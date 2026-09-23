@@ -10,52 +10,86 @@
 #include <stdlib.h>
 #include <string.h>
 
-#define MODE_BIT(m) (1U << (m))
-#define DMR         MODE_BIT(DSD_SCAN_MODE_DMR)
-#define P25         MODE_BIT(DSD_SCAN_MODE_P25)
-#define NXDN        (MODE_BIT(DSD_SCAN_MODE_NXDN48) | MODE_BIT(DSD_SCAN_MODE_NXDN96))
-#define DPMR        MODE_BIT(DSD_SCAN_MODE_DPMR)
-#define ALL_MODES   0x1FFU
+#define MODE_BIT(m)   (1U << (m))
+#define DMR           MODE_BIT(DSD_SCAN_MODE_DMR)
+#define P25           MODE_BIT(DSD_SCAN_MODE_P25)
+#define NXDN          (MODE_BIT(DSD_SCAN_MODE_NXDN48) | MODE_BIT(DSD_SCAN_MODE_NXDN96))
+#define DPMR          MODE_BIT(DSD_SCAN_MODE_DPMR)
+/* Blank rows and every digital class (INHERIT through M17). */
+#define DIGITAL_MODES 0x1FFU
+/* Every class a row or target can declare. Equal to DIGITAL_MODES until analog classes exist;
+ * an option that is meaningful whatever the class (squelch) uses this, not DIGITAL_MODES. */
+#define ANY_MODES     DIGITAL_MODES
 
-typedef struct {
+typedef struct scan_option_spec scan_option_spec;
+
+/* Store one accepted switch into the parse result. Returns 0, or -1 when the value is invalid. */
+typedef int (*scan_option_setter)(const scan_option_spec* spec, const char* argument, unsigned int mode,
+                                  dsd_scan_options* parsed);
+
+struct scan_option_spec {
     const char* name;
     uint32_t field;
     unsigned int modes;
     int argument;
     int conventional;
     int value;
-} scan_option_spec;
+    /* The separate-token value may be a digits-only negative number (^-[0-9]+$). Every other
+     * switch refuses a following token that starts with '-', so a missing value can never
+     * swallow the next switch; this flag narrows that rule for one numeric switch only. */
+    int signed_numeric;
+    /* Fixed explanation for an invalid value; NULL reads "invalid value". */
+    const char* hint;
+    scan_option_setter set;
+};
+
+static int option_set_none(const scan_option_spec*, const char*, unsigned int, dsd_scan_options*);
+static int option_set_flag(const scan_option_spec*, const char*, unsigned int, dsd_scan_options*);
+static int option_set_force(const scan_option_spec*, const char*, unsigned int, dsd_scan_options*);
+static int option_set_hex(const scan_option_spec*, const char*, unsigned int, dsd_scan_options*);
+static int option_set_bp(const scan_option_spec*, const char*, unsigned int, dsd_scan_options*);
+static int option_set_scrambler(const scan_option_spec*, const char*, unsigned int, dsd_scan_options*);
+static int option_set_voice_ms(const scan_option_spec*, const char*, unsigned int, dsd_scan_options*);
+static int option_set_max_visit(const scan_option_spec*, const char*, unsigned int, dsd_scan_options*);
+static int option_set_squelch(const scan_option_spec*, const char*, unsigned int, dsd_scan_options*);
+static int option_set_path(const scan_option_spec*, const char*, unsigned int, dsd_scan_options*);
+
+#define SQUELCH_HINT "expects whole dB from -100 to 0 (0 = off)"
 
 static const scan_option_spec specifications[] = {
-    {"-b", DSD_SCAN_OPT_BP, DMR, 1, 0, 0},
-    {"-H", DSD_SCAN_OPT_HYTERA, DMR | P25 | NXDN, 1, 0, 0},
-    {"-1", DSD_SCAN_OPT_SCALAR, DMR | P25 | NXDN, 1, 0, 0},
-    {"-R", DSD_SCAN_OPT_SCRAMBLER, NXDN | DPMR, 1, 0, 0},
-    {"-K", DSD_SCAN_OPT_HEX_FILE, DMR | P25 | NXDN, 1, 0, 0},
-    {"-k", DSD_SCAN_OPT_DEC_FILE, DMR | P25 | NXDN, 1, 0, 0},
-    {"-G", DSD_SCAN_OPT_GROUP, ALL_MODES, 1, 0, 0},
-    {"--dmr-tg-key-csv", DSD_SCAN_OPT_DMR_MAP, DMR, 1, 0, 0},
-    {"--dmr-tg-key-clear", DSD_SCAN_OPT_DMR_MAP, DMR, 0, 0, 0},
-    {"--no-decryption-keys", DSD_SCAN_OPT_CLEAR_KEYS, ALL_MODES, 0, 0, 0},
-    {"--key-profile-ref", DSD_SCAN_OPT_KEY_PROFILE_REF, ALL_MODES, 1, 0, 0},
-    {"-4", DSD_SCAN_OPT_FORCE, DMR | NXDN, 0, 0, 1},
-    {"-0", DSD_SCAN_OPT_FORCE, DMR, 0, 0, 0x21},
-    {"--dmr-force-algid", DSD_SCAN_OPT_FORCE, DMR, 1, 0, 0},
-    {"--no-force-key", DSD_SCAN_OPT_FORCE, ALL_MODES, 0, 0, 0},
-    {"-F", DSD_SCAN_OPT_CRC, DMR | P25 | MODE_BIT(DSD_SCAN_MODE_M17), 0, 0, 0},
-    {"--strict-crc", DSD_SCAN_OPT_CRC, ALL_MODES, 0, 0, 1},
-    {"-^", DSD_SCAN_OPT_P25_CANDIDATES, P25, 0, 0, 1},
-    {"-e", DSD_SCAN_OPT_DATA, ALL_MODES, 0, 0, 1},
-    {"--no-data-calls", DSD_SCAN_OPT_DATA, ALL_MODES, 0, 0, 0},
-    {"--enc-follow", DSD_SCAN_OPT_ENC, ALL_MODES, 0, 0, 1},
-    {"--enc-lockout", DSD_SCAN_OPT_ENC, ALL_MODES, 0, 0, 0},
-    {"--scan-voice-only", DSD_SCAN_OPT_VOICE, ALL_MODES, 0, 1, 1},
-    {"--no-scan-voice-only", DSD_SCAN_OPT_VOICE, ALL_MODES, 0, 1, 0},
-    {"--scan-voice-qualify-ms", DSD_SCAN_OPT_QUALIFY, ALL_MODES, 1, 1, 0},
-    {"--scan-voice-hold-ms", DSD_SCAN_OPT_HOLD, ALL_MODES, 1, 1, 0},
+    {"-b", DSD_SCAN_OPT_BP, DMR, 1, 0, 0, 0, NULL, option_set_bp},
+    {"-H", DSD_SCAN_OPT_HYTERA, DMR | P25 | NXDN, 1, 0, 0, 0, NULL, option_set_hex},
+    {"-1", DSD_SCAN_OPT_SCALAR, DMR | P25 | NXDN, 1, 0, 0, 0, NULL, option_set_hex},
+    {"-R", DSD_SCAN_OPT_SCRAMBLER, NXDN | DPMR, 1, 0, 0, 0, NULL, option_set_scrambler},
+    {"-K", DSD_SCAN_OPT_HEX_FILE, DMR | P25 | NXDN, 1, 0, 0, 0, NULL, option_set_path},
+    {"-k", DSD_SCAN_OPT_DEC_FILE, DMR | P25 | NXDN, 1, 0, 0, 0, NULL, option_set_path},
+    {"-G", DSD_SCAN_OPT_GROUP, DIGITAL_MODES, 1, 0, 0, 0, NULL, option_set_path},
+    {"--dmr-tg-key-csv", DSD_SCAN_OPT_DMR_MAP, DMR, 1, 0, 0, 0, NULL, option_set_path},
+    {"--dmr-tg-key-clear", DSD_SCAN_OPT_DMR_MAP, DMR, 0, 0, 0, 0, NULL, option_set_path},
+    /* Recognised here and acted on elsewhere: neither carries a value of its own to store. */
+    {"--no-decryption-keys", DSD_SCAN_OPT_CLEAR_KEYS, DIGITAL_MODES, 0, 0, 0, 0, NULL, option_set_none},
+    {"--key-profile-ref", DSD_SCAN_OPT_KEY_PROFILE_REF, DIGITAL_MODES, 1, 0, 0, 0, NULL, option_set_path},
+    {"-4", DSD_SCAN_OPT_FORCE, DMR | NXDN, 0, 0, 1, 0, NULL, option_set_force},
+    {"-0", DSD_SCAN_OPT_FORCE, DMR, 0, 0, 0x21, 0, NULL, option_set_force},
+    {"--dmr-force-algid", DSD_SCAN_OPT_FORCE, DMR, 1, 0, 0, 0, NULL, option_set_force},
+    {"--no-force-key", DSD_SCAN_OPT_FORCE, DIGITAL_MODES, 0, 0, 0, 0, NULL, option_set_force},
+    {"-F", DSD_SCAN_OPT_CRC, DMR | P25 | MODE_BIT(DSD_SCAN_MODE_M17), 0, 0, 0, 0, NULL, option_set_flag},
+    {"--strict-crc", DSD_SCAN_OPT_CRC, DIGITAL_MODES, 0, 0, 1, 0, NULL, option_set_flag},
+    {"-^", DSD_SCAN_OPT_P25_CANDIDATES, P25, 0, 0, 1, 0, NULL, option_set_none},
+    {"-e", DSD_SCAN_OPT_DATA, DIGITAL_MODES, 0, 0, 1, 0, NULL, option_set_flag},
+    {"--no-data-calls", DSD_SCAN_OPT_DATA, DIGITAL_MODES, 0, 0, 0, 0, NULL, option_set_flag},
+    {"--enc-follow", DSD_SCAN_OPT_ENC, DIGITAL_MODES, 0, 0, 1, 0, NULL, option_set_flag},
+    {"--enc-lockout", DSD_SCAN_OPT_ENC, DIGITAL_MODES, 0, 0, 0, 0, NULL, option_set_flag},
+    {"--scan-voice-only", DSD_SCAN_OPT_VOICE, DIGITAL_MODES, 0, 1, 1, 0, NULL, option_set_flag},
+    {"--no-scan-voice-only", DSD_SCAN_OPT_VOICE, DIGITAL_MODES, 0, 1, 0, 0, NULL, option_set_flag},
+    {"--scan-voice-qualify-ms", DSD_SCAN_OPT_QUALIFY, DIGITAL_MODES, 1, 1, 0, 0, NULL, option_set_voice_ms},
+    {"--scan-voice-hold-ms", DSD_SCAN_OPT_HOLD, DIGITAL_MODES, 1, 1, 0, 0, NULL, option_set_voice_ms},
     /* The per-visit cap applies to every trunk-scan target type, so unlike the voice-gate
      * switches above it is not conventional-only. */
-    {"--scan-max-visit-ms", DSD_SCAN_OPT_MAX_VISIT, ALL_MODES, 1, 0, 0},
+    {"--scan-max-visit-ms", DSD_SCAN_OPT_MAX_VISIT, DIGITAL_MODES, 1, 0, 0, 0, NULL, option_set_max_visit},
+    /* Squelch is a receiver setting, so it is legal on every class and target type, trunked
+     * control channels included (issue #521). Units and range are rtl_sql's. */
+    {"--squelch-db", DSD_SCAN_OPT_SQUELCH, ANY_MODES, 1, 0, 0, 1, SQUELCH_HINT, option_set_squelch},
 };
 
 static int
@@ -220,45 +254,115 @@ option_set_hex(const scan_option_spec* spec, const char* argument, unsigned int 
 }
 
 static int
-option_set_number(const scan_option_spec* spec, const char* argument, dsd_scan_options* parsed) {
-    unsigned long number = 0;
+option_set_none(const scan_option_spec* spec, const char* argument, unsigned int mode, dsd_scan_options* parsed) {
+    (void)spec;
+    (void)argument;
+    (void)mode;
+    (void)parsed;
+    return 0;
+}
+
+/* The plain on/off switches: the spec already carries the value the row asked for, so there is
+ * nothing to parse. */
+static int
+option_set_flag(const scan_option_spec* spec, const char* argument, unsigned int mode, dsd_scan_options* parsed) {
+    (void)argument;
+    (void)mode;
     switch (spec->field) {
-        case DSD_SCAN_OPT_BP:
-        case DSD_SCAN_OPT_SCRAMBLER:
-            if (option_decimal(argument, spec->field == DSD_SCAN_OPT_BP ? 255UL : 32767UL, &number)) {
-                return -1;
-            }
-            if (spec->field == DSD_SCAN_OPT_BP) {
-                parsed->bp = number;
-            } else {
-                parsed->scalar = number;
-            }
-            return 0;
-        case DSD_SCAN_OPT_QUALIFY:
-        case DSD_SCAN_OPT_HOLD:
-            if (option_decimal(argument, 600000UL, &number) || number < 100) {
-                return -1;
-            }
-            if (spec->field == DSD_SCAN_OPT_QUALIFY) {
-                parsed->values.qualify_ms = (int)number;
-            } else {
-                parsed->values.hold_ms = (int)number;
-            }
-            return 0;
-        case DSD_SCAN_OPT_MAX_VISIT:
-            /* A row disables the cap outright with 0; any other value is a real cap and
-             * shares the CLI bounds, so the voice-gate bounds above do not apply. */
-            if (option_decimal(argument, 3600000UL, &number) || (number != 0UL && number < 1000UL)) {
-                return -1;
-            }
-            parsed->values.max_visit_ms = (int)number;
-            return 0;
+        case DSD_SCAN_OPT_CRC: parsed->values.strict_crc = spec->value; return 0;
+        case DSD_SCAN_OPT_VOICE: parsed->values.voice_only = spec->value; return 0;
+        case DSD_SCAN_OPT_DATA: parsed->values.tune_data_calls = spec->value; return 0;
+        case DSD_SCAN_OPT_ENC: parsed->values.tune_enc_calls = spec->value; return 0;
         default: return -1;
     }
 }
 
 static int
-option_set_path(const scan_option_spec* spec, const char* argument, dsd_scan_options* parsed) {
+option_set_force(const scan_option_spec* spec, const char* argument, unsigned int mode, dsd_scan_options* parsed) {
+    if (spec->argument) {
+        return option_set_hex(spec, argument, mode, parsed);
+    }
+    parsed->values.force = spec->value;
+    return 0;
+}
+
+static int
+option_set_bp(const scan_option_spec* spec, const char* argument, unsigned int mode, dsd_scan_options* parsed) {
+    (void)spec;
+    (void)mode;
+    unsigned long number = 0;
+    if (option_decimal(argument, 255UL, &number)) {
+        return -1;
+    }
+    parsed->bp = number;
+    return 0;
+}
+
+static int
+option_set_scrambler(const scan_option_spec* spec, const char* argument, unsigned int mode, dsd_scan_options* parsed) {
+    (void)spec;
+    (void)mode;
+    unsigned long number = 0;
+    if (option_decimal(argument, 32767UL, &number)) {
+        return -1;
+    }
+    parsed->scalar = number;
+    return 0;
+}
+
+static int
+option_set_voice_ms(const scan_option_spec* spec, const char* argument, unsigned int mode, dsd_scan_options* parsed) {
+    (void)mode;
+    unsigned long number = 0;
+    if (option_decimal(argument, 600000UL, &number) || number < 100) {
+        return -1;
+    }
+    if (spec->field == DSD_SCAN_OPT_QUALIFY) {
+        parsed->values.qualify_ms = (int)number;
+    } else {
+        parsed->values.hold_ms = (int)number;
+    }
+    return 0;
+}
+
+static int
+option_set_max_visit(const scan_option_spec* spec, const char* argument, unsigned int mode, dsd_scan_options* parsed) {
+    (void)spec;
+    (void)mode;
+    unsigned long number = 0;
+    /* A row disables the cap outright with 0; any other value is a real cap and shares the
+     * CLI bounds, so the voice-gate bounds do not apply. */
+    if (option_decimal(argument, 3600000UL, &number) || (number != 0UL && number < 1000UL)) {
+        return -1;
+    }
+    parsed->values.max_visit_ms = (int)number;
+    return 0;
+}
+
+/* Digits with an optional leading minus and nothing else: no '+', spaces, exponent or fraction. */
+static int
+option_signed_integer(const char* text) {
+    const char* digits = text[0] == '-' ? text + 1 : text;
+    return digits[0] != '\0' && strspn(digits, "0123456789") == strlen(digits);
+}
+
+static int
+option_set_squelch(const scan_option_spec* spec, const char* argument, unsigned int mode, dsd_scan_options* parsed) {
+    (void)spec;
+    (void)mode;
+    int db = 0;
+    /* Whole dB, rtl_sql's own range. A positive number was a linear mean power in the legacy
+     * CLI contract; it is refused here rather than read in a second unit. */
+    if (!option_signed_integer(argument) || dsd_parse_int_strict(argument, 10, -100, 0, &db) != 0) {
+        return -1;
+    }
+    parsed->values.squelch_db = db;
+    return 0;
+}
+
+static int
+option_set_path(const scan_option_spec* spec, const char* argument, unsigned int mode, dsd_scan_options* parsed) {
+    (void)mode;
     char* path = parsed->values.group_file;
     size_t capacity = sizeof(parsed->values.group_file);
     if (spec->field == DSD_SCAN_OPT_KEY_PROFILE_REF) {
@@ -290,46 +394,6 @@ option_set_path(const scan_option_spec* spec, const char* argument, dsd_scan_opt
     return 0;
 }
 
-/* The plain on/off switches: the spec already carries the value the row asked for, so there is
- * nothing to parse. Returns 0 when the field was one of them and -1 when it belongs elsewhere. */
-static int
-option_set_flag(const scan_option_spec* spec, dsd_scan_options* parsed) {
-    switch (spec->field) {
-        case DSD_SCAN_OPT_CRC: parsed->values.strict_crc = spec->value; return 0;
-        case DSD_SCAN_OPT_VOICE: parsed->values.voice_only = spec->value; return 0;
-        case DSD_SCAN_OPT_DATA: parsed->values.tune_data_calls = spec->value; return 0;
-        case DSD_SCAN_OPT_ENC: parsed->values.tune_enc_calls = spec->value; return 0;
-        default: return -1;
-    }
-}
-
-static int
-option_set(const scan_option_spec* spec, const char* argument, unsigned int mode, dsd_scan_options* parsed) {
-    /* Recognised here and acted on elsewhere: neither carries a value of its own to store. */
-    if (spec->field == DSD_SCAN_OPT_CLEAR_KEYS || spec->field == DSD_SCAN_OPT_P25_CANDIDATES) {
-        return 0;
-    }
-    if (option_set_flag(spec, parsed) == 0) {
-        return 0;
-    }
-    switch (spec->field) {
-        case DSD_SCAN_OPT_FORCE:
-            if (spec->argument) {
-                return option_set_hex(spec, argument, mode, parsed);
-            }
-            parsed->values.force = spec->value;
-            return 0;
-        case DSD_SCAN_OPT_HYTERA:
-        case DSD_SCAN_OPT_SCALAR: return option_set_hex(spec, argument, mode, parsed);
-        case DSD_SCAN_OPT_BP:
-        case DSD_SCAN_OPT_SCRAMBLER:
-        case DSD_SCAN_OPT_QUALIFY:
-        case DSD_SCAN_OPT_HOLD:
-        case DSD_SCAN_OPT_MAX_VISIT: return option_set_number(spec, argument, parsed);
-        default: return option_set_path(spec, argument, parsed);
-    }
-}
-
 typedef struct {
     const scan_option_spec* first;
     int alias_used;
@@ -350,8 +414,8 @@ option_apply(const scan_option_spec* spec, const char* argument, unsigned int mo
     if ((parsed->values.present & spec->field) && spec->field != DSD_SCAN_OPT_FORCE) {
         return option_error(error, error_size, spec->name, "duplicate option");
     }
-    if (option_set(spec, argument, mode, parsed)) {
-        return option_error(error, error_size, spec->name, "invalid value");
+    if (spec->set(spec, argument, mode, parsed)) {
+        return option_error(error, error_size, spec->name, spec->hint ? spec->hint : "invalid value");
     }
     if ((parsed->values.present & DSD_SCAN_OPT_FORCE) && spec->field == DSD_SCAN_OPT_FORCE
         && old_force != parsed->values.force) {
@@ -371,10 +435,21 @@ option_apply(const scan_option_spec* spec, const char* argument, unsigned int mo
     return 1;
 }
 
-/* A missing value cannot consume the following switch as a file path. */
+/* Whether a separate token is a digits-only negative number such as -60. */
 static int
-option_argument(const char** cursor, char* argument, size_t size) {
-    return option_token(cursor, argument, size) == 1 && argument[0] != '-';
+option_negative_integer(const char* text) {
+    return text[0] == '-' && text[1] != '\0' && strspn(text + 1, "0123456789") == strlen(text + 1);
+}
+
+/* A missing value cannot consume the following switch as a file path. A signed_numeric switch
+ * may take a digits-only negative number instead; this is the one place the rule lives, and both
+ * the parser and the file visitor come through it, so the two always agree on a row. */
+static int
+option_argument(const scan_option_spec* spec, const char** cursor, char* argument, size_t size) {
+    if (option_token(cursor, argument, size) != 1) {
+        return 0;
+    }
+    return argument[0] != '-' || (spec->signed_numeric && option_negative_integer(argument));
 }
 
 static int
@@ -407,7 +482,7 @@ option_read(const char** cursor, unsigned int mode, int conventional, dsd_scan_o
         option_error(error, error_size, spec->name, "takes no argument");
         goto done;
     }
-    if (spec->argument && !equals && !option_argument(cursor, argument, sizeof(argument))) {
+    if (spec->argument && !equals && !option_argument(spec, cursor, argument, sizeof(argument))) {
         option_error(error, error_size, spec->name, "requires a valid argument");
         goto done;
     }
@@ -440,7 +515,7 @@ option_file_read(const char* text, const char** cursor, dsd_scan_option_file_cb 
     if (spec->argument && !equals) {
         *cursor = option_skip_space(*cursor);
         start = *cursor;
-        if (!option_argument(cursor, argument, sizeof(argument))) {
+        if (!option_argument(spec, cursor, argument, sizeof(argument))) {
             goto done;
         }
     }

@@ -39,6 +39,9 @@ typedef enum {
  * The leading block holds the row-scoped nonsecret options (see scan_options.h); they are
  * captured and restored with the rest but excluded from dsd_scan_settings_equal(). */
 typedef struct {
+    /** dsd_opts::rtl_squelch_level (mean power; 0 = off). First so the struct has no padding.
+     * A double: compare it with a tolerance, never ==. */
+    double rtl_squelch_level;
     int force_key;
     int aggressive_framesync;
     int dmr_crc_relaxed_default;
@@ -119,7 +122,13 @@ int dsd_scan_mode_enter(dsd_opts* opts, dsd_state* state, dsd_scan_mode mode);
  * No allocation. Returns -1 without touching anything when no scan scope is owned (call
  * dsd_scan_mode_enter()/dsd_scan_mode_begin() first), else 0. While the scope is suspended the
  * values are only recorded and take effect at dsd_scan_mode_resume(); they are reapplied over the
- * refreshed baseline after every operator update. */
+ * refreshed baseline after every operator update.
+ *
+ * Squelch (DSD_SCAN_OPT_SQUELCH) is the one row option with hardware behind it. enter, options
+ * and leave push the effective level to the RTL demodulator through the runtime metrics hook
+ * when it changed and the input is AUDIO_IN_RTL; resume always re-pushes it there, because the
+ * command that ran while suspended may have pushed the configured default itself. prepare
+ * never pushes. */
 int dsd_scan_mode_options(dsd_opts* opts, dsd_state* state, const dsd_scan_option_values* values);
 /** Restore the exact configured baseline and release the scope. */
 void dsd_scan_mode_leave(dsd_opts* opts, dsd_state* state);
@@ -142,6 +151,11 @@ void dsd_scan_mode_configured(const dsd_opts* opts, const dsd_state* state, dsd_
 const dsd_scan_settings* dsd_scan_mode_configured_view(const dsd_state* state);
 /** Nonsecret row-option mask, also available on a held frontend snapshot. */
 uint32_t dsd_scan_mode_option_fields(const dsd_state* state);
+/** Borrow the installed nonsecret row options (fields meaningful per their `present` bits), or
+ * NULL without a scope. Unlike the configured view it stays valid while suspended, so a command
+ * editing a configured default can tell whether the row on air shadows it. Decoder thread or a
+ * consumer-owned snapshot only; invalidated by scope updates. */
+const dsd_scan_option_values* dsd_scan_mode_row_options(const dsd_state* state);
 /** Deep-copy scalar scope metadata for frontend snapshots. No live extension pointer is shared. */
 void dsd_scan_mode_copy_snapshot(dsd_state* dst, const dsd_state* src);
 /** Current class profile; combined P25 and inherited settings follow the active hunt index. */

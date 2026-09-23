@@ -2883,6 +2883,24 @@ trunk_scan_warn_ignored_target_gain(const dsd_opts* opts, const dsd_state* state
     LOG_WARN("WARNING: Trunk scan rtl_gain target overrides require RTL-family input; ignoring target gain settings\n");
 }
 
+/* A target squelch gates the RTL demodulator. With rigctl tuning a PCM input there is no
+ * demodulator for it to gate, only the analog monitor and the carrier activity stamp, which read
+ * the same threshold from dsd_opts. Say so once per affected target when the scan starts. */
+static void
+trunk_scan_warn_target_squelch(const dsd_opts* opts, const dsd_trunk_scan_target_list* list) {
+    if (!opts || !list || opts->audio_in_type == AUDIO_IN_RTL) {
+        return;
+    }
+    for (size_t i = 0; i < list->count; i++) {
+        const dsd_trunk_scan_target* target = &list->targets[i];
+        if (target->row_options.present & DSD_SCAN_OPT_SQUELCH) {
+            LOG_WARN("WARNING: Trunk scan target '%s': --squelch-db %d gates only the analog monitor and carrier "
+                     "activity on this input; it cannot gate digital acquisition without a radio input.\n",
+                     target->id, target->row_options.squelch_db);
+        }
+    }
+}
+
 static void
 trunk_scan_tick_active_target_sm(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_target_runtime* rt) {
     if (!opts || !state || !rt) {
@@ -3738,6 +3756,7 @@ dsd_engine_trunk_scan_init(dsd_opts* opts, dsd_state* state, char* err, size_t e
         return -1;
     }
     trunk_scan_warn_ignored_target_gain(opts, state, &list);
+    trunk_scan_warn_target_squelch(opts, &list);
 
     dsd_trunk_scan_coord* coord = trunk_scan_coord_create(&list, opts, err, err_sz);
     if (!coord) {

@@ -42,6 +42,24 @@ dsd_squelch_is_off(double mean_power) {
 }
 
 /**
+ * @brief Whether a measured mean power opens the decoder-side squelch gate.
+ *
+ * The rule the unsynced analog monitor applies before it writes monitor audio and stamps
+ * carrier activity (`dsd_symbol.c`): strictly above the stored threshold. With the squelch
+ * off (a threshold of 0) any power at all opens it, and digital silence never does, so an
+ * idle PCM input cannot hold a scan row on air. Scan rows and targets change the threshold
+ * this reads (issue #521); the rule itself does not change.
+ *
+ * @param mean_power Measured channel power (`dsd_opts::rtl_pwr`).
+ * @param level      Stored threshold in mean-power units (`dsd_opts::rtl_squelch_level`).
+ * @return Non-zero when the gate is open.
+ */
+static inline int
+dsd_squelch_opens(double mean_power, double level) {
+    return mean_power > level;
+}
+
+/**
  * @brief Map a user-facing `sql` setting onto a stored threshold.
  *
  * One definition for every entry point that accepts the setting: the `sql` field

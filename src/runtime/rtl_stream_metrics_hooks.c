@@ -94,6 +94,15 @@ dsd_rtl_stream_metrics_hook_apply_demod_profile(int cqpsk_enable, int symbol_rat
 }
 
 int
+dsd_rtl_stream_metrics_hook_set_channel_squelch(double mean_power) {
+    if (g_rtl_stream_metrics_hooks.set_channel_squelch) {
+        g_rtl_stream_metrics_hooks.set_channel_squelch(mean_power);
+        return 0;
+    }
+    return -1;
+}
+
+int
 dsd_rtl_stream_metrics_hook_cqpsk_status(int* out_cqpsk_enable, int* out_cqpsk_timing_active) {
     if (g_rtl_stream_metrics_hooks.cqpsk_status) {
         return g_rtl_stream_metrics_hooks.cqpsk_status(out_cqpsk_enable, out_cqpsk_timing_active);

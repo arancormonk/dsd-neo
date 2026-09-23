@@ -11,6 +11,7 @@
 #include <dsd-neo/io/rtl_stream_c.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
+#include <math.h>
 #include <stddef.h>
 #include <stdint.h>
 
@@ -38,6 +39,8 @@ static int g_p25p1_ber_calls;
 static int g_p25p2_err_calls;
 static int g_stream_active_calls;
 static int g_input_level_calls;
+static int g_channel_squelch_calls;
+static float g_last_channel_squelch;
 static dsdneoRuntimeConfig g_runtime_config;
 
 static int g_last_symbol_rate;
@@ -209,6 +212,12 @@ rtl_stream_get_input_level(dsd_input_level_snapshot* out) {
     return -9;
 }
 
+void
+rtl_stream_set_channel_squelch(float level) {
+    ++g_channel_squelch_calls;
+    g_last_channel_squelch = level;
+}
+
 int
 main(void) {
     dsd_rtl_stream_metrics_hooks_set(NULL);
@@ -308,6 +317,12 @@ main(void) {
     assert(level.status == DSD_INPUT_LEVEL_OK);
     assert(level.source == DSD_INPUT_LEVEL_SOURCE_RTL_CU8);
     assert(level.sample_count == 1024U);
+
+    /* Scan rows push their squelch through the runtime table to the same demod setter the
+     * operator's squelch command uses (issue #521). */
+    assert(dsd_rtl_stream_metrics_hook_set_channel_squelch(1e-6) == 0);
+    assert(g_channel_squelch_calls == 1);
+    assert(fabsf(g_last_channel_squelch - 1e-6f) < 1e-12f);
 
     dsd_rtl_stream_metrics_hooks_set(NULL);
     return 0;

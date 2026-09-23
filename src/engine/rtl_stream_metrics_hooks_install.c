@@ -31,6 +31,12 @@ rtl_stream_metrics_apply_demod_profile(int cqpsk_enable, int symbol_rate_hz, int
     return rtl_stream_request_demod_profile(cqpsk, symbol_rate_hz, levels, channel_profile, ted_sps > 0 ? ted_sps : 0,
                                             0);
 }
+
+/* The demod keeps the threshold as a float, like the operator's own squelch command does. */
+static void
+rtl_stream_metrics_set_channel_squelch(double mean_power) {
+    rtl_stream_set_channel_squelch((float)mean_power);
+}
 #endif
 
 void
@@ -56,6 +62,7 @@ dsd_engine_rtl_stream_metrics_hooks_install(void) {
     hooks.p25p2_err_update = rtl_stream_p25p2_err_update;
     hooks.stream_active = rtl_stream_is_active;
     hooks.input_level = rtl_stream_get_input_level;
+    hooks.set_channel_squelch = rtl_stream_metrics_set_channel_squelch;
 #endif
     dsd_rtl_stream_metrics_hooks_set(&hooks);
 }

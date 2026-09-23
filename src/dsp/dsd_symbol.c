@@ -24,6 +24,7 @@
 #include <dsd-neo/core/dsd_time.h>
 #include <dsd-neo/core/input_level.h>
 #include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/power.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/dsp/frame_sync.h>
@@ -1157,8 +1158,8 @@ symbol_apply_unsynced_filters(dsd_opts* opts, dsd_state* state, unsigned int ana
 
 static inline void
 symbol_output_unsynced_analog(dsd_opts* opts, dsd_state* state, unsigned int analog_block) {
-    if ((opts->rtl_pwr > opts->rtl_squelch_level) && opts->monitor_input_audio == 1 && state->carrier == 0
-        && opts->audio_out == 1) {
+    if (dsd_squelch_opens(opts->rtl_pwr, opts->rtl_squelch_level) && opts->monitor_input_audio == 1
+        && state->carrier == 0 && opts->audio_out == 1) {
         symbol_convert_analog_block_to_i16(state, analog_block);
         size_t bytes = (size_t)analog_block * sizeof(short);
         if (opts->audio_out_type == 0 && opts->audio_raw_out) {

@@ -14,6 +14,7 @@
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/parse.h>
+#include <dsd-neo/core/power.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
@@ -35,6 +36,7 @@
 #include <dsd-neo/protocol/p25/p25_sm_watchdog.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
+#include <dsd-neo/runtime/scan_mode.h>
 #include <dsd-neo/runtime/trunk_scan_hooks.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <limits.h>
@@ -9536,6 +9538,223 @@ test_visit_pending_fallback_anchors_on_completion(void) {
     return rc;
 }
 
+/* --- Issue #521: per-target squelch overrides --- */
+
+static const char k_squelch_targets_header[] =
+    "id,type,frequency_hz,chan_csv,dwell_ms,activity_hold_ms,notes,options\n";
+static int g_target_squelch_pushes;
+static double g_target_squelch_pushed = -1.0;
+
+static void
+record_target_squelch(double mean_power) {
+    g_target_squelch_pushes++;
+    g_target_squelch_pushed = mean_power;
+}
+
+/* What a target visit leaves in force: the level in dsd_opts (read by the analog monitor gate),
+ * the level the RTL demodulator was last handed, and whether the fixed channel power opens the
+ * gate at that level. `db` 0 means off. */
+static int
+expect_target_squelch(const dsd_opts* opts, const char* stage, int db, int gate_open) {
+    const double want = dsd_squelch_level_from_sql((double)db);
+    const double tolerance = 1e-9 * fmax(fabs(want), fabs(opts->rtl_squelch_level));
+    const int level_ok = fabs(opts->rtl_squelch_level - want) <= tolerance;
+    const int pushed_ok =
+        fabs(g_target_squelch_pushed - want) <= 1e-9 * fmax(fabs(want), fabs(g_target_squelch_pushed));
+    const int gate = dsd_squelch_opens(opts->rtl_pwr, opts->rtl_squelch_level);
+    if (!level_ok || !pushed_ok || gate != gate_open) {
+        DSD_FPRINTF(stderr, "target squelch after %s: level %.3g pushed %.3g gate %d, want %d dB gate %d\n", stage,
+                    opts->rtl_squelch_level, g_target_squelch_pushed, gate, db, gate_open);
+        return 1;
+    }
+    return 0;
+}
+
+static int
+squelch_targets_init(const char* body, dsd_opts* opts, dsd_state* state, char* dir, size_t dir_sz, char* target_path,
+                     size_t target_sz) {
+    if (make_temp_dir(dir, dir_sz) != 0
+        || write_targets_file_with_header(dir, k_squelch_targets_header, body, target_path, target_sz) != 0) {
+        cleanup_paths(dir, NULL, NULL);
+        return -1;
+    }
+    reset_scan_opts_state(opts, state);
+    opts->rtl_squelch_level = dsd_squelch_level_from_sql(-80.0);
+    opts->rtl_pwr = dsd_squelch_level_from_sql(-70.0);
+    DSD_SNPRINTF(opts->trunk_scan_targets_csv, sizeof opts->trunk_scan_targets_csv, "%s", target_path);
+    const dsd_rtl_stream_metrics_hooks hooks = {.set_channel_squelch = record_target_squelch};
+    dsd_rtl_stream_metrics_hooks_set(&hooks);
+    g_target_squelch_pushes = 0;
+    g_target_squelch_pushed = -1.0;
+    char err[256] = {0};
+    trunk_scan_test_set_now(0.0);
+    if (dsd_engine_trunk_scan_init(opts, state, err, sizeof err) != 0) {
+        DSD_FPRINTF(stderr, "squelch targets init failed: %s\n", err);
+        cleanup_paths(dir, target_path, NULL);
+        return -1;
+    }
+    return 0;
+}
+
+/* A threshold target (trunked), an explicit off target and an inheriting target (both
+ * conventional) in succession with the channel power held between the default and the
+ * threshold: the demod is handed each target's level and the monitor gate flips with it. A
+ * manual advance, an operator edit and shutdown leave the configured default in force. */
+static int
+test_target_squelch_threshold_off_inherit(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    char target_path[DSD_TEST_PATH_MAX];
+    static dsd_opts opts;
+    static dsd_state state;
+    if (squelch_targets_init("thr,p25-trunk,851000000,,250,,,--squelch-db -60\n"
+                             "off,dmr-conventional,461000000,,250,,,--squelch-db 0\n"
+                             "inh,nxdn48-conventional,461556250,,250,,\n",
+                             &opts, &state, dir, sizeof dir, target_path, sizeof target_path)
+        != 0) {
+        return 1;
+    }
+    int test_rc = expect_active_target(&state, "squelch init", 0U);
+    test_rc |= expect_target_squelch(&opts, "threshold target", -60, 0);
+
+    trunk_scan_test_set_now(0.26);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    test_rc |= expect_active_target(&state, "rotation to off target", 1U);
+    test_rc |= expect_target_squelch(&opts, "off target", 0, 1);
+
+    trunk_scan_test_set_now(0.52);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    test_rc |= expect_active_target(&state, "rotation to inheriting target", 2U);
+    test_rc |= expect_target_squelch(&opts, "inheriting target", -80, 1);
+
+    test_rc |=
+        expect_control_rc("advance", dsd_engine_trunk_scan_control(&opts, &state, DSD_TRUNK_SCAN_CONTROL_ADVANCE), 0);
+    test_rc |= expect_active_target(&state, "manual advance", 0U);
+    test_rc |= expect_target_squelch(&opts, "manual advance", -60, 0);
+
+    /* An operator edit beneath the target changes the default only, and the demod is re-told
+     * the target's own level once the edit is done. */
+    const int pushes_before_edit = g_target_squelch_pushes;
+    if (!dsd_scan_mode_suspend(&opts, &state)) {
+        test_rc = 1;
+    }
+    opts.rtl_squelch_level = dsd_squelch_level_from_sql(-75.0);
+    (void)dsd_scan_mode_resume(&opts, &state);
+    test_rc |= expect_target_squelch(&opts, "edit beneath the target", -60, 0);
+    const dsd_scan_settings* configured = dsd_scan_mode_configured_view(&state);
+    if (g_target_squelch_pushes != pushes_before_edit + 1 || !configured
+        || fabs(configured->rtl_squelch_level - dsd_squelch_level_from_sql(-75.0)) > 1e-15) {
+        DSD_FPRINTF(stderr, "operator squelch edit beneath a target did not stay on the default\n");
+        test_rc = 1;
+    }
+
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    test_rc |= expect_target_squelch(&opts, "shutdown", -75, 1);
+    dsd_rtl_stream_metrics_hooks_set(NULL);
+    trunk_scan_test_clear_now();
+    cleanup_paths(dir, target_path, NULL);
+    return test_rc;
+}
+
+/* Every alternate fails to retune, so the advance rolls back onto the original target: its
+ * own threshold has to come back with it, not the last failed alternate's or the default. */
+static int
+test_target_squelch_restored_on_rollback(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    char target_path[DSD_TEST_PATH_MAX];
+    static dsd_opts opts;
+    static dsd_state state;
+    if (squelch_targets_init("thr,p25-trunk,851000000,,250,,,--squelch-db -60\n"
+                             "off,dmr-trunk,452000000,,250,,,--squelch-db 0\n",
+                             &opts, &state, dir, sizeof dir, target_path, sizeof target_path)
+        != 0) {
+        return 1;
+    }
+    int test_rc = expect_target_squelch(&opts, "rollback init", -60, 0);
+    g_counting_tune_to_cc_failures_remaining = 2;
+    trunk_scan_test_set_now(0.26);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    test_rc |= expect_active_target(&state, "rollback", 0U);
+    test_rc |= expect_target_squelch(&opts, "rollback", -60, 0);
+    g_counting_tune_to_cc_failures_remaining = 0;
+
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    test_rc |= expect_target_squelch(&opts, "rollback shutdown", -80, 1);
+    dsd_rtl_stream_metrics_hooks_set(NULL);
+    trunk_scan_test_clear_now();
+    cleanup_paths(dir, target_path, NULL);
+    return test_rc;
+}
+
+/* Count the target-specific squelch warnings one init prints for the given input. */
+static int
+count_target_squelch_warnings(int audio_in_type, int* out_count, char* buf, size_t buf_sz) {
+    char dir[DSD_TEST_PATH_MAX];
+    char target_path[DSD_TEST_PATH_MAX];
+    static dsd_opts opts;
+    static dsd_state state;
+    if (make_temp_dir(dir, sizeof dir) != 0
+        || write_targets_file_with_header(dir, k_squelch_targets_header,
+                                          "a,p25-trunk,851000000,,250,,,--squelch-db -60\n"
+                                          "b,dmr-conventional,461000000,,250,,\n"
+                                          "c,dmr-conventional,462000000,,250,,,--squelch-db 0\n",
+                                          target_path, sizeof target_path)
+               != 0) {
+        return 1;
+    }
+    reset_scan_opts_state(&opts, &state);
+    opts.audio_in_type = audio_in_type;
+    if (audio_in_type != AUDIO_IN_RTL) {
+        opts.use_rigctl = 1;
+        state.rtl_ctx = NULL;
+    }
+    DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", target_path);
+    dsd_test_capture_stderr cap;
+    if (dsd_test_capture_stderr_begin(&cap, "trunkscansql") != 0) {
+        cleanup_paths(dir, target_path, NULL);
+        return 1;
+    }
+    char err[256] = {0};
+    trunk_scan_test_set_now(0.0);
+    const int rc = dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err);
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    (void)dsd_test_capture_stderr_end(&cap);
+    trunk_scan_test_clear_now();
+    const int read_rc = dsd_test_capture_stderr_read(&cap, buf, buf_sz);
+    cleanup_paths(dir, target_path, NULL);
+    if (rc != 0 || read_rc != 0) {
+        DSD_FPRINTF(stderr, "squelch warning case failed rc=%d err=%s\n", rc, err);
+        return 1;
+    }
+    int count = 0;
+    for (const char* p = strstr(buf, "--squelch-db"); p; p = strstr(p + 1, "--squelch-db")) {
+        count++;
+    }
+    *out_count = count;
+    return 0;
+}
+
+/* A rigctl + PCM scan still gates the monitor audio and carrier activity on the target's
+ * threshold, but cannot gate digital acquisition: one warning per affected target, none on RTL. */
+static int
+test_target_squelch_warns_once_per_target_on_pcm_input(void) {
+    char buf[4096];
+    int count = -1;
+    int test_rc = count_target_squelch_warnings(AUDIO_IN_UDP, &count, buf, sizeof buf);
+    if (test_rc == 0
+        && (count != 2 || !strstr(buf, "Trunk scan target 'a'") || !strstr(buf, "Trunk scan target 'c'")
+            || strstr(buf, "Trunk scan target 'b'"))) {
+        DSD_FPRINTF(stderr, "PCM input squelch warnings (%d):\n%s\n", count, buf);
+        test_rc = 1;
+    }
+    count = -1;
+    test_rc |= count_target_squelch_warnings(AUDIO_IN_RTL, &count, buf, sizeof buf);
+    if (count != 0) {
+        DSD_FPRINTF(stderr, "RTL input warned about target squelch:\n%s\n", buf);
+        test_rc = 1;
+    }
+    return test_rc;
+}
+
 int
 main(void) {
     int rc = 0;
@@ -9670,6 +9889,10 @@ main(void) {
     rc |= run_with_default_tune_hook(test_visit_limit_forced_advance_rollback_rearms);
     rc |= run_with_default_tune_hook(test_visit_failed_fallback_recovers);
     rc |= run_with_default_tune_hook(test_visit_pending_fallback_anchors_on_completion);
+    /* Issue #521 */
+    rc |= run_with_default_tune_hook(test_target_squelch_threshold_off_inherit);
+    rc |= run_with_default_tune_hook(test_target_squelch_restored_on_rollback);
+    rc |= run_with_default_tune_hook(test_target_squelch_warns_once_per_target_on_pcm_input);
     return rc;
 }
 
