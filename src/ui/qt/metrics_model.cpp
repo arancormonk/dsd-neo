@@ -302,6 +302,11 @@ MetricsModel::fillSiteView(View& next, const dsd_state* snapshot) const {
 }
 
 MetricsModel::MetricsModel(QObject* parent) : QObject(parent) {
+    /* The configured tone policy is configuration, so it reads as configured -- "off" until
+       #527 -- before the first frame too; the app-control view owns that text. */
+    dsd_app_rx_tone policy;
+    (void)dsd_app_rx_tone_view(nullptr, nullptr, &policy);
+    m_view.rx_tone_configured_text = QString::fromUtf8(policy.configured_text);
     m_messageTimer.setSingleShot(true);
     connect(&m_messageTimer, &QTimer::timeout, this, [this]() {
         View next = m_view;
@@ -375,7 +380,10 @@ MetricsModel::clear() {
      * session's answer to "is there anything here". */
     m_sync_type_here = DSD_SYNC_NONE;
     m_sync_seen_m = 0.0;
-    publish(View());
+    View cleared;
+    /* The configured tone policy is not session state: stopping leaves it as configured. */
+    cleared.rx_tone_configured_text = m_view.rx_tone_configured_text;
+    publish(cleared);
 }
 
 /**

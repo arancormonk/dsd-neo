@@ -805,6 +805,8 @@ test_rx_tone() {
     int scan_changes = 0;
     QObject::connect(&model, &dsd_qt::MetricsModel::rxToneChanged, [&]() { ++changes; });
     QObject::connect(&model, &dsd_qt::MetricsModel::scanTimingChanged, [&]() { ++scan_changes; });
+    expect("the configured policy reads off before the first frame",
+           model.rxToneConfiguredText() == QStringLiteral("off"));
 
     /* Digital decoding: no detection runs, so a stale publication must not reach the row. */
     state.analog_rx.carrier_open = 1;
@@ -866,8 +868,9 @@ test_rx_tone() {
     model.clear();
     expect("stop clears the received tone", !model.rxToneVisible() && model.rxToneStatus() == DSD_APP_RX_TONE_HIDDEN
                                                 && model.rxToneText().isEmpty() && model.rxToneKind() == 0
-                                                && model.rxToneTenthsHz() == 0 && !model.rxToneCarrier()
-                                                && model.rxToneConfiguredText().isEmpty());
+                                                && model.rxToneTenthsHz() == 0 && !model.rxToneCarrier());
+    /* The configured policy is configuration, not session state: stop leaves it as it was. */
+    expect("stop keeps the configured policy", model.rxToneConfiguredText() == QStringLiteral("off"));
     expect("stop notifies the received-tone group", changes > before_stop);
 
     freeState(&state);
