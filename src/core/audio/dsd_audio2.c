@@ -1143,7 +1143,13 @@ playSynthesizedVoiceMS(dsd_opts* opts, dsd_state* state) {
     short* mono_samp = mono_samp_buf;
     DSD_MEMSET(mono_samp, 0, len * sizeof(short));
 
-    if (opts->slot1_on != 0) {
+    // Crypto is settled before samples reach s_l (the MBE post-processing only
+    // fills it for audible calls), but the talkgroup gate is not, so apply it
+    // here as every other output path does.
+    int muted = 0;
+    (void)dsd_audio_group_gate_mono(opts, state, dsd_audio_call_target(state, 0U), 0, &muted);
+
+    if (opts->slot1_on != 0 && !muted) {
         dsd_load_short_mono_samples(mono_samp, len, state->s_l, &state->audio_out_buf_p);
         if (opts->use_hpf_d == 1) {
             hpf_dL(state, mono_samp, (int)len);

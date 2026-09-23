@@ -8,12 +8,14 @@
 
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/file_io.h>
+#include <dsd-neo/core/init.h>
 #include <dsd-neo/core/keyring.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/synctype_ids.h>
+#include <dsd-neo/core/talkgroup_policy.h>
 #include <dsd-neo/core/vocoder.h>
 #include <dsd-neo/crypto/aes.h>
 #include <dsd-neo/crypto/des.h>
@@ -745,6 +747,78 @@ test_play_mbe_files_processes_imbe_ambe_and_dstar_records(void) {
     (void)remove(imbe_path);
     (void)remove(amb_path);
     (void)remove(dmb_path);
+    return rc;
+}
+
+/* Each file replays its own traffic. An SDRTrunk JSON export leaves its last
+ * call open at EOF; a raw .imb that follows carries no identity, so the
+ * talkgroup gate must not judge it on that call and mute it. */
+static int
+test_play_mbe_files_does_not_carry_call_identity_across_files(void) {
+    char imbe_path[1024];
+    char wav_path[1024];
+    char imbe_bits[88] = {0};
+    for (int i = 0; i < 88; i++) {
+        imbe_bits[i] = (char)(((i * 5) + 1) & 1);
+    }
+    int rc = create_mbe_playback_file(imbe_path, sizeof imbe_path, ".imb", saveImbe4400Data, imbe_bits, 0x12,
+                                      "mbe_play_carry");
+    if (rc != 0) {
+        return rc;
+    }
+    SNDFILE* wav = create_wav_temp(wav_path, sizeof wav_path, "mbe_play_carry_wav");
+    dsd_opts* opts = calloc(1, sizeof(*opts));
+    dsd_state* state = calloc(1, sizeof(*state));
+    if (!wav || !opts || !state) {
+        if (wav) {
+            sf_close(wav);
+            (void)remove(wav_path);
+        }
+        free(opts);
+        free(state);
+        (void)remove(imbe_path);
+        return 1;
+    }
+    initOpts(opts);
+    initState(state);
+    opts->audio_out = 0;
+    opts->slot1_on = 1;
+    opts->floating_point = 0;
+    opts->wav_out_f = wav;
+    opts->static_wav_file = 1;
+    state->optind = 1;
+    state->synctype = DSD_SYNC_P25P1_POS;
+    rc |= expect_eq_int("carry blocked talkgroup row", dsd_tg_policy_set_mode(state, 123, 123, "B"), 0);
+    const dsd_call_observation previous_file_call = {.protocol = DSD_SYNC_P25P1_POS,
+                                                     .slot = 0U,
+                                                     .kind = DSD_CALL_KIND_GROUP_VOICE,
+                                                     .ota_target_id = 123U,
+                                                     .policy_target_id = 123U,
+                                                     .ota_source_id = 1U};
+    rc |= expect_eq_int("carry previous file call open",
+                        dsd_call_state_observe(state, &previous_file_call, DSD_CALL_BOUNDARY_BEGIN), 1);
+
+    char* argv[] = {"dsd-neo", imbe_path};
+    playMbeFiles(opts, state, 2, argv);
+
+    dsd_call_snapshot call;
+    rc |= expect_eq_int("carry previous file call ended",
+                        dsd_call_state_get(state, 0U, &call) > 0 && call.phase == DSD_CALL_PHASE_ACTIVE, 0);
+    sf_close(wav);
+    opts->wav_out_f = NULL;
+    SF_INFO info;
+    DSD_MEMSET(&info, 0, sizeof(info));
+    SNDFILE* written = sf_open(wav_path, SFM_READ, &info);
+    rc |= expect_eq_int("carry raw file audible in static wav", written != NULL && info.frames > 0, 1);
+    if (written) {
+        sf_close(written);
+    }
+
+    freeState(state);
+    free(state);
+    free(opts);
+    (void)remove(imbe_path);
+    (void)remove(wav_path);
     return rc;
 }
 
@@ -2918,6 +2992,7 @@ main(void) {
     rc |= test_process_mbe_frame_activation_gate_and_wide_kid();
     rc |= test_process_mbe_frame_hard_p25p2_right_stages_audio();
     rc |= test_play_mbe_files_processes_imbe_ambe_and_dstar_records();
+    rc |= test_play_mbe_files_does_not_carry_call_identity_across_files();
     rc |= test_process_mbe_frame_p25p1_updates_error_history();
     rc |= test_process_mbe_frame_provoice_updates_debug_errors_without_p25_history();
     rc |= test_process_mbe_frame_hard_provoice_stages_audio();

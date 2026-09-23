@@ -4502,7 +4502,12 @@ target_include_directories(
 )
 target_link_libraries(
     dsd-neo_test_core_mbe_transform_context
-    PRIVATE dsd-neo_core dsd-neo_proto_nxdn dsd-neo_proto_dmr
+    PRIVATE
+        dsd-neo_core
+        dsd-neo_proto_nxdn
+        dsd-neo_proto_dmr
+        dsd-neo_feature_codec2
+        ${LIBS}
 )
 add_test(
     NAME CORE_MBE_TRANSFORM_CONTEXT
