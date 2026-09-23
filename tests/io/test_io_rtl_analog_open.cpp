@@ -23,17 +23,23 @@
  * - demod_rate 78125 with the unset default: the 16 kHz design fits and runs.
  * - an explicit 16 kHz width at demod_rate 16000: the start fails with the
  *   validator's text.
+ * - a 1 kHz FM tone captured at 78125 Hz: the monitor delivers it at the 48 kHz
+ *   output rate once, not resampled a second time (which played it back at
+ *   1628 Hz in 0.61 of the capture's duration).
  */
 
+#include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/io/iq_capture.h>
 #include <dsd-neo/io/rtl_stream_c.h>
+#include <dsd-neo/platform/timing.h>
 #include <dsd-neo/runtime/analog_channel.h>
 #include <dsd-neo/runtime/log.h>
 #include <memory>
+#include <vector>
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/io/iq_types.h"
@@ -97,8 +103,11 @@ fill_capture_cfg(dsd_iq_capture_config* cfg, const char* data_path, const char* 
     DSD_SNPRINTF(cfg->source_args, sizeof(cfg->source_args), "%s", "dev=0");
 }
 
+/* @p centred records the carrier on 0 Hz, as the committed analog fixtures do: no fs/4 shift or rotation for the
+ * replay to undo. */
 static int
-make_replay_fixture(const ReplayRate& rate, const char* tag, char* out_metadata_path, size_t out_size) {
+make_replay_fixture_with(const ReplayRate& rate, const char* tag, const std::vector<uint8_t>& payload, int centred,
+                         char* out_metadata_path, size_t out_size) {
     char temp_dir[DSD_TEST_PATH_MAX];
     if (!dsd_test_mkdtemp(temp_dir, sizeof(temp_dir), tag)) {
         DSD_FPRINTF(stderr, "FAIL: could not create temporary fixture directory\n");
@@ -113,16 +122,17 @@ make_replay_fixture(const ReplayRate& rate, const char* tag, char* out_metadata_
     }
     dsd_iq_capture_config cfg;
     fill_capture_cfg(&cfg, data_path, metadata_path, rate);
+    if (centred) {
+        cfg.fs4_shift_enabled = 0;
+        cfg.combine_rotate_enabled = 0;
+    }
     dsd_iq_capture_writer* writer = NULL;
     char err_buf[256] = {0};
     if (dsd_iq_capture_open(&cfg, &writer, err_buf, sizeof(err_buf)) != DSD_IQ_OK || !writer) {
         DSD_FPRINTF(stderr, "FAIL: could not open IQ capture writer: %s\n", err_buf[0] ? err_buf : "unknown");
         return 1;
     }
-    /* Mid-scale cu8 is silence: nothing here depends on the samples. */
-    static uint8_t payload[8192];
-    DSD_MEMSET(payload, 127, sizeof(payload));
-    if (dsd_iq_capture_submit(writer, payload, sizeof(payload)) != DSD_IQ_OK) {
+    if (dsd_iq_capture_submit(writer, payload.data(), payload.size()) != DSD_IQ_OK) {
         DSD_FPRINTF(stderr, "FAIL: could not submit fixture payload\n");
         dsd_iq_capture_abort(writer);
         return 1;
@@ -135,6 +145,30 @@ make_replay_fixture(const ReplayRate& rate, const char* tag, char* out_metadata_
         return 1;
     }
     return 0;
+}
+
+static int
+make_replay_fixture(const ReplayRate& rate, const char* tag, char* out_metadata_path, size_t out_size) {
+    /* Mid-scale cu8 is silence: nothing here depends on the samples. */
+    const std::vector<uint8_t> payload(8192U, 127U);
+    return make_replay_fixture_with(rate, tag, payload, 0, out_metadata_path, out_size);
+}
+
+static constexpr double kToneHz = 1000.0;
+static constexpr double kToneDeviationHz = 3000.0;
+
+/* An FM carrier on 0 Hz modulated by a kToneHz tone at kToneDeviationHz deviation, as cu8 at @p rate_hz. */
+static std::vector<uint8_t>
+fm_tone_cu8(uint32_t rate_hz, double seconds) {
+    const size_t count = (size_t)std::lround(seconds * (double)rate_hz);
+    std::vector<uint8_t> out(count * 2U);
+    const double beta = kToneDeviationHz / kToneHz;
+    for (size_t i = 0; i < count; i++) {
+        const double phase = beta * std::sin(2.0 * M_PI * kToneHz * (double)i / (double)rate_hz);
+        out[2U * i] = (uint8_t)std::lround(127.5 + 114.0 * std::cos(phase));
+        out[2U * i + 1U] = (uint8_t)std::lround(127.5 + 114.0 * std::sin(phase));
+    }
+    return out;
 }
 
 static void
@@ -189,6 +223,117 @@ open_analog_replay(const ReplayRate& rate, const char* tag, int nfm_width_hz, Op
     return 0;
 }
 
+namespace {
+struct MonitorAudio {
+    uint32_t output_rate_hz;
+    std::vector<float> samples;
+};
+} // namespace
+
+/* Replay @p payload through the analog monitor to its end and keep every sample the stream delivered. */
+static int
+replay_monitor_audio(const ReplayRate& rate, const char* tag, const std::vector<uint8_t>& payload, MonitorAudio* out) {
+    out->output_rate_hz = 0;
+    out->samples.clear();
+    char metadata_path[DSD_TEST_PATH_MAX];
+    if (make_replay_fixture_with(rate, tag, payload, 1, metadata_path, sizeof(metadata_path)) != 0) {
+        return 1;
+    }
+    std::unique_ptr<dsd_opts> opts = std::make_unique<dsd_opts>();
+    prepare_analog_replay_opts(opts.get(), metadata_path, 0);
+    RtlSdrContext* ctx = NULL;
+    if (rtl_stream_create(opts.get(), &ctx) != 0 || !ctx || rtl_stream_start(ctx) != 0) {
+        DSD_FPRINTF(stderr, "FAIL: %s: could not start the replay\n", tag);
+        if (ctx) {
+            rtl_stream_destroy(ctx);
+        }
+        return 1;
+    }
+    out->output_rate_hz = rtl_stream_output_rate(ctx);
+    const uint64_t start_ns = dsd_time_monotonic_ns();
+    float block[2048];
+    int rc = 0;
+    for (;;) {
+        int got = 0;
+        if (rtl_stream_read(ctx, block, sizeof(block) / sizeof(block[0]), &got) != 0) {
+            break; /* end of the replay */
+        }
+        if (got > 0) {
+            out->samples.insert(out->samples.end(), block, block + got);
+        }
+        if (dsd_time_monotonic_ns() - start_ns > 10000ULL * 1000000ULL) {
+            DSD_FPRINTF(stderr, "FAIL: %s: timed out draining the replay\n", tag);
+            rc = 1;
+            break;
+        }
+    }
+    (void)rtl_stream_stop(ctx);
+    (void)rtl_stream_destroy(ctx);
+    return rc;
+}
+
+/* Goertzel power of @p x[first, last) at @p hz. */
+static double
+goertzel_power(const std::vector<float>& x, size_t first, size_t last, double hz, uint32_t rate_hz) {
+    const double coeff = 2.0 * std::cos(2.0 * M_PI * hz / (double)rate_hz);
+    double s1 = 0.0;
+    double s2 = 0.0;
+    for (size_t i = first; i < last; i++) {
+        const double s0 = (double)x[i] + coeff * s1 - s2;
+        s2 = s1;
+        s1 = s0;
+    }
+    return s1 * s1 + s2 * s2 - coeff * s1 * s2;
+}
+
+/* The strongest audio tone between 300 and 3000 Hz (10 Hz steps) in the middle half of @p x. The raw stream still
+ * carries the discriminator's wideband noise, which the monitor's voice filters remove later, so a spectral peak is
+ * read rather than zero crossings. */
+static double
+dominant_tone_hz(const std::vector<float>& x, uint32_t rate_hz) {
+    const size_t first = x.size() / 4U;
+    const size_t last = x.size() - x.size() / 4U;
+    if (last <= first || rate_hz == 0U) {
+        return 0.0;
+    }
+    double best_hz = 0.0;
+    double best_power = -1.0;
+    for (int hz = 300; hz <= 3000; hz += 10) {
+        const double power = goertzel_power(x, first, last, (double)hz, rate_hz);
+        if (power > best_power) {
+            best_power = power;
+            best_hz = (double)hz;
+        }
+    }
+    return best_hz;
+}
+
+static int
+test_forced_rate_monitor_audio_is_resampled_once(void) {
+    int rc = 0;
+    /* A capture delivered at the 78125 Hz forced rate, already at the demod rate (no decimation). */
+    const ReplayRate rate78k = {78125U, 1U, 1U, 78125U};
+    const double seconds = 1.0;
+    MonitorAudio audio;
+    rc |= replay_monitor_audio(rate78k, "dsdneo_analog_open_78k_tone", fm_tone_cu8(rate78k.sample_rate_hz, seconds),
+                               &audio);
+    rc |= expect_int("78125 Hz tone replay output rate", (int)audio.output_rate_hz, 48000);
+    /* Every second of capture is a second of monitor audio at the output rate, give or take the filters' edges. */
+    const double expected = seconds * 48000.0;
+    const double delivered = (double)audio.samples.size();
+    if (delivered < 0.98 * expected || delivered > 1.01 * expected) {
+        DSD_FPRINTF(stderr, "FAIL: 78125 Hz tone replay delivered %zu samples, want about %.0f\n", audio.samples.size(),
+                    expected);
+        rc |= 1;
+    }
+    const double tone_hz = dominant_tone_hz(audio.samples, audio.output_rate_hz);
+    if (std::fabs(tone_hz - kToneHz) > 5.0) {
+        DSD_FPRINTF(stderr, "FAIL: 78125 Hz tone replay plays the %.0f Hz tone at %.1f Hz\n", kToneHz, tone_hz);
+        rc |= 1;
+    }
+    return rc;
+}
+
 int
 main(void) {
     dsd_neo_log_set_tap(capture_errors, NULL);
@@ -237,6 +382,8 @@ main(void) {
     rc |= open_analog_replay(post3, "dsdneo_analog_open_post3_default", 0, &r);
     rc |= expect_int("default with post_downsample 3 still starts", r.start_rc, 0);
     rc |= expect_int("default with post_downsample 3 is the analog family", r.family, 1);
+
+    rc |= test_forced_rate_monitor_audio_is_resampled_once();
 
     if (rc == 0) {
         std::printf("IO_RTL_ANALOG_OPEN: OK\n");

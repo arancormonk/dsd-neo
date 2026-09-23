@@ -547,6 +547,10 @@ Notes:
     AM demodulator yet) fails the start with the validator's text. The unset NFM default never fails: it keeps the
     `rate_in >= 20000` / `DSD_NEO_CHANNEL_LPF` enable rule and falls back to the legacy WIDE design where the rate
     cannot fit 16 kHz.
+  - The monitor's legacy `low_pass_real()` stage (`rate_in` to `rate_out2`) passes audio through: a live open sets both
+    to the DSP bandwidth, and IQ replay (`controller_apply_replay_settings()`) sets `rate_out2` to the `rate_in` it
+    takes from the capture, so only the rational resampler converts `rate_out` to the output rate. Test:
+    `IO_RTL_ANALOG_OPEN` (a 78,125 Hz capture).
   - De-emphasis and audio-LPF settings are stored in `demod_state` (`deemph_tau_us`, `audio_lpf_cutoff_hz`) and their
     coefficients recomputed every time the rate chain is finalized (`rtl_demod_refresh_audio_coefficients()`).
   - A retune on `AUDIO_MONITOR` (the M17 encoder's monitor stream included) returns the de-emphasis, DC, audio-LPF

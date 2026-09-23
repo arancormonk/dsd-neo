@@ -4372,6 +4372,11 @@ controller_apply_replay_settings(struct controller_state* s, const dsd_opts* opt
     if (demod.rate_in < 1) {
         demod.rate_in = 1;
     }
+    /* low_pass_real() takes monitor audio from rate_in to rate_out2. A live open sets both to the DSP bandwidth, so
+       that stage passes audio through and the rational resampler alone brings rate_out to the output rate. Replay
+       takes rate_in from the capture instead, so rate_out2 has to follow it: left at the sidecar's DSP bandwidth, a
+       capture at any other rate (a device-forced 78125 Hz, say) was resampled twice and played back fast. */
+    demod.rate_out2 = demod.rate_in;
     demod.rate_out = (int)cfg->demod_rate_hz;
     /* The capture file dictates the rate chain, exactly like a device with a fixed rate grid. */
     demod.capture_rate_device_forced = 1;

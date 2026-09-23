@@ -122,7 +122,8 @@ dsd-neo -fA --iq-replay tests/fixtures/iq/nfm_ctcss_real.iq.json --iq-replay-rat
 ```
 
 - The monitor runs at the capture's `demod_rate_hz` (48 kHz for every committed fixture). The capture dictates the
-  rate chain, so the RTL DSP bandwidth option has no effect on replay.
+  rate chain, so the RTL DSP bandwidth option has no effect on replay. A capture at another rate, such as the
+  78,125 Hz an Airspy at 2.5 MS/s forces, is resampled to the 48 kHz output once, as live.
 - The power squelch and the monitor's voice filters (`-v`) apply as they do live; `-o null` discards the audio.
 - Use `realtime` pacing to listen. `fast` replay is right for scoring, which is sample-deterministic either way as
   long as the front end stays on the monitor path.

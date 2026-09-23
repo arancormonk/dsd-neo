@@ -125,6 +125,14 @@ Enable rule and validation:
 - Device-forced rates above ~51.4 kHz (for example Airspy at 2.5 MS/s, demod
   rate 78,125 Hz) used to fall back to the 63-tap prototype designed for 24 kHz.
   They now get a real design (219 taps at 78,125 Hz).
+- After the DC block, `low_pass_real()` takes the audio from `rate_in` to
+  `rate_out2`, and the rational resampler then takes `rate_out` to 48 kHz. A
+  live open sets `rate_in` and `rate_out2` to the DSP bandwidth, so that stage
+  passes audio through unchanged even at a forced rate. IQ replay takes
+  `rate_in` from the capture and sets `rate_out2` to match; it used to leave
+  `rate_out2` at the sidecar's DSP bandwidth, which resampled a capture at any
+  other rate twice (a 1 kHz tone recorded at 78,125 Hz played back at 1628 Hz,
+  in 0.61 of its duration).
 
 ### State Hygiene
 
@@ -221,7 +229,8 @@ scale, and ratio-based audio metrics are invariant to it, so it is left as is.
   channel, half-band and resampler histories included, and covers width-only
   changes and requests made with no stream running; `IO_RTL_ANALOG_OPEN` opens IQ
   replays whose demod rate differs from their DSP bandwidth and checks the
-  start-time channel decision and refusal.
+  start-time channel decision and refusal, and that a tone captured at 78,125 Hz
+  reaches the output once, at 48 kHz and at its own frequency.
 
 Run the focused audit checks with:
 
