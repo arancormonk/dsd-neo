@@ -24,6 +24,7 @@
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #include <dsd-neo/runtime/scan_mode.h>
 #include <dsd-neo/runtime/scan_options.h>
+#include <dsd-neo/runtime/unicode.h>
 #include <dsd-neo/ui/menu_core.h>
 #include <dsd-neo/ui/ncurses_dsp_display.h>
 #include <dsd-neo/ui/ncurses_internal.h>
@@ -285,6 +286,14 @@ dsd_tg_policy_lookup_label(const dsd_state* state, uint32_t id, char* mode, size
         DSD_SNPRINTF(name, name_sz, "Dispatch");
     }
     return 1;
+}
+
+/* The terminal's UTF-8 answer, set per case: the real one reads the locale and environment. */
+static int g_unicode_stub = 1;
+
+const char*
+dsd_unicode_or_ascii(const char* unicode_str, const char* ascii_str) {
+    return g_unicode_stub ? unicode_str : ascii_str;
 }
 
 static const char* g_source_alias_stub;
@@ -1325,6 +1334,13 @@ test_call_info_rx_tone_line_rendering(void) {
     assert_rx_tone_line(&opts, state, "| Rx tone: \xE2\x80\x94");
     seed_rx_tone(state, 0, DSD_ANALOG_TONE_STATE_INACTIVE, 0);
     assert_rx_tone_line(&opts, state, "| Rx tone: \xE2\x80\x94");
+
+    /* Without UTF-8 the em dash is a hyphen; everything else the line says is ASCII already. */
+    g_unicode_stub = 0;
+    assert_rx_tone_line(&opts, state, "| Rx tone: -");
+    seed_rx_tone(state, 1, DSD_ANALOG_TONE_STATE_LOCKED, 1000);
+    assert_rx_tone_line(&opts, state, "| Rx tone: CTCSS 100.0 Hz");
+    g_unicode_stub = 1;
 
     /* Rendered in the Call Info colour, restored before the newline. */
     seed_rx_tone(state, 1, DSD_ANALOG_TONE_STATE_LOCKED, 1318);

@@ -40,6 +40,7 @@
 #include <dsd-neo/protocol/p25/p25_crypto.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #include <dsd-neo/runtime/scan_mode.h>
+#include <dsd-neo/runtime/unicode.h>
 #include <dsd-neo/ui/menu_core.h>
 #include <dsd-neo/ui/ncurses.h>
 #include <dsd-neo/ui/ncurses_dsp_display.h>
@@ -3407,7 +3408,10 @@ ui_format_rx_tone_line(const dsd_opts* opts, const dsd_state* state, char* buf, 
     if (dsd_app_rx_tone_view(opts, state, &view) != 1) {
         return 0;
     }
-    const int written = DSD_SNPRINTF(buf, buf_sz, "| Rx tone: %s", view.text);
+    /* The no-carrier mark is an em dash, the one non-ASCII text the view writes; a terminal
+       without UTF-8 gets a hyphen instead of mojibake. */
+    const char* text = (view.status == DSD_APP_RX_TONE_NO_CARRIER) ? dsd_unicode_or_ascii(view.text, "-") : view.text;
+    const int written = DSD_SNPRINTF(buf, buf_sz, "| Rx tone: %s", text);
     if (written < 0) {
         buf[0] = '\0';
         return 0;
