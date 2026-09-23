@@ -18,8 +18,10 @@
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/platform/audio.h>
+#include <dsd-neo/runtime/log.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <string.h>
 
 #ifdef DSD_NEO_TEST_AUDIO_WRAP
 
@@ -64,6 +66,23 @@ __wrap_dsd_audio_close(dsd_audio_stream* stream) {
 // NOLINTEND(bugprone-reserved-identifier,cert-dcl37-c,cert-dcl51-cpp,misc-use-internal-linkage)
 
 static int g_failures;
+
+/* Error lines the ensure helpers logged, by sink. */
+static int g_raw_error_logs;
+static int g_digital_error_logs;
+
+static void
+count_error_logs(dsd_neo_log_level_t level, const char* text, void* ctx) {
+    (void)ctx;
+    if (level != LOG_LEVEL_ERROR || !text) {
+        return;
+    }
+    if (strstr(text, "Failed to open raw audio output") != NULL) {
+        g_raw_error_logs++;
+    } else if (strstr(text, "Failed to open audio output") != NULL) {
+        g_digital_error_logs++;
+    }
+}
 
 static void
 expect_int(const char* label, int got, int want) {
@@ -155,18 +174,35 @@ test_open_failure(void) {
     static dsd_opts opts;
     device_session(&opts);
     reset_backend();
+    g_raw_error_logs = 0;
+    g_digital_error_logs = 0;
     g_fail_opens = 1;
     expect_int("failed analog ensure reports", dsd_audio_ensure_analog_output(&opts), -1);
     expect_int("failed ensure leaves no sink", opts.audio_raw_out == NULL, 1);
     expect_int("failed analog ensure again", dsd_audio_ensure_analog_output(&opts), -1);
+    expect_int("failed analog ensure a third time", dsd_audio_ensure_analog_output(&opts), -1);
+    expect_int("a failing raw sink is logged once", g_raw_error_logs, 1);
     expect_int("failed digital ensure reports", dsd_audio_ensure_digital_output(&opts), -1);
+    expect_int("failed digital ensure again", dsd_audio_ensure_digital_output(&opts), -1);
+    expect_int("a failing digital sink is logged once", g_digital_error_logs, 1);
+    expect_int("the digital failure does not re-log the raw sink", g_raw_error_logs, 1);
     g_fail_opens = 0;
     expect_int("recovered analog ensure", dsd_audio_ensure_analog_output(&opts), 0);
     expect_int("recovered sink", opts.audio_raw_out != NULL, 1);
+
+    /* A success re-arms the message: the next failure after it is news again. */
+    opts.audio_raw_out = NULL; /* the sink went away (the recording backend has nothing to close) */
+    g_fail_opens = 1;
+    expect_int("failure after recovery reports", dsd_audio_ensure_analog_output(&opts), -1);
+    expect_int("failure after recovery is logged afresh", g_raw_error_logs, 2);
+    expect_int("and only once", dsd_audio_ensure_analog_output(&opts), -1);
+    expect_int("still two raw messages", g_raw_error_logs, 2);
+    g_fail_opens = 0;
 }
 
 int
 main(void) {
+    dsd_neo_log_set_tap(count_error_logs, NULL);
     test_analog_sink();
     test_digital_sink();
     test_nothing_to_open();
