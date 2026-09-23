@@ -24,6 +24,7 @@
 #include <stdio.h>
 
 #include <dsd-neo/app_control/frontend.h>
+#include <dsd-neo/app_control/rx_tone_view.h>
 #include <dsd-neo/app_control/scan_timing_view.h>
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/dsd_time.h>
@@ -787,6 +788,91 @@ test_scan_timing() {
     freeState(&state);
 }
 
+/*
+ * The received sub-audible tone (#522), read through the real app-control view: what the
+ * monitor row shows for each state, the configured policy kept apart from it, and the row
+ * cleared when the session stops -- which is MetricsModel::clear(), the path UiController
+ * takes on stop, not something the QML fixture can prove.
+ */
+static void
+test_rx_tone() {
+    static dsd_opts opts;
+    static dsd_state state;
+    initOpts(&opts);
+    initState(&state);
+    dsd_qt::MetricsModel model;
+    int changes = 0;
+    int scan_changes = 0;
+    QObject::connect(&model, &dsd_qt::MetricsModel::rxToneChanged, [&]() { ++changes; });
+    QObject::connect(&model, &dsd_qt::MetricsModel::scanTimingChanged, [&]() { ++scan_changes; });
+
+    /* Digital decoding: no detection runs, so a stale publication must not reach the row. */
+    state.analog_rx.carrier_open = 1;
+    state.analog_rx.tone_state = DSD_ANALOG_TONE_STATE_LOCKED;
+    state.analog_rx.tone_kind = DSD_ANALOG_TONE_KIND_CTCSS;
+    state.analog_rx.ctcss_tenths_hz = 1000;
+    model.refresh(&opts, &state);
+    expect("no FM monitor, no received-tone row", !model.rxToneVisible() && model.rxToneText().isEmpty());
+    expect("the configured policy reads off", model.rxToneConfiguredText() == QStringLiteral("off"));
+
+    /* The analog FM monitor locked on 100.0 Hz. */
+    opts.analog_only = 1;
+    opts.monitor_input_audio = 1;
+    const int before = changes;
+    model.refresh(&opts, &state);
+    expect("a locked tone shows its value", model.rxToneVisible() && model.rxToneStatus() == DSD_APP_RX_TONE_LOCKED
+                                                && model.rxToneText() == QStringLiteral("CTCSS 100.0 Hz")
+                                                && model.rxToneKind() == DSD_ANALOG_TONE_KIND_CTCSS
+                                                && model.rxToneTenthsHz() == 1000 && model.rxToneCarrier());
+    expect("the received tone has its own notification", changes > before && scan_changes == 0);
+    expect("received and configured stay apart", model.rxToneConfiguredText() == QStringLiteral("off"));
+    const int settled = changes;
+    model.refresh(&opts, &state);
+    expect("an unchanged tone does not notify twice", changes == settled);
+
+    /* The policy verdict field is reserved: no value of it moves either text. */
+    state.analog_rx.gate = DSD_ANALOG_TONE_GATE_REJECTED;
+    model.refresh(&opts, &state);
+    expect("a gate value changes neither the received nor the configured text",
+           model.rxToneText() == QStringLiteral("CTCSS 100.0 Hz")
+               && model.rxToneConfiguredText() == QStringLiteral("off"));
+    state.analog_rx.gate = DSD_ANALOG_TONE_GATE_OFF;
+
+    /* A retune resets the publication: the row stays, with nothing heard yet. */
+    DSD_MEMSET(&state.analog_rx, 0, sizeof(state.analog_rx));
+    state.analog_rx.generation = 2U;
+    model.refresh(&opts, &state);
+    expect("after a retune the tone is gone",
+           model.rxToneVisible() && model.rxToneStatus() == DSD_APP_RX_TONE_NO_CARRIER
+               && model.rxToneText() == QStringLiteral("\u2014") && model.rxToneTenthsHz() == 0);
+
+    state.analog_rx.carrier_open = 1;
+    state.analog_rx.tone_state = DSD_ANALOG_TONE_STATE_ACQUIRING;
+    model.refresh(&opts, &state);
+    expect("a carrier under evaluation reads detecting",
+           model.rxToneStatus() == DSD_APP_RX_TONE_DETECTING && model.rxToneText() == QStringLiteral("detecting"));
+    state.analog_rx.tone_state = DSD_ANALOG_TONE_STATE_NONE;
+    model.refresh(&opts, &state);
+    expect("a carrier with no tone reads none",
+           model.rxToneStatus() == DSD_APP_RX_TONE_NONE && model.rxToneText() == QStringLiteral("none"));
+
+    /* Stop: clear() returns every rxTone reading to unknown and says so. */
+    state.analog_rx.tone_state = DSD_ANALOG_TONE_STATE_LOCKED;
+    state.analog_rx.tone_kind = DSD_ANALOG_TONE_KIND_CTCSS;
+    state.analog_rx.ctcss_tenths_hz = 1318;
+    model.refresh(&opts, &state);
+    expect("locked again before the stop", model.rxToneTenthsHz() == 1318);
+    const int before_stop = changes;
+    model.clear();
+    expect("stop clears the received tone", !model.rxToneVisible() && model.rxToneStatus() == DSD_APP_RX_TONE_HIDDEN
+                                                && model.rxToneText().isEmpty() && model.rxToneKind() == 0
+                                                && model.rxToneTenthsHz() == 0 && !model.rxToneCarrier()
+                                                && model.rxToneConfiguredText().isEmpty());
+    expect("stop notifies the received-tone group", changes > before_stop);
+
+    freeState(&state);
+}
+
 int
 main(int argc, char** argv) {
     QCoreApplication app(argc, argv);
@@ -794,6 +880,7 @@ main(int argc, char** argv) {
     test_temporary_lockout_metrics();
     test_call_skip_metrics();
     test_scan_timing();
+    test_rx_tone();
     test_direct_key_presence();
     test_decryption_metadata();
     test_site();

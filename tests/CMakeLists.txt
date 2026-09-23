@@ -658,6 +658,18 @@ dsd_neo_add_public_header_smoke_test(
   CXX
 )
 dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_app_control_rx_tone_view
+  HEADERS_PUBLIC_APP_CONTROL_RX_TONE_VIEW
+  dsd-neo/app_control/rx_tone_view.h
+  C
+)
+dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_app_control_rx_tone_view_cxx
+  HEADERS_PUBLIC_APP_CONTROL_RX_TONE_VIEW_CXX
+  dsd-neo/app_control/rx_tone_view.h
+  CXX
+)
+dsd_neo_add_public_header_smoke_test(
   dsd-neo_test_headers_public_app_control_commands
   HEADERS_PUBLIC_APP_CONTROL_COMMANDS
   dsd-neo/app_control/commands.h
@@ -2098,6 +2110,26 @@ add_test(
     COMMAND dsd-neo_test_app_control_squelch_view
 )
 
+# The received-tone text every frontend shows (issue #522), and the configured policy kept
+# apart from it.
+add_executable(
+    dsd-neo_test_app_control_rx_tone_view
+    ui/test_app_control_rx_tone_view.c
+    ${PROJECT_SOURCE_DIR}/src/app_control/rx_tone_view.c
+)
+target_include_directories(
+    dsd-neo_test_app_control_rx_tone_view
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+target_link_libraries(
+    dsd-neo_test_app_control_rx_tone_view
+    PRIVATE dsd-neo_runtime
+)
+add_test(
+    NAME APP_CONTROL_RX_TONE_VIEW
+    COMMAND dsd-neo_test_app_control_rx_tone_view
+)
+
 add_executable(
     dsd-neo_test_app_control_notification_status
     ui/test_app_control_notification_status.c
@@ -2165,13 +2197,16 @@ if(DSD_ENABLE_TERMINAL_UI)
         COMMAND dsd-neo_test_ui_ncurses_p25_display_helpers
     )
 
-    # The shared scan-timing and squelch views come in as sources rather than stubs: the Scan
-    # Timing and SQL goldens are only worth anything if they run through the real display rules.
+    # The shared scan-timing, squelch and received-tone views come in as sources rather than
+    # stubs: the Scan Timing, SQL and Rx tone goldens are only worth anything if they run through
+    # the real display rules.
     add_executable(
         dsd-neo_test_ui_ncurses_printer_helpers
         ui/test_ui_ncurses_printer_helpers.c
         ${PROJECT_SOURCE_DIR}/src/app_control/scan_timing_view.c
         ${PROJECT_SOURCE_DIR}/src/app_control/squelch_view.c
+        ${PROJECT_SOURCE_DIR}/src/app_control/rx_tone_view.c
+        ${PROJECT_SOURCE_DIR}/src/runtime/analog_tones.c
     )
     target_compile_definitions(
         dsd-neo_test_ui_ncurses_printer_helpers
@@ -2857,6 +2892,7 @@ if(DSD_ENABLE_QT_UI)
         ${PROJECT_SOURCE_DIR}/src/app_control/call_view.c
         ${PROJECT_SOURCE_DIR}/src/app_control/p25_metrics.c
         ${PROJECT_SOURCE_DIR}/src/app_control/squelch_view.c
+        ${PROJECT_SOURCE_DIR}/src/app_control/rx_tone_view.c
     )
     target_include_directories(
         dsd-neo_test_ui_qt_metrics_model

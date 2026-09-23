@@ -905,6 +905,65 @@ Item {
                 }
             }
 
+            // The sub-audible tone the analog FM monitor hears (#522): "CTCSS 100.0 Hz"
+            // once locked, "detecting" while a carrier is being evaluated, "none" when
+            // it carries no supported tone, an em dash with no carrier. Shown only while
+            // the FM monitor runs, which app-control decides for this row and the
+            // terminal alike. Cyan once locked (rxToneStatus 3 is
+            // DSD_APP_RX_TONE_LOCKED), like the other signal readings.
+            Row {
+                // Named so UI_QT_QML_CALL_LISTS can reach it with findChild().
+                objectName: "monitorRxTone"
+
+                spacing: 5
+                visible: metrics.rxToneVisible
+
+                Text {
+                    text: qsTr("RECEIVED TONE")
+                    font.family: Theme.mono
+                    font.pixelSize: Theme.fontSize(11)
+                    color: Theme.textSubdued
+                }
+
+                Text {
+                    objectName: "monitorRxToneValue"
+
+                    text: metrics.rxToneText
+                    textFormat: Text.PlainText
+                    font.family: Theme.mono
+                    font.pixelSize: Theme.fontSize(11)
+                    color: metrics.rxToneStatus === 3 ? Theme.cyan : Theme.textSubdued
+                }
+            }
+
+            // The configured tone policy, beside the received tone but never fed by
+            // it: its own reading, which says "off" until tone filtering exists (#527).
+            // Reserved and hidden until then.
+            Row {
+                // Named so UI_QT_QML_CALL_LISTS can reach it with findChild().
+                objectName: "monitorToneFilter"
+
+                spacing: 5
+                visible: false
+
+                Text {
+                    text: qsTr("TONE FILTER")
+                    font.family: Theme.mono
+                    font.pixelSize: Theme.fontSize(11)
+                    color: Theme.textSubdued
+                }
+
+                Text {
+                    objectName: "monitorToneFilterValue"
+
+                    text: metrics.rxToneConfiguredText
+                    textFormat: Text.PlainText
+                    font.family: Theme.mono
+                    font.pixelSize: Theme.fontSize(11)
+                    color: Theme.textSubdued
+                }
+            }
+
             // Why the scan stopped moving (#380): channels or targets the operator
             // avoided for the session, with the way to put them back. Hidden at zero
             // and outside any rotation, so an idle session never carries a 0. The

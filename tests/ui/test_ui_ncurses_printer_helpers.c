@@ -1279,6 +1279,93 @@ test_call_info_channel_line_rendering(void) {
 }
 
 static void
+seed_rx_tone(dsd_state* state, int carrier, int tone_state, int tenths) {
+    DSD_MEMSET(&state->analog_rx, 0, sizeof(state->analog_rx));
+    state->analog_rx.carrier_open = carrier;
+    state->analog_rx.tone_state = tone_state;
+    if (tenths > 0) {
+        state->analog_rx.tone_kind = DSD_ANALOG_TONE_KIND_CTCSS;
+        state->analog_rx.ctcss_tenths_hz = tenths;
+    }
+}
+
+static void
+assert_rx_tone_line(const dsd_opts* opts, const dsd_state* state, const char* expected) {
+    char line[64];
+    const int len = ui_format_rx_tone_line(opts, state, line, sizeof(line));
+    assert(len == (int)strlen(expected));
+    assert(strcmp(line, expected) == 0);
+}
+
+/*
+ * The received tone (issue #522) on its own Call Info line, which compact view keeps: the
+ * formatter's exact bytes for every state the shared view names, and the row's place and
+ * colours in the section.
+ */
+static void
+test_call_info_rx_tone_line_rendering(void) {
+    static dsd_opts opts;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    dsd_state* state = (dsd_state*)calloc(1U, sizeof(*state));
+    assert(state != NULL);
+    reset_lcn_name_stub();
+    ncurses_last_synctype = DSD_SYNC_NONE;
+    opts.analog_only = 1;
+    opts.monitor_input_audio = 1;
+
+    seed_rx_tone(state, 1, DSD_ANALOG_TONE_STATE_LOCKED, 1000);
+    assert_rx_tone_line(&opts, state, "| Rx tone: CTCSS 100.0 Hz");
+    seed_rx_tone(state, 1, DSD_ANALOG_TONE_STATE_LOCKED, 670);
+    assert_rx_tone_line(&opts, state, "| Rx tone: CTCSS 67.0 Hz");
+    seed_rx_tone(state, 1, DSD_ANALOG_TONE_STATE_ACQUIRING, 0);
+    assert_rx_tone_line(&opts, state, "| Rx tone: detecting");
+    seed_rx_tone(state, 1, DSD_ANALOG_TONE_STATE_NONE, 0);
+    assert_rx_tone_line(&opts, state, "| Rx tone: none");
+    seed_rx_tone(state, 0, DSD_ANALOG_TONE_STATE_IDLE, 0);
+    assert_rx_tone_line(&opts, state, "| Rx tone: \xE2\x80\x94");
+    seed_rx_tone(state, 0, DSD_ANALOG_TONE_STATE_INACTIVE, 0);
+    assert_rx_tone_line(&opts, state, "| Rx tone: \xE2\x80\x94");
+
+    /* Rendered in the Call Info colour, restored before the newline. */
+    seed_rx_tone(state, 1, DSD_ANALOG_TONE_STATE_LOCKED, 1318);
+    reset_printw_capture();
+    reset_color_trace();
+    ui_render_call_info_rx_tone_line(&opts, state);
+    assert_capture_equals("| Rx tone: CTCSS 131.8 Hz\n");
+    assert(strcmp(g_color_trace, "+4+4") == 0);
+
+    /* A Call Info row, so compact view shows it too, and it sits under the channel line. */
+    opts.scanner_mode = 1;
+    state->lcn_freq_count = 2;
+    state->lcn_freq_roll = 1;
+    state->trunk_lcn_freq[0] = 462012500;
+    DSD_SNPRINTF(g_lcn_name_stub[0], sizeof(g_lcn_name_stub[0]), "Marion");
+    opts.frontend_terminal_display.terminal_compact = 1;
+    reset_printw_capture();
+    ui_render_call_info_and_history(&opts, state);
+    assert_capture_starts_with("| Channel: Marion\n| Rx tone: CTCSS 131.8 Hz\n");
+    opts.frontend_terminal_display.terminal_compact = 0;
+    reset_printw_capture();
+    ui_render_call_info_and_history(&opts, state);
+    assert_capture_starts_with("| Channel: Marion\n| Rx tone: CTCSS 131.8 Hz\n");
+    opts.scanner_mode = 0;
+
+    /* Outside the analog FM monitor there is no detection, so no line, whatever is left in
+       the publication. */
+    opts.analog_only = 0;
+    char line[64];
+    assert(ui_format_rx_tone_line(&opts, state, line, sizeof(line)) == 0);
+    assert(line[0] == '\0');
+    reset_printw_capture();
+    ui_render_call_info_and_history(&opts, state);
+    assert(strstr(g_printw_capture, "Rx tone") == NULL);
+
+    reset_lcn_name_stub();
+    dsd_state_ext_free_all(state);
+    free(state);
+}
+
+static void
 test_history_and_sort_helpers(void) {
     Event_History item;
     DSD_MEMSET(&item, 0, sizeof(item));
@@ -2562,6 +2649,7 @@ main(void) {
     test_scan_timing_row_real_cursor();
 #endif
     test_call_info_channel_line_rendering();
+    test_call_info_rx_tone_line_rendering();
     test_history_and_sort_helpers();
     test_history_color_pair_policy();
     test_history_viewport_helpers();
