@@ -20,6 +20,7 @@ target_sources(
         notification_status.c
         rr_import_apply.c
         scan_timing_view.c
+        squelch_view.c
         symbol_profile.c
         tcp_audio_connect.c
         telemetry_hooks_install.c

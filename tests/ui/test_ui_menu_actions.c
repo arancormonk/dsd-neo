@@ -1457,6 +1457,26 @@ test_additional_prompt_and_toggle_actions(void) {
     rtl_set_sql(&ctx);
     rc |= expect_int("rtl squelch prompt states a real threshold", fabs(g_prompt.initial_double - (-50.0)) < 0.001, 1);
 
+    /* Issue #521: a scan row can override the squelch while it is on air. The editor edits the
+     * configured default, so it has to offer that value, not the row's. */
+    {
+        dsd_scan_settings configured;
+        DSD_MEMSET(&configured, 0, sizeof configured);
+        configured.rtl_squelch_level = pow(10.0, -8.0);
+        dsd_test_scan_labels_configured(&configured);
+        reset_capture();
+        opts.rtl_squelch_level = pow(10.0, -6.0); /* the row's -60 dB */
+        rtl_set_sql(&ctx);
+        rc |= expect_int("rtl squelch prompt seeds the configured default",
+                         fabs(g_prompt.initial_double - (-80.0)) < 0.001, 1);
+        configured.rtl_squelch_level = 0.0;
+        dsd_test_scan_labels_configured(&configured);
+        reset_capture();
+        rtl_set_sql(&ctx);
+        rc |= expect_int("rtl squelch prompt offers a configured off", fabs(g_prompt.initial_double) < 1e-12, 1);
+        dsd_test_scan_labels_configured(NULL);
+    }
+
 #if defined(__SSE__) || defined(__SSE2__)
     reset_capture();
     g_cfg.ftz_daz_enable = 0;

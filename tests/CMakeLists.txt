@@ -620,6 +620,19 @@ dsd_neo_add_public_header_smoke_test(
   dsd-neo/app_control/scan_timing_view.h
   CXX
 )
+# Issue #521: the shared squelch readout.
+dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_app_control_squelch_view
+  HEADERS_PUBLIC_APP_CONTROL_SQUELCH_VIEW
+  dsd-neo/app_control/squelch_view.h
+  C
+)
+dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_app_control_squelch_view_cxx
+  HEADERS_PUBLIC_APP_CONTROL_SQUELCH_VIEW_CXX
+  dsd-neo/app_control/squelch_view.h
+  CXX
+)
 dsd_neo_add_public_header_smoke_test(
   dsd-neo_test_headers_public_app_control_commands
   HEADERS_PUBLIC_APP_CONTROL_COMMANDS
@@ -2031,6 +2044,21 @@ target_link_libraries(
 add_test(
     NAME APP_CONTROL_SCAN_TIMING_VIEW
     COMMAND dsd-neo_test_app_control_scan_timing_view
+)
+
+# Issue #521: effective squelch first, "(row; default X)" while a scan row overrides it.
+add_executable(
+    dsd-neo_test_app_control_squelch_view
+    ui/test_app_control_squelch_view.c
+    ${PROJECT_SOURCE_DIR}/src/app_control/squelch_view.c
+)
+target_link_libraries(
+    dsd-neo_test_app_control_squelch_view
+    PRIVATE dsd-neo_core dsd-neo_runtime ${DSD_NEO_TEST_MATH_LIB}
+)
+add_test(
+    NAME APP_CONTROL_SQUELCH_VIEW
+    COMMAND dsd-neo_test_app_control_squelch_view
 )
 
 add_executable(

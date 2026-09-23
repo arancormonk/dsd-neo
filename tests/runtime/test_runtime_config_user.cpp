@@ -12,6 +12,7 @@
 
 #include <dsd-neo/core/frontend_types.h>
 #include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/power.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/decode_mode.h>
@@ -2537,6 +2538,60 @@ test_scan_max_visit_roundtrip(void) {
 }
 
 /*
+ * Issue #521: a row's --squelch-db is effective state, not a user default. Config->Save taken
+ * while the row is on air writes the configured rtl_sql -- for every radio input family that
+ * saves the shared tuning -- and an explicit per-row "off" never becomes the saved default.
+ */
+static int
+test_squelch_snapshot_uses_configured_not_row_override(void) {
+    auto opts_storage = std::unique_ptr<dsd_opts>(new dsd_opts{});
+    auto state_storage = std::unique_ptr<dsd_state>(new dsd_state{});
+    dsd_opts& opts = *opts_storage;
+    dsd_state& state = *state_storage;
+    const char* inputs[] = {"rtl:0:851.375M:22:-2:24:-80:2", "rtltcp:127.0.0.1:1234:851.375M:22:-2:24:-80:2",
+                            "soapy:driver=test", "airspy"};
+    int rc = 0;
+    for (const char* input : inputs) {
+        static const int row_dbs[] = {-60, 0};
+        for (int row_db : row_dbs) {
+            reset_opts_and_state(opts, state);
+            DSD_SNPRINTF(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", input);
+            opts.rtlsdr_center_freq = 851375000U;
+            opts.rtl_dsp_bw_khz = 24;
+            opts.rtl_squelch_level = dsd_squelch_level_from_sql(-80.0); /* the configured default */
+            if (dsd_scan_mode_enter(&opts, &state, DSD_SCAN_MODE_DMR) != 0) {
+                DSD_FPRINTF(stderr, "FAIL: could not open a scan scope\n");
+                return 1;
+            }
+            dsd_scan_option_values row;
+            DSD_MEMSET(&row, 0, sizeof row);
+            row.present = DSD_SCAN_OPT_SQUELCH;
+            row.squelch_db = row_db;
+            (void)dsd_scan_mode_options(&opts, &state, &row);
+            const double row_level = dsd_squelch_level_from_sql((double)row_db);
+            if (fabs(opts.rtl_squelch_level - row_level) > 1e-9 * fmax(row_level, 1e-12)) {
+                DSD_FPRINTF(stderr, "FAIL: %s row squelch %d dB did not reach dsd_opts\n", input, row_db);
+                rc |= 1;
+            }
+            dsdneoUserConfig snap;
+            dsd_snapshot_opts_to_user_config(&opts, &state, &snap);
+            if (snap.rtl_sql != -80) {
+                DSD_FPRINTF(stderr, "FAIL: %s save during a %d dB row wrote rtl_sql %d, want the default -80\n", input,
+                            row_db, snap.rtl_sql);
+                rc |= 1;
+            }
+            dsd_scan_mode_leave(&opts, &state);
+            if (fabs(opts.rtl_squelch_level - dsd_squelch_level_from_sql(-80.0)) > 1e-18) {
+                DSD_FPRINTF(stderr, "FAIL: %s leaving the row did not restore the default\n", input);
+                rc |= 1;
+            }
+            dsd_state_ext_free_all(&state);
+        }
+    }
+    return rc;
+}
+
+/*
  * A parked row's own --scan-max-visit-ms is effective state, not a user default. The save path
  * has to read the configured baseline through dsd_scan_mode_configured_view(), or a
  * Config->Save taken while a row override is active would pin the row's value for every
@@ -3219,6 +3274,7 @@ main(void) {
     rc |= test_scan_max_visit_roundtrip();
     rc |= test_tg_lockout_persistence_roundtrip();
     rc |= test_scan_max_visit_snapshot_uses_configured_not_row_override();
+    rc |= test_squelch_snapshot_uses_configured_not_row_override();
     rc |= test_src_csv_roundtrip();
     rc |= test_p25_bandplan_csv_roundtrip();
     rc |= test_edacs_variant_roundtrip();

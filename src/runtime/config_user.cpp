@@ -458,7 +458,7 @@ apply_soapy_tuning_from_config(const dsdneoUserConfig* cfg, dsd_opts* opts) {
 }
 
 static void
-snapshot_apply_live_rtl_values(const dsd_opts* opts, dsdneoUserConfig* cfg) {
+snapshot_apply_live_rtl_values(const dsd_opts* opts, const dsd_state* state, dsdneoUserConfig* cfg) {
     if (!opts || !cfg) {
         return;
     }
@@ -470,7 +470,11 @@ snapshot_apply_live_rtl_values(const dsd_opts* opts, dsdneoUserConfig* cfg) {
     /* Off is a setting in its own right, and 0 is how the CLI and the config key
      * both spell it. Rendering it through pwr_to_dB() saved -120, which reloaded
      * as a real threshold and is outside the key's own -100..0 range. */
-    cfg->rtl_sql = dsd_squelch_is_off(opts->rtl_squelch_level) ? 0 : (int)local_pwr_to_dB(opts->rtl_squelch_level);
+    /* A scan row or target may be overriding the squelch (--squelch-db, issue #521); its value
+     * is effective state, so the save reads the configured default beneath it. */
+    const dsd_scan_settings* configured = dsd_scan_mode_configured_view(state);
+    const double squelch = configured ? configured->rtl_squelch_level : opts->rtl_squelch_level;
+    cfg->rtl_sql = dsd_squelch_is_off(squelch) ? 0 : (int)local_pwr_to_dB(squelch);
     cfg->rtl_volume = opts->rtl_volume_multiplier;
     if (opts->rtlsdr_center_freq > 0) {
         DSD_SNPRINTF(cfg->rtl_freq, sizeof cfg->rtl_freq, "%u", opts->rtlsdr_center_freq);
@@ -1665,20 +1669,20 @@ dsd_finalize_user_config_file_input_after_cli(const dsdneoUserConfig* cfg, dsd_o
 }
 
 static void
-snapshot_other_input_config(const dsd_opts* opts, dsdneoUserConfig* cfg) {
+snapshot_other_input_config(const dsd_opts* opts, const dsd_state* state, dsdneoUserConfig* cfg) {
     cfg->has_input = 1;
     if (strncmp(opts->audio_in_dev, "rtl:", 4) == 0) {
         cfg->input_source = DSDCFG_INPUT_RTL;
         snapshot_parse_rtl_device_spec(opts->audio_in_dev, cfg);
-        snapshot_apply_live_rtl_values(opts, cfg);
+        snapshot_apply_live_rtl_values(opts, state, cfg);
     } else if (strncmp(opts->audio_in_dev, "rtltcp:", 7) == 0) {
         cfg->input_source = DSDCFG_INPUT_RTLTCP;
         snapshot_parse_rtltcp_device_spec(opts->audio_in_dev, cfg);
-        snapshot_apply_live_rtl_values(opts, cfg);
+        snapshot_apply_live_rtl_values(opts, state, cfg);
     } else if ((strcmp(opts->audio_in_dev, "soapy") == 0) || (strncmp(opts->audio_in_dev, "soapy:", 6) == 0)) {
         cfg->input_source = DSDCFG_INPUT_SOAPY;
         snapshot_parse_soapy_device_spec(opts->audio_in_dev, cfg);
-        snapshot_apply_live_rtl_values(opts, cfg);
+        snapshot_apply_live_rtl_values(opts, state, cfg);
         snapshot_apply_live_soapy_values(opts, cfg);
     } else if (strncmp(opts->audio_in_dev, "tcp:", 4) == 0) {
         cfg->input_source = DSDCFG_INPUT_TCP;
@@ -1711,14 +1715,14 @@ snapshot_other_input_config(const dsd_opts* opts, dsdneoUserConfig* cfg) {
 }
 
 static void
-snapshot_input_config(const dsd_opts* opts, dsdneoUserConfig* cfg) {
+snapshot_input_config(const dsd_opts* opts, const dsd_state* state, dsdneoUserConfig* cfg) {
     if (dsd_opts_audio_in_dev_is_airspy_spec(opts->audio_in_dev)) {
         cfg->has_input = 1;
         cfg->input_source = DSDCFG_INPUT_AIRSPY;
         cfg->airspy = opts->airspy;
-        snapshot_apply_live_rtl_values(opts, cfg);
+        snapshot_apply_live_rtl_values(opts, state, cfg);
     } else {
-        snapshot_other_input_config(opts, cfg);
+        snapshot_other_input_config(opts, state, cfg);
     }
 
     /* LOW advisories exist for every input source, so the threshold snapshots unconditionally. */
@@ -1907,7 +1911,7 @@ dsd_snapshot_opts_to_user_config(const dsd_opts* opts, const dsd_state* state, d
     }
 
     user_cfg_reset(cfg);
-    snapshot_input_config(opts, cfg);
+    snapshot_input_config(opts, state, cfg);
     snapshot_output_config(opts, cfg);
     snapshot_mode_config(opts, state, cfg);
     snapshot_demod_config(opts, state, cfg);
