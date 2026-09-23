@@ -136,7 +136,8 @@ Tests: `tests/engine/test_engine_trunk_scan.c` (`ENGINE_TRUNK_SCAN`) and
   restored SPS hunt index, so AUTO's saved timing and the frontend's rate/levels agree after leaving a row.
   `dsd_scan_mode_row_options()` borrows the installed nonsecret row options (valid while suspended and on held
   snapshots). Row options are applied through a per-field table (`scan_option_appliers[]`), and the row squelch is
-  pushed to the RTL demodulator from the scope's entry points only, once per row change;
+  pushed to the RTL demodulator from the scope's entry points only, once per row change. `dsd_scan_mode_enter()`
+  never pushes, so every caller must follow it with `dsd_scan_mode_options()` (NULL for a row without options);
   `dsd_scan_mode_set_configured_squelch()` edits the configured default without suspending (see Scoped scan options).
 - Engine `channel_scan.c` (extension slot 7) stages typed `-Y` entries for automatic, manual, and avoid stepping through
   tracked tuning. It commits mode/keys only after success and retains generation protection across pending requests.
@@ -791,10 +792,12 @@ External dependencies (resolved via CMake):
   `set_channel_squelch`, only for `AUDIO_IN_RTL`, and at most once per row change: `dsd_scan_mode_enter` pushes
   nothing and records the level the demod held; the `dsd_scan_mode_options` call that completes the row pushes when
   the level in force differs from it (a `-60 -> -60` move pushes nothing, and the configured default is never pushed
-  in between). Callers install the row's options after every enter. `options` on its own and `leave` push on a
-  change; `dsd_scan_mode_resume`, and an enter or leave that finds the scope suspended (a command stopping the
-  scanner), always push, because a command run while suspended (`CONFIG_APPLY`) may have pushed the configured
-  default itself, or the demod may still hold the row's. `dsd_scan_mode_prepare` and `scan_scope_apply` never push.
+  in between). Every enter caller must install the row's options (NULL for none) right after it. `options` on its
+  own and `leave` push on a change; `dsd_scan_mode_resume`, and a `leave` that finds the scope suspended (a command
+  stopping the scanner), always push, because a command run while suspended (`CONFIG_APPLY`) may have pushed the
+  configured default itself, or the demod may still hold the row's. After an enter that found the scope suspended,
+  the `options` call that completes the row pushes unconditionally for the same reason. `dsd_scan_mode_prepare` and
+  `scan_scope_apply` never push.
   `RTL_SET_SQL_DB` is not a scoped command: `svc_rtl_set_sql_db()` edits the configured default through
   `dsd_scan_mode_set_configured_squelch()`, which touches no acquisition setting (so a squelch nudge can never read
   as a decoder change that ends the call) and leaves `dsd_opts` and the demod on the row's value while a row
