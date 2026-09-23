@@ -159,8 +159,8 @@ enc_lockout_inert(const dsd_state* state) {
 
 static int
 expect_str(const char* tag, const char* got, const char* want) {
-    if (strcmp(got, want) != 0) {
-        DSD_FPRINTF(stderr, "%s: got \"%s\" want \"%s\"\n", tag, got, want);
+    if (!got || !want || strcmp(got, want) != 0) {
+        DSD_FPRINTF(stderr, "%s: got \"%s\" want \"%s\"\n", tag, got ? got : "(null)", want ? want : "(null)");
         return 1;
     }
     return 0;

@@ -16,6 +16,7 @@
 #include <dsd-neo/runtime/scan_mode.h>
 #include <dsd-neo/runtime/scan_options.h>
 #include <math.h>
+#include <stddef.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -221,8 +222,19 @@ record_squelch_push(double mean_power) {
 }
 
 static int
-level_is(double level, double expected) {
-    return fabs(level - expected) <= 1e-12 + 1e-9 * fabs(expected);
+level_is(double got, double want) {
+    return fabs(got - want) <= 1e-12 + 1e-9 * fabs(want);
+}
+
+/* Every captured field matches. dsd_scan_settings_equal() covers acquisition and timing but
+ * leaves out the leading row-option block, so that block is checked here as well: the squelch
+ * double with a tolerance, and its integer and group-file fields byte for byte. */
+static int
+settings_identical(const dsd_scan_settings* a, const dsd_scan_settings* b) {
+    const size_t row_begin = offsetof(dsd_scan_settings, force_key);
+    const size_t row_end = offsetof(dsd_scan_settings, frame_dstar);
+    return dsd_scan_settings_equal(a, b, 1) && level_is(a->rtl_squelch_level, b->rtl_squelch_level)
+           && memcmp((const char*)a + row_begin, (const char*)b + row_begin, row_end - row_begin) == 0;
 }
 
 /* A row squelch is policy carried beside the acquisition settings: an omitted value inherits,
@@ -430,12 +442,12 @@ main(void) {
             assert(o->use_cosine_filter == 0);
         }
         dsd_scan_mode_configured(o, s, &restored);
-        assert(memcmp(&baseline, &restored, sizeof(baseline)) == 0);
+        assert(settings_identical(&baseline, &restored));
         dsd_scan_mode_copy_snapshot(copy, s);
         assert(copy->state_ext[6] != s->state_ext[6]);
         dsd_scan_mode_leave(o, s);
         dsd_scan_settings_capture(o, s, &restored);
-        assert(memcmp(&baseline, &restored, sizeof(baseline)) == 0);
+        assert(settings_identical(&baseline, &restored));
         assert(dsd_scan_mode_active(copy) == parsed);
     }
     assert(dsd_scan_mode_enter(o, s, DSD_SCAN_MODE_M17) == 0);
