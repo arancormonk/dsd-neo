@@ -8,9 +8,15 @@ pipeline's run-to-run variation is therefore the per-repeat difference, not the
 difference of the means -- on the captures behind issue #444 the within-build
 spread was large enough to reverse a blocked comparison.
 
-Errors are reported per decoded voice frame. A build that loses sync decodes
-fewer frames and accrues fewer errors without being better, so the raw total
-flatters exactly the regressions worth catching.
+Digital runs report errors per decoded voice frame. A build that loses sync
+decodes fewer frames and accrues fewer errors without being better, so the raw
+total flatters exactly the regressions worth catching.
+
+Analog runs (replay_ab.sh --metric analog) report each analog column the host
+measured -- tone SNR, in-band ratio, clipped samples, audible and first-audible
+time, the first probe's level relative to the test tone, and time to tone lock --
+paired per repeat the same way, plus the received tone label each build settled
+on. Columns no build measured are left out.
 """
 
 from __future__ import annotations
@@ -19,41 +25,131 @@ import argparse
 import math
 import statistics
 import sys
-from collections import defaultdict
+from collections import Counter, defaultdict
 from pathlib import Path
+
+ANALOG_NUMERIC = ("tone_snr_db", "inband_db", "clip", "audible_ms", "first_audible_ms", "probe_dbc", "tone_lock_ms")
+ANALOG_LABELS = ("tone",)
+
+
+def read_rows(path: Path) -> list[dict[str, str]]:
+    """Read summary.tsv into one dict per run, keyed by the header's column names."""
+    with path.open() as handle:
+        header = handle.readline().rstrip("\n").split("\t")
+        if header[:1] != ["variant"]:
+            raise SystemExit(f"{path}: not a replay_ab summary (unexpected header)")
+        rows = []
+        for line in handle:
+            parts = line.rstrip("\n").split("\t")
+            if len(parts) >= 6:
+                rows.append(dict(zip(header, parts)))
+    return rows
 
 
 def load(path: Path) -> dict[int, dict[str, tuple[float, int, int]]]:
     """Read summary.tsv into {repeat: {build: (err_per_voice, errs, voice)}}."""
     by_rep: dict[int, dict[str, tuple[float, int, int]]] = defaultdict(dict)
-    with path.open() as handle:
-        header = handle.readline().rstrip("\n").split("\t")
-        if header[:1] != ["variant"]:
-            raise SystemExit(f"{path}: not a replay_ab summary (unexpected header)")
-        for line in handle:
-            parts = line.rstrip("\n").split("\t")
-            if len(parts) < 6 or parts[3] == "NA":
-                continue
-            build, _case, rep, errs, voice, _sync = parts[:6]
-            if int(voice) == 0:
-                continue
-            by_rep[int(rep)][build] = (int(errs) / int(voice), int(errs), int(voice))
+    for row in read_rows(path):
+        if row["errs"] == "NA" or int(row["voice"]) == 0:
+            continue
+        errs, voice = int(row["errs"]), int(row["voice"])
+        by_rep[int(row["rep"])][row["variant"]] = (errs / voice, errs, voice)
     return by_rep
 
 
-def main() -> int:
-    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("summary", type=Path, help="summary.tsv written by tools/replay_ab.sh")
-    parser.add_argument("--baseline", help="build to compare against (default: the first one seen)")
-    args = parser.parse_args()
+def parse_number(text: str | None) -> float | None:
+    if text is None or text == "NA" or text == "":
+        return None
+    try:
+        return float(text)
+    except ValueError:
+        return None
 
-    by_rep = load(args.summary)
+
+def load_analog(rows: list[dict[str, str]]) -> dict[str, dict[int, dict[str, object]]]:
+    """{column: {repeat: {build: value}}} for every analog column some run measured."""
+    columns: dict[str, dict[int, dict[str, object]]] = {}
+    for name in ANALOG_NUMERIC + ANALOG_LABELS:
+        by_rep: dict[int, dict[str, object]] = defaultdict(dict)
+        for row in rows:
+            raw = row.get(name)
+            value = parse_number(raw) if name in ANALOG_NUMERIC else (raw if raw not in (None, "", "NA") else None)
+            if value is not None:
+                by_rep[int(row["rep"])][row["variant"]] = value
+        if by_rep:
+            columns[name] = by_rep
+    return columns
+
+
+def paired(by_rep: dict[int, dict[str, object]], build: str, baseline: str) -> tuple[str, str]:
+    """Mean per-repeat difference from the baseline with a 95% interval, and how many repeats differ."""
+    diffs = [by_rep[r][build] - by_rep[r][baseline] for r in sorted(by_rep)
+             if build in by_rep[r] and baseline in by_rep[r]]
+    if build == baseline or not diffs:
+        return "-", "-"
+    half = 1.96 * statistics.stdev(diffs) / math.sqrt(len(diffs)) if len(diffs) > 1 else 0.0
+    differ = sum(1 for d in diffs if abs(d) > 1e-9)
+    return f"{statistics.fmean(diffs):+.2f} +/- {half:.2f}", f"{differ}/{len(diffs)}"
+
+
+def report_analog(rows: list[dict[str, str]], baseline_arg: str | None) -> int:
+    columns = load_analog(rows)
+    if not columns:
+        raise SystemExit("no analog columns measured; was this run with replay_ab.sh --metric analog "
+                         "and an analog replay host?")
+    reps = sorted({int(row["rep"]) for row in rows})
+    builds = list(dict.fromkeys(row["variant"] for row in rows))
+    baseline = baseline_arg or builds[0]
+    if baseline not in builds:
+        raise SystemExit(f"baseline '{baseline}' not present; have: {', '.join(builds)}")
+
+    print(f"repeats: {len(reps)}   baseline: {baseline}   metric: analog\n")
+    print(f"{'metric':<17} {'build':<24} {'mean':>9} {'median':>9} {'sd':>7}  {'paired vs baseline':>20}  "
+          f"{'differ':>6}")
+    for name in ANALOG_NUMERIC:
+        by_rep = columns.get(name)
+        if not by_rep:
+            continue
+        for build in builds:
+            vals = [by_rep[r][build] for r in reps if r in by_rep and build in by_rep[r]]
+            if not vals:
+                continue
+            sd = statistics.stdev(vals) if len(vals) > 1 else 0.0
+            diff, differ = paired(by_rep, build, baseline)
+            print(f"{name:<17} {build:<24} {statistics.fmean(vals):9.2f} {statistics.median(vals):9.2f} "
+                  f"{sd:7.2f}  {diff:>20}  {differ:>6}")
+    for name in ANALOG_LABELS:
+        by_rep = columns.get(name)
+        if not by_rep:
+            continue
+        print(f"\n{'label':<17} {'build':<24} {'value':>9} {'agree':>7}")
+        for build in builds:
+            seen = [by_rep[r][build] for r in reps if r in by_rep and build in by_rep[r]]
+            if not seen:
+                print(f"{name:<17} {build:<24} {'NA':>9} {'0/' + str(len(reps)):>7}")
+                continue
+            # Most common label; a tie goes to the one seen in the earliest repeat.
+            value = Counter(seen).most_common()[0][1]
+            label = next(v for v in seen if seen.count(v) == value)
+            print(f"{name:<17} {build:<24} {label:>9} {f'{value}/{len(reps)}':>7}")
+
+    print("\nPaired column is the mean per-repeat difference from the baseline with a 95%")
+    print("interval; 'differ' counts the repeats where the two builds disagreed at all. Run")
+    print("the baseline against a copy of itself first: I/Q replay is sample-deterministic,")
+    print("so that control should read +0.00 +/- 0.00 with 0 differing repeats.")
+    print("Higher is better for tone_snr_db and inband_db, lower for clip, first_audible_ms,")
+    print("the probe's dBc and tone_lock_ms; whether audible_ms should rise depends on the case.")
+    return 0
+
+
+def report_digital(path: Path, baseline_arg: str | None) -> int:
+    by_rep = load(path)
     if not by_rep:
-        raise SystemExit(f"{args.summary}: no usable rows")
+        raise SystemExit(f"{path}: no usable rows")
 
     reps = sorted(by_rep)
     builds = sorted({b for row in by_rep.values() for b in row})
-    baseline = args.baseline or by_rep[reps[0]].keys().__iter__().__next__()
+    baseline = baseline_arg or by_rep[reps[0]].keys().__iter__().__next__()
     if baseline not in builds:
         raise SystemExit(f"baseline '{baseline}' not present; have: {', '.join(builds)}")
 
@@ -69,18 +165,34 @@ def main() -> int:
         if build != baseline and diffs:
             mean_d = statistics.fmean(diffs)
             half = 1.96 * statistics.stdev(diffs) / math.sqrt(len(diffs)) if len(diffs) > 1 else 0.0
-            paired = f"{mean_d:+.2f} +/- {half:.2f}"
+            paired_text = f"{mean_d:+.2f} +/- {half:.2f}"
             better = f"{sum(1 for d in diffs if d < 0)}/{len(diffs)}"
         else:
-            paired, better = "-", "-"
+            paired_text, better = "-", "-"
         print(f"{build:>24}  {statistics.fmean(vals):9.2f} {statistics.median(vals):7.2f} {sd:6.2f}  "
-              f"{statistics.fmean(voices):6.1f}  {paired:>20}  {better:>7}")
+              f"{statistics.fmean(voices):6.1f}  {paired_text:>20}  {better:>7}")
 
     print("\nPaired column is the mean per-repeat difference in errors per voice frame,")
     print("with a 95% interval. Negative beats the baseline; an interval spanning 0 means")
     print("the run did not resolve a difference. Watch the voice column too: a build that")
     print("decodes noticeably fewer frames is losing sync, whatever its error rate says.")
     return 0
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("summary", type=Path, help="summary.tsv written by tools/replay_ab.sh")
+    parser.add_argument("--baseline", help="build to compare against (default: the first one seen)")
+    parser.add_argument("--metric", choices=("auto", "digital", "analog"), default="auto",
+                        help="which columns to report (default: analog when any analog column was measured)")
+    args = parser.parse_args()
+
+    metric = args.metric
+    if metric == "auto":
+        metric = "analog" if load_analog(read_rows(args.summary)) else "digital"
+    if metric == "analog":
+        return report_analog(read_rows(args.summary), args.baseline)
+    return report_digital(args.summary, args.baseline)
 
 
 if __name__ == "__main__":

@@ -11233,6 +11233,16 @@ if(Python3_Interpreter_FOUND)
         )
         set_tests_properties(TOOLS_AIRSPY_PACKAGING PROPERTIES TIMEOUT 120)
     endif()
+    # replay_ab.sh --metric analog and the report's per-repeat pairing of the analog
+    # columns (issue #518). Stdlib only; the replay_ab.sh half skips without bash.
+    add_test(
+        NAME TOOLS_REPLAY_AB_REPORT
+        COMMAND
+            ${Python3_EXECUTABLE}
+            ${PROJECT_SOURCE_DIR}/tests/tools/test_replay_ab_report.py
+        WORKING_DIRECTORY ${PROJECT_SOURCE_DIR}
+    )
+    set_tests_properties(TOOLS_REPLAY_AB_REPORT PROPERTIES TIMEOUT 120)
 endif()
 
 # WP-F4: real event synchronization and published snapshots for late emergency metadata.
