@@ -882,6 +882,12 @@ Scan lists use the app's voice hang time; per-system hang-time overrides do not 
 targets. The list editor can select imported group/source CSVs from the existing library.
 It has no field for the per-visit cap; add `--scan-max-visit-ms <ms>` to Extra decoder
 arguments to cap every target in the session.
+Per-target squelch is CSV-only: import a target CSV whose `options` carry
+`--squelch-db <dB>` (whole dB from -100 to 0, 0 = off, omitted = inherit). It is not a
+decoder argument, so Extra decoder arguments cannot set it. The target preview lists each
+target's squelch, or inherit. While such a target is on air, the Radio panel shows its
+threshold with a **row** badge and the default beside it; the squelch buttons change that
+default, not the target's value.
 Per-system groups and keys remain isolated on rotation; source aliases are global
 and differing system alias files produce a warning. Unsupported settings are
 refused rather than dropped. See [scan-list rules](../docs/trunk-scan.md#qt-and-android-scan-lists).
