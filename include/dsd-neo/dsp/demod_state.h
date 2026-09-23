@@ -26,12 +26,18 @@
 #include <dsd-neo/platform/threading.h>
 
 /* Buffer sizing constants shared by the demodulator and radio front-end. */
-#define DEFAULT_BUF_LENGTH 16384
-#define MAXIMUM_OVERSAMPLE 16
-#define MAXIMUM_BUF_LENGTH (MAXIMUM_OVERSAMPLE * DEFAULT_BUF_LENGTH)
+#define DEFAULT_BUF_LENGTH       16384
+#define MAXIMUM_OVERSAMPLE       16
+#define MAXIMUM_BUF_LENGTH       (MAXIMUM_OVERSAMPLE * DEFAULT_BUF_LENGTH)
 
 /* Maximum half-band tap count used to dimension complex-decimator histories. */
-#define HB_TAPS_MAX        31
+#define HB_TAPS_MAX              31
+
+/* Channel LPF plan/history capacity. Digital profiles design at most 144 taps
+ * (and keep their 63-tap fallback); the analog family uses the full capacity so
+ * device-forced rates up to ~102 kHz get a real design. Static-asserted against
+ * DSD_ANALOG_CHANNEL_MAX_TAPS in demod_pipeline.cpp. */
+#define DSD_CHANNEL_LPF_MAX_TAPS 288
 
 /* Channel LPF profile ids */
 enum DSD_ATTR_PACKED {
@@ -79,9 +85,9 @@ struct demod_state {
     alignas(64) float result[MAXIMUM_BUF_LENGTH];
     alignas(64) float timing_buf[MAXIMUM_BUF_LENGTH];
     alignas(64) float resamp_outbuf[MAXIMUM_BUF_LENGTH * 4];
-    alignas(64) float channel_lpf_hist_i[144]; /* sized for up to 144-tap symmetric FIR (tap-1) */
-    alignas(64) float channel_lpf_hist_q[144];
-    alignas(64) float channel_lpf_plan_taps[144];
+    alignas(64) float channel_lpf_hist_i[DSD_CHANNEL_LPF_MAX_TAPS]; /* symmetric FIR history (taps - 1) */
+    alignas(64) float channel_lpf_hist_q[DSD_CHANNEL_LPF_MAX_TAPS];
+    alignas(64) float channel_lpf_plan_taps[DSD_CHANNEL_LPF_MAX_TAPS];
 
     /* Pointers and 64-bit items next */
     dsd_thread_t thread;
@@ -138,8 +144,13 @@ struct demod_state {
     int deemph;
     float deemph_a; /* deemphasis alpha [0.0, 1.0] for one-pole IIR */
     float deemph_avg;
+    /* De-emphasis time constant in microseconds (0 = none); deemph_a is recomputed from it whenever rate_out
+       changes. */
+    int deemph_tau_us;
     /* Optional post-demod audio low-pass filter (one-pole) */
     int audio_lpf_enable;
+    /* Audio LPF cutoff in Hz (0 = none); audio_lpf_alpha is recomputed from it whenever rate_out changes. */
+    int audio_lpf_cutoff_hz;
     float audio_lpf_alpha; /* alpha [0.0, 1.0] for one-pole LPF */
     float audio_lpf_state; /* state/output y[n-1] */
     float now_lpr;
@@ -152,15 +163,24 @@ struct demod_state {
     float hb_hist_q[10][HB_TAPS_MAX - 1];
 
     /* Fixed channel low-pass (post-HB) to bound noise bandwidth at higher Fs.
-     * At 48 kHz with 1200 Hz transition, Blackman needs up to 135 taps (hist = 134).
-     * Size 144 provides headroom for higher sample rates. */
+     * At 48 kHz with 1200 Hz transition, Blackman needs 135 taps (hist = 134).
+     * Digital profiles cap the design at 144 taps; the analog family may use
+     * the full DSD_CHANNEL_LPF_MAX_TAPS. */
     int channel_lpf_enable; /* gate */
     int channel_lpf_hist_len;
     int channel_lpf_profile;       /* see DSD_CH_LPF_PROFILE_* */
     int channel_lpf_plan_rate_out; /* cached rate for channel_lpf_plan_taps */
     int channel_lpf_plan_profile;  /* cached profile for channel_lpf_plan_taps */
-    int channel_lpf_plan_taps_len; /* cached tap count; 0 = not designed */
-    float channel_pwr;             /* mean power (RMS^2 proxy) measured after channel LPF */
+    int channel_lpf_plan_width_hz; /* cached analog width for channel_lpf_plan_taps (0 = profile design) */
+    int channel_lpf_plan_taps_len; /* cached tap count; 0 = not designed, or the analog width is unrealizable */
+    /* Analog receive family (the -fA monitor; not the M17 encoder, which shares the analog front end). While set,
+       channel_lpf_width_hz > 0 drives the channel filter instead of channel_lpf_profile. */
+    int analog_family;
+    int analog_demod; /* dsd_analog_demod (runtime/analog_channel.h); 0 = FM */
+    /* Full RF channel width in Hz the analog filter protects (cutoff W/2 + 600 Hz, 1200 Hz transition).
+       0 keeps the profile design, including the legacy WIDE design for an unset default the rate cannot fit. */
+    int channel_lpf_width_hz;
+    float channel_pwr; /* mean power (RMS^2 proxy) measured after channel LPF */
     /* Squelch threshold (linear power); 0 = disabled. Written from the control thread
      * (config apply, menus) while the demod thread reads it per block. */
     std::atomic<float> channel_squelch_level;

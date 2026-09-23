@@ -20,6 +20,7 @@
 #include <dsd-neo/dsp/math_utils.h>
 #include <dsd-neo/dsp/simd_fir.h>
 #include <dsd-neo/dsp/ted.h>
+#include <dsd-neo/runtime/analog_channel.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/mem.h>
 #include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
@@ -130,10 +131,26 @@ clamp_float(float value, float lo, float hi) {
  * At 48 kHz with 1200 Hz transition width:
  *   - Hamming: ntaps = (53 * 48000) / (22 * 1200) = 97
  *   - Blackman: ntaps = (74 * 48000) / (22 * 1200) = 135
- * Size 144 provides headroom for higher sample rates. */
+ * Digital profiles cap the design at 144 taps (headroom for higher rates) and
+ * keep the 63-tap fallback. The analog family designs from the channel width
+ * instead (cutoff W/2 + guard) with the full DSD_CHANNEL_LPF_MAX_TAPS capacity,
+ * no Nyquist clamp and no fallback: an unrealizable width yields no plan, and
+ * the runtime validator (runtime/analog_channel.h) rejects it before it gets
+ * here. The transition, guard and capacity are shared with that validator. */
 static const int kChannelLpfTaps = 144;
-static const double kChannelLpfTransitionHz = 1200.0;
+static const double kChannelLpfTransitionHz = (double)DSD_ANALOG_CHANNEL_TRANSITION_HZ;
 static const double kChannelLpfGuardHz = kChannelLpfTransitionHz * 0.5;
+
+static_assert(DSD_ANALOG_CHANNEL_GUARD_HZ * 2 == DSD_ANALOG_CHANNEL_TRANSITION_HZ,
+              "analog guard must stay half the channel-filter transition");
+static_assert(DSD_CHANNEL_LPF_MAX_TAPS == DSD_ANALOG_CHANNEL_MAX_TAPS,
+              "demod_state channel LPF capacity must match the analog validator's tap limit");
+static_assert(sizeof(demod_state::channel_lpf_plan_taps) / sizeof(float) == DSD_ANALOG_CHANNEL_MAX_TAPS,
+              "channel LPF plan array must hold the analog tap capacity");
+static_assert(sizeof(demod_state::channel_lpf_hist_i) / sizeof(float) >= DSD_ANALOG_CHANNEL_MAX_TAPS - 1,
+              "channel LPF history must hold taps - 1 samples at analog capacity");
+static_assert(kChannelLpfTaps <= DSD_CHANNEL_LPF_MAX_TAPS, "digital channel LPF cap exceeds the plan array");
+static_assert(DSD_ANALOG_DEMOD_FM == 0, "a zeroed demod_state must mean the FM analog demodulator");
 /* Protected channel edges: the highest frequency each profile's channel LPF is
  * designed to pass unattenuated. The cutoff constants below are these plus
  * design guard, and dsd_channel_lpf_protected_edge_hz() reports these — see its
@@ -441,6 +458,19 @@ audio_polydecim_process(struct demod_state* d, const float* in, int in_len, floa
 
 /* ---------------- Fixed channel LPF (complex, no decimation) ----------------- */
 
+int
+dsd_channel_lpf_design_analog(int rate_hz, int width_hz, float* taps_out, int max_taps) {
+    if (!taps_out || max_taps <= 0 || !dsd_analog_width_realizable(width_hz, rate_hz)) {
+        return -1;
+    }
+    if (max_taps > DSD_ANALOG_CHANNEL_MAX_TAPS) {
+        max_taps = DSD_ANALOG_CHANNEL_MAX_TAPS;
+    }
+    const double cutoff_hz = (double)width_hz * 0.5 + kChannelLpfGuardHz;
+    return dsd_firdes_low_pass(1.0, (double)rate_hz, cutoff_hz, kChannelLpfTransitionHz, DSD_WIN_BLACKMAN, taps_out,
+                               max_taps);
+}
+
 static int
 channel_lpf_design_low_pass(double sample_rate, double cutoff_hz, float* taps_out, int max_taps) {
     if (sample_rate <= 0.0 || !taps_out || max_taps <= 0) {
@@ -496,18 +526,8 @@ channel_lpf_cutoff_for_profile(int profile) {
  * Keeps absolute cutoffs in Hz constant across sample rates and avoids global
  * per-block profile dispatch.
  */
-static void
-channel_lpf_ensure_plan(struct demod_state* d) {
-    if (!d) {
-        return;
-    }
-    const int profile = d->channel_lpf_profile;
-    const int rate_out = d->rate_out;
-    if (d->channel_lpf_plan_taps_len > 0 && d->channel_lpf_plan_rate_out == rate_out
-        && d->channel_lpf_plan_profile == profile) {
-        return;
-    }
-
+static int
+channel_lpf_design_profile_plan(struct demod_state* d, int profile, int rate_out) {
     int taps_len = 0;
     if (rate_out > 0) {
         taps_len = channel_lpf_design_low_pass((double)rate_out, channel_lpf_cutoff_for_profile(profile),
@@ -519,8 +539,38 @@ channel_lpf_ensure_plan(struct demod_state* d) {
         DSD_MEMCPY(d->channel_lpf_plan_taps, fallback, (size_t)fallback_len * sizeof(float));
         taps_len = fallback_len;
     }
+    return taps_len;
+}
+
+static void
+channel_lpf_ensure_plan(struct demod_state* d) {
+    if (!d) {
+        return;
+    }
+    const int profile = d->channel_lpf_profile;
+    const int rate_out = d->rate_out;
+    /* Gated on the analog family, not on the profile: WIDE is also the digital fallback profile, and the M17
+       encoder shares the analog front end without being part of that family. */
+    const int width_hz = (d->analog_family && d->channel_lpf_width_hz > 0) ? d->channel_lpf_width_hz : 0;
+    const int planned = d->channel_lpf_plan_taps_len > 0 || d->channel_lpf_plan_width_hz > 0;
+    if (planned && d->channel_lpf_plan_rate_out == rate_out && d->channel_lpf_plan_profile == profile
+        && d->channel_lpf_plan_width_hz == width_hz) {
+        return;
+    }
+
+    int taps_len = 0;
+    if (width_hz > 0) {
+        taps_len =
+            dsd_channel_lpf_design_analog(rate_out, width_hz, d->channel_lpf_plan_taps, DSD_CHANNEL_LPF_MAX_TAPS);
+        if (taps_len < 0) {
+            taps_len = 0; /* no clamp and no fallback: the block passes unfiltered */
+        }
+    } else {
+        taps_len = channel_lpf_design_profile_plan(d, profile, rate_out);
+    }
     d->channel_lpf_plan_rate_out = rate_out;
     d->channel_lpf_plan_profile = profile;
+    d->channel_lpf_plan_width_hz = width_hz;
     d->channel_lpf_plan_taps_len = taps_len;
 }
 

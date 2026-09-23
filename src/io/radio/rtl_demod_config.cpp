@@ -277,10 +277,8 @@ demod_init_common_defaults(struct demod_state* s, int rtl_dsp_bw_hz, struct outp
     s->channel_lpf_enable = 0;
     s->channel_lpf_hist_len = 143;
     s->channel_lpf_profile = DSD_CH_LPF_PROFILE_WIDE;
-    for (int k = 0; k < 144; k++) {
-        s->channel_lpf_hist_i[k] = 0;
-        s->channel_lpf_hist_q[k] = 0;
-    }
+    DSD_MEMSET(s->channel_lpf_hist_i, 0, sizeof(s->channel_lpf_hist_i));
+    DSD_MEMSET(s->channel_lpf_hist_q, 0, sizeof(s->channel_lpf_hist_q));
     s->channel_pwr = 0.0f;
     g_channel_pwr.store(0.0f, std::memory_order_relaxed);
     s->channel_squelch_level.store(0.0f, std::memory_order_relaxed);

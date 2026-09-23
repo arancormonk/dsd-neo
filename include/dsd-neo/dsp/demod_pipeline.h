@@ -117,6 +117,23 @@ void full_demod(struct demod_state* d);
  */
 double dsd_channel_lpf_protected_edge_hz(int profile);
 
+/**
+ * Design the analog channel filter for a full RF channel width.
+ *
+ * Cutoff is width/2 + DSD_ANALOG_CHANNEL_GUARD_HZ with the fixed
+ * DSD_ANALOG_CHANNEL_TRANSITION_HZ Blackman transition, so the width is the
+ * protected passband. 16000 Hz reproduces the WIDE profile's taps. There is no
+ * Nyquist clamp and no fallback prototype: a width the rate cannot realize
+ * (see dsd_analog_width_realizable()) is an error.
+ *
+ * @param rate_hz  Channel-filter sample rate (demod rate_out) in Hz.
+ * @param width_hz Full channel width in Hz.
+ * @param taps_out Output taps; must hold @p max_taps floats.
+ * @param max_taps Capacity of @p taps_out (at most DSD_ANALOG_CHANNEL_MAX_TAPS is used).
+ * @return Number of taps written, or -1 when the width cannot be designed.
+ */
+int dsd_channel_lpf_design_analog(int rate_hz, int width_hz, float* taps_out, int max_taps);
+
 #ifdef __cplusplus
 }
 #endif

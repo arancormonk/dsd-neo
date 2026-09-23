@@ -9,6 +9,7 @@
 #include <cstdlib>
 #include <dsd-neo/dsp/demod_pipeline.h>
 #include <dsd-neo/dsp/demod_state.h>
+#include <dsd-neo/runtime/analog_channel.h>
 #include <stdio.h>
 #include "dsd-neo/core/safe_api.h"
 
@@ -28,7 +29,7 @@ monotonic_nondecreasing(const float* x, int n) {
 }
 
 static double
-channel_lpf_tone_gain(demod_state* s, int profile, double tone_hz) {
+channel_lpf_tone_gain_at(demod_state* s, int profile, int analog_width_hz, double tone_hz) {
     const int sample_rate = 48000;
     const int complex_samples = 4096;
     const float amp = 0.75f;
@@ -43,6 +44,11 @@ channel_lpf_tone_gain(demod_state* s, int profile, double tone_hz) {
     s->lp_len = complex_samples * 2;
     s->channel_lpf_enable = 1;
     s->channel_lpf_profile = profile;
+    if (analog_width_hz > 0) {
+        s->analog_family = 1;
+        s->analog_demod = DSD_ANALOG_DEMOD_FM;
+        s->channel_lpf_width_hz = analog_width_hz;
+    }
 
     for (int n = 0; n < complex_samples; n++) {
         double phase = two_pi * tone_hz * (double)n / (double)sample_rate;
@@ -55,7 +61,10 @@ channel_lpf_tone_gain(demod_state* s, int profile, double tone_hz) {
     double power = 0.0;
     int count = 0;
     const int start = 512; /* Skip FIR startup transient. */
-    const int pairs = s->result_len >> 1;
+    /* The channel FIR is centred (zero delay) and pads its look-ahead past the
+     * block end with the last sample, so the final taps/2 outputs are not a
+     * steady-state reading; keep them out of the measurement. */
+    const int pairs = (s->result_len >> 1) - (DSD_CHANNEL_LPF_MAX_TAPS / 2);
     for (int n = start; n < pairs; n++) {
         double i = (double)s->result[(size_t)(n << 1) + 0];
         double q = (double)s->result[(size_t)(n << 1) + 1];
@@ -66,6 +75,83 @@ channel_lpf_tone_gain(demod_state* s, int profile, double tone_hz) {
         return 0.0;
     }
     return sqrt(power / (double)count) / (double)amp;
+}
+
+static double
+channel_lpf_tone_gain(demod_state* s, int profile, double tone_hz) {
+    return channel_lpf_tone_gain_at(s, profile, 0, tone_hz);
+}
+
+/*
+ * The analog width is the protected passband: a tone at +/- W/2 passes within
+ * 1 dB for every NFM width, while the profile (WIDE here) no longer decides it.
+ */
+static int
+check_analog_protected_edges(demod_state* s) {
+    const int widths[] = {8000, 12500, 16000, 20000, 25000};
+    for (int w : widths) {
+        const double edge = (double)w * 0.5;
+        const double gain = channel_lpf_tone_gain_at(s, DSD_CH_LPF_PROFILE_WIDE, w, edge);
+        const double gain_neg = channel_lpf_tone_gain_at(s, DSD_CH_LPF_PROFILE_WIDE, w, -edge);
+        if (gain < 0.891 || gain_neg < 0.891) {
+            DSD_FPRINTF(stderr, "analog width %d edge gain %.3f/%.3f below -1 dB\n", w, gain, gain_neg);
+            return 1;
+        }
+        const double outside = channel_lpf_tone_gain_at(s, DSD_CH_LPF_PROFILE_WIDE, w, edge + 1600.0);
+        if (outside > 0.01) {
+            DSD_FPRINTF(stderr, "analog width %d passes %.4f at W/2 + 1600 Hz\n", w, outside);
+            return 1;
+        }
+    }
+    /* A narrow width really narrows the channel the WIDE profile would pass. */
+    if (channel_lpf_tone_gain_at(s, DSD_CH_LPF_PROFILE_WIDE, 8000, 7000.0) > 0.01
+        || channel_lpf_tone_gain(s, DSD_CH_LPF_PROFILE_WIDE, 7000.0) < 0.9) {
+        DSD_FPRINTF(stderr, "8 kHz analog width does not reject a 7 kHz tone that WIDE passes\n");
+        return 1;
+    }
+    return 0;
+}
+
+/*
+ * The plan cache is keyed on (rate_out, profile, width). A width change alone
+ * must redesign; an unchanged key must not.
+ */
+static int
+check_analog_plan_cache(demod_state* s) {
+    (void)channel_lpf_tone_gain_at(s, DSD_CH_LPF_PROFILE_WIDE, 16000, 1000.0);
+    if (s->channel_lpf_plan_width_hz != 16000 || s->channel_lpf_plan_taps_len != 135) {
+        DSD_FPRINTF(stderr, "16 kHz plan: width %d taps %d\n", s->channel_lpf_plan_width_hz,
+                    s->channel_lpf_plan_taps_len);
+        return 1;
+    }
+    const float center_16k = s->channel_lpf_plan_taps[67];
+    s->channel_lpf_width_hz = 8000;
+    s->lowpassed = s->input_cb_buf;
+    s->lp_len = 1024;
+    full_demod(s);
+    if (s->channel_lpf_plan_width_hz != 8000) {
+        DSD_FPRINTF(stderr, "plan kept width %d after a width change\n", s->channel_lpf_plan_width_hz);
+        return 1;
+    }
+    /* Center tap = 2 * cutoff / rate before DC normalization; the narrower filter's is smaller. */
+    if (!(s->channel_lpf_plan_taps[67] < center_16k - 0.05f)) {
+        DSD_FPRINTF(stderr, "8 kHz plan center tap %.4f not below 16 kHz %.4f\n", (double)s->channel_lpf_plan_taps[67],
+                    (double)center_16k);
+        return 1;
+    }
+    /* Leaving the analog family returns the design to the profile. */
+    s->analog_family = 0;
+    s->channel_lpf_width_hz = 0;
+    s->lowpassed = s->input_cb_buf;
+    s->lp_len = 1024;
+    full_demod(s);
+    if (s->channel_lpf_plan_width_hz != 0 || s->channel_lpf_plan_taps_len != 135
+        || !approx_eq(s->channel_lpf_plan_taps[67], center_16k, 1e-7f)) {
+        DSD_FPRINTF(stderr, "profile plan after analog: width %d taps %d\n", s->channel_lpf_plan_width_hz,
+                    s->channel_lpf_plan_taps_len);
+        return 1;
+    }
+    return 0;
 }
 
 static int
@@ -225,6 +311,11 @@ main(void) {
     }
 
     if (check_channel_lpf_protected_edges(s) != 0) {
+        free(s);
+        return 1;
+    }
+
+    if (check_analog_protected_edges(s) != 0 || check_analog_plan_cache(s) != 0) {
         free(s);
         return 1;
     }
