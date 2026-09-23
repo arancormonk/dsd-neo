@@ -251,6 +251,51 @@ int rtl_stream_set_symbol_profile(int symbol_rate_hz, int levels, int channel_pr
 int rtl_stream_request_demod_profile(int cqpsk_enable, int symbol_rate_hz, int levels, int channel_profile, int ted_sps,
                                      int ted_sps_is_override);
 
+/**
+ * @brief Queue a receive-family / analog profile change for the demod thread.
+ *
+ * Covers a width-only change, an FM<->AM switch and an analog<->digital switch. The request is validated on the
+ * caller's thread (against the published demod rate), then applied by the demod thread between blocks, before any
+ * demod profile queued alongside it; a newer request overwrites an unconsumed older one. With no pipeline running
+ * there is nothing to switch: the next stream open configures the front end from the options.
+ *
+ * Entering the analog family (or leaving it) re-applies the defaults a fresh stream open of that family would choose,
+ * resets the filter state, clears the output ring and bumps the output generation. Leaving it for digital expects the
+ * digital symbol profile to follow through rtl_stream_request_demod_profile().
+ *
+ * @param family   dsd_rx_family: DSD_RX_FAMILY_ANALOG or DSD_RX_FAMILY_DIGITAL.
+ * @param kind     dsd_analog_demod for the analog family (AM is refused until the front end can demodulate it).
+ * @param width_hz Explicit analog channel width in Hz, or 0 for the kind's default (ignored for digital).
+ * @return 0 when queued or applied; -1 when refused (unknown family/kind, AM, a width outside the kind's range or
+ *         unrealizable at the current rate, or an explicit width while DSD_NEO_CHANNEL_LPF=0).
+ */
+int rtl_stream_request_analog_profile(int family, int kind, int width_hz);
+
+/**
+ * @brief Report the published analog receive profile.
+ *
+ * @param out_kind     dsd_analog_demod of the active analog family (0 otherwise). May be NULL.
+ * @param out_width_hz Effective channel width in Hz: the configured width while the width-driven channel filter runs,
+ *                     otherwise the width the DSP rate leaves (0 outside the analog family). May be NULL.
+ * @param out_lpf_on   1 when the width-driven channel filter sets the width, 0 when the DSP rate limits it. May be
+ *                     NULL.
+ * @return 1 while the analog family is active, 0 otherwise (digital output, or the M17 encoder's monitor path).
+ */
+int rtl_stream_get_analog_profile(int* out_kind, int* out_width_hz, int* out_lpf_on);
+
+/**
+ * @brief Predict the output rate the stream will have once it runs @p family.
+ *
+ * A family switch is deferred to the demod thread, so a caller that sets symbol timing for the new family must not
+ * read the current output rate (the analog monitor resamples to its audio rate; a digital stream usually does not).
+ *
+ * @param family         dsd_rx_family.
+ * @param cqpsk_enable   Non-zero for the CQPSK symbol output (digital family only).
+ * @param symbol_rate_hz Digital symbol rate, which decides the digital resampling policy.
+ * @return Predicted output rate in Hz, or 0 before any stream has published a rate.
+ */
+unsigned int rtl_stream_output_rate_for_family(int family, int cqpsk_enable, int symbol_rate_hz);
+
 typedef struct rtl_stream_retune_gain_profile {
     int tuner_gain_is_set;
     int tuner_gain_tenth_db;
@@ -280,6 +325,26 @@ void rtl_stream_prepare_retune_profile_for_target_with_gain(uint32_t target_freq
                                                             int symbol_rate_hz, int levels, int channel_profile,
                                                             int ted_sps, int persist_ted_override,
                                                             const rtl_stream_retune_gain_profile* gain_profile);
+
+/** @brief Receive family, analog demodulator and channel width to apply at a retune. */
+typedef struct rtl_stream_retune_analog_profile {
+    int family;   /**< dsd_rx_family to switch to; negative leaves the family unchanged. */
+    int kind;     /**< dsd_analog_demod (analog family only). */
+    int width_hz; /**< Explicit analog channel width in Hz; 0 selects the kind's default. */
+} rtl_stream_retune_analog_profile;
+
+/**
+ * @brief Attach a receive-family / analog profile to the retune queued for @p target_freq_hz.
+ *
+ * Applied at the same retune boundary as the symbol profile and before it. Queue any symbol profile for the target
+ * first (rtl_stream_prepare_retune_profile_for_target_with_gain() replaces the whole queued profile); with none
+ * queued for this target, an analog-only profile is queued that leaves the CQPSK family, symbol profile and timing
+ * alone.
+ *
+ * @return 0 when attached; -1 when refused (same rules as rtl_stream_request_analog_profile()).
+ */
+int rtl_stream_prepare_retune_analog_profile_for_target(uint32_t target_freq_hz,
+                                                        const rtl_stream_retune_analog_profile* analog);
 
 /**
  * @brief Apply and clear a queued retune profile for a specific external retune target.

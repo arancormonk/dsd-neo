@@ -180,6 +180,112 @@ int rtl_stream_test_finalize_rate_chain_profile(const dsd_opts* opts, int rate_o
                                                 int seed_symbol_levels, int seed_channel_profile,
                                                 rtl_stream_test_finalize_profile_result* out_result);
 
+/* Demod fields that define a receive family, as a fresh stream open would leave them. */
+typedef struct rtl_stream_test_demod_fields {
+    int output_kind;
+    int cqpsk_enable;
+    int demod_is_fm;
+    int demod_is_qpsk;
+    int deemph;
+    int deemph_a_q15;
+    int audio_lpf_enable;
+    int channel_lpf_enable;
+    int channel_lpf_profile;
+    int channel_lpf_width_hz;
+    int analog_family;
+    int analog_demod;
+    int symbol_rate_hz;
+    int symbol_levels;
+    int ted_enabled;
+    int ted_sps;
+    int resamp_enabled;
+    int resamp_l;
+    int resamp_m;
+    int output_rate;
+    int fsk_sample_rate_hz;
+    int fsk_symbol_rate_hz;
+    int fsk_levels;
+    int fsk_channel_profile;
+} rtl_stream_test_demod_fields;
+
+/* What svc_publish_symbol_profile() queues for a digital mode after the family request. */
+typedef struct rtl_stream_test_digital_request {
+    int cqpsk_enable;
+    int symbol_rate_hz;
+    int levels;
+    int channel_profile;
+    int ted_sps;
+} rtl_stream_test_digital_request;
+
+typedef struct rtl_stream_test_family_switch_result {
+    rtl_stream_test_demod_fields fresh_digital;
+    rtl_stream_test_demod_fields fresh_analog;
+    rtl_stream_test_demod_fields switched_analog;
+    rtl_stream_test_demod_fields switched_digital;
+    int analog_request_rc;
+    int digital_request_rc;
+    int analog_deferred_until_consume; /* 1 when the live request left demod state alone until consumed */
+    uint32_t generation_before;
+    uint32_t generation_after_analog;
+    uint32_t generation_after_digital;
+    size_t used_before;
+    size_t used_after_analog;
+    size_t used_after_digital;
+    int published_analog_rc;
+    int published_kind;
+    int published_width_hz;
+    int published_lpf_on;
+    int published_after_digital_rc;
+    unsigned int predicted_analog_output_rate;  /* rtl_stream_output_rate_for_family() before the analog switch */
+    unsigned int predicted_digital_output_rate; /* ... and before the digital switch */
+} rtl_stream_test_family_switch_result;
+
+/* Open @p digital_opts at @p rate_hz, switch live to @p analog_opts and back (each request consumed the way the
+ * demod thread consumes it between blocks), and report each state next to a fresh open of the same options. */
+int rtl_stream_test_analog_family_switch(const dsd_opts* digital_opts, const dsd_opts* analog_opts, int rate_hz,
+                                         const rtl_stream_test_digital_request* digital_request,
+                                         rtl_stream_test_family_switch_result* out);
+
+typedef struct rtl_stream_test_audio_reset_result {
+    float deemph_avg;
+    float dc_avg;
+    float audio_lpf_state;
+    float squelch_env;
+    int channel_hist_cleared;
+    int hb_hist_cleared;
+    int resamp_hist_cleared;
+    float deemph_a_before;
+    float deemph_a_after;
+    float audio_lpf_alpha_before;
+    float audio_lpf_alpha_after;
+} rtl_stream_test_audio_reset_result;
+
+/* Seed an analog monitor at @p rate_before_hz with stale filter state and run the retune finalize path after the
+ * device settled on @p rate_after_hz (75 us de-emphasis, 3 kHz audio LPF). */
+int rtl_stream_test_audio_monitor_retune(int rate_before_hz, int rate_after_hz,
+                                         rtl_stream_test_audio_reset_result* out);
+
+typedef struct rtl_stream_test_retune_analog_result {
+    int queued_rc;
+    int taken;
+    int profile_family;
+    int profile_kind;
+    int profile_width_hz;
+    uint32_t profile_target_hz;
+    int applied_family;
+    int applied_kind;
+    int applied_width_hz;
+    int applied_output_kind;
+    int applied_lpf_enable;
+    int other_target_left_alone;
+} rtl_stream_test_retune_analog_result;
+
+/* Queue an analog profile for @p target_hz on a digital stream, take it the way the controller does, finalize the
+ * retune with it, and report what the profile carried and what the demodulator ended on. A second profile bound to a
+ * different frequency must not apply. */
+int rtl_stream_test_retune_analog_profile(uint32_t target_hz, int family, int kind, int width_hz,
+                                          rtl_stream_test_retune_analog_result* out);
+
 typedef struct rtl_stream_test_replay_state {
     int replay_input_eof;
     int replay_input_drained;

@@ -167,6 +167,10 @@ struct demod_state {
      * Digital profiles cap the design at 144 taps; the analog family may use
      * the full DSD_CHANNEL_LPF_MAX_TAPS. */
     int channel_lpf_enable; /* gate */
+    /* The historical enable rule (DSD_NEO_CHANNEL_LPF, else a 20 kHz rate_in) as decided when the stream was
+       configured. The unset analog default and a switch back to digital restore it; an explicit analog width
+       overrides it. */
+    int channel_lpf_default_enable;
     int channel_lpf_hist_len;
     int channel_lpf_profile;       /* see DSD_CH_LPF_PROFILE_* */
     int channel_lpf_plan_rate_out; /* cached rate for channel_lpf_plan_taps */

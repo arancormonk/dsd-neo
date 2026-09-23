@@ -14,6 +14,9 @@
 #include <dsd-neo/io/rtl_demod_config.h>
 #include <dsd-neo/io/rtl_metrics.h>
 #include <dsd-neo/io/rtl_stream_c.h>
+#include <dsd-neo/platform/posix_compat.h>
+#include <dsd-neo/runtime/analog_channel.h>
+#include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/ring.h>
 #include <stdint.h>
 #include "dsd-neo/core/opts_fwd.h"
@@ -1096,6 +1099,229 @@ expect_private_policy_matrices(void) {
     return rc;
 }
 
+/* -fA: the analog preset leaves every digital frame decoder off. */
+static void
+make_analog_opts(dsd_opts* opts) {
+    DSD_MEMSET(opts, 0, sizeof(*opts));
+    opts->analog_only = 1;
+    opts->monitor_input_audio = 1;
+    opts->analog_demod = DSD_ANALOG_DEMOD_FM;
+}
+
+/* Stream-open demod configuration at one DSP bandwidth, then the start-time
+ * finalize against the (here: unforced) output rate. */
+static int
+configure_and_finalize(demod_state* demod, dsd_opts* opts, int rtl_dsp_bw_hz, char* err, size_t err_size) {
+    output_state output;
+    DSD_MEMSET(&output, 0, sizeof(output));
+    output.rate = rtl_dsp_bw_hz;
+    rtl_demod_init_for_mode(demod, &output, opts, rtl_dsp_bw_hz);
+    rtl_demod_config_from_env_and_opts(demod, opts);
+    rtl_demod_select_defaults_for_mode(demod, opts, &output);
+    return rtl_demod_finalize_analog_channel(demod, opts, err, err_size);
+}
+
+static void
+set_channel_lpf_env(const char* value) {
+    if (value) {
+        (void)dsd_setenv("DSD_NEO_CHANNEL_LPF", value, 1);
+    } else {
+        (void)dsd_unsetenv("DSD_NEO_CHANNEL_LPF");
+    }
+    dsd_neo_config_init();
+}
+
+/*
+ * The unset NFM default keeps today's enable rule bit for bit: the LPF turns on
+ * only from a 20 kHz rate_in. Where the 16 kHz default does not fit the rate the
+ * legacy WIDE design stays in charge (width 0) instead of failing the start.
+ */
+static int
+expect_analog_legacy_default_enable(void) {
+    struct {
+        int bw_hz;
+        int want_enable;
+        int want_width;
+    } rows[] = {{12000, 0, 0}, {16000, 0, 0}, {24000, 1, 16000}, {48000, 1, 16000}};
+
+    int rc = 0;
+    set_channel_lpf_env(NULL);
+    for (size_t i = 0; i < sizeof rows / sizeof rows[0]; i++) {
+        demod_state* demod = static_cast<demod_state*>(std::calloc(1, sizeof(*demod)));
+        static dsd_opts opts;
+        make_analog_opts(&opts);
+        char err[DSD_ANALOG_ERROR_TEXT_MAX] = {0};
+        char label[96];
+        DSD_SNPRINTF(label, sizeof label, "analog default @%d", rows[i].bw_hz);
+        rc |= expect_int_eq(label, configure_and_finalize(demod, &opts, rows[i].bw_hz, err, sizeof err), 0);
+        rc |= expect_int_eq("analog default output kind", demod->output_kind, DSD_DEMOD_OUTPUT_AUDIO_MONITOR);
+        rc |= expect_int_eq("analog default family", demod->analog_family, 1);
+        rc |= expect_int_eq("analog default kind", demod->analog_demod, DSD_ANALOG_DEMOD_FM);
+        rc |= expect_int_eq("analog default LPF enable", demod->channel_lpf_enable, rows[i].want_enable);
+        rc |= expect_int_eq("analog default width", demod->channel_lpf_width_hz, rows[i].want_width);
+        rc |= expect_int_eq("analog default profile", demod->channel_lpf_profile, DSD_CH_LPF_PROFILE_WIDE);
+        rc |= expect_int_eq("analog default deemph", demod->deemph, 1);
+        rtl_demod_cleanup(demod);
+        std::free(demod);
+    }
+    return rc;
+}
+
+/*
+ * IQ replay rewrites rate_in from the capture after stream configuration. The unset
+ * default keeps the enable decision configuration made (the historical behaviour),
+ * rather than re-deciding it from the replay's rate_in at finalize.
+ */
+static int
+expect_analog_default_enable_survives_replay_rate(void) {
+    int rc = 0;
+    set_channel_lpf_env(NULL);
+    const int configured_bw[] = {48000, 12000};
+    const int replay_rate_in[] = {12000, 48000};
+    for (int i = 0; i < 2; i++) {
+        demod_state* demod = static_cast<demod_state*>(std::calloc(1, sizeof(*demod)));
+        output_state output;
+        DSD_MEMSET(&output, 0, sizeof(output));
+        output.rate = configured_bw[i];
+        static dsd_opts opts;
+        make_analog_opts(&opts);
+        rtl_demod_init_for_mode(demod, &output, &opts, configured_bw[i]);
+        rtl_demod_config_from_env_and_opts(demod, &opts);
+        const int configured_enable = demod->channel_lpf_enable;
+        demod->rate_in = replay_rate_in[i];
+        demod->rate_out = 48000;
+        char err[DSD_ANALOG_ERROR_TEXT_MAX] = {0};
+        rc |= expect_int_eq("replay finalize", rtl_demod_finalize_analog_channel(demod, &opts, err, sizeof err), 0);
+        rc |=
+            expect_int_eq("replay keeps the configured enable decision", demod->channel_lpf_enable, configured_enable);
+        rc |= expect_int_eq("replay default width", demod->channel_lpf_width_hz, 16000);
+        rtl_demod_cleanup(demod);
+        std::free(demod);
+    }
+    return rc;
+}
+
+/* An explicit width, including 16000, turns the channel filter on at any rate that fits it. */
+static int
+expect_analog_explicit_width_forces_lpf(void) {
+    struct {
+        int bw_hz;
+        int width_hz;
+    } rows[] = {{12000, 8000}, {16000, 12500}, {24000, 16000}, {48000, 25000}};
+
+    int rc = 0;
+    set_channel_lpf_env(NULL);
+    for (size_t i = 0; i < sizeof rows / sizeof rows[0]; i++) {
+        demod_state* demod = static_cast<demod_state*>(std::calloc(1, sizeof(*demod)));
+        static dsd_opts opts;
+        make_analog_opts(&opts);
+        opts.analog_nfm_bandwidth_hz = rows[i].width_hz;
+        char err[DSD_ANALOG_ERROR_TEXT_MAX] = {0};
+        rc |= expect_int_eq("explicit width accepted",
+                            configure_and_finalize(demod, &opts, rows[i].bw_hz, err, sizeof err), 0);
+        rc |= expect_int_eq("explicit width forces LPF", demod->channel_lpf_enable, 1);
+        rc |= expect_int_eq("explicit width drives the filter", demod->channel_lpf_width_hz, rows[i].width_hz);
+        rtl_demod_cleanup(demod);
+        std::free(demod);
+    }
+
+    /* A width the rate cannot fit fails the start with the validator's text. */
+    demod_state* demod = static_cast<demod_state*>(std::calloc(1, sizeof(*demod)));
+    static dsd_opts opts;
+    make_analog_opts(&opts);
+    opts.analog_nfm_bandwidth_hz = 16000;
+    char err[DSD_ANALOG_ERROR_TEXT_MAX] = {0};
+    rc |= expect_int_eq("16 kHz at 16 kHz refused", configure_and_finalize(demod, &opts, 16000, err, sizeof err), -1);
+    if (!std::strstr(err, "NFM bandwidth 16 kHz") || !std::strstr(err, "set the RTL DSP bandwidth to 24 or 48 kHz")) {
+        DSD_FPRINTF(stderr, "unrealizable explicit width message: %s\n", err);
+        rc = 1;
+    }
+    rtl_demod_cleanup(demod);
+    std::free(demod);
+    return rc;
+}
+
+/* DSD_NEO_CHANNEL_LPF=0 turns the filter off; an explicit width cannot run without it. */
+static int
+expect_analog_env_off_conflict(void) {
+    int rc = 0;
+    set_channel_lpf_env("0");
+    demod_state* demod = static_cast<demod_state*>(std::calloc(1, sizeof(*demod)));
+    static dsd_opts opts;
+    make_analog_opts(&opts);
+    opts.analog_nfm_bandwidth_hz = 12500;
+    char err[DSD_ANALOG_ERROR_TEXT_MAX] = {0};
+    rc |= expect_int_eq("explicit width with LPF env off refused",
+                        configure_and_finalize(demod, &opts, 48000, err, sizeof err), -1);
+    if (!std::strstr(err, "DSD_NEO_CHANNEL_LPF")) {
+        DSD_FPRINTF(stderr, "env-off conflict message does not name the variable: %s\n", err);
+        rc = 1;
+    }
+    rtl_demod_cleanup(demod);
+    std::free(demod);
+
+    /* The unset default simply follows the environment. */
+    demod = static_cast<demod_state*>(std::calloc(1, sizeof(*demod)));
+    make_analog_opts(&opts);
+    rc |= expect_int_eq("default with LPF env off starts", configure_and_finalize(demod, &opts, 48000, err, sizeof err),
+                        0);
+    rc |= expect_int_eq("default with LPF env off leaves LPF off", demod->channel_lpf_enable, 0);
+    rtl_demod_cleanup(demod);
+    std::free(demod);
+    set_channel_lpf_env(NULL);
+    return rc;
+}
+
+/* The M17 encoder shares the analog front end but is not the analog family. */
+static int
+expect_m17_encoder_unchanged(void) {
+    int rc = 0;
+    set_channel_lpf_env(NULL);
+    const int both[] = {0, 1};
+    for (int analog_only : both) {
+        demod_state* demod = static_cast<demod_state*>(std::calloc(1, sizeof(*demod)));
+        static dsd_opts opts;
+        DSD_MEMSET(&opts, 0, sizeof(opts));
+        opts.m17encoder = 1;
+        opts.analog_only = analog_only;
+        opts.analog_nfm_bandwidth_hz = 8000; /* ignored: not the analog family */
+        char err[DSD_ANALOG_ERROR_TEXT_MAX] = {0};
+        rc |= expect_int_eq("M17 encoder starts", configure_and_finalize(demod, &opts, 48000, err, sizeof err), 0);
+        rc |= expect_int_eq("M17 encoder monitor output", demod->output_kind, DSD_DEMOD_OUTPUT_AUDIO_MONITOR);
+        rc |= expect_int_eq("M17 encoder not analog family", demod->analog_family, 0);
+        rc |= expect_int_eq("M17 encoder keeps profile design", demod->channel_lpf_width_hz, 0);
+        rc |= expect_int_eq("M17 encoder WIDE profile", demod->channel_lpf_profile, DSD_CH_LPF_PROFILE_WIDE);
+        rc |= expect_int_eq("M17 encoder LPF rule", demod->channel_lpf_enable, 1);
+        rc |= expect_int_eq("M17 encoder deemph", demod->deemph, 1);
+        rtl_demod_cleanup(demod);
+        std::free(demod);
+    }
+    return rc;
+}
+
+/* Native AM is not available yet; asking for it must not silently run FM. */
+static int
+expect_analog_am_refused(void) {
+    int rc = 0;
+    demod_state* demod = static_cast<demod_state*>(std::calloc(1, sizeof(*demod)));
+    static dsd_opts opts;
+    make_analog_opts(&opts);
+    opts.analog_demod = DSD_ANALOG_DEMOD_AM;
+    char err[DSD_ANALOG_ERROR_TEXT_MAX] = {0};
+    rc |= expect_int_eq("AM start refused", configure_and_finalize(demod, &opts, 48000, err, sizeof err), -1);
+    if (!std::strstr(err, "AM")) {
+        DSD_FPRINTF(stderr, "AM refusal message: %s\n", err);
+        rc = 1;
+    }
+    rc |= expect_int_eq("AM check refused",
+                        rtl_demod_check_analog_channel(DSD_ANALOG_DEMOD_AM, 6000, 48000, err, sizeof err), -1);
+    rc |= expect_int_eq("unset FM default never refused",
+                        rtl_demod_check_analog_channel(DSD_ANALOG_DEMOD_FM, 0, 8000, err, sizeof err), 0);
+    rtl_demod_cleanup(demod);
+    std::free(demod);
+    return rc;
+}
+
 int
 main(void) {
     int rc = 0;
@@ -1266,6 +1492,13 @@ main(void) {
     DSD_SNPRINTF(soapy_analog.audio_in_dev, sizeof(soapy_analog.audio_in_dev), "%s", "soapy");
     rc |= expect_output_kind("Soapy analog-only stays monitor/audio path", soapy_analog, DSD_DEMOD_OUTPUT_AUDIO_MONITOR,
                              4800, 4);
+
+    rc |= expect_analog_legacy_default_enable();
+    rc |= expect_analog_default_enable_survives_replay_rate();
+    rc |= expect_analog_explicit_width_forces_lpf();
+    rc |= expect_analog_env_off_conflict();
+    rc |= expect_m17_encoder_unchanged();
+    rc |= expect_analog_am_refused();
 
     rc |= expect_live_symbol_status();
     rc |= expect_cqpsk_toggle_clears_output_contract_backlog();

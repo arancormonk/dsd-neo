@@ -16,6 +16,7 @@
 #define DSD_NEO_INCLUDE_DSD_NEO_IO_RTL_DEMOD_CONFIG_H_
 
 #include <dsd-neo/core/opts_fwd.h>
+#include <stddef.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -69,6 +70,93 @@ void rtl_demod_select_defaults_for_mode(struct demod_state* demod, const dsd_opt
  * @return Target rate in Hz, or 0 to bypass the resampler.
  */
 int rtl_demod_digital_resample_target_hz(const struct demod_state* demod);
+
+/**
+ * Pure form of rtl_demod_digital_resample_target_hz(): the digital stream's resample target for the given policy
+ * inputs, or 0 when the stream is not resampled.
+ */
+int rtl_demod_digital_resample_target_for(int output_kind, int digital_resample_mode, int resamp_target_hz,
+                                          int symbol_rate_hz, int rate_out_hz, int capture_rate_device_forced);
+
+/**
+ * Output rate of the analog monitor stream for a demod rate: the resampler target when the monitor resamples to it,
+ * otherwise @p rate_out_hz.
+ */
+int rtl_demod_monitor_output_rate_for(int resamp_target_hz, int rate_out_hz);
+
+/**
+ * Check the analog channel a stream would run at @p rate_hz.
+ *
+ * Refuses AM (the radio front end has no AM demodulator yet), an explicit width while DSD_NEO_CHANNEL_LPF=0 turns
+ * the channel filter off, and an explicit width the rate cannot realize (dsd_analog_width_check()). The unset NFM
+ * default (@p explicit_width_hz 0) never fails: it keeps the historical filter behaviour.
+ *
+ * @return 0 when the stream may run it, -1 with an actionable message in @p err otherwise.
+ */
+int rtl_demod_check_analog_channel(int kind, int explicit_width_hz, int rate_hz, char* err, size_t err_size);
+
+/**
+ * Put @p demod on the analog channel for @p kind at its current rates.
+ *
+ * Marks the analog family, selects the WIDE profile, and sets the channel width: an explicit width turns the channel
+ * LPF on; the unset default keeps the enable decision stream configuration made (DSD_NEO_CHANNEL_LPF, else
+ * rate_in >= 20 kHz; channel_lpf_default_enable) and falls back to the legacy WIDE design (width 0) where the rate
+ * cannot fit the default width. Does not validate; see rtl_demod_check_analog_channel().
+ *
+ * @return 1 when the channel filter configuration changed, else 0.
+ */
+int rtl_demod_apply_analog_channel(struct demod_state* demod, int kind, int explicit_width_hz);
+
+/**
+ * Validate and apply the analog channel @p opts ask for once rate_out is final (stream start). No-op outside the
+ * analog family (including the M17 encoder).
+ *
+ * @return 0 on success, -1 with the refusal text in @p err (the stream must not start).
+ */
+int rtl_demod_finalize_analog_channel(struct demod_state* demod, const dsd_opts* opts, char* err, size_t err_size);
+
+/**
+ * Load de-emphasis (when @p demod->deemph is set) and the audio LPF from the runtime config, then compute their
+ * coefficients for the current rate_out. DSD_NEO_DEEMPH=off clears deemph.
+ *
+ * @return 1 when the audio LPF is enabled.
+ */
+int rtl_demod_apply_audio_filters_from_config(struct demod_state* demod);
+
+/** Recompute the de-emphasis and audio-LPF coefficients for @p demod->rate_out. */
+void rtl_demod_refresh_audio_coefficients(struct demod_state* demod);
+
+/** Return the monitor audio state (de-emphasis, DC, audio LPF, squelch envelope, discriminator) to fresh-open values. */
+void rtl_demod_reset_audio_monitor_state(struct demod_state* demod);
+
+/** Clear the half-band and channel-LPF histories. */
+void rtl_demod_clear_filter_histories(struct demod_state* demod);
+
+/** Reset the rational resampler's phase and history. */
+void rtl_demod_reset_resampler_state(struct demod_state* demod);
+
+/**
+ * Switch the analog demodulator kind (demodulator and de-emphasis) and reset the monitor audio state.
+ *
+ * @return 1 when the kind changed, 0 when already on it, -1 for an invalid kind.
+ */
+int rtl_demod_set_analog_kind(struct demod_state* demod, int kind);
+
+/**
+ * Move a running front end to the analog family with the defaults a fresh analog open would choose (monitor output,
+ * demodulator, de-emphasis and audio LPF from the config, analog channel, monitor resampler) and fresh filter state.
+ * The capture rate chain is left alone. The caller clears the output ring.
+ */
+void rtl_demod_enter_analog_family(struct demod_state* demod, struct output_state* output, int kind,
+                                   int explicit_width_hz, int rtl_dsp_bw_hz);
+
+/**
+ * Move a running front end to the digital family with fresh-open digital defaults (FSK discriminator output, no
+ * de-emphasis, profile channel filter, digital resampler policy) and fresh filter state. The symbol profile and
+ * CQPSK family follow in a demod-profile request. The caller clears the output ring.
+ */
+void rtl_demod_enter_digital_family(struct demod_state* demod, struct output_state* output, int channel_profile,
+                                    int rtl_dsp_bw_hz);
 
 /**
  * Recompute resampler configuration when the demod output rate changes,

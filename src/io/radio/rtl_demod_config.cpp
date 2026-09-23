@@ -21,13 +21,16 @@
 #include <dsd-neo/dsp/resampler.h>
 #include <dsd-neo/dsp/ted.h>
 #include <dsd-neo/io/rtl_demod_config.h>
+#include <dsd-neo/runtime/analog_channel.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/log.h>
 #include <dsd-neo/runtime/mem.h>
 #include <dsd-neo/runtime/ring.h>
 #include <dsd-neo/runtime/worker_pool.h>
 #include <limits.h>
+#include <math.h>
 #include <stdint.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
@@ -486,15 +489,20 @@ demod_apply_iq_defaults(struct demod_state* demod, const dsdneoRuntimeConfig* cf
     }
 }
 
+/* The historical channel-LPF enable rule: DSD_NEO_CHANNEL_LPF when set, otherwise on from a 20 kHz rate_in. */
+static int
+demod_channel_lpf_default_enable(const struct demod_state* demod, const dsdneoRuntimeConfig* cfg) {
+    if (cfg && cfg->channel_lpf_is_set) {
+        return (cfg->channel_lpf_enable != 0) ? 1 : 0;
+    }
+    return (demod->rate_in >= 20000) ? 1 : 0;
+}
+
 static void
 demod_apply_channel_lpf_defaults(struct demod_state* demod, const dsd_opts* opts, const dsdneoRuntimeConfig* cfg) {
-    int channel_lpf = 0;
+    int channel_lpf = demod_channel_lpf_default_enable(demod, cfg);
+    demod->channel_lpf_default_enable = channel_lpf;
     int profile = DSD_CH_LPF_PROFILE_WIDE;
-    if (cfg->channel_lpf_is_set) {
-        channel_lpf = (cfg->channel_lpf_enable != 0);
-    } else if (demod->rate_in >= 20000) {
-        channel_lpf = 1;
-    }
     if (channel_lpf) {
         profile = opts_channel_profile_for_rate(opts, demod, demod->symbol_rate_hz);
     }
@@ -502,6 +510,13 @@ demod_apply_channel_lpf_defaults(struct demod_state* demod, const dsd_opts* opts
     demod->channel_lpf_profile = profile;
     if (demod->output_kind == DSD_DEMOD_OUTPUT_SYMBOL_CQPSK) {
         demod->channel_lpf_profile = DSD_CH_LPF_PROFILE_P25_CQPSK;
+    }
+    demod->analog_family = 0;
+    demod->analog_demod = DSD_ANALOG_DEMOD_FM;
+    demod->channel_lpf_width_hz = 0;
+    if (dsd_opts_is_analog_family(opts)) {
+        /* Provisional: rate_out is not final yet. rtl_demod_finalize_analog_channel() settles it. */
+        (void)rtl_demod_apply_analog_channel(demod, opts->analog_demod, dsd_opts_analog_width_hz(opts));
     }
     fsk_modem_apply_config(demod);
 }
@@ -663,18 +678,19 @@ rtl_demod_disable_resampler(struct demod_state* demod, int reset_ratio) {
 }
 
 int
-rtl_demod_digital_resample_target_hz(const struct demod_state* demod) {
+rtl_demod_digital_resample_target_for(int output_kind, int digital_resample_mode, int resamp_target_hz,
+                                      int symbol_rate_hz, int rate_out_hz, int capture_rate_device_forced) {
     /* Only the FSK discriminator stream is at sample rate. CQPSK output is already one value
        per symbol from the Gardner loop, which absorbs a fractional SPS on its own. */
-    if (!demod || demod->output_kind != DSD_DEMOD_OUTPUT_FSK_DISCRIMINATOR) {
+    if (output_kind != DSD_DEMOD_OUTPUT_FSK_DISCRIMINATOR) {
         return 0;
     }
-    if (demod->digital_resample_mode == DSD_DIGITAL_RESAMPLE_OFF) {
+    if (digital_resample_mode == DSD_DIGITAL_RESAMPLE_OFF) {
         return 0;
     }
-    const int target = demod->resamp_target_hz;
-    const int sym_rate = demod->symbol_rate_hz > 0 ? demod->symbol_rate_hz : 4800;
-    const int in_rate = demod->rate_out;
+    const int target = resamp_target_hz;
+    const int sym_rate = symbol_rate_hz > 0 ? symbol_rate_hz : 4800;
+    const int in_rate = rate_out_hz;
     if (target <= 0 || in_rate <= 0 || target == in_rate) {
         return 0;
     }
@@ -682,17 +698,27 @@ rtl_demod_digital_resample_target_hz(const struct demod_state* demod) {
         /* Resampling here would not buy an integer SPS. */
         return 0;
     }
-    if (demod->digital_resample_mode == DSD_DIGITAL_RESAMPLE_AUTO) {
+    if (digital_resample_mode == DSD_DIGITAL_RESAMPLE_AUTO) {
         if ((in_rate % sym_rate) == 0) {
             return 0;
         }
-        if (!demod->capture_rate_device_forced) {
+        if (!capture_rate_device_forced) {
             /* The rate follows the requested DSP bandwidth, so leave the existing chain alone
                and let the non-integer SPS warning point the user at a better bandwidth. */
             return 0;
         }
     }
     return target;
+}
+
+int
+rtl_demod_digital_resample_target_hz(const struct demod_state* demod) {
+    if (!demod) {
+        return 0;
+    }
+    return rtl_demod_digital_resample_target_for(demod->output_kind, demod->digital_resample_mode,
+                                                 demod->resamp_target_hz, demod->symbol_rate_hz, demod->rate_out,
+                                                 demod->capture_rate_device_forced);
 }
 
 static int
@@ -929,4 +955,306 @@ rtl_demod_cleanup(struct demod_state* demod) {
         dsd_neo_aligned_free(demod->post_polydecim_hist);
         demod->post_polydecim_hist = NULL;
     }
+}
+
+/* ---------------- Analog receive family ---------------- */
+
+static const double kAudioFilterPi = 3.14159265358979323846;
+
+static void
+demod_error_text(char* err, size_t err_size, const char* text) {
+    if (err && err_size > 0U) {
+        DSD_SNPRINTF(err, err_size, "%s", text);
+    }
+}
+
+int
+rtl_demod_check_analog_channel(int kind, int explicit_width_hz, int rate_hz, char* err, size_t err_size) {
+    demod_error_text(err, err_size, "");
+    if (!dsd_analog_demod_is_valid(kind)) {
+        demod_error_text(err, err_size, "unknown analog demodulator");
+        return -1;
+    }
+    if (kind == DSD_ANALOG_DEMOD_AM) {
+        demod_error_text(err, err_size,
+                         "AM reception is not available on the radio front end yet; -fA monitors audio that was "
+                         "already demodulated");
+        return -1;
+    }
+    if (explicit_width_hz <= 0) {
+        /* The unset NFM default keeps the historical filter behaviour at every rate. */
+        return 0;
+    }
+    const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
+    if (cfg && cfg->channel_lpf_is_set && cfg->channel_lpf_enable == 0) {
+        if (err && err_size > 0U) {
+            char width_text[DSD_ANALOG_WIDTH_TEXT_MAX];
+            (void)dsd_analog_width_format(explicit_width_hz, width_text, sizeof width_text);
+            DSD_SNPRINTF(err, err_size,
+                         "%s bandwidth %s needs the channel filter, but DSD_NEO_CHANNEL_LPF=0 turns it off; unset "
+                         "DSD_NEO_CHANNEL_LPF or drop the explicit bandwidth",
+                         dsd_analog_demod_label(kind), width_text);
+        }
+        return -1;
+    }
+    return dsd_analog_width_check(kind, explicit_width_hz, rate_hz, err, err_size);
+}
+
+int
+rtl_demod_apply_analog_channel(struct demod_state* demod, int kind, int explicit_width_hz) {
+    if (!demod) {
+        return 0;
+    }
+    const int prev_family = demod->analog_family;
+    const int prev_width = demod->channel_lpf_width_hz;
+    const int prev_enable = demod->channel_lpf_enable;
+    const int prev_profile = demod->channel_lpf_profile;
+    const int analog_kind = dsd_analog_demod_is_valid(kind) ? kind : DSD_ANALOG_DEMOD_FM;
+    const int width_hz = dsd_analog_width_effective_hz(analog_kind, explicit_width_hz);
+
+    demod->analog_family = 1;
+    demod->analog_demod = analog_kind;
+    demod->channel_lpf_profile = DSD_CH_LPF_PROFILE_WIDE;
+    if (explicit_width_hz > 0) {
+        /* An explicit width is a request for that filter: it turns the channel LPF on. */
+        demod->channel_lpf_enable = 1;
+        demod->channel_lpf_width_hz = width_hz;
+    } else {
+        /* The unset default keeps the enable decision stream configuration made, and where the rate cannot fit the
+           default width the legacy WIDE design (width 0) stays in charge rather than failing the stream. */
+        demod->channel_lpf_enable = demod->channel_lpf_default_enable;
+        demod->channel_lpf_width_hz = dsd_analog_width_realizable(width_hz, demod->rate_out) ? width_hz : 0;
+    }
+    return (prev_family != 1 || prev_width != demod->channel_lpf_width_hz || prev_enable != demod->channel_lpf_enable
+            || prev_profile != demod->channel_lpf_profile)
+               ? 1
+               : 0;
+}
+
+int
+rtl_demod_finalize_analog_channel(struct demod_state* demod, const dsd_opts* opts, char* err, size_t err_size) {
+    demod_error_text(err, err_size, "");
+    if (!demod || !opts) {
+        return -1;
+    }
+    if (!dsd_opts_is_analog_family(opts)) {
+        return 0;
+    }
+    const int kind = opts->analog_demod;
+    const int explicit_width_hz = dsd_opts_analog_width_hz(opts);
+    if (rtl_demod_check_analog_channel(kind, explicit_width_hz, demod->rate_out, err, err_size) != 0) {
+        return -1;
+    }
+    (void)rtl_demod_apply_analog_channel(demod, kind, explicit_width_hz);
+    return 0;
+}
+
+static int
+demod_deemph_tau_us_from_config(const dsdneoRuntimeConfig* cfg) {
+    if (!cfg || !cfg->deemph_is_set) {
+        return 75;
+    }
+    switch (cfg->deemph_mode) {
+        case DSD_NEO_DEEMPH_OFF: return 0;
+        case DSD_NEO_DEEMPH_50: return 50;
+        case DSD_NEO_DEEMPH_NFM: return 750;
+        default: return 75;
+    }
+}
+
+int
+rtl_demod_apply_audio_filters_from_config(struct demod_state* demod) {
+    if (!demod) {
+        return 0;
+    }
+    const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
+    demod->deemph_tau_us = 0;
+    if (demod->deemph) {
+        demod->deemph_tau_us = demod_deemph_tau_us_from_config(cfg);
+        if (demod->deemph_tau_us <= 0) {
+            demod->deemph = 0;
+        }
+    }
+    demod->audio_lpf_enable = 0;
+    demod->audio_lpf_alpha = 0.0f;
+    demod->audio_lpf_state = 0.0f;
+    demod->audio_lpf_cutoff_hz = 0;
+    if (cfg && cfg->audio_lpf_is_set && !cfg->audio_lpf_disable && cfg->audio_lpf_cutoff_hz > 0) {
+        demod->audio_lpf_cutoff_hz = cfg->audio_lpf_cutoff_hz < 100 ? 100 : cfg->audio_lpf_cutoff_hz;
+        demod->audio_lpf_enable = 1;
+    }
+    rtl_demod_refresh_audio_coefficients(demod);
+    return demod->audio_lpf_enable;
+}
+
+void
+rtl_demod_refresh_audio_coefficients(struct demod_state* demod) {
+    if (!demod) {
+        return;
+    }
+    double fs = (double)demod->rate_out;
+    if (fs < 1.0) {
+        fs = 1.0;
+    }
+    if (demod->deemph && demod->deemph_tau_us > 0) {
+        const double tau_s = (double)demod->deemph_tau_us / 1000000.0;
+        const double a = exp(-1.0 / (fs * tau_s));
+        const double alpha = 1.0 - a;
+        int coef_q15 = (int)lrint(alpha * (double)(1 << 15));
+        if (coef_q15 < 1) {
+            coef_q15 = 1;
+        } else if (coef_q15 > ((1 << 15) - 1)) {
+            coef_q15 = ((1 << 15) - 1);
+        }
+        demod->deemph_a = (float)((double)coef_q15 / (double)(1 << 15));
+    }
+    if (demod->audio_lpf_enable && demod->audio_lpf_cutoff_hz > 0) {
+        double a = 1.0 - exp(-2.0 * kAudioFilterPi * (double)demod->audio_lpf_cutoff_hz / fs);
+        if (a < 0.0) {
+            a = 0.0;
+        }
+        if (a > 1.0) {
+            a = 1.0;
+        }
+        demod->audio_lpf_alpha = (float)a;
+    }
+}
+
+void
+rtl_demod_reset_audio_monitor_state(struct demod_state* demod) {
+    if (!demod) {
+        return;
+    }
+    demod->deemph_avg = 0.0f;
+    demod->dc_avg = 0.0f;
+    demod->audio_lpf_state = 0.0f;
+    /* Fresh-open envelope: open, so the first block of a live channel is not faded in from the last one's squelch. */
+    demod->squelch_env = 1.0f;
+    demod->squelch_gate_open = 1;
+    demod->now_lpr = 0.0f;
+    demod->prev_lpr_index = 0;
+    demod->fm_demod_history_valid = 0;
+    demod->pre_r = 0.0f;
+    demod->pre_j = 0.0f;
+}
+
+void
+rtl_demod_clear_filter_histories(struct demod_state* demod) {
+    if (!demod) {
+        return;
+    }
+    for (int st = 0; st < 10; st++) {
+        DSD_MEMSET(demod->hb_hist_i[st], 0, sizeof(demod->hb_hist_i[st]));
+        DSD_MEMSET(demod->hb_hist_q[st], 0, sizeof(demod->hb_hist_q[st]));
+    }
+    DSD_MEMSET(demod->channel_lpf_hist_i, 0, sizeof(demod->channel_lpf_hist_i));
+    DSD_MEMSET(demod->channel_lpf_hist_q, 0, sizeof(demod->channel_lpf_hist_q));
+    demod->channel_lpf_hist_len = 0;
+}
+
+void
+rtl_demod_reset_resampler_state(struct demod_state* demod) {
+    if (!demod) {
+        return;
+    }
+    demod->resamp_phase = 0;
+    demod->resamp_hist_head = 0;
+    if (demod->resamp_hist && demod->resamp_taps_per_phase > 0) {
+        DSD_MEMSET(demod->resamp_hist, 0, (size_t)demod->resamp_taps_per_phase * 2U * sizeof(float));
+    }
+}
+
+static void
+demod_family_switch_reset(struct demod_state* demod) {
+    rtl_demod_reset_audio_monitor_state(demod);
+    rtl_demod_clear_filter_histories(demod);
+    rtl_demod_reset_resampler_state(demod);
+    /* Force a fresh channel-filter plan for the new family. */
+    demod->channel_lpf_plan_taps_len = 0;
+    demod->channel_lpf_plan_width_hz = 0;
+}
+
+int
+rtl_demod_set_analog_kind(struct demod_state* demod, int kind) {
+    if (!demod || !dsd_analog_demod_is_valid(kind)) {
+        return -1;
+    }
+    if (demod->analog_family && demod->analog_demod == kind) {
+        return 0;
+    }
+    demod->analog_demod = kind;
+    demod->mode_demod = &dsd_fm_demod;
+    /* FM keeps the configured de-emphasis; AM runs without it. */
+    demod->deemph = (kind == DSD_ANALOG_DEMOD_FM) ? 1 : 0;
+    (void)rtl_demod_apply_audio_filters_from_config(demod);
+    rtl_demod_reset_audio_monitor_state(demod);
+    return 1;
+}
+
+void
+rtl_demod_enter_analog_family(struct demod_state* demod, struct output_state* output, int kind, int explicit_width_hz,
+                              int rtl_dsp_bw_hz) {
+    if (!demod || !output) {
+        return;
+    }
+    demod->cqpsk_enable = 0;
+    demod->output_kind = DSD_DEMOD_OUTPUT_AUDIO_MONITOR;
+    demod->ted_enabled = 0;
+    demod->ted_sps_override = 0;
+    /* A fresh -fA open has no digital decoder enabled, so it derives the 4800/4 default symbol profile. */
+    demod->symbol_rate_hz = 4800;
+    demod->symbol_levels = 4;
+    demod->analog_family = 0;
+    (void)rtl_demod_set_analog_kind(demod, kind);
+    (void)rtl_demod_apply_analog_channel(demod, kind, explicit_width_hz);
+    rtl_demod_maybe_update_resampler_after_rate_change(demod, output, rtl_dsp_bw_hz);
+    rtl_demod_maybe_refresh_ted_sps_after_rate_change(demod, NULL, output, /*preserve_active_profile=*/1);
+    demod_family_switch_reset(demod);
+}
+
+void
+rtl_demod_enter_digital_family(struct demod_state* demod, struct output_state* output, int channel_profile,
+                               int rtl_dsp_bw_hz) {
+    if (!demod || !output) {
+        return;
+    }
+    demod->analog_family = 0;
+    demod->analog_demod = DSD_ANALOG_DEMOD_FM;
+    demod->channel_lpf_width_hz = 0;
+    demod->cqpsk_enable = 0;
+    demod->output_kind = DSD_DEMOD_OUTPUT_FSK_DISCRIMINATOR;
+    demod->ted_enabled = 0;
+    demod->mode_demod = &dsd_fm_demod;
+    /* Digital opens never run de-emphasis, and never compute its coefficient. */
+    demod->deemph = 0;
+    demod->deemph_tau_us = 0;
+    demod->deemph_a = 0.0f;
+    demod->channel_lpf_enable = demod->channel_lpf_default_enable;
+    demod->channel_lpf_profile =
+        (channel_profile >= DSD_CH_LPF_PROFILE_WIDE && channel_profile <= DSD_CH_LPF_PROFILE_P25_CQPSK)
+            ? channel_profile
+            : DSD_CH_LPF_PROFILE_WIDE;
+    rtl_demod_maybe_update_resampler_after_rate_change(demod, output, rtl_dsp_bw_hz);
+    if (!demod->resamp_enabled) {
+        /* Match a fresh digital open, which never configured the monitor's ratio. */
+        rtl_demod_disable_resampler(demod, 1);
+    }
+    fsk_modem_apply_config(demod);
+    dsd_fsk_modem_reset(&demod->fsk_modem_state);
+    demod_family_switch_reset(demod);
+}
+
+int
+rtl_demod_monitor_output_rate_for(int resamp_target_hz, int rate_out_hz) {
+    if (rate_out_hz <= 0) {
+        return 0;
+    }
+    if (resamp_target_hz <= 0 || resamp_target_hz == rate_out_hz) {
+        return rate_out_hz;
+    }
+    int L = 1;
+    int M = 1;
+    int scale = 1;
+    rtl_demod_compute_resampler_ratio(rate_out_hz, resamp_target_hz, &L, &M, &scale);
+    return (scale > 12) ? rate_out_hz : resamp_target_hz;
 }

@@ -8,8 +8,10 @@
 #include <cstdio>
 #include <cstring>
 #include <dsd-neo/core/input_level.h>
+#include <dsd-neo/dsp/demod_state.h>
 #include <dsd-neo/io/iq_types.h>
 #include <dsd-neo/io/rtl_stream_c.h>
+#include <dsd-neo/runtime/analog_channel.h>
 #include "dsd-neo/core/safe_api.h"
 #include "rtl_stream_test_support.h"
 
@@ -173,6 +175,93 @@ expect_double_near(const char* label, double got, double want, double tolerance)
         return 1;
     }
     return 0;
+}
+
+/* The one-pole coefficients stream open derives from the output rate. */
+static double
+expected_deemph_alpha(int rate_hz, double tau_s) {
+    const double a = std::exp(-1.0 / ((double)rate_hz * tau_s));
+    int q15 = (int)std::lrint((1.0 - a) * 32768.0);
+    q15 = q15 < 1 ? 1 : (q15 > 32767 ? 32767 : q15);
+    return (double)q15 / 32768.0;
+}
+
+static double
+expected_audio_lpf_alpha(int rate_hz, int cutoff_hz) {
+    return 1.0 - std::exp(-2.0 * 3.14159265358979323846 * (double)cutoff_hz / (double)rate_hz);
+}
+
+/*
+ * A retune on the analog monitor starts from clean filter state: de-emphasis,
+ * DC, audio-LPF and squelch-envelope state and the channel/half-band/resampler
+ * histories all return to their fresh-open values, and the rate-dependent
+ * coefficients follow the output rate the device actually settled on.
+ */
+static int
+test_audio_monitor_retune_reset(void) {
+    int failed = 0;
+    rtl_stream_test_audio_reset_result r;
+    std::memset(&r, 0, sizeof r);
+    failed |= expect_int_eq("audio monitor retune hook", rtl_stream_test_audio_monitor_retune(48000, 78125, &r), 0);
+    failed |= expect_double_near("deemph state reset", r.deemph_avg, 0.0, 0.0);
+    failed |= expect_double_near("dc state reset", r.dc_avg, 0.0, 0.0);
+    failed |= expect_double_near("audio LPF state reset", r.audio_lpf_state, 0.0, 0.0);
+    failed |= expect_double_near("squelch envelope reopened", r.squelch_env, 1.0, 0.0);
+    failed |= expect_int_eq("channel LPF history cleared", r.channel_hist_cleared, 1);
+    failed |= expect_int_eq("half-band history cleared", r.hb_hist_cleared, 1);
+    failed |= expect_int_eq("resampler history cleared", r.resamp_hist_cleared, 1);
+    failed |=
+        expect_double_near("deemph seeded for 48 kHz", r.deemph_a_before, expected_deemph_alpha(48000, 75e-6), 1e-9);
+    failed |= expect_double_near("deemph follows the forced 78125 Hz rate", r.deemph_a_after,
+                                 expected_deemph_alpha(78125, 75e-6), 1e-9);
+    failed |= expect_double_near("audio LPF seeded for 48 kHz", r.audio_lpf_alpha_before,
+                                 expected_audio_lpf_alpha(48000, 3000), 1e-6);
+    failed |= expect_double_near("audio LPF follows the forced rate", r.audio_lpf_alpha_after,
+                                 expected_audio_lpf_alpha(78125, 3000), 1e-6);
+
+    /* An unchanged rate keeps the coefficients exactly (the default path stays bit-identical). At 24 kHz the
+     * monitor resamples to 48 kHz with the same ratio before and after, so its history is only clean if the
+     * retune reset it. */
+    std::memset(&r, 0, sizeof r);
+    failed |= expect_int_eq("same-rate retune hook", rtl_stream_test_audio_monitor_retune(24000, 24000, &r), 0);
+    failed |= expect_double_near("same-rate deemph unchanged", r.deemph_a_after, r.deemph_a_before, 0.0);
+    failed |=
+        expect_double_near("same-rate audio LPF unchanged", r.audio_lpf_alpha_after, r.audio_lpf_alpha_before, 0.0);
+    failed |= expect_int_eq("same-ratio resampler history cleared", r.resamp_hist_cleared, 1);
+    failed |= expect_double_near("same-rate deemph state reset", r.deemph_avg, 0.0, 0.0);
+    failed |= expect_double_near("same-rate squelch envelope reopened", r.squelch_env, 1.0, 0.0);
+    return failed;
+}
+
+/* The analog family, kind and width travel with a retune profile bound to its target frequency. */
+static int
+test_retune_profile_carries_analog_fields(void) {
+    int failed = 0;
+    rtl_stream_test_retune_analog_result r;
+    std::memset(&r, 0, sizeof r);
+    failed |= expect_int_eq(
+        "analog retune hook",
+        rtl_stream_test_retune_analog_profile(853012500U, DSD_RX_FAMILY_ANALOG, DSD_ANALOG_DEMOD_FM, 12500, &r), 0);
+    failed |= expect_int_eq("analog profile queued", r.queued_rc, 0);
+    failed |= expect_int_eq("analog profile taken for its target", r.taken, 1);
+    failed |= expect_int_eq("profile carries the family", r.profile_family, DSD_RX_FAMILY_ANALOG);
+    failed |= expect_int_eq("profile carries the kind", r.profile_kind, DSD_ANALOG_DEMOD_FM);
+    failed |= expect_int_eq("profile carries the width", r.profile_width_hz, 12500);
+    failed |= expect_int_eq("profile bound to its target", (int)r.profile_target_hz, 853012500);
+    failed |= expect_int_eq("retune applied the analog family", r.applied_family, 1);
+    failed |= expect_int_eq("retune applied the kind", r.applied_kind, DSD_ANALOG_DEMOD_FM);
+    failed |= expect_int_eq("retune applied the width", r.applied_width_hz, 12500);
+    failed |= expect_int_eq("retune switched to monitor output", r.applied_output_kind, DSD_DEMOD_OUTPUT_AUDIO_MONITOR);
+    failed |= expect_int_eq("explicit width enabled the filter", r.applied_lpf_enable, 1);
+    failed |= expect_int_eq("profile for another target left alone", r.other_target_left_alone, 1);
+
+    std::memset(&r, 0, sizeof r);
+    failed |= expect_int_eq(
+        "refused analog retune hook",
+        rtl_stream_test_retune_analog_profile(853012500U, DSD_RX_FAMILY_ANALOG, DSD_ANALOG_DEMOD_AM, 0, &r), 0);
+    failed |= expect_int_eq("AM retune profile refused", r.queued_rc, -1);
+    failed |= expect_int_eq("refused profile not queued", r.taken, 0);
+    return failed;
 }
 
 int
@@ -978,6 +1067,9 @@ main(void) {
                                                                sizeof(tcp_waitall) / sizeof(tcp_waitall[0]), tcp_deltas,
                                                                sizeof(tcp_deltas) / sizeof(tcp_deltas[0]), &agc_want),
                             -1);
+
+    failed |= test_audio_monitor_retune_reset();
+    failed |= test_retune_profile_carries_analog_fields();
 
     return failed ? 1 : 0;
 }
