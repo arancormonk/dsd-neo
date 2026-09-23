@@ -643,10 +643,12 @@ measured that column. The paired interval needs at least two paired repeats and 
 every other repeat left out), in the digital report too, since one pair says nothing about the spread. A build missing
 a column that another build measured gets an explicit `NA` row, and a build with no usable repeat (it crashed, timed
 out, left the monitor path, or is not an analog replay host) makes the report warn and exit 1, rather than leave the
-other builds' rows looking like a clean result. `TOOLS_REPLAY_AB_REPORT`
-(`tests/tools/test_replay_ab_report.py`, stdlib only) covers the per-repeat pairing, the A-vs-A control, probe
-frequency keying, the coverage reporting, crashed and off-path repeats, the single-pair interval, the received-tone
-columns and the duplicate-name refusal.
+other builds' rows looking like a clean result. `tests/tools/test_replay_ab_report.py` (stdlib only) covers the
+per-repeat pairing, the A-vs-A control, probe frequency keying, the coverage reporting, crashed and off-path repeats,
+the single-pair interval, the received-tone columns and the duplicate-name refusal. CTest runs it as two tests:
+`TOOLS_REPLAY_AB_REPORT` scores canned summaries and runs wherever Python does, and `TOOLS_REPLAY_AB_ANALOG_METRIC`
+drives the real `replay_ab.sh` with a fake host, so it is registered only outside Windows where bash and coreutils
+`timeout` are found.
 
 `tone` and `tone_lock_ms` come from the host's `ANALOG METRIC:` line and read `NA` until a tone detector publishes a
 received tone. The host defines the two fields and replay_ab.sh and the report pair them; the CTCSS detector (#522)

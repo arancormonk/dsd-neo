@@ -11361,17 +11361,37 @@ if(Python3_Interpreter_FOUND)
         )
         set_tests_properties(TOOLS_AIRSPY_PACKAGING PROPERTIES TIMEOUT 120)
     endif()
-    # replay_ab.sh --metric analog and the report's per-repeat pairing of the analog
-    # columns (issue #518). Stdlib only; the replay_ab.sh half skips on Windows and
-    # wherever bash or timeout is missing.
+    # The report's per-repeat pairing of the analog columns (issue #518), on canned
+    # summaries. Stdlib only, so it runs wherever Python does.
     add_test(
         NAME TOOLS_REPLAY_AB_REPORT
         COMMAND
             ${Python3_EXECUTABLE}
             ${PROJECT_SOURCE_DIR}/tests/tools/test_replay_ab_report.py
+            ReplayAbReport
         WORKING_DIRECTORY ${PROJECT_SOURCE_DIR}
     )
     set_tests_properties(TOOLS_REPLAY_AB_REPORT PROPERTIES TIMEOUT 120)
+    # The same file's replay_ab.sh --metric analog half runs the real script with a
+    # fake host, so it needs bash and coreutils timeout. Windows is left out: its
+    # timeout.exe is a different program and its bash has its own path rules.
+    find_program(DSD_NEO_TIMEOUT_FOR_TESTS timeout)
+    if(NOT WIN32 AND DSD_NEO_BASH_EXECUTABLE AND DSD_NEO_TIMEOUT_FOR_TESTS)
+        add_test(
+            NAME TOOLS_REPLAY_AB_ANALOG_METRIC
+            COMMAND
+                ${Python3_EXECUTABLE}
+                ${PROJECT_SOURCE_DIR}/tests/tools/test_replay_ab_report.py
+                ReplayAbAnalogMetric
+            WORKING_DIRECTORY ${PROJECT_SOURCE_DIR}
+        )
+        set_tests_properties(
+            TOOLS_REPLAY_AB_ANALOG_METRIC
+            PROPERTIES
+                ENVIRONMENT "DSD_TEST_BASH=${DSD_NEO_BASH_EXECUTABLE}"
+                TIMEOUT 120
+        )
+    endif()
 endif()
 
 # WP-F4: real event synchronization and published snapshots for late emergency metadata.

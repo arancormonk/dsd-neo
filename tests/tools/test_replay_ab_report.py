@@ -5,6 +5,9 @@
 The analog metrics come from the analog replay host's "ANALOG METRIC:" and "ANALOG PROBE:" lines. What has to hold
 is the same as for the digital metrics: every build is compared with the baseline inside one repeat, never across
 repeats, and a build compared with itself reports no difference.
+
+ReplayAbReport runs the report on canned summaries and needs only Python; ReplayAbAnalogMetric also runs
+replay_ab.sh. Name a class on the command line to run just that one, as tests/CMakeLists.txt does.
 """
 
 import os
@@ -19,6 +22,8 @@ import unittest
 ROOT = Path(os.environ.get("DSD_TEST_SOURCE_ROOT", Path(__file__).resolve().parents[2]))
 REPORT = ROOT / "tools" / "replay_ab_report.py"
 REPLAY_AB = ROOT / "tools" / "replay_ab.sh"
+# The bash tests/CMakeLists.txt found when it registered the replay_ab.sh half.
+BASH = os.environ.get("DSD_TEST_BASH", "bash")
 
 COLUMNS = [
     "variant", "case", "rep", "errs", "voice", "sync",
@@ -291,10 +296,11 @@ exit 0
 """
 
 
-# Windows has a timeout.exe that is not coreutils timeout, and bash there is WSL or Git bash with its own path rules.
-@unittest.skipIf(os.name == "nt", "replay_ab.sh is a POSIX shell tool")
-@unittest.skipUnless(shutil.which("bash") and shutil.which("timeout"), "replay_ab.sh needs bash and timeout")
 class ReplayAbAnalogMetric(unittest.TestCase):
+    """Drives the real replay_ab.sh, so it needs bash and coreutils timeout. tests/CMakeLists.txt runs this class as
+    its own test and registers it only where both are found, outside Windows (whose timeout.exe is not coreutils
+    timeout, and whose bash is WSL or Git bash with their own path rules)."""
+
     def setUp(self):
         self.tmp = Path(tempfile.mkdtemp(prefix="replay-ab-analog-"))
         self.capture = self.tmp / "capture.iq.json"
@@ -311,7 +317,7 @@ class ReplayAbAnalogMetric(unittest.TestCase):
         return path
 
     def replay_ab(self, *args):
-        return run(["bash", str(REPLAY_AB), "--capture", str(self.capture), "--mode", "-fA", "--rate", "fast", *args],
+        return run([BASH, str(REPLAY_AB), "--capture", str(self.capture), "--mode", "-fA", "--rate", "fast", *args],
                    cwd=str(ROOT))
 
     def test_analog_columns_come_from_the_host_lines(self):

@@ -312,22 +312,28 @@ analog_host_option_name(const char* arg, char* name, size_t cap, const char** eq
 }
 
 /* Moves every non-host argument to out (argv[0] included) and applies the host options, in either the
- * "--analog-x VALUE" or the "--analog-x=VALUE" spelling. */
+ * "--analog-x VALUE" or the "--analog-x=VALUE" spelling. A while loop, because the separate spelling consumes
+ * the next argument as well. */
 static int
 analog_split_args(int argc, char** argv, char** out, int* out_count) {
     int kept = 0;
-    for (int i = 0; i < argc; i++) {
+    int next = 0;
+    while (next < argc) {
+        char* arg = argv[next];
+        const int is_program = next == 0;
+        next++;
         char name[64];
         const char* eq = NULL;
-        if (i == 0 || !analog_host_option_name(argv[i], name, sizeof(name), &eq)) {
-            out[kept++] = argv[i];
+        if (is_program || !analog_host_option_name(arg, name, sizeof(name), &eq)) {
+            out[kept++] = arg;
             continue;
         }
         const char* value = NULL;
         if (eq != NULL) {
             value = eq + 1;
-        } else if (i + 1 < argc) {
-            value = argv[++i];
+        } else if (next < argc) {
+            value = argv[next];
+            next++;
         }
         if (value == NULL) {
             DSD_FPRINTF(stderr, "analog replay: %s needs a value\n", name);
