@@ -59,8 +59,9 @@ int dsd_app_squelch_view_format(const dsd_app_squelch_view* view, char* out, siz
 int dsd_app_squelch_view_edit_notice(const dsd_app_squelch_view* view, char* out, size_t out_size);
 
 /**
- * @brief A threshold as whole-or-fractional dB in the rtl_sql convention: 0 when it is off,
- * otherwise its level in dB (always negative for a real threshold). For numeric frontends.
+ * @brief A threshold in dB in the rtl_sql convention, for numeric frontends: 0 when it is off,
+ * otherwise its level in dB, clamped to -120..0 like pwr_to_dB(). Every threshold the dB forms
+ * can set is negative; only the legacy linear form can reach full scale and read as 0.
  */
 double dsd_app_squelch_db_or_off(double level);
 

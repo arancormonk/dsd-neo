@@ -43,16 +43,26 @@ struct scan_option_spec {
     scan_option_setter set;
 };
 
-static int option_set_none(const scan_option_spec*, const char*, unsigned int, dsd_scan_options*);
-static int option_set_flag(const scan_option_spec*, const char*, unsigned int, dsd_scan_options*);
-static int option_set_force(const scan_option_spec*, const char*, unsigned int, dsd_scan_options*);
-static int option_set_hex(const scan_option_spec*, const char*, unsigned int, dsd_scan_options*);
-static int option_set_bp(const scan_option_spec*, const char*, unsigned int, dsd_scan_options*);
-static int option_set_scrambler(const scan_option_spec*, const char*, unsigned int, dsd_scan_options*);
-static int option_set_voice_ms(const scan_option_spec*, const char*, unsigned int, dsd_scan_options*);
-static int option_set_max_visit(const scan_option_spec*, const char*, unsigned int, dsd_scan_options*);
-static int option_set_squelch(const scan_option_spec*, const char*, unsigned int, dsd_scan_options*);
-static int option_set_path(const scan_option_spec*, const char*, unsigned int, dsd_scan_options*);
+static int option_set_none(const scan_option_spec* spec, const char* argument, unsigned int mode,
+                           dsd_scan_options* parsed);
+static int option_set_flag(const scan_option_spec* spec, const char* argument, unsigned int mode,
+                           dsd_scan_options* parsed);
+static int option_set_force(const scan_option_spec* spec, const char* argument, unsigned int mode,
+                            dsd_scan_options* parsed);
+static int option_set_hex(const scan_option_spec* spec, const char* argument, unsigned int mode,
+                          dsd_scan_options* parsed);
+static int option_set_bp(const scan_option_spec* spec, const char* argument, unsigned int mode,
+                         dsd_scan_options* parsed);
+static int option_set_scrambler(const scan_option_spec* spec, const char* argument, unsigned int mode,
+                                dsd_scan_options* parsed);
+static int option_set_voice_ms(const scan_option_spec* spec, const char* argument, unsigned int mode,
+                               dsd_scan_options* parsed);
+static int option_set_max_visit(const scan_option_spec* spec, const char* argument, unsigned int mode,
+                                dsd_scan_options* parsed);
+static int option_set_squelch(const scan_option_spec* spec, const char* argument, unsigned int mode,
+                              dsd_scan_options* parsed);
+static int option_set_path(const scan_option_spec* spec, const char* argument, unsigned int mode,
+                           dsd_scan_options* parsed);
 
 #define SQUELCH_HINT "expects whole dB from -100 to 0 (0 = off)"
 
