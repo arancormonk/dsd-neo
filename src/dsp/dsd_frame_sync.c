@@ -2174,7 +2174,10 @@ frame_sync_maybe_auto_switch_modulation(const dsd_opts* opts, dsd_state* state, 
     }
 
     *lastt = 0;
-    if (opts->mod_cli_lock) {
+    /* A lock has made the choice already. The analog family has no digital modulation to choose: its RTL front end
+     * runs the monitor path, and a vote there (a carrier near 0 Hz votes CQPSK) would apply that modulation's demod
+     * profile and replace monitor audio with symbols. */
+    if (opts->mod_cli_lock || dsd_opts_is_analog_family(opts)) {
         return;
     }
 

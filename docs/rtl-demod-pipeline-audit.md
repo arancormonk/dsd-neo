@@ -168,7 +168,11 @@ demod profile queued with it:
 
 Toggling CQPSK on under `-fA` leaves the analog family flag set but takes the
 output off the monitor, so that stream keeps its P25 CQPSK profile filter and
-publishes no analog profile.
+publishes no analog profile. The modulation auto-switch never does this: frame
+sync stands it down in the analog family (`dsd_opts_is_analog_family()`),
+because a carrier within a few hertz of 0 Hz votes for CQPSK there and the
+switch used to follow that vote onto the P25 CQPSK path
+(`FRAME_SYNC_INTERNAL_HELPERS`, `DECODE_IQ_ANALOG_NO_MOD_AUTO_SWITCH`).
 
 Retune profiles carry the same fields bound to their target frequency; an analog
 one applies no symbol profile, CQPSK toggle or timing queued for the same

@@ -278,22 +278,21 @@ Known gaps and caveats:
 - Fixtures are timing-insensitive by construction. Do not add assertions that
   depend on wall-clock call-state timers, because `fast` replay compresses them;
   use `--iq-replay-rate realtime` for that.
-- **AM** has a fixture (`am_airband_real`) but no case until native AM reception (#524) adds `-fM`. Under `-fA` it
-  cannot stand in for one, because the modulation auto-switch (`frame_sync_maybe_auto_switch_modulation()` in
-  `src/dsp/dsd_frame_sync.c`) still runs in analog-only mode: it stands down only when `opts->mod_cli_lock` is set, and
-  `-fA` does not set it. On this carrier, which sits within a few hertz of 0 Hz, it votes for CQPSK and applies the P25
-  CQPSK demod profile to the RTL front end, which then delivers CQPSK symbols instead of monitor audio. The switch's
-  dwell is timed by the wall clock, so the outcome depends on pacing and varies from run to run even in `fast` replay.
-  Observed so far: in `fast`, 0 or 20 ms of monitor audio; in `realtime`, 680 ms. Symbols are not samples at the output
-  rate, so the analog replay host's stream clock does not measure stream time on this path and can be far off in either
-  direction: 1.41 s of the 8 s excerpt in `realtime`, usually about 0.75 s in `fast`, and in some `fast` runs over 44 s,
-  from more than 2 million symbols out of a capture of 384,000 samples. The host warns whenever the front end delivered
-  CQPSK symbols, and every registered `-fA` case that expects its bounds to hold fails on that warning. The same excerpt
-  shifted 1 kHz off centre replays in full. Any case or A/B on `am_airband_real` therefore needs a mode that locks the
-  modulation, so that the auto-switch cannot take the front end off the AM path (the `-fM` preset of #524), and has to
-  carry the same CQPSK-warning guard (`NOT_EXPECTED`) as the `-fA` cases; under `-fA` it measures the CQPSK path, and
-  `tools/replay_ab.sh` leaves such repeats out (its `off_path` column). The auto-switch running under `-fA` is a
-  decoder defect; these checks keep it from passing as a result, and do not change it.
+- **AM** has a fixture (`am_airband_real`) but no AM case until native AM reception (#524) adds `-fM`. Under `-fA`
+  the FM monitor demodulates it, which measures an FM discriminator on an AM signal, so `-fA` cannot stand in for an
+  AM case. The excerpt serves `-fA` for another reason: its carrier sits within a few hertz of 0 Hz, where the
+  modulation auto-switch (`frame_sync_maybe_auto_switch_modulation()` in `src/dsp/dsd_frame_sync.c`) votes for CQPSK.
+  The switch used to run in analog-only mode too, because `-fA` does not set `opts->mod_cli_lock`: it applied the
+  P25 CQPSK demod profile to the RTL front end, which then delivered CQPSK symbols instead of monitor audio, after 0
+  or 20 ms of monitor audio in `fast` replay and 680 ms in `realtime` (the switch's dwell is timed by the wall clock).
+  The analog family (`dsd_opts_is_analog_family()`) now stands the switch down, so the front end stays on the monitor
+  path whatever the carrier offset, and replay of the excerpt is sample-deterministic. Two tests pin it:
+  `FRAME_SYNC_INTERNAL_HELPERS` feeds the switch CQPSK-favouring metrics under the analog preset and requires no vote
+  and no demod profile, with no clock involved, and `DECODE_IQ_ANALOG_NO_MOD_AUTO_SWITCH` replays the excerpt under
+  `-fA` and requires all 8000 ms on the monitor path. The analog replay host still warns whenever the front end
+  delivers CQPSK symbols, since symbols are not samples at the output rate and its stream clock then does not measure
+  stream time, and every registered `-fA` case fails on that warning (`NOT_EXPECTED`); `tools/replay_ab.sh` leaves
+  such repeats out (its `off_path` column). An AM case on this excerpt (`-fM`) carries the same guard.
 
 ### Analog monitor audio checks
 
@@ -362,9 +361,10 @@ two cases with their own limits, not a comparison between runs. Measured on the 
 | `DECODE_IQ_ANALOG_NFM_REAL_CTCSS_SMOKE` | `nfm_ctcss_real` | captured and audible 6000 ms, in-band -1.0 dB, RMS -44.6 dBFS | captured ≥ 5800, audible ≥ 4500, in-band ≥ -4, RMS ≤ -34 dBFS |
 | `DECODE_IQ_ANALOG_NFM_REAL_SQUELCH_A_SMOKE` | `nfm_squelch_real_a` | captured 4000 ms, audible 1460 ms from 460 ms, in-band 8.0 dB | captured ≥ 3900, audible ≥ 900, first audible 250 to 1000 ms, in-band ≥ 4 |
 | `DECODE_IQ_ANALOG_NFM_REAL_SQUELCH_B_SMOKE` | `nfm_squelch_real_b` | captured 4000 ms, audible 2980 ms, in-band 9.6 dB | captured ≥ 3900, audible ≥ 2000, in-band ≥ 5 |
+| `DECODE_IQ_ANALOG_NO_MOD_AUTO_SWITCH` | `am_airband_real` under `-fA` (monitor path only, not AM reception) | total and captured 8000 ms, no CQPSK symbols (before the fix: total 751 ms, captured 0 to 20 ms, CQPSK warning) | captured ≥ 7800 ms, total 7800 to 8200 ms |
 
 Every `-fA` case in the table also fails if the host warns that the front end delivered CQPSK symbols instead of
-monitor audio (see the `am_airband_real` gap above).
+monitor audio (see the `am_airband_real` note above).
 
 The cases above can only show that bounds hold. The `DECODE_IQ_ANALOG_NEG_*` negative controls show that a missed
 bound fails: they run the host through `tests/analog_replay_fail_check.cmake`, which requires its exit status (1 for
@@ -689,9 +689,10 @@ each 20 ms block, no finer.
 Run the control first, one host against a copy of itself. While the front end stays on the monitor path, I/Q replay
 is sample-deterministic, so the control must read `+0.00 +/- 0.00` with no differing repeats: 12 realtime repeats on
 `nfm_ctcss_real` and on `nfm_tone_synth` did, for every column. A run whose log carries the host's CQPSK-symbols
-warning is not deterministic (see the `am_airband_real` gap under
-[Full-chain modulation decode tests](#full-chain-modulation-decode-tests)) and measures the auto-switch, not the
-change; the report leaves it out as `off_path` and warns, and a build with no other repeats fails the report. A
+warning left the monitor path and is not deterministic: a build from before the analog family stood the modulation
+auto-switch down does that on `am_airband_real` (see the `am_airband_real` note under
+[Full-chain modulation decode tests](#full-chain-modulation-decode-tests)), and such a run measures the auto-switch,
+not the change; the report leaves it out as `off_path` and warns, and a build with no other repeats fails the report. A
 difference that shows up in a monitor-path control is the harness's, not the change's. Attach the report to the pull request with the capture, flags and repeat count.
 
 ### Analog listen-test sign-off

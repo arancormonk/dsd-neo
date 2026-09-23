@@ -11160,6 +11160,18 @@ if(DSD_HAS_RADIO)
         ""
         "${_analog_off_path}"
     )
+    # A carrier within a few hertz of 0 Hz votes for CQPSK, and the modulation
+    # auto-switch used to follow that vote under -fA and move the front end to the
+    # P25 CQPSK path. The analog family stands the switch down, so the whole 8 s
+    # excerpt reaches the monitor (8000 ms captured and stream time measured) with
+    # no CQPSK symbols. This checks the monitor path only, not AM reception.
+    dsd_neo_add_analog_replay_test(
+        DECODE_IQ_ANALOG_NO_MOD_AUTO_SWITCH
+        am_airband_real
+        "-fA --analog-min-captured-ms 7800 --analog-min-total-ms 7800 --analog-max-total-ms 8200"
+        ""
+        "${_analog_off_path}"
+    )
 
     # Negative controls: bounds that must NOT hold, run through
     # analog_replay_fail_check.cmake, which requires the host's exit code (1 for a
