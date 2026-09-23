@@ -4401,22 +4401,19 @@ if(NOT APPLE AND NOT WIN32 AND (CMAKE_C_COMPILER_ID MATCHES "GNU|Clang"))
 endif()
 add_test(NAME CORE_AUDIO_GAIN COMMAND dsd-neo_test_core_audio_gain)
 
-add_executable(
-    dsd-neo_test_core_audio_ensure_output
-    core/test_core_audio_ensure_output.c
-)
-target_include_directories(
-    dsd-neo_test_core_audio_ensure_output
-    PRIVATE ${PROJECT_SOURCE_DIR}/include
-)
-target_link_libraries(
-    dsd-neo_test_core_audio_ensure_output
-    PRIVATE dsd-neo_core
-)
+# The audio backend is replaced with GNU ld --wrap, so the test exists only where that links.
 if(NOT APPLE AND NOT WIN32 AND (CMAKE_C_COMPILER_ID MATCHES "GNU|Clang"))
-    target_compile_definitions(
+    add_executable(
         dsd-neo_test_core_audio_ensure_output
-        PRIVATE DSD_NEO_TEST_AUDIO_WRAP
+        core/test_core_audio_ensure_output.c
+    )
+    target_include_directories(
+        dsd-neo_test_core_audio_ensure_output
+        PRIVATE ${PROJECT_SOURCE_DIR}/include
+    )
+    target_link_libraries(
+        dsd-neo_test_core_audio_ensure_output
+        PRIVATE dsd-neo_core
     )
     target_link_options(
         dsd-neo_test_core_audio_ensure_output
@@ -4424,12 +4421,11 @@ if(NOT APPLE AND NOT WIN32 AND (CMAKE_C_COMPILER_ID MATCHES "GNU|Clang"))
             "LINKER:--wrap=dsd_audio_open_output"
             "LINKER:--wrap=dsd_audio_close"
     )
+    add_test(
+        NAME CORE_AUDIO_ENSURE_OUTPUT
+        COMMAND dsd-neo_test_core_audio_ensure_output
+    )
 endif()
-add_test(
-    NAME CORE_AUDIO_ENSURE_OUTPUT
-    COMMAND dsd-neo_test_core_audio_ensure_output
-)
-set_tests_properties(CORE_AUDIO_ENSURE_OUTPUT PROPERTIES SKIP_RETURN_CODE 77)
 
 add_executable(
     dsd-neo_test_core_audio2_helpers

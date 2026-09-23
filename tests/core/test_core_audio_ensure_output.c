@@ -28,8 +28,6 @@
 #include <stdio.h>
 #include <string.h>
 
-#ifdef DSD_NEO_TEST_AUDIO_WRAP
-
 typedef struct {
     int sample_rate;
     int channels;
@@ -309,14 +307,3 @@ main(void) {
     printf("CORE_AUDIO_ENSURE_OUTPUT: OK\n");
     return 0;
 }
-
-#else
-
-int
-main(void) {
-    /* Needs link-time wrapping of the audio backend (GNU ld); skipped elsewhere. */
-    printf("CORE_AUDIO_ENSURE_OUTPUT: skipped (no link-time audio wrap on this toolchain)\n");
-    return 77;
-}
-
-#endif
