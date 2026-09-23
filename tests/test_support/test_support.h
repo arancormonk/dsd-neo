@@ -21,7 +21,9 @@
 #include <stdlib.h>
 #include <string.h>
 
-#if !DSD_PLATFORM_WIN_NATIVE
+#if DSD_PLATFORM_WIN_NATIVE
+#include <direct.h>
+#else
 #include <pwd.h>
 #include <sys/types.h>
 #include <unistd.h>
@@ -152,6 +154,92 @@ dsd_test_mkdtemp(char* out_path, size_t out_sz, const char* prefix) {
         return NULL;
     }
     return dsd_mkdtemp(out_path);
+}
+
+static inline char*
+dsd_test_getcwd(char* buf, size_t size) {
+#if DSD_PLATFORM_WIN_NATIVE
+    return _getcwd(buf, (int)size);
+#else
+    return getcwd(buf, size);
+#endif
+}
+
+static inline int
+dsd_test_chdir(const char* path) {
+#if DSD_PLATFORM_WIN_NATIVE
+    return _chdir(path);
+#else
+    return chdir(path);
+#endif
+}
+
+static inline int
+dsd_test_rmdir(const char* path) {
+#if DSD_PLATFORM_WIN_NATIVE
+    return _rmdir(path);
+#else
+    return rmdir(path);
+#endif
+}
+
+/**
+ * @brief A fresh temp directory used as the working directory for part of a test.
+ *
+ * Code that writes relative to the working directory (the DSP output service creates ./DSP) would
+ * otherwise leave files wherever the test binary was launched, including the source tree.
+ */
+typedef struct dsd_test_temp_cwd {
+    char saved_cwd[DSD_TEST_PATH_MAX];
+    char dir[DSD_TEST_PATH_MAX];
+} dsd_test_temp_cwd;
+
+/**
+ * @brief Create a temp directory and make it the working directory.
+ *
+ * @return 0 on success, -1 otherwise. On failure the working directory is unchanged.
+ */
+static inline int
+dsd_test_temp_cwd_enter(dsd_test_temp_cwd* cwd, const char* prefix) {
+    if (!cwd) {
+        errno = EINVAL;
+        return -1;
+    }
+    cwd->saved_cwd[0] = '\0';
+    cwd->dir[0] = '\0';
+
+    if (!dsd_test_getcwd(cwd->saved_cwd, sizeof(cwd->saved_cwd))) {
+        return -1;
+    }
+    if (!dsd_test_mkdtemp(cwd->dir, sizeof(cwd->dir), prefix)) {
+        return -1;
+    }
+    if (dsd_test_chdir(cwd->dir) != 0) {
+        int saved_errno = errno;
+        (void)dsd_test_rmdir(cwd->dir);
+        errno = saved_errno;
+        return -1;
+    }
+    return 0;
+}
+
+/**
+ * @brief Return to the working directory saved by dsd_test_temp_cwd_enter() and remove the temp directory.
+ *
+ * The test must first remove everything it created in the temp directory; a leftover file makes this fail.
+ *
+ * @return 0 on success, -1 if the working directory could not be restored or the temp directory not removed.
+ */
+static inline int
+dsd_test_temp_cwd_leave(const dsd_test_temp_cwd* cwd) {
+    if (!cwd || cwd->saved_cwd[0] == '\0' || cwd->dir[0] == '\0') {
+        errno = EINVAL;
+        return -1;
+    }
+    if (dsd_test_chdir(cwd->saved_cwd) != 0) {
+        return -1;
+    }
+    return dsd_test_rmdir(cwd->dir);
 }
 
 static inline int
