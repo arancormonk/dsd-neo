@@ -88,17 +88,81 @@ design_plan(demod_state* s, int rate_hz, int profile, int analog_width_hz, float
     return 0;
 }
 
+/* WIDE taps as the design produced them before the analog channel filter became width-driven: tap count and six taps
+ * per rate, the centre tap last. Pinned rather than recomputed, so a change to the shared design path (window, guard,
+ * WIDE cutoff) cannot move the WIDE and analog designs together unnoticed. Values within a tolerance, not a hash of
+ * the float bits: the taps come from libm sin/cos, which may differ by an ulp between platforms. */
+namespace {
+struct pinned_tap {
+    int index;
+    float value;
+};
+
+struct pinned_wide_design {
+    int rate_hz;
+    int taps_len;
+    pinned_tap taps[6];
+};
+} // namespace
+
+static const pinned_wide_design kPinnedWide[] = {
+    {24000,
+     67,
+     {{0, 1.280668765e-10f},
+      {8, -2.041145053e-04f},
+      {16, 3.228353802e-03f},
+      {25, -2.323140018e-02f},
+      {32, 2.464553267e-01f},
+      {33, 7.166660428e-01f}}},
+    {46875,
+     131,
+     {{0, 3.299232068e-11f},
+      {16, -2.650803435e-05f},
+      {32, 1.060506678e-03f},
+      {49, -6.118888967e-03f},
+      {64, 2.906197608e-01f},
+      {65, 3.669324815e-01f}}},
+    {48000,
+     135,
+     {{0, -1.853161938e-12f},
+      {16, 2.840763773e-04f},
+      {33, 1.674318220e-03f},
+      {50, 4.081554245e-03f},
+      {66, 2.870422006e-01f},
+      {67, 3.583324254e-01f}}},
+};
+
+static int
+expect_pinned_wide(const float* taps, int taps_len, const pinned_wide_design& pin) {
+    if (taps_len != pin.taps_len) {
+        DSD_FPRINTF(stderr, "WIDE at %d Hz designs %d taps, pinned %d\n", pin.rate_hz, taps_len, pin.taps_len);
+        return 1;
+    }
+    for (const pinned_tap& t : pin.taps) {
+        const double tol = 1e-6 * std::fabs((double)t.value) + 1e-9;
+        if (std::fabs((double)taps[t.index] - (double)t.value) > tol) {
+            DSD_FPRINTF(stderr, "WIDE at %d Hz tap %d = %.9e, pinned %.9e\n", pin.rate_hz, t.index,
+                        (double)taps[t.index], (double)t.value);
+            return 1;
+        }
+    }
+    return 0;
+}
+
 /* 16 kHz reproduces today's WIDE design wherever that design succeeds: same
  * cutoff (8600 Hz), transition and window through the same firdes call. */
 static int
 test_default_width_matches_wide(demod_state* s) {
-    const int rates[] = {24000, 46875, 48000};
-    for (int rate : rates) {
+    for (const pinned_wide_design& pin : kPinnedWide) {
+        const int rate = pin.rate_hz;
         static float wide[DSD_CHANNEL_LPF_MAX_TAPS];
         static float analog[DSD_CHANNEL_LPF_MAX_TAPS];
         int wide_len = 0;
         int analog_len = 0;
         design_plan(s, rate, DSD_CH_LPF_PROFILE_WIDE, 0, wide, &wide_len);
+        if (expect_pinned_wide(wide, wide_len, pin) != 0) {
+            return 1;
+        }
         design_plan(s, rate, DSD_CH_LPF_PROFILE_WIDE, DSD_ANALOG_NFM_WIDTH_DEFAULT_HZ, analog, &analog_len);
         if (wide_len <= 0 || wide_len != analog_len
             || std::memcmp(wide, analog, (size_t)wide_len * sizeof(float)) != 0) {
