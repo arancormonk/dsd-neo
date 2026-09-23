@@ -8394,12 +8394,45 @@ rtl_stream_apply_retune_gain_profile(const RtlRetuneProfile* profile) {
     }
 }
 
+/* Last refused retune analog profile (kind, width, demod rate), so a scanner revisiting the same target does not
+ * repeat the message on every pass. */
+static std::atomic<uint64_t> g_retune_analog_refusal_logged{0};
+
+/* A retune profile carries an analog width that was checked when it was queued, against the rate running then, or
+ * against no rate at all when no stream was running. The retune lands on the rate that holds now (rate_out is final
+ * here, in controller_finalize_rate_chain()), so the width is held to that rate before it is applied: a refusal
+ * keeps the receive profile the front end has, as a refused live request does. */
+static int
+rtl_stream_retune_analog_profile_fits(const RtlRetuneProfile* profile) {
+    char err[DSD_ANALOG_ERROR_TEXT_MAX];
+    const int kind = profile->analog_kind;
+    const int width_hz = profile->analog_width_hz;
+    if (rtl_demod_check_analog_channel(kind, width_hz, demod.rate_out, err, sizeof err) == 0
+        && rtl_demod_check_analog_post_decimation(kind, width_hz, demod.rate_out, demod.post_downsample, err,
+                                                  sizeof err)
+               == 0) {
+        g_retune_analog_refusal_logged.store(0, std::memory_order_relaxed);
+        return 1;
+    }
+    const uint64_t key = (1ULL << 63) | ((uint64_t)((uint32_t)kind & 0xFFU) << 48)
+                         | ((uint64_t)((uint32_t)width_hz & 0xFFFFU) << 32) | (uint64_t)(uint32_t)demod.rate_out;
+    if (g_retune_analog_refusal_logged.exchange(key, std::memory_order_relaxed) != key) {
+        LOG_ERROR("%s. The retune keeps the current receive profile.\n", err);
+    }
+    return 0;
+}
+
 /* A retune profile's receive-family switch, applied before its symbol profile: a switch back to digital is what that
- * profile runs on, and is decided for it. Returns 1 when the profile moves the front end onto the analog family. */
+ * profile runs on, and is decided for it. Returns 1 when the rest of the profile must not apply: the profile moves the
+ * front end onto the analog family, or asks for an analog channel the demod rate cannot run (refused, and the front
+ * end keeps its receive profile). */
 static int
 rtl_stream_apply_retune_family(const RtlRetuneProfile* profile) {
     if (profile->analog_family < 0) {
         return 0;
+    }
+    if (profile->analog_family == DSD_RX_FAMILY_ANALOG && !rtl_stream_retune_analog_profile_fits(profile)) {
+        return 1;
     }
     const int levels_valid = (profile->levels == 2 || profile->levels == 4) ? 1 : 0;
     const int next_symbol_rate_hz = (profile->symbol_rate_hz > 0 && levels_valid) ? profile->symbol_rate_hz : 0;
@@ -8424,7 +8457,8 @@ rtl_stream_apply_retune_profile(const RtlRetuneProfile* profile, uint32_t center
     if (rtl_stream_apply_retune_family(profile)) {
         /* The analog family has no symbol clock. A symbol profile queued for the same target would toggle the
            CQPSK family or the FSK discriminator back on and take the monitor output away, so it is dropped here,
-           as rtl_stream_request_analog_profile() drops one queued before an analog request. */
+           as rtl_stream_request_analog_profile() drops one queued before an analog request. A refused analog
+           profile drops it too: it was queued for an analog target. */
         return;
     }
 
@@ -10738,9 +10772,10 @@ rtl_stream_test_analog_request_without_stream(int stale_rate_out_hz, int kind, i
 }
 
 extern "C" int
-rtl_stream_test_retune_analog_profile(uint32_t target_hz, int family, int kind, int width_hz,
-                                      int with_cqpsk_symbol_profile, rtl_stream_test_retune_analog_result* out) {
-    if (!out || target_hz == 0U) {
+rtl_stream_test_retune_analog_profile_at_rate(uint32_t target_hz, int rate_hz, int family, int kind, int width_hz,
+                                              int with_cqpsk_symbol_profile,
+                                              rtl_stream_test_retune_analog_result* out) {
+    if (!out || target_hz == 0U || rate_hz <= 0) {
         return -1;
     }
     *out = {};
@@ -10749,7 +10784,7 @@ rtl_stream_test_retune_analog_profile(uint32_t target_hz, int family, int kind, 
     static dsd_opts dmr_opts;
     DSD_MEMSET(&dmr_opts, 0, sizeof dmr_opts);
     dmr_opts.frame_dmr = 1;
-    if (family_test_seed_open(&dmr_opts, 48000, 0) != 0) {
+    if (family_test_seed_open(&dmr_opts, rate_hz, 0) != 0) {
         family_test_restore(saved);
         return -2;
     }
@@ -10769,8 +10804,9 @@ rtl_stream_test_retune_analog_profile(uint32_t target_hz, int family, int kind, 
     out->profile_kind = profile.analog_kind;
     out->profile_width_hz = profile.analog_width_hz;
     out->profile_target_hz = profile.target_freq_hz;
+    /* The retune keeps the demod rate, so nothing but the profile itself can hold its width to that rate. */
     controller_finalize_rate_chain(&controller, &dmr_opts, target_hz, /*mark_reconfigure=*/1,
-                                   DemodRetuneResetReason::FrequencyRetune, target_hz, 48000,
+                                   DemodRetuneResetReason::FrequencyRetune, target_hz, demod.rate_out,
                                    out->taken ? &profile : NULL);
     out->applied_family = demod.analog_family;
     out->applied_kind = demod.analog_demod;
@@ -10784,6 +10820,13 @@ rtl_stream_test_retune_analog_profile(uint32_t target_hz, int family, int kind, 
     family_test_restore(saved);
     family_test_release_buffers();
     return 0;
+}
+
+extern "C" int
+rtl_stream_test_retune_analog_profile(uint32_t target_hz, int family, int kind, int width_hz,
+                                      int with_cqpsk_symbol_profile, rtl_stream_test_retune_analog_result* out) {
+    return rtl_stream_test_retune_analog_profile_at_rate(target_hz, 48000, family, kind, width_hz,
+                                                         with_cqpsk_symbol_profile, out);
 }
 #endif
 

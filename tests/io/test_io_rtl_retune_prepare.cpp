@@ -347,6 +347,50 @@ test_retune_profile_carries_analog_fields(void) {
     return failed;
 }
 
+/* A retune profile queued with no stream running is checked only against the kind and range rules. When it lands, the
+ * demod rate is known: a width that rate cannot realize is refused there with the validator's text, once, and the
+ * front end keeps its receive profile instead of running an analog channel with no filter. */
+static int
+test_retune_profile_width_checked_at_landing_rate(void) {
+    int failed = 0;
+    rtl_stream_test_retune_analog_result r;
+    std::memset(&r, 0, sizeof r);
+    g_last_error[0] = '\0';
+    failed |= expect_int_eq("12 kHz retune hook",
+                            rtl_stream_test_retune_analog_profile_at_rate(853012500U, 12000, DSD_RX_FAMILY_ANALOG,
+                                                                          DSD_ANALOG_DEMOD_FM, 16000, 0, &r),
+                            0);
+    failed |= expect_int_eq("no-stream profile queued", r.queued_rc, 0);
+    failed |= expect_int_eq("no-stream profile taken", r.taken, 1);
+    failed |= expect_int_eq("unrealizable width keeps the digital family", r.applied_family, 0);
+    failed |= expect_int_eq("unrealizable width keeps the digital output",
+                            r.applied_output_kind != DSD_DEMOD_OUTPUT_AUDIO_MONITOR, 1);
+    failed |= expect_int_eq("no analog width installed", r.applied_width_hz, 0);
+    failed |=
+        expect_int_eq("landing refusal carries the validator text",
+                      std::strstr(g_last_error, "NFM bandwidth 16 kHz does not fit the 12 kHz DSP rate") != NULL, 1);
+
+    /* A scanner revisiting the same target does not repeat the message. */
+    g_last_error[0] = '\0';
+    std::memset(&r, 0, sizeof r);
+    failed |= expect_int_eq("repeat 12 kHz retune hook",
+                            rtl_stream_test_retune_analog_profile_at_rate(853012500U, 12000, DSD_RX_FAMILY_ANALOG,
+                                                                          DSD_ANALOG_DEMOD_FM, 16000, 0, &r),
+                            0);
+    failed |= expect_int_eq("repeat refusal keeps the digital family", r.applied_family, 0);
+    failed |= expect_int_eq("repeat refusal is not logged again", g_last_error[0] == '\0', 1);
+
+    /* A width the rate fits lands as usual. */
+    std::memset(&r, 0, sizeof r);
+    failed |= expect_int_eq("fitting 12 kHz retune hook",
+                            rtl_stream_test_retune_analog_profile_at_rate(853012500U, 12000, DSD_RX_FAMILY_ANALOG,
+                                                                          DSD_ANALOG_DEMOD_FM, 8000, 0, &r),
+                            0);
+    failed |= expect_int_eq("fitting width applies the analog family", r.applied_family, 1);
+    failed |= expect_int_eq("fitting width reaches the filter", r.applied_width_hz, 8000);
+    return failed;
+}
+
 int
 main(void) {
     dsd_neo_log_set_tap(capture_error_log, NULL);
@@ -1155,6 +1199,7 @@ main(void) {
     failed |= test_audio_monitor_retune_reset();
     failed |= test_audio_monitor_retune_resolves_channel();
     failed |= test_retune_profile_carries_analog_fields();
+    failed |= test_retune_profile_width_checked_at_landing_rate();
 
     return failed ? 1 : 0;
 }

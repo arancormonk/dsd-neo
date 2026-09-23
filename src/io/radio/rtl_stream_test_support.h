@@ -351,6 +351,12 @@ typedef struct rtl_stream_test_retune_analog_result {
 int rtl_stream_test_retune_analog_profile(uint32_t target_hz, int family, int kind, int width_hz,
                                           int with_cqpsk_symbol_profile, rtl_stream_test_retune_analog_result* out);
 
+/* rtl_stream_test_retune_analog_profile() on a DMR stream opened at @p rate_hz. The profile is queued with no stream
+ * running (checked only against the kind and range rules then) and the retune keeps that demod rate. */
+int rtl_stream_test_retune_analog_profile_at_rate(uint32_t target_hz, int rate_hz, int family, int kind, int width_hz,
+                                                  int with_cqpsk_symbol_profile,
+                                                  rtl_stream_test_retune_analog_result* out);
+
 typedef struct rtl_stream_test_replay_state {
     int replay_input_eof;
     int replay_input_drained;
