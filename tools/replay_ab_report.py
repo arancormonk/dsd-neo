@@ -14,9 +14,11 @@ total flatters exactly the regressions worth catching.
 
 Analog runs (replay_ab.sh --metric analog) report each analog column the host
 measured -- tone SNR, in-band ratio, clipped samples, audible and first-audible
-time, the first probe's level relative to the test tone, and time to tone lock --
-paired per repeat the same way, plus the received tone label each build settled
-on. Columns no build measured are left out.
+time, RMS level, the first probe's level (dBFS, and dBc against a test tone), and
+time to tone lock -- paired per repeat the same way, plus the received tone label
+each build settled on. Probe levels are keyed by the probe's frequency, so builds
+that probed different frequencies are never paired. Columns no build measured are
+left out.
 """
 
 from __future__ import annotations
@@ -28,8 +30,11 @@ import sys
 from collections import Counter, defaultdict
 from pathlib import Path
 
-ANALOG_NUMERIC = ("tone_snr_db", "inband_db", "clip", "audible_ms", "first_audible_ms", "probe_dbc", "tone_lock_ms")
+ANALOG_NUMERIC = ("tone_snr_db", "inband_db", "clip", "audible_ms", "first_audible_ms", "rms_dbfs", "probe_dbfs",
+                  "probe_dbc", "tone_lock_ms")
 ANALOG_LABELS = ("tone",)
+# A probe level means something only at the probe's frequency (probe_hz).
+PROBE_COLUMNS = ("probe_dbfs", "probe_dbc")
 
 
 def read_rows(path: Path) -> list[dict[str, str]]:
@@ -66,18 +71,24 @@ def parse_number(text: str | None) -> float | None:
         return None
 
 
+def analog_key(name: str, row: dict[str, str]) -> str:
+    """Column name, with the probe frequency appended to probe levels (probe_dbfs@12500.0)."""
+    hz = row.get("probe_hz")
+    if name in PROBE_COLUMNS and hz not in (None, "", "NA"):
+        return f"{name}@{hz}"
+    return name
+
+
 def load_analog(rows: list[dict[str, str]]) -> dict[str, dict[int, dict[str, object]]]:
     """{column: {repeat: {build: value}}} for every analog column some run measured."""
     columns: dict[str, dict[int, dict[str, object]]] = {}
     for name in ANALOG_NUMERIC + ANALOG_LABELS:
-        by_rep: dict[int, dict[str, object]] = defaultdict(dict)
         for row in rows:
             raw = row.get(name)
             value = parse_number(raw) if name in ANALOG_NUMERIC else (raw if raw not in (None, "", "NA") else None)
             if value is not None:
+                by_rep = columns.setdefault(analog_key(name, row), defaultdict(dict))
                 by_rep[int(row["rep"])][row["variant"]] = value
-        if by_rep:
-            columns[name] = by_rep
     return columns
 
 
@@ -92,6 +103,44 @@ def paired(by_rep: dict[int, dict[str, object]], build: str, baseline: str) -> t
     return f"{statistics.fmean(diffs):+.2f} +/- {half:.2f}", f"{differ}/{len(diffs)}"
 
 
+def print_analog_numeric(columns: dict[str, dict[int, dict[str, object]]], builds: list[str], reps: list[int],
+                         baseline: str) -> None:
+    print(f"{'metric':<22} {'build':<24} {'mean':>9} {'median':>9} {'sd':>7}  {'paired vs baseline':>20}  "
+          f"{'differ':>6}")
+    for key, by_rep in columns.items():
+        if key.split("@")[0] not in ANALOG_NUMERIC:
+            continue
+        for build in builds:
+            vals = [by_rep[r][build] for r in reps if r in by_rep and build in by_rep[r]]
+            if not vals:
+                continue
+            sd = statistics.stdev(vals) if len(vals) > 1 else 0.0
+            diff, differ = paired(by_rep, build, baseline)
+            print(f"{key:<22} {build:<24} {statistics.fmean(vals):9.2f} {statistics.median(vals):9.2f} "
+                  f"{sd:7.2f}  {diff:>20}  {differ:>6}")
+    probe_freqs = sorted({key.split("@", 1)[1] for key in columns if "@" in key}, key=float)
+    if len(probe_freqs) > 1:
+        print(f"\nnote: builds probed different frequencies ({', '.join(probe_freqs)} Hz); probe levels are "
+              "paired only at the same frequency.")
+
+
+def print_analog_labels(columns: dict[str, dict[int, dict[str, object]]], builds: list[str], reps: list[int]) -> None:
+    for name in ANALOG_LABELS:
+        by_rep = columns.get(name)
+        if not by_rep:
+            continue
+        print(f"\n{'label':<22} {'build':<24} {'value':>9} {'agree':>7}")
+        for build in builds:
+            seen = [by_rep[r][build] for r in reps if r in by_rep and build in by_rep[r]]
+            if not seen:
+                print(f"{name:<22} {build:<24} {'NA':>9} {'0/' + str(len(reps)):>7}")
+                continue
+            # Most common label; a tie goes to the one seen in the earliest repeat.
+            value = Counter(seen).most_common()[0][1]
+            label = next(v for v in seen if seen.count(v) == value)
+            print(f"{name:<22} {build:<24} {label:>9} {f'{value}/{len(reps)}':>7}")
+
+
 def report_analog(rows: list[dict[str, str]], baseline_arg: str | None) -> int:
     columns = load_analog(rows)
     if not columns:
@@ -104,42 +153,36 @@ def report_analog(rows: list[dict[str, str]], baseline_arg: str | None) -> int:
         raise SystemExit(f"baseline '{baseline}' not present; have: {', '.join(builds)}")
 
     print(f"repeats: {len(reps)}   baseline: {baseline}   metric: analog\n")
-    print(f"{'metric':<17} {'build':<24} {'mean':>9} {'median':>9} {'sd':>7}  {'paired vs baseline':>20}  "
-          f"{'differ':>6}")
-    for name in ANALOG_NUMERIC:
-        by_rep = columns.get(name)
-        if not by_rep:
-            continue
-        for build in builds:
-            vals = [by_rep[r][build] for r in reps if r in by_rep and build in by_rep[r]]
-            if not vals:
-                continue
-            sd = statistics.stdev(vals) if len(vals) > 1 else 0.0
-            diff, differ = paired(by_rep, build, baseline)
-            print(f"{name:<17} {build:<24} {statistics.fmean(vals):9.2f} {statistics.median(vals):9.2f} "
-                  f"{sd:7.2f}  {diff:>20}  {differ:>6}")
-    for name in ANALOG_LABELS:
-        by_rep = columns.get(name)
-        if not by_rep:
-            continue
-        print(f"\n{'label':<17} {'build':<24} {'value':>9} {'agree':>7}")
-        for build in builds:
-            seen = [by_rep[r][build] for r in reps if r in by_rep and build in by_rep[r]]
-            if not seen:
-                print(f"{name:<17} {build:<24} {'NA':>9} {'0/' + str(len(reps)):>7}")
-                continue
-            # Most common label; a tie goes to the one seen in the earliest repeat.
-            value = Counter(seen).most_common()[0][1]
-            label = next(v for v in seen if seen.count(v) == value)
-            print(f"{name:<17} {build:<24} {label:>9} {f'{value}/{len(reps)}':>7}")
+    print_analog_numeric(columns, builds, reps, baseline)
+    print_analog_labels(columns, builds, reps)
 
     print("\nPaired column is the mean per-repeat difference from the baseline with a 95%")
     print("interval; 'differ' counts the repeats where the two builds disagreed at all. Run")
     print("the baseline against a copy of itself first: I/Q replay is sample-deterministic,")
     print("so that control should read +0.00 +/- 0.00 with 0 differing repeats.")
-    print("Higher is better for tone_snr_db and inband_db, lower for clip, first_audible_ms,")
-    print("the probe's dBc and tone_lock_ms; whether audible_ms should rise depends on the case.")
+    print("Higher is better for tone_snr_db and inband_db, lower for clip, first_audible_ms")
+    print("and tone_lock_ms, and lower for a probe that measures an interferer; whether")
+    print("audible_ms or rms_dbfs should move depends on the case.")
     return 0
+
+
+def digital_row(by_rep: dict[int, dict[str, tuple[float, int, int]]], reps: list[int], build: str,
+                baseline: str) -> str:
+    """One build's line of the digital report."""
+    vals = [by_rep[r][build][0] for r in reps if build in by_rep[r]]
+    voices = [by_rep[r][build][2] for r in reps if build in by_rep[r]]
+    diffs = [by_rep[r][build][0] - by_rep[r][baseline][0]
+             for r in reps if build in by_rep[r] and baseline in by_rep[r]]
+    sd = statistics.stdev(vals) if len(vals) > 1 else 0.0
+    if build != baseline and diffs:
+        mean_d = statistics.fmean(diffs)
+        half = 1.96 * statistics.stdev(diffs) / math.sqrt(len(diffs)) if len(diffs) > 1 else 0.0
+        paired_text = f"{mean_d:+.2f} +/- {half:.2f}"
+        better = f"{sum(1 for d in diffs if d < 0)}/{len(diffs)}"
+    else:
+        paired_text, better = "-", "-"
+    return (f"{build:>24}  {statistics.fmean(vals):9.2f} {statistics.median(vals):7.2f} {sd:6.2f}  "
+            f"{statistics.fmean(voices):6.1f}  {paired_text:>20}  {better:>7}")
 
 
 def report_digital(path: Path, baseline_arg: str | None) -> int:
@@ -157,20 +200,7 @@ def report_digital(path: Path, baseline_arg: str | None) -> int:
     print(f"{'build':>24}  {'err/voice':>9} {'median':>7} {'sd':>6}  {'voice':>6}  "
           f"{'paired vs baseline':>20}  {'better':>7}")
     for build in builds:
-        vals = [by_rep[r][build][0] for r in reps if build in by_rep[r]]
-        voices = [by_rep[r][build][2] for r in reps if build in by_rep[r]]
-        diffs = [by_rep[r][build][0] - by_rep[r][baseline][0]
-                 for r in reps if build in by_rep[r] and baseline in by_rep[r]]
-        sd = statistics.stdev(vals) if len(vals) > 1 else 0.0
-        if build != baseline and diffs:
-            mean_d = statistics.fmean(diffs)
-            half = 1.96 * statistics.stdev(diffs) / math.sqrt(len(diffs)) if len(diffs) > 1 else 0.0
-            paired_text = f"{mean_d:+.2f} +/- {half:.2f}"
-            better = f"{sum(1 for d in diffs if d < 0)}/{len(diffs)}"
-        else:
-            paired_text, better = "-", "-"
-        print(f"{build:>24}  {statistics.fmean(vals):9.2f} {statistics.median(vals):7.2f} {sd:6.2f}  "
-              f"{statistics.fmean(voices):6.1f}  {paired_text:>20}  {better:>7}")
+        print(digital_row(by_rep, reps, build, baseline))
 
     print("\nPaired column is the mean per-repeat difference in errors per voice frame,")
     print("with a 95% interval. Negative beats the baseline; an interval spanning 0 means")

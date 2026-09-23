@@ -135,17 +135,20 @@ if [ -z "$out" ]; then
 fi
 mkdir -p "$out"
 summary="$out/summary.tsv"
-analog_keys=(tone_snr_db inband_db clip audible_ms first_audible_ms)
+analog_keys=(tone_snr_db inband_db clip audible_ms first_audible_ms rms_dbfs)
+probe_keys=(hz dbfs dbc)
 printf 'variant\tcase\trep\terrs\tvoice\tsync' > "$summary"
-printf '\t%s' "${analog_keys[@]}" probe_dbc tone tone_lock_ms >> "$summary"
+printf '\t%s' "${analog_keys[@]}" probe_hz probe_dbfs probe_dbc tone tone_lock_ms >> "$summary"
 printf '\n' >> "$summary"
 
-# Value of key=value on the last line of the log that starts with prefix, or NA.
-# tone= and tone_lock_ms= appear once a tone detector publishes them; until then
-# they stay NA, like every analog column of a digital run.
+# Value of key=value on the last (or, with which=first, the first) line of the log
+# that starts with prefix, or NA. tone= and tone_lock_ms= appear once a tone
+# detector publishes them; until then they stay NA, like every analog column of a
+# digital run.
 line_value() {
-  local log=$1 prefix=$2 key=$3 value
-  value=$(grep -E "^${prefix}" "$log" | tail -n 1 | tr ' ' '\n' | sed -n "s/^${key}=//p" | head -n 1 || true)
+  local log=$1 prefix=$2 key=$3 which=${4:-last} value pick=(tail -n 1)
+  [ "$which" = first ] && pick=(head -n 1)
+  value=$(grep -E "^${prefix}" "$log" | "${pick[@]}" | tr ' ' '\n' | sed -n "s/^${key}=//p" | head -n 1 || true)
   printf '%s' "${value:-NA}"
 }
 
@@ -173,9 +176,13 @@ for r in $(seq 1 "$reps"); do
     for key in "${analog_keys[@]}"; do
       analog+=("$(line_value "$log" 'ANALOG METRIC:' "$key")")
     done
-    # The first probe frequency the host was given; each wrapper names its own.
-    probe_dbc=$(grep -E '^ANALOG PROBE:' "$log" | head -n 1 | tr ' ' '\n' | sed -n 's/^dbc=//p' | head -n 1 || true)
-    analog+=("${probe_dbc:-NA}")
+    # The first probe the host was given, with its frequency: a wrapper that puts
+    # its own --analog-probe-hz first probes elsewhere, and the report pairs probe
+    # levels only between builds that probed the same frequency. dbc needs
+    # --analog-expect-tone-hz; dbfs does not, so it is the level on real captures.
+    for key in "${probe_keys[@]}"; do
+      analog+=("$(line_value "$log" 'ANALOG PROBE:' "$key" first)")
+    done
     analog+=("$(line_value "$log" 'ANALOG METRIC:' tone)" "$(line_value "$log" 'ANALOG METRIC:' tone_lock_ms)")
     {
       printf '%s\t%s\t%s\t%s\t%s\t%s' \
@@ -185,8 +192,9 @@ for r in $(seq 1 "$reps"); do
     } >> "$summary"
     exit_note=$([ "$rc" -ne 0 ] && echo " (exit $rc)" || true)
     if [ "$metric" = analog ]; then
-      printf '  r%-3s %-24s snr=%-8s inband=%-8s audible_ms=%-9s probe_dbc=%-8s%s\n' \
-        "$r" "$name" "${analog[0]}" "${analog[1]}" "${analog[3]}" "${analog[5]}" "$exit_note"
+      # analog[] follows the summary header: snr inband clip audible first rms probe_hz probe_dbfs ...
+      printf '  r%-3s %-24s snr=%-8s inband=%-8s audible_ms=%-9s rms=%-8s probe_dbfs=%-8s%s\n' \
+        "$r" "$name" "${analog[0]}" "${analog[1]}" "${analog[3]}" "${analog[5]}" "${analog[7]}" "$exit_note"
     else
       printf '  r%-3s %-24s errs=%-6s voice=%-5s sync=%-5s%s\n' \
         "$r" "$name" "${errs:-NA}" "$voice" "$sync" "$exit_note"

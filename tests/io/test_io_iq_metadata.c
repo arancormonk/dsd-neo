@@ -1401,8 +1401,8 @@ check_committed_analog_fixture(const committed_analog_fixture* fixture) {
 static int
 test_committed_analog_fixture_sidecars_open(void) {
     static const committed_analog_fixture fixtures[] = {
-        {"am_airband_real", 8.0}, {"nfm_ctcss_real", 6.0}, {"nfm_dcs_real_a", 4.0},
-        {"nfm_dcs_real_b", 4.0},  {"nfm_tone_synth", 1.5}, {"nfm_adjacent_synth", 1.5},
+        {"am_airband_real", 8.0},    {"nfm_ctcss_real", 6.0}, {"nfm_squelch_real_a", 4.0},
+        {"nfm_squelch_real_b", 4.0}, {"nfm_tone_synth", 1.5}, {"nfm_adjacent_synth", 1.5},
     };
     int rc = 0;
     for (size_t i = 0; i < sizeof(fixtures) / sizeof(fixtures[0]); i++) {

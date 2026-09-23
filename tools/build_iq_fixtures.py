@@ -164,10 +164,13 @@ FIXTURES = [
 #                    151.4 Hz, speech from 10 s). Its 12.5 kHz neighbour (CTCSS near
 #                    173.8 Hz) is kept at -12.5 kHz as real adjacent-channel energy;
 #                    the default channel filter rejects it.
-#   nfm_dcs_real_a/b The two "unknown squelch" channels. Their sub-audible signalling
-#                    is labelled by tools/analog_oracle.py, not assumed from the name:
-#                    it finds 150 bit/s data repeating every 21 bits, which is not DCS
-#                    (docs/testing.md). They keep the fixture names issue #518 reserved.
+#   nfm_squelch_real_a/b  The two "unknown squelch" channels, named after their
+#                    source. Their sub-audible signalling is labelled by
+#                    tools/analog_oracle.py, not assumed: it finds 150 bit/s data
+#                    repeating every 21 bits, which is neither CTCSS nor DCS
+#                    (docs/testing.md), so they are no-false-lock material for tone
+#                    and code detectors. Issue #518 first reserved them as
+#                    nfm_dcs_real_a/b, before the oracle ran.
 #
 # The nominal 39.0625 kHz rate of the squelch captures is stored as 39062 Hz in their
 # WAV headers (13 ppm); the header value is used as recorded.
@@ -176,8 +179,8 @@ FIXTURES = [
 ANALOG_EXCERPTS = [
     ("am_airband_real", "am_airband_iq", 22.0, 8.0, 8.6),
     ("nfm_ctcss_real", "ctcss_example_iq", 10.0, 6.0, 12255.0),
-    ("nfm_dcs_real_a", "nfm_squelch_a_iq", 0.3, 4.0, 75.0),
-    ("nfm_dcs_real_b", "nfm_squelch_b_iq", 0.5, 4.0, 72.0),
+    ("nfm_squelch_real_a", "nfm_squelch_a_iq", 0.3, 4.0, 75.0),
+    ("nfm_squelch_real_b", "nfm_squelch_b_iq", 0.5, 4.0, 72.0),
 ]
 # Real samples read either side of each excerpt so the frequency-domain resampler's
 # circular edges fall outside the kept span.

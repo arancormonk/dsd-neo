@@ -10938,11 +10938,12 @@ endif()
 
 # Analog monitor audio (issue #518). dsd-neo_test_analog_replay runs the real engine
 # on the arguments dsd-neo would get and scores the monitor audio a listener hears --
-# after the audio filters, the AGC and the squelch gate -- through the UDP analog hook
-# seam; its own --analog-* threshold options are removed before the CLI parser runs.
-# The cases go through the unchanged iq_decode_check.cmake, so each still needs exit
-# code 0 and its expected line. Thresholds sit well clear of the values measured when
-# each case was added; docs/testing.md records those values and what each case pins.
+# after the audio filters, the gain stage and the squelch gate -- through the UDP
+# analog hook seam; its own --analog-* threshold options are removed before the CLI
+# parser runs. The cases go through the unchanged iq_decode_check.cmake, so each still
+# needs exit code 0 (the host exits 1 when any bound misses) and its expected line.
+# Thresholds sit well clear of the values measured when each case was added;
+# docs/testing.md records those values and what each case pins.
 if(DSD_HAS_RADIO)
     add_executable(dsd-neo_test_analog_replay engine/analog_replay.c)
     target_include_directories(
@@ -10954,7 +10955,19 @@ if(DSD_HAS_RADIO)
         PRIVATE dsd-neo_engine dsd-neo_io_radio ${LIBS}
     )
 
+    # dsd_neo_add_analog_replay_test(name fixture mode [expected [not_expected]])
+    # expected defaults to "ANALOG AUDIO OK" (pass "" to keep the default); a case
+    # that also asserts a log line names that line instead, since exit code 0 already
+    # means every audio bound held. not_expected is a regex that must not appear.
     function(dsd_neo_add_analog_replay_test test_name fixture mode)
+        set(_expected "ANALOG AUDIO OK")
+        if(ARGC GREATER 3 AND NOT "${ARGV3}" STREQUAL "")
+            set(_expected "${ARGV3}")
+        endif()
+        set(_not_expected_arg)
+        if(ARGC GREATER 4)
+            set(_not_expected_arg "-DNOT_EXPECTED=${ARGV4}")
+        endif()
         add_test(
             NAME ${test_name}
             COMMAND
@@ -10962,7 +10975,7 @@ if(DSD_HAS_RADIO)
                 "-DDSD_BIN=$<TARGET_FILE:dsd-neo_test_analog_replay>"
                 "-DMODE=${mode}"
                 "-DFIXTURE=${PROJECT_SOURCE_DIR}/tests/fixtures/iq/${fixture}.iq.json"
-                "-DEXPECTED=ANALOG AUDIO OK" -P
+                "-DEXPECTED=${_expected}" ${_not_expected_arg} -P
                 "${CMAKE_CURRENT_SOURCE_DIR}/iq_decode_check.cmake"
         )
         set_tests_properties(
@@ -10971,39 +10984,66 @@ if(DSD_HAS_RADIO)
         )
     endfunction()
 
+    # Under -fA the front end must stay on the monitor path; the host warns when it
+    # delivers CQPSK symbols instead (the modulation auto-switch, see docs/testing.md).
+    set(_analog_off_path "CQPSK symbols instead of monitor samples")
+
     # 1 kHz at 3 kHz deviation through the default monitor chain: 25.9 dB tone SNR,
-    # 30.5 dB in-band ratio, audible from the first block, no clipping.
+    # 30.5 dB in-band ratio, -36.1 dBFS at the fixed default gain, audible from the
+    # first block, no clipping. The probe on the tone itself must agree with the fit
+    # (0.00 dBc measured), which shows the probe reads a real line at its level.
     dsd_neo_add_analog_replay_test(
         DECODE_IQ_ANALOG_NFM_TONE
         nfm_tone_synth
-        "-fA --analog-expect-tone-hz 1000 --analog-min-snr-db 20 --analog-min-captured-ms 1400 --analog-min-audible-ms 1400 --analog-max-first-audible-ms 100 --analog-min-inband-db 24 --analog-max-clip 0"
+        "-fA --analog-expect-tone-hz 1000 --analog-min-snr-db 20 --analog-min-captured-ms 1400 --analog-min-audible-ms 1400 --analog-max-first-audible-ms 100 --analog-min-inband-db 24 --analog-min-rms-dbfs -42 --analog-max-rms-dbfs -30 --analog-max-clip 0 --analog-probe-min-dbc 1000:-1 --analog-probe-max-dbc 1000:1"
+        ""
+        "${_analog_off_path}"
     )
     # The same tone with an unmodulated carrier 12.5 kHz up at -6 dB. The default
-    # 16 kHz channel filter leaves its beat at 12.5 kHz 65 dB under the tone; a -6 dB
-    # carrier inside the passband measures -6 dBc at its offset.
+    # 16 kHz channel filter rejects it: the 12.5 kHz probe reads -64.9 dBc, the same
+    # floor it reads on nfm_tone_synth (-66.7 dBc), so the bound catches a channel
+    # filter that lets the neighbour through, not a finer change.
     dsd_neo_add_analog_replay_test(
         DECODE_IQ_ANALOG_NFM_ADJACENT
         nfm_adjacent_synth
         "-fA --analog-expect-tone-hz 1000 --analog-min-snr-db 20 --analog-min-captured-ms 1400 --analog-probe-max-dbc 12500:-40"
+        ""
+        "${_analog_off_path}"
+    )
+    # A run in which no audio reaches the hook at all: -fi leaves the analog monitor
+    # off. The never-audible bound is paired with stream time (1500 ms measured), the
+    # pattern every silent or muted case uses so that a stalled or empty replay
+    # cannot pass by delivering nothing.
+    dsd_neo_add_analog_replay_test(
+        DECODE_IQ_ANALOG_SILENT_STREAM_TIME
+        nfm_tone_synth
+        "-fi --analog-max-audible-ms 0 --analog-min-total-ms 1400 --analog-max-total-ms 1600"
     )
     # Off-air smoke baselines: the monitor delivers the whole excerpt and it keeps its
-    # measured audible time and spectral shape. On nfm_ctcss_real the in-band ratio is
-    # within a few dB of receiver noise (small speech deviation), so that case pins
-    # presence and duration more than quality; see docs/testing.md.
+    # measured audible time, onset and spectral shape. On nfm_ctcss_real the in-band
+    # ratio is no better than receiver noise (small speech deviation), so that case
+    # tells the two apart by FM quieting instead: the channel measures -44.6 dBFS RMS,
+    # open-squelch noise (noise_floor) -23.3 dBFS.
     dsd_neo_add_analog_replay_test(
         DECODE_IQ_ANALOG_NFM_REAL_CTCSS_SMOKE
         nfm_ctcss_real
-        "-fA --analog-min-captured-ms 5800 --analog-min-audible-ms 4500 --analog-min-inband-db -4"
+        "-fA --analog-min-captured-ms 5800 --analog-min-audible-ms 4500 --analog-min-inband-db -4 --analog-max-rms-dbfs -34"
+        ""
+        "${_analog_off_path}"
     )
     dsd_neo_add_analog_replay_test(
-        DECODE_IQ_ANALOG_NFM_REAL_DCS_A_SMOKE
-        nfm_dcs_real_a
-        "-fA --analog-min-captured-ms 3900 --analog-min-audible-ms 900 --analog-max-first-audible-ms 1000 --analog-min-inband-db 4"
+        DECODE_IQ_ANALOG_NFM_REAL_SQUELCH_A_SMOKE
+        nfm_squelch_real_a
+        "-fA --analog-min-captured-ms 3900 --analog-min-audible-ms 900 --analog-min-first-audible-ms 250 --analog-max-first-audible-ms 1000 --analog-min-inband-db 4"
+        ""
+        "${_analog_off_path}"
     )
     dsd_neo_add_analog_replay_test(
-        DECODE_IQ_ANALOG_NFM_REAL_DCS_B_SMOKE
-        nfm_dcs_real_b
+        DECODE_IQ_ANALOG_NFM_REAL_SQUELCH_B_SMOKE
+        nfm_squelch_real_b
         "-fA --analog-min-captured-ms 3900 --analog-min-audible-ms 2000 --analog-min-inband-db 5"
+        ""
+        "${_analog_off_path}"
     )
 endif()
 
@@ -11234,7 +11274,8 @@ if(Python3_Interpreter_FOUND)
         set_tests_properties(TOOLS_AIRSPY_PACKAGING PROPERTIES TIMEOUT 120)
     endif()
     # replay_ab.sh --metric analog and the report's per-repeat pairing of the analog
-    # columns (issue #518). Stdlib only; the replay_ab.sh half skips without bash.
+    # columns (issue #518). Stdlib only; the replay_ab.sh half skips on Windows and
+    # wherever bash or timeout is missing.
     add_test(
         NAME TOOLS_REPLAY_AB_REPORT
         COMMAND

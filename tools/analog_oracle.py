@@ -85,7 +85,9 @@ DCS_CODES = tuple(int(code, 8) for code in (
     "466 503 506 516 523 526 532 546 565 606 612 624 627 631 632 654 662 664 703 712 723 731 732 734 743 754"
 ).split())
 
-DEFAULT_FIXTURES = ("nfm_ctcss_real", "nfm_dcs_real_a", "nfm_dcs_real_b", "nfm_tone_synth", "nfm_adjacent_synth")
+DEFAULT_FIXTURES = (
+    "nfm_ctcss_real", "nfm_squelch_real_a", "nfm_squelch_real_b", "nfm_tone_synth", "nfm_adjacent_synth",
+)
 
 
 # ---- demodulation -------------------------------------------------------------------------------------------------
