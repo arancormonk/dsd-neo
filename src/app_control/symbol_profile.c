@@ -14,7 +14,6 @@
 
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
-#include <dsd-neo/runtime/analog_channel.h>
 #include <dsd-neo/runtime/decode_mode.h>
 #include <dsd-neo/runtime/scan_mode.h>
 #include "dsd-neo/core/opts_fwd.h"
@@ -23,6 +22,7 @@
 
 #ifdef USE_RADIO
 #include <dsd-neo/io/rtl_stream_c.h>
+#include <dsd-neo/runtime/analog_channel.h>
 #include <stddef.h>
 #endif
 
