@@ -10468,7 +10468,8 @@ family_test_capture(void) {
     f.costas_phase_urad = (int)lrintf(demod.costas_state.phase * 1e6f);
     f.fll_freq_urad = (int)lrintf(demod.fll_band_edge_state.freq * 1e6f);
     f.fll_phase_urad = (int)lrintf(demod.fll_band_edge_state.phase * 1e6f);
-    f.ted_awaiting_init = (demod.ted_state.omega_mid == 0.0f || demod.ted_state.twice_sps < 2) ? 1 : 0;
+    /* The Gardner loop's first-initialisation test (gardner_need_reinit()), with a tolerance on omega_mid. */
+    f.ted_awaiting_init = (fabsf(demod.ted_state.omega_mid) < 1e-12f || demod.ted_state.twice_sps < 2) ? 1 : 0;
     f.deemph_avg_u = family_test_micro(demod.deemph_avg);
     f.dc_avg_u = family_test_micro(demod.dc_avg);
     f.audio_lpf_state_u = family_test_micro(demod.audio_lpf_state);
