@@ -4603,6 +4603,72 @@ test_decode_mode_set_switches_rtl_receive_family(void) {
     freeState(&state);
     return rc;
 }
+
+static int
+submit_config_mode(dsd_opts* opts, dsd_state* state, dsdneoUserDecodeMode mode, const char* label) {
+    dsdneoUserConfig cfg;
+    DSD_MEMSET(&cfg, 0, sizeof cfg);
+    cfg.has_mode = 1;
+    cfg.decode_mode = mode;
+    int rc = expect_int(label, dsd_app_command_submit(DSD_APP_CMD_CONFIG_APPLY, &cfg, sizeof(cfg)),
+                        DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int(label, dsd_app_drain_cmds(opts, state), 1);
+    return rc;
+}
+
+/*
+ * A config whose [mode] moves a live RTL session into or out of analog has to switch the receive family and open the
+ * new family's sink the way DECODE_MODE_SET does, or the analog preset runs on the digital demodulator (and back). A
+ * [mode] that stays inside its family asks the front end for nothing new.
+ */
+static int
+test_config_apply_switches_rtl_receive_family(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static void* fake_ctx[2];
+    int rc = 0;
+    init_decode_mode_context(&opts, &state);
+    opts.audio_in_type = AUDIO_IN_RTL;
+    state.rtl_ctx = (RtlSdrContext*)fake_ctx;
+    rc |= submit_config_mode(&opts, &state, DSDCFG_MODE_DMR, "config dmr start");
+
+    reset_rx_family_wrap();
+    rc |= submit_config_mode(&opts, &state, DSDCFG_MODE_ANALOG, "config analog");
+    rc |= expect_int("config analog preset applied", opts.analog_only, 1);
+    rc |= expect_int("config analog profile published", g_analog_req_calls, 1);
+    rc |= expect_int("config analog family requested", g_analog_req_family, DSD_RX_FAMILY_ANALOG);
+    rc |= expect_int("config analog FM requested", g_analog_req_kind, DSD_ANALOG_DEMOD_FM);
+    rc |= expect_int("config analog asks for no symbol profile", g_demod_req_calls, 0);
+    rc |= expect_int("config analog ensures the raw sink", g_ensure_analog_calls, 1);
+    rc |= expect_int("config analog leaves the digital sink", g_ensure_digital_calls, 0);
+
+    /* Back to DMR while the front end still runs the analog monitor at a 24 kHz DSP rate. */
+    reset_rx_family_wrap();
+    g_fake_analog_active = 1;
+    g_fake_digital_rate = 24000U;
+    rc |= submit_config_mode(&opts, &state, DSDCFG_MODE_DMR, "config dmr");
+    rc |= expect_int("config dmr leaves analog", opts.analog_only, 0);
+    rc |= expect_int("config digital family requested", g_analog_req_family, DSD_RX_FAMILY_DIGITAL);
+    rc |= expect_int("config family request made once", g_analog_req_calls, 1);
+    rc |= expect_int("config symbol profile follows", g_demod_req_calls, 1);
+    rc |= expect_int("config family before profile", g_analog_req_order < g_demod_req_order, 1);
+    rc |= expect_int("config decoder timed for the digital rate", state.samplesPerSymbol, 5);
+    rc |= expect_int("config digital sink ensured", g_ensure_digital_calls, 1);
+    rc |= expect_int("config raw sink not asked for", g_ensure_analog_calls, 0);
+
+    /* A [mode] inside the same family keeps the earlier config-apply behaviour. */
+    reset_rx_family_wrap();
+    g_fake_analog_active = 0;
+    rc |= submit_config_mode(&opts, &state, DSDCFG_MODE_NXDN48, "config nxdn48");
+    rc |= expect_int("config same family asks for no family", g_analog_req_calls, 0);
+    rc |= expect_int("config same family asks for no profile", g_demod_req_calls, 0);
+    rc |= expect_int("config same family opens no sink", g_ensure_analog_calls + g_ensure_digital_calls, 0);
+
+    g_fake_digital_rate = 0U;
+    state.rtl_ctx = NULL;
+    freeState(&state);
+    return rc;
+}
 #endif
 
 #ifdef DSD_NEO_TEST_IO_CONTROL_WRAP
@@ -4758,6 +4824,7 @@ main(void) {
 #endif
 #if defined(USE_RADIO) && defined(DSD_NEO_TEST_ANALOG_WRAP) && defined(DSD_NEO_TEST_AUDIO_ENSURE_WRAP)
     rc |= test_decode_mode_set_switches_rtl_receive_family();
+    rc |= test_config_apply_switches_rtl_receive_family();
 #endif
 #ifdef DSD_NEO_TEST_IO_CONTROL_WRAP
     rc |= test_dmr_policy_command_ticks_owner(DSD_APP_CMD_LOCKOUT_SLOT);

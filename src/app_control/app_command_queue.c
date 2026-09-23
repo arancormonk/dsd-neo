@@ -5040,6 +5040,29 @@ cfg_restore_lifecycle_owned(dsd_opts* opts, const dsdneoUserConfig* cfg, dsd_fro
     return frontend_changed || trunk_scan_changed;
 }
 
+/*
+ * A [mode] that moves a running session between the analog monitor and a digital decoder needs what
+ * DSD_APP_CMD_DECODE_MODE_SET does for the same move: the sink the new family writes to, and on an RTL front end the
+ * receive-family switch with symbol timing at the live demod rate (decode_mode_republish()). Without it the front end
+ * stays on the old family's demodulator. A [mode] that stays inside its family keeps the config-apply behaviour it
+ * had.
+ */
+static void
+apply_cfg_receive_family_change(dsd_opts* opts, dsd_state* state, const dsdneoUserConfig* cfg, int old_analog_only) {
+    const int analog_only = opts->analog_only ? 1 : 0;
+    if (!cfg->has_mode || analog_only == old_analog_only) {
+        return;
+    }
+    if (analog_only) {
+        (void)dsd_audio_ensure_analog_output(opts);
+    } else {
+        (void)dsd_audio_ensure_digital_output(opts);
+    }
+    if (opts->audio_in_type == AUDIO_IN_RTL) {
+        decode_mode_republish(opts, state, cfg->decode_mode);
+    }
+}
+
 static int
 ui_cmd_handle_config_apply(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
     if (!state || c->n < sizeof(dsdneoUserConfig)) {
@@ -5059,6 +5082,7 @@ ui_cmd_handle_config_apply(dsd_opts* opts, dsd_state* state, const struct dsd_ap
     int old_jitter = state->jitter;
     dsd_frontend_kind old_frontend_kind = opts->frontend_kind;
     const int old_trunk_scan_enabled = opts->trunk_scan_enabled;
+    const int old_analog_only = opts->analog_only ? 1 : 0;
 #ifdef USE_RADIO
     int airspy_rc = 0;
     dsd_airspy_config old_airspy = opts->airspy;
@@ -5090,6 +5114,7 @@ ui_cmd_handle_config_apply(dsd_opts* opts, dsd_state* state, const struct dsd_ap
     apply_cfg_file_runtime_rate(opts, state, &cfg, old_runtime_input_rate, old_samples_per_symbol, old_symbol_center,
                                 old_jitter);
     int reconfigure_rc = ui_reconfigure_output_for_input_policy(opts, state);
+    apply_cfg_receive_family_change(opts, state, &cfg, old_analog_only);
 #ifdef USE_RADIO
     if (airspy_rc != 0) {
         return UI_CMD_APPLY_FAILED;
