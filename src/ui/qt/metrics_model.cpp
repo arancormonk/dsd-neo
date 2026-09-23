@@ -305,7 +305,7 @@ MetricsModel::MetricsModel(QObject* parent) : QObject(parent) {
     /* The configured tone policy is configuration, so it reads as configured -- "off" until
        #527 -- before the first frame too; the app-control view owns that text. */
     dsd_app_rx_tone policy;
-    (void)dsd_app_rx_tone_view(nullptr, nullptr, &policy);
+    (void)dsd_app_rx_tone_view(nullptr, nullptr, 0.0, &policy);
     m_view.rx_tone_configured_text = QString::fromUtf8(policy.configured_text);
     m_messageTimer.setSingleShot(true);
     connect(&m_messageTimer, &QTimer::timeout, this, [this]() {
@@ -476,12 +476,13 @@ MetricsModel::fillScanTimingView(View& next, const dsd_opts* opts_snapshot, cons
  * The phrase and the visibility rule are app-control's (rx_tone_view), shared with the
  * terminal. Only the words are translated here; a tone value is a number and stays as the
  * view wrote it. The configured text comes from its own field of the view and nothing
- * received is ever copied into it.
+ * received is ever copied into it. @p now_m is the frame's one clock reading, which ages the
+ * publication of a live stream input that has gone quiet.
  */
 void
-MetricsModel::fillRxToneView(View& next, const dsd_opts* opts_snapshot, const dsd_state* snapshot) const {
+MetricsModel::fillRxToneView(View& next, const dsd_opts* opts_snapshot, const dsd_state* snapshot, double now_m) const {
     dsd_app_rx_tone view;
-    const int shown = dsd_app_rx_tone_view(opts_snapshot, snapshot, &view);
+    const int shown = dsd_app_rx_tone_view(opts_snapshot, snapshot, now_m, &view);
     next.rx_tone_configured_text = QString::fromUtf8(view.configured_text);
     if (shown != 1) {
         return;
@@ -934,7 +935,7 @@ MetricsModel::refresh(const dsd_opts* opts_snapshot, const dsd_state* snapshot) 
      * clock read: one frame has to describe one instant, or the countdown and the
      * call durations beside it would come from moments either side of the poll. */
     fillScanTimingView(next, opts_snapshot, snapshot, now_m);
-    fillRxToneView(next, opts_snapshot, snapshot);
+    fillRxToneView(next, opts_snapshot, snapshot, now_m);
 
     /* The engine's command acknowledgement, shown until its own expiry stamp. The
      * timer takes an expired message down without waiting for another publish —

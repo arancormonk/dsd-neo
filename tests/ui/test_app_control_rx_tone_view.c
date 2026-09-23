@@ -52,7 +52,7 @@ publish(dsd_state* state, int carrier, int tone_state, int kind, int tenths) {
 static void
 assert_view(const dsd_opts* opts, const dsd_state* state, int status, const char* text) {
     dsd_app_rx_tone view;
-    const int rc = dsd_app_rx_tone_view(opts, state, &view);
+    const int rc = dsd_app_rx_tone_view(opts, state, 0.0, &view);
     assert(rc == (status == DSD_APP_RX_TONE_HIDDEN ? 0 : 1));
     assert(view.status == (uint8_t)status);
     assert(view.visible == (status == DSD_APP_RX_TONE_HIDDEN ? 0U : 1U));
@@ -79,7 +79,7 @@ test_states_and_formats(void) {
     publish(state, 1, DSD_ANALOG_TONE_STATE_LOCKED, DSD_ANALOG_TONE_KIND_CTCSS, 1000);
     assert_view(&opts, state, DSD_APP_RX_TONE_LOCKED, "CTCSS 100.0 Hz");
     dsd_app_rx_tone view;
-    assert(dsd_app_rx_tone_view(&opts, state, &view) == 1);
+    assert(dsd_app_rx_tone_view(&opts, state, 0.0, &view) == 1);
     assert(view.kind == (uint8_t)DSD_ANALOG_TONE_KIND_CTCSS);
     assert(view.ctcss_tenths_hz == 1000);
     assert(view.carrier_open == 1U);
@@ -162,10 +162,57 @@ test_received_is_not_configured(void) {
     publish(state, 1, DSD_ANALOG_TONE_STATE_LOCKED, DSD_ANALOG_TONE_KIND_CTCSS, 1318);
     for (int gate = DSD_ANALOG_TONE_GATE_OFF; gate <= DSD_ANALOG_TONE_GATE_REJECTED; gate++) {
         state->analog_rx.gate = gate;
-        assert(dsd_app_rx_tone_view(&opts, state, &view) == 1);
+        assert(dsd_app_rx_tone_view(&opts, state, 0.0, &view) == 1);
         assert(strcmp(view.text, "CTCSS 131.8 Hz") == 0);
         assert(strcmp(view.configured_text, "off") == 0);
     }
+    free(state);
+}
+
+/*
+ * A live stream input (stdin, UDP, TCP) whose producer stopped sending: the decoder waits for
+ * the next sample and cannot retract what it last published, so the tap stamps a deadline and
+ * the view, on the caller's clock, reads the publication past it as no carrier. Up to the
+ * deadline, and with no deadline at all (files, Pulse, RTL), the publication stands.
+ */
+static void
+test_paused_stream_reads_no_carrier(void) {
+    static dsd_opts opts;
+    dsd_state* state = make_state();
+    make_monitor_opts(&opts);
+    opts.audio_in_type = AUDIO_IN_UDP;
+    dsd_app_rx_tone view;
+
+    publish(state, 1, DSD_ANALOG_TONE_STATE_LOCKED, DSD_ANALOG_TONE_KIND_CTCSS, 1000);
+    state->analog_rx.stale_after_ms = 5000U;
+    /* Monotonic seconds: 4.999 s is before the 5000 ms deadline, 5.001 s after it. */
+    assert(dsd_app_rx_tone_view(&opts, state, 4.999, &view) == 1);
+    assert(view.status == DSD_APP_RX_TONE_LOCKED && strcmp(view.text, "CTCSS 100.0 Hz") == 0);
+    assert(dsd_app_rx_tone_view(&opts, state, 5.001, &view) == 1);
+    assert(view.visible == 1U && view.status == DSD_APP_RX_TONE_NO_CARRIER);
+    assert(strcmp(view.text, EM_DASH) == 0);
+    assert(view.carrier_open == 0U && view.kind == 0U && view.ctcss_tenths_hz == 0);
+    assert(view.generation == 7U);
+    assert(strcmp(view.configured_text, "off") == 0);
+
+    /* "detecting" and "none" describe a carrier too, and go stale the same way. */
+    publish(state, 1, DSD_ANALOG_TONE_STATE_NONE, 0, 0);
+    state->analog_rx.stale_after_ms = 5000U;
+    assert(dsd_app_rx_tone_view(&opts, state, 6.0, &view) == 1);
+    assert(view.status == DSD_APP_RX_TONE_NO_CARRIER);
+
+    /* No deadline: an input that never pauses, however old the frame. */
+    publish(state, 1, DSD_ANALOG_TONE_STATE_LOCKED, DSD_ANALOG_TONE_KIND_CTCSS, 1000);
+    assert(dsd_app_rx_tone_view(&opts, state, 1.0e6, &view) == 1);
+    assert(view.status == DSD_APP_RX_TONE_LOCKED);
+    /* No clock (0): the caller asked for no aging. */
+    state->analog_rx.stale_after_ms = 5000U;
+    assert(dsd_app_rx_tone_view(&opts, state, 0.0, &view) == 1);
+    assert(view.status == DSD_APP_RX_TONE_LOCKED);
+    /* Hidden stays hidden: a stale publication never brings the row back. */
+    opts.analog_only = 0;
+    assert(dsd_app_rx_tone_view(&opts, state, 6.0, &view) == 0);
+    assert(view.status == DSD_APP_RX_TONE_HIDDEN);
     free(state);
 }
 
@@ -175,11 +222,11 @@ test_invalid_arguments(void) {
     dsd_state* state = make_state();
     make_monitor_opts(&opts);
     dsd_app_rx_tone view;
-    assert(dsd_app_rx_tone_view(NULL, state, &view) == -1);
+    assert(dsd_app_rx_tone_view(NULL, state, 0.0, &view) == -1);
     assert(view.visible == 0U && view.text[0] == '\0');
     assert(strcmp(view.configured_text, "off") == 0);
-    assert(dsd_app_rx_tone_view(&opts, NULL, &view) == -1);
-    assert(dsd_app_rx_tone_view(&opts, state, NULL) == -1);
+    assert(dsd_app_rx_tone_view(&opts, NULL, 0.0, &view) == -1);
+    assert(dsd_app_rx_tone_view(&opts, state, 0.0, NULL) == -1);
     free(state);
 }
 
@@ -188,6 +235,7 @@ main(void) {
     test_states_and_formats();
     test_hidden_outside_the_fm_monitor();
     test_received_is_not_configured();
+    test_paused_stream_reads_no_carrier();
     test_invalid_arguments();
     return 0;
 }

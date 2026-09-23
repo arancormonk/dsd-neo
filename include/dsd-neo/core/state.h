@@ -493,9 +493,16 @@ struct dsd_analog_rx_publication {
     int dcs_inverted;    /**< 1 = inverted DCS polarity; reserved for #523 */
     int gate;            /**< dsd_analog_tone_gate; always OFF until #527 */
     /** Bumped on every reset (retune, row or target change, input switch, mode change, stop,
-     * input-rate change, carrier hangover), so a reader can tell a new reception from the one
-     * it last saw. */
+     * input-rate change, carrier hangover, stream pause), so a reader can tell a new reception
+     * from the one it last saw. */
     uint32_t generation;
+    /** Monotonic ms (dsd_time_monotonic_ms()) after which this publication no longer describes
+     * the channel if the tap has not run again since. Set only on live stream input (stdin,
+     * UDP, TCP), whose producer may stop sending between transmissions: then no block arrives
+     * for the sample-time hangover to count, and a frontend reads the publication past this
+     * point as no carrier (app_control/rx_tone_view.h). 0 = never stale (files, Pulse and RTL
+     * input deliver continuously). */
+    uint64_t stale_after_ms;
 };
 
 // dsd_state is a C aggregate, not a C++ class: it is allocated once and zeroed by

@@ -65,8 +65,20 @@ rx_tone_fill_status(dsd_app_rx_tone* out, const dsd_analog_rx_publication* pub) 
     }
 }
 
+/* A live stream input that stopped delivering: the decoder is blocked waiting for the next
+   sample, so its last word -- often a locked tone -- stays published. Past the deadline the tap
+   set, the pause has outlasted the carrier hangover, and the next block will start a new
+   reception; until then the row shows no carrier. */
+static int
+rx_tone_stale(const dsd_analog_rx_publication* pub, double now_m) {
+    if (pub->stale_after_ms == 0U || !(now_m > 0.0)) {
+        return 0;
+    }
+    return (uint64_t)(now_m * 1000.0) > pub->stale_after_ms;
+}
+
 int
-dsd_app_rx_tone_view(const dsd_opts* opts, const dsd_state* state, dsd_app_rx_tone* out) {
+dsd_app_rx_tone_view(const dsd_opts* opts, const dsd_state* state, double now_m, dsd_app_rx_tone* out) {
     if (out) {
         DSD_MEMSET(out, 0, sizeof(*out));
         DSD_SNPRINTF(out->configured_text, sizeof(out->configured_text), "%s", RX_TONE_POLICY_OFF_TEXT);
@@ -86,8 +98,13 @@ dsd_app_rx_tone_view(const dsd_opts* opts, const dsd_state* state, dsd_app_rx_to
         return 0;
     }
     out->visible = 1U;
-    out->carrier_open = pub->carrier_open ? 1U : 0U;
     out->generation = pub->generation;
+    if (rx_tone_stale(pub, now_m)) {
+        out->status = DSD_APP_RX_TONE_NO_CARRIER;
+        rx_tone_set_text(out, RX_TONE_NO_CARRIER_TEXT);
+        return 1;
+    }
+    out->carrier_open = pub->carrier_open ? 1U : 0U;
     rx_tone_fill_status(out, pub);
     return 1;
 }

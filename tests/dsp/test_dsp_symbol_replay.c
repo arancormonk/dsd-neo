@@ -825,6 +825,84 @@ test_rx_tone_unusable_rate_is_unavailable(void) {
     dsd_state_ext_free_all(&state);
 }
 
+static uint64_t g_fake_now_ms = 0U;
+
+static uint64_t
+fake_now_ms(void) {
+    return g_fake_now_ms;
+}
+
+/* Blocks as a live stream delivers them: the clock moves on by each block's 20 ms. */
+static void
+feed_stream_block(dsd_opts* opts, dsd_state* state, double hz) {
+    float block[960];
+    g_fake_now_ms += 20U;
+    fill_tone_block(block, 960U, hz, 3000.0);
+    assert(dsd_symbol_test_finalize_unsynced_analog_block(opts, state, block, 960U) == 960U);
+}
+
+/*
+ * A live stream whose producer squelches by sending nothing (rtl_fm without -E pad, a UDP
+ * sender that stops): no block arrives while it is quiet, so the sample-time hangover never
+ * runs. The tap stamps each block with a deadline the frontends age the row against, and the
+ * first block after a pause past it starts a new reception -- here another channel's, on
+ * 131.8 Hz, which must never be shown as the 100.0 Hz the last one carried. File input keeps
+ * no deadline: it delivers continuously, and a slow reader is not a quiet channel.
+ */
+static void
+test_rx_tone_paused_stream_starts_a_new_reception(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    install_fake_rtl_hooks(0);
+    init_analog_monitor_fixture(&opts, &state);
+    opts.audio_in_type = AUDIO_IN_UDP;
+    dsd_analog_rx_test_set_clock(fake_now_ms);
+    g_fake_now_ms = 100000U;
+
+    for (int b = 0; b < 30; b++) {
+        feed_stream_block(&opts, &state, 100.0);
+    }
+    assert(rx_tone_locked_on_100(&state));
+    /* A 20 ms block allows its duration plus the 200 ms hangover, floored at the minimum. */
+    assert(state.analog_rx.stale_after_ms == g_fake_now_ms + (uint64_t)DSD_ANALOG_STREAM_PAUSE_MIN_MS);
+
+    /* A gap inside the allowance -- squelch flicker, a scheduling delay -- changes nothing. */
+    uint32_t generation = state.analog_rx.generation;
+    g_fake_now_ms += (uint64_t)DSD_ANALOG_STREAM_PAUSE_MIN_MS - 40U;
+    feed_stream_block(&opts, &state, 100.0);
+    assert(rx_tone_locked_on_100(&state) && state.analog_rx.generation == generation);
+
+    /* The producer goes quiet for a second: the publication cannot change while the decoder
+       waits, but its deadline passes (the frontends now read it as no carrier) ... */
+    const uint64_t deadline = state.analog_rx.stale_after_ms;
+    g_fake_now_ms += 1000U;
+    assert(g_fake_now_ms > deadline);
+    /* ... and the next transmission inherits nothing: the old value is never shown again, the
+       first block moves the generation and is evaluated afresh, and its own tone locks. */
+    g_tone_phase = 0.3;
+    for (int b = 0; b < 30; b++) {
+        feed_stream_block(&opts, &state, 131.8);
+        assert(state.analog_rx.ctcss_tenths_hz != 1000);
+        if (b == 0) {
+            assert(state.analog_rx.tone_state == DSD_ANALOG_TONE_STATE_ACQUIRING);
+            assert(state.analog_rx.generation != generation);
+        }
+    }
+    assert(state.analog_rx.tone_state == DSD_ANALOG_TONE_STATE_LOCKED && state.analog_rx.ctcss_tenths_hz == 1318);
+
+    /* File input never goes stale and never resets on a gap, however long. */
+    opts.audio_in_type = AUDIO_IN_WAV;
+    feed_stream_block(&opts, &state, 131.8);
+    assert(state.analog_rx.stale_after_ms == 0U);
+    generation = state.analog_rx.generation;
+    g_fake_now_ms += 5000U;
+    feed_stream_block(&opts, &state, 131.8);
+    assert(state.analog_rx.ctcss_tenths_hz == 1318 && state.analog_rx.generation == generation);
+
+    dsd_analog_rx_test_set_clock(NULL);
+    dsd_state_ext_free_all(&state);
+}
+
 int
 main(void) {
     exitflag = 0;
@@ -844,6 +922,7 @@ main(void) {
     test_rx_tone_tap_reads_raw_block_before_voice_filters();
     test_rx_tone_clears_on_unannounced_retune();
     test_rx_tone_unusable_rate_is_unavailable();
+    test_rx_tone_paused_stream_starts_a_new_reception();
     return 0;
 }
 

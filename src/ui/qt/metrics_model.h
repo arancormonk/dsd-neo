@@ -1449,7 +1449,7 @@ class MetricsModel : public QObject {
     /** @brief Why the rotation is staying on this row and how long is left (#508). */
     void fillScanTimingView(View& next, const dsd_opts* opts_snapshot, const dsd_state* snapshot, double now_m) const;
     /** @brief The received sub-audible tone and the configured tone policy (#522). */
-    void fillRxToneView(View& next, const dsd_opts* opts_snapshot, const dsd_state* snapshot) const;
+    void fillRxToneView(View& next, const dsd_opts* opts_snapshot, const dsd_state* snapshot, double now_m) const;
 
   public:
 #ifdef DSD_NEO_TEST_HOOKS

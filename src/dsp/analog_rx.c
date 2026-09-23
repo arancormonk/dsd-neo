@@ -18,6 +18,7 @@
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/dsp/analog_rx.h>
 #include <dsd-neo/dsp/firdes.h>
+#include <dsd-neo/platform/timing.h>
 #include <dsd-neo/runtime/analog_tones.h>
 #include <dsd-neo/runtime/log.h>
 #include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
@@ -370,7 +371,32 @@ typedef struct {
     uint64_t tune_generation;
     int log_key;              /**< ANALOG_RX_LOG_* or the logged tone in tenths of a hertz */
     int unusable_rate_logged; /**< the unusable rate already reported, so it is said once */
+    /** Live stream input: the monotonic ms past which the next block arrives after a pause
+        (published as dsd_analog_rx_publication::stale_after_ms); 0 = no block to measure from. */
+    uint64_t stale_after_ms;
 } analog_rx_session;
+
+#ifdef DSD_NEO_TEST_HOOKS
+void dsd_analog_rx_test_set_clock(uint64_t (*now_ms)(void));
+
+static uint64_t (*g_analog_rx_test_clock)(void) = NULL;
+
+/* Replace the clock the stream-pause check reads; NULL restores the monotonic clock. */
+void
+dsd_analog_rx_test_set_clock(uint64_t (*now_ms)(void)) {
+    g_analog_rx_test_clock = now_ms;
+}
+#endif
+
+static uint64_t
+analog_rx_now_ms(void) {
+#ifdef DSD_NEO_TEST_HOOKS
+    if (g_analog_rx_test_clock) {
+        return g_analog_rx_test_clock();
+    }
+#endif
+    return dsd_time_monotonic_ms();
+}
 
 static analog_rx_session*
 analog_rx_session_get(const dsd_state* state) {
@@ -444,7 +470,36 @@ analog_rx_log_change(analog_rx_session* session, const dsd_analog_rx_publication
 static void
 analog_rx_publish(dsd_state* state, analog_rx_session* session) {
     dsd_analog_rx_core_publish(&session->core, &state->analog_rx);
+    state->analog_rx.stale_after_ms = session->stale_after_ms;
     analog_rx_log_change(session, &state->analog_rx);
+}
+
+/*
+ * A live stream input whose producer went quiet. Files, Pulse and RTL deliver samples
+ * continuously -- a closed squelch arrives as zeroed blocks, which the sample-time hangover
+ * counts -- but stdin, UDP and TCP producers may squelch by sending nothing (rtl_fm without
+ * `-E pad`, a sender that stops), and then no block arrives to count. So on those inputs each
+ * block sets a deadline: its arrival plus its own duration and the hangover, and at least
+ * DSD_ANALOG_STREAM_PAUSE_MIN_MS. A block arriving past the previous deadline follows a pause
+ * as long as a dropped carrier, and returns 1. The frontends read the same deadline, so the
+ * row stops claiming a carrier while the stream is quiet.
+ */
+static int
+analog_rx_stream_paused(const dsd_opts* opts, analog_rx_session* session, unsigned int count, int rate_hz) {
+    const int live_stream = opts->audio_in_type == AUDIO_IN_STDIN || opts->audio_in_type == AUDIO_IN_UDP
+                            || opts->audio_in_type == AUDIO_IN_TCP;
+    if (!live_stream || rate_hz <= 0) {
+        session->stale_after_ms = 0;
+        return 0;
+    }
+    const uint64_t now = analog_rx_now_ms();
+    const int paused = session->stale_after_ms != 0U && now > session->stale_after_ms;
+    uint64_t allowed = (((uint64_t)count * 1000U) / (uint64_t)rate_hz) + (uint64_t)DSD_ANALOG_CARRIER_HANGOVER_MS;
+    if (allowed < (uint64_t)DSD_ANALOG_STREAM_PAUSE_MIN_MS) {
+        allowed = (uint64_t)DSD_ANALOG_STREAM_PAUSE_MIN_MS;
+    }
+    session->stale_after_ms = now + allowed;
+    return paused;
 }
 
 /* A retune nobody told the tap about shows up as a generation change: the RTL stream's for
@@ -487,6 +542,7 @@ dsd_analog_rx_reset(dsd_state* state) {
     }
     dsd_analog_rx_core_reset(&session->core);
     session->log_key = ANALOG_RX_LOG_UNSET;
+    session->stale_after_ms = 0;
     dsd_analog_rx_core_publish(&session->core, &state->analog_rx);
     /* Nothing has been processed since the reset, whatever the front end's design says; at an
        unusable rate the next block publishes UNAVAILABLE again. */
@@ -514,10 +570,17 @@ dsd_analog_rx_tap(const dsd_opts* opts, dsd_state* state, const float* block, un
         }
     } else if (analog_rx_generation_moved(opts, session)) {
         dsd_analog_rx_core_reset(&session->core);
+        session->stale_after_ms = 0;
         analog_rx_publish(state, session);
         return;
     }
     const int rate_hz = analog_rx_rate_hz(opts);
+    if (analog_rx_stream_paused(opts, session, count, rate_hz)) {
+        /* The pause outlasted the hangover: whatever arrives now is a new reception, maybe on
+           another channel, and inherits nothing -- the same reset the hangover makes. */
+        dsd_analog_rx_core_reset(&session->core);
+        session->log_key = ANALOG_RX_LOG_UNSET;
+    }
     const int squelch_open = opts->rtl_pwr > opts->rtl_squelch_level;
     if (!dsd_analog_rx_core_process(&session->core, block, (int)count, rate_hz, squelch_open)) {
         analog_rx_log_unusable_rate(session, rate_hz);

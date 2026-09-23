@@ -1301,7 +1301,7 @@ seed_rx_tone(dsd_state* state, int carrier, int tone_state, int tenths) {
 static void
 assert_rx_tone_line(const dsd_opts* opts, const dsd_state* state, const char* expected) {
     char line[64];
-    const int len = ui_format_rx_tone_line(opts, state, line, sizeof(line));
+    const int len = ui_format_rx_tone_line(opts, state, 0.0, line, sizeof(line));
     assert(len == (int)strlen(expected));
     assert(strcmp(line, expected) == 0);
 }
@@ -1342,6 +1342,17 @@ test_call_info_rx_tone_line_rendering(void) {
     assert_rx_tone_line(&opts, state, "| Rx tone: CTCSS 100.0 Hz");
     g_unicode_stub = 1;
 
+    /* A paused live stream's publication, past its deadline on the caller's clock, is no
+       carrier: the same em dash, not the tone the decoder last heard. */
+    seed_rx_tone(state, 1, DSD_ANALOG_TONE_STATE_LOCKED, 1000);
+    state->analog_rx.stale_after_ms = 2000U;
+    char stale[64];
+    assert(ui_format_rx_tone_line(&opts, state, 1.5, stale, sizeof(stale)) > 0);
+    assert(strcmp(stale, "| Rx tone: CTCSS 100.0 Hz") == 0);
+    assert(ui_format_rx_tone_line(&opts, state, 2.5, stale, sizeof(stale)) > 0);
+    assert(strcmp(stale, "| Rx tone: \xE2\x80\x94") == 0);
+    state->analog_rx.stale_after_ms = 0U;
+
     /* Rendered in the Call Info colour, restored before the newline. */
     seed_rx_tone(state, 1, DSD_ANALOG_TONE_STATE_LOCKED, 1318);
     reset_printw_capture();
@@ -1370,7 +1381,7 @@ test_call_info_rx_tone_line_rendering(void) {
        the publication. */
     opts.analog_only = 0;
     char line[64];
-    assert(ui_format_rx_tone_line(&opts, state, line, sizeof(line)) == 0);
+    assert(ui_format_rx_tone_line(&opts, state, 0.0, line, sizeof(line)) == 0);
     assert(line[0] == '\0');
     reset_printw_capture();
     ui_render_call_info_and_history(&opts, state);

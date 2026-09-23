@@ -3397,15 +3397,16 @@ ui_render_call_info_channel_line(const dsd_opts* opts, const dsd_state* state) {
 
 /* The received sub-audible tone (issue #522) without its newline: the shared app-control
    view's text, so the terminal and the Qt/Android row say the same thing. Pure, for the
-   goldens. Returns the length written, or 0 when the analog FM monitor is not running. */
+   goldens: @p now_m is the caller's monotonic clock, which ages a paused stream's
+   publication. Returns the length written, or 0 when the analog FM monitor is not running. */
 static int
-ui_format_rx_tone_line(const dsd_opts* opts, const dsd_state* state, char* buf, size_t buf_sz) {
+ui_format_rx_tone_line(const dsd_opts* opts, const dsd_state* state, double now_m, char* buf, size_t buf_sz) {
     if (!buf || buf_sz == 0U) {
         return 0;
     }
     buf[0] = '\0';
     dsd_app_rx_tone view;
-    if (dsd_app_rx_tone_view(opts, state, &view) != 1) {
+    if (dsd_app_rx_tone_view(opts, state, now_m, &view) != 1) {
         return 0;
     }
     /* The no-carrier mark is an em dash, the one non-ASCII text the view writes; a terminal
@@ -3424,7 +3425,7 @@ ui_format_rx_tone_line(const dsd_opts* opts, const dsd_state* state, char* buf, 
 static void
 ui_render_call_info_rx_tone_line(const dsd_opts* opts, const dsd_state* state) {
     char line[64];
-    if (ui_format_rx_tone_line(opts, state, line, sizeof(line)) <= 0) {
+    if (ui_format_rx_tone_line(opts, state, dsd_time_now_monotonic_s(), line, sizeof(line)) <= 0) {
         return;
     }
     printw("| ");

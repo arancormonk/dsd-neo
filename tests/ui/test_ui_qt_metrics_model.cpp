@@ -836,6 +836,21 @@ test_rx_tone() {
     model.refresh(&opts, &state);
     expect("an unchanged tone does not notify twice", changes == settled);
 
+    /* A live stream input that went quiet: past the deadline the tap published, the decoder is
+       waiting for samples and its last word no longer describes the channel. The frame's own
+       clock ages it to no carrier; a deadline still ahead keeps the tone. */
+    state.analog_rx.stale_after_ms = 1U;
+    model.refresh(&opts, &state);
+    expect("a paused stream's tone reads no carrier", model.rxToneVisible()
+                                                          && model.rxToneStatus() == DSD_APP_RX_TONE_NO_CARRIER
+                                                          && model.rxToneText() == QStringLiteral("\u2014")
+                                                          && model.rxToneTenthsHz() == 0 && !model.rxToneCarrier());
+    state.analog_rx.stale_after_ms = UINT64_MAX;
+    model.refresh(&opts, &state);
+    expect("a stream inside its deadline keeps the tone",
+           model.rxToneStatus() == DSD_APP_RX_TONE_LOCKED && model.rxToneText() == QStringLiteral("CTCSS 100.0 Hz"));
+    state.analog_rx.stale_after_ms = 0U;
+
     /* The policy verdict field is reserved: no value of it moves either text. */
     state.analog_rx.gate = DSD_ANALOG_TONE_GATE_REJECTED;
     model.refresh(&opts, &state);
