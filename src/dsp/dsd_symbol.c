@@ -1314,6 +1314,9 @@ symbol_stop_after_shutdown(float* sample_out) {
 static inline int
 symbol_open_pulse_input_and_reconfigure_output(dsd_opts* opts, dsd_state* state) {
     opts->audio_in_type = AUDIO_IN_PULSE;
+    /* A new input is a new receiver (issue #522): the tone the file or TCP stream carried does
+       not describe live Pulse audio, which at the same rate nothing else would tell the tap. */
+    dsd_analog_rx_reset(state);
     if (openAudioInput(opts) != 0) {
         dsd_request_shutdown(opts, state);
         return 0;

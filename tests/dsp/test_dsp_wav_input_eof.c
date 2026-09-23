@@ -6,6 +6,7 @@
 #include <assert.h>
 #include <dsd-neo/core/audio.h>
 #include <dsd-neo/core/audio_filters.h>
+#include <dsd-neo/core/frontend_types.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/power.h>
 #include <dsd-neo/core/state.h>
@@ -16,6 +17,7 @@
 #include <dsd-neo/runtime/exitflag.h>
 #include <dsd-neo/runtime/shutdown.h>
 #include <sndfile.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include "dsd-neo/core/opts_fwd.h"
@@ -24,6 +26,8 @@
 #include "test_support.h"
 
 static int g_cleanup_calls = 0;
+static int g_open_audio_input_rc = -1;
+static int g_open_audio_input_calls = 0;
 
 dsd_socket_t
 // NOLINTNEXTLINE(misc-use-internal-linkage)
@@ -37,7 +41,8 @@ int
 // NOLINTNEXTLINE(misc-use-internal-linkage)
 openAudioInput(dsd_opts* opts) {
     (void)opts;
-    return -1;
+    g_open_audio_input_calls++;
+    return g_open_audio_input_rc;
 }
 
 int
@@ -138,8 +143,66 @@ create_one_sample_wav(char* out_path, size_t out_path_size) {
     return ok ? 0 : -1;
 }
 
+/*
+ * An interactive terminal session keeps going on live Pulse input when the file ends. That is
+ * a new receiver: the tone the file carried at its end must not stay on screen for the live
+ * audio (issue #522), which at the same rate nothing else would tell the analog tap.
+ */
+static void
+test_eof_onto_live_input_clears_received_tone(void) {
+    char wav_path[DSD_TEST_PATH_MAX];
+    assert(create_one_sample_wav(wav_path, sizeof(wav_path)) == 0);
+
+    static dsd_opts opts;
+    static dsd_state state;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    opts.audio_in_file_info = (SF_INFO*)calloc(1, sizeof(*opts.audio_in_file_info));
+    assert(opts.audio_in_file_info != NULL);
+    opts.audio_in_file = sf_open(wav_path, SFM_READ, opts.audio_in_file_info);
+    assert(opts.audio_in_file != NULL);
+    opts.audio_in_type = AUDIO_IN_WAV;
+    opts.audio_out_type = 0;
+    opts.frontend_kind = DSD_FRONTEND_TERMINAL;
+    opts.input_volume_multiplier = 1;
+    opts.wav_sample_rate = 48000;
+    DSD_SNPRINTF(opts.audio_in_dev, sizeof(opts.audio_in_dev), "%s", wav_path);
+    state.samplesPerSymbol = 1;
+    state.symbolCenter = 0;
+    state.rf_mod = 0;
+    exitflag = 0;
+    g_cleanup_calls = 0;
+    g_open_audio_input_rc = 0;
+    g_open_audio_input_calls = 0;
+
+    /* A tone the tap locked on the file. */
+    state.analog_rx.carrier_open = 1;
+    state.analog_rx.tone_state = DSD_ANALOG_TONE_STATE_LOCKED;
+    state.analog_rx.tone_kind = DSD_ANALOG_TONE_KIND_CTCSS;
+    state.analog_rx.ctcss_tenths_hz = 1000;
+    const uint32_t seeded = state.analog_rx.generation;
+
+    assert(getSymbol(&opts, &state, 0) == 1234.0f);
+    (void)getSymbol(&opts, &state, 0);
+    assert(g_open_audio_input_calls == 1);
+    assert(g_cleanup_calls == 0 && exitflag == 0);
+    assert(opts.audio_in_type == AUDIO_IN_PULSE);
+    assert(opts.audio_in_file == NULL);
+    assert(state.analog_rx.tone_state != DSD_ANALOG_TONE_STATE_LOCKED);
+    assert(state.analog_rx.tone_kind == DSD_ANALOG_TONE_KIND_NONE);
+    assert(state.analog_rx.ctcss_tenths_hz == 0 && state.analog_rx.carrier_open == 0);
+    assert(state.analog_rx.generation != seeded);
+
+    g_open_audio_input_rc = -1;
+    free(opts.audio_in_file_info);
+    opts.audio_in_file_info = NULL;
+    remove(wav_path);
+}
+
 int
 main(void) {
+    test_eof_onto_live_input_clears_received_tone();
+
     char wav_path[DSD_TEST_PATH_MAX];
     assert(create_one_sample_wav(wav_path, sizeof(wav_path)) == 0);
 
@@ -162,6 +225,7 @@ main(void) {
     state.symbolCenter = 0;
     state.rf_mod = 0;
     exitflag = 0;
+    g_cleanup_calls = 0;
 
     assert(getSymbol(&opts, &state, 0) == 1234.0f);
     assert(g_cleanup_calls == 0);
