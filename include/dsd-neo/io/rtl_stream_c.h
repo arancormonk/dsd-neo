@@ -257,7 +257,9 @@ int rtl_stream_request_demod_profile(int cqpsk_enable, int symbol_rate_hz, int l
  * Covers a width-only change, an FM<->AM switch and an analog<->digital switch. The request is validated on the
  * caller's thread (against the published demod rate), then applied by the demod thread between blocks, before any
  * demod profile queued alongside it; a newer request overwrites an unconsumed older one. With no pipeline running
- * there is nothing to switch: the next stream open configures the front end from the options.
+ * there is nothing to switch and no demod rate to check against: only the kind, range and DSD_NEO_CHANNEL_LPF rules
+ * apply, and the next stream open configures the front end from the options and checks the width against the rate
+ * it actually delivers.
  *
  * Entering the analog family (or leaving it) re-applies the defaults a fresh stream open of that family would choose,
  * resets the filter state, clears the output ring and bumps the output generation. Leaving it for digital expects the
@@ -267,7 +269,7 @@ int rtl_stream_request_demod_profile(int cqpsk_enable, int symbol_rate_hz, int l
  * @param kind     dsd_analog_demod for the analog family (AM is refused until the front end can demodulate it).
  * @param width_hz Explicit analog channel width in Hz, or 0 for the kind's default (ignored for digital).
  * @return 0 when queued or applied; -1 when refused (unknown family/kind, AM, a width outside the kind's range or
- *         unrealizable at the current rate, or an explicit width while DSD_NEO_CHANNEL_LPF=0).
+ *         unrealizable at the running stream's rate, or an explicit width while DSD_NEO_CHANNEL_LPF=0).
  */
 int rtl_stream_request_analog_profile(int family, int kind, int width_hz);
 

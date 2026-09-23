@@ -192,10 +192,12 @@ struct dsd_opts {
     /* Minimum seconds between repeated low-level warnings. */
     int input_warn_cooldown_sec;
     int analog_only;
-    /* Analog demodulator kind (dsd_analog_demod); written only by the decode presets. */
+    /* Analog demodulator kind (dsd_analog_demod): set by the decode presets (and restored with the scan-settings
+       snapshot when a typed row is left); no width, CLI or menu code writes it directly. */
     int analog_demod;
     /* Configured analog channel widths in Hz (runtime/analog_channel.h ranges). 0 = the kind's default,
-       not an explicit request: only an explicit width forces the channel filter on or is saved. */
+       not an explicit request, and not saved. An explicit width, or the AM default, forces the channel filter on;
+       the unset NFM default keeps the historical enable rule. */
     int analog_nfm_bandwidth_hz;
     int analog_am_bandwidth_hz;
     int pulse_raw_rate_in;

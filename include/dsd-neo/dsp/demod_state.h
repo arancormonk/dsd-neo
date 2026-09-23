@@ -184,9 +184,9 @@ struct demod_state {
     /* Full RF channel width in Hz the analog filter protects (cutoff W/2 + 600 Hz, 1200 Hz transition).
        0 keeps the profile design, including the legacy WIDE design for an unset default the rate cannot fit. */
     int channel_lpf_width_hz;
-    /* The explicit analog width the stream was asked for (0 = the kind's default), kept so a later rate change can
-       resolve the channel again: the unset default between 16 kHz and the legacy WIDE design, and an explicit
-       width against the new rate. */
+    /* The analog width the stream was asked for (0 = the unset NFM default; the AM default counts as requested),
+       kept so a later rate change can resolve the channel again: the unset default between 16 kHz and the legacy
+       WIDE design, and a requested width against the new rate. */
     int analog_width_request_hz;
     float channel_pwr; /* mean power (RMS^2 proxy) measured after channel LPF */
     /* Squelch threshold (linear power); 0 = disabled. Written from the control thread

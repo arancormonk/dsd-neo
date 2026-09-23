@@ -970,6 +970,14 @@ demod_error_text(char* err, size_t err_size, const char* text) {
 }
 
 int
+rtl_demod_analog_requested_width_hz(int kind, int explicit_width_hz) {
+    if (explicit_width_hz > 0) {
+        return explicit_width_hz;
+    }
+    return kind == DSD_ANALOG_DEMOD_FM ? 0 : dsd_analog_width_default_hz(kind);
+}
+
+int
 rtl_demod_check_analog_channel(int kind, int explicit_width_hz, int rate_hz, char* err, size_t err_size) {
     demod_error_text(err, err_size, "");
     if (!dsd_analog_demod_is_valid(kind)) {
@@ -982,23 +990,35 @@ rtl_demod_check_analog_channel(int kind, int explicit_width_hz, int rate_hz, cha
                          "NFM only");
         return -1;
     }
-    if (explicit_width_hz <= 0) {
+    if (explicit_width_hz <= 0 && kind == DSD_ANALOG_DEMOD_FM) {
         /* The unset NFM default keeps the historical filter behaviour at every rate. */
         return 0;
     }
+    /* Every other width is a request for that filter, including the unset AM default: AM is new, so its default is
+       held to the same rules as an explicit width. */
+    const int width_hz = rtl_demod_analog_requested_width_hz(kind, explicit_width_hz);
     const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
     if (cfg && cfg->channel_lpf_is_set && cfg->channel_lpf_enable == 0) {
-        if (err && err_size > 0U) {
+        if (err && err_size > 0U && explicit_width_hz > 0) {
             char width_text[DSD_ANALOG_WIDTH_TEXT_MAX];
             (void)dsd_analog_width_format(explicit_width_hz, width_text, sizeof width_text);
             DSD_SNPRINTF(err, err_size,
                          "%s bandwidth %s needs the channel filter, but DSD_NEO_CHANNEL_LPF=0 turns it off; unset "
                          "DSD_NEO_CHANNEL_LPF or drop the explicit bandwidth",
                          dsd_analog_demod_label(kind), width_text);
+        } else if (err && err_size > 0U) {
+            DSD_SNPRINTF(err, err_size,
+                         "%s reception needs the channel filter, but DSD_NEO_CHANNEL_LPF=0 turns it off; unset "
+                         "DSD_NEO_CHANNEL_LPF",
+                         dsd_analog_demod_label(kind));
         }
         return -1;
     }
-    return dsd_analog_width_check(kind, explicit_width_hz, rate_hz, err, err_size);
+    if (rate_hz <= 0 && dsd_analog_width_in_range(kind, width_hz)) {
+        /* No DSP rate yet (no stream running): the next stream open checks the width against the rate it delivers. */
+        return 0;
+    }
+    return dsd_analog_width_check(kind, width_hz, rate_hz, err, err_size);
 }
 
 int
@@ -1011,19 +1031,20 @@ rtl_demod_apply_analog_channel(struct demod_state* demod, int kind, int explicit
     const int prev_enable = demod->channel_lpf_enable;
     const int prev_profile = demod->channel_lpf_profile;
     const int analog_kind = dsd_analog_demod_is_valid(kind) ? kind : DSD_ANALOG_DEMOD_FM;
-    const int width_hz = dsd_analog_width_effective_hz(analog_kind, explicit_width_hz);
+    const int requested_hz = rtl_demod_analog_requested_width_hz(analog_kind, explicit_width_hz);
+    const int width_hz = dsd_analog_width_effective_hz(analog_kind, requested_hz);
 
     demod->analog_family = 1;
     demod->analog_demod = analog_kind;
-    demod->analog_width_request_hz = explicit_width_hz > 0 ? explicit_width_hz : 0;
+    demod->analog_width_request_hz = requested_hz;
     demod->channel_lpf_profile = DSD_CH_LPF_PROFILE_WIDE;
-    if (explicit_width_hz > 0) {
-        /* An explicit width is a request for that filter: it turns the channel LPF on. */
+    if (requested_hz > 0) {
+        /* A requested width (explicit, or the AM default) is a request for that filter: it turns the channel LPF on. */
         demod->channel_lpf_enable = 1;
         demod->channel_lpf_width_hz = width_hz;
     } else {
-        /* The unset default keeps the enable decision stream configuration made, and where the rate cannot fit the
-           default width the legacy WIDE design (width 0) stays in charge rather than failing the stream. */
+        /* The unset NFM default keeps the enable decision stream configuration made, and where the rate cannot fit
+           the default width the legacy WIDE design (width 0) stays in charge rather than failing the stream. */
         demod->channel_lpf_enable = demod->channel_lpf_default_enable;
         demod->channel_lpf_width_hz = dsd_analog_width_realizable(width_hz, demod->rate_out) ? width_hz : 0;
     }
@@ -1233,6 +1254,7 @@ rtl_demod_set_analog_kind(struct demod_state* demod, int kind) {
         return 0;
     }
     demod->analog_demod = kind;
+    /* rtl_demod_check_analog_channel() refuses AM before a stream gets here, so no AM demodulator is installed yet. */
     demod->mode_demod = &dsd_fm_demod;
     /* FM keeps the configured de-emphasis; AM runs without it. */
     demod->deemph = (kind == DSD_ANALOG_DEMOD_FM) ? 1 : 0;
@@ -1264,7 +1286,7 @@ rtl_demod_enter_analog_family(struct demod_state* demod, struct output_state* ou
 
 void
 rtl_demod_enter_digital_family(struct demod_state* demod, struct output_state* output, int channel_profile,
-                               int rtl_dsp_bw_hz) {
+                               int cqpsk_enable, int symbol_rate_hz, int rtl_dsp_bw_hz) {
     if (!demod || !output) {
         return;
     }
@@ -1273,7 +1295,6 @@ rtl_demod_enter_digital_family(struct demod_state* demod, struct output_state* o
     demod->channel_lpf_width_hz = 0;
     demod->analog_width_request_hz = 0;
     demod->cqpsk_enable = 0;
-    demod->output_kind = DSD_DEMOD_OUTPUT_FSK_DISCRIMINATOR;
     demod->ted_enabled = 0;
     demod->mode_demod = &dsd_fm_demod;
     /* Digital opens never run de-emphasis, and never compute its coefficient. */
@@ -1285,7 +1306,18 @@ rtl_demod_enter_digital_family(struct demod_state* demod, struct output_state* o
         (channel_profile >= DSD_CH_LPF_PROFILE_WIDE && channel_profile <= DSD_CH_LPF_PROFILE_P25_CQPSK)
             ? channel_profile
             : DSD_CH_LPF_PROFILE_WIDE;
+    if (symbol_rate_hz > 0) {
+        demod->symbol_rate_hz = symbol_rate_hz;
+    }
+    /* The digital resampler depends on the symbol profile the family lands on, exactly as a fresh open decides it:
+       CQPSK symbols are never resampled, and the FSK discriminator stream only when that profile's symbol rate needs
+       it at a forced rate. It is decided here, once, so the output rate the caller commits is already final; the
+       analog monitor's 4800 sym/s placeholder would pick the wrong chain at forced rates such as 78125 or 60000 Hz.
+       The family itself lands on the FSK discriminator; the CQPSK toggle that follows the switch changes the output
+       kind. */
+    demod->output_kind = cqpsk_enable > 0 ? DSD_DEMOD_OUTPUT_SYMBOL_CQPSK : DSD_DEMOD_OUTPUT_FSK_DISCRIMINATOR;
     rtl_demod_maybe_update_resampler_after_rate_change(demod, output, rtl_dsp_bw_hz);
+    demod->output_kind = DSD_DEMOD_OUTPUT_FSK_DISCRIMINATOR;
     if (!demod->resamp_enabled) {
         /* Match a fresh digital open, which never configured the monitor's ratio. */
         rtl_demod_disable_resampler(demod, 1);

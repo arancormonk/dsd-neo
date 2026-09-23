@@ -213,6 +213,17 @@ typedef struct rtl_stream_test_demod_fields {
     int fll_freq_urad;
     int fll_phase_urad;
     int ted_awaiting_init;
+    /* Monitor audio state, in millionths: a fresh open starts de-emphasis, DC and the audio LPF at zero and the
+       squelch envelope open (1000000). */
+    int deemph_avg_u;
+    int dc_avg_u;
+    int audio_lpf_state_u;
+    int squelch_env_u;
+    int squelch_gate_open;
+    /* 1 when the filter delay lines hold nothing (no resampler counts as clear), as after a fresh open. */
+    int channel_hist_clear;
+    int hb_hist_clear;
+    int resamp_hist_clear;
 } rtl_stream_test_demod_fields;
 
 /* What svc_publish_symbol_profile() queues for a digital mode after the family request. */
@@ -248,10 +259,46 @@ typedef struct rtl_stream_test_family_switch_result {
 } rtl_stream_test_family_switch_result;
 
 /* Open @p digital_opts at @p rate_hz, switch live to @p analog_opts and back (each request consumed the way the
- * demod thread consumes it between blocks), and report each state next to a fresh open of the same options. */
+ * demod thread consumes it between blocks), and report each state next to a fresh open of the same options. Before
+ * each switch the session being left gets running carrier/timing loops and stale monitor audio and filter state.
+ * @p forced_rate_out_hz > 0 has the device settle every open on that demod rate instead (a fixed rate grid, such as
+ * Airspy's 78125 Hz), which puts the digital resampler under its forced-rate policy. */
 int rtl_stream_test_analog_family_switch(const dsd_opts* digital_opts, const dsd_opts* analog_opts, int rate_hz,
-                                         const rtl_stream_test_digital_request* digital_request,
+                                         int forced_rate_out_hz, const rtl_stream_test_digital_request* digital_request,
                                          rtl_stream_test_family_switch_result* out);
+
+typedef struct rtl_stream_test_width_change_result {
+    int request_rc;
+    int deferred_until_consume; /* 1 when the queued request left the channel width alone until consumed */
+    int width_after;
+    int lpf_enable_after;
+    int output_kind_after;
+    int analog_family_after;
+    int plan_invalidated; /* the consume dropped the channel-filter plan (taps and width) */
+    int channel_hist_cleared;
+    int hb_hist_cleared;
+    int published_width_hz;
+    int published_lpf_on;
+    uint32_t generation_before;
+    uint32_t generation_after;
+    size_t used_before;
+    size_t used_after;
+    /* A second request for the width already running. */
+    int same_width_rc;
+    int same_width_kept_histories; /* 1 when that request left the (re-seeded) filter histories alone */
+    int same_width_kept_plan;
+} rtl_stream_test_width_change_result;
+
+/* Run an analog stream at @p rate_hz with NFM width @p width_before_hz (0 = default), give it a designed channel plan
+ * and stale filter histories, queue a width-only request for @p width_after_hz while it runs, consume it at a
+ * demod-thread block boundary, then queue the same width again. */
+int rtl_stream_test_analog_width_change(int rate_hz, int width_before_hz, int width_after_hz,
+                                        rtl_stream_test_width_change_result* out);
+
+/* With no stream running and @p stale_rate_out_hz left in the published rate mirror by an earlier session, ask for an
+ * analog profile (@p kind, @p width_hz) through the live request and through a retune profile. Returns the live
+ * request's result and stores the retune profile's in @p out_retune_rc; any profile queued is discarded. */
+int rtl_stream_test_analog_request_without_stream(int stale_rate_out_hz, int kind, int width_hz, int* out_retune_rc);
 
 typedef struct rtl_stream_test_audio_reset_result {
     float deemph_avg;

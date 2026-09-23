@@ -1322,6 +1322,55 @@ expect_analog_am_refused(void) {
     return rc;
 }
 
+/*
+ * Only the unset NFM default keeps the historical enable rule and the legacy WIDE fallback. The unset AM default is a
+ * requested width like any explicit one: it forces the channel filter on at the AM default and is validated. Pinned
+ * below the stream's AM refusal so the rule holds when that refusal goes.
+ */
+static int
+expect_unset_default_rule_keyed_on_nfm(void) {
+    int rc = 0;
+    set_channel_lpf_env(NULL);
+    rc |=
+        expect_int_eq("unset NFM default stays unset", rtl_demod_analog_requested_width_hz(DSD_ANALOG_DEMOD_FM, 0), 0);
+    rc |= expect_int_eq("unset AM default is requested", rtl_demod_analog_requested_width_hz(DSD_ANALOG_DEMOD_AM, 0),
+                        DSD_ANALOG_AM_WIDTH_DEFAULT_HZ);
+    rc |= expect_int_eq("explicit width kept", rtl_demod_analog_requested_width_hz(DSD_ANALOG_DEMOD_AM, 9000), 9000);
+
+    /* 12 kHz DSP bandwidth: rate_in below 20 kHz, so the legacy rule leaves the filter off for the NFM default. */
+    demod_state* demod = static_cast<demod_state*>(std::calloc(1, sizeof(*demod)));
+    static dsd_opts opts;
+    make_analog_opts(&opts);
+    char err[DSD_ANALOG_ERROR_TEXT_MAX] = {0};
+    rc |= expect_int_eq("12 kHz NFM default start", configure_and_finalize(demod, &opts, 12000, err, sizeof err), 0);
+    rc |= expect_int_eq("12 kHz NFM default leaves LPF off", demod->channel_lpf_enable, 0);
+    (void)rtl_demod_apply_analog_channel(demod, DSD_ANALOG_DEMOD_AM, 0);
+    rc |= expect_int_eq("12 kHz AM default forces LPF on", demod->channel_lpf_enable, 1);
+    rc |= expect_int_eq("12 kHz AM default width", demod->channel_lpf_width_hz, DSD_ANALOG_AM_WIDTH_DEFAULT_HZ);
+    rc |= expect_int_eq("AM default kept for rate changes", demod->analog_width_request_hz,
+                        DSD_ANALOG_AM_WIDTH_DEFAULT_HZ);
+    (void)rtl_demod_apply_analog_channel(demod, DSD_ANALOG_DEMOD_FM, 0);
+    rc |= expect_int_eq("back to the NFM default restores the legacy rule", demod->channel_lpf_enable, 0);
+    rc |= expect_int_eq("NFM default request stays unset", demod->analog_width_request_hz, 0);
+    rtl_demod_cleanup(demod);
+    std::free(demod);
+
+    /* With no DSP rate yet (no stream), only the kind, range and environment rules apply. */
+    rc |= expect_int_eq("no-rate in-range width accepted",
+                        rtl_demod_check_analog_channel(DSD_ANALOG_DEMOD_FM, 25000, 0, err, sizeof err), 0);
+    rc |= expect_int_eq("no-rate out-of-range width refused",
+                        rtl_demod_check_analog_channel(DSD_ANALOG_DEMOD_FM, 30000, 0, err, sizeof err), -1);
+    if (!std::strstr(err, "outside the supported range")) {
+        DSD_FPRINTF(stderr, "no-rate range message: %s\n", err);
+        rc = 1;
+    }
+    set_channel_lpf_env("0");
+    rc |= expect_int_eq("no-rate explicit width with LPF env off refused",
+                        rtl_demod_check_analog_channel(DSD_ANALOG_DEMOD_FM, 12500, 0, err, sizeof err), -1);
+    set_channel_lpf_env(NULL);
+    return rc;
+}
+
 int
 main(void) {
     int rc = 0;
@@ -1499,6 +1548,7 @@ main(void) {
     rc |= expect_analog_env_off_conflict();
     rc |= expect_m17_encoder_unchanged();
     rc |= expect_analog_am_refused();
+    rc |= expect_unset_default_rule_keyed_on_nfm();
 
     rc |= expect_live_symbol_status();
     rc |= expect_cqpsk_toggle_clears_output_contract_backlog();

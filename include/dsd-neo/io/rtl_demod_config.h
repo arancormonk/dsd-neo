@@ -85,11 +85,21 @@ int rtl_demod_digital_resample_target_for(int output_kind, int digital_resample_
 int rtl_demod_monitor_output_rate_for(int resamp_target_hz, int rate_out_hz);
 
 /**
+ * The channel width @p kind is requested at: @p explicit_width_hz when positive, otherwise 0 (the legacy default) for
+ * NFM and the kind's default for AM. Only the unset NFM default keeps the historical enable rule and WIDE fallback;
+ * every requested width turns the channel filter on and is validated.
+ */
+int rtl_demod_analog_requested_width_hz(int kind, int explicit_width_hz);
+
+/**
  * Check the analog channel a stream would run at @p rate_hz.
  *
- * Refuses AM (the radio front end has no AM demodulator yet), an explicit width while DSD_NEO_CHANNEL_LPF=0 turns
- * the channel filter off, and an explicit width the rate cannot realize (dsd_analog_width_check()). The unset NFM
- * default (@p explicit_width_hz 0) never fails: it keeps the historical filter behaviour.
+ * Refuses AM (the radio front end has no AM demodulator yet), a requested width while DSD_NEO_CHANNEL_LPF=0 turns
+ * the channel filter off, and a requested width the rate cannot realize (dsd_analog_width_check()). The unset NFM
+ * default (@p explicit_width_hz 0 with FM) never fails: it keeps the historical filter behaviour. The unset AM default
+ * is checked like an explicit width (see rtl_demod_analog_requested_width_hz()). @p rate_hz <= 0 means no DSP rate is
+ * known yet (no stream running): then only the kind, environment and range rules apply, and the next stream open
+ * checks the width against the rate it delivers.
  *
  * @return 0 when the stream may run it, -1 with an actionable message in @p err otherwise.
  */
@@ -98,10 +108,11 @@ int rtl_demod_check_analog_channel(int kind, int explicit_width_hz, int rate_hz,
 /**
  * Put @p demod on the analog channel for @p kind at its current rates.
  *
- * Marks the analog family, selects the WIDE profile, and sets the channel width: an explicit width turns the channel
- * LPF on; the unset default keeps the enable decision stream configuration made (DSD_NEO_CHANNEL_LPF, else
- * rate_in >= 20 kHz; channel_lpf_default_enable) and falls back to the legacy WIDE design (width 0) where the rate
- * cannot fit the default width. Does not validate; see rtl_demod_check_analog_channel().
+ * Marks the analog family, selects the WIDE profile, and sets the channel width: a requested width (explicit, or the
+ * AM default; rtl_demod_analog_requested_width_hz()) turns the channel LPF on; the unset NFM default keeps the enable
+ * decision stream configuration made (DSD_NEO_CHANNEL_LPF, else rate_in >= 20 kHz; channel_lpf_default_enable) and
+ * falls back to the legacy WIDE design (width 0) where the rate cannot fit the default width. Does not validate; see
+ * rtl_demod_check_analog_channel().
  *
  * @return 1 when the channel filter configuration changed, else 0.
  */
@@ -163,10 +174,12 @@ void rtl_demod_enter_analog_family(struct demod_state* demod, struct output_stat
 /**
  * Move a running front end to the digital family with fresh-open digital defaults (FSK discriminator output, no
  * de-emphasis, profile channel filter, digital resampler policy) and fresh filter state. The symbol profile and
- * CQPSK family follow in a demod-profile request. The caller clears the output ring.
+ * CQPSK family follow in a demod-profile request; @p cqpsk_enable (> 0 for CQPSK) and @p symbol_rate_hz (> 0, else
+ * the current one) name that profile, so the resampler and the output rate in @p output are decided for it the way
+ * a fresh open of it would decide them. The caller clears the output ring.
  */
 void rtl_demod_enter_digital_family(struct demod_state* demod, struct output_state* output, int channel_profile,
-                                    int rtl_dsp_bw_hz);
+                                    int cqpsk_enable, int symbol_rate_hz, int rtl_dsp_bw_hz);
 
 /**
  * Recompute resampler configuration when the demod output rate changes,
