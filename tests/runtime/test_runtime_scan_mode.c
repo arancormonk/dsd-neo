@@ -333,8 +333,29 @@ test_squelch_row_override_scope(void) {
     assert(g_squelch_pushes == 9 && level_is(g_squelch_pushed, edited));
     assert(dsd_scan_mode_row_options(s) == NULL);
 
+    /* A command that ends the scan while the scope is suspended for it (CONFIG_APPLY stopping the
+     * scanner) leaves from the configured values already in dsd_opts. The demod was last told the
+     * row's threshold, so leaving has to tell it the default even though dsd_opts did not move. */
+    assert(dsd_scan_mode_enter(o, s, DSD_SCAN_MODE_DMR) == 0);
+    assert(dsd_scan_mode_options(o, s, &row) == 0);
+    assert(level_is(g_squelch_pushed, dsd_squelch_level_from_sql(-40.0)));
+    assert(dsd_scan_mode_suspend(o, s));
+    const int before_suspended_leave = g_squelch_pushes;
+    dsd_scan_mode_leave(o, s);
+    assert(level_is(o->rtl_squelch_level, edited));
+    assert(g_squelch_pushes == before_suspended_leave + 1 && level_is(g_squelch_pushed, edited));
+    /* Entering a row while a command holds the scope suspended is the same story. */
+    assert(dsd_scan_mode_enter(o, s, DSD_SCAN_MODE_DMR) == 0);
+    assert(dsd_scan_mode_options(o, s, &row) == 0);
+    assert(dsd_scan_mode_suspend(o, s));
+    const int before_suspended_enter = g_squelch_pushes;
+    assert(dsd_scan_mode_enter(o, s, DSD_SCAN_MODE_P25) == 0);
+    assert(g_squelch_pushes == before_suspended_enter + 1 && level_is(g_squelch_pushed, edited));
+    dsd_scan_mode_leave(o, s);
+
     /* A PCM input has no demodulator to push to, but the row still owns the threshold the
      * analog monitor and carrier stamp read from dsd_opts. */
+    const int before_pcm = g_squelch_pushes;
     o->audio_in_type = AUDIO_IN_WAV;
     assert(dsd_scan_mode_enter(o, s, DSD_SCAN_MODE_DMR) == 0);
     assert(dsd_scan_mode_options(o, s, &row) == 0);
@@ -343,7 +364,7 @@ test_squelch_row_override_scope(void) {
     assert(dsd_scan_mode_resume(o, s) == 0);
     dsd_scan_mode_leave(o, s);
     assert(level_is(o->rtl_squelch_level, edited));
-    assert(g_squelch_pushes == 9);
+    assert(g_squelch_pushes == before_pcm);
 
     dsd_rtl_stream_metrics_hooks_set(NULL);
     dsd_state_ext_free_all(s);

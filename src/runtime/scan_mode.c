@@ -489,9 +489,12 @@ scan_squelch_push(const dsd_opts* opts) {
     }
 }
 
+/* A suspended scope already holds the configured values in dsd_opts, while the demod was last
+ * told the row's threshold (suspend does not push; resume does). An entry point that runs on a
+ * suspended scope therefore cannot judge "changed" from dsd_opts and always pushes. */
 static void
-scan_squelch_push_if_changed(const dsd_opts* opts, double before) {
-    if (scan_squelch_changed(before, opts->rtl_squelch_level)) {
+scan_squelch_push_if_changed(const dsd_opts* opts, double before, int was_suspended) {
+    if (was_suspended || scan_squelch_changed(before, opts->rtl_squelch_level)) {
         scan_squelch_push(opts);
     }
 }
@@ -517,7 +520,7 @@ dsd_scan_mode_options(dsd_opts* opts, dsd_state* state, const dsd_scan_option_va
         scan_settings_restore_row_opts(&scope->configured, opts);
         state->M = scope->configured.force_key;
         scan_options_apply(opts, state, &scope->options);
-        scan_squelch_push_if_changed(opts, squelch_before);
+        scan_squelch_push_if_changed(opts, squelch_before, 0);
     }
     return 0;
 }
@@ -553,12 +556,13 @@ dsd_scan_mode_enter(dsd_opts* opts, dsd_state* state, dsd_scan_mode mode) {
         return -1;
     }
     const double squelch_before = opts->rtl_squelch_level;
+    const int was_suspended = scope->suspended;
     DSD_MEMSET(&scope->options, 0, sizeof(scope->options));
     scope->modulation = 0;
     scope->mode = mode;
     scope->suspended = 0;
     scan_scope_apply(opts, state, scope);
-    scan_squelch_push_if_changed(opts, squelch_before);
+    scan_squelch_push_if_changed(opts, squelch_before, was_suspended);
     return 0;
 }
 
@@ -581,11 +585,12 @@ dsd_scan_mode_leave(dsd_opts* opts, dsd_state* state) {
         return;
     }
     const double squelch_before = opts->rtl_squelch_level;
-    if (!scope->suspended) {
+    const int was_suspended = scope->suspended;
+    if (!was_suspended) {
         dsd_scan_settings_restore(&scope->configured, opts, state);
     }
     (void)dsd_state_ext_set(state, DSD_STATE_EXT_RUNTIME_SCAN_MODE, NULL, NULL);
-    scan_squelch_push_if_changed(opts, squelch_before);
+    scan_squelch_push_if_changed(opts, squelch_before, was_suspended);
 }
 
 int

@@ -126,9 +126,10 @@ int dsd_scan_mode_enter(dsd_opts* opts, dsd_state* state, dsd_scan_mode mode);
  *
  * Squelch (DSD_SCAN_OPT_SQUELCH) is the one row option with hardware behind it. enter, options
  * and leave push the effective level to the RTL demodulator through the runtime metrics hook
- * when it changed and the input is AUDIO_IN_RTL; resume always re-pushes it there, because the
- * command that ran while suspended may have pushed the configured default itself. prepare
- * never pushes. */
+ * when it changed and the input is AUDIO_IN_RTL; resume, and an enter or leave that finds the
+ * scope suspended, always push it there, because the command that ran while suspended may have
+ * pushed the configured default itself (or the demod still holds the row's). prepare never
+ * pushes. */
 int dsd_scan_mode_options(dsd_opts* opts, dsd_state* state, const dsd_scan_option_values* values);
 /** Restore the exact configured baseline and release the scope. */
 void dsd_scan_mode_leave(dsd_opts* opts, dsd_state* state);

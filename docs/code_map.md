@@ -784,9 +784,10 @@ External dependencies (resolved via CMake):
   value", applied in `option_argument()` so the parser and `dsd_scan_options_visit_files()` agree. The level lives in
   `dsd_scan_settings::rtl_squelch_level` (a double, first in the struct, compared with a tolerance) beside the other
   row options, outside `dsd_scan_settings_equal()`. `dsd_scan_mode_enter/options/leave` push it through the runtime
-  metrics hook `set_channel_squelch` when it changed and the input is `AUDIO_IN_RTL`; `dsd_scan_mode_resume` always
-  re-pushes it, because a command run while suspended (`RTL_SET_SQL_DB`, `CONFIG_APPLY`) may have pushed the
-  configured default itself. `dsd_scan_mode_prepare` and `scan_scope_apply` never push. `RTL_SET_SQL_DB` and
+  metrics hook `set_channel_squelch` when it changed and the input is `AUDIO_IN_RTL`; `dsd_scan_mode_resume`, and an
+  enter or leave that finds the scope suspended (a command stopping the scanner), always push it, because a command
+  run while suspended (`RTL_SET_SQL_DB`, `CONFIG_APPLY`) may have pushed the configured default itself, or the demod
+  may still hold the row's. `dsd_scan_mode_prepare` and `scan_scope_apply` never push. `RTL_SET_SQL_DB` and
   `AIRSPY_SET` are scoped commands; `RTL_ENABLE_INPUT`/`AIRSPY_ENABLE_INPUT` rewrite no squelch and stay unscoped, so
   the stream they open starts on the threshold in force. Saves read `rtl_sql` from `dsd_scan_mode_configured_view()`.
   On non-radio inputs the level still feeds `dsd_squelch_opens()` (the analog monitor/carrier gate); channel and
