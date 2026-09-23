@@ -1421,6 +1421,44 @@ expect_post_decimation_rule(void) {
     return rc;
 }
 
+/*
+ * CQPSK toggled on under -fA keeps the analog family flag but runs the P25 CQPSK profile filter. A retune that moves
+ * rate_out must not re-apply the analog channel (WIDE) over it.
+ */
+static int
+expect_rate_refresh_leaves_cqpsk_profile(void) {
+    int rc = 0;
+    set_channel_lpf_env(NULL);
+    demod_state* demod = static_cast<demod_state*>(std::calloc(1, sizeof(*demod)));
+    static dsd_opts opts;
+    make_analog_opts(&opts);
+    opts.analog_nfm_bandwidth_hz = 12500;
+    char err[DSD_ANALOG_ERROR_TEXT_MAX] = {0};
+    rc |=
+        expect_int_eq("analog start for CQPSK toggle", configure_and_finalize(demod, &opts, 48000, err, sizeof err), 0);
+    demod->cqpsk_enable = 1;
+    demod->output_kind = DSD_DEMOD_OUTPUT_SYMBOL_CQPSK;
+    demod->channel_lpf_profile = DSD_CH_LPF_PROFILE_P25_CQPSK;
+    const int enable_before = demod->channel_lpf_enable;
+    demod->rate_out = 78125;
+    rc |=
+        expect_int_eq("CQPSK under -fA refresh", rtl_demod_refresh_analog_channel_for_rate(demod, err, sizeof err), 0);
+    rc |= expect_int_eq("CQPSK profile kept across the rate change", demod->channel_lpf_profile,
+                        DSD_CH_LPF_PROFILE_P25_CQPSK);
+    rc |= expect_int_eq("CQPSK filter enable kept", demod->channel_lpf_enable, enable_before);
+    rc |= expect_int_eq("analog family still set", demod->analog_family, 1);
+
+    /* Back on the monitor output, the refresh resolves the analog channel as before. */
+    demod->cqpsk_enable = 0;
+    demod->output_kind = DSD_DEMOD_OUTPUT_AUDIO_MONITOR;
+    rc |= expect_int_eq("monitor refresh", rtl_demod_refresh_analog_channel_for_rate(demod, err, sizeof err), 0);
+    rc |= expect_int_eq("monitor refresh restores WIDE", demod->channel_lpf_profile, DSD_CH_LPF_PROFILE_WIDE);
+    rc |= expect_int_eq("monitor refresh keeps the width", demod->channel_lpf_width_hz, 12500);
+    rtl_demod_cleanup(demod);
+    std::free(demod);
+    return rc;
+}
+
 int
 main(void) {
     int rc = 0;
@@ -1600,6 +1638,7 @@ main(void) {
     rc |= expect_analog_am_refused();
     rc |= expect_unset_default_rule_keyed_on_nfm();
     rc |= expect_post_decimation_rule();
+    rc |= expect_rate_refresh_leaves_cqpsk_profile();
 
     rc |= expect_live_symbol_status();
     rc |= expect_cqpsk_toggle_clears_output_contract_backlog();

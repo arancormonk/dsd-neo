@@ -1079,7 +1079,9 @@ rtl_demod_apply_analog_channel(struct demod_state* demod, int kind, int explicit
 int
 rtl_demod_refresh_analog_channel_for_rate(struct demod_state* demod, char* err, size_t err_size) {
     demod_error_text(err, err_size, "");
-    if (!demod || !demod->analog_family) {
+    /* The analog monitor output, not the family flag: CQPSK toggled on under -fA keeps the analog family but runs its
+       own P25 CQPSK profile filter, which re-applying the analog channel would replace with WIDE. */
+    if (!dsd_demod_analog_monitor_active(demod)) {
         return 0;
     }
     const int explicit_width_hz = demod->analog_width_request_hz;
