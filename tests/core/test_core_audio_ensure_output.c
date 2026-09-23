@@ -8,9 +8,12 @@
  * writes to. dsd_audio_ensure_analog_output() and dsd_audio_ensure_digital_output()
  * open what openAudioOutput() would have opened for the current options, with the
  * same parameters, and are idempotent: a sink that is already open is left alone,
- * and nothing is opened for a muted session or a non-device output.
+ * and nothing is opened for a muted session or an output with no such sink.
+ * With UDP output the analog monitor's sink is the socket on port + 2, which a
+ * session started digital (without -8 or ProVoice) never opened.
  *
- * The device layer is replaced at link time with a recording null backend.
+ * The device layer is replaced at link time with a recording null backend, and
+ * the UDP analog socket is opened through a recording UDP audio hook.
  */
 
 #include <dsd-neo/core/audio.h>
@@ -18,7 +21,9 @@
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/platform/audio.h>
+#include <dsd-neo/platform/sockets.h>
 #include <dsd-neo/runtime/log.h>
+#include <dsd-neo/runtime/udp_audio_hooks.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
@@ -70,6 +75,21 @@ static int g_failures;
 /* Error lines the ensure helpers logged, by sink. */
 static int g_raw_error_logs;
 static int g_digital_error_logs;
+static int g_udp_error_logs;
+
+/* Recording UDP analog connect: what the engine installs opens udp_sockfdA on port + 2. */
+static int g_udp_connects;
+static int g_udp_connect_fails;
+
+static int
+fake_udp_connect_analog(dsd_opts* opts) {
+    g_udp_connects++;
+    if (g_udp_connect_fails) {
+        return -1;
+    }
+    opts->udp_sockfdA = (dsd_socket_t)42;
+    return 0;
+}
 
 static void
 count_error_logs(dsd_neo_log_level_t level, const char* text, void* ctx) {
@@ -79,6 +99,8 @@ count_error_logs(dsd_neo_log_level_t level, const char* text, void* ctx) {
     }
     if (strstr(text, "Failed to open raw audio output") != NULL) {
         g_raw_error_logs++;
+    } else if (strstr(text, "Failed to open the UDP analog audio output on 127.0.0.1:23458") != NULL) {
+        g_udp_error_logs++;
     } else if (strstr(text, "Failed to open audio output") != NULL) {
         g_digital_error_logs++;
     }
@@ -109,6 +131,18 @@ device_session(dsd_opts* opts) {
     opts->pulse_raw_out_channels = 1;
     opts->pulse_digi_rate_out = 8000;
     opts->pulse_digi_out_channels = 2;
+    opts->udp_sockfd = DSD_INVALID_SOCKET;
+    opts->udp_sockfdA = DSD_INVALID_SOCKET;
+}
+
+/* `-o udp:127.0.0.1:23456`, started digital: the digital socket is open, the analog one on port + 2 is not. */
+static void
+udp_session(dsd_opts* opts) {
+    device_session(opts);
+    opts->audio_out_type = 8;
+    DSD_SNPRINTF(opts->udp_hostname, sizeof opts->udp_hostname, "%s", "127.0.0.1");
+    opts->udp_portno = 23456;
+    opts->udp_sockfd = (dsd_socket_t)41;
 }
 
 static void
@@ -170,6 +204,66 @@ test_nothing_to_open(void) {
 }
 
 static void
+install_udp_hooks(void) {
+    dsd_udp_audio_hooks hooks;
+    DSD_MEMSET(&hooks, 0, sizeof hooks);
+    hooks.connect_analog = fake_udp_connect_analog;
+    dsd_udp_audio_hooks_set(hooks);
+    g_udp_connects = 0;
+    g_udp_connect_fails = 0;
+    g_udp_error_logs = 0;
+}
+
+static void
+test_udp_analog_sink(void) {
+    static dsd_opts opts;
+    install_udp_hooks();
+    reset_backend();
+
+    /* A digital session switched to Analog: the monitor audio goes to port + 2, so that socket opens. */
+    udp_session(&opts);
+    expect_int("udp digital ensure", dsd_audio_ensure_digital_output(&opts), 0);
+    expect_int("digital udp needs no analog socket", g_udp_connects, 0);
+    expect_int("udp analog ensure", dsd_audio_ensure_analog_output(&opts), 0);
+    expect_int("analog socket opened once", g_udp_connects, 1);
+    expect_int("analog socket kept", opts.udp_sockfdA == (dsd_socket_t)42, 1);
+    expect_int("second udp analog ensure", dsd_audio_ensure_analog_output(&opts), 0);
+    expect_int("udp analog idempotent", g_udp_connects, 1);
+    expect_int("udp opens no audio device", g_open_count, 0);
+
+    /* ProVoice and the -8 source monitor write the same socket on a digital udp session. */
+    udp_session(&opts);
+    opts.monitor_input_audio = 1;
+    g_udp_connects = 0;
+    expect_int("udp monitor digital ensure", dsd_audio_ensure_digital_output(&opts), 0);
+    expect_int("monitor opens the analog socket", g_udp_connects, 1);
+    expect_int("still no audio device", g_open_count, 0);
+
+    /* Muted: unmuting reopens what the mode needs. */
+    udp_session(&opts);
+    opts.audio_out = 0;
+    g_udp_connects = 0;
+    expect_int("muted udp analog", dsd_audio_ensure_analog_output(&opts), 0);
+    expect_int("muted udp opens nothing", g_udp_connects, 0);
+
+    /* A socket that cannot open is reported once, stays invalid, and a success re-arms the message. */
+    udp_session(&opts);
+    g_udp_connect_fails = 1;
+    expect_int("failed udp analog ensure", dsd_audio_ensure_analog_output(&opts), -1);
+    expect_int("failed udp analog ensure again", dsd_audio_ensure_analog_output(&opts), -1);
+    expect_int("failed socket stays invalid", opts.udp_sockfdA == DSD_INVALID_SOCKET, 1);
+    expect_int("a failing udp socket is logged once", g_udp_error_logs, 1);
+    g_udp_connect_fails = 0;
+    expect_int("recovered udp analog ensure", dsd_audio_ensure_analog_output(&opts), 0);
+
+    /* Without a UDP backend (no engine hooks) there is no socket to open. */
+    dsd_udp_audio_hooks_set((dsd_udp_audio_hooks){0});
+    udp_session(&opts);
+    expect_int("no udp backend", dsd_audio_ensure_analog_output(&opts), -1);
+    expect_int("no udp backend is reported", g_udp_error_logs, 2);
+}
+
+static void
 test_open_failure(void) {
     static dsd_opts opts;
     device_session(&opts);
@@ -206,6 +300,7 @@ main(void) {
     test_analog_sink();
     test_digital_sink();
     test_nothing_to_open();
+    test_udp_analog_sink();
     test_open_failure();
     if (g_failures) {
         DSD_FPRINTF(stderr, "CORE_AUDIO_ENSURE_OUTPUT: %d failure(s)\n", g_failures);

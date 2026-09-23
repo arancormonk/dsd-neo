@@ -314,7 +314,8 @@ svc_udp_output_config(dsd_opts* opts, dsd_state* state, const char* host, int po
     opts->audio_out_type = 8;
     if (opts->monitor_input_audio == 1 || opts->frame_provoice == 1) {
         if (udp_socket_connectA(opts, state) < 0) {
-            opts->udp_sockfdA = 0;
+            /* Invalid, not 0: 0 is a valid descriptor, and the analog sink is reopened lazily only from invalid. */
+            opts->udp_sockfdA = DSD_INVALID_SOCKET;
         }
     }
     return 0;

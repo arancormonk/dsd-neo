@@ -320,11 +320,17 @@ openAudioOutput(dsd_opts* opts) {
 /* A runtime family switch that cannot open its sink leaves that family silent; say so once, not on every switch. */
 static int g_ensure_raw_failure_logged;
 static int g_ensure_digital_failure_logged;
+static int g_ensure_udp_analog_failure_logged;
 
+/* A muted session opens nothing here: unmuting reopens every sink the current mode needs. */
 static int
 dsd_audio_ensure_is_device_output(const dsd_opts* opts) {
-    /* A muted session opens nothing here: unmuting reopens every sink the current mode needs. */
     return (opts->audio_out == 1 && opts->audio_out_type == 0) ? 1 : 0;
+}
+
+static int
+dsd_audio_ensure_is_udp_output(const dsd_opts* opts) {
+    return (opts->audio_out == 1 && opts->audio_out_type == 8) ? 1 : 0;
 }
 
 static int
@@ -347,15 +353,63 @@ dsd_audio_ensure_raw_output(dsd_opts* opts) {
     return 0;
 }
 
+/* With UDP output the analog monitor, ProVoice and the -8 source monitor go to port + 2. Session start opens that
+ * socket only when one of them is on at start. */
+static int
+dsd_audio_ensure_udp_analog_output(dsd_opts* opts) {
+    if (opts->udp_sockfdA != DSD_INVALID_SOCKET) {
+        return 0;
+    }
+    if (dsd_udp_audio_hook_connect_analog(opts) != 0) {
+        if (!g_ensure_udp_analog_failure_logged) {
+            LOG_ERROR("Failed to open the UDP analog audio output on %s:%d\n", opts->udp_hostname,
+                      opts->udp_portno + 2);
+            g_ensure_udp_analog_failure_logged = 1;
+        }
+        return -1;
+    }
+    g_ensure_udp_analog_failure_logged = 0;
+    return 0;
+}
+
+/* The sink the raw/analog stream writes to for this output type, if it has one. */
+static int
+dsd_audio_ensure_raw_sink(dsd_opts* opts) {
+    if (dsd_audio_ensure_is_device_output(opts)) {
+        return dsd_audio_ensure_raw_output(opts);
+    }
+    if (dsd_audio_ensure_is_udp_output(opts)) {
+        return dsd_audio_ensure_udp_analog_output(opts);
+    }
+    return 0;
+}
+
 int
 dsd_audio_ensure_analog_output(dsd_opts* opts) {
     if (!opts) {
         return -1;
     }
-    if (!dsd_audio_ensure_is_device_output(opts)) {
+    return dsd_audio_ensure_raw_sink(opts);
+}
+
+static int
+dsd_audio_ensure_digital_stream(dsd_opts* opts) {
+    if (opts->audio_out_stream) {
         return 0;
     }
-    return dsd_audio_ensure_raw_output(opts);
+    dsd_audio_params params;
+    dsd_audio_output_params_init(opts, &params);
+    opts->audio_out_stream = dsd_audio_open_digital_output_stream(opts, &params);
+    if (!opts->audio_out_stream) {
+        if (!g_ensure_digital_failure_logged) {
+            LOG_ERROR("Failed to open audio output: %s\n", dsd_audio_get_error());
+            g_ensure_digital_failure_logged = 1;
+        }
+        return -1;
+    }
+    g_ensure_digital_failure_logged = 0;
+    opts->audio_output_async_policy = params.async_output ? 1 : 0;
+    return 0;
 }
 
 int
@@ -363,30 +417,14 @@ dsd_audio_ensure_digital_output(dsd_opts* opts) {
     if (!opts) {
         return -1;
     }
-    if (!dsd_audio_ensure_is_device_output(opts)) {
-        return 0;
-    }
     int rc = 0;
-    if (!opts->audio_out_stream) {
-        dsd_audio_params params;
-        dsd_audio_output_params_init(opts, &params);
-        opts->audio_out_stream = dsd_audio_open_digital_output_stream(opts, &params);
-        if (opts->audio_out_stream) {
-            g_ensure_digital_failure_logged = 0;
-            opts->audio_output_async_policy = params.async_output ? 1 : 0;
-        } else {
-            if (!g_ensure_digital_failure_logged) {
-                LOG_ERROR("Failed to open audio output: %s\n", dsd_audio_get_error());
-                g_ensure_digital_failure_logged = 1;
-            }
-            rc = -1;
-        }
+    /* UDP output opened the digital socket at session start whatever the mode; only a local device may lack it. */
+    if (dsd_audio_ensure_is_device_output(opts) && dsd_audio_ensure_digital_stream(opts) != 0) {
+        rc = -1;
     }
-    /* openAudioOutput() also opens the raw sink for ProVoice and the -8 source monitor. */
-    if (opts->frame_provoice == 1 || opts->monitor_input_audio == 1) {
-        if (dsd_audio_ensure_raw_output(opts) != 0) {
-            rc = -1;
-        }
+    /* openAudioOutput() and the UDP setup also open the raw sink for ProVoice and the -8 source monitor. */
+    if ((opts->frame_provoice == 1 || opts->monitor_input_audio == 1) && dsd_audio_ensure_raw_sink(opts) != 0) {
+        rc = -1;
     }
     return rc;
 }

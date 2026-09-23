@@ -272,6 +272,14 @@ test_udp_connect_success_and_send_paths(void) {
     assert(g_last_sendto_sock == opts.udp_sockfdA);
     assert(g_last_sendto_len == sizeof(analog_payload));
     assert(memcmp(g_last_sendto_data, analog_payload, sizeof(analog_payload)) == 0);
+
+    /* No analog socket (never opened, or the open failed): nothing is sent, and nothing is reported per block. */
+    reset_stubs();
+    opts.udp_sockfdA = DSD_INVALID_SOCKET;
+    g_sendto_result = -1;
+    udp_socket_blasterA(&opts, &state, sizeof(analog_payload), analog_payload);
+    assert(g_last_sendto_len == 0);
+    assert(g_last_sendto_sock == DSD_INVALID_SOCKET);
     return 0;
 }
 
