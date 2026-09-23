@@ -10936,6 +10936,77 @@ if(DSD_HAS_RADIO)
     )
 endif()
 
+# Analog monitor audio (issue #518). dsd-neo_test_analog_replay runs the real engine
+# on the arguments dsd-neo would get and scores the monitor audio a listener hears --
+# after the audio filters, the AGC and the squelch gate -- through the UDP analog hook
+# seam; its own --analog-* threshold options are removed before the CLI parser runs.
+# The cases go through the unchanged iq_decode_check.cmake, so each still needs exit
+# code 0 and its expected line. Thresholds sit well clear of the values measured when
+# each case was added; docs/testing.md records those values and what each case pins.
+if(DSD_HAS_RADIO)
+    add_executable(dsd-neo_test_analog_replay engine/analog_replay.c)
+    target_include_directories(
+        dsd-neo_test_analog_replay
+        PRIVATE ${PROJECT_SOURCE_DIR}/include
+    )
+    target_link_libraries(
+        dsd-neo_test_analog_replay
+        PRIVATE dsd-neo_engine dsd-neo_io_radio ${LIBS}
+    )
+
+    function(dsd_neo_add_analog_replay_test test_name fixture mode)
+        add_test(
+            NAME ${test_name}
+            COMMAND
+                ${CMAKE_COMMAND}
+                "-DDSD_BIN=$<TARGET_FILE:dsd-neo_test_analog_replay>"
+                "-DMODE=${mode}"
+                "-DFIXTURE=${PROJECT_SOURCE_DIR}/tests/fixtures/iq/${fixture}.iq.json"
+                "-DEXPECTED=ANALOG AUDIO OK" -P
+                "${CMAKE_CURRENT_SOURCE_DIR}/iq_decode_check.cmake"
+        )
+        set_tests_properties(
+            ${test_name}
+            PROPERTIES LABELS "iq-decode;analog" TIMEOUT 120
+        )
+    endfunction()
+
+    # 1 kHz at 3 kHz deviation through the default monitor chain: 25.9 dB tone SNR,
+    # 30.5 dB in-band ratio, audible from the first block, no clipping.
+    dsd_neo_add_analog_replay_test(
+        DECODE_IQ_ANALOG_NFM_TONE
+        nfm_tone_synth
+        "-fA --analog-expect-tone-hz 1000 --analog-min-snr-db 20 --analog-min-captured-ms 1400 --analog-min-audible-ms 1400 --analog-max-first-audible-ms 100 --analog-min-inband-db 24 --analog-max-clip 0"
+    )
+    # The same tone with an unmodulated carrier 12.5 kHz up at -6 dB. The default
+    # 16 kHz channel filter leaves its beat at 12.5 kHz 65 dB under the tone; a -6 dB
+    # carrier inside the passband measures -6 dBc at its offset.
+    dsd_neo_add_analog_replay_test(
+        DECODE_IQ_ANALOG_NFM_ADJACENT
+        nfm_adjacent_synth
+        "-fA --analog-expect-tone-hz 1000 --analog-min-snr-db 20 --analog-min-captured-ms 1400 --analog-probe-max-dbc 12500:-40"
+    )
+    # Off-air smoke baselines: the monitor delivers the whole excerpt and it keeps its
+    # measured audible time and spectral shape. On nfm_ctcss_real the in-band ratio is
+    # within a few dB of receiver noise (small speech deviation), so that case pins
+    # presence and duration more than quality; see docs/testing.md.
+    dsd_neo_add_analog_replay_test(
+        DECODE_IQ_ANALOG_NFM_REAL_CTCSS_SMOKE
+        nfm_ctcss_real
+        "-fA --analog-min-captured-ms 5800 --analog-min-audible-ms 4500 --analog-min-inband-db -4"
+    )
+    dsd_neo_add_analog_replay_test(
+        DECODE_IQ_ANALOG_NFM_REAL_DCS_A_SMOKE
+        nfm_dcs_real_a
+        "-fA --analog-min-captured-ms 3900 --analog-min-audible-ms 900 --analog-max-first-audible-ms 1000 --analog-min-inband-db 4"
+    )
+    dsd_neo_add_analog_replay_test(
+        DECODE_IQ_ANALOG_NFM_REAL_DCS_B_SMOKE
+        nfm_dcs_real_b
+        "-fA --analog-min-captured-ms 3900 --analog-min-audible-ms 2000 --analog-min-inband-db 5"
+    )
+endif()
+
 # The validation facade must exercise the real CSV parser and its cleanup path.
 add_executable(
     dsd-neo_test_app_control_trunk_scan_validate

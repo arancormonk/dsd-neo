@@ -415,6 +415,12 @@ installs from `src/engine/trunk_tuning.c` in `src/engine/trunk_tuning_hooks_inst
   sensitive that is; the comment above `symbol_adjust_timing_nxdn()` records the five ways of damping it that were
   A/B'd on real captures and measured worse, so change it only with `tools/replay_ab.sh` evidence
   (`docs/testing.md`). The CQPSK path does not use any of this: it has a real timing loop in `costas.cpp`.
+- The analog monitor's audible output leaves `dsd_symbol.c` in `symbol_output_unsynced_analog()`, after the voice
+  filters and AGC and only while the squelch gate is open; for `audio_out_type == 8` it goes through
+  `dsd_udp_audio_hook_blast_analog()` with a byte count of int16 mono samples. `tests/engine/analog_replay.c`
+  (`dsd-neo_test_analog_replay`, the `DECODE_IQ_ANALOG_*` cases) captures and scores exactly that output through the
+  hook, and times it with a wrapped RTL stream read hook, so changes to the monitor chain are measured against what a
+  listener hears; back them with `tools/replay_ab.sh --metric analog` evidence (`docs/testing.md`).
 
 Runtime controls (via `include/dsd-neo/io/rtl_stream_c.h`):
 
