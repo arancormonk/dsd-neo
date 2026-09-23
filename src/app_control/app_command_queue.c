@@ -2180,6 +2180,10 @@ request_manual_tune(dsd_opts* opts, dsd_state* state, long int freq, int p25_cc_
         *out_request_id = request_id;
     }
     if (accepted) {
+        /* The radio is moving (issue #522). With rigctl on PCM input nothing else reports this
+           hop: io_control does not advance the trunk-tuning generation, and there is no RTL
+           stream generation to move, so the tone heard on the old channel goes here. */
+        dsd_analog_rx_reset(state);
         return 1;
     }
     LOG_WARN("WARNING: %s tune to %ld Hz was not accepted (result=%d); preserving decoder state\n",
@@ -4957,6 +4961,8 @@ ui_cmd_handle_stop_playback(dsd_opts* opts, dsd_state* state, const struct dsd_a
         opts->audio_in_type = AUDIO_IN_PULSE;
         if (openAudioInput(opts) != 0) {
             LOG_ERROR("UI: failed to open PulseAudio input\n");
+            /* The playback is gone either way; its tone goes with it (issue #522). */
+            dsd_analog_rx_reset(state);
         } else {
             (void)ui_input_switched(opts, state);
         }

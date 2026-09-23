@@ -1587,6 +1587,61 @@ test_channel_cycle_hands_p25_sm_back_to_cc(void) {
 }
 
 /*
+ * The manual channel cycle and scan avoid on an untyped -Y list move an external radio
+ * through rigctl on PCM input: no RTL stream generation moves and io_control does not advance
+ * the trunk-tuning generation, so nothing else tells the analog tap (issue #522). An accepted
+ * step -- pending included -- clears the received tone; a refused one leaves the radio, and so
+ * its tone, where they were.
+ */
+static int
+test_manual_scan_steps_clear_received_tone(void) {
+    static const struct {
+        int cmd;
+        int tune_result;
+        int clears;
+        const char* tag;
+    } cases[] = {
+        {DSD_APP_CMD_CHANNEL_CYCLE, RTL_STREAM_TUNE_OK, 1, "channel cycle by rigctl clears the received tone"},
+        {DSD_APP_CMD_CHANNEL_CYCLE, RTL_STREAM_TUNE_TIMEOUT, 1, "pending channel cycle clears the received tone"},
+        {DSD_APP_CMD_CHANNEL_CYCLE, RTL_STREAM_TUNE_FAILED, 0, "refused channel cycle keeps the received tone"},
+        {DSD_APP_CMD_SCAN_AVOID, RTL_STREAM_TUNE_OK, 1, "scan avoid by rigctl clears the received tone"},
+        {DSD_APP_CMD_SCAN_AVOID, RTL_STREAM_TUNE_FAILED, 0, "refused scan avoid step keeps the received tone"},
+    };
+
+    int rc = 0;
+    static dsd_opts opts;
+    static dsd_state state;
+    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+        init_test_context(&opts, &state);
+        opts.scanner_mode = 1;
+        opts.use_rigctl = 1;
+        opts.audio_in_type = AUDIO_IN_PULSE;
+        state.lcn_freq_count = 3;
+        state.trunk_lcn_freq[0] = 461012500L;
+        state.trunk_lcn_freq[1] = 462012500L;
+        state.trunk_lcn_freq[2] = 463012500L;
+        state.lcn_freq_roll = 1; /* row 0 is on air */
+        seed_received_tone(&state);
+        const uint32_t seeded = state.analog_rx.generation;
+        reset_io_control_tune_stub(cases[i].tune_result);
+        rc |= expect_int(cases[i].tag, dsd_app_command_action(cases[i].cmd), DSD_APP_COMMAND_SUBMIT_QUEUED);
+        rc |= expect_int(cases[i].tag, dsd_app_drain_cmds(&opts, &state), 1);
+        rc |= expect_int(cases[i].tag, g_io_control_tune_calls, 1);
+        rc |= expect_true(cases[i].tag, g_io_control_tune_freq == 462012500L);
+        if (cases[i].clears) {
+            rc |= expect_received_tone_cleared(cases[i].tag, &state, seeded);
+        } else {
+            rc |= expect_true(cases[i].tag, state.analog_rx.tone_state == DSD_ANALOG_TONE_STATE_LOCKED
+                                                && state.analog_rx.ctcss_tenths_hz == 1000
+                                                && state.analog_rx.generation == seeded);
+        }
+        freeState(&state);
+    }
+    reset_io_control_tune_stub(RTL_STREAM_TUNE_OK);
+    return rc;
+}
+
+/*
  * Tap-to-tune is gated on the live options at drain time, not on the frontend
  * hiding the affordance, and an accepted tap tears down call state so the
  * decoder re-acquires on the new frequency instead of aging out.
@@ -1835,6 +1890,7 @@ test_input_switch_clears_received_tone(void) {
     } cases[] = {
         {DSD_APP_CMD_INPUT_WAV_SET, "input.wav", "wav input clears the received tone"},
         {DSD_APP_CMD_INPUT_SET_PULSE, NULL, "pulse input clears the received tone"},
+        {DSD_APP_CMD_PULSE_IN_SET, "source0", "named pulse source clears the received tone"},
         {DSD_APP_CMD_UDP_INPUT_CFG, NULL, "udp input clears the received tone"},
         {DSD_APP_CMD_INPUT_SYM_STREAM_SET, "symbols.f32", "symbol stream input clears the received tone"},
     };
@@ -1859,6 +1915,87 @@ test_input_switch_clears_received_tone(void) {
         rc |= expect_received_tone_cleared(cases[i].tag, &state, seeded);
         freeState(&state);
     }
+    return rc;
+}
+
+/*
+ * The input switches the table above cannot drive without a real file: replaying the last
+ * input as a symbol file, and stopping playback back onto a live input. Both clear the tone
+ * the old input carried (issue #522).
+ */
+static int
+test_playback_switches_clear_received_tone(void) {
+    int rc = 0;
+    static dsd_opts opts;
+    static dsd_state state;
+    char path[DSD_TEST_PATH_MAX];
+    const int fd = dsd_test_mkstemp(path, sizeof path, "dsd_rx_tone_replay");
+    if (fd < 0) {
+        return expect_true("replay temporary path available", 0);
+    }
+    dsd_close(fd);
+    static const unsigned char k_symbols[] = {0x01, 0x03, 0x00, 0x02};
+    rc |= write_file_bytes(path, k_symbols, sizeof k_symbols);
+
+    init_test_context(&opts, &state);
+    DSD_SNPRINTF(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", path);
+    seed_received_tone(&state);
+    uint32_t seeded = state.analog_rx.generation;
+    rc |= expect_int("replay last queued", post_empty(DSD_APP_CMD_REPLAY_LAST), DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("replay last drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("replay last switches to the symbol file", opts.audio_in_type, AUDIO_IN_SYMBOL_BIN);
+    rc |= expect_received_tone_cleared("replay last clears the received tone", &state, seeded);
+
+    /* Stopping that playback moves the input again: onto stdin when an output other than
+       Pulse is configured. */
+    opts.audio_out_type = 9;
+    seed_received_tone(&state);
+    seeded = state.analog_rx.generation;
+    rc |= expect_int("stop playback queued", post_empty(DSD_APP_CMD_STOP_PLAYBACK), DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("stop playback drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_true("stop playback closes the symbol file", opts.symbolfile == NULL);
+    rc |= expect_int("stop playback switches to stdin", opts.audio_in_type, AUDIO_IN_STDIN);
+    rc |= expect_received_tone_cleared("stop playback clears the received tone", &state, seeded);
+    freeState(&state);
+    remove(path);
+    return rc;
+}
+
+/*
+ * A config apply that moves the input is an input switch like the commands that make one,
+ * and clears the received tone (issue #522); one that changes an unrelated setting leaves the
+ * tone and its generation alone, so a settings change does not restart acquisition.
+ */
+static int
+test_config_apply_input_change_clears_received_tone(void) {
+    int rc = 0;
+    static dsd_opts opts;
+    static dsd_state state;
+
+    init_test_context(&opts, &state);
+    seed_received_tone(&state);
+    uint32_t seeded = state.analog_rx.generation;
+    dsdneoUserConfig cfg;
+    DSD_MEMSET(&cfg, 0, sizeof cfg);
+    cfg.has_alerts = 1;
+    cfg.call_alert_enabled = 1;
+    rc |= expect_true("unrelated config queued", dsd_app_command_apply_config(&cfg) > 0);
+    rc |= expect_int("unrelated config drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_true("unrelated config keeps the received tone",
+                      state.analog_rx.tone_state == DSD_ANALOG_TONE_STATE_LOCKED
+                          && state.analog_rx.ctcss_tenths_hz == 1000 && state.analog_rx.carrier_open == 1
+                          && state.analog_rx.generation == seeded);
+
+    DSD_MEMSET(&cfg, 0, sizeof cfg);
+    cfg.has_input = 1;
+    cfg.input_source = DSDCFG_INPUT_TCP;
+    DSD_SNPRINTF(cfg.tcp_host, sizeof cfg.tcp_host, "%s", "127.0.0.1");
+    cfg.tcp_port = 7355;
+    rc |= expect_true("input config queued", dsd_app_command_apply_config(&cfg) > 0);
+    rc |= expect_int("input config drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_str("input config moves the input", opts.audio_in_dev, "tcp:127.0.0.1:7355");
+    rc |= expect_received_tone_cleared("input config clears the received tone", &state, seeded);
+    freeState(&state);
     return rc;
 }
 
@@ -5451,6 +5588,8 @@ main(void) {
     rc |= test_modulation_and_decode_mode_setters();
     rc |= test_decode_mode_change_clears_received_tone();
     rc |= test_input_switch_clears_received_tone();
+    rc |= test_playback_switches_clear_received_tone();
+    rc |= test_config_apply_input_change_clears_received_tone();
     rc |= test_trunk_set();
     rc |= test_scan_voice_gate_commands();
 #ifdef DSD_NEO_TEST_IO_CONTROL_WRAP
@@ -5460,6 +5599,7 @@ main(void) {
     rc |= test_skip_hands_p25_sm_back_to_cc();
     rc |= test_skip_command_reader_stress();
     rc |= test_channel_cycle_hands_p25_sm_back_to_cc();
+    rc |= test_manual_scan_steps_clear_received_tone();
 #ifdef USE_RADIO
     rc |= test_manual_tune_trunking_gate_and_reacquisition();
     rc |= test_retune_commands_clear_received_tone();
