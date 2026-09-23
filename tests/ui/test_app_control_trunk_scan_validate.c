@@ -61,7 +61,7 @@ test_target_squelch(const char* path) {
         const char* reason;
     } bad[] = {{"--squelch-db 5", "row 3: --squelch-db: expects whole dB from -100 to 0 (0 = off)"},
                {"--squelch-db=-101", "row 3: --squelch-db: expects whole dB from -100 to 0 (0 = off)"},
-               {"--squelch-db -5.5", "row 3: --squelch-db: requires a valid argument"},
+               {"--squelch-db -5.5", "row 3: --squelch-db: expects whole dB from -100 to 0 (0 = off)"},
                {"--squelch-db", "row 3: --squelch-db: requires a valid argument"},
                {"--squelch-db 0 --squelch-db -40", "row 3: --squelch-db: duplicate option"}};
 

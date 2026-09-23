@@ -747,7 +747,7 @@ test_squelch_rows_import_and_preview(void) {
         const char* reason;
     } bad[] = {{"--squelch-db 5", "--squelch-db: expects whole dB from -100 to 0 (0 = off)"},
                {"--squelch-db -101", "--squelch-db: expects whole dB from -100 to 0 (0 = off)"},
-               {"--squelch-db -5.5", "--squelch-db: requires a valid argument"},
+               {"--squelch-db -5.5", "--squelch-db: expects whole dB from -100 to 0 (0 = off)"},
                {"--squelch-db", "--squelch-db: requires a valid argument"},
                {"--squelch-db -60 --squelch-db -50", "--squelch-db: duplicate option"}};
 

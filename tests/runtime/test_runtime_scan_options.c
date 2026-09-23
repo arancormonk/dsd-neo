@@ -59,8 +59,8 @@ count_file_spans(void* context, const char* option, const char* path, size_t off
 }
 
 /* The row squelch uses the rtl_sql contract: whole dB from -100 to 0, 0 switches it off, and
- * omitting it inherits. Both the separate-token and the = spellings work, and the negative
- * value is the one digits-only exception to "a following token that starts with - is a switch". */
+ * omitting it inherits. Both the separate-token and the = spellings work, and a negative number
+ * is the one exception to "a following token that starts with - is a switch". */
 static void
 check_squelch_option(void) {
     dsd_scan_options parsed = {0};
@@ -134,8 +134,21 @@ check_squelch_option(void) {
         dsd_scan_options_parse("--squelch-db -60 --squelch-db -50", DSD_SCAN_MODE_DMR, 1, &parsed, error, sizeof(error))
         < 0);
     assert(strcmp(error, "--squelch-db: duplicate option") == 0);
-    assert(dsd_scan_options_parse("--squelch-db 5", DSD_SCAN_MODE_DMR, 1, &parsed, error, sizeof(error)) < 0);
-    assert(strcmp(error, "--squelch-db: expects whole dB from -100 to 0 (0 = off)") == 0);
+    /* A bad number gets the same diagnostic however it is spelled; only a token that is not a
+     * number at all reads as a missing value. */
+    const char* out_of_contract[] = {"--squelch-db 5",     "--squelch-db=5",     "--squelch-db -5.5",
+                                     "--squelch-db=-5.5",  "--squelch-db -101",  "--squelch-db -1e1",
+                                     "--squelch-db -60.0", "--squelch-db=-60.0", "--squelch-db +5"};
+    for (size_t i = 0; i < sizeof(out_of_contract) / sizeof(out_of_contract[0]); i++) {
+        assert(dsd_scan_options_parse(out_of_contract[i], DSD_SCAN_MODE_DMR, 1, &parsed, error, sizeof(error)) < 0);
+        assert(strcmp(error, "--squelch-db: expects whole dB from -100 to 0 (0 = off)") == 0);
+    }
+    const char* missing[] = {"--squelch-db", "--squelch-db -", "--squelch-db --strict-crc", "--squelch-db -G",
+                             "--squelch-db -60dB"};
+    for (size_t i = 0; i < sizeof(missing) / sizeof(missing[0]); i++) {
+        assert(dsd_scan_options_parse(missing[i], DSD_SCAN_MODE_DMR, 1, &parsed, error, sizeof(error)) < 0);
+        assert(strcmp(error, "--squelch-db: requires a valid argument") == 0);
+    }
 
     /* The file visitor walks the same grammar, or the Qt/Android inspector would reject a row
      * the importer accepts (or accept one it rejects). */
@@ -144,6 +157,9 @@ check_squelch_option(void) {
     assert(dsd_scan_options_visit_files("--squelch-db=-60", &visited, count_file_spans) == 0 && visited == 0);
     assert(dsd_scan_options_visit_files("--squelch-db -4 -G groups.csv", &visited, count_file_spans) == 0);
     assert(visited == 1);
+    /* A malformed number is still the value (the parser's setter rejects it), not a switch. */
+    assert(dsd_scan_options_visit_files("--squelch-db -5.5 -G groups.csv", &visited, count_file_spans) == 0);
+    assert(visited == 2);
     visited = 0;
     assert(dsd_scan_options_visit_files("--squelch-db", &visited, count_file_spans) == -1);
     assert(dsd_scan_options_visit_files("--squelch-db --strict-crc", &visited, count_file_spans) == -1);

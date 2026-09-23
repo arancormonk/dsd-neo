@@ -34,9 +34,11 @@ struct scan_option_spec {
     int argument;
     int conventional;
     int value;
-    /* The separate-token value may be a digits-only negative number (^-[0-9]+$). Every other
-     * switch refuses a following token that starts with '-', so a missing value can never
-     * swallow the next switch; this flag narrows that rule for one numeric switch only. */
+    /* The separate-token value may be a negative number: a minus sign, a digit, then only
+     * number characters (^-[0-9][0-9.eE+-]*$), so -60 is taken and a malformed -5.5 reaches the
+     * setter's own diagnostic. Every other switch refuses a following token that starts with
+     * '-', and no switch is spelled -<digit><more>, so a missing value can never swallow the
+     * next switch; this flag narrows that rule for one numeric switch only. */
     int signed_numeric;
     /* Fixed explanation for an invalid value; NULL reads "invalid value". */
     const char* hint;
@@ -445,21 +447,24 @@ option_apply(const scan_option_spec* spec, const char* argument, unsigned int mo
     return 1;
 }
 
-/* Whether a separate token is a digits-only negative number such as -60. */
+/* Whether a separate token reads as a negative number, well formed (-60) or not (-5.5, -1e1):
+ * a minus sign, a digit, then only digits, '.', 'e', 'E', '+' or '-'. */
 static int
-option_negative_integer(const char* text) {
-    return text[0] == '-' && text[1] != '\0' && strspn(text + 1, "0123456789") == strlen(text + 1);
+option_negative_number(const char* text) {
+    return text[0] == '-' && text[1] >= '0' && text[1] <= '9'
+           && strspn(text + 1, "0123456789.eE+-") == strlen(text + 1);
 }
 
 /* A missing value cannot consume the following switch as a file path. A signed_numeric switch
- * may take a digits-only negative number instead; this is the one place the rule lives, and both
- * the parser and the file visitor come through it, so the two always agree on a row. */
+ * may take a negative number instead, and its setter judges it; this is the one place the rule
+ * lives, and both the parser and the file visitor come through it, so the two always agree on a
+ * row. */
 static int
 option_argument(const scan_option_spec* spec, const char** cursor, char* argument, size_t size) {
     if (option_token(cursor, argument, size) != 1) {
         return 0;
     }
-    return argument[0] != '-' || (spec->signed_numeric && option_negative_integer(argument));
+    return argument[0] != '-' || (spec->signed_numeric && option_negative_number(argument));
 }
 
 static int
