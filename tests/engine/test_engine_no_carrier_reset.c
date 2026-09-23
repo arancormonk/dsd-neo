@@ -246,9 +246,14 @@ __wrap_rtl_stream_request_fsk_reacquire(void) {
     g_rtl_fsk_reacquire_requests++;
     return 1;
 }
+#endif
 
+/* The same --wrap block goes on here, under its own guard only because radio-off builds need this wrap too. */
+#if defined(DSD_NEO_TEST_RTL_WRAP)
 // Rigctl needs a success path here, not just the socket-failure one the rest of the file uses:
-// the interesting case is a hop whose rigctl leg lands and whose RTL leg then does not.
+// the interesting cases are a hop whose rigctl leg lands and whose RTL leg then does not, and a
+// rigctl hop on PCM input, which radio-off builds have too. Failing by default is what the real
+// call does on the invalid socket every other case configures.
 static int g_rigctl_setfreq_ok = 0;
 static int g_rigctl_setfreq_calls = 0;
 static long int g_rigctl_setfreq_freq = 0;
@@ -642,6 +647,68 @@ test_visit_cap_scanner_hops(void) {
 }
 #endif
 
+/* A tone the analog tap published before the step. */
+static void
+seed_rx_tone_publication(dsd_state* state, int tenths) {
+    state->analog_rx.carrier_open = 1;
+    state->analog_rx.tone_state = DSD_ANALOG_TONE_STATE_LOCKED;
+    state->analog_rx.tone_kind = DSD_ANALOG_TONE_KIND_CTCSS;
+    state->analog_rx.ctcss_tenths_hz = tenths;
+}
+
+static int
+rx_tone_publication_cleared(const dsd_state* state, uint32_t seeded_generation) {
+    return state->analog_rx.tone_state == DSD_ANALOG_TONE_STATE_INACTIVE
+           && state->analog_rx.tone_kind == DSD_ANALOG_TONE_KIND_NONE && state->analog_rx.ctcss_tenths_hz == 0
+           && state->analog_rx.carrier_open == 0 && state->analog_rx.generation != seeded_generation;
+}
+
+#if defined(DSD_NEO_TEST_RTL_WRAP)
+/* The legacy -Y step by rigctl on PCM input, the one radio-off builds have: a hop that lands
+   clears the received tone (issue #522), and a refused one leaves the receiver -- and so its
+   tone -- where they were. */
+static int
+test_rx_tone_rigctl_scan_step(void) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    int rc = 0;
+    opts->scanner_mode = 1;
+    opts->audio_in_type = AUDIO_IN_WAV;
+    opts->use_rigctl = 1;
+    opts->rigctl_sockfd = DSD_INVALID_SOCKET;
+    opts->setmod_bw = 0;
+    opts->trunk_hangtime = 1;
+    // Frequencies no other case uses: engine.c caches the last rigctl tune across cases.
+    state->trunk_lcn_freq[0] = 951012500;
+    state->trunk_lcn_freq[1] = 952012500;
+    state->lcn_freq_count = 2;
+    state->lcn_freq_roll = 0;
+    seed_rx_tone_publication(state, 1318);
+    const uint32_t generation = state->analog_rx.generation;
+
+    g_rigctl_setfreq_ok = 0;
+    state->last_cc_sync_time = time(NULL) - 11;
+    noCarrier(opts, state);
+    rc |= expect_true("rigctl-step-refused-keeps-rx-tone",
+                      state->lcn_freq_roll == 0 && state->analog_rx.tone_state == DSD_ANALOG_TONE_STATE_LOCKED
+                          && state->analog_rx.ctcss_tenths_hz == 1318 && state->analog_rx.generation == generation);
+
+    g_rigctl_setfreq_ok = 1;
+    g_rigctl_setfreq_calls = 0;
+    state->last_cc_sync_time = time(NULL) - 11;
+    noCarrier(opts, state);
+    rc |= expect_true("rigctl-step-moved",
+                      g_rigctl_setfreq_calls > 0 && g_rigctl_setfreq_freq == 951012500 && state->lcn_freq_roll == 1);
+    rc |= expect_true("rigctl-step-clears-rx-tone", rx_tone_publication_cleared(state, generation));
+    g_rigctl_setfreq_ok = 0;
+    free_test_runtime(opts, state);
+    return rc;
+}
+#endif
+
 /*
  * The received tone (issue #522) has to survive noCarrier(): in analog mode it runs on every
  * no-sync pass, about every 375 ms, and a reset there would keep any tone from ever locking.
@@ -722,10 +789,7 @@ test_rx_tone_resets_on_legacy_scan_step(void) {
     g_rtl_tune_result = RTL_STREAM_TUNE_OK;
 
     /* A fresh hangtime: noCarrier() runs but does not step, and the tone stays. */
-    state->analog_rx.carrier_open = 1;
-    state->analog_rx.tone_state = DSD_ANALOG_TONE_STATE_LOCKED;
-    state->analog_rx.tone_kind = DSD_ANALOG_TONE_KIND_CTCSS;
-    state->analog_rx.ctcss_tenths_hz = 1318;
+    seed_rx_tone_publication(state, 1318);
     const uint32_t generation = state->analog_rx.generation;
     state->last_cc_sync_time = time(NULL);
     g_rtl_tune_calls = 0;
@@ -737,11 +801,7 @@ test_rx_tone_resets_on_legacy_scan_step(void) {
     state->last_cc_sync_time = time(NULL) - 11;
     noCarrier(opts, state);
     rc |= expect_true("rx-tone-step-retuned", g_rtl_tune_calls == 1 && state->lcn_freq_roll == 1);
-    rc |= expect_true("rx-tone-step-clears-tone", state->analog_rx.tone_state == DSD_ANALOG_TONE_STATE_INACTIVE
-                                                      && state->analog_rx.tone_kind == DSD_ANALOG_TONE_KIND_NONE
-                                                      && state->analog_rx.ctcss_tenths_hz == 0
-                                                      && state->analog_rx.carrier_open == 0
-                                                      && state->analog_rx.generation != generation);
+    rc |= expect_true("rx-tone-step-clears-tone", rx_tone_publication_cleared(state, generation));
     free_test_runtime(opts, state);
     return rc;
 }
@@ -1431,6 +1491,8 @@ main(void) {
     partial_hop_call.observed_m = 1.0;
     rc |= expect_true("partial-hop-seeds-call",
                       dsd_call_state_observe(state, &partial_hop_call, DSD_CALL_BOUNDARY_BEGIN) == 1);
+    seed_rx_tone_publication(state, 1318);
+    const uint32_t partial_hop_tone_generation = state->analog_rx.generation;
 
     noCarrier(opts, state);
 
@@ -1445,6 +1507,9 @@ main(void) {
     rc |= expect_true("partial-hop-ends-call", partial_hop_snapshot.phase == DSD_CALL_PHASE_ENDED);
     rc |= expect_true("partial-hop-ends-call-explicitly",
                       partial_hop_snapshot.end_reason == (uint8_t)DSD_CALL_END_EXPLICIT);
+    // The received tone (issue #522) goes the same way: the radio is on another frequency, so
+    // the tone heard on the old one no longer describes it, even though the step failed.
+    rc |= expect_true("partial-hop-clears-rx-tone", rx_tone_publication_cleared(state, partial_hop_tone_generation));
     g_rigctl_setfreq_ok = 0;
     g_rtl_tune_result = RTL_STREAM_TUNE_OK;
 #endif
@@ -2422,6 +2487,9 @@ main(void) {
     free_test_runtime(opts, state);
 
     rc |= test_rx_tone_survives_no_carrier();
+#if defined(DSD_NEO_TEST_RTL_WRAP)
+    rc |= test_rx_tone_rigctl_scan_step();
+#endif
 #if defined(USE_RADIO) && defined(DSD_NEO_TEST_RTL_WRAP)
     rc |= test_rx_tone_resets_on_legacy_scan_step();
     rc |= test_typed_scan_tune_boundaries();
