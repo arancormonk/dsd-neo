@@ -29,7 +29,6 @@
 #include <dsd-neo/runtime/scan_options.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <math.h>
-#include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
