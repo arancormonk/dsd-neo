@@ -3,6 +3,7 @@
  * Copyright (C) 2025 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
+#include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/engine/protocol_dispatch.h>
 #include <dsd-neo/protocol/ysf/ysf.h>
@@ -18,6 +19,9 @@ dsd_dispatch_matches_ysf(int synctype) {
 
 dsd_frame_verdict
 dsd_dispatch_handle_ysf(dsd_opts* opts, dsd_state* state) {
+    /* FDMA voice is slot 0. The shared vocoder, record and audio paths read
+     * currentslot, which a DMR, P25 Phase 2 or X2-TDMA decode may have left at 1. */
+    state->currentslot = 0;
     /* processYSF() answers with dsd_state::ysf_fich_confirmed, which is sticky for the
      * transmission rather than per frame: zero only until one FICH has decoded -- Golay
      * corrected and the CRC-16 over the corrected bits held. Before that, a failure leaves the

@@ -195,6 +195,11 @@ Windows console runs:
 - `-6 <file>` Save raw audio WAV (48k/mono). Large files (≈360 MB/hour)
 - `-w <file>` Save decoded audio to a single WAV (mutually exclusive with `-P`)
 - `-P` Per‑call WAV saving (auto‑named files in a folder; mutually exclusive with `-w`)
+- Recordings (`-w`, `-P`, `-d`) follow each talkgroup's `record` policy: a lockout (`B`/`DE`), avoid, skip, an
+  allow-list or Hold miss, or `record=off` keeps the call out of the per-call WAV, the static WAV and MBE capture,
+  live and in SDRTrunk JSON playback. A matching Hold (`-I`) overrides a row's lockout or `record=off`, as it does
+  for audio; avoids and skips still apply. The static WAV holds only what is heard: on a two-slot mix a record-blocked
+  slot's channel is written silent while the other slot is still written.
 - `-7 <dir>` Set folder for per‑call WAVs (use before `-P`)
 - `--rdio-mode <off|dirwatch|api|both>` Enable rdio-scanner export from finalized per-call WAV calls
 - `--rdio-system-id <N>` Set rdio-scanner system ID (required for API upload mode)
@@ -280,7 +285,10 @@ DirWatch modes keep the WAV and JSON files because the watcher needs stable file
   only applies to ports that would otherwise be unknown. Config key: `mode.dmr_lrrp_ports`
   (comma-separated); a CLI list replaces the config list.
 - `-Q <file>` Write structured DSP or M17 stream data to `./DSP/<file>`
-- `-q` Reverse mute: mute clear audio, unmute encrypted audio
+- `-q` Reverse mute: mute clear audio, unmute encrypted audio. It applies to live DMR and P25 decoding. With integer
+  stereo output (the AUTO default), NXDN, dPMR and YSF voice decoded through the vocoder's DMR slot path follows it
+  too; YSF V/D2 and float output (`-y`) do not. SDRTrunk JSON playback ignores it. WAV recordings and P25 Phase 1
+  MBE capture follow what it mutes.
 
 ## IQ Capture And Replay
 

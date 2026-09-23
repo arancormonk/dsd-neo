@@ -71,6 +71,9 @@ static int g_dsd_write_fd;
 static size_t g_dsd_write_bytes;
 static uint8_t g_dsd_write_data[1920 * sizeof(short)];
 static int g_sf_write_short_calls;
+static short g_sf_written[18 * 320];
+static size_t g_sf_written_count;
+static int g_record_policy_blocked[2];
 static int g_dmr_missing_alg_key_allowed[2];
 static int g_dmr_voice_slot_allowed[2];
 static int g_gate_mono_forced_enc = -1;
@@ -140,8 +143,11 @@ audio_mix_interleave_stereo_s16(const short* left, const short* right, size_t n,
 sf_count_t
 sf_write_short(SNDFILE* sndfile, const short* ptr, sf_count_t items) {
     (void)sndfile;
-    (void)ptr;
     g_sf_write_short_calls++;
+    for (sf_count_t i = 0;
+         ptr != NULL && i < items && g_sf_written_count < sizeof(g_sf_written) / sizeof(g_sf_written[0]); i++) {
+        g_sf_written[g_sf_written_count++] = ptr[i];
+    }
     return items;
 }
 
@@ -242,6 +248,17 @@ dsd_audio_group_gate_dual(const dsd_opts* opts, const dsd_state* state, unsigned
 }
 
 int
+dsd_audio_record_policy_gate_slot(const dsd_opts* opts, const dsd_state* state, int slot, int* allow_out) {
+    (void)opts;
+    (void)state;
+    if (allow_out == NULL || slot < 0 || slot > 1) {
+        return -1;
+    }
+    *allow_out = !g_record_policy_blocked[slot];
+    return 0;
+}
+
+int
 dsd_audio_write(dsd_audio_stream* stream, const int16_t* buffer, size_t frames) {
     (void)stream;
     g_audio_write_calls++;
@@ -319,6 +336,8 @@ reset_sink_capture(void) {
     g_dsd_write_bytes = 0;
     DSD_MEMSET(g_dsd_write_data, 0, sizeof(g_dsd_write_data));
     g_sf_write_short_calls = 0;
+    g_sf_written_count = 0;
+    DSD_MEMSET(g_sf_written, 0, sizeof(g_sf_written));
 }
 
 static void
@@ -335,6 +354,8 @@ reset_gate_capture(void) {
     g_gate_dual_forced_enc_l = -1;
     g_gate_dual_forced_enc_r = -1;
     g_gate_mono_tg = 0UL;
+    g_record_policy_blocked[0] = 0;
+    g_record_policy_blocked[1] = 0;
 }
 
 static int
@@ -1517,6 +1538,276 @@ test_silent_s16_helper(void) {
     return rc;
 }
 
+/* The static WAV (-w) is a recording: a talkgroup whose row allows audio but not
+ * recording is heard but not written. Mono and mono-to-stereo paths skip the
+ * frame; the stereo mixes render the WAV as if that slot were muted, so the
+ * other slot still records and a mirrored channel never carries it. */
+static int
+test_static_wav_honors_record_policy_mono(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    int rc = 0;
+    for (int stereo = 0; stereo <= 1; ++stereo) {
+        for (int blocked = 1; blocked >= 0; --blocked) {
+            DSD_MEMSET(&opts, 0, sizeof(opts));
+            DSD_MEMSET(&state, 0, sizeof(state));
+            reset_gate_capture();
+            reset_sink_capture();
+            opts.audio_out = 1;
+            opts.audio_out_type = 8;
+            opts.slot1_on = 1;
+            opts.pulse_digi_out_channels = stereo ? 2 : 1;
+            opts.wav_out_f = (SNDFILE*)&opts;
+            opts.static_wav_file = 1;
+            g_audio_write_channels = opts.pulse_digi_out_channels;
+            state.synctype = DSD_SYNC_NXDN_POS;
+            state.audio_out_idx = 160;
+            for (size_t i = 0; i < 160U; i++) {
+                state.s_l[i] = (short)(i + 1U);
+            }
+            g_record_policy_blocked[0] = blocked;
+            if (stereo) {
+                playSynthesizedVoiceSS(&opts, &state);
+            } else {
+                playSynthesizedVoiceMS(&opts, &state);
+            }
+            rc |= expect_int("record-blocked frame still plays", g_udp_blast_calls, 1);
+            rc |= expect_int(blocked ? "record-blocked frame skips static wav" : "recordable frame writes static wav",
+                             g_sf_write_short_calls, blocked ? 0 : 1);
+        }
+    }
+    reset_gate_capture();
+    g_audio_write_channels = 2;
+    return rc;
+}
+
+static int
+test_static_wav_honors_record_policy_stereo(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    int rc = 0;
+    for (int p25 = 0; p25 <= 1; ++p25) {
+        const size_t blocks = p25 ? 18U : 3U;
+        for (int blocked_slot = 0; blocked_slot < 2; ++blocked_slot) {
+            DSD_MEMSET(&opts, 0, sizeof(opts));
+            DSD_MEMSET(&state, 0, sizeof(state));
+            reset_gate_capture();
+            reset_sink_capture();
+            opts.audio_out = 1;
+            opts.audio_out_type = 8;
+            opts.slot1_on = opts.slot2_on = 1;
+            opts.pulse_digi_out_channels = 2;
+            opts.wav_out_f = (SNDFILE*)&opts;
+            opts.static_wav_file = 1;
+            g_gate_dual_forced_enc_l = 0;
+            g_gate_dual_forced_enc_r = 0;
+            if (p25) {
+                state.synctype = DSD_SYNC_P25P2_POS;
+                state.p25_p2_audio_allowed[0] = state.p25_p2_audio_allowed[1] = 1;
+                state.p25_crypto_state[0] = state.p25_crypto_state[1] = DSD_P25_CRYPTO_CLEAR;
+                state.voice_counter[0] = state.voice_counter[1] = 18;
+            } else {
+                state.synctype = DSD_SYNC_DMR_BS_VOICE_POS;
+            }
+            for (size_t j = 0; j < blocks; j++) {
+                for (size_t i = 0; i < 160U; i++) {
+                    state.s_l4[j][i] = 1111;
+                    state.s_r4[j][i] = 2222;
+                }
+            }
+            g_record_policy_blocked[blocked_slot] = 1;
+            if (p25) {
+                playSynthesizedVoiceSS18(&opts, &state);
+            } else {
+                playSynthesizedVoiceSS3(&opts, &state);
+            }
+            short played[2] = {0, 0};
+            DSD_MEMCPY(played, g_udp_blast_data, sizeof(played));
+            rc |= expect_int("record-blocked slot still plays", played[blocked_slot], blocked_slot ? 2222 : 1111);
+            rc |= expect_int("other slot still plays", played[blocked_slot ^ 1], blocked_slot ? 1111 : 2222);
+            rc |= expect_size("stereo static wav keeps every block", g_sf_written_count, blocks * 320U);
+            // The WAV is rendered as if the blocked slot were muted, so the output
+            // policy may mirror the other slot into both channels, as heard.
+            const short blocked_value = blocked_slot ? 2222 : 1111;
+            const short kept_value = blocked_slot ? 1111 : 2222;
+            int blocked_absent = 1;
+            int kept_present = 0;
+            for (size_t i = 0; i < g_sf_written_count; i++) {
+                blocked_absent &= g_sf_written[i] != blocked_value;
+                kept_present |= g_sf_written[i] == kept_value;
+            }
+            rc |= expect_int("stereo static wav omits the record-blocked slot", blocked_absent, 1);
+            rc |= expect_int("stereo static wav keeps the other slot", kept_present, 1);
+        }
+        // A record-blocked slot whose companion is muted leaves nothing to record,
+        // even though the audible mix mirrors it into both channels.
+        DSD_MEMSET(&opts, 0, sizeof(opts));
+        DSD_MEMSET(&state, 0, sizeof(state));
+        reset_gate_capture();
+        reset_sink_capture();
+        opts.audio_out = 1;
+        opts.audio_out_type = 8;
+        opts.slot1_on = opts.slot2_on = 1;
+        opts.pulse_digi_out_channels = 2;
+        opts.wav_out_f = (SNDFILE*)&opts;
+        opts.static_wav_file = 1;
+        g_gate_dual_forced_enc_l = 0;
+        g_gate_dual_forced_enc_r = 1;
+        if (p25) {
+            state.synctype = DSD_SYNC_P25P2_POS;
+            state.p25_p2_audio_allowed[0] = state.p25_p2_audio_allowed[1] = 1;
+            state.p25_crypto_state[0] = state.p25_crypto_state[1] = DSD_P25_CRYPTO_CLEAR;
+            state.voice_counter[0] = 18;
+        } else {
+            state.synctype = DSD_SYNC_DMR_BS_VOICE_POS;
+        }
+        for (size_t j = 0; j < blocks; j++) {
+            for (size_t i = 0; i < 160U; i++) {
+                state.s_l4[j][i] = 1111;
+            }
+        }
+        g_record_policy_blocked[0] = 1;
+        if (p25) {
+            playSynthesizedVoiceSS18(&opts, &state);
+        } else {
+            playSynthesizedVoiceSS3(&opts, &state);
+        }
+        rc |= expect_int("record-blocked sole audible slot still plays", g_udp_blast_calls > 0, 1);
+        int wav_silent = 1;
+        for (size_t i = 0; i < g_sf_written_count; i++) {
+            wav_silent &= g_sf_written[i] == 0;
+        }
+        rc |= expect_int("record-blocked sole audible slot never reaches the wav", wav_silent, 1);
+    }
+    reset_gate_capture();
+    return rc;
+}
+
+/* The static WAV follows the mix's routing: when the output mirrors one slot over
+ * the other (a disabled slot, or a burst hint), the unplayed slot is not recorded
+ * either, so blocking the played slot leaves nothing to write. */
+static int
+test_static_wav_follows_stereo_routing(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    int rc = 0;
+    for (int p25 = 0; p25 <= 1; ++p25) {
+        const size_t blocks = p25 ? 18U : 3U;
+        for (int scenario = 0; scenario < 2; ++scenario) {
+            DSD_MEMSET(&opts, 0, sizeof(opts));
+            DSD_MEMSET(&state, 0, sizeof(state));
+            reset_gate_capture();
+            reset_sink_capture();
+            opts.audio_out = 1;
+            opts.audio_out_type = 8;
+            opts.slot1_on = scenario == 0 ? 0 : 1;
+            opts.slot2_on = 1;
+            opts.pulse_digi_out_channels = 2;
+            opts.wav_out_f = (SNDFILE*)&opts;
+            opts.static_wav_file = 1;
+            g_gate_dual_forced_enc_l = 0;
+            g_gate_dual_forced_enc_r = 0;
+            if (p25) {
+                state.synctype = DSD_SYNC_P25P2_POS;
+                state.p25_p2_audio_allowed[0] = state.p25_p2_audio_allowed[1] = 1;
+                state.p25_crypto_state[0] = state.p25_crypto_state[1] = DSD_P25_CRYPTO_CLEAR;
+                state.voice_counter[0] = state.voice_counter[1] = 18;
+            } else {
+                state.synctype = DSD_SYNC_DMR_BS_VOICE_POS;
+            }
+            if (scenario == 1) {
+                state.dmrburstR = p25 ? 21 : 16;
+            }
+            for (size_t j = 0; j < blocks; j++) {
+                for (size_t i = 0; i < 160U; i++) {
+                    state.s_l4[j][i] = 1111;
+                    state.s_r4[j][i] = 2222;
+                }
+            }
+            g_record_policy_blocked[1] = 1;
+            if (p25) {
+                playSynthesizedVoiceSS18(&opts, &state);
+            } else {
+                playSynthesizedVoiceSS3(&opts, &state);
+            }
+            short played[2] = {0, 0};
+            DSD_MEMCPY(played, g_udp_blast_data, sizeof(played));
+            rc |= expect_int("mirrored mix plays the second slot", played[0] == 2222 && played[1] == 2222, 1);
+            int unheard_absent = 1;
+            int blocked_absent = 1;
+            for (size_t i = 0; i < g_sf_written_count; i++) {
+                unheard_absent &= g_sf_written[i] != 1111;
+                blocked_absent &= g_sf_written[i] != 2222;
+            }
+            rc |= expect_int("static wav never records the unplayed slot", unheard_absent, 1);
+            rc |= expect_int("static wav omits the record-blocked played slot", blocked_absent, 1);
+        }
+    }
+    reset_gate_capture();
+    return rc;
+}
+
+/* X2-TDMA stages either timeslot in the mono buffer, so the mono paths ask the
+ * gate and the record policy about the slot being played. */
+static int
+test_x2_mono_voice_uses_playing_slot(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    int rc = 0;
+    for (int stereo = 0; stereo <= 1; ++stereo) {
+        for (int blocked_slot = 0; blocked_slot < 2; ++blocked_slot) {
+            DSD_MEMSET(&opts, 0, sizeof(opts));
+            DSD_MEMSET(&state, 0, sizeof(state));
+            reset_gate_capture();
+            reset_sink_capture();
+            opts.audio_out = 1;
+            opts.audio_out_type = 8;
+            opts.slot1_on = 1;
+            opts.pulse_digi_out_channels = stereo ? 2 : 1;
+            opts.wav_out_f = (SNDFILE*)&opts;
+            opts.static_wav_file = 1;
+            g_audio_write_channels = opts.pulse_digi_out_channels;
+            for (uint8_t slot = 0; slot < 2; slot++) {
+                const dsd_call_observation call = {.protocol = DSD_SYNC_X2TDMA_VOICE_POS,
+                                                   .slot = slot,
+                                                   .kind = DSD_CALL_KIND_GROUP_VOICE,
+                                                   .ota_target_id = slot ? 200U : 100U,
+                                                   .policy_target_id = slot ? 200U : 100U};
+                rc |= expect_int("x2 call", dsd_call_state_observe(&state, &call, DSD_CALL_BOUNDARY_BEGIN), 1);
+            }
+            state.synctype = DSD_SYNC_X2TDMA_VOICE_POS;
+            state.currentslot = 1;
+            state.audio_out_idx = 160;
+            for (size_t i = 0; i < 160U; i++) {
+                state.s_l[i] = (short)(i + 1U);
+            }
+            g_record_policy_blocked[blocked_slot] = 1;
+            if (stereo) {
+                playSynthesizedVoiceSS(&opts, &state);
+            } else {
+                playSynthesizedVoiceMS(&opts, &state);
+            }
+            rc |= expect_int("x2 gate asks about the playing slot", (int)g_gate_mono_tg, 200);
+            // Float output asks the same slot.
+            reset_gate_capture();
+            if (stereo) {
+                playSynthesizedVoiceFS(&opts, &state);
+            } else {
+                playSynthesizedVoiceFM(&opts, &state);
+            }
+            rc |= expect_int("x2 float gate asks about the playing slot", (int)g_gate_mono_tg, 200);
+            g_record_policy_blocked[blocked_slot] = 1;
+            rc |=
+                expect_int(blocked_slot ? "x2 playing slot record-blocked skips wav" : "x2 other slot's policy ignored",
+                           g_sf_write_short_calls, blocked_slot ? 0 : 1);
+            dsd_state_ext_free_all(&state);
+        }
+    }
+    reset_gate_capture();
+    g_audio_write_channels = 2;
+    return rc;
+}
+
 static int
 test_ss3_hold_respects_policy_mute(void) {
     static dsd_opts opts;
@@ -1573,6 +1864,10 @@ main(void) {
     rc |= test_mono_voice_preserves_samples_in_configured_output();
     rc |= test_mono_short_voice_honors_talkgroup_gate();
     rc |= test_mono_short_voice_honors_p25_reverse_mute();
+    rc |= test_static_wav_honors_record_policy_mono();
+    rc |= test_static_wav_honors_record_policy_stereo();
+    rc |= test_static_wav_follows_stereo_routing();
+    rc |= test_x2_mono_voice_uses_playing_slot();
     rc |= test_ss3_hold_respects_policy_mute();
     rc |= test_silent_s16_helper();
     return rc;

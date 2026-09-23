@@ -103,7 +103,10 @@ test_voice_dispatch(void) {
         /* A confirmed transmission is productive: the superframe decoded content that
          * proved itself, so the 1992 symbols it took are earned (#421). */
         voice_confirm_result = 1;
+        /* FDMA voice is slot 0, whatever slot a TDMA decode left current. */
+        state.currentslot = 1;
         assert(dsd_dispatch_handle_dstar(&opts, &state) == DSD_FRAME_VERDICT_PRODUCTIVE);
+        assert(state.currentslot == 0);
 
         assert(strcmp(state.fsubtype, " VOICE        ") == 0);
         assert(open_calls == 1);

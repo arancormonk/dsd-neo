@@ -226,6 +226,69 @@ test_call_skip_mutes_slot(dsd_opts* opts, dsd_state* st) {
     return rc;
 }
 
+// Reverse mute (-q) keeps a clear P25 call out of the per-call WAV as it keeps it
+// out of the speakers, on Phase 1 and on each Phase 2 slot; a decryptable call
+// still records.
+static int
+test_p25_record_gate_honors_reverse_mute(dsd_opts* opts, dsd_state* st) {
+    int rc = 0;
+    for (int phase2 = 0; phase2 <= 1; ++phase2) {
+        const int synctype = phase2 ? DSD_SYNC_P25P2_POS : DSD_SYNC_P25P1_POS;
+        for (int slot = 0; slot < (phase2 ? 2 : 1); ++slot) {
+            for (int crypto = 0; crypto < 2; ++crypto) {
+                for (int reverse = 0; reverse <= 1; ++reverse) {
+                    DSD_MEMSET(opts, 0, sizeof(*opts));
+                    reset_state(st);
+                    opts->reverse_mute = reverse;
+                    st->synctype = synctype;
+                    st->currentslot = slot;
+                    st->p25_crypto_state[slot] = crypto ? DSD_P25_CRYPTO_DECRYPTABLE : DSD_P25_CRYPTO_CLEAR;
+                    st->p25_p2_audio_allowed[slot] = 1;
+                    rc |=
+                        expect_eq("p25 record call",
+                                  seed_call(st, (uint8_t)slot, synctype, DSD_CALL_KIND_GROUP_VOICE, 123, 123, 456), 1);
+                    int record = -1;
+                    rc |= expect_eq("p25 record gate", dsd_audio_record_gate_mono(opts, st, &record), 0);
+                    rc |= expect_eq(reverse && !crypto ? "reverse mute keeps clear p25 out of the wav"
+                                                       : "p25 call records",
+                                    record, !(reverse && !crypto));
+                }
+            }
+        }
+    }
+    return rc;
+}
+
+// The P25 recording rule is for P25 calls: YSF full rate borrows the Phase 1
+// decoder (synctype P25P1) for a YSF call that has no P25 crypto state, and its
+// WAV still records; the P25-only unmute override does not reopen a DMR slot
+// that reverse mute (or encryption) muted.
+static int
+test_record_gate_protocol_boundaries(dsd_opts* opts, dsd_state* st) {
+    int rc = 0;
+    DSD_MEMSET(opts, 0, sizeof(*opts));
+    reset_state(st);
+    rc |= expect_eq("ysf reuse call", seed_call(st, 0U, DSD_SYNC_YSF_POS, DSD_CALL_KIND_GROUP_VOICE, 0, 0, 0), 1);
+    st->synctype = DSD_SYNC_P25P1_POS;
+    opts->reverse_mute = 1;
+    int record = -1;
+    rc |= expect_eq("ysf reuse record gate", dsd_audio_record_gate_mono(opts, st, &record), 0);
+    rc |= expect_eq("ysf full rate through the p25 decoder still records", record, 1);
+
+    DSD_MEMSET(opts, 0, sizeof(*opts));
+    reset_state(st);
+    rc |= expect_eq("dmr muted call",
+                    seed_call(st, 0U, DSD_SYNC_DMR_BS_VOICE_POS, DSD_CALL_KIND_GROUP_VOICE, 123, 123, 456), 1);
+    st->synctype = DSD_SYNC_DMR_BS_VOICE_POS;
+    st->dmr_encL = 1;
+    opts->dmr_mute_encL = 1;
+    opts->unmute_encrypted_p25 = 1;
+    record = -1;
+    rc |= expect_eq("dmr muted record gate", dsd_audio_record_gate_mono(opts, st, &record), 0);
+    rc |= expect_eq("p25 unmute override leaves a muted dmr slot unrecorded", record, 0);
+    return rc;
+}
+
 // A patched call is judged on the member WG its grant matched, but a user block
 // on the over-the-air supergroup itself is final: it mutes the member-matched
 // call too (a Lock out whose return to the CC fails leaves the call running).
@@ -389,6 +452,7 @@ main(void) {
     // Case 4: Mono per-call recording gate respects block mode.
     DSD_MEMSET(opts, 0, sizeof(*opts));
     reset_state(st);
+    st->synctype = DSD_SYNC_DMR_BS_VOICE_POS;
     rc |= expect_eq("case4-call",
                     seed_call(st, 0U, DSD_SYNC_DMR_BS_VOICE_POS, DSD_CALL_KIND_GROUP_VOICE, 500U, 500U, 501U), 1);
     st->dmr_encL = 0;
@@ -402,6 +466,7 @@ main(void) {
     // Case 4b: record=off blocks recording while audio remains allowed.
     DSD_MEMSET(opts, 0, sizeof(*opts));
     reset_state(st);
+    st->synctype = DSD_SYNC_DMR_BS_VOICE_POS;
     rc |= expect_eq("case4b-call",
                     seed_call(st, 0U, DSD_SYNC_DMR_BS_VOICE_POS, DSD_CALL_KIND_GROUP_VOICE, 520U, 520U, 521U), 1);
     st->dmr_encL = 0;
@@ -418,6 +483,7 @@ main(void) {
     // Case 4c: Matching TG hold overrides explicit media-off policy; non-match blocks.
     DSD_MEMSET(opts, 0, sizeof(*opts));
     reset_state(st);
+    st->synctype = DSD_SYNC_DMR_BS_VOICE_POS;
     rc |= expect_eq("case4c-call",
                     seed_call(st, 0U, DSD_SYNC_DMR_BS_VOICE_POS, DSD_CALL_KIND_GROUP_VOICE, 530U, 530U, 531U), 1);
     st->dmr_encL = 0;
@@ -440,6 +506,7 @@ main(void) {
     // Case 5: Mono per-call recording gate uses slot-specific TG/encryption state.
     DSD_MEMSET(opts, 0, sizeof(*opts));
     reset_state(st);
+    st->synctype = DSD_SYNC_DMR_BS_VOICE_POS;
     opts->trunk_use_allow_list = 1;
     st->currentslot = 1;
     rc |= expect_eq("case5-left-call",
@@ -458,6 +525,7 @@ main(void) {
     // Case 5b: Slot-specific DMR encrypted-mute flags gate recording baseline.
     DSD_MEMSET(opts, 0, sizeof(*opts));
     reset_state(st);
+    st->synctype = DSD_SYNC_DMR_BS_VOICE_POS;
     opts->trunk_use_allow_list = 1;
     st->currentslot = 1;
     rc |= expect_eq("case5b-call",
@@ -481,6 +549,8 @@ main(void) {
     st->currentslot = 1;
     st->p25_p2_audio_allowed[0] = 0;
     st->p25_p2_audio_allowed[1] = 1;
+    // A slot whose audio is allowed has classified clear or decryptable.
+    st->p25_crypto_state[1] = DSD_P25_CRYPTO_CLEAR;
     {
         int allow = -1;
         rc |= expect_eq("case6-rec-ret", dsd_audio_record_gate_mono(opts, st, &allow), 0);
@@ -619,6 +689,8 @@ main(void) {
     rc |= test_session_avoid_overrides_hold(opts, st);
     rc |= test_call_skip_mutes_slot(opts, st);
     rc |= test_supergroup_block_mutes_patched_member(opts, st);
+    rc |= test_p25_record_gate_honors_reverse_mute(opts, st);
+    rc |= test_record_gate_protocol_boundaries(opts, st);
     rc |= test_private_audio_policy(opts, st);
     if (rc == 0) {
         printf("CORE_AUDIO_GROUP_GATE: OK\n");

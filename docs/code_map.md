@@ -229,10 +229,22 @@ Tests: `tests/engine/test_engine_trunk_scan.c` (`ENGINE_TRUNK_SCAN`) and
 - API note (audio output and WAV gates, `<dsd-neo/core/audio.h>`): every voice output path applies the talkgroup
   gate (`dsd_audio_group_gate_mono()`/`_dual()`). The short mono path and the legacy short output that SDRTrunk JSON
   playback uses share `dsd_audio_mono_output_muted()` (module-private, `src/core/audio/dsd_audio_internal.h`), the
-  same gate plus live P25 Phase 1 crypto and reverse-mute rule as the float and stereo paths. Per-call WAV writers
-  use `dsd_audio_record_gate_mono()` (DMR slot crypto plus policy), or `dsd_audio_record_policy_gate_slot()` (policy
-  alone, on the slot the protocol publishes) where the decode path settles crypto without setting the DMR slot
-  flags: X2-TDMA, D-STAR and SDRTrunk JSON playback.
+  same gate plus live P25 Phase 1 crypto and reverse-mute rule as the float and stereo paths; that P25 rule is
+  `p25_crypto_audio_output_permitted()` in `<dsd-neo/protocol/p25/p25_crypto.h>`, shared with the record gate.
+  Per-call WAV writers use `dsd_audio_record_gate_mono()` (slot crypto, P25 reverse mute and policy), or
+  `dsd_audio_record_policy_gate_slot()` (policy alone, on the slot the protocol publishes) where the decode path
+  settles crypto without setting the DMR slot flags: X2-TDMA, D-STAR, YSF V/D2, EDACS analog and SDRTrunk JSON
+  playback (YSF EHR and full-rate frames go through the vocoder's full record gate). Every MBE capture save point (`src/core/vocoder/dsd_mbe.c`, JSON playback in `dsd_file.c`) applies the
+  same policy gate; live P25 Phase 1 capture also applies the P25 speaker rule, and
+  `dsd_audio_p25p1_live_voice()` tells a live P25 call from a protocol borrowing the Phase 1 decoder (YSF full
+  rate). The static WAV writes only recordable slots: the mono paths ask about the slot being played (X2-TDMA may
+  play slot 1), and the stereo mixes write silent any channel whose routed source slot, as the output policy
+  mirrors it, is record-blocked (`dsd_stereo_wav_channel_mask()`). The vocoder writes each MBE frame's per-call
+  WAV block; YSF writes only its V/D2 frames, which decode straight through mbelib. FDMA dispatchers (NXDN, YSF, D-STAR, ProVoice, dPMR) set
+  `currentslot` to 0, since these paths read it. EDACS analog voice applies the talkgroup gate at its own output.
+  M17 is outside talkgroup policy (callsign addresses). DMR and P25 Phase 2 MBE capture save in
+  `mbe_finalize_slot_left/right()` before `mbe_post_left/right_audio()` recomputes the slot mute flags, so the
+  first frame after a mute change (reverse mute included) follows the previous frame's state.
 - Build files: `src/core/CMakeLists.txt`
 
 ## Runtime

@@ -452,6 +452,9 @@ Important behavior:
 - Exact duplicates preserve first-match behavior.
 - `audio=off` forces `record=off` and `stream=off`.
 - `mode=B`/`DE` forces media fields off regardless of optional values.
+- `record` covers every recording: the per-call WAV (`-P`), the static WAV (`-w`) and MBE capture (`-d`).
+- Rows, `-W` and the Hold match numeric talkgroup IDs. M17 addresses calls by callsign, so M17 traffic is not
+  matched by them; use the M17 CAN filter to select M17 traffic.
 - Android: **TG list** on the live monitor lists configured talkgroups/ranges plus voice talkgroups heard this
   session that no listed row covers. Tap a card to choose **Listening** (`A`) or **Not tuned** (`B`); the screen
   waits for the decoder snapshot before showing the change. Search matches names or IDs; category chips use the

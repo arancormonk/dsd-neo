@@ -451,14 +451,7 @@ ysf_ehr(dsd_opts* opts, dsd_state* state, uint8_t dbuf[180], int start, int stop
 
         processMbeFrame(opts, state, NULL, ambe_fr, NULL);
 
-        if (opts->floating_point == 0) {
-            // processAudio(opts, state); //needed here? -- nothign to test it with
-
-            if (opts->wav_out_f != NULL && opts->dmr_stereo_wav == 1) {
-                writeSynthesizedVoice(opts, state);
-            }
-        }
-
+        // The vocoder already wrote this frame's per-call WAV block behind its record gate.
         if (opts->floating_point == 1) //float audio is really quiet now (look into it)
         {
 
@@ -491,19 +484,30 @@ typedef struct {
     uint8_t fich_decode[32];
 } ysf_fich_info;
 
+// V/D2 decodes straight through mbelib, so its frames never reach the vocoder's
+// per-call WAV write (-P); they are written here under the same record policy, on
+// slot 0 where YSF publishes its call. Frames that went through processMbeFrame()
+// were already written there.
 static void
-ysf_emit_audio_from_temp(dsd_opts* opts, dsd_state* state, bool run_process_audio) {
+ysf_write_bypassed_call_wav(dsd_opts* opts, dsd_state* state) {
+    int allow = 0;
+    if (opts->wav_out_f != NULL && opts->dmr_stereo_wav == 1
+        && dsd_audio_record_policy_gate_slot(opts, state, 0, &allow) == 0 && allow) {
+        writeSynthesizedVoice(opts, state);
+    }
+}
+
+static void
+ysf_emit_audio_from_temp(dsd_opts* opts, dsd_state* state, bool bypassed_vocoder) {
     if (opts->floating_point == 0) {
-        if (run_process_audio) {
+        if (bypassed_vocoder) {
             processAudio(opts, state);
         }
-
-        if (opts->wav_out_f != NULL && opts->dmr_stereo_wav == 1) {
-            writeSynthesizedVoice(opts, state);
-        }
-
     } else {
         DSD_MEMCPY(state->f_l, state->audio_out_temp_buf, sizeof(state->f_l));
+    }
+    if (bypassed_vocoder) {
+        ysf_write_bypassed_call_wav(opts, state);
     }
     dsd_play_synthesized_voice(opts, state);
 }

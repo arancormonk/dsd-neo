@@ -74,7 +74,10 @@ test_ysf_match_and_dispatch(void) {
     assert(!dsd_dispatch_matches_ysf(DSD_SYNC_P25P2_POS));
     assert(!dsd_dispatch_matches_ysf(DSD_SYNC_DMR_BS_DATA_POS));
 
+    /* FDMA voice is slot 0, whatever slot a TDMA decode left current. */
+    state.currentslot = 1;
     assert(dsd_dispatch_handle_ysf(&opts, &state) == DSD_FRAME_VERDICT_PRODUCTIVE);
+    assert(state.currentslot == 0);
     assert(g_process_ysf_calls == 1);
     assert(strcmp(state.fsubtype, " YSF          ") == 0);
 }

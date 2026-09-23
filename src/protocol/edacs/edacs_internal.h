@@ -34,6 +34,8 @@ int edacs_collect_analog_triplet(dsd_opts* opts, dsd_state* state, short* analog
 void edacs_emit_analog_audio(dsd_opts* opts, dsd_state* state, const short* analog1, const short* analog2,
                              const short* analog3);
 int edacs_build_static_wav_block(const short* src, short* out, size_t out_count);
+void edacs_write_analog_wav(dsd_opts* opts, const dsd_state* state, const short* analog1, const short* analog2,
+                            const short* analog3);
 double edacs_no_sql_watchdog_window(double trunk_hangtime);
 
 #ifdef __cplusplus

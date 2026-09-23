@@ -544,6 +544,15 @@ mbe_p25p1_record_accepted_frame(dsd_state* state, int corrections, unsigned proc
     }
 }
 
+// Recording (MBE capture and the policy-only WAVs) answers to the talkgroup
+// policy of the call on the slot the protocol publishes. Each save point keeps its
+// own crypto condition; this adds only the policy.
+static int
+mbe_record_policy_allows(const dsd_opts* opts, const dsd_state* state, int slot) {
+    int allow = 0;
+    return (dsd_audio_record_policy_gate_slot(opts, state, slot, &allow) == 0 && allow) ? 1 : 0;
+}
+
 static void
 mbe_process_p25p1(dsd_opts* opts, dsd_state* state, char imbe_fr[8][23], dsd_vocoder_soft_bit imbe_soft_fr[8][23],
                   mbe_frame_ctx_t* frame_ctx) {
@@ -599,7 +608,10 @@ mbe_process_p25p1(dsd_opts* opts, dsd_state* state, char imbe_fr[8][23], dsd_voc
     //increment vc counter by one.
     state->p25vc++;
 
-    if (opts->mbe_out_f != NULL) {
+    // A live P25 frame reached the vocoder with crypto permitted; reverse mute
+    // (-q) still keeps a clear call out of the capture as it keeps it off the speakers.
+    if (opts->mbe_out_f != NULL && mbe_record_policy_allows(opts, state, 0)
+        && (!dsd_audio_p25p1_live_voice(state) || p25_crypto_audio_output_permitted(opts, state, 0))) {
         saveImbe4400Data(opts, state, frame_ctx->imbe_d);
     }
 }
@@ -629,7 +641,7 @@ mbe_process_provoice(dsd_opts* opts, dsd_state* state, char imbe7100_fr[7][24], 
         update_p25_p1_voice_err_hist(state);
     }
 
-    if (opts->mbe_out_f != NULL) {
+    if (opts->mbe_out_f != NULL && mbe_record_policy_allows(opts, state, 0)) {
         saveImbe4400Data(opts, state, frame_ctx->imbe_d);
     }
 }
@@ -644,7 +656,8 @@ mbe_process_dstar(dsd_opts* opts, dsd_state* state, char ambe_fr[4][24], mbe_fra
     if (dsd_frame_detail_enabled(opts)) {
         PrintAMBEData(opts, state, frame_ctx->ambe_d);
     }
-    if (opts->mbe_out_f != NULL) {
+    // D-STAR publishes on slot 0 whatever slot a TDMA decode left current.
+    if (opts->mbe_out_f != NULL && mbe_record_policy_allows(opts, state, 0)) {
         saveAmbe2450Data(opts, state, frame_ctx->ambe_d);
     }
 }
@@ -697,7 +710,7 @@ mbe_process_x2(dsd_opts* opts, dsd_state* state, char ambe_fr[4][24], dsd_vocode
     if (dsd_frame_detail_enabled(opts)) {
         PrintAMBEData(opts, state, frame_ctx->ambe_d);
     }
-    if (opts->mbe_out_f != NULL) {
+    if (opts->mbe_out_f != NULL && mbe_record_policy_allows(opts, state, state->currentslot == 1 ? 1 : 0)) {
         mbe_save_x2_frame(opts, state, frame_ctx->ambe_d);
     }
 }
@@ -846,7 +859,7 @@ mbe_finalize_slot_left(dsd_opts* opts, dsd_state* state, char ambe_d[49], mbe_pr
         PrintAMBEData(opts, state, ambe_d);
     }
     if (mbe_dmr_output_slot_enabled(opts, state, 0) && opts->mbe_out_f != NULL
-        && (state->dmr_encL == 0 || opts->dmr_mute_encL == 0)) {
+        && (state->dmr_encL == 0 || opts->dmr_mute_encL == 0) && mbe_record_policy_allows(opts, state, 0)) {
         saveAmbe2450Data(opts, state, ambe_d);
     }
 }
@@ -861,8 +874,10 @@ mbe_finalize_slot_right(dsd_opts* opts, dsd_state* state, char ambe_d[49], mbe_p
     if (dsd_frame_detail_enabled(opts)) {
         PrintAMBEData(opts, state, ambe_d);
     }
+    // YSF is FDMA: it publishes on slot 0 even when a TDMA decode left currentslot at 1.
+    const int policy_slot = DSD_SYNC_IS_YSF(state->synctype) ? 0 : 1;
     if (mbe_dmr_output_slot_enabled(opts, state, 1) && opts->mbe_out_fR != NULL
-        && (state->dmr_encR == 0 || opts->dmr_mute_encR == 0)) {
+        && (state->dmr_encR == 0 || opts->dmr_mute_encR == 0) && mbe_record_policy_allows(opts, state, policy_slot)) {
         saveAmbe2450DataR(opts, state, ambe_d);
     }
 }
@@ -905,7 +920,8 @@ mbe_process_nxdn(dsd_opts* opts, dsd_state* state, char ambe_fr[4][24], dsd_voco
         PrintAMBEData(opts, state, frame_ctx->ambe_d);
     }
 
-    if (opts->mbe_out_f != NULL && (state->dmr_encL == 0 || opts->dmr_mute_encL == 0)) {
+    if (opts->mbe_out_f != NULL && (state->dmr_encL == 0 || opts->dmr_mute_encL == 0)
+        && mbe_record_policy_allows(opts, state, 0)) {
         saveAmbe2450Data(opts, state, frame_ctx->ambe_d);
     }
 }
@@ -1715,23 +1731,17 @@ mbe_post_allow_stereo_slot_wav(const dsd_opts* opts, const dsd_state* state, int
 
 // X2-TDMA and D-STAR never classify crypto into the DMR slot flags the full
 // record gate reads, so their WAV answers to the talkgroup policy alone.
-static int
-mbe_post_allow_policy_wav(const dsd_opts* opts, const dsd_state* state, int slot) {
-    int allow_wav = 0;
-    return (dsd_audio_record_policy_gate_slot(opts, state, slot, &allow_wav) == 0 && allow_wav) ? 1 : 0;
-}
-
 static void
 mbe_post_wav_outputs(dsd_opts* opts, dsd_state* state) {
     if (DSD_SYNC_IS_X2TDMA(state->synctype)) {
-        if (opts->wav_out_f != NULL && mbe_post_allow_policy_wav(opts, state, state->currentslot == 1 ? 1 : 0)) {
+        if (opts->wav_out_f != NULL && mbe_record_policy_allows(opts, state, state->currentslot == 1 ? 1 : 0)) {
             writeSynthesizedVoice(opts, state);
         }
         return;
     }
     if (DSD_SYNC_IS_DSTAR(state->synctype)) {
         // D-STAR publishes on slot 0 whatever slot a TDMA decode left current.
-        if (opts->wav_out_f != NULL && opts->dmr_stereo_wav == 1 && mbe_post_allow_policy_wav(opts, state, 0)) {
+        if (opts->wav_out_f != NULL && opts->dmr_stereo_wav == 1 && mbe_record_policy_allows(opts, state, 0)) {
             writeSynthesizedVoice(opts, state);
         }
         return;
