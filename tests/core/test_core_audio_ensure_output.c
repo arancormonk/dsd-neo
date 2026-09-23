@@ -20,7 +20,6 @@
 #include <dsd-neo/platform/audio.h>
 #include <stdint.h>
 #include <stdio.h>
-#include <string.h>
 
 #ifdef DSD_NEO_TEST_AUDIO_WRAP
 

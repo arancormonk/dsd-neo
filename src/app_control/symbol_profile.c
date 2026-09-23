@@ -23,6 +23,7 @@
 
 #ifdef USE_RADIO
 #include <dsd-neo/io/rtl_stream_c.h>
+#include <stddef.h>
 #endif
 
 void
