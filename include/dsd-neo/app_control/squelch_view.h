@@ -10,9 +10,14 @@
  *
  * A channel-map row or trunk-scan target can carry its own `--squelch-db`. While it is on air
  * the threshold in force is the row's, but every editor still edits the configured default
- * and every save writes it. The terminal, Qt and Android all show the same rule: the effective
- * value first, then "(row; default X)" while a row overrides it. The decision and the text live
- * here so the three surfaces cannot drift apart.
+ * and every save writes it. Every frontend follows the same rule: the effective value first,
+ * then the row note and the default while a row overrides it.
+ *
+ * This view owns the decisions (which level is in force, whether a row overrides it, whether
+ * each level is off) and the terminal's text ("-60.0 dB (row; default -80.0 dB)") and toast. The
+ * Qt/Android radio panel lays the same decisions out as its whole-dB stepper reading, a "row"
+ * badge and "default X", from the numeric pair and the off flags, and gives the control this
+ * text as its accessible name.
  */
 
 #ifndef DSD_NEO_INCLUDE_DSD_NEO_APP_CONTROL_SQUELCH_VIEW_H_
@@ -32,6 +37,8 @@ typedef struct {
     double effective_level;  /**< The threshold in force on the row on air. */
     double configured_level; /**< The configured default; what editors change and saves write. */
     uint8_t row_override;    /**< 1 while the active row or target sets --squelch-db. */
+    uint8_t effective_off;   /**< 1 when effective_level gates nothing (dsd_squelch_is_off()). */
+    uint8_t configured_off;  /**< 1 when configured_level gates nothing. */
 } dsd_app_squelch_view;
 
 /**
@@ -61,7 +68,8 @@ int dsd_app_squelch_view_edit_notice(const dsd_app_squelch_view* view, char* out
 /**
  * @brief A threshold in dB in the rtl_sql convention, for numeric frontends: 0 when it is off,
  * otherwise its level in dB, clamped to -120..0 like pwr_to_dB(). Every threshold the dB forms
- * can set is negative; only the legacy linear form can reach full scale and read as 0.
+ * can set is negative; only the legacy linear form can reach full scale and read as 0, so a
+ * frontend tells off from full scale with the view's off flags, never with the sign of this.
  */
 double dsd_app_squelch_db_or_off(double level);
 

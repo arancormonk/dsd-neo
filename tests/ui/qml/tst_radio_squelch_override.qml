@@ -35,6 +35,9 @@ Item {
             testContext.setMetric("squelchRowOverride", false);
             testContext.setMetric("configuredSquelchDb", -120.0);
             testContext.setMetric("effectiveSquelchDb", -120.0);
+            testContext.setMetric("configuredSquelchOff", false);
+            testContext.setMetric("effectiveSquelchOff", false);
+            testContext.setMetric("squelchReadout", "-120.0 dB");
             testContext.setMetric("squelchDb", -120.0);
             testContext.setMetric("squelchOff", false);
             if (sheet) {
@@ -44,11 +47,16 @@ Item {
             testContext.setHostRunning(false);
         }
 
-        function rowOverride(effectiveDb, configuredDb) {
+        // What the engine publishes for a row override: 0 dB reads as off here, as it does
+        // for every level the dB forms can set. The readout is the app-control text.
+        function rowOverride(effectiveDb, configuredDb, readout) {
             testContext.setMetric("effectiveSquelchDb", effectiveDb);
+            testContext.setMetric("effectiveSquelchOff", effectiveDb >= 0);
             testContext.setMetric("squelchDb", effectiveDb >= 0 ? -120.0 : effectiveDb);
             testContext.setMetric("squelchOff", effectiveDb >= 0);
             testContext.setMetric("configuredSquelchDb", configuredDb);
+            testContext.setMetric("configuredSquelchOff", configuredDb >= 0);
+            testContext.setMetric("squelchReadout", readout || "");
             testContext.setMetric("squelchRowOverride", true);
             tryVerify(function () { return metrics.squelchRowOverride === true });
         }
@@ -63,11 +71,26 @@ Item {
         }
 
         function test_row_override_reads_row_first_and_names_the_default() {
-            rowOverride(-60.0, -80.0);
+            rowOverride(-60.0, -80.0, "-60.0 dB (row; default -80.0 dB)");
             compare(findChild(sheet, "radioSquelchValue").text, "-60 dB");
             verify(findChild(sheet, "radioSquelchRowNote").visible);
             verify(findChild(sheet, "radioSquelchRowBadge").visible);
             compare(findChild(sheet, "radioSquelchDefault").text, "default -80 dB");
+            // Read aloud as the terminal prints it.
+            compare(findChild(sheet, "radioSquelchValue").Accessible.name, "-60.0 dB (row; default -80.0 dB)");
+        }
+
+        function test_full_scale_default_is_not_off() {
+            // A legacy linear default at full scale reads 0 dB, like off, but it gates
+            // everything; the engine's off flag decides, not the sign of the reading.
+            rowOverride(-60.0, 0.0, "-60.0 dB (row; default 0.0 dB)");
+            testContext.setMetric("configuredSquelchOff", false);
+            tryVerify(function () { return metrics.configuredSquelchOff === false });
+            compare(findChild(sheet, "radioSquelchDefault").text, "default 0 dB");
+            testContext.setMetric("effectiveSquelchDb", 0.0);
+            testContext.setMetric("effectiveSquelchOff", false);
+            tryVerify(function () { return metrics.effectiveSquelchOff === false });
+            compare(findChild(sheet, "radioSquelchValue").text, "0 dB");
         }
 
         function test_buttons_edit_the_configured_default_not_the_row() {

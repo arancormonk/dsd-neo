@@ -9,7 +9,7 @@
 #include <dsd-neo/core/safe_api.h>
 
 int
-ui_dsp_format_squelch_status(double channel_power, double squelch_power, char* out, size_t out_size) {
+ui_dsp_format_squelch_status(double channel_power, double squelch_power, int row_override, char* out, size_t out_size) {
     if (!out || out_size == 0U) {
         return -1;
     }
@@ -19,6 +19,7 @@ ui_dsp_format_squelch_status(double channel_power, double squelch_power, char* o
      * says so, while the channel power is always a reading and always a number. */
     char sql[24];
     (void)dsd_squelch_format(squelch_power, " dB", sql, sizeof sql);
-    DSD_SNPRINTF(out, out_size, "%s ch:%.1f dB sql:%s", gate, pwr_to_dB(channel_power), sql);
+    DSD_SNPRINTF(out, out_size, "%s ch:%.1f dB sql:%s%s", gate, pwr_to_dB(channel_power), sql,
+                 row_override ? " (row)" : "");
     return 0;
 }

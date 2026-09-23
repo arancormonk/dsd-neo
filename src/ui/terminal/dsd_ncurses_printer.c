@@ -633,9 +633,12 @@ ui_render_m17_encoder_status(const dsd_opts* opts, const dsd_state* state) {
         }
         if (opts->audio_in_type != AUDIO_IN_RTL && state->m17_vox == 1) {
             /* Measured power then threshold: the first is always a reading, the
-             * second says "off" when it is not gating. */
-            char vox_sql[24];
-            (void)dsd_squelch_format(opts->rtl_squelch_level, " dB", vox_sql, sizeof vox_sql);
+             * second says "off" when it is not gating. A scan row can override the
+             * threshold on this input too, so it reads like the RTL line's SQL. */
+            dsd_app_squelch_view vox_view;
+            char vox_sql[72];
+            (void)dsd_app_squelch_view_get(opts, state, &vox_view);
+            (void)dsd_app_squelch_view_format(&vox_view, vox_sql, sizeof vox_sql);
             printw(" SQL: %.1f : %s;", pwr_to_dB(opts->rtl_pwr), vox_sql);
         }
         printw("\n");

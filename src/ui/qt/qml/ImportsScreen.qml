@@ -37,6 +37,13 @@ Item {
     // replaces the live one wholesale and clears what the protocol had learned.
     property var sessionSystem: null
 
+    // A row's own squelch (--squelch-db). Absent inherits the session's; 0 is off.
+    function squelchSummary(db) {
+        if (db === undefined || db === null)
+            return qsTr("Squelch: inherit");
+        return db === 0 ? qsTr("Squelch: off") : qsTr("Squelch: %1 dB").arg(db);
+    }
+
     function nounFor(type, count) {
         if (type === "trunkTargets")
             return count === 1 ? qsTr("target") : qsTr("targets");
@@ -513,6 +520,7 @@ Item {
 
     ModalSheet {
         id: channelReview
+        objectName: "channelReviewSheet"
         property var rows: []
         property bool valid: true
         accessibleName: qsTr("Channel decryption profiles")
@@ -524,6 +532,7 @@ Item {
             font.pixelSize: Theme.fontSize(14)
         }
         ListView {
+            objectName: "channelReviewRows"
             width: parent.width
             height: Math.min(400, contentHeight)
             clip: true
@@ -533,7 +542,7 @@ Item {
                 width: ListView.view.width
                 topPadding: 10
                 bottomPadding: 10
-                text: (modelData.name || qsTr("Row %1").arg(modelData.index + 1)) + " · " + modelData.frequency + " MHz · " + (modelData.mode || qsTr("Inherited protocol")) + "\n" + [qsTr("Keys: inherit session defaults"), qsTr("Keys: direct override"), qsTr("Keys: automatic collection"), qsTr("Keys: explicitly empty")][modelData.keySource] + "\n" + (modelData.force < 0 ? qsTr("Identifiers: inherit") : modelData.force === 0 ? qsTr("Identifiers: normal signaling") : qsTr("Identifier override: %1").arg(modelData.force.toString(16).toUpperCase())) + (modelData.mode === "dmr" || modelData.mappings >= 0 ? "\n" + (modelData.mappings < 0 ? qsTr("DMR mappings: inherit") : qsTr("DMR mappings: %1").arg(modelData.mappings)) : "")
+                text: (modelData.name || qsTr("Row %1").arg(modelData.index + 1)) + " · " + modelData.frequency + " MHz · " + (modelData.mode || qsTr("Inherited protocol")) + "\n" + [qsTr("Keys: inherit session defaults"), qsTr("Keys: direct override"), qsTr("Keys: automatic collection"), qsTr("Keys: explicitly empty")][modelData.keySource] + "\n" + (modelData.force < 0 ? qsTr("Identifiers: inherit") : modelData.force === 0 ? qsTr("Identifiers: normal signaling") : qsTr("Identifier override: %1").arg(modelData.force.toString(16).toUpperCase())) + (modelData.mode === "dmr" || modelData.mappings >= 0 ? "\n" + (modelData.mappings < 0 ? qsTr("DMR mappings: inherit") : qsTr("DMR mappings: %1").arg(modelData.mappings)) : "") + "\n" + screen.squelchSummary(modelData.squelchDb)
                 textFormat: Text.PlainText
                 wrapMode: Text.WrapAnywhere
                 color: Theme.textPrimary

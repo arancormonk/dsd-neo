@@ -830,8 +830,29 @@ test_rtl_and_soapy_input_source_rendering(void) {
     reset_printw_capture();
     ui_render_rtl_input_source(&opts, &state);
     assert_capture_contains(" SQL: -80.0 dB;");
+
+    /* The M17 VOX field on a non-RTL input reads the same threshold, so it reads the same way:
+     * the measured power, then the shared readout with the row note. */
+    static dsd_opts vox_opts;
+    static dsd_state vox_state;
+    DSD_MEMSET(&vox_opts, 0, sizeof(vox_opts));
+    DSD_MEMSET(&vox_state, 0, sizeof(vox_state));
+    vox_opts.m17encoder = 1;
+    vox_opts.audio_in_type = AUDIO_IN_PULSE;
+    vox_opts.rtl_pwr = dsd_squelch_level_from_sql(-70.0);
+    vox_state.m17_vox = 1;
+    row.present = DSD_SCAN_OPT_SQUELCH;
+    row.squelch_db = -60;
+    vox_opts.rtl_squelch_level = dsd_squelch_level_from_sql(-60.0);
+    reset_printw_capture();
+    ui_render_m17_encoder_status(&vox_opts, &vox_state);
+    assert_capture_contains(" SQL: -70.0 : -60.0 dB (row; default -80.0 dB);");
     g_scan_row_options = NULL;
     g_scan_configured = NULL;
+    vox_opts.rtl_squelch_level = dsd_squelch_level_from_sql(-80.0);
+    reset_printw_capture();
+    ui_render_m17_encoder_status(&vox_opts, &vox_state);
+    assert_capture_contains(" SQL: -70.0 : -80.0 dB;");
 
     DSD_MEMSET(&opts, 0, sizeof(opts));
     opts.audio_in_type = AUDIO_IN_RTL;

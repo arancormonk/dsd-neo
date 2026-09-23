@@ -70,6 +70,38 @@ Item {
             }
         }
 
+        // Issue #521: the channel-map review reports each row's own --squelch-db, and a row
+        // without one says it inherits.
+        function test_channel_review_shows_row_squelch() {
+            var map = testContext.writeFixtureCsv("squelch-map.csv",
+                "channel,frequency,mode,options\n"
+                + "1,851012500,p25,--squelch-db -60\n"
+                + "2,852012500,dmr,--squelch-db 0\n"
+                + "3,853012500,dmr,\n");
+            var result = importedFiles.importFile(map, "squelch-map.csv", "chan");
+            verify(result.ok, result.detail || "the channel map did not import");
+            var row = importedFiles.rowForPath(result.path);
+            try {
+                var profiles = importedFiles.channelProfiles(row);
+                verify(profiles.ok);
+                var sheet = findChild(tc.screen, "channelReviewSheet");
+                verify(sheet !== null, "the channel review is missing");
+                sheet.rows = profiles.rows;
+                sheet.valid = profiles.ok;
+                sheet.visible = true;
+                var rows = findChild(tc.screen, "channelReviewRows");
+                verify(rows !== null);
+                tryVerify(function() { return rows.count === 3 && rows.itemAtIndex(2) !== null; });
+                verify(rows.itemAtIndex(0).text.indexOf("Squelch: -60 dB") >= 0, rows.itemAtIndex(0).text);
+                verify(rows.itemAtIndex(1).text.indexOf("Squelch: off") >= 0, rows.itemAtIndex(1).text);
+                verify(rows.itemAtIndex(2).text.indexOf("Squelch: inherit") >= 0, rows.itemAtIndex(2).text);
+                sheet.visible = false;
+            } finally {
+                importedFiles.remove(importedFiles.rowForPath(result.path));
+                tryCompare(tc.list, "count", 2);
+            }
+        }
+
         function test_cancel_import_cleanup_data() {
             return [{tag: "primary"}, {tag: "sheet"}];
         }

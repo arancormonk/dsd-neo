@@ -11,14 +11,14 @@
 static void
 test_squelch_status_open(void) {
     char out[64];
-    assert(ui_dsp_format_squelch_status(dB_to_pwr(-28.4), dB_to_pwr(-120.0), out, sizeof(out)) == 0);
+    assert(ui_dsp_format_squelch_status(dB_to_pwr(-28.4), dB_to_pwr(-120.0), 0, out, sizeof(out)) == 0);
     assert(strcmp(out, "Open ch:-28.4 dB sql:-120.0 dB") == 0);
 }
 
 static void
 test_squelch_status_closed(void) {
     char out[64];
-    assert(ui_dsp_format_squelch_status(dB_to_pwr(-80.0), dB_to_pwr(-40.0), out, sizeof(out)) == 0);
+    assert(ui_dsp_format_squelch_status(dB_to_pwr(-80.0), dB_to_pwr(-40.0), 0, out, sizeof(out)) == 0);
     assert(strcmp(out, "Closed ch:-80.0 dB sql:-40.0 dB") == 0);
 }
 
@@ -30,7 +30,7 @@ test_squelch_status_closed(void) {
 static void
 test_squelch_status_open_when_disabled(void) {
     char out[64];
-    assert(ui_dsp_format_squelch_status(0.0, 0.0, out, sizeof(out)) == 0);
+    assert(ui_dsp_format_squelch_status(0.0, 0.0, 0, out, sizeof(out)) == 0);
     assert(strcmp(out, "Open ch:-120.0 dB sql:off") == 0);
 }
 
@@ -38,14 +38,14 @@ test_squelch_status_open_when_disabled(void) {
 static void
 test_squelch_status_reports_power_while_disabled(void) {
     char out[64];
-    assert(ui_dsp_format_squelch_status(dB_to_pwr(-60.0), 0.0, out, sizeof(out)) == 0);
+    assert(ui_dsp_format_squelch_status(dB_to_pwr(-60.0), 0.0, 0, out, sizeof(out)) == 0);
     assert(strcmp(out, "Open ch:-60.0 dB sql:off") == 0);
 }
 
 static void
 test_squelch_status_open_at_threshold(void) {
     char out[64];
-    assert(ui_dsp_format_squelch_status(dB_to_pwr(-40.0), dB_to_pwr(-40.0), out, sizeof(out)) == 0);
+    assert(ui_dsp_format_squelch_status(dB_to_pwr(-40.0), dB_to_pwr(-40.0), 0, out, sizeof(out)) == 0);
     assert(strcmp(out, "Open ch:-40.0 dB sql:-40.0 dB") == 0);
 }
 
@@ -55,17 +55,23 @@ test_squelch_status_open_at_threshold(void) {
 static void
 test_squelch_status_row_thresholds(void) {
     char out[64];
-    assert(ui_dsp_format_squelch_status(dB_to_pwr(-70.0), dsd_squelch_level_from_sql(-60.0), out, sizeof(out)) == 0);
+    assert(ui_dsp_format_squelch_status(dB_to_pwr(-70.0), dsd_squelch_level_from_sql(-60.0), 0, out, sizeof(out)) == 0);
     assert(strcmp(out, "Closed ch:-70.0 dB sql:-60.0 dB") == 0);
-    assert(ui_dsp_format_squelch_status(dB_to_pwr(-70.0), dsd_squelch_level_from_sql(-100.0), out, sizeof(out)) == 0);
+    assert(ui_dsp_format_squelch_status(dB_to_pwr(-70.0), dsd_squelch_level_from_sql(-100.0), 0, out, sizeof(out))
+           == 0);
     assert(strcmp(out, "Open ch:-70.0 dB sql:-100.0 dB") == 0);
-    assert(ui_dsp_format_squelch_status(dB_to_pwr(-70.0), dsd_squelch_level_from_sql(0.0), out, sizeof(out)) == 0);
+    assert(ui_dsp_format_squelch_status(dB_to_pwr(-70.0), dsd_squelch_level_from_sql(0.0), 0, out, sizeof(out)) == 0);
     assert(strcmp(out, "Open ch:-70.0 dB sql:off") == 0);
+    /* While the row sets the threshold, the panel says so, as the input line does. */
+    assert(ui_dsp_format_squelch_status(dB_to_pwr(-70.0), dsd_squelch_level_from_sql(-60.0), 1, out, sizeof(out)) == 0);
+    assert(strcmp(out, "Closed ch:-70.0 dB sql:-60.0 dB (row)") == 0);
+    assert(ui_dsp_format_squelch_status(dB_to_pwr(-70.0), dsd_squelch_level_from_sql(0.0), 1, out, sizeof(out)) == 0);
+    assert(strcmp(out, "Open ch:-70.0 dB sql:off (row)") == 0);
 }
 
 static void
 test_squelch_status_rejects_missing_output(void) {
-    assert(ui_dsp_format_squelch_status(dB_to_pwr(-20.0), dB_to_pwr(-30.0), NULL, 0U) != 0);
+    assert(ui_dsp_format_squelch_status(dB_to_pwr(-20.0), dB_to_pwr(-30.0), 0, NULL, 0U) != 0);
 }
 
 int

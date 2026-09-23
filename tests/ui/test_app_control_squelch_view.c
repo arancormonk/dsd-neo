@@ -80,6 +80,7 @@ main(void) {
     assert(dsd_scan_mode_options(opts, state, &row) == 0);
     assert(dsd_app_squelch_view_get(opts, state, &view) == 0);
     expect_text(&view, "off (row; default -75.0 dB)", "Default squelch -75.0 dB; this channel overrides it (off)");
+    assert(view.effective_off && !view.configured_off);
     assert(fabs(dsd_app_squelch_db_or_off(view.effective_level)) < 1e-12);
     assert(fabs(dsd_app_squelch_db_or_off(view.configured_level) - (-75.0)) < 1e-9);
     dsd_scan_mode_leave(opts, state);
@@ -89,6 +90,7 @@ main(void) {
     assert(dsd_scan_mode_options(opts, state, &row) == 0);
     assert(dsd_app_squelch_view_get(opts, state, &view) == 0);
     expect_text(&view, "-45.0 dB (row; default off)", "Default squelch off; this channel overrides it (-45.0 dB)");
+    assert(!view.effective_off && view.configured_off);
 
     /* A frontend snapshot pair reads the same as the live state. */
     dsd_state* copy = (dsd_state*)calloc(1, sizeof(*copy));
@@ -98,6 +100,14 @@ main(void) {
     assert(dsd_app_squelch_view_get(opts, copy, &snap) == 0);
     assert(snap.row_override && level_is(snap.effective_level, -45.0) && dsd_squelch_is_off(snap.configured_level));
     dsd_scan_mode_leave(opts, state);
+
+    /* A legacy linear default at full scale gates everything: it is not off, although its dB
+     * reading is 0 like off's. The flags carry the difference to numeric frontends. */
+    opts->rtl_squelch_level = 1.0;
+    assert(dsd_app_squelch_view_get(opts, state, &view) == 0);
+    assert(!view.configured_off && !view.effective_off);
+    assert(fabs(dsd_app_squelch_db_or_off(view.configured_level)) < 1e-12);
+    expect_text(&view, "0.0 dB", "Applied: RTL squelch -> 0.0 dB");
 
     char out[8];
     assert(dsd_app_squelch_view_get(NULL, state, &view) == -1 && !view.row_override);

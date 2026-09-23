@@ -37,6 +37,13 @@ Rectangle {
         return isFinite(value) && value >= bottom && value <= top ? value : NaN;
     }
 
+    // A target's own squelch (--squelch-db). Absent inherits the list's; 0 is off.
+    function squelchSummary(db) {
+        if (db === undefined || db === null)
+            return qsTr("Squelch: inherit");
+        return db === 0 ? qsTr("Squelch: off") : qsTr("Squelch: %1 dB").arg(db);
+    }
+
     function frequencyValid(text) {
         return /^[0-9]{1,5}(\.[0-9]{0,6})?$/.test(text) && sessionArgs.freqValid(text);
     }
@@ -684,7 +691,7 @@ Rectangle {
                         textFormat: Text.PlainText
                         wrapMode: Text.Wrap
                         color: Theme.textPrimary
-                        text: modelData.id + " · " + modelData.type + " · " + modelData.frequency + " MHz\n" + qsTr("Dwell: %1 · Hold: %2 · Modulation: %3 · Gain: %4").arg(modelData.dwellMs < 0 ? qsTr("inherit") : modelData.dwellMs + " ms").arg(modelData.holdMs < 0 ? qsTr("inherit") : modelData.holdMs + " ms").arg(modelData.modulation || qsTr("inherit")).arg(modelData.gainDb < 0 ? qsTr("inherit") : modelData.gainDb === 0 ? qsTr("auto") : modelData.gainDb + " dB")
+                        text: modelData.id + " · " + modelData.type + " · " + modelData.frequency + " MHz\n" + qsTr("Dwell: %1 · Hold: %2 · Modulation: %3 · Gain: %4").arg(modelData.dwellMs < 0 ? qsTr("inherit") : modelData.dwellMs + " ms").arg(modelData.holdMs < 0 ? qsTr("inherit") : modelData.holdMs + " ms").arg(modelData.modulation || qsTr("inherit")).arg(modelData.gainDb < 0 ? qsTr("inherit") : modelData.gainDb === 0 ? qsTr("auto") : modelData.gainDb + " dB") + " · " + screen.squelchSummary(modelData.squelchDb)
                     }
                 }
             }

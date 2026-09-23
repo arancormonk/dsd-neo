@@ -715,20 +715,29 @@ MetricsModel::fillDecoderView(View& next, const dsd_opts* opts_snapshot, const d
     fillSquelchOverride(next, opts_snapshot, snapshot);
 }
 
-/* Issue #521: the configured/effective pair and the row badge come from the same app_control
- * view the terminal's SQL readout uses, so the two frontends cannot disagree about a row. */
+/* Issue #521: the configured/effective pair, the off decisions, the row badge and the readout
+ * text all come from the same app_control view the terminal's SQL readout uses, so the two
+ * frontends cannot disagree about a row. */
 void
 MetricsModel::fillSquelchOverride(View& next, const dsd_opts* opts_snapshot, const dsd_state* snapshot) {
     dsd_app_squelch_view squelch{};
     if (!next.radio_input || dsd_app_squelch_view_get(opts_snapshot, snapshot, &squelch) != 0) {
         next.configured_squelch_db = 0.0;
         next.effective_squelch_db = 0.0;
+        next.configured_squelch_off = false;
+        next.effective_squelch_off = false;
         next.squelch_row_override = false;
+        next.squelch_readout.clear();
         return;
     }
     next.configured_squelch_db = dsd_app_squelch_db_or_off(squelch.configured_level);
     next.effective_squelch_db = dsd_app_squelch_db_or_off(squelch.effective_level);
+    next.configured_squelch_off = squelch.configured_off != 0U;
+    next.effective_squelch_off = squelch.effective_off != 0U;
     next.squelch_row_override = squelch.row_override != 0U;
+    char readout[96];
+    (void)dsd_app_squelch_view_format(&squelch, readout, sizeof readout);
+    next.squelch_readout = QString::fromUtf8(readout);
 }
 
 void

@@ -30,6 +30,8 @@ dsd_app_squelch_view_get(const dsd_opts* opts, const dsd_state* state, dsd_app_s
     /* The row's own value, not dsd_opts: suspended for a command, dsd_opts reads the default. */
     out->effective_level =
         out->row_override ? dsd_squelch_level_from_sql((double)row->squelch_db) : opts->rtl_squelch_level;
+    out->effective_off = dsd_squelch_is_off(out->effective_level) ? 1U : 0U;
+    out->configured_off = dsd_squelch_is_off(out->configured_level) ? 1U : 0U;
     return 0;
 }
 

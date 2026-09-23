@@ -177,10 +177,14 @@ class MetricsModel : public QObject {
     Q_PROPERTY(int tunerGainDb READ tunerGainDb NOTIFY controlChanged)
     Q_PROPERTY(double squelchDb READ squelchDb NOTIFY controlChanged)
     Q_PROPERTY(bool squelchOff READ squelchOff NOTIFY controlChanged)
-    /* #521: a scan row's --squelch-db. rtl_sql convention: 0 is off, otherwise dB. */
+    /* #521: a scan row's --squelch-db. rtl_sql convention: 0 is off, otherwise dB; the off
+     * flags and the readout text come from the app-control squelch view. */
     Q_PROPERTY(double configuredSquelchDb READ configuredSquelchDb NOTIFY controlChanged)
     Q_PROPERTY(double effectiveSquelchDb READ effectiveSquelchDb NOTIFY controlChanged)
+    Q_PROPERTY(bool configuredSquelchOff READ configuredSquelchOff NOTIFY controlChanged)
+    Q_PROPERTY(bool effectiveSquelchOff READ effectiveSquelchOff NOTIFY controlChanged)
     Q_PROPERTY(bool squelchRowOverride READ squelchRowOverride NOTIFY controlChanged)
+    Q_PROPERTY(QString squelchReadout READ squelchReadout NOTIFY controlChanged)
     Q_PROPERTY(int ppm READ ppm NOTIFY controlChanged)
     Q_PROPERTY(QString uiMessage READ uiMessage NOTIFY uiMessageChanged)
 
@@ -521,10 +525,37 @@ class MetricsModel : public QObject {
         return m_view.effective_squelch_db;
     }
 
+    /**
+     * @brief Whether the configured default gates nothing.
+     *
+     * The view's own decision (dsd_squelch_is_off()), not configuredSquelchDb() >= 0: a legacy
+     * linear default at full scale also reads 0 dB, and it gates everything.
+     */
+    bool
+    configuredSquelchOff() const {
+        return m_view.configured_squelch_off;
+    }
+
+    /** @brief Whether the squelch in force on the row on air gates nothing. */
+    bool
+    effectiveSquelchOff() const {
+        return m_view.effective_squelch_off;
+    }
+
     /** @brief Whether the row or target on air sets its own squelch (--squelch-db). */
     bool
     squelchRowOverride() const {
         return m_view.squelch_row_override;
+    }
+
+    /**
+     * @brief The squelch readout as the terminal prints it, from dsd_app_squelch_view_format():
+     * "-60.0 dB (row; default -80.0 dB)" under a row override, otherwise "-80.0 dB" or "off".
+     * Empty without a radio input.
+     */
+    QString
+    squelchReadout() const {
+        return m_view.squelch_readout;
     }
 
     /**
@@ -1176,6 +1207,7 @@ class MetricsModel : public QObject {
         QString sync_label;
         QString scan_mode;
         QString ui_message;
+        QString squelch_readout;
         /* Slot views and lead ranking share the canonical slot count. */
         SlotCall slot_call[DSD_CALL_STATE_SLOT_COUNT];
         int lead_slot = -1;
@@ -1202,6 +1234,8 @@ class MetricsModel : public QObject {
         bool trunkable_sync = false;
         bool squelch_off = false;
         bool squelch_row_override = false;
+        bool configured_squelch_off = false;
+        bool effective_squelch_off = false;
         bool audio_muted = false;
         bool tuner_controlled = false;
         bool trunking_enabled = false;
@@ -1287,7 +1321,9 @@ class MetricsModel : public QObject {
         squelchOverrideEquals(const View& other) const {
             return std::fabs(configured_squelch_db - other.configured_squelch_db) < 1e-6
                    && std::fabs(effective_squelch_db - other.effective_squelch_db) < 1e-6
-                   && squelch_row_override == other.squelch_row_override;
+                   && squelch_row_override == other.squelch_row_override
+                   && configured_squelch_off == other.configured_squelch_off
+                   && effective_squelch_off == other.effective_squelch_off && squelch_readout == other.squelch_readout;
         }
 
         bool
