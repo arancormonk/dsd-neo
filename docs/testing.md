@@ -383,9 +383,11 @@ Known gaps and caveats:
 
 ### Analog monitor audio checks
 
-The `DECODE_IQ_ANALOG_*` cases (CTest labels `iq-decode` and `analog`, radio builds only) check what the analog FM
-monitor lets a listener hear. `iq_decode_check.cmake` can only match log lines, and the `-6` WAV is taken before the
-monitor's filters, gain stage and squelch gate, so neither can say whether the monitor produced the right audio. The
+The `DECODE_IQ_ANALOG_*` audio cases (CTest labels `iq-decode` and `analog`, radio builds only) check what the analog
+FM monitor lets a listener hear; the received-tone cases `DECODE_IQ_ANALOG_CTCSS_*` carry the same labels but match a
+log line (see [Received tone (CTCSS) on the analog monitor](#received-tone-ctcss-on-the-analog-monitor)).
+`iq_decode_check.cmake` can only match log lines, and the `-6` WAV is taken before the monitor's filters, gain stage
+and squelch gate, so neither can say whether the monitor produced the right audio. The
 cases therefore run `dsd-neo_test_analog_replay` (`tests/engine/analog_replay.c`) as `DSD_BIN` through the unchanged
 checker (the negative controls below through their own). The host runs the real engine on the arguments `dsd-neo` would
 get. From its lifecycle start hook, which runs after the engine has installed its hooks and opened (no) audio output, it
@@ -499,6 +501,10 @@ carrier inside the passband (5 kHz up, a variant fixture that is not committed) 
 | `nfm_squelch_real_a` | sigidwiki `Unknown_NFM_squelch_IQ.zip`, `855111kHz_IQ.wav` (s16, 39.0625 kHz) | 4 s from 0.3 s: speech, then carrier only; 150 bit/s sub-audible data, not CTCSS or DCS |
 | `nfm_squelch_real_b` | the same zip, `855361kHz_IQ.wav` | 4 s from 0.5 s: speech, then carrier only; the same data signalling |
 | `am_airband_real` | sigidwiki `AM_IQ.zip` (u8, 64 kHz) | 8 s from 22 s: AM airband voice on a continuous carrier |
+| `nfm_ctcss_synth_1000` | synthetic, seed 5221000 | 2 s: voice-band audio at up to 4 kHz deviation plus CTCSS 100.0 Hz at 600 Hz deviation, receiver noise at baseband (#522) |
+| `nfm_ctcss_synth_670` | synthetic, seed 5220670 | the same with CTCSS 67.0 Hz |
+| `nfm_ctcss_synth_drop` | synthetic, seed 5221001 | 2.5 s: CTCSS 100.0 Hz that stops at 1.2 s while the carrier and voice carry on |
+| `nfm_notone_synth` | synthetic, seed 5220000 | 2 s: the same voice and noise with no tone |
 
 `tools/build_iq_fixtures.py` pins each zip's SHA-256, reads the WAV members sample-exact (u8 centred on 127.5),
 shifts each wanted carrier to 0 Hz by an offset measured over the excerpt (`ANALOG_EXCERPTS` documents each), and
@@ -506,11 +512,12 @@ resamples to 48 kHz in the frequency domain. The synthetics regenerate offline a
 `python3 tools/build_iq_fixtures.py --derived-only`; the excerpts need the network:
 `python3 tools/build_iq_fixtures.py --only nfm_ctcss_real` (and so on).
 
-The whole analog effort (issue #518) stays within 5 MB of new fixture bytes. The six fixtures here take 2.4 MB, which
-leaves about 2.6 MB. A 48 kHz cu8 fixture takes 96 kB a second, so keep each later synthetic fixture to 2 s
-(192 kB) or less: the ones reserved so far (four for #522, three for #523, two for #524) then take at most 1.7 MB;
-adding the 0.58 MB `nxdn48_attenuated` that #521 committed gives about 2.3 MB in all. A pull request that adds analog
-fixtures states the running total.
+The whole analog effort (issue #518) stays within 5 MB of new fixture bytes. The six #518 fixtures take 2.4 MB, the
+`nxdn48_attenuated` replay that #521 committed 0.58 MB and the four received-tone synthetics of #522 0.82 MB
+(`nfm_ctcss_synth_drop` runs 2.5 s: after its tone stops at 1.2 s it still has to lose the tone and reach the no-tone
+verdict), 3.8 MB in all, which leaves about 1.2 MB. A 48 kHz cu8 fixture takes 96 kB a second, so keep each later
+synthetic fixture to 2 s (192 kB) or less: the ones still reserved (three for #523, two for #524) then take at most
+0.96 MB. A pull request that adds analog fixtures states the running total.
 
 #### Tone and code labels
 

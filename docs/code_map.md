@@ -603,8 +603,8 @@ installs from `src/engine/trunk_tuning.c` in `src/engine/trunk_tuning_hooks_inst
   follows the output it reads: an analog-family decoder does not collect a direct (digital) output's samples while
   the front end has yet to switch, and a move between the monitor output and a direct one drops the part-collected
   block (`symbol_refresh_rtl_profile()`), so the first block the new family plays holds only its own samples.
-  `tests/engine/analog_replay.c` (`dsd-neo_test_analog_replay`, the `DECODE_IQ_ANALOG_*` cases) captures and scores
-  exactly that output through the hook, and times it with a wrapped RTL stream read hook, so changes to the monitor
+  `tests/engine/analog_replay.c` (`dsd-neo_test_analog_replay`, the `DECODE_IQ_ANALOG_*` audio cases) captures and
+  scores exactly that output through the hook, and times it with a wrapped RTL stream read hook, so changes to the monitor
   chain are measured against what a listener hears; back them with `tools/replay_ab.sh --metric analog` evidence
   (`docs/testing.md`). The host's own options are the `--analog-*` names it lists; other `--analog-*` arguments pass
   through to the CLI parser.
