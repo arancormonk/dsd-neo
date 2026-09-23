@@ -1358,7 +1358,7 @@ check_committed_analog_fixture(const committed_analog_fixture* fixture) {
         dsd_iq_replay_config_clear(&cfg);
         return 1;
     }
-    rc |= expect_int(fixture->name, (int)cfg.format, (int)DSD_IQ_FORMAT_CU8);
+    rc |= expect_int("analog fixture format", (int)cfg.format, DSD_IQ_FORMAT_CU8);
     rc |= expect_u32("analog fixture sample rate", cfg.sample_rate_hz, 48000U);
     rc |= expect_u32("analog fixture demod rate", cfg.demod_rate_hz, 48000U);
     rc |= expect_int("analog fixture dsp bandwidth", cfg.rtl_dsp_bw_khz, 48);
@@ -1374,7 +1374,7 @@ check_committed_analog_fixture(const committed_analog_fixture* fixture) {
         while ((n = fread(chunk, 1U, sizeof(chunk), fp)) > 0U) {
             on_disk += (uint64_t)n;
         }
-        fclose(fp);
+        (void)fclose(fp);
         rc |= expect_u64("analog fixture data_bytes matches file", cfg.data_bytes, on_disk);
     }
 

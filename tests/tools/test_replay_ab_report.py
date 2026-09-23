@@ -33,6 +33,11 @@ def analog_row(build, rep, snr, inband="30.00", audible="1500.00", tone="NA", lo
             probe_hz, probe_dbfs, probe, tone, lock]
 
 
+def missing_row(build, rep):
+    """A repeat whose host printed no ANALOG METRIC line (it crashed or timed out): every analog column is NA."""
+    return [build, "cap.json-fast", str(rep), "NA", "0", "0"] + ["NA"] * (len(COLUMNS) - 6)
+
+
 def write_script(path, text):
     """An executable script with LF line endings whatever the platform's default."""
     with open(path, "w", encoding="utf-8", newline="\n") as handle:
@@ -146,6 +151,37 @@ class ReplayAbReport(unittest.TestCase):
         self.assertNotRegex(result.stdout, r"(?m)^probe_dbc")
         self.assertIn("probed different frequencies (5000.0, 12500.0 Hz)", result.stdout)
 
+    def test_build_without_any_analog_data_is_shown_and_fails_the_report(self):
+        # A variant that crashed in every repeat must not vanish from the report and leave the baseline's rows
+        # looking like a clean comparison.
+        rows = []
+        for rep, snr in enumerate(("25.10", "24.90", "25.40"), start=1):
+            rows.append(analog_row("host.main", rep, snr))
+            rows.append(missing_row("host.branch", rep))
+        write_summary(self.summary, rows)
+        result = report(self.summary, "--baseline", "host.main")
+        self.assertEqual(result.returncode, 1, result.stdout)
+        for metric in ("tone_snr_db", "inband_db", "audible_ms", "rms_dbfs"):
+            self.assertRegex(metric_line(result.stdout, metric, "host.branch"), r"\s0/3\s+NA\s+NA\s+NA\s+-\s+-$")
+        self.assertIn("warning: host.branch produced no analog measurement in any of 3 repeats", result.stdout)
+        self.assertNotIn("warning: host.main", result.stdout)
+
+    def test_partial_coverage_is_counted_and_paired_on_common_repeats(self):
+        rows = [
+            analog_row("a", 1, "20.00"), analog_row("b", 1, "21.00"),
+            analog_row("a", 2, "30.00"), missing_row("b", 2),
+            analog_row("a", 3, "10.00"), analog_row("b", 3, "11.00"),
+        ]
+        write_summary(self.summary, rows)
+        result = report(self.summary, "--baseline", "a")
+        self.assertEqual(result.returncode, 0, result.stdout)
+        line = metric_line(result.stdout, "tone_snr_db", "b")
+        self.assertRegex(line, r"\s2/3\s")
+        self.assertIn("+1.00 +/- 0.00", line)
+        self.assertTrue(line.rstrip().endswith("2/2"), line)
+        self.assertRegex(metric_line(result.stdout, "tone_snr_db", "a"), r"\s3/3\s")
+        self.assertIn("note: b produced analog measurements in only 2 of 3 repeats", result.stdout)
+
     def test_digital_summary_still_reports_errors_per_voice_frame(self):
         rows = [
             ["before", "cap.json-fast", "1", "40", "20", "5"],
@@ -169,12 +205,16 @@ class ReplayAbReport(unittest.TestCase):
 FAKE_HOST = """#!/usr/bin/env bash
 # Stands in for dsd-neo_test_analog_replay: its output depends only on its own name and on
 # a per-variant flag, the way a wrapper script passes one to the real host.
+# The received-tone fields follow the contract in tests/engine/analog_replay.c's file comment.
 snr=25.00
+tone=NA
+lock=NA
 case "$*" in *--fake-boost*) snr=26.00 ;; esac
+case "$*" in *--fake-tone*) tone=D023N lock=312.50 ;; esac
 echo "NOTICE: Total audio errors: 0"
 echo "ANALOG METRIC: rate_hz=48000 total_ms=1500.00 captured_ms=1500.00 audible_ms=1480.00" \\
   "first_audible_ms=20.00 rms_dbfs=-36.00 peak_dbfs=-31.00 clip=0 inband_db=30.50 tone_hz=1000.00" \\
-  "tone_dbfs=-36.00 tone_snr_db=$snr"
+  "tone_dbfs=-36.00 tone_snr_db=$snr tone=$tone tone_lock_ms=$lock"
 echo "ANALOG PROBE: hz=12500.0 dbfs=-100.00 dbc=-64.00"
 echo "ANALOG PROBE: hz=5000.0 dbfs=-80.00 dbc=-44.00"
 """
@@ -231,6 +271,26 @@ class ReplayAbAnalogMetric(unittest.TestCase):
         result = report(out / "summary.tsv", "--baseline", "host.main")
         self.assertEqual(result.returncode, 0, result.stdout)
         self.assertIn("+1.00 +/- 0.00", metric_line(result.stdout, "tone_snr_db", "host.boost"))
+
+    def test_received_tone_fields_follow_the_host_contract(self):
+        # tone= must not be confused with the host's tone_hz= (the expected test tone), and a detector's label and
+        # lock time land in their own columns and in the report.
+        toned = self.wrapper("host.tone", "--fake-tone")
+        out = self.tmp / "out"
+        result = self.replay_ab("--metric", "analog", "--reps", "2", "--out", str(out), str(self.host), str(toned))
+        self.assertEqual(result.returncode, 0, result.stdout)
+        lines = (out / "summary.tsv").read_text(encoding="utf-8").splitlines()
+        rows = {(row["variant"], row["rep"]): row for row in (dict(zip(COLUMNS, line.split("\t"))) for line in lines[1:])}
+        self.assertEqual(rows[("host.tone", "1")]["tone"], "D023N")
+        self.assertEqual(rows[("host.tone", "2")]["tone_lock_ms"], "312.50")
+        self.assertEqual(rows[("host.main", "1")]["tone"], "NA")
+        self.assertEqual(rows[("host.main", "2")]["tone_lock_ms"], "NA")
+
+        result = report(out / "summary.tsv", "--baseline", "host.main")
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assertRegex(metric_line(result.stdout, "tone", "host.tone"), r"D023N\s+2/2")
+        self.assertRegex(metric_line(result.stdout, "tone", "host.main"), r"NA\s+0/2")
+        self.assertRegex(metric_line(result.stdout, "tone_lock_ms", "host.main"), r"\s0/2\s+NA")
 
     def test_builds_with_the_same_name_are_rejected(self):
         other = self.tmp / "other"

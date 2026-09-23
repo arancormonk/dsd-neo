@@ -142,9 +142,11 @@ printf '\t%s' "${analog_keys[@]}" probe_hz probe_dbfs probe_dbc tone tone_lock_m
 printf '\n' >> "$summary"
 
 # Value of key=value on the last (or, with which=first, the first) line of the log
-# that starts with prefix, or NA. tone= and tone_lock_ms= appear once a tone
-# detector publishes them; until then they stay NA, like every analog column of a
-# digital run.
+# that starts with prefix, or NA. The line is split on spaces, so no value may
+# contain one. tone= (a label such as 151.4 or D023N) and tone_lock_ms= (stream
+# time of the first lock) follow the contract in tests/engine/analog_replay.c's
+# file comment and read NA until a tone detector publishes a received tone, like
+# every analog column of a digital run.
 line_value() {
   local log=$1 prefix=$2 key=$3 which=${4:-last} value pick=(tail -n 1)
   [ "$which" = first ] && pick=(head -n 1)

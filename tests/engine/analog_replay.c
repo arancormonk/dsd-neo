@@ -23,6 +23,16 @@
  * stays right when the front end changes rate mid-run and is reported even when no audio reached the hook at all.
  * A case that expects silence therefore pairs --analog-max-audible-ms 0 with --analog-min-total-ms, which proves
  * the replay ran rather than stalled.
+ *
+ * The METRIC line ends with the received-tone fields tools/replay_ab.sh reads into its tone and tone_lock_ms
+ * columns. They read NA until a tone detector publishes a received tone; the CTCSS detector (#522) fills them in
+ * for CTCSS and the DCS detector (#523) for DCS. The contract, which replay_ab.sh relies on because it splits the
+ * line on spaces:
+ *   tone=<label>       the received tone or code as the detector names it, with no whitespace: "151.4" (Hz, one
+ *                      decimal) for CTCSS, "D023N" or "D023I" for DCS; NA when none was confirmed.
+ *   tone_lock_ms=<ms>  stream time of the first confirmed lock, on the same clock as first_audible_ms (see above),
+ *                      with two decimals; NA when nothing locked.
+ * When the label changes during a run, tone= is the last one confirmed and tone_lock_ms the first lock of any.
  */
 
 #include <dsd-neo/core/init.h>
@@ -467,7 +477,7 @@ analog_score_levels(const double* x, size_t n, double block_start_ms, double rat
     }
 }
 
-/* One audio block as the monitor delivered it. The default fixed gain (-n 50) is the same for every block, and
+/* One audio block as the monitor delivered it. The fixed gain (any -n above 0) is the same for every block, and
  * the per-block AGC (-n 0) sets one gain per block, so either way no gain step falls inside the analysis window. */
 static void
 analog_score_block(const double* x, size_t n, double block_start_ms) {
@@ -656,6 +666,9 @@ analog_print_metric_line(const analog_report_ctx* ctx) {
     analog_print_value(line, sizeof(line), "tone_hz", g_limits.expect_tone_hz.set, g_limits.expect_tone_hz.value);
     analog_print_value(line, sizeof(line), "tone_dbfs", ctx->have_tone, analog_db(ctx->tone_ref));
     analog_print_value(line, sizeof(line), "tone_snr_db", ctx->have_tone, ctx->snr_db);
+    /* Received-tone fields (see the file comment): no detector publishes one yet. */
+    used = strlen(line);
+    DSD_SNPRINTF(line + used, sizeof(line) - used, " tone=NA tone_lock_ms=NA");
     DSD_FPRINTF(stderr, "%s\n", line);
 }
 
@@ -723,10 +736,11 @@ analog_note_resolution(void) {
         }
     }
     if (g_totals.cqpsk_reads > 0U) {
-        /* Those reads are symbols, not samples at the output rate, so total_ms under-reads the stream. */
+        /* Those reads are symbols, not samples at the output rate, and how many arrive is not tied to the stream
+         * length, so total_ms can come out far too low or far too high. */
         DSD_FPRINTF(stderr,
                     "analog replay: warning: the RTL front end delivered %llu CQPSK symbols instead of monitor "
-                    "samples; total_ms counts them as samples and under-reads the stream\n",
+                    "samples; total_ms counts them as samples, so it does not measure stream time\n",
                     (unsigned long long)g_totals.cqpsk_reads);
     }
     if (g_totals.rate_changes > 0U) {

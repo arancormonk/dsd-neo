@@ -10940,8 +10940,9 @@ endif()
 # on the arguments dsd-neo would get and scores the monitor audio a listener hears --
 # after the audio filters, the gain stage and the squelch gate -- through the UDP
 # analog hook seam; its own --analog-* threshold options are removed before the CLI
-# parser runs. The cases go through the unchanged iq_decode_check.cmake, so each still
-# needs exit code 0 (the host exits 1 when any bound misses) and its expected line.
+# parser runs. The passing cases go through the unchanged iq_decode_check.cmake, so each
+# still needs exit code 0 (the host exits 1 when any bound misses) and its expected
+# line; the negative controls at the end of this block show that a missed bound fails.
 # Thresholds sit well clear of the values measured when each case was added;
 # docs/testing.md records those values and what each case pins.
 if(DSD_HAS_RADIO)
@@ -10952,7 +10953,7 @@ if(DSD_HAS_RADIO)
     )
     target_link_libraries(
         dsd-neo_test_analog_replay
-        PRIVATE dsd-neo_engine dsd-neo_io_radio ${LIBS}
+        PRIVATE dsd-neo_engine dsd-neo_io_radio ${LIBS} ${DSD_NEO_TEST_MATH_LIB}
     )
 
     # dsd_neo_add_analog_replay_test(name fixture mode [expected [not_expected]])
@@ -11044,6 +11045,91 @@ if(DSD_HAS_RADIO)
         "-fA --analog-min-captured-ms 3900 --analog-min-audible-ms 2000 --analog-min-inband-db 5"
         ""
         "${_analog_off_path}"
+    )
+
+    # Negative controls: bounds that must NOT hold, run through
+    # analog_replay_fail_check.cmake, which requires the host's exit code (1 for a
+    # missed bound), the named ANALOG AUDIO FAIL line and no ANALOG AUDIO OK. Without
+    # them a host whose checks never fired would pass every case above.
+    # dsd_neo_add_analog_replay_fail_test(name fixture mode expected [rc [not_expected]])
+    # rc defaults to 1 (pass "" to keep it); not_expected is a regex that must not
+    # appear, such as a bound that has to keep holding.
+    function(
+        dsd_neo_add_analog_replay_fail_test
+        test_name
+        fixture
+        mode
+        expected
+    )
+        set(_rc_arg)
+        if(ARGC GREATER 4 AND NOT "${ARGV4}" STREQUAL "")
+            set(_rc_arg "-DEXPECTED_RC=${ARGV4}")
+        endif()
+        set(_not_expected_arg)
+        if(ARGC GREATER 5)
+            set(_not_expected_arg "-DNOT_EXPECTED=${ARGV5}")
+        endif()
+        add_test(
+            NAME ${test_name}
+            COMMAND
+                ${CMAKE_COMMAND}
+                "-DDSD_BIN=$<TARGET_FILE:dsd-neo_test_analog_replay>"
+                "-DMODE=${mode}"
+                "-DFIXTURE=${PROJECT_SOURCE_DIR}/tests/fixtures/iq/${fixture}.iq.json"
+                "-DEXPECTED=${expected}" ${_rc_arg} ${_not_expected_arg} -P
+                "${CMAKE_CURRENT_SOURCE_DIR}/analog_replay_fail_check.cmake"
+        )
+        set_tests_properties(
+            ${test_name}
+            PROPERTIES LABELS "iq-decode;analog" TIMEOUT 120
+        )
+    endfunction()
+
+    # DECODE_IQ_ANALOG_NFM_ADJACENT's bound with the channel filter switched off:
+    # the 12.5 kHz neighbour then reads about -8 dBc (-64.9 with the filter), so
+    # that bound is not vacuous. Also the one case spelling host options --opt=VALUE.
+    dsd_neo_add_analog_replay_fail_test(
+        DECODE_IQ_ANALOG_NEG_ADJACENT_UNFILTERED
+        nfm_adjacent_synth
+        "-fA --analog-expect-tone-hz=1000 --analog-probe-max-dbc=12500:-40"
+        "ANALOG AUDIO FAIL: probe 12500[.]0 Hz dBc"
+    )
+    set_tests_properties(
+        DECODE_IQ_ANALOG_NEG_ADJACENT_UNFILTERED
+        PROPERTIES ENVIRONMENT "DSD_NEO_CHANNEL_LPF=0"
+    )
+    # The silence pattern (max audible 0 with a stream-time floor) on a replay that
+    # is audible throughout: the audible bound must fire, the stream-time one not.
+    dsd_neo_add_analog_replay_fail_test(
+        DECODE_IQ_ANALOG_NEG_AUDIBLE_NOT_SILENT
+        nfm_tone_synth
+        "-fA --analog-max-audible-ms 0 --analog-min-total-ms 1400"
+        "ANALOG AUDIO FAIL: audible ms [0-9.]+ [(]limit 0[.]00[)]"
+        ""
+        "ANALOG AUDIO FAIL: total ms"
+    )
+    # A lower bound above what the tone measures (25.9 dB).
+    dsd_neo_add_analog_replay_fail_test(
+        DECODE_IQ_ANALOG_NEG_TONE_SNR
+        nfm_tone_synth
+        "-fA --analog-expect-tone-hz 1000 --analog-min-snr-db 60"
+        "ANALOG AUDIO FAIL: tone SNR dB [0-9.]+ [(]limit 60[.]00[)]"
+    )
+    # A bound on a value the run never measured fails rather than passing unchecked.
+    dsd_neo_add_analog_replay_fail_test(
+        DECODE_IQ_ANALOG_NEG_TONE_NOT_MEASURED
+        nfm_tone_synth
+        "-fA --analog-min-snr-db 20"
+        "ANALOG AUDIO FAIL: tone SNR dB not measured"
+    )
+    # A malformed bound stops the host before the replay (exit 2), rather than being
+    # dropped or handed to the CLI parser.
+    dsd_neo_add_analog_replay_fail_test(
+        DECODE_IQ_ANALOG_NEG_BAD_BOUND
+        nfm_tone_synth
+        "-fA --analog-min-snr-db 2O"
+        "--analog-min-snr-db: invalid value '2O'"
+        2
     )
 endif()
 

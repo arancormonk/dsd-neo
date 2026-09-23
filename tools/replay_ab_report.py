@@ -18,7 +18,10 @@ time, RMS level, the first probe's level (dBFS, and dBc against a test tone), an
 time to tone lock -- paired per repeat the same way, plus the received tone label
 each build settled on. Probe levels are keyed by the probe's frequency, so builds
 that probed different frequencies are never paired. Columns no build measured are
-left out.
+left out; a build that has no value for a column another build measured gets an
+explicit NA row, and the exit status is 1 when a build produced no analog
+measurement in any repeat (it crashed, or it is not an analog replay host), since
+a report of the remaining builds would read like a clean result.
 """
 
 from __future__ import annotations
@@ -103,25 +106,66 @@ def paired(by_rep: dict[int, dict[str, object]], build: str, baseline: str) -> t
     return f"{statistics.fmean(diffs):+.2f} +/- {half:.2f}", f"{differ}/{len(diffs)}"
 
 
+def analog_coverage(rows: list[dict[str, str]]) -> dict[str, set[int]]:
+    """{build: repeats in which it measured any numeric analog column}. The host always prints audible_ms and
+    clip, so a repeat without any is one whose ANALOG METRIC line never came (a crash, a timeout, or a build that
+    is not an analog replay host)."""
+    covered: dict[str, set[int]] = {row["variant"]: set() for row in rows}
+    for row in rows:
+        if any(parse_number(row.get(name)) is not None for name in ANALOG_NUMERIC):
+            covered[row["variant"]].add(int(row["rep"]))
+    return covered
+
+
+def probed_frequencies(rows: list[dict[str, str]]) -> dict[str, set[str]]:
+    """{build: probe frequencies it reported}."""
+    probed: dict[str, set[str]] = defaultdict(set)
+    for row in rows:
+        if row.get("probe_hz") not in (None, "", "NA"):
+            probed[row["variant"]].add(row["probe_hz"])
+    return probed
+
+
 def print_analog_numeric(columns: dict[str, dict[int, dict[str, object]]], builds: list[str], reps: list[int],
-                         baseline: str) -> None:
-    print(f"{'metric':<22} {'build':<24} {'mean':>9} {'median':>9} {'sd':>7}  {'paired vs baseline':>20}  "
+                         baseline: str, probed: dict[str, set[str]]) -> None:
+    print(f"{'metric':<22} {'build':<24} {'n':>5} {'mean':>9} {'median':>9} {'sd':>7}  {'paired vs baseline':>20}  "
           f"{'differ':>6}")
     for key, by_rep in columns.items():
         if key.split("@")[0] not in ANALOG_NUMERIC:
             continue
         for build in builds:
             vals = [by_rep[r][build] for r in reps if r in by_rep and build in by_rep[r]]
+            count = f"{len(vals)}/{len(reps)}"
             if not vals:
+                # A build that probed another frequency is reported under that one; anything else missing a
+                # column some build measured is shown, not dropped.
+                if "@" in key and probed.get(build) and key.split("@", 1)[1] not in probed[build]:
+                    continue
+                print(f"{key:<22} {build:<24} {count:>5} {'NA':>9} {'NA':>9} {'NA':>7}  {'-':>20}  {'-':>6}")
                 continue
             sd = statistics.stdev(vals) if len(vals) > 1 else 0.0
             diff, differ = paired(by_rep, build, baseline)
-            print(f"{key:<22} {build:<24} {statistics.fmean(vals):9.2f} {statistics.median(vals):9.2f} "
+            print(f"{key:<22} {build:<24} {count:>5} {statistics.fmean(vals):9.2f} {statistics.median(vals):9.2f} "
                   f"{sd:7.2f}  {diff:>20}  {differ:>6}")
     probe_freqs = sorted({key.split("@", 1)[1] for key in columns if "@" in key}, key=float)
     if len(probe_freqs) > 1:
         print(f"\nnote: builds probed different frequencies ({', '.join(probe_freqs)} Hz); probe levels are "
               "paired only at the same frequency.")
+
+
+def print_analog_coverage(coverage: dict[str, set[int]], builds: list[str], reps: list[int]) -> int:
+    """Warns about builds that measured nothing in some or all repeats; 1 when a build measured nothing at all."""
+    status = 0
+    for build in builds:
+        have = len(coverage.get(build, ()))
+        if have == 0:
+            print(f"\nwarning: {build} produced no analog measurement in any of {len(reps)} repeats (a crash, a "
+                  "timeout, or not an analog replay host?); read its logs before trusting this report.")
+            status = 1
+        elif have < len(reps):
+            print(f"\nnote: {build} produced analog measurements in only {have} of {len(reps)} repeats; paired "
+                  "columns use the repeats both builds measured.")
+    return status
 
 
 def print_analog_labels(columns: dict[str, dict[int, dict[str, object]]], builds: list[str], reps: list[int]) -> None:
@@ -153,17 +197,21 @@ def report_analog(rows: list[dict[str, str]], baseline_arg: str | None) -> int:
         raise SystemExit(f"baseline '{baseline}' not present; have: {', '.join(builds)}")
 
     print(f"repeats: {len(reps)}   baseline: {baseline}   metric: analog\n")
-    print_analog_numeric(columns, builds, reps, baseline)
+    print_analog_numeric(columns, builds, reps, baseline, probed_frequencies(rows))
     print_analog_labels(columns, builds, reps)
+    status = print_analog_coverage(analog_coverage(rows), builds, reps)
 
     print("\nPaired column is the mean per-repeat difference from the baseline with a 95%")
     print("interval; 'differ' counts the repeats where the two builds disagreed at all. Run")
-    print("the baseline against a copy of itself first: I/Q replay is sample-deterministic,")
-    print("so that control should read +0.00 +/- 0.00 with 0 differing repeats.")
+    print("the baseline against a copy of itself first: while the front end stays on the")
+    print("monitor path, I/Q replay is sample-deterministic, so that control should read")
+    print("+0.00 +/- 0.00 with 0 differing repeats. A run whose log warns that the front")
+    print("end delivered CQPSK symbols is not, and its control is expected to differ.")
     print("Higher is better for tone_snr_db and inband_db, lower for clip, first_audible_ms")
     print("and tone_lock_ms, and lower for a probe that measures an interferer; whether")
-    print("audible_ms or rms_dbfs should move depends on the case.")
-    return 0
+    print("audible_ms or rms_dbfs should move depends on the case. 'n' counts the repeats")
+    print("in which the build measured that column.")
+    return status
 
 
 def digital_row(by_rep: dict[int, dict[str, tuple[float, int, int]]], reps: list[int], build: str,

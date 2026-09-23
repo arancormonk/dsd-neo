@@ -279,14 +279,19 @@ Known gaps and caveats:
   depend on wall-clock call-state timers, because `fast` replay compresses them;
   use `--iq-replay-rate realtime` for that.
 - **AM** has a fixture (`am_airband_real`) but no case until native AM reception (#524) adds `-fM`. Under `-fA` it
-  cannot stand in for one, because of a defect that has no owner yet and is not part of #524's `-fM` path: the
-  modulation auto-switch (`frame_sync_maybe_auto_switch_modulation()` in `src/dsp/dsd_frame_sync.c`) still runs in
-  analog-only mode. On this carrier, which sits within a few hertz of 0 Hz, it votes for CQPSK and applies the P25
-  CQPSK demod profile to the RTL front end, which then delivers 4800 symbols/s instead of monitor audio. The monitor
-  gets 20 ms of audio in `fast` replay and 680 ms in `realtime` (the switch's dwell is timed by the wall clock), so
-  the result depends on pacing. The output rate still reads 48 kHz, so the analog replay host's stream clock
-  under-reads (0.75 s of the 8 s excerpt in `fast`, 1.4 s in `realtime`); the host prints a warning when the front
-  end delivers CQPSK symbols. The same excerpt shifted 1 kHz off centre replays in full.
+  cannot stand in for one, because the modulation auto-switch (`frame_sync_maybe_auto_switch_modulation()` in
+  `src/dsp/dsd_frame_sync.c`) still runs in analog-only mode: it stands down only when `opts->mod_cli_lock` is set, and
+  `-fA` does not set it. On this carrier, which sits within a few hertz of 0 Hz, it votes for CQPSK and applies the P25
+  CQPSK demod profile to the RTL front end, which then delivers CQPSK symbols instead of monitor audio. The switch's
+  dwell is timed by the wall clock, so the outcome depends on pacing and varies from run to run even in `fast` replay.
+  Observed so far: in `fast`, 0 or 20 ms of monitor audio; in `realtime`, 680 ms. Symbols are not samples at the output
+  rate, so the analog replay host's stream clock does not measure stream time on this path and can be far off in either
+  direction: 1.41 s of the 8 s excerpt in `realtime`, usually about 0.75 s in `fast`, and in some `fast` runs over 44 s,
+  from more than 2 million symbols out of a capture of 384,000 samples. The host warns whenever the front end delivered
+  CQPSK symbols, and every registered `-fA` case that expects its bounds to hold fails on that warning. The same excerpt
+  shifted 1 kHz off centre replays in full. For #524 this is a requirement: `-fM` must lock the modulation so that the
+  auto-switch cannot take the front end off the AM path, and its `am_airband_real` case must carry the same
+  CQPSK-warning guard (`NOT_EXPECTED`). The `-fA` behaviour itself is a product defect that this test work leaves alone.
 
 ### Analog monitor audio checks
 
@@ -294,12 +299,12 @@ The `DECODE_IQ_ANALOG_*` cases (CTest labels `iq-decode` and `analog`, radio bui
 monitor lets a listener hear. `iq_decode_check.cmake` can only match log lines, and the `-6` WAV is taken before the
 monitor's filters, gain stage and squelch gate, so neither can say whether the monitor produced the right audio. The
 cases therefore run `dsd-neo_test_analog_replay` (`tests/engine/analog_replay.c`) as `DSD_BIN` through the unchanged
-checker. The host runs the real engine on the arguments `dsd-neo` would get. From its lifecycle start hook, which
-runs after the engine has installed its hooks and opened (no) audio output, it switches the monitor's UDP output on
-and replaces the UDP analog hook with a capture. It also wraps the RTL stream read hook, so it knows how much of the
-stream the decoder has consumed: muted or squelched blocks never reach the audio hook, so the stream position is the
-only clock that says when audio started, or that a run with no audio ran at all. Each read is converted to
-milliseconds at the output rate in force when it was made. No product code is involved.
+checker (the negative controls below through their own). The host runs the real engine on the arguments `dsd-neo` would
+get. From its lifecycle start hook, which runs after the engine has installed its hooks and opened (no) audio output, it
+switches the monitor's UDP output on and replaces the UDP analog hook with a capture. It also wraps the RTL stream read
+hook, so it knows how much of the stream the decoder has consumed: muted or squelched blocks never reach the audio hook,
+so the stream position is the only clock that says when audio started, or that a run with no audio ran at all. Each read
+is converted to milliseconds at the output rate in force when it was made. No product code is involved.
 
 ```sh
 ctest --preset dev-debug -L analog --output-on-failure
@@ -340,8 +345,9 @@ and all of it is leakage of that tone: the 173.8 Hz neighbour sits 12.5 kHz away
 it. Sub-audible tones 20-30 Hz apart need a longer, phase-continuous window than this host has.
 
 When live processing ends the host prints `ANALOG METRIC:` (`rate_hz`, `total_ms`, `captured_ms`, `audible_ms`,
-`first_audible_ms`, `rms_dbfs`, `peak_dbfs`, `clip`, `inband_db`, `tone_hz`, `tone_dbfs`, `tone_snr_db`; `NA` where a
-value was not measured), one `ANALOG PROBE:` line per probe, and then `ANALOG AUDIO OK`, or one
+`first_audible_ms`, `rms_dbfs`, `peak_dbfs`, `clip`, `inband_db`, `tone_hz`, `tone_dbfs`, `tone_snr_db`, and the
+received-tone fields `tone` and `tone_lock_ms` described under [Analog A/B](#analog-ab); `NA` where a value was not
+measured), one `ANALOG PROBE:` line per probe, and then `ANALOG AUDIO OK`, or one
 `ANALOG AUDIO FAIL:` line per missed bound and exit status 1. Without bounds it only reports, which is how
 `tools/replay_ab.sh --metric analog` uses it. Every bound is absolute and per case, so "narrower is cleaner" becomes
 two cases with their own limits, not a comparison between runs. Measured on the commit that added them:
@@ -355,8 +361,23 @@ two cases with their own limits, not a comparison between runs. Measured on the 
 | `DECODE_IQ_ANALOG_NFM_REAL_SQUELCH_A_SMOKE` | `nfm_squelch_real_a` | captured 4000 ms, audible 1460 ms from 460 ms, in-band 8.0 dB | captured ≥ 3900, audible ≥ 900, first audible 250 to 1000 ms, in-band ≥ 4 |
 | `DECODE_IQ_ANALOG_NFM_REAL_SQUELCH_B_SMOKE` | `nfm_squelch_real_b` | captured 4000 ms, audible 2980 ms, in-band 9.6 dB | captured ≥ 3900, audible ≥ 2000, in-band ≥ 5 |
 
-Every `-fA` case also fails if the host warns that the front end delivered CQPSK symbols instead of monitor audio
-(see the `am_airband_real` gap above).
+Every `-fA` case in the table also fails if the host warns that the front end delivered CQPSK symbols instead of
+monitor audio (see the `am_airband_real` gap above).
+
+The cases above can only show that bounds hold. The `DECODE_IQ_ANALOG_NEG_*` negative controls show that a missed
+bound fails: they run the host through `tests/analog_replay_fail_check.cmake`, which requires its exit status (1 for
+a missed bound), the named `ANALOG AUDIO FAIL:` line, an `ANALOG METRIC:` line (so the replay was scored) and no
+`ANALOG AUDIO OK`, and can name a bound that must keep holding.
+
+| Case | Run | Must fail on |
+| --- | --- | --- |
+| `DECODE_IQ_ANALOG_NEG_ADJACENT_UNFILTERED` | `DECODE_IQ_ANALOG_NFM_ADJACENT`'s 12.5 kHz bound with `DSD_NEO_CHANNEL_LPF=0`, options spelled `--opt=VALUE` | the probe: about -8 dBc against -40 (-64.9 with the channel filter) |
+| `DECODE_IQ_ANALOG_NEG_AUDIBLE_NOT_SILENT` | the silence pattern (`--analog-max-audible-ms 0`, `--analog-min-total-ms 1400`) on `nfm_tone_synth` | audible ms, while the stream-time bound holds |
+| `DECODE_IQ_ANALOG_NEG_TONE_SNR` | a 60 dB tone SNR floor on `nfm_tone_synth` (25.9 dB) | tone SNR |
+| `DECODE_IQ_ANALOG_NEG_TONE_NOT_MEASURED` | an SNR bound without `--analog-expect-tone-hz` | tone SNR "not measured" |
+| `DECODE_IQ_ANALOG_NEG_BAD_BOUND` | a malformed bound value | exit status 2 before the replay starts |
+
+When a later change adds a bound or a new kind of check to the host, add a negative control beside it.
 
 A few things about these numbers. The default monitor chain puts a first-order 8 kHz high-pass (`pbf_f`) and a
 960 Hz high-pass after the discriminator, then a fixed gain: at the default `-n 50`, `analog_gain_f()` multiplies by
@@ -393,8 +414,13 @@ carrier inside the passband (5 kHz up, a variant fixture that is not committed) 
 shifts each wanted carrier to 0 Hz by an offset measured over the excerpt (`ANALOG_EXCERPTS` documents each), and
 resamples to 48 kHz in the frequency domain. The synthetics regenerate offline and byte for byte with
 `python3 tools/build_iq_fixtures.py --derived-only`; the excerpts need the network:
-`python3 tools/build_iq_fixtures.py --only nfm_ctcss_real` (and so on). The six fixtures add 2.4 MB. Keep the whole
-analog effort (issue #518) within 5 MB of new fixture bytes, with synthetic fixtures of 3 s or less.
+`python3 tools/build_iq_fixtures.py --only nfm_ctcss_real` (and so on).
+
+The whole analog effort (issue #518) stays within 5 MB of new fixture bytes. The six fixtures here take 2.4 MB, which
+leaves about 2.6 MB. A 48 kHz cu8 fixture takes 96 kB a second, so keep each later synthetic fixture to 2 s
+(192 kB) or less: the ones reserved so far (four for #522, three for #523, two for #524) then take at most 1.7 MB,
+and #521's attenuated copy of `nxdn48` 0.58 MB, about 2.3 MB in all. A pull request that adds analog fixtures states
+the running total.
 
 #### Tone and code labels
 
@@ -555,10 +581,11 @@ Reading it:
 - **Paired per repeat.** Builds run round-robin with the order rotated each
   repeat, because a fixed order credits the better slot to whichever build holds
   it. The report compares within a repeat for the same reason.
-- **Run the baseline against itself first.** That control establishes the noise
-  floor for the machine and the capture; a difference smaller than it has not
-  been measured. On the captures behind issue #444 the floor was about
-  0.1 errors per voice frame over 12 repeats.
+- **Run the baseline against itself first**, as a copy under another name
+  (replay_ab.sh refuses two builds with the same basename). That control
+  establishes the noise floor for the machine and the capture; a difference
+  smaller than it has not been measured. On the captures behind issue #444 the
+  floor was about 0.1 errors per voice frame over 12 repeats.
 - Keep the machine otherwise idle: `--rate realtime` is wall-clock paced, so a
   build competing with a compile is measured under different conditions.
 
@@ -598,10 +625,23 @@ real excerpts in `tests/fixtures/iq` and on any longer real capture, with `--met
 replay hosts rather than `dsd-neo`, and `summary.tsv` gains the analog columns: `tone_snr_db`, `inband_db`, `clip`,
 `audible_ms`, `first_audible_ms`, `rms_dbfs`, the first probe given as `probe_hz`, `probe_dbfs` and `probe_dbc`, and
 then `tone` and `tone_lock_ms`. `probe_dbc` needs `--analog-expect-tone-hz`, so on a real capture, which has no test
-tone, it is `NA` and `probe_dbfs` is the probe's level. `tone` and `tone_lock_ms` stay `NA` until a tone detector
-publishes a received tone; the detector's change fills them in the host. The report pairs each column per repeat,
-pairs probe levels only between builds that probed the same frequency (a wrapper that puts its own
-`--analog-probe-hz` first changes which probe comes first), and gives the tone label each build settled on.
+tone, it is `NA` and `probe_dbfs` is the probe's level. The report pairs each column per repeat, pairs probe levels
+only between builds that probed the same frequency (a wrapper that puts its own `--analog-probe-hz` first changes
+which probe comes first), and gives the tone label each build settled on. Its `n` column counts the repeats in which
+a build measured that column. A build missing a column that another build measured gets an explicit `NA` row, and a
+build that measured nothing in any repeat (it crashed, timed out, or is not an analog replay host) makes the report
+warn and exit 1, rather than leave the other builds' rows looking like a clean result. `TOOLS_REPLAY_AB_REPORT`
+(`tests/tools/test_replay_ab_report.py`, stdlib only) covers the per-repeat pairing, the A-vs-A control, probe
+frequency keying, the coverage reporting, the received-tone columns and the duplicate-name refusal.
+
+`tone` and `tone_lock_ms` come from the host's `ANALOG METRIC:` line and read `NA` until a tone detector publishes a
+received tone. The CTCSS detector (#522) fills them in the host for CTCSS, the DCS detector (#523) for DCS, to this
+contract (also in the file comment of `tests/engine/analog_replay.c`), since replay_ab.sh splits the line on spaces:
+
+- `tone=<label>`: the received tone or code with no whitespace, `151.4` (Hz, one decimal) for CTCSS and `D023N` or
+  `D023I` for DCS; `NA` when none was confirmed. When the label changes during a run, the last one confirmed.
+- `tone_lock_ms=<ms>`: stream time of the first confirmed lock, on the same clock as `first_audible_ms`, with two
+  decimals; `NA` when nothing locked.
 
 replay_ab.sh names each build by its basename and refuses two with the same one, so copy each tree's host to its own
 name. Per-variant flags or settings within one build go in a wrapper script per variant; its name is the variant's
@@ -626,10 +666,13 @@ tools/replay_ab_report.py /tmp/ab/ctcss/summary.tsv --baseline analog_replay.mai
 [Analog monitor audio checks](#analog-monitor-audio-checks)); leave it out when the question is what a listener gets.
 The 12.5 kHz probe there reads the neighbour channel's leakage as `probe_dbfs`, over about 75 Hz around 12.5 kHz in
 each 20 ms block, no finer.
-Run the control first, one host against a copy of itself. I/Q replay is sample-deterministic, so it must read
-`+0.00 +/- 0.00` with no differing repeats: 12 realtime repeats on `nfm_ctcss_real` and on `nfm_tone_synth` did,
-for every column. A difference that shows up in the control is the harness's, not the change's. Attach the report
-to the pull request with the capture, flags and repeat count.
+Run the control first, one host against a copy of itself. While the front end stays on the monitor path, I/Q replay
+is sample-deterministic, so the control must read `+0.00 +/- 0.00` with no differing repeats: 12 realtime repeats on
+`nfm_ctcss_real` and on `nfm_tone_synth` did, for every column. A run whose log carries the host's CQPSK-symbols
+warning is not deterministic (see the `am_airband_real` gap under
+[Full-chain modulation decode tests](#full-chain-modulation-decode-tests)), and its control is expected to differ;
+such a run measures the auto-switch, not the change. A difference that shows up in a monitor-path control is the
+harness's, not the change's. Attach the report to the pull request with the capture, flags and repeat count.
 
 ### Analog listen-test sign-off
 
