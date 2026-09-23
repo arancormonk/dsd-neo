@@ -738,8 +738,7 @@ dsd_scan_mode_row_options(const dsd_state* state) {
 }
 
 int
-// cppcheck-suppress constParameterPointer -- writes the scope that state owns through its extension slot.
-dsd_scan_mode_set_configured_squelch(dsd_opts* opts, dsd_state* state, double level) {
+dsd_scan_mode_set_configured_squelch(dsd_opts* opts, const dsd_state* state, double level) {
     if (!opts) {
         return -1;
     }

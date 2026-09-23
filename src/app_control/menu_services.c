@@ -1010,7 +1010,7 @@ svc_rtl_set_bandwidth(dsd_opts* opts, dsd_state* state, int khz) {
 }
 
 int
-svc_rtl_set_sql_db(dsd_opts* opts, dsd_state* state, double dB) {
+svc_rtl_set_sql_db(dsd_opts* opts, const dsd_state* state, double dB) {
     if (!opts) {
         return -1;
     }
