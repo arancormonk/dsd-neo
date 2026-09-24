@@ -327,13 +327,14 @@ user guide states; the per-row pins are tighter and record what these seeds meas
   itself within 400 ms, and when the tone stops the residue alone does not hold the lock (dropped within 350 ms).
 - Loss and verdicts: every tone at every rate is dropped after it stops under a live carrier, at +10 dB 99% of the stops
   within 350 ms and all within 386 ms, at 0 dB 98% within 350 ms and all within 476 ms (the rows assert 98% and 400 ms,
-  97% and 500 ms); every tone at every rate is dropped within 150 ms of a reverse burst at +10 dB; at 0 dB, with the
-  flipped tone held 400 ms before the carrier drops, 91% of the bursts are caught within 150 ms and every caught one
-  within the loss contract, and the 4 of 200 that are missed end with the carrier drop, within its 200 ms hangover (the
-  row asserts 89% and at most 5 missed); a carrier with no tone reads `detecting` until 500 ms of it and `none` by the
-  next hop, and a tone that starts after that verdict still locks within the lock bound; the verdict, the no-tone one
-  included, is identical at the three input scales and for any block size; the front end runs from 2400 Hz up to its
-  320 kHz limit and reports itself unavailable outside it.
+  97% and 500 ms); every tone at every rate is dropped within 150 ms of a reverse burst at +10 dB, a 180 degree one and
+  a 120 and a 240 degree one alike, the flip landing anywhere inside a sub-block; at 0 dB, with a 180 degree flip held
+  400 ms before the carrier drops, 91% of the bursts are caught within 150 ms and every caught one within the loss
+  contract, and the 4 of 200 that are missed end with the carrier drop, within its 200 ms hangover (the row asserts 89%
+  and at most 5 missed); a carrier with no tone reads `detecting` until 500 ms of it and `none` by the next hop, and a
+  tone that starts after that verdict still locks within the lock bound; the verdict, the no-tone one included, is
+  identical at the three input scales and for any block size; the front end runs from 2400 Hz up to its 320 kHz limit
+  and reports itself unavailable outside it.
 
 Fixed seeds say what the detector does on those seeds, not how often it misses in the long run. The long-run figures
 below come from wider seed sweeps run offline over the same generators and the same core (x86-64 at -O0 and -O2 give
@@ -347,7 +348,9 @@ identical results), and they are the numbers the user guide quotes:
   on about one hop in eighty, whatever its level, which restarts the four-hop count. Making the hold stricter once a hop
   has failed cuts that tail to about 0.4%, but a held tone at -3 dB then drops 7 to 45 times as often, so the hold
   stays as it is. Reverse burst, 40,000 each: none beyond 150 ms at +10 dB (123 ms); at 0 dB 6.1% beyond 150 ms (the
-  slowest 344 ms) and 1.1% missed, where the carrier drop that follows ends the lock.
+  slowest 344 ms) and 1.1% missed, where the carrier drop that follows ends the lock. The 120 and 240 degree variants,
+  40,000 each: at +10 dB 12 and 13 missed and 4 and 1 beyond 150 ms (the slowest 244 ms); at 0 dB 8.9% beyond 150 ms
+  (the slowest 408 ms) and 8.0% missed.
 - Ceiling tail, sweeps up to a hundred times larger: over 100,000 starts each, the exact tone at +10 and 0 dB and
   0.2 and 0.35 Hz off at +10 dB stayed within the 700 ms lock ceiling (443, 664, 485 and 585 ms at the slowest), while
   0.2 Hz off at 0 dB passed it twice (725 ms); over 1,000,000 starts at 0 dB, 8 exact tones passed it (757 ms, and one

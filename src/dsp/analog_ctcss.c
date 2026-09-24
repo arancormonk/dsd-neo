@@ -169,6 +169,7 @@ ctcss_reset(void* ctx) {
     det->state = DSD_ANALOG_TONE_STATE_ACQUIRING;
     det->locked = -1;
     det->locked_hz = 0.0;
+    det->burst_ref_hz = 0.0;
     det->cand = -1;
     det->cand_run = 0;
     det->fail_run = 0;
@@ -466,11 +467,20 @@ ctcss_pair_jumped(const dsd_analog_ctcss* det, int bin, double advance, int a, i
  * The newest sub-block is compared with the one before it (a flip on a sub-block boundary)
  * and with the one before that (a flip inside the previous sub-block, which then cancels
  * itself and cannot serve as a reference).
+ *
+ * The phase each pair should have advanced by comes from @p ref_hz, the locked frequency as it
+ * stood two hops ago, never from a newer estimate. A flip inside a sub-block that stays strong
+ * -- a 120 or 240 degree burst early or late in it -- puts part of the step into that
+ * sub-block's phase, and a window that ends on it fits the step as a steeper slope. Measured
+ * against that slope, the whole step across the next pair can read short of the 100 degree
+ * threshold: on a clean tone about one such burst in fourteen was missed that way. The window
+ * two hops back ends no later than the older sub-block of every pair compared here, so no step
+ * after that sub-block can have bent it.
  */
 static int
-ctcss_reverse_burst(const dsd_analog_ctcss* det) {
+ctcss_reverse_burst(const dsd_analog_ctcss* det, double ref_hz) {
     const int bin = det->locked;
-    const double advance = ctcss_advance_for(det, bin, det->locked_hz);
+    const double advance = ctcss_advance_for(det, bin, ref_hz);
     const int newest = DSD_ANALOG_CTCSS_WINDOW - 1;
     return ctcss_pair_jumped(det, bin, advance, newest - 1, newest)
            || ctcss_pair_jumped(det, bin, advance, newest - 2, newest);
@@ -481,6 +491,7 @@ ctcss_lock(dsd_analog_ctcss* det, int index, double hz) {
     det->state = DSD_ANALOG_TONE_STATE_LOCKED;
     det->locked = index;
     det->locked_hz = hz;
+    det->burst_ref_hz = hz;
     det->fail_run = 0;
 }
 
@@ -489,6 +500,7 @@ ctcss_unlock(dsd_analog_ctcss* det) {
     det->state = DSD_ANALOG_TONE_STATE_NONE;
     det->locked = -1;
     det->locked_hz = 0.0;
+    det->burst_ref_hz = 0.0;
     det->fail_run = 0;
 }
 
@@ -624,7 +636,11 @@ ctcss_step_unlocked(dsd_analog_ctcss* det, const dsd_analog_ctcss_hop* hop) {
 
 static void
 ctcss_step_locked(dsd_analog_ctcss* det, dsd_analog_ctcss_hop* hop) {
-    if (ctcss_reverse_burst(det)) {
+    /* The burst reference moves on one hop behind locked_hz: this hop checks against the
+       frequency from two hops ago, and the next one against the frequency this hop starts from. */
+    const double burst_ref_hz = det->burst_ref_hz;
+    det->burst_ref_hz = det->locked_hz;
+    if (ctcss_reverse_burst(det, burst_ref_hz)) {
         ctcss_unlock(det);
         det->holdoff = CTCSS_BURST_HOLDOFF_HOPS;
         det->cand = -1;

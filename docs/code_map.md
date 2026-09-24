@@ -573,16 +573,19 @@ installs from `src/engine/trunk_tuning.c` in `src/engine/trunk_tuning_hooks_inst
     third harmonic power: a voice fundamental has harmonics, a tone does not). It holds while its own bin's estimate,
     re-measured every hop, stays within the 0.8 Hz snap gate and the newest 100 ms keep rho >= 0.15 at the locked
     frequency and the same -50 dB of the full band; it is lost after four failing hops or at once on a reverse burst
-    (a >100 degree phase jump between strong sub-blocks). The two frequency gates are hysteresis: at 0 dB the estimate
-    scatters by about 0.19 Hz, so an off-table tone 1.1 Hz from a neighbour reaches the 0.8 Hz gate on several percent
-    of hops but the 0.5 Hz one almost never, and the per-hop check drops a lock the tone has moved away from. The price
-    of the tighter acquisition gate is tolerance of transmitter encoder error: `DSP_ANALOG_CTCSS` pins tones 0.2 and
-    0.35 Hz off their table value locking within 400 ms at +10 dB on every one of its 200 seeded starts, and 0.2 Hz off
-    at 0 dB within 400 ms on at least 95% of them (all within 500 ms); over 10,000 starts, 3.4% of 0.2 Hz-off tones at
-    0 dB take longer than 400 ms (`docs/testing.md`). From about 0.5 Hz off a tone locks late or not at all. A carrier
-    with no lock after 500 ms of evaluation reads `NONE`, on the first hop after it however the input is blocked
-    (carrier time is counted per sample), and a tone that starts later still locks. Every threshold is a ratio, so the
-    RTL live (~1/pi), replay and int16 PCM scales read the same.
+    (a >100 degree phase jump between strong sub-blocks, which catches the 180 degree burst and the 120 and 240 degree
+    variants). The jump is measured against the locked frequency as it stood two hops earlier: a 120 or 240 degree step
+    inside a sub-block that stays strong puts part of the step into that sub-block's phase, and a newer estimate fits it
+    as a steeper slope, against which the step reads short of 100 degrees. The two frequency gates are hysteresis: at
+    0 dB the estimate scatters by about 0.19 Hz, so an off-table tone 1.1 Hz from a neighbour reaches the 0.8 Hz gate on
+    several percent of hops but the 0.5 Hz one almost never, and the per-hop check drops a lock the tone has moved away
+    from. The price of the tighter acquisition gate is tolerance of transmitter encoder error: `DSP_ANALOG_CTCSS` pins
+    tones 0.2 and 0.35 Hz off their table value locking within 400 ms at +10 dB on every one of its 200 seeded starts,
+    and 0.2 Hz off at 0 dB within 400 ms on at least 95% of them (all within 500 ms); over 10,000 starts, 3.4% of
+    0.2 Hz-off tones at 0 dB take longer than 400 ms (`docs/testing.md`). From about 0.5 Hz off a tone locks late or not
+    at all. A carrier with no lock after 500 ms of evaluation reads `NONE`, on the first hop after it however the input
+    is blocked (carrier time is counted per sample), and a tone that starts later still locks. Every threshold is a
+    ratio, so the RTL live (~1/pi), replay and int16 PCM scales read the same.
   - Invariant: resets never happen in `noCarrier()` / `dsd_engine_reset_no_carrier_state()` (they run every ~375 ms in
     analog mode and would stop any tone locking). They happen in `dsd_frame_sync_reset_acquisition()` (row commit and
     leave, trunk-scan target switch, decode-mode change, scope resume, RR apply), on an RTL stream-generation or

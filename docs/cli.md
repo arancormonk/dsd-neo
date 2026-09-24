@@ -515,8 +515,10 @@ tone setting, and it runs with `-o null` too.
   254.1 Hz) was lost four times, reading `none` for under a second before it was confirmed again. A tone that stops
   while the carrier stays up is dropped within 350 ms on 98 stops in 100 at 0 and 10 dB alike (typically after
   200-315 ms; the slowest of 8,000 took 515 ms). When the transmitter sends a reverse burst (the end-of-message phase
-  flip) at 10 dB or more in-band, the tone is dropped within 150 ms (the slowest of 40,000 bursts took 123 ms); near
-  0 dB about one burst in fourteen is caught late or missed, and the carrier drop that follows ends the tone instead. A
+  flip: 180 degrees, or 120 or 240 degrees on some radios) at 10 dB or more in-band, the tone is dropped within 150 ms:
+  all of 40,000 bursts at 180 degrees (the slowest took 123 ms), and all but 16 and 14 of 40,000 each at 120 and 240
+  degrees. Near 0 dB about one 180 degree burst in fourteen, and one 120 or 240 degree burst in six, is caught late or
+  missed. A missed burst leaves the tone to the carrier drop that follows, which ends it within the 200 ms hangover. A
   carrier with no tone reads `detecting` until 500 ms of it have been evaluated and `none` by the next 50 ms step; a
   tone that starts after that, such as one a repeater adds after its kerchunk, is still confirmed within 400 ms of its
   own start.

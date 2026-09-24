@@ -97,7 +97,8 @@ struct signal_src {
     double noise_sigma;
     int64_t tone_on;  /**< first sample carrying the tone */
     int64_t tone_off; /**< first sample without it (INT64_MAX = never) */
-    int64_t flip_at;  /**< reverse burst: the tone's phase flips by pi here (INT64_MAX = never) */
+    int64_t flip_at;  /**< reverse burst: the tone's phase steps by flip_rad here (INT64_MAX = never) */
+    double flip_rad;  /**< the reverse burst's phase step: pi, or 2 pi / 3 and 4 pi / 3 for the other variants */
     int64_t move_at;  /**< the tone moves to move_hz here, phase-continuous (INT64_MAX = never) */
     double move_hz;
     int64_t carrier_off; /**< the carrier drops here: digital silence from then on (INT64_MAX = never) */
@@ -118,7 +119,7 @@ signal_next(signal_src* src, int64_t n) {
     }
     double v = src->noise_sigma > 0.0 ? src->noise_sigma * synth_gauss(&src->rng) : 0.0;
     if (n == src->flip_at) {
-        src->tone.phase += M_PI;
+        src->tone.phase += src->flip_rad;
     }
     if (n == src->move_at) {
         src->tone.hz = src->move_hz;
@@ -156,6 +157,7 @@ signal_init(signal_src* src, double fs, uint64_t seed, double tone_hz, double sn
     src->tone_on = INT64_MAX;
     src->tone_off = INT64_MAX;
     src->flip_at = INT64_MAX;
+    src->flip_rad = M_PI;
     src->move_at = INT64_MAX;
     src->carrier_off = INT64_MAX;
     src->scale = 1.0;
@@ -863,38 +865,48 @@ test_tone_loss_within_bound(void) {
     }
 }
 
-/* A reverse burst -- the transmitter flipping its tone's phase before it unkeys -- ends the
+/* A reverse burst -- the transmitter stepping its tone's phase before it unkeys -- ends the
    lock within 150 ms, without waiting for the tone to stop: every tone at every rate at
-   +10 dB in-band. Nearer 0 dB a sub-block is too noisy to serve as the phase reference on
-   every hop, and a burst can be caught late or missed, when the carrier drop that follows
-   ends the lock instead (test_reverse_burst_at_0db_ends_the_lock). A caught burst ends the
-   lock as a stop does, so the row checks the loss contract too. */
+   +10 dB in-band, for each variant in use: 180 degrees, and 120 and 240 degrees. The flip lands
+   anywhere inside a sub-block; a 120 or 240 degree step early or late in one leaves that
+   sub-block strong with part of the step in its phase, the case a burst reference taken from
+   the newest estimate missed. Nearer 0 dB a sub-block is too noisy to serve as the phase
+   reference on every hop, and a burst can be caught late or missed, when the carrier drop that
+   follows ends the lock instead (test_reverse_burst_at_0db_ends_the_lock). A caught burst ends
+   the lock as a stop does, so each row checks the loss contract too. */
 static void
 test_reverse_burst_drops_fast(void) {
+    static const int steps_deg[] = {180, 120, 240};
     static double times[RATE_COUNT * DSD_CTCSS_TONE_COUNT];
-    int count = 0;
-    for (int ri = 0; ri < RATE_COUNT; ri++) {
-        for (int k = 0; k < DSD_CTCSS_TONE_COUNT; k++) {
-            const int fs = k_rates[ri];
-            const double hz = (double)dsd_ctcss_tone_tenths(k) / 10.0;
-            dsd_analog_rx_core_init(&g_core);
-            signal_src src;
-            signal_init(&src, fs, 8675309ULL + (uint64_t)(k * 13 + ri), hz, 10.0);
-            src.tone_on = 0;
-            src.flip_at = ms_to_samples(fs, 1000.0 + (double)((k * 17) % 50));
-            const run_result r =
-                run_signal(&g_core, &src, src.flip_at + ms_to_samples(fs, 180.0), fs / 1000, (int)lround(hz * 10.0));
-            assert(r.first_lock >= 0 && r.first_lock < src.flip_at);
-            assert(r.first_unlocked > src.flip_at);
-            const double loss_ms = samples_to_ms(fs, r.first_unlocked - src.flip_at);
-            if (loss_ms > (double)BURST_LOSS_BOUND_MS) {
-                DSD_FPRINTF(stderr, "slow burst: fs=%d hz=%.1f -> %.0f ms\n", fs, hz, loss_ms);
+    for (size_t v = 0; v < sizeof(steps_deg) / sizeof(steps_deg[0]); v++) {
+        int count = 0;
+        for (int ri = 0; ri < RATE_COUNT; ri++) {
+            for (int k = 0; k < DSD_CTCSS_TONE_COUNT; k++) {
+                const int fs = k_rates[ri];
+                const double hz = (double)dsd_ctcss_tone_tenths(k) / 10.0;
+                dsd_analog_rx_core_init(&g_core);
+                signal_src src;
+                signal_init(&src, fs, 8675309ULL + (uint64_t)(k * 13 + ri) + ((uint64_t)v * 7001ULL), hz, 10.0);
+                src.tone_on = 0;
+                src.flip_at = ms_to_samples(fs, 1000.0 + (double)((k * 17) % 50));
+                src.flip_rad = (double)steps_deg[v] * M_PI / 180.0;
+                const run_result r = run_signal(&g_core, &src, src.flip_at + ms_to_samples(fs, 180.0), fs / 1000,
+                                                (int)lround(hz * 10.0));
+                assert(r.first_lock >= 0 && r.first_lock < src.flip_at);
+                assert(r.first_unlocked > src.flip_at);
+                const double loss_ms = samples_to_ms(fs, r.first_unlocked - src.flip_at);
+                if (loss_ms > (double)BURST_LOSS_BOUND_MS) {
+                    DSD_FPRINTF(stderr, "slow burst: %d degrees fs=%d hz=%.1f -> %.0f ms\n", steps_deg[v], fs, hz,
+                                loss_ms);
+                }
+                assert(loss_ms <= (double)BURST_LOSS_BOUND_MS);
+                times[count++] = loss_ms;
             }
-            assert(loss_ms <= (double)BURST_LOSS_BOUND_MS);
-            times[count++] = loss_ms;
         }
+        char what[64];
+        DSD_SNPRINTF(what, sizeof(what), "CTCSS loss on a %d degree reverse burst", steps_deg[v]);
+        check_loss_contract(what, times, count);
     }
-    check_loss_contract("CTCSS loss on a reverse burst", times, count);
 }
 
 /*
