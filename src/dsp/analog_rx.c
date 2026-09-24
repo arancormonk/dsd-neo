@@ -111,7 +111,10 @@ dsd_analog_subaudible_fe_configure(dsd_analog_subaudible_fe* fe, int rate_hz) {
         full_len += (int)lround((double)(fe->n1 - fe->decim) / (2.0 * (double)fe->decim));
     }
     const int full_cap = (int)(sizeof(fe->full_delay) / sizeof(fe->full_delay[0]));
-    fe->full_delay_len = full_len < 0 ? 0 : (full_len > full_cap ? full_cap : full_len);
+    if (full_len > full_cap) {
+        full_len = full_cap;
+    }
+    fe->full_delay_len = full_len > 0 ? full_len : 0;
     fe->dc_alpha = exp(-2.0 * M_PI * k_dc_corner_hz / fe->out_rate_hz);
     dsd_analog_subaudible_fe_clear(fe);
     fe->active = 1;

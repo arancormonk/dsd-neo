@@ -444,10 +444,12 @@ test_unsupported_frequencies_never_lock(void) {
     }
 }
 
-/* The decimated rate the front end runs at for an input at @p fs (analog_rx_internal.h). */
+/* The decimated rate the front end runs at for an input at @p fs, from its own design. */
 static double
 decimated_rate(int fs) {
-    return (double)fs / (double)(fs / DSD_ANALOG_RX_TARGET_RATE_HZ);
+    static dsd_analog_subaudible_fe fe;
+    assert(dsd_analog_subaudible_fe_configure(&fe, fs) == 1);
+    return fe.out_rate_hz;
 }
 
 /* 1.2 s of a steady voice-band tone at @p hz, alone on the carrier: nothing may lock, and the
