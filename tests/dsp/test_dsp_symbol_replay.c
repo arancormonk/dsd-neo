@@ -830,13 +830,26 @@ test_rx_tone_unusable_rate_is_unavailable(void) {
     dsd_state_ext_free_all(&state);
 }
 
+/* What the log tap has counted: the unusable-rate warning, and the received-tone lines the tap
+   logs when its verdict changes. */
 static int g_unusable_rate_warnings = 0;
+static int g_rx_tone_lines = 0;
+static int g_rx_tone_100_lines = 0;
+static int g_rx_tone_none_lines = 0;
 
 static void
-count_unusable_rate_warnings(dsd_neo_log_level_t level, const char* text, void* ctx) {
+count_rx_tone_log_lines(dsd_neo_log_level_t level, const char* text, void* ctx) {
     (void)ctx;
-    if (level == LOG_LEVEL_WARN && text && strstr(text, "Received tone detection inactive") != NULL) {
+    if (!text) {
+        return;
+    }
+    if (level == LOG_LEVEL_WARN && strstr(text, "Received tone detection inactive") != NULL) {
         g_unusable_rate_warnings++;
+    }
+    if (level == LOG_LEVEL_INFO && strncmp(text, "Received tone: ", strlen("Received tone: ")) == 0) {
+        g_rx_tone_lines++;
+        g_rx_tone_100_lines += strcmp(text, "Received tone: CTCSS 100.0 Hz\n") == 0 ? 1 : 0;
+        g_rx_tone_none_lines += strcmp(text, "Received tone: none\n") == 0 ? 1 : 0;
     }
 }
 
@@ -907,6 +920,71 @@ test_rx_tone_usable_rate_change_drops_lock(void) {
     feed_tone_blocks(&opts, &state, 30);
     assert(rx_tone_locked_on_100(&state));
     g_tone_fs = 48000.0;
+    dsd_state_ext_free_all(&state);
+}
+
+/* Feed @p blocks 20 ms blocks of a tone at @p hz, or of digital silence (a closed squelch) for 0. */
+static void
+feed_blocks_at(dsd_opts* opts, dsd_state* state, int blocks, double hz) {
+    float block[960];
+    for (int b = 0; b < blocks; b++) {
+        if (hz > 0.0) {
+            fill_tone_block(block, 960U, hz, 3000.0);
+        } else {
+            DSD_MEMSET(block, 0, sizeof(block));
+        }
+        assert(dsd_symbol_test_finalize_unsynced_analog_block(opts, state, block, 960U) == 960U);
+    }
+}
+
+/*
+ * The received-tone log line is said when the verdict changes, never block by block: once when
+ * a tone locks, however long it is held and through a fade shorter than the hangover; once for
+ * "none" when the tone stops under a live carrier, however long the carrier stays; and nothing
+ * while a verdict is still being reached or the carrier is down. A new reception -- after the
+ * carrier hangover or a reset -- reports its tone afresh, even the same tone.
+ */
+static void
+test_rx_tone_logs_on_change_only(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    install_fake_rtl_hooks(0);
+    init_analog_monitor_fixture(&opts, &state);
+    g_rx_tone_lines = 0;
+    g_rx_tone_100_lines = 0;
+    g_rx_tone_none_lines = 0;
+
+    /* 600 ms to lock, then 2 s more of the same tone, a 100 ms fade and 1 s more: one line. */
+    feed_blocks_at(&opts, &state, 30, 100.0);
+    assert(rx_tone_locked_on_100(&state));
+    assert(g_rx_tone_100_lines == 1 && g_rx_tone_lines == 1);
+    feed_blocks_at(&opts, &state, 100, 100.0);
+    feed_blocks_at(&opts, &state, 5, 0.0);
+    feed_blocks_at(&opts, &state, 50, 100.0);
+    assert(rx_tone_locked_on_100(&state));
+    assert(g_rx_tone_100_lines == 1 && g_rx_tone_lines == 1);
+
+    /* The carrier drops for longer than the hangover, silently; the same tone on the next
+       reception is reported again. */
+    feed_blocks_at(&opts, &state, 15, 0.0);
+    assert(state.analog_rx.tone_state == DSD_ANALOG_TONE_STATE_IDLE && state.analog_rx.carrier_open == 0);
+    assert(g_rx_tone_lines == 1);
+    feed_blocks_at(&opts, &state, 30, 100.0);
+    assert(rx_tone_locked_on_100(&state));
+    assert(g_rx_tone_100_lines == 2 && g_rx_tone_lines == 2);
+
+    /* A reset (a retune, a scan step) starts a new reception too. */
+    dsd_analog_rx_reset(&state);
+    assert(g_rx_tone_lines == 2);
+    feed_blocks_at(&opts, &state, 30, 100.0);
+    assert(rx_tone_locked_on_100(&state));
+    assert(g_rx_tone_100_lines == 3 && g_rx_tone_lines == 3);
+
+    /* The tone gives way to 150.0 Hz, on no table, under the same carrier: 2 s of it say
+       "none" once. */
+    feed_blocks_at(&opts, &state, 100, 150.0);
+    assert(state.analog_rx.tone_state == DSD_ANALOG_TONE_STATE_NONE && state.analog_rx.carrier_open == 1);
+    assert(g_rx_tone_none_lines == 1 && g_rx_tone_100_lines == 3 && g_rx_tone_lines == 4);
     dsd_state_ext_free_all(&state);
 }
 
@@ -991,7 +1069,7 @@ test_rx_tone_paused_stream_starts_a_new_reception(void) {
 int
 main(void) {
     exitflag = 0;
-    dsd_neo_log_set_tap(count_unusable_rate_warnings, NULL);
+    dsd_neo_log_set_tap(count_rx_tone_log_lines, NULL);
     test_soft_symbol_replay_record();
     test_short_file_falls_back_to_legacy_replay();
     test_symbol_count_wraps_instead_of_overflowing();
@@ -1010,6 +1088,7 @@ main(void) {
     test_rx_tone_unusable_rate_is_unavailable();
     test_rx_tone_unusable_rate_warns_once_per_stretch();
     test_rx_tone_usable_rate_change_drops_lock();
+    test_rx_tone_logs_on_change_only();
     test_rx_tone_paused_stream_starts_a_new_reception();
     return 0;
 }
