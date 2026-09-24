@@ -4407,6 +4407,9 @@ test_squelch_edit_keeps_live_acquisition(void) {
 /* The sink helpers a decode-mode change calls, recorded instead of run (every build, radio or not). */
 static int g_ensure_analog_calls;
 static int g_ensure_digital_calls;
+/* The output layout in the options when the digital sink was last asked for: the one a stream opened there gets. */
+static int g_ensure_digital_channels;
+static int g_ensure_digital_rate;
 
 // GNU ld --wrap entry points must keep the reserved __wrap_* symbol name.
 // NOLINTBEGIN(bugprone-reserved-identifier,cert-dcl37-c,cert-dcl51-cpp,misc-use-internal-linkage)
@@ -4422,8 +4425,9 @@ __wrap_dsd_audio_ensure_analog_output(dsd_opts* opts) {
 
 int
 __wrap_dsd_audio_ensure_digital_output(dsd_opts* opts) {
-    (void)opts;
     g_ensure_digital_calls++;
+    g_ensure_digital_channels = opts->pulse_digi_out_channels;
+    g_ensure_digital_rate = opts->pulse_digi_rate_out;
     return 0;
 }
 
@@ -4454,6 +4458,68 @@ test_decode_mode_set_ensures_family_sink(void) {
     rc |= expect_int("digital sink mode drained", dsd_app_drain_cmds(&opts, &state), 1);
     rc |= expect_int("digital mode ensures the digital sink", g_ensure_digital_calls, 1);
     rc |= expect_int("digital mode leaves the raw sink", g_ensure_analog_calls, 0);
+    freeState(&state);
+    return rc;
+}
+
+static int
+submit_config_mode(dsd_opts* opts, dsd_state* state, dsdneoUserDecodeMode mode, const char* label) {
+    dsdneoUserConfig cfg;
+    DSD_MEMSET(&cfg, 0, sizeof cfg);
+    cfg.has_mode = 1;
+    cfg.decode_mode = mode;
+    int rc = expect_int(label, dsd_app_command_submit(DSD_APP_CMD_CONFIG_APPLY, &cfg, sizeof(cfg)),
+                        DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int(label, dsd_app_drain_cmds(opts, state), 1);
+    return rc;
+}
+
+/*
+ * A [mode] preset also carries an audio layout, but the session's output streams keep the one they were opened with,
+ * so a config apply keeps the session's layout as DECODE_MODE_SET does. A config that moves a -fA session (mono) to
+ * DMR opens the digital sink mono, and a later [mode] keeps the options on the layout that stream has: here P25
+ * Phase 1 after Analog, which reuses the stream the DMR config opened. A stereo DMR session keeps its two channels
+ * through a mono [mode]. Letting the preset change it would dispatch mono writes into the stereo stream (reading past
+ * each buffer) or stereo writes into a mono one.
+ */
+static int
+test_config_apply_keeps_session_output_layout(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    int rc = 0;
+    init_decode_mode_context(&opts, &state);
+    rc |= expect_int("layout: -fA session",
+                     dsd_apply_decode_mode_preset(DSDCFG_MODE_ANALOG, DSD_DECODE_PRESET_PROFILE_CLI, &opts, &state), 0);
+    rc |= expect_int("layout: -fA session is mono", opts.pulse_digi_out_channels, 1);
+    g_ensure_analog_calls = g_ensure_digital_calls = 0;
+    g_ensure_digital_channels = g_ensure_digital_rate = 0;
+    rc |= submit_config_mode(&opts, &state, DSDCFG_MODE_DMR, "layout: config dmr");
+    rc |= expect_int("layout: dmr applied", opts.analog_only == 0 && opts.frame_dmr == 1, 1);
+    rc |= expect_int("layout: digital sink asked for", g_ensure_digital_calls, 1);
+    rc |= expect_int("layout: digital sink opened mono", g_ensure_digital_channels, 1);
+    rc |= expect_int("layout: digital sink at the session rate", g_ensure_digital_rate, 8000);
+    rc |= expect_int("layout: dmr keeps the session's channel", opts.pulse_digi_out_channels, 1);
+    rc |= expect_int("layout: dmr still decodes both slots", opts.dmr_stereo, 1);
+    rc |= submit_config_mode(&opts, &state, DSDCFG_MODE_ANALOG, "layout: config analog");
+    rc |= expect_int("layout: analog applied", opts.analog_only, 1);
+    rc |= expect_int("layout: analog keeps the session's channel", opts.pulse_digi_out_channels, 1);
+    g_ensure_digital_calls = 0;
+    g_ensure_digital_channels = 0;
+    rc |= submit_config_mode(&opts, &state, DSDCFG_MODE_P25P1, "layout: config p25p1");
+    rc |= expect_int("layout: p25p1 applied", opts.analog_only == 0 && opts.frame_p25p1 == 1, 1);
+    rc |= expect_int("layout: p25p1 asks for the digital sink", g_ensure_digital_calls, 1);
+    rc |= expect_int("layout: p25p1 asks for it mono", g_ensure_digital_channels, 1);
+    rc |= expect_int("layout: p25p1 keeps the stream's channel", opts.pulse_digi_out_channels, 1);
+    freeState(&state);
+
+    init_decode_mode_context(&opts, &state);
+    rc |= expect_int("layout: stereo dmr session",
+                     dsd_apply_decode_mode_preset(DSDCFG_MODE_DMR, DSD_DECODE_PRESET_PROFILE_CLI, &opts, &state), 0);
+    rc |= expect_int("layout: dmr session is stereo", opts.pulse_digi_out_channels, 2);
+    rc |= submit_config_mode(&opts, &state, DSDCFG_MODE_P25P1, "layout: stereo session to p25p1");
+    rc |= expect_int("layout: stereo session runs p25p1", opts.frame_p25p1 == 1 && opts.frame_dmr == 0, 1);
+    rc |= expect_int("layout: stereo session keeps two channels", opts.pulse_digi_out_channels, 2);
+    rc |= expect_int("layout: stereo session keeps its rate", opts.pulse_digi_rate_out, 8000);
     freeState(&state);
     return rc;
 }
@@ -4782,18 +4848,6 @@ test_typed_row_republish_follows_configured_family(void) {
     return rc;
 }
 
-static int
-submit_config_mode(dsd_opts* opts, dsd_state* state, dsdneoUserDecodeMode mode, const char* label) {
-    dsdneoUserConfig cfg;
-    DSD_MEMSET(&cfg, 0, sizeof cfg);
-    cfg.has_mode = 1;
-    cfg.decode_mode = mode;
-    int rc = expect_int(label, dsd_app_command_submit(DSD_APP_CMD_CONFIG_APPLY, &cfg, sizeof(cfg)),
-                        DSD_APP_COMMAND_SUBMIT_QUEUED);
-    rc |= expect_int(label, dsd_app_drain_cmds(opts, state), 1);
-    return rc;
-}
-
 /*
  * A config whose [mode] moves a live RTL session into or out of analog has to switch the receive family and open the
  * new family's sink the way DECODE_MODE_SET does, or the analog preset runs on the digital demodulator (and back). A
@@ -5069,6 +5123,7 @@ main(void) {
 #endif
 #ifdef DSD_NEO_TEST_AUDIO_ENSURE_WRAP
     rc |= test_decode_mode_set_ensures_family_sink();
+    rc |= test_config_apply_keeps_session_output_layout();
 #endif
 #if defined(USE_RADIO) && defined(DSD_NEO_TEST_ANALOG_WRAP) && defined(DSD_NEO_TEST_AUDIO_ENSURE_WRAP)
     rc |= test_decode_mode_set_switches_rtl_receive_family();

@@ -5119,6 +5119,8 @@ ui_cmd_handle_config_apply(dsd_opts* opts, dsd_state* state, const struct dsd_ap
     dsd_frontend_kind old_frontend_kind = opts->frontend_kind;
     const int old_trunk_scan_enabled = opts->trunk_scan_enabled;
     const int old_analog_only = opts->analog_only ? 1 : 0;
+    const int old_audio_channels = opts->pulse_digi_out_channels;
+    const int old_audio_rate = opts->pulse_digi_rate_out;
 #ifdef USE_RADIO
     int airspy_rc = 0;
     dsd_airspy_config old_airspy = opts->airspy;
@@ -5135,6 +5137,13 @@ ui_cmd_handle_config_apply(dsd_opts* opts, dsd_state* state, const struct dsd_ap
         return prepare_rc;
     }
     dsd_apply_user_config_to_opts(&cfg, opts, state);
+    /* A [mode] preset carries an audio layout too, but the session's output streams were opened with the layout in
+       force then, which the backend fixes for their life: the session's layout is kept, as decode_mode_apply_value()
+       keeps it for DSD_APP_CMD_DECODE_MODE_SET. Put back before anything below opens or reopens an output (a changed
+       output device, the input-policy reconfigure, the sink a family change opens), so every stream is opened with
+       the layout the decoder writes. */
+    opts->pulse_digi_out_channels = old_audio_channels;
+    opts->pulse_digi_rate_out = old_audio_rate;
     const int restart_required = cfg_restore_lifecycle_owned(opts, &cfg, old_frontend_kind, old_trunk_scan_enabled);
 #ifdef USE_RADIO
     if (cfg_is_live_airspy(&cfg, old_audio_in_dev, old_audio_in_type)) {
