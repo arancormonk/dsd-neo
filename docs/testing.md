@@ -405,9 +405,35 @@ publication into its `tone`, `tone_lock_ms` and `tone_lock_pct` fields:
 
 The neighbour's 173.8 Hz has no case: `--iq-replay` plays a capture at its recorded centre, with no way to tune
 12.5 kHz off it, and a shifted copy would be another committed fixture, which neither the #518 fixture reservations
-nor the budget below plan for. Measured once on such a copy
-(`nfm_ctcss_real.iq` mixed up by 12.5 kHz, not committed), the detector locks 173.8 Hz at 300 ms, reports no other
-tone, and drops and re-locks it once around a similar reversal and gap at 2.44 s, 90.33% locked in all.
+nor the budget below plan for. The copy is rebuilt outside the tree, byte for byte, by mixing `nfm_ctcss_real.iq` up
+by 12.5 kHz with the fixture builder's own cu8 helpers, so the neighbour sits at 0 Hz:
+
+```sh
+mkdir -p /tmp/neighbour
+python3 - /tmp/neighbour <<'EOF'
+import json, math, os, sys
+import numpy as np
+sys.path.insert(0, "tools")
+from build_iq_fixtures import load_cu8_fixture, to_cu8
+src, out = "tests/fixtures/iq/nfm_ctcss_real.iq", sys.argv[1]
+iq = load_cu8_fixture(src)
+iq *= np.exp(2j * math.pi * 12500 * np.arange(len(iq)) / 48000)
+to_cu8(iq, headroom=1.0, normalize=False).tofile(os.path.join(out, "nfm_ctcss_real_neighbour.iq"))
+with open(src + ".json", encoding="utf-8") as handle:
+    meta = json.load(handle)
+meta["data_file"] = "nfm_ctcss_real_neighbour.iq"
+meta["center_frequency_hz"] -= 12500
+meta["capture_center_frequency_hz"] -= 12500
+with open(os.path.join(out, "nfm_ctcss_real_neighbour.iq.json"), "w", encoding="utf-8") as handle:
+    json.dump(meta, handle, indent=2)
+EOF
+tools/replay_ab.sh --metric analog --capture /tmp/neighbour/nfm_ctcss_real_neighbour.iq.json \
+    --mode -fA --reps 12 --out /tmp/ab/neighbour /tmp/ab/analog_replay.main /tmp/ab/analog_replay.branch
+```
+
+The hosts are set up as under [Analog A/B](#analog-ab). Over those 12 realtime repeats the detector locked 173.8 Hz at
+300 ms on every one, reported no other tone, and dropped and re-locked it once around a similar reversal and gap at
+2.44 s, 90.33% locked in all.
 
 Known gaps and caveats:
 
