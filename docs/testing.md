@@ -396,7 +396,13 @@ read that spans it and never showing the previous channel's tone, also when the 
 (driven sample by sample through the unsynced analog path at 8192 Hz, where the 958 samples waiting in the block locked
 the old tone again over a quiet carrier), and on a live radio stream that stops delivering (an `rtl_tcp` outage) the
 same way, while IQ replay keeps no deadline and never resets on a gap, and starts a new reception the moment a TCP audio
-connection drops when it reconnects inside the read, whose 300 ms backoff is shorter than the pause deadline; and --
+connection drops when it reconnects inside the read, whose 300 ms backoff is shorter than the pause deadline; skips, on
+Pulse, stdin, UDP and TCP input after a reset or a trunk-tuning generation move, the half second of the old channel's
+100 Hz tone the input had queued -- read with no time passing on the injected clock, as a decoder drains a backlog,
+which heard locked 100.0 Hz again on the new channel -- whether the new channel then arrives in 20 ms reads or in 100 ms
+bursts, and its own 131.8 Hz tone locks within the p95 target plus one read, while a WAV file is heard at once after a
+reset, a UDP stream with nothing queued from the third read after a reset or a generation move, and stdin fed faster
+than real time again after 2 s; and --
 driven through `getSymbol()` on 2500 Hz WAVs, where one 960-sample block is 384 ms -- reads the block as it fills, so a
 tone starting mid-block locks within the 400 ms p95 target of its start and a carrier drop is forgotten within the
 hangover and two 20 ms reads (read only at block ends they took 576 and 544 ms), and drops the monitor block still being

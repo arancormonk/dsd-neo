@@ -535,7 +535,13 @@ tone setting, and it runs with `-o null` too.
   stream (see below), or a live radio stream whose source stopped, such as an `rtl_tcp` server that went away while
   DSD-neo retries the connection, or a stalled device. After half a second of such an outage the row shows no carrier,
   and when the stream returns it starts a new reception; IQ replay never counts as paused, however slowly it is read.
-  The frequent no-carrier cleanup between syncs does not clear it.
+  The frequent no-carrier cleanup between syncs does not clear it. On Pulse, stdin, UDP and TCP input such a boundary
+  also skips the audio the input had already queued, which the old channel went on filling while a rigctl retune held
+  the decoder: detection hears nothing until a read shows the input ran dry (20 ms or more of it that took at least
+  half as long to arrive, which a queue the decoder drains at its own speed never does), and not that read either.
+  With nothing queued that costs the new channel two 20 ms reads, and no more than 2 s of input is ever skipped, so
+  stdin fed from a file faster than real time is heard again after that. Files and RTL-family streams are not skipped:
+  a file holds no other channel, and an RTL-family stream clears its own output at a retune.
 - Where it runs: analog-only decoding with input monitoring, on PCM inputs (TCP, UDP, Pulse, WAV, stdin) or on an
   RTL-family stream that outputs monitor audio. It does not run for the `-8` source monitor during digital decoding, for
   EDACS analog voice, or on symbol-file input, and the `Rx tone:` line and `RECEIVED TONE` row are shown exactly while
@@ -563,7 +569,11 @@ tone setting, and it runs with `-o null` too.
   producer makes on its own, such as `rtl_fm` scanning several frequencies: a hop that leaves a gap shorter than half a
   second (with padding, shorter than the 200 ms hangover) is not a new reception, so the previous channel's tone can
   still show on the next channel for a few hundred milliseconds, until the detector drops it as it drops a tone that
-  stops (timing above).
+  stops (timing above). The same goes for audio a source still holds when DSD-neo moves it through rigctl -- in the
+  producer's own pipeline, or captured by the sound server but not yet handed over -- which arrives after the retune
+  like the new channel's. In offline runs of a clean tone followed by a carrier with no tone, about a tenth of a second
+  of the old channel's tone at the start of a reception was enough to show it again (on most seeds from 110 ms, on
+  every seed from 180 ms), for up to half a second.
 - Talk-off: a voice whose fundamental holds within 0.5 Hz of a table tone for a third of a second, with weak harmonics,
   is indistinguishable from that tone in the time allowed and can be reported briefly. It is rare on transmitted voice
   (which the transmitter high-passes at 300 Hz) and most likely near the top of the table. In offline seed sweeps, two

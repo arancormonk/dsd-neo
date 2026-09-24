@@ -611,10 +611,18 @@ installs from `src/engine/trunk_tuning.c` in `src/engine/trunk_tuning_hooks_inst
     and `analog_sample_counter`) and starts the tap's reading over at the next block: the samples in it arrived before
     the boundary, and left in place they would be read again as the new reception's opening audio, where at a low PCM
     rate one block (960 samples, 384 ms at 2500 Hz) is enough to lock the old channel's tone again. The monitor output
-    and raw WAV lose that part-block (at most 20 ms at 48 kHz) at the boundary. The tap's own resets act on the read in
-    hand instead: a generation move, a pause or a change of input rate since the previous read drops it (after a rate
-    change, samples taken at the old rate are another signal at the new one: 1920 Hz at 48 kHz read as 2500 Hz input is
-    a 100 Hz tone), and the hangover expires on it.
+    and raw WAV lose that part-block (at most 20 ms at 48 kHz) at the boundary. On Pulse, stdin, UDP and TCP input the
+    input's own queue holds more of the old channel, which kept arriving while a rigctl retune held the decoder, so
+    every `dsd_analog_rx_reset()` and every generation move the tap sees also arms a backlog skip: the tap skips its
+    reads until one shows the input ran dry (a span of `DSD_ANALOG_RX_TAP_READ_MS` or more of input that took at least
+    half as long to arrive on the monotonic clock, where a backlog drains at the decoder's own speed), that read
+    included, or until `DSD_ANALOG_RX_BACKLOG_MAX_MS` (2 s) of input, after which stdin fed from a file faster than
+    real time is heard again. The first read after the boundary only starts that clock. Files and RTL-family streams
+    are not skipped (the RTL stream clears its own output at a retune), and the skip only reads: the monitor output
+    plays the backlog as before. The tap's own resets act on the read in hand instead: a generation move, a pause or a
+    change of input rate since the previous read drops it (after a rate change, samples taken at the old rate are
+    another signal at the new one: 1920 Hz at 48 kHz read as 2500 Hz input is a 100 Hz tone), and the hangover expires
+    on it.
 - `dsd_filters.c` owns the per-protocol matched filters, selected by kind rather than by calling one of four
   wrappers, because the symbol grid has to know when the stream it samples changes identity. It reads the raw
   discriminator until a sync names a protocol and the filter's output afterwards, and that output describes the
