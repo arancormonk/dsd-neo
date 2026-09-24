@@ -899,7 +899,8 @@ test_rx_tone_unusable_rate_warns_once_per_stretch(void) {
 /*
  * A change between two input rates the front end can use (a 48 kHz WAV reopened at 44.1 kHz):
  * the redesign drops the lock and moves the generation on the first block at the new rate,
- * and the tone then locks again at that rate on its own evidence.
+ * and the tone then locks again at that rate on its own evidence. Like every other reset, it
+ * starts a new reception, so the log reports the tone again even though it is the same one.
  */
 static void
 test_rx_tone_usable_rate_change_drops_lock(void) {
@@ -907,8 +908,11 @@ test_rx_tone_usable_rate_change_drops_lock(void) {
     static dsd_state state;
     install_fake_rtl_hooks(0);
     init_analog_monitor_fixture(&opts, &state);
+    g_rx_tone_lines = 0;
+    g_rx_tone_100_lines = 0;
     feed_tone_blocks(&opts, &state, 30);
     assert(rx_tone_locked_on_100(&state));
+    assert(g_rx_tone_100_lines == 1 && g_rx_tone_lines == 1);
     const uint32_t generation = state.analog_rx.generation;
 
     opts.wav_sample_rate = 44100;
@@ -917,8 +921,10 @@ test_rx_tone_usable_rate_change_drops_lock(void) {
     assert(state.analog_rx.tone_state == DSD_ANALOG_TONE_STATE_ACQUIRING);
     assert(state.analog_rx.ctcss_tenths_hz == 0 && state.analog_rx.tone_kind == DSD_ANALOG_TONE_KIND_NONE);
     assert(state.analog_rx.generation != generation);
+    assert(g_rx_tone_lines == 1);
     feed_tone_blocks(&opts, &state, 30);
     assert(rx_tone_locked_on_100(&state));
+    assert(g_rx_tone_100_lines == 2 && g_rx_tone_lines == 2);
     g_tone_fs = 48000.0;
     dsd_state_ext_free_all(&state);
 }

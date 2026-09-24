@@ -370,6 +370,7 @@ typedef struct {
     uint32_t rtl_generation;
     uint64_t tune_generation;
     int log_key;              /**< ANALOG_RX_LOG_* or the logged tone in tenths of a hertz */
+    uint32_t log_generation;  /**< the publication generation log_key belongs to */
     int unusable_rate_logged; /**< the unusable rate reported for the current stretch of such input; 0 = none */
     /** Live stream input: the monotonic ms past which the next block arrives after a pause
         (published as dsd_analog_rx_publication::stale_after_ms); 0 = no block to measure from. */
@@ -420,6 +421,7 @@ analog_rx_session_create(const dsd_opts* opts, dsd_state* state) {
        generations never sees one repeat. */
     session->core.resets = state->analog_rx.generation;
     session->log_key = ANALOG_RX_LOG_UNSET;
+    session->log_generation = session->core.resets;
     analog_rx_note_generations(opts, session);
     if (dsd_state_ext_set(state, DSD_STATE_EXT_DSP_ANALOG_RX, session, free) != 0) {
         free(session);
@@ -442,14 +444,20 @@ analog_rx_rate_hz(const dsd_opts* opts) {
 
 static void
 analog_rx_log_change(analog_rx_session* session, const dsd_analog_rx_publication* pub) {
+    if (pub->generation != session->log_generation) {
+        /* Every reset moves the generation on -- a retune, a stream pause, the carrier
+           hangover, a new input rate -- and starts a new reception, which reports its tone
+           afresh, even the same tone. */
+        session->log_generation = pub->generation;
+        session->log_key = ANALOG_RX_LOG_UNSET;
+    }
     int key = session->log_key;
     if (pub->tone_state == DSD_ANALOG_TONE_STATE_LOCKED && pub->tone_kind == DSD_ANALOG_TONE_KIND_CTCSS) {
         key = pub->ctcss_tenths_hz;
     } else if (pub->tone_state == DSD_ANALOG_TONE_STATE_NONE) {
         key = ANALOG_RX_LOG_NONE;
     } else if (pub->tone_state != DSD_ANALOG_TONE_STATE_ACQUIRING) {
-        /* No carrier: the next reception reports its tone afresh. */
-        session->log_key = ANALOG_RX_LOG_UNSET;
+        /* No verdict to report: no carrier, or no detection at this input rate. */
         return;
     }
     if (key == session->log_key) {
@@ -540,7 +548,6 @@ dsd_analog_rx_reset(dsd_state* state) {
         return;
     }
     dsd_analog_rx_core_reset(&session->core);
-    session->log_key = ANALOG_RX_LOG_UNSET;
     session->stale_after_ms = 0;
     dsd_analog_rx_core_publish(&session->core, &state->analog_rx);
     /* Nothing has been processed since the reset, whatever the front end's design says; at an
@@ -578,7 +585,6 @@ dsd_analog_rx_tap(const dsd_opts* opts, dsd_state* state, const float* block, un
         /* The pause outlasted the hangover: whatever arrives now is a new reception, maybe on
            another channel, and inherits nothing -- the same reset the hangover makes. */
         dsd_analog_rx_core_reset(&session->core);
-        session->log_key = ANALOG_RX_LOG_UNSET;
     }
     const int squelch_open = opts->rtl_pwr > opts->rtl_squelch_level;
     if (!dsd_analog_rx_core_process(&session->core, block, (int)count, rate_hz, squelch_open)) {

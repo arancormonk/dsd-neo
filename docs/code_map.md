@@ -541,13 +541,13 @@ installs from `src/engine/trunk_tuning.c` in `src/engine/trunk_tuning_hooks_inst
     next block on). The core, not a detector, owns the absolute floor and the carrier test;
     `process(band, wide, count, freeze)` is the whole interface a detector gets. It also holds the decoder-thread glue:
     the working state in `DSD_STATE_EXT_DSP_ANALOG_RX` (slot 9, heap, never deep-copied), the publication
-    `dsd_state::analog_rx`, and the `Received tone:` LOG_INFO line on each change of verdict (a new reception logs again
-    after the carrier drops). The carrier hangover counts samples, which only works while samples arrive: on stdin, UDP
-    and TCP input, whose producer may squelch by sending nothing, each block also sets a monotonic deadline (its arrival
-    plus its own duration and the hangover, at least `DSD_ANALOG_STREAM_PAUSE_MIN_MS`), published as `stale_after_ms`. A
-    block arriving past it follows a pause as long as a dropped carrier and starts a new reception; the frontends age
-    the row against the same deadline meanwhile. Files, Pulse and RTL deliver continuously and never set one, so replay
-    stays deterministic.
+    `dsd_state::analog_rx`, and the `Received tone:` LOG_INFO line on each change of verdict (every reset moves the
+    publication's generation on and starts a new reception, which logs its verdict again, the same tone included). The
+    carrier hangover counts samples, which only works while samples arrive: on stdin, UDP and TCP input, whose producer
+    may squelch by sending nothing, each block also sets a monotonic deadline (its arrival plus its own duration and the
+    hangover, at least `DSD_ANALOG_STREAM_PAUSE_MIN_MS`), published as `stale_after_ms`. A block arriving past it
+    follows a pause as long as a dropped carrier and starts a new reception; the frontends age the row against the same
+    deadline meanwhile. Files, Pulse and RTL deliver continuously and never set one, so replay stays deterministic.
   - `src/dsp/analog_ctcss.c` is the CTCSS detector: one continuously running phasor per table tone, 50 ms sub-blocks
     with absolute phase in a 250 ms window, one hop per sub-block. Each hop fits every bin's sub-block phases (a
     pulse-pair estimate refined by weighted least squares), snaps the fine estimate to the table within +/-0.8 Hz,

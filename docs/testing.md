@@ -368,12 +368,12 @@ high-pass removes the tone, leaves the audio byte-identical, clears on an RTL st
 trunk-tuning-generation move and on a change between two usable input rates, publishes an unusable input rate as
 unavailable without resetting block after block and warns about it once for each stretch of input at it (a 384 kHz,
 48 kHz, 384 kHz sequence warns twice), logs `Received tone:` once per change of verdict -- not per block, nor for a fade
-inside the hangover -- and again for a new reception after the hangover or a reset, and on a UDP stream whose producer
-pauses -- driven on an injected clock -- stamps the deadline the frontends age the row against and starts a new
-reception after the pause, never showing the previous channel's tone), `FRAME_SYNC_INTERNAL_HELPERS` (the acquisition
-reset), `ENGINE_NO_CARRIER_RESET` (survives `noCarrier()`, cleared by the legacy `-Y` step -- on RTL, by rigctl on PCM
-input in radio-off builds too, and by a failed step whose rigctl leg already moved the radio -- and kept by a refused
-one), `ENGINE_CLEANUP_AUDIO` (engine stop frees the detector and moves the generation on),
+inside the hangover -- and again for a new reception after the hangover, a reset or a change of input rate, and on a UDP
+stream whose producer pauses -- driven on an injected clock -- stamps the deadline the frontends age the row against and
+starts a new reception after the pause, never showing the previous channel's tone), `FRAME_SYNC_INTERNAL_HELPERS` (the
+acquisition reset), `ENGINE_NO_CARRIER_RESET` (survives `noCarrier()`, cleared by the legacy `-Y` step -- on RTL, by
+rigctl on PCM input in radio-off builds too, and by a failed step whose rigctl leg already moved the radio -- and kept
+by a refused one), `ENGINE_CLEANUP_AUDIO` (engine stop frees the detector and moves the generation on),
 `ENGINE_CHANNEL_SCAN`/`ENGINE_TRUNK_SCAN` (row commit and target switch), `DSP_WAV_INPUT_EOF` (the switch to live Pulse
 input when a WAV file ends), `APP_CONTROL_RX_TONE_VIEW`, `UI_NCURSES_PRINTER_HELPERS` and `UI_QT_METRICS_MODEL` (a
 paused stream's publication reads no carrier past its deadline on the caller's clock) and `APP_COMMAND_QUEUE`
