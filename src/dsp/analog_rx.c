@@ -403,6 +403,9 @@ typedef struct {
     uint64_t stale_after_ms;
     /** Samples of the monitor block the symbol path is assembling that the tap has read. */
     unsigned int block_taken;
+    /** The input rate at the tap's last read, which the samples it has not read yet arrived
+        at; 0 once a reset has emptied the monitor block, when nothing unread is left. */
+    int read_rate_hz;
 } analog_rx_session;
 
 #ifdef DSD_NEO_TEST_HOOKS
@@ -473,6 +476,7 @@ analog_rx_session_create(const dsd_opts* opts, dsd_state* state) {
     session->core.resets = state->analog_rx.generation;
     session->log_key = ANALOG_RX_LOG_UNSET;
     session->log_generation = session->core.resets;
+    session->read_rate_hz = analog_rx_rate_hz(opts);
     analog_rx_note_generations(opts, session);
     if (dsd_state_ext_set(state, DSD_STATE_EXT_DSP_ANALOG_RX, session, free) != 0) {
         free(session);
@@ -644,23 +648,41 @@ dsd_analog_rx_reset(dsd_state* state) {
     analog_rx_session* session = analog_rx_session_get(state);
     if (session) {
         session->block_taken = 0U;
+        session->read_rate_hz = 0;
     }
     analog_rx_forget(state);
 }
 
-/* The core's own resets act on the samples in hand: a retune nobody announced, or an input
-   that paused. Either way these samples may straddle the boundary -- the first of them can
-   have arrived before it -- so they are dropped, and the new reception starts with the next
-   read. Returns 1 when that happened. */
+/* Whether the input rate moved since the tap's last read, so that the samples in hand may
+   have arrived at either rate; notes @p rate_hz as the rate of this read. */
+static int
+analog_rx_rate_moved(analog_rx_session* session, int rate_hz) {
+    const int previous = session->read_rate_hz;
+    session->read_rate_hz = rate_hz;
+    return previous != 0 && previous != rate_hz;
+}
+
+/* The core's own resets act on the samples in hand: a retune nobody announced, an input that
+   paused, or an input rate that moved. Each way these samples may straddle the boundary -- the
+   first of them can have arrived before it, and after a rate change they are another signal
+   at the new rate (1920 Hz at 48 kHz read as 2500 Hz input is a 100 Hz tone) -- so they are
+   dropped, and the new reception starts with the next read. Returns 1 when that happened. */
 static int
 analog_rx_boundary_dropped(const dsd_opts* opts, dsd_state* state, analog_rx_session* session, unsigned int count,
                            int rate_hz) {
     const int moved = analog_rx_generation_moved(opts, session);
     const int paused = analog_rx_input_paused(opts, session, count, rate_hz);
-    if (!moved && !paused) {
+    const int rate_moved = analog_rx_rate_moved(session, rate_hz);
+    if (!moved && !paused && !rate_moved) {
         return 0;
     }
-    dsd_analog_rx_core_reset(&session->core);
+    if (rate_moved) {
+        /* Designed for the new rate at once, so the publication says straight away whether
+           detection can use it. */
+        core_configure(&session->core, rate_hz);
+    } else {
+        dsd_analog_rx_core_reset(&session->core);
+    }
     if (moved) {
         /* A retune starts the stream afresh: no deadline until it delivers again. */
         session->stale_after_ms = 0;

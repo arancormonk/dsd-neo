@@ -106,10 +106,11 @@ enum { DSD_ANALOG_STREAM_PAUSE_MIN_MS = 500 };
  * that never calls dsd_analog_rx_tap_partial() hands over whole blocks.
  *
  * Each read resets on its own when the RTL stream generation or the trunk-tuning generation
- * moved (a retune it was not told about), and on an input that may pause when it arrives more
- * than DSD_ANALOG_STREAM_PAUSE_MIN_MS allows after the previous read. Either way the samples
- * read may straddle the boundary, so they are dropped and the new reception starts with the
- * next read. A change of input rate also resets, and reads the samples at the new rate.
+ * moved (a retune it was not told about), on an input that may pause when it arrives more than
+ * DSD_ANALOG_STREAM_PAUSE_MIN_MS allows after the previous read, and when the input rate
+ * changed since the previous read. Each way the samples read may straddle the boundary -- after
+ * a rate change, samples taken at the old rate are another signal at the new one -- so they are
+ * dropped and the new reception starts with the next read.
  */
 void dsd_analog_rx_tap(const dsd_opts* opts, dsd_state* state, const float* block, unsigned int count);
 

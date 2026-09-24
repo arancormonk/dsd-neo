@@ -1093,9 +1093,11 @@ test_rx_tone_unusable_rate_warns_once_per_stretch(void) {
 
 /*
  * A change between two input rates the front end can use (a 48 kHz WAV reopened at 44.1 kHz):
- * the redesign drops the lock and moves the generation on the first block at the new rate,
- * and the tone then locks again at that rate on its own evidence. Like every other reset, it
- * starts a new reception, so the log reports the tone again even though it is the same one.
+ * the first read at the new rate drops the lock and moves the generation. Nothing says where in
+ * that read the rate changed, so its samples are dropped, not heard, and the carrier is
+ * evaluated afresh from the next block on. The tone then locks again at the new rate on its own
+ * evidence. Like every other reset, it starts a new reception, so the log reports the tone
+ * again even though it is the same one.
  */
 static void
 test_rx_tone_usable_rate_change_drops_lock(void) {
@@ -1113,9 +1115,14 @@ test_rx_tone_usable_rate_change_drops_lock(void) {
     opts.wav_sample_rate = 44100;
     g_tone_fs = 44100.0;
     feed_tone_blocks(&opts, &state, 1);
-    assert(state.analog_rx.tone_state == DSD_ANALOG_TONE_STATE_ACQUIRING);
+    assert(state.analog_rx.tone_state == DSD_ANALOG_TONE_STATE_IDLE && state.analog_rx.carrier_open == 0);
     assert(state.analog_rx.ctcss_tenths_hz == 0 && state.analog_rx.tone_kind == DSD_ANALOG_TONE_KIND_NONE);
     assert(state.analog_rx.generation != generation);
+    const uint32_t dropped_generation = state.analog_rx.generation;
+    feed_tone_blocks(&opts, &state, 1);
+    assert(state.analog_rx.tone_state == DSD_ANALOG_TONE_STATE_ACQUIRING && state.analog_rx.carrier_open == 1);
+    assert(state.analog_rx.ctcss_tenths_hz == 0 && state.analog_rx.tone_kind == DSD_ANALOG_TONE_KIND_NONE);
+    assert(state.analog_rx.generation == dropped_generation);
     assert(g_rx_tone_lines == 1);
     feed_tone_blocks(&opts, &state, 30);
     assert(rx_tone_locked_on_100(&state));
@@ -1159,6 +1166,50 @@ test_rx_tone_rate_drop_mid_stream_keeps_pace(void) {
     assert(state.analog_sample_counter == RESET_WAV_BLOCK - 1);
     assert(ended_at > 0 && ended_at <= pace_ms_to_samples(DSD_ANALOG_RX_TAP_READ_MS));
     assert(state.analog_rx.carrier_open == 1);
+    dsd_state_ext_free_all(&state);
+}
+
+/*
+ * A drop in input rate while the monitor block is part-full: the samples the tap has not read
+ * yet arrived at the old rate, and read at the new one they are another signal. A 1920 Hz tone
+ * at 48 kHz fills all but two samples of a block -- a carrier with no sub-audible tone, as the
+ * tap hears it -- and the input then moves to 2500 Hz, where those 958 samples, taken as 384 ms
+ * of input, are a 100 Hz tone. The first read at the new rate must drop them rather than lock
+ * 100.0 Hz from them: it ends the reception at the old rate with no tone, and the reception at
+ * the new rate starts with the samples after it, where a real 131.8 Hz tone then locks.
+ */
+static void
+test_rx_tone_rate_change_drops_the_unread_samples(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    install_fake_rtl_hooks(0);
+    init_analog_monitor_fixture(&opts, &state);
+    for (int n = 0; n < 50 * RESET_WAV_BLOCK + RESET_WAV_PENDING; n++) {
+        const double v = 3000.0 * cos(2.0 * M_PI * 1920.0 * (double)n / 48000.0);
+        dsd_symbol_test_push_unsynced_analog_sample(&opts, &state, (float)v);
+    }
+    assert(state.analog_sample_counter == RESET_WAV_PENDING);
+    assert(state.analog_rx.tone_state == DSD_ANALOG_TONE_STATE_NONE && state.analog_rx.carrier_open == 1);
+    const uint32_t generation = state.analog_rx.generation;
+
+    opts.wav_sample_rate = PACE_WAV_RATE;
+    dsd_symbol_test_push_unsynced_analog_sample(&opts, &state, 0.0f);
+    assert(state.analog_rx.generation != generation);
+    assert(state.analog_rx.tone_state == DSD_ANALOG_TONE_STATE_IDLE && state.analog_rx.carrier_open == 0);
+    assert(state.analog_rx.ctcss_tenths_hz == 0 && state.analog_rx.tone_kind == DSD_ANALOG_TONE_KIND_NONE);
+
+    int locked_at = -1;
+    for (int n = 0; n < PACE_WAV_RATE; n++) {
+        const double v = 3000.0 * cos(2.0 * M_PI * 131.8 * (double)n / (double)PACE_WAV_RATE);
+        dsd_symbol_test_push_unsynced_analog_sample(&opts, &state, (float)v);
+        assert(state.analog_rx.ctcss_tenths_hz != 1000);
+        if (locked_at < 0 && state.analog_rx.tone_state == DSD_ANALOG_TONE_STATE_LOCKED) {
+            locked_at = n + 1;
+        }
+    }
+    assert(locked_at > 0);
+    assert(state.analog_rx.tone_state == DSD_ANALOG_TONE_STATE_LOCKED);
+    assert(state.analog_rx.tone_kind == DSD_ANALOG_TONE_KIND_CTCSS && state.analog_rx.ctcss_tenths_hz == 1318);
     dsd_state_ext_free_all(&state);
 }
 
@@ -1620,6 +1671,7 @@ main(void) {
     test_rx_tone_unusable_rate_warns_once_per_stretch();
     test_rx_tone_usable_rate_change_drops_lock();
     test_rx_tone_rate_drop_mid_stream_keeps_pace();
+    test_rx_tone_rate_change_drops_the_unread_samples();
     test_rx_tone_logs_on_change_only();
     test_rx_tone_paused_stream_starts_a_new_reception();
     test_rx_tone_pause_mid_block_inherits_nothing();
