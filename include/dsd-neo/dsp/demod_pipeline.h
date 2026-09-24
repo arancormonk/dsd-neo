@@ -122,8 +122,12 @@ double dsd_channel_lpf_protected_edge_hz(int profile);
  *
  * Cutoff is width/2 + DSD_ANALOG_CHANNEL_GUARD_HZ with the fixed
  * DSD_ANALOG_CHANNEL_TRANSITION_HZ Blackman transition, so the width is the
- * protected passband. 16000 Hz reproduces the WIDE profile's taps. There is no
- * Nyquist clamp and no fallback prototype: a width the rate cannot realize
+ * protected passband. 16000 Hz reproduces the WIDE profile's taps wherever the
+ * WIDE design succeeds (rates from about 19.1 to 51.4 kHz: no 0.9 x Nyquist
+ * clamp, within its 144-tap cap). Above that WIDE runs its 63-tap fallback
+ * prototype, and this design gives 16000 Hz its full length instead (219 taps at
+ * 78,125 Hz), up to the analog tap capacity at about 102.7 kHz. There is no
+ * Nyquist clamp and no fallback prototype here: a width the rate cannot realize
  * (see dsd_analog_width_realizable()) is an error.
  *
  * @param rate_hz  Channel-filter sample rate (demod rate_out) in Hz.

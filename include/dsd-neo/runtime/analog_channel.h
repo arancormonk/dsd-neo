@@ -10,7 +10,11 @@
  * The channel width is the full RF passband, centred on the tuned frequency, that the analog channel filter protects:
  * the filter's cutoff sits at width/2 + DSD_ANALOG_CHANNEL_GUARD_HZ with a fixed DSD_ANALOG_CHANNEL_TRANSITION_HZ
  * Blackman transition outside it. It is neither the tuner bandwidth nor the audio bandwidth. A width of 16000 Hz
- * reproduces the historical analog (WIDE) channel filter exactly.
+ * reproduces the historical analog (WIDE) channel filter exactly wherever that design succeeded: from about 19.1 kHz,
+ * where its cutoff stops being held to 0.9 x Nyquist, up to about 51.4 kHz, where it no longer fits its 144 taps. Above
+ * that the historical filter was the 63-tap fallback prototype, and 16000 Hz gets a full design instead (219 taps at
+ * 78,125 Hz) up to the analog tap capacity at about 102.7 kHz. Below about 19.1 kHz and above that capacity 16000 Hz is
+ * not realizable.
  *
  * The transition is the window-method design parameter, not a stopband guarantee: the response is about -0.3 dB at
  * width/2, about -30 dB at width/2 + 1200 Hz, and -50 dB or better only from about width/2 + 1450 Hz.
