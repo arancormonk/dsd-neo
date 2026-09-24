@@ -26,6 +26,7 @@
 #include <dsd-neo/platform/sockets.h>
 #include <dsd-neo/runtime/exitflag.h>
 #include <dsd-neo/runtime/log.h>
+#include <dsd-neo/runtime/net_audio_input_hooks.h>
 #include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
 #include <dsd-neo/runtime/shutdown.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
@@ -48,6 +49,8 @@
 #include "test_support.h"
 
 static int g_cleanup_calls = 0;
+/* What the Connect() stub returns: 0, a failed connection, unless a test hands it a socket. */
+static dsd_socket_t g_connect_socket = 0;
 
 static int
 symbol_level_matches(float got, uint8_t dibit) {
@@ -59,7 +62,7 @@ dsd_socket_t
 Connect(char* hostname, int portno) {
     (void)hostname;
     (void)portno;
-    return (dsd_socket_t)0;
+    return g_connect_socket;
 }
 
 int
@@ -1486,6 +1489,108 @@ test_rx_tone_stalled_radio_stream_goes_stale(void) {
     dsd_state_ext_free_all(&state);
 }
 
+/* The reconnect test's TCP audio source: the connection drops once, as the reconnect's backoff
+   passes on the injected clock, and the new connection then carries a 131.8 Hz tone. */
+static int g_tcp_ctx_token = 0;
+static int g_tcp_opens = 0;
+static int g_tcp_drops_left = 0;
+static int g_tcp_sample_n = 0;
+
+static tcp_input_ctx*
+fake_tcp_open(dsd_socket_t sockfd, int samplerate) {
+    (void)sockfd;
+    (void)samplerate;
+    g_tcp_opens++;
+    return (tcp_input_ctx*)&g_tcp_ctx_token;
+}
+
+static void
+fake_tcp_close(tcp_input_ctx* ctx) {
+    (void)ctx;
+}
+
+static int
+fake_tcp_read_sample(tcp_input_ctx* ctx, int16_t* out) {
+    (void)ctx;
+    if (g_tcp_drops_left > 0) {
+        g_tcp_drops_left--;
+        g_fake_now_ms += 300U;
+        return 0;
+    }
+    *out = (int16_t)lround(3000.0 * cos(2.0 * M_PI * 131.8 * (double)g_tcp_sample_n / 48000.0));
+    g_tcp_sample_n++;
+    return 1;
+}
+
+/*
+ * A TCP audio connection that drops and reconnects inside the read. The reconnect waits only
+ * its backoff (300 ms by default), less than the half second after which a quiet input counts
+ * as a dropped carrier, and the new connection may carry another source altogether: the
+ * interruption itself starts a new reception. Driven through getSymbol() at 48 kHz: 100.0 Hz
+ * locks on the first connection, the next read finds it gone, the reconnect succeeds, and the
+ * new connection carries 131.8 Hz. The old tone goes as the connection drops, before the new one
+ * delivers a read's worth, never comes back, and the new tone locks on its own.
+ */
+static void
+test_rx_tone_tcp_reconnect_starts_a_new_reception(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    assert(dsd_socket_init() == 0);
+    install_fake_rtl_hooks(0);
+    init_analog_monitor_fixture(&opts, &state);
+    opts.audio_in_type = AUDIO_IN_TCP;
+    opts.tcp_sockfd = dsd_socket_create(AF_INET, SOCK_STREAM, 0);
+    g_connect_socket = dsd_socket_create(AF_INET, SOCK_STREAM, 0);
+    assert(opts.tcp_sockfd != DSD_INVALID_SOCKET && g_connect_socket != DSD_INVALID_SOCKET);
+    opts.tcp_in_ctx = (tcp_input_ctx*)&g_tcp_ctx_token;
+    state.samplesPerSymbol = 1;
+    state.symbolCenter = 0;
+    state.jitter = -1;
+    exitflag = 0;
+    dsd_analog_rx_test_set_clock(fake_now_ms);
+    g_fake_now_ms = 900000U;
+    g_tone_phase = 0.0;
+
+    for (int b = 0; b < 30; b++) {
+        feed_stream_block(&opts, &state, 100.0);
+    }
+    assert(rx_tone_locked_on_100(&state));
+    const uint32_t generation = state.analog_rx.generation;
+
+    dsd_net_audio_input_hooks hooks;
+    DSD_MEMSET(&hooks, 0, sizeof(hooks));
+    hooks.tcp_open = fake_tcp_open;
+    hooks.tcp_close = fake_tcp_close;
+    hooks.tcp_read_sample = fake_tcp_read_sample;
+    dsd_net_audio_input_hooks_set(hooks);
+    g_tcp_opens = 0;
+    g_tcp_drops_left = 1;
+    g_tcp_sample_n = 0;
+
+    /* One read: the connection is gone, the reconnect succeeds, and the new connection's first
+       sample comes back. The received tone went with the old connection. */
+    (void)getSymbol(&opts, &state, 0);
+    assert(exitflag == 0 && g_tcp_opens == 1);
+    assert(opts.audio_in_type == AUDIO_IN_TCP && opts.tcp_sockfd == g_connect_socket);
+    assert(state.analog_rx.generation != generation);
+    assert(state.analog_rx.tone_state == DSD_ANALOG_TONE_STATE_INACTIVE && state.analog_rx.ctcss_tenths_hz == 0);
+    for (int n = 1; n < 48000; n++) {
+        (void)getSymbol(&opts, &state, 0);
+        assert(state.analog_rx.ctcss_tenths_hz != 1000);
+    }
+    assert(exitflag == 0 && g_tcp_opens == 1);
+    assert(state.analog_rx.tone_state == DSD_ANALOG_TONE_STATE_LOCKED && state.analog_rx.ctcss_tenths_hz == 1318);
+
+    dsd_net_audio_input_hooks_set((dsd_net_audio_input_hooks){0});
+    (void)dsd_socket_close(opts.tcp_sockfd);
+    opts.tcp_sockfd = 0;
+    opts.tcp_in_ctx = NULL;
+    g_connect_socket = 0;
+    dsd_analog_rx_test_set_clock(NULL);
+    dsd_state_ext_free_all(&state);
+    dsd_socket_cleanup();
+}
+
 int
 main(void) {
     exitflag = 0;
@@ -1516,6 +1621,7 @@ main(void) {
     test_rx_tone_pause_mid_block_inherits_nothing();
     test_rx_tone_pcm_squelch_follows_each_read();
     test_rx_tone_stalled_radio_stream_goes_stale();
+    test_rx_tone_tcp_reconnect_starts_a_new_reception();
     return 0;
 }
 

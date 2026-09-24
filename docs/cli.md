@@ -527,11 +527,12 @@ tone setting, and it runs with `-o null` too.
   `-Y` scan step (including one that failed after rigctl had already moved the radio), a manual channel cycle or scan
   avoid, a scan row or trunk-scan target change, a decode-mode change, an input switch (Pulse, WAV, UDP, TCP, RTL or
   symbol input, replay and stop-playback, from a frontend or a config apply, and the switch to live Pulse input when
-  a WAV file ends or a TCP connection is lost), stop, 200 ms without carrier, and an input that stops delivering
-  audio for about half a second: a stdin, UDP or TCP stream (see below), or a live radio stream whose source stopped,
-  such as an `rtl_tcp` server that went away while DSD-neo retries the connection, or a stalled device. After half a
-  second of such an outage the row shows no carrier, and when the stream returns it starts a new reception; IQ replay
-  never counts as paused, however slowly it is read. The frequent no-carrier cleanup between syncs does not clear it.
+  a WAV file ends), a dropped TCP audio connection, whether DSD-neo reconnects it or falls back to live Pulse input,
+  stop, 200 ms without carrier, and an input that stops delivering audio for about half a second: a stdin, UDP or TCP
+  stream (see below), or a live radio stream whose source stopped, such as an `rtl_tcp` server that went away while
+  DSD-neo retries the connection, or a stalled device. After half a second of such an outage the row shows no carrier,
+  and when the stream returns it starts a new reception; IQ replay never counts as paused, however slowly it is read.
+  The frequent no-carrier cleanup between syncs does not clear it.
 - Where it runs: analog-only decoding with input monitoring, on PCM inputs (TCP, UDP, Pulse, WAV, stdin) or on an
   RTL-family stream that outputs monitor audio. It does not run for the `-8` source monitor during digital decoding, for
   EDACS analog voice, or on symbol-file input, and the `Rx tone:` line and `RECEIVED TONE` row are shown exactly while

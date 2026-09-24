@@ -384,26 +384,28 @@ stamps the deadline the frontends age the row against and starts a new reception
 spans it and never showing the previous channel's tone, also when the pause falls part-way through a block (driven
 sample by sample through the unsynced analog path at 8192 Hz, where the 958 samples waiting in the block locked the old
 tone again over a quiet carrier), and on a live radio stream that stops delivering (an `rtl_tcp` outage) the same way,
-while IQ replay keeps no deadline and never resets on a gap; and -- driven through `getSymbol()` on 2500 Hz WAVs, where
-one 960-sample block is 384 ms -- reads the block as it fills, so a tone starting mid-block locks within the 400 ms p95
-target of its start and a carrier drop is forgotten within the hangover and two 20 ms reads (read only at block ends
-they took 576 and 544 ms), and drops the monitor block still being assembled at a reset, so the new channel's first
-block holds none of the old channel's samples and does not lock its tone again), `FRAME_SYNC_INTERNAL_HELPERS` (the
-acquisition reset), `ENGINE_NO_CARRIER_RESET` (survives `noCarrier()`, cleared by the legacy `-Y` step -- on RTL, by
-rigctl on PCM input in radio-off builds too, and by a failed step whose rigctl leg already moved the radio -- and kept
-by a refused one), `ENGINE_CLEANUP_AUDIO` (engine stop frees the detector and moves the generation on),
-`ENGINE_CHANNEL_SCAN`/`ENGINE_TRUNK_SCAN` (row commit and target switch), `DSP_WAV_INPUT_EOF` (the switch to live Pulse
-input when a WAV file ends), `APP_CONTROL_RX_TONE_VIEW`, `UI_NCURSES_PRINTER_HELPERS` and `UI_QT_METRICS_MODEL` (a
-paused stream's publication reads no carrier past its deadline on the caller's clock) and `APP_COMMAND_QUEUE`
-(decode-mode change, `RTL_SET_FREQ`, `MANUAL_TUNE`, a manual channel cycle and scan avoid by rigctl on PCM input,
-accepted, pending or refused; switching to WAV, Pulse, a named Pulse source, UDP or symbol-stream input, replay and
-stop-playback, including a stop whose Pulse open fails; TCP connect and reconnect, accepted or refused; and a config
-apply, which clears the tone when it moves the input and keeps it, generation included, when it changes an unrelated
-setting). The `APP_COMMAND_QUEUE` cases for `RTL_SET_FREQ`, `MANUAL_TUNE`, the manual channel cycle, scan avoid, the TCP
-connect and the failed Pulse open, and the `ENGINE_NO_CARRIER_RESET` `-Y` step cases (the rigctl step, the legacy RTL
-step and the failed partial hop), stub what they drive through the linker's `--wrap` seam, so they run only where that
-seam exists: GCC or Clang builds off macOS, and for `APP_COMMAND_QUEUE` off Windows too. The RTL cases also need a radio
-build. All of these bounds come from synthetic signals.
+while IQ replay keeps no deadline and never resets on a gap, and starts a new reception the moment a TCP audio
+connection drops when it reconnects inside the read, whose 300 ms backoff is shorter than the pause deadline; and --
+driven through `getSymbol()` on 2500 Hz WAVs, where one 960-sample block is 384 ms -- reads the block as it fills, so a
+tone starting mid-block locks within the 400 ms p95 target of its start and a carrier drop is forgotten within the
+hangover and two 20 ms reads (read only at block ends they took 576 and 544 ms), and drops the monitor block still being
+assembled at a reset, so the new channel's first block holds none of the old channel's samples and does not lock its
+tone again), `FRAME_SYNC_INTERNAL_HELPERS` (the acquisition reset), `ENGINE_NO_CARRIER_RESET` (survives `noCarrier()`,
+cleared by the legacy `-Y` step -- on RTL, by rigctl on PCM input in radio-off builds too, and by a failed step whose
+rigctl leg already moved the radio -- and kept by a refused one), `ENGINE_CLEANUP_AUDIO` (engine stop frees the detector
+and moves the generation on), `ENGINE_CHANNEL_SCAN`/`ENGINE_TRUNK_SCAN` (row commit and target switch),
+`DSP_WAV_INPUT_EOF` (the switch to live Pulse input when a WAV file ends), `APP_CONTROL_RX_TONE_VIEW`,
+`UI_NCURSES_PRINTER_HELPERS` and `UI_QT_METRICS_MODEL` (a paused stream's publication reads no carrier past its deadline
+on the caller's clock) and `APP_COMMAND_QUEUE` (decode-mode change, `RTL_SET_FREQ`, `MANUAL_TUNE`, a manual channel
+cycle and scan avoid by rigctl on PCM input, accepted, pending or refused; switching to WAV, Pulse, a named Pulse
+source, UDP or symbol-stream input, replay and stop-playback, including a stop whose Pulse open fails; TCP connect and
+reconnect, accepted or refused; and a config apply, which clears the tone when it moves the input and keeps it,
+generation included, when it changes an unrelated setting). The `APP_COMMAND_QUEUE` cases for `RTL_SET_FREQ`,
+`MANUAL_TUNE`, the manual channel cycle, scan avoid, the TCP connect and the failed Pulse open, and the
+`ENGINE_NO_CARRIER_RESET` `-Y` step cases (the rigctl step, the legacy RTL step and the failed partial hop), stub what
+they drive through the linker's `--wrap` seam, so they run only where that seam exists: GCC or Clang builds off macOS,
+and for `APP_COMMAND_QUEUE` off Windows too. The RTL cases also need a radio build. All of these bounds come from
+synthetic signals.
 
 The off-air excerpts are pinned against their oracle labels (see [Tone and code labels](#tone-and-code-labels)) by
 cases in the analog block, run through the analog replay host, which reads the received tone from the decoder's

@@ -1634,6 +1634,10 @@ symbol_read_sample_tcp(dsd_opts* opts, dsd_state* state, float* sample_out) {
             backoff_ms = cfg_retry->tcpin_backoff_ms;
         }
         DSD_FPRINTF(stderr, "\nConnection to TCP Server Interrupted. Trying again in %d ms.\n", backoff_ms);
+        /* The stream ended, and whatever a reconnect brings may be another source: a new
+           reception (issue #522). The default backoff is shorter than a pause the received-tone
+           tap would notice, so the old tone would otherwise carry over onto the new connection. */
+        dsd_analog_rx_reset(state);
         dsd_net_audio_input_hook_tcp_close(opts->tcp_in_ctx);
         opts->tcp_in_ctx = NULL;
         dsd_socket_close(opts->tcp_sockfd);
