@@ -818,6 +818,8 @@ main(void) {
     rc |= expect_int("bad family refused", rtl_stream_request_analog_profile(7, DSD_ANALOG_DEMOD_FM, 0), -1);
     rc |= expect_int("out-of-range width refused",
                      rtl_stream_request_analog_profile(DSD_RX_FAMILY_ANALOG, DSD_ANALOG_DEMOD_FM, 30000), -1);
+    rc |= expect_int("negative width refused",
+                     rtl_stream_request_analog_profile(DSD_RX_FAMILY_ANALOG, DSD_ANALOG_DEMOD_FM, -1), -1);
     if (rc == 0) {
         std::printf("IO_RTL_ANALOG_FAMILY_SWITCH: OK\n");
     }

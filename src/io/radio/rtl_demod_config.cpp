@@ -977,12 +977,55 @@ rtl_demod_analog_requested_width_hz(int kind, int explicit_width_hz) {
     return kind == DSD_ANALOG_DEMOD_FM ? 0 : dsd_analog_width_default_hz(kind);
 }
 
+/* Only 0 selects the kind's default: a negative width is not a width, whichever caller stored it. */
+static int
+demod_refuse_negative_analog_width(int kind, int explicit_width_hz, char* err, size_t err_size) {
+    if (err && err_size > 0U) {
+        char default_text[DSD_ANALOG_WIDTH_TEXT_MAX];
+        (void)dsd_analog_width_format(dsd_analog_width_default_hz(kind), default_text, sizeof default_text);
+        DSD_SNPRINTF(err, err_size,
+                     "%s bandwidth %d Hz is negative; set 0 for the %s default or a width from %d to %d Hz",
+                     dsd_analog_demod_label(kind), explicit_width_hz, default_text, dsd_analog_width_min_hz(kind),
+                     dsd_analog_width_max_hz(kind));
+    }
+    return -1;
+}
+
+/* A requested width needs the channel filter, which DSD_NEO_CHANNEL_LPF=0 turns off. */
+static int
+demod_check_analog_channel_lpf_env(int kind, int explicit_width_hz, char* err, size_t err_size) {
+    const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
+    if (!cfg || !cfg->channel_lpf_is_set || cfg->channel_lpf_enable != 0) {
+        return 0;
+    }
+    if (!err || err_size == 0U) {
+        return -1;
+    }
+    if (explicit_width_hz > 0) {
+        char width_text[DSD_ANALOG_WIDTH_TEXT_MAX];
+        (void)dsd_analog_width_format(explicit_width_hz, width_text, sizeof width_text);
+        DSD_SNPRINTF(err, err_size,
+                     "%s bandwidth %s needs the channel filter, but DSD_NEO_CHANNEL_LPF=0 turns it off; unset "
+                     "DSD_NEO_CHANNEL_LPF or drop the explicit bandwidth",
+                     dsd_analog_demod_label(kind), width_text);
+    } else {
+        DSD_SNPRINTF(err, err_size,
+                     "%s reception needs the channel filter, but DSD_NEO_CHANNEL_LPF=0 turns it off; unset "
+                     "DSD_NEO_CHANNEL_LPF",
+                     dsd_analog_demod_label(kind));
+    }
+    return -1;
+}
+
 int
 rtl_demod_check_analog_channel(int kind, int explicit_width_hz, int rate_hz, char* err, size_t err_size) {
     demod_error_text(err, err_size, "");
     if (!dsd_analog_demod_is_valid(kind)) {
         demod_error_text(err, err_size, "unknown analog demodulator");
         return -1;
+    }
+    if (explicit_width_hz < 0) {
+        return demod_refuse_negative_analog_width(kind, explicit_width_hz, err, err_size);
     }
     if (kind == DSD_ANALOG_DEMOD_AM) {
         demod_error_text(err, err_size,
@@ -996,24 +1039,10 @@ rtl_demod_check_analog_channel(int kind, int explicit_width_hz, int rate_hz, cha
     }
     /* Every other width is a request for that filter, including the unset AM default: AM is new, so its default is
        held to the same rules as an explicit width. */
-    const int width_hz = rtl_demod_analog_requested_width_hz(kind, explicit_width_hz);
-    const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
-    if (cfg && cfg->channel_lpf_is_set && cfg->channel_lpf_enable == 0) {
-        if (err && err_size > 0U && explicit_width_hz > 0) {
-            char width_text[DSD_ANALOG_WIDTH_TEXT_MAX];
-            (void)dsd_analog_width_format(explicit_width_hz, width_text, sizeof width_text);
-            DSD_SNPRINTF(err, err_size,
-                         "%s bandwidth %s needs the channel filter, but DSD_NEO_CHANNEL_LPF=0 turns it off; unset "
-                         "DSD_NEO_CHANNEL_LPF or drop the explicit bandwidth",
-                         dsd_analog_demod_label(kind), width_text);
-        } else if (err && err_size > 0U) {
-            DSD_SNPRINTF(err, err_size,
-                         "%s reception needs the channel filter, but DSD_NEO_CHANNEL_LPF=0 turns it off; unset "
-                         "DSD_NEO_CHANNEL_LPF",
-                         dsd_analog_demod_label(kind));
-        }
+    if (demod_check_analog_channel_lpf_env(kind, explicit_width_hz, err, err_size) != 0) {
         return -1;
     }
+    const int width_hz = rtl_demod_analog_requested_width_hz(kind, explicit_width_hz);
     if (rate_hz <= 0 && dsd_analog_width_in_range(kind, width_hz)) {
         /* No DSP rate yet (no stream running): the next stream open checks the width against the rate it delivers. */
         return 0;

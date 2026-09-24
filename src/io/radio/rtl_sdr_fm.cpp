@@ -8191,10 +8191,6 @@ rtl_stream_check_analog_request(int family, int kind, int width_hz, int rate_hz,
         DSD_SNPRINTF(err, err_size, "unknown receive family %d", family);
         return -1;
     }
-    if (width_hz < 0) {
-        DSD_SNPRINTF(err, err_size, "analog channel width %d Hz is negative", width_hz);
-        return -1;
-    }
     if (rtl_demod_check_analog_channel(kind, width_hz, rate_hz, err, err_size) != 0) {
         return -1;
     }

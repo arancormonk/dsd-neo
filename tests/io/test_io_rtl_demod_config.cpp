@@ -1410,6 +1410,46 @@ expect_unset_default_rule_keyed_on_nfm(void) {
 }
 
 /*
+ * Only 0 in the options means "the kind's default": a negative width is refused with an actionable message, both when
+ * a stream starts (the finalize against its rate) and by the shared check the live requests use, never treated as the
+ * unset default.
+ */
+static int
+expect_negative_width_refused(void) {
+    int rc = 0;
+    set_channel_lpf_env(NULL);
+    char err[DSD_ANALOG_ERROR_TEXT_MAX] = {0};
+    rc |= expect_int_eq("negative NFM width refused at a rate",
+                        rtl_demod_check_analog_channel(DSD_ANALOG_DEMOD_FM, -1, 48000, err, sizeof err), -1);
+    if (!std::strstr(err, "NFM bandwidth -1 Hz is negative; set 0 for the 16 kHz default or a width from 8000 to "
+                          "25000 Hz")) {
+        DSD_FPRINTF(stderr, "negative width message: %s\n", err);
+        rc = 1;
+    }
+    rc |= expect_int_eq("negative NFM width refused with no rate",
+                        rtl_demod_check_analog_channel(DSD_ANALOG_DEMOD_FM, -12500, 0, err, sizeof err), -1);
+
+    demod_state* demod = static_cast<demod_state*>(std::calloc(1, sizeof(*demod)));
+    if (!demod) {
+        DSD_FPRINTF(stderr, "negative width finalize: allocation failed\n");
+        return 1;
+    }
+    static dsd_opts opts;
+    make_analog_opts(&opts);
+    opts.analog_nfm_bandwidth_hz = -1;
+    DSD_MEMSET(err, 0, sizeof err);
+    rc |= expect_int_eq("negative NFM width fails the start",
+                        configure_and_finalize(demod, &opts, 48000, err, sizeof err), -1);
+    if (!std::strstr(err, "NFM bandwidth -1 Hz is negative")) {
+        DSD_FPRINTF(stderr, "negative width start message: %s\n", err);
+        rc = 1;
+    }
+    rtl_demod_cleanup(demod);
+    std::free(demod);
+    return rc;
+}
+
+/*
  * An I/Q replay whose sidecar decimates after the demodulator runs the channel filter at rate_out x post_downsample,
  * not at the rate_out a width is designed and checked at: a requested width is refused there with the cause and the
  * fix, while the unset NFM default and every post_downsample-1 chain pass.
@@ -1692,6 +1732,7 @@ main(void) {
     rc |= expect_m17_encoder_unchanged();
     rc |= expect_analog_am_refused();
     rc |= expect_unset_default_rule_keyed_on_nfm();
+    rc |= expect_negative_width_refused();
     rc |= expect_post_decimation_rule();
     rc |= expect_rate_refresh_leaves_cqpsk_profile();
 
