@@ -8,9 +8,11 @@
  * writes to. dsd_audio_ensure_analog_output() and dsd_audio_ensure_digital_output()
  * open what openAudioOutput() would have opened for the current options, with the
  * same parameters, and are idempotent: a sink that is already open is left alone,
- * and nothing is opened for a muted session or an output with no such sink.
- * With UDP output the analog monitor's sink is the socket on port + 2, which a
- * session started digital (without -8 or ProVoice) never opened.
+ * and nothing is opened for an output with no such sink, or for a muted session
+ * on a local device (unmuting reopens those streams). With UDP output the analog
+ * monitor's sink is the socket on port + 2, which a session started digital
+ * (without -8 or ProVoice) never opened; it opens even while muted, because
+ * unmuting reopens local devices only and would leave it closed.
  *
  * The device layer is replaced at link time with a recording null backend, and
  * the UDP analog socket is opened through a recording UDP audio hook.
@@ -188,7 +190,7 @@ test_nothing_to_open(void) {
     static dsd_opts opts;
     device_session(&opts);
     reset_backend();
-    opts.audio_out = 0; /* muted: unmuting reopens every sink the mode needs */
+    opts.audio_out = 0; /* muted local device: unmuting reopens every device stream the mode needs */
     expect_int("muted analog", dsd_audio_ensure_analog_output(&opts), 0);
     expect_int("muted digital", dsd_audio_ensure_digital_output(&opts), 0);
     opts.audio_out = 1;
@@ -237,12 +239,18 @@ test_udp_analog_sink(void) {
     expect_int("monitor opens the analog socket", g_udp_connects, 1);
     expect_int("still no audio device", g_open_count, 0);
 
-    /* Muted: unmuting reopens what the mode needs. */
+    /* Muted: the mute toggle reopens local devices only, never the UDP sockets, so a switch to Analog while muted
+     * opens the socket now; the analog writers send nothing until unmuted. After the unmute the socket is there. */
     udp_session(&opts);
     opts.audio_out = 0;
     g_udp_connects = 0;
     expect_int("muted udp analog", dsd_audio_ensure_analog_output(&opts), 0);
-    expect_int("muted udp opens nothing", g_udp_connects, 0);
+    expect_int("muted udp opens the analog socket", g_udp_connects, 1);
+    expect_int("muted udp analog socket kept", opts.udp_sockfdA == (dsd_socket_t)42, 1);
+    opts.audio_out = 1; /* unmute: ui_handle_toggle_mute() touches no socket for UDP output */
+    expect_int("unmuted udp analog", dsd_audio_ensure_analog_output(&opts), 0);
+    expect_int("unmute finds the socket open", g_udp_connects, 1);
+    expect_int("muted udp opens no audio device", g_open_count, 0);
 
     /* A socket that cannot open is reported once, stays invalid, and a success re-arms the message. */
     udp_session(&opts);

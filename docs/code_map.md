@@ -268,7 +268,8 @@ Tests: `tests/engine/test_engine_trunk_scan.c` (`ENGINE_TRUNK_SCAN`) and
   voice stream, plus the raw stream for ProVoice and `-8`) with the parameters `openAudioOutput()` uses, when the
   session plays to an unmuted local device and the sink is not open. With UDP output the raw sink is the analog socket
   on port + 2 (`udp_sockfdA`), opened through the `connect_analog` member of the runtime UDP audio hook table
-  (`<dsd-neo/runtime/udp_audio_hooks.h>`, installed by the engine); `udp_socket_blasterA()` skips an invalid socket.
+  (`<dsd-neo/runtime/udp_audio_hooks.h>`, installed by the engine), muted or not: the mute toggle reopens local
+  devices only, so a socket skipped while muted would stay closed. `udp_socket_blasterA()` skips an invalid socket.
   Idempotent, decoder thread only; a failure is logged once and leaves that family silent. `DSD_APP_CMD_DECODE_MODE_SET`
   and the RadioReference import (both through `decode_mode_apply_value()`) call them, and so does
   `DSD_APP_CMD_CONFIG_APPLY` when its `[mode]` moves the session between the analog and digital families. Tests:

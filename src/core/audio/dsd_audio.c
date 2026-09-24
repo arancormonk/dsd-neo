@@ -322,15 +322,18 @@ static int g_ensure_raw_failure_logged;
 static int g_ensure_digital_failure_logged;
 static int g_ensure_udp_analog_failure_logged;
 
-/* A muted session opens nothing here: unmuting reopens every sink the current mode needs. */
+/* A muted local-device session opens no stream here: unmuting closes and reopens every device sink the current mode
+ * needs (openAudioOutput()). */
 static int
 dsd_audio_ensure_is_device_output(const dsd_opts* opts) {
     return (opts->audio_out == 1 && opts->audio_out_type == 0) ? 1 : 0;
 }
 
+/* UDP output opens its sockets muted or not. Unmuting reopens local devices only, so a socket skipped while muted would
+ * stay closed for the rest of the session; opening one makes no sound, and the writers send nothing while muted. */
 static int
 dsd_audio_ensure_is_udp_output(const dsd_opts* opts) {
-    return (opts->audio_out == 1 && opts->audio_out_type == 8) ? 1 : 0;
+    return opts->audio_out_type == 8 ? 1 : 0;
 }
 
 static int

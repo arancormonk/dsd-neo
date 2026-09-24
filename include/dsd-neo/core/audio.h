@@ -56,10 +56,11 @@ int dsd_audio_reconfigure_output_for_input_policy(dsd_opts* opts);
 /**
  * @brief Make sure the analog monitor's raw output sink is open (decoder thread only).
  *
- * For a runtime switch into the analog family, on an unmuted session: with a local audio device, opens
- * `audio_raw_out` with the parameters openAudioOutput() uses; with UDP output (`-o udp`), opens the analog socket on
- * port + 2 (`udp_sockfdA`) through the UDP audio hook. Other outputs have no raw sink to open. Idempotent. A failure
- * is logged once and leaves the sink closed, so analog audio stays silent.
+ * For a runtime switch into the analog family: with an unmuted local audio device, opens `audio_raw_out` with the
+ * parameters openAudioOutput() uses (unmuting reopens device streams itself); with UDP output (`-o udp`), muted or not,
+ * opens the analog socket on port + 2 (`udp_sockfdA`) through the UDP audio hook, since unmuting reopens no socket.
+ * Other outputs have no raw sink to open. Idempotent. A failure is logged once and leaves the sink closed, so analog
+ * audio stays silent.
  *
  * @return 0 when the sink is open or not needed, -1 when it could not be opened (or @p opts is NULL).
  */
