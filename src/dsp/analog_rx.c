@@ -377,11 +377,10 @@ typedef struct {
 } analog_rx_session;
 
 #ifdef DSD_NEO_TEST_HOOKS
-void dsd_analog_rx_test_set_clock(uint64_t (*now_ms)(void));
-
 static uint64_t (*g_analog_rx_test_clock)(void) = NULL;
 
-/* Replace the clock the stream-pause check reads; NULL restores the monotonic clock. */
+/* Test-hook entry point (declared in analog_rx_internal.h): replace the clock the stream-pause
+   check reads; NULL restores the monotonic clock. */
 void
 dsd_analog_rx_test_set_clock(uint64_t (*now_ms)(void)) {
     g_analog_rx_test_clock = now_ms;

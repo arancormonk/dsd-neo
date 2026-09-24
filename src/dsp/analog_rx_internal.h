@@ -252,6 +252,15 @@ int dsd_analog_subaudible_fe_process(dsd_analog_subaudible_fe* fe, const float* 
 /** @brief The CTCSS evaluator's last hop, for tests. */
 const dsd_analog_ctcss_hop* dsd_analog_ctcss_last_hop(const dsd_analog_ctcss* det);
 
+/**
+ * @brief Test hook: replace the monotonic clock the tap reads to tell a paused live stream input.
+ *
+ * NULL restores dsd_time_monotonic_ms(). Defined only in the test-hook build of the DSP module
+ * (dsd-neo_dsp_private_test_support, compiled with DSD_NEO_TEST_HOOKS); the shipped library
+ * has no such symbol.
+ */
+void dsd_analog_rx_test_set_clock(uint64_t (*now_ms)(void));
+
 #ifdef __cplusplus
 }
 #endif

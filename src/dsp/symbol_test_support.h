@@ -5,7 +5,6 @@
 
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/state_fwd.h>
-#include <stdint.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -22,9 +21,6 @@ unsigned int dsd_symbol_test_convert_analog_block_to_i16(const float* input, sho
    power, raw WAV, the received-tone tap, the voice filters and the monitor output. */
 unsigned int dsd_symbol_test_finalize_unsynced_analog_block(dsd_opts* opts, dsd_state* state, const float* input,
                                                             unsigned int count);
-/* Replace the monotonic clock the received-tone tap reads to tell a paused live stream input
-   (src/dsp/analog_rx.c); NULL restores dsd_time_monotonic_ms(). */
-void dsd_analog_rx_test_set_clock(uint64_t (*now_ms)(void));
 #ifdef USE_RADIO
 int dsd_symbol_test_rtl_cache_and_center_contract(int out_values[10]);
 int dsd_symbol_test_auto_center_step_direction(int e_ema, int deadband, int* run_dir, int* run_len, int* dir_out);

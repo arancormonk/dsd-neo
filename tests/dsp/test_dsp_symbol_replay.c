@@ -36,6 +36,7 @@
 #define M_PI 3.14159265358979323846
 #endif
 
+#include "analog_rx_internal.h"
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
