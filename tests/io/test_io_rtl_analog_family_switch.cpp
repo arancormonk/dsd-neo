@@ -38,8 +38,11 @@
  *
  * A typed digital scan row on an analog session (a -fA open, or a DMR open
  * switched to analog) keeps the monitor output with the row's channel profile and
- * the analog family flag still set; a digital family request there is not a
- * family switch, and the row's leave restores the analog monitor.
+ * the analog family flag still set; republishing the row's symbol profile changes
+ * nothing, and the row's leave restores the analog monitor. A digital family
+ * request still leaves the analog family from there, and from a CQPSK toggle
+ * under -fA: a -fA session that had either applied before a digital mode is
+ * picked lands on the same fresh open of that mode.
  *
  * A live request accepted at the published rate is held again to the rate a
  * retune landed the stream on before the demod thread consumed it.
@@ -308,6 +311,71 @@ run_analog_start_case(const family_case& c, int rate_hz, int forced_rate_out_hz)
      * to keep a symbol profile without CQPSK on the FSK discriminator. */
     rc |= expect_int("-fA start: CQPSK and back returns to the FSK discriminator", r.output_kind_after_cqpsk_round_trip,
                      RTL_STREAM_OUTPUT_FSK_DISCRIMINATOR);
+    rc |= expect_int("-fA start: the digital family is not the analog family", r.family_active_after_digital, 0);
+    return rc;
+}
+
+/* A -fA session that had moved its front end off the monitor output with a symbol profile applied on its own, before
+ * the operator picks a digital mode: the analog family flag is still set, and the analog profile is no longer
+ * published. The digital family request must leave the analog family from there all the same, onto a fresh open of
+ * the mode picked, instead of letting that mode's symbol profile land on the -fA session (where a profile without
+ * CQPSK puts the front end back on monitor audio). */
+static int
+run_under_analog_case(const family_case& c, int profile_under_analog, int rate_hz, int forced_rate_out_hz) {
+    family_case under = c;
+    under.request.profile_under_analog = profile_under_analog;
+    static dsd_opts digital;
+    static dsd_opts analog;
+    DSD_MEMSET(&digital, 0, sizeof digital);
+    DSD_MEMSET(&analog, 0, sizeof analog);
+    c.configure(&digital);
+    analog.analog_only = 1;
+    analog.monitor_input_audio = 1;
+    analog.analog_demod = DSD_ANALOG_DEMOD_FM;
+
+    rtl_stream_test_family_switch_result r;
+    DSD_MEMSET(&r, 0, sizeof r);
+    const int demod_rate_hz = forced_rate_out_hz > 0 ? forced_rate_out_hz : rate_hz;
+    const char* under_name =
+        profile_under_analog == RTL_STREAM_TEST_UNDER_ANALOG_CQPSK_TOGGLE ? "CQPSK toggle" : "typed DMR row";
+    char label[160];
+    DSD_SNPRINTF(label, sizeof label, "-fA %s, %s@%d run", under_name, c.name, demod_rate_hz);
+    int rc = expect_int(
+        label,
+        rtl_stream_test_analog_start_family_switch(&digital, &analog, rate_hz, forced_rate_out_hz, &under.request, &r),
+        0);
+    DSD_SNPRINTF(label, sizeof label, "-fA %s: off the monitor output", under_name);
+    if (profile_under_analog == RTL_STREAM_TEST_UNDER_ANALOG_CQPSK_TOGGLE) {
+        rc |= expect_int(label, r.under_analog_output_kind, RTL_STREAM_OUTPUT_SYMBOL_CQPSK);
+    } else {
+        rc |= expect_int(label, r.under_analog_channel_profile, RTL_STREAM_CHANNEL_PROFILE_12K5);
+    }
+    DSD_SNPRINTF(label, sizeof label, "-fA %s: still the analog family", under_name);
+    rc |= expect_int(label, r.under_analog_family, 1);
+    DSD_SNPRINTF(label, sizeof label, "-fA %s: no analog profile published", under_name);
+    rc |= expect_int(label, r.under_analog_published, 0);
+    DSD_SNPRINTF(label, sizeof label, "-fA %s: the decoder still sees the analog family", under_name);
+    rc |= expect_int(label, r.under_analog_family_active, 1);
+
+    DSD_SNPRINTF(label, sizeof label, "-fA %s, %s@%d -> digital", under_name, c.name, demod_rate_hz);
+    rc |= expect_int(label, r.digital_request_rc, 0);
+    rc |= expect_fields_equal(label, r.switched_digital, r.fresh_digital);
+    DSD_SNPRINTF(label, sizeof label, "-fA %s: digital switch bumps the generation", under_name);
+    rc |= expect_int(label, r.generation_after_digital != r.generation_after_analog, 1);
+    DSD_SNPRINTF(label, sizeof label, "-fA %s: digital switch clears the ring", under_name);
+    rc |= expect_int(label, (int)r.used_after_digital, 0);
+    DSD_SNPRINTF(label, sizeof label, "-fA %s: seeded ring was not empty", under_name);
+    rc |= expect_int(label, r.used_before > 0U, 1);
+    DSD_SNPRINTF(label, sizeof label, "-fA %s: analog family left", under_name);
+    rc |= expect_int(label, r.family_active_after_digital, 0);
+    if (under.request.boundary_between_requests) {
+        DSD_SNPRINTF(label, sizeof label, "-fA %s: digital family waits for its symbol profile", under_name);
+        rc |= expect_int(label, r.digital_held_until_profile, 1);
+    }
+    DSD_SNPRINTF(label, sizeof label, "-fA %s: predicted digital output rate", under_name);
+    rc |= expect_int(label, (int)r.predicted_digital_output_rate, r.switched_digital.output_rate);
+    DSD_SNPRINTF(label, sizeof label, "-fA %s: CQPSK and back returns to the FSK discriminator", under_name);
+    rc |= expect_int(label, r.output_kind_after_cqpsk_round_trip, RTL_STREAM_OUTPUT_FSK_DISCRIMINATOR);
     return rc;
 }
 
@@ -315,9 +383,10 @@ run_analog_start_case(const family_case& c, int rate_hz, int forced_rate_out_hz)
  * it opened with (a -fA open, or a DMR open the operator had switched to analog), so the row's profile keeps the
  * monitor output as it always did, but puts the row's channel profile in place of the analog channel: the analog
  * family flag stays set, the width-driven filter and the published analog profile stand down, and the row filters with
- * its own profile. The decoder decides on the published state, and so must the front end: a digital family request
- * there is not a family switch (it neither waits for a symbol profile nor clears the ring, bumps the generation or
- * moves the output rate in the middle of the row), and the row's leave brings the analog monitor back. */
+ * its own profile. A scoped command republishes only the row's symbol profile (the decoder's configured mode is still
+ * analog), which neither clears the ring, bumps the generation nor moves the output rate in the middle of the row, and
+ * the row's leave brings the analog monitor back. A digital family request there is a real family switch (the operator
+ * picked a digital mode), so it waits for its symbol profile like any other. */
 static int
 expect_digital_row_on_analog_session(const char* name, int start_digital) {
     rtl_stream_test_digital_row_result r;
@@ -337,7 +406,7 @@ expect_digital_row_on_analog_session(const char* name, int start_digital) {
     ROW_EXPECT("row keeps the monitor's 48 kHz output", r.row_output_rate, 48000);
 
     ROW_EXPECT("lone digital request accepted", r.lone_request_rc, 0);
-    ROW_EXPECT("lone digital request is not held for a profile", r.lone_request_held, 0);
+    ROW_EXPECT("lone digital request waits for its symbol profile", r.lone_request_held, 1);
 
     ROW_EXPECT("row republish accepted", r.republish_rc, 0);
     ROW_EXPECT("row republish keeps the generation", r.generation_after == r.generation_before, 1);
@@ -579,11 +648,15 @@ main(void) {
     dsd_neo_log_set_tap(capture_error_log, NULL);
     dsd_neo_config_init();
     const family_case cases[] = {
-        {"P25 C4FM", p25_c4fm, {0, 4800, 4, RTL_STREAM_CHANNEL_PROFILE_P25_C4FM, 10, 0}},
-        {"P25 CQPSK", p25_cqpsk, {1, 4800, 4, RTL_STREAM_CHANNEL_PROFILE_P25_CQPSK, 10, 0}},
-        {"DMR", dmr, {0, 4800, 4, RTL_STREAM_CHANNEL_PROFILE_12K5, 10, 0}},
-        {"NXDN48", nxdn48, {0, 2400, 4, RTL_STREAM_CHANNEL_PROFILE_6K25, 20, 0}},
-        {"dPMR", dpmr, {0, 2400, 4, RTL_STREAM_CHANNEL_PROFILE_6K25, 20, 0}},
+        {"P25 C4FM",
+         p25_c4fm,
+         {0, 4800, 4, RTL_STREAM_CHANNEL_PROFILE_P25_C4FM, 10, 0, RTL_STREAM_TEST_UNDER_ANALOG_NONE}},
+        {"P25 CQPSK",
+         p25_cqpsk,
+         {1, 4800, 4, RTL_STREAM_CHANNEL_PROFILE_P25_CQPSK, 10, 0, RTL_STREAM_TEST_UNDER_ANALOG_NONE}},
+        {"DMR", dmr, {0, 4800, 4, RTL_STREAM_CHANNEL_PROFILE_12K5, 10, 0, RTL_STREAM_TEST_UNDER_ANALOG_NONE}},
+        {"NXDN48", nxdn48, {0, 2400, 4, RTL_STREAM_CHANNEL_PROFILE_6K25, 20, 0, RTL_STREAM_TEST_UNDER_ANALOG_NONE}},
+        {"dPMR", dpmr, {0, 2400, 4, RTL_STREAM_CHANNEL_PROFILE_6K25, 20, 0, RTL_STREAM_TEST_UNDER_ANALOG_NONE}},
     };
     int rc = 0;
     for (const family_case& c : cases) {
@@ -641,6 +714,20 @@ main(void) {
     rc |= run_analog_start_case(c4fm78, 48000, 78125);
     rc |= run_analog_start_case(nxdn60, 48000, 60000);
     rc |= run_analog_start_case(dpmr60_split, 48000, 60000);
+
+    /* The same switch from a -fA session a CQPSK toggle or a typed DMR row had moved off the monitor output, including
+     * the forced-rate resampler decisions and a boundary between the family request and its profile. */
+    const int under_analog[] = {RTL_STREAM_TEST_UNDER_ANALOG_CQPSK_TOGGLE, RTL_STREAM_TEST_UNDER_ANALOG_TYPED_ROW};
+    for (int under : under_analog) {
+        for (const family_case& c : cases) {
+            rc |= run_under_analog_case(c, under, 48000, 0);
+        }
+        rc |= run_under_analog_case(dmr24, under, 24000, 0);
+        rc |= run_under_analog_case(cqpsk78, under, 48000, 78125);
+        rc |= run_under_analog_case(c4fm78, under, 48000, 78125);
+        rc |= run_under_analog_case(dpmr60_split, under, 48000, 60000);
+        rc |= run_under_analog_case(dmr48_split, under, 48000, 0);
+    }
 
     rtl_stream_test_family_switch_result r;
     DSD_MEMSET(&r, 0, sizeof r);

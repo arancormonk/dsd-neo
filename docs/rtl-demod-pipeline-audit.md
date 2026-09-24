@@ -205,16 +205,21 @@ publishes no analog profile. A typed digital scan row's symbol profile on an
 analog session keeps the monitor output but puts the row's channel profile in
 place of the analog (WIDE) one, so the row filters with its own profile, as it
 did before the analog filter became width-driven, and publishes no analog
-profile either. A digital family request is a family switch only while the
-monitor output runs on the analog channel, the state the decoder sees
-published and times the switch for; on such a stream it changes nothing and the
-symbol profile queued with it applies as it did before, instead of resetting
-the stream in the middle of the row. An analog request brings the monitor back
-from either state. The modulation auto-switch never does this: frame
-sync stands it down in the analog family (`dsd_opts_is_analog_family()`),
-because a carrier within a few hertz of 0 Hz votes for CQPSK there and the
-switch used to follow that vote onto the P25 CQPSK path
-(`FRAME_SYNC_INTERNAL_HELPERS`, `DECODE_IQ_ANALOG_NO_MOD_AUTO_SWITCH`).
+profile either. Neither leaves the analog family: the stream still reports it
+(`rtl_stream_analog_family_active()`), and a digital family request leaves it
+from either state, onto the same fresh open of the digital mode a switch from
+the monitor output lands on (without it, the digital mode's symbol profile
+would land on the analog session, where a profile without CQPSK runs monitor
+audio). The decoder asks for the digital family only when its configured mode
+is digital (`svc_publish_symbol_profile()` reads the scan baseline under a row
+constraint), so a scoped command republishing a typed digital row's profile on
+an analog session queues that profile alone and the row keeps its monitor
+output. An analog request brings the monitor back from either state. The
+modulation auto-switch never does this: frame sync stands it down in the analog
+family (`dsd_opts_is_analog_family()`), because a carrier within a few hertz of
+0 Hz votes for CQPSK there and the switch used to follow that vote onto the P25
+CQPSK path (`FRAME_SYNC_INTERNAL_HELPERS`,
+`DECODE_IQ_ANALOG_NO_MOD_AUTO_SWITCH`).
 
 Retune profiles carry the same fields bound to their target frequency; an analog
 one applies no symbol profile, CQPSK toggle or timing queued for the same
@@ -262,7 +267,9 @@ scale, and ratio-based audio metrics are invariant to it, so it is left as is.
   forced 78,125 and 60,000 Hz rates, with loop state, monitor audio state, the
   I/Q corrections, the post-demod decimator and the channel, half-band and
   resampler histories included, a typed digital row on a `-fA` session and on a
-  DMR session switched to analog, and covers width-only
+  DMR session switched to analog, a `-fA` session a CQPSK toggle or a typed
+  digital row had moved off the monitor output switched to digital (each equal
+  to a fresh open too), and covers width-only
   changes, requests made with no stream running, and live requests and retune
   profiles a running stream's rate or post-demod decimation cannot realize
   (refused before anything is queued, or at the rate a retune moved the stream

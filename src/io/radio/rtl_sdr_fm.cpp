@@ -1778,6 +1778,9 @@ static std::atomic<int> g_pub_analog_family{0};
 static std::atomic<int> g_pub_analog_kind{0};
 static std::atomic<int> g_pub_analog_width_hz{0};
 static std::atomic<int> g_pub_analog_lpf_on{0};
+/* demod_state::analog_family: set on the analog family even while a symbol profile applied under it (a CQPSK toggle, a
+ * typed digital scan row) has moved the front end off the monitor output and g_pub_analog_family reads 0. */
+static std::atomic<int> g_pub_rx_analog_family{0};
 /* Resampler policy inputs, so callers can predict the output rate of a family switch before it lands. */
 static std::atomic<int> g_pub_resamp_target_hz{0};
 static std::atomic<int> g_pub_digital_resample_mode{0};
@@ -7386,6 +7389,7 @@ rtl_stream_publish_analog_profile_snapshot(void) {
     g_pub_analog_width_hz.store(width_hz, std::memory_order_relaxed);
     g_pub_analog_lpf_on.store(lpf_on, std::memory_order_relaxed);
     g_pub_analog_family.store(family, std::memory_order_relaxed);
+    g_pub_rx_analog_family.store(demod.analog_family ? 1 : 0, std::memory_order_relaxed);
     g_pub_resamp_target_hz.store(demod.resamp_target_hz, std::memory_order_relaxed);
     g_pub_digital_resample_mode.store(demod.digital_resample_mode, std::memory_order_relaxed);
     g_pub_capture_rate_forced.store(demod.capture_rate_device_forced ? 1 : 0, std::memory_order_relaxed);
@@ -7441,6 +7445,11 @@ rtl_stream_get_analog_profile(int* out_kind, int* out_width_hz, int* out_lpf_on)
         *out_lpf_on = family ? g_pub_analog_lpf_on.load(std::memory_order_relaxed) : 0;
     }
     return family ? 1 : 0;
+}
+
+extern "C" int
+rtl_stream_analog_family_active(void) {
+    return g_pub_rx_analog_family.load(std::memory_order_relaxed) ? 1 : 0;
 }
 
 extern "C" unsigned int
@@ -8144,17 +8153,18 @@ rtl_stream_apply_analog_request(int kind, int width_hz) {
  * @p next_cqpsk and @p next_symbol_rate_hz describe the symbol profile applied after a switch to digital (-1 / 0
  * when none follows).
  *
- * A switch to digital leaves the analog family only while the front end delivers its monitor audio: the state the
- * stream publishes (rtl_stream_get_analog_profile()), and the one the decoder times the switch for. A symbol profile
- * applied without a family request (a typed digital scan row under -fA, a CQPSK toggle) already moved the front end
- * off the analog monitor with the family flag still set (to symbols, or to the row's own channel profile); a digital
- * request there only lets that profile apply, as it did before the family switch existed, rather than resetting the
- * stream in the middle of the row. */
+ * A switch to digital leaves the analog family whenever the stream runs it, the state rtl_stream_analog_family_active()
+ * publishes and the decoder times the switch by. That includes a front end a symbol profile applied without a family
+ * request (a CQPSK toggle under -fA, a typed digital scan row) has moved off the monitor output with the family flag
+ * still set: such a profile never leaves the family, so without the switch the digital mode's own profile would land
+ * on the analog session, where a profile without CQPSK runs monitor audio. The decoder asks for the digital family
+ * only when its configured mode is digital (svc_publish_symbol_profile()), so a typed digital row on an analog session
+ * republishes its symbol profile without one and keeps the monitor output it has always had. */
 static void
 rtl_stream_apply_analog_profile_params(int family, int kind, int width_hz, int next_cqpsk, int next_symbol_rate_hz) {
     if (family == DSD_RX_FAMILY_ANALOG) {
         rtl_stream_apply_analog_request(kind, width_hz);
-    } else if (family == DSD_RX_FAMILY_DIGITAL && dsd_demod_analog_monitor_active(&demod)) {
+    } else if (family == DSD_RX_FAMILY_DIGITAL && demod.analog_family) {
         rtl_stream_leave_analog_family(next_cqpsk, next_symbol_rate_hz);
     }
     rtl_stream_publish_demod_profile_snapshot();
@@ -8289,8 +8299,7 @@ rtl_stream_consume_demod_profile_request(void) {
     {
         std::lock_guard<std::mutex> lock(g_profile_req_m);
         g_profile_req_pending.store(0, std::memory_order_relaxed);
-        if (g_profile_req_analog_family == DSD_RX_FAMILY_DIGITAL && !g_profile_req_has_demod
-            && dsd_demod_analog_monitor_active(&demod)) {
+        if (g_profile_req_analog_family == DSD_RX_FAMILY_DIGITAL && !g_profile_req_has_demod && demod.analog_family) {
             /* Leaving analog lands on the symbol profile queued with it, which decides the digital resampler and the
                output rate committed at the switch. Callers queue that profile as a second request right after the
                family (svc_publish_symbol_profile(), the channel-scan leave), and this block boundary fell between
@@ -10660,12 +10669,14 @@ family_test_seed_running_loops(void) {
     demod.ted_state.mu = 3.5f;
 }
 
-/* One demod-thread block boundary: the consumes that precede full_demod(). */
+/* One demod-thread block boundary: the consumes that precede full_demod(), and the profile snapshot the demod thread
+ * publishes after it (a consumed CQPSK toggle with no symbol profile publishes nothing of its own). */
 static void
 family_test_demod_thread_boundary(void) {
     rtl_stream_consume_demod_profile_request();
     (void)rtl_stream_consume_fsk_modem_config_pending(&demod);
     (void)rtl_stream_consume_fsk_modem_reset_pending(&demod);
+    rtl_stream_publish_demod_profile_snapshot();
 }
 
 static void
@@ -10742,12 +10753,38 @@ family_test_switch_to_digital(const rtl_stream_test_digital_request* req, rtl_st
     out->generation_after_digital = rtl_stream_output_generation();
     out->used_after_digital = ring_used(&output);
     out->published_after_digital_rc = rtl_stream_get_analog_profile(NULL, NULL, NULL);
+    out->family_active_after_digital = rtl_stream_analog_family_active();
     /* The digital session goes on to a CQPSK profile and back, as a modulation change or a typed row does. */
     (void)rtl_stream_request_demod_profile(1, 4800, 4, DSD_CH_LPF_PROFILE_P25_CQPSK, 10, 0);
     family_test_demod_thread_boundary();
     (void)rtl_stream_request_demod_profile(0, 4800, 4, DSD_CH_LPF_PROFILE_P25_C4FM, 10, 0);
     family_test_demod_thread_boundary();
     out->output_kind_after_cqpsk_round_trip = demod.output_kind;
+}
+
+/* The DMR symbol profile a typed scan row queues, timed for the monitor's 48 kHz output. */
+static int
+family_test_request_dmr_row_profile(void) {
+    return rtl_stream_request_demod_profile(0, 4800, 4, DSD_CH_LPF_PROFILE_12K5, 10, 0);
+}
+
+/* A symbol profile the -fA session applies on its own, with no family request, consumed at a block boundary: the DSP
+ * menu's CQPSK toggle (apply_dsp_op_cqpsk_toggle() queues exactly this), or a typed DMR scan row's profile. */
+static void
+family_test_apply_profile_under_analog(int which, rtl_stream_test_family_switch_result* out) {
+    if (which == RTL_STREAM_TEST_UNDER_ANALOG_CQPSK_TOGGLE) {
+        (void)rtl_stream_request_demod_profile(1, 0, 0, -1, -1, 0);
+    } else if (which == RTL_STREAM_TEST_UNDER_ANALOG_TYPED_ROW) {
+        (void)family_test_request_dmr_row_profile();
+    } else {
+        return;
+    }
+    family_test_demod_thread_boundary();
+    out->under_analog_output_kind = demod.output_kind;
+    out->under_analog_channel_profile = demod.channel_lpf_profile;
+    out->under_analog_family = demod.analog_family;
+    out->under_analog_published = rtl_stream_get_analog_profile(NULL, NULL, NULL);
+    out->under_analog_family_active = rtl_stream_analog_family_active();
 }
 
 extern "C" int
@@ -10822,6 +10859,9 @@ rtl_stream_test_analog_start_family_switch(const dsd_opts* digital_opts, const d
     rc |= family_test_seed_open(analog_opts, rate_hz, forced_rate_out_hz);
     out->fresh_analog = family_test_capture();
     g_stream = &g_cqpsk_toggle_test_stream; /* live on the -fA open: requests queue for the demod thread */
+    out->published_analog_rc =
+        rtl_stream_get_analog_profile(&out->published_kind, &out->published_width_hz, &out->published_lpf_on);
+    family_test_apply_profile_under_analog(digital_request->profile_under_analog, out);
 
     family_test_seed_ring(queued);
     family_test_seed_running_loops();
@@ -10829,20 +10869,12 @@ rtl_stream_test_analog_start_family_switch(const dsd_opts* digital_opts, const d
     out->used_before = ring_used(&output);
     out->generation_before = rtl_stream_output_generation();
     out->generation_after_analog = out->generation_before;
-    out->published_analog_rc =
-        rtl_stream_get_analog_profile(&out->published_kind, &out->published_width_hz, &out->published_lpf_on);
     family_test_switch_to_digital(digital_request, out);
 
     family_test_restore(saved);
     family_test_release_buffers();
     fsk_reacquire_test_cleanup_output_ring(initialized_output);
     return rc == 0 ? 0 : -3;
-}
-
-/* The DMR symbol profile a typed scan row queues, timed for the monitor's 48 kHz output. */
-static int
-family_test_request_dmr_row_profile(void) {
-    return rtl_stream_request_demod_profile(0, 4800, 4, DSD_CH_LPF_PROFILE_12K5, 10, 0);
 }
 
 static int
@@ -10903,7 +10935,6 @@ rtl_stream_test_digital_row_on_analog_session(int rate_hz, int start_digital, rt
     family_test_seed_ring(queued);
     out->used_before = ring_used(&output);
     out->generation_before = rtl_stream_output_generation();
-    rc |= rtl_stream_request_analog_profile(DSD_RX_FAMILY_DIGITAL, DSD_ANALOG_DEMOD_FM, 0);
     rc |= family_test_request_dmr_row_profile();
     family_test_demod_thread_boundary();
     out->republish_rc = rc;

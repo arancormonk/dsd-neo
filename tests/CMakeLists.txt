@@ -5532,7 +5532,7 @@ if(
             "LINKER:--wrap=rtl_stream_set_channel_squelch"
             "LINKER:--wrap=rtl_stream_request_analog_profile"
             "LINKER:--wrap=rtl_stream_request_demod_profile"
-            "LINKER:--wrap=rtl_stream_get_analog_profile"
+            "LINKER:--wrap=rtl_stream_analog_family_active"
             "LINKER:--wrap=rtl_stream_output_rate_for_family"
     )
 endif()

@@ -78,16 +78,7 @@ rtl_stream_request_analog_profile(int family, int kind, int width_hz) {
 
 /* The front end is digital throughout these tests. */
 int
-rtl_stream_get_analog_profile(int* out_kind, int* out_width_hz, int* out_lpf_on) {
-    if (out_kind) {
-        *out_kind = 0;
-    }
-    if (out_width_hz) {
-        *out_width_hz = 0;
-    }
-    if (out_lpf_on) {
-        *out_lpf_on = 0;
-    }
+rtl_stream_analog_family_active(void) {
     return 0;
 }
 

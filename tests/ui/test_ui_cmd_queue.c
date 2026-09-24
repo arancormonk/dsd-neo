@@ -4471,7 +4471,9 @@ static int g_demod_req_calls;
 static int g_demod_req_order;
 static int g_demod_req_rate;
 static int g_demod_req_ted_sps;
-static int g_fake_analog_active;
+/* What rtl_stream_analog_family_active() reports: the front end runs the analog family (its monitor output, or a
+   symbol profile a CQPSK toggle or typed row applied under it). */
+static int g_fake_analog_family;
 static unsigned int g_fake_digital_rate;
 
 // GNU ld --wrap entry points must keep the reserved __wrap_* symbol name.
@@ -4479,7 +4481,7 @@ static unsigned int g_fake_digital_rate;
 int __wrap_rtl_stream_request_analog_profile(int family, int kind, int width_hz);
 int __wrap_rtl_stream_request_demod_profile(int cqpsk_enable, int symbol_rate_hz, int levels, int channel_profile,
                                             int ted_sps, int ted_sps_is_override);
-int __wrap_rtl_stream_get_analog_profile(int* out_kind, int* out_width_hz, int* out_lpf_on);
+int __wrap_rtl_stream_analog_family_active(void);
 unsigned int __wrap_rtl_stream_output_rate_for_family(int family, int cqpsk_enable, int symbol_rate_hz);
 
 int
@@ -4507,17 +4509,8 @@ __wrap_rtl_stream_request_demod_profile(int cqpsk_enable, int symbol_rate_hz, in
 }
 
 int
-__wrap_rtl_stream_get_analog_profile(int* out_kind, int* out_width_hz, int* out_lpf_on) {
-    if (out_kind) {
-        *out_kind = 0;
-    }
-    if (out_width_hz) {
-        *out_width_hz = g_fake_analog_active ? 16000 : 0;
-    }
-    if (out_lpf_on) {
-        *out_lpf_on = g_fake_analog_active;
-    }
-    return g_fake_analog_active;
+__wrap_rtl_stream_analog_family_active(void) {
+    return g_fake_analog_family;
 }
 
 unsigned int
@@ -4574,7 +4567,7 @@ test_decode_mode_set_switches_rtl_receive_family(void) {
 
     /* Back to DMR while the front end still runs the analog monitor at a 24 kHz DSP rate. */
     reset_rx_family_wrap();
-    g_fake_analog_active = 1;
+    g_fake_analog_family = 1;
     g_fake_digital_rate = 24000U;
     rc |= expect_int("dmr queued", dsd_app_command_set_i32(DSD_APP_CMD_DECODE_MODE_SET, (int32_t)DSDCFG_MODE_DMR),
                      DSD_APP_COMMAND_SUBMIT_QUEUED);
@@ -4590,7 +4583,7 @@ test_decode_mode_set_switches_rtl_receive_family(void) {
 
     /* A configured width travels with the next analog request. */
     reset_rx_family_wrap();
-    g_fake_analog_active = 0;
+    g_fake_analog_family = 0;
     opts.analog_nfm_bandwidth_hz = 12500;
     rc |= expect_int("analog again queued",
                      dsd_app_command_set_i32(DSD_APP_CMD_DECODE_MODE_SET, (int32_t)DSDCFG_MODE_ANALOG),
@@ -4599,6 +4592,102 @@ test_decode_mode_set_switches_rtl_receive_family(void) {
     rc |= expect_int("configured width requested", g_analog_req_width_hz, 12500);
 
     g_fake_digital_rate = 0U;
+    state.rtl_ctx = NULL;
+    freeState(&state);
+    return rc;
+}
+
+/*
+ * A -fA session whose front end a CQPSK toggle has moved onto symbols: the analog profile is no longer published, but
+ * the stream still runs the analog family, and picking a digital mode leaves it. The decoder asks for the digital
+ * family before the mode's symbol profile and times itself for the rate the digital stream will run at, as it does
+ * from the monitor output.
+ */
+static int
+test_decode_mode_set_leaves_analog_family_off_the_monitor(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static void* fake_ctx[2];
+    int rc = 0;
+    init_decode_mode_context(&opts, &state);
+    opts.audio_in_type = AUDIO_IN_RTL;
+    state.rtl_ctx = (RtlSdrContext*)fake_ctx;
+    rc |= expect_int("cqpsk -fA start queued",
+                     dsd_app_command_set_i32(DSD_APP_CMD_DECODE_MODE_SET, (int32_t)DSDCFG_MODE_ANALOG),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("cqpsk -fA start drained", dsd_app_drain_cmds(&opts, &state), 1);
+
+    reset_rx_family_wrap();
+    g_fake_analog_family = 1;
+    g_fake_digital_rate = 24000U;
+    rc |= expect_int("cqpsk dmr queued", dsd_app_command_set_i32(DSD_APP_CMD_DECODE_MODE_SET, (int32_t)DSDCFG_MODE_DMR),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("cqpsk dmr drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("cqpsk: digital family requested", g_analog_req_family, DSD_RX_FAMILY_DIGITAL);
+    rc |= expect_int("cqpsk: family request made once", g_analog_req_calls, 1);
+    rc |= expect_int("cqpsk: symbol profile follows", g_demod_req_calls, 1);
+    rc |= expect_int("cqpsk: family before profile", g_analog_req_order < g_demod_req_order, 1);
+    rc |= expect_int("cqpsk: decoder timed for the digital rate", state.samplesPerSymbol, 5);
+    rc |= expect_int("cqpsk: front end timed for the digital rate", g_demod_req_ted_sps, 5);
+
+    g_fake_analog_family = 0;
+    g_fake_digital_rate = 0U;
+    state.rtl_ctx = NULL;
+    freeState(&state);
+    return rc;
+}
+
+/*
+ * A typed digital scan row on an analog session runs its symbol profile on the analog family, as it always has. A
+ * scoped command that republishes the row's profile asks for the digital family only when the configured mode is
+ * digital: on the -fA baseline it queues the row's symbol profile alone, so the front end is not switched in the
+ * middle of the row. On a digital baseline the same republish asks for the digital family first (a no-op on a
+ * digital front end).
+ */
+static int
+test_typed_row_republish_follows_configured_family(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static void* fake_ctx[2];
+    int rc = 0;
+    init_decode_mode_context(&opts, &state);
+    opts.audio_in_type = AUDIO_IN_RTL;
+    state.rtl_ctx = (RtlSdrContext*)fake_ctx;
+    rc |= expect_int("row -fA baseline queued",
+                     dsd_app_command_set_i32(DSD_APP_CMD_DECODE_MODE_SET, (int32_t)DSDCFG_MODE_ANALOG),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("row -fA baseline drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("typed DMR row on -fA", dsd_scan_mode_enter(&opts, &state, DSD_SCAN_MODE_DMR), 0);
+    rc |= expect_int("typed DMR row options", dsd_scan_mode_options(&opts, &state, NULL), 0);
+    rc |= expect_int("row runs DMR", opts.frame_dmr, 1);
+
+    reset_rx_family_wrap();
+    g_fake_analog_family = 1;
+    rc |= expect_int("row republish queued", dsd_app_command_action(DSD_APP_CMD_INV_DMR_TOGGLE),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("row republish drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("-fA row: row profile republished", g_demod_req_calls, 1);
+    rc |= expect_int("-fA row: no family request", g_analog_req_calls, 0);
+    dsd_scan_mode_leave(&opts, &state);
+    rc |= expect_int("-fA row left", opts.analog_only, 1);
+
+    rc |= expect_int("row dmr baseline queued",
+                     dsd_app_command_set_i32(DSD_APP_CMD_DECODE_MODE_SET, (int32_t)DSDCFG_MODE_DMR),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("row dmr baseline drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("typed NXDN row on DMR", dsd_scan_mode_enter(&opts, &state, DSD_SCAN_MODE_NXDN48), 0);
+    rc |= expect_int("typed NXDN row options", dsd_scan_mode_options(&opts, &state, NULL), 0);
+    reset_rx_family_wrap();
+    g_fake_analog_family = 0;
+    rc |= expect_int("digital row republish queued", dsd_app_command_action(DSD_APP_CMD_INV_DMR_TOGGLE),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("digital row republish drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("digital row: digital family requested", g_analog_req_family, DSD_RX_FAMILY_DIGITAL);
+    rc |= expect_int("digital row: family request made once", g_analog_req_calls, 1);
+    rc |= expect_int("digital row: row profile follows", g_demod_req_calls, 1);
+    rc |= expect_int("digital row: family before profile", g_analog_req_order < g_demod_req_order, 1);
+    dsd_scan_mode_leave(&opts, &state);
+
     state.rtl_ctx = NULL;
     freeState(&state);
     return rc;
@@ -4645,7 +4734,7 @@ test_config_apply_switches_rtl_receive_family(void) {
 
     /* Back to DMR while the front end still runs the analog monitor at a 24 kHz DSP rate. */
     reset_rx_family_wrap();
-    g_fake_analog_active = 1;
+    g_fake_analog_family = 1;
     g_fake_digital_rate = 24000U;
     rc |= submit_config_mode(&opts, &state, DSDCFG_MODE_DMR, "config dmr");
     rc |= expect_int("config dmr leaves analog", opts.analog_only, 0);
@@ -4659,7 +4748,7 @@ test_config_apply_switches_rtl_receive_family(void) {
 
     /* A [mode] inside the same family keeps the earlier config-apply behaviour. */
     reset_rx_family_wrap();
-    g_fake_analog_active = 0;
+    g_fake_analog_family = 0;
     rc |= submit_config_mode(&opts, &state, DSDCFG_MODE_NXDN48, "config nxdn48");
     rc |= expect_int("config same family asks for no family", g_analog_req_calls, 0);
     rc |= expect_int("config same family asks for no profile", g_demod_req_calls, 0);
@@ -4835,6 +4924,8 @@ main(void) {
 #endif
 #if defined(USE_RADIO) && defined(DSD_NEO_TEST_ANALOG_WRAP) && defined(DSD_NEO_TEST_AUDIO_ENSURE_WRAP)
     rc |= test_decode_mode_set_switches_rtl_receive_family();
+    rc |= test_decode_mode_set_leaves_analog_family_off_the_monitor();
+    rc |= test_typed_row_republish_follows_configured_family();
     rc |= test_config_apply_switches_rtl_receive_family();
 #endif
 #ifdef DSD_NEO_TEST_IO_CONTROL_WRAP

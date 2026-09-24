@@ -23,7 +23,16 @@
 #ifdef USE_RADIO
 #include <dsd-neo/io/rtl_stream_c.h>
 #include <dsd-neo/runtime/analog_channel.h>
-#include <stddef.h>
+
+/* Whether the decoder's configured mode, not a scan row's constraint over it, is digital. A typed digital scan row on
+   an analog session runs its symbol profile on the analog family's monitor output, as it always has; only a digital
+   configured mode moves the front end off the analog family. */
+static int
+symbol_profile_configured_digital(const dsd_opts* opts, const dsd_state* state) {
+    const dsd_scan_settings* configured = dsd_scan_mode_configured_view(state);
+    const int analog_only = configured ? configured->analog_only : opts->analog_only;
+    return (analog_only == 1 && opts->m17encoder != 1) ? 0 : 1;
+}
 #endif
 
 void
@@ -60,10 +69,12 @@ svc_publish_symbol_profile(const dsd_opts* opts, dsd_state* state, dsd_decode_mo
         return;
     }
     const int mod = state->rf_mod;
-    if (rtl_stream_get_analog_profile(NULL, NULL, NULL) > 0) {
+    const int configured_digital = symbol_profile_configured_digital(opts, state);
+    if (configured_digital && rtl_stream_analog_family_active()) {
         /* Leaving analog: the family switch lands on the demod thread after this returns, and until then the
-           output rate is the analog monitor's resampled audio rate, not the rate the digital stream will run at.
-           Time the decoder, and the front end below, for the digital rate. */
+           output rate is the analog family's (the monitor's resampled audio rate, or the rate a CQPSK toggle or typed
+           row put it on), not the rate the digital stream will run at. Time the decoder, and the front end below,
+           for the digital rate. */
         const unsigned int rate_hz =
             rtl_stream_output_rate_for_family(DSD_RX_FAMILY_DIGITAL, mod == 1, profile.symbol_rate_hz);
         if (rate_hz > 0U) {
@@ -75,7 +86,9 @@ svc_publish_symbol_profile(const dsd_opts* opts, dsd_state* state, dsd_decode_mo
        caller's thread: the digital family first (a no-op unless the front end is
        analog), then the symbol profile it runs on. The clamp mirrors the
        no-override setter this replaced. */
-    (void)rtl_stream_request_analog_profile(DSD_RX_FAMILY_DIGITAL, DSD_ANALOG_DEMOD_FM, 0);
+    if (configured_digital) {
+        (void)rtl_stream_request_analog_profile(DSD_RX_FAMILY_DIGITAL, DSD_ANALOG_DEMOD_FM, 0);
+    }
     const int ted_sps = state->samplesPerSymbol < 2 ? 2 : state->samplesPerSymbol;
     (void)rtl_stream_request_demod_profile(
         mod == 1, profile.symbol_rate_hz, profile.levels,

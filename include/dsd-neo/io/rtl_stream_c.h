@@ -270,10 +270,10 @@ int rtl_stream_request_demod_profile(int cqpsk_enable, int symbol_rate_hz, int l
  * family for digital expects the digital symbol profile to follow through rtl_stream_request_demod_profile(), and waits
  * for it: that profile decides the digital resampler and output rate, so a digital family request the demod thread
  * finds without a symbol profile stays queued until one arrives, and the two apply at the same block boundary. A
- * digital family request leaves the analog family only while the front end delivers analog monitor audio on the analog
- * channel, the state rtl_stream_get_analog_profile() reports: when a symbol profile applied on its own (a typed digital
- * scan row, a CQPSK toggle) has already moved the front end off it, the request changes nothing and the symbol profile
- * queued with it applies as usual.
+ * digital family request leaves the analog family whenever the stream runs it (rtl_stream_analog_family_active()),
+ * including after a symbol profile applied on its own (a typed digital scan row, a CQPSK toggle) has moved the front
+ * end off the monitor output: such a profile never leaves the family itself, and the decoder asks for the digital
+ * family only when its configured mode is digital, not for a typed digital scan row on an analog session.
  *
  * @param family   dsd_rx_family: DSD_RX_FAMILY_ANALOG or DSD_RX_FAMILY_DIGITAL.
  * @param kind     dsd_analog_demod for the analog family (AM is refused until the front end can demodulate it).
@@ -299,6 +299,19 @@ int rtl_stream_request_analog_profile(int family, int kind, int width_hz);
  * @return 1 while the analog family is active, 0 otherwise (digital output, or the M17 encoder's monitor path).
  */
 int rtl_stream_get_analog_profile(int* out_kind, int* out_width_hz, int* out_lpf_on);
+
+/**
+ * @brief Report whether the stream runs the analog receive family.
+ *
+ * Unlike rtl_stream_get_analog_profile(), this stays 1 while a symbol profile applied without a family request (a
+ * CQPSK toggle, a typed digital scan row's profile) has moved the front end off the analog monitor output. A digital
+ * family request leaves the analog family from there too, so a caller that times the decoder for that switch reads
+ * this rather than the published analog profile.
+ *
+ * @return 1 while the stream runs the analog family, 0 otherwise (the digital family, the M17 encoder's monitor
+ *         path, or before a stream has published its profile).
+ */
+int rtl_stream_analog_family_active(void);
 
 /**
  * @brief Predict the output rate the stream will have once it runs @p family.

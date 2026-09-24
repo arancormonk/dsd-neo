@@ -230,6 +230,14 @@ typedef struct rtl_stream_test_demod_fields {
     int post_decim_clear;
 } rtl_stream_test_demod_fields;
 
+/* A symbol profile a -fA session applies on its own, without a family request, which moves the front end off the
+ * analog monitor while the stream stays on the analog family. */
+enum {
+    RTL_STREAM_TEST_UNDER_ANALOG_NONE = 0,
+    RTL_STREAM_TEST_UNDER_ANALOG_CQPSK_TOGGLE = 1, /* the DSP menu's CQPSK toggle: symbols instead of monitor audio */
+    RTL_STREAM_TEST_UNDER_ANALOG_TYPED_ROW = 2,    /* a typed DMR scan row: monitor output on the row's channel */
+};
+
 /* What svc_publish_symbol_profile() queues for a digital mode after the family request. */
 typedef struct rtl_stream_test_digital_request {
     int cqpsk_enable;
@@ -239,6 +247,9 @@ typedef struct rtl_stream_test_digital_request {
     int ted_sps;
     /* 1: the demod thread reaches a block boundary between the family request and the symbol profile request. */
     int boundary_between_requests;
+    /* RTL_STREAM_TEST_UNDER_ANALOG_*: a profile the -fA session had applied before the digital mode was picked
+       (rtl_stream_test_analog_start_family_switch() only). */
+    int profile_under_analog;
 } rtl_stream_test_digital_request;
 
 typedef struct rtl_stream_test_family_switch_result {
@@ -266,6 +277,14 @@ typedef struct rtl_stream_test_family_switch_result {
     /* Output kind once the digital session, after the switch, has had a CQPSK symbol profile applied and then a C4FM
        one: a fresh digital open comes back to the FSK discriminator. */
     int output_kind_after_cqpsk_round_trip;
+    /* With a profile_under_analog: the -fA session once that profile landed, before the digital mode was picked. */
+    int under_analog_output_kind;
+    int under_analog_channel_profile;
+    int under_analog_family;        /* demod_state::analog_family */
+    int under_analog_published;     /* rtl_stream_get_analog_profile() */
+    int under_analog_family_active; /* rtl_stream_analog_family_active(), what the decoder times the switch by */
+    /* After the switch: rtl_stream_analog_family_active() */
+    int family_active_after_digital;
 } rtl_stream_test_family_switch_result;
 
 /* Open @p digital_opts at @p rate_hz, switch live to @p analog_opts and back (each request consumed the way the
@@ -283,7 +302,9 @@ int rtl_stream_test_analog_family_switch(const dsd_opts* digital_opts, const dsd
  * carrier/timing loops and stale monitor audio and filter state, and switch live to @p digital_opts through
  * @p digital_request. Fills fresh_digital (a fresh open of @p digital_opts), fresh_analog (the -fA open the session
  * started from), switched_digital and the digital-switch fields; the analog request fields stay zero, and
- * generation_after_analog is the generation the -fA session ran at. */
+ * generation_after_analog is the generation the -fA session ran at (after the profile_under_analog, if any, which is
+ * applied and consumed at a block boundary before the stale state is seeded, and reported in the under_analog_*
+ * fields). */
 int rtl_stream_test_analog_start_family_switch(const dsd_opts* digital_opts, const dsd_opts* analog_opts, int rate_hz,
                                                int forced_rate_out_hz,
                                                const rtl_stream_test_digital_request* digital_request,
@@ -301,7 +322,8 @@ typedef struct rtl_stream_test_digital_row_result {
     /* A digital family request with no symbol profile behind it, at one block boundary. */
     int lone_request_rc;
     int lone_request_held; /* 1 when it stayed queued, waiting for a symbol profile */
-    /* The family request and symbol profile a scoped command republishes during the row. */
+    /* The row's symbol profile a scoped command republishes during the row, with no family request: on an analog
+       session the decoder asks for the digital family only when its configured mode is digital. */
     int republish_rc;
     uint32_t generation_before;
     uint32_t generation_after;
@@ -321,10 +343,11 @@ typedef struct rtl_stream_test_digital_row_result {
 
 /* An analog session at @p rate_hz on a typed DMR scan row that queued only its symbol profile: the front end keeps
  * the monitor output, with the row's channel profile in place of the analog channel, while the analog family flag is
- * still set. Queue a lone digital family request, then republish the row's family and symbol profile as a scoped
- * command does, then request the -fA baseline back as the row's leave does; each consumed at a demod-thread block
- * boundary. The session is a -fA open, or with @p start_digital a DMR open switched live to analog first; either way
- * the stream keeps the options snapshot it opened with, as a real session's does. */
+ * still set. Queue a lone digital family request (held for a symbol profile, then dropped), then republish the row's
+ * symbol profile as a scoped command on the analog session does, then request the -fA baseline back as the row's
+ * leave does; each consumed at a demod-thread block boundary. The session is a -fA open, or with @p start_digital a
+ * DMR open switched live to analog first; either way the stream keeps the options snapshot it opened with, as a real
+ * session's does. */
 int rtl_stream_test_digital_row_on_analog_session(int rate_hz, int start_digital,
                                                   rtl_stream_test_digital_row_result* out);
 
