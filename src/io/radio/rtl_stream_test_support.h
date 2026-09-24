@@ -316,6 +316,25 @@ int rtl_stream_test_analog_start_family_switch(const dsd_opts* digital_opts, con
                                                const rtl_stream_test_digital_request* digital_request,
                                                rtl_stream_test_family_switch_result* out);
 
+/* A live switch to analog whose ring clear meets a decoder read in flight. */
+typedef struct rtl_stream_test_read_race_result {
+    int paused;                  /* 1 when the read stopped between its copy and its tail store */
+    int switch_done_during_read; /* 1 when the switch finished while the read was still stopped there */
+    int read_got;                /* what the live read returned (0: discarded, the generation moved under it) */
+    int analog_family_after;     /* demod_state::analog_family once both finished */
+    size_t used_before;
+    size_t used_after; /* samples the ring reports once both finished */
+    size_t tail_after;
+    size_t head_after;
+    uint32_t generation_before;
+    uint32_t generation_after;
+} rtl_stream_test_read_race_result;
+
+/* Open DMR at 48 kHz with a seeded output ring and queue a switch to analog. A decoder-side live read then stops
+ * between copying samples and publishing its tail, and another thread consumes the switch as the demod thread would
+ * (its ring clear included). The read stays stopped until the switch finished or @p hold_ms passed, then completes. */
+int rtl_stream_test_family_switch_during_live_read(int hold_ms, rtl_stream_test_read_race_result* out);
+
 typedef struct rtl_stream_test_digital_row_result {
     int open_rc;
     /* After the row's symbol profile landed on the -fA session. */

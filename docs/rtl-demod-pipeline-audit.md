@@ -212,6 +212,12 @@ drained in the same pass of the command queue as the mode change):
 - FM <-> AM: demodulator and de-emphasis swap with a monitor-state reset (AM is
   refused until the front end can demodulate it).
 
+The decoder keeps reading the output ring while the demod thread clears it for a
+switch. A read holds the ring's `ready_m` from its tail snapshot to its tail
+store, and the clear takes it too, so a read in flight finishes before the clear
+(and is discarded by the generation bump) instead of storing its old tail over
+the cleared indices, which would read as a ring full of the old family's samples.
+
 Toggling CQPSK on under `-fA` leaves the analog family flag set but takes the
 output off the monitor, so that stream keeps its P25 CQPSK profile filter and
 publishes no analog profile. A typed digital scan row's symbol profile on an
@@ -301,7 +307,9 @@ invariant to it, so it is left as is.
   profiles a running stream's rate or post-demod decimation cannot realize
   (refused before anything is queued, or at the rate a retune moved the stream
   to before the demod thread consumed it), all with the stream keeping the
-  options snapshot it opened with; `IO_RTL_ANALOG_OPEN` opens IQ
+  options snapshot it opened with, and a switch whose ring clear meets a decoder
+  read between its copy and its tail store (`RUNTIME_RINGS` holds the replay
+  reader to the same contract); `IO_RTL_ANALOG_OPEN` opens IQ
   replays whose demod rate differs from their DSP bandwidth and checks the
   start-time channel decision and refusal, the width a post-demod decimating
   replay publishes, that a tone captured at 78,125 Hz reaches the output once,

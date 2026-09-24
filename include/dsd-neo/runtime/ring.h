@@ -77,6 +77,10 @@ ring_is_empty(const struct output_state* o) {
 /**
  * @brief Clear the output ring head/tail indices.
  *
+ * A consumer holds ready_m from its tail snapshot to its tail store (ring_read_batch()), so a caller that clears the
+ * ring while a consumer may be reading holds ready_m too; otherwise the consumer's store of its old tail can land
+ * after the clear and turn the reset indices into a backlog of stale samples.
+ *
  * @param o Output ring state to clear.
  */
 static inline void

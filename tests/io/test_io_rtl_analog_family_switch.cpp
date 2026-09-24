@@ -767,6 +767,26 @@ test_cqpsk_override_lands_like_open(const family_case* p25_c4fm_case, const fami
     return rc;
 }
 
+/* The decoder reads the output ring while the demod thread switches family and clears it. A read that has copied
+ * samples but not yet published its tail when the switch arrives must finish before the clear, or its old tail lands
+ * on the cleared indices and the ring reports a backlog of the old family's samples. The switch waits for the read,
+ * the read is discarded (the generation moved under it), and the ring comes out empty. */
+static int
+test_switch_during_live_read(void) {
+    rtl_stream_test_read_race_result r;
+    DSD_MEMSET(&r, 0, sizeof r);
+    int rc = expect_int("read race run", rtl_stream_test_family_switch_during_live_read(100, &r), 0);
+    rc |= expect_int("read race: the read stopped before its tail store", r.paused, 1);
+    rc |= expect_int("read race: seeded ring was not empty", r.used_before > 0U, 1);
+    rc |= expect_int("read race: the switch waits for the read in flight", r.switch_done_during_read, 0);
+    rc |= expect_int("read race: the switch landed", r.analog_family_after, 1);
+    rc |= expect_int("read race: the switch bumps the generation", r.generation_after != r.generation_before, 1);
+    rc |= expect_int("read race: the read in flight is discarded", r.read_got, 0);
+    rc |= expect_int("read race: ring empty after the switch", (int)r.used_after, 0);
+    rc |= expect_int("read race: indices agree", r.tail_after == r.head_after, 1);
+    return rc;
+}
+
 int
 main(void) {
     dsd_neo_log_set_tap(capture_error_log, NULL);
@@ -885,6 +905,7 @@ main(void) {
     rc |= test_requests_against_running_stream();
     rc |= test_request_across_rate_change();
     rc |= test_cqpsk_override_lands_like_open(&cases[0], &cases[1], &cases[2]);
+    rc |= test_switch_during_live_read();
 
     /* Requests the front end cannot honour are refused up front. */
     rc |= expect_int("AM refused", rtl_stream_request_analog_profile(DSD_RX_FAMILY_ANALOG, DSD_ANALOG_DEMOD_AM, 0), -1);
