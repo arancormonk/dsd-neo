@@ -97,9 +97,10 @@ typedef struct {
  *
  * configure() designs for a new decimated rate and starts from scratch; reset() starts from
  * scratch at the current rate; process() takes @p count decimated samples of the sub-audible
- * band and the time-aligned wide and full streams (see the file comment), and @p freeze asks
- * it to keep evaluating without changing its verdict (the carrier is inside its hangover);
- * report() says where it stands.
+ * band and the time-aligned wide and full streams (see the file comment), and @p freeze says
+ * they arrived while the carrier read closed inside its hangover: the detector keeps time
+ * through them, but may not change its verdict on them alone (the CTCSS detector keeps it on
+ * any hop whose newest 100 ms holds nothing else); report() says where it stands.
  */
 typedef struct {
     const char* name;
@@ -134,6 +135,8 @@ typedef struct {
     double rate_hz; /**< decimated rate this detector is designed for; 0 = unconfigured */
     int sub_len;    /**< samples per sub-block */
     int sub_fill;
+    int sub_open;  /**< 1 once a sample of the sub-block being filled arrived unfrozen (carrier open) */
+    int prev_open; /**< the same for the newest sub-block in the ring */
     double sub_energy;
     double osc_re[DSD_CTCSS_TONE_COUNT];
     double osc_im[DSD_CTCSS_TONE_COUNT];

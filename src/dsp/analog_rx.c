@@ -323,7 +323,8 @@ dsd_analog_rx_core_process(dsd_analog_rx_core* core, const float* block, int cou
     }
     const int carrier_now = squelch_open && core_mean_square(block, count) > DSD_ANALOG_RX_FLOOR_MEAN_SQUARE;
     if (core_update_carrier(core, carrier_now, count)) {
-        /* Inside the hangover the detectors keep time but may not change their verdict. */
+        /* Inside the hangover the detectors keep time but may not change their verdict on
+           these samples alone. */
         core_feed(core, block, count, !carrier_now);
     }
     return 1;

@@ -110,6 +110,11 @@ struct signal_src {
     double voice_gain;  /**< 0 = no voice */
     int voice_filtered; /**< 1 = through the transmitter's 300 Hz high-pass */
     synth_tone steady;  /**< optional steady voice-band tone, such as a test tone (amp 0 = none) */
+    /** From here the carrier is up for only the first flicker_open samples of every
+        flicker_period, digital silence between (INT64_MAX = never). */
+    int64_t flicker_from;
+    int64_t flicker_period;
+    int64_t flicker_open;
 };
 
 static float
@@ -140,6 +145,11 @@ signal_next(signal_src* src, int64_t n) {
         }
         v += src->voice_gain * voice;
     }
+    /* A dropout silences the receiver, not the transmitter: every generator keeps running, so a
+       tone that is still on comes back with its phase where the transmitter's is. */
+    if (n >= src->flicker_from && ((n - src->flicker_from) % src->flicker_period) >= src->flicker_open) {
+        return 0.0f;
+    }
     return (float)(v * src->scale);
 }
 
@@ -160,6 +170,9 @@ signal_init(signal_src* src, double fs, uint64_t seed, double tone_hz, double sn
     src->flip_rad = M_PI;
     src->move_at = INT64_MAX;
     src->carrier_off = INT64_MAX;
+    src->flicker_from = INT64_MAX;
+    src->flicker_period = 1;
+    src->flicker_open = 1;
     src->scale = 1.0;
 }
 
@@ -173,6 +186,7 @@ typedef struct {
     int64_t locks;          /**< transitions into LOCKED */
     int64_t open_blocks;    /**< blocks observed with the carrier open */
     int64_t none_blocks;    /**< ... of which read NONE */
+    int64_t first_closed;   /**< first block end at which the carrier read closed */
     int final_state;
 } run_result;
 
@@ -183,7 +197,7 @@ typedef struct {
  */
 static run_result
 run_signal(dsd_analog_rx_core* core, signal_src* src, int64_t total, int block, int expect_tenths) {
-    run_result r = {-1, -1, -1, -1, -1, 0, 0, 0, 0};
+    run_result r = {-1, -1, -1, -1, -1, 0, 0, 0, -1, 0};
     float buf[4096];
     assert(block > 0 && block <= (int)(sizeof(buf) / sizeof(buf[0])));
     int prev_locked = 0;
@@ -215,6 +229,9 @@ run_signal(dsd_analog_rx_core* core, signal_src* src, int64_t total, int block, 
         }
         r.open_blocks += o.carrier ? 1 : 0;
         r.none_blocks += o.carrier && o.state == DSD_ANALOG_TONE_STATE_NONE ? 1 : 0;
+        if (!o.carrier && r.first_closed < 0) {
+            r.first_closed = n + m;
+        }
         prev_locked = locked;
         r.final_state = o.state;
     }
@@ -865,6 +882,72 @@ test_tone_loss_within_bound(void) {
     }
 }
 
+/*
+ * A carrier that keeps dropping out, each time for less than the hangover, never expires, so
+ * only the detector can end a lock under it. The tone stops, and from then on the carrier is
+ * up for 20 ms of every 40-180 ms -- a voice-band tone and noise, no sub-audible tone -- with
+ * digital silence between. However those openings fall between the hops, and whatever the
+ * block size, the lock ends within the loss ceiling while the carrier stays open throughout,
+ * and nothing locks again. A detector that let every hop closing inside a dropout keep its
+ * verdict would keep the stopped tone for good whenever the openings missed every hop's end
+ * (20 ms of every 100 ms at 8 kHz here). The p95 target is for a live carrier, so the row holds
+ * every stop to the ceiling only. Prints p50/p95/worst.
+ */
+static void
+test_tone_stop_under_a_flickering_carrier(void) {
+    static const int periods_ms[] = {40, 60, 100, 140, 180};
+
+    enum { PERIOD_COUNT = (int)(sizeof(periods_ms) / sizeof(periods_ms[0])), OFFSETS = 5 };
+
+    static double times[RATE_COUNT * PERIOD_COUNT * OFFSETS];
+    int count = 0;
+    for (int ri = 0; ri < RATE_COUNT; ri++) {
+        for (int pi = 0; pi < PERIOD_COUNT; pi++) {
+            for (int oi = 0; oi < OFFSETS; oi++) {
+                const int fs = k_rates[ri];
+                const int k = (ri * 17 + pi * 7 + oi * 3) % DSD_CTCSS_TONE_COUNT;
+                const double hz = (double)dsd_ctcss_tone_tenths(k) / 10.0;
+                /* 1 ms blocks, and the 20 ms blocks an RTL stream delivers, alternately. */
+                const int block = (oi % 2 == 0) ? fs / 1000 : fs / 50;
+                dsd_analog_rx_core_init(&g_core);
+                signal_src src;
+                signal_init(&src, fs, 5550001ULL + (uint64_t)(ri * 1009 + pi * 101 + oi), hz, 10.0);
+                src.tone_on = 0;
+                src.tone_off = ms_to_samples(fs, 800.0 + (double)(oi * 10));
+                src.flicker_from = src.tone_off;
+                src.flicker_period = ms_to_samples(fs, (double)periods_ms[pi]);
+                src.flicker_open = ms_to_samples(fs, 20.0);
+                src.steady.fs = fs;
+                src.steady.hz = 1000.0;
+                src.steady.amp = src.tone.amp;
+                const run_result r =
+                    run_signal(&g_core, &src, src.tone_off + ms_to_samples(fs, 1500.0), block, (int)lround(hz * 10.0));
+                assert(r.first_wrong < 0);
+                assert(r.first_lock >= 0 && r.first_lock < src.tone_off);
+                /* Every dropout is shorter than the hangover: the carrier never read closed. */
+                assert(r.first_closed < 0);
+                if (r.first_unlocked < 0) {
+                    DSD_FPRINTF(stderr, "stopped tone held under a flickering carrier: fs=%d hz=%.1f period=%d ms\n",
+                                fs, hz, periods_ms[pi]);
+                }
+                assert(r.first_unlocked > src.tone_off);
+                const double loss_ms = samples_to_ms(fs, r.first_unlocked - src.tone_off);
+                if (loss_ms > (double)DSD_ANALOG_CTCSS_LOSS_CEILING_MS) {
+                    DSD_FPRINTF(stderr, "slow loss under a flickering carrier: fs=%d hz=%.1f period=%d ms -> %.0f ms\n",
+                                fs, hz, periods_ms[pi], loss_ms);
+                }
+                assert(loss_ms <= (double)DSD_ANALOG_CTCSS_LOSS_CEILING_MS);
+                assert(r.locks == 1 && r.final_state == DSD_ANALOG_TONE_STATE_NONE);
+                times[count++] = loss_ms;
+            }
+        }
+    }
+    qsort(times, (size_t)count, sizeof(times[0]), compare_doubles);
+    printf("CTCSS loss under a flickering carrier: p50 %.0f ms, p95 %.0f ms, worst %.0f ms (%d cases)\n",
+           times[count / 2], times[(count * 95) / 100], times[count - 1], count);
+    (void)fflush(stdout);
+}
+
 /* A reverse burst -- the transmitter stepping its tone's phase before it unkeys -- ends the
    lock within 150 ms, without waiting for the tone to stop: every tone at every rate at
    +10 dB in-band, for each variant in use: 180 degrees, and 120 and 240 degrees. The flip lands
@@ -1171,6 +1254,7 @@ main(void) {
     test_dcs_never_locks();
     test_no_tone_verdict_then_late_tone();
     test_tone_loss_within_bound();
+    test_tone_stop_under_a_flickering_carrier();
     test_reverse_burst_drops_fast();
     test_reverse_burst_at_0db_ends_the_lock();
     test_tone_under_voice_locks();

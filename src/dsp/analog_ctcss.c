@@ -36,6 +36,11 @@
  * noisy pair of hops snapped to a neighbour from being reported as that neighbour for as long
  * as it lasts. Everything is measured in samples, so the bounds hold in sample time at any
  * input rate.
+ *
+ * Samples from inside the carrier hangover keep the correlators' time, but a hop whose newest
+ * 100 ms holds nothing else keeps the verdict, so a dropout's silence alone never ends a lock or
+ * makes one. A carrier that keeps dropping out still cannot keep a lock the tone has left:
+ * every opening makes the two hops that read it count.
  */
 
 #include <dsd-neo/core/safe_api.h>
@@ -164,6 +169,8 @@ ctcss_reset(void* ctx) {
     det->ring_head = 0;
     det->ring_count = 0;
     det->sub_fill = 0;
+    det->sub_open = 0;
+    det->prev_open = 0;
     det->sub_energy = 0.0;
     det->sub_full = 0.0;
     det->state = DSD_ANALOG_TONE_STATE_ACQUIRING;
@@ -691,8 +698,16 @@ ctcss_evaluate_hop(dsd_analog_ctcss* det, int freeze) {
     det->last_hop = hop;
 }
 
+/* The hop this sub-block closes may change the verdict unless everything its hold test reads --
+   the newest 100 ms, two sub-blocks -- arrived inside the carrier hangover. Judged by the sample
+   that closes the hop instead, a carrier that keeps dropping out for less than the hangover would
+   hold a verdict for good once its openings missed every hop's end. A dropout the hangover allows
+   (under 200 ms) leaves at most three hops in a row with nothing else in their newest 100 ms, so
+   the verdict is re-examined at least every fourth hop. */
 static void
-ctcss_close_subblock(dsd_analog_ctcss* det, int freeze) {
+ctcss_close_subblock(dsd_analog_ctcss* det) {
+    const int freeze = !det->sub_open && !det->prev_open;
+    det->prev_open = det->sub_open;
     const int slot = det->ring_head;
     for (int k = 0; k < DSD_CTCSS_TONE_COUNT; k++) {
         det->ring_re[slot][k] = det->acc_re[k];
@@ -711,6 +726,7 @@ ctcss_close_subblock(dsd_analog_ctcss* det, int freeze) {
     det->ring_full[slot] = det->sub_full;
     det->sub_full = 0.0;
     det->sub_fill = 0;
+    det->sub_open = 0;
     det->ring_head = (det->ring_head + 1) % DSD_ANALOG_CTCSS_WINDOW;
     if (det->ring_count < DSD_ANALOG_CTCSS_WINDOW) {
         det->ring_count++;
@@ -749,9 +765,10 @@ ctcss_process(void* ctx, const float* band, const float* wide, const float* full
            same hop however the input was cut into blocks. */
         if (!freeze) {
             det->open_samples++;
+            det->sub_open = 1;
         }
         if (++det->sub_fill >= det->sub_len) {
-            ctcss_close_subblock(det, freeze);
+            ctcss_close_subblock(det);
         }
     }
 }
