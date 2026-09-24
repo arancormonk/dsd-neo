@@ -331,7 +331,13 @@ user guide states; the per-row pins are tighter and record what these seeds meas
   a 120 and a 240 degree one alike, the flip landing anywhere inside a sub-block; at 0 dB, with a 180 degree flip held
   400 ms before the carrier drops, 91% of the bursts are caught within 150 ms and every caught one within the loss
   contract, and the 4 of 200 that are missed end with the carrier drop, within its 200 ms hangover (the row asserts 89%
-  and at most 5 missed); a tone that stops under a carrier that keeps dropping out (up for 20 ms of every 40 to 180 ms,
+  and at most 5 missed); a 120 or 240 degree burst inside the sub-block a tone locks on -- driven through the detector
+  alone at +10 dB, every tone on its table value and 0.15 Hz either side, the step at every eighth sample of that
+  sub-block -- ends the lock within 150 ms after every one of the 2,882 steps that still lock the tone on that hop, and
+  after all but 15 of 2,852 when the tone has just moved there from another table tone it was locked on (248 of those
+  300 tones lock in place of the old tone's lock, the rest just after losing it); the rows assert at most 2 and 20, and
+  measured against the lock hop's own estimate 115 and 143 were missed; a tone that stops under a carrier that keeps
+  dropping out (up for 20 ms of every 40 to 180 ms,
   a voice-band tone and noise between stretches of digital silence, so the carrier never expires) is dropped at every
   rate, period and block size, 95% of the 100 stops within 427 ms and all within 457 ms, and nothing locks again (the
   row asserts the 800 ms loss ceiling only, since the p95 target is for a live carrier); a carrier with no tone reads

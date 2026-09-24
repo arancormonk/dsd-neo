@@ -178,6 +178,7 @@ ctcss_reset(void* ctx) {
     det->locked_hz = 0.0;
     det->burst_ref_hz = 0.0;
     det->cand = -1;
+    det->cand_prev_hz = 0.0;
     det->cand_run = 0;
     det->fail_run = 0;
     det->holdoff = 0;
@@ -476,13 +477,14 @@ ctcss_pair_jumped(const dsd_analog_ctcss* det, int bin, double advance, int a, i
  * itself and cannot serve as a reference).
  *
  * The phase each pair should have advanced by comes from @p ref_hz, the locked frequency as it
- * stood two hops ago, never from a newer estimate. A flip inside a sub-block that stays strong
- * -- a 120 or 240 degree burst early or late in it -- puts part of the step into that
- * sub-block's phase, and a window that ends on it fits the step as a steeper slope. Measured
- * against that slope, the whole step across the next pair can read short of the 100 degree
- * threshold: on a clean tone about one such burst in fourteen was missed that way. The window
- * two hops back ends no later than the older sub-block of every pair compared here, so no step
- * after that sub-block can have bent it.
+ * stood two hops ago, never from a newer estimate; on the first hop after a lock, the
+ * candidate's estimate from the hop before the lock (ctcss_lock()). A flip inside a sub-block
+ * that stays strong -- a 120 or 240 degree burst early or late in it -- puts part of the step
+ * into that sub-block's phase, and a window that ends on it fits the step as a steeper slope.
+ * Measured against that slope, the whole step across the next pair can read short of the 100
+ * degree threshold: on a clean tone about one such burst in fourteen was missed that way. Either
+ * reference comes from a window that ends no later than the older sub-block of every pair
+ * compared here, so no step after that sub-block can have bent it.
  */
 static int
 ctcss_reverse_burst(const dsd_analog_ctcss* det, double ref_hz) {
@@ -493,12 +495,21 @@ ctcss_reverse_burst(const dsd_analog_ctcss* det, double ref_hz) {
            || ctcss_pair_jumped(det, bin, advance, newest - 2, newest);
 }
 
+/* A lock needs the candidate's estimate from the hop before it (dsd_analog_ctcss::cand_prev_hz). */
+_Static_assert(DSD_ANALOG_CTCSS_ACQUIRE_HOPS >= 2, "a lock takes its burst reference from an earlier qualifying hop");
+
+/*
+ * Lock @p index at @p hz, this hop's estimate. The reverse burst check on the next hop compares
+ * the sub-block two back, the newest of this hop's window, and a window that ends on it may
+ * already carry part of a step made inside it. So the check starts one hop further back, from
+ * @p burst_ref_hz: the same candidate's estimate from the qualifying hop before this one.
+ */
 static void
-ctcss_lock(dsd_analog_ctcss* det, int index, double hz) {
+ctcss_lock(dsd_analog_ctcss* det, int index, double hz, double burst_ref_hz) {
     det->state = DSD_ANALOG_TONE_STATE_LOCKED;
     det->locked = index;
     det->locked_hz = hz;
-    det->burst_ref_hz = hz;
+    det->burst_ref_hz = burst_ref_hz;
     det->fail_run = 0;
 }
 
@@ -625,6 +636,7 @@ ctcss_track_candidate(dsd_analog_ctcss* det, dsd_analog_ctcss_hop* hop) {
     }
     const int stable = hop->snapped == det->cand && fabs(hop->est_hz - det->cand_hz) <= k_stable_hz;
     det->cand_run = stable ? det->cand_run + 1 : 1;
+    det->cand_prev_hz = stable ? det->cand_hz : hop->est_hz;
     det->cand = hop->snapped;
     det->cand_hz = hop->est_hz;
 }
@@ -632,7 +644,7 @@ ctcss_track_candidate(dsd_analog_ctcss* det, dsd_analog_ctcss_hop* hop) {
 static void
 ctcss_step_unlocked(dsd_analog_ctcss* det, const dsd_analog_ctcss_hop* hop) {
     if (det->cand >= 0 && det->cand_run >= DSD_ANALOG_CTCSS_ACQUIRE_HOPS) {
-        ctcss_lock(det, det->cand, hop->est_hz);
+        ctcss_lock(det, det->cand, hop->est_hz, det->cand_prev_hz);
         return;
     }
     const int64_t no_tone_samples = (int64_t)llround(det->rate_hz * (double)DSD_ANALOG_CTCSS_NO_TONE_MS / 1000.0);
@@ -656,7 +668,7 @@ ctcss_step_locked(dsd_analog_ctcss* det, dsd_analog_ctcss_hop* hop) {
     }
     const int other = det->cand >= 0 && det->cand != det->locked;
     if (other && det->cand_run >= DSD_ANALOG_CTCSS_ACQUIRE_HOPS) {
-        ctcss_lock(det, det->cand, hop->est_hz);
+        ctcss_lock(det, det->cand, hop->est_hz, det->cand_prev_hz);
         return;
     }
     /* The locked bin's own estimate, every hop: once locked, a tone is only held while it still

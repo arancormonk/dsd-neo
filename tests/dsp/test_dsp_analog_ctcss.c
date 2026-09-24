@@ -45,6 +45,11 @@ enum {
     BURST_0DB_CARRIER_MS = 400,
     BURST_0DB_WITHIN_BOUND_MIN_PCT = 89,
     BURST_0DB_MISSED_MAX = 5,
+    /* A reverse burst inside the sub-block a lock or a relock is made on, at +10 dB: the most
+       of those steps whose burst may go uncaught within BURST_LOSS_BOUND_MS (these seeds miss
+       none and 15). */
+    BURST_AT_LOCK_MISSED_MAX = 2,
+    BURST_AT_RELOCK_MISSED_MAX = 20,
 };
 
 /* A pin that holds keeps its events inside the contract's per-event ceilings too: the checks
@@ -992,6 +997,151 @@ test_reverse_burst_drops_fast(void) {
     }
 }
 
+/* The CTCSS detector on its own, fed a decimated stream directly so that a phase step lands
+   exactly where a test puts it: 50 ms sub-blocks of 120 samples at 2400 Hz. */
+enum { DIRECT_RATE_HZ = 2400, DIRECT_SUB_LEN = (DIRECT_RATE_HZ * DSD_ANALOG_CTCSS_SUBBLOCK_MS) / 1000 };
+
+typedef struct {
+    dsd_analog_ctcss det;
+    synth_tone tone;
+    synth_rng rng;
+    double sigma;
+} direct_run;
+
+/* A fresh detector and a tone at @p hz in white noise giving @p snr_db of in-band tone-to-noise. */
+static void
+direct_start(direct_run* run, uint64_t seed, double hz, double snr_db) {
+    dsd_analog_ctcss_ops.configure(&run->det, (double)DIRECT_RATE_HZ);
+    synth_rng_seed(&run->rng, seed);
+    run->tone.fs = (double)DIRECT_RATE_HZ;
+    run->tone.hz = hz;
+    run->tone.amp = 0.1;
+    run->tone.phase = synth_range(&run->rng, 0.0, 2.0 * M_PI);
+    run->sigma = synth_inband_noise_sigma(run->tone.amp, snr_db, (double)DIRECT_RATE_HZ);
+}
+
+/* Feed one sub-block, the tone's phase stepping by @p step_rad at sample @p step_at of it (-1 =
+   none). The wide stream is the same signal and the full stream its power, as the front end
+   hands them over for a signal with nothing above the band. Returns the locked tone in tenths
+   of a hertz, or 0. */
+static int
+direct_subblock(direct_run* run, int step_at, double step_rad) {
+    float band[DIRECT_SUB_LEN];
+    float full[DIRECT_SUB_LEN];
+    for (int i = 0; i < DIRECT_SUB_LEN; i++) {
+        if (i == step_at) {
+            run->tone.phase += step_rad;
+        }
+        const double v = (double)synth_tone_next(&run->tone) + (run->sigma * synth_gauss(&run->rng));
+        band[i] = (float)v;
+        full[i] = (float)(v * v);
+    }
+    dsd_analog_ctcss_ops.process(&run->det, band, band, full, DIRECT_SUB_LEN, 0);
+    dsd_analog_rx_report report;
+    dsd_analog_ctcss_ops.report(&run->det, &report);
+    return report.state == DSD_ANALOG_TONE_STATE_LOCKED ? report.ctcss_tenths_hz : 0;
+}
+
+/* What reverse bursts inside the sub-block a lock is made on did. */
+typedef struct {
+    int tones;   /**< seeded tones run */
+    int relocks; /**< ... whose lock replaced another tone's on the same hop */
+    int stepped; /**< steps tried */
+    int locked;  /**< ... after which the tone still locked on that sub-block's hop */
+    int missed;  /**< ... and the burst then did not end the lock within BURST_LOSS_BOUND_MS */
+} burst_at_lock;
+
+/*
+ * Run a tone at @p hz from @p seed -- as @p lead_hz for its first @p lead_subblocks (0 = none),
+ * then phase-continuously at @p hz -- until a hop locks it as @p expect_tenths. Then replay the
+ * sub-block that hop closed with the phase stepping by @p step_rad at every @p stride samples of
+ * it, and follow each step that still locks the tone on that hop through three more hops.
+ */
+static void
+run_burst_at_lock(burst_at_lock* acc, uint64_t seed, double lead_hz, int lead_subblocks, double hz, int expect_tenths,
+                  double step_rad, int stride) {
+    static direct_run run;
+    static direct_run lock_start; /* the run as the sub-block that locks begins */
+    direct_start(&run, seed, lead_subblocks > 0 ? lead_hz : hz, 10.0);
+    int tenths = 0;
+    int tenths_before = 0;
+    for (int s = 0; s < 40 && tenths != expect_tenths; s++) {
+        if (s == lead_subblocks) {
+            run.tone.hz = hz;
+        }
+        tenths_before = tenths;
+        lock_start = run;
+        tenths = direct_subblock(&run, -1, 0.0);
+    }
+    assert(tenths == expect_tenths);
+    acc->tones++;
+    acc->relocks += tenths_before != 0 ? 1 : 0;
+    for (int at = stride / 2; at < DIRECT_SUB_LEN; at += stride) {
+        run = lock_start;
+        acc->stepped++;
+        if (direct_subblock(&run, at, step_rad) != expect_tenths) {
+            /* The step spoiled the hop's window, so the tone did not lock on it. */
+            continue;
+        }
+        acc->locked++;
+        int ended = 0;
+        for (int hop = 1; hop <= 3 && ended == 0; hop++) {
+            if (direct_subblock(&run, -1, 0.0) != expect_tenths) {
+                ended = hop;
+            }
+        }
+        const double loss_ms =
+            samples_to_ms(DIRECT_RATE_HZ, (int64_t)(DIRECT_SUB_LEN - at) + ((int64_t)ended * DIRECT_SUB_LEN));
+        if (ended == 0 || loss_ms > (double)BURST_LOSS_BOUND_MS) {
+            acc->missed++;
+        }
+    }
+}
+
+/*
+ * A reverse burst inside the sub-block a lock is made on, as when a transmitter unkeys right
+ * after its tone is confirmed. The hop that locks holds part of a 120 or 240 degree step in its
+ * newest sub-block and fits it as a steeper slope, so the next hop's burst check cannot measure
+ * against that hop's estimate: it takes the candidate's estimate from the hop before, whose
+ * window ends a sub-block earlier. Driven through the detector alone at +10 dB in-band, every
+ * tone on its table value and 0.15 Hz either side, the step at every eighth sample of the
+ * sub-block: of the steps that still lock the tone on that hop, the burst ends the lock within
+ * 150 ms on all but BURST_AT_LOCK_MISSED_MAX. The second row does the same for a lock that
+ * replaces another tone's on the same hop (the tone moves to a new table value while locked).
+ * Measured against the lock hop's own estimate, 115 of 2,882 locks and 143 of 2,852 relocks
+ * here missed the burst.
+ */
+static void
+test_reverse_burst_inside_the_lock_subblock(void) {
+    static const int steps_deg[] = {120, 240};
+    static const char* const rows[] = {"lock", "relock"};
+    for (int row = 0; row < 2; row++) {
+        burst_at_lock acc = {0, 0, 0, 0, 0};
+        for (size_t v = 0; v < sizeof(steps_deg) / sizeof(steps_deg[0]); v++) {
+            for (int k = 0; k < DSD_CTCSS_TONE_COUNT; k++) {
+                for (int off = -1; off <= 1; off++) {
+                    const int tenths = dsd_ctcss_tone_tenths(k);
+                    const double hz = ((double)tenths / 10.0) + (0.15 * (double)off);
+                    const double lead_hz = (double)dsd_ctcss_tone_tenths((k + 25) % DSD_CTCSS_TONE_COUNT) / 10.0;
+                    const uint64_t seed =
+                        (1000003ULL * (uint64_t)(k + 1)) + (7919ULL * (uint64_t)(off + 3)) + ((uint64_t)v * 104729ULL);
+                    run_burst_at_lock(&acc, seed, lead_hz, row == 0 ? 0 : 20, hz, tenths,
+                                      (double)steps_deg[v] * M_PI / 180.0, 8);
+                }
+            }
+        }
+        printf("CTCSS reverse burst inside the sub-block of a %s at +10 dB in-band: %d of %d steps locked, %d not "
+               "caught within %d ms (%d of %d tones relocked)\n",
+               rows[row], acc.locked, acc.stepped, acc.missed, BURST_LOSS_BOUND_MS, acc.relocks, acc.tones);
+        (void)fflush(stdout);
+        /* The rows exercise what they name: most steps still lock, and on the relock row the new
+           tone mostly replaces the old one on the same hop rather than after losing it. */
+        assert(2 * acc.locked >= acc.stepped);
+        assert(row == 0 ? acc.relocks == 0 : 4 * acc.relocks >= 3 * acc.tones);
+        assert(acc.missed <= (row == 0 ? BURST_AT_LOCK_MISSED_MAX : BURST_AT_RELOCK_MISSED_MAX));
+    }
+}
+
 /*
  * A reverse burst at 0 dB in-band: every tone at every rate, the flipped tone held under a live
  * carrier for 400 ms -- longer than a transmitter sends one, so that a late catch still shows --
@@ -1256,6 +1406,7 @@ main(void) {
     test_tone_loss_within_bound();
     test_tone_stop_under_a_flickering_carrier();
     test_reverse_burst_drops_fast();
+    test_reverse_burst_inside_the_lock_subblock();
     test_reverse_burst_at_0db_ends_the_lock();
     test_tone_under_voice_locks();
     test_lock_holds_at_0db();

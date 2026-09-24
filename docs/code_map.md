@@ -576,7 +576,10 @@ installs from `src/engine/trunk_tuning.c` in `src/engine/trunk_tuning_hooks_inst
     (a >100 degree phase jump between strong sub-blocks, which catches the 180 degree burst and the 120 and 240 degree
     variants). The jump is measured against the locked frequency as it stood two hops earlier: a 120 or 240 degree step
     inside a sub-block that stays strong puts part of the step into that sub-block's phase, and a newer estimate fits it
-    as a steeper slope, against which the step reads short of 100 degrees. The two frequency gates are hysteresis: at
+    as a steeper slope, against which the step reads short of 100 degrees. On the first hop after a lock, or a relock
+    onto another tone, the reference is the candidate's estimate from the qualifying hop before the lock, whose window
+    ends a sub-block before the lock hop's, so a step inside the sub-block a tone locks on is caught on the next hop
+    too. The two frequency gates are hysteresis: at
     0 dB the estimate scatters by about 0.19 Hz, so an off-table tone 1.1 Hz from a neighbour reaches the 0.8 Hz gate on
     several percent of hops but the 0.5 Hz one almost never, and the per-hop check drops a lock the tone has moved away
     from. The price of the tighter acquisition gate is tolerance of transmitter encoder error: `DSP_ANALOG_CTCSS` pins

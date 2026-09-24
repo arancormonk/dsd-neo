@@ -154,11 +154,16 @@ typedef struct {
     int state;      /**< dsd_analog_tone_state: ACQUIRING, LOCKED or NONE */
     int locked;     /**< table index of the locked tone, or -1 */
     double locked_hz;
-    /** locked_hz as it stood two hops ago: the reverse burst check's reference, from a window
-        that ends no later than the older sub-block of each pair the check compares */
+    /** The reverse burst check's reference: locked_hz as it stood two hops ago, or on the first
+        hop after a lock the candidate's estimate from the hop before the lock (cand_prev_hz).
+        Either comes from a window that ends no later than the older sub-block of each pair the
+        check compares. */
     double burst_ref_hz;
-    int cand;                              /**< table index the previous hop qualified, or -1 */
-    double cand_hz;                        /**< fine estimate of the previous qualifying hop */
+    int cand;       /**< table index the previous hop qualified, or -1 */
+    double cand_hz; /**< fine estimate of the previous qualifying hop */
+    /** cand's estimate from the qualifying hop before cand_hz's, when the two agreed: the burst
+        reference a lock on cand starts from */
+    double cand_prev_hz;
     int cand_run;                          /**< consecutive hops that qualified cand */
     int fail_run;                          /**< consecutive hops the locked tone failed its hold */
     int holdoff;                           /**< hops left before a tone may lock again (after a reverse burst) */
