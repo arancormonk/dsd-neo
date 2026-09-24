@@ -541,8 +541,11 @@ tone setting, and it runs with `-o null` too.
   audio feed. A producer on stdin, UDP or TCP that squelches by sending nothing at all (`rtl_fm` without `-E pad`, a
   UDP sender that stops between transmissions) pauses the stream instead: once the pause outlasts the block in
   flight plus the 200 ms hangover, and at least half a second, the row shows no carrier, and the next audio starts a
-  new reception that inherits nothing from the last one -- as it must when `rtl_fm` scans several frequencies. Padded
-  output (`rtl_fm -E pad`) keeps samples flowing, and the 200 ms hangover then applies as on any other input.
+  new reception that inherits nothing from the last one. Padded output (`rtl_fm -E pad`) keeps samples flowing, and
+  the 200 ms hangover then applies as on any other input. DSD-neo does not see a retune the producer makes on its own,
+  such as `rtl_fm` scanning several frequencies: a hop that leaves a gap shorter than half a second (with padding,
+  shorter than the 200 ms hangover) is not a new reception, so the previous channel's tone can still show on the next
+  channel for a few hundred milliseconds, until the detector drops it as it drops a tone that stops (timing above).
 - Talk-off: a voice whose fundamental holds within 0.5 Hz of a table tone for a third of a second, with weak
   harmonics, is indistinguishable from that tone in the time allowed and can be reported briefly. It is rare on
   transmitted voice (which the transmitter high-passes at 300 Hz) and most likely near the top of the table.
