@@ -23,6 +23,7 @@
 #include <dsd-neo/io/rigctl_client.h>
 #include <dsd-neo/io/rtl_stream_c.h>
 #include <dsd-neo/platform/file_compat.h>
+#include <dsd-neo/platform/platform.h>
 #include <dsd-neo/platform/sockets.h>
 #include <dsd-neo/runtime/exitflag.h>
 #include <dsd-neo/runtime/log.h>
@@ -36,6 +37,9 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#if !DSD_PLATFORM_WIN_NATIVE
+#include <sys/socket.h>
+#endif
 
 #ifndef M_PI
 #define M_PI 3.14159265358979323846
