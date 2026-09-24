@@ -45,7 +45,11 @@
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/io/rtl_stream_fwd.h>
+#include <dsd-neo/platform/platform.h>
 #include <dsd-neo/platform/sockets.h>
+#if !DSD_PLATFORM_WIN_NATIVE
+#include <sys/socket.h>
+#endif
 
 void
 dsd_neo_log_write(dsd_neo_log_level_t level, const char* format, ...) {
@@ -397,17 +401,24 @@ Connect(char* hostname, int portno) {
     return DSD_INVALID_SOCKET;
 }
 
+static int g_udp_connect_result = -1;
+static int g_udp_connectA_calls = 0;
+/* What udp_socket_connectA() leaves in udp_sockfdA when it fails: a socket it created before its setsockopt or
+ * address resolve failed, or DSD_INVALID_SOCKET when the create itself failed. */
+static dsd_socket_t g_udp_connectA_leftover = DSD_INVALID_SOCKET;
+
 int
 udp_socket_connect(dsd_opts* opts, dsd_state* state) {
     (void)opts;
     (void)state;
-    return -1;
+    return g_udp_connect_result;
 }
 
 int
 udp_socket_connectA(dsd_opts* opts, dsd_state* state) {
-    (void)opts;
     (void)state;
+    g_udp_connectA_calls++;
+    opts->udp_sockfdA = g_udp_connectA_leftover;
     return -1;
 }
 
@@ -963,6 +974,56 @@ test_file_network_and_import_failure_contracts(void) {
     return rc;
 }
 
+/* UDP output with the source monitor on also opens the analog socket (port + 2). When that fails, the descriptor must
+ * end invalid, not 0 (a valid descriptor), since a later switch to Analog reopens the sink only from invalid, and a
+ * socket udp_socket_connectA() created before failing must be closed, not leaked. */
+static int
+test_udp_output_analog_socket_failure(void) {
+    int rc = 0;
+    static dsd_opts opts;
+    static dsd_state state;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    if (dsd_socket_init() != 0) {
+        DSD_FPRINTF(stderr, "FAIL: socket init\n");
+        return 1;
+    }
+    g_udp_connect_result = 0;
+
+    /* Failing after it created the socket. */
+    const dsd_socket_t half_open = dsd_socket_create(AF_INET, SOCK_DGRAM, 0);
+    if (half_open == DSD_INVALID_SOCKET) {
+        DSD_FPRINTF(stderr, "FAIL: UDP socket create\n");
+        g_udp_connect_result = -1;
+        return 1;
+    }
+    g_udp_connectA_leftover = half_open;
+    g_udp_connectA_calls = 0;
+    opts.monitor_input_audio = 1;
+    opts.udp_sockfdA = 0;
+    rc |= expect_int("udp output with a failing analog socket",
+                     svc_udp_output_config(&opts, &state, "127.0.0.1", 23456), 0);
+    rc |= expect_int("udp output enabled", opts.audio_out_type, 8);
+    rc |= expect_int("analog socket attempted", g_udp_connectA_calls, 1);
+    rc |= expect_int("failed analog socket left invalid", opts.udp_sockfdA == DSD_INVALID_SOCKET, 1);
+    rc |= expect_int("half-created analog socket closed", dsd_socket_close(half_open) != 0, 1);
+
+    /* Failing before it created one. */
+    g_udp_connectA_leftover = DSD_INVALID_SOCKET;
+    opts.udp_sockfdA = 0;
+    rc |= expect_int("udp output with no analog socket", svc_udp_output_config(&opts, &state, "127.0.0.1", 23456), 0);
+    rc |= expect_int("uncreated analog socket left invalid", opts.udp_sockfdA == DSD_INVALID_SOCKET, 1);
+
+    /* Without the source monitor or ProVoice there is no analog socket to open. */
+    g_udp_connectA_calls = 0;
+    opts.monitor_input_audio = 0;
+    rc |= expect_int("digital-only udp output", svc_udp_output_config(&opts, &state, "127.0.0.1", 23456), 0);
+    rc |= expect_int("digital-only udp output opens no analog socket", g_udp_connectA_calls, 0);
+
+    g_udp_connect_result = -1;
+    return rc;
+}
+
 static int
 test_channel_map_reimport_replaces_previous_map(void) {
     int rc = 0;
@@ -1364,6 +1425,7 @@ main(void) {
     rc |= test_rtl_service_option_contracts();
 #endif
     rc |= test_file_network_and_import_failure_contracts();
+    rc |= test_udp_output_analog_socket_failure();
     rc |= test_channel_map_reimport_replaces_previous_map();
     rc |= test_channel_map_keys_adopt_and_clear();
     rc |= test_key_import_arms_keyloader();
