@@ -318,7 +318,13 @@ user guide states; the per-row pins are tighter and record what these seeds meas
   every rate, clean, at +10 dB and at 0 dB; and a minute each of unfiltered speech, transmitter-filtered speech and
   noise never locks and reaches the `none` verdict, which the speech runs hold for 87% of their carrier time (the rows
   assert 80%; each pause that closes the carrier starts the verdict again). The speech model is source-filter speech
-  with a jittering, drifting, wobbling fundamental in 85-255 Hz.
+  with a jittering, drifting, wobbling fundamental in 85-255 Hz. A steady voice-band tone alone on a clean carrier
+  never locks and reads `none`, though decimation folds a residue of it onto the sub-audible band: every table tone is
+  hit that way at 6, 8, 44.1, 48 and 78.125 kHz from either side of the first multiple of the decimated rate (the lower
+  side only at 6 kHz, where the upper one is past half the input rate), and a spread of tones from the next three
+  multiples wherever they lie below it (2300 Hz at 48 kHz lands on 100.0 Hz, 2333 Hz on 67.0 Hz). The other side of
+  that check: a tone at +10 dB beside a voice-band tone 30 dB louder whose residue lands on the tone's own bin locks as
+  itself within 400 ms, and when the tone stops the residue alone does not hold the lock (dropped within 350 ms).
 - Loss and verdicts: every tone at every rate is dropped after it stops under a live carrier, at +10 dB 99% of the stops
   within 350 ms and all within 386 ms, at 0 dB 98% within 350 ms and all within 476 ms (the rows assert 98% and 400 ms,
   97% and 500 ms); every tone at every rate is dropped within 150 ms of a reverse burst at +10 dB; at 0 dB, with the

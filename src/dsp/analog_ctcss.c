@@ -21,18 +21,21 @@
  *
  * and keeps the best qualifying bin. Qualifying means rho >= 0.35, a fine estimate within
  * 0.5 Hz of the table tone it snapped to and within 5 Hz of its bin (50 ms sub-blocks alias
- * beyond 10 Hz), a phase fit that is actually linear against the noise the band carries
- * (reduced chi-square), and -- tested last, on the winner only -- no harmonics phase-locked
- * to it, which is what a voice fundamental has and a tone has not.
+ * beyond 10 Hz), a tone carrying at least 1e-5 (-50 dB) of the raw input's full-band power
+ * (more than decimation can fold into the band from a voice-band tone), a phase fit that is
+ * actually linear against the noise the band carries (reduced chi-square), and -- tested
+ * last, on the winner only -- no harmonics phase-locked to it, which is what a voice
+ * fundamental has and a tone has not.
  *
  * Hysteresis, in level and in frequency: a tone locks after two consecutive hops qualify it
  * with estimates within 0.5 Hz of each other and of the table value; it holds while its own
  * bin's estimate stays within the 0.8 Hz snap gate and the newest 100 ms still carry
- * rho >= 0.15 at the locked frequency, and is lost after four failing hops or at once on a
- * reverse burst (the transmitter's end-of-message phase flip). The frequency check on every
- * held hop is what keeps an off-table tone that one noisy pair of hops snapped to a neighbour
- * from being reported as that neighbour for as long as it lasts. Everything is measured in
- * samples, so the bounds hold in sample time at any input rate.
+ * rho >= 0.15 at the locked frequency (and the same -50 dB of the full band), and is lost
+ * after four failing hops or at once on a reverse burst (the transmitter's end-of-message
+ * phase flip). The frequency check on every held hop is what keeps an off-table tone that one
+ * noisy pair of hops snapped to a neighbour from being reported as that neighbour for as long
+ * as it lasts. Everything is measured in samples, so the bounds hold in sample time at any
+ * input rate.
  */
 
 #include <dsd-neo/core/safe_api.h>
@@ -76,6 +79,16 @@ static const double k_max_bin_offset_hz = 5.0;
 /* Consecutive hops share 200 of their 250 ms, so a steady tone's two estimates agree well
    inside half a hertz even at 0 dB; a pitch that is still moving does not. */
 static const double k_stable_hz = 0.5;
+/* The least share of the raw input's full-band power a tone must carry. Decimation folds a
+   residue of everything above the band into it, and a steady voice-band tone with nothing else
+   below 290 Hz -- a 2300 Hz test tone, say, which lands on 100 Hz at a 2400 Hz decimated rate --
+   would otherwise read as a pure sub-audible tone, however faint that residue. Stage 1 leaves
+   such a residue at least 58 dB below its source at 4.8-7.2 kHz input rates, 67 dB from
+   7.2 kHz, 69 dB from 9.6 kHz and 74 dB from 20 kHz up, so no voice-band component reaches
+   -50 dB. A real tone sits far above it: in white noise filling a 78 kHz input at 0 dB in-band
+   tone-to-noise it carries about -21 dB of the full band, and no tone DSP_ANALOG_CTCSS locks,
+   under speech included, reads below -26 dB. */
+static const double k_min_full_share = 1e-5;
 /* A voice fundamental comes with harmonics phase-locked to it; a CTCSS tone is one sinusoid
    (encoders stay under a few percent distortion). Phase-locked second and third harmonics
    together within 11 dB of the candidate make it a voice (see ctcss_harmonic_lock). */
@@ -146,11 +159,13 @@ ctcss_reset(void* ctx) {
     DSD_MEMSET(det->ring_re, 0, sizeof(det->ring_re));
     DSD_MEMSET(det->ring_im, 0, sizeof(det->ring_im));
     DSD_MEMSET(det->ring_energy, 0, sizeof(det->ring_energy));
+    DSD_MEMSET(det->ring_full, 0, sizeof(det->ring_full));
     DSD_MEMSET(&det->last_hop, 0, sizeof(det->last_hop));
     det->ring_head = 0;
     det->ring_count = 0;
     det->sub_fill = 0;
     det->sub_energy = 0.0;
+    det->sub_full = 0.0;
     det->state = DSD_ANALOG_TONE_STATE_ACQUIRING;
     det->locked = -1;
     det->locked_hz = 0.0;
@@ -346,6 +361,24 @@ ctcss_rho(const dsd_analog_ctcss* det, int bin, double advance, int first, int c
     return 2.0 * ctcss_mag2(sum) / denom;
 }
 
+/**
+ * @brief The share of the raw input's full-band power that @p rho of the band over sub-blocks
+ * [first, first + count) stands for: rho times the band energy, over the full stream's energy.
+ */
+static double
+ctcss_full_share(const dsd_analog_ctcss* det, double rho, int first, int count) {
+    double band = 0.0;
+    double full = 0.0;
+    for (int j = first; j < first + count; j++) {
+        band += ctcss_ring_energy_at(det, j);
+        full += det->ring_full[(det->ring_head + j) % DSD_ANALOG_CTCSS_WINDOW];
+    }
+    if (!(full > 0.0)) {
+        return 0.0;
+    }
+    return rho * band / full;
+}
+
 /** @brief Per-sub-block phase advance of a tone at @p hz relative to @p bin. */
 static double
 ctcss_advance_for(const dsd_analog_ctcss* det, int bin, double hz) {
@@ -363,6 +396,7 @@ ctcss_measure_bin(const dsd_analog_ctcss* det, int bin, dsd_analog_ctcss_hop* ou
     out->chi2 = ctcss_fit_chi2(det, bin, &fit);
     out->est_hz = ctcss_tone_hz(bin) + (fit.advance * det->rate_hz / (2.0 * M_PI * (double)det->sub_len));
     out->rho = ctcss_rho(det, bin, fit.advance, 0, DSD_ANALOG_CTCSS_WINDOW);
+    out->share = ctcss_full_share(det, out->rho, 0, DSD_ANALOG_CTCSS_WINDOW);
     out->snapped = ctcss_snap(out->est_hz);
     out->recent_rho = 0.0;
     out->harmonic = 0.0;
@@ -376,7 +410,7 @@ ctcss_hop_qualifies(const dsd_analog_ctcss_hop* hop) {
        that produced it is an alias, never a tone. */
     return hop->snapped >= 0 && fabs(hop->est_hz - ctcss_tone_hz(hop->snapped)) <= k_acquire_snap_hz
            && fabs(hop->est_hz - ctcss_tone_hz(hop->best_index)) <= k_max_bin_offset_hz && hop->rho >= k_acquire_rho
-           && hop->residual <= k_max_residual_rad && hop->chi2 <= k_max_chi2;
+           && hop->share >= k_min_full_share && hop->residual <= k_max_residual_rad && hop->chi2 <= k_max_chi2;
 }
 
 /**
@@ -610,7 +644,9 @@ ctcss_step_locked(dsd_analog_ctcss* det, dsd_analog_ctcss_hop* hop) {
     const int on_tone = fabs(own.est_hz - ctcss_tone_hz(det->locked)) <= k_snap_hz;
     const double advance = ctcss_advance_for(det, det->locked, det->locked_hz);
     hop->recent_rho = ctcss_rho(det, det->locked, advance, DSD_ANALOG_CTCSS_WINDOW - 2, 2);
-    if (on_tone && hop->recent_rho >= k_hold_rho && !other) {
+    const int above_residue =
+        ctcss_full_share(det, hop->recent_rho, DSD_ANALOG_CTCSS_WINDOW - 2, 2) >= k_min_full_share;
+    if (on_tone && hop->recent_rho >= k_hold_rho && above_residue && !other) {
         det->fail_run = 0;
         det->locked_hz = own.est_hz;
         return;
@@ -656,6 +692,8 @@ ctcss_close_subblock(dsd_analog_ctcss* det, int freeze) {
     }
     det->ring_energy[slot] = det->sub_energy;
     det->sub_energy = 0.0;
+    det->ring_full[slot] = det->sub_full;
+    det->sub_full = 0.0;
     det->sub_fill = 0;
     det->ring_head = (det->ring_head + 1) % DSD_ANALOG_CTCSS_WINDOW;
     if (det->ring_count < DSD_ANALOG_CTCSS_WINDOW) {
@@ -680,13 +718,15 @@ ctcss_accumulate(dsd_analog_ctcss* det, double x) {
 }
 
 static void
-ctcss_process(void* ctx, const float* band, const float* wide, int count, int freeze) {
+ctcss_process(void* ctx, const float* band, const float* wide, const float* full, int count, int freeze) {
     dsd_analog_ctcss* det = (dsd_analog_ctcss*)ctx;
     if (!det || !band || count <= 0 || det->sub_len <= 0 || det->wide_len <= 0) {
         return;
     }
     for (int i = 0; i < count; i++) {
         ctcss_accumulate(det, (double)band[i]);
+        /* Without a full stream the band stands in for it, and the share is rho itself. */
+        det->sub_full += full ? (double)full[i] : (double)band[i] * (double)band[i];
         det->wide[det->wide_pos] = wide ? wide[i] : band[i];
         det->wide_pos = (det->wide_pos + 1) % det->wide_len;
         /* Counted per sample, before the hop it may close, so the no-tone verdict lands on the

@@ -532,16 +532,19 @@ installs from `src/engine/trunk_tuning.c` in `src/engine/trunk_tuning_hooks_inst
     an absolute mean-square floor that only rejects zeroed or squelched blocks) with the 200 ms sample-time hangover
     (`DSD_ANALOG_CARRIER_HANGOVER_MS`), and the detector plug-in table `k_detectors`: each row is a
     `dsd_analog_rx_detector_ops` (configure/reset/process/report) and the core member holding that detector's state, so
-    the DCS detector (#523) is one more row. Detectors get the band stream and a time-aligned stage-1 "wide" stream
-    (about 0-1 kHz, for the harmonic test) rather than a full-band power figure: the carrier test reads the raw block's
-    mean square, and each detector's thresholds are ratios against the energy it sees. Reports merge in table order: the
-    first LOCKED report names the tone; otherwise the verdict is ACQUIRING while any detector still is, and NONE once
-    all have said so. The front end accepts 2400 Hz up to `DSD_ANALOG_RX_MAX_RATE_HZ` (320 kHz, below the ~333 kHz its
-    tap budget can design), logs which side of that range an unusable rate is on (once for each stretch of input at such
-    a rate: a usable block ends the stretch, a reset does not) and publishes UNAVAILABLE there (after a reset, from the
-    next block on). The core, not a detector, owns the absolute floor and the carrier test;
-    `process(band, wide, count, freeze)` is the whole interface a detector gets. It also holds the decoder-thread glue:
-    the working state in `DSD_STATE_EXT_DSP_ANALOG_RX` (slot 9, heap, never deep-copied), the publication
+    the DCS detector (#523) is one more row. Detectors get the band stream, a time-aligned stage-1 "wide" stream (about
+    0-1 kHz, for the harmonic test) and a "full" stream aligned the same way: the raw input's mean square over each
+    decimated sample's span, before any filter. Decimation folds a residue of voice-band content into the band (stage 1
+    leaves it at least 58 dB down, 74 dB from 20 kHz inputs up), and on a carrier with nothing else below 290 Hz that
+    residue alone looks like a pure tone; the full stream is how a detector tells it from one. The carrier test reads
+    the raw block's mean square, and each detector's thresholds are ratios against those streams' energy. Reports merge
+    in table order: the first LOCKED report names the tone; otherwise the verdict is ACQUIRING while any detector still
+    is, and NONE once all have said so. The front end accepts 2400 Hz up to `DSD_ANALOG_RX_MAX_RATE_HZ` (320 kHz, below
+    the ~333 kHz its tap budget can design), logs which side of that range an unusable rate is on (once for each stretch
+    of input at such a rate: a usable block ends the stretch, a reset does not) and publishes UNAVAILABLE there (after a
+    reset, from the next block on). The core, not a detector, owns the absolute floor and the carrier test;
+    `process(band, wide, full, count, freeze)` is the whole interface a detector gets. It also holds the decoder-thread
+    glue: the working state in `DSD_STATE_EXT_DSP_ANALOG_RX` (slot 9, heap, never deep-copied), the publication
     `dsd_state::analog_rx`, and the `Received tone:` LOG_INFO line on each change of verdict (every reset moves the
     publication's generation on and starts a new reception, which logs its verdict again, the same tone included). The
     carrier hangover counts samples, which only works while samples arrive: on stdin, UDP and TCP input, whose producer
@@ -554,20 +557,22 @@ installs from `src/engine/trunk_tuning.c` in `src/engine/trunk_tuning_hooks_inst
     pulse-pair estimate refined by weighted least squares), snaps the fine estimate to the table within +/-0.8 Hz,
     rejects aliases (an estimate more than 5 Hz from its bin) and scores rho, the share of the sub-audible band energy
     the tone explains. A tone locks after two consecutive hops qualify it (rho >= 0.35, an estimate within 0.5 Hz of the
-    table value, a phase fit whose reduced chi-square against the band's own noise stays under 6, estimates within
-    0.5 Hz of each other, and less than 0.08 of phase-locked second and third harmonic power: a voice fundamental has
-    harmonics, a tone does not). It holds while its own bin's estimate, re-measured every hop, stays within the 0.8 Hz
-    snap gate and the newest 100 ms keep rho >= 0.15 at the locked frequency; it is lost after four failing hops or at
-    once on a reverse burst (a >100 degree phase jump between strong sub-blocks). The two frequency gates are
-    hysteresis: at 0 dB the estimate scatters by about 0.19 Hz, so an off-table tone 1.1 Hz from a neighbour reaches the
-    0.8 Hz gate on several percent of hops but the 0.5 Hz one almost never, and the per-hop check drops a lock the tone
-    has moved away from. The price of the tighter acquisition gate is tolerance of transmitter encoder error:
-    `DSP_ANALOG_CTCSS` pins tones 0.2 and 0.35 Hz off their table value locking within 400 ms at +10 dB on every one of
-    its 200 seeded starts, and 0.2 Hz off at 0 dB within 400 ms on at least 95% of them (all within 500 ms); over 10,000
-    starts, 3.4% of 0.2 Hz-off tones at 0 dB take longer than 400 ms (`docs/testing.md`). From about 0.5 Hz off a tone
-    locks late or not at all. A carrier with no lock after 500 ms of evaluation reads `NONE`, on the first hop after it
-    however the input is blocked (carrier time is counted per sample), and a tone that starts later still locks. Every
-    threshold is a ratio, so the RTL live (~1/pi), replay and int16 PCM scales read the same.
+    table value, at least 1e-5 (-50 dB) of the raw input's full-band power, which no folded voice-band residue reaches
+    and every tone the tests lock exceeds by 24 dB or more, a phase fit whose reduced chi-square against the band's
+    own noise stays under 6, estimates within 0.5 Hz of each other, and less than 0.08 of phase-locked second and
+    third harmonic power: a voice fundamental has harmonics, a tone does not). It holds while its own bin's estimate,
+    re-measured every hop, stays within the 0.8 Hz snap gate and the newest 100 ms keep rho >= 0.15 at the locked
+    frequency and the same -50 dB of the full band; it is lost after four failing hops or at once on a reverse burst
+    (a >100 degree phase jump between strong sub-blocks). The two frequency gates are hysteresis: at 0 dB the estimate
+    scatters by about 0.19 Hz, so an off-table tone 1.1 Hz from a neighbour reaches the 0.8 Hz gate on several percent
+    of hops but the 0.5 Hz one almost never, and the per-hop check drops a lock the tone has moved away from. The price
+    of the tighter acquisition gate is tolerance of transmitter encoder error: `DSP_ANALOG_CTCSS` pins tones 0.2 and
+    0.35 Hz off their table value locking within 400 ms at +10 dB on every one of its 200 seeded starts, and 0.2 Hz off
+    at 0 dB within 400 ms on at least 95% of them (all within 500 ms); over 10,000 starts, 3.4% of 0.2 Hz-off tones at
+    0 dB take longer than 400 ms (`docs/testing.md`). From about 0.5 Hz off a tone locks late or not at all. A carrier
+    with no lock after 500 ms of evaluation reads `NONE`, on the first hop after it however the input is blocked
+    (carrier time is counted per sample), and a tone that starts later still locks. Every threshold is a ratio, so the
+    RTL live (~1/pi), replay and int16 PCM scales read the same.
   - Invariant: resets never happen in `noCarrier()` / `dsd_engine_reset_no_carrier_state()` (they run every ~375 ms in
     analog mode and would stop any tone locking). They happen in `dsd_frame_sync_reset_acquisition()` (row commit and
     leave, trunk-scan target switch, decode-mode change, scope resume, RR apply), on an RTL stream-generation or

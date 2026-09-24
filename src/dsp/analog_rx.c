@@ -53,9 +53,12 @@ dsd_analog_subaudible_fe_clear(dsd_analog_subaudible_fe* fe) {
     DSD_MEMSET(fe->hist1, 0, sizeof(fe->hist1));
     DSD_MEMSET(fe->hist2, 0, sizeof(fe->hist2));
     DSD_MEMSET(fe->wide_delay, 0, sizeof(fe->wide_delay));
+    DSD_MEMSET(fe->full_delay, 0, sizeof(fe->full_delay));
     fe->pos1 = 0;
     fe->pos2 = 0;
     fe->wide_delay_pos = 0;
+    fe->full_delay_pos = 0;
+    fe->full_acc = 0.0;
     fe->phase = 0;
     fe->dc_x1 = 0.0;
     fe->dc_y1 = 0.0;
@@ -101,6 +104,14 @@ dsd_analog_subaudible_fe_configure(dsd_analog_subaudible_fe* fe, int rate_hz) {
     }
     /* Stage 2 is linear phase, so its delay is exactly (n2 - 1) / 2 decimated samples. */
     fe->wide_delay_len = (fe->n2 - 1) / 2;
+    /* The full stream also has stage 1's delay to make up: (n1 - 1) / 2 input samples, less
+       the (decim - 1) / 2 by which the span an output averages already lags its newest sample. */
+    int full_len = fe->wide_delay_len;
+    if (fe->decim > 1) {
+        full_len += (int)lround((double)(fe->n1 - fe->decim) / (2.0 * (double)fe->decim));
+    }
+    const int full_cap = (int)(sizeof(fe->full_delay) / sizeof(fe->full_delay[0]));
+    fe->full_delay_len = full_len < 0 ? 0 : (full_len > full_cap ? full_cap : full_len);
     fe->dc_alpha = exp(-2.0 * M_PI * k_dc_corner_hz / fe->out_rate_hz);
     dsd_analog_subaudible_fe_clear(fe);
     fe->active = 1;
@@ -142,38 +153,47 @@ fe_stage1(dsd_analog_subaudible_fe* fe, float x, float* y) {
     return 1;
 }
 
-/* The stage-1 sample from wide_delay_len outputs ago, which lines up with stage 2's output. */
+/* The value pushed @p len outputs ago on a delay line of that length (the value itself when
+   the line is empty). */
 static float
-fe_delay_wide(dsd_analog_subaudible_fe* fe, float y1) {
-    if (fe->wide_delay_len <= 0) {
-        return y1;
+fe_delay(float* line, int len, int* pos, float x) {
+    if (len <= 0) {
+        return x;
     }
-    const float delayed = fe->wide_delay[fe->wide_delay_pos];
-    fe->wide_delay[fe->wide_delay_pos] = y1;
-    fe->wide_delay_pos = (fe->wide_delay_pos + 1) % fe->wide_delay_len;
+    const float delayed = line[*pos];
+    line[*pos] = x;
+    *pos = (*pos + 1) % len;
     return delayed;
 }
 
 int
 dsd_analog_subaudible_fe_process(dsd_analog_subaudible_fe* fe, const float* in, int count, float* band, float* wide,
-                                 int out_cap) {
+                                 float* full, int out_cap) {
     if (!fe || !fe->active || !in || !band || count <= 0) {
         return 0;
     }
+    const double span = (fe->decim > 1) ? (double)fe->decim : 1.0;
     int produced = 0;
     for (int i = 0; i < count && produced < out_cap; i++) {
+        fe->full_acc += (double)in[i] * (double)in[i];
         float y1 = 0.0f;
         if (!fe_stage1(fe, in[i], &y1)) {
             continue;
         }
+        const float full_now = (float)(fe->full_acc / span);
+        fe->full_acc = 0.0;
         const float* run = fe_push(fe->hist2, fe->n2, &fe->pos2, y1);
         const double y2 = (double)fe_dot(fe->taps2, run, fe->n2);
         const double y = y2 - fe->dc_x1 + (fe->dc_alpha * fe->dc_y1);
         fe->dc_x1 = y2;
         fe->dc_y1 = y;
-        const float delayed = fe_delay_wide(fe, y1);
+        const float delayed_wide = fe_delay(fe->wide_delay, fe->wide_delay_len, &fe->wide_delay_pos, y1);
+        const float delayed_full = fe_delay(fe->full_delay, fe->full_delay_len, &fe->full_delay_pos, full_now);
         if (wide) {
-            wide[produced] = delayed;
+            wide[produced] = delayed_wide;
+        }
+        if (full) {
+            full[produced] = delayed_full;
         }
         band[produced++] = (float)y;
     }
@@ -256,10 +276,11 @@ core_feed(dsd_analog_rx_core* core, const float* block, int count, int freeze) {
     const int slice = (DSD_ANALOG_RX_SCRATCH - 1) * core->fe.decim;
     for (int start = 0; start < count; start += slice) {
         const int n = (count - start < slice) ? count - start : slice;
-        const int produced = dsd_analog_subaudible_fe_process(&core->fe, block + start, n, core->scratch,
-                                                              core->scratch_wide, DSD_ANALOG_RX_SCRATCH);
+        const int produced = dsd_analog_subaudible_fe_process(
+            &core->fe, block + start, n, core->scratch, core->scratch_wide, core->scratch_full, DSD_ANALOG_RX_SCRATCH);
         for (int i = 0; i < ANALOG_RX_DETECTOR_COUNT; i++) {
-            k_detectors[i].ops->process(core_detector(core, i), core->scratch, core->scratch_wide, produced, freeze);
+            k_detectors[i].ops->process(core_detector(core, i), core->scratch, core->scratch_wide, core->scratch_full,
+                                        produced, freeze);
         }
     }
 }

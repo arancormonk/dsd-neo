@@ -108,6 +108,7 @@ struct signal_src {
     synth_voice_hpf voice_hpf;
     double voice_gain;  /**< 0 = no voice */
     int voice_filtered; /**< 1 = through the transmitter's 300 Hz high-pass */
+    synth_tone steady;  /**< optional steady voice-band tone, such as a test tone (amp 0 = none) */
 };
 
 static float
@@ -127,6 +128,9 @@ signal_next(signal_src* src, int64_t n) {
     }
     if (n >= src->tone_on && n < src->tone_off) {
         v += synth_tone_next(&src->tone);
+    }
+    if (src->steady.amp > 0.0) {
+        v += synth_tone_next(&src->steady);
     }
     if (src->voice_gain > 0.0) {
         float voice = synth_speech_next(&src->speech);
@@ -437,6 +441,132 @@ test_unsupported_frequencies_never_lock(void) {
                 assert(r.locks == 0 && r.final_state == DSD_ANALOG_TONE_STATE_NONE);
             }
         }
+    }
+}
+
+/* The decimated rate the front end runs at for an input at @p fs (analog_rx_internal.h). */
+static double
+decimated_rate(int fs) {
+    return (double)fs / (double)(fs / DSD_ANALOG_RX_TARGET_RATE_HZ);
+}
+
+/* 1.2 s of a steady voice-band tone at @p hz, alone on the carrier: nothing may lock, and the
+   carrier reads NONE. */
+static void
+check_voice_band_tone_rejected(int fs, double hz) {
+    dsd_analog_rx_core_init(&g_core);
+    signal_src src;
+    signal_init(&src, fs, 1ULL, 100.0, 0.0);
+    src.noise_sigma = 0.0;
+    src.steady.fs = fs;
+    src.steady.hz = hz;
+    src.steady.amp = 0.3;
+    const run_result r = run_signal(&g_core, &src, ms_to_samples(fs, 1200.0), fs / 50, 0);
+    if (r.locks != 0 || r.final_state != DSD_ANALOG_TONE_STATE_NONE) {
+        DSD_FPRINTF(stderr, "voice-band tone read as CTCSS: fs=%d hz=%.1f\n", fs, hz);
+    }
+    assert(r.locks == 0 && r.first_wrong < 0);
+    assert(r.final_state == DSD_ANALOG_TONE_STATE_NONE && r.open_blocks > 0);
+}
+
+/*
+ * A steady tone in the voice band -- a 2300 Hz test tone, a data or signalling tone -- with
+ * nothing else on the carrier. Decimating to the ~2.4 kHz rate folds a residue of it, 58 dB
+ * or more down, onto k * rate +/- f, and with nothing else below 290 Hz that residue is the
+ * whole band: without the full-band share check a 2300 Hz tone at 48 kHz read as 100.0 Hz and
+ * 2333 Hz as 67.0 Hz. Every tone at every rate is placed so its residue lands exactly on a
+ * table tone, from each side of the first multiple of the decimated rate, and a spread of
+ * tones from the higher multiples up to half the input rate; 6 kHz is the rate class whose
+ * stage 1 folds the most back (a 2-to-1 decimation).
+ */
+static void
+test_voice_band_tones_never_lock(void) {
+    static const int rates[] = {6000, 8000, 44100, 48000, 78125};
+    for (size_t ri = 0; ri < sizeof(rates) / sizeof(rates[0]); ri++) {
+        const int fs = rates[ri];
+        const double out = decimated_rate(fs);
+        for (int k = 1; k <= 4; k++) {
+            for (int t = 0; t < DSD_CTCSS_TONE_COUNT; t += (k == 1) ? 1 : 5) {
+                const double tone = (double)dsd_ctcss_tone_tenths(t) / 10.0;
+                for (int side = -1; side <= 1; side += 2) {
+                    const double hz = ((double)k * out) + ((double)side * tone);
+                    if (hz > 300.0 && hz < ((double)fs / 2.0) - 10.0) {
+                        check_voice_band_tone_rejected(fs, hz);
+                    }
+                }
+            }
+        }
+    }
+    /* The reported cases, at 48 kHz: 2300 and 2500 Hz on 100.0, 2333 and 2467 Hz on 67.0,
+       2200 Hz on 199.5 (as 200 Hz) and 2562.2 Hz on 162.2. */
+    static const double reported[] = {2300.0, 2500.0, 2333.0, 2467.0, 2200.0, 2562.2};
+    for (size_t i = 0; i < sizeof(reported) / sizeof(reported[0]); i++) {
+        check_voice_band_tone_rejected(48000, reported[i]);
+    }
+}
+
+/*
+ * The other side of that check: a real tone beside a voice-band tone 30 dB louder, whose
+ * residue lands on the tone's own correlator bin, still locks as itself within the bound. The
+ * tone then carries about -30 dB of the full band, 20 dB above the share a lock needs.
+ */
+static void
+test_tone_beside_a_loud_voice_band_tone_locks(void) {
+    static const double tones[] = {67.0, 100.0, 162.2, 254.1};
+    for (int ri = 0; ri < RATE_COUNT; ri++) {
+        const int fs = k_rates[ri];
+        for (int t = 0; t < 4; t++) {
+            dsd_analog_rx_core_init(&g_core);
+            signal_src src;
+            signal_init(&src, fs, 5150ULL + (uint64_t)(ri * 4 + t), tones[t], 10.0);
+            src.tone_on = ms_to_samples(fs, 300.0);
+            src.steady.fs = fs;
+            src.steady.hz = decimated_rate(fs) - tones[t];
+            src.steady.amp = src.tone.amp * pow(10.0, 30.0 / 20.0);
+            const int tenths = (int)lround(tones[t] * 10.0);
+            const run_result r = run_signal(&g_core, &src, src.tone_on + ms_to_samples(fs, 1000.0), fs / 1000, tenths);
+            assert(r.first_wrong < 0);
+            assert(r.first_lock >= 0);
+            const double t_ms = samples_to_ms(fs, r.first_lock - src.tone_on);
+            if (t_ms > (double)LOCK_BOUND_MS) {
+                DSD_FPRINTF(stderr, "slow lock beside a voice-band tone: fs=%d hz=%.1f -> %.0f ms\n", fs, tones[t],
+                            t_ms);
+            }
+            assert(t_ms <= (double)LOCK_BOUND_MS);
+            assert(r.first_unlocked < 0);
+        }
+    }
+}
+
+/*
+ * And a lock ends with its tone even while a voice-band tone's residue sits on the same bin:
+ * 100.0 Hz beside a steady 2300 Hz tone, on a clean carrier, stops after a second. The residue
+ * alone is a perfectly steady 100 Hz in an otherwise empty band, so only the full-band share
+ * on held hops lets the lock go -- within the loss bound, and nothing locks again.
+ */
+static void
+test_tone_stop_beside_a_voice_band_tone_drops(void) {
+    for (int ri = 0; ri < RATE_COUNT; ri++) {
+        const int fs = k_rates[ri];
+        dsd_analog_rx_core_init(&g_core);
+        signal_src src;
+        signal_init(&src, fs, 6160ULL + (uint64_t)ri, 100.0, 0.0);
+        src.noise_sigma = 0.0;
+        src.tone_on = 0;
+        src.tone_off = ms_to_samples(fs, 1000.0);
+        src.steady.fs = fs;
+        src.steady.hz = decimated_rate(fs) - 100.0;
+        src.steady.amp = 0.3;
+        const run_result r = run_signal(&g_core, &src, ms_to_samples(fs, 2500.0), fs / 1000, 1000);
+        assert(r.first_wrong < 0);
+        assert(r.first_lock >= 0 && r.first_lock < src.tone_off);
+        assert(r.first_unlocked > src.tone_off);
+        const double lost_ms = samples_to_ms(fs, r.first_unlocked - src.tone_off);
+        if (lost_ms > (double)LOSS_BOUND_MS) {
+            DSD_FPRINTF(stderr, "residue held the lock: fs=%d -> %.0f ms\n", fs, lost_ms);
+        }
+        assert(lost_ms <= (double)LOSS_BOUND_MS);
+        assert(r.locks == 1 && r.final_state == DSD_ANALOG_TONE_STATE_NONE);
     }
 }
 
@@ -997,11 +1127,12 @@ test_silent_window_is_defined_and_rejected(void) {
     DSD_MEMSET(silence, 0, sizeof(silence));
     dsd_analog_ctcss_ops.configure(&det, rate_hz);
     for (int s = 0; s < 2 * DSD_ANALOG_CTCSS_WINDOW; s++) {
-        dsd_analog_ctcss_ops.process(&det, silence, silence, sub_len, 0);
+        dsd_analog_ctcss_ops.process(&det, silence, silence, silence, sub_len, 0);
     }
     const dsd_analog_ctcss_hop* hop = dsd_analog_ctcss_last_hop(&det);
     assert(hop->evaluated == 1);
     assert(fabs(hop->rho) < 1e-12);
+    assert(fabs(hop->share) < 1e-12);
     assert(fabs(hop->residual - M_PI) < 1e-12);
     const double random_phase_chi2 = 3.0 * (double)DSD_ANALOG_CTCSS_WINDOW / (double)(DSD_ANALOG_CTCSS_WINDOW - 2);
     assert(isfinite(hop->chi2) && hop->chi2 >= random_phase_chi2 - 1e-9);
@@ -1019,6 +1150,9 @@ main(void) {
     test_scale_invariance();
     test_adjacent_low_tones_are_distinguished();
     test_unsupported_frequencies_never_lock();
+    test_voice_band_tones_never_lock();
+    test_tone_beside_a_loud_voice_band_tone_locks();
+    test_tone_stop_beside_a_voice_band_tone_drops();
     test_lock_follows_a_tone_off_the_table();
     test_dcs_never_locks();
     test_no_tone_verdict_then_late_tone();

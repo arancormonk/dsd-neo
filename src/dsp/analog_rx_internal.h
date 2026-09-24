@@ -18,11 +18,14 @@
  *                  -> DC blocker -> every detector in the core's table (CTCSS here, DCS in #523)
  * Detectors also get the stage-1 output delayed to line up with stage 2 (the "wide" stream,
  * about 0-1 kHz): the CTCSS detector uses it to see a voice fundamental's harmonics, which a
- * tone does not have. No full-band level is handed over: the carrier test reads the raw
- * block's mean square before the front end, and a detector's thresholds are ratios against
- * the band (and wide) energy it sees itself.
- * Every threshold a detector applies is a ratio against the sub-audible band energy, so the
- * RTL live (about +/-1/pi), replay (unscaled) and int16-scale PCM inputs all read the same.
+ * tone does not have. And they get the "full" stream, aligned the same way: the raw input's
+ * mean square over the span of each decimated sample, before any filter. Decimation folds a
+ * small residue of everything above the band into it (stage 1 leaves it at least 58 dB down),
+ * so a steady voice-band tone with nothing else below 290 Hz would otherwise read as a pure
+ * sub-audible tone; the full stream is what tells that residue from a real one.
+ * Every threshold a detector applies is a ratio against the energy of one of these streams,
+ * so the RTL live (about +/-1/pi), replay (unscaled) and int16-scale PCM inputs all read the
+ * same. The carrier test reads the raw block's mean square before the front end.
  */
 
 #ifndef DSD_NEO_SRC_DSP_ANALOG_RX_INTERNAL_H_
@@ -94,14 +97,15 @@ typedef struct {
  *
  * configure() designs for a new decimated rate and starts from scratch; reset() starts from
  * scratch at the current rate; process() takes @p count decimated samples of the sub-audible
- * band and the time-aligned wide stream, and @p freeze asks it to keep evaluating without
- * changing its verdict (the carrier is inside its hangover); report() says where it stands.
+ * band and the time-aligned wide and full streams (see the file comment), and @p freeze asks
+ * it to keep evaluating without changing its verdict (the carrier is inside its hangover);
+ * report() says where it stands.
  */
 typedef struct {
     const char* name;
     void (*configure)(void* ctx, double rate_hz);
     void (*reset)(void* ctx);
-    void (*process)(void* ctx, const float* band, const float* wide, int count, int freeze);
+    void (*process)(void* ctx, const float* band, const float* wide, const float* full, int count, int freeze);
     void (*report)(const void* ctx, dsd_analog_rx_report* out);
 } dsd_analog_rx_detector_ops;
 
@@ -114,6 +118,7 @@ typedef struct {
     double rho;        /**< share of the sub-audible band energy the tone explains (0..1) */
     double residual;   /**< weighted RMS phase residual of the linear fit, radians */
     double chi2;       /**< reduced chi-square of that fit against the band's phase noise */
+    double share;      /**< the tone's share of the raw input's full-band power (0..1) */
     double recent_rho; /**< rho over the newest 100 ms at the locked frequency, when locked */
     double harmonic;   /**< phase-locked (2f, 3f) power over the candidate's; computed only when needed */
 } dsd_analog_ctcss_hop;
@@ -139,6 +144,8 @@ typedef struct {
     double ring_re[DSD_ANALOG_CTCSS_WINDOW][DSD_CTCSS_TONE_COUNT];
     double ring_im[DSD_ANALOG_CTCSS_WINDOW][DSD_CTCSS_TONE_COUNT];
     double ring_energy[DSD_ANALOG_CTCSS_WINDOW];
+    double sub_full;                           /**< full-stream energy of the sub-block being filled */
+    double ring_full[DSD_ANALOG_CTCSS_WINDOW]; /**< full-stream energy of each sub-block in the ring */
     int ring_head;  /**< next ring slot to write; the oldest sub-block once the ring is full */
     int ring_count; /**< sub-blocks in the ring, up to DSD_ANALOG_CTCSS_WINDOW */
     int state;      /**< dsd_analog_tone_state: ACQUIRING, LOCKED or NONE */
@@ -180,6 +187,12 @@ typedef struct {
     float wide_delay[DSD_ANALOG_RX_STAGE2_MAX_TAPS];
     int wide_delay_len;
     int wide_delay_pos;
+    /* The raw input's energy since the last decimated output, and its mean square per output
+       delayed by both stages' group delay, so the full stream lines up with the band too. */
+    double full_acc;
+    float full_delay[DSD_ANALOG_RX_STAGE2_MAX_TAPS];
+    int full_delay_len;
+    int full_delay_pos;
     double dc_alpha;
     double dc_x1;
     double dc_y1;
@@ -194,6 +207,7 @@ typedef struct {
     uint32_t resets;        /**< bumped by every reset, published as the generation */
     float scratch[DSD_ANALOG_RX_SCRATCH];
     float scratch_wide[DSD_ANALOG_RX_SCRATCH];
+    float scratch_full[DSD_ANALOG_RX_SCRATCH];
 } dsd_analog_rx_core;
 
 /**
@@ -242,12 +256,13 @@ void dsd_analog_subaudible_fe_clear(dsd_analog_subaudible_fe* fe);
 /**
  * @brief Filter and decimate @p count input samples.
  *
- * Writes at most @p out_cap decimated samples of the sub-audible band to @p band and of the
- * aligned wide stream to @p wide (which may be NULL), and returns how many; the caller sizes
- * its input so the output fits (count / decim + 1 <= out_cap).
+ * Writes at most @p out_cap decimated samples of the sub-audible band to @p band, of the
+ * aligned wide stream to @p wide and of the aligned full stream to @p full (either may be
+ * NULL), and returns how many; the caller sizes its input so the output fits
+ * (count / decim + 1 <= out_cap).
  */
 int dsd_analog_subaudible_fe_process(dsd_analog_subaudible_fe* fe, const float* in, int count, float* band, float* wide,
-                                     int out_cap);
+                                     float* full, int out_cap);
 
 /** @brief The CTCSS evaluator's last hop, for tests. */
 const dsd_analog_ctcss_hop* dsd_analog_ctcss_last_hop(const dsd_analog_ctcss* det);
