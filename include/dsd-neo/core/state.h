@@ -485,7 +485,10 @@ typedef enum {
  * assert), so it must never grow a pointer, and it holds no float, so the semgrep float-field
  * list does not change. The detector's working state lives in DSD_STATE_EXT_DSP_ANALOG_RX. */
 struct dsd_analog_rx_publication {
-    int carrier_open;    /**< 1 while a carrier is open, held through the 200 ms hangover */
+    /** 1 while a carrier is open, held through the 200 ms hangover. On stdin, UDP and TCP input
+     * the tap cannot clear it while the producer sends nothing, so a reader of carrier_open or
+     * tone_state must also honour stale_after_ms, as dsd_app_rx_tone_view() does. */
+    int carrier_open;
     int tone_kind;       /**< dsd_analog_tone_kind; NONE unless tone_state is LOCKED */
     int tone_state;      /**< dsd_analog_tone_state */
     int ctcss_tenths_hz; /**< locked CTCSS tone in tenths of a hertz (1000 = 100.0 Hz); 0 = none */
