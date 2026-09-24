@@ -119,6 +119,9 @@ Enable rule and validation:
   including a rate the device forced; a refusal fails the start. A runtime
   request is checked against the running stream's rate; with no stream running
   only the kind, range and environment rules apply, and the next start decides.
+  A refused runtime request (live, or attached to a retune target) is logged
+  with the validator's text and what stays in place, once per kind, width and
+  rate until an analog request is accepted.
 - The design uses `rate_out`, which is the complex rate the channel filter runs
   at only while `post_downsample` is 1. Live sources always run that way; only
   IQ replay sidecars can set a larger post-demod decimation, and there a

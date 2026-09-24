@@ -25,7 +25,7 @@
  *
  * While a stream runs, a width its published demod rate (or a replay's post-demod
  * decimation) cannot realize is refused before it is queued, as a live request
- * and as a retune profile.
+ * and as a retune profile, and the refusal is logged with the validator's text.
  *
  * A session that started with -fA and then switches to a digital mode lands on
  * a fresh open of that mode too. A typed digital scan row on a -fA session runs
@@ -34,13 +34,27 @@
  */
 
 #include <cstdio>
+#include <cstring>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/io/rtl_stream_c.h>
 #include <dsd-neo/runtime/analog_channel.h>
 #include <dsd-neo/runtime/config.h>
+#include <dsd-neo/runtime/log.h>
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "rtl_stream_test_support.h"
+
+static char g_last_error[512];
+static int g_error_count;
+
+static void
+capture_error_log(dsd_neo_log_level_t level, const char* text, void* ctx) {
+    (void)ctx;
+    if (level == LOG_LEVEL_ERROR && text) {
+        DSD_SNPRINTF(g_last_error, sizeof g_last_error, "%s", text);
+        g_error_count++;
+    }
+}
 
 static int
 expect_int(const char* label, int got, int want) {
@@ -378,6 +392,7 @@ struct live_request_case {
     int refused_width_hz;  /* in range for NFM, but the running stream cannot realize it */
     int accepted_width_hz; /* what the same stream does realize (0 = the unset default) */
     int accepted_filter_width_hz;
+    const char* refusal_text; /* the validator's text the refusal logs */
 };
 
 } // namespace
@@ -387,6 +402,8 @@ expect_live_refusal(const live_request_case& c) {
     rtl_stream_test_live_request_result r;
     DSD_MEMSET(&r, 0, sizeof r);
     char label[160];
+    g_last_error[0] = '\0';
+    g_error_count = 0;
     DSD_SNPRINTF(label, sizeof label, "%s: refused %d Hz run", c.name, c.refused_width_hz);
     int rc = expect_int(label,
                         rtl_stream_test_analog_request_with_stream(c.rate_hz, c.analog_stream, c.post_downsample,
@@ -394,6 +411,17 @@ expect_live_refusal(const live_request_case& c) {
                         0);
     DSD_SNPRINTF(label, sizeof label, "%s: live request refused", c.name);
     rc |= expect_int(label, r.request_rc, -1);
+    /* The refusal is reported, not silent: the live request logs the validator's text and what stays in place, and
+     * the retune profile for the same width and rate that follows it is not logged a second time. */
+    DSD_SNPRINTF(label, sizeof label, "%s: one refusal logged for the width and rate", c.name);
+    rc |= expect_int(label, g_error_count, 1);
+    DSD_SNPRINTF(label, sizeof label, "%s: refusal logs the validator's text", c.name);
+    rc |= expect_int(label, std::strstr(g_last_error, c.refusal_text) != NULL, 1);
+    DSD_SNPRINTF(label, sizeof label, "%s: refusal says the front end keeps its profile", c.name);
+    rc |= expect_int(label, std::strstr(g_last_error, "The front end keeps its current receive profile.") != NULL, 1);
+    if (rc != 0) {
+        DSD_FPRINTF(stderr, "  logged: \"%s\"\n", g_last_error);
+    }
     DSD_SNPRINTF(label, sizeof label, "%s: nothing queued", c.name);
     rc |= expect_int(label, r.request_queued, 0);
     DSD_SNPRINTF(label, sizeof label, "%s: family unchanged", c.name);
@@ -445,14 +473,19 @@ static int
 test_requests_against_running_stream(void) {
     const live_request_case cases[] = {
         /* 24 kHz fits up to 20.4 kHz: 25 kHz is in range, but its 13.1 kHz cutoff is above 0.45 x 24 kHz. */
-        {"24 kHz analog stream", 24000, 1, 1, 25000, 20000, 20000},
+        {"24 kHz analog stream", 24000, 1, 1, 25000, 20000, 20000,
+         "NFM bandwidth 25 kHz does not fit the 24 kHz DSP rate (the largest width it fits is 20.4 kHz)"},
         /* 16 kHz fits up to 13.2 kHz, so even the 16 kHz default width is out of reach when asked for explicitly. */
-        {"16 kHz analog stream", 16000, 1, 1, 16000, 13000, 13000},
+        {"16 kHz analog stream", 16000, 1, 1, 16000, 13000, 13000,
+         "NFM bandwidth 16 kHz does not fit the 16 kHz DSP rate (the largest width it fits is 13.2 kHz)"},
         /* A digital session switching to analog is held to the rate it runs at, too. */
-        {"24 kHz DMR stream", 24000, 0, 1, 25000, 20000, 20000},
+        {"24 kHz DMR stream", 24000, 0, 1, 25000, 20000, 20000,
+         "NFM bandwidth 25 kHz does not fit the 24 kHz DSP rate (the largest width it fits is 20.4 kHz)"},
         /* A replay decimating by 2 after demod runs the channel filter at twice the published rate: every requested
          * width is refused there, while the unset default keeps its legacy design (16 kHz at 48 kHz). */
-        {"48 kHz replay with post_downsample 2", 48000, 1, 2, 12500, 0, 16000},
+        {"48 kHz replay with post_downsample 2", 48000, 1, 2, 12500, 0, 16000,
+         "NFM bandwidth 12.5 kHz cannot be applied to this I/Q replay: post_downsample 2 runs the channel filter at "
+         "96000 Hz"},
     };
     int rc = 0;
     for (const live_request_case& c : cases) {
@@ -464,6 +497,7 @@ test_requests_against_running_stream(void) {
 
 int
 main(void) {
+    dsd_neo_log_set_tap(capture_error_log, NULL);
     dsd_neo_config_init();
     const family_case cases[] = {
         {"P25 C4FM", p25_c4fm, {0, 4800, 4, RTL_STREAM_CHANNEL_PROFILE_P25_C4FM, 10, 0}},

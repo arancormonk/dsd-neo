@@ -8118,35 +8118,68 @@ rtl_stream_apply_analog_profile_gated(int family, int kind, int width_hz, int ne
     rtl_stream_leave_demod_family_switch_gate(gate_armed);
 }
 
-/* Validate on the caller's thread against the published rate, so a refusal reaches the caller. With no stream running
- * the mirror only holds a previous session's rate (or its initial value), which says nothing about the rate the next
- * open will deliver: only the kind, range and environment rules apply then, and that open's finalize check is the
- * authoritative one. */
+/* Identifies one refused analog profile (kind, width, demod rate) for the once-per-refusal logs below; never 0. */
+static uint64_t
+rtl_stream_analog_refusal_key(int kind, int width_hz, int rate_hz) {
+    return (1ULL << 63) | ((uint64_t)((uint32_t)kind & 0x7FU) << 56)
+           | ((uint64_t)((uint32_t)width_hz & 0xFFFFFFU) << 32) | (uint64_t)(uint32_t)rate_hz;
+}
+
+/* Last refused analog request (live, or attached to a retune target), so a caller repeating the same request does not
+ * repeat the message. An accepted analog request re-arms it. */
+static std::atomic<uint64_t> g_analog_request_refusal_logged{0};
+
 static int
-rtl_stream_analog_request_valid(int family, int kind, int width_hz) {
+rtl_stream_check_analog_request(int family, int kind, int width_hz, int rate_hz, char* err, size_t err_size) {
+    if (family != DSD_RX_FAMILY_ANALOG) {
+        DSD_SNPRINTF(err, err_size, "unknown receive family %d", family);
+        return -1;
+    }
+    if (width_hz < 0) {
+        DSD_SNPRINTF(err, err_size, "analog channel width %d Hz is negative", width_hz);
+        return -1;
+    }
+    if (rtl_demod_check_analog_channel(kind, width_hz, rate_hz, err, err_size) != 0) {
+        return -1;
+    }
+    if (rate_hz > 0
+        && rtl_demod_check_analog_post_decimation(kind, width_hz, rate_hz,
+                                                  g_pub_post_downsample.load(std::memory_order_relaxed), err, err_size)
+               != 0) {
+        return -1;
+    }
+    return 0;
+}
+
+/* Validate on the caller's thread against the published rate, and log a refusal with the validator's text (once per
+ * kind, width and rate) so it is never silent. With no stream running the mirror only holds a previous session's rate
+ * (or its initial value), which says nothing about the rate the next open will deliver: only the kind, range and
+ * environment rules apply then, and that open's finalize check is the authoritative one. @p refused_result says what
+ * a refusal leaves in place. */
+static int
+rtl_stream_analog_request_valid(int family, int kind, int width_hz, const char* refused_result) {
     if (family == DSD_RX_FAMILY_DIGITAL) {
         return 1;
     }
-    if (family != DSD_RX_FAMILY_ANALOG || width_hz < 0) {
-        return 0;
-    }
     char err[DSD_ANALOG_ERROR_TEXT_MAX];
     const int rate_hz = g_stream ? g_pub_rate_out.load(std::memory_order_relaxed) : 0;
-    if (rtl_demod_check_analog_channel(kind, width_hz, rate_hz, err, sizeof err) != 0) {
-        return 0;
+    if (rtl_stream_check_analog_request(family, kind, width_hz, rate_hz, err, sizeof err) == 0) {
+        g_analog_request_refusal_logged.store(0, std::memory_order_relaxed);
+        return 1;
     }
-    if (rate_hz > 0
-        && rtl_demod_check_analog_post_decimation(
-               kind, width_hz, rate_hz, g_pub_post_downsample.load(std::memory_order_relaxed), err, sizeof err)
-               != 0) {
-        return 0;
+    const uint64_t key = rtl_stream_analog_refusal_key(family == DSD_RX_FAMILY_ANALOG ? kind : 0x7F, width_hz, rate_hz);
+    if (g_analog_request_refusal_logged.exchange(key, std::memory_order_relaxed) != key) {
+        LOG_ERROR("%s. %s\n", err, refused_result);
     }
-    return 1;
+    return 0;
 }
 
 extern "C" int
 rtl_stream_request_analog_profile(int family, int kind, int width_hz) {
-    if (!rtl_stream_analog_request_valid(family, kind, width_hz)) {
+    const char* refused_result = g_stream ? "The front end keeps its current receive profile."
+                                          : "No stream is running; the next start configures the front end from the "
+                                            "options.";
+    if (!rtl_stream_analog_request_valid(family, kind, width_hz, refused_result)) {
         return -1;
     }
     if (!g_stream) {
@@ -8330,7 +8363,9 @@ rtl_stream_prepare_retune_profile_for_target_with_gain(uint32_t target_freq_hz, 
 extern "C" int
 rtl_stream_prepare_retune_analog_profile_for_target(uint32_t target_freq_hz,
                                                     const rtl_stream_retune_analog_profile* analog) {
-    if (!analog || !rtl_stream_analog_request_valid(analog->family, analog->kind, analog->width_hz)) {
+    if (!analog
+        || !rtl_stream_analog_request_valid(analog->family, analog->kind, analog->width_hz,
+                                            "The retune keeps the current receive profile.")) {
         return -1;
     }
     std::lock_guard<std::mutex> lock(g_pending_retune_profile_mutex);
@@ -8426,8 +8461,7 @@ rtl_stream_retune_analog_profile_fits(const RtlRetuneProfile* profile) {
         g_retune_analog_refusal_logged.store(0, std::memory_order_relaxed);
         return 1;
     }
-    const uint64_t key = (1ULL << 63) | ((uint64_t)((uint32_t)kind & 0xFFU) << 48)
-                         | ((uint64_t)((uint32_t)width_hz & 0xFFFFU) << 32) | (uint64_t)(uint32_t)demod.rate_out;
+    const uint64_t key = rtl_stream_analog_refusal_key(kind, width_hz, demod.rate_out);
     if (g_retune_analog_refusal_logged.exchange(key, std::memory_order_relaxed) != key) {
         LOG_ERROR("%s. The retune keeps the current receive profile.\n", err);
     }

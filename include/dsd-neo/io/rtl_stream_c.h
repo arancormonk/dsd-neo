@@ -274,7 +274,10 @@ int rtl_stream_request_demod_profile(int cqpsk_enable, int symbol_rate_hz, int l
  * @param kind     dsd_analog_demod for the analog family (AM is refused until the front end can demodulate it).
  * @param width_hz Explicit analog channel width in Hz, or 0 for the kind's default (ignored for digital).
  * @return 0 when queued or applied; -1 when refused (unknown family/kind, AM, a width outside the kind's range or
- *         unrealizable at the running stream's rate, or an explicit width while DSD_NEO_CHANNEL_LPF=0).
+ *         unrealizable at the running stream's rate, or an explicit width while DSD_NEO_CHANNEL_LPF=0). A refusal is
+ *         logged as an error with the validator's text (for a width the rate cannot realize: the width, the DSP rate,
+ *         the largest width that rate fits and the DSP bandwidths that would fit), once per kind, width and rate until
+ *         an analog request is accepted.
  */
 int rtl_stream_request_analog_profile(int family, int kind, int width_hz);
 
@@ -350,7 +353,7 @@ typedef struct rtl_stream_retune_analog_profile {
  * alone. A DSD_RX_FAMILY_DIGITAL switch then applies the queued symbol profile; a DSD_RX_FAMILY_ANALOG switch
  * applies none of it (the analog family has no symbol clock), only the gain profile.
  *
- * @return 0 when attached; -1 when refused (same rules as rtl_stream_request_analog_profile()).
+ * @return 0 when attached; -1 when refused (same rules and refusal log as rtl_stream_request_analog_profile()).
  */
 int rtl_stream_prepare_retune_analog_profile_for_target(uint32_t target_freq_hz,
                                                         const rtl_stream_retune_analog_profile* analog);

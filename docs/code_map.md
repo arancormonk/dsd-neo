@@ -493,8 +493,9 @@ installs from `src/engine/trunk_tuning.c` in `src/engine/trunk_tuning_hooks_inst
 Runtime controls (via `include/dsd-neo/io/rtl_stream_c.h`):
 
 - Receive family: `rtl_stream_request_analog_profile()` (family, analog kind, channel width; validated on the caller's
-  thread against the running stream's rate, or only for kind and range with no stream running, and applied on the
-  demod thread ahead of any demod profile queued with it), `rtl_stream_get_analog_profile()`,
+  thread against the running stream's rate, or only for kind and range with no stream running, a refusal logged with
+  the validator's text once per kind, width and rate, and applied on the demod thread ahead of any demod profile
+  queued with it), `rtl_stream_get_analog_profile()`,
   `rtl_stream_output_rate_for_family()` (the output rate a pending switch will produce), and
   `rtl_stream_prepare_retune_analog_profile_for_target()` (the same fields bound to a retune target).
 
