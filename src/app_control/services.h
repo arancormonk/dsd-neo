@@ -203,6 +203,18 @@ void svc_publish_symbol_profile(const dsd_opts* opts, dsd_state* state, dsd_deco
  */
 int svc_check_mode_receive_profile(const dsd_opts* opts, const dsd_state* state, dsdneoUserDecodeMode mode);
 
+/**
+ * @brief Note the configured digital decode modes with a running RTL front end.
+ *
+ * Once a live switch has moved the front end onto the digital family, the options its stream opened with no longer name
+ * the modes it runs, and the modes noted here pick the FSK channel profile its CQPSK toggle returns to
+ * (rtl_stream_set_digital_decode_modes()). svc_publish_symbol_profile() notes them with every profile it publishes; a
+ * handler that changes the digital modes without publishing one (a config apply whose [mode] stays digital) calls this.
+ * Nothing is noted for the analog family, off an RTL front end, or from a running scan row's options, which carry the
+ * row's constraint rather than the configured modes.
+ */
+void svc_note_digital_decode_modes(const dsd_opts* opts, const dsd_state* state);
+
 // Per-protocol inversion toggles
 /** @brief Toggle X2-TDMA symbol inversion. */
 void svc_toggle_inv_x2(dsd_opts* opts);

@@ -5084,7 +5084,9 @@ cfg_restore_lifecycle_owned(dsd_opts* opts, const dsdneoUserConfig* cfg, dsd_fro
  * demodulator. A [mode] that stays inside its family keeps the config-apply behaviour it
  * had, except that a digital mode writing raw audio (ProVoice, or the -8 source monitor) gets the raw sink a session
  * started in another digital mode never opened, as DECODE_MODE_SET gives it (dsd_audio_ensure_digital_output() is
- * idempotent).
+ * idempotent), and that the digital modes it configures are noted with an RTL front end, as DECODE_MODE_SET notes them
+ * (svc_note_digital_decode_modes()): after a live switch onto the digital family they pick the FSK channel profile the
+ * front end's CQPSK toggle returns to.
  */
 static void
 apply_cfg_receive_family_change(dsd_opts* opts, dsd_state* state, const dsdneoUserConfig* cfg, int old_analog_only) {
@@ -5096,6 +5098,7 @@ apply_cfg_receive_family_change(dsd_opts* opts, dsd_state* state, const dsdneoUs
         if (!analog_only && (opts->frame_provoice == 1 || opts->monitor_input_audio == 1)) {
             (void)dsd_audio_ensure_digital_output(opts);
         }
+        svc_note_digital_decode_modes(opts, state);
         return;
     }
     if (analog_only) {

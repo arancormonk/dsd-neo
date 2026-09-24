@@ -432,7 +432,8 @@ installs from `src/engine/trunk_tuning.c` in `src/engine/trunk_tuning_hooks_inst
   `DSD_APP_CMD_CONFIG_APPLY` runs the same sink and publish sequence when its `[mode]` moves the session between the
   analog and digital families, after the same check when the move is onto the analog family (a refusal leaves the
   whole config unapplied); a digital-to-digital `[mode]` change keeps its earlier behaviour, except that ProVoice
-  (or `-8`) also gets the raw sink it writes to. Like `DECODE_MODE_SET` it keeps the session's audio output layout
+  (or `-8`) also gets the raw sink it writes to, and that an RTL front end is told the digital modes it now configures
+  (`svc_note_digital_decode_modes()`, which `svc_publish_symbol_profile()` also calls). Like `DECODE_MODE_SET` it keeps the session's audio output layout
   (`pulse_digi_out_channels`, `pulse_digi_rate_out`) through any `[mode]`: the output streams were opened with it, so
   a digital sink a family change opens gets it too, and a later preset cannot leave the options on another layout
   than the open stream's. A `DECODE_MODE_SET`, RadioReference import or `[mode]` that moves the decoder between the
@@ -652,7 +653,8 @@ Notes:
     once a switch has moved the stream onto the digital family, the FSK channel profile a symbol profile without one
     of its own lands on (the DSP menu's CQPSK toggle turning CQPSK off) comes from the digital modes the decoder
     noted (`rtl_stream_set_digital_decode_modes()`, from `svc_publish_symbol_profile()` with the configured options,
-    also for a mode picked under a scan row, never a running row's constraint) rather than from the options, as an
+    also for a mode picked under a scan row, never a running row's constraint, and from a config apply whose `[mode]`
+    stays digital: `svc_note_digital_decode_modes()`) rather than from the options, as an
     open with those modes picks it; a stream still on the family it opened on, or with no note since its open (the
     open drops it), keeps picking from its options. Entering or leaving
     the analog family re-applies that family's fresh-open defaults (`rtl_demod_enter_analog_family()`/

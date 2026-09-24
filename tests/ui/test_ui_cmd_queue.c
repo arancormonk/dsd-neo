@@ -5033,13 +5033,18 @@ test_config_apply_switches_rtl_receive_family(void) {
     rc |= expect_int("config digital sink ensured", g_ensure_digital_calls, 1);
     rc |= expect_int("config raw sink not asked for", g_ensure_analog_calls, 0);
 
-    /* A [mode] inside the same family keeps the earlier config-apply behaviour. */
+    /* A [mode] inside the same family keeps the earlier config-apply behaviour, except that the front end learns the
+       digital modes it now configures: after the live switch above its opening options name none, and the noted ones
+       pick the FSK channel profile its CQPSK toggle returns to (NXDN48's 6.25 kHz, not DMR's 12.5 kHz). */
     reset_rx_family_wrap();
     g_fake_analog_family = 0;
     rc |= submit_config_mode(&opts, &state, DSDCFG_MODE_NXDN48, "config nxdn48");
     rc |= expect_int("config same family asks for no family", g_analog_req_calls, 0);
     rc |= expect_int("config same family asks for no profile", g_demod_req_calls, 0);
     rc |= expect_int("config same family opens no sink", g_ensure_analog_calls + g_ensure_digital_calls, 0);
+    rc |= expect_int("config same family notes its digital modes", g_modes_note_calls, 1);
+    rc |= expect_int("config same family notes NXDN48", g_modes_note_nxdn48, 1);
+    rc |= expect_int("config same family no longer notes DMR", g_modes_note_dmr, 0);
 
     /* DMR-family session to ProVoice: still digital, but ProVoice writes the raw stream (UDP port + 2 with UDP output)
        that a digital start did not open. */
