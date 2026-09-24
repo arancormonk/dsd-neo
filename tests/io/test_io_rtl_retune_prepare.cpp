@@ -294,6 +294,17 @@ test_audio_monitor_retune_resolves_channel(void) {
     failed |= expect_int_eq("16 kHz at 78125 Hz is the width-driven filter", r.published_lpf_on_after, 1);
     failed |= expect_int_eq("16 kHz at 78125 Hz published", r.published_width_after, 16000);
 
+    /* Past the 288-tap capacity (~102.7 kHz) the default takes the legacy WIDE plan again, which there is the 63-tap
+     * fallback prototype: cut at a third of the rate, its passband at 128 kHz is 2 x (42667 - 3417) Hz, not the whole
+     * 128 kHz DSP span an unfiltered channel would have. */
+    DSD_MEMSET(&r, 0, sizeof r);
+    failed |=
+        expect_int_eq("default 48k -> 128000 hook", rtl_stream_test_audio_monitor_retune(48000, 128000, 0, &r), 0);
+    failed |= expect_int_eq("default takes the legacy WIDE plan past the tap capacity", r.channel_lpf_width_after, 0);
+    failed |= expect_int_eq("legacy WIDE keeps the filter on at 128000 Hz", r.channel_lpf_enable_after, 1);
+    failed |= expect_int_eq("fallback prototype published as DSP-limited", r.published_lpf_on_after, 0);
+    failed |= expect_int_eq("fallback prototype publishes the width it passes", r.published_width_after, 78499);
+
     DSD_MEMSET(&r, 0, sizeof r);
     g_last_error[0] = '\0';
     failed |=

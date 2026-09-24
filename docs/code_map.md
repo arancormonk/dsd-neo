@@ -403,8 +403,9 @@ installs from `src/engine/trunk_tuning.c` in `src/engine/trunk_tuning_hooks_inst
 - Behavior note: `channel_bandwidth_hz` on the analog monitor is the published analog width (the configured width
   while the width-driven channel filter runs), and `channel_bandwidth_dsp_limited` is set when the DSP rate rather than
   that filter bounds the channel (the historical default below a 20 kHz DSP rate, or a width the rate cannot realize);
-  the reported width is then the one the rate leaves. Digital output and the M17 encoder's monitor path keep twice the
-  profile's protected edge. Test: `APP_CONTROL_FRONTEND_METRICS`.
+  the reported width is then the one the rate leaves: the passband of the legacy WIDE plan when that plan runs
+  (`dsd_channel_lpf_legacy_wide_width_hz()`), otherwise the DSP rate. Digital output and the M17 encoder's monitor
+  path keep twice the profile's protected edge. Test: `APP_CONTROL_FRONTEND_METRICS`.
 - Receive family on a live mode change: `svc_publish_symbol_profile()` (`src/app_control/symbol_profile.c`)
   publishes the configured analog profile for the analog family, which is what moves a running digital RTL front end
   onto the analog monitor. For a digital configured mode it requests the digital family before the symbol profile;
@@ -496,6 +497,9 @@ installs from `src/engine/trunk_tuning.c` in `src/engine/trunk_tuning_hooks_inst
   filter at all. The stream layer refuses such a width at start and on every request; only a retune that leaves the
   stream on another demod rate can keep an explicit width that rate cannot realize (see the IO notes). 16000 Hz runs
   the same design call as WIDE, so its taps are bit-identical wherever WIDE's design succeeds.
+  `dsd_channel_lpf_legacy_wide_width_hz()` reports the passband the legacy WIDE plan has at a rate (the 144-tap design,
+  its cutoff held to 0.9 x Nyquist, or above ~51.4 kHz the 63-tap fallback prototype, cut at a third of the rate), the
+  width published for an unset default that plan runs.
   The plan cache key is (rate_out, profile, width). The SIMD complex FIR kernels size their scratch per call, so the
   288-tap capacity needs no kernel change. Tests: `DSP_CHANNEL_FILTERS`, `DSP_DEMOD_MISC`.
 
@@ -557,7 +561,7 @@ Notes:
     after the demodulator (`post_downsample` above 1, `rtl_demod_check_analog_post_decimation()`), or AM (no front-end
     AM demodulator yet) fails the start with the validator's text. The unset NFM default never fails: it keeps the
     `rate_in >= 20000` / `DSD_NEO_CHANNEL_LPF` enable rule and falls back to the legacy WIDE design where the rate
-    cannot fit 16 kHz.
+    cannot fit 16 kHz, published as DSP-limited at the width that plan passes.
   - The monitor's legacy `low_pass_real()` stage (`rate_in` to `rate_out2`) passes audio through: a live open sets both
     to the DSP bandwidth, and IQ replay (`controller_apply_replay_settings()`) sets `rate_out2` to the `rate_in` it
     takes from the capture, so only the rational resampler converts `rate_out` to the output rate. Test:

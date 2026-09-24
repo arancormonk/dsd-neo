@@ -134,6 +134,21 @@ double dsd_channel_lpf_protected_edge_hz(int profile);
  */
 int dsd_channel_lpf_design_analog(int rate_hz, int width_hz, float* taps_out, int max_taps);
 
+/**
+ * Channel width the legacy WIDE profile plan protects at a rate.
+ *
+ * The plan the unset NFM default runs where the rate cannot realize the 16 kHz
+ * width-driven design: the 144-tap WIDE design with its cutoff held to 0.9 x
+ * Nyquist, or, at rates that design cannot fit (above about 51.4 kHz), the
+ * 63-tap WIDE fallback prototype, whose response scales with the rate it runs
+ * at. The width is the protected passband (twice the edge the transition
+ * starts at), measured the same way as an analog width.
+ *
+ * @param rate_hz Channel-filter sample rate (demod rate_out) in Hz.
+ * @return Protected width in Hz, or 0 for a rate of 0 or less.
+ */
+int dsd_channel_lpf_legacy_wide_width_hz(int rate_hz);
+
 #ifdef __cplusplus
 }
 #endif

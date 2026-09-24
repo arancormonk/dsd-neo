@@ -292,7 +292,9 @@ int rtl_stream_request_analog_profile(int family, int kind, int width_hz);
  *
  * @param out_kind     dsd_analog_demod of the active analog family (0 otherwise). May be NULL.
  * @param out_width_hz Effective channel width in Hz: the configured width while the width-driven channel filter runs,
- *                     otherwise the width the DSP rate leaves (0 outside the analog family). An I/Q replay that
+ *                     otherwise the width the DSP rate leaves: the passband of the legacy WIDE plan an unset default
+ *                     runs where the rate cannot fit it (dsd_channel_lpf_legacy_wide_width_hz()), or the DSP rate
+ *                     with no channel filter (0 outside the analog family). An I/Q replay that
  *                     decimates after the demodulator runs the filter at post_downsample times its design rate, and
  *                     reports that many times the designed width. May be NULL.
  * @param out_lpf_on   1 when the width-driven channel filter sets the width, 0 when the DSP rate limits it (including

@@ -110,8 +110,12 @@ Enable rule and validation:
 
 - The unset default (16 kHz NFM) keeps the historical rule: the channel LPF is
   on from a 20 kHz `rate_in`, or as `DSD_NEO_CHANNEL_LPF` says. Where the rate
-  cannot fit 16 kHz, the legacy WIDE design stays in charge instead of failing,
-  and frontends see the channel as DSP-limited.
+  cannot fit 16 kHz, the legacy WIDE plan stays in charge instead of failing,
+  and frontends see the channel as DSP-limited at the width that plan passes
+  (`dsd_channel_lpf_legacy_wide_width_hz()`): below ~19.1 kHz the 144-tap WIDE
+  design with its cutoff held to 0.9 x Nyquist (13.2 kHz at 16 kHz), and above
+  the ~102.7 kHz tap capacity the 63-tap fallback prototype, cut at a third of
+  the rate (about 78.5 kHz at 128 kHz), rather than the whole DSP span.
 - An explicit width turns the channel LPF on. With `DSD_NEO_CHANNEL_LPF=0` it
   is refused. The unset AM default is held to the same rules as an explicit
   width (AM itself is refused until the front end can demodulate it).
@@ -264,13 +268,17 @@ is.
   change.
 - `DSP_CHANNEL_FILTERS` pins the 16 kHz analog taps to the WIDE taps at 24000,
   46875 and 48000 Hz, checks the passband/stopband of each width, the 288-tap
-  design at forced rates, and that unrealizable widths fail rather than clamp.
+  design at forced rates, that unrealizable widths fail rather than clamp, and
+  that the width reported for the legacy WIDE plan is the passband that plan
+  has, the 63-tap fallback included.
 - `RUNTIME_ANALOG_CHANNEL` covers the width ranges, parser and validator text
   across DSP rates.
 - `IO_RTL_DEMOD_CONFIG` covers the analog enable rule at 12/16/24/48 kHz, the
   explicit-width and `DSD_NEO_CHANNEL_LPF=0` cases, the unchanged M17 encoder, and
   the AM refusal; `IO_RTL_RETUNE_PREPARE` covers the analog retune resets, the
-  coefficient refresh after a forced rate change, and analog retune profiles;
+  coefficient refresh after a forced rate change, the channel a rate change
+  resolves (the fallback prototype's width published past the tap capacity),
+  and analog retune profiles;
   `IO_RTL_ANALOG_FAMILY_SWITCH` checks that digital -> analog -> digital ends on
   a fresh open for P25 C4FM/CQPSK, DMR, NXDN48 and dPMR, at unforced rates and at
   forced 78,125 and 60,000 Hz rates, with loop state, monitor audio state, the

@@ -7344,18 +7344,15 @@ rtl_stream_test_publish_demod_snapshot(void) {
 }
 #endif
 
-/* Width the analog channel actually has when the width-driven filter is not what bounds it: the legacy WIDE design
- * (an unset default the rate cannot fit) protects the largest width the rate fits; with no channel filter, or a width
+/* Width the analog channel actually has when the width-driven filter is not what bounds it: the legacy WIDE plan (an
+ * unset default the rate cannot fit) protects the width that plan passes at this rate, the largest width the rate fits
+ * below ~19.1 kHz and the 63-tap fallback prototype's above the 288-tap capacity; with no channel filter, or a width
  * the rate cannot realize, the DSP rate itself is the bound. */
 static int
 rtl_stream_analog_dsp_limited_width_hz(void) {
     const int rate = demod.rate_out;
     if (demod.channel_lpf_enable && demod.channel_lpf_width_hz <= 0) {
-        const int max_hz = dsd_analog_width_max_for_rate(rate);
-        const int default_hz = dsd_analog_width_default_hz(demod.analog_demod);
-        if (max_hz > 0) {
-            return max_hz < default_hz ? max_hz : default_hz;
-        }
+        return dsd_channel_lpf_legacy_wide_width_hz(rate);
     }
     return rate > 0 ? rate : 0;
 }

@@ -474,12 +474,9 @@ dsd_channel_lpf_design_analog(int rate_hz, int width_hz, float* taps_out, int ma
                                max_taps);
 }
 
-static int
-channel_lpf_design_low_pass(double sample_rate, double cutoff_hz, float* taps_out, int max_taps) {
-    if (sample_rate <= 0.0 || !taps_out || max_taps <= 0) {
-        return -1;
-    }
-
+/* The cutoff the profile design uses: at least 100 Hz, and held to 0.9 x Nyquist. */
+static double
+channel_lpf_profile_cutoff_hz(double sample_rate, double cutoff_hz) {
     const double nyquist = sample_rate * 0.5;
     const double max_cutoff = nyquist * 0.90;
     double cutoff = cutoff_hz;
@@ -489,8 +486,17 @@ channel_lpf_design_low_pass(double sample_rate, double cutoff_hz, float* taps_ou
     if (cutoff > max_cutoff) {
         cutoff = max_cutoff;
     }
+    return cutoff;
+}
 
-    return dsd_firdes_low_pass(1.0, sample_rate, cutoff, kChannelLpfTransitionHz, DSD_WIN_BLACKMAN, taps_out, max_taps);
+static int
+channel_lpf_design_low_pass(double sample_rate, double cutoff_hz, float* taps_out, int max_taps) {
+    if (sample_rate <= 0.0 || !taps_out || max_taps <= 0) {
+        return -1;
+    }
+
+    return dsd_firdes_low_pass(1.0, sample_rate, channel_lpf_profile_cutoff_hz(sample_rate, cutoff_hz),
+                               kChannelLpfTransitionHz, DSD_WIN_BLACKMAN, taps_out, max_taps);
 }
 
 static const float*
@@ -537,6 +543,32 @@ channel_lpf_design_profile_plan(struct demod_state* d, int profile, int rate_out
         taps_len = fallback_len;
     }
     return taps_len;
+}
+
+/* The 63-tap WIDE fallback prototype is a Blackman low-pass cut at a third of the rate it runs at (8 kHz at the 24 kHz
+ * it was designed for). Being a fixed set of taps, its whole response, transition included, scales with that rate. */
+static const double kChannelLpfWideFallbackCutoffPerRate = 1.0 / 3.0;
+
+int
+dsd_channel_lpf_legacy_wide_width_hz(int rate_hz) {
+    if (rate_hz <= 0) {
+        return 0;
+    }
+    const double rate = (double)rate_hz;
+    double cutoff_hz = 0.0;
+    double transition_hz = 0.0;
+    if (dsd_firdes_compute_ntaps(rate, kChannelLpfTransitionHz, DSD_WIN_BLACKMAN) <= kChannelLpfTaps) {
+        /* channel_lpf_design_profile_plan() designs WIDE within the 144-tap cap. */
+        cutoff_hz = channel_lpf_profile_cutoff_hz(rate, kChannelLpfWideCutoffHz);
+        transition_hz = kChannelLpfTransitionHz;
+    } else {
+        /* ... and runs the fallback prototype where that design does not fit. */
+        cutoff_hz = rate * kChannelLpfWideFallbackCutoffPerRate;
+        transition_hz = dsd_window_max_attenuation(DSD_WIN_BLACKMAN) * rate / (22.0 * (double)kChannelLpfFallbackTaps);
+    }
+    /* The protected passband ends where the transition starts, half a transition below the cutoff. */
+    const double width_hz = 2.0 * (cutoff_hz - transition_hz * 0.5);
+    return width_hz > 0.0 ? (int)lround(width_hz) : 0;
 }
 
 /**

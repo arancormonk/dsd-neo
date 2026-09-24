@@ -380,6 +380,61 @@ test_digital_row_profile_under_analog_family(demod_state* s) {
     return 0;
 }
 
+/* The width published for the legacy WIDE plan (the unset NFM default where the 16 kHz design does not fit) is the
+ * passband that plan really has, at every rate: the 144-tap design, its cutoff held to 0.9 x Nyquist at low rates, and
+ * the 63-tap fallback prototype above ~51.4 kHz, whose response scales with the rate. The plan passes that width within
+ * 1 dB and, where the rate leaves room, is down 20 dB a quarter past its own transition (Blackman,
+ * 74 x R / (22 x taps)) beyond it, so the width is neither wider nor much narrower than what the plan passes. */
+static int
+test_legacy_wide_width(demod_state* s) {
+    struct legacy_case {
+        int rate_hz;
+        int taps_len;
+        int width_hz; /* 0: only the response bounds */
+    };
+
+    const legacy_case cases[] = {
+        {12000, 33, 9600},   {16000, 45, 13200}, {24000, 67, 16000}, {46875, 131, 16000},
+        {48000, 135, 16000}, {78125, 63, 0},     {104000, 63, 0},    {128000, 63, 0},
+    };
+    static float taps[DSD_CHANNEL_LPF_MAX_TAPS];
+    for (const legacy_case& c : cases) {
+        int len = 0;
+        design_plan(s, c.rate_hz, DSD_CH_LPF_PROFILE_WIDE, 0, taps, &len);
+        const int width_hz = dsd_channel_lpf_legacy_wide_width_hz(c.rate_hz);
+        if (len != c.taps_len || width_hz <= 0 || (c.width_hz > 0 && width_hz != c.width_hz)) {
+            DSD_FPRINTF(stderr, "legacy WIDE at %d Hz: %d taps (want %d), width %d (want %d)\n", c.rate_hz, len,
+                        c.taps_len, width_hz, c.width_hz);
+            return 1;
+        }
+        const double rate = (double)c.rate_hz;
+        const double half_hz = (double)width_hz * 0.5;
+        for (int f_hz = 0; (double)f_hz <= half_hz; f_hz += 25) {
+            if (tap_response_db(taps, len, rate, (double)f_hz) < -1.0) {
+                DSD_FPRINTF(stderr, "legacy WIDE at %d Hz: %d Hz inside the %d Hz width is below -1 dB\n", c.rate_hz,
+                            f_hz, width_hz);
+                return 1;
+            }
+        }
+        if (tap_response_db(taps, len, rate, half_hz) < -1.0) {
+            DSD_FPRINTF(stderr, "legacy WIDE at %d Hz: the %d Hz width's edge is below -1 dB\n", c.rate_hz, width_hz);
+            return 1;
+        }
+        const double transition_hz = dsd_window_max_attenuation(DSD_WIN_BLACKMAN) * rate / (22.0 * (double)len);
+        const double skirt_hz = half_hz + 1.25 * transition_hz;
+        if (skirt_hz < rate * 0.5 && tap_response_db(taps, len, rate, skirt_hz) > -20.0) {
+            DSD_FPRINTF(stderr, "legacy WIDE at %d Hz: %.0f Hz past the %d Hz width is above -20 dB\n", c.rate_hz,
+                        skirt_hz, width_hz);
+            return 1;
+        }
+    }
+    if (dsd_channel_lpf_legacy_wide_width_hz(0) != 0 || dsd_channel_lpf_legacy_wide_width_hz(-48000) != 0) {
+        DSD_FPRINTF(stderr, "legacy WIDE width reported for a rate of 0 or less\n");
+        return 1;
+    }
+    return 0;
+}
+
 /* The runtime validator mirrors the DSP design constants. */
 static int
 test_runtime_mirror(void) {
@@ -427,6 +482,7 @@ main(void) {
     rc |= test_unrealizable_width(s);
     rc |= test_cqpsk_under_analog_family_keeps_profile(s);
     rc |= test_digital_row_profile_under_analog_family(s);
+    rc |= test_legacy_wide_width(s);
     rc |= test_runtime_mirror();
     std::free(s);
     return rc;
