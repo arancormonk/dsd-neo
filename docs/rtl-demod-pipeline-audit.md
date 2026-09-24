@@ -227,7 +227,14 @@ A decode-mode change, from the mode control or a config apply, asks the
 running front end first (`rtl_stream_check_analog_profile()`, the checks a
 request makes before it queues): a mode whose analog profile the front end would
 refuse fails with a toast and leaves the decoder's mode as it was, so the
-decoder and the front end never disagree about the family.
+decoder and the front end never disagree about the family. The demod thread
+checks the width again when it consumes the request, against the rate the
+stream is on then (a retune can move it). A width change on the running monitor
+that rate cannot realize is refused there, and the monitor keeps its profile. A
+request that moves the stream onto the monitor goes ahead, because the decoder
+has already switched on the first check: it lands as a retune right after the
+switch would leave it, the width kept, logged with the validator's text and
+published as DSP-limited.
 
 Toggling CQPSK on under `-fA` leaves the analog family flag set but takes the
 output off the monitor, so that stream keeps its P25 CQPSK profile filter and

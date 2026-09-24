@@ -421,6 +421,8 @@ typedef struct rtl_stream_test_live_request_result {
     int published_width_after;
     int retune_rc;     /* rtl_stream_prepare_retune_analog_profile_for_target() while the stream runs */
     int retune_queued; /* 1 when a retune profile for the target was left pending */
+    int monitor_after; /* dsd_demod_analog_monitor_active() after the boundary */
+    int published_lpf_on_after;
 } rtl_stream_test_live_request_result;
 
 /* Run a stream at @p rate_hz (the analog monitor at its default width, or a DMR session when @p analog_stream is 0)
@@ -430,11 +432,12 @@ typedef struct rtl_stream_test_live_request_result {
 int rtl_stream_test_analog_request_with_stream(int rate_hz, int analog_stream, int post_downsample, int kind,
                                                int width_hz, rtl_stream_test_live_request_result* out);
 
-/* A live NFM request for @p width_hz checked against the rate a running -fA session (unset default width) published at
- * @p rate_hz, then consumed after a retune settled the stream on @p landed_rate_hz: the request is queued, the rate
- * chain is finalized on the landed rate as a retune does, and one demod-thread block boundary consumes it. The
- * *_before fields are read after the retune, just before that boundary; the retune fields are unused. */
-int rtl_stream_test_analog_request_across_rate_change(int rate_hz, int landed_rate_hz, int width_hz,
+/* A live NFM request for @p width_hz checked against the rate a running stream published at @p rate_hz (a -fA session
+ * at the unset default width, or a DMR session when @p analog_stream is 0), then consumed after a retune settled the
+ * stream on @p landed_rate_hz: the request is queued, the rate chain is finalized on the landed rate as a retune does,
+ * and one demod-thread block boundary consumes it. The *_before fields are read after the retune, just before that
+ * boundary; the retune fields are unused. */
+int rtl_stream_test_analog_request_across_rate_change(int rate_hz, int landed_rate_hz, int width_hz, int analog_stream,
                                                       rtl_stream_test_live_request_result* out);
 
 typedef struct rtl_stream_test_audio_reset_result {

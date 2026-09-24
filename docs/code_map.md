@@ -601,7 +601,11 @@ Notes:
     analog width is checked again against the demod rate it lands on, both a live request when the demod thread
     consumes it and a retune profile when the retune lands (a retune can move the rate after the request was checked
     against the published one); a width that rate cannot realize is refused (logged once per kind, width and rate) and
-    the front end keeps its receive profile. A digital family request leaves the analog family whenever the stream
+    the front end keeps its receive profile. The exception is a live request that moves the stream onto the analog
+    monitor output, whose caller has already switched the decoder to Analog on the check the request passed: it goes
+    ahead as a retune right after the switch would leave it (the width kept, logged with the validator's text,
+    published as DSP-limited), so the decoder and the front end never disagree about the family. A digital family
+    request leaves the analog family whenever the stream
     runs it (`demod_state::analog_family`, published as `rtl_stream_analog_family_active()`), including after a symbol
     profile applied on its own (a typed digital scan row under `-fA`, a CQPSK toggle) has moved the front end off the
     analog monitor: such a profile never leaves the family, and the decoder asks for the digital family only when its
@@ -635,7 +639,8 @@ Notes:
     picked; a typed digital row under `-fA` and on a DMR session switched
     to analog; width-only changes; requests with no stream; live requests and
     retune profiles refused against a running stream's rate and a replay's `post_downsample`, and a live request
-    refused at the rate a retune moved the stream to before it was consumed; a demod block boundary
+    refused at the rate a retune moved the stream to before it was consumed, or applied as DSP-limited when it moves a
+    DMR session onto the monitor; a demod block boundary
     between the family request and its symbol profile; a switch whose ring clear meets a decoder read between its
     copy and its tail store; the baselines run the same demod configuration functions as
     `dsd_rtl_stream_open()`), `IO_RTL_ANALOG_OPEN` (the start-time check against the rate an IQ replay delivers, and a
