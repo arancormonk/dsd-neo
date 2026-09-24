@@ -1240,6 +1240,13 @@ symbol_process_analog_capture(dsd_opts* opts, dsd_state* state, const symbol_wor
     if (work->rtl_symbol_rate_output) {
         return;
     }
+    /* The analog family's block is monitor audio. Between a switch into that family and the demod thread applying it
+       at its next block boundary, the front end still delivers the digital family's discriminator output: that is
+       not collected, or the block would play it as monitor audio (the switch ends it at the boundary, see
+       symbol_refresh_rtl_profile()). */
+    if (work->rtl_direct_output && dsd_opts_is_analog_family(opts)) {
+        return;
+    }
 #endif
     if (have_sync == 0) {
         symbol_process_unsynced_analog(opts, state, work->analog_out_cap, work->sample);
@@ -1381,6 +1388,9 @@ symbol_refresh_rtl_profile(dsd_state* state, symbol_work_ctx* work) {
     if (!work) {
         return 0;
     }
+    /* The output the previous refresh saw: the cache keeps a direct output's kind, and is cleared to 0 on the monitor
+       output (and before the first refresh). */
+    const int was_direct = (state && state->rtl_symbol_cache_output_kind != 0) ? 1 : 0;
     work->rtl_direct_output =
         rtl_symbol_current_profile(&work->rtl_output_kind, &work->rtl_channel_profile, &work->rtl_symbol_rate_hz,
                                    &work->rtl_symbol_levels, &work->rtl_stream_generation);
@@ -1394,6 +1404,12 @@ symbol_refresh_rtl_profile(dsd_state* state, symbol_work_ctx* work) {
                                      work->rtl_symbol_levels, work->rtl_stream_generation);
     } else {
         rtl_symbol_cache_clear(state);
+    }
+    if (state && work->rtl_direct_output != was_direct) {
+        /* The front end moved between the monitor output and a direct (digital) one: a receive-family switch landed.
+           Whatever the analog block part-collected came off the old output, so the next block starts with the new
+           one's samples. (A stream's first direct read lands here too, with nothing collected yet.) */
+        symbol_reset_analog_buffers(state);
     }
     return work->rtl_direct_output;
 }

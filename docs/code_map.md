@@ -500,7 +500,11 @@ installs from `src/engine/trunk_tuning.c` in `src/engine/trunk_tuning_hooks_inst
   mono samples.
   The block (`dsd_state::analog_out_f`) collects unsynced samples in a digital session too, monitored or not (the
   CQPSK symbol-rate output excepted). `dsd_symbol_analog_block_reset()` (`<dsd-neo/dsp/symbol.h>`, decoder thread)
-  drops a part-collected block; app-control and the channel-scan leave call it when the receive family changes.
+  drops a part-collected block; app-control and the channel-scan leave call it when the receive family changes. On an
+  RTL front end the switch itself lands later, at the demod thread's next block boundary, so `getSymbol()` also
+  follows the output it reads: an analog-family decoder does not collect a direct (digital) output's samples while
+  the front end has yet to switch, and a move between the monitor output and a direct one drops the part-collected
+  block (`symbol_refresh_rtl_profile()`), so the first block the new family plays holds only its own samples.
   `tests/engine/analog_replay.c` (`dsd-neo_test_analog_replay`, the `DECODE_IQ_ANALOG_*` cases) captures and scores
   exactly that output through the hook, and times it with a wrapped RTL stream read hook, so changes to the monitor
   chain are measured against what a listener hears; back them with `tools/replay_ab.sh --metric analog` evidence
