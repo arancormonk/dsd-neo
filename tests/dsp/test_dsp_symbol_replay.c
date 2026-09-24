@@ -1545,7 +1545,8 @@ test_rx_tone_stalled_radio_stream_goes_stale(void) {
 }
 
 /* The reconnect test's TCP audio source: the connection drops once, as the reconnect's backoff
-   passes on the injected clock, and the new connection then carries a 131.8 Hz tone. */
+   passes on the injected clock, and the new connection then carries a 131.8 Hz tone in real
+   time. */
 static int g_tcp_ctx_token = 0;
 static int g_tcp_opens = 0;
 static int g_tcp_drops_left = 0;
@@ -1574,6 +1575,10 @@ fake_tcp_read_sample(tcp_input_ctx* ctx, int16_t* out) {
     }
     *out = (int16_t)lround(3000.0 * cos(2.0 * M_PI * 131.8 * (double)g_tcp_sample_n / 48000.0));
     g_tcp_sample_n++;
+    /* A live connection: samples arrive at 48 kHz, one millisecond per 48. */
+    if (g_tcp_sample_n % 48 == 0) {
+        g_fake_now_ms++;
+    }
     return 1;
 }
 
@@ -1646,6 +1651,189 @@ test_rx_tone_tcp_reconnect_starts_a_new_reception(void) {
     dsd_socket_cleanup();
 }
 
+/* A block a live input had already queued when the decoder reads it: the decoder drains a
+   backlog far faster than real time, so no time passes on the clock. */
+static void
+feed_queued_block(dsd_opts* opts, dsd_state* state, double hz) {
+    float block[960];
+    fill_tone_block(block, 960U, hz, 3000.0);
+    assert(dsd_symbol_test_finalize_unsynced_analog_block(opts, state, block, 960U) == 960U);
+}
+
+/* Block @p b of a live stream that delivers @p burst_blocks 20 ms blocks at a time, as a
+   producer sending large datagrams does: each burst arrives after its own duration, all at once. */
+static void
+feed_burst_block(dsd_opts* opts, dsd_state* state, double hz, int b, int burst_blocks) {
+    if (b % burst_blocks == 0) {
+        g_fake_now_ms += 20U * (uint64_t)burst_blocks;
+    }
+    feed_queued_block(opts, state, hz);
+}
+
+enum { BACKLOG_BOUNDARY_RESET = 0, BACKLOG_BOUNDARY_TUNING = 1, BACKLOG_QUEUED_BLOCKS = 25 };
+
+/*
+ * The audio a live input had queued when the receiver moved. A rigctl retune holds the decoder
+ * while the old channel's audio keeps arriving -- in the UDP ring, the TCP socket, the Pulse
+ * record buffer or the stdin pipe -- and the decoder then reads that backlog at CPU speed. The
+ * reset empties the monitor block, but the backlog comes in after it. At 48 kHz on the injected
+ * clock: 100.0 Hz locks at real-time pace, the receiver moves (an announced reset, as a scan
+ * step makes, or a trunk-tuning generation move, as a hook-driven rigctl retune leaves), half a
+ * second of the old channel's tone arrives queued, and the new channel then carries 131.8 Hz,
+ * delivered @p burst_blocks 20 ms blocks at a time. Heard, the backlog locks 100.0 Hz again on
+ * the new channel. None of it may be heard -- the row reads no carrier throughout -- the old
+ * tone must never come back, and the new one must lock within the p95 target of its arrival
+ * plus the one read the skip still takes once the backlog is gone.
+ */
+static void
+run_retune_backlog(int audio_in_type, int boundary, int burst_blocks) {
+    static dsd_opts opts;
+    static dsd_state state;
+    install_fake_rtl_hooks(0);
+    init_analog_monitor_fixture(&opts, &state);
+    opts.audio_in_type = audio_in_type;
+    dsd_analog_rx_test_set_clock(fake_now_ms);
+    g_fake_now_ms = 1100000U;
+    g_tone_phase = 0.0;
+
+    for (int b = 0; b < 30; b++) {
+        feed_stream_block(&opts, &state, 100.0);
+    }
+    assert(rx_tone_locked_on_100(&state));
+    const uint32_t generation = state.analog_rx.generation;
+
+    if (boundary == BACKLOG_BOUNDARY_RESET) {
+        dsd_analog_rx_reset(&state);
+    } else {
+        dsd_trunk_tuning_generation_advance();
+    }
+    for (int b = 0; b < BACKLOG_QUEUED_BLOCKS; b++) {
+        feed_queued_block(&opts, &state, 100.0);
+        assert(state.analog_rx.generation != generation);
+        assert(state.analog_rx.tone_state == DSD_ANALOG_TONE_STATE_IDLE && state.analog_rx.carrier_open == 0);
+        assert(state.analog_rx.ctcss_tenths_hz == 0);
+    }
+
+    g_tone_phase = 0.3;
+    int locked_at = -1;
+    for (int b = 0; b < 40; b++) {
+        feed_burst_block(&opts, &state, 131.8, b, burst_blocks);
+        assert(state.analog_rx.ctcss_tenths_hz != 1000);
+        if (locked_at < 0 && state.analog_rx.tone_state == DSD_ANALOG_TONE_STATE_LOCKED) {
+            locked_at = b;
+        }
+    }
+    assert(state.analog_rx.tone_state == DSD_ANALOG_TONE_STATE_LOCKED && state.analog_rx.ctcss_tenths_hz == 1318);
+    assert(locked_at >= 0);
+    assert((locked_at + 1) * 20 <= DSD_ANALOG_CTCSS_LOCK_P95_MS + DSD_ANALOG_RX_TAP_READ_MS);
+
+    dsd_analog_rx_test_set_clock(NULL);
+    dsd_state_ext_free_all(&state);
+}
+
+/*
+ * Every live PCM input, both kinds of boundary, and 20 ms and 100 ms deliveries. A file is not
+ * skipped: it queues nothing from another channel, and after a reset it is heard at once however
+ * fast it is read. Nor is a live input with no backlog held back for more than two reads: the
+ * first read after a boundary may have waited in the input for any length of time, and only the
+ * one after it can show that the input ran dry.
+ */
+static void
+test_rx_tone_retune_skips_the_input_backlog(void) {
+    static const int inputs[] = {AUDIO_IN_UDP, AUDIO_IN_TCP, AUDIO_IN_PULSE, AUDIO_IN_STDIN};
+    for (size_t i = 0; i < sizeof(inputs) / sizeof(inputs[0]); i++) {
+        run_retune_backlog(inputs[i], BACKLOG_BOUNDARY_RESET, 1);
+        run_retune_backlog(inputs[i], BACKLOG_BOUNDARY_TUNING, 1);
+        run_retune_backlog(inputs[i], BACKLOG_BOUNDARY_RESET, 5);
+        run_retune_backlog(inputs[i], BACKLOG_BOUNDARY_TUNING, 5);
+    }
+
+    static dsd_opts opts;
+    static dsd_state state;
+    install_fake_rtl_hooks(0);
+    init_analog_monitor_fixture(&opts, &state);
+    dsd_analog_rx_test_set_clock(fake_now_ms);
+    g_fake_now_ms = 1200000U;
+    g_tone_phase = 0.0;
+
+    /* A WAV file read at any speed. */
+    for (int b = 0; b < 30; b++) {
+        feed_queued_block(&opts, &state, 100.0);
+    }
+    assert(rx_tone_locked_on_100(&state));
+    dsd_analog_rx_reset(&state);
+    feed_queued_block(&opts, &state, 100.0);
+    assert(state.analog_rx.carrier_open == 1 && state.analog_rx.tone_state == DSD_ANALOG_TONE_STATE_ACQUIRING);
+    for (int b = 1; b < 30; b++) {
+        feed_queued_block(&opts, &state, 100.0);
+    }
+    assert(rx_tone_locked_on_100(&state));
+
+    /* UDP with nothing queued: the first read after the reset is skipped, the second shows the
+       input keeping real time and is skipped too, and the third is heard. After a generation
+       move the first read is the one the move is seen on, dropped as before, and the skip
+       costs the second only. */
+    opts.audio_in_type = AUDIO_IN_UDP;
+    dsd_analog_rx_reset(&state);
+    feed_stream_block(&opts, &state, 100.0);
+    feed_stream_block(&opts, &state, 100.0);
+    assert(state.analog_rx.carrier_open == 0 && state.analog_rx.tone_state == DSD_ANALOG_TONE_STATE_IDLE);
+    feed_stream_block(&opts, &state, 100.0);
+    assert(state.analog_rx.carrier_open == 1 && state.analog_rx.tone_state == DSD_ANALOG_TONE_STATE_ACQUIRING);
+    const uint32_t generation = state.analog_rx.generation;
+    dsd_trunk_tuning_generation_advance();
+    feed_stream_block(&opts, &state, 100.0);
+    assert(state.analog_rx.generation != generation);
+    feed_stream_block(&opts, &state, 100.0);
+    assert(state.analog_rx.carrier_open == 0 && state.analog_rx.tone_state == DSD_ANALOG_TONE_STATE_IDLE);
+    feed_stream_block(&opts, &state, 100.0);
+    assert(state.analog_rx.carrier_open == 1 && state.analog_rx.tone_state == DSD_ANALOG_TONE_STATE_ACQUIRING);
+
+    dsd_analog_rx_test_set_clock(NULL);
+    dsd_state_ext_free_all(&state);
+}
+
+/*
+ * An input that never runs dry -- stdin fed from a file, read as fast as the decoder goes -- is
+ * heard again once DSD_ANALOG_RX_BACKLOG_MAX_MS of it has been skipped after a boundary, and its
+ * tone then locks within the p95 target.
+ */
+static void
+test_rx_tone_backlog_skip_is_bounded(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    install_fake_rtl_hooks(0);
+    init_analog_monitor_fixture(&opts, &state);
+    opts.audio_in_type = AUDIO_IN_STDIN;
+    dsd_analog_rx_test_set_clock(fake_now_ms);
+    g_fake_now_ms = 1300000U;
+    g_tone_phase = 0.0;
+
+    for (int b = 0; b < 30; b++) {
+        feed_stream_block(&opts, &state, 100.0);
+    }
+    assert(rx_tone_locked_on_100(&state));
+    dsd_analog_rx_reset(&state);
+
+    const int skipped_blocks = DSD_ANALOG_RX_BACKLOG_MAX_MS / 20;
+    for (int b = 0; b < skipped_blocks; b++) {
+        feed_queued_block(&opts, &state, 100.0);
+        assert(state.analog_rx.carrier_open == 0 && state.analog_rx.tone_state == DSD_ANALOG_TONE_STATE_IDLE);
+    }
+    int locked_at = -1;
+    for (int b = 0; b < 40 && locked_at < 0; b++) {
+        feed_queued_block(&opts, &state, 100.0);
+        assert(state.analog_rx.carrier_open == 1);
+        if (rx_tone_locked_on_100(&state)) {
+            locked_at = b;
+        }
+    }
+    assert(locked_at >= 0 && (locked_at + 1) * 20 <= DSD_ANALOG_CTCSS_LOCK_P95_MS);
+
+    dsd_analog_rx_test_set_clock(NULL);
+    dsd_state_ext_free_all(&state);
+}
+
 int
 main(void) {
     exitflag = 0;
@@ -1678,6 +1866,8 @@ main(void) {
     test_rx_tone_pcm_squelch_follows_each_read();
     test_rx_tone_stalled_radio_stream_goes_stale();
     test_rx_tone_tcp_reconnect_starts_a_new_reception();
+    test_rx_tone_retune_skips_the_input_backlog();
+    test_rx_tone_backlog_skip_is_bounded();
     return 0;
 }
 

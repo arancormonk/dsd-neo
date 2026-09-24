@@ -407,6 +407,12 @@ typedef struct {
     /** The input rate at the tap's last read, which the samples it has not read yet arrived
         at; 0 once a reset has emptied the monitor block, when nothing unread is left. */
     int read_rate_hz;
+    /** 1 from a boundary until a read shows the input ran dry (analog_rx_backlog_skipped()). */
+    int backlog_armed;
+    int backlog_span_open;          /**< 1 once a read since the boundary started a measured span */
+    uint64_t backlog_span_start_ms; /**< monotonic ms at which the span being measured started */
+    uint64_t backlog_span_us;       /**< input read in that span, in sample time */
+    uint64_t backlog_skipped_us;    /**< input skipped since the boundary, in sample time */
 } analog_rx_session;
 
 #ifdef DSD_NEO_TEST_HOOKS
@@ -567,6 +573,78 @@ analog_rx_input_paused(const dsd_opts* opts, analog_rx_session* session, unsigne
     return paused;
 }
 
+/*
+ * Live inputs that can queue audio before the decoder reads it: the UDP ring, the TCP socket,
+ * the Pulse record buffer and the stdin pipe. What they hold at a boundary arrived before it --
+ * a rigctl retune holds the decoder while the old channel keeps arriving -- and the monitor block
+ * a reset empties is only the part the symbol path had already taken. An RTL-family stream clears
+ * its own output at a retune and moves its generation, and a file queues no other channel.
+ */
+static int
+analog_rx_input_queues(const dsd_opts* opts) {
+    switch (opts->audio_in_type) {
+        case AUDIO_IN_PULSE:
+        case AUDIO_IN_STDIN:
+        case AUDIO_IN_UDP:
+        case AUDIO_IN_TCP: return 1;
+        default: return 0;
+    }
+}
+
+/* Skip what the input had queued at the boundary just crossed. */
+static void
+analog_rx_arm_backlog_skip(analog_rx_session* session) {
+    session->backlog_armed = 1;
+    session->backlog_span_open = 0;
+    session->backlog_span_start_ms = 0U;
+    session->backlog_span_us = 0U;
+    session->backlog_skipped_us = 0U;
+}
+
+/*
+ * After a boundary, on an input that queues, every read is skipped until one shows the input ran
+ * dry. The decoder drains a backlog far faster than real time, so the test is a span of at least
+ * DSD_ANALOG_RX_TAP_READ_MS of input that took at least half as long to arrive: the decoder had
+ * to wait for it. The first read after the boundary only starts the clock, since it may have
+ * waited in the input for any length of time (after a generation move that is the read the move
+ * is seen on, dropped already), and the read that ends the waiting span is skipped too, since it
+ * can still open with the backlog's last samples; the next read holds only audio that arrived
+ * after the boundary. An input that never runs dry (stdin fed from a file) is heard
+ * again after DSD_ANALOG_RX_BACKLOG_MAX_MS of it. Returns 1 when this read is skipped.
+ */
+static int
+analog_rx_backlog_skipped(const dsd_opts* opts, analog_rx_session* session, unsigned int count, int rate_hz) {
+    if (!session->backlog_armed) {
+        return 0;
+    }
+    if (!analog_rx_input_queues(opts) || rate_hz <= 0) {
+        session->backlog_armed = 0;
+        return 0;
+    }
+    const uint64_t now = analog_rx_now_ms();
+    const uint64_t read_us = ((uint64_t)count * 1000000U) / (uint64_t)rate_hz;
+    session->backlog_skipped_us += read_us;
+    if (!session->backlog_span_open) {
+        session->backlog_span_open = 1;
+        session->backlog_span_start_ms = now;
+        session->backlog_span_us = 0U;
+    } else {
+        session->backlog_span_us += read_us;
+        if (session->backlog_span_us >= (uint64_t)DSD_ANALOG_RX_TAP_READ_MS * 1000U) {
+            const uint64_t waited_ms = now > session->backlog_span_start_ms ? now - session->backlog_span_start_ms : 0U;
+            if (2U * waited_ms * 1000U >= session->backlog_span_us) {
+                session->backlog_armed = 0;
+            }
+            session->backlog_span_start_ms = now;
+            session->backlog_span_us = 0U;
+        }
+    }
+    if (session->backlog_skipped_us >= (uint64_t)DSD_ANALOG_RX_BACKLOG_MAX_MS * 1000U) {
+        session->backlog_armed = 0;
+    }
+    return 1;
+}
+
 /* A retune nobody told the tap about shows up as a generation change: the RTL stream's for
    a direct or UDP-driven retune, the trunk-tuning one for a hook-driven or rigctl retune. */
 static int
@@ -650,6 +728,8 @@ dsd_analog_rx_reset(dsd_state* state) {
     if (session) {
         session->block_taken = 0U;
         session->read_rate_hz = 0;
+        /* Nor may what a live input still holds, which arrived before the boundary too. */
+        analog_rx_arm_backlog_skip(session);
     }
     analog_rx_forget(state);
 }
@@ -685,8 +765,13 @@ analog_rx_boundary_dropped(const dsd_opts* opts, dsd_state* state, analog_rx_ses
         dsd_analog_rx_core_reset(&session->core);
     }
     if (moved) {
-        /* A retune starts the stream afresh: no deadline until it delivers again. */
+        /* A retune starts the stream afresh: no deadline until it delivers again, and what the
+           input had queued is the old channel's. This read, dropped here, starts the clock the
+           skip measures the next ones against. */
         session->stale_after_ms = 0;
+        analog_rx_arm_backlog_skip(session);
+        session->backlog_span_open = 1;
+        session->backlog_span_start_ms = analog_rx_now_ms();
     }
     analog_rx_publish(state, session);
     return 1;
@@ -713,6 +798,10 @@ analog_rx_read(const dsd_opts* opts, dsd_state* state, const float* samples, uns
             return;
         }
     } else if (analog_rx_boundary_dropped(opts, state, session, count, rate_hz)) {
+        return;
+    }
+    if (analog_rx_backlog_skipped(opts, session, count, rate_hz)) {
+        analog_rx_publish(state, session);
         return;
     }
     if (!dsd_analog_rx_core_process(&session->core, samples, (int)count, rate_hz,

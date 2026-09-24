@@ -104,6 +104,16 @@ enum {
 enum { DSD_ANALOG_STREAM_PAUSE_MIN_MS = 500 };
 
 /**
+ * @brief Most input, in sample time, the tap skips after a boundary while a live input drains
+ * what it had queued before it (see dsd_analog_rx_reset()).
+ *
+ * A backlog builds only while the decoder is held up, as it is for the rigctl round trip of a
+ * retune; of a longer one, what is left after this much is heard. An input that never runs dry,
+ * such as stdin fed from a file as fast as the decoder reads it, is heard again after it.
+ */
+enum { DSD_ANALOG_RX_BACKLOG_MAX_MS = 2000 };
+
+/**
  * @brief Feed the detectors the rest of a completed raw unsynced analog block.
  *
  * Called from the symbol path after the raw WAV write and before the voice filters, with the
@@ -116,7 +126,8 @@ enum { DSD_ANALOG_STREAM_PAUSE_MIN_MS = 500 };
  * DSD_ANALOG_STREAM_PAUSE_MIN_MS allows after the previous read, and when the input rate
  * changed since the previous read. Each way the samples read may straddle the boundary -- after
  * a rate change, samples taken at the old rate are another signal at the new one -- so they are
- * dropped and the new reception starts with the next read.
+ * dropped and the new reception starts with the next read. After a generation move it also skips
+ * what the input had queued, as after dsd_analog_rx_reset().
  */
 void dsd_analog_rx_tap(const dsd_opts* opts, dsd_state* state, const float* block, unsigned int count);
 
@@ -139,6 +150,16 @@ void dsd_analog_rx_tap_partial(const dsd_opts* opts, dsd_state* state, const flo
  * symbol path is part-way through assembling (dsd_state::analog_out_f and its sample counter)
  * and starts the tap's reading over with the next block: those samples arrived before the
  * boundary, and what the tap reads next, which opens the new reception, must hold none of them.
+ *
+ * Nor may the audio a live input still holds: on Pulse, stdin, UDP and TCP input the old
+ * channel keeps arriving while a rigctl retune holds the decoder, and the decoder reads that
+ * backlog afterwards. So on those inputs the tap skips what it reads after the boundary until a
+ * read shows the input ran dry -- DSD_ANALOG_RX_TAP_READ_MS or more of input that took at least
+ * half as long to arrive, which a backlog read at the decoder's pace never does -- and that read
+ * too, or until it has skipped DSD_ANALOG_RX_BACKLOG_MAX_MS. With nothing queued that costs two
+ * reads. The publication reads IDLE meanwhile. Files and RTL-family streams are not skipped: a
+ * file queues no other channel, and a stream clears its own output at a retune.
+ *
  * Not for the frequent no-carrier cleanup: that runs every few hundred milliseconds in analog
  * mode and would keep a tone from ever locking. Afterwards the publication reads INACTIVE until
  * the tap reads again.
