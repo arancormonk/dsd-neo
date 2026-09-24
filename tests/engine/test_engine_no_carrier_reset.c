@@ -79,7 +79,8 @@ p25_tick_guard_is_held(void) {
 
 #endif
 
-#if defined(USE_RADIO) && defined(DSD_NEO_TEST_RTL_WRAP)
+#if defined(DSD_NEO_TEST_RTL_WRAP)
+#ifdef USE_RADIO
 static int g_p25_tick_guard_held_during_tune = 0;
 static int g_rtl_tune_calls = 0;
 static uint32_t g_rtl_tune_freq = 0;
@@ -125,9 +126,19 @@ reset_rtl_profile_fakes(void) {
     g_check_p25_tick_guard = 0;
     g_p25_tick_guard_held_during_tune = 0;
 }
+#endif
+
+// Rigctl needs a success path here, not just the socket-failure one the rest of the file uses:
+// the interesting cases are a hop whose rigctl leg lands and whose RTL leg then does not, and a
+// rigctl hop on PCM input, which radio-off builds have too. Failing by default is what the real
+// call does on the invalid socket every other case configures.
+static int g_rigctl_setfreq_ok = 0;
+static int g_rigctl_setfreq_calls = 0;
+static long int g_rigctl_setfreq_freq = 0;
 
 // GNU ld --wrap entry points must keep the reserved __wrap_* symbol names.
 // NOLINTBEGIN(bugprone-reserved-identifier, cert-dcl37-c, cert-dcl51-cpp, misc-use-internal-linkage)
+#ifdef USE_RADIO
 uint32_t
 __wrap_rtl_stream_output_rate(const RtlSdrContext* ctx) {
     (void)ctx;
@@ -247,16 +258,6 @@ __wrap_rtl_stream_request_fsk_reacquire(void) {
     return 1;
 }
 #endif
-
-/* The same --wrap block goes on here, under its own guard only because radio-off builds need this wrap too. */
-#if defined(DSD_NEO_TEST_RTL_WRAP)
-// Rigctl needs a success path here, not just the socket-failure one the rest of the file uses:
-// the interesting cases are a hop whose rigctl leg lands and whose RTL leg then does not, and a
-// rigctl hop on PCM input, which radio-off builds have too. Failing by default is what the real
-// call does on the invalid socket every other case configures.
-static int g_rigctl_setfreq_ok = 0;
-static int g_rigctl_setfreq_calls = 0;
-static long int g_rigctl_setfreq_freq = 0;
 
 bool
 __wrap_SetFreq(dsd_socket_t sockfd, long int freq) {
