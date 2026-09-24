@@ -335,6 +335,26 @@ typedef struct rtl_stream_test_read_race_result {
  * (its ring clear included). The read stays stopped until the switch finished or @p hold_ms passed, then completes. */
 int rtl_stream_test_family_switch_during_live_read(int hold_ms, rtl_stream_test_read_race_result* out);
 
+/* A live switch to analog whose ring clear meets a decoder read that reaches the ring before it. */
+typedef struct rtl_stream_test_clear_race_result {
+    int paused;                  /* 1 when the switch stopped in its ring clear, before taking ready_m */
+    int switch_done_during_read; /* 1 when the switch finished before the read did */
+    int read_got;                /* what the live read returned */
+    int analog_family_after;     /* demod_state::analog_family once the switch finished */
+    size_t used_before;
+    size_t used_after; /* samples the ring reports once the switch finished */
+    size_t tail_after;
+    size_t head_after;
+    uint32_t generation_before; /* before the switch */
+    uint32_t read_generation;   /* the generation the read ran under */
+    uint32_t generation_after;  /* once the switch finished */
+} rtl_stream_test_clear_race_result;
+
+/* Open DMR at 48 kHz with a seeded output ring and queue a switch to analog. Another thread consumes the switch as the
+ * demod thread would and stops in its ring clear after the clear's first generation bump, before it takes ready_m;
+ * a decoder-side live read then runs from start to end, and the switch is released to finish. */
+int rtl_stream_test_live_read_during_family_switch_clear(rtl_stream_test_clear_race_result* out);
+
 typedef struct rtl_stream_test_digital_row_result {
     int open_rc;
     /* After the row's symbol profile landed on the -fA session. */

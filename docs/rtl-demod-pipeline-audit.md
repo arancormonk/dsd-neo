@@ -235,6 +235,11 @@ switch. A read holds the ring's `ready_m` from its tail snapshot to its tail
 store, and the clear takes it too, so a read in flight finishes before the clear
 (and is discarded by the generation bump) instead of storing its old tail over
 the cleared indices, which would read as a ring full of the old family's samples.
+A read can also load the generation after that bump and still reach the ring
+before the clear, taking samples the clear was meant to drop under the bumped
+generation, so the clear bumps the generation again under `ready_m` once the
+ring is empty: the generation the stream runs on after a switch is one only a
+read made after the clear can load.
 
 A decode-mode change, from the mode control or a config apply, asks the
 running front end first (`rtl_stream_check_analog_profile()`, which holds the
@@ -349,9 +354,10 @@ invariant to it, so it is left as is.
   before the switch was consumed, and when requested after a retune moved the
   rate its check accepted), with the unset default switching at a rate that
   cannot fit 16 kHz instead, all with the stream keeping the
-  options snapshot it opened with, and a switch whose ring clear meets a decoder
+  options snapshot it opened with, a switch whose ring clear meets a decoder
   read between its copy and its tail store (`RUNTIME_RINGS` holds the replay
-  reader to the same contract); `IO_RTL_ANALOG_OPEN` opens IQ
+  reader to the same contract), and one whose clear a read loading the bumped
+  generation reaches the ring before; `IO_RTL_ANALOG_OPEN` opens IQ
   replays whose demod rate differs from their DSP bandwidth and checks the
   start-time channel decision and refusal, the width a post-demod decimating
   replay publishes, that a tone captured at 78,125 Hz reaches the output once,

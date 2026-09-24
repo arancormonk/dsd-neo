@@ -975,6 +975,29 @@ test_switch_during_live_read(void) {
     return rc;
 }
 
+/* A read can also load the generation after the switch's clear has bumped it and still reach the ring before the clear
+ * takes ready_m. It finishes first, with samples the clear was meant to drop, under the generation it loaded. The
+ * stream must not stay on that generation once the ring is cleared, or the decoder takes those samples as the new
+ * family's and keeps its caches of them. */
+static int
+test_read_before_switch_clear(void) {
+    rtl_stream_test_clear_race_result r;
+    DSD_MEMSET(&r, 0, sizeof r);
+    int rc = expect_int("clear race run", rtl_stream_test_live_read_during_family_switch_clear(&r), 0);
+    rc |= expect_int("clear race: the switch stopped in its ring clear", r.paused, 1);
+    rc |= expect_int("clear race: seeded ring was not empty", r.used_before > 0U, 1);
+    rc |= expect_int("clear race: the read ran after the clear's first bump", r.read_generation != r.generation_before,
+                     1);
+    rc |= expect_int("clear race: the read finished before the clear", r.switch_done_during_read, 0);
+    rc |= expect_int("clear race: the read took samples the clear drops", r.read_got, 16);
+    rc |= expect_int("clear race: the switch landed", r.analog_family_after, 1);
+    rc |= expect_int("clear race: the stream leaves the generation that read ran under",
+                     r.generation_after != r.read_generation, 1);
+    rc |= expect_int("clear race: ring empty after the switch", (int)r.used_after, 0);
+    rc |= expect_int("clear race: indices agree", r.tail_after == r.head_after, 1);
+    return rc;
+}
+
 int
 main(void) {
     dsd_neo_log_set_tap(capture_error_log, NULL);
@@ -1113,6 +1136,7 @@ main(void) {
     rc |= test_cqpsk_override_lands_like_open(&cases[0], &cases[1], &cases[2]);
     rc |= test_lpf_off_lands_like_open(cases, sizeof cases / sizeof cases[0]);
     rc |= test_switch_during_live_read();
+    rc |= test_read_before_switch_clear();
 
     /* Requests the front end cannot honour are refused up front. */
     rc |= expect_int("AM refused", rtl_stream_request_analog_profile(DSD_RX_FAMILY_ANALOG, DSD_ANALOG_DEMOD_AM, 0), -1);

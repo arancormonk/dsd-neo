@@ -609,6 +609,9 @@ static struct RtlSdrInternals g_cqpsk_toggle_test_stream;
 /* Called by ring_read_available() between its copy and the tail it publishes, with ready_m held. */
 static void (*g_test_live_read_pause_hook)(void*) = NULL;
 static void* g_test_live_read_pause_ctx = NULL;
+/* Called by rtl_stream_clear_output_ring() after its first generation bump, before it takes ready_m. */
+static void (*g_test_output_clear_pause_hook)(void*) = NULL;
+static void* g_test_output_clear_pause_ctx = NULL;
 #endif
 /* The consumer's tail snapshot, copy and tail store run under ready_m, which a clear of the ring from another thread
  * (rtl_stream_clear_output_ring()) also takes. Otherwise a clear landing between the snapshot and the store would be
@@ -11100,8 +11103,9 @@ struct ReadRaceContext {
 };
 } // namespace
 
-/* The read's stop between its copy and its tail store: it waits there for the release (bounded, so a broken test
- * cannot hang the suite). */
+/* The stop a race test puts in the read (between its copy and its tail store) or in the switch's ring clear (after its
+ * first generation bump, before it takes ready_m): it waits there for the release (bounded, so a broken test cannot
+ * hang the suite). */
 static void
 read_race_pause(void* arg) {
     ReadRaceContext* ctx = static_cast<ReadRaceContext*>(arg);
@@ -11170,6 +11174,26 @@ read_race_run(ReadRaceContext* ctx, int hold_ms, rtl_stream_test_read_race_resul
     return (reader_started && switcher_started) ? 0 : -1;
 }
 
+/* Open DMR at 48 kHz as a live stream with @p queued samples in its output ring and a switch to analog queued for the
+ * demod thread. */
+static int
+read_race_seed_live_switch(size_t queued, size_t* out_used_before, uint32_t* out_generation_before) {
+    static dsd_opts stream_opts;
+    DSD_MEMSET(&stream_opts, 0, sizeof stream_opts);
+    stream_opts.frame_dmr = 1;
+    stream_opts.mod_c4fm = 1;
+    g_cqpsk_toggle_test_stream.output = &output;
+    g_cqpsk_toggle_test_stream.opts = &stream_opts;
+    g_stream = NULL; /* the open seeds before any pipeline exists */
+    int rc = family_test_seed_open(&stream_opts, 48000, 0);
+    g_stream = &g_cqpsk_toggle_test_stream; /* live from here on: the request queues for the demod thread */
+    family_test_seed_ring(queued);
+    *out_used_before = ring_used(&output);
+    *out_generation_before = rtl_stream_output_generation();
+    rc |= rtl_stream_request_analog_profile(DSD_RX_FAMILY_ANALOG, DSD_ANALOG_DEMOD_FM, 0);
+    return rc;
+}
+
 extern "C" int
 rtl_stream_test_family_switch_during_live_read(int hold_ms, rtl_stream_test_read_race_result* out) {
     if (!out || hold_ms <= 0) {
@@ -11183,19 +11207,7 @@ rtl_stream_test_family_switch_during_live_read(int hold_ms, rtl_stream_test_read
         return -2;
     }
     const FamilyTestSaved saved = family_test_save();
-    static dsd_opts stream_opts;
-    DSD_MEMSET(&stream_opts, 0, sizeof stream_opts);
-    stream_opts.frame_dmr = 1;
-    stream_opts.mod_c4fm = 1;
-    g_cqpsk_toggle_test_stream.output = &output;
-    g_cqpsk_toggle_test_stream.opts = &stream_opts;
-    g_stream = NULL; /* the open seeds before any pipeline exists */
-    int rc = family_test_seed_open(&stream_opts, 48000, 0);
-    g_stream = &g_cqpsk_toggle_test_stream; /* live from here on: the request queues for the demod thread */
-    family_test_seed_ring(queued);
-    out->used_before = ring_used(&output);
-    out->generation_before = rtl_stream_output_generation();
-    rc |= rtl_stream_request_analog_profile(DSD_RX_FAMILY_ANALOG, DSD_ANALOG_DEMOD_FM, 0);
+    int rc = read_race_seed_live_switch(queued, &out->used_before, &out->generation_before);
 
     ReadRaceContext ctx;
     rc |= read_race_run(&ctx, hold_ms, out);
@@ -11209,6 +11221,53 @@ rtl_stream_test_family_switch_during_live_read(int hold_ms, rtl_stream_test_read
     family_test_release_buffers();
     fsk_reacquire_test_cleanup_output_ring(initialized_output);
     return rc == 0 ? 0 : -3;
+}
+
+extern "C" int
+rtl_stream_test_live_read_during_family_switch_clear(rtl_stream_test_clear_race_result* out) {
+    if (!out) {
+        return -1;
+    }
+    *out = {};
+    const size_t queued = 64U;
+    int initialized_output = 0;
+    if (fsk_reacquire_test_prepare_output_ring(queued, &initialized_output) != 0) {
+        fsk_reacquire_test_cleanup_output_ring(initialized_output);
+        return -2;
+    }
+    const FamilyTestSaved saved = family_test_save();
+    int rc = read_race_seed_live_switch(queued, &out->used_before, &out->generation_before);
+
+    ReadRaceContext ctx;
+    g_test_output_clear_pause_ctx = &ctx;
+    g_test_output_clear_pause_hook = read_race_pause;
+    dsd_thread_t switcher{};
+    const int switcher_started = dsd_thread_create(&switcher, read_race_switcher, &ctx) == 0 ? 1 : 0;
+    out->paused = switcher_started ? read_race_wait_for(&ctx.paused, 5000) : 0;
+    if (out->paused) {
+        /* The decoder's read, from its generation load to its tail store, while the clear waits to take ready_m. */
+        float samples[16];
+        int gated = 0;
+        out->read_generation = rtl_stream_output_generation();
+        out->read_got = rtl_stream_read_live_available(&controller, &output, samples, 16U, &gated);
+        out->switch_done_during_read = ctx.switch_done.load(std::memory_order_acquire);
+    }
+    ctx.release.store(1, std::memory_order_release);
+    if (switcher_started) {
+        (void)dsd_thread_join(switcher);
+    }
+    g_test_output_clear_pause_hook = NULL;
+    g_test_output_clear_pause_ctx = NULL;
+    out->used_after = ring_used(&output);
+    out->tail_after = output.tail.load();
+    out->head_after = output.head.load();
+    out->generation_after = rtl_stream_output_generation();
+    out->analog_family_after = demod.analog_family;
+
+    family_test_restore(saved);
+    family_test_release_buffers();
+    fsk_reacquire_test_cleanup_output_ring(initialized_output);
+    return (rc == 0 && switcher_started) ? 0 : -3;
 }
 
 static int
@@ -11801,14 +11860,26 @@ rtl_stream_clear_output_ring(struct output_state* outp, int bump_generation) {
         return;
     }
     if (bump_generation) {
-        /* Invalidate decoder-owned cached symbols before clearing the shared output. */
+        /* Invalidate decoder-owned cached symbols before clearing the shared output, and discard a read already
+           copying from it. */
         rtl_stream_bump_output_generation();
     }
+#if defined(DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS)
+    if (g_test_output_clear_pause_hook) {
+        g_test_output_clear_pause_hook(g_test_output_clear_pause_ctx);
+    }
+#endif
     /* Clear the entire ring to prevent sample 'lag'. Under ready_m, which a consumer holds from its tail snapshot to
        its tail store (ring_read_available(), ring_read_batch()), so a read in flight cannot put its old tail back over
-       the cleared indices. */
+       the cleared indices. A read can also load the generation after the bump above and still reach ready_m before
+       the clear does, copying samples the clear was meant to drop under that generation. Bumping again under ready_m,
+       once the ring is empty, leaves the stream on a generation that only reads made after the clear can load, so the
+       decoder never takes pre-clear samples under the generation it runs on from here. */
     dsd_mutex_lock(&outp->ready_m);
     ring_clear(outp);
+    if (bump_generation) {
+        rtl_stream_bump_output_generation();
+    }
     dsd_mutex_unlock(&outp->ready_m);
     dsd_rtl_stream_metrics_hook_symbol_cache_pending_reset();
     rtl_stream_signal_output_waiters(outp);

@@ -661,7 +661,8 @@ Notes:
     at a rate that cannot fit 16 kHz instead; a demod
     block boundary
     between the family request and its symbol profile; a switch whose ring clear meets a decoder read between its
-    copy and its tail store; the baselines run the same demod configuration functions as
+    copy and its tail store, or a read that loaded the clear's first generation bump and reached the ring before the
+    clear; the baselines run the same demod configuration functions as
     `dsd_rtl_stream_open()`), `IO_RTL_ANALOG_OPEN` (the start-time check against the rate an IQ replay delivers, and a
     `-fA` replay switched to DMR and back through the stream API), plus
     `IO_RTL_DEMOD_CONFIG` and `IO_RTL_RETUNE_PREPARE`.
@@ -671,6 +672,9 @@ Notes:
     while the decoder reads it. The readers (`ring_read_available()`, `ring_read_batch()`) hold `ready_m` from their
     tail snapshot to their tail store, and `rtl_stream_clear_output_ring()` clears under it, so a read in flight
     cannot store its old tail over the cleared indices (which reads as a ring full of the old stream's samples).
+    The clear bumps the output generation before it takes `ready_m`, and again under it once the ring is empty: a
+    read that loaded the first bump can still reach the ring before the clear and take samples the clear drops, and
+    the second bump keeps the stream from running on the generation that read carried them under.
     Tests: `RUNTIME_RINGS`, `IO_RTL_ANALOG_FAMILY_SWITCH`.
 - Local audio output backends and audio device listing live in `dsd-neo_platform` (see `src/platform/audio_*.c`).
 - Network audio/input backends live in `src/io/audio_backends/` (`udp_input.c`, `tcp_input.c`, `udp_audio.c`,
