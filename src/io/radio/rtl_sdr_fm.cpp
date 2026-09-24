@@ -8291,12 +8291,14 @@ rtl_stream_request_analog_profile(int family, int kind, int width_hz) {
 }
 
 /* The symbol profile a switch out of the analog family lands on: its CQPSK family and channel filter become the ones
- * an open of the mode picks, which DSD_NEO_CQPSK decides when set (rtl_demod_open_cqpsk_request(),
- * rtl_demod_open_channel_profile()), for the switch and for the profile applied after it alike. */
+ * an open of the mode picks, which DSD_NEO_CQPSK decides when set, and the channel-filter enable rule of the open
+ * (rtl_demod_open_cqpsk_request(), rtl_demod_open_channel_profile()), for the switch and for the profile applied after
+ * it alike. */
 static void
 rtl_stream_resolve_landing_profile(int* cqpsk, int* channel_profile, int symbol_rate_hz) {
     const int landing = rtl_demod_open_cqpsk_request(*cqpsk);
-    *channel_profile = rtl_demod_open_channel_profile(landing, *cqpsk, *channel_profile, symbol_rate_hz);
+    *channel_profile = rtl_demod_open_channel_profile(landing, *cqpsk, *channel_profile, symbol_rate_hz,
+                                                      demod.channel_lpf_default_enable);
     *cqpsk = landing;
 }
 

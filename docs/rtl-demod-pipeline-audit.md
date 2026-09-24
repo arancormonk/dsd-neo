@@ -199,7 +199,12 @@ drained in the same pass of the command queue as the mode change):
   demod profile request, and it decides the CQPSK family, unless `DSD_NEO_CQPSK`
   is set: that override decides it as it does at stream open, and the channel
   filter follows the family the switch lands on (the P25 CQPSK profile for CQPSK,
-  P25 C4FM for a 4800 sym/s P25 CQPSK request turned onto the discriminator).
+  P25 C4FM for a 4800 sym/s P25 CQPSK request turned onto the discriminator) and
+  the open's enable rule: while the channel filter is off (`DSD_NEO_CHANNEL_LPF=0`,
+  or a DSP rate below 20 kHz by default) an open on the discriminator keeps the
+  WIDE profile, and so does the switch, whatever profile the mode names. The
+  override does not reach the analog family: a `-fA` open runs the FM monitor
+  under `DSD_NEO_CQPSK=1` (or a QPSK modulation), as the switch to analog does.
   The family request
   waits for that profile: when the demod thread reaches a block boundary between
   the two requests, it keeps the family request queued, so both apply at one
@@ -288,14 +293,15 @@ invariant to it, so it is left as is.
 - `RUNTIME_ANALOG_CHANNEL` covers the width ranges, parser and validator text
   across DSP rates.
 - `IO_RTL_DEMOD_CONFIG` covers the analog enable rule at 12/16/24/48 kHz, the
-  explicit-width and `DSD_NEO_CHANNEL_LPF=0` cases, the unchanged M17 encoder, and
-  the AM refusal; `IO_RTL_RETUNE_PREPARE` covers the analog retune resets, the
+  explicit-width and `DSD_NEO_CHANNEL_LPF=0` cases, the unchanged M17 encoder, a
+  `-fA` open under `DSD_NEO_CQPSK=1` (FM monitor) and the AM refusal; `IO_RTL_RETUNE_PREPARE` covers the analog retune resets, the
   coefficient refresh after a forced rate change, the channel a rate change
   resolves (the fallback prototype's width published past the tap capacity),
   and analog retune profiles;
   `IO_RTL_ANALOG_FAMILY_SWITCH` checks that digital -> analog -> digital ends on
   a fresh open for P25 C4FM/CQPSK, DMR, NXDN48 and dPMR, at unforced rates and at
-  forced 78,125 and 60,000 Hz rates, with loop state, monitor audio state, the
+  forced 78,125 and 60,000 Hz rates, under `DSD_NEO_CQPSK=0`/`=1` and with the
+  channel filter off (`DSD_NEO_CHANNEL_LPF=0`, a 12 kHz DSP rate), with loop state, monitor audio state, the
   I/Q corrections, the post-demod decimator and the channel, half-band and
   resampler histories and the squelch dwell included, a typed digital row on a
   `-fA` session and on a

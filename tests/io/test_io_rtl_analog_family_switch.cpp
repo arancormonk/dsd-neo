@@ -733,15 +733,28 @@ expect_override_digital_leg(const family_case& c, const char* cqpsk_env, int lan
         rc |= expect_int(label, r.fresh_digital.output_kind, want_kind);
         rc |= expect_fields_equal(label, r.switched_digital, r.fresh_digital);
         rc |= expect_int(label, (int)r.predicted_digital_output_rate, r.switched_digital.output_rate);
+        /* The analog family never runs CQPSK: a -fA open under the override runs the FM monitor, and so does the
+           switch to analog (from the digital session). */
+        DSD_SNPRINTF(label, sizeof label, "DSD_NEO_CQPSK=%s, %s@%d: -fA open runs the FM monitor", cqpsk_env, c.name,
+                     demod_rate_hz);
+        rc |= expect_int(label, r.fresh_analog.output_kind, RTL_STREAM_OUTPUT_AUDIO_MONITOR);
+        rc |= expect_int(label, r.fresh_analog.cqpsk_enable, 0);
+        rc |= expect_int(label, r.fresh_analog.demod_is_fm, 1);
+        rc |= expect_int(label, r.fresh_analog.ted_enabled, 0);
+        if (!from_analog_start) {
+            DSD_SNPRINTF(label, sizeof label, "DSD_NEO_CQPSK=%s, %s@%d -> analog", cqpsk_env, c.name, demod_rate_hz);
+            rc |= expect_analog_fields_equal(label, r.switched_analog, r.fresh_analog);
+        }
     }
     return rc;
 }
 
-/* DSD_NEO_CQPSK decides the CQPSK family a stream opens on, whatever the mode asks for, so a switch from the analog
- * family to a digital mode lands where an open of that mode would under the override: off, a P25 CQPSK mode runs the
- * FSK discriminator (resampled to 48 kHz at a forced 78125 Hz, as a C4FM open is); on, every digital mode runs CQPSK
- * (never resampled). The decoder's output-rate prediction follows the same override. Only the digital leg is held to
- * the open here: the override also reaches a -fA open, where it means nothing for monitor audio. */
+/* DSD_NEO_CQPSK decides the CQPSK family a digital stream opens on, whatever the mode asks for, so a switch from the
+ * analog family to a digital mode lands where an open of that mode would under the override: off, a P25 CQPSK mode runs
+ * the FSK discriminator (resampled to 48 kHz at a forced 78125 Hz, as a C4FM open is); on, every digital mode runs
+ * CQPSK (never resampled). The decoder's output-rate prediction follows the same override. The analog family is not
+ * a CQPSK family: a -fA open under the override runs the FM monitor, as the switch to analog does, and the two are
+ * held equal as well. */
 static int
 test_cqpsk_override_lands_like_open(const family_case* p25_c4fm_case, const family_case* p25_cqpsk_case,
                                     const family_case* dmr_case) {
@@ -764,6 +777,48 @@ test_cqpsk_override_lands_like_open(const family_case* p25_c4fm_case, const fami
 
     (void)dsd_unsetenv("DSD_NEO_CQPSK");
     dsd_neo_config_init();
+    return rc;
+}
+
+/* With the channel filter off (DSD_NEO_CHANNEL_LPF=0, or a DSP rate below 20 kHz under the default rule), a digital
+ * open keeps the WIDE channel profile for an FSK mode, since it picks a protocol profile only for a filter that runs
+ * (and CQPSK always the P25 CQPSK one). A switch out of the analog family lands on the same profile, and so on the
+ * same FSK modem configuration, published bandwidth and SNR correction, not on the one the mode's symbol profile
+ * names. */
+static int
+test_lpf_off_lands_like_open(const family_case* cases, size_t n_cases) {
+    static const char* const lpf_env_names[] = {"P25 C4FM, LPF off", "P25 CQPSK, LPF off", "DMR, LPF off",
+                                                "NXDN48, LPF off", "dPMR, LPF off"};
+    int rc = 0;
+    (void)dsd_setenv("DSD_NEO_CHANNEL_LPF", "0", 1);
+    dsd_neo_config_init();
+    for (size_t i = 0; i < n_cases && i < sizeof lpf_env_names / sizeof lpf_env_names[0]; i++) {
+        family_case off = cases[i];
+        off.name = lpf_env_names[i];
+        rc |= run_case(off, 48000, 0, 0);
+        rc |= run_analog_start_case(off, 48000, 0);
+    }
+    family_case nxdn60 = cases[3];
+    nxdn60.name = "NXDN48, LPF off";
+    nxdn60.request.ted_sps = 25;
+    rc |= run_case(nxdn60, 48000, 60000, 0);
+    (void)dsd_unsetenv("DSD_NEO_CHANNEL_LPF");
+    dsd_neo_config_init();
+
+    /* A 12 kHz DSP rate: the default rule leaves the filter off below 20 kHz. */
+    family_case nxdn12 = cases[3];
+    nxdn12.name = "NXDN48, 12 kHz DSP rate";
+    nxdn12.request.ted_sps = 5;
+    family_case dpmr12 = cases[4];
+    dpmr12.name = "dPMR, 12 kHz DSP rate";
+    dpmr12.request.ted_sps = 5;
+    rc |= run_case(nxdn12, 12000, 0, 0);
+    rc |= run_analog_start_case(nxdn12, 12000, 0);
+    rc |= run_case(dpmr12, 12000, 0, 0);
+    rc |= run_analog_start_case(dpmr12, 12000, 0);
+    family_case split12 = nxdn12;
+    split12.request.boundary_between_requests = 1;
+    rc |= run_case(split12, 12000, 0, 0);
     return rc;
 }
 
@@ -905,6 +960,7 @@ main(void) {
     rc |= test_requests_against_running_stream();
     rc |= test_request_across_rate_change();
     rc |= test_cqpsk_override_lands_like_open(&cases[0], &cases[1], &cases[2]);
+    rc |= test_lpf_off_lands_like_open(cases, sizeof cases / sizeof cases[0]);
     rc |= test_switch_during_live_read();
 
     /* Requests the front end cannot honour are refused up front. */

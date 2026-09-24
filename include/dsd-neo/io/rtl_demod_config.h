@@ -197,12 +197,15 @@ int rtl_demod_open_cqpsk_request(int requested_cqpsk);
 
 /**
  * The channel profile a digital open filters with once it lands on @p landing_cqpsk, for a symbol profile whose
- * requester chose @p channel_profile for @p requested_cqpsk. Where DSD_NEO_CQPSK moved the family off the request
+ * requester chose @p channel_profile for @p requested_cqpsk. With the channel filter off (@p channel_lpf_enabled 0:
+ * DSD_NEO_CHANNEL_LPF=0, or the default rule below a 20 kHz DSP rate), an open on the FSK discriminator keeps the
+ * WIDE profile whatever the mode. Where DSD_NEO_CQPSK moved the family off the request
  * (rtl_demod_open_cqpsk_request()), the requester's filter was chosen for the other family: an open filters CQPSK with
  * the P25 CQPSK profile, and a 4800 sym/s P25 CQPSK request turned onto the FSK discriminator with the P25 C4FM one.
  * Otherwise @p channel_profile stands unchanged.
  */
-int rtl_demod_open_channel_profile(int landing_cqpsk, int requested_cqpsk, int channel_profile, int symbol_rate_hz);
+int rtl_demod_open_channel_profile(int landing_cqpsk, int requested_cqpsk, int channel_profile, int symbol_rate_hz,
+                                   int channel_lpf_enabled);
 
 /**
  * Move a running front end to the digital family with fresh-open digital defaults (FSK discriminator output, no

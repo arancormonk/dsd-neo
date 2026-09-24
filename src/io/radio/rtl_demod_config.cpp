@@ -462,7 +462,10 @@ demod_apply_ted_defaults(struct demod_state* demod, const dsdneoRuntimeConfig* c
 
 static void
 demod_apply_cqpsk_defaults(struct demod_state* demod, const dsd_opts* opts) {
-    demod->cqpsk_enable = rtl_demod_open_cqpsk_request((opts->mod_qpsk == 1) ? 1 : 0) > 0 ? 1 : 0;
+    /* The analog family's monitor audio comes from the FM discriminator, never the CQPSK path, whatever DSD_NEO_CQPSK
+       or the modulation say (rtl_demod_enter_analog_family() holds a live switch to the same). */
+    demod->cqpsk_enable =
+        (!dsd_opts_is_analog_family(opts) && rtl_demod_open_cqpsk_request((opts->mod_qpsk == 1) ? 1 : 0) > 0) ? 1 : 0;
     if (demod->cqpsk_enable) {
         if (!demod->ted_enabled) {
             demod->ted_enabled = 1;
@@ -1369,7 +1372,12 @@ rtl_demod_open_cqpsk_request(int requested_cqpsk) {
 }
 
 int
-rtl_demod_open_channel_profile(int landing_cqpsk, int requested_cqpsk, int channel_profile, int symbol_rate_hz) {
+rtl_demod_open_channel_profile(int landing_cqpsk, int requested_cqpsk, int channel_profile, int symbol_rate_hz,
+                               int channel_lpf_enabled) {
+    if (landing_cqpsk <= 0 && !channel_lpf_enabled) {
+        /* demod_apply_channel_lpf_defaults(): an open picks a protocol profile only for a channel filter that runs. */
+        return DSD_CH_LPF_PROFILE_WIDE;
+    }
     if (landing_cqpsk == requested_cqpsk) {
         return channel_profile;
     }

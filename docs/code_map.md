@@ -607,15 +607,19 @@ Notes:
     `_digital_family()`), restarts the carrier and timing loops (Costas, band-edge FLL, Gardner TED) and zeroes the
     I/Q DC and balance estimates, the squelch dwell toward a multi-frequency hop and a replay's post-demod decimator as
     an open does, clears the output ring and bumps
-    the output generation; a width-only change redesigns the filter from empty histories. The CQPSK family after a
-    switch to digital follows the symbol profile requested with it unless `DSD_NEO_CQPSK` is set, which decides it
-    as it does at stream open, the channel filter following the family it lands on (`rtl_demod_open_cqpsk_request()`,
-    `rtl_demod_open_channel_profile()`, also behind `rtl_stream_output_rate_for_family()`), and the digital resampler
+    the output generation; a width-only change redesigns the filter from empty histories. The analog family never runs
+    CQPSK: a `-fA` open demodulates FM whatever `DSD_NEO_CQPSK` or the modulation say, as a switch to analog does. The
+    CQPSK family after a switch to digital follows the symbol profile requested with it unless `DSD_NEO_CQPSK` is set,
+    which decides it as it does at stream open, the channel filter following the family it lands on and the open's
+    enable rule (an FSK landing keeps the WIDE profile while the channel filter is off: `DSD_NEO_CHANNEL_LPF=0`, or
+    below a 20 kHz DSP rate by default) (`rtl_demod_open_cqpsk_request()`, `rtl_demod_open_channel_profile()`, also
+    behind `rtl_stream_output_rate_for_family()`), and the digital resampler
     and output rate are decided for that profile when the switch is made (`rtl_demod_enter_digital_family()` takes its
     CQPSK flag and symbol rate), so a forced rate lands where an open of the profile would. Tests:
     `IO_RTL_ANALOG_FAMILY_SWITCH` (digital → analog → digital, and a `-fA` start switched to digital, each equal to a
-    fresh open, loop state, monitor audio state, I/Q corrections and filter histories included, the digital leg also
-    under `DSD_NEO_CQPSK=0` and `=1`, with the stream keeping the options snapshot it opened with, for P25
+    fresh open, loop state, monitor audio state, I/Q corrections and filter histories included, also under
+    `DSD_NEO_CQPSK=0` and `=1` and with the channel filter off (`DSD_NEO_CHANNEL_LPF=0`, a 12 kHz DSP rate), with the
+    stream keeping the options snapshot it opened with, for P25
     C4FM/CQPSK, DMR, NXDN48 and dPMR at unforced and forced rates, including from a `-fA` session a CQPSK toggle or a
     typed digital row had moved off the monitor output, or with a CQPSK toggle still queued when the digital mode is
     picked; a typed digital row under `-fA` and on a DMR session switched

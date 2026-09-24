@@ -8,6 +8,7 @@
 #include <cstdio>
 #include <cstring>
 #include <dsd-neo/core/opts.h>
+#include <dsd-neo/dsp/demod_pipeline.h>
 #include <dsd-neo/dsp/demod_state.h>
 #include <dsd-neo/dsp/fsk_modem.h>
 #include <dsd-neo/io/rtl_demod_config.h>
@@ -1340,6 +1341,64 @@ expect_m17_encoder_unchanged(void) {
     return rc;
 }
 
+/*
+ * The analog family's monitor audio comes from the FM discriminator. DSD_NEO_CQPSK=1, or a QPSK modulation left on the
+ * options, must not put a -fA open on the CQPSK path, which would hand the monitor differential phase symbols instead
+ * of audio; a live switch to analog lands on FM the same way. A digital open under the override still runs CQPSK.
+ */
+static int
+expect_analog_open_ignores_cqpsk(void) {
+    int rc = 0;
+    set_channel_lpf_env(NULL);
+    (void)dsd_setenv("DSD_NEO_CQPSK", "1", 1);
+    dsd_neo_config_init();
+    for (int mod_qpsk = 0; mod_qpsk <= 1; mod_qpsk++) {
+        demod_state* demod = alloc_zeroed_demod();
+        if (!demod) {
+            DSD_FPRINTF(stderr, "analog open under DSD_NEO_CQPSK=1: allocation failed\n");
+            rc = 1;
+            break;
+        }
+        static dsd_opts opts;
+        make_analog_opts(&opts);
+        opts.mod_qpsk = mod_qpsk;
+        char err[DSD_ANALOG_ERROR_TEXT_MAX] = {0};
+        char label[128];
+        DSD_SNPRINTF(label, sizeof label, "-fA under DSD_NEO_CQPSK=1 (mod_qpsk %d)", mod_qpsk);
+        rc |= expect_int_eq(label, configure_and_finalize(demod, &opts, 48000, err, sizeof err), 0);
+        rc |= expect_int_eq("  monitor output", demod->output_kind, DSD_DEMOD_OUTPUT_AUDIO_MONITOR);
+        rc |= expect_int_eq("  CQPSK off", demod->cqpsk_enable, 0);
+        rc |= expect_int_eq("  FM discriminator", demod->mode_demod == &dsd_fm_demod ? 1 : 0, 1);
+        rc |= expect_int_eq("  no symbol timing", demod->ted_enabled, 0);
+        rc |= expect_int_eq("  analog channel", demod->channel_lpf_width_hz, DSD_ANALOG_NFM_WIDTH_DEFAULT_HZ);
+        rc |= expect_int_eq("  analog profile", demod->channel_lpf_profile, DSD_CH_LPF_PROFILE_WIDE);
+        rc |= expect_int_eq("  de-emphasis", demod->deemph, 1);
+        rtl_demod_cleanup(demod);
+        dsd_neo_aligned_free(demod);
+    }
+
+    demod_state* demod = alloc_zeroed_demod();
+    if (demod) {
+        static dsd_opts opts;
+        DSD_MEMSET(&opts, 0, sizeof(opts));
+        opts.frame_dmr = 1;
+        opts.mod_c4fm = 1;
+        char err[DSD_ANALOG_ERROR_TEXT_MAX] = {0};
+        rc |= expect_int_eq("DMR under DSD_NEO_CQPSK=1 starts",
+                            configure_and_finalize(demod, &opts, 48000, err, sizeof err), 0);
+        rc |= expect_int_eq("  CQPSK symbols", demod->output_kind, DSD_DEMOD_OUTPUT_SYMBOL_CQPSK);
+        rc |= expect_int_eq("  CQPSK on", demod->cqpsk_enable, 1);
+        rtl_demod_cleanup(demod);
+        dsd_neo_aligned_free(demod);
+    } else {
+        DSD_FPRINTF(stderr, "digital open under DSD_NEO_CQPSK=1: allocation failed\n");
+        rc = 1;
+    }
+    (void)dsd_unsetenv("DSD_NEO_CQPSK");
+    dsd_neo_config_init();
+    return rc;
+}
+
 /* Native AM is not available yet; asking for it must not silently run FM. */
 static int
 expect_analog_am_refused(void) {
@@ -1741,6 +1800,7 @@ main(void) {
     rc |= expect_analog_explicit_width_forces_lpf();
     rc |= expect_analog_env_off_conflict();
     rc |= expect_m17_encoder_unchanged();
+    rc |= expect_analog_open_ignores_cqpsk();
     rc |= expect_analog_am_refused();
     rc |= expect_unset_default_rule_keyed_on_nfm();
     rc |= expect_negative_width_refused();
