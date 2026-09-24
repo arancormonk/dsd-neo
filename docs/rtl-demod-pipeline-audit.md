@@ -173,7 +173,10 @@ Enable rule and validation:
 
 `rtl_stream_request_analog_profile()` queues a receive-family request (family,
 analog kind, width) that the demod thread applies between blocks, ahead of any
-demod profile queued with it:
+demod profile queued after it. A demod profile still queued from before it is
+dropped: the analog family has no symbol clock, and a digital family lands on
+the symbol profile queued after it, never on an older one (a CQPSK toggle
+drained in the same pass of the command queue as the mode change):
 
 - width-only change: new filter plan from empty channel and half-band
   histories, with the output ring, the generation and the monitor audio state
@@ -273,8 +276,9 @@ is.
   I/Q corrections, the post-demod decimator and the channel, half-band and
   resampler histories included, a typed digital row on a `-fA` session and on a
   DMR session switched to analog, a `-fA` session a CQPSK toggle or a typed
-  digital row had moved off the monitor output switched to digital (each equal
-  to a fresh open too), and covers width-only
+  digital row had moved off the monitor output switched to digital, and one
+  whose CQPSK toggle was still queued when the digital mode was picked (each
+  equal to a fresh open too), and covers width-only
   changes, requests made with no stream running, and live requests and retune
   profiles a running stream's rate or post-demod decimation cannot realize
   (refused before anything is queued, or at the rate a retune moved the stream

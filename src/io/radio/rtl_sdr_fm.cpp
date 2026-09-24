@@ -8272,11 +8272,12 @@ rtl_stream_request_analog_profile(int family, int kind, int width_hz) {
     g_profile_req_analog_family = family;
     g_profile_req_analog_kind = kind;
     g_profile_req_analog_width_hz = width_hz;
-    if (family == DSD_RX_FAMILY_ANALOG) {
-        /* The analog family has no symbol clock: an older digital profile still queued is now obsolete. A digital
-           family request keeps it, since that profile is what the new family runs on. */
-        g_profile_req_has_demod = 0;
-    }
+    /* A demod profile still queued from before this request is obsolete either way. The analog family has no symbol
+       clock. A digital family runs on the symbol profile its caller queues right after this request, and that
+       profile decides the digital resampler and the output rate the switch commits; an older one (a CQPSK toggle
+       drained in the same pass of the decoder's command queue) must not stand in for it at a block boundary between
+       the two requests, where the consume holds the family request for its own profile instead. */
+    g_profile_req_has_demod = 0;
     g_profile_req_pending.store(1, std::memory_order_release);
     return 0;
 }
@@ -10769,17 +10770,21 @@ family_test_request_dmr_row_profile(void) {
 }
 
 /* A symbol profile the -fA session applies on its own, with no family request, consumed at a block boundary: the DSP
- * menu's CQPSK toggle (apply_dsp_op_cqpsk_toggle() queues exactly this), or a typed DMR scan row's profile. */
+ * menu's CQPSK toggle (apply_dsp_op_cqpsk_toggle() queues exactly this), or a typed DMR scan row's profile. The queued
+ * variant leaves the toggle unconsumed for the family request to find. */
 static void
 family_test_apply_profile_under_analog(int which, rtl_stream_test_family_switch_result* out) {
-    if (which == RTL_STREAM_TEST_UNDER_ANALOG_CQPSK_TOGGLE) {
+    if (which == RTL_STREAM_TEST_UNDER_ANALOG_CQPSK_TOGGLE
+        || which == RTL_STREAM_TEST_UNDER_ANALOG_CQPSK_TOGGLE_QUEUED) {
         (void)rtl_stream_request_demod_profile(1, 0, 0, -1, -1, 0);
     } else if (which == RTL_STREAM_TEST_UNDER_ANALOG_TYPED_ROW) {
         (void)family_test_request_dmr_row_profile();
     } else {
         return;
     }
-    family_test_demod_thread_boundary();
+    if (which != RTL_STREAM_TEST_UNDER_ANALOG_CQPSK_TOGGLE_QUEUED) {
+        family_test_demod_thread_boundary();
+    }
     out->under_analog_output_kind = demod.output_kind;
     out->under_analog_channel_profile = demod.channel_lpf_profile;
     out->under_analog_family = demod.analog_family;

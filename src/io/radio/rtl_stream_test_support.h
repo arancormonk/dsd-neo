@@ -236,6 +236,9 @@ enum {
     RTL_STREAM_TEST_UNDER_ANALOG_NONE = 0,
     RTL_STREAM_TEST_UNDER_ANALOG_CQPSK_TOGGLE = 1, /* the DSP menu's CQPSK toggle: symbols instead of monitor audio */
     RTL_STREAM_TEST_UNDER_ANALOG_TYPED_ROW = 2,    /* a typed DMR scan row: monitor output on the row's channel */
+    /* The DSP menu's CQPSK toggle still queued, not yet consumed, when the digital mode is picked (both commands in
+       one drain of the decoder's command queue): the family request must not land on it. */
+    RTL_STREAM_TEST_UNDER_ANALOG_CQPSK_TOGGLE_QUEUED = 3,
 };
 
 /* What svc_publish_symbol_profile() queues for a digital mode after the family request. */
@@ -304,7 +307,8 @@ int rtl_stream_test_analog_family_switch(const dsd_opts* digital_opts, const dsd
  * started from), switched_digital and the digital-switch fields; the analog request fields stay zero, and
  * generation_after_analog is the generation the -fA session ran at (after the profile_under_analog, if any, which is
  * applied and consumed at a block boundary before the stale state is seeded, and reported in the under_analog_*
- * fields). */
+ * fields; RTL_STREAM_TEST_UNDER_ANALOG_CQPSK_TOGGLE_QUEUED is queued the same way but left unconsumed, so the
+ * under_analog_* fields still show the monitor). */
 int rtl_stream_test_analog_start_family_switch(const dsd_opts* digital_opts, const dsd_opts* analog_opts, int rate_hz,
                                                int forced_rate_out_hz,
                                                const rtl_stream_test_digital_request* digital_request,

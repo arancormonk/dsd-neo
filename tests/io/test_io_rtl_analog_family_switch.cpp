@@ -18,7 +18,8 @@
  * the device forces, where the digital resampler follows the symbol profile.
  *
  * Leaving analog lands on the symbol profile queued after the family request,
- * even when the demod thread reaches a block boundary between the two requests.
+ * even when the demod thread reaches a block boundary between the two requests,
+ * and even when an older CQPSK toggle was still queued before the family request.
  *
  * A width-only change on a running analog stream stays inside the family: it
  * drops the channel plan and the channel/half-band histories and nothing else.
@@ -379,6 +380,52 @@ run_under_analog_case(const family_case& c, int profile_under_analog, int rate_h
     return rc;
 }
 
+/* The operator toggles CQPSK on a -fA session and picks a digital mode before the demod thread reaches a block
+ * boundary, so the toggle is still queued when the family request arrives (both commands drain in one pass of the
+ * decoder's command queue). The switch must land on the digital mode's own symbol profile, not on that older toggle,
+ * even when a boundary falls between the family request and the profile: at a forced 78125 Hz, a DMR switch decided
+ * for the toggle's CQPSK would leave the discriminator unresampled at 78125 Hz, where a fresh DMR open resamples it to
+ * 48 kHz, and the DMR profile that follows does not revisit the resampler. */
+static int
+run_queued_toggle_case(const family_case& c, int rate_hz, int forced_rate_out_hz) {
+    family_case queued = c;
+    queued.request.profile_under_analog = RTL_STREAM_TEST_UNDER_ANALOG_CQPSK_TOGGLE_QUEUED;
+    queued.request.boundary_between_requests = 1;
+    static dsd_opts digital;
+    static dsd_opts analog;
+    DSD_MEMSET(&digital, 0, sizeof digital);
+    DSD_MEMSET(&analog, 0, sizeof analog);
+    c.configure(&digital);
+    analog.analog_only = 1;
+    analog.monitor_input_audio = 1;
+    analog.analog_demod = DSD_ANALOG_DEMOD_FM;
+
+    rtl_stream_test_family_switch_result r;
+    DSD_MEMSET(&r, 0, sizeof r);
+    const int demod_rate_hz = forced_rate_out_hz > 0 ? forced_rate_out_hz : rate_hz;
+    char label[160];
+    DSD_SNPRINTF(label, sizeof label, "-fA queued CQPSK toggle, %s@%d run", c.name, demod_rate_hz);
+    int rc = expect_int(
+        label,
+        rtl_stream_test_analog_start_family_switch(&digital, &analog, rate_hz, forced_rate_out_hz, &queued.request, &r),
+        0);
+    rc |= expect_int("-fA queued CQPSK toggle: not yet consumed", r.under_analog_output_kind,
+                     RTL_STREAM_OUTPUT_AUDIO_MONITOR);
+
+    DSD_SNPRINTF(label, sizeof label, "-fA queued CQPSK toggle, %s@%d -> digital", c.name, demod_rate_hz);
+    rc |= expect_int(label, r.digital_request_rc, 0);
+    rc |= expect_fields_equal(label, r.switched_digital, r.fresh_digital);
+    rc |= expect_int("-fA queued CQPSK toggle: digital family waits for its symbol profile",
+                     r.digital_held_until_profile, 1);
+    rc |= expect_int("-fA queued CQPSK toggle: digital switch bumps the generation",
+                     r.generation_after_digital != r.generation_after_analog, 1);
+    rc |= expect_int("-fA queued CQPSK toggle: digital switch clears the ring", (int)r.used_after_digital, 0);
+    rc |= expect_int("-fA queued CQPSK toggle: analog family left", r.family_active_after_digital, 0);
+    rc |= expect_int("-fA queued CQPSK toggle: predicted digital output rate", (int)r.predicted_digital_output_rate,
+                     r.switched_digital.output_rate);
+    return rc;
+}
+
 /* A typed DMR scan row on an analog session queues only its symbol profile. The stream's options snapshot is the one
  * it opened with (a -fA open, or a DMR open the operator had switched to analog), so the row's profile keeps the
  * monitor output as it always did, but puts the row's channel profile in place of the analog channel: the analog
@@ -728,6 +775,16 @@ main(void) {
         rc |= run_under_analog_case(dpmr60_split, under, 48000, 60000);
         rc |= run_under_analog_case(dmr48_split, under, 48000, 0);
     }
+
+    /* A CQPSK toggle still queued when the digital mode is picked, with a boundary between the family request and the
+     * mode's symbol profile: each mode, the 24 kHz and forced-rate resampler decisions. */
+    for (const family_case& c : cases) {
+        rc |= run_queued_toggle_case(c, 48000, 0);
+    }
+    rc |= run_queued_toggle_case(dmr24, 24000, 0);
+    rc |= run_queued_toggle_case(cases[2], 48000, 78125);
+    rc |= run_queued_toggle_case(c4fm78, 48000, 78125);
+    rc |= run_queued_toggle_case(nxdn60, 48000, 60000);
 
     rtl_stream_test_family_switch_result r;
     DSD_MEMSET(&r, 0, sizeof r);

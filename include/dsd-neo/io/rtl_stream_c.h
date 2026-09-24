@@ -256,9 +256,10 @@ int rtl_stream_request_demod_profile(int cqpsk_enable, int symbol_rate_hz, int l
  *
  * Covers a width-only change, an FM<->AM switch and an analog<->digital switch. The request is validated on the
  * caller's thread (against the published demod rate), then applied by the demod thread between blocks, before any
- * demod profile queued alongside it; a newer request overwrites an unconsumed older one. The demod thread checks an
- * analog width again against the rate the stream is on when it applies it (a retune may have moved it), and refuses
- * it there the same way, logged, with the running profile kept. With no pipeline running
+ * demod profile queued after it; a newer request overwrites an unconsumed older one, and drops any demod profile
+ * queued before it (for a digital request, the symbol profile that follows is the one the switch lands on). The demod
+ * thread checks an analog width again against the rate the stream is on when it applies it (a retune may have moved
+ * it), and refuses it there the same way, logged, with the running profile kept. With no pipeline running
  * there is nothing to switch and no demod rate to check against: only the kind, range and DSD_NEO_CHANNEL_LPF rules
  * apply, and the next stream open configures the front end from the options and checks the width against the rate
  * it actually delivers.
