@@ -510,8 +510,9 @@ installs from `src/engine/trunk_tuning.c` in `src/engine/trunk_tuning_hooks_inst
   fallback and the M17 encoder's) designs from `channel_lpf_width_hz` instead: cutoff width/2 + 600 Hz, the fixed
   1200 Hz Blackman transition, up to `DSD_CHANNEL_LPF_MAX_TAPS` (288), with no Nyquist clamp and no fallback — an
   unrealizable width leaves no plan (`dsd_channel_lpf_design_analog()` returns -1) and the block runs with no channel
-  filter at all. The stream layer refuses such a width at start and on every request; only a retune that leaves the
-  stream on another demod rate can keep an explicit width that rate cannot realize (see the IO notes). 16000 Hz runs
+  filter at all. The stream layer does not run such a width: it refuses one at start, on every request and on a retune
+  that lands on a rate that cannot realize it, and stops the stream when the device does not return to a capture
+  where it runs (see the IO notes). 16000 Hz runs
   the same design call as WIDE, so its taps are bit-identical wherever WIDE's design succeeds.
   `dsd_channel_lpf_legacy_wide_width_hz()` reports the passband the legacy WIDE plan has at a rate (the 144-tap design,
   its cutoff held to 0.9 x Nyquist, or above ~51.4 kHz the 63-tap fallback prototype, cut at a third of the rate), the

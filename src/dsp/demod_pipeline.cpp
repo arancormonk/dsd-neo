@@ -135,11 +135,12 @@ clamp_float(float value, float lo, float hi) {
  * keep the 63-tap fallback. The analog family designs from the channel width
  * instead (cutoff W/2 + guard) with the full DSD_CHANNEL_LPF_MAX_TAPS capacity,
  * no Nyquist clamp and no fallback: an unrealizable width yields no plan, and
- * the block then runs with no channel filter. The runtime validator
- * (runtime/analog_channel.h) refuses such a width at stream start and on every
- * request; a retune that leaves the stream on another demod rate is the one
- * path that can leave one in place (logged, and published as DSP-limited). The
- * transition, guard and capacity are shared with that validator. */
+ * the block then runs with no channel filter. The stream layer holds every
+ * width to the runtime validator (runtime/analog_channel.h) and does not run
+ * such a width: it refuses one at stream start, on every request and on a
+ * retune that lands on a rate that cannot realize it, and stops the stream when
+ * the device does not return to a capture where it runs. The transition, guard
+ * and capacity are shared with that validator. */
 static const int kChannelLpfTaps = 144;
 static const double kChannelLpfTransitionHz = (double)DSD_ANALOG_CHANNEL_TRANSITION_HZ;
 static const double kChannelLpfGuardHz = kChannelLpfTransitionHz * 0.5;
