@@ -556,11 +556,9 @@ analog_rx_log_unusable_rate(analog_rx_session* session, int rate_hz) {
     }
 }
 
-void
-dsd_analog_rx_reset(dsd_state* state) {
-    if (!state) {
-        return;
-    }
+/* Forget the received tone: every detector's state and the publication. */
+static void
+analog_rx_forget(dsd_state* state) {
     analog_rx_session* session = analog_rx_session_get(state);
     if (!session) {
         const uint32_t generation = state->analog_rx.generation + 1U;
@@ -577,6 +575,21 @@ dsd_analog_rx_reset(dsd_state* state) {
 }
 
 void
+dsd_analog_rx_reset(dsd_state* state) {
+    if (!state) {
+        return;
+    }
+    /* The symbol path assembles the monitor block this tap reads sample by sample
+       (dsd_state::analog_out_f, dsd_symbol.c), and whatever it holds now arrived before the
+       boundary. Left in place, it would open the next block, and so the next reception: at a
+       low input rate, a block's worth of the old channel is enough to lock its tone again. */
+    DSD_MEMSET(state->analog_out_f, 0, sizeof(state->analog_out_f));
+    DSD_MEMSET(state->analog_out, 0, sizeof(state->analog_out));
+    state->analog_sample_counter = 0;
+    analog_rx_forget(state);
+}
+
+void
 dsd_analog_rx_tap(const dsd_opts* opts, dsd_state* state, const float* block, unsigned int count) {
     if (!opts || !state || !block || count == 0U) {
         return;
@@ -584,8 +597,10 @@ dsd_analog_rx_tap(const dsd_opts* opts, dsd_state* state, const float* block, un
     /* The same question every frontend's row asks (runtime/analog_tones.h), so the row is on
        screen exactly while this tap listens. */
     if (!dsd_analog_tone_detection_active(opts)) {
+        /* Forget only: this block is the one the symbol path is finalizing, and it goes on to
+           the voice filters and the monitor output as it is. */
         if (state->analog_rx.tone_state != DSD_ANALOG_TONE_STATE_INACTIVE || state->analog_rx.carrier_open) {
-            dsd_analog_rx_reset(state);
+            analog_rx_forget(state);
         }
         return;
     }

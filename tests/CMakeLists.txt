@@ -4602,6 +4602,7 @@ target_include_directories(
         ${PROJECT_SOURCE_DIR}/include
         ${PROJECT_SOURCE_DIR}/src/dsp
         ${PROJECT_SOURCE_DIR}/tests/test_support
+        ${LIBSNDFILE_INCLUDE_DIR}
 )
 target_link_libraries(
     dsd-neo_test_dsp_symbol_replay

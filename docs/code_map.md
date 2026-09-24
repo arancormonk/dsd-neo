@@ -584,7 +584,12 @@ installs from `src/engine/trunk_tuning.c` in `src/engine/trunk_tuning_hooks_inst
     stop-playback even when the Pulse open fails, and the config apply's input comparison in `app_command_queue.c`),
     when the symbol path falls back to Pulse at the end of a WAV file or after a lost TCP connection
     (`symbol_open_pulse_input_and_reconfigure_output()` in `dsd_symbol.c`), after the carrier hangover, and on the first
-    block after a stdin, UDP or TCP stream paused past its deadline. Every reset bumps `analog_rx.generation`.
+    block after a stdin, UDP or TCP stream paused past its deadline. Every reset bumps `analog_rx.generation`. Every
+    `dsd_analog_rx_reset()` also drops the monitor block `dsd_symbol.c` is part-way through assembling (`analog_out_f`
+    and `analog_sample_counter`): its samples arrived before the boundary, and at a low PCM rate one block (960 samples,
+    384 ms at 2500 Hz) is enough to lock the old channel's tone again. The monitor output and raw WAV lose that
+    part-block (at most 20 ms at 48 kHz) at the boundary. The tap's own resets (generation move, rate change, hangover,
+    stream pause) act on the block in hand instead.
 - `dsd_filters.c` owns the per-protocol matched filters, selected by kind rather than by calling one of four
   wrappers, because the symbol grid has to know when the stream it samples changes identity. It reads the raw
   discriminator until a sync names a protocol and the filter's output afterwards, and that output describes the

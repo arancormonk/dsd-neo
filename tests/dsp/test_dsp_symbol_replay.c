@@ -30,8 +30,10 @@
 #include <dsd-neo/runtime/shutdown.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <math.h>
+#include <sndfile.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #ifndef M_PI
@@ -785,6 +787,108 @@ test_rx_tone_clears_on_unannounced_retune(void) {
     dsd_state_ext_free_all(&state);
 }
 
+/* Samples of the reset test's WAV: two blocks and all but two samples of a third of a 100 Hz
+   tone on the old channel, then a block of seeded noise -- a carrier with no tone -- on the
+   new one. */
+enum {
+    RESET_WAV_RATE = 2500,
+    RESET_WAV_BLOCK = 960,
+    RESET_WAV_PENDING = RESET_WAV_BLOCK - 2,
+    RESET_WAV_TONE = (2 * RESET_WAV_BLOCK) + RESET_WAV_PENDING,
+    RESET_WAV_TOTAL = RESET_WAV_TONE + RESET_WAV_BLOCK,
+};
+
+static int
+write_reset_wav(char* path, size_t path_size) {
+    int fd = dsd_test_mkstemp(path, path_size, "dsdneo_rx_tone_reset");
+    if (fd < 0) {
+        return -1;
+    }
+    dsd_close(fd);
+    SF_INFO info;
+    DSD_MEMSET(&info, 0, sizeof(info));
+    info.samplerate = RESET_WAV_RATE;
+    info.channels = 1;
+    info.format = SF_FORMAT_WAV | SF_FORMAT_PCM_16;
+    SNDFILE* wav = sf_open(path, SFM_WRITE, &info);
+    if (wav == NULL) {
+        return -1;
+    }
+    static short samples[RESET_WAV_TOTAL];
+    uint32_t rng = 0x2500U;
+    for (int n = 0; n < RESET_WAV_TOTAL; n++) {
+        if (n < RESET_WAV_TONE) {
+            samples[n] = (short)lround(3000.0 * cos(2.0 * M_PI * 100.0 * (double)n / (double)RESET_WAV_RATE));
+        } else {
+            rng = (rng * 1664525U) + 1013904223U;
+            samples[n] = (short)((int)(rng >> 20) - 2048);
+        }
+    }
+    const int ok = sf_write_short(wav, samples, RESET_WAV_TOTAL) == RESET_WAV_TOTAL;
+    sf_close(wav);
+    return ok ? 0 : -1;
+}
+
+/*
+ * A reset drops the monitor block the symbol path is still assembling, driven through
+ * getSymbol() on a 2500 Hz WAV, where one 960-sample block is 384 ms: long enough to lock a
+ * tone on its own. The old channel's 100 Hz tone locks, 958 more of its samples wait in the
+ * block, the receiver moves, and the new channel -- a carrier with no tone -- fills the next
+ * block. Had those 958 samples stayed, that block would have locked 100.0 Hz again from the old
+ * channel's audio alone.
+ */
+static void
+test_rx_tone_reset_drops_the_pending_block(void) {
+    char wav_path[DSD_TEST_PATH_MAX];
+    assert(write_reset_wav(wav_path, sizeof(wav_path)) == 0);
+    static dsd_opts opts;
+    static dsd_state state;
+    install_fake_rtl_hooks(0);
+    init_analog_monitor_fixture(&opts, &state);
+    opts.wav_sample_rate = RESET_WAV_RATE;
+    opts.rtl_squelch_level = -100.0;
+    DSD_SNPRINTF(opts.audio_in_dev, sizeof(opts.audio_in_dev), "%s", wav_path);
+    opts.audio_in_file_info = (SF_INFO*)calloc(1, sizeof(*opts.audio_in_file_info));
+    assert(opts.audio_in_file_info != NULL);
+    opts.audio_in_file = sf_open(wav_path, SFM_READ, opts.audio_in_file_info);
+    assert(opts.audio_in_file != NULL);
+    state.samplesPerSymbol = 1;
+    state.symbolCenter = 0;
+    state.jitter = -1;
+    exitflag = 0;
+
+    for (int n = 0; n < 2 * RESET_WAV_BLOCK; n++) {
+        (void)getSymbol(&opts, &state, 0);
+    }
+    assert(rx_tone_locked_on_100(&state));
+    for (int n = 0; n < RESET_WAV_PENDING; n++) {
+        (void)getSymbol(&opts, &state, 0);
+    }
+    assert(state.analog_sample_counter == RESET_WAV_PENDING);
+    assert(rx_tone_locked_on_100(&state));
+
+    dsd_analog_rx_reset(&state);
+    assert(state.analog_sample_counter == 0);
+    assert(state.analog_rx.tone_state == DSD_ANALOG_TONE_STATE_INACTIVE);
+
+    for (int n = 0; n < RESET_WAV_BLOCK; n++) {
+        (void)getSymbol(&opts, &state, 0);
+    }
+    assert(exitflag == 0 && state.analog_sample_counter == 0);
+    /* The new channel's block was heard -- a carrier, still being evaluated -- and holds no
+       tone, the old one's least of all. */
+    assert(state.analog_rx.carrier_open == 1);
+    assert(state.analog_rx.tone_state == DSD_ANALOG_TONE_STATE_ACQUIRING);
+    assert(state.analog_rx.tone_kind == DSD_ANALOG_TONE_KIND_NONE && state.analog_rx.ctcss_tenths_hz == 0);
+
+    sf_close(opts.audio_in_file);
+    opts.audio_in_file = NULL;
+    free(opts.audio_in_file_info);
+    opts.audio_in_file_info = NULL;
+    (void)remove(wav_path);
+    dsd_state_ext_free_all(&state);
+}
+
 /*
  * An input rate the sub-audible front end cannot use (here a 384 kHz WAV): the tap publishes
  * UNAVAILABLE, so the frontends leave the row out instead of reading "no carrier" over a
@@ -1091,6 +1195,7 @@ main(void) {
     test_symbol_helper_rtl_cache_and_center_contract();
     test_rx_tone_tap_reads_raw_block_before_voice_filters();
     test_rx_tone_clears_on_unannounced_retune();
+    test_rx_tone_reset_drops_the_pending_block();
     test_rx_tone_unusable_rate_is_unavailable();
     test_rx_tone_unusable_rate_warns_once_per_stretch();
     test_rx_tone_usable_rate_change_drops_lock();
