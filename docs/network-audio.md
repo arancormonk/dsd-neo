@@ -58,6 +58,10 @@ base port is `23456`) whenever something writes analog or source audio:
   or a config apply, even while output is muted. If that socket cannot be opened, the failure is logged once and analog
   audio stays silent.
 
+Changing the UDP output target during a session closes an open port + 2 socket, since it still sends to the old host
+and port. It is reopened for the new target at once when the current mode writes analog or source audio, and
+otherwise on the next switch to Analog or ProVoice.
+
 The analog/source monitor stream is:
 
 - Sample rate: **48000 Hz**

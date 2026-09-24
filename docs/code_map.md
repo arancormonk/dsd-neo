@@ -270,10 +270,12 @@ Tests: `tests/engine/test_engine_trunk_scan.c` (`ENGINE_TRUNK_SCAN`) and
   on port + 2 (`udp_sockfdA`), opened through the `connect_analog` member of the runtime UDP audio hook table
   (`<dsd-neo/runtime/udp_audio_hooks.h>`, installed by the engine), muted or not: the mute toggle reopens local
   devices only, so a socket skipped while muted would stay closed. `udp_socket_blasterA()` skips an invalid socket.
-  Idempotent, decoder thread only; a failure is logged once and leaves that family silent. `DSD_APP_CMD_DECODE_MODE_SET`
-  and the RadioReference import (both through `decode_mode_apply_value()`) call them, and so does
-  `DSD_APP_CMD_CONFIG_APPLY` when its `[mode]` moves the session between the analog and digital families. Tests:
-  `CORE_AUDIO_ENSURE_OUTPUT`, `APP_COMMAND_QUEUE`, `APP_CONTROL_RR_APPLY`.
+  A new UDP target (`svc_udp_output_config()`) closes an open analog socket, which still sends to the old host and
+  port, and reopens it at once only when the current mode writes to it. Idempotent, decoder thread only; a failure is
+  logged once and leaves that family silent. `DSD_APP_CMD_DECODE_MODE_SET` and the RadioReference import (both through
+  `decode_mode_apply_value()`) call them, and so does `DSD_APP_CMD_CONFIG_APPLY` when its `[mode]` moves the session
+  between the analog and digital families or lands on a digital mode that writes raw audio (ProVoice, `-8`). Tests:
+  `CORE_AUDIO_ENSURE_OUTPUT`, `APP_COMMAND_QUEUE`, `APP_CONTROL_RR_APPLY`, `UI_MENU_SERVICES`.
 - Build files: `src/core/CMakeLists.txt`
 
 ## Runtime
@@ -410,7 +412,8 @@ installs from `src/engine/trunk_tuning.c` in `src/engine/trunk_tuning_hooks_inst
   on the demod thread after the command returns and the monitor's resampled rate is not the digital stream's.
   `DSD_APP_CMD_DECODE_MODE_SET` also opens the new family's sink (`dsd_audio_ensure_*_output()`).
   `DSD_APP_CMD_CONFIG_APPLY` runs the same sink and publish sequence when its `[mode]` moves the session between the
-  analog and digital families (a digital-to-digital `[mode]` change keeps its earlier behaviour). Tests:
+  analog and digital families; a digital-to-digital `[mode]` change keeps its earlier behaviour, except that ProVoice
+  (or `-8`) also gets the raw sink it writes to. Tests:
   `APP_COMMAND_QUEUE`, `APP_CONTROL_ACTIONS_RTL`.
 - Shared display decisions, so no frontend has to restate one: `include/dsd-neo/app_control/call_view.h` and
   `src/app_control/call_view.c` fold the canonical call state into a per-slot line, and

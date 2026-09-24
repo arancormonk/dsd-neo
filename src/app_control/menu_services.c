@@ -307,6 +307,14 @@ svc_udp_output_config(dsd_opts* opts, dsd_state* state, const char* host, int po
     DSD_STRNCPY(opts->udp_hostname, host, sizeof opts->udp_hostname - 1);
     opts->udp_hostname[sizeof opts->udp_hostname - 1] = '\0';
     opts->udp_portno = port;
+    /* An open analog socket (port + 2) sends to the previous host and port. Close it: it is reopened below when the
+       current mode writes to it, and otherwise by the lazy open on a later switch to Analog or ProVoice
+       (dsd_audio_ensure_analog_output()), which reopens only an invalid descriptor, so a socket left open here would
+       keep sending to the old target. */
+    if (opts->udp_sockfdA != DSD_INVALID_SOCKET) {
+        (void)dsd_socket_close(opts->udp_sockfdA);
+        opts->udp_sockfdA = DSD_INVALID_SOCKET;
+    }
     int err = udp_socket_connect(opts, state);
     if (err < 0) {
         return -1;

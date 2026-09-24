@@ -4619,7 +4619,8 @@ submit_config_mode(dsd_opts* opts, dsd_state* state, dsdneoUserDecodeMode mode, 
 /*
  * A config whose [mode] moves a live RTL session into or out of analog has to switch the receive family and open the
  * new family's sink the way DECODE_MODE_SET does, or the analog preset runs on the digital demodulator (and back). A
- * [mode] that stays inside its family asks the front end for nothing new.
+ * [mode] that stays inside its family asks the front end for nothing new, and opens no sink unless it writes raw audio
+ * a digital start did not open a sink for (ProVoice).
  */
 static int
 test_config_apply_switches_rtl_receive_family(void) {
@@ -4663,6 +4664,16 @@ test_config_apply_switches_rtl_receive_family(void) {
     rc |= expect_int("config same family asks for no family", g_analog_req_calls, 0);
     rc |= expect_int("config same family asks for no profile", g_demod_req_calls, 0);
     rc |= expect_int("config same family opens no sink", g_ensure_analog_calls + g_ensure_digital_calls, 0);
+
+    /* DMR-family session to ProVoice: still digital, but ProVoice writes the raw stream (UDP port + 2 with UDP output)
+       that a digital start did not open. */
+    reset_rx_family_wrap();
+    rc |= submit_config_mode(&opts, &state, DSDCFG_MODE_EDACS_PV, "config provoice");
+    rc |= expect_int("config provoice stays digital", opts.analog_only, 0);
+    rc |= expect_int("config provoice preset applied", opts.frame_provoice, 1);
+    rc |= expect_int("config provoice asks for no family", g_analog_req_calls, 0);
+    rc |= expect_int("config provoice opens its raw sink", g_ensure_digital_calls, 1);
+    rc |= expect_int("config provoice is not the analog monitor", g_ensure_analog_calls, 0);
 
     g_fake_digital_rate = 0U;
     state.rtl_ctx = NULL;

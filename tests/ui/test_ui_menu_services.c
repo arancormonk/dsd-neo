@@ -403,8 +403,9 @@ Connect(char* hostname, int portno) {
 
 static int g_udp_connect_result = -1;
 static int g_udp_connectA_calls = 0;
-/* What udp_socket_connectA() leaves in udp_sockfdA when it fails: a socket it created before its setsockopt or
- * address resolve failed, or DSD_INVALID_SOCKET when the create itself failed. */
+static int g_udp_connectA_result = -1;
+/* What udp_socket_connectA() leaves in udp_sockfdA: the socket it opened when it succeeds; when it fails, a socket it
+ * created before its setsockopt or address resolve failed, or DSD_INVALID_SOCKET when the create itself failed. */
 static dsd_socket_t g_udp_connectA_leftover = DSD_INVALID_SOCKET;
 
 int
@@ -419,7 +420,7 @@ udp_socket_connectA(dsd_opts* opts, dsd_state* state) {
     (void)state;
     g_udp_connectA_calls++;
     opts->udp_sockfdA = g_udp_connectA_leftover;
-    return -1;
+    return g_udp_connectA_result;
 }
 
 int
@@ -928,6 +929,7 @@ test_file_network_and_import_failure_contracts(void) {
     static dsd_opts opts;
     static dsd_state state;
     DSD_MEMSET(&opts, 0, sizeof(opts));
+    opts.udp_sockfdA = DSD_INVALID_SOCKET; /* as dsd_init() leaves it: no analog socket */
     DSD_MEMSET(&state, 0, sizeof(state));
 
     rc |= expect_int("symbol out empty path", svc_open_symbol_out(&opts, &state, ""), -1);
@@ -1000,7 +1002,7 @@ test_udp_output_analog_socket_failure(void) {
     g_udp_connectA_leftover = half_open;
     g_udp_connectA_calls = 0;
     opts.monitor_input_audio = 1;
-    opts.udp_sockfdA = 0;
+    opts.udp_sockfdA = DSD_INVALID_SOCKET;
     rc |= expect_int("udp output with a failing analog socket",
                      svc_udp_output_config(&opts, &state, "127.0.0.1", 23456), 0);
     rc |= expect_int("udp output enabled", opts.audio_out_type, 8);
@@ -1010,7 +1012,7 @@ test_udp_output_analog_socket_failure(void) {
 
     /* Failing before it created one. */
     g_udp_connectA_leftover = DSD_INVALID_SOCKET;
-    opts.udp_sockfdA = 0;
+    opts.udp_sockfdA = DSD_INVALID_SOCKET;
     rc |= expect_int("udp output with no analog socket", svc_udp_output_config(&opts, &state, "127.0.0.1", 23456), 0);
     rc |= expect_int("uncreated analog socket left invalid", opts.udp_sockfdA == DSD_INVALID_SOCKET, 1);
 
@@ -1020,6 +1022,64 @@ test_udp_output_analog_socket_failure(void) {
     rc |= expect_int("digital-only udp output", svc_udp_output_config(&opts, &state, "127.0.0.1", 23456), 0);
     rc |= expect_int("digital-only udp output opens no analog socket", g_udp_connectA_calls, 0);
 
+    g_udp_connect_result = -1;
+    return rc;
+}
+
+/* A new UDP target while an analog socket (port + 2) is open: that socket sends to the old host and port, so it is
+ * closed. With neither the source monitor nor ProVoice on it stays closed, so a later switch to Analog reopens it
+ * against the new target (dsd_audio_ensure_analog_output() opens from an invalid descriptor only, see
+ * CORE_AUDIO_ENSURE_OUTPUT); with one of them on it is reopened at once. */
+static int
+test_udp_output_target_change_closes_analog_socket(void) {
+    int rc = 0;
+    static dsd_opts opts;
+    static dsd_state state;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    if (dsd_socket_init() != 0) {
+        DSD_FPRINTF(stderr, "FAIL: socket init\n");
+        return 1;
+    }
+    g_udp_connect_result = 0;
+
+    /* -fA started with UDP output to host A, then a digital mode: the analog socket is still open. */
+    const dsd_socket_t old_analog = dsd_socket_create(AF_INET, SOCK_DGRAM, 0);
+    if (old_analog == DSD_INVALID_SOCKET) {
+        DSD_FPRINTF(stderr, "FAIL: UDP socket create\n");
+        g_udp_connect_result = -1;
+        return 1;
+    }
+    opts.udp_sockfdA = old_analog;
+    g_udp_connectA_calls = 0;
+    rc |=
+        expect_int("new udp target with the monitor off", svc_udp_output_config(&opts, &state, "127.0.0.2", 23466), 0);
+    rc |= expect_int("monitor off opens no analog socket", g_udp_connectA_calls, 0);
+    rc |= expect_int("stale analog socket left invalid for the lazy open", opts.udp_sockfdA == DSD_INVALID_SOCKET, 1);
+    rc |= expect_int("stale analog socket closed", dsd_socket_close(old_analog) != 0, 1);
+
+    /* The same with the source monitor on: the analog socket is reopened for the new target at once. */
+    const dsd_socket_t stale = dsd_socket_create(AF_INET, SOCK_DGRAM, 0);
+    const dsd_socket_t fresh = dsd_socket_create(AF_INET, SOCK_DGRAM, 0);
+    if (stale == DSD_INVALID_SOCKET || fresh == DSD_INVALID_SOCKET) {
+        DSD_FPRINTF(stderr, "FAIL: UDP socket create\n");
+        g_udp_connect_result = -1;
+        return 1;
+    }
+    opts.udp_sockfdA = stale;
+    opts.monitor_input_audio = 1;
+    g_udp_connectA_leftover = fresh;
+    g_udp_connectA_result = 0;
+    g_udp_connectA_calls = 0;
+    rc |= expect_int("new udp target with the monitor on", svc_udp_output_config(&opts, &state, "127.0.0.3", 23476), 0);
+    rc |= expect_int("monitor on reopens the analog socket", g_udp_connectA_calls, 1);
+    rc |= expect_int("analog socket is the reopened one", opts.udp_sockfdA == fresh, 1);
+    rc |= expect_int("stale analog socket closed before the reopen", dsd_socket_close(stale) != 0, 1);
+    rc |= expect_int("reopened analog socket left open", dsd_socket_close(fresh), 0);
+
+    opts.udp_sockfdA = DSD_INVALID_SOCKET;
+    g_udp_connectA_leftover = DSD_INVALID_SOCKET;
+    g_udp_connectA_result = -1;
     g_udp_connect_result = -1;
     return rc;
 }
@@ -1426,6 +1486,7 @@ main(void) {
 #endif
     rc |= test_file_network_and_import_failure_contracts();
     rc |= test_udp_output_analog_socket_failure();
+    rc |= test_udp_output_target_change_closes_analog_socket();
     rc |= test_channel_map_reimport_replaces_previous_map();
     rc |= test_channel_map_keys_adopt_and_clear();
     rc |= test_key_import_arms_keyloader();
