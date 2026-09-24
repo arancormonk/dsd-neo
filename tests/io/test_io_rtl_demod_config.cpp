@@ -1148,6 +1148,10 @@ expect_analog_legacy_default_enable(void) {
     set_channel_lpf_env(NULL);
     for (size_t i = 0; i < sizeof rows / sizeof rows[0]; i++) {
         demod_state* demod = static_cast<demod_state*>(std::calloc(1, sizeof(*demod)));
+        if (!demod) {
+            DSD_FPRINTF(stderr, "analog default: allocation failed\n");
+            return 1;
+        }
         static dsd_opts opts;
         make_analog_opts(&opts);
         char err[DSD_ANALOG_ERROR_TEXT_MAX] = {0};
@@ -1180,6 +1184,10 @@ expect_analog_default_enable_survives_replay_rate(void) {
     const int replay_rate_in[] = {12000, 48000};
     for (int i = 0; i < 2; i++) {
         demod_state* demod = static_cast<demod_state*>(std::calloc(1, sizeof(*demod)));
+        if (!demod) {
+            DSD_FPRINTF(stderr, "analog default replay rate: allocation failed\n");
+            return 1;
+        }
         output_state output;
         DSD_MEMSET(&output, 0, sizeof(output));
         output.rate = configured_bw[i];
@@ -1213,6 +1221,10 @@ expect_analog_explicit_width_forces_lpf(void) {
     set_channel_lpf_env(NULL);
     for (size_t i = 0; i < sizeof rows / sizeof rows[0]; i++) {
         demod_state* demod = static_cast<demod_state*>(std::calloc(1, sizeof(*demod)));
+        if (!demod) {
+            DSD_FPRINTF(stderr, "explicit width: allocation failed\n");
+            return 1;
+        }
         static dsd_opts opts;
         make_analog_opts(&opts);
         opts.analog_nfm_bandwidth_hz = rows[i].width_hz;
@@ -1227,6 +1239,10 @@ expect_analog_explicit_width_forces_lpf(void) {
 
     /* A width the rate cannot fit fails the start with the validator's text. */
     demod_state* demod = static_cast<demod_state*>(std::calloc(1, sizeof(*demod)));
+    if (!demod) {
+        DSD_FPRINTF(stderr, "unrealizable explicit width: allocation failed\n");
+        return 1;
+    }
     static dsd_opts opts;
     make_analog_opts(&opts);
     opts.analog_nfm_bandwidth_hz = 16000;
@@ -1247,6 +1263,11 @@ expect_analog_env_off_conflict(void) {
     int rc = 0;
     set_channel_lpf_env("0");
     demod_state* demod = static_cast<demod_state*>(std::calloc(1, sizeof(*demod)));
+    if (!demod) {
+        DSD_FPRINTF(stderr, "env-off conflict: allocation failed\n");
+        set_channel_lpf_env(NULL);
+        return 1;
+    }
     static dsd_opts opts;
     make_analog_opts(&opts);
     opts.analog_nfm_bandwidth_hz = 12500;
@@ -1262,6 +1283,11 @@ expect_analog_env_off_conflict(void) {
 
     /* The unset default simply follows the environment. */
     demod = static_cast<demod_state*>(std::calloc(1, sizeof(*demod)));
+    if (!demod) {
+        DSD_FPRINTF(stderr, "env-off default: allocation failed\n");
+        set_channel_lpf_env(NULL);
+        return 1;
+    }
     make_analog_opts(&opts);
     rc |= expect_int_eq("default with LPF env off starts", configure_and_finalize(demod, &opts, 48000, err, sizeof err),
                         0);
@@ -1280,6 +1306,10 @@ expect_m17_encoder_unchanged(void) {
     const int both[] = {0, 1};
     for (int analog_only : both) {
         demod_state* demod = static_cast<demod_state*>(std::calloc(1, sizeof(*demod)));
+        if (!demod) {
+            DSD_FPRINTF(stderr, "M17 encoder: allocation failed\n");
+            return 1;
+        }
         static dsd_opts opts;
         DSD_MEMSET(&opts, 0, sizeof(opts));
         opts.m17encoder = 1;
@@ -1304,6 +1334,10 @@ static int
 expect_analog_am_refused(void) {
     int rc = 0;
     demod_state* demod = static_cast<demod_state*>(std::calloc(1, sizeof(*demod)));
+    if (!demod) {
+        DSD_FPRINTF(stderr, "AM refusal: allocation failed\n");
+        return 1;
+    }
     static dsd_opts opts;
     make_analog_opts(&opts);
     opts.analog_demod = DSD_ANALOG_DEMOD_AM;
@@ -1339,6 +1373,10 @@ expect_unset_default_rule_keyed_on_nfm(void) {
 
     /* 12 kHz DSP bandwidth: rate_in below 20 kHz, so the legacy rule leaves the filter off for the NFM default. */
     demod_state* demod = static_cast<demod_state*>(std::calloc(1, sizeof(*demod)));
+    if (!demod) {
+        DSD_FPRINTF(stderr, "unset default rule: allocation failed\n");
+        return 1;
+    }
     static dsd_opts opts;
     make_analog_opts(&opts);
     char err[DSD_ANALOG_ERROR_TEXT_MAX] = {0};
@@ -1400,6 +1438,10 @@ expect_post_decimation_rule(void) {
     /* The stream-start finalize applies the same rule against the stream's own chain. */
     set_channel_lpf_env(NULL);
     demod_state* demod = static_cast<demod_state*>(std::calloc(1, sizeof(*demod)));
+    if (!demod) {
+        DSD_FPRINTF(stderr, "post decimation finalize: allocation failed\n");
+        return 1;
+    }
     output_state output;
     DSD_MEMSET(&output, 0, sizeof(output));
     output.rate = 48000;
@@ -1431,6 +1473,10 @@ expect_rate_refresh_leaves_cqpsk_profile(void) {
     int rc = 0;
     set_channel_lpf_env(NULL);
     demod_state* demod = static_cast<demod_state*>(std::calloc(1, sizeof(*demod)));
+    if (!demod) {
+        DSD_FPRINTF(stderr, "rate refresh CQPSK profile: allocation failed\n");
+        return 1;
+    }
     static dsd_opts opts;
     make_analog_opts(&opts);
     opts.analog_nfm_bandwidth_hz = 12500;
