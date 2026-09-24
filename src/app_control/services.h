@@ -17,6 +17,7 @@
 
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/state_fwd.h>
+#include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/decode_mode.h>
 
 #ifdef USE_RADIO
@@ -184,6 +185,20 @@ void svc_set_scan_voice_hold_ms(dsd_opts* opts, int ms);
  * a second request from here would fight it.
  */
 void svc_publish_symbol_profile(const dsd_opts* opts, dsd_state* state, dsd_decode_mode_profile profile);
+
+/**
+ * @brief Ask a running RTL front end, before a decode-mode change commits, whether it takes the receive profile
+ * @p mode will publish.
+ *
+ * Only a mode that moves the front end onto the analog family can be refused (an analog width the running demod rate
+ * cannot realize, for one): the check applies the rules rtl_stream_request_analog_profile() applies, and logs a
+ * refusal with the validator's text the same way. A caller that gets -1 leaves the decoder's mode as it was, so the
+ * decoder and the front end never disagree about the family.
+ *
+ * @return 0 when the front end would take it, or when @p mode publishes no analog profile here (a digital mode, the
+ *         M17 encoder, no running RTL stream, or a scope update that defers the publish); -1 when it would refuse it.
+ */
+int svc_check_mode_receive_profile(const dsd_opts* opts, const dsd_state* state, dsdneoUserDecodeMode mode);
 
 // Per-protocol inversion toggles
 /** @brief Toggle X2-TDMA symbol inversion. */

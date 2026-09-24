@@ -3661,6 +3661,14 @@ decode_mode_apply_value(dsd_opts* opts, dsd_state* state, dsdneoUserDecodeMode m
        bootstrap against BS voice and nothing at all against MS voice. */
     const int audio_channels = opts->pulse_digi_out_channels;
     const int audio_rate = opts->pulse_digi_rate_out;
+    /* Asked before anything changes: a running RTL front end that would refuse the analog receive profile the new
+       mode publishes (logged with the reason) leaves the session in its mode, instead of an Analog decoder on a
+       digital front end. */
+    if (svc_check_mode_receive_profile(opts, state, mode) != 0) {
+        ui_set_toast(state, 4, "Failed: %s -> RTL front end refused its channel (see log)",
+                     dsd_decode_mode_display_name(mode));
+        return UI_CMD_APPLY_FAILED;
+    }
     /* Released before the preset runs, not after. The presets skip their whole
        modulation block under mod_cli_lock (decode_mode_apply_dmr() and siblings),
        so on a session started with `-mq`/`-mg` the new protocol would keep the old

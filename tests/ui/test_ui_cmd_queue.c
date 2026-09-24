@@ -4475,14 +4475,30 @@ static int g_demod_req_ted_sps;
    symbol profile a CQPSK toggle or typed row applied under it). */
 static int g_fake_analog_family;
 static unsigned int g_fake_digital_rate;
+/* What rtl_stream_check_analog_profile() answers (0 accepts), and what it was asked. */
+static int g_analog_check_result;
+static int g_analog_check_calls;
+static int g_analog_check_family;
+static int g_analog_check_kind;
+static int g_analog_check_width_hz;
 
 // GNU ld --wrap entry points must keep the reserved __wrap_* symbol name.
 // NOLINTBEGIN(bugprone-reserved-identifier,cert-dcl37-c,cert-dcl51-cpp,misc-use-internal-linkage)
+int __wrap_rtl_stream_check_analog_profile(int family, int kind, int width_hz);
 int __wrap_rtl_stream_request_analog_profile(int family, int kind, int width_hz);
 int __wrap_rtl_stream_request_demod_profile(int cqpsk_enable, int symbol_rate_hz, int levels, int channel_profile,
                                             int ted_sps, int ted_sps_is_override);
 int __wrap_rtl_stream_analog_family_active(void);
 unsigned int __wrap_rtl_stream_output_rate_for_family(int family, int cqpsk_enable, int symbol_rate_hz);
+
+int
+__wrap_rtl_stream_check_analog_profile(int family, int kind, int width_hz) {
+    g_analog_check_calls++;
+    g_analog_check_family = family;
+    g_analog_check_kind = kind;
+    g_analog_check_width_hz = width_hz;
+    return g_analog_check_result;
+}
 
 int
 __wrap_rtl_stream_request_analog_profile(int family, int kind, int width_hz) {
@@ -4525,6 +4541,8 @@ __wrap_rtl_stream_output_rate_for_family(int family, int cqpsk_enable, int symbo
 
 static void
 reset_rx_family_wrap(void) {
+    g_analog_check_result = 0;
+    g_analog_check_calls = g_analog_check_family = g_analog_check_kind = g_analog_check_width_hz = 0;
     g_rx_sequence = 0;
     g_analog_req_calls = g_analog_req_family = g_analog_req_kind = g_analog_req_width_hz = g_analog_req_order = 0;
     g_demod_req_calls = g_demod_req_order = g_demod_req_rate = g_demod_req_ted_sps = 0;
@@ -4592,6 +4610,77 @@ test_decode_mode_set_switches_rtl_receive_family(void) {
     rc |= expect_int("configured width requested", g_analog_req_width_hz, 12500);
 
     g_fake_digital_rate = 0U;
+    state.rtl_ctx = NULL;
+    freeState(&state);
+    return rc;
+}
+
+/*
+ * DECODE_MODE_SET Analog that the running RTL front end would refuse (an explicit NFM width its demod rate cannot
+ * realize, say) is asked about before anything changes: the command fails with a toast, and the session stays in its
+ * digital mode with the digital front end, sink and options it had. Committing the preset first would leave an Analog
+ * decoder on the digital demodulator, and a second Analog pick would take the already-selected shortcut and never
+ * retry. Once the front end takes the profile, the same command switches.
+ */
+static int
+test_decode_mode_set_refused_analog_profile_changes_nothing(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static void* fake_ctx[2];
+    int rc = 0;
+    init_decode_mode_context(&opts, &state);
+    opts.audio_in_type = AUDIO_IN_RTL;
+    state.rtl_ctx = (RtlSdrContext*)fake_ctx;
+    rc |= expect_int("refusal: dmr start queued",
+                     dsd_app_command_set_i32(DSD_APP_CMD_DECODE_MODE_SET, (int32_t)DSDCFG_MODE_DMR),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("refusal: dmr start drained", dsd_app_drain_cmds(&opts, &state), 1);
+    opts.analog_nfm_bandwidth_hz = 25000;
+    opts.mod_cli_lock = 1;
+
+    reset_rx_family_wrap();
+    g_analog_check_result = -1;
+    state.ui_msg[0] = '\0';
+    rc |= expect_int("refusal: analog queued",
+                     dsd_app_command_set_i32(DSD_APP_CMD_DECODE_MODE_SET, (int32_t)DSDCFG_MODE_ANALOG),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("refusal: analog drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("refusal: front end asked once", g_analog_check_calls, 1);
+    rc |= expect_int("refusal: asked for the analog family", g_analog_check_family, DSD_RX_FAMILY_ANALOG);
+    rc |= expect_int("refusal: asked for NFM", g_analog_check_kind, DSD_ANALOG_DEMOD_FM);
+    rc |= expect_int("refusal: asked for the configured width", g_analog_check_width_hz, 25000);
+    rc |= expect_int("refusal: decoder stays digital", opts.analog_only, 0);
+    rc |= expect_int("refusal: DMR still decoded", opts.frame_dmr, 1);
+    rc |= expect_int("refusal: mode still DMR", dsd_infer_decode_mode_preset(&opts) == DSDCFG_MODE_DMR, 1);
+    rc |= expect_int("refusal: modulation lock kept", opts.mod_cli_lock, 1);
+    rc |= expect_int("refusal: no family request", g_analog_req_calls, 0);
+    rc |= expect_int("refusal: no symbol profile", g_demod_req_calls, 0);
+    rc |= expect_int("refusal: no raw sink opened", g_ensure_analog_calls, 0);
+    rc |= expect_int("refusal: toast names the refusal", strstr(state.ui_msg, "refused") != NULL, 1);
+
+    /* The front end takes it now: the same pick switches, with no already-selected shortcut in the way. */
+    reset_rx_family_wrap();
+    rc |= expect_int("accepted: analog queued",
+                     dsd_app_command_set_i32(DSD_APP_CMD_DECODE_MODE_SET, (int32_t)DSDCFG_MODE_ANALOG),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("accepted: analog drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("accepted: decoder on analog", opts.analog_only, 1);
+    rc |= expect_int("accepted: analog family requested", g_analog_req_family, DSD_RX_FAMILY_ANALOG);
+    rc |= expect_int("accepted: width travels", g_analog_req_width_hz, 25000);
+    rc |= expect_int("accepted: raw sink ensured", g_ensure_analog_calls, 1);
+
+    /* A digital pick is never asked about. */
+    reset_rx_family_wrap();
+    g_analog_check_result = -1;
+    rc |= expect_int("digital: dmr queued",
+                     dsd_app_command_set_i32(DSD_APP_CMD_DECODE_MODE_SET, (int32_t)DSDCFG_MODE_DMR),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("digital: dmr drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("digital: front end not asked", g_analog_check_calls, 0);
+    rc |= expect_int("digital: DMR applied", opts.analog_only == 0 && opts.frame_dmr == 1, 1);
+
+    g_analog_check_result = 0;
+    opts.analog_nfm_bandwidth_hz = 0;
     state.rtl_ctx = NULL;
     freeState(&state);
     return rc;
@@ -4924,6 +5013,7 @@ main(void) {
 #endif
 #if defined(USE_RADIO) && defined(DSD_NEO_TEST_ANALOG_WRAP) && defined(DSD_NEO_TEST_AUDIO_ENSURE_WRAP)
     rc |= test_decode_mode_set_switches_rtl_receive_family();
+    rc |= test_decode_mode_set_refused_analog_profile_changes_nothing();
     rc |= test_decode_mode_set_leaves_analog_family_off_the_monitor();
     rc |= test_typed_row_republish_follows_configured_family();
     rc |= test_config_apply_switches_rtl_receive_family();

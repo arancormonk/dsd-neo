@@ -5530,6 +5530,7 @@ if(
         PRIVATE
             "LINKER:--wrap=rtl_stream_create"
             "LINKER:--wrap=rtl_stream_set_channel_squelch"
+            "LINKER:--wrap=rtl_stream_check_analog_profile"
             "LINKER:--wrap=rtl_stream_request_analog_profile"
             "LINKER:--wrap=rtl_stream_request_demod_profile"
             "LINKER:--wrap=rtl_stream_analog_family_active"

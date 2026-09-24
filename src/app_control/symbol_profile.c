@@ -14,6 +14,7 @@
 
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/decode_mode.h>
 #include <dsd-neo/runtime/scan_mode.h>
 #include "dsd-neo/core/opts_fwd.h"
@@ -34,6 +35,23 @@ symbol_profile_configured_digital(const dsd_opts* opts, const dsd_state* state) 
     return (analog_only == 1 && opts->m17encoder != 1) ? 0 : 1;
 }
 #endif
+
+int
+svc_check_mode_receive_profile(const dsd_opts* opts, const dsd_state* state, dsdneoUserDecodeMode mode) {
+    if (!opts || !state || mode != DSDCFG_MODE_ANALOG || opts->m17encoder == 1 || dsd_scan_mode_updating(state)) {
+        return 0;
+    }
+#ifdef USE_RADIO
+    if (opts->audio_in_type != AUDIO_IN_RTL || !state->rtl_ctx) {
+        return 0;
+    }
+    /* What svc_publish_symbol_profile() will request once the Analog preset has run: the preset selects NFM
+       (dsd_apply_decode_mode_preset() sets analog_demod to FM) and keeps the configured NFM width. */
+    return rtl_stream_check_analog_profile(DSD_RX_FAMILY_ANALOG, DSD_ANALOG_DEMOD_FM, opts->analog_nfm_bandwidth_hz);
+#else
+    return 0;
+#endif
+}
 
 void
 svc_publish_symbol_profile(const dsd_opts* opts, dsd_state* state, dsd_decode_mode_profile profile) {

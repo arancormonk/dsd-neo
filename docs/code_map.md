@@ -416,7 +416,11 @@ installs from `src/engine/trunk_tuning.c` in `src/engine/trunk_tuning_hooks_inst
   digital stream's. Under a scan row's constraint the configured mode is the scan baseline
   (`dsd_scan_mode_configured_view()`), so republishing a typed digital row's profile on an analog session queues that
   profile alone and does not switch the front end in the middle of the row.
-  `DSD_APP_CMD_DECODE_MODE_SET` also opens the new family's sink (`dsd_audio_ensure_*_output()`).
+  `DSD_APP_CMD_DECODE_MODE_SET` also opens the new family's sink (`dsd_audio_ensure_*_output()`). Before it changes
+  anything it asks a running RTL front end whether it takes the analog profile the mode will publish
+  (`svc_check_mode_receive_profile()`, `rtl_stream_check_analog_profile()`: the checks
+  `rtl_stream_request_analog_profile()` makes before it queues, refusal logged the same way); a refusal fails the
+  command with a toast and leaves the mode, options, sinks and front end as they were.
   `DSD_APP_CMD_CONFIG_APPLY` runs the same sink and publish sequence when its `[mode]` moves the session between the
   analog and digital families; a digital-to-digital `[mode]` change keeps its earlier behaviour, except that ProVoice
   (or `-8`) also gets the raw sink it writes to. Tests:

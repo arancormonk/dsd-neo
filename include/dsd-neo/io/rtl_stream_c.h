@@ -288,6 +288,18 @@ int rtl_stream_request_demod_profile(int cqpsk_enable, int symbol_rate_hz, int l
 int rtl_stream_request_analog_profile(int family, int kind, int width_hz);
 
 /**
+ * @brief Check a receive-family / analog profile request without queuing it.
+ *
+ * Applies what rtl_stream_request_analog_profile() checks on the caller's thread before it queues (the family and
+ * kind, the width's range, DSD_NEO_CHANNEL_LPF, and while a stream runs its published demod rate and a replay's
+ * post-demod decimation), and logs a refusal the same way. For a caller that must change nothing else when the front
+ * end refuses, such as a decode-mode change.
+ *
+ * @return 0 when rtl_stream_request_analog_profile() would accept the same request now; -1 when it would refuse it.
+ */
+int rtl_stream_check_analog_profile(int family, int kind, int width_hz);
+
+/**
  * @brief Report the published analog receive profile.
  *
  * @param out_kind     dsd_analog_demod of the active analog family (0 otherwise). May be NULL.

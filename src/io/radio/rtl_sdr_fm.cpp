@@ -8264,12 +8264,21 @@ rtl_stream_analog_request_valid(int family, int kind, int width_hz, const char* 
     return 0;
 }
 
+/* What a refused request leaves in place, for its log line. */
+static const char*
+rtl_stream_analog_refused_result(void) {
+    return g_stream ? "The front end keeps its current receive profile."
+                    : "No stream is running; the next start configures the front end from the options.";
+}
+
+extern "C" int
+rtl_stream_check_analog_profile(int family, int kind, int width_hz) {
+    return rtl_stream_analog_request_valid(family, kind, width_hz, rtl_stream_analog_refused_result()) ? 0 : -1;
+}
+
 extern "C" int
 rtl_stream_request_analog_profile(int family, int kind, int width_hz) {
-    const char* refused_result = g_stream ? "The front end keeps its current receive profile."
-                                          : "No stream is running; the next start configures the front end from the "
-                                            "options.";
-    if (!rtl_stream_analog_request_valid(family, kind, width_hz, refused_result)) {
+    if (!rtl_stream_analog_request_valid(family, kind, width_hz, rtl_stream_analog_refused_result())) {
         return -1;
     }
     if (!g_stream) {

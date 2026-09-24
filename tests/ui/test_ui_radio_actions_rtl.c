@@ -76,6 +76,15 @@ rtl_stream_request_analog_profile(int family, int kind, int width_hz) {
     return 0;
 }
 
+/* Linked in with svc_check_mode_receive_profile(); nothing here changes the decode mode. */
+int
+rtl_stream_check_analog_profile(int family, int kind, int width_hz) {
+    (void)family;
+    (void)kind;
+    (void)width_hz;
+    return 0;
+}
+
 /* The front end is digital throughout these tests. */
 int
 rtl_stream_analog_family_active(void) {
