@@ -243,14 +243,17 @@ leaving analog.
 ### Output Scale
 
 Live radio sets `output_scale = 1/pi` in `optimal_settings()`; IQ replay never
-calls it and leaves the discriminator output unscaled, so replayed FM monitor
-audio is about pi times louder than live. The scale applies to monitor audio
-only: `demod_write_output_block()` skips it for FSK discriminator and CQPSK
-symbol output, so digital decoding and the digital `DECODE_IQ_*` baselines do
-not depend on it. The analog replay checks (`DECODE_IQ_ANALOG_*`) do: their
-level bounds (RMS, peak and audible thresholds in dBFS) were measured at the
-replay scale. Ratio-based audio metrics are invariant to it, so it is left as
-is.
+calls it. `output_scale` belongs to the process-wide demod state and nothing
+resets it, so a replay in a process that has not run a live stream (the CLI's
+`--iq-replay`, the replay tests) leaves the discriminator output unscaled, and
+replayed FM monitor audio is about pi times louder than live; a replay opened
+after a live session in the same process keeps the 1/pi that session set. The
+scale applies to monitor audio only: `demod_write_output_block()` skips it for
+FSK discriminator and CQPSK symbol output, so digital decoding and the digital
+`DECODE_IQ_*` baselines do not depend on it. The analog replay checks
+(`DECODE_IQ_ANALOG_*`) do: their level bounds (RMS, peak and audible thresholds
+in dBFS) were measured at the replay scale. Ratio-based audio metrics are
+invariant to it, so it is left as is.
 
 ## Regression Coverage
 
@@ -319,9 +322,9 @@ ctest --preset dev-debug --output-on-failure
   signals once representative captures are available.
 - Any future change to channel LPF cutoffs, default RTL DSP bandwidth, CQPSK
   loop gains, or FSK normalization must update the mode matrix tests first.
-- The live (1/pi) versus replay (unscaled) analog output scale difference is
-  documented above and left in place; aligning it moves replayed monitor audio
-  levels, so the analog replay checks' dBFS bounds would need new baselines
-  (digital output never takes the scale).
+- The live (1/pi) versus cold-start replay (unscaled) analog output scale
+  difference is documented above and left in place; aligning it moves replayed
+  monitor audio levels, so the analog replay checks' dBFS bounds would need new
+  baselines (digital output never takes the scale).
 - The forced-rate analog channel filter (Airspy 2.5 MS/s -> 78,125 Hz) needs a
   hardware listen check.
