@@ -50,6 +50,8 @@ dsd_engine_rtl_stream_metrics_hooks_install(void) {
     hooks.apply_demod_profile = rtl_stream_metrics_apply_demod_profile;
     hooks.apply_analog_profile = rtl_stream_request_analog_profile;
     hooks.analog_profile = rtl_stream_get_analog_profile;
+    hooks.analog_family_active = rtl_stream_analog_family_active;
+    hooks.output_rate_for_family = rtl_stream_output_rate_for_family;
     hooks.cqpsk_status = rtl_stream_get_cqpsk_status;
     hooks.request_cqpsk_reacquire = rtl_stream_request_cqpsk_reacquire;
     hooks.cqpsk_timing_bias = rtl_stream_metrics_cqpsk_timing_bias;

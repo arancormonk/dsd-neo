@@ -51,6 +51,10 @@ typedef struct {
     int (*apply_analog_profile)(int family, int kind, int width_hz);
     /* Published analog profile; returns 1 while the analog family is active. */
     int (*analog_profile)(int* out_kind, int* out_width_hz, int* out_lpf_on);
+    /* 1 while the front end runs the analog receive family, including under a symbol profile applied on its own. */
+    int (*analog_family_active)(void);
+    /* Output rate the front end will have once it runs the family (dsd_rx_family); 0 when unknown. */
+    unsigned int (*output_rate_for_family)(int family, int cqpsk_enable, int symbol_rate_hz);
 } dsd_rtl_stream_metrics_hooks;
 
 typedef enum DSD_ATTR_PACKED dsd_rtl_stream_channel_profile {
@@ -105,6 +109,27 @@ int dsd_rtl_stream_metrics_hook_apply_analog_profile(int family, int kind, int w
  * @return 1 while the analog family is active (outputs filled), 0 otherwise (outputs zeroed).
  */
 int dsd_rtl_stream_metrics_hook_analog_profile(int* out_kind, int* out_width_hz, int* out_lpf_on);
+/**
+ * @brief Report whether the RTL front end runs the analog receive family.
+ *
+ * Stays 1 while a symbol profile applied without a family request (a CQPSK toggle, a typed digital scan row) has moved
+ * the front end off the analog monitor output; a digital family request leaves the family from there too.
+ *
+ * @return 1 while the analog family runs, 0 otherwise or when no RTL front end is installed.
+ */
+int dsd_rtl_stream_metrics_hook_analog_family_active(void);
+/**
+ * @brief Predict the output rate the RTL front end will have once it runs @p family.
+ *
+ * A family switch lands on the demod thread after the request returns, so a caller timing the decoder for the new
+ * family reads this rather than the current output rate.
+ *
+ * @param family         dsd_rx_family.
+ * @param cqpsk_enable   Non-zero for the CQPSK symbol output (digital family only).
+ * @param symbol_rate_hz Digital symbol rate, which decides the digital resampling policy.
+ * @return Predicted output rate in Hz, or 0 when it is unknown or no RTL front end is installed.
+ */
+unsigned int dsd_rtl_stream_metrics_hook_output_rate_for_family(int family, int cqpsk_enable, int symbol_rate_hz);
 int dsd_rtl_stream_metrics_hook_cqpsk_status(int* out_cqpsk_enable, int* out_cqpsk_timing_active);
 int dsd_rtl_stream_metrics_hook_request_cqpsk_reacquire(void);
 int dsd_rtl_stream_metrics_hook_cqpsk_timing_bias(void);

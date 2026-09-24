@@ -514,6 +514,14 @@ static int analog_restore_width_hz;
 static int analog_restore_order;
 static int digital_restore_calls;
 static int digital_restore_order;
+static int digital_restore_sps;
+/* What the front end reports: whether it runs the analog family, and the output rate the digital family lands on. */
+static int fake_analog_family;
+static unsigned int fake_digital_rate;
+static int rate_for_family_calls;
+static int rate_for_family_family;
+static int rate_for_family_cqpsk;
+static int rate_for_family_symbol_rate;
 
 static int
 record_analog_restore(int family, int kind, int width_hz) {
@@ -531,17 +539,32 @@ record_digital_restore(int cqpsk, int rate, int levels, int filter, int sps) {
     (void)rate;
     (void)levels;
     (void)filter;
-    (void)sps;
     digital_restore_calls++;
     digital_restore_order = ++frontend_sequence;
+    digital_restore_sps = sps;
     return 0;
+}
+
+static int
+report_analog_family(void) {
+    return fake_analog_family;
+}
+
+static unsigned int
+report_output_rate_for_family(int family, int cqpsk_enable, int symbol_rate_hz) {
+    rate_for_family_calls++;
+    rate_for_family_family = family;
+    rate_for_family_cqpsk = cqpsk_enable;
+    rate_for_family_symbol_rate = symbol_rate_hz;
+    return family == DSD_RX_FAMILY_DIGITAL ? fake_digital_rate : 48000U;
 }
 
 static void
 reset_frontend_records(void) {
     frontend_sequence = 0;
     analog_restore_calls = analog_restore_family = analog_restore_kind = analog_restore_width_hz = 0;
-    analog_restore_order = digital_restore_calls = digital_restore_order = 0;
+    analog_restore_order = digital_restore_calls = digital_restore_order = digital_restore_sps = 0;
+    rate_for_family_calls = rate_for_family_family = rate_for_family_cqpsk = rate_for_family_symbol_rate = 0;
 }
 
 /*
@@ -619,10 +642,81 @@ test_leave_restores_configured_receive_family(void) {
     free(opts);
 }
 
+/*
+ * A -fA session scanning a typed DMR row, whose configured mode the operator changes to P25 Phase 2 while the row
+ * runs. The command times the saved configuration for the rate it reads then, the analog monitor's resampled 48 kHz
+ * (8 samples per 6000 sym/s symbol), and leaves the front end alone until the row's constraint is gone. Leaving the
+ * scan is what switches the front end to the digital family, which runs at the 24 kHz DSP rate: the leave times the
+ * decoder, and the symbol profile it publishes, for the rate that family lands on (4 samples per symbol), as a mode
+ * change outside a row does. A front end already on the digital family keeps the timing the configuration saved.
+ */
+static void
+test_leave_retimes_the_digital_landing(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
+    assert(opts && state);
+    opts->scanner_mode = 1;
+    opts->audio_in_type = AUDIO_IN_RTL;
+    state->samplesPerSymbol = 10;
+    assert(dsd_apply_decode_mode_preset(DSDCFG_MODE_ANALOG, DSD_DECODE_PRESET_PROFILE_CLI, opts, state) == 0);
+    const dsd_rtl_stream_metrics_hooks hooks = {.apply_demod_profile = record_digital_restore,
+                                                .apply_analog_profile = record_analog_restore,
+                                                .analog_family_active = report_analog_family,
+                                                .output_rate_for_family = report_output_rate_for_family};
+    dsd_rtl_stream_metrics_hooks_set(&hooks);
+
+    assert(dsd_scan_mode_enter(opts, state, DSD_SCAN_MODE_DMR) == 0);
+    assert(dsd_scan_mode_options(opts, state, NULL) == 0);
+    assert(dsd_scan_mode_suspend(opts, state) == 1);
+    /* What DSD_APP_CMD_DECODE_MODE_SET does while the row's constraint is suspended: the preset, the timing at the
+     * 48 kHz the stream outputs now, and the mode's SPS hunt profile (svc_publish_symbol_profile()). */
+    assert(dsd_apply_decode_mode_preset(DSDCFG_MODE_P25P2, DSD_DECODE_PRESET_PROFILE_CLI, opts, state) == 0);
+    state->samplesPerSymbol = 8;
+    state->symbolCenter = dsd_opts_symbol_center(8);
+    state->sps_hunt_idx = DSD_FRAME_SYNC_SPS_PROFILE_6000_4;
+    (void)dsd_scan_mode_resume(opts, state);
+    assert(opts->frame_dmr == 1);
+
+    reset_frontend_records();
+    fake_analog_family = 1;
+    fake_digital_rate = 24000U;
+    dsd_engine_channel_scan_leave(opts, state);
+    assert(opts->analog_only == 0 && opts->frame_p25p2 == 1);
+    assert(analog_restore_calls == 1 && analog_restore_family == DSD_RX_FAMILY_DIGITAL);
+    assert(digital_restore_calls == 1 && analog_restore_order < digital_restore_order);
+    assert(rate_for_family_calls == 1 && rate_for_family_family == DSD_RX_FAMILY_DIGITAL);
+    assert(rate_for_family_symbol_rate == 6000);
+    assert(rate_for_family_cqpsk == (state->rf_mod == 1));
+    assert(state->samplesPerSymbol == 4);
+    assert(state->symbolCenter == dsd_opts_symbol_center(4));
+    assert(digital_restore_sps == 4);
+
+    /* A digital session's front end is already on the digital family: nothing to predict, the saved timing stands. */
+    assert(dsd_apply_decode_mode_preset(DSDCFG_MODE_DMR, DSD_DECODE_PRESET_PROFILE_CLI, opts, state) == 0);
+    state->samplesPerSymbol = 5;
+    state->symbolCenter = dsd_opts_symbol_center(5);
+    assert(dsd_scan_mode_enter(opts, state, DSD_SCAN_MODE_NXDN48) == 0);
+    assert(dsd_scan_mode_options(opts, state, NULL) == 0);
+    reset_frontend_records();
+    fake_analog_family = 0;
+    dsd_engine_channel_scan_leave(opts, state);
+    assert(opts->frame_dmr == 1);
+    assert(rate_for_family_calls == 0);
+    assert(state->samplesPerSymbol == 5 && digital_restore_sps == 5);
+
+    fake_digital_rate = 0U;
+    dsd_rtl_stream_metrics_hooks_set(NULL);
+    dsd_state_trunk_lcn_free(state);
+    dsd_state_ext_free_all(state);
+    free(state);
+    free(opts);
+}
+
 int
 main(void) {
     dsd_neo_log_set_tap(count_squelch_warnings, NULL);
     test_leave_restores_configured_receive_family();
+    test_leave_retimes_the_digital_landing();
     test_option_commit_boundary();
     test_option_only_rows_and_policy_edits();
     test_row_max_visit_override_and_inherit();

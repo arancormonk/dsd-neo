@@ -323,9 +323,15 @@ dsd_engine_channel_scan_step_manual(dsd_opts* opts, dsd_state* state) {
 
 /* Put the RTL front end back on the configured receive family. Under -fA that is the configured analog profile
  * (demodulator and channel width, 0 meaning the default); otherwise the digital family and the symbol profile the
- * restored decoder runs on, in that order, so the demod thread switches family before it applies the profile. */
+ * restored decoder runs on, in that order, so the demod thread switches family before it applies the profile.
+ *
+ * A front end still on the analog family (the -fA session whose configured mode was changed to a digital one while a
+ * row ran) switches to digital only here, after the configured timing was saved for the analog family's output rate:
+ * the monitor's resampled audio, or the rate a typed row's profile ran at. The decoder, and the profile it publishes,
+ * are timed for the rate the digital family lands on instead, as svc_publish_symbol_profile() times a mode change
+ * outside a row. */
 static void
-channel_scan_restore_frontend(const dsd_opts* opts, const dsd_state* state) {
+channel_scan_restore_frontend(const dsd_opts* opts, dsd_state* state) {
     if (opts->audio_in_type != AUDIO_IN_RTL) {
         return;
     }
@@ -335,6 +341,14 @@ channel_scan_restore_frontend(const dsd_opts* opts, const dsd_state* state) {
         return;
     }
     const dsd_decode_mode_profile profile = dsd_scan_mode_effective_profile(opts, state);
+    if (dsd_rtl_stream_metrics_hook_analog_family_active()) {
+        const unsigned int rate_hz = dsd_rtl_stream_metrics_hook_output_rate_for_family(
+            DSD_RX_FAMILY_DIGITAL, state->rf_mod == 1, profile.symbol_rate_hz);
+        if (rate_hz > 0U) {
+            state->samplesPerSymbol = dsd_opts_compute_sps_rate(opts, profile.symbol_rate_hz, (int)rate_hz);
+            state->symbolCenter = dsd_opts_symbol_center(state->samplesPerSymbol);
+        }
+    }
     const int filter = opts->analog_only || !dsd_opts_has_digital_decode_mode(opts)
                            ? DSD_RTL_STREAM_CHANNEL_PROFILE_WIDE
                            : dsd_rtl_channel_profile_for(opts, profile.symbol_rate_hz, profile.levels, state->rf_mod);

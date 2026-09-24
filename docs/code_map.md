@@ -150,8 +150,11 @@ Tests: `tests/engine/test_engine_trunk_scan.c` (`ENGINE_TRUNK_SCAN`) and
   Leaving the scan (`dsd_engine_channel_scan_leave()`) restores the configured RTL receive family through the metrics
   hooks: under `-fA` the configured analog profile (`apply_analog_profile`, analog family, demodulator kind and
   channel width with 0 meaning the default), otherwise the digital family first and then the restored symbol profile
-  (`apply_demod_profile`), so the demod thread switches family before it applies the profile. The M17 encoder is not
-  the analog family. Test: `ENGINE_CHANNEL_SCAN`.
+  (`apply_demod_profile`), so the demod thread switches family before it applies the profile. When the front end still
+  runs the analog family there (`analog_family_active`: an `-fA` session whose configured mode was changed to a digital
+  one while a row ran, saving its timing for the analog output rate), the leave times the decoder, and the profile it
+  publishes, for the rate the digital family lands on (`output_rate_for_family`). The M17 encoder is not the analog
+  family. Test: `ENGINE_CHANNEL_SCAN`.
 - DSP `dsd_frame_sync_reset_acquisition()` drops outgoing profile proof, modulation votes, symbol history, hunt budgets,
   and slicer windows at committed row boundaries. Conventional rows also discard learned P25 modulation; trunk targets
   retain their own learned modulation. Normal no-carrier protocol confirmation resets remain in use.
@@ -298,8 +301,10 @@ Tests: `tests/engine/test_engine_trunk_scan.c` (`ENGINE_TRUNK_SCAN`) and
     `RUNTIME_ANALOG_CHANNEL`, `DSP_CHANNEL_FILTERS` (validator and design agree across a width/rate grid; the
     analog design gates on `dsd_analog_width_realizable()` itself).
   - The RTL metrics hook table (`include/dsd-neo/runtime/rtl_stream_metrics_hooks.h`) also carries the receive-family
-    request (`apply_analog_profile`) and the published analog profile (`analog_profile`); the engine installs
-    `rtl_stream_request_analog_profile()`/`rtl_stream_get_analog_profile()` behind them.
+    request (`apply_analog_profile`), the published analog profile (`analog_profile`), whether the analog family runs
+    (`analog_family_active`) and the output rate a family switch lands on (`output_rate_for_family`); the engine
+    installs `rtl_stream_request_analog_profile()`, `rtl_stream_get_analog_profile()`,
+    `rtl_stream_analog_family_active()` and `rtl_stream_output_rate_for_family()` behind them.
   - RadioReference.com import client (`src/runtime/radioreference/`): SOAP envelope builder, expat response parser,
     worker-thread client with cancellation, and the generators that turn fetched systems into the channel-map and
     talkgroup CSVs `src/core/file/dsd_import.c` already parses. UI-agnostic C API in

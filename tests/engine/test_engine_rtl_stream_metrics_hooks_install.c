@@ -139,6 +139,27 @@ rtl_stream_get_analog_profile(int* out_kind, int* out_width_hz, int* out_lpf_on)
     return 1;
 }
 
+static int g_analog_family_active_calls;
+static int g_output_rate_for_family_calls;
+static int g_last_rate_family;
+static int g_last_rate_cqpsk;
+static int g_last_rate_symbol_rate;
+
+int
+rtl_stream_analog_family_active(void) {
+    ++g_analog_family_active_calls;
+    return 1;
+}
+
+unsigned int
+rtl_stream_output_rate_for_family(int family, int cqpsk_enable, int symbol_rate_hz) {
+    ++g_output_rate_for_family_calls;
+    g_last_rate_family = family;
+    g_last_rate_cqpsk = cqpsk_enable;
+    g_last_rate_symbol_rate = symbol_rate_hz;
+    return 24000U;
+}
+
 int
 rtl_stream_get_cqpsk_status(int* cqpsk_enable, int* cqpsk_timing_active) {
     ++g_cqpsk_status_calls;
@@ -314,6 +335,12 @@ main(void) {
     assert(analog_kind == 0);
     assert(analog_width == 12500);
     assert(analog_lpf_on == 1);
+    /* So do the family readback and the output rate a family switch lands on. */
+    assert(dsd_rtl_stream_metrics_hook_analog_family_active() == 1);
+    assert(g_analog_family_active_calls == 1);
+    assert(dsd_rtl_stream_metrics_hook_output_rate_for_family(0, 1, 6000) == 24000U);
+    assert(g_output_rate_for_family_calls == 1);
+    assert(g_last_rate_family == 0 && g_last_rate_cqpsk == 1 && g_last_rate_symbol_rate == 6000);
 
     int cqpsk_enable = -1;
     int cqpsk_timing = -1;
