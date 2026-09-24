@@ -6,3 +6,8 @@ src/third_party/** linguist-vendored
 android/third_party/libusb/** linguist-vendored
 android/third_party/librtlsdr/** linguist-vendored
 android/third_party/libairspy/** linguist-vendored
+
+# Scripts and sourced environment fragments must keep LF line endings so Linux
+# containers can execute/source them directly from archives produced on Windows.
+*.sh text eol=lf
+*.env text eol=lf
