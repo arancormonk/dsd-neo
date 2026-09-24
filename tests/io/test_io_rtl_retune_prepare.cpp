@@ -433,6 +433,52 @@ test_audio_monitor_rate_not_restored_stops(void) {
     return failed;
 }
 
+/*
+ * A retune refused for the monitor's explicit width fails, whatever centre it finalized on. A retune whose target is
+ * the centre the stream already runs on (or one made before any centre was applied, which the refusal keeps as the
+ * target) finalizes on that very centre without its profile, and must not complete as tuned.
+ */
+static int
+test_audio_monitor_refused_retune_completes_failed(void) {
+    int failed = 0;
+    rtl_stream_test_retune_completion_result r;
+    const uint32_t running_hz = 460125000U;
+    const uint32_t next_hz = 460150000U;
+
+    DSD_MEMSET(&r, 0, sizeof r);
+    failed |= expect_int_eq(
+        "same-centre refused retune hook",
+        rtl_stream_test_audio_monitor_retune_completion(48000, 16000, 16000, running_hz, running_hz, &r), 0);
+    failed |= expect_int_eq("same-centre retune refused", r.retune_refused, 1);
+    failed |=
+        expect_int_eq("same-centre refusal finalizes on the target centre", (int)(r.center_after == running_hz), 1);
+    failed |= expect_int_eq("same-centre refusal completes failed", r.completion_result, RTL_STREAM_TUNE_FAILED);
+
+    DSD_MEMSET(&r, 0, sizeof r);
+    failed |= expect_int_eq("no-centre refused retune hook",
+                            rtl_stream_test_audio_monitor_retune_completion(48000, 16000, 16000, 0U, next_hz, &r), 0);
+    failed |= expect_int_eq("no-centre retune refused", r.retune_refused, 1);
+    failed |= expect_int_eq("no-centre refusal keeps the target centre", (int)(r.center_after == next_hz), 1);
+    failed |= expect_int_eq("no-centre refusal completes failed", r.completion_result, RTL_STREAM_TUNE_FAILED);
+
+    DSD_MEMSET(&r, 0, sizeof r);
+    failed |=
+        expect_int_eq("next-centre refused retune hook",
+                      rtl_stream_test_audio_monitor_retune_completion(48000, 16000, 16000, running_hz, next_hz, &r), 0);
+    failed |= expect_int_eq("next-centre retune refused", r.retune_refused, 1);
+    failed |= expect_int_eq("next-centre refusal stays on the running centre", (int)(r.center_after == running_hz), 1);
+    failed |= expect_int_eq("next-centre refusal completes failed", r.completion_result, RTL_STREAM_TUNE_FAILED);
+
+    /* A same-centre retune the width still fits lands and completes as tuned. */
+    DSD_MEMSET(&r, 0, sizeof r);
+    failed |= expect_int_eq(
+        "same-centre fitting retune hook",
+        rtl_stream_test_audio_monitor_retune_completion(48000, 24000, 12500, running_hz, running_hz, &r), 0);
+    failed |= expect_int_eq("same-centre fitting retune lands", r.retune_refused, 0);
+    failed |= expect_int_eq("same-centre fitting retune completes ok", r.completion_result, RTL_STREAM_TUNE_OK);
+    return failed;
+}
+
 /* The analog family, kind and width travel with a retune profile bound to its target frequency. */
 static int
 test_retune_profile_carries_analog_fields(void) {
@@ -615,13 +661,16 @@ main(void) {
                             dsd_rtl_stream_test_tune_completion_result(RTL_STREAM_TUNE_TIMEOUT, RTL_STREAM_TUNE_FAILED),
                             RTL_STREAM_TUNE_TIMEOUT);
     failed |= expect_int_eq("committed retune failure reports tune ok",
-                            dsd_rtl_stream_test_manual_retune_completion_result(-5, 1, 855000000U, 855000000U),
+                            dsd_rtl_stream_test_manual_retune_completion_result(-5, 1, 0, 855000000U, 855000000U),
                             RTL_STREAM_TUNE_OK);
     failed |= expect_int_eq("uncommitted retune failure reports tune failed",
-                            dsd_rtl_stream_test_manual_retune_completion_result(-5, 1, 855000000U, 851000000U),
+                            dsd_rtl_stream_test_manual_retune_completion_result(-5, 1, 0, 855000000U, 851000000U),
                             RTL_STREAM_TUNE_FAILED);
     failed |= expect_int_eq("failed retune without reconfigure reports tune failed",
-                            dsd_rtl_stream_test_manual_retune_completion_result(-5, 0, 855000000U, 855000000U),
+                            dsd_rtl_stream_test_manual_retune_completion_result(-5, 0, 0, 855000000U, 855000000U),
+                            RTL_STREAM_TUNE_FAILED);
+    failed |= expect_int_eq("retune refused for its analog width on its own centre reports tune failed",
+                            dsd_rtl_stream_test_manual_retune_completion_result(-1, 1, 1, 855000000U, 855000000U),
                             RTL_STREAM_TUNE_FAILED);
 
     /*
@@ -1342,6 +1391,7 @@ main(void) {
     failed |= test_audio_monitor_retune_resolves_channel();
     failed |= test_audio_monitor_retune_profile_decides();
     failed |= test_audio_monitor_rate_not_restored_stops();
+    failed |= test_audio_monitor_refused_retune_completes_failed();
     failed |= test_retune_profile_carries_analog_fields();
     failed |= test_retune_profile_width_checked_at_landing_rate();
 

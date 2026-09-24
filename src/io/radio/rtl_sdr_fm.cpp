@@ -4250,11 +4250,18 @@ controller_reconfigure_active_stream_locked(struct controller_state* s, uint32_t
     return rc;
 }
 
+/* @p out_refused is set to 1 when the retune was refused for the analog monitor's width
+ * (controller_refuse_retune_for_analog_width()): it then finalized without its profile on the centre it left, which
+ * can be the centre it asked for, and reports kRetuneRefusedForAnalogWidth. */
 static int
 controller_apply_reconfigure(struct controller_state* s, uint32_t center_freq_hz, int ppm_error,
-                             const RtlRetuneProfile* retune_profile, int* out_ppm_rc, int* out_reconfigured) {
+                             const RtlRetuneProfile* retune_profile, int* out_ppm_rc, int* out_reconfigured,
+                             int* out_refused) {
     if (out_reconfigured) {
         *out_reconfigured = 0;
+    }
+    if (out_refused) {
+        *out_refused = 0;
     }
     if (!s || center_freq_hz == 0) {
         return -1;
@@ -4283,9 +4290,14 @@ controller_apply_reconfigure(struct controller_state* s, uint32_t center_freq_hz
         controller_reconfigure_finalized_profile(retune_profile, center_freq_hz, finalized_center_freq_hz);
     controller_arm_retune_mute("post", 1);
     store_dongle_ppm_error_if_applied(ppm_rc, ppm_error);
-    if (controller_refuse_retune_for_analog_width(&previous_capture, previous_rate_out_hz, previous_center_freq_hz,
-                                                  &finalized_center_freq_hz, &finalized_profile)) {
+    const int refused =
+        controller_refuse_retune_for_analog_width(&previous_capture, previous_rate_out_hz, previous_center_freq_hz,
+                                                  &finalized_center_freq_hz, &finalized_profile);
+    if (refused) {
         apply_rc = kRetuneRefusedForAnalogWidth;
+    }
+    if (out_refused) {
+        *out_refused = refused;
     }
     DemodRetuneResetReason reset_reason =
         ppm_changed ? DemodRetuneResetReason::PpmCorrection : DemodRetuneResetReason::FrequencyRetune;
@@ -4710,9 +4722,15 @@ controller_gate_tune_timeout(struct controller_state* s, uint32_t request_id) {
     }
 }
 
+/* A retune refused for the analog monitor's width (@p refused) fails whatever centre it finalized on: it kept the
+ * capture it had and dropped its profile, even when the centre it kept is the one it asked for. Any other failed apply
+ * that still reconfigured onto its target reports OK, with a warning logged. */
 static int
-controller_manual_retune_completion_result(int retune_rc, int reconfigured, uint32_t target_hz,
+controller_manual_retune_completion_result(int retune_rc, int reconfigured, int refused, uint32_t target_hz,
                                            uint32_t applied_freq_hz) {
+    if (refused) {
+        return RTL_STREAM_TUNE_FAILED;
+    }
     if (retune_rc == 0) {
         return RTL_STREAM_TUNE_OK;
     }
@@ -4821,15 +4839,16 @@ controller_process_manual_retune(struct controller_state* s, const ControllerRet
     int target_ppm = work->ppm_changed ? work->requested_ppm : work->current_ppm;
     int ppm_rc = 0;
     int reconfigured = 0;
+    int refused = 0;
     int retune_rc =
-        controller_apply_reconfigure(s, target_hz, target_ppm, &work->manual_profile, &ppm_rc, &reconfigured);
+        controller_apply_reconfigure(s, target_hz, target_ppm, &work->manual_profile, &ppm_rc, &reconfigured, &refused);
     if (work->ppm_changed && ppm_rc != 0) {
         note_failed_ppm_request(work->requested_ppm, work->requested_ppm_request_id, work->current_ppm, ppm_rc);
     }
     controller_clear_active_ppm_request(s, work->ppm_pending);
     uint32_t applied_freq_hz = s->last_applied_freq_hz.load(std::memory_order_acquire);
     int completion_result =
-        controller_manual_retune_completion_result(retune_rc, reconfigured, target_hz, applied_freq_hz);
+        controller_manual_retune_completion_result(retune_rc, reconfigured, refused, target_hz, applied_freq_hz);
     controller_finish_manual_retune(s, work, completion_result, retune_rc == 0 || reconfigured);
     if (retune_rc != 0 && completion_result == RTL_STREAM_TUNE_OK) {
         LOG_INFO("NOTICE: Retune applied with warning: %u Hz (rc=%d).\n", target_hz, retune_rc);
@@ -4924,7 +4943,7 @@ static DSD_THREAD_RETURN_TYPE
         int ppm_rc = 0;
         int reconfigured = 0;
         int retune_rc = controller_apply_reconfigure(s, (uint32_t)s->freqs[s->freq_now], work.current_ppm, NULL,
-                                                     &ppm_rc, &reconfigured);
+                                                     &ppm_rc, &reconfigured, NULL);
         if (retune_rc == 0 || reconfigured) {
             drain_output_on_retune();
         }
@@ -9291,9 +9310,9 @@ dsd_rtl_stream_test_tune_completion_result(int wait_result, int completion_resul
 }
 
 extern "C" int
-dsd_rtl_stream_test_manual_retune_completion_result(int retune_rc, int reconfigured, uint32_t target_hz,
+dsd_rtl_stream_test_manual_retune_completion_result(int retune_rc, int reconfigured, int refused, uint32_t target_hz,
                                                     uint32_t applied_freq_hz) {
-    return controller_manual_retune_completion_result(retune_rc, reconfigured, target_hz, applied_freq_hz);
+    return controller_manual_retune_completion_result(retune_rc, reconfigured, refused, target_hz, applied_freq_hz);
 }
 
 extern "C" int
@@ -11351,28 +11370,36 @@ rtl_stream_test_digital_row_on_analog_session(int rate_hz, int start_digital, rt
     return 0;
 }
 
-/* Land a retune from kFamilyTestCenterHz to kFamilyTestRetuneHz (with @p retune_profile, or none) the way
- * controller_apply_reconfigure() lands one once the device is programmed: the device settled on @p landed_rate_hz, the
- * landing check may refuse the retune and put the capture back, and the rate chain finalizes. @p reported_rate_hz is
- * the rate the device reports after that restore (the rate it was put back to when equal to @p rate_before_hz).
- * Returns 1 when the retune was refused. */
+/* Land a retune from @p running_center_hz (0: no centre applied yet) to @p target_hz (with @p retune_profile, or none)
+ * the way controller_apply_reconfigure() lands one once the device is programmed: the device settled on
+ * @p landed_rate_hz, the landing check may refuse the retune and put the capture back, and the rate chain finalizes.
+ * @p reported_rate_hz is the rate the device reports after that restore (the rate it was put back to when equal to
+ * @p rate_before_hz). Returns 1 when the retune was refused. */
 static int
-family_test_land_retune(const dsd_opts* opts, int rate_before_hz, int landed_rate_hz, int reported_rate_hz,
-                        const RtlRetuneProfile* retune_profile) {
-    controller.last_applied_freq_hz.store(kFamilyTestCenterHz, std::memory_order_release);
-    const CaptureSettingsSnapshot previous_capture = capture_settings_snapshot_for_center(kFamilyTestCenterHz);
-    uint32_t center_hz = kFamilyTestRetuneHz;
+family_test_land_retune_between(const dsd_opts* opts, uint32_t running_center_hz, uint32_t target_hz,
+                                int rate_before_hz, int landed_rate_hz, int reported_rate_hz,
+                                const RtlRetuneProfile* retune_profile) {
+    controller.last_applied_freq_hz.store(running_center_hz, std::memory_order_release);
+    const CaptureSettingsSnapshot previous_capture = capture_settings_snapshot_for_center(running_center_hz);
+    uint32_t center_hz = target_hz;
     const RtlRetuneProfile* profile = retune_profile;
     demod.rate_out = landed_rate_hz;
-    const int refused = controller_refuse_retune_for_analog_width(&previous_capture, rate_before_hz,
-                                                                  kFamilyTestCenterHz, &center_hz, &profile);
+    const int refused = controller_refuse_retune_for_analog_width(&previous_capture, rate_before_hz, running_center_hz,
+                                                                  &center_hz, &profile);
     if (refused && reported_rate_hz != rate_before_hz) {
         demod.rate_out = reported_rate_hz; /* the device did not return to the rate the capture was put back to */
     }
     controller_finalize_rate_chain(&controller, opts, center_hz, /*mark_reconfigure=*/1,
-                                   DemodRetuneResetReason::FrequencyRetune, kFamilyTestCenterHz, rate_before_hz,
-                                   profile);
+                                   DemodRetuneResetReason::FrequencyRetune, running_center_hz, rate_before_hz, profile);
     return refused;
+}
+
+/* A retune from kFamilyTestCenterHz to kFamilyTestRetuneHz, landed as family_test_land_retune_between() lands it. */
+static int
+family_test_land_retune(const dsd_opts* opts, int rate_before_hz, int landed_rate_hz, int reported_rate_hz,
+                        const RtlRetuneProfile* retune_profile) {
+    return family_test_land_retune_between(opts, kFamilyTestCenterHz, kFamilyTestRetuneHz, rate_before_hz,
+                                           landed_rate_hz, reported_rate_hz, retune_profile);
 }
 
 extern "C" int
@@ -11430,6 +11457,38 @@ rtl_stream_test_audio_monitor_retune(int rate_before_hz, int rate_after_hz, int 
 
     demod.audio_lpf_enable = 0;
     demod.audio_lpf_cutoff_hz = 0;
+    family_test_restore(saved);
+    family_test_release_buffers();
+    return 0;
+}
+
+extern "C" int
+rtl_stream_test_audio_monitor_retune_completion(int rate_before_hz, int rate_after_hz, int nfm_width_hz,
+                                                uint32_t running_center_hz, uint32_t target_hz,
+                                                rtl_stream_test_retune_completion_result* out) {
+    if (!out || rate_before_hz <= 0 || rate_after_hz <= 0 || target_hz == 0U) {
+        return -1;
+    }
+    *out = {};
+    const FamilyTestSaved saved = family_test_save();
+    g_stream = NULL;
+    static dsd_opts analog_opts;
+    DSD_MEMSET(&analog_opts, 0, sizeof analog_opts);
+    analog_opts.analog_only = 1;
+    analog_opts.monitor_input_audio = 1;
+    analog_opts.analog_nfm_bandwidth_hz = nfm_width_hz;
+    if (family_test_seed_open(&analog_opts, rate_before_hz, 0) != 0) {
+        family_test_restore(saved);
+        return -2;
+    }
+    /* What controller_apply_reconfigure() reports once the device is programmed, landed as it lands it. */
+    const int refused = family_test_land_retune_between(&analog_opts, running_center_hz, target_hz, rate_before_hz,
+                                                        rate_after_hz, rate_before_hz, NULL);
+    out->retune_refused = refused;
+    out->center_after = controller.last_applied_freq_hz.load(std::memory_order_acquire);
+    out->completion_result = controller_manual_retune_completion_result(
+        refused ? kRetuneRefusedForAnalogWidth : 0, /*reconfigured=*/1, refused, target_hz, out->center_after);
+
     family_test_restore(saved);
     family_test_release_buffers();
     return 0;

@@ -171,7 +171,9 @@ Enable rule and validation:
   text (once per kind, width and rate), the device goes back to the capture
   frequency and rate it had, where the width runs, and the retune fails as a
   retune that could not be applied does (`RTL_STREAM_TUNE_FAILED`,
-  `NOTICE: Retune failed`). A retune profile for the target that switches to
+  `NOTICE: Retune failed`), also when the centre it keeps is the one it asked
+  for (a retune to the running centre, or one before any centre was applied).
+  A retune profile for the target that switches to
   the digital family, or to an analog width the new rate fits, takes the
   monitor's width away and is not refused for it; one that carries only a
   symbol profile is held like a bare retune. Should the device report another
@@ -333,7 +335,8 @@ invariant to it, so it is left as is.
   coefficient refresh after a forced rate change, the channel a rate change
   resolves (the fallback prototype's width published past the tap capacity),
   the retune refused when its rate cannot realize an explicit width (the
-  capture, centre, rate and width put back), the stop when the device does not
+  capture, centre, rate and width put back, and the retune completing as
+  failed, a retune to the running centre included), the stop when the device does not
   return to a rate that fits it, and analog retune profiles;
   `IO_RTL_ANALOG_FAMILY_SWITCH` checks that digital -> analog -> digital ends on
   a fresh open for P25 C4FM/CQPSK, DMR, NXDN48 and dPMR, at unforced rates and at

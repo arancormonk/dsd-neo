@@ -32,8 +32,8 @@ int rtl_stream_test_tune_timeout_read_gate(size_t queued_samples, int* out_read_
                                            int* out_read_after_recovery, uint32_t* out_generation_before,
                                            uint32_t* out_generation_after_gate);
 int dsd_rtl_stream_test_tune_completion_result(int wait_result, int completion_result);
-int dsd_rtl_stream_test_manual_retune_completion_result(int retune_rc, int reconfigured, uint32_t target_hz,
-                                                        uint32_t applied_freq_hz);
+int dsd_rtl_stream_test_manual_retune_completion_result(int retune_rc, int reconfigured, int refused,
+                                                        uint32_t target_hz, uint32_t applied_freq_hz);
 int dsd_rtl_stream_test_tune_failure_reconciles_applied(uint32_t requested_freq_hz, uint32_t applied_freq_hz,
                                                         long int* out_opts_freq, uint32_t* out_capture_freq_hz);
 int dsd_rtl_stream_test_capture_settings_failure_restore(uint32_t* out_full_freq_hz, uint32_t* out_full_rate_hz,
@@ -514,6 +514,19 @@ typedef struct rtl_stream_test_retune_profile_landing_result {
 int rtl_stream_test_audio_monitor_retune_with_profile(int rate_before_hz, int rate_after_hz, int nfm_width_hz,
                                                       int profile_family, int profile_width_hz,
                                                       rtl_stream_test_retune_profile_landing_result* out);
+
+typedef struct rtl_stream_test_retune_completion_result {
+    int retune_refused;    /* 1 when the landing check refused the retune */
+    uint32_t center_after; /* the centre frequency the retune finalized on */
+    int completion_result; /* rtl_stream_tune_result the manual retune completes with */
+} rtl_stream_test_retune_completion_result;
+
+/* As rtl_stream_test_audio_monitor_retune(), for a manual retune to @p target_hz from a stream running on
+ * @p running_center_hz (0: no centre applied yet), which the device reconfigured for: reports the result the controller
+ * completes that retune with (controller_manual_retune_completion_result()). */
+int rtl_stream_test_audio_monitor_retune_completion(int rate_before_hz, int rate_after_hz, int nfm_width_hz,
+                                                    uint32_t running_center_hz, uint32_t target_hz,
+                                                    rtl_stream_test_retune_completion_result* out);
 
 typedef struct rtl_stream_test_rate_not_restored_result {
     int retune_refused;     /* 1 when the landing check refused the retune */

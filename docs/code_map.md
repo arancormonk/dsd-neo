@@ -594,12 +594,14 @@ Notes:
     run without its channel filter: `controller_refuse_retune_for_analog_width()` refuses the retune once the device is
     programmed and before it finalizes (both reconfigure paths), logs the validator's text once per kind, width and
     rate, puts the device back on the capture frequency and rate it had (`CaptureSettingsSnapshot`, which keeps the
-    device-forced flag too), and finalizes on the centre it left without the retune's profile, so the tune fails. A
-    retune profile for the target that switches to the digital family, or to an analog width the new rate fits, is
-    not refused for the monitor's width. A device that still reports a rate the width cannot run at after it was put
-    back stops the stream (`controller_refresh_analog_channel_for_rate()`: logged, `DSD_INPUT_FAILURE_CONFIGURATION`,
-    exit flag), as a start at that rate fails. Only while the monitor output runs on the analog channel: CQPSK toggled
-    on under `-fA`, or a typed digital scan row's profile, keeps its own profile filter across the rate change.
+    device-forced flag too), and finalizes on the centre it left without the retune's profile, so the tune fails
+    (`controller_apply_reconfigure()` reports the refusal, and the manual retune completes as failed even when the
+    centre it kept is its target). A retune profile for the target that switches to the digital family, or to an
+    analog width the new rate fits, is not refused for the monitor's width. A device that still reports a rate the
+    width cannot run at after it was put back stops the stream (`controller_refresh_analog_channel_for_rate()`:
+    logged, `DSD_INPUT_FAILURE_CONFIGURATION`, exit flag), as a start at that rate fails. Only while the monitor
+    output runs on the analog channel: CQPSK toggled on under `-fA`, or a typed digital scan row's profile, keeps its
+    own profile filter across the rate change.
   - The width-driven filter and the published analog profile follow `dsd_demod_analog_monitor_active()` (analog
     family, `AUDIO_MONITOR` output, CQPSK off, the analog WIDE channel profile), so CQPSK toggled on under `-fA` keeps
     its P25 CQPSK profile filter, and a typed digital scan row's symbol profile on an analog session keeps the monitor
