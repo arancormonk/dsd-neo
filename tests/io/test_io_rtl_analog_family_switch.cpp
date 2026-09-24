@@ -55,6 +55,7 @@
 #include <cstring>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/io/rtl_stream_c.h>
+#include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/runtime/analog_channel.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/log.h>
@@ -695,6 +696,77 @@ test_request_across_rate_change(void) {
     return rc;
 }
 
+/* The digital leg of a switch under a DSD_NEO_CQPSK override, from a digital session switched to analog and from a -fA
+ * start, held to a fresh open of the mode under the same override. @p ted_sps is what the decoder times the profile
+ * with at the rate the switch predicts. */
+static int
+expect_override_digital_leg(const family_case& c, const char* cqpsk_env, int landing_cqpsk, int forced_rate_out_hz,
+                            int ted_sps) {
+    family_case lands = c;
+    lands.request.ted_sps = ted_sps;
+    static dsd_opts digital;
+    static dsd_opts analog;
+    DSD_MEMSET(&digital, 0, sizeof digital);
+    DSD_MEMSET(&analog, 0, sizeof analog);
+    c.configure(&digital);
+    analog.analog_only = 1;
+    analog.monitor_input_audio = 1;
+    analog.analog_demod = DSD_ANALOG_DEMOD_FM;
+    const int demod_rate_hz = forced_rate_out_hz > 0 ? forced_rate_out_hz : 48000;
+    const int want_kind = landing_cqpsk ? RTL_STREAM_OUTPUT_SYMBOL_CQPSK : RTL_STREAM_OUTPUT_FSK_DISCRIMINATOR;
+    int rc = 0;
+    char label[160];
+    for (int from_analog_start = 0; from_analog_start <= 1; from_analog_start++) {
+        rtl_stream_test_family_switch_result r;
+        DSD_MEMSET(&r, 0, sizeof r);
+        DSD_SNPRINTF(label, sizeof label, "DSD_NEO_CQPSK=%s, %s%s@%d run", cqpsk_env,
+                     from_analog_start ? "-fA start, " : "", c.name, demod_rate_hz);
+        const int run_rc = from_analog_start
+                               ? rtl_stream_test_analog_start_family_switch(&digital, &analog, 48000,
+                                                                            forced_rate_out_hz, &lands.request, &r)
+                               : rtl_stream_test_analog_family_switch(&digital, &analog, 48000, forced_rate_out_hz,
+                                                                      &lands.request, &r);
+        rc |= expect_int(label, run_rc, 0);
+        DSD_SNPRINTF(label, sizeof label, "DSD_NEO_CQPSK=%s, %s%s@%d -> digital", cqpsk_env,
+                     from_analog_start ? "-fA start, " : "", c.name, demod_rate_hz);
+        rc |= expect_int(label, r.digital_request_rc, 0);
+        rc |= expect_int(label, r.fresh_digital.output_kind, want_kind);
+        rc |= expect_fields_equal(label, r.switched_digital, r.fresh_digital);
+        rc |= expect_int(label, (int)r.predicted_digital_output_rate, r.switched_digital.output_rate);
+    }
+    return rc;
+}
+
+/* DSD_NEO_CQPSK decides the CQPSK family a stream opens on, whatever the mode asks for, so a switch from the analog
+ * family to a digital mode lands where an open of that mode would under the override: off, a P25 CQPSK mode runs the
+ * FSK discriminator (resampled to 48 kHz at a forced 78125 Hz, as a C4FM open is); on, every digital mode runs CQPSK
+ * (never resampled). The decoder's output-rate prediction follows the same override. Only the digital leg is held to
+ * the open here: the override also reaches a -fA open, where it means nothing for monitor audio. */
+static int
+test_cqpsk_override_lands_like_open(const family_case* p25_c4fm_case, const family_case* p25_cqpsk_case,
+                                    const family_case* dmr_case) {
+    int rc = 0;
+    (void)dsd_setenv("DSD_NEO_CQPSK", "0", 1);
+    dsd_neo_config_init();
+    rc |= expect_override_digital_leg(*p25_cqpsk_case, "0", 0, 0, 10);
+    rc |= expect_override_digital_leg(*p25_cqpsk_case, "0", 0, 78125, 10);
+    rc |= expect_override_digital_leg(*p25_c4fm_case, "0", 0, 78125, 10);
+    family_case split = *p25_cqpsk_case;
+    split.request.boundary_between_requests = 1;
+    rc |= expect_override_digital_leg(split, "0", 0, 78125, 10);
+
+    (void)dsd_setenv("DSD_NEO_CQPSK", "1", 1);
+    dsd_neo_config_init();
+    rc |= expect_override_digital_leg(*p25_c4fm_case, "1", 1, 0, 10);
+    rc |= expect_override_digital_leg(*p25_c4fm_case, "1", 1, 78125, 16);
+    rc |= expect_override_digital_leg(*dmr_case, "1", 1, 0, 10);
+    rc |= expect_override_digital_leg(*p25_cqpsk_case, "1", 1, 78125, 16);
+
+    (void)dsd_unsetenv("DSD_NEO_CQPSK");
+    dsd_neo_config_init();
+    return rc;
+}
+
 int
 main(void) {
     dsd_neo_log_set_tap(capture_error_log, NULL);
@@ -812,6 +884,7 @@ main(void) {
     rc |= test_requests_without_stream();
     rc |= test_requests_against_running_stream();
     rc |= test_request_across_rate_change();
+    rc |= test_cqpsk_override_lands_like_open(&cases[0], &cases[1], &cases[2]);
 
     /* Requests the front end cannot honour are refused up front. */
     rc |= expect_int("AM refused", rtl_stream_request_analog_profile(DSD_RX_FAMILY_ANALOG, DSD_ANALOG_DEMOD_AM, 0), -1);

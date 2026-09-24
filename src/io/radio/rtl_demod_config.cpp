@@ -461,11 +461,8 @@ demod_apply_ted_defaults(struct demod_state* demod, const dsdneoRuntimeConfig* c
 }
 
 static void
-demod_apply_cqpsk_defaults(struct demod_state* demod, const dsd_opts* opts, const dsdneoRuntimeConfig* cfg) {
-    demod->cqpsk_enable = (opts->mod_qpsk == 1) ? 1 : 0;
-    if (cfg->cqpsk_is_set) {
-        demod->cqpsk_enable = (cfg->cqpsk_enable != 0) ? 1 : 0;
-    }
+demod_apply_cqpsk_defaults(struct demod_state* demod, const dsd_opts* opts) {
+    demod->cqpsk_enable = rtl_demod_open_cqpsk_request((opts->mod_qpsk == 1) ? 1 : 0) > 0 ? 1 : 0;
     if (demod->cqpsk_enable) {
         if (!demod->ted_enabled) {
             demod->ted_enabled = 1;
@@ -592,7 +589,7 @@ rtl_demod_config_from_env_and_opts(struct demod_state* demod, const dsd_opts* op
     demod->digital_resample_mode = opts->digital_resample_mode;
     demod_apply_costas_defaults(demod, cfg);
     demod_apply_ted_defaults(demod, cfg);
-    demod_apply_cqpsk_defaults(demod, opts, cfg);
+    demod_apply_cqpsk_defaults(demod, opts);
     demod_apply_iq_defaults(demod, cfg);
     demod_apply_channel_lpf_defaults(demod, opts, cfg);
     demod_finalize_runtime_profile(demod, opts);
@@ -1360,6 +1357,31 @@ rtl_demod_enter_analog_family(struct demod_state* demod, struct output_state* ou
     rtl_demod_maybe_update_resampler_after_rate_change(demod, output, rtl_dsp_bw_hz);
     rtl_demod_maybe_refresh_ted_sps_after_rate_change(demod, NULL, output, /*preserve_active_profile=*/1);
     demod_family_switch_reset(demod);
+}
+
+int
+rtl_demod_open_cqpsk_request(int requested_cqpsk) {
+    const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
+    if (cfg && cfg->cqpsk_is_set) {
+        return (cfg->cqpsk_enable != 0) ? 1 : 0;
+    }
+    return requested_cqpsk;
+}
+
+int
+rtl_demod_open_channel_profile(int landing_cqpsk, int requested_cqpsk, int channel_profile, int symbol_rate_hz) {
+    if (landing_cqpsk == requested_cqpsk) {
+        return channel_profile;
+    }
+    if (landing_cqpsk > 0) {
+        /* demod_apply_channel_lpf_defaults(): CQPSK output always runs the P25 CQPSK filter. */
+        return DSD_CH_LPF_PROFILE_P25_CQPSK;
+    }
+    if (channel_profile == DSD_CH_LPF_PROFILE_P25_CQPSK && symbol_rate_hz == 4800) {
+        /* A P25 Phase 1 open on the FSK discriminator filters with the C4FM profile. */
+        return DSD_CH_LPF_PROFILE_P25_C4FM;
+    }
+    return channel_profile;
 }
 
 void

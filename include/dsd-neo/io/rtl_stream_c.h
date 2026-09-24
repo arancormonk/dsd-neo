@@ -323,7 +323,8 @@ int rtl_stream_analog_family_active(void);
  * read the current output rate (the analog monitor resamples to its audio rate; a digital stream usually does not).
  *
  * @param family         dsd_rx_family.
- * @param cqpsk_enable   Non-zero for the CQPSK symbol output (digital family only).
+ * @param cqpsk_enable   Non-zero for the CQPSK symbol output (digital family only). DSD_NEO_CQPSK overrides it when
+ *                       set, as it does at stream open and at the switch itself.
  * @param symbol_rate_hz Digital symbol rate, which decides the digital resampling policy.
  * @return Predicted output rate in Hz, derived from the last published demod rate (48000 until a stream has opened
  *         and published its own), or 0 when that rate is not positive.

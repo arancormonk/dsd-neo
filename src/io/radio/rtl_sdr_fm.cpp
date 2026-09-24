@@ -7459,7 +7459,8 @@ rtl_stream_output_rate_for_family(int family, int cqpsk_enable, int symbol_rate_
     if (family == DSD_RX_FAMILY_ANALOG) {
         return (unsigned int)rtl_demod_monitor_output_rate_for(resamp_target, rate_out);
     }
-    if (cqpsk_enable) {
+    /* The switch lands on the CQPSK family an open of the mode would (rtl_stream_leave_analog_family()). */
+    if (rtl_demod_open_cqpsk_request(cqpsk_enable) > 0) {
         return (unsigned int)rate_out;
     }
     const int target = rtl_demod_digital_resample_target_for(
@@ -8121,13 +8122,14 @@ rtl_stream_enter_analog_family(int kind, int width_hz) {
 }
 
 /* @p cqpsk_enable and @p symbol_rate_hz name the symbol profile applied right after the switch (-1 / 0 when none is
- * queued), which decides the digital resampler and so the output rate committed here. */
+ * queued), which decides the digital resampler and so the output rate committed here. The CQPSK family is the one an
+ * open of the mode lands on (rtl_demod_open_cqpsk_request()); the caller applies the same one with the profile. */
 static void
 rtl_stream_leave_analog_family(int cqpsk_enable, int symbol_rate_hz) {
     struct output_state scratch;
     scratch.rate = rtl_stream_active_output()->rate.load();
-    rtl_demod_enter_digital_family(&demod, &scratch, rtl_stream_fsk_channel_profile_for_current_mode(), cqpsk_enable,
-                                   symbol_rate_hz, rtl_dsp_bw_hz);
+    rtl_demod_enter_digital_family(&demod, &scratch, rtl_stream_fsk_channel_profile_for_current_mode(),
+                                   rtl_demod_open_cqpsk_request(cqpsk_enable), symbol_rate_hz, rtl_dsp_bw_hz);
     rtl_stream_commit_family_switch(DSD_RX_FAMILY_DIGITAL, scratch.rate);
 }
 
@@ -8275,6 +8277,16 @@ rtl_stream_request_analog_profile(int family, int kind, int width_hz) {
     return 0;
 }
 
+/* The symbol profile a switch out of the analog family lands on: its CQPSK family and channel filter become the ones
+ * an open of the mode picks, which DSD_NEO_CQPSK decides when set (rtl_demod_open_cqpsk_request(),
+ * rtl_demod_open_channel_profile()), for the switch and for the profile applied after it alike. */
+static void
+rtl_stream_resolve_landing_profile(int* cqpsk, int* channel_profile, int symbol_rate_hz) {
+    const int landing = rtl_demod_open_cqpsk_request(*cqpsk);
+    *channel_profile = rtl_demod_open_channel_profile(landing, *cqpsk, *channel_profile, symbol_rate_hz);
+    *cqpsk = landing;
+}
+
 static void
 rtl_stream_consume_demod_profile_request(void) {
     if (!g_profile_req_pending.load(std::memory_order_acquire)) {
@@ -8320,6 +8332,9 @@ rtl_stream_consume_demod_profile_request(void) {
         /* Accepted against the rate published when it was made, but a retune has since left the stream on a rate the
            width does not fit: refused here, as it would have been had the retune come first. */
         analog_family = -1;
+    }
+    if (has_demod && analog_family == DSD_RX_FAMILY_DIGITAL && demod.analog_family) {
+        rtl_stream_resolve_landing_profile(&cqpsk, &chan, sym_rate);
     }
     if (analog_family >= 0) {
         rtl_stream_apply_analog_profile_params(analog_family, analog_kind, analog_width_hz, has_demod ? cqpsk : -1,
@@ -8557,6 +8572,23 @@ rtl_stream_apply_retune_family(const RtlRetuneProfile* profile) {
     return profile->analog_family == DSD_RX_FAMILY_ANALOG ? 1 : 0;
 }
 
+/* Whether @p profile moves the front end off the analog family (read before its family switch applies). */
+static int
+rtl_stream_retune_leaves_analog(const RtlRetuneProfile* profile) {
+    return (profile->analog_family == DSD_RX_FAMILY_DIGITAL && demod.analog_family) ? 1 : 0;
+}
+
+/* The CQPSK family and channel filter a retune profile's symbol profile runs on: the ones its family switch landed on
+ * when @p leaves_analog (rtl_stream_resolve_landing_profile()), otherwise its own. */
+static void
+rtl_stream_retune_symbol_family(const RtlRetuneProfile* profile, int leaves_analog, int* cqpsk, int* channel_profile) {
+    *cqpsk = profile->cqpsk_enable;
+    *channel_profile = profile->channel_profile;
+    if (leaves_analog) {
+        rtl_stream_resolve_landing_profile(cqpsk, channel_profile, profile->symbol_rate_hz);
+    }
+}
+
 static void
 rtl_stream_apply_retune_profile(const RtlRetuneProfile* profile, uint32_t center_freq_hz) {
     if (!profile || !profile->active) {
@@ -8570,6 +8602,7 @@ rtl_stream_apply_retune_profile(const RtlRetuneProfile* profile, uint32_t center
 
     rtl_stream_apply_retune_gain_profile(profile);
 
+    const int leaves_analog = rtl_stream_retune_leaves_analog(profile);
     if (rtl_stream_apply_retune_family(profile)) {
         /* The analog family has no symbol clock. A symbol profile queued for the same target would toggle the
            CQPSK family or the FSK discriminator back on and take the monitor output away, so it is dropped here,
@@ -8578,14 +8611,15 @@ rtl_stream_apply_retune_profile(const RtlRetuneProfile* profile, uint32_t center
         return;
     }
 
-    int cqpsk = profile->cqpsk_enable;
+    int cqpsk = -1;
+    int channel_profile = -1;
+    rtl_stream_retune_symbol_family(profile, leaves_analog, &cqpsk, &channel_profile);
     if (cqpsk >= 0) {
         rtl_stream_toggle_cqpsk(cqpsk);
     }
 
     int symbol_rate_hz = profile->symbol_rate_hz;
     int levels = profile->levels;
-    int channel_profile = profile->channel_profile;
     if (symbol_rate_hz > 0 && (levels == 2 || levels == 4)) {
         (void)rtl_stream_set_symbol_profile(symbol_rate_hz, levels, channel_profile);
     }

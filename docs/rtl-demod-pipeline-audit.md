@@ -196,7 +196,11 @@ drained in the same pass of the command queue as the mode change):
   record decides whether a symbol profile without CQPSK runs the FSK
   discriminator or monitor audio (a `-fA` session switched to DMR stays on the
   discriminator through a CQPSK profile and back). The digital symbol profile follows as a
-  demod profile request, and it decides the CQPSK family. The family request
+  demod profile request, and it decides the CQPSK family, unless `DSD_NEO_CQPSK`
+  is set: that override decides it as it does at stream open, and the channel
+  filter follows the family the switch lands on (the P25 CQPSK profile for CQPSK,
+  P25 C4FM for a 4800 sym/s P25 CQPSK request turned onto the discriminator).
+  The family request
   waits for that profile: when the demod thread reaches a block boundary between
   the two requests, it keeps the family request queued, so both apply at one
   boundary. The digital resampler (and so the output rate) is decided for that

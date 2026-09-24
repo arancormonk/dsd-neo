@@ -188,11 +188,29 @@ void rtl_demod_enter_analog_family(struct demod_state* demod, struct output_stat
                                    int explicit_width_hz, int rtl_dsp_bw_hz);
 
 /**
+ * The CQPSK family a digital open lands on when @p requested_cqpsk (1 CQPSK, 0 FSK discriminator, -1 none requested)
+ * is what the mode asks for: DSD_NEO_CQPSK decides it when set, as it does at stream open, and otherwise
+ * @p requested_cqpsk stands unchanged. A switch from the analog family to a digital mode resolves its CQPSK flag here,
+ * so it lands where an open of that mode would.
+ */
+int rtl_demod_open_cqpsk_request(int requested_cqpsk);
+
+/**
+ * The channel profile a digital open filters with once it lands on @p landing_cqpsk, for a symbol profile whose
+ * requester chose @p channel_profile for @p requested_cqpsk. Where DSD_NEO_CQPSK moved the family off the request
+ * (rtl_demod_open_cqpsk_request()), the requester's filter was chosen for the other family: an open filters CQPSK with
+ * the P25 CQPSK profile, and a 4800 sym/s P25 CQPSK request turned onto the FSK discriminator with the P25 C4FM one.
+ * Otherwise @p channel_profile stands unchanged.
+ */
+int rtl_demod_open_channel_profile(int landing_cqpsk, int requested_cqpsk, int channel_profile, int symbol_rate_hz);
+
+/**
  * Move a running front end to the digital family with fresh-open digital defaults (FSK discriminator output, no
  * de-emphasis, profile channel filter, digital resampler policy) and fresh filter state. The symbol profile and
- * CQPSK family follow in a demod-profile request; @p cqpsk_enable (> 0 for CQPSK) and @p symbol_rate_hz (> 0, else
- * the current one) name that profile, so the resampler and the output rate in @p output are decided for it the way
- * a fresh open of it would decide them. The caller clears the output ring.
+ * CQPSK family follow in a demod-profile request; @p cqpsk_enable (> 0 for CQPSK, after
+ * rtl_demod_open_cqpsk_request()) and @p symbol_rate_hz (> 0, else the current one) name that profile, so the
+ * resampler and the output rate in @p output are decided for it the way a fresh open of it would decide them. The
+ * caller clears the output ring.
  */
 void rtl_demod_enter_digital_family(struct demod_state* demod, struct output_state* output, int channel_profile,
                                     int cqpsk_enable, int symbol_rate_hz, int rtl_dsp_bw_hz);
