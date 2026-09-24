@@ -540,6 +540,27 @@ typedef struct rtl_stream_test_rate_not_restored_result {
 int rtl_stream_test_audio_monitor_rate_not_restored(int rate_before_hz, int rate_after_hz, int nfm_width_hz,
                                                     rtl_stream_test_rate_not_restored_result* out);
 
+typedef struct rtl_stream_test_restore_failure_result {
+    int retune_refused;              /* 1 when the landing check refused the retune */
+    int program_calls;               /* times the refusal asked the device for the capture it ran */
+    uint32_t program_freq_hz;        /* the capture frequency it asked for */
+    uint32_t program_rate_hz;        /* the capture rate it asked for */
+    uint32_t capture_freq_before_hz; /* the capture the stream ran before the retune */
+    uint32_t capture_rate_before_hz;
+    int rate_out_after;     /* demod rate once the retune finalized */
+    int exit_requested;     /* dsd_exitflag_load() once the retune finalized */
+    int input_failure_kind; /* dsd_input_failure kind reported by then */
+    int input_failure_code; /* ... and its native code */
+} rtl_stream_test_restore_failure_result;
+
+/* As rtl_stream_test_audio_monitor_retune() for an explicit width the landed rate cannot realize, with the device the
+ * refusal programs back standing in for a real one: it answers the capture frequency with @p frequency_rc and the
+ * capture rate with @p rate_rc (0 = taken; the rate the device then reports is the one it was put back to). The exit
+ * request and input failure a failure reports are cleared before this returns. */
+int rtl_stream_test_audio_monitor_restore_failure(int rate_before_hz, int rate_after_hz, int nfm_width_hz,
+                                                  int frequency_rc, int rate_rc,
+                                                  rtl_stream_test_restore_failure_result* out);
+
 typedef struct rtl_stream_test_retune_analog_result {
     int queued_rc;
     int taken;

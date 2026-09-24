@@ -433,6 +433,66 @@ test_audio_monitor_rate_not_restored_stops(void) {
     return failed;
 }
 
+/* One refused retune whose device answers the capture put back with @p frequency_rc and @p rate_rc. */
+static int
+expect_refused_restore(const char* label, int frequency_rc, int rate_rc, int want_stop, int want_code) {
+    int failed = 0;
+    char what[160];
+    rtl_stream_test_restore_failure_result r;
+    DSD_MEMSET(&r, 0, sizeof r);
+    g_last_error[0] = '\0';
+    DSD_SNPRINTF(what, sizeof what, "%s: hook", label);
+    failed |= expect_int_eq(
+        what, rtl_stream_test_audio_monitor_restore_failure(48000, 16000, 16000, frequency_rc, rate_rc, &r), 0);
+    DSD_SNPRINTF(what, sizeof what, "%s: the retune was refused", label);
+    failed |= expect_int_eq(what, r.retune_refused, 1);
+    DSD_SNPRINTF(what, sizeof what, "%s: the device was asked for the capture it ran", label);
+    failed |= expect_int_eq(what, r.program_calls, 1);
+    DSD_SNPRINTF(what, sizeof what, "%s: capture frequency put back", label);
+    failed |= expect_int_eq(what, r.program_freq_hz == r.capture_freq_before_hz, 1);
+    DSD_SNPRINTF(what, sizeof what, "%s: capture rate put back", label);
+    failed |= expect_int_eq(what, r.program_rate_hz == r.capture_rate_before_hz && r.program_rate_hz > 0U, 1);
+    DSD_SNPRINTF(what, sizeof what, "%s: the rate the width runs at is back", label);
+    failed |= expect_int_eq(what, r.rate_out_after, 48000);
+    DSD_SNPRINTF(what, sizeof what, "%s: stream stop", label);
+    failed |= expect_int_eq(what, r.exit_requested, want_stop);
+    DSD_SNPRINTF(what, sizeof what, "%s: input failure", label);
+    failed |= expect_int_eq(what, r.input_failure_kind,
+                            want_stop ? (int)DSD_INPUT_FAILURE_DEVICE : (int)DSD_INPUT_FAILURE_NONE);
+    DSD_SNPRINTF(what, sizeof what, "%s: device return code reported", label);
+    failed |= expect_int_eq(what, r.input_failure_code, want_code);
+    if (want_stop) {
+        DSD_SNPRINTF(what, sizeof what, "%s: stop logged", label);
+        failed |= expect_int_eq(what,
+                                std::strstr(g_last_error, "could not be put back") != NULL
+                                    && std::strstr(g_last_error, "the stream stops") != NULL,
+                                1);
+    }
+    DSD_SNPRINTF(what, sizeof what, "%s: exit request cleared again", label);
+    failed |= expect_int_eq(what, (int)dsd_exitflag_load(), 0);
+    if (failed != 0) {
+        DSD_FPRINTF(stderr, "  logged: \"%s\"\n", g_last_error);
+    }
+    return failed;
+}
+
+/*
+ * A refused retune has already programmed the device for the retune's capture, so it has to program the capture it
+ * ran back. When the device refuses either call, it may still be on the retune's capture while the stream finalizes on
+ * the centre and rate it kept, and nothing then holds the monitor's width to what the device delivers: the stream
+ * stops, logged and reported as a device failure of the input with the device's return code. A device that takes both
+ * back keeps the stream running on the capture it had.
+ */
+static int
+test_audio_monitor_refused_restore_failure_stops(void) {
+    int failed = 0;
+    failed |= expect_refused_restore("device takes the capture back", 0, 0, 0, 0);
+    failed |= expect_refused_restore("device refuses the frequency", -5, 0, 1, -5);
+    failed |= expect_refused_restore("device refuses the rate", 0, -7, 1, -7);
+    failed |= expect_refused_restore("device refuses both", -5, -7, 1, -5);
+    return failed;
+}
+
 /*
  * A retune refused for the monitor's explicit width fails, whatever centre it finalized on. A retune whose target is
  * the centre the stream already runs on (or one made before any centre was applied, which the refusal keeps as the
@@ -1391,6 +1451,7 @@ main(void) {
     failed |= test_audio_monitor_retune_resolves_channel();
     failed |= test_audio_monitor_retune_profile_decides();
     failed |= test_audio_monitor_rate_not_restored_stops();
+    failed |= test_audio_monitor_refused_restore_failure_stops();
     failed |= test_audio_monitor_refused_retune_completes_failed();
     failed |= test_retune_profile_carries_analog_fields();
     failed |= test_retune_profile_width_checked_at_landing_rate();

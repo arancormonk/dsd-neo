@@ -176,8 +176,11 @@ Enable rule and validation:
   A retune profile for the target that switches to
   the digital family, or to an analog width the new rate fits, takes the
   monitor's width away and is not refused for it; one that carries only a
-  symbol profile is held like a bare retune. Should the device report another
-  rate the width cannot run at even after it was put back, no receive profile
+  symbol profile is held like a bare retune. A device that refuses the capture
+  frequency or rate it is put back on may still run the retune's capture while
+  the stream finalizes on the one it kept, so the stream stops: logged, reported
+  as a device input failure with the device's return code. Should the device
+  report another rate the width cannot run at even after it was put back, no receive profile
   the stream can keep runs that width, so the stream stops as a start at that
   rate fails: logged with the validator's text, reported as a configuration
   input failure. This applies only while the monitor output runs on the analog

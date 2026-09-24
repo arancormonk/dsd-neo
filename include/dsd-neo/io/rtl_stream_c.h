@@ -107,9 +107,10 @@ int rtl_stream_destroy(RtlSdrContext* ctx);
  *
  * A retune the device settles on another demod rate is refused when that rate cannot realize the explicit width the
  * running analog monitor runs (dsd_analog_width_check()): the refusal is logged with the validator's text, the device
- * goes back to the capture frequency and rate it had, and the tune fails. When the device does not return to a rate
- * that fits the width, the stream stops as a start at that rate fails (logged, reported as a configuration input
- * failure), rather than run the width without its channel filter.
+ * goes back to the capture frequency and rate it had, and the tune fails. When the device refuses to be put back, the
+ * stream stops (logged, reported as a device input failure with the device's return code); when it does not return to
+ * a rate that fits the width, the stream stops as a start at that rate fails (logged, reported as a configuration
+ * input failure), rather than run the width without its channel filter.
  *
  * @param ctx Stream context.
  * @param center_freq_hz New center frequency in Hz.

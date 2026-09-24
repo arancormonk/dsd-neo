@@ -597,7 +597,10 @@ Notes:
     device-forced flag too), and finalizes on the centre it left without the retune's profile, so the tune fails
     (`controller_apply_reconfigure()` reports the refusal, and the manual retune completes as failed even when the
     centre it kept is its target). A retune profile for the target that switches to the digital family, or to an
-    analog width the new rate fits, is not refused for the monitor's width. A device that still reports a rate the
+    analog width the new rate fits, is not refused for the monitor's width. A device that refuses the capture
+    frequency or rate it is put back on stops the stream (`controller_stop_for_unrestored_capture()`: logged,
+    `DSD_INPUT_FAILURE_DEVICE` with the device's return code, exit flag), since it may still run the retune's capture
+    while the stream finalizes on the one it kept. A device that still reports a rate the
     width cannot run at after it was put back stops the stream (`controller_refresh_analog_channel_for_rate()`:
     logged, `DSD_INPUT_FAILURE_CONFIGURATION`, exit flag), as a start at that rate fails. Only while the monitor
     output runs on the analog channel: CQPSK toggled on under `-fA`, or a typed digital scan row's profile, keeps its

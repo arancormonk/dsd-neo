@@ -4028,32 +4028,76 @@ controller_retune_keeps_analog_width(int previous_rate_out_hz, const RtlRetunePr
                                                err_size);
 }
 
+namespace {
+/* The device calls that put a refused retune's capture back (controller_restore_refused_capture()). */
+struct RefusedCaptureDeviceOps {
+    int (*set_frequency)(struct rtl_device* dev, uint32_t frequency_hz);
+    int (*set_sample_rate)(struct rtl_device* dev, uint32_t rate_hz);
+    int (*get_sample_rate)(struct rtl_device* dev);
+};
+} // namespace
+
+static const RefusedCaptureDeviceOps kRefusedCaptureDeviceOps = {rtl_device_set_frequency, rtl_device_set_sample_rate,
+                                                                 rtl_device_get_sample_rate};
+#if defined(DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS)
+/* Stands in for the device a refused retune programs back, whether or not one is open. */
+static const RefusedCaptureDeviceOps* g_test_refused_capture_device_ops = NULL;
+#endif
+
+/* The device a refused retune's capture is programmed back on; NULL with none open (nothing to program). */
+static const RefusedCaptureDeviceOps*
+controller_refused_capture_device(void) {
+#if defined(DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS)
+    if (g_test_refused_capture_device_ops) {
+        return g_test_refused_capture_device_ops;
+    }
+#endif
+    return rtl_device_handle ? &kRefusedCaptureDeviceOps : NULL;
+}
+
 /* Put the device back on the capture a refused retune moved it from: the rate chain restore_capture_settings() keeps,
  * then that capture frequency and rate on the device, synced to the rate the device then reports as any programming
- * is (apply_actual_capture_rate()). With no device open there is nothing to program. */
-static void
+ * is (apply_actual_capture_rate()). With no device open there is nothing to program.
+ * @return 0 when the device took the capture frequency and rate back (or none is open); otherwise the return code of
+ * the first of the two calls it refused, after which the device can still run the capture the retune programmed. */
+static int
 controller_restore_refused_capture(const CaptureSettingsSnapshot* previous, uint32_t center_freq_hz) {
     restore_capture_settings(previous);
-    if (!rtl_device_handle) {
-        return;
+    const RefusedCaptureDeviceOps* device = controller_refused_capture_device();
+    if (!device) {
+        return 0;
     }
-    int rc = rtl_device_set_frequency(rtl_device_handle, previous->dongle_frequency_hz);
-    if (rc != 0) {
+    const int frequency_rc = device->set_frequency(rtl_device_handle, previous->dongle_frequency_hz);
+    if (frequency_rc != 0) {
         LOG_ERROR("Failed to return the RTL-SDR to center frequency %u Hz (rc=%d).\n", previous->dongle_frequency_hz,
-                  rc);
+                  frequency_rc);
     }
-    rc = rtl_device_set_sample_rate(rtl_device_handle, previous->dongle_rate_hz);
-    if (rc != 0) {
-        LOG_ERROR("Failed to return the RTL-SDR to sample rate %u Hz (rc=%d).\n", previous->dongle_rate_hz, rc);
+    const int rate_rc = device->set_sample_rate(rtl_device_handle, previous->dongle_rate_hz);
+    if (rate_rc != 0) {
+        LOG_ERROR("Failed to return the RTL-SDR to sample rate %u Hz (rc=%d).\n", previous->dongle_rate_hz, rate_rc);
     }
     uint32_t capture_rate_hz = previous->dongle_rate_hz;
-    const int actual = rtl_device_get_sample_rate(rtl_device_handle);
+    const int actual = device->get_sample_rate(rtl_device_handle);
     if (actual > 0 && (uint32_t)actual != capture_rate_hz) {
         capture_rate_hz =
             apply_actual_capture_rate(center_freq_hz, previous->dongle_frequency_hz, capture_rate_hz, (uint32_t)actual);
     }
     (void)apply_capture_tuner_bandwidth(capture_rate_hz, g_stream ? g_stream->opts : NULL, 0);
     stream_refresh_watermark_for_current_rate();
+    return frequency_rc != 0 ? frequency_rc : rate_rc;
+}
+
+/* A refused retune whose capture the device would not take back: the device can still run the capture the retune
+ * programmed while the stream finalizes on the centre and rate it kept, and nothing then holds the monitor's width to
+ * the rate the device delivers. The stream stops (logged, reported as a device failure of the input with @p device_rc),
+ * rather than run on a capture it cannot vouch for. */
+static void
+controller_stop_for_unrestored_capture(uint32_t kept_center_hz, int device_rc) {
+    LOG_ERROR("The RTL-SDR could not be put back on %u Hz after a retune refused for the analog channel width (rc=%d); "
+              "the stream stops.\n",
+              kept_center_hz, device_rc);
+    dsd_input_failure_report(DSD_INPUT_FAILURE_DEVICE, device_rc);
+    dsd_exitflag_store(1);
 }
 
 /* The return code of a retune refused for its analog width (controller_refuse_retune_for_analog_width()). */
@@ -4068,6 +4112,7 @@ static std::atomic<uint64_t> g_retune_width_refusal_logged{0};
  * or retune profile for that width at that rate is. The validator's text is logged (once per kind, width and rate),
  * the device goes back to the capture it had (@p previous_capture, where the width runs), and the retune finalizes on
  * the centre it left (@p previous_center_freq_hz) without its profile, which the caller reports as a failed retune.
+ * A device that refuses to go back stops the stream (controller_stop_for_unrestored_capture()).
  * @p center_freq_hz and @p profile are updated to what the retune then finalizes on.
  * @return 1 when the retune is refused, 0 when it lands. */
 static int
@@ -4086,7 +4131,10 @@ controller_refuse_retune_for_analog_width(const CaptureSettingsSnapshot* previou
         LOG_ERROR("%s. The retune to %u Hz is refused; the front end stays on %u Hz at the %d Hz DSP rate.\n", err,
                   *center_freq_hz, kept_center_hz, previous_rate_out_hz);
     }
-    controller_restore_refused_capture(previous_capture, kept_center_hz);
+    const int restore_rc = controller_restore_refused_capture(previous_capture, kept_center_hz);
+    if (restore_rc != 0) {
+        controller_stop_for_unrestored_capture(kept_center_hz, restore_rc);
+    }
     *center_freq_hz = kept_center_hz;
     *profile = NULL;
     return 1;
@@ -11520,6 +11568,94 @@ rtl_stream_test_audio_monitor_rate_not_restored(int rate_before_hz, int rate_aft
     out->input_failure_kind = failure.kind;
     dsd_exitflag_store(0);
     dsd_input_failure_clear();
+    family_test_restore(saved);
+    family_test_release_buffers();
+    return 0;
+}
+
+namespace {
+/* The device rtl_stream_test_audio_monitor_restore_failure() puts a refused retune's capture back on: each call answers
+ * with the return code the test gave, and the rate it reports is the last one it was asked for. */
+struct RefusedCaptureTestDevice {
+    int frequency_rc;
+    int rate_rc;
+    int frequency_calls;
+    uint32_t frequency_hz;
+    uint32_t rate_hz;
+};
+
+RefusedCaptureTestDevice g_refused_capture_test_device;
+} // namespace
+
+static int
+refused_capture_test_set_frequency(struct rtl_device* dev, uint32_t frequency_hz) {
+    (void)dev;
+    g_refused_capture_test_device.frequency_calls++;
+    g_refused_capture_test_device.frequency_hz = frequency_hz;
+    return g_refused_capture_test_device.frequency_rc;
+}
+
+static int
+refused_capture_test_set_sample_rate(struct rtl_device* dev, uint32_t rate_hz) {
+    (void)dev;
+    g_refused_capture_test_device.rate_hz = rate_hz;
+    return g_refused_capture_test_device.rate_rc;
+}
+
+static int
+refused_capture_test_get_sample_rate(struct rtl_device* dev) {
+    (void)dev;
+    return (int)g_refused_capture_test_device.rate_hz;
+}
+
+static const RefusedCaptureDeviceOps kRefusedCaptureTestDeviceOps = {
+    refused_capture_test_set_frequency, refused_capture_test_set_sample_rate, refused_capture_test_get_sample_rate};
+
+extern "C" int
+rtl_stream_test_audio_monitor_restore_failure(int rate_before_hz, int rate_after_hz, int nfm_width_hz, int frequency_rc,
+                                              int rate_rc, rtl_stream_test_restore_failure_result* out) {
+    if (!out || rate_before_hz <= 0 || rate_after_hz <= 0) {
+        return -1;
+    }
+    *out = {};
+    const FamilyTestSaved saved = family_test_save();
+    const uint32_t saved_capture_freq_hz = load_dongle_frequency();
+    const uint32_t saved_capture_rate_hz = load_dongle_rate();
+    g_stream = NULL;
+    static dsd_opts analog_opts;
+    DSD_MEMSET(&analog_opts, 0, sizeof analog_opts);
+    analog_opts.analog_only = 1;
+    analog_opts.monitor_input_audio = 1;
+    analog_opts.analog_nfm_bandwidth_hz = nfm_width_hz;
+    if (family_test_seed_open(&analog_opts, rate_before_hz, 0) != 0) {
+        family_test_restore(saved);
+        return -2;
+    }
+    /* The capture the stream ran before the retune: 20 times the DSP rate, placed for the running centre. */
+    store_dongle_rate((uint32_t)rate_before_hz * 20U);
+    store_dongle_frequency(capture_frequency_for_rate((int64_t)kFamilyTestCenterHz, load_dongle_rate()));
+    out->capture_freq_before_hz = load_dongle_frequency();
+    out->capture_rate_before_hz = load_dongle_rate();
+    g_refused_capture_test_device = {};
+    g_refused_capture_test_device.frequency_rc = frequency_rc;
+    g_refused_capture_test_device.rate_rc = rate_rc;
+    g_test_refused_capture_device_ops = &kRefusedCaptureTestDeviceOps;
+    dsd_input_failure_clear();
+    out->retune_refused = family_test_land_retune(&analog_opts, rate_before_hz, rate_after_hz, rate_before_hz, NULL);
+    g_test_refused_capture_device_ops = NULL;
+    out->program_calls = g_refused_capture_test_device.frequency_calls;
+    out->program_freq_hz = g_refused_capture_test_device.frequency_hz;
+    out->program_rate_hz = g_refused_capture_test_device.rate_hz;
+    out->rate_out_after = demod.rate_out;
+    out->exit_requested = dsd_exitflag_load() ? 1 : 0;
+    dsd_input_failure failure = {};
+    dsd_input_failure_get(&failure);
+    out->input_failure_kind = failure.kind;
+    out->input_failure_code = failure.native_code;
+    dsd_exitflag_store(0);
+    dsd_input_failure_clear();
+    store_dongle_frequency(saved_capture_freq_hz);
+    store_dongle_rate(saved_capture_rate_hz);
     family_test_restore(saved);
     family_test_release_buffers();
     return 0;
