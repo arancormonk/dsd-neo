@@ -79,7 +79,7 @@ p25_tick_guard_is_held(void) {
 
 #endif
 
-#if defined(DSD_NEO_TEST_RTL_WRAP)
+#ifdef DSD_NEO_TEST_RTL_WRAP
 #ifdef USE_RADIO
 static int g_p25_tick_guard_held_during_tune = 0;
 static int g_rtl_tune_calls = 0;
@@ -648,7 +648,7 @@ test_visit_cap_scanner_hops(void) {
 }
 #endif
 
-#if defined(DSD_NEO_TEST_RTL_WRAP)
+#ifdef DSD_NEO_TEST_RTL_WRAP
 /* A tone the analog tap published before the step. Every case that uses these helpers needs
    the RTL wrap, so they share its guard; without it they would be unused functions. */
 static void
@@ -2489,7 +2489,7 @@ main(void) {
     free_test_runtime(opts, state);
 
     rc |= test_rx_tone_survives_no_carrier();
-#if defined(DSD_NEO_TEST_RTL_WRAP)
+#ifdef DSD_NEO_TEST_RTL_WRAP
     rc |= test_rx_tone_rigctl_scan_step();
 #endif
 #if defined(USE_RADIO) && defined(DSD_NEO_TEST_RTL_WRAP)
