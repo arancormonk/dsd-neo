@@ -295,12 +295,13 @@ Every timing row also checks the CTCSS timing contract in `<dsd-neo/dsp/analog_r
 levels, the off-nominal rows, the tone under speech) keep their p95 within `DSD_ANALOG_CTCSS_LOCK_P95_MS` (400 ms) and
 every start within `DSD_ANALOG_CTCSS_LOCK_CEILING_MS` (700 ms); the loss rows (both levels, and the reverse burst,
 which ends a lock as a stop does) keep their p95 within `DSD_ANALOG_CTCSS_LOSS_P95_MS` (350 ms) and every stop within
-`DSD_ANALOG_CTCSS_LOSS_CEILING_MS` (550 ms). Static asserts keep the fixed pins below (the 400 and 500 ms lock bounds,
+`DSD_ANALOG_CTCSS_LOSS_CEILING_MS` (800 ms). Static asserts keep the fixed pins below (the 400 and 500 ms lock bounds,
 the 350, 150 and 450 ms loss bounds) inside the ceilings, so the checks that assert only a pin sit inside the
-contract too. The ceilings are set above the slowest start and stop of the long-run sweeps below (677 and 515 ms), and
-the lock ceiling may not exceed 700 ms: the tone policy's 800 ms acquisition window (issue #527) has to leave two hops
-beyond it. The p95 targets and the ceilings are what the user guide states; the per-row pins are tighter and record
-what these seeds measure:
+contract too. The loss ceiling sits above the slowest of the 800,000 stops in the ceiling-tail sweeps below (738 ms).
+The lock ceiling may not exceed 700 ms, because the tone policy's 800 ms acquisition window (issue #527) has to leave
+two hops beyond it, and in noise a start can take longer than any fixed bound: the header states the lock ceiling
+with the rate at which the sweeps below exceeded it. The p95 targets, the ceilings and those rates are what the user
+guide states; the per-row pins are tighter and record what these seeds measure:
 
 - Lock: all 50 tones at four input rates, at +10 and 0 dB in-band tone-to-noise, lock within 400 ms of an onset placed
   anywhere inside a hop. Tones off their table value by transmitter encoder error lock on that value: 0.2 and 0.35 Hz
@@ -340,10 +341,10 @@ identical results), and they are the numbers the user guide quotes:
 - Ceiling tail, sweeps up to a hundred times larger: over 100,000 starts each, the exact tone at +10 and 0 dB and
   0.2 and 0.35 Hz off at +10 dB stayed within the 700 ms lock ceiling (443, 664, 485 and 585 ms at the slowest), while
   0.2 Hz off at 0 dB passed it twice (725 ms); over 1,000,000 starts at 0 dB, 8 exact tones passed it (757 ms, and one
-  at 1,128 ms) and 24 of the 0.2 Hz-off ones (843 ms). Over 40,000 stops at 0 dB, 3 passed the 550 ms loss ceiling
-  (617 ms) and none at +10 dB (548 ms); over 400,000 stops each, 24 at 0 dB and 31 at +10 dB (738 ms at both). The
-  p95s did not move with sweep size (lock 344 and 374 ms at 0 dB, loss 299 and 312 ms). The ceilings bound what the
-  sweeps the user guide quotes measured, not every start there will ever be.
+  at 1,128 ms) and 24 of the 0.2 Hz-off ones (843 ms): about one start in 125,000 on the table value and one in
+  40,000 for 0.2 Hz off, the rates the header gives with the lock ceiling. Over 400,000 stops each at 0 and +10 dB,
+  none passed the 800 ms loss ceiling (738 ms at the slowest at both), though 24 and 31 took longer than 550 ms. The
+  p95s did not move with sweep size (lock 344 and 374 ms at 0 dB, loss 299 and 312 ms).
 - Lock under transmitter-filtered speech 10 dB above the tone, 50,000 starts at 48 kHz (voice from the carrier's start,
   the tone 200-250 ms later): p95 307 ms, 1.6% beyond 400 ms, 0.21% beyond the 700 ms lock ceiling and the slowest at
   1,314 ms. Twice a voice holding 254.1 Hz locked that tone for 150-250 ms, once before the real tone locked and once

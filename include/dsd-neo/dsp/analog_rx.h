@@ -35,24 +35,33 @@ enum { DSD_ANALOG_CARRIER_HANGOVER_MS = 200 };
  * @brief CTCSS timing contract, in sample time (docs/cli.md "Received tone").
  *
  * Lock runs from a tone's onset to the first hop that reports it; loss runs from the moment the
- * tone stops under a live carrier to the first hop that no longer reports it. For a table tone
- * in noise at 0 dB in-band tone-to-noise or better, 95% of onsets lock within
- * DSD_ANALOG_CTCSS_LOCK_P95_MS and 95% of stops are dropped within DSD_ANALOG_CTCSS_LOSS_P95_MS.
- * The ceilings bound single events: no onset or stop in DSP_ANALOG_CTCSS, nor in the long-run
- * noise sweeps the user guide quotes (10,000 onsets and 4,000 stops per condition, transmitter
- * tone error of up to 0.35 Hz included), took longer. They are measured bounds, not guarantees:
- * sweeps a hundred times larger found about one onset in 100,000 at 0 dB locking later and
- * about one stop in 15,000 dropped later, and a voice 10 dB louder than the tone delays about
- * one onset in 500 past the lock ceiling (docs/testing.md).
+ * tone stops under a live carrier to the first hop that no longer reports it. The contract
+ * covers a tone in noise at 0 dB in-band tone-to-noise or better, on its table value or off it
+ * by transmitter tone error of up to 0.2 Hz (0.35 Hz at +10 dB):
+ *
+ * - p95 targets: 95% of onsets lock within DSD_ANALOG_CTCSS_LOCK_P95_MS and 95% of stops are
+ *   dropped within DSD_ANALOG_CTCSS_LOSS_P95_MS.
+ * - Per-event ceilings, DSD_ANALOG_CTCSS_LOCK_CEILING_MS and DSD_ANALOG_CTCSS_LOSS_CEILING_MS,
+ *   each with its measured exceedance rate. Every onset and stop in DSP_ANALOG_CTCSS is within
+ *   them. Lock time in noise has no absolute bound, so the lock ceiling is exceeded at a small
+ *   rate that a consumer has to budget for: over 1,000,000 onsets at 0 dB, about one in 125,000
+ *   on the table value and one in 40,000 for a tone 0.2 Hz off locked later (the slowest after
+ *   1,128 ms), and none of 100,000 per condition at +10 dB did. No stop of 800,000 at 0 and
+ *   +10 dB was dropped later than the loss ceiling (the slowest after 738 ms).
+ *
+ * Speech louder than the tone is outside the contract: under transmitter-filtered speech 10 dB
+ * above the tone, 0.21% of 50,000 onsets locked later than the lock ceiling (the slowest after
+ * 1,314 ms). docs/testing.md ("Ceiling tail") has the per-condition sweeps.
  *
  * A tone policy that waits for a lock before deciding there is no tone must wait at least
- * DSD_ANALOG_CTCSS_LOCK_CEILING_MS plus 100 ms (two hops).
+ * DSD_ANALOG_CTCSS_LOCK_CEILING_MS plus 100 ms (two hops), and still meets a late lock at the
+ * rates above.
  */
 enum {
     DSD_ANALOG_CTCSS_LOCK_P95_MS = 400,
     DSD_ANALOG_CTCSS_LOCK_CEILING_MS = 700,
     DSD_ANALOG_CTCSS_LOSS_P95_MS = 350,
-    DSD_ANALOG_CTCSS_LOSS_CEILING_MS = 550,
+    DSD_ANALOG_CTCSS_LOSS_CEILING_MS = 800,
 };
 
 /**

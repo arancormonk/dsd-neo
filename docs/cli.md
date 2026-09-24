@@ -478,10 +478,10 @@ tone setting, and it runs with `-o null` too.
 
 - Supported tones: the standard 50-tone EIA/TIA table, 67.0-254.1 Hz (67.0, 69.3, 71.9 ... 250.3, 254.1). A tone is
   confirmed only from estimates within 0.5 Hz of a table value, and a confirmed tone is held only while it stays within
-  0.8 Hz of it. 150.0 Hz is not supported and is never reported as 151.4 Hz; any other frequency within the
-  sub-audible band, such as 68.2 Hz, reads as no tone rather than as its nearest neighbour, and a confirmed tone that
-  moves off the table is dropped within about half a second. Near 0 dB in-band a noisy estimate can still confirm a
-  neighbour for about 200 ms before the same check drops it: over two hours of a continuous 0 dB carrier in the tests,
+  0.8 Hz of it. 150.0 Hz is not supported and is never reported as 151.4 Hz; any other frequency within the sub-audible
+  band, such as 68.2 Hz, reads as no tone rather than as its nearest neighbour, and a confirmed tone that moves off the
+  table is dropped within about half a second. Near 0 dB in-band a noisy estimate can still confirm a neighbour for
+  about 200 ms before the same check drops it: over two hours of a continuous 0 dB carrier in offline seed sweeps,
   68.2 Hz read as 67.0 or 69.3 Hz about ten times an hour and 161.0 or 166.7 Hz as a neighbour about twice an hour,
   while 150.0 Hz never did; from 3 dB up it did not happen at all. DCS (DPL) signalling never reads as a CTCSS tone.
 - Transmitter tone error: a tone slightly off its table value still reads as that value. Over 10,000 seeded starts
@@ -493,14 +493,14 @@ tone setting, and it runs with `-o null` too.
   being evaluated, `none` when the carrier carries no supported tone, and an em dash with no carrier (a hyphen on a
   terminal without UTF-8). The log prints `Received tone: CTCSS 100.0 Hz` or `Received tone: none` whenever that
   verdict changes.
-- Timing contract, in sample time, for a tone on its table value in noise at 0 dB in-band tone-to-noise (0-290 Hz) or
-  better: 95% of tones are confirmed within 400 ms of their start and 95% of stops under a live carrier are dropped
-  within 350 ms (the p95 targets), and no single start takes longer than 700 ms nor any stop longer than 550 ms (the
-  ceilings). The tests assert both on every timing row of their fixed seeds, and the ceilings sit above the slowest
-  start and stop of the long-run sweeps below (a tone 0.2 Hz off its table value at 0 dB confirmed after 677 ms, a
-  stop dropped after 515 ms). They are measured bounds, not guarantees: in sweeps a hundred times larger, about one
-  start in 100,000 at 0 dB was confirmed later than 700 ms (one after 1.1 s) and about one stop in 15,000 was dropped
-  later than 550 ms (the slowest after 738 ms). Speech louder than the tone is outside the contract (below).
+- Timing contract, in sample time, for a tone in noise at 0 dB in-band tone-to-noise (0-290 Hz) or better, on its table
+  value or up to 0.2 Hz off it (0.35 Hz at 10 dB): 95% of tones are confirmed within 400 ms of their start and 95% of
+  stops under a live carrier are dropped within 350 ms (the p95 targets). Single events have ceilings of 700 ms for a
+  start and 800 ms for a stop, each with its measured rate of being exceeded, and the tests hold every timing row of
+  their fixed seeds within both. Lock time in noise has no absolute bound: over 1,000,000 seeded starts at 0 dB, about
+  one in 125,000 on the table value and one in 40,000 for a tone 0.2 Hz off took longer than 700 ms (the slowest 1.1 s),
+  while none of 100,000 per condition at 10 dB did. No stop of 800,000 at 0 and 10 dB took longer than 800 ms (the
+  slowest 738 ms). Speech louder than the tone is outside the contract (below).
 - Timing measured, in sample time, over 10,000 seeded starts per condition: a tone at 10 dB in-band is confirmed within
   400 ms of its start on all but about one start in 10,000 (p95 273 ms, the slowest at 443 ms), and at 0 dB on 99
   starts in 100 (p95 343 ms, the slowest at 615 ms). Under transmitted speech it can take longer, because a
