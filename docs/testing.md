@@ -293,15 +293,15 @@ holds for its fixed seeds, and each row prints its measured share and p50/p95/wo
 
 Every timing row also checks the CTCSS timing contract in `<dsd-neo/dsp/analog_rx.h>`: the lock rows (all tones at both
 levels, the off-nominal rows, the tone under speech) keep their p95 within `DSD_ANALOG_CTCSS_LOCK_P95_MS` (400 ms) and
-every start within `DSD_ANALOG_CTCSS_LOCK_CEILING_MS` (700 ms); the loss rows (both levels, and the reverse burst,
-which ends a lock as a stop does) keep their p95 within `DSD_ANALOG_CTCSS_LOSS_P95_MS` (350 ms) and every stop within
-`DSD_ANALOG_CTCSS_LOSS_CEILING_MS` (800 ms). Static asserts keep the fixed pins below (the 400 and 500 ms lock bounds,
-the 350, 150 and 450 ms loss bounds) inside the ceilings, so the checks that assert only a pin sit inside the
-contract too. The loss ceiling sits above the slowest of the 800,000 stops in the ceiling-tail sweeps below (738 ms).
-The lock ceiling may not exceed 700 ms, because the tone policy's 800 ms acquisition window (issue #527) has to leave
-two hops beyond it, and in noise a start can take longer than any fixed bound: the header states the lock ceiling
-with the rate at which the sweeps below exceeded it. The p95 targets, the ceilings and those rates are what the user
-guide states; the per-row pins are tighter and record what these seeds measure:
+every start within `DSD_ANALOG_CTCSS_LOCK_CEILING_MS` (700 ms); the loss rows (both levels, and the reverse bursts
+caught at +10 and 0 dB, which end a lock as a stop does) keep their p95 within `DSD_ANALOG_CTCSS_LOSS_P95_MS` (350 ms)
+and every stop within `DSD_ANALOG_CTCSS_LOSS_CEILING_MS` (800 ms). Static asserts keep the fixed pins below (the 400 and
+500 ms lock bounds, the 350, 150 and 450 ms loss bounds) inside the ceilings, so the checks that assert only a pin sit
+inside the contract too. The loss ceiling sits above the slowest of the 800,000 stops in the ceiling-tail sweeps below
+(738 ms). The lock ceiling may not exceed 700 ms, because the tone policy's 800 ms acquisition window (issue #527) has
+to leave two hops beyond it, and in noise a start can take longer than any fixed bound: the header states the lock
+ceiling with the rate at which the sweeps below exceeded it. The p95 targets, the ceilings and those rates are what the
+user guide states; the per-row pins are tighter and record what these seeds measure:
 
 - Lock: all 50 tones at four input rates, at +10 and 0 dB in-band tone-to-noise, lock within 400 ms of an onset placed
   anywhere inside a hop. Tones off their table value by transmitter encoder error lock on that value: 0.2 and 0.35 Hz
@@ -315,15 +315,19 @@ guide states; the per-row pins are tighter and record what these seeds measure:
   gate of 100.0, at +10 and +20 dB; a locked tone that moves off the table is dropped within 450 ms (one window plus
   four failing hops) and nothing locks in its place; no DCS code locks -- every rotation class of the Golay (23,12)
   code, forward and bit-reversed, which is every periodic DCS waveform in either polarity, plus the nearest words at
-  every rate, clean and at +10 dB; and a minute each of unfiltered speech, transmitter-filtered speech and noise never
-  locks. The speech model is source-filter speech with a jittering, drifting, wobbling fundamental in 85-255 Hz.
-- Loss and verdicts: every tone at every rate is dropped after it stops under a live carrier, at +10 dB 99% of the
-  stops within 350 ms and all within 386 ms, at 0 dB 98% within 350 ms and all within 476 ms (the rows assert 98% and
-  400 ms, 97% and 500 ms); every tone at every rate is dropped within 150 ms of a reverse burst at +10 dB; a carrier
-  with no tone reads `detecting` until 500 ms of it and `none` by the next hop, and a tone that starts after that
-  verdict still locks within the lock bound; the verdict, the no-tone one included, is identical at the three input
-  scales and for any block size; the front end runs from 2400 Hz up to its 320 kHz limit and reports itself
-  unavailable outside it.
+  every rate, clean, at +10 dB and at 0 dB; and a minute each of unfiltered speech, transmitter-filtered speech and
+  noise never locks and reaches the `none` verdict, which the speech runs hold for 87% of their carrier time (the rows
+  assert 80%; each pause that closes the carrier starts the verdict again). The speech model is source-filter speech
+  with a jittering, drifting, wobbling fundamental in 85-255 Hz.
+- Loss and verdicts: every tone at every rate is dropped after it stops under a live carrier, at +10 dB 99% of the stops
+  within 350 ms and all within 386 ms, at 0 dB 98% within 350 ms and all within 476 ms (the rows assert 98% and 400 ms,
+  97% and 500 ms); every tone at every rate is dropped within 150 ms of a reverse burst at +10 dB; at 0 dB, with the
+  flipped tone held 400 ms before the carrier drops, 91% of the bursts are caught within 150 ms and every caught one
+  within the loss contract, and the 4 of 200 that are missed end with the carrier drop, within its 200 ms hangover (the
+  row asserts 89% and at most 5 missed); a carrier with no tone reads `detecting` until 500 ms of it and `none` by the
+  next hop, and a tone that starts after that verdict still locks within the lock bound; the verdict, the no-tone one
+  included, is identical at the three input scales and for any block size; the front end runs from 2400 Hz up to its
+  320 kHz limit and reports itself unavailable outside it.
 
 Fixed seeds say what the detector does on those seeds, not how often it misses in the long run. The long-run figures
 below come from wider seed sweeps run offline over the same generators and the same core (x86-64 at -O0 and -O2 give

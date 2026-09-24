@@ -483,7 +483,8 @@ tone setting, and it runs with `-o null` too.
   table is dropped within about half a second. Near 0 dB in-band a noisy estimate can still confirm a neighbour for
   about 200 ms before the same check drops it: over two hours of a continuous 0 dB carrier in offline seed sweeps,
   68.2 Hz read as 67.0 or 69.3 Hz about ten times an hour and 161.0 or 166.7 Hz as a neighbour about twice an hour,
-  while 150.0 Hz never did; from 3 dB up it did not happen at all. DCS (DPL) signalling never reads as a CTCSS tone.
+  while 150.0 Hz never did; from 3 dB up it did not happen at all. DCS (DPL) signalling does not read as a CTCSS tone:
+  in the tests no DCS code did on a clean signal, nor did the codes nearest to a table tone at 10 or 0 dB in-band.
 - Transmitter tone error: a tone slightly off its table value still reads as that value. Over 10,000 seeded starts
   each, tones 0.2 and 0.35 Hz off were confirmed within 400 ms at 10 dB in-band tone-to-noise on all but 1 and 4
   starts (the slowest at 443 and 424 ms), and 0.2 Hz off at 0 dB on 97 starts in 100 (the slowest at 677 ms). A tone

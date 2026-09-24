@@ -38,6 +38,13 @@ enum {
     /* A locked tone that moves off the table is dropped once the window has filled with the
        new frequency and four more hops have failed. */
     MOVED_OFF_BOUND_MS = (DSD_ANALOG_CTCSS_WINDOW + DSD_ANALOG_CTCSS_LOSE_HOPS) * DSD_ANALOG_CTCSS_SUBBLOCK_MS,
+    /* The minutes of speech read "none" for at least this share of their carrier time. */
+    SPEECH_NONE_MIN_PCT = 80,
+    /* The reverse burst at 0 dB: how long the flipped tone runs before the carrier drops, the
+       share of bursts caught within BURST_LOSS_BOUND_MS, and the most that may be missed. */
+    BURST_0DB_CARRIER_MS = 400,
+    BURST_0DB_WITHIN_BOUND_MIN_PCT = 89,
+    BURST_0DB_MISSED_MAX = 5,
 };
 
 /* A pin that holds keeps its events inside the contract's per-event ceilings too: the checks
@@ -93,7 +100,8 @@ struct signal_src {
     int64_t flip_at;  /**< reverse burst: the tone's phase flips by pi here (INT64_MAX = never) */
     int64_t move_at;  /**< the tone moves to move_hz here, phase-continuous (INT64_MAX = never) */
     double move_hz;
-    synth_dcs dcs; /**< DCS signalling instead of a tone, when dcs_on */
+    int64_t carrier_off; /**< the carrier drops here: digital silence from then on (INT64_MAX = never) */
+    synth_dcs dcs;       /**< DCS signalling instead of a tone, when dcs_on */
     int dcs_on;
     double scale;        /**< input scale: 1, 1/pi, 32768 */
     synth_speech speech; /**< optional voice */
@@ -104,6 +112,9 @@ struct signal_src {
 
 static float
 signal_next(signal_src* src, int64_t n) {
+    if (n >= src->carrier_off) {
+        return 0.0f;
+    }
     double v = src->noise_sigma > 0.0 ? src->noise_sigma * synth_gauss(&src->rng) : 0.0;
     if (n == src->flip_at) {
         src->tone.phase += M_PI;
@@ -142,6 +153,7 @@ signal_init(signal_src* src, double fs, uint64_t seed, double tone_hz, double sn
     src->tone_off = INT64_MAX;
     src->flip_at = INT64_MAX;
     src->move_at = INT64_MAX;
+    src->carrier_off = INT64_MAX;
     src->scale = 1.0;
 }
 
@@ -153,6 +165,8 @@ typedef struct {
     int64_t first_none;     /**< first block end at which the verdict read NONE */
     int64_t last_acquiring; /**< last block end, before first_none, still reading ACQUIRING */
     int64_t locks;          /**< transitions into LOCKED */
+    int64_t open_blocks;    /**< blocks observed with the carrier open */
+    int64_t none_blocks;    /**< ... of which read NONE */
     int final_state;
 } run_result;
 
@@ -163,7 +177,7 @@ typedef struct {
  */
 static run_result
 run_signal(dsd_analog_rx_core* core, signal_src* src, int64_t total, int block, int expect_tenths) {
-    run_result r = {-1, -1, -1, -1, -1, 0, 0};
+    run_result r = {-1, -1, -1, -1, -1, 0, 0, 0, 0};
     float buf[4096];
     assert(block > 0 && block <= (int)(sizeof(buf) / sizeof(buf[0])));
     int prev_locked = 0;
@@ -193,6 +207,8 @@ run_signal(dsd_analog_rx_core* core, signal_src* src, int64_t total, int block, 
         if (o.state == DSD_ANALOG_TONE_STATE_ACQUIRING && r.first_none < 0) {
             r.last_acquiring = n + m;
         }
+        r.open_blocks += o.carrier ? 1 : 0;
+        r.none_blocks += o.carrier && o.state == DSD_ANALOG_TONE_STATE_NONE ? 1 : 0;
         prev_locked = locked;
         r.final_state = o.state;
     }
@@ -510,8 +526,8 @@ run_dcs(int fs, uint32_t word, double snr_db, uint64_t seed) {
  * 178 non-constant periodic waveforms, which covers every DCS code in both polarities, since
  * a word's complement is a code word too -- sent forward and bit-reversed (the reciprocal
  * generator's code), for 3 s at 8 kHz, never locks and is positively "no tone". The words
- * that come nearest (the most rho at a snapped table tone) do the same at every rate, clean
- * and at +10 dB, in both polarities.
+ * that come nearest (the most rho at a snapped table tone) do the same at every rate, clean,
+ * at +10 dB and at 0 dB in-band, in both polarities.
  */
 static void
 test_dcs_never_locks(void) {
@@ -534,13 +550,13 @@ test_dcs_never_locks(void) {
         }
     }
     static const uint32_t nearest[] = {0x5D5530U, 0x5559E8U};
-    static const double snrs[] = {200.0, 10.0};
+    static const double snrs[] = {200.0, 10.0, 0.0};
     for (int w = 0; w < 2; w++) {
         for (int inverted = 0; inverted < 2; inverted++) {
             const uint32_t word = inverted ? (~nearest[w] & all_ones) : nearest[w];
             for (int ri = 0; ri < RATE_COUNT; ri++) {
-                for (int s = 0; s < 2; s++) {
-                    const run_result r = run_dcs(k_rates[ri], word, snrs[s], 23ULL + (uint64_t)(w * 8 + ri * 2 + s));
+                for (int s = 0; s < 3; s++) {
+                    const run_result r = run_dcs(k_rates[ri], word, snrs[s], 23ULL + (uint64_t)(w * 12 + ri * 3 + s));
                     assert(r.locks == 0 && r.final_state == DSD_ANALOG_TONE_STATE_NONE);
                 }
             }
@@ -590,6 +606,11 @@ test_speech_and_noise_never_lock(void) {
     synth_speech_init(&src.speech, 48000, 2ULL, 0.05);
     run_result r = run_signal(&g_core, &src, ms_to_samples(48000, 60000.0), 960, 0);
     assert(r.locks == 0);
+    /* Speech is positively "no tone" too, not left deciding. Its pauses close the carrier, and
+       each new stretch of carrier reads "detecting" until its own verdict, so the run need not
+       end on "none"; but it reaches that verdict, and holds it for most of the carrier time
+       (87% on both these seeds). */
+    assert(r.first_none >= 0 && 100 * r.none_blocks >= SPEECH_NONE_MIN_PCT * r.open_blocks);
 
     dsd_analog_rx_core_init(&g_core);
     signal_init(&src, 48000, 2718282ULL, 100.0, 0.0);
@@ -600,6 +621,7 @@ test_speech_and_noise_never_lock(void) {
     synth_voice_hpf_init(&src.voice_hpf, 48000);
     r = run_signal(&g_core, &src, ms_to_samples(48000, 60000.0), 960, 0);
     assert(r.locks == 0);
+    assert(r.first_none >= 0 && 100 * r.none_blocks >= SPEECH_NONE_MIN_PCT * r.open_blocks);
 
     dsd_analog_rx_core_init(&g_core);
     signal_init(&src, 48000, 1618033ULL, 100.0, 0.0);
@@ -713,8 +735,8 @@ test_tone_loss_within_bound(void) {
    lock within 150 ms, without waiting for the tone to stop: every tone at every rate at
    +10 dB in-band. Nearer 0 dB a sub-block is too noisy to serve as the phase reference on
    every hop, and a burst can be caught late or missed, when the carrier drop that follows
-   ends the lock instead (docs/testing.md). A caught burst ends the lock as a stop does, so the
-   row checks the loss contract too. */
+   ends the lock instead (test_reverse_burst_at_0db_ends_the_lock). A caught burst ends the
+   lock as a stop does, so the row checks the loss contract too. */
 static void
 test_reverse_burst_drops_fast(void) {
     static double times[RATE_COUNT * DSD_CTCSS_TONE_COUNT];
@@ -741,6 +763,67 @@ test_reverse_burst_drops_fast(void) {
         }
     }
     check_loss_contract("CTCSS loss on a reverse burst", times, count);
+}
+
+/*
+ * A reverse burst at 0 dB in-band: every tone at every rate, the flipped tone held under a live
+ * carrier for 400 ms -- longer than a transmitter sends one, so that a late catch still shows --
+ * and then the carrier drops. A sub-block this noisy cannot serve as the phase reference on
+ * every hop, so a burst can be caught late or missed. A caught burst ends the lock as a stop
+ * does, and the caught ones check the loss contract; a missed one leaves the lock to the
+ * carrier drop, which ends it within the 200 ms hangover. The row is a floor on the share
+ * caught within 150 ms and a ceiling on the number missed, set at what these seeds do (91%, and
+ * 4 of 200); the long-run shares are in docs/testing.md. Prints p50/p95/worst of the caught ones.
+ */
+static void
+test_reverse_burst_at_0db_ends_the_lock(void) {
+    static double caught[RATE_COUNT * DSD_CTCSS_TONE_COUNT];
+    int count = 0;
+    int within = 0;
+    int missed = 0;
+    for (int ri = 0; ri < RATE_COUNT; ri++) {
+        for (int k = 0; k < DSD_CTCSS_TONE_COUNT; k++) {
+            const int fs = k_rates[ri];
+            const double hz = (double)dsd_ctcss_tone_tenths(k) / 10.0;
+            dsd_analog_rx_core_init(&g_core);
+            signal_src src;
+            signal_init(&src, fs, 8675309ULL + (uint64_t)(k * 13 + ri) + 104729ULL, hz, 0.0);
+            src.tone_on = 0;
+            src.flip_at = ms_to_samples(fs, 1000.0 + (double)((k * 17) % 50));
+            src.carrier_off = src.flip_at + ms_to_samples(fs, BURST_0DB_CARRIER_MS);
+            const run_result r =
+                run_signal(&g_core, &src, src.carrier_off + ms_to_samples(fs, DSD_ANALOG_CARRIER_HANGOVER_MS + 50.0),
+                           fs / 1000, (int)lround(hz * 10.0));
+            assert(r.first_lock >= 0 && r.first_lock < src.flip_at && r.first_wrong < 0);
+            assert(r.first_unlocked > src.flip_at);
+            /* Whichever ended it, the carrier drop leaves no tone behind. */
+            assert(r.final_state == DSD_ANALOG_TONE_STATE_IDLE);
+            if (r.first_unlocked <= src.carrier_off) {
+                const double loss_ms = samples_to_ms(fs, r.first_unlocked - src.flip_at);
+                within += loss_ms <= (double)BURST_LOSS_BOUND_MS ? 1 : 0;
+                caught[count++] = loss_ms;
+                continue;
+            }
+            missed++;
+            /* The hangover counts closed blocks, and the block the drop falls in still carries
+               signal, so the lock ends up to a block after the hangover and shows a block later. */
+            const double after_drop_ms = samples_to_ms(fs, r.first_unlocked - src.carrier_off);
+            const double block_ms = samples_to_ms(fs, fs / 1000);
+            if (after_drop_ms > (double)DSD_ANALOG_CARRIER_HANGOVER_MS + (2.0 * block_ms)) {
+                DSD_FPRINTF(stderr, "missed burst held: fs=%d hz=%.1f -> %.0f ms after the carrier drop\n", fs, hz,
+                            after_drop_ms);
+            }
+            assert(after_drop_ms <= (double)DSD_ANALOG_CARRIER_HANGOVER_MS + (2.0 * block_ms));
+        }
+    }
+    const int total = count + missed;
+    char what[128];
+    DSD_SNPRINTF(what, sizeof(what),
+                 "CTCSS loss on a reverse burst at +0 dB in-band, caught (%d%% within %d ms, %d of %d missed)",
+                 (100 * within) / total, BURST_LOSS_BOUND_MS, missed, total);
+    check_loss_contract(what, caught, count);
+    assert(100 * within >= BURST_0DB_WITHIN_BOUND_MIN_PCT * total);
+    assert(missed <= BURST_0DB_MISSED_MAX);
 }
 
 /* A held tone at 0 dB in-band stays held: one lock per 15 s run and never lost, at every
@@ -941,6 +1024,7 @@ main(void) {
     test_no_tone_verdict_then_late_tone();
     test_tone_loss_within_bound();
     test_reverse_burst_drops_fast();
+    test_reverse_burst_at_0db_ends_the_lock();
     test_tone_under_voice_locks();
     test_lock_holds_at_0db();
     test_every_tone_locks_within_bound();
