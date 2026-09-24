@@ -521,11 +521,11 @@ installs from `src/engine/trunk_tuning.c` in `src/engine/trunk_tuning_hooks_inst
 
 Runtime controls (via `include/dsd-neo/io/rtl_stream_c.h`):
 
-- Receive family: `rtl_stream_request_analog_profile()` (family, analog kind, channel width; validated on the caller's
-  thread, against the running stream's rate for a change on the running analog monitor, and only for kind, range and
-  `DSD_NEO_CHANNEL_LPF` with no stream running or for a switch onto the monitor, whose rate check is the caller's
-  `rtl_stream_check_analog_profile()` before it commits; a refusal logged with the validator's text once per kind,
-  width and rate, and applied on the demod thread ahead of any demod profile queued after it; a demod profile queued
+- Receive family: `rtl_stream_request_analog_profile()` (family, analog kind, channel width; an analog request, a
+  change on the running monitor and a switch onto it alike, is validated on the caller's thread against the running
+  stream's published rate, or only for kind, range and `DSD_NEO_CHANNEL_LPF` with no stream running, and checked
+  again on the demod thread at the rate it lands on; a refusal logged with the validator's text once per kind, width
+  and rate, and applied on the demod thread ahead of any demod profile queued after it; a demod profile queued
   before it is dropped), `rtl_stream_check_analog_profile()`, `rtl_stream_get_analog_profile()`,
   `rtl_stream_analog_family_active()` (the analog family, including
   while a CQPSK toggle or a typed row's profile has moved the front end off the monitor output),
