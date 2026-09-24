@@ -1027,11 +1027,12 @@ test_udp_output_analog_socket_failure(void) {
 }
 
 /* A new UDP target while an analog socket (port + 2) is open: that socket sends to the old host and port, so it is
- * closed. With neither the source monitor nor ProVoice on it stays closed, so a later switch to Analog reopens it
- * against the new target (dsd_audio_ensure_analog_output() opens from an invalid descriptor only, see
- * CORE_AUDIO_ENSURE_OUTPUT); with one of them on it is reopened at once. */
+ * closed and reopened for the new target, whether or not the current mode writes to it. The -8 source monitor can be
+ * turned back on later, and its toggle opens no socket: it must find one, as it did before the target changed. A
+ * reopen that fails leaves the descriptor invalid, for the lazy open of a later switch to Analog
+ * (dsd_audio_ensure_analog_output() opens from an invalid descriptor only, see CORE_AUDIO_ENSURE_OUTPUT). */
 static int
-test_udp_output_target_change_closes_analog_socket(void) {
+test_udp_output_target_change_moves_analog_socket(void) {
     int rc = 0;
     static dsd_opts opts;
     static dsd_state state;
@@ -1043,20 +1044,38 @@ test_udp_output_target_change_closes_analog_socket(void) {
     }
     g_udp_connect_result = 0;
 
-    /* -fA started with UDP output to host A, then a digital mode: the analog socket is still open. */
+    /* A -8 session with the source monitor turned off since: the analog socket is still open. */
     const dsd_socket_t old_analog = dsd_socket_create(AF_INET, SOCK_DGRAM, 0);
-    if (old_analog == DSD_INVALID_SOCKET) {
+    const dsd_socket_t moved = dsd_socket_create(AF_INET, SOCK_DGRAM, 0);
+    if (old_analog == DSD_INVALID_SOCKET || moved == DSD_INVALID_SOCKET) {
         DSD_FPRINTF(stderr, "FAIL: UDP socket create\n");
         g_udp_connect_result = -1;
         return 1;
     }
     opts.udp_sockfdA = old_analog;
+    opts.monitor_input_audio = 0;
+    g_udp_connectA_leftover = moved;
+    g_udp_connectA_result = 0;
     g_udp_connectA_calls = 0;
     rc |=
         expect_int("new udp target with the monitor off", svc_udp_output_config(&opts, &state, "127.0.0.2", 23466), 0);
-    rc |= expect_int("monitor off opens no analog socket", g_udp_connectA_calls, 0);
-    rc |= expect_int("stale analog socket left invalid for the lazy open", opts.udp_sockfdA == DSD_INVALID_SOCKET, 1);
+    rc |= expect_int("an open analog socket is reopened with the monitor off", g_udp_connectA_calls, 1);
+    rc |= expect_int("analog socket moved to the new target", opts.udp_sockfdA == moved, 1);
     rc |= expect_int("stale analog socket closed", dsd_socket_close(old_analog) != 0, 1);
+    /* Source monitoring back on: the toggle only sets the flag, and the socket is there for it. */
+    opts.monitor_input_audio = 1;
+    rc |= expect_int("monitor back on finds the analog socket", opts.udp_sockfdA != DSD_INVALID_SOCKET, 1);
+    opts.monitor_input_audio = 0;
+
+    /* The reopen fails: the descriptor is left invalid for the lazy open. */
+    g_udp_connectA_leftover = DSD_INVALID_SOCKET;
+    g_udp_connectA_result = -1;
+    g_udp_connectA_calls = 0;
+    rc |=
+        expect_int("new udp target with a failing reopen", svc_udp_output_config(&opts, &state, "127.0.0.4", 23486), 0);
+    rc |= expect_int("failing reopen attempted", g_udp_connectA_calls, 1);
+    rc |= expect_int("failed reopen left invalid for the lazy open", opts.udp_sockfdA == DSD_INVALID_SOCKET, 1);
+    rc |= expect_int("moved analog socket closed before the reopen", dsd_socket_close(moved) != 0, 1);
 
     /* The same with the source monitor on: the analog socket is reopened for the new target at once. */
     const dsd_socket_t stale = dsd_socket_create(AF_INET, SOCK_DGRAM, 0);
@@ -1486,7 +1505,7 @@ main(void) {
 #endif
     rc |= test_file_network_and_import_failure_contracts();
     rc |= test_udp_output_analog_socket_failure();
-    rc |= test_udp_output_target_change_closes_analog_socket();
+    rc |= test_udp_output_target_change_moves_analog_socket();
     rc |= test_channel_map_reimport_replaces_previous_map();
     rc |= test_channel_map_keys_adopt_and_clear();
     rc |= test_key_import_arms_keyloader();

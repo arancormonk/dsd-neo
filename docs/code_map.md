@@ -271,8 +271,9 @@ Tests: `tests/engine/test_engine_trunk_scan.c` (`ENGINE_TRUNK_SCAN`) and
   (`<dsd-neo/runtime/udp_audio_hooks.h>`, installed by the engine), muted or not: the mute toggle reopens local
   devices only, so a socket skipped while muted would stay closed. `udp_socket_blasterA()` skips an invalid socket.
   A new UDP target (`svc_udp_output_config()`) closes an open analog socket, which still sends to the old host and
-  port, and reopens it at once only when the current mode writes to it. Idempotent, decoder thread only; a failure is
-  logged once and leaves that family silent. `DSD_APP_CMD_DECODE_MODE_SET` and the RadioReference import (both through
+  port, and reopens it for the new target at once, since the `-8` toggle opens no socket; with none open it opens one
+  only when the current mode writes to it. Idempotent, decoder thread only; a failure is logged once and leaves that
+  family silent. `DSD_APP_CMD_DECODE_MODE_SET` and the RadioReference import (both through
   `decode_mode_apply_value()`) call them, and so does `DSD_APP_CMD_CONFIG_APPLY` when its `[mode]` moves the session
   between the analog and digital families or lands on a digital mode that writes raw audio (ProVoice, `-8`). Tests:
   `CORE_AUDIO_ENSURE_OUTPUT`, `APP_COMMAND_QUEUE`, `APP_CONTROL_RR_APPLY`, `UI_MENU_SERVICES`.
