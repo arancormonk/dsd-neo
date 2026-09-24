@@ -198,7 +198,10 @@ tap_response_db(const float* taps, int len, double rate_hz, double f_hz) {
 /* The selected width is the protected passband; the transition sits outside it.
  * The Blackman window's real skirt is wider than the 1200 Hz design transition:
  * attenuation reaches about 30 dB at W/2 + 1200 Hz and 50 dB by W/2 + ~1450 Hz,
- * so the stopband bound is checked from W/2 + 1500 Hz. */
+ * so the stopband bound is checked from W/2 + 1500 Hz. A 50 dB bound at
+ * W/2 + 1200 Hz would take a longer design than WIDE's, and W = 16000 must
+ * reproduce the WIDE taps bit for bit (test_default_width_matches_wide()), so
+ * these bounds pin the skirt that design has. */
 static int
 test_width_response(void) {
     const int widths[] = {8000, 12500, 16000, 25000};

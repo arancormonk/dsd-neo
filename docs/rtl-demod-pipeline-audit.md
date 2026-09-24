@@ -83,7 +83,10 @@ cutoff is `W/2 + 600 Hz` with a fixed 1200 Hz Blackman transition outside the
 protected passband (about -0.3 dB at `W/2`, -30 dB at `W/2 + 1200 Hz`, -50 dB
 from about `W/2 + 1450 Hz`). The width is neither the tuner bandwidth nor the
 audio bandwidth. `W = 16000` runs the same design call as the historical WIDE
-profile, so its taps are bit-identical wherever that design succeeded.
+profile, so its taps are bit-identical wherever that design succeeded. That
+identity fixes the skirt: 50 dB at `W/2 + 1200 Hz` would take a longer design
+than WIDE's, so `DSP_CHANNEL_FILTERS` pins about -30 dB (bound -29 dB) from
+`W/2 + 1200 Hz` and -50 dB from `W/2 + 1500 Hz`.
 
 A width is realizable at DSP rate `R` only when `W/2 + 600 <= 0.45 x R` and the
 Blackman tap count `74 x R / 26400` (odd) fits the 288-tap analog capacity:
@@ -147,7 +150,13 @@ Enable rule and validation:
   is resolved again for that rate: the unset default moves between the 16 kHz
   design and the legacy WIDE design, and an explicit width the new rate cannot
   realize is logged with the validator's text and runs unfiltered (DSP-limited)
-  rather than being clamped. This applies only while the monitor output runs:
+  rather than being clamped. Unfiltered is the deliberate choice here: the old
+  taps belong to the old rate, a clamp or the legacy design would replace the
+  width that was asked for, and the running stream has no other profile to fall
+  back to. Frontends show the channel as DSP-limited, and the log names the
+  widths the new rate fits. A retune profile that would land on such a rate is
+  refused instead (see Live Switching), because there the front end still has
+  its current profile to keep. This applies only while the monitor output runs:
   CQPSK toggled on under `-fA` keeps its P25 CQPSK profile filter.
 
 ### Live Switching
