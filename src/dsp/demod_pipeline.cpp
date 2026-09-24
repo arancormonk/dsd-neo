@@ -554,8 +554,9 @@ channel_lpf_ensure_plan(struct demod_state* d) {
     }
     const int profile = d->channel_lpf_profile;
     const int rate_out = d->rate_out;
-    /* Gated on the analog family's monitor output, not on the profile: WIDE is also the digital fallback profile,
-       the M17 encoder shares the analog front end without being part of that family, and CQPSK toggled on under -fA
+    /* Gated on the analog family's monitor output on its WIDE channel (dsd_demod_analog_monitor_active()), not on the
+       profile alone: WIDE is also the digital fallback profile, and the M17 encoder shares the analog front end
+       without being part of that family. CQPSK toggled on under -fA, or a typed digital scan row's symbol profile,
        keeps its own profile filter. */
     const int width_hz =
         (dsd_demod_analog_monitor_active(d) && d->channel_lpf_width_hz > 0) ? d->channel_lpf_width_hz : 0;

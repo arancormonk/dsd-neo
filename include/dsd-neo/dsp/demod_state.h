@@ -291,13 +291,18 @@ struct demod_state {
 // NOLINTEND(clang-analyzer-optin.performance.Padding)
 
 /*
- * Whether the analog family's monitor audio is what the demodulator produces. The width-driven channel filter and
- * the published analog profile describe that path only: a CQPSK toggle under -fA moves the output to symbols without
- * leaving the family, and that output keeps its profile filter.
+ * Whether the analog family's monitor audio, on the analog channel, is what the demodulator produces. The width-driven
+ * channel filter and the published analog profile describe that path only. A symbol profile applied without a family
+ * switch leaves the family flag set but moves the front end off that path, and keeps its own profile filter: a CQPSK
+ * toggle under -fA moves the output to symbols, and a typed digital scan row's profile puts the row's channel profile
+ * in place of the analog (WIDE) one while the monitor output stays.
  */
 static inline int
 dsd_demod_analog_monitor_active(const struct demod_state* d) {
-    return (d && d->analog_family && d->output_kind == DSD_DEMOD_OUTPUT_AUDIO_MONITOR && !d->cqpsk_enable) ? 1 : 0;
+    return (d && d->analog_family && d->output_kind == DSD_DEMOD_OUTPUT_AUDIO_MONITOR && !d->cqpsk_enable
+            && d->channel_lpf_profile == DSD_CH_LPF_PROFILE_WIDE)
+               ? 1
+               : 0;
 }
 
 #endif /* DSD_NEO_INCLUDE_DSD_NEO_DSP_DEMOD_STATE_H_ */

@@ -121,13 +121,19 @@ Enable rule and validation:
   only the kind, range and environment rules apply, and the next start decides.
   A refused runtime request (live, or attached to a retune target) is logged
   with the validator's text and what stays in place, once per kind, width and
-  rate until an analog request is accepted.
+  rate until an analog request is accepted. Both are checked again where they
+  land: a retune can settle the device on another rate after a live request was
+  checked against the published rate, so the demod thread holds the request to
+  the rate it is on when it applies it, and refuses it there, as it would have
+  had the retune come first.
 - The design uses `rate_out`, which is the complex rate the channel filter runs
   at only while `post_downsample` is 1. Live sources always run that way; only
   IQ replay sidecars can set a larger post-demod decimation, and there a
   requested width (explicit, or the AM default) is refused at start and on
   every runtime request, since the filter would run at `rate_out` x
-  `post_downsample`. The unset NFM default keeps the legacy design.
+  `post_downsample`. The unset NFM default keeps the legacy design, and is
+  published as DSP-limited at the width that design passes at the rate it
+  really runs at (its width at `rate_out` times `post_downsample`).
 - Device-forced rates above ~51.4 kHz (for example Airspy at 2.5 MS/s, demod
   rate 78,125 Hz) used to fall back to the 63-tap prototype designed for 24 kHz.
   They now get a real design (219 taps at 78,125 Hz).
@@ -159,8 +165,9 @@ Enable rule and validation:
   back to. Frontends show the channel as DSP-limited, and the log names the
   widths the new rate fits. A retune profile that would land on such a rate is
   refused instead (see Live Switching), because there the front end still has
-  its current profile to keep. This applies only while the monitor output runs:
-  CQPSK toggled on under `-fA` keeps its P25 CQPSK profile filter.
+  its current profile to keep. This applies only while the monitor output runs
+  on the analog channel: CQPSK toggled on under `-fA`, or a typed digital scan
+  row's profile, keeps its own profile filter.
 
 ### Live Switching
 
@@ -173,8 +180,14 @@ demod profile queued with it:
   left alone (a request for the width already running changes nothing);
 - analog <-> digital: the new family's fresh-open defaults (output kind,
   demodulator, de-emphasis, channel filter, resampler), carrier and timing loops
-  restarted as on an open (Costas, band-edge FLL, Gardner TED), a cleared output
-  ring and a bumped output generation. The digital symbol profile follows as a
+  restarted as on an open (Costas, band-edge FLL, Gardner TED), the I/Q DC and
+  balance estimates and a replay's post-demod decimator zeroed as on an open, a
+  cleared output ring and a bumped output generation. The stream records the
+  family it switched to: its options are the orchestrator's copy from before
+  the open, which a decoder-side mode change never reaches, so from then on that
+  record decides whether a symbol profile without CQPSK runs the FSK
+  discriminator or monitor audio (a `-fA` session switched to DMR stays on the
+  discriminator through a CQPSK profile and back). The digital symbol profile follows as a
   demod profile request, and it decides the CQPSK family. The family request
   waits for that profile: when the demod thread reaches a block boundary between
   the two requests, it keeps the family request queued, so both apply at one
@@ -188,9 +201,12 @@ demod profile queued with it:
 
 Toggling CQPSK on under `-fA` leaves the analog family flag set but takes the
 output off the monitor, so that stream keeps its P25 CQPSK profile filter and
-publishes no analog profile. A typed digital scan row does the same when its
-symbol profile lands on a `-fA` session. A digital family request is a family
-switch only while the monitor output runs, the state the decoder sees
+publishes no analog profile. A typed digital scan row's symbol profile on an
+analog session keeps the monitor output but puts the row's channel profile in
+place of the analog (WIDE) one, so the row filters with its own profile, as it
+did before the analog filter became width-driven, and publishes no analog
+profile either. A digital family request is a family switch only while the
+monitor output runs on the analog channel, the state the decoder sees
 published and times the switch for; on such a stream it changes nothing and the
 symbol profile queued with it applies as it did before, instead of resetting
 the stream in the middle of the row. An analog request brings the monitor back
@@ -243,14 +259,20 @@ scale, and ratio-based audio metrics are invariant to it, so it is left as is.
   coefficient refresh after a forced rate change, and analog retune profiles;
   `IO_RTL_ANALOG_FAMILY_SWITCH` checks that digital -> analog -> digital ends on
   a fresh open for P25 C4FM/CQPSK, DMR, NXDN48 and dPMR, at unforced rates and at
-  forced 78,125 and 60,000 Hz rates, with loop state, monitor audio state and the
-  channel, half-band and resampler histories included, and covers width-only
+  forced 78,125 and 60,000 Hz rates, with loop state, monitor audio state, the
+  I/Q corrections, the post-demod decimator and the channel, half-band and
+  resampler histories included, a typed digital row on a `-fA` session and on a
+  DMR session switched to analog, and covers width-only
   changes, requests made with no stream running, and live requests and retune
   profiles a running stream's rate or post-demod decimation cannot realize
-  (refused before anything is queued); `IO_RTL_ANALOG_OPEN` opens IQ
+  (refused before anything is queued, or at the rate a retune moved the stream
+  to before the demod thread consumed it), all with the stream keeping the
+  options snapshot it opened with; `IO_RTL_ANALOG_OPEN` opens IQ
   replays whose demod rate differs from their DSP bandwidth and checks the
-  start-time channel decision and refusal, and that a tone captured at 78,125 Hz
-  reaches the output once, at 48 kHz and at its own frequency.
+  start-time channel decision and refusal, the width a post-demod decimating
+  replay publishes, that a tone captured at 78,125 Hz reaches the output once,
+  at 48 kHz and at its own frequency, and that a `-fA` replay switched to DMR
+  through the stream API runs the FSK discriminator and returns to the monitor.
 
 Run the focused audit checks with:
 

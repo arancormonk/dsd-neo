@@ -16,7 +16,8 @@
  * - a sidecar with post_downsample 3: the channel filter runs at three times
  *   the demod rate the width would be designed and checked at, so an explicit
  *   width fails the start with an actionable message, while the unset default
- *   keeps the legacy design and starts.
+ *   keeps the legacy design and starts, published as DSP-limited at the width
+ *   that design protects at the rate it really runs at.
  * - demod_rate 16000 with the unset default: 16 kHz does not fit, so the legacy
  *   WIDE design takes over and the channel is published as DSP-limited at the
  *   width the rate leaves (not the 16 kHz picked for the 48 kHz bandwidth).
@@ -26,6 +27,10 @@
  * - a 1 kHz FM tone captured at 78125 Hz: the monitor delivers it at the 48 kHz
  *   output rate once, not resampled a second time (which played it back at
  *   1628 Hz in 0.61 of the capture's duration).
+ * - a -fA session switched live to DMR through the stream API: the stream works
+ *   from the orchestrator's own copy of the -fA options, which the decoder's mode
+ *   change never reaches, and still lands on the FSK discriminator (and back on
+ *   the monitor when Analog is picked again).
  */
 
 #include <cmath>
@@ -334,6 +339,83 @@ test_forced_rate_monitor_audio_is_resampled_once(void) {
     return rc;
 }
 
+/* Read the running stream until @p done holds for its published state, or give up after five seconds. Reading keeps
+ * the demod thread supplied with output space, so it keeps reaching the block boundaries where requests land. */
+static int
+read_until(RtlSdrContext* ctx, int (*done)(void)) {
+    const uint64_t start_ns = dsd_time_monotonic_ns();
+    float block[256];
+    while (!done()) {
+        int got = 0;
+        (void)rtl_stream_read(ctx, block, sizeof(block) / sizeof(block[0]), &got);
+        if (dsd_time_monotonic_ns() - start_ns > 5000ULL * 1000000ULL) {
+            return -1;
+        }
+    }
+    return 0;
+}
+
+static int
+digital_dmr_profile_published(void) {
+    int rate = 0;
+    int levels = 0;
+    int profile = -1;
+    (void)rtl_stream_get_symbol_profile_full(&rate, &levels, &profile);
+    return rtl_stream_get_analog_profile(NULL, NULL, NULL) == 0 && rate == 4800 && levels == 4
+           && profile == RTL_STREAM_CHANNEL_PROFILE_12K5;
+}
+
+static int
+analog_profile_published(void) {
+    return rtl_stream_get_analog_profile(NULL, NULL, NULL) == 1;
+}
+
+/* A session started with -fA on which the operator picks DMR: the decoder's options change, but the stream keeps the
+ * copy of the -fA options its orchestrator took, and hears of the change only as the digital family request and the
+ * DMR symbol profile svc_publish_symbol_profile() queues. It must land on the FSK discriminator a fresh DMR open runs,
+ * and go back to monitor audio when Analog is picked again. The capture loops so the demod thread keeps running. */
+static int
+test_fa_start_switches_to_digital_through_the_stream(void) {
+    const ReplayRate rate48k = {1536000U, 32U, 1U, 48000U};
+    char metadata_path[DSD_TEST_PATH_MAX];
+    const std::vector<uint8_t> payload(393216U, 127U); /* 128 ms of silence at 1.536 MS/s */
+    if (make_replay_fixture_with(rate48k, "dsdneo_analog_open_fa_to_dmr", payload, 0, metadata_path,
+                                 sizeof(metadata_path))
+        != 0) {
+        return 1;
+    }
+    std::unique_ptr<dsd_opts> opts = std::make_unique<dsd_opts>();
+    prepare_analog_replay_opts(opts.get(), metadata_path, 0);
+    opts->iq_replay_loop = 1;
+    RtlSdrContext* ctx = NULL;
+    if (rtl_stream_create(opts.get(), &ctx) != 0 || !ctx || rtl_stream_start(ctx) != 0) {
+        DSD_FPRINTF(stderr, "FAIL: -fA to DMR: could not start the replay\n");
+        if (ctx) {
+            rtl_stream_destroy(ctx);
+        }
+        return 1;
+    }
+    int rc = expect_int("-fA start runs the monitor", rtl_stream_get_output_kind(), RTL_STREAM_OUTPUT_AUDIO_MONITOR);
+    rc |= expect_int("-fA start publishes the analog profile", rtl_stream_get_analog_profile(NULL, NULL, NULL), 1);
+
+    rc |= expect_int("digital family request",
+                     rtl_stream_request_analog_profile(DSD_RX_FAMILY_DIGITAL, DSD_ANALOG_DEMOD_FM, 0), 0);
+    rc |= expect_int("DMR symbol profile request",
+                     rtl_stream_request_demod_profile(0, 4800, 4, RTL_STREAM_CHANNEL_PROFILE_12K5, 10, 0), 0);
+    rc |= expect_int("DMR profile lands", read_until(ctx, digital_dmr_profile_published), 0);
+    rc |=
+        expect_int("DMR runs the FSK discriminator", rtl_stream_get_output_kind(), RTL_STREAM_OUTPUT_FSK_DISCRIMINATOR);
+
+    rc |= expect_int("analog family request",
+                     rtl_stream_request_analog_profile(DSD_RX_FAMILY_ANALOG, DSD_ANALOG_DEMOD_FM, 0), 0);
+    rc |= expect_int("analog profile lands", read_until(ctx, analog_profile_published), 0);
+    rc |= expect_int("Analog runs the monitor again", rtl_stream_get_output_kind(), RTL_STREAM_OUTPUT_AUDIO_MONITOR);
+
+    (void)rtl_stream_stop(ctx);
+    (void)rtl_stream_destroy(ctx);
+    return rc;
+}
+
 int
 main(void) {
     dsd_neo_log_set_tap(capture_errors, NULL);
@@ -382,8 +464,13 @@ main(void) {
     rc |= open_analog_replay(post3, "dsdneo_analog_open_post3_default", 0, &r);
     rc |= expect_int("default with post_downsample 3 still starts", r.start_rc, 0);
     rc |= expect_int("default with post_downsample 3 is the analog family", r.family, 1);
+    /* The legacy WIDE design at 16000 Hz protects 13.2 kHz; run at three times that rate it protects 39.6 kHz, which
+     * is not the configured width, so it is published as DSP-limited. */
+    rc |= expect_int("default with post_downsample 3 runs DSP-limited", r.lpf_on, 0);
+    rc |= expect_int("default with post_downsample 3 publishes the width it filters", r.width_hz, 39600);
 
     rc |= test_forced_rate_monitor_audio_is_resampled_once();
+    rc |= test_fa_start_switches_to_digital_through_the_stream();
 
     if (rc == 0) {
         std::printf("IO_RTL_ANALOG_OPEN: OK\n");

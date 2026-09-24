@@ -1079,8 +1079,9 @@ rtl_demod_apply_analog_channel(struct demod_state* demod, int kind, int explicit
 int
 rtl_demod_refresh_analog_channel_for_rate(struct demod_state* demod, char* err, size_t err_size) {
     demod_error_text(err, err_size, "");
-    /* The analog monitor output, not the family flag: CQPSK toggled on under -fA keeps the analog family but runs its
-       own P25 CQPSK profile filter, which re-applying the analog channel would replace with WIDE. */
+    /* The analog monitor output on the analog channel, not the family flag: CQPSK toggled on under -fA, or a typed
+       digital scan row's symbol profile, keeps the analog family but runs its own profile filter, which re-applying
+       the analog channel would replace with WIDE. */
     if (!dsd_demod_analog_monitor_active(demod)) {
         return 0;
     }
@@ -1261,11 +1262,27 @@ demod_family_switch_reset_loops(struct demod_state* demod) {
     demod->cqpsk_agc_avg = 1.0f;
 }
 
+/* The input corrections and the post-demod decimator an open starts from nothing: the I/Q DC blocker and I/Q balance
+ * estimates, and a replay's post-demod decimator (its delay line holds the old family's demodulated samples). */
+static void
+demod_family_switch_reset_input_and_decimator(struct demod_state* demod) {
+    demod->iq_dc_avg_r = 0.0f;
+    demod->iq_dc_avg_i = 0.0f;
+    demod->iqbal_alpha_ema_r = 0.0f;
+    demod->iqbal_alpha_ema_i = 0.0f;
+    if (demod->post_polydecim_hist && demod->post_polydecim_K > 0) {
+        DSD_MEMSET(demod->post_polydecim_hist, 0, (size_t)demod->post_polydecim_K * sizeof(float));
+    }
+    demod->post_polydecim_hist_head = 0;
+    demod->post_polydecim_phase = 0;
+}
+
 static void
 demod_family_switch_reset(struct demod_state* demod) {
     rtl_demod_reset_audio_monitor_state(demod);
     rtl_demod_clear_filter_histories(demod);
     rtl_demod_reset_resampler_state(demod);
+    demod_family_switch_reset_input_and_decimator(demod);
     demod_family_switch_reset_loops(demod);
     /* Force a fresh channel-filter plan for the new family. */
     demod->channel_lpf_plan_taps_len = 0;

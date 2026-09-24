@@ -356,6 +356,30 @@ test_cqpsk_under_analog_family_keeps_profile(demod_state* s) {
     return 0;
 }
 
+/* A typed digital scan row on an analog session applies its symbol profile without a family switch: the monitor output
+ * and the analog family flag stay, but the row's channel profile takes the place of the analog (WIDE) one, and the row
+ * filters with that profile, as it did before the analog filter became width-driven, not with the analog width. */
+static int
+test_digital_row_profile_under_analog_family(demod_state* s) {
+    static float profile[DSD_CHANNEL_LPF_MAX_TAPS];
+    static float row[DSD_CHANNEL_LPF_MAX_TAPS];
+    int profile_len = 0;
+    int row_len = 0;
+    design_plan(s, 48000, DSD_CH_LPF_PROFILE_12K5, 0, profile, &profile_len);
+    design_plan(s, 48000, DSD_CH_LPF_PROFILE_12K5, DSD_ANALOG_NFM_WIDTH_DEFAULT_HZ, row, &row_len);
+    if (dsd_demod_analog_monitor_active(s)) {
+        DSD_FPRINTF(stderr, "a digital row's channel profile reported as the analog monitor\n");
+        return 1;
+    }
+    if (profile_len <= 0 || row_len != profile_len
+        || std::memcmp(profile, row, (size_t)profile_len * sizeof(float)) != 0 || s->channel_lpf_plan_width_hz != 0) {
+        DSD_FPRINTF(stderr, "a 12K5 row under the analog family designed %d taps (width %d), want the %d-tap profile\n",
+                    row_len, s->channel_lpf_plan_width_hz, profile_len);
+        return 1;
+    }
+    return 0;
+}
+
 /* The runtime validator mirrors the DSP design constants. */
 static int
 test_runtime_mirror(void) {
@@ -402,6 +426,7 @@ main(void) {
     rc |= test_forced_rate_capacity(s);
     rc |= test_unrealizable_width(s);
     rc |= test_cqpsk_under_analog_family_keeps_profile(s);
+    rc |= test_digital_row_profile_under_analog_family(s);
     rc |= test_runtime_mirror();
     std::free(s);
     return rc;

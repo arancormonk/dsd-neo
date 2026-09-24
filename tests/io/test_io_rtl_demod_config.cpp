@@ -1422,8 +1422,9 @@ expect_post_decimation_rule(void) {
 }
 
 /*
- * CQPSK toggled on under -fA keeps the analog family flag but runs the P25 CQPSK profile filter. A retune that moves
- * rate_out must not re-apply the analog channel (WIDE) over it.
+ * CQPSK toggled on under -fA keeps the analog family flag but runs the P25 CQPSK profile filter, and a typed digital
+ * scan row's symbol profile keeps the monitor output with the row's channel profile. A retune that moves rate_out must
+ * not re-apply the analog channel (WIDE) over either; back on the analog channel, it resolves the width again.
  */
 static int
 expect_rate_refresh_leaves_cqpsk_profile(void) {
@@ -1448,12 +1449,20 @@ expect_rate_refresh_leaves_cqpsk_profile(void) {
     rc |= expect_int_eq("CQPSK filter enable kept", demod->channel_lpf_enable, enable_before);
     rc |= expect_int_eq("analog family still set", demod->analog_family, 1);
 
-    /* Back on the monitor output, the refresh resolves the analog channel as before. */
+    /* CQPSK off again for a typed DMR row: the monitor output, but the row's channel profile, not the analog one. */
     demod->cqpsk_enable = 0;
     demod->output_kind = DSD_DEMOD_OUTPUT_AUDIO_MONITOR;
+    demod->channel_lpf_profile = DSD_CH_LPF_PROFILE_12K5;
+    rc |= expect_int_eq("typed row refresh", rtl_demod_refresh_analog_channel_for_rate(demod, err, sizeof err), 0);
+    rc |= expect_int_eq("typed row profile kept across the rate change", demod->channel_lpf_profile,
+                        DSD_CH_LPF_PROFILE_12K5);
+
+    /* Back on the analog channel (an analog request restores WIDE), the refresh resolves the analog width again. */
+    demod->channel_lpf_profile = DSD_CH_LPF_PROFILE_WIDE;
+    demod->channel_lpf_width_hz = 0;
     rc |= expect_int_eq("monitor refresh", rtl_demod_refresh_analog_channel_for_rate(demod, err, sizeof err), 0);
-    rc |= expect_int_eq("monitor refresh restores WIDE", demod->channel_lpf_profile, DSD_CH_LPF_PROFILE_WIDE);
-    rc |= expect_int_eq("monitor refresh keeps the width", demod->channel_lpf_width_hz, 12500);
+    rc |= expect_int_eq("monitor refresh keeps WIDE", demod->channel_lpf_profile, DSD_CH_LPF_PROFILE_WIDE);
+    rc |= expect_int_eq("monitor refresh resolves the explicit width", demod->channel_lpf_width_hz, 12500);
     rtl_demod_cleanup(demod);
     std::free(demod);
     return rc;

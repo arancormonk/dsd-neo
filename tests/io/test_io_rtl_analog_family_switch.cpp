@@ -28,9 +28,21 @@
  * and as a retune profile, and the refusal is logged with the validator's text.
  *
  * A session that started with -fA and then switches to a digital mode lands on
- * a fresh open of that mode too. A typed digital scan row on a -fA session runs
- * the FSK discriminator with the analog family flag still set; a digital family
- * request there is not a family switch, and the row's leave restores the monitor.
+ * a fresh open of that mode too. Throughout, the stream keeps the options
+ * snapshot it opened with, as a real session's orchestrator copy does: the
+ * family requests are all it learns of a mode change, so after a switch its own
+ * record of the family, not that snapshot, decides where a symbol profile without
+ * CQPSK lands (a CQPSK profile and back returns to the FSK discriminator). Every
+ * switch also returns the I/Q DC and balance estimates and a replay's post-demod
+ * decimator to their start.
+ *
+ * A typed digital scan row on an analog session (a -fA open, or a DMR open
+ * switched to analog) keeps the monitor output with the row's channel profile and
+ * the analog family flag still set; a digital family request there is not a
+ * family switch, and the row's leave restores the analog monitor.
+ *
+ * A live request accepted at the published rate is held again to the rate a
+ * retune landed the stream on before the demod thread consumed it.
  */
 
 #include <cstdio>
@@ -112,6 +124,8 @@ expect_fields_equal(const char* label, const rtl_stream_test_demod_fields& got,
     FIELD(channel_hist_clear);
     FIELD(hb_hist_clear);
     FIELD(resamp_hist_clear);
+    FIELD(iq_correction_clear);
+    FIELD(post_decim_clear);
 #undef FIELD
     return rc;
 }
@@ -158,6 +172,8 @@ expect_analog_fields_equal(const char* label, const rtl_stream_test_demod_fields
     FIELD(channel_hist_clear);
     FIELD(hb_hist_clear);
     FIELD(resamp_hist_clear);
+    FIELD(iq_correction_clear);
+    FIELD(post_decim_clear);
 #undef FIELD
     return rc;
 }
@@ -246,6 +262,8 @@ run_case(const family_case& c, int rate_hz, int forced_rate_out_hz, int nfm_widt
         expect_int("predicted analog output rate", (int)r.predicted_analog_output_rate, r.switched_analog.output_rate);
     rc |= expect_int("predicted digital output rate", (int)r.predicted_digital_output_rate,
                      r.switched_digital.output_rate);
+    rc |= expect_int("CQPSK and back returns to the FSK discriminator", r.output_kind_after_cqpsk_round_trip,
+                     RTL_STREAM_OUTPUT_FSK_DISCRIMINATOR);
     return rc;
 }
 
@@ -286,42 +304,63 @@ run_analog_start_case(const family_case& c, int rate_hz, int forced_rate_out_hz)
     }
     rc |= expect_int("-fA start: predicted digital output rate", (int)r.predicted_digital_output_rate,
                      r.switched_digital.output_rate);
+    /* The -fA session's options snapshot names no digital mode: after the switch, the stream's own record of it has
+     * to keep a symbol profile without CQPSK on the FSK discriminator. */
+    rc |= expect_int("-fA start: CQPSK and back returns to the FSK discriminator", r.output_kind_after_cqpsk_round_trip,
+                     RTL_STREAM_OUTPUT_FSK_DISCRIMINATOR);
     return rc;
 }
 
-/* A typed DMR scan row on a -fA session queues only its symbol profile, so the front end runs the FSK discriminator
- * with the analog family flag still set, and publishes no analog profile. The decoder decides on the published state,
- * and so must the front end: a digital family request there is not a family switch (it neither waits for a symbol
- * profile nor clears the ring, bumps the generation or moves the output rate in the middle of the row), and the row's
- * leave still brings the monitor back. */
+/* A typed DMR scan row on an analog session queues only its symbol profile. The stream's options snapshot is the one
+ * it opened with (a -fA open, or a DMR open the operator had switched to analog), so the row's profile keeps the
+ * monitor output as it always did, but puts the row's channel profile in place of the analog channel: the analog
+ * family flag stays set, the width-driven filter and the published analog profile stand down, and the row filters with
+ * its own profile. The decoder decides on the published state, and so must the front end: a digital family request
+ * there is not a family switch (it neither waits for a symbol profile nor clears the ring, bumps the generation or
+ * moves the output rate in the middle of the row), and the row's leave brings the analog monitor back. */
 static int
-test_digital_row_on_analog_session(void) {
+expect_digital_row_on_analog_session(const char* name, int start_digital) {
     rtl_stream_test_digital_row_result r;
     DSD_MEMSET(&r, 0, sizeof r);
-    int rc = expect_int("digital row run", rtl_stream_test_digital_row_on_analog_session(24000, &r), 0);
-    rc |= expect_int("digital row open", r.open_rc, 0);
-    rc |= expect_int("row runs the FSK discriminator", r.row_output_kind, RTL_STREAM_OUTPUT_FSK_DISCRIMINATOR);
-    rc |= expect_int("row keeps the analog family flag", r.row_analog_family, 1);
-    rc |= expect_int("row publishes no analog profile", r.row_published_family, 0);
-    rc |= expect_int("row keeps the monitor's 48 kHz output", r.row_output_rate, 48000);
+    char label[160];
+#define ROW_EXPECT(text, got, want)                                                                                    \
+    do {                                                                                                               \
+        DSD_SNPRINTF(label, sizeof label, "%s: %s", name, text);                                                       \
+        rc |= expect_int(label, (got), (want));                                                                        \
+    } while (0)
+    int rc = 0;
+    ROW_EXPECT("digital row run", rtl_stream_test_digital_row_on_analog_session(24000, start_digital, &r), 0);
+    ROW_EXPECT("digital row open", r.open_rc, 0);
+    ROW_EXPECT("row keeps the monitor output", r.row_output_kind, RTL_STREAM_OUTPUT_AUDIO_MONITOR);
+    ROW_EXPECT("row keeps the analog family flag", r.row_analog_family, 1);
+    ROW_EXPECT("row publishes no analog profile", r.row_published_family, 0);
+    ROW_EXPECT("row keeps the monitor's 48 kHz output", r.row_output_rate, 48000);
 
-    rc |= expect_int("lone digital request accepted", r.lone_request_rc, 0);
-    rc |= expect_int("lone digital request is not held for a profile", r.lone_request_held, 0);
+    ROW_EXPECT("lone digital request accepted", r.lone_request_rc, 0);
+    ROW_EXPECT("lone digital request is not held for a profile", r.lone_request_held, 0);
 
-    rc |= expect_int("row republish accepted", r.republish_rc, 0);
-    rc |= expect_int("row republish keeps the generation", r.generation_after == r.generation_before, 1);
-    rc |= expect_int("row republish keeps the ring", (int)r.used_after, (int)r.used_before);
-    rc |= expect_int("seeded ring was not empty", r.used_before > 0U, 1);
-    rc |= expect_int("row republish keeps the FSK output", r.output_kind_after, RTL_STREAM_OUTPUT_FSK_DISCRIMINATOR);
-    rc |= expect_int("row republish keeps the output rate", r.output_rate_after, r.row_output_rate);
-    rc |= expect_int("row republish keeps the resampler",
-                     r.resamp_l_after == r.row_resamp_l && r.resamp_m_after == r.row_resamp_m, 1);
+    ROW_EXPECT("row republish accepted", r.republish_rc, 0);
+    ROW_EXPECT("row republish keeps the generation", r.generation_after == r.generation_before, 1);
+    ROW_EXPECT("row republish keeps the ring", (int)r.used_after, (int)r.used_before);
+    ROW_EXPECT("seeded ring was not empty", r.used_before > 0U, 1);
+    ROW_EXPECT("row republish keeps the monitor output", r.output_kind_after, RTL_STREAM_OUTPUT_AUDIO_MONITOR);
+    ROW_EXPECT("row republish keeps the output rate", r.output_rate_after, r.row_output_rate);
+    ROW_EXPECT("row republish keeps the resampler",
+               r.resamp_l_after == r.row_resamp_l && r.resamp_m_after == r.row_resamp_m, 1);
 
-    rc |= expect_int("row leave accepted", r.restore_rc, 0);
-    rc |= expect_int("row leave restores the monitor", r.restored_output_kind, RTL_STREAM_OUTPUT_AUDIO_MONITOR);
-    rc |= expect_int("row leave publishes the analog profile", r.restored_published_family, 1);
-    rc |= expect_int("row leave keeps the monitor rate", r.restored_output_rate, 48000);
-    rc |= expect_int("row leave bumps the generation", r.generation_after_restore != r.generation_after, 1);
+    ROW_EXPECT("row leave accepted", r.restore_rc, 0);
+    ROW_EXPECT("row leave restores the monitor", r.restored_output_kind, RTL_STREAM_OUTPUT_AUDIO_MONITOR);
+    ROW_EXPECT("row leave publishes the analog profile", r.restored_published_family, 1);
+    ROW_EXPECT("row leave keeps the monitor rate", r.restored_output_rate, 48000);
+    ROW_EXPECT("row leave bumps the generation", r.generation_after_restore != r.generation_after, 1);
+#undef ROW_EXPECT
+    return rc;
+}
+
+static int
+test_digital_row_on_analog_session(void) {
+    int rc = expect_digital_row_on_analog_session("-fA session", 0);
+    rc |= expect_digital_row_on_analog_session("DMR session switched to analog", 1);
     return rc;
 }
 
@@ -495,6 +534,46 @@ test_requests_against_running_stream(void) {
     return rc;
 }
 
+/* A live request is checked against the rate the stream published when it was made; a retune that settles the device
+ * on another rate can land before the demod thread consumes it. The width is held to the rate it lands on: one that
+ * rate cannot realize is refused there, logged with the validator's text, and the channel stays as the retune left it,
+ * rather than running unfiltered. One the landed rate still fits is applied. */
+static int
+test_request_across_rate_change(void) {
+    rtl_stream_test_live_request_result r;
+    DSD_MEMSET(&r, 0, sizeof r);
+    g_last_error[0] = '\0';
+    g_error_count = 0;
+    int rc = expect_int("16 kHz across 48 -> 16 kHz run",
+                        rtl_stream_test_analog_request_across_rate_change(48000, 16000, 16000, &r), 0);
+    rc |= expect_int("16 kHz accepted at the published 48 kHz", r.request_rc, 0);
+    rc |= expect_int("16 kHz queued", r.request_queued, 1);
+    rc |= expect_int("16 kHz refused at the landed rate: width unchanged", r.width_after, r.width_before);
+    rc |= expect_int("16 kHz refused at the landed rate: family unchanged", r.family_after, r.family_before);
+    rc |= expect_int("16 kHz refused at the landed rate: plan kept", r.plan_kept, 1);
+    rc |= expect_int("16 kHz refused at the landed rate: published width unchanged", r.published_width_after,
+                     r.published_width_before);
+    rc |= expect_int("landed-rate refusal logged once", g_error_count, 1);
+    rc |= expect_int("landed-rate refusal logs the validator's text",
+                     std::strstr(g_last_error, "NFM bandwidth 16 kHz does not fit the 16 kHz DSP rate (the largest "
+                                               "width it fits is 13.2 kHz)")
+                         != NULL,
+                     1);
+    rc |= expect_int("landed-rate refusal says the front end keeps its profile",
+                     std::strstr(g_last_error, "The front end keeps its current receive profile.") != NULL, 1);
+    if (rc != 0) {
+        DSD_FPRINTF(stderr, "  logged: \"%s\"\n", g_last_error);
+    }
+
+    DSD_MEMSET(&r, 0, sizeof r);
+    rc |= expect_int("12.5 kHz across 48 -> 16 kHz run",
+                     rtl_stream_test_analog_request_across_rate_change(48000, 16000, 12500, &r), 0);
+    rc |= expect_int("12.5 kHz accepted", r.request_rc, 0);
+    rc |= expect_int("12.5 kHz still fits the landed rate and applies", r.width_after, 12500);
+    rc |= expect_int("12.5 kHz published", r.published_width_after, 12500);
+    return rc;
+}
+
 int
 main(void) {
     dsd_neo_log_set_tap(capture_error_log, NULL);
@@ -583,6 +662,7 @@ main(void) {
     rc |= test_width_only_change();
     rc |= test_requests_without_stream();
     rc |= test_requests_against_running_stream();
+    rc |= test_request_across_rate_change();
 
     /* Requests the front end cannot honour are refused up front. */
     rc |= expect_int("AM refused", rtl_stream_request_analog_profile(DSD_RX_FAMILY_ANALOG, DSD_ANALOG_DEMOD_AM, 0), -1);

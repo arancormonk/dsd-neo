@@ -564,34 +564,49 @@ Notes:
     (`rtl_demod_refresh_analog_channel_for_rate()`, from `demod_state::analog_width_request_hz`): the unset default
     moves between 16 kHz and the legacy WIDE design, and an explicit width the new rate cannot realize is kept (never
     clamped), logged with the validator's text, and runs with no channel filter, published as DSP-limited with the
-    DSP rate as its width. Only while the monitor output runs: CQPSK toggled on under `-fA` keeps its profile filter
-    across the rate change.
+    DSP rate as its width. Only while the monitor output runs on the analog channel: CQPSK toggled on under `-fA`, or a
+    typed digital scan row's profile, keeps its own profile filter across the rate change.
   - The width-driven filter and the published analog profile follow `dsd_demod_analog_monitor_active()` (analog
-    family, `AUDIO_MONITOR` output, CQPSK off), so CQPSK toggled on under `-fA` keeps its P25 CQPSK profile filter.
-  - Only the demod thread writes `demod_state` while the pipeline runs. Receive-family requests are queued and applied
-    between blocks; a retune profile's family fields apply under the reconfigure gate, and an analog one applies no
-    symbol profile, CQPSK toggle or timing queued for the same target. A retune profile's analog width is checked again
-    against the demod rate the retune lands on; a width that rate cannot realize is refused (logged once per kind, width
-    and rate) and the front end keeps its receive profile. A digital family request leaves the analog family only
+    family, `AUDIO_MONITOR` output, CQPSK off, the analog WIDE channel profile), so CQPSK toggled on under `-fA` keeps
+    its P25 CQPSK profile filter, and a typed digital scan row's symbol profile on an analog session keeps the monitor
+    output but filters with the row's channel profile and publishes no analog profile. An IQ replay that decimates
+    after the demodulator (`post_downsample` above 1) runs the channel filter at that multiple of the rate it was
+    designed for, so its analog width is published as DSP-limited, scaled by `post_downsample`.
+  - While the pipeline runs, `demod_state` is written by the demod thread, or by a thread holding the reconfigure or
+    family-switch gate while the demod thread is parked (a retune's finalize on the controller thread, a gated CQPSK
+    toggle). Receive-family requests are queued and applied by the demod thread between blocks; a retune profile's
+    family fields apply with the rest of the retune under the reconfigure gate, as its symbol profile and CQPSK toggle
+    always have, and an analog one applies no symbol profile, CQPSK toggle or timing queued for the same target. An
+    analog width is checked again against the demod rate it lands on, both a live request when the demod thread
+    consumes it and a retune profile when the retune lands (a retune can move the rate after the request was checked
+    against the published one); a width that rate cannot realize is refused (logged once per kind, width and rate) and
+    the front end keeps its receive profile. A digital family request leaves the analog family only
     while the monitor output runs (`dsd_demod_analog_monitor_active()`, the state the decoder sees published): once a
-    symbol profile applied on its own (a typed digital scan row under `-fA`, a CQPSK toggle) has moved the output to
-    symbols, it changes nothing and that profile applies as usual. A digital family request the demod thread finds
-    with no symbol profile queued while the monitor runs stays queued until the profile arrives, so a switch to digital
-    requested as two calls (`svc_publish_symbol_profile()`, the channel-scan leave) always lands on its profile.
-    Entering or leaving the analog family re-applies that family's fresh-open defaults
+    symbol profile applied on its own (a typed digital scan row under `-fA`, a CQPSK toggle) has moved the front end
+    off the analog monitor, it changes nothing and that profile applies as usual. A digital family request the demod
+    thread finds with no symbol profile queued while the monitor runs stays queued until the profile arrives, so a
+    switch to digital requested as two calls (`svc_publish_symbol_profile()`, the channel-scan leave) always lands on
+    its profile. The stream records the family each switch lands on (`RtlSdrInternals::rx_family_switch`): its options
+    are the orchestrator's copy from before the open, which a decoder-side mode change never reaches, so after a switch
+    that record, not the options, decides whether a symbol profile without CQPSK runs the FSK discriminator or monitor
+    audio. Entering or leaving the analog family re-applies that family's fresh-open defaults
     (`rtl_demod_enter_analog_family()`/`_digital_family()`), restarts the carrier and timing loops (Costas, band-edge
-    FLL, Gardner TED) as an open does, clears the output ring and bumps the output generation; a width-only change
-    redesigns the filter from empty histories. The CQPSK family
+    FLL, Gardner TED) and zeroes the I/Q DC and balance estimates and a replay's post-demod decimator as an open does,
+    clears the output ring and bumps the output generation; a width-only change redesigns the filter from empty
+    histories. The CQPSK family
     after a switch to digital follows the symbol profile requested with it, as for any runtime mode change (a
     `DSD_NEO_CQPSK` override applies at stream open), and the digital resampler and output rate are decided for that
     profile when the switch is made (`rtl_demod_enter_digital_family()` takes its CQPSK flag and symbol rate), so a
     forced rate lands where an open of the profile would. Tests: `IO_RTL_ANALOG_FAMILY_SWITCH` (digital → analog →
-    digital, and a `-fA` start switched to digital, each equal to a fresh open, loop state, monitor audio state and
-    filter histories included, for P25 C4FM/CQPSK, DMR, NXDN48 and dPMR at unforced and forced rates; a digital
-    request on a typed digital row under `-fA`; width-only changes; requests with no stream; live requests and
-    retune profiles refused against a running stream's rate and a replay's `post_downsample`; a demod block boundary
+    digital, and a `-fA` start switched to digital, each equal to a fresh open, loop state, monitor audio state, I/Q
+    corrections and filter histories included, with the stream keeping the options snapshot it opened with, for P25
+    C4FM/CQPSK, DMR, NXDN48 and dPMR at unforced and forced rates; a digital request on a typed digital row under
+    `-fA` and on a DMR session switched to analog; width-only changes; requests with no stream; live requests and
+    retune profiles refused against a running stream's rate and a replay's `post_downsample`, and a live request
+    refused at the rate a retune moved the stream to before it was consumed; a demod block boundary
     between the family request and its symbol profile; the baselines run the same demod configuration functions as
-    `dsd_rtl_stream_open()`), `IO_RTL_ANALOG_OPEN` (the start-time check against the rate an IQ replay delivers), plus
+    `dsd_rtl_stream_open()`), `IO_RTL_ANALOG_OPEN` (the start-time check against the rate an IQ replay delivers, and a
+    `-fA` replay switched to DMR and back through the stream API), plus
     `IO_RTL_DEMOD_CONFIG` and `IO_RTL_RETUNE_PREPARE`.
   - `output_state::rate` (`<dsd-neo/runtime/ring.h>`) is atomic: the controller and demod threads write it and the
     decoder and UI threads read it through `dsd_rtl_stream_output_rate()`.
