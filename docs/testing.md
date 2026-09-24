@@ -374,17 +374,19 @@ identical results), and they are the numbers the user guide quotes:
 
 Retune clearing is covered where each path lives: `DSP_SYMBOL_REPLAY` (the tap reads the raw block before the voice
 high-pass removes the tone, leaves the audio byte-identical, clears on an RTL stream-generation or
-trunk-tuning-generation move and on a change between two usable input rates (also sample by sample, where after a
-drop from 48 kHz to 2500 Hz the old reception ends within one 20 ms read at the new rate, not 384 ms later at the end
-of the block), publishes an unusable input rate as unavailable without resetting block after block and warns about it
-once for each stretch of input at it (a 384 kHz, 48 kHz, 384 kHz sequence warns twice), logs `Received tone:` once per
-change of verdict -- not per block, nor for a fade inside the hangover -- and again for a new reception after the
-hangover, a reset or a change of input rate, and on a UDP stream whose producer pauses -- driven on an injected clock --
-stamps the deadline the frontends age the row against and starts a new reception after the pause, dropping the read that
-spans it and never showing the previous channel's tone, also when the pause falls part-way through a block (driven
-sample by sample through the unsynced analog path at 8192 Hz, where the 958 samples waiting in the block locked the old
-tone again over a quiet carrier), and on a live radio stream that stops delivering (an `rtl_tcp` outage) the same way,
-while IQ replay keeps no deadline and never resets on a gap, and starts a new reception the moment a TCP audio
+trunk-tuning-generation move and on a change between two usable input rates, dropping the read the change falls in (also
+sample by sample, where after a drop from 48 kHz to 2500 Hz the old reception ends within one 20 ms read at the new
+rate, not 384 ms later at the end of the block, and where the 958 samples of a 1920 Hz tone waiting in the block at 48
+kHz, which read as 2500 Hz input are a 100 Hz tone, are dropped rather than locking 100.0 Hz, and a 131.8 Hz tone at the
+new rate then locks), publishes an unusable input rate as unavailable without resetting block after block and warns
+about it once for each stretch of input at it (a 384 kHz, 48 kHz, 384 kHz sequence warns twice), logs `Received tone:`
+once per change of verdict -- not per block, nor for a fade inside the hangover -- and again for a new reception after
+the hangover, a reset or a change of input rate, and on a UDP stream whose producer pauses -- driven on an injected
+clock -- stamps the deadline the frontends age the row against and starts a new reception after the pause, dropping the
+read that spans it and never showing the previous channel's tone, also when the pause falls part-way through a block
+(driven sample by sample through the unsynced analog path at 8192 Hz, where the 958 samples waiting in the block locked
+the old tone again over a quiet carrier), and on a live radio stream that stops delivering (an `rtl_tcp` outage) the
+same way, while IQ replay keeps no deadline and never resets on a gap, and starts a new reception the moment a TCP audio
 connection drops when it reconnects inside the read, whose 300 ms backoff is shorter than the pause deadline; and --
 driven through `getSymbol()` on 2500 Hz WAVs, where one 960-sample block is 384 ms -- reads the block as it fills, so a
 tone starting mid-block locks within the 400 ms p95 target of its start and a carrier drop is forgotten within the
@@ -399,13 +401,14 @@ and moves the generation on), `ENGINE_CHANNEL_SCAN`/`ENGINE_TRUNK_SCAN` (row com
 on the caller's clock) and `APP_COMMAND_QUEUE` (decode-mode change, `RTL_SET_FREQ`, `MANUAL_TUNE`, a manual channel
 cycle and scan avoid by rigctl on PCM input, accepted, pending or refused; switching to WAV, Pulse, a named Pulse
 source, UDP or symbol-stream input, replay and stop-playback, including a stop whose Pulse open fails; TCP connect and
-reconnect, accepted or refused; and a config apply, which clears the tone when it moves the input and keeps it,
-generation included, when it changes an unrelated setting). The `APP_COMMAND_QUEUE` cases for `RTL_SET_FREQ`,
-`MANUAL_TUNE`, the manual channel cycle, scan avoid, the TCP connect and the failed Pulse open, and the
-`ENGINE_NO_CARRIER_RESET` `-Y` step cases (the rigctl step, the legacy RTL step and the failed partial hop), stub what
-they drive through the linker's `--wrap` seam, so they run only where that seam exists: GCC or Clang builds off macOS,
-and for `APP_COMMAND_QUEUE` off Windows too. The RTL cases also need a radio build. All of these bounds come from
-synthetic signals.
+reconnect, accepted or refused; and a config apply, which clears the tone when it moves the input or changes the decode
+mode -- out of the analog monitor and straight back with no monitor block read in between, the row returns with no
+carrier, not the old tone -- and keeps it, generation included, when it changes an unrelated setting or restates the
+mode the session is in). The `APP_COMMAND_QUEUE` cases for `RTL_SET_FREQ`, `MANUAL_TUNE`, the manual channel cycle, scan
+avoid, the TCP connect and the failed Pulse open, and the `ENGINE_NO_CARRIER_RESET` `-Y` step cases (the rigctl step,
+the legacy RTL step and the failed partial hop), stub what they drive through the linker's `--wrap` seam, so they run
+only where that seam exists: GCC or Clang builds off macOS, and for `APP_COMMAND_QUEUE` off Windows too. The RTL cases
+also need a radio build. All of these bounds come from synthetic signals.
 
 The off-air excerpts are pinned against their oracle labels (see [Tone and code labels](#tone-and-code-labels)) by
 cases in the analog block, run through the analog replay host, which reads the received tone from the decoder's

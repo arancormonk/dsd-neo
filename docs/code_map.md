@@ -589,24 +589,27 @@ installs from `src/engine/trunk_tuning.c` in `src/engine/trunk_tuning_hooks_inst
   - Invariant: resets never happen in `noCarrier()` / `dsd_engine_reset_no_carrier_state()` (they run every ~375 ms in
     analog mode and would stop any tone locking). They happen in `dsd_frame_sync_reset_acquisition()` (row commit and
     leave, trunk-scan target switch, decode-mode change, scope resume, RR apply), on an RTL stream-generation or
-    `dsd_trunk_tuning_generation()` move seen by the tap (the read is discarded), at the legacy untyped `-Y` step (also
-    when the step failed after its rigctl leg moved the radio) and at engine stop (`engine.c`), on accepted
-    `RTL_SET_FREQ` / `MANUAL_TUNE` commands, on every tune `request_manual_tune()` accepts (manual channel cycle and
-    scan avoid on an untyped list, candidate cycle, return-to-CC, lockout and skip: `io_control_set_freq()` moves a
-    rigctl radio without advancing the trunk-tuning generation), on every input switch (`ui_input_switched()`,
-    stop-playback even when the Pulse open fails, and the config apply's input comparison in `app_command_queue.c`),
-    when the symbol path falls back to Pulse at the end of a WAV file or after a lost TCP connection
-    (`symbol_open_pulse_input_and_reconfigure_output()` in `dsd_symbol.c`), whenever `symbol_read_sample_tcp()` finds
-    its connection interrupted, before it reconnects (the reconnect's 300 ms default backoff is shorter than
-    `DSD_ANALOG_STREAM_PAUSE_MIN_MS`, and the new connection may carry another source), after the carrier hangover, and
-    on the first read after an input that may pause (stdin, UDP, TCP, a live radio stream) paused past its deadline (the
-    read is discarded). Every reset bumps `analog_rx.generation`. Every `dsd_analog_rx_reset()` also drops the monitor
-    block `dsd_symbol.c` is part-way through assembling (`analog_out_f` and `analog_sample_counter`) and starts the
-    tap's reading over at the next block: the samples in it arrived before the boundary, and left in place they would be
-    read again as the new reception's opening audio, where at a low PCM rate one block (960 samples, 384 ms at 2500 Hz)
-    is enough to lock the old channel's tone again. The monitor output and raw WAV lose that part-block (at most 20 ms
-    at 48 kHz) at the boundary. The tap's own resets act on the read in hand instead: a generation move or a pause drops
-    it, a rate change reads it at the new rate, and the hangover expires on it.
+    `dsd_trunk_tuning_generation()` move or an input-rate change seen by the tap (the read is discarded), at the legacy
+    untyped `-Y` step (also when the step failed after its rigctl leg moved the radio) and at engine stop (`engine.c`),
+    on accepted `RTL_SET_FREQ` / `MANUAL_TUNE` commands, on every tune `request_manual_tune()` accepts (manual channel
+    cycle and scan avoid on an untyped list, candidate cycle, return-to-CC, lockout and skip: `io_control_set_freq()`
+    moves a rigctl radio without advancing the trunk-tuning generation), on every input switch (`ui_input_switched()`,
+    stop-playback even when the Pulse open fails, and the config apply's input comparison in `app_command_queue.c`), on
+    a config apply that changes the decode mode (the same comparison: out of the analog monitor no monitor block need
+    arrive to forget the tone before the row comes back), when the symbol path falls back to Pulse at the end of a WAV
+    file or after a lost TCP connection (`symbol_open_pulse_input_and_reconfigure_output()` in `dsd_symbol.c`), whenever
+    `symbol_read_sample_tcp()` finds its connection interrupted, before it reconnects (the reconnect's 300 ms default
+    backoff is shorter than `DSD_ANALOG_STREAM_PAUSE_MIN_MS`, and the new connection may carry another source), after
+    the carrier hangover, and on the first read after an input that may pause (stdin, UDP, TCP, a live radio stream)
+    paused past its deadline (the read is discarded). Every reset bumps `analog_rx.generation`. Every
+    `dsd_analog_rx_reset()` also drops the monitor block `dsd_symbol.c` is part-way through assembling (`analog_out_f`
+    and `analog_sample_counter`) and starts the tap's reading over at the next block: the samples in it arrived before
+    the boundary, and left in place they would be read again as the new reception's opening audio, where at a low PCM
+    rate one block (960 samples, 384 ms at 2500 Hz) is enough to lock the old channel's tone again. The monitor output
+    and raw WAV lose that part-block (at most 20 ms at 48 kHz) at the boundary. The tap's own resets act on the read in
+    hand instead: a generation move, a pause or a change of input rate since the previous read drops it (after a rate
+    change, samples taken at the old rate are another signal at the new one: 1920 Hz at 48 kHz read as 2500 Hz input is
+    a 100 Hz tone), and the hangover expires on it.
 - `dsd_filters.c` owns the per-protocol matched filters, selected by kind rather than by calling one of four
   wrappers, because the symbol grid has to know when the stream it samples changes identity. It reads the raw
   discriminator until a sync names a protocol and the filter's output afterwards, and that output describes the
