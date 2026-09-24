@@ -402,10 +402,12 @@ typedef struct {
     /** Input that may pause: the monotonic ms past which the next read arrives after a pause
         (published as dsd_analog_rx_publication::stale_after_ms); 0 = no read to measure from. */
     uint64_t stale_after_ms;
-    /** Samples of the monitor block the symbol path is assembling that the tap has read. */
+    /** Samples of the monitor block the symbol path is assembling that the tap has read, or
+        set aside at a reset or when detection started. */
     unsigned int block_taken;
     /** The input rate at the tap's last read, which the samples it has not read yet arrived
-        at; 0 once a reset has emptied the monitor block, when nothing unread is left. */
+        at; 0 once a reset has set the rest of the monitor block aside, when nothing unread is
+        left. */
     int read_rate_hz;
     /** 1 from a boundary until a read shows the input ran dry (analog_rx_backlog_skipped()). */
     int backlog_armed;
@@ -576,9 +578,10 @@ analog_rx_input_paused(const dsd_opts* opts, analog_rx_session* session, unsigne
 /*
  * Live inputs that can queue audio before the decoder reads it: the UDP ring, the TCP socket,
  * the Pulse record buffer and the stdin pipe. What they hold at a boundary arrived before it --
- * a rigctl retune holds the decoder while the old channel keeps arriving -- and the monitor block
- * a reset empties is only the part the symbol path had already taken. An RTL-family stream clears
- * its own output at a retune and moves its generation, and a file queues no other channel.
+ * a rigctl retune holds the decoder while the old channel keeps arriving -- and the part of the
+ * monitor block a reset sets aside is only what the symbol path had already taken. An
+ * RTL-family stream clears its own output at a retune and moves its generation, and a file
+ * queues no other channel.
  */
 static int
 analog_rx_input_queues(const dsd_opts* opts) {
@@ -716,17 +719,17 @@ dsd_analog_rx_reset(dsd_state* state) {
     if (!state) {
         return;
     }
-    /* The symbol path assembles the monitor block this tap reads sample by sample
-       (dsd_state::analog_out_f, dsd_symbol.c), and whatever it holds now arrived before the
-       boundary. Left in place, it would open the next block, and the tap, which starts reading
-       over at a new block, would hear it as the next reception: at a low input rate, a block's
-       worth of the old channel is enough to lock its tone again. */
-    DSD_MEMSET(state->analog_out_f, 0, sizeof(state->analog_out_f));
-    DSD_MEMSET(state->analog_out, 0, sizeof(state->analog_out));
-    state->analog_sample_counter = 0;
     analog_rx_session* session = analog_rx_session_get(state);
     if (session) {
-        session->block_taken = 0U;
+        /* The symbol path assembles the monitor block this tap reads sample by sample
+           (dsd_state::analog_out_f, dsd_symbol.c), and what it holds now arrived before the
+           boundary: at a low input rate, a block's worth of the old channel is enough to lock
+           its tone again. The tap sets those samples aside rather than reading them; they stay
+           in the block for the raw WAV and the monitor output, whose audio a reset leaves alone.
+           With no session, detection has not run since the engine started, and the first read
+           that creates one starts at the newest sample (dsd_analog_rx_tap_partial()). */
+        const int pending = state->analog_sample_counter;
+        session->block_taken = pending > 0 ? (unsigned int)pending : 0U;
         session->read_rate_hz = 0;
         /* Nor may what a live input still holds, which arrived before the boundary too. */
         analog_rx_arm_backlog_skip(session);
@@ -840,6 +843,10 @@ dsd_analog_rx_tap_partial(const dsd_opts* opts, dsd_state* state, const float* b
         if (!session) {
             return;
         }
+        /* Detection starts listening with the sample just added. The ones before it in the
+           block arrived while it was not, and perhaps before a boundary that had no session to
+           set them aside (dsd_analog_rx_reset()). */
+        session->block_taken = filled - 1U;
     }
     /* The quota follows the input rate as it is now, not as it was at the last read: after a
        drop in rate, the old rate's quota would hold the first read at the new one back for up

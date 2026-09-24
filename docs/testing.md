@@ -405,9 +405,11 @@ reset, a UDP stream with nothing queued from the third read after a reset or a g
 than real time again after 2 s; and --
 driven through `getSymbol()` on 2500 Hz WAVs, where one 960-sample block is 384 ms -- reads the block as it fills, so a
 tone starting mid-block locks within the 400 ms p95 target of its start and a carrier drop is forgotten within the
-hangover and two 20 ms reads (read only at block ends they took 576 and 544 ms), and drops the monitor block still being
-assembled at a reset, so the new channel's first block holds none of the old channel's samples and does not lock its
-tone again), `FRAME_SYNC_INTERNAL_HELPERS` (the acquisition reset), `ENGINE_NO_CARRIER_RESET` (survives `noCarrier()`,
+hangover and two 20 ms reads (read only at block ends they took 576 and 544 ms), and sets aside the part of the monitor
+block already assembled at a reset, so the tap reads none of the old channel's samples and the new channel does not lock
+its tone again, while the raw WAV keeps every sample of that block -- also after a reset in a digital mode, where
+detection that then starts part-way through the block reads from the sample it started on),
+`FRAME_SYNC_INTERNAL_HELPERS` (the acquisition reset), `ENGINE_NO_CARRIER_RESET` (survives `noCarrier()`,
 cleared by the legacy `-Y` step -- on RTL, by rigctl on PCM input in radio-off builds too, and by a failed step whose
 rigctl leg already moved the radio -- and kept by a refused one), `ENGINE_CLEANUP_AUDIO` (engine stop frees the detector
 and moves the generation on), `ENGINE_CHANNEL_SCAN`/`ENGINE_TRUNK_SCAN` (row commit and target switch),

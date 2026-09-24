@@ -607,11 +607,13 @@ installs from `src/engine/trunk_tuning.c` in `src/engine/trunk_tuning_hooks_inst
     backoff is shorter than `DSD_ANALOG_STREAM_PAUSE_MIN_MS`, and the new connection may carry another source), after
     the carrier hangover, and on the first read after an input that may pause (stdin, UDP, TCP, a live radio stream)
     paused past its deadline (the read is discarded). Every reset bumps `analog_rx.generation`. Every
-    `dsd_analog_rx_reset()` also drops the monitor block `dsd_symbol.c` is part-way through assembling (`analog_out_f`
-    and `analog_sample_counter`) and starts the tap's reading over at the next block: the samples in it arrived before
-    the boundary, and left in place they would be read again as the new reception's opening audio, where at a low PCM
-    rate one block (960 samples, 384 ms at 2500 Hz) is enough to lock the old channel's tone again. The monitor output
-    and raw WAV lose that part-block (at most 20 ms at 48 kHz) at the boundary. On Pulse, stdin, UDP and TCP input the
+    `dsd_analog_rx_reset()` also sets aside what the monitor block `dsd_symbol.c` is part-way through assembling
+    (`analog_out_f`) already holds: the tap reads on from the next sample, so none of those samples, which arrived
+    before the boundary, opens the new reception, where at a low PCM rate one block (960 samples, 384 ms at 2500 Hz) is
+    enough to lock the old channel's tone again. The block itself is left alone, so the raw WAV and the monitor output
+    keep every sample across the boundary; resets run in digital sessions too (every
+    `dsd_frame_sync_reset_acquisition()`, a lost TCP connection). Detection that starts part-way through a block, with
+    no session yet, likewise reads from the sample it started on. On Pulse, stdin, UDP and TCP input the
     input's own queue holds more of the old channel, which kept arriving while a rigctl retune held the decoder, so
     every `dsd_analog_rx_reset()` and every generation move the tap sees also arms a backlog skip: the tap skips its
     reads until one shows the input ran dry (a span of `DSD_ANALOG_RX_TAP_READ_MS` or more of input that took at least

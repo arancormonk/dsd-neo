@@ -840,14 +840,56 @@ noise_sample(uint32_t* rng) {
     return (short)((int)(*rng >> 20) - 2048);
 }
 
+/* The reset tests' input: the old channel's 100 Hz tone, then the new channel's noise. */
+static short g_reset_wav_samples[RESET_WAV_TOTAL];
+
 static int
 write_reset_wav(char* path, size_t path_size) {
-    static short samples[RESET_WAV_TOTAL];
     uint32_t rng = 0x2500U;
     for (int n = 0; n < RESET_WAV_TOTAL; n++) {
-        samples[n] = n < RESET_WAV_TONE ? tone_100_sample(n, RESET_WAV_RATE) : noise_sample(&rng);
+        g_reset_wav_samples[n] = n < RESET_WAV_TONE ? tone_100_sample(n, RESET_WAV_RATE) : noise_sample(&rng);
     }
-    return write_mono_wav(path, path_size, "dsdneo_rx_tone_reset", RESET_WAV_RATE, samples, RESET_WAV_TOTAL);
+    return write_mono_wav(path, path_size, "dsdneo_rx_tone_reset", RESET_WAV_RATE, g_reset_wav_samples,
+                          RESET_WAV_TOTAL);
+}
+
+/* Open a new private temp file for the raw WAV the symbol path writes, mono 16-bit at @p rate. */
+static SNDFILE*
+open_raw_wav_out(char* path, size_t path_size, int rate) {
+    int fd = dsd_test_mkstemp(path, path_size, "dsdneo_rx_tone_raw");
+    if (fd < 0) {
+        return NULL;
+    }
+    dsd_close(fd);
+    SF_INFO info;
+    DSD_MEMSET(&info, 0, sizeof(info));
+    info.samplerate = rate;
+    info.channels = 1;
+    info.format = SF_FORMAT_WAV | SF_FORMAT_PCM_16;
+    return sf_open(path, SFM_WRITE, &info);
+}
+
+/* Whether the WAV at @p path holds exactly the first @p count samples of the reset tests' input. */
+static int
+raw_wav_holds_reset_input(const char* path, int count) {
+    SF_INFO info;
+    DSD_MEMSET(&info, 0, sizeof(info));
+    SNDFILE* wav = sf_open(path, SFM_READ, &info);
+    if (wav == NULL) {
+        return 0;
+    }
+    static short got[RESET_WAV_TOTAL];
+    const sf_count_t n = sf_read_short(wav, got, RESET_WAV_TOTAL);
+    sf_close(wav);
+    if (info.frames != (sf_count_t)count || n != (sf_count_t)count) {
+        return 0;
+    }
+    for (int i = 0; i < count; i++) {
+        if (got[i] != g_reset_wav_samples[i]) {
+            return 0;
+        }
+    }
+    return 1;
 }
 
 /* The analog monitor reading @p path, a WAV at @p rate, one getSymbol() per sample. */
@@ -879,20 +921,25 @@ close_monitor_wav(dsd_opts* opts, dsd_state* state, const char* path) {
 }
 
 /*
- * A reset drops the monitor block the symbol path is still assembling, driven through
- * getSymbol() on a 2500 Hz WAV, where one 960-sample block is 384 ms: long enough to lock a
- * tone on its own. The old channel's 100 Hz tone locks, 958 more of its samples wait in the
- * block, the receiver moves, and the new channel -- a carrier with no tone -- fills the next
- * block. Had those 958 samples stayed, that block would have locked 100.0 Hz again from the old
- * channel's audio alone.
+ * A reset sets aside the part of the monitor block the symbol path has already assembled,
+ * driven through getSymbol() on a 2500 Hz WAV, where one 960-sample block is 384 ms: long
+ * enough to lock a tone on its own. The old channel's 100 Hz tone locks, 958 more of its
+ * samples wait in the block, the receiver moves, and the new channel -- a carrier with no tone
+ * -- completes that block and fills the next. Read as the new reception's opening audio, those
+ * 958 samples would lock 100.0 Hz again from the old channel alone; the tap must not read them.
+ * The audio must not lose them either: resets run in digital sessions too, at every acquisition
+ * reset and lost TCP connection, and the raw WAV has to hold every sample of the input.
  */
 static void
-test_rx_tone_reset_drops_the_pending_block(void) {
+test_rx_tone_reset_sets_the_pending_block_aside(void) {
     char wav_path[DSD_TEST_PATH_MAX];
+    char raw_path[DSD_TEST_PATH_MAX];
     assert(write_reset_wav(wav_path, sizeof(wav_path)) == 0);
     static dsd_opts opts;
     static dsd_state state;
     open_monitor_wav(&opts, &state, wav_path, RESET_WAV_RATE);
+    opts.wav_out_raw = open_raw_wav_out(raw_path, sizeof(raw_path), RESET_WAV_RATE);
+    assert(opts.wav_out_raw != NULL);
 
     for (int n = 0; n < 2 * RESET_WAV_BLOCK; n++) {
         (void)getSymbol(&opts, &state, 0);
@@ -905,18 +952,73 @@ test_rx_tone_reset_drops_the_pending_block(void) {
     assert(rx_tone_locked_on_100(&state));
 
     dsd_analog_rx_reset(&state);
-    assert(state.analog_sample_counter == 0);
+    assert(state.analog_sample_counter == RESET_WAV_PENDING);
     assert(state.analog_rx.tone_state == DSD_ANALOG_TONE_STATE_INACTIVE);
 
     for (int n = 0; n < RESET_WAV_BLOCK; n++) {
         (void)getSymbol(&opts, &state, 0);
+        assert(state.analog_rx.ctcss_tenths_hz != 1000);
     }
-    assert(exitflag == 0 && state.analog_sample_counter == 0);
-    /* The new channel's block was heard -- a carrier, still being evaluated -- and holds no
-       tone, the old one's least of all. */
+    assert(exitflag == 0 && state.analog_sample_counter == RESET_WAV_PENDING);
+    /* The new channel was heard -- a carrier, still being evaluated -- and holds no tone, the
+       old one's least of all. */
     assert(state.analog_rx.carrier_open == 1);
     assert(state.analog_rx.tone_state == DSD_ANALOG_TONE_STATE_ACQUIRING);
     assert(state.analog_rx.tone_kind == DSD_ANALOG_TONE_KIND_NONE && state.analog_rx.ctcss_tenths_hz == 0);
+
+    /* Three whole blocks went out, the one the reset fell in with the old channel's 958
+       samples in place. */
+    sf_close(opts.wav_out_raw);
+    opts.wav_out_raw = NULL;
+    assert(raw_wav_holds_reset_input(raw_path, 3 * RESET_WAV_BLOCK));
+    (void)remove(raw_path);
+    close_monitor_wav(&opts, &state, wav_path);
+}
+
+/*
+ * The same block pending at a reset in a digital mode, where detection has not run and so has
+ * no session to set the samples aside with. The raw WAV keeps every sample across the reset, as
+ * it does at each acquisition reset of a digital session, and the tap starts listening when the
+ * analog monitor does, at the sample it starts on, never at the start of a block that began
+ * before it. Read from there, the 958 samples of the old channel waiting in the block would
+ * lock 100.0 Hz on the new one.
+ */
+static void
+test_rx_tone_detection_starting_mid_block_skips_older_samples(void) {
+    char wav_path[DSD_TEST_PATH_MAX];
+    char raw_path[DSD_TEST_PATH_MAX];
+    assert(write_reset_wav(wav_path, sizeof(wav_path)) == 0);
+    static dsd_opts opts;
+    static dsd_state state;
+    open_monitor_wav(&opts, &state, wav_path, RESET_WAV_RATE);
+    opts.wav_out_raw = open_raw_wav_out(raw_path, sizeof(raw_path), RESET_WAV_RATE);
+    assert(opts.wav_out_raw != NULL);
+    opts.analog_only = 0;
+
+    for (int n = 0; n < RESET_WAV_TONE; n++) {
+        (void)getSymbol(&opts, &state, 0);
+    }
+    assert(dsd_state_ext_get(&state, DSD_STATE_EXT_DSP_ANALOG_RX) == NULL);
+    assert(state.analog_sample_counter == RESET_WAV_PENDING);
+    assert(state.analog_rx.tone_state == DSD_ANALOG_TONE_STATE_INACTIVE);
+
+    /* A retune, then the switch to the analog monitor. */
+    dsd_analog_rx_reset(&state);
+    assert(state.analog_sample_counter == RESET_WAV_PENDING);
+    opts.analog_only = 1;
+    for (int n = 0; n < RESET_WAV_BLOCK; n++) {
+        (void)getSymbol(&opts, &state, 0);
+        assert(state.analog_rx.ctcss_tenths_hz != 1000);
+    }
+    assert(exitflag == 0 && state.analog_sample_counter == RESET_WAV_PENDING);
+    assert(state.analog_rx.carrier_open == 1);
+    assert(state.analog_rx.tone_state == DSD_ANALOG_TONE_STATE_ACQUIRING);
+    assert(state.analog_rx.tone_kind == DSD_ANALOG_TONE_KIND_NONE && state.analog_rx.ctcss_tenths_hz == 0);
+
+    sf_close(opts.wav_out_raw);
+    opts.wav_out_raw = NULL;
+    assert(raw_wav_holds_reset_input(raw_path, 3 * RESET_WAV_BLOCK));
+    (void)remove(raw_path);
     close_monitor_wav(&opts, &state, wav_path);
 }
 
@@ -1676,14 +1778,14 @@ enum { BACKLOG_BOUNDARY_RESET = 0, BACKLOG_BOUNDARY_TUNING = 1, BACKLOG_QUEUED_B
  * The audio a live input had queued when the receiver moved. A rigctl retune holds the decoder
  * while the old channel's audio keeps arriving -- in the UDP ring, the TCP socket, the Pulse
  * record buffer or the stdin pipe -- and the decoder then reads that backlog at CPU speed. The
- * reset empties the monitor block, but the backlog comes in after it. At 48 kHz on the injected
- * clock: 100.0 Hz locks at real-time pace, the receiver moves (an announced reset, as a scan
- * step makes, or a trunk-tuning generation move, as a hook-driven rigctl retune leaves), half a
- * second of the old channel's tone arrives queued, and the new channel then carries 131.8 Hz,
- * delivered @p burst_blocks 20 ms blocks at a time. Heard, the backlog locks 100.0 Hz again on
- * the new channel. None of it may be heard -- the row reads no carrier throughout -- the old
- * tone must never come back, and the new one must lock within the p95 target of its arrival
- * plus the one read the skip still takes once the backlog is gone.
+ * reset sets aside what the monitor block holds, but the backlog comes in after it. At 48 kHz
+ * on the injected clock: 100.0 Hz locks at real-time pace, the receiver moves (an announced
+ * reset, as a scan step makes, or a trunk-tuning generation move, as a hook-driven rigctl
+ * retune leaves), half a second of the old channel's tone arrives queued, and the new channel
+ * then carries 131.8 Hz, delivered @p burst_blocks 20 ms blocks at a time. Heard, the backlog
+ * locks 100.0 Hz again on the new channel. None of it may be heard -- the row reads no carrier
+ * throughout -- the old tone must never come back, and the new one must lock within the p95
+ * target of its arrival plus the one read the skip still takes once the backlog is gone.
  */
 static void
 run_retune_backlog(int audio_in_type, int boundary, int burst_blocks) {
@@ -1853,7 +1955,8 @@ main(void) {
     test_symbol_helper_rtl_cache_and_center_contract();
     test_rx_tone_tap_reads_raw_block_before_voice_filters();
     test_rx_tone_clears_on_unannounced_retune();
-    test_rx_tone_reset_drops_the_pending_block();
+    test_rx_tone_reset_sets_the_pending_block_aside();
+    test_rx_tone_detection_starting_mid_block_skips_older_samples();
     test_rx_tone_keeps_pace_with_a_long_pcm_block();
     test_rx_tone_unusable_rate_is_unavailable();
     test_rx_tone_unusable_rate_warns_once_per_stretch();

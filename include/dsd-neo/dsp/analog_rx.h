@@ -138,7 +138,9 @@ void dsd_analog_rx_tap(const dsd_opts* opts, dsd_state* state, const float* bloc
  * now holds, while the block is not yet complete. The tap reads what it has not read yet once
  * DSD_ANALOG_RX_TAP_READ_MS of input, at the input's current rate, is waiting, so on an input
  * whose block lasts longer the detectors and the publication still keep pace, also across a
- * change of rate. Otherwise as dsd_analog_rx_tap().
+ * change of rate. When detection starts part-way through a block, the tap reads from the sample
+ * just added: the ones before it arrived while nothing listened. Otherwise as
+ * dsd_analog_rx_tap().
  */
 void dsd_analog_rx_tap_partial(const dsd_opts* opts, dsd_state* state, const float* block, unsigned int filled);
 
@@ -146,10 +148,11 @@ void dsd_analog_rx_tap_partial(const dsd_opts* opts, dsd_state* state, const flo
  * @brief Forget the received tone: clears the publication and every detector's state.
  *
  * Call on retune, scan row or target change, input switch, decode-mode change and stop, so a
- * new channel never inherits the previous channel's tone. It also drops the monitor block the
- * symbol path is part-way through assembling (dsd_state::analog_out_f and its sample counter)
- * and starts the tap's reading over with the next block: those samples arrived before the
- * boundary, and what the tap reads next, which opens the new reception, must hold none of them.
+ * new channel never inherits the previous channel's tone. What the monitor block the symbol
+ * path is part-way through assembling (dsd_state::analog_out_f) holds arrived before the
+ * boundary too, and what the tap reads next, which opens the new reception, must hold none of
+ * it: the tap sets those samples aside and reads on from the next one. The block itself is left
+ * alone, so the raw WAV and the monitor output keep every sample, in digital modes as in analog.
  *
  * Nor may the audio a live input still holds: on Pulse, stdin, UDP and TCP input the old
  * channel keeps arriving while a rigctl retune holds the decoder, and the decoder reads that
