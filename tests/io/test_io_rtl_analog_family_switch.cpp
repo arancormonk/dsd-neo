@@ -10,9 +10,10 @@
  * output ring is cleared and the stream generation bumps at each switch, and a
  * request made while the stream runs waits for the demod thread to consume it.
  * The session being left has its carrier and timing loops pulled well away from
- * their start values, and its monitor audio (de-emphasis, DC, audio LPF, squelch
+ * their start values, its monitor audio (de-emphasis, DC, audio LPF, squelch
  * envelope) and channel, half-band and resampler delay lines filled with stale
- * values first, so each switch has to reset them the way an open does. The fresh
+ * values, and its squelch dwell one block short of a multi-frequency hop first,
+ * so each switch has to reset them the way an open does. The fresh
  * baselines run the same demodulator configuration functions as
  * dsd_rtl_stream_open() (see family_test_seed_open()), including at a demod rate
  * the device forces, where the digital resampler follows the symbol profile.
@@ -125,6 +126,7 @@ expect_fields_equal(const char* label, const rtl_stream_test_demod_fields& got,
     FIELD(audio_lpf_state_u);
     FIELD(squelch_env_u);
     FIELD(squelch_gate_open);
+    FIELD(squelch_hits);
     FIELD(channel_hist_clear);
     FIELD(hb_hist_clear);
     FIELD(resamp_hist_clear);
@@ -173,6 +175,7 @@ expect_analog_fields_equal(const char* label, const rtl_stream_test_demod_fields
     FIELD(audio_lpf_state_u);
     FIELD(squelch_env_u);
     FIELD(squelch_gate_open);
+    FIELD(squelch_hits);
     FIELD(channel_hist_clear);
     FIELD(hb_hist_clear);
     FIELD(resamp_hist_clear);

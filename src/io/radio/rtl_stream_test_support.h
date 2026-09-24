@@ -220,6 +220,7 @@ typedef struct rtl_stream_test_demod_fields {
     int audio_lpf_state_u;
     int squelch_env_u;
     int squelch_gate_open;
+    int squelch_hits; /* consecutive squelched blocks toward a multi-frequency hop: 0 after an open */
     /* 1 when the filter delay lines hold nothing (no resampler counts as clear), as after a fresh open. */
     int channel_hist_clear;
     int hb_hist_clear;

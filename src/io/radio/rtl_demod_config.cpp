@@ -1280,6 +1280,11 @@ demod_family_switch_reset_input_and_decimator(struct demod_state* demod) {
 static void
 demod_family_switch_reset(struct demod_state* demod) {
     rtl_demod_reset_audio_monitor_state(demod);
+    /* The squelch dwell an open starts from: the old family's run of squelched blocks must not count toward a
+       multi-frequency hop on the new family's first squelched block. */
+    demod->squelch_hits = 0;
+    demod->squelch_running_power = 0;
+    demod->squelch_decim_phase = 0;
     rtl_demod_clear_filter_histories(demod);
     rtl_demod_reset_resampler_state(demod);
     demod_family_switch_reset_input_and_decimator(demod);

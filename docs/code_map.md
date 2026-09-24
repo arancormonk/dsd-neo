@@ -600,7 +600,8 @@ Notes:
     decides whether a symbol profile without CQPSK runs the FSK discriminator or monitor audio. Entering or leaving
     the analog family re-applies that family's fresh-open defaults (`rtl_demod_enter_analog_family()`/
     `_digital_family()`), restarts the carrier and timing loops (Costas, band-edge FLL, Gardner TED) and zeroes the
-    I/Q DC and balance estimates and a replay's post-demod decimator as an open does, clears the output ring and bumps
+    I/Q DC and balance estimates, the squelch dwell toward a multi-frequency hop and a replay's post-demod decimator as
+    an open does, clears the output ring and bumps
     the output generation; a width-only change redesigns the filter from empty histories. The CQPSK family after a
     switch to digital follows the symbol profile requested with it, as for any runtime mode change (a
     `DSD_NEO_CQPSK` override applies at stream open), and the digital resampler and output rate are decided for that

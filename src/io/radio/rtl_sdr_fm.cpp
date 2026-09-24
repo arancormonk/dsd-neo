@@ -10577,6 +10577,7 @@ family_test_seed_stale_monitor_state(void) {
     demod.audio_lpf_state = 0.125f;
     demod.squelch_env = 0.0f;
     demod.squelch_gate_open = 0;
+    demod.squelch_hits = 11; /* a run of squelched blocks one short of a hop */
     family_test_seed_stale_filter_histories();
     if (demod.resamp_hist && demod.resamp_taps_per_phase > 0) {
         for (int k = 0; k < demod.resamp_taps_per_phase * 2; k++) {
@@ -10646,6 +10647,7 @@ family_test_capture(void) {
     f.audio_lpf_state_u = family_test_micro(demod.audio_lpf_state);
     f.squelch_env_u = family_test_micro(demod.squelch_env);
     f.squelch_gate_open = demod.squelch_gate_open;
+    f.squelch_hits = demod.squelch_hits;
     f.channel_hist_clear = family_test_channel_hist_clear();
     f.hb_hist_clear = family_test_hb_hist_clear();
     f.resamp_hist_clear = (demod.resamp_hist && demod.resamp_taps_per_phase > 0)

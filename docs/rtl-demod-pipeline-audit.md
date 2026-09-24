@@ -184,8 +184,9 @@ drained in the same pass of the command queue as the mode change):
 - analog <-> digital: the new family's fresh-open defaults (output kind,
   demodulator, de-emphasis, channel filter, resampler), carrier and timing loops
   restarted as on an open (Costas, band-edge FLL, Gardner TED), the I/Q DC and
-  balance estimates and a replay's post-demod decimator zeroed as on an open, a
-  cleared output ring and a bumped output generation. The stream records the
+  balance estimates, the squelch dwell toward a multi-frequency hop and a
+  replay's post-demod decimator zeroed as on an open, a cleared output ring and
+  a bumped output generation. The stream records the
   family it switched to: its options are the orchestrator's copy from before
   the open, which a decoder-side mode change never reaches, so from then on that
   record decides whether a symbol profile without CQPSK runs the FSK
@@ -274,7 +275,8 @@ is.
   a fresh open for P25 C4FM/CQPSK, DMR, NXDN48 and dPMR, at unforced rates and at
   forced 78,125 and 60,000 Hz rates, with loop state, monitor audio state, the
   I/Q corrections, the post-demod decimator and the channel, half-band and
-  resampler histories included, a typed digital row on a `-fA` session and on a
+  resampler histories and the squelch dwell included, a typed digital row on a
+  `-fA` session and on a
   DMR session switched to analog, a `-fA` session a CQPSK toggle or a typed
   digital row had moved off the monitor output switched to digital, and one
   whose CQPSK toggle was still queued when the digital mode was picked (each
