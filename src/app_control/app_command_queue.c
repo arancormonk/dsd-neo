@@ -5134,13 +5134,17 @@ apply_cfg_receive_family_change(dsd_opts* opts, dsd_state* state, const dsdneoUs
     }
 }
 
-/* A config apply that moved the input is an input switch like the commands that make one: the
-   tone heard on the old input goes (issue #522). An unrelated settings change keeps it. */
+/* A config apply that moved the input is an input switch like the commands that make one, and
+   one that changed the decode mode a decode-mode change: either way the tone heard before it
+   goes (issue #522). Out of the analog monitor nothing else forgets it before the row can come
+   back, since no monitor block need arrive in between. An unrelated settings change keeps it,
+   including the mode every runtime apply restates. */
 static void
-cfg_forget_rx_tone_if_input_moved(const dsd_opts* opts, dsd_state* state, int old_audio_in_type,
-                                  const char* old_audio_in_dev) {
+cfg_forget_rx_tone_on_boundary(const dsd_opts* opts, dsd_state* state, int old_audio_in_type,
+                               const char* old_audio_in_dev, dsdneoUserDecodeMode old_decode_mode) {
     if (opts->audio_in_type != old_audio_in_type
-        || strncmp(old_audio_in_dev, opts->audio_in_dev, sizeof opts->audio_in_dev) != 0) {
+        || strncmp(old_audio_in_dev, opts->audio_in_dev, sizeof opts->audio_in_dev) != 0
+        || dsd_infer_decode_mode_preset_exact(opts) != old_decode_mode) {
         dsd_analog_rx_reset(state);
     }
 }
@@ -5167,6 +5171,7 @@ ui_cmd_handle_config_apply(dsd_opts* opts, dsd_state* state, const struct dsd_ap
     const int old_analog_only = opts->analog_only ? 1 : 0;
     const int old_audio_channels = opts->pulse_digi_out_channels;
     const int old_audio_rate = opts->pulse_digi_rate_out;
+    const dsdneoUserDecodeMode old_decode_mode = dsd_infer_decode_mode_preset_exact(opts);
 #ifdef USE_RADIO
     int airspy_rc = 0;
     dsd_airspy_config old_airspy = opts->airspy;
@@ -5204,7 +5209,7 @@ ui_cmd_handle_config_apply(dsd_opts* opts, dsd_state* state, const struct dsd_ap
     restore_live_pcm_rate_after_staged_file_apply(opts, &cfg, old_wav_sample_rate);
     apply_cfg_file_runtime_rate(opts, state, &cfg, old_runtime_input_rate, old_samples_per_symbol, old_symbol_center,
                                 old_jitter);
-    cfg_forget_rx_tone_if_input_moved(opts, state, old_audio_in_type, old_audio_in_dev);
+    cfg_forget_rx_tone_on_boundary(opts, state, old_audio_in_type, old_audio_in_dev, old_decode_mode);
     int reconfigure_rc = ui_reconfigure_output_for_input_policy(opts, state);
     apply_cfg_receive_family_change(opts, state, &cfg, old_analog_only);
 #ifdef USE_RADIO

@@ -9,6 +9,7 @@
 
 #include <dsd-neo/app_control/commands.h>
 #include <dsd-neo/app_control/frontend_runtime.h>
+#include <dsd-neo/app_control/rx_tone_view.h>
 #include <dsd-neo/core/audio.h>
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/channel_mode.h>
@@ -2045,6 +2046,69 @@ test_config_apply_input_change_clears_received_tone(void) {
     rc |= expect_int("input config drained", dsd_app_drain_cmds(&opts, &state), 1);
     rc |= expect_str("input config moves the input", opts.audio_in_dev, "tcp:127.0.0.1:7355");
     rc |= expect_received_tone_cleared("input config clears the received tone", &state, seeded);
+    freeState(&state);
+    return rc;
+}
+
+/* Queue a config apply that carries only decode mode @p mode, and drain it. */
+static int
+apply_config_mode(dsd_opts* opts, dsd_state* state, dsdneoUserDecodeMode mode, const char* tag) {
+    dsdneoUserConfig cfg;
+    DSD_MEMSET(&cfg, 0, sizeof cfg);
+    cfg.has_mode = 1;
+    cfg.decode_mode = mode;
+    int rc = expect_true(tag, dsd_app_command_apply_config(&cfg) > 0);
+    rc |= expect_int(tag, dsd_app_drain_cmds(opts, state), 1);
+    return rc;
+}
+
+/*
+ * A config apply that changes the decode mode is a decode-mode change like the command that
+ * makes one, and clears the received tone (issue #522). Out of the analog monitor, the row is
+ * hidden and no monitor block need arrive to forget the tone, so coming straight back would put
+ * the old reception's tone on screen again; into it, whatever the publication holds was heard
+ * before the change. Every runtime config apply carries the mode, so one that restates the
+ * mode the session is in keeps the tone and its generation.
+ */
+static int
+test_config_apply_mode_change_clears_received_tone(void) {
+    int rc = 0;
+    static dsd_opts opts;
+    static dsd_state state;
+    dsd_app_rx_tone view;
+
+    init_test_context(&opts, &state);
+    opts.audio_in_type = AUDIO_IN_PULSE;
+    rc |= expect_int("analog monitor set up",
+                     dsd_apply_decode_mode_preset(DSDCFG_MODE_ANALOG, DSD_DECODE_PRESET_PROFILE_CLI, &opts, &state), 0);
+    seed_received_tone(&state);
+    uint32_t seeded = state.analog_rx.generation;
+    rc |= apply_config_mode(&opts, &state, DSDCFG_MODE_ANALOG, "config restating analog");
+    rc |= expect_true("config restating analog keeps the received tone",
+                      state.analog_rx.tone_state == DSD_ANALOG_TONE_STATE_LOCKED
+                          && state.analog_rx.ctcss_tenths_hz == 1000 && state.analog_rx.carrier_open == 1
+                          && state.analog_rx.generation == seeded);
+    rc |= expect_int("received row shown in analog", dsd_app_rx_tone_view(&opts, &state, 0.0, &view), 1);
+    rc |= expect_str("received row shows the tone", view.text, "CTCSS 100.0 Hz");
+
+    rc |= apply_config_mode(&opts, &state, DSDCFG_MODE_DMR, "config to dmr");
+    rc |= expect_int("config to dmr leaves the analog monitor", opts.analog_only, 0);
+    rc |= expect_received_tone_cleared("config to dmr clears the received tone", &state, seeded);
+
+    /* Straight back, with no monitor block read in between. */
+    rc |= apply_config_mode(&opts, &state, DSDCFG_MODE_ANALOG, "config back to analog");
+    rc |= expect_int("config back to analog", opts.analog_only, 1);
+    rc |= expect_int("received row shown again", dsd_app_rx_tone_view(&opts, &state, 0.0, &view), 1);
+    rc |= expect_int("received row has no carrier yet", view.status, DSD_APP_RX_TONE_NO_CARRIER);
+    rc |= expect_true("received row does not bring the old tone back", view.ctcss_tenths_hz == 0);
+
+    /* Into the analog monitor, a tone the publication still holds goes too. */
+    rc |= expect_int("dmr set up",
+                     dsd_apply_decode_mode_preset(DSDCFG_MODE_DMR, DSD_DECODE_PRESET_PROFILE_CLI, &opts, &state), 0);
+    seed_received_tone(&state);
+    seeded = state.analog_rx.generation;
+    rc |= apply_config_mode(&opts, &state, DSDCFG_MODE_ANALOG, "config into analog");
+    rc |= expect_received_tone_cleared("config into analog clears the received tone", &state, seeded);
     freeState(&state);
     return rc;
 }
@@ -5721,6 +5785,7 @@ main(void) {
     rc |= test_input_switch_clears_received_tone();
     rc |= test_playback_switches_clear_received_tone();
     rc |= test_config_apply_input_change_clears_received_tone();
+    rc |= test_config_apply_mode_change_clears_received_tone();
 #ifdef DSD_NEO_TEST_IO_CONTROL_WRAP
     rc |= test_tcp_connect_clears_received_tone();
     rc |= test_stop_playback_pulse_failure_clears_received_tone();
