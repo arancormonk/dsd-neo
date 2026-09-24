@@ -493,19 +493,29 @@ tone setting, and it runs with `-o null` too.
   being evaluated, `none` when the carrier carries no supported tone, and an em dash with no carrier (a hyphen on a
   terminal without UTF-8). The log prints `Received tone: CTCSS 100.0 Hz` or `Received tone: none` whenever that
   verdict changes.
-- Timing, in sample time, measured over 10,000 seeded starts: a tone at 10 dB in-band tone-to-noise (0-290 Hz) is
-  confirmed within 400 ms of its start on all but about one start in 10,000 (p95 265 ms, the slowest at 443 ms), and
-  at 0 dB on 99 starts in 100 (p95 343 ms, the slowest at 615 ms). Under transmitted speech it can take longer,
-  because a transmitter's voice high-pass still lets a high voice's fundamental leak below 300 Hz in bursts: with
-  speech 10 dB louder than the tone, confirmation came within 500 ms in the tests (p95 250 ms, worst 450 ms), and over
-  100 minutes of that speech a confirmed tone at the top of the table (250.3 or 254.1 Hz) was lost four times, reading
-  `none` for under a second before it was confirmed again. A tone that stops while the carrier stays up is dropped
-  within 350 ms on 98 stops in 100 at 0 and 10 dB alike (typically after 200-315 ms; the slowest of 8,000 took
-  515 ms). When the transmitter sends a reverse burst (the end-of-message phase flip) at 10 dB or more in-band, the
-  tone is dropped within 150 ms (the slowest of 4,000 bursts took 123 ms); near 0 dB about one burst in twelve is
-  caught late or missed, and the carrier drop that follows ends the tone instead. A carrier with no tone reads
-  `detecting` until 500 ms of it have been evaluated and `none` by the next 50 ms step; a tone that starts after that,
-  such as one a repeater adds after its kerchunk, is still confirmed within 400 ms of its own start.
+- Timing contract, in sample time, for a tone on its table value in noise at 0 dB in-band tone-to-noise (0-290 Hz) or
+  better: 95% of tones are confirmed within 400 ms of their start and 95% of stops under a live carrier are dropped
+  within 350 ms (the p95 targets), and no single start takes longer than 700 ms nor any stop longer than 550 ms (the
+  ceilings). The tests assert both on every timing row of their fixed seeds, and the ceilings sit above the slowest
+  start and stop of the long-run sweeps below (a tone 0.2 Hz off its table value at 0 dB confirmed after 677 ms, a
+  stop dropped after 515 ms). They are measured bounds, not guarantees: in sweeps a hundred times larger, about one
+  start in 100,000 at 0 dB was confirmed later than 700 ms (one after 1.1 s) and about one stop in 15,000 was dropped
+  later than 550 ms (the slowest after 738 ms). Speech louder than the tone is outside the contract (below).
+- Timing measured, in sample time, over 10,000 seeded starts per condition: a tone at 10 dB in-band is confirmed within
+  400 ms of its start on all but about one start in 10,000 (p95 273 ms, the slowest at 443 ms), and at 0 dB on 99
+  starts in 100 (p95 343 ms, the slowest at 615 ms). Under transmitted speech it can take longer, because a
+  transmitter's voice high-pass still lets a high voice's fundamental leak below 300 Hz in bursts: with speech 10 dB
+  louder than the tone, over 50,000 seeded starts 95% were confirmed within 307 ms, 1.6% took longer than 400 ms and
+  0.2% longer than 700 ms (the slowest 1.3 s), and twice a voice holding 254.1 Hz read as that tone for 150-250 ms,
+  once in place of the real tone. Over 100 minutes of that speech a confirmed tone at the top of the table (250.3 or
+  254.1 Hz) was lost four times, reading `none` for under a second before it was confirmed again. A tone that stops
+  while the carrier stays up is dropped within 350 ms on 98 stops in 100 at 0 and 10 dB alike (typically after
+  200-315 ms; the slowest of 8,000 took 515 ms). When the transmitter sends a reverse burst (the end-of-message phase
+  flip) at 10 dB or more in-band, the tone is dropped within 150 ms (the slowest of 40,000 bursts took 123 ms); near
+  0 dB about one burst in fourteen is caught late or missed, and the carrier drop that follows ends the tone instead. A
+  carrier with no tone reads `detecting` until 500 ms of it have been evaluated and `none` by the next 50 ms step; a
+  tone that starts after that, such as one a repeater adds after its kerchunk, is still confirmed within 400 ms of its
+  own start.
 - The received tone is forgotten when the receiver moves or the session changes: a frequency set from a frontend or a
   spectrum tap, any other retune the RTL stream or the tuning hooks report (UDP retune, rigctl-driven tuning), a
   `-Y` scan step (including one that failed after rigctl had already moved the radio), a manual channel cycle or scan

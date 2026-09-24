@@ -509,7 +509,12 @@ installs from `src/engine/trunk_tuning.c` in `src/engine/trunk_tuning_hooks_inst
   per accepted frame sync, behind `DSD_NEO_DEBUG_SYMBOL_TIMING` (see `docs/cli.md`). The sample trace it correlates
   over is filled by `dsd_symbol.c` and owned by decoder-state setup/teardown in `src/core/util/dsd_init.c`.
 - Received-tone detection (issue #522), public entry points in `include/dsd-neo/dsp/analog_rx.h`: `dsd_analog_rx_tap()`
-  and `dsd_analog_rx_reset()`. `dsd_symbol.c` taps each unsynced analog block in
+  and `dsd_analog_rx_reset()`. The same header holds the CTCSS timing contract in sample time: p95 targets
+  `DSD_ANALOG_CTCSS_LOCK_P95_MS` (400) and `DSD_ANALOG_CTCSS_LOSS_P95_MS` (350) and per-event ceilings
+  `DSD_ANALOG_CTCSS_LOCK_CEILING_MS` (700) and `DSD_ANALOG_CTCSS_LOSS_CEILING_MS` (550). `DSP_ANALOG_CTCSS` asserts them
+  on every timing row, and a tone policy's acquisition window must exceed the lock ceiling by at least 100 ms. They
+  are measured bounds, set above the slowest events of the long-run sweeps in `docs/testing.md`; change them only with
+  new sweeps. `dsd_symbol.c` taps each unsynced analog block in
   `symbol_finalize_unsynced_analog_block()` after the raw WAV write and before `symbol_apply_unsynced_filters()`: the
   in-place `hpf_f` (960 Hz) and `pbf_f` there would remove every CTCSS tone. One decoder-thread tap covers RTL and PCM,
   sees only live (not seam-replayed) samples, only reads the block, and runs whatever `audio_out` says. It is active

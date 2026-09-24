@@ -17,6 +17,7 @@
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_fwd.h>
+#include <dsd-neo/dsp/analog_rx.h>
 #include <dsd-neo/runtime/analog_tones.h>
 #include <math.h>
 #include <stdint.h>
@@ -26,7 +27,8 @@
 #include "analog_rx_internal.h"
 #include "analog_tone_synth.h"
 
-/* The bounds under test (docs/cli.md "Received tone"). */
+/* The per-row pins under test (docs/cli.md "Received tone"): what these fixed seeds measure,
+   tighter than the timing contract in <dsd-neo/dsp/analog_rx.h> that every row also checks. */
 enum {
     LOCK_BOUND_MS = 400,
     VOICE_LOCK_BOUND_MS = 500,
@@ -37,6 +39,17 @@ enum {
        new frequency and four more hops have failed. */
     MOVED_OFF_BOUND_MS = (DSD_ANALOG_CTCSS_WINDOW + DSD_ANALOG_CTCSS_LOSE_HOPS) * DSD_ANALOG_CTCSS_SUBBLOCK_MS,
 };
+
+/* A pin that holds keeps its events inside the contract's per-event ceilings too: the checks
+   that assert only a pin (the adjacent low tones, the late tone, the moved-off drop) are
+   covered by the ceilings through these. */
+_Static_assert((int)LOCK_BOUND_MS <= (int)DSD_ANALOG_CTCSS_LOCK_CEILING_MS, "lock pin outside the lock ceiling");
+_Static_assert((int)VOICE_LOCK_BOUND_MS <= (int)DSD_ANALOG_CTCSS_LOCK_CEILING_MS,
+               "voice lock pin outside the lock ceiling");
+_Static_assert((int)LOSS_BOUND_MS <= (int)DSD_ANALOG_CTCSS_LOSS_CEILING_MS, "loss pin outside the loss ceiling");
+_Static_assert((int)BURST_LOSS_BOUND_MS <= (int)DSD_ANALOG_CTCSS_LOSS_CEILING_MS, "burst pin outside the loss ceiling");
+_Static_assert((int)MOVED_OFF_BOUND_MS <= (int)DSD_ANALOG_CTCSS_LOSS_CEILING_MS,
+               "moved-off pin outside the loss ceiling");
 
 static const int k_rates[] = {8000, 44100, 48000, 78125};
 #define RATE_COUNT ((int)(sizeof(k_rates) / sizeof(k_rates[0])))
@@ -234,17 +247,44 @@ compare_doubles(const void* a, const void* b) {
     return (x > y) - (x < y);
 }
 
-/* p50/p95/worst of @p count timings, for the PR evidence. Sorts in place. */
+/*
+ * The timing contract (<dsd-neo/dsp/analog_rx.h>) on one row of fixed seeds: prints p50/p95/worst
+ * of @p count timings for the PR evidence, then asserts the row's p95 is within @p p95_target_ms
+ * and every single event within @p ceiling_ms. The p95 is the event at index 95% of @p count (the
+ * 191st fastest of 200), so a row of 200 allows at most nine beyond the target. Sorts in place.
+ */
 static void
-report_timings(const char* what, double* times, int count) {
+check_timing_contract(const char* what, double* times, int count, int p95_target_ms, int ceiling_ms) {
+    assert(count > 0);
     qsort(times, (size_t)count, sizeof(times[0]), compare_doubles);
-    printf("%s: p50 %.0f ms, p95 %.0f ms, worst %.0f ms (%d cases)\n", what, times[count / 2],
-           times[(count * 95) / 100], times[count - 1], count);
+    const double p95 = times[(count * 95) / 100];
+    const double worst = times[count - 1];
+    printf("%s: p50 %.0f ms, p95 %.0f ms, worst %.0f ms (%d cases; contract p95 <= %d ms, each <= %d ms)\n", what,
+           times[count / 2], p95, worst, count, p95_target_ms, ceiling_ms);
     (void)fflush(stdout);
+    if (p95 > (double)p95_target_ms || worst > (double)ceiling_ms) {
+        DSD_FPRINTF(stderr, "timing contract broken: %s\n", what);
+    }
+    assert(p95 <= (double)p95_target_ms);
+    assert(worst <= (double)ceiling_ms);
+}
+
+/* Lock: from the tone's onset to the first hop that reports it. */
+static void
+check_lock_contract(const char* what, double* times, int count) {
+    check_timing_contract(what, times, count, DSD_ANALOG_CTCSS_LOCK_P95_MS, DSD_ANALOG_CTCSS_LOCK_CEILING_MS);
+}
+
+/* Loss: from the tone's stop (or a caught reverse burst) under a live carrier to the first hop
+   without it. */
+static void
+check_loss_contract(const char* what, double* times, int count) {
+    check_timing_contract(what, times, count, DSD_ANALOG_CTCSS_LOSS_P95_MS, DSD_ANALOG_CTCSS_LOSS_CEILING_MS);
 }
 
 /* All 50 tones, every rate, at +10 and 0 dB in-band tone-to-noise: the right value within
-   400 ms of sample time. Prints the p95 and worst lock times for the PR evidence. */
+   400 ms of sample time. Checks the lock contract and prints the p95 and worst lock times for the
+   PR evidence. */
 static void
 test_every_tone_locks_within_bound(void) {
     static const double snrs[] = {10.0, 0.0};
@@ -265,7 +305,7 @@ test_every_tone_locks_within_bound(void) {
         }
         char what[64];
         DSD_SNPRINTF(what, sizeof(what), "CTCSS lock at %+.0f dB in-band", snrs[si]);
-        report_timings(what, times, count);
+        check_lock_contract(what, times, count);
     }
 }
 
@@ -278,9 +318,10 @@ test_every_tone_locks_within_bound(void) {
  * scatter (about 0.19 Hz RMS) pushes a hop past that gate and the later it locks. Each row is
  * a floor on the share of these 200 starts that lock within the 400 ms bound and a ceiling on
  * the slowest, set at what these seeds do (the printed shares and times); the last row is the
- * exact tone at 0 dB on a second seed set. These are pinned seeds, not the long-run rate: over
- * 10,000 seeded starts at 0 dB, 1% of exact tones and 3% of tones 0.2 Hz off take longer than
- * 400 ms (docs/testing.md). Prints p50/p95/worst for the PR evidence.
+ * exact tone at 0 dB on a second seed set. Every row also checks the lock contract. These are
+ * pinned seeds, not the long-run rate: over 10,000 seeded starts at 0 dB, 1% of exact tones and
+ * 3% of tones 0.2 Hz off take longer than 400 ms (docs/testing.md). Prints p50/p95/worst for the
+ * PR evidence.
  */
 static void
 test_off_nominal_tones_lock(void) {
@@ -320,7 +361,7 @@ test_off_nominal_tones_lock(void) {
         char what[96];
         DSD_SNPRINTF(what, sizeof(what), "CTCSS lock %.2f Hz off the table at %+.0f dB in-band (%d%% within %d ms)",
                      rows[row].offset_hz, rows[row].snr_db, (100 * within) / count, LOCK_BOUND_MS);
-        report_timings(what, times, count);
+        check_lock_contract(what, times, count);
         assert(100 * within >= rows[row].min_within_bound_pct * count);
     }
 }
@@ -576,8 +617,8 @@ test_speech_and_noise_never_lock(void) {
  * than the noise bound although the voice's long-run share of the sub-audible band is 12-14 dB
  * below the tone: a high voice's fundamental still leaks through the high-pass in bursts,
  * right where the tone is -- which is also why, over 100 minutes of this speech, the two
- * highest table tones lost their lock briefly four times (docs/testing.md). Prints the
- * p50/p95/worst lock times for the PR evidence.
+ * highest table tones lost their lock briefly four times (docs/testing.md). Checks the lock
+ * contract and prints the p50/p95/worst lock times for the PR evidence.
  */
 static void
 test_tone_under_voice_locks(void) {
@@ -606,7 +647,7 @@ test_tone_under_voice_locks(void) {
         assert(r.locks == 1 && r.first_unlocked < 0);
         assert(r.final_state == DSD_ANALOG_TONE_STATE_LOCKED);
     }
-    report_timings("CTCSS lock under voice 10 dB above the tone", times, DSD_CTCSS_TONE_COUNT);
+    check_lock_contract("CTCSS lock under voice 10 dB above the tone", times, DSD_CTCSS_TONE_COUNT);
 }
 
 /*
@@ -616,8 +657,8 @@ test_tone_under_voice_locks(void) {
  * the stop is noise, and at the locked bin noise alone clears the hold threshold on about one
  * hop in eighty, whatever its level; such a hop restarts the count, so a few stops in a
  * hundred take longer. Each row is a floor on the share of these 200 stops dropped within
- * 350 ms and a ceiling on the slowest, set at what these seeds do; the long-run shares are in
- * docs/testing.md. Prints p50/p95/worst for the PR evidence.
+ * 350 ms and a ceiling on the slowest, set at what these seeds do, and every row checks the loss
+ * contract; the long-run shares are in docs/testing.md. Prints p50/p95/worst for the PR evidence.
  */
 static void
 test_tone_loss_within_bound(void) {
@@ -663,7 +704,7 @@ test_tone_loss_within_bound(void) {
         char what[96];
         DSD_SNPRINTF(what, sizeof(what), "CTCSS loss after the tone stops at %+.0f dB in-band (%d%% within %d ms)",
                      rows[row].snr_db, (100 * within) / count, LOSS_BOUND_MS);
-        report_timings(what, times, count);
+        check_loss_contract(what, times, count);
         assert(100 * within >= rows[row].min_within_bound_pct * count);
     }
 }
@@ -672,7 +713,8 @@ test_tone_loss_within_bound(void) {
    lock within 150 ms, without waiting for the tone to stop: every tone at every rate at
    +10 dB in-band. Nearer 0 dB a sub-block is too noisy to serve as the phase reference on
    every hop, and a burst can be caught late or missed, when the carrier drop that follows
-   ends the lock instead (docs/testing.md). */
+   ends the lock instead (docs/testing.md). A caught burst ends the lock as a stop does, so the
+   row checks the loss contract too. */
 static void
 test_reverse_burst_drops_fast(void) {
     static double times[RATE_COUNT * DSD_CTCSS_TONE_COUNT];
@@ -698,7 +740,7 @@ test_reverse_burst_drops_fast(void) {
             times[count++] = loss_ms;
         }
     }
-    report_timings("CTCSS loss on a reverse burst", times, count);
+    check_loss_contract("CTCSS loss on a reverse burst", times, count);
 }
 
 /* A held tone at 0 dB in-band stays held: one lock per 15 s run and never lost, at every

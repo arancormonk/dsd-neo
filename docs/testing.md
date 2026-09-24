@@ -289,7 +289,18 @@ control.
 
 The detector's own bounds are pinned in sample time by `DSP_ANALOG_CTCSS`, through the pure receive core
 (`src/dsp/analog_rx_internal.h`) and seeded generators in `tests/dsp/analog_tone_synth.h`. Every figure it asserts
-holds for its fixed seeds, and each row prints its measured share and p50/p95/worst for the PR evidence:
+holds for its fixed seeds, and each row prints its measured share and p50/p95/worst for the PR evidence.
+
+Every timing row also checks the CTCSS timing contract in `<dsd-neo/dsp/analog_rx.h>`: the lock rows (all tones at both
+levels, the off-nominal rows, the tone under speech) keep their p95 within `DSD_ANALOG_CTCSS_LOCK_P95_MS` (400 ms) and
+every start within `DSD_ANALOG_CTCSS_LOCK_CEILING_MS` (700 ms); the loss rows (both levels, and the reverse burst,
+which ends a lock as a stop does) keep their p95 within `DSD_ANALOG_CTCSS_LOSS_P95_MS` (350 ms) and every stop within
+`DSD_ANALOG_CTCSS_LOSS_CEILING_MS` (550 ms). Static asserts keep the fixed pins below (the 400 and 500 ms lock bounds,
+the 350, 150 and 450 ms loss bounds) inside the ceilings, so the checks that assert only a pin sit inside the
+contract too. The ceilings are set above the slowest start and stop of the long-run sweeps below (677 and 515 ms), and
+the lock ceiling may not exceed 700 ms: the tone policy's 800 ms acquisition window (issue #527) has to leave two hops
+beyond it. The p95 targets and the ceilings are what the user guide states; the per-row pins are tighter and record
+what these seeds measure:
 
 - Lock: all 50 tones at four input rates, at +10 and 0 dB in-band tone-to-noise, lock within 400 ms of an onset placed
   anywhere inside a hop. Tones off their table value by transmitter encoder error lock on that value: 0.2 and 0.35 Hz
@@ -317,15 +328,27 @@ Fixed seeds say what the detector does on those seeds, not how often it misses i
 below come from wider seed sweeps run offline over the same generators and the same core (x86-64 at -O0 and -O2 give
 identical results), and they are the numbers the user guide quotes:
 
-- Lock, 10,000 starts each (every tone at every rate, onset anywhere in a hop): at +10 dB, 1 start beyond 400 ms
-  (443 ms); at 0 dB, 0.97% beyond 400 ms (the slowest 615 ms); 0.35 Hz off at +10 dB, 0.04% (424 ms); 0.2 Hz off at
-  0 dB, 3.4% (677 ms).
+- Lock, 10,000 starts each (every tone at every rate, onset anywhere in a hop): at +10 dB, p95 273 ms and 1 start
+  beyond 400 ms (443 ms); at 0 dB, p95 343 ms and 0.97% beyond 400 ms (the slowest 615 ms); 0.2 Hz off at +10 dB,
+  1 start (443 ms); 0.35 Hz off at +10 dB, 0.04% (424 ms); 0.2 Hz off at 0 dB, p95 378 ms and 3.4% (677 ms).
 - Loss, 4,000 stops each: 2.0% beyond 350 ms at +10 dB (the slowest 515 ms) and 1.25% at 0 dB (494 ms), and about 2%
   at +60 dB too: what is left after the stop is noise, and at the locked bin noise alone clears the 0.15 hold threshold
   on about one hop in eighty, whatever its level, which restarts the four-hop count. Making the hold stricter once a hop
   has failed cuts that tail to about 0.4%, but a held tone at -3 dB then drops 7 to 45 times as often, so the hold
-  stays as it is. Reverse burst: none of 4,000 beyond 150 ms at +10 dB (123 ms); at 0 dB 6% beyond 150 ms (256 ms) and
-  2% missed, where the carrier drop that follows ends the lock.
+  stays as it is. Reverse burst, 40,000 each: none beyond 150 ms at +10 dB (123 ms); at 0 dB 6.1% beyond 150 ms (the
+  slowest 344 ms) and 1.1% missed, where the carrier drop that follows ends the lock.
+- Ceiling tail, sweeps up to a hundred times larger: over 100,000 starts each, the exact tone at +10 and 0 dB and
+  0.2 and 0.35 Hz off at +10 dB stayed within the 700 ms lock ceiling (443, 664, 485 and 585 ms at the slowest), while
+  0.2 Hz off at 0 dB passed it twice (725 ms); over 1,000,000 starts at 0 dB, 8 exact tones passed it (757 ms, and one
+  at 1,128 ms) and 24 of the 0.2 Hz-off ones (843 ms). Over 40,000 stops at 0 dB, 3 passed the 550 ms loss ceiling
+  (617 ms) and none at +10 dB (548 ms); over 400,000 stops each, 24 at 0 dB and 31 at +10 dB (738 ms at both). The
+  p95s did not move with sweep size (lock 344 and 374 ms at 0 dB, loss 299 and 312 ms). The ceilings bound what the
+  sweeps the user guide quotes measured, not every start there will ever be.
+- Lock under transmitter-filtered speech 10 dB above the tone, 50,000 starts at 48 kHz (voice from the carrier's start,
+  the tone 200-250 ms later): p95 307 ms, 1.6% beyond 400 ms, 0.21% beyond the 700 ms lock ceiling and the slowest at
+  1,314 ms. Twice a voice holding 254.1 Hz locked that tone for 150-250 ms, once before the real tone locked and once
+  in its place (the detector hands a lock to a steadier tone). The contract covers tones in noise, so the speech row
+  holds only its fixed seeds to it.
 - Off-table tones, two hours of continuous carrier at 0 dB each, at 48 kHz and 8 kHz: 150.0 Hz never locked; 68.2 Hz
   locked a neighbour 20 and 25 times, 161.0 Hz 5 and 5, 166.7 Hz 6 and 4, each for 200-260 ms; at +3, +6 and +10 dB,
   68.2 and 161.0 Hz never locked in two hours.
