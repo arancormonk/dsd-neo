@@ -370,7 +370,7 @@ typedef struct {
     uint32_t rtl_generation;
     uint64_t tune_generation;
     int log_key;              /**< ANALOG_RX_LOG_* or the logged tone in tenths of a hertz */
-    int unusable_rate_logged; /**< the unusable rate already reported, so it is said once */
+    int unusable_rate_logged; /**< the unusable rate reported for the current stretch of such input; 0 = none */
     /** Live stream input: the monotonic ms past which the next block arrives after a pause
         (published as dsd_analog_rx_publication::stale_after_ms); 0 = no block to measure from. */
     uint64_t stale_after_ms;
@@ -583,6 +583,10 @@ dsd_analog_rx_tap(const dsd_opts* opts, dsd_state* state, const float* block, un
     const int squelch_open = opts->rtl_pwr > opts->rtl_squelch_level;
     if (!dsd_analog_rx_core_process(&session->core, block, (int)count, rate_hz, squelch_open)) {
         analog_rx_log_unusable_rate(session, rate_hz);
+    } else {
+        /* A usable block ends the stretch: going back to an unusable rate says so again. A
+           reset does not, so a scan step or retune at an unchanged unusable rate stays quiet. */
+        session->unusable_rate_logged = 0;
     }
     analog_rx_publish(state, session);
 }

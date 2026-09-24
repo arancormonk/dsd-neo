@@ -25,12 +25,14 @@
 #include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/platform/sockets.h>
 #include <dsd-neo/runtime/exitflag.h>
+#include <dsd-neo/runtime/log.h>
 #include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
 #include <dsd-neo/runtime/shutdown.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <math.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <string.h>
 
 #ifndef M_PI
 #define M_PI 3.14159265358979323846
@@ -828,6 +830,59 @@ test_rx_tone_unusable_rate_is_unavailable(void) {
     dsd_state_ext_free_all(&state);
 }
 
+static int g_unusable_rate_warnings = 0;
+
+static void
+count_unusable_rate_warnings(dsd_neo_log_level_t level, const char* text, void* ctx) {
+    (void)ctx;
+    if (level == LOG_LEVEL_WARN && text && strstr(text, "Received tone detection inactive") != NULL) {
+        g_unusable_rate_warnings++;
+    }
+}
+
+/*
+ * The "detection inactive" warning is said once for each stretch of input at a rate the front
+ * end cannot use. More blocks, and a reset at the same rate (a retune, a scan step, another
+ * file at that rate), do not repeat it; a stretch at a usable rate ends it, so going back to
+ * the unusable rate -- a 384 kHz WAV, a 48 kHz one, then 384 kHz again -- says it again, as
+ * does moving straight to a different unusable rate.
+ */
+static void
+test_rx_tone_unusable_rate_warns_once_per_stretch(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    install_fake_rtl_hooks(0);
+    init_analog_monitor_fixture(&opts, &state);
+    g_unusable_rate_warnings = 0;
+
+    opts.wav_sample_rate = 384000;
+    feed_tone_blocks(&opts, &state, 3);
+    assert(g_unusable_rate_warnings == 1);
+    feed_tone_blocks(&opts, &state, 3);
+    dsd_analog_rx_reset(&state);
+    feed_tone_blocks(&opts, &state, 3);
+    assert(state.analog_rx.tone_state == DSD_ANALOG_TONE_STATE_UNAVAILABLE);
+    assert(g_unusable_rate_warnings == 1);
+
+    dsd_analog_rx_reset(&state);
+    opts.wav_sample_rate = 48000;
+    feed_tone_blocks(&opts, &state, 30);
+    assert(rx_tone_locked_on_100(&state));
+    assert(g_unusable_rate_warnings == 1);
+
+    dsd_analog_rx_reset(&state);
+    opts.wav_sample_rate = 384000;
+    feed_tone_blocks(&opts, &state, 3);
+    assert(state.analog_rx.tone_state == DSD_ANALOG_TONE_STATE_UNAVAILABLE);
+    assert(g_unusable_rate_warnings == 2);
+
+    opts.wav_sample_rate = 2000;
+    feed_tone_blocks(&opts, &state, 3);
+    assert(state.analog_rx.tone_state == DSD_ANALOG_TONE_STATE_UNAVAILABLE);
+    assert(g_unusable_rate_warnings == 3);
+    dsd_state_ext_free_all(&state);
+}
+
 /*
  * A change between two input rates the front end can use (a 48 kHz WAV reopened at 44.1 kHz):
  * the redesign drops the lock and moves the generation on the first block at the new rate,
@@ -936,6 +991,7 @@ test_rx_tone_paused_stream_starts_a_new_reception(void) {
 int
 main(void) {
     exitflag = 0;
+    dsd_neo_log_set_tap(count_unusable_rate_warnings, NULL);
     test_soft_symbol_replay_record();
     test_short_file_falls_back_to_legacy_replay();
     test_symbol_count_wraps_instead_of_overflowing();
@@ -952,6 +1008,7 @@ main(void) {
     test_rx_tone_tap_reads_raw_block_before_voice_filters();
     test_rx_tone_clears_on_unannounced_retune();
     test_rx_tone_unusable_rate_is_unavailable();
+    test_rx_tone_unusable_rate_warns_once_per_stretch();
     test_rx_tone_usable_rate_change_drops_lock();
     test_rx_tone_paused_stream_starts_a_new_reception();
     return 0;

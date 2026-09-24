@@ -525,12 +525,12 @@ tone setting, and it runs with `-o null` too.
   stops delivering audio for about half a second (see below). The frequent no-carrier cleanup between syncs does not
   clear it.
 - Where it runs: analog-only decoding with input monitoring, on PCM inputs (TCP, UDP, Pulse, WAV, stdin) or on an
-  RTL-family stream that outputs monitor audio. It does not run for the `-8` source monitor during digital decoding,
-  for EDACS analog voice, or on symbol-file input, and the `Rx tone:` line and `RECEIVED TONE` row are shown exactly
-  while it runs. The front end needs an input rate from 2400 Hz up to 320 kHz; outside that range detection logs once
-  that it is inactive and the row is left out. On RTL input, detection hears the monitor audio after the RTL monitor
-  gain (`vol`), so a gain of 0 leaves it nothing to hear and it reads no carrier; to silence the monitor, mute the
-  output instead.
+  RTL-family stream that outputs monitor audio. It does not run for the `-8` source monitor during digital decoding, for
+  EDACS analog voice, or on symbol-file input, and the `Rx tone:` line and `RECEIVED TONE` row are shown exactly while
+  it runs. The front end needs an input rate from 2400 Hz up to 320 kHz; outside that range detection logs that it is
+  inactive, once each time the input moves to such a rate, and the row is left out. On RTL input, detection hears the
+  monitor audio after the RTL monitor gain (`vol`), so a gain of 0 leaves it nothing to hear and it reads no carrier; to
+  silence the monitor, mute the output instead.
 - Externally demodulated audio (PCM inputs): the tone has to survive the producer. Feed the discriminator or
   flat audio with nothing below 300 Hz removed -- no voice high-pass, no de-emphasis that rolls off the low end -- and
   prefer 48 kHz. Sound cards and receivers that high-pass their audio output remove CTCSS before DSD-neo sees it.

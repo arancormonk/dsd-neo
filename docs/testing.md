@@ -361,7 +361,8 @@ identical results), and they are the numbers the user guide quotes:
 Retune clearing is covered where each path lives: `DSP_SYMBOL_REPLAY` (the tap reads the raw block before the voice
 high-pass removes the tone, leaves the audio byte-identical, clears on an RTL stream-generation or
 trunk-tuning-generation move and on a change between two usable input rates, publishes an unusable input rate as
-unavailable without resetting block after block, and on a UDP stream whose producer pauses -- driven on an injected
+unavailable without resetting block after block and warns about it once for each stretch of input at it (a 384 kHz,
+48 kHz, 384 kHz sequence warns twice), and on a UDP stream whose producer pauses -- driven on an injected
 clock -- stamps the deadline the frontends age the row against and starts a new reception after the pause, never
 showing the previous channel's tone), `FRAME_SYNC_INTERNAL_HELPERS` (the acquisition reset),
 `ENGINE_NO_CARRIER_RESET` (survives `noCarrier()`, cleared by the legacy `-Y` step -- on RTL, by rigctl on PCM input in

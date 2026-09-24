@@ -535,8 +535,9 @@ installs from `src/engine/trunk_tuning.c` in `src/engine/trunk_tuning_hooks_inst
     mean square, and each detector's thresholds are ratios against the energy it sees. Reports merge in table order: the
     first LOCKED report names the tone; otherwise the verdict is ACQUIRING while any detector still is, and NONE once
     all have said so. The front end accepts 2400 Hz up to `DSD_ANALOG_RX_MAX_RATE_HZ` (320 kHz, below the ~333 kHz its
-    tap budget can design), logs which side of that range an unusable rate is on and publishes UNAVAILABLE there (after
-    a reset, from the next block on). The core, not a detector, owns the absolute floor and the carrier test;
+    tap budget can design), logs which side of that range an unusable rate is on (once for each stretch of input at such
+    a rate: a usable block ends the stretch, a reset does not) and publishes UNAVAILABLE there (after a reset, from the
+    next block on). The core, not a detector, owns the absolute floor and the carrier test;
     `process(band, wide, count, freeze)` is the whole interface a detector gets. It also holds the decoder-thread glue:
     the working state in `DSD_STATE_EXT_DSP_ANALOG_RX` (slot 9, heap, never deep-copied), the publication
     `dsd_state::analog_rx`, and the `Received tone:` LOG_INFO line on each change of verdict (a new reception logs again
