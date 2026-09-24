@@ -11395,7 +11395,20 @@ struct ReadRaceContext {
     std::atomic<int> switch_done{0};
     std::atomic<int> read_got{0};
 };
+
+/* Static storage, because the pause hooks keep its address in file-scope pointers while the race runs. */
+ReadRaceContext g_read_race_ctx;
 } // namespace
+
+/* Clear the shared race context for a new run, before any thread that uses it starts. */
+static ReadRaceContext*
+read_race_context_reset(void) {
+    g_read_race_ctx.paused.store(0, std::memory_order_relaxed);
+    g_read_race_ctx.release.store(0, std::memory_order_relaxed);
+    g_read_race_ctx.switch_done.store(0, std::memory_order_relaxed);
+    g_read_race_ctx.read_got.store(0, std::memory_order_relaxed);
+    return &g_read_race_ctx;
+}
 
 /* The stop a race test puts in the read (between its copy and its tail store) or in the switch's ring clear (after its
  * first generation bump, before it takes ready_m): it waits there for the release (bounded, so a broken test cannot
@@ -11503,8 +11516,7 @@ rtl_stream_test_family_switch_during_live_read(int hold_ms, rtl_stream_test_read
     const FamilyTestSaved saved = family_test_save();
     int rc = read_race_seed_live_switch(queued, &out->used_before, &out->generation_before);
 
-    ReadRaceContext ctx;
-    rc |= read_race_run(&ctx, hold_ms, out);
+    rc |= read_race_run(read_race_context_reset(), hold_ms, out);
     out->used_after = ring_used(&output);
     out->tail_after = output.tail.load();
     out->head_after = output.head.load();
@@ -11532,21 +11544,21 @@ rtl_stream_test_live_read_during_family_switch_clear(rtl_stream_test_clear_race_
     const FamilyTestSaved saved = family_test_save();
     int rc = read_race_seed_live_switch(queued, &out->used_before, &out->generation_before);
 
-    ReadRaceContext ctx;
-    g_test_output_clear_pause_ctx = &ctx;
+    ReadRaceContext* ctx = read_race_context_reset();
+    g_test_output_clear_pause_ctx = ctx;
     g_test_output_clear_pause_hook = read_race_pause;
     dsd_thread_t switcher{};
-    const int switcher_started = dsd_thread_create(&switcher, read_race_switcher, &ctx) == 0 ? 1 : 0;
-    out->paused = switcher_started ? read_race_wait_for(&ctx.paused, 5000) : 0;
+    const int switcher_started = dsd_thread_create(&switcher, read_race_switcher, ctx) == 0 ? 1 : 0;
+    out->paused = switcher_started ? read_race_wait_for(&ctx->paused, 5000) : 0;
     if (out->paused) {
         /* The decoder's read, from its generation load to its tail store, while the clear waits to take ready_m. */
         float samples[16];
         int gated = 0;
         out->read_generation = rtl_stream_output_generation();
         out->read_got = rtl_stream_read_live_available(&controller, &output, samples, 16U, &gated);
-        out->switch_done_during_read = ctx.switch_done.load(std::memory_order_acquire);
+        out->switch_done_during_read = ctx->switch_done.load(std::memory_order_acquire);
     }
-    ctx.release.store(1, std::memory_order_release);
+    ctx->release.store(1, std::memory_order_release);
     if (switcher_started) {
         (void)dsd_thread_join(switcher);
     }
