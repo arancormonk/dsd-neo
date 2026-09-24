@@ -178,6 +178,31 @@ expect_double_near(const char* label, double got, double want, double tolerance)
     return 0;
 }
 
+/* A reset puts the monitor state back to exact start values (0, or 1 for the squelch envelope), so the tolerance
+ * only has to separate them from the stale values seeded before the retune, each at least 0.125 away. */
+static const double kResetTolerance = 1e-12;
+
+static_assert(sizeof(float) == sizeof(uint32_t), "float bit patterns are compared as uint32_t");
+
+static uint32_t
+float_bits(float v) {
+    uint32_t bits = 0U;
+    DSD_MEMCPY(&bits, &v, sizeof bits);
+    return bits;
+}
+
+/* Bit identity, not closeness: an unchanged rate must leave a coefficient exactly as it was (the default path stays
+ * bit-identical), which a tolerance would not prove. Compares the bit patterns, as DSP_CHANNEL_FILTERS does for taps. */
+static int
+expect_float_bits_equal(const char* label, float got, float want) {
+    if (float_bits(got) != float_bits(want)) {
+        DSD_FPRINTF(stderr, "FAIL: %s got=%.9g (0x%08x) want=%.9g (0x%08x)\n", label, (double)got,
+                    (unsigned)float_bits(got), (double)want, (unsigned)float_bits(want));
+        return 1;
+    }
+    return 0;
+}
+
 /* The one-pole coefficients stream open derives from the output rate. */
 static double
 expected_deemph_alpha(int rate_hz, double tau_s) {
@@ -202,12 +227,12 @@ static int
 test_audio_monitor_retune_reset(void) {
     int failed = 0;
     rtl_stream_test_audio_reset_result r;
-    std::memset(&r, 0, sizeof r);
+    DSD_MEMSET(&r, 0, sizeof r);
     failed |= expect_int_eq("audio monitor retune hook", rtl_stream_test_audio_monitor_retune(48000, 78125, 0, &r), 0);
-    failed |= expect_double_near("deemph state reset", r.deemph_avg, 0.0, 0.0);
-    failed |= expect_double_near("dc state reset", r.dc_avg, 0.0, 0.0);
-    failed |= expect_double_near("audio LPF state reset", r.audio_lpf_state, 0.0, 0.0);
-    failed |= expect_double_near("squelch envelope reopened", r.squelch_env, 1.0, 0.0);
+    failed |= expect_double_near("deemph state reset", r.deemph_avg, 0.0, kResetTolerance);
+    failed |= expect_double_near("dc state reset", r.dc_avg, 0.0, kResetTolerance);
+    failed |= expect_double_near("audio LPF state reset", r.audio_lpf_state, 0.0, kResetTolerance);
+    failed |= expect_double_near("squelch envelope reopened", r.squelch_env, 1.0, kResetTolerance);
     failed |= expect_int_eq("channel LPF history cleared", r.channel_hist_cleared, 1);
     failed |= expect_int_eq("half-band history cleared", r.hb_hist_cleared, 1);
     failed |= expect_int_eq("resampler history cleared", r.resamp_hist_cleared, 1);
@@ -223,14 +248,14 @@ test_audio_monitor_retune_reset(void) {
     /* An unchanged rate keeps the coefficients exactly (the default path stays bit-identical). At 24 kHz the
      * monitor resamples to 48 kHz with the same ratio before and after, so its history is only clean if the
      * retune reset it. */
-    std::memset(&r, 0, sizeof r);
+    DSD_MEMSET(&r, 0, sizeof r);
     failed |= expect_int_eq("same-rate retune hook", rtl_stream_test_audio_monitor_retune(24000, 24000, 0, &r), 0);
-    failed |= expect_double_near("same-rate deemph unchanged", r.deemph_a_after, r.deemph_a_before, 0.0);
+    failed |= expect_float_bits_equal("same-rate deemph unchanged", r.deemph_a_after, r.deemph_a_before);
     failed |=
-        expect_double_near("same-rate audio LPF unchanged", r.audio_lpf_alpha_after, r.audio_lpf_alpha_before, 0.0);
+        expect_float_bits_equal("same-rate audio LPF unchanged", r.audio_lpf_alpha_after, r.audio_lpf_alpha_before);
     failed |= expect_int_eq("same-ratio resampler history cleared", r.resamp_hist_cleared, 1);
-    failed |= expect_double_near("same-rate deemph state reset", r.deemph_avg, 0.0, 0.0);
-    failed |= expect_double_near("same-rate squelch envelope reopened", r.squelch_env, 1.0, 0.0);
+    failed |= expect_double_near("same-rate deemph state reset", r.deemph_avg, 0.0, kResetTolerance);
+    failed |= expect_double_near("same-rate squelch envelope reopened", r.squelch_env, 1.0, kResetTolerance);
     return failed;
 }
 
@@ -255,7 +280,7 @@ test_audio_monitor_retune_resolves_channel(void) {
     int failed = 0;
     rtl_stream_test_audio_reset_result r;
 
-    std::memset(&r, 0, sizeof r);
+    DSD_MEMSET(&r, 0, sizeof r);
     failed |= expect_int_eq("default 48k -> 16k hook", rtl_stream_test_audio_monitor_retune(48000, 16000, 0, &r), 0);
     failed |= expect_int_eq("default designs 16 kHz at 48 kHz", r.channel_lpf_width_before, 16000);
     failed |= expect_int_eq("default falls back to legacy WIDE at 16 kHz", r.channel_lpf_width_after, 0);
@@ -263,13 +288,13 @@ test_audio_monitor_retune_resolves_channel(void) {
     failed |= expect_int_eq("legacy WIDE published as DSP-limited", r.published_lpf_on_after, 0);
     failed |= expect_int_eq("legacy WIDE publishes the width 16 kHz fits", r.published_width_after, 13200);
 
-    std::memset(&r, 0, sizeof r);
+    DSD_MEMSET(&r, 0, sizeof r);
     failed |= expect_int_eq("default 48k -> 78125 hook", rtl_stream_test_audio_monitor_retune(48000, 78125, 0, &r), 0);
     failed |= expect_int_eq("default keeps 16 kHz at a forced 78125 Hz", r.channel_lpf_width_after, 16000);
     failed |= expect_int_eq("16 kHz at 78125 Hz is the width-driven filter", r.published_lpf_on_after, 1);
     failed |= expect_int_eq("16 kHz at 78125 Hz published", r.published_width_after, 16000);
 
-    std::memset(&r, 0, sizeof r);
+    DSD_MEMSET(&r, 0, sizeof r);
     g_last_error[0] = '\0';
     failed |=
         expect_int_eq("explicit 48k -> 16k hook", rtl_stream_test_audio_monitor_retune(48000, 16000, 16000, &r), 0);
@@ -282,7 +307,7 @@ test_audio_monitor_retune_resolves_channel(void) {
                       std::strstr(g_last_error, "NFM bandwidth 16 kHz does not fit the 16 kHz DSP rate") != NULL, 1);
 
     /* An unchanged rate does not re-log or re-resolve anything. */
-    std::memset(&r, 0, sizeof r);
+    DSD_MEMSET(&r, 0, sizeof r);
     g_last_error[0] = '\0';
     failed |=
         expect_int_eq("explicit same-rate hook", rtl_stream_test_audio_monitor_retune(48000, 48000, 12500, &r), 0);
@@ -296,7 +321,7 @@ static int
 test_retune_profile_carries_analog_fields(void) {
     int failed = 0;
     rtl_stream_test_retune_analog_result r;
-    std::memset(&r, 0, sizeof r);
+    DSD_MEMSET(&r, 0, sizeof r);
     failed |= expect_int_eq(
         "analog retune hook",
         rtl_stream_test_retune_analog_profile(853012500U, DSD_RX_FAMILY_ANALOG, DSD_ANALOG_DEMOD_FM, 12500, 0, &r), 0);
@@ -313,7 +338,7 @@ test_retune_profile_carries_analog_fields(void) {
     failed |= expect_int_eq("explicit width enabled the filter", r.applied_lpf_enable, 1);
     failed |= expect_int_eq("profile for another target left alone", r.other_target_left_alone, 1);
 
-    std::memset(&r, 0, sizeof r);
+    DSD_MEMSET(&r, 0, sizeof r);
     failed |= expect_int_eq(
         "refused analog retune hook",
         rtl_stream_test_retune_analog_profile(853012500U, DSD_RX_FAMILY_ANALOG, DSD_ANALOG_DEMOD_AM, 0, 0, &r), 0);
@@ -322,7 +347,7 @@ test_retune_profile_carries_analog_fields(void) {
 
     /* A symbol profile queued for the same target first (the documented combined shape) must not pull the analog
      * row back off the monitor: the analog family has no symbol clock, so none of it applies. */
-    std::memset(&r, 0, sizeof r);
+    DSD_MEMSET(&r, 0, sizeof r);
     failed |= expect_int_eq(
         "combined analog retune hook",
         rtl_stream_test_retune_analog_profile(853012500U, DSD_RX_FAMILY_ANALOG, DSD_ANALOG_DEMOD_FM, 12500, 1, &r), 0);
@@ -336,7 +361,7 @@ test_retune_profile_carries_analog_fields(void) {
     failed |= expect_int_eq("combined retune keeps the width", r.applied_width_hz, 12500);
 
     /* A digital switch bound to the same target still applies its symbol profile after the family change. */
-    std::memset(&r, 0, sizeof r);
+    DSD_MEMSET(&r, 0, sizeof r);
     failed |= expect_int_eq(
         "combined digital retune hook",
         rtl_stream_test_retune_analog_profile(853012500U, DSD_RX_FAMILY_DIGITAL, DSD_ANALOG_DEMOD_FM, 0, 1, &r), 0);
@@ -354,7 +379,7 @@ static int
 test_retune_profile_width_checked_at_landing_rate(void) {
     int failed = 0;
     rtl_stream_test_retune_analog_result r;
-    std::memset(&r, 0, sizeof r);
+    DSD_MEMSET(&r, 0, sizeof r);
     g_last_error[0] = '\0';
     failed |= expect_int_eq("12 kHz retune hook",
                             rtl_stream_test_retune_analog_profile_at_rate(853012500U, 12000, DSD_RX_FAMILY_ANALOG,
@@ -372,7 +397,7 @@ test_retune_profile_width_checked_at_landing_rate(void) {
 
     /* A scanner revisiting the same target does not repeat the message. */
     g_last_error[0] = '\0';
-    std::memset(&r, 0, sizeof r);
+    DSD_MEMSET(&r, 0, sizeof r);
     failed |= expect_int_eq("repeat 12 kHz retune hook",
                             rtl_stream_test_retune_analog_profile_at_rate(853012500U, 12000, DSD_RX_FAMILY_ANALOG,
                                                                           DSD_ANALOG_DEMOD_FM, 16000, 0, &r),
@@ -381,7 +406,7 @@ test_retune_profile_width_checked_at_landing_rate(void) {
     failed |= expect_int_eq("repeat refusal is not logged again", g_last_error[0] == '\0', 1);
 
     /* A width the rate fits lands as usual. */
-    std::memset(&r, 0, sizeof r);
+    DSD_MEMSET(&r, 0, sizeof r);
     failed |= expect_int_eq("fitting 12 kHz retune hook",
                             rtl_stream_test_retune_analog_profile_at_rate(853012500U, 12000, DSD_RX_FAMILY_ANALOG,
                                                                           DSD_ANALOG_DEMOD_FM, 8000, 0, &r),

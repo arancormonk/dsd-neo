@@ -10385,10 +10385,11 @@ family_test_seed_open(const dsd_opts* opts, int rate_hz, int forced_rate_out_hz)
     return 0;
 }
 
+/* Cleared, with the explicit tolerance float comparisons carry: the stale values seeded here are +/-1. */
 static int
 family_test_all_zero(const float* v, size_t n) {
     for (size_t i = 0; i < n; i++) {
-        if (fabsf(v[i]) > 0.0f) {
+        if (fabsf(v[i]) > 1e-12f) {
             return 0;
         }
     }
