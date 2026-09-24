@@ -235,9 +235,14 @@ leaving analog.
 ### Output Scale
 
 Live radio sets `output_scale = 1/pi` in `optimal_settings()`; IQ replay never
-calls it and leaves the discriminator output unscaled, so replayed FM audio is
-about pi times louder than live. Digital replay baselines depend on the replay
-scale, and ratio-based audio metrics are invariant to it, so it is left as is.
+calls it and leaves the discriminator output unscaled, so replayed FM monitor
+audio is about pi times louder than live. The scale applies to monitor audio
+only: `demod_write_output_block()` skips it for FSK discriminator and CQPSK
+symbol output, so digital decoding and the digital `DECODE_IQ_*` baselines do
+not depend on it. The analog replay checks (`DECODE_IQ_ANALOG_*`) do: their
+level bounds (RMS, peak and audible thresholds in dBFS) were measured at the
+replay scale. Ratio-based audio metrics are invariant to it, so it is left as
+is.
 
 ## Regression Coverage
 
@@ -301,7 +306,8 @@ ctest --preset dev-debug --output-on-failure
 - Any future change to channel LPF cutoffs, default RTL DSP bandwidth, CQPSK
   loop gains, or FSK normalization must update the mode matrix tests first.
 - The live (1/pi) versus replay (unscaled) analog output scale difference is
-  documented above and left in place; aligning it needs new digital replay
-  baselines.
+  documented above and left in place; aligning it moves replayed monitor audio
+  levels, so the analog replay checks' dBFS bounds would need new baselines
+  (digital output never takes the scale).
 - The forced-rate analog channel filter (Airspy 2.5 MS/s -> 78,125 Hz) needs a
   hardware listen check.
