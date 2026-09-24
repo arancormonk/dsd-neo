@@ -14,18 +14,19 @@ total flatters exactly the regressions worth catching.
 
 Analog runs (replay_ab.sh --metric analog) report each analog column the host
 measured -- tone SNR, in-band ratio, clipped samples, audible and first-audible
-time, RMS level, the first probe's level (dBFS, and dBc against a test tone), and
-time to tone lock and the share of the audio the tone stayed locked for -- paired
-per repeat the same way, plus the received tone label each build settled on. Probe levels are keyed by the probe's frequency, so builds
-that probed different frequencies are never paired. A repeat whose host exited
-non-zero (summary.tsv's rc column: a crash, a timeout, or a run the host rejected)
-or warned that the front end left the monitor path (off_path: it delivered CQPSK
-symbols, so the repeat measures the modulation auto-switch rather than the build)
-is left out of every column and counted in a warning, even when the host printed
-its metrics first. Columns no build measured are left out; a build that has no
-value for a column another build measured gets an explicit NA row, and the exit
-status is 1 when a build produced no usable analog measurement in any repeat,
-since a report of the remaining builds would read like a clean result.
+time, RMS level, the first probe's level (dBFS, and dBc against a test tone),
+and time to tone lock and the share of the audio the tone stayed locked for --
+paired per repeat the same way, plus the received tone label each build settled
+on. Probe levels are keyed by the probe's frequency, so builds that probed
+different frequencies are never paired. A repeat whose host exited non-zero
+(summary.tsv's rc column: a crash, a timeout, or a run the host rejected) or
+warned that the front end left the monitor path (off_path: it delivered CQPSK
+symbols, so the repeat measures the modulation auto-switch rather than the
+build) is left out of every column and counted in a warning, even when the host
+printed its metrics first. Columns no build measured are left out; a build that
+has no value for a column another build measured gets an explicit NA row, and
+the exit status is 1 when a build produced no usable analog measurement in any
+repeat, since a report of the remaining builds would read like a clean result.
 """
 
 from __future__ import annotations

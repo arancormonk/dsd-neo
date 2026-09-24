@@ -611,8 +611,8 @@ installs from `src/engine/trunk_tuning.c` in `src/engine/trunk_tuning_hooks_inst
   the front end has yet to switch, and a move between the monitor output and a direct one drops the part-collected
   block (`symbol_refresh_rtl_profile()`), so the first block the new family plays holds only its own samples.
   `tests/engine/analog_replay.c` (`dsd-neo_test_analog_replay`, the `DECODE_IQ_ANALOG_*` audio cases) captures and
-  scores exactly that output through the hook, and times it with a wrapped RTL stream read hook, so changes to the monitor
-  chain are measured against what a listener hears; back them with `tools/replay_ab.sh --metric analog` evidence
+  scores exactly that output through the hook, and times it with a wrapped RTL stream read hook, so changes to the
+  monitor chain are measured against what a listener hears; back them with `tools/replay_ab.sh --metric analog` evidence
   (`docs/testing.md`). The host's own options are the `--analog-*` names it lists; other `--analog-*` arguments pass
   through to the CLI parser. After each delivered block it also reads the received-tone publication
   (`dsd_state::analog_rx`, which the tap updated from the same block) into its `tone`, `tone_lock_ms` and

@@ -783,28 +783,28 @@ it replaced one fragile constant with two.
 
 ### Analog A/B
 
-Analog DSP changes (channel width, AM demodulation, de-emphasis, tone detection) are judged the same way, on the
-real excerpts in `tests/fixtures/iq` and on any longer real capture, with `--metric analog`. The builds are analog
-replay hosts rather than `dsd-neo`, and `summary.tsv` gains the analog columns: `tone_snr_db`, `inband_db`, `clip`,
-`audible_ms`, `first_audible_ms`, `rms_dbfs`, the first probe given as `probe_hz`, `probe_dbfs` and `probe_dbc`,
-`tone`, `tone_lock_ms` and `tone_lock_pct`, and last the run's exit status `rc` and `off_path`, 1 when the host
-warned that the front end delivered CQPSK symbols instead of monitor samples. `probe_dbc` needs `--analog-expect-tone-hz`, so on a real capture, which has no test
-tone, it is `NA` and `probe_dbfs` is the probe's level. The report pairs each column per repeat, pairs probe levels
-only between builds that probed the same frequency (a wrapper that puts its own `--analog-probe-hz` first changes
-which probe comes first), and gives the tone label each build settled on. A repeat that exited non-zero or ran off the
-monitor path is left out of every column and counted in a per-build warning, even though the host prints its metrics
-before it exits: it measured a crash, a timeout or the modulation auto-switch, not the build. So give the host no
-`--analog-*` bounds in `--mode`, since a missed bound exits 1. Its `n` column counts the repeats in which a build
-measured that column. The paired interval needs at least two paired repeats and reads `n/a` with one (`--reps 1`, or
-every other repeat left out), in the digital report too, since one pair says nothing about the spread. A build missing
-a column that another build measured gets an explicit `NA` row, and a build with no usable repeat (it crashed, timed
-out, left the monitor path, or is not an analog replay host) makes the report warn and exit 1, rather than leave the
-other builds' rows looking like a clean result. `tests/tools/test_replay_ab_report.py` (stdlib only) covers the
-per-repeat pairing, the A-vs-A control, probe frequency keying, the coverage reporting, crashed and off-path repeats,
-the single-pair interval, the received-tone columns and the duplicate-name refusal. CTest runs it as two tests:
-`TOOLS_REPLAY_AB_REPORT` scores canned summaries and runs wherever Python does, and `TOOLS_REPLAY_AB_ANALOG_METRIC`
-drives the real `replay_ab.sh` with a fake host, so it is registered only outside Windows where bash and coreutils
-`timeout` are found.
+Analog DSP changes (channel width, AM demodulation, de-emphasis, tone detection) are judged the same way, on the real
+excerpts in `tests/fixtures/iq` and on any longer real capture, with `--metric analog`. The builds are analog replay
+hosts rather than `dsd-neo`, and `summary.tsv` gains the analog columns: `tone_snr_db`, `inband_db`, `clip`,
+`audible_ms`, `first_audible_ms`, `rms_dbfs`, the first probe given as `probe_hz`, `probe_dbfs` and `probe_dbc`, `tone`,
+`tone_lock_ms` and `tone_lock_pct`, and last the run's exit status `rc` and `off_path`, 1 when the host warned that the
+front end delivered CQPSK symbols instead of monitor samples. `probe_dbc` needs `--analog-expect-tone-hz`, so on a real
+capture, which has no test tone, it is `NA` and `probe_dbfs` is the probe's level. The report pairs each column per
+repeat, pairs probe levels only between builds that probed the same frequency (a wrapper that puts its own
+`--analog-probe-hz` first changes which probe comes first), and gives the tone label each build settled on. A repeat
+that exited non-zero or ran off the monitor path is left out of every column and counted in a per-build warning, even
+though the host prints its metrics before it exits: it measured a crash, a timeout or the modulation auto-switch, not
+the build. So give the host no `--analog-*` bounds in `--mode`, since a missed bound exits 1. Its `n` column counts the
+repeats in which a build measured that column. The paired interval needs at least two paired repeats and reads `n/a`
+with one (`--reps 1`, or every other repeat left out), in the digital report too, since one pair says nothing about the
+spread. A build missing a column that another build measured gets an explicit `NA` row, and a build with no usable
+repeat (it crashed, timed out, left the monitor path, or is not an analog replay host) makes the report warn and exit 1,
+rather than leave the other builds' rows looking like a clean result. `tests/tools/test_replay_ab_report.py` (stdlib
+only) covers the per-repeat pairing, the A-vs-A control, probe frequency keying, the coverage reporting, crashed and
+off-path repeats, the single-pair interval, the received-tone columns and the duplicate-name refusal. CTest runs it as
+two tests: `TOOLS_REPLAY_AB_REPORT` scores canned summaries and runs wherever Python does, and
+`TOOLS_REPLAY_AB_ANALOG_METRIC` drives the real `replay_ab.sh` with a fake host, so it is registered only outside
+Windows where bash and coreutils `timeout` are found.
 
 `tone`, `tone_lock_ms` and `tone_lock_pct` come from the host's `ANALOG METRIC:` line, which reads them from the
 decoder's received-tone publication (`dsd_state::analog_rx`) after every block the monitor delivers; a host built
