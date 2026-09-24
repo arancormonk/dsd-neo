@@ -265,7 +265,10 @@ int rtl_stream_request_demod_profile(int cqpsk_enable, int symbol_rate_hz, int l
  * resets the filter state, clears the output ring and bumps the output generation. Leaving it for digital expects the
  * digital symbol profile to follow through rtl_stream_request_demod_profile(), and waits for it: that profile decides
  * the digital resampler and output rate, so a digital family request the demod thread finds without a symbol profile
- * stays queued until one arrives, and the two apply at the same block boundary.
+ * stays queued until one arrives, and the two apply at the same block boundary. A digital family request leaves the
+ * analog family only while the front end delivers analog monitor audio, the state rtl_stream_get_analog_profile()
+ * reports: when a symbol profile applied on its own (a typed digital scan row, a CQPSK toggle) has already moved the
+ * output to symbols, the request changes nothing and the symbol profile queued with it applies as usual.
  *
  * @param family   dsd_rx_family: DSD_RX_FAMILY_ANALOG or DSD_RX_FAMILY_DIGITAL.
  * @param kind     dsd_analog_demod for the analog family (AM is refused until the front end can demodulate it).

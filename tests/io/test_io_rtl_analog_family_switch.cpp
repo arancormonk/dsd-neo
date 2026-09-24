@@ -26,6 +26,11 @@
  * While a stream runs, a width its published demod rate (or a replay's post-demod
  * decimation) cannot realize is refused before it is queued, as a live request
  * and as a retune profile.
+ *
+ * A session that started with -fA and then switches to a digital mode lands on
+ * a fresh open of that mode too. A typed digital scan row on a -fA session runs
+ * the FSK discriminator with the analog family flag still set; a digital family
+ * request there is not a family switch, and the row's leave restores the monitor.
  */
 
 #include <cstdio>
@@ -227,6 +232,82 @@ run_case(const family_case& c, int rate_hz, int forced_rate_out_hz, int nfm_widt
         expect_int("predicted analog output rate", (int)r.predicted_analog_output_rate, r.switched_analog.output_rate);
     rc |= expect_int("predicted digital output rate", (int)r.predicted_digital_output_rate,
                      r.switched_digital.output_rate);
+    return rc;
+}
+
+/* A session started with -fA, where the operator then picks a digital mode: the digital state it lands on must equal
+ * a fresh open of that mode, with nothing the -fA open chose carried over. */
+static int
+run_analog_start_case(const family_case& c, int rate_hz, int forced_rate_out_hz) {
+    static dsd_opts digital;
+    static dsd_opts analog;
+    DSD_MEMSET(&digital, 0, sizeof digital);
+    DSD_MEMSET(&analog, 0, sizeof analog);
+    c.configure(&digital);
+    analog.analog_only = 1;
+    analog.monitor_input_audio = 1;
+    analog.analog_demod = DSD_ANALOG_DEMOD_FM;
+
+    rtl_stream_test_family_switch_result r;
+    DSD_MEMSET(&r, 0, sizeof r);
+    const int demod_rate_hz = forced_rate_out_hz > 0 ? forced_rate_out_hz : rate_hz;
+    char label[128];
+    DSD_SNPRINTF(label, sizeof label, "-fA start, %s@%d run", c.name, demod_rate_hz);
+    int rc = expect_int(
+        label,
+        rtl_stream_test_analog_start_family_switch(&digital, &analog, rate_hz, forced_rate_out_hz, &c.request, &r), 0);
+    rc |= expect_int("-fA start runs the monitor", r.fresh_analog.output_kind, RTL_STREAM_OUTPUT_AUDIO_MONITOR);
+    rc |= expect_int("-fA start publishes the analog profile", r.published_analog_rc, 1);
+
+    DSD_SNPRINTF(label, sizeof label, "-fA start, %s@%d -> digital", c.name, demod_rate_hz);
+    rc |= expect_int(label, r.digital_request_rc, 0);
+    rc |= expect_fields_equal(label, r.switched_digital, r.fresh_digital);
+    rc |= expect_int("-fA start: digital switch bumps the generation",
+                     r.generation_after_digital != r.generation_after_analog, 1);
+    rc |= expect_int("-fA start: digital switch clears the ring", (int)r.used_after_digital, 0);
+    rc |= expect_int("-fA start: seeded ring was not empty", r.used_before > 0U, 1);
+    rc |= expect_int("-fA start: analog profile withdrawn", r.published_after_digital_rc, 0);
+    if (c.request.boundary_between_requests) {
+        rc |= expect_int("-fA start: digital family waits for its symbol profile", r.digital_held_until_profile, 1);
+    }
+    rc |= expect_int("-fA start: predicted digital output rate", (int)r.predicted_digital_output_rate,
+                     r.switched_digital.output_rate);
+    return rc;
+}
+
+/* A typed DMR scan row on a -fA session queues only its symbol profile, so the front end runs the FSK discriminator
+ * with the analog family flag still set, and publishes no analog profile. The decoder decides on the published state,
+ * and so must the front end: a digital family request there is not a family switch (it neither waits for a symbol
+ * profile nor clears the ring, bumps the generation or moves the output rate in the middle of the row), and the row's
+ * leave still brings the monitor back. */
+static int
+test_digital_row_on_analog_session(void) {
+    rtl_stream_test_digital_row_result r;
+    DSD_MEMSET(&r, 0, sizeof r);
+    int rc = expect_int("digital row run", rtl_stream_test_digital_row_on_analog_session(24000, &r), 0);
+    rc |= expect_int("digital row open", r.open_rc, 0);
+    rc |= expect_int("row runs the FSK discriminator", r.row_output_kind, RTL_STREAM_OUTPUT_FSK_DISCRIMINATOR);
+    rc |= expect_int("row keeps the analog family flag", r.row_analog_family, 1);
+    rc |= expect_int("row publishes no analog profile", r.row_published_family, 0);
+    rc |= expect_int("row keeps the monitor's 48 kHz output", r.row_output_rate, 48000);
+
+    rc |= expect_int("lone digital request accepted", r.lone_request_rc, 0);
+    rc |= expect_int("lone digital request is not held for a profile", r.lone_request_held, 0);
+
+    rc |= expect_int("row republish accepted", r.republish_rc, 0);
+    rc |= expect_int("row republish keeps the generation", r.generation_after == r.generation_before, 1);
+    rc |= expect_int("row republish keeps the ring", (int)r.used_after, (int)r.used_before);
+    rc |= expect_int("seeded ring was not empty", r.used_before > 0U, 1);
+    rc |= expect_int("row republish keeps the FSK output", r.output_kind_after, RTL_STREAM_OUTPUT_FSK_DISCRIMINATOR);
+    rc |= expect_int("row republish keeps the output rate", r.output_rate_after, r.row_output_rate);
+    rc |= expect_int("row republish keeps the resampler",
+                     r.resamp_l_after == r.row_resamp_l && r.resamp_m_after == r.row_resamp_m, 1);
+
+    rc |= expect_int("row leave accepted", r.restore_rc, 0);
+    rc |= expect_int("row leave restores the monitor", r.restored_output_kind, RTL_STREAM_OUTPUT_AUDIO_MONITOR);
+    rc |= expect_int("row leave publishes the analog profile", r.restored_published_family, 1);
+    rc |= expect_int("row leave keeps the monitor rate", r.restored_output_rate, 48000);
+    rc |= expect_int("row leave bumps the generation", r.generation_after_restore != r.generation_after, 1);
     return rc;
 }
 
@@ -436,6 +517,18 @@ main(void) {
     dmr48_split.request.boundary_between_requests = 1;
     rc |= run_case(dmr48_split, 48000, 0, 0);
 
+    /* The same switches from a session that started with -fA rather than from a digital open, so nothing the digital
+     * open left behind can stand in for what the switch must set: each mode, the 24 kHz and forced-rate resampler
+     * decisions, and the boundary that falls between the family request and its symbol profile. */
+    for (const family_case& c : cases) {
+        rc |= run_analog_start_case(c, 48000, 0);
+    }
+    rc |= run_analog_start_case(dmr24, 24000, 0);
+    rc |= run_analog_start_case(cqpsk78, 48000, 78125);
+    rc |= run_analog_start_case(c4fm78, 48000, 78125);
+    rc |= run_analog_start_case(nxdn60, 48000, 60000);
+    rc |= run_analog_start_case(dpmr60_split, 48000, 60000);
+
     rtl_stream_test_family_switch_result r;
     DSD_MEMSET(&r, 0, sizeof r);
     static dsd_opts digital;
@@ -452,6 +545,7 @@ main(void) {
     rc |= expect_int("explicit width published", r.published_width_hz, 12500);
     rc |= expect_int("explicit width published as filtered", r.published_lpf_on, 1);
 
+    rc |= test_digital_row_on_analog_session();
     rc |= test_width_only_change();
     rc |= test_requests_without_stream();
     rc |= test_requests_against_running_stream();

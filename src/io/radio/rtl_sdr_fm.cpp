@@ -8094,12 +8094,18 @@ rtl_stream_apply_analog_request(int kind, int width_hz) {
 
 /* Body of an analog profile request. Callers hold the family-switch gate or run on the demod thread.
  * @p next_cqpsk and @p next_symbol_rate_hz describe the symbol profile applied after a switch to digital (-1 / 0
- * when none follows). */
+ * when none follows).
+ *
+ * A switch to digital leaves the analog family only while the front end delivers its monitor audio: the state the
+ * stream publishes (rtl_stream_get_analog_profile()), and the one the decoder times the switch for. A symbol profile
+ * applied without a family request (a typed digital scan row under -fA, a CQPSK toggle) already moved the output to
+ * symbols or the FSK discriminator with the family flag still set; a digital request there only lets that profile
+ * apply, as it did before the family switch existed, rather than resetting the stream in the middle of the row. */
 static void
 rtl_stream_apply_analog_profile_params(int family, int kind, int width_hz, int next_cqpsk, int next_symbol_rate_hz) {
     if (family == DSD_RX_FAMILY_ANALOG) {
         rtl_stream_apply_analog_request(kind, width_hz);
-    } else if (family == DSD_RX_FAMILY_DIGITAL && demod.analog_family) {
+    } else if (family == DSD_RX_FAMILY_DIGITAL && dsd_demod_analog_monitor_active(&demod)) {
         rtl_stream_leave_analog_family(next_cqpsk, next_symbol_rate_hz);
     }
     rtl_stream_publish_demod_profile_snapshot();
@@ -8178,7 +8184,8 @@ rtl_stream_consume_demod_profile_request(void) {
     {
         std::lock_guard<std::mutex> lock(g_profile_req_m);
         g_profile_req_pending.store(0, std::memory_order_relaxed);
-        if (g_profile_req_analog_family == DSD_RX_FAMILY_DIGITAL && !g_profile_req_has_demod && demod.analog_family) {
+        if (g_profile_req_analog_family == DSD_RX_FAMILY_DIGITAL && !g_profile_req_has_demod
+            && dsd_demod_analog_monitor_active(&demod)) {
             /* Leaving analog lands on the symbol profile queued with it, which decides the digital resampler and the
                output rate committed at the switch. Callers queue that profile as a second request right after the
                family (svc_publish_symbol_profile(), the channel-scan leave), and this block boundary fell between
@@ -10624,6 +10631,132 @@ rtl_stream_test_analog_family_switch(const dsd_opts* digital_opts, const dsd_opt
     family_test_release_buffers();
     fsk_reacquire_test_cleanup_output_ring(initialized_output);
     return rc == 0 ? 0 : -3;
+}
+
+extern "C" int
+rtl_stream_test_analog_start_family_switch(const dsd_opts* digital_opts, const dsd_opts* analog_opts, int rate_hz,
+                                           int forced_rate_out_hz,
+                                           const rtl_stream_test_digital_request* digital_request,
+                                           rtl_stream_test_family_switch_result* out) {
+    if (!digital_opts || !analog_opts || !digital_request || !out || rate_hz <= 0) {
+        return -1;
+    }
+    *out = {};
+    const size_t queued = 64U;
+    int initialized_output = 0;
+    if (fsk_reacquire_test_prepare_output_ring(queued, &initialized_output) != 0) {
+        fsk_reacquire_test_cleanup_output_ring(initialized_output);
+        return -2;
+    }
+    const FamilyTestSaved saved = family_test_save();
+    static dsd_opts stream_opts;
+    stream_opts = *analog_opts;
+    g_cqpsk_toggle_test_stream.output = &output;
+    g_cqpsk_toggle_test_stream.opts = &stream_opts;
+    g_stream = NULL; /* fresh opens seed before any pipeline exists */
+    int rc = family_test_seed_open(digital_opts, rate_hz, forced_rate_out_hz);
+    out->fresh_digital = family_test_capture();
+    rc |= family_test_seed_open(analog_opts, rate_hz, forced_rate_out_hz);
+    out->fresh_analog = family_test_capture();
+    g_stream = &g_cqpsk_toggle_test_stream; /* live on the -fA open: requests queue for the demod thread */
+
+    family_test_seed_ring(queued);
+    family_test_seed_running_loops();
+    family_test_seed_stale_monitor_state();
+    out->used_before = ring_used(&output);
+    out->generation_before = rtl_stream_output_generation();
+    out->generation_after_analog = out->generation_before;
+    out->published_analog_rc =
+        rtl_stream_get_analog_profile(&out->published_kind, &out->published_width_hz, &out->published_lpf_on);
+    family_test_switch_to_digital(&stream_opts, digital_opts, digital_request, out);
+
+    family_test_restore(saved);
+    family_test_release_buffers();
+    fsk_reacquire_test_cleanup_output_ring(initialized_output);
+    return rc == 0 ? 0 : -3;
+}
+
+/* The DMR symbol profile a typed scan row queues, timed for the monitor's 48 kHz output. */
+static int
+family_test_request_dmr_row_profile(void) {
+    return rtl_stream_request_demod_profile(0, 4800, 4, DSD_CH_LPF_PROFILE_12K5, 10, 0);
+}
+
+static int
+family_test_digital_family_held(void) {
+    std::lock_guard<std::mutex> lock(g_profile_req_m);
+    return g_profile_req_analog_family == DSD_RX_FAMILY_DIGITAL ? 1 : 0;
+}
+
+extern "C" int
+rtl_stream_test_digital_row_on_analog_session(int rate_hz, rtl_stream_test_digital_row_result* out) {
+    if (!out || rate_hz <= 0) {
+        return -1;
+    }
+    *out = {};
+    const size_t queued = 64U;
+    int initialized_output = 0;
+    if (fsk_reacquire_test_prepare_output_ring(queued, &initialized_output) != 0) {
+        fsk_reacquire_test_cleanup_output_ring(initialized_output);
+        return -2;
+    }
+    const FamilyTestSaved saved = family_test_save();
+    static dsd_opts analog_opts;
+    static dsd_opts stream_opts;
+    DSD_MEMSET(&analog_opts, 0, sizeof analog_opts);
+    analog_opts.analog_only = 1;
+    analog_opts.monitor_input_audio = 1;
+    stream_opts = analog_opts;
+    g_cqpsk_toggle_test_stream.output = &output;
+    g_cqpsk_toggle_test_stream.opts = &stream_opts;
+    g_stream = NULL;
+    out->open_rc = family_test_seed_open(&analog_opts, rate_hz, 0);
+    g_stream = &g_cqpsk_toggle_test_stream; /* live: requests queue for the demod thread */
+
+    /* The row constraint puts DMR on the decoder options; row entry queues only the row's symbol profile. */
+    DSD_MEMSET(&stream_opts, 0, sizeof stream_opts);
+    stream_opts.frame_dmr = 1;
+    stream_opts.mod_c4fm = 1;
+    int rc = family_test_request_dmr_row_profile();
+    family_test_demod_thread_boundary();
+    out->row_output_kind = demod.output_kind;
+    out->row_analog_family = demod.analog_family;
+    out->row_published_family = rtl_stream_get_analog_profile(NULL, NULL, NULL);
+    out->row_output_rate = output.rate;
+    out->row_resamp_l = demod.resamp_L;
+    out->row_resamp_m = demod.resamp_M;
+
+    out->lone_request_rc = rtl_stream_request_analog_profile(DSD_RX_FAMILY_DIGITAL, DSD_ANALOG_DEMOD_FM, 0);
+    family_test_demod_thread_boundary();
+    out->lone_request_held = family_test_digital_family_held();
+    rtl_stream_clear_demod_profile_request();
+
+    family_test_seed_ring(queued);
+    out->used_before = ring_used(&output);
+    out->generation_before = rtl_stream_output_generation();
+    rc |= rtl_stream_request_analog_profile(DSD_RX_FAMILY_DIGITAL, DSD_ANALOG_DEMOD_FM, 0);
+    rc |= family_test_request_dmr_row_profile();
+    family_test_demod_thread_boundary();
+    out->republish_rc = rc;
+    out->generation_after = rtl_stream_output_generation();
+    out->used_after = ring_used(&output);
+    out->output_kind_after = demod.output_kind;
+    out->output_rate_after = output.rate;
+    out->resamp_l_after = demod.resamp_L;
+    out->resamp_m_after = demod.resamp_M;
+
+    stream_opts = analog_opts;
+    out->restore_rc = rtl_stream_request_analog_profile(DSD_RX_FAMILY_ANALOG, DSD_ANALOG_DEMOD_FM, 0);
+    family_test_demod_thread_boundary();
+    out->restored_output_kind = demod.output_kind;
+    out->restored_published_family = rtl_stream_get_analog_profile(NULL, NULL, NULL);
+    out->restored_output_rate = output.rate;
+    out->generation_after_restore = rtl_stream_output_generation();
+
+    family_test_restore(saved);
+    family_test_release_buffers();
+    fsk_reacquire_test_cleanup_output_ring(initialized_output);
+    return 0;
 }
 
 extern "C" int

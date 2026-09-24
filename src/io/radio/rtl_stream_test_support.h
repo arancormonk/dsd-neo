@@ -270,6 +270,52 @@ int rtl_stream_test_analog_family_switch(const dsd_opts* digital_opts, const dsd
                                          int forced_rate_out_hz, const rtl_stream_test_digital_request* digital_request,
                                          rtl_stream_test_family_switch_result* out);
 
+/* The session a -fA start leaves before a digital mode is picked: open @p analog_opts at @p rate_hz, give it running
+ * carrier/timing loops and stale monitor audio and filter state, and switch live to @p digital_opts through
+ * @p digital_request. Fills fresh_digital (a fresh open of @p digital_opts), fresh_analog (the -fA open the session
+ * started from), switched_digital and the digital-switch fields; the analog request fields stay zero, and
+ * generation_after_analog is the generation the -fA session ran at. */
+int rtl_stream_test_analog_start_family_switch(const dsd_opts* digital_opts, const dsd_opts* analog_opts, int rate_hz,
+                                               int forced_rate_out_hz,
+                                               const rtl_stream_test_digital_request* digital_request,
+                                               rtl_stream_test_family_switch_result* out);
+
+typedef struct rtl_stream_test_digital_row_result {
+    int open_rc;
+    /* After the row's symbol profile landed on the -fA session. */
+    int row_output_kind;
+    int row_analog_family;    /* demod_state::analog_family */
+    int row_published_family; /* rtl_stream_get_analog_profile(), what the decoder sees */
+    int row_output_rate;
+    int row_resamp_l;
+    int row_resamp_m;
+    /* A digital family request with no symbol profile behind it, at one block boundary. */
+    int lone_request_rc;
+    int lone_request_held; /* 1 when it stayed queued, waiting for a symbol profile */
+    /* The family request and symbol profile a scoped command republishes during the row. */
+    int republish_rc;
+    uint32_t generation_before;
+    uint32_t generation_after;
+    size_t used_before;
+    size_t used_after;
+    int output_kind_after;
+    int output_rate_after;
+    int resamp_l_after;
+    int resamp_m_after;
+    /* The -fA baseline requested back when the row is left. */
+    int restore_rc;
+    int restored_output_kind;
+    int restored_published_family;
+    int restored_output_rate;
+    uint32_t generation_after_restore;
+} rtl_stream_test_digital_row_result;
+
+/* A -fA session at @p rate_hz on a typed DMR scan row that queued only its symbol profile: the front end runs the
+ * FSK discriminator while the analog family flag is still set. Queue a lone digital family request, then republish
+ * the row's family and symbol profile as a scoped command does, then request the -fA baseline back as the row's leave
+ * does; each consumed at a demod-thread block boundary. */
+int rtl_stream_test_digital_row_on_analog_session(int rate_hz, rtl_stream_test_digital_row_result* out);
+
 typedef struct rtl_stream_test_width_change_result {
     int request_rc;
     int deferred_until_consume; /* 1 when the queued request left the channel width alone until consumed */

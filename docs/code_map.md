@@ -566,18 +566,23 @@ Notes:
     between blocks; a retune profile's family fields apply under the reconfigure gate, and an analog one applies no
     symbol profile, CQPSK toggle or timing queued for the same target. A retune profile's analog width is checked again
     against the demod rate the retune lands on; a width that rate cannot realize is refused (logged once per kind, width
-    and rate) and the front end keeps its receive profile. A digital family request the demod thread finds with no
-    symbol profile queued stays queued until the profile arrives, so a switch to digital requested as two calls
-    (`svc_publish_symbol_profile()`, the channel-scan leave) always lands on its profile. Entering or leaving the analog
-    family re-applies that family's fresh-open defaults (`rtl_demod_enter_analog_family()`/`_digital_family()`),
-    restarts the carrier and timing loops (Costas, band-edge FLL, Gardner TED) as an open does, clears the output ring
-    and bumps the output generation; a width-only change redesigns the filter from empty histories. The CQPSK family
+    and rate) and the front end keeps its receive profile. A digital family request leaves the analog family only
+    while the monitor output runs (`dsd_demod_analog_monitor_active()`, the state the decoder sees published): once a
+    symbol profile applied on its own (a typed digital scan row under `-fA`, a CQPSK toggle) has moved the output to
+    symbols, it changes nothing and that profile applies as usual. A digital family request the demod thread finds
+    with no symbol profile queued while the monitor runs stays queued until the profile arrives, so a switch to digital
+    requested as two calls (`svc_publish_symbol_profile()`, the channel-scan leave) always lands on its profile.
+    Entering or leaving the analog family re-applies that family's fresh-open defaults
+    (`rtl_demod_enter_analog_family()`/`_digital_family()`), restarts the carrier and timing loops (Costas, band-edge
+    FLL, Gardner TED) as an open does, clears the output ring and bumps the output generation; a width-only change
+    redesigns the filter from empty histories. The CQPSK family
     after a switch to digital follows the symbol profile requested with it, as for any runtime mode change (a
     `DSD_NEO_CQPSK` override applies at stream open), and the digital resampler and output rate are decided for that
     profile when the switch is made (`rtl_demod_enter_digital_family()` takes its CQPSK flag and symbol rate), so a
     forced rate lands where an open of the profile would. Tests: `IO_RTL_ANALOG_FAMILY_SWITCH` (digital → analog →
-    digital equals a fresh open, loop state, monitor audio state and filter histories included, for P25 C4FM/CQPSK, DMR,
-    NXDN48 and dPMR at unforced and forced rates; width-only changes; requests with no stream; live requests and
+    digital, and a `-fA` start switched to digital, each equal to a fresh open, loop state, monitor audio state and
+    filter histories included, for P25 C4FM/CQPSK, DMR, NXDN48 and dPMR at unforced and forced rates; a digital
+    request on a typed digital row under `-fA`; width-only changes; requests with no stream; live requests and
     retune profiles refused against a running stream's rate and a replay's `post_downsample`; a demod block boundary
     between the family request and its symbol profile; the baselines run the same demod configuration functions as
     `dsd_rtl_stream_open()`), `IO_RTL_ANALOG_OPEN` (the start-time check against the rate an IQ replay delivers), plus

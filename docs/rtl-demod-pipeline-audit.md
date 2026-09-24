@@ -185,7 +185,13 @@ demod profile queued with it:
 
 Toggling CQPSK on under `-fA` leaves the analog family flag set but takes the
 output off the monitor, so that stream keeps its P25 CQPSK profile filter and
-publishes no analog profile. The modulation auto-switch never does this: frame
+publishes no analog profile. A typed digital scan row does the same when its
+symbol profile lands on a `-fA` session. A digital family request is a family
+switch only while the monitor output runs, the state the decoder sees
+published and times the switch for; on such a stream it changes nothing and the
+symbol profile queued with it applies as it did before, instead of resetting
+the stream in the middle of the row. An analog request brings the monitor back
+from either state. The modulation auto-switch never does this: frame
 sync stands it down in the analog family (`dsd_opts_is_analog_family()`),
 because a carrier within a few hertz of 0 Hz votes for CQPSK there and the
 switch used to follow that vote onto the P25 CQPSK path
