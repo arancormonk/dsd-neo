@@ -481,10 +481,10 @@ tone setting, and it runs with `-o null` too.
   0.8 Hz of it. 150.0 Hz is not supported and is never reported as 151.4 Hz; any other frequency within the sub-audible
   band, such as 68.2 Hz, reads as no tone rather than as its nearest neighbour, and a confirmed tone that moves off the
   table is dropped within about half a second. Near 0 dB in-band a noisy estimate can still confirm a neighbour for
-  about 200 ms before the same check drops it: over two hours of a continuous 0 dB carrier in offline seed sweeps,
-  68.2 Hz read as 67.0 or 69.3 Hz about ten times an hour and 161.0 or 166.7 Hz as a neighbour about twice an hour,
-  while 150.0 Hz never did; from 3 dB up it did not happen at all. DCS (DPL) signalling does not read as a CTCSS tone:
-  in the tests no DCS code did on a clean signal, nor did the codes nearest to a table tone at 10 or 0 dB in-band.
+  200-260 ms before the same check drops it: over two hours of a continuous 0 dB carrier in offline seed sweeps, 68.2 Hz
+  read as 67.0 or 69.3 Hz about ten times an hour and 161.0 or 166.7 Hz as a neighbour two or three times an hour, while
+  150.0 Hz never did; from 3 dB up 68.2 and 161.0 Hz never did. DCS (DPL) signalling does not read as a CTCSS tone: in
+  the tests no DCS code did on a clean signal, nor did the codes nearest to a table tone at 10 or 0 dB in-band.
 - Transmitter tone error: a tone slightly off its table value still reads as that value. Over 10,000 seeded starts
   each, tones 0.2 and 0.35 Hz off were confirmed within 400 ms at 10 dB in-band tone-to-noise on all but 1 and 4
   starts (the slowest at 443 and 424 ms), and 0.2 Hz off at 0 dB on 97 starts in 100 (the slowest at 677 ms). A tone
@@ -546,9 +546,11 @@ tone setting, and it runs with `-o null` too.
   such as `rtl_fm` scanning several frequencies: a hop that leaves a gap shorter than half a second (with padding,
   shorter than the 200 ms hangover) is not a new reception, so the previous channel's tone can still show on the next
   channel for a few hundred milliseconds, until the detector drops it as it drops a tone that stops (timing above).
-- Talk-off: a voice whose fundamental holds within 0.5 Hz of a table tone for a third of a second, with weak
-  harmonics, is indistinguishable from that tone in the time allowed and can be reported briefly. It is rare on
-  transmitted voice (which the transmitter high-passes at 300 Hz) and most likely near the top of the table.
+- Talk-off: a voice whose fundamental holds within 0.5 Hz of a table tone for a third of a second, with weak harmonics,
+  is indistinguishable from that tone in the time allowed and can be reported briefly. It is rare on transmitted voice
+  (which the transmitter high-passes at 300 Hz) and most likely near the top of the table. In offline seed sweeps, two
+  hours of unfiltered speech with no tone locked a tone once (233.6 Hz), and the same speech high-passed as a
+  transmitter does never locked one.
 
 ## Mode Tweaks & Advanced
 

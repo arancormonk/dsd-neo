@@ -56,6 +56,17 @@ enum { DSD_ANALOG_CARRIER_HANGOVER_MS = 200 };
  * A tone policy that waits for a lock before deciding there is no tone must wait at least
  * DSD_ANALOG_CTCSS_LOCK_CEILING_MS plus 100 ms (two hops), and still meets a late lock at the
  * rates above.
+ *
+ * A lock can also name the wrong tone for a few hops, and a policy that acts on the first lock
+ * meets those too. Near 0 dB in-band an off-table tone can lock a table neighbour for 200-260 ms
+ * before the detector drops it: over two hours of continuous carrier at 0 dB, 68.2 Hz read as
+ * 67.0 or 69.3 Hz about ten times an hour and 161.0 and 166.7 Hz as a neighbour two or three
+ * times an hour, while 150.0 Hz never read as 151.4 Hz and from +3 dB up 68.2 and 161.0 Hz
+ * never locked. A voice whose fundamental holds on a table tone can lock that tone (talk-off):
+ * under transmitter-filtered speech 10 dB above the tone, twice in 50,000 onsets a voice holding
+ * 254.1 Hz locked it for 150-250 ms, once in place of the real tone, and over two hours of
+ * seeded speech with no tone the unfiltered speech model locked a tone once (233.6 Hz) and the
+ * transmitter-filtered one never.
  */
 enum {
     DSD_ANALOG_CTCSS_LOCK_P95_MS = 400,
