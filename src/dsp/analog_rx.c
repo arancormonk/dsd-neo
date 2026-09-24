@@ -403,9 +403,6 @@ typedef struct {
     uint64_t stale_after_ms;
     /** Samples of the monitor block the symbol path is assembling that the tap has read. */
     unsigned int block_taken;
-    /** Samples that may wait before the tap reads them: DSD_ANALOG_RX_TAP_READ_MS at the rate
-        of the last read. */
-    unsigned int read_samples;
 } analog_rx_session;
 
 #ifdef DSD_NEO_TEST_HOOKS
@@ -476,7 +473,6 @@ analog_rx_session_create(const dsd_opts* opts, dsd_state* state) {
     session->core.resets = state->analog_rx.generation;
     session->log_key = ANALOG_RX_LOG_UNSET;
     session->log_generation = session->core.resets;
-    session->read_samples = analog_rx_read_samples(analog_rx_rate_hz(opts));
     analog_rx_note_generations(opts, session);
     if (dsd_state_ext_set(state, DSD_STATE_EXT_DSP_ANALOG_RX, session, free) != 0) {
         free(session);
@@ -696,7 +692,6 @@ analog_rx_read(const dsd_opts* opts, dsd_state* state, const float* samples, uns
     } else if (analog_rx_boundary_dropped(opts, state, session, count, rate_hz)) {
         return;
     }
-    session->read_samples = analog_rx_read_samples(rate_hz);
     if (!dsd_analog_rx_core_process(&session->core, samples, (int)count, rate_hz,
                                     analog_rx_squelch_open(opts, samples, count))) {
         analog_rx_log_unusable_rate(session, rate_hz);
@@ -734,8 +729,11 @@ dsd_analog_rx_tap_partial(const dsd_opts* opts, dsd_state* state, const float* b
             return;
         }
     }
+    /* The quota follows the input rate as it is now, not as it was at the last read: after a
+       drop in rate, the old rate's quota would hold the first read at the new one back for up
+       to a whole block (384 ms from 48 kHz to 2500 Hz), with the old reception still shown. */
     const unsigned int start = analog_rx_block_start(session, filled);
-    if (filled - start < session->read_samples) {
+    if (filled - start < analog_rx_read_samples(analog_rx_rate_hz(opts))) {
         return;
     }
     analog_rx_read(opts, state, block + start, filled - start);

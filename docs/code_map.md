@@ -519,17 +519,17 @@ installs from `src/engine/trunk_tuning.c` in `src/engine/trunk_tuning_hooks_inst
   only with new sweeps. The header also states the measured wrong-tone rates (neighbour locks near 0 dB, talk-off),
   which a policy acting on the first lock has to budget for. `dsd_symbol.c` taps each unsynced analog block while it is
   still raw: `symbol_process_unsynced_analog()` offers the tap the block after every sample it adds
-  (`dsd_analog_rx_tap_partial()`), and the tap reads what is waiting once `DSD_ANALOG_RX_TAP_READ_MS` (20 ms) of input
-  has built up; `symbol_finalize_unsynced_analog_block()` hands it the rest after the raw WAV write and before
-  `symbol_apply_unsynced_filters()`, whose in-place `hpf_f` (960 Hz) and `pbf_f` would remove every CTCSS tone. The
-  block is 20 ms on RTL but 960 samples on PCM at any rate (384 ms at 2500 Hz), and read only at block ends the
-  publication would trail the sample-time contract by up to a block. One decoder-thread tap covers RTL and PCM, sees
-  only live (not seam-replayed) samples, only reads the block, and runs whatever `audio_out` says. It is active only
-  while `dsd_analog_tone_detection_active()` (runtime, above) says so: the analog FM monitor on PCM input or on RTL with
-  an AUDIO_MONITOR output kind. The rate comes from the RTL output-rate hook or `dsd_opts_current_input_timing_rate()`.
-  The sync hunt keeps that output kind: in analog-only mode `dsd_frame_sync.c` never sends the RTL front end a symbol
-  profile (a CQPSK one would turn the monitor audio into symbols and silence the tap), as `app_control/symbol_profile.c`
-  already did not.
+  (`dsd_analog_rx_tap_partial()`), and the tap reads what is waiting once `DSD_ANALOG_RX_TAP_READ_MS` (20 ms) of input,
+  at the input's current rate, has built up; `symbol_finalize_unsynced_analog_block()` hands it the rest after the raw
+  WAV write and before `symbol_apply_unsynced_filters()`, whose in-place `hpf_f` (960 Hz) and `pbf_f` would remove every
+  CTCSS tone. The block is 20 ms on RTL but 960 samples on PCM at any rate (384 ms at 2500 Hz), and read only at block
+  ends the publication would trail the sample-time contract by up to a block. One decoder-thread tap covers RTL and PCM,
+  sees only live (not seam-replayed) samples, only reads the block, and runs whatever `audio_out` says. It is active
+  only while `dsd_analog_tone_detection_active()` (runtime, above) says so: the analog FM monitor on PCM input or on RTL
+  with an AUDIO_MONITOR output kind. The rate comes from the RTL output-rate hook or
+  `dsd_opts_current_input_timing_rate()`. The sync hunt keeps that output kind: in analog-only mode `dsd_frame_sync.c`
+  never sends the RTL front end a symbol profile (a CQPSK one would turn the monitor audio into symbols and silence the
+  tap), as `app_control/symbol_profile.c` already did not.
   - `src/dsp/analog_rx.c` holds the pure core behind the module-private `src/dsp/analog_rx_internal.h` (no `dsd_state`,
     no clock, so `DSP_ANALOG_CTCSS` drives it in sample time): the shared sub-audible front end (stage 1 a Blackman FIR
     decimating by `floor(fs / 2400)`, evaluated only when an output is due; stage 2 a Blackman LPF at the ~2.4 kHz rate,

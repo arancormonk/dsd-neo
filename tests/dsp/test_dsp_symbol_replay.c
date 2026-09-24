@@ -1117,6 +1117,44 @@ test_rx_tone_usable_rate_change_drops_lock(void) {
     dsd_state_ext_free_all(&state);
 }
 
+/*
+ * A drop in input rate part-way through a stream, driven sample by sample through the unsynced
+ * analog path: the tap reads at the new rate's pace from its first read there. A 100 Hz tone
+ * locks at 48 kHz; the input then moves to 2500 Hz, where one 960-sample monitor block lasts
+ * 384 ms, and carries 131.8 Hz. Read at the old rate's quota (960 samples), the first read at
+ * the new rate waits for the whole block, and the old reception stays on screen for 384 ms.
+ * The reception at the old rate must end within one 20 ms read at the new one, well inside the
+ * block, and its tone must not come back.
+ */
+static void
+test_rx_tone_rate_drop_mid_stream_keeps_pace(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    install_fake_rtl_hooks(0);
+    init_analog_monitor_fixture(&opts, &state);
+    feed_tone_blocks(&opts, &state, 30);
+    assert(rx_tone_locked_on_100(&state));
+    assert(state.analog_sample_counter == 0);
+    const uint32_t generation = state.analog_rx.generation;
+
+    opts.wav_sample_rate = PACE_WAV_RATE;
+    int ended_at = -1;
+    for (int n = 0; n < RESET_WAV_BLOCK - 1; n++) {
+        const double v = 3000.0 * cos(2.0 * M_PI * 131.8 * (double)n / (double)PACE_WAV_RATE);
+        dsd_symbol_test_push_unsynced_analog_sample(&opts, &state, (float)v);
+        if (ended_at < 0 && state.analog_rx.generation != generation) {
+            ended_at = n + 1;
+        }
+        if (ended_at >= 0) {
+            assert(state.analog_rx.ctcss_tenths_hz != 1000);
+        }
+    }
+    assert(state.analog_sample_counter == RESET_WAV_BLOCK - 1);
+    assert(ended_at > 0 && ended_at <= pace_ms_to_samples(DSD_ANALOG_RX_TAP_READ_MS));
+    assert(state.analog_rx.carrier_open == 1);
+    dsd_state_ext_free_all(&state);
+}
+
 /* Feed @p blocks 20 ms blocks of a tone at @p hz, or of digital silence (a closed squelch) for 0. */
 static void
 feed_blocks_at(dsd_opts* opts, dsd_state* state, int blocks, double hz) {
@@ -1472,6 +1510,7 @@ main(void) {
     test_rx_tone_unusable_rate_is_unavailable();
     test_rx_tone_unusable_rate_warns_once_per_stretch();
     test_rx_tone_usable_rate_change_drops_lock();
+    test_rx_tone_rate_drop_mid_stream_keeps_pace();
     test_rx_tone_logs_on_change_only();
     test_rx_tone_paused_stream_starts_a_new_reception();
     test_rx_tone_pause_mid_block_inherits_nothing();

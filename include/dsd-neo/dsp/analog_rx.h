@@ -118,8 +118,9 @@ void dsd_analog_rx_tap(const dsd_opts* opts, dsd_state* state, const float* bloc
  *
  * Called once per sample the symbol path adds, with the block and the number of samples it
  * now holds, while the block is not yet complete. The tap reads what it has not read yet once
- * DSD_ANALOG_RX_TAP_READ_MS of input is waiting, so on an input whose block lasts longer the
- * detectors and the publication still keep pace. Otherwise as dsd_analog_rx_tap().
+ * DSD_ANALOG_RX_TAP_READ_MS of input, at the input's current rate, is waiting, so on an input
+ * whose block lasts longer the detectors and the publication still keep pace, also across a
+ * change of rate. Otherwise as dsd_analog_rx_tap().
  */
 void dsd_analog_rx_tap_partial(const dsd_opts* opts, dsd_state* state, const float* block, unsigned int filled);
 
