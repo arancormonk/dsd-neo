@@ -203,7 +203,8 @@ drained in the same pass of the command queue as the mode change):
   profile, as an open of it would decide it: at a forced rate such as 78,125 Hz
   CQPSK never resamples and a 2400 sym/s profile at 60 kHz needs no resampling,
   where the analog monitor's 4800 sym/s placeholder would have resampled both to
-  48 kHz;
+  48 kHz. The integer-SPS flag (`sps_is_integer`) is derived for that profile
+  too, from the demod rate as an open derives it;
 - FM <-> AM: demodulator and de-emphasis swap with a monitor-state reset (AM is
   refused until the front end can demodulate it).
 

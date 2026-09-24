@@ -198,6 +198,7 @@ typedef struct rtl_stream_test_demod_fields {
     int symbol_levels;
     int ted_enabled;
     int ted_sps;
+    int sps_is_integer; /* the complex demod rate is a whole multiple of the symbol rate */
     int resamp_enabled;
     int resamp_l;
     int resamp_m;

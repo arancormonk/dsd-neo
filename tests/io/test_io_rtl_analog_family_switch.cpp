@@ -16,7 +16,8 @@
  * so each switch has to reset them the way an open does. The fresh
  * baselines run the same demodulator configuration functions as
  * dsd_rtl_stream_open() (see family_test_seed_open()), including at a demod rate
- * the device forces, where the digital resampler follows the symbol profile.
+ * the device forces, where the digital resampler and the integer-SPS flag follow
+ * the symbol profile.
  *
  * Leaving analog lands on the symbol profile queued after the family request,
  * even when the demod thread reaches a block boundary between the two requests,
@@ -108,6 +109,7 @@ expect_fields_equal(const char* label, const rtl_stream_test_demod_fields& got,
     FIELD(symbol_levels);
     FIELD(ted_enabled);
     FIELD(ted_sps);
+    FIELD(sps_is_integer);
     FIELD(resamp_enabled);
     FIELD(resamp_l);
     FIELD(resamp_m);

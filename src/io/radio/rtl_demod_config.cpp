@@ -1358,6 +1358,11 @@ rtl_demod_enter_digital_family(struct demod_state* demod, struct output_state* o
     if (symbol_rate_hz > 0) {
         demod->symbol_rate_hz = symbol_rate_hz;
     }
+    /* The integer-SPS flag an open derives from the complex demod rate and the symbol rate it runs. The analog family's
+       flag was decided for the monitor's 4800 sym/s placeholder: at a forced 60000 Hz that is 12.5 samples per symbol,
+       where a 2400 sym/s profile gets a whole 25. */
+    const int fs_cx = rtl_demod_resolve_complex_rate(demod, output);
+    demod->sps_is_integer = (demod->symbol_rate_hz > 0 && (fs_cx % demod->symbol_rate_hz) == 0) ? 1 : 0;
     /* The digital resampler depends on the symbol profile the family lands on, exactly as a fresh open decides it:
        CQPSK symbols are never resampled, and the FSK discriminator stream only when that profile's symbol rate needs
        it at a forced rate. It is decided here, once, so the output rate the caller commits is already final; the

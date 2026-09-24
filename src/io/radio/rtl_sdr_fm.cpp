@@ -10625,6 +10625,7 @@ family_test_capture(void) {
     f.symbol_levels = demod.symbol_levels;
     f.ted_enabled = demod.ted_enabled;
     f.ted_sps = demod.ted_sps;
+    f.sps_is_integer = demod.sps_is_integer;
     f.resamp_enabled = demod.resamp_enabled;
     f.resamp_l = demod.resamp_L;
     f.resamp_m = demod.resamp_M;
