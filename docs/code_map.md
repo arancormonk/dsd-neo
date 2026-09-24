@@ -530,7 +530,9 @@ Runtime controls (via `include/dsd-neo/io/rtl_stream_c.h`):
   before it is dropped), `rtl_stream_check_analog_profile()`, `rtl_stream_get_analog_profile()`,
   `rtl_stream_analog_family_active()` (the analog family, including
   while a CQPSK toggle or a typed row's profile has moved the front end off the monitor output),
-  `rtl_stream_output_rate_for_family()` (the output rate a pending switch will produce), and
+  `rtl_stream_output_rate_for_family()` (the output rate a pending switch will produce),
+  `rtl_stream_set_digital_decode_modes()` (the decoder's configured digital modes, which pick the FSK channel profile
+  a CQPSK toggle returns to once a live switch has moved the stream onto the digital family), and
   `rtl_stream_prepare_retune_analog_profile_for_target()` (the same fields bound to a retune target).
 - CQPSK control/status: `rtl_stream_toggle_cqpsk`, `rtl_stream_get_cqpsk_status`,
   `rtl_stream_request_cqpsk_reacquire`,
@@ -636,7 +638,13 @@ Notes:
     The stream records the
     family each switch lands on (`RtlSdrInternals::rx_family_switch`): its options are the orchestrator's copy from
     before the open, which a decoder-side mode change never reaches, so after a switch that record, not the options,
-    decides whether a symbol profile without CQPSK runs the FSK discriminator or monitor audio. Entering or leaving
+    decides whether a symbol profile without CQPSK runs the FSK discriminator or monitor audio. For the same reason,
+    once a switch has moved the stream onto the digital family, the FSK channel profile a symbol profile without one
+    of its own lands on (the DSP menu's CQPSK toggle turning CQPSK off) comes from the digital modes the decoder
+    noted (`rtl_stream_set_digital_decode_modes()`, from `svc_publish_symbol_profile()` with the configured options,
+    also for a mode picked under a scan row, never a running row's constraint) rather than from the options, as an
+    open with those modes picks it; a stream still on the family it opened on, or with no note since its open (the
+    open drops it), keeps picking from its options. Entering or leaving
     the analog family re-applies that family's fresh-open defaults (`rtl_demod_enter_analog_family()`/
     `_digital_family()`), restarts the carrier and timing loops (Costas, band-edge FLL, Gardner TED) and zeroes the
     I/Q DC and balance estimates, the squelch dwell toward a multi-frequency hop and a replay's post-demod decimator as
@@ -656,7 +664,8 @@ Notes:
     fresh open, loop state, monitor audio state, I/Q corrections and filter histories included, also under
     `DSD_NEO_CQPSK=0` and `=1` and with the channel filter off (`DSD_NEO_CHANNEL_LPF=0`, a 12 kHz DSP rate), with the
     stream keeping the options snapshot it opened with, for P25
-    C4FM/CQPSK, DMR, NXDN48, dPMR and ProVoice (also at a 12 kHz DSP rate) at unforced and forced rates, including
+    C4FM/CQPSK, DMR, NXDN48, dPMR and ProVoice (also at a 12 kHz DSP rate) at unforced and forced rates and D-STAR,
+    the DSP menu's CQPSK toggle made twice after the switch landing where it lands on a fresh open, including
     from a `-fA` session a CQPSK toggle or a
     typed digital row had moved off the monitor output, or with a CQPSK toggle still queued when the digital mode is
     picked; a typed digital row under `-fA` and on a DMR session switched
@@ -668,7 +677,8 @@ Notes:
     block boundary
     between the family request and its symbol profile; a switch whose ring clear meets a decoder read between its
     copy and its tail store, or a read that loaded the clear's first generation bump and reached the ring before the
-    clear; the baselines run the same demod configuration functions as
+    clear; noted digital modes deciding only after a switch to digital and dropped by a new open; the baselines run
+    the same demod configuration functions as
     `dsd_rtl_stream_open()`), `IO_RTL_ANALOG_OPEN` (the start-time check against the rate an IQ replay delivers, and a
     `-fA` replay switched to DMR and back through the stream API), plus
     `IO_RTL_DEMOD_CONFIG` and `IO_RTL_RETUNE_PREPARE`.

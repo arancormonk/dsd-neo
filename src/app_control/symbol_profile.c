@@ -34,6 +34,23 @@ symbol_profile_configured_digital(const dsd_opts* opts, const dsd_state* state) 
     const int analog_only = configured ? configured->analog_only : opts->analog_only;
     return (analog_only == 1 && opts->m17encoder != 1) ? 0 : 1;
 }
+
+/* Note the configured digital decode modes with the RTL front end (rtl_stream_set_digital_decode_modes()). Once a live
+   switch has moved it onto the digital family, the options it opened with no longer name the modes it runs (a -fA
+   session's name none), and these pick the FSK channel profile a CQPSK toggle returns to, as an open with them would.
+   Only options that are the configured ones say that: outside a scan row, or while a command updates the configuration
+   under one (dsd_scan_mode_updating(), before the row's constraint is reapplied); a running row's options carry the
+   row's constraint, and the configured modes it runs under were noted when they were set, or are the ones the stream
+   opened with. A mode change made under a row is noted here even though the front end waits for the row's leave to
+   switch to it. */
+static void
+symbol_profile_note_digital_modes(const dsd_opts* opts, const dsd_state* state) {
+    if (opts->audio_in_type != AUDIO_IN_RTL || !state->rtl_ctx || dsd_scan_mode_configured_view(state)
+        || opts->analog_only == 1) {
+        return;
+    }
+    rtl_stream_set_digital_decode_modes(opts);
+}
 #endif
 
 int
@@ -60,6 +77,9 @@ svc_publish_symbol_profile(const dsd_opts* opts, dsd_state* state, dsd_decode_mo
     }
 
     state->sps_hunt_idx = (int)profile.sps_profile_index;
+#ifdef USE_RADIO
+    symbol_profile_note_digital_modes(opts, state);
+#endif
     if (dsd_scan_mode_updating(state)) {
         /* The saved configuration needs its new profile, but acquisition and
          * frontend changes wait until the row constraint has been reapplied. */

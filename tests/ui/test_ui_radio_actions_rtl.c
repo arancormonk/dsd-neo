@@ -36,6 +36,8 @@ static int g_analog_family;
 static int g_analog_kind;
 static int g_analog_width_hz;
 static int g_analog_order;
+static int g_modes_calls;
+static int g_modes_order;
 
 int
 rtl_stream_adjust_ppm(dsd_opts* opts, int delta) {
@@ -74,6 +76,13 @@ rtl_stream_request_analog_profile(int family, int kind, int width_hz) {
     g_analog_width_hz = width_hz;
     g_analog_order = ++g_sequence;
     return 0;
+}
+
+void
+rtl_stream_set_digital_decode_modes(const dsd_opts* opts) {
+    (void)opts;
+    g_modes_calls++;
+    g_modes_order = ++g_sequence;
 }
 
 /* Linked in with svc_check_mode_receive_profile(); nothing here changes the decode mode. */
@@ -136,6 +145,8 @@ reset_profile_capture(const dsd_opts* opts) {
     g_analog_kind = -1;
     g_analog_width_hz = -1;
     g_analog_order = 0;
+    g_modes_calls = 0;
+    g_modes_order = 0;
 }
 
 static int
@@ -158,6 +169,9 @@ test_p25p2_toggle_applies_rtl_profile_before_lock(void) {
     rc |= expect_int("p25p2 qpsk request call", g_request_calls, 1);
     rc |= expect_int("p25p2 qpsk asks for the digital family", g_analog_family, DSD_RX_FAMILY_DIGITAL);
     rc |= expect_int("p25p2 qpsk family before profile", g_analog_order > 0 && g_analog_order < g_request_order, 1);
+    rc |= expect_int("p25p2 qpsk notes the configured digital modes", g_modes_calls, 1);
+    rc |= expect_int("p25p2 qpsk notes them before the family request",
+                     g_modes_order > 0 && g_modes_order < g_analog_order, 1);
     rc |= expect_int("p25p2 qpsk family", g_request_cqpsk, 1);
     rc |= expect_int("p25p2 qpsk profile rate", g_request_rate, 6000);
     rc |= expect_int("p25p2 qpsk profile levels", g_request_levels, 4);

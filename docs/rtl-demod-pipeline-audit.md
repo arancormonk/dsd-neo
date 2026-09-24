@@ -211,7 +211,13 @@ drained in the same pass of the command queue as the mode change):
   the open, which a decoder-side mode change never reaches, so from then on that
   record decides whether a symbol profile without CQPSK runs the FSK
   discriminator or monitor audio (a `-fA` session switched to DMR stays on the
-  discriminator through a CQPSK profile and back). The digital symbol profile follows as a
+  discriminator through a CQPSK profile and back). On the digital family, the
+  FSK channel profile the DSP menu's CQPSK toggle returns to when it turns
+  CQPSK off comes from the digital modes the decoder noted
+  (`rtl_stream_set_digital_decode_modes()`) rather than from those options, as
+  an open with those modes picks it (a `-fA` session switched to D-STAR
+  returns to its 6.25 kHz profile, not the 12.5 kHz one four levels at
+  4800 sym/s give). The digital symbol profile follows as a
   demod profile request, and it decides the CQPSK family, unless `DSD_NEO_CQPSK`
   is set: that override decides it as it does at stream open, and the channel
   filter follows the family the switch lands on (the P25 CQPSK profile for CQPSK,
@@ -351,7 +357,8 @@ invariant to it, so it is left as is.
   DMR session switched to analog, a `-fA` session a CQPSK toggle or a typed
   digital row had moved off the monitor output switched to digital, and one
   whose CQPSK toggle was still queued when the digital mode was picked (each
-  equal to a fresh open too), and covers width-only
+  equal to a fresh open too, the DSP menu's CQPSK toggle after the switch
+  included, D-STAR among the modes), and covers width-only
   changes, requests made with no stream running, and live requests and retune
   profiles a running stream's rate or post-demod decimation cannot realize
   (refused before anything is queued, or at the rate a retune moved the stream

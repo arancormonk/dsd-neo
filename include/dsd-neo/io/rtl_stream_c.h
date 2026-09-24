@@ -280,7 +280,8 @@ int rtl_stream_request_demod_profile(int cqpsk_enable, int symbol_rate_hz, int l
  * Entering the analog family (or leaving it) re-applies the defaults a fresh stream open of that family would choose,
  * resets the filter state, clears the output ring and bumps the output generation. The stream remembers the family it
  * switched to: the options it runs on are the copy taken before the open, so that record, not those options, decides
- * from then on whether a symbol profile without CQPSK runs the FSK discriminator or monitor audio. Leaving the analog
+ * from then on whether a symbol profile without CQPSK runs the FSK discriminator or monitor audio (and on the digital
+ * family, the modes noted with rtl_stream_set_digital_decode_modes() pick its FSK channel profile). Leaving the analog
  * family for digital expects the digital symbol profile to follow through rtl_stream_request_demod_profile(), and waits
  * for it: that profile decides the digital resampler and output rate, so a digital family request the demod thread
  * finds without a symbol profile stays queued until one arrives, and the two apply at the same block boundary. A
@@ -300,6 +301,21 @@ int rtl_stream_request_demod_profile(int cqpsk_enable, int symbol_rate_hz, int l
  *         an analog request is accepted.
  */
 int rtl_stream_request_analog_profile(int family, int kind, int width_hz);
+
+/**
+ * @brief Note the digital decode modes the decoder is configured for.
+ *
+ * An open picks the FSK channel profile a symbol profile without one of its own lands on (the DSP menu's CQPSK toggle
+ * turning CQPSK off) from the decode modes in the options it opens with. Those options are the copy taken before the
+ * open, and a live switch can move the stream onto the digital family for modes they do not name (a -fA session names
+ * none), so once a live switch has done that, the modes noted here pick that profile instead, as an open with them
+ * would. A stream still on the family it opened on keeps picking from its own options. Called on the decoder thread
+ * with its configured options whenever it publishes a digital mode's symbol profile (svc_publish_symbol_profile()); the
+ * latest note stands until the next stream open drops it. Does nothing for NULL.
+ *
+ * @param opts Decoder options whose frame flags name the configured digital decode modes.
+ */
+void rtl_stream_set_digital_decode_modes(const dsd_opts* opts);
 
 /**
  * @brief Check a receive-family / analog profile request without queuing it.

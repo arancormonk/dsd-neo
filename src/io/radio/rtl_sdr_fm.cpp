@@ -855,41 +855,69 @@ opts_has_12k5_or_cqpsk_bw_mode(const dsd_opts* opts) {
             || opts->mod_qpsk == 1);
 }
 
-static int
-rtl_stream_fsk_profile_for_opts_by_sym_rate(const dsd_opts* opts, int sym_rate) {
+namespace {
+/* The decode modes that pick an FSK channel profile (rtl_stream_fsk_channel_profile_for_current_mode()), as bits. */
+enum RtlFskModeBits : uint32_t {
+    kFskModeProvoice = 1U << 0,   /* frame_provoice */
+    kFskModeNxdn48Dpmr = 1U << 1, /* frame_nxdn48 or frame_dpmr */
+    kFskModeX2tdma = 1U << 2,     /* frame_x2tdma */
+    kFskModeWide4800 = 1U << 3,   /* dsd_opts_uses_wide_4800_profile() */
+    kFskModeP25 = 1U << 4,        /* frame_p25p1 or frame_p25p2 */
+    kFskModeDstar = 1U << 5,      /* frame_dstar */
+    kFskModesNoted = 1U << 31,    /* g_noted_digital_modes holds a note */
+};
+} // namespace
+
+/* Digital decode modes the decoder noted since the stream opened (rtl_stream_set_digital_decode_modes()), with
+ * kFskModesNoted set, or 0 for none. They pick the FSK channel profile once a live switch has moved the stream onto
+ * the digital family (rtl_stream_fsk_profile_modes()). Written by the decoder thread, read by whichever thread applies
+ * a CQPSK toggle; cleared when a stream opens (rtl_stream_clear_demod_profile_request()). */
+static std::atomic<uint32_t> g_noted_digital_modes{0U};
+
+static uint32_t
+rtl_stream_fsk_modes_from_opts(const dsd_opts* opts) {
     if (!opts) {
-        return -1;
+        return 0U;
     }
-    if (sym_rate == 9600 && opts->frame_provoice == 1) {
+    uint32_t modes = 0U;
+    modes |= opts->frame_provoice == 1 ? (uint32_t)kFskModeProvoice : 0U;
+    modes |= (opts->frame_nxdn48 == 1 || opts->frame_dpmr == 1) ? (uint32_t)kFskModeNxdn48Dpmr : 0U;
+    modes |= opts->frame_x2tdma == 1 ? (uint32_t)kFskModeX2tdma : 0U;
+    modes |= dsd_opts_uses_wide_4800_profile(opts) ? (uint32_t)kFskModeWide4800 : 0U;
+    modes |= (opts->frame_p25p1 == 1 || opts->frame_p25p2 == 1) ? (uint32_t)kFskModeP25 : 0U;
+    modes |= opts->frame_dstar == 1 ? (uint32_t)kFskModeDstar : 0U;
+    return modes;
+}
+
+static int
+rtl_stream_fsk_profile_for_modes_by_sym_rate(uint32_t modes, int sym_rate) {
+    if (sym_rate == 9600 && (modes & kFskModeProvoice) != 0U) {
         return DSD_CH_LPF_PROFILE_PROVOICE;
     }
-    if (sym_rate == 2400 && (opts->frame_nxdn48 == 1 || opts->frame_dpmr == 1)) {
+    if (sym_rate == 2400 && (modes & kFskModeNxdn48Dpmr) != 0U) {
         return DSD_CH_LPF_PROFILE_6K25;
     }
-    if (sym_rate == 6000 && opts->frame_x2tdma == 1) {
+    if (sym_rate == 6000 && (modes & kFskModeX2tdma) != 0U) {
         return DSD_CH_LPF_PROFILE_12K5;
     }
     return -1;
 }
 
 static int
-rtl_stream_fsk_profile_for_opts_by_frame(const dsd_opts* opts) {
-    if (!opts) {
-        return -1;
-    }
-    if (dsd_opts_uses_wide_4800_profile(opts)) {
+rtl_stream_fsk_profile_for_modes_by_frame(uint32_t modes) {
+    if ((modes & kFskModeWide4800) != 0U) {
         return DSD_CH_LPF_PROFILE_12K5;
     }
-    if (opts->frame_p25p1 == 1 || opts->frame_p25p2 == 1) {
+    if ((modes & kFskModeP25) != 0U) {
         return DSD_CH_LPF_PROFILE_P25_C4FM;
     }
-    if (opts->frame_nxdn48 == 1 || opts->frame_dpmr == 1 || opts->frame_dstar == 1) {
+    if ((modes & (kFskModeNxdn48Dpmr | kFskModeDstar)) != 0U) {
         return DSD_CH_LPF_PROFILE_6K25;
     }
-    if (opts->frame_x2tdma == 1) {
+    if ((modes & kFskModeX2tdma) != 0U) {
         return DSD_CH_LPF_PROFILE_12K5;
     }
-    if (opts->frame_provoice == 1) {
+    if ((modes & kFskModeProvoice) != 0U) {
         return DSD_CH_LPF_PROFILE_PROVOICE;
     }
     return -1;
@@ -915,20 +943,44 @@ rtl_stream_fsk_profile_for_symbol_rate(int sym_rate, int levels) {
     return DSD_CH_LPF_PROFILE_WIDE;
 }
 
+/* The decode modes that pick the FSK channel profile now. The options the stream opened with decide until a live
+ * switch has moved it onto the digital family (see RtlSdrInternals::rx_family_switch); from then on the modes the
+ * decoder noted do, as they would for an open with its options: the options the stream opened with are the
+ * orchestrator's copy from before the open and never see a mode change (a -fA session's name no digital mode). With
+ * no note since the open, the options still decide. */
+static uint32_t
+rtl_stream_fsk_profile_modes(void) {
+    if (g_stream && g_stream->rx_family_switch.load(std::memory_order_relaxed) == kRxFamilySwitchedDigital) {
+        const uint32_t noted = g_noted_digital_modes.load(std::memory_order_acquire);
+        if ((noted & kFskModesNoted) != 0U) {
+            return noted;
+        }
+    }
+    return rtl_stream_fsk_modes_from_opts(g_stream ? g_stream->opts : NULL);
+}
+
 static int
 rtl_stream_fsk_channel_profile_for_current_mode(void) {
-    const dsd_opts* opts = (g_stream && g_stream->opts) ? g_stream->opts : NULL;
+    const uint32_t modes = rtl_stream_fsk_profile_modes();
     const int sym_rate = demod.symbol_rate_hz > 0 ? demod.symbol_rate_hz : 4800;
     const int levels = demod.symbol_levels == 2 ? 2 : 4;
-    int profile = rtl_stream_fsk_profile_for_opts_by_sym_rate(opts, sym_rate);
+    int profile = rtl_stream_fsk_profile_for_modes_by_sym_rate(modes, sym_rate);
     if (profile >= 0) {
         return profile;
     }
-    profile = rtl_stream_fsk_profile_for_opts_by_frame(opts);
+    profile = rtl_stream_fsk_profile_for_modes_by_frame(modes);
     if (profile >= 0) {
         return profile;
     }
     return rtl_stream_fsk_profile_for_symbol_rate(sym_rate, levels);
+}
+
+extern "C" void
+rtl_stream_set_digital_decode_modes(const dsd_opts* opts) {
+    if (!opts) {
+        return;
+    }
+    g_noted_digital_modes.store(rtl_stream_fsk_modes_from_opts(opts) | kFskModesNoted, std::memory_order_release);
 }
 
 static void
@@ -8591,16 +8643,19 @@ rtl_stream_consume_demod_profile_request(void) {
     }
 }
 
-/* Discard any unconsumed queued request. Called from dsd_rtl_stream_open
- * before the pipeline threads start, so a request queued while a previous
- * session was tearing down cannot override the new session's startup profile
- * when the demod thread consumes its first block. */
+/* Discard any unconsumed queued request, and the digital decode modes a
+ * decoder noted. Called from dsd_rtl_stream_open before the pipeline threads
+ * start, so a request queued while a previous session was tearing down cannot
+ * override the new session's startup profile when the demod thread consumes
+ * its first block, and the options the new session opens with decide its FSK
+ * channel profile until its own decoder notes a mode change. */
 static void
 rtl_stream_clear_demod_profile_request(void) {
     std::lock_guard<std::mutex> lock(g_profile_req_m);
     g_profile_req_pending.store(0, std::memory_order_relaxed);
     g_profile_req_has_demod = 0;
     g_profile_req_analog_family = -1;
+    g_noted_digital_modes.store(0U, std::memory_order_release);
 }
 
 static int
@@ -10047,6 +10102,17 @@ rtl_stream_test_mode_policy_matrix(int* out_values, size_t count) {
     return 0;
 }
 
+/* The profile an open's options pick by symbol rate, and by frame flags alone (-1: they pick none). */
+static int
+rtl_stream_fsk_profile_for_opts_by_sym_rate(const dsd_opts* opts, int sym_rate) {
+    return rtl_stream_fsk_profile_for_modes_by_sym_rate(rtl_stream_fsk_modes_from_opts(opts), sym_rate);
+}
+
+static int
+rtl_stream_fsk_profile_for_opts_by_frame(const dsd_opts* opts) {
+    return rtl_stream_fsk_profile_for_modes_by_frame(rtl_stream_fsk_modes_from_opts(opts));
+}
+
 extern "C" int
 rtl_stream_test_fsk_profile_policy_matrix(int* out_profiles, size_t count) {
     if (!out_profiles || count < 21U) {
@@ -10979,8 +11045,10 @@ family_test_save(void) {
     FamilyTestSaved saved = {g_stream, rtl_dsp_bw_hz,
                              controller.retune_in_progress.exchange(0, std::memory_order_acq_rel),
                              controller.last_applied_freq_hz.load(std::memory_order_acquire)};
-    /* Each test's stream starts on the family its options open it on, as a newly opened stream does. */
+    /* Each test's stream starts on the family its options open it on, with no decode modes noted, as a newly opened
+       stream does. */
     g_cqpsk_toggle_test_stream.rx_family_switch.store(kRxFamilyFromOptions, std::memory_order_relaxed);
+    g_noted_digital_modes.store(0U, std::memory_order_release);
     return saved;
 }
 
@@ -11014,12 +11082,42 @@ family_test_switch_to_analog(const dsd_opts* analog_opts, rtl_stream_test_family
         rtl_stream_get_analog_profile(&out->published_kind, &out->published_width_hz, &out->published_lpf_on);
 }
 
-/* As family_test_switch_to_analog(): the decoder's mode change reaches the stream only as the family request and the
- * symbol profile svc_publish_symbol_profile() queues. */
+/* The DSP menu's CQPSK toggle made twice, each consumed at a block boundary: the opposite of the published CQPSK state
+ * with no symbol profile, as apply_dsp_op_cqpsk_toggle() queues it. Records the channel profile, output kind and
+ * symbol levels after each. */
 static void
-family_test_switch_to_digital(const rtl_stream_test_digital_request* req, rtl_stream_test_family_switch_result* out) {
+family_test_menu_cqpsk_toggles(int* profiles, int* kinds, int* levels) {
+    for (int i = 0; i < 2; i++) {
+        int cqpsk = 0;
+        rtl_stream_get_cqpsk_status(&cqpsk, NULL);
+        (void)rtl_stream_request_demod_profile(cqpsk ? 0 : 1, 0, 0, -1, -1, 0);
+        family_test_demod_thread_boundary();
+        profiles[i] = demod.channel_lpf_profile;
+        kinds[i] = demod.output_kind;
+        levels[i] = demod.symbol_levels;
+    }
+}
+
+/* The DSP menu's toggles on the fresh open just seeded, running as a stream that opened with @p opts does. */
+static void
+family_test_fresh_menu_cqpsk_toggles(const dsd_opts* opts, rtl_stream_test_family_switch_result* out) {
+    const dsd_opts* stream_opts = g_cqpsk_toggle_test_stream.opts;
+    g_cqpsk_toggle_test_stream.opts = opts;
+    g_stream = &g_cqpsk_toggle_test_stream;
+    family_test_menu_cqpsk_toggles(out->fresh_toggle_channel_profile, out->fresh_toggle_output_kind,
+                                   out->fresh_toggle_levels);
+    g_stream = NULL;
+    g_cqpsk_toggle_test_stream.opts = stream_opts;
+}
+
+/* As family_test_switch_to_analog(): the decoder's mode change reaches the stream only as the digital decode modes it
+ * notes (@p digital_opts), the family request and the symbol profile svc_publish_symbol_profile() queues. */
+static void
+family_test_switch_to_digital(const dsd_opts* digital_opts, const rtl_stream_test_digital_request* req,
+                              rtl_stream_test_family_switch_result* out) {
     out->predicted_digital_output_rate =
         rtl_stream_output_rate_for_family(DSD_RX_FAMILY_DIGITAL, req->cqpsk_enable, req->symbol_rate_hz);
+    rtl_stream_set_digital_decode_modes(digital_opts);
     int rc = rtl_stream_request_analog_profile(DSD_RX_FAMILY_DIGITAL, DSD_ANALOG_DEMOD_FM, 0);
     if (req->boundary_between_requests) {
         family_test_demod_thread_boundary();
@@ -11034,6 +11132,8 @@ family_test_switch_to_digital(const rtl_stream_test_digital_request* req, rtl_st
     out->used_after_digital = ring_used(&output);
     out->published_after_digital_rc = rtl_stream_get_analog_profile(NULL, NULL, NULL);
     out->family_active_after_digital = rtl_stream_analog_family_active();
+    family_test_menu_cqpsk_toggles(out->switched_toggle_channel_profile, out->switched_toggle_output_kind,
+                                   out->switched_toggle_levels);
     /* The digital session goes on to a CQPSK profile and back, as a modulation change or a typed row does. */
     (void)rtl_stream_request_demod_profile(1, 4800, 4, DSD_CH_LPF_PROFILE_P25_CQPSK, 10, 0);
     family_test_demod_thread_boundary();
@@ -11094,6 +11194,7 @@ rtl_stream_test_analog_family_switch(const dsd_opts* digital_opts, const dsd_opt
     g_stream = NULL; /* fresh opens seed before any pipeline exists */
     int rc = family_test_seed_open(digital_opts, rate_hz, forced_rate_out_hz);
     out->fresh_digital = family_test_capture();
+    family_test_fresh_menu_cqpsk_toggles(digital_opts, out);
     rc |= family_test_seed_open(analog_opts, rate_hz, forced_rate_out_hz);
     out->fresh_analog = family_test_capture();
     rc |= family_test_seed_open(digital_opts, rate_hz, forced_rate_out_hz);
@@ -11108,7 +11209,7 @@ rtl_stream_test_analog_family_switch(const dsd_opts* digital_opts, const dsd_opt
     family_test_seed_ring(queued);
     family_test_seed_running_loops();
     rc |= family_test_seed_stale_monitor_state();
-    family_test_switch_to_digital(digital_request, out);
+    family_test_switch_to_digital(digital_opts, digital_request, out);
 
     family_test_restore(saved);
     family_test_release_buffers();
@@ -11140,6 +11241,7 @@ rtl_stream_test_analog_start_family_switch(const dsd_opts* digital_opts, const d
     g_stream = NULL; /* fresh opens seed before any pipeline exists */
     int rc = family_test_seed_open(digital_opts, rate_hz, forced_rate_out_hz);
     out->fresh_digital = family_test_capture();
+    family_test_fresh_menu_cqpsk_toggles(digital_opts, out);
     rc |= family_test_seed_open(analog_opts, rate_hz, forced_rate_out_hz);
     out->fresh_analog = family_test_capture();
     g_stream = &g_cqpsk_toggle_test_stream; /* live on the -fA open: requests queue for the demod thread */
@@ -11153,7 +11255,81 @@ rtl_stream_test_analog_start_family_switch(const dsd_opts* digital_opts, const d
     out->used_before = ring_used(&output);
     out->generation_before = rtl_stream_output_generation();
     out->generation_after_analog = out->generation_before;
-    family_test_switch_to_digital(digital_request, out);
+    family_test_switch_to_digital(digital_opts, digital_request, out);
+
+    family_test_restore(saved);
+    family_test_release_buffers();
+    fsk_reacquire_test_cleanup_output_ring(initialized_output);
+    return rc == 0 ? 0 : -3;
+}
+
+/* Switch the running test stream to the analog monitor and back to D-STAR, noting @p noted_modes (none for NULL) before
+ * the digital family request as the decoder does, then make the DSP menu's CQPSK toggle twice: returns the channel
+ * profile the toggle turning CQPSK off again landed on through @p out_profile. */
+static int
+family_test_scope_switch_and_toggle(const dsd_opts* noted_modes, int* out_profile) {
+    int rc = rtl_stream_request_analog_profile(DSD_RX_FAMILY_ANALOG, DSD_ANALOG_DEMOD_FM, 0);
+    family_test_demod_thread_boundary();
+    if (noted_modes) {
+        rtl_stream_set_digital_decode_modes(noted_modes);
+    }
+    rc |= rtl_stream_request_analog_profile(DSD_RX_FAMILY_DIGITAL, DSD_ANALOG_DEMOD_FM, 0);
+    rc |= rtl_stream_request_demod_profile(0, 4800, 2, DSD_CH_LPF_PROFILE_6K25, 10, 0);
+    family_test_demod_thread_boundary();
+    int profiles[2] = {0, 0};
+    int kinds[2] = {0, 0};
+    int levels[2] = {0, 0};
+    family_test_menu_cqpsk_toggles(profiles, kinds, levels);
+    *out_profile = profiles[1];
+    return rc;
+}
+
+extern "C" int
+rtl_stream_test_noted_digital_modes_scope(rtl_stream_test_noted_modes_result* out) {
+    if (!out) {
+        return -1;
+    }
+    *out = {};
+    const size_t queued = 64U;
+    int initialized_output = 0;
+    if (fsk_reacquire_test_prepare_output_ring(queued, &initialized_output) != 0) {
+        fsk_reacquire_test_cleanup_output_ring(initialized_output);
+        return -2;
+    }
+    const FamilyTestSaved saved = family_test_save();
+    static dsd_opts p25_opts;
+    static dsd_opts dstar_opts;
+    DSD_MEMSET(&p25_opts, 0, sizeof p25_opts);
+    DSD_MEMSET(&dstar_opts, 0, sizeof dstar_opts);
+    p25_opts.frame_p25p1 = 1;
+    p25_opts.mod_c4fm = 1;
+    dstar_opts.frame_dstar = 1;
+    dstar_opts.mod_gfsk = 1;
+    g_cqpsk_toggle_test_stream.output = &output;
+    g_cqpsk_toggle_test_stream.opts = &p25_opts; /* the P25 open's own copy of its options */
+    g_stream = NULL;
+    int rc = family_test_seed_open(&p25_opts, 48000, 0);
+    g_stream = &g_cqpsk_toggle_test_stream;
+
+    /* A digital-to-digital mode change: the decoder notes D-STAR and queues its symbol profile, with no family switch. */
+    rtl_stream_set_digital_decode_modes(&dstar_opts);
+    rc |= rtl_stream_request_demod_profile(0, 4800, 2, DSD_CH_LPF_PROFILE_6K25, 10, 0);
+    family_test_demod_thread_boundary();
+    int profiles[2] = {0, 0};
+    int kinds[2] = {0, 0};
+    int levels[2] = {0, 0};
+    family_test_menu_cqpsk_toggles(profiles, kinds, levels);
+    out->unswitched_profile = profiles[1];
+
+    rc |= family_test_scope_switch_and_toggle(&dstar_opts, &out->switched_profile);
+
+    /* A new open of the same options: it drops the note and starts on the family its options open it on. */
+    rtl_stream_clear_demod_profile_request();
+    g_cqpsk_toggle_test_stream.rx_family_switch.store(kRxFamilyFromOptions, std::memory_order_relaxed);
+    g_stream = NULL;
+    rc |= family_test_seed_open(&p25_opts, 48000, 0);
+    g_stream = &g_cqpsk_toggle_test_stream;
+    rc |= family_test_scope_switch_and_toggle(NULL, &out->reopened_profile);
 
     family_test_restore(saved);
     family_test_release_buffers();

@@ -34,14 +34,17 @@
  * lands on the legacy WIDE design where the rate cannot fit 16 kHz.
  *
  * The matrix covers P25 C4FM/CQPSK, DMR, NXDN48, dPMR and ProVoice, the last also at a 12 kHz DSP rate, where its
- * 9600 sym/s leaves under two samples per symbol and the switch has to land on the two an open clamps the timing to.
+ * 9600 sym/s leaves under two samples per symbol and the switch has to land on the two an open clamps the timing to,
+ * and D-STAR (4800 sym/s over two levels).
  *
  * A session that started with -fA and then switches to a digital mode lands on
  * a fresh open of that mode too. Throughout, the stream keeps the options
  * snapshot it opened with, as a real session's orchestrator copy does: the
- * family requests are all it learns of a mode change, so after a switch its own
- * record of the family, not that snapshot, decides where a symbol profile without
- * CQPSK lands (a CQPSK profile and back returns to the FSK discriminator). Every
+ * family requests and the digital modes the decoder notes are all it learns of a
+ * mode change, so after a switch its own record of the family, not that snapshot,
+ * decides where a symbol profile without CQPSK lands (a CQPSK profile and back
+ * returns to the FSK discriminator), and the noted modes pick the channel profile
+ * the DSP menu's CQPSK toggle returns to, as on a fresh open of the mode. Every
  * switch also returns the I/Q DC and balance estimates and a replay's post-demod
  * decimator to their start.
  *
@@ -197,6 +200,30 @@ expect_analog_fields_equal(const char* label, const rtl_stream_test_demod_fields
     return rc;
 }
 
+/* The DSP menu's CQPSK toggle, made twice after the switch, lands where it lands on a fresh open of the mode: turning
+ * CQPSK off returns to the FSK channel profile an open picks from the decode modes it runs, not from the options the
+ * stream opened with (the -fA monitor's name no digital mode). */
+static int
+expect_menu_toggles_like_open(const char* label, const rtl_stream_test_family_switch_result& r) {
+    int rc = 0;
+    char name[192];
+    for (int i = 0; i < 2; i++) {
+        DSD_SNPRINTF(name, sizeof name, "%s: menu CQPSK toggle %d channel profile", label, i + 1);
+        rc |= expect_int(name, r.switched_toggle_channel_profile[i], r.fresh_toggle_channel_profile[i]);
+        DSD_SNPRINTF(name, sizeof name, "%s: menu CQPSK toggle %d output kind", label, i + 1);
+        rc |= expect_int(name, r.switched_toggle_output_kind[i], r.fresh_toggle_output_kind[i]);
+        DSD_SNPRINTF(name, sizeof name, "%s: menu CQPSK toggle %d symbol levels", label, i + 1);
+        rc |= expect_int(name, r.switched_toggle_levels[i], r.fresh_toggle_levels[i]);
+    }
+    /* One of the two toggles turned CQPSK off (a C4FM mode toggles on, then off; a CQPSK mode off first). */
+    DSD_SNPRINTF(name, sizeof name, "%s: a menu CQPSK toggle returned to the FSK discriminator", label);
+    rc |= expect_int(name,
+                     r.switched_toggle_output_kind[0] == RTL_STREAM_OUTPUT_FSK_DISCRIMINATOR
+                         || r.switched_toggle_output_kind[1] == RTL_STREAM_OUTPUT_FSK_DISCRIMINATOR,
+                     1);
+    return rc;
+}
+
 namespace {
 
 struct family_case {
@@ -240,6 +267,12 @@ dpmr(dsd_opts* o) {
 static void
 provoice(dsd_opts* o) {
     o->frame_provoice = 1;
+    o->mod_gfsk = 1;
+}
+
+static void
+dstar(dsd_opts* o) {
+    o->frame_dstar = 1;
     o->mod_gfsk = 1;
 }
 
@@ -287,6 +320,7 @@ run_case(const family_case& c, int rate_hz, int forced_rate_out_hz, int nfm_widt
         expect_int("predicted analog output rate", (int)r.predicted_analog_output_rate, r.switched_analog.output_rate);
     rc |= expect_int("predicted digital output rate", (int)r.predicted_digital_output_rate,
                      r.switched_digital.output_rate);
+    rc |= expect_menu_toggles_like_open(label, r);
     rc |= expect_int("CQPSK and back returns to the FSK discriminator", r.output_kind_after_cqpsk_round_trip,
                      RTL_STREAM_OUTPUT_FSK_DISCRIMINATOR);
     return rc;
@@ -329,8 +363,10 @@ run_analog_start_case(const family_case& c, int rate_hz, int forced_rate_out_hz)
     }
     rc |= expect_int("-fA start: predicted digital output rate", (int)r.predicted_digital_output_rate,
                      r.switched_digital.output_rate);
-    /* The -fA session's options snapshot names no digital mode: after the switch, the stream's own record of it has
-     * to keep a symbol profile without CQPSK on the FSK discriminator. */
+    /* The -fA session's options snapshot names no digital mode: after the switch, the decode modes the decoder noted
+     * pick the FSK channel profile a toggle-off returns to, and the stream's own record of the family has to keep a
+     * symbol profile without CQPSK on the FSK discriminator. */
+    rc |= expect_menu_toggles_like_open(label, r);
     rc |= expect_int("-fA start: CQPSK and back returns to the FSK discriminator", r.output_kind_after_cqpsk_round_trip,
                      RTL_STREAM_OUTPUT_FSK_DISCRIMINATOR);
     rc |= expect_int("-fA start: the digital family is not the analog family", r.family_active_after_digital, 0);
@@ -396,6 +432,8 @@ run_under_analog_case(const family_case& c, int profile_under_analog, int rate_h
     }
     DSD_SNPRINTF(label, sizeof label, "-fA %s: predicted digital output rate", under_name);
     rc |= expect_int(label, (int)r.predicted_digital_output_rate, r.switched_digital.output_rate);
+    DSD_SNPRINTF(label, sizeof label, "-fA %s, %s@%d", under_name, c.name, demod_rate_hz);
+    rc |= expect_menu_toggles_like_open(label, r);
     DSD_SNPRINTF(label, sizeof label, "-fA %s: CQPSK and back returns to the FSK discriminator", under_name);
     rc |= expect_int(label, r.output_kind_after_cqpsk_round_trip, RTL_STREAM_OUTPUT_FSK_DISCRIMINATOR);
     return rc;
@@ -998,6 +1036,24 @@ test_read_before_switch_clear(void) {
     return rc;
 }
 
+/* The decode modes the decoder notes (rtl_stream_set_digital_decode_modes()) decide only once a live switch has moved
+ * the stream onto the digital family. A P25 open whose decoder notes D-STAR (a digital-to-digital mode change) keeps
+ * picking the FSK channel profile a CQPSK toggle-off returns to from the options it opened with, as it always has; after
+ * a switch to analog and back it picks D-STAR's; and a new open drops the note, so the options it opens with decide
+ * again. */
+static int
+test_noted_digital_modes_scope(void) {
+    rtl_stream_test_noted_modes_result r;
+    DSD_MEMSET(&r, 0, sizeof r);
+    int rc = expect_int("noted modes run", rtl_stream_test_noted_digital_modes_scope(&r), 0);
+    rc |= expect_int("noted modes: no switch yet, the P25 options decide", r.unswitched_profile,
+                     RTL_STREAM_CHANNEL_PROFILE_P25_C4FM);
+    rc |= expect_int("noted modes: switched to digital, D-STAR decides", r.switched_profile,
+                     RTL_STREAM_CHANNEL_PROFILE_6K25);
+    rc |= expect_int("noted modes: a new open drops the note", r.reopened_profile, RTL_STREAM_CHANNEL_PROFILE_P25_C4FM);
+    return rc;
+}
+
 int
 main(void) {
     dsd_neo_log_set_tap(capture_error_log, NULL);
@@ -1074,6 +1130,15 @@ main(void) {
     pv12_split.request.boundary_between_requests = 1;
     rc |= run_case(pv12_split, 12000, 0, 0);
 
+    /* D-STAR (4800 sym/s over two levels, the 6.25 kHz channel profile). CQPSK forces four levels, and the DSP menu's
+     * toggle turning it off again returns to the channel profile the mode's options pick, not the 12.5 kHz one four
+     * levels at 4800 sym/s give on their own; after a -fA start the stream's options name no digital mode at all. */
+    const family_case ds = {
+        "D-STAR", dstar, {0, 4800, 2, RTL_STREAM_CHANNEL_PROFILE_6K25, 10, 0, RTL_STREAM_TEST_UNDER_ANALOG_NONE}};
+    rc |= run_case(ds, 48000, 0, 0);
+    rc |= run_analog_start_case(ds, 48000, 0);
+    rc |= run_under_analog_case(ds, RTL_STREAM_TEST_UNDER_ANALOG_CQPSK_TOGGLE, 48000, 0);
+
     /* The same switches from a session that started with -fA rather than from a digital open, so nothing the digital
      * open left behind can stand in for what the switch must set: each mode, the 24 kHz and forced-rate resampler
      * decisions, and the boundary that falls between the family request and its symbol profile. */
@@ -1137,6 +1202,7 @@ main(void) {
     rc |= test_lpf_off_lands_like_open(cases, sizeof cases / sizeof cases[0]);
     rc |= test_switch_during_live_read();
     rc |= test_read_before_switch_clear();
+    rc |= test_noted_digital_modes_scope();
 
     /* Requests the front end cannot honour are refused up front. */
     rc |= expect_int("AM refused", rtl_stream_request_analog_profile(DSD_RX_FAMILY_ANALOG, DSD_ANALOG_DEMOD_AM, 0), -1);

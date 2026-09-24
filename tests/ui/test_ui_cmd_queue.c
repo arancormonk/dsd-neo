@@ -4547,6 +4547,11 @@ static int g_analog_check_calls;
 static int g_analog_check_family;
 static int g_analog_check_kind;
 static int g_analog_check_width_hz;
+/* The digital decode modes the decoder notes with the front end (rtl_stream_set_digital_decode_modes()). */
+static int g_modes_note_calls;
+static int g_modes_note_order;
+static int g_modes_note_dmr;
+static int g_modes_note_nxdn48;
 
 // GNU ld --wrap entry points must keep the reserved __wrap_* symbol name.
 // NOLINTBEGIN(bugprone-reserved-identifier,cert-dcl37-c,cert-dcl51-cpp,misc-use-internal-linkage)
@@ -4556,6 +4561,7 @@ int __wrap_rtl_stream_request_demod_profile(int cqpsk_enable, int symbol_rate_hz
                                             int ted_sps, int ted_sps_is_override);
 int __wrap_rtl_stream_analog_family_active(void);
 unsigned int __wrap_rtl_stream_output_rate_for_family(int family, int cqpsk_enable, int symbol_rate_hz);
+void __wrap_rtl_stream_set_digital_decode_modes(const dsd_opts* opts);
 
 int
 __wrap_rtl_stream_check_analog_profile(int family, int kind, int width_hz) {
@@ -4603,6 +4609,14 @@ __wrap_rtl_stream_output_rate_for_family(int family, int cqpsk_enable, int symbo
     return g_fake_digital_rate;
 }
 
+void
+__wrap_rtl_stream_set_digital_decode_modes(const dsd_opts* opts) {
+    g_modes_note_calls++;
+    g_modes_note_dmr = opts ? opts->frame_dmr : -1;
+    g_modes_note_nxdn48 = opts ? opts->frame_nxdn48 : -1;
+    g_modes_note_order = ++g_rx_sequence;
+}
+
 // NOLINTEND(bugprone-reserved-identifier,cert-dcl37-c,cert-dcl51-cpp,misc-use-internal-linkage)
 
 static void
@@ -4612,6 +4626,7 @@ reset_rx_family_wrap(void) {
     g_rx_sequence = 0;
     g_analog_req_calls = g_analog_req_family = g_analog_req_kind = g_analog_req_width_hz = g_analog_req_order = 0;
     g_demod_req_calls = g_demod_req_order = g_demod_req_rate = g_demod_req_ted_sps = 0;
+    g_modes_note_calls = g_modes_note_order = g_modes_note_dmr = g_modes_note_nxdn48 = 0;
     g_ensure_analog_calls = g_ensure_digital_calls = 0;
 }
 
@@ -4646,6 +4661,7 @@ test_decode_mode_set_switches_rtl_receive_family(void) {
     rc |= expect_int("FM requested", g_analog_req_kind, DSD_ANALOG_DEMOD_FM);
     rc |= expect_int("default width travels as 0", g_analog_req_width_hz, 0);
     rc |= expect_int("no symbol profile for analog", g_demod_req_calls, 0);
+    rc |= expect_int("analog notes no digital modes", g_modes_note_calls, 0);
     rc |= expect_int("raw sink ensured", g_ensure_analog_calls, 1);
     rc |= expect_int("digital sink not asked for", g_ensure_digital_calls, 0);
 
@@ -4660,6 +4676,10 @@ test_decode_mode_set_switches_rtl_receive_family(void) {
     rc |= expect_int("digital family requested", g_analog_req_family, DSD_RX_FAMILY_DIGITAL);
     rc |= expect_int("symbol profile follows", g_demod_req_calls, 1);
     rc |= expect_int("family before profile", g_analog_req_order < g_demod_req_order, 1);
+    /* The stream's options are the -fA session's, which name no digital mode: the decoder notes DMR's with it. */
+    rc |= expect_int("dmr modes noted", g_modes_note_calls, 1);
+    rc |= expect_int("noted modes are DMR's", g_modes_note_dmr, 1);
+    rc |= expect_int("modes noted before the family request", g_modes_note_order < g_analog_req_order, 1);
     rc |= expect_int("decoder timed for the digital rate", state.samplesPerSymbol, 5);
     rc |= expect_int("front end timed for the digital rate", g_demod_req_ted_sps, 5);
     rc |= expect_int("digital sink ensured", g_ensure_digital_calls, 1);
@@ -4823,6 +4843,7 @@ test_typed_row_republish_follows_configured_family(void) {
     rc |= expect_int("row republish drained", dsd_app_drain_cmds(&opts, &state), 1);
     rc |= expect_int("-fA row: row profile republished", g_demod_req_calls, 1);
     rc |= expect_int("-fA row: no family request", g_analog_req_calls, 0);
+    rc |= expect_int("-fA row: the row's modes are not noted", g_modes_note_calls, 0);
     dsd_scan_mode_leave(&opts, &state);
     rc |= expect_int("-fA row left", opts.analog_only, 1);
 
@@ -4841,8 +4862,50 @@ test_typed_row_republish_follows_configured_family(void) {
     rc |= expect_int("digital row: family request made once", g_analog_req_calls, 1);
     rc |= expect_int("digital row: row profile follows", g_demod_req_calls, 1);
     rc |= expect_int("digital row: family before profile", g_analog_req_order < g_demod_req_order, 1);
+    rc |= expect_int("digital row: the row's modes are not noted", g_modes_note_calls, 0);
     dsd_scan_mode_leave(&opts, &state);
 
+    state.rtl_ctx = NULL;
+    freeState(&state);
+    return rc;
+}
+
+/*
+ * A digital mode picked while a typed scan row runs on a -fA session is the configured mode, noted with the front end
+ * for the switch the row's leave makes: the decoder notes the options it applies the preset to (the configuration,
+ * before the row's constraint is reapplied), not the row's, and republishing the row's profile after the update notes
+ * nothing more.
+ */
+static int
+test_mode_change_under_row_notes_configured_modes(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static void* fake_ctx[2];
+    int rc = 0;
+    init_decode_mode_context(&opts, &state);
+    opts.audio_in_type = AUDIO_IN_RTL;
+    state.rtl_ctx = (RtlSdrContext*)fake_ctx;
+    rc |= expect_int("under row: -fA baseline queued",
+                     dsd_app_command_set_i32(DSD_APP_CMD_DECODE_MODE_SET, (int32_t)DSDCFG_MODE_ANALOG),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("under row: -fA baseline drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("under row: typed NXDN row", dsd_scan_mode_enter(&opts, &state, DSD_SCAN_MODE_NXDN48), 0);
+    rc |= expect_int("under row: typed NXDN row options", dsd_scan_mode_options(&opts, &state, NULL), 0);
+    rc |= expect_int("under row: row runs NXDN48", opts.frame_nxdn48, 1);
+
+    reset_rx_family_wrap();
+    g_fake_analog_family = 1;
+    rc |= expect_int("under row: dmr queued",
+                     dsd_app_command_set_i32(DSD_APP_CMD_DECODE_MODE_SET, (int32_t)DSDCFG_MODE_DMR),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("under row: dmr drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("under row: configured modes noted once", g_modes_note_calls, 1);
+    rc |= expect_int("under row: noted modes are the configured DMR", g_modes_note_dmr, 1);
+    rc |= expect_int("under row: not the row's NXDN48", g_modes_note_nxdn48, 0);
+    rc |= expect_int("under row: the row still runs NXDN48", opts.frame_nxdn48, 1);
+    dsd_scan_mode_leave(&opts, &state);
+
+    g_fake_analog_family = 0;
     state.rtl_ctx = NULL;
     freeState(&state);
     return rc;
@@ -5130,6 +5193,7 @@ main(void) {
     rc |= test_decode_mode_set_refused_analog_profile_changes_nothing();
     rc |= test_decode_mode_set_leaves_analog_family_off_the_monitor();
     rc |= test_typed_row_republish_follows_configured_family();
+    rc |= test_mode_change_under_row_notes_configured_modes();
     rc |= test_config_apply_switches_rtl_receive_family();
     rc |= test_config_apply_refused_analog_profile_changes_nothing();
 #endif

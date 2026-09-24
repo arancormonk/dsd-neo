@@ -282,6 +282,16 @@ typedef struct rtl_stream_test_family_switch_result {
     /* Output kind once the digital session, after the switch, has had a CQPSK symbol profile applied and then a C4FM
        one: a fresh digital open comes back to the FSK discriminator. */
     int output_kind_after_cqpsk_round_trip;
+    /* The DSP menu's CQPSK toggle (a CQPSK flip with no symbol profile, as apply_dsp_op_cqpsk_toggle() queues it) made
+       twice, right after the switch and on a fresh open of the digital mode: the channel profile, output kind and
+       symbol levels after each. Turning CQPSK off returns to the FSK channel profile an open picks from the decode
+       modes it runs. */
+    int switched_toggle_channel_profile[2];
+    int switched_toggle_output_kind[2];
+    int switched_toggle_levels[2];
+    int fresh_toggle_channel_profile[2];
+    int fresh_toggle_output_kind[2];
+    int fresh_toggle_levels[2];
     /* With a profile_under_analog: the -fA session once that profile landed, before the digital mode was picked. */
     int under_analog_output_kind;
     int under_analog_channel_profile;
@@ -298,7 +308,9 @@ typedef struct rtl_stream_test_family_switch_result {
  * @p forced_rate_out_hz > 0 has the device settle every open on that demod rate instead (a fixed rate grid, such as
  * Airspy's 78125 Hz), which puts the digital resampler under its forced-rate policy. The stream keeps the options
  * snapshot it opened with throughout, as the orchestrator's private copy does in a real session: only the family
- * requests tell it about the switches. */
+ * requests, and the digital decode modes the decoder notes before its digital one (rtl_stream_set_digital_decode_modes()
+ * with @p digital_opts, as svc_publish_symbol_profile() notes them), tell it about the switches. The DSP menu's CQPSK
+ * toggle is made twice on the fresh digital open (a stream that opened with @p digital_opts) and after the switch. */
 int rtl_stream_test_analog_family_switch(const dsd_opts* digital_opts, const dsd_opts* analog_opts, int rate_hz,
                                          int forced_rate_out_hz, const rtl_stream_test_digital_request* digital_request,
                                          rtl_stream_test_family_switch_result* out);
@@ -315,6 +327,16 @@ int rtl_stream_test_analog_start_family_switch(const dsd_opts* digital_opts, con
                                                int forced_rate_out_hz,
                                                const rtl_stream_test_digital_request* digital_request,
                                                rtl_stream_test_family_switch_result* out);
+
+/* Channel profile after the DSP menu's CQPSK toggle turned CQPSK on and off again, for a P25 C4FM open (at 48 kHz)
+ * whose decoder has noted D-STAR as its digital modes (rtl_stream_set_digital_decode_modes()). */
+typedef struct rtl_stream_test_noted_modes_result {
+    int unswitched_profile; /* no live family switch yet */
+    int switched_profile;   /* after a live switch to analog and back to digital (D-STAR's symbol profile) */
+    int reopened_profile;   /* the same switches after a new open, which drops the note, with no note since */
+} rtl_stream_test_noted_modes_result;
+
+int rtl_stream_test_noted_digital_modes_scope(rtl_stream_test_noted_modes_result* out);
 
 /* A live switch to analog whose ring clear meets a decoder read in flight. */
 typedef struct rtl_stream_test_read_race_result {
