@@ -6,7 +6,6 @@
 #include <atomic>
 #include <cmath>
 #include <cstdio>
-#include <cstdlib>
 #include <cstring>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/dsp/demod_state.h>
@@ -17,6 +16,7 @@
 #include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/runtime/analog_channel.h>
 #include <dsd-neo/runtime/config.h>
+#include <dsd-neo/runtime/mem.h>
 #include <dsd-neo/runtime/ring.h>
 #include <stdint.h>
 #include "dsd-neo/core/opts_fwd.h"
@@ -27,6 +27,17 @@ extern demod_state demod;
 extern std::atomic<double> g_snr_c4fm_db;
 extern std::atomic<double> g_snr_gfsk_db;
 extern std::atomic<double> g_snr_qpsk_db;
+
+/* A zeroed demod_state from the aligned allocator (its members need 64-byte alignment, which calloc() does not give);
+ * release it with dsd_neo_aligned_free(). */
+static demod_state*
+alloc_zeroed_demod(void) {
+    demod_state* demod = static_cast<demod_state*>(dsd_neo_aligned_malloc(sizeof(demod_state)));
+    if (demod) {
+        DSD_MEMSET(demod, 0, sizeof(*demod));
+    }
+    return demod;
+}
 
 static int
 is_fsk_output_kind(int kind) {
@@ -258,7 +269,7 @@ expect_finalize_rate_chain_preserves_profile(void) {
 
 static int
 expect_output_kind(const char* label, const dsd_opts& opts, int want_kind, int want_sym_rate, int want_levels) {
-    demod_state* demod = static_cast<demod_state*>(std::calloc(1, sizeof(*demod)));
+    demod_state* demod = alloc_zeroed_demod();
     output_state output;
     DSD_MEMSET(&output, 0, sizeof(output));
     output.rate = 48000U;
@@ -299,13 +310,13 @@ expect_output_kind(const char* label, const dsd_opts& opts, int want_kind, int w
     }
 
     rtl_demod_cleanup(demod);
-    std::free(demod);
+    dsd_neo_aligned_free(demod);
     return rc;
 }
 
 static int
 expect_configured_channel_profile(const char* label, const dsd_opts& opts, int rtl_dsp_bw_hz, int want_profile) {
-    demod_state* demod = static_cast<demod_state*>(std::calloc(1, sizeof(*demod)));
+    demod_state* demod = alloc_zeroed_demod();
     output_state output;
     DSD_MEMSET(&output, 0, sizeof(output));
     output.rate = static_cast<unsigned int>(rtl_dsp_bw_hz);
@@ -332,14 +343,14 @@ expect_configured_channel_profile(const char* label, const dsd_opts& opts, int r
     }
 
     rtl_demod_cleanup(demod);
-    std::free(demod);
+    dsd_neo_aligned_free(demod);
     return rc;
 }
 
 static int
 expect_configured_mode(const char* label, const dsd_opts& opts, int rtl_dsp_bw_hz, int want_kind, int want_sym_rate,
                        int want_levels, int want_profile) {
-    demod_state* demod = static_cast<demod_state*>(std::calloc(1, sizeof(*demod)));
+    demod_state* demod = alloc_zeroed_demod();
     output_state output;
     DSD_MEMSET(&output, 0, sizeof(output));
     output.rate = static_cast<unsigned int>(rtl_dsp_bw_hz);
@@ -393,7 +404,7 @@ expect_configured_mode(const char* label, const dsd_opts& opts, int rtl_dsp_bw_h
     }
 
     rtl_demod_cleanup(demod);
-    std::free(demod);
+    dsd_neo_aligned_free(demod);
     return rc;
 }
 
@@ -1147,7 +1158,7 @@ expect_analog_legacy_default_enable(void) {
     int rc = 0;
     set_channel_lpf_env(NULL);
     for (size_t i = 0; i < sizeof rows / sizeof rows[0]; i++) {
-        demod_state* demod = static_cast<demod_state*>(std::calloc(1, sizeof(*demod)));
+        demod_state* demod = alloc_zeroed_demod();
         if (!demod) {
             DSD_FPRINTF(stderr, "analog default: allocation failed\n");
             return 1;
@@ -1166,7 +1177,7 @@ expect_analog_legacy_default_enable(void) {
         rc |= expect_int_eq("analog default profile", demod->channel_lpf_profile, DSD_CH_LPF_PROFILE_WIDE);
         rc |= expect_int_eq("analog default deemph", demod->deemph, 1);
         rtl_demod_cleanup(demod);
-        std::free(demod);
+        dsd_neo_aligned_free(demod);
     }
     return rc;
 }
@@ -1183,7 +1194,7 @@ expect_analog_default_enable_survives_replay_rate(void) {
     const int configured_bw[] = {48000, 12000};
     const int replay_rate_in[] = {12000, 48000};
     for (int i = 0; i < 2; i++) {
-        demod_state* demod = static_cast<demod_state*>(std::calloc(1, sizeof(*demod)));
+        demod_state* demod = alloc_zeroed_demod();
         if (!demod) {
             DSD_FPRINTF(stderr, "analog default replay rate: allocation failed\n");
             return 1;
@@ -1204,7 +1215,7 @@ expect_analog_default_enable_survives_replay_rate(void) {
             expect_int_eq("replay keeps the configured enable decision", demod->channel_lpf_enable, configured_enable);
         rc |= expect_int_eq("replay default width", demod->channel_lpf_width_hz, 16000);
         rtl_demod_cleanup(demod);
-        std::free(demod);
+        dsd_neo_aligned_free(demod);
     }
     return rc;
 }
@@ -1220,7 +1231,7 @@ expect_analog_explicit_width_forces_lpf(void) {
     int rc = 0;
     set_channel_lpf_env(NULL);
     for (size_t i = 0; i < sizeof rows / sizeof rows[0]; i++) {
-        demod_state* demod = static_cast<demod_state*>(std::calloc(1, sizeof(*demod)));
+        demod_state* demod = alloc_zeroed_demod();
         if (!demod) {
             DSD_FPRINTF(stderr, "explicit width: allocation failed\n");
             return 1;
@@ -1234,11 +1245,11 @@ expect_analog_explicit_width_forces_lpf(void) {
         rc |= expect_int_eq("explicit width forces LPF", demod->channel_lpf_enable, 1);
         rc |= expect_int_eq("explicit width drives the filter", demod->channel_lpf_width_hz, rows[i].width_hz);
         rtl_demod_cleanup(demod);
-        std::free(demod);
+        dsd_neo_aligned_free(demod);
     }
 
     /* A width the rate cannot fit fails the start with the validator's text. */
-    demod_state* demod = static_cast<demod_state*>(std::calloc(1, sizeof(*demod)));
+    demod_state* demod = alloc_zeroed_demod();
     if (!demod) {
         DSD_FPRINTF(stderr, "unrealizable explicit width: allocation failed\n");
         return 1;
@@ -1253,7 +1264,7 @@ expect_analog_explicit_width_forces_lpf(void) {
         rc = 1;
     }
     rtl_demod_cleanup(demod);
-    std::free(demod);
+    dsd_neo_aligned_free(demod);
     return rc;
 }
 
@@ -1262,7 +1273,7 @@ static int
 expect_analog_env_off_conflict(void) {
     int rc = 0;
     set_channel_lpf_env("0");
-    demod_state* demod = static_cast<demod_state*>(std::calloc(1, sizeof(*demod)));
+    demod_state* demod = alloc_zeroed_demod();
     if (!demod) {
         DSD_FPRINTF(stderr, "env-off conflict: allocation failed\n");
         set_channel_lpf_env(NULL);
@@ -1279,10 +1290,10 @@ expect_analog_env_off_conflict(void) {
         rc = 1;
     }
     rtl_demod_cleanup(demod);
-    std::free(demod);
+    dsd_neo_aligned_free(demod);
 
     /* The unset default simply follows the environment. */
-    demod = static_cast<demod_state*>(std::calloc(1, sizeof(*demod)));
+    demod = alloc_zeroed_demod();
     if (!demod) {
         DSD_FPRINTF(stderr, "env-off default: allocation failed\n");
         set_channel_lpf_env(NULL);
@@ -1293,7 +1304,7 @@ expect_analog_env_off_conflict(void) {
                         0);
     rc |= expect_int_eq("default with LPF env off leaves LPF off", demod->channel_lpf_enable, 0);
     rtl_demod_cleanup(demod);
-    std::free(demod);
+    dsd_neo_aligned_free(demod);
     set_channel_lpf_env(NULL);
     return rc;
 }
@@ -1305,7 +1316,7 @@ expect_m17_encoder_unchanged(void) {
     set_channel_lpf_env(NULL);
     const int both[] = {0, 1};
     for (int analog_only : both) {
-        demod_state* demod = static_cast<demod_state*>(std::calloc(1, sizeof(*demod)));
+        demod_state* demod = alloc_zeroed_demod();
         if (!demod) {
             DSD_FPRINTF(stderr, "M17 encoder: allocation failed\n");
             return 1;
@@ -1324,7 +1335,7 @@ expect_m17_encoder_unchanged(void) {
         rc |= expect_int_eq("M17 encoder LPF rule", demod->channel_lpf_enable, 1);
         rc |= expect_int_eq("M17 encoder deemph", demod->deemph, 1);
         rtl_demod_cleanup(demod);
-        std::free(demod);
+        dsd_neo_aligned_free(demod);
     }
     return rc;
 }
@@ -1333,7 +1344,7 @@ expect_m17_encoder_unchanged(void) {
 static int
 expect_analog_am_refused(void) {
     int rc = 0;
-    demod_state* demod = static_cast<demod_state*>(std::calloc(1, sizeof(*demod)));
+    demod_state* demod = alloc_zeroed_demod();
     if (!demod) {
         DSD_FPRINTF(stderr, "AM refusal: allocation failed\n");
         return 1;
@@ -1352,7 +1363,7 @@ expect_analog_am_refused(void) {
     rc |= expect_int_eq("unset FM default never refused",
                         rtl_demod_check_analog_channel(DSD_ANALOG_DEMOD_FM, 0, 8000, err, sizeof err), 0);
     rtl_demod_cleanup(demod);
-    std::free(demod);
+    dsd_neo_aligned_free(demod);
     return rc;
 }
 
@@ -1372,7 +1383,7 @@ expect_unset_default_rule_keyed_on_nfm(void) {
     rc |= expect_int_eq("explicit width kept", rtl_demod_analog_requested_width_hz(DSD_ANALOG_DEMOD_AM, 9000), 9000);
 
     /* 12 kHz DSP bandwidth: rate_in below 20 kHz, so the legacy rule leaves the filter off for the NFM default. */
-    demod_state* demod = static_cast<demod_state*>(std::calloc(1, sizeof(*demod)));
+    demod_state* demod = alloc_zeroed_demod();
     if (!demod) {
         DSD_FPRINTF(stderr, "unset default rule: allocation failed\n");
         return 1;
@@ -1391,7 +1402,7 @@ expect_unset_default_rule_keyed_on_nfm(void) {
     rc |= expect_int_eq("back to the NFM default restores the legacy rule", demod->channel_lpf_enable, 0);
     rc |= expect_int_eq("NFM default request stays unset", demod->analog_width_request_hz, 0);
     rtl_demod_cleanup(demod);
-    std::free(demod);
+    dsd_neo_aligned_free(demod);
 
     /* With no DSP rate yet (no stream), only the kind, range and environment rules apply. */
     rc |= expect_int_eq("no-rate in-range width accepted",
@@ -1429,7 +1440,7 @@ expect_negative_width_refused(void) {
     rc |= expect_int_eq("negative NFM width refused with no rate",
                         rtl_demod_check_analog_channel(DSD_ANALOG_DEMOD_FM, -12500, 0, err, sizeof err), -1);
 
-    demod_state* demod = static_cast<demod_state*>(std::calloc(1, sizeof(*demod)));
+    demod_state* demod = alloc_zeroed_demod();
     if (!demod) {
         DSD_FPRINTF(stderr, "negative width finalize: allocation failed\n");
         return 1;
@@ -1445,7 +1456,7 @@ expect_negative_width_refused(void) {
         rc = 1;
     }
     rtl_demod_cleanup(demod);
-    std::free(demod);
+    dsd_neo_aligned_free(demod);
     return rc;
 }
 
@@ -1477,7 +1488,7 @@ expect_post_decimation_rule(void) {
 
     /* The stream-start finalize applies the same rule against the stream's own chain. */
     set_channel_lpf_env(NULL);
-    demod_state* demod = static_cast<demod_state*>(std::calloc(1, sizeof(*demod)));
+    demod_state* demod = alloc_zeroed_demod();
     if (!demod) {
         DSD_FPRINTF(stderr, "post decimation finalize: allocation failed\n");
         return 1;
@@ -1499,7 +1510,7 @@ expect_post_decimation_rule(void) {
     rc |= expect_int_eq("finalize keeps the default under post decimation",
                         rtl_demod_finalize_analog_channel(demod, &opts, err, sizeof err), 0);
     rtl_demod_cleanup(demod);
-    std::free(demod);
+    dsd_neo_aligned_free(demod);
     return rc;
 }
 
@@ -1512,7 +1523,7 @@ static int
 expect_rate_refresh_leaves_cqpsk_profile(void) {
     int rc = 0;
     set_channel_lpf_env(NULL);
-    demod_state* demod = static_cast<demod_state*>(std::calloc(1, sizeof(*demod)));
+    demod_state* demod = alloc_zeroed_demod();
     if (!demod) {
         DSD_FPRINTF(stderr, "rate refresh CQPSK profile: allocation failed\n");
         return 1;
@@ -1550,7 +1561,7 @@ expect_rate_refresh_leaves_cqpsk_profile(void) {
     rc |= expect_int_eq("monitor refresh keeps WIDE", demod->channel_lpf_profile, DSD_CH_LPF_PROFILE_WIDE);
     rc |= expect_int_eq("monitor refresh resolves the explicit width", demod->channel_lpf_width_hz, 12500);
     rtl_demod_cleanup(demod);
-    std::free(demod);
+    dsd_neo_aligned_free(demod);
     return rc;
 }
 

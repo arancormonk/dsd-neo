@@ -8,12 +8,12 @@
 
 #include <atomic>
 #include <cmath>
-#include <cstdlib>
 #include <cstring>
 #include <dsd-neo/dsp/demod_pipeline.h>
 #include <dsd-neo/dsp/demod_state.h>
 #include <dsd-neo/dsp/firdes.h>
 #include <dsd-neo/runtime/analog_channel.h>
+#include <dsd-neo/runtime/mem.h>
 #include <stdio.h>
 #include "dsd-neo/core/safe_api.h"
 
@@ -470,10 +470,12 @@ test_runtime_mirror(void) {
 
 int
 main(void) {
-    demod_state* s = static_cast<demod_state*>(std::calloc(1, sizeof(demod_state)));
+    /* demod_state carries 64-byte-aligned members, so it needs the aligned allocator, not calloc(). */
+    demod_state* s = static_cast<demod_state*>(dsd_neo_aligned_malloc(sizeof(demod_state)));
     if (!s) {
         return 1;
     }
+    DSD_MEMSET(s, 0, sizeof(*s));
     int rc = 0;
     rc |= test_rrc_dc();
     rc |= test_default_width_matches_wide(s);
@@ -484,6 +486,6 @@ main(void) {
     rc |= test_digital_row_profile_under_analog_family(s);
     rc |= test_legacy_wide_width(s);
     rc |= test_runtime_mirror();
-    std::free(s);
+    dsd_neo_aligned_free(s);
     return rc;
 }
