@@ -10778,6 +10778,66 @@ rtl_stream_test_analog_request_without_stream(int stale_rate_out_hz, int kind, i
 }
 
 extern "C" int
+rtl_stream_test_analog_request_with_stream(int rate_hz, int analog_stream, int post_downsample, int kind, int width_hz,
+                                           rtl_stream_test_live_request_result* out) {
+    if (!out || rate_hz <= 0 || post_downsample < 1) {
+        return -1;
+    }
+    *out = {};
+    const size_t queued = 64U;
+    int initialized_output = 0;
+    if (fsk_reacquire_test_prepare_output_ring(queued, &initialized_output) != 0) {
+        fsk_reacquire_test_cleanup_output_ring(initialized_output);
+        return -2;
+    }
+    const FamilyTestSaved saved = family_test_save();
+    static dsd_opts stream_opts;
+    DSD_MEMSET(&stream_opts, 0, sizeof stream_opts);
+    if (analog_stream) {
+        stream_opts.analog_only = 1;
+        stream_opts.monitor_input_audio = 1;
+    } else {
+        stream_opts.frame_dmr = 1;
+        stream_opts.mod_c4fm = 1;
+    }
+    g_cqpsk_toggle_test_stream.output = &output;
+    g_cqpsk_toggle_test_stream.opts = &stream_opts;
+    g_stream = NULL;
+    const int open_rc = family_test_seed_open(&stream_opts, rate_hz, 0);
+    /* An I/Q replay sidecar can decimate after the demodulator; the stream publishes that beside its rate. */
+    const int prev_post_downsample = demod.post_downsample;
+    demod.post_downsample = post_downsample;
+    rtl_stream_publish_demod_profile_snapshot();
+    g_stream = &g_cqpsk_toggle_test_stream; /* live: requests are checked against the published rate */
+    rtl_stream_clear_demod_profile_request();
+    rtl_stream_clear_pending_retune_profile();
+
+    family_test_seed_channel_plan();
+    out->family_before = demod.analog_family;
+    out->width_before = demod.channel_lpf_width_hz;
+    (void)rtl_stream_get_analog_profile(NULL, &out->published_width_before, NULL);
+    out->request_rc = rtl_stream_request_analog_profile(DSD_RX_FAMILY_ANALOG, kind, width_hz);
+    out->request_queued = g_profile_req_pending.load(std::memory_order_acquire);
+    family_test_demod_thread_boundary();
+    out->family_after = demod.analog_family;
+    out->width_after = demod.channel_lpf_width_hz;
+    out->plan_kept = !family_test_channel_plan_dropped();
+    (void)rtl_stream_get_analog_profile(NULL, &out->published_width_after, NULL);
+
+    const rtl_stream_retune_analog_profile analog = {DSD_RX_FAMILY_ANALOG, kind, width_hz};
+    out->retune_rc = rtl_stream_prepare_retune_analog_profile_for_target(kFamilyTestCenterHz, &analog);
+    RtlRetuneProfile pending{};
+    out->retune_queued = rtl_stream_take_pending_retune_profile(&pending, 0U, kFamilyTestCenterHz);
+
+    rtl_stream_clear_pending_retune_profile();
+    demod.post_downsample = prev_post_downsample;
+    family_test_restore(saved);
+    family_test_release_buffers();
+    fsk_reacquire_test_cleanup_output_ring(initialized_output);
+    return open_rc == 0 ? 0 : -3;
+}
+
+extern "C" int
 rtl_stream_test_retune_analog_profile_at_rate(uint32_t target_hz, int rate_hz, int family, int kind, int width_hz,
                                               int with_cqpsk_symbol_profile,
                                               rtl_stream_test_retune_analog_result* out) {

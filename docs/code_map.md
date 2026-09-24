@@ -577,7 +577,8 @@ Notes:
     profile when the switch is made (`rtl_demod_enter_digital_family()` takes its CQPSK flag and symbol rate), so a
     forced rate lands where an open of the profile would. Tests: `IO_RTL_ANALOG_FAMILY_SWITCH` (digital → analog →
     digital equals a fresh open, loop state, monitor audio state and filter histories included, for P25 C4FM/CQPSK, DMR,
-    NXDN48 and dPMR at unforced and forced rates; width-only changes; requests with no stream; a demod block boundary
+    NXDN48 and dPMR at unforced and forced rates; width-only changes; requests with no stream; live requests and
+    retune profiles refused against a running stream's rate and a replay's `post_downsample`; a demod block boundary
     between the family request and its symbol profile; the baselines run the same demod configuration functions as
     `dsd_rtl_stream_open()`), `IO_RTL_ANALOG_OPEN` (the start-time check against the rate an IQ replay delivers), plus
     `IO_RTL_DEMOD_CONFIG` and `IO_RTL_RETUNE_PREPARE`.

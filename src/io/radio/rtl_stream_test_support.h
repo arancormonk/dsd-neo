@@ -303,6 +303,27 @@ int rtl_stream_test_analog_width_change(int rate_hz, int width_before_hz, int wi
  * request's result and stores the retune profile's in @p out_retune_rc; any profile queued is discarded. */
 int rtl_stream_test_analog_request_without_stream(int stale_rate_out_hz, int kind, int width_hz, int* out_retune_rc);
 
+typedef struct rtl_stream_test_live_request_result {
+    int request_rc;     /* rtl_stream_request_analog_profile() while the stream runs */
+    int request_queued; /* 1 when that request left something queued for the demod thread */
+    int family_before;  /* demod_state::analog_family before the request ... */
+    int family_after;   /* ... and after one demod-thread block boundary */
+    int width_before;   /* demod_state::channel_lpf_width_hz, likewise */
+    int width_after;
+    int plan_kept; /* 1 when the boundary left the running channel plan alone */
+    int published_width_before;
+    int published_width_after;
+    int retune_rc;     /* rtl_stream_prepare_retune_analog_profile_for_target() while the stream runs */
+    int retune_queued; /* 1 when a retune profile for the target was left pending */
+} rtl_stream_test_live_request_result;
+
+/* Run a stream at @p rate_hz (the analog monitor at its default width, or a DMR session when @p analog_stream is 0)
+ * with @p post_downsample published as an I/Q replay sidecar would set it, give it a designed channel plan, and ask
+ * it while it runs for the analog profile (@p kind, @p width_hz): first as a live request consumed at one
+ * demod-thread block boundary, then as a retune profile for a target. */
+int rtl_stream_test_analog_request_with_stream(int rate_hz, int analog_stream, int post_downsample, int kind,
+                                               int width_hz, rtl_stream_test_live_request_result* out);
+
 typedef struct rtl_stream_test_audio_reset_result {
     float deemph_avg;
     float dc_avg;

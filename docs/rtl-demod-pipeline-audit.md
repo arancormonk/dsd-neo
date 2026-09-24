@@ -227,7 +227,9 @@ scale, and ratio-based audio metrics are invariant to it, so it is left as is.
   a fresh open for P25 C4FM/CQPSK, DMR, NXDN48 and dPMR, at unforced rates and at
   forced 78,125 and 60,000 Hz rates, with loop state, monitor audio state and the
   channel, half-band and resampler histories included, and covers width-only
-  changes and requests made with no stream running; `IO_RTL_ANALOG_OPEN` opens IQ
+  changes, requests made with no stream running, and live requests and retune
+  profiles a running stream's rate or post-demod decimation cannot realize
+  (refused before anything is queued); `IO_RTL_ANALOG_OPEN` opens IQ
   replays whose demod rate differs from their DSP bandwidth and checks the
   start-time channel decision and refusal, and that a tone captured at 78,125 Hz
   reaches the output once, at 48 kHz and at its own frequency.

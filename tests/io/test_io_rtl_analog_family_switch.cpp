@@ -22,6 +22,10 @@
  *
  * A width-only change on a running analog stream stays inside the family: it
  * drops the channel plan and the channel/half-band histories and nothing else.
+ *
+ * While a stream runs, a width its published demod rate (or a replay's post-demod
+ * decimation) cannot realize is refused before it is queued, as a live request
+ * and as a retune profile.
  */
 
 #include <cstdio>
@@ -283,6 +287,100 @@ test_requests_without_stream(void) {
     return rc;
 }
 
+namespace {
+
+struct live_request_case {
+    const char* name;
+    int rate_hz;
+    int analog_stream; /* 0: a DMR session asked to switch to analog */
+    int post_downsample;
+    int refused_width_hz;  /* in range for NFM, but the running stream cannot realize it */
+    int accepted_width_hz; /* what the same stream does realize (0 = the unset default) */
+    int accepted_filter_width_hz;
+};
+
+} // namespace
+
+static int
+expect_live_refusal(const live_request_case& c) {
+    rtl_stream_test_live_request_result r;
+    DSD_MEMSET(&r, 0, sizeof r);
+    char label[160];
+    DSD_SNPRINTF(label, sizeof label, "%s: refused %d Hz run", c.name, c.refused_width_hz);
+    int rc = expect_int(label,
+                        rtl_stream_test_analog_request_with_stream(c.rate_hz, c.analog_stream, c.post_downsample,
+                                                                   DSD_ANALOG_DEMOD_FM, c.refused_width_hz, &r),
+                        0);
+    DSD_SNPRINTF(label, sizeof label, "%s: live request refused", c.name);
+    rc |= expect_int(label, r.request_rc, -1);
+    DSD_SNPRINTF(label, sizeof label, "%s: nothing queued", c.name);
+    rc |= expect_int(label, r.request_queued, 0);
+    DSD_SNPRINTF(label, sizeof label, "%s: family unchanged", c.name);
+    rc |= expect_int(label, r.family_after, r.family_before);
+    DSD_SNPRINTF(label, sizeof label, "%s: filter width unchanged", c.name);
+    rc |= expect_int(label, r.width_after, r.width_before);
+    DSD_SNPRINTF(label, sizeof label, "%s: channel plan kept", c.name);
+    rc |= expect_int(label, r.plan_kept, 1);
+    DSD_SNPRINTF(label, sizeof label, "%s: published width unchanged", c.name);
+    rc |= expect_int(label, r.published_width_after, r.published_width_before);
+    DSD_SNPRINTF(label, sizeof label, "%s: retune profile refused", c.name);
+    rc |= expect_int(label, r.retune_rc, -1);
+    DSD_SNPRINTF(label, sizeof label, "%s: no retune profile queued", c.name);
+    rc |= expect_int(label, r.retune_queued, 0);
+    return rc;
+}
+
+static int
+expect_live_acceptance(const live_request_case& c) {
+    rtl_stream_test_live_request_result r;
+    DSD_MEMSET(&r, 0, sizeof r);
+    char label[160];
+    DSD_SNPRINTF(label, sizeof label, "%s: accepted %d Hz run", c.name, c.accepted_width_hz);
+    int rc = expect_int(label,
+                        rtl_stream_test_analog_request_with_stream(c.rate_hz, c.analog_stream, c.post_downsample,
+                                                                   DSD_ANALOG_DEMOD_FM, c.accepted_width_hz, &r),
+                        0);
+    DSD_SNPRINTF(label, sizeof label, "%s: realizable request accepted", c.name);
+    rc |= expect_int(label, r.request_rc, 0);
+    DSD_SNPRINTF(label, sizeof label, "%s: realizable request queued", c.name);
+    rc |= expect_int(label, r.request_queued, 1);
+    DSD_SNPRINTF(label, sizeof label, "%s: lands on the analog family", c.name);
+    rc |= expect_int(label, r.family_after, 1);
+    DSD_SNPRINTF(label, sizeof label, "%s: realizable width reaches the filter", c.name);
+    rc |= expect_int(label, r.width_after, c.accepted_filter_width_hz);
+    DSD_SNPRINTF(label, sizeof label, "%s: realizable retune profile accepted", c.name);
+    rc |= expect_int(label, r.retune_rc, 0);
+    DSD_SNPRINTF(label, sizeof label, "%s: realizable retune profile queued", c.name);
+    rc |= expect_int(label, r.retune_queued, 1);
+    return rc;
+}
+
+/* While a stream runs, each request is checked against the demod rate that stream publishes, and against the
+ * post-demod decimation an I/Q replay sidecar can set: a width in NFM's range that the running stream cannot realize is
+ * refused before anything is queued, as a live request and as a retune profile alike, and the running channel stays as
+ * it was. Were such a width queued, the demodulator would have no filter design for it and run the channel unfiltered.
+ * Beside each refusal a width the same stream does realize is accepted, so the refusal is the rate's doing. */
+static int
+test_requests_against_running_stream(void) {
+    const live_request_case cases[] = {
+        /* 24 kHz fits up to 20.4 kHz: 25 kHz is in range, but its 13.1 kHz cutoff is above 0.45 x 24 kHz. */
+        {"24 kHz analog stream", 24000, 1, 1, 25000, 20000, 20000},
+        /* 16 kHz fits up to 13.2 kHz, so even the 16 kHz default width is out of reach when asked for explicitly. */
+        {"16 kHz analog stream", 16000, 1, 1, 16000, 13000, 13000},
+        /* A digital session switching to analog is held to the rate it runs at, too. */
+        {"24 kHz DMR stream", 24000, 0, 1, 25000, 20000, 20000},
+        /* A replay decimating by 2 after demod runs the channel filter at twice the published rate: every requested
+         * width is refused there, while the unset default keeps its legacy design (16 kHz at 48 kHz). */
+        {"48 kHz replay with post_downsample 2", 48000, 1, 2, 12500, 0, 16000},
+    };
+    int rc = 0;
+    for (const live_request_case& c : cases) {
+        rc |= expect_live_refusal(c);
+        rc |= expect_live_acceptance(c);
+    }
+    return rc;
+}
+
 int
 main(void) {
     dsd_neo_config_init();
@@ -356,6 +454,7 @@ main(void) {
 
     rc |= test_width_only_change();
     rc |= test_requests_without_stream();
+    rc |= test_requests_against_running_stream();
 
     /* Requests the front end cannot honour are refused up front. */
     rc |= expect_int("AM refused", rtl_stream_request_analog_profile(DSD_RX_FAMILY_ANALOG, DSD_ANALOG_DEMOD_AM, 0), -1);
