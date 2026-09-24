@@ -135,11 +135,12 @@ void dsd_analog_rx_tap(const dsd_opts* opts, dsd_state* state, const float* bloc
  * @brief Read the part of the raw unsynced analog block the symbol path has assembled so far.
  *
  * Called once per sample the symbol path adds, with the block and the number of samples it
- * now holds, while the block is not yet complete. The tap reads what it has not read yet once
- * DSD_ANALOG_RX_TAP_READ_MS of input, at the input's current rate, is waiting, so on an input
- * whose block lasts longer the detectors and the publication still keep pace, also across a
- * change of rate. When detection starts part-way through a block, the tap reads from the sample
- * just added: the ones before it arrived while nothing listened. Otherwise as
+ * now holds, the sample that completes the block included (before dsd_analog_rx_tap() is handed
+ * the whole block). The tap reads what it has not read yet once DSD_ANALOG_RX_TAP_READ_MS of
+ * input, at the input's current rate, is waiting, so on an input whose block lasts longer the
+ * detectors and the publication still keep pace, also across a change of rate. When detection
+ * starts part-way through a block, the tap reads from the sample just added, even when that
+ * sample completes the block: the ones before it arrived while nothing listened. Otherwise as
  * dsd_analog_rx_tap().
  */
 void dsd_analog_rx_tap_partial(const dsd_opts* opts, dsd_state* state, const float* block, unsigned int filled);
@@ -158,16 +159,37 @@ void dsd_analog_rx_tap_partial(const dsd_opts* opts, dsd_state* state, const flo
  * channel keeps arriving while a rigctl retune holds the decoder, and the decoder reads that
  * backlog afterwards. So on those inputs the tap skips what it reads after the boundary until a
  * read shows the input ran dry -- DSD_ANALOG_RX_TAP_READ_MS or more of input that took at least
- * half as long to arrive, which a backlog read at the decoder's pace never does -- and that read
- * too, or until it has skipped DSD_ANALOG_RX_BACKLOG_MAX_MS. With nothing queued that costs two
- * reads. The publication reads IDLE meanwhile. Files and RTL-family streams are not skipped: a
- * file queues no other channel, and a stream clears its own output at a retune.
+ * half as long to arrive, not counting the time the decoder spent playing monitor audio
+ * (dsd_analog_rx_playback_begin()), which a backlog read at the decoder's pace never does -- and
+ * that read too, or until it has skipped DSD_ANALOG_RX_BACKLOG_MAX_MS. With nothing queued that
+ * costs two reads. The publication reads IDLE meanwhile. Files and RTL-family streams are not
+ * skipped: a file queues no other channel, and a stream clears its own output at a retune.
+ *
+ * Before detection has run there is no detector state to hold either boundary. The tap then
+ * starts at the sample detection starts on (dsd_analog_rx_tap_partial()), and when a reset
+ * came first (the publication's generation is no longer 0) its first reads skip what the input
+ * holds, as after a reset with detection running.
  *
  * Not for the frequent no-carrier cleanup: that runs every few hundred milliseconds in analog
  * mode and would keep a tone from ever locking. Afterwards the publication reads INACTIVE until
  * the tap reads again.
  */
 void dsd_analog_rx_reset(dsd_state* state);
+
+/**
+ * @brief Mark the start of the monitor playback of a block.
+ *
+ * The symbol path calls it before it writes a monitor block to the audio output and
+ * dsd_analog_rx_playback_end() after. Synchronous playback (stdin and file input) holds the
+ * decoder for the block's playing time once its buffer is full, and the decoder then reads an
+ * input's backlog at real-time pace, as it reads audio arriving live; the backlog skip after a
+ * boundary (dsd_analog_rx_reset()) counts the time between the two calls as playing, not as
+ * waiting for input.
+ */
+void dsd_analog_rx_playback_begin(dsd_state* state);
+
+/** @brief Mark the end of the monitor playback dsd_analog_rx_playback_begin() started. */
+void dsd_analog_rx_playback_end(dsd_state* state);
 
 #ifdef __cplusplus
 }

@@ -411,10 +411,13 @@ typedef struct {
     int read_rate_hz;
     /** 1 from a boundary until a read shows the input ran dry (analog_rx_backlog_skipped()). */
     int backlog_armed;
-    int backlog_span_open;          /**< 1 once a read since the boundary started a measured span */
-    uint64_t backlog_span_start_ms; /**< monotonic ms at which the span being measured started */
-    uint64_t backlog_span_us;       /**< input read in that span, in sample time */
-    uint64_t backlog_skipped_us;    /**< input skipped since the boundary, in sample time */
+    int backlog_span_open;           /**< 1 once a read since the boundary started a measured span */
+    uint64_t backlog_span_start_ms;  /**< monotonic ms at which the span being measured started */
+    uint64_t backlog_span_us;        /**< input read in that span, in sample time */
+    uint64_t backlog_span_played_ms; /**< of that span, the time the decoder spent playing monitor audio */
+    uint64_t backlog_skipped_us;     /**< input skipped since the boundary, in sample time */
+    int playback_open;               /**< 1 between dsd_analog_rx_playback_begin() and _end() */
+    uint64_t playback_started_ms;    /**< monotonic ms at dsd_analog_rx_playback_begin() */
 } analog_rx_session;
 
 #ifdef DSD_NEO_TEST_HOOKS
@@ -601,19 +604,32 @@ analog_rx_arm_backlog_skip(analog_rx_session* session) {
     session->backlog_span_open = 0;
     session->backlog_span_start_ms = 0U;
     session->backlog_span_us = 0U;
+    session->backlog_span_played_ms = 0U;
     session->backlog_skipped_us = 0U;
+}
+
+/* Start measuring a new span of the backlog skip at @p now_ms. */
+static void
+analog_rx_backlog_span_start(analog_rx_session* session, uint64_t now_ms) {
+    session->backlog_span_open = 1;
+    session->backlog_span_start_ms = now_ms;
+    session->backlog_span_us = 0U;
+    session->backlog_span_played_ms = 0U;
 }
 
 /*
  * After a boundary, on an input that queues, every read is skipped until one shows the input ran
  * dry. The decoder drains a backlog far faster than real time, so the test is a span of at least
  * DSD_ANALOG_RX_TAP_READ_MS of input that took at least half as long to arrive: the decoder had
- * to wait for it. The first read after the boundary only starts the clock, since it may have
- * waited in the input for any length of time (after a generation move that is the read the move
- * is seen on, dropped already), and the read that ends the waiting span is skipped too, since it
- * can still open with the backlog's last samples; the next read holds only audio that arrived
- * after the boundary. An input that never runs dry (stdin fed from a file) is heard
- * again after DSD_ANALOG_RX_BACKLOG_MAX_MS of it. Returns 1 when this read is skipped.
+ * to wait for it. Time the decoder spent playing monitor audio does not count: synchronous
+ * playback holds it for each block's playing time once the output buffer is full, and it then
+ * reads a backlog at real-time pace without ever waiting for the input. The first read after the
+ * boundary only starts the clock, since it may have waited in the input for any length of time
+ * (after a generation move that is the read the move is seen on, dropped already), and the read
+ * that ends the waiting span is skipped too, since it can still open with the backlog's last
+ * samples; the next read holds only audio that arrived after the boundary. An input that never
+ * runs dry (stdin fed from a file) is heard again after DSD_ANALOG_RX_BACKLOG_MAX_MS of it.
+ * Returns 1 when this read is skipped.
  */
 static int
 analog_rx_backlog_skipped(const dsd_opts* opts, analog_rx_session* session, unsigned int count, int rate_hz) {
@@ -628,24 +644,52 @@ analog_rx_backlog_skipped(const dsd_opts* opts, analog_rx_session* session, unsi
     const uint64_t read_us = ((uint64_t)count * 1000000U) / (uint64_t)rate_hz;
     session->backlog_skipped_us += read_us;
     if (!session->backlog_span_open) {
-        session->backlog_span_open = 1;
-        session->backlog_span_start_ms = now;
-        session->backlog_span_us = 0U;
+        analog_rx_backlog_span_start(session, now);
     } else {
         session->backlog_span_us += read_us;
         if (session->backlog_span_us >= (uint64_t)DSD_ANALOG_RX_TAP_READ_MS * 1000U) {
-            const uint64_t waited_ms = now > session->backlog_span_start_ms ? now - session->backlog_span_start_ms : 0U;
+            const uint64_t elapsed_ms =
+                now > session->backlog_span_start_ms ? now - session->backlog_span_start_ms : 0U;
+            const uint64_t waited_ms =
+                elapsed_ms > session->backlog_span_played_ms ? elapsed_ms - session->backlog_span_played_ms : 0U;
             if (2U * waited_ms * 1000U >= session->backlog_span_us) {
                 session->backlog_armed = 0;
             }
-            session->backlog_span_start_ms = now;
-            session->backlog_span_us = 0U;
+            analog_rx_backlog_span_start(session, now);
         }
     }
     if (session->backlog_skipped_us >= (uint64_t)DSD_ANALOG_RX_BACKLOG_MAX_MS * 1000U) {
         session->backlog_armed = 0;
     }
     return 1;
+}
+
+/*
+ * The session for detection that starts now. With no session there was nothing for a reset to
+ * arm the backlog skip in, and one did happen when the publication's generation, which every
+ * reset moves, is no longer 0: a retune, say, then the switch from a digital mode to the analog
+ * monitor. What the input holds now may then be the old channel's, so the first reads skip it
+ * as after a reset with detection running. With no reset at all (the engine started on the
+ * analog monitor) nothing is skipped, so stdin fed from a file is heard from its start.
+ */
+static analog_rx_session*
+analog_rx_session_start(const dsd_opts* opts, dsd_state* state) {
+    const int after_reset = state->analog_rx.generation != 0U;
+    analog_rx_session* session = analog_rx_session_create(opts, state);
+    if (session && after_reset) {
+        analog_rx_arm_backlog_skip(session);
+    }
+    return session;
+}
+
+/* Publish a read the backlog skip passed over. The core is still designed for the read's rate,
+   so the publication says at once whether detection can use it: IDLE meanwhile, or UNAVAILABLE. */
+static void
+analog_rx_publish_skipped(dsd_state* state, analog_rx_session* session, int rate_hz) {
+    if (session->core.fe.in_rate_hz != rate_hz) {
+        core_configure(&session->core, rate_hz);
+    }
+    analog_rx_publish(state, session);
 }
 
 /* A retune nobody told the tap about shows up as a generation change: the RTL stream's for
@@ -726,8 +770,9 @@ dsd_analog_rx_reset(dsd_state* state) {
            boundary: at a low input rate, a block's worth of the old channel is enough to lock
            its tone again. The tap sets those samples aside rather than reading them; they stay
            in the block for the raw WAV and the monitor output, whose audio a reset leaves alone.
-           With no session, detection has not run since the engine started, and the first read
-           that creates one starts at the newest sample (dsd_analog_rx_tap_partial()). */
+           With no session, detection has not run since the engine started: the first read that
+           creates one starts at the newest sample (dsd_analog_rx_tap_partial()) and, after this
+           reset, arms the backlog skip (analog_rx_session_start()). */
         const int pending = state->analog_sample_counter;
         session->block_taken = pending > 0 ? (unsigned int)pending : 0U;
         session->read_rate_hz = 0;
@@ -773,8 +818,7 @@ analog_rx_boundary_dropped(const dsd_opts* opts, dsd_state* state, analog_rx_ses
            skip measures the next ones against. */
         session->stale_after_ms = 0;
         analog_rx_arm_backlog_skip(session);
-        session->backlog_span_open = 1;
-        session->backlog_span_start_ms = analog_rx_now_ms();
+        analog_rx_backlog_span_start(session, analog_rx_now_ms());
     }
     analog_rx_publish(state, session);
     return 1;
@@ -796,7 +840,7 @@ analog_rx_read(const dsd_opts* opts, dsd_state* state, const float* samples, uns
     analog_rx_session* session = analog_rx_session_get(state);
     const int rate_hz = analog_rx_rate_hz(opts);
     if (!session) {
-        session = analog_rx_session_create(opts, state);
+        session = analog_rx_session_start(opts, state);
         if (!session) {
             return;
         }
@@ -804,7 +848,7 @@ analog_rx_read(const dsd_opts* opts, dsd_state* state, const float* samples, uns
         return;
     }
     if (analog_rx_backlog_skipped(opts, session, count, rate_hz)) {
-        analog_rx_publish(state, session);
+        analog_rx_publish_skipped(state, session, rate_hz);
         return;
     }
     if (!dsd_analog_rx_core_process(&session->core, samples, (int)count, rate_hz,
@@ -839,7 +883,7 @@ dsd_analog_rx_tap_partial(const dsd_opts* opts, dsd_state* state, const float* b
         if (!dsd_analog_tone_detection_active(opts)) {
             return;
         }
-        session = analog_rx_session_create(opts, state);
+        session = analog_rx_session_start(opts, state);
         if (!session) {
             return;
         }
@@ -872,5 +916,28 @@ dsd_analog_rx_tap(const dsd_opts* opts, dsd_state* state, const float* block, un
     }
     if (start < count) {
         analog_rx_read(opts, state, block + start, count - start);
+    }
+}
+
+void
+dsd_analog_rx_playback_begin(dsd_state* state) {
+    analog_rx_session* session = state ? analog_rx_session_get(state) : NULL;
+    if (!session || !session->backlog_armed) {
+        return;
+    }
+    session->playback_open = 1;
+    session->playback_started_ms = analog_rx_now_ms();
+}
+
+void
+dsd_analog_rx_playback_end(dsd_state* state) {
+    analog_rx_session* session = state ? analog_rx_session_get(state) : NULL;
+    if (!session || !session->playback_open) {
+        return;
+    }
+    session->playback_open = 0;
+    const uint64_t now = analog_rx_now_ms();
+    if (session->backlog_armed && session->backlog_span_open && now > session->playback_started_ms) {
+        session->backlog_span_played_ms += now - session->playback_started_ms;
     }
 }

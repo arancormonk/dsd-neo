@@ -510,26 +510,28 @@ installs from `src/engine/trunk_tuning.c` in `src/engine/trunk_tuning_hooks_inst
   per accepted frame sync, behind `DSD_NEO_DEBUG_SYMBOL_TIMING` (see `docs/cli.md`). The sample trace it correlates
   over is filled by `dsd_symbol.c` and owned by decoder-state setup/teardown in `src/core/util/dsd_init.c`.
 - Received-tone detection (issue #522), public entry points in `include/dsd-neo/dsp/analog_rx.h`: `dsd_analog_rx_tap()`,
-  `dsd_analog_rx_tap_partial()` and `dsd_analog_rx_reset()`. The same header holds the CTCSS timing contract in sample
-  time: p95 targets `DSD_ANALOG_CTCSS_LOCK_P95_MS` (400) and `DSD_ANALOG_CTCSS_LOSS_P95_MS` (350) and per-event ceilings
-  `DSD_ANALOG_CTCSS_LOCK_CEILING_MS` (700) and `DSD_ANALOG_CTCSS_LOSS_CEILING_MS` (800). `DSP_ANALOG_CTCSS` asserts them
-  on every timing row, and a tone policy's acquisition window must exceed the lock ceiling by at least 100 ms. Each
-  ceiling comes with the rate at which the long-run sweeps in `docs/testing.md` exceeded it, stated in the header (none
-  for loss; for lock in noise, about one start in 125,000 at 0 dB, more for a tone off its table value); change them
-  only with new sweeps. The header also states the measured wrong-tone rates (neighbour locks near 0 dB, talk-off),
-  which a policy acting on the first lock has to budget for. `dsd_symbol.c` taps each unsynced analog block while it is
-  still raw: `symbol_process_unsynced_analog()` offers the tap the block after every sample it adds
-  (`dsd_analog_rx_tap_partial()`), and the tap reads what is waiting once `DSD_ANALOG_RX_TAP_READ_MS` (20 ms) of input,
-  at the input's current rate, has built up; `symbol_finalize_unsynced_analog_block()` hands it the rest after the raw
-  WAV write and before `symbol_apply_unsynced_filters()`, whose in-place `hpf_f` (960 Hz) and `pbf_f` would remove every
-  CTCSS tone. The block is 20 ms on RTL but 960 samples on PCM at any rate (384 ms at 2500 Hz), and read only at block
-  ends the publication would trail the sample-time contract by up to a block. One decoder-thread tap covers RTL and PCM,
-  sees only live (not seam-replayed) samples, only reads the block, and runs whatever `audio_out` says. It is active
-  only while `dsd_analog_tone_detection_active()` (runtime, above) says so: the analog FM monitor on PCM input or on RTL
-  with an AUDIO_MONITOR output kind. The rate comes from the RTL output-rate hook or
-  `dsd_opts_current_input_timing_rate()`. The sync hunt keeps that output kind: in analog-only mode `dsd_frame_sync.c`
-  never sends the RTL front end a symbol profile (a CQPSK one would turn the monitor audio into symbols and silence the
-  tap), as `app_control/symbol_profile.c` already did not.
+  `dsd_analog_rx_tap_partial()`, `dsd_analog_rx_reset()` and the monitor playback bracket
+  `dsd_analog_rx_playback_begin()` / `dsd_analog_rx_playback_end()`. The same header holds the CTCSS timing contract in
+  sample time: p95 targets `DSD_ANALOG_CTCSS_LOCK_P95_MS` (400) and `DSD_ANALOG_CTCSS_LOSS_P95_MS` (350) and per-event
+  ceilings `DSD_ANALOG_CTCSS_LOCK_CEILING_MS` (700) and `DSD_ANALOG_CTCSS_LOSS_CEILING_MS` (800). `DSP_ANALOG_CTCSS`
+  asserts them on every timing row, and a tone policy's acquisition window must exceed the lock ceiling by at least
+  100 ms. Each ceiling comes with the rate at which the long-run sweeps in `docs/testing.md` exceeded it, stated in the
+  header (none for loss; for lock in noise, about one start in 125,000 at 0 dB, more for a tone off its table value);
+  change them only with new sweeps. The header also states the measured wrong-tone rates (neighbour locks near 0 dB,
+  talk-off), which a policy acting on the first lock has to budget for. `dsd_symbol.c` taps each unsynced analog block
+  while it is still raw: `symbol_process_unsynced_analog()` offers the tap the block after every sample it adds, the one
+  that completes the block included (`dsd_analog_rx_tap_partial()`), and the tap reads what is waiting once
+  `DSD_ANALOG_RX_TAP_READ_MS` (20 ms) of input, at the input's current rate, has built up;
+  `symbol_finalize_unsynced_analog_block()` hands it the rest after the raw WAV write and before
+  `symbol_apply_unsynced_filters()`, whose in-place `hpf_f` (960 Hz) and `pbf_f` would remove every CTCSS tone. The
+  block is 20 ms on RTL but 960 samples on PCM at any rate (384 ms at 2500 Hz), and read only at block ends the
+  publication would trail the sample-time contract by up to a block. One decoder-thread tap covers RTL and PCM, sees
+  only live (not seam-replayed) samples, only reads the block, and runs whatever `audio_out` says. It is active only
+  while `dsd_analog_tone_detection_active()` (runtime, above) says so: the analog FM monitor on PCM input or on RTL with
+  an AUDIO_MONITOR output kind. The rate comes from the RTL output-rate hook or `dsd_opts_current_input_timing_rate()`.
+  The sync hunt keeps that output kind: in analog-only mode `dsd_frame_sync.c` never sends the RTL front end a symbol
+  profile (a CQPSK one would turn the monitor audio into symbols and silence the tap), as `app_control/symbol_profile.c`
+  already did not.
   - `src/dsp/analog_rx.c` holds the pure core behind the module-private `src/dsp/analog_rx_internal.h` (no `dsd_state`,
     no clock, so `DSP_ANALOG_CTCSS` drives it in sample time): the shared sub-audible front end (stage 1 a Blackman FIR
     decimating by `floor(fs / 2400)`, evaluated only when an output is due; stage 2 a Blackman LPF at the ~2.4 kHz rate,
@@ -616,18 +618,23 @@ installs from `src/engine/trunk_tuning.c` in `src/engine/trunk_tuning_hooks_inst
     enough to lock the old channel's tone again. The block itself is left alone, so the raw WAV and the monitor output
     keep every sample across the boundary; resets run in digital sessions too (every
     `dsd_frame_sync_reset_acquisition()`, a lost TCP connection). Detection that starts part-way through a block, with
-    no session yet, likewise reads from the sample it started on. On Pulse, stdin, UDP and TCP input the
-    input's own queue holds more of the old channel, which kept arriving while a rigctl retune held the decoder, so
-    every `dsd_analog_rx_reset()` and every generation move the tap sees also arms a backlog skip: the tap skips its
-    reads until one shows the input ran dry (a span of `DSD_ANALOG_RX_TAP_READ_MS` or more of input that took at least
-    half as long to arrive on the monotonic clock, where a backlog drains at the decoder's own speed), that read
-    included, or until `DSD_ANALOG_RX_BACKLOG_MAX_MS` (2 s) of input, after which stdin fed from a file faster than
-    real time is heard again. The first read after the boundary only starts that clock. Files and RTL-family streams
-    are not skipped (the RTL stream clears its own output at a retune), and the skip only reads: the monitor output
-    plays the backlog as before. The tap's own resets act on the read in hand instead: a generation move, a pause or a
-    change of input rate since the previous read drops it (after a rate change, samples taken at the old rate are
-    another signal at the new one: 1920 Hz at 48 kHz read as 2500 Hz input is a 100 Hz tone), and the hangover expires
-    on it.
+    no session yet, likewise reads from the sample it started on, also when that sample completes the block: the symbol
+    path offers every sample to `dsd_analog_rx_tap_partial()` before it finalizes the block. On Pulse, stdin, UDP and
+    TCP input the input's own queue holds more of the old channel, which kept arriving while a rigctl retune held the
+    decoder, so every `dsd_analog_rx_reset()` and every generation move the tap sees also arms a backlog skip, and so
+    does detection that starts with no session after a reset (the publication's generation is no longer 0: a retune in a
+    digital mode, then the switch to the analog monitor). The tap skips its reads until one shows the input ran dry (a
+    span of `DSD_ANALOG_RX_TAP_READ_MS` or more of input that took at least half as long to arrive on the monotonic
+    clock, where a backlog drains at the decoder's own speed), that read included, or until
+    `DSD_ANALOG_RX_BACKLOG_MAX_MS` (2 s) of input, after which stdin fed from a file faster than real time is heard
+    again. Time the symbol path spends playing monitor audio (`dsd_analog_rx_playback_begin()` / `_end()` around the
+    output write) is not waiting: synchronous playback of stdin input holds the decoder for each block's playing time
+    once its buffer is full, and it then reads a backlog at real-time pace. The first read after the boundary only
+    starts that clock. Files and RTL-family streams are not skipped (the RTL stream clears its own output at a retune),
+    and the skip only reads: the monitor output plays the backlog as before. The tap's own resets act on the read in
+    hand instead: a generation move, a pause or a change of input rate since the previous read drops it (after a rate
+    change, samples taken at the old rate are another signal at the new one: 1920 Hz at 48 kHz read as 2500 Hz input is
+    a 100 Hz tone), and the hangover expires on it.
 - `dsd_filters.c` owns the per-protocol matched filters, selected by kind rather than by calling one of four
   wrappers, because the symbol grid has to know when the stream it samples changes identity. It reads the raw
   discriminator until a sync names a protocol and the filter's output afterwards, and that output describes the

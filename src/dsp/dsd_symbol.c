@@ -1162,12 +1162,16 @@ symbol_output_unsynced_analog(dsd_opts* opts, dsd_state* state, unsigned int ana
         && opts->audio_out == 1) {
         symbol_convert_analog_block_to_i16(state, analog_block);
         size_t bytes = (size_t)analog_block * sizeof(short);
+        /* Synchronous playback can hold the decoder for the block's playing time; that is not
+           time spent waiting for input, which received-tone detection measures (issue #522). */
+        dsd_analog_rx_playback_begin(state);
         if (opts->audio_out_type == 0 && opts->audio_raw_out) {
             dsd_audio_write(opts->audio_raw_out, state->analog_out, analog_block);
         }
         if (opts->audio_out_type == 8) {
             dsd_udp_audio_hook_blast_analog(opts, state, bytes, state->analog_out);
         }
+        dsd_analog_rx_playback_end(state);
         if (opts->trunk_enable != 1) {
             state->last_cc_sync_time = time(NULL);
             state->last_cc_sync_time_m = dsd_time_now_monotonic_s();
@@ -1235,13 +1239,14 @@ symbol_process_unsynced_analog(dsd_opts* opts, dsd_state* state, unsigned int an
         state->analog_sample_counter = (int)analog_block - 1;
     }
     state->analog_out_f[state->analog_sample_counter++] = sample;
+    /* Received-tone detection (issue #522) reads the raw block as it fills, so its verdicts keep
+       pace with the input however long the block is: 960 samples are 384 ms at 2500 Hz. Every
+       sample is offered, the one that completes the block too, so detection that starts on
+       that sample hears only it and not the block that began before it. */
+    dsd_analog_rx_tap_partial(opts, state, state->analog_out_f, (unsigned int)state->analog_sample_counter);
     if ((unsigned int)state->analog_sample_counter == analog_block) {
         symbol_finalize_unsynced_analog_block(opts, state, analog_block);
-        return;
     }
-    /* Received-tone detection (issue #522) reads the raw block as it fills, so its verdicts keep
-       pace with the input however long the block is: 960 samples are 384 ms at 2500 Hz. */
-    dsd_analog_rx_tap_partial(opts, state, state->analog_out_f, (unsigned int)state->analog_sample_counter);
 }
 
 #ifdef DSD_NEO_TEST_HOOKS

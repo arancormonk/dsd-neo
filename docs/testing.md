@@ -406,15 +406,18 @@ connection drops when it reconnects inside the read, whose 300 ms backoff is sho
 Pulse, stdin, UDP and TCP input after a reset or a trunk-tuning generation move, the half second of the old channel's
 100 Hz tone the input had queued -- read with no time passing on the injected clock, as a decoder drains a backlog,
 which heard locked 100.0 Hz again on the new channel -- whether the new channel then arrives in 20 ms reads or in 100 ms
-bursts, and its own 131.8 Hz tone locks within the p95 target plus one read, while a WAV file is heard at once after a
-reset, a UDP stream with nothing queued from the third read after a reset or a generation move, and stdin fed faster
-than real time again after 2 s; and --
+bursts, also when the reset came in a digital mode before detection started, and on stdin input whose monitor playback
+holds the decoder for each block's 20 ms (the time spent playing is not counted as waiting for input), and its own
+131.8 Hz tone locks within the p95 target plus one read, while a WAV file is heard at once after a reset, a UDP stream
+with nothing queued from the third read after a reset or a generation move, and stdin fed faster than real time again
+after 2 s; and --
 driven through `getSymbol()` on 2500 Hz WAVs, where one 960-sample block is 384 ms -- reads the block as it fills, so a
 tone starting mid-block locks within the 400 ms p95 target of its start and a carrier drop is forgotten within the
 hangover and two 20 ms reads (read only at block ends they took 576 and 544 ms), and sets aside the part of the monitor
 block already assembled at a reset, so the tap reads none of the old channel's samples and the new channel does not lock
-its tone again, while the raw WAV keeps every sample of that block -- also after a reset in a digital mode, where
-detection that then starts part-way through the block reads from the sample it started on),
+its tone again, while the raw WAV keeps every sample of that block -- also in a digital mode, where detection that
+starts part-way through the block, after a reset or with none announced, reads from the sample it started on, also
+when 959 old samples wait and that sample completes the block),
 `FRAME_SYNC_INTERNAL_HELPERS` (the acquisition reset), `ENGINE_NO_CARRIER_RESET` (survives `noCarrier()`,
 cleared by the legacy `-Y` step -- on RTL, by rigctl on PCM input in radio-off builds too, and by a failed step whose
 rigctl leg already moved the radio -- and kept by a refused one), `ENGINE_CLEANUP_AUDIO` (engine stop frees the detector
