@@ -410,6 +410,7 @@ int rtl_stream_test_analog_width_change(int rate_hz, int width_before_hz, int wi
 int rtl_stream_test_analog_request_without_stream(int stale_rate_out_hz, int kind, int width_hz, int* out_retune_rc);
 
 typedef struct rtl_stream_test_live_request_result {
+    int check_rc;       /* rtl_stream_check_analog_profile() for the same profile, asked before the request */
     int request_rc;     /* rtl_stream_request_analog_profile() while the stream runs */
     int request_queued; /* 1 when that request left something queued for the demod thread */
     int family_before;  /* demod_state::analog_family before the request ... */
@@ -427,8 +428,9 @@ typedef struct rtl_stream_test_live_request_result {
 
 /* Run a stream at @p rate_hz (the analog monitor at its default width, or a DMR session when @p analog_stream is 0)
  * with @p post_downsample published as an I/Q replay sidecar would set it, give it a designed channel plan, and ask
- * it while it runs for the analog profile (@p kind, @p width_hz): first as a live request consumed at one
- * demod-thread block boundary, then as a retune profile for a target. */
+ * it while it runs for the analog profile (@p kind, @p width_hz): first through the check a decode-mode change makes
+ * before it commits, then as a live request consumed at one demod-thread block boundary (made whatever the check
+ * said), then as a retune profile for a target. */
 int rtl_stream_test_analog_request_with_stream(int rate_hz, int analog_stream, int post_downsample, int kind,
                                                int width_hz, rtl_stream_test_live_request_result* out);
 
@@ -439,6 +441,14 @@ int rtl_stream_test_analog_request_with_stream(int rate_hz, int analog_stream, i
  * boundary; the retune fields are unused. */
 int rtl_stream_test_analog_request_across_rate_change(int rate_hz, int landed_rate_hz, int width_hz, int analog_stream,
                                                       rtl_stream_test_live_request_result* out);
+
+/* What a decode-mode change to Analog does on a DMR session running at @p rate_hz, with a retune landing in between:
+ * the NFM width @p width_hz is checked against the published rate before the decoder commits (check_rc), then a
+ * retune settles the stream on @p landed_rate_hz and publishes it, and only then is the analog profile requested
+ * (request_rc) and consumed at one demod-thread block boundary. The *_before fields are read after the retune, just
+ * before the request; the retune fields are unused. */
+int rtl_stream_test_analog_switch_request_after_rate_change(int rate_hz, int landed_rate_hz, int width_hz,
+                                                            rtl_stream_test_live_request_result* out);
 
 typedef struct rtl_stream_test_audio_reset_result {
     float deemph_avg;

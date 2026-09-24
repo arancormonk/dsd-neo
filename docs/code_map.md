@@ -423,9 +423,10 @@ installs from `src/engine/trunk_tuning.c` in `src/engine/trunk_tuning_hooks_inst
   profile alone and does not switch the front end in the middle of the row.
   `DSD_APP_CMD_DECODE_MODE_SET` also opens the new family's sink (`dsd_audio_ensure_*_output()`). Before it changes
   anything it asks a running RTL front end whether it takes the analog profile the mode will publish
-  (`svc_check_mode_receive_profile()`, `rtl_stream_check_analog_profile()`: the checks
-  `rtl_stream_request_analog_profile()` makes before it queues, refusal logged the same way); a refusal fails the
-  command with a toast and leaves the mode, options, sinks and front end as they were.
+  (`svc_check_mode_receive_profile()`, `rtl_stream_check_analog_profile()`: kind, range, `DSD_NEO_CHANNEL_LPF` and the
+  published demod rate, refusal logged with the validator's text); a refusal fails the command with a toast and leaves
+  the mode, options, sinks and front end as they were. That is the rate check the switch gets: the request it
+  publishes after committing is not refused on a rate a retune moved in between.
   `DSD_APP_CMD_CONFIG_APPLY` runs the same sink and publish sequence when its `[mode]` moves the session between the
   analog and digital families, after the same check when the move is onto the analog family (a refusal leaves the
   whole config unapplied); a digital-to-digital `[mode]` change keeps its earlier behaviour, except that ProVoice
@@ -517,9 +518,11 @@ installs from `src/engine/trunk_tuning.c` in `src/engine/trunk_tuning_hooks_inst
 Runtime controls (via `include/dsd-neo/io/rtl_stream_c.h`):
 
 - Receive family: `rtl_stream_request_analog_profile()` (family, analog kind, channel width; validated on the caller's
-  thread against the running stream's rate, or only for kind and range with no stream running, a refusal logged with
-  the validator's text once per kind, width and rate, and applied on the demod thread ahead of any demod profile
-  queued after it; a demod profile queued before it is dropped), `rtl_stream_get_analog_profile()`,
+  thread, against the running stream's rate for a change on the running analog monitor, and only for kind, range and
+  `DSD_NEO_CHANNEL_LPF` with no stream running or for a switch onto the monitor, whose rate check is the caller's
+  `rtl_stream_check_analog_profile()` before it commits; a refusal logged with the validator's text once per kind,
+  width and rate, and applied on the demod thread ahead of any demod profile queued after it; a demod profile queued
+  before it is dropped), `rtl_stream_check_analog_profile()`, `rtl_stream_get_analog_profile()`,
   `rtl_stream_analog_family_active()` (the analog family, including
   while a CQPSK toggle or a typed row's profile has moved the front end off the monitor output),
   `rtl_stream_output_rate_for_family()` (the output rate a pending switch will produce), and
@@ -602,8 +605,9 @@ Notes:
     consumes it and a retune profile when the retune lands (a retune can move the rate after the request was checked
     against the published one); a width that rate cannot realize is refused (logged once per kind, width and rate) and
     the front end keeps its receive profile. The exception is a live request that moves the stream onto the analog
-    monitor output, whose caller has already switched the decoder to Analog on the check the request passed: it goes
-    ahead as a retune right after the switch would leave it (the width kept, logged with the validator's text,
+    monitor output, whose caller has already put the decoder on Analog (after `rtl_stream_check_analog_profile()` held
+    it to the published rate, or as the session's configured family): it is not held to the rate when it is made, and
+    it goes ahead as a retune right after the switch would leave it (the width kept, logged with the validator's text,
     published as DSP-limited), so the decoder and the front end never disagree about the family. A digital family
     request leaves the analog family whenever the stream
     runs it (`demod_state::analog_family`, published as `rtl_stream_analog_family_active()`), including after a symbol
@@ -643,7 +647,8 @@ Notes:
     to analog; width-only changes; requests with no stream; live requests and
     retune profiles refused against a running stream's rate and a replay's `post_downsample`, and a live request
     refused at the rate a retune moved the stream to before it was consumed, or applied as DSP-limited when it moves a
-    DMR session onto the monitor; a demod block boundary
+    DMR session onto the monitor, including one requested after a retune moved the rate its check accepted; a demod
+    block boundary
     between the family request and its symbol profile; a switch whose ring clear meets a decoder read between its
     copy and its tail store; the baselines run the same demod configuration functions as
     `dsd_rtl_stream_open()`), `IO_RTL_ANALOG_OPEN` (the start-time check against the rate an IQ replay delivers, and a

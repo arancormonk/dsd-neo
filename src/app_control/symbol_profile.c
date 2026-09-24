@@ -76,7 +76,14 @@ svc_publish_symbol_profile(const dsd_opts* opts, dsd_state* state, dsd_decode_mo
        it and falls back on 4800/4, which would ask rtl_stream_set_symbol_profile()
        for the P25 C4FM filter and narrow the monitor audio to a digital channel.
        The analog request is also what moves a live digital front end onto the
-       analog family when the operator picks Analog mid-session. */
+       analog family when the operator picks Analog mid-session. Its result is
+       not needed here. A switch onto the monitor is refused only by rules that
+       do not depend on the demod rate, which the caller's
+       svc_check_mode_receive_profile() applied to the same profile before it
+       committed, together with the rate the stream then ran at; a retune that
+       moves the rate afterwards does not make the request refuse it. A width
+       change the running monitor refuses leaves the monitor on its profile.
+       Either way the front end ends on the analog family with the decoder. */
     if (dsd_opts_is_analog_family(opts)) {
         (void)rtl_stream_request_analog_profile(DSD_RX_FAMILY_ANALOG, opts->analog_demod,
                                                 dsd_opts_analog_width_hz(opts));

@@ -582,10 +582,12 @@ expect_live_refusal(const live_request_case& c) {
                         rtl_stream_test_analog_request_with_stream(c.rate_hz, c.analog_stream, c.post_downsample,
                                                                    DSD_ANALOG_DEMOD_FM, c.refused_width_hz, &r),
                         0);
+    DSD_SNPRINTF(label, sizeof label, "%s: check refuses it", c.name);
+    rc |= expect_int(label, r.check_rc, -1);
     DSD_SNPRINTF(label, sizeof label, "%s: live request refused", c.name);
     rc |= expect_int(label, r.request_rc, -1);
-    /* The refusal is reported, not silent: the live request logs the validator's text and what stays in place, and
-     * the retune profile for the same width and rate that follows it is not logged a second time. */
+    /* The refusal is reported, not silent: the check logs the validator's text and what stays in place, and neither
+     * the live request nor the retune profile for the same width and rate that follow it log it a second time. */
     DSD_SNPRINTF(label, sizeof label, "%s: one refusal logged for the width and rate", c.name);
     rc |= expect_int(label, g_error_count, 1);
     DSD_SNPRINTF(label, sizeof label, "%s: refusal logs the validator's text", c.name);
@@ -622,6 +624,8 @@ expect_live_acceptance(const live_request_case& c) {
                         rtl_stream_test_analog_request_with_stream(c.rate_hz, c.analog_stream, c.post_downsample,
                                                                    DSD_ANALOG_DEMOD_FM, c.accepted_width_hz, &r),
                         0);
+    DSD_SNPRINTF(label, sizeof label, "%s: check accepts it", c.name);
+    rc |= expect_int(label, r.check_rc, 0);
     DSD_SNPRINTF(label, sizeof label, "%s: realizable request accepted", c.name);
     rc |= expect_int(label, r.request_rc, 0);
     DSD_SNPRINTF(label, sizeof label, "%s: realizable request queued", c.name);
@@ -637,11 +641,13 @@ expect_live_acceptance(const live_request_case& c) {
     return rc;
 }
 
-/* While a stream runs, each request is checked against the demod rate that stream publishes, and against the
+/* While the analog monitor runs, each request is checked against the demod rate the stream publishes, and against the
  * post-demod decimation an I/Q replay sidecar can set: a width in NFM's range that the running stream cannot realize is
- * refused before anything is queued, as a live request and as a retune profile alike, and the running channel stays as
- * it was. Were such a width queued, the demodulator would have no filter design for it and run the channel unfiltered.
- * Beside each refusal a width the same stream does realize is accepted, so the refusal is the rate's doing. */
+ * refused before anything is queued, by the check, as a live request and as a retune profile alike, and the running
+ * channel stays as it was. Were such a width queued, the demodulator would have no filter design for it and run the
+ * channel unfiltered. Beside each refusal a width the same stream does realize is accepted, so the refusal is the
+ * rate's doing. A digital session moving onto the monitor is held to its rate by the check alone
+ * (test_digital_switch_rate_check()). */
 static int
 test_requests_against_running_stream(void) {
     const live_request_case cases[] = {
@@ -651,9 +657,6 @@ test_requests_against_running_stream(void) {
         /* 16 kHz fits up to 13.2 kHz, so even the 16 kHz default width is out of reach when asked for explicitly. */
         {"16 kHz analog stream", 16000, 1, 1, 16000, 13000, 13000,
          "NFM bandwidth 16 kHz does not fit the 16 kHz DSP rate (the largest width it fits is 13.2 kHz)"},
-        /* A digital session switching to analog is held to the rate it runs at, too. */
-        {"24 kHz DMR stream", 24000, 0, 1, 25000, 20000, 20000,
-         "NFM bandwidth 25 kHz does not fit the 24 kHz DSP rate (the largest width it fits is 20.4 kHz)"},
         /* A replay decimating by 2 after demod runs the channel filter at twice the published rate: every requested
          * width is refused there, while the unset default keeps its legacy design (16 kHz at 48 kHz). */
         {"48 kHz replay with post_downsample 2", 48000, 1, 2, 12500, 0, 16000,
@@ -735,6 +738,96 @@ test_request_across_rate_change(void) {
     if (rc != 0) {
         DSD_FPRINTF(stderr, "  logged: \"%s\"\n", g_last_error);
     }
+    return rc;
+}
+
+/* A digital session switching to the analog monitor is held to the rate it runs at by the check a decode-mode change
+ * makes before it commits (rtl_stream_check_analog_profile()): a width in NFM's range that the rate cannot realize is
+ * refused there, logged with the validator's text, and the caller leaves its mode alone. The request itself is not
+ * held to that rate: whoever makes it has already put its decoder on the analog mode, so it goes ahead and lands the
+ * way the demod thread lands any switch onto the monitor, the width kept (never clamped or swapped for another
+ * design), logged, and published as DSP-limited. A retune profile for the same width is still refused. */
+static int
+test_digital_switch_rate_check(void) {
+    /* The width the rate does fit first: an accepted request re-arms the once-per-refusal log, which an earlier case
+     * may have left holding the width and rate refused below. */
+    const live_request_case fits = {"24 kHz DMR stream", 24000, 0, 1, 25000, 20000, 20000, ""};
+    int rc = expect_live_acceptance(fits);
+
+    rtl_stream_test_live_request_result r;
+    DSD_MEMSET(&r, 0, sizeof r);
+    g_last_error[0] = '\0';
+    g_error_count = 0;
+    rc |= expect_int("DMR at 24 kHz to a 25 kHz NFM width run",
+                     rtl_stream_test_analog_request_with_stream(24000, 0, 1, DSD_ANALOG_DEMOD_FM, 25000, &r), 0);
+    rc |= expect_int("DMR at 24 kHz: the check refuses 25 kHz", r.check_rc, -1);
+    rc |= expect_int("DMR at 24 kHz: the request goes ahead", r.request_rc, 0);
+    rc |= expect_int("DMR at 24 kHz: the request is queued", r.request_queued, 1);
+    rc |= expect_int("DMR at 24 kHz: digital before the boundary", r.family_before, 0);
+    rc |= expect_int("DMR at 24 kHz: lands on the analog family", r.family_after, 1);
+    rc |= expect_int("DMR at 24 kHz: onto the monitor output", r.monitor_after, 1);
+    rc |= expect_int("DMR at 24 kHz: width kept, not clamped", r.width_after, 25000);
+    rc |= expect_int("DMR at 24 kHz: published as DSP-limited", r.published_lpf_on_after, 0);
+    rc |= expect_int("DMR at 24 kHz: retune profile refused", r.retune_rc, -1);
+    rc |= expect_int("DMR at 24 kHz: no retune profile queued", r.retune_queued, 0);
+    /* The check's refusal, and the landing's note that the monitor starts without that width. */
+    rc |= expect_int("DMR at 24 kHz: the check and the landing each log once", g_error_count, 2);
+    rc |= expect_int("DMR at 24 kHz: logs the validator's text",
+                     std::strstr(g_last_error, "NFM bandwidth 25 kHz does not fit the 24 kHz DSP rate (the largest "
+                                               "width it fits is 20.4 kHz)")
+                         != NULL,
+                     1);
+    rc |= expect_int("DMR at 24 kHz: says the monitor starts anyway",
+                     std::strstr(g_last_error, "The analog monitor starts anyway") != NULL, 1);
+    if (rc != 0) {
+        DSD_FPRINTF(stderr, "  logged: \"%s\"\n", g_last_error);
+    }
+    return rc;
+}
+
+/* A decode-mode change to Analog checks the width against the published rate and commits its decoder on the answer,
+ * then requests the analog profile. A retune can settle the device on another rate between the two. The request must
+ * not refuse then what the check accepted: its decoder is already on Analog, so a refusal would leave it on a digital
+ * front end with nothing reporting it back, and a second Analog pick takes the already-selected shortcut. The switch
+ * lands on the monitor the way it does when the retune comes after the request instead
+ * (test_request_across_rate_change()): the width kept, logged once with the validator's text, and published as
+ * DSP-limited. */
+static int
+test_switch_request_after_rate_change(void) {
+    rtl_stream_test_live_request_result r;
+    DSD_MEMSET(&r, 0, sizeof r);
+    g_last_error[0] = '\0';
+    g_error_count = 0;
+    int rc = expect_int("DMR to 25 kHz, 48 -> 24 kHz before the request run",
+                        rtl_stream_test_analog_switch_request_after_rate_change(48000, 24000, 25000, &r), 0);
+    rc |= expect_int("checked at the published 48 kHz: accepted", r.check_rc, 0);
+    rc |= expect_int("requested after the move to 24 kHz: accepted", r.request_rc, 0);
+    rc |= expect_int("requested after the move to 24 kHz: queued", r.request_queued, 1);
+    rc |= expect_int("digital until the boundary", r.family_before, 0);
+    rc |= expect_int("the switch lands on the analog family", r.family_after, 1);
+    rc |= expect_int("onto the monitor output", r.monitor_after, 1);
+    rc |= expect_int("width kept, not clamped", r.width_after, 25000);
+    rc |= expect_int("published as DSP-limited", r.published_lpf_on_after, 0);
+    rc |= expect_int("logged once", g_error_count, 1);
+    rc |= expect_int("logs the validator's text",
+                     std::strstr(g_last_error, "NFM bandwidth 25 kHz does not fit the 24 kHz DSP rate (the largest "
+                                               "width it fits is 20.4 kHz)")
+                         != NULL,
+                     1);
+    rc |= expect_int("says the monitor starts anyway",
+                     std::strstr(g_last_error, "The analog monitor starts anyway") != NULL, 1);
+    if (rc != 0) {
+        DSD_FPRINTF(stderr, "  logged: \"%s\"\n", g_last_error);
+    }
+
+    /* A width the new rate still fits lands filtered. */
+    DSD_MEMSET(&r, 0, sizeof r);
+    rc |= expect_int("DMR to 12.5 kHz, 48 -> 24 kHz before the request run",
+                     rtl_stream_test_analog_switch_request_after_rate_change(48000, 24000, 12500, &r), 0);
+    rc |= expect_int("12.5 kHz accepted", r.request_rc, 0);
+    rc |= expect_int("12.5 kHz lands on the monitor", r.monitor_after, 1);
+    rc |= expect_int("12.5 kHz reaches the filter", r.width_after, 12500);
+    rc |= expect_int("12.5 kHz published as filtered", r.published_lpf_on_after, 1);
     return rc;
 }
 
@@ -1017,6 +1110,8 @@ main(void) {
     rc |= test_requests_without_stream();
     rc |= test_requests_against_running_stream();
     rc |= test_request_across_rate_change();
+    rc |= test_digital_switch_rate_check();
+    rc |= test_switch_request_after_rate_change();
     rc |= test_cqpsk_override_lands_like_open(&cases[0], &cases[1], &cases[2]);
     rc |= test_lpf_off_lands_like_open(cases, sizeof cases / sizeof cases[0]);
     rc |= test_switch_during_live_read();
