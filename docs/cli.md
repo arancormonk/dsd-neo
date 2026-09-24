@@ -538,10 +538,14 @@ tone setting, and it runs with `-o null` too.
   EDACS analog voice, or on symbol-file input, and the `Rx tone:` line and `RECEIVED TONE` row are shown exactly while
   it runs. The front end needs an input rate from 2400 Hz up to 320 kHz; outside that range detection logs that it is
   inactive, once each time the input moves to such a rate, and the row is left out. Detection reads the input at least
-  every 20 ms of it, whatever the length of the blocks the monitor handles audio in (on PCM input 960 samples: 120 ms at
-  8 kHz, 384 ms at 2500 Hz), so at every supported rate what is shown trails the times above by at most two such reads.
-  On RTL input, detection hears the monitor audio after the RTL monitor gain (`vol`), so a gain of 0 leaves it nothing
-  to hear and it reads no carrier; to silence the monitor, mute the output instead.
+  every 20 ms of it, whatever the length of the blocks the monitor handles audio in (on PCM input 960 samples at the
+  rate the monitor runs at: 20 ms at 48 kHz, which 8, 9.6, 12, 16 and 24 kHz input is brought up to first, but 384 ms
+  at 2500 Hz), so at every supported rate the verdict the decoder publishes trails the times above by at most two such
+  reads. The frontends show it at their next refresh: the decoder hands them a new snapshot at most every 50 ms while it
+  hunts for sync, the terminal redraws at up to about 15 frames a second, and the Qt/Android monitor polls every 250 ms
+  by default, so the screen can trail the published verdict by a few hundred milliseconds more. On RTL input, detection
+  hears the monitor audio after the RTL monitor gain (`vol`), so a gain of 0 leaves it nothing to hear and it reads no
+  carrier; to silence the monitor, mute the output instead.
 - Externally demodulated audio (PCM inputs): the tone has to survive the producer. Feed the discriminator or flat audio
   with nothing below 300 Hz removed -- no voice high-pass, no de-emphasis that rolls off the low end -- and prefer
   48 kHz. Sound cards and receivers that high-pass their audio output remove CTCSS before DSD-neo sees it. PCM carrier
