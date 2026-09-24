@@ -153,8 +153,9 @@ Tests: `tests/engine/test_engine_trunk_scan.c` (`ENGINE_TRUNK_SCAN`) and
   (`apply_demod_profile`), so the demod thread switches family before it applies the profile. When the front end still
   runs the analog family there (`analog_family_active`: an `-fA` session whose configured mode was changed to a digital
   one while a row ran, saving its timing for the analog output rate), the leave times the decoder, and the profile it
-  publishes, for the rate the digital family lands on (`output_rate_for_family`). The M17 encoder is not the analog
-  family. Test: `ENGINE_CHANNEL_SCAN`.
+  publishes, for the rate the digital family lands on (`output_rate_for_family`). A leave that switches the front
+  end's family either way also drops the analog monitor block the decoder has part-collected
+  (`dsd_symbol_analog_block_reset()`). The M17 encoder is not the analog family. Test: `ENGINE_CHANNEL_SCAN`.
 - DSP `dsd_frame_sync_reset_acquisition()` drops outgoing profile proof, modulation votes, symbol history, hunt budgets,
   and slicer windows at committed row boundaries. Conventional rows also discard learned P25 modulation; trunk targets
   retain their own learned modulation. Normal no-carrier protocol confirmation resets remain in use.
@@ -434,7 +435,9 @@ installs from `src/engine/trunk_tuning.c` in `src/engine/trunk_tuning_hooks_inst
   (or `-8`) also gets the raw sink it writes to. Like `DECODE_MODE_SET` it keeps the session's audio output layout
   (`pulse_digi_out_channels`, `pulse_digi_rate_out`) through any `[mode]`: the output streams were opened with it, so
   a digital sink a family change opens gets it too, and a later preset cannot leave the options on another layout
-  than the open stream's. Tests:
+  than the open stream's. A `DECODE_MODE_SET`, RadioReference import or `[mode]` that moves the decoder between the
+  analog and digital families drops the analog monitor block it has part-collected (`dsd_symbol_analog_block_reset()`),
+  whose samples are the old family's; a change inside a family keeps it. Tests:
   `APP_COMMAND_QUEUE`, `APP_CONTROL_ACTIONS_RTL`.
 - Shared display decisions, so no frontend has to restate one: `include/dsd-neo/app_control/call_view.h` and
   `src/app_control/call_view.c` fold the canonical call state into a per-slot line, and
@@ -495,6 +498,9 @@ installs from `src/engine/trunk_tuning.c` in `src/engine/trunk_tuning_hooks_inst
   above 0, 12000x for RTL/I-Q input at the default 50 and 2.5x for PCM inputs, and the per-block `agsm_f()` AGC only
   at `-n 0`) and only while the squelch gate is open; for `audio_out_type == 8` it goes through `dsd_udp_audio_hook_blast_analog()` with a byte count of int16
   mono samples.
+  The block (`dsd_state::analog_out_f`) collects unsynced samples in a digital session too, monitored or not (the
+  CQPSK symbol-rate output excepted). `dsd_symbol_analog_block_reset()` (`<dsd-neo/dsp/symbol.h>`, decoder thread)
+  drops a part-collected block; app-control and the channel-scan leave call it when the receive family changes.
   `tests/engine/analog_replay.c` (`dsd-neo_test_analog_replay`, the `DECODE_IQ_ANALOG_*` cases) captures and scores
   exactly that output through the hook, and times it with a wrapped RTL stream read hook, so changes to the monitor
   chain are measured against what a listener hears; back them with `tools/replay_ab.sh --metric analog` evidence

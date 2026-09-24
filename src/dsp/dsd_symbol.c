@@ -1185,6 +1185,14 @@ symbol_reset_analog_buffers(dsd_state* state) {
     state->analog_sample_counter = 0;
 }
 
+void
+dsd_symbol_analog_block_reset(dsd_state* state) {
+    if (!state) {
+        return;
+    }
+    symbol_reset_analog_buffers(state);
+}
+
 static inline void
 symbol_finalize_unsynced_analog_block(dsd_opts* opts, dsd_state* state, unsigned int analog_block) {
     symbol_update_unsynced_input_power(opts, state, analog_block);

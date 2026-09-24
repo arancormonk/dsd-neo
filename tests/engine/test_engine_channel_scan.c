@@ -18,6 +18,7 @@
 #include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/dsp/frame_sync.h>
+#include <dsd-neo/dsp/symbol.h>
 #include <dsd-neo/engine/channel_scan.h>
 #include <dsd-neo/engine/frame_processing.h>
 #include <dsd-neo/engine/scan_voice_gate.h>
@@ -101,6 +102,15 @@ dsd_frame_sync_reset_acquisition(const dsd_opts* opts, dsd_state* state, int for
     state->profile_proof_valid = 0;
     state->symbol_history_count = 0;
     state->sps_hunt_counter = 0;
+}
+
+/* How many times the leave dropped the decoder's part-collected analog monitor block. */
+static int analog_block_resets;
+
+void
+dsd_symbol_analog_block_reset(dsd_state* state) {
+    (void)state;
+    analog_block_resets++;
 }
 
 void
@@ -712,11 +722,89 @@ test_leave_retimes_the_digital_landing(void) {
     free(opts);
 }
 
+/*
+ * The decoder's part-collected analog monitor block holds samples of the front end's output family. A leave that
+ * switches the front end between the analog and digital families drops it, so the first block the other family
+ * completes does not start with them; a leave that keeps the family keeps it, and off RTL there is no front end family
+ * to switch.
+ */
+static void
+test_leave_family_switch_drops_partial_analog_block(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
+    assert(opts && state);
+    opts->scanner_mode = 1;
+    opts->audio_in_type = AUDIO_IN_RTL;
+    state->samplesPerSymbol = 10;
+    assert(dsd_apply_decode_mode_preset(DSDCFG_MODE_ANALOG, DSD_DECODE_PRESET_PROFILE_CLI, opts, state) == 0);
+    const dsd_rtl_stream_metrics_hooks hooks = {.apply_demod_profile = record_digital_restore,
+                                                .apply_analog_profile = record_analog_restore,
+                                                .analog_family_active = report_analog_family,
+                                                .output_rate_for_family = report_output_rate_for_family};
+    dsd_rtl_stream_metrics_hooks_set(&hooks);
+
+    /* -fA with a typed DMR row, which runs on the analog family's monitor output: the leave keeps the family. */
+    reset_frontend_records();
+    analog_block_resets = 0;
+    fake_analog_family = 1;
+    assert(dsd_scan_mode_enter(opts, state, DSD_SCAN_MODE_DMR) == 0);
+    dsd_engine_channel_scan_leave(opts, state);
+    assert(analog_restore_calls == 1 && analog_restore_family == DSD_RX_FAMILY_ANALOG);
+    assert(analog_block_resets == 0);
+
+    /* Analog configured while the front end runs the digital family (Analog picked under a digital session's row). */
+    reset_frontend_records();
+    analog_block_resets = 0;
+    fake_analog_family = 0;
+    assert(dsd_scan_mode_enter(opts, state, DSD_SCAN_MODE_DMR) == 0);
+    dsd_engine_channel_scan_leave(opts, state);
+    assert(analog_restore_calls == 1 && analog_restore_family == DSD_RX_FAMILY_ANALOG);
+    assert(analog_block_resets == 1);
+
+    /* A digital mode configured while the front end still runs the analog family. */
+    assert(dsd_apply_decode_mode_preset(DSDCFG_MODE_DMR, DSD_DECODE_PRESET_PROFILE_CLI, opts, state) == 0);
+    reset_frontend_records();
+    analog_block_resets = 0;
+    fake_analog_family = 1;
+    fake_digital_rate = 24000U;
+    assert(dsd_scan_mode_enter(opts, state, DSD_SCAN_MODE_NXDN48) == 0);
+    dsd_engine_channel_scan_leave(opts, state);
+    assert(analog_restore_calls == 1 && analog_restore_family == DSD_RX_FAMILY_DIGITAL);
+    assert(analog_block_resets == 1);
+
+    /* Digital configured on a digital front end. */
+    reset_frontend_records();
+    analog_block_resets = 0;
+    fake_analog_family = 0;
+    assert(dsd_scan_mode_enter(opts, state, DSD_SCAN_MODE_NXDN48) == 0);
+    dsd_engine_channel_scan_leave(opts, state);
+    assert(analog_restore_calls == 1 && analog_restore_family == DSD_RX_FAMILY_DIGITAL);
+    assert(analog_block_resets == 0);
+
+    /* Off RTL. */
+    opts->audio_in_type = AUDIO_IN_WAV;
+    reset_frontend_records();
+    analog_block_resets = 0;
+    fake_analog_family = 1;
+    assert(dsd_scan_mode_enter(opts, state, DSD_SCAN_MODE_P25) == 0);
+    dsd_engine_channel_scan_leave(opts, state);
+    assert(analog_restore_calls == 0 && analog_block_resets == 0);
+
+    fake_analog_family = 0;
+    fake_digital_rate = 0U;
+    dsd_rtl_stream_metrics_hooks_set(NULL);
+    dsd_state_trunk_lcn_free(state);
+    dsd_state_ext_free_all(state);
+    free(state);
+    free(opts);
+}
+
 int
 main(void) {
     dsd_neo_log_set_tap(count_squelch_warnings, NULL);
     test_leave_restores_configured_receive_family();
     test_leave_retimes_the_digital_landing();
+    test_leave_family_switch_drops_partial_analog_block();
     test_option_commit_boundary();
     test_option_only_rows_and_policy_edits();
     test_row_max_visit_override_and_inherit();

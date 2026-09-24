@@ -4403,6 +4403,19 @@ test_squelch_edit_keeps_live_acquisition(void) {
 }
 #endif
 
+/* A config apply carrying only a [mode], drained on this thread as the decoder drains it. */
+static int
+submit_config_mode(dsd_opts* opts, dsd_state* state, dsdneoUserDecodeMode mode, const char* label) {
+    dsdneoUserConfig cfg;
+    DSD_MEMSET(&cfg, 0, sizeof cfg);
+    cfg.has_mode = 1;
+    cfg.decode_mode = mode;
+    int rc = expect_int(label, dsd_app_command_submit(DSD_APP_CMD_CONFIG_APPLY, &cfg, sizeof(cfg)),
+                        DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int(label, dsd_app_drain_cmds(opts, state), 1);
+    return rc;
+}
+
 #ifdef DSD_NEO_TEST_AUDIO_ENSURE_WRAP
 /* The sink helpers a decode-mode change calls, recorded instead of run (every build, radio or not). */
 static int g_ensure_analog_calls;
@@ -4462,18 +4475,6 @@ test_decode_mode_set_ensures_family_sink(void) {
     return rc;
 }
 
-static int
-submit_config_mode(dsd_opts* opts, dsd_state* state, dsdneoUserDecodeMode mode, const char* label) {
-    dsdneoUserConfig cfg;
-    DSD_MEMSET(&cfg, 0, sizeof cfg);
-    cfg.has_mode = 1;
-    cfg.decode_mode = mode;
-    int rc = expect_int(label, dsd_app_command_submit(DSD_APP_CMD_CONFIG_APPLY, &cfg, sizeof(cfg)),
-                        DSD_APP_COMMAND_SUBMIT_QUEUED);
-    rc |= expect_int(label, dsd_app_drain_cmds(opts, state), 1);
-    return rc;
-}
-
 /*
  * A [mode] preset also carries an audio layout, but the session's output streams keep the one they were opened with,
  * so a config apply keeps the session's layout as DECODE_MODE_SET does. A config that moves a -fA session (mono) to
@@ -4524,6 +4525,86 @@ test_config_apply_keeps_session_output_layout(void) {
     return rc;
 }
 #endif
+
+/* A part-collected analog monitor block the decoder holds: 400 of its 960 samples, first and last marked. */
+static void
+seed_partial_analog_block(dsd_state* state) {
+    state->analog_sample_counter = 400;
+    state->analog_out_f[0] = 1234.0f;
+    state->analog_out_f[399] = -77.0f;
+}
+
+static int
+expect_partial_analog_block(const char* tag, const dsd_state* state, int kept) {
+    if (kept) {
+        return expect_true(tag, state->analog_sample_counter == 400 && fabsf(state->analog_out_f[0] - 1234.0f) < 1e-3f
+                                    && fabsf(state->analog_out_f[399] + 77.0f) < 1e-3f);
+    }
+    return expect_true(tag, state->analog_sample_counter == 0 && fabsf(state->analog_out_f[0]) < 1e-6f
+                                && fabsf(state->analog_out_f[399]) < 1e-6f);
+}
+
+/*
+ * The decoder collects every unsynced sample into the analog monitor block (analog_out_f), whether or not a digital
+ * session monitors it, and plays a block once it is full. The samples a digital session collected are the old
+ * family's (on an RTL front end, the digital discriminator rather than monitor audio), so a change that moves the
+ * decoder between the analog and digital families drops the part-collected block: otherwise the first block the new
+ * family completes would start with them, audible once Analog opens the raw sink. A change inside a family keeps it.
+ * DECODE_MODE_SET and a config apply's [mode] both hold to this.
+ */
+static int
+test_family_change_discards_partial_analog_block(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    int rc = 0;
+    init_decode_mode_context(&opts, &state);
+    rc |= expect_int("block: dmr start queued",
+                     dsd_app_command_set_i32(DSD_APP_CMD_DECODE_MODE_SET, (int32_t)DSDCFG_MODE_DMR),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("block: dmr start drained", dsd_app_drain_cmds(&opts, &state), 1);
+
+    seed_partial_analog_block(&state);
+    rc |= expect_int("block: nxdn48 queued",
+                     dsd_app_command_set_i32(DSD_APP_CMD_DECODE_MODE_SET, (int32_t)DSDCFG_MODE_NXDN48),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("block: nxdn48 drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("block: nxdn48 applied", opts.frame_nxdn48 == 1 && opts.analog_only == 0, 1);
+    rc |= expect_partial_analog_block("block: digital to digital keeps the block", &state, 1);
+
+    rc |= expect_int("block: analog queued",
+                     dsd_app_command_set_i32(DSD_APP_CMD_DECODE_MODE_SET, (int32_t)DSDCFG_MODE_ANALOG),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("block: analog drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("block: analog applied", opts.analog_only, 1);
+    rc |= expect_partial_analog_block("block: digital to analog drops the block", &state, 0);
+
+    seed_partial_analog_block(&state);
+    rc |=
+        expect_int("block: dmr queued", dsd_app_command_set_i32(DSD_APP_CMD_DECODE_MODE_SET, (int32_t)DSDCFG_MODE_DMR),
+                   DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("block: dmr drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("block: dmr applied", opts.frame_dmr == 1 && opts.analog_only == 0, 1);
+    rc |= expect_partial_analog_block("block: analog to digital drops the block", &state, 0);
+
+    seed_partial_analog_block(&state);
+    rc |= submit_config_mode(&opts, &state, DSDCFG_MODE_P25P1, "block: config p25p1");
+    rc |= expect_int("block: config p25p1 applied", opts.frame_p25p1 == 1 && opts.analog_only == 0, 1);
+    rc |= expect_partial_analog_block("block: config inside the digital family keeps the block", &state, 1);
+
+    rc |= submit_config_mode(&opts, &state, DSDCFG_MODE_ANALOG, "block: config analog");
+    rc |= expect_int("block: config analog applied", opts.analog_only, 1);
+    rc |= expect_partial_analog_block("block: config onto analog drops the block", &state, 0);
+
+    seed_partial_analog_block(&state);
+    rc |= submit_config_mode(&opts, &state, DSDCFG_MODE_ANALOG, "block: config analog again");
+    rc |= expect_partial_analog_block("block: config staying analog keeps the block", &state, 1);
+
+    rc |= submit_config_mode(&opts, &state, DSDCFG_MODE_DMR, "block: config dmr");
+    rc |= expect_int("block: config dmr applied", opts.frame_dmr == 1 && opts.analog_only == 0, 1);
+    rc |= expect_partial_analog_block("block: config off analog drops the block", &state, 0);
+    freeState(&state);
+    return rc;
+}
 
 #if defined(USE_RADIO) && defined(DSD_NEO_TEST_ANALOG_WRAP) && defined(DSD_NEO_TEST_AUDIO_ENSURE_WRAP)
 /* The RTL receive-family requests a decode-mode change makes, recorded instead of run. */
@@ -5188,6 +5269,7 @@ main(void) {
     rc |= test_decode_mode_set_ensures_family_sink();
     rc |= test_config_apply_keeps_session_output_layout();
 #endif
+    rc |= test_family_change_discards_partial_analog_block();
 #if defined(USE_RADIO) && defined(DSD_NEO_TEST_ANALOG_WRAP) && defined(DSD_NEO_TEST_AUDIO_ENSURE_WRAP)
     rc |= test_decode_mode_set_switches_rtl_receive_family();
     rc |= test_decode_mode_set_refused_analog_profile_changes_nothing();

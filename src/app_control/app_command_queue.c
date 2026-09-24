@@ -35,6 +35,7 @@
 #include <dsd-neo/core/time_format.h>
 #include <dsd-neo/crypto/dmr_keystream.h>
 #include <dsd-neo/dsp/frame_sync.h>
+#include <dsd-neo/dsp/symbol.h>
 #include <dsd-neo/engine/channel_scan.h>
 #include <dsd-neo/engine/frame_processing.h>
 #include <dsd-neo/engine/scan_voice_gate.h>
@@ -3661,6 +3662,7 @@ decode_mode_apply_value(dsd_opts* opts, dsd_state* state, dsdneoUserDecodeMode m
        bootstrap against BS voice and nothing at all against MS voice. */
     const int audio_channels = opts->pulse_digi_out_channels;
     const int audio_rate = opts->pulse_digi_rate_out;
+    const int was_analog = opts->analog_only != 0;
     /* Asked before anything changes: a running RTL front end that would refuse the analog receive profile the new
        mode publishes (logged with the reason) leaves the session in its mode, instead of an Analog decoder on a
        digital front end. */
@@ -3700,6 +3702,12 @@ decode_mode_apply_value(dsd_opts* opts, dsd_state* state, dsdneoUserDecodeMode m
         (void)dsd_audio_ensure_analog_output(opts);
     } else {
         (void)dsd_audio_ensure_digital_output(opts);
+    }
+    /* The analog monitor block the decoder has part-collected holds the old family's samples (a digital session
+       collects its unsynced input there too, monitored or not): dropped, so the first block the new family plays
+       does not start with them. */
+    if ((opts->analog_only != 0) != was_analog) {
+        dsd_symbol_analog_block_reset(state);
     }
     /* The presets write symbol timing for a 48 kHz input, and on an RTL front end
        the demod output rate is whatever the capture rate decimates to, so the
@@ -5070,9 +5078,10 @@ cfg_restore_lifecycle_owned(dsd_opts* opts, const dsdneoUserConfig* cfg, dsd_fro
 
 /*
  * A [mode] that moves a running session between the analog monitor and a digital decoder needs what
- * DSD_APP_CMD_DECODE_MODE_SET does for the same move: the sink the new family writes to, and on an RTL front end the
- * receive-family switch with symbol timing at the live demod rate (decode_mode_republish()). Without it the front end
- * stays on the old family's demodulator. A [mode] that stays inside its family keeps the config-apply behaviour it
+ * DSD_APP_CMD_DECODE_MODE_SET does for the same move: the sink the new family writes to, the part-collected analog
+ * monitor block of the old family's samples dropped, and on an RTL front end the receive-family switch with symbol
+ * timing at the live demod rate (decode_mode_republish()). Without it the front end stays on the old family's
+ * demodulator. A [mode] that stays inside its family keeps the config-apply behaviour it
  * had, except that a digital mode writing raw audio (ProVoice, or the -8 source monitor) gets the raw sink a session
  * started in another digital mode never opened, as DECODE_MODE_SET gives it (dsd_audio_ensure_digital_output() is
  * idempotent).
@@ -5094,6 +5103,7 @@ apply_cfg_receive_family_change(dsd_opts* opts, dsd_state* state, const dsdneoUs
     } else {
         (void)dsd_audio_ensure_digital_output(opts);
     }
+    dsd_symbol_analog_block_reset(state);
     if (opts->audio_in_type == AUDIO_IN_RTL) {
         decode_mode_republish(opts, state, cfg->decode_mode);
     }

@@ -31,6 +31,17 @@ float getSymbol(dsd_opts* opts, dsd_state* state, int have_sync);
  */
 void dsd_symbol_matched_filter_reset(dsd_state* state);
 
+/**
+ * @brief Drop the analog monitor block the decoder has part-collected.
+ *
+ * getSymbol() collects the unsynced samples it reads into `analog_out_f`, in a
+ * digital session too, and plays or records the block once it is full. The
+ * samples in it belong to the receive family they were read under, so a change
+ * between the analog and digital families calls this on the decoder thread; the
+ * next block then starts with the new family's samples.
+ */
+void dsd_symbol_analog_block_reset(dsd_state* state);
+
 #ifdef __cplusplus
 }
 #endif

@@ -16,6 +16,7 @@
 #include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/dsp/frame_sync.h>
+#include <dsd-neo/dsp/symbol.h>
 #include <dsd-neo/engine/channel_scan.h>
 #include <dsd-neo/engine/frame_processing.h>
 #include <dsd-neo/engine/scan_voice_gate.h>
@@ -329,19 +330,27 @@ dsd_engine_channel_scan_step_manual(dsd_opts* opts, dsd_state* state) {
  * row ran) switches to digital only here, after the configured timing was saved for the analog family's output rate:
  * the monitor's resampled audio, or the rate a typed row's profile ran at. The decoder, and the profile it publishes,
  * are timed for the rate the digital family lands on instead, as svc_publish_symbol_profile() times a mode change
- * outside a row. */
+ * outside a row.
+ *
+ * A leave that switches the front end's family also drops the analog monitor block the decoder has part-collected
+ * from the old family's output, as a decode-mode change between the families does. */
 static void
 channel_scan_restore_frontend(const dsd_opts* opts, dsd_state* state) {
     if (opts->audio_in_type != AUDIO_IN_RTL) {
         return;
     }
+    const int analog_family_active = dsd_rtl_stream_metrics_hook_analog_family_active();
     if (dsd_opts_is_analog_family(opts)) {
+        if (!analog_family_active) {
+            dsd_symbol_analog_block_reset(state);
+        }
         (void)dsd_rtl_stream_metrics_hook_apply_analog_profile(DSD_RX_FAMILY_ANALOG, opts->analog_demod,
                                                                dsd_opts_analog_width_hz(opts));
         return;
     }
     const dsd_decode_mode_profile profile = dsd_scan_mode_effective_profile(opts, state);
-    if (dsd_rtl_stream_metrics_hook_analog_family_active()) {
+    if (analog_family_active) {
+        dsd_symbol_analog_block_reset(state);
         const unsigned int rate_hz = dsd_rtl_stream_metrics_hook_output_rate_for_family(
             DSD_RX_FAMILY_DIGITAL, state->rf_mod == 1, profile.symbol_rate_hz);
         if (rate_hz > 0U) {
