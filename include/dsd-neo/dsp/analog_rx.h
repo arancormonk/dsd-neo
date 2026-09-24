@@ -184,12 +184,13 @@ void dsd_analog_rx_reset(dsd_state* state);
  * decoder for the block's playing time once its buffer is full, and the decoder then reads an
  * input's backlog at real-time pace, as it reads audio arriving live; the backlog skip after a
  * boundary (dsd_analog_rx_reset()) counts the time between the two calls as playing, not as
- * waiting for input.
+ * waiting for input. Both only note the time in the detector's own state, which the state
+ * holds by pointer, so neither changes @p state itself.
  */
-void dsd_analog_rx_playback_begin(dsd_state* state);
+void dsd_analog_rx_playback_begin(const dsd_state* state);
 
 /** @brief Mark the end of the monitor playback dsd_analog_rx_playback_begin() started. */
-void dsd_analog_rx_playback_end(dsd_state* state);
+void dsd_analog_rx_playback_end(const dsd_state* state);
 
 #ifdef __cplusplus
 }

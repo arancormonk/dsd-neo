@@ -2023,7 +2023,7 @@ test_rx_tone_backlog_skip_ignores_playback_time(void) {
     }
     assert(rx_tone_locked_on_100(&state));
     /* Each block waited 20 ms for its input and was then played for 20 ms. */
-    assert(g_fake_now_ms == started + (30U * 40U));
+    assert(g_fake_now_ms == started + ((uint64_t)30U * 40U));
     const uint32_t generation = state.analog_rx.generation;
 
     dsd_analog_rx_reset(&state);

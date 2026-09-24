@@ -920,7 +920,7 @@ dsd_analog_rx_tap(const dsd_opts* opts, dsd_state* state, const float* block, un
 }
 
 void
-dsd_analog_rx_playback_begin(dsd_state* state) {
+dsd_analog_rx_playback_begin(const dsd_state* state) {
     analog_rx_session* session = state ? analog_rx_session_get(state) : NULL;
     if (!session || !session->backlog_armed) {
         return;
@@ -930,7 +930,7 @@ dsd_analog_rx_playback_begin(dsd_state* state) {
 }
 
 void
-dsd_analog_rx_playback_end(dsd_state* state) {
+dsd_analog_rx_playback_end(const dsd_state* state) {
     analog_rx_session* session = state ? analog_rx_session_get(state) : NULL;
     if (!session || !session->playback_open) {
         return;
