@@ -477,7 +477,7 @@ MetricsModel::fillScanTimingView(View& next, const dsd_opts* opts_snapshot, cons
  * terminal. Only the words are translated here; a tone value is a number and stays as the
  * view wrote it. The configured text comes from its own field of the view and nothing
  * received is ever copied into it. @p now_m is the frame's one clock reading, which ages the
- * publication of a live stream input that has gone quiet.
+ * publication of an input that has gone quiet.
  */
 void
 MetricsModel::fillRxToneView(View& next, const dsd_opts* opts_snapshot, const dsd_state* snapshot, double now_m) const {

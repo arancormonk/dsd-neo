@@ -7,12 +7,12 @@
  * @file
  * @brief Received sub-audible tone detection on the analog FM monitor (issue #522).
  *
- * The decoder thread taps the raw monitor audio once per unsynced analog block, before the
- * voice filters that would remove everything below 300 Hz, and publishes what it hears in
- * dsd_state::analog_rx. Detection runs whenever the analog FM monitor does (analog-only
- * decoding with input monitoring, on PCM input or on an RTL-family stream that outputs monitor
- * audio), whether or not audio is played and whether or not a tone policy exists: it never
- * gates audio.
+ * The decoder thread taps the raw monitor audio as the symbol path assembles each unsynced
+ * analog block, before the voice filters that would remove everything below 300 Hz, and
+ * publishes what it hears in dsd_state::analog_rx. Detection runs whenever the analog FM
+ * monitor does (analog-only decoding with input monitoring, on PCM input or on an RTL-family
+ * stream that outputs monitor audio), whether or not audio is played and whether or not a tone
+ * policy exists: it never gates audio.
  *
  * All calls run on the decoder thread, which owns dsd_state. Frontends read the publication
  * from their snapshot, never the detector.
@@ -30,6 +30,15 @@ extern "C" {
 
 /** @brief How long the carrier may read closed, in sample time, before the tone is forgotten. */
 enum { DSD_ANALOG_CARRIER_HANGOVER_MS = 200 };
+
+/**
+ * @brief Most input, in sample time, that the tap lets wait before reading it.
+ *
+ * The symbol path assembles its monitor block sample by sample (960 samples on PCM input, 384 ms
+ * at 2500 Hz). The tap reads the block as it fills, this much at a time, so the detectors and
+ * the publication keep pace with the input whatever the block's length.
+ */
+enum { DSD_ANALOG_RX_TAP_READ_MS = 20 };
 
 /**
  * @brief CTCSS timing contract, in sample time (docs/cli.md "Received tone").
@@ -76,39 +85,55 @@ enum {
 };
 
 /**
- * @brief Shortest pause of a live stream input (stdin, UDP, TCP) that counts as the carrier
- * dropping.
+ * @brief Shortest gap in an input that may pause that counts as the carrier dropping.
  *
- * A producer that squelches by sending nothing (rtl_fm without `-E pad`, a UDP sender that
- * stops) delivers no block for the sample-time hangover to count. When the next block arrives
- * later than its own duration plus DSD_ANALOG_CARRIER_HANGOVER_MS after the previous one, and
- * at least this long after it, the pause counts as a carrier drop. The floor keeps scheduling
- * delays of a busy or instrumented decoder from ever reading as one.
+ * Inputs that may pause: stdin, UDP and TCP, and live RTL-family radio streams (not IQ
+ * replay). A producer that squelches by sending nothing (rtl_fm without `-E pad`, a UDP sender
+ * that stops) or a radio stream whose source stopped (an rtl_tcp server that went away, a
+ * stalled device) delivers no samples for the sample-time hangover to count. When the tap's
+ * next read arrives later than the previous read's duration plus DSD_ANALOG_CARRIER_HANGOVER_MS
+ * after it, and at least this long after it, the pause counts as a carrier drop. The floor keeps
+ * scheduling delays of a busy or instrumented decoder from ever reading as one.
  */
 enum { DSD_ANALOG_STREAM_PAUSE_MIN_MS = 500 };
 
 /**
- * @brief Feed one raw unsynced analog block to the detectors.
+ * @brief Feed the detectors the rest of a completed raw unsynced analog block.
  *
- * Called from the symbol path after the raw WAV write and before the voice filters. Reads
- * the block without modifying it. Resets on its own when the RTL stream generation or the
- * trunk-tuning generation moves (a retune it was not told about), discarding that block, when
- * the input rate changes, and when a live stream input paused for longer than
- * DSD_ANALOG_STREAM_PAUSE_MIN_MS allows (then the block is kept as the start of a new
- * reception).
+ * Called from the symbol path after the raw WAV write and before the voice filters, with the
+ * whole block: the tap reads the samples dsd_analog_rx_tap_partial() has not already read,
+ * without modifying any of them, and starts the next block from its first sample. A caller
+ * that never calls dsd_analog_rx_tap_partial() hands over whole blocks.
+ *
+ * Each read resets on its own when the RTL stream generation or the trunk-tuning generation
+ * moved (a retune it was not told about), and on an input that may pause when it arrives more
+ * than DSD_ANALOG_STREAM_PAUSE_MIN_MS allows after the previous read. Either way the samples
+ * read may straddle the boundary, so they are dropped and the new reception starts with the
+ * next read. A change of input rate also resets, and reads the samples at the new rate.
  */
 void dsd_analog_rx_tap(const dsd_opts* opts, dsd_state* state, const float* block, unsigned int count);
+
+/**
+ * @brief Read the part of the raw unsynced analog block the symbol path has assembled so far.
+ *
+ * Called once per sample the symbol path adds, with the block and the number of samples it
+ * now holds, while the block is not yet complete. The tap reads what it has not read yet once
+ * DSD_ANALOG_RX_TAP_READ_MS of input is waiting, so on an input whose block lasts longer the
+ * detectors and the publication still keep pace. Otherwise as dsd_analog_rx_tap().
+ */
+void dsd_analog_rx_tap_partial(const dsd_opts* opts, dsd_state* state, const float* block, unsigned int filled);
 
 /**
  * @brief Forget the received tone: clears the publication and every detector's state.
  *
  * Call on retune, scan row or target change, input switch, decode-mode change and stop, so a
  * new channel never inherits the previous channel's tone. It also drops the monitor block the
- * symbol path is part-way through assembling (dsd_state::analog_out_f and its sample counter):
- * those samples arrived before the boundary, and the next block the tap reads, which opens the
- * new reception, must hold none of them. Not for the frequent no-carrier cleanup: that runs
- * every few hundred milliseconds in analog mode and would keep a tone from ever locking.
- * Afterwards the publication reads INACTIVE until the tap processes the next block.
+ * symbol path is part-way through assembling (dsd_state::analog_out_f and its sample counter)
+ * and starts the tap's reading over with the next block: those samples arrived before the
+ * boundary, and what the tap reads next, which opens the new reception, must hold none of them.
+ * Not for the frequent no-carrier cleanup: that runs every few hundred milliseconds in analog
+ * mode and would keep a tone from ever locking. Afterwards the publication reads INACTIVE until
+ * the tap reads again.
  */
 void dsd_analog_rx_reset(dsd_state* state);
 

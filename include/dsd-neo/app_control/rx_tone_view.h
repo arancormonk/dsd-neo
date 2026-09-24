@@ -59,9 +59,10 @@ typedef struct {
  * @brief Fill @p out from the published received tone.
  *
  * Zeroes @p out first, then always fills @c configured_text. @p now_m is monotonic seconds,
- * the clock dsd_time_now_monotonic_s() reads: a publication from a live stream input whose
- * producer has gone quiet past its stale_after_ms deadline reads as no carrier, because the
- * decoder, waiting for the next sample, cannot say so itself. Pass 0 to skip that check.
+ * the clock dsd_time_now_monotonic_s() reads: a publication from an input that has gone quiet
+ * past its stale_after_ms deadline (a stdin, UDP or TCP producer that stopped sending, a live
+ * radio stream whose source stopped) reads as no carrier, because the decoder, waiting for the
+ * next sample, cannot say so itself. Pass 0 to skip that check.
  * Returns 1 when the row should be shown (@c visible), 0 when it should be left out, and -1
  * for invalid arguments.
  */

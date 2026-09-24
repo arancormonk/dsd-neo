@@ -12,7 +12,9 @@
  * "Received tone:" log line is the second. See analog_rx_internal.h for the signal path.
  */
 
+#include <dsd-neo/core/input_level.h>
 #include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/power.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
@@ -396,9 +398,14 @@ typedef struct {
     int log_key;              /**< ANALOG_RX_LOG_* or the logged tone in tenths of a hertz */
     uint32_t log_generation;  /**< the publication generation log_key belongs to */
     int unusable_rate_logged; /**< the unusable rate reported for the current stretch of such input; 0 = none */
-    /** Live stream input: the monotonic ms past which the next block arrives after a pause
-        (published as dsd_analog_rx_publication::stale_after_ms); 0 = no block to measure from. */
+    /** Input that may pause: the monotonic ms past which the next read arrives after a pause
+        (published as dsd_analog_rx_publication::stale_after_ms); 0 = no read to measure from. */
     uint64_t stale_after_ms;
+    /** Samples of the monitor block the symbol path is assembling that the tap has read. */
+    unsigned int block_taken;
+    /** Samples that may wait before the tap reads them: DSD_ANALOG_RX_TAP_READ_MS at the rate
+        of the last read. */
+    unsigned int read_samples;
 } analog_rx_session;
 
 #ifdef DSD_NEO_TEST_HOOKS
@@ -434,6 +441,29 @@ analog_rx_note_generations(const dsd_opts* opts, analog_rx_session* session) {
     session->tune_generation = dsd_trunk_tuning_generation();
 }
 
+static int
+analog_rx_rate_hz(const dsd_opts* opts) {
+    if (opts->audio_in_type == AUDIO_IN_RTL) {
+        const unsigned int rtl_rate = dsd_rtl_stream_metrics_hook_output_rate_hz();
+        if (rtl_rate > 0U) {
+            return (int)rtl_rate;
+        }
+    }
+    const int rate = dsd_opts_current_input_timing_rate(opts);
+    return rate > 0 ? rate : 48000;
+}
+
+/* DSD_ANALOG_RX_TAP_READ_MS of input at @p rate_hz, rounded up as the symbol path sizes an RTL
+   block; at least one sample. */
+static unsigned int
+analog_rx_read_samples(int rate_hz) {
+    if (rate_hz <= 0) {
+        return 1U;
+    }
+    const uint64_t samples = (((uint64_t)rate_hz * DSD_ANALOG_RX_TAP_READ_MS) + 999U) / 1000U;
+    return samples > 0U ? (unsigned int)samples : 1U;
+}
+
 static analog_rx_session*
 analog_rx_session_create(const dsd_opts* opts, dsd_state* state) {
     analog_rx_session* session = (analog_rx_session*)calloc(1, sizeof(*session));
@@ -446,24 +476,13 @@ analog_rx_session_create(const dsd_opts* opts, dsd_state* state) {
     session->core.resets = state->analog_rx.generation;
     session->log_key = ANALOG_RX_LOG_UNSET;
     session->log_generation = session->core.resets;
+    session->read_samples = analog_rx_read_samples(analog_rx_rate_hz(opts));
     analog_rx_note_generations(opts, session);
     if (dsd_state_ext_set(state, DSD_STATE_EXT_DSP_ANALOG_RX, session, free) != 0) {
         free(session);
         return NULL;
     }
     return session;
-}
-
-static int
-analog_rx_rate_hz(const dsd_opts* opts) {
-    if (opts->audio_in_type == AUDIO_IN_RTL) {
-        const unsigned int rtl_rate = dsd_rtl_stream_metrics_hook_output_rate_hz();
-        if (rtl_rate > 0U) {
-            return (int)rtl_rate;
-        }
-    }
-    const int rate = dsd_opts_current_input_timing_rate(opts);
-    return rate > 0 ? rate : 48000;
 }
 
 static void
@@ -506,20 +525,34 @@ analog_rx_publish(dsd_state* state, analog_rx_session* session) {
 }
 
 /*
- * A live stream input whose producer went quiet. Files, Pulse and RTL deliver samples
- * continuously -- a closed squelch arrives as zeroed blocks, which the sample-time hangover
- * counts -- but stdin, UDP and TCP producers may squelch by sending nothing (rtl_fm without
- * `-E pad`, a sender that stops), and then no block arrives to count. So on those inputs each
- * block sets a deadline: its arrival plus its own duration and the hangover, and at least
- * DSD_ANALOG_STREAM_PAUSE_MIN_MS. A block arriving past the previous deadline follows a pause
- * as long as a dropped carrier, and returns 1. The frontends read the same deadline, so the
- * row stops claiming a carrier while the stream is quiet.
+ * Inputs whose samples can stop arriving while the decoder waits for them. Files and Pulse
+ * deliver continuously, and a closed squelch arrives as zeroed blocks, which the sample-time
+ * hangover counts. But stdin, UDP and TCP producers may squelch by sending nothing (rtl_fm
+ * without `-E pad`, a sender that stops), and a live radio stream stops when its source does
+ * (an rtl_tcp server that went away, whose client then retries without end; a stalled device):
+ * then no block arrives to count. IQ replay is a file, so a replay reads the same however
+ * slowly it is read.
  */
 static int
-analog_rx_stream_paused(const dsd_opts* opts, analog_rx_session* session, unsigned int count, int rate_hz) {
-    const int live_stream = opts->audio_in_type == AUDIO_IN_STDIN || opts->audio_in_type == AUDIO_IN_UDP
-                            || opts->audio_in_type == AUDIO_IN_TCP;
-    if (!live_stream || rate_hz <= 0) {
+analog_rx_input_may_pause(const dsd_opts* opts) {
+    switch (opts->audio_in_type) {
+        case AUDIO_IN_STDIN:
+        case AUDIO_IN_UDP:
+        case AUDIO_IN_TCP: return 1;
+        case AUDIO_IN_RTL: return opts->iq_replay_active == 0U;
+        default: return 0;
+    }
+}
+
+/*
+ * On an input that may pause, each read sets a deadline: its arrival plus its own duration and
+ * the hangover, and at least DSD_ANALOG_STREAM_PAUSE_MIN_MS. A read arriving past the previous
+ * deadline follows a pause as long as a dropped carrier, and returns 1. The frontends read the
+ * same deadline, so the row stops claiming a carrier while the input is quiet.
+ */
+static int
+analog_rx_input_paused(const dsd_opts* opts, analog_rx_session* session, unsigned int count, int rate_hz) {
+    if (!analog_rx_input_may_pause(opts) || rate_hz <= 0) {
         session->stale_after_ms = 0;
         return 0;
     }
@@ -559,6 +592,28 @@ analog_rx_log_unusable_rate(analog_rx_session* session, int rate_hz) {
     }
 }
 
+/*
+ * Whether the squelch is open over these samples. RTL input compares the receiver power, which
+ * the stream keeps current. PCM input has no receiver power: dsd_input_level_publish() sets
+ * opts->rtl_pwr from the level of each whole monitor block once the block is complete, which is
+ * after the tap has read most of it. So on PCM each read is judged on its own level, the same
+ * measurement and the same dB-to-power step; for a read that is the whole block, exactly the
+ * value opts->rtl_pwr is about to hold.
+ */
+static int
+analog_rx_squelch_open(const dsd_opts* opts, const float* samples, unsigned int count) {
+    if (opts->audio_in_type == AUDIO_IN_RTL) {
+        return opts->rtl_pwr > opts->rtl_squelch_level;
+    }
+    dsd_input_level_snapshot level;
+    if (dsd_input_level_metrics_from_pcm_f32_i16_scale(samples, count, 1U, DSD_INPUT_LEVEL_SOURCE_PCM, &level) != 0) {
+        return opts->rtl_pwr > opts->rtl_squelch_level;
+    }
+    /* rms_dbfs never exceeds 0 dBFS, full scale, which is a mean power of 1. */
+    const double power = (level.rms_dbfs < 0.0) ? dsd_squelch_level_from_sql(level.rms_dbfs) : 1.0;
+    return power > opts->rtl_squelch_level;
+}
+
 /* Forget the received tone: every detector's state and the publication. */
 static void
 analog_rx_forget(dsd_state* state) {
@@ -573,7 +628,7 @@ analog_rx_forget(dsd_state* state) {
     session->stale_after_ms = 0;
     dsd_analog_rx_core_publish(&session->core, &state->analog_rx);
     /* Nothing has been processed since the reset, whatever the front end's design says; at an
-       unusable rate the next block publishes UNAVAILABLE again. */
+       unusable rate the next read publishes UNAVAILABLE again. */
     state->analog_rx.tone_state = DSD_ANALOG_TONE_STATE_INACTIVE;
 }
 
@@ -584,49 +639,66 @@ dsd_analog_rx_reset(dsd_state* state) {
     }
     /* The symbol path assembles the monitor block this tap reads sample by sample
        (dsd_state::analog_out_f, dsd_symbol.c), and whatever it holds now arrived before the
-       boundary. Left in place, it would open the next block, and so the next reception: at a
-       low input rate, a block's worth of the old channel is enough to lock its tone again. */
+       boundary. Left in place, it would open the next block, and the tap, which starts reading
+       over at a new block, would hear it as the next reception: at a low input rate, a block's
+       worth of the old channel is enough to lock its tone again. */
     DSD_MEMSET(state->analog_out_f, 0, sizeof(state->analog_out_f));
     DSD_MEMSET(state->analog_out, 0, sizeof(state->analog_out));
     state->analog_sample_counter = 0;
+    analog_rx_session* session = analog_rx_session_get(state);
+    if (session) {
+        session->block_taken = 0U;
+    }
     analog_rx_forget(state);
 }
 
-void
-dsd_analog_rx_tap(const dsd_opts* opts, dsd_state* state, const float* block, unsigned int count) {
-    if (!opts || !state || !block || count == 0U) {
-        return;
+/* The core's own resets act on the samples in hand: a retune nobody announced, or an input
+   that paused. Either way these samples may straddle the boundary -- the first of them can
+   have arrived before it -- so they are dropped, and the new reception starts with the next
+   read. Returns 1 when that happened. */
+static int
+analog_rx_boundary_dropped(const dsd_opts* opts, dsd_state* state, analog_rx_session* session, unsigned int count,
+                           int rate_hz) {
+    const int moved = analog_rx_generation_moved(opts, session);
+    const int paused = analog_rx_input_paused(opts, session, count, rate_hz);
+    if (!moved && !paused) {
+        return 0;
     }
+    dsd_analog_rx_core_reset(&session->core);
+    if (moved) {
+        /* A retune starts the stream afresh: no deadline until it delivers again. */
+        session->stale_after_ms = 0;
+    }
+    analog_rx_publish(state, session);
+    return 1;
+}
+
+/* Hand the detectors @p count consecutive raw samples of the monitor block. */
+static void
+analog_rx_read(const dsd_opts* opts, dsd_state* state, const float* samples, unsigned int count) {
     /* The same question every frontend's row asks (runtime/analog_tones.h), so the row is on
        screen exactly while this tap listens. */
     if (!dsd_analog_tone_detection_active(opts)) {
-        /* Forget only: this block is the one the symbol path is finalizing, and it goes on to
-           the voice filters and the monitor output as it is. */
+        /* Forget only: these samples go on to the voice filters and the monitor output as
+           they are. */
         if (state->analog_rx.tone_state != DSD_ANALOG_TONE_STATE_INACTIVE || state->analog_rx.carrier_open) {
             analog_rx_forget(state);
         }
         return;
     }
     analog_rx_session* session = analog_rx_session_get(state);
+    const int rate_hz = analog_rx_rate_hz(opts);
     if (!session) {
         session = analog_rx_session_create(opts, state);
         if (!session) {
             return;
         }
-    } else if (analog_rx_generation_moved(opts, session)) {
-        dsd_analog_rx_core_reset(&session->core);
-        session->stale_after_ms = 0;
-        analog_rx_publish(state, session);
+    } else if (analog_rx_boundary_dropped(opts, state, session, count, rate_hz)) {
         return;
     }
-    const int rate_hz = analog_rx_rate_hz(opts);
-    if (analog_rx_stream_paused(opts, session, count, rate_hz)) {
-        /* The pause outlasted the hangover: whatever arrives now is a new reception, maybe on
-           another channel, and inherits nothing -- the same reset the hangover makes. */
-        dsd_analog_rx_core_reset(&session->core);
-    }
-    const int squelch_open = opts->rtl_pwr > opts->rtl_squelch_level;
-    if (!dsd_analog_rx_core_process(&session->core, block, (int)count, rate_hz, squelch_open)) {
+    session->read_samples = analog_rx_read_samples(rate_hz);
+    if (!dsd_analog_rx_core_process(&session->core, samples, (int)count, rate_hz,
+                                    analog_rx_squelch_open(opts, samples, count))) {
         analog_rx_log_unusable_rate(session, rate_hz);
     } else {
         /* A usable block ends the stretch: going back to an unusable rate says so again. A
@@ -634,4 +706,54 @@ dsd_analog_rx_tap(const dsd_opts* opts, dsd_state* state, const float* block, un
         session->unusable_rate_logged = 0;
     }
     analog_rx_publish(state, session);
+}
+
+/* Where the tap's next read starts in a block now holding @p filled samples: after what it has
+   read of this block, or at its start when the symbol path began a new block unannounced. */
+static unsigned int
+analog_rx_block_start(const analog_rx_session* session, unsigned int filled) {
+    if (!session || session->block_taken > filled) {
+        return 0U;
+    }
+    return session->block_taken;
+}
+
+void
+dsd_analog_rx_tap_partial(const dsd_opts* opts, dsd_state* state, const float* block, unsigned int filled) {
+    if (!opts || !state || !block || filled == 0U) {
+        return;
+    }
+    analog_rx_session* session = analog_rx_session_get(state);
+    if (!session) {
+        /* Nothing to catch up on until detection runs; the first read creates the session. */
+        if (!dsd_analog_tone_detection_active(opts)) {
+            return;
+        }
+        session = analog_rx_session_create(opts, state);
+        if (!session) {
+            return;
+        }
+    }
+    const unsigned int start = analog_rx_block_start(session, filled);
+    if (filled - start < session->read_samples) {
+        return;
+    }
+    analog_rx_read(opts, state, block + start, filled - start);
+    session->block_taken = filled;
+}
+
+void
+dsd_analog_rx_tap(const dsd_opts* opts, dsd_state* state, const float* block, unsigned int count) {
+    if (!opts || !state || !block || count == 0U) {
+        return;
+    }
+    analog_rx_session* session = analog_rx_session_get(state);
+    const unsigned int start = analog_rx_block_start(session, count);
+    if (session) {
+        /* The symbol path starts a new block after this one. */
+        session->block_taken = 0U;
+    }
+    if (start < count) {
+        analog_rx_read(opts, state, block + start, count - start);
+    }
 }

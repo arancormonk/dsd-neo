@@ -1198,9 +1198,9 @@ static inline void
 symbol_finalize_unsynced_analog_block(dsd_opts* opts, dsd_state* state, unsigned int analog_block) {
     symbol_update_unsynced_input_power(opts, state, analog_block);
     symbol_write_unsynced_raw_wav(opts, state, analog_block);
-    /* Received-tone detection (issue #522) reads the block here, while it is still raw: the
-       voice filters below run in place, and hpf_f alone takes out everything a CTCSS tone
-       lives in. It only reads, so the audio that follows is unchanged. */
+    /* Received-tone detection (issue #522) reads the rest of the block here, while it is still
+       raw: the voice filters below run in place, and hpf_f alone takes out everything a CTCSS
+       tone lives in. It only reads, so the audio that follows is unchanged. */
     dsd_analog_rx_tap(opts, state, state->analog_out_f, analog_block);
     symbol_apply_unsynced_filters(opts, state, analog_block);
     symbol_output_unsynced_analog(opts, state, analog_block);
@@ -1237,8 +1237,23 @@ symbol_process_unsynced_analog(dsd_opts* opts, dsd_state* state, unsigned int an
     state->analog_out_f[state->analog_sample_counter++] = sample;
     if ((unsigned int)state->analog_sample_counter == analog_block) {
         symbol_finalize_unsynced_analog_block(opts, state, analog_block);
+        return;
     }
+    /* Received-tone detection (issue #522) reads the raw block as it fills, so its verdicts keep
+       pace with the input however long the block is: 960 samples are 384 ms at 2500 Hz. */
+    dsd_analog_rx_tap_partial(opts, state, state->analog_out_f, (unsigned int)state->analog_sample_counter);
 }
+
+#ifdef DSD_NEO_TEST_HOOKS
+void
+dsd_symbol_test_push_unsynced_analog_sample(dsd_opts* opts, dsd_state* state, float sample) {
+    if (!opts || !state) {
+        return;
+    }
+    const unsigned int cap = (unsigned int)(sizeof(state->analog_out) / sizeof(state->analog_out[0]));
+    symbol_process_unsynced_analog(opts, state, cap, sample);
+}
+#endif
 
 static inline void
 symbol_process_synced_analog(dsd_opts* opts, dsd_state* state, unsigned int analog_out_cap, float sample) {

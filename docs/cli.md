@@ -525,30 +525,35 @@ tone setting, and it runs with `-o null` too.
   `-Y` scan step (including one that failed after rigctl had already moved the radio), a manual channel cycle or scan
   avoid, a scan row or trunk-scan target change, a decode-mode change, an input switch (Pulse, WAV, UDP, TCP, RTL or
   symbol input, replay and stop-playback, from a frontend or a config apply, and the switch to live Pulse input when
-  a WAV file ends or a TCP connection is lost), stop, 200 ms without carrier, and a stdin, UDP or TCP stream that
-  stops delivering audio for about half a second (see below). The frequent no-carrier cleanup between syncs does not
-  clear it.
+  a WAV file ends or a TCP connection is lost), stop, 200 ms without carrier, and an input that stops delivering
+  audio for about half a second: a stdin, UDP or TCP stream (see below), or a live radio stream whose source stopped,
+  such as an `rtl_tcp` server that went away while DSD-neo retries the connection, or a stalled device. After half a
+  second of such an outage the row shows no carrier, and when the stream returns it starts a new reception; IQ replay
+  never counts as paused, however slowly it is read. The frequent no-carrier cleanup between syncs does not clear it.
 - Where it runs: analog-only decoding with input monitoring, on PCM inputs (TCP, UDP, Pulse, WAV, stdin) or on an
   RTL-family stream that outputs monitor audio. It does not run for the `-8` source monitor during digital decoding, for
   EDACS analog voice, or on symbol-file input, and the `Rx tone:` line and `RECEIVED TONE` row are shown exactly while
   it runs. The front end needs an input rate from 2400 Hz up to 320 kHz; outside that range detection logs that it is
-  inactive, once each time the input moves to such a rate, and the row is left out. On RTL input, detection hears the
-  monitor audio after the RTL monitor gain (`vol`), so a gain of 0 leaves it nothing to hear and it reads no carrier; to
-  silence the monitor, mute the output instead.
-- Externally demodulated audio (PCM inputs): the tone has to survive the producer. Feed the discriminator or
-  flat audio with nothing below 300 Hz removed -- no voice high-pass, no de-emphasis that rolls off the low end -- and
-  prefer 48 kHz. Sound cards and receivers that high-pass their audio output remove CTCSS before DSD-neo sees it.
-  PCM carrier detection only rejects digital silence, so hum on the audio path is heard too, between transmissions as
-  well: a hum that dominates the sub-audible band on a table tone reads as that tone. Power-supply ripple in a 50 Hz
-  mains region is exactly that -- a 100 Hz hum that reads `CTCSS 100.0 Hz` -- so keep ripple and ground loops off the
-  audio feed. A producer on stdin, UDP or TCP that squelches by sending nothing at all (`rtl_fm` without `-E pad`, a
-  UDP sender that stops between transmissions) pauses the stream instead: once the pause outlasts the block in
-  flight plus the 200 ms hangover, and at least half a second, the row shows no carrier, and the next audio starts a
-  new reception that inherits nothing from the last one. Padded output (`rtl_fm -E pad`) keeps samples flowing, and
-  the 200 ms hangover then applies as on any other input. DSD-neo does not see a retune the producer makes on its own,
-  such as `rtl_fm` scanning several frequencies: a hop that leaves a gap shorter than half a second (with padding,
-  shorter than the 200 ms hangover) is not a new reception, so the previous channel's tone can still show on the next
-  channel for a few hundred milliseconds, until the detector drops it as it drops a tone that stops (timing above).
+  inactive, once each time the input moves to such a rate, and the row is left out. Detection reads the input at least
+  every 20 ms of it, whatever the length of the blocks the monitor handles audio in (on PCM input 960 samples: 120 ms at
+  8 kHz, 384 ms at 2500 Hz), so at every supported rate what is shown trails the times above by at most two such reads.
+  On RTL input, detection hears the monitor audio after the RTL monitor gain (`vol`), so a gain of 0 leaves it nothing
+  to hear and it reads no carrier; to silence the monitor, mute the output instead.
+- Externally demodulated audio (PCM inputs): the tone has to survive the producer. Feed the discriminator or flat audio
+  with nothing below 300 Hz removed -- no voice high-pass, no de-emphasis that rolls off the low end -- and prefer
+  48 kHz. Sound cards and receivers that high-pass their audio output remove CTCSS before DSD-neo sees it. PCM carrier
+  detection only rejects digital silence, so hum on the audio path is heard too, between transmissions as well: a hum
+  that dominates the sub-audible band on a table tone reads as that tone. Power-supply ripple in a 50 Hz mains region is
+  exactly that -- a 100 Hz hum that reads `CTCSS 100.0 Hz` -- so keep ripple and ground loops off the audio feed. A
+  producer on stdin, UDP or TCP that squelches by sending nothing at all (`rtl_fm` without `-E pad`, a UDP sender that
+  stops between transmissions) pauses the stream instead: once nothing has arrived for about half a second, the row
+  shows no carrier, and the audio that follows starts a new reception that inherits nothing from the last one (the read
+  that spans the pause, up to 20 ms of audio from either side of it, is not used). Padded output (`rtl_fm -E pad`) keeps
+  samples flowing, and the 200 ms hangover then applies as on any other input. DSD-neo does not see a retune the
+  producer makes on its own, such as `rtl_fm` scanning several frequencies: a hop that leaves a gap shorter than half a
+  second (with padding, shorter than the 200 ms hangover) is not a new reception, so the previous channel's tone can
+  still show on the next channel for a few hundred milliseconds, until the detector drops it as it drops a tone that
+  stops (timing above).
 - Talk-off: a voice whose fundamental holds within 0.5 Hz of a table tone for a third of a second, with weak harmonics,
   is indistinguishable from that tone in the time allowed and can be reported briefly. It is rare on transmitted voice
   (which the transmitter high-passes at 300 Hz) and most likely near the top of the table. In offline seed sweeps, two

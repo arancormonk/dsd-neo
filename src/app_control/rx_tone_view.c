@@ -65,10 +65,11 @@ rx_tone_fill_status(dsd_app_rx_tone* out, const dsd_analog_rx_publication* pub) 
     }
 }
 
-/* A live stream input that stopped delivering: the decoder is blocked waiting for the next
-   sample, so its last word -- often a locked tone -- stays published. Past the deadline the tap
-   set, the pause has outlasted the carrier hangover, and the next block will start a new
-   reception; until then the row shows no carrier. */
+/* An input that stopped delivering (a stdin, UDP or TCP producer gone quiet, a live radio
+   stream whose source stopped): the decoder is blocked waiting for the next sample, so its last
+   word -- often a locked tone -- stays published. Past the deadline the tap set, the pause has
+   outlasted the carrier hangover, and the next read will start a new reception; until then the
+   row shows no carrier. */
 static int
 rx_tone_stale(const dsd_analog_rx_publication* pub, double now_m) {
     if (pub->stale_after_ms == 0U || !(now_m > 0.0)) {

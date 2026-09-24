@@ -21,6 +21,10 @@ unsigned int dsd_symbol_test_convert_analog_block_to_i16(const float* input, sho
    power, raw WAV, the received-tone tap, the voice filters and the monitor output. */
 unsigned int dsd_symbol_test_finalize_unsynced_analog_block(dsd_opts* opts, dsd_state* state, const float* input,
                                                             unsigned int count);
+/* Hand the unsynced analog path one input sample, as getSymbol() does for each sample it reads
+   while there is no sync: the sample joins the block being assembled, which is finalized when
+   full. */
+void dsd_symbol_test_push_unsynced_analog_sample(dsd_opts* opts, dsd_state* state, float sample);
 #ifdef USE_RADIO
 int dsd_symbol_test_rtl_cache_and_center_contract(int out_values[10]);
 int dsd_symbol_test_auto_center_step_direction(int e_ema, int deadband, int* run_dir, int* run_len, int* dir_out);

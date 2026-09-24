@@ -376,14 +376,19 @@ unavailable without resetting block after block and warns about it once for each
 48 kHz, 384 kHz sequence warns twice), logs `Received tone:` once per change of verdict -- not per block, nor for a fade
 inside the hangover -- and again for a new reception after the hangover, a reset or a change of input rate, and on a UDP
 stream whose producer pauses -- driven on an injected clock -- stamps the deadline the frontends age the row against and
-starts a new reception after the pause, never showing the previous channel's tone, and -- driven through `getSymbol()`
-on a 2500 Hz WAV, where one 960-sample block is long enough to lock a tone -- drops the monitor block still being
-assembled at a reset, so the new channel's first block holds none of the old channel's samples and does not lock its
-tone again), `FRAME_SYNC_INTERNAL_HELPERS` (the acquisition reset), `ENGINE_NO_CARRIER_RESET` (survives `noCarrier()`,
-cleared by the legacy `-Y` step -- on RTL, by rigctl on PCM input in radio-off builds too, and by a failed step whose
-rigctl leg already moved the radio -- and kept by a refused one), `ENGINE_CLEANUP_AUDIO` (engine stop frees the detector
-and moves the generation on), `ENGINE_CHANNEL_SCAN`/`ENGINE_TRUNK_SCAN` (row commit and target switch),
-`DSP_WAV_INPUT_EOF` (the switch to live Pulse input when a WAV file ends), `APP_CONTROL_RX_TONE_VIEW`,
+starts a new reception after the pause, dropping the read that spans it and never showing the previous channel's tone,
+also when the pause falls part-way through a block (driven sample by sample through the unsynced analog path at 8192 Hz,
+where the 958 samples waiting in the block locked the old tone again over a quiet carrier), and on a live radio stream
+that stops delivering (an `rtl_tcp` outage) the same way, while IQ replay keeps no deadline and never resets on a gap;
+and -- driven through `getSymbol()` on 2500 Hz WAVs, where one 960-sample block is 384 ms -- reads the block as it
+fills, so a tone starting mid-block locks within the 400 ms p95 target of its start and a carrier drop is forgotten
+within the hangover and two 20 ms reads (read only at block ends they took 576 and 544 ms), and drops the monitor block
+still being assembled at a reset, so the new channel's first block holds none of the old channel's samples and does not
+lock its tone again), `FRAME_SYNC_INTERNAL_HELPERS` (the acquisition reset), `ENGINE_NO_CARRIER_RESET` (survives
+`noCarrier()`, cleared by the legacy `-Y` step -- on RTL, by rigctl on PCM input in radio-off builds too, and by a
+failed step whose rigctl leg already moved the radio -- and kept by a refused one), `ENGINE_CLEANUP_AUDIO` (engine stop
+frees the detector and moves the generation on), `ENGINE_CHANNEL_SCAN`/`ENGINE_TRUNK_SCAN` (row commit and target
+switch), `DSP_WAV_INPUT_EOF` (the switch to live Pulse input when a WAV file ends), `APP_CONTROL_RX_TONE_VIEW`,
 `UI_NCURSES_PRINTER_HELPERS` and `UI_QT_METRICS_MODEL` (a paused stream's publication reads no carrier past its deadline
 on the caller's clock) and `APP_COMMAND_QUEUE` (decode-mode change, `RTL_SET_FREQ`, `MANUAL_TUNE`, a manual channel
 cycle and scan avoid by rigctl on PCM input, accepted, pending or refused; switching to WAV, Pulse, a named Pulse

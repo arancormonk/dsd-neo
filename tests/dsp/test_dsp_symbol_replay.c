@@ -798,35 +798,77 @@ enum {
     RESET_WAV_TOTAL = RESET_WAV_TONE + RESET_WAV_BLOCK,
 };
 
+/* Write @p count samples as a mono 16-bit WAV at @p rate into a new private temp file. */
 static int
-write_reset_wav(char* path, size_t path_size) {
-    int fd = dsd_test_mkstemp(path, path_size, "dsdneo_rx_tone_reset");
+write_mono_wav(char* path, size_t path_size, const char* prefix, int rate, const short* samples, int count) {
+    int fd = dsd_test_mkstemp(path, path_size, prefix);
     if (fd < 0) {
         return -1;
     }
     dsd_close(fd);
     SF_INFO info;
     DSD_MEMSET(&info, 0, sizeof(info));
-    info.samplerate = RESET_WAV_RATE;
+    info.samplerate = rate;
     info.channels = 1;
     info.format = SF_FORMAT_WAV | SF_FORMAT_PCM_16;
     SNDFILE* wav = sf_open(path, SFM_WRITE, &info);
     if (wav == NULL) {
         return -1;
     }
+    const int ok = sf_write_short(wav, samples, count) == count;
+    sf_close(wav);
+    return ok ? 0 : -1;
+}
+
+/* A 100 Hz tone at 3000 peak on sample @p n of a @p rate input. */
+static short
+tone_100_sample(int n, int rate) {
+    return (short)lround(3000.0 * cos(2.0 * M_PI * 100.0 * (double)n / (double)rate));
+}
+
+/* Seeded noise within +/-2048: a carrier with no tone. */
+static short
+noise_sample(uint32_t* rng) {
+    *rng = (*rng * 1664525U) + 1013904223U;
+    return (short)((int)(*rng >> 20) - 2048);
+}
+
+static int
+write_reset_wav(char* path, size_t path_size) {
     static short samples[RESET_WAV_TOTAL];
     uint32_t rng = 0x2500U;
     for (int n = 0; n < RESET_WAV_TOTAL; n++) {
-        if (n < RESET_WAV_TONE) {
-            samples[n] = (short)lround(3000.0 * cos(2.0 * M_PI * 100.0 * (double)n / (double)RESET_WAV_RATE));
-        } else {
-            rng = (rng * 1664525U) + 1013904223U;
-            samples[n] = (short)((int)(rng >> 20) - 2048);
-        }
+        samples[n] = n < RESET_WAV_TONE ? tone_100_sample(n, RESET_WAV_RATE) : noise_sample(&rng);
     }
-    const int ok = sf_write_short(wav, samples, RESET_WAV_TOTAL) == RESET_WAV_TOTAL;
-    sf_close(wav);
-    return ok ? 0 : -1;
+    return write_mono_wav(path, path_size, "dsdneo_rx_tone_reset", RESET_WAV_RATE, samples, RESET_WAV_TOTAL);
+}
+
+/* The analog monitor reading @p path, a WAV at @p rate, one getSymbol() per sample. */
+static void
+open_monitor_wav(dsd_opts* opts, dsd_state* state, const char* path, int rate) {
+    install_fake_rtl_hooks(0);
+    init_analog_monitor_fixture(opts, state);
+    opts->wav_sample_rate = rate;
+    opts->rtl_squelch_level = -100.0;
+    DSD_SNPRINTF(opts->audio_in_dev, sizeof(opts->audio_in_dev), "%s", path);
+    opts->audio_in_file_info = (SF_INFO*)calloc(1, sizeof(*opts->audio_in_file_info));
+    assert(opts->audio_in_file_info != NULL);
+    opts->audio_in_file = sf_open(path, SFM_READ, opts->audio_in_file_info);
+    assert(opts->audio_in_file != NULL);
+    state->samplesPerSymbol = 1;
+    state->symbolCenter = 0;
+    state->jitter = -1;
+    exitflag = 0;
+}
+
+static void
+close_monitor_wav(dsd_opts* opts, dsd_state* state, const char* path) {
+    sf_close(opts->audio_in_file);
+    opts->audio_in_file = NULL;
+    free(opts->audio_in_file_info);
+    opts->audio_in_file_info = NULL;
+    (void)remove(path);
+    dsd_state_ext_free_all(state);
 }
 
 /*
@@ -843,19 +885,7 @@ test_rx_tone_reset_drops_the_pending_block(void) {
     assert(write_reset_wav(wav_path, sizeof(wav_path)) == 0);
     static dsd_opts opts;
     static dsd_state state;
-    install_fake_rtl_hooks(0);
-    init_analog_monitor_fixture(&opts, &state);
-    opts.wav_sample_rate = RESET_WAV_RATE;
-    opts.rtl_squelch_level = -100.0;
-    DSD_SNPRINTF(opts.audio_in_dev, sizeof(opts.audio_in_dev), "%s", wav_path);
-    opts.audio_in_file_info = (SF_INFO*)calloc(1, sizeof(*opts.audio_in_file_info));
-    assert(opts.audio_in_file_info != NULL);
-    opts.audio_in_file = sf_open(wav_path, SFM_READ, opts.audio_in_file_info);
-    assert(opts.audio_in_file != NULL);
-    state.samplesPerSymbol = 1;
-    state.symbolCenter = 0;
-    state.jitter = -1;
-    exitflag = 0;
+    open_monitor_wav(&opts, &state, wav_path, RESET_WAV_RATE);
 
     for (int n = 0; n < 2 * RESET_WAV_BLOCK; n++) {
         (void)getSymbol(&opts, &state, 0);
@@ -880,13 +910,67 @@ test_rx_tone_reset_drops_the_pending_block(void) {
     assert(state.analog_rx.carrier_open == 1);
     assert(state.analog_rx.tone_state == DSD_ANALOG_TONE_STATE_ACQUIRING);
     assert(state.analog_rx.tone_kind == DSD_ANALOG_TONE_KIND_NONE && state.analog_rx.ctcss_tenths_hz == 0);
+    close_monitor_wav(&opts, &state, wav_path);
+}
 
-    sf_close(opts.audio_in_file);
-    opts.audio_in_file = NULL;
-    free(opts.audio_in_file_info);
-    opts.audio_in_file_info = NULL;
-    (void)remove(wav_path);
-    dsd_state_ext_free_all(&state);
+/* The pacing test's 2500 Hz WAV: digital silence (no carrier), then 800 ms of a 100 Hz tone
+   starting half-way through the first 960-sample block, then digital silence again, starting
+   part-way through another block. */
+enum {
+    PACE_WAV_RATE = 2500,
+    PACE_LEAD = 480,
+    PACE_TONE = 2000,
+    PACE_TONE_END = PACE_LEAD + PACE_TONE,
+    PACE_TOTAL = PACE_TONE_END + 1500,
+};
+
+static int
+pace_ms_to_samples(int ms) {
+    return (ms * PACE_WAV_RATE) / 1000;
+}
+
+/*
+ * The publication keeps pace with the input however long the monitor block is. On PCM input
+ * the symbol path assembles 960-sample blocks whatever the rate, and at 2500 Hz one is 384 ms:
+ * read only at block ends, a tone that starts mid-block and locks inside the next one is shown
+ * a block late (576 ms after its start here), and a carrier that drops mid-block is forgotten a
+ * block or two late (544 ms here). Driven through getSymbol(), sample by sample: the tone must
+ * lock within the 400 ms p95 target of its start, and the carrier drop must be forgotten within
+ * the hangover and two reads of the tap -- the read the carrier drops in still counts as
+ * carrier, and the hangover runs out part-way through the read that ends it.
+ */
+static void
+test_rx_tone_keeps_pace_with_a_long_pcm_block(void) {
+    static short samples[PACE_TOTAL];
+    for (int n = 0; n < PACE_TOTAL; n++) {
+        samples[n] = (n >= PACE_LEAD && n < PACE_TONE_END) ? tone_100_sample(n - PACE_LEAD, PACE_WAV_RATE) : 0;
+    }
+    char wav_path[DSD_TEST_PATH_MAX];
+    assert(write_mono_wav(wav_path, sizeof(wav_path), "dsdneo_rx_tone_pace", PACE_WAV_RATE, samples, PACE_TOTAL) == 0);
+    static dsd_opts opts;
+    static dsd_state state;
+    open_monitor_wav(&opts, &state, wav_path, PACE_WAV_RATE);
+
+    int locked_at = -1;
+    int forgotten_at = -1;
+    for (int n = 1; n <= PACE_TOTAL; n++) {
+        (void)getSymbol(&opts, &state, 0);
+        assert(exitflag == 0);
+        assert(state.analog_rx.ctcss_tenths_hz == 0 || state.analog_rx.ctcss_tenths_hz == 1000);
+        if (locked_at < 0 && rx_tone_locked_on_100(&state)) {
+            locked_at = n;
+        }
+        if (forgotten_at < 0 && n > PACE_TONE_END && state.analog_rx.carrier_open == 0
+            && state.analog_rx.tone_state == DSD_ANALOG_TONE_STATE_IDLE) {
+            forgotten_at = n;
+        }
+    }
+    assert(locked_at > PACE_LEAD && locked_at < PACE_TONE_END);
+    assert(locked_at - PACE_LEAD <= pace_ms_to_samples(DSD_ANALOG_CTCSS_LOCK_P95_MS));
+    assert(forgotten_at > PACE_TONE_END);
+    assert(forgotten_at - PACE_TONE_END
+           <= pace_ms_to_samples(DSD_ANALOG_CARRIER_HANGOVER_MS + (2 * DSD_ANALOG_RX_TAP_READ_MS)));
+    close_monitor_wav(&opts, &state, wav_path);
 }
 
 /*
@@ -1119,8 +1203,10 @@ feed_stream_block(dsd_opts* opts, dsd_state* state, double hz) {
  * sender that stops): no block arrives while it is quiet, so the sample-time hangover never
  * runs. The tap stamps each block with a deadline the frontends age the row against, and the
  * first block after a pause past it starts a new reception -- here another channel's, on
- * 131.8 Hz, which must never be shown as the 100.0 Hz the last one carried. File input keeps
- * no deadline: it delivers continuously, and a slow reader is not a quiet channel.
+ * 131.8 Hz, which must never be shown as the 100.0 Hz the last one carried. That first block
+ * spans the pause (its first samples may have arrived before it), so it is dropped, and the new
+ * reception starts with the block after it. File input keeps no deadline: it delivers
+ * continuously, and a slow reader is not a quiet channel.
  */
 static void
 test_rx_tone_paused_stream_starts_a_new_reception(void) {
@@ -1151,20 +1237,206 @@ test_rx_tone_paused_stream_starts_a_new_reception(void) {
     g_fake_now_ms += 1000U;
     assert(g_fake_now_ms > deadline);
     /* ... and the next transmission inherits nothing: the old value is never shown again, the
-       first block moves the generation and is evaluated afresh, and its own tone locks. */
+       first block moves the generation and is dropped, the next is evaluated afresh, and its
+       own tone locks. */
     g_tone_phase = 0.3;
     for (int b = 0; b < 30; b++) {
         feed_stream_block(&opts, &state, 131.8);
         assert(state.analog_rx.ctcss_tenths_hz != 1000);
         if (b == 0) {
-            assert(state.analog_rx.tone_state == DSD_ANALOG_TONE_STATE_ACQUIRING);
+            assert(state.analog_rx.tone_state == DSD_ANALOG_TONE_STATE_IDLE && state.analog_rx.carrier_open == 0);
             assert(state.analog_rx.generation != generation);
+            generation = state.analog_rx.generation;
+        } else if (b == 1) {
+            assert(state.analog_rx.tone_state == DSD_ANALOG_TONE_STATE_ACQUIRING);
+            assert(state.analog_rx.generation == generation);
         }
     }
     assert(state.analog_rx.tone_state == DSD_ANALOG_TONE_STATE_LOCKED && state.analog_rx.ctcss_tenths_hz == 1318);
 
     /* File input never goes stale and never resets on a gap, however long. */
     opts.audio_in_type = AUDIO_IN_WAV;
+    feed_stream_block(&opts, &state, 131.8);
+    assert(state.analog_rx.stale_after_ms == 0U);
+    generation = state.analog_rx.generation;
+    g_fake_now_ms += 5000U;
+    feed_stream_block(&opts, &state, 131.8);
+    assert(state.analog_rx.ctcss_tenths_hz == 1318 && state.analog_rx.generation == generation);
+
+    dsd_analog_rx_test_set_clock(NULL);
+    dsd_state_ext_free_all(&state);
+}
+
+/* A live stream on the injected clock, one sample at a time: sample n arrives n / rate seconds
+   after the first, plus every pause the test inserts. */
+static uint64_t g_stream_base_ms = 0U;
+static uint64_t g_stream_samples = 0U;
+
+enum { MID_PAUSE_RATE = 8192, MID_PAUSE_PENDING = 958 };
+
+static void
+push_stream_sample(dsd_opts* opts, dsd_state* state, short sample) {
+    g_stream_samples++;
+    g_fake_now_ms = g_stream_base_ms + ((g_stream_samples * 1000U) / (uint64_t)MID_PAUSE_RATE);
+    dsd_symbol_test_push_unsynced_analog_sample(opts, state, (float)sample);
+}
+
+/*
+ * A live stream that pauses part-way through a monitor block. The samples already waiting in
+ * the block arrived before the pause; what arrives after it may be another transmission or
+ * another channel. Driven sample by sample through the unsynced analog path on 8192 Hz UDP
+ * input: a 100 Hz tone locks, 958 more of its samples arrive (all but two of a 960-sample
+ * block), the producer goes quiet for a second, and then it sends a carrier with no tone, its
+ * noise @p noise_shift bits below +/-2048. Read together with the new reception, those 958
+ * samples lock 100.0 Hz again over a quiet carrier; none may reach it.
+ */
+static void
+run_pause_mid_block(int noise_shift) {
+    static dsd_opts opts;
+    static dsd_state state;
+    install_fake_rtl_hooks(0);
+    init_analog_monitor_fixture(&opts, &state);
+    opts.audio_in_type = AUDIO_IN_UDP;
+    opts.wav_sample_rate = MID_PAUSE_RATE;
+    dsd_analog_rx_test_set_clock(fake_now_ms);
+    g_stream_base_ms = 300000U;
+    g_stream_samples = 0U;
+
+    int n = 0;
+    for (; n < 9 * RESET_WAV_BLOCK; n++) {
+        push_stream_sample(&opts, &state, tone_100_sample(n, MID_PAUSE_RATE));
+    }
+    assert(rx_tone_locked_on_100(&state));
+    for (int i = 0; i < MID_PAUSE_PENDING; i++, n++) {
+        push_stream_sample(&opts, &state, tone_100_sample(n, MID_PAUSE_RATE));
+    }
+    assert(state.analog_sample_counter == MID_PAUSE_PENDING);
+    const uint32_t generation = state.analog_rx.generation;
+
+    /* Until the tap reads again the publication still says what it said before the pause (the
+       frontends age it by its deadline meanwhile). The first read after the pause starts the
+       new reception, within one read of the stream's return, and from then on the old tone
+       must never be shown. */
+    g_stream_base_ms += 1000U;
+    uint32_t rng = 0x8192U;
+    int new_reception_at = -1;
+    for (int i = 0; i < (3 * MID_PAUSE_RATE) / 2; i++) {
+        push_stream_sample(&opts, &state, (short)(noise_sample(&rng) / (1 << noise_shift)));
+        if (new_reception_at < 0 && state.analog_rx.generation != generation) {
+            new_reception_at = i;
+        }
+        if (new_reception_at >= 0) {
+            assert(state.analog_rx.ctcss_tenths_hz != 1000);
+        }
+    }
+    assert(new_reception_at >= 0 && new_reception_at < (MID_PAUSE_RATE * DSD_ANALOG_RX_TAP_READ_MS) / 1000);
+    assert(state.analog_rx.carrier_open == 1 && state.analog_rx.tone_state == DSD_ANALOG_TONE_STATE_NONE);
+
+    dsd_analog_rx_test_set_clock(NULL);
+    dsd_state_ext_free_all(&state);
+}
+
+static void
+test_rx_tone_pause_mid_block_inherits_nothing(void) {
+    static const int noise_shifts[] = {0, 3, 6, 10};
+    for (size_t i = 0; i < sizeof(noise_shifts) / sizeof(noise_shifts[0]); i++) {
+        run_pause_mid_block(noise_shifts[i]);
+    }
+}
+
+/*
+ * A squelch set on PCM input follows each read of the tap, not the block. The symbol path
+ * measures each whole block's level into opts->rtl_pwr only once the block is complete, so a
+ * read taken while the block fills that went by opts->rtl_pwr would be judged on the previous
+ * block. Driven sample by sample at 8192 Hz with the squelch at -40 dBFS: a quiet carrier
+ * (about -72 dBFS) never opens it, and a tone at about -24 dBFS that starts half-way through a
+ * block opens the carrier within one read of its start rather than at the block's end.
+ */
+static void
+test_rx_tone_pcm_squelch_follows_each_read(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    install_fake_rtl_hooks(0);
+    init_analog_monitor_fixture(&opts, &state);
+    opts.audio_in_type = AUDIO_IN_UDP;
+    opts.wav_sample_rate = MID_PAUSE_RATE;
+    opts.rtl_squelch_level = dsd_squelch_level_from_sql(-40.0);
+    dsd_analog_rx_test_set_clock(fake_now_ms);
+    g_stream_base_ms = 700000U;
+    g_stream_samples = 0U;
+
+    uint32_t rng = 0x5E1CU;
+    const int quiet = (2 * RESET_WAV_BLOCK) + (RESET_WAV_BLOCK / 2);
+    for (int i = 0; i < quiet; i++) {
+        push_stream_sample(&opts, &state, (short)(noise_sample(&rng) / 256));
+        assert(state.analog_rx.carrier_open == 0);
+    }
+    assert(state.analog_sample_counter == RESET_WAV_BLOCK / 2);
+    assert(opts.rtl_pwr < opts.rtl_squelch_level);
+
+    int opened_at = -1;
+    for (int n = 0; n < RESET_WAV_BLOCK && opened_at < 0; n++) {
+        push_stream_sample(&opts, &state, tone_100_sample(n, MID_PAUSE_RATE));
+        if (state.analog_rx.carrier_open == 1) {
+            opened_at = n;
+        }
+    }
+    assert(opened_at >= 0 && opened_at < (MID_PAUSE_RATE * DSD_ANALOG_RX_TAP_READ_MS) / 1000);
+    assert(state.analog_sample_counter < RESET_WAV_BLOCK);
+
+    dsd_analog_rx_test_set_clock(NULL);
+    dsd_state_ext_free_all(&state);
+}
+
+/*
+ * A live radio stream that stops delivering: an rtl_tcp server that went away, whose client
+ * then retries the connection without end while the decoder waits in the read (a stalled
+ * device does the same). Nothing arrives for the sample-time hangover to count, so as on a
+ * paused PCM stream each block stamps the deadline the frontends age the row against, and the
+ * first block after the outage is dropped and starts a new reception. IQ replay is a file: it
+ * keeps no deadline and never resets on a gap, so a replay reads the same however slowly it is
+ * read.
+ */
+static void
+test_rx_tone_stalled_radio_stream_goes_stale(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    install_fake_rtl_hooks(1);
+    init_analog_monitor_fixture(&opts, &state);
+    opts.audio_in_type = AUDIO_IN_RTL;
+    opts.rtltcp_enabled = 1;
+    dsd_analog_rx_test_set_clock(fake_now_ms);
+    g_fake_now_ms = 500000U;
+    g_tone_phase = 0.0;
+
+    for (int b = 0; b < 30; b++) {
+        feed_stream_block(&opts, &state, 100.0);
+    }
+    assert(rx_tone_locked_on_100(&state));
+    assert(state.analog_rx.stale_after_ms == g_fake_now_ms + (uint64_t)DSD_ANALOG_STREAM_PAUSE_MIN_MS);
+
+    /* A minute without samples: the publication still names the tone, but its deadline has
+       passed, so the frontends read it as no carrier. */
+    uint32_t generation = state.analog_rx.generation;
+    g_fake_now_ms += 60000U;
+    assert(g_fake_now_ms > state.analog_rx.stale_after_ms);
+
+    /* The stream returns on another tone: the old one is never shown again, the first block
+       is dropped with the generation moved on, and the new tone locks on its own. */
+    g_tone_phase = 0.3;
+    for (int b = 0; b < 30; b++) {
+        feed_stream_block(&opts, &state, 131.8);
+        assert(state.analog_rx.ctcss_tenths_hz != 1000);
+        if (b == 0) {
+            assert(state.analog_rx.tone_state == DSD_ANALOG_TONE_STATE_IDLE && state.analog_rx.carrier_open == 0);
+            assert(state.analog_rx.generation != generation);
+        }
+    }
+    assert(state.analog_rx.tone_state == DSD_ANALOG_TONE_STATE_LOCKED && state.analog_rx.ctcss_tenths_hz == 1318);
+
+    /* IQ replay keeps no deadline and carries on across a gap. */
+    opts.rtltcp_enabled = 0;
+    opts.iq_replay_active = 1;
     feed_stream_block(&opts, &state, 131.8);
     assert(state.analog_rx.stale_after_ms == 0U);
     generation = state.analog_rx.generation;
@@ -1196,11 +1468,15 @@ main(void) {
     test_rx_tone_tap_reads_raw_block_before_voice_filters();
     test_rx_tone_clears_on_unannounced_retune();
     test_rx_tone_reset_drops_the_pending_block();
+    test_rx_tone_keeps_pace_with_a_long_pcm_block();
     test_rx_tone_unusable_rate_is_unavailable();
     test_rx_tone_unusable_rate_warns_once_per_stretch();
     test_rx_tone_usable_rate_change_drops_lock();
     test_rx_tone_logs_on_change_only();
     test_rx_tone_paused_stream_starts_a_new_reception();
+    test_rx_tone_pause_mid_block_inherits_nothing();
+    test_rx_tone_pcm_squelch_follows_each_read();
+    test_rx_tone_stalled_radio_stream_goes_stale();
     return 0;
 }
 

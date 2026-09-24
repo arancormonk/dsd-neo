@@ -486,8 +486,9 @@ typedef enum {
  * list does not change. The detector's working state lives in DSD_STATE_EXT_DSP_ANALOG_RX. */
 struct dsd_analog_rx_publication {
     /** 1 while a carrier is open, held through the 200 ms hangover. On stdin, UDP and TCP input
-     * the tap cannot clear it while the producer sends nothing, so a reader of carrier_open or
-     * tone_state must also honour stale_after_ms, as dsd_app_rx_tone_view() does. */
+     * and on a live radio stream the tap cannot clear it while no samples arrive, so a reader of
+     * carrier_open or tone_state must also honour stale_after_ms, as dsd_app_rx_tone_view()
+     * does. */
     int carrier_open;
     int tone_kind;       /**< dsd_analog_tone_kind; NONE unless tone_state is LOCKED */
     int tone_state;      /**< dsd_analog_tone_state */
@@ -500,11 +501,13 @@ struct dsd_analog_rx_publication {
      * from the one it last saw. */
     uint32_t generation;
     /** Monotonic ms (dsd_time_monotonic_ms()) after which this publication no longer describes
-     * the channel if the tap has not run again since. Set only on live stream input (stdin,
-     * UDP, TCP), whose producer may stop sending between transmissions: then no block arrives
-     * for the sample-time hangover to count, and a frontend reads the publication past this
-     * point as no carrier (app_control/rx_tone_view.h). 0 = never stale (files, Pulse and RTL
-     * input deliver continuously). */
+     * the channel if the tap has not run again since. Set only on input that may pause: stdin,
+     * UDP and TCP, whose producer may stop sending between transmissions, and live RTL-family
+     * radio streams, which stop when their source does (an rtl_tcp server that went away, a
+     * stalled device). Then no samples arrive for the sample-time hangover to count, and a
+     * frontend reads the publication past this point as no carrier
+     * (app_control/rx_tone_view.h). 0 = never stale (files, Pulse and IQ replay deliver
+     * continuously). */
     uint64_t stale_after_ms;
 };
 
