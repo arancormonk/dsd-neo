@@ -515,7 +515,8 @@ installs from `src/engine/trunk_tuning.c` in `src/engine/trunk_tuning_hooks_inst
   on every timing row, and a tone policy's acquisition window must exceed the lock ceiling by at least 100 ms. Each
   ceiling comes with the rate at which the long-run sweeps in `docs/testing.md` exceeded it, stated in the header (none
   for loss; for lock in noise, about one start in 125,000 at 0 dB, more for a tone off its table value); change them
-  only with new sweeps. `dsd_symbol.c` taps each unsynced analog block in
+  only with new sweeps. The header also states the measured wrong-tone rates (neighbour locks near 0 dB, talk-off),
+  which a policy acting on the first lock has to budget for. `dsd_symbol.c` taps each unsynced analog block in
   `symbol_finalize_unsynced_analog_block()` after the raw WAV write and before `symbol_apply_unsynced_filters()`: the
   in-place `hpf_f` (960 Hz) and `pbf_f` there would remove every CTCSS tone. One decoder-thread tap covers RTL and PCM,
   sees only live (not seam-replayed) samples, only reads the block, and runs whatever `audio_out` says. It is active
