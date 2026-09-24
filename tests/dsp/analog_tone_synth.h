@@ -186,9 +186,9 @@ synth_dcs_next(synth_dcs* dcs) {
  *
  * Voiced segments are a glottal pulse train through a -12 dB/octave source tilt, three
  * formant resonators and +6 dB/octave lip radiation, the standard source-filter model; the
- * fundamental is the strongest single harmonic below the first formant. Per phrase the fundamental starts
- * anywhere in 85-255 Hz; inside it, it drifts with intonation (up to +/-40 Hz/s), carries a
- * 5 Hz vibrato of about 1% and a cycle-to-cycle jitter of about 1%.
+ * fundamental is the strongest single harmonic below the first formant. Per phrase the
+ * fundamental starts anywhere in 85-255 Hz; inside it, it drifts with intonation (up to
+ * +/-40 Hz/s), carries a 5 Hz vibrato of about 1% and a cycle-to-cycle jitter of about 1%.
  */
 typedef struct {
     double fs;

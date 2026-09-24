@@ -140,7 +140,8 @@ summary="$out/summary.tsv"
 analog_keys=(tone_snr_db inband_db clip audible_ms first_audible_ms rms_dbfs)
 probe_keys=(hz dbfs dbc)
 printf 'variant\tcase\trep\terrs\tvoice\tsync' > "$summary"
-printf '\t%s' "${analog_keys[@]}" probe_hz probe_dbfs probe_dbc tone tone_lock_ms tone_lock_pct rc off_path >> "$summary"
+printf '\t%s' "${analog_keys[@]}" probe_hz probe_dbfs probe_dbc \
+  tone tone_lock_ms tone_lock_pct rc off_path >> "$summary"
 printf '\n' >> "$summary"
 
 # Value of key=value on the last (or, with which=first, the first) line of the log
