@@ -69,14 +69,25 @@ enum { DSD_ANALOG_RX_SCRATCH = 512 };
 /** @brief CTCSS correlator geometry: 50 ms sub-blocks, a 5-sub-block (250 ms) window, 50 ms hop. */
 enum { DSD_ANALOG_CTCSS_SUBBLOCK_MS = 50, DSD_ANALOG_CTCSS_WINDOW = 5 };
 
+/**
+ * @brief The late acquisition windows: the newest 12 sub-blocks (600 ms) and the newest 8
+ * (400 ms), from the ring of 12.
+ *
+ * While no tone is locked, every hop also measures both, over no more than has closed since the
+ * last reset or loss (the longer one is cut short until then, and neither runs before 8 have), so
+ * a tone that has just been lost is never in them. The 250 ms window locks most tones; these lock
+ * the ones its noise kept from it (see ctcss_step_late() in analog_ctcss.c).
+ */
+enum { DSD_ANALOG_CTCSS_LONG_WINDOW = 12, DSD_ANALOG_CTCSS_LONG_MIN = 8 };
+
 /** @brief Consecutive agreeing hops needed to lock, and failing hops that lose the lock. */
 enum { DSD_ANALOG_CTCSS_ACQUIRE_HOPS = 2, DSD_ANALOG_CTCSS_LOSE_HOPS = 4 };
 
 /** @brief Carrier time without a lock after which the verdict is "no tone". */
 enum { DSD_ANALOG_CTCSS_NO_TONE_MS = 500 };
 
-/** @brief Wide-stream history the harmonic check correlates over: one window at up to 4.8 kHz. */
-enum { DSD_ANALOG_CTCSS_WIDE_MAX = (DSD_ANALOG_CTCSS_WINDOW * DSD_ANALOG_CTCSS_SUBBLOCK_MS * 4800) / 1000 };
+/** @brief Wide-stream history the harmonic check correlates over: one late acquisition window at up to 4.8 kHz. */
+enum { DSD_ANALOG_CTCSS_WIDE_MAX = (DSD_ANALOG_CTCSS_LONG_WINDOW * DSD_ANALOG_CTCSS_SUBBLOCK_MS * 4800) / 1000 };
 
 /**
  * @brief What one detector currently reports.
@@ -124,6 +135,16 @@ typedef struct {
     double harmonic;   /**< phase-locked (2f, 3f) power over the candidate's; computed only when needed */
 } dsd_analog_ctcss_hop;
 
+/** @brief A tone the acquisition tracks from hop to hop, one per acquisition window. */
+typedef struct {
+    int index; /**< table index the previous hop qualified, or -1 */
+    double hz; /**< fine estimate of the previous qualifying hop */
+    /** index's estimate from the qualifying hop before hz's, when the two agreed: the burst
+        reference a lock on index starts from */
+    double prev_hz;
+    int run; /**< consecutive hops that qualified index */
+} dsd_analog_ctcss_cand;
+
 /**
  * @brief CTCSS detector working state (a correlator bin per supported tone).
  *
@@ -144,32 +165,29 @@ typedef struct {
     double step_im[DSD_CTCSS_TONE_COUNT];
     double acc_re[DSD_CTCSS_TONE_COUNT];
     double acc_im[DSD_CTCSS_TONE_COUNT];
-    double ring_re[DSD_ANALOG_CTCSS_WINDOW][DSD_CTCSS_TONE_COUNT];
-    double ring_im[DSD_ANALOG_CTCSS_WINDOW][DSD_CTCSS_TONE_COUNT];
-    double ring_energy[DSD_ANALOG_CTCSS_WINDOW];
-    double sub_full;                           /**< full-stream energy of the sub-block being filled */
-    double ring_full[DSD_ANALOG_CTCSS_WINDOW]; /**< full-stream energy of each sub-block in the ring */
+    double ring_re[DSD_ANALOG_CTCSS_LONG_WINDOW][DSD_CTCSS_TONE_COUNT];
+    double ring_im[DSD_ANALOG_CTCSS_LONG_WINDOW][DSD_CTCSS_TONE_COUNT];
+    double ring_energy[DSD_ANALOG_CTCSS_LONG_WINDOW];
+    double sub_full;                                /**< full-stream energy of the sub-block being filled */
+    double ring_full[DSD_ANALOG_CTCSS_LONG_WINDOW]; /**< full-stream energy of each sub-block in the ring */
     int ring_head;  /**< next ring slot to write; the oldest sub-block once the ring is full */
-    int ring_count; /**< sub-blocks in the ring, up to DSD_ANALOG_CTCSS_WINDOW */
+    int ring_count; /**< sub-blocks in the ring, up to DSD_ANALOG_CTCSS_LONG_WINDOW */
+    int fresh;      /**< sub-blocks closed since the last reset or loss, up to DSD_ANALOG_CTCSS_LONG_WINDOW */
     int state;      /**< dsd_analog_tone_state: ACQUIRING, LOCKED or NONE */
     int locked;     /**< table index of the locked tone, or -1 */
     double locked_hz;
     /** The reverse burst check's reference: locked_hz as it stood two hops ago, or on the first
-        hop after a lock the candidate's estimate from the hop before the lock (cand_prev_hz).
+        hop after a lock the candidate's estimate from the hop before the lock (prev_hz).
         Either comes from a window that ends no later than the older sub-block of each pair the
         check compares. */
     double burst_ref_hz;
-    int cand;       /**< table index the previous hop qualified, or -1 */
-    double cand_hz; /**< fine estimate of the previous qualifying hop */
-    /** cand's estimate from the qualifying hop before cand_hz's, when the two agreed: the burst
-        reference a lock on cand starts from */
-    double cand_prev_hz;
-    int cand_run;                          /**< consecutive hops that qualified cand */
+    dsd_analog_ctcss_cand cand;            /**< what the 250 ms window has been qualifying */
+    dsd_analog_ctcss_cand long_cand;       /**< what the late acquisition window has been qualifying */
     int fail_run;                          /**< consecutive hops the locked tone failed its hold */
     int holdoff;                           /**< hops left before a tone may lock again (after a reverse burst) */
     int64_t open_samples;                  /**< unfrozen samples since the last reset, for the no-tone verdict */
-    float wide[DSD_ANALOG_CTCSS_WIDE_MAX]; /**< the window's wide-stream samples, circular */
-    int wide_len;                          /**< window length in samples (WINDOW * sub_len) */
+    float wide[DSD_ANALOG_CTCSS_WIDE_MAX]; /**< the ring's wide-stream samples, circular */
+    int wide_len;                          /**< ring length in samples (LONG_WINDOW * sub_len) */
     int wide_pos;                          /**< next write position; the oldest sample once the ring is full */
     dsd_analog_ctcss_hop last_hop;
 } dsd_analog_ctcss;

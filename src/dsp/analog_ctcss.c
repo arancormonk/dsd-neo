@@ -8,8 +8,8 @@
  * @brief CTCSS detector over the decimated sub-audible stream (issue #522).
  *
  * One complex correlator per supported tone, each with a phasor that runs continuously at its
- * table frequency. Every 50 ms sub-block closes into a ring of five (a 250 ms window, one hop
- * per sub-block). A hop, for every bin:
+ * table frequency. Every 50 ms sub-block closes into a ring of twelve; the newest five are the
+ * 250 ms window, with one hop per sub-block. A hop, for every bin:
  *
  *   1. estimates the offset from the bin from the slope of the sub-block phases -- a coarse
  *      pulse-pair estimate, refined by a magnitude-weighted least-squares fit -- which is what
@@ -37,6 +37,13 @@
  * as it lasts. Everything is measured in samples, so the bounds hold in sample time at any
  * input rate.
  *
+ * Late acquisition bounds the lock time in noise. While no tone is locked every hop also measures
+ * two longer windows from the ring, its newest 600 and 400 ms, over no more of them than has
+ * closed since the last reset or loss: the same tests with rho down to 0.25, and the newest 250 ms
+ * still carrying the tone. The longer windows average away the noise that now and then keeps
+ * every pair of 250 ms hops from qualifying a tone at 0 dB well past half a second (see
+ * ctcss_step_late()).
+ *
  * Samples from inside the carrier hangover keep the correlators' time, but a hop whose newest
  * 100 ms holds nothing else keeps the verdict, so a dropout's silence alone never ends a lock or
  * makes one. A carrier that keeps dropping out still cannot keep a lock the tone has left:
@@ -57,6 +64,10 @@
 
 /* Hysteresis and qualification thresholds. Ratios only: nothing here depends on scale. */
 static const double k_acquire_rho = 0.35;
+/* rho the late acquisition windows (ctcss_step_late) qualify a tone at. Over 400 ms noise alone
+   puts about 1/116 of the band into a bin (1/174 over 600 ms), so noise reaches 0.25 at a bin on
+   well under one hop in 10^12, while a tone at 0 dB in-band reads about 0.5. */
+static const double k_late_acquire_rho = 0.25;
 static const double k_hold_rho = 0.15;
 /* The snap gate: a locked tone holds while its own bin's fine estimate stays this close to the
    table value. */
@@ -112,17 +123,24 @@ typedef struct {
     double im;
 } ctcss_cpx;
 
+/* A window is the newest @p span sub-blocks of the ring: DSD_ANALOG_CTCSS_WINDOW of them, or up to
+   DSD_ANALOG_CTCSS_LONG_WINDOW for late acquisition. j = 0 is its oldest sub-block, j = span - 1
+   the newest. */
+static int
+ctcss_slot(const dsd_analog_ctcss* det, int span, int j) {
+    return (det->ring_head + DSD_ANALOG_CTCSS_LONG_WINDOW - span + j) % DSD_ANALOG_CTCSS_LONG_WINDOW;
+}
+
 static ctcss_cpx
-ctcss_ring_at(const dsd_analog_ctcss* det, int j, int bin) {
-    /* j = 0 is the oldest sub-block in the window, j = WINDOW - 1 the newest. */
-    const int slot = (det->ring_head + j) % DSD_ANALOG_CTCSS_WINDOW;
+ctcss_ring_at(const dsd_analog_ctcss* det, int span, int j, int bin) {
+    const int slot = ctcss_slot(det, span, j);
     ctcss_cpx c = {det->ring_re[slot][bin], det->ring_im[slot][bin]};
     return c;
 }
 
 static double
-ctcss_ring_energy_at(const dsd_analog_ctcss* det, int j) {
-    return det->ring_energy[(det->ring_head + j) % DSD_ANALOG_CTCSS_WINDOW];
+ctcss_ring_energy_at(const dsd_analog_ctcss* det, int span, int j) {
+    return det->ring_energy[ctcss_slot(det, span, j)];
 }
 
 static ctcss_cpx
@@ -150,6 +168,14 @@ ctcss_tone_hz(int index) {
 }
 
 static void
+ctcss_cand_clear(dsd_analog_ctcss_cand* cand) {
+    cand->index = -1;
+    cand->hz = 0.0;
+    cand->prev_hz = 0.0;
+    cand->run = 0;
+}
+
+static void
 ctcss_reset(void* ctx) {
     dsd_analog_ctcss* det = (dsd_analog_ctcss*)ctx;
     if (!det) {
@@ -168,6 +194,7 @@ ctcss_reset(void* ctx) {
     DSD_MEMSET(&det->last_hop, 0, sizeof(det->last_hop));
     det->ring_head = 0;
     det->ring_count = 0;
+    det->fresh = 0;
     det->sub_fill = 0;
     det->sub_open = 0;
     det->prev_open = 0;
@@ -177,9 +204,8 @@ ctcss_reset(void* ctx) {
     det->locked = -1;
     det->locked_hz = 0.0;
     det->burst_ref_hz = 0.0;
-    det->cand = -1;
-    det->cand_prev_hz = 0.0;
-    det->cand_run = 0;
+    ctcss_cand_clear(&det->cand);
+    ctcss_cand_clear(&det->long_cand);
     det->fail_run = 0;
     det->holdoff = 0;
     det->open_samples = 0;
@@ -200,7 +226,7 @@ ctcss_configure(void* ctx, double rate_hz) {
     if (det->sub_len < 1) {
         det->sub_len = 1;
     }
-    det->wide_len = DSD_ANALOG_CTCSS_WINDOW * det->sub_len;
+    det->wide_len = DSD_ANALOG_CTCSS_LONG_WINDOW * det->sub_len;
     if (det->wide_len > DSD_ANALOG_CTCSS_WIDE_MAX) {
         det->wide_len = DSD_ANALOG_CTCSS_WIDE_MAX;
     }
@@ -229,12 +255,12 @@ ctcss_snap(double hz) {
 
 /** @brief Coarse per-sub-block phase advance: the magnitude-weighted pulse-pair estimate. */
 static double
-ctcss_coarse_advance(const dsd_analog_ctcss* det, int bin) {
+ctcss_coarse_advance(const dsd_analog_ctcss* det, int span, int bin) {
     double re = 0.0;
     double im = 0.0;
-    for (int j = 1; j < DSD_ANALOG_CTCSS_WINDOW; j++) {
-        const ctcss_cpx a = ctcss_ring_at(det, j - 1, bin);
-        const ctcss_cpx b = ctcss_ring_at(det, j, bin);
+    for (int j = 1; j < span; j++) {
+        const ctcss_cpx a = ctcss_ring_at(det, span, j - 1, bin);
+        const ctcss_cpx b = ctcss_ring_at(det, span, j, bin);
         re += (b.re * a.re) + (b.im * a.im);
         im += (b.im * a.re) - (b.re * a.im);
     }
@@ -243,9 +269,9 @@ ctcss_coarse_advance(const dsd_analog_ctcss* det, int bin) {
 
 /** @brief A linear phase fit across the window: the offset and how well a line explains it. */
 typedef struct {
-    double advance;                      /**< per-sub-block phase advance, radians */
-    double residual;                     /**< magnitude-weighted RMS residual, radians */
-    double err[DSD_ANALOG_CTCSS_WINDOW]; /**< per-sub-block residual, radians */
+    double advance;                           /**< per-sub-block phase advance, radians */
+    double residual;                          /**< magnitude-weighted RMS residual, radians */
+    double err[DSD_ANALOG_CTCSS_LONG_WINDOW]; /**< per-sub-block residual, radians */
 } ctcss_fit;
 
 /**
@@ -256,21 +282,21 @@ typedef struct {
  * whether the window is one steady tone at all.
  */
 static void
-ctcss_refine_advance(const dsd_analog_ctcss* det, int bin, double coarse, ctcss_fit* fit) {
-    ctcss_cpx d[DSD_ANALOG_CTCSS_WINDOW];
+ctcss_refine_advance(const dsd_analog_ctcss* det, int span, int bin, double coarse, ctcss_fit* fit) {
+    ctcss_cpx d[DSD_ANALOG_CTCSS_LONG_WINDOW];
     ctcss_cpx sum = {0.0, 0.0};
-    for (int j = 0; j < DSD_ANALOG_CTCSS_WINDOW; j++) {
-        d[j] = ctcss_rotate(ctcss_ring_at(det, j, bin), -coarse * (double)j);
+    for (int j = 0; j < span; j++) {
+        d[j] = ctcss_rotate(ctcss_ring_at(det, span, j, bin), -coarse * (double)j);
         sum.re += d[j].re;
         sum.im += d[j].im;
     }
     const double ref = atan2(sum.im, sum.re);
-    double r[DSD_ANALOG_CTCSS_WINDOW];
-    double w[DSD_ANALOG_CTCSS_WINDOW];
+    double r[DSD_ANALOG_CTCSS_LONG_WINDOW];
+    double w[DSD_ANALOG_CTCSS_LONG_WINDOW];
     double sw = 0.0;
     double swj = 0.0;
     double swr = 0.0;
-    for (int j = 0; j < DSD_ANALOG_CTCSS_WINDOW; j++) {
+    for (int j = 0; j < span; j++) {
         const double phase = atan2(d[j].im, d[j].re) - ref;
         r[j] = atan2(sin(phase), cos(phase));
         w[j] = ctcss_mag2(d[j]);
@@ -282,7 +308,7 @@ ctcss_refine_advance(const dsd_analog_ctcss* det, int bin, double coarse, ctcss_
     fit->residual = M_PI;
     if (!(sw > 0.0)) {
         /* An empty bin has nothing to fit: every sub-block counts as fully unexplained. */
-        for (int j = 0; j < DSD_ANALOG_CTCSS_WINDOW; j++) {
+        for (int j = 0; j < span; j++) {
             fit->err[j] = M_PI;
         }
         return;
@@ -291,13 +317,13 @@ ctcss_refine_advance(const dsd_analog_ctcss* det, int bin, double coarse, ctcss_
     const double rm = swr / sw;
     double sxy = 0.0;
     double sxx = 0.0;
-    for (int j = 0; j < DSD_ANALOG_CTCSS_WINDOW; j++) {
+    for (int j = 0; j < span; j++) {
         sxy += w[j] * ((double)j - jm) * (r[j] - rm);
         sxx += w[j] * ((double)j - jm) * ((double)j - jm);
     }
     const double slope = (sxx > 0.0) ? sxy / sxx : 0.0;
     double se = 0.0;
-    for (int j = 0; j < DSD_ANALOG_CTCSS_WINDOW; j++) {
+    for (int j = 0; j < span; j++) {
         fit->err[j] = r[j] - (rm + (slope * ((double)j - jm)));
         se += w[j] * fit->err[j] * fit->err[j];
     }
@@ -317,14 +343,14 @@ ctcss_refine_advance(const dsd_analog_ctcss* det, int bin, double coarse, ctcss_
  * account for.
  */
 static double
-ctcss_fit_chi2(const dsd_analog_ctcss* det, int bin, const ctcss_fit* fit) {
+ctcss_fit_chi2(const dsd_analog_ctcss* det, int span, int bin, const ctcss_fit* fit) {
     /* The noise is assumed to fill the sub-audible band up to the front end's cutoff. */
     const double noise_bin_gain = det->rate_hz / (2.0 * DSD_ANALOG_RX_BAND_HZ);
     double chi2 = 0.0;
-    for (int j = 0; j < DSD_ANALOG_CTCSS_WINDOW; j++) {
-        const double bin_power = ctcss_mag2(ctcss_ring_at(det, j, bin));
+    for (int j = 0; j < span; j++) {
+        const double bin_power = ctcss_mag2(ctcss_ring_at(det, span, j, bin));
         const double tone_energy = 2.0 * bin_power / (double)det->sub_len;
-        double noise_energy = ctcss_ring_energy_at(det, j) - tone_energy;
+        double noise_energy = ctcss_ring_energy_at(det, span, j) - tone_energy;
         if (!(noise_energy > 0.0)) {
             noise_energy = 0.0;
         }
@@ -345,7 +371,7 @@ ctcss_fit_chi2(const dsd_analog_ctcss* det, int bin, const ctcss_fit* fit) {
         }
         chi2 += fit->err[j] * fit->err[j] / var;
     }
-    return chi2 / (double)(DSD_ANALOG_CTCSS_WINDOW - 2);
+    return chi2 / (double)(span - 2);
 }
 
 /**
@@ -354,14 +380,14 @@ ctcss_fit_chi2(const dsd_analog_ctcss* det, int bin, const ctcss_fit* fit) {
  * 2|sum|^2 / (N * energy): a pure tone reads 1, a tone at 0 dB in-band SNR about 0.5.
  */
 static double
-ctcss_rho(const dsd_analog_ctcss* det, int bin, double advance, int first, int count) {
+ctcss_rho(const dsd_analog_ctcss* det, int span, int bin, double advance, int first, int count) {
     ctcss_cpx sum = {0.0, 0.0};
     double energy = 0.0;
     for (int j = first; j < first + count; j++) {
-        const ctcss_cpx c = ctcss_rotate(ctcss_ring_at(det, j, bin), -advance * (double)j);
+        const ctcss_cpx c = ctcss_rotate(ctcss_ring_at(det, span, j, bin), -advance * (double)j);
         sum.re += c.re;
         sum.im += c.im;
-        energy += ctcss_ring_energy_at(det, j);
+        energy += ctcss_ring_energy_at(det, span, j);
     }
     const double denom = (double)det->sub_len * (double)count * energy;
     if (!(denom > 0.0)) {
@@ -375,12 +401,12 @@ ctcss_rho(const dsd_analog_ctcss* det, int bin, double advance, int first, int c
  * [first, first + count) stands for: rho times the band energy, over the full stream's energy.
  */
 static double
-ctcss_full_share(const dsd_analog_ctcss* det, double rho, int first, int count) {
+ctcss_full_share(const dsd_analog_ctcss* det, int span, double rho, int first, int count) {
     double band = 0.0;
     double full = 0.0;
     for (int j = first; j < first + count; j++) {
-        band += ctcss_ring_energy_at(det, j);
-        full += det->ring_full[(det->ring_head + j) % DSD_ANALOG_CTCSS_WINDOW];
+        band += ctcss_ring_energy_at(det, span, j);
+        full += det->ring_full[ctcss_slot(det, span, j)];
     }
     if (!(full > 0.0)) {
         return 0.0;
@@ -394,31 +420,31 @@ ctcss_advance_for(const dsd_analog_ctcss* det, int bin, double hz) {
     return 2.0 * M_PI * (hz - ctcss_tone_hz(bin)) * (double)det->sub_len / det->rate_hz;
 }
 
-/** @brief Fine estimate, fit and rho for one correlator bin. */
+/** @brief Fine estimate, fit and rho for one correlator bin over the newest @p span sub-blocks. */
 static void
-ctcss_measure_bin(const dsd_analog_ctcss* det, int bin, dsd_analog_ctcss_hop* out) {
+ctcss_measure_bin(const dsd_analog_ctcss* det, int span, int bin, dsd_analog_ctcss_hop* out) {
     ctcss_fit fit;
-    ctcss_refine_advance(det, bin, ctcss_coarse_advance(det, bin), &fit);
+    ctcss_refine_advance(det, span, bin, ctcss_coarse_advance(det, span, bin), &fit);
     out->evaluated = 1;
     out->best_index = bin;
     out->residual = fit.residual;
-    out->chi2 = ctcss_fit_chi2(det, bin, &fit);
+    out->chi2 = ctcss_fit_chi2(det, span, bin, &fit);
     out->est_hz = ctcss_tone_hz(bin) + (fit.advance * det->rate_hz / (2.0 * M_PI * (double)det->sub_len));
-    out->rho = ctcss_rho(det, bin, fit.advance, 0, DSD_ANALOG_CTCSS_WINDOW);
-    out->share = ctcss_full_share(det, out->rho, 0, DSD_ANALOG_CTCSS_WINDOW);
+    out->rho = ctcss_rho(det, span, bin, fit.advance, 0, span);
+    out->share = ctcss_full_share(det, span, out->rho, 0, span);
     out->snapped = ctcss_snap(out->est_hz);
     out->recent_rho = 0.0;
     out->harmonic = 0.0;
 }
 
 static int
-ctcss_hop_qualifies(const dsd_analog_ctcss_hop* hop) {
+ctcss_hop_qualifies(const dsd_analog_ctcss_hop* hop, double acquire_rho) {
     /* A 50 ms sub-block only resolves offsets up to 10 Hz from its bin: a signal 10.7 Hz
        below a bin reads as 9.3 Hz above it. The table is dense enough that every supported
        tone is within 4.1 Hz of its nearest bin, so an estimate further than 5 Hz from the bin
        that produced it is an alias, never a tone. */
     return hop->snapped >= 0 && fabs(hop->est_hz - ctcss_tone_hz(hop->snapped)) <= k_acquire_snap_hz
-           && fabs(hop->est_hz - ctcss_tone_hz(hop->best_index)) <= k_max_bin_offset_hz && hop->rho >= k_acquire_rho
+           && fabs(hop->est_hz - ctcss_tone_hz(hop->best_index)) <= k_max_bin_offset_hz && hop->rho >= acquire_rho
            && hop->share >= k_min_full_share && hop->residual <= k_max_residual_rad && hop->chi2 <= k_max_chi2;
 }
 
@@ -432,13 +458,13 @@ ctcss_hop_qualifies(const dsd_analog_ctcss_hop* hop) {
  * among equals the larger rho wins.
  */
 static void
-ctcss_measure(const dsd_analog_ctcss* det, dsd_analog_ctcss_hop* hop) {
+ctcss_measure(const dsd_analog_ctcss* det, int span, double acquire_rho, dsd_analog_ctcss_hop* hop) {
     int have_qualified = 0;
     hop->rho = -1.0;
     for (int k = 0; k < DSD_CTCSS_TONE_COUNT; k++) {
         dsd_analog_ctcss_hop trial;
-        ctcss_measure_bin(det, k, &trial);
-        const int qualified = ctcss_hop_qualifies(&trial);
+        ctcss_measure_bin(det, span, k, &trial);
+        const int qualified = ctcss_hop_qualifies(&trial, acquire_rho);
         if (qualified < have_qualified || (qualified == have_qualified && !(trial.rho > hop->rho))) {
             continue;
         }
@@ -450,11 +476,11 @@ ctcss_measure(const dsd_analog_ctcss* det, dsd_analog_ctcss_hop* hop) {
 /** @brief Single-sub-block rho at @p bin: how much the tone dominates that sub-block. */
 static double
 ctcss_sub_rho(const dsd_analog_ctcss* det, int bin, int j) {
-    const double denom = (double)det->sub_len * ctcss_ring_energy_at(det, j);
+    const double denom = (double)det->sub_len * ctcss_ring_energy_at(det, DSD_ANALOG_CTCSS_WINDOW, j);
     if (!(denom > 0.0)) {
         return 0.0;
     }
-    return 2.0 * ctcss_mag2(ctcss_ring_at(det, j, bin)) / denom;
+    return 2.0 * ctcss_mag2(ctcss_ring_at(det, DSD_ANALOG_CTCSS_WINDOW, j, bin)) / denom;
 }
 
 /** @brief Phase jump between sub-blocks @p a and @p b beyond what the locked offset explains. */
@@ -463,8 +489,8 @@ ctcss_pair_jumped(const dsd_analog_ctcss* det, int bin, double advance, int a, i
     if (ctcss_sub_rho(det, bin, a) < k_burst_sub_rho || ctcss_sub_rho(det, bin, b) < k_burst_sub_rho) {
         return 0;
     }
-    const ctcss_cpx ca = ctcss_ring_at(det, a, bin);
-    const ctcss_cpx cb = ctcss_rotate(ctcss_ring_at(det, b, bin), -advance * (double)(b - a));
+    const ctcss_cpx ca = ctcss_ring_at(det, DSD_ANALOG_CTCSS_WINDOW, a, bin);
+    const ctcss_cpx cb = ctcss_rotate(ctcss_ring_at(det, DSD_ANALOG_CTCSS_WINDOW, b, bin), -advance * (double)(b - a));
     const double jump = atan2((cb.im * ca.re) - (cb.re * ca.im), (cb.re * ca.re) + (cb.im * ca.im));
     return fabs(jump) >= k_burst_rad;
 }
@@ -495,7 +521,7 @@ ctcss_reverse_burst(const dsd_analog_ctcss* det, double ref_hz) {
            || ctcss_pair_jumped(det, bin, advance, newest - 2, newest);
 }
 
-/* A lock needs the candidate's estimate from the hop before it (dsd_analog_ctcss::cand_prev_hz). */
+/* A lock needs the candidate's estimate from the hop before it (dsd_analog_ctcss_cand::prev_hz). */
 _Static_assert(DSD_ANALOG_CTCSS_ACQUIRE_HOPS >= 2, "a lock takes its burst reference from an earlier qualifying hop");
 
 /*
@@ -515,6 +541,9 @@ ctcss_lock(dsd_analog_ctcss* det, int index, double hz, double burst_ref_hz) {
 
 static void
 ctcss_unlock(dsd_analog_ctcss* det) {
+    /* What the ring holds from before the loss may still carry the tone that was lost: the late
+       acquisition window starts over from here. */
+    det->fresh = 0;
     det->state = DSD_ANALOG_TONE_STATE_NONE;
     det->locked = -1;
     det->locked_hz = 0.0;
@@ -522,8 +551,12 @@ ctcss_unlock(dsd_analog_ctcss* det) {
     det->fail_run = 0;
 }
 
-/** @brief Most pieces the harmonic check splits the window into (about 25 ms each). */
-enum { CTCSS_HARMONIC_PIECES = 12 };
+/** @brief Most pieces the harmonic check splits a 250 ms window into (about 25 ms each), and
+    the most any window gets: as many per sub-block, over the late acquisition window. */
+enum {
+    CTCSS_HARMONIC_PIECES = 12,
+    CTCSS_HARMONIC_PIECES_MAX = (CTCSS_HARMONIC_PIECES * DSD_ANALOG_CTCSS_LONG_WINDOW) / DSD_ANALOG_CTCSS_WINDOW,
+};
 
 /**
  * @brief Per-piece correlations of the wide stream at hz, 2hz and 3hz, phase-locked to each other.
@@ -531,21 +564,24 @@ enum { CTCSS_HARMONIC_PIECES = 12 };
  * Each piece spans a whole number of the candidate's cycles, close to 25 ms, so the three
  * kernels are orthogonal over it: noise at f is independent of noise at 2f and 3f, and the
  * candidate's own energy does not leak into its harmonic bins. Pieces are taken from the
- * newest end of the window. Returns the number of pieces filled.
+ * newest end of the window, the newest @p span sub-blocks. Returns the number of pieces filled.
  */
 static int
-ctcss_wide_correlate(const dsd_analog_ctcss* det, double hz, ctcss_cpx a[CTCSS_HARMONIC_PIECES],
-                     ctcss_cpx b[CTCSS_HARMONIC_PIECES], ctcss_cpx c[CTCSS_HARMONIC_PIECES]) {
+ctcss_wide_correlate(const dsd_analog_ctcss* det, int span, double hz, ctcss_cpx a[CTCSS_HARMONIC_PIECES_MAX],
+                     ctcss_cpx b[CTCSS_HARMONIC_PIECES_MAX], ctcss_cpx c[CTCSS_HARMONIC_PIECES_MAX]) {
     const double cycles = fmax(1.0, round(hz * 0.025));
     const int piece = (int)lround(cycles * det->rate_hz / hz);
-    if (piece <= 0) {
+    const int span_len = span * det->sub_len;
+    if (piece <= 0 || span_len > det->wide_len) {
         return 0;
     }
-    int pieces = det->wide_len / piece;
-    if (pieces > CTCSS_HARMONIC_PIECES) {
-        pieces = CTCSS_HARMONIC_PIECES;
+    const int max_pieces = (CTCSS_HARMONIC_PIECES * span) / DSD_ANALOG_CTCSS_WINDOW;
+    int pieces = span_len / piece;
+    if (pieces > max_pieces) {
+        pieces = max_pieces;
     }
-    const int first = det->wide_len - (pieces * piece);
+    /* The window's oldest sample sits span_len samples behind the newest. */
+    const int first = (det->wide_len - span_len) + (span_len - (pieces * piece));
     const double w = 2.0 * M_PI * hz / det->rate_hz;
     const ctcss_cpx step = {cos(w), -sin(w)};
     ctcss_cpx p1 = {1.0, 0.0};
@@ -595,11 +631,11 @@ ctcss_coupling_add(ctcss_coupling* acc, ctcss_cpx t) {
  * balance; a tone reads about zero.
  */
 static double
-ctcss_harmonic_lock(const dsd_analog_ctcss* det, double hz) {
-    ctcss_cpx a[CTCSS_HARMONIC_PIECES];
-    ctcss_cpx b[CTCSS_HARMONIC_PIECES];
-    ctcss_cpx c[CTCSS_HARMONIC_PIECES];
-    const int pieces = ctcss_wide_correlate(det, hz, a, b, c);
+ctcss_harmonic_lock(const dsd_analog_ctcss* det, int span, double hz) {
+    ctcss_cpx a[CTCSS_HARMONIC_PIECES_MAX];
+    ctcss_cpx b[CTCSS_HARMONIC_PIECES_MAX];
+    ctcss_cpx c[CTCSS_HARMONIC_PIECES_MAX];
+    const int pieces = ctcss_wide_correlate(det, span, hz, a, b, c);
     ctcss_coupling h2 = {{0.0, 0.0}, 0.0};
     ctcss_coupling h3 = {{0.0, 0.0}, 0.0};
     double sum_mag = 0.0;
@@ -621,30 +657,101 @@ ctcss_harmonic_lock(const dsd_analog_ctcss* det, double hz) {
     return (fundamental > 0.0) ? cross / fundamental : 1.0;
 }
 
+/* The last qualifying test, on the winner only: no harmonics phase-locked to it. Last, because it
+   is the one test that costs a pass over the window. */
+static int
+ctcss_passes_harmonic(const dsd_analog_ctcss* det, int span, dsd_analog_ctcss_hop* hop, double max_ratio) {
+    hop->harmonic = ctcss_harmonic_lock(det, span, hop->est_hz);
+    return hop->harmonic < max_ratio;
+}
+
+/* Feed a hop into @p cand: the run of consecutive hops that qualified the same table tone with
+   estimates that agree. */
 static void
-ctcss_track_candidate(dsd_analog_ctcss* det, dsd_analog_ctcss_hop* hop) {
-    int qualified = det->holdoff == 0 && ctcss_hop_qualifies(hop);
-    if (qualified) {
-        /* Last, because it is the one test that costs a pass over the window. */
-        hop->harmonic = ctcss_harmonic_lock(det, hop->est_hz);
-        qualified = hop->harmonic < k_max_harmonic_ratio;
-    }
+ctcss_track(dsd_analog_ctcss_cand* cand, int qualified, const dsd_analog_ctcss_hop* hop) {
     if (!qualified) {
-        det->cand = -1;
-        det->cand_run = 0;
+        ctcss_cand_clear(cand);
         return;
     }
-    const int stable = hop->snapped == det->cand && fabs(hop->est_hz - det->cand_hz) <= k_stable_hz;
-    det->cand_run = stable ? det->cand_run + 1 : 1;
-    det->cand_prev_hz = stable ? det->cand_hz : hop->est_hz;
-    det->cand = hop->snapped;
-    det->cand_hz = hop->est_hz;
+    const int stable = hop->snapped == cand->index && fabs(hop->est_hz - cand->hz) <= k_stable_hz;
+    cand->run = stable ? cand->run + 1 : 1;
+    cand->prev_hz = stable ? cand->hz : hop->est_hz;
+    cand->index = hop->snapped;
+    cand->hz = hop->est_hz;
+}
+
+static int
+ctcss_cand_ready(const dsd_analog_ctcss_cand* cand) {
+    return cand->index >= 0 && cand->run >= DSD_ANALOG_CTCSS_ACQUIRE_HOPS;
 }
 
 static void
-ctcss_step_unlocked(dsd_analog_ctcss* det, const dsd_analog_ctcss_hop* hop) {
-    if (det->cand >= 0 && det->cand_run >= DSD_ANALOG_CTCSS_ACQUIRE_HOPS) {
-        ctcss_lock(det, det->cand, hop->est_hz, det->cand_prev_hz);
+ctcss_lock_cand(dsd_analog_ctcss* det, const dsd_analog_ctcss_cand* cand) {
+    ctcss_lock(det, cand->index, cand->hz, cand->prev_hz);
+    ctcss_cand_clear(&det->long_cand);
+}
+
+/*
+ * Whether the newest 250 ms still carry what a late window qualified: the tone's own bin there
+ * reads at least the late rho, with an estimate inside the snap gate. A tone in noise always does
+ * (that window's rho is about 0.5 at 0 dB); a voice that held a pitch near a table tone for most
+ * of a late window and has since moved on does not.
+ */
+static int
+ctcss_late_still_present(const dsd_analog_ctcss* det, const dsd_analog_ctcss_hop* hop) {
+    dsd_analog_ctcss_hop newest;
+    ctcss_measure_bin(det, DSD_ANALOG_CTCSS_WINDOW, hop->snapped, &newest);
+    return newest.rho >= k_late_acquire_rho && fabs(newest.est_hz - ctcss_tone_hz(hop->snapped)) <= k_snap_hz;
+}
+
+/* Measure one late window, the newest @p span sub-blocks, and say whether it qualifies a tone. */
+static int
+ctcss_late_qualifies(const dsd_analog_ctcss* det, int span, dsd_analog_ctcss_hop* hop) {
+    DSD_MEMSET(hop, 0, sizeof(*hop));
+    ctcss_measure(det, span, k_late_acquire_rho, hop);
+    return ctcss_hop_qualifies(hop, k_late_acquire_rho) && ctcss_late_still_present(det, hop)
+           && ctcss_passes_harmonic(det, span, hop, k_max_harmonic_ratio);
+}
+
+/*
+ * Late acquisition. At 0 dB in-band the 250 ms window's rho, estimate and harmonic reading scatter
+ * enough that now and then a tone's noise keeps every pair of hops from qualifying it for well
+ * over half a second. Two longer windows average that scatter down: the newest
+ * DSD_ANALOG_CTCSS_LONG_WINDOW sub-blocks (600 ms) and the newest DSD_ANALOG_CTCSS_LONG_MIN
+ * (400 ms), which fills with a new tone sooner. A hop qualifies a tone when either window does --
+ * the longer one tried first -- with the same tests as the 250 ms window, except that rho may be
+ * as low as k_late_acquire_rho, and with one more: the newest 250 ms must still carry the tone
+ * (ctcss_late_still_present()). Two consecutive qualifying hops with agreeing estimates lock it,
+ * as for the 250 ms window.
+ *
+ * Neither window reaches back past the last reset or loss (dsd_analog_ctcss::fresh): until 600 ms
+ * have closed since then the longer one covers only what has, and until 400 ms have there is no
+ * late acquisition at all, so a tone that has just been lost cannot lock again from what the ring
+ * still holds of it. A reverse burst's holdoff blocks it as it blocks the 250 ms window, and it
+ * never runs while a tone is locked.
+ */
+static void
+ctcss_step_late(dsd_analog_ctcss* det) {
+    const int avail = det->fresh < DSD_ANALOG_CTCSS_LONG_WINDOW ? det->fresh : DSD_ANALOG_CTCSS_LONG_WINDOW;
+    if (det->state == DSD_ANALOG_TONE_STATE_LOCKED || det->holdoff > 0 || avail < DSD_ANALOG_CTCSS_LONG_MIN) {
+        ctcss_cand_clear(&det->long_cand);
+        return;
+    }
+    dsd_analog_ctcss_hop hop;
+    int qualified = ctcss_late_qualifies(det, avail, &hop);
+    if (!qualified && avail > DSD_ANALOG_CTCSS_LONG_MIN) {
+        qualified = ctcss_late_qualifies(det, DSD_ANALOG_CTCSS_LONG_MIN, &hop);
+    }
+    ctcss_track(&det->long_cand, qualified, &hop);
+    if (ctcss_cand_ready(&det->long_cand)) {
+        ctcss_lock_cand(det, &det->long_cand);
+    }
+}
+
+static void
+ctcss_step_unlocked(dsd_analog_ctcss* det) {
+    if (ctcss_cand_ready(&det->cand)) {
+        ctcss_lock_cand(det, &det->cand);
         return;
     }
     const int64_t no_tone_samples = (int64_t)llround(det->rate_hz * (double)DSD_ANALOG_CTCSS_NO_TONE_MS / 1000.0);
@@ -662,25 +769,25 @@ ctcss_step_locked(dsd_analog_ctcss* det, dsd_analog_ctcss_hop* hop) {
     if (ctcss_reverse_burst(det, burst_ref_hz)) {
         ctcss_unlock(det);
         det->holdoff = CTCSS_BURST_HOLDOFF_HOPS;
-        det->cand = -1;
-        det->cand_run = 0;
+        ctcss_cand_clear(&det->cand);
         return;
     }
-    const int other = det->cand >= 0 && det->cand != det->locked;
-    if (other && det->cand_run >= DSD_ANALOG_CTCSS_ACQUIRE_HOPS) {
-        ctcss_lock(det, det->cand, hop->est_hz, det->cand_prev_hz);
+    const int other = det->cand.index >= 0 && det->cand.index != det->locked;
+    if (other && ctcss_cand_ready(&det->cand)) {
+        ctcss_lock_cand(det, &det->cand);
         return;
     }
     /* The locked bin's own estimate, every hop: once locked, a tone is only held while it still
        sits on the table value it locked to. Without this an off-table tone that locked on one
        noisy pair of hops would keep reporting its neighbour for as long as it stayed coherent. */
     dsd_analog_ctcss_hop own;
-    ctcss_measure_bin(det, det->locked, &own);
+    ctcss_measure_bin(det, DSD_ANALOG_CTCSS_WINDOW, det->locked, &own);
     const int on_tone = fabs(own.est_hz - ctcss_tone_hz(det->locked)) <= k_snap_hz;
     const double advance = ctcss_advance_for(det, det->locked, det->locked_hz);
-    hop->recent_rho = ctcss_rho(det, det->locked, advance, DSD_ANALOG_CTCSS_WINDOW - 2, 2);
+    hop->recent_rho = ctcss_rho(det, DSD_ANALOG_CTCSS_WINDOW, det->locked, advance, DSD_ANALOG_CTCSS_WINDOW - 2, 2);
     const int above_residue =
-        ctcss_full_share(det, hop->recent_rho, DSD_ANALOG_CTCSS_WINDOW - 2, 2) >= k_min_full_share;
+        ctcss_full_share(det, DSD_ANALOG_CTCSS_WINDOW, hop->recent_rho, DSD_ANALOG_CTCSS_WINDOW - 2, 2)
+        >= k_min_full_share;
     if (on_tone && hop->recent_rho >= k_hold_rho && above_residue && !other) {
         det->fail_run = 0;
         det->locked_hz = own.est_hz;
@@ -695,14 +802,17 @@ static void
 ctcss_evaluate_hop(dsd_analog_ctcss* det, int freeze) {
     dsd_analog_ctcss_hop hop;
     DSD_MEMSET(&hop, 0, sizeof(hop));
-    ctcss_measure(det, &hop);
+    ctcss_measure(det, DSD_ANALOG_CTCSS_WINDOW, k_acquire_rho, &hop);
     if (!freeze) {
-        ctcss_track_candidate(det, &hop);
+        const int qualified = det->holdoff == 0 && ctcss_hop_qualifies(&hop, k_acquire_rho)
+                              && ctcss_passes_harmonic(det, DSD_ANALOG_CTCSS_WINDOW, &hop, k_max_harmonic_ratio);
+        ctcss_track(&det->cand, qualified, &hop);
         if (det->state == DSD_ANALOG_TONE_STATE_LOCKED) {
             ctcss_step_locked(det, &hop);
         } else {
-            ctcss_step_unlocked(det, &hop);
+            ctcss_step_unlocked(det);
         }
+        ctcss_step_late(det);
         if (det->holdoff > 0) {
             det->holdoff--;
         }
@@ -739,11 +849,14 @@ ctcss_close_subblock(dsd_analog_ctcss* det) {
     det->sub_full = 0.0;
     det->sub_fill = 0;
     det->sub_open = 0;
-    det->ring_head = (det->ring_head + 1) % DSD_ANALOG_CTCSS_WINDOW;
-    if (det->ring_count < DSD_ANALOG_CTCSS_WINDOW) {
+    det->ring_head = (det->ring_head + 1) % DSD_ANALOG_CTCSS_LONG_WINDOW;
+    if (det->ring_count < DSD_ANALOG_CTCSS_LONG_WINDOW) {
         det->ring_count++;
     }
-    if (det->ring_count == DSD_ANALOG_CTCSS_WINDOW) {
+    if (det->fresh < DSD_ANALOG_CTCSS_LONG_WINDOW) {
+        det->fresh++;
+    }
+    if (det->ring_count >= DSD_ANALOG_CTCSS_WINDOW) {
         ctcss_evaluate_hop(det, freeze);
     }
 }

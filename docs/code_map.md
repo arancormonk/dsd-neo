@@ -515,9 +515,8 @@ installs from `src/engine/trunk_tuning.c` in `src/engine/trunk_tuning_hooks_inst
   sample time: p95 targets `DSD_ANALOG_CTCSS_LOCK_P95_MS` (400) and `DSD_ANALOG_CTCSS_LOSS_P95_MS` (350) and per-event
   ceilings `DSD_ANALOG_CTCSS_LOCK_CEILING_MS` (700) and `DSD_ANALOG_CTCSS_LOSS_CEILING_MS` (800). `DSP_ANALOG_CTCSS`
   asserts them on every timing row, and a tone policy's acquisition window must exceed the lock ceiling by at least
-  100 ms. Each ceiling comes with the rate at which the long-run sweeps in `docs/testing.md` exceeded it, stated in the
-  header (none for loss; for lock in noise, about one start in 125,000 at 0 dB, more for a tone off its table value);
-  change them only with new sweeps. The header also states the measured wrong-tone rates (neighbour locks near 0 dB,
+  100 ms. Each ceiling sits above the slowest event of the long-run sweeps in `docs/testing.md` (1,000,000 starts per
+  condition at 0 dB, 800,000 stops), as the header states; change them only with new sweeps. The header also states the measured wrong-tone rates (neighbour locks near 0 dB,
   talk-off), which a policy acting on the first lock has to budget for. `dsd_symbol.c` taps each unsynced analog block
   while it is still raw: `symbol_process_unsynced_analog()` offers the tap the block after every sample it adds, the one
   that completes the block included (`dsd_analog_rx_tap_partial()`), and the tap reads what is waiting once
@@ -586,10 +585,19 @@ installs from `src/engine/trunk_tuning.c` in `src/engine/trunk_tuning_hooks_inst
     several percent of hops but the 0.5 Hz one almost never, and the per-hop check drops a lock the tone has moved away
     from. The price of the tighter acquisition gate is tolerance of transmitter encoder error: `DSP_ANALOG_CTCSS` pins
     tones 0.2 and 0.35 Hz off their table value locking within 400 ms at +10 dB on every one of its 200 seeded starts,
-    and 0.2 Hz off at 0 dB within 400 ms on at least 95% of them (all within 500 ms); over 10,000 starts, 3.4% of
+    and 0.2 Hz off at 0 dB within 400 ms on at least 95% of them (all within 500 ms); over 10,000 starts, 1.55% of
     0.2 Hz-off tones at 0 dB take longer than 400 ms (`docs/testing.md`). From about 0.5 Hz off a tone locks late or not
     at all. A carrier with no lock after 500 ms of evaluation reads `NONE`, on the first hop after it however the input
-    is blocked (carrier time is counted per sample), and a tone that starts later still locks. Samples from inside the
+    is blocked (carrier time is counted per sample), and a tone that starts later still locks. Late acquisition keeps
+    lock time in noise inside the lock ceiling: the ring holds 12 sub-blocks, and while nothing is locked each hop also
+    measures its newest 600 and 400 ms (`ctcss_step_late()`), over no more than has closed since the last reset or
+    loss (`fresh`), so a lost tone is never in them and neither runs before 400 ms have. They apply the same tests with
+    rho down to 0.25 (noise alone puts about 1/116 of the band into a bin over 400 ms) and one more: the newest 250 ms
+    must still carry the tone at that rho, within the 0.8 Hz gate, which keeps a voice that held a pitch near a table
+    tone for most of a longer window and then moved on from locking. Two agreeing hops lock, as for the 250 ms window.
+    On its own the 250 ms window passed the 700 ms ceiling on about one start in 125,000 at 0 dB (the slowest after
+    1,128 ms), when noise kept every pair of its hops from qualifying the tone; the longer windows average that noise
+    down. Samples from inside the
     carrier hangover keep the correlators' time, but a hop whose newest 100 ms (what the hold test reads) holds nothing
     else keeps the verdict, so a dropout's silence alone never ends a lock or makes one. Deciding by the sample that
     closes a hop instead would let a carrier that keeps dropping out keep a stopped tone for good, once its openings

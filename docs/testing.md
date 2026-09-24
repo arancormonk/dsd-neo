@@ -299,15 +299,19 @@ and every stop within `DSD_ANALOG_CTCSS_LOSS_CEILING_MS` (800 ms). Static assert
 500 ms lock bounds, the 350, 150 and 450 ms loss bounds) inside the ceilings, so the checks that assert only a pin sit
 inside the contract too. The loss ceiling sits above the slowest of the 800,000 stops in the ceiling-tail sweeps below
 (738 ms). The lock ceiling may not exceed 700 ms, because the tone policy's 800 ms acquisition window (issue #527) has
-to leave two hops beyond it, and in noise a start can take longer than any fixed bound: the header states the lock
-ceiling with the rate at which the sweeps below exceeded it. The p95 targets, the ceilings and those rates are what the
+to leave two hops beyond it; it sits above the slowest of the 2,000,000 starts at 0 dB in those sweeps (651 ms). In
+noise a start can take longer than any fixed bound: the 250 ms window alone passed 700 ms on about one start in 125,000
+at 0 dB, and the late acquisition windows (`ctcss_step_late()` in `src/dsp/analog_ctcss.c`) are what keep those inside
+the ceiling. The p95 targets, the ceilings and those rates are what the
 user guide states; the per-row pins are tighter and record what these seeds measure:
 
 - Lock: all 50 tones at four input rates, at +10 and 0 dB in-band tone-to-noise, lock within 400 ms of an onset placed
   anywhere inside a hop. Tones off their table value by transmitter encoder error lock on that value: 0.2 and 0.35 Hz
   off within 400 ms at +10 dB, and the exact tone at 0 dB on a second seed set within 400 ms too; 0.2 Hz off at 0 dB,
-  97% of the starts lock within 400 ms and the slowest at 469 ms (the row asserts at least 95% and 500 ms). The lock
-  gate is 0.5 Hz, so encoder error trades against lock time. Under transmitter-filtered speech 10 dB above the tone
+  99% of the starts lock within 400 ms and the slowest at 468 ms (the row asserts at least 95% and 500 ms). The lock
+  gate is 0.5 Hz, so encoder error trades against lock time. The 32 slowest of the 2,000,000 long-run starts at 0 dB
+  as the 250 ms window alone locked them (8 exact tones and 24 tones 0.2 Hz off, from 701 ms to 1,128 ms), rebuilt from
+  the sweep's own seeds, each lock within the 700 ms ceiling (the slowest at 509 ms). Under transmitter-filtered speech 10 dB above the tone
   every tone locks within 500 ms and holds that one lock to the end of the run; a tone held 15 s at 0 dB, at each rate,
   locks once and is never lost.
 - Rejection: 67.0/69.3/71.9 Hz are each identified; off-table tones lock nothing over 3 s runs down to 0 dB in-band
@@ -317,7 +321,10 @@ user guide states; the per-row pins are tighter and record what these seeds meas
   code, forward and bit-reversed, which is every periodic DCS waveform in either polarity, plus the nearest words at
   every rate, clean, at +10 dB and at 0 dB; and a minute each of unfiltered speech, transmitter-filtered speech and
   noise never locks and reaches the `none` verdict, which the speech runs hold for 87% of their carrier time (the rows
-  assert 80%; each pause that closes the carrier starts the verdict again). The speech model is source-filter speech
+  assert 80%; each pause that closes the carrier starts the verdict again). Two more minutes of speech, one filtered and
+  one not, in which a high voice holds a pitch near 225.7 or 229.1 Hz for most of a late acquisition window and then
+  moves on, never lock: the late windows qualify that pitch, and only the check that the newest 250 ms still carry it
+  keeps it from locking. The speech model is source-filter speech
   with a jittering, drifting, wobbling fundamental in 85-255 Hz. A steady voice-band tone alone on a clean carrier
   never locks and reads `none`, though decimation folds a residue of it onto the sub-audible band: every table tone is
   hit that way at 6, 8, 44.1, 48 and 78.125 kHz from either side of the first multiple of the decimated rate (the lower
@@ -327,7 +334,7 @@ user guide states; the per-row pins are tighter and record what these seeds meas
   itself within 400 ms, and when the tone stops the residue alone does not hold the lock (dropped within 350 ms).
 - Loss and verdicts: every tone at every rate is dropped after it stops under a live carrier, at +10 dB 99% of the stops
   within 350 ms and all within 386 ms, at 0 dB 98% within 350 ms and all within 476 ms (the rows assert 98% and 400 ms,
-  97% and 500 ms); every tone at every rate is dropped within 150 ms of a reverse burst at +10 dB, a 180 degree one and
+  97% and 500 ms), and nothing locks again from what the detector still holds of the stopped tone; every tone at every rate is dropped within 150 ms of a reverse burst at +10 dB, a 180 degree one and
   a 120 and a 240 degree one alike, the flip landing anywhere inside a sub-block; at 0 dB, with a 180 degree flip held
   400 ms before the carrier drops, 91% of the bursts are caught within 150 ms and every caught one within the loss
   contract, and the 4 of 200 that are missed end with the carrier drop, within its 200 ms hangover (the row asserts 89%
@@ -349,9 +356,9 @@ Fixed seeds say what the detector does on those seeds, not how often it misses i
 below come from wider seed sweeps run offline over the same generators and the same core (x86-64 at -O0 and -O2 give
 identical results), and they are the numbers the user guide quotes:
 
-- Lock, 10,000 starts each (every tone at every rate, onset anywhere in a hop): at +10 dB, p95 273 ms and 1 start
-  beyond 400 ms (443 ms); at 0 dB, p95 343 ms and 0.97% beyond 400 ms (the slowest 615 ms); 0.2 Hz off at +10 dB,
-  1 start (443 ms); 0.35 Hz off at +10 dB, 0.04% (424 ms); 0.2 Hz off at 0 dB, p95 378 ms and 3.4% (677 ms).
+- Lock, 10,000 starts each (every tone at every rate, onset anywhere in a hop): at +10 dB, p95 255 ms and none beyond
+  400 ms (the slowest 331 ms); at 0 dB, p95 341 ms and 0.30% beyond 400 ms (447 ms); 0.2 Hz off at +10 dB, none
+  (331 ms); 0.35 Hz off at +10 dB, 1 start (424 ms); 0.2 Hz off at 0 dB, p95 362 ms and 1.55% (553 ms).
 - Loss, 4,000 stops each: 2.0% beyond 350 ms at +10 dB (the slowest 515 ms) and 1.25% at 0 dB (494 ms), and about 2%
   at +60 dB too: what is left after the stop is noise, and at the locked bin noise alone clears the 0.15 hold threshold
   on about one hop in eighty, whatever its level, which restarts the four-hop count. Making the hold stricter once a hop
@@ -366,15 +373,17 @@ identical results), and they are the numbers the user guide quotes:
   when its newest 100 ms heard the carrier, so each opening makes the two hops that read it count, and a dropout the
   hangover allows leaves at most three hops in a row that do not; if every hop that closed inside a dropout kept the
   verdict instead, openings that missed every hop's end would keep the stopped tone for good.
-- Ceiling tail, sweeps up to a hundred times larger: over 100,000 starts each, the exact tone at +10 and 0 dB and
-  0.2 and 0.35 Hz off at +10 dB stayed within the 700 ms lock ceiling (443, 664, 485 and 585 ms at the slowest), while
-  0.2 Hz off at 0 dB passed it twice (725 ms); over 1,000,000 starts at 0 dB, 8 exact tones passed it (757 ms, and one
-  at 1,128 ms) and 24 of the 0.2 Hz-off ones (843 ms): about one start in 125,000 on the table value and one in
-  40,000 for 0.2 Hz off, the rates the header gives with the lock ceiling. Over 400,000 stops each at 0 and +10 dB,
-  none passed the 800 ms loss ceiling (738 ms at the slowest at both), though 24 and 31 took longer than 550 ms. The
-  p95s did not move with sweep size (lock 344 and 374 ms at 0 dB, loss 299 and 312 ms).
+- Ceiling tail, sweeps up to a hundred times larger: over 100,000 starts each, the exact tone at +10 dB and 0.2 and
+  0.35 Hz off at +10 dB stayed within 400 ms but for 11 starts 0.35 Hz off (334, 334 and 452 ms at the slowest); over
+  1,000,000 starts each at 0 dB, none of the exact tones or of those 0.2 Hz off passed the 700 ms lock ceiling (651 ms
+  at the slowest for both, on the same seed, whose noise kept the harmonic test failing on nearly every window for 250 ms;
+  the next slowest 583 and 596 ms), and 0.33% and 1.43% took longer than 400 ms. Before the late acquisition windows the 250 ms window
+  alone passed the ceiling on 8 of those exact starts (the slowest at 1,128 ms) and 24 of those 0.2 Hz off (843 ms), and
+  took longer than 400 ms on 0.93% and 3.06%. Over 400,000 stops each at 0 and +10 dB, none passed the 800 ms loss
+  ceiling (738 ms at the slowest at both), though 24 and 31 took longer than 550 ms. The p95s did not move with sweep
+  size (lock 342 and 360 ms at 0 dB, loss 299 and 312 ms).
 - Lock under transmitter-filtered speech 10 dB above the tone, 50,000 starts at 48 kHz (voice from the carrier's start,
-  the tone 200-250 ms later): p95 307 ms, 1.6% beyond 400 ms, 0.21% beyond the 700 ms lock ceiling and the slowest at
+  the tone 200-250 ms later): p95 301 ms, 1.4% beyond 400 ms, 0.16% beyond the 700 ms lock ceiling and the slowest at
   1,314 ms. Twice a voice holding 254.1 Hz locked that tone for 150-250 ms, once before the real tone locked and once
   in its place (the detector hands a lock to a steadier tone). The contract covers tones in noise, so the speech row
   holds only its fixed seeds to it.
@@ -384,8 +393,10 @@ identical results), and they are the numbers the user guide quotes:
 - Holds, 200 runs of 20 s: at 0 and +3 dB a held tone never dropped. Under transmitter-filtered speech 10 dB above the
   tone, 300 runs of 20 s: 4 drops, all on 250.3 and 254.1 Hz, each reading `none` for 340-740 ms before the same tone
   locked again.
-- Talk-off: over two hours of seeds the unfiltered speech model locked a tone once (at 233.6 Hz, where a high voice with
-  weak harmonics holds near a table tone), and the transmitter-filtered model never.
+- Talk-off: over two hours of seeds the unfiltered speech model locked a tone three times (at 233.6, 241.8 and
+  254.1 Hz, where a high voice with weak harmonics holds near a table tone), and the transmitter-filtered model once
+  (at 254.1 Hz). The 250 ms window alone locked the 233.6 Hz and the filtered 254.1 Hz voice too; without the check
+  that the newest 250 ms still carry the tone, the late windows would lock another five unfiltered and one filtered.
 
 Retune clearing is covered where each path lives: `DSP_SYMBOL_REPLAY` (the tap reads the raw block before the voice
 high-pass removes the tone, leaves the audio byte-identical, clears on an RTL stream-generation or

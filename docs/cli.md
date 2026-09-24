@@ -489,8 +489,8 @@ tone setting, and it runs with `-o null` too.
   while it carries at least 1/100,000 (-50 dB) of the input's total power, far above what the decimating front end
   folds down from the voice band and far below any real CTCSS tone.
 - Transmitter tone error: a tone slightly off its table value still reads as that value. Over 10,000 seeded starts
-  each, tones 0.2 and 0.35 Hz off were confirmed within 400 ms at 10 dB in-band tone-to-noise on all but 1 and 4
-  starts (the slowest at 443 and 424 ms), and 0.2 Hz off at 0 dB on 97 starts in 100 (the slowest at 677 ms). A tone
+  each, tones 0.2 and 0.35 Hz off were confirmed within 400 ms at 10 dB in-band tone-to-noise on all starts and on all
+  but 1 (the slowest at 331 and 424 ms), and 0.2 Hz off at 0 dB on 98 starts in 100 (the slowest at 553 ms). A tone
   about 0.5 Hz or more off is confirmed late or not at all, and then reads `none`.
 - What is shown: the terminal's Call Info section carries an `Rx tone:` line (compact view too), and the Qt/Android
   monitor a `RECEIVED TONE` row. Both read `CTCSS 100.0 Hz` once a tone is confirmed, `detecting` while a carrier is
@@ -500,17 +500,20 @@ tone setting, and it runs with `-o null` too.
 - Timing contract, in sample time, for a tone in noise at 0 dB in-band tone-to-noise (0-290 Hz) or better, on its table
   value or up to 0.2 Hz off it (0.35 Hz at 10 dB): 95% of tones are confirmed within 400 ms of their start and 95% of
   stops under a live carrier are dropped within 350 ms (the p95 targets). Single events have ceilings of 700 ms for a
-  start and 800 ms for a stop, each with its measured rate of being exceeded, and the tests hold every timing row of
-  their fixed seeds within both. Lock time in noise has no absolute bound: over 1,000,000 seeded starts at 0 dB, about
-  one in 125,000 on the table value and one in 40,000 for a tone 0.2 Hz off took longer than 700 ms (the slowest 1.1 s),
-  while none of 100,000 per condition at 10 dB did. No stop of 800,000 at 0 and 10 dB took longer than 800 ms (the
-  slowest 738 ms). Speech louder than the tone is outside the contract (below).
+  start and 800 ms for a stop, above the slowest of the long-run sweeps, and the tests hold every timing row of their
+  fixed seeds within both. Over 1,000,000 seeded starts per condition at 0 dB, on the table value and 0.2 Hz off it, none
+  took longer than 700 ms (the slowest 651 ms), nor did any of 100,000 per condition at 10 dB (the slowest 452 ms). No
+  stop of 800,000 at 0 and 10 dB took longer than 800 ms (the slowest 738 ms). Lock time in noise has no absolute bound:
+  now and then noise keeps the usual 250 ms measurement from confirming a tone for well over half a second (on its own
+  it took longer than 700 ms on about one start in 125,000 at 0 dB, the slowest 1.1 s), so while no tone is confirmed
+  the detector also measures the last 400 and 600 ms, which average that noise away. Speech louder than the tone is
+  outside the contract (below).
 - Timing measured, in sample time, over 10,000 seeded starts per condition: a tone at 10 dB in-band is confirmed within
-  400 ms of its start on all but about one start in 10,000 (p95 273 ms, the slowest at 443 ms), and at 0 dB on 99
-  starts in 100 (p95 343 ms, the slowest at 615 ms). Under transmitted speech it can take longer, because a
+  400 ms of its start on every start (p95 255 ms, the slowest at 331 ms), and at 0 dB on all but about 3 starts in
+  1,000 (p95 341 ms, the slowest at 447 ms). Under transmitted speech it can take longer, because a
   transmitter's voice high-pass still lets a high voice's fundamental leak below 300 Hz in bursts: with speech 10 dB
-  louder than the tone, over 50,000 seeded starts 95% were confirmed within 307 ms, 1.6% took longer than 400 ms and
-  0.2% longer than 700 ms (the slowest 1.3 s), and twice a voice holding 254.1 Hz read as that tone for 150-250 ms,
+  louder than the tone, over 50,000 seeded starts 95% were confirmed within 301 ms, 1.4% took longer than 400 ms and
+  0.16% longer than 700 ms (the slowest 1.3 s), and twice a voice holding 254.1 Hz read as that tone for 150-250 ms,
   once in place of the real tone. Over 100 minutes of that speech a confirmed tone at the top of the table (250.3 or
   254.1 Hz) was lost four times, reading `none` for under a second before it was confirmed again. A tone that stops
   while the carrier stays up is dropped within 350 ms on 98 stops in 100 at 0 and 10 dB alike (typically after
@@ -579,8 +582,8 @@ tone setting, and it runs with `-o null` too.
 - Talk-off: a voice whose fundamental holds within 0.5 Hz of a table tone for a third of a second, with weak harmonics,
   is indistinguishable from that tone in the time allowed and can be reported briefly. It is rare on transmitted voice
   (which the transmitter high-passes at 300 Hz) and most likely near the top of the table. In offline seed sweeps, two
-  hours of unfiltered speech with no tone locked a tone once (233.6 Hz), and the same speech high-passed as a
-  transmitter does never locked one.
+  hours of unfiltered speech with no tone locked a tone three times (233.6, 241.8 and 254.1 Hz), and the same speech
+  high-passed as a transmitter does once (254.1 Hz).
 
 ## Mode Tweaks & Advanced
 

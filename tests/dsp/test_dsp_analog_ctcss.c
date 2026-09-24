@@ -363,8 +363,8 @@ test_every_tone_locks_within_bound(void) {
  * a floor on the share of these 200 starts that lock within the 400 ms bound and a ceiling on
  * the slowest, set at what these seeds do (the printed shares and times); the last row is the
  * exact tone at 0 dB on a second seed set. Every row also checks the lock contract. These are
- * pinned seeds, not the long-run rate: over 10,000 seeded starts at 0 dB, 1% of exact tones and
- * 3% of tones 0.2 Hz off take longer than 400 ms (docs/testing.md). Prints p50/p95/worst for the
+ * pinned seeds, not the long-run rate: over 10,000 seeded starts at 0 dB, 0.3% of exact tones and
+ * 1.6% of tones 0.2 Hz off take longer than 400 ms (docs/testing.md). Prints p50/p95/worst for the
  * PR evidence.
  */
 static void
@@ -408,6 +408,62 @@ test_off_nominal_tones_lock(void) {
         check_lock_contract(what, times, count);
         assert(100 * within >= rows[row].min_within_bound_pct * count);
     }
+}
+
+/*
+ * The slowest onsets of the long-run lock sweeps at 0 dB in-band (docs/testing.md, "Ceiling
+ * tail"): 32 of 2,000,000 that the 250 ms window alone locked only after the 700 ms lock ceiling
+ * -- 8 exact tones, the slowest after 1,128 ms, and 24 tones 0.2 Hz off, the slowest after
+ * 843 ms -- because their noise kept every pair of hops from qualifying the tone well past half a
+ * second. The late acquisition windows lock each of them within the ceiling, on its table value.
+ * Each onset is rebuilt exactly as the sweep made it: set @c s, the tone at every rate, seed and
+ * onset derived from them.
+ */
+static void
+test_late_onsets_lock_within_ceiling(void) {
+    static const struct {
+        int set;
+        int fs;
+        int tenths;
+        double offset_hz;
+    } onsets[] = {
+        {2546, 78125, 670, 0.0},  {2103, 44100, 1148, 0.0}, {1540, 48000, 670, 0.0},  {3220, 48000, 2291, 0.0},
+        {3572, 44100, 1598, 0.0}, {3443, 48000, 1598, 0.0}, {3589, 44100, 2181, 0.0}, {2384, 44100, 948, 0.0},
+        {4345, 78125, 1413, 0.2}, {2284, 78125, 2181, 0.2}, {3522, 48000, 2541, 0.2}, {1363, 8000, 670, 0.2},
+        {1011, 78125, 1598, 0.2}, {4544, 78125, 1928, 0.2}, {1812, 48000, 1598, 0.2}, {3339, 8000, 915, 0.2},
+        {402, 48000, 693, 0.2},   {3528, 44100, 1862, 0.2}, {116, 44100, 2181, 0.2},  {1592, 78125, 885, 0.2},
+        {863, 8000, 2541, 0.2},   {1640, 8000, 670, 0.2},   {1473, 78125, 719, 0.2},  {1191, 44100, 2065, 0.2},
+        {3220, 48000, 2291, 0.2}, {2023, 8000, 854, 0.2},   {1899, 78125, 1230, 0.2}, {4813, 8000, 1230, 0.2},
+        {3220, 78125, 1462, 0.2}, {1575, 8000, 2418, 0.2},  {803, 78125, 2503, 0.2},  {4873, 8000, 1598, 0.2},
+    };
+
+    enum { ONSET_COUNT = (int)(sizeof(onsets) / sizeof(onsets[0])) };
+
+    static double times[ONSET_COUNT];
+    for (int i = 0; i < ONSET_COUNT; i++) {
+        int ri = 0;
+        while (k_rates[ri] != onsets[i].fs) {
+            ri++;
+        }
+        const int k = dsd_ctcss_tone_index(onsets[i].tenths);
+        assert(k >= 0);
+        const int s = onsets[i].set;
+        const double sign = (k + ri + s) % 2 == 0 ? 1.0 : -1.0;
+        const double hz = ((double)onsets[i].tenths / 10.0) + (sign * onsets[i].offset_hz);
+        const uint64_t seed = (3000017ULL * (uint64_t)(k + 1)) + ((uint64_t)ri * 7919ULL) + ((uint64_t)s * 104729ULL);
+        times[i] = lock_time_as_ms(onsets[i].fs, hz, onsets[i].tenths, 0.0, seed, (k * 11 + s * 7) % 50,
+                                   (double)DSD_ANALOG_CTCSS_LOCK_CEILING_MS + 50.0);
+        if (times[i] < 0.0 || times[i] > (double)DSD_ANALOG_CTCSS_LOCK_CEILING_MS) {
+            DSD_FPRINTF(stderr, "late onset past the lock ceiling: set=%d fs=%d hz=%.2f -> %.0f ms\n", s, onsets[i].fs,
+                        hz, times[i]);
+        }
+        assert(times[i] >= 0.0 && times[i] <= (double)DSD_ANALOG_CTCSS_LOCK_CEILING_MS);
+    }
+    qsort(times, (size_t)ONSET_COUNT, sizeof(times[0]), compare_doubles);
+    printf("CTCSS lock of the long-run sweeps' slowest onsets at +0 dB in-band: p50 %.0f ms, worst %.0f ms (%d cases; "
+           "each <= %d ms)\n",
+           times[ONSET_COUNT / 2], times[ONSET_COUNT - 1], ONSET_COUNT, DSD_ANALOG_CTCSS_LOCK_CEILING_MS);
+    (void)fflush(stdout);
 }
 
 /* 67.0, 69.3 and 71.9 Hz sit 2.3-2.6 Hz apart; each must read as itself. */
@@ -789,6 +845,43 @@ test_speech_and_noise_never_lock(void) {
 }
 
 /*
+ * Two minutes of seeded speech, one through a transmitter's 300 Hz high-pass and one without,
+ * in which a high voice holds its pitch near a table tone (225.7 and 229.1 Hz) for most of a
+ * late acquisition window and then moves on. Over 400-600 ms that pitch averages out steady
+ * enough to qualify the window; what keeps it from locking is that the newest 250 ms no longer
+ * carry it. Neither minute locks anything.
+ */
+static void
+test_speech_that_moved_on_never_locks(void) {
+    static const struct {
+        uint64_t signal_seed;
+        uint64_t speech_seed;
+        int filtered;
+    } minutes[] = {
+        {1311789ULL, 5452909ULL, 1},
+        {979190ULL, 1054290ULL, 0},
+    };
+
+    for (size_t i = 0; i < sizeof(minutes) / sizeof(minutes[0]); i++) {
+        dsd_analog_rx_core_init(&g_core);
+        signal_src src;
+        signal_init(&src, 48000, minutes[i].signal_seed, 100.0, 0.0);
+        src.noise_sigma = 0.0;
+        src.voice_gain = 1.0;
+        src.voice_filtered = minutes[i].filtered;
+        synth_speech_init(&src.speech, 48000, minutes[i].speech_seed, 0.05);
+        if (minutes[i].filtered) {
+            synth_voice_hpf_init(&src.voice_hpf, 48000);
+        }
+        const run_result r = run_signal(&g_core, &src, ms_to_samples(48000, 60000.0), 960, 0);
+        if (r.locks != 0) {
+            DSD_FPRINTF(stderr, "speech locked a tone: minute %zu\n", i);
+        }
+        assert(r.locks == 0);
+    }
+}
+
+/*
  * A tone under a transmitter's voice (speech through a 300 Hz high-pass, 10 dB above the
  * tone): every tone locks on its value within 500 ms of its start, the voice never reads as
  * another tone, and on these seeds, once locked, the voice never knocks the lock out. Slower
@@ -874,8 +967,9 @@ test_tone_loss_within_bound(void) {
                 }
                 assert(loss_ms <= (double)rows[row].worst_ms);
                 within += loss_ms <= (double)LOSS_BOUND_MS ? 1 : 0;
-                /* Carrier still up, no tone: "none", positively. */
-                assert(r.final_state == DSD_ANALOG_TONE_STATE_NONE);
+                /* Carrier still up, no tone: "none", positively, and nothing locked again from what
+                   the detector still held of the stopped tone. */
+                assert(r.locks == 1 && r.final_state == DSD_ANALOG_TONE_STATE_NONE);
                 times[count++] = loss_ms;
             }
         }
@@ -1412,6 +1506,8 @@ main(void) {
     test_lock_holds_at_0db();
     test_every_tone_locks_within_bound();
     test_off_nominal_tones_lock();
+    test_late_onsets_lock_within_ceiling();
     test_speech_and_noise_never_lock();
+    test_speech_that_moved_on_never_locks();
     return 0;
 }

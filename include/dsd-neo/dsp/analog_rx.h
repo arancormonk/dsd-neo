@@ -51,12 +51,14 @@ enum { DSD_ANALOG_RX_TAP_READ_MS = 20 };
  * - p95 targets: 95% of onsets lock within DSD_ANALOG_CTCSS_LOCK_P95_MS and 95% of stops are
  *   dropped within DSD_ANALOG_CTCSS_LOSS_P95_MS.
  * - Per-event ceilings, DSD_ANALOG_CTCSS_LOCK_CEILING_MS and DSD_ANALOG_CTCSS_LOSS_CEILING_MS,
- *   each with its measured exceedance rate. Every onset and stop in DSP_ANALOG_CTCSS is within
- *   them. Lock time in noise has no absolute bound, so the lock ceiling is exceeded at a small
- *   rate that a consumer has to budget for: over 1,000,000 onsets at 0 dB, about one in 125,000
- *   on the table value and one in 40,000 for a tone 0.2 Hz off locked later (the slowest after
- *   1,128 ms), and none of 100,000 per condition at +10 dB did. No stop of 800,000 at 0 and
- *   +10 dB was dropped later than the loss ceiling (the slowest after 738 ms).
+ *   above the slowest event of the long-run sweeps. Every onset and stop in DSP_ANALOG_CTCSS is
+ *   within them. Over 1,000,000 onsets per condition at 0 dB, on the table value and 0.2 Hz off
+ *   it, none locked later than the lock ceiling (the slowest after 651 ms), nor did any of
+ *   100,000 per condition at +10 dB (the slowest after 452 ms, 0.35 Hz off); no stop of 800,000
+ *   at 0 and +10 dB was dropped later than the loss ceiling (the slowest after 738 ms). Lock time
+ *   in noise has no absolute bound: the 250 ms window alone locked about one onset in 125,000 at
+ *   0 dB later than the lock ceiling (the slowest after 1,128 ms), and the detector's longer
+ *   late acquisition windows are what lock those within it.
  *
  * A carrier that keeps dropping out, each time for less than DSD_ANALOG_CARRIER_HANGOVER_MS,
  * never expires, and a stop under it is dropped later than under a live carrier: past the p95
@@ -65,12 +67,12 @@ enum { DSD_ANALOG_RX_TAP_READ_MS = 20 };
  * 693 ms.
  *
  * Speech louder than the tone is outside the contract: under transmitter-filtered speech 10 dB
- * above the tone, 0.21% of 50,000 onsets locked later than the lock ceiling (the slowest after
+ * above the tone, 0.16% of 50,000 onsets locked later than the lock ceiling (the slowest after
  * 1,314 ms). docs/testing.md ("Ceiling tail") has the per-condition sweeps.
  *
  * A tone policy that waits for a lock before deciding there is no tone must wait at least
- * DSD_ANALOG_CTCSS_LOCK_CEILING_MS plus 100 ms (two hops), and still meets a late lock at the
- * rates above.
+ * DSD_ANALOG_CTCSS_LOCK_CEILING_MS plus 100 ms (two hops), and still meets a late lock under
+ * speech at the rate above.
  *
  * A lock can also name the wrong tone for a few hops, and a policy that acts on the first lock
  * meets those too. Near 0 dB in-band an off-table tone can lock a table neighbour for 200-260 ms
@@ -80,8 +82,8 @@ enum { DSD_ANALOG_RX_TAP_READ_MS = 20 };
  * never locked. A voice whose fundamental holds on a table tone can lock that tone (talk-off):
  * under transmitter-filtered speech 10 dB above the tone, twice in 50,000 onsets a voice holding
  * 254.1 Hz locked it for 150-250 ms, once in place of the real tone, and over two hours of
- * seeded speech with no tone the unfiltered speech model locked a tone once (233.6 Hz) and the
- * transmitter-filtered one never.
+ * seeded speech with no tone the unfiltered speech model locked a tone three times (233.6, 241.8
+ * and 254.1 Hz) and the transmitter-filtered one once (254.1 Hz).
  */
 enum {
     DSD_ANALOG_CTCSS_LOCK_P95_MS = 400,
