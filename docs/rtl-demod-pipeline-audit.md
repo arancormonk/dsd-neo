@@ -213,7 +213,9 @@ drained in the same pass of the command queue as the mode change):
   CQPSK never resamples and a 2400 sym/s profile at 60 kHz needs no resampling,
   where the analog monitor's 4800 sym/s placeholder would have resampled both to
   48 kHz. The integer-SPS flag (`sps_is_integer`) is derived for that profile
-  too, from the demod rate as an open derives it;
+  too, from the demod rate as an open derives it, and the TED keeps the open's
+  floor of two samples per symbol (ProVoice's 9600 sym/s at a 12 kHz DSP rate
+  gets two, where the symbol-profile setter alone would leave one);
 - FM <-> AM: demodulator and de-emphasis swap with a monitor-state reset (AM is
   refused until the front end can demodulate it).
 

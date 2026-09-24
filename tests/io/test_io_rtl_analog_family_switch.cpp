@@ -30,6 +30,9 @@
  * decimation) cannot realize is refused before it is queued, as a live request
  * and as a retune profile, and the refusal is logged with the validator's text.
  *
+ * The matrix covers P25 C4FM/CQPSK, DMR, NXDN48, dPMR and ProVoice, the last also at a 12 kHz DSP rate, where its
+ * 9600 sym/s leaves under two samples per symbol and the switch has to land on the two an open clamps the timing to.
+ *
  * A session that started with -fA and then switches to a digital mode lands on
  * a fresh open of that mode too. Throughout, the stream keeps the options
  * snapshot it opened with, as a real session's orchestrator copy does: the
@@ -229,6 +232,12 @@ static void
 dpmr(dsd_opts* o) {
     o->frame_dpmr = 1;
     o->mod_c4fm = 1;
+}
+
+static void
+provoice(dsd_opts* o) {
+    o->frame_provoice = 1;
+    o->mod_gfsk = 1;
 }
 
 static int
@@ -934,6 +943,22 @@ main(void) {
     family_case dmr48_split = cases[2];
     dmr48_split.request.boundary_between_requests = 1;
     rc |= run_case(dmr48_split, 48000, 0, 0);
+
+    /* ProVoice (9600 sym/s, 2 levels). At a 12 kHz DSP rate its symbol rate gets under two samples per symbol, and an
+     * open times it with the two samples it clamps to, as the decoder does (dsd_opts_compute_sps_rate()); the symbol
+     * profile the switch lands on would otherwise leave the one sample the profile setter keeps. */
+    const family_case pv = {"ProVoice",
+                            provoice,
+                            {0, 9600, 2, RTL_STREAM_CHANNEL_PROFILE_PROVOICE, 5, 0, RTL_STREAM_TEST_UNDER_ANALOG_NONE}};
+    rc |= run_case(pv, 48000, 0, 0);
+    rc |= run_analog_start_case(pv, 48000, 0);
+    family_case pv12 = pv;
+    pv12.request.ted_sps = 2;
+    rc |= run_case(pv12, 12000, 0, 0);
+    rc |= run_analog_start_case(pv12, 12000, 0);
+    family_case pv12_split = pv12;
+    pv12_split.request.boundary_between_requests = 1;
+    rc |= run_case(pv12_split, 12000, 0, 0);
 
     /* The same switches from a session that started with -fA rather than from a digital open, so nothing the digital
      * open left behind can stand in for what the switch must set: each mode, the 24 kHz and forced-rate resampler

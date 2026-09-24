@@ -8332,6 +8332,18 @@ rtl_stream_analog_request_fits_landed_rate(int kind, int width_hz) {
                                                      "The front end keeps its current receive profile.");
 }
 
+/* An open times its symbol profile with at least two samples per symbol (rtl_demod_clamp_sps(), the floor the decoder's
+ * dsd_opts_compute_sps_rate() keeps too); the symbol-profile setter keeps as few as one. A switch out of the analog
+ * family lands where an open of the mode would, so a symbol rate the demod rate gives under two samples per symbol
+ * (ProVoice's 9600 sym/s at a 12 kHz DSP rate) is timed with the open's two. */
+static void
+rtl_stream_apply_landing_ted_floor(void) {
+    if (demod.ted_sps_override <= 0 && demod.ted_sps < 2) {
+        demod.ted_sps = 2;
+        rtl_stream_publish_demod_profile_snapshot();
+    }
+}
+
 static void
 rtl_stream_consume_demod_profile_request(void) {
     if (!g_profile_req_pending.load(std::memory_order_acquire)) {
@@ -8375,7 +8387,8 @@ rtl_stream_consume_demod_profile_request(void) {
         && !rtl_stream_analog_request_fits_landed_rate(analog_kind, analog_width_hz)) {
         analog_family = -1;
     }
-    if (has_demod && analog_family == DSD_RX_FAMILY_DIGITAL && demod.analog_family) {
+    const bool lands_on_digital = has_demod && analog_family == DSD_RX_FAMILY_DIGITAL && demod.analog_family;
+    if (lands_on_digital) {
         rtl_stream_resolve_landing_profile(&cqpsk, &chan, sym_rate);
     }
     if (analog_family >= 0) {
@@ -8384,6 +8397,9 @@ rtl_stream_consume_demod_profile_request(void) {
     }
     if (has_demod) {
         rtl_stream_apply_demod_profile_params(cqpsk, sym_rate, levels, chan, ted_sps, ted_sps_is_override, 0);
+    }
+    if (lands_on_digital) {
+        rtl_stream_apply_landing_ted_floor();
     }
 }
 

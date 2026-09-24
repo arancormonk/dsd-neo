@@ -621,7 +621,9 @@ Notes:
     `_digital_family()`), restarts the carrier and timing loops (Costas, band-edge FLL, Gardner TED) and zeroes the
     I/Q DC and balance estimates, the squelch dwell toward a multi-frequency hop and a replay's post-demod decimator as
     an open does, clears the output ring and bumps
-    the output generation; a width-only change redesigns the filter from empty histories. The analog family never runs
+    the output generation; a width-only change redesigns the filter from empty histories. A switch to digital also
+    keeps the open's floor of two samples per symbol for the TED, which the symbol-profile setter it applies does not
+    (ProVoice at a 12 kHz DSP rate). The analog family never runs
     CQPSK: a `-fA` open demodulates FM whatever `DSD_NEO_CQPSK` or the modulation say, as a switch to analog does. The
     CQPSK family after a switch to digital follows the symbol profile requested with it unless `DSD_NEO_CQPSK` is set,
     which decides it as it does at stream open, the channel filter following the family it lands on and the open's
@@ -634,7 +636,8 @@ Notes:
     fresh open, loop state, monitor audio state, I/Q corrections and filter histories included, also under
     `DSD_NEO_CQPSK=0` and `=1` and with the channel filter off (`DSD_NEO_CHANNEL_LPF=0`, a 12 kHz DSP rate), with the
     stream keeping the options snapshot it opened with, for P25
-    C4FM/CQPSK, DMR, NXDN48 and dPMR at unforced and forced rates, including from a `-fA` session a CQPSK toggle or a
+    C4FM/CQPSK, DMR, NXDN48, dPMR and ProVoice (also at a 12 kHz DSP rate) at unforced and forced rates, including
+    from a `-fA` session a CQPSK toggle or a
     typed digital row had moved off the monitor output, or with a CQPSK toggle still queued when the digital mode is
     picked; a typed digital row under `-fA` and on a DMR session switched
     to analog; width-only changes; requests with no stream; live requests and
