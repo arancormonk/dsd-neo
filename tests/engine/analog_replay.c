@@ -24,18 +24,24 @@
  * A case that expects silence therefore pairs --analog-max-audible-ms 0 with --analog-min-total-ms, which proves
  * the replay ran rather than stalled.
  *
- * The METRIC line ends with the received-tone fields tools/replay_ab.sh reads into its tone and tone_lock_ms
- * columns. They read NA until a tone detector publishes a received tone; the CTCSS detector (#522) fills them in
- * for CTCSS and the DCS detector (#523) for DCS. This file owns the field names and the contract below, and
- * replay_ab.sh and the report own the columns; a detector that wants more (a lock percentage, say) adds its own
- * field and column. The contract, which replay_ab.sh relies on because it splits the line on spaces:
- *   tone=<label>       the received tone or code as the detector names it, with no whitespace: "151.4" (Hz, one
- *                      decimal) for CTCSS; for DCS the detector's one canonical label, such as "D023N". Every DCS
- *                      waveform has two spellings (D023N is also D047I), and the DCS detector (#523) defines which
- *                      one it prints; NA when none was confirmed.
- *   tone_lock_ms=<ms>  stream time of the first confirmed lock, on the same clock as first_audible_ms (see above),
- *                      with two decimals; NA when nothing locked.
+ * The METRIC line ends with the received-tone fields tools/replay_ab.sh reads into its tone, tone_lock_ms and
+ * tone_lock_pct columns. They come from the decoder's received-tone publication (dsd_state::analog_rx), read after
+ * every block the monitor delivers: the tap that detects tones runs on the same block just before the block reaches
+ * the audio hook, and a tone can only lock while the monitor's gate is open. The CTCSS detector (#522) fills them
+ * for CTCSS; the DCS detector (#523) adds its label. This file owns the field names and the contract below, and
+ * replay_ab.sh and the report own the columns; a detector that wants more adds its own field and column. The
+ * contract, which replay_ab.sh relies on because it splits the line on spaces:
+ *   tone=<label>        the received tone or code as the detector names it, with no whitespace: "151.4" (Hz, one
+ *                       decimal) for CTCSS; for DCS the detector's one canonical label, such as "D023N". Every DCS
+ *                       waveform has two spellings (D023N is also D047I), and the DCS detector (#523) defines which
+ *                       one it prints; NA when none was confirmed.
+ *   tone_lock_ms=<ms>   stream time of the first confirmed lock, on the same clock as first_audible_ms (see above):
+ *                       the end of the block after which the publication first read locked, with two decimals; NA
+ *                       when nothing locked.
+ *   tone_lock_pct=<pct> share of the delivered audio (captured_ms) in blocks after which the publication read
+ *                       locked, 0 to 100 with two decimals: 0.00 when nothing locked, NA when no audio came out.
  * When the label changes during a run, tone= is the last one confirmed and tone_lock_ms the first lock of any.
+ * --analog-max-tone-lock-ms bounds tone_lock_ms; like every bound, it fails as not measured when nothing locked.
  */
 
 #include <dsd-neo/core/init.h>
@@ -47,6 +53,7 @@
 #include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/engine/engine.h>
 #include <dsd-neo/io/rtl_stream_c.h>
+#include <dsd-neo/runtime/analog_tones.h>
 #include <dsd-neo/runtime/bootstrap.h>
 #include <dsd-neo/runtime/rtl_stream_io_hooks.h>
 #include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
@@ -96,6 +103,7 @@ typedef struct {
     analog_limit max_peak_dbfs;
     analog_limit max_clip;
     analog_limit audible_dbfs;
+    analog_limit max_tone_lock_ms;
 } analog_limits;
 
 enum { PROBE_MIN_DBC = 0, PROBE_MAX_DBC, PROBE_MIN_DBFS, PROBE_MAX_DBFS, PROBE_LIMIT_COUNT };
@@ -128,10 +136,18 @@ typedef struct {
     int no_rate;
 } analog_totals;
 
+/* The received tone as the decoder published it (see the file comment). */
+typedef struct {
+    char label[DSD_CTCSS_LABEL_SIZE]; /* last confirmed tone or code, "" = none */
+    double first_lock_ms;             /* stream time of the first lock, -1 if none */
+    double locked_ms;                 /* delivered audio in blocks after which the publication read locked */
+} analog_tone_track;
+
 static analog_limits g_limits;
 static analog_probe g_probes[ANALOG_MAX_PROBES];
 static int g_probe_count;
 static analog_totals g_totals;
+static analog_tone_track g_tone;
 static int g_failed;
 
 /* ---- argument handling ---------------------------------------------------------------------------------------- */
@@ -159,6 +175,7 @@ static const analog_scalar_arg k_scalar_args[] = {
     {"--analog-max-peak-dbfs", &g_limits.max_peak_dbfs, -ANALOG_DB_LIMIT, 0.0},
     {"--analog-max-clip", &g_limits.max_clip, 0.0, 1e12},
     {"--analog-audible-dbfs", &g_limits.audible_dbfs, -ANALOG_DB_LIMIT, 0.0},
+    {"--analog-max-tone-lock-ms", &g_limits.max_tone_lock_ms, 0.0, 1e9},
 };
 
 static const char* const k_probe_limit_args[PROBE_LIMIT_COUNT] = {
@@ -189,6 +206,7 @@ analog_usage(void) {
                 "  --analog-max-peak-dbfs DB         largest sample of the delivered audio\n"
                 "  --analog-max-clip N               samples at int16 full scale\n"
                 "  --analog-audible-dbfs DB          block RMS counted as audible (default -50)\n"
+                "  --analog-max-tone-lock-ms MS      stream time when the received tone first locks\n"
                 "  --analog-probe-hz HZ              report the level at HZ (repeatable, up to 8)\n"
                 "  --analog-probe-{min,max}-dbc HZ:DB   probe level relative to the expected tone\n"
                 "  --analog-probe-{min,max}-dbfs HZ:DB  probe level relative to full scale\n"
@@ -509,11 +527,26 @@ analog_score_block(const double* x, size_t n, double block_start_ms) {
     g_totals.outband_energy += analog_band_energy(xw, n, rate, ANALOG_OUTBAND_LO_HZ, ANALOG_OUTBAND_HI_HZ);
 }
 
+/* Reads the received-tone publication after one delivered block, which ended at block_end_ms. The tap updated it
+ * from this same block just before the block came here. */
+static void
+analog_note_tone(const dsd_state* state, double block_end_ms, double block_ms) {
+    if (state == NULL || state->analog_rx.tone_state != DSD_ANALOG_TONE_STATE_LOCKED) {
+        return;
+    }
+    g_tone.locked_ms += block_ms;
+    if (g_tone.first_lock_ms < 0.0) {
+        g_tone.first_lock_ms = block_end_ms;
+    }
+    if (state->analog_rx.tone_kind == DSD_ANALOG_TONE_KIND_CTCSS) {
+        (void)dsd_ctcss_format(state->analog_rx.ctcss_tenths_hz, g_tone.label, sizeof(g_tone.label));
+    }
+}
+
 /* Replaces the UDP analog blaster. nbytes is a byte count of int16 mono samples, as dsd_symbol.c passes it. */
 static void
 analog_capture_blast(const dsd_opts* opts, dsd_state* state, size_t nbytes, const void* data) {
     (void)opts;
-    (void)state;
     size_t n = nbytes / sizeof(short);
     if (data == NULL || n == 0U) {
         return;
@@ -539,6 +572,7 @@ analog_capture_blast(const dsd_opts* opts, dsd_state* state, size_t nbytes, cons
         analog_score_block(block, chunk, block_start_ms + ((double)done * ms_per_sample));
         done += chunk;
     }
+    analog_note_tone(state, block_start_ms + block_ms, block_ms);
 }
 
 static int
@@ -634,6 +668,7 @@ typedef struct {
     int have_tone;
     int have_time;
     int have_first;
+    int have_lock;
     double total_ms;
     double rms_dbfs;
     double peak_dbfs;
@@ -648,6 +683,7 @@ analog_report_measure(analog_report_ctx* ctx) {
     ctx->have_audio = g_totals.samples_captured > 0U && g_totals.rate_hz > 0U;
     ctx->have_time = g_totals.read_ms > 0.0;
     ctx->have_first = g_totals.first_audible_ms >= 0.0;
+    ctx->have_lock = g_tone.first_lock_ms >= 0.0;
     ctx->total_ms = analog_consumed_ms();
     ctx->tone_ref = ctx->have_audio ? g_totals.tone_energy / captured : 0.0;
     ctx->have_tone = ctx->have_audio && g_limits.expect_tone_hz.set && analog_measurable(g_limits.expect_tone_hz.value);
@@ -675,9 +711,13 @@ analog_print_metric_line(const analog_report_ctx* ctx) {
     analog_print_value(line, sizeof(line), "tone_hz", g_limits.expect_tone_hz.set, g_limits.expect_tone_hz.value);
     analog_print_value(line, sizeof(line), "tone_dbfs", ctx->have_tone, analog_db(ctx->tone_ref));
     analog_print_value(line, sizeof(line), "tone_snr_db", ctx->have_tone, ctx->snr_db);
-    /* Received-tone fields (see the file comment): no detector publishes one yet. */
+    /* Received-tone fields (see the file comment). */
     used = strlen(line);
-    DSD_SNPRINTF(line + used, sizeof(line) - used, " tone=NA tone_lock_ms=NA");
+    DSD_SNPRINTF(line + used, sizeof(line) - used, " tone=%s", g_tone.label[0] != '\0' ? g_tone.label : "NA");
+    analog_print_value(line, sizeof(line), "tone_lock_ms", ctx->have_lock, g_tone.first_lock_ms);
+    const int have_captured = g_totals.captured_ms > 0.0;
+    analog_print_value(line, sizeof(line), "tone_lock_pct", have_captured,
+                       have_captured ? 100.0 * g_tone.locked_ms / g_totals.captured_ms : 0.0);
     DSD_FPRINTF(stderr, "%s\n", line);
 }
 
@@ -781,6 +821,7 @@ analog_check_limits(const analog_report_ctx* ctx) {
     analog_check_max("RMS dBFS", ctx->have_audio, ctx->rms_dbfs, &g_limits.max_rms_dbfs);
     analog_check_max("peak dBFS", ctx->have_audio, ctx->peak_dbfs, &g_limits.max_peak_dbfs);
     analog_check_max("clipped samples", 1, (double)g_totals.clip_count, &g_limits.max_clip);
+    analog_check_max("tone lock ms", ctx->have_lock, g_tone.first_lock_ms, &g_limits.max_tone_lock_ms);
     analog_report_probes(ctx, 1);
 }
 
@@ -813,6 +854,7 @@ main(int argc, char** argv) {
         return 1;
     }
     g_totals.first_audible_ms = -1.0;
+    g_tone.first_lock_ms = -1.0;
     int kept = 0;
     if (analog_split_args(argc, argv, args, &kept) != 0) {
         free((void*)args);

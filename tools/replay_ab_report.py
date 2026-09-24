@@ -15,8 +15,8 @@ total flatters exactly the regressions worth catching.
 Analog runs (replay_ab.sh --metric analog) report each analog column the host
 measured -- tone SNR, in-band ratio, clipped samples, audible and first-audible
 time, RMS level, the first probe's level (dBFS, and dBc against a test tone), and
-time to tone lock -- paired per repeat the same way, plus the received tone label
-each build settled on. Probe levels are keyed by the probe's frequency, so builds
+time to tone lock and the share of the audio the tone stayed locked for -- paired
+per repeat the same way, plus the received tone label each build settled on. Probe levels are keyed by the probe's frequency, so builds
 that probed different frequencies are never paired. A repeat whose host exited
 non-zero (summary.tsv's rc column: a crash, a timeout, or a run the host rejected)
 or warned that the front end left the monitor path (off_path: it delivered CQPSK
@@ -38,7 +38,7 @@ from collections import Counter, defaultdict
 from pathlib import Path
 
 ANALOG_NUMERIC = ("tone_snr_db", "inband_db", "clip", "audible_ms", "first_audible_ms", "rms_dbfs", "probe_dbfs",
-                  "probe_dbc", "tone_lock_ms")
+                  "probe_dbc", "tone_lock_ms", "tone_lock_pct")
 ANALOG_LABELS = ("tone",)
 # A probe level means something only at the probe's frequency (probe_hz).
 PROBE_COLUMNS = ("probe_dbfs", "probe_dbc")
@@ -259,8 +259,9 @@ def report_analog(rows: list[dict[str, str]], baseline_arg: str | None) -> int:
     print("are left out of every column and counted in a warning above.")
     print("Higher is better for tone_snr_db and inband_db, lower for clip, first_audible_ms")
     print("and tone_lock_ms, and lower for a probe that measures an interferer; whether")
-    print("audible_ms or rms_dbfs should move depends on the case. 'n' counts the repeats")
-    print("in which the build measured that column.")
+    print("audible_ms, rms_dbfs or tone_lock_pct should move depends on the case (a capture")
+    print("with no tone wants tone_lock_pct at 0). 'n' counts the repeats in which the")
+    print("build measured that column.")
     return status
 
 

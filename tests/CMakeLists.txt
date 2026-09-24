@@ -11311,6 +11311,45 @@ if(DSD_HAS_RADIO)
         "${_analog_off_path}"
     )
 
+    # Received CTCSS on the off-air excerpts (issue #522), against the oracle labels in
+    # docs/testing.md that the maintainer confirmed. nfm_ctcss_real carries 151.4 Hz: it
+    # must lock within the 400 ms bound (300 ms measured) and never report another tone,
+    # least of all the neighbour's 173.8 Hz 12.5 kHz away. "none" is allowed: the excerpt
+    # carries a reverse burst and a short tone gap at 3.7-4.0 s, after which the tone locks
+    # again. The host's tone= field comes from the decoder's publication, not from the log.
+    dsd_neo_add_analog_replay_test(
+        DECODE_IQ_ANALOG_REAL_CTCSS_1514
+        nfm_ctcss_real
+        "-fA --analog-max-tone-lock-ms 400"
+        "Received tone: CTCSS 151[.]4 Hz.*ANALOG METRIC: .* tone=151[.]4 tone_lock_ms=[0-9]+[.][0-9][0-9] tone_lock_pct=[0-9]+[.][0-9][0-9]"
+        "Received tone: CTCSS (([0-9]|[0-9][0-9]|[02-9][0-9][0-9]|1[0-46-9][0-9]|15[02-9])[.][0-9]|151[.][0-35-9]) Hz|${_analog_off_path}"
+    )
+    # No false lock: speech and carrier with no CTCSS (the squelch excerpts carry 150 bit/s
+    # data below 300 Hz, which is neither CTCSS nor DCS), and AM airband voice through the
+    # FM monitor. Each must reach the "none" verdict, which shows detection ran, and never
+    # report a tone.
+    dsd_neo_add_analog_replay_test(
+        DECODE_IQ_ANALOG_REAL_CTCSS_NOFALSE_SQUELCH_A
+        nfm_squelch_real_a
+        -fA
+        "Received tone: none.*ANALOG METRIC: .* tone=NA tone_lock_ms=NA tone_lock_pct=0[.]00"
+        "Received tone: CTCSS|${_analog_off_path}"
+    )
+    dsd_neo_add_analog_replay_test(
+        DECODE_IQ_ANALOG_REAL_CTCSS_NOFALSE_SQUELCH_B
+        nfm_squelch_real_b
+        -fA
+        "Received tone: none.*ANALOG METRIC: .* tone=NA tone_lock_ms=NA tone_lock_pct=0[.]00"
+        "Received tone: CTCSS|${_analog_off_path}"
+    )
+    dsd_neo_add_analog_replay_test(
+        DECODE_IQ_ANALOG_REAL_CTCSS_NOFALSE_AM
+        am_airband_real
+        -fA
+        "Received tone: none.*ANALOG METRIC: .* tone=NA tone_lock_ms=NA tone_lock_pct=0[.]00"
+        "Received tone: CTCSS|${_analog_off_path}"
+    )
+
     # Negative controls: bounds that must NOT hold, run through
     # analog_replay_fail_check.cmake, which requires the host's exit code (1 for a
     # missed bound), the named ANALOG AUDIO FAIL line and no ANALOG AUDIO OK. Without
@@ -11393,6 +11432,21 @@ if(DSD_HAS_RADIO)
         nfm_tone_synth
         "-fA --analog-min-snr-db 20"
         "ANALOG AUDIO FAIL: tone SNR dB not measured"
+    )
+    # The received-tone lock bound (issue #522): a limit below the lock time
+    # nfm_ctcss_synth_1000 measures fails on the measured value, and on a replay with no
+    # tone at all the bound fails as not measured instead of passing unchecked.
+    dsd_neo_add_analog_replay_fail_test(
+        DECODE_IQ_ANALOG_NEG_TONE_LOCK_MS
+        nfm_ctcss_synth_1000
+        "-fA --analog-max-tone-lock-ms 50"
+        "ANALOG AUDIO FAIL: tone lock ms [0-9]+[.][0-9]+ [(]limit 50[.]00[)]"
+    )
+    dsd_neo_add_analog_replay_fail_test(
+        DECODE_IQ_ANALOG_NEG_TONE_LOCK_NOT_MEASURED
+        nfm_notone_synth
+        "-fA --analog-max-tone-lock-ms 400"
+        "ANALOG AUDIO FAIL: tone lock ms not measured"
     )
     # A malformed bound stops the host before the replay (exit 2), rather than being
     # dropped or handed to the CLI parser.

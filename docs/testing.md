@@ -354,6 +354,28 @@ accepted or refused; and a config apply, which clears the tone when it moves the
 included, when it changes an unrelated setting). The TCP and failed-Pulse cases stub the connect and the open through
 the Linux `--wrap` seam, so they run only where that seam exists. All of these bounds come from synthetic signals.
 
+The off-air excerpts are pinned against their oracle labels (see [Tone and code labels](#tone-and-code-labels)) by
+cases in the analog block, run through the analog replay host, which reads the received tone from the decoder's
+publication into its `tone`, `tone_lock_ms` and `tone_lock_pct` fields:
+
+- `DECODE_IQ_ANALOG_REAL_CTCSS_1514` (`nfm_ctcss_real`): CTCSS 151.4 Hz, locked within the 400 ms bound
+  (`--analog-max-tone-lock-ms 400`; 300 ms measured) and no other tone ever reported, the 173.8 Hz neighbour 12.5 kHz
+  away included. The excerpt also holds what a detector must drop the tone for: at 3.73 s the tone's phase reverses by
+  180 degrees for about 180 ms (a reverse burst), then the tone is absent for about 60 ms under an unbroken carrier
+  and comes back at a new phase. The detector drops the tone at 3.86 s, about 130 ms after the reversal, logs `none`,
+  and locks 151.4 Hz again at 4.26 s, so the tone reads locked for 88.67% of the excerpt; the case allows that `none`
+  rather than requiring it, since only the tone value is a confirmed label.
+- `DECODE_IQ_ANALOG_REAL_CTCSS_NOFALSE_SQUELCH_A`, `_SQUELCH_B` and `_AM` (`nfm_squelch_real_a`, `nfm_squelch_real_b`,
+  and `am_airband_real` through the FM monitor): each must log the `none` verdict, which shows detection ran, report
+  `tone=NA` with a 0.00% lock share, and never log a tone. The squelch excerpts carry 150 bit/s data below 300 Hz and
+  speech, the AM one voice on a steady carrier.
+
+The neighbour's 173.8 Hz has no case: `--iq-replay` plays a capture at its recorded centre, with no way to tune
+12.5 kHz off it, and a shifted copy would be another committed fixture, which neither the #518 fixture reservations
+nor the budget below plan for. Measured once on such a copy
+(`nfm_ctcss_real.iq` mixed up by 12.5 kHz, not committed), the detector locks 173.8 Hz at 300 ms, reports no other
+tone, and drops and re-locks it once around a similar reversal and gap at 2.44 s, 90.33% locked in all.
+
 Known gaps and caveats:
 
 - **ProVoice** and **X2-TDMA** have no usable public sample and are untested here.
@@ -367,7 +389,8 @@ Known gaps and caveats:
   use `--iq-replay-rate realtime` for that.
 - **AM** has a fixture (`am_airband_real`) but no AM case until native AM reception (#524) adds `-fM`. Under `-fA`
   the FM monitor demodulates it, which measures an FM discriminator on an AM signal, so `-fA` cannot stand in for an
-  AM case. The excerpt serves `-fA` for another reason: its carrier sits within a few hertz of 0 Hz, where the
+  AM case (`DECODE_IQ_ANALOG_REAL_CTCSS_NOFALSE_AM` uses it under `-fA` only as no-false-lock material for the tone
+  detector). The excerpt serves `-fA` for another reason: its carrier sits within a few hertz of 0 Hz, where the
   modulation auto-switch (`frame_sync_maybe_auto_switch_modulation()` in `src/dsp/dsd_frame_sync.c`) votes for CQPSK.
   The switch used to run in analog-only mode too, because `-fA` does not set `opts->mod_cli_lock`: it applied the
   P25 CQPSK demod profile to the RTL front end, which then delivered CQPSK symbols instead of monitor audio, after 0
@@ -385,7 +408,8 @@ Known gaps and caveats:
 
 The `DECODE_IQ_ANALOG_*` audio cases (CTest labels `iq-decode` and `analog`, radio builds only) check what the analog
 FM monitor lets a listener hear; the received-tone cases `DECODE_IQ_ANALOG_CTCSS_*` carry the same labels but match a
-log line (see [Received tone (CTCSS) on the analog monitor](#received-tone-ctcss-on-the-analog-monitor)).
+log line, and `DECODE_IQ_ANALOG_REAL_CTCSS_*` read the received tone through this host (see
+[Received tone (CTCSS) on the analog monitor](#received-tone-ctcss-on-the-analog-monitor)).
 `iq_decode_check.cmake` can only match log lines, and the `-6` WAV is taken before the monitor's filters, gain stage
 and squelch gate, so neither can say whether the monitor produced the right audio. The
 cases therefore run `dsd-neo_test_analog_replay` (`tests/engine/analog_replay.c`) as `DSD_BIN` through the unchanged
@@ -421,6 +445,7 @@ fixed gain, or with `-n 0` the per-block AGC.
 | `--analog-max-clip N` | Samples at int16 full scale. |
 | `--analog-probe-hz HZ` | Level at `HZ` (Hann-windowed Goertzel), repeatable up to 8 frequencies: `dbfs`, and `dbc` against the expected tone. |
 | `--analog-probe-{min,max}-{dbc,dbfs} HZ:DB` | Bounds on a probe's level; each also adds the probe. |
+| `--analog-max-tone-lock-ms MS` | Upper bound on `tone_lock_ms`, the stream time of the first received-tone lock. Fails as not measured when no tone locked. |
 
 A case that expects silence (a muted or rejected transmission) pairs `--analog-max-audible-ms 0` with
 `--analog-min-total-ms`: silence alone is also what a replay that stalled or never started produces.
@@ -436,8 +461,8 @@ it. Sub-audible tones 20-30 Hz apart need a longer, phase-continuous window than
 
 When live processing ends the host prints `ANALOG METRIC:` (`rate_hz`, `total_ms`, `captured_ms`, `audible_ms`,
 `first_audible_ms`, `rms_dbfs`, `peak_dbfs`, `clip`, `inband_db`, `tone_hz`, `tone_dbfs`, `tone_snr_db`, and the
-received-tone fields `tone` and `tone_lock_ms` described under [Analog A/B](#analog-ab); `NA` where a value was not
-measured), one `ANALOG PROBE:` line per probe, and then `ANALOG AUDIO OK`, or one
+received-tone fields `tone`, `tone_lock_ms` and `tone_lock_pct` described under [Analog A/B](#analog-ab); `NA` where
+a value was not measured), one `ANALOG PROBE:` line per probe, and then `ANALOG AUDIO OK`, or one
 `ANALOG AUDIO FAIL:` line per missed bound and exit status 1. Without bounds it only reports, which is how
 `tools/replay_ab.sh --metric analog` uses it. Every bound is absolute and per case, so "narrower is cleaner" becomes
 two cases with their own limits, not a comparison between runs. Measured on the commit that added them:
@@ -451,6 +476,8 @@ two cases with their own limits, not a comparison between runs. Measured on the 
 | `DECODE_IQ_ANALOG_NFM_REAL_SQUELCH_A_SMOKE` | `nfm_squelch_real_a` | captured 4000 ms, audible 1460 ms from 460 ms, in-band 8.0 dB | captured ≥ 3900, audible ≥ 900, first audible 250 to 1000 ms, in-band ≥ 4 |
 | `DECODE_IQ_ANALOG_NFM_REAL_SQUELCH_B_SMOKE` | `nfm_squelch_real_b` | captured 4000 ms, audible 2980 ms, in-band 9.6 dB | captured ≥ 3900, audible ≥ 2000, in-band ≥ 5 |
 | `DECODE_IQ_ANALOG_NO_MOD_AUTO_SWITCH` | `am_airband_real` under `-fA` (monitor path only, not AM reception) | total and captured 8000 ms, no CQPSK symbols (before the fix: total 751 ms, captured 0 to 20 ms, CQPSK warning) | captured ≥ 7800 ms, total 7800 to 8200 ms |
+| `DECODE_IQ_ANALOG_REAL_CTCSS_1514` | `nfm_ctcss_real` | tone 151.4, first lock at 300 ms, locked 88.67% | tone lock ≤ 400 ms; tone 151.4 and no other tone logged |
+| `DECODE_IQ_ANALOG_REAL_CTCSS_NOFALSE_SQUELCH_A`, `_B`, `_AM` | `nfm_squelch_real_a`, `nfm_squelch_real_b`, `am_airband_real` | `none` verdict, no tone, locked 0.00% | `none` logged, `tone=NA`, 0.00% locked, no tone logged |
 
 Every `-fA` case in the table also fails if the host warns that the front end delivered CQPSK symbols instead of
 monitor audio (see the `am_airband_real` note above).
@@ -468,6 +495,8 @@ a missed bound), the named `ANALOG AUDIO FAIL:` line, an `ANALOG METRIC:` line (
 | `DECODE_IQ_ANALOG_NEG_TONE_NOT_MEASURED` | an SNR bound without `--analog-expect-tone-hz` | tone SNR "not measured" |
 | `DECODE_IQ_ANALOG_NEG_BAD_BOUND` | a malformed bound value | exit status 2 before the replay starts |
 | `DECODE_IQ_ANALOG_NEG_MISSING_VALUE` | a host option as the last argument, with no value | exit status 2 and "needs a value" before the replay starts |
+| `DECODE_IQ_ANALOG_NEG_TONE_LOCK_MS` | a 50 ms tone-lock bound on `nfm_ctcss_synth_1000` (300 ms) | tone lock ms, on the measured value |
+| `DECODE_IQ_ANALOG_NEG_TONE_LOCK_NOT_MEASURED` | a 400 ms tone-lock bound on `nfm_notone_synth`, where no tone locks | tone lock ms "not measured" |
 
 When a later change adds a bound or a new kind of check to the host, add a negative control beside it.
 
@@ -543,9 +572,12 @@ names with the new ones and refuses any name it does not build). A real DCS acce
 Every DCS waveform has two spellings, because inverting a DCS word gives another valid word: the oracle prints both
 (`D023N = D047I`, and `D023I = D047N` for the inverted waveform). A detector reports one canonical label per waveform,
 and the DCS detector (#523) defines which; compare an oracle label with a detector's by waveform, not by spelling. The wiki's CTCSS page, which links the I/Q recording, carries audio samples at
-151.4, 173.8 and 186.2 Hz without saying which tones the recording holds; the oracle finds the first two. These
-labels, including "none" for both squelch captures, are recorded here and are not pinned by any test until a
-maintainer confirms them. Until then a fixture gets only no-false-lock and stability assertions.
+151.4, 173.8 and 186.2 Hz without saying which tones the recording holds; the oracle finds the first two. A
+maintainer has confirmed the CTCSS labels in the table, "none" for both squelch captures included, and the received-tone
+cases pin them: `DECODE_IQ_ANALOG_REAL_CTCSS_1514` the 151.4 Hz of `nfm_ctcss_real`, and the
+`DECODE_IQ_ANALOG_REAL_CTCSS_NOFALSE_*` cases the absence of any tone on both squelch captures (see
+[Received tone (CTCSS) on the analog monitor](#received-tone-ctcss-on-the-analog-monitor), which also says why the
+neighbour's 173.8 Hz has no case). The DCS labels stay unpinned until a DCS detector exists.
 
 ### Qt frontend and QML screen tests
 
@@ -726,8 +758,8 @@ Analog DSP changes (channel width, AM demodulation, de-emphasis, tone detection)
 real excerpts in `tests/fixtures/iq` and on any longer real capture, with `--metric analog`. The builds are analog
 replay hosts rather than `dsd-neo`, and `summary.tsv` gains the analog columns: `tone_snr_db`, `inband_db`, `clip`,
 `audible_ms`, `first_audible_ms`, `rms_dbfs`, the first probe given as `probe_hz`, `probe_dbfs` and `probe_dbc`,
-`tone` and `tone_lock_ms`, and last the run's exit status `rc` and `off_path`, 1 when the host warned that the front end
-delivered CQPSK symbols instead of monitor samples. `probe_dbc` needs `--analog-expect-tone-hz`, so on a real capture, which has no test
+`tone`, `tone_lock_ms` and `tone_lock_pct`, and last the run's exit status `rc` and `off_path`, 1 when the host
+warned that the front end delivered CQPSK symbols instead of monitor samples. `probe_dbc` needs `--analog-expect-tone-hz`, so on a real capture, which has no test
 tone, it is `NA` and `probe_dbfs` is the probe's level. The report pairs each column per repeat, pairs probe levels
 only between builds that probed the same frequency (a wrapper that puts its own `--analog-probe-hz` first changes
 which probe comes first), and gives the tone label each build settled on. A repeat that exited non-zero or ran off the
@@ -745,17 +777,22 @@ the single-pair interval, the received-tone columns and the duplicate-name refus
 drives the real `replay_ab.sh` with a fake host, so it is registered only outside Windows where bash and coreutils
 `timeout` are found.
 
-`tone` and `tone_lock_ms` come from the host's `ANALOG METRIC:` line and read `NA` until a tone detector publishes a
-received tone. The host defines the two fields and replay_ab.sh and the report pair them; the CTCSS detector (#522)
-fills them in the host for CTCSS, the DCS detector (#523) for DCS, and a detector that needs another statistic (a lock
-percentage, say) adds its own field and column. The contract (also in the file comment of
-`tests/engine/analog_replay.c`), which matters because replay_ab.sh splits the line on spaces:
+`tone`, `tone_lock_ms` and `tone_lock_pct` come from the host's `ANALOG METRIC:` line, which reads them from the
+decoder's received-tone publication (`dsd_state::analog_rx`) after every block the monitor delivers; a host built
+before a field existed reads `NA` for it. The host defines the fields and replay_ab.sh and the report pair them; the
+CTCSS detector (#522) fills them for CTCSS, the DCS detector (#523) adds its label, and a detector that needs another
+statistic adds its own field and column. The contract (also in the file comment of `tests/engine/analog_replay.c`),
+which matters because replay_ab.sh splits the line on spaces:
 
 - `tone=<label>`: the received tone or code with no whitespace, `151.4` (Hz, one decimal) for CTCSS and the DCS
   detector's canonical label, such as `D023N`, for DCS (see [Tone and code labels](#tone-and-code-labels)); `NA` when
   none was confirmed. When the label changes during a run, the last one confirmed.
-- `tone_lock_ms=<ms>`: stream time of the first confirmed lock, on the same clock as `first_audible_ms`, with two
-  decimals; `NA` when nothing locked.
+- `tone_lock_ms=<ms>`: stream time of the first confirmed lock, on the same clock as `first_audible_ms`: the end of
+  the block after which the publication first read locked, with two decimals; `NA` when nothing locked.
+- `tone_lock_pct=<pct>`: the share of the delivered audio (`captured_ms`) in blocks after which the publication read
+  locked, 0 to 100 with two decimals: `0.00` when nothing locked, `NA` when no audio came out. On a capture whose tone
+  is continuous it says how steadily the tone was held; on one with no tone it is the false-lock share and should read
+  `0.00`.
 
 replay_ab.sh names each build by its basename and refuses two with the same one, so copy each tree's host to its own
 name. Per-variant flags or settings within one build go in a wrapper script per variant; its name is the variant's

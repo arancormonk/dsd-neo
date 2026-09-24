@@ -28,14 +28,14 @@ BASH = os.environ.get("DSD_TEST_BASH", "bash")
 COLUMNS = [
     "variant", "case", "rep", "errs", "voice", "sync",
     "tone_snr_db", "inband_db", "clip", "audible_ms", "first_audible_ms", "rms_dbfs",
-    "probe_hz", "probe_dbfs", "probe_dbc", "tone", "tone_lock_ms", "rc", "off_path",
+    "probe_hz", "probe_dbfs", "probe_dbc", "tone", "tone_lock_ms", "tone_lock_pct", "rc", "off_path",
 ]
 
 
 def analog_row(build, rep, snr, inband="30.00", audible="1500.00", tone="NA", lock="NA", probe="NA",
-               probe_hz="NA", probe_dbfs="NA", rc="0", off_path="0"):
+               probe_hz="NA", probe_dbfs="NA", rc="0", off_path="0", lock_pct="NA"):
     return [build, "cap.json-fast", str(rep), "0", "0", "0", snr, inband, "0", audible, "0.00", "-36.00",
-            probe_hz, probe_dbfs, probe, tone, lock, rc, off_path]
+            probe_hz, probe_dbfs, probe, tone, lock, lock_pct, rc, off_path]
 
 
 def missing_row(build, rep):
@@ -114,12 +114,12 @@ class ReplayAbReport(unittest.TestCase):
 
     def test_tone_label_reports_modal_value_and_agreement(self):
         rows = [
-            analog_row("a", 1, "20.00", tone="151.4", lock="310.00"),
-            analog_row("b", 1, "20.00", tone="151.4", lock="290.00"),
-            analog_row("a", 2, "20.00", tone="151.4", lock="320.00"),
-            analog_row("b", 2, "20.00", tone="NA", lock="NA"),
-            analog_row("a", 3, "20.00", tone="151.4", lock="300.00"),
-            analog_row("b", 3, "20.00", tone="146.2", lock="280.00"),
+            analog_row("a", 1, "20.00", tone="151.4", lock="310.00", lock_pct="90.00"),
+            analog_row("b", 1, "20.00", tone="151.4", lock="290.00", lock_pct="92.50"),
+            analog_row("a", 2, "20.00", tone="151.4", lock="320.00", lock_pct="88.00"),
+            analog_row("b", 2, "20.00", tone="NA", lock="NA", lock_pct="0.00"),
+            analog_row("a", 3, "20.00", tone="151.4", lock="300.00", lock_pct="91.00"),
+            analog_row("b", 3, "20.00", tone="146.2", lock="280.00", lock_pct="93.50"),
         ]
         write_summary(self.summary, rows)
         result = report(self.summary, "--baseline", "a")
@@ -128,13 +128,19 @@ class ReplayAbReport(unittest.TestCase):
         self.assertRegex(metric_line(result.stdout, "tone", "b"), r"151\.4\s+1/3")
         # Only repeats both builds measured are paired: 290-310 and 280-300.
         self.assertIn("-20.00 +/- 0.00", metric_line(result.stdout, "tone_lock_ms", "b"))
+        # The lock percentage is measured even in a repeat that never locked (0.00, not NA), so every repeat pairs:
+        # +2.50, -88.00 and +2.50.
+        lock_pct = metric_line(result.stdout, "tone_lock_pct", "b")
+        self.assertRegex(lock_pct, r"\s3/3\s")
+        self.assertIn("-27.67 +/- ", lock_pct)
+        self.assertTrue(lock_pct.rstrip().endswith("3/3"), lock_pct)
 
     def test_unmeasured_analog_columns_are_left_out(self):
         rows = [analog_row("a", 1, "20.00"), analog_row("b", 1, "21.00")]
         write_summary(self.summary, rows)
         result = report(self.summary)
         self.assertEqual(result.returncode, 0, result.stdout)
-        for metric in ("tone", "tone_lock_ms", "probe_dbc", "probe_dbfs"):
+        for metric in ("tone", "tone_lock_ms", "tone_lock_pct", "probe_dbc", "probe_dbfs"):
             self.assertNotRegex(result.stdout, rf"(?m)^{metric}[\s@]")
         self.assertRegex(result.stdout, r"(?m)^tone_snr_db\s")
 
@@ -277,12 +283,13 @@ FAKE_HOST = """#!/usr/bin/env bash
 snr=25.00
 tone=NA
 lock=NA
+pct=0.00
 case "$*" in *--fake-boost*) snr=26.00 ;; esac
-case "$*" in *--fake-tone*) tone=D023N lock=312.50 ;; esac
+case "$*" in *--fake-tone*) tone=D023N lock=312.50 pct=87.50 ;; esac
 echo "NOTICE: Total audio errors: 0"
 echo "ANALOG METRIC: rate_hz=48000 total_ms=1500.00 captured_ms=1500.00 audible_ms=1480.00" \\
   "first_audible_ms=20.00 rms_dbfs=-36.00 peak_dbfs=-31.00 clip=0 inband_db=30.50 tone_hz=1000.00" \\
-  "tone_dbfs=-36.00 tone_snr_db=$snr tone=$tone tone_lock_ms=$lock"
+  "tone_dbfs=-36.00 tone_snr_db=$snr tone=$tone tone_lock_ms=$lock tone_lock_pct=$pct"
 echo "ANALOG PROBE: hz=12500.0 dbfs=-100.00 dbc=-64.00"
 echo "ANALOG PROBE: hz=5000.0 dbfs=-80.00 dbc=-44.00"
 # The host's own warning text (tests/engine/analog_replay.c), which replay_ab.sh matches.
@@ -344,6 +351,7 @@ class ReplayAbAnalogMetric(unittest.TestCase):
             self.assertEqual(row["probe_dbc"], "-64.00")
             self.assertEqual(row["tone"], "NA")
             self.assertEqual(row["tone_lock_ms"], "NA")
+            self.assertEqual(row["tone_lock_pct"], "0.00")
             self.assertEqual(row["rc"], "0")
             self.assertEqual(row["off_path"], "0")
 
@@ -395,12 +403,15 @@ class ReplayAbAnalogMetric(unittest.TestCase):
         self.assertEqual(rows[("host.tone", "2")]["tone_lock_ms"], "312.50")
         self.assertEqual(rows[("host.main", "1")]["tone"], "NA")
         self.assertEqual(rows[("host.main", "2")]["tone_lock_ms"], "NA")
+        self.assertEqual(rows[("host.tone", "1")]["tone_lock_pct"], "87.50")
+        self.assertEqual(rows[("host.main", "1")]["tone_lock_pct"], "0.00")
 
         result = report(out / "summary.tsv", "--baseline", "host.main")
         self.assertEqual(result.returncode, 0, result.stdout)
         self.assertRegex(metric_line(result.stdout, "tone", "host.tone"), r"D023N\s+2/2")
         self.assertRegex(metric_line(result.stdout, "tone", "host.main"), r"NA\s+0/2")
         self.assertRegex(metric_line(result.stdout, "tone_lock_ms", "host.main"), r"\s0/2\s+NA")
+        self.assertIn("+87.50 +/- 0.00", metric_line(result.stdout, "tone_lock_pct", "host.tone"))
 
     def test_builds_with_the_same_name_are_rejected(self):
         other = self.tmp / "other"
