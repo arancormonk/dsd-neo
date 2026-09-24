@@ -369,6 +369,7 @@ static const int kRetuneDiagBlocks = 20;
 static uint32_t rtl_stream_bump_output_generation(void);
 static void rtl_stream_signal_output_waiters(struct output_state* outp);
 static void rtl_stream_clear_retune_profile(RtlRetuneProfile* profile);
+static int rtl_stream_clamp_retune_ted_sps(int sps);
 static int rtl_stream_take_pending_retune_profile(RtlRetuneProfile* out_profile, uint32_t request_id,
                                                   uint32_t target_freq_hz);
 static void rtl_stream_store_pending_retune_profile(uint32_t target_freq_hz, int cqpsk_enable, int symbol_rate_hz,
@@ -8584,6 +8585,20 @@ rtl_stream_apply_landing_ted_floor(void) {
     }
 }
 
+/* The timing a switch out of the analog family lands on. The decoder queued its symbol profile timed for the demod rate
+ * the stream published when it picked the mode, and a retune can have settled the device on another rate before this
+ * block boundary; an open times a profile it does not override for the rate it runs at
+ * (rtl_demod_maybe_refresh_ted_sps_after_rate_change()), and so does the switch. The FSK discriminator's profile setter
+ * derives its timing from the rate itself; the CQPSK timing loop takes what it is given, so it is given this. An
+ * override, or a request that leaves the timing alone, is kept as queued. */
+static int
+rtl_stream_landing_ted_sps(int ted_sps, int ted_sps_is_override, int symbol_rate_hz) {
+    if (ted_sps <= 0 || ted_sps_is_override || symbol_rate_hz <= 0 || demod.rate_out <= 0) {
+        return ted_sps;
+    }
+    return rtl_stream_clamp_retune_ted_sps((demod.rate_out + (symbol_rate_hz / 2)) / symbol_rate_hz);
+}
+
 static void
 rtl_stream_consume_demod_profile_request(void) {
     if (!g_profile_req_pending.load(std::memory_order_acquire)) {
@@ -8630,6 +8645,7 @@ rtl_stream_consume_demod_profile_request(void) {
     const bool lands_on_digital = has_demod && analog_family == DSD_RX_FAMILY_DIGITAL && demod.analog_family;
     if (lands_on_digital) {
         rtl_stream_resolve_landing_profile(&cqpsk, &chan, sym_rate);
+        ted_sps = rtl_stream_landing_ted_sps(ted_sps, ted_sps_is_override, sym_rate);
     }
     if (analog_family >= 0) {
         rtl_stream_apply_analog_profile_params(analog_family, analog_kind, analog_width_hz, has_demod ? cqpsk : -1,
@@ -11111,10 +11127,12 @@ family_test_fresh_menu_cqpsk_toggles(const dsd_opts* opts, rtl_stream_test_famil
 }
 
 /* As family_test_switch_to_analog(): the decoder's mode change reaches the stream only as the digital decode modes it
- * notes (@p digital_opts), the family request and the symbol profile svc_publish_symbol_profile() queues. */
+ * notes (@p digital_opts), the family request and the symbol profile svc_publish_symbol_profile() queues. With
+ * @p landed_rate_out_hz > 0 a retune lands after both requests are queued and before the demod thread consumes them,
+ * and the device settles it on that demod rate, finalized as the controller finalizes one. */
 static void
 family_test_switch_to_digital(const dsd_opts* digital_opts, const rtl_stream_test_digital_request* req,
-                              rtl_stream_test_family_switch_result* out) {
+                              int landed_rate_out_hz, rtl_stream_test_family_switch_result* out) {
     out->predicted_digital_output_rate =
         rtl_stream_output_rate_for_family(DSD_RX_FAMILY_DIGITAL, req->cqpsk_enable, req->symbol_rate_hz);
     rtl_stream_set_digital_decode_modes(digital_opts);
@@ -11126,6 +11144,15 @@ family_test_switch_to_digital(const dsd_opts* digital_opts, const rtl_stream_tes
     rc |= rtl_stream_request_demod_profile(req->cqpsk_enable, req->symbol_rate_hz, req->levels, req->channel_profile,
                                            req->ted_sps, 0);
     out->digital_request_rc = rc;
+    if (landed_rate_out_hz > 0) {
+        const int rate_before_hz = demod.rate_out;
+        demod.rate_out = landed_rate_out_hz;
+        demod.capture_rate_device_forced = 1;
+        controller_finalize_rate_chain(&controller, g_stream ? g_stream->opts : NULL, kFamilyTestCenterHz,
+                                       /*mark_reconfigure=*/1, DemodRetuneResetReason::FrequencyRetune,
+                                       kFamilyTestCenterHz, rate_before_hz, NULL);
+        rtl_stream_publish_demod_profile_snapshot();
+    }
     family_test_demod_thread_boundary();
     out->switched_digital = family_test_capture();
     out->generation_after_digital = rtl_stream_output_generation();
@@ -11209,7 +11236,7 @@ rtl_stream_test_analog_family_switch(const dsd_opts* digital_opts, const dsd_opt
     family_test_seed_ring(queued);
     family_test_seed_running_loops();
     rc |= family_test_seed_stale_monitor_state();
-    family_test_switch_to_digital(digital_opts, digital_request, out);
+    family_test_switch_to_digital(digital_opts, digital_request, 0, out);
 
     family_test_restore(saved);
     family_test_release_buffers();
@@ -11217,14 +11244,13 @@ rtl_stream_test_analog_family_switch(const dsd_opts* digital_opts, const dsd_opt
     return rc == 0 ? 0 : -3;
 }
 
-extern "C" int
-rtl_stream_test_analog_start_family_switch(const dsd_opts* digital_opts, const dsd_opts* analog_opts, int rate_hz,
-                                           int forced_rate_out_hz,
-                                           const rtl_stream_test_digital_request* digital_request,
-                                           rtl_stream_test_family_switch_result* out) {
-    if (!digital_opts || !analog_opts || !digital_request || !out || rate_hz <= 0) {
-        return -1;
-    }
+/* rtl_stream_test_analog_start_family_switch(), with @p landed_rate_out_hz > 0 landing a retune on that demod rate
+ * between the digital requests and their consume; fresh_digital is then an open the device forces to that rate. */
+static int
+family_test_analog_start_switch(const dsd_opts* digital_opts, const dsd_opts* analog_opts, int rate_hz,
+                                int forced_rate_out_hz, int landed_rate_out_hz,
+                                const rtl_stream_test_digital_request* digital_request,
+                                rtl_stream_test_family_switch_result* out) {
     *out = {};
     const size_t queued = 64U;
     int initialized_output = 0;
@@ -11239,7 +11265,8 @@ rtl_stream_test_analog_start_family_switch(const dsd_opts* digital_opts, const d
     g_cqpsk_toggle_test_stream.output = &output;
     g_cqpsk_toggle_test_stream.opts = &stream_opts;
     g_stream = NULL; /* fresh opens seed before any pipeline exists */
-    int rc = family_test_seed_open(digital_opts, rate_hz, forced_rate_out_hz);
+    int rc =
+        family_test_seed_open(digital_opts, rate_hz, landed_rate_out_hz > 0 ? landed_rate_out_hz : forced_rate_out_hz);
     out->fresh_digital = family_test_capture();
     family_test_fresh_menu_cqpsk_toggles(digital_opts, out);
     rc |= family_test_seed_open(analog_opts, rate_hz, forced_rate_out_hz);
@@ -11255,12 +11282,36 @@ rtl_stream_test_analog_start_family_switch(const dsd_opts* digital_opts, const d
     out->used_before = ring_used(&output);
     out->generation_before = rtl_stream_output_generation();
     out->generation_after_analog = out->generation_before;
-    family_test_switch_to_digital(digital_opts, digital_request, out);
+    family_test_switch_to_digital(digital_opts, digital_request, landed_rate_out_hz, out);
 
     family_test_restore(saved);
     family_test_release_buffers();
     fsk_reacquire_test_cleanup_output_ring(initialized_output);
     return rc == 0 ? 0 : -3;
+}
+
+extern "C" int
+rtl_stream_test_analog_start_family_switch(const dsd_opts* digital_opts, const dsd_opts* analog_opts, int rate_hz,
+                                           int forced_rate_out_hz,
+                                           const rtl_stream_test_digital_request* digital_request,
+                                           rtl_stream_test_family_switch_result* out) {
+    if (!digital_opts || !analog_opts || !digital_request || !out || rate_hz <= 0) {
+        return -1;
+    }
+    return family_test_analog_start_switch(digital_opts, analog_opts, rate_hz, forced_rate_out_hz, 0, digital_request,
+                                           out);
+}
+
+extern "C" int
+rtl_stream_test_analog_start_family_switch_across_retune(const dsd_opts* digital_opts, const dsd_opts* analog_opts,
+                                                         int rate_hz, int landed_rate_out_hz,
+                                                         const rtl_stream_test_digital_request* digital_request,
+                                                         rtl_stream_test_family_switch_result* out) {
+    if (!digital_opts || !analog_opts || !digital_request || !out || rate_hz <= 0 || landed_rate_out_hz <= 0) {
+        return -1;
+    }
+    return family_test_analog_start_switch(digital_opts, analog_opts, rate_hz, 0, landed_rate_out_hz, digital_request,
+                                           out);
 }
 
 /* Switch the running test stream to the analog monitor and back to D-STAR, noting @p noted_modes (none for NULL) before

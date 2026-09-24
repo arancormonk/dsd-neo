@@ -237,7 +237,11 @@ drained in the same pass of the command queue as the mode change):
   48 kHz. The integer-SPS flag (`sps_is_integer`) is derived for that profile
   too, from the demod rate as an open derives it, and the TED keeps the open's
   floor of two samples per symbol (ProVoice's 9600 sym/s at a 12 kHz DSP rate
-  gets two, where the symbol-profile setter alone would leave one);
+  gets two, where the symbol-profile setter alone would leave one). The TED
+  timing is taken from the demod rate the switch lands on, as an open takes it,
+  not from the rate the decoder read when it queued the profile: a retune can
+  settle the device on another rate first (a CQPSK profile queued at 48 kHz and
+  landing at a forced 78,125 Hz runs 16 samples per symbol, not 10);
 - FM <-> AM: demodulator and de-emphasis swap with a monitor-state reset (AM is
   refused until the front end can demodulate it).
 

@@ -328,6 +328,15 @@ int rtl_stream_test_analog_start_family_switch(const dsd_opts* digital_opts, con
                                                const rtl_stream_test_digital_request* digital_request,
                                                rtl_stream_test_family_switch_result* out);
 
+/* rtl_stream_test_analog_start_family_switch() on a -fA session at @p rate_hz (no forced rate), with a retune landing
+ * between the decoder's digital requests (timed for the rate the stream published when they were made) and the demod
+ * thread's consume: the device settles the retune on @p landed_rate_out_hz and the rate chain is finalized as the
+ * controller finalizes one. fresh_digital is an open of @p digital_opts the device forces to @p landed_rate_out_hz. */
+int rtl_stream_test_analog_start_family_switch_across_retune(const dsd_opts* digital_opts, const dsd_opts* analog_opts,
+                                                             int rate_hz, int landed_rate_out_hz,
+                                                             const rtl_stream_test_digital_request* digital_request,
+                                                             rtl_stream_test_family_switch_result* out);
+
 /* Channel profile after the DSP menu's CQPSK toggle turned CQPSK on and off again, for a P25 C4FM open (at 48 kHz)
  * whose decoder has noted D-STAR as its digital modes (rtl_stream_set_digital_decode_modes()). */
 typedef struct rtl_stream_test_noted_modes_result {

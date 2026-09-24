@@ -661,7 +661,9 @@ Notes:
     an open does, clears the output ring and bumps
     the output generation; a width-only change redesigns the filter from empty histories. A switch to digital also
     keeps the open's floor of two samples per symbol for the TED, which the symbol-profile setter it applies does not
-    (ProVoice at a 12 kHz DSP rate). The analog family never runs
+    (ProVoice at a 12 kHz DSP rate), and times a profile it does not override for the demod rate it lands on, as an
+    open does, not for the rate the decoder read when it queued the profile: a retune can settle the device on
+    another rate in between, and the CQPSK timing loop takes the SPS it is given (`rtl_stream_landing_ted_sps()`). The analog family never runs
     CQPSK: a `-fA` open demodulates FM whatever `DSD_NEO_CQPSK` or the modulation say, as a switch to analog does. The
     CQPSK family after a switch to digital follows the symbol profile requested with it unless `DSD_NEO_CQPSK` is set,
     which decides it as it does at stream open, the channel filter following the family it lands on and the open's
@@ -685,7 +687,8 @@ Notes:
     included (also one requested after a retune moved the rate its check accepted), with the unset default switching
     at a rate that cannot fit 16 kHz instead; a demod
     block boundary
-    between the family request and its symbol profile; a switch whose ring clear meets a decoder read between its
+    between the family request and its symbol profile; a retune that settles a forced 78125 Hz between a `-fA`
+    session's digital requests, timed at its 48 kHz, and their consume; a switch whose ring clear meets a decoder read between its
     copy and its tail store, or a read that loaded the clear's first generation bump and reached the ring before the
     clear; noted digital modes deciding only after a switch to digital and dropped by a new open; the baselines run
     the same demod configuration functions as

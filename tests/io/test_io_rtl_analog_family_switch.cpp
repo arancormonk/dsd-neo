@@ -22,6 +22,9 @@
  * Leaving analog lands on the symbol profile queued after the family request,
  * even when the demod thread reaches a block boundary between the two requests,
  * and even when an older CQPSK toggle was still queued before the family request.
+ * A retune that settles the device on another demod rate after the decoder
+ * timed and queued that profile, before the demod thread consumes it, still
+ * lands on a fresh open at the new rate, its CQPSK timing included.
  *
  * A width-only change on a running analog stream stays inside the family: it
  * drops the channel plan and the channel/half-band histories and nothing else.
@@ -370,6 +373,38 @@ run_analog_start_case(const family_case& c, int rate_hz, int forced_rate_out_hz)
     rc |= expect_int("-fA start: CQPSK and back returns to the FSK discriminator", r.output_kind_after_cqpsk_round_trip,
                      RTL_STREAM_OUTPUT_FSK_DISCRIMINATOR);
     rc |= expect_int("-fA start: the digital family is not the analog family", r.family_active_after_digital, 0);
+    return rc;
+}
+
+/* The decoder times the digital profile it queues for the rate the stream published when it picked the mode (the -fA
+ * session's 48 kHz: ten samples per 4800 sym/s symbol). A retune can settle the device on another rate before the
+ * demod thread reaches the block boundary that consumes the switch, here the 78125 Hz a fixed-grid device forces. The
+ * switch still lands where an open of the mode at that rate would, with the timing that rate gives (sixteen samples per
+ * symbol), for the CQPSK timing loop and the FSK discriminator alike. */
+static int
+run_analog_start_across_retune_case(const family_case& c, int landed_rate_out_hz) {
+    static dsd_opts digital;
+    static dsd_opts analog;
+    DSD_MEMSET(&digital, 0, sizeof digital);
+    DSD_MEMSET(&analog, 0, sizeof analog);
+    c.configure(&digital);
+    analog.analog_only = 1;
+    analog.monitor_input_audio = 1;
+    analog.analog_demod = DSD_ANALOG_DEMOD_FM;
+
+    rtl_stream_test_family_switch_result r;
+    DSD_MEMSET(&r, 0, sizeof r);
+    char label[160];
+    DSD_SNPRINTF(label, sizeof label, "-fA start, %s queued at 48000, landed at %d run", c.name, landed_rate_out_hz);
+    int rc = expect_int(label,
+                        rtl_stream_test_analog_start_family_switch_across_retune(&digital, &analog, 48000,
+                                                                                 landed_rate_out_hz, &c.request, &r),
+                        0);
+    DSD_SNPRINTF(label, sizeof label, "-fA start, %s queued at 48000, landed at %d -> digital", c.name,
+                 landed_rate_out_hz);
+    rc |= expect_int(label, r.digital_request_rc, 0);
+    rc |= expect_fields_equal(label, r.switched_digital, r.fresh_digital);
+    rc |= expect_int("across a retune: the digital family is not the analog family", r.family_active_after_digital, 0);
     return rc;
 }
 
@@ -1150,6 +1185,14 @@ main(void) {
     rc |= run_analog_start_case(c4fm78, 48000, 78125);
     rc |= run_analog_start_case(nxdn60, 48000, 60000);
     rc |= run_analog_start_case(dpmr60_split, 48000, 60000);
+
+    /* A retune settles the device on a forced 78125 Hz between the decoder's requests, timed for the 48 kHz the -fA
+     * session published, and the demod thread's consume. */
+    rc |= run_analog_start_across_retune_case(cases[1], 78125);
+    rc |= run_analog_start_across_retune_case(cases[0], 78125);
+    family_case cqpsk_split_across = cases[1];
+    cqpsk_split_across.request.boundary_between_requests = 1;
+    rc |= run_analog_start_across_retune_case(cqpsk_split_across, 78125);
 
     /* The same switch from a -fA session a CQPSK toggle or a typed DMR row had moved off the monitor output, including
      * the forced-rate resampler decisions and a boundary between the family request and its profile. */
