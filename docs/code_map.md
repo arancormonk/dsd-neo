@@ -488,8 +488,10 @@ installs from `src/engine/trunk_tuning.c` in `src/engine/trunk_tuning_hooks_inst
   63-tap fallback. The analog family (`demod_state::analog_family`, not the WIDE profile, which is also the digital
   fallback and the M17 encoder's) designs from `channel_lpf_width_hz` instead: cutoff width/2 + 600 Hz, the fixed
   1200 Hz Blackman transition, up to `DSD_CHANNEL_LPF_MAX_TAPS` (288), with no Nyquist clamp and no fallback — an
-  unrealizable width leaves no plan (`dsd_channel_lpf_design_analog()` returns -1) and the stream layer never asks for
-  one. 16000 Hz runs the same design call as WIDE, so its taps are bit-identical wherever WIDE's design succeeds.
+  unrealizable width leaves no plan (`dsd_channel_lpf_design_analog()` returns -1) and the block runs with no channel
+  filter at all. The stream layer refuses such a width at start and on every request; only a retune that leaves the
+  stream on another demod rate can keep an explicit width that rate cannot realize (see the IO notes). 16000 Hz runs
+  the same design call as WIDE, so its taps are bit-identical wherever WIDE's design succeeds.
   The plan cache key is (rate_out, profile, width). The SIMD complex FIR kernels size their scratch per call, so the
   288-tap capacity needs no kernel change. Tests: `DSP_CHANNEL_FILTERS`, `DSP_DEMOD_MISC`.
 
@@ -501,7 +503,6 @@ Runtime controls (via `include/dsd-neo/io/rtl_stream_c.h`):
   queued with it), `rtl_stream_get_analog_profile()`,
   `rtl_stream_output_rate_for_family()` (the output rate a pending switch will produce), and
   `rtl_stream_prepare_retune_analog_profile_for_target()` (the same fields bound to a retune target).
-
 - CQPSK control/status: `rtl_stream_toggle_cqpsk`, `rtl_stream_get_cqpsk_status`,
   `rtl_stream_request_cqpsk_reacquire`,
   `rtl_stream_set_ted_sps`/`rtl_stream_get_ted_sps`, `rtl_stream_set_ted_gain`/`rtl_stream_get_ted_gain`,
@@ -562,8 +563,9 @@ Notes:
     leaves the stream on another demod rate resolves the analog channel again for that rate
     (`rtl_demod_refresh_analog_channel_for_rate()`, from `demod_state::analog_width_request_hz`): the unset default
     moves between 16 kHz and the legacy WIDE design, and an explicit width the new rate cannot realize is kept (never
-    clamped), logged with the validator's text, and runs DSP-limited. Only while the monitor output runs: CQPSK
-    toggled on under `-fA` keeps its profile filter across the rate change.
+    clamped), logged with the validator's text, and runs with no channel filter, published as DSP-limited with the
+    DSP rate as its width. Only while the monitor output runs: CQPSK toggled on under `-fA` keeps its profile filter
+    across the rate change.
   - The width-driven filter and the published analog profile follow `dsd_demod_analog_monitor_active()` (analog
     family, `AUDIO_MONITOR` output, CQPSK off), so CQPSK toggled on under `-fA` keeps its P25 CQPSK profile filter.
   - Only the demod thread writes `demod_state` while the pipeline runs. Receive-family requests are queued and applied

@@ -11100,7 +11100,8 @@ if(DSD_HAS_RADIO)
     endfunction()
 
     # Under -fA the front end must stay on the monitor path; the host warns when it
-    # delivers CQPSK symbols instead (the modulation auto-switch, see docs/testing.md).
+    # delivers CQPSK symbols instead (the modulation auto-switch did this before the
+    # analog family stood it down; see docs/testing.md).
     set(_analog_off_path "CQPSK symbols instead of monitor samples")
 
     # 1 kHz at 3 kHz deviation through the default monitor chain: 25.9 dB tone SNR,

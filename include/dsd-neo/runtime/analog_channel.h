@@ -16,8 +16,11 @@
  * width/2, about -30 dB at width/2 + 1200 Hz, and -50 dB or better only from about width/2 + 1450 Hz.
  *
  * Everything here is pure integer arithmetic so that runtime callers can validate a width without linking the DSP
- * module. `src/dsp/demod_pipeline.cpp` static-asserts its design constants against the ones below, so the validator
- * and the filter it describes cannot drift apart.
+ * module, which mirrors the design constants below. `src/dsp/demod_pipeline.cpp` takes its transition from
+ * DSD_ANALOG_CHANNEL_TRANSITION_HZ and static-asserts the guard (half that transition) and the tap capacity. The rest
+ * is pinned at run time by DSP_CHANNEL_FILTERS: the Blackman attenuation the tap count uses (firdes), the tap count at
+ * every rate, and that every width the validator accepts designs while every width it rejects does not (the analog
+ * design calls dsd_analog_width_realizable() itself, which holds the 9/20 cutoff ratio).
  */
 
 #ifndef DSD_NEO_INCLUDE_DSD_NEO_RUNTIME_ANALOG_CHANNEL_H_
@@ -49,7 +52,9 @@ typedef enum dsd_rx_family {
 #define DSD_ANALOG_AM_WIDTH_MAX_HZ               20000
 #define DSD_ANALOG_AM_WIDTH_DEFAULT_HZ           6000
 
-/* Channel filter design constants (mirrored by the DSP, which static-asserts them). */
+/* Channel filter design constants. The DSP takes the transition from here and static-asserts the guard and the tap
+   capacity; DSP_CHANNEL_FILTERS checks the window attenuation and tap counts against firdes, and that the analog
+   design accepts exactly the widths the validator does. */
 #define DSD_ANALOG_CHANNEL_TRANSITION_HZ         1200 /**< Blackman transition width. */
 #define DSD_ANALOG_CHANNEL_GUARD_HZ              600  /**< Cutoff = width/2 + guard (half the transition). */
 #define DSD_ANALOG_CHANNEL_MAX_TAPS              288  /**< Analog channel-filter tap capacity. */
