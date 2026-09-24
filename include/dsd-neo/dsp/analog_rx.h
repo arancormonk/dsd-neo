@@ -58,6 +58,12 @@ enum { DSD_ANALOG_RX_TAP_READ_MS = 20 };
  *   1,128 ms), and none of 100,000 per condition at +10 dB did. No stop of 800,000 at 0 and
  *   +10 dB was dropped later than the loss ceiling (the slowest after 738 ms).
  *
+ * A carrier that keeps dropping out, each time for less than DSD_ANALOG_CARRIER_HANGOVER_MS,
+ * never expires, and a stop under it is dropped later than under a live carrier: past the p95
+ * target but within the loss ceiling. Over 11,264 stops under such carriers (openings of 1 to
+ * 60 ms between dropouts of 10 to 199 ms), 95% were dropped within 465 ms and the slowest after
+ * 693 ms.
+ *
  * Speech louder than the tone is outside the contract: under transmitter-filtered speech 10 dB
  * above the tone, 0.21% of 50,000 onsets locked later than the lock ceiling (the slowest after
  * 1,314 ms). docs/testing.md ("Ceiling tail") has the per-condition sweeps.

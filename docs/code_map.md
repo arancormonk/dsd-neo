@@ -584,8 +584,13 @@ installs from `src/engine/trunk_tuning.c` in `src/engine/trunk_tuning_hooks_inst
     and 0.2 Hz off at 0 dB within 400 ms on at least 95% of them (all within 500 ms); over 10,000 starts, 3.4% of
     0.2 Hz-off tones at 0 dB take longer than 400 ms (`docs/testing.md`). From about 0.5 Hz off a tone locks late or not
     at all. A carrier with no lock after 500 ms of evaluation reads `NONE`, on the first hop after it however the input
-    is blocked (carrier time is counted per sample), and a tone that starts later still locks. Every threshold is a
-    ratio, so the RTL live (~1/pi), replay and int16 PCM scales read the same.
+    is blocked (carrier time is counted per sample), and a tone that starts later still locks. Samples from inside the
+    carrier hangover keep the correlators' time, but a hop whose newest 100 ms (what the hold test reads) holds nothing
+    else keeps the verdict, so a dropout's silence alone never ends a lock or makes one. Deciding by the sample that
+    closes a hop instead would let a carrier that keeps dropping out keep a stopped tone for good, once its openings
+    missed every hop's end; this way each opening makes the two hops that read it count, and a dropout the hangover
+    allows leaves at most three hops in a row without one. Every threshold is a ratio, so the RTL live (~1/pi), replay
+    and int16 PCM scales read the same.
   - Invariant: resets never happen in `noCarrier()` / `dsd_engine_reset_no_carrier_state()` (they run every ~375 ms in
     analog mode and would stop any tone locking). They happen in `dsd_frame_sync_reset_acquisition()` (row commit and
     leave, trunk-scan target switch, decode-mode change, scope resume, RR apply), on an RTL stream-generation or

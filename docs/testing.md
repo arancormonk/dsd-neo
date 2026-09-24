@@ -331,10 +331,13 @@ user guide states; the per-row pins are tighter and record what these seeds meas
   a 120 and a 240 degree one alike, the flip landing anywhere inside a sub-block; at 0 dB, with a 180 degree flip held
   400 ms before the carrier drops, 91% of the bursts are caught within 150 ms and every caught one within the loss
   contract, and the 4 of 200 that are missed end with the carrier drop, within its 200 ms hangover (the row asserts 89%
-  and at most 5 missed); a carrier with no tone reads `detecting` until 500 ms of it and `none` by the next hop, and a
-  tone that starts after that verdict still locks within the lock bound; the verdict, the no-tone one included, is
-  identical at the three input scales and for any block size; the front end runs from 2400 Hz up to its 320 kHz limit
-  and reports itself unavailable outside it.
+  and at most 5 missed); a tone that stops under a carrier that keeps dropping out (up for 20 ms of every 40 to 180 ms,
+  a voice-band tone and noise between stretches of digital silence, so the carrier never expires) is dropped at every
+  rate, period and block size, 95% of the 100 stops within 427 ms and all within 457 ms, and nothing locks again (the
+  row asserts the 800 ms loss ceiling only, since the p95 target is for a live carrier); a carrier with no tone reads
+  `detecting` until 500 ms of it and `none` by the next hop, and a tone that starts after that verdict still locks
+  within the lock bound; the verdict, the no-tone one included, is identical at the three input scales and for any
+  block size; the front end runs from 2400 Hz up to its 320 kHz limit and reports itself unavailable outside it.
 
 Fixed seeds say what the detector does on those seeds, not how often it misses in the long run. The long-run figures
 below come from wider seed sweeps run offline over the same generators and the same core (x86-64 at -O0 and -O2 give
@@ -351,6 +354,12 @@ identical results), and they are the numbers the user guide quotes:
   slowest 344 ms) and 1.1% missed, where the carrier drop that follows ends the lock. The 120 and 240 degree variants,
   40,000 each: at +10 dB 12 and 13 missed and 4 and 1 beyond 150 ms (the slowest 244 ms); at 0 dB 8.9% beyond 150 ms
   (the slowest 408 ms) and 8.0% missed.
+- Loss under a carrier that keeps dropping out, 11,264 stops (openings of 1, 5, 20 and 60 ms between dropouts of 10 to
+  199 ms, the stop anywhere inside a hop, at 0 and +10 dB, with and without a voice-band tone in the openings): none was
+  held, p95 465 ms, 30% beyond 350 ms and the slowest 693 ms, inside the loss ceiling. A hop changes the verdict only
+  when its newest 100 ms heard the carrier, so each opening makes the two hops that read it count, and a dropout the
+  hangover allows leaves at most three hops in a row that do not; if every hop that closed inside a dropout kept the
+  verdict instead, openings that missed every hop's end would keep the stopped tone for good.
 - Ceiling tail, sweeps up to a hundred times larger: over 100,000 starts each, the exact tone at +10 and 0 dB and
   0.2 and 0.35 Hz off at +10 dB stayed within the 700 ms lock ceiling (443, 664, 485 and 585 ms at the slowest), while
   0.2 Hz off at 0 dB passed it twice (725 ms); over 1,000,000 starts at 0 dB, 8 exact tones passed it (757 ms, and one

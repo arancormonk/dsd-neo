@@ -521,7 +521,10 @@ tone setting, and it runs with `-o null` too.
   missed. A missed burst leaves the tone to the carrier drop that follows, which ends it within the 200 ms hangover. A
   carrier with no tone reads `detecting` until 500 ms of it have been evaluated and `none` by the next 50 ms step; a
   tone that starts after that, such as one a repeater adds after its kerchunk, is still confirmed within 400 ms of its
-  own start.
+  own start. A tone that stops under a carrier that keeps dropping out, each time for less than the 200 ms hangover
+  (squelch chatter on the noise after a transmission, say), is still dropped, though later than under a steady
+  carrier: over 11,264 seeded stops under such carriers (openings of 1 to 60 ms between dropouts of 10 to 199 ms), 95%
+  were dropped within 465 ms and all within 800 ms (the slowest 693 ms).
 - The received tone is forgotten when the receiver moves or the session changes: a frequency set from a frontend or a
   spectrum tap, any other retune the RTL stream or the tuning hooks report (UDP retune, rigctl-driven tuning), a
   `-Y` scan step (including one that failed after rigctl had already moved the radio), a manual channel cycle or scan
