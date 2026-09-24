@@ -129,7 +129,8 @@ dsd-neo -fA --iq-replay tests/fixtures/iq/nfm_ctcss_real.iq.json --iq-replay-rat
   long as the front end stays on the monitor path.
 - Under `-fA` the modulation auto-switch stands down, so a carrier within a few hertz of 0 Hz (`am_airband_real`),
   which votes for CQPSK, no longer moves the front end to the P25 CQPSK path, and the monitor delivers the whole
-  capture. `dsd-neo_test_analog_replay` warns if the front end ever delivers CQPSK symbols instead of monitor audio.
+  capture. No other symbol profile the sync hunt requests reaches the RTL front end in analog-only mode either.
+  `dsd-neo_test_analog_replay` warns if the front end ever delivers CQPSK symbols instead of monitor audio.
   `docs/testing.md` has the details.
 - `tests/fixtures/iq` carries short analog captures (`nfm_*`, `am_airband_real`), and
   `dsd-neo_test_analog_replay` scores the monitor's audio from any capture. `docs/testing.md` covers both, the

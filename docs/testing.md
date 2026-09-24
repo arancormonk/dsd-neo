@@ -424,7 +424,11 @@ Known gaps and caveats:
   path whatever the carrier offset, and replay of the excerpt is sample-deterministic. Two tests pin it:
   `FRAME_SYNC_INTERNAL_HELPERS` feeds the switch CQPSK-favouring metrics under the analog preset and requires no vote
   and no demod profile, with no clock involved, and `DECODE_IQ_ANALOG_NO_MOD_AUTO_SWITCH` replays the excerpt under
-  `-fA` and requires all 8000 ms on the monitor path. The analog replay host still warns whenever the front end
+  `-fA` and requires all 8000 ms on the monitor path. The vote is not the hunt's only request: every symbol profile the
+  sync hunt asks for goes through `rtl_maybe_apply_demod_profile()`, which sends the RTL front end nothing in
+  analog-only mode, so a two-level profile the hunt re-normalises when its dwell runs out (a live switch to `-fA` from
+  D-STAR leaves the hunt on 4800/2) cannot narrow the monitor to a digital channel either; `FRAME_SYNC_INTERNAL_HELPERS`
+  pins that guard on both paths. The analog replay host still warns whenever the front end
   delivers CQPSK symbols, since symbols are not samples at the output rate and its stream clock then does not measure
   stream time, and every registered `-fA` case fails on that warning (`NOT_EXPECTED`); `tools/replay_ab.sh` leaves
   such repeats out (its `off_path` column). An AM case on this excerpt (`-fM`) carries the same guard.

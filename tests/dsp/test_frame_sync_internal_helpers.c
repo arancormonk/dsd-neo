@@ -2968,36 +2968,49 @@ test_analog_family_never_auto_switches_modulation(void) {
     dsd_rtl_stream_metrics_hooks_set(NULL);
 }
 
+/* An RTL session on the analog monitor (-fA) or, as the control, on a digital preset. */
+static void
+init_rtl_profile_session(dsd_opts* opts, dsd_state* state, int analog, int digital_frame_is_dstar) {
+    static int fake_rtl_context;
+    reset(opts, state);
+    if (analog) {
+        opts->analog_only = 1;
+        opts->monitor_input_audio = 1;
+    } else if (digital_frame_is_dstar) {
+        opts->frame_dstar = 1;
+    } else {
+        opts->frame_p25p1 = 1;
+    }
+    opts->audio_in_type = AUDIO_IN_RTL;
+    state->rtl_ctx = (struct RtlSdrContext*)&fake_rtl_context;
+    install_fake_snr_hooks();
+    reset_fake_profile_capture();
+}
+
 /*
- * The analog monitor has no symbol clock: whatever the modulation votes decide while it runs,
- * the RTL front end must not be handed a symbol profile. A CQPSK one turns the stream's
- * monitor audio into symbols, which silenced the monitor and received-tone detection with it
- * (issue #522: a -fA replay that opened on quiet audio decoded nothing at all). The same votes
- * on a digital session are the control: there they do reach the front end.
+ * The analog monitor has no symbol clock: nothing the sync hunt decides while it runs may hand
+ * the RTL front end a symbol profile. A CQPSK one turns the stream's monitor audio into symbols,
+ * which silenced the monitor and received-tone detection with it (issue #522: a -fA replay that
+ * opened on quiet audio decoded nothing at all), and a digital channel profile narrows it. Every
+ * profile request the hunt makes goes through one helper, and two paths reach it: the
+ * modulation vote, and the dwell running out on a two-level profile, which re-normalises its
+ * modulation (a live switch to -fA from D-STAR leaves the hunt on 4800/2). The same calls on a
+ * digital session are the control: there they do reach the front end.
  */
 static void
 test_analog_monitor_never_requests_rtl_symbol_profiles(void) {
     static dsd_opts opts;
     static dsd_state state;
-    static int fake_rtl_context;
 
     for (int analog = 1; analog >= 0; analog--) {
         int lastt = 24;
-        reset(&opts, &state);
-        if (analog) {
-            opts.analog_only = 1;
-            opts.monitor_input_audio = 1;
-        } else {
-            opts.frame_p25p1 = 1;
-        }
-        opts.audio_in_type = AUDIO_IN_RTL;
-        state.rtl_ctx = (struct RtlSdrContext*)&fake_rtl_context;
+        init_rtl_profile_session(&opts, &state, analog, 0);
         state.carrier = 1;
         dsd_frame_sync_reset_mod_state();
         set_fake_snr(-100.0, 4.0, -100.0, 12.0);
-        install_fake_snr_hooks();
-        reset_fake_profile_capture();
 
+        /* CQPSK-favouring metrics: whether or not the vote runs under -fA, only the digital
+           session's switch reaches the front end. */
         frame_sync_maybe_auto_switch_modulation(&opts, &state, 24, &lastt);
         lastt = 24;
         frame_sync_maybe_auto_switch_modulation(&opts, &state, 24, &lastt);
@@ -3006,6 +3019,25 @@ test_analog_monitor_never_requests_rtl_symbol_profiles(void) {
         } else {
             assert(state.rf_mod == 1);
             assert(g_profile_set_calls == 1 && g_profile_cqpsk == 1);
+        }
+        dsd_rtl_stream_metrics_hooks_set(NULL);
+
+        init_rtl_profile_session(&opts, &state, analog, 1);
+        state.rf_mod = 0;
+        state.sps_hunt_idx = DSD_FRAME_SYNC_SPS_PROFILE_4800_2;
+        state.sps_hunt_counter =
+            dsd_frame_sync_sps_hunt_dwell_passes(&opts, &state) * DSD_FRAME_SYNC_NO_SYNC_PASS_SYMBOLS;
+        state.samplesPerSymbol = 10;
+        state.symbolCenter = 4;
+        state.min = -3.0f;
+        state.max = 3.0f;
+        frame_sync_no_sync_sps_hunt(&opts, &state);
+        /* The hunt re-normalised the binary profile to GFSK, so the request was made. */
+        assert(state.sps_hunt_idx == DSD_FRAME_SYNC_SPS_PROFILE_4800_2 && state.rf_mod == 2);
+        if (analog) {
+            assert(g_profile_set_calls == 0);
+        } else {
+            assert(g_profile_set_calls == 1 && g_profile_cqpsk == 0 && g_profile_levels == 2);
         }
         dsd_rtl_stream_metrics_hooks_set(NULL);
     }
