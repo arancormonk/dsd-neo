@@ -422,7 +422,8 @@ installs from `src/engine/trunk_tuning.c` in `src/engine/trunk_tuning_hooks_inst
   `rtl_stream_request_analog_profile()` makes before it queues, refusal logged the same way); a refusal fails the
   command with a toast and leaves the mode, options, sinks and front end as they were.
   `DSD_APP_CMD_CONFIG_APPLY` runs the same sink and publish sequence when its `[mode]` moves the session between the
-  analog and digital families; a digital-to-digital `[mode]` change keeps its earlier behaviour, except that ProVoice
+  analog and digital families, after the same check when the move is onto the analog family (a refusal leaves the
+  whole config unapplied); a digital-to-digital `[mode]` change keeps its earlier behaviour, except that ProVoice
   (or `-8`) also gets the raw sink it writes to. Tests:
   `APP_COMMAND_QUEUE`, `APP_CONTROL_ACTIONS_RTL`.
 - Shared display decisions, so no frontend has to restate one: `include/dsd-neo/app_control/call_view.h` and

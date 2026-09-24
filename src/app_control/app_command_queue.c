@@ -5000,10 +5000,30 @@ cfg_airspy_settings_valid(const dsdneoUserConfig* cfg) {
     return !cfg->airspy_invalid && dsd_airspy_config_valid(&cfg->airspy);
 }
 
+/*
+ * Asked before anything changes, as DSD_APP_CMD_DECODE_MODE_SET asks: a [mode] that moves a running RTL session onto
+ * the analog monitor publishes the analog receive profile (apply_cfg_receive_family_change()), and a front end that
+ * would refuse it (logged with the reason) leaves the whole config unapplied, instead of an Analog decoder on a
+ * digital front end.
+ */
+static int
+cfg_check_receive_family(const dsd_opts* opts, dsd_state* state, const dsdneoUserConfig* cfg) {
+    if (!cfg->has_mode || opts->analog_only || svc_check_mode_receive_profile(opts, state, cfg->decode_mode) == 0) {
+        return UI_CMD_APPLY_COMPLETED;
+    }
+    ui_set_toast(state, 4, "Config not applied: RTL front end refused the %s channel (see log)",
+                 dsd_decode_mode_display_name(cfg->decode_mode));
+    return UI_CMD_APPLY_FAILED;
+}
+
 static int
 cfg_prepare_runtime_apply(dsd_opts* opts, dsd_state* state, const dsdneoUserConfig* cfg) {
     if (!cfg_airspy_settings_valid(cfg)) {
         return UI_CMD_APPLY_INVALID_PAYLOAD;
+    }
+    const int family_rc = cfg_check_receive_family(opts, state, cfg);
+    if (family_rc != UI_CMD_APPLY_COMPLETED) {
+        return family_rc;
     }
     /* Refused before any mutation: the conventional scanner and a trunk-scan
      * coordinator are exclusive tuner owners (same rule as the scanner toggle). */

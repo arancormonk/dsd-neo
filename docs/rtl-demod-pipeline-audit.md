@@ -223,11 +223,11 @@ store, and the clear takes it too, so a read in flight finishes before the clear
 (and is discarded by the generation bump) instead of storing its old tail over
 the cleared indices, which would read as a ring full of the old family's samples.
 
-A decode-mode change asks the running front end first
-(`rtl_stream_check_analog_profile()`, the checks a request makes before it
-queues): a mode whose analog profile the front end would refuse fails with a
-toast and leaves the decoder's mode as it was, so the decoder and the front end
-never disagree about the family.
+A decode-mode change, from the mode control or a config apply, asks the
+running front end first (`rtl_stream_check_analog_profile()`, the checks a
+request makes before it queues): a mode whose analog profile the front end would
+refuse fails with a toast and leaves the decoder's mode as it was, so the
+decoder and the front end never disagree about the family.
 
 Toggling CQPSK on under `-fA` leaves the analog family flag set but takes the
 output off the monitor, so that stream keeps its P25 CQPSK profile filter and

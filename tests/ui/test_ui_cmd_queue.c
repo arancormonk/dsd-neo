@@ -4858,6 +4858,65 @@ test_config_apply_switches_rtl_receive_family(void) {
     freeState(&state);
     return rc;
 }
+
+/*
+ * A config whose [mode] picks Analog on a live digital RTL session is asked about before it is applied, as
+ * DECODE_MODE_SET is: when the running front end would refuse the analog profile (an explicit NFM width its demod rate
+ * cannot realize, say), the whole config is refused with a toast and the session keeps its digital mode, front end,
+ * sink and options. Applying the preset first would leave an Analog decoder on the digital demodulator, and picking
+ * Analog again would take the already-selected shortcut and never retry. Once the front end takes the profile, the
+ * same config switches. A config that stays digital is never asked about.
+ */
+static int
+test_config_apply_refused_analog_profile_changes_nothing(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static void* fake_ctx[2];
+    int rc = 0;
+    init_decode_mode_context(&opts, &state);
+    opts.audio_in_type = AUDIO_IN_RTL;
+    state.rtl_ctx = (RtlSdrContext*)fake_ctx;
+    rc |= submit_config_mode(&opts, &state, DSDCFG_MODE_DMR, "config refusal: dmr start");
+    opts.analog_nfm_bandwidth_hz = 25000;
+
+    reset_rx_family_wrap();
+    g_analog_check_result = -1;
+    state.ui_msg[0] = '\0';
+    rc |= submit_config_mode(&opts, &state, DSDCFG_MODE_ANALOG, "config refusal: analog");
+    rc |= expect_int("config refusal: front end asked once", g_analog_check_calls, 1);
+    rc |= expect_int("config refusal: asked for the analog family", g_analog_check_family, DSD_RX_FAMILY_ANALOG);
+    rc |= expect_int("config refusal: asked for NFM", g_analog_check_kind, DSD_ANALOG_DEMOD_FM);
+    rc |= expect_int("config refusal: asked for the configured width", g_analog_check_width_hz, 25000);
+    rc |= expect_int("config refusal: decoder stays digital", opts.analog_only, 0);
+    rc |= expect_int("config refusal: DMR still decoded", opts.frame_dmr, 1);
+    rc |= expect_int("config refusal: mode still DMR", dsd_infer_decode_mode_preset(&opts) == DSDCFG_MODE_DMR, 1);
+    rc |= expect_int("config refusal: no family request", g_analog_req_calls, 0);
+    rc |= expect_int("config refusal: no symbol profile", g_demod_req_calls, 0);
+    rc |= expect_int("config refusal: no raw sink opened", g_ensure_analog_calls, 0);
+    rc |= expect_int("config refusal: toast names the refusal", strstr(state.ui_msg, "refused") != NULL, 1);
+
+    /* The front end takes it now: the same config switches. */
+    reset_rx_family_wrap();
+    rc |= submit_config_mode(&opts, &state, DSDCFG_MODE_ANALOG, "config accepted: analog");
+    rc |= expect_int("config accepted: front end asked", g_analog_check_calls, 1);
+    rc |= expect_int("config accepted: decoder on analog", opts.analog_only, 1);
+    rc |= expect_int("config accepted: analog family requested", g_analog_req_family, DSD_RX_FAMILY_ANALOG);
+    rc |= expect_int("config accepted: width travels", g_analog_req_width_hz, 25000);
+    rc |= expect_int("config accepted: raw sink ensured", g_ensure_analog_calls, 1);
+
+    /* Back to a digital [mode]: never asked about. */
+    reset_rx_family_wrap();
+    g_analog_check_result = -1;
+    rc |= submit_config_mode(&opts, &state, DSDCFG_MODE_DMR, "config digital: dmr");
+    rc |= expect_int("config digital: front end not asked", g_analog_check_calls, 0);
+    rc |= expect_int("config digital: DMR applied", opts.analog_only == 0 && opts.frame_dmr == 1, 1);
+
+    g_analog_check_result = 0;
+    opts.analog_nfm_bandwidth_hz = 0;
+    state.rtl_ctx = NULL;
+    freeState(&state);
+    return rc;
+}
 #endif
 
 #ifdef DSD_NEO_TEST_IO_CONTROL_WRAP
@@ -5017,6 +5076,7 @@ main(void) {
     rc |= test_decode_mode_set_leaves_analog_family_off_the_monitor();
     rc |= test_typed_row_republish_follows_configured_family();
     rc |= test_config_apply_switches_rtl_receive_family();
+    rc |= test_config_apply_refused_analog_profile_changes_nothing();
 #endif
 #ifdef DSD_NEO_TEST_IO_CONTROL_WRAP
     rc |= test_dmr_policy_command_ticks_owner(DSD_APP_CMD_LOCKOUT_SLOT);
