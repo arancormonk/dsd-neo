@@ -134,10 +134,11 @@ int rtl_demod_apply_analog_channel(struct demod_state* demod, int kind, int expl
 /**
  * Resolve the analog channel again after rate_out changed under a running stream (a retune the device settled on
  * another rate). The unset default moves between the default width and the legacy WIDE design as the new rate
- * allows. An explicit width stays as requested even when the new rate cannot realize it: the channel then has no
- * width-driven plan and runs with no channel filter, published as DSP-limited. No-op unless the analog monitor output
- * is running on the analog channel (dsd_demod_analog_monitor_active()): CQPSK toggled on under the analog family, or
- * a typed digital scan row's symbol profile, keeps its own profile filter.
+ * allows. An explicit width stays as requested, never clamped or swapped for another design; when the new rate cannot
+ * realize it the channel has no width-driven plan, so the caller must not run the stream on it (the RTL stream refuses
+ * a retune that lands there, and stops when the device will not leave such a rate). No-op unless the analog monitor
+ * output is running on the analog channel (dsd_demod_analog_monitor_active()): CQPSK toggled on under the analog
+ * family, or a typed digital scan row's symbol profile, keeps its own profile filter.
  *
  * @return 0, or -1 with the validator's text in @p err when the explicit width no longer fits the rate.
  */

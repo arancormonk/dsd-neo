@@ -193,9 +193,10 @@ void svc_publish_symbol_profile(const dsd_opts* opts, dsd_state* state, dsd_deco
  * Only a mode that moves the front end onto the analog family can be refused (an analog width the running demod rate
  * cannot realize, for one): rtl_stream_check_analog_profile() holds it to the running stream's rate and logs a
  * refusal with the validator's text. A caller that gets -1 leaves the decoder's mode as it was, so the decoder and the
- * front end never disagree about the family. This is the rate check such a switch gets: the request
- * svc_publish_symbol_profile() makes once the caller has committed is not refused on a rate a retune moved in
- * between, and lands at whatever rate the stream is on.
+ * front end agree about the family. The request svc_publish_symbol_profile() makes once the caller has committed is
+ * held to the same rules again, at the rate the stream runs when it is made and when it lands: only a retune that
+ * moves the rate in between gets it refused there, logged, with the front end kept on its receive profile rather than
+ * running the width without its channel filter.
  *
  * @return 0 when the front end would take it, or when @p mode publishes no analog profile here (a digital mode, the
  *         M17 encoder, no running RTL stream, or a scope update that defers the publish); -1 when it would refuse it.

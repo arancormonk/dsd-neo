@@ -129,8 +129,8 @@ Enable rule and validation:
   land: a retune can settle the device on another rate after a live request was
   checked against the published rate, so the demod thread holds the request to
   the rate it is on when it applies it, and refuses it there, as it would have
-  had the retune come first. A live request that moves the stream onto the
-  monitor is the exception to both (see Live Switching below).
+  had the retune come first. That includes a request that moves the stream onto
+  the monitor (see Live Switching below).
 - The design uses `rate_out`, which is the complex rate the channel filter runs
   at only while `post_downsample` is 1. Live sources always run that way; only
   IQ replay sidecars can set a larger post-demod decimation, and there a
@@ -160,19 +160,29 @@ Enable rule and validation:
 - A retune on any `AUDIO_MONITOR` stream resets the de-emphasis, DC, audio-LPF
   and squelch-envelope state and the channel, half-band and resampler histories
   to their fresh-open values.
-- When a retune leaves the stream on a different demod rate, the analog channel
-  is resolved again for that rate: the unset default moves between the 16 kHz
-  design and the legacy WIDE design, and an explicit width the new rate cannot
-  realize is logged with the validator's text and runs unfiltered (DSP-limited)
-  rather than being clamped. Unfiltered is the deliberate choice here: the old
-  taps belong to the old rate, a clamp or the legacy design would replace the
-  width that was asked for, and the running stream has no other profile to fall
-  back to. Frontends show the channel as DSP-limited, and the log names the
-  widths the new rate fits. A retune profile that would land on such a rate is
-  refused instead (see Live Switching), because there the front end still has
-  its current profile to keep. This applies only while the monitor output runs
-  on the analog channel: CQPSK toggled on under `-fA`, or a typed digital scan
-  row's profile, keeps its own profile filter.
+- When a retune leaves the stream on a different demod rate (a device that
+  settles on another rate than it delivered before), the analog channel is
+  resolved again for that rate: the unset default moves between the 16 kHz
+  design and the legacy WIDE design, published as DSP-limited where the rate
+  cannot fit 16 kHz. An explicit width the new rate cannot realize is never
+  clamped, swapped for the legacy design, or run without its channel filter:
+  the retune is refused before it finalizes
+  (`controller_refuse_retune_for_analog_width()`), logged with the validator's
+  text (once per kind, width and rate), the device goes back to the capture
+  frequency and rate it had, where the width runs, and the retune fails as a
+  retune that could not be applied does (`RTL_STREAM_TUNE_FAILED`,
+  `NOTICE: Retune failed`). A retune profile for the target that switches to
+  the digital family, or to an analog width the new rate fits, takes the
+  monitor's width away and is not refused for it; one that carries only a
+  symbol profile is held like a bare retune. Should the device report another
+  rate the width cannot run at even after it was put back, no receive profile
+  the stream can keep runs that width, so the stream stops as a start at that
+  rate fails: logged with the validator's text, reported as a configuration
+  input failure. This applies only while the monitor output runs on the analog
+  channel: CQPSK toggled on under `-fA`, or a typed digital scan row's profile,
+  keeps its own profile filter. A retune asks the device for the same capture
+  rate every time, so this guards against a device that reports a different
+  rate than it did before.
 
 ### Live Switching
 
@@ -230,19 +240,18 @@ A decode-mode change, from the mode control or a config apply, asks the
 running front end first (`rtl_stream_check_analog_profile()`, which holds the
 analog profile to the rate the stream publishes): a mode whose analog profile
 the front end would refuse fails with a toast and leaves the decoder's mode as
-it was, so the decoder and the front end never disagree about the family. That
-check is the only rate check a switch onto the monitor gets. The request the
-command makes once it has committed is held only to the rules that do not
-depend on the rate (kind, range, `DSD_NEO_CHANNEL_LPF`), and the demod thread
-lands it at the rate it finds, because a retune can move the rate after the
-check and a refusal then would leave the Analog decoder on a digital front end.
-A width that rate cannot realize is kept (never clamped or swapped for another
-design), logged with the validator's text and published as DSP-limited, as a
-retune right after the switch would leave it. The same holds for the
-channel-scan leave, which restores an analog session's configured family. A
-width change on the running monitor is held to the published rate when it is
-requested and to the rate the demod thread finds when it applies it; refused
-either time, the monitor keeps its profile.
+it was, so the decoder and the front end agree about the family. The request
+the command makes once it has committed is held to the same rules again: to
+the published rate when it is made, and to the rate the demod thread finds
+when it applies it, like any analog request. Only a retune that moves the rate
+between the check and the switch gets it refused there; the refusal is logged
+with the validator's text and the front end stays on the digital family,
+rather than run the width without its channel filter (the decoder keeps the
+Analog mode it committed to, and the log names the fix). The same holds for
+the channel-scan leave, which restores an analog session's configured family,
+and for a width change on the running monitor, which keeps its profile when
+refused. The unset NFM default is never refused for its rate: a switch lands on
+the legacy design or with the channel filter off, as an open at that rate does.
 
 Toggling CQPSK on under `-fA` leaves the analog family flag set but takes the
 output off the monitor, so that stream keeps its P25 CQPSK profile filter and
@@ -318,7 +327,9 @@ invariant to it, so it is left as is.
   `-fA` open under `DSD_NEO_CQPSK=1` (FM monitor) and the AM refusal; `IO_RTL_RETUNE_PREPARE` covers the analog retune resets, the
   coefficient refresh after a forced rate change, the channel a rate change
   resolves (the fallback prototype's width published past the tap capacity),
-  and analog retune profiles;
+  the retune refused when its rate cannot realize an explicit width (the
+  capture, centre, rate and width put back), the stop when the device does not
+  return to a rate that fits it, and analog retune profiles;
   `IO_RTL_ANALOG_FAMILY_SWITCH` checks that digital -> analog -> digital ends on
   a fresh open for P25 C4FM/CQPSK, DMR, NXDN48 and dPMR, at unforced rates and at
   forced 78,125 and 60,000 Hz rates, under `DSD_NEO_CQPSK=0`/`=1` and with the
@@ -334,9 +345,10 @@ invariant to it, so it is left as is.
   profiles a running stream's rate or post-demod decimation cannot realize
   (refused before anything is queued, or at the rate a retune moved the stream
   to before the demod thread consumed it), a DMR session's switch onto the
-  monitor that the check refuses at its rate while the request itself is not
-  held to it, and one requested after a retune moved the rate its check
-  accepted (landing DSP-limited), all with the stream keeping the
+  monitor refused the same ways (at its rate, at the rate a retune landed
+  before the switch was consumed, and when requested after a retune moved the
+  rate its check accepted), with the unset default switching at a rate that
+  cannot fit 16 kHz instead, all with the stream keeping the
   options snapshot it opened with, and a switch whose ring clear meets a decoder
   read between its copy and its tail store (`RUNTIME_RINGS` holds the replay
   reader to the same contract); `IO_RTL_ANALOG_OPEN` opens IQ

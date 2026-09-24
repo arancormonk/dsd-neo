@@ -104,6 +104,13 @@ int rtl_stream_destroy(RtlSdrContext* ctx);
 /* Control */
 /**
  * @brief Tune to a new center frequency.
+ *
+ * A retune the device settles on another demod rate is refused when that rate cannot realize the explicit width the
+ * running analog monitor runs (dsd_analog_width_check()): the refusal is logged with the validator's text, the device
+ * goes back to the capture frequency and rate it had, and the tune fails. When the device does not return to a rate
+ * that fits the width, the stream stops as a start at that rate fails (logged, reported as a configuration input
+ * failure), rather than run the width without its channel filter.
+ *
  * @param ctx Stream context.
  * @param center_freq_hz New center frequency in Hz.
  * @return rtl_stream_tune_result: 0 on success, 1 when deferred, negative on error/timeout.
@@ -257,15 +264,14 @@ int rtl_stream_request_demod_profile(int cqpsk_enable, int symbol_rate_hz, int l
  * Covers a width-only change, an FM<->AM switch and an analog<->digital switch. The request is validated on the
  * caller's thread, then applied by the demod thread between blocks, before any demod profile queued after it; a newer
  * request overwrites an unconsumed older one, and drops any demod profile queued before it (for a digital request, the
- * symbol profile that follows is the one the switch lands on). A width or kind change on the running analog monitor
- * is validated against the published demod rate, and checked again by the demod thread against the rate the stream is
- * on when it applies it (a retune may have moved it): refused either time, it is logged and the running profile kept.
- * A request that moves a running stream onto the analog monitor is held only to the rules that do not depend on the
- * rate (kind, range, DSD_NEO_CHANNEL_LPF): its caller has already put its decoder on the analog mode, on
- * rtl_stream_check_analog_profile() against the published rate or as the session's configured family, so a refusal
- * on a rate a retune moved since would leave that decoder on a digital front end. It lands at the rate the demod
- * thread finds, as a retune right after the switch would leave it: a width that rate cannot realize is kept (never
- * clamped or replaced), logged with the validator's text and published as DSP-limited. With no pipeline running
+ * symbol profile that follows is the one the switch lands on). An analog request, a width or kind change on the
+ * running monitor and a switch onto the monitor alike, is validated against the published demod rate, and checked
+ * again by the demod thread against the rate the stream is on when it applies it (a retune may have moved it). A width
+ * that rate cannot realize is refused either time, never clamped, replaced or run without its channel filter: the
+ * refusal is logged with the validator's text and the front end keeps its current receive profile (a digital session
+ * asked to switch stays on the digital family). The unset NFM default is never refused for its rate. A refusal at the
+ * demod thread reaches the caller only through that log: a decoder that has already committed to Analog stays on it,
+ * which is why a decode-mode change asks rtl_stream_check_analog_profile() before it commits. With no pipeline running
  * there is nothing to switch and no demod rate to check against: only the kind, range and DSD_NEO_CHANNEL_LPF rules
  * apply, and the next stream open configures the front end from the options and checks the width against the rate it
  * actually delivers.
@@ -286,7 +292,7 @@ int rtl_stream_request_demod_profile(int cqpsk_enable, int symbol_rate_hz, int l
  * @param kind     dsd_analog_demod for the analog family (AM is refused until the front end can demodulate it).
  * @param width_hz Explicit analog channel width in Hz, or 0 for the kind's default (ignored for digital).
  * @return 0 when queued or applied; -1 when refused (unknown family/kind, AM, a width outside the kind's range, a
- *         width change the running analog monitor's rate cannot realize, or an explicit width while
+ *         width the running stream's published rate cannot realize, or an explicit width while
  *         DSD_NEO_CHANNEL_LPF=0). A refusal is
  *         logged as an error with the validator's text (for a width the rate cannot realize: the width, the DSP rate,
  *         the largest width that rate fits and the DSP bandwidths that would fit), once per kind, width and rate until
@@ -299,9 +305,10 @@ int rtl_stream_request_analog_profile(int family, int kind, int width_hz);
  *
  * Applies the family and kind, the width's range, DSD_NEO_CHANNEL_LPF, and while a stream runs its published demod
  * rate and a replay's post-demod decimation, and logs a refusal the way rtl_stream_request_analog_profile() does. For
- * a caller that must change nothing else when the front end refuses, such as a decode-mode change: this is where a
- * switch onto the analog monitor is held to the running stream's rate, before the caller commits its decoder, since
- * the request that follows no longer is (rtl_stream_request_analog_profile()).
+ * a caller that must change nothing else when the front end refuses, such as a decode-mode change: asked before the
+ * caller commits its decoder, it keeps the decoder and the front end on the same family whenever the rate holds until
+ * the request that follows lands (a retune that moves the rate in between gets that request refused, logged, with
+ * the front end left on its current receive profile).
  *
  * @return 0 when the front end takes the profile at the rate it runs now; -1 when it refuses it.
  */

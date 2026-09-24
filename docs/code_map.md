@@ -425,8 +425,9 @@ installs from `src/engine/trunk_tuning.c` in `src/engine/trunk_tuning_hooks_inst
   anything it asks a running RTL front end whether it takes the analog profile the mode will publish
   (`svc_check_mode_receive_profile()`, `rtl_stream_check_analog_profile()`: kind, range, `DSD_NEO_CHANNEL_LPF` and the
   published demod rate, refusal logged with the validator's text); a refusal fails the command with a toast and leaves
-  the mode, options, sinks and front end as they were. That is the rate check the switch gets: the request it
-  publishes after committing is not refused on a rate a retune moved in between.
+  the mode, options, sinks and front end as they were. The request it publishes after committing is held to the same
+  rules again (at the published rate, and at the rate the demod thread applies it at): only a retune that moves the
+  rate in between gets it refused there, logged, with the front end kept on its receive profile.
   `DSD_APP_CMD_CONFIG_APPLY` runs the same sink and publish sequence when its `[mode]` moves the session between the
   analog and digital families, after the same check when the move is onto the analog family (a refusal leaves the
   whole config unapplied); a digital-to-digital `[mode]` change keeps its earlier behaviour, except that ProVoice
@@ -589,10 +590,16 @@ Notes:
     and squelch-envelope state and the channel, half-band and resampler histories to fresh-open values. A retune that
     leaves the stream on another demod rate resolves the analog channel again for that rate
     (`rtl_demod_refresh_analog_channel_for_rate()`, from `demod_state::analog_width_request_hz`): the unset default
-    moves between 16 kHz and the legacy WIDE design, and an explicit width the new rate cannot realize is kept (never
-    clamped), logged with the validator's text, and runs with no channel filter, published as DSP-limited with the
-    DSP rate as its width. Only while the monitor output runs on the analog channel: CQPSK toggled on under `-fA`, or a
-    typed digital scan row's profile, keeps its own profile filter across the rate change.
+    moves between 16 kHz and the legacy WIDE design. An explicit width the new rate cannot realize is never clamped or
+    run without its channel filter: `controller_refuse_retune_for_analog_width()` refuses the retune once the device is
+    programmed and before it finalizes (both reconfigure paths), logs the validator's text once per kind, width and
+    rate, puts the device back on the capture frequency and rate it had (`CaptureSettingsSnapshot`, which keeps the
+    device-forced flag too), and finalizes on the centre it left without the retune's profile, so the tune fails. A
+    retune profile for the target that switches to the digital family, or to an analog width the new rate fits, is
+    not refused for the monitor's width. A device that still reports a rate the width cannot run at after it was put
+    back stops the stream (`controller_refresh_analog_channel_for_rate()`: logged, `DSD_INPUT_FAILURE_CONFIGURATION`,
+    exit flag), as a start at that rate fails. Only while the monitor output runs on the analog channel: CQPSK toggled
+    on under `-fA`, or a typed digital scan row's profile, keeps its own profile filter across the rate change.
   - The width-driven filter and the published analog profile follow `dsd_demod_analog_monitor_active()` (analog
     family, `AUDIO_MONITOR` output, CQPSK off, the analog WIDE channel profile), so CQPSK toggled on under `-fA` keeps
     its P25 CQPSK profile filter, and a typed digital scan row's symbol profile on an analog session keeps the monitor
@@ -607,11 +614,11 @@ Notes:
     analog width is checked again against the demod rate it lands on, both a live request when the demod thread
     consumes it and a retune profile when the retune lands (a retune can move the rate after the request was checked
     against the published one); a width that rate cannot realize is refused (logged once per kind, width and rate) and
-    the front end keeps its receive profile. The exception is a live request that moves the stream onto the analog
+    the front end keeps its receive profile. That includes a live request that moves the stream onto the analog
     monitor output, whose caller has already put the decoder on Analog (after `rtl_stream_check_analog_profile()` held
-    it to the published rate, or as the session's configured family): it is not held to the rate when it is made, and
-    it goes ahead as a retune right after the switch would leave it (the width kept, logged with the validator's text,
-    published as DSP-limited), so the decoder and the front end never disagree about the family. A digital family
+    it to the published rate, or as the session's configured family): a retune that moved the rate since gets it
+    refused, and the front end stays where it was rather than run the width without its channel filter; the log is
+    all the decoder hears of it. The unset NFM default is never refused for its rate. A digital family
     request leaves the analog family whenever the stream
     runs it (`demod_state::analog_family`, published as `rtl_stream_analog_family_active()`), including after a symbol
     profile applied on its own (a typed digital scan row under `-fA`, a CQPSK toggle) has moved the front end off the
@@ -649,8 +656,9 @@ Notes:
     picked; a typed digital row under `-fA` and on a DMR session switched
     to analog; width-only changes; requests with no stream; live requests and
     retune profiles refused against a running stream's rate and a replay's `post_downsample`, and a live request
-    refused at the rate a retune moved the stream to before it was consumed, or applied as DSP-limited when it moves a
-    DMR session onto the monitor, including one requested after a retune moved the rate its check accepted; a demod
+    refused at the rate a retune moved the stream to before it was consumed, a DMR session's switch onto the monitor
+    included (also one requested after a retune moved the rate its check accepted), with the unset default switching
+    at a rate that cannot fit 16 kHz instead; a demod
     block boundary
     between the family request and its symbol profile; a switch whose ring clear meets a decoder read between its
     copy and its tail store; the baselines run the same demod configuration functions as

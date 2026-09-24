@@ -467,12 +467,45 @@ typedef struct rtl_stream_test_audio_reset_result {
     int channel_lpf_enable_after;
     int published_width_after;
     int published_lpf_on_after;
+    int retune_refused;        /* 1 when the retune was refused for the monitor's analog width */
+    int rate_out_after;        /* demod_state::rate_out once the retune finalized */
+    uint32_t center_before;    /* the centre frequency the stream ran on before the retune */
+    uint32_t retune_target_hz; /* the centre frequency the retune asked for */
+    uint32_t center_after;     /* the centre frequency the retune finalized on */
 } rtl_stream_test_audio_reset_result;
 
-/* Seed an analog monitor at @p rate_before_hz (NFM width @p nfm_width_hz, 0 = default) with stale filter state and
- * run the retune finalize path after the device settled on @p rate_after_hz (75 us de-emphasis, 3 kHz audio LPF). */
+/* Seed an analog monitor at @p rate_before_hz (NFM width @p nfm_width_hz, 0 = default) with stale filter state, then
+ * land a retune to the next channel that the device settled on @p rate_after_hz, the way the controller lands one: the
+ * landing check that may refuse it (and put the capture back), then the rate-chain finalize (75 us de-emphasis, 3 kHz
+ * audio LPF). No device is open, so a refusal restores the capture settings the stream keeps and programs nothing. */
 int rtl_stream_test_audio_monitor_retune(int rate_before_hz, int rate_after_hz, int nfm_width_hz,
                                          rtl_stream_test_audio_reset_result* out);
+
+typedef struct rtl_stream_test_retune_profile_landing_result {
+    int retune_refused;          /* 1 when the landing check refused the retune */
+    int rate_out_after;          /* demod_state::rate_out once the retune finalized */
+    int analog_family_after;     /* demod_state::analog_family, likewise */
+    int monitor_after;           /* dsd_demod_analog_monitor_active(), likewise */
+    int channel_lpf_width_after; /* demod_state::channel_lpf_width_hz, likewise */
+} rtl_stream_test_retune_profile_landing_result;
+
+/* As rtl_stream_test_audio_monitor_retune(), with the retune carrying a retune profile for its target that switches to
+ * @p profile_family (dsd_rx_family), with NFM width @p profile_width_hz for the analog family. */
+int rtl_stream_test_audio_monitor_retune_with_profile(int rate_before_hz, int rate_after_hz, int nfm_width_hz,
+                                                      int profile_family, int profile_width_hz,
+                                                      rtl_stream_test_retune_profile_landing_result* out);
+
+typedef struct rtl_stream_test_rate_not_restored_result {
+    int retune_refused;     /* 1 when the landing check refused the retune */
+    int exit_requested;     /* dsd_exitflag_load() once the retune finalized */
+    int input_failure_kind; /* dsd_input_failure kind reported by then */
+} rtl_stream_test_rate_not_restored_result;
+
+/* As rtl_stream_test_audio_monitor_retune() for an explicit width, with a device that does not return to the rate the
+ * refused retune put back: the rate the device reports once the capture is restored is still @p rate_after_hz when
+ * the rate chain finalizes. The exit request and input failure that reports are cleared before this returns. */
+int rtl_stream_test_audio_monitor_rate_not_restored(int rate_before_hz, int rate_after_hz, int nfm_width_hz,
+                                                    rtl_stream_test_rate_not_restored_result* out);
 
 typedef struct rtl_stream_test_retune_analog_result {
     int queued_rc;

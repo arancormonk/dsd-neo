@@ -12,6 +12,8 @@
 #include <dsd-neo/io/iq_types.h>
 #include <dsd-neo/io/rtl_stream_c.h>
 #include <dsd-neo/runtime/analog_channel.h>
+#include <dsd-neo/runtime/exitflag.h>
+#include <dsd-neo/runtime/input_failure.h>
 #include <dsd-neo/runtime/log.h>
 #include "dsd-neo/core/safe_api.h"
 #include "rtl_stream_test_support.h"
@@ -272,8 +274,10 @@ capture_error_log(dsd_neo_log_level_t level, const char* text, void* ctx) {
 
 /*
  * A retune the device settles on another demod rate resolves the analog channel for that rate: the unset default
- * moves between the 16 kHz design and the legacy WIDE design, and an explicit width the new rate cannot realize is
- * kept (never clamped), logged with the validator's text, and reported as DSP-limited.
+ * moves between the 16 kHz design and the legacy WIDE design, published as DSP-limited where the rate cannot fit
+ * 16 kHz. An explicit width the new rate cannot realize is never run there without its channel filter: the retune is
+ * refused with the validator's text, the capture goes back to the rate the width runs at, and the stream stays on the
+ * centre it had, with that width still designed and published as filtered.
  */
 static int
 test_audio_monitor_retune_resolves_channel(void) {
@@ -281,12 +285,17 @@ test_audio_monitor_retune_resolves_channel(void) {
     rtl_stream_test_audio_reset_result r;
 
     DSD_MEMSET(&r, 0, sizeof r);
+    g_last_error[0] = '\0';
     failed |= expect_int_eq("default 48k -> 16k hook", rtl_stream_test_audio_monitor_retune(48000, 16000, 0, &r), 0);
+    failed |= expect_int_eq("default retune lands", r.retune_refused, 0);
+    failed |= expect_int_eq("default retune lands on its target", (int)(r.center_after == r.retune_target_hz), 1);
+    failed |= expect_int_eq("default retune runs at 16 kHz", r.rate_out_after, 16000);
     failed |= expect_int_eq("default designs 16 kHz at 48 kHz", r.channel_lpf_width_before, 16000);
     failed |= expect_int_eq("default falls back to legacy WIDE at 16 kHz", r.channel_lpf_width_after, 0);
     failed |= expect_int_eq("legacy WIDE keeps the filter on", r.channel_lpf_enable_after, 1);
     failed |= expect_int_eq("legacy WIDE published as DSP-limited", r.published_lpf_on_after, 0);
     failed |= expect_int_eq("legacy WIDE publishes the width 16 kHz fits", r.published_width_after, 13200);
+    failed |= expect_int_eq("default retune logs nothing", g_last_error[0] == '\0', 1);
 
     DSD_MEMSET(&r, 0, sizeof r);
     failed |= expect_int_eq("default 48k -> 78125 hook", rtl_stream_test_audio_monitor_retune(48000, 78125, 0, &r), 0);
@@ -310,20 +319,117 @@ test_audio_monitor_retune_resolves_channel(void) {
     failed |=
         expect_int_eq("explicit 48k -> 16k hook", rtl_stream_test_audio_monitor_retune(48000, 16000, 16000, &r), 0);
     failed |= expect_int_eq("explicit width designed at 48 kHz", r.channel_lpf_width_before, 16000);
-    failed |= expect_int_eq("explicit width kept, not clamped", r.channel_lpf_width_after, 16000);
-    failed |= expect_int_eq("unrealizable explicit width published as DSP-limited", r.published_lpf_on_after, 0);
-    failed |= expect_int_eq("unrealizable explicit width reports the DSP rate", r.published_width_after, 16000);
+    failed |= expect_int_eq("retune the explicit width does not fit is refused", r.retune_refused, 1);
+    failed |= expect_int_eq("refused retune stays on the centre it had", (int)(r.center_after == r.center_before), 1);
+    failed |= expect_int_eq("refused retune did not reach its target", (int)(r.center_after != r.retune_target_hz), 1);
+    failed |= expect_int_eq("refused retune puts the 48 kHz rate back", r.rate_out_after, 48000);
+    failed |= expect_int_eq("explicit width still designed", r.channel_lpf_width_after, 16000);
+    failed |= expect_int_eq("explicit width keeps its filter on", r.channel_lpf_enable_after, 1);
+    failed |= expect_int_eq("explicit width still published as filtered", r.published_lpf_on_after, 1);
+    failed |= expect_int_eq("explicit width still published", r.published_width_after, 16000);
+    failed |=
+        expect_double_near("refused retune keeps the 48 kHz de-emphasis", r.deemph_a_after, r.deemph_a_before, 1e-9);
     failed |=
         expect_int_eq("refusal logged with the validator text",
                       std::strstr(g_last_error, "NFM bandwidth 16 kHz does not fit the 16 kHz DSP rate") != NULL, 1);
+    failed |= expect_int_eq("refusal says the retune is refused",
+                            std::strstr(g_last_error, "is refused; the front end stays on") != NULL, 1);
+    if (failed != 0) {
+        DSD_FPRINTF(stderr, "  logged: \"%s\"\n", g_last_error);
+    }
+
+    /* A width the new rate still fits lands with the retune, on the new rate. */
+    DSD_MEMSET(&r, 0, sizeof r);
+    g_last_error[0] = '\0';
+    failed |=
+        expect_int_eq("explicit 48k -> 24k hook", rtl_stream_test_audio_monitor_retune(48000, 24000, 12500, &r), 0);
+    failed |= expect_int_eq("a width 24 kHz fits lands", r.retune_refused, 0);
+    failed |= expect_int_eq("a width 24 kHz fits reaches its target", (int)(r.center_after == r.retune_target_hz), 1);
+    failed |= expect_int_eq("a width 24 kHz fits runs at 24 kHz", r.rate_out_after, 24000);
+    failed |= expect_int_eq("a width 24 kHz fits stays designed", r.channel_lpf_width_after, 12500);
+    failed |= expect_int_eq("a width 24 kHz fits published as filtered", r.published_lpf_on_after, 1);
+    failed |= expect_int_eq("a width 24 kHz fits logs nothing", g_last_error[0] == '\0', 1);
 
     /* An unchanged rate does not re-log or re-resolve anything. */
     DSD_MEMSET(&r, 0, sizeof r);
     g_last_error[0] = '\0';
     failed |=
         expect_int_eq("explicit same-rate hook", rtl_stream_test_audio_monitor_retune(48000, 48000, 12500, &r), 0);
+    failed |= expect_int_eq("same-rate retune lands", r.retune_refused, 0);
     failed |= expect_int_eq("same-rate explicit width kept", r.channel_lpf_width_after, 12500);
     failed |= expect_int_eq("same-rate retune logs nothing", g_last_error[0] == '\0', 1);
+    return failed;
+}
+
+/*
+ * A retune profile for the target decides the analog channel the retune lands on, so the running monitor's explicit
+ * width is held to the new rate only where the profile leaves the monitor as it is: a switch to the digital family, or
+ * to an analog width the new rate fits, lands with the retune; an analog width that does not fit is refused on its own
+ * and leaves the monitor's width, which the new rate does not fit either, so the retune is refused.
+ */
+static int
+test_audio_monitor_retune_profile_decides(void) {
+    int failed = 0;
+    rtl_stream_test_retune_profile_landing_result r;
+
+    DSD_MEMSET(&r, 0, sizeof r);
+    failed |= expect_int_eq(
+        "digital profile hook",
+        rtl_stream_test_audio_monitor_retune_with_profile(48000, 16000, 16000, DSD_RX_FAMILY_DIGITAL, 0, &r), 0);
+    failed |= expect_int_eq("a switch to digital lands", r.retune_refused, 0);
+    failed |= expect_int_eq("a switch to digital runs at the new rate", r.rate_out_after, 16000);
+    failed |= expect_int_eq("a switch to digital leaves the analog family", r.analog_family_after, 0);
+
+    DSD_MEMSET(&r, 0, sizeof r);
+    failed |= expect_int_eq(
+        "fitting analog profile hook",
+        rtl_stream_test_audio_monitor_retune_with_profile(48000, 16000, 16000, DSD_RX_FAMILY_ANALOG, 12500, &r), 0);
+    failed |= expect_int_eq("an analog width the new rate fits lands", r.retune_refused, 0);
+    failed |= expect_int_eq("that width runs at the new rate", r.rate_out_after, 16000);
+    failed |= expect_int_eq("on the monitor", r.monitor_after, 1);
+    failed |= expect_int_eq("with the profile's width", r.channel_lpf_width_after, 12500);
+
+    DSD_MEMSET(&r, 0, sizeof r);
+    g_last_error[0] = '\0';
+    failed |= expect_int_eq(
+        "unfitting analog profile hook",
+        rtl_stream_test_audio_monitor_retune_with_profile(48000, 16000, 16000, DSD_RX_FAMILY_ANALOG, 25000, &r), 0);
+    failed |= expect_int_eq("an analog width the new rate does not fit is refused", r.retune_refused, 1);
+    failed |= expect_int_eq("the 48 kHz rate is put back", r.rate_out_after, 48000);
+    failed |= expect_int_eq("the monitor keeps running", r.monitor_after, 1);
+    failed |= expect_int_eq("with its own width", r.channel_lpf_width_after, 16000);
+    failed |=
+        expect_int_eq("the refusal names the monitor's width",
+                      std::strstr(g_last_error, "NFM bandwidth 16 kHz does not fit the 16 kHz DSP rate") != NULL, 1);
+    return failed;
+}
+
+/*
+ * A refused retune puts the capture back, but a device can still report another rate once it is reprogrammed. With no
+ * receive profile left that runs the explicit width, the stream stops, as a start at that rate fails: the stop is
+ * logged with the validator's text and reported as a configuration failure of the input, never run without the
+ * channel filter the width asked for.
+ */
+static int
+test_audio_monitor_rate_not_restored_stops(void) {
+    int failed = 0;
+    rtl_stream_test_rate_not_restored_result r;
+    DSD_MEMSET(&r, 0, sizeof r);
+    g_last_error[0] = '\0';
+    failed |= expect_int_eq("rate not restored hook",
+                            rtl_stream_test_audio_monitor_rate_not_restored(48000, 16000, 16000, &r), 0);
+    failed |= expect_int_eq("the retune was refused first", r.retune_refused, 1);
+    failed |= expect_int_eq("the stream is stopped", r.exit_requested, 1);
+    failed |= expect_int_eq("reported as a configuration failure", r.input_failure_kind,
+                            (int)DSD_INPUT_FAILURE_CONFIGURATION);
+    failed |=
+        expect_int_eq("stop logged with the validator text",
+                      std::strstr(g_last_error, "NFM bandwidth 16 kHz does not fit the 16 kHz DSP rate") != NULL, 1);
+    failed |= expect_int_eq("stop says the stream stops", std::strstr(g_last_error, "the stream stops") != NULL, 1);
+    failed |= expect_int_eq("exit request cleared again", (int)dsd_exitflag_load(), 0);
+    if (failed != 0) {
+        DSD_FPRINTF(stderr, "  logged: \"%s\"\n", g_last_error);
+    }
     return failed;
 }
 
@@ -1234,6 +1340,8 @@ main(void) {
 
     failed |= test_audio_monitor_retune_reset();
     failed |= test_audio_monitor_retune_resolves_channel();
+    failed |= test_audio_monitor_retune_profile_decides();
+    failed |= test_audio_monitor_rate_not_restored_stops();
     failed |= test_retune_profile_carries_analog_fields();
     failed |= test_retune_profile_width_checked_at_landing_rate();
 
