@@ -196,7 +196,7 @@ void svc_publish_symbol_profile(const dsd_opts* opts, dsd_state* state, dsd_deco
  * front end agree about the family. The request svc_publish_symbol_profile() makes once the caller has committed is
  * held to the same rules again, at the rate the stream runs when it is made and when it lands: only a retune that
  * moves the rate in between gets it refused there, logged, with the front end kept on its receive profile rather than
- * running the width without its channel filter.
+ * running the width without its channel filter, and with the decoder left on the mode it committed to.
  *
  * @return 0 when the front end would take it, or when @p mode publishes no analog profile here (a digital mode, the
  *         M17 encoder, no running RTL stream, or a scope update that defers the publish); -1 when it would refuse it.

@@ -77,12 +77,17 @@ svc_publish_symbol_profile(const dsd_opts* opts, dsd_state* state, dsd_decode_mo
        for the P25 C4FM filter and narrow the monitor audio to a digital channel.
        The analog request is also what moves a live digital front end onto the
        analog family when the operator picks Analog mid-session. Its result is
-       not needed here: the caller's svc_check_mode_receive_profile() held the
-       same profile to the rate the stream ran at before it committed, so the
-       front end refuses it only when a retune moved the rate since. Then the
-       refusal is logged with the validator's text and the front end keeps its
-       receive profile, as it does for a width change the running monitor
-       refuses, rather than run the width without its channel filter. */
+       dropped: the caller's svc_check_mode_receive_profile() held the same
+       profile to the rate the stream ran at before it committed, so the front
+       end refuses it only when a retune moved the rate since, here or on the
+       demod thread. Then the refusal is logged with the validator's text and
+       the front end keeps its receive profile, as it does for a width change
+       the running monitor refuses, rather than run the width without its
+       channel filter, but a decoder that has committed to Analog is not told
+       and stays on it. Only an explicit analog width can be refused for its
+       rate; nothing in this build sets one (the Analog preset asks for the
+       unset NFM default), so the split cannot happen yet, and a control that
+       lets the operator set a width has to report this refusal back. */
     if (dsd_opts_is_analog_family(opts)) {
         (void)rtl_stream_request_analog_profile(DSD_RX_FAMILY_ANALOG, opts->analog_demod,
                                                 dsd_opts_analog_width_hz(opts));
