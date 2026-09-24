@@ -1030,7 +1030,8 @@ test_udp_output_analog_socket_failure(void) {
  * closed and reopened for the new target, whether or not the current mode writes to it. The -8 source monitor can be
  * turned back on later, and its toggle opens no socket: it must find one, as it did before the target changed. A
  * reopen that fails leaves the descriptor invalid, for the lazy open of a later switch to Analog
- * (dsd_audio_ensure_analog_output() opens from an invalid descriptor only, see CORE_AUDIO_ENSURE_OUTPUT). */
+ * (dsd_audio_ensure_analog_output() opens from an invalid descriptor only, see CORE_AUDIO_ENSURE_OUTPUT). A target
+ * the primary connection refuses changes nothing about the analog socket. */
 static int
 test_udp_output_target_change_moves_analog_socket(void) {
     int rc = 0;
@@ -1095,6 +1096,24 @@ test_udp_output_target_change_moves_analog_socket(void) {
     rc |= expect_int("analog socket is the reopened one", opts.udp_sockfdA == fresh, 1);
     rc |= expect_int("stale analog socket closed before the reopen", dsd_socket_close(stale) != 0, 1);
     rc |= expect_int("reopened analog socket left open", dsd_socket_close(fresh), 0);
+
+    /* A new target the primary connection refuses leaves a working analog socket where it was, still open and
+       untouched, as before the analog socket followed the target. */
+    const dsd_socket_t working = dsd_socket_create(AF_INET, SOCK_DGRAM, 0);
+    if (working == DSD_INVALID_SOCKET) {
+        DSD_FPRINTF(stderr, "FAIL: UDP socket create\n");
+        g_udp_connect_result = -1;
+        return 1;
+    }
+    opts.udp_sockfdA = working;
+    opts.monitor_input_audio = 1;
+    g_udp_connect_result = -1;
+    g_udp_connectA_leftover = DSD_INVALID_SOCKET;
+    g_udp_connectA_calls = 0;
+    rc |= expect_int("refused udp target", svc_udp_output_config(&opts, &state, "bad.invalid", 23496), -1);
+    rc |= expect_int("refused udp target keeps the analog socket", opts.udp_sockfdA == working, 1);
+    rc |= expect_int("refused udp target does not reopen the analog socket", g_udp_connectA_calls, 0);
+    rc |= expect_int("working analog socket left open", dsd_socket_close(working), 0);
 
     opts.udp_sockfdA = DSD_INVALID_SOCKET;
     g_udp_connectA_leftover = DSD_INVALID_SOCKET;
