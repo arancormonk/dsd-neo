@@ -85,6 +85,18 @@ dsd_apply_decode_mode_preset(dsdneoUserDecodeMode mode, dsdDecodePresetProfile p
     return 0;
 }
 
+/* The shared pre-open rule (RUNTIME_DECODE_MODE tests it) stands in here for the input specs the wizard writes: it
+   records the input it was asked about, so a case can tell the wizard asked about the source it configured. */
+static char g_iq_asked_dev[sizeof(((dsd_opts*)0)->audio_in_dev)];
+static int g_iq_asked_calls;
+
+int
+dsd_decode_mode_input_spec_is_iq(const dsd_opts* opts) {
+    ++g_iq_asked_calls;
+    DSD_SNPRINTF(g_iq_asked_dev, sizeof g_iq_asked_dev, "%s", opts ? opts->audio_in_dev : "");
+    return opts && (strncmp(opts->audio_in_dev, "rtl:", 4) == 0 || strncmp(opts->audio_in_dev, "rtltcp:", 7) == 0);
+}
+
 void
 dsd_bootstrap_choose_audio_input(dsd_opts* opts) {
     ++g_audio_input_calls;
@@ -296,8 +308,11 @@ test_am_entry_needs_an_iq_source(void) {
     reset_harness();
     DSD_MEMSET(&opts, 0, sizeof opts);
     DSD_MEMSET(&state, 0, sizeof state);
+    g_iq_asked_calls = 0;
     rc |= with_stdin_text("\n15\n4\n\n", dsd_bootstrap_interactive, &opts, &state);
     rc |= expect_int("pulse-am-refused-then-dmr", g_last_decode_mode, DSDCFG_MODE_DMR);
+    rc |= expect_int("pulse-am-asked-the-shared-rule", g_iq_asked_calls, 1);
+    rc |= expect_str("pulse-am-asked-about-the-chosen-input", g_iq_asked_dev, "pulse:stub-input");
 
     reset_harness();
     DSD_MEMSET(&opts, 0, sizeof opts);
@@ -318,6 +333,23 @@ test_am_entry_needs_an_iq_source(void) {
     rc |= expect_str("rtl-am-audio-in", opts.audio_in_dev, "rtl:0:118.1M:22:0:48:0:1");
     rc |= expect_int("rtl-am-decode-mode", g_last_decode_mode, DSDCFG_MODE_AM);
     rc |= expect_int("rtl-am-decode-profile", g_last_decode_profile, DSD_DECODE_PRESET_PROFILE_INTERACTIVE);
+
+    /* The wizard asks the rule the CLI applies (dsd_decode_mode_input_spec_is_iq()) about the input it configured:
+     * an rtl_tcp source with no centre frequency given takes AM; a TCP audio source does not. */
+    reset_harness();
+    DSD_MEMSET(&opts, 0, sizeof opts);
+    DSD_MEMSET(&state, 0, sizeof state);
+    rc |= with_stdin_text("3\n\n\n\n15\nn\nn\nn\n", dsd_bootstrap_interactive, &opts, &state);
+    rc |= expect_str("rtltcp-am-audio-in", opts.audio_in_dev, "rtltcp:127.0.0.1:1234");
+    rc |= expect_str("rtltcp-am-asked-about-the-configured-input", g_iq_asked_dev, "rtltcp:127.0.0.1:1234");
+    rc |= expect_int("rtltcp-am-decode-mode", g_last_decode_mode, DSDCFG_MODE_AM);
+
+    reset_harness();
+    DSD_MEMSET(&opts, 0, sizeof opts);
+    DSD_MEMSET(&state, 0, sizeof state);
+    rc |= with_stdin_text("5\n\n\n15\n4\nn\nn\nn\n", dsd_bootstrap_interactive, &opts, &state);
+    rc |= expect_str("tcp-am-audio-in", opts.audio_in_dev, "tcp:127.0.0.1:7355");
+    rc |= expect_int("tcp-am-refused-then-dmr", g_last_decode_mode, DSDCFG_MODE_DMR);
     return rc;
 }
 

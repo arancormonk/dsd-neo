@@ -43,6 +43,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 #if !DSD_PLATFORM_WIN_NATIVE
 #include <unistd.h>
@@ -505,10 +506,14 @@ cli_warn_analog_width_without_radio(const dsd_opts* opts, const char* option_nam
 
 /* AM needs an IQ radio input (issue #524). -fM on a PCM input is an error. [mode] decode = am from a loaded config (the
  * only other way a parse ends on AM) falls back to the Analog monitor for the session instead, and autosave is turned
- * off for it so the saved decode = am is not replaced. */
+ * off for it so the saved decode = am is not replaced by the fallback. That turns off saving every other change the
+ * session makes too, so it is said where the operator looks, not only in the log: a toast the frontends show once
+ * they are up. (Keeping autosave and writing decode = am back would need the session to remember the preset it fell
+ * back from, a state field this change does not add.) */
 static int
 cli_check_am_input(dsd_opts* opts, dsd_state* state, int cli_chose_am, int* out_exit_rc) {
-    if (dsd_decode_mode_runs_on_input(dsd_infer_decode_mode_preset_exact(opts), opts)) {
+    /* The input is not open yet: its spec (or --iq-replay) says whether it will deliver I/Q. */
+    if (dsd_infer_decode_mode_preset_exact(opts) != DSDCFG_MODE_AM || dsd_decode_mode_input_spec_is_iq(opts)) {
         return 0;
     }
     if (cli_chose_am) {
@@ -522,6 +527,9 @@ cli_check_am_input(dsd_opts* opts, dsd_state* state, int cli_chose_am, int* out_
     if (state->config_autosave_enabled) {
         state->config_autosave_enabled = 0;
         LOG_INFO("NOTICE: Autosave disabled for this session so the saved decode = am is kept.\n");
+        DSD_SNPRINTF(state->ui_msg, sizeof state->ui_msg, "%s",
+                     "Decoding Analog: AM needs an IQ radio input. Autosave is off this session to keep decode = am");
+        state->ui_msg_expire = time(NULL) + 30;
     }
     return 0;
 }

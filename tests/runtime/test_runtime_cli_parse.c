@@ -28,6 +28,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 #include "dsd-neo/core/frontend_types.h"
 #include "dsd-neo/core/opts_fwd.h"
@@ -5978,8 +5979,8 @@ test_am_bandwidth_option(void) {
 }
 
 /* [mode] decode = am from a loaded config on a PCM input: the same reason, logged, and the session monitors with the
- * Analog preset instead. Autosave is off for the session, so the saved decode = am stays as it was. On an IQ input the
- * config's AM stands. */
+ * Analog preset instead. Autosave is off for the session, so the saved decode = am stays as it was, and a toast says
+ * so. On an IQ input the config's AM stands. */
 static int
 test_config_am_on_pcm_input_falls_back(void) {
     int test_rc = 0;
@@ -5988,9 +5989,12 @@ test_config_am_on_pcm_input_falls_back(void) {
     if (am_cli_parse(pcm, 1, &run) != 0) {
         return 1;
     }
+    /* Autosave off stops every other change the session makes from being saved, so the frontends are told too. */
     if (run.rc != DSD_PARSE_CONTINUE || dsd_infer_decode_mode_preset(run.opts) != DSDCFG_MODE_ANALOG
         || run.opts->analog_demod != DSD_ANALOG_DEMOD_FM || run.state->config_autosave_enabled != 0
-        || !strstr(run.err, "AM demodulation needs an IQ radio input")) {
+        || !strstr(run.err, "AM demodulation needs an IQ radio input")
+        || !strstr(run.state->ui_msg, "Autosave is off this session to keep decode = am")
+        || run.state->ui_msg_expire <= time(NULL)) {
         DSD_FPRINTF(stderr, "config AM on PCM: rc=%d mode=%d autosave=%d\n%s\n", run.rc,
                     (int)dsd_infer_decode_mode_preset(run.opts), run.state->config_autosave_enabled, run.err);
         test_rc = 1;

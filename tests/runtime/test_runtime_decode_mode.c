@@ -717,6 +717,68 @@ test_am_preset(void) {
 }
 
 /*
+ * Where AM can run (issue #524). Before the engine opens the input its spec decides (or --iq-replay, which sets the RTL
+ * input type while the options are parsed); once one is open the input type alone does, so a live switch to TCP audio
+ * that keeps the old RTL spec, or a replay session switched to Pulse, is PCM.
+ */
+static int
+test_am_input_rules(void) {
+    static dsd_opts opts;
+    DSD_MEMSET(&opts, 0, sizeof opts);
+    static const char* const iq_specs[] = {"rtl",    "rtl:0:118.1M:22:0:48", "rtltcp:127.0.0.1:1234", "soapy:driver=x",
+                                           "airspy", "iqreplay:/tmp/x.iq"};
+    static const char* const pcm_specs[] = {"pulse", "pulse:x", "-", "/tmp/a.wav", "tcp:127.0.0.1:7355", "udp", ""};
+    opts.audio_in_type = AUDIO_IN_PULSE;
+    for (size_t i = 0; i < sizeof iq_specs / sizeof iq_specs[0]; i++) {
+        DSD_SNPRINTF(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", iq_specs[i]);
+        if (!dsd_decode_mode_input_spec_is_iq(&opts)) {
+            DSD_FPRINTF(stderr, "spec %s should be I/Q before the input opens\n", iq_specs[i]);
+            return 1;
+        }
+        if (dsd_decode_mode_input_is_iq(&opts) || dsd_decode_mode_runs_on_input(DSDCFG_MODE_AM, &opts)) {
+            DSD_FPRINTF(stderr, "spec %s on an open Pulse input should not be I/Q\n", iq_specs[i]);
+            return 1;
+        }
+    }
+    for (size_t i = 0; i < sizeof pcm_specs / sizeof pcm_specs[0]; i++) {
+        DSD_SNPRINTF(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", pcm_specs[i]);
+        if (dsd_decode_mode_input_spec_is_iq(&opts)) {
+            DSD_FPRINTF(stderr, "spec '%s' should be PCM\n", pcm_specs[i]);
+            return 1;
+        }
+    }
+    /* --iq-replay: the RTL input type is set while the spec is not yet written. */
+    DSD_SNPRINTF(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", "pulse");
+    opts.audio_in_type = AUDIO_IN_RTL;
+    opts.iq_replay_requested = 1;
+    if (!dsd_decode_mode_input_spec_is_iq(&opts) || !dsd_decode_mode_input_is_iq(&opts)
+        || !dsd_decode_mode_runs_on_input(DSDCFG_MODE_AM, &opts)) {
+        DSD_FPRINTF(stderr, "an RTL input type should be I/Q\n");
+        return 1;
+    }
+    /* The replay session switched to TCP audio: the request and the old spec stay, the input is PCM. */
+    DSD_SNPRINTF(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", "iqreplay:/tmp/x.iq");
+    opts.audio_in_type = AUDIO_IN_TCP;
+    if (dsd_decode_mode_input_is_iq(&opts) || dsd_decode_mode_runs_on_input(DSDCFG_MODE_AM, &opts)) {
+        DSD_FPRINTF(stderr, "an open TCP input should not run AM whatever the spec and request say\n");
+        return 1;
+    }
+    /* Every other preset runs anywhere. */
+    for (int m = (int)DSDCFG_MODE_UNSET; m < (int)DSDCFG_MODE_AM; m++) {
+        if (!dsd_decode_mode_runs_on_input((dsdneoUserDecodeMode)m, &opts)) {
+            DSD_FPRINTF(stderr, "mode %d should run on PCM input\n", m);
+            return 1;
+        }
+    }
+    if (dsd_decode_mode_input_is_iq(NULL) || dsd_decode_mode_input_spec_is_iq(NULL)
+        || dsd_decode_mode_runs_on_input(DSDCFG_MODE_AM, NULL)) {
+        DSD_FPRINTF(stderr, "no options should read as no I/Q\n");
+        return 1;
+    }
+    return 0;
+}
+
+/*
  * The menu's mode picker and the label that reads the mode back both come from
  * this table; every preset needs a name and nothing outside the enum may crash.
  */
@@ -784,6 +846,7 @@ main(void) {
     rc |= test_analog_monitor_is_not_a_one_way_door();
     rc |= test_analog_demod_follows_the_preset();
     rc |= test_am_preset();
+    rc |= test_am_input_rules();
     return rc;
 }
 

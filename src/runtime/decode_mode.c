@@ -581,7 +581,8 @@ decode_mode_apply_analog(dsd_opts* o, dsd_state* s) {
 }
 
 /* AM (issue #524): the analog monitor with the AM envelope detector, which only an IQ radio input can run. The CLI,
-   config and command paths refuse it on PCM input before they get here (dsd_decode_mode_needs_iq_input()). */
+   config, wizard and command paths refuse it on PCM input, or fall back to Analog, before they get here
+   (dsd_decode_mode_runs_on_input(), and dsd_decode_mode_input_spec_is_iq() before the input opens). */
 static void
 decode_mode_apply_am(dsd_opts* o, dsd_state* s) {
     decode_mode_apply_analog(o, s);
@@ -776,11 +777,16 @@ dsd_decode_mode_display_name(dsdneoUserDecodeMode mode) {
 
 int
 dsd_decode_mode_input_is_iq(const dsd_opts* opts) {
+    return dsd_opts_input_is_radio(opts);
+}
+
+int
+dsd_decode_mode_input_spec_is_iq(const dsd_opts* opts) {
     if (!opts) {
         return 0;
     }
     const char* dev = opts->audio_in_dev;
-    return (opts->audio_in_type == AUDIO_IN_RTL || opts->iq_replay_requested || dsd_opts_audio_in_dev_is_rtl_spec(dev)
+    return (opts->audio_in_type == AUDIO_IN_RTL || dsd_opts_audio_in_dev_is_rtl_spec(dev)
             || dsd_opts_audio_in_dev_is_rtltcp_spec(dev) || dsd_opts_audio_in_dev_is_soapy_spec(dev)
             || dsd_opts_audio_in_dev_is_airspy_spec(dev) || dsd_opts_audio_in_dev_is_iqreplay_spec(dev))
                ? 1

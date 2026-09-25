@@ -164,11 +164,13 @@ const char* dsd_decode_mode_display_name(dsdneoUserDecodeMode mode);
     "AM demodulation needs an IQ radio input; monitor externally demodulated AM audio with -fA"
 
 /**
- * @brief Whether the input @p opts name delivers I/Q the radio front end demodulates.
+ * @brief Whether the open input delivers I/Q the radio front end demodulates.
  *
- * A running RTL-family input (`audio_in_type` AUDIO_IN_RTL: RTL-SDR, rtl_tcp, SoapySDR, Airspy or an I/Q replay), or,
- * before the engine has opened one, an input spec naming one (`rtl`, `rtltcp`, `soapy`, `airspy`, `iqreplay`, or
- * `--iq-replay`). PCM inputs (Pulse, WAV and other files, stdin, TCP and UDP audio) arrive demodulated.
+ * Once the engine has opened an input, or a live switch has changed it, the input type alone says what runs:
+ * AUDIO_IN_RTL (RTL-SDR, rtl_tcp, SoapySDR, Airspy or an I/Q replay; dsd_opts_input_is_radio()). The spec string and
+ * the startup `--iq-replay` request are not read: a live switch to TCP audio keeps the old device string, and a replay
+ * session switched to Pulse keeps the request. PCM inputs (Pulse, WAV and other files, stdin, symbol files, TCP and UDP
+ * audio) arrive demodulated.
  *
  * @param opts Decoder options; NULL reads as no I/Q.
  * @return 1 for an I/Q radio input, else 0.
@@ -176,12 +178,25 @@ const char* dsd_decode_mode_display_name(dsdneoUserDecodeMode mode);
 int dsd_decode_mode_input_is_iq(const dsd_opts* opts);
 
 /**
- * @brief Whether @p mode can run on the input @p opts name.
+ * @brief Whether the input @p opts name will deliver I/Q, before the engine opens it.
  *
- * AM needs an I/Q radio input (dsd_decode_mode_input_is_iq()); every other preset runs on any input (the Analog preset
- * monitors PCM audio as it arrives, whatever demodulated it).
+ * For the CLI, a loaded config and the setup wizard: an input type already set to AUDIO_IN_RTL (`--iq-replay` sets
+ * it while the options are parsed), or an input spec naming an I/Q source (`rtl`, `rtltcp`, `soapy`, `airspy`,
+ * `iqreplay`). Everything else opens as PCM.
  *
- * @return 1 when it can, 0 when the caller must refuse it with DSD_DECODE_MODE_AM_NEEDS_IQ_TEXT.
+ * @param opts Decoder options; NULL reads as no I/Q.
+ * @return 1 for an I/Q radio input, else 0.
+ */
+int dsd_decode_mode_input_spec_is_iq(const dsd_opts* opts);
+
+/**
+ * @brief Whether @p mode can run on the open input @p opts name (dsd_decode_mode_input_is_iq()).
+ *
+ * AM needs an I/Q radio input; every other preset runs on any input (the Analog preset monitors PCM audio as it
+ * arrives, whatever demodulated it). Before the engine opens the input, ask dsd_decode_mode_input_spec_is_iq().
+ *
+ * @return 1 when it can, 0 when the caller must refuse it (or fall back to Analog) with
+ *         DSD_DECODE_MODE_AM_NEEDS_IQ_TEXT.
  */
 int dsd_decode_mode_runs_on_input(dsdneoUserDecodeMode mode, const dsd_opts* opts);
 

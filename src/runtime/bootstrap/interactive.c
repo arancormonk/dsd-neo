@@ -223,14 +223,11 @@ interactive_configure_input_source(dsd_opts* opts, dsd_state* state, int* src) {
     }
 }
 
-/* The wizard's AM entry: only the RTL-SDR and rtl_tcp sources it offers deliver I/Q; PulseAudio, files and network
-   audio arrive demodulated. */
+/* The wizard's AM entry. Whether the configured source delivers I/Q is the shared pre-open rule
+   (dsd_decode_mode_input_spec_is_iq()) applied to the input it has just configured: of its sources only RTL-SDR and
+   rtl_tcp do (an RTL-SDR choice on a build without RTL-SDR support falls back to PulseAudio); PulseAudio, files and
+   network audio arrive demodulated. */
 #define INTERACTIVE_MODE_AM 15
-
-static int
-interactive_source_is_iq(int src) {
-    return (src == 2 || src == 3) ? 1 : 0;
-}
 
 static int
 interactive_prompt_decode_mode(void) {
@@ -255,9 +252,9 @@ interactive_prompt_decode_mode(void) {
 
 /* AM on a source without I/Q is refused with the reason and asked again (end of input answers with the default). */
 static int
-interactive_choose_decode_mode(int src) {
+interactive_choose_decode_mode(const dsd_opts* opts) {
     int mode = interactive_prompt_decode_mode();
-    while (mode == INTERACTIVE_MODE_AM && !interactive_source_is_iq(src)) {
+    while (mode == INTERACTIVE_MODE_AM && !dsd_decode_mode_input_spec_is_iq(opts)) {
         DSD_FPRINTF(stderr, "%s.\n", DSD_DECODE_MODE_AM_NEEDS_IQ_TEXT);
         mode = interactive_prompt_decode_mode();
     }
@@ -418,7 +415,7 @@ dsd_bootstrap_interactive(dsd_opts* opts, dsd_state* state) {
         dsd_bootstrap_choose_audio_output(opts);
     }
 
-    int mode = interactive_choose_decode_mode(src);
+    int mode = interactive_choose_decode_mode(opts);
     dsdneoUserDecodeMode decode_mode = interactive_mode_to_decode_mode(mode);
     if (decode_mode != DSDCFG_MODE_UNSET) {
         (void)dsd_apply_decode_mode_preset(decode_mode, DSD_DECODE_PRESET_PROFILE_INTERACTIVE, opts, state);
