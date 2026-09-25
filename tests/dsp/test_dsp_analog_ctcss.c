@@ -725,6 +725,17 @@ dcs_distance_to_code(uint32_t word, int code) {
     return best;
 }
 
+/* Fewest bits in which some rotation of @p word differs from any supported code's word. */
+static int
+dcs_distance_to_supported(uint32_t word) {
+    int best = SYNTH_DCS_BITS;
+    for (int i = 0; i < DSD_DCS_CODE_COUNT; i++) {
+        const int d = dcs_distance_to_code(word, dsd_dcs_code(i));
+        best = d < best ? d : best;
+    }
+    return best;
+}
+
 /* The Golay (23,12) code's words, one per rotation class: every periodic waveform a DCS
    transmitter can send, whatever its code (issue #523 decodes them). */
 enum { DCS_CLASS_MAX = 256 };
@@ -772,10 +783,12 @@ run_dcs(int fs, uint32_t word, double snr_db, uint64_t seed) {
  * 178 non-constant periodic waveforms, which covers every DCS code in both polarities, since
  * a word's complement is a code word too -- sent forward and bit-reversed (the reciprocal
  * generator's code), for 3 s at 8 kHz, never locks a CTCSS tone. Each ends as the DCS detector
- * (issue #523) names it: locked on its code when it is a supported code's signal, or on a
- * supported code one bit away, and positively "no tone" otherwise. The words that come nearest (the most rho at a snapped table
- * tone) never lock a CTCSS tone at every rate either, clean, at +10 dB and at 0 dB in-band, in
- * both polarities.
+ * (issue #523) names it, with no lock that comes and goes on the way: locked once on its code
+ * when it is a supported code's signal, locked once on a supported code one bit away, the way a
+ * DCS decoder tolerates a bit error, or never locked and positively "no tone". The words that
+ * come nearest (the most rho at a snapped table tone), which are at least three bits from every
+ * supported code's word, never lock at all at every rate, clean, at +10 dB and at 0 dB in-band,
+ * in both polarities.
  */
 static void
 test_dcs_never_locks(void) {
@@ -795,14 +808,18 @@ test_dcs_never_locks(void) {
                 DSD_FPRINTF(stderr, "CTCSS lock on DCS: word 0x%06X\n", (unsigned int)word);
             }
             assert(r.ctcss_locks == 0);
-            if (dsd_dcs_match(word, NULL, NULL)) {
-                assert(r.final_state == DSD_ANALOG_TONE_STATE_LOCKED && r.final_dcs == 1);
+            int code = -1;
+            int inverted = -1;
+            if (dsd_dcs_match(word, &code, &inverted)) {
+                assert(r.locks == 1 && r.final_state == DSD_ANALOG_TONE_STATE_LOCKED && r.final_dcs == 1);
+                assert(g_core.dcs.code == code && g_core.dcs.inverted == inverted);
             } else if (r.final_dcs) {
                 /* A word one bit from a supported code's may read as that code, the way a DCS
                    decoder tolerates a bit error; nothing further away does. */
+                assert(r.locks == 1 && r.final_state == DSD_ANALOG_TONE_STATE_LOCKED);
                 assert(dcs_distance_to_code(word, g_core.dcs.code) <= 1);
             } else {
-                assert(r.final_state == DSD_ANALOG_TONE_STATE_NONE);
+                assert(r.locks == 0 && r.final_state == DSD_ANALOG_TONE_STATE_NONE);
             }
         }
     }
@@ -811,11 +828,11 @@ test_dcs_never_locks(void) {
     for (int w = 0; w < 2; w++) {
         for (int inverted = 0; inverted < 2; inverted++) {
             const uint32_t word = inverted ? (~nearest[w] & all_ones) : nearest[w];
+            assert(dcs_distance_to_supported(word) >= 3);
             for (int ri = 0; ri < RATE_COUNT; ri++) {
                 for (int s = 0; s < 3; s++) {
                     const run_result r = run_dcs(k_rates[ri], word, snrs[s], 23ULL + (uint64_t)(w * 12 + ri * 3 + s));
-                    assert(r.ctcss_locks == 0);
-                    assert(r.final_state == DSD_ANALOG_TONE_STATE_NONE || r.final_dcs == 1);
+                    assert(r.locks == 0 && r.final_state == DSD_ANALOG_TONE_STATE_NONE);
                 }
             }
         }
