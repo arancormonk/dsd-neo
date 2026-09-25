@@ -181,9 +181,11 @@ int dsd_analog_rx_carrier_open_now(const dsd_opts* opts, const dsd_state* state)
  * Set when the tap's own generation check found a retune or an applied receive-profile change part-way through the
  * block (see dsd_analog_rx_tap()), and when dsd_analog_rx_reset() set the samples collected before it aside; cleared
  * when the symbol path empties its block (dsd_analog_rx_block_restart()). Part of such a block is the old channel's,
- * so the monitor output drops it (one block at most); the raw WAV keeps it. 0 while detection is not running.
+ * so the analog monitor's output drops it (one block at most); the raw WAV keeps it. 0 while detection is not running
+ * (dsd_analog_tone_detection_active() on @p opts), whatever a reset set aside: the -8 source monitor under digital
+ * decoding plays every block, as it did before the tap, whether or not an earlier analog row left the tap a session.
  */
-int dsd_analog_rx_block_straddles_boundary(const dsd_state* state);
+int dsd_analog_rx_block_straddles_boundary(const dsd_opts* opts, const dsd_state* state);
 
 /**
  * @brief Forget the received tone: clears the publication and every detector's state.

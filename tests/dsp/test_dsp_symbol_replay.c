@@ -26,6 +26,7 @@
 #include <dsd-neo/platform/platform.h>
 #include <dsd-neo/platform/sockets.h>
 #include <dsd-neo/runtime/analog_channel.h>
+#include <dsd-neo/runtime/analog_tones.h>
 #include <dsd-neo/runtime/exitflag.h>
 #include <dsd-neo/runtime/log.h>
 #include <dsd-neo/runtime/net_audio_input_hooks.h>
@@ -2329,6 +2330,22 @@ test_monitor_muted_across_a_retune(void) {
     assert(g_monitor_blocks == 6);
     feed_tone_blocks(&opts, &state, 1);
     assert(g_monitor_blocks == 7);
+
+    /* The -8 source monitor under digital decoding runs no detection, so a reset part-way through its block drops
+       nothing, as before the tap existed, although the analog monitor above left the tap a session to set the
+       collected samples aside in. */
+    opts.analog_only = 0;
+    assert(!dsd_analog_tone_detection_active(&opts));
+    for (unsigned int i = 0; i < 500U; i++) {
+        dsd_symbol_test_push_unsynced_analog_sample(&opts, &state, block[i]);
+    }
+    dsd_analog_rx_reset(&state);
+    assert(dsd_analog_rx_block_straddles_boundary(&opts, &state) == 0);
+    for (unsigned int i = 500U; i < 960U; i++) {
+        dsd_symbol_test_push_unsynced_analog_sample(&opts, &state, block[i]);
+    }
+    assert(g_monitor_blocks == 8);
+    opts.analog_only = 1;
     dsd_trunk_tuning_requests_reset();
     dsd_udp_audio_hooks_set((dsd_udp_audio_hooks){0});
     install_fake_rtl_hooks(0);

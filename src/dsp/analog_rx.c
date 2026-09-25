@@ -805,14 +805,15 @@ dsd_analog_rx_reset(dsd_state* state) {
            (dsd_state::analog_out_f, dsd_symbol.c), and what it holds now arrived before the
            boundary: at a low input rate, a block's worth of the old channel is enough to lock
            its tone again. The tap sets those samples aside rather than reading them; they stay
-           in the block for the raw WAV and the monitor output, whose audio a reset leaves alone.
-           With no session, detection has not run since the engine started: the first read that
-           creates one starts at the newest sample (dsd_analog_rx_tap_partial()) and, after this
-           reset, arms the backlog skip (analog_rx_session_start()). */
+           in the block, which the raw WAV keeps as it is. With no session, detection has not run
+           since the engine started: the first read that creates one starts at the newest sample
+           (dsd_analog_rx_tap_partial()) and, after this reset, arms the backlog skip
+           (analog_rx_session_start()). */
         const int pending = state->analog_sample_counter;
         session->block_taken = pending > 0 ? (unsigned int)pending : 0U;
-        /* Those samples stay in the block, so the monitor output drops it rather than play them as the new
-           reception's (issue #526). */
+        /* The analog monitor's output drops that block rather than play them as the new reception's (issue #526);
+           the -8 source monitor under digital decoding, which detection does not run on, still plays it
+           (dsd_analog_rx_block_straddles_boundary()). */
         if (pending > 0) {
             session->block_straddled = 1;
         }
@@ -1000,8 +1001,12 @@ dsd_analog_rx_carrier_open_now(const dsd_opts* opts, const dsd_state* state) {
 }
 
 int
-dsd_analog_rx_block_straddles_boundary(const dsd_state* state) {
-    const analog_rx_session* session = state ? analog_rx_session_get(state) : NULL;
+dsd_analog_rx_block_straddles_boundary(const dsd_opts* opts, const dsd_state* state) {
+    /* Only the analog monitor drops such a block; the flag outlives detection until the block is emptied. */
+    if (!state || !dsd_analog_tone_detection_active(opts)) {
+        return 0;
+    }
+    const analog_rx_session* session = analog_rx_session_get(state);
     return session ? session->block_straddled : 0;
 }
 
