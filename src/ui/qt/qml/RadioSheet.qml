@@ -44,6 +44,7 @@ ModalSheet {
     property real pendingGain: NaN
     property real pendingPpm: NaN
     property real pendingSquelch: NaN
+    property real pendingAnalogWidth: NaN
 
     // What each control steps from and displays.
     readonly property bool airspyActive: metrics.airspy !== undefined && metrics.airspy.gain_mode !== undefined
@@ -73,6 +74,27 @@ ModalSheet {
     // "0" next to a signal that vanished reads as a mistake otherwise.
     readonly property bool autoGain: gainDb <= 0
 
+    // Issue #525: the NFM channel width, shown under the analog preset. The
+    // stepper edits the configured width (0 is the default), and the reading is
+    // the width in force: what the front end reports while the monitor runs,
+    // with "DSP-limited" when the DSP rate rather than the filter bounds it.
+    readonly property int analogMode: commands.decodeModeForFlag("-fA")
+    readonly property bool analogPreset: analogMode >= 0 && metrics.decodeMode === analogMode
+    // The width is the radio front end's filter; PCM audio arrives demodulated.
+    readonly property bool analogWidthEditable: metrics.radioInput === true
+    readonly property int analogWidthConfigured: isNaN(pendingAnalogWidth)
+        ? metrics.analogBandwidthConfiguredHz : pendingAnalogWidth
+    readonly property int analogWidthStepFrom: analogWidthConfigured > 0
+        ? analogWidthConfigured : Util.NFM_DEFAULT_WIDTH_HZ
+    readonly property string analogWidthReading: {
+        if (!isNaN(pendingAnalogWidth))
+            return Util.widthKhzText(pendingAnalogWidth);
+        var text = Util.widthKhzText(metrics.analogBandwidthHz);
+        if (metrics.analogBandwidthDspLimited === true)
+            return text + " " + qsTr("(DSP-limited)");
+        return metrics.analogBandwidthConfiguredHz > 0 ? text : text + " " + qsTr("(default)");
+    }
+
     function open() {
         // Whatever was outstanding belongs to the last time this was open, and on
         // Android the service may have been driven from elsewhere since.
@@ -90,9 +112,27 @@ ModalSheet {
         pendingGain = NaN;
         pendingPpm = NaN;
         pendingSquelch = NaN;
+        pendingAnalogWidth = NaN;
         gainTtl.stop();
         ppmTtl.stop();
         squelchTtl.stop();
+        analogWidthTtl.stop();
+    }
+
+    /**
+     * Step the NFM channel width through the common channel plans. The engine
+     * refuses a width the DSP rate cannot filter, with a message, and keeps the
+     * one it had; the pending value then expires back to the reading.
+     */
+    function stepAnalogWidth(direction) {
+        if (!analogWidthEditable)
+            return;
+        var next = Util.nextNfmWidth(analogWidthStepFrom, direction);
+        if (next < 0)
+            return;
+        pendingAnalogWidth = next;
+        analogWidthTtl.restart();
+        commands.setNfmBandwidthHz(next);
     }
 
     /**
@@ -178,6 +218,13 @@ ModalSheet {
 
         interval: sheet.requestTtlMs
         onTriggered: sheet.pendingSquelch = NaN
+    }
+
+    Timer {
+        id: analogWidthTtl
+
+        interval: sheet.requestTtlMs
+        onTriggered: sheet.pendingAnalogWidth = NaN
     }
 
     MicroLabel {
@@ -407,6 +454,61 @@ ModalSheet {
                         commands.setDecodeMode(mode);
                 }
             }
+        }
+    }
+
+    // ---- Analog ----
+    // The NFM channel filter's width: the full RF passband the monitor keeps,
+    // not the tuner or the audio bandwidth. It has to fit the DSP rate.
+    Column {
+        objectName: "radioAnalogSection"
+        visible: sheet.analogPreset
+        width: parent.width
+        spacing: 8
+        Text {
+            text: qsTr("NFM channel width")
+            color: Theme.textSecondary
+            font.pixelSize: Theme.fontSize(14)
+        }
+        Row {
+            objectName: "radioAnalogBandwidth"
+            width: parent.width
+            spacing: 10
+            Text {
+                objectName: "radioAnalogBandwidthValue"
+                width: parent.width - 116
+                anchors.verticalCenter: parent.verticalCenter
+                text: sheet.analogWidthReading
+                color: Theme.textPrimary
+                font.family: Theme.mono
+                font.pixelSize: Theme.fontSize(14)
+            }
+            OutlineButton {
+                objectName: "radioAnalogBandwidthDown"
+                width: 48
+                text: "−"
+                accessibleName: qsTr("Narrower Channel")
+                enabled: sheet.analogWidthEditable && Util.nextNfmWidth(sheet.analogWidthStepFrom, -1) > 0
+                onClicked: sheet.stepAnalogWidth(-1)
+            }
+            OutlineButton {
+                objectName: "radioAnalogBandwidthUp"
+                width: 48
+                text: "+"
+                accessibleName: qsTr("Wider Channel")
+                enabled: sheet.analogWidthEditable && Util.nextNfmWidth(sheet.analogWidthStepFrom, 1) > 0
+                onClicked: sheet.stepAnalogWidth(1)
+            }
+        }
+        // Why the stepper is greyed out, rather than leaving a dead control.
+        Text {
+            objectName: "radioAnalogBandwidthNote"
+            visible: !sheet.analogWidthEditable
+            width: parent.width
+            wrapMode: Text.WordWrap
+            text: qsTr("The channel width filters a radio input; this session's audio arrives already demodulated.")
+            color: Theme.textSecondary
+            font.pixelSize: Theme.fontSize(12)
         }
     }
 

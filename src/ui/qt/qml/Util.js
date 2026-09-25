@@ -66,8 +66,44 @@ var DECODE_MODES = [
     {
         label: "M17", short: "M17", flag: "-fz",
         hint: "M17 — open-source ham digital voice."
+    },
+    {
+        // -fA is the analog monitor. On a radio it receives narrowband FM through
+        // the NFM channel filter, whose width the Radio sheet sets (issue #525).
+        label: "NFM — analog FM", short: "NFM", flag: "-fA",
+        hint: "Analog narrowband FM voice — repeaters, business and public-service radio."
     }
 ]
+
+// The NFM channel widths the Radio sheet steps through, in Hz: the full RF
+// passband the channel filter keeps, not the tuner or audio bandwidth. The
+// engine accepts any whole Hz from 8000 to 25000 (the terminal row and the CLI
+// take those); these are the common channel plans. 16000 is the default.
+var NFM_WIDTHS_HZ = [8000, 11250, 12500, 16000, 20000, 25000]
+var NFM_DEFAULT_WIDTH_HZ = 16000
+
+// A channel width as kHz text with trailing zeros dropped, as the engine prints
+// it (dsd_analog_width_format()): "12.5 kHz", "11.25 kHz", "16 kHz".
+function widthKhzText(hz) {
+    return String(hz / 1000) + " kHz"
+}
+
+// The preset after (direction 1) or before (-1) a width, or -1 at the end of the
+// list. A width between presets steps to the nearest one in that direction.
+function nextNfmWidth(hz, direction) {
+    if (direction > 0) {
+        for (var i = 0; i < NFM_WIDTHS_HZ.length; i++) {
+            if (NFM_WIDTHS_HZ[i] > hz)
+                return NFM_WIDTHS_HZ[i]
+        }
+    } else {
+        for (var j = NFM_WIDTHS_HZ.length - 1; j >= 0; j--) {
+            if (NFM_WIDTHS_HZ[j] < hz)
+                return NFM_WIDTHS_HZ[j]
+        }
+    }
+    return -1
+}
 
 // Flags a saved system may carry that the chip catalog above does not offer:
 // one left over from an older catalog, and the composite forms the

@@ -37,6 +37,7 @@
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/core/talkgroup_policy.h>
+#include <dsd-neo/runtime/analog_channel.h>
 #include <dsd-neo/runtime/scan_mode.h>
 
 #include <dsd-neo/core/opts_fwd.h>
@@ -787,6 +788,33 @@ MetricsModel::fillSquelchOverride(View& next, const dsd_opts* opts_snapshot, con
     next.squelch_readout = QString::fromUtf8(readout);
 }
 
+/* Issue #525: the analog width the Radio sheet shows and the configured one its control edits. The analog preset is
+ * the configured one (a typed digital scan row does not end it), but the front end's width is the analog channel only
+ * while the options in force are the analog family on the monitor output: under a typed digital row it is the row's
+ * channel profile, and the sheet shows the configured width the row's leave returns to. The same rule as the
+ * terminal's "Analog:" status field. */
+void
+MetricsModel::fillAnalogChannel(View& next, const dsd_opts* opts_snapshot, const dsd_state* snapshot,
+                                const dsd_frontend_metrics& metrics) {
+    const dsd_scan_settings* configured = dsd_scan_mode_configured_view(snapshot);
+    const int analog_only = configured ? configured->analog_only : opts_snapshot->analog_only;
+    const int kind = configured ? configured->analog_demod : opts_snapshot->analog_demod;
+    const int configured_hz =
+        (kind == DSD_ANALOG_DEMOD_AM) ? opts_snapshot->analog_am_bandwidth_hz : opts_snapshot->analog_nfm_bandwidth_hz;
+    next.analog_bandwidth_configured_hz = configured_hz > 0 ? configured_hz : 0;
+    next.analog_bandwidth_hz = 0;
+    next.analog_bandwidth_dsp_limited = false;
+    if (analog_only != 1 || opts_snapshot->m17encoder == 1) {
+        return;
+    }
+    next.analog_bandwidth_hz = dsd_analog_width_effective_hz(kind, next.analog_bandwidth_configured_hz);
+    if (next.radio_input && dsd_opts_is_analog_family(opts_snapshot)
+        && metrics.output_kind == DSD_FRONTEND_RTL_OUTPUT_AUDIO_MONITOR && metrics.channel_bandwidth_hz > 0) {
+        next.analog_bandwidth_hz = metrics.channel_bandwidth_hz;
+        next.analog_bandwidth_dsp_limited = metrics.channel_bandwidth_dsp_limited != 0;
+    }
+}
+
 void
 MetricsModel::fillSlotCalls(View& next, const dsd_state* snapshot, double now_m) {
     int line_states[DSD_CALL_STATE_SLOT_COUNT];
@@ -891,6 +919,7 @@ MetricsModel::refresh(const dsd_opts* opts_snapshot, const dsd_state* snapshot) 
      * stepping the channel map once the hangtime expires. */
     next.center_freq_hz = next.radio_input ? static_cast<double>(opts_snapshot->rtlsdr_center_freq) : 0.0;
     next.channel_bandwidth_hz = next.radio_input ? metrics.channel_bandwidth_hz : 0;
+    fillAnalogChannel(next, opts_snapshot, snapshot, metrics);
     next.trunking_enabled = opts_snapshot->trunk_enable != 0;
     next.scanner_mode = opts_snapshot->scanner_mode != 0;
     /* Trunk scan counts as a third owner even though it has no reading of its own:

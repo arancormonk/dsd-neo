@@ -27,6 +27,7 @@
 #include <QVariantMap>
 #include <QtGlobal>
 #include <cmath>
+#include <dsd-neo/app_control/frontend.h>
 #include <dsd-neo/app_control/p25_metrics.h>
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/opts_fwd.h>
@@ -100,6 +101,9 @@ class MetricsModel : public QObject {
     Q_PROPERTY(bool streamActive READ streamActive NOTIFY tunerChanged)
     Q_PROPERTY(double centerFreqHz READ centerFreqHz NOTIFY tunerChanged)
     Q_PROPERTY(int channelBandwidthHz READ channelBandwidthHz NOTIFY tunerChanged)
+    Q_PROPERTY(int analogBandwidthHz READ analogBandwidthHz NOTIFY tunerChanged)
+    Q_PROPERTY(bool analogBandwidthDspLimited READ analogBandwidthDspLimited NOTIFY tunerChanged)
+    Q_PROPERTY(int analogBandwidthConfiguredHz READ analogBandwidthConfiguredHz NOTIFY controlChanged)
     Q_PROPERTY(int slot1CallState READ slot1CallState NOTIFY slot1Changed)
     Q_PROPERTY(int slot2CallState READ slot2CallState NOTIFY slot2Changed)
     Q_PROPERTY(QString slot1CallName READ slot1CallName NOTIFY slot1Changed)
@@ -394,6 +398,35 @@ class MetricsModel : public QObject {
     int
     channelBandwidthHz() const {
         return m_view.channel_bandwidth_hz;
+    }
+
+    /**
+     * @brief The analog channel width in force, in Hz (issue #525); 0 outside the analog preset.
+     *
+     * While the front end runs the analog monitor, the width it reports (the configured width while its channel filter
+     * runs, otherwise the width the DSP rate leaves: see analogBandwidthDspLimited()). Otherwise -- no tuner, a stream
+     * not started, a typed digital scan row filtering with its own profile -- the configured width, the kind's default
+     * when none is set. The same rule as the terminal's "Analog:" status field.
+     */
+    int
+    analogBandwidthHz() const {
+        return m_view.analog_bandwidth_hz;
+    }
+
+    /** @brief Whether the DSP rate, not the channel filter, bounds analogBandwidthHz(). */
+    bool
+    analogBandwidthDspLimited() const {
+        return m_view.analog_bandwidth_dsp_limited;
+    }
+
+    /**
+     * @brief The configured analog channel width in Hz, 0 for the default: what the width control edits.
+     *
+     * Configuration, not a reading, so it is published for any input; the control is only enabled on a radio.
+     */
+    int
+    analogBandwidthConfiguredHz() const {
+        return m_view.analog_bandwidth_configured_hz;
     }
 
     /**
@@ -1277,6 +1310,8 @@ class MetricsModel : public QObject {
         SlotCall slot_call[DSD_CALL_STATE_SLOT_COUNT];
         int lead_slot = -1;
         int channel_bandwidth_hz = 0;
+        int analog_bandwidth_hz = 0;
+        int analog_bandwidth_configured_hz = 0;
         int decode_mode = 0;
         int configured_force = 0;
         int effective_force = 0;
@@ -1295,6 +1330,7 @@ class MetricsModel : public QObject {
         bool carrier_lock = false;
         bool radio_input = false;
         bool stream_active = false;
+        bool analog_bandwidth_dsp_limited = false;
         bool synced_here = false;
         bool trunkable_sync = false;
         bool squelch_off = false;
@@ -1346,6 +1382,8 @@ class MetricsModel : public QObject {
                    && cfo_hz == other.cfo_hz && tuner_gain_text == other.tuner_gain_text
                    && radio_input == other.radio_input && stream_active == other.stream_active
                    && center_freq_hz == other.center_freq_hz && channel_bandwidth_hz == other.channel_bandwidth_hz
+                   && analog_bandwidth_hz == other.analog_bandwidth_hz
+                   && analog_bandwidth_dsp_limited == other.analog_bandwidth_dsp_limited
                    && synced_here == other.synced_here && sync_label == other.sync_label
                    && trunkable_sync == other.trunkable_sync;
         }
@@ -1393,7 +1431,8 @@ class MetricsModel : public QObject {
         radioControlsEqual(const View& other) const {
             return modulation == other.modulation && tuner_gain_db == other.tuner_gain_db
                    && squelch_db == other.squelch_db && squelch_off == other.squelch_off && ppm == other.ppm
-                   && airspy == other.airspy && squelchOverrideEquals(other);
+                   && airspy == other.airspy && squelchOverrideEquals(other)
+                   && analog_bandwidth_configured_hz == other.analog_bandwidth_configured_hz;
         }
 
         /* The configured/effective pair is whole-dB configuration, not a measurement, so a
@@ -1442,6 +1481,9 @@ class MetricsModel : public QObject {
     void fillDecoderView(View& next, const dsd_opts* opts_snapshot, const dsd_state* snapshot, double now_m);
     /** @brief The configured/effective squelch pair and the row badge (#521). */
     static void fillSquelchOverride(View& next, const dsd_opts* opts_snapshot, const dsd_state* snapshot);
+    /** @brief The analog channel width in force and the configured one (#525). */
+    static void fillAnalogChannel(View& next, const dsd_opts* opts_snapshot, const dsd_state* snapshot,
+                                  const dsd_frontend_metrics& metrics);
     /** @brief Listening settings, talkgroup Hold, and lockout state from the held snapshot. */
     static void fillListeningControlView(View& next, const dsd_opts* opts_snapshot, const dsd_state* snapshot);
     /** @brief Scan hold and avoids (#380), read from whichever rotation is running. */
