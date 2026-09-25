@@ -161,7 +161,6 @@ dcs_reset(void* ctx) {
     det->expected = 0U;
     det->fail_run = 0;
     det->open_samples = 0;
-    det->turnoff_ratio = 0.0;
     det->bits_decided = 0;
 }
 
@@ -251,7 +250,7 @@ dcs_steer(dsd_analog_dcs* det) {
 }
 
 /* One slicer's decision on a bit integral, and its droop and level updates. */
-static int
+static void
 dcs_slice(dsd_analog_dcs_slicer* s, double integral) {
     const double level = (integral / s->gain) + s->baseline;
     const int bit = level > 0.0 ? 1 : 0;
@@ -262,7 +261,6 @@ dcs_slice(dsd_analog_dcs_slicer* s, double integral) {
     if (s->count < DSD_ANALOG_DCS_HISTORY_BITS) {
         s->count++;
     }
-    return bit;
 }
 
 /* A slicer's newest 23 decisions, the earliest in bit 0; and the 23 before them. */
@@ -437,14 +435,13 @@ dcs_read_bit(dsd_analog_dcs* det) {
     det->bit_open = 0;
     const double integral = dcs_box(det, det->next_bit);
     for (int j = 0; j < DSD_ANALOG_DCS_HYPOTHESES; j++) {
-        (void)dcs_slice(&det->slicer[j], integral);
+        dcs_slice(&det->slicer[j], integral);
     }
     det->bits_decided++;
     if (det->state == DSD_ANALOG_TONE_STATE_LOCKED) {
         det->expected = dcs_rotr(det->expected, 1);
     }
     const double share = dcs_turnoff_share(det);
-    det->turnoff_ratio = share;
     det->turnoff_run = (open && share >= k_turnoff_share) ? det->turnoff_run + 1 : 0;
     det->next_bit += det->samples_per_bit;
     dcs_steer(det);
