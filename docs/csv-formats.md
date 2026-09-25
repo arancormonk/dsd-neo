@@ -275,12 +275,16 @@ while the row is on air the edit waits for it to leave, and the message says the
 running DSP rate cannot filter (the channel filter needs `width / 2 + 600 Hz` within 0.45 of the DSP rate: at a 24 kHz
 DSP bandwidth the widest is 20.4 kHz, at 16 kHz 13.2 kHz) is named with the fix the input allows (an RTL DSP bandwidth
 that fits; on a SoapySDR or Airspy device a wider DSP bandwidth or a narrower width; on an I/Q replay a narrower width)
-when the scan starts, against the rate the running stream publishes, and again whenever that rate changes. An import
-does not check it: the configured RTL DSP bandwidth is only what the next stream is asked to open at (a SoapySDR or
-Airspy device may deliver another rate), and the rate changes live with the DSP bandwidth, so a list may be loaded
-before the bandwidth that fits it is set. A row the rate cannot filter is skipped at every visit rather than received
-without its filter. A row without a width of its own is held to the rate with the configured NFM width it runs, and is
-named again whenever that configured width changes. While the scan has such a row, the configured NFM width is in use on
+in the log and on the status line when the scan starts, against the rate the running stream publishes, and again
+whenever that rate changes. A channel map imported while DSD-neo runs (the terminal menu, Qt, Android) is held to the
+DSP rate known then: the running stream's, or on an RTL-SDR or rtl_tcp input with no stream running the one its DSP
+bandwidth sets. The map still loads, since the DSP bandwidth that fits it can be set afterwards, and the import message
+names the first row that rate cannot run and how many more there are. A SoapySDR or Airspy device, or an I/Q replay,
+delivers its rate only once its stream runs, so its rows are held to it at scan start; the Qt/Android review before an
+import, like a trunk-scan list's preview, checks the width's range only. A row the rate cannot filter is skipped at
+every visit rather than received without its filter, and so is every row with a width of its own while
+`DSD_NEO_CHANNEL_LPF=0` turns off the channel filter each explicit width needs. A row without a width of its own is
+held to the rate with the configured NFM width it runs, and is named again whenever that configured width changes. While the scan has such a row, the configured NFM width is in use on
 any session, as under `-fA`: a width edit or a loaded config that sets a width the DSP rate cannot filter, and a DSP
 bandwidth or an input switch whose rate cannot filter the configured width, is refused, whichever row is on air. While a
 row with its own width is on air, an RTL DSP bandwidth that cannot filter the width is refused rather than reopening the

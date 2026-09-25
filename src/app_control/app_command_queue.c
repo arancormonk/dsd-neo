@@ -1821,7 +1821,11 @@ ui_cmd_handle_import_channel_map(dsd_opts* opts, dsd_state* state, const struct 
         if (ui_cmd_copy_payload_string(c, path, sizeof path)) {
             int rc = svc_import_channel_map(opts, state, path);
             result = ui_cmd_apply_status_from_service_rc(rc);
-            if (rc == 0) {
+            char skipped[160];
+            if (rc == 0 && svc_channel_map_refused_rows(opts, state, skipped, sizeof skipped) > 0) {
+                /* The rows load; the ones the DSP rate cannot run are named with the import (issue #526). */
+                ui_set_toast(state, 5, "Imported; %s", skipped);
+            } else if (rc == 0) {
                 ui_set_toast(state, 3, "Applied: Channel map imported -> %s", path);
             } else {
                 ui_set_toast(state, 4, "Failed: Channel map import -> %s", path);

@@ -7476,6 +7476,100 @@ test_rtl_set_bw_refuses_a_rate_the_nfm_width_cannot_run_at(void) {
     freeState(&state);
     return rc;
 }
+
+/* Import @p csv as the channel map through the command queue and leave the toast in @p state. */
+static int
+import_channel_map_text(dsd_opts* opts, dsd_state* state, const char* path, const char* csv, const char* label) {
+    int rc = write_file_bytes(path, csv, strlen(csv));
+    state->ui_msg[0] = '\0';
+    post_string(DSD_APP_CMD_IMPORT_CHANNEL_MAP, path);
+    rc |= expect_int(label, dsd_app_drain_cmds(opts, state), 1);
+    return rc;
+}
+
+/*
+ * Issue #526: an nfm row's width is held to the DSP rate when the channel map loads. The map loads either way; a row
+ * the rate cannot run (its own --nfm-bandwidth-hz, or the configured NFM width a row without one runs) is skipped at
+ * every visit, so the import names the first such row and its reason rather than a plain success. With no stream
+ * running an RTL-SDR input's rate is the one its DSP bandwidth sets; DSD_NEO_CHANNEL_LPF=0 refuses every explicit
+ * width.
+ */
+static int
+test_channel_map_import_names_rows_the_dsp_rate_skips(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    int rc = 0;
+    dsd_test_temp_cwd cwd;
+    if (dsd_test_temp_cwd_enter(&cwd, "dsdneo_ui_cmd_queue_nfm_map") != 0) {
+        DSD_FPRINTF(stderr, "temp working directory setup failed: %s\n", strerror(errno));
+        return 1;
+    }
+    init_decode_mode_context(&opts, &state);
+    opts.audio_in_type = AUDIO_IN_RTL;
+    DSD_SNPRINTF(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", "rtl:0:851.375M:0:0:16");
+    opts.rtl_dsp_bw_khz = 16;
+    state.rtl_ctx = NULL;
+    static const char mixed[] = "channel,frequency_hz,name,mode,options\n"
+                                "1,461000000,dmr,dmr,\n"
+                                "2,154430000,wide,nfm,--nfm-bandwidth-hz 20000\n"
+                                "3,155475000,narrow,nfm,--nfm-bandwidth-hz 12500\n"
+                                "4,155490000,wider,nfm,--nfm-bandwidth-hz 25000\n";
+    rc |= import_channel_map_text(&opts, &state, "nfm_map.csv", mixed, "mixed map drained");
+    rc |= expect_int("mixed map loaded", state.lcn_freq_count, 4);
+    rc |= expect_str("mixed map path", opts.chan_in_file, "nfm_map.csv");
+    rc |= expect_toast("mixed map names the skipped rows", &state,
+                       "Imported; scan channel 2 and 1 more are skipped at every visit: NFM 20 kHz does not fit the "
+                       "16 kHz DSP rate");
+
+    /* A 24 kHz DSP bandwidth runs 20 kHz, not 25. */
+    opts.rtl_dsp_bw_khz = 24;
+    rc |= import_channel_map_text(&opts, &state, "nfm_map.csv", mixed, "24 kHz map drained");
+    rc |= expect_toast("24 kHz names one row", &state,
+                       "Imported; scan channel 4 is skipped at every visit: NFM 25 kHz does not fit the 24 kHz DSP "
+                       "rate");
+
+    /* A row without a width runs the configured one. */
+    static const char inherits[] = "channel,frequency_hz,name,mode,options\n"
+                                   "1,154430000,plain,nfm,\n";
+    opts.rtl_dsp_bw_khz = 16;
+    opts.analog_nfm_bandwidth_hz = 16000;
+    rc |= import_channel_map_text(&opts, &state, "nfm_plain.csv", inherits, "configured-width map drained");
+    rc |= expect_toast("configured width named", &state,
+                       "Imported; scan channel 1 is skipped at every visit: NFM 16 kHz does not fit the 16 kHz DSP "
+                       "rate");
+    opts.analog_nfm_bandwidth_hz = 0;
+    rc |= import_channel_map_text(&opts, &state, "nfm_plain.csv", inherits, "default-width map drained");
+    rc |= expect_toast("default width imports as before", &state, "Applied: Channel map imported -> nfm_plain.csv");
+
+    /* Every explicit width needs the filter DSD_NEO_CHANNEL_LPF=0 turns off, whatever the rate. */
+    opts.rtl_dsp_bw_khz = 48;
+    (void)dsd_setenv("DSD_NEO_CHANNEL_LPF", "0", 1);
+    dsd_neo_config_init();
+    rc |= import_channel_map_text(&opts, &state, "nfm_map.csv", mixed, "lpf-off map drained");
+    rc |= expect_toast("lpf-off names the rows", &state,
+                       "Imported; scan channel 2 and 2 more are skipped at every visit: NFM 20 kHz needs the "
+                       "filter DSD_NEO_CHANNEL_LPF=0 turns off");
+    (void)dsd_unsetenv("DSD_NEO_CHANNEL_LPF");
+    dsd_neo_config_init();
+
+    /* At 48 kHz every row runs. */
+    rc |= import_channel_map_text(&opts, &state, "nfm_map.csv", mixed, "48 kHz map drained");
+    rc |= expect_toast("48 kHz imports as before", &state, "Applied: Channel map imported -> nfm_map.csv");
+
+    /* Audio input applies no width: nothing to name. */
+    opts.audio_in_type = AUDIO_IN_NULL;
+    opts.rtl_dsp_bw_khz = 16;
+    rc |= import_channel_map_text(&opts, &state, "nfm_map.csv", mixed, "audio input map drained");
+    rc |= expect_toast("audio input imports as before", &state, "Applied: Channel map imported -> nfm_map.csv");
+
+    (void)remove("nfm_map.csv");
+    (void)remove("nfm_plain.csv");
+    freeState(&state);
+    if (dsd_test_temp_cwd_leave(&cwd) != 0) {
+        rc = 1;
+    }
+    return rc;
+}
 #endif
 
 #if defined(USE_RADIO) && defined(DSD_NEO_TEST_RTL_WRAP)
@@ -7785,6 +7879,7 @@ main(void) {
 #endif
 #ifdef USE_RADIO
     rc |= test_rtl_set_bw_refuses_a_rate_the_nfm_width_cannot_run_at();
+    rc |= test_channel_map_import_names_rows_the_dsp_rate_skips();
 #endif
 #if defined(USE_RADIO) && defined(DSD_NEO_TEST_RTL_WRAP)
     rc |= test_rtl_enable_input_holds_the_nfm_width();

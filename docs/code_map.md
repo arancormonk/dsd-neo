@@ -217,11 +217,16 @@ Tests: `tests/engine/test_engine_trunk_scan.c` (`ENGINE_TRUNK_SCAN`) and
   on air. What is left to warn about is a list loaded over such a width, or a rate a device forced. A trunk-scan retune
   in flight on an analog target keeps the width it queued; a width edit made meanwhile reaches the front end as a live
   request the landing retune can land over, so the coordinator requests the width in force again once the retune lands
-  wherever it differs (`trunk_scan_reapply_analog_width()`), as the `-Y` scanner restages such a tune. The row widths
-  are held to that published rate only, not at import against the configured RTL DSP bandwidth: the rate a width must
-  fit is certain only once the stream runs (a SoapySDR or Airspy device may force another) and changes live with the DSP
-  bandwidth, so a width it cannot fit is a warning and a skipped row, never an import error. The describe records carry
-  each row's width (`bandwidth_hz`) for the Qt/Android review to show it (see Scoped scan options).
+  wherever it differs (`trunk_scan_reapply_analog_width()`), as the `-Y` scanner restages such a tune. A channel map
+  loaded at runtime is held to the DSP rate as it loads: `svc_channel_map_refused_rows()` asks
+  `dsd_engine_channel_scan_refused_rows()` (public in `channel_scan.h`, read-only) for the rows the front end would
+  refuse at the running stream's rate, or on an RTL-SDR or rtl_tcp input with none running at the rate its DSP bandwidth
+  sets, and the import command's toast names the first and counts the rest. The map still loads, since the DSP
+  bandwidth that fits it can be set afterwards, and a width the rate cannot fit stays a warning and a skipped row, never
+  an import error: the rate a SoapySDR or Airspy device, or an I/Q replay, runs at is certain only once its stream runs,
+  so their rows are held to it at scan start, and the Qt/Android review and target-list preview (dry-run loaders with no
+  session) check the width's range only. The describe records carry each row's width (`bandwidth_hz`) for the Qt/Android
+  review to show it (see Scoped scan options).
   The receive family a row runs on is queued with its tune in `trunk_tuning.c` (`dsd_engine_prepare_scan_profile()`,
   issue #526): an analog row attaches the analog family, demodulator and width to the retune profile
   (`rtl_stream_prepare_retune_analog_profile_for_target()`) with no symbol profile, and a width the front end refuses

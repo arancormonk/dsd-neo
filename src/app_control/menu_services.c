@@ -934,6 +934,38 @@ svc_input_rate_source(const dsd_opts* opts) {
 
 #endif
 
+int
+svc_channel_map_refused_rows(const dsd_opts* opts, const dsd_state* state, char* why, size_t why_size) {
+    svc_why(why, why_size, "%s", "");
+    if (!opts || !state) {
+        return 0;
+    }
+    int rate_hz = 0;
+#ifdef USE_RADIO
+    rate_hz = svc_rtl_stream_running(opts, state) ? rtl_stream_get_request_rate_hz() : 0;
+    if (rate_hz <= 0) {
+        rate_hz = svc_rtl_bw_dsp_rate_hz(opts, opts->rtl_dsp_bw_khz);
+    }
+#endif
+    int first_row = -1;
+    char brief[DSD_ANALOG_ERROR_TEXT_MAX];
+    const int refused = dsd_engine_channel_scan_refused_rows(opts, state, rate_hz, &first_row, brief, sizeof brief);
+    if (refused <= 0) {
+        return 0;
+    }
+    /* Numbered as the scan names its rows ("Scan channel 3"). */
+    char text[sizeof brief + 64];
+    if (refused == 1) {
+        DSD_SNPRINTF(text, sizeof text, "scan channel %d is skipped at every visit: %s", first_row + 1, brief);
+    } else {
+        DSD_SNPRINTF(text, sizeof text, "scan channel %d and %d more are skipped at every visit: %s", first_row + 1,
+                     refused - 1, brief);
+    }
+    svc_why(why, why_size, "%s", text);
+    LOG_WARN("WARNING: Channel map %s: %s.\n", opts->chan_in_file, text);
+    return refused;
+}
+
 void
 svc_describe_nfm_refusal(const dsd_opts* opts, int width_hz, char* why, size_t why_size) {
     char width[DSD_ANALOG_WIDTH_TEXT_MAX];

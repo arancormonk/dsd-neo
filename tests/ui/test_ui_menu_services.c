@@ -581,6 +581,12 @@ rtl_stream_get_demod_rate_hz(void) {
     return g_demod_rate_hz;
 }
 
+/* The rate a running stream holds analog requests to, which a channel-map import holds its nfm rows to. */
+int
+rtl_stream_get_request_rate_hz(void) {
+    return g_demod_rate_hz;
+}
+
 /* The analog width view's reading of the unset NFM default where the channel filter runs but the rate cannot realize
    the default: the legacy WIDE plan's passband, which no rate these cases run at falls back on. */
 int

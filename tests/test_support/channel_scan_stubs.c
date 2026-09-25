@@ -23,3 +23,20 @@ dsd_engine_scan_runs_configured_nfm_width(const dsd_opts* opts, const dsd_state*
     (void)state;
     return 0;
 }
+
+/* Nor a channel map whose row widths a front end refuses: the width rules run in the engine, which ENGINE_CHANNEL_SCAN
+   and APP_COMMAND_QUEUE drive. */
+int
+dsd_engine_channel_scan_refused_rows(const dsd_opts* opts, const dsd_state* state, int dsp_rate_hz, int* first_row,
+                                     char* brief, size_t brief_size) {
+    (void)opts;
+    (void)state;
+    (void)dsp_rate_hz;
+    if (first_row) {
+        *first_row = -1;
+    }
+    if (brief && brief_size > 0U) {
+        brief[0] = '\0';
+    }
+    return 0;
+}

@@ -487,6 +487,42 @@ dsd_engine_scan_warn_analog_width(const dsd_opts* opts, const dsd_state* state, 
     return DSD_ENGINE_SCAN_WIDTH_SKIPPED;
 }
 
+int
+dsd_engine_channel_scan_refused_rows(const dsd_opts* opts, const dsd_state* state, int dsp_rate_hz, int* first_row,
+                                     char* brief, size_t brief_size) {
+    if (first_row) {
+        *first_row = -1;
+    }
+    if (brief && brief_size > 0U) {
+        brief[0] = '\0';
+    }
+    if (!opts || !state || opts->audio_in_type != AUDIO_IN_RTL) {
+        return 0;
+    }
+    const int configured_hz = dsd_engine_scan_configured_nfm_width_hz(opts, state);
+    int refused = 0;
+    for (int row = 0; row < state->lcn_freq_count; row++) {
+        if (*dsd_state_trunk_lcn_slot_const(state, row) == 0
+            || !dsd_scan_mode_is_analog(dsd_channel_mode_get(state, (size_t)row))) {
+            continue;
+        }
+        const dsd_scan_row_profile* profile = dsd_channel_profile_get(state, (size_t)row);
+        const int width_hz = (profile && (profile->values.present & DSD_SCAN_OPT_BANDWIDTH))
+                                 ? profile->values.channel_bw_hz
+                                 : configured_hz;
+        if (!dsd_engine_scan_width_refused(opts, DSD_ANALOG_DEMOD_FM, width_hz, dsp_rate_hz, NULL, 0U)) {
+            continue;
+        }
+        if (refused++ == 0) {
+            if (first_row) {
+                *first_row = row;
+            }
+            scan_width_refusal_brief(DSD_ANALOG_DEMOD_FM, width_hz, dsp_rate_hz, brief, brief_size);
+        }
+    }
+    return refused;
+}
+
 static int
 channel_scan_start_row(dsd_opts* opts, dsd_state* state, int row) {
     channel_scan* scan = channel_scan_get(state);
