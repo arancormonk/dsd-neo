@@ -767,12 +767,34 @@ dsd_scan_mode_updating(const dsd_state* state) {
     return scope && scope->suspended;
 }
 
+/* A command run while the scope was suspended timed the configured decoder at the live output rate. While the RTL front
+ * end still runs the analog family for the analog row on air (issue #526) and the configured mode is digital, that is
+ * the monitor's resampled audio rate, not the rate the configured decoder runs at: the digital family's, which an
+ * untyped row's tune or the leave lands it on, and which nothing retimes it for once it is the saved baseline. Time it
+ * for that family, as svc_publish_symbol_profile() times a mode change made outside a row. The profile is the
+ * configured one (the scope is still suspended); a front end on the digital family needs nothing. */
+static void
+scan_configured_retime(const dsd_opts* opts, dsd_state* state) {
+    if (opts->audio_in_type != AUDIO_IN_RTL || !scan_configured_digital(opts, opts->analog_only)
+        || !dsd_rtl_stream_metrics_hook_analog_family_active()) {
+        return;
+    }
+    const dsd_decode_mode_profile profile = dsd_scan_mode_effective_profile(opts, state);
+    if (profile.symbol_rate_hz <= 0) {
+        return;
+    }
+    const int rate_hz = scan_timing_rate_hz(opts, 1, profile.symbol_rate_hz, state->rf_mod == 1);
+    state->samplesPerSymbol = dsd_opts_compute_sps_rate(opts, profile.symbol_rate_hz, rate_hz);
+    state->symbolCenter = dsd_opts_symbol_center(state->samplesPerSymbol);
+}
+
 int
 dsd_scan_mode_resume(dsd_opts* opts, dsd_state* state) {
     scan_scope* scope = scan_scope_get(state);
     if (!scope || !opts || !state || !scope->suspended) {
         return 0;
     }
+    scan_configured_retime(opts, state);
     dsd_scan_settings_capture(opts, state, &scope->configured);
     scope->configured_mode = dsd_infer_decode_mode_preset_exact(opts);
     scope->suspended = 0;
