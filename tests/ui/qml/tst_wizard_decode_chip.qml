@@ -187,6 +187,34 @@ Item {
             verify(chip.enabled)
         }
 
+        // Issue #524: the AM chip greyed out is not enough. Picking a network or
+        // file source after AM drops the flag back to Auto, so the wizard cannot
+        // save a system the engine refuses to start; staying on a radio source
+        // keeps it. A system that reaches step 1 with AM on such a source (an
+        // edit, set here directly) cannot continue until another chip is picked.
+        function test_11_leaving_the_radio_drops_the_am_flag() {
+            tc.wizard.pickDecodeFlag("-fM")
+            findChild(tc.wizard, "wizardSource_rtltcp").clicked()
+            compare(tc.wizard.sourceType, "rtltcp")
+            compare(tc.wizard.decodeFlag, "-fM", "a radio source kept AM")
+            findChild(tc.wizard, "wizardSource_tcp").clicked()
+            compare(tc.wizard.sourceType, "tcp")
+            compare(tc.wizard.decodeFlag, "", "TCP audio kept the AM flag")
+            compare(tc.selectedLabels(), ["Auto — P25/DMR/YSF"])
+
+            findChild(tc.wizard, "wizardSource_usb").clicked()
+            tc.wizard.pickDecodeFlag("-fM")
+            findChild(tc.wizard, "wizardSource_file").clicked()
+            compare(tc.wizard.decodeFlag, "", "a file source kept the AM flag")
+
+            tc.wizard.decodeFlag = "-fM"
+            tc.wizard.step = 1
+            verify(!tc.wizard.stepValid(), "AM on a file source passes step 1")
+            tc.wizard.pickDecodeFlag("-fs")
+            verify(tc.wizard.stepValid(), "another chip clears the refusal")
+            tc.wizard.step = 0
+        }
+
         // A flag nobody has a name for must not invent a chip; the row falls
         // back to showing nothing selected rather than a mystery label.
         function test_07_an_unknown_flag_adds_no_chip() {

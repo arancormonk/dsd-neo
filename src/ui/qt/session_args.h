@@ -65,7 +65,9 @@ enum class SessionArgsError {
     KeyM17Aes,
     KeyConflict,
     ForceKey,
-    UnsafeOption
+    UnsafeOption,
+    /* Issue #524: an AM system (-fM) on a source whose audio arrives already demodulated (network or file). */
+    AmNeedsRadio
 };
 
 /** ASCII whitespace removed, optional 0x stripped, uppercase hex. QString copies

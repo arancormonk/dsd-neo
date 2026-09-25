@@ -550,6 +550,8 @@ Window {
                 mainRoot.startError = qsTr("“%1” has an invalid decryption configuration. Edit the source to correct it.").arg(sys.name);
             } else if (built.error === "unsafe-option") {
                 mainRoot.startError = qsTr("The session contains a prohibited extra option or grouped short options. Remove prohibited options and write each short option separately.");
+            } else if (built.error === "am-needs-radio") {
+                mainRoot.startError = qsTr("“%1” decodes AM, which needs a radio source: network and file audio arrives already demodulated. Edit the source to correct it.").arg(sys.name);
             } else {
                 mainRoot.startError = qsTr("The session options are invalid. Review them before starting.");
             }

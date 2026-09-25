@@ -214,6 +214,49 @@ test_nfm_system(void) {
            input_spec(remote) == QStringLiteral("rtltcp:10.0.2.2:1234:851.375M:30:0:48:0:2"));
 }
 
+/*
+ * Issue #524: the AM chip (-fM) demodulates from the radio's I/Q. A system on a radio source reaches the session with
+ * it; one on a network or file source, which the wizard no longer saves but an older save may hold, fails with its own
+ * reason instead of reaching the engine, which would refuse -fM on audio that arrives demodulated.
+ */
+void
+test_am_system(void) {
+    QVariantMap sys = usb_system();
+    sys.insert(QStringLiteral("decodeFlag"), QStringLiteral("-fM"));
+    SessionArgsError error = SessionArgsError::None;
+    const QStringList args = session_args_build(sys, SessionArgPrefs(), &error);
+    expect("an AM system builds on a USB dongle", error == SessionArgsError::None);
+    expect("the AM chip reaches the session as -fM", args.count(QStringLiteral("-fM")) == 1);
+    expect("an AM system follows no calls", !args.contains(QStringLiteral("-T")));
+
+    for (const char* source : {"tcp", "udp", "file"}) {
+        QVariantMap pcm = sys;
+        pcm.insert(QStringLiteral("sourceType"), QString::fromLatin1(source));
+        pcm.insert(QStringLiteral("host"), QStringLiteral("127.0.0.1"));
+        pcm.insert(QStringLiteral("port"), 7355);
+        pcm.insert(QStringLiteral("path"), QStringLiteral("/tmp/capture.wav"));
+        error = SessionArgsError::None;
+        expect("an AM system on a network or file source is refused",
+               session_args_build(pcm, SessionArgPrefs(), &error).isEmpty() && error == SessionArgsError::AmNeedsRadio);
+    }
+    expect("the refusal says why",
+           session_args_error_text(SessionArgsError::AmNeedsRadio).contains(QStringLiteral("AM needs a radio source")));
+
+    /* Among other tokens, as an import could save it; and a flag that merely contains the letters is not AM. */
+    QVariantMap composite = sys;
+    composite.insert(QStringLiteral("sourceType"), QStringLiteral("tcp"));
+    composite.insert(QStringLiteral("host"), QStringLiteral("127.0.0.1"));
+    composite.insert(QStringLiteral("port"), 7355);
+    composite.insert(QStringLiteral("decodeFlag"), QStringLiteral("-fM -Y"));
+    expect("a composite AM flag is refused off a radio",
+           session_args_build(composite, SessionArgPrefs(), &error).isEmpty()
+               && error == SessionArgsError::AmNeedsRadio);
+    composite.insert(QStringLiteral("decodeFlag"), QStringLiteral("-fA"));
+    error = SessionArgsError::None;
+    expect("NFM still builds on TCP audio",
+           !session_args_build(composite, SessionArgPrefs(), &error).isEmpty() && error == SessionArgsError::None);
+}
+
 void
 test_defaults_and_overrides(void) {
     SessionArgsError error = SessionArgsError::None;
@@ -582,6 +625,7 @@ main(int argc, char** argv) {
     test_tg_lockout_preference();
     test_defaults_and_overrides();
     test_nfm_system();
+    test_am_system();
     test_airspy_bandwidth();
     test_csv_args();
     test_ppm_shapes();

@@ -74,13 +74,17 @@ ModalSheet {
     // "0" next to a signal that vanished reads as a mistake otherwise.
     readonly property bool autoGain: gainDb <= 0
 
-    // Issue #525: the NFM channel width, shown under the analog preset. The
+    // Issue #525: the analog channel width, shown under the analog presets. The
     // stepper edits the configured width (0 is the default), and the reading is
     // the width in force as the engine spells it for every frontend: what the
     // front end reports while the monitor runs, with "DSP-limited" when the DSP
-    // rate rather than the filter bounds it.
+    // rate rather than the filter bounds it. Under the AM preset (issue #524)
+    // it is the AM width, stepped over the AM widths; otherwise the NFM width.
     readonly property int analogMode: commands.decodeModeForFlag("-fA")
-    readonly property bool analogPreset: analogMode >= 0 && metrics.decodeMode === analogMode
+    readonly property int amMode: commands.decodeModeForFlag("-fM")
+    readonly property bool amPreset: amMode >= 0 && metrics.decodeMode === amMode
+    readonly property bool analogPreset: (analogMode >= 0 && metrics.decodeMode === analogMode) || amPreset
+    readonly property var analogWidths: amPreset ? Util.AM_WIDTHS_HZ : Util.NFM_WIDTHS_HZ
     // Issue #526: an nfm scan row on air runs the NFM width whatever the
     // configured preset, a digital one included, so its width is in force and
     // shown there too, as the terminal shows it.
@@ -103,24 +107,26 @@ ModalSheet {
         || (analogWidthEditable && (metrics.analogBandwidthConfiguredHz > 0 || !isNaN(pendingAnalogWidth)))
     // An explicit width steps from itself. The default steps from the width in
     // force, which below a 20 kHz DSP rate is the width the rate leaves rather
-    // than 16 kHz, so the first step from there is one the rate can take. Under
-    // a row's own width the width in force is the row's, not the default's, so
-    // the default steps from 16 kHz, within what the DSP rate filters.
+    // than 16 kHz for NFM, so the first step from there is one the rate can take.
+    // Under a row's own width the width in force is the row's, not the default's,
+    // so the default steps from 16 kHz, within what the DSP rate filters.
     readonly property int analogWidthStepFrom: {
         if (analogWidthConfigured > 0)
             return analogWidthConfigured;
         if (analogRowOverride)
             return Util.NFM_DEFAULT_WIDTH_HZ;
-        return metrics.analogBandwidthHz > 0 ? metrics.analogBandwidthHz : Util.NFM_DEFAULT_WIDTH_HZ;
+        if (metrics.analogBandwidthHz > 0)
+            return metrics.analogBandwidthHz;
+        return amPreset ? Util.AM_DEFAULT_WIDTH_HZ : Util.NFM_DEFAULT_WIDTH_HZ;
     }
     // The widest width the DSP rate filters (the running stream's, or with none
     // the rate an RTL-SDR input's DSP bandwidth sets; 0 = not known): the steps
     // skip what the engine would refuse.
     readonly property int analogWidthMax: metrics.analogBandwidthMaxHz > 0 ? metrics.analogBandwidthMaxHz : 0
     readonly property bool analogWidthCanNarrow: analogWidthEditable
-        && Util.nextNfmWidth(analogWidthStepFrom, -1, analogWidthMax) > 0
+        && Util.nextWidthIn(analogWidths, analogWidthStepFrom, -1, analogWidthMax) > 0
     readonly property bool analogWidthCanWiden: analogWidthEditable
-        && Util.nextNfmWidth(analogWidthStepFrom, 1, analogWidthMax) > 0
+        && Util.nextWidthIn(analogWidths, analogWidthStepFrom, 1, analogWidthMax) > 0
     // A request stands in for the reading until the engine answers, spelled as
     // the setting it is ("12.5 kHz", or "default" for 0).
     // Outside the preset, with no nfm row on air, no width is in force, so the
@@ -164,32 +170,41 @@ ModalSheet {
         analogWidthTtl.stop();
     }
 
+    // The width command of the kind the section edits: AM under the AM preset,
+    // NFM otherwise.
+    function sendAnalogWidth(hz) {
+        if (amPreset)
+            commands.setAmBandwidthHz(hz);
+        else
+            commands.setNfmBandwidthHz(hz);
+    }
+
     /**
-     * Step the NFM channel width through the common channel plans. The engine
+     * Step the channel width through the common channel plans. The engine
      * refuses a width the DSP rate cannot filter, with a message, and keeps the
      * one it had; the pending value then expires back to the reading.
      */
     function stepAnalogWidth(direction) {
         if (!(direction > 0 ? analogWidthCanWiden : analogWidthCanNarrow))
             return;
-        var next = Util.nextNfmWidth(analogWidthStepFrom, direction, analogWidthMax);
+        var next = Util.nextWidthIn(analogWidths, analogWidthStepFrom, direction, analogWidthMax);
         pendingAnalogWidth = next;
         analogWidthTtl.restart();
-        commands.setNfmBandwidthHz(next);
+        sendAnalogWidth(next);
     }
 
     /**
-     * Return the NFM channel width to the unset default (0). Not a step to
-     * 16 kHz: the default keeps its own rule (the channel filter runs only at
-     * DSP rates of 20 kHz or more) and a save leaves it out of the config, so a
-     * later default reaches it.
+     * Return the channel width to the unset default (0). Not a step to the
+     * default's width: a save leaves the default out of the config, so a later
+     * default reaches it, and the NFM default keeps its own rule (the channel
+     * filter runs only at DSP rates of 20 kHz or more).
      */
     function resetAnalogWidth() {
         if (!analogWidthEditable || analogWidthConfigured <= 0)
             return;
         pendingAnalogWidth = 0;
         analogWidthTtl.restart();
-        commands.setNfmBandwidthHz(0);
+        sendAnalogWidth(0);
     }
 
     /**
@@ -517,7 +532,9 @@ ModalSheet {
         }
     }
 
-    // Why the AM chip is greyed out, rather than leaving a dead control.
+    // Why the AM chip is greyed out, rather than leaving a dead control. The
+    // sheet opens only on a radio input, but stays open across a live switch to
+    // audio that arrives demodulated, where the chip goes grey under the reader.
     Text {
         objectName: "radioDecodeIqNote"
         visible: metrics.radioInput !== true
@@ -525,19 +542,22 @@ ModalSheet {
         wrapMode: Text.WordWrap
         text: qsTr("AM needs a radio (I/Q) input; this audio arrives already demodulated.")
         color: Theme.textSecondary
+        font.family: Theme.sans
         font.pixelSize: Theme.fontSize(12)
     }
 
     // ---- Analog ----
-    // The NFM channel filter's width: the full RF passband the monitor keeps,
-    // not the tuner or the audio bandwidth. It has to fit the DSP rate.
+    // The analog channel filter's width (NFM, or AM under the AM preset): the
+    // full RF passband the monitor keeps, not the tuner or the audio bandwidth.
+    // It has to fit the DSP rate.
     Column {
         objectName: "radioAnalogSection"
         visible: sheet.analogWidthOffered
         width: parent.width
         spacing: 8
         Text {
-            text: qsTr("NFM channel width")
+            objectName: "radioAnalogSectionTitle"
+            text: sheet.amPreset ? qsTr("AM channel width") : qsTr("NFM channel width")
             color: Theme.textSecondary
             font.pixelSize: Theme.fontSize(14)
         }

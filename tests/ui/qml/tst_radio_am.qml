@@ -8,6 +8,12 @@ import QtTest
 // AM preset (-fM) and reads back as selected once the engine reports that mode.
 // On audio that arrives already demodulated the engine refuses AM, so the chip is
 // not offered there, and a note says why rather than leaving a dead control.
+//
+// Under the AM preset the sheet's analog channel width section edits the AM
+// width: a stepper over the common AM steps that skips what the DSP rate cannot
+// filter, a way back to the default, and the width in force as app_control's
+// analog width view spells it for every frontend (the same section the NFM
+// width uses under -fA).
 Item {
     width: 420
     height: 900
@@ -34,6 +40,11 @@ Item {
         function cleanup() {
             testContext.setMetric("radioInput", true);
             testContext.setMetric("decodeMode", 1);
+            testContext.setMetric("analogBandwidthHz", 0);
+            testContext.setMetric("analogBandwidthDspLimited", false);
+            testContext.setMetric("analogBandwidthConfiguredHz", 0);
+            testContext.setMetric("analogBandwidthMaxHz", 0);
+            testContext.setMetric("analogBandwidthReading", "");
             if (sheet) {
                 sheet.forgetRequests();
                 sheet.visible = false;
@@ -62,6 +73,88 @@ Item {
             verify(!chip.enabled, "the AM chip is offered on PCM input");
             verify(findChild(sheet, "radioDecodeIqNote").visible, "no note says why AM is unavailable");
             verify(findChild(sheet, "radioDecode_DMR").enabled, "the digital chips must stay available");
+        }
+
+        /* The sheet on the AM preset, as the engine publishes it: the width in force, the configured width (0 = the
+           default), the widest width the DSP rate filters (0 = not known) and the view's reading of them. AM's
+           default is never DSP-limited. */
+        function onAm(widthHz, configuredHz, maxHz) {
+            testContext.setMetric("analogBandwidthHz", widthHz);
+            testContext.setMetric("analogBandwidthConfiguredHz", configuredHz);
+            testContext.setMetric("analogBandwidthMaxHz", maxHz === undefined ? 0 : maxHz);
+            testContext.setMetric("analogBandwidthReading", (widthHz / 1000) + " kHz" + (configuredHz === 0 ? " (default)" : ""));
+            testContext.setMetric("decodeMode", commands.decodeModeForFlag("-fM"));
+            tryVerify(function () { return findChild(sheet, "radioAnalogSection").visible });
+        }
+
+        function valueText() {
+            return findChild(sheet, "radioAnalogBandwidthValue").text;
+        }
+
+        function test_am_width_section_under_the_am_preset() {
+            verify(!findChild(sheet, "radioAnalogSection").visible, "the width shows on a digital preset");
+            testContext.setMetric("analogBandwidthHz", 16000);
+            testContext.setMetric("analogBandwidthReading", "16 kHz (default)");
+            testContext.setMetric("decodeMode", commands.decodeModeForFlag("-fA"));
+            tryVerify(function () { return findChild(sheet, "radioAnalogSection").visible });
+            compare(findChild(sheet, "radioAnalogSectionTitle").text, "NFM channel width");
+            onAm(6000, 0);
+            compare(findChild(sheet, "radioAnalogSectionTitle").text, "AM channel width");
+            compare(valueText(), "6 kHz (default)");
+        }
+
+        function test_am_width_steps_through_the_common_widths() {
+            onAm(6000, 0);
+            findChild(sheet, "radioAnalogBandwidthUp").clicked();
+            compare(testContext.lastAmBandwidthHz(), 8000);
+            compare(testContext.nfmBandwidthCalls(), 0, "the AM step went to the NFM command");
+            compare(valueText(), "8 kHz", "the request stands in for the reading");
+            sheet.forgetRequests();
+            onAm(8000, 8000);
+            tryCompare(findChild(sheet, "radioAnalogBandwidthValue"), "text", "8 kHz");
+            findChild(sheet, "radioAnalogBandwidthDown").clicked();
+            compare(testContext.lastAmBandwidthHz(), 6000);
+            findChild(sheet, "radioAnalogBandwidthDown").clicked();
+            compare(testContext.lastAmBandwidthHz(), 5000, "a second step goes on from the first");
+            compare(testContext.amBandwidthCalls(), 3);
+            verify(!findChild(sheet, "radioAnalogBandwidthDown").enabled, "5 kHz is the narrowest AM width");
+        }
+
+        function test_am_width_refused_request_expires_back_to_the_reading() {
+            onAm(6000, 0);
+            findChild(sheet, "radioAnalogBandwidthUp").clicked();
+            compare(valueText(), "8 kHz");
+            // The engine refused it: the reading never moves, and the request expires back to it.
+            tryCompare(findChild(sheet, "radioAnalogBandwidthValue"), "text", "6 kHz (default)", 4000);
+        }
+
+        function test_am_width_skips_what_the_dsp_rate_cannot_filter() {
+            // A 16 kHz DSP rate filters at most 13.2 kHz: from 10 kHz, 15 and 20 kHz are refused.
+            onAm(10000, 10000, 13200);
+            tryVerify(function () { return !findChild(sheet, "radioAnalogBandwidthUp").enabled });
+            findChild(sheet, "radioAnalogBandwidthUp").clicked();
+            compare(testContext.amBandwidthCalls(), 0, "a step the rate refuses was sent");
+            verify(findChild(sheet, "radioAnalogBandwidthDown").enabled);
+        }
+
+        function test_am_width_back_to_the_default() {
+            onAm(6000, 0);
+            verify(!findChild(sheet, "radioAnalogBandwidthDefault").visible, "the default offered while in use");
+            onAm(8000, 8000);
+            tryVerify(function () { return findChild(sheet, "radioAnalogBandwidthDefault").visible });
+            findChild(sheet, "radioAnalogBandwidthDefault").clicked();
+            compare(testContext.lastAmBandwidthHz(), 0, "the default is sent as 0, not as 6000");
+            compare(testContext.nfmBandwidthCalls(), 0);
+        }
+
+        function test_am_width_disabled_off_a_radio() {
+            onAm(6000, 0);
+            testContext.setMetric("radioInput", false);
+            tryVerify(function () { return !findChild(sheet, "radioAnalogBandwidthUp").enabled });
+            verify(!findChild(sheet, "radioAnalogBandwidthDown").enabled);
+            verify(findChild(sheet, "radioAnalogBandwidthNote").visible, "no note says why the width is disabled");
+            findChild(sheet, "radioAnalogBandwidthUp").clicked();
+            compare(testContext.amBandwidthCalls(), 0);
         }
     }
 }

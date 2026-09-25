@@ -627,6 +627,13 @@ class CommandRecorder : public QObject {
     }
 
     Q_INVOKABLE bool
+    setAmBandwidthHz(int hz) {
+        m_last_am_bandwidth_hz = hz;
+        m_am_bandwidth_calls++;
+        return true;
+    }
+
+    Q_INVOKABLE bool
     setModulation(int modulation) {
         m_last_modulation = modulation;
         return true;
@@ -683,6 +690,8 @@ class CommandRecorder : public QObject {
         m_last_modulation = -1;
         m_last_decode_mode = -1;
         m_last_ppm = 9999;
+        m_last_am_bandwidth_hz = -1;
+        m_am_bandwidth_calls = 0;
         m_lockout_accepted = true;
         m_lockout_requests.clear();
         m_avoid_clear_requests.clear();
@@ -764,6 +773,16 @@ class CommandRecorder : public QObject {
     int
     lastPpm() const {
         return m_last_ppm;
+    }
+
+    int
+    lastAmBandwidthHz() const {
+        return m_last_am_bandwidth_hz;
+    }
+
+    int
+    amBandwidthCalls() const {
+        return m_am_bandwidth_calls;
     }
 
     int
@@ -892,6 +911,8 @@ class CommandRecorder : public QObject {
     int m_last_modulation = -1;
     int m_last_decode_mode = -1;
     int m_last_ppm = 9999;
+    int m_last_am_bandwidth_hz = -1;
+    int m_am_bandwidth_calls = 0;
     QVariantList m_talkgroupEdit;
     int m_talkgroup_listen_calls = 0;
     double m_last_talkgroup_id_start = 0.0;
@@ -1692,6 +1713,17 @@ class Setup : public QObject {
     Q_INVOKABLE int
     lastPpm() const {
         return (m_commands != nullptr) ? m_commands->lastPpm() : 9999;
+    }
+
+    /** @brief The last AM channel width the Radio sheet asked for (issue #524), and how many times it asked. */
+    Q_INVOKABLE int
+    lastAmBandwidthHz() const {
+        return (m_commands != nullptr) ? m_commands->lastAmBandwidthHz() : -1;
+    }
+
+    Q_INVOKABLE int
+    amBandwidthCalls() const {
+        return (m_commands != nullptr) ? m_commands->amBandwidthCalls() : -1;
     }
 
     Q_INVOKABLE QFont

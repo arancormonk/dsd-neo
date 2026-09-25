@@ -480,6 +480,9 @@ session_args_error_text(SessionArgsError error) {
         case SessionArgsError::UnsafeOption:
             return QStringLiteral("Extra options contain a prohibited option or grouped short options. "
                                   "Remove prohibited options and write each short option separately.");
+        case SessionArgsError::AmNeedsRadio:
+            return QStringLiteral("AM needs a radio source (USB, Airspy or rtl_tcp): network and file audio arrives "
+                                  "already demodulated. Choose a radio source, or another decode mode.");
     }
     return {};
 }
@@ -537,6 +540,13 @@ append_profile_args(QStringList& args, const QVariantMap& system) {
     }
 }
 
+/* Whether a saved decode flag selects the AM preset (-fM, issue #524), alone or among other tokens. */
+static bool
+decode_flag_names_am(const QString& decodeFlag) {
+    static const QRegularExpression whitespace(QStringLiteral("\\s+"));
+    return decodeFlag.split(whitespace, Qt::SkipEmptyParts).contains(QStringLiteral("-fM"));
+}
+
 static bool
 is_radio_source(const QString& source) {
     return source == QLatin1String("usb") || source == QLatin1String("airspy") || source == QLatin1String("rtltcp");
@@ -563,6 +573,12 @@ session_args_build(const QVariantMap& system, const SessionArgPrefs& prefs, Sess
 
     const QString sourceType = system.value(QStringLiteral("sourceType")).toString();
     const bool radioSource = is_radio_source(sourceType);
+    // Issue #524: -fM demodulates AM from the radio's I/Q, and the engine refuses it on audio that arrives already
+    // demodulated. The wizard keeps the pair from being saved; a system saved before that fails here with a reason
+    // rather than at engine startup.
+    if (!radioSource && decode_flag_names_am(system.value(QStringLiteral("decodeFlag")).toString())) {
+        return fail(SessionArgsError::AmNeedsRadio);
+    }
     const QString freqMhz = system.value(QStringLiteral("freqMhz")).toString().trimmed();
     if (radioSource && !session_args_freq_valid(freqMhz)) {
         return fail(SessionArgsError::Frequency);
@@ -677,6 +693,7 @@ validationResult(SessionArgsError error) {
                                            : error == SessionArgsError::Ppm          ? QStringLiteral("ppm")
                                            : error == SessionArgsError::Hangtime     ? QStringLiteral("hangtime")
                                            : error == SessionArgsError::UnsafeOption ? QStringLiteral("unsafe-option")
+                                           : error == SessionArgsError::AmNeedsRadio ? QStringLiteral("am-needs-radio")
                                            : error == SessionArgsError::None         ? QString()
                                                                                      : QStringLiteral("encryption"));
     result.insert(QStringLiteral("errorText"), session_args_error_text(error));

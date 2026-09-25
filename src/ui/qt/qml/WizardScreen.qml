@@ -307,6 +307,16 @@ Item {
     }
 
     /**
+     * A source change away from the radio drops a chip only a radio can run
+     * (AM, issue #524) back to Auto, rather than saving a system the engine
+     * would refuse to start. Its chip is greyed out for the new source.
+     */
+    function dropRadioOnlyDecodeFlag() {
+        if (!radioSource && Util.decodeFlagNeedsRadio(decodeFlag))
+            pickDecodeFlag("");
+    }
+
+    /**
      * Re-derive the unanswered trunking switch from the chip and the frequency.
      *
      * Called on every chip pick and on every frequency edit, not just the pick:
@@ -356,8 +366,11 @@ Item {
                 return fileText.length > 0;
             return true;
         }
+        // A system edited or imported onto a non-radio source may still carry
+        // AM, which only a radio can run: not until another chip is picked.
         if (step === 1)
-            return hangtimeValid() && encryptionValid && (!radioSource || sessionArgs.freqValid(freqText));
+            return hangtimeValid() && encryptionValid && (!radioSource || sessionArgs.freqValid(freqText))
+                && (radioSource || !Util.decodeFlagNeedsRadio(decodeFlag));
         return hangtimeValid() && encryptionValid && nameText.trim().length > 0;
     }
 
@@ -686,13 +699,16 @@ Item {
                         DecodeChip {
                             required property var modelData
 
+                            objectName: "wizardSource_" + modelData.key
                             text: modelData.label
                             selected: wizard.sourceType === modelData.key
                             onClicked: {
                                 var prev = wizard.sourceType;
                                 wizard.sourceType = modelData.key;
-                                if (prev !== modelData.key)
+                                if (prev !== modelData.key) {
                                     wizard.applySourceDefaults(prev);
+                                    wizard.dropRadioOnlyDecodeFlag();
+                                }
                             }
                         }
                     }

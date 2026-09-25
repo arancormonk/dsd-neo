@@ -36,6 +36,7 @@
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/core/talkgroup_policy.h>
+#include <dsd-neo/runtime/analog_channel.h>
 #include <dsd-neo/runtime/scan_mode.h>
 #include <dsd-neo/runtime/scan_options.h>
 
@@ -53,6 +54,8 @@ static int g_stub_channel_bandwidth_hz = 0;
 static int g_stub_channel_bandwidth_dsp_limited = 0;
 /* Whether the stubbed front end says a stream runs, and its demod rate (issue #525). */
 static int g_stub_stream_active = 0;
+/* The demodulator kind of the published analog width (issue #524): FM unless a case publishes an AM width. */
+static int g_stub_channel_analog_kind = DSD_ANALOG_DEMOD_FM;
 static int g_stub_demod_rate_hz = 0;
 
 /* The scan-timing view a case feeds the model. Zeroed between cases: reason NONE
@@ -86,6 +89,7 @@ dsd_app_frontend_get_metrics_for_snapshot(const dsd_opts* opts, const dsd_state*
     out->channel_bandwidth_hz = g_stub_channel_bandwidth_hz;
     out->channel_bandwidth_dsp_limited = g_stub_channel_bandwidth_dsp_limited;
     out->stream_active = g_stub_stream_active;
+    out->channel_analog_kind = g_stub_channel_analog_kind;
     out->demod_rate_hz = g_stub_demod_rate_hz;
     return 0;
 }
@@ -1433,6 +1437,53 @@ main(int argc, char** argv) {
         g_stub_stream_active = 0;
         g_stub_demod_rate_hz = 0;
         opts.audio_in_type = AUDIO_IN_RTL;
+    }
+
+    /* Issue #524: under the AM preset the view reads the AM width: the configured one, 6 kHz by default and never
+     * DSP-limited (a rate that cannot filter it is refused), and the running monitor's own width once the front end
+     * publishes an AM one. An FM width still published (a switch to AM not landed yet) is another channel's. The
+     * configured AM width is what the stepper edits, and stays published off a radio. */
+    {
+        opts.audio_in_type = AUDIO_IN_RTL;
+        g_stub_stream_active = 1;
+        g_stub_demod_rate_hz = 16000;
+        opts.analog_only = 1;
+        opts.monitor_input_audio = 1;
+        opts.analog_demod = DSD_ANALOG_DEMOD_AM;
+        model.refresh(&opts, &state);
+        expect("am: the default width", model.analogBandwidthHz() == 6000 && !model.analogBandwidthDspLimited());
+        expect("am: the default is configured as 0", model.analogBandwidthConfiguredHz() == 0);
+        expect("am: the 16 kHz rate bounds the steps at 13.2 kHz", model.analogBandwidthMaxHz() == 13200);
+        expect("am: the reading says it is the default",
+               model.analogBandwidthReading() == QStringLiteral("6 kHz (default)"));
+
+        opts.analog_am_bandwidth_hz = 10000;
+        g_stub_channel_bandwidth_hz = 16000;
+        g_stub_channel_analog_kind = DSD_ANALOG_DEMOD_FM;
+        model.refresh(&opts, &state);
+        expect("am: an FM width is not the AM channel", model.analogBandwidthHz() == 10000);
+        expect("am: the configured AM width", model.analogBandwidthConfiguredHz() == 10000);
+        g_stub_channel_bandwidth_hz = 9000;
+        g_stub_channel_analog_kind = DSD_ANALOG_DEMOD_AM;
+        model.refresh(&opts, &state);
+        expect("am: the AM monitor's width", model.analogBandwidthHz() == 9000);
+        expect("am: the reading is the AM monitor's width", model.analogBandwidthReading() == QStringLiteral("9 kHz"));
+
+        opts.audio_in_type = AUDIO_IN_PULSE;
+        model.refresh(&opts, &state);
+        expect("am: no width in force off a radio", model.analogBandwidthHz() == 0 && model.analogBandwidthMaxHz() == 0);
+        expect("am: the configured AM width stays off a radio", model.analogBandwidthConfiguredHz() == 10000);
+
+        opts.analog_only = 0;
+        opts.monitor_input_audio = 0;
+        opts.analog_demod = DSD_ANALOG_DEMOD_FM;
+        opts.analog_am_bandwidth_hz = 0;
+        opts.audio_in_type = AUDIO_IN_RTL;
+        g_stub_channel_bandwidth_hz = 0;
+        g_stub_channel_analog_kind = DSD_ANALOG_DEMOD_FM;
+        g_stub_stream_active = 0;
+        g_stub_demod_rate_hz = 0;
+        model.refresh(&opts, &state);
     }
 
     /* A call with no name of its own on a named scan channel: the hero must show
