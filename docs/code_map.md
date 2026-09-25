@@ -609,8 +609,10 @@ installs from `src/engine/trunk_tuning.c` in `src/engine/trunk_tuning_hooks_inst
   - Invariant: resets never happen in `noCarrier()` / `dsd_engine_reset_no_carrier_state()` (they run every ~375 ms in
     analog mode and would stop any tone locking). They happen in `dsd_frame_sync_reset_acquisition()` (row commit and
     leave, trunk-scan target switch, decode-mode change, scope resume, RR apply), on an RTL stream-generation or
-    `dsd_trunk_tuning_generation()` move or an input-rate change seen by the tap (the read is discarded), at the legacy
-    untyped `-Y` step (also when the step failed after its rigctl leg moved the radio) and at engine stop (`engine.c`),
+    `dsd_trunk_tuning_generation()` move, a change of the analog profile the RTL stream publishes
+    (`dsd_rtl_stream_metrics_hook_analog_profile()`: kind, width, channel filter on) or an input-rate change seen by
+    the tap (the read is discarded), at the legacy untyped `-Y` step (also when the step failed after its rigctl leg
+    moved the radio) and at engine stop (`engine.c`),
     on accepted `RTL_SET_FREQ` / `MANUAL_TUNE` commands, on every tune `request_manual_tune()` accepts (manual channel
     cycle and scan avoid on an untyped list, candidate cycle, return-to-CC, lockout and skip: `io_control_set_freq()`
     moves a rigctl radio without advancing the trunk-tuning generation), on every input switch (`ui_input_switched()`,
@@ -635,8 +637,10 @@ installs from `src/engine/trunk_tuning.c` in `src/engine/trunk_tuning_hooks_inst
     `dsd_analog_rx_block_restart()`, so the tap's next read starts at the new block's first sample. A receive-family
     switch (`DSD_APP_CMD_DECODE_MODE_SET`, a config apply's `[mode]`, the channel-scan leave) forgets the tone through
     the boundary resets above, and on RTL input the switch that lands later on the demod thread also clears the output
-    ring and moves the stream generation the tap watches. On Pulse, stdin, UDP and
-    TCP input the input's own queue holds more of the old channel, which kept arriving while a rigctl retune held the
+    ring and moves the stream generation the tap watches. An analog profile the demod thread applies to a running
+    monitor without a family switch (a width-only change, the channel filter turning on or off) keeps the generation
+    and the output ring, so the tap watches the published profile too. On Pulse, stdin, UDP and TCP input the input's
+    own queue holds more of the old channel, which kept arriving while a rigctl retune held the
     decoder, so every `dsd_analog_rx_reset()` and every generation move the tap sees also arms a backlog skip, and so
     does detection that starts with no session after a reset (the publication's generation is no longer 0: a retune in a
     digital mode, then the switch to the analog monitor). The tap skips its reads until one shows the input ran dry (a

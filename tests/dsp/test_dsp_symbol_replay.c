@@ -25,6 +25,7 @@
 #include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/platform/platform.h>
 #include <dsd-neo/platform/sockets.h>
+#include <dsd-neo/runtime/analog_channel.h>
 #include <dsd-neo/runtime/exitflag.h>
 #include <dsd-neo/runtime/log.h>
 #include <dsd-neo/runtime/net_audio_input_hooks.h>
@@ -643,6 +644,24 @@ fake_rtl_stream_generation(void) {
     return g_fake_rtl_generation;
 }
 
+/* The analog receive profile the fake stream publishes: NFM at this width, with the channel filter on or not. */
+static int g_fake_rtl_analog_width_hz = 12500;
+static int g_fake_rtl_analog_lpf_on = 1;
+
+static int
+fake_rtl_analog_profile(int* out_kind, int* out_width_hz, int* out_lpf_on) {
+    if (out_kind) {
+        *out_kind = DSD_ANALOG_DEMOD_FM;
+    }
+    if (out_width_hz) {
+        *out_width_hz = g_fake_rtl_analog_width_hz;
+    }
+    if (out_lpf_on) {
+        *out_lpf_on = g_fake_rtl_analog_lpf_on;
+    }
+    return 1;
+}
+
 static void
 install_fake_rtl_hooks(int installed) {
     dsd_rtl_stream_metrics_hooks hooks;
@@ -651,6 +670,7 @@ install_fake_rtl_hooks(int installed) {
         hooks.output_rate_hz = fake_rtl_output_rate_hz;
         hooks.output_kind = fake_rtl_output_kind;
         hooks.stream_generation = fake_rtl_stream_generation;
+        hooks.analog_profile = fake_rtl_analog_profile;
     }
     dsd_rtl_stream_metrics_hooks_set(&hooks);
 }
@@ -792,6 +812,60 @@ test_rx_tone_clears_on_unannounced_retune(void) {
     assert(state.analog_rx.carrier_open == 0);
     assert(state.analog_rx.ctcss_tenths_hz == 0);
     assert(state.analog_rx.generation != generation);
+    dsd_state_ext_free_all(&state);
+}
+
+/* Feed one block of the 100 Hz tone after a change of the published analog profile and check the
+   tap dropped it and started a new reception, then that the tone locks again from scratch. */
+static void
+expect_rx_tone_reset_on_profile_change(dsd_opts* opts, dsd_state* state) {
+    float block[960];
+    const uint32_t generation = state->analog_rx.generation;
+    const uint32_t rtl_generation = g_fake_rtl_generation;
+    fill_tone_block(block, 960U, 100.0, 3000.0);
+    (void)dsd_symbol_test_finalize_unsynced_analog_block(opts, state, block, 960U);
+    assert(g_fake_rtl_generation == rtl_generation);
+    assert(state->analog_rx.tone_state == DSD_ANALOG_TONE_STATE_IDLE);
+    assert(state->analog_rx.tone_kind == DSD_ANALOG_TONE_KIND_NONE);
+    assert(state->analog_rx.ctcss_tenths_hz == 0);
+    assert(state->analog_rx.generation != generation);
+    feed_tone_blocks(opts, state, 30);
+    assert(rx_tone_locked_on_100(state));
+}
+
+/* An analog profile the RTL stream applies on a running monitor without a family switch (a
+   width-only change, or the channel filter turning on or off at the same width) keeps the
+   stream's generation and its output ring and publishes the new profile
+   (IO_RTL_ANALOG_FAMILY_SWITCH pins all three), so the tap tells that boundary by the profile
+   the stream publishes. */
+static void
+test_rx_tone_clears_on_applied_analog_profile_change(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+
+    install_fake_rtl_hooks(1);
+    init_analog_monitor_fixture(&opts, &state);
+    opts.audio_in_type = AUDIO_IN_RTL;
+    g_fake_rtl_analog_width_hz = 12500;
+    g_fake_rtl_analog_lpf_on = 1;
+    feed_tone_blocks(&opts, &state, 30);
+    assert(rx_tone_locked_on_100(&state));
+    /* The same profile published block after block is no boundary: the lock and its reception hold. */
+    const uint32_t generation = state.analog_rx.generation;
+    feed_tone_blocks(&opts, &state, 10);
+    assert(rx_tone_locked_on_100(&state));
+    assert(state.analog_rx.generation == generation);
+
+    /* Width only. */
+    g_fake_rtl_analog_width_hz = 8000;
+    expect_rx_tone_reset_on_profile_change(&opts, &state);
+    /* The channel filter only, at the width already published. */
+    g_fake_rtl_analog_lpf_on = 0;
+    expect_rx_tone_reset_on_profile_change(&opts, &state);
+
+    g_fake_rtl_analog_width_hz = 12500;
+    g_fake_rtl_analog_lpf_on = 1;
+    install_fake_rtl_hooks(0);
     dsd_state_ext_free_all(&state);
 }
 
@@ -2110,6 +2184,7 @@ main(void) {
     test_symbol_helper_rtl_cache_and_center_contract();
     test_rx_tone_tap_reads_raw_block_before_voice_filters();
     test_rx_tone_clears_on_unannounced_retune();
+    test_rx_tone_clears_on_applied_analog_profile_change();
     test_rx_tone_reset_sets_the_pending_block_aside();
     test_rx_tone_detection_starting_mid_block_skips_older_samples();
     test_rx_tone_keeps_pace_with_a_long_pcm_block();

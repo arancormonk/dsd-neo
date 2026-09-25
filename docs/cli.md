@@ -530,6 +530,7 @@ tone setting, and it runs with `-o null` too.
   were dropped within 465 ms and all within 800 ms (the slowest 693 ms).
 - The received tone is forgotten when the receiver moves or the session changes: a frequency set from a frontend or a
   spectrum tap, any other retune the RTL stream or the tuning hooks report (UDP retune, rigctl-driven tuning), a
+  change of the analog channel filter the RTL front end runs (its width, or whether it runs), a
   `-Y` scan step (including one that failed after rigctl had already moved the radio), a manual channel cycle or scan
   avoid, a scan row or trunk-scan target change, a decode-mode change, an input switch (Pulse, WAV, UDP, TCP, RTL or
   symbol input, replay and stop-playback, from a frontend or a config apply, and the switch to live Pulse input when

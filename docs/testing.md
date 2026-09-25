@@ -400,7 +400,9 @@ identical results), and they are the numbers the user guide quotes:
 
 Retune clearing is covered where each path lives: `DSP_SYMBOL_REPLAY` (the tap reads the raw block before the voice
 high-pass removes the tone, leaves the audio byte-identical, clears on an RTL stream-generation or
-trunk-tuning-generation move and on a change between two usable input rates, dropping the read the change falls in (also
+trunk-tuning-generation move, on a change of the analog profile the RTL stream publishes with neither moved (a width
+alone, then the channel filter alone, while the same profile published block after block keeps the lock and its
+generation) and on a change between two usable input rates, dropping the read the change falls in (also
 sample by sample, where after a drop from 48 kHz to 2500 Hz the old reception ends within one 20 ms read at the new
 rate, not 384 ms later at the end of the block, and where the 958 samples of a 1920 Hz tone waiting in the block at 48
 kHz, which read as 2500 Hz input are a 100 Hz tone, are dropped rather than locking 100.0 Hz, and a 131.8 Hz tone at the

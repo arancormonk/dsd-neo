@@ -124,7 +124,10 @@ enum { DSD_ANALOG_RX_BACKLOG_MAX_MS = 2000 };
  * that never calls dsd_analog_rx_tap_partial() hands over whole blocks.
  *
  * Each read resets on its own when the RTL stream generation or the trunk-tuning generation
- * moved (a retune it was not told about), on an input that may pause when it arrives more than
+ * moved (a retune it was not told about), when the analog receive profile the RTL stream
+ * publishes changed (dsd_rtl_stream_metrics_hook_analog_profile(): a width-only change or the
+ * channel filter turning on or off, applied to a running monitor, does not move the
+ * generation), on an input that may pause when it arrives more than
  * DSD_ANALOG_STREAM_PAUSE_MIN_MS allows after the previous read, and when the input rate
  * changed since the previous read. Each way the samples read may straddle the boundary -- after
  * a rate change, samples taken at the old rate are another signal at the new one -- so they are

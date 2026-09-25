@@ -396,6 +396,11 @@ typedef struct {
     dsd_analog_rx_core core;
     uint32_t rtl_generation;
     uint64_t tune_generation;
+    /** The analog receive profile the RTL stream published at the tap's last look (kind, width,
+        channel filter on); all 0 on other inputs and while the stream runs no analog monitor. */
+    int rtl_profile_kind;
+    int rtl_profile_width_hz;
+    int rtl_profile_lpf_on;
     int log_key;              /**< ANALOG_RX_LOG_* or the logged tone in tenths of a hertz */
     uint32_t log_generation;  /**< the publication generation log_key belongs to */
     int unusable_rate_logged; /**< the unusable rate reported for the current stretch of such input; 0 = none */
@@ -448,9 +453,16 @@ analog_rx_session_get(const dsd_state* state) {
 
 static void
 analog_rx_note_generations(const dsd_opts* opts, analog_rx_session* session) {
-    session->rtl_generation =
-        (opts && opts->audio_in_type == AUDIO_IN_RTL) ? dsd_rtl_stream_metrics_hook_stream_generation() : 0U;
+    const int rtl = (opts && opts->audio_in_type == AUDIO_IN_RTL) ? 1 : 0;
+    session->rtl_generation = rtl ? dsd_rtl_stream_metrics_hook_stream_generation() : 0U;
     session->tune_generation = dsd_trunk_tuning_generation();
+    session->rtl_profile_kind = 0;
+    session->rtl_profile_width_hz = 0;
+    session->rtl_profile_lpf_on = 0;
+    if (rtl) {
+        (void)dsd_rtl_stream_metrics_hook_analog_profile(&session->rtl_profile_kind, &session->rtl_profile_width_hz,
+                                                         &session->rtl_profile_lpf_on);
+    }
 }
 
 static int
@@ -693,13 +705,21 @@ analog_rx_publish_skipped(dsd_state* state, analog_rx_session* session, int rate
 }
 
 /* A retune nobody told the tap about shows up as a generation change: the RTL stream's for
-   a direct or UDP-driven retune, the trunk-tuning one for a hook-driven or rigctl retune. */
+   a direct or UDP-driven retune, the trunk-tuning one for a hook-driven or rigctl retune. An
+   analog profile the RTL stream applies to a running monitor without a family switch (a
+   width-only change, the channel filter turning on or off) keeps the stream's generation and
+   its output; it shows up as a change of the profile the stream publishes, which the demod
+   thread updates as it applies the request. */
 static int
 analog_rx_generation_moved(const dsd_opts* opts, analog_rx_session* session) {
     const uint32_t rtl = session->rtl_generation;
     const uint64_t tune = session->tune_generation;
+    const int kind = session->rtl_profile_kind;
+    const int width_hz = session->rtl_profile_width_hz;
+    const int lpf_on = session->rtl_profile_lpf_on;
     analog_rx_note_generations(opts, session);
-    return rtl != session->rtl_generation || tune != session->tune_generation;
+    return rtl != session->rtl_generation || tune != session->tune_generation || kind != session->rtl_profile_kind
+           || width_hz != session->rtl_profile_width_hz || lpf_on != session->rtl_profile_lpf_on;
 }
 
 static void
@@ -791,11 +811,12 @@ analog_rx_rate_moved(analog_rx_session* session, int rate_hz) {
     return previous != 0 && previous != rate_hz;
 }
 
-/* The core's own resets act on the samples in hand: a retune nobody announced, an input that
-   paused, or an input rate that moved. Each way these samples may straddle the boundary -- the
-   first of them can have arrived before it, and after a rate change they are another signal
-   at the new rate (1920 Hz at 48 kHz read as 2500 Hz input is a 100 Hz tone) -- so they are
-   dropped, and the new reception starts with the next read. Returns 1 when that happened. */
+/* The core's own resets act on the samples in hand: a retune nobody announced, an analog
+   profile the RTL stream applied, an input that paused, or an input rate that moved. Each way
+   these samples may straddle the boundary -- the first of them can have arrived before it, and
+   after a rate change they are another signal at the new rate (1920 Hz at 48 kHz read as 2500 Hz
+   input is a 100 Hz tone) -- so they are dropped, and the new reception starts with the next
+   read. Returns 1 when that happened. */
 static int
 analog_rx_boundary_dropped(const dsd_opts* opts, dsd_state* state, analog_rx_session* session, unsigned int count,
                            int rate_hz) {
