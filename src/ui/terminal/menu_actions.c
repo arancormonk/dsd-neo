@@ -1323,14 +1323,15 @@ is_non_airspy_input(const void* v) {
     return !is_airspy_input(v);
 }
 
-/* The NFM width row, on a radio input, where the width is the channel filter: while the configured analog preset runs
-   FM, and under any other preset while an explicit NFM width is configured. The configured preset, as the status
-   line's "Analog:" field reads it (app_control's analog width view): a typed digital scan row on an analog session does
-   not end it, and the width set under the row is the one its leave returns to. Outside the preset a switch to Analog
-   is held to the explicit width, and where a SoapySDR or Airspy device or an I/Q replay forces a DSP rate that cannot
-   filter it, the refusal says to narrow the width: this row is where that happens. */
-bool
-is_nfm_width_editable(const void* v) {
+/* A channel width row of analog @p kind, on a radio input, where the width is the channel filter: while the configured
+   analog preset runs that kind, and under any other preset while an explicit width of the kind is configured. The
+   configured preset, as the status line's "Analog:" field reads it (app_control's analog width view): a typed digital
+   scan row on an analog session does not end it, and the width set under the row is the one its leave returns to.
+   Outside the preset a switch to it is held to the explicit width, and where a SoapySDR or Airspy device or an I/Q
+   replay forces a DSP rate that cannot filter it, the refusal says to narrow the width: this row is where that
+   happens. */
+static bool
+is_analog_width_editable(const void* v, int kind) {
     const UiCtx* c = (const UiCtx*)v;
     if (!c || !c->opts) {
         return false;
@@ -1339,15 +1340,21 @@ is_nfm_width_editable(const void* v) {
     if (dsd_app_analog_width_view_get(c->opts, dsd_app_get_latest_snapshot(), NULL, &view) != 0 || !view.radio_input) {
         return false;
     }
-    /* An nfm scan row on air (issue #526) runs the width on any session; the configured width is the one edited. */
-    return (view.shown || view.row_analog) ? view.kind == DSD_ANALOG_DEMOD_FM : view.configured_hz > 0;
+    /* An nfm scan row on air (issue #526) runs its width on any session; the configured width is the one edited. */
+    const int explicit_hz = dsd_scan_mode_configured_analog_width(c->opts, dsd_app_get_latest_snapshot(), kind);
+    return (view.shown || view.row_analog) ? view.kind == kind : explicit_hz > 0;
 }
 
-/* Issue #524: the AM width row, while the AM preset runs on a radio input, where the width is the channel filter. */
+/* The NFM width row (issue #525). */
+bool
+is_nfm_width_editable(const void* v) {
+    return is_analog_width_editable(v, DSD_ANALOG_DEMOD_FM);
+}
+
+/* The AM width row (issue #524). */
 bool
 is_am_width_editable(const void* v) {
-    const UiCtx* c = (const UiCtx*)v;
-    return c && c->opts && dsd_opts_input_is_radio(c->opts) && dsd_infer_decode_mode_preset(c->opts) == DSDCFG_MODE_AM;
+    return is_analog_width_editable(v, DSD_ANALOG_DEMOD_AM);
 }
 
 // NcMenuItem action callbacks require a mutable context signature.

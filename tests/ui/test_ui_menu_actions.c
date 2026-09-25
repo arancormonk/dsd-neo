@@ -1487,18 +1487,29 @@ test_additional_prompt_and_toggle_actions(void) {
         dsd_test_scan_labels_configured(NULL);
     }
 
-    /* Issue #524: the AM width row. Shown while AM runs on a radio input; the prompt offers the configured width (0
-     * for the default) and hands what was typed to the width command, which refuses what it cannot apply. */
+    /* Issue #524: the AM width row. Shown while the configured analog preset runs AM on a radio input, as the NFM row
+     * is while it runs FM, and under another preset while an explicit AM width is configured; the prompt offers the
+     * configured width (0 for the default) and hands what was typed to the width command, which refuses what it cannot
+     * apply. */
     reset_capture();
     opts.audio_in_type = AUDIO_IN_RTL;
-    g_infer_mode = DSDCFG_MODE_AM;
+    opts.analog_only = 1;
+    opts.analog_demod = DSD_ANALOG_DEMOD_AM;
     rc |= expect_int("am width row shown under AM on a radio", is_am_width_editable(&ctx), 1);
-    g_infer_mode = DSDCFG_MODE_ANALOG;
+    rc |= expect_int("nfm width row hidden under AM", is_nfm_width_editable(&ctx), 0);
+    opts.analog_demod = DSD_ANALOG_DEMOD_FM;
     rc |= expect_int("am width row hidden under Analog", is_am_width_editable(&ctx), 0);
-    g_infer_mode = DSDCFG_MODE_AM;
+    opts.analog_am_bandwidth_hz = 10000;
+    opts.analog_only = 0;
+    rc |= expect_int("am width row shown for an explicit width on a digital session", is_am_width_editable(&ctx), 1);
+    opts.analog_am_bandwidth_hz = 0;
+    opts.analog_only = 1;
+    opts.analog_demod = DSD_ANALOG_DEMOD_AM;
     opts.audio_in_type = AUDIO_IN_PULSE;
     rc |= expect_int("am width row hidden on PCM input", is_am_width_editable(&ctx), 0);
     rc |= expect_int("am width row hidden with no context", is_am_width_editable(NULL), 0);
+    opts.analog_only = 0;
+    opts.analog_demod = DSD_ANALOG_DEMOD_FM;
     opts.audio_in_type = AUDIO_IN_RTL;
     opts.analog_am_bandwidth_hz = 8000;
     rtl_set_am_bw(&ctx);
