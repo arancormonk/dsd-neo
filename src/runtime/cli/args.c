@@ -43,7 +43,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <time.h>
 
 #if !DSD_PLATFORM_WIN_NATIVE
 #include <unistd.h>
@@ -506,10 +505,11 @@ cli_warn_analog_width_without_radio(const dsd_opts* opts, const char* option_nam
 
 /* AM needs an IQ radio input (issue #524). -fM on a PCM input is an error. [mode] decode = am from a loaded config (the
  * only other way a parse ends on AM) falls back to the Analog monitor for the session instead, and autosave is turned
- * off for it so the saved decode = am is not replaced by the fallback. That turns off saving every other change the
- * session makes too, so it is said where the operator looks, not only in the log: a toast the frontends show once
- * they are up. (Keeping autosave and writing decode = am back would need the session to remember the preset it fell
- * back from, a state field this change does not add.) */
+ * off for it so the saved decode = am is not replaced by the fallback (dsd_decode_mode_keep_saved_am(), which a runtime
+ * config apply of such a config calls too). That turns off saving every other change the session makes too, so it is
+ * said where the operator looks, not only in the log: a toast the frontends show once they are up. (Keeping autosave
+ * and writing decode = am back would need the session to remember the preset it fell back from, a state field this
+ * change does not add.) */
 static int
 cli_check_am_input(dsd_opts* opts, dsd_state* state, int cli_chose_am, int* out_exit_rc) {
     /* The input is not open yet: its spec (or --iq-replay) says whether it will deliver I/Q. */
@@ -524,12 +524,8 @@ cli_check_am_input(dsd_opts* opts, dsd_state* state, int cli_chose_am, int* out_
     LOG_WARN("WARNING: [mode] decode = am: %s. Using the Analog monitor for this session.\n",
              DSD_DECODE_MODE_AM_NEEDS_IQ_TEXT);
     (void)dsd_apply_decode_mode_preset(DSDCFG_MODE_ANALOG, DSD_DECODE_PRESET_PROFILE_CONFIG, opts, state);
-    if (state->config_autosave_enabled) {
-        state->config_autosave_enabled = 0;
-        LOG_INFO("NOTICE: Autosave disabled for this session so the saved decode = am is kept.\n");
-        DSD_SNPRINTF(state->ui_msg, sizeof state->ui_msg, "%s",
-                     "Decoding Analog: AM needs an IQ radio input. Autosave is off this session to keep decode = am");
-        state->ui_msg_expire = time(NULL) + 30;
+    if (dsd_decode_mode_keep_saved_am(state)) {
+        LOG_INFO("NOTICE: %s.\n", DSD_DECODE_MODE_KEEP_SAVED_AM_NOTICE);
     }
     return 0;
 }

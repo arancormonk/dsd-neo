@@ -633,9 +633,11 @@ of the setup wizard): the analog monitor with an AM envelope detector in place o
   monitor for that session instead, with autosave off so the saved `decode = am` is kept; a toast says so, since
   nothing else the session changes is saved either. A decode-mode change to AM on a PCM session (terminal picker, Qt
   chip) is refused with the same reason; the terminal picker's AM entry reads `AM (needs an I/Q radio input)` there
-  and the Qt chip is greyed out. A runtime config apply with `decode = am` on a PCM session applies, and the session
-  runs the Analog monitor with that reason, as a start does; so does a live switch of a running AM session's input to
-  a PCM one (Pulse, a file, TCP or UDP audio).
+  and the Qt chip is greyed out. A runtime config apply with `decode = am` on a PCM session (terminal Config > Load)
+  applies, and the session runs the Analog monitor with that reason and autosave off, as a start does. A live switch of
+  a running AM session's input to a PCM one (Pulse, a file, TCP or UDP audio) also falls back to the Analog monitor with
+  that reason, but autosave stays on: the operator moved the session there, and autosave keeps the new input with the
+  mode it runs.
 - Channel width: `--am-bandwidth-hz <Hz>` (or `--am-bandwidth-hz=<Hz>`, `[analog] am_bandwidth_hz`) sets the AM
   channel filter, a whole number of Hz from 5000 to 20000; the default is 6000. It is the full RF passband centred on
   the tuned frequency, with the NFM width's filter response (see [Channel width](#channel-width) above), and it is

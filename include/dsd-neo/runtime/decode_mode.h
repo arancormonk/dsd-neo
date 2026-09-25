@@ -200,6 +200,24 @@ int dsd_decode_mode_input_spec_is_iq(const dsd_opts* opts);
  */
 int dsd_decode_mode_runs_on_input(dsdneoUserDecodeMode mode, const dsd_opts* opts);
 
+/** @brief The log notice for dsd_decode_mode_keep_saved_am() turning autosave off, which its callers log. */
+#define DSD_DECODE_MODE_KEEP_SAVED_AM_NOTICE "Autosave disabled for this session so the saved decode = am is kept"
+
+/**
+ * @brief Turn autosave off for a session whose loaded config's `[mode] decode = am` fell back to Analog on PCM input.
+ *
+ * The fallback holds for that session only and the saved setting stays as it is (issue #524), but autosave writes the
+ * session's configuration back when it ends, which would replace `decode = am` with the Analog fallback. A start with
+ * such a config and a runtime config apply of one both call this. Stopping autosave also stops every other change the
+ * session makes from being saved, so it says so in a toast the frontends show, and the caller logs
+ * DSD_DECODE_MODE_KEEP_SAVED_AM_NOTICE (this translation unit links no logger). Nothing happens when autosave is
+ * already off (a profile load, or no config file).
+ *
+ * @param state Decoder state; NULL does nothing.
+ * @return 1 when it turned autosave off, else 0.
+ */
+int dsd_decode_mode_keep_saved_am(dsd_state* state);
+
 #ifdef __cplusplus
 }
 #endif

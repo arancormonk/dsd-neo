@@ -596,10 +596,13 @@ rtl_tcp, SoapySDR, Airspy or an I/Q replay. On a PCM input the session logs
 audio with -fA`, runs the Analog monitor instead, and turns autosave off so
 the saved `decode = "am"` is kept; a toast says so in the terminal and the
 Qt/Android app, since no other change the session makes is saved either. A
-runtime config apply with `am` on a PCM session applies the rest of the config
-and runs the Analog monitor with the same reason, as a start does; the
-session's configuration then holds the Analog monitor, as after any other
-mode change, so a later save writes `analog`.
+runtime config apply with `am` on a PCM session (terminal Config > Load)
+applies the rest of the config and runs the Analog monitor with the same
+reason and autosave off, as a start does, so the loaded file keeps its
+`decode = "am"`. An explicit save still writes what the session runs
+(`analog`). A live switch of a running AM session's input to a PCM one falls
+back to the Analog monitor too, with autosave left on: it saves the new input
+with the mode the session runs there.
 Persisted compatibility values `p25p1_only`, `p25p2_only`, `edacs`,
 `provoice`, and `analog_monitor` are translated to their canonical modes when
 read. Generated configurations always use the canonical values above.

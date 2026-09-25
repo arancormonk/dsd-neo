@@ -6167,9 +6167,10 @@ test_am_bandwidth_set_under_scan_rows(void) {
 /*
  * AM runs only on an I/Q input (issue #524). Switching a running AM session's input to PCM (Pulse here) falls it back
  * to the Analog monitor with the reason, as a start with a config's decode = am on PCM does, rather than leave AM
- * running on audio that arrives demodulated (where the received-tone detector, FM-only, would stay off). Once an input
- * is open its type alone decides: a session started with --iq-replay and switched to Pulse keeps the replay request and
- * spec, and AM is still refused there.
+ * running on audio that arrives demodulated (where the received-tone detector, FM-only, would stay off). The operator
+ * moved the session there, so autosave stays on and keeps the new input with the mode it runs, unlike a config whose
+ * own decode = am meets PCM input. Once an input is open its type alone decides: a session started with --iq-replay
+ * and switched to Pulse keeps the replay request and spec, and AM is still refused there.
  */
 static int
 test_input_switch_to_pcm_leaves_am(void) {
@@ -6184,6 +6185,7 @@ test_input_switch_to_pcm_leaves_am(void) {
     rc |= expect_int("pcm switch: on AM", dsd_infer_decode_mode_preset(&opts) == DSDCFG_MODE_AM, 1);
 
     state.rtl_ctx = NULL;
+    state.config_autosave_enabled = 1;
     rc |=
         expect_int("pcm switch: pulse queued", post_empty(DSD_APP_CMD_INPUT_SET_PULSE), DSD_APP_COMMAND_SUBMIT_QUEUED);
     rc |= expect_int("pcm switch: pulse drained", dsd_app_drain_cmds(&opts, &state), 1);
@@ -6192,6 +6194,8 @@ test_input_switch_to_pcm_leaves_am(void) {
     rc |= expect_int("pcm switch: FM detector", opts.analog_demod, DSD_ANALOG_DEMOD_FM);
     rc |= expect_int("pcm switch: toast gives the reason",
                      strstr(state.ui_msg, "Decoding Analog: AM demodulation needs an IQ radio input") != NULL, 1);
+    rc |= expect_int("pcm switch: autosave stays on", state.config_autosave_enabled, 1);
+    state.config_autosave_enabled = 0;
 
     /* A replay session switched to Pulse: the request and spec stay, the input is PCM. */
     opts.iq_replay_requested = 1;
@@ -8670,6 +8674,29 @@ main(void) {
 #endif
 #ifdef DSD_NEO_TEST_AUDIO_ENSURE_WRAP
     rc |= test_decode_mode_set_ensures_family_sink();
+    /* Config > Load makes the loaded file the autosave target, then applies it. Its decode = am must survive the
+     * session, as it does a start with it: autosave is turned off, with a toast, rather than writing the Analog
+     * fallback over it when the session ends. */
+    dsd_app_config_metadata_payload meta;
+    DSD_MEMSET(&meta, 0, sizeof meta);
+    meta.autosave_enabled = 1;
+    DSD_SNPRINTF(meta.path, sizeof meta.path, "%s", "shared-am.ini");
+    rc |= expect_int("pcm am: load metadata queued",
+                     dsd_app_command_submit(DSD_APP_CMD_CONFIG_METADATA_SET, &meta, sizeof meta),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("pcm am: load metadata drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("pcm am: autosave on for the loaded file", state.config_autosave_enabled, 1);
+    state.ui_msg[0] = '\0';
+    rc |= submit_config_mode(&opts, &state, DSDCFG_MODE_AM, "pcm am: loaded config am");
+    rc |= expect_int("pcm am: loaded config fell back to Analog",
+                     dsd_infer_decode_mode_preset(&opts) == DSDCFG_MODE_ANALOG, 1);
+    rc |= expect_int("pcm am: loaded config turns autosave off", state.config_autosave_enabled, 0);
+    rc |= expect_str("pcm am: the autosave path stays", state.config_autosave_path, "shared-am.ini");
+    rc |= expect_int("pcm am: loaded config toast says why",
+                     strstr(state.ui_msg, "Autosave is off this session to keep decode = am") != NULL, 1);
+    state.config_autosave_enabled = 0;
+    state.config_autosave_path[0] = '\0';
+
     rc |= test_config_apply_keeps_session_output_layout();
 #endif
     rc |= test_family_change_discards_partial_analog_block();

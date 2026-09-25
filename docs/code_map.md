@@ -464,7 +464,8 @@ Tests: `tests/engine/test_engine_trunk_scan.c` (`ENGINE_TRUNK_SCAN`) and
     for two phases: before the engine opens the input, `dsd_decode_mode_input_spec_is_iq()` reads the spec (an rtl,
     rtltcp, soapy, airspy or iqreplay one, or the RTL input type `--iq-replay` sets while the options are parsed) for
     the CLI (which stops on `-fM` with a PCM input, and falls a config's `decode = am` back to Analog with autosave off
-    and a toast saying so) and the setup wizard (which asks it about the input it just configured); once an input is
+    and a toast saying so, `dsd_decode_mode_keep_saved_am()`, which a runtime config apply of one shares) and the
+    setup wizard (which asks it about the input it just configured); once an input is
     open, `dsd_decode_mode_input_is_iq()` and `dsd_decode_mode_runs_on_input()` go by the input type alone
     (`dsd_opts_input_is_radio()`), since a live switch to TCP audio keeps the old device string and a replay session
     switched to Pulse keeps its request. All of them say `DSD_DECODE_MODE_AM_NEEDS_IQ_TEXT`.
@@ -694,8 +695,10 @@ installs from `src/engine/trunk_tuning.c` in `src/engine/trunk_tuning_hooks_inst
   `apply_cmd_fall_back_from_am_on_pcm()`, run after every command (`apply_cmd_scoped()`): a configured AM preset on an
   input that is not I/Q (a live input switch to Pulse, a file, TCP or UDP audio, or a config's `decode = am` on PCM)
   becomes the Analog monitor through the scope, as DECODE_MODE_SET would make it, with the reason in the log and the
-  toast. Neither width command is scoped (`command_updates_scan_mode()`): each edits the configured width as above
-  rather than suspending and re-applying the row. Tests: `APP_COMMAND_QUEUE`, `UI_MENU_SERVICES`.
+  toast. After a config apply whose own `[mode]` is `am` it also turns autosave off (`dsd_decode_mode_keep_saved_am()`),
+  as a start with that config does, so the loaded file keeps `decode = am`; a live input switch leaves autosave on.
+  Neither width command is scoped (`command_updates_scan_mode()`): each edits the configured width as above rather than
+  suspending and re-applying the row. Tests: `APP_COMMAND_QUEUE`, `UI_MENU_SERVICES`.
 - Shared display decisions, so no frontend has to restate one: `include/dsd-neo/app_control/call_view.h` and
   `src/app_control/call_view.c` fold the canonical call state into a per-slot line, and
   `include/dsd-neo/app_control/scan_timing_view.h` and `src/app_control/scan_timing_view.c` fold

@@ -10,6 +10,7 @@
 #include <dsd-neo/runtime/decode_mode.h>
 #include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
 #include <stddef.h>
+#include <time.h>
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
@@ -796,4 +797,19 @@ dsd_decode_mode_input_spec_is_iq(const dsd_opts* opts) {
 int
 dsd_decode_mode_runs_on_input(dsdneoUserDecodeMode mode, const dsd_opts* opts) {
     return (mode != DSDCFG_MODE_AM || dsd_decode_mode_input_is_iq(opts)) ? 1 : 0;
+}
+
+/* How long the toast stays: a start sets it before any frontend is up to show it. */
+#define DSD_DECODE_MODE_KEEP_SAVED_AM_TOAST_S 30
+
+int
+dsd_decode_mode_keep_saved_am(dsd_state* state) {
+    if (!state || !state->config_autosave_enabled) {
+        return 0;
+    }
+    state->config_autosave_enabled = 0;
+    DSD_SNPRINTF(state->ui_msg, sizeof state->ui_msg, "%s",
+                 "Decoding Analog: AM needs an IQ radio input. Autosave is off this session to keep decode = am");
+    state->ui_msg_expire = time(NULL) + DSD_DECODE_MODE_KEEP_SAVED_AM_TOAST_S;
+    return 1;
 }
