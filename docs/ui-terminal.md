@@ -81,16 +81,16 @@ Main Menu
 │       ├── PPM correction... [0]                { }
 │       ├── DSP bandwidth... [48 kHz]
 │       ├── NFM bandwidth... [default]           (-fA, or a width set, on a radio input)
-│       ├── AM bandwidth... [default]            (while AM runs)
+│       ├── AM bandwidth... [default]            (-fM, or a width set, on a radio input)
 │       ├── Squelch (dB)...
 │       ├── Volume multiplier... [1]             v
-│       ├── Auto-PPM [On]
 │       ├── Tuner autogain [On]
 │       ├── Bias tee [Off]
 │       ├── ─────
 │       ├── Device index...
 │       ├── Restart stream
 │       ├── Auto-PPM & rtl_tcp
+│       │   ├── Auto-PPM [On]
 │       │   ├── Auto-PPM SNR threshold... [6.0 dB]
 │       │   ├── Auto-PPM minimum power... [-80.0 dB]
 │       │   ├── Auto-PPM zero-lock PPM... [0.60]
@@ -301,13 +301,15 @@ preset back (`Mode... [P25 Phase 1]`), and the footer toasts `Decoding <mode>` o
 AM (`-fM`) needs an I/Q radio input. On a PCM input the picker's AM row reads `AM (needs an I/Q radio input)`, and
 choosing it sends nothing: the footer gives the reason (`AM demodulation needs an IQ radio input; monitor externally
 demodulated AM audio with -fA`). A running AM session whose input is switched to a PCM one falls back to Analog, and
-the footer says why. While AM runs on a radio input, **Input -> RTL-SDR -> AM bandwidth... [6 kHz (default)]** sets
-the AM channel-filter width (5000..20000 Hz, 0 for the 6000 default) live; the label reads the configured width back.
-It passes the value as typed, and the engine refuses one outside the range or one the DSP rate cannot filter, keeping
-the width it had. Under a `-Y` row with its own decode mode the width is saved and applies when the row ends, and the
-footer says so. **Bandwidth...** refuses a DSP bandwidth that cannot filter the AM width while AM runs (the 6 kHz
-default needs 8 kHz or more). The status line shows the width in force next to the DSP bandwidth:
-`DSP-BW: 48 kHz; Analog: AM 6 kHz;`.
+the footer says why. **Input -> RTL-SDR -> AM bandwidth... [default]** sets the AM channel-filter width (5000..20000 Hz,
+0 for the 6000 default) as **NFM bandwidth...** sets the NFM one (below): offered on a radio input while AM is the
+configured mode, or while an explicit AM width is set under another mode, it passes the value as typed, the engine
+refuses one outside the range or one the DSP rate cannot filter, keeping the width it had, and the label reads the
+setting back (`[8 kHz]`, or `[default]`). Under a `-Y` row with its own decode mode the width applies when the row
+ends. **DSP bandwidth...** refuses a DSP bandwidth that cannot filter the AM width while AM is the configured mode
+(the 6 kHz default needs 8 kHz or more). The status line shows the width in force next to the DSP bandwidth:
+`DSP-BW: 48 kHz; Analog: AM 6 kHz (default);`. To keep the RTL-SDR menu within fifteen rows beside the two width rows,
+the Auto-PPM switch leads the **Auto-PPM & rtl_tcp** submenu, above the settings it governs.
 
 Group policy reload:
 
@@ -405,7 +407,8 @@ need to inspect post-channel-filter squelch power. `RF Level` and `Squelch` are 
 expected to match exactly.
 
 `DSP-BW:` on the RTL input line is the DSP bandwidth, the demodulator's sample rate that `DSP bandwidth...` sets. Under
-`-fA` the line also shows the analog channel width in force beside it, `Analog: NFM 12.5 kHz;`: the width the front
+`-fA` (or `-fM`, reading `Analog: AM ...;`) the line also shows the analog channel width in force beside it,
+`Analog: NFM 12.5 kHz;`: the width the front
 end reports while a running stream runs the analog monitor, otherwise the configured one, so a scan row running a
 digital protocol shows the width its leave returns to. The unset default reads `Analog: NFM 16 kHz (default);`, and
 `Analog: NFM 12 kHz (DSP-limited);` beside `DSP-BW: 12 kHz;` when the DSP rate rather than the channel filter bounds

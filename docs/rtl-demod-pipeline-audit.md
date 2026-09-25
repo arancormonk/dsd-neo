@@ -233,8 +233,11 @@ The configured NFM width (`dsd_opts::analog_nfm_bandwidth_hz`, 0 for the
 default) comes from `--nfm-bandwidth-hz`, `[analog] nfm_bandwidth_hz`, the
 terminal's NFM bandwidth row and the Qt Radio sheet, the last two through
 `DSD_APP_CMD_NFM_BANDWIDTH_SET` (user docs: `docs/cli.md`, Analog reception).
-Every entry point refuses rather than clamps, and the checks sit where the rate
-is known:
+The AM width (`analog_am_bandwidth_hz`, issue #524) comes the same ways, through
+`--am-bandwidth-hz`, `am_bandwidth_hz`, the AM bandwidth row, the sheet under
+the AM preset and `DSD_APP_CMD_AM_BANDWIDTH_SET`, and every check below holds
+its unset default (6 kHz) as it holds an explicit width. Every entry point
+refuses rather than clamps, and the checks sit where the rate is known:
 
 - The CLI and the INI loader take whole Hz in range only
   (`dsd_analog_width_parse()`); `--validate-config` reports the same text as an
@@ -581,7 +584,15 @@ and in replay; the `DECODE_IQ_ANALOG_AM_*` level bounds hold on both.
   stream against fresh opens (the carrier estimate and its closed-squelch run
   included), live FM <-> AM switches against a
   fresh open of the new kind, and AM widths held to a running stream's rate;
-  `IO_RTL_RETUNE_PREPARE` retunes while AM runs.
+  `IO_RTL_RETUNE_PREPARE` retunes while AM runs. `APP_COMMAND_QUEUE` and
+  `UI_MENU_SERVICES` hold the AM width, its default included, to the rate
+  through the shared width services, and cover a switch between FM and AM the
+  front end refuses (by the request and where it lands, which the stream's
+  refusal record tells from a refused width by the kind it kept), an AM width
+  refused where it lands (put back, the default as the default) and AM under
+  `DSD_NEO_CHANNEL_LPF=0`; `RUNTIME_ANALOG_AM_WIDTH_RATE_REFUSED`, `_RTL`,
+  `RUNTIME_ANALOG_AM_DEFAULT_RATE_REFUSED` and
+  `RUNTIME_ANALOG_AM_WIDTH_FITS_LOW_RATE` the startup check.
 
 Run the focused audit checks with:
 
