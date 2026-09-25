@@ -16,6 +16,7 @@
  */
 
 #include <cmath>
+#include <cstddef>
 #include <cstdint>
 #include <cstdio>
 #include <dsd-neo/dsp/demod_pipeline.h>
@@ -339,7 +340,7 @@ test_floor_and_clamp(void) {
     rc |= expect("no carrier is not silence", silent);
 
     s->am_carrier = 0.5f;
-    for (int k = 0; k < 8; k++) {
+    for (size_t k = 0; k < 8; k++) {
         s->input_cb_buf[2 * k] = (k == 3) ? 20.0f : 0.5f;
         s->input_cb_buf[(2 * k) + 1] = 0.0f;
     }

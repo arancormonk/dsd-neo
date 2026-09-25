@@ -1650,13 +1650,12 @@ ui_am_on_air(const dsd_opts* opts, const dsd_state* state) {
 static void
 ui_describe_am_width_refusal(int hz, char* why, size_t why_size) {
     const int width_hz = dsd_analog_width_effective_hz(DSD_ANALOG_DEMOD_AM, hz);
-    int rate_hz = 0;
 #ifdef USE_RADIO
-    rate_hz = rtl_stream_get_demod_rate_hz();
-#endif
+    const int rate_hz = rtl_stream_get_demod_rate_hz();
     if (rate_hz > 0 && dsd_analog_width_check(DSD_ANALOG_DEMOD_AM, width_hz, rate_hz, why, why_size) != 0) {
         return;
     }
+#endif
     char width[DSD_ANALOG_WIDTH_TEXT_MAX];
     (void)dsd_analog_width_format(width_hz, width, sizeof width);
     DSD_SNPRINTF(why, why_size, "AM bandwidth %s: the RTL front end refused it (see log)", width);

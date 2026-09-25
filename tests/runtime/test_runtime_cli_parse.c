@@ -20,6 +20,7 @@
 #include <dsd-neo/runtime/bootstrap.h>
 #include <dsd-neo/runtime/call_alert.h>
 #include <dsd-neo/runtime/cli.h>
+#include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/decode_mode.h>
 #include <dsd-neo/runtime/rdio_export.h>
 #include <inttypes.h>
