@@ -39,17 +39,27 @@
  *      read that way about once in 6 x 10^8 bits per slicer, some 50 days of noise at
  *      134.4 bit/s; with four slicers, at most once in 1.6 x 10^8 bits, some 13 days.
  *   6. Hold: every bit the expected window rotates by one; the lock holds while some slicer
- *      reads it within one bit (a slip of one bit either way is followed), and is lost after
- *      32 consecutive bits without, or at the first bit without once the 134.4 Hz turn-off
- *      tone has carried over a third of the band's power for two bits. A bit integral over
- *      exactly one period of 134.4 Hz is zero, so the tone reads as nothing to the slicers; a
- *      correlator over the newest six bits finds it. The tone ends a lock only once the code
- *      has gone too: a steady component near 134.4 Hz under a code the slicers still read (an
- *      interferer, a voice that holds the pitch) leaves the lock alone.
+ *      reads it within one bit (a slip of one bit either way is followed), or reads the locked
+ *      class exactly at another place in the word, which it then follows: the same code
+ *      starting over elsewhere in its word, as a radio that re-keys inside the carrier
+ *      hangover or another transmitter behind a repeater does. It is lost after 32 bits
+ *      without a hold, or at the first bit without once the 134.4 Hz turn-off tone has carried
+ *      over a third of the band's power for two bits. A bit integral over exactly one period
+ *      of 134.4 Hz is zero, so the tone reads as nothing to the slicers; a correlator over the
+ *      newest six bits finds it. The tone ends a lock only once the code has gone too: a
+ *      steady component near 134.4 Hz under a code the slicers still read (an interferer, a
+ *      voice that holds the pitch) leaves the lock alone. A window that holds a bit read with
+ *      the carrier closed can hold no word, so the 32 bits count only windows read wholly
+ *      with the carrier open, and a lock that has not held for 64 bits (476 ms), with the
+ *      carrier open or closed, is lost: enough for the same code to come back at another
+ *      place after a dropout up to the hangover (the gap, a word to clear the windows of it
+ *      and the bit clock's settling), and a bound on how long a stopped code stays shown
+ *      under a carrier that keeps dropping out, whose windows are never read wholly open.
  *
  * A carrier with no code reads ACQUIRING until 500 ms of it have been evaluated, then NONE,
  * like the CTCSS detector. Samples inside the carrier hangover keep the bit clock and the
- * windows moving but change no verdict.
+ * windows moving but change no verdict on what they read; only the 64-bit span, which is
+ * carrier time, can run out on them.
  */
 
 #include <dsd-neo/core/safe_api.h>
@@ -172,6 +182,8 @@ dcs_reset(void* ctx) {
     det->inverted = 0;
     det->expected = 0U;
     det->fail_run = 0;
+    det->since_held = 0;
+    det->since_frozen = 0;
     det->open_samples = 0;
     det->bits_decided = 0;
 }
@@ -299,6 +311,7 @@ dcs_lock(dsd_analog_dcs* det, int code, int inverted, uint32_t window) {
     det->inverted = inverted;
     det->expected = window;
     det->fail_run = 0;
+    det->since_held = 0;
 }
 
 static void
@@ -308,6 +321,7 @@ dcs_unlock(dsd_analog_dcs* det) {
     det->inverted = 0;
     det->expected = 0U;
     det->fail_run = 0;
+    det->since_held = 0;
 }
 
 /* The word a slicer read twice in a row: its newest 23 decisions and the 23 before them are a
@@ -356,7 +370,10 @@ dcs_acquire(dsd_analog_dcs* det) {
 }
 
 /* Whether some slicer reads the expected window, or one slipped a bit either way, within the
-   hold distance; follows a slip. */
+   hold distance, and follows a slip; or reads the locked class exactly at another place in the
+   word, and follows it there. The same code can start over anywhere in its word under a held
+   lock: a radio that re-keys inside the carrier hangover, or another transmitter behind a
+   repeater whose carrier stays up. */
 static int
 dcs_hold(dsd_analog_dcs* det) {
     static const int k_slips[] = {0, 1, -1};
@@ -371,6 +388,19 @@ dcs_hold(dsd_analog_dcs* det) {
                 det->expected = expected;
                 return 1;
             }
+        }
+    }
+    for (int j = 0; j < DSD_ANALOG_DCS_HYPOTHESES; j++) {
+        const dsd_analog_dcs_slicer* s = &det->slicer[j];
+        if (s->count < DCS_WORD_BITS) {
+            continue;
+        }
+        const uint32_t window = dcs_window(s);
+        int code = -1;
+        int inverted = 0;
+        if (dsd_dcs_match(window, &code, &inverted) && code == det->code && inverted == det->inverted) {
+            det->expected = window;
+            return 1;
         }
     }
     return 0;
@@ -426,14 +456,21 @@ dcs_judge(dsd_analog_dcs* det, int turnoff) {
         }
         if (dcs_hold(det)) {
             det->fail_run = 0;
+            det->since_held = 0;
             return;
         }
-        det->fail_run++;
         if (turnoff) {
             dcs_unlock(det);
             /* What the slicers hold is the transmission that just ended. */
             dcs_clear_slicers(det);
-        } else if (det->fail_run >= DSD_ANALOG_DCS_LOSE_BITS) {
+            return;
+        }
+        /* A window that holds a bit read with the carrier closed can hold no word, so only
+           windows read wholly with it open count; the span bounds the rest (see step 6). */
+        if (det->since_frozen >= DCS_WORD_BITS) {
+            det->fail_run++;
+        }
+        if (det->fail_run >= DSD_ANALOG_DCS_LOSE_BITS || det->since_held >= DSD_ANALOG_DCS_SPAN_BITS) {
             dcs_unlock(det);
         }
         return;
@@ -457,8 +494,16 @@ dcs_read_bit(dsd_analog_dcs* det) {
         dcs_slice(&det->slicer[j], integral);
     }
     det->bits_decided++;
+    if (!open) {
+        det->since_frozen = 0;
+    } else if (det->since_frozen < DCS_WORD_BITS) {
+        det->since_frozen++;
+    }
     if (det->state == DSD_ANALOG_TONE_STATE_LOCKED) {
         det->expected = dcs_rotr(det->expected, 1);
+        if (det->since_held < DSD_ANALOG_DCS_SPAN_BITS) {
+            det->since_held++;
+        }
     }
     const double share = dcs_turnoff_share(det);
     det->turnoff_run = (open && share >= k_turnoff_share) ? det->turnoff_run + 1 : 0;
@@ -466,6 +511,9 @@ dcs_read_bit(dsd_analog_dcs* det) {
     dcs_steer(det);
     if (open) {
         dcs_judge(det, det->turnoff_run >= DSD_ANALOG_DCS_TURNOFF_RUN);
+    } else if (det->state == DSD_ANALOG_TONE_STATE_LOCKED && det->since_held >= DSD_ANALOG_DCS_SPAN_BITS) {
+        /* The span is carrier time, not a reading: it runs out inside a dropout as well. */
+        dcs_unlock(det);
     }
 }
 

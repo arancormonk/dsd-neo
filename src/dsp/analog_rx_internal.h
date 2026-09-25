@@ -221,7 +221,11 @@ extern const dsd_analog_rx_detector_ops dsd_analog_ctcss_ops;
  * - ACQUIRE_DISTANCE: bits the two words a lock is read from may differ by (one of them must be
  *   a supported code's word exactly).
  * - HOLD_DISTANCE: bits a held word may differ from the expected one.
- * - LOSE_BITS: consecutive bits without a held word that lose the lock.
+ * - LOSE_BITS: bits without a held word that lose the lock, counting only bits whose window
+ *   was read wholly with the carrier open (after a dropout the windows hold bits of it for a
+ *   word, which no signal reads through).
+ * - SPAN_BITS: bits since the lock last held, read with the carrier open or closed, that lose
+ *   it whatever the windows held: the bound under dropouts and a flickering carrier.
  * - TURNOFF_BITS: bits the turn-off tone (134.4 Hz) is measured over; TURNOFF_RUN: consecutive
  *   bits it must stand out in before the first bit no slicer holds the expected word ends the
  *   lock, ahead of LOSE_BITS.
@@ -233,6 +237,7 @@ enum {
     DSD_ANALOG_DCS_ACQUIRE_DISTANCE = 1,
     DSD_ANALOG_DCS_HOLD_DISTANCE = 1,
     DSD_ANALOG_DCS_LOSE_BITS = 32,
+    DSD_ANALOG_DCS_SPAN_BITS = 64,
     DSD_ANALOG_DCS_TURNOFF_BITS = 6,
     DSD_ANALOG_DCS_TURNOFF_RUN = 2,
 };
@@ -253,7 +258,8 @@ typedef struct {
  * The band is re-poled (the front end's 10 Hz DC blocker undone, 0.5 Hz put in its place),
  * integrated over each bit at the instants a bit clock recovers from the signal's own edges,
  * and sliced by every droop hypothesis. A lock is a supported code's word read twice in a row
- * by one slicer; it holds while some slicer reads the expected word within one bit.
+ * by one slicer; it holds while some slicer reads the expected word within one bit, or the
+ * locked code exactly at another place in its word.
  */
 typedef struct {
     double rate_hz;                /**< decimated rate this detector is designed for; 0 = unconfigured */
@@ -296,7 +302,9 @@ typedef struct {
     int code;             /**< locked code (canonical), or -1 */
     int inverted;         /**< polarity of the canonical member of the locked class */
     uint32_t expected;    /**< the window the locked signal reads next, earliest bit in bit 0 */
-    int fail_run;         /**< consecutive bits no slicer held the expected word */
+    int fail_run;         /**< bits since the last hold whose window, read wholly with the carrier open, held nothing */
+    int since_held;       /**< bits read since the lock last held (carrier open or closed), up to SPAN_BITS */
+    int since_frozen;     /**< bits read with the carrier open since the last read with it closed, up to a word */
     int64_t open_samples; /**< unfrozen samples since the last reset, for the no-code verdict */
     int64_t bits_decided; /**< bits read since the last reset (tests) */
 } dsd_analog_dcs;
