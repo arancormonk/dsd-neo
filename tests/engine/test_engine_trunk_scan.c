@@ -94,6 +94,13 @@ dsd_engine_scan_dsp_rate_hz(const dsd_opts* opts, const dsd_state* state) {
     return g_scan_dsp_rate_hz;
 }
 
+/* The -Y scanner's receive-family request count (trunk_tuning.c), linked with channel_scan.c. */
+uint32_t
+dsd_engine_scan_family_requests(const dsd_opts* opts) {
+    (void)opts;
+    return 0U;
+}
+
 static int g_dmr_tick_calls = 0;
 static int g_dmr_tick_release_tuned = 0;
 static int g_csv_import_result = 0;

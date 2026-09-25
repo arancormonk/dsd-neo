@@ -47,6 +47,9 @@ typedef struct {
     dsd_scan_settings configured;
     dsd_scan_key_change keys;
     uint64_t key_epoch;
+    /* The live receive-family requests the front end had accepted when the staged tune was queued
+     * (dsd_engine_scan_family_requests(); issue #526). */
+    uint32_t family_requests;
     /* The map generation whose rows were last checked against the input (issues #521, #526), and the DSP rate its
      * analog row widths were last held to, with the configured NFM width a row without its own runs (issue #526). */
     uint64_t rows_checked_map;
@@ -109,6 +112,20 @@ channel_scan_configured_changed(const dsd_scan_settings* latest, const channel_s
                || latest->analog_am_bandwidth_hz != scan->configured.analog_am_bandwidth_hz);
 }
 
+/* Whether the tune staged for the row no longer describes what it should land: a configured setting or the keyring it
+ * was prepared from changed while it was outstanding, or a live receive-family request superseded the family its
+ * retune carries. That request acts for the row still in scope (a width edit or a config apply republishing the
+ * outgoing nfm row's analog monitor), yet the front end takes it as the newer word on the family and lands the staged
+ * retune with neither its family nor its symbol profile (rtl_stream_prepare_retune_analog_profile_for_target()): a
+ * digital row would otherwise commit on the analog monitor, or an nfm row on the digital family (issue #526). */
+static int
+channel_scan_staged_stale(const dsd_opts* opts, const dsd_state* state, const channel_scan* scan) {
+    dsd_scan_settings latest;
+    dsd_scan_mode_configured(opts, state, &latest);
+    return channel_scan_configured_changed(&latest, scan) || scan->key_epoch != state->enc_lockout_key_epoch
+           || scan->family_requests != dsd_engine_scan_family_requests(opts);
+}
+
 static int
 channel_scan_commit(dsd_opts* opts, dsd_state* state, channel_scan* scan) {
     /* Row commits run only in conventional scanner mode. Entry into that mode
@@ -117,11 +134,9 @@ channel_scan_commit(dsd_opts* opts, dsd_state* state, channel_scan* scan) {
     /* Hardware has moved. Even if a later retry rolls back, frames cannot use
      * the outgoing profile until a row is successfully committed. */
     scan->needs_commit = 1;
-    dsd_scan_settings latest;
-    dsd_scan_mode_configured(opts, state, &latest);
-    if (channel_scan_configured_changed(&latest, scan) || scan->key_epoch != state->enc_lockout_key_epoch) {
-        /* A configured setting changed while tuning. Stage the new effective
-         * profile in a fresh request before any frame can use it. */
+    if (channel_scan_staged_stale(opts, state, scan)) {
+        /* Stage the new effective profile in a fresh request before any frame
+         * can use it. */
         scan->request = 0;
         scan->retry = 1;
         return 0;
@@ -566,6 +581,7 @@ channel_scan_start_row(dsd_opts* opts, dsd_state* state, int row) {
      * closed through preparation failures; the new request takes over below. */
     scan->retry = 0;
     dsd_scan_settings_restore(&next, opts, state);
+    scan->family_requests = dsd_engine_scan_family_requests(opts);
     const dsd_trunk_tune_result result =
         dsd_engine_scan_tune_to_freq(opts, state, freq, state->samplesPerSymbol, &scan->request);
     dsd_scan_settings_restore(&before, opts, state);

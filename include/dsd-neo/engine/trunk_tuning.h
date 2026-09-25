@@ -42,6 +42,10 @@ dsd_trunk_tune_result dsd_engine_scan_tune_to_freq(dsd_opts* opts, dsd_state* st
  * stream holds an analog request to (rtl_stream_get_request_rate_hz()), published from its start; 0 when no RTL stream
  * runs. */
 int dsd_engine_scan_dsp_rate_hz(const dsd_opts* opts, const dsd_state* state);
+/** @brief The live receive-family requests an RTL-family front end has accepted (rtl_stream_live_family_request_count()),
+ * or 0 on any other input. A scanner row's retune queued before this number moved no longer lands the receive family,
+ * or the symbol profile, that dsd_engine_scan_tune_to_freq() attached to it (issue #526). */
+uint32_t dsd_engine_scan_family_requests(const dsd_opts* opts);
 /**
  * @brief Release the call state a tuned voice channel owns, without tuning.
  *

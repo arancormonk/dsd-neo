@@ -66,6 +66,13 @@ dsd_engine_scan_dsp_rate_hz(const dsd_opts* opts, const dsd_state* state) {
     return 0;
 }
 
+/* And its receive-family request count (trunk_tuning.c): no front end takes a live request here. */
+uint32_t
+dsd_engine_scan_family_requests(const dsd_opts* opts) {
+    (void)opts;
+    return 0U;
+}
+
 static void
 record_push(double mean_power) {
     g_pushes++;

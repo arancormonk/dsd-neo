@@ -877,6 +877,18 @@ dsd_engine_scan_dsp_rate_hz(const dsd_opts* opts, const dsd_state* state) {
     return 0;
 }
 
+uint32_t
+dsd_engine_scan_family_requests(const dsd_opts* opts) {
+#ifdef USE_RADIO
+    if (opts && opts->audio_in_type == AUDIO_IN_RTL) {
+        return rtl_stream_live_family_request_count();
+    }
+#else
+    (void)opts;
+#endif
+    return 0U;
+}
+
 static void
 dsd_engine_scan_tune_failed(const dsd_opts* opts, uint64_t request_id, dsd_trunk_tune_result result) {
     if (dsd_engine_conventional_scan_active(opts) && opts->use_rigctl == 1 && opts->audio_in_type == AUDIO_IN_RTL) {

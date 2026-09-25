@@ -524,6 +524,17 @@ int rtl_stream_prepare_retune_analog_profile_for_target(uint32_t target_freq_hz,
                                                         const rtl_stream_retune_analog_profile* analog);
 
 /**
+ * @brief Number of live receive-family requests accepted so far (rtl_stream_request_analog_profile()).
+ *
+ * Rises by one per accepted request, running stream or not; a refused request does not count. A retune profile whose
+ * family was attached before the number last moved no longer lands that family or the symbol profile queued with it
+ * (rtl_stream_prepare_retune_analog_profile_for_target()). A scanner that queued a row's retune compares the number
+ * when the retune completes: a request made meanwhile (a command acting for the row still on air) chose the family
+ * the front end runs, so the row it tuned for must be restaged.
+ */
+uint32_t rtl_stream_live_family_request_count(void);
+
+/**
  * @brief Apply and clear a queued retune profile for a specific external retune target.
  *
  * Use this when an external backend, such as rigctl, has completed a frequency

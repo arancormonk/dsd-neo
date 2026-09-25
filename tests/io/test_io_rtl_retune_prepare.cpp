@@ -714,6 +714,29 @@ test_retune_family_superseded_by_a_later_live_request(void) {
     return failed;
 }
 
+/* The live family requests the stream accepts are counted, running stream or not, and a refused one is not (issue
+ * #526): the -Y scanner compares the count across a row's outstanding retune, whose family a request counted meanwhile
+ * has superseded. */
+static int
+test_live_family_request_count(void) {
+    const uint32_t before = rtl_stream_live_family_request_count();
+    int failed = expect_int_eq("digital request accepted",
+                               rtl_stream_request_analog_profile(DSD_RX_FAMILY_DIGITAL, DSD_ANALOG_DEMOD_FM, 0), 0);
+    failed |= expect_int_eq("accepted request counted", (int)(rtl_stream_live_family_request_count() - before), 1);
+    failed |= expect_int_eq("width below the NFM range refused",
+                            rtl_stream_request_analog_profile(DSD_RX_FAMILY_ANALOG, DSD_ANALOG_DEMOD_FM, 1000), -1);
+    failed |= expect_int_eq("refused request not counted", (int)(rtl_stream_live_family_request_count() - before), 1);
+    const rtl_stream_test_retune_step supersede[] = {
+        {DSD_RX_FAMILY_ANALOG, DSD_ANALOG_DEMOD_FM, 12500, 0, DSD_RX_FAMILY_DIGITAL, DSD_RX_FAMILY_DIGITAL},
+    };
+    rtl_stream_test_retune_landing r[1];
+    DSD_MEMSET(r, 0, sizeof r);
+    failed |= expect_int_eq("supersede hook", rtl_stream_test_retune_profile_sequence(supersede, 1U, r), 0);
+    failed |=
+        expect_int_eq("requests around a retune counted", (int)(rtl_stream_live_family_request_count() - before), 3);
+    return failed;
+}
+
 int
 main(void) {
     dsd_neo_log_set_tap(capture_error_log, NULL);
@@ -1532,6 +1555,7 @@ main(void) {
     failed |= test_retune_profile_width_checked_at_landing_rate();
     failed |= test_retune_profiles_land_each_rows_family_and_width();
     failed |= test_retune_family_superseded_by_a_later_live_request();
+    failed |= test_live_family_request_count();
 
     return failed ? 1 : 0;
 }

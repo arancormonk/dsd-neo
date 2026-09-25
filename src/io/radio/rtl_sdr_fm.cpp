@@ -8959,6 +8959,11 @@ rtl_stream_prepare_retune_analog_profile_for_target(uint32_t target_freq_hz,
     return 0;
 }
 
+extern "C" uint32_t
+rtl_stream_live_family_request_count(void) {
+    return g_live_family_requests.load(std::memory_order_acquire);
+}
+
 extern "C" void
 rtl_stream_clear_pending_retune_profile(void) {
     std::lock_guard<std::mutex> lock(g_pending_retune_profile_mutex);

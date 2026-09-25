@@ -238,7 +238,12 @@ Tests: `tests/engine/test_engine_trunk_scan.c` (`ENGINE_TRUNK_SCAN`) and
   (`rtl_stream_prepare_retune_analog_profile_for_target()`) with no symbol profile, and a width the front end refuses
   fails the tune before any backend moves; a digital row attaches the digital family ahead of its symbol profile only
   while the front end runs the analog family and the configured mode is digital (a typed digital row on an `-fA`
-  session keeps the monitor output). A failed hop off the analog monitor re-requests no symbol profile over it.
+  session keeps the monitor output). A failed hop off the analog monitor re-requests no symbol profile over it. A live
+  receive-family request accepted while a `-Y` row's retune is outstanding supersedes the family, and the symbol
+  profile, that retune carries; it acts for the row still in scope (a width edit or a config apply republishing the
+  outgoing row's receive profile), so the commit restages the row rather than run it on the outgoing row's family
+  (`channel_scan_staged_stale()`, comparing `dsd_engine_scan_family_requests()`, the stream's
+  `rtl_stream_live_family_request_count()`, with the count when the tune was queued).
   Leaving the scan (`dsd_engine_channel_scan_leave()`) restores the configured RTL receive family through the metrics
   hooks: under `-fA` the configured analog profile (`apply_analog_profile`, analog family, demodulator kind and
   channel width with 0 meaning the default), otherwise the digital family first and then the restored symbol profile
@@ -934,8 +939,10 @@ Runtime controls (via `include/dsd-neo/io/rtl_stream_c.h`):
   while a CQPSK toggle or a typed row's profile has moved the front end off the monitor output),
   `rtl_stream_output_rate_for_family()` (the output rate a pending switch will produce),
   `rtl_stream_set_digital_decode_modes()` (the decoder's configured digital modes, which pick the FSK channel profile
-  a CQPSK toggle returns to once a live switch has moved the stream onto the digital family), and
-  `rtl_stream_prepare_retune_analog_profile_for_target()` (the same fields bound to a retune target).
+  a CQPSK toggle returns to once a live switch has moved the stream onto the digital family),
+  `rtl_stream_prepare_retune_analog_profile_for_target()` (the same fields bound to a retune target), and
+  `rtl_stream_live_family_request_count()` (the live family requests accepted so far; one accepted after a retune
+  profile's family was attached supersedes that family).
 - CQPSK control/status: `rtl_stream_toggle_cqpsk`, `rtl_stream_get_cqpsk_status`,
   `rtl_stream_request_cqpsk_reacquire`,
   `rtl_stream_set_ted_sps`/`rtl_stream_get_ted_sps`, `rtl_stream_set_ted_gain`/`rtl_stream_get_ted_gain`,
@@ -1021,7 +1028,8 @@ Notes:
     toggle). Receive-family requests are queued and applied by the demod thread between blocks; a retune profile's
     family fields apply with the rest of the retune under the reconfigure gate, as its symbol profile and CQPSK toggle
     always have, and an analog one applies no symbol profile, CQPSK toggle or timing queued for the same target. A live
-    family request accepted after a retune profile's family was attached supersedes it (`g_live_family_requests`): the
+    family request accepted after a retune profile's family was attached supersedes it (`g_live_family_requests`, read
+    by `rtl_stream_live_family_request_count()`, which the `-Y` scanner compares across a row's retune): the
     retune lands on its target with neither that family nor the symbol profile queued with it, so a scanner that leaves
     while its row's retune is still in flight (the configured family put back by live requests) is not switched back
     to the row's family when the device finishes the retune. An
