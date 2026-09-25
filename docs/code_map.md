@@ -165,7 +165,11 @@ Tests: `tests/engine/test_engine_trunk_scan.c` (`ENGINE_TRUNK_SCAN`) and
   is the digital family's (`output_rate_for_family`), not the monitor's resampled audio rate. The -Y scope timing and
   the trunk-scan target timing (`trunk_scan_p25_cc_sps()`, `trunk_scan_gfsk_sps()`) read it, and `trunk_tuning.c`
   decides the family switch and the GFSK chain's TED by the same predicate, so the decoder and the TED the retune
-  profile carries are timed for one family.
+  profile carries are timed for one family. The configured baseline follows the same rule: a scoped command (a
+  decode-mode or modulation change, a config apply) times the configured decoder at the live rate, the monitor's
+  while an analog row is on air, so `dsd_scan_mode_resume()` retimes it for the digital family before saving it
+  (`scan_configured_retime()`) whenever the front end still runs the analog family and the configured mode is
+  digital; an untyped row's tune and the leave then land the digital family on the timing it runs at.
 - Runtime owns the exact configured decoder baseline and temporary class through `runtime/scan_mode.h` and
   `runtime/scan_mode.c` (extension slot 6). It uses the existing preset definitions while keeping the audio sink fixed.
   Suspend/update/resume supports global commands; scalar snapshot copies keep frontend state independent of live storage.
@@ -188,12 +192,16 @@ Tests: `tests/engine/test_engine_trunk_scan.c` (`ENGINE_TRUNK_SCAN`) and
   `trunk_scan.c` selects the same classes from target types while retaining target snapshots and modulation/gain ownership.
   Each row commit (and trunk-scan target switch) opens the sink the row plays through,
   `dsd_engine_scan_ensure_output()` (analog or digital, idempotent), and scan start logs what an analog row owes the
-  operator, `dsd_engine_scan_warn_analog_row()`: an open squelch, a width on audio input, a width the DSP rate
-  (`dsd_engine_scan_dsp_rate_hz()`, the rate the RTL stream holds analog requests to,
-  `rtl_stream_get_request_rate_hz()`) cannot filter. Both scanners say it once per map (-Y) or list (trunk scan) and
-  DSP rate: an RTL stream that has published no rate defers the checks, and a changed rate repeats them, because the
+  operator on two schedules. An open squelch, which lets noise hold the row until the visit cap or the operator moves
+  on, `dsd_engine_scan_warn_analog_squelch()`, is said once per map (-Y) or list (trunk scan). A width on audio input,
+  or one the DSP rate (`dsd_engine_scan_dsp_rate_hz()`, the rate the RTL stream holds analog requests to,
+  `rtl_stream_get_request_rate_hz()`) cannot filter, `dsd_engine_scan_warn_analog_width()`, is said once per map or
+  list and DSP rate: an RTL stream that has published no rate defers it, and a changed rate repeats it, because the
   tune refuses such a row without calling into the stream (whose refusal log a valid row's request would re-arm at
-  every rotation).
+  every rotation) and the trunk-scan coordinator logs no retune failure for it (`trunk_scan_analog_width_refused()`).
+  The widths are held to that published rate only, not at import against the configured RTL DSP bandwidth: the rate
+  is known only once the stream runs (a device may force another) and changes live, so a width it cannot fit is a
+  warning and a skipped row, never an import error.
   The receive family a row runs on is queued with its tune in `trunk_tuning.c` (`dsd_engine_prepare_scan_profile()`,
   issue #526): an analog row attaches the analog family, demodulator and width to the retune profile
   (`rtl_stream_prepare_retune_analog_profile_for_target()`) with no symbol profile, and a width the front end refuses
@@ -1439,7 +1447,13 @@ External dependencies (resolved via CMake):
   the classes the switch serves (`needs mode nfm`), not every analog class. The value is whole Hz in the
   NFM range (`dsd_analog_width_parse()`); `dsd_scan_option_width_check()` holds it to a DSP rate with the validator's
   message. Unlike squelch it is an acquisition setting (see Per-channel decoder modes), so a width change restages a
-  parked row and the configured width is never replaced by a row's in the configured view.
+  parked row and the configured width is never replaced by a row's in the configured view. `RTL_SET_BW` stays
+  unscoped, so the stream it reopens starts on the width in force, a row's included; `svc_rtl_set_bandwidth()`
+  refuses a bandwidth whose DSP rate cannot filter that width (on RTL-SDR and rtl_tcp, where the bandwidth sets the
+  rate) with the validator's text, rather than let the start refuse it and leave no radio input. Its preview fields,
+  `bandwidth_hz` in `dsd_csv_channel_profile` and `dsd_app_scan_csv_target` (-1 when the row inherits), are filled,
+  but `ImportedFilesModel` does not publish them yet: the Qt/Android channel-map review and target preview gain the
+  width with the Qt scan-list editor that follows (issue #526), which carries the AM width as well.
 - Adding a row option: add the `DSD_SCAN_OPT_*` bit (reserved values only), a `dsd_scan_option_values` field and a
   `specifications[]` row with its setter in `runtime/scan_options.c` (use `ANY_MODES` only for options that mean the
   same on every class); add a `scan_option_appliers[]` row in `runtime/scan_mode.c`; if it lands in `dsd_opts`, add

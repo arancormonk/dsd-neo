@@ -497,11 +497,13 @@ its analog monitor and width, and no symbol profile is applied over the monitor.
   open and `Activity hold` for the tail. No decoded frame, header or voice verdict is involved, and digital activity
   reports never claim an analog target.
 - **Squelch matters.** Set a threshold with the target's `--squelch-db`, `[input] rtl_sql` or the `sql` field of
-  `-i rtl:`. With the squelch off, or at -100 dB or below, noise holds the target until the per-visit cap moves on,
-  and scan start warns about it.
+  `-i rtl:`. With the squelch off, or at -100 dB or below, noise holds the target until the per-visit cap or a
+  manual advance or avoid moves on, and scan start warns about it once.
 - **Width.** `--nfm-bandwidth-hz <Hz>` in the `options` column sets the target's NFM channel width (whole Hz,
-  `8000..25000`); without it the default 16 kHz width applies. A width the running DSP rate cannot filter is named
-  with the fix at scan start (and again if that rate changes), and that target's retune is refused at every visit.
+  `8000..25000`); without it the configured NFM width (16 kHz by default) applies. A width the running DSP rate
+  cannot filter is named with the fix at scan start (and again if that rate changes), and that target's retune is
+  then refused at every visit without a further warning. While the target is parked, an RTL DSP bandwidth that cannot
+  filter its width is refused.
   With rigctl tuning an audio input, the peer demodulates: the width has no effect (scan start says so) and `-B`
   sets the peer's passband.
 - **Controls.** `--scan-max-visit-ms`, the `Y` hold, advance and avoid work exactly as for digital targets, including
@@ -581,7 +583,8 @@ target's own, or the configured default. On an RTL-family input the threshold ga
 `p25-trunk`, `dmr-trunk` or `nxdn*-trunk` target that includes the control channel, so a threshold above the control
 channel's level makes the whole system look dead. With rigctl tuning a PCM, UDP or TCP audio source the value
 cannot gate digital acquisition: it only gates the analog input monitor (`-8`, with audio output on) and the carrier
-activity that monitor stamps, and scan start logs a warning naming each such target. Terminal, Qt
+activity that monitor stamps, and scan start logs a warning naming each such digital target; an `nfm-conventional`
+target's squelch gates exactly its monitor and carrier, so it draws none. Terminal, Qt
 and Android show the target's threshold with the configured default beside it; the squelch controls and Config->Save
 work on the configured default.
 

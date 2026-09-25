@@ -803,11 +803,11 @@ is delayed.
   Optional channel-map `mode` values select `p25`, `dmr`, `nxdn96`, `nxdn48`, `dpmr`, `dstar`, `ysf`, `m17`, or
   `nfm` (analog narrowband FM) for each row. See [the mixed-mode example](../examples/conventional_scan_modes.csv).
   Declared rows work even when excluded by the global preset; blank rows inherit it. An `nfm` row runs the analog
-  monitor at its own `--nfm-bandwidth-hz` width (the row's `options`) or the default 16 kHz, switching the receiver
-  between the analog monitor and the digital decoder at each row without reopening the device, and holds under
-  `-t` for as long as its carrier (squelch open) lasts, whether or not audio is played: `-o null` and a muted frontend
-  no longer let the scanner leave an active analog row. `--scan-voice-only` never applies to an analog row. Details
-  and the options an analog row accepts: [csv-formats.md](csv-formats.md#analog-rows). Modes take effect at the first scheduled row entry, including
+  monitor at its own `--nfm-bandwidth-hz` width (the row's `options`) or the configured NFM width (16 kHz by
+  default), switching the receiver between the analog monitor and the digital decoder at each row without reopening
+  the device, and holds under `-t` for as long as its carrier (squelch open) lasts, whether or not audio is played:
+  `-o null` and a muted frontend no longer let the scanner leave an active analog row. `--scan-voice-only` never
+  applies to an analog row. Details and the options an analog row accepts: [csv-formats.md](csv-formats.md#analog-rows). Modes take effect at the first scheduled row entry, including
   manual `L` cycling. Existing dwell and voice-hold defaults remain unchanged.
   The open audio sink retains its rate/channel count while logical DMR slot decoding may change. Global mode and
   modulation commands update the saved configuration, and exiting scanning restores it.

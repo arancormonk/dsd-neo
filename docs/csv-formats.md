@@ -267,13 +267,16 @@ encrypted-call policy (`-e`, `--no-data-calls`, `--enc-*`) and the voice-gate sw
 analog channel never carries, and are rejected with `not supported for this mode/target`.
 
 `--nfm-bandwidth-hz` is the full RF channel width the analog channel filter protects while the row is on air (the
-same contract as the receiver's NFM width); a row without it uses the default 16 kHz width. It is applied when the
-row is tuned and restored when the scanner moves on, and Config->Save never writes it (nor the row's analog class)
-as a default. A width the running DSP rate cannot filter (the channel filter needs `width / 2 + 600 Hz` within 0.45
-of the DSP rate: at a 24 kHz DSP bandwidth the widest is 20.4 kHz, at 16 kHz 13.2 kHz) is named with the fix when
-the scan starts, and again whenever that rate changes, and that row is skipped at every visit rather than received
-without its filter. On audio input (rigctl tuning a PCM, UDP or TCP source) the audio arrives demodulated, so a row
-width has no effect and scan start says so; set the peer's own passband (`-B`).
+same contract as the receiver's NFM width); a row without it uses the configured NFM width (16 kHz by default). It
+is applied when the row is tuned and restored when the scanner moves on, and Config->Save never writes it (nor the
+row's analog class) as a default. A width the running DSP rate cannot filter (the channel filter needs
+`width / 2 + 600 Hz` within 0.45 of the DSP rate: at a 24 kHz DSP bandwidth the widest is 20.4 kHz, at 16 kHz
+13.2 kHz) is named with the fix when the scan starts, against the rate the running stream publishes (an import cannot
+know it: the rate is set when the stream opens and changes with the RTL DSP bandwidth), and again whenever that rate
+changes; that row is then skipped at every visit rather than received without its filter. While a row with its own
+width is on air, an RTL DSP bandwidth that cannot filter the width is refused rather than reopening the stream on it.
+On audio input (rigctl tuning a PCM, UDP or TCP source) the audio arrives demodulated, so a row width has no effect
+and scan start says so; set the peer's own passband (`-B`).
 
 An analog row holds while its carrier is open: the squelch is open over the monitor audio (above the input's level
 floor, through a 200 ms hangover; at an input rate the received-tone detector cannot run at, the squelch alone),
@@ -282,8 +285,9 @@ A `-Y` row holds for `-t` after the last carrier; an `nfm-conventional` target h
 after the last carrier and rotates after its `dwell_ms` of silence. The per-visit cap and the hold, advance and
 avoid controls apply as for any row, and the voice gate never applies to an analog row, so a global
 `--scan-voice-only` does not block one. That includes the rows of an untyped list scanned under `-fA`, which hold on
-their carrier under `-t` as well. Scan start warns about an analog row whose squelch is off or at -100 dB or below,
-since noise would then hold it until `-t` or the visit cap moves on.
+their carrier under `-t` as well. Scan start warns once about an analog row whose squelch is off or at -100 dB or
+below: noise then keeps its carrier open, re-arming the hold with every block, so only the visit cap or a manual
+advance or avoid moves on.
 
 A list may mix analog and digital rows: each row switches the receiver between the analog monitor and the digital
 decoder at its own width when it is tuned, without reopening the device, and opens the audio output the row plays
@@ -380,7 +384,7 @@ Columns:
 | `id` | Yes | Unique short name shown in the terminal status row and Call Info, as the `[id]` prefix on event-history rows, `-J` log lines and the rdio `talkgroup_tag` fallback, and in log messages. Empty or too-long IDs are rejected. |
 | `type` | Yes | One of `p25-trunk`, `p25-conventional`, `dmr-trunk`, `dmr-conventional`, `nxdn-trunk` (NXDN96, 12.5 kHz), `nxdn48-trunk` (NXDN48, 6.25 kHz), `nxdn-conventional` (NXDN96, 12.5 kHz), `nxdn48-conventional` (NXDN48, 6.25 kHz), or `nfm-conventional` (one analog NFM channel; see [Analog rows](#analog-rows)). Exact case. |
 | `frequency_hz` | Yes | Decimal Hz only. Normal 64-bit builds accept `1..4294967295`; 32-bit builds may reject values above `LONG_MAX`. Do not use `K`/`M`/`G` suffixes in CSV. |
-| `chan_csv` | No | Optional channel-map path for trunk targets (`p25-trunk`, `dmr-trunk`, `nxdn-trunk`, `nxdn48-trunk`). Paths are resolved relative to this CSV. Leave empty for conventional DMR, P25 and both conventional NXDN types. |
+| `chan_csv` | No | Optional channel-map path for trunk targets (`p25-trunk`, `dmr-trunk`, `nxdn-trunk`, `nxdn48-trunk`). Paths are resolved relative to this CSV. Leave empty for conventional DMR, P25, both conventional NXDN types and `nfm-conventional`. |
 | `dwell_ms` | No | Per-target idle dwell (`250..600000`). Empty uses `--trunk-scan-dwell-ms` or `[trunk_scan] idle_dwell_ms`. |
 | `activity_hold_ms` | No | Per-target conventional DMR/P25/NXDN (NXDN96 and NXDN48) activity hold (`250..600000`), and an `nfm-conventional` target's hold after its carrier drops. Empty uses `--trunk-scan-activity-hold-ms` or `[trunk_scan] activity_hold_ms`. P25 holds from allowed voice starts, not PDU data; `-e` has no effect on P25 conventional holds. |
 | `notes` | No | Ignored. Use for local notes. |
