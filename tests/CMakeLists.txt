@@ -3571,7 +3571,9 @@ target_include_directories(
 target_link_libraries(dsd-neo_test_runtime_freq_parse PRIVATE dsd-neo_runtime)
 add_test(NAME RUNTIME_FREQ_PARSE COMMAND dsd-neo_test_runtime_freq_parse)
 
-# The CTCSS table and its text (issue #522), shared by the detector, the views and the policy.
+# The CTCSS and DCS tables and their text (issues #522, #523), shared by the detectors, the
+# views and the policy: the tone table, the DCS codes, their Golay words against the published
+# reference words, the alias rule and its golden table, and the formatters.
 add_executable(
     dsd-neo_test_runtime_analog_tones
     runtime/test_runtime_analog_tones.c
@@ -11599,15 +11601,35 @@ if(DSD_HAS_RADIO)
     # Received CTCSS on the off-air excerpts (issue #522), against the oracle labels in
     # docs/testing.md that the maintainer confirmed. nfm_ctcss_real carries 151.4 Hz: it
     # must lock within the 400 ms bound (300 ms measured) and never report another tone,
-    # least of all the neighbour's 173.8 Hz 12.5 kHz away, nor any DCS code (issue #523). "none" is allowed: the excerpt
-    # carries a reverse burst and a short tone gap at 3.7-4.0 s, after which the tone locks
-    # again. The host's tone= field comes from the decoder's publication, not from the log.
+    # least of all the neighbour's 173.8 Hz 12.5 kHz away, nor any DCS code (issue #523).
+    # "none" is allowed: the excerpt carries a reverse burst and a short tone gap at
+    # 3.7-4.0 s, after which the tone locks again. The host's tone= field comes from the
+    # decoder's publication, not from the log.
     dsd_neo_add_analog_replay_test(
         DECODE_IQ_ANALOG_REAL_CTCSS_1514
         nfm_ctcss_real
         "-fA --analog-max-tone-lock-ms 400"
         "Received tone: CTCSS 151[.]4 Hz.*ANALOG METRIC: .* tone=151[.]4 tone_lock_ms=[0-9]+[.][0-9][0-9] tone_lock_pct=[0-9]+[.][0-9][0-9]"
         "Received tone: CTCSS (([0-9]|[0-9][0-9]|[02-9][0-9][0-9]|1[0-46-9][0-9]|15[02-9])[.][0-9]|151[.][0-35-9]) Hz|Received tone: DCS|${_analog_off_path}"
+    )
+    # Received DCS through the host (issue #523): the synthetic DCS fixtures carry the code
+    # from their start, and the host's tone= field reads the detector's one canonical label
+    # from the publication: D023N for the normal word, D047N for the inverted D023 word,
+    # never the other spelling. Each locks within the 10 dB lock bound (360 ms measured,
+    # 83% of the run locked) and reports no other code, no tone and no "none".
+    dsd_neo_add_analog_replay_test(
+        DECODE_IQ_ANALOG_DCS_023N_HOST
+        nfm_dcs_synth_023n
+        "-fA --analog-max-tone-lock-ms 520"
+        "Received tone: DCS D023N.*ANALOG METRIC: .* tone=D023N tone_lock_ms=[0-9]+[.][0-9][0-9] tone_lock_pct=[0-9]+[.][0-9][0-9]"
+        "Received tone: (none|CTCSS|DCS D([1-7][0-7][0-7]|0[013-7][0-7]|02[0-24-7])[NI]|DCS D023I)|${_analog_off_path}"
+    )
+    dsd_neo_add_analog_replay_test(
+        DECODE_IQ_ANALOG_DCS_023I_HOST
+        nfm_dcs_synth_023i
+        "-fA --analog-max-tone-lock-ms 520"
+        "Received tone: DCS D047N.*ANALOG METRIC: .* tone=D047N tone_lock_ms=[0-9]+[.][0-9][0-9] tone_lock_pct=[0-9]+[.][0-9][0-9]"
+        "Received tone: (none|CTCSS|DCS D([1-7][0-7][0-7]|0[0-35-7][0-7]|04[0-6])[NI]|DCS D047I)|tone=D023|${_analog_off_path}"
     )
     # No false lock: speech and carrier with no CTCSS or DCS (the squelch excerpts carry
     # 150 bit/s data below 300 Hz, which is neither CTCSS nor DCS: the DCS detector's bit
