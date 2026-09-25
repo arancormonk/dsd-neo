@@ -1854,6 +1854,9 @@ static std::atomic<int> g_pub_analog_lpf_on{0};
 /* demod_state::analog_family: set on the analog family even while a symbol profile applied under it (a CQPSK toggle, a
  * typed digital scan row) has moved the front end off the monitor output and g_pub_analog_family reads 0. */
 static std::atomic<int> g_pub_rx_analog_family{0};
+/* demod_state::channel_lpf_default_enable: whether the channel filter runs where no width requests it (the unset NFM
+ * default, a digital profile), as the stream's configuration decided it. -1 until a stream has published it. */
+static std::atomic<int> g_pub_channel_lpf_default{-1};
 /* Resampler policy inputs, so callers can predict the output rate of a family switch before it lands. */
 static std::atomic<int> g_pub_resamp_target_hz{0};
 static std::atomic<int> g_pub_digital_resample_mode{0};
@@ -7651,6 +7654,7 @@ rtl_stream_publish_analog_profile_snapshot(void) {
     g_pub_analog_lpf_on.store(lpf_on, std::memory_order_relaxed);
     g_pub_analog_family.store(family, std::memory_order_relaxed);
     g_pub_rx_analog_family.store(demod.analog_family ? 1 : 0, std::memory_order_relaxed);
+    g_pub_channel_lpf_default.store(demod.channel_lpf_default_enable ? 1 : 0, std::memory_order_relaxed);
     g_pub_resamp_target_hz.store(demod.resamp_target_hz, std::memory_order_relaxed);
     g_pub_digital_resample_mode.store(demod.digital_resample_mode, std::memory_order_relaxed);
     g_pub_capture_rate_forced.store(demod.capture_rate_device_forced ? 1 : 0, std::memory_order_relaxed);
@@ -7711,6 +7715,11 @@ rtl_stream_get_analog_profile(int* out_kind, int* out_width_hz, int* out_lpf_on)
 extern "C" int
 rtl_stream_analog_family_active(void) {
     return g_pub_rx_analog_family.load(std::memory_order_relaxed) ? 1 : 0;
+}
+
+extern "C" int
+rtl_stream_channel_lpf_default(void) {
+    return g_pub_channel_lpf_default.load(std::memory_order_relaxed);
 }
 
 extern "C" unsigned int

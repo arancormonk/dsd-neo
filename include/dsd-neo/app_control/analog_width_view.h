@@ -14,9 +14,12 @@
  * analog family on the monitor output, the width in force is the one the front end reports, flagged when the DSP rate
  * rather than the channel filter bounds it; otherwise (no stream, a typed digital row filtering with its own profile)
  * it is the configured width, the kind's default when none is set. An unset NFM default reads as what the monitor
- * runs at the DSP rate it returns to: where no channel filter runs there (below 20 kHz, or as DSD_NEO_CHANNEL_LPF
- * says), the rate itself, and where the filter runs but the rate cannot realize the default, the passband of the
- * legacy WIDE plan that runs instead (dsd_channel_lpf_legacy_wide_width_hz()), both DSP-limited. That rate is the
+ * runs at the DSP rate it returns to: where no channel filter runs there, the rate itself, and where the filter runs
+ * but the rate cannot realize the default, the passband of the legacy WIDE plan that runs instead
+ * (dsd_channel_lpf_legacy_wide_width_hz()), both DSP-limited. Whether the filter runs is the running stream's own
+ * decision (dsd_frontend_metrics::channel_lpf_default), made from the rate its configuration started at and kept
+ * whatever rate the device then delivers; before a stream has published it, the view predicts it as a start makes it
+ * (DSD_NEO_CHANNEL_LPF, else a rate of 20 kHz or more). That rate is the
  * running stream's demod rate or, with no stream, the rate the next start runs at where the input's RTL DSP bandwidth
  * sets it (dsd_app_analog_rtl_bw_rate_hz()), which also bounds the widths the controls offer. On PCM input no channel
  * filter runs, so no width is in force.

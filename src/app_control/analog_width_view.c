@@ -35,10 +35,15 @@ dsd_app_analog_rtl_bw_rate_hz(const char* audio_in_dev, int audio_in_type, int r
    (demod_channel_lpf_default_enable()). */
 #define ANALOG_WIDTH_VIEW_DEFAULT_FILTER_MIN_RATE_HZ 20000
 
-/* Whether the unset NFM default runs a channel filter at DSP rate @p rate_hz: as DSD_NEO_CHANNEL_LPF sets it, otherwise
-   from the rate the stream turns it on at. */
+/* Whether the unset NFM default runs a channel filter at DSP rate @p rate_hz. A running stream decided it when its
+   configuration started (@p lpf_default, dsd_frontend_channel_lpf_default) and keeps that decision whatever rate the
+   device then delivers; before a stream has said, it is predicted as a start decides it: as DSD_NEO_CHANNEL_LPF sets
+   it, otherwise from the rate the filter starts at. */
 static int
-analog_width_view_default_filter_on(int rate_hz) {
+analog_width_view_default_filter_on(int rate_hz, int lpf_default) {
+    if (lpf_default == DSD_FRONTEND_CHANNEL_LPF_DEFAULT_ON || lpf_default == DSD_FRONTEND_CHANNEL_LPF_DEFAULT_OFF) {
+        return lpf_default == DSD_FRONTEND_CHANNEL_LPF_DEFAULT_ON;
+    }
     const dsdneoRuntimeConfig* env = dsd_neo_get_config();
     if (env && env->channel_lpf_is_set) {
         return env->channel_lpf_enable != 0;
@@ -50,14 +55,14 @@ analog_width_view_default_filter_on(int rate_hz) {
    the width the stream publishes for it): its own design where the channel filter runs and the rate realizes it;
    otherwise the rate bounds the channel, DSP-limited, through the legacy WIDE plan's passband while the filter runs
    (dsd_channel_lpf_legacy_wide_width_hz(): a 128 kHz replay protects about 78.5 kHz, not 128), or the rate itself with
-   no channel filter. Every RTL DSP bandwidth that cannot realize the default lies below the rate the filter starts at,
-   so there the rate itself is the reading. */
+   no channel filter (@p lpf_default: analog_width_view_default_filter_on()). Every RTL DSP bandwidth that cannot
+   realize the default lies below the rate the filter starts at, so there the rate itself is the reading. */
 static void
-analog_width_view_take_default_rate(int rate_hz, dsd_app_analog_width_view* out) {
+analog_width_view_take_default_rate(int rate_hz, int lpf_default, dsd_app_analog_width_view* out) {
     if (rate_hz <= 0 || out->kind != DSD_ANALOG_DEMOD_FM || out->configured_hz > 0) {
         return;
     }
-    const int filter_on = analog_width_view_default_filter_on(rate_hz);
+    const int filter_on = analog_width_view_default_filter_on(rate_hz, lpf_default);
     if (filter_on && dsd_analog_width_realizable(out->width_hz, rate_hz)) {
         return;
     }
@@ -74,13 +79,13 @@ analog_width_view_take_rtl_rate(const dsd_opts* opts, dsd_app_analog_width_view*
         return;
     }
     out->max_hz = dsd_analog_width_max_for_rate(rate_hz);
-    analog_width_view_take_default_rate(rate_hz, out);
+    analog_width_view_take_default_rate(rate_hz, DSD_FRONTEND_CHANNEL_LPF_DEFAULT_UNKNOWN, out);
 }
 
 /* The front end's width is the channel in force only while it runs the monitor for the analog family the options in
    force select. Its mirror outlives a stopped stream, and under a typed digital row (or CQPSK toggled on under -fA)
    it describes that profile's channel; the width in force is then the one the monitor returns to at the running demod
-   rate (analog_width_view_take_default_rate() for the unset default). */
+   rate (analog_width_view_take_default_rate() for the unset default, with the stream's own filter decision). */
 static void
 analog_width_view_take_front_end(const dsd_opts* opts, const dsd_frontend_metrics* metrics,
                                  dsd_app_analog_width_view* out) {
@@ -95,7 +100,7 @@ analog_width_view_take_front_end(const dsd_opts* opts, const dsd_frontend_metric
         out->dsp_limited = metrics->channel_bandwidth_dsp_limited ? 1U : 0U;
         return;
     }
-    analog_width_view_take_default_rate(metrics->demod_rate_hz, out);
+    analog_width_view_take_default_rate(metrics->demod_rate_hz, metrics->channel_lpf_default, out);
 }
 
 int

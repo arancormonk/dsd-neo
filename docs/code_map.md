@@ -577,7 +577,10 @@ installs from `src/engine/trunk_tuning.c` in `src/engine/trunk_tuning_hooks_inst
   itself where no channel filter runs (below 20 kHz, or as `DSD_NEO_CHANNEL_LPF` says), the legacy WIDE plan's passband
   (`dsd_channel_lpf_legacy_wide_width_hz()`) where the filter runs but the rate cannot realize the default, both
   DSP-limited, and so it does at a running stream's demod rate while the front end is off the monitor (a typed digital
-  row, CQPSK toggled on under -fA), as the monitor it returns to publishes it. They spell the reading (`12.5 kHz`,
+  row, CQPSK toggled on under -fA), as the monitor it returns to publishes it. There whether the filter runs is the
+  stream's own decision (`rtl_stream_channel_lpf_default()`, carried as `dsd_frontend_metrics::channel_lpf_default`),
+  which its configuration made from the rate it started at and keeps whatever rate the device then delivers (a forced
+  rate, a replay's capture rate), so the view does not re-derive it from the rate. They spell the reading (`12.5 kHz`,
   `16 kHz (default)`, `12 kHz (DSP-limited)`, `not used on PCM input`) and the configured setting (`12.5 kHz`,
   `default`). The terminal's `Analog:` status field, the `rtl.nfm_bw` row's label and predicate, the width command's
   toast, RTL_SET_BW's configured-width check and Qt's `analogBandwidth*` properties all come from it. Test:

@@ -428,6 +428,19 @@ int rtl_stream_get_analog_profile(int* out_kind, int* out_width_hz, int* out_lpf
 int rtl_stream_analog_family_active(void);
 
 /**
+ * @brief Report whether the stream runs its channel filter where no width requests one: the unset NFM default on the
+ * analog monitor, and a digital profile.
+ *
+ * The stream's configuration decides it once, from DSD_NEO_CHANNEL_LPF or else from the DSP rate the configuration
+ * starts from (20 kHz or more), and keeps it when the device delivers another rate (a forced rate, a replay's capture
+ * rate) or a retune moves it. So the width the monitor returns to from a CQPSK toggle or a typed digital scan row
+ * follows this decision, not the rate it runs at then.
+ *
+ * @return 1 when it runs the filter, 0 when it does not, -1 before a stream has published its receive profile.
+ */
+int rtl_stream_channel_lpf_default(void);
+
+/**
  * @brief Predict the output rate the stream will have once it runs @p family.
  *
  * A family switch is deferred to the demod thread, so a caller that sets symbol timing for the new family must not

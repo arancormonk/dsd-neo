@@ -561,7 +561,9 @@ The terminal shows the width in force on the input status line beside `DSP-BW:`:
 explicit width, `Analog: NFM 16 kHz (default);` for the unset default, and `Analog: NFM 12 kHz (DSP-limited);` when
 the rate bounds it. With the stream stopped, an RTL-SDR or rtl_tcp input shows what the next start runs at its DSP
 bandwidth, and while a scan row runs a digital protocol the line shows what the monitor returns to at the running
-rate: below 20 kHz the unset default reads as that rate, DSP-limited. The terminal sets the width from Input >
+rate: where the stream runs no channel filter for the unset default, the default reads as that rate, DSP-limited. The
+stream decides that when it opens, from the DSP bandwidth it opens at (below 20 kHz, or as `DSD_NEO_CHANNEL_LPF`
+says), and keeps it when the device delivers another rate. The terminal sets the width from Input >
 RTL-SDR > NFM bandwidth..., whose label shows the setting (`[12.5 kHz]`, or `[default]`), while `-fA` is the
 configured mode on a radio input (a scan row running a digital protocol does not hide it). The Qt and Android Radio
 sheet shows the same reading under the NFM decode chip, with a stepper over 8, 11.25, 12.5, 16, 20 and 25 kHz that

@@ -1221,6 +1221,52 @@ expect_analog_default_enable_survives_replay_rate(void) {
     return rc;
 }
 
+/*
+ * The stream publishes the enable decision its configuration made, which the unset NFM default keeps at whatever rate
+ * the device then delivers, so a frontend that reads the width the monitor returns to (from a CQPSK toggle or a typed
+ * digital row) follows it rather than the delivered rate: a device opened at a 16 kHz DSP bandwidth that delivers
+ * 31.25 kHz runs no channel filter, and one opened at 48 kHz that delivers 12 kHz still runs it.
+ */
+static int
+expect_channel_lpf_default_published(void) {
+    int rc = 0;
+    set_channel_lpf_env(NULL);
+
+    const struct {
+        int configured_bw;
+        int delivered_rate;
+        int want;
+    } rows[] = {{16000, 31250, 0}, {48000, 12000, 1}};
+
+    for (const auto& row : rows) {
+        demod_state* configured = alloc_zeroed_demod();
+        if (!configured) {
+            DSD_FPRINTF(stderr, "channel LPF default publish: allocation failed\n");
+            return 1;
+        }
+        static dsd_opts opts;
+        make_analog_opts(&opts);
+        char err[DSD_ANALOG_ERROR_TEXT_MAX] = {0};
+        rc |= expect_int_eq("LPF default: configured",
+                            configure_and_finalize(configured, &opts, row.configured_bw, err, sizeof err), 0);
+        configured->rate_out = row.delivered_rate;
+        rc |= expect_int_eq("LPF default: delivered rate settles",
+                            rtl_demod_finalize_analog_channel(configured, &opts, err, sizeof err), 0);
+        rc |= expect_int_eq("LPF default: the monitor keeps the configured decision", configured->channel_lpf_enable,
+                            row.want);
+
+        DSD_MEMSET(&demod, 0, sizeof(demod));
+        demod.channel_lpf_default_enable = configured->channel_lpf_default_enable;
+        demod.rate_out = row.delivered_rate;
+        rtl_stream_test_publish_demod_snapshot();
+        rc |= expect_int_eq("LPF default: published as configured", rtl_stream_channel_lpf_default(), row.want);
+        rtl_demod_cleanup(configured);
+        dsd_neo_aligned_free(configured);
+    }
+    DSD_MEMSET(&demod, 0, sizeof(demod));
+    return rc;
+}
+
 /* An explicit width, including 16000, turns the channel filter on at any rate that fits it. */
 static int
 expect_analog_explicit_width_forces_lpf(void) {
@@ -1891,6 +1937,7 @@ main(void) {
 
     rc |= expect_analog_legacy_default_enable();
     rc |= expect_analog_default_enable_survives_replay_rate();
+    rc |= expect_channel_lpf_default_published();
     rc |= expect_analog_explicit_width_forces_lpf();
     rc |= expect_forced_rate_refusal_names_the_width();
     rc |= expect_rx_request_outcomes();

@@ -159,8 +159,39 @@ main(void) {
     m.output_kind = DSD_FRONTEND_RTL_OUTPUT_SYMBOL_CQPSK;
     assert(dsd_app_analog_width_view_get(opts, state, &m, &view) == 0);
     assert(view.width_hz == dsd_channel_lpf_legacy_wide_width_hz(12000) && view.width_hz < 12000 && view.dsp_limited);
+    /* A running stream that has published its own decision is not second-guessed, by the environment either. */
+    m.channel_lpf_default = DSD_FRONTEND_CHANNEL_LPF_DEFAULT_OFF;
+    assert(dsd_app_analog_width_view_get(opts, state, &m, &view) == 0);
+    assert(view.width_hz == 12000 && view.dsp_limited);
     assert(dsd_unsetenv("DSD_NEO_CHANNEL_LPF") == 0);
     dsd_neo_config_init();
+
+    /* The stream decided the filter when its configuration started, from the rate it started at, and keeps that
+       decision at whatever rate the device delivers. A SoapySDR device opened at a 16 kHz DSP bandwidth that delivers
+       31.25 kHz runs the unset default with no channel filter, so the monitor it returns to is the rate, not the 16 kHz
+       a start at 31.25 kHz would filter... */
+    m = monitor_metrics(12500, 0, 31250);
+    m.output_kind = DSD_FRONTEND_RTL_OUTPUT_SYMBOL_CQPSK;
+    assert(dsd_app_analog_width_view_get(opts, state, &m, &view) == 0);
+    assert(view.width_hz == 16000 && !view.dsp_limited); /* not published yet: predicted from the rate */
+    m.channel_lpf_default = DSD_FRONTEND_CHANNEL_LPF_DEFAULT_OFF;
+    assert(dsd_app_analog_width_view_get(opts, state, &m, &view) == 0);
+    assert(view.width_hz == 31250 && view.dsp_limited && view.configured_hz == 0);
+    expect_reading(&view, "31.25 kHz (DSP-limited)");
+    /* ...and one that started at 48 kHz still runs it at 12 kHz, through the legacy WIDE plan. */
+    m = monitor_metrics(12500, 0, 12000);
+    m.output_kind = DSD_FRONTEND_RTL_OUTPUT_SYMBOL_CQPSK;
+    m.channel_lpf_default = DSD_FRONTEND_CHANNEL_LPF_DEFAULT_ON;
+    assert(dsd_app_analog_width_view_get(opts, state, &m, &view) == 0);
+    assert(view.width_hz == dsd_channel_lpf_legacy_wide_width_hz(12000) && view.dsp_limited);
+    /* The decision applies to the unset default only: an explicit width always runs the filter. */
+    opts->analog_nfm_bandwidth_hz = 8000;
+    m = monitor_metrics(12500, 0, 31250);
+    m.output_kind = DSD_FRONTEND_RTL_OUTPUT_SYMBOL_CQPSK;
+    m.channel_lpf_default = DSD_FRONTEND_CHANNEL_LPF_DEFAULT_OFF;
+    assert(dsd_app_analog_width_view_get(opts, state, &m, &view) == 0);
+    assert(view.width_hz == 8000 && !view.dsp_limited);
+    opts->analog_nfm_bandwidth_hz = 0;
 
     /* A typed digital row on the analog session: the configured preset is still NFM, and the row's front end filters
        with the row's profile, so the configured width shows, the one the row's leave returns to. */

@@ -130,6 +130,11 @@ frontend_metrics_from_radio(const dsd_opts* opts, const dsd_state* state, dsd_fr
     out->costas_err_q14 = rtl_stream_get_costas_err_q14();
     out->nco_q15 = rtl_stream_get_nco_q15();
     out->demod_rate_hz = rtl_stream_get_demod_rate_hz();
+    const int lpf_default = rtl_stream_channel_lpf_default();
+    if (lpf_default >= 0) {
+        out->channel_lpf_default =
+            lpf_default ? DSD_FRONTEND_CHANNEL_LPF_DEFAULT_ON : DSD_FRONTEND_CHANNEL_LPF_DEFAULT_OFF;
+    }
     out->fll_band_edge_freq_hz = rtl_stream_get_fll_band_edge_freq_hz();
     out->spectrum_size = rtl_stream_spectrum_get_size();
     out->snr_bias_c4fm = rtl_stream_get_snr_bias_c4fm();
