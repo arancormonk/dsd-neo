@@ -385,6 +385,10 @@ static int voc_open(const char *cmd) {
     }
     if (pid == 0) {
         /* child */
+        /* Give the shell and any codec it starts a private process group so
+         * timeout recovery can terminate the whole command tree. */
+        if (setpgid(0, 0) != 0)
+            _exit(127);
         dup2(to_child[0],   STDIN_FILENO);
         dup2(from_child[1], STDOUT_FILENO);
         close(to_child[0]); close(to_child[1]);
@@ -458,8 +462,10 @@ void tetra_vocoder_close(void) {
         struct timespec pause = {0, 10000000L}; /* 10 ms, at most 200 ms */
         nanosleep(&pause, NULL);
     }
+    /* The shell may have exited while a codec descendant still holds our
+     * pipe open. Close the private process group as well as reaping the child. */
+    kill(-s_voc.pid, SIGTERM);
     if (!exited) {
-        kill(s_voc.pid, SIGTERM);
         while (waitpid(s_voc.pid, &status, 0) < 0 && errno == EINTR) {}
     }
     memset(&s_voc, 0, sizeof(s_voc));
