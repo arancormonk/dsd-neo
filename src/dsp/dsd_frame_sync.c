@@ -146,10 +146,13 @@ rtl_maybe_apply_demod_profile(const dsd_opts* opts, const dsd_state* state, cons
         return;
     }
     /* The analog monitor has no symbol clock, and its front end answers for itself with the
-       wide profile. A symbol profile from the hunt would turn the stream's monitor audio into
-       CQPSK symbols, or narrow it to a digital channel: the monitor, and received-tone detection
-       with it, would go quiet until the mode changed. app_control/symbol_profile.c refuses the
-       same request for the same reason. */
+       analog receive profile. The analog family stands the modulation vote down
+       (frame_sync_maybe_auto_switch_modulation()), but the hunt has other requests, such as a
+       two-level profile it re-normalises when its dwell runs out. Any symbol profile from the
+       hunt would turn the stream's monitor audio into CQPSK symbols, or narrow it to a digital
+       channel: the monitor, and received-tone detection with it, would go quiet until the mode
+       changed. app_control/symbol_profile.c sends the analog profile instead for the same
+       reason. */
     if (opts->analog_only) {
         return;
     }

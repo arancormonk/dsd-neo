@@ -283,9 +283,9 @@ Each case's expected line appears only once the replay has run long enough to re
 ends early fails rather than passing. Replays that opened on quiet monitor audio used to do exactly that: under `-fA`
 the sync hunt's modulation vote could pick QPSK and send the RTL front end a CQPSK symbol profile, after which the
 stream carried symbols instead of monitor audio, the unsynced analog path (and the tap) never ran, and the replay
-drained with nothing decoded. The hunt no longer sends the RTL front end a symbol profile in analog-only mode, as the
-app-control modulation path already did not; `FRAME_SYNC_INTERNAL_HELPERS` pins it, with a digital session as the
-control.
+drained with nothing decoded. The analog family now stands the vote down, and the hunt sends the RTL front end no
+symbol profile at all in analog-only mode, as the app-control modulation path does not; `FRAME_SYNC_INTERNAL_HELPERS`
+pins both, with a digital session as the control.
 
 The detector's own bounds are pinned in sample time by `DSP_ANALOG_CTCSS`, through the pure receive core
 (`src/dsp/analog_rx_internal.h`) and seeded generators in `tests/dsp/analog_tone_synth.h`. Every figure it asserts
