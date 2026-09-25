@@ -325,16 +325,15 @@ dcs_slice_balance(dsd_analog_dcs* det, double integral) {
                 sizeof(det->balance_integrals) - sizeof(det->balance_integrals[0]));
     det->balance_integrals[DSD_ANALOG_DCS_HISTORY_BITS - 1] = integral;
     uint64_t bits = 0U;
-    for (int w = 0; w < 2; w++) {
-        const double* word = &det->balance_integrals[w * DCS_WORD_BITS];
+    for (int first = 0; first < DSD_ANALOG_DCS_HISTORY_BITS; first += DCS_WORD_BITS) {
         double mean = 0.0;
-        for (int i = 0; i < DCS_WORD_BITS; i++) {
-            mean += word[i];
+        for (int i = first; i < first + DCS_WORD_BITS; i++) {
+            mean += det->balance_integrals[i];
         }
         mean /= (double)DCS_WORD_BITS;
-        for (int i = 0; i < DCS_WORD_BITS; i++) {
-            if (word[i] > mean) {
-                bits |= (uint64_t)1 << ((w * DCS_WORD_BITS) + i);
+        for (int i = first; i < first + DCS_WORD_BITS; i++) {
+            if (det->balance_integrals[i] > mean) {
+                bits |= (uint64_t)1 << i;
             }
         }
     }
