@@ -536,10 +536,12 @@ width first.
 
 The terminal shows the width in force on the input status line beside `DSP-BW:`: `Analog: NFM 12.5 kHz;` for an
 explicit width, `Analog: NFM 16 kHz (default);` for the unset default, and `Analog: NFM 12 kHz (DSP-limited);` when
-the rate bounds it. It sets the width from Input > RTL-SDR > NFM bandwidth..., whose label shows the setting
+the rate bounds it. With the stream stopped, an RTL-SDR or rtl_tcp input shows what the next start runs at its DSP
+bandwidth: below 20 kHz the unset default reads as that rate, DSP-limited. It sets the width from Input > RTL-SDR > NFM bandwidth..., whose label shows the setting
 (`[12.5 kHz]`, or `[default]`), while `-fA` is the configured mode on a radio input (a scan row running a digital
 protocol does not hide it). The Qt and Android Radio sheet shows the same reading under the NFM decode chip, with a
-stepper over 8, 11.25, 12.5, 16, 20 and 25 kHz that skips the widths the running DSP rate cannot filter, and *Use the
+stepper over 8, 11.25, 12.5, 16, 20 and 25 kHz that skips the widths the DSP rate cannot filter (the running
+stream's, or with none running the rate an RTL-SDR or rtl_tcp input's DSP bandwidth sets), and *Use the
 default width* to return an explicit width to the unset default. On PCM input it reads *not used on PCM input* and
 the controls are disabled. The setup wizard offers the NFM chip too, and picking it suggests no trunking.
 
@@ -549,7 +551,8 @@ the controls are disabled. The setup wizard offers the NFM chip too, and picking
 | --- | --- |
 | NFM width from the terminal row, the Radio sheet or a loaded config | Live, on the next DSP block of a running analog monitor, with a filter designed from empty histories; no reopen. Refused with a message, and the width unchanged, when the DSP rate it will run at cannot filter it (a config is then not applied at all). A width set while a scan row runs a digital protocol, or while CQPSK is toggled on under `-fA`, applies when the front end returns to the monitor. With no stream running, the next start uses it. |
 | Decode mode to or from Analog (`-fA`, the NFM chip, `[mode] decode`) | Live: the front end switches receive family between DSP blocks. A switch to Analog with an explicit NFM width the DSP rate cannot filter is refused, naming both, and the mode stays (under a scan row too). |
-| DSP bandwidth (`bw`, `rtl_bw_khz`, DSP bandwidth...) | Reopens the device. On an RTL-SDR or rtl_tcp input a bandwidth the explicit NFM width in use cannot run at is refused, naming both, from the DSP bandwidth... row and from a loaded config alike. A loaded config is checked at the bandwidth its `[input]` reopens the device at (its `rtl_bw_khz` as given), from whatever input runs now; one that builds the input already running (an rtl_tcp source without `rtl_freq` for the host and port in use) reopens nothing and changes no rate. |
+| DSP bandwidth (`bw`, `rtl_bw_khz`, DSP bandwidth...) | Reopens the device. On an RTL-SDR or rtl_tcp input (an RTL input whose device string names no SoapySDR, Airspy or replay device opens as one) a bandwidth the explicit NFM width in use cannot run at is refused, naming both, from the DSP bandwidth... row and from a loaded config alike. A loaded config is checked at the bandwidth its `[input]` reopens the device at (its `rtl_bw_khz` as given), from whatever input runs now; one that builds the input already running (an rtl_tcp source without `rtl_freq` for the host and port in use) reopens nothing and changes no rate. |
+| Input > RTL-SDR | Reopens the input as an RTL-SDR or rtl_tcp device at the DSP bandwidth. An explicit NFM width that bandwidth cannot filter is refused, naming both and the DSP bandwidths that fit, and the running input stays. A SoapySDR input reopens at the rate its device sets, which its start checks. |
 | A retune (scanner, trunking, manual tune) | The channel filter, de-emphasis, audio filter and squelch start from empty state on the new channel; a retune that lands on another DSP rate resolves the channel for that rate. |
 | `--nfm-bandwidth-hz`, `[analog] nfm_bandwidth_hz` at startup | When the stream opens. |
 

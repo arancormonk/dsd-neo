@@ -11,7 +11,46 @@
 #include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/runtime/analog_channel.h>
 #include <dsd-neo/runtime/scan_mode.h>
+#include <limits.h>
 #include <stddef.h>
+
+int
+dsd_app_analog_rtl_bw_rate_hz(const char* audio_in_dev, int audio_in_type, int rtl_bw_khz) {
+    /* detect_radio_source(): the stream opens every device string outside the SoapySDR, Airspy and I/Q replay specs
+       as an RTL-SDR (rtl_tcp by its own spec), and runs it at the DSP bandwidth. */
+    const int rtl = dsd_opts_audio_in_dev_is_rtl_spec(audio_in_dev)
+                    || dsd_opts_audio_in_dev_is_rtltcp_spec(audio_in_dev)
+                    || (audio_in_type == AUDIO_IN_RTL && !dsd_opts_audio_in_dev_is_soapy_spec(audio_in_dev)
+                        && !dsd_opts_audio_in_dev_is_airspy_spec(audio_in_dev)
+                        && !dsd_opts_audio_in_dev_is_iqreplay_spec(audio_in_dev));
+    if (!rtl || rtl_bw_khz <= 0) {
+        return 0;
+    }
+    return rtl_bw_khz > INT_MAX / 1000 ? INT_MAX : rtl_bw_khz * 1000;
+}
+
+/* The rate from which the unset NFM default runs a channel filter (demod_channel_lpf_default_enable(), without a
+   DSD_NEO_CHANNEL_LPF override, which shows once the stream runs). */
+#define ANALOG_WIDTH_VIEW_DEFAULT_FILTER_MIN_RATE_HZ 20000
+
+/* With no stream running, the rate the next start runs at, where the RTL DSP bandwidth sets it, bounds the widths the
+   controls offer, and an unset NFM default reads as what that start publishes (rtl_demod_apply_analog_channel()).
+   Below the rate from which the default runs a channel filter, the rate itself bounds the channel; every RTL DSP
+   bandwidth that cannot filter the default lies there. */
+static void
+analog_width_view_take_rtl_rate(const dsd_opts* opts, dsd_app_analog_width_view* out) {
+    const int rate_hz = dsd_app_analog_rtl_bw_rate_hz(opts->audio_in_dev, opts->audio_in_type, opts->rtl_dsp_bw_khz);
+    if (rate_hz <= 0) {
+        return;
+    }
+    out->max_hz = dsd_analog_width_max_for_rate(rate_hz);
+    if (out->kind == DSD_ANALOG_DEMOD_FM && out->configured_hz <= 0
+        && (rate_hz < ANALOG_WIDTH_VIEW_DEFAULT_FILTER_MIN_RATE_HZ
+            || !dsd_analog_width_realizable(out->width_hz, rate_hz))) {
+        out->width_hz = rate_hz;
+        out->dsp_limited = 1U;
+    }
+}
 
 /* The front end's width is the channel in force only while it runs the monitor for the analog family the options in
    force select. Its mirror outlives a stopped stream, and under a typed digital row it describes the row's channel. */
@@ -19,6 +58,7 @@ static void
 analog_width_view_take_front_end(const dsd_opts* opts, const dsd_frontend_metrics* metrics,
                                  dsd_app_analog_width_view* out) {
     if (!metrics || !metrics->stream_active) {
+        analog_width_view_take_rtl_rate(opts, out);
         return;
     }
     out->max_hz = metrics->demod_rate_hz > 0 ? dsd_analog_width_max_for_rate(metrics->demod_rate_hz) : 0;

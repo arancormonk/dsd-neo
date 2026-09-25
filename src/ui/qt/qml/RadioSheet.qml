@@ -93,8 +93,9 @@ ModalSheet {
             return analogWidthConfigured;
         return metrics.analogBandwidthHz > 0 ? metrics.analogBandwidthHz : Util.NFM_DEFAULT_WIDTH_HZ;
     }
-    // The widest width the running stream's DSP rate filters (0 = not known):
-    // the steps skip what the engine would refuse.
+    // The widest width the DSP rate filters (the running stream's, or with none
+    // the rate an RTL-SDR input's DSP bandwidth sets; 0 = not known): the steps
+    // skip what the engine would refuse.
     readonly property int analogWidthMax: metrics.analogBandwidthMaxHz > 0 ? metrics.analogBandwidthMaxHz : 0
     readonly property bool analogWidthCanNarrow: analogWidthEditable
         && Util.nextNfmWidth(analogWidthStepFrom, -1, analogWidthMax) > 0

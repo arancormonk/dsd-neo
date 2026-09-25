@@ -435,7 +435,9 @@ invariant to it, so it is left as is.
   unset default and a fitting width still start at a low DSP rate;
   `APP_COMMAND_QUEUE` and `UI_MENU_SERVICES` the command's live request and
   refusals, a CQPSK toggle or switch drained with it, a config apply's width
-  and reopen rate, scan rows, and the DSP bandwidth refusal. `DECODE_IQ_ANALOG_NFM_TONE_8K`,
+  and reopen rate, scan rows, and the DSP bandwidth and Input > RTL-SDR
+  refusals, on an input the stream opens as an RTL-SDR whatever its device
+  string. `DECODE_IQ_ANALOG_NFM_TONE_8K`,
   `_16K` and `_25K` show the 1 kHz tone keeping its level through each width
   (-36.1 dBFS, bounded to -37.5..-34.5 dBFS; the explicit 16 kHz measuring the
   same as the default), and `DECODE_IQ_ANALOG_NFM_BW_8K`

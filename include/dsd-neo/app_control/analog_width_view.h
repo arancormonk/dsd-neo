@@ -13,8 +13,10 @@
  * output without being the analog receiver, so it has no width. While a running stream's options in force run the
  * analog family on the monitor output, the width in force is the one the front end reports, flagged when the DSP rate
  * rather than the channel filter bounds it; otherwise (no stream, a typed digital row filtering with its own profile)
- * it is the configured width, the kind's default when none is set. On PCM input no channel filter runs, so no width is
- * in force.
+ * it is the configured width, the kind's default when none is set. With no stream running on an input whose RTL DSP
+ * bandwidth sets the rate (dsd_app_analog_rtl_bw_rate_hz()), that rate bounds the widths the controls offer, and an
+ * unset default it cannot filter reads as what the next start runs: the rate itself, DSP-limited. On PCM input no
+ * channel filter runs, so no width is in force.
  *
  * This view owns those decisions, the reading's text ("12.5 kHz", "16 kHz (default)", "12 kHz (DSP-limited)") and the
  * one spelling of a configured width ("12.5 kHz", "default"). The terminal's status field, RTL menu row and its
@@ -43,7 +45,8 @@ typedef struct {
     int kind;            /**< dsd_analog_demod of the configured preset. */
     int width_hz;        /**< The width in force; 0 when not shown or on PCM input. */
     int configured_hz;   /**< The configured width, 0 for the default: what the controls edit and a save writes. */
-    int max_hz;          /**< The widest width the running stream's demod rate filters; 0 when not known. */
+    int max_hz;          /**< The widest width the DSP rate filters (the running stream's demod rate, else the
+                              rate the RTL DSP bandwidth sets); 0 when not known. */
     uint8_t shown;       /**< 1 under the configured analog preset (never for the M17 encoder's monitor). */
     uint8_t radio_input; /**< 1 on a radio input, where the width is a channel filter; 0 on PCM input. */
     uint8_t dsp_limited; /**< 1 when the DSP rate, not the channel filter, bounds width_hz (the unset default only). */
@@ -52,7 +55,8 @@ typedef struct {
 /**
  * @brief Fill @p out from decoder state, or from a frontend snapshot pair and the metrics taken with it.
  *
- * @p metrics may be NULL, which reads as no running stream: the configured width then stands in. @p state may be NULL
+ * @p metrics may be NULL, which reads as no running stream: the configured width then stands in, bounded by the rate
+ * the RTL DSP bandwidth sets where it sets one. @p state may be NULL
  * (no snapshot published yet), which reads as no scan scope. Correct on the decoder thread while a scan scope is
  * suspended for a command, where dsd_opts holds the configured options; no scan row sets a width yet, so the options
  * always hold the configured one. Zeroes @p out first. configured_hz is filled whenever @p opts is given, for the kind
@@ -74,6 +78,22 @@ int dsd_app_analog_width_view_format(const dsd_app_analog_width_view* view, char
  * Returns 0, or -1 when @p out is NULL or @p out_size is zero.
  */
 int dsd_app_analog_width_setting_format(int configured_hz, char* out, size_t out_size);
+
+/**
+ * @brief The DSP rate, in Hz, an RTL DSP bandwidth of @p rtl_bw_khz gives an input, where that bandwidth sets the rate.
+ *
+ * It does on an RTL-SDR or rtl_tcp input. That is an "rtl" or "rtltcp" spec, and also any other device string on an RTL
+ * input (@p audio_in_type AUDIO_IN_RTL), which the stream opens as an RTL-SDR: the terminal's Input > RTL-SDR row, say,
+ * leaves "pulse" there. The result is 0 elsewhere: a SoapySDR or Airspy device may force another rate, an I/Q replay
+ * runs at its capture's, and PCM input has none. It is 0 too for @p rtl_bw_khz <= 0. A value too large for a rate in
+ * Hz (a loaded config keeps any integer) saturates at INT_MAX, a rate no channel width can be filtered at.
+ *
+ * @param audio_in_dev  The input's device string (dsd_opts.audio_in_dev); NULL reads as an RTL-SDR, as the stream reads
+ *                      it.
+ * @param audio_in_type The input's type (dsd_opts.audio_in_type).
+ * @param rtl_bw_khz    The RTL DSP bandwidth in kHz.
+ */
+int dsd_app_analog_rtl_bw_rate_hz(const char* audio_in_dev, int audio_in_type, int rtl_bw_khz);
 
 #ifdef __cplusplus
 }

@@ -962,6 +962,16 @@ test_analog_channel_status_rendering(void) {
     reset_printw_capture();
     ui_render_rtl_input_source(&opts, &state);
     assert_capture_contains(" DSP-BW: 12 kHz; Analog: NFM 12 kHz (DSP-limited);");
+    /* ...and with the stream stopped (an rtl_tcp disconnect, a failed restart), from the options alone: the 12 kHz DSP
+       bandwidth is the rate the next start runs the default at, so the line reads what that start publishes, not the
+       default's 16 kHz. */
+    g_stream_active = 0;
+    g_channel_bandwidth_hz = 0;
+    g_channel_bandwidth_dsp_limited = 0;
+    reset_printw_capture();
+    ui_render_rtl_input_source(&opts, &state);
+    assert_capture_contains(" DSP-BW: 12 kHz; Analog: NFM 12 kHz (DSP-limited);");
+    g_stream_active = 1;
 
     /* The M17 encoder shares the monitor output without being the analog receiver. */
     opts.m17encoder = 1;

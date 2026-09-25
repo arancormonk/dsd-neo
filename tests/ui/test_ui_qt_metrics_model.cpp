@@ -1333,7 +1333,21 @@ main(int argc, char** argv) {
         model.refresh(&opts, &state);
         expect("no stream: the configured width", model.analogBandwidthHz() == 12500);
         expect("no stream: not DSP-limited", !model.analogBandwidthDspLimited());
-        expect("no stream: no rate to bound the steps", model.analogBandwidthMaxHz() == 0);
+        /* The input is an RTL one ("pulse" on an RTL input opens as an RTL-SDR): the next start runs at its 48 kHz DSP
+         * bandwidth, which bounds the steps. */
+        expect("no stream: the DSP bandwidth bounds the steps", model.analogBandwidthMaxHz() == 42000);
+        /* At a 12 kHz DSP bandwidth the default runs no channel filter: the sheet reads what the next start publishes
+         * and offers only the widths that rate filters. */
+        opts.analog_nfm_bandwidth_hz = 0;
+        opts.rtl_dsp_bw_khz = 12;
+        model.refresh(&opts, &state);
+        expect("no stream at 12 kHz: the default reads as the rate",
+               model.analogBandwidthHz() == 12000 && model.analogBandwidthDspLimited());
+        expect("no stream at 12 kHz: the steps it filters", model.analogBandwidthMaxHz() == 9600);
+        expect("no stream at 12 kHz: the reading says DSP-limited",
+               model.analogBandwidthReading() == QStringLiteral("12 kHz (DSP-limited)"));
+        opts.rtl_dsp_bw_khz = 48;
+        opts.analog_nfm_bandwidth_hz = 12500;
         g_stub_stream_active = 1;
         g_stub_channel_bandwidth_dsp_limited = 0;
 

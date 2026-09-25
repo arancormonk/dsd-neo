@@ -1079,8 +1079,27 @@ ui_cmd_parse_double_payload(const struct dsd_app_command* c, double* out) {
 }
 
 #ifdef USE_RADIO
+/* Input > RTL-SDR opens a device at the RTL DSP bandwidth, so an explicit analog width that bandwidth cannot filter is
+   refused before the running input is torn down: the new stream's start would refuse it and leave none. An Airspy
+   device sets its own rate, which its start checks. */
+static int
+ui_cmd_rtl_enable_input_refused(const dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
+    if (!opts || !state || c->id != DSD_APP_CMD_RTL_ENABLE_INPUT) {
+        return 0;
+    }
+    char why[128];
+    if (svc_check_rtl_input_analog_width(opts, state, why, sizeof why) == 0) {
+        return 0;
+    }
+    ui_set_toast(state, 5, "Refused: %s", why);
+    return 1;
+}
+
 static int
 ui_cmd_handle_rtl_enable_input(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
+    if (ui_cmd_rtl_enable_input_refused(opts, state, c)) {
+        return UI_CMD_APPLY_FAILED;
+    }
     if (opts && c->id == DSD_APP_CMD_AIRSPY_ENABLE_INPUT) {
         DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "airspy%s%s",
                      opts->airspy.serial[0] ? ":serial=" : "", opts->airspy.serial);

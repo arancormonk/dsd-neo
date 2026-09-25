@@ -18,6 +18,7 @@
 #include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/runtime/analog_channel.h>
 #include <dsd-neo/runtime/scan_mode.h>
+#include <limits.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -69,11 +70,36 @@ main(void) {
     opts->analog_only = 1;
     opts->analog_demod = DSD_ANALOG_DEMOD_FM;
     opts->analog_nfm_bandwidth_hz = 0;
-    /* No stream: the configured width, the default here, marked as such. */
+    /* No stream: the configured width, the default here, marked as such. The RTL DSP bandwidth (48 kHz) is the rate
+       the next start runs at and bounds the widths offered. */
     assert(dsd_app_analog_width_view_get(opts, state, NULL, &view) == 0);
     assert(view.shown && view.radio_input && view.kind == DSD_ANALOG_DEMOD_FM);
-    assert(view.width_hz == 16000 && view.configured_hz == 0 && !view.dsp_limited && view.max_hz == 0);
+    assert(view.width_hz == 16000 && view.configured_hz == 0 && !view.dsp_limited && view.max_hz == 42000);
     expect_reading(&view, "16 kHz (default)");
+
+    /* No stream at a 12 kHz DSP bandwidth: the default runs no channel filter there, so it reads as the rate, as the
+       running stream will publish it, and the widest width offered is the one that rate filters. */
+    opts->rtl_dsp_bw_khz = 12;
+    assert(dsd_app_analog_width_view_get(opts, state, NULL, &view) == 0);
+    assert(view.width_hz == 12000 && view.dsp_limited && view.configured_hz == 0 && view.max_hz == 9600);
+    expect_reading(&view, "12 kHz (DSP-limited)");
+    /* ...an explicit width the rate filters is the channel in force, not limited. */
+    opts->analog_nfm_bandwidth_hz = 8000;
+    assert(dsd_app_analog_width_view_get(opts, state, NULL, &view) == 0);
+    assert(view.width_hz == 8000 && !view.dsp_limited && view.max_hz == 9600);
+    expect_reading(&view, "8 kHz");
+    opts->analog_nfm_bandwidth_hz = 0;
+    /* The terminal's Input > RTL-SDR leaves "pulse" on an RTL input: the stream opens it as an RTL-SDR, at this rate. */
+    DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", "pulse");
+    assert(dsd_app_analog_width_view_get(opts, state, NULL, &view) == 0);
+    assert(view.width_hz == 12000 && view.dsp_limited && view.max_hz == 9600);
+    /* A SoapySDR device may force another rate: nothing is known before it runs. */
+    DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", "soapy:driver=airspy");
+    assert(dsd_app_analog_width_view_get(opts, state, NULL, &view) == 0);
+    assert(view.width_hz == 16000 && !view.dsp_limited && view.max_hz == 0);
+    expect_reading(&view, "16 kHz (default)");
+    opts->audio_in_dev[0] = '\0';
+    opts->rtl_dsp_bw_khz = 48;
 
     /* On the monitor, the front end's width and the widest its demod rate filters. */
     opts->analog_nfm_bandwidth_hz = 12500;
@@ -96,7 +122,7 @@ main(void) {
     /* The front end's mirror outlives a stopped stream, and describes another output than the monitor's. */
     m.stream_active = 0;
     assert(dsd_app_analog_width_view_get(opts, state, &m, &view) == 0);
-    assert(view.width_hz == 16000 && !view.dsp_limited && view.max_hz == 0);
+    assert(view.width_hz == 16000 && !view.dsp_limited && view.max_hz == 42000);
     m = monitor_metrics(12500, 0, 48000);
     m.output_kind = DSD_FRONTEND_RTL_OUTPUT_SYMBOL_CQPSK;
     assert(dsd_app_analog_width_view_get(opts, state, &m, &view) == 0);
@@ -149,6 +175,23 @@ main(void) {
     assert(dsd_app_analog_width_view_get(opts, state, &m, &view) == 0);
     assert(!view.shown && view.width_hz == 0);
     opts->m17encoder = 0;
+
+    /* The rate the RTL DSP bandwidth gives an input where it sets one, classified as the stream classifies the
+       input: RTL-SDR and rtl_tcp specs, and any other device string on an RTL input. */
+    assert(dsd_app_analog_rtl_bw_rate_hz("rtl:0:146.52M", AUDIO_IN_NULL, 24) == 24000);
+    assert(dsd_app_analog_rtl_bw_rate_hz("rtltcp:127.0.0.1:1234", AUDIO_IN_RTL, 16) == 16000);
+    assert(dsd_app_analog_rtl_bw_rate_hz("pulse", AUDIO_IN_RTL, 12) == 12000);
+    assert(dsd_app_analog_rtl_bw_rate_hz(NULL, AUDIO_IN_RTL, 48) == 48000);
+    assert(dsd_app_analog_rtl_bw_rate_hz("pulse", AUDIO_IN_PULSE, 48) == 0);
+    assert(dsd_app_analog_rtl_bw_rate_hz("soapy", AUDIO_IN_RTL, 48) == 0);
+    assert(dsd_app_analog_rtl_bw_rate_hz("airspy:serial=0123456789abcdef", AUDIO_IN_RTL, 48) == 0);
+    assert(dsd_app_analog_rtl_bw_rate_hz("iqreplay:/tmp/capture.iq.json", AUDIO_IN_RTL, 48) == 0);
+    assert(dsd_app_analog_rtl_bw_rate_hz("rtl", AUDIO_IN_RTL, 0) == 0);
+    assert(dsd_app_analog_rtl_bw_rate_hz("rtl", AUDIO_IN_RTL, -24) == 0);
+    /* A loaded config keeps any integer: saturated, never overflowed. */
+    assert(dsd_app_analog_rtl_bw_rate_hz("rtl", AUDIO_IN_RTL, INT_MAX / 1000) == (INT_MAX / 1000) * 1000);
+    assert(dsd_app_analog_rtl_bw_rate_hz("rtl", AUDIO_IN_RTL, INT_MAX / 1000 + 1) == INT_MAX);
+    assert(dsd_app_analog_rtl_bw_rate_hz("rtl", AUDIO_IN_RTL, INT_MAX) == INT_MAX);
 
     /* The configured width, spelled one way everywhere: the value, or "default". */
     expect_setting(12500, "12.5 kHz");

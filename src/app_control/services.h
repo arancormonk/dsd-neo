@@ -299,6 +299,19 @@ void svc_toggle_inv_m17(dsd_opts* opts);
 // RTL-SDR configuration and lifecycle helpers
 /** @brief Switch active input to RTL-SDR and restart the stream. */
 int svc_rtl_enable_input(dsd_opts* opts, dsd_state* state);
+/**
+ * @brief Check the configured explicit analog width against the RTL-SDR input DSD_APP_CMD_RTL_ENABLE_INPUT would open.
+ *
+ * Asked before the switch rewrites the input and tears down the running stream. The configured analog preset's
+ * explicit width (as RTL_SET_BW holds it, a typed digital scan row included) must fit the rate the RTL DSP bandwidth
+ * (rtl_dsp_bw_khz) gives the device the switch opens: an RTL-SDR from an Airspy spec, "pulse" or any other device
+ * string, rtl_tcp from an rtl_tcp spec. A SoapySDR or I/Q replay input is reopened at a rate its device or capture
+ * sets, which its start checks. The unset default is never refused for a rate. A refusal's reason names the width,
+ * the rate, the widest width it filters and the DSP bandwidths that would fit; the validator's text is logged.
+ *
+ * @return 0 when the switch may go ahead, -1 otherwise (reason in @p why, may be NULL).
+ */
+int svc_check_rtl_input_analog_width(const dsd_opts* opts, const dsd_state* state, char* why, size_t why_size);
 /** @brief Restart the RTL stream if active, tearing down any existing context. */
 int svc_rtl_restart(dsd_opts* opts, dsd_state* state);
 /** Restart without acquiring; caller holds the P25 SM tick guard. */

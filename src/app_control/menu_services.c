@@ -855,30 +855,29 @@ svc_analog_rate_refusal(int kind, int width_hz, int rate_hz, int rtl_bandwidth_s
     }
 }
 
-/* An explicit NFM width held to an RTL-SDR or rtl_tcp input's DSP bandwidth @p rate_hz (0: no rate to hold it to). A
-   refusal gives the toast text and logs the validator's full message, which names every DSP bandwidth that would fit,
-   as the front end logs its own. */
+/* An explicit analog width held to an RTL-SDR or rtl_tcp input's DSP bandwidth @p rate_hz (0: no rate to hold it to).
+   A refusal gives the toast text and logs the validator's full message, which names every DSP bandwidth that would
+   fit, as the front end logs its own. */
 static int
-svc_nfm_width_fits_rate(int width_hz, int rate_hz, char* why, size_t why_size) {
+svc_analog_width_fits_rtl_rate(int kind, int width_hz, int rate_hz, char* why, size_t why_size) {
     if (rate_hz <= 0 || dsd_analog_width_realizable(width_hz, rate_hz)) {
         return 1;
     }
-    svc_analog_rate_refusal(DSD_ANALOG_DEMOD_FM, width_hz, rate_hz, 1, why, why_size);
+    svc_analog_rate_refusal(kind, width_hz, rate_hz, 1, why, why_size);
     char err[DSD_ANALOG_ERROR_TEXT_MAX];
-    if (dsd_analog_width_check(DSD_ANALOG_DEMOD_FM, width_hz, rate_hz, err, sizeof err) != 0) {
+    if (dsd_analog_width_check(kind, width_hz, rate_hz, err, sizeof err) != 0) {
         LOG_WARN("%s.\n", err);
     }
     return 0;
 }
 
 #ifdef USE_RADIO
-/* The DSP rate an RTL DSP bandwidth gives where that bandwidth is the rate: an RTL-SDR or rtl_tcp input. 0 elsewhere:
-   SoapySDR and Airspy devices may force another rate, an I/Q replay runs at its capture's, and PCM has none. */
+/* The DSP rate an RTL DSP bandwidth gives this input where that bandwidth is the rate: an RTL-SDR or rtl_tcp input,
+   classified as the stream classifies it (dsd_app_analog_rtl_bw_rate_hz()). 0 elsewhere: SoapySDR and Airspy devices
+   may force another rate, an I/Q replay runs at its capture's, and PCM has none. */
 static int
 svc_rtl_bw_dsp_rate_hz(const dsd_opts* opts, int rtl_bw_khz) {
-    const int rtl = dsd_opts_audio_in_dev_is_rtl_spec(opts->audio_in_dev)
-                    || dsd_opts_audio_in_dev_is_rtltcp_spec(opts->audio_in_dev);
-    return (rtl && rtl_bw_khz > 0) ? rtl_bw_khz * 1000 : 0;
+    return dsd_app_analog_rtl_bw_rate_hz(opts->audio_in_dev, opts->audio_in_type, rtl_bw_khz);
 }
 
 static int
@@ -929,7 +928,8 @@ svc_check_nfm_bandwidth(const dsd_opts* opts, const dsd_state* state, int width_
         svc_running_nfm_refusal(opts, width_hz, why, why_size);
         return -1;
     }
-    if (!svc_nfm_width_fits_rate(width_hz, svc_rtl_bw_dsp_rate_hz(opts, opts->rtl_dsp_bw_khz), why, why_size)) {
+    if (!svc_analog_width_fits_rtl_rate(DSD_ANALOG_DEMOD_FM, width_hz,
+                                        svc_rtl_bw_dsp_rate_hz(opts, opts->rtl_dsp_bw_khz), why, why_size)) {
         return -1;
     }
 #else
@@ -944,10 +944,13 @@ svc_check_nfm_bandwidth_for_rtl_bw(int width_hz, int rtl_bw_khz, char* why, size
     if (!svc_analog_width_in_range(DSD_ANALOG_DEMOD_FM, width_hz, why, why_size)) {
         return -1;
     }
-    if (width_hz == 0 || rtl_bw_khz <= 0) {
+    /* The reopened device is an RTL-SDR or rtl_tcp one, whose rate is its DSP bandwidth: saturated, never overflowed,
+       for a loaded config's out-of-range rtl_bw_khz, which no width then fits. */
+    const int rate_hz = dsd_app_analog_rtl_bw_rate_hz("rtl", AUDIO_IN_RTL, rtl_bw_khz);
+    if (width_hz == 0 || rate_hz <= 0) {
         return 0;
     }
-    return svc_nfm_width_fits_rate(width_hz, rtl_bw_khz * 1000, why, why_size) ? 0 : -1;
+    return svc_analog_width_fits_rtl_rate(DSD_ANALOG_DEMOD_FM, width_hz, rate_hz, why, why_size) ? 0 : -1;
 }
 
 int
@@ -965,6 +968,35 @@ svc_set_nfm_bandwidth(dsd_opts* opts, const dsd_state* state, int width_hz, char
 }
 
 #ifdef USE_RADIO
+
+/* The explicit analog width a DSP rate is held to, 0 for none: the configured analog preset's (app_control's analog
+   width view), so a typed digital scan row on an analog session, whose leave returns to the monitor, still holds it. */
+static int
+svc_configured_analog_width(const dsd_opts* opts, const dsd_state* state, int* kind) {
+    dsd_app_analog_width_view view;
+    (void)dsd_app_analog_width_view_get(opts, state, NULL, &view);
+    *kind = view.kind;
+    return view.shown ? view.configured_hz : 0;
+}
+
+int
+svc_check_rtl_input_analog_width(const dsd_opts* opts, const dsd_state* state, char* why, size_t why_size) {
+    svc_why(why, why_size, "%s", "");
+    if (!opts) {
+        return -1;
+    }
+    int kind = DSD_ANALOG_DEMOD_FM;
+    const int width_hz = svc_configured_analog_width(opts, state, &kind);
+    if (width_hz <= 0) {
+        return 0;
+    }
+    /* Input > RTL-SDR turns an Airspy spec into "rtl" and reopens every other device string but a SoapySDR or I/Q
+       replay one as an RTL-SDR or rtl_tcp device, at its DSP bandwidth. A SoapySDR device may force its own rate and a
+       replay runs at its capture's: their start checks those. */
+    const char* dev = dsd_opts_audio_in_dev_is_airspy_spec(opts->audio_in_dev) ? "rtl" : opts->audio_in_dev;
+    const int rate_hz = dsd_app_analog_rtl_bw_rate_hz(dev, AUDIO_IN_RTL, opts->rtl_dsp_bw_khz);
+    return svc_analog_width_fits_rtl_rate(kind, width_hz, rate_hz, why, why_size) ? 0 : -1;
+}
 
 int
 svc_rtl_enable_input(dsd_opts* opts, dsd_state* state) {
@@ -1190,14 +1222,12 @@ svc_rtl_set_gain(dsd_opts* opts, dsd_state* state, int value) {
    session still returns to the analog monitor, at this rate. */
 static int
 svc_rtl_bandwidth_fits_analog_width(const dsd_opts* opts, const dsd_state* state, int khz, char* why, size_t why_size) {
-    dsd_app_analog_width_view view;
-    (void)dsd_app_analog_width_view_get(opts, state, NULL, &view);
-    const int width_hz = view.shown ? view.configured_hz : 0;
+    int kind = DSD_ANALOG_DEMOD_FM;
+    const int width_hz = svc_configured_analog_width(opts, state, &kind);
     const int rate_hz = svc_rtl_bw_dsp_rate_hz(opts, khz);
     if (width_hz <= 0 || rate_hz <= 0 || dsd_analog_width_realizable(width_hz, rate_hz)) {
         return 1;
     }
-    const int kind = view.kind;
     char width[DSD_ANALOG_WIDTH_TEXT_MAX];
     char max[DSD_ANALOG_WIDTH_TEXT_MAX];
     const int max_hz = dsd_analog_width_max_for_rate(rate_hz);

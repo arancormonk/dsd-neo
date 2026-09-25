@@ -423,11 +423,12 @@ class MetricsModel : public QObject {
     }
 
     /**
-     * @brief The widest analog channel width the running stream's DSP rate filters, in Hz; 0 when unknown.
+     * @brief The widest analog channel width the DSP rate filters, in Hz; 0 when unknown.
      *
-     * Published under the analog preset while a radio stream runs, from the demod rate it reports
-     * (dsd_analog_width_max_for_rate()), so the width control offers only steps the engine would take. 0 with no
-     * stream: the engine then holds a width to the rate the next start gives.
+     * Published under the analog preset on a radio input, from the demod rate a running stream reports
+     * (dsd_analog_width_max_for_rate()), so the width control offers only steps the engine would take. With no
+     * stream it is the rate an RTL-SDR or rtl_tcp input's DSP bandwidth gives the next start, which the engine holds
+     * a width to; 0 on an input whose device or capture sets the rate.
      */
     int
     analogBandwidthMaxHz() const {
