@@ -12,6 +12,7 @@
 #include <dsd-neo/dsp/demod_pipeline.h>
 #include <dsd-neo/dsp/demod_state.h>
 #include <dsd-neo/runtime/analog_tones.h>
+#include <stdint.h>
 #include <stdio.h>
 #include "dsd-neo/core/safe_api.h"
 
