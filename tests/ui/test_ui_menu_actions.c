@@ -1864,6 +1864,30 @@ test_signal_chain_rows(void) {
     act_decode_mode(&mode_ctx);
     rc |= expect_int("decode mode opens on auto when auto is live", g_chooser.initial_sel, 0);
 
+    /* Issue #524: on an input that is not an I/Q radio (the snapshot's input type) the AM row keeps its place but
+     * says why it is off, and choosing it repeats the reason instead of posting a command the decoder would refuse.
+     * On a radio input it is AM again. */
+    reset_capture();
+    dsd_test_scan_labels_input_type(AUDIO_IN_PULSE);
+    act_decode_mode(&mode_ctx);
+    rc |= expect_int("decode mode on pcm keeps every row", g_chooser.n, 16);
+    rc |= expect_str("decode mode on pcm says why AM is off", g_chooser.labels[15], "AM (needs an I/Q radio input)");
+    g_chooser.on_done(g_chooser.user, 15);
+    rc |= expect_int("decode mode on pcm AM posts nothing", g_cmd.calls, 0);
+    rc |= expect_str("decode mode on pcm AM gives the reason", g_status,
+                     "AM demodulation needs an IQ radio input; monitor externally demodulated AM audio with -fA");
+    g_chooser.on_done(g_chooser.user, 14);
+    rc |= expect_int("decode mode on pcm analog still posts",
+                     g_cmd.id == DSD_APP_CMD_DECODE_MODE_SET && cmd_i32() == 14, 1);
+    reset_capture();
+    dsd_test_scan_labels_input_type(AUDIO_IN_RTL);
+    act_decode_mode(&mode_ctx);
+    rc |= expect_str("decode mode on a radio offers AM", g_chooser.labels[15], "m16");
+    g_chooser.on_done(g_chooser.user, 15);
+    rc |= expect_int("decode mode on a radio AM posts AM",
+                     g_cmd.id == DSD_APP_CMD_DECODE_MODE_SET && cmd_i32() == DSDCFG_MODE_AM, 1);
+    dsd_test_scan_labels_input_type(AUDIO_IN_PULSE);
+
     return rc;
 }
 

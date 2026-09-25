@@ -282,6 +282,7 @@
     X(lbl_rtl_auto_ppm)                                                                                                \
     X(lbl_rtl_bias)                                                                                                    \
     X(lbl_rtl_bw)                                                                                                      \
+    X(lbl_rtl_am_bw)                                                                                                   \
     X(lbl_rtl_freq)                                                                                                    \
     X(lbl_rtl_gain)                                                                                                    \
     X(lbl_rtl_nfm_bw)                                                                                                  \

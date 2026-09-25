@@ -1715,14 +1715,20 @@ static const dsdneoUserDecodeMode k_decode_mode_choices[] = {
     DSDCFG_MODE_DPMR,
     DSDCFG_MODE_M17,
     DSDCFG_MODE_ANALOG,
-    /* AM needs an I/Q radio input; on PCM input the command refuses it and says why. */
+    /* AM needs an I/Q radio input: see g_decode_mode_am_offered. */
     DSDCFG_MODE_AM,
 };
 #define DECODE_MODE_CHOICE_COUNT (sizeof k_decode_mode_choices / sizeof k_decode_mode_choices[0])
 /* Filled once: every entry is a pointer into the runtime's own static name table,
-   so there is nothing to refresh between opens. */
+   so there is nothing to refresh between opens but the AM row's. */
 static const char* g_decode_mode_labels[DECODE_MODE_CHOICE_COUNT];
 static int g_decode_mode_labels_ready;
+/* Issue #524: whether the picker last opened on an input that runs AM, an I/Q radio input (the input type alone, as
+   dsd_decode_mode_input_is_iq() reads an open input). On any other input the AM row stays, so no row moves, but it
+   is shown disabled with the reason, and choosing it repeats the reason instead of sending a command the decoder
+   would refuse. With no options snapshot yet the command decides. */
+static int g_decode_mode_am_offered = 1;
+static const char k_decode_mode_am_disabled_label[] = "AM (needs an I/Q radio input)";
 
 static int
 decode_mode_choice_index(dsdneoUserDecodeMode mode) {
@@ -1738,6 +1744,10 @@ static void
 chooser_done_decode_mode(void* u, int sel) {
     UNUSED(u);
     if (sel < 0 || sel >= (int)DECODE_MODE_CHOICE_COUNT) {
+        return;
+    }
+    if (k_decode_mode_choices[sel] == DSDCFG_MODE_AM && !g_decode_mode_am_offered) {
+        ui_statusf("%s", DSD_DECODE_MODE_AM_NEEDS_IQ_TEXT);
         return;
     }
     /* The command toasts "Decoding <mode>" itself once it has applied. */
@@ -1762,6 +1772,9 @@ act_decode_mode(void* v) {
     const dsd_state* snapshot = c ? dsd_app_get_latest_snapshot() : NULL;
     const dsdneoUserDecodeMode now =
         opts_snapshot ? dsd_scan_mode_configured_preset(opts_snapshot, snapshot) : DSDCFG_MODE_AUTO;
+    g_decode_mode_am_offered = !opts_snapshot || dsd_opts_input_is_radio(opts_snapshot);
+    g_decode_mode_labels[decode_mode_choice_index(DSDCFG_MODE_AM)] =
+        g_decode_mode_am_offered ? dsd_decode_mode_display_name(DSDCFG_MODE_AM) : k_decode_mode_am_disabled_label;
     ui_chooser_start_at("Decoder mode", g_decode_mode_labels, (int)DECODE_MODE_CHOICE_COUNT,
                         decode_mode_choice_index(now), chooser_done_decode_mode, NULL);
 }

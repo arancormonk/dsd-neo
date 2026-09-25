@@ -184,7 +184,7 @@ static const NcMenuItem RTL_MENU_ITEMS[] = {
      .on_select = rtl_set_nfm_bw},
     {.id = "rtl.am_bw",
      .is_enabled = is_am_width_editable,
-     .label = "AM bandwidth (Hz)...",
+     .label_fn = lbl_rtl_am_bw,
      .help = "AM channel-filter width in Hz (5000..20000; 0 = default 6000), applied live. It must fit the DSP "
              "bandwidth.",
      .on_select = rtl_set_am_bw},
