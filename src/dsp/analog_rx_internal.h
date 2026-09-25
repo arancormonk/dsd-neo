@@ -213,15 +213,18 @@ extern const dsd_analog_rx_detector_ops dsd_analog_ctcss_ops;
  *
  * - HYPOTHESES: slicers, one per model of the low-frequency droop a receiver's DC block puts
  *   on the bit levels (none, and three one-pole high-passes).
- * - RING: re-poled band samples kept for the bit integrals (a power of two, and at least two
- *   bits and two early/late offsets at the highest decimated rate, 4800 Hz).
+ * - RING: re-poled band samples kept for the bit integrals (a power of two). The bit clock's
+ *   edge reaches back two bit integrals, 2 * box_len samples, and a bit read one sample more,
+ *   for the interpolation; below 4800 Hz, above every decimated rate, a bit is at most 36
+ *   samples, so 74 samples are enough.
  * - HISTORY_BITS: decisions each slicer keeps: two words.
  * - ACQUIRE_DISTANCE: bits the two words a lock is read from may differ by (one of them must be
  *   a supported code's word exactly).
  * - HOLD_DISTANCE: bits a held word may differ from the expected one.
  * - LOSE_BITS: consecutive bits without a held word that lose the lock.
  * - TURNOFF_BITS: bits the turn-off tone (134.4 Hz) is measured over; TURNOFF_RUN: consecutive
- *   bits it must dominate to end a lock.
+ *   bits it must stand out in before the first bit no slicer holds the expected word ends the
+ *   lock, ahead of LOSE_BITS.
  */
 enum {
     DSD_ANALOG_DCS_HYPOTHESES = 4,
@@ -341,6 +344,10 @@ typedef struct {
     int carrier_open;       /**< 1 from the first open block until the hangover expires */
     int64_t closed_samples; /**< input samples since the carrier last read open */
     uint32_t resets;        /**< bumped by every reset, published as the generation */
+    /** 1 + the table index of the detector whose lock the publication shows, 0 while none is
+        locked: the lock that came first keeps the publication until it is lost, so a later
+        lock of the other kind (a voice's talk-off on a coded channel) never hides it. */
+    int held_by;
     float scratch[DSD_ANALOG_RX_SCRATCH];
     float scratch_wide[DSD_ANALOG_RX_SCRATCH];
     float scratch_full[DSD_ANALOG_RX_SCRATCH];
