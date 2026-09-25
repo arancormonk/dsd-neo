@@ -1848,19 +1848,21 @@ test_retune_commands_clear_received_tone(void) {
                 seed_received_tone(&state);
             }
             const uint32_t seeded = state.analog_rx.generation;
+            /* Name the pass too: a failure says whether the tone or the code survived. */
+            char tag[96];
+            DSD_SNPRINTF(tag, sizeof(tag), "%s (%s)", cases[i].tag, code ? "DCS" : "CTCSS");
             reset_io_control_tune_stub(cases[i].tune_result);
-            rc |= expect_int(cases[i].tag, dsd_app_command_set_u32(cases[i].cmd, 853125000U),
-                             DSD_APP_COMMAND_SUBMIT_QUEUED);
-            rc |= expect_int(cases[i].tag, dsd_app_drain_cmds(&opts, &state), 1);
-            rc |= expect_int(cases[i].tag, g_io_control_tune_calls, 1);
+            rc |= expect_int(tag, dsd_app_command_set_u32(cases[i].cmd, 853125000U), DSD_APP_COMMAND_SUBMIT_QUEUED);
+            rc |= expect_int(tag, dsd_app_drain_cmds(&opts, &state), 1);
+            rc |= expect_int(tag, g_io_control_tune_calls, 1);
             if (cases[i].clears) {
-                rc |= expect_received_tone_cleared(cases[i].tag, &state, seeded);
+                rc |= expect_received_tone_cleared(tag, &state, seeded);
             } else {
                 const int kept =
                     code ? (state.analog_rx.tone_kind == DSD_ANALOG_TONE_KIND_DCS && state.analog_rx.dcs_code == 023)
                          : state.analog_rx.ctcss_tenths_hz == 1000;
-                rc |= expect_true(cases[i].tag, state.analog_rx.tone_state == DSD_ANALOG_TONE_STATE_LOCKED && kept
-                                                    && state.analog_rx.generation == seeded);
+                rc |= expect_true(tag, state.analog_rx.tone_state == DSD_ANALOG_TONE_STATE_LOCKED && kept
+                                           && state.analog_rx.generation == seeded);
             }
             freeState(&state);
         }
