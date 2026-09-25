@@ -1293,7 +1293,17 @@ expect_rx_request_outcomes(void) {
     rc |= expect_int_eq("rx analog request refused where it landed", r.analog_outcome, RTL_STREAM_RX_REQUEST_REFUSED);
     rc |= expect_int_eq("rx request after a refusal: settled", r.after_refused_outcome, RTL_STREAM_RX_REQUEST_SETTLED);
     rc |= expect_int_eq("rx refusal still reads refused", r.refused_outcome_kept, RTL_STREAM_RX_REQUEST_REFUSED);
+    rc |= expect_int_eq("rx requested CQPSK: the queued toggle's", r.requested_cqpsk_while_pending, 1);
+    rc |= expect_int_eq("rx requested CQPSK: off once the monitor is asked for", r.requested_cqpsk_analog_queued, 0);
+    rc |= expect_int_eq("rx requested CQPSK: the stream's once that was refused", r.requested_cqpsk_after_refusal, 1);
+    rc |= expect_int_eq("rx refusal reported", r.refusal_reported, 1);
+    rc |= expect_int_eq("rx refusal: the analog family kept", r.kept_analog_family, 1);
+    rc |= expect_int_eq("rx refusal: the width the stream kept, not the one refused", r.kept_width_hz, 12500);
+    rc |= expect_int_eq("rx settled request: no refusal", r.settled_refusal_reported, 0);
+    rc |= expect_int_eq("rx refused switch: the digital family kept", r.entry_kept_analog_family, 0);
     rc |= expect_int_eq("rx request dropped by an open: settled", r.open_outcome, RTL_STREAM_RX_REQUEST_SETTLED);
+    rc |= expect_int_eq("rx refusal forgotten by the next open", r.refused_outcome_after_open,
+                        RTL_STREAM_RX_REQUEST_SETTLED);
     rc |= expect_int_eq("rx request stranded without a pipeline: settled", r.no_stream_outcome,
                         RTL_STREAM_RX_REQUEST_SETTLED);
     return rc;

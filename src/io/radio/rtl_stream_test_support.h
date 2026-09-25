@@ -81,6 +81,16 @@ typedef struct rtl_stream_test_rx_request_result {
     int open_outcome;                  /* a queued request once a stream open drops the queue */
     int no_stream_outcome;             /* a queued request once a request is made with no pipeline running */
     int second_seq_follows;            /* 1 when each queued request took the next number */
+    int requested_cqpsk_while_pending; /* rtl_stream_requested_cqpsk() with the CQPSK-on request pending */
+    int requested_cqpsk_analog_queued; /* ... with the analog request queued over CQPSK on */
+    int requested_cqpsk_after_refusal; /* ... once that request was refused: the CQPSK state the stream kept */
+    int refusal_reported;              /* rtl_stream_receive_request_refusal() for the refused request */
+    int kept_analog_family;            /* the family it says the stream kept (on the analog family, at 12.5 kHz) */
+    int kept_width_hz;                 /* the analog width it says the stream kept */
+    int settled_refusal_reported;      /* rtl_stream_receive_request_refusal() for a settled request */
+    int entry_kept_analog_family;      /* the family kept when a switch onto the monitor was refused */
+    uint32_t refused_seq;              /* the number of that refused switch */
+    int refused_outcome_after_open;    /* its outcome once a stream open has run */
 } rtl_stream_test_rx_request_result;
 
 int rtl_stream_test_rx_request_outcomes(rtl_stream_test_rx_request_result* out);

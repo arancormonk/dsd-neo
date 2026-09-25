@@ -271,8 +271,11 @@ int rtl_stream_request_demod_profile(int cqpsk_enable, int symbol_rate_hz, int l
  * that rate cannot realize is refused either time, never clamped, replaced or run without its channel filter: the
  * refusal is logged with the validator's text and the front end keeps its current receive profile (a digital session
  * asked to switch stays on the digital family). The unset NFM default is never refused for its rate. A refusal at the
- * demod thread reaches the caller only through that log: a decoder that has already committed to Analog stays on it,
- * which is why a decode-mode change asks rtl_stream_check_analog_profile() before it commits. With no pipeline running
+ * demod thread reaches the caller through the request's number, which then reads refused
+ * (rtl_stream_receive_request_outcome(), with what the stream kept from rtl_stream_receive_request_refusal()): a
+ * decoder that has already committed to Analog, or to the width, puts itself back from that. A decode-mode change
+ * also asks rtl_stream_check_analog_profile() before it commits, so only a retune in between gets this far. With no
+ * pipeline running
  * there is nothing to switch and no demod rate to check against: only the kind, range and DSD_NEO_CHANNEL_LPF rules
  * apply, and the next stream open configures the front end from the options and checks the width against the rate it
  * actually delivers.
@@ -329,9 +332,42 @@ uint32_t rtl_stream_receive_request_seq(void);
  * request it took at a block boundary, a later request that replaced an earlier one settles that one with it, and a
  * stream open settles whatever the previous stream left queued. An analog profile request whose width the demod rate
  * it landed at cannot filter (a retune moved the rate after the request was checked) is refused there, logged with the
- * validator's text, and the front end keeps the receive profile it had; its number then reads REFUSED.
+ * validator's text, and the front end keeps the receive profile it had; its number then reads REFUSED until the next
+ * stream open, which opens on the options as they are and forgets it (it reads settled from then).
  */
 int rtl_stream_receive_request_outcome(uint32_t seq);
+
+/**
+ * @brief The receive profile the stream kept when it refused request @p seq where it landed.
+ *
+ * Recorded before the refusal becomes visible, so a caller that reads @p seq as refused reads what the refusing
+ * stream kept, not what the request asked for: two width requests queued back to back, the first taken and the second
+ * refused, leave the first one's width.
+ *
+ * @param seq               A number rtl_stream_receive_request_seq() returned.
+ * @param out_analog_family 1 when the stream stayed on the analog family (a width or kind change on the monitor, or a
+ *                          return to the monitor from a symbol profile applied under it), 0 when it stayed on the
+ *                          digital family (a switch onto the analog family). May be NULL.
+ * @param out_width_hz      The analog width that family runs (0 = the kind's default; meaningful on the analog family
+ *                          only). May be NULL.
+ * @return 1 when @p seq reads RTL_STREAM_RX_REQUEST_REFUSED, filling the outputs; 0 otherwise, leaving them untouched.
+ */
+int rtl_stream_receive_request_refusal(uint32_t seq, int* out_analog_family, int* out_width_hz);
+
+/**
+ * @brief The CQPSK state the RTL front end runs once the receive requests queued so far have applied.
+ *
+ * While a request is unsettled (rtl_stream_receive_request_outcome()), what the stream publishes
+ * (rtl_stream_get_cqpsk_status()) can still describe the stream before it. This answers for the requests instead,
+ * whoever queued them: the DSP menu's CQPSK toggle, a decode-mode change, a scan row's profile or its leave. An analog
+ * family request turns CQPSK off (it enters the monitor), a demod profile request sets the state it names or leaves
+ * it, and a digital family request leaves it to the symbol profile queued after it. Once every request has settled,
+ * the published state answers. An analog request later refused where it landed was counted as turning CQPSK off
+ * until it settles.
+ *
+ * @return 1 for CQPSK, 0 otherwise.
+ */
+int rtl_stream_requested_cqpsk(void);
 
 /**
  * @brief Note the digital decode modes the decoder is configured for.

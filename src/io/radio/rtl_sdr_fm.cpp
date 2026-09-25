@@ -8283,6 +8283,11 @@ static int g_profile_req_chan = -1;
 static int g_profile_req_ted_sps = -1; /* <0 = leave timing untouched, 0 = clear override only */
 static int g_profile_req_ted_sps_is_override = 0;
 static uint32_t g_profile_req_analog_seq = 0U; /* the queued analog request's number */
+/* The CQPSK state the stream runs once every numbered request has applied, noted as each one is queued, whoever queues
+ * it (rtl_stream_requested_cqpsk()): an analog family request enters the monitor, which turns CQPSK off; a demod
+ * profile request sets the state it names, or leaves it; a digital family request leaves it to the symbol profile
+ * queued after it. It says something only while a request is unsettled; once none is, the published state does. */
+static int g_profile_req_cqpsk_after = 0;
 
 /* Receive-request numbering (rtl_stream_receive_request_seq(), rtl_stream_receive_request_outcome()). A queued request
  * takes the next number under g_profile_req_m. The demod thread settles every number it took once it has applied and
@@ -8291,6 +8296,11 @@ static uint32_t g_profile_req_analog_seq = 0U; /* the queued analog request's nu
 static std::atomic<uint32_t> g_rx_req_seq{0U};
 static std::atomic<uint32_t> g_rx_req_settled_seq{0U};
 static std::atomic<uint32_t> g_rx_req_refused_seq{0U};
+/* What the stream kept when it refused g_rx_req_refused_seq (rtl_stream_receive_request_refusal()): whether it stayed
+ * on the analog family, and the analog width (0 = the kind's default) that family runs. Written before the settlement
+ * that makes the refusal visible. */
+static std::atomic<int> g_rx_req_refused_kept_analog{0};
+static std::atomic<int> g_rx_req_refused_kept_width_hz{0};
 
 /* Number the request being queued. Called with g_profile_req_m held. Skips 0, which names no request. */
 static uint32_t
@@ -8322,6 +8332,39 @@ rtl_stream_receive_request_outcome(uint32_t seq) {
     }
     const uint32_t refused = g_rx_req_refused_seq.load(std::memory_order_relaxed);
     return (seq != 0U && refused == seq) ? RTL_STREAM_RX_REQUEST_REFUSED : RTL_STREAM_RX_REQUEST_SETTLED;
+}
+
+extern "C" int
+rtl_stream_receive_request_refusal(uint32_t seq, int* out_analog_family, int* out_width_hz) {
+    if (rtl_stream_receive_request_outcome(seq) != RTL_STREAM_RX_REQUEST_REFUSED) {
+        return 0;
+    }
+    if (out_analog_family) {
+        *out_analog_family = g_rx_req_refused_kept_analog.load(std::memory_order_relaxed);
+    }
+    if (out_width_hz) {
+        *out_width_hz = g_rx_req_refused_kept_width_hz.load(std::memory_order_relaxed);
+    }
+    return 1;
+}
+
+/* The CQPSK state the stream will run once the requests queued so far have applied: the one the last of them leaves
+ * while any is unsettled, else the published one. Called with g_profile_req_m held. */
+static int
+rtl_stream_requested_cqpsk_locked(void) {
+    if (rtl_stream_receive_request_outcome(g_rx_req_seq.load(std::memory_order_relaxed))
+        == RTL_STREAM_RX_REQUEST_PENDING) {
+        return g_profile_req_cqpsk_after;
+    }
+    int cqpsk = 0;
+    (void)rtl_stream_get_cqpsk_status(&cqpsk, NULL);
+    return cqpsk ? 1 : 0;
+}
+
+extern "C" int
+rtl_stream_requested_cqpsk(void) {
+    std::lock_guard<std::mutex> lock(g_profile_req_m);
+    return rtl_stream_requested_cqpsk_locked();
 }
 
 /* Shared application order for both the immediate and the deferred path.
@@ -8381,6 +8424,7 @@ rtl_stream_request_demod_profile(int cqpsk_enable, int symbol_rate_hz, int level
         return 0;
     }
     std::lock_guard<std::mutex> lock(g_profile_req_m);
+    g_profile_req_cqpsk_after = (cqpsk_enable >= 0) ? (cqpsk_enable ? 1 : 0) : rtl_stream_requested_cqpsk_locked();
     (void)rtl_stream_number_request_locked();
     g_profile_req_has_demod = 1;
     g_profile_req_cqpsk = cqpsk_enable;
@@ -8580,6 +8624,7 @@ rtl_stream_request_analog_profile(int family, int kind, int width_hz) {
         return 0;
     }
     std::lock_guard<std::mutex> lock(g_profile_req_m);
+    g_profile_req_cqpsk_after = (family == DSD_RX_FAMILY_ANALOG) ? 0 : rtl_stream_requested_cqpsk_locked();
     g_profile_req_analog_seq = rtl_stream_number_request_locked();
     g_profile_req_analog_family = family;
     g_profile_req_analog_kind = kind;
@@ -8656,12 +8701,14 @@ rtl_stream_drop_refused_analog_request(int* analog_family, int kind, int width_h
     return analog_seq;
 }
 
-/* Settle every request up to @p taken_seq once it is applied, recording @p refused_seq (0: none) as refused first.
- * What was applied is published before it is settled, so a decoder that reads a request as settled reads the state it
+/* Settle every request up to @p taken_seq once it is applied, recording @p refused_seq (0: none) as refused first, with
+ * the family and analog width the stream kept (rtl_stream_receive_request_refusal()). What was applied is published before it is settled, so a decoder that reads a request as settled reads the state it
  * left (the block loop publishes again after the block). */
 static void
 rtl_stream_settle_taken_requests(uint32_t taken_seq, uint32_t refused_seq) {
     if (refused_seq != 0U) {
+        g_rx_req_refused_kept_analog.store(demod.analog_family ? 1 : 0, std::memory_order_relaxed);
+        g_rx_req_refused_kept_width_hz.store(demod.analog_width_request_hz, std::memory_order_relaxed);
         g_rx_req_refused_seq.store(refused_seq, std::memory_order_relaxed);
     }
     rtl_stream_publish_demod_profile_snapshot();
@@ -8743,6 +8790,9 @@ rtl_stream_clear_demod_profile_request(void) {
     g_profile_req_pending.store(0, std::memory_order_relaxed);
     g_profile_req_has_demod = 0;
     g_profile_req_analog_family = -1;
+    /* A refusal the previous stream recorded is not this stream's: it opens on the options as they are, so a request
+       its predecessor refused says nothing about what it runs. */
+    g_rx_req_refused_seq.store(0U, std::memory_order_relaxed);
     rtl_stream_settle_all_requests();
     g_noted_digital_modes.store(0U, std::memory_order_release);
 }
@@ -9896,33 +9946,58 @@ rx_request_test_published_cqpsk(void) {
 }
 
 /* The analog part of rtl_stream_test_rx_request_outcomes(): an NFM width the published 48 kHz rate filters, taken at a
-   24 kHz demod rate that cannot (a retune moved the rate in between), then a request queued after it. */
+   24 kHz demod rate that cannot (a retune moved the rate in between) by a stream on the analog family at 12.5 kHz, then
+   a request queued after it; and the same width refused to a stream on the digital family, which stays there. */
 static void
 rx_request_test_analog_refusal(rtl_stream_test_rx_request_result* out) {
     const int saved_rate_out = demod.rate_out;
+    const int saved_family = demod.analog_family;
+    const int saved_width_request = demod.analog_width_request_hz;
+    demod.analog_family = 1;
+    demod.analog_width_request_hz = 12500;
     demod.rate_out = 48000;
     rtl_stream_publish_demod_profile_snapshot();
     out->analog_request_rc = rtl_stream_request_analog_profile(DSD_RX_FAMILY_ANALOG, DSD_ANALOG_DEMOD_FM, 25000);
     const uint32_t analog_seq = rtl_stream_receive_request_seq();
+    out->requested_cqpsk_analog_queued = rtl_stream_requested_cqpsk();
     demod.rate_out = 24000;
     rtl_stream_consume_demod_profile_request();
     out->analog_outcome = rtl_stream_receive_request_outcome(analog_seq);
+    out->refusal_reported =
+        rtl_stream_receive_request_refusal(analog_seq, &out->kept_analog_family, &out->kept_width_hz);
+    out->requested_cqpsk_after_refusal = rtl_stream_requested_cqpsk();
     (void)rtl_stream_request_demod_profile(-1, 0, 0, -1, -1, 0);
     const uint32_t later_seq = rtl_stream_receive_request_seq();
     out->second_seq_follows &= later_seq == analog_seq + 1U ? 1 : 0;
     rtl_stream_consume_demod_profile_request();
     out->after_refused_outcome = rtl_stream_receive_request_outcome(later_seq);
     out->refused_outcome_kept = rtl_stream_receive_request_outcome(analog_seq);
+    out->settled_refusal_reported = rtl_stream_receive_request_refusal(later_seq, NULL, NULL);
+
+    demod.analog_family = 0;
+    demod.rate_out = 48000;
+    rtl_stream_publish_demod_profile_snapshot();
+    (void)rtl_stream_request_analog_profile(DSD_RX_FAMILY_ANALOG, DSD_ANALOG_DEMOD_FM, 25000);
+    out->refused_seq = rtl_stream_receive_request_seq();
+    demod.rate_out = 24000;
+    rtl_stream_consume_demod_profile_request();
+    out->entry_kept_analog_family = -1;
+    (void)rtl_stream_receive_request_refusal(out->refused_seq, &out->entry_kept_analog_family, NULL);
+
+    demod.analog_family = saved_family;
+    demod.analog_width_request_hz = saved_width_request;
     demod.rate_out = saved_rate_out;
 }
 
-/* The queue-dropping part: a stream open's clear, and a request made with no pipeline running, settle what is queued. */
+/* The queue-dropping part: a stream open's clear, and a request made with no pipeline running, settle what is queued;
+   the open also forgets the refusal the stream before it recorded. */
 static void
 rx_request_test_dropped(rtl_stream_test_rx_request_result* out) {
     (void)rtl_stream_request_demod_profile(-1, 0, 0, -1, -1, 0);
     const uint32_t open_seq = rtl_stream_receive_request_seq();
     rtl_stream_clear_demod_profile_request();
     out->open_outcome = rtl_stream_receive_request_outcome(open_seq);
+    out->refused_outcome_after_open = rtl_stream_receive_request_outcome(out->refused_seq);
 
     (void)rtl_stream_request_demod_profile(-1, 0, 0, -1, -1, 0);
     const uint32_t stranded_seq = rtl_stream_receive_request_seq();
@@ -9957,6 +10032,7 @@ rtl_stream_test_rx_request_outcomes(rtl_stream_test_rx_request_result* out) {
     (void)rtl_stream_request_demod_profile(1, 0, 0, -1, -1, 0);
     out->first_seq = rtl_stream_receive_request_seq();
     out->queued_outcome = rtl_stream_receive_request_outcome(out->first_seq);
+    out->requested_cqpsk_while_pending = rtl_stream_requested_cqpsk();
     (void)rtl_stream_bump_output_generation();
     out->outcome_across_generation = rtl_stream_receive_request_outcome(out->first_seq);
     out->published_cqpsk_while_pending = rx_request_test_published_cqpsk();

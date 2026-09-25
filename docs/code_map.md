@@ -904,7 +904,11 @@ Notes:
     (`rtl_stream_receive_request_seq()`), and `rtl_stream_receive_request_outcome()` says whether the demod thread has
     settled it: pending until it takes it and has published what it applied (the consume publishes the demod snapshot
     before it settles), settled with a later request that replaced it, and settled by a stream open (which drops the
-    queue) or a request with no pipeline to take the queue; an analog request refused where it landed reads refused.
+    queue) or a request with no pipeline to take the queue; an analog request refused where it landed reads refused,
+    with the family and analog width the stream kept recorded before the settlement
+    (`rtl_stream_receive_request_refusal()`), until the next stream open forgets it. Each numbered request also notes
+    the CQPSK state it leaves the stream on (an analog family request turns it off, a demod profile sets or leaves it),
+    which `rtl_stream_requested_cqpsk()` answers with while any request is unsettled.
     That, not the output generation (which the clear for a request moves before the publish, and a retune moves without
     taking a request), is what tells the decoder the published CQPSK state includes its request. Test:
     `IO_RTL_DEMOD_CONFIG` (`rtl_stream_test_rx_request_outcomes()`). A digital family
