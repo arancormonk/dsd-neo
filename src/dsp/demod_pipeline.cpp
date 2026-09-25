@@ -791,7 +791,8 @@ am_note_squelched_block(struct demod_state* d, int pairs) {
    another transmission, whose carrier the estimate must start over on. */
 static int
 am_squelch_ended_transmission(const struct demod_state* d) {
-    const long long hold_samples = (long long)am_detector_rate_hz(d) * DSD_AM_CARRIER_HOLD_MS / 1000;
+    const int hold_ms = DSD_AM_CARRIER_HOLD_MS;
+    const long long hold_samples = (long long)am_detector_rate_hz(d) * hold_ms / 1000;
     return (long long)d->am_squelched_samples > hold_samples ? 1 : 0;
 }
 
