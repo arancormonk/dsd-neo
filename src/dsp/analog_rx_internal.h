@@ -295,7 +295,6 @@ typedef struct {
     uint32_t expected;    /**< the window the locked signal reads next, earliest bit in bit 0 */
     int fail_run;         /**< consecutive bits no slicer held the expected word */
     int64_t open_samples; /**< unfrozen samples since the last reset, for the no-code verdict */
-    double turnoff_ratio; /**< the turn-off tone's share of the band over the last bits (tests) */
     int64_t bits_decided; /**< bits read since the last reset (tests) */
 } dsd_analog_dcs;
 
