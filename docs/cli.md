@@ -838,8 +838,8 @@ is delayed.
     `single_key_dec`/`single_key_hex` embed `-b`/`-H` equivalents; a target cannot mix direct and file key sources.
     Leaving the target restores the global keys.
   - Idle dwell: `--trunk-scan-dwell-ms <250..600000>` (default `3000`).
-  - Conventional DMR/P25/NXDN activity hold (both NXDN rates): `--trunk-scan-activity-hold-ms <250..600000>`
-    (default `1200`).
+  - Conventional DMR/P25/NXDN activity hold (both NXDN rates), and an `nfm-conventional` target's hold after its
+    carrier drops: `--trunk-scan-activity-hold-ms <250..600000>` (default `1200`).
   - Maximum time per visit: `--scan-max-visit-ms <ms>` (`0` disables, otherwise `1000..3600000`; default `0`).
     Unlike the activity hold above it applies to every target type, trunked and conventional, and it is a ceiling
     rather than a reason to stay: it can cut an ongoing call short, which is the point on a busy system that would

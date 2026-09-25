@@ -156,13 +156,13 @@ Tests: `tests/engine/test_engine_trunk_scan.c` (`ENGINE_TRUNK_SCAN`) and
   analog FM monitor (`DSDCFG_MODE_ANALOG`). `DSD_SCAN_MODE_LAST` is the one bound every range check uses (the option
   parser, `dsd_channel_mode_set()`), `dsd_scan_mode_is_analog()` the one analog predicate (key compatibility, the
   importer, trunk-scan target classes), and appending a class keeps stored values and `MODE_BIT()` masks stable.
-  `dsd_scan_mode_alias_hint()` names the class to suggest for an alias (`fm`, `analog`, `wfm` -> `nfm`; none is
-  accepted) and `dsd_scan_mode_names_list()` the accepted spellings for a diagnostic. The analog channel widths
-  (`analog_nfm_bandwidth_hz`, `analog_am_bandwidth_hz`) are acquisition fields of `dsd_scan_settings`: captured,
-  restored, compared by `dsd_scan_settings_equal()` for the analog family (so a width change restages a parked analog
-  row, while a digital row, which runs its own channel profile, is not disturbed by a configured width edit) and
-  restored again before a row's options install; a row width (`DSD_SCAN_OPT_BANDWIDTH`) lands there through its
-  applier. `channel_scan.c` also restages an outstanding analog row's tune when the configured widths change
+  `dsd_scan_mode_alias_hint()` names the class to suggest for an alias (`fm`, `analog`, `wfm`, `nbfm`, `fm-conventional`
+  -> `nfm`; none is accepted) and `dsd_scan_mode_names_list()` the accepted spellings for a diagnostic. The analog
+  channel widths (`analog_nfm_bandwidth_hz`, `analog_am_bandwidth_hz`) are acquisition fields of `dsd_scan_settings`:
+  captured, restored, compared by `dsd_scan_settings_equal()` for the analog family (so a width change restages a parked
+  analog row, while a digital row, which runs its own channel profile, is not disturbed by a configured width edit) and
+  restored again before a row's options install; a row width (`DSD_SCAN_OPT_BANDWIDTH`) lands there through its applier.
+  `channel_scan.c` also restages an outstanding analog row's tune when the configured widths change
   (`channel_scan_configured_changed()`), since an analog row tunes with them whatever the configured family.
   `dsd_scan_mode_prepare()` takes the row's option values (NULL = none) so the prepared settings a scanner tunes with
   already carry the row width; its callers are `channel_scan.c` and the `scan_mode_replay` / `analog_replay` hosts.
@@ -227,7 +227,8 @@ Tests: `tests/engine/test_engine_trunk_scan.c` (`ENGINE_TRUNK_SCAN`) and
   loaded at runtime is held to the DSP rate as it loads: `svc_channel_map_refused_rows()` asks
   `dsd_engine_channel_scan_refused_rows()` (public in `channel_scan.h`, read-only) for the rows the front end would
   refuse at the running stream's rate, or on an RTL-SDR or rtl_tcp input with none running at the rate its DSP bandwidth
-  sets, and the import command's toast names the first and counts the rest. The map still loads, since the DSP
+  sets, and the import command's toast names the first and counts the rest. A map `-C` or `[trunking] chan_csv` loads at
+  startup is held to the rate at scan start, once the stream has published it. The map still loads, since the DSP
   bandwidth that fits it can be set afterwards, and a width the rate cannot fit stays a warning and a skipped row, never
   an import error: the rate a SoapySDR or Airspy device, or an I/Q replay, runs at is certain only once its stream runs,
   so their rows are held to it at scan start, and the Qt/Android review and target-list preview (dry-run loaders with no

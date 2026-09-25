@@ -608,7 +608,7 @@ last sync. NXDN's additional grace period is described below.
 | `Qualify` | synced under `--scan-voice-only`, no allowed voice yet | the qualify window |
 | `Idle dwell` | nothing holds the row | the idle dwell |
 | `Hangtime` | `-Y` without `--scan-voice-only`: waiting out `-t` since the last sync | next whole second after `-t` |
-| `Carrier` | an analog row's carrier is open (an `nfm` row or `nfm-conventional` target, or any row scanned under `-fA`): squelch open, whether or not audio plays | `-Y`: the hangtime window; trunk scan: the activity hold |
+| `Carrier` | an analog row's carrier is open (an `nfm` row or `nfm-conventional` target, or a row of an untyped list scanned under `-fA`): squelch open, whether or not audio plays | `-Y`: the hangtime window; trunk scan: the activity hold |
 
 Which phrases you can see depends on the protocol: an NXDN trunked target has no state machine to report control
 acquisition, so it never reads `Acquiring control`. An analog row (an `nfm` row or target, or any row of an untyped list
