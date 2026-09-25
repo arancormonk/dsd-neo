@@ -14,6 +14,7 @@
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/power.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/runtime/analog_channel.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/decode_mode.h>
 #include <dsd-neo/runtime/rdio_export.h>
@@ -2340,6 +2341,7 @@ test_persistence_gap_schema_rows(void) {
         {"trunking", "scan_voice_hold_ms"},
         {"trunking", "scan_max_visit_ms"},
         {"analog", "nfm_bandwidth_hz"},
+        {"analog", "am_bandwidth_hz"},
     };
 
     for (size_t i = 0; i < sizeof expected / sizeof expected[0]; i++) {
@@ -2348,6 +2350,111 @@ test_persistence_gap_schema_rows(void) {
             rc |= 1;
         }
     }
+    return rc;
+}
+
+static int
+load_am_config_text(const char* ini, dsdneoUserConfig* cfg) {
+    char path[DSD_TEST_PATH_MAX];
+    if (write_temp_config(ini, path, sizeof path) != 0) {
+        return 1;
+    }
+    const int load_rc = dsd_user_config_load(path, cfg);
+    (void)remove(path);
+    return load_rc;
+}
+
+/*
+ * Issue #524: [mode] decode = am and [analog] am_bandwidth_hz ride INI -> cfg -> opts -> snapshot -> render. 0 in the
+ * options is the AM default, not a request, so a save writes the key only for an explicit width (6000 included); the
+ * section itself is always written, so a config saved at the default loads back as the default. A width outside
+ * 5000..20000, or not whole Hz, is refused by the loader, which keeps the default.
+ */
+static int
+test_am_mode_and_bandwidth_roundtrip(void) {
+    int rc = 0;
+    dsdneoUserConfig cfg;
+    if (load_am_config_text("[mode]\ndecode = am\n[analog]\nam_bandwidth_hz = 8000\n", &cfg) != 0) {
+        DSD_FPRINTF(stderr, "AM config failed to load\n");
+        return 1;
+    }
+    if (!cfg.has_mode || cfg.decode_mode != DSDCFG_MODE_AM || !cfg.has_analog || cfg.analog_am_bandwidth_hz != 8000) {
+        DSD_FPRINTF(stderr, "FAIL: AM config did not load: mode=%d has_analog=%d width=%d\n", (int)cfg.decode_mode,
+                    cfg.has_analog, cfg.analog_am_bandwidth_hz);
+        rc |= 1;
+    }
+    auto opts_storage = std::unique_ptr<dsd_opts>(new dsd_opts{});
+    auto state_storage = std::unique_ptr<dsd_state>(new dsd_state{});
+    dsd_opts& opts = *opts_storage;
+    dsd_state& state = *state_storage;
+    reset_opts_and_state(opts, state);
+    dsd_apply_user_config_to_opts(&cfg, &opts, &state);
+    if (opts.analog_am_bandwidth_hz != 8000 || opts.analog_demod != DSD_ANALOG_DEMOD_AM || opts.analog_only != 1
+        || dsd_infer_decode_mode_preset(&opts) != DSDCFG_MODE_AM) {
+        DSD_FPRINTF(stderr, "FAIL: AM config did not reach dsd_opts: width=%d kind=%d analog_only=%d\n",
+                    opts.analog_am_bandwidth_hz, opts.analog_demod, opts.analog_only);
+        rc |= 1;
+    }
+
+    dsdneoUserConfig snap;
+    dsd_snapshot_opts_to_user_config(&opts, &state, &snap);
+    char rendered[8192];
+    if (render_config_to_buffer(&snap, rendered, sizeof rendered) != 0) {
+        return 1;
+    }
+    rc |= expect_contains("AM decode mode", rendered, "decode = \"am\"\n");
+    rc |= expect_contains("explicit AM width", rendered, "[analog]\nam_bandwidth_hz = 8000\n");
+
+    opts.analog_am_bandwidth_hz = DSD_ANALOG_AM_WIDTH_DEFAULT_HZ;
+    dsd_snapshot_opts_to_user_config(&opts, &state, &snap);
+    if (render_config_to_buffer(&snap, rendered, sizeof rendered) != 0) {
+        return 1;
+    }
+    rc |= expect_contains("explicit default-valued AM width", rendered, "am_bandwidth_hz = 6000\n");
+
+    opts.analog_am_bandwidth_hz = 0;
+    dsd_snapshot_opts_to_user_config(&opts, &state, &snap);
+    if (render_config_to_buffer(&snap, rendered, sizeof rendered) != 0) {
+        return 1;
+    }
+    if (strstr(rendered, "am_bandwidth_hz") != NULL || !strstr(rendered, "[analog]\n")) {
+        DSD_FPRINTF(stderr, "FAIL: the default AM width was saved, or its section left out:\n%s\n", rendered);
+        rc |= 1;
+    }
+    if (load_am_config_text(rendered, &cfg) != 0 || !cfg.has_analog || cfg.analog_am_bandwidth_hz != 0) {
+        DSD_FPRINTF(stderr, "FAIL: a saved AM default did not load back as the default\n");
+        rc |= 1;
+    }
+    opts.analog_am_bandwidth_hz = 12000;
+    dsd_apply_user_config_to_opts(&cfg, &opts, &state);
+    if (opts.analog_am_bandwidth_hz != 0) {
+        DSD_FPRINTF(stderr, "FAIL: loading a config saved at the AM default kept width %d\n",
+                    opts.analog_am_bandwidth_hz);
+        rc |= 1;
+    }
+
+    const char* invalid[] = {"[analog]\nam_bandwidth_hz = 25000\n", "[analog]\nam_bandwidth_hz = 6k\n",
+                             "[analog]\nam_bandwidth_hz = 4999\n", "[analog]\nam_bandwidth_hz = 0\n"};
+    for (const char* ini : invalid) {
+        if (load_am_config_text(ini, &cfg) != 0 || cfg.analog_am_bandwidth_hz != 0) {
+            DSD_FPRINTF(stderr, "FAIL: invalid AM width was not refused (width %d) for:\n%s",
+                        cfg.analog_am_bandwidth_hz, ini);
+            rc |= 1;
+        }
+    }
+    /* A config without [analog] leaves the configured width alone. */
+    reset_opts_and_state(opts, state);
+    opts.analog_am_bandwidth_hz = 15000;
+    if (load_am_config_text("[mode]\ndecode = \"am\"\n", &cfg) != 0) {
+        return 1;
+    }
+    dsd_apply_user_config_to_opts(&cfg, &opts, &state);
+    if (opts.analog_am_bandwidth_hz != 15000 || opts.analog_demod != DSD_ANALOG_DEMOD_AM) {
+        DSD_FPRINTF(stderr, "FAIL: a config without [analog] changed the AM width to %d\n",
+                    opts.analog_am_bandwidth_hz);
+        rc |= 1;
+    }
+    dsd_state_ext_free_all(&state);
     return rc;
 }
 
@@ -3594,6 +3701,7 @@ main(void) {
     rc |= test_scan_max_visit_roundtrip();
     rc |= test_analog_nfm_bandwidth_roundtrip();
     rc |= test_radio_input_spec();
+    rc |= test_am_mode_and_bandwidth_roundtrip();
     rc |= test_tg_lockout_persistence_roundtrip();
     rc |= test_scan_max_visit_snapshot_uses_configured_not_row_override();
     rc |= test_squelch_snapshot_uses_configured_not_row_override();

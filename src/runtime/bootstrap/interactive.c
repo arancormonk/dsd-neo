@@ -223,8 +223,17 @@ interactive_configure_input_source(dsd_opts* opts, dsd_state* state, int* src) {
     }
 }
 
+/* The wizard's AM entry: only the RTL-SDR and rtl_tcp sources it offers deliver I/Q; PulseAudio, files and network
+   audio arrive demodulated. */
+#define INTERACTIVE_MODE_AM 15
+
 static int
-interactive_choose_decode_mode(void) {
+interactive_source_is_iq(int src) {
+    return (src == 2 || src == 3) ? 1 : 0;
+}
+
+static int
+interactive_prompt_decode_mode(void) {
     DSD_FPRINTF(stderr, "\nWhat do you want to decode?\n");
     DSD_FPRINTF(stderr, "  1) Auto (all digital modes) [default]\n");
     DSD_FPRINTF(stderr, "  2) P25 Phase 1 only\n");
@@ -240,28 +249,37 @@ interactive_choose_decode_mode(void) {
     DSD_FPRINTF(stderr, " 12) M17\n");
     DSD_FPRINTF(stderr, " 13) P25 + DMR (TDMA)\n");
     DSD_FPRINTF(stderr, " 14) Analog monitor (passive)\n");
-    return prompt_int("Selection", 1, 1, 14);
+    DSD_FPRINTF(stderr, " 15) AM receiver (IQ inputs)\n");
+    return prompt_int("Selection", 1, 1, INTERACTIVE_MODE_AM);
 }
+
+/* AM on a source without I/Q is refused with the reason and asked again (end of input answers with the default). */
+static int
+interactive_choose_decode_mode(int src) {
+    int mode = interactive_prompt_decode_mode();
+    while (mode == INTERACTIVE_MODE_AM && !interactive_source_is_iq(src)) {
+        DSD_FPRINTF(stderr, "%s.\n", DSD_DECODE_MODE_AM_NEEDS_IQ_TEXT);
+        mode = interactive_prompt_decode_mode();
+    }
+    return mode;
+}
+
+/* The wizard's menu numbers, in menu order (0 is not an entry). A table rather than a switch, so an entry adds a row. */
+static const dsdneoUserDecodeMode k_interactive_menu_modes[] = {
+    DSDCFG_MODE_UNSET, DSDCFG_MODE_AUTO,   DSDCFG_MODE_P25P1,    DSDCFG_MODE_P25P2,
+    DSDCFG_MODE_DMR,   DSDCFG_MODE_NXDN48, DSDCFG_MODE_NXDN96,   DSDCFG_MODE_X2TDMA,
+    DSDCFG_MODE_YSF,   DSDCFG_MODE_DSTAR,  DSDCFG_MODE_EDACS_PV, DSDCFG_MODE_DPMR,
+    DSDCFG_MODE_M17,   DSDCFG_MODE_TDMA,   DSDCFG_MODE_ANALOG,   DSDCFG_MODE_AM,
+};
+_Static_assert(sizeof k_interactive_menu_modes / sizeof k_interactive_menu_modes[0] == INTERACTIVE_MODE_AM + 1,
+               "every wizard entry maps to a decode mode");
 
 static dsdneoUserDecodeMode
 interactive_mode_to_decode_mode(int mode) {
-    switch (mode) {
-        case 1: return DSDCFG_MODE_AUTO;
-        case 2: return DSDCFG_MODE_P25P1;
-        case 3: return DSDCFG_MODE_P25P2;
-        case 4: return DSDCFG_MODE_DMR;
-        case 5: return DSDCFG_MODE_NXDN48;
-        case 6: return DSDCFG_MODE_NXDN96;
-        case 7: return DSDCFG_MODE_X2TDMA;
-        case 8: return DSDCFG_MODE_YSF;
-        case 9: return DSDCFG_MODE_DSTAR;
-        case 10: return DSDCFG_MODE_EDACS_PV;
-        case 11: return DSDCFG_MODE_DPMR;
-        case 12: return DSDCFG_MODE_M17;
-        case 13: return DSDCFG_MODE_TDMA;
-        case 14: return DSDCFG_MODE_ANALOG;
-        default: return DSDCFG_MODE_UNSET;
+    if (mode < 1 || mode > INTERACTIVE_MODE_AM) {
+        return DSDCFG_MODE_UNSET;
     }
+    return k_interactive_menu_modes[mode];
 }
 
 static int
@@ -400,7 +418,7 @@ dsd_bootstrap_interactive(dsd_opts* opts, dsd_state* state) {
         dsd_bootstrap_choose_audio_output(opts);
     }
 
-    int mode = interactive_choose_decode_mode();
+    int mode = interactive_choose_decode_mode(src);
     dsdneoUserDecodeMode decode_mode = interactive_mode_to_decode_mode(mode);
     if (decode_mode != DSDCFG_MODE_UNSET) {
         (void)dsd_apply_decode_mode_preset(decode_mode, DSD_DECODE_PRESET_PROFILE_INTERACTIVE, opts, state);

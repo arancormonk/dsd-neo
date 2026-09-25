@@ -264,7 +264,7 @@ test_cli_preset_mapping_and_guards(void) {
         {'a', DSDCFG_MODE_AUTO},   {'A', DSDCFG_MODE_ANALOG}, {'d', DSDCFG_MODE_DSTAR}, {'x', DSDCFG_MODE_X2TDMA},
         {'t', DSDCFG_MODE_TDMA},   {'1', DSDCFG_MODE_P25P1},  {'2', DSDCFG_MODE_P25P2}, {'s', DSDCFG_MODE_DMR},
         {'i', DSDCFG_MODE_NXDN48}, {'n', DSDCFG_MODE_NXDN96}, {'y', DSDCFG_MODE_YSF},   {'m', DSDCFG_MODE_DPMR},
-        {'z', DSDCFG_MODE_M17},
+        {'z', DSDCFG_MODE_M17},    {'M', DSDCFG_MODE_AM},
     };
 
     dsdneoUserDecodeMode mode = DSDCFG_MODE_UNSET;
@@ -275,6 +275,15 @@ test_cli_preset_mapping_and_guards(void) {
     if (dsd_decode_mode_from_cli_preset('?', &mode) != -1 || mode != DSDCFG_MODE_UNSET) {
         DSD_FPRINTF(stderr, "invalid preset parse should fail without changing mode\n");
         return 1;
+    }
+    /* The selectors handled outside the preset helper (and 'r', which the CLI maps to 's') are not presets here. */
+    static const char not_presets[] = {'p', 'h', 'H', 'e', 'E', 'Z', 'B', 'P', 'U', 'r', 'f', '\0'};
+    for (size_t i = 0; i < sizeof not_presets; i++) {
+        mode = DSDCFG_MODE_UNSET;
+        if (dsd_decode_mode_from_cli_preset(not_presets[i], &mode) != -1 || mode != DSDCFG_MODE_UNSET) {
+            DSD_FPRINTF(stderr, "selector 0x%02x should not map to a preset\n", (unsigned)not_presets[i]);
+            return 1;
+        }
     }
 
     for (size_t i = 0; i < sizeof cases / sizeof cases[0]; i++) {
@@ -652,6 +661,62 @@ test_analog_demod_follows_the_preset(void) {
 }
 
 /*
+ * AM (issue #524) is its own preset: the analog monitor with the AM detector. It
+ * reads back as AM (not as Analog, which is the FM monitor), Analog after it puts
+ * the detector back to FM, and any other preset leaves both, the widths untouched.
+ */
+static int
+test_am_preset(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    DSD_MEMSET(&opts, 0, sizeof opts);
+    DSD_MEMSET(&state, 0, sizeof state);
+    opts.analog_nfm_bandwidth_hz = 12500;
+    opts.analog_am_bandwidth_hz = 8000;
+    opts.frame_dmr = 1;
+
+    if (dsd_apply_decode_mode_preset(DSDCFG_MODE_AM, DSD_DECODE_PRESET_PROFILE_CLI, &opts, &state) != 0
+        || opts.analog_only != 1 || opts.monitor_input_audio != 1 || opts.analog_demod != DSD_ANALOG_DEMOD_AM
+        || opts.frame_dmr != 0) {
+        DSD_FPRINTF(stderr, "AM preset should select the analog monitor with the AM detector\n");
+        return 1;
+    }
+    if (dsd_infer_decode_mode_preset(&opts) != DSDCFG_MODE_AM
+        || dsd_infer_decode_mode_preset_exact(&opts) != DSDCFG_MODE_AM) {
+        DSD_FPRINTF(stderr, "AM preset should read back as AM\n");
+        return 1;
+    }
+    if (strcmp(opts.output_name, "AM Monitor") != 0) {
+        DSD_FPRINTF(stderr, "AM preset output name: %s\n", opts.output_name);
+        return 1;
+    }
+    /* Re-applying AM (a config apply with the mode already in force) keeps it. */
+    if (dsd_apply_decode_mode_preset(DSDCFG_MODE_AM, DSD_DECODE_PRESET_PROFILE_CONFIG, &opts, &state) != 0
+        || opts.analog_only != 1 || opts.analog_demod != DSD_ANALOG_DEMOD_AM) {
+        DSD_FPRINTF(stderr, "re-applying AM should keep the AM monitor\n");
+        return 1;
+    }
+    if (dsd_apply_decode_mode_preset(DSDCFG_MODE_ANALOG, DSD_DECODE_PRESET_PROFILE_CLI, &opts, &state) != 0
+        || opts.analog_only != 1 || opts.analog_demod != DSD_ANALOG_DEMOD_FM
+        || dsd_infer_decode_mode_preset(&opts) != DSDCFG_MODE_ANALOG) {
+        DSD_FPRINTF(stderr, "Analog after AM should be the FM monitor\n");
+        return 1;
+    }
+    if (dsd_apply_decode_mode_preset(DSDCFG_MODE_AM, DSD_DECODE_PRESET_PROFILE_INTERACTIVE, &opts, &state) != 0
+        || dsd_apply_decode_mode_preset(DSDCFG_MODE_DMR, DSD_DECODE_PRESET_PROFILE_CLI, &opts, &state) != 0
+        || opts.analog_only != 0 || opts.monitor_input_audio != 0 || opts.analog_demod != DSD_ANALOG_DEMOD_FM
+        || dsd_infer_decode_mode_preset(&opts) != DSDCFG_MODE_DMR) {
+        DSD_FPRINTF(stderr, "leaving AM should leave the analog monitor and its detector\n");
+        return 1;
+    }
+    if (opts.analog_nfm_bandwidth_hz != 12500 || opts.analog_am_bandwidth_hz != 8000) {
+        DSD_FPRINTF(stderr, "the AM preset must not touch the configured analog widths\n");
+        return 1;
+    }
+    return 0;
+}
+
+/*
  * The menu's mode picker and the label that reads the mode back both come from
  * this table; every preset needs a name and nothing outside the enum may crash.
  */
@@ -677,6 +742,7 @@ test_display_names(void) {
         {DSDCFG_MODE_DPMR, "dPMR"},
         {DSDCFG_MODE_M17, "M17"},
         {DSDCFG_MODE_ANALOG, "Analog"},
+        {DSDCFG_MODE_AM, "AM"},
     };
 
     for (size_t i = 0; i < sizeof cases / sizeof cases[0]; i++) {
@@ -687,8 +753,8 @@ test_display_names(void) {
             return 1;
         }
     }
-    /* Every enumerator between UNSET and DMR_MONO is covered by the table above. */
-    for (int m = (int)DSDCFG_MODE_UNSET; m <= (int)DSDCFG_MODE_DMR_MONO; m++) {
+    /* Every enumerator between UNSET and the last preset (AM) is covered by the table above. */
+    for (int m = (int)DSDCFG_MODE_UNSET; m <= (int)DSDCFG_MODE_AM; m++) {
         if (strcmp(dsd_decode_mode_display_name((dsdneoUserDecodeMode)m), "Unknown") == 0) {
             DSD_FPRINTF(stderr, "mode %d has no display name\n", m);
             return 1;
@@ -717,6 +783,7 @@ main(void) {
     rc |= test_symbol_timing_and_inference();
     rc |= test_analog_monitor_is_not_a_one_way_door();
     rc |= test_analog_demod_follows_the_preset();
+    rc |= test_am_preset();
     return rc;
 }
 

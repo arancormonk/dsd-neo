@@ -159,12 +159,18 @@ validate_standard_entry_value(const dsdcfg_schema_entry_t* entry, const char* va
 static int
 validate_analog_width_entry(const dsdcfg_schema_entry_t* entry, const char* val, dsdcfg_diagnostics_t* diags,
                             int line_num, const char* diag_section, const char* diag_key) {
-    if (strcmp(entry->section, "analog") != 0 || strcmp(entry->key, "nfm_bandwidth_hz") != 0) {
+    if (strcmp(entry->section, "analog") != 0) {
+        return 0;
+    }
+    const int kind = (strcmp(entry->key, "nfm_bandwidth_hz") == 0)  ? DSD_ANALOG_DEMOD_FM
+                     : (strcmp(entry->key, "am_bandwidth_hz") == 0) ? DSD_ANALOG_DEMOD_AM
+                                                                     : -1;
+    if (kind < 0) {
         return 0;
     }
     char err[DSD_ANALOG_ERROR_TEXT_MAX];
     int width_hz = 0;
-    if (dsd_analog_width_parse(DSD_ANALOG_DEMOD_FM, val, &width_hz, err, sizeof err) != 0) {
+    if (dsd_analog_width_parse(kind, val, &width_hz, err, sizeof err) != 0) {
         dsdcfg_diags_add(diags, DSDCFG_DIAG_ERROR, line_num, diag_section, diag_key, err);
     }
     return 1;

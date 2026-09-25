@@ -242,6 +242,10 @@ dsd_cli_usage_section_decode(void) {
     printf("      --nfm-bandwidth-hz <Hz>  NFM channel-filter width, the full RF passband in whole Hz (8000..25000;\n");
     printf("                               default 16000). Not the tuner or audio bandwidth; it must fit the DSP\n");
     printf("                               rate (e.g. 25000 needs a 48 kHz DSP bandwidth). No effect on PCM input.\n");
+    printf("  -fM           Native AM receiver (IQ inputs: RTL-SDR, rtl_tcp, SoapySDR, Airspy, --iq-replay)\n");
+    printf("      --am-bandwidth-hz <Hz>   AM channel-filter width, the full RF passband in whole Hz (5000..20000;\n");
+    printf("                               default 6000). Not the tuner or audio bandwidth; it must fit the DSP\n");
+    printf("                               rate (e.g. 20000 needs a 24 or 48 kHz DSP bandwidth).\n");
     printf("  -ft           TDMA Trunking P25p1 Control and Voice, P25p2 Trunked Channels, and DMR\n");
     printf("  -fs           DMR TDMA BS and MS Simplex\n");
     printf("  -fr           DMR TDMA BS and MS Simplex using the single-slot mono decoder\n");

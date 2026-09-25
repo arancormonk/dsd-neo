@@ -41,7 +41,7 @@ typedef enum DSD_ATTR_PACKED {
 /**
  * @brief Map a core `-f` CLI preset character to a user decode mode enum.
  *
- * Supports the shared subset used by config/CLI (`a,A,d,x,t,1,2,s,i,n,y,m`).
+ * Supports the shared subset used by config/CLI (`a,A,M,d,x,t,1,2,s,i,n,y,m,z`; `M` is AM, issue #524).
  *
  * @param preset Single-character CLI `-f` selector.
  * @param out_mode Output mode enum.
@@ -158,6 +158,32 @@ dsdneoUserDecodeMode dsd_infer_decode_mode_preset_exact(const dsd_opts* opts);
  *         DSDCFG_MODE_UNSET; "Unknown" for any value outside the enum.
  */
 const char* dsd_decode_mode_display_name(dsdneoUserDecodeMode mode);
+
+/** @brief Why AM is refused on an input that delivers already demodulated audio (issue #524). */
+#define DSD_DECODE_MODE_AM_NEEDS_IQ_TEXT                                                                               \
+    "AM demodulation needs an IQ radio input; monitor externally demodulated AM audio with -fA"
+
+/**
+ * @brief Whether the input @p opts name delivers I/Q the radio front end demodulates.
+ *
+ * A running RTL-family input (`audio_in_type` AUDIO_IN_RTL: RTL-SDR, rtl_tcp, SoapySDR, Airspy or an I/Q replay), or,
+ * before the engine has opened one, an input spec naming one (`rtl`, `rtltcp`, `soapy`, `airspy`, `iqreplay`, or
+ * `--iq-replay`). PCM inputs (Pulse, WAV and other files, stdin, TCP and UDP audio) arrive demodulated.
+ *
+ * @param opts Decoder options; NULL reads as no I/Q.
+ * @return 1 for an I/Q radio input, else 0.
+ */
+int dsd_decode_mode_input_is_iq(const dsd_opts* opts);
+
+/**
+ * @brief Whether @p mode can run on the input @p opts name.
+ *
+ * AM needs an I/Q radio input (dsd_decode_mode_input_is_iq()); every other preset runs on any input (the Analog preset
+ * monitors PCM audio as it arrives, whatever demodulated it).
+ *
+ * @return 1 when it can, 0 when the caller must refuse it with DSD_DECODE_MODE_AM_NEEDS_IQ_TEXT.
+ */
+int dsd_decode_mode_runs_on_input(dsdneoUserDecodeMode mode, const dsd_opts* opts);
 
 #ifdef __cplusplus
 }

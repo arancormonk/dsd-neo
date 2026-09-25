@@ -16,6 +16,7 @@
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/io/rtl_stream_c.h>
+#include <dsd-neo/runtime/analog_channel.h>
 #include <dsd-neo/runtime/analog_tones.h>
 #include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
 
@@ -142,6 +143,15 @@ test_detection_active(void) {
     g_fake_output_kind = RTL_STREAM_OUTPUT_SYMBOL_CQPSK;
     assert(dsd_analog_tone_detection_active(opts) == 0);
     g_fake_output_kind = RTL_STREAM_OUTPUT_AUDIO_MONITOR;
+
+    /* The AM monitor (issue #524): CTCSS and DCS are FM signalling, so detection is off there, on RTL and PCM alike. */
+    opts->analog_demod = DSD_ANALOG_DEMOD_AM;
+    assert(dsd_analog_tone_detection_active(opts) == 0);
+    opts->audio_in_type = AUDIO_IN_PULSE;
+    assert(dsd_analog_tone_detection_active(opts) == 0);
+    opts->analog_demod = DSD_ANALOG_DEMOD_FM;
+    assert(dsd_analog_tone_detection_active(opts) == 1);
+    opts->audio_in_type = AUDIO_IN_RTL;
 
     /* Not the analog FM monitor: digital decoding, or analog without the input monitored. */
     opts->analog_only = 0;

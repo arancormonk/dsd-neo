@@ -285,6 +285,42 @@ test_rtltcp_trunking_imports_group_allow_list_and_null_output(void) {
     return rc;
 }
 
+/* AM (issue #524) is offered for the I/Q sources: on PulseAudio it is refused with the reason and asked again, here
+ * answered with DMR; on an RTL-SDR source it is taken. */
+static int
+test_am_entry_needs_an_iq_source(void) {
+    int rc = 0;
+    static dsd_opts opts;
+    static dsd_state state;
+
+    reset_harness();
+    DSD_MEMSET(&opts, 0, sizeof opts);
+    DSD_MEMSET(&state, 0, sizeof state);
+    rc |= with_stdin_text("\n15\n4\n\n", dsd_bootstrap_interactive, &opts, &state);
+    rc |= expect_int("pulse-am-refused-then-dmr", g_last_decode_mode, DSDCFG_MODE_DMR);
+
+    reset_harness();
+    DSD_MEMSET(&opts, 0, sizeof opts);
+    DSD_MEMSET(&state, 0, sizeof state);
+    const char* rtl = "2\n"
+                      "118.1M\n"
+                      "0\n"
+                      "22\n"
+                      "0\n"
+                      "48\n"
+                      "0\n"
+                      "1\n"
+                      "15\n"
+                      "n\n"
+                      "n\n"
+                      "n\n";
+    rc |= with_stdin_text(rtl, dsd_bootstrap_interactive, &opts, &state);
+    rc |= expect_str("rtl-am-audio-in", opts.audio_in_dev, "rtl:0:118.1M:22:0:48:0:1");
+    rc |= expect_int("rtl-am-decode-mode", g_last_decode_mode, DSDCFG_MODE_AM);
+    rc |= expect_int("rtl-am-decode-profile", g_last_decode_profile, DSD_DECODE_PRESET_PROFILE_INTERACTIVE);
+    return rc;
+}
+
 static int
 test_tcp_trunking_enables_default_rigctl_and_skips_missing_csv(void) {
     int rc = 0;
@@ -540,6 +576,7 @@ main(void) {
     rc |= test_pulse_defaults_apply_decode_and_ncurses();
     rc |= test_rtltcp_trunking_imports_group_allow_list_and_null_output();
     rc |= test_tcp_trunking_enables_default_rigctl_and_skips_missing_csv();
+    rc |= test_am_entry_needs_an_iq_source();
     rc |= test_udp_eof_uses_socket_defaults_and_default_pulse_output();
     rc |= test_file_input_applies_clamped_low_sample_rate();
     rc |= test_empty_file_path_falls_back_to_pulse_devices();

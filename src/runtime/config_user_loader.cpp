@@ -684,16 +684,23 @@ apply_dsp_section_key(dsdneoUserConfig* cfg, const char* key_lc, const char* val
    loaded (the default, for a base file) stays. --validate-config reports the same text as an error. */
 static void
 apply_analog_section_key(dsdneoUserConfig* cfg, const char* key_lc, const char* val) {
-    if (strcmp(key_lc, "nfm_bandwidth_hz") != 0) {
+    const int kind = (strcmp(key_lc, "nfm_bandwidth_hz") == 0)  ? DSD_ANALOG_DEMOD_FM
+                     : (strcmp(key_lc, "am_bandwidth_hz") == 0) ? DSD_ANALOG_DEMOD_AM
+                                                                 : -1;
+    if (kind < 0) {
         return;
     }
     char err[DSD_ANALOG_ERROR_TEXT_MAX];
     int width_hz = 0;
-    if (dsd_analog_width_parse(DSD_ANALOG_DEMOD_FM, val, &width_hz, err, sizeof err) != 0) {
+    if (dsd_analog_width_parse(kind, val, &width_hz, err, sizeof err) != 0) {
         LOG_WARN("Config: invalid %s = '%s'; %s; keeping the previous/default width\n", key_lc, val, err);
         return;
     }
-    cfg->analog_nfm_bandwidth_hz = width_hz;
+    if (kind == DSD_ANALOG_DEMOD_AM) {
+        cfg->analog_am_bandwidth_hz = width_hz;
+    } else {
+        cfg->analog_nfm_bandwidth_hz = width_hz;
+    }
 }
 
 static void
