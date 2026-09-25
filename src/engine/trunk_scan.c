@@ -406,7 +406,8 @@ trunk_scan_type_is_conventional(dsd_trunk_scan_target_type type) {
         case DSD_TRUNK_SCAN_TARGET_DMR_CONVENTIONAL:
         case DSD_TRUNK_SCAN_TARGET_P25_CONVENTIONAL:
         case DSD_TRUNK_SCAN_TARGET_NXDN_CONVENTIONAL:
-        case DSD_TRUNK_SCAN_TARGET_NXDN48_CONVENTIONAL: return 1;
+        case DSD_TRUNK_SCAN_TARGET_NXDN48_CONVENTIONAL:
+        case DSD_TRUNK_SCAN_TARGET_NFM_CONVENTIONAL: return 1;
     }
     return 0;
 }
@@ -426,7 +427,8 @@ trunk_scan_type_is_p25_class(dsd_trunk_scan_target_type type) {
         case DSD_TRUNK_SCAN_TARGET_NXDN_TRUNK:
         case DSD_TRUNK_SCAN_TARGET_NXDN_CONVENTIONAL:
         case DSD_TRUNK_SCAN_TARGET_NXDN48_TRUNK:
-        case DSD_TRUNK_SCAN_TARGET_NXDN48_CONVENTIONAL: return 0;
+        case DSD_TRUNK_SCAN_TARGET_NXDN48_CONVENTIONAL:
+        case DSD_TRUNK_SCAN_TARGET_NFM_CONVENTIONAL: return 0;
     }
     return 0;
 }
@@ -443,7 +445,8 @@ trunk_scan_type_is_nxdn_trunk(dsd_trunk_scan_target_type type) {
         case DSD_TRUNK_SCAN_TARGET_DMR_TRUNK:
         case DSD_TRUNK_SCAN_TARGET_DMR_CONVENTIONAL:
         case DSD_TRUNK_SCAN_TARGET_NXDN_CONVENTIONAL:
-        case DSD_TRUNK_SCAN_TARGET_NXDN48_CONVENTIONAL: return 0;
+        case DSD_TRUNK_SCAN_TARGET_NXDN48_CONVENTIONAL:
+        case DSD_TRUNK_SCAN_TARGET_NFM_CONVENTIONAL: return 0;
     }
     return 0;
 }
@@ -461,19 +464,22 @@ trunk_scan_type_anchors_p25_cc_freq(dsd_trunk_scan_target_type type) {
         case DSD_TRUNK_SCAN_TARGET_P25_CONVENTIONAL:
         case DSD_TRUNK_SCAN_TARGET_DMR_CONVENTIONAL:
         case DSD_TRUNK_SCAN_TARGET_NXDN_CONVENTIONAL:
-        case DSD_TRUNK_SCAN_TARGET_NXDN48_CONVENTIONAL: return 0;
+        case DSD_TRUNK_SCAN_TARGET_NXDN48_CONVENTIONAL:
+        case DSD_TRUNK_SCAN_TARGET_NFM_CONVENTIONAL: return 0;
     }
     return 0;
 }
 
-/* Symbol rate of a target's four-level GFSK demod profile, or 0 for the P25 class. DMR and NXDN96
- * share 4800 sym/s; NXDN48 runs the same four-level GFSK demodulator at 2400 sym/s, which is the
- * only axis that separates it from an nxdn-conventional target. */
+/* Symbol rate of a target's four-level GFSK demod profile, or 0 for the P25 class and for an analog
+ * target, which has no symbol clock at all. DMR and NXDN96 share 4800 sym/s; NXDN48 runs the same
+ * four-level GFSK demodulator at 2400 sym/s, which is the only axis that separates it from an
+ * nxdn-conventional target. */
 static int
 trunk_scan_type_gfsk_symbol_rate(dsd_trunk_scan_target_type type) {
     switch (type) {
         case DSD_TRUNK_SCAN_TARGET_P25_TRUNK:
-        case DSD_TRUNK_SCAN_TARGET_P25_CONVENTIONAL: return 0;
+        case DSD_TRUNK_SCAN_TARGET_P25_CONVENTIONAL:
+        case DSD_TRUNK_SCAN_TARGET_NFM_CONVENTIONAL: return 0;
         case DSD_TRUNK_SCAN_TARGET_DMR_TRUNK:
         case DSD_TRUNK_SCAN_TARGET_DMR_CONVENTIONAL:
         case DSD_TRUNK_SCAN_TARGET_NXDN_TRUNK:
@@ -489,44 +495,101 @@ trunk_scan_type_is_gfsk_family(dsd_trunk_scan_target_type type) {
     return trunk_scan_type_gfsk_symbol_rate(type) > 0;
 }
 
+typedef struct {
+    const char* resolved_path;
+    int default_dwell_ms;
+    int default_hold_ms;
+    int modulation_idx;
+    int rtl_gain_idx;
+    int keys_hex_idx;
+    int keys_dec_idx;
+    int single_key_hex_idx;
+    int single_key_dec_idx;
+    int p25_bandplan_idx;
+    int options_idx;
+    unsigned int row;
+    char* err;
+    size_t err_sz;
+} dsd_trunk_scan_row_parse;
+
+static dsd_scan_mode trunk_scan_target_mode(dsd_trunk_scan_target_type type);
+
+/* An analog target (issue #526): no frames, keys, talkgroups or symbol clock; its carrier is its activity. */
+static int
+trunk_scan_type_is_analog(dsd_trunk_scan_target_type type) {
+    return dsd_scan_mode_is_analog(trunk_scan_target_mode(type));
+}
+
+/* The type column's spellings, exact case, in the order a diagnostic lists them. */
+static const struct {
+    const char* name;
+    dsd_trunk_scan_target_type type;
+} k_trunk_scan_types[] = {
+    {"p25-trunk", DSD_TRUNK_SCAN_TARGET_P25_TRUNK},
+    {"p25-conventional", DSD_TRUNK_SCAN_TARGET_P25_CONVENTIONAL},
+    {"dmr-trunk", DSD_TRUNK_SCAN_TARGET_DMR_TRUNK},
+    {"dmr-conventional", DSD_TRUNK_SCAN_TARGET_DMR_CONVENTIONAL},
+    {"nxdn-trunk", DSD_TRUNK_SCAN_TARGET_NXDN_TRUNK},
+    {"nxdn-conventional", DSD_TRUNK_SCAN_TARGET_NXDN_CONVENTIONAL},
+    {"nxdn48-conventional", DSD_TRUNK_SCAN_TARGET_NXDN48_CONVENTIONAL},
+    {"nxdn48-trunk", DSD_TRUNK_SCAN_TARGET_NXDN48_TRUNK},
+    {"nfm-conventional", DSD_TRUNK_SCAN_TARGET_NFM_CONVENTIONAL},
+};
+
 static int
 scan_parse_type(const char* s, dsd_trunk_scan_target_type* out) {
     if (!s || !out) {
         return -1;
     }
-    if (strcmp(s, "p25-trunk") == 0) {
-        *out = DSD_TRUNK_SCAN_TARGET_P25_TRUNK;
-        return 0;
-    }
-    if (strcmp(s, "p25-conventional") == 0) {
-        *out = DSD_TRUNK_SCAN_TARGET_P25_CONVENTIONAL;
-        return 0;
-    }
-    if (strcmp(s, "dmr-trunk") == 0) {
-        *out = DSD_TRUNK_SCAN_TARGET_DMR_TRUNK;
-        return 0;
-    }
-    if (strcmp(s, "dmr-conventional") == 0) {
-        *out = DSD_TRUNK_SCAN_TARGET_DMR_CONVENTIONAL;
-        return 0;
-    }
-    if (strcmp(s, "nxdn-trunk") == 0) {
-        *out = DSD_TRUNK_SCAN_TARGET_NXDN_TRUNK;
-        return 0;
-    }
-    if (strcmp(s, "nxdn-conventional") == 0) {
-        *out = DSD_TRUNK_SCAN_TARGET_NXDN_CONVENTIONAL;
-        return 0;
-    }
-    if (strcmp(s, "nxdn48-conventional") == 0) {
-        *out = DSD_TRUNK_SCAN_TARGET_NXDN48_CONVENTIONAL;
-        return 0;
-    }
-    if (strcmp(s, "nxdn48-trunk") == 0) {
-        *out = DSD_TRUNK_SCAN_TARGET_NXDN48_TRUNK;
-        return 0;
+    for (size_t i = 0; i < sizeof(k_trunk_scan_types) / sizeof(k_trunk_scan_types[0]); i++) {
+        if (strcmp(s, k_trunk_scan_types[i].name) == 0) {
+            *out = k_trunk_scan_types[i].type;
+            return 0;
+        }
     }
     return -1;
+}
+
+/* Whether @p s names an analog class ("nfm") or one of the analog FM aliases, which are never accepted. */
+static int
+scan_type_names_analog_class(const char* s) {
+    dsd_scan_mode mode = DSD_SCAN_MODE_INHERIT;
+    return dsd_scan_mode_alias_hint(s) != NULL || (dsd_scan_mode_parse(s, &mode) == 0 && dsd_scan_mode_is_analog(mode));
+}
+
+/* An unknown type column. A spelling that names the analog class is pointed at the one type that carries
+ * it, and a trunked analog type is told why it does not exist; anything else gets the accepted list. */
+static void
+scan_report_invalid_type(const dsd_trunk_scan_row_parse* parse, const char* type_s) {
+    const char* dash = strrchr(type_s, '-');
+    char head[32] = "";
+    if (dash && strcmp(dash, "-trunk") == 0 && (size_t)(dash - type_s) < sizeof head) {
+        DSD_MEMCPY(head, type_s, (size_t)(dash - type_s));
+        head[dash - type_s] = '\0';
+    }
+    if (head[0] != '\0' && scan_type_names_analog_class(head)) {
+        scan_set_error(parse->err, parse->err_sz, "row %u: analog targets are conventional only (use %s)", parse->row,
+                       "nfm-conventional");
+        return;
+    }
+    if (scan_type_names_analog_class(type_s)) {
+        scan_set_error(parse->err, parse->err_sz, "row %u has invalid target type '%s' (use %s)", parse->row, type_s,
+                       "nfm-conventional");
+        return;
+    }
+    char names[256] = "";
+    size_t used = 0;
+    const size_t count = sizeof(k_trunk_scan_types) / sizeof(k_trunk_scan_types[0]);
+    for (size_t i = 0; i < count && used < sizeof names; i++) {
+        const char* separator = i == 0 ? "" : (i + 1 == count ? " or " : ", ");
+        const int n = DSD_SNPRINTF(names + used, sizeof names - used, "%s%s", separator, k_trunk_scan_types[i].name);
+        if (n < 0) {
+            break;
+        }
+        used += (size_t)n;
+    }
+    scan_set_error(parse->err, parse->err_sz, "row %u has invalid target type '%s'; expected %s", parse->row, type_s,
+                   names);
 }
 
 int
@@ -581,23 +644,6 @@ scan_has_duplicate_type_freq(const dsd_trunk_scan_target_list* list, dsd_trunk_s
     }
     return 0;
 }
-
-typedef struct {
-    const char* resolved_path;
-    int default_dwell_ms;
-    int default_hold_ms;
-    int modulation_idx;
-    int rtl_gain_idx;
-    int keys_hex_idx;
-    int keys_dec_idx;
-    int single_key_hex_idx;
-    int single_key_dec_idx;
-    int p25_bandplan_idx;
-    int options_idx;
-    unsigned int row;
-    char* err;
-    size_t err_sz;
-} dsd_trunk_scan_row_parse;
 
 static const char*
 scan_optional_field(char** fields, size_t field_count, int idx) {
@@ -675,7 +721,7 @@ scan_parse_target_base_fields(char** fields, const dsd_trunk_scan_target_list* p
     DSD_SNPRINTF(target->id, sizeof target->id, "%s", id);
     const char* type_s = scan_unquote(fields[1]);
     if (scan_parse_type(type_s, &target->type) != 0) {
-        scan_set_error(parse->err, parse->err_sz, "row %u has invalid target type '%s'", parse->row, type_s);
+        scan_report_invalid_type(parse, type_s);
         return -1;
     }
 
@@ -694,6 +740,10 @@ scan_parse_target_base_fields(char** fields, const dsd_trunk_scan_target_list* p
 static int
 scan_parse_target_overrides(dsd_trunk_scan_target* target, const dsd_trunk_scan_row_parse* parse,
                             const char* modulation_s, const char* rtl_gain_s) {
+    if (trunk_scan_type_is_analog(target->type) && modulation_s[0] != '\0') {
+        scan_set_error(parse->err, parse->err_sz, "row %u: an analog target takes no modulation", parse->row);
+        return -1;
+    }
     if (scan_parse_modulation(modulation_s, target->type, &target->modulation) != 0) {
         scan_set_error(parse->err, parse->err_sz, "row %u has invalid modulation '%s'", parse->row, modulation_s);
         return -1;
@@ -833,8 +883,6 @@ scan_parse_target_direct_keys(dsd_trunk_scan_target* target, const dsd_trunk_sca
     return 0;
 }
 
-static dsd_scan_mode trunk_scan_target_mode(dsd_trunk_scan_target_type type);
-
 static int
 scan_copy_target_key_path(char* dest, size_t capacity, const char* resolved) {
     if (strlen(resolved) >= capacity) {
@@ -892,9 +940,32 @@ scan_parse_target_options(dsd_trunk_scan_target* target, const char* text, char*
  * the scoped-options merge later (scan_parse_target_secrets), so only the legacy row
  * validates and resolves them here.
  */
+/* An analog target decrypts nothing, so a key column that would load material for it is refused; the
+ * cell itself never reaches the diagnostic. */
+static int
+scan_reject_analog_key_columns(const dsd_trunk_scan_target* target, char** fields, size_t count,
+                               const dsd_trunk_scan_row_parse* parse) {
+    if (!trunk_scan_type_is_analog(target->type)) {
+        return 0;
+    }
+    const int columns[] = {parse->keys_hex_idx, parse->keys_dec_idx, parse->single_key_hex_idx,
+                           parse->single_key_dec_idx};
+    for (size_t i = 0; i < sizeof(columns) / sizeof(columns[0]); i++) {
+        if (scan_optional_field(fields, count, columns[i])[0] != '\0') {
+            scan_set_error(parse->err, parse->err_sz, "row %u: key columns are not supported for an analog target",
+                           parse->row);
+            return -1;
+        }
+    }
+    return 0;
+}
+
 static int
 scan_parse_target_key_paths(dsd_trunk_scan_target* target, char** fields, size_t count,
                             const dsd_trunk_scan_row_parse* parse, const char* chan_csv, int have_options) {
+    if (scan_reject_analog_key_columns(target, fields, count, parse) != 0) {
+        return -1;
+    }
     const char* keys_hex_s = have_options ? "" : scan_optional_field(fields, count, parse->keys_hex_idx);
     const char* keys_dec_s = have_options ? "" : scan_optional_field(fields, count, parse->keys_dec_idx);
     const char* single_hex_s = scan_optional_field(fields, count, parse->single_key_hex_idx);
@@ -2128,7 +2199,8 @@ trunk_scan_apply_target_opts(dsd_opts* opts, const dsd_trunk_scan_coord* coord, 
         case DSD_TRUNK_SCAN_TARGET_DMR_CONVENTIONAL:
         case DSD_TRUNK_SCAN_TARGET_P25_CONVENTIONAL:
         case DSD_TRUNK_SCAN_TARGET_NXDN_CONVENTIONAL:
-        case DSD_TRUNK_SCAN_TARGET_NXDN48_CONVENTIONAL: opts->trunk_enable = 0; break;
+        case DSD_TRUNK_SCAN_TARGET_NXDN48_CONVENTIONAL:
+        case DSD_TRUNK_SCAN_TARGET_NFM_CONVENTIONAL: opts->trunk_enable = 0; break;
     }
 }
 
@@ -2349,6 +2421,11 @@ trunk_scan_retune_active(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_target
         *out_request_id = 0U;
     }
     const long int freq = trunk_scan_retune_freq(state, &rt->target);
+    if (trunk_scan_type_is_analog(rt->target.type)) {
+        /* No symbol clock: the tune queues the target's analog receive profile (its options already hold
+         * the width), and no symbol rate ever reaches the SPS arithmetic. */
+        return dsd_engine_scan_tune_to_freq(opts, state, freq, 0, out_request_id);
+    }
     if (trunk_scan_type_is_conventional(rt->target.type)) {
         const int ted_sps = trunk_scan_target_is_p25(&rt->target) ? trunk_scan_p25_cc_sps(opts, state)
                                                                   : trunk_scan_gfsk_sps(opts, state, rt->target.type);
@@ -2438,6 +2515,7 @@ trunk_scan_target_mode(dsd_trunk_scan_target_type type) {
         case DSD_TRUNK_SCAN_TARGET_NXDN_CONVENTIONAL: return DSD_SCAN_MODE_NXDN96;
         case DSD_TRUNK_SCAN_TARGET_NXDN48_TRUNK:
         case DSD_TRUNK_SCAN_TARGET_NXDN48_CONVENTIONAL: return DSD_SCAN_MODE_NXDN48;
+        case DSD_TRUNK_SCAN_TARGET_NFM_CONVENTIONAL: return DSD_SCAN_MODE_NFM;
     }
     return DSD_SCAN_MODE_INHERIT;
 }
@@ -2506,7 +2584,8 @@ trunk_scan_release_active_carrier(dsd_opts* opts, dsd_state* state, dsd_trunk_sc
         case DSD_TRUNK_SCAN_TARGET_DMR_CONVENTIONAL:
         case DSD_TRUNK_SCAN_TARGET_P25_CONVENTIONAL:
         case DSD_TRUNK_SCAN_TARGET_NXDN_CONVENTIONAL:
-        case DSD_TRUNK_SCAN_TARGET_NXDN48_CONVENTIONAL: break;
+        case DSD_TRUNK_SCAN_TARGET_NXDN48_CONVENTIONAL:
+        case DSD_TRUNK_SCAN_TARGET_NFM_CONVENTIONAL: break;
     }
     dsd_engine_release_tuned_call_state(opts, state);
     rt->last_allowed_activity_m = 0.0;
@@ -2810,6 +2889,10 @@ trunk_scan_conventional_stay_reason(const dsd_opts* opts, const dsd_state* state
     if (span_ms) {
         *span_ms = hold_ms > 0 ? (uint32_t)hold_ms : 0U;
     }
+    if (trunk_scan_type_is_analog(rt->target.type)) {
+        /* The carrier is what holds an analog row; once it drops the hold's tail runs out. */
+        return dsd_scan_analog_carrier_open(opts, state) ? DSD_SCAN_STAY_CARRIER : DSD_SCAN_STAY_ACTIVITY_HOLD;
+    }
     return (state->scan_voice_gate_phase == (uint8_t)DSD_SCAN_VOICE_GATE_VOICE) ? DSD_SCAN_STAY_VOICE
                                                                                 : DSD_SCAN_STAY_ACTIVITY_HOLD;
 }
@@ -3019,6 +3102,29 @@ trunk_scan_refresh_voice_media_hold(const dsd_opts* opts, dsd_state* state, dsd_
     } else {
         state->scan_voice_gate_phase = (uint8_t)DSD_SCAN_VOICE_GATE_QUALIFY;
     }
+}
+
+/* An analog target's activity is its carrier (issue #526): every tick that finds the squelch open
+ * restarts the activity hold, whatever the voice gate says, since an analog channel never produces
+ * the decoded voice media that gate waits for. The gate's phase is not this row's to publish. */
+static void
+trunk_scan_refresh_analog_carrier_hold(const dsd_opts* opts, dsd_state* state, dsd_trunk_scan_target_runtime* rt,
+                                       double now_m) {
+    state->scan_voice_gate_phase = (uint8_t)DSD_SCAN_VOICE_GATE_OFF;
+    if (dsd_scan_analog_carrier_open(opts, state)) {
+        rt->last_allowed_activity_m = now_m;
+    }
+}
+
+/* Refresh what holds the target on air besides protocol reports: its carrier on an analog target,
+ * decoded voice media under --scan-voice-only on a digital one. */
+static void
+trunk_scan_refresh_activity(const dsd_opts* opts, dsd_state* state, dsd_trunk_scan_target_runtime* rt, double now_m) {
+    if (trunk_scan_type_is_analog(rt->target.type)) {
+        trunk_scan_refresh_analog_carrier_hold(opts, state, rt, now_m);
+        return;
+    }
+    trunk_scan_refresh_voice_media_hold(opts, state, rt, now_m);
 }
 
 /* Pick the reason the row on air is staying, and the window it runs for when the coordinator
@@ -3266,7 +3372,7 @@ trunk_scan_tick_targets_locked(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_
     if (state->p2_wacn != rt->iden_share_wacn || state->p2_sysid != rt->iden_share_sysid) {
         trunk_scan_share_peer_idens(coord, state, rt);
     }
-    trunk_scan_refresh_voice_media_hold(opts, state, rt, now_m);
+    trunk_scan_refresh_activity(opts, state, rt, now_m);
     if (trunk_scan_service_visit_limit(opts, state, coord, rt, now_m)) {
         return;
     }
@@ -3490,8 +3596,10 @@ trunk_scan_apply_decryption(dsd_opts* opts, dsd_state* state, const char* target
     if (!opts || !state || !coord || coord->active >= coord->count || !keys || !map) {
         return DSD_TRUNK_KEY_UNAVAILABLE;
     }
-    if (validate_target_decryption(coord->targets[coord->active].target.type, fields, keys, map, force)
-        != DSD_TRUNK_KEY_APPLIED) {
+    const dsd_trunk_scan_target_type type = coord->targets[coord->active].target.type;
+    /* An analog target decrypts nothing: no material, map or forcing applies to it. */
+    if (trunk_scan_type_is_analog(type)
+        || validate_target_decryption(type, fields, keys, map, force) != DSD_TRUNK_KEY_APPLIED) {
         return DSD_TRUNK_KEY_INVALID;
     }
     if (!target_id || strcmp(coord->targets[coord->active].target.id, target_id) != 0
@@ -3562,6 +3670,8 @@ trunk_scan_type_in_conventional_family(dsd_trunk_scan_target_type type, trunk_sc
         case DSD_TRUNK_SCAN_TARGET_P25_CONVENTIONAL: return family == TRUNK_SCAN_CONVENTIONAL_FAMILY_P25;
         case DSD_TRUNK_SCAN_TARGET_NXDN_CONVENTIONAL:
         case DSD_TRUNK_SCAN_TARGET_NXDN48_CONVENTIONAL: return family == TRUNK_SCAN_CONVENTIONAL_FAMILY_NXDN;
+        /* No protocol reports claim an analog channel: its carrier holds it (trunk_scan_refresh_activity()). */
+        case DSD_TRUNK_SCAN_TARGET_NFM_CONVENTIONAL: return 0;
     }
     return 0;
 }

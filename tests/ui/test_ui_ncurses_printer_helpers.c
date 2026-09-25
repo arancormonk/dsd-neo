@@ -1866,6 +1866,13 @@ test_sync_tree_follows_scan_class(void) {
     reset_printw_capture();
     ui_render_nxdn_site_line(state, 1);
     assert_capture_contains("IDAS - Area: --;");
+    /* Issue #526: an analog row has no frame sync, so the last digital sync type is dropped
+       rather than shown beside an nfm row. */
+    g_scan_mode_active = DSD_SCAN_MODE_NFM;
+    ncurses_last_synctype = DSD_SYNC_DMR_BS_DATA_POS;
+    state->synctype = DSD_SYNC_NONE;
+    ui_update_sync_and_edacs_tree(state);
+    assert(ncurses_last_synctype == DSD_SYNC_NONE);
     g_scan_mode_active = DSD_SCAN_MODE_INHERIT;
     ncurses_last_synctype = DSD_SYNC_NONE;
     dsd_state_ext_free_all(state);
@@ -2603,6 +2610,15 @@ test_scan_timing_row_phrases(void) {
        to run from, and an unanchored timer is left off rather than shown as zero. */
     seed_scan_timing(&state, DSD_SCAN_STAY_HANGTIME, 1U, -1.0, 0U, 0U, 0U);
     assert_scan_timing_row(&opts, &state, "| Scan Timing: Hangtime");
+
+    /* Issue #526: an analog row's carrier holds it. On -Y it restarts the hangtime window; on a
+       trunk-scan nfm-conventional target it restarts the activity hold and suspends the dwell. */
+    seed_scan_timing(&state, DSD_SCAN_STAY_CARRIER, 1U, 101.9, 2000U, 0U, 0U);
+    assert_scan_timing_row(&opts, &state, "| Scan Timing: Carrier 1.9s/2.0s");
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    opts.trunk_scan_enabled = 1;
+    seed_scan_timing(&state, DSD_SCAN_STAY_CARRIER, 1U, 101.2, 1200U, 3000U, 1200U);
+    assert_scan_timing_row(&opts, &state, "| Scan Timing: Carrier 1.2s/1.2s  dwell 3.0s (suspended)");
 }
 
 /* The decoder decides when the receiver moves. A poll that lands after the deadline is a

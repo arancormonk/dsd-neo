@@ -57,6 +57,8 @@ typedef enum {
     DSD_TRUNK_SCAN_TARGET_NXDN48_CONVENTIONAL = 5,
     DSD_TRUNK_SCAN_TARGET_NXDN48_TRUNK = 6,
     DSD_TRUNK_SCAN_TARGET_P25_CONVENTIONAL = 7,
+    /** One analog NFM channel (issue #526): carrier activity, no frames, keys or symbol clock. */
+    DSD_TRUNK_SCAN_TARGET_NFM_CONVENTIONAL = 8,
 } dsd_trunk_scan_target_type;
 
 typedef enum {

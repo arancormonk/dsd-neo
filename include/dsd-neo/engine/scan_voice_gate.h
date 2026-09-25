@@ -42,6 +42,21 @@ typedef struct {
 int dsd_scan_voice_probe(const dsd_opts* opts, const dsd_state* state, dsd_scan_voice_probe_result* out);
 
 /**
+ * Non-zero while the analog channel on air has carrier (issue #526), the activity that holds an analog
+ * row in both scanners.
+ *
+ * It reads the received-tone tap's carrier (dsd_state::analog_rx, issue #522) rather than deriving one:
+ * the squelch open over the monitor audio, above the tap's level floor, held through its 200 ms hangover,
+ * and dropped at every reset the tap makes -- a retune, a stream generation or receive-profile change, a
+ * stream pause -- so a block that straddles a retune never counts for the new channel. So it holds only
+ * while the analog FM monitor runs (dsd_analog_tone_detection_active()), never on a publication past its
+ * stale_after_ms, never while a digital carrier is flagged (dsd_state::carrier) and never while a trunking
+ * state machine owns the channel. Whether audio is played has no part in it: -o null or a muted UI still
+ * holds the row. Read-only and null-safe.
+ */
+int dsd_scan_analog_carrier_open(const dsd_opts* opts, const dsd_state* state);
+
+/**
  * Non-zero when the operator's talkgroup hold is on a call that is being followed right now:
  * some slot carries an active, non-data call whose target -- after policy remapping -- is the
  * held talkgroup, or, on a private call, whose source is.
@@ -58,7 +73,9 @@ int dsd_scan_tg_hold_call_active(const dsd_state* state);
  */
 void dsd_scan_voice_gate_note_retune(dsd_state* state, double now_m);
 
-/** Per-frame tick while parked on a -Y row; a no-op unless scanner_mode is on. */
+/** Per-frame tick while parked on a -Y row; a no-op unless scanner_mode is on. The gate never owns an analog
+ * row (the analog FM monitor): there is no decoded voice to wait for, and the row's carrier holds it under the
+ * hangtime rule instead, so a global --scan-voice-only does not block analog rows. */
 void dsd_scan_voice_gate_tick(const dsd_opts* opts, dsd_state* state, int synced, double now_m);
 
 /** Non-zero when the gate has a visit anchor and owns the scanner's step timing. */

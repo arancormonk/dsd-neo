@@ -40,11 +40,14 @@ static const dsd_scan_timing_row k_scan_timing_rows[] = {
     [DSD_SCAN_STAY_MANUAL_HOLD] = {"Manual hold", DSD_APP_SCAN_DWELL_PAUSED, 1U, 1U, 0U},
     [DSD_SCAN_STAY_IDLE_DWELL] = {"Idle dwell", DSD_APP_SCAN_DWELL_NONE, 0U, 1U, 0U},
     [DSD_SCAN_STAY_HANGTIME] = {"Hangtime", DSD_APP_SCAN_DWELL_NONE, 0U, 0U, 0U},
+    /* An analog row's carrier holds it the way voice holds a digital one: the dwell is disarmed and
+       the live window is the hold (or -Y hangtime) running from the last carrier. */
+    [DSD_SCAN_STAY_CARRIER] = {"Carrier", DSD_APP_SCAN_DWELL_SUSPENDED, 1U, 0U, 0U},
 };
 
 /* A reason the decoder can publish but this table cannot render would reach the surfaces
    as a blank phrase. Sized against the last enumerator so adding one fails the build. */
-_Static_assert((int)(sizeof(k_scan_timing_rows) / sizeof(k_scan_timing_rows[0])) == (int)DSD_SCAN_STAY_HANGTIME + 1,
+_Static_assert((int)(sizeof(k_scan_timing_rows) / sizeof(k_scan_timing_rows[0])) == (int)DSD_SCAN_STAY_CARRIER + 1,
                "every dsd_scan_stay_reason needs a display row");
 
 /** @brief Longest countdown the view will report, guarding the cast below. */
