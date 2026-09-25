@@ -7895,8 +7895,9 @@ test_refused_switch_between_fm_and_am_puts_the_mode_back(void) {
 
 /*
  * Issue #524: an AM width the running monitor took when asked but refused where the request landed (a retune moved the
- * rate) is put back to the width the monitor kept, as an NFM width is. The stream records AM's unset default as its
- * 6 kHz, and that goes back as the default, not as an explicit 6 kHz a save would then write.
+ * rate) is put back to the width the monitor kept, as an NFM width is. The stream records the setting it runs, so AM's
+ * unset default goes back as the default, not as an explicit 6 kHz a save would then write, and an explicit 6 kHz,
+ * which filters the same, goes back as the explicit width a save keeps.
  */
 static int
 test_am_width_refused_where_it_lands(void) {
@@ -7916,12 +7917,21 @@ test_am_width_refused_where_it_lands(void) {
     rc |= expect_int("am width landing: stored while pending", opts.analog_am_bandwidth_hz, 10000);
     rc |= expect_int("am width landing: requested for AM",
                      g_analog_req_kind == DSD_ANALOG_DEMOD_AM && g_analog_req_width_hz == 10000, 1);
-    demod_thread_refuses_analog_keeping_kind(1, DSD_ANALOG_DEMOD_AM, 6000);
+    demod_thread_refuses_analog_keeping_kind(1, DSD_ANALOG_DEMOD_AM, 0);
     state.ui_msg[0] = '\0';
     rc |= expect_int("am width landing: settled on an empty drain", dsd_app_drain_cmds(&opts, &state), 0);
     rc |= expect_int("am width landing: the default put back", opts.analog_am_bandwidth_hz, 0);
     rc |= expect_int("am width landing: still AM", dsd_infer_decode_mode_preset(&opts) == DSDCFG_MODE_AM, 1);
     rc |= expect_toast("am width landing: toast", &state, "Refused: the RTL front end refused AM 10 kHz (see log)");
+
+    /* An explicit 6 kHz running, then 20 kHz refused where it lands: the explicit 6 kHz goes back. */
+    opts.analog_am_bandwidth_hz = 6000;
+    reset_rx_family_wrap();
+    rc |= submit_am_width(&opts, &state, 20000, "am width landing: 20 kHz over an explicit 6 kHz");
+    rc |= expect_int("am width landing: 20 kHz stored, pending", opts.analog_am_bandwidth_hz, 20000);
+    demod_thread_refuses_analog_keeping_kind(1, DSD_ANALOG_DEMOD_AM, 6000);
+    rc |= expect_int("am width landing: explicit settled", dsd_app_drain_cmds(&opts, &state), 0);
+    rc |= expect_int("am width landing: explicit 6 kHz put back", opts.analog_am_bandwidth_hz, 6000);
 
     g_fake_analog_family = 0;
     opts.analog_am_bandwidth_hz = 0;
@@ -8610,6 +8620,29 @@ test_am_refused_on_pcm_input(void) {
     rc |= expect_int("pcm am: config toast",
                      strstr(state.ui_msg, "Decoding Analog: AM demodulation needs an IQ radio input") != NULL, 1);
 
+    /* Config > Load makes the loaded file the autosave target, then applies it. Its decode = am must survive the
+     * session, as it does a start with it: autosave is turned off, with a toast, rather than writing the Analog
+     * fallback over it when the session ends. */
+    dsd_app_config_metadata_payload meta;
+    DSD_MEMSET(&meta, 0, sizeof meta);
+    meta.autosave_enabled = 1;
+    DSD_SNPRINTF(meta.path, sizeof meta.path, "%s", "shared-am.ini");
+    rc |= expect_int("pcm am: load metadata queued",
+                     dsd_app_command_submit(DSD_APP_CMD_CONFIG_METADATA_SET, &meta, sizeof meta),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("pcm am: load metadata drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("pcm am: autosave on for the loaded file", state.config_autosave_enabled, 1);
+    state.ui_msg[0] = '\0';
+    rc |= submit_config_mode(&opts, &state, DSDCFG_MODE_AM, "pcm am: loaded config am");
+    rc |= expect_int("pcm am: loaded config fell back to Analog",
+                     dsd_infer_decode_mode_preset(&opts) == DSDCFG_MODE_ANALOG, 1);
+    rc |= expect_int("pcm am: loaded config turns autosave off", state.config_autosave_enabled, 0);
+    rc |= expect_str("pcm am: the autosave path stays", state.config_autosave_path, "shared-am.ini");
+    rc |= expect_int("pcm am: loaded config toast says why",
+                     strstr(state.ui_msg, "Autosave is off this session to keep decode = am") != NULL, 1);
+    state.config_autosave_enabled = 0;
+    state.config_autosave_path[0] = '\0';
+
     /* Analog stays available on PCM: it monitors the audio as it arrives. */
     rc |= expect_int("pcm analog queued", dsd_app_command_set_i32(DSD_APP_CMD_DECODE_MODE_SET, DSDCFG_MODE_ANALOG),
                      DSD_APP_COMMAND_SUBMIT_QUEUED);
@@ -8674,29 +8707,6 @@ main(void) {
 #endif
 #ifdef DSD_NEO_TEST_AUDIO_ENSURE_WRAP
     rc |= test_decode_mode_set_ensures_family_sink();
-    /* Config > Load makes the loaded file the autosave target, then applies it. Its decode = am must survive the
-     * session, as it does a start with it: autosave is turned off, with a toast, rather than writing the Analog
-     * fallback over it when the session ends. */
-    dsd_app_config_metadata_payload meta;
-    DSD_MEMSET(&meta, 0, sizeof meta);
-    meta.autosave_enabled = 1;
-    DSD_SNPRINTF(meta.path, sizeof meta.path, "%s", "shared-am.ini");
-    rc |= expect_int("pcm am: load metadata queued",
-                     dsd_app_command_submit(DSD_APP_CMD_CONFIG_METADATA_SET, &meta, sizeof meta),
-                     DSD_APP_COMMAND_SUBMIT_QUEUED);
-    rc |= expect_int("pcm am: load metadata drained", dsd_app_drain_cmds(&opts, &state), 1);
-    rc |= expect_int("pcm am: autosave on for the loaded file", state.config_autosave_enabled, 1);
-    state.ui_msg[0] = '\0';
-    rc |= submit_config_mode(&opts, &state, DSDCFG_MODE_AM, "pcm am: loaded config am");
-    rc |= expect_int("pcm am: loaded config fell back to Analog",
-                     dsd_infer_decode_mode_preset(&opts) == DSDCFG_MODE_ANALOG, 1);
-    rc |= expect_int("pcm am: loaded config turns autosave off", state.config_autosave_enabled, 0);
-    rc |= expect_str("pcm am: the autosave path stays", state.config_autosave_path, "shared-am.ini");
-    rc |= expect_int("pcm am: loaded config toast says why",
-                     strstr(state.ui_msg, "Autosave is off this session to keep decode = am") != NULL, 1);
-    state.config_autosave_enabled = 0;
-    state.config_autosave_path[0] = '\0';
-
     rc |= test_config_apply_keeps_session_output_layout();
 #endif
     rc |= test_family_change_discards_partial_analog_block();

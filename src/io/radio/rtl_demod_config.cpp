@@ -517,6 +517,7 @@ demod_apply_channel_lpf_defaults(struct demod_state* demod, const dsd_opts* opts
     demod->analog_demod = DSD_ANALOG_DEMOD_FM;
     demod->channel_lpf_width_hz = 0;
     demod->analog_width_request_hz = 0;
+    demod->analog_width_setting_hz = 0;
     if (dsd_opts_is_analog_family(opts)) {
         /* Provisional: rate_out is not final yet. rtl_demod_finalize_analog_channel() settles it. */
         (void)rtl_demod_apply_analog_channel(demod, opts->analog_demod, dsd_opts_analog_width_hz(opts));
@@ -1095,6 +1096,7 @@ rtl_demod_apply_analog_channel(struct demod_state* demod, int kind, int explicit
     demod->analog_family = 1;
     demod->analog_demod = analog_kind;
     demod->analog_width_request_hz = requested_hz;
+    demod->analog_width_setting_hz = explicit_width_hz > 0 ? explicit_width_hz : 0;
     demod->channel_lpf_profile = DSD_CH_LPF_PROFILE_WIDE;
     if (requested_hz > 0) {
         /* A requested width (explicit, or the AM default) is a request for that filter: it turns the channel LPF on. */
@@ -1121,14 +1123,15 @@ rtl_demod_refresh_analog_channel_for_rate(struct demod_state* demod, char* err, 
     if (!dsd_demod_analog_monitor_active(demod)) {
         return 0;
     }
-    const int explicit_width_hz = demod->analog_width_request_hz;
+    const int requested_hz = demod->analog_width_request_hz;
     int rc = 0;
-    if (explicit_width_hz > 0
-        && dsd_analog_width_check(demod->analog_demod, explicit_width_hz, demod->rate_out, err, err_size) != 0) {
+    if (requested_hz > 0
+        && dsd_analog_width_check(demod->analog_demod, requested_hz, demod->rate_out, err, err_size) != 0) {
         /* Kept as requested: never clamped and never swapped for another design. */
         rc = -1;
     }
-    (void)rtl_demod_apply_analog_channel(demod, demod->analog_demod, explicit_width_hz);
+    /* From the setting, which resolves to the same request, so an unset AM default stays unset. */
+    (void)rtl_demod_apply_analog_channel(demod, demod->analog_demod, demod->analog_width_setting_hz);
     return rc;
 }
 
@@ -1429,6 +1432,7 @@ rtl_demod_enter_digital_family(struct demod_state* demod, struct output_state* o
     demod->analog_demod = DSD_ANALOG_DEMOD_FM;
     demod->channel_lpf_width_hz = 0;
     demod->analog_width_request_hz = 0;
+    demod->analog_width_setting_hz = 0;
     demod->cqpsk_enable = 0;
     demod->ted_enabled = 0;
     demod->mode_demod = &dsd_fm_demod;

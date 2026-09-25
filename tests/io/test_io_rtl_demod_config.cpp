@@ -1754,9 +1754,26 @@ expect_unset_default_rule_keyed_on_nfm(void) {
     rc |= expect_int_eq("12 kHz AM default width", demod->channel_lpf_width_hz, DSD_ANALOG_AM_WIDTH_DEFAULT_HZ);
     rc |= expect_int_eq("AM default kept for rate changes", demod->analog_width_request_hz,
                         DSD_ANALOG_AM_WIDTH_DEFAULT_HZ);
+    /* The setting the request came from is kept apart from it: the unset AM default and an explicit 6000 Hz make the
+     * same request, and a refusing stream reports the setting, so the explicit one is not put back as the default. A
+     * rate change resolves the channel again from the setting, so the default stays unset across it. */
+    rc |= expect_int_eq("AM default setting stays unset", demod->analog_width_setting_hz, 0);
+    demod->rate_out = 24000;
+    rc |= expect_int_eq("AM default refreshed for a new rate",
+                        rtl_demod_refresh_analog_channel_for_rate(demod, err, sizeof err), 0);
+    rc |= expect_int_eq("AM default setting stays unset across a rate change", demod->analog_width_setting_hz, 0);
+    rc |= expect_int_eq("AM default request across a rate change", demod->analog_width_request_hz,
+                        DSD_ANALOG_AM_WIDTH_DEFAULT_HZ);
+    (void)rtl_demod_apply_analog_channel(demod, DSD_ANALOG_DEMOD_AM, DSD_ANALOG_AM_WIDTH_DEFAULT_HZ);
+    rc |= expect_int_eq("explicit AM 6 kHz setting", demod->analog_width_setting_hz, DSD_ANALOG_AM_WIDTH_DEFAULT_HZ);
+    rc |= expect_int_eq("explicit AM 6 kHz request", demod->analog_width_request_hz, DSD_ANALOG_AM_WIDTH_DEFAULT_HZ);
+    (void)rtl_demod_refresh_analog_channel_for_rate(demod, err, sizeof err);
+    rc |= expect_int_eq("explicit AM 6 kHz stays explicit across a rate change", demod->analog_width_setting_hz,
+                        DSD_ANALOG_AM_WIDTH_DEFAULT_HZ);
     (void)rtl_demod_apply_analog_channel(demod, DSD_ANALOG_DEMOD_FM, 0);
     rc |= expect_int_eq("back to the NFM default restores the legacy rule", demod->channel_lpf_enable, 0);
     rc |= expect_int_eq("NFM default request stays unset", demod->analog_width_request_hz, 0);
+    rc |= expect_int_eq("NFM default setting stays unset", demod->analog_width_setting_hz, 0);
     rtl_demod_cleanup(demod);
     dsd_neo_aligned_free(demod);
 

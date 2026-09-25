@@ -188,6 +188,11 @@ struct demod_state {
        kept so a later rate change can resolve the channel again: the unset default between 16 kHz and the legacy
        WIDE design, and a requested width against the new rate. */
     int analog_width_request_hz;
+    /* The configured width that request came from (0 = the kind's default, AM's included), as the decoder spells the
+       setting. The AM default and an explicit 6000 Hz make the same request; a stream that refuses a later request
+       reports this as the width it kept (rtl_stream_receive_request_refusal()), so the decoder puts back the setting
+       it had, not the default for an explicit 6000. */
+    int analog_width_setting_hz;
     /* AM envelope detector (dsd_am_demod(), issue #524): the carrier estimate the envelope is divided by, a one-pole
        average of |z| with a DSD_AM_CARRIER_TAU_MS time constant. A squelched block leaves it where it was. Every reset
        of the monitor audio state (stream open, retune, receive-family or FM/AM switch) sets it to 0, and the next

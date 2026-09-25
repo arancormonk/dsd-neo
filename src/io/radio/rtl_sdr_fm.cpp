@@ -8347,8 +8347,8 @@ static std::atomic<uint32_t> g_rx_req_seq{0U};
 static std::atomic<uint32_t> g_rx_req_settled_seq{0U};
 static std::atomic<uint32_t> g_rx_req_refused_seq{0U};
 /* What the stream kept when it refused g_rx_req_refused_seq (rtl_stream_receive_request_refusal()): whether it stayed
- * on the analog family, and the analog width (0 = the kind's default) and kind that family runs. Written before the
- * settlement that makes the refusal visible. */
+ * on the analog family, and the configured analog width (0 = the kind's default, demod_state::analog_width_setting_hz)
+ * and kind that family runs. Written before the settlement that makes the refusal visible. */
 static std::atomic<int> g_rx_req_refused_kept_analog{0};
 static std::atomic<int> g_rx_req_refused_kept_width_hz{0};
 static std::atomic<int> g_rx_req_refused_kept_kind{0};
@@ -8755,15 +8755,15 @@ rtl_stream_drop_refused_analog_request(int* analog_family, int kind, int width_h
     return analog_seq;
 }
 
-/* Settle every request up to @p taken_seq once it is applied, recording @p refused_seq (0: none) as refused first, with
- * the family, analog width and kind the stream kept (rtl_stream_receive_request_refusal()). What was applied is published
- * before it is settled, so a decoder that reads a request as settled reads the state it left (the block loop publishes
- * again after the block). */
+/* Settle every request up to @p taken_seq once it is applied, recording @p refused_seq (0: none) as refused first,
+ * with the family, analog width setting and kind the stream kept (rtl_stream_receive_request_refusal()). What was
+ * applied is published before it is settled, so a decoder that reads a request as settled reads the state it left
+ * (the block loop publishes again after the block). */
 static void
 rtl_stream_settle_taken_requests(uint32_t taken_seq, uint32_t refused_seq) {
     if (refused_seq != 0U) {
         g_rx_req_refused_kept_analog.store(demod.analog_family ? 1 : 0, std::memory_order_relaxed);
-        g_rx_req_refused_kept_width_hz.store(demod.analog_width_request_hz, std::memory_order_relaxed);
+        g_rx_req_refused_kept_width_hz.store(demod.analog_width_setting_hz, std::memory_order_relaxed);
         g_rx_req_refused_kept_kind.store(demod.analog_demod, std::memory_order_relaxed);
         g_rx_req_refused_seq.store(refused_seq, std::memory_order_relaxed);
     }
@@ -10102,10 +10102,12 @@ rx_request_test_analog_refusal(rtl_stream_test_rx_request_result* out) {
     const int saved_rate_out = demod.rate_out;
     const int saved_family = demod.analog_family;
     const int saved_width_request = demod.analog_width_request_hz;
+    const int saved_width_setting = demod.analog_width_setting_hz;
     const int saved_kind = demod.analog_demod;
     demod.analog_family = 1;
     demod.analog_demod = DSD_ANALOG_DEMOD_AM;
     demod.analog_width_request_hz = 12500;
+    demod.analog_width_setting_hz = 12500;
     demod.rate_out = 48000;
     rtl_stream_publish_demod_profile_snapshot();
     out->analog_request_rc = rtl_stream_request_analog_profile(DSD_RX_FAMILY_ANALOG, DSD_ANALOG_DEMOD_FM, 25000);
@@ -10137,6 +10139,7 @@ rx_request_test_analog_refusal(rtl_stream_test_rx_request_result* out) {
 
     demod.analog_family = saved_family;
     demod.analog_width_request_hz = saved_width_request;
+    demod.analog_width_setting_hz = saved_width_setting;
     demod.analog_demod = saved_kind;
     demod.rate_out = saved_rate_out;
 }
