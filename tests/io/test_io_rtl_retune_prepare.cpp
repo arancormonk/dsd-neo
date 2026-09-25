@@ -639,6 +639,81 @@ test_retune_profile_width_checked_at_landing_rate(void) {
     return failed;
 }
 
+static int
+expect_landing(const char* stage, const rtl_stream_test_retune_landing* r, int family, int width_hz, int output_kind) {
+    char label[160];
+    int failed = 0;
+    DSD_SNPRINTF(label, sizeof label, "%s: profile queued", stage);
+    failed |= expect_int_eq(label, r->queued_rc, 0);
+    DSD_SNPRINTF(label, sizeof label, "%s: profile taken", stage);
+    failed |= expect_int_eq(label, r->taken, 1);
+    DSD_SNPRINTF(label, sizeof label, "%s: family", stage);
+    failed |= expect_int_eq(label, r->applied_family, family);
+    DSD_SNPRINTF(label, sizeof label, "%s: output", stage);
+    failed |= expect_int_eq(label, r->applied_output_kind, output_kind);
+    if (width_hz > 0) {
+        DSD_SNPRINTF(label, sizeof label, "%s: channel width", stage);
+        failed |= expect_int_eq(label, r->applied_width_hz, width_hz);
+    }
+    return failed;
+}
+
+/* Scan rows retune one after another on one running stream (issue #526), and each lands the receive family and width
+ * its own retune profile carries: an nfm row with its own width, a digital row after it (its symbol profile on the
+ * digital family), and an nfm row at the default width. */
+static int
+test_retune_profiles_land_each_rows_family_and_width(void) {
+    const rtl_stream_test_retune_step steps[] = {
+        {DSD_RX_FAMILY_ANALOG, DSD_ANALOG_DEMOD_FM, 12500, 0, -1, -1},
+        {DSD_RX_FAMILY_DIGITAL, DSD_ANALOG_DEMOD_FM, 0, 1, -1, -1},
+        {DSD_RX_FAMILY_ANALOG, DSD_ANALOG_DEMOD_FM, 0, 0, -1, -1},
+    };
+    rtl_stream_test_retune_landing r[3];
+    DSD_MEMSET(r, 0, sizeof r);
+    int failed = expect_int_eq("row sequence hook", rtl_stream_test_retune_profile_sequence(steps, 3U, r), 0);
+    failed |= expect_landing("nfm row at 12.5 kHz", &r[0], 1, 12500, DSD_DEMOD_OUTPUT_AUDIO_MONITOR);
+    failed |= expect_landing("digital row after it", &r[1], 0, 0, DSD_DEMOD_OUTPUT_SYMBOL_CQPSK);
+    failed |= expect_int_eq("digital row runs its CQPSK profile", r[1].applied_cqpsk_enable, 1);
+    failed |= expect_landing("nfm row at the default width", &r[2], 1, DSD_ANALOG_NFM_WIDTH_DEFAULT_HZ,
+                             DSD_DEMOD_OUTPUT_AUDIO_MONITOR);
+    failed |= expect_int_eq("nfm row after a digital row leaves CQPSK off", r[2].applied_cqpsk_enable, 0);
+    return failed;
+}
+
+/* A live family request made after a row's retune profile was taken, while that retune is still in flight on the
+ * device, is newer than the profile: a scanner leaving meanwhile puts the configured family back that way. The retune
+ * then lands on its channel without switching the front end to the family the row wanted, and without the symbol
+ * profile queued with it. A request made before the profile was queued is older, and the profile lands over it. */
+static int
+test_retune_family_superseded_by_a_later_live_request(void) {
+    /* A digital session leaves -Y while an nfm row's retune is in flight. */
+    const rtl_stream_test_retune_step leave_to_digital[] = {
+        {DSD_RX_FAMILY_ANALOG, DSD_ANALOG_DEMOD_FM, 12500, 0, -1, DSD_RX_FAMILY_DIGITAL},
+        {DSD_RX_FAMILY_ANALOG, DSD_ANALOG_DEMOD_FM, 12500, 0, DSD_RX_FAMILY_DIGITAL, -1},
+    };
+    rtl_stream_test_retune_landing r[2];
+    DSD_MEMSET(r, 0, sizeof r);
+    int failed =
+        expect_int_eq("leave-to-digital hook", rtl_stream_test_retune_profile_sequence(leave_to_digital, 2U, r), 0);
+    failed |=
+        expect_landing("nfm retune after a later digital request", &r[0], 0, 0, DSD_DEMOD_OUTPUT_FSK_DISCRIMINATOR);
+    failed |=
+        expect_landing("nfm retune after an earlier digital request", &r[1], 1, 12500, DSD_DEMOD_OUTPUT_AUDIO_MONITOR);
+
+    /* An -fA session leaves -Y while a digital row's retune (after an nfm row) is in flight. */
+    const rtl_stream_test_retune_step leave_to_analog[] = {
+        {DSD_RX_FAMILY_ANALOG, DSD_ANALOG_DEMOD_FM, 12500, 0, -1, -1},
+        {DSD_RX_FAMILY_DIGITAL, DSD_ANALOG_DEMOD_FM, 0, 1, -1, DSD_RX_FAMILY_ANALOG},
+    };
+    DSD_MEMSET(r, 0, sizeof r);
+    failed |= expect_int_eq("leave-to-analog hook", rtl_stream_test_retune_profile_sequence(leave_to_analog, 2U, r), 0);
+    failed |= expect_landing("nfm row", &r[0], 1, 12500, DSD_DEMOD_OUTPUT_AUDIO_MONITOR);
+    failed |=
+        expect_landing("digital retune after a later analog request", &r[1], 1, 12500, DSD_DEMOD_OUTPUT_AUDIO_MONITOR);
+    failed |= expect_int_eq("superseded symbol profile not applied", r[1].applied_cqpsk_enable, 0);
+    return failed;
+}
+
 int
 main(void) {
     dsd_neo_log_set_tap(capture_error_log, NULL);
@@ -1455,6 +1530,8 @@ main(void) {
     failed |= test_audio_monitor_refused_retune_completes_failed();
     failed |= test_retune_profile_carries_analog_fields();
     failed |= test_retune_profile_width_checked_at_landing_rate();
+    failed |= test_retune_profiles_land_each_rows_family_and_width();
+    failed |= test_retune_family_superseded_by_a_later_live_request();
 
     return failed ? 1 : 0;
 }

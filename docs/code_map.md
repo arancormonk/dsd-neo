@@ -1004,7 +1004,11 @@ Notes:
     family-switch gate while the demod thread is parked (a retune's finalize on the controller thread, a gated CQPSK
     toggle). Receive-family requests are queued and applied by the demod thread between blocks; a retune profile's
     family fields apply with the rest of the retune under the reconfigure gate, as its symbol profile and CQPSK toggle
-    always have, and an analog one applies no symbol profile, CQPSK toggle or timing queued for the same target. An
+    always have, and an analog one applies no symbol profile, CQPSK toggle or timing queued for the same target. A live
+    family request accepted after a retune profile's family was attached supersedes it (`g_live_family_requests`): the
+    retune lands on its target with neither that family nor the symbol profile queued with it, so a scanner that leaves
+    while its row's retune is still in flight (the configured family put back by live requests) is not switched back
+    to the row's family when the device finishes the retune. An
     analog width is checked again against the demod rate it lands on, both a live request when the demod thread
     consumes it and a retune profile when the retune lands (a retune can move the rate after the request was checked
     against the published one); a width that rate cannot realize is refused (logged once per kind, width and rate) and

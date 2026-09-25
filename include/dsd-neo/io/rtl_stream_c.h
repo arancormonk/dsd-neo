@@ -513,6 +513,11 @@ typedef struct rtl_stream_retune_analog_profile {
  * alone. A DSD_RX_FAMILY_DIGITAL switch then applies the queued symbol profile; a DSD_RX_FAMILY_ANALOG switch
  * applies none of it (the analog family has no symbol clock), only the gain profile.
  *
+ * A live rtl_stream_request_analog_profile() accepted after this call is the newer word on the family: the retune then
+ * lands on its target with neither this family nor the symbol profile queued with it, so the front end stays on the
+ * family and profile the live requests chose. A scanner that leaves while its row's retune is still in flight puts
+ * the configured family back that way, and the late retune does not switch it back to the row's.
+ *
  * @return 0 when attached; -1 when refused (same rules and refusal log as rtl_stream_request_analog_profile()).
  */
 int rtl_stream_prepare_retune_analog_profile_for_target(uint32_t target_freq_hz,

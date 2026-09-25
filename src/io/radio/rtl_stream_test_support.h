@@ -654,6 +654,33 @@ int rtl_stream_test_retune_analog_profile_at_rate(uint32_t target_hz, int rate_h
                                                   int with_cqpsk_symbol_profile,
                                                   rtl_stream_test_retune_analog_result* out);
 
+/* One scan row's retune (issue #526): the receive family its profile attaches, and the live family request a scanner
+ * or a command makes around it. */
+typedef struct rtl_stream_test_retune_step {
+    int family; /* dsd_rx_family the retune profile attaches */
+    int kind;   /* analog demodulator (with the analog family) */
+    int width_hz;
+    int with_symbol_profile;    /* queue a P25 CQPSK symbol profile for the target first, as a digital row does */
+    int live_family_before;     /* -1, or a live family request made before the profile is queued */
+    int live_family_after_take; /* -1, or a live family request made once the controller has taken the profile */
+} rtl_stream_test_retune_step;
+
+typedef struct rtl_stream_test_retune_landing {
+    int queued_rc;           /* rtl_stream_prepare_retune_analog_profile_for_target() */
+    int taken;               /* the controller took a profile for the step's target */
+    int applied_family;      /* demod_state::analog_family once the retune finalized */
+    int applied_width_hz;    /* demod_state::channel_lpf_width_hz then */
+    int applied_output_kind; /* demod_state::output_kind then */
+    int applied_cqpsk_enable;
+} rtl_stream_test_retune_landing;
+
+/* Land @p count scan-row retunes one after another on a DMR stream opened at 48 kHz, each on its own channel, the way
+ * the controller does (queue the profile, take it, finalize the retune with it), and report what the demodulator ended
+ * on after each. With no stream running a live family request switches nothing itself; it only stands, as it does on
+ * the demod thread, for a newer request than the profile queued before it. */
+int rtl_stream_test_retune_profile_sequence(const rtl_stream_test_retune_step* steps, size_t count,
+                                            rtl_stream_test_retune_landing* out);
+
 typedef struct rtl_stream_test_replay_state {
     int replay_input_eof;
     int replay_input_drained;
