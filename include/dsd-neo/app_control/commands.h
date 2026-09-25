@@ -200,6 +200,10 @@ enum dsd_app_command_id {
     DSD_APP_CMD_SCAN_VOICE_ONLY_SET = 505,       // payload: int32_t on(0/1)
     DSD_APP_CMD_SCAN_VOICE_QUALIFY_MS_SET = 506, // payload: int32_t ms (100..600000)
     DSD_APP_CMD_SCAN_VOICE_HOLD_MS_SET = 507,    // payload: int32_t ms (100..600000)
+    // Configured NFM channel-filter width (issue #525): the full RF passband in Hz, 8000..25000, or 0 for the
+    // 16000 default. Refused with a toast, changing nothing, when out of range or when the front end the analog
+    // preset runs on cannot filter it at its DSP rate; applied live to a running analog monitor.
+    DSD_APP_CMD_NFM_BANDWIDTH_SET = 508, // payload: int32_t Hz (0 = default)
 
     // Pulse audio device selection
     DSD_APP_CMD_PULSE_OUT_SET = 520, // payload: char name[]

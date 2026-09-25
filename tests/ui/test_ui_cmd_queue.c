@@ -5093,6 +5093,8 @@ static int g_analog_check_calls;
 static int g_analog_check_family;
 static int g_analog_check_kind;
 static int g_analog_check_width_hz;
+/* What rtl_stream_get_analog_profile() reports: 1 while the front end runs the analog monitor. */
+static int g_fake_analog_profile;
 /* The digital decode modes the decoder notes with the front end (rtl_stream_set_digital_decode_modes()). */
 static int g_modes_note_calls;
 static int g_modes_note_order;
@@ -5108,6 +5110,21 @@ int __wrap_rtl_stream_request_demod_profile(int cqpsk_enable, int symbol_rate_hz
 int __wrap_rtl_stream_analog_family_active(void);
 unsigned int __wrap_rtl_stream_output_rate_for_family(int family, int cqpsk_enable, int symbol_rate_hz);
 void __wrap_rtl_stream_set_digital_decode_modes(const dsd_opts* opts);
+int __wrap_rtl_stream_get_analog_profile(int* out_kind, int* out_width_hz, int* out_lpf_on);
+
+int
+__wrap_rtl_stream_get_analog_profile(int* out_kind, int* out_width_hz, int* out_lpf_on) {
+    if (out_kind) {
+        *out_kind = 0;
+    }
+    if (out_width_hz) {
+        *out_width_hz = 0;
+    }
+    if (out_lpf_on) {
+        *out_lpf_on = 0;
+    }
+    return g_fake_analog_profile;
+}
 
 int
 __wrap_rtl_stream_check_analog_profile(int family, int kind, int width_hz) {
@@ -5585,6 +5602,305 @@ test_config_apply_refused_analog_profile_changes_nothing(void) {
     freeState(&state);
     return rc;
 }
+
+static int
+submit_nfm_width(dsd_opts* opts, dsd_state* state, int32_t hz, const char* label) {
+    int rc =
+        expect_int(label, dsd_app_command_set_i32(DSD_APP_CMD_NFM_BANDWIDTH_SET, hz), DSD_APP_COMMAND_SUBMIT_QUEUED);
+    state->ui_msg[0] = '\0';
+    rc |= expect_int(label, dsd_app_drain_cmds(opts, state), 1);
+    return rc;
+}
+
+static int
+expect_toast(const char* label, const dsd_state* state, const char* text) {
+    if (strstr(state->ui_msg, text) == NULL) {
+        DSD_FPRINTF(stderr, "%s: toast \"%s\" does not contain \"%s\"\n", label, state->ui_msg, text);
+        return 1;
+    }
+    return 0;
+}
+
+/* An -fA session on an RTL-SDR input whose DSP bandwidth is 24 kHz, with the front end on the analog monitor. */
+static void
+init_nfm_session(dsd_opts* opts, dsd_state* state, void* fake_ctx) {
+    init_decode_mode_context(opts, state);
+    opts->audio_in_type = AUDIO_IN_RTL;
+    DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", "rtl:0:851.375M:0:0:24");
+    opts->rtl_dsp_bw_khz = 24;
+    state->rtl_ctx = (RtlSdrContext*)fake_ctx;
+    (void)dsd_app_command_set_i32(DSD_APP_CMD_DECODE_MODE_SET, (int32_t)DSDCFG_MODE_ANALOG);
+    (void)dsd_app_drain_cmds(opts, state);
+    reset_rx_family_wrap();
+    g_fake_analog_profile = 1;
+}
+
+/*
+ * Issue #525: DSD_APP_CMD_NFM_BANDWIDTH_SET edits the configured NFM width and hands it to a front end on the analog
+ * monitor, live. A width outside 8000..25000 Hz, or one the front end cannot filter at its DSP rate, is refused with a
+ * toast that names the values, and the previous width stays: never clamped. 0 selects the default.
+ */
+static int
+test_nfm_bandwidth_set_applies_live_and_refuses(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static void* fake_ctx[2];
+    int rc = 0;
+    init_nfm_session(&opts, &state, fake_ctx);
+    rc |= expect_int("nfm: session is analog", opts.analog_only, 1);
+
+    rc |= submit_nfm_width(&opts, &state, 12500, "nfm 12500");
+    rc |= expect_int("nfm 12500 stored", opts.analog_nfm_bandwidth_hz, 12500);
+    rc |= expect_int("nfm 12500 checked with the front end", g_analog_check_calls, 1);
+    rc |= expect_int("nfm 12500 checked as NFM", g_analog_check_kind, DSD_ANALOG_DEMOD_FM);
+    rc |= expect_int("nfm 12500 checked width", g_analog_check_width_hz, 12500);
+    rc |= expect_int("nfm 12500 requested live", g_analog_req_calls, 1);
+    rc |= expect_int("nfm 12500 request family", g_analog_req_family, DSD_RX_FAMILY_ANALOG);
+    rc |= expect_int("nfm 12500 request width", g_analog_req_width_hz, 12500);
+    rc |= expect_toast("nfm 12500 toast", &state, "Applied: NFM bandwidth -> 12.5 kHz");
+
+    reset_rx_family_wrap();
+    rc |= submit_nfm_width(&opts, &state, 30000, "nfm 30000");
+    rc |= expect_int("nfm 30000 keeps the width", opts.analog_nfm_bandwidth_hz, 12500);
+    rc |= expect_int("nfm 30000 asks nothing", g_analog_check_calls + g_analog_req_calls, 0);
+    rc |= expect_toast("nfm 30000 toast", &state, "Refused: NFM bandwidth 30 kHz is outside 8 kHz to 25 kHz");
+    rc |= submit_nfm_width(&opts, &state, -1, "nfm -1");
+    rc |= expect_int("nfm -1 keeps the width", opts.analog_nfm_bandwidth_hz, 12500);
+    rc |= expect_toast("nfm -1 toast", &state, "Refused: NFM bandwidth -1 Hz is outside");
+
+    /* The front end refuses a width its 24 kHz DSP rate cannot filter: the toast names both and the fix's limit. */
+    reset_rx_family_wrap();
+    g_fake_analog_profile = 1;
+    g_analog_check_result = -1;
+    rc |= submit_nfm_width(&opts, &state, 25000, "nfm 25000");
+    rc |= expect_int("nfm 25000 keeps the width", opts.analog_nfm_bandwidth_hz, 12500);
+    rc |= expect_int("nfm 25000 not requested", g_analog_req_calls, 0);
+    rc |=
+        expect_toast("nfm 25000 toast", &state, "Refused: NFM 25 kHz does not fit the 24 kHz DSP rate (max 20.4 kHz)");
+    /* Refused for a reason the rate does not explain (DSD_NEO_CHANNEL_LPF=0, say): the front end logged it. */
+    rc |= submit_nfm_width(&opts, &state, 20000, "nfm 20000 refused");
+    rc |= expect_int("nfm 20000 keeps the width", opts.analog_nfm_bandwidth_hz, 12500);
+    rc |= expect_toast("nfm 20000 toast", &state, "Refused: the RTL front end refused NFM 20 kHz (see log)");
+    g_analog_check_result = 0;
+
+    /* 0 is the default: never refused for its rate, and requested as 0. */
+    reset_rx_family_wrap();
+    g_fake_analog_profile = 1;
+    rc |= submit_nfm_width(&opts, &state, 0, "nfm default");
+    rc |= expect_int("nfm default stored", opts.analog_nfm_bandwidth_hz, 0);
+    rc |= expect_int("nfm default not checked", g_analog_check_calls, 0);
+    rc |= expect_int("nfm default requested", g_analog_req_calls == 1 && g_analog_req_width_hz == 0, 1);
+    rc |= expect_toast("nfm default toast", &state, "Applied: NFM bandwidth -> default (16 kHz)");
+
+    /* A front end off the monitor (a CQPSK toggle under -fA) keeps its profile; the width waits for the next analog
+       profile. */
+    reset_rx_family_wrap();
+    g_fake_analog_profile = 0;
+    rc |= submit_nfm_width(&opts, &state, 16000, "nfm off the monitor");
+    rc |= expect_int("nfm off the monitor stored", opts.analog_nfm_bandwidth_hz, 16000);
+    rc |= expect_int("nfm off the monitor checked", g_analog_check_calls, 1);
+    rc |= expect_int("nfm off the monitor not requested", g_analog_req_calls, 0);
+
+    /* With no stream running, an RTL-SDR input's DSP bandwidth is the rate the next start will run at. */
+    state.rtl_ctx = NULL;
+    reset_rx_family_wrap();
+    rc |= submit_nfm_width(&opts, &state, 25000, "nfm no stream");
+    rc |= expect_int("nfm no stream keeps the width", opts.analog_nfm_bandwidth_hz, 16000);
+    rc |= expect_int("nfm no stream asks no front end", g_analog_check_calls, 0);
+    rc |= expect_toast("nfm no stream toast", &state, "Refused: NFM 25 kHz does not fit the 24 kHz DSP rate");
+    state.rtl_ctx = (RtlSdrContext*)fake_ctx;
+
+    /* A digital session does not use the width: only its range is checked, and the front end is not asked. */
+    (void)dsd_app_command_set_i32(DSD_APP_CMD_DECODE_MODE_SET, (int32_t)DSDCFG_MODE_DMR);
+    (void)dsd_app_drain_cmds(&opts, &state);
+    reset_rx_family_wrap();
+    g_analog_check_result = -1;
+    rc |= submit_nfm_width(&opts, &state, 25000, "nfm digital");
+    rc |= expect_int("nfm digital stored", opts.analog_nfm_bandwidth_hz, 25000);
+    rc |= expect_int("nfm digital asks nothing", g_analog_check_calls + g_analog_req_calls, 0);
+
+    g_analog_check_result = 0;
+    g_fake_analog_profile = 0;
+    opts.analog_nfm_bandwidth_hz = 0;
+    state.rtl_ctx = NULL;
+    freeState(&state);
+    return rc;
+}
+
+/*
+ * The width is configuration, so under a scan row the command runs against the baseline: on a typed digital row of an
+ * -fA session it is stored without switching the front end in the middle of the row, and the row keeps running; on a
+ * row that inherits the analog monitor it applies live.
+ */
+static int
+test_nfm_bandwidth_set_under_scan_rows(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static void* fake_ctx[2];
+    int rc = 0;
+    init_nfm_session(&opts, &state, fake_ctx);
+    rc |= expect_int("nfm row: typed DMR row", dsd_scan_mode_enter(&opts, &state, DSD_SCAN_MODE_DMR), 0);
+    rc |= expect_int("nfm row: typed DMR options", dsd_scan_mode_options(&opts, &state, NULL), 0);
+    reset_rx_family_wrap();
+    g_fake_analog_profile = 0;
+    rc |= submit_nfm_width(&opts, &state, 12500, "nfm row");
+    rc |= expect_int("nfm row: width stored", opts.analog_nfm_bandwidth_hz, 12500);
+    rc |= expect_int("nfm row: held to the front end", g_analog_check_calls, 1);
+    rc |= expect_int("nfm row: front end not switched", g_analog_req_calls, 0);
+    rc |= expect_int("nfm row: row still runs DMR", opts.frame_dmr == 1 && opts.analog_only == 0, 1);
+    dsd_scan_mode_leave(&opts, &state);
+    rc |= expect_int("nfm row: baseline analog again", opts.analog_only, 1);
+    rc |= expect_int("nfm row: width kept for the leave", opts.analog_nfm_bandwidth_hz, 12500);
+
+    rc |= expect_int("nfm inherit: row", dsd_scan_mode_enter(&opts, &state, DSD_SCAN_MODE_INHERIT), 0);
+    rc |= expect_int("nfm inherit: options", dsd_scan_mode_options(&opts, &state, NULL), 0);
+    reset_rx_family_wrap();
+    g_fake_analog_profile = 1;
+    rc |= submit_nfm_width(&opts, &state, 16000, "nfm inherit");
+    rc |= expect_int("nfm inherit: width stored", opts.analog_nfm_bandwidth_hz, 16000);
+    rc |= expect_int("nfm inherit: requested live", g_analog_req_calls == 1 && g_analog_req_width_hz == 16000, 1);
+    dsd_scan_mode_leave(&opts, &state);
+
+    g_fake_analog_profile = 0;
+    opts.analog_nfm_bandwidth_hz = 0;
+    state.rtl_ctx = NULL;
+    freeState(&state);
+    return rc;
+}
+
+static int
+submit_config_nfm_width(dsd_opts* opts, dsd_state* state, int mode, int width_hz, const char* label) {
+    dsdneoUserConfig cfg;
+    DSD_MEMSET(&cfg, 0, sizeof cfg);
+    cfg.has_mode = mode != DSDCFG_MODE_UNSET;
+    cfg.decode_mode = (dsdneoUserDecodeMode)mode;
+    cfg.has_analog = 1;
+    cfg.analog_nfm_bandwidth_hz = width_hz;
+    int rc = expect_int(label, dsd_app_command_submit(DSD_APP_CMD_CONFIG_APPLY, &cfg, sizeof(cfg)),
+                        DSD_APP_COMMAND_SUBMIT_QUEUED);
+    state->ui_msg[0] = '\0';
+    rc |= expect_int(label, dsd_app_drain_cmds(opts, state), 1);
+    return rc;
+}
+
+/*
+ * A config that gives the analog monitor a new [analog] nfm_bandwidth_hz is held to the front end before anything is
+ * applied, as the command is: a width it cannot filter leaves the whole config unapplied. An accepted one reaches a
+ * running monitor as a width-only change, and a [mode] that moves onto the monitor asks with the new width.
+ */
+static int
+test_config_apply_holds_nfm_width_to_the_front_end(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static void* fake_ctx[2];
+    int rc = 0;
+    init_nfm_session(&opts, &state, fake_ctx);
+
+    rc |= submit_config_nfm_width(&opts, &state, DSDCFG_MODE_UNSET, 12500, "cfg nfm 12500");
+    rc |= expect_int("cfg nfm 12500 applied", opts.analog_nfm_bandwidth_hz, 12500);
+    rc |= expect_int("cfg nfm 12500 checked", g_analog_check_calls == 1 && g_analog_check_width_hz == 12500, 1);
+    rc |= expect_int("cfg nfm 12500 requested", g_analog_req_calls == 1 && g_analog_req_width_hz == 12500, 1);
+
+    reset_rx_family_wrap();
+    g_fake_analog_profile = 1;
+    g_analog_check_result = -1;
+    rc |= submit_config_nfm_width(&opts, &state, DSDCFG_MODE_ANALOG, 25000, "cfg nfm 25000");
+    rc |= expect_int("cfg nfm 25000 not applied", opts.analog_nfm_bandwidth_hz, 12500);
+    rc |= expect_int("cfg nfm 25000 not requested", g_analog_req_calls, 0);
+    rc |= expect_toast("cfg nfm 25000 toast", &state,
+                       "Config not applied: NFM 25 kHz does not fit the 24 kHz DSP rate (max 20.4 kHz)");
+    g_analog_check_result = 0;
+
+    /* The same width again is not a change: nothing to ask or request. */
+    reset_rx_family_wrap();
+    g_fake_analog_profile = 1;
+    rc |= submit_config_nfm_width(&opts, &state, DSDCFG_MODE_ANALOG, 12500, "cfg nfm same");
+    rc |= expect_int("cfg nfm same asks nothing", g_analog_check_calls + g_analog_req_calls, 0);
+
+    /* From a digital session, a [mode] moving onto the monitor is asked about with the width it brings. */
+    (void)dsd_app_command_set_i32(DSD_APP_CMD_DECODE_MODE_SET, (int32_t)DSDCFG_MODE_DMR);
+    (void)dsd_app_drain_cmds(&opts, &state);
+    reset_rx_family_wrap();
+    rc |= submit_config_nfm_width(&opts, &state, DSDCFG_MODE_ANALOG, 16000, "cfg onto analog");
+    rc |= expect_int("cfg onto analog asked with the new width", g_analog_check_width_hz, 16000);
+    rc |= expect_int("cfg onto analog applied", opts.analog_only == 1 && opts.analog_nfm_bandwidth_hz == 16000, 1);
+    rc |= expect_int("cfg onto analog requested with the new width", g_analog_req_width_hz, 16000);
+
+    g_fake_analog_profile = 0;
+    opts.analog_nfm_bandwidth_hz = 0;
+    state.rtl_ctx = NULL;
+    freeState(&state);
+    return rc;
+}
+#endif
+
+#ifdef USE_RADIO
+/*
+ * RTL_SET_BW sets the DSP rate an RTL-SDR or rtl_tcp input runs at, so a bandwidth that cannot filter the explicit
+ * NFM width the analog preset uses is refused with a toast that names both, and the bandwidth stays: the width is never
+ * clamped to fit, nor left to fail the next start. The unset default, a digital session and a device that picks its
+ * own rate are not held to it.
+ */
+static int
+test_rtl_set_bw_refuses_a_rate_the_nfm_width_cannot_run_at(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    int rc = 0;
+    init_decode_mode_context(&opts, &state);
+    opts.audio_in_type = AUDIO_IN_NULL; /* no restart: the check is on the options alone */
+    DSD_SNPRINTF(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", "rtl:0:851.375M");
+    opts.analog_only = 1;
+    opts.analog_demod = DSD_ANALOG_DEMOD_FM;
+    opts.analog_nfm_bandwidth_hz = 16000;
+    opts.rtl_dsp_bw_khz = 48;
+
+    rc |=
+        expect_int("bw 16 queued", dsd_app_command_set_i32(DSD_APP_CMD_RTL_SET_BW, 16), DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("bw 16 drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("bw 16 refused", opts.rtl_dsp_bw_khz, 48);
+    rc |= expect_toast("bw 16 toast", &state, "Refused: DSP BW 16 kHz cannot filter NFM 16 kHz (max 13.2 kHz)");
+
+    /* A typed digital scan row does not end the analog session: its leave returns to the monitor at this rate. */
+    rc |= expect_int("bw row: typed DMR row", dsd_scan_mode_enter(&opts, &state, DSD_SCAN_MODE_DMR), 0);
+    rc |= expect_int("bw row: typed DMR options", dsd_scan_mode_options(&opts, &state, NULL), 0);
+    rc |= expect_int("bw row: the row is digital", opts.analog_only, 0);
+    (void)dsd_app_command_set_i32(DSD_APP_CMD_RTL_SET_BW, 16);
+    (void)dsd_app_drain_cmds(&opts, &state);
+    rc |= expect_int("bw row: 16 refused under the row", opts.rtl_dsp_bw_khz, 48);
+    dsd_scan_mode_leave(&opts, &state);
+
+    rc |=
+        expect_int("bw 24 queued", dsd_app_command_set_i32(DSD_APP_CMD_RTL_SET_BW, 24), DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("bw 24 drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("bw 24 applied", opts.rtl_dsp_bw_khz, 24);
+
+    opts.analog_nfm_bandwidth_hz = 0; /* the default keeps its historical rule at any rate */
+    (void)dsd_app_command_set_i32(DSD_APP_CMD_RTL_SET_BW, 12);
+    (void)dsd_app_drain_cmds(&opts, &state);
+    rc |= expect_int("default width: bw 12 applied", opts.rtl_dsp_bw_khz, 12);
+
+    opts.analog_nfm_bandwidth_hz = 25000;
+    DSD_SNPRINTF(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", "soapy:driver=airspy");
+    (void)dsd_app_command_set_i32(DSD_APP_CMD_RTL_SET_BW, 16);
+    (void)dsd_app_drain_cmds(&opts, &state);
+    rc |= expect_int("device-picked rate: bw 16 applied", opts.rtl_dsp_bw_khz, 16);
+
+    DSD_SNPRINTF(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", "rtltcp:127.0.0.1:1234");
+    opts.analog_only = 0; /* a digital session does not use the width */
+    (void)dsd_app_command_set_i32(DSD_APP_CMD_RTL_SET_BW, 8);
+    (void)dsd_app_drain_cmds(&opts, &state);
+    rc |= expect_int("digital: bw 8 applied", opts.rtl_dsp_bw_khz, 8);
+    opts.analog_only = 1;
+    (void)dsd_app_command_set_i32(DSD_APP_CMD_RTL_SET_BW, 24);
+    (void)dsd_app_drain_cmds(&opts, &state);
+    rc |= expect_int("rtl_tcp: bw 24 refused for 25 kHz", opts.rtl_dsp_bw_khz, 8);
+    rc |=
+        expect_toast("rtl_tcp: bw 24 toast", &state, "Refused: DSP BW 24 kHz cannot filter NFM 25 kHz (max 20.4 kHz)");
+
+    opts.analog_nfm_bandwidth_hz = 0;
+    freeState(&state);
+    return rc;
+}
 #endif
 
 #ifdef DSD_NEO_TEST_IO_CONTROL_WRAP
@@ -5748,6 +6064,12 @@ main(void) {
     rc |= test_mode_change_under_row_notes_configured_modes();
     rc |= test_config_apply_switches_rtl_receive_family();
     rc |= test_config_apply_refused_analog_profile_changes_nothing();
+    rc |= test_nfm_bandwidth_set_applies_live_and_refuses();
+    rc |= test_nfm_bandwidth_set_under_scan_rows();
+    rc |= test_config_apply_holds_nfm_width_to_the_front_end();
+#endif
+#ifdef USE_RADIO
+    rc |= test_rtl_set_bw_refuses_a_rate_the_nfm_width_cannot_run_at();
 #endif
 #ifdef DSD_NEO_TEST_IO_CONTROL_WRAP
     rc |= test_dmr_policy_command_ticks_owner(DSD_APP_CMD_LOCKOUT_SLOT);

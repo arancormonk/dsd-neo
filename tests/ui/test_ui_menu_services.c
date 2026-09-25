@@ -553,6 +553,39 @@ rtl_stream_set_auto_ppm(int onoff) {
     (void)onoff;
 }
 
+/* The analog receive profile calls the NFM width services make (issue #525), answered and recorded here. */
+static int g_analog_check_result;
+static int g_analog_check_calls;
+static int g_analog_profile_published;
+static int g_analog_request_calls;
+static int g_analog_request_width_hz;
+
+int
+rtl_stream_check_analog_profile(int family, int kind, int width_hz) {
+    (void)family;
+    (void)kind;
+    (void)width_hz;
+    g_analog_check_calls++;
+    return g_analog_check_result;
+}
+
+int
+rtl_stream_request_analog_profile(int family, int kind, int width_hz) {
+    (void)family;
+    (void)kind;
+    g_analog_request_calls++;
+    g_analog_request_width_hz = width_hz;
+    return 0;
+}
+
+int
+rtl_stream_get_analog_profile(int* out_kind, int* out_width_hz, int* out_lpf_on) {
+    (void)out_kind;
+    (void)out_width_hz;
+    (void)out_lpf_on;
+    return g_analog_profile_published;
+}
+
 static int
 expect_int(const char* tag, int got, int want) {
     if (got != want) {
@@ -887,9 +920,9 @@ test_rtl_service_option_contracts(void) {
     opts.audio_in_type = 0;
     rc |= expect_int("rtl gain clamps high", svc_rtl_set_gain(&opts, &state, 99), 0);
     rc |= expect_int("rtl gain stored", opts.rtl_gain_value, 49);
-    rc |= expect_int("rtl bandwidth invalid defaults", svc_rtl_set_bandwidth(&opts, &state, 7), 0);
+    rc |= expect_int("rtl bandwidth invalid defaults", svc_rtl_set_bandwidth(&opts, &state, 7, NULL, 0U), 0);
     rc |= expect_int("rtl bandwidth default stored", opts.rtl_dsp_bw_khz, 48);
-    rc |= expect_int("rtl bandwidth valid stored", svc_rtl_set_bandwidth(&opts, &state, 12), 0);
+    rc |= expect_int("rtl bandwidth valid stored", svc_rtl_set_bandwidth(&opts, &state, 12, NULL, 0U), 0);
     rc |= expect_int("rtl bandwidth exact stored", opts.rtl_dsp_bw_khz, 12);
 
     rc |= expect_int("rtl squelch stores converted threshold", svc_rtl_set_sql_db(&opts, &state, -12.5), 0);
@@ -1509,6 +1542,68 @@ test_source_alias_services(void) {
     return rc;
 }
 
+/*
+ * Issue #525: the NFM width services. A width is 0 (the default) or 8000..25000 Hz; while the -fA preset uses it, an
+ * explicit width is held to the DSP rate it would run at (the running front end's own check, or an RTL input's DSP
+ * bandwidth with no stream), and an accepted one reaches a front end on the analog monitor. RTL_SET_BW's service
+ * refuses a bandwidth that explicit width cannot run at, naming both.
+ */
+static int
+test_nfm_bandwidth_services(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static void* fake_ctx[2];
+    int rc = 0;
+    DSD_MEMSET(&opts, 0, sizeof opts);
+    DSD_MEMSET(&state, 0, sizeof state);
+    DSD_SNPRINTF(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", "rtl:0:851.375M:0:0:16");
+    opts.rtl_dsp_bw_khz = 16;
+    opts.analog_only = 1;
+    char why[96];
+
+    /* No stream: the RTL DSP bandwidth is the rate. 12.5 kHz fits 16 kHz, 16 kHz does not. */
+    rc |= expect_int("nfm svc 12500 fits 16 kHz", svc_set_nfm_bandwidth(&opts, &state, 12500, why, sizeof why), 0);
+    rc |= expect_int("nfm svc 12500 stored", opts.analog_nfm_bandwidth_hz, 12500);
+    rc |=
+        expect_int("nfm svc 16000 refused at 16 kHz", svc_set_nfm_bandwidth(&opts, &state, 16000, why, sizeof why), -1);
+    rc |= expect_int("nfm svc 16000 not stored", opts.analog_nfm_bandwidth_hz, 12500);
+    rc |= expect_int("nfm svc 16000 reason",
+                     strcmp(why, "NFM 16 kHz does not fit the 16 kHz DSP rate (max 13.2 kHz)") == 0, 1);
+    rc |= expect_int("nfm svc out of range", svc_check_nfm_bandwidth(&opts, &state, 7999, why, sizeof why), -1);
+    rc |= expect_int("nfm svc range reason", strcmp(why, "NFM bandwidth 7.999 kHz is outside 8 kHz to 25 kHz") == 0, 1);
+    rc |= expect_int("nfm svc default never refused", svc_check_nfm_bandwidth(&opts, &state, 0, why, sizeof why), 0);
+
+    /* A running stream answers for itself; only an analog monitor gets the request. */
+    opts.audio_in_type = AUDIO_IN_RTL;
+    state.rtl_ctx = (RtlSdrContext*)fake_ctx;
+    g_analog_check_calls = g_analog_request_calls = 0;
+    g_analog_profile_published = 1;
+    rc |= expect_int("nfm svc live 8000", svc_set_nfm_bandwidth(&opts, &state, 8000, why, sizeof why), 0);
+    rc |= expect_int("nfm svc live asks the front end", g_analog_check_calls, 1);
+    rc |= expect_int("nfm svc live request", g_analog_request_calls == 1 && g_analog_request_width_hz == 8000, 1);
+    g_analog_check_result = -1;
+    rc |= expect_int("nfm svc live refusal", svc_set_nfm_bandwidth(&opts, &state, 12500, why, sizeof why), -1);
+    rc |= expect_int("nfm svc live refusal keeps the width", opts.analog_nfm_bandwidth_hz, 8000);
+    g_analog_check_result = 0;
+    g_analog_profile_published = 0;
+    g_analog_request_calls = 0;
+    rc |= expect_int("nfm svc off the monitor", svc_set_nfm_bandwidth(&opts, &state, 12500, why, sizeof why), 0);
+    rc |= expect_int("nfm svc off the monitor not requested", g_analog_request_calls, 0);
+
+    /* RTL_SET_BW: 12.5 kHz needs at least a 16 kHz DSP bandwidth. */
+    opts.audio_in_type = 0;
+    state.rtl_ctx = NULL;
+    rc |= expect_int("bw 12 refused for 12.5 kHz", svc_rtl_set_bandwidth(&opts, &state, 12, why, sizeof why), -1);
+    rc |= expect_int("bw 12 not stored", opts.rtl_dsp_bw_khz, 16);
+    rc |= expect_int("bw 12 reason", strcmp(why, "DSP BW 12 kHz cannot filter NFM 12.5 kHz (max 9.6 kHz)") == 0, 1);
+    rc |= expect_int("bw 24 fits 12.5 kHz", svc_rtl_set_bandwidth(&opts, &state, 24, why, sizeof why), 0);
+    rc |= expect_int("bw 24 stored", opts.rtl_dsp_bw_khz, 24);
+    opts.analog_only = 0;
+    rc |= expect_int("digital: bw 4 stored", svc_rtl_set_bandwidth(&opts, &state, 4, why, sizeof why), 0);
+    opts.analog_nfm_bandwidth_hz = 0;
+    return rc;
+}
+
 int
 main(void) {
     int rc = 0;
@@ -1521,6 +1616,7 @@ main(void) {
     rc |= test_rtl_restart_quiesces_p25_retunes();
     rc |= test_locked_restarts();
     rc |= test_rtl_service_option_contracts();
+    rc |= test_nfm_bandwidth_services();
 #endif
     rc |= test_file_network_and_import_failure_contracts();
     rc |= test_udp_output_analog_socket_failure();

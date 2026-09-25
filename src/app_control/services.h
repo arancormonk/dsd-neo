@@ -19,6 +19,7 @@
 #include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/decode_mode.h>
+#include <stddef.h>
 
 #ifdef USE_RADIO
 #include <dsd-neo/core/airspy_config.h>
@@ -215,6 +216,45 @@ int svc_check_mode_receive_profile(const dsd_opts* opts, const dsd_state* state,
  */
 void svc_note_digital_decode_modes(const dsd_opts* opts, const dsd_state* state);
 
+/**
+ * @brief Check an NFM channel width against the receive front end it would run on, before anything changes.
+ *
+ * @p width_hz is the full RF channel-filter width in Hz, or 0 for the default (runtime/analog_channel.h). A width
+ * outside 8000..25000 Hz is refused. An explicit width is also held to the DSP rate it would run at: with a running
+ * RTL-family stream, the front end's own check at its published demod rate (rtl_stream_check_analog_profile(), which
+ * also logs a refusal with the validator's text); without one, the rate an RTL-SDR or rtl_tcp input's DSP bandwidth
+ * (rtl_dsp_bw_khz) gives. Other inputs are checked by their next stream start, against the rate the device delivers.
+ * The unset default is never refused for its rate. Callers decide whether the width is in use; this only says whether
+ * the front end would take it.
+ *
+ * @param why      Receives a short reason on refusal, for a toast (may be NULL).
+ * @param why_size Size of @p why.
+ * @return 0 when the width may be applied, -1 otherwise.
+ */
+int svc_check_nfm_bandwidth(const dsd_opts* opts, const dsd_state* state, int width_hz, char* why, size_t why_size);
+
+/**
+ * @brief Set the configured NFM channel width (DSD_APP_CMD_NFM_BANDWIDTH_SET), live when the analog monitor runs.
+ *
+ * Refuses, and changes nothing, a width outside 0 or 8000..25000 Hz, and, while the NFM preset uses the width, one the
+ * front end would refuse (svc_check_nfm_bandwidth()). An accepted width is stored and, when the RTL front end runs the
+ * analog monitor, requested from it (rtl_stream_request_analog_profile()): a width-only change redesigns the channel
+ * filter from empty histories at the next block. Anywhere else (a digital session, a typed digital scan row on an
+ * analog session, a stopped stream) the stored width applies the next time the analog profile is published or the
+ * stream opens. Decoder thread only.
+ *
+ * @return 0 when stored, -1 when refused (reason in @p why).
+ */
+int svc_set_nfm_bandwidth(dsd_opts* opts, const dsd_state* state, int width_hz, char* why, size_t why_size);
+
+/**
+ * @brief Hand the configured NFM width to an RTL front end that runs the analog monitor now.
+ *
+ * For callers that changed the width some other way (a config apply). Does nothing unless the NFM preset uses the
+ * width and the front end publishes an analog profile.
+ */
+void svc_publish_nfm_bandwidth(const dsd_opts* opts, const dsd_state* state);
+
 // Per-protocol inversion toggles
 /** @brief Toggle X2-TDMA symbol inversion. */
 void svc_toggle_inv_x2(dsd_opts* opts);
@@ -255,8 +295,14 @@ int svc_rtl_set_dev_index(dsd_opts* opts, dsd_state* state, int index);
 int svc_rtl_set_freq(dsd_opts* opts, dsd_state* state, uint32_t hz);
 /** @brief Set RTL manual gain (0–49), clamping and restarting if needed. */
 int svc_rtl_set_gain(dsd_opts* opts, dsd_state* state, int value);
-/** @brief Set RTL DSP baseband bandwidth (kHz: 4,6,8,12,16,24,48), clamping and restarting if needed. */
-int svc_rtl_set_bandwidth(dsd_opts* opts, dsd_state* state, int khz);
+/**
+ * @brief Set RTL DSP baseband bandwidth (kHz: 4,6,8,12,16,24,48), restarting if needed.
+ *
+ * An unsupported value becomes 48. A bandwidth the explicit analog channel width in use cannot run at (the analog
+ * preset on an RTL-SDR or rtl_tcp input, whose DSP rate this sets) is refused and nothing changes: the width is never
+ * clamped to fit. @p why receives a short reason naming both values on that refusal (may be NULL).
+ */
+int svc_rtl_set_bandwidth(dsd_opts* opts, dsd_state* state, int khz, char* why, size_t why_size);
 /**
  * @brief Set the RTL squelch threshold from a decibel value.
  *

@@ -5613,6 +5613,7 @@ if(
             "LINKER:--wrap=rtl_stream_analog_family_active"
             "LINKER:--wrap=rtl_stream_output_rate_for_family"
             "LINKER:--wrap=rtl_stream_set_digital_decode_modes"
+            "LINKER:--wrap=rtl_stream_get_analog_profile"
     )
 endif()
 add_test(NAME APP_COMMAND_QUEUE COMMAND dsd-neo_test_app_command_queue)

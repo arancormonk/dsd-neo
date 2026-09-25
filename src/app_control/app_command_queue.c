@@ -55,6 +55,7 @@
 #include <dsd-neo/protocol/p25/p25_sm_watchdog.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #include <dsd-neo/runtime/airspy_config.h>
+#include <dsd-neo/runtime/analog_channel.h>
 #include <dsd-neo/runtime/call_alert.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/decode_mode.h>
@@ -286,6 +287,7 @@ static const int k_ui_cmd_coalescible_setter_ids[] = {
     DSD_APP_CMD_SLOT_PREF_SET,
     DSD_APP_CMD_SCAN_VOICE_QUALIFY_MS_SET,
     DSD_APP_CMD_SCAN_VOICE_HOLD_MS_SET,
+    DSD_APP_CMD_NFM_BANDWIDTH_SET,
 };
 
 static int
@@ -1391,12 +1393,15 @@ ui_cmd_handle_rtl_set_bw(dsd_opts* opts, dsd_state* state, const struct dsd_app_
     int32_t v = 0;
     int result = UI_CMD_APPLY_COMPLETED;
     if (state && ui_cmd_parse_i32_payload(c, &v)) {
-        int rc = svc_rtl_set_bandwidth(opts, state, v);
+        char why[96];
+        int rc = svc_rtl_set_bandwidth(opts, state, v, why, sizeof why);
         result = ui_cmd_apply_status_from_service_rc(rc);
         if (rc == 0) {
             ui_set_toast(state, 3, "Applied: RTL DSP BW -> %d kHz", (int)opts->rtl_dsp_bw_khz);
         } else if (ui_rc_is_not_supported(rc)) {
             ui_set_toast(state, 3, "Unsupported: bandwidth control not available on active backend");
+        } else if (why[0] != '\0') {
+            ui_set_toast(state, 5, "Refused: %s", why);
         } else {
             ui_set_toast(state, 4, "Failed: RTL DSP BW update");
         }
@@ -1612,9 +1617,42 @@ ui_cmd_handle_scan_voice_hold_ms_set(dsd_opts* opts, dsd_state* state, const str
     return 1;
 }
 
+/* The configured NFM width, as the kHz text every frontend shows ("12.5 kHz"; the default says so). */
+static void
+ui_nfm_width_text(int width_hz, char* out, size_t out_size) {
+    char width[DSD_ANALOG_WIDTH_TEXT_MAX];
+    if (dsd_analog_width_format(dsd_analog_width_effective_hz(DSD_ANALOG_DEMOD_FM, width_hz), width, sizeof width)
+        != 0) {
+        width[0] = '\0';
+    }
+    if (width_hz > 0) {
+        DSD_SNPRINTF(out, out_size, "%s", width);
+    } else {
+        DSD_SNPRINTF(out, out_size, "default (%s)", width);
+    }
+}
+
+static int
+ui_cmd_handle_nfm_bandwidth_set(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
+    int32_t hz = 0;
+    if (!state || !ui_cmd_parse_i32_payload(c, &hz)) {
+        return UI_CMD_APPLY_INVALID_PAYLOAD;
+    }
+    char why[96];
+    if (svc_set_nfm_bandwidth(opts, state, (int)hz, why, sizeof why) != 0) {
+        ui_set_toast(state, 5, "Refused: %s", why);
+        return UI_CMD_APPLY_FAILED;
+    }
+    char text[DSD_ANALOG_WIDTH_TEXT_MAX + 16];
+    ui_nfm_width_text(opts->analog_nfm_bandwidth_hz, text, sizeof text);
+    ui_set_toast(state, 3, "Applied: NFM bandwidth -> %s", text);
+    return UI_CMD_APPLY_COMPLETED;
+}
+
 static int
 apply_cmd_io_and_import_runtime_a(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
     static const struct dsd_app_command_handler_entry k_handlers[] = {
+        {DSD_APP_CMD_NFM_BANDWIDTH_SET, ui_cmd_handle_nfm_bandwidth_set},
         {DSD_APP_CMD_RIGCTL_SET_MOD_BW, ui_cmd_handle_rigctl_set_mod_bw},
         {DSD_APP_CMD_TG_HOLD_SET, ui_cmd_handle_tg_hold_set},
         {DSD_APP_CMD_HANGTIME_SET, ui_cmd_handle_hangtime_set},
@@ -2954,6 +2992,7 @@ static const int k_ui_cmd_i32_ids[] = {
     DSD_APP_CMD_SCAN_VOICE_ONLY_SET,
     DSD_APP_CMD_SCAN_VOICE_QUALIFY_MS_SET,
     DSD_APP_CMD_SCAN_VOICE_HOLD_MS_SET,
+    DSD_APP_CMD_NFM_BANDWIDTH_SET,
     DSD_APP_CMD_INPUT_VOL_SET,
     DSD_APP_CMD_MOD_SET,
     DSD_APP_CMD_DECODE_MODE_SET,
@@ -5030,14 +5069,55 @@ cfg_airspy_settings_valid(const dsdneoUserConfig* cfg) {
     return !cfg->airspy_invalid && dsd_airspy_config_valid(&cfg->airspy);
 }
 
+/* The NFM width the session has once the config is applied: [analog] sets it (its loader keeps only in-range widths,
+   and the apply treats anything else as the default), otherwise it stays. */
+static int
+cfg_nfm_width_after(const dsd_opts* opts, const dsdneoUserConfig* cfg) {
+    if (!cfg->has_analog) {
+        return opts->analog_nfm_bandwidth_hz;
+    }
+    return dsd_analog_width_in_range(DSD_ANALOG_DEMOD_FM, cfg->analog_nfm_bandwidth_hz) ? cfg->analog_nfm_bandwidth_hz
+                                                                                        : 0;
+}
+
+/* Whether the session runs the -fA analog family once the config's [mode] is applied. */
+static int
+cfg_analog_family_after(const dsd_opts* opts, const dsdneoUserConfig* cfg) {
+    const int analog = cfg->has_mode ? (cfg->decode_mode == DSDCFG_MODE_ANALOG) : (opts->analog_only == 1);
+    return analog && opts->m17encoder != 1;
+}
+
+/*
+ * A config that gives the analog monitor a new NFM width is held to the front end first, the way
+ * DSD_APP_CMD_NFM_BANDWIDTH_SET holds it: a width the front end cannot filter at its DSP rate leaves the whole config
+ * unapplied. That includes a [mode] that moves the session onto the monitor with the new width.
+ */
+static int
+cfg_changes_analog_width(const dsd_opts* opts, const dsdneoUserConfig* cfg) {
+    return cfg_nfm_width_after(opts, cfg) != opts->analog_nfm_bandwidth_hz && cfg_analog_family_after(opts, cfg);
+}
+
+static int
+cfg_check_analog_width(const dsd_opts* opts, dsd_state* state, const dsdneoUserConfig* cfg) {
+    char why[96];
+    if (svc_check_nfm_bandwidth(opts, state, cfg_nfm_width_after(opts, cfg), why, sizeof why) == 0) {
+        return UI_CMD_APPLY_COMPLETED;
+    }
+    ui_set_toast(state, 5, "Config not applied: %s", why);
+    return UI_CMD_APPLY_FAILED;
+}
+
 /*
  * Asked before anything changes, as DSD_APP_CMD_DECODE_MODE_SET asks: a [mode] that moves a running RTL session onto
  * the analog monitor publishes the analog receive profile (apply_cfg_receive_family_change()), and a front end that
  * would refuse it (logged with the reason) leaves the whole config unapplied, instead of an Analog decoder on a
- * digital front end.
+ * digital front end. A config that also brings a new NFM width is asked about with that width instead.
  */
 static int
 cfg_check_receive_family(const dsd_opts* opts, dsd_state* state, const dsdneoUserConfig* cfg) {
+    if (cfg_changes_analog_width(opts, cfg)) {
+        return cfg_check_analog_width(opts, state, cfg);
+    }
     if (!cfg->has_mode || opts->analog_only || svc_check_mode_receive_profile(opts, state, cfg->decode_mode) == 0) {
         return UI_CMD_APPLY_COMPLETED;
     }
@@ -5111,11 +5191,16 @@ cfg_restore_lifecycle_owned(dsd_opts* opts, const dsdneoUserConfig* cfg, dsd_fro
  * front end's CQPSK toggle returns to.
  */
 static void
-apply_cfg_receive_family_change(dsd_opts* opts, dsd_state* state, const dsdneoUserConfig* cfg, int old_analog_only) {
+apply_cfg_receive_family_change(dsd_opts* opts, dsd_state* state, const dsdneoUserConfig* cfg, int old_analog_only,
+                                int old_nfm_width_hz) {
+    const int analog_only = opts->analog_only ? 1 : 0;
+    if (analog_only && old_analog_only && opts->analog_nfm_bandwidth_hz != old_nfm_width_hz) {
+        /* Still on the analog monitor with a new width: a width-only change for the front end. */
+        svc_publish_nfm_bandwidth(opts, state);
+    }
     if (!cfg->has_mode) {
         return;
     }
-    const int analog_only = opts->analog_only ? 1 : 0;
     if (analog_only == old_analog_only) {
         if (!analog_only && (opts->frame_provoice == 1 || opts->monitor_input_audio == 1)) {
             (void)dsd_audio_ensure_digital_output(opts);
@@ -5169,6 +5254,7 @@ ui_cmd_handle_config_apply(dsd_opts* opts, dsd_state* state, const struct dsd_ap
     dsd_frontend_kind old_frontend_kind = opts->frontend_kind;
     const int old_trunk_scan_enabled = opts->trunk_scan_enabled;
     const int old_analog_only = opts->analog_only ? 1 : 0;
+    const int old_nfm_width_hz = opts->analog_nfm_bandwidth_hz;
     const int old_audio_channels = opts->pulse_digi_out_channels;
     const int old_audio_rate = opts->pulse_digi_rate_out;
     const dsdneoUserDecodeMode old_decode_mode = dsd_infer_decode_mode_preset_exact(opts);
@@ -5211,7 +5297,7 @@ ui_cmd_handle_config_apply(dsd_opts* opts, dsd_state* state, const struct dsd_ap
                                 old_jitter);
     cfg_forget_rx_tone_on_boundary(opts, state, old_audio_in_type, old_audio_in_dev, old_decode_mode);
     int reconfigure_rc = ui_reconfigure_output_for_input_policy(opts, state);
-    apply_cfg_receive_family_change(opts, state, &cfg, old_analog_only);
+    apply_cfg_receive_family_change(opts, state, &cfg, old_analog_only, old_nfm_width_hz);
 #ifdef USE_RADIO
     if (airspy_rc != 0) {
         return UI_CMD_APPLY_FAILED;
@@ -5318,6 +5404,9 @@ command_updates_scan_mode(const struct dsd_app_command* c) {
         DSD_APP_CMD_SCAN_VOICE_ONLY_SET,
         DSD_APP_CMD_SCAN_VOICE_QUALIFY_MS_SET,
         DSD_APP_CMD_SCAN_VOICE_HOLD_MS_SET,
+        /* The width edits the configured value: under a row it runs against the baseline, and a row that carries
+         * its own width keeps it until the scanner moves on. */
+        DSD_APP_CMD_NFM_BANDWIDTH_SET,
         DSD_APP_CMD_IMPORT_GROUP_LIST,
         DSD_APP_CMD_IMPORT_GROUP_LIST_CLEAR,
         DSD_APP_CMD_DECODE_MODE_SET,
