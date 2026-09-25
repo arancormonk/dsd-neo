@@ -506,6 +506,7 @@ typedef struct rtl_stream_test_live_request_result {
     int retune_queued; /* 1 when a retune profile for the target was left pending */
     int monitor_after; /* dsd_demod_analog_monitor_active() after the boundary */
     int published_lpf_on_after;
+    int request_rate_hz; /* rtl_stream_get_request_rate_hz() while the stream runs */
 } rtl_stream_test_live_request_result;
 
 /* Run a stream at @p rate_hz (the analog monitor at its default width, or a DMR session when @p analog_stream is 0)

@@ -4951,6 +4951,7 @@ if(NOT APPLE AND (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"))
             "-Wl,--wrap=rtl_stream_prepare_retune_analog_profile_for_target"
             "-Wl,--wrap=rtl_stream_analog_family_active"
             "-Wl,--wrap=rtl_stream_get_analog_profile"
+            "-Wl,--wrap=rtl_stream_get_request_rate_hz"
             "-Wl,--wrap=rtl_stream_request_demod_profile"
             "-Wl,--wrap=SetFreq"
             "-Wl,--wrap=rtl_stream_request_fsk_reacquire"

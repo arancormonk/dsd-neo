@@ -414,13 +414,22 @@ dsd_engine_prepare_current_cc_rtl_chain(const dsd_opts* opts, const dsd_state* s
 
 /* An analog scan row (issue #526): the analog monitor, the row's demodulator and its width (0 = the
  * kind's default), bound to the target with the scan's gain profile and no symbol profile. Returns -1
- * when the front end refuses the width at the rate it runs; the refusal is logged there. */
+ * when the front end refuses the width at the rate it runs.
+ *
+ * A width the published DSP rate cannot fit was named when the scan started, or when that rate last changed
+ * (dsd_engine_scan_warn_analog_row() checks it against the same rate), together with the fact that the row is skipped
+ * at every visit, so it is refused here without calling into the stream, whose refusal log a valid row's request
+ * would re-arm and repeat at every rotation. Any other refusal is the stream's to log. */
 static int
 dsd_engine_prepare_scan_analog_profile(const dsd_opts* opts, const dsd_state* state, long int freq) {
+    const int width_hz = dsd_opts_analog_width_hz(opts);
+    const int rate_hz = dsd_engine_scan_dsp_rate_hz(opts, state);
+    if (width_hz > 0 && rate_hz > 0 && dsd_analog_width_check(opts->analog_demod, width_hz, rate_hz, NULL, 0U) != 0) {
+        return -1;
+    }
     dsd_engine_prepare_retune_profile_for_target(opts, state, (uint32_t)freq, -1, 0, 4, RTL_STREAM_CHANNEL_PROFILE_WIDE,
                                                  0, 0);
-    const rtl_stream_retune_analog_profile analog = {DSD_RX_FAMILY_ANALOG, opts->analog_demod,
-                                                     dsd_opts_analog_width_hz(opts)};
+    const rtl_stream_retune_analog_profile analog = {DSD_RX_FAMILY_ANALOG, opts->analog_demod, width_hz};
     return rtl_stream_prepare_retune_analog_profile_for_target((uint32_t)freq, &analog);
 }
 
@@ -850,7 +859,9 @@ int
 dsd_engine_scan_dsp_rate_hz(const dsd_opts* opts, const dsd_state* state) {
 #ifdef USE_RADIO
     if (opts && state && opts->audio_in_type == AUDIO_IN_RTL && state->rtl_ctx) {
-        const int rate_hz = rtl_stream_get_demod_rate_hz();
+        /* The rate the stream holds an analog request to, published from its start; not the CFO metrics rate, which
+           stays 0 until the demod thread has processed a block. */
+        const int rate_hz = rtl_stream_get_request_rate_hz();
         return rate_hz > 0 ? rate_hz : 0;
     }
 #else

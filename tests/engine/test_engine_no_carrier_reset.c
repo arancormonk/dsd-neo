@@ -119,6 +119,9 @@ static int g_analog_attach_calls = 0;
 static int g_rtl_analog_family = 0;
 static int g_rtl_analog_width_hz = 0;
 static int g_request_demod_calls = 0;
+/* The DSP rate the fake stream publishes for analog requests (0: none), and the widest analog width it was asked for. */
+static int g_rtl_request_rate_hz = 0;
+static int g_analog_attach_max_width_hz = 0;
 /* 1: the output rate follows the family, the analog monitor at 48 kHz and the digital family at 24 kHz (bw=24). */
 static int g_rtl_family_rates = 0;
 
@@ -151,6 +154,8 @@ reset_rtl_profile_fakes(void) {
     g_rtl_analog_family = 0;
     g_rtl_analog_width_hz = 0;
     g_request_demod_calls = 0;
+    g_rtl_request_rate_hz = 0;
+    g_analog_attach_max_width_hz = 0;
     g_rtl_family_rates = 0;
     g_check_p25_tick_guard = 0;
     g_p25_tick_guard_held_during_tune = 0;
@@ -242,6 +247,9 @@ int
 __wrap_rtl_stream_prepare_retune_analog_profile_for_target(uint32_t target_freq_hz,
                                                            const rtl_stream_retune_analog_profile* analog) {
     g_analog_attach_calls++;
+    if (analog && analog->family == DSD_RX_FAMILY_ANALOG && analog->width_hz > g_analog_attach_max_width_hz) {
+        g_analog_attach_max_width_hz = analog->width_hz;
+    }
     if (!analog || (analog->family == DSD_RX_FAMILY_ANALOG && g_refuse_analog_profile)) {
         return -1;
     }
@@ -261,6 +269,11 @@ __wrap_rtl_stream_prepare_retune_analog_profile_for_target(uint32_t target_freq_
 int
 __wrap_rtl_stream_analog_family_active(void) {
     return g_rtl_analog_family;
+}
+
+int
+__wrap_rtl_stream_get_request_rate_hz(void) {
+    return g_rtl_request_rate_hz;
 }
 
 int
@@ -1053,6 +1066,55 @@ test_trunk_scan_digital_target_after_nfm_timed_for_digital(void) {
     state->rtl_ctx = NULL;
     (void)remove(path);
     free_test_runtime(opts, state);
+    return rc;
+}
+
+/* A row width the published DSP rate cannot fit is skipped at every visit without asking the stream for it: the stream
+ * would log its refusal again each time the valid row beside it re-armed the log. Only the valid row's width ever
+ * reaches the stream, and only its frequency is tuned. */
+static int
+test_typed_scan_refused_width_skipped_without_the_stream(void) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    int rc = 0;
+    reset_rtl_profile_fakes();
+    dsd_trunk_tuning_requests_reset();
+    opts->audio_in_type = AUDIO_IN_RTL;
+    opts->scanner_mode = 1;
+    opts->trunk_hangtime = 1;
+    state->rtl_ctx = (RtlSdrContext*)state;
+    g_rtl_request_rate_hz = 16000;
+    state->lcn_freq_count = 2;
+    state->trunk_lcn_freq[0] = 154530000L;
+    state->trunk_lcn_freq[1] = 155530000L;
+    const int widths[] = {12500, 20000};
+    for (int row = 0; row < 2; row++) {
+        rc |= expect_true("refusal row mode", dsd_channel_mode_set(state, (size_t)row, DSD_SCAN_MODE_NFM) == 0);
+        dsd_scan_row_profile* profile = NULL;
+        rc |= expect_true("refusal row profile", dsd_scan_profile_ensure(&profile) == 0 && profile);
+        if (profile) {
+            profile->values.present = DSD_SCAN_OPT_BANDWIDTH;
+            profile->values.channel_bw_hz = widths[row];
+            rc |= expect_true("refusal row width", dsd_channel_profile_set(state, (size_t)row, profile) == 0);
+        }
+    }
+    for (int visit = 0; visit < 6; visit++) {
+        state->last_cc_sync_time = time(NULL) - 11;
+        noCarrier(opts, state);
+    }
+    rc |= expect_true("refused width never reaches the stream",
+                      g_analog_attach_calls > 0 && g_analog_attach_max_width_hz == 12500);
+    rc |= expect_true("refused row never tuned", g_rtl_tune_freq == 154530000U && g_rtl_analog_width_hz == 12500);
+    if (g_analog_attach_max_width_hz != 12500) {
+        DSD_FPRINTF(stderr, "  widest width asked of the stream: %d Hz\n", g_analog_attach_max_width_hz);
+    }
+    dsd_engine_channel_scan_leave(opts, state);
+    state->rtl_ctx = NULL;
+    free_test_runtime(opts, state);
+    dsd_trunk_tuning_requests_reset();
     return rc;
 }
 
@@ -2911,6 +2973,7 @@ main(void) {
     rc |= test_visit_cap_scanner_hops();
     rc |= test_typed_scan_digital_row_after_nfm_timed_for_digital();
     rc |= test_trunk_scan_digital_target_after_nfm_timed_for_digital();
+    rc |= test_typed_scan_refused_width_skipped_without_the_stream();
     rc |= test_trunk_cache_with_mode_metadata();
     rc |= test_dmr_explicit_return_destination();
 #endif

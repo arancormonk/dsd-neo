@@ -628,6 +628,8 @@ test_requests_without_stream(void) {
     rc |= expect_int("no-stream AM refused",
                      rtl_stream_test_analog_request_without_stream(48000, DSD_ANALOG_DEMOD_AM, 0, &retune_rc), -1);
     rc |= expect_int("no-stream AM retune refused", retune_rc, -1);
+    /* A stale mirror is no rate to hold a request to, for the scanners' width checks either. */
+    rc |= expect_int("no-stream request rate", rtl_stream_get_request_rate_hz(), 0);
     return rc;
 }
 
@@ -700,6 +702,8 @@ expect_live_acceptance(const live_request_case& c) {
                         rtl_stream_test_analog_request_with_stream(c.rate_hz, c.analog_stream, c.post_downsample,
                                                                    DSD_ANALOG_DEMOD_FM, c.accepted_width_hz, &r),
                         0);
+    DSD_SNPRINTF(label, sizeof label, "%s: request rate is the published DSP rate", c.name);
+    rc |= expect_int(label, r.request_rate_hz, c.rate_hz);
     DSD_SNPRINTF(label, sizeof label, "%s: check accepts it", c.name);
     rc |= expect_int(label, r.check_rc, 0);
     DSD_SNPRINTF(label, sizeof label, "%s: realizable request accepted", c.name);

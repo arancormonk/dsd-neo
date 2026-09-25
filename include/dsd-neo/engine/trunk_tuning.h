@@ -38,8 +38,9 @@ dsd_trunk_tune_result dsd_engine_return_to_cc_request(dsd_opts* opts, dsd_state*
  */
 dsd_trunk_tune_result dsd_engine_scan_tune_to_freq(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps,
                                                    uint64_t* out_request_id);
-/** @brief DSP (demodulator) rate of a running RTL-family stream in Hz, which an analog row width must fit; 0 when no
- * RTL stream runs or the rate is not published yet. */
+/** @brief DSP (demodulator) rate of a running RTL-family stream in Hz, which an analog row width must fit: the rate the
+ * stream holds an analog request to (rtl_stream_get_request_rate_hz()), published from its start; 0 when no RTL stream
+ * runs. */
 int dsd_engine_scan_dsp_rate_hz(const dsd_opts* opts, const dsd_state* state);
 /**
  * @brief Release the call state a tuned voice channel owns, without tuning.

@@ -271,6 +271,8 @@ typedef struct {
     int saved_tuner_autogain_on;
     int saved_tuner_autogain_is_set;
     uint64_t last_trunk_chan_map_seq;
+    /* The DSP rate the analog targets were last checked at, or TRUNK_SCAN_ANALOG_CHECK_DEFERRED (issue #526). */
+    int analog_checked_rate_hz;
 } dsd_trunk_scan_coord;
 
 static dsd_trunk_scan_coord* g_trunk_scan_coord;
@@ -2622,6 +2624,40 @@ trunk_scan_arm_tune_completion(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_
     trunk_scan_arm_visit(rt, completed_m);
 }
 
+/* An RTL stream that has published no DSP rate yet: an analog target's width cannot be checked, so the checks wait. */
+#define TRUNK_SCAN_ANALOG_CHECK_DEFERRED (-1)
+
+static int
+trunk_scan_analog_check_rate(const dsd_opts* opts, const dsd_state* state) {
+    const int rate_hz = dsd_engine_scan_dsp_rate_hz(opts, state);
+    return (opts->audio_in_type == AUDIO_IN_RTL && rate_hz <= 0) ? TRUNK_SCAN_ANALOG_CHECK_DEFERRED : rate_hz;
+}
+
+static void
+trunk_scan_warn_analog_target(const dsd_opts* opts, const dsd_state* state, const dsd_trunk_scan_target* target,
+                              int dsp_rate_hz) {
+    char label[96];
+    DSD_SNPRINTF(label, sizeof label, "Trunk scan target '%s'", target->id);
+    (void)dsd_engine_scan_warn_analog_row(opts, state, &target->row_options, dsp_rate_hz, label);
+}
+
+/* The retune skips an analog target whose width the DSP rate cannot fit without a word (dsd_engine_scan_tune_to_freq()),
+ * so the analog targets are named again whenever that rate has changed since they were checked -- the operator changed
+ * the RTL DSP bandwidth -- or first became known. */
+static void
+trunk_scan_recheck_analog_targets(const dsd_opts* opts, const dsd_state* state, dsd_trunk_scan_coord* coord) {
+    const int rate_hz = trunk_scan_analog_check_rate(opts, state);
+    if (rate_hz == TRUNK_SCAN_ANALOG_CHECK_DEFERRED || rate_hz == coord->analog_checked_rate_hz) {
+        return;
+    }
+    coord->analog_checked_rate_hz = rate_hz;
+    for (size_t i = 0; i < coord->count; i++) {
+        if (trunk_scan_type_is_analog(coord->targets[i].target.type)) {
+            trunk_scan_warn_analog_target(opts, state, &coord->targets[i].target, rate_hz);
+        }
+    }
+}
+
 static int
 trunk_scan_switch_to(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_coord* coord, size_t next, int save_current) {
     if (!coord || next >= coord->count) {
@@ -2674,6 +2710,7 @@ trunk_scan_switch_to(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_coord* coo
     rt->idle_since_m = now_m;
     /* The incoming target publishes its own voice-gate phase on the next tick. */
     state->scan_voice_gate_phase = (uint8_t)DSD_SCAN_VOICE_GATE_OFF;
+    trunk_scan_recheck_analog_targets(opts, state, coord);
     uint64_t tune_request_id = 0U;
     dsd_trunk_tune_result tune_result = trunk_scan_retune_active(opts, state, rt, &tune_request_id);
     if (!dsd_trunk_tune_result_is_ok(tune_result)) {
@@ -2968,14 +3005,16 @@ trunk_scan_warn_ignored_target_gain(const dsd_opts* opts, const dsd_state* state
 /* A target squelch gates the RTL demodulator. With rigctl tuning a PCM input there is no
  * demodulator for it to gate, so it cannot gate digital acquisition; the threshold in dsd_opts
  * only reaches the analog input monitor (-8, with audio output on) and the carrier activity that
- * monitor stamps. Said once per affected target when the scan starts, beside what an analog target
- * owes the operator (dsd_engine_scan_warn_analog_row()). */
-static void
+ * monitor stamps. Said once per affected digital target when the scan starts, beside what an analog
+ * target owes the operator (dsd_engine_scan_warn_analog_row()). Returns the DSP rate the analog
+ * targets were checked at, or TRUNK_SCAN_ANALOG_CHECK_DEFERRED when that check waits for the rate
+ * (trunk_scan_recheck_analog_targets()). */
+static int
 trunk_scan_warn_targets(const dsd_opts* opts, const dsd_state* state, const dsd_trunk_scan_target_list* list) {
     if (!opts || !list) {
-        return;
+        return TRUNK_SCAN_ANALOG_CHECK_DEFERRED;
     }
-    const int dsp_rate_hz = dsd_engine_scan_dsp_rate_hz(opts, state);
+    const int check_rate_hz = trunk_scan_analog_check_rate(opts, state);
     for (size_t i = 0; i < list->count; i++) {
         const dsd_trunk_scan_target* target = &list->targets[i];
         const int analog = trunk_scan_type_is_analog(target->type);
@@ -2985,12 +3024,11 @@ trunk_scan_warn_targets(const dsd_opts* opts, const dsd_state* state, const dsd_
                      "stamps.\n",
                      target->id, target->row_options.squelch_db);
         }
-        if (analog) {
-            char label[96];
-            DSD_SNPRINTF(label, sizeof label, "Trunk scan target '%s'", target->id);
-            (void)dsd_engine_scan_warn_analog_row(opts, state, &target->row_options, dsp_rate_hz, label);
+        if (analog && check_rate_hz != TRUNK_SCAN_ANALOG_CHECK_DEFERRED) {
+            trunk_scan_warn_analog_target(opts, state, target, check_rate_hz);
         }
     }
+    return check_rate_hz;
 }
 
 static void
@@ -3875,13 +3913,14 @@ dsd_engine_trunk_scan_init(dsd_opts* opts, dsd_state* state, char* err, size_t e
         return -1;
     }
     trunk_scan_warn_ignored_target_gain(opts, state, &list);
-    trunk_scan_warn_targets(opts, state, &list);
+    const int analog_checked_rate_hz = trunk_scan_warn_targets(opts, state, &list);
 
     dsd_trunk_scan_coord* coord = trunk_scan_coord_create(&list, opts, err, err_sz);
     if (!coord) {
         dsd_trunk_scan_target_list_reset(&list);
         return -1;
     }
+    coord->analog_checked_rate_hz = analog_checked_rate_hz;
 
     if (dsd_scan_mode_begin(opts, state) != 0
         || trunk_scan_build_target_runtime(coord, opts, state, &list, err, err_sz) != 0) {

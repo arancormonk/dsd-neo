@@ -1004,14 +1004,10 @@ test_nfm_rows_switch_family_width_and_sink(void) {
     tunes = reset_count = 0;
 }
 
-/* What the nfm rows owe the operator, said once per row per map when the scan starts: a squelch
- * that holds on noise, a width on an input with no demodulator for it, and a width the running
- * DSP rate cannot filter. Digital rows and well-set nfm rows say nothing. */
-static int
-nfm_row_warnings(int audio_in_type, int dsp_rate_hz, double configured_sql_db) {
-    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
-    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
-    assert(opts && state);
+/* Four rows on one frequency: nfm with a 20 kHz width and its own -50 dB squelch, nfm with its squelch off, DMR with a
+ * squelch, and nfm on the configured squelch. */
+static void
+nfm_warning_rows_setup(dsd_opts* opts, dsd_state* state, int audio_in_type, double configured_sql_db) {
     opts->scanner_mode = 1;
     opts->audio_in_type = audio_in_type;
     opts->wav_sample_rate = 48000;
@@ -1029,14 +1025,30 @@ nfm_row_warnings(int audio_in_type, int dsp_rate_hz, double configured_sql_db) {
     (void)nfm_row_profile(state, 0, DSD_SCAN_OPT_BANDWIDTH | DSD_SCAN_OPT_SQUELCH, 20000, -50);
     (void)nfm_row_profile(state, 1, DSD_SCAN_OPT_SQUELCH, 0, 0);
     (void)nfm_row_profile(state, 2, DSD_SCAN_OPT_SQUELCH, 0, 0);
-    g_scan_dsp_rate_hz = dsp_rate_hz;
     g_analog_warnings = 0;
     g_squelch_warnings = 0;
     expected_nxdn = 0;
     tune_result = DSD_TRUNK_TUNE_RESULT_OK;
-    for (int visit = 0; visit < 8; visit++) {
+}
+
+static void
+nfm_warning_rows_visit(dsd_opts* opts, dsd_state* state, int visits) {
+    for (int visit = 0; visit < visits; visit++) {
         (void)dsd_engine_channel_scan_step(opts, state);
     }
+}
+
+/* What the nfm rows owe the operator, said once per row per map when the scan starts: a squelch
+ * that holds on noise, a width on an input with no demodulator for it, and a width the running
+ * DSP rate cannot filter. Digital rows and well-set nfm rows say nothing. */
+static int
+nfm_row_warnings(int audio_in_type, int dsp_rate_hz, double configured_sql_db) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
+    assert(opts && state);
+    nfm_warning_rows_setup(opts, state, audio_in_type, configured_sql_db);
+    g_scan_dsp_rate_hz = dsp_rate_hz;
+    nfm_warning_rows_visit(opts, state, 8);
     dsd_engine_channel_scan_leave(opts, state);
     g_scan_dsp_rate_hz = 0;
     dsd_state_trunk_lcn_free(state);
@@ -1067,6 +1079,42 @@ test_nfm_row_warnings_once_per_row(void) {
     assert(g_squelch_warnings == 1 && strstr(g_squelch_warning_rows[0], "Scan channel 3 "));
 }
 
+/* The row checks follow the DSP rate a width must fit. An RTL stream that has published none yet leaves them to a
+ * later row start rather than skip the width check for good, and a new rate names the rows again: a width that fit
+ * the old rate may not fit the new one, and the scanner skips such a row quietly. */
+static void
+test_nfm_row_warnings_follow_the_dsp_rate(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
+    assert(opts && state);
+    nfm_warning_rows_setup(opts, state, AUDIO_IN_RTL, -60.0);
+    g_scan_dsp_rate_hz = 0;
+    nfm_warning_rows_visit(opts, state, 4);
+    assert(g_analog_warnings == 0);
+    /* The rate arrives: row 2's open squelch and row 1's 20 kHz, once. */
+    g_scan_dsp_rate_hz = 16000;
+    nfm_warning_rows_visit(opts, state, 8);
+    assert(g_analog_warnings == 2);
+    assert(strstr(g_analog_warning_rows[0], "Scan channel 1 (150.000000 MHz): NFM bandwidth 20 kHz does not fit the "
+                                            "16 kHz DSP rate"));
+    /* A 24 kHz rate fits the 20 kHz width: only the squelch is named again. */
+    g_scan_dsp_rate_hz = 24000;
+    nfm_warning_rows_visit(opts, state, 8);
+    assert(g_analog_warnings == 3);
+    assert(strstr(g_analog_warning_rows[2], "Scan channel 2 (150.000000 MHz): the nfm row's squelch is off"));
+    /* Back to 16 kHz: the width is named again. */
+    g_scan_dsp_rate_hz = 16000;
+    nfm_warning_rows_visit(opts, state, 8);
+    assert(g_analog_warnings == 5);
+    dsd_engine_channel_scan_leave(opts, state);
+    g_scan_dsp_rate_hz = 0;
+    dsd_state_trunk_lcn_free(state);
+    dsd_state_ext_free_all(state);
+    free(state);
+    free(opts);
+    tunes = reset_count = 0;
+}
+
 int
 main(void) {
     dsd_neo_log_set_tap(count_squelch_warnings, NULL);
@@ -1081,6 +1129,7 @@ main(void) {
     test_rx_tone_row_commit_and_step_clear();
     test_nfm_rows_switch_family_width_and_sink();
     test_nfm_row_warnings_once_per_row();
+    test_nfm_row_warnings_follow_the_dsp_rate();
     dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
     dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
     assert(opts && state);

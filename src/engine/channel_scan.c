@@ -45,8 +45,9 @@ typedef struct {
     dsd_scan_settings configured;
     dsd_scan_key_change keys;
     uint64_t key_epoch;
-    /* The map generation whose rows were last checked against the input (issues #521, #526). */
+    /* The map generation, and the DSP rate, whose rows were last checked against the input (issues #521, #526). */
     uint64_t rows_checked_map;
+    int rows_checked_rate_hz;
     int rows_checked;
 } channel_scan;
 
@@ -213,15 +214,23 @@ channel_scan_warn_row_squelch(const dsd_opts* opts, int row, long freq, const ds
              row + 1, (double)freq / 1000000.0, values->squelch_db);
 }
 
-/* What the rows owe the operator, said once per row when a scan (or a newly imported map) starts. */
+/* What the rows owe the operator, said once per row when a scan (or a newly imported map) starts, and again when the
+ * DSP rate an analog row width must fit changes. An RTL stream that has published no rate yet leaves the check to the
+ * next row start: a width would go unchecked, and the rows are skipped quietly at every visit it refuses
+ * (dsd_engine_scan_tune_to_freq()). */
 static void
 channel_scan_check_rows(const dsd_opts* opts, const dsd_state* state, channel_scan* scan) {
-    if (scan->rows_checked && scan->rows_checked_map == state->trunk_chan_map_seq) {
+    const int dsp_rate_hz = dsd_engine_scan_dsp_rate_hz(opts, state);
+    if (opts->audio_in_type == AUDIO_IN_RTL && dsp_rate_hz <= 0) {
+        return;
+    }
+    if (scan->rows_checked && scan->rows_checked_map == state->trunk_chan_map_seq
+        && scan->rows_checked_rate_hz == dsp_rate_hz) {
         return;
     }
     scan->rows_checked = 1;
     scan->rows_checked_map = state->trunk_chan_map_seq;
-    const int dsp_rate_hz = dsd_engine_scan_dsp_rate_hz(opts, state);
+    scan->rows_checked_rate_hz = dsp_rate_hz;
     for (int row = 0; row < state->lcn_freq_count; row++) {
         const dsd_scan_row_profile* profile = dsd_channel_profile_get(state, (size_t)row);
         const dsd_scan_option_values* values = profile ? &profile->values : NULL;

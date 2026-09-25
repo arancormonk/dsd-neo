@@ -399,6 +399,18 @@ void rtl_stream_set_digital_decode_modes(const dsd_opts* opts);
 int rtl_stream_check_analog_profile(int family, int kind, int width_hz);
 
 /**
+ * @brief Report the demod (DSP) rate an analog profile request is held to on the caller's thread.
+ *
+ * The rate the running stream published, from its start on, which rtl_stream_check_analog_profile(),
+ * rtl_stream_request_analog_profile() and rtl_stream_prepare_retune_analog_profile_for_target() check a width against.
+ * Unlike rtl_stream_get_demod_rate_hz(), a metrics value the demod thread publishes with its first processed block,
+ * it needs no block to have run.
+ *
+ * @return The rate in Hz, or 0 with no stream running.
+ */
+int rtl_stream_get_request_rate_hz(void);
+
+/**
  * @brief Report the published analog receive profile.
  *
  * @param out_kind     dsd_analog_demod of the active analog family (0 otherwise). May be NULL.

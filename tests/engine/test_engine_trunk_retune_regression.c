@@ -20,6 +20,7 @@
 #include <dsd-neo/engine/trunk_tuning.h>
 #include <dsd-neo/io/rigctl_client.h>
 #include <dsd-neo/io/rtl_stream_c.h>
+#include <dsd-neo/runtime/analog_channel.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/scan_mode.h>
 #include <stdbool.h>
@@ -475,8 +476,19 @@ rtl_stream_output_rate_for_family(int family, int cqpsk_enable, int symbol_rate_
 }
 
 int
-rtl_stream_get_demod_rate_hz(void) {
+rtl_stream_get_request_rate_hz(void) {
     return 48000;
+}
+
+int
+dsd_analog_width_check(int kind, int width_hz, int rate_hz, char* err, size_t err_size) {
+    (void)kind;
+    (void)width_hz;
+    (void)rate_hz;
+    if (err && err_size > 0U) {
+        err[0] = '\0';
+    }
+    return 0;
 }
 
 int

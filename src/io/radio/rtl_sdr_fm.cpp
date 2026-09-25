@@ -8587,6 +8587,11 @@ rtl_stream_published_request_rate(void) {
     return g_stream ? g_pub_rate_out.load(std::memory_order_relaxed) : 0;
 }
 
+extern "C" int
+rtl_stream_get_request_rate_hz(void) {
+    return rtl_stream_published_request_rate();
+}
+
 /* Validate on the caller's thread against @p rate_hz (0: no rate, see rtl_stream_published_request_rate()), and log a
  * refusal with the validator's text (once per kind, width and rate) so it is never silent. @p refused_result says what
  * a refusal leaves in place. */
@@ -12327,6 +12332,7 @@ rtl_stream_test_analog_request_with_stream(int rate_hz, int analog_stream, int p
     out->family_before = demod.analog_family;
     out->width_before = demod.channel_lpf_width_hz;
     (void)rtl_stream_get_analog_profile(NULL, &out->published_width_before, NULL);
+    out->request_rate_hz = rtl_stream_get_request_rate_hz();
     out->check_rc = rtl_stream_check_analog_profile(DSD_RX_FAMILY_ANALOG, kind, width_hz);
     out->request_rc = rtl_stream_request_analog_profile(DSD_RX_FAMILY_ANALOG, kind, width_hz);
     out->request_queued = g_profile_req_pending.load(std::memory_order_acquire);
