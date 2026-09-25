@@ -506,13 +506,13 @@ its analog monitor and width, and no symbol profile is applied over the monitor.
   status line (and again if that rate changes, or, for a target without its own width, if the configured width does),
   and that target's retune is then refused at every visit without a further warning. So is a target's own width while
   `DSD_NEO_CHANNEL_LPF=0` turns off the channel filter it needs. The Qt/Android scan-list preview checks the width's
-  range only: the rate is known once the scan's stream runs. While the target is parked, an RTL DSP bandwidth that cannot filter
-  its width is refused, from the DSP bandwidth control, Input > Switch source and a loaded config alike. While the list
-  has a target without a width of its own, the configured NFM width is in use on any session, as under `-fA`: a width
-  edit, a loaded config or a DSP bandwidth that would leave it unfiltered is refused, whichever target is parked. A
-  configured-width edit made while the target's retune is still in flight is applied once the retune lands.
-  With rigctl tuning an audio input, the peer demodulates: the width has no effect (scan start says so) and `-B`
-  sets the peer's passband.
+  range only: the rate is known once the scan's stream runs. While the target is parked, an RTL DSP bandwidth that
+  cannot filter its width is refused, from the DSP bandwidth control, Input > Switch source and a loaded config alike.
+  While the list has a target without a width of its own, the configured NFM width is in use on any session, as under
+  `-fA`: a width edit, a loaded config or a DSP bandwidth that would leave it unfiltered is refused, whichever target is
+  parked. A configured-width edit made while the target's retune is still in flight is applied once the retune lands.
+  With rigctl tuning an audio input, the peer demodulates: the width has no effect (scan start says so) and `-B` sets
+  the peer's passband.
 - **Controls.** `--scan-max-visit-ms`, the `Y` hold, advance and avoid work exactly as for digital targets, including
   while a carrier holds the target. The voice gate never applies to an analog target, so a global `--scan-voice-only`
   does not block one, and voice-gate switches are rejected in its `options`.

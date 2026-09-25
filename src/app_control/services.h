@@ -459,11 +459,12 @@ int svc_rtl_set_gain(dsd_opts* opts, dsd_state* state, int value);
  * any other session the configured NFM width while the scan has an nfm row or target without a width of its own to
  * visit (issue #526, dsd_engine_scan_runs_configured_nfm_width()), and, since the reopened stream starts on the
  * settings in force, the width in force while an nfm scan row runs the analog family: the row's own
- * --nfm-bandwidth-hz, or on a digital session the configured NFM width the row runs. @p why receives a short reason naming both values, the widest width the bandwidth filters and the fix on that
- * refusal (may be NULL): narrow the width first, or, for a scan row's own width, which the width controls do not edit,
- * keep a wider DSP bandwidth ("DSP BW 12 kHz cannot filter the scan row's NFM 12.5 kHz (max 9.6 kHz); keep a wider DSP
- * bandwidth"). The validator's full text is logged. The reopen is also refused while DSD_NEO_CHANNEL_LPF=0 turns off
- * the channel filter that explicit width needs, which its start would refuse at any rate.
+ * --nfm-bandwidth-hz, or on a digital session the configured NFM width the row runs. @p why receives a short reason
+ * naming both values, the widest width the bandwidth filters and the fix on that refusal (may be NULL): narrow the
+ * width first, or, for a scan row's own width, which the width controls do not edit, keep a wider DSP bandwidth ("DSP
+ * BW 12 kHz cannot filter the scan row's NFM 12.5 kHz (max 9.6 kHz); keep a wider DSP bandwidth"). The validator's full
+ * text is logged. The reopen is also refused while DSD_NEO_CHANNEL_LPF=0 turns off the channel filter that explicit
+ * width needs, which its start would refuse at any rate.
  */
 int svc_rtl_set_bandwidth(dsd_opts* opts, dsd_state* state, int khz, char* why, size_t why_size);
 /**

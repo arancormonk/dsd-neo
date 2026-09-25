@@ -283,14 +283,14 @@ names the first row that rate cannot run and how many more there are. A SoapySDR
 delivers its rate only once its stream runs, so its rows are held to it at scan start; the Qt/Android review before an
 import, like a trunk-scan list's preview, checks the width's range only. A row the rate cannot filter is skipped at
 every visit rather than received without its filter, and so is every row with a width of its own while
-`DSD_NEO_CHANNEL_LPF=0` turns off the channel filter each explicit width needs. A row without a width of its own is
-held to the rate with the configured NFM width it runs, and is named again whenever that configured width changes. While the scan has such a row, the configured NFM width is in use on
-any session, as under `-fA`: a width edit or a loaded config that sets a width the DSP rate cannot filter, and a DSP
-bandwidth or an input switch whose rate cannot filter the configured width, is refused, whichever row is on air. While a
-row with its own width is on air, an RTL DSP bandwidth that cannot filter the width is refused rather than reopening the
-stream on it, from the DSP bandwidth control, Input > Switch source and a loaded config alike. On audio input (rigctl
-tuning a PCM, UDP or TCP source) the audio arrives demodulated, so a row width has no effect and scan start says so; set
-the peer's own passband (`-B`).
+`DSD_NEO_CHANNEL_LPF=0` turns off the channel filter each explicit width needs. A row without a width of its own is held
+to the rate with the configured NFM width it runs, and is named again whenever that configured width changes. While the
+scan has such a row, the configured NFM width is in use on any session, as under `-fA`: a width edit or a loaded config
+that sets a width the DSP rate cannot filter, and a DSP bandwidth or an input switch whose rate cannot filter the
+configured width, is refused, whichever row is on air. While a row with its own width is on air, an RTL DSP bandwidth
+that cannot filter the width is refused rather than reopening the stream on it, from the DSP bandwidth control, Input >
+Switch source and a loaded config alike. On audio input (rigctl tuning a PCM, UDP or TCP source) the audio arrives
+demodulated, so a row width has no effect and scan start says so; set the peer's own passband (`-B`).
 
 An analog row holds while its carrier is open: the squelch is open over the monitor audio (above the input's level
 floor, through a 200 ms hangover; at an input rate the received-tone detector cannot run at, the squelch alone),

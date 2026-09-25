@@ -107,6 +107,12 @@ target-list CSV (P25 trunk/conventional, DMR trunk/conventional, NXDN96/NXDN48 t
   (`trunk_scan_refresh_activity()`), and its stay reason reads `CARRIER` while the carrier is open, then
   `ACTIVITY_HOLD` for the tail. The parser refuses key columns, `modulation`, `chan_csv` and `p25_bandplan_csv` on
   it, and the live decryption command refuses it.
+- Configured-width use across both scanners: `dsd_engine_scan_runs_configured_nfm_width()` answers whether the scan
+  running now, the trunk-scan coordinator's target list or else the `-Y` channel map (whose rows
+  `channel_rows_run_configured_nfm_width()` walks), has an analog row without a width of its own, which runs the
+  configured NFM width whenever it comes on air. App-control holds that width to the DSP rate on any session while it
+  does (see Per-channel decoder modes). It lives here rather than in `channel_scan.h` because the coordinator's list is
+  the one it reads first, and the question is asked of whichever scanner owns the tuner.
 
 Beside the active-target publication the coordinator also publishes the stay reason and live timing for the parked
 target into `dsd_state::scan_timing` once per tick (issue #508), from the same effective dwell/hold resolvers the
