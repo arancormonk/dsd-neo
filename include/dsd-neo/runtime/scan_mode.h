@@ -124,9 +124,10 @@ dsd_scan_mode dsd_scan_mode_active(const dsd_state* state);
 /** Capture/restore effective fields for a staged tune; no pointers or audio sink fields are changed. */
 void dsd_scan_settings_capture(const dsd_opts* opts, const dsd_state* state, dsd_scan_settings* out);
 void dsd_scan_settings_restore(const dsd_scan_settings* saved, dsd_opts* opts, dsd_state* state);
-/** Compare the acquisition-relevant settings (decoder set, modulation, inversion, slot policy, output
- * name), ignoring unused label bytes and the row-scoped option fields; optionally include live
- * timing/modulation. A difference means a staged tune or parked row must be re-acquired. */
+/** Compare the acquisition-relevant settings (decoder set, modulation, inversion, slot policy, analog
+ * demodulator and channel widths, output name), ignoring unused label bytes and the row-scoped option
+ * fields; optionally include live timing/modulation. A difference means a staged tune or parked row must
+ * be re-acquired. */
 int dsd_scan_settings_equal(const dsd_scan_settings* a, const dsd_scan_settings* b, int include_timing);
 /** Prepare production row settings without committing the row or baseline. @p row carries the row's
  * nonsecret options (NULL = none): the acquisition ones among them, the analog channel width, are in
@@ -158,7 +159,11 @@ int dsd_scan_mode_enter(dsd_opts* opts, dsd_state* state, dsd_scan_mode mode);
  * resume, and a leave that finds the scope suspended, always push, because the command that ran
  * while suspended may have pushed the configured default itself (or the demod still holds the
  * row's). After an enter that found the scope suspended, the options call that completes the row
- * pushes unconditionally for the same reason. prepare never pushes. */
+ * pushes unconditionally for the same reason. prepare never pushes.
+ *
+ * The analog channel width (DSD_SCAN_OPT_BANDWIDTH, issue #526) is an acquisition setting, not policy:
+ * options restores the configured widths and applies the row's, but nothing retunes here, so the tune
+ * that lands the row must already carry it (prepare with the row's values). */
 int dsd_scan_mode_options(dsd_opts* opts, dsd_state* state, const dsd_scan_option_values* values);
 /** Restore the exact configured baseline and release the scope. */
 void dsd_scan_mode_leave(dsd_opts* opts, dsd_state* state);

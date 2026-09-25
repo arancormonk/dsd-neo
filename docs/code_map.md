@@ -54,8 +54,9 @@ Generated (do not edit/commit):
     monotonic deadline of the window that is running (issue #508); the deadline it publishes is the same instant
     `dsd_scan_voice_gate_should_step()` flips, so the readout cannot drift from the rotation it describes. It also
     owns the analog carrier probe both scanners hold analog rows on, `dsd_scan_analog_carrier_open()` (issue #526):
-    the received-tone tap's `dsd_state::analog_rx.carrier_open` while the analog FM monitor runs, never on a stale
-    publication, a flagged digital carrier or a trunking-owned channel, and independent of audio output. The -Y voice
+    the received-tone tap's carrier held to the channel on air (`dsd_analog_rx_carrier_open_now()`) while the analog
+    FM monitor runs, never on a stale publication, a flagged digital carrier or a trunking-owned channel, and
+    independent of audio output. The -Y voice
     gate never owns an analog row (`scan_voice_gate_enabled()` is false under the analog family), and the -Y timing tick
     reports `DSD_SCAN_STAY_CARRIER` for the hangtime window while that probe is open
   - Stepped slicer threshold refresh after each getFrameSync() return: `src/engine/slicer_thresholds.c` behind
@@ -643,7 +644,7 @@ installs from `src/engine/trunk_tuning.c` in `src/engine/trunk_tuning_hooks_inst
   over is filled by `dsd_symbol.c` and owned by decoder-state setup/teardown in `src/core/util/dsd_init.c`.
 - Received-tone detection (issue #522), public entry points in `include/dsd-neo/dsp/analog_rx.h`: `dsd_analog_rx_tap()`,
   `dsd_analog_rx_tap_partial()`, `dsd_analog_rx_block_restart()`, `dsd_analog_rx_reset()`,
-  `dsd_analog_rx_block_straddles_boundary()` and the monitor playback
+  `dsd_analog_rx_carrier_open_now()`, `dsd_analog_rx_block_straddles_boundary()` and the monitor playback
   bracket `dsd_analog_rx_playback_begin()` / `dsd_analog_rx_playback_end()`. The same header holds the CTCSS timing
   contract in sample time: p95 targets `DSD_ANALOG_CTCSS_LOCK_P95_MS` (400) and `DSD_ANALOG_CTCSS_LOSS_P95_MS` (350) and
   per-event ceilings `DSD_ANALOG_CTCSS_LOCK_CEILING_MS` (700) and `DSD_ANALOG_CTCSS_LOSS_CEILING_MS` (800).
@@ -661,7 +662,9 @@ installs from `src/engine/trunk_tuning.c` in `src/engine/trunk_tuning_hooks_inst
   publication would trail the sample-time contract by up to a block. One decoder-thread tap covers RTL and PCM, sees
   only live (not seam-replayed) samples, only reads the block, and runs whatever `audio_out` says.
   `symbol_output_unsynced_analog()` is its monitor gate, sink and carrier stamp (issue #526): the stamp that holds a
-  -Y row under the hangtime rule follows the tap's `carrier_open` while the analog FM monitor runs, whether or not
+  -Y row under the hangtime rule follows the tap's carrier (`dsd_analog_rx_carrier_open_now()`, which reports none
+  once the tap's own generation check sees a retune or profile change since its last read) while the analog FM
+  monitor runs, whether or not
   the block plays (the `-8` monitor under digital decoding keeps stamping only what it plays), and the gate writes
   nothing while a retune is in flight (`dsd_trunk_tuning_pending_request()`) or from a block that began before a
   retune, profile change or reset the tap noticed (`dsd_analog_rx_block_straddles_boundary()`). It is active only
