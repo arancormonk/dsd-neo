@@ -460,29 +460,33 @@ session_args_key_valid(const QString& type, const QString& value) {
 
 QString
 session_args_error_text(SessionArgsError error) {
-    switch (error) {
-        case SessionArgsError::None: return {};
-        case SessionArgsError::KeyM17Scrambler:
-            return QStringLiteral("Enter a nonzero M17 seed with 2, 4, or 6 hex digits.");
-        case SessionArgsError::KeyM17Aes:
-            return QStringLiteral(
-                "Enter an M17 AES key with 32, 48, or 64 hex digits; an all-zero key is unavailable to the decoder.");
-        case SessionArgsError::Frequency: return QStringLiteral("Enter a positive frequency in MHz.");
-        case SessionArgsError::Ppm: return QStringLiteral("Enter a whole number for PPM.");
-        case SessionArgsError::Hangtime: return QStringLiteral("Enter hang time in seconds from 0 to 30.");
-        case SessionArgsError::KeyType: return QStringLiteral("Choose one encryption key type.");
-        case SessionArgsError::KeyBasic: return QStringLiteral("Enter a basic key from 0 to 255.");
-        case SessionArgsError::KeyHex: return QStringLiteral("Enter 10, 32, or 64 hexadecimal digits.");
-        case SessionArgsError::KeyRc4: return QStringLiteral("Enter 1 to 16 hexadecimal digits.");
-        case SessionArgsError::KeyScrambler: return QStringLiteral("Enter a scrambler key from 0 to 32767.");
-        case SessionArgsError::KeyConflict: return QStringLiteral("Choose either a direct key or a key CSV file.");
-        case SessionArgsError::ForceKey: return QStringLiteral("Choose force key mode 0, 1, or 2.");
-        case SessionArgsError::UnsafeOption:
-            return QStringLiteral("Extra options contain a prohibited option or grouped short options. "
-                                  "Remove prohibited options and write each short option separately.");
-        case SessionArgsError::AmNeedsRadio:
-            return QStringLiteral("AM needs a radio source (USB, Airspy or rtl_tcp): network and file audio arrives "
-                                  "already demodulated. Choose a radio source, or another decode mode.");
+    static const struct {
+        SessionArgsError error;
+        const char* text;
+    } k_error_texts[] = {
+        {SessionArgsError::KeyM17Scrambler, "Enter a nonzero M17 seed with 2, 4, or 6 hex digits."},
+        {SessionArgsError::KeyM17Aes,
+         "Enter an M17 AES key with 32, 48, or 64 hex digits; an all-zero key is unavailable to the decoder."},
+        {SessionArgsError::Frequency, "Enter a positive frequency in MHz."},
+        {SessionArgsError::Ppm, "Enter a whole number for PPM."},
+        {SessionArgsError::Hangtime, "Enter hang time in seconds from 0 to 30."},
+        {SessionArgsError::KeyType, "Choose one encryption key type."},
+        {SessionArgsError::KeyBasic, "Enter a basic key from 0 to 255."},
+        {SessionArgsError::KeyHex, "Enter 10, 32, or 64 hexadecimal digits."},
+        {SessionArgsError::KeyRc4, "Enter 1 to 16 hexadecimal digits."},
+        {SessionArgsError::KeyScrambler, "Enter a scrambler key from 0 to 32767."},
+        {SessionArgsError::KeyConflict, "Choose either a direct key or a key CSV file."},
+        {SessionArgsError::ForceKey, "Choose force key mode 0, 1, or 2."},
+        {SessionArgsError::UnsafeOption, "Extra options contain a prohibited option or grouped short options. "
+                                         "Remove prohibited options and write each short option separately."},
+        {SessionArgsError::AmNeedsRadio, "AM needs a radio source (USB, Airspy or rtl_tcp): network and file audio "
+                                         "arrives already demodulated. Choose a radio source, or another decode mode."},
+    };
+
+    for (const auto& entry : k_error_texts) {
+        if (entry.error == error) {
+            return QString::fromUtf8(entry.text);
+        }
     }
     return {};
 }
@@ -552,6 +556,19 @@ is_radio_source(const QString& source) {
     return source == QLatin1String("usb") || source == QLatin1String("airspy") || source == QLatin1String("rtltcp");
 }
 
+/* What the source allows. A radio source needs a frequency it can tune. Issue #524: -fM demodulates AM from the radio's
+   I/Q, and the engine refuses it on audio that arrives already demodulated; the wizard keeps the pair from being saved,
+   and a system saved before that fails here with a reason rather than at engine startup. */
+static SessionArgsError
+session_args_source_error(const QVariantMap& system, bool radioSource, const QString& freqMhz) {
+    if (!radioSource) {
+        return decode_flag_names_am(system.value(QStringLiteral("decodeFlag")).toString())
+                   ? SessionArgsError::AmNeedsRadio
+                   : SessionArgsError::None;
+    }
+    return session_args_freq_valid(freqMhz) ? SessionArgsError::None : SessionArgsError::Frequency;
+}
+
 QStringList
 session_args_build(const QVariantMap& system, const SessionArgPrefs& prefs, SessionArgsError* error) {
     if (error != nullptr) {
@@ -573,15 +590,10 @@ session_args_build(const QVariantMap& system, const SessionArgPrefs& prefs, Sess
 
     const QString sourceType = system.value(QStringLiteral("sourceType")).toString();
     const bool radioSource = is_radio_source(sourceType);
-    // Issue #524: -fM demodulates AM from the radio's I/Q, and the engine refuses it on audio that arrives already
-    // demodulated. The wizard keeps the pair from being saved; a system saved before that fails here with a reason
-    // rather than at engine startup.
-    if (!radioSource && decode_flag_names_am(system.value(QStringLiteral("decodeFlag")).toString())) {
-        return fail(SessionArgsError::AmNeedsRadio);
-    }
     const QString freqMhz = system.value(QStringLiteral("freqMhz")).toString().trimmed();
-    if (radioSource && !session_args_freq_valid(freqMhz)) {
-        return fail(SessionArgsError::Frequency);
+    const SessionArgsError sourceError = session_args_source_error(system, radioSource, freqMhz);
+    if (sourceError != SessionArgsError::None) {
+        return fail(sourceError);
     }
 
     // PPM is the one override persisted as a raw string, and it is spliced
