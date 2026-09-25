@@ -510,16 +510,17 @@ installs from `src/engine/trunk_tuning.c` in `src/engine/trunk_tuning_hooks_inst
   per accepted frame sync, behind `DSD_NEO_DEBUG_SYMBOL_TIMING` (see `docs/cli.md`). The sample trace it correlates
   over is filled by `dsd_symbol.c` and owned by decoder-state setup/teardown in `src/core/util/dsd_init.c`.
 - Received-tone detection (issue #522), public entry points in `include/dsd-neo/dsp/analog_rx.h`: `dsd_analog_rx_tap()`,
-  `dsd_analog_rx_tap_partial()`, `dsd_analog_rx_reset()` and the monitor playback bracket
-  `dsd_analog_rx_playback_begin()` / `dsd_analog_rx_playback_end()`. The same header holds the CTCSS timing contract in
-  sample time: p95 targets `DSD_ANALOG_CTCSS_LOCK_P95_MS` (400) and `DSD_ANALOG_CTCSS_LOSS_P95_MS` (350) and per-event
-  ceilings `DSD_ANALOG_CTCSS_LOCK_CEILING_MS` (700) and `DSD_ANALOG_CTCSS_LOSS_CEILING_MS` (800). `DSP_ANALOG_CTCSS`
-  asserts them on every timing row, and a tone policy's acquisition window must exceed the lock ceiling by at least
-  100 ms. Each ceiling sits above the slowest event of the long-run sweeps in `docs/testing.md` (1,000,000 starts per
-  condition at 0 dB, 800,000 stops), as the header states; change them only with new sweeps. The header also states the measured wrong-tone rates (neighbour locks near 0 dB,
-  talk-off), which a policy acting on the first lock has to budget for. `dsd_symbol.c` taps each unsynced analog block
-  while it is still raw: `symbol_process_unsynced_analog()` offers the tap the block after every sample it adds, the one
-  that completes the block included (`dsd_analog_rx_tap_partial()`), and the tap reads what is waiting once
+  `dsd_analog_rx_tap_partial()`, `dsd_analog_rx_block_restart()`, `dsd_analog_rx_reset()` and the monitor playback
+  bracket `dsd_analog_rx_playback_begin()` / `dsd_analog_rx_playback_end()`. The same header holds the CTCSS timing
+  contract in sample time: p95 targets `DSD_ANALOG_CTCSS_LOCK_P95_MS` (400) and `DSD_ANALOG_CTCSS_LOSS_P95_MS` (350) and
+  per-event ceilings `DSD_ANALOG_CTCSS_LOCK_CEILING_MS` (700) and `DSD_ANALOG_CTCSS_LOSS_CEILING_MS` (800).
+  `DSP_ANALOG_CTCSS` asserts them on every timing row, and a tone policy's acquisition window must exceed the lock
+  ceiling by at least 100 ms. Each ceiling sits above the slowest event of the long-run sweeps in `docs/testing.md`
+  (1,000,000 starts per condition at 0 dB, 800,000 stops), as the header states; change them only with new sweeps. The
+  header also states the measured wrong-tone rates (neighbour locks near 0 dB, talk-off), which a policy acting on the
+  first lock has to budget for. `dsd_symbol.c` taps each unsynced analog block while it is still raw:
+  `symbol_process_unsynced_analog()` offers the tap the block after every sample it adds, the one that completes the
+  block included (`dsd_analog_rx_tap_partial()`), and the tap reads what is waiting once
   `DSD_ANALOG_RX_TAP_READ_MS` (20 ms) of input, at the input's current rate, has built up;
   `symbol_finalize_unsynced_analog_block()` hands it the rest after the raw WAV write and before
   `symbol_apply_unsynced_filters()`, whose in-place `hpf_f` (960 Hz) and `pbf_f` would remove every CTCSS tone. The
@@ -528,9 +529,10 @@ installs from `src/engine/trunk_tuning.c` in `src/engine/trunk_tuning_hooks_inst
   only live (not seam-replayed) samples, only reads the block, and runs whatever `audio_out` says. It is active only
   while `dsd_analog_tone_detection_active()` (runtime, above) says so: the analog FM monitor on PCM input or on RTL with
   an AUDIO_MONITOR output kind. The rate comes from the RTL output-rate hook or `dsd_opts_current_input_timing_rate()`.
-  The sync hunt keeps that output kind: in analog-only mode `dsd_frame_sync.c` never sends the RTL front end a symbol
-  profile (a CQPSK one would turn the monitor audio into symbols and silence the tap), as `app_control/symbol_profile.c`
-  already did not.
+  The sync hunt keeps that output kind: the analog family stands the modulation auto-switch down, and in analog-only
+  mode `dsd_frame_sync.c` never sends the RTL front end any symbol profile the hunt requests, the profile a two-level
+  hunt re-normalises included (a CQPSK one would turn the monitor audio into symbols and silence the tap, and a digital
+  channel profile would narrow it), as `app_control/symbol_profile.c` does not.
   - `src/dsp/analog_rx.c` holds the pure core behind the module-private `src/dsp/analog_rx_internal.h` (no `dsd_state`,
     no clock, so `DSP_ANALOG_CTCSS` drives it in sample time): the shared sub-audible front end (stage 1 a Blackman FIR
     decimating by `floor(fs / 2400)`, evaluated only when an output is due; stage 2 a Blackman LPF at the ~2.4 kHz rate,
@@ -627,7 +629,13 @@ installs from `src/engine/trunk_tuning.c` in `src/engine/trunk_tuning_hooks_inst
     keep every sample across the boundary; resets run in digital sessions too (every
     `dsd_frame_sync_reset_acquisition()`, a lost TCP connection). Detection that starts part-way through a block, with
     no session yet, likewise reads from the sample it started on, also when that sample completes the block: the symbol
-    path offers every sample to `dsd_analog_rx_tap_partial()` before it finalizes the block. On Pulse, stdin, UDP and
+    path offers every sample to `dsd_analog_rx_tap_partial()` before it finalizes the block. Whenever the symbol path
+    empties the block (`symbol_reset_analog_buffers()`: after each block, and when `dsd_symbol_analog_block_reset()` or
+    a receive-family switch landing in `symbol_refresh_rtl_profile()` drops a part-collected one) it calls
+    `dsd_analog_rx_block_restart()`, so the tap's next read starts at the new block's first sample. A receive-family
+    switch (`DSD_APP_CMD_DECODE_MODE_SET`, a config apply's `[mode]`, the channel-scan leave) forgets the tone through
+    the boundary resets above, and on RTL input the switch that lands later on the demod thread also clears the output
+    ring and moves the stream generation the tap watches. On Pulse, stdin, UDP and
     TCP input the input's own queue holds more of the old channel, which kept arriving while a rigctl retune held the
     decoder, so every `dsd_analog_rx_reset()` and every generation move the tap sees also arms a backlog skip, and so
     does detection that starts with no session after a reset (the publication's generation is no longer 0: a retune in a

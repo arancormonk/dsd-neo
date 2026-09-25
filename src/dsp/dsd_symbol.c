@@ -1188,6 +1188,9 @@ symbol_reset_analog_buffers(dsd_state* state) {
     DSD_MEMSET(state->analog_out_f, 0, sizeof(state->analog_out_f));
     DSD_MEMSET(state->analog_out, 0, sizeof(state->analog_out));
     state->analog_sample_counter = 0;
+    /* The next block starts at its first sample for received-tone detection too (issue #522), also when this drops
+       one part-way through: dsd_symbol_analog_block_reset() and a receive-family switch landing. */
+    dsd_analog_rx_block_restart(state);
 }
 
 void

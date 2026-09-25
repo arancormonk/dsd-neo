@@ -920,6 +920,15 @@ dsd_analog_rx_tap(const dsd_opts* opts, dsd_state* state, const float* block, un
 }
 
 void
+dsd_analog_rx_block_restart(const dsd_state* state) {
+    analog_rx_session* session = state ? analog_rx_session_get(state) : NULL;
+    if (session) {
+        /* Whatever the tap had read, or set aside, of the emptied block is gone with it. */
+        session->block_taken = 0U;
+    }
+}
+
+void
 dsd_analog_rx_playback_begin(const dsd_state* state) {
     analog_rx_session* session = state ? analog_rx_session_get(state) : NULL;
     if (!session || !session->backlog_armed) {

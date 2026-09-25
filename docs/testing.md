@@ -421,7 +421,9 @@ bursts, also when the reset came in a digital mode before detection started, and
 holds the decoder for each block's 20 ms (the time spent playing is not counted as waiting for input), and its own
 131.8 Hz tone locks within the p95 target plus one read, while a WAV file is heard at once after a reset, a UDP stream
 with nothing queued from the third read after a reset or a generation move, and stdin fed faster than real time again
-after 2 s; and --
+after 2 s; restarts the tap at the first sample of the next block when the symbol path drops a part-collected block
+(`dsd_symbol_analog_block_reset()` on a receive-family change, or a family switch landing on an RTL front end), where
+read on from its place in the dropped block it missed the new block's opening samples; and --
 driven through `getSymbol()` on 2500 Hz WAVs, where one 960-sample block is 384 ms -- reads the block as it fills, so a
 tone starting mid-block locks within the 400 ms p95 target of its start and a carrier drop is forgotten within the
 hangover and two 20 ms reads (read only at block ends they took 576 and 544 ms), and sets aside the part of the monitor

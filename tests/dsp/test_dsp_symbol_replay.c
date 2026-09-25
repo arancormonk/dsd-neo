@@ -1613,6 +1613,45 @@ test_rx_tone_pcm_squelch_follows_each_read(void) {
 }
 
 /*
+ * The symbol path can empty its monitor block part-way through: dsd_symbol_analog_block_reset()
+ * drops the part-collected block on a receive-family change, and so does a family switch landing
+ * on an RTL front end. The tap's next read must then start at the new block's first sample. Here
+ * a reset has just set aside the few samples the old block held, fewer than one read, when the
+ * block is dropped; the new block opens with as many samples of a tone at about -24 dBFS and then
+ * goes silent. Read from its first sample, the first read holds the tone and opens the -40 dBFS
+ * squelch. Read on from where the tap had got to in the dropped block, it would skip the tone
+ * and, a read later, find only silence.
+ */
+static void
+test_rx_tone_dropped_block_restarts_the_tap(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    install_fake_rtl_hooks(0);
+    init_analog_monitor_fixture(&opts, &state);
+    opts.wav_sample_rate = MID_PAUSE_RATE;
+    opts.rtl_squelch_level = dsd_squelch_level_from_sql(-40.0);
+    const int read = ((MID_PAUSE_RATE * DSD_ANALOG_RX_TAP_READ_MS) + 999) / 1000;
+    const int held = read / 2;
+
+    for (int n = 0; n < held; n++) {
+        dsd_symbol_test_push_unsynced_analog_sample(&opts, &state, 0.0f);
+    }
+    assert(state.analog_sample_counter == held);
+    dsd_analog_rx_reset(&state);
+    dsd_symbol_analog_block_reset(&state);
+    assert(state.analog_sample_counter == 0);
+    assert(state.analog_rx.tone_state == DSD_ANALOG_TONE_STATE_INACTIVE && state.analog_rx.carrier_open == 0);
+
+    for (int n = 0; n < held + read; n++) {
+        const short v = n < held ? tone_100_sample(n, MID_PAUSE_RATE) : 0;
+        dsd_symbol_test_push_unsynced_analog_sample(&opts, &state, (float)v);
+    }
+    assert(state.analog_sample_counter == held + read);
+    assert(state.analog_rx.carrier_open == 1);
+    dsd_state_ext_free_all(&state);
+}
+
+/*
  * A live radio stream that stops delivering: an rtl_tcp server that went away, whose client
  * then retries the connection without end while the decoder waits in the read (a stalled
  * device does the same). Nothing arrives for the sample-time hangover to count, so as on a
@@ -2083,6 +2122,7 @@ main(void) {
     test_rx_tone_paused_stream_starts_a_new_reception();
     test_rx_tone_pause_mid_block_inherits_nothing();
     test_rx_tone_pcm_squelch_follows_each_read();
+    test_rx_tone_dropped_block_restarts_the_tap();
     test_rx_tone_stalled_radio_stream_goes_stale();
     test_rx_tone_tcp_reconnect_starts_a_new_reception();
     test_rx_tone_retune_skips_the_input_backlog();

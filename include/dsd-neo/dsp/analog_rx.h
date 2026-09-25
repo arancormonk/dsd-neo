@@ -148,6 +148,18 @@ void dsd_analog_rx_tap(const dsd_opts* opts, dsd_state* state, const float* bloc
 void dsd_analog_rx_tap_partial(const dsd_opts* opts, dsd_state* state, const float* block, unsigned int filled);
 
 /**
+ * @brief Note that the symbol path emptied its monitor block.
+ *
+ * The symbol path calls it whenever it empties dsd_state::analog_out_f: after each block it
+ * completes, and when it drops a part-collected block, as dsd_symbol_analog_block_reset() and a
+ * receive-family switch landing on an RTL front end do. The tap's next read then starts at the
+ * first sample of the block that follows, not where it had read up to in the dropped one, which
+ * could otherwise leave the new block's first samples unread. Only the detector's own state,
+ * which the state holds by pointer, changes.
+ */
+void dsd_analog_rx_block_restart(const dsd_state* state);
+
+/**
  * @brief Forget the received tone: clears the publication and every detector's state.
  *
  * Call on retune, scan row or target change, input switch, decode-mode change and stop, so a
