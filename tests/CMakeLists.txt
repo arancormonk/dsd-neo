@@ -11290,6 +11290,57 @@ if(DSD_HAS_RADIO)
         ""
         "${_analog_off_path}"
     )
+    # Issue #525: --nfm-bandwidth-hz changes the channel filter a listener hears
+    # through. The same 1 kHz tone through an 8 kHz, an explicit 16 kHz and a 25 kHz
+    # channel: the tone keeps its level at every width (probe on the tone within
+    # +/-1 dBc, RMS unchanged). 8 kHz trims the 3 kHz-deviation signal's outer
+    # sidebands (tone SNR 17.0 dB), 25 kHz lets in more of the receiver noise
+    # (23.6 dB), and an explicit 16 kHz is the default filter bit for bit (25.9 dB).
+    set(_analog_tone_bounds
+        "--analog-expect-tone-hz 1000 --analog-min-captured-ms 1400 --analog-min-audible-ms 1400 --analog-max-first-audible-ms 100 --analog-min-rms-dbfs -42 --analog-max-rms-dbfs -30 --analog-max-clip 0 --analog-probe-min-dbc 1000:-1 --analog-probe-max-dbc 1000:1"
+    )
+    dsd_neo_add_analog_replay_test(
+        DECODE_IQ_ANALOG_NFM_TONE_8K
+        nfm_tone_synth
+        "-fA --nfm-bandwidth-hz 8000 ${_analog_tone_bounds} --analog-min-snr-db 12"
+        ""
+        "${_analog_off_path}"
+    )
+    dsd_neo_add_analog_replay_test(
+        DECODE_IQ_ANALOG_NFM_TONE_16K
+        nfm_tone_synth
+        "-fA --nfm-bandwidth-hz 16000 ${_analog_tone_bounds} --analog-min-snr-db 20"
+        ""
+        "${_analog_off_path}"
+    )
+    dsd_neo_add_analog_replay_test(
+        DECODE_IQ_ANALOG_NFM_TONE_25K
+        nfm_tone_synth
+        "-fA --nfm-bandwidth-hz=25000 ${_analog_tone_bounds} --analog-min-snr-db 18"
+        ""
+        "${_analog_off_path}"
+    )
+    # The unmodulated neighbour 12.5 kHz up at -6 dB, through the narrowest and the
+    # widest channel. At 8 kHz it reads -79.5 dBc (the default 16 kHz filter leaves
+    # -64.9) and the tone keeps a 17.0 dB SNR; at 25 kHz the neighbour sits inside the
+    # passband and reads -8.2 dBc, so each case's neighbour bound is one the default
+    # width and the other case break. At 25 kHz the beat counts against the tone SNR
+    # (-3.5 dB), so that case pins the tone's level instead: -36.1 dBFS, the same as
+    # at every other width.
+    dsd_neo_add_analog_replay_test(
+        DECODE_IQ_ANALOG_NFM_BW_8K
+        nfm_adjacent_synth
+        "-fA --nfm-bandwidth-hz 8000 --analog-expect-tone-hz 1000 --analog-min-snr-db 12 --analog-min-captured-ms 1400 --analog-probe-max-dbc 12500:-72"
+        ""
+        "${_analog_off_path}"
+    )
+    dsd_neo_add_analog_replay_test(
+        DECODE_IQ_ANALOG_NFM_BW_25K
+        nfm_adjacent_synth
+        "-fA --nfm-bandwidth-hz 25000 --analog-expect-tone-hz 1000 --analog-min-captured-ms 1400 --analog-probe-min-dbc 12500:-20 --analog-probe-min-dbfs 1000:-38 --analog-probe-max-dbfs 1000:-34"
+        ""
+        "${_analog_off_path}"
+    )
     # A run in which no audio reaches the hook at all: -fi leaves the analog monitor
     # off. The never-audible bound is paired with stream time (1500 ms measured), the
     # pattern every silent or muted case uses so that a stalled or empty replay
