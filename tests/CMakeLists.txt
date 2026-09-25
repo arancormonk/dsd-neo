@@ -7658,6 +7658,22 @@ dsd_neo_link_dsp_test(dsd-neo_test_dsp_analog_ctcss ${DSD_NEO_TEST_MATH_LIB})
 add_test(NAME DSP_ANALOG_CTCSS COMMAND dsd-neo_test_dsp_analog_ctcss)
 set_tests_properties(DSP_ANALOG_CTCSS PROPERTIES TIMEOUT 300)
 
+# The DCS words runtime generates, checked against Golay24.hpp through the explicit layout
+# mapping between the two, with the cited reference words pinned on both sides (issue #523).
+add_executable(
+    dsd-neo_test_dsp_analog_dcs_golay
+    dsp/test_dsp_analog_dcs_golay.cpp
+)
+target_include_directories(
+    dsd-neo_test_dsp_analog_dcs_golay
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+target_link_libraries(dsd-neo_test_dsp_analog_dcs_golay PRIVATE dsd-neo_runtime)
+add_test(
+    NAME DSP_ANALOG_DCS_GOLAY_XCHECK
+    COMMAND dsd-neo_test_dsp_analog_dcs_golay
+)
+
 add_executable(dsd-neo_test_dsp_fsk_modem dsp/test_fsk_modem.c)
 target_include_directories(
     dsd-neo_test_dsp_fsk_modem
