@@ -27,7 +27,8 @@
 #define ANY_MODES     (DIGITAL_MODES | ANALOG_MODES)
 
 _Static_assert((DIGITAL_MODES & ANALOG_MODES) == 0U, "a class is digital or analog, never both");
-_Static_assert((ANY_MODES >> DSD_SCAN_MODE_LAST) == 1U, "ANY_MODES covers every class up to the last one");
+_Static_assert(ANY_MODES == (MODE_BIT(DSD_SCAN_MODE_LAST) * 2U) - 1U,
+               "ANY_MODES covers every class up to the last one");
 
 typedef struct scan_option_spec scan_option_spec;
 
