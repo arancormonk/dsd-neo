@@ -946,8 +946,10 @@ chan_import_row_mode(char** fields, const char* base_path, int row_number, dsd_s
     static const int key_columns[] = {CHAN_KEYS_HEX, CHAN_KEYS_DEC, CHAN_SINGLE_HEX, CHAN_SINGLE_DEC};
     for (size_t i = 0; i < sizeof(key_columns) / sizeof(key_columns[0]); i++) {
         if (chan_key_cell_present(chan_key_cell(fields, CHAN_FIELD_COUNT, key_columns[i]))) {
-            LOG_ERROR("channel map file '%s' row %d: key columns are not supported for mode %s\n", base_path,
-                      row_number, dsd_scan_mode_name(*mode));
+            char row_text[32] = "?";
+            (void)DSD_SNPRINTF(row_text, sizeof(row_text), "%d", row_number);
+            LOG_ERROR("channel map file '%s' row %s: key columns are not supported for mode %s\n", base_path, row_text,
+                      dsd_scan_mode_name(*mode));
             return -1;
         }
     }
