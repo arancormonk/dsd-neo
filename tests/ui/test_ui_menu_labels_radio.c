@@ -301,7 +301,17 @@ test_radio_tuning_labels(void) {
     opts.rtl_gain_value = 28;
     rc |= expect_str("rtl gain set", lbl_rtl_gain(&ctx, b, sizeof(b)), "Gain... [28]");
     rc |= expect_str("rtl ppm", lbl_rtl_ppm(&ctx, b, sizeof(b)), "PPM correction... [-3]");
-    rc |= expect_str("rtl bandwidth", lbl_rtl_bw(&ctx, b, sizeof(b)), "Bandwidth... [48 kHz]");
+    /* The DSP rate, not a channel width: the NFM channel width has its own row (issue #525). */
+    rc |= expect_str("rtl bandwidth", lbl_rtl_bw(&ctx, b, sizeof(b)), "DSP bandwidth... [48 kHz]");
+    rc |= expect_str("nfm bandwidth default", lbl_rtl_nfm_bw(&ctx, b, sizeof(b)), "NFM bandwidth... [default 16 kHz]");
+    opts.analog_nfm_bandwidth_hz = 12500;
+    rc |= expect_str("nfm bandwidth explicit", lbl_rtl_nfm_bw(&ctx, b, sizeof(b)), "NFM bandwidth... [12.5 kHz]");
+    opts.analog_nfm_bandwidth_hz = 16000;
+    rc |= expect_str("nfm bandwidth explicit default value", lbl_rtl_nfm_bw(&ctx, b, sizeof(b)),
+                     "NFM bandwidth... [16 kHz]");
+    opts.analog_nfm_bandwidth_hz = 11250;
+    rc |= expect_str("nfm bandwidth 11.25", lbl_rtl_nfm_bw(&ctx, b, sizeof(b)), "NFM bandwidth... [11.25 kHz]");
+    opts.analog_nfm_bandwidth_hz = 0;
     rc |= expect_str("rtl volume", lbl_rtl_vol(&ctx, b, sizeof(b)), "Volume multiplier... [2]");
     rc |= expect_str("rtl frequency null ctx", lbl_rtl_freq(NULL, b, sizeof(b)), "Frequency... [0.000000 MHz]");
 

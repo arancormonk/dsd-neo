@@ -39,6 +39,7 @@
 #include <dsd-neo/protocol/p25/p25_callsign.h>
 #include <dsd-neo/protocol/p25/p25_crypto.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
+#include <dsd-neo/runtime/analog_channel.h>
 #include <dsd-neo/runtime/scan_mode.h>
 #include <dsd-neo/runtime/unicode.h>
 #include <dsd-neo/ui/menu_core.h>
@@ -411,6 +412,29 @@ ui_print_rtl_auto_ppm_status(void) {
 #endif
 }
 
+/* The analog channel width beside the DSP rate it has to fit (issue #525): the width the front end reports while it
+   runs the analog monitor, otherwise the configured one; "(DSP-limited)" when the DSP rate rather than the channel
+   filter bounds it. The M17 encoder shares the monitor output without being the analog receiver. */
+static void
+ui_print_analog_channel_field(const dsd_opts* opts) {
+    if (!dsd_opts_is_analog_family(opts)) {
+        return;
+    }
+    dsd_frontend_metrics metrics;
+    (void)dsd_app_frontend_get_metrics(&metrics);
+    int width_hz = dsd_analog_width_effective_hz(opts->analog_demod, dsd_opts_analog_width_hz(opts));
+    int limited = 0;
+    if (metrics.output_kind == DSD_FRONTEND_RTL_OUTPUT_AUDIO_MONITOR && metrics.channel_bandwidth_hz > 0) {
+        width_hz = metrics.channel_bandwidth_hz;
+        limited = metrics.channel_bandwidth_dsp_limited;
+    }
+    char width[DSD_ANALOG_WIDTH_TEXT_MAX];
+    if (dsd_analog_width_format(width_hz, width, sizeof width) != 0) {
+        return;
+    }
+    printw(" Analog: %s %s%s;", dsd_analog_demod_label(opts->analog_demod), width, limited ? " (DSP-limited)" : "");
+}
+
 static void
 ui_render_rtl_input_source(dsd_opts* opts, dsd_state* state) {
     if (opts->audio_in_type == AUDIO_IN_RTL) {
@@ -437,6 +461,7 @@ ui_render_rtl_input_source(dsd_opts* opts, dsd_state* state) {
         (void)dsd_app_squelch_view_format(&squelch, sql, sizeof sql);
         printw(" SQL: %s;", sql);
         printw(" DSP-BW: %i kHz;", opts->rtl_dsp_bw_khz);
+        ui_print_analog_channel_field(opts);
         printw(" FRQ: %i;", opts->rtlsdr_center_freq);
         ui_print_rtl_auto_ppm_status();
         if (!soapy_input && opts->rtl_udp_port != 0) {

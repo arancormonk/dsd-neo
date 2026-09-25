@@ -18,6 +18,7 @@
 #include <dsd-neo/core/talkgroup_policy.h>
 #include <dsd-neo/io/tcp_input.h>
 #include <dsd-neo/platform/file_compat.h>
+#include <dsd-neo/runtime/analog_channel.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/decode_mode.h>
 #include <dsd-neo/runtime/radioreference.h>
@@ -1368,7 +1369,21 @@ lbl_rtl_ppm(const void* v, char* b, size_t n) {
 const char*
 lbl_rtl_bw(const void* v, char* b, size_t n) {
     const UiCtx* c = (const UiCtx*)v;
-    DSD_SNPRINTF(b, n, "Bandwidth... [%d kHz]", (c && c->opts) ? c->opts->rtl_dsp_bw_khz : 0);
+    DSD_SNPRINTF(b, n, "DSP bandwidth... [%d kHz]", (c && c->opts) ? c->opts->rtl_dsp_bw_khz : 0);
+    return b;
+}
+
+/* The configured NFM channel width: an explicit one as set, the unset default named as such. */
+const char*
+lbl_rtl_nfm_bw(const void* v, char* b, size_t n) {
+    const UiCtx* c = (const UiCtx*)v;
+    const int configured = (c && c->opts) ? c->opts->analog_nfm_bandwidth_hz : 0;
+    char width[DSD_ANALOG_WIDTH_TEXT_MAX];
+    if (dsd_analog_width_format(dsd_analog_width_effective_hz(DSD_ANALOG_DEMOD_FM, configured), width, sizeof width)
+        != 0) {
+        width[0] = '\0';
+    }
+    DSD_SNPRINTF(b, n, "NFM bandwidth... [%s%s]", configured > 0 ? "" : "default ", width);
     return b;
 }
 

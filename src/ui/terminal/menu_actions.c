@@ -20,6 +20,7 @@
 #include <dsd-neo/core/talkgroup_policy.h>
 #include <dsd-neo/platform/audio.h>
 #include <dsd-neo/platform/posix_compat.h>
+#include <dsd-neo/runtime/analog_channel.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/decode_mode.h>
 #include <dsd-neo/runtime/scan_mode.h>
@@ -1321,6 +1322,14 @@ is_non_airspy_input(const void* v) {
     return !is_airspy_input(v);
 }
 
+/* The NFM width row: while the analog preset runs FM on a radio input, where the width is the channel filter. */
+bool
+is_nfm_analog_active(const void* v) {
+    const UiCtx* c = (const UiCtx*)v;
+    return c && c->opts && dsd_opts_is_analog_family(c->opts) && c->opts->analog_demod == DSD_ANALOG_DEMOD_FM
+           && dsd_opts_input_is_radio(c->opts);
+}
+
 // NcMenuItem action callbacks require a mutable context signature.
 // cppcheck-suppress-begin constParameterPointer
 void
@@ -1457,6 +1466,23 @@ void
 rtl_set_bw(void* v) {
     UiCtx* c = (UiCtx*)v;
     ui_prompt_open_int_async("DSP Bandwidth kHz (4,6,8,12,16,24,48)", c->opts->rtl_dsp_bw_khz, cb_rtl_bw, c);
+}
+
+/* Any value goes to the command as typed: it refuses what it cannot apply, with the reason, rather than the prompt
+   rounding it to something the operator did not ask for. */
+static void
+cb_rtl_nfm_bw(void* u, int ok, int hz) {
+    UNUSED(u);
+    if (ok) {
+        (void)dsd_app_command_set_i32(DSD_APP_CMD_NFM_BANDWIDTH_SET, (int32_t)hz);
+    }
+}
+
+void
+rtl_set_nfm_bw(void* v) {
+    UiCtx* c = (UiCtx*)v;
+    ui_prompt_open_int_async("NFM bandwidth Hz (8000..25000; 0 = default 16000)", c->opts->analog_nfm_bandwidth_hz,
+                             cb_rtl_nfm_bw, c);
 }
 
 void

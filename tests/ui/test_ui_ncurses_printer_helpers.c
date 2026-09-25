@@ -637,11 +637,18 @@ print_dsp_status(dsd_opts* opts, dsd_state* state) { // NOLINT(misc-use-internal
 #include "dsd-neo/core/state_fwd.h"
 
 static int g_requested_ppm;
+/* The channel the front end reports (issue #525): its width, whether the DSP rate limits it, and its output. */
+static int g_channel_bandwidth_hz;
+static int g_channel_bandwidth_dsp_limited;
+static int g_output_kind = DSD_FRONTEND_RTL_OUTPUT_AUDIO_MONITOR;
 
 int
 dsd_app_frontend_get_metrics(dsd_frontend_metrics* out) { // NOLINT(misc-use-internal-linkage)
     DSD_MEMSET(out, 0, sizeof(*out));
     out->requested_ppm = g_requested_ppm;
+    out->output_kind = g_output_kind;
+    out->channel_bandwidth_hz = g_channel_bandwidth_hz;
+    out->channel_bandwidth_dsp_limited = g_channel_bandwidth_dsp_limited;
     return 0;
 }
 
@@ -881,6 +888,59 @@ test_rtl_and_soapy_input_source_rendering(void) {
     reset_printw_capture();
     ui_render_rtl_input_source(&opts, &state);
     assert_capture_contains("| SoapySDR;");
+}
+
+/*
+ * Issue #525: beside the DSP rate, the status line names the analog channel width in force -- the front end's while it
+ * runs the monitor, else the configured one -- and says when the DSP rate rather than the filter bounds it. The same
+ * width the NFM bandwidth row and the Qt Radio sheet show.
+ */
+static void
+test_analog_channel_status_rendering(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    opts.audio_in_type = AUDIO_IN_RTL;
+    opts.rtl_dsp_bw_khz = 48;
+    DSD_SNPRINTF(opts.audio_in_dev, sizeof(opts.audio_in_dev), "rtl");
+
+    /* Digital: no analog field. */
+    reset_printw_capture();
+    ui_render_rtl_input_source(&opts, &state);
+    assert(strstr(g_printw_capture, "Analog:") == NULL);
+
+    opts.analog_only = 1;
+    opts.analog_demod = DSD_ANALOG_DEMOD_FM;
+    /* No published width yet: the configured one, the default here. */
+    g_channel_bandwidth_hz = 0;
+    reset_printw_capture();
+    ui_render_rtl_input_source(&opts, &state);
+    assert_capture_contains(" DSP-BW: 48 kHz; Analog: NFM 16 kHz;");
+
+    opts.analog_nfm_bandwidth_hz = 12500;
+    g_channel_bandwidth_hz = 12500;
+    reset_printw_capture();
+    ui_render_rtl_input_source(&opts, &state);
+    assert_capture_contains(" Analog: NFM 12.5 kHz;");
+
+    /* The default below a 20 kHz DSP rate keeps its legacy filter: the rate bounds the channel. */
+    opts.analog_nfm_bandwidth_hz = 0;
+    opts.rtl_dsp_bw_khz = 12;
+    g_channel_bandwidth_hz = 10800;
+    g_channel_bandwidth_dsp_limited = 1;
+    reset_printw_capture();
+    ui_render_rtl_input_source(&opts, &state);
+    assert_capture_contains(" DSP-BW: 12 kHz; Analog: NFM 10.8 kHz (DSP-limited);");
+
+    /* The M17 encoder shares the monitor output without being the analog receiver. */
+    opts.m17encoder = 1;
+    reset_printw_capture();
+    ui_render_rtl_input_source(&opts, &state);
+    assert(strstr(g_printw_capture, "Analog:") == NULL);
+
+    g_channel_bandwidth_hz = 0;
+    g_channel_bandwidth_dsp_limited = 0;
 }
 
 static void
@@ -2659,6 +2719,7 @@ main(void) {
     test_dmr_mono_override_terminal_reporting();
     test_basic_input_source_rendering();
     test_rtl_and_soapy_input_source_rendering();
+    test_analog_channel_status_rendering();
     test_rtl_auto_ppm_status_rendering();
     test_demod_symbol_rate_helpers();
     test_input_level_policy();
