@@ -1513,7 +1513,8 @@ no_carrier_p25_frames_enabled(const dsd_opts* opts) {
 
 static int
 no_carrier_generic_trunk_synctype(int synctype) {
-    if (DSD_SYNC_IS_DMR(synctype) || DSD_SYNC_IS_NXDN(synctype) || DSD_SYNC_IS_EDACS(synctype)) {
+    if (DSD_SYNC_IS_DMR(synctype) || DSD_SYNC_IS_NXDN(synctype) || DSD_SYNC_IS_EDACS(synctype)
+        || DSD_SYNC_IS_TETRA(synctype)) {
         return 1;
     }
     return DSD_SYNC_IS_X2TDMA(synctype) ? 1 : 0;
