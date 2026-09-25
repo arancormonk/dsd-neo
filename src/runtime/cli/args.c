@@ -1093,7 +1093,7 @@ cli_parse_airspy_option(int argc, char** argv, int i, dsd_opts* opts) {
                                                &opts->analog_nfm_bandwidth_hz, out_exit_rc)) {                         \
                 return DSD_PARSE_ERROR;                                                                                \
             }                                                                                                          \
-            nfm_bandwidth_cli_seen = 1;                                                                                \
+            analog_width_cli_seen |= 1 << DSD_ANALOG_DEMOD_FM;                                                         \
             continue;                                                                                                  \
         }                                                                                                              \
         if (strcmp(argv[i], "--am-bandwidth-hz") == 0 || strncmp(argv[i], "--am-bandwidth-hz=", 18) == 0) {            \
@@ -1102,7 +1102,7 @@ cli_parse_airspy_option(int argc, char** argv, int i, dsd_opts* opts) {
                                                &opts->analog_am_bandwidth_hz, out_exit_rc)) {                          \
                 return DSD_PARSE_ERROR;                                                                                \
             }                                                                                                          \
-            am_bandwidth_cli_seen = 1;                                                                                 \
+            analog_width_cli_seen |= 1 << DSD_ANALOG_DEMOD_AM;                                                         \
             continue;                                                                                                  \
         }                                                                                                              \
         if (strcmp(argv[i], "--auto-ppm") == 0) {                                                                      \
@@ -1933,15 +1933,15 @@ cli_finish_airspy_input(dsd_opts* opts, int parse_rc, int* out_exit_rc) {
     return parse_rc;
 }
 
-/* What runs once every option has been read, whatever order they came in. */
+/* What runs once every option has been read, whatever order they came in. @p analog_width_cli_seen has bit
+   1 << dsd_analog_demod set for each analog width option given. */
 static int
-cli_finish_parse(dsd_opts* opts, int parse_rc, int nfm_bandwidth_cli_seen, int am_bandwidth_cli_seen,
-                 int* out_exit_rc) {
+cli_finish_parse(dsd_opts* opts, int parse_rc, int analog_width_cli_seen, int* out_exit_rc) {
     parse_rc = cli_finish_airspy_input(opts, parse_rc, out_exit_rc);
-    if (parse_rc == DSD_PARSE_CONTINUE && nfm_bandwidth_cli_seen) {
+    if (parse_rc == DSD_PARSE_CONTINUE && (analog_width_cli_seen & (1 << DSD_ANALOG_DEMOD_FM))) {
         cli_warn_analog_width_without_radio(opts, "--nfm-bandwidth-hz");
     }
-    if (parse_rc == DSD_PARSE_CONTINUE && am_bandwidth_cli_seen) {
+    if (parse_rc == DSD_PARSE_CONTINUE && (analog_width_cli_seen & (1 << DSD_ANALOG_DEMOD_AM))) {
         cli_warn_analog_width_without_radio(opts, "--am-bandwidth-hz");
     }
     return parse_rc;
@@ -1999,8 +1999,7 @@ dsd_parse_args(int argc, char** argv, dsd_opts* opts, dsd_state* state, int* out
     int trunk_scan_cli_seen = 0;
     int chan_csv_cli_seen = 0;
     int p25_bandplan_cli_seen = 0;
-    int nfm_bandwidth_cli_seen = 0;
-    int am_bandwidth_cli_seen = 0;
+    int analog_width_cli_seen = 0; /* bit 1 << dsd_analog_demod per analog width option given */
     int config_one_shot_cli_seen = cli_has_config_one_shot_arg(argc, argv);
     DSD_PARSE_ARGS_PRESCAN_BLOCK();
     DSD_PARSE_ARGS_IQ_PRE_BLOCK();
@@ -2043,7 +2042,7 @@ dsd_parse_args(int argc, char** argv, dsd_opts* opts, dsd_state* state, int* out
             return DSD_PARSE_ERROR;
         }
     }
-    parse_rc = cli_finish_parse(opts, parse_rc, nfm_bandwidth_cli_seen, am_bandwidth_cli_seen, out_exit_rc);
+    parse_rc = cli_finish_parse(opts, parse_rc, analog_width_cli_seen, out_exit_rc);
     if (out_argc) {
         *out_argc = new_argc;
     }
