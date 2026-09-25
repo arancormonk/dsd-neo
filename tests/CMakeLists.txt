@@ -7679,17 +7679,20 @@ set_tests_properties(DSP_ANALOG_DCS PROPERTIES TIMEOUT 300)
 # The DCS words runtime generates, checked against Golay24.hpp through the explicit layout
 # mapping between the two, with the cited reference words pinned on both sides (issue #523).
 add_executable(
-    dsd-neo_test_dsp_analog_dcs_golay
+    dsd-neo_test_dsp_analog_dcs_golay_xcheck
     dsp/test_dsp_analog_dcs_golay.cpp
 )
 target_include_directories(
-    dsd-neo_test_dsp_analog_dcs_golay
+    dsd-neo_test_dsp_analog_dcs_golay_xcheck
     PRIVATE ${PROJECT_SOURCE_DIR}/include
 )
-target_link_libraries(dsd-neo_test_dsp_analog_dcs_golay PRIVATE dsd-neo_runtime)
+target_link_libraries(
+    dsd-neo_test_dsp_analog_dcs_golay_xcheck
+    PRIVATE dsd-neo_runtime
+)
 add_test(
     NAME DSP_ANALOG_DCS_GOLAY_XCHECK
-    COMMAND dsd-neo_test_dsp_analog_dcs_golay
+    COMMAND dsd-neo_test_dsp_analog_dcs_golay_xcheck
 )
 
 add_executable(dsd-neo_test_dsp_fsk_modem dsp/test_fsk_modem.c)
@@ -11178,13 +11181,13 @@ if(DSD_HAS_RADIO)
         "Received tone: CTCSS 100\\.0 Hz.*Received tone: none"
         "Received tone: CTCSS ([0-9]|[0-9][0-9]|[02-9][0-9][0-9]|1[1-9][0-9]|10[1-9])\\.[0-9] Hz|Received tone: CTCSS 100\\.[1-9] Hz|Received tone: DCS"
     )
-    # Voice with no tone: positively "none", and never a tone.
+    # Voice with no tone: positively "none", and never a tone or a code.
     dsd_neo_add_iq_decode_test(
         DECODE_IQ_ANALOG_CTCSS_NOTONE
         nfm_notone_synth
         -fA
         "Received tone: none"
-        "Received tone: CTCSS"
+        "Received tone: (CTCSS|DCS)"
     )
     # Received DCS on the analog FM monitor (issue #523): synthetic NFM with voice and a DCS
     # word at 600 Hz deviation, correct by construction (tools/build_iq_fixtures.py), replayed
@@ -11252,14 +11255,14 @@ if(DSD_HAS_RADIO)
         nfm_ctcss_synth_1000
         "-fA --nfm-bandwidth-hz 8000"
         "Received tone: CTCSS 100\\.0 Hz"
-        "Received tone: (none|CTCSS ([0-9]|[0-9][0-9]|[02-9][0-9][0-9]|1[1-9][0-9]|10[1-9])\\.[0-9] Hz|CTCSS 100\\.[1-9] Hz)"
+        "Received tone: (none|DCS|CTCSS ([0-9]|[0-9][0-9]|[02-9][0-9][0-9]|1[1-9][0-9]|10[1-9])\\.[0-9] Hz|CTCSS 100\\.[1-9] Hz)"
     )
     dsd_neo_add_iq_decode_test(
         DECODE_IQ_ANALOG_CTCSS_1000_NFM_25K
         nfm_ctcss_synth_1000
         "-fA --nfm-bandwidth-hz 25000"
         "Received tone: CTCSS 100\\.0 Hz"
-        "Received tone: (none|CTCSS ([0-9]|[0-9][0-9]|[02-9][0-9][0-9]|1[1-9][0-9]|10[1-9])\\.[0-9] Hz|CTCSS 100\\.[1-9] Hz)"
+        "Received tone: (none|DCS|CTCSS ([0-9]|[0-9][0-9]|[02-9][0-9][0-9]|1[1-9][0-9]|10[1-9])\\.[0-9] Hz|CTCSS 100\\.[1-9] Hz)"
     )
     set_tests_properties(
         DECODE_IQ_ANALOG_CTCSS_1000_NFM_8K
