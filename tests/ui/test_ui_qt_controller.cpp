@@ -409,6 +409,32 @@ test_auto_start_requests() {
     check(requests == 2); // Suppressed requests do not retry when the gate opens.
 }
 
+// Issue #525: the Radio sheet's NFM width control goes through the real bridge and decoder queue as
+// DSD_APP_CMD_NFM_BANDWIDTH_SET with the width as typed; the decoder applies what it accepts (0 is the default)
+// and refuses the rest with the width unchanged. PCM input keeps the front end out of it.
+static void
+test_nfm_bandwidth_bridge() {
+    dsd_qt::CommandBridge bridge;
+    static dsd_opts opts;
+    static dsd_state state;
+    initOpts(&opts);
+    initState(&state);
+    opts.audio_in_type = AUDIO_IN_PULSE;
+    opts.audio_out_type = 9;
+    opts.analog_only = 1;
+    dsd_app_frontend_runtime_start(nullptr, nullptr);
+    check(bridge.setNfmBandwidthHz(12500));
+    check(dsd_app_drain_cmds(&opts, &state) == 1);
+    check(opts.analog_nfm_bandwidth_hz == 12500);
+    check(bridge.setNfmBandwidthHz(30000));
+    check(dsd_app_drain_cmds(&opts, &state) == 1);
+    check(opts.analog_nfm_bandwidth_hz == 12500);
+    check(bridge.setNfmBandwidthHz(0));
+    check(dsd_app_drain_cmds(&opts, &state) == 1);
+    check(opts.analog_nfm_bandwidth_hz == 0);
+    freeState(&state);
+}
+
 static void
 test_zero_bounds() {
     dsd_qt::CommandBridge bridge;
@@ -453,6 +479,7 @@ main(int argc, char** argv) {
     test_startup_options_wait_for_redraw();
     test_metrics_age_without_decoder_redraw();
     test_sheet_policy_edits();
+    test_nfm_bandwidth_bridge();
     test_zero_bounds();
     test_auto_start_requests();
     test_initial_usb_record();

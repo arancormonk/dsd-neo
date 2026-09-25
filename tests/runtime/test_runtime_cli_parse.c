@@ -7755,8 +7755,8 @@ test_nfm_bandwidth_rejects_invalid_values(void) {
 }
 
 /* The NFM width is the radio front end's channel filter: on PCM input (the default Pulse source,
- * a file, UDP or TCP audio) it cannot act, so the flag parses and says so. Radio inputs and I/Q
- * replay do not warn. */
+ * a file, UDP or TCP audio) it cannot act, so the flag parses and says so. Radio inputs do not
+ * warn; I/Q replay has its own case below, in the radio builds where --iq-replay parses. */
 static int
 test_nfm_bandwidth_warns_on_pcm_input(void) {
     static const struct {
@@ -7817,6 +7817,67 @@ test_nfm_bandwidth_warns_on_pcm_input(void) {
     }
     return test_rc;
 }
+
+#ifdef USE_RADIO
+/* An I/Q replay runs the capture through the radio front end, channel filter included: the width
+ * acts there, so the flag parses without the PCM warning, whichever side of --iq-replay it is on. */
+static int
+test_nfm_bandwidth_quiet_on_iq_replay(void) {
+    char metadata_path[1024];
+    char data_path[1024];
+    if (test_create_temp_iq_fixture(metadata_path, sizeof metadata_path, data_path, sizeof data_path) != 0) {
+        DSD_FPRINTF(stderr, "failed to create temporary IQ fixture\n");
+        return 1;
+    }
+    int test_rc = 0;
+    for (int flag_first = 0; flag_first <= 1; flag_first++) {
+        dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
+        dsd_state* state = (dsd_state*)calloc(1, sizeof(dsd_state));
+        if (!opts || !state) {
+            free(opts);
+            free(state);
+            test_rc = 1;
+            break;
+        }
+        initOpts(opts);
+        initState(state);
+
+        char arg0[] = "dsd-neo";
+        char arg_flag[] = "--nfm-bandwidth-hz=12500";
+        char arg_mode[] = "-fA";
+        char arg_replay[] = "--iq-replay";
+        char arg_path[1024];
+        DSD_SNPRINTF(arg_path, sizeof arg_path, "%s", metadata_path);
+        char* argv_flag_first[] = {arg0, arg_flag, arg_mode, arg_replay, arg_path, NULL};
+        char* argv_flag_last[] = {arg0, arg_replay, arg_path, arg_mode, arg_flag, NULL};
+        char** argv = flag_first ? argv_flag_first : argv_flag_last;
+
+        char output[4096];
+        int argc_effective = 0;
+        int exit_rc = 0;
+        int rc = parse_args_capture_stderr(5, argv, opts, state, &argc_effective, &exit_rc, output, sizeof output);
+        if (rc != DSD_PARSE_CONTINUE || exit_rc != 0 || opts->analog_nfm_bandwidth_hz != 12500
+            || !opts->iq_replay_requested) {
+            DSD_FPRINTF(stderr, "iq replay (flag %s): expected a parse, got rc=%d exit_rc=%d width=%d replay=%d\n",
+                        flag_first ? "first" : "last", rc, exit_rc, opts->analog_nfm_bandwidth_hz,
+                        opts->iq_replay_requested);
+            test_rc = 1;
+        }
+        if (strstr(output, "has no effect on PCM input") != NULL) {
+            DSD_FPRINTF(stderr, "iq replay (flag %s): warned as PCM input; stderr was \"%s\"\n",
+                        flag_first ? "first" : "last", output);
+            test_rc = 1;
+        }
+
+        freeState(state);
+        free(opts);
+        free(state);
+    }
+    (void)remove(metadata_path);
+    (void)remove(data_path);
+    return test_rc;
+}
+#endif
 
 /* [analog] nfm_bandwidth_hz sets the configured width before the CLI runs, and --nfm-bandwidth-hz
  * overrides it; an out-of-range INI value is refused with a warning and leaves the default. */
@@ -8528,6 +8589,9 @@ main(void) {
     rc |= test_nfm_bandwidth_long_option_parses();
     rc |= test_nfm_bandwidth_rejects_invalid_values();
     rc |= test_nfm_bandwidth_warns_on_pcm_input();
+#ifdef USE_RADIO
+    rc |= test_nfm_bandwidth_quiet_on_iq_replay();
+#endif
     rc |= test_bootstrap_analog_config_and_cli_override();
     rc |= test_input_source_tcp_ipv4_roundtrip();
     rc |= test_trunk_scan_long_options_parse();

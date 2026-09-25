@@ -2659,6 +2659,99 @@ test_analog_nfm_bandwidth_roundtrip(void) {
     return rc;
 }
 
+/* One dsd_user_config_rtl_input_spec() case: @p want NULL expects -1 and @p out left for the caller to ignore. */
+static int
+expect_rtl_input_spec(const char* label, const dsdneoUserConfig* cfg, const dsd_opts* opts, const char* want) {
+    char spec[256];
+    spec[0] = '\0';
+    const int got_rc = dsd_user_config_rtl_input_spec(cfg, opts, spec, sizeof spec);
+    if (!want) {
+        if (got_rc != -1) {
+            DSD_FPRINTF(stderr, "FAIL: %s: expected no RTL input spec, got rc=%d \"%s\"\n", label, got_rc, spec);
+            return 1;
+        }
+        return 0;
+    }
+    if (got_rc != 0 || strcmp(spec, want) != 0) {
+        DSD_FPRINTF(stderr, "FAIL: %s: got rc=%d \"%s\", want \"%s\"\n", label, got_rc, spec, want);
+        return 1;
+    }
+    return 0;
+}
+
+/*
+ * Issue #525: the RTL-SDR or rtl_tcp spec a config's [input] builds, without applying it, which a runtime config
+ * apply compares with the running input to know whether it reopens the device (and at which DSP bandwidth). It is the
+ * spec the apply writes: an rtl source needs rtl_freq, rtl_tcp needs a host and adds the tuning only with rtl_freq, the
+ * values the config leaves out come from the options, and any other source builds none.
+ */
+static int
+test_rtl_input_spec(void) {
+    int rc = 0;
+    auto opts_storage = std::unique_ptr<dsd_opts>(new dsd_opts{});
+    dsd_opts& opts = *opts_storage;
+    opts.rtl_gain_value = 30;
+    opts.rtlsdr_ppm_error = 4;
+    opts.rtl_dsp_bw_khz = 24;
+    opts.rtl_volume_multiplier = 1;
+
+    dsdneoUserConfig cfg;
+    DSD_MEMSET(&cfg, 0, sizeof cfg);
+    cfg.input_source = DSDCFG_INPUT_RTL;
+    cfg.rtl_device = 1;
+    DSD_SNPRINTF(cfg.rtl_freq, sizeof cfg.rtl_freq, "%s", "146.52M");
+    cfg.rtl_gain = 22;
+    cfg.rtl_ppm_is_set = 1;
+    cfg.rtl_ppm = -3;
+    cfg.rtl_bw_khz = 16;
+    cfg.rtl_sql = -50;
+    cfg.rtl_volume = 2;
+    rc |= expect_rtl_input_spec("no [input]", &cfg, &opts, NULL);
+    cfg.has_input = 1;
+    rc |= expect_rtl_input_spec("rtl with rtl_freq", &cfg, &opts, "rtl:1:146.52M:22:-3:16:-50:2");
+    /* What the config leaves out is the session's, as the apply takes it. */
+    cfg.rtl_gain = 0;
+    cfg.rtl_ppm_is_set = 0;
+    cfg.rtl_bw_khz = 0;
+    cfg.rtl_volume = 0;
+    rc |= expect_rtl_input_spec("rtl from the session's tuning", &cfg, &opts, "rtl:1:146.52M:30:4:24:-50:1");
+    /* No rtl_freq: the apply leaves the input as it is. */
+    cfg.rtl_freq[0] = '\0';
+    rc |= expect_rtl_input_spec("rtl without rtl_freq", &cfg, &opts, NULL);
+
+    cfg.input_source = DSDCFG_INPUT_RTLTCP;
+    DSD_SNPRINTF(cfg.rtltcp_host, sizeof cfg.rtltcp_host, "%s", "127.0.0.1");
+    rc |= expect_rtl_input_spec("rtltcp without rtl_freq", &cfg, &opts, "rtltcp:127.0.0.1:1234");
+    cfg.rtltcp_port = 1235;
+    DSD_SNPRINTF(cfg.rtl_freq, sizeof cfg.rtl_freq, "%s", "851.375M");
+    cfg.rtl_bw_khz = 48;
+    rc |= expect_rtl_input_spec("rtltcp with rtl_freq", &cfg, &opts, "rtltcp:127.0.0.1:1235:851.375M:30:4:48:-50:1");
+    cfg.rtltcp_host[0] = '\0';
+    rc |= expect_rtl_input_spec("rtltcp without a host", &cfg, &opts, NULL);
+
+    static const dsdneoUserInputSource k_other_sources[] = {
+        DSDCFG_INPUT_UNSET, DSDCFG_INPUT_PULSE, DSDCFG_INPUT_SOAPY,  DSDCFG_INPUT_FILE,
+        DSDCFG_INPUT_TCP,   DSDCFG_INPUT_UDP,   DSDCFG_INPUT_AIRSPY,
+    };
+    for (dsdneoUserInputSource source : k_other_sources) {
+        cfg.input_source = source;
+        char label[48];
+        DSD_SNPRINTF(label, sizeof label, "source %d builds no RTL spec", static_cast<int>(source));
+        rc |= expect_rtl_input_spec(label, &cfg, &opts, NULL);
+    }
+
+    cfg.input_source = DSDCFG_INPUT_RTL;
+    char spec[64];
+    rc |= (dsd_user_config_rtl_input_spec(NULL, &opts, spec, sizeof spec) == -1) ? 0 : 1;
+    rc |= (dsd_user_config_rtl_input_spec(&cfg, NULL, spec, sizeof spec) == -1) ? 0 : 1;
+    rc |= (dsd_user_config_rtl_input_spec(&cfg, &opts, NULL, sizeof spec) == -1) ? 0 : 1;
+    rc |= (dsd_user_config_rtl_input_spec(&cfg, &opts, spec, 0U) == -1) ? 0 : 1;
+    if (rc) {
+        DSD_FPRINTF(stderr, "FAIL: dsd_user_config_rtl_input_spec cases\n");
+    }
+    return rc;
+}
+
 /*
  * Issue #521: a row's --squelch-db is effective state, not a user default. Config->Save taken
  * while the row is on air writes the configured rtl_sql -- for every radio input family that
@@ -3395,6 +3488,7 @@ main(void) {
     rc |= test_scan_voice_gate_roundtrip();
     rc |= test_scan_max_visit_roundtrip();
     rc |= test_analog_nfm_bandwidth_roundtrip();
+    rc |= test_rtl_input_spec();
     rc |= test_tg_lockout_persistence_roundtrip();
     rc |= test_scan_max_visit_snapshot_uses_configured_not_row_override();
     rc |= test_squelch_snapshot_uses_configured_not_row_override();

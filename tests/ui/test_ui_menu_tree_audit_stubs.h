@@ -190,13 +190,13 @@
     X(rtl_set_dev)                                                                                                     \
     X(rtl_set_freq)                                                                                                    \
     X(rtl_set_gain)                                                                                                    \
+    X(rtl_set_nfm_bw)                                                                                                  \
     X(rtl_set_ppm)                                                                                                     \
     X(rtl_set_sql)                                                                                                     \
     X(rtl_set_vol)                                                                                                     \
     X(rtl_toggle_auto_ppm)                                                                                             \
     X(rtl_toggle_bias)                                                                                                 \
     X(rtl_toggle_rtltcp_autotune)                                                                                      \
-    X(rtl_set_nfm_bw)                                                                                                  \
     X(rtl_toggle_tuner_autogain)                                                                                       \
     X(switch_out_pulse)                                                                                                \
     X(switch_out_toggle_mute)                                                                                          \
@@ -283,9 +283,9 @@
     X(lbl_rtl_bw)                                                                                                      \
     X(lbl_rtl_freq)                                                                                                    \
     X(lbl_rtl_gain)                                                                                                    \
+    X(lbl_rtl_nfm_bw)                                                                                                  \
     X(lbl_rtl_ppm)                                                                                                     \
     X(lbl_rtl_rtltcp_autotune)                                                                                         \
-    X(lbl_rtl_nfm_bw)                                                                                                  \
     X(lbl_rtl_tuner_autogain)                                                                                          \
     X(lbl_rtl_vol)                                                                                                     \
     X(lbl_scan)                                                                                                        \

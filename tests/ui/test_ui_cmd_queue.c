@@ -5118,6 +5118,29 @@ test_nfm_bandwidth_set_on_pcm_input(void) {
     rc |= expect_int("pcm nfm default stored", opts.analog_nfm_bandwidth_hz, 0);
     rc |= expect_toast("pcm nfm default toast", &state, "Applied: NFM bandwidth -> default");
 
+    /* An int32 setter only, and one that coalesces: taps on the Radio sheet's stepper queued before the decoder drains
+       collapse onto the newest width, which is the one applied and toasted. */
+    rc |= expect_int("nfm width rejects action shape", dsd_app_command_action(DSD_APP_CMD_NFM_BANDWIDTH_SET),
+                     DSD_APP_COMMAND_SUBMIT_REJECTED);
+    rc |= expect_int("nfm width rejects u32 shape", dsd_app_command_set_u32(DSD_APP_CMD_NFM_BANDWIDTH_SET, 12500U),
+                     DSD_APP_COMMAND_SUBMIT_REJECTED);
+    rc |= expect_int("nfm width first queued", dsd_app_command_set_i32(DSD_APP_CMD_NFM_BANDWIDTH_SET, 12500),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("nfm width coalesces", dsd_app_command_set_i32(DSD_APP_CMD_NFM_BANDWIDTH_SET, 20000),
+                     DSD_APP_COMMAND_SUBMIT_COALESCED);
+    state.ui_msg[0] = '\0';
+    rc |= expect_int("coalesced nfm width drained once", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("coalesced nfm width kept latest", opts.analog_nfm_bandwidth_hz, 20000);
+    rc |= expect_toast("coalesced nfm width toast", &state, "Applied: NFM bandwidth -> 20 kHz");
+    /* A payload too short for an int32 is refused at drain and changes nothing. */
+    {
+        uint8_t short_payload = 0x10U;
+        (void)dsd_app_command_submit(DSD_APP_CMD_NFM_BANDWIDTH_SET, &short_payload, sizeof(short_payload));
+        rc |= expect_int("short nfm width drained", dsd_app_drain_cmds(&opts, &state), 1);
+        rc |= expect_int("short nfm width ignored", opts.analog_nfm_bandwidth_hz, 20000);
+    }
+    opts.analog_nfm_bandwidth_hz = 0;
+
     opts.analog_only = 0;
     freeState(&state);
     return rc;

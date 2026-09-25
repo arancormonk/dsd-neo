@@ -303,6 +303,49 @@ test_check_messages(void) {
     expect_int("no buffer still rejects", dsd_analog_width_check(DSD_ANALOG_DEMOD_FM, 25000, 24000, NULL, 0), -1);
 }
 
+/* The selectable RTL DSP bandwidths, and the list of them that filter a width: the fix the validator names, and what
+   the width and bandwidth refusals in app-control put in their toasts. */
+static void
+test_rtl_bandwidth_helpers(void) {
+    static const int selectable[] = {4, 6, 8, 12, 16, 24, 48};
+    for (size_t i = 0; i < sizeof selectable / sizeof selectable[0]; i++) {
+        char label[48];
+        DSD_SNPRINTF(label, sizeof label, "%d kHz selectable", selectable[i]);
+        expect_int(label, dsd_analog_rtl_dsp_bw_is_selectable(selectable[i]), 1);
+    }
+    static const int not_selectable[] = {0, -24, 5, 20, 32, 96, 48000};
+    for (size_t i = 0; i < sizeof not_selectable / sizeof not_selectable[0]; i++) {
+        char label[48];
+        DSD_SNPRINTF(label, sizeof label, "%d kHz not selectable", not_selectable[i]);
+        expect_int(label, dsd_analog_rtl_dsp_bw_is_selectable(not_selectable[i]), 0);
+    }
+
+    char fits[64];
+    expect_int("8k fits", dsd_analog_width_fitting_rtl_bandwidths(8000, fits, sizeof fits), 0);
+    expect_str("8k list", fits, "12, 16, 24 or 48");
+    expect_int("12.5k fits", dsd_analog_width_fitting_rtl_bandwidths(12500, fits, sizeof fits), 0);
+    expect_str("12.5k list", fits, "16, 24 or 48");
+    expect_int("16k fits", dsd_analog_width_fitting_rtl_bandwidths(16000, fits, sizeof fits), 0);
+    expect_str("16k list", fits, "24 or 48");
+    expect_int("25k fits", dsd_analog_width_fitting_rtl_bandwidths(25000, fits, sizeof fits), 0);
+    expect_str("25k list", fits, "48");
+    expect_int("AM 5k fits", dsd_analog_width_fitting_rtl_bandwidths(5000, fits, sizeof fits), 0);
+    expect_str("AM 5k list", fits, "8, 12, 16, 24 or 48");
+    /* No selectable bandwidth filters it (the 48 kHz rate stops at 42 kHz), and a width of 0 is no width: empty. */
+    DSD_SNPRINTF(fits, sizeof fits, "%s", "stale");
+    expect_int("50k fits none", dsd_analog_width_fitting_rtl_bandwidths(50000, fits, sizeof fits), 0);
+    expect_str("50k list empty", fits, "");
+    DSD_SNPRINTF(fits, sizeof fits, "%s", "stale");
+    expect_int("0 fits none", dsd_analog_width_fitting_rtl_bandwidths(0, fits, sizeof fits), 0);
+    expect_str("0 list empty", fits, "");
+    /* A short buffer truncates and stays terminated. */
+    char tiny[5];
+    expect_int("tiny buffer", dsd_analog_width_fitting_rtl_bandwidths(8000, tiny, sizeof tiny), 0);
+    expect_int("tiny buffer terminated", (int)strlen(tiny) < (int)sizeof tiny, 1);
+    expect_int("NULL buffer", dsd_analog_width_fitting_rtl_bandwidths(8000, NULL, sizeof fits), -1);
+    expect_int("empty buffer", dsd_analog_width_fitting_rtl_bandwidths(8000, fits, 0U), -1);
+}
+
 int
 main(void) {
     test_ranges_and_defaults();
@@ -312,6 +355,7 @@ main(void) {
     test_max_width_by_rate();
     test_check_table();
     test_check_messages();
+    test_rtl_bandwidth_helpers();
     if (g_failures) {
         DSD_FPRINTF(stderr, "RUNTIME_ANALOG_CHANNEL: %d failure(s)\n", g_failures);
         return 1;

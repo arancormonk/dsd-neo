@@ -1998,12 +1998,59 @@ test_nfm_bandwidth_row_follows_the_configured_preset(void) {
     return rc;
 }
 
+/*
+ * The NFM bandwidth row prompts for Hz, seeded with the configured width (0 for the default), and hands the command
+ * whatever was typed: DSD_APP_CMD_NFM_BANDWIDTH_SET refuses what it cannot apply with the reason, rather than the
+ * prompt rounding or clamping a value into one the operator did not ask for. A cancelled prompt submits nothing.
+ */
+static int
+test_nfm_bandwidth_prompt_submits_as_typed(void) {
+    int rc = 0;
+    static dsd_opts opts;
+    static dsd_state state;
+    DSD_MEMSET(&opts, 0, sizeof opts);
+    DSD_MEMSET(&state, 0, sizeof state);
+    static UiCtx ctx;
+    ctx = make_ctx(&opts, &state);
+
+    opts.analog_nfm_bandwidth_hz = 12500;
+    reset_capture();
+    rtl_set_nfm_bw(&ctx);
+    rc |= expect_str("nfm prompt", g_prompt.title, "NFM bandwidth Hz (8000..25000; 0 = default 16000)");
+    rc |= expect_int("nfm prompt seeds the configured width", g_prompt.initial_int, 12500);
+    rc |= expect_int("nfm prompt is an int prompt", g_prompt.calls == 1 && g_prompt.int_cb != NULL, 1);
+    opts.analog_nfm_bandwidth_hz = 0;
+    reset_capture();
+    rtl_set_nfm_bw(&ctx);
+    rc |= expect_int("nfm prompt seeds the default as 0", g_prompt.initial_int, 0);
+
+    ui_prompt_int_done_fn cb = g_prompt.int_cb;
+    void* user = g_prompt.user;
+    static const int typed[] = {12345, 30000, 0, 7999, -1};
+    for (size_t i = 0; i < sizeof typed / sizeof typed[0]; i++) {
+        char tag[64];
+        DSD_MEMSET(&g_cmd, 0, sizeof g_cmd);
+        cb(user, 1, typed[i]);
+        DSD_SNPRINTF(tag, sizeof tag, "nfm %d submitted once", typed[i]);
+        rc |= expect_int(tag, g_cmd.calls, 1);
+        DSD_SNPRINTF(tag, sizeof tag, "nfm %d command", typed[i]);
+        rc |= expect_int(tag, g_cmd.id, DSD_APP_CMD_NFM_BANDWIDTH_SET);
+        DSD_SNPRINTF(tag, sizeof tag, "nfm %d sent as typed", typed[i]);
+        rc |= expect_int(tag, cmd_i32(), typed[i]);
+    }
+    DSD_MEMSET(&g_cmd, 0, sizeof g_cmd);
+    cb(user, 0, 12500);
+    rc |= expect_int("nfm cancelled submits nothing", g_cmd.calls, 0);
+    return rc;
+}
+
 int
 main(void) {
     int rc = 0;
     rc |= test_simple_commands_and_prompts();
     rc |= test_scan_voice_gate_actions();
     rc |= test_nfm_bandwidth_row_follows_the_configured_preset();
+    rc |= test_nfm_bandwidth_prompt_submits_as_typed();
     rc |= test_p25_bandplan_actions();
     rc |= test_config_profile_and_env_actions();
     rc |= test_io_actions_and_choosers();
