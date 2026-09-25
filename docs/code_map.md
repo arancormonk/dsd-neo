@@ -659,9 +659,11 @@ installs from `src/engine/trunk_tuning.c` in `src/engine/trunk_tuning_hooks_inst
   the published rate), the change is refused with the previous width put back; refused by the demod thread where it
   lands, the request reads `RTL_STREAM_RX_REQUEST_REFUSED`, and the next `dsd_app_drain_cmds()` puts back the width the
   front end kept, as the stream recorded it when it refused (`rtl_stream_receive_request_refusal()`, so an earlier width
-  that landed in between stands; AM's default, which the stream records as 6 kHz, goes back as the default), and toasts
-  why (`svc_take_monitor_request_outcome()`, which follows the last analog monitor request `symbol_profile.c` queued,
-  and `ui_settle_receive_requests()`). A switch to Analog or AM (`DECODE_MODE_SET`, a config's `[mode]`) holds an
+  that landed in between stands; the stream records the configured setting it kept,
+  `demod_state::analog_width_setting_hz`, 0 for the default, so an unset AM default goes back as the default and an
+  explicit 6000 Hz stays explicit), and toasts why (`svc_take_monitor_request_outcome()`, which follows the last analog
+  monitor request `symbol_profile.c` queued, and `ui_settle_receive_requests()`). A switch to Analog or AM
+  (`DECODE_MODE_SET`, a config's `[mode]`) holds an
   explicit width, or the AM width, to the rate first, under a scan row as well (`ui_check_mode_receive_profile()`); a
   `[mode]` without a decode key keeps the session's family and kind. A switch between FM and AM on the monitor is armed
   like a switch onto it (`ui_arm_analog_entry()`), and the stream records the kind it kept with a refusal, so one the
