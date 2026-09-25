@@ -389,6 +389,40 @@ dsd_engine_prepare_current_cc_rtl_chain(const dsd_opts* opts, const dsd_state* s
     }
 }
 
+/* Whether the configured mode, not the row's constraint over it, is digital. Only then does a digital row
+ * move the front end off the analog family: a typed digital row on an analog (-fA) session keeps the monitor
+ * output it has always had, as svc_publish_symbol_profile() decides for a configured-mode change. */
+static int
+dsd_engine_configured_mode_digital(const dsd_opts* opts, const dsd_state* state) {
+    const dsd_scan_settings* configured = dsd_scan_mode_configured_view(state);
+    const int analog_only = configured ? configured->analog_only : opts->analog_only;
+    return (analog_only == 1 && opts->m17encoder != 1) ? 0 : 1;
+}
+
+/* An analog scan row (issue #526): the analog monitor, the row's demodulator and its width (0 = the
+ * kind's default), bound to the target with the scan's gain profile and no symbol profile. Returns -1
+ * when the front end refuses the width at the rate it runs; the refusal is logged there. */
+static int
+dsd_engine_prepare_scan_analog_profile(const dsd_opts* opts, const dsd_state* state, long int freq) {
+    dsd_engine_prepare_retune_profile_for_target(opts, state, (uint32_t)freq, -1, 0, 4, RTL_STREAM_CHANNEL_PROFILE_WIDE,
+                                                 0, 0);
+    const rtl_stream_retune_analog_profile analog = {DSD_RX_FAMILY_ANALOG, opts->analog_demod,
+                                                     dsd_opts_analog_width_hz(opts)};
+    return rtl_stream_prepare_retune_analog_profile_for_target((uint32_t)freq, &analog);
+}
+
+/* A digital tune after an analog scan row (a -Y row, a conventional or trunked target, a return to a control
+ * channel): the symbol profile already queued for the target lands on the digital family. Nothing is attached while
+ * the front end runs the digital family, so a digital-only session retunes exactly as it always has. */
+static void
+dsd_engine_prepare_digital_family(const dsd_opts* opts, const dsd_state* state, long int freq) {
+    if (!dsd_engine_configured_mode_digital(opts, state) || !rtl_stream_analog_family_active()) {
+        return;
+    }
+    const rtl_stream_retune_analog_profile digital = {DSD_RX_FAMILY_DIGITAL, DSD_ANALOG_DEMOD_FM, 0};
+    (void)rtl_stream_prepare_retune_analog_profile_for_target((uint32_t)freq, &digital);
+}
+
 static void
 dsd_engine_prepare_cc_rtl_chain(const dsd_opts* opts, dsd_state* state, long int target_freq_hz, int ted_sps) {
     if (!opts || !state || opts->audio_in_type != AUDIO_IN_RTL) {
@@ -751,6 +785,7 @@ dsd_engine_trunk_tune_to_cc_request(dsd_opts* opts, dsd_state* state, long int f
     if (opts->audio_in_type == AUDIO_IN_RTL) {
 #ifdef USE_RADIO
         dsd_engine_prepare_cc_rtl_chain(opts, state, freq, ted_sps);
+        dsd_engine_prepare_digital_family(opts, state, freq);
 #endif
     }
     result = dsd_engine_tune_with_backend(opts, state, freq, request_id);
@@ -773,40 +808,6 @@ dsd_engine_trunk_tune_to_cc_request(dsd_opts* opts, dsd_state* state, long int f
 }
 
 #ifdef USE_RADIO
-/* Whether the configured mode, not the row's constraint over it, is digital. Only then does a digital row
- * move the front end off the analog family: a typed digital row on an analog (-fA) session keeps the monitor
- * output it has always had, as svc_publish_symbol_profile() decides for a configured-mode change. */
-static int
-dsd_engine_scan_configured_digital(const dsd_opts* opts, const dsd_state* state) {
-    const dsd_scan_settings* configured = dsd_scan_mode_configured_view(state);
-    const int analog_only = configured ? configured->analog_only : opts->analog_only;
-    return (analog_only == 1 && opts->m17encoder != 1) ? 0 : 1;
-}
-
-/* An analog scan row (issue #526): the analog monitor, the row's demodulator and its width (0 = the
- * kind's default), bound to the target with the scan's gain profile and no symbol profile. Returns -1
- * when the front end refuses the width at the rate it runs; the refusal is logged there. */
-static int
-dsd_engine_prepare_scan_analog_profile(const dsd_opts* opts, const dsd_state* state, long int freq) {
-    dsd_engine_prepare_retune_profile_for_target(opts, state, (uint32_t)freq, -1, 0, 4, RTL_STREAM_CHANNEL_PROFILE_WIDE,
-                                                 0, 0);
-    const rtl_stream_retune_analog_profile analog = {DSD_RX_FAMILY_ANALOG, opts->analog_demod,
-                                                     dsd_opts_analog_width_hz(opts)};
-    return rtl_stream_prepare_retune_analog_profile_for_target((uint32_t)freq, &analog);
-}
-
-/* A digital row after an analog one: the symbol profile already queued for the target lands on the
- * digital family. Nothing is attached while the front end runs the digital family, so a digital-only
- * scan retunes exactly as it always has. */
-static void
-dsd_engine_prepare_scan_digital_family(const dsd_opts* opts, const dsd_state* state, long int freq) {
-    if (!dsd_engine_scan_configured_digital(opts, state) || !rtl_stream_analog_family_active()) {
-        return;
-    }
-    const rtl_stream_retune_analog_profile digital = {DSD_RX_FAMILY_DIGITAL, DSD_ANALOG_DEMOD_FM, 0};
-    (void)rtl_stream_prepare_retune_analog_profile_for_target((uint32_t)freq, &digital);
-}
-
 /* Queue the receive profile a scanner row runs on. Returns -1 when the front end refuses it. */
 static int
 dsd_engine_prepare_scan_profile(const dsd_opts* opts, dsd_state* state, long int freq, int ted_sps) {
@@ -826,7 +827,7 @@ dsd_engine_prepare_scan_profile(const dsd_opts* opts, dsd_state* state, long int
         } else {
             dsd_engine_prepare_cc_rtl_chain(opts, state, freq, ted_sps);
         }
-        dsd_engine_prepare_scan_digital_family(opts, state, freq);
+        dsd_engine_prepare_digital_family(opts, state, freq);
     }
     return 0;
 }

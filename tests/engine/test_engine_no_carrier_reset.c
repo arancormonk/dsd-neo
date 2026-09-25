@@ -19,8 +19,10 @@
 #include <dsd-neo/engine/channel_scan.h>
 #include <dsd-neo/engine/frame_processing.h>
 #include <dsd-neo/engine/scan_voice_gate.h>
+#include <dsd-neo/engine/trunk_scan.h>
 #include <dsd-neo/engine/trunk_tuning.h>
 #include <dsd-neo/io/rtl_stream_c.h>
+#include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/platform/sockets.h>
 #include <dsd-neo/protocol/dmr/dmr_trunk_sm.h>
 #include <dsd-neo/protocol/p25/p25_sm_watchdog.h>
@@ -45,6 +47,7 @@
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
 #include "dsd-neo/io/rtl_stream_fwd.h"
+#include "test_support.h"
 
 #if defined(__GNUC__) && !defined(__cplusplus)
 #pragma GCC diagnostic push
@@ -631,6 +634,63 @@ test_typed_scan_nfm_rows_switch_family(int configured_analog) {
     if (rc) {
         DSD_FPRINTF(stderr, "typed nfm rows on a%s session failed\n", configured_analog ? "n analog" : " digital");
     }
+    return rc;
+}
+
+/* Issue #526: --trunk-scan through the real coordinator and tuning. An nfm-conventional target
+ * runs the analog monitor; the trunked P25 target after it re-parks through the control-channel
+ * tune, which must put the front end back on the digital family before its symbol profile, or the
+ * P25 profile would land on the monitor output and decode nothing. */
+static int
+test_trunk_scan_nfm_target_then_trunked_target(void) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    char path[DSD_TEST_PATH_MAX];
+    const int fd = dsd_test_mkstemp(path, sizeof path, "nfm-trunk-scan-");
+    if (fd < 0) {
+        free_test_runtime(opts, state);
+        return 1;
+    }
+    dsd_close(fd);
+    FILE* fp = dsd_fopen_private(path, "w");
+    int rc = expect_true("targets file", fp != NULL);
+    if (fp) {
+        DSD_FPRINTF(fp, "id,type,frequency_hz,chan_csv,dwell_ms,activity_hold_ms,notes,options\n"
+                        "fire,nfm-conventional,154430000,,250,250,,--nfm-bandwidth-hz 12500\n"
+                        "county,p25-trunk,851012500,,250,,,\n");
+        (void)fclose(fp);
+    }
+    reset_rtl_profile_fakes();
+    g_rtl_symbol_rate_hz = 4800;
+    g_rtl_cqpsk_enable = 0;
+    dsd_trunk_tuning_requests_reset();
+    dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){.tune_to_freq_request = dsd_engine_trunk_tune_to_freq_request,
+                                                        .tune_to_cc_request = dsd_engine_trunk_tune_to_cc_request,
+                                                        .return_to_cc_request = dsd_engine_return_to_cc_request});
+    opts->audio_in_type = AUDIO_IN_RTL;
+    opts->trunk_scan_enabled = 1;
+    state->rtl_ctx = (RtlSdrContext*)state;
+    DSD_SNPRINTF(opts->trunk_scan_targets_csv, sizeof opts->trunk_scan_targets_csv, "%s", path);
+    char err[256] = {0};
+    rc |= expect_true("nfm trunk scan init", dsd_engine_trunk_scan_init(opts, state, err, sizeof err) == 0);
+    rc |= expect_true("nfm target runs the monitor at its width", opts->analog_only == 1 && g_rtl_analog_family == 1
+                                                                      && g_rtl_analog_width_hz == 12500
+                                                                      && g_rtl_tune_freq == 154430000U);
+    rc |= expect_true("advance to the trunked target",
+                      dsd_engine_trunk_scan_control(opts, state, DSD_TRUNK_SCAN_CONTROL_ADVANCE) == 0);
+    rc |= expect_true("trunked target leaves the monitor for the digital family",
+                      opts->analog_only == 0 && g_rtl_analog_family == 0 && g_rtl_tune_freq == 851012500U
+                          && g_rtl_symbol_rate_hz == 4800);
+    dsd_engine_trunk_scan_shutdown(opts, state);
+    rc |= expect_true("shutdown restores the digital session", opts->analog_only == 0);
+    dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){0});
+    dsd_trunk_tuning_requests_reset();
+    state->rtl_ctx = NULL;
+    (void)remove(path);
+    free_test_runtime(opts, state);
     return rc;
 }
 
@@ -2690,6 +2750,7 @@ main(void) {
     rc |= test_typed_scan_tune_boundaries();
     rc |= test_typed_scan_nfm_rows_switch_family(0);
     rc |= test_typed_scan_nfm_rows_switch_family(1);
+    rc |= test_trunk_scan_nfm_target_then_trunked_target();
     rc |= test_visit_cap_scanner_hops();
     rc |= test_trunk_cache_with_mode_metadata();
     rc |= test_dmr_explicit_return_destination();
