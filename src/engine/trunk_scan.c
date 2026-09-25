@@ -935,11 +935,6 @@ scan_parse_target_options(dsd_trunk_scan_target* target, const char* text, char*
     return rc;
 }
 
-/*
- * Non-secret path work for one row. A row with an `options` cell hands its key cells to
- * the scoped-options merge later (scan_parse_target_secrets), so only the legacy row
- * validates and resolves them here.
- */
 /* An analog target decrypts nothing, so a key column that would load material for it is refused; the
  * cell itself never reaches the diagnostic. */
 static int
@@ -960,6 +955,11 @@ scan_reject_analog_key_columns(const dsd_trunk_scan_target* target, char** field
     return 0;
 }
 
+/*
+ * Non-secret path work for one row. A row with an `options` cell hands its key cells to
+ * the scoped-options merge later (scan_parse_target_secrets), so only the legacy row
+ * validates and resolves them here.
+ */
 static int
 scan_parse_target_key_paths(dsd_trunk_scan_target* target, char** fields, size_t count,
                             const dsd_trunk_scan_row_parse* parse, const char* chan_csv, int have_options) {

@@ -904,21 +904,6 @@ chan_import_options(dsd_state* state, char** fields, dsd_scan_mode mode, const c
     return rc;
 }
 
-/**
- * @brief Parse one channel row into @p state.
- *
- * Empty fields are preserved rather than collapsed, so `1,,851000000` reads as a
- * blank frequency and is skipped instead of promoting column 3 into its place.
- *
- * When the header opts into per-row keys, a row that took a slot stores either
- * its direct scalar values or a key file resolved against the map. Direct cells
- * are still validated on a row that took no slot, while file-only paths on such
- * a row are not opened. Key paths cannot contain commas: the splitter does no
- * quote handling. Invalid direct input or a key-file load failure rejects the
- * whole import.
- *
- * @return 1 when a frequency loaded, -1 on allocation failure or key load failure.
- */
 /*
  * Parse a row's mode cell. An unknown mode is refused with the accepted spellings; an analog FM alias is
  * echoed with the one spelling that is accepted instead (the cell matched a fixed word, so it is safe to
@@ -956,6 +941,21 @@ chan_import_row_mode(char** fields, const char* base_path, int row_number, dsd_s
     return 0;
 }
 
+/**
+ * @brief Parse one channel row into @p state.
+ *
+ * Empty fields are preserved rather than collapsed, so `1,,851000000` reads as a
+ * blank frequency and is skipped instead of promoting column 3 into its place.
+ *
+ * When the header opts into per-row keys, a row that took a slot stores either
+ * its direct scalar values or a key file resolved against the map. Direct cells
+ * are still validated on a row that took no slot, while file-only paths on such
+ * a row are not opened. Key paths cannot contain commas: the splitter does no
+ * quote handling. Invalid direct input or a key-file load failure rejects the
+ * whole import.
+ *
+ * @return 1 when a frequency loaded, -1 on allocation failure or key load failure.
+ */
 static int
 chan_import_row(dsd_state* state, char* buffer, const chan_header_cols* cols, const char* base_path, int row_number,
                 int show_keys, int* out_field_count, long int* out_chan_number) {
