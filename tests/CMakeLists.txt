@@ -5976,6 +5976,52 @@ if(DSD_HAS_RADIO)
     )
 endif()
 
+# Issue #524: an AM width (the 6 kHz default included) the input's DSP bandwidth
+# cannot filter is refused before the device opens, with the validator's
+# actionable text, and startup fails. rtl_tcp and RTL-SDR specs carry their DSP
+# bandwidth, so no device or server is needed. RunCliSmoke.cmake checks the
+# non-zero exit code together with the text (and that the stream was never
+# opened), which PASS_REGULAR_EXPRESSION alone cannot.
+if(DSD_HAS_RADIO)
+    add_test(
+        NAME RUNTIME_ANALOG_AM_WIDTH_RATE_REFUSED
+        COMMAND
+            ${CMAKE_COMMAND} -D DSD_NEO_CLI=$<TARGET_FILE:dsd-neo> -D
+            DSD_NEO_CLI_SMOKE_MODE=am-width-rate-refused -P
+            ${CMAKE_CURRENT_SOURCE_DIR}/cmake/RunCliSmoke.cmake
+    )
+    add_test(
+        NAME RUNTIME_ANALOG_AM_WIDTH_RATE_REFUSED_RTL
+        COMMAND
+            ${CMAKE_COMMAND} -D DSD_NEO_CLI=$<TARGET_FILE:dsd-neo> -D
+            DSD_NEO_CLI_SMOKE_MODE=am-width-rate-refused-rtl -P
+            ${CMAKE_CURRENT_SOURCE_DIR}/cmake/RunCliSmoke.cmake
+    )
+    add_test(
+        NAME RUNTIME_ANALOG_AM_DEFAULT_RATE_REFUSED
+        COMMAND
+            ${CMAKE_COMMAND} -D DSD_NEO_CLI=$<TARGET_FILE:dsd-neo> -D
+            DSD_NEO_CLI_SMOKE_MODE=am-default-rate-refused -P
+            ${CMAKE_CURRENT_SOURCE_DIR}/cmake/RunCliSmoke.cmake
+    )
+    # The negative control: a width the 16 kHz DSP rate filters gets as far as
+    # opening the stream (which fails: nothing listens on port 1).
+    add_test(
+        NAME RUNTIME_ANALOG_AM_WIDTH_FITS_LOW_RATE
+        COMMAND
+            ${CMAKE_COMMAND} -D DSD_NEO_CLI=$<TARGET_FILE:dsd-neo> -D
+            DSD_NEO_CLI_SMOKE_MODE=am-width-fits-low-rate -P
+            ${CMAKE_CURRENT_SOURCE_DIR}/cmake/RunCliSmoke.cmake
+    )
+    set_tests_properties(
+        RUNTIME_ANALOG_AM_WIDTH_RATE_REFUSED
+        RUNTIME_ANALOG_AM_WIDTH_RATE_REFUSED_RTL
+        RUNTIME_ANALOG_AM_DEFAULT_RATE_REFUSED
+        RUNTIME_ANALOG_AM_WIDTH_FITS_LOW_RATE
+        PROPERTIES ENVIRONMENT "DSD_NEO_NO_BOOTSTRAP=1" TIMEOUT 30
+    )
+endif()
+
 # P25 helper tests
 add_executable(dsd-neo_test_p25_12_list protocol/p25/test_p25_12_list.c)
 target_include_directories(

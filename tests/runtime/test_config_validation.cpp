@@ -531,6 +531,40 @@ test_analog_am_bandwidth_validation(void) {
             result = 1;
         }
     }
+
+    /* The AM width a decode = am config runs, the 6 kHz default included, is held to the DSP rate the RTL-SDR or
+     * rtl_tcp input it builds runs at (rtl_bw_khz), as the startup check holds it: the same actionable text. */
+    static const struct {
+        const char* ini;
+        const char* text; /* NULL: validates */
+    } rate[] = {
+        {"[input]\nsource = rtl\nrtl_freq = 118.1M\nrtl_bw_khz = 16\n[mode]\ndecode = am\n[analog]\n"
+         "am_bandwidth_hz = 20000\n",
+         "AM bandwidth 20 kHz does not fit the 16 kHz DSP rate (the largest width it fits is 13.2 kHz); set the RTL "
+         "DSP "
+         "bandwidth to 24 or 48 kHz"},
+        {"[input]\nsource = rtltcp\nrtltcp_host = 127.0.0.1\nrtl_freq = 118.1M\nrtl_bw_khz = 6\n[mode]\ndecode = am\n",
+         "AM bandwidth 6 kHz does not fit the 6 kHz DSP rate (the largest width it fits is 4.2 kHz)"},
+        {"[input]\nsource = rtl\nrtl_freq = 118.1M\nrtl_bw_khz = 24\n[mode]\ndecode = am\n[analog]\n"
+         "am_bandwidth_hz = 20000\n",
+         NULL},
+        {"[input]\nsource = rtl\nrtl_freq = 118.1M\nrtl_bw_khz = 8\n[mode]\ndecode = am\n", NULL},
+        /* Not the AM preset, a device that may force its own rate, and an rtl source startup does not build (no
+         * rtl_freq): nothing to hold the width to here. */
+        {"[input]\nsource = rtl\nrtl_freq = 118.1M\nrtl_bw_khz = 6\n[mode]\ndecode = analog\n", NULL},
+        {"[input]\nsource = soapy\nrtl_bw_khz = 6\n[mode]\ndecode = am\n", NULL},
+        {"[input]\nsource = rtl\nrtl_bw_khz = 6\n[mode]\ndecode = am\n", NULL},
+    };
+
+    for (size_t i = 0; i < sizeof rate / sizeof rate[0]; i++) {
+        const int found = validate_ini_has_error(rate[i].ini, "analog", "am_bandwidth_hz", rate[i].text, &rc);
+        const int ok = rate[i].text ? (found == 1 && rc != 0) : (found == 0 && rc == 0);
+        if (!ok) {
+            DSD_FPRINTF(stderr, "FAIL: %s: want %s (found=%d rc=%d)\n", rate[i].ini,
+                        rate[i].text ? rate[i].text : "no error", found, rc);
+            result = 1;
+        }
+    }
     return result;
 }
 
