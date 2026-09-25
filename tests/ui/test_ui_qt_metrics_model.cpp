@@ -1471,7 +1471,8 @@ main(int argc, char** argv) {
 
         opts.audio_in_type = AUDIO_IN_PULSE;
         model.refresh(&opts, &state);
-        expect("am: no width in force off a radio", model.analogBandwidthHz() == 0 && model.analogBandwidthMaxHz() == 0);
+        expect("am: no width in force off a radio",
+               model.analogBandwidthHz() == 0 && model.analogBandwidthMaxHz() == 0);
         expect("am: the configured AM width stays off a radio", model.analogBandwidthConfiguredHz() == 10000);
 
         opts.analog_only = 0;

@@ -686,7 +686,7 @@ static void
 apply_analog_section_key(dsdneoUserConfig* cfg, const char* key_lc, const char* val) {
     const int kind = (strcmp(key_lc, "nfm_bandwidth_hz") == 0)  ? DSD_ANALOG_DEMOD_FM
                      : (strcmp(key_lc, "am_bandwidth_hz") == 0) ? DSD_ANALOG_DEMOD_AM
-                                                                 : -1;
+                                                                : -1;
     if (kind < 0) {
         return;
     }

@@ -164,7 +164,7 @@ validate_analog_width_entry(const dsdcfg_schema_entry_t* entry, const char* val,
     }
     const int kind = (strcmp(entry->key, "nfm_bandwidth_hz") == 0)  ? DSD_ANALOG_DEMOD_FM
                      : (strcmp(entry->key, "am_bandwidth_hz") == 0) ? DSD_ANALOG_DEMOD_AM
-                                                                     : -1;
+                                                                    : -1;
     if (kind < 0) {
         return 0;
     }
