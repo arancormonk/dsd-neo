@@ -45,7 +45,7 @@ Item {
         // and labels do not.
         readonly property var everyLabel: [
             "Auto — P25/DMR/YSF", "P25", "P25 Simulcast", "DMR", "NXDN48",
-            "NXDN96", "D-STAR", "YSF", "M17", "NFM — analog FM",
+            "NXDN96", "D-STAR", "YSF", "M17", "NFM — analog FM", "AM",
             "P25 LSM", "DMR Scan", "P25 Scan", "P25 LSM Scan",
             "NXDN48 Scan", "NXDN96 Scan", "EDACS", "EDACS EA"]
 
@@ -163,6 +163,28 @@ Item {
             compare(tc.wizard.decodeFlag, "-fA")
             compare(tc.selectedLabels(), ["NFM — analog FM"])
             compare(tc.wizard.trunking, false, "picking NFM suggested call-following")
+        }
+
+        // Issue #524: the AM chip (-fM) comes with the shared catalog. It is
+        // offered for radio sources only (network and file audio arrives already
+        // demodulated), selects on its own flag, and names a system type that is
+        // not trunked, so picking it on the 800 MHz prefill suggests no
+        // call-following.
+        function test_10_the_am_chip_needs_a_radio_source_and_never_suggests_trunking() {
+            var chip = tc.chipFor("AM")
+            verify(chip !== null, "the wizard offers no AM chip")
+            compare(chip.modelData.flag, "-fM")
+            verify(tc.wizard.radioSource, "the wizard opens on a radio source")
+            verify(chip.enabled, "the AM chip is disabled on a radio source")
+            compare(tc.wizard.trunking, true, "the 800 MHz prefill suggests trunking before the pick")
+            tc.wizard.pickDecodeFlag("-fM")
+            compare(tc.wizard.decodeFlag, "-fM")
+            compare(tc.selectedLabels(), ["AM"])
+            compare(tc.wizard.trunking, false, "picking AM suggested call-following")
+            tc.wizard.sourceType = "tcp"
+            verify(!chip.enabled, "the AM chip is offered for TCP audio")
+            tc.wizard.sourceType = "usb"
+            verify(chip.enabled)
         }
 
         // A flag nobody has a name for must not invent a chip; the row falls

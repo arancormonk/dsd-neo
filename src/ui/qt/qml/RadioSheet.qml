@@ -505,6 +505,9 @@ ModalSheet {
 
                 objectName: "radioDecode_" + modelData.short
                 text: modelData.short
+                // AM needs the radio's I/Q (issue #524): on audio that arrives
+                // demodulated the engine would refuse it, so it is not offered.
+                enabled: modelData.iqOnly !== true || metrics.radioInput === true
                 selected: mode >= 0 && mode === metrics.decodeMode
                 onClicked: {
                     if (mode >= 0)
@@ -512,6 +515,17 @@ ModalSheet {
                 }
             }
         }
+    }
+
+    // Why the AM chip is greyed out, rather than leaving a dead control.
+    Text {
+        objectName: "radioDecodeIqNote"
+        visible: metrics.radioInput !== true
+        width: parent.width
+        wrapMode: Text.WordWrap
+        text: qsTr("AM needs a radio (I/Q) input; this audio arrives already demodulated.")
+        color: Theme.textSecondary
+        font.pixelSize: Theme.fontSize(12)
     }
 
     // ---- Analog ----

@@ -913,6 +913,8 @@ Item {
 
                             objectName: "wizardDecode_" + modelData.label
                             text: modelData.label
+                            // AM needs the radio's I/Q (issue #524): network and file audio arrives demodulated.
+                            enabled: modelData.iqOnly !== true || wizard.radioSource
                             selected: wizard.decodeFlag === modelData.flag
                             onClicked: wizard.pickDecodeFlag(modelData.flag)
                         }

@@ -72,6 +72,13 @@ var DECODE_MODES = [
         // the NFM channel filter, whose width the Radio sheet sets (issue #525).
         label: "NFM — analog FM", short: "NFM", flag: "-fA",
         hint: "Analog narrowband FM voice — repeaters, business and public-service radio."
+    },
+    {
+        // -fM is native AM (issue #524): the engine demodulates it from the
+        // radio's I/Q. Audio from a network or file source arrives already
+        // demodulated, so iqOnly chips are offered only for radio sources.
+        label: "AM", short: "AM", flag: "-fM", iqOnly: true,
+        hint: "Analog AM voice — airband and other AM channels. Needs a radio source."
     }
 ]
 
