@@ -22,6 +22,7 @@
 #include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/core/talkgroup_policy.h>
+#include <dsd-neo/dsp/analog_rx.h>
 #include <dsd-neo/dsp/frame_sync.h>
 #include <dsd-neo/dsp/symbol.h>
 #include <dsd-neo/engine/frame_processing.h>
@@ -57,6 +58,14 @@ static const char k_header[] = "id,type,frequency_hz,chan_csv,dwell_ms,activity_
 /* --- Issue #526: scanner sinks and DSP rate, from engine/trunk_tuning.c and core/audio, which this fixture does not
  * link. The stubs record which sink each row commit asked for. --- */
 static int g_ensure_analog_calls;
+
+/* From dsp/analog_rx.c, which this fixture does not link: with no detector session there is no generation to
+   compare, so the published carrier stands as it is -- exactly what the real function returns then. */
+int
+dsd_analog_rx_carrier_open_now(const dsd_opts* opts, const dsd_state* state) {
+    return (opts && state && state->analog_rx.carrier_open) ? 1 : 0;
+}
+
 static int g_ensure_digital_calls;
 static int g_scan_dsp_rate_hz;
 

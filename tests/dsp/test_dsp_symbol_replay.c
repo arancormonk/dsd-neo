@@ -2266,12 +2266,20 @@ test_monitor_muted_across_a_retune(void) {
     feed_tone_blocks(&opts, &state, 1);
     assert(g_monitor_blocks == 4);
 
-    /* A retune nobody announced shows up as a new stream generation: that block is dropped. */
+    /* A retune nobody announced shows up as a new stream generation: until the tap reads the new channel, the
+       carrier it published belongs to the old one, and the block that straddles it is dropped. */
+    assert(state.analog_rx.carrier_open == 1 && dsd_analog_rx_carrier_open_now(&opts, &state) == 1);
     g_fake_rtl_generation++;
+    assert(state.analog_rx.carrier_open == 1 && dsd_analog_rx_carrier_open_now(&opts, &state) == 0);
     feed_tone_blocks(&opts, &state, 1);
     assert(g_monitor_blocks == 4);
     feed_tone_blocks(&opts, &state, 1);
-    assert(g_monitor_blocks == 5);
+    assert(g_monitor_blocks == 5 && dsd_analog_rx_carrier_open_now(&opts, &state) == 1);
+    /* A completed rigctl-style retune moves the trunk-tuning generation the same way. */
+    dsd_trunk_tuning_generation_advance();
+    assert(dsd_analog_rx_carrier_open_now(&opts, &state) == 0);
+    feed_tone_blocks(&opts, &state, 2);
+    assert(g_monitor_blocks == 6 && dsd_analog_rx_carrier_open_now(&opts, &state) == 1);
 
     /* An announced reset (a scan row commit) with part of a block collected: the block is dropped. */
     float block[960];
@@ -2283,9 +2291,9 @@ test_monitor_muted_across_a_retune(void) {
     for (unsigned int i = 500U; i < 960U; i++) {
         dsd_symbol_test_push_unsynced_analog_sample(&opts, &state, block[i]);
     }
-    assert(g_monitor_blocks == 5);
-    feed_tone_blocks(&opts, &state, 1);
     assert(g_monitor_blocks == 6);
+    feed_tone_blocks(&opts, &state, 1);
+    assert(g_monitor_blocks == 7);
     dsd_trunk_tuning_requests_reset();
     dsd_udp_audio_hooks_set((dsd_udp_audio_hooks){0});
     install_fake_rtl_hooks(0);

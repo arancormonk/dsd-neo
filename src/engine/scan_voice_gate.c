@@ -8,6 +8,7 @@
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/talkgroup_policy.h>
+#include <dsd-neo/dsp/analog_rx.h>
 #include <dsd-neo/engine/channel_scan.h>
 #include <dsd-neo/engine/scan_voice_gate.h>
 #include <dsd-neo/platform/timing.h>
@@ -37,13 +38,15 @@ dsd_scan_analog_carrier_open(const dsd_opts* opts, const dsd_state* state) {
     if (!opts || !state || opts->trunk_enable == 1 || state->carrier != 0 || !dsd_analog_tone_detection_active(opts)) {
         return 0;
     }
-    const dsd_analog_rx_publication* pub = &state->analog_rx;
-    if (!pub->carrier_open) {
+    /* The tap's carrier, and only for the channel the receiver is on now: a read from before a retune says
+       nothing about the new row. */
+    if (!dsd_analog_rx_carrier_open_now(opts, state)) {
         return 0;
     }
     /* An input that stopped delivering leaves its last word published; past this the pause has outlasted
        the hangover (rx_tone_view.c reads it the same way). */
-    return pub->stale_after_ms == 0U || dsd_time_monotonic_ms() <= pub->stale_after_ms;
+    const uint64_t stale_after_ms = state->analog_rx.stale_after_ms;
+    return stale_after_ms == 0U || dsd_time_monotonic_ms() <= stale_after_ms;
 }
 
 static int

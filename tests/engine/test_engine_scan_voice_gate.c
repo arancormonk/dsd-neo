@@ -24,6 +24,7 @@
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/talkgroup_policy.h>
+#include <dsd-neo/dsp/analog_rx.h>
 #include <dsd-neo/engine/channel_scan.h>
 #include <dsd-neo/engine/scan_voice_gate.h>
 
@@ -101,6 +102,13 @@ dsd_tg_policy_evaluate_private_call(const dsd_opts* opts, const dsd_state* state
 /* The visit cap refuses to fire while a typed row transaction is outstanding. Only
  * scan_voice_gate.c is under test here, so the transaction is a flag the cases drive. */
 static int g_scan_waiting = 0;
+
+/* From dsp/analog_rx.c, which this fixture does not link: with no detector session there is no generation to
+   compare, so the published carrier stands as it is -- exactly what the real function returns then. */
+int
+dsd_analog_rx_carrier_open_now(const dsd_opts* opts, const dsd_state* state) {
+    return (opts && state && state->analog_rx.carrier_open) ? 1 : 0;
+}
 
 int
 dsd_engine_channel_scan_waiting(const dsd_state* state) {

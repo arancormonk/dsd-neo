@@ -1197,7 +1197,7 @@ symbol_unsynced_carrier_active(const dsd_opts* opts, const dsd_state* state) {
         return 0;
     }
     if (dsd_analog_tone_detection_active(opts)) {
-        return state->analog_rx.carrier_open != 0;
+        return dsd_analog_rx_carrier_open_now(opts, state);
     }
     return opts->audio_out == 1 && opts->rtl_pwr > opts->rtl_squelch_level;
 }

@@ -958,6 +958,36 @@ dsd_analog_rx_block_restart(const dsd_state* state) {
     }
 }
 
+/* Whether the generations the tap noted at its last read still hold: the comparison analog_rx_generation_moved()
+   makes, without noting anything. */
+static int
+analog_rx_generations_current(const dsd_opts* opts, const analog_rx_session* session) {
+    if (session->tune_generation != dsd_trunk_tuning_generation()) {
+        return 0;
+    }
+    if (opts->audio_in_type != AUDIO_IN_RTL) {
+        return 1;
+    }
+    if (session->rtl_generation != dsd_rtl_stream_metrics_hook_stream_generation()) {
+        return 0;
+    }
+    int kind = 0;
+    int width_hz = 0;
+    int lpf_on = 0;
+    (void)dsd_rtl_stream_metrics_hook_analog_profile(&kind, &width_hz, &lpf_on);
+    return kind == session->rtl_profile_kind && width_hz == session->rtl_profile_width_hz
+           && lpf_on == session->rtl_profile_lpf_on;
+}
+
+int
+dsd_analog_rx_carrier_open_now(const dsd_opts* opts, const dsd_state* state) {
+    if (!opts || !state || !state->analog_rx.carrier_open) {
+        return 0;
+    }
+    const analog_rx_session* session = analog_rx_session_get(state);
+    return session ? analog_rx_generations_current(opts, session) : 1;
+}
+
 int
 dsd_analog_rx_block_straddles_boundary(const dsd_state* state) {
     const analog_rx_session* session = state ? analog_rx_session_get(state) : NULL;

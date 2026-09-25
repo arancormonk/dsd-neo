@@ -163,6 +163,17 @@ void dsd_analog_rx_tap_partial(const dsd_opts* opts, dsd_state* state, const flo
 void dsd_analog_rx_block_restart(const dsd_state* state);
 
 /**
+ * @brief The published carrier, held to the channel the receiver is on now (issue #526).
+ *
+ * dsd_state::analog_rx.carrier_open says what the tap heard at its last read. When the tap's own generation check
+ * would see a boundary since that read -- the trunk-tuning generation, and on RTL input the stream generation or the
+ * published analog profile, moved -- the read was of the channel before, so this returns 0 until the tap reads the new
+ * one. A scanner that has just retuned therefore never holds the new row on the old row's carrier. Before detection
+ * has run there is nothing to compare, and the publication stands as it is. Read-only.
+ */
+int dsd_analog_rx_carrier_open_now(const dsd_opts* opts, const dsd_state* state);
+
+/**
  * @brief Whether the monitor block now being completed began before a boundary the tap knows of (issue #526).
  *
  * Set when the tap's own generation check found a retune or an applied receive-profile change part-way through the
