@@ -1251,6 +1251,102 @@ test_scan_max_visit_ms_validation(void) {
     return rc;
 }
 
+/* Issue #525: [analog] nfm_bandwidth_hz. A width outside 8000..25000 Hz, or anything but whole Hz, is an ERROR
+ * (never a warning the loader would clamp); so is an explicit width the configured RTL DSP bandwidth cannot filter,
+ * but only where that bandwidth sets the DSP rate (rtl and rtltcp) and the analog preset uses the width. An empty
+ * @p message expects no diagnostic at all on the key. */
+static int
+run_analog_width_case(const char* ini, const char* message, const char* message2) {
+    char path[DSD_TEST_PATH_MAX];
+    if (write_temp_config(ini, path, sizeof path) != 0) {
+        return 1;
+    }
+
+    dsdcfg_diagnostics_t diags;
+    DSD_MEMSET(&diags, 0, sizeof(diags));
+    (void)dsd_user_config_validate(path, &diags);
+
+    int result = 0;
+    int matched = 0;
+    int on_key = 0;
+    for (int i = 0; i < diags.count; i++) {
+        const dsdcfg_diagnostic_t* d = &diags.items[i];
+        /* A profile line reports its section.key split at the dot, so the message names the setting there. */
+        if (strstr(d->key, "nfm_bandwidth_hz") == NULL && strstr(d->message, "NFM bandwidth") == NULL) {
+            if (strstr(d->message, "Unknown section") || strstr(d->message, "Unknown key")) {
+                DSD_FPRINTF(stderr, "FAIL: [analog] is not known to the schema: %s\n", d->message);
+                result = 1;
+            }
+            continue;
+        }
+        on_key++;
+        if (message[0] != '\0' && d->level == DSDCFG_DIAG_ERROR && strstr(d->message, message)
+            && (!message2 || strstr(d->message, message2))) {
+            matched++;
+        }
+    }
+    if (message[0] == '\0' && (on_key != 0 || diags.error_count != 0)) {
+        DSD_FPRINTF(stderr, "FAIL: expected no diagnostics, got %d on the key and %d error(s) for:\n%s", on_key,
+                    diags.error_count, ini);
+        result = 1;
+    }
+    if (message[0] != '\0' && matched != 1) {
+        DSD_FPRINTF(stderr, "FAIL: expected one nfm_bandwidth_hz error naming \"%s\"%s%s (got %d of %d) for:\n%s",
+                    message, message2 ? " and " : "", message2 ? message2 : "", matched, on_key, ini);
+        for (int i = 0; i < diags.count; i++) {
+            DSD_FPRINTF(stderr, "  diag: [%s] %s: %s\n", diags.items[i].section, diags.items[i].key,
+                        diags.items[i].message);
+        }
+        result = 1;
+    }
+
+    dsdcfg_diags_free(&diags);
+    (void)remove(path);
+    return result;
+}
+
+static int
+test_analog_nfm_bandwidth_validation(void) {
+    int rc = 0;
+    rc |= run_analog_width_case("[analog]\nnfm_bandwidth_hz = 12500\n", "", NULL);
+    rc |= run_analog_width_case("[analog]\nnfm_bandwidth_hz = 8000\n", "", NULL);
+    rc |= run_analog_width_case("[analog]\nnfm_bandwidth_hz = 25000\n", "", NULL);
+    /* Out of range and malformed: the value, the range and the unit are in the message. */
+    rc |= run_analog_width_case("[analog]\nnfm_bandwidth_hz = 7999\n", "7999 Hz", "8000 to 25000");
+    rc |= run_analog_width_case("[analog]\nnfm_bandwidth_hz = 25001\n", "25001 Hz", "8000 to 25000");
+    rc |= run_analog_width_case("[analog]\nnfm_bandwidth_hz = 0\n", "0 Hz", "8000 to 25000");
+    rc |= run_analog_width_case("[analog]\nnfm_bandwidth_hz = 12.5k\n", "whole number of Hz", "12.5k");
+    rc |= run_analog_width_case("[profile.narrow]\nanalog.nfm_bandwidth_hz = 30000\n", "30000 Hz", "8000 to 25000");
+
+    /* The composed rate rule: the width against the DSP rate rtl_bw_khz gives an RTL or rtl_tcp input. */
+    rc |= run_analog_width_case("[input]\nsource = \"rtl\"\nrtl_bw_khz = 24\n[mode]\ndecode = \"analog\"\n"
+                                "[analog]\nnfm_bandwidth_hz = 25000\n",
+                                "does not fit the 24 kHz DSP rate", "set the RTL DSP bandwidth to 48 kHz");
+    rc |= run_analog_width_case("[input]\nsource = \"rtltcp\"\nrtl_bw_khz = 16\n[mode]\ndecode = \"analog\"\n"
+                                "[analog]\nnfm_bandwidth_hz = 16000\n",
+                                "does not fit the 16 kHz DSP rate", "24 or 48 kHz");
+    rc |= run_analog_width_case("[input]\nsource = \"rtl\"\nrtl_bw_khz = 16\n[mode]\ndecode = \"analog\"\n"
+                                "[analog]\nnfm_bandwidth_hz = 12500\n",
+                                "", NULL);
+    /* rtl_bw_khz left out is the 48 kHz default, which fits every NFM width. */
+    rc |= run_analog_width_case("[input]\nsource = \"rtl\"\n[mode]\ndecode = \"analog\"\n"
+                                "[analog]\nnfm_bandwidth_hz = 25000\n",
+                                "", NULL);
+    /* Not the analog preset: the width is not in use. */
+    rc |= run_analog_width_case("[input]\nsource = \"rtl\"\nrtl_bw_khz = 24\n[mode]\ndecode = \"dmr\"\n"
+                                "[analog]\nnfm_bandwidth_hz = 25000\n",
+                                "", NULL);
+    /* A device that may force its own rate is checked against the rate it delivers, at stream start. */
+    rc |= run_analog_width_case("[input]\nsource = \"soapy\"\nrtl_bw_khz = 24\n[mode]\ndecode = \"analog\"\n"
+                                "[analog]\nnfm_bandwidth_hz = 25000\n",
+                                "", NULL);
+    /* Profiles compose the same rule. */
+    rc |= run_analog_width_case("[input]\nsource = \"rtl\"\nrtl_bw_khz = 24\n[mode]\ndecode = \"analog\"\n"
+                                "[profile.wide]\nanalog.nfm_bandwidth_hz = 25000\n",
+                                "does not fit the 24 kHz DSP rate", NULL);
+    return rc;
+}
+
 static int
 test_input_warn_db_double_validation(void) {
     // In-range double: no diagnostics for the key
@@ -1805,6 +1901,7 @@ main(void) {
     rc |= test_int_out_of_range_negative_max();
     rc |= test_scan_voice_ms_out_of_range();
     rc |= test_scan_max_visit_ms_validation();
+    rc |= test_analog_nfm_bandwidth_validation();
     rc |= test_input_warn_db_double_validation();
     rc |= test_dmr_lrrp_ports_validation();
     rc |= test_diags_have_line_numbers();

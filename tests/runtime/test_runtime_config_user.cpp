@@ -2339,6 +2339,7 @@ test_persistence_gap_schema_rows(void) {
         {"trunking", "scan_voice_qualify_ms"},
         {"trunking", "scan_voice_hold_ms"},
         {"trunking", "scan_max_visit_ms"},
+        {"analog", "nfm_bandwidth_hz"},
     };
 
     for (size_t i = 0; i < sizeof expected / sizeof expected[0]; i++) {
@@ -2535,6 +2536,111 @@ test_scan_max_visit_roundtrip(void) {
         return 1;
     }
     rc |= expect_contains_quiet("trunking scan max visit off", rendered, "scan_max_visit_ms = 0\n");
+    return rc;
+}
+
+static int
+load_config_text(const char* ini, dsdneoUserConfig* cfg) {
+    char path[DSD_TEST_PATH_MAX];
+    if (write_temp_config(ini, path, sizeof path) != 0) {
+        return 1;
+    }
+    const int load_rc = dsd_user_config_load(path, cfg);
+    (void)remove(path);
+    return load_rc;
+}
+
+/*
+ * Issue #525: [analog] nfm_bandwidth_hz rides INI -> cfg -> opts -> snapshot -> render. 0 in the
+ * options is the default, not a request, so a save writes the key (and the section) only for an
+ * explicit width -- an explicit 16000 included, since it forces the channel filter on where the
+ * default would not. An invalid value is refused by the loader, which keeps the default.
+ */
+static int
+test_analog_nfm_bandwidth_roundtrip(void) {
+    int rc = 0;
+    dsdneoUserConfig cfg;
+    if (load_config_text("[analog]\nnfm_bandwidth_hz = 12500\n", &cfg) != 0) {
+        DSD_FPRINTF(stderr, "analog config failed to load\n");
+        return 1;
+    }
+    if (!cfg.has_analog || cfg.analog_nfm_bandwidth_hz != 12500) {
+        DSD_FPRINTF(stderr, "FAIL: [analog] nfm_bandwidth_hz did not load, got has=%d width=%d\n", cfg.has_analog,
+                    cfg.analog_nfm_bandwidth_hz);
+        rc |= 1;
+    }
+
+    auto opts_storage = std::unique_ptr<dsd_opts>(new dsd_opts{});
+    auto state_storage = std::unique_ptr<dsd_state>(new dsd_state{});
+    dsd_opts& opts = *opts_storage;
+    dsd_state& state = *state_storage;
+    reset_opts_and_state(opts, state);
+    dsd_apply_user_config_to_opts(&cfg, &opts, &state);
+    if (opts.analog_nfm_bandwidth_hz != 12500) {
+        DSD_FPRINTF(stderr, "FAIL: nfm_bandwidth_hz did not reach dsd_opts, got %d\n", opts.analog_nfm_bandwidth_hz);
+        rc |= 1;
+    }
+
+    dsdneoUserConfig snap;
+    dsd_snapshot_opts_to_user_config(&opts, &state, &snap);
+    char rendered[8192];
+    if (render_config_to_buffer(&snap, rendered, sizeof rendered) != 0) {
+        return 1;
+    }
+    rc |= expect_contains("explicit NFM width", rendered, "[analog]\nnfm_bandwidth_hz = 12500\n");
+
+    /* The explicit width equal to the default is still a request, and is saved as one. */
+    opts.analog_nfm_bandwidth_hz = 16000;
+    dsd_snapshot_opts_to_user_config(&opts, &state, &snap);
+    if (render_config_to_buffer(&snap, rendered, sizeof rendered) != 0) {
+        return 1;
+    }
+    rc |= expect_contains("explicit default-valued NFM width", rendered, "nfm_bandwidth_hz = 16000\n");
+
+    /* The default is not saved at all, so a later default change reaches this config. */
+    reset_opts_and_state(opts, state);
+    dsd_snapshot_opts_to_user_config(&opts, &state, &snap);
+    if (render_config_to_buffer(&snap, rendered, sizeof rendered) != 0) {
+        return 1;
+    }
+    if (strstr(rendered, "nfm_bandwidth_hz") != NULL || strstr(rendered, "[analog]") != NULL) {
+        DSD_FPRINTF(stderr, "FAIL: the default NFM width was saved:\n%s\n", rendered);
+        rc |= 1;
+    }
+
+    /* Refused, not clamped: the loader keeps the default. */
+    const char* invalid[] = {"[analog]\nnfm_bandwidth_hz = 30000\n", "[analog]\nnfm_bandwidth_hz = 12.5k\n",
+                             "[analog]\nnfm_bandwidth_hz = 0\n"};
+    for (const char* ini : invalid) {
+        if (load_config_text(ini, &cfg) != 0 || cfg.analog_nfm_bandwidth_hz != 0) {
+            DSD_FPRINTF(stderr, "FAIL: invalid width was not refused (width %d) for:\n%s", cfg.analog_nfm_bandwidth_hz,
+                        ini);
+            rc |= 1;
+        }
+    }
+
+    /* A config without [analog] leaves the configured width alone; one whose width the loader refused sets the
+       default, as a config naming no width in that section would. */
+    reset_opts_and_state(opts, state);
+    opts.analog_nfm_bandwidth_hz = 20000;
+    if (load_config_text("[mode]\ndecode = \"analog\"\n", &cfg) != 0) {
+        return 1;
+    }
+    dsd_apply_user_config_to_opts(&cfg, &opts, &state);
+    if (opts.analog_nfm_bandwidth_hz != 20000) {
+        DSD_FPRINTF(stderr, "FAIL: a config without [analog] changed the width to %d\n", opts.analog_nfm_bandwidth_hz);
+        rc |= 1;
+    }
+    if (load_config_text("[analog]\nnfm_bandwidth_hz = 30000\n", &cfg) != 0) {
+        return 1;
+    }
+    dsd_apply_user_config_to_opts(&cfg, &opts, &state);
+    if (opts.analog_nfm_bandwidth_hz != 0) {
+        DSD_FPRINTF(stderr, "FAIL: an [analog] section with a refused width left width %d\n",
+                    opts.analog_nfm_bandwidth_hz);
+        rc |= 1;
+    }
+    dsd_state_ext_free_all(&state);
     return rc;
 }
 
@@ -3273,6 +3379,7 @@ main(void) {
     rc |= test_scanner_and_candidates_roundtrip();
     rc |= test_scan_voice_gate_roundtrip();
     rc |= test_scan_max_visit_roundtrip();
+    rc |= test_analog_nfm_bandwidth_roundtrip();
     rc |= test_tg_lockout_persistence_roundtrip();
     rc |= test_scan_max_visit_snapshot_uses_configured_not_row_override();
     rc |= test_squelch_snapshot_uses_configured_not_row_override();

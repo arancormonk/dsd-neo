@@ -8,6 +8,7 @@
  */
 
 #include <dsd-neo/runtime/airspy_config.h>
+#include <dsd-neo/runtime/analog_channel.h>
 #if defined(_WIN32)
 #include <algorithm>
 #endif
@@ -679,6 +680,22 @@ apply_dsp_section_key(dsdneoUserConfig* cfg, const char* key_lc, const char* val
     }
 }
 
+/* An analog width is refused, never clamped: a value the strict parser rejects is reported and the width already
+   loaded (the default, for a base file) stays. --validate-config reports the same text as an error. */
+static void
+apply_analog_section_key(dsdneoUserConfig* cfg, const char* key_lc, const char* val) {
+    if (strcmp(key_lc, "nfm_bandwidth_hz") != 0) {
+        return;
+    }
+    char err[DSD_ANALOG_ERROR_TEXT_MAX];
+    int width_hz = 0;
+    if (dsd_analog_width_parse(DSD_ANALOG_DEMOD_FM, val, &width_hz, err, sizeof err) != 0) {
+        LOG_WARN("Config: invalid %s = '%s'; %s; keeping the previous/default width\n", key_lc, val, err);
+        return;
+    }
+    cfg->analog_nfm_bandwidth_hz = width_hz;
+}
+
 static void
 apply_section_key(dsdneoUserConfig* cfg, const char* section, const char* key_lc, const char* val,
                   user_cfg_parse_mode_t mode) {
@@ -712,6 +729,9 @@ apply_section_key(dsdneoUserConfig* cfg, const char* section, const char* key_lc
     } else if (strcmp(section, "dsp") == 0) {
         cfg->has_dsp = 1;
         apply_dsp_section_key(cfg, key_lc, val);
+    } else if (strcmp(section, "analog") == 0) {
+        cfg->has_analog = 1;
+        apply_analog_section_key(cfg, key_lc, val);
     }
 }
 

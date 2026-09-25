@@ -23,6 +23,7 @@
 #include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/runtime/airspy_config.h>
+#include <dsd-neo/runtime/analog_channel.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/config_schema.h>
 #include <dsd-neo/runtime/decode_mode.h>
@@ -1141,6 +1142,18 @@ render_dsp_section(FILE* out, const dsdneoUserConfig* cfg) {
     DSD_FPRINTF(out, "\n");
 }
 
+/* Only explicit widths are written: a width left at its default (0) is not a setting, so the section is left out
+   entirely when nothing in it is explicit. */
+static void
+render_analog_section(FILE* out, const dsdneoUserConfig* cfg) {
+    if (cfg->analog_nfm_bandwidth_hz <= 0) {
+        return;
+    }
+    DSD_FPRINTF(out, "[analog]\n");
+    DSD_FPRINTF(out, "nfm_bandwidth_hz = %d\n", cfg->analog_nfm_bandwidth_hz);
+    DSD_FPRINTF(out, "\n");
+}
+
 void
 dsd_user_config_render_ini(const dsdneoUserConfig* cfg, FILE* stream) {
     if (!cfg || !stream) {
@@ -1176,6 +1189,9 @@ dsd_user_config_render_ini(const dsdneoUserConfig* cfg, FILE* stream) {
     }
     if (cfg->has_dsp) {
         render_dsp_section(stream, cfg);
+    }
+    if (cfg->has_analog) {
+        render_analog_section(stream, cfg);
     }
 }
 
@@ -1595,6 +1611,17 @@ apply_dsp_config(const dsdneoUserConfig* cfg) {
     }
 }
 
+/* A section that is present sets every key it owns: a width left out is the default (0). The loader only stores
+   in-range widths; anything else in a hand-built config is treated as the default rather than trusted. */
+static void
+apply_analog_config(const dsdneoUserConfig* cfg, dsd_opts* opts) {
+    if (!cfg || !opts || !cfg->has_analog) {
+        return;
+    }
+    const int nfm = cfg->analog_nfm_bandwidth_hz;
+    opts->analog_nfm_bandwidth_hz = dsd_analog_width_in_range(DSD_ANALOG_DEMOD_FM, nfm) ? nfm : 0;
+}
+
 static void
 apply_file_input_symbol_timing(const dsdneoUserConfig* cfg, const dsd_opts* opts, dsd_state* state,
                                int old_effective_input_rate, int apply_file_input_rate_now) {
@@ -1630,6 +1657,7 @@ dsd_apply_user_config_to_opts_impl(const dsdneoUserConfig* cfg, dsd_opts* opts, 
     apply_alerts_config(cfg, opts);
     apply_recording_config(cfg, opts);
     apply_dsp_config(cfg);
+    apply_analog_config(cfg, opts);
     apply_file_input_symbol_timing(cfg, opts, state, old_effective_input_rate, apply_file_input_rate_now);
 }
 
@@ -1904,6 +1932,14 @@ snapshot_dsp_config(dsdneoUserConfig* cfg) {
     cfg->iq_dc_block = (dsd_parse_int_strict(dcb, 10, INT_MIN, INT_MAX, &parsed) == 0 && parsed != 0) ? 1 : 0;
 }
 
+/* The configured width, 0 when the default is in force. No scan row sets a width yet, so the options are the
+   configured values here; rows that do will have to save from dsd_scan_mode_configured_view() instead. */
+static void
+snapshot_analog_config(const dsd_opts* opts, dsdneoUserConfig* cfg) {
+    cfg->analog_nfm_bandwidth_hz = opts->analog_nfm_bandwidth_hz > 0 ? opts->analog_nfm_bandwidth_hz : 0;
+    cfg->has_analog = cfg->analog_nfm_bandwidth_hz > 0 ? 1 : 0;
+}
+
 void
 dsd_snapshot_opts_to_user_config(const dsd_opts* opts, const dsd_state* state, dsdneoUserConfig* cfg) {
     if (!opts || !state || !cfg) {
@@ -1922,6 +1958,7 @@ dsd_snapshot_opts_to_user_config(const dsd_opts* opts, const dsd_state* state, d
     snapshot_alerts_config(opts, cfg);
     snapshot_recording_config(opts, cfg);
     snapshot_dsp_config(cfg);
+    snapshot_analog_config(opts, cfg);
 }
 
 // Template generation ---------------------------------------------------------

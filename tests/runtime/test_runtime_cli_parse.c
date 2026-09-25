@@ -7602,6 +7602,285 @@ test_bootstrap_inherited_trunk_scan_preserves_max_visit_override(void) {
     return test_rc;
 }
 
+/* Issue #525: --nfm-bandwidth-hz takes whole Hz in both long-option spellings and lands in the
+ * configured NFM width. The value token must be consumed before getopt runs, or it would read
+ * as a positional input and the -fA after it would not be seen. */
+static int
+test_nfm_bandwidth_long_option_parses(void) {
+    static const int wanted[] = {8000, 12500, 25000};
+    int test_rc = 0;
+    for (size_t i = 0; i < sizeof wanted / sizeof wanted[0]; i++) {
+        for (int equals = 0; equals < 2; equals++) {
+            dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
+            dsd_state* state = (dsd_state*)calloc(1, sizeof(dsd_state));
+            if (!opts || !state) {
+                free(opts);
+                free(state);
+                return 1;
+            }
+            initOpts(opts);
+            initState(state);
+
+            char arg0[] = "dsd-neo";
+            char arg_flag[] = "--nfm-bandwidth-hz";
+            char value[16];
+            char equals_form[48];
+            char arg_mode[] = "-fA";
+            char arg_in[] = "-i";
+            char arg_rtl[] = "rtl";
+            DSD_SNPRINTF(value, sizeof value, "%d", wanted[i]);
+            DSD_SNPRINTF(equals_form, sizeof equals_form, "--nfm-bandwidth-hz=%d", wanted[i]);
+            char* argv_space[] = {arg0, arg_flag, value, arg_mode, arg_in, arg_rtl, NULL};
+            char* argv_equals[] = {arg0, equals_form, arg_mode, arg_in, arg_rtl, NULL};
+            char** argv = equals ? argv_equals : argv_space;
+            const int argc = equals ? 5 : 6;
+
+            char output[4096];
+            int argc_effective = 0;
+            int exit_rc = 0;
+            int rc =
+                parse_args_capture_stderr(argc, argv, opts, state, &argc_effective, &exit_rc, output, sizeof output);
+            if (rc != DSD_PARSE_CONTINUE || exit_rc != 0 || opts->analog_nfm_bandwidth_hz != wanted[i]
+                || opts->analog_only != 1) {
+                DSD_FPRINTF(stderr,
+                            "%s form: expected --nfm-bandwidth-hz %d with -fA, got rc=%d exit_rc=%d width=%d "
+                            "analog_only=%d\n",
+                            equals ? "equals" : "space", wanted[i], rc, exit_rc, opts->analog_nfm_bandwidth_hz,
+                            opts->analog_only);
+                test_rc = 1;
+            }
+            /* A radio input is where the width acts, so there is nothing to warn about. */
+            if (strstr(output, "--nfm-bandwidth-hz has no effect") != NULL) {
+                DSD_FPRINTF(stderr, "%s form: unexpected PCM warning on RTL input: \"%s\"\n",
+                            equals ? "equals" : "space", output);
+                test_rc = 1;
+            }
+
+            freeState(state);
+            free(opts);
+            free(state);
+        }
+    }
+    return test_rc;
+}
+
+/* An unsupported width is refused, never clamped: the error names the flag, the range and the
+ * value, the parse fails with exit code 1, and the configured width stays the default. */
+static int
+test_nfm_bandwidth_rejects_invalid_values(void) {
+    static const struct {
+        const char* argv1;
+        const char* argv2;
+        const char* shown;
+    } cases[] = {
+        {"--nfm-bandwidth-hz", "7999", "7999 Hz"},
+        {"--nfm-bandwidth-hz=25001", NULL, "25001 Hz"},
+        {"--nfm-bandwidth-hz", "12.5k", "\"12.5k\""},
+        {"--nfm-bandwidth-hz=12500Hz", NULL, "\"12500Hz\""},
+        {"--nfm-bandwidth-hz", "-12500", "\"-12500\""},
+        {"--nfm-bandwidth-hz=", NULL, "\"\""},
+        {"--nfm-bandwidth-hz", "0", "0 Hz"},
+        {"--nfm-bandwidth-hz", " 12500", "\" 12500\""},
+    };
+
+    int test_rc = 0;
+    for (size_t i = 0; i < sizeof cases / sizeof cases[0]; i++) {
+        dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
+        dsd_state* state = (dsd_state*)calloc(1, sizeof(dsd_state));
+        if (!opts || !state) {
+            free(opts);
+            free(state);
+            return 1;
+        }
+        initOpts(opts);
+        initState(state);
+
+        char arg0[] = "dsd-neo";
+        char arg1[64];
+        char arg2[32];
+        DSD_SNPRINTF(arg1, sizeof arg1, "%s", cases[i].argv1);
+        if (cases[i].argv2) {
+            DSD_SNPRINTF(arg2, sizeof arg2, "%s", cases[i].argv2);
+        }
+        char* argv[] = {arg0, arg1, cases[i].argv2 ? arg2 : NULL, NULL};
+        const int argc = cases[i].argv2 ? 3 : 2;
+
+        char output[4096];
+        int argc_effective = 0;
+        int exit_rc = 0;
+        int rc = parse_args_capture_stderr(argc, argv, opts, state, &argc_effective, &exit_rc, output, sizeof output);
+        if (rc != DSD_PARSE_ERROR || exit_rc != 1 || opts->analog_nfm_bandwidth_hz != 0) {
+            DSD_FPRINTF(stderr, "%s %s: expected a refusal, got rc=%d exit_rc=%d width=%d\n", cases[i].argv1,
+                        cases[i].argv2 ? cases[i].argv2 : "", rc, exit_rc, opts->analog_nfm_bandwidth_hz);
+            test_rc = 1;
+        }
+        if (!strstr(output, "--nfm-bandwidth-hz") || !strstr(output, "8000") || !strstr(output, "25000")
+            || !strstr(output, cases[i].shown)) {
+            DSD_FPRINTF(stderr, "%s %s: error does not name the flag, range and value (%s): \"%s\"\n", cases[i].argv1,
+                        cases[i].argv2 ? cases[i].argv2 : "", cases[i].shown, output);
+            test_rc = 1;
+        }
+
+        freeState(state);
+        free(opts);
+        free(state);
+    }
+
+    /* A trailing flag with no value is an error, not a silently ignored option. */
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(dsd_state));
+    if (!opts || !state) {
+        free(opts);
+        free(state);
+        return 1;
+    }
+    initOpts(opts);
+    initState(state);
+    char arg0[] = "dsd-neo";
+    char arg1[] = "--nfm-bandwidth-hz";
+    char* argv[] = {arg0, arg1, NULL};
+    char output[4096];
+    int argc_effective = 0;
+    int exit_rc = 0;
+    int rc = parse_args_capture_stderr(2, argv, opts, state, &argc_effective, &exit_rc, output, sizeof output);
+    if (rc != DSD_PARSE_ERROR || exit_rc != 1 || !strstr(output, "--nfm-bandwidth-hz requires")) {
+        DSD_FPRINTF(stderr, "missing value: expected a refusal, got rc=%d exit_rc=%d stderr \"%s\"\n", rc, exit_rc,
+                    output);
+        test_rc = 1;
+    }
+    freeState(state);
+    free(opts);
+    free(state);
+    return test_rc;
+}
+
+/* The NFM width is the radio front end's channel filter: on PCM input (the default Pulse source,
+ * a file, UDP or TCP audio) it cannot act, so the flag parses and says so. Radio inputs and I/Q
+ * replay do not warn. */
+static int
+test_nfm_bandwidth_warns_on_pcm_input(void) {
+    static const struct {
+        const char* input;
+        int warn;
+    } cases[] = {
+        {NULL, 1},
+        {"udp:127.0.0.1:7355", 1},
+        {"tcp:127.0.0.1:7355", 1},
+        {"rtl:0:851.375M", 0},
+        {"rtltcp:127.0.0.1:1234", 0},
+        {"soapy", 0},
+    };
+
+    static const char* const expected_warning = "--nfm-bandwidth-hz has no effect on PCM input";
+    int test_rc = 0;
+    for (size_t i = 0; i < sizeof cases / sizeof cases[0]; i++) {
+        dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
+        dsd_state* state = (dsd_state*)calloc(1, sizeof(dsd_state));
+        if (!opts || !state) {
+            free(opts);
+            free(state);
+            return 1;
+        }
+        initOpts(opts);
+        initState(state);
+
+        char arg0[] = "dsd-neo";
+        char arg_flag[] = "--nfm-bandwidth-hz=12500";
+        char arg_mode[] = "-fA";
+        char arg_in[] = "-i";
+        char arg_spec[64];
+        DSD_SNPRINTF(arg_spec, sizeof arg_spec, "%s", cases[i].input ? cases[i].input : "");
+        char* argv_plain[] = {arg0, arg_flag, arg_mode, NULL};
+        char* argv_input[] = {arg0, arg_flag, arg_mode, arg_in, arg_spec, NULL};
+        char** argv = cases[i].input ? argv_input : argv_plain;
+        const int argc = cases[i].input ? 5 : 3;
+
+        char output[4096];
+        int argc_effective = 0;
+        int exit_rc = 0;
+        int rc = parse_args_capture_stderr(argc, argv, opts, state, &argc_effective, &exit_rc, output, sizeof output);
+        if (rc != DSD_PARSE_CONTINUE || exit_rc != 0 || opts->analog_nfm_bandwidth_hz != 12500) {
+            DSD_FPRINTF(stderr, "input %s: expected a non-fatal parse, got rc=%d exit_rc=%d width=%d\n",
+                        cases[i].input ? cases[i].input : "(default)", rc, exit_rc, opts->analog_nfm_bandwidth_hz);
+            test_rc = 1;
+        }
+        const int warned = strstr(output, expected_warning) != NULL ? 1 : 0;
+        if (warned != cases[i].warn) {
+            DSD_FPRINTF(stderr, "input %s: warned=%d, want %d; stderr was \"%s\"\n",
+                        cases[i].input ? cases[i].input : "(default)", warned, cases[i].warn, output);
+            test_rc = 1;
+        }
+
+        freeState(state);
+        free(opts);
+        free(state);
+    }
+    return test_rc;
+}
+
+/* [analog] nfm_bandwidth_hz sets the configured width before the CLI runs, and --nfm-bandwidth-hz
+ * overrides it; an out-of-range INI value is refused with a warning and leaves the default. */
+static int
+test_bootstrap_analog_config_and_cli_override(void) {
+    static const struct {
+        const char* ini;
+        const char* cli;
+        int want;
+    } cases[] = {
+        {"[analog]\nnfm_bandwidth_hz = 12500\n", NULL, 12500},
+        {"[analog]\nnfm_bandwidth_hz = 12500\n", "--nfm-bandwidth-hz=20000", 20000},
+        {"[analog]\nnfm_bandwidth_hz = 30000\n", NULL, 0},
+        {"[analog]\nnfm_bandwidth_hz = 12.5k\n", NULL, 0},
+    };
+
+    int test_rc = 0;
+    for (size_t i = 0; i < sizeof cases / sizeof cases[0]; i++) {
+        dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
+        dsd_state* state = (dsd_state*)calloc(1, sizeof(dsd_state));
+        if (!opts || !state) {
+            free(opts);
+            free(state);
+            return 1;
+        }
+        initOpts(opts);
+        initState(state);
+        (void)dsd_unsetenv("DSD_NEO_CONFIG");
+        (void)dsd_setenv("DSD_NEO_NO_BOOTSTRAP", "1", 1);
+
+        char cfg_path[1024];
+        if (test_create_temp_ini_with_contents(cases[i].ini, cfg_path, sizeof cfg_path) != 0) {
+            DSD_FPRINTF(stderr, "failed to create temp analog ini\n");
+            freeState(state);
+            free(opts);
+            free(state);
+            return 1;
+        }
+        char arg0[] = "dsd-neo";
+        char arg1[] = "--config";
+        char arg2[1024];
+        char arg3[64];
+        DSD_SNPRINTF(arg2, sizeof arg2, "%s", cfg_path);
+        DSD_SNPRINTF(arg3, sizeof arg3, "%s", cases[i].cli ? cases[i].cli : "");
+        char* argv[] = {arg0, arg1, arg2, cases[i].cli ? arg3 : NULL, NULL};
+        const int argc = cases[i].cli ? 4 : 3;
+
+        int argc_effective = 0;
+        int exit_rc = -1;
+        int rc = dsd_runtime_bootstrap(argc, argv, opts, state, &argc_effective, &exit_rc);
+        if (rc != DSD_BOOTSTRAP_CONTINUE || exit_rc != 0 || opts->analog_nfm_bandwidth_hz != cases[i].want) {
+            DSD_FPRINTF(stderr, "case %zu: expected width %d, got rc=%d exit_rc=%d width=%d\n", i, cases[i].want, rc,
+                        exit_rc, opts->analog_nfm_bandwidth_hz);
+            test_rc = 1;
+        }
+
+        (void)remove(cfg_path);
+        freeState(state);
+        free(opts);
+        free(state);
+    }
+    return test_rc;
+}
+
 static int
 test_bootstrap_config_file_rate_rescales_manual_m3_override(void) {
     dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
@@ -8246,6 +8525,10 @@ main(void) {
     rc |= test_scan_max_visit_boundary_and_off_values_parse();
     rc |= test_scan_max_visit_warns_without_scan_mode();
     rc |= test_bootstrap_inherited_trunk_scan_preserves_max_visit_override();
+    rc |= test_nfm_bandwidth_long_option_parses();
+    rc |= test_nfm_bandwidth_rejects_invalid_values();
+    rc |= test_nfm_bandwidth_warns_on_pcm_input();
+    rc |= test_bootstrap_analog_config_and_cli_override();
     rc |= test_input_source_tcp_ipv4_roundtrip();
     rc |= test_trunk_scan_long_options_parse();
     rc |= test_trunk_scanner_option_order();

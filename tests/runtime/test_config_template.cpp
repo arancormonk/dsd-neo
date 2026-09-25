@@ -201,6 +201,16 @@ test_template_contains_keys(void) {
         DSD_FPRINTF(stderr, "FAIL: template missing scan_max_visit_ms range hint or default\n");
         rc = 1;
     }
+    /* [analog] (issue #525): the NFM width's range and its default, which the loader treats the same as the key
+     * left out. */
+    if (!strstr(content, "[analog]\n")) {
+        DSD_FPRINTF(stderr, "FAIL: template missing [analog] section\n");
+        rc = 1;
+    }
+    if (!strstr(content, "# Range: 8000 to 25000\n# nfm_bandwidth_hz = 16000\n")) {
+        DSD_FPRINTF(stderr, "FAIL: template missing nfm_bandwidth_hz range hint or default\n");
+        rc = 1;
+    }
     if (strstr(content, "version =") != NULL) {
         DSD_FPRINTF(stderr, "FAIL: template must not emit the persisted version marker\n");
         rc = 1;

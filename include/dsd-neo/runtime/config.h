@@ -667,6 +667,12 @@ typedef struct dsdneoUserConfig {
     int has_dsp;
     int iq_balance;  /* bool */
     int iq_dc_block; /* bool */
+
+    /* [analog] (runtime/analog_channel.h). A width is the full RF channel-filter width in Hz; 0 is the kind's
+       default (the key left out), which a save does not write. The loader refuses a value outside the kind's range
+       and keeps the default. */
+    int has_analog;
+    int analog_nfm_bandwidth_hz;
 } dsdneoUserConfig;
 
 /**
