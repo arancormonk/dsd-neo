@@ -872,15 +872,22 @@ installs from `src/engine/trunk_tuning.c` in `src/engine/trunk_tuning_hooks_inst
     run of equal bits. A lock is one slicer reading a supported code's word twice in a row, exactly in one 23-bit window
     and within one bit in the other (both exact would need 46 clean bits in a row, which at 3 dB several starts in a
     hundred do not deliver within 700 ms), named by `dsd_dcs_match()`. It holds while some slicer reads the expected
-    rotation within one bit, following a one-bit slip either way, and is lost after 32 bits without, or at the first bit
-    without once the 134.4 Hz turn-off tone has carried over a third of the band's power (the newest six bits) for two
-    bits (a bit integral over one period of 134.4 Hz is zero, so the slicers hear nothing of it). The tone alone ends
-    nothing: a steady component near 134.4 Hz under a code the slicers still read keeps the lock, which is why the
-    threshold can sit below the 3 dB level. The ring holds two bit integrals at the highest decimated rate (a
-    `_Static_assert`); a rate beyond it leaves the detector inert and reporting NONE. NONE after 500 ms of carrier
-    without a lock, like CTCSS. Samples inside the hangover keep the clock and the windows moving but change no verdict.
-    A signal one bit from a supported word can read as that code, the way a DCS decoder tolerates a bit error;
-    `DSP_ANALOG_DCS` pins that nothing further away does.
+    rotation within one bit, following a one-bit slip either way, or reads the locked class exactly at another rotation,
+    which it then follows (the same code starting over elsewhere in its word: a radio re-keying inside the hangover,
+    another transmitter behind a repeater). It is lost after 32 bits without, or at the first bit without once the
+    134.4 Hz turn-off tone has carried over a third of the band's power (the newest six bits) for two bits (a bit
+    integral over one period of 134.4 Hz is zero, so the slicers hear nothing of it). The tone alone ends nothing: a
+    steady component near 134.4 Hz under a code the slicers still read keeps the lock, which is why the threshold can
+    sit below the 3 dB level. A window holding a bit read with the carrier closed can hold no word, so the 32 bits count
+    only windows read wholly with the carrier open (`since_frozen`), and `DSD_ANALOG_DCS_SPAN_BITS` (64 bits, 476 ms)
+    since the lock last held (`since_held`, carrier open or closed) ends it too: long enough for the same code to come
+    back at another place after a dropout up to the hangover, and the bound under a carrier that keeps dropping out,
+    whose windows are never read wholly open (counting open bits alone, a stopped code stayed shown for up to 1.8 s
+    there). The ring holds two bit integrals at the highest decimated rate (a `_Static_assert`); a rate beyond it leaves
+    the detector inert and reporting NONE. NONE after 500 ms of carrier without a lock, like CTCSS. Samples inside the
+    hangover keep the clock and the windows moving but change no verdict on what they read; only the span, which is
+    carrier time, runs out on them. A signal one bit from a supported word can read as that code, the way a DCS decoder
+    tolerates a bit error; `DSP_ANALOG_DCS` pins that nothing further away does.
   - Invariant: resets never happen in `noCarrier()` / `dsd_engine_reset_no_carrier_state()` (they run every ~375 ms in
     analog mode and would stop any tone locking). They happen in `dsd_frame_sync_reset_acquisition()` (row commit and
     leave, trunk-scan target switch, decode-mode change, scope resume, RR apply), on an RTL stream-generation or

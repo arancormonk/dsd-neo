@@ -555,7 +555,11 @@ target on its own, and at 3 dB every row meets the lock p95 target and every fix
   carrier is lost within 350 ms (p50 293 ms), and the 134.4 Hz turn-off tone within 150 ms (p50 76 ms, worst 99 ms);
   a steady 130, 134.4 or 140 Hz component at the code's power or 3 dB above it, starting under a held code, never
   ends the lock (the turn-off rule waits for the code to go too); a carrier drop is forgotten within the 200 ms
-  hangover, and a 150 ms dropout inside a transmission keeps the lock.
+  hangover, and a 150 ms dropout inside a transmission keeps the lock; a code that stops under a carrier up for 20 ms
+  of every 40-180 ms is lost within the 64-bit span and a word of the stop (649 ms; worst 577 ms over 100 cases at
+  every rate, 1 and 20 ms blocks), with the carrier open throughout; the same code starting over 1 to 22 bits and a
+  share of a bit further on in its word, on a continuous carrier and after 120 and 190 ms gaps, keeps one lock and
+  never reads `none`.
 - Publication: when a CTCSS tone locks under a held code, or a code under a held tone, the one that locked first stays
   published until its signal stops, and only then the other shows; both detectors are locked meanwhile, so the rule,
   not a missed detection, keeps the display.
@@ -592,10 +596,19 @@ per start with the onset anywhere in a word; `<dsd-neo/dsp/analog_rx.h>` sets it
   block sags the most and the de-emphasis smears a code's isolated bits; the slowest read one bit of nearly every word
   wrong, a different bit each time, for over a second.
 - Loss when the code stops under a live carrier, 1,000,000 stops at 3 and 10 dB over the same rates and de-emphasis:
-  p95 at most 328 ms, p99.9 at most 376 ms, the slowest 572 ms. About 5 stops in 100,000 take longer than 450 ms: the
-  noise that follows reads as the code within one bit once, which starts the 32 bits over.
-- Loss on the turn-off tone, 1,000,000 at 3 and 10 dB: p95 at most 135 ms (750 us at 3 dB; 97-109 ms otherwise), p99.9
-  at most 225 ms, the slowest 307 ms.
+  p95 at most 328 ms, p99.9 at most 376 ms, the slowest 587 ms. About 6 stops in 100,000 take longer than 450 ms: the
+  noise that follows reads as the code once more (within one bit of the word expected next, or exactly at another
+  place in it), which starts the 32 bits over.
+- Loss on the turn-off tone, 1,000,000 at 3 and 10 dB: p95 at most 134 ms (750 us at 3 dB; 97-109 ms otherwise), p99.9
+  at most 225 ms, the slowest 335 ms.
+- Loss under a flickering carrier (openings of 1-60 ms between dropouts of 10-199 ms from the stop), 16,000 stops at 8,
+  44.1, 48 and 78.125 kHz, 3 and 10 dB: p95 at most 546 ms, the slowest 612 ms (a loss that counted only bits read with
+  the carrier open, with no span, took p95 1,270 ms and the slowest 1,755 ms at 48 kHz). After a single 120 ms dropout
+  with the code gone, 16,000 returns: lost p95 367 ms after the carrier came back, the slowest 469 ms.
+- The same code at another place in its word, a shift of 1-22 bits and a random share of a bit, half on a continuous
+  carrier and half after a 120 or 190 ms gap: at 10 and 20 dB, none of 7,040 restarts at 8, 44.1, 48 and 78.125 kHz
+  reported anything else (a hold that followed only the expected place dropped 396 of 440 to `none` at 48 kHz, 20 dB);
+  at 3 dB, 2-5% dropped and locked again.
 - Holds: at 3 dB with nothing else in the band, a held code dropped 5 times in 200 minutes with 750 us at
   78.125 kHz and once in 200 minutes at 48 kHz, each time locking again, and never in 8 minutes at 10 dB; with a
   steady 130 Hz component 3 dB above the code or 134.4 Hz at its power, about once or twice a minute at 3 dB and never

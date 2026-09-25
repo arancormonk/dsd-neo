@@ -43,6 +43,9 @@ enum {
     TURNOFF_LOSS_MS = DSD_ANALOG_DCS_TURNOFF_LOSS_P95_MS,
     /* One 23-bit word at 134.4 bit/s, rounded up. */
     WORD_MS = 172,
+    /* The span a lock survives without holding, DSD_ANALOG_DCS_SPAN_BITS at 134.4 bit/s, rounded
+       up (477 ms). */
+    SPAN_MS = ((DSD_ANALOG_DCS_SPAN_BITS * 10000) + 1343) / 1344,
 };
 
 _Static_assert((int)LOCK_3DB_P95_MS <= (int)LOCK_3DB_SEEDED_MS
@@ -119,6 +122,16 @@ typedef struct {
     send_kind send;      /**< from on */
     send_kind then_send; /**< from switch_at */
     int64_t carrier_off; /**< digital silence from here (INT64_MAX = never) */
+    int64_t carrier_on;  /**< ... until here, when it ends (INT64_MAX = never) */
+    /** From here the carrier is up for only the first flicker_open samples of every
+        flicker_period, digital silence between (INT64_MAX = never). */
+    int64_t flicker_from;
+    int64_t flicker_period;
+    int64_t flicker_open;
+    /* The transmitter starts its word over at another place from rephase_at (INT64_MAX =
+       never): bit_phase jumps to rephase_to, a word position in bits. */
+    int64_t rephase_at;
+    double rephase_to;
     /* One bit error per word: flip word bit flip_bit (flip_step moves it on each repetition),
        and a second one at flip2_bit when flip2 is set. */
     int flip;
@@ -184,6 +197,11 @@ src_init(dcs_src* src, double fs, uint64_t seed, int code, int inverted, double 
     src->send = code >= 0 ? SEND_WORD : SEND_NOTHING;
     src->then_send = SEND_NOTHING;
     src->carrier_off = INT64_MAX;
+    src->carrier_on = INT64_MAX;
+    src->flicker_from = INT64_MAX;
+    src->flicker_period = 1;
+    src->flicker_open = 1;
+    src->rephase_at = INT64_MAX;
     src->flip_from = INT64_MAX;
     src->deemph_alpha = deemph_us > 0.0 ? 1.0 - exp(-1.0 / (fs * deemph_us * 1e-6)) : 1.0;
     src->dc_block = 1;
@@ -244,6 +262,9 @@ src_signalling(dcs_src* src, int64_t n) {
 
 static float
 src_next(dcs_src* src, int64_t n) {
+    if (n == src->rephase_at) {
+        src->bit_phase = src->rephase_to;
+    }
     double v = src_signalling(src, n);
     if (src->voice_gain > 0.0) {
         float voice = synth_speech_next(&src->speech);
@@ -265,7 +286,10 @@ src_next(dcs_src* src, int64_t n) {
     if (src->noise_sigma > 0.0) {
         y += src->noise_sigma * synth_gauss(&src->rng);
     }
-    if (n >= src->carrier_off) {
+    if (n >= src->carrier_off && n < src->carrier_on) {
+        return 0.0f;
+    }
+    if (n >= src->flicker_from && ((n - src->flicker_from) % src->flicker_period) >= src->flicker_open) {
         return 0.0f;
     }
     return (float)(y * src->scale);
@@ -281,6 +305,7 @@ typedef struct {
     int64_t first_wrong;    /**< first block end at which any other code (or a CTCSS tone) was locked */
     int64_t first_unlocked; /**< first block end after first_lock without the lock */
     int64_t first_none;     /**< first block end at which the verdict read NONE */
+    int64_t first_closed;   /**< first block end at which the carrier read closed */
     int64_t dcs_locks;      /**< transitions of the DCS detector into LOCKED */
     int final_state;
 } run_result;
@@ -291,7 +316,7 @@ static dsd_analog_rx_core g_core;
    @p expect_inverted name the code that may lock (-1: none may). */
 static run_result
 run_signal(dcs_src* src, int64_t total, int block, int expect_code, int expect_inverted) {
-    run_result r = {-1, -1, -1, -1, 0, 0};
+    run_result r = {-1, -1, -1, -1, -1, 0, 0};
     float buf[4096];
     assert(block > 0 && block <= (int)(sizeof(buf) / sizeof(buf[0])));
     int prev_dcs_locked = 0;
@@ -321,6 +346,9 @@ run_signal(dcs_src* src, int64_t total, int block, int expect_code, int expect_i
         }
         if (o.state == DSD_ANALOG_TONE_STATE_NONE && r.first_none < 0) {
             r.first_none = n + m;
+        }
+        if (!o.carrier && r.first_closed < 0) {
+            r.first_closed = n + m;
         }
         r.final_state = o.state;
     }
@@ -728,6 +756,125 @@ test_carrier_drop_and_dropout(void) {
     assert(held == 1);
 }
 
+/*
+ * A carrier that keeps dropping out, each time for less than the hangover, never expires, so
+ * only the detector can end a lock under it. The code stops, and from then on the carrier is
+ * up for 20 ms of every 40-180 ms, digital silence between: no window is ever read wholly with
+ * the carrier open again, so the 32-bit loss never runs, and the lock ends on the span since
+ * it last held (64 bits), whatever the rate and block size. A window can still hold the code
+ * up to a word after it stops, so every stop is lost within the span and a word of it (the
+ * loss contract's p95 target and ceiling are for a live carrier). Nothing locks again and the
+ * carrier stays open throughout. A span that ran only on bits read with the carrier open would
+ * stretch with every dropout (0.9 s on one of these, 1.8 s under random flicker). Prints
+ * p50/p95/worst.
+ */
+static void
+test_code_stop_under_a_flickering_carrier(void) {
+    static const int periods_ms[] = {40, 60, 100, 140, 180};
+
+    enum { PERIOD_COUNT = (int)(sizeof(periods_ms) / sizeof(periods_ms[0])), OFFSETS = 5 };
+
+    static double times[RATE_COUNT * PERIOD_COUNT * OFFSETS];
+    int count = 0;
+    for (int ri = 0; ri < RATE_COUNT; ri++) {
+        for (int pi = 0; pi < PERIOD_COUNT; pi++) {
+            for (int oi = 0; oi < OFFSETS; oi++) {
+                const double fs = (double)k_rates[ri];
+                const int code = dsd_dcs_code(((ri * 17) + (pi * 7) + (oi * 3)) % DSD_DCS_CODE_COUNT);
+                const int sent_inverted = (ri + pi + oi) % 2;
+                /* 1 ms blocks, and the 20 ms blocks an RTL stream delivers, alternately. */
+                const int block = (oi % 2 == 0) ? k_rates[ri] / 1000 : k_rates[ri] / 50;
+                dsd_analog_rx_core_init(&g_core);
+                dcs_src src;
+                src_init(&src, fs, 5231001ULL + (uint64_t)((ri * 1009) + (pi * 101) + oi), code, sent_inverted, 10.0,
+                         (oi == 4) ? 750.0 : 75.0);
+                src.switch_at = ms_to_samples(fs, 1500.0 + (double)(oi * 10));
+                src.then_send = SEND_NOTHING;
+                src.flicker_from = src.switch_at;
+                src.flicker_period = ms_to_samples(fs, (double)periods_ms[pi]);
+                src.flicker_open = ms_to_samples(fs, 20.0);
+                int want_code = -1;
+                int want_inverted = -1;
+                expected_name(code, sent_inverted, &want_code, &want_inverted);
+                const run_result r =
+                    run_signal(&src, src.switch_at + ms_to_samples(fs, 1500.0), block, want_code, want_inverted);
+                assert(r.first_wrong < 0);
+                assert(r.first_lock >= 0 && r.first_lock < src.switch_at);
+                /* Every dropout is shorter than the hangover: the carrier never read closed. */
+                assert(r.first_closed < 0);
+                if (r.first_unlocked < 0) {
+                    DSD_FPRINTF(stderr, "stopped code held under a flickering carrier: fs=%d code=%03o period=%d ms\n",
+                                k_rates[ri], (unsigned int)code, periods_ms[pi]);
+                }
+                assert(r.first_unlocked > src.switch_at);
+                const double loss_ms = samples_to_ms(fs, r.first_unlocked - src.switch_at);
+                if (loss_ms > (double)(SPAN_MS + WORD_MS)) {
+                    DSD_FPRINTF(stderr,
+                                "slow loss under a flickering carrier: fs=%d code=%03o period=%d ms -> %.0f ms\n",
+                                k_rates[ri], (unsigned int)code, periods_ms[pi], loss_ms);
+                }
+                assert(loss_ms <= (double)(SPAN_MS + WORD_MS));
+                assert(r.dcs_locks == 1 && r.final_state == DSD_ANALOG_TONE_STATE_NONE);
+                times[count++] = loss_ms;
+            }
+        }
+    }
+    qsort(times, (size_t)count, sizeof(times[0]), compare_doubles);
+    printf("loss under a flickering carrier: p50 %.0f ms, p95 %.0f ms, worst %.0f ms (%d cases; each <= %d ms)\n",
+           times[count / 2], times[(count * 95) / 100], times[count - 1], count, (int)(SPAN_MS + WORD_MS));
+    (void)fflush(stdout);
+}
+
+/*
+ * The same code at another word phase keeps the lock: a radio that re-keys inside the carrier
+ * hangover (a simplex radio with no turn-off tone), or a repeater whose carrier stays up while
+ * another transmitter sends the same code, starts the word over somewhere else. Every shift of
+ * 1 to 22 bits, the bit timing moved by a share of a bit as well, on a continuous carrier and
+ * after gaps of 120 and 190 ms (the hangover is 200 ms): the code stays shown throughout, as
+ * one lock, and never reads "none". After a gap the timing moves by close to half a bit, where
+ * the bit clock takes longest to settle, and the windows read across the gap hold bits of it
+ * for a word, so the new place is read only after the gap, a word and the settling: 57 of the
+ * 64-bit span at 190 ms.
+ */
+static void
+test_same_code_at_another_word_phase_holds(void) {
+    static const double gaps_ms[] = {0.0, 120.0, 190.0};
+    const double fs = 48000.0;
+    for (int gap = 0; gap < 3; gap++) {
+        for (int k = 1; k < DSD_DCS_WORD_BITS; k++) {
+            const int code = dsd_dcs_code(((k * 5) + (gap * 3)) % DSD_DCS_CODE_COUNT);
+            const int sent_inverted = (k + gap) % 2;
+            dsd_analog_rx_core_init(&g_core);
+            dcs_src src;
+            src_init(&src, fs, 5230ULL + (uint64_t)((gap * 100) + k), code, sent_inverted, (k % 2) ? 10.0 : 20.0, 75.0);
+            src.bit_phase = 0.0;
+            const int64_t resume = ms_to_samples(fs, 1500.0);
+            const int64_t gap_from = resume - ms_to_samples(fs, gaps_ms[gap]);
+            if (gap) {
+                src.carrier_off = gap_from;
+                src.carrier_on = resume;
+            }
+            /* Where the word would have been at resume, moved on k bits and a share of one. */
+            const double at = fmod((double)resume * src.baud / fs, (double)DSD_DCS_WORD_BITS);
+            src.rephase_at = resume;
+            const double share = gap ? 0.45 + (0.01 * (double)(k % 10)) : 0.1 * (double)((k * 3) % 10);
+            src.rephase_to = fmod(at + (double)k + share, (double)DSD_DCS_WORD_BITS);
+            int want_code = -1;
+            int want_inverted = -1;
+            expected_name(code, sent_inverted, &want_code, &want_inverted);
+            const run_result r = run_signal(&src, ms_to_samples(fs, 2600.0), 480, want_code, want_inverted);
+            if (r.first_unlocked >= 0 || r.dcs_locks != 1) {
+                DSD_FPRINTF(stderr,
+                            "lost at another word phase: gap=%.0f ms shift=%d bits, unlocked at %.0f ms, %lld locks\n",
+                            gaps_ms[gap], k, samples_to_ms(fs, r.first_unlocked), (long long)r.dcs_locks);
+            }
+            assert(r.first_wrong < 0 && r.first_lock >= 0 && r.first_lock < gap_from);
+            assert(r.first_unlocked < 0 && r.first_none < 0 && r.first_closed < 0);
+            assert(r.dcs_locks == 1);
+        }
+    }
+}
+
 /* ------------------------------------------------------------------------------------------
  * Rejection
  * ---------------------------------------------------------------------------------------- */
@@ -1000,6 +1147,8 @@ main(void) {
     test_code_stop_under_carrier_loses();
     test_turnoff_tone_loses_fast();
     test_carrier_drop_and_dropout();
+    test_code_stop_under_a_flickering_carrier();
+    test_same_code_at_another_word_phase_holds();
     test_steady_component_keeps_the_lock();
     test_first_lock_keeps_the_publication();
     test_other_code_words_never_lock();

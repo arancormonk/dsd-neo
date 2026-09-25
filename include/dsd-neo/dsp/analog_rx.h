@@ -116,15 +116,29 @@ enum {
  * Loss runs from the moment the word stops under a live carrier to the first bit that no longer
  * reports it: 32 bits and the front end's delay, with a p95 target, DSD_ANALOG_DCS_LOSS_P95_MS,
  * and a ceiling, DSD_ANALOG_DCS_LOSS_CEILING_MS. Over 1,000,000 stops at 3 and 10 dB, p95 was
- * at most 328 ms and the slowest 572 ms: in about 5 stops in 100,000 the noise that follows
- * reads as the code within one bit once more, which starts the 32 bits over. The 134.4 Hz
- * turn-off tone a transmitter sends as it unkeys ends a lock sooner, once the code has gone
- * with it: p95 target DSD_ANALOG_DCS_TURNOFF_LOSS_P95_MS, ceiling
- * DSD_ANALOG_DCS_TURNOFF_LOSS_CEILING_MS; over 1,000,000 turn-offs at 3 and 10 dB, p95 was at
- * most 135 ms and the slowest 307 ms. A steady component near 134.4 Hz under a code that is
- * still read (an interferer, a voice holding its pitch) ends no lock at 10 dB; at 3 dB, where
- * the noise now and then costs the code a bit, one at the code's power or 3 dB above it ended
- * one or two locks a minute, each locking again.
+ * at most 328 ms and the slowest 587 ms: in about 6 stops in 100,000 the noise that follows
+ * reads as the code once more (within one bit of the word expected next, or exactly at another
+ * place in it), which starts the 32 bits over. The 134.4 Hz turn-off tone a transmitter sends as
+ * it unkeys ends a lock sooner, once the code has gone with it: p95 target
+ * DSD_ANALOG_DCS_TURNOFF_LOSS_P95_MS, ceiling DSD_ANALOG_DCS_TURNOFF_LOSS_CEILING_MS; over
+ * 1,000,000 turn-offs at 3 and 10 dB, p95 was at most 134 ms and the slowest 335 ms. A steady
+ * component near 134.4 Hz under a code that is still read (an interferer, a voice holding its
+ * pitch) ends no lock at 10 dB; at 3 dB, where the noise now and then costs the code a bit, one
+ * at the code's power or 3 dB above it ended one or two locks a minute, each locking again.
+ *
+ * The same code starting over at another place in its word (a radio re-keying inside the carrier
+ * hangover without a turn-off tone, another transmitter behind a repeater whose carrier stays
+ * up) keeps the lock: at 10 dB or better, none of 7,040 such restarts at 8 to 78.125 kHz, on a
+ * continuous carrier or after a 120 or 190 ms gap, moved by 1-22 bits and any share of a bit,
+ * ever reported anything else; at 3 dB, where the new place must be read exactly, 2-5% dropped
+ * and locked again. The windows read across a dropout hold bits of it for a word, so only
+ * windows read wholly with the carrier open count toward the 32 bits, and a lock that has not
+ * held for 64 bits (476 ms), carrier open or closed, is lost. Under a carrier that keeps dropping
+ * out, each time for less than the hangover, a code that stops is lost within that span and a
+ * word of the stop: over 16,000 stops under random flicker (openings of 1-60 ms between dropouts
+ * of 10-199 ms) at 3 and 10 dB, p95 was at most 546 ms and the slowest 612 ms, past the
+ * live-carrier ceiling. A carrier that comes back from a dropout without the code loses it the
+ * span after it last held, less the dropout: p95 367 ms after a 120 ms dropout.
  *
  * Speech louder than the code is outside the contract. Transmitter-filtered speech 10 and 20 dB
  * above the code never lost a lock in 12 minutes at each level, but unfiltered speech 10 dB

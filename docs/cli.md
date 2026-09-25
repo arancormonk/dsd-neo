@@ -783,18 +783,27 @@ detection it only reports: it never mutes or gates audio, it needs no setting, a
   de-emphasis, which smears a code's isolated bits. Lock time in noise has no absolute bound. The tests hold every code
   in both polarities within 520 ms at 10 dB and 700 ms at 3 dB on fixed seeds. A code that stops under a live carrier is
   dropped within 350 ms on 95 stops in 100 (32 bits and the front end's delay), with a 600 ms ceiling above the slowest
-  of 1,000,000 stops (572 ms); the 134.4 Hz turn-off tone a transmitter sends as it unkeys drops it sooner, within
-  150 ms on 95 in 100 (typically 80 ms), with a 350 ms ceiling (the slowest of 1,000,000 took 307 ms). The ceilings are
+  of 1,000,000 stops (587 ms); the 134.4 Hz turn-off tone a transmitter sends as it unkeys drops it sooner, within
+  150 ms on 95 in 100 (typically 80 ms), with a 350 ms ceiling (the slowest of 1,000,000 took 335 ms). The ceilings are
   in `<dsd-neo/dsp/analog_rx.h>`. One wrong bit in every word keeps the lock; two do not. A transmitter
   a little off 134.4 bit/s (some send 134.3) locks and holds. A carrier with no code reads `detecting` until 500 ms of
   it and `none` after, so a code that takes longer than that to confirm, near 3 dB, shows `none` first.
 - Holding: the turn-off tone ends a lock only once the code has gone too, so a steady component near 134.4 Hz under a
   code that is still read (an interferer, a voice holding its pitch) leaves the lock alone: at 10 dB it never ended one,
-  and at 3 dB, where the noise now and then costs the code a bit, a component at the code's power or 3 dB above it
-  ended one or two a minute, each confirmed again. Transmitter-filtered speech 10 and 20 dB
-  above the code never lost a lock in the long runs. Unfiltered speech 10 dB above the code (a voice fundamental in the
-  band, which a transmitter's voice high-pass removes) is outside these bounds: it lost the lock about 8 times a
-  minute, each time confirming the code again, so the code showed 94% of the time.
+  and at 3 dB, where the noise now and then costs the code a bit, a component at the code's power or 3 dB above it ended
+  one or two a minute, each confirmed again. The same code starting over at another place in its word (a radio that
+  re-keys inside the 200 ms hangover without a turn-off tone, another transmitter behind a repeater whose carrier stays
+  up) keeps the code shown: at 10 dB or better it never showed anything else in 7,040 such restarts, on a steady carrier
+  or after a gap of up to 190 ms; at 3 dB, where the new place has to be read without an error, 2-5 in 100 showed `none`
+  briefly before the code was confirmed again. What is read across a dropout says nothing about the code, so a word that
+  holds any of it never counts toward the 32 bits, but time still runs: a code is dropped 64 bits (476 ms) after it was
+  last read, carrier open or closed. A code that stops under a carrier that keeps dropping out (squelch chatter after a
+  transmission, say) is dropped within about 650 ms (over 16,000 such stops, 95 in 100 within 546 ms, the slowest
+  612 ms), and a carrier that comes back from a dropout without the code drops it about 365 ms after it returns from a
+  120 ms dropout. Transmitter-filtered speech 10 and 20 dB above the code never lost a lock in the long runs. Unfiltered
+  speech 10 dB above the code (a voice fundamental in the band, which a transmitter's voice high-pass removes) is
+  outside these bounds: it lost the lock about 8 times a minute, each time confirming the code again, so the code showed
+  94% of the time.
 - Rejection: in the tests random bits, the Golay code words that carry no standard code, every CTCSS tone and speech
   never read as a code. A signal one bit from a standard code's word may read as that code, the way DCS decoders
   tolerate a bit error; one two bits from every code's word does not. Noise reads as a code twice in a row about once
