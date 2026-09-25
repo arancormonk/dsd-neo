@@ -63,6 +63,7 @@
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #include <dsd-neo/protocol/provoice/provoice.h>
 #include <dsd-neo/runtime/airspy_config.h>
+#include <dsd-neo/runtime/analog_channel.h>
 #include <dsd-neo/runtime/cli.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/control_pump.h>
@@ -1166,6 +1167,29 @@ dsd_engine_setup_open_audio_paths(dsd_opts* opts, dsd_state* state) {
     return 0;
 }
 
+/*
+ * An explicit analog channel width, from --nfm-bandwidth-hz or [analog] nfm_bandwidth_hz, has to fit the DSP rate the
+ * stream will run at. For an RTL-SDR or rtl_tcp input that rate is the DSP bandwidth the input spec (or [input]
+ * rtl_bw_khz) sets, known here, so a width it cannot filter is refused before the device opens, with the validator's
+ * actionable text. Inputs whose device may force another rate (SoapySDR, Airspy) and I/Q replay, whose sidecar sets
+ * the rate, are checked where the rate is final, at stream start (rtl_demod_finalize_analog_channel()).
+ */
+static int
+dsd_engine_setup_check_analog_width(const dsd_opts* opts) {
+    const int width_hz = dsd_opts_analog_width_hz(opts);
+    if (!dsd_opts_is_analog_family(opts) || width_hz <= 0 || opts->iq_replay_active
+        || !(dsd_opts_audio_in_dev_is_rtl_spec(opts->audio_in_dev)
+             || dsd_opts_audio_in_dev_is_rtltcp_spec(opts->audio_in_dev))) {
+        return 0;
+    }
+    char err[DSD_ANALOG_ERROR_TEXT_MAX];
+    if (dsd_analog_width_check(opts->analog_demod, width_hz, opts->rtl_dsp_bw_khz * 1000, err, sizeof err) == 0) {
+        return 0;
+    }
+    LOG_ERROR("%s.\n", err);
+    return -1;
+}
+
 static int
 dsd_engine_setup_io(dsd_opts* opts, dsd_state* state) {
     if (!opts || !state) {
@@ -1195,6 +1219,9 @@ dsd_engine_setup_io(dsd_opts* opts, dsd_state* state) {
         return -1;
     }
     if (dsd_engine_setup_parse_rtl_input(opts, state) != 0) {
+        return -1;
+    }
+    if (dsd_engine_setup_check_analog_width(opts) != 0) {
         return -1;
     }
     dsd_engine_setup_parse_pulse_input(opts);

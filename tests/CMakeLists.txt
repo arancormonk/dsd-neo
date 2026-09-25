@@ -5876,6 +5876,29 @@ set_tests_properties(
     PROPERTIES WORKING_DIRECTORY "${_DSD_BOOTSTRAP_FIXTURE_DIR}" WILL_FAIL TRUE
 )
 
+# Issue #525: an explicit NFM width the input's DSP bandwidth cannot filter is refused
+# before the device opens, with the validator's actionable text. rtl_tcp takes its DSP
+# bandwidth from the input spec, so no device or server is needed: nothing listens on
+# port 1, and a run that went on to open the stream would print the stream failure
+# instead of the refusal.
+if(DSD_HAS_RADIO)
+    add_test(
+        NAME RUNTIME_ANALOG_WIDTH_RATE_REFUSED
+        COMMAND
+            $<TARGET_FILE:dsd-neo> --frontend none -fA -i
+            rtltcp:127.0.0.1:1:851.375M:0:0:24 --nfm-bandwidth-hz 25000 -o null
+    )
+    set_tests_properties(
+        RUNTIME_ANALOG_WIDTH_RATE_REFUSED
+        PROPERTIES
+            ENVIRONMENT "DSD_NEO_NO_BOOTSTRAP=1"
+            PASS_REGULAR_EXPRESSION
+                "NFM bandwidth 25 kHz does not fit the 24 kHz DSP rate [(]the largest width it fits is 20[.]4 kHz[)]; set the RTL DSP bandwidth to 48 kHz"
+            FAIL_REGULAR_EXPRESSION "radio stream"
+            TIMEOUT 30
+    )
+endif()
+
 # P25 helper tests
 add_executable(dsd-neo_test_p25_12_list protocol/p25/test_p25_12_list.c)
 target_include_directories(
