@@ -11,49 +11,62 @@
  * has the words). Before it reaches this detector the waveform has been through the receiver's
  * DC blocking: the demodulator's (a one-pole high-pass, about 3.7 Hz at 48 kHz), a sound card's
  * coupling on PCM input, and the front end's own 10 Hz DC blocker. Each makes the level of a run
- * of equal bits sag toward zero. So, per decimated sample:
+ * of equal bits sag toward zero. A carrier off frequency adds a DC level that steps in with the
+ * carrier, and an input with no DC block ahead of the front end (a DC-coupled PCM source) keeps
+ * all of it. So, per decimated sample:
  *
- *   1. Re-pole: the front end's DC blocker is known exactly, so it is undone and a 0.5 Hz pole
- *      put in its place, which keeps the removal of any DC offset but not the sag.
- *   2. Integrate over each bit (a boxcar of one bit), the matched filter for NRZ, read at the end
- *      of each bit.
- *   3. Bit clock: the difference of two consecutive bit integrals is a triangle that peaks at
- *      the end of a bit a transition started, whatever the sag. Its energy, averaged over about
- *      eight bits, has a component at the bit rate whose angle says where in the bit those
- *      peaks fall (square-law timing recovery); each bit end is steered halfway onto it. Being
- *      an average over every phase of the bit, it has no false lock half a bit off, which an
- *      early/late gate on the triangle has.
+ *   1. Re-pole: the front end's DC blocker is known exactly, so it is undone twice over. The
+ *      re-poled stream puts a 0.5 Hz pole in its place, which barely sags a run but still
+ *      removes a DC offset, slowly (about 0.3 s per 1/e); the balance stream puts a 0.01 Hz
+ *      pole there, which leaves an offset all but constant over the two words a lock is read
+ *      from.
+ *   2. Integrate each stream over each bit (a boxcar of one bit), the matched filter for NRZ,
+ *      read at the end of each bit.
+ *   3. Bit clock: the difference of two consecutive bit integrals of the re-poled stream is a
+ *      triangle that peaks at the end of a bit a transition started, whatever the sag. Its
+ *      energy, averaged over about eight bits, has a component at the bit rate whose angle says
+ *      where in the bit those peaks fall (square-law timing recovery); each bit end is steered
+ *      halfway onto it. Being an average over every phase of the bit, it has no false lock half a
+ *      bit off, which an early/late gate on the triangle has.
  *   4. Slice with decision feedback, once per droop hypothesis. A one-pole high-pass of time
  *      constant tau takes the level of each bit toward zero by d = e^(-T/tau) per bit, and the
  *      level it has taken away follows the bits decided so far. Each slicer predicts that
- *      baseline under its own d (none, and three sags that cover the demodulator's DC block
- *      at 8 to 78 kHz and a sound card's 10 Hz coupling) and adds it back before deciding. A
- *      plain slicer loses over 1% of bits at 3 dB in-band under the demodulator's DC block;
- *      the matching hypothesis about 0.5%.
+ *      baseline under its own d (none, and three sags that cover the demodulator's DC block at 8
+ *      to 78 kHz and a sound card's 10 Hz coupling) and adds it back before deciding. A plain
+ *      slicer loses over 1% of bits at 3 dB in-band under the demodulator's DC block; the
+ *      matching hypothesis about 0.5%. These slicers read the re-poled stream, so a DC step
+ *      larger than the code holds every one of them on one polarity until the step has decayed
+ *      below the code's level. The balance slicer, fifth, reads the balance stream: every
+ *      supported code's word carries 11 or 12 ones, so its level averages to within 1/23 of zero
+ *      over any 23 bits, and the slicer decides each of its two 23-bit windows against that
+ *      window's own mean of bit integrals, which carries any offset that holds over a word and
+ *      next to nothing of the code.
  *   5. Acquire: a slicer that reads a supported code's word twice in a row -- its newest 23
  *      decisions and the 23 before them are one rotation of that word, in either polarity,
- *      exactly in one window and within one bit in the other -- locks the code's class under
- *      its canonical name (dsd_dcs_match()). Asking for both windows exactly would lock at 3 dB
- *      only when 46 bits in a row come through clean, which several starts in a hundred do not
- *      manage within 700 ms; one bit of slack in either window makes that rare. Random bits
- *      read that way about once in 6 x 10^8 bits per slicer, some 50 days of noise at
- *      134.4 bit/s; with four slicers, at most once in 1.6 x 10^8 bits, some 13 days.
- *   6. Hold: every bit the expected window rotates by one; the lock holds while some slicer
- *      reads it within one bit (a slip of one bit either way is followed), or reads the locked
- *      class exactly at another place in the word, which it then follows: the same code
- *      starting over elsewhere in its word, as a radio that re-keys inside the carrier
- *      hangover or another transmitter behind a repeater does. It is lost after 32 bits
- *      without a hold, or at the first bit without once the 134.4 Hz turn-off tone has carried
- *      over a third of the band's power for two bits. A bit integral over exactly one period
- *      of 134.4 Hz is zero, so the tone reads as nothing to the slicers; a correlator over the
- *      newest six bits finds it. The tone ends a lock only once the code has gone too: a
- *      steady component near 134.4 Hz under a code the slicers still read (an interferer, a
- *      voice that holds the pitch) leaves the lock alone. A window that holds a bit read with
- *      the carrier closed can hold no word, so the 32 bits count only windows read wholly
- *      with the carrier open, and a lock that has not held for 64 bits (476 ms), with the
- *      carrier open or closed, is lost: enough for the same code to come back at another
- *      place after a dropout up to the hangover (the gap, a word to clear the windows of it
- *      and the bit clock's settling), and a bound on how long a stopped code stays shown
+ *      exactly in one window and within one bit in the other -- locks the code's class under its
+ *      canonical name (dsd_dcs_match()). Asking for both windows exactly would lock at 3 dB only
+ *      when 46 bits in a row come through clean, which several starts in a hundred do not manage
+ *      within 700 ms; one bit of slack in either window makes that rare. Noise reads that way
+ *      about once in 6 x 10^8 bits per droop slicer, some 50 days at 134.4 bit/s, and about 2.3
+ *      times as often through the balance slicer, whose windows are balanced like a code's (once
+ *      in 2.7 x 10^8 bits, some 23 days); with all five, at most once in 10^8 bits, some 8 days.
+ *   6. Hold: every bit the expected window rotates by one; the lock holds while some slicer reads
+ *      it within one bit, the balance slicer exactly (a slip of one bit either way is followed;
+ *      noise the balance slicer reads within a bit of the expected word held a stopped code past
+ *      450 ms about twice as often as without it), or reads the locked class exactly at another
+ *      place in the word, which it then follows: the same code starting over elsewhere in its
+ *      word, as a radio that re-keys inside the carrier hangover or another transmitter behind a
+ *      repeater does. It is lost after 32 bits without a hold, or at the first bit without once
+ *      the 134.4 Hz turn-off tone has carried over a third of the band's power for two bits. A
+ *      bit integral over exactly one period of 134.4 Hz is zero, so the tone reads as nothing to
+ *      the slicers; a correlator over the newest six bits finds it. The tone ends a lock only
+ *      once the code has gone too: a steady component near 134.4 Hz under a code the slicers
+ *      still read (an interferer, a voice that holds the pitch) leaves the lock alone. A window
+ *      that holds a bit read with the carrier closed can hold no word, so the 32 bits count only
+ *      windows read wholly with the carrier open, and a lock that has not held for 64 bits
+ *      (476 ms), with the carrier open or closed, is lost: enough for the same code to come back
+ *      at another place after a dropout up to the hangover (the gap, a word to clear the windows
+ *      of it and the bit clock's settling), and a bound on how long a stopped code stays shown
  *      under a carrier that keeps dropping out, whose windows are never read wholly open.
  *
  * A carrier with no code reads ACQUIRING until 500 ms of it have been evaluated, then NONE,
@@ -76,10 +89,13 @@
 enum {
     DCS_WORD_BITS = DSD_DCS_WORD_BITS,
     DCS_RING_MASK = DSD_ANALOG_DCS_RING - 1,
+    /* The balance slicer's place in the slicer array, after the droop slicers. */
+    DCS_BALANCE = DSD_ANALOG_DCS_HYPOTHESES,
 };
 
 _Static_assert((DSD_ANALOG_DCS_RING & (DSD_ANALOG_DCS_RING - 1)) == 0, "the sample ring is a power of two");
 _Static_assert(DSD_ANALOG_DCS_HISTORY_BITS == 2 * DSD_DCS_WORD_BITS, "each slicer keeps exactly two words");
+_Static_assert(DSD_ANALOG_DCS_SLICERS == DSD_ANALOG_DCS_HYPOTHESES + 1, "the balance slicer follows the droop slicers");
 
 /* The longest bit integral the ring must serve: every decimated rate is below twice the target
    rate (fs / floor(fs / 2400) < 4800 Hz), where a bit at 134.4 bit/s is under 36 samples. */
@@ -139,13 +155,14 @@ dcs_popcount23(uint32_t x) {
 
 static void
 dcs_clear_slicers(dsd_analog_dcs* det) {
-    for (int j = 0; j < DSD_ANALOG_DCS_HYPOTHESES; j++) {
+    for (int j = 0; j < DSD_ANALOG_DCS_SLICERS; j++) {
         dsd_analog_dcs_slicer* s = &det->slicer[j];
         s->baseline = 0.0;
         s->amp = 0.0;
         s->bits = 0U;
         s->count = 0;
     }
+    DSD_MEMSET(det->balance_integrals, 0, sizeof(det->balance_integrals));
 }
 
 static void
@@ -157,6 +174,8 @@ dcs_reset(void* ctx) {
     det->x1 = 0.0;
     det->u1 = 0.0;
     DSD_MEMSET(det->u, 0, sizeof(det->u));
+    det->v1 = 0.0;
+    DSD_MEMSET(det->v, 0, sizeof(det->v));
     det->n = 0;
     det->next_bit = det->samples_per_bit;
     det->clock_re = 0.0;
@@ -210,6 +229,7 @@ dcs_configure(void* ctx, double rate_hz) {
     if (det->rate_hz > 0.0) {
         det->fe_pole = exp(-2.0 * M_PI * DSD_ANALOG_RX_DC_CORNER_HZ / det->rate_hz);
         det->slow_pole = exp(-2.0 * M_PI * DSD_ANALOG_DCS_DC_CORNER_HZ / det->rate_hz);
+        det->balance_pole = exp(-2.0 * M_PI * DSD_ANALOG_DCS_BALANCE_CORNER_HZ / det->rate_hz);
         const double w = 2.0 * M_PI * DSD_ANALOG_DCS_BAUD / det->rate_hz;
         det->step_re = cos(w);
         det->step_im = -sin(w);
@@ -219,33 +239,36 @@ dcs_configure(void* ctx, double rate_hz) {
         det->slicer[j].droop = d;
         det->slicer[j].gain = (d < 1.0) ? (1.0 - d) / -log(d) : 1.0;
     }
+    det->slicer[DCS_BALANCE].droop = 1.0;
+    det->slicer[DCS_BALANCE].gain = 1.0;
     dcs_reset(det);
 }
 
-/* The bit integral ending at sample index @p k (the newest box_len re-poled samples). */
+/* The bit integral of the stream in @p ring (det->u or det->v) ending at sample index @p k: its
+   newest box_len samples. */
 static double
-dcs_box_at(const dsd_analog_dcs* det, int64_t k) {
+dcs_box_at(const dsd_analog_dcs* det, const double* ring, int64_t k) {
     double sum = 0.0;
     for (int i = 0; i < det->box_len; i++) {
-        sum += det->u[(uint64_t)(k - i) & (uint64_t)DCS_RING_MASK];
+        sum += ring[(uint64_t)(k - i) & (uint64_t)DCS_RING_MASK];
     }
     return sum;
 }
 
-/* The bit integral ending at fractional sample time @p t. */
+/* The bit integral of the stream in @p ring ending at fractional sample time @p t. */
 static double
-dcs_box(const dsd_analog_dcs* det, double t) {
+dcs_box(const dsd_analog_dcs* det, const double* ring, double t) {
     const double k = floor(t);
     const double f = t - k;
     const int64_t i = (int64_t)k;
-    return ((1.0 - f) * dcs_box_at(det, i)) + (f * dcs_box_at(det, i + 1));
+    return ((1.0 - f) * dcs_box_at(det, ring, i)) + (f * dcs_box_at(det, ring, i + 1));
 }
 
-/* The difference of the bit integrals ending at sample index @p k and a bit before it: a
-   triangle that peaks where a transition began the later of the two. */
+/* The difference of the re-poled bit integrals ending at sample index @p k and a bit before
+   it: a triangle that peaks where a transition began the later of the two. */
 static double
 dcs_edge_at(const dsd_analog_dcs* det, int64_t k) {
-    return dcs_box_at(det, k) - dcs_box_at(det, k - det->box_len);
+    return dcs_box_at(det, det->u, k) - dcs_box_at(det, det->u, k - det->box_len);
 }
 
 /* Where in the bit the edges fall, as a share of a bit in the phasor's reference (sample n is
@@ -288,6 +311,35 @@ dcs_slice(dsd_analog_dcs_slicer* s, double integral) {
     s->amp = (s->amp > 0.0) ? s->amp + (k_amp_alpha * (mag - s->amp)) : mag;
     s->baseline = (s->droop * s->baseline) + ((1.0 - s->droop) * (bit ? s->amp : -s->amp));
     s->bits = (s->bits >> 1) | ((uint64_t)bit << (DSD_ANALOG_DCS_HISTORY_BITS - 1));
+    if (s->count < DSD_ANALOG_DCS_HISTORY_BITS) {
+        s->count++;
+    }
+}
+
+/* The balance slicer's decisions once a new bit integral of the balance stream arrives (see
+   step 4): each of its two words is sliced against that word's own mean, which carries any DC
+   offset that holds over the word. */
+static void
+dcs_slice_balance(dsd_analog_dcs* det, double integral) {
+    DSD_MEMMOVE(det->balance_integrals, &det->balance_integrals[1],
+                sizeof(det->balance_integrals) - sizeof(det->balance_integrals[0]));
+    det->balance_integrals[DSD_ANALOG_DCS_HISTORY_BITS - 1] = integral;
+    uint64_t bits = 0U;
+    for (int w = 0; w < 2; w++) {
+        const double* word = &det->balance_integrals[w * DCS_WORD_BITS];
+        double mean = 0.0;
+        for (int i = 0; i < DCS_WORD_BITS; i++) {
+            mean += word[i];
+        }
+        mean /= (double)DCS_WORD_BITS;
+        for (int i = 0; i < DCS_WORD_BITS; i++) {
+            if (word[i] > mean) {
+                bits |= (uint64_t)1 << ((w * DCS_WORD_BITS) + i);
+            }
+        }
+    }
+    dsd_analog_dcs_slicer* s = &det->slicer[DCS_BALANCE];
+    s->bits = bits;
     if (s->count < DSD_ANALOG_DCS_HISTORY_BITS) {
         s->count++;
     }
@@ -353,7 +405,7 @@ dcs_read_twice(const dsd_analog_dcs_slicer* s, uint32_t* word, int* code, int* i
    locked class again does not count: the hold is its business. */
 static int
 dcs_acquire(dsd_analog_dcs* det) {
-    for (int j = 0; j < DSD_ANALOG_DCS_HYPOTHESES; j++) {
+    for (int j = 0; j < DSD_ANALOG_DCS_SLICERS; j++) {
         uint32_t word = 0U;
         int code = -1;
         int inverted = 0;
@@ -370,27 +422,30 @@ dcs_acquire(dsd_analog_dcs* det) {
 }
 
 /* Whether some slicer reads the expected window, or one slipped a bit either way, within the
-   hold distance, and follows a slip; or reads the locked class exactly at another place in the
-   word, and follows it there. The same code can start over anywhere in its word under a held
-   lock: a radio that re-keys inside the carrier hangover, or another transmitter behind a
-   repeater whose carrier stays up. */
+   hold distance (the balance slicer exactly), and follows a slip; or reads the locked class
+   exactly at another place in the word, and follows it there. The same code can start over
+   anywhere in its word under a held lock: a radio that re-keys inside the carrier hangover, or
+   another transmitter behind a repeater whose carrier stays up. The balance slicer's windows
+   are balanced like a code's even in noise, and with a bit of slack the noise after a stop
+   held a stopped code about twice as often (see step 6). */
 static int
 dcs_hold(dsd_analog_dcs* det) {
     static const int k_slips[] = {0, 1, -1};
     for (int si = 0; si < 3; si++) {
         const uint32_t expected = dcs_rotr(det->expected, k_slips[si]);
-        for (int j = 0; j < DSD_ANALOG_DCS_HYPOTHESES; j++) {
+        for (int j = 0; j < DSD_ANALOG_DCS_SLICERS; j++) {
             const dsd_analog_dcs_slicer* s = &det->slicer[j];
             if (s->count < DCS_WORD_BITS) {
                 continue;
             }
-            if (dcs_popcount23(dcs_window(s) ^ expected) <= DSD_ANALOG_DCS_HOLD_DISTANCE) {
+            const int distance = (j == DCS_BALANCE) ? 0 : DSD_ANALOG_DCS_HOLD_DISTANCE;
+            if (dcs_popcount23(dcs_window(s) ^ expected) <= distance) {
                 det->expected = expected;
                 return 1;
             }
         }
     }
-    for (int j = 0; j < DSD_ANALOG_DCS_HYPOTHESES; j++) {
+    for (int j = 0; j < DSD_ANALOG_DCS_SLICERS; j++) {
         const dsd_analog_dcs_slicer* s = &det->slicer[j];
         if (s->count < DCS_WORD_BITS) {
             continue;
@@ -489,10 +544,11 @@ static void
 dcs_read_bit(dsd_analog_dcs* det) {
     const int open = det->bit_open;
     det->bit_open = 0;
-    const double integral = dcs_box(det, det->next_bit);
+    const double integral = dcs_box(det, det->u, det->next_bit);
     for (int j = 0; j < DSD_ANALOG_DCS_HYPOTHESES; j++) {
         dcs_slice(&det->slicer[j], integral);
     }
+    dcs_slice_balance(det, dcs_box(det, det->v, det->next_bit));
     det->bits_decided++;
     if (!open) {
         det->since_frozen = 0;
@@ -520,9 +576,12 @@ dcs_read_bit(dsd_analog_dcs* det) {
 static void
 dcs_push_sample(dsd_analog_dcs* det, double x, int freeze) {
     const double u = (det->slow_pole * det->u1) + x - (det->fe_pole * det->x1);
+    const double v = (det->balance_pole * det->v1) + x - (det->fe_pole * det->x1);
     det->x1 = x;
     det->u1 = u;
+    det->v1 = v;
     det->u[(uint64_t)det->n & (uint64_t)DCS_RING_MASK] = u;
+    det->v[(uint64_t)det->n & (uint64_t)DCS_RING_MASK] = v;
     if (!freeze) {
         /* The clock hears the edges only while the carrier is open. */
         const double edge = dcs_edge_at(det, det->n);

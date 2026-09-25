@@ -51,8 +51,8 @@ enum {
     RESET_QUIET_MS = 330,
     /* A sound card's AC coupling on PCM input (docs/cli.md "Received code"), outside the timing
        contract at 3 dB: its own p95 pin there, above the long-run sweeps' p95 at 48 kHz with
-       75 us (502 ms), and a per-start pin on the fixed seeds more than a word (172 ms) above
-       their slowest (698 ms). */
+       75 us (483 ms), and a per-start pin on the fixed seeds more than a word (172 ms) above
+       their slowest (683 ms). */
     COUPLING_HZ = 10,
     LOCK_COUPLED_3DB_P95_MS = 550,
     LOCK_COUPLED_3DB_SEEDED_MS = 1000,
@@ -153,6 +153,9 @@ typedef struct {
     int flip2_bit;
     int64_t flip_from;
     /* Receiver model. */
+    /** A DC level on the discriminator's output from @c on: a carrier off frequency (the
+        transmitter's error or the receiver's) steps it in with the carrier. */
+    double offset;
     double deemph_alpha; /**< one-pole de-emphasis; 1 = off */
     double deemph_y;
     double dc; /**< the DC block's state */
@@ -226,9 +229,14 @@ src_init(dcs_src* src, double fs, uint64_t seed, int code, int inverted, double 
 }
 
 /* PCM input: audio a receiver demodulated and de-emphasised, through a sound card whose AC
-   coupling is a one-pole high-pass at @p corner_hz, in place of the demodulator's DC block. */
+   coupling is a one-pole high-pass at @p corner_hz, in place of the demodulator's DC block; or,
+   with @p corner_hz 0, a DC-coupled input with no DC removal ahead of the front end at all. */
 static void
 src_couple(dcs_src* src, double corner_hz) {
+    if (corner_hz <= 0.0) {
+        src->dc_block = 0;
+        return;
+    }
     src->dc_k = 1.0 - exp(-2.0 * M_PI * corner_hz / src->fs);
 }
 
@@ -289,6 +297,9 @@ src_next(dcs_src* src, int64_t n) {
         src->bit_phase = src->rephase_to;
     }
     double v = src_signalling(src, n);
+    if (n >= src->on) {
+        v += src->offset;
+    }
     if (src->voice_gain > 0.0) {
         float voice = synth_speech_next(&src->speech);
         if (src->voice_filtered) {
@@ -384,18 +395,29 @@ expected_name(int code, int inverted, int* out_code, int* out_inverted) {
     assert(dsd_dcs_canonical(code, inverted, out_code, out_inverted) == 0);
 }
 
+/** @brief How the receiver hands the code to the detector, beyond the noise and de-emphasis. */
+typedef struct {
+    /** 1: PCM input through a sound card's coupling at couple_hz (0 Hz: DC-coupled) in place of
+        the demodulator's DC block (src_couple()). */
+    int pcm;
+    double couple_hz;
+    double offset; /**< DC step at the code's onset (dcs_src::offset) */
+} receive_path;
+
 /* Lock time, from the onset of the word, of @p code in @p inverted polarity, through the
-   demodulator's DC block or, when @p couple_hz is positive, a sound card's coupling with that
-   corner (src_couple()). Asserts nothing else ever locked; returns -1 if it never locked within
-   @p watch_ms. */
+   demodulator's DC block or the PCM path @p path names (NULL: the demodulator's DC block, no
+   offset). Asserts nothing else ever locked; returns -1 if it never locked within @p watch_ms. */
 static double
-lock_time_through_ms(double fs, int code, int inverted, double snr_db, double deemph_us, double couple_hz,
+lock_time_through_ms(double fs, int code, int inverted, double snr_db, double deemph_us, const receive_path* path,
                      uint64_t seed, double onset_ms, double watch_ms) {
     dsd_analog_rx_core_init(&g_core);
     dcs_src src;
     src_init(&src, fs, seed, code, inverted, snr_db, deemph_us);
-    if (couple_hz > 0.0) {
-        src_couple(&src, couple_hz);
+    if (path && path->pcm) {
+        src_couple(&src, path->couple_hz);
+    }
+    if (path) {
+        src.offset = path->offset;
     }
     src.on = ms_to_samples(fs, onset_ms);
     int want_code = -1;
@@ -418,7 +440,7 @@ lock_time_through_ms(double fs, int code, int inverted, double snr_db, double de
 static double
 lock_time_ms(double fs, int code, int inverted, double snr_db, double deemph_us, uint64_t seed, double onset_ms,
              double watch_ms) {
-    return lock_time_through_ms(fs, code, inverted, snr_db, deemph_us, 0.0, seed, onset_ms, watch_ms);
+    return lock_time_through_ms(fs, code, inverted, snr_db, deemph_us, NULL, seed, onset_ms, watch_ms);
 }
 
 static int
@@ -528,14 +550,14 @@ test_codes_lock_through_a_sound_card_coupling(void) {
     static const int bounds[] = {LOCK_10DB_MS, LOCK_COUPLED_3DB_SEEDED_MS};
     static const int p95s[] = {0, LOCK_COUPLED_3DB_P95_MS};
     static const int code_steps[] = {2, 1};
+    const receive_path coupling = {1, (double)COUPLING_HZ, 0.0};
     for (int si = 0; si < 2; si++) {
         int count = 0;
         for (int i = 0; i < DSD_DCS_CODE_COUNT; i += code_steps[si]) {
             for (int inverted = 0; inverted < 2; inverted++) {
                 const uint64_t seed = 524000ULL + (uint64_t)(i * 8 + inverted * 4 + si);
-                times[count++] =
-                    lock_time_through_ms(48000.0, dsd_dcs_code(i), inverted, snrs[si], 75.0, (double)COUPLING_HZ, seed,
-                                         300.0 + (double)(i % 7), (double)bounds[si] + 150.0);
+                times[count++] = lock_time_through_ms(48000.0, dsd_dcs_code(i), inverted, snrs[si], 75.0, &coupling,
+                                                      seed, 300.0 + (double)(i % 7), (double)bounds[si] + 150.0);
             }
         }
         char what[96];
@@ -543,6 +565,67 @@ test_codes_lock_through_a_sound_card_coupling(void) {
                      (int)COUPLING_HZ, snrs[si]);
         check_bound(what, times, count, bounds[si], p95s[si]);
     }
+}
+
+/*
+ * A carrier off frequency (the transmitter's error or the receiver's) reads as a DC level on the
+ * discriminator's output, which steps in with the carrier. A DC-coupled PCM input keeps all of
+ * it: no DC removal ahead of the front end, whose 10 Hz blocker the detector undoes, so the
+ * re-poled stream carries the step for about 0.3 s per 1/e, and a step larger than the code held
+ * every droop slicer on one polarity well past the 10 dB bound (at twice the code's level, 19,990
+ * of 20,000 starts took longer than 520 ms, half of them longer than 617 ms). The balance slicer
+ * slices each word against its own mean, so a level that holds over a word costs it nothing. At
+ * 10 dB, every second code in both polarities at 48 kHz locks within the 10 dB bound through a
+ * DC-coupled input with a step at its onset of 1, 2 and 4 times its own level, up or down; so
+ * does the RTL path at 8 kHz, where the demodulator's DC block (0.6 Hz) lets a step linger
+ * longest, with a step of 4 times. At 3 dB, every code in both polarities through a DC-coupled
+ * input with a 4 times step meets the 3 dB p95 target, and every start the per-start pin of these
+ * seeds.
+ */
+static void
+test_codes_lock_through_a_frequency_offset(void) {
+    static double times[3 * DSD_DCS_CODE_COUNT];
+    static const double steps[] = {1.0, 2.0, 4.0};
+    int count = 0;
+    for (int k = 0; k < 3; k++) {
+        for (int i = 0; i < DSD_DCS_CODE_COUNT; i += 2) {
+            for (int inverted = 0; inverted < 2; inverted++) {
+                const double sign = ((i / 2) % 2) ? -1.0 : 1.0;
+                const receive_path dc_coupled = {1, 0.0, sign * steps[k] * DCS_AMP};
+                const uint64_t seed = 525000ULL + (uint64_t)(k * 1000 + i * 4 + inverted);
+                times[count++] = lock_time_through_ms(48000.0, dsd_dcs_code(i), inverted, 10.0, 75.0, &dc_coupled, seed,
+                                                      300.0 + (double)(i % 7), (double)LOCK_10DB_MS + 150.0);
+            }
+        }
+    }
+    check_bound("lock through a DC-coupled input, a 1-4x step at the onset, 48 kHz, 10 dB in-band", times, count,
+                LOCK_10DB_MS, 0);
+
+    count = 0;
+    for (int i = 0; i < DSD_DCS_CODE_COUNT; i += 2) {
+        for (int inverted = 0; inverted < 2; inverted++) {
+            const double sign = ((i / 2) % 2) ? -1.0 : 1.0;
+            const receive_path rtl = {0, 0.0, sign * 4.0 * DCS_AMP};
+            const uint64_t seed = 526000ULL + (uint64_t)(i * 4 + inverted);
+            times[count++] = lock_time_through_ms(8000.0, dsd_dcs_code(i), inverted, 10.0, k_deemph_us[(i / 8) % 2],
+                                                  &rtl, seed, 250.0 + (double)(i % 5), (double)LOCK_10DB_MS + 150.0);
+        }
+    }
+    check_bound("lock through the demodulator's DC block, a 4x step at the onset, 8 kHz, 10 dB in-band", times, count,
+                LOCK_10DB_MS, 0);
+
+    count = 0;
+    for (int i = 0; i < DSD_DCS_CODE_COUNT; i++) {
+        for (int inverted = 0; inverted < 2; inverted++) {
+            const double sign = (i % 2) ? -1.0 : 1.0;
+            const receive_path dc_coupled = {1, 0.0, sign * 4.0 * DCS_AMP};
+            const uint64_t seed = 527000ULL + (uint64_t)(i * 4 + inverted);
+            times[count++] = lock_time_through_ms(48000.0, dsd_dcs_code(i), inverted, 3.0, 75.0, &dc_coupled, seed,
+                                                  300.0 + (double)(i % 7), (double)LOCK_3DB_SEEDED_MS + 150.0);
+        }
+    }
+    check_bound("lock through a DC-coupled input, a 4x step at the onset, 48 kHz, 3 dB in-band", times, count,
+                LOCK_3DB_SEEDED_MS, LOCK_3DB_P95_MS);
 }
 
 /*
@@ -804,11 +887,12 @@ test_a_code_outranks_a_tone(void) {
 
 /*
  * A code's own waveform in noise can read as a CTCSS tone before the code locks: it happened
- * twice in 7,000,000 starts at 10 dB in the long-run sweeps (docs/testing.md), D274N read as
- * 67.0 Hz at 8 kHz and D122N as 77.0 Hz at 78.125 kHz, both with 75 us de-emphasis. The code
- * outranks the tone the moment it locks, so each still shows within the 10 dB bound of its
+ * twice in the 7,000,000 starts at 10 dB of an earlier long-run sweep (docs/testing.md), D274N
+ * read as 67.0 Hz at 8 kHz and D122N as 77.0 Hz at 78.125 kHz, both with 75 us de-emphasis. The
+ * code outranks the tone the moment it locks, so each still shows within the 10 dB bound of its
  * onset; the rule that let the first lock keep the publication showed D122N only after 535 ms,
- * when the tone was lost. Those two starts, replayed exactly (seed, code and onset).
+ * when the tone was lost. Those two starts, replayed exactly (seed, code and onset); both still
+ * read the tone first.
  */
 static void
 test_a_code_read_as_a_tone_first_still_locks_in_time(void) {
@@ -1388,6 +1472,7 @@ main(void) {
     test_every_code_locks_within_bound();
     test_codes_lock_at_every_rate();
     test_codes_lock_through_a_sound_card_coupling();
+    test_codes_lock_through_a_frequency_offset();
     test_random_bits_never_lock();
     test_speech();
     return 0;
