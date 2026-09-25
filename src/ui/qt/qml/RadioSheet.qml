@@ -81,22 +81,36 @@ ModalSheet {
     // rate rather than the filter bounds it.
     readonly property int analogMode: commands.decodeModeForFlag("-fA")
     readonly property bool analogPreset: analogMode >= 0 && metrics.decodeMode === analogMode
+    // Issue #526: an nfm scan row on air runs the NFM width whatever the
+    // configured preset, a digital one included, so its width is in force and
+    // shown there too, as the terminal shows it.
+    readonly property bool analogRowActive: metrics.analogBandwidthRowActive === true
+    readonly property bool analogWidthInForce: analogPreset || analogRowActive
     // The width is the radio front end's filter; PCM audio arrives demodulated.
     readonly property bool analogWidthEditable: metrics.radioInput === true
+    // A row can carry its own width (--nfm-bandwidth-hz). While it is on air the
+    // readout is the row's, and the stepper edits the configured default beneath
+    // it, as the squelch does: an edit made to the row would be gone the moment
+    // the scanner moved on. On PCM input the width filters nothing, row or not.
+    readonly property bool analogRowOverride: metrics.analogBandwidthRowOverride === true && analogWidthEditable
     readonly property int analogWidthConfigured: isNaN(pendingAnalogWidth)
         ? metrics.analogBandwidthConfiguredHz : pendingAnalogWidth
     // Under another preset an explicit width stays editable on a radio, as the
     // terminal row does: a switch to NFM is held to it, and where the device or
     // the capture forces a DSP rate that cannot filter it, the refusal says to
     // narrow it, which has to be possible before the switch.
-    readonly property bool analogWidthOffered: analogPreset
+    readonly property bool analogWidthOffered: analogWidthInForce
         || (analogWidthEditable && (metrics.analogBandwidthConfiguredHz > 0 || !isNaN(pendingAnalogWidth)))
     // An explicit width steps from itself. The default steps from the width in
     // force, which below a 20 kHz DSP rate is the width the rate leaves rather
-    // than 16 kHz, so the first step from there is one the rate can take.
+    // than 16 kHz, so the first step from there is one the rate can take. Under
+    // a row's own width the width in force is the row's, not the default's, so
+    // the default steps from 16 kHz, within what the DSP rate filters.
     readonly property int analogWidthStepFrom: {
         if (analogWidthConfigured > 0)
             return analogWidthConfigured;
+        if (analogRowOverride)
+            return Util.NFM_DEFAULT_WIDTH_HZ;
         return metrics.analogBandwidthHz > 0 ? metrics.analogBandwidthHz : Util.NFM_DEFAULT_WIDTH_HZ;
     }
     // The widest width the DSP rate filters (the running stream's, or with none
@@ -109,14 +123,22 @@ ModalSheet {
         && Util.nextNfmWidth(analogWidthStepFrom, 1, analogWidthMax) > 0
     // A request stands in for the reading until the engine answers, spelled as
     // the setting it is ("12.5 kHz", or "default" for 0).
-    // Outside the preset no width is in force, so the setting stands in.
+    // Outside the preset, with no nfm row on air, no width is in force, so the
+    // setting stands in. A row's own width comes first, and the default being
+    // edited is named below it (analogWidthDefaultText).
     readonly property string analogWidthReading: {
+        if (analogRowOverride)
+            return Util.widthKhzText(metrics.analogBandwidthHz);
         if (!isNaN(pendingAnalogWidth))
             return pendingAnalogWidth > 0 ? Util.widthKhzText(pendingAnalogWidth) : qsTr("default");
-        if (!analogPreset)
+        if (!analogWidthInForce)
             return analogWidthConfigured > 0 ? Util.widthKhzText(analogWidthConfigured) : qsTr("default");
         return metrics.analogBandwidthReading;
     }
+    // The configured width a row's own width shadows, and the row's leave
+    // returns to, as the engine names it: 16 kHz for the unset default.
+    readonly property string analogWidthDefaultText: qsTr("default %1").arg(Util.widthKhzText(
+        analogWidthConfigured > 0 ? analogWidthConfigured : Util.NFM_DEFAULT_WIDTH_HZ))
 
     function open() {
         // Whatever was outstanding belongs to the last time this was open, and on
@@ -514,6 +536,9 @@ ModalSheet {
                 width: parent.width - 116
                 anchors.verticalCenter: parent.verticalCenter
                 text: sheet.analogWidthReading
+                // Read aloud as the terminal prints it, row note and default included.
+                Accessible.role: Accessible.StaticText
+                Accessible.name: sheet.analogRowOverride ? metrics.analogBandwidthReading : sheet.analogWidthReading
                 color: Theme.textPrimary
                 font.family: Theme.mono
                 font.pixelSize: Theme.fontSize(14)
@@ -535,6 +560,41 @@ ModalSheet {
                 onClicked: sheet.stepAnalogWidth(1)
             }
         }
+        // Shown only while the row on air sets its own width: says the row owns
+        // the reading above, and which default the stepper is changing.
+        Row {
+            objectName: "radioAnalogBandwidthRowNote"
+            visible: sheet.analogRowOverride
+            spacing: 8
+            Rectangle {
+                objectName: "radioAnalogBandwidthRowBadge"
+                implicitWidth: analogRowBadge.implicitWidth + 14
+                implicitHeight: Math.max(20, analogRowBadge.implicitHeight + 8)
+                anchors.verticalCenter: parent.verticalCenter
+                radius: 5
+                color: "transparent"
+                border.width: 1
+                border.color: Theme.controlBorder
+
+                Text {
+                    id: analogRowBadge
+                    anchors.centerIn: parent
+                    text: qsTr("row")
+                    font.family: Theme.mono
+                    font.pixelSize: Theme.fontSize(10)
+                    font.letterSpacing: 1
+                    color: Theme.cyan
+                }
+            }
+            Text {
+                objectName: "radioAnalogBandwidthRowDefault"
+                anchors.verticalCenter: parent.verticalCenter
+                text: sheet.analogWidthDefaultText
+                color: Theme.textSecondary
+                font.family: Theme.mono
+                font.pixelSize: Theme.fontSize(12)
+            }
+        }
         // Back to the unset default, offered while an explicit width is set.
         OutlineButton {
             objectName: "radioAnalogBandwidthDefault"
@@ -545,10 +605,10 @@ ModalSheet {
             enabled: sheet.analogWidthEditable
             onClicked: sheet.resetAnalogWidth()
         }
-        // Outside the preset: what the setting is for.
+        // Outside the preset, with no nfm row on air: what the setting is for.
         Text {
             objectName: "radioAnalogBandwidthIdleNote"
-            visible: !sheet.analogPreset && sheet.analogWidthEditable
+            visible: !sheet.analogWidthInForce && sheet.analogWidthEditable
             width: parent.width
             wrapMode: Text.WordWrap
             text: qsTr("Used when NFM is chosen, which needs a width the DSP rate can filter.")

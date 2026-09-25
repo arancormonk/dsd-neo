@@ -661,11 +661,13 @@ installs from `src/engine/trunk_tuning.c` in `src/engine/trunk_tuning_hooks_inst
   the scan scope's configured view while one is live. An analog scan row on air (issue #526) shows its width on any
   session (`row_analog`), and a row that sets its own width (`row_override`, `row_hz`) is the width in force, read as
   `12.5 kHz (row; default 16 kHz)` with the configured width its leave returns to. They spell the reading (`12.5 kHz`,
-  `16 kHz (default)`, `12 kHz (DSP-limited)`, `not used on PCM input`), the width command's notice (`Applied: NFM
-  bandwidth -> 12.5 kHz`, or `Default NFM bandwidth -> 16 kHz; this channel overrides it (12.5 kHz)` under a row
-  width) and the configured setting (`12.5 kHz`, `default`). The terminal's `Analog:` status field, the `rtl.nfm_bw`
-  row's label and predicate, the width command's toast, RTL_SET_BW's configured-width check and Qt's
-  `analogBandwidth*` properties all come from it. Test: `APP_CONTROL_ANALOG_WIDTH_VIEW`.
+  `16 kHz (default)`, `12 kHz (DSP-limited)`, `not used on PCM input`), the width command's notice
+  (`dsd_app_analog_width_edit_notice()`, for the kind the command edits whatever kind the configured preset runs:
+  `Applied: NFM bandwidth -> 12.5 kHz`, or `Default NFM bandwidth -> 16 kHz; this channel overrides it (12.5 kHz)`
+  under a row width) and the configured setting (`12.5 kHz`, `default`). The terminal's `Analog:` status field, the
+  `rtl.nfm_bw` row's label and predicate, the width command's toast, RTL_SET_BW's configured-width check and Qt's
+  `analogBandwidth*` properties (the row flags as `analogBandwidthRowActive`/`analogBandwidthRowOverride`) all come
+  from it. Test: `APP_CONTROL_ANALOG_WIDTH_VIEW`.
 - Decode quality: `include/dsd-neo/app_control/p25_metrics.h` and `src/app_control/p25_metrics.c`
   copy FEC ok percentages, populated P25 voice-error averages, and non-P25 last-frame
   errors from the caller's held snapshot. The core vocoder maintains ring counts;
@@ -1226,7 +1228,12 @@ Build files: `src/protocol/CMakeLists.txt` and per‑protocol `src/protocol/<nam
     `CommandBridge::setNfmBandwidthHz()`; `radioAnalogBandwidthDefault` sends 0 to return an explicit width to the
     default, and the controls are disabled on PCM input with the reason shown. Under another preset the section stays on
     a radio input while an explicit width is set (`analogWidthOffered`), reading the setting, so a width that blocks a
-    switch to NFM can be narrowed first. The `NFM` decode chip (`-fA`) sits in `Util.DECODE_MODES`, so the setup wizard
+    switch to NFM can be narrowed first. An nfm scan row on air (`analogBandwidthRowActive`, issue #526) keeps the
+    section, the width in force and the stepper on any preset (`analogWidthInForce`); a row's own width
+    (`analogBandwidthRowOverride`) reads first with a `row` badge and the configured default beside it
+    (`radioAnalogBandwidthRowNote`, as `radioSquelchRowNote` does for a row squelch), the value is read aloud as the
+    view's full reading, and the stepper steps the configured default (from 16 kHz when it is unset, never from the
+    row's width). The `NFM` decode chip (`-fA`) sits in `Util.DECODE_MODES`, so the setup wizard
     offers it too (it suggests no trunking). Tests: `UI_MENU_TREE_AUDIT`, `UI_MENU_ACTIONS`, `UI_MENU_LABELS_RADIO`,
     `UI_NCURSES_PRINTER_HELPERS`, `UI_QT_METRICS_MODEL`, `UI_QT_SESSION_ARGS`, `UI_QT_QML_CALL_LISTS`
     (`tst_radio_analog.qml`, `tst_wizard_decode_chip.qml`).

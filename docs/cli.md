@@ -569,7 +569,9 @@ is on air, the row's width is the one in force and the line names the configured
 sets the width from Input > RTL-SDR > NFM bandwidth..., whose label shows the setting (`[12.5 kHz]`, or
 `[default]`), while `-fA` is the configured mode or an `nfm` scan row is on air on a radio input (a scan row running
 a digital protocol does not hide it). The Qt and Android Radio
-sheet shows the same reading under the NFM decode chip, with a stepper over 8, 11.25, 12.5, 16, 20 and 25 kHz that
+sheet shows the same reading under the NFM decode chip, and under any other chip while an `nfm` scan row is on air
+(a row's own width reads first, with a `row` badge naming the configured default the stepper edits), with a stepper
+over 8, 11.25, 12.5, 16, 20 and 25 kHz that
 skips the widths the DSP rate cannot filter (the running stream's, or with none running the rate an RTL-SDR or
 rtl_tcp input's DSP bandwidth sets), and *Use the default width* to return an explicit width to the unset default. On
 PCM input it reads *not used on PCM input* and the controls are disabled. Under another mode, both keep the width

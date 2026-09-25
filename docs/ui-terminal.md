@@ -411,7 +411,8 @@ and the fix, and a
 `DSP bandwidth...` value the explicit NFM width cannot run at is refused with one saying to narrow the width first.
 Input > Switch source > RTL-SDR refuses the switch, keeping the running input, when its DSP bandwidth cannot filter the
 explicit NFM width (see `docs/cli.md`, Analog reception). The Qt and Android Radio sheet shows the same reading,
-spelled the same way.
+spelled the same way, on any session while an `nfm` row is on air; a row's own width reads first there, with a `row`
+badge and the configured default the stepper edits beside it (`12.5 kHz` over a `row` badge and `default 16 kHz`).
 
 The low-level threshold is controlled by `--input-level-warn-db`, `DSD_NEO_INPUT_WARN_DB`, or the `[input]`
 `input_warn_db` user-config key, and defaults to `-40 dBFS`. Changes made through the terminal menu persist through
