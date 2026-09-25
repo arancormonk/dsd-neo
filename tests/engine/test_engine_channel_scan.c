@@ -103,11 +103,26 @@ dsd_frame_sync_reset_acquisition(const dsd_opts* opts, dsd_state* state, int for
     state->symbol_history_count = 0;
     state->sps_hunt_counter = 0;
     /* The real reset also forgets the received tone (issue #522; pinned by
-       FRAME_SYNC_INTERNAL_HELPERS). Mirrored here so a commit that stopped calling it, or
-       that seeded the tone again afterwards, shows up in the row assertions. */
+       FRAME_SYNC_INTERNAL_HELPERS). Mirrored here so a row commit or a leave that stopped
+       calling it, or that seeded the tone again afterwards, shows up in their assertions. */
     const uint32_t generation = state->analog_rx.generation + 1U;
     DSD_MEMSET(&state->analog_rx, 0, sizeof(state->analog_rx));
     state->analog_rx.generation = generation;
+}
+
+/* A tone the previous row left on the publication, as the analog tap would. */
+static void
+seed_received_tone(dsd_state* state) {
+    state->analog_rx.carrier_open = 1;
+    state->analog_rx.tone_state = DSD_ANALOG_TONE_STATE_LOCKED;
+    state->analog_rx.tone_kind = DSD_ANALOG_TONE_KIND_CTCSS;
+    state->analog_rx.ctcss_tenths_hz = 1000;
+}
+
+static int
+received_tone_cleared(const dsd_state* state) {
+    return state->analog_rx.tone_state != DSD_ANALOG_TONE_STATE_LOCKED && state->analog_rx.ctcss_tenths_hz == 0
+           && state->analog_rx.tone_kind == DSD_ANALOG_TONE_KIND_NONE && state->analog_rx.carrier_open == 0;
 }
 
 /* How many times the leave dropped the decoder's part-collected analog monitor block. */
@@ -732,7 +747,8 @@ test_leave_retimes_the_digital_landing(void) {
  * The decoder's part-collected analog monitor block holds samples of the front end's output family. A leave that
  * switches the front end between the analog and digital families drops it, so the first block the other family
  * completes does not start with them; a leave that keeps the family keeps it, and off RTL there is no front end family
- * to switch.
+ * to switch. A leave that switches the family also forgets the received tone (issue #522), which described the old
+ * family's reception.
  */
 static void
 test_leave_family_switch_drops_partial_analog_block(void) {
@@ -763,9 +779,12 @@ test_leave_family_switch_drops_partial_analog_block(void) {
     analog_block_resets = 0;
     fake_analog_family = 0;
     assert(dsd_scan_mode_enter(opts, state, DSD_SCAN_MODE_DMR) == 0);
+    seed_received_tone(state);
+    uint32_t generation = state->analog_rx.generation;
     dsd_engine_channel_scan_leave(opts, state);
     assert(analog_restore_calls == 1 && analog_restore_family == DSD_RX_FAMILY_ANALOG);
     assert(analog_block_resets == 1);
+    assert(received_tone_cleared(state) && state->analog_rx.generation != generation);
 
     /* A digital mode configured while the front end still runs the analog family. */
     assert(dsd_apply_decode_mode_preset(DSDCFG_MODE_DMR, DSD_DECODE_PRESET_PROFILE_CLI, opts, state) == 0);
@@ -774,9 +793,12 @@ test_leave_family_switch_drops_partial_analog_block(void) {
     fake_analog_family = 1;
     fake_digital_rate = 24000U;
     assert(dsd_scan_mode_enter(opts, state, DSD_SCAN_MODE_NXDN48) == 0);
+    seed_received_tone(state);
+    generation = state->analog_rx.generation;
     dsd_engine_channel_scan_leave(opts, state);
     assert(analog_restore_calls == 1 && analog_restore_family == DSD_RX_FAMILY_DIGITAL);
     assert(analog_block_resets == 1);
+    assert(received_tone_cleared(state) && state->analog_rx.generation != generation);
 
     /* Digital configured on a digital front end. */
     reset_frontend_records();
@@ -806,21 +828,6 @@ test_leave_family_switch_drops_partial_analog_block(void) {
 }
 
 /* ---- Received tone (issue #522) ----------------------------------------------------------- */
-
-/* A tone the previous row left on the publication, as the analog tap would. */
-static void
-seed_received_tone(dsd_state* state) {
-    state->analog_rx.carrier_open = 1;
-    state->analog_rx.tone_state = DSD_ANALOG_TONE_STATE_LOCKED;
-    state->analog_rx.tone_kind = DSD_ANALOG_TONE_KIND_CTCSS;
-    state->analog_rx.ctcss_tenths_hz = 1000;
-}
-
-static int
-received_tone_cleared(const dsd_state* state) {
-    return state->analog_rx.tone_state != DSD_ANALOG_TONE_STATE_LOCKED && state->analog_rx.ctcss_tenths_hz == 0
-           && state->analog_rx.tone_kind == DSD_ANALOG_TONE_KIND_NONE && state->analog_rx.carrier_open == 0;
-}
 
 /* A row the scanner commits to starts with no received tone, whether its tune resolved later
    (a pending request the sync service commits) or at once (a step whose tune completed): the
