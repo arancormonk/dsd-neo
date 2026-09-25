@@ -5880,25 +5880,21 @@ set_tests_properties(
 )
 
 # Issue #525: an explicit NFM width the input's DSP bandwidth cannot filter is refused
-# before the device opens, with the validator's actionable text. rtl_tcp takes its DSP
-# bandwidth from the input spec, so no device or server is needed: nothing listens on
-# port 1, and a run that went on to open the stream would print the stream failure
-# instead of the refusal.
+# before the device opens, with the validator's actionable text, and startup fails.
+# rtl_tcp takes its DSP bandwidth from the input spec, so no device or server is
+# needed. RunCliSmoke.cmake checks the non-zero exit code together with the text
+# (and that the stream was never opened), which PASS_REGULAR_EXPRESSION alone cannot.
 if(DSD_HAS_RADIO)
     add_test(
         NAME RUNTIME_ANALOG_WIDTH_RATE_REFUSED
         COMMAND
-            $<TARGET_FILE:dsd-neo> --frontend none -fA -i
-            rtltcp:127.0.0.1:1:851.375M:0:0:24 --nfm-bandwidth-hz 25000 -o null
+            ${CMAKE_COMMAND} -D DSD_NEO_CLI=$<TARGET_FILE:dsd-neo> -D
+            DSD_NEO_CLI_SMOKE_MODE=nfm-width-rate-refused -P
+            ${CMAKE_CURRENT_SOURCE_DIR}/cmake/RunCliSmoke.cmake
     )
     set_tests_properties(
         RUNTIME_ANALOG_WIDTH_RATE_REFUSED
-        PROPERTIES
-            ENVIRONMENT "DSD_NEO_NO_BOOTSTRAP=1"
-            PASS_REGULAR_EXPRESSION
-                "NFM bandwidth 25 kHz does not fit the 24 kHz DSP rate [(]the largest width it fits is 20[.]4 kHz[)]; set the RTL DSP bandwidth to 48 kHz"
-            FAIL_REGULAR_EXPRESSION "radio stream"
-            TIMEOUT 30
+        PROPERTIES ENVIRONMENT "DSD_NEO_NO_BOOTSTRAP=1" TIMEOUT 30
     )
 endif()
 
@@ -11292,31 +11288,35 @@ if(DSD_HAS_RADIO)
     )
     # Issue #525: --nfm-bandwidth-hz changes the channel filter a listener hears
     # through. The same 1 kHz tone through an 8 kHz, an explicit 16 kHz and a 25 kHz
-    # channel: the tone keeps its level at every width (probe on the tone within
+    # channel, each held to NFM_TONE's bounds with its own SNR and in-band floors:
+    # the tone keeps its level at every width (probe on the tone within
     # +/-1 dBc, RMS unchanged). 8 kHz trims the 3 kHz-deviation signal's outer
-    # sidebands (tone SNR 17.0 dB), 25 kHz lets in more of the receiver noise
-    # (23.6 dB), and an explicit 16 kHz is the default filter bit for bit (25.9 dB).
+    # sidebands (tone SNR 17.0 dB, in-band 28.5 dB), 25 kHz lets in more of the
+    # receiver noise (23.6 dB, 30.4 dB), and an explicit 16 kHz measures the same as
+    # the default (25.9 dB, 30.5 dB): its floors are ones neither other width meets
+    # together. That its taps are the default's bit for bit is DSP_CHANNEL_FILTERS'
+    # golden, not this replay's.
     set(_analog_tone_bounds
         "--analog-expect-tone-hz 1000 --analog-min-captured-ms 1400 --analog-min-audible-ms 1400 --analog-max-first-audible-ms 100 --analog-min-rms-dbfs -42 --analog-max-rms-dbfs -30 --analog-max-clip 0 --analog-probe-min-dbc 1000:-1 --analog-probe-max-dbc 1000:1"
     )
     dsd_neo_add_analog_replay_test(
         DECODE_IQ_ANALOG_NFM_TONE_8K
         nfm_tone_synth
-        "-fA --nfm-bandwidth-hz 8000 ${_analog_tone_bounds} --analog-min-snr-db 12"
+        "-fA --nfm-bandwidth-hz 8000 ${_analog_tone_bounds} --analog-min-snr-db 12 --analog-min-inband-db 24"
         ""
         "${_analog_off_path}"
     )
     dsd_neo_add_analog_replay_test(
         DECODE_IQ_ANALOG_NFM_TONE_16K
         nfm_tone_synth
-        "-fA --nfm-bandwidth-hz 16000 ${_analog_tone_bounds} --analog-min-snr-db 20"
+        "-fA --nfm-bandwidth-hz 16000 ${_analog_tone_bounds} --analog-min-snr-db 25 --analog-min-inband-db 30"
         ""
         "${_analog_off_path}"
     )
     dsd_neo_add_analog_replay_test(
         DECODE_IQ_ANALOG_NFM_TONE_25K
         nfm_tone_synth
-        "-fA --nfm-bandwidth-hz=25000 ${_analog_tone_bounds} --analog-min-snr-db 18"
+        "-fA --nfm-bandwidth-hz=25000 ${_analog_tone_bounds} --analog-min-snr-db 18 --analog-min-inband-db 24"
         ""
         "${_analog_off_path}"
     )
