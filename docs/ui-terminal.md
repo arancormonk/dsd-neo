@@ -80,7 +80,7 @@ Main Menu
 │       ├── Gain... [AGC]
 │       ├── PPM correction... [0]                { }
 │       ├── DSP bandwidth... [48 kHz]
-│       ├── NFM bandwidth... [default]           (-fA on a radio input)
+│       ├── NFM bandwidth... [default]           (-fA, or a width set, on a radio input)
 │       ├── Squelch (dB)...
 │       ├── Volume multiplier... [1]             v
 │       ├── Auto-PPM [On]
@@ -399,12 +399,15 @@ digital protocol shows the width its leave returns to. The unset default reads `
 `Analog: NFM 12 kHz (DSP-limited);` beside `DSP-BW: 12 kHz;` when the DSP rate rather than the channel filter bounds
 the channel, which is what the unset default does below a 20 kHz DSP rate: no channel filter runs there, so the rate
 itself is the bound. With the stream stopped, the line reads what the next start runs at `DSP-BW:`, so a 12 kHz DSP
-bandwidth still shows `Analog: NFM 12 kHz (DSP-limited);`. `NFM bandwidth...` (offered while `-fA` is the configured mode on a radio input) shows the
-setting, `[12.5 kHz]` or `[default]`, takes any width from 8000 to 25000 Hz, or `0` for the default, and applies it
-live; a width the DSP rate cannot filter is refused with a message naming both and the fix, and a `DSP bandwidth...`
-value the explicit NFM width cannot run at is refused with one saying to narrow the width first. Input > RTL-SDR
-refuses the switch, keeping the running input, when its DSP bandwidth cannot filter the explicit NFM width (see
-`docs/cli.md`, Analog reception). The Qt and Android Radio sheet shows the same reading, spelled the same way.
+bandwidth still shows `Analog: NFM 12 kHz (DSP-limited);`, and so does a scan row running a digital protocol at a
+12 kHz rate. `NFM bandwidth...` (offered on a radio input while `-fA` is the configured mode, or while an explicit
+width is set under another mode, so that a width a switch to `-fA` would be refused for can be narrowed first) shows
+the setting, `[12.5 kHz]` or `[default]`, takes any width from 8000 to 25000 Hz, or `0` for the default, and applies
+it live; a width the DSP rate cannot filter is refused with a message naming both and the fix, and a
+`DSP bandwidth...` value the explicit NFM width cannot run at is refused with one saying to narrow the width first.
+Input > Switch source > RTL-SDR refuses the switch, keeping the running input, when its DSP bandwidth cannot filter the
+explicit NFM width (see `docs/cli.md`, Analog reception). The Qt and Android Radio sheet shows the same reading,
+spelled the same way.
 
 The low-level threshold is controlled by `--input-level-warn-db`, `DSD_NEO_INPUT_WARN_DB`, or the `[input]`
 `input_warn_db` user-config key, and defaults to `-40 dBFS`. Changes made through the terminal menu persist through

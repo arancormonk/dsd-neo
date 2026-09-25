@@ -166,9 +166,13 @@ is known:
 - For RTL-SDR and rtl_tcp inputs the DSP rate is the DSP bandwidth, so engine
   setup checks an explicit width against it once the input spec is parsed,
   before the device opens (`--validate-config` does the same for a config
-  whose input is `rtl`/`rtltcp` and whose decode mode is `analog`). SoapySDR and
-  Airspy devices can force another rate and IQ replay takes the capture's, so
-  for them the stream-start check above is the only one.
+  whose `[input]` builds an `rtl`/`rtltcp` input with `rtl_bw_khz`, that is
+  with `rtl_freq` set and, for rtl_tcp, a host, under `decode = "analog"`).
+  SoapySDR and Airspy devices can force another rate and IQ replay takes the
+  capture's, so for them the stream-start check above is the only one, and its
+  refusal names narrowing the width as the fix
+  (`dsd_analog_width_check_forced_rate()`), since no RTL DSP bandwidth moves
+  that rate.
 - The command checks a width the analog preset uses against the running
   stream (`rtl_stream_check_analog_profile()`), or with no stream against an
   RTL-SDR/rtl_tcp input's DSP bandwidth, and requests it live from a running
@@ -191,6 +195,9 @@ is known:
   `rtl_bw_khz` the reopen stores, as given, when the config's `[input]` builds
   an input spec other than the running one (from any RTL-family input),
   otherwise the running stream. A refusal leaves the whole config unapplied.
+  An `[input]` that reopens a SoapySDR or Airspy device instead is held to
+  neither: the reopened stream's start checks the width at the rate that
+  device delivers.
 - `DSD_APP_CMD_RTL_SET_BW` refuses a DSP bandwidth that the explicit width of
   the configured analog preset cannot run at on an RTL-SDR or rtl_tcp input,
   naming both; the width is never adjusted to fit the new rate.
@@ -435,12 +442,15 @@ invariant to it, so it is left as is.
   unset default and a fitting width still start at a low DSP rate;
   `APP_COMMAND_QUEUE` and `UI_MENU_SERVICES` the command's live request and
   refusals, a CQPSK toggle or switch drained with it, a config apply's width
-  and reopen rate, scan rows, and the DSP bandwidth and Input > RTL-SDR
-  refusals, on an input the stream opens as an RTL-SDR whatever its device
-  string. `DECODE_IQ_ANALOG_NFM_TONE_8K`,
+  and reopen rate (a SoapySDR or Airspy reopen left to its start), scan rows,
+  and the DSP bandwidth and Input > Switch source > RTL-SDR refusals, on an
+  input the stream opens as an RTL-SDR whatever its device string;
+  `IO_RTL_DEMOD_CONFIG` the stream-start refusal's fix on a forced rate. `DECODE_IQ_ANALOG_NFM_TONE_8K`,
   `_16K` and `_25K` show the 1 kHz tone keeping its level through each width
   (-36.1 dBFS, bounded to -37.5..-34.5 dBFS; the explicit 16 kHz measuring the
-  same as the default), and `DECODE_IQ_ANALOG_NFM_BW_8K`
+  same as the default) and, at 8 and 25 kHz, a demodulator noise level at
+  12.5 kHz the default does not reach (-80.4 and -48.9 dBc against -66.7), and
+  `DECODE_IQ_ANALOG_NFM_BW_8K`
   and `_25K` that the neighbour 12.5 kHz away is rejected at 8 kHz (-79.5 dBc)
   and inside the passband at 25 kHz (-8.2 dBc).
 
