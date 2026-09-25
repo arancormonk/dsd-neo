@@ -2165,6 +2165,133 @@ test_rx_tone_backlog_skip_ignores_playback_time(void) {
     dsd_state_ext_free_all(&state);
 }
 
+/* --- Issue #526: the analog carrier stamp and the monitor gate across a retune --- */
+
+static int g_monitor_blocks;
+
+static void
+count_monitor_block(const dsd_opts* opts, dsd_state* state, size_t nsam, const void* data) {
+    (void)opts;
+    (void)state;
+    (void)nsam;
+    (void)data;
+    g_monitor_blocks++;
+}
+
+static void
+clear_carrier_stamps(dsd_state* state) {
+    state->last_cc_sync_time = 0;
+    state->last_cc_sync_time_m = 0.0;
+    state->last_vc_sync_time = 0;
+    state->last_vc_sync_time_m = 0.0;
+}
+
+/* The -Y hold anchors on the analog monitor's carrier whether or not audio is played: -o null or a
+ * muted UI (audio_out = 0) still stamps, a closed squelch stops stamping once the tap's hangover is
+ * over, a trunking state machine keeps the control-channel anchor to itself, and the -8 source
+ * monitor under digital decoding keeps its old rule of stamping only what it plays. */
+static void
+test_carrier_stamp_does_not_need_audio_out(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    install_fake_rtl_hooks(0);
+    init_analog_monitor_fixture(&opts, &state);
+    opts.audio_out = 0;
+    opts.audio_out_type = 8;
+    dsd_udp_audio_hooks monitor = {0};
+    monitor.blast_analog = count_monitor_block;
+    dsd_udp_audio_hooks_set(monitor);
+    g_monitor_blocks = 0;
+    clear_carrier_stamps(&state);
+    feed_tone_blocks(&opts, &state, 2);
+    assert(state.analog_rx.carrier_open == 1);
+    assert(state.last_cc_sync_time != 0 && state.last_cc_sync_time_m > 0.0);
+    assert(state.last_vc_sync_time != 0 && state.last_vc_sync_time_m > 0.0);
+    assert(g_monitor_blocks == 0);
+
+    /* The squelch closes (the block is -23.8 dBFS): stamps stop once the 200 ms hangover is over. */
+    opts.rtl_squelch_level = dsd_squelch_level_from_sql(-10.0);
+    feed_tone_blocks(&opts, &state, 15);
+    assert(state.analog_rx.carrier_open == 0);
+    clear_carrier_stamps(&state);
+    feed_tone_blocks(&opts, &state, 2);
+    assert(state.last_cc_sync_time == 0 && state.last_vc_sync_time == 0);
+
+    /* Open again under a trunking state machine: only the voice anchor moves off a tuned channel. */
+    opts.rtl_squelch_level = 0.0;
+    opts.trunk_enable = 1;
+    feed_tone_blocks(&opts, &state, 2);
+    assert(state.last_cc_sync_time == 0 && state.last_vc_sync_time != 0);
+    opts.trunk_enable = 0;
+
+    /* The -8 monitor during digital decoding: no tap runs, and its stamp still follows the audio it plays. */
+    opts.analog_only = 0;
+    clear_carrier_stamps(&state);
+    feed_tone_blocks(&opts, &state, 1);
+    assert(state.last_cc_sync_time == 0 && g_monitor_blocks == 0);
+    opts.audio_out = 1;
+    feed_tone_blocks(&opts, &state, 1);
+    assert(state.last_cc_sync_time != 0 && g_monitor_blocks == 1);
+    dsd_udp_audio_hooks_set((dsd_udp_audio_hooks){0});
+    dsd_state_ext_free_all(&state);
+}
+
+/* The monitor writes nothing while a retune is in flight (the front end still delivers the channel
+ * being left) nor from a block that began before a retune or a reset the tap noticed -- one block
+ * at most -- and plays the new channel from the next block on. */
+static void
+test_monitor_muted_across_a_retune(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    install_fake_rtl_hooks(1);
+    init_analog_monitor_fixture(&opts, &state);
+    opts.audio_in_type = AUDIO_IN_RTL;
+    opts.audio_out = 1;
+    opts.audio_out_type = 8;
+    dsd_udp_audio_hooks monitor = {0};
+    monitor.blast_analog = count_monitor_block;
+    dsd_udp_audio_hooks_set(monitor);
+    dsd_trunk_tuning_requests_reset();
+    g_monitor_blocks = 0;
+    feed_tone_blocks(&opts, &state, 3);
+    assert(g_monitor_blocks == 3);
+
+    /* A retune in flight, then landed: the block that straddles its completion is dropped too. */
+    const uint64_t request = dsd_trunk_tuning_request_begin();
+    feed_tone_blocks(&opts, &state, 2);
+    assert(g_monitor_blocks == 3);
+    dsd_trunk_tuning_request_complete(request, DSD_TRUNK_TUNE_RESULT_OK);
+    feed_tone_blocks(&opts, &state, 1);
+    assert(g_monitor_blocks == 3);
+    feed_tone_blocks(&opts, &state, 1);
+    assert(g_monitor_blocks == 4);
+
+    /* A retune nobody announced shows up as a new stream generation: that block is dropped. */
+    g_fake_rtl_generation++;
+    feed_tone_blocks(&opts, &state, 1);
+    assert(g_monitor_blocks == 4);
+    feed_tone_blocks(&opts, &state, 1);
+    assert(g_monitor_blocks == 5);
+
+    /* An announced reset (a scan row commit) with part of a block collected: the block is dropped. */
+    float block[960];
+    fill_tone_block(block, 960U, 100.0, 3000.0);
+    for (unsigned int i = 0; i < 500U; i++) {
+        dsd_symbol_test_push_unsynced_analog_sample(&opts, &state, block[i]);
+    }
+    dsd_analog_rx_reset(&state);
+    for (unsigned int i = 500U; i < 960U; i++) {
+        dsd_symbol_test_push_unsynced_analog_sample(&opts, &state, block[i]);
+    }
+    assert(g_monitor_blocks == 5);
+    feed_tone_blocks(&opts, &state, 1);
+    assert(g_monitor_blocks == 6);
+    dsd_trunk_tuning_requests_reset();
+    dsd_udp_audio_hooks_set((dsd_udp_audio_hooks){0});
+    install_fake_rtl_hooks(0);
+    dsd_state_ext_free_all(&state);
+}
+
 int
 main(void) {
     exitflag = 0;
@@ -2183,6 +2310,8 @@ main(void) {
     test_symbol_matched_filter_uses_active_nxdn_variant();
     test_symbol_helper_rtl_cache_and_center_contract();
     test_rx_tone_tap_reads_raw_block_before_voice_filters();
+    test_carrier_stamp_does_not_need_audio_out();
+    test_monitor_muted_across_a_retune();
     test_rx_tone_clears_on_unannounced_retune();
     test_rx_tone_clears_on_applied_analog_profile_change();
     test_rx_tone_reset_sets_the_pending_block_aside();

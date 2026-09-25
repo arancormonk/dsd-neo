@@ -423,6 +423,8 @@ typedef struct {
     uint64_t backlog_skipped_us;     /**< input skipped since the boundary, in sample time */
     int playback_open;               /**< 1 between dsd_analog_rx_playback_begin() and _end() */
     uint64_t playback_started_ms;    /**< monotonic ms at dsd_analog_rx_playback_begin() */
+    /** 1 when the monitor block being assembled began before a retune, profile change or reset (issue #526). */
+    int block_straddled;
 } analog_rx_session;
 
 #ifdef DSD_NEO_TEST_HOOKS
@@ -795,6 +797,11 @@ dsd_analog_rx_reset(dsd_state* state) {
            reset, arms the backlog skip (analog_rx_session_start()). */
         const int pending = state->analog_sample_counter;
         session->block_taken = pending > 0 ? (unsigned int)pending : 0U;
+        /* Those samples stay in the block, so the monitor output drops it rather than play them as the new
+           reception's (issue #526). */
+        if (pending > 0) {
+            session->block_straddled = 1;
+        }
         session->read_rate_hz = 0;
         /* Nor may what a live input still holds, which arrived before the boundary too. */
         analog_rx_arm_backlog_skip(session);
@@ -836,7 +843,8 @@ analog_rx_boundary_dropped(const dsd_opts* opts, dsd_state* state, analog_rx_ses
     if (moved) {
         /* A retune starts the stream afresh: no deadline until it delivers again, and what the
            input had queued is the old channel's. This read, dropped here, starts the clock the
-           skip measures the next ones against. */
+           skip measures the next ones against. The block around it holds both channels. */
+        session->block_straddled = 1;
         session->stale_after_ms = 0;
         analog_rx_arm_backlog_skip(session);
         analog_rx_backlog_span_start(session, analog_rx_now_ms());
@@ -946,7 +954,14 @@ dsd_analog_rx_block_restart(const dsd_state* state) {
     if (session) {
         /* Whatever the tap had read, or set aside, of the emptied block is gone with it. */
         session->block_taken = 0U;
+        session->block_straddled = 0;
     }
+}
+
+int
+dsd_analog_rx_block_straddles_boundary(const dsd_state* state) {
+    const analog_rx_session* session = state ? analog_rx_session_get(state) : NULL;
+    return session ? session->block_straddled : 0;
 }
 
 void

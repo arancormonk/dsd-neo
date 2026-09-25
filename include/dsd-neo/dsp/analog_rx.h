@@ -163,6 +163,16 @@ void dsd_analog_rx_tap_partial(const dsd_opts* opts, dsd_state* state, const flo
 void dsd_analog_rx_block_restart(const dsd_state* state);
 
 /**
+ * @brief Whether the monitor block now being completed began before a boundary the tap knows of (issue #526).
+ *
+ * Set when the tap's own generation check found a retune or an applied receive-profile change part-way through the
+ * block (see dsd_analog_rx_tap()), and when dsd_analog_rx_reset() set the samples collected before it aside; cleared
+ * when the symbol path empties its block (dsd_analog_rx_block_restart()). Part of such a block is the old channel's,
+ * so the monitor output drops it (one block at most); the raw WAV keeps it. 0 while detection is not running.
+ */
+int dsd_analog_rx_block_straddles_boundary(const dsd_state* state);
+
+/**
  * @brief Forget the received tone: clears the publication and every detector's state.
  *
  * Call on retune, scan row or target change, input switch, decode-mode change and stop, so a
