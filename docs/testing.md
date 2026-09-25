@@ -537,7 +537,7 @@ accept fixtures through the analog replay host and match its `tone=` field, whic
 from the publication: `tone=D023N` and `tone=D047N` (never `D023I` or `D023N` for the inverted word), locked within the
 520 ms bound (360 ms measured, 83% of each run locked). Over 12 realtime `replay_ab.sh --metric analog` repeats against
 `main` (see [Analog A/B](#analog-ab)), this build read `D023N`, `D047N` and `D023N` on `_023n`, `_023i` and `_drop` on
-every repeat (first lock 360, 360 and 380 ms; 83, 83 and 56% locked), where `main`, which has no DCS detector, reads
+every repeat (first lock 360 ms on each; 83, 83 and 57% locked), where `main`, which has no DCS detector, reads
 `NA`; `_noisy`, both squelch captures and `nfm_ctcss_real` (151.4 Hz at 300 ms, 88.67% locked) read the same in both
 builds, with every audio column unchanged.
 
