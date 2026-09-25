@@ -19,6 +19,7 @@
 #include "dsd-neo/core/input_level.h"
 
 #include <curses.h>
+#include <dsd-neo/app_control/analog_width_view.h>
 #include <dsd-neo/app_control/frontend.h>
 #include <dsd-neo/app_control/history.h>
 #include <dsd-neo/app_control/rx_tone_view.h>
@@ -39,6 +40,7 @@
 #include <dsd-neo/protocol/p25/p25_callsign.h>
 #include <dsd-neo/protocol/p25/p25_crypto.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
+#include <dsd-neo/runtime/analog_channel.h>
 #include <dsd-neo/runtime/scan_mode.h>
 #include <dsd-neo/runtime/unicode.h>
 #include <dsd-neo/ui/menu_core.h>
@@ -411,6 +413,23 @@ ui_print_rtl_auto_ppm_status(void) {
 #endif
 }
 
+/* The analog channel width in force beside the DSP rate it has to fit (issue #525), under the configured analog preset,
+   as app_control's analog width view decides and spells it for every frontend. */
+static void
+ui_print_analog_channel_field(const dsd_opts* opts, const dsd_state* state) {
+    dsd_frontend_metrics metrics;
+    (void)dsd_app_frontend_get_metrics(&metrics);
+    dsd_app_analog_width_view view;
+    if (dsd_app_analog_width_view_get(opts, state, &metrics, &view) != 0 || !view.shown || !view.radio_input) {
+        return;
+    }
+    char width[DSD_APP_ANALOG_WIDTH_TEXT_MAX];
+    (void)dsd_app_analog_width_view_format(&view, width, sizeof width);
+    if (width[0] != '\0') {
+        printw(" Analog: %s %s;", dsd_analog_demod_label(view.kind), width);
+    }
+}
+
 static void
 ui_render_rtl_input_source(dsd_opts* opts, dsd_state* state) {
     if (opts->audio_in_type == AUDIO_IN_RTL) {
@@ -437,6 +456,7 @@ ui_render_rtl_input_source(dsd_opts* opts, dsd_state* state) {
         (void)dsd_app_squelch_view_format(&squelch, sql, sizeof sql);
         printw(" SQL: %s;", sql);
         printw(" DSP-BW: %i kHz;", opts->rtl_dsp_bw_khz);
+        ui_print_analog_channel_field(opts, state);
         printw(" FRQ: %i;", opts->rtlsdr_center_freq);
         ui_print_rtl_auto_ppm_status();
         if (!soapy_input && opts->rtl_udp_port != 0) {

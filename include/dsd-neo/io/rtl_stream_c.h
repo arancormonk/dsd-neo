@@ -271,8 +271,11 @@ int rtl_stream_request_demod_profile(int cqpsk_enable, int symbol_rate_hz, int l
  * that rate cannot realize is refused either time, never clamped, replaced or run without its channel filter: the
  * refusal is logged with the validator's text and the front end keeps its current receive profile (a digital session
  * asked to switch stays on the digital family). The unset NFM default is never refused for its rate. A refusal at the
- * demod thread reaches the caller only through that log: a decoder that has already committed to Analog stays on it,
- * which is why a decode-mode change asks rtl_stream_check_analog_profile() before it commits. With no pipeline running
+ * demod thread reaches the caller through the request's number, which then reads refused
+ * (rtl_stream_receive_request_outcome(), with what the stream kept from rtl_stream_receive_request_refusal()): a
+ * decoder that has already committed to Analog, or to the width, puts itself back from that. A decode-mode change
+ * also asks rtl_stream_check_analog_profile() before it commits, so only a retune in between gets this far. With no
+ * pipeline running
  * there is nothing to switch and no demod rate to check against: only the kind, range and DSD_NEO_CHANNEL_LPF rules
  * apply, and the next stream open configures the front end from the options and checks the width against the rate it
  * actually delivers.
@@ -301,6 +304,70 @@ int rtl_stream_request_demod_profile(int cqpsk_enable, int symbol_rate_hz, int l
  *         an analog request is accepted.
  */
 int rtl_stream_request_analog_profile(int family, int kind, int width_hz);
+
+/** @brief What became of a queued receive request (rtl_stream_receive_request_outcome()). */
+enum rtl_stream_rx_request_outcome {
+    RTL_STREAM_RX_REQUEST_PENDING = 0, /**< Queued: the demod thread has not taken it yet. */
+    RTL_STREAM_RX_REQUEST_SETTLED = 1, /**< Taken and its result published, replaced by a later request, or dropped. */
+    RTL_STREAM_RX_REQUEST_REFUSED = 2, /**< An analog profile request refused at the demod rate it landed at. */
+};
+
+/**
+ * @brief Number of the last receive request queued for the demod thread (rtl_stream_request_demod_profile(),
+ * rtl_stream_request_analog_profile()), for rtl_stream_receive_request_outcome().
+ *
+ * Read it on the thread that queued the request, right after the request: the decoder thread queues them all. Numbers
+ * rise by one per queued request and are never 0. A request applied at once, with no pipeline running, is not queued
+ * and gets no number of its own; it settles every request queued before it, since no demod thread will take them.
+ */
+uint32_t rtl_stream_receive_request_seq(void);
+
+/**
+ * @brief What became of the receive request numbered @p seq (RTL_STREAM_RX_REQUEST_*).
+ *
+ * While a request is pending, what the stream publishes (the CQPSK state rtl_stream_get_cqpsk_status() reports, the
+ * analog profile) can still describe the stream before it: the demod thread clears the output, which moves the output
+ * generation, before it publishes what it applied, and a retune moves the generation without taking a request. Once
+ * the request is settled or refused, what the stream publishes includes its effect. The demod thread settles every
+ * request it took at a block boundary, a later request that replaced an earlier one settles that one with it, and a
+ * stream open settles whatever the previous stream left queued. An analog profile request whose width the demod rate
+ * it landed at cannot filter (a retune moved the rate after the request was checked) is refused there, logged with the
+ * validator's text, and the front end keeps the receive profile it had; its number then reads REFUSED until the next
+ * stream open, which opens on the options as they are and forgets it (it reads settled from then).
+ */
+int rtl_stream_receive_request_outcome(uint32_t seq);
+
+/**
+ * @brief The receive profile the stream kept when it refused request @p seq where it landed.
+ *
+ * Recorded before the refusal becomes visible, so a caller that reads @p seq as refused reads what the refusing
+ * stream kept, not what the request asked for: two width requests queued back to back, the first taken and the second
+ * refused, leave the first one's width.
+ *
+ * @param seq               A number rtl_stream_receive_request_seq() returned.
+ * @param out_analog_family 1 when the stream stayed on the analog family (a width or kind change on the monitor, or a
+ *                          return to the monitor from a symbol profile applied under it), 0 when it stayed on the
+ *                          digital family (a switch onto the analog family). May be NULL.
+ * @param out_width_hz      The analog width that family runs (0 = the kind's default; meaningful on the analog family
+ *                          only). May be NULL.
+ * @return 1 when @p seq reads RTL_STREAM_RX_REQUEST_REFUSED, filling the outputs; 0 otherwise, leaving them untouched.
+ */
+int rtl_stream_receive_request_refusal(uint32_t seq, int* out_analog_family, int* out_width_hz);
+
+/**
+ * @brief The CQPSK state the RTL front end runs once the receive requests queued so far have applied.
+ *
+ * While a request is unsettled (rtl_stream_receive_request_outcome()), what the stream publishes
+ * (rtl_stream_get_cqpsk_status()) can still describe the stream before it. This answers for the requests instead,
+ * whoever queued them: the DSP menu's CQPSK toggle, a decode-mode change, a scan row's profile or its leave. An analog
+ * family request turns CQPSK off (it enters the monitor), a demod profile request sets the state it names or leaves
+ * it, and a digital family request leaves it to the symbol profile queued after it. Once every request has settled,
+ * the published state answers. An analog request later refused where it landed was counted as turning CQPSK off
+ * until it settles.
+ *
+ * @return 1 for CQPSK, 0 otherwise.
+ */
+int rtl_stream_requested_cqpsk(void);
 
 /**
  * @brief Note the digital decode modes the decoder is configured for.
@@ -359,6 +426,19 @@ int rtl_stream_get_analog_profile(int* out_kind, int* out_width_hz, int* out_lpf
  *         path, or before a stream has published its profile).
  */
 int rtl_stream_analog_family_active(void);
+
+/**
+ * @brief Report whether the stream runs its channel filter where no width requests one: the unset NFM default on the
+ * analog monitor, and a digital profile.
+ *
+ * The stream's configuration decides it once, from DSD_NEO_CHANNEL_LPF or else from the DSP rate the configuration
+ * starts from (20 kHz or more), and keeps it when the device delivers another rate (a forced rate, a replay's capture
+ * rate) or a retune moves it. So the width the monitor returns to from a CQPSK toggle or a typed digital scan row
+ * follows this decision, not the rate it runs at then.
+ *
+ * @return 1 when it runs the filter, 0 when it does not, -1 before a stream has published its receive profile.
+ */
+int rtl_stream_channel_lpf_default(void);
 
 /**
  * @brief Predict the output rate the stream will have once it runs @p family.

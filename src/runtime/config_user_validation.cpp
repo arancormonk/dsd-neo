@@ -12,6 +12,7 @@
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/runtime/airspy_config.h>
+#include <dsd-neo/runtime/analog_channel.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/config_schema.h>
 #include <dsd-neo/runtime/path_policy.h>
@@ -152,10 +153,30 @@ validate_standard_entry_value(const dsdcfg_schema_entry_t* entry, const char* va
     }
 }
 
+/* An analog width outside its kind's range, or not whole Hz, is an error rather than the schema walk's out-of-range
+   warning: the loader refuses it (keeping the default) instead of clamping, and the message is the parser's, the same
+   text the CLI prints. */
+static int
+validate_analog_width_entry(const dsdcfg_schema_entry_t* entry, const char* val, dsdcfg_diagnostics_t* diags,
+                            int line_num, const char* diag_section, const char* diag_key) {
+    if (strcmp(entry->section, "analog") != 0 || strcmp(entry->key, "nfm_bandwidth_hz") != 0) {
+        return 0;
+    }
+    char err[DSD_ANALOG_ERROR_TEXT_MAX];
+    int width_hz = 0;
+    if (dsd_analog_width_parse(DSD_ANALOG_DEMOD_FM, val, &width_hz, err, sizeof err) != 0) {
+        dsdcfg_diags_add(diags, DSDCFG_DIAG_ERROR, line_num, diag_section, diag_key, err);
+    }
+    return 1;
+}
+
 static void
 validate_entry_value(const dsdcfg_schema_entry_t* entry, const char* val, dsdcfg_diagnostics_t* diags, int line_num,
                      const char* diag_section, const char* diag_key) {
     if (!entry || !val || !diags) {
+        return;
+    }
+    if (validate_analog_width_entry(entry, val, diags, line_num, diag_section, diag_key)) {
         return;
     }
     if (strcmp(entry->section, "input") == 0 && strncmp(entry->key, "airspy_", 7) == 0) {
@@ -383,6 +404,41 @@ validate_composed_scan_max_visit_ms(const dsdneoUserConfig* cfg, const char* sec
                      "scan_max_visit_ms below 1000 ms is ignored; use 0 to disable or 1000..3600000");
 }
 
+/* An explicit NFM width the analog preset will use, on an input whose DSP rate is the configured RTL DSP bandwidth
+   (RTL-SDR and rtl_tcp), must fit that rate. Devices that can force another rate (SoapySDR, Airspy) are checked
+   against the rate they deliver when the stream starts. rtl_bw_khz is that rate only where startup builds the input
+   with it, which takes rtl_freq: without one an rtl source leaves the input as it was, and an rtl_tcp source connects
+   as "rtltcp:host:port" at the 48 kHz default (apply_input_source_rtl()/_rtltcp()). */
+static int
+validate_configured_rtl_bw_khz(int bw) {
+    /* What applying the config leaves in force: an unset or unsupported value is the 48 kHz default. */
+    return dsd_analog_rtl_dsp_bw_is_selectable(bw) ? bw : 48;
+}
+
+static int
+validate_analog_width_rate_applies(const dsdneoUserConfig* cfg) {
+    const int builds_rtl_input = cfg->has_input && cfg->rtl_freq[0] != '\0'
+                                 && (cfg->input_source == DSDCFG_INPUT_RTL
+                                     || (cfg->input_source == DSDCFG_INPUT_RTLTCP && cfg->rtltcp_host[0] != '\0'));
+    return cfg->analog_nfm_bandwidth_hz > 0 && cfg->has_mode && cfg->decode_mode == DSDCFG_MODE_ANALOG
+           && builds_rtl_input;
+}
+
+static void
+validate_composed_analog_width(const dsdneoUserConfig* cfg, const char* section, const char* key,
+                               dsdcfg_diagnostics_t* diags) {
+    if (!cfg || !diags || !validate_analog_width_rate_applies(cfg)) {
+        return;
+    }
+    const int rtl_bw_khz = validate_configured_rtl_bw_khz(cfg->rtl_bw_khz);
+    char err[DSD_ANALOG_ERROR_TEXT_MAX];
+    if (dsd_analog_width_check(DSD_ANALOG_DEMOD_FM, cfg->analog_nfm_bandwidth_hz, rtl_bw_khz * 1000, err, sizeof err)
+        != 0) {
+        dsdcfg_diags_add(diags, DSDCFG_DIAG_ERROR, 0, section ? section : "analog", key ? key : "nfm_bandwidth_hz",
+                         err);
+    }
+}
+
 static void
 validate_composed_config_base(const dsdneoUserConfig* cfg, dsdcfg_diagnostics_t* diags) {
     validate_composed_trunk_scan_requirements(cfg, "trunk_scan", "targets_csv", diags);
@@ -390,6 +446,7 @@ validate_composed_config_base(const dsdneoUserConfig* cfg, dsdcfg_diagnostics_t*
     validate_composed_trunk_scan_p25_bandplan_conflict(cfg, "trunking", "p25_bandplan_csv", diags);
     validate_composed_lrrp_ports(cfg, "mode", "dmr_lrrp_ports", diags);
     validate_composed_scan_max_visit_ms(cfg, "trunking", "scan_max_visit_ms", diags);
+    validate_composed_analog_width(cfg, "analog", "nfm_bandwidth_hz", diags);
 }
 
 static void
@@ -402,6 +459,7 @@ validate_composed_profile_config(const char* profile_name, const dsdneoUserConfi
     validate_composed_trunk_scan_p25_bandplan_conflict(cfg, section, "trunking.p25_bandplan_csv", diags);
     validate_composed_lrrp_ports(cfg, section, "mode.dmr_lrrp_ports", diags);
     validate_composed_scan_max_visit_ms(cfg, section, "trunking.scan_max_visit_ms", diags);
+    validate_composed_analog_width(cfg, section, "analog.nfm_bandwidth_hz", diags);
 }
 
 static void

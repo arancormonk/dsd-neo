@@ -190,6 +190,7 @@
     X(rtl_set_dev)                                                                                                     \
     X(rtl_set_freq)                                                                                                    \
     X(rtl_set_gain)                                                                                                    \
+    X(rtl_set_nfm_bw)                                                                                                  \
     X(rtl_set_ppm)                                                                                                     \
     X(rtl_set_sql)                                                                                                     \
     X(rtl_set_vol)                                                                                                     \
@@ -282,6 +283,7 @@
     X(lbl_rtl_bw)                                                                                                      \
     X(lbl_rtl_freq)                                                                                                    \
     X(lbl_rtl_gain)                                                                                                    \
+    X(lbl_rtl_nfm_bw)                                                                                                  \
     X(lbl_rtl_ppm)                                                                                                     \
     X(lbl_rtl_rtltcp_autotune)                                                                                         \
     X(lbl_rtl_tuner_autogain)                                                                                          \
@@ -333,6 +335,7 @@
 #define AUDIT_PREDICATES(X)                                                                                            \
     X(is_airspy_input)                                                                                                 \
     X(is_non_airspy_input)                                                                                             \
+    X(is_nfm_width_editable)                                                                                           \
     X(const_view_active)                                                                                               \
     X(eye_view_active)                                                                                                 \
     X(io_rtl_active)                                                                                                   \

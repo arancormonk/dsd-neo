@@ -657,6 +657,19 @@ dsd_neo_add_public_header_smoke_test(
   dsd-neo/app_control/squelch_view.h
   CXX
 )
+# Issue #525: the shared analog channel width readout.
+dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_app_control_analog_width_view
+  HEADERS_PUBLIC_APP_CONTROL_ANALOG_WIDTH_VIEW
+  dsd-neo/app_control/analog_width_view.h
+  C
+)
+dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_app_control_analog_width_view_cxx
+  HEADERS_PUBLIC_APP_CONTROL_ANALOG_WIDTH_VIEW_CXX
+  dsd-neo/app_control/analog_width_view.h
+  CXX
+)
 dsd_neo_add_public_header_smoke_test(
   dsd-neo_test_headers_public_app_control_rx_tone_view
   HEADERS_PUBLIC_APP_CONTROL_RX_TONE_VIEW
@@ -1808,6 +1821,7 @@ add_executable(
     test_support/scan_group_stubs.c
     ui/test_ui_menu_services.c
     ${PROJECT_SOURCE_DIR}/src/core/util/bit_packing.c
+    ${PROJECT_SOURCE_DIR}/src/app_control/analog_width_view.c
     ${PROJECT_SOURCE_DIR}/src/app_control/menu_services.c
     # svc_clear_keys() drops the DMR TG->key ID map through keyring_dmr_tg_map_reset().
     ${PROJECT_SOURCE_DIR}/src/core/vocoder/keyring.c
@@ -1864,6 +1878,8 @@ if(DSD_ENABLE_TERMINAL_UI)
         ui/test_ui_menu_labels_radio.c
         ${PROJECT_SOURCE_DIR}/src/ui/terminal/menu_labels.c
         ${PROJECT_SOURCE_DIR}/src/core/util/enc_lockout.c
+        ${PROJECT_SOURCE_DIR}/src/app_control/analog_width_view.c
+        ${PROJECT_SOURCE_DIR}/src/runtime/analog_channel.c
     )
     target_include_directories(
         dsd-neo_test_ui_menu_labels_radio
@@ -2130,6 +2146,22 @@ add_test(
     COMMAND dsd-neo_test_app_control_rx_tone_view
 )
 
+# Issue #525: the analog channel width in force under the configured analog preset, the
+# DSP-limited flag, and the one spelling of the reading and of the configured width.
+add_executable(
+    dsd-neo_test_app_control_analog_width_view
+    ui/test_app_control_analog_width_view.c
+    ${PROJECT_SOURCE_DIR}/src/app_control/analog_width_view.c
+)
+target_link_libraries(
+    dsd-neo_test_app_control_analog_width_view
+    PRIVATE dsd-neo_core dsd-neo_runtime
+)
+add_test(
+    NAME APP_CONTROL_ANALOG_WIDTH_VIEW
+    COMMAND dsd-neo_test_app_control_analog_width_view
+)
+
 add_executable(
     dsd-neo_test_app_control_notification_status
     ui/test_app_control_notification_status.c
@@ -2203,9 +2235,11 @@ if(DSD_ENABLE_TERMINAL_UI)
     add_executable(
         dsd-neo_test_ui_ncurses_printer_helpers
         ui/test_ui_ncurses_printer_helpers.c
+        ${PROJECT_SOURCE_DIR}/src/app_control/analog_width_view.c
         ${PROJECT_SOURCE_DIR}/src/app_control/scan_timing_view.c
         ${PROJECT_SOURCE_DIR}/src/app_control/squelch_view.c
         ${PROJECT_SOURCE_DIR}/src/app_control/rx_tone_view.c
+        ${PROJECT_SOURCE_DIR}/src/runtime/analog_channel.c
         ${PROJECT_SOURCE_DIR}/src/runtime/analog_tones.c
         ${PROJECT_SOURCE_DIR}/src/runtime/rtl_stream_metrics_hooks.c
     )
@@ -2254,6 +2288,8 @@ if(DSD_ENABLE_TERMINAL_UI)
         dsd-neo_test_ui_menu_actions
         ui/test_ui_menu_actions.c
         ${PROJECT_SOURCE_DIR}/src/ui/terminal/menu_actions.c
+        ${PROJECT_SOURCE_DIR}/src/app_control/analog_width_view.c
+        ${PROJECT_SOURCE_DIR}/src/runtime/analog_channel.c
     )
     target_include_directories(
         dsd-neo_test_ui_menu_actions
@@ -2890,6 +2926,7 @@ if(DSD_ENABLE_QT_UI)
         dsd-neo_test_ui_qt_metrics_model
         ui/test_ui_qt_metrics_model.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/metrics_model.cpp
+        ${PROJECT_SOURCE_DIR}/src/app_control/analog_width_view.c
         ${PROJECT_SOURCE_DIR}/src/app_control/call_view.c
         ${PROJECT_SOURCE_DIR}/src/app_control/p25_metrics.c
         ${PROJECT_SOURCE_DIR}/src/app_control/squelch_view.c
@@ -5606,6 +5643,8 @@ if(
         dsd-neo_test_app_command_queue
         PRIVATE
             "LINKER:--wrap=rtl_stream_create"
+            "LINKER:--wrap=rtl_stream_stop"
+            "LINKER:--wrap=rtl_stream_destroy"
             "LINKER:--wrap=rtl_stream_set_channel_squelch"
             "LINKER:--wrap=rtl_stream_check_analog_profile"
             "LINKER:--wrap=rtl_stream_request_analog_profile"
@@ -5613,6 +5652,12 @@ if(
             "LINKER:--wrap=rtl_stream_analog_family_active"
             "LINKER:--wrap=rtl_stream_output_rate_for_family"
             "LINKER:--wrap=rtl_stream_set_digital_decode_modes"
+            "LINKER:--wrap=rtl_stream_receive_request_seq"
+            "LINKER:--wrap=rtl_stream_receive_request_outcome"
+            "LINKER:--wrap=rtl_stream_receive_request_refusal"
+            "LINKER:--wrap=rtl_stream_requested_cqpsk"
+            "LINKER:--wrap=rtl_stream_get_demod_rate_hz"
+            "LINKER:--wrap=rtl_stream_output_rate"
     )
 endif()
 add_test(NAME APP_COMMAND_QUEUE COMMAND dsd-neo_test_app_command_queue)
@@ -5875,6 +5920,55 @@ set_tests_properties(
     RUNTIME_BOOTSTRAP_MISSING_PROFILE
     PROPERTIES WORKING_DIRECTORY "${_DSD_BOOTSTRAP_FIXTURE_DIR}" WILL_FAIL TRUE
 )
+
+# Issue #525: an explicit NFM width the input's DSP bandwidth cannot filter is refused
+# before the device opens, with the validator's actionable text, and startup fails.
+# rtl_tcp and RTL-SDR specs carry their DSP bandwidth, so no device or server is
+# needed. RunCliSmoke.cmake checks the non-zero exit code together with the text
+# (and that the stream was never opened), which PASS_REGULAR_EXPRESSION alone cannot.
+if(DSD_HAS_RADIO)
+    add_test(
+        NAME RUNTIME_ANALOG_WIDTH_RATE_REFUSED
+        COMMAND
+            ${CMAKE_COMMAND} -D DSD_NEO_CLI=$<TARGET_FILE:dsd-neo> -D
+            DSD_NEO_CLI_SMOKE_MODE=nfm-width-rate-refused -P
+            ${CMAKE_CURRENT_SOURCE_DIR}/cmake/RunCliSmoke.cmake
+    )
+    add_test(
+        NAME RUNTIME_ANALOG_WIDTH_RATE_REFUSED_RTL
+        COMMAND
+            ${CMAKE_COMMAND} -D DSD_NEO_CLI=$<TARGET_FILE:dsd-neo> -D
+            DSD_NEO_CLI_SMOKE_MODE=nfm-width-rate-refused-rtl -P
+            ${CMAKE_CURRENT_SOURCE_DIR}/cmake/RunCliSmoke.cmake
+    )
+    set_tests_properties(
+        RUNTIME_ANALOG_WIDTH_RATE_REFUSED
+        RUNTIME_ANALOG_WIDTH_RATE_REFUSED_RTL
+        PROPERTIES ENVIRONMENT "DSD_NEO_NO_BOOTSTRAP=1" TIMEOUT 30
+    )
+    # The same check lets existing low-rate -fA command lines start: the unset
+    # default below a 20 kHz DSP rate, and an explicit width that fits one. Both
+    # get as far as opening the stream (which fails: nothing listens on port 1).
+    add_test(
+        NAME RUNTIME_ANALOG_NFM_DEFAULT_LOW_RATE
+        COMMAND
+            ${CMAKE_COMMAND} -D DSD_NEO_CLI=$<TARGET_FILE:dsd-neo> -D
+            DSD_NEO_CLI_SMOKE_MODE=nfm-default-low-rate -P
+            ${CMAKE_CURRENT_SOURCE_DIR}/cmake/RunCliSmoke.cmake
+    )
+    add_test(
+        NAME RUNTIME_ANALOG_NFM_WIDTH_FITS_LOW_RATE
+        COMMAND
+            ${CMAKE_COMMAND} -D DSD_NEO_CLI=$<TARGET_FILE:dsd-neo> -D
+            DSD_NEO_CLI_SMOKE_MODE=nfm-width-fits-low-rate -P
+            ${CMAKE_CURRENT_SOURCE_DIR}/cmake/RunCliSmoke.cmake
+    )
+    set_tests_properties(
+        RUNTIME_ANALOG_NFM_DEFAULT_LOW_RATE
+        RUNTIME_ANALOG_NFM_WIDTH_FITS_LOW_RATE
+        PROPERTIES ENVIRONMENT "DSD_NEO_NO_BOOTSTRAP=1" TIMEOUT 30
+    )
+endif()
 
 # P25 helper tests
 add_executable(dsd-neo_test_p25_12_list protocol/p25/test_p25_12_list.c)
@@ -11059,6 +11153,28 @@ if(DSD_HAS_RADIO)
         DECODE_IQ_ANALOG_CTCSS_NOTONE
         PROPERTIES LABELS "iq-decode;analog"
     )
+    # Issue #525: the tone detector listens behind the NFM channel filter, so the width
+    # must not cost it the tone. DECODE_IQ_ANALOG_CTCSS_1000 through the narrowest and
+    # the widest channel, held to the same verdict and the same "no other tone" guard.
+    dsd_neo_add_iq_decode_test(
+        DECODE_IQ_ANALOG_CTCSS_1000_NFM_8K
+        nfm_ctcss_synth_1000
+        "-fA --nfm-bandwidth-hz 8000"
+        "Received tone: CTCSS 100\\.0 Hz"
+        "Received tone: (none|CTCSS ([0-9]|[0-9][0-9]|[02-9][0-9][0-9]|1[1-9][0-9]|10[1-9])\\.[0-9] Hz|CTCSS 100\\.[1-9] Hz)"
+    )
+    dsd_neo_add_iq_decode_test(
+        DECODE_IQ_ANALOG_CTCSS_1000_NFM_25K
+        nfm_ctcss_synth_1000
+        "-fA --nfm-bandwidth-hz 25000"
+        "Received tone: CTCSS 100\\.0 Hz"
+        "Received tone: (none|CTCSS ([0-9]|[0-9][0-9]|[02-9][0-9][0-9]|1[1-9][0-9]|10[1-9])\\.[0-9] Hz|CTCSS 100\\.[1-9] Hz)"
+    )
+    set_tests_properties(
+        DECODE_IQ_ANALOG_CTCSS_1000_NFM_8K
+        DECODE_IQ_ANALOG_CTCSS_1000_NFM_25K
+        PROPERTIES LABELS "iq-decode;analog"
+    )
 
     # Restart safety: bootstrap + engine lifecycle twice inside one process, the
     # shape an embedding host (Android service, GUI shell) uses. Lives here
@@ -11261,6 +11377,67 @@ if(DSD_HAS_RADIO)
         DECODE_IQ_ANALOG_NFM_ADJACENT
         nfm_adjacent_synth
         "-fA --analog-expect-tone-hz 1000 --analog-min-snr-db 20 --analog-min-captured-ms 1400 --analog-probe-max-dbc 12500:-40"
+        ""
+        "${_analog_off_path}"
+    )
+    # Issue #525: --nfm-bandwidth-hz changes the channel filter a listener hears
+    # through. The same 1 kHz tone through an 8 kHz, an explicit 16 kHz and a 25 kHz
+    # channel, each held to NFM_TONE's bounds with its own SNR and in-band floors,
+    # and to the tone's absolute level: -36.1 dBFS at every width (-36.14 at 8 kHz),
+    # bounded to -37.5..-34.5 dBFS, so a width that costs the tone 1.5 dB fails. The
+    # 1 kHz probe's +/-1 dBc is NFM_TONE's self-check of the probe (it is measured
+    # against the fit of the same tone, so it reads 0.00 dBc at any level), not a
+    # level bound. 8 kHz trims the 3 kHz-deviation signal's outer sidebands (tone SNR
+    # 17.0 dB, in-band 28.5 dB), 25 kHz lets in more of the receiver noise (23.6 dB,
+    # 30.4 dB), and an explicit 16 kHz measures the same as the default (25.9 dB,
+    # 30.5 dB): its floors are ones neither other width meets together. That its taps
+    # are the default's bit for bit is DSP_CHANNEL_FILTERS' golden, not this replay's.
+    # The 8 kHz and 25 kHz cases also bound the demodulator noise at 12.5 kHz, where
+    # the channel width shows: -80.4 dBc at 8 kHz and -48.9 dBc at 25 kHz, against
+    # -66.7 dBc at the default. Each bound is one the default fails, so a run that
+    # dropped the width would not pass.
+    set(_analog_tone_bounds
+        "--analog-expect-tone-hz 1000 --analog-min-captured-ms 1400 --analog-min-audible-ms 1400 --analog-max-first-audible-ms 100 --analog-min-rms-dbfs -42 --analog-max-rms-dbfs -30 --analog-max-clip 0 --analog-probe-min-dbc 1000:-1 --analog-probe-max-dbc 1000:1 --analog-probe-min-dbfs 1000:-37.5 --analog-probe-max-dbfs 1000:-34.5"
+    )
+    dsd_neo_add_analog_replay_test(
+        DECODE_IQ_ANALOG_NFM_TONE_8K
+        nfm_tone_synth
+        "-fA --nfm-bandwidth-hz 8000 ${_analog_tone_bounds} --analog-min-snr-db 12 --analog-min-inband-db 24 --analog-probe-max-dbc 12500:-72"
+        ""
+        "${_analog_off_path}"
+    )
+    dsd_neo_add_analog_replay_test(
+        DECODE_IQ_ANALOG_NFM_TONE_16K
+        nfm_tone_synth
+        "-fA --nfm-bandwidth-hz 16000 ${_analog_tone_bounds} --analog-min-snr-db 25 --analog-min-inband-db 30"
+        ""
+        "${_analog_off_path}"
+    )
+    dsd_neo_add_analog_replay_test(
+        DECODE_IQ_ANALOG_NFM_TONE_25K
+        nfm_tone_synth
+        "-fA --nfm-bandwidth-hz=25000 ${_analog_tone_bounds} --analog-min-snr-db 18 --analog-min-inband-db 24 --analog-probe-min-dbc 12500:-58"
+        ""
+        "${_analog_off_path}"
+    )
+    # The unmodulated neighbour 12.5 kHz up at -6 dB, through the narrowest and the
+    # widest channel. At 8 kHz it reads -79.5 dBc (the default 16 kHz filter leaves
+    # -64.9) and the tone keeps a 17.0 dB SNR; at 25 kHz the neighbour sits inside the
+    # passband and reads -8.2 dBc, so each case's neighbour bound is one the default
+    # width and the other case break. At 25 kHz the beat counts against the tone SNR
+    # (-3.5 dB), so that case pins the tone's level instead: -36.1 dBFS, the same as
+    # at every other width.
+    dsd_neo_add_analog_replay_test(
+        DECODE_IQ_ANALOG_NFM_BW_8K
+        nfm_adjacent_synth
+        "-fA --nfm-bandwidth-hz 8000 --analog-expect-tone-hz 1000 --analog-min-snr-db 12 --analog-min-captured-ms 1400 --analog-probe-max-dbc 12500:-72"
+        ""
+        "${_analog_off_path}"
+    )
+    dsd_neo_add_analog_replay_test(
+        DECODE_IQ_ANALOG_NFM_BW_25K
+        nfm_adjacent_synth
+        "-fA --nfm-bandwidth-hz 25000 --analog-expect-tone-hz 1000 --analog-min-captured-ms 1400 --analog-probe-min-dbc 12500:-20 --analog-probe-min-dbfs 1000:-38 --analog-probe-max-dbfs 1000:-34"
         ""
         "${_analog_off_path}"
     )

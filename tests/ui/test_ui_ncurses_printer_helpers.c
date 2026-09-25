@@ -18,10 +18,12 @@
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/core/talkgroup_policy.h>
+#include <dsd-neo/dsp/demod_pipeline.h>
 #include <dsd-neo/protocol/edacs/edacs_afs.h>
 #include <dsd-neo/protocol/m17/m17_parse.h>
 #include <dsd-neo/protocol/p25/p25_callsign.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
+#include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/scan_mode.h>
 #include <dsd-neo/runtime/scan_options.h>
 #include <dsd-neo/runtime/unicode.h>
@@ -629,19 +631,46 @@ print_dsp_status(dsd_opts* opts, dsd_state* state) { // NOLINT(misc-use-internal
     (void)state;
 }
 
+/* The analog width view's reading of the unset NFM default asks DSD_NEO_CHANNEL_LPF (unset here) and, where the
+   channel filter runs but the rate cannot realize the default, the legacy WIDE plan's passband, which no rate these
+   cases run at falls back on. */
+const dsdneoRuntimeConfig*
+dsd_neo_get_config(void) {
+    return NULL;
+}
+
+int
+dsd_channel_lpf_legacy_wide_width_hz(int rate_hz) {
+    (void)rate_hz;
+    return 0;
+}
+
 #include "../../src/ui/terminal/dsd_ncurses_printer.c"
 #include "dsd-neo/app_control/frontend.h"
 #include "dsd-neo/core/input_level.h"
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/secret_redaction.h"
 #include "dsd-neo/core/state_fwd.h"
+#include "dsd-neo/runtime/analog_channel.h"
 
 static int g_requested_ppm;
+/* The channel the front end reports (issue #525): its width, whether the DSP rate limits it, its output, and whether
+   a stream runs at all (the mirror behind the width outlives the stream). */
+static int g_channel_bandwidth_hz;
+static int g_channel_bandwidth_dsp_limited;
+static int g_output_kind = DSD_FRONTEND_RTL_OUTPUT_AUDIO_MONITOR;
+static int g_stream_active;
+static int g_demod_rate_hz;
 
 int
 dsd_app_frontend_get_metrics(dsd_frontend_metrics* out) { // NOLINT(misc-use-internal-linkage)
     DSD_MEMSET(out, 0, sizeof(*out));
     out->requested_ppm = g_requested_ppm;
+    out->output_kind = g_output_kind;
+    out->channel_bandwidth_hz = g_channel_bandwidth_hz;
+    out->channel_bandwidth_dsp_limited = g_channel_bandwidth_dsp_limited;
+    out->stream_active = g_stream_active;
+    out->demod_rate_hz = g_demod_rate_hz;
     return 0;
 }
 
@@ -881,6 +910,107 @@ test_rtl_and_soapy_input_source_rendering(void) {
     reset_printw_capture();
     ui_render_rtl_input_source(&opts, &state);
     assert_capture_contains("| SoapySDR;");
+}
+
+/*
+ * Issue #525: beside the DSP rate, the status line names the analog channel width in force -- the front end's while a
+ * running stream runs the monitor, else the configured one -- and says when the DSP rate rather than the filter bounds
+ * it, or that it is the default. App-control's analog width view decides and spells it for the Qt Radio sheet too, and
+ * runs here for real. The front end's width is kept apart from the configured one, so each case shows which of the two
+ * the line took.
+ */
+static void
+test_analog_channel_status_rendering(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    opts.audio_in_type = AUDIO_IN_RTL;
+    opts.rtl_dsp_bw_khz = 48;
+    DSD_SNPRINTF(opts.audio_in_dev, sizeof(opts.audio_in_dev), "rtl");
+    g_stream_active = 1;
+
+    /* Digital: no analog field. */
+    reset_printw_capture();
+    ui_render_rtl_input_source(&opts, &state);
+    assert(strstr(g_printw_capture, "Analog:") == NULL);
+
+    opts.analog_only = 1;
+    opts.analog_demod = DSD_ANALOG_DEMOD_FM;
+    /* No published width yet: the configured one, the default here, marked as such. */
+    g_channel_bandwidth_hz = 0;
+    reset_printw_capture();
+    ui_render_rtl_input_source(&opts, &state);
+    assert_capture_contains(" DSP-BW: 48 kHz; Analog: NFM 16 kHz (default);");
+
+    opts.analog_nfm_bandwidth_hz = 12500;
+    g_channel_bandwidth_hz = 20000;
+    reset_printw_capture();
+    ui_render_rtl_input_source(&opts, &state);
+    assert_capture_contains(" Analog: NFM 20 kHz;");
+
+    /* A stopped stream: the mirror still holds the last session's width, which is not this one's. */
+    g_stream_active = 0;
+    reset_printw_capture();
+    ui_render_rtl_input_source(&opts, &state);
+    assert_capture_contains(" Analog: NFM 12.5 kHz;");
+    g_stream_active = 1;
+
+    /* A typed digital scan row on the analog session: the configured preset stays analog, and the row filters with its
+       own profile, so the line shows the configured width the row's leave returns to. */
+    static dsd_scan_settings configured;
+    DSD_MEMSET(&configured, 0, sizeof(configured));
+    configured.analog_only = 1;
+    configured.analog_demod = DSD_ANALOG_DEMOD_FM;
+    g_scan_configured = &configured;
+    opts.analog_only = 0;
+    opts.frame_dmr = 1;
+    reset_printw_capture();
+    ui_render_rtl_input_source(&opts, &state);
+    assert_capture_contains(" Analog: NFM 12.5 kHz;");
+    /* ...and with the unset default at a 12 kHz DSP rate, what that leave returns to: the rate itself, DSP-limited,
+       not the 16 kHz the rate cannot filter. The row's front end reports its own channel meanwhile. */
+    opts.analog_nfm_bandwidth_hz = 0;
+    opts.rtl_dsp_bw_khz = 12;
+    g_demod_rate_hz = 12000;
+    reset_printw_capture();
+    ui_render_rtl_input_source(&opts, &state);
+    assert_capture_contains(" DSP-BW: 12 kHz; Analog: NFM 12 kHz (DSP-limited);");
+    opts.analog_nfm_bandwidth_hz = 12500;
+    opts.rtl_dsp_bw_khz = 48;
+    g_demod_rate_hz = 0;
+    g_scan_configured = NULL;
+    opts.frame_dmr = 0;
+    opts.analog_only = 1;
+
+    /* The default below a 20 kHz DSP rate runs no channel filter: the 12 kHz rate itself bounds the channel. */
+    opts.analog_nfm_bandwidth_hz = 0;
+    opts.rtl_dsp_bw_khz = 12;
+    g_channel_bandwidth_hz = 12000;
+    g_channel_bandwidth_dsp_limited = 1;
+    reset_printw_capture();
+    ui_render_rtl_input_source(&opts, &state);
+    assert_capture_contains(" DSP-BW: 12 kHz; Analog: NFM 12 kHz (DSP-limited);");
+    /* ...and with the stream stopped (an rtl_tcp disconnect, a failed restart), from the options alone: the 12 kHz DSP
+       bandwidth is the rate the next start runs the default at, so the line reads what that start publishes, not the
+       default's 16 kHz. */
+    g_stream_active = 0;
+    g_channel_bandwidth_hz = 0;
+    g_channel_bandwidth_dsp_limited = 0;
+    reset_printw_capture();
+    ui_render_rtl_input_source(&opts, &state);
+    assert_capture_contains(" DSP-BW: 12 kHz; Analog: NFM 12 kHz (DSP-limited);");
+    g_stream_active = 1;
+
+    /* The M17 encoder shares the monitor output without being the analog receiver. */
+    opts.m17encoder = 1;
+    reset_printw_capture();
+    ui_render_rtl_input_source(&opts, &state);
+    assert(strstr(g_printw_capture, "Analog:") == NULL);
+
+    g_channel_bandwidth_hz = 0;
+    g_channel_bandwidth_dsp_limited = 0;
+    g_stream_active = 0;
 }
 
 static void
@@ -2659,6 +2789,7 @@ main(void) {
     test_dmr_mono_override_terminal_reporting();
     test_basic_input_source_rendering();
     test_rtl_and_soapy_input_source_rendering();
+    test_analog_channel_status_rendering();
     test_rtl_auto_ppm_status_rendering();
     test_demod_symbol_rate_helpers();
     test_input_level_policy();

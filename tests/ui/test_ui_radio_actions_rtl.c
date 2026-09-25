@@ -108,6 +108,32 @@ rtl_stream_output_rate_for_family(int family, int cqpsk_enable, int symbol_rate_
     return 48000U;
 }
 
+/* Linked in with the record of queued receive requests (symbol_profile.c): a stream that has taken every request, with
+   CQPSK off. */
+uint32_t
+rtl_stream_receive_request_seq(void) {
+    return 1U;
+}
+
+int
+rtl_stream_receive_request_outcome(uint32_t seq) {
+    (void)seq;
+    return RTL_STREAM_RX_REQUEST_SETTLED;
+}
+
+int
+rtl_stream_receive_request_refusal(uint32_t seq, int* out_analog_family, int* out_width_hz) {
+    (void)seq;
+    (void)out_analog_family;
+    (void)out_width_hz;
+    return 0;
+}
+
+int
+rtl_stream_requested_cqpsk(void) {
+    return 0;
+}
+
 static int
 expect_int(const char* tag, int got, int want) {
     if (got != want) {

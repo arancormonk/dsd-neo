@@ -2339,6 +2339,7 @@ test_persistence_gap_schema_rows(void) {
         {"trunking", "scan_voice_qualify_ms"},
         {"trunking", "scan_voice_hold_ms"},
         {"trunking", "scan_max_visit_ms"},
+        {"analog", "nfm_bandwidth_hz"},
     };
 
     for (size_t i = 0; i < sizeof expected / sizeof expected[0]; i++) {
@@ -2535,6 +2536,235 @@ test_scan_max_visit_roundtrip(void) {
         return 1;
     }
     rc |= expect_contains_quiet("trunking scan max visit off", rendered, "scan_max_visit_ms = 0\n");
+    return rc;
+}
+
+static int
+load_config_text(const char* ini, dsdneoUserConfig* cfg) {
+    char path[DSD_TEST_PATH_MAX];
+    if (write_temp_config(ini, path, sizeof path) != 0) {
+        return 1;
+    }
+    const int load_rc = dsd_user_config_load(path, cfg);
+    (void)remove(path);
+    return load_rc;
+}
+
+/*
+ * Issue #525: [analog] nfm_bandwidth_hz rides INI -> cfg -> opts -> snapshot -> render. 0 in the
+ * options is the default, not a request, so a save writes the key only for an explicit width -- an
+ * explicit 16000 included, since it forces the channel filter on where the default would not. The
+ * section itself is always saved, so a config saved at the default loads back as the default over a
+ * session's explicit width. An invalid value is refused by the loader, which keeps the default.
+ */
+static int
+test_analog_nfm_bandwidth_roundtrip(void) {
+    int rc = 0;
+    dsdneoUserConfig cfg;
+    if (load_config_text("[analog]\nnfm_bandwidth_hz = 12500\n", &cfg) != 0) {
+        DSD_FPRINTF(stderr, "analog config failed to load\n");
+        return 1;
+    }
+    if (!cfg.has_analog || cfg.analog_nfm_bandwidth_hz != 12500) {
+        DSD_FPRINTF(stderr, "FAIL: [analog] nfm_bandwidth_hz did not load, got has=%d width=%d\n", cfg.has_analog,
+                    cfg.analog_nfm_bandwidth_hz);
+        rc |= 1;
+    }
+
+    auto opts_storage = std::unique_ptr<dsd_opts>(new dsd_opts{});
+    auto state_storage = std::unique_ptr<dsd_state>(new dsd_state{});
+    dsd_opts& opts = *opts_storage;
+    dsd_state& state = *state_storage;
+    reset_opts_and_state(opts, state);
+    dsd_apply_user_config_to_opts(&cfg, &opts, &state);
+    if (opts.analog_nfm_bandwidth_hz != 12500) {
+        DSD_FPRINTF(stderr, "FAIL: nfm_bandwidth_hz did not reach dsd_opts, got %d\n", opts.analog_nfm_bandwidth_hz);
+        rc |= 1;
+    }
+
+    dsdneoUserConfig snap;
+    dsd_snapshot_opts_to_user_config(&opts, &state, &snap);
+    char rendered[8192];
+    if (render_config_to_buffer(&snap, rendered, sizeof rendered) != 0) {
+        return 1;
+    }
+    rc |= expect_contains("explicit NFM width", rendered, "[analog]\nnfm_bandwidth_hz = 12500\n");
+
+    /* The explicit width equal to the default is still a request, and is saved as one. */
+    opts.analog_nfm_bandwidth_hz = 16000;
+    dsd_snapshot_opts_to_user_config(&opts, &state, &snap);
+    if (render_config_to_buffer(&snap, rendered, sizeof rendered) != 0) {
+        return 1;
+    }
+    rc |= expect_contains("explicit default-valued NFM width", rendered, "nfm_bandwidth_hz = 16000\n");
+
+    /* The default's key is not saved, so a later default change reaches this config, but its section is: loading the
+       file into a session with an explicit width puts the default back rather than keeping that width. */
+    reset_opts_and_state(opts, state);
+    dsd_snapshot_opts_to_user_config(&opts, &state, &snap);
+    if (render_config_to_buffer(&snap, rendered, sizeof rendered) != 0) {
+        return 1;
+    }
+    if (strstr(rendered, "nfm_bandwidth_hz") != NULL) {
+        DSD_FPRINTF(stderr, "FAIL: the default NFM width was saved:\n%s\n", rendered);
+        rc |= 1;
+    }
+    rc |= expect_contains("the section of a default width", rendered, "[analog]\n\n");
+    if (load_config_text(rendered, &cfg) != 0 || !cfg.has_analog || cfg.analog_nfm_bandwidth_hz != 0) {
+        DSD_FPRINTF(stderr, "FAIL: a saved default did not load back as a present [analog] (has=%d width=%d)\n",
+                    cfg.has_analog, cfg.analog_nfm_bandwidth_hz);
+        rc |= 1;
+    }
+    opts.analog_nfm_bandwidth_hz = 12500;
+    dsd_apply_user_config_to_opts(&cfg, &opts, &state);
+    if (opts.analog_nfm_bandwidth_hz != 0) {
+        DSD_FPRINTF(stderr, "FAIL: loading a config saved at the default kept width %d\n",
+                    opts.analog_nfm_bandwidth_hz);
+        rc |= 1;
+    }
+
+    /* Refused, not clamped: the loader keeps the default. */
+    const char* invalid[] = {"[analog]\nnfm_bandwidth_hz = 30000\n", "[analog]\nnfm_bandwidth_hz = 12.5k\n",
+                             "[analog]\nnfm_bandwidth_hz = 0\n"};
+    for (const char* ini : invalid) {
+        if (load_config_text(ini, &cfg) != 0 || cfg.analog_nfm_bandwidth_hz != 0) {
+            DSD_FPRINTF(stderr, "FAIL: invalid width was not refused (width %d) for:\n%s", cfg.analog_nfm_bandwidth_hz,
+                        ini);
+            rc |= 1;
+        }
+    }
+
+    /* A config without [analog] leaves the configured width alone; one whose width the loader refused sets the
+       default, as a config naming no width in that section would. */
+    reset_opts_and_state(opts, state);
+    opts.analog_nfm_bandwidth_hz = 20000;
+    if (load_config_text("[mode]\ndecode = \"analog\"\n", &cfg) != 0) {
+        return 1;
+    }
+    dsd_apply_user_config_to_opts(&cfg, &opts, &state);
+    if (opts.analog_nfm_bandwidth_hz != 20000) {
+        DSD_FPRINTF(stderr, "FAIL: a config without [analog] changed the width to %d\n", opts.analog_nfm_bandwidth_hz);
+        rc |= 1;
+    }
+    if (load_config_text("[analog]\nnfm_bandwidth_hz = 30000\n", &cfg) != 0) {
+        return 1;
+    }
+    dsd_apply_user_config_to_opts(&cfg, &opts, &state);
+    if (opts.analog_nfm_bandwidth_hz != 0) {
+        DSD_FPRINTF(stderr, "FAIL: an [analog] section with a refused width left width %d\n",
+                    opts.analog_nfm_bandwidth_hz);
+        rc |= 1;
+    }
+    dsd_state_ext_free_all(&state);
+    return rc;
+}
+
+/* One dsd_user_config_radio_input_spec() case: @p want NULL expects -1 and @p out left for the caller to ignore. */
+static int
+expect_radio_input_spec(const char* label, const dsdneoUserConfig* cfg, const dsd_opts* opts, const char* want) {
+    char spec[256];
+    spec[0] = '\0';
+    const int got_rc = dsd_user_config_radio_input_spec(cfg, opts, spec, sizeof spec);
+    if (!want) {
+        if (got_rc != -1) {
+            DSD_FPRINTF(stderr, "FAIL: %s: expected no radio input spec, got rc=%d \"%s\"\n", label, got_rc, spec);
+            return 1;
+        }
+        return 0;
+    }
+    if (got_rc != 0 || strcmp(spec, want) != 0) {
+        DSD_FPRINTF(stderr, "FAIL: %s: got rc=%d \"%s\", want \"%s\"\n", label, got_rc, spec, want);
+        return 1;
+    }
+    return 0;
+}
+
+/*
+ * Issue #525: the radio input spec a config's [input] builds, without applying it, which a runtime config apply
+ * compares with the running input to know whether it reopens the device (and what then sets the DSP rate). It is the
+ * spec the apply writes: an rtl source needs rtl_freq, rtl_tcp needs a host and adds the tuning only with rtl_freq, the
+ * values the config leaves out come from the options, a SoapySDR source carries its args, an Airspy source is
+ * "airspy", and a non-radio source builds none.
+ */
+static int
+test_radio_input_spec(void) {
+    int rc = 0;
+    auto opts_storage = std::unique_ptr<dsd_opts>(new dsd_opts{});
+    dsd_opts& opts = *opts_storage;
+    opts.rtl_gain_value = 30;
+    opts.rtlsdr_ppm_error = 4;
+    opts.rtl_dsp_bw_khz = 24;
+    opts.rtl_volume_multiplier = 1;
+
+    dsdneoUserConfig cfg;
+    DSD_MEMSET(&cfg, 0, sizeof cfg);
+    cfg.input_source = DSDCFG_INPUT_RTL;
+    cfg.rtl_device = 1;
+    DSD_SNPRINTF(cfg.rtl_freq, sizeof cfg.rtl_freq, "%s", "146.52M");
+    cfg.rtl_gain = 22;
+    cfg.rtl_ppm_is_set = 1;
+    cfg.rtl_ppm = -3;
+    cfg.rtl_bw_khz = 16;
+    cfg.rtl_sql = -50;
+    cfg.rtl_volume = 2;
+    rc |= expect_radio_input_spec("no [input]", &cfg, &opts, NULL);
+    cfg.has_input = 1;
+    rc |= expect_radio_input_spec("rtl with rtl_freq", &cfg, &opts, "rtl:1:146.52M:22:-3:16:-50:2");
+    /* What the config leaves out is the session's, as the apply takes it. */
+    cfg.rtl_gain = 0;
+    cfg.rtl_ppm_is_set = 0;
+    cfg.rtl_bw_khz = 0;
+    cfg.rtl_volume = 0;
+    rc |= expect_radio_input_spec("rtl from the session's tuning", &cfg, &opts, "rtl:1:146.52M:30:4:24:-50:1");
+    /* No rtl_freq: the apply leaves the input as it is. */
+    cfg.rtl_freq[0] = '\0';
+    rc |= expect_radio_input_spec("rtl without rtl_freq", &cfg, &opts, NULL);
+
+    cfg.input_source = DSDCFG_INPUT_RTLTCP;
+    DSD_SNPRINTF(cfg.rtltcp_host, sizeof cfg.rtltcp_host, "%s", "127.0.0.1");
+    rc |= expect_radio_input_spec("rtltcp without rtl_freq", &cfg, &opts, "rtltcp:127.0.0.1:1234");
+    cfg.rtltcp_port = 1235;
+    DSD_SNPRINTF(cfg.rtl_freq, sizeof cfg.rtl_freq, "%s", "851.375M");
+    cfg.rtl_bw_khz = 48;
+    rc |= expect_radio_input_spec("rtltcp with rtl_freq", &cfg, &opts, "rtltcp:127.0.0.1:1235:851.375M:30:4:48:-50:1");
+    cfg.rtltcp_host[0] = '\0';
+    rc |= expect_radio_input_spec("rtltcp without a host", &cfg, &opts, NULL);
+
+    /* The spec is what the apply writes to the input, so a caller compares it with the running one. */
+    cfg.input_source = DSDCFG_INPUT_SOAPY;
+    rc |= expect_radio_input_spec("soapy without args", &cfg, &opts, "soapy");
+    DSD_SNPRINTF(cfg.soapy_args, sizeof cfg.soapy_args, "%s", "driver=airspy");
+    rc |= expect_radio_input_spec("soapy with args", &cfg, &opts, "soapy:driver=airspy");
+    {
+        static dsd_opts applied;
+        static dsd_state state;
+        reset_opts_and_state(applied, state);
+        dsd_apply_user_config_to_opts(&cfg, &applied, &state);
+        rc |= expect_radio_input_spec("soapy spec is the applied input", &cfg, &opts, applied.audio_in_dev);
+        dsd_state_ext_free_all(&state);
+    }
+    cfg.input_source = DSDCFG_INPUT_AIRSPY;
+    rc |= expect_radio_input_spec("airspy", &cfg, &opts, "airspy");
+
+    static const dsdneoUserInputSource k_other_sources[] = {
+        DSDCFG_INPUT_UNSET, DSDCFG_INPUT_PULSE, DSDCFG_INPUT_FILE, DSDCFG_INPUT_TCP, DSDCFG_INPUT_UDP,
+    };
+    for (dsdneoUserInputSource source : k_other_sources) {
+        cfg.input_source = source;
+        char label[48];
+        DSD_SNPRINTF(label, sizeof label, "source %d builds no radio spec", static_cast<int>(source));
+        rc |= expect_radio_input_spec(label, &cfg, &opts, NULL);
+    }
+
+    cfg.input_source = DSDCFG_INPUT_RTL;
+    char spec[64];
+    rc |= (dsd_user_config_radio_input_spec(NULL, &opts, spec, sizeof spec) == -1) ? 0 : 1;
+    rc |= (dsd_user_config_radio_input_spec(&cfg, NULL, spec, sizeof spec) == -1) ? 0 : 1;
+    rc |= (dsd_user_config_radio_input_spec(&cfg, &opts, NULL, sizeof spec) == -1) ? 0 : 1;
+    rc |= (dsd_user_config_radio_input_spec(&cfg, &opts, spec, 0U) == -1) ? 0 : 1;
+    if (rc) {
+        DSD_FPRINTF(stderr, "FAIL: dsd_user_config_radio_input_spec cases\n");
+    }
     return rc;
 }
 
@@ -3273,6 +3503,8 @@ main(void) {
     rc |= test_scanner_and_candidates_roundtrip();
     rc |= test_scan_voice_gate_roundtrip();
     rc |= test_scan_max_visit_roundtrip();
+    rc |= test_analog_nfm_bandwidth_roundtrip();
+    rc |= test_radio_input_spec();
     rc |= test_tg_lockout_persistence_roundtrip();
     rc |= test_scan_max_visit_snapshot_uses_configured_not_row_override();
     rc |= test_squelch_snapshot_uses_configured_not_row_override();

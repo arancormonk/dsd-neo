@@ -63,6 +63,37 @@ typedef struct rtl_stream_test_cqpsk_toggle_result {
 int rtl_stream_test_cqpsk_toggle_output_clear(int start_cqpsk, int target_cqpsk, int active_rtl_digital,
                                               size_t queued_samples, int cached_symbols,
                                               rtl_stream_test_cqpsk_toggle_result* out_result);
+
+/* What became of receive requests on a running stream (rtl_stream_receive_request_outcome()), each consumed the way
+ * the demod thread consumes them between blocks. */
+typedef struct rtl_stream_test_rx_request_result {
+    uint32_t first_seq;                /* the number of the CQPSK-on request */
+    int queued_outcome;                /* its outcome right after it was queued */
+    int outcome_across_generation;     /* after the output generation moved (a retune) with nothing taken */
+    int published_cqpsk_while_pending; /* rtl_stream_get_cqpsk_status() while it is pending: the stream before it */
+    int outcome_after_consume;         /* once the demod thread took it */
+    int published_cqpsk_after_consume; /* rtl_stream_get_cqpsk_status() then */
+    int replaced_outcome;              /* a request a later one replaced before a consume, once that one is taken */
+    int analog_request_rc;             /* an NFM width the published demod rate filters, queued */
+    int analog_outcome;                /* that request, taken at a demod rate that cannot filter it */
+    int after_refused_outcome;         /* a request queued after the refused one, once taken */
+    int refused_outcome_kept;          /* the refused request's outcome after that later one settled */
+    int open_outcome;                  /* a queued request once a stream open drops the queue */
+    int no_stream_outcome;             /* a queued request once a request is made with no pipeline running */
+    int second_seq_follows;            /* 1 when each queued request took the next number */
+    int requested_cqpsk_while_pending; /* rtl_stream_requested_cqpsk() with the CQPSK-on request pending */
+    int requested_cqpsk_analog_queued; /* ... with the analog request queued over CQPSK on */
+    int requested_cqpsk_after_refusal; /* ... once that request was refused: the CQPSK state the stream kept */
+    int refusal_reported;              /* rtl_stream_receive_request_refusal() for the refused request */
+    int kept_analog_family;            /* the family it says the stream kept (on the analog family, at 12.5 kHz) */
+    int kept_width_hz;                 /* the analog width it says the stream kept */
+    int settled_refusal_reported;      /* rtl_stream_receive_request_refusal() for a settled request */
+    int entry_kept_analog_family;      /* the family kept when a switch onto the monitor was refused */
+    uint32_t refused_seq;              /* the number of that refused switch */
+    int refused_outcome_after_open;    /* its outcome once a stream open has run */
+} rtl_stream_test_rx_request_result;
+
+int rtl_stream_test_rx_request_outcomes(rtl_stream_test_rx_request_result* out);
 int rtl_stream_test_fsk_cfo_snapshot(double dc_rad_per_sample, int rate_out_hz, double* out_cfo_hz,
                                      int* out_after_generation_bump_available, int* out_after_reset_available);
 int rtl_stream_test_fsk_snr_sps(int rate_out_hz, int symbol_rate_hz, int stale_ted_sps);

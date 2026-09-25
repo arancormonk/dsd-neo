@@ -153,6 +153,12 @@ static const dsdcfg_schema_entry_t s_schema[] = {
     /* [dsp] section */
     {"dsp", "iq_balance", "Enable RTL IQ balance (image suppression)", "false", NULL, DSDCFG_TYPE_BOOL, 0, 0},
     {"dsp", "iq_dc_block", "Enable RTL I/Q DC blocker", "false", NULL, DSDCFG_TYPE_BOOL, 0, 0},
+
+    /* [analog] section */
+    {"analog", "nfm_bandwidth_hz",
+     "NFM channel-filter width in Hz: the full RF passband, not the tuner or audio bandwidth. Leave it out for the "
+     "default; an explicit value, 16000 included, always runs the channel filter and must fit the DSP rate",
+     "16000", NULL, DSDCFG_TYPE_INT, 8000, 25000},
 };
 
 /* Deprecated persisted spellings remain accepted for read compatibility, but are deliberately kept out of the

@@ -303,6 +303,136 @@ test_check_messages(void) {
     expect_int("no buffer still rejects", dsd_analog_width_check(DSD_ANALOG_DEMOD_FM, 25000, 24000, NULL, 0), -1);
 }
 
+/* Where a SoapySDR or Airspy device or an I/Q replay sets the rate, the same acceptance and wording, with the fix that
+   rate allows: a device's rate is its capture rate decimated toward the DSP bandwidth, so a wider DSP bandwidth raises
+   it (and a narrower one lowers it past the tap ceiling); a replay's rate is its capture's, which only a narrower width
+   can suit. Narrowing is never the fix where no width of the kind fits; for NFM, leaving the width unset is. */
+static void
+test_check_at_rate_source_messages(void) {
+    char err[DSD_ANALOG_ERROR_TEXT_MAX];
+    const int fm = DSD_ANALOG_DEMOD_FM;
+    expect_int("device 25k at 24k rejected",
+               dsd_analog_width_check_at(fm, 25000, 24000, DSD_ANALOG_RATE_DEVICE, err, sizeof err), -1);
+    expect_str("device 25k at 24k text", err,
+               "NFM bandwidth 25 kHz does not fit the 24 kHz DSP rate (the largest width it fits is 20.4 kHz); raise "
+               "the DSP bandwidth or narrow the NFM width");
+    expect_int("capture 25k at 24k rejected",
+               dsd_analog_width_check_at(fm, 25000, 24000, DSD_ANALOG_RATE_CAPTURE, err, sizeof err), -1);
+    expect_str("capture 25k at 24k text", err,
+               "NFM bandwidth 25 kHz does not fit the 24 kHz DSP rate (the largest width it fits is 20.4 kHz); narrow "
+               "the NFM width");
+    expect_int("rtl source is the plain check",
+               dsd_analog_width_check_at(fm, 25000, 24000, DSD_ANALOG_RATE_RTL_BW, err, sizeof err), -1);
+    expect_contains("rtl source names the bandwidths", err, "set the RTL DSP bandwidth to 48 kHz");
+
+    /* An 8 kHz rate filters at most 6 kHz, below the narrowest NFM width: narrowing cannot help. */
+    expect_int("device 8k at 8k rejected",
+               dsd_analog_width_check_at(fm, 8000, 8000, DSD_ANALOG_RATE_DEVICE, err, sizeof err), -1);
+    expect_str("device 8k at 8k text", err,
+               "NFM bandwidth 8 kHz does not fit the 8 kHz DSP rate (the largest width it fits is 6 kHz); raise the "
+               "DSP bandwidth or leave the NFM width unset");
+    expect_int("capture 8k at 8k rejected",
+               dsd_analog_width_check_at(fm, 8000, 8000, DSD_ANALOG_RATE_CAPTURE, err, sizeof err), -1);
+    expect_str("capture 8k at 8k text", err,
+               "NFM bandwidth 8 kHz does not fit the 8 kHz DSP rate (the largest width it fits is 6 kHz); no NFM width "
+               "fits this DSP rate; leave the NFM width unset");
+    expect_int("capture AM at 6k rejected",
+               dsd_analog_width_check_at(DSD_ANALOG_DEMOD_AM, 5000, 6000, DSD_ANALOG_RATE_CAPTURE, err, sizeof err),
+               -1);
+    expect_contains("capture AM at 6k says none fits", err, "no AM width fits this DSP rate");
+    expect_int("capture AM never names an unset width", strstr(err, "unset") == NULL, 1);
+
+    /* Past the tap ceiling: a device's rate comes down with the DSP bandwidth; a replay's does not. */
+    expect_int("device 16k at 128k rejected",
+               dsd_analog_width_check_at(fm, 16000, 128000, DSD_ANALOG_RATE_DEVICE, err, sizeof err), -1);
+    expect_contains("device 128k names the filter limit", err, "more than 288 taps");
+    expect_contains("device 128k lowers the DSP bandwidth", err,
+                    "lower the DSP bandwidth or leave the NFM width unset");
+    expect_int("capture 16k at 128k rejected",
+               dsd_analog_width_check_at(fm, 16000, 128000, DSD_ANALOG_RATE_CAPTURE, err, sizeof err), -1);
+    expect_contains("capture 128k says no width fits", err,
+                    "no NFM width fits this DSP rate; leave the NFM width unset");
+    expect_int("capture never names an RTL DSP bandwidth", strstr(err, "RTL DSP bandwidth") == NULL, 1);
+
+    /* What the check accepts is unchanged, and so is every other refusal. */
+    expect_int("device 20k at 24k accepted",
+               dsd_analog_width_check_at(fm, 20000, 24000, DSD_ANALOG_RATE_DEVICE, err, sizeof err), 0);
+    expect_str("accepted clears the text", err, "");
+    expect_int("capture 25k at 78125 accepted",
+               dsd_analog_width_check_at(fm, 25000, 78125, DSD_ANALOG_RATE_CAPTURE, err, sizeof err), 0);
+    expect_int("device range rejected",
+               dsd_analog_width_check_at(fm, 30000, 48000, DSD_ANALOG_RATE_DEVICE, err, sizeof err), -1);
+    expect_contains("device range names bounds", err, "8 to 25 kHz");
+
+    char fix[96];
+    expect_int("fix text", dsd_analog_width_rate_fix(fm, 25000, 24000, DSD_ANALOG_RATE_DEVICE, fix, sizeof fix), 0);
+    expect_str("fix text device", fix, "raise the DSP bandwidth or narrow the NFM width");
+    expect_int("fix text no buffer", dsd_analog_width_rate_fix(fm, 25000, 24000, DSD_ANALOG_RATE_DEVICE, NULL, 0), -1);
+}
+
+/* DSD_NEO_CHANNEL_LPF=0 turns the channel filter off: an explicit width, or the AM default, cannot run, at any rate. */
+static void
+test_channel_lpf_off_check(void) {
+    char err[DSD_ANALOG_ERROR_TEXT_MAX];
+    expect_int("lpf on: explicit width runs",
+               dsd_analog_channel_lpf_off_check(DSD_ANALOG_DEMOD_FM, 12500, 0, err, sizeof err), 0);
+    expect_str("lpf on: no text", err, "");
+    expect_int("lpf off: explicit width refused",
+               dsd_analog_channel_lpf_off_check(DSD_ANALOG_DEMOD_FM, 12500, 1, err, sizeof err), -1);
+    expect_str("lpf off: explicit width text", err,
+               "NFM bandwidth 12.5 kHz needs the channel filter, but DSD_NEO_CHANNEL_LPF=0 turns it off; unset "
+               "DSD_NEO_CHANNEL_LPF or drop the explicit bandwidth");
+    expect_int("lpf off: AM default refused",
+               dsd_analog_channel_lpf_off_check(DSD_ANALOG_DEMOD_AM, 0, 1, err, sizeof err), -1);
+    expect_contains("lpf off: AM default text", err, "AM reception needs the channel filter");
+    expect_int("lpf off: refused without a buffer",
+               dsd_analog_channel_lpf_off_check(DSD_ANALOG_DEMOD_FM, 12500, 1, NULL, 0), -1);
+}
+
+/* The selectable RTL DSP bandwidths, and the list of them that filter a width: the fix the validator names, and what
+   the width and bandwidth refusals in app-control put in their toasts. */
+static void
+test_rtl_bandwidth_helpers(void) {
+    static const int selectable[] = {4, 6, 8, 12, 16, 24, DSD_ANALOG_RTL_DSP_BW_MAX_KHZ};
+    expect_int("the widest selectable bandwidth", DSD_ANALOG_RTL_DSP_BW_MAX_KHZ, 48);
+    for (size_t i = 0; i < sizeof selectable / sizeof selectable[0]; i++) {
+        char label[48];
+        DSD_SNPRINTF(label, sizeof label, "%d kHz selectable", selectable[i]);
+        expect_int(label, dsd_analog_rtl_dsp_bw_is_selectable(selectable[i]), 1);
+    }
+    static const int not_selectable[] = {0, -24, 5, 20, 32, 96, 48000};
+    for (size_t i = 0; i < sizeof not_selectable / sizeof not_selectable[0]; i++) {
+        char label[48];
+        DSD_SNPRINTF(label, sizeof label, "%d kHz not selectable", not_selectable[i]);
+        expect_int(label, dsd_analog_rtl_dsp_bw_is_selectable(not_selectable[i]), 0);
+    }
+
+    char fits[64];
+    expect_int("8k fits", dsd_analog_width_fitting_rtl_bandwidths(8000, fits, sizeof fits), 0);
+    expect_str("8k list", fits, "12, 16, 24 or 48");
+    expect_int("12.5k fits", dsd_analog_width_fitting_rtl_bandwidths(12500, fits, sizeof fits), 0);
+    expect_str("12.5k list", fits, "16, 24 or 48");
+    expect_int("16k fits", dsd_analog_width_fitting_rtl_bandwidths(16000, fits, sizeof fits), 0);
+    expect_str("16k list", fits, "24 or 48");
+    expect_int("25k fits", dsd_analog_width_fitting_rtl_bandwidths(25000, fits, sizeof fits), 0);
+    expect_str("25k list", fits, "48");
+    expect_int("AM 5k fits", dsd_analog_width_fitting_rtl_bandwidths(5000, fits, sizeof fits), 0);
+    expect_str("AM 5k list", fits, "8, 12, 16, 24 or 48");
+    /* No selectable bandwidth filters it (the 48 kHz rate stops at 42 kHz), and a width of 0 is no width: empty. */
+    DSD_SNPRINTF(fits, sizeof fits, "%s", "stale");
+    expect_int("50k fits none", dsd_analog_width_fitting_rtl_bandwidths(50000, fits, sizeof fits), 0);
+    expect_str("50k list empty", fits, "");
+    DSD_SNPRINTF(fits, sizeof fits, "%s", "stale");
+    expect_int("0 fits none", dsd_analog_width_fitting_rtl_bandwidths(0, fits, sizeof fits), 0);
+    expect_str("0 list empty", fits, "");
+    /* A short buffer truncates and stays terminated. */
+    char tiny[5];
+    expect_int("tiny buffer", dsd_analog_width_fitting_rtl_bandwidths(8000, tiny, sizeof tiny), 0);
+    expect_int("tiny buffer terminated", (int)strlen(tiny) < (int)sizeof tiny, 1);
+    expect_int("NULL buffer", dsd_analog_width_fitting_rtl_bandwidths(8000, NULL, sizeof fits), -1);
+    expect_int("empty buffer", dsd_analog_width_fitting_rtl_bandwidths(8000, fits, 0U), -1);
+}
+
 int
 main(void) {
     test_ranges_and_defaults();
@@ -312,6 +442,9 @@ main(void) {
     test_max_width_by_rate();
     test_check_table();
     test_check_messages();
+    test_check_at_rate_source_messages();
+    test_channel_lpf_off_check();
+    test_rtl_bandwidth_helpers();
     if (g_failures) {
         DSD_FPRINTF(stderr, "RUNTIME_ANALOG_CHANNEL: %d failure(s)\n", g_failures);
         return 1;

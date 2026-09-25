@@ -79,13 +79,13 @@ Main Menu
 │       ├── Frequency... [769.768750 MHz]
 │       ├── Gain... [AGC]
 │       ├── PPM correction... [0]                { }
-│       ├── Bandwidth... [48 kHz]
+│       ├── DSP bandwidth... [48 kHz]
+│       ├── NFM bandwidth... [default]           (-fA, or a width set, on a radio input)
 │       ├── Squelch (dB)...
 │       ├── Volume multiplier... [1]             v
 │       ├── Auto-PPM [On]
 │       ├── Tuner autogain [On]
 │       ├── Bias tee [Off]
-│       ├── rtl_tcp adaptive buffering [On]
 │       ├── ─────
 │       ├── Device index...
 │       ├── Restart stream
@@ -96,6 +96,7 @@ Main Menu
 │       │   ├── Auto-PPM zero-lock Hz... [60]
 │       │   ├── Auto-PPM freeze [Off]
 │       │   ├── ─────
+│       │   ├── rtl_tcp adaptive buffering [On]
 │       │   ├── rtl_tcp prebuffer... [30 ms]
 │       │   ├── rtl_tcp SO_RCVBUF... [system default]
 │       │   ├── rtl_tcp SO_RCVTIMEO... [Off]
@@ -390,6 +391,23 @@ reads the same way after the measured power, and the DSP panel's `Squelch` line 
 `(row)`. Enable the DSP panel when you
 need to inspect post-channel-filter squelch power. `RF Level` and `Squelch` are measured at different stages and are not
 expected to match exactly.
+
+`DSP-BW:` on the RTL input line is the DSP bandwidth, the demodulator's sample rate that `DSP bandwidth...` sets. Under
+`-fA` the line also shows the analog channel width in force beside it, `Analog: NFM 12.5 kHz;`: the width the front
+end reports while a running stream runs the analog monitor, otherwise the configured one, so a scan row running a
+digital protocol shows the width its leave returns to. The unset default reads `Analog: NFM 16 kHz (default);`, and
+`Analog: NFM 12 kHz (DSP-limited);` beside `DSP-BW: 12 kHz;` when the DSP rate rather than the channel filter bounds
+the channel, which is what the unset default does below a 20 kHz DSP rate: no channel filter runs there, so the rate
+itself is the bound. With the stream stopped, the line reads what the next start runs at `DSP-BW:`, so a 12 kHz DSP
+bandwidth still shows `Analog: NFM 12 kHz (DSP-limited);`, and so does a scan row running a digital protocol at a
+12 kHz rate. `NFM bandwidth...` (offered on a radio input while `-fA` is the configured mode, or while an explicit
+width is set under another mode, so that a width a switch to `-fA` would be refused for can be narrowed first) shows
+the setting, `[12.5 kHz]` or `[default]`, takes any width from 8000 to 25000 Hz, or `0` for the default, and applies
+it live; a width the DSP rate cannot filter is refused with a message naming both and the fix, and a
+`DSP bandwidth...` value the explicit NFM width cannot run at is refused with one saying to narrow the width first.
+Input > Switch source > RTL-SDR refuses the switch, keeping the running input, when its DSP bandwidth cannot filter the
+explicit NFM width (see `docs/cli.md`, Analog reception). The Qt and Android Radio sheet shows the same reading,
+spelled the same way.
 
 The low-level threshold is controlled by `--input-level-warn-db`, `DSD_NEO_INPUT_WARN_DB`, or the `[input]`
 `input_warn_db` user-config key, and defaults to `-40 dBFS`. Changes made through the terminal menu persist through

@@ -24,6 +24,7 @@
 #include <QChar>
 #include <QDateTime>
 #include <QtGlobal>
+#include <dsd-neo/app_control/analog_width_view.h>
 #include <dsd-neo/app_control/call_view.h>
 #include <dsd-neo/app_control/frontend.h>
 #include <dsd-neo/app_control/rx_tone_view.h>
@@ -787,6 +788,23 @@ MetricsModel::fillSquelchOverride(View& next, const dsd_opts* opts_snapshot, con
     next.squelch_readout = QString::fromUtf8(readout);
 }
 
+/* Issue #525: the analog width the Radio sheet shows and the configured one its control edits, as app_control's analog
+ * width view decides them for every frontend (the terminal's "Analog:" status field too). */
+void
+MetricsModel::fillAnalogChannel(View& next, const dsd_opts* opts_snapshot, const dsd_state* snapshot,
+                                const dsd_frontend_metrics& metrics) {
+    dsd_app_analog_width_view view;
+    (void)dsd_app_analog_width_view_get(opts_snapshot, snapshot, &metrics, &view);
+    /* The view leaves the width, its bound and the flag at 0 outside the analog preset. */
+    next.analog_bandwidth_configured_hz = view.configured_hz;
+    next.analog_bandwidth_hz = view.width_hz;
+    next.analog_bandwidth_max_hz = view.max_hz;
+    next.analog_bandwidth_dsp_limited = view.dsp_limited != 0U;
+    char reading[DSD_APP_ANALOG_WIDTH_TEXT_MAX];
+    (void)dsd_app_analog_width_view_format(&view, reading, sizeof reading);
+    next.analog_bandwidth_reading = QString::fromUtf8(reading);
+}
+
 void
 MetricsModel::fillSlotCalls(View& next, const dsd_state* snapshot, double now_m) {
     int line_states[DSD_CALL_STATE_SLOT_COUNT];
@@ -891,6 +909,7 @@ MetricsModel::refresh(const dsd_opts* opts_snapshot, const dsd_state* snapshot) 
      * stepping the channel map once the hangtime expires. */
     next.center_freq_hz = next.radio_input ? static_cast<double>(opts_snapshot->rtlsdr_center_freq) : 0.0;
     next.channel_bandwidth_hz = next.radio_input ? metrics.channel_bandwidth_hz : 0;
+    fillAnalogChannel(next, opts_snapshot, snapshot, metrics);
     next.trunking_enabled = opts_snapshot->trunk_enable != 0;
     next.scanner_mode = opts_snapshot->scanner_mode != 0;
     /* Trunk scan counts as a third owner even though it has no reading of its own:

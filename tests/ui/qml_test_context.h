@@ -620,6 +620,13 @@ class CommandRecorder : public QObject {
     }
 
     Q_INVOKABLE bool
+    setNfmBandwidthHz(int hz) {
+        m_last_nfm_bandwidth_hz = hz;
+        m_nfm_bandwidth_calls++;
+        return true;
+    }
+
+    Q_INVOKABLE bool
     setModulation(int modulation) {
         m_last_modulation = modulation;
         return true;
@@ -671,6 +678,8 @@ class CommandRecorder : public QObject {
         m_last_gain_db = -1;
         m_last_squelch_db = 0.0;
         m_squelch_calls = 0;
+        m_last_nfm_bandwidth_hz = -1;
+        m_nfm_bandwidth_calls = 0;
         m_last_modulation = -1;
         m_last_decode_mode = -1;
         m_last_ppm = 9999;
@@ -730,6 +739,16 @@ class CommandRecorder : public QObject {
     Q_INVOKABLE int
     squelchCalls() const {
         return m_squelch_calls;
+    }
+
+    int
+    lastNfmBandwidthHz() const {
+        return m_last_nfm_bandwidth_hz;
+    }
+
+    int
+    nfmBandwidthCalls() const {
+        return m_nfm_bandwidth_calls;
     }
 
     int
@@ -868,6 +887,8 @@ class CommandRecorder : public QObject {
     int m_last_gain_db = -1;
     double m_last_squelch_db = 0.0;
     int m_squelch_calls = 0;
+    int m_last_nfm_bandwidth_hz = -1;
+    int m_nfm_bandwidth_calls = 0;
     int m_last_modulation = -1;
     int m_last_decode_mode = -1;
     int m_last_ppm = 9999;
@@ -1647,6 +1668,17 @@ class Setup : public QObject {
         return (m_commands != nullptr) ? m_commands->squelchCalls() : -1;
     }
 
+    /** @brief The last NFM channel width the Radio sheet asked for (issue #525), and how many times it asked. */
+    Q_INVOKABLE int
+    lastNfmBandwidthHz() const {
+        return (m_commands != nullptr) ? m_commands->lastNfmBandwidthHz() : -1;
+    }
+
+    Q_INVOKABLE int
+    nfmBandwidthCalls() const {
+        return (m_commands != nullptr) ? m_commands->nfmBandwidthCalls() : -1;
+    }
+
     Q_INVOKABLE int
     lastModulation() const {
         return (m_commands != nullptr) ? m_commands->lastModulation() : -1;
@@ -1962,6 +1994,15 @@ class Setup : public QObject {
         metrics[QStringLiteral("effectiveSquelchOff")] = false;
         metrics[QStringLiteral("squelchRowOverride")] = false;
         metrics[QStringLiteral("squelchReadout")] = QStringLiteral("-120.0 dB");
+        // #525: the analog channel width in force (0 outside the analog preset and on PCM input),
+        // whether the DSP rate bounds it, the configured width the control edits (0 = default),
+        // the widest width the running stream's DSP rate filters (0 = not known), and the
+        // reading as app_control's analog width view spells it.
+        metrics[QStringLiteral("analogBandwidthHz")] = 0;
+        metrics[QStringLiteral("analogBandwidthDspLimited")] = false;
+        metrics[QStringLiteral("analogBandwidthConfiguredHz")] = 0;
+        metrics[QStringLiteral("analogBandwidthMaxHz")] = 0;
+        metrics[QStringLiteral("analogBandwidthReading")] = QString();
         metrics[QStringLiteral("ppm")] = 0;
         m_metrics = metrics;
         m_engine = engine;

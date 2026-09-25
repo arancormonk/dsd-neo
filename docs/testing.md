@@ -287,6 +287,10 @@ drained with nothing decoded. The analog family now stands the vote down, and th
 symbol profile at all in analog-only mode, as the app-control modulation path does not; `FRAME_SYNC_INTERNAL_HELPERS`
 pins both, with a digital session as the control.
 
+The detector listens behind the NFM channel filter, so `DECODE_IQ_ANALOG_CTCSS_1000_NFM_8K` and `_NFM_25K`
+(issue #525) replay `nfm_ctcss_synth_1000` through the narrowest and the widest channel (`--nfm-bandwidth-hz 8000`
+and `25000`) and hold it to `DECODE_IQ_ANALOG_CTCSS_1000`'s assertions: a width must not cost the tone.
+
 The detector's own bounds are pinned in sample time by `DSP_ANALOG_CTCSS`, through the pure receive core
 (`src/dsp/analog_rx_internal.h`) and seeded generators in `tests/dsp/analog_tone_synth.h`. Every figure it asserts
 holds for its fixed seeds, and each row prints its measured share and p50/p95/worst for the PR evidence.
@@ -598,6 +602,11 @@ two cases with their own limits, not a comparison between runs. Measured on the 
 | --- | --- | --- | --- |
 | `DECODE_IQ_ANALOG_NFM_TONE` | `nfm_tone_synth` | tone SNR 25.9 dB, in-band 30.5 dB, RMS -36.1 dBFS, audible 1500 of 1500 ms from 0 ms, no clipping; a 1 kHz probe reads 0.00 dBc | SNR ≥ 20, captured and audible ≥ 1400 ms, first audible ≤ 100 ms, in-band ≥ 24, RMS -42 to -30 dBFS, clip 0, 1 kHz probe within ±1 dBc |
 | `DECODE_IQ_ANALOG_NFM_ADJACENT` | `nfm_adjacent_synth` | tone SNR 25.8 dB; 12.5 kHz probe -64.9 dBc | SNR ≥ 20, captured ≥ 1400 ms, 12.5 kHz ≤ -40 dBc |
+| `DECODE_IQ_ANALOG_NFM_TONE_8K` | `nfm_tone_synth`, `--nfm-bandwidth-hz 8000` | tone SNR 17.0 dB (the 8 kHz channel trims the 3 kHz-deviation sidebands), in-band 28.5 dB, RMS -36.1 dBFS, 1 kHz tone -36.1 dBFS; 12.5 kHz probe -80.4 dBc | `NFM_TONE`'s bounds with SNR ≥ 12, the 1 kHz tone at -37.5 to -34.5 dBFS, and 12.5 kHz ≤ -72 dBc (the default width reads -66.7) |
+| `DECODE_IQ_ANALOG_NFM_TONE_16K` | `nfm_tone_synth`, `--nfm-bandwidth-hz 16000` | measures the same as the default: tone SNR 25.9 dB, in-band 30.5 dB, 1 kHz tone -36.1 dBFS | `NFM_TONE`'s bounds with SNR ≥ 25 and in-band ≥ 30, which neither other width meets together, and the 1 kHz tone at -37.5 to -34.5 dBFS |
+| `DECODE_IQ_ANALOG_NFM_TONE_25K` | `nfm_tone_synth`, `--nfm-bandwidth-hz=25000` | tone SNR 23.6 dB (more receiver noise in the wider channel), in-band 30.4 dB, RMS -36.1 dBFS, 1 kHz tone -36.1 dBFS; 12.5 kHz probe -48.9 dBc | `NFM_TONE`'s bounds with SNR ≥ 18, the 1 kHz tone at -37.5 to -34.5 dBFS, and 12.5 kHz ≥ -58 dBc (the default width reads -66.7) |
+| `DECODE_IQ_ANALOG_NFM_BW_8K` | `nfm_adjacent_synth`, `--nfm-bandwidth-hz 8000` | tone SNR 17.0 dB; 12.5 kHz probe -79.5 dBc | SNR ≥ 12, captured ≥ 1400 ms, 12.5 kHz ≤ -72 dBc (the default width reads -64.9) |
+| `DECODE_IQ_ANALOG_NFM_BW_25K` | `nfm_adjacent_synth`, `--nfm-bandwidth-hz 25000` | the neighbour is in the passband: 12.5 kHz probe -8.2 dBc, tone SNR -3.5 dB (the beat counts as noise), tone level -36.1 dBFS | captured ≥ 1400 ms, 12.5 kHz ≥ -20 dBc, 1 kHz level -38 to -34 dBFS |
 | `DECODE_IQ_ANALOG_SILENT_STREAM_TIME` | `nfm_tone_synth` under `-fi` (monitor off) | total 1500 ms, no audio at all | audible 0 ms, total 1400 to 1600 ms |
 | `DECODE_IQ_ANALOG_NFM_REAL_CTCSS_SMOKE` | `nfm_ctcss_real` | captured and audible 6000 ms, in-band -1.0 dB, RMS -44.6 dBFS | captured ≥ 5800, audible ≥ 4500, in-band ≥ -4, RMS ≤ -34 dBFS |
 | `DECODE_IQ_ANALOG_NFM_REAL_SQUELCH_A_SMOKE` | `nfm_squelch_real_a` | captured 4000 ms, audible 1460 ms from 460 ms, in-band 8.0 dB | captured ≥ 3900, audible ≥ 900, first audible 250 to 1000 ms, in-band ≥ 4 |
@@ -924,8 +933,9 @@ which matters because replay_ab.sh splits the line on spaces:
 replay_ab.sh names each build by its basename and refuses two with the same one, so copy each tree's host to its own
 name. Per-variant flags or settings within one build go in a wrapper script per variant; its name is the variant's
 name. The example compares main with a branch and, on the branch, the land-mobile de-emphasis (`DSD_NEO_DEEMPH=nfm`)
-with the default. A channel-width variant is the same kind of wrapper passing `--nfm-bandwidth-hz`, once #525 adds
-that option; an AGC variant passes `-n 0`, since the default gain is fixed.
+with the default. A channel-width variant is the same kind of wrapper passing `--nfm-bandwidth-hz`
+(`printf '#!/bin/sh\nexec /tmp/ab/analog_replay.branch --nfm-bandwidth-hz 12500 "$@"\n' > /tmp/ab/nfm_12k5`); an AGC
+variant passes `-n 0`, since the default gain is fixed.
 
 ```sh
 mkdir -p /tmp/ab

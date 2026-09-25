@@ -9,6 +9,7 @@
  */
 
 #include "menu_labels.h"
+#include <dsd-neo/app_control/analog_width_view.h>
 #include <dsd-neo/app_control/frontend.h>
 #include <dsd-neo/app_control/history.h>
 #include <dsd-neo/app_control/snapshot.h>
@@ -1368,7 +1369,19 @@ lbl_rtl_ppm(const void* v, char* b, size_t n) {
 const char*
 lbl_rtl_bw(const void* v, char* b, size_t n) {
     const UiCtx* c = (const UiCtx*)v;
-    DSD_SNPRINTF(b, n, "Bandwidth... [%d kHz]", (c && c->opts) ? c->opts->rtl_dsp_bw_khz : 0);
+    DSD_SNPRINTF(b, n, "DSP bandwidth... [%d kHz]", (c && c->opts) ? c->opts->rtl_dsp_bw_khz : 0);
+    return b;
+}
+
+/* The configured NFM channel width, a setting rather than a reading: an explicit width as set, the unset default as
+   "default" (the status line's "Analog:" field shows what that gives at the DSP rate). App-control's spelling. */
+const char*
+lbl_rtl_nfm_bw(const void* v, char* b, size_t n) {
+    const UiCtx* c = (const UiCtx*)v;
+    char width[DSD_APP_ANALOG_WIDTH_TEXT_MAX];
+    (void)dsd_app_analog_width_setting_format((c && c->opts) ? c->opts->analog_nfm_bandwidth_hz : 0, width,
+                                              sizeof width);
+    DSD_SNPRINTF(b, n, "NFM bandwidth... [%s]", width);
     return b;
 }
 

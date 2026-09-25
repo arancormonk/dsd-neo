@@ -141,6 +141,14 @@ class CommandBridge : public QObject {
     Q_INVOKABLE bool setPpm(int ppm) const;
 
     /**
+     * @brief Set the NFM channel-filter width in Hz (8000..25000), or 0 for the default (issue #525).
+     *
+     * The engine refuses a width the front end cannot filter at its DSP rate, with a message, and keeps
+     * the one it had; a view reads the width back rather than trusting the request.
+     */
+    Q_INVOKABLE bool setNfmBandwidthHz(int hz) const;
+
+    /**
      * @brief Choose the demodulator: 0 for C4FM, 1 for QPSK, 2 for GFSK.
      *
      * A setter, not the hotkey's cycle: a control showing them as choices has to

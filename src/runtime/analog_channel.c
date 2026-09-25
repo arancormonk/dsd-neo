@@ -18,7 +18,7 @@
 #include <string.h>
 
 /* RTL DSP bandwidths a user can select (rtl_bw_khz), in kHz, ascending. */
-static const int kRtlDspBandwidthsKhz[] = {4, 6, 8, 12, 16, 24, 48};
+static const int kRtlDspBandwidthsKhz[] = {4, 6, 8, 12, 16, 24, DSD_ANALOG_RTL_DSP_BW_MAX_KHZ};
 
 enum { kRtlDspBandwidthCount = (int)(sizeof kRtlDspBandwidthsKhz / sizeof kRtlDspBandwidthsKhz[0]) };
 
@@ -212,9 +212,21 @@ dsd_analog_width_max_for_rate(int rate_hz) {
     return max_hz > (int64_t)INT_MAX ? INT_MAX : (int)max_hz;
 }
 
-/* "24 or 48" / "16, 24 or 48": every selectable RTL DSP bandwidth that fits @p width_hz, in kHz. */
-static void
-analog_format_fitting_bandwidths(int width_hz, char* out, size_t out_size) {
+int
+dsd_analog_rtl_dsp_bw_is_selectable(int khz) {
+    for (int i = 0; i < kRtlDspBandwidthCount; i++) {
+        if (kRtlDspBandwidthsKhz[i] == khz) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+int
+dsd_analog_width_fitting_rtl_bandwidths(int width_hz, char* out, size_t out_size) {
+    if (!out || out_size == 0U) {
+        return -1;
+    }
     int fitting[kRtlDspBandwidthCount];
     int count = 0;
     for (int i = 0; i < kRtlDspBandwidthCount; i++) {
@@ -228,34 +240,75 @@ analog_format_fitting_bandwidths(int width_hz, char* out, size_t out_size) {
         const char* sep = (i == 0) ? "" : ((i + 1 == count) ? " or " : ", ");
         const int n = DSD_SNPRINTF(out + used, out_size - used, "%s%d", sep, fitting[i]);
         if (n < 0) {
-            return;
+            break;
         }
         used += (size_t)n;
     }
+    return 0;
+}
+
+/* The fix for a width the device's rate cannot filter. Its rate is the capture rate halved down to the first rate at or
+   above the DSP bandwidth, so a wider DSP bandwidth raises it and a narrower one lowers it. */
+static void
+analog_format_device_fix(int kind, int too_fast, int none_fits, char* out, size_t out_size) {
+    const char* label = dsd_analog_demod_label(kind);
+    const char* unset = (kind == DSD_ANALOG_DEMOD_FM) ? " or leave the NFM width unset" : "";
+    if (too_fast) {
+        DSD_SNPRINTF(out, out_size, "lower the DSP bandwidth%s", unset);
+    } else if (none_fits) {
+        DSD_SNPRINTF(out, out_size, "raise the DSP bandwidth%s", unset);
+    } else {
+        DSD_SNPRINTF(out, out_size, "raise the DSP bandwidth or narrow the %s width", label);
+    }
+}
+
+int
+dsd_analog_width_rate_fix(int kind, int width_hz, int rate_hz, int source, char* out, size_t out_size) {
+    if (!out || out_size == 0U) {
+        return -1;
+    }
+    const char* label = dsd_analog_demod_label(kind);
+    const int max_hz = dsd_analog_width_max_for_rate(rate_hz);
+    const int too_fast = max_hz <= 0 && dsd_analog_channel_taps_for_rate(rate_hz) > DSD_ANALOG_CHANNEL_MAX_TAPS;
+    /* Narrowing cannot help where the rate filters no width of the kind; the unset NFM default runs at any rate
+       (DSP-limited where it cannot filter), so it is the fix left for NFM. */
+    const int none_fits = max_hz < dsd_analog_width_min_hz(kind);
+    if (source == DSD_ANALOG_RATE_RTL_BW) {
+        char fits_text[64];
+        (void)dsd_analog_width_fitting_rtl_bandwidths(width_hz, fits_text, sizeof fits_text);
+        DSD_SNPRINTF(out, out_size, "set the RTL DSP bandwidth to %s kHz", fits_text);
+    } else if (source == DSD_ANALOG_RATE_DEVICE) {
+        analog_format_device_fix(kind, too_fast, none_fits, out, out_size);
+    } else if (!none_fits) {
+        DSD_SNPRINTF(out, out_size, "narrow the %s width", label);
+    } else if (kind == DSD_ANALOG_DEMOD_FM) {
+        DSD_SNPRINTF(out, out_size, "no NFM width fits this DSP rate; leave the NFM width unset");
+    } else {
+        DSD_SNPRINTF(out, out_size, "no %s width fits this DSP rate", label);
+    }
+    return 0;
 }
 
 static void
-analog_format_rate_error(int kind, int width_hz, int rate_hz, char* err, size_t err_size) {
+analog_format_rate_error(int kind, int width_hz, int rate_hz, int source, char* err, size_t err_size) {
     char width_text[DSD_ANALOG_WIDTH_TEXT_MAX];
     char rate_text[DSD_ANALOG_WIDTH_TEXT_MAX];
-    char fits_text[64];
+    char fix_text[96];
     (void)dsd_analog_width_format(width_hz, width_text, sizeof width_text);
     (void)dsd_analog_width_format(rate_hz, rate_text, sizeof rate_text);
-    analog_format_fitting_bandwidths(width_hz, fits_text, sizeof fits_text);
+    (void)dsd_analog_width_rate_fix(kind, width_hz, rate_hz, source, fix_text, sizeof fix_text);
     const int max_hz = dsd_analog_width_max_for_rate(rate_hz);
     if (max_hz <= 0 && dsd_analog_channel_taps_for_rate(rate_hz) > DSD_ANALOG_CHANNEL_MAX_TAPS) {
         DSD_SNPRINTF(err, err_size,
                      "%s bandwidth %s cannot be filtered at the %s DSP rate: the channel filter would need more than "
-                     "%d taps; set the RTL DSP bandwidth to %s kHz",
-                     dsd_analog_demod_label(kind), width_text, rate_text, DSD_ANALOG_CHANNEL_MAX_TAPS, fits_text);
+                     "%d taps; %s",
+                     dsd_analog_demod_label(kind), width_text, rate_text, DSD_ANALOG_CHANNEL_MAX_TAPS, fix_text);
         return;
     }
     char max_text[DSD_ANALOG_WIDTH_TEXT_MAX];
     (void)dsd_analog_width_format(max_hz, max_text, sizeof max_text);
-    DSD_SNPRINTF(err, err_size,
-                 "%s bandwidth %s does not fit the %s DSP rate (the largest width it fits is %s); set the RTL DSP "
-                 "bandwidth to %s kHz",
-                 dsd_analog_demod_label(kind), width_text, rate_text, max_text, fits_text);
+    DSD_SNPRINTF(err, err_size, "%s bandwidth %s does not fit the %s DSP rate (the largest width it fits is %s); %s",
+                 dsd_analog_demod_label(kind), width_text, rate_text, max_text, fix_text);
 }
 
 static void
@@ -270,8 +323,8 @@ analog_format_range_error(int kind, int width_hz, char* err, size_t err_size) {
                  dsd_analog_demod_label(kind), width_text, min_text, max_text);
 }
 
-int
-dsd_analog_width_check(int kind, int width_hz, int rate_hz, char* err, size_t err_size) {
+static int
+analog_width_check(int kind, int width_hz, int rate_hz, int source, char* err, size_t err_size) {
     analog_error_clear(err, err_size);
     const int want_text = (err && err_size > 0U) ? 1 : 0;
     if (!dsd_analog_demod_is_valid(kind)) {
@@ -295,9 +348,44 @@ dsd_analog_width_check(int kind, int width_hz, int rate_hz, char* err, size_t er
     }
     if (!dsd_analog_width_realizable(width_hz, rate_hz)) {
         if (want_text) {
-            analog_format_rate_error(kind, width_hz, rate_hz, err, err_size);
+            analog_format_rate_error(kind, width_hz, rate_hz, source, err, err_size);
         }
         return -1;
     }
     return 0;
+}
+
+int
+dsd_analog_width_check(int kind, int width_hz, int rate_hz, char* err, size_t err_size) {
+    return analog_width_check(kind, width_hz, rate_hz, DSD_ANALOG_RATE_RTL_BW, err, err_size);
+}
+
+int
+dsd_analog_width_check_at(int kind, int width_hz, int rate_hz, int source, char* err, size_t err_size) {
+    return analog_width_check(kind, width_hz, rate_hz, source, err, err_size);
+}
+
+int
+dsd_analog_channel_lpf_off_check(int kind, int explicit_width_hz, int channel_lpf_off, char* err, size_t err_size) {
+    analog_error_clear(err, err_size);
+    if (!channel_lpf_off) {
+        return 0;
+    }
+    if (!err || err_size == 0U) {
+        return -1;
+    }
+    if (explicit_width_hz > 0) {
+        char width_text[DSD_ANALOG_WIDTH_TEXT_MAX];
+        (void)dsd_analog_width_format(explicit_width_hz, width_text, sizeof width_text);
+        DSD_SNPRINTF(err, err_size,
+                     "%s bandwidth %s needs the channel filter, but DSD_NEO_CHANNEL_LPF=0 turns it off; unset "
+                     "DSD_NEO_CHANNEL_LPF or drop the explicit bandwidth",
+                     dsd_analog_demod_label(kind), width_text);
+    } else {
+        DSD_SNPRINTF(err, err_size,
+                     "%s reception needs the channel filter, but DSD_NEO_CHANNEL_LPF=0 turns it off; unset "
+                     "DSD_NEO_CHANNEL_LPF",
+                     dsd_analog_demod_label(kind));
+    }
+    return -1;
 }

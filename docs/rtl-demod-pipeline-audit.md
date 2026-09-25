@@ -151,6 +151,94 @@ Enable rule and validation:
   other rate twice (a 1 kHz tone recorded at 78,125 Hz played back at 1628 Hz,
   in 0.61 of its duration).
 
+### Setting The Width
+
+The configured NFM width (`dsd_opts::analog_nfm_bandwidth_hz`, 0 for the
+default) comes from `--nfm-bandwidth-hz`, `[analog] nfm_bandwidth_hz`, the
+terminal's NFM bandwidth row and the Qt Radio sheet, the last two through
+`DSD_APP_CMD_NFM_BANDWIDTH_SET` (user docs: `docs/cli.md`, Analog reception).
+Every entry point refuses rather than clamps, and the checks sit where the rate
+is known:
+
+- The CLI and the INI loader take whole Hz in range only
+  (`dsd_analog_width_parse()`); `--validate-config` reports the same text as an
+  error.
+- For RTL-SDR and rtl_tcp inputs the DSP rate is the DSP bandwidth, so engine
+  setup checks an explicit width against the bandwidth the input spec sets,
+  from the spec alone, before an RTL-SDR input looks for its device (so the
+  refusal needs no dongle); `--validate-config` does the same for a config
+  whose `[input]` builds an `rtl`/`rtltcp` input with `rtl_bw_khz`, that is
+  with `rtl_freq` set and, for rtl_tcp, a host, under `decode = "analog"`.
+  For SoapySDR, Airspy and IQ replay inputs the stream-start check above is
+  the only one, and its refusal names the fix that rate allows
+  (`dsd_analog_width_check_at()` with a `dsd_analog_rate_source`): a device's
+  capture rate is halved down to the first rate at or above the DSP
+  bandwidth, so raising the DSP bandwidth or narrowing the width; a replay
+  runs at its capture's rate, so narrowing the width. Where the rate filters
+  no width of the kind, narrowing is never named: an NFM refusal names
+  leaving the width unset, which runs at any rate.
+- `DSD_NEO_CHANNEL_LPF=0` refuses every explicit width at any rate
+  (`dsd_analog_channel_lpf_off_check()`) on a radio input (PCM input runs no
+  channel filter, so a width there is only stored), at stream start and,
+  first, in every change that would commit to a start with one: a width with
+  no stream running, a config reopen at an RTL DSP bandwidth or a device's
+  rate, a DSP bandwidth change and Input > Switch source > RTL-SDR, so the
+  running input is not torn down for a start that cannot open.
+- The command checks a width the analog preset uses against the running
+  stream (`rtl_stream_check_analog_profile()`), or with no stream against an
+  RTL-SDR/rtl_tcp input's DSP bandwidth, and requests it live from a running
+  front end whose options in force are `-fA` (`rtl_stream_request_analog_profile()`):
+  a width-only change on the monitor, or the width a queued switch onto the
+  analog family carries. The width is not a scan row setting, so the command
+  edits it in place rather than suspending a row's scope (which would read a
+  row's live acquisition as a change); under a typed digital scan row it is
+  stored and applied when the row's leave republishes the analog profile;
+  with CQPSK toggled on under `-fA` it is stored, and turning CQPSK off
+  returns to the monitor through the analog profile with it. Whether CQPSK
+  holds the front end off the monitor is read from the requests queued, not
+  only from the published state, which lags them until the demod thread takes
+  them: the stream notes the CQPSK state each numbered request leaves it on,
+  whoever queues it (the DSP menu's toggle, a mode change, a scan row's
+  profile or its leave), and answers with it while a request is unsettled
+  (`rtl_stream_requested_cqpsk()`), with the published state once every one
+  has settled (`rtl_stream_receive_request_outcome()`: taken and published,
+  replaced, refused where it landed, or dropped by a restart). The output
+  generation says nothing about that: the demod thread moves it when it
+  clears the output for a request, before it publishes, and a retune moves it
+  without taking a request.
+- A width the front end took when asked can still be refused: by the request
+  itself, when a retune moved the published rate after the check, or by the
+  demod thread where the request lands, when the rate moved after that. The
+  first is refused to the caller with the previous width put back; for the
+  second the demod thread records the request as refused
+  (`RTL_STREAM_RX_REQUEST_REFUSED`) with the family and width it kept
+  (`rtl_stream_receive_request_refusal()`), and the decoder's next command
+  drain puts back that width and says why (`svc_take_monitor_request_outcome()`),
+  so the configured width never stays one the filter does not run, even when
+  an earlier width request landed in between. A stream open forgets a refusal
+  its predecessor recorded: it opens on the options as they are.
+- A switch to Analog (a decode-mode change, a config's `[mode]`) holds an
+  explicit width to the rate first, under a scan row too. A retune that moves
+  the rate after that check gets the switch refused at once or where it lands,
+  and the front end stays on the digital family: the decoder then goes back to
+  the mode it had (the configured settings before the switch, under a scan row
+  too), so it is never left on Analog over a digital front end.
+- A config apply that changes the width, or reopens an RTL-SDR or rtl_tcp
+  device under an explicit one, is held to the rate the width will run at: the
+  `rtl_bw_khz` the reopen stores, as given, when the config's `[input]` builds
+  an input spec other than the running one (from any RTL-family input),
+  otherwise the running stream. A refusal leaves the whole config unapplied.
+  An `[input]` that reopens a SoapySDR or Airspy device instead (an Airspy
+  source over a running Airspy reopens it for a new sample rate, serial, DSP
+  bandwidth or volume, `svc_airspy_settings_reopen()`) is held to neither: the
+  reopened stream's start checks the width at the rate that device delivers.
+- `DSD_APP_CMD_RTL_SET_BW` refuses a DSP bandwidth that the explicit width of
+  the configured analog preset cannot run at on an RTL-SDR or rtl_tcp input,
+  naming both; the width is never adjusted to fit the new rate.
+
+The channel squelch measures power after the channel filter, so its noise
+floor moves with the width (about 3 dB per halving).
+
 ### State Hygiene
 
 - De-emphasis and audio-LPF coefficients are recomputed from stored settings
@@ -380,6 +468,27 @@ invariant to it, so it is left as is.
   replay publishes, that a tone captured at 78,125 Hz reaches the output once,
   at 48 kHz and at its own frequency, and that a `-fA` replay switched to DMR
   through the stream API runs the FSK discriminator and returns to the monitor.
+- The configured width (issue #525): `RUNTIME_CLI_PARSE`, `CONFIG_VALIDATION`
+  and `RUNTIME_CONFIG_USER` cover the option, the `[analog]` key and their
+  refusals; `RUNTIME_ANALOG_WIDTH_RATE_REFUSED` the startup refusal of a width
+  an rtl_tcp input's DSP bandwidth cannot filter, and
+  `RUNTIME_ANALOG_NFM_DEFAULT_LOW_RATE` and `_WIDTH_FITS_LOW_RATE` that the
+  unset default and a fitting width still start at a low DSP rate;
+  `APP_COMMAND_QUEUE` and `UI_MENU_SERVICES` the command's live request and
+  refusals, a CQPSK toggle or switch drained with it, a config apply's width
+  and reopen rate (a SoapySDR or Airspy reopen left to its start), scan rows,
+  and the DSP bandwidth and Input > Switch source > RTL-SDR refusals, on an
+  input the stream opens as an RTL-SDR whatever its device string;
+  `IO_RTL_DEMOD_CONFIG` the stream-start refusal's fix on a forced rate. `DECODE_IQ_ANALOG_NFM_TONE_8K`,
+  `_16K` and `_25K` show the 1 kHz tone keeping its level through each width
+  (-36.1 dBFS, bounded to -37.5..-34.5 dBFS; the explicit 16 kHz measuring the
+  same as the default) and, at 8 and 25 kHz, a demodulator noise level at
+  12.5 kHz the default does not reach (-80.4 and -48.9 dBc against -66.7),
+  `DECODE_IQ_ANALOG_NFM_BW_8K`
+  and `_25K` that the neighbour 12.5 kHz away is rejected at 8 kHz (-79.5 dBc)
+  and inside the passband at 25 kHz (-8.2 dBc), and
+  `DECODE_IQ_ANALOG_CTCSS_1000_NFM_8K` and `_NFM_25K` that received-tone
+  detection (issue #522) still reports the 100.0 Hz tone through both widths.
 
 Run the focused audit checks with:
 

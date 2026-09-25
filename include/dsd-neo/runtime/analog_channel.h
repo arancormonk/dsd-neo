@@ -136,6 +136,21 @@ int dsd_analog_width_realizable(int width_hz, int rate_hz);
 /** @brief Largest width realizable at @p rate_hz in Hz, or 0 when no width fits that rate. */
 int dsd_analog_width_max_for_rate(int rate_hz);
 
+/** @brief The widest selectable RTL DSP bandwidth, in kHz. */
+#define DSD_ANALOG_RTL_DSP_BW_MAX_KHZ 48
+
+/** @brief Return 1 when @p khz is a selectable RTL DSP bandwidth (rtl_bw_khz): 4, 6, 8, 12, 16, 24 or 48 kHz. */
+int dsd_analog_rtl_dsp_bw_is_selectable(int khz);
+
+/**
+ * @brief List the selectable RTL DSP bandwidths that filter @p width_hz, in kHz: "48", "24 or 48", "16, 24 or 48".
+ *
+ * The list dsd_analog_width_check() names as the fix. @p out is empty when no bandwidth fits.
+ *
+ * @return 0 on success, -1 on a NULL or empty buffer.
+ */
+int dsd_analog_width_fitting_rtl_bandwidths(int width_hz, char* out, size_t out_size);
+
 /**
  * @brief Validate an explicit width for @p kind at a DSP rate.
  *
@@ -151,6 +166,56 @@ int dsd_analog_width_max_for_rate(int rate_hz);
  * @return 0 when accepted, -1 otherwise.
  */
 int dsd_analog_width_check(int kind, int width_hz, int rate_hz, char* err, size_t err_size);
+
+/** @brief What sets the DSP rate an analog channel runs at, which decides the fix a rate refusal names. */
+typedef enum dsd_analog_rate_source {
+    DSD_ANALOG_RATE_RTL_BW = 0,  /**< An RTL-SDR or rtl_tcp input: the rate is the RTL DSP bandwidth (rtl_bw_khz). */
+    DSD_ANALOG_RATE_DEVICE = 1,  /**< A SoapySDR or Airspy device: the capture rate its device delivers, halved down to
+                                      the first rate at or above the DSP bandwidth, so a wider DSP bandwidth raises it
+                                      and a narrower one lowers it, but neither picks it. */
+    DSD_ANALOG_RATE_CAPTURE = 2, /**< An I/Q replay: the capture's own rate, which no setting moves. */
+} dsd_analog_rate_source;
+
+/**
+ * @brief dsd_analog_width_check() at a DSP rate that @p source (dsd_analog_rate_source) sets.
+ *
+ * Accepts exactly what dsd_analog_width_check() accepts and words every refusal the same, apart from the fix a width
+ * the rate cannot filter names (dsd_analog_width_rate_fix()). DSD_ANALOG_RATE_RTL_BW is dsd_analog_width_check().
+ */
+int dsd_analog_width_check_at(int kind, int width_hz, int rate_hz, int source, char* err, size_t err_size);
+
+/**
+ * @brief The fix a refusal names for a width @p rate_hz cannot filter, where @p source sets that rate.
+ *
+ * - DSD_ANALOG_RATE_RTL_BW: the RTL DSP bandwidths that would fit ("set the RTL DSP bandwidth to 24 or 48 kHz").
+ * - DSD_ANALOG_RATE_DEVICE: "raise the DSP bandwidth or narrow the NFM width"; where the rate filters no width of the
+ *   kind, raising the DSP bandwidth, and where it is past what the channel filter's taps cover, lowering it.
+ * - DSD_ANALOG_RATE_CAPTURE: "narrow the NFM width", or where the rate filters no width of the kind, that none fits.
+ *
+ * Narrowing is never named where it cannot help. Where no NFM width fits, the fix also names leaving the NFM width
+ * unset: the unset NFM default runs at any rate, DSP-limited where it cannot filter.
+ *
+ * @return 0 on success, -1 on a NULL or empty buffer.
+ */
+int dsd_analog_width_rate_fix(int kind, int width_hz, int rate_hz, int source, char* out, size_t out_size);
+
+/**
+ * @brief Refuse a width the channel filter being forced off leaves unfiltered.
+ *
+ * DSD_NEO_CHANNEL_LPF=0 (dsdneoRuntimeConfig channel_lpf_is_set with channel_lpf_enable 0) turns off the channel filter
+ * that an explicit width, and the unset AM default, need; every stream start refuses them then, at any rate. Callers
+ * that commit to a width before the next start pass that state as @p channel_lpf_off and hold the width to it first.
+ * The unset NFM default follows the environment and is never refused; pass it only for AM.
+ *
+ * @param kind              Demodulator kind.
+ * @param explicit_width_hz The explicit width in Hz, or 0 for the kind's default.
+ * @param channel_lpf_off   Nonzero when DSD_NEO_CHANNEL_LPF=0 forces the channel filter off.
+ * @param err               Optional message buffer (cleared when the width may run): the width, the variable and the
+ *                          fix.
+ * @param err_size          Size of @p err in bytes.
+ * @return 0 when the width may run, -1 otherwise.
+ */
+int dsd_analog_channel_lpf_off_check(int kind, int explicit_width_hz, int channel_lpf_off, char* err, size_t err_size);
 
 /**
  * @brief Format a width in Hz as kHz text with trailing zeros dropped ("12.5 kHz", "16 kHz").
