@@ -225,6 +225,16 @@ expect_received_tone_cleared(const char* tag, const dsd_state* state, uint32_t s
     return expect_true(tag, cleared);
 }
 
+/* The tone seed_received_tone() published is still there, in the generation it was seeded in. */
+static int
+expect_received_tone_kept(const char* tag, const dsd_state* state, uint32_t seeded_generation) {
+    const int kept = state->analog_rx.tone_state == DSD_ANALOG_TONE_STATE_LOCKED
+                     && state->analog_rx.tone_kind == DSD_ANALOG_TONE_KIND_CTCSS
+                     && state->analog_rx.ctcss_tenths_hz == 1000 && state->analog_rx.carrier_open == 1
+                     && state->analog_rx.generation == seeded_generation;
+    return expect_true(tag, kept);
+}
+
 static int
 enc_lockout_inert(const dsd_state* state) {
     return state != NULL && dsd_enc_lockout_active_count(state) == 0;
@@ -5122,13 +5132,19 @@ test_nfm_bandwidth_set_on_pcm_input(void) {
     opts.audio_in_type = AUDIO_IN_PULSE;
     opts.analog_only = 1;
     opts.analog_demod = DSD_ANALOG_DEMOD_FM;
+    /* PCM audio arrives demodulated and no channel filter runs on it, so neither a refused nor a stored width changes
+       what the monitor hears: the received tone (issue #522) and its generation stay. */
+    seed_received_tone(&state);
+    const uint32_t seeded = state.analog_rx.generation;
 
     rc |= submit_nfm_width(&opts, &state, 30000, "pcm nfm 30000");
     rc |= expect_int("pcm nfm 30000 keeps the default", opts.analog_nfm_bandwidth_hz, 0);
     rc |= expect_toast("pcm nfm 30000 toast", &state, "Refused: NFM bandwidth 30 kHz is outside 8 kHz to 25 kHz");
+    rc |= expect_received_tone_kept("pcm nfm 30000 keeps the received tone", &state, seeded);
     rc |= submit_nfm_width(&opts, &state, 12500, "pcm nfm 12500");
     rc |= expect_int("pcm nfm 12500 stored", opts.analog_nfm_bandwidth_hz, 12500);
     rc |= expect_toast("pcm nfm 12500 toast", &state, "Applied: NFM bandwidth -> 12.5 kHz");
+    rc |= expect_received_tone_kept("pcm nfm 12500 keeps the received tone", &state, seeded);
     rc |= submit_nfm_width(&opts, &state, 7999, "pcm nfm 7999");
     rc |= expect_int("pcm nfm 7999 keeps 12500", opts.analog_nfm_bandwidth_hz, 12500);
     rc |= expect_toast("pcm nfm 7999 toast", &state, "Refused: NFM bandwidth 7.999 kHz is outside 8 kHz to 25 kHz");
@@ -5845,15 +5861,19 @@ test_nfm_bandwidth_set_applies_live_and_refuses(void) {
     rc |= expect_int("nfm -1 keeps the width", opts.analog_nfm_bandwidth_hz, 12500);
     rc |= expect_toast("nfm -1 toast", &state, "Refused: NFM bandwidth -1 Hz is outside");
 
-    /* The front end refuses a width its 24 kHz DSP rate cannot filter: the toast names both, the limit and the fix. */
+    /* The front end refuses a width its 24 kHz DSP rate cannot filter: the toast names both, the limit and the fix.
+       The channel keeps its filter, so the tone received on it (issue #522) stays too. */
     reset_rx_family_wrap();
     g_analog_check_result = -1;
+    seed_received_tone(&state);
+    const uint32_t seeded = state.analog_rx.generation;
     rc |= submit_nfm_width(&opts, &state, 25000, "nfm 25000");
     rc |= expect_int("nfm 25000 keeps the width", opts.analog_nfm_bandwidth_hz, 12500);
     rc |= expect_int("nfm 25000 not requested", g_analog_req_calls, 0);
     rc |=
         expect_toast("nfm 25000 toast", &state,
                      "Refused: NFM 25 kHz does not fit the 24 kHz DSP rate (max 20.4 kHz); use a 48 kHz DSP bandwidth");
+    rc |= expect_received_tone_kept("nfm 25000 keeps the received tone", &state, seeded);
     /* Refused for a reason the rate does not explain (DSD_NEO_CHANNEL_LPF=0, say): the front end logged it. */
     rc |= submit_nfm_width(&opts, &state, 20000, "nfm 20000 refused");
     rc |= expect_int("nfm 20000 keeps the width", opts.analog_nfm_bandwidth_hz, 12500);
@@ -6262,11 +6282,15 @@ test_config_apply_holds_nfm_width_to_the_front_end(void) {
 
     reset_rx_family_wrap();
     g_analog_check_result = -1;
+    /* A config left unapplied is no boundary: the received tone (issue #522) stays with its generation. */
+    seed_received_tone(&state);
+    const uint32_t seeded = state.analog_rx.generation;
     rc |= submit_config_nfm_width(&opts, &state, DSDCFG_MODE_ANALOG, 25000, "cfg nfm 25000");
     rc |= expect_int("cfg nfm 25000 not applied", opts.analog_nfm_bandwidth_hz, 12500);
     rc |= expect_int("cfg nfm 25000 not requested", g_analog_req_calls, 0);
     rc |= expect_toast("cfg nfm 25000 toast", &state,
                        "Config not applied: NFM 25 kHz does not fit the 24 kHz DSP rate (max 20.4 kHz); use a 48 kHz");
+    rc |= expect_received_tone_kept("cfg nfm 25000 keeps the received tone", &state, seeded);
     /* A [mode] without a decode key applies no preset, so the session stays on the monitor and the width is held the
        same way: it is not a move onto a digital decoder that leaves the width unused. */
     reset_rx_family_wrap();
@@ -7214,11 +7238,14 @@ test_rtl_enable_input_holds_the_nfm_width(void) {
         expect_toast("airspy to rtl toast", &state,
                      "Refused: NFM 25 kHz does not fit the 24 kHz DSP rate (max 20.4 kHz); use a 48 kHz DSP bandwidth");
 
-    /* PCM input: the switch opens the RTL-SDR the "pulse" device string becomes on an RTL input. */
+    /* PCM input: the switch opens the RTL-SDR the "pulse" device string becomes on an RTL input. A refused switch
+       keeps the input, and with it the tone received on it (issue #522). */
     opts.audio_in_type = AUDIO_IN_PULSE;
     DSD_SNPRINTF(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", "pulse");
     opts.analog_nfm_bandwidth_hz = 16000;
     opts.rtl_dsp_bw_khz = 12;
+    seed_received_tone(&state);
+    const uint32_t seeded = state.analog_rx.generation;
     (void)post_empty(DSD_APP_CMD_RTL_ENABLE_INPUT);
     state.ui_msg[0] = '\0';
     rc |= expect_int("pcm to rtl drained", dsd_app_drain_cmds(&opts, &state), 1);
@@ -7227,6 +7254,7 @@ test_rtl_enable_input_holds_the_nfm_width(void) {
     rc |= expect_toast("pcm to rtl toast", &state,
                        "Refused: NFM 16 kHz does not fit the 12 kHz DSP rate (max 9.6 kHz); use a 24 or 48 kHz DSP "
                        "bandwidth");
+    rc |= expect_received_tone_kept("pcm to rtl refused: received tone kept", &state, seeded);
 
     /* A bandwidth that fits, and the unset default at any bandwidth, open the stream. */
     opts.rtl_dsp_bw_khz = 24;
