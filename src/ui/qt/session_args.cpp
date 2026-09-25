@@ -13,6 +13,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <iterator>
 
 #include <QChar>
 #include <QLatin1String>
@@ -483,12 +484,10 @@ session_args_error_text(SessionArgsError error) {
                                          "arrives already demodulated. Choose a radio source, or another decode mode."},
     };
 
-    for (const auto& entry : k_error_texts) {
-        if (entry.error == error) {
-            return QString::fromUtf8(entry.text);
-        }
-    }
-    return {};
+    const auto* const end = std::end(k_error_texts);
+    const auto* const found =
+        std::find_if(std::begin(k_error_texts), end, [error](const auto& entry) { return entry.error == error; });
+    return found != end ? QString::fromUtf8(found->text) : QString();
 }
 
 bool
