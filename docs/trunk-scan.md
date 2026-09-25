@@ -503,9 +503,10 @@ its analog monitor and width, and no symbol profile is applied over the monitor.
   manual advance or avoid moves on, and scan start warns about it once.
 - **Width.** `--nfm-bandwidth-hz <Hz>` in the `options` column sets the target's NFM channel width (whole Hz,
   `8000..25000`); without it the configured NFM width (16 kHz by default) applies. A width the running DSP rate
-  cannot filter is named with the fix at scan start (and again if that rate changes), and that target's retune is
-  then refused at every visit without a further warning. While the target is parked, an RTL DSP bandwidth that cannot
-  filter its width is refused.
+  cannot filter, the target's own or the configured one it runs, is named with the fix at scan start (and again if
+  that rate changes, or, for a target without its own width, if the configured width does), and that target's retune
+  is then refused at every visit without a further warning. While the target is parked, an RTL DSP bandwidth that
+  cannot filter its width is refused.
   With rigctl tuning an audio input, the peer demodulates: the width has no effect (scan start says so) and `-B`
   sets the peer's passband.
 - **Controls.** `--scan-max-visit-ms`, the `Y` hold, advance and avoid work exactly as for digital targets, including

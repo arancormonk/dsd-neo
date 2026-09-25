@@ -20,6 +20,7 @@
 #include <dsd-neo/engine/scan_voice_gate.h>
 #include <dsd-neo/engine/trunk_scan.h>
 #include <dsd-neo/platform/posix_compat.h>
+#include <dsd-neo/runtime/analog_channel.h>
 #include <dsd-neo/runtime/scan_mode.h>
 #include <dsd-neo/runtime/scan_options.h>
 #ifdef USE_RADIO
@@ -271,8 +272,10 @@ typedef struct {
     int saved_tuner_autogain_on;
     int saved_tuner_autogain_is_set;
     uint64_t last_trunk_chan_map_seq;
-    /* The DSP rate the analog targets were last checked at, or TRUNK_SCAN_ANALOG_CHECK_DEFERRED (issue #526). */
+    /* The DSP rate the analog targets were last checked at, or TRUNK_SCAN_ANALOG_CHECK_DEFERRED, and the configured NFM
+     * width a target without its own runs (issue #526). */
     int analog_checked_rate_hz;
+    int analog_checked_nfm_hz;
 } dsd_trunk_scan_coord;
 
 static dsd_trunk_scan_coord* g_trunk_scan_coord;
@@ -2639,40 +2642,50 @@ trunk_scan_analog_target_label(const dsd_trunk_scan_target* target, char* label,
 }
 
 static void
-trunk_scan_warn_analog_width(const dsd_opts* opts, const dsd_trunk_scan_target* target, int dsp_rate_hz) {
+trunk_scan_warn_analog_width(const dsd_opts* opts, const dsd_state* state, const dsd_trunk_scan_target* target,
+                             int dsp_rate_hz) {
     char label[96];
     trunk_scan_analog_target_label(target, label, sizeof label);
-    (void)dsd_engine_scan_warn_analog_width(opts, &target->row_options, dsp_rate_hz, label);
+    (void)dsd_engine_scan_warn_analog_width(opts, state, &target->row_options, dsp_rate_hz, label);
 }
 
 /* The retune skips an analog target whose width the DSP rate cannot fit without a word (dsd_engine_scan_tune_to_freq()),
  * so the analog targets' widths are named again whenever that rate has changed since they were checked -- the operator
- * changed the RTL DSP bandwidth -- or first became known. Their squelch was named when the scan started. */
+ * changed the RTL DSP bandwidth -- or first became known, and the widths of the targets that run the configured NFM
+ * width whenever that width has changed (the width command, a config apply). Their squelch was named when the scan
+ * started. */
 static void
 trunk_scan_recheck_analog_targets(const dsd_opts* opts, const dsd_state* state, dsd_trunk_scan_coord* coord) {
     const int rate_hz = trunk_scan_analog_check_rate(opts, state);
-    if (rate_hz == TRUNK_SCAN_ANALOG_CHECK_DEFERRED || rate_hz == coord->analog_checked_rate_hz) {
+    const int nfm_hz = dsd_engine_scan_configured_nfm_width_hz(opts, state);
+    if (rate_hz == TRUNK_SCAN_ANALOG_CHECK_DEFERRED
+        || (rate_hz == coord->analog_checked_rate_hz && nfm_hz == coord->analog_checked_nfm_hz)) {
         return;
     }
+    const int inherited_only = rate_hz == coord->analog_checked_rate_hz;
     coord->analog_checked_rate_hz = rate_hz;
+    coord->analog_checked_nfm_hz = nfm_hz;
     for (size_t i = 0; i < coord->count; i++) {
-        if (trunk_scan_type_is_analog(coord->targets[i].target.type)) {
-            trunk_scan_warn_analog_width(opts, &coord->targets[i].target, rate_hz);
+        const dsd_trunk_scan_target* target = &coord->targets[i].target;
+        if (trunk_scan_type_is_analog(target->type)
+            && !(inherited_only && (target->row_options.present & DSD_SCAN_OPT_BANDWIDTH))) {
+            trunk_scan_warn_analog_width(opts, state, target, rate_hz);
         }
     }
 }
 
 /* Whether the retune refuses an analog target's width at the published DSP rate before any backend moves
- * (dsd_engine_scan_tune_to_freq()). trunk_scan_recheck_analog_targets(), which runs before every retune, has named such
- * a target for that rate already, with the fact that it is skipped at every visit, so the failed visit adds nothing. */
+ * (dsd_engine_scan_tune_to_freq()): the width in force once the target's options apply, its own or the configured NFM
+ * width it runs. trunk_scan_recheck_analog_targets(), which runs before every retune, has named such a target for that
+ * rate and width already, with the fact that it is skipped at every visit, so the failed visit adds nothing. */
 static int
 trunk_scan_analog_width_refused(const dsd_opts* opts, const dsd_state* state, const dsd_trunk_scan_target* target) {
-    if (!trunk_scan_type_is_analog(target->type)) {
+    if (!trunk_scan_type_is_analog(target->type) || !dsd_opts_is_analog_family(opts)) {
         return 0;
     }
-    return dsd_scan_option_width_check(DSD_SCAN_MODE_NFM, &target->row_options,
-                                       dsd_engine_scan_dsp_rate_hz(opts, state), NULL, 0U)
-           != 0;
+    const int width_hz = dsd_opts_analog_width_hz(opts);
+    const int rate_hz = dsd_engine_scan_dsp_rate_hz(opts, state);
+    return width_hz > 0 && rate_hz > 0 && dsd_analog_width_check(opts->analog_demod, width_hz, rate_hz, NULL, 0U) != 0;
 }
 
 static int
@@ -3050,7 +3063,7 @@ trunk_scan_warn_targets(const dsd_opts* opts, const dsd_state* state, const dsd_
         trunk_scan_analog_target_label(target, label, sizeof label);
         (void)dsd_engine_scan_warn_analog_squelch(opts, state, &target->row_options, label);
         if (check_rate_hz != TRUNK_SCAN_ANALOG_CHECK_DEFERRED) {
-            trunk_scan_warn_analog_width(opts, target, check_rate_hz);
+            trunk_scan_warn_analog_width(opts, state, target, check_rate_hz);
         }
     }
     return check_rate_hz;
@@ -3946,6 +3959,7 @@ dsd_engine_trunk_scan_init(dsd_opts* opts, dsd_state* state, char* err, size_t e
         return -1;
     }
     coord->analog_checked_rate_hz = analog_checked_rate_hz;
+    coord->analog_checked_nfm_hz = dsd_engine_scan_configured_nfm_width_hz(opts, state);
 
     if (dsd_scan_mode_begin(opts, state) != 0
         || trunk_scan_build_target_runtime(coord, opts, state, &list, err, err_sz) != 0) {

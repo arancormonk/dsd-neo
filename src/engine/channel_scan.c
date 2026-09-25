@@ -46,10 +46,11 @@ typedef struct {
     dsd_scan_key_change keys;
     uint64_t key_epoch;
     /* The map generation whose rows were last checked against the input (issues #521, #526), and the DSP rate its
-     * analog row widths were last held to (issue #526). */
+     * analog row widths were last held to, with the configured NFM width a row without its own runs (issue #526). */
     uint64_t rows_checked_map;
     int rows_checked;
     int widths_checked_rate_hz;
+    int widths_checked_nfm_hz;
     int widths_checked;
 } channel_scan;
 
@@ -254,10 +255,30 @@ channel_scan_warn_rows_squelch(const dsd_opts* opts, const dsd_state* state) {
     }
 }
 
+/* The widths the analog rows run, held to @p dsp_rate_hz: every row's, or only those of the rows that run the
+ * configured NFM width (@p inherited_only, after that width alone changed). */
+static void
+channel_scan_warn_rows_width(const dsd_opts* opts, const dsd_state* state, int dsp_rate_hz, int inherited_only) {
+    for (int row = 0; row < state->lcn_freq_count; row++) {
+        if (!dsd_scan_mode_is_analog(dsd_channel_mode_get(state, (size_t)row))) {
+            continue;
+        }
+        const dsd_scan_row_profile* profile = dsd_channel_profile_get(state, (size_t)row);
+        const dsd_scan_option_values* values = profile ? &profile->values : NULL;
+        if (inherited_only && values && (values->present & DSD_SCAN_OPT_BANDWIDTH)) {
+            continue;
+        }
+        char label[64];
+        channel_scan_row_label(state, row, label, sizeof label);
+        (void)dsd_engine_scan_warn_analog_width(opts, state, values, dsp_rate_hz, label);
+    }
+}
+
 /* Once per map the rows' squelch, and the analog row widths once the DSP rate they must fit is known: an RTL stream
  * that has published no rate yet leaves the widths to a later row start, and a changed rate (the operator changed the
  * RTL DSP bandwidth) names them again, since a row whose width the rate cannot fit is skipped quietly at every visit
- * (dsd_engine_scan_tune_to_freq()). */
+ * (dsd_engine_scan_tune_to_freq()). A changed configured NFM width (the width command, a config apply) names again the
+ * rows that run it. */
 static void
 channel_scan_check_rows(const dsd_opts* opts, const dsd_state* state, channel_scan* scan) {
     if (!scan->rows_checked || scan->rows_checked_map != state->trunk_chan_map_seq) {
@@ -267,21 +288,18 @@ channel_scan_check_rows(const dsd_opts* opts, const dsd_state* state, channel_sc
         channel_scan_warn_rows_squelch(opts, state);
     }
     const int dsp_rate_hz = dsd_engine_scan_dsp_rate_hz(opts, state);
-    if ((opts->audio_in_type == AUDIO_IN_RTL && dsp_rate_hz <= 0)
-        || (scan->widths_checked && scan->widths_checked_rate_hz == dsp_rate_hz)) {
+    const int nfm_hz = dsd_engine_scan_configured_nfm_width_hz(opts, state);
+    if (opts->audio_in_type == AUDIO_IN_RTL && dsp_rate_hz <= 0) {
+        return;
+    }
+    const int same_rate = scan->widths_checked && scan->widths_checked_rate_hz == dsp_rate_hz;
+    if (same_rate && scan->widths_checked_nfm_hz == nfm_hz) {
         return;
     }
     scan->widths_checked = 1;
     scan->widths_checked_rate_hz = dsp_rate_hz;
-    for (int row = 0; row < state->lcn_freq_count; row++) {
-        if (!dsd_scan_mode_is_analog(dsd_channel_mode_get(state, (size_t)row))) {
-            continue;
-        }
-        const dsd_scan_row_profile* profile = dsd_channel_profile_get(state, (size_t)row);
-        char label[64];
-        channel_scan_row_label(state, row, label, sizeof label);
-        (void)dsd_engine_scan_warn_analog_width(opts, profile ? &profile->values : NULL, dsp_rate_hz, label);
-    }
+    scan->widths_checked_nfm_hz = nfm_hz;
+    channel_scan_warn_rows_width(opts, state, dsp_rate_hz, same_rate);
 }
 
 /* The squelch an analog row runs with: its own, else the configured one. Off, or at -100 dB and below, holds the row
@@ -338,10 +356,44 @@ scan_input_rate_source(const dsd_opts* opts) {
 }
 
 int
-dsd_engine_scan_warn_analog_width(const dsd_opts* opts, const dsd_scan_option_values* row, int dsp_rate_hz,
-                                  const char* label) {
-    if (!opts || !label || !row || !(row->present & DSD_SCAN_OPT_BANDWIDTH)) {
+dsd_engine_scan_configured_nfm_width_hz(const dsd_opts* opts, const dsd_state* state) {
+    if (!opts) {
         return 0;
+    }
+    const dsd_scan_settings* configured = dsd_scan_mode_configured_view(state);
+    const int width_hz = configured ? configured->analog_nfm_bandwidth_hz : opts->analog_nfm_bandwidth_hz;
+    return width_hz > 0 ? width_hz : 0;
+}
+
+/* A row without a width of its own runs the configured NFM width, which no command holds to the DSP rate while a
+ * digital preset or row runs (it is no width in use there): a rate that cannot filter it skips the row at every visit
+ * as well. Audio input filters nothing, and the configured width is no row's to name there. */
+static int
+scan_warn_configured_nfm_width(const dsd_opts* opts, const dsd_state* state, int dsp_rate_hz, const char* label) {
+    const int width_hz = dsd_engine_scan_configured_nfm_width_hz(opts, state);
+    if (width_hz <= 0 || dsp_rate_hz <= 0 || opts->audio_in_type != AUDIO_IN_RTL) {
+        return 0;
+    }
+    char why[DSD_ANALOG_ERROR_TEXT_MAX];
+    if (dsd_analog_width_check_at(DSD_ANALOG_DEMOD_FM, width_hz, dsp_rate_hz, scan_input_rate_source(opts), why,
+                                  sizeof why)
+        == 0) {
+        return 0;
+    }
+    LOG_WARN("WARNING: %s: it sets no NFM width of its own, and the configured %s; until then it is skipped at every "
+             "visit.\n",
+             label, why);
+    return 1;
+}
+
+int
+dsd_engine_scan_warn_analog_width(const dsd_opts* opts, const dsd_state* state, const dsd_scan_option_values* row,
+                                  int dsp_rate_hz, const char* label) {
+    if (!opts || !label) {
+        return 0;
+    }
+    if (!row || !(row->present & DSD_SCAN_OPT_BANDWIDTH)) {
+        return scan_warn_configured_nfm_width(opts, state, dsp_rate_hz, label);
     }
     if (opts->audio_in_type != AUDIO_IN_RTL) {
         LOG_WARN("WARNING: %s: --nfm-bandwidth-hz %d has no effect on audio input, which arrives demodulated; set "

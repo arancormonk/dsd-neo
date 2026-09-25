@@ -1191,6 +1191,51 @@ test_nfm_row_warnings_follow_the_dsp_rate(void) {
     tunes = reset_count = 0;
 }
 
+/* An nfm row that sets no width of its own runs the configured NFM width, which nothing holds to the DSP rate on a
+ * digital session: a rate that cannot filter it skips those rows at every visit, so the scan start names them with
+ * that width beside the rows whose own width does not fit, and a changed configured width names again only the rows
+ * that run it. */
+static void
+test_nfm_row_warnings_for_the_configured_width(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
+    assert(opts && state);
+    nfm_warning_rows_setup(opts, state, AUDIO_IN_RTL, -60.0);
+    opts->analog_nfm_bandwidth_hz = 16000;
+    g_scan_dsp_rate_hz = 16000;
+    nfm_warning_rows_visit(opts, state, 8);
+    /* Row 2's open squelch, row 1's own 20 kHz, and rows 2 and 4, which run the configured 16 kHz. */
+    assert(g_analog_warnings == 4);
+    assert(strstr(g_analog_warning_rows[1], "Scan channel 1 (150.000000 MHz): NFM bandwidth 20 kHz does not fit"));
+    assert(strstr(g_analog_warning_rows[2], "Scan channel 2 (150.000000 MHz): it sets no NFM width of its own, and the "
+                                            "configured NFM bandwidth 16 kHz does not fit the 16 kHz DSP rate"));
+    assert(strstr(g_analog_warning_rows[2], "set the RTL DSP bandwidth to 24 or 48 kHz; until then it is skipped at "
+                                            "every visit"));
+    assert(strstr(g_analog_warning_rows[3], "Scan channel 4 (150.000000 MHz): it sets no NFM width of its own"));
+    /* A configured width the rate fits names nothing; one it does not names the two rows again, not row 1. */
+    assert(dsd_scan_mode_configured_view(state) != NULL);
+    (void)dsd_scan_mode_set_configured_nfm_bandwidth(opts, state, 12500);
+    nfm_warning_rows_visit(opts, state, 8);
+    assert(g_analog_warnings == 4);
+    (void)dsd_scan_mode_set_configured_nfm_bandwidth(opts, state, 20000);
+    nfm_warning_rows_visit(opts, state, 8);
+    assert(g_analog_warnings == 6);
+    assert(strstr(g_analog_warning_rows[4], "Scan channel 2 (150.000000 MHz): it sets no NFM width of its own, and the "
+                                            "configured NFM bandwidth 20 kHz does not fit"));
+    assert(strstr(g_analog_warning_rows[5], "Scan channel 4 "));
+    /* The unset default runs at any rate (DSP-limited where it cannot filter), so it names nothing. */
+    (void)dsd_scan_mode_set_configured_nfm_bandwidth(opts, state, 0);
+    nfm_warning_rows_visit(opts, state, 8);
+    assert(g_analog_warnings == 6);
+    dsd_engine_channel_scan_leave(opts, state);
+    g_scan_dsp_rate_hz = 0;
+    dsd_state_trunk_lcn_free(state);
+    dsd_state_ext_free_all(state);
+    free(state);
+    free(opts);
+    tunes = reset_count = 0;
+}
+
 int
 main(void) {
     dsd_neo_log_set_tap(count_squelch_warnings, NULL);
@@ -1207,6 +1252,7 @@ main(void) {
     test_nfm_row_restages_after_a_configured_width_edit();
     test_nfm_row_warnings_once_per_row();
     test_nfm_row_warnings_follow_the_dsp_rate();
+    test_nfm_row_warnings_for_the_configured_width();
     dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
     dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
     assert(opts && state);

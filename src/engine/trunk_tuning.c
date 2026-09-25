@@ -416,7 +416,8 @@ dsd_engine_prepare_current_cc_rtl_chain(const dsd_opts* opts, const dsd_state* s
  * kind's default), bound to the target with the scan's gain profile and no symbol profile. Returns -1
  * when the front end refuses the width at the rate it runs.
  *
- * A width the published DSP rate cannot fit was named when the scan started, or when that rate last changed
+ * A width the published DSP rate cannot fit -- the row's own, or the configured NFM width a row without one runs --
+ * was named when the scan started, or when that rate or the configured width last changed
  * (dsd_engine_scan_warn_analog_width() checks it against the same rate), together with the fact that the row is
  * skipped at every visit, so it is refused here without calling into the stream, whose refusal log a valid row's
  * request would re-arm and repeat at every rotation; the trunk-scan coordinator stays quiet about the failed visit for

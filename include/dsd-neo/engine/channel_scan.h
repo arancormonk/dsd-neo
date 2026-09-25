@@ -36,11 +36,18 @@ void dsd_engine_scan_ensure_output(dsd_opts* opts);
  * (no options). Returns 1 when it warned, else 0. */
 int dsd_engine_scan_warn_analog_squelch(const dsd_opts* opts, const dsd_state* state, const dsd_scan_option_values* row,
                                         const char* label);
-/** Warn, in the same form, about an analog row's own width (--nfm-bandwidth-hz, issue #526): on an input with no
- * demodulator to apply it, or one @p dsp_rate_hz cannot filter, which is then skipped at every visit. Said when a scan
- * starts and again whenever the DSP rate changes; @p dsp_rate_hz 0 skips the rate check. Returns 1 when it warned. */
-int dsd_engine_scan_warn_analog_width(const dsd_opts* opts, const dsd_scan_option_values* row, int dsp_rate_hz,
-                                      const char* label);
+/** Warn, in the same form, about the width an analog row runs (issue #526), which is then skipped at every visit:
+ * its own --nfm-bandwidth-hz on an input with no demodulator to apply it, or one @p dsp_rate_hz cannot filter; or, for
+ * a row that sets none, the configured NFM width it runs (dsd_engine_scan_configured_nfm_width_hz()) where
+ * @p dsp_rate_hz cannot filter that. Said when a scan starts, again whenever the DSP rate changes, and for the rows
+ * without a width of their own whenever the configured NFM width does; @p dsp_rate_hz 0 skips the rate check. @p row
+ * may be NULL (no options). Returns 1 when it warned. */
+int dsd_engine_scan_warn_analog_width(const dsd_opts* opts, const dsd_state* state, const dsd_scan_option_values* row,
+                                      int dsp_rate_hz, const char* label);
+/** The explicit NFM width an analog row without one of its own runs (issue #526): the configured width, from the scan
+ * scope's configured view while one is live and dsd_opts otherwise; 0 for the unset default, which no DSP rate
+ * refuses, and when @p opts is NULL. */
+int dsd_engine_scan_configured_nfm_width_hz(const dsd_opts* opts, const dsd_state* state);
 #ifdef __cplusplus
 }
 #endif

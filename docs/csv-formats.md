@@ -278,7 +278,9 @@ it. A width the running DSP rate cannot filter (the channel filter needs
 wider DSP bandwidth or a narrower width; on an I/Q replay a narrower width) when the scan starts, against the rate
 the running stream publishes (an import cannot
 know it: the rate is set when the stream opens and changes with the RTL DSP bandwidth), and again whenever that rate
-changes; that row is then skipped at every visit rather than received without its filter. While a row with its own
+changes; that row is then skipped at every visit rather than received without its filter. A row without a width of
+its own is held to the rate with the configured NFM width it runs, which a digital session never holds to it
+otherwise, and is named again whenever that configured width changes. While a row with its own
 width is on air, an RTL DSP bandwidth that cannot filter the width is refused rather than reopening the stream on it.
 On audio input (rigctl tuning a PCM, UDP or TCP source) the audio arrives demodulated, so a row width has no effect
 and scan start says so; set the peer's own passband (`-B`).

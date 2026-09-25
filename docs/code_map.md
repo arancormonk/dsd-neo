@@ -204,7 +204,10 @@ Tests: `tests/engine/test_engine_trunk_scan.c` (`ENGINE_TRUNK_SCAN`) and
   bandwidth or a narrower width on a SoapySDR or Airspy device, a narrower width on an I/Q replay), is said once per map
   or list and DSP rate: an RTL stream that has published no rate defers it, and a changed rate repeats it, because the
   tune refuses such a row without calling into the stream (whose refusal log a valid row's request would re-arm at
-  every rotation) and the trunk-scan coordinator logs no retune failure for it (`trunk_scan_analog_width_refused()`).
+  every rotation) and the trunk-scan coordinator logs no retune failure for it (`trunk_scan_analog_width_refused()`,
+  which holds the width in force once the target's options apply). A row without a width of its own is held with the
+  configured NFM width it runs (`dsd_engine_scan_configured_nfm_width_hz()`), which no command holds to the rate while
+  a digital preset or row runs, and a changed configured width names those rows again.
   The widths are held to that published rate only, not at import against the configured RTL DSP bandwidth: the rate
   is known only once the stream runs (a device may force another) and changes live, so a width it cannot fit is a
   warning and a skipped row, never an import error.
