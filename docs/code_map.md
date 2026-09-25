@@ -1080,10 +1080,14 @@ Notes:
     open. An AM start on a replay whose sidecar decimates after the demodulator is refused with `AM needs a capture with
     post_downsample 1`: no AM width runs there, the default included. `demod_write_output_block()` skips the output
     scale for AM (`dsd_demod_am_active()`), which normalises its own level. A configured I/Q DC blocker is bypassed
-    under AM with a one-time note (`rtl_demod_note_am_iq_dc_bypass()`, from configuration, a kind switch and the runtime
-    toggle). Tests: `IO_RTL_DEMOD_CONFIG`, `IO_RTL_ANALOG_FAMILY_SWITCH` (digital <-> AM, an AM start to digital and
-    back to AM on the same stream, live FM <-> AM against fresh opens via `rtl_stream_test_analog_kind_switch()`),
-    `IO_RTL_RETUNE_PREPARE` (`rtl_stream_test_audio_monitor_retune_kind()`).
+    under AM with a one-time note (`rtl_demod_note_am_iq_dc_bypass()`, from configuration, a kind switch, a switch onto
+    the analog family (`rtl_demod_enter_analog_family()`) and the runtime toggle). A live FM <-> AM switch on the
+    running monitor (`rtl_stream_apply_analog_request()`) also resets the resampler history and clears the output ring
+    with a generation bump, so the new kind's audio does not follow the old detector's; a width-only change keeps both.
+    Tests: `IO_RTL_DEMOD_CONFIG`, `IO_RTL_ANALOG_FAMILY_SWITCH` (digital <-> AM, an AM start to digital and back to AM
+    on the same stream, live FM <-> AM against fresh opens via `rtl_stream_test_analog_kind_switch()`, and the live
+    output scale through `demod_write_output_block()` via `rtl_stream_test_monitor_output_scale()`: 1/pi for FM, none
+    for AM or digital output), `IO_RTL_RETUNE_PREPARE` (`rtl_stream_test_audio_monitor_retune_kind()`).
   - The monitor's legacy `low_pass_real()` stage (`rate_in` to `rate_out2`) passes audio through: a live open sets both
     to the DSP bandwidth, and IQ replay (`controller_apply_replay_settings()`) sets `rate_out2` to the `rate_in` it
     takes from the capture, so only the rational resampler converts `rate_out` to the output rate. Test:

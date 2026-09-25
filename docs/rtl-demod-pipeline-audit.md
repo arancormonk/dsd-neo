@@ -416,7 +416,10 @@ drained in the same pass of the command queue as the mode change):
 - FM <-> AM: the detector and de-emphasis swap with a monitor-state reset (the
   AM carrier estimate included) and the I/Q DC estimate starts over (AM leaves
   it where FM had it); a changed width also redesigns the channel filter from
-  empty histories.
+  empty histories. The output ring and the resampler history hold the old
+  detector's audio, so the switch clears the ring with a generation bump and
+  resets the resampler, as a family switch does, and the decoder drops the
+  monitor block it had part-collected; a width-only change keeps all three.
 
 The decoder keeps reading the output ring while the demod thread clears it for a
 switch. A read holds the ring's `ready_m` from its tail snapshot to its tail
@@ -495,6 +498,11 @@ in dBFS) were measured at the replay scale. Ratio-based audio metrics are
 invariant to it, so it is left as is. The AM detector normalises its own level
 and is exempt (`dsd_demod_am_active()`), so AM monitor audio is the same live
 and in replay; the `DECODE_IQ_ANALOG_AM_*` level bounds hold on both.
+`IO_RTL_ANALOG_FAMILY_SWITCH` holds that exemption on the live path, which replay
+never exercises: it writes one block through `demod_write_output_block()` with
+the live scale and without (`rtl_stream_test_monitor_output_scale()`), and
+expects FM monitor audio scaled by 1/pi and AM monitor audio and digital
+discriminator output unchanged, at 48 kHz and through the 24 kHz resampler.
 
 ## Regression Coverage
 
@@ -585,7 +593,9 @@ and in replay; the `DECODE_IQ_ANALOG_AM_*` level bounds hold on both.
   AM -> digital and an AM start switched to digital and back to AM on the same
   stream against fresh opens (the carrier estimate and its closed-squelch run
   included), live FM <-> AM switches against a
-  fresh open of the new kind, and AM widths held to a running stream's rate;
+  fresh open of the new kind (the ring cleared, the generation bumped and the
+  resampler reset), the live output scale (1/pi for FM monitor audio, none for
+  AM), and AM widths held to a running stream's rate;
   `IO_RTL_RETUNE_PREPARE` retunes while AM runs. `APP_COMMAND_QUEUE` and
   `UI_MENU_SERVICES` hold the AM width, its default included, to the rate
   through the shared width services, and cover a switch between FM and AM the

@@ -2119,6 +2119,10 @@ retune_settle_should_discard(const struct demod_state* d, float mean_abs, float 
     return 1;
 }
 
+/* The output scale a live stream runs (optimal_settings()): discriminator radians into roughly [-1, 1]. I/Q replay
+   never sets one (0, unscaled). */
+static const float kLiveDiscriminatorOutputScale = (float)(1.0 / M_PI);
+
 /* Apply a single gain factor to the final demod block before handing it to consumers. */
 static inline void
 apply_output_scale(const struct demod_state* d, float* buf, int len) {
@@ -3767,7 +3771,7 @@ optimal_settings(int freq, int rate) {
     }
     uint32_t capture_freq_hz = capture_frequency_for_rate((int64_t)freq, capture_rate_hz);
     /* Normalize discriminator radians into roughly [-1,1] for float pipeline. */
-    dm->output_scale = (float)(1.0 / M_PI);
+    dm->output_scale = kLiveDiscriminatorOutputScale;
     /* Update the effective discriminator output sample rate based on current settings.
        HB cascade reduces by (1<<downsample_passes). Apply optional post_downsample on audio. */
     dm->rate_out = demod_output_rate_for_capture_rate(capture_rate_hz);
@@ -8544,12 +8548,20 @@ rtl_stream_apply_analog_request(int kind, int width_hz) {
         rtl_stream_enter_analog_family(kind, width_hz);
         return;
     }
-    (void)rtl_demod_set_analog_kind(&demod, kind);
+    const int kind_changed = rtl_demod_set_analog_kind(&demod, kind) > 0;
     if (rtl_demod_apply_analog_channel(&demod, kind, width_hz)) {
         /* Width-only change: the next block designs a new plan and starts from empty filter histories. */
         demod.channel_lpf_plan_taps_len = 0;
         demod.channel_lpf_plan_width_hz = 0;
         rtl_demod_clear_filter_histories(&demod);
+    }
+    if (kind_changed) {
+        /* An FM <-> AM switch: the output ring and the resampler hold the old detector's audio (the FM discriminator
+           reading an AM carrier, or the reverse), so the new kind starts from neither, and the generation moves so the
+           decoder discards a read of the old audio in flight. A width-only change keeps both: its audio is the same
+           kind's. */
+        rtl_demod_reset_resampler_state(&demod);
+        rtl_stream_clear_output_ring(rtl_stream_active_output(), 1);
     }
 }
 
@@ -12480,15 +12492,84 @@ rtl_stream_test_analog_kind_switch(const dsd_opts* from_opts, const dsd_opts* to
     family_test_seed_ring(queued);
     rc |= family_test_seed_stale_monitor_state();
     const int kind_before = demod.analog_demod;
+    out->used_before = ring_used(&output);
     out->generation_before = rtl_stream_output_generation();
     out->request_rc = rtl_stream_request_analog_profile(DSD_RX_FAMILY_ANALOG, to_opts->analog_demod,
                                                         dsd_opts_analog_width_hz(to_opts));
     out->deferred_until_consume = demod.analog_demod == kind_before ? 1 : 0;
+    out->used_while_pending = ring_used(&output);
     family_test_demod_thread_boundary();
     out->switched = family_test_capture();
     out->generation_after = rtl_stream_output_generation();
+    out->used_after = ring_used(&output);
     out->published_rc = rtl_stream_get_analog_profile(&out->published_kind, &out->published_width_hz, NULL);
 
+    family_test_restore(saved);
+    family_test_release_buffers();
+    fsk_reacquire_test_cleanup_output_ring(initialized_output);
+    return rc == 0 ? 0 : -3;
+}
+
+/* One block of demodulated samples (a 1 kHz tone at 0.5, as full_demod() leaves it in result) through
+ * demod_write_output_block() with @p output_scale, from a clear resampler into an empty ring; @p got receives what the
+ * ring took, up to @p cap samples. */
+static int
+output_scale_test_write_block(float output_scale, float* got, int cap) {
+    const int n = demod.rate_out > 0 ? demod.rate_out / 100 : 480; /* 10 ms */
+    if (n <= 0 || n > MAXIMUM_BUF_LENGTH) {
+        return -1;
+    }
+    demod.output_scale = output_scale;
+    rtl_demod_reset_resampler_state(&demod);
+    ring_clear(&output);
+    for (int i = 0; i < n; i++) {
+        demod.result[i] = 0.5f * sinf((float)(2.0 * M_PI * 1000.0 * (double)i / (double)demod.rate_out));
+    }
+    demod.result_len = n;
+    (void)demod_write_output_block(&demod, &output);
+    return ring_read_batch(&output, got, (size_t)cap);
+}
+
+extern "C" int
+rtl_stream_test_monitor_output_scale(const dsd_opts* opts, int rate_hz, rtl_stream_test_output_scale_result* out) {
+    if (!opts || !out || rate_hz <= 0) {
+        return -1;
+    }
+    *out = {};
+    int initialized_output = 0;
+    if (fsk_reacquire_test_prepare_output_ring(0U, &initialized_output) != 0) {
+        fsk_reacquire_test_cleanup_output_ring(initialized_output);
+        return -2;
+    }
+    const FamilyTestSaved saved = family_test_save();
+    const float prev_output_scale = demod.output_scale;
+    g_stream = NULL;
+    int rc = family_test_seed_open(opts, rate_hz, 0);
+    out->demod_is_am = dsd_demod_am_active(&demod);
+    out->output_kind = demod.output_kind;
+    out->resampled = demod.resamp_enabled;
+    out->live_scale = kLiveDiscriminatorOutputScale;
+
+    static float unscaled[MAXIMUM_BUF_LENGTH * 4];
+    static float scaled[MAXIMUM_BUF_LENGTH * 4];
+    const int cap = (int)(sizeof unscaled / sizeof unscaled[0]);
+    out->unscaled_samples = output_scale_test_write_block(0.0f, unscaled, cap);
+    out->scaled_samples = output_scale_test_write_block(kLiveDiscriminatorOutputScale, scaled, cap);
+    if (out->unscaled_samples <= 0 || out->scaled_samples != out->unscaled_samples) {
+        rc = -1;
+    } else {
+        /* The least-squares gain from the unscaled block to the scaled one. */
+        double cross = 0.0;
+        double power = 0.0;
+        for (int i = 0; i < out->unscaled_samples; i++) {
+            cross += (double)scaled[i] * (double)unscaled[i];
+            power += (double)unscaled[i] * (double)unscaled[i];
+        }
+        out->gain = power > 0.0 ? (float)(cross / power) : 0.0f;
+    }
+
+    demod.output_scale = prev_output_scale;
+    demod.result_len = 0;
     family_test_restore(saved);
     family_test_release_buffers();
     fsk_reacquire_test_cleanup_output_ring(initialized_output);

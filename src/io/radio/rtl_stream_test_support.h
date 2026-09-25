@@ -87,7 +87,8 @@ typedef struct rtl_stream_test_rx_request_result {
     int refusal_reported;              /* rtl_stream_receive_request_refusal() for the refused request */
     int kept_analog_family;            /* the family it says the stream kept (on the analog family, at 12.5 kHz) */
     int kept_width_hz;                 /* the analog width it says the stream kept */
-    int kept_kind;                     /* the analog kind it says the stream kept (FM) */
+    int kept_kind;                     /* the analog kind it says the stream kept (AM: the kind it ran when an NFM
+                                          request was refused) */
     int settled_refusal_reported;      /* rtl_stream_receive_request_refusal() for a settled request */
     int entry_kept_analog_family;      /* the family kept when a switch onto the monitor was refused */
     uint32_t refused_seq;              /* the number of that refused switch */
@@ -596,13 +597,32 @@ typedef struct rtl_stream_test_kind_switch_result {
     int published_width_hz;
     uint32_t generation_before;
     uint32_t generation_after;
+    size_t used_before;        /* output ring samples the old kind left queued */
+    size_t used_while_pending; /* ... with the request queued, not yet consumed */
+    size_t used_after;         /* ... once the switch was consumed */
 } rtl_stream_test_kind_switch_result;
 
 /* Open the analog monitor on @p from_opts at @p rate_hz, give it a running session's stale monitor audio, filter,
- * carrier-estimate and I/Q DC state, queue a live request for @p to_opts's kind and width (an FM <-> AM switch), and
- * consume it at one demod-thread block boundary; fresh is an open of @p to_opts at the same rate. */
+ * resampler, carrier-estimate and I/Q DC state and a queued output ring, queue a live request for @p to_opts's kind and
+ * width (an FM <-> AM switch, or the same kind again), and consume it at one demod-thread block boundary; fresh is an
+ * open of @p to_opts at the same rate. */
 int rtl_stream_test_analog_kind_switch(const dsd_opts* from_opts, const dsd_opts* to_opts, int rate_hz,
                                        rtl_stream_test_kind_switch_result* out);
+
+typedef struct rtl_stream_test_output_scale_result {
+    int demod_is_am;      /* dsd_demod_am_active() on the open */
+    int output_kind;      /* demod_state::output_kind on the open */
+    int resampled;        /* 1 when the block went through the output resampler */
+    float live_scale;     /* the output scale a live stream runs (1/pi) */
+    int unscaled_samples; /* samples the ring took with no output scale (0, as I/Q replay runs) */
+    int scaled_samples;   /* ... and with the live scale */
+    float gain;           /* least-squares gain from the unscaled output to the scaled one */
+} rtl_stream_test_output_scale_result;
+
+/* Open @p opts at @p rate_hz and write one block of demodulated samples through the output block the demod thread
+ * writes (demod_write_output_block()), once with no output scale, as I/Q replay runs, and once with the scale a live
+ * stream runs: gain says what the live scale did to the audio the ring took (1 when the output is exempt). */
+int rtl_stream_test_monitor_output_scale(const dsd_opts* opts, int rate_hz, rtl_stream_test_output_scale_result* out);
 
 typedef struct rtl_stream_test_retune_profile_landing_result {
     int retune_refused;          /* 1 when the landing check refused the retune */
