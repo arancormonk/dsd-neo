@@ -521,7 +521,7 @@ rate), and the filter within its 288 taps. For an RTL-SDR or rtl_tcp input the D
 | 24 kHz | 20.4 kHz | 8 to 20.4 kHz | all, 5 to 20 kHz |
 | 16 kHz | 13.2 kHz | 8 to 13.2 kHz | 5 to 13.2 kHz |
 | 12 kHz | 9.6 kHz | 8 to 9.6 kHz | 5 to 9.6 kHz |
-| 8 kHz | 6 kHz | none; only the unset default runs there, DSP-limited | 5 or 6 kHz (the default fits) |
+| 8 kHz | 6 kHz | none; only the unset default runs there, DSP-limited | 5 to 6 kHz (the default fits) |
 | 6, 4 kHz | 4.2, 2.4 kHz | none; only the unset default runs there, DSP-limited | none: AM is refused |
 
 A width the DSP rate cannot filter is refused with the width, the rate, the widest width that rate filters and the
@@ -662,14 +662,14 @@ of the setup wizard): the analog monitor with an AM envelope detector in place o
   iq_dc_block`) would remove a carrier tuned to 0 Hz, so it stays off while AM runs, with a one-time log note; it
   applies again to FM.
 - Received-tone detection (CTCSS, below) is FM signalling and does not run for AM.
-- Live changes follow the [When changes apply](#when-changes-apply) table: switching between AM, the Analog (FM)
-  monitor and the digital modes from a frontend applies to the running stream without reopening it, and so does a new
-  AM width (Input > RTL-SDR > `AM bandwidth... [default]` in the terminal, or the Radio sheet's channel width stepper
-  under the AM chip in the Qt and Android app; the terminal row takes any value, and the engine refuses what the rate
-  cannot filter). Under `-Y` scanning the width is held to the running rate too: on a blank row, which keeps the
-  configured mode, it applies live; under a row with its own decode mode (a digital row) the row's profile runs, so the
-  width applies when the row ends. The terminal status line shows the width in force (`Analog: AM 6 kHz (default);`)
-  next to `DSP-BW`, and the Radio sheet shows the same reading.
+- Live changes follow the [When changes apply](#when-changes-apply) table: switching between AM, the Analog (FM) monitor
+  and the digital modes from a frontend applies to the running stream without reopening it, and so does a new AM width
+  (Input > RTL-SDR > `AM bandwidth... [default]` in the terminal, or the Radio sheet's channel width stepper under the
+  AM chip in the Qt and Android app; the terminal row takes any value, and the engine refuses what the rate cannot
+  filter). Under `-Y` scanning the width is held to the running rate too: on a blank row, which keeps the configured
+  mode (its retune brings the AM monitor back after a digital row), it applies live; under a row with its own decode
+  mode (a digital row) the row's profile runs, so the width applies when the row ends. The terminal status line shows
+  the width in force (`Analog: AM 6 kHz (default);`) next to `DSP-BW`, and the Radio sheet shows the same reading.
 
 ### Received tone (CTCSS) on the analog monitor
 
