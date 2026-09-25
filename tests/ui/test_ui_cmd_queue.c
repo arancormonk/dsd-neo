@@ -7376,6 +7376,34 @@ test_rtl_enable_input_holds_the_nfm_width(void) {
     (void)dsd_app_drain_cmds(&opts, &state);
     rc |= expect_int("digital: not held", g_config_rtl_creates, 1);
 
+    /* Issue #526: the switch is unscoped, so the stream it opens starts on the settings in force, an nfm scan row's
+       own width among them, which the configured digital session does not use: that width is held to the rate too. */
+    opts.audio_in_type = AUDIO_IN_PULSE;
+    DSD_SNPRINTF(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", "pulse");
+    opts.analog_nfm_bandwidth_hz = 0;
+    opts.rtl_dsp_bw_khz = 24;
+    dsd_scan_option_values row = {0};
+    row.present = DSD_SCAN_OPT_BANDWIDTH;
+    row.channel_bw_hz = 25000;
+    rc |= expect_int("row width: nfm row", dsd_scan_mode_enter(&opts, &state, DSD_SCAN_MODE_NFM), 0);
+    rc |= expect_int("row width: its width", dsd_scan_mode_options(&opts, &state, &row), 0);
+    g_config_rtl_creates = 0;
+    (void)post_empty(DSD_APP_CMD_RTL_ENABLE_INPUT);
+    state.ui_msg[0] = '\0';
+    rc |= expect_int("row width to rtl drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("row width to rtl: still PCM", opts.audio_in_type, AUDIO_IN_PULSE);
+    rc |= expect_int("row width to rtl: nothing opened", g_config_rtl_creates, 0);
+    rc |=
+        expect_toast("row width to rtl toast", &state,
+                     "Refused: NFM 25 kHz does not fit the 24 kHz DSP rate (max 20.4 kHz); use a 48 kHz DSP bandwidth");
+    /* The same row at a 48 kHz DSP bandwidth opens. */
+    opts.rtl_dsp_bw_khz = 48;
+    (void)post_empty(DSD_APP_CMD_RTL_ENABLE_INPUT);
+    (void)dsd_app_drain_cmds(&opts, &state);
+    rc |= expect_int("row width to rtl at 48 kHz: opened", g_config_rtl_creates, 1);
+    dsd_scan_mode_leave(&opts, &state);
+    opts.analog_only = 0;
+
     opts.analog_nfm_bandwidth_hz = 0;
     state.rtl_ctx = NULL;
     freeState(&state);

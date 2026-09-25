@@ -1473,8 +1473,9 @@ External dependencies (resolved via CMake):
   included; `svc_rtl_set_bandwidth()` refuses a bandwidth whose DSP rate cannot filter that width, as well as the
   configured one (on RTL-SDR and rtl_tcp, where the bandwidth sets the rate), rather than let the start refuse it and
   leave no radio input; the toast names the scan row's width (`DSP BW 12 kHz cannot filter the scan row's NFM 12.5 kHz
-  (max 9.6 kHz); keep a wider DSP bandwidth`). Its preview fields,
-  `bandwidth_hz` in `dsd_csv_channel_profile` and `dsd_app_scan_csv_target` (-1 when the row inherits), are filled,
+  (max 9.6 kHz); keep a wider DSP bandwidth`), or gives the width's own fix where the row runs the configured width.
+  Input > Switch source > RTL-SDR (`svc_check_rtl_input_analog_width()`), unscoped too, holds the same two widths.
+  The option's preview fields, `bandwidth_hz` in `dsd_csv_channel_profile` and `dsd_app_scan_csv_target` (-1 when the row inherits), are filled,
   but `ImportedFilesModel` does not publish them yet: the Qt/Android channel-map review and target preview gain the
   width with the Qt scan-list editor that follows (issue #526), which carries the AM width as well.
 - Adding a row option: add the `DSD_SCAN_OPT_*` bit (reserved values only), a `dsd_scan_option_values` field and a

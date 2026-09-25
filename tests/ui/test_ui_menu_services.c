@@ -1019,6 +1019,18 @@ test_rtl_bandwidth_holds_the_analog_width_in_force(void) {
     rc |= expect_int("bandwidth after the row applied", svc_rtl_set_bandwidth(&opts, &state, 12, why, sizeof why), 0);
     rc |= expect_int("bandwidth after the row stored", opts.rtl_dsp_bw_khz, 12);
 
+    /* An nfm row without a width of its own runs the configured width, which the digital session holds nowhere else:
+       held the same way, with the width's own fix. */
+    opts.rtl_dsp_bw_khz = 24;
+    opts.analog_nfm_bandwidth_hz = 12500;
+    rc |= expect_int("configured width row entered", dsd_scan_mode_enter(&opts, &state, DSD_SCAN_MODE_NFM), 0);
+    rc |= expect_int("configured width row options", dsd_scan_mode_options(&opts, &state, NULL), 0);
+    rc |= expect_int("configured width row refused", svc_rtl_set_bandwidth(&opts, &state, 12, why, sizeof why), -1);
+    rc |= expect_int(
+        "configured width row reason",
+        strcmp(why, "DSP BW 12 kHz cannot filter NFM 12.5 kHz (max 9.6 kHz); narrow the NFM width first") == 0, 1);
+    dsd_scan_mode_leave(&opts, &state);
+
     reset_rtl_restart_stubs();
     dsd_state_ext_free_all(&state);
     DSD_MEMSET(&opts, 0, sizeof(opts));
