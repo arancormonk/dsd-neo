@@ -17,6 +17,7 @@
 #include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/runtime/analog_channel.h>
 #include <dsd-neo/runtime/config.h>
+#include <dsd-neo/runtime/log.h>
 #include <dsd-neo/runtime/mem.h>
 #include <dsd-neo/runtime/ring.h>
 #include <stdint.h>
@@ -1551,6 +1552,51 @@ set_iq_dc_block_env(const char* value) {
     dsd_neo_config_init();
 }
 
+/* The notes the log tap has seen that a configured I/Q DC blocker is bypassed for AM. */
+static std::atomic<int> g_iq_dc_bypass_notes{0};
+
+static void
+count_iq_dc_bypass_notes(dsd_neo_log_level_t level, const char* text, void* ctx) {
+    (void)level;
+    (void)ctx;
+    if (text && std::strstr(text, "The I/Q DC blocker stays off while AM is demodulated")) {
+        g_iq_dc_bypass_notes.fetch_add(1, std::memory_order_relaxed);
+    }
+}
+
+/* A digital start switched live onto AM (rtl_demod_enter_analog_family(), the decoder picker's AM on a DMR session)
+ * notes a configured I/Q DC blocker's bypass, as an AM start and a live FM -> AM switch do: the family is off until the
+ * analog channel goes in, so the note has to wait for it. The note is logged once per process, so main() runs this
+ * before any other AM start. */
+static int
+expect_family_entry_notes_am_iq_dc_bypass(void) {
+    dsd_neo_log_set_tap(count_iq_dc_bypass_notes, NULL);
+    set_iq_dc_block_env("1");
+    demod_state* demod = alloc_zeroed_demod();
+    if (!demod) {
+        set_iq_dc_block_env(NULL);
+        return 1;
+    }
+    static dsd_opts dmr;
+    DSD_MEMSET(&dmr, 0, sizeof dmr);
+    dmr.frame_dmr = 1;
+    char err[256];
+    int rc = expect_int_eq("digital start with the I/Q DC blocker",
+                           configure_and_finalize(demod, &dmr, 48000, err, sizeof err), 0);
+    rc |= expect_int_eq("digital start notes nothing", g_iq_dc_bypass_notes.load(std::memory_order_relaxed), 0);
+    output_state output;
+    DSD_MEMSET(&output, 0, sizeof(output));
+    output.rate = 48000;
+    rtl_demod_enter_analog_family(demod, &output, DSD_ANALOG_DEMOD_AM, 0, 48000);
+    rc |= expect_int_eq("digital -> AM runs the AM detector", dsd_demod_am_active(demod), 1);
+    rc |= expect_int_eq("digital -> AM bypasses the I/Q DC blocker", dsd_demod_iq_dc_block_active(demod), 0);
+    rc |= expect_int_eq("digital -> AM notes the bypass", g_iq_dc_bypass_notes.load(std::memory_order_relaxed), 1);
+    rtl_demod_cleanup(demod);
+    dsd_neo_aligned_free(demod);
+    set_iq_dc_block_env(NULL);
+    return rc;
+}
+
 /* One AM start (issue #524): the detector, no de-emphasis at any rate, and the channel filter on at the width asked for
  * (the AM default counts as asked for, so it never falls back to the legacy enable rule). */
 static int
@@ -1946,7 +1992,8 @@ expect_rate_refresh_leaves_cqpsk_profile(void) {
 
 int
 main(void) {
-    int rc = 0;
+    /* First: the note it checks is logged once per process. */
+    int rc = expect_family_entry_notes_am_iq_dc_bypass();
     /*
      * Walk protocol families through the same demod configuration helper.
      * The assertions check symbol rate, output kind, and channel filter profile

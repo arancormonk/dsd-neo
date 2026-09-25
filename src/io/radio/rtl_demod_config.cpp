@@ -1390,6 +1390,10 @@ rtl_demod_enter_analog_family(struct demod_state* demod, struct output_state* ou
     rtl_demod_maybe_update_resampler_after_rate_change(demod, output, rtl_dsp_bw_hz);
     rtl_demod_maybe_refresh_ted_sps_after_rate_change(demod, NULL, output, /*preserve_active_profile=*/1);
     demod_family_switch_reset(demod);
+    /* rtl_demod_set_analog_kind() notes the bypass on the running monitor only: here the family was off until the
+       analog channel went in, so a switch onto AM from the digital family (or from a profile CQPSK or a typed digital
+       row put in place) is noted now that the AM detector runs. */
+    (void)rtl_demod_note_am_iq_dc_bypass(demod->iq_dc_block_enable, dsd_demod_am_active(demod));
 }
 
 int
