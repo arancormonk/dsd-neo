@@ -1219,7 +1219,7 @@ symbol_stamp_unsynced_carrier(const dsd_opts* opts, dsd_state* state) {
 }
 
 static inline void
-symbol_output_unsynced_analog(dsd_opts* opts, dsd_state* state, unsigned int analog_block) {
+symbol_output_unsynced_analog(const dsd_opts* opts, dsd_state* state, unsigned int analog_block) {
     if (symbol_unsynced_audio_allowed(opts, state)) {
         symbol_write_unsynced_audio(opts, state, analog_block);
     }
