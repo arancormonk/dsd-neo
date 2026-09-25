@@ -5623,12 +5623,12 @@ expect_toast(const char* label, const dsd_state* state, const char* text) {
 
 /* An -fA session on an RTL-SDR input whose DSP bandwidth is 24 kHz, with the front end on the analog monitor. */
 static void
-init_nfm_session(dsd_opts* opts, dsd_state* state, void* fake_ctx) {
+init_nfm_session(dsd_opts* opts, dsd_state* state, RtlSdrContext* fake_ctx) {
     init_decode_mode_context(opts, state);
     opts->audio_in_type = AUDIO_IN_RTL;
     DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", "rtl:0:851.375M:0:0:24");
     opts->rtl_dsp_bw_khz = 24;
-    state->rtl_ctx = (RtlSdrContext*)fake_ctx;
+    state->rtl_ctx = fake_ctx;
     (void)dsd_app_command_set_i32(DSD_APP_CMD_DECODE_MODE_SET, (int32_t)DSDCFG_MODE_ANALOG);
     (void)dsd_app_drain_cmds(opts, state);
     reset_rx_family_wrap();
@@ -5646,7 +5646,7 @@ test_nfm_bandwidth_set_applies_live_and_refuses(void) {
     static dsd_state state;
     static void* fake_ctx[2];
     int rc = 0;
-    init_nfm_session(&opts, &state, fake_ctx);
+    init_nfm_session(&opts, &state, (RtlSdrContext*)fake_ctx);
     rc |= expect_int("nfm: session is analog", opts.analog_only, 1);
 
     rc |= submit_nfm_width(&opts, &state, 12500, "nfm 12500");
@@ -5738,7 +5738,7 @@ test_nfm_bandwidth_set_under_scan_rows(void) {
     static dsd_state state;
     static void* fake_ctx[2];
     int rc = 0;
-    init_nfm_session(&opts, &state, fake_ctx);
+    init_nfm_session(&opts, &state, (RtlSdrContext*)fake_ctx);
     rc |= expect_int("nfm row: typed DMR row", dsd_scan_mode_enter(&opts, &state, DSD_SCAN_MODE_DMR), 0);
     rc |= expect_int("nfm row: typed DMR options", dsd_scan_mode_options(&opts, &state, NULL), 0);
     reset_rx_family_wrap();
@@ -5794,7 +5794,7 @@ test_config_apply_holds_nfm_width_to_the_front_end(void) {
     static dsd_state state;
     static void* fake_ctx[2];
     int rc = 0;
-    init_nfm_session(&opts, &state, fake_ctx);
+    init_nfm_session(&opts, &state, (RtlSdrContext*)fake_ctx);
 
     rc |= submit_config_nfm_width(&opts, &state, DSDCFG_MODE_UNSET, 12500, "cfg nfm 12500");
     rc |= expect_int("cfg nfm 12500 applied", opts.analog_nfm_bandwidth_hz, 12500);
