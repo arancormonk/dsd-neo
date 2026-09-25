@@ -72,6 +72,8 @@
  * estimate, the resampler and the channel filter over as a fresh open of the new
  * kind would, dropping the old kind's queued audio. The live output scale (1/pi)
  * applies to FM monitor audio and not to AM's, which normalises its own level.
+ * No symbol profile without CQPSK swaps the AM detector for the discriminator:
+ * a CQPSK-off toggle, a failed tune's restore and a typed row's profile keep it.
  */
 
 #include <cmath>
@@ -596,6 +598,34 @@ test_monitor_output_scale(void) {
     rc |= expect_output_gain("FM @48k is scaled", &fm, 48000, 0, live);
     rc |= expect_output_gain("FM @24k is scaled", &fm, 24000, 0, live);
     rc |= expect_output_gain("DMR discriminator is not scaled", &dmr, 48000, 0, 1.0f);
+    return rc;
+}
+
+/* A symbol profile without CQPSK never swaps the AM monitor's detector for the FM discriminator: only a family switch
+ * or an FM <-> AM switch changes the detector. A CQPSK-off toggle on the monitor (CQPSK off already) keeps AM, and so
+ * does the restore of the monitor's own profile a failed tune queues after a typed digital row, with a later AM width
+ * request applied to the AM detector. A typed row's profile, which moves the channel off the monitor's, is read with
+ * the discriminator for as long as it runs, the AM kind kept; the analog profile a row running the analog family
+ * queues for its retune brings the AM monitor back on its own channel. */
+static int
+test_am_monitor_keeps_detector_under_symbol_profiles(void) {
+    rtl_stream_test_am_symbol_profile_result r;
+    DSD_MEMSET(&r, 0, sizeof r);
+    int rc = expect_int("AM symbol profiles run", rtl_stream_test_am_monitor_symbol_profiles(48000, &r), 0);
+    rc |= expect_int("AM symbol profiles: open", r.open_rc, 0);
+    rc |= expect_int("AM open runs the AM detector", r.am_on_open, 1);
+    rc |= expect_int("CQPSK off on the AM monitor keeps the AM detector", r.am_after_cqpsk_off, 1);
+    rc |= expect_int("typed row moves the channel off the monitor", r.row_monitor, 0);
+    rc |= expect_int("typed row is read with the discriminator", r.row_am, 0);
+    rc |= expect_int("typed row keeps the AM kind", r.row_kind, DSD_ANALOG_DEMOD_AM);
+    rc |= expect_int("restored monitor profile runs the AM detector", r.am_after_restore, 1);
+    rc |= expect_int("AM width request keeps the AM detector", r.am_after_width_request, 1);
+    rc |= expect_int("AM width request reaches the filter", r.width_after_request, 10000);
+    rc |= expect_int("retuned typed row is read with the discriminator", r.retune_row_am, 0);
+    rc |= expect_int("analog row retune runs the AM detector", r.retune_analog_am, 1);
+    rc |= expect_int("analog row retune runs the monitor", r.retune_analog_monitor, 1);
+    rc |= expect_int("analog row retune filters at the AM default", r.retune_analog_width,
+                     DSD_ANALOG_AM_WIDTH_DEFAULT_HZ);
     return rc;
 }
 
@@ -1513,6 +1543,7 @@ main(void) {
     rc |= run_am_case(cases[0], 24000, 20000);
     rc |= test_fm_am_kind_switch();
     rc |= test_monitor_output_scale();
+    rc |= test_am_monitor_keeps_detector_under_symbol_profiles();
     rc |= test_am_requests_against_running_stream();
     rc |= expect_int("AM accepted with no stream",
                      rtl_stream_request_analog_profile(DSD_RX_FAMILY_ANALOG, DSD_ANALOG_DEMOD_AM, 0), 0);

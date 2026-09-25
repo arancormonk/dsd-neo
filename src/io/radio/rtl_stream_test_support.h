@@ -472,6 +472,31 @@ typedef struct rtl_stream_test_digital_row_result {
 int rtl_stream_test_digital_row_on_analog_session(int rate_hz, int start_digital,
                                                   rtl_stream_test_digital_row_result* out);
 
+typedef struct rtl_stream_test_am_symbol_profile_result {
+    int open_rc;
+    int am_on_open;         /* dsd_demod_am_active() on the -fM open */
+    int am_after_cqpsk_off; /* ... after a CQPSK-off toggle on that monitor, whose CQPSK is off already */
+    /* Under a typed digital row's CQPSK-off symbol profile, consumed at a block boundary. */
+    int row_monitor;      /* dsd_demod_analog_monitor_active() */
+    int row_am;           /* dsd_demod_am_active(): 0, full_demod() reads the row's signal with the discriminator */
+    int row_kind;         /* demod_state::analog_demod */
+    int am_after_restore; /* dsd_demod_am_active() once a failed tune's restore put the monitor's profile back */
+    int am_after_width_request; /* ... once an AM width request on that monitor was consumed */
+    int width_after_request;    /* demod_state::channel_lpf_width_hz, likewise */
+    /* Retunes landed as the controller lands them: a typed digital row's CQPSK-off symbol profile, then the analog
+       profile a row running the analog family queues for its target (dsd_engine_scan_tune_to_freq()). */
+    int retune_row_am;         /* dsd_demod_am_active() once the row's retune landed */
+    int retune_analog_am;      /* ... once the analog profile's retune landed */
+    int retune_analog_monitor; /* dsd_demod_analog_monitor_active(), likewise */
+    int retune_analog_width;   /* demod_state::channel_lpf_width_hz, likewise */
+} rtl_stream_test_am_symbol_profile_result;
+
+/* An AM monitor (-fM) opened at @p rate_hz, running live, taken through every CQPSK-off symbol profile a session can
+ * put on it without a family or kind switch: a CQPSK toggle that finds CQPSK off already, a typed digital scan row's
+ * profile, the restore of the monitor's own profile a failed tune queues, an AM width request after that, and the
+ * same row profile and then an analog row's analog profile landed by retunes. */
+int rtl_stream_test_am_monitor_symbol_profiles(int rate_hz, rtl_stream_test_am_symbol_profile_result* out);
+
 typedef struct rtl_stream_test_width_change_result {
     int request_rc;
     int deferred_until_consume; /* 1 when the queued request left the channel width alone until consumed */

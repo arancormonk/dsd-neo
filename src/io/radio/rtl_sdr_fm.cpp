@@ -8225,7 +8225,13 @@ rtl_stream_runs_digital_family(void) {
 
 static void
 rtl_stream_disable_cqpsk_mode(void) {
-    demod.mode_demod = &dsd_fm_demod;
+    /* Off CQPSK the analog family runs the detector of its kind, which only a family switch or an FM <-> AM switch
+       changes (rtl_demod_set_analog_kind()). An AM monitor that a CQPSK-off profile reaches keeps the envelope
+       detector: a toggle that finds CQPSK off already, a failed tune's restore of the monitor's own profile, or a typed
+       digital row's profile, whose signal full_demod() reads with the discriminator while its channel is not the
+       monitor's (dsd_demod_am_active()). */
+    demod.mode_demod =
+        (demod.analog_family && demod.analog_demod == DSD_ANALOG_DEMOD_AM) ? &dsd_am_demod : &dsd_fm_demod;
     if (demod.channel_lpf_profile == DSD_CH_LPF_PROFILE_P25_CQPSK) {
         demod.channel_lpf_profile = rtl_stream_fsk_channel_profile_for_current_mode();
     }
@@ -12117,6 +12123,80 @@ family_test_land_retune(const dsd_opts* opts, int rate_before_hz, int landed_rat
                         const RtlRetuneProfile* retune_profile) {
     return family_test_land_retune_between(opts, kFamilyTestCenterHz, kFamilyTestRetuneHz, rate_before_hz,
                                            landed_rate_hz, reported_rate_hz, retune_profile);
+}
+
+extern "C" int
+rtl_stream_test_am_monitor_symbol_profiles(int rate_hz, rtl_stream_test_am_symbol_profile_result* out) {
+    if (!out || rate_hz <= 0) {
+        return -1;
+    }
+    *out = {};
+    int initialized_output = 0;
+    if (fsk_reacquire_test_prepare_output_ring(0U, &initialized_output) != 0) {
+        fsk_reacquire_test_cleanup_output_ring(initialized_output);
+        return -2;
+    }
+    const FamilyTestSaved saved = family_test_save();
+    static dsd_opts stream_opts;
+    DSD_MEMSET(&stream_opts, 0, sizeof stream_opts);
+    stream_opts.analog_only = 1;
+    stream_opts.monitor_input_audio = 1;
+    stream_opts.analog_demod = DSD_ANALOG_DEMOD_AM;
+    g_cqpsk_toggle_test_stream.output = &output;
+    g_cqpsk_toggle_test_stream.opts = &stream_opts;
+    g_stream = NULL;
+    out->open_rc = family_test_seed_open(&stream_opts, rate_hz, 0);
+    out->am_on_open = dsd_demod_am_active(&demod);
+    g_stream = &g_cqpsk_toggle_test_stream; /* live: requests queue for the demod thread */
+
+    rtl_stream_toggle_cqpsk(0);
+    out->am_after_cqpsk_off = dsd_demod_am_active(&demod);
+
+    int rc = family_test_request_dmr_row_profile();
+    family_test_demod_thread_boundary();
+    out->row_monitor = dsd_demod_analog_monitor_active(&demod);
+    out->row_am = dsd_demod_am_active(&demod);
+    out->row_kind = demod.analog_demod;
+
+    /* dsd_engine_rtl_profile_snapshot_restore(): the CQPSK state and symbol profile the monitor published before the
+       tune. */
+    rc |= rtl_stream_request_demod_profile(0, 4800, 4, DSD_CH_LPF_PROFILE_WIDE, 10, 0);
+    family_test_demod_thread_boundary();
+    out->am_after_restore = dsd_demod_am_active(&demod);
+
+    rc |= rtl_stream_request_analog_profile(DSD_RX_FAMILY_ANALOG, DSD_ANALOG_DEMOD_AM, 10000);
+    family_test_demod_thread_boundary();
+    out->am_after_width_request = dsd_demod_am_active(&demod);
+    out->width_after_request = demod.channel_lpf_width_hz;
+
+    g_stream = NULL; /* retunes land as the other monitor retune tests land them */
+    RtlRetuneProfile row{};
+    row.active = 1;
+    row.cqpsk_enable = 0;
+    row.symbol_rate_hz = 4800;
+    row.levels = 4;
+    row.channel_profile = DSD_CH_LPF_PROFILE_P25_C4FM;
+    row.ted_sps = 10;
+    row.target_freq_hz = kFamilyTestRetuneHz;
+    rc |= family_test_land_retune(&stream_opts, demod.rate_out, demod.rate_out, demod.rate_out, &row);
+    out->retune_row_am = dsd_demod_am_active(&demod);
+
+    /* The shape rtl_stream_prepare_retune_analog_profile_for_target() queues for a target with no symbol profile. */
+    RtlRetuneProfile analog{};
+    analog.active = 1;
+    analog.cqpsk_enable = -1;
+    analog.analog_family = DSD_RX_FAMILY_ANALOG;
+    analog.analog_kind = DSD_ANALOG_DEMOD_AM;
+    analog.target_freq_hz = kFamilyTestRetuneHz;
+    rc |= family_test_land_retune(&stream_opts, demod.rate_out, demod.rate_out, demod.rate_out, &analog);
+    out->retune_analog_am = dsd_demod_am_active(&demod);
+    out->retune_analog_monitor = dsd_demod_analog_monitor_active(&demod);
+    out->retune_analog_width = demod.channel_lpf_width_hz;
+
+    family_test_restore(saved);
+    family_test_release_buffers();
+    fsk_reacquire_test_cleanup_output_ring(initialized_output);
+    return rc == 0 ? 0 : -3;
 }
 
 extern "C" int
