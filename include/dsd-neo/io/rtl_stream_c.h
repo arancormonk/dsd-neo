@@ -294,11 +294,11 @@ int rtl_stream_request_demod_profile(int cqpsk_enable, int symbol_rate_hz, int l
  * family only when its configured mode is digital, not for a typed digital scan row on an analog session.
  *
  * @param family   dsd_rx_family: DSD_RX_FAMILY_ANALOG or DSD_RX_FAMILY_DIGITAL.
- * @param kind     dsd_analog_demod for the analog family (AM is refused until the front end can demodulate it).
+ * @param kind     dsd_analog_demod for the analog family: FM (the discriminator) or AM (the envelope detector).
  * @param width_hz Explicit analog channel width in Hz, or 0 for the kind's default (ignored for digital).
- * @return 0 when queued or applied; -1 when refused (unknown family/kind, AM, a width outside the kind's range, a
- *         width the running stream's published rate cannot realize, or an explicit width while
- *         DSD_NEO_CHANNEL_LPF=0). A refusal is
+ * @return 0 when queued or applied; -1 when refused (unknown family/kind, a width outside the kind's range, a
+ *         width the running stream's published rate cannot realize (the unset AM default is held to it like an
+ *         explicit width), or, while DSD_NEO_CHANNEL_LPF=0, an explicit width or AM). A refusal is
  *         logged as an error with the validator's text (for a width the rate cannot realize: the width, the DSP rate,
  *         the largest width that rate fits and the DSP bandwidths that would fit), once per kind, width and rate until
  *         an analog request is accepted.

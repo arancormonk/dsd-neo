@@ -217,6 +217,7 @@ typedef struct rtl_stream_test_demod_fields {
     int cqpsk_enable;
     int demod_is_fm;
     int demod_is_qpsk;
+    int demod_is_am; /* dsd_demod_am_active(): the AM envelope detector */
     int deemph;
     int deemph_a_q15;
     int audio_lpf_enable;
@@ -253,6 +254,7 @@ typedef struct rtl_stream_test_demod_fields {
     int squelch_env_u;
     int squelch_gate_open;
     int squelch_hits; /* consecutive squelched blocks toward a multi-frequency hop: 0 after an open */
+    int am_carrier_u; /* the AM detector's carrier estimate, in millionths: 0 (cold) after an open */
     /* 1 when the filter delay lines hold nothing (no resampler counts as clear), as after a fresh open. */
     int channel_hist_clear;
     int hb_hist_clear;
@@ -538,6 +540,10 @@ typedef struct rtl_stream_test_audio_reset_result {
     float dc_avg;
     float audio_lpf_state;
     float squelch_env;
+    float am_carrier; /* the AM detector's carrier estimate once the retune finalized */
+    int demod_is_am;  /* dsd_demod_am_active() once the retune finalized */
+    int deemph_after; /* demod_state::deemph, likewise */
+    int analog_kind;  /* demod_state::analog_demod, likewise */
     int channel_hist_cleared;
     int hb_hist_cleared;
     int resamp_hist_cleared;
@@ -563,6 +569,29 @@ typedef struct rtl_stream_test_audio_reset_result {
  * audio LPF). No device is open, so a refusal restores the capture settings the stream keeps and programs nothing. */
 int rtl_stream_test_audio_monitor_retune(int rate_before_hz, int rate_after_hz, int nfm_width_hz,
                                          rtl_stream_test_audio_reset_result* out);
+
+/* rtl_stream_test_audio_monitor_retune() for an analog monitor of @p kind (dsd_analog_demod) at width @p width_hz
+ * (0 = the kind's default), its AM carrier estimate seeded stale along with the rest. */
+int rtl_stream_test_audio_monitor_retune_kind(int kind, int rate_before_hz, int rate_after_hz, int width_hz,
+                                              rtl_stream_test_audio_reset_result* out);
+
+typedef struct rtl_stream_test_kind_switch_result {
+    rtl_stream_test_demod_fields fresh;    /* a fresh open of the options switched to */
+    rtl_stream_test_demod_fields switched; /* the running monitor once the live switch was consumed */
+    int request_rc;
+    int deferred_until_consume; /* 1 when the queued request left the running kind alone until consumed */
+    int published_rc;           /* rtl_stream_get_analog_profile() after the switch */
+    int published_kind;
+    int published_width_hz;
+    uint32_t generation_before;
+    uint32_t generation_after;
+} rtl_stream_test_kind_switch_result;
+
+/* Open the analog monitor on @p from_opts at @p rate_hz, give it a running session's stale monitor audio, filter,
+ * carrier-estimate and I/Q DC state, queue a live request for @p to_opts's kind and width (an FM <-> AM switch), and
+ * consume it at one demod-thread block boundary; fresh is an open of @p to_opts at the same rate. */
+int rtl_stream_test_analog_kind_switch(const dsd_opts* from_opts, const dsd_opts* to_opts, int rate_hz,
+                                       rtl_stream_test_kind_switch_result* out);
 
 typedef struct rtl_stream_test_retune_profile_landing_result {
     int retune_refused;          /* 1 when the landing check refused the retune */

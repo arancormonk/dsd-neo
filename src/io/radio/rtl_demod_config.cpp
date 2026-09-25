@@ -277,6 +277,7 @@ demod_init_common_defaults(struct demod_state* s, int rtl_dsp_bw_hz, struct outp
     s->prev_lpr_index = 0;
     s->deemph_a = 0.0f;
     s->deemph_avg = 0.0f;
+    s->am_carrier = 0.0f;
     s->channel_lpf_enable = 0;
     s->channel_lpf_hist_len = 143;
     s->channel_lpf_profile = DSD_CH_LPF_PROFILE_WIDE;
@@ -522,6 +523,20 @@ demod_apply_channel_lpf_defaults(struct demod_state* demod, const dsd_opts* opts
     fsk_modem_apply_config(demod);
 }
 
+/* The detector and de-emphasis of an analog kind: FM runs the discriminator with the configured de-emphasis, AM the
+   envelope detector with none (de-emphasis would tilt AM audio, which is not pre-emphasized). */
+static void
+demod_install_analog_detector(struct demod_state* demod, int kind) {
+    const int am = (kind == DSD_ANALOG_DEMOD_AM) ? 1 : 0;
+    demod->mode_demod = am ? &dsd_am_demod : &dsd_fm_demod;
+    demod->deemph = am ? 0 : 1;
+    if (am) {
+        /* As an AM open has it: no de-emphasis coefficient either (FM's is recomputed from the config on the way back). */
+        demod->deemph_tau_us = 0;
+        demod->deemph_a = 0.0f;
+    }
+}
+
 static void
 demod_finalize_runtime_profile(struct demod_state* demod, const dsd_opts* opts) {
     demod->channel_squelch_level.store((float)opts->rtl_squelch_level, std::memory_order_relaxed);
@@ -558,6 +573,10 @@ rtl_demod_init_for_mode(struct demod_state* demod, struct output_state* output, 
     } else if (opts->analog_only == 1 || opts->m17encoder == 1) {
         params.deemph_default = 1;
         demod_init_mode(demod, DEMOD_ANALOG, &params, rtl_dsp_bw_hz, output);
+        if (dsd_opts_is_analog_family(opts)) {
+            /* The M17 encoder's monitor stays on the FM discriminator. */
+            demod_install_analog_detector(demod, opts->analog_demod);
+        }
     } else {
         demod_init_mode(demod, DEMOD_DIGITAL, &params, rtl_dsp_bw_hz, output);
     }
@@ -596,6 +615,7 @@ rtl_demod_config_from_env_and_opts(struct demod_state* demod, const dsd_opts* op
     demod_apply_iq_defaults(demod, cfg);
     demod_apply_channel_lpf_defaults(demod, opts, cfg);
     demod_finalize_runtime_profile(demod, opts);
+    (void)rtl_demod_note_am_iq_dc_bypass(demod->iq_dc_block_enable, dsd_demod_am_active(demod));
 }
 
 static int
@@ -1010,12 +1030,6 @@ demod_check_analog_channel(int kind, int explicit_width_hz, int rate_hz, int rat
     if (explicit_width_hz < 0) {
         return demod_refuse_negative_analog_width(kind, explicit_width_hz, err, err_size);
     }
-    if (kind == DSD_ANALOG_DEMOD_AM) {
-        demod_error_text(err, err_size,
-                         "AM reception is not available on the radio front end yet; the analog monitor demodulates "
-                         "NFM only");
-        return -1;
-    }
     if (explicit_width_hz <= 0 && kind == DSD_ANALOG_DEMOD_FM) {
         /* The unset NFM default keeps the historical filter behaviour at every rate. */
         return 0;
@@ -1215,6 +1229,9 @@ rtl_demod_reset_audio_monitor_state(struct demod_state* demod) {
     demod->deemph_avg = 0.0f;
     demod->dc_avg = 0.0f;
     demod->audio_lpf_state = 0.0f;
+    /* Cold, so the AM detector warm-starts from the new channel's own level rather than dividing it by the last one's
+       carrier. */
+    demod->am_carrier = 0.0f;
     /* Fresh-open envelope: open, so the first block of a live channel is not faded in from the last one's squelch. */
     demod->squelch_env = 1.0f;
     demod->squelch_gate_open = 1;
@@ -1322,12 +1339,26 @@ rtl_demod_set_analog_kind(struct demod_state* demod, int kind) {
         return 0;
     }
     demod->analog_demod = kind;
-    /* rtl_demod_check_analog_channel() refuses AM before a stream gets here, so no AM demodulator is installed yet. */
-    demod->mode_demod = &dsd_fm_demod;
-    /* FM keeps the configured de-emphasis; AM runs without it. */
-    demod->deemph = (kind == DSD_ANALOG_DEMOD_FM) ? 1 : 0;
+    demod_install_analog_detector(demod, kind);
     (void)rtl_demod_apply_audio_filters_from_config(demod);
     rtl_demod_reset_audio_monitor_state(demod);
+    /* AM does not run the I/Q DC blocker, so FM would otherwise resume from the estimate it had before AM. */
+    demod->iq_dc_avg_r = 0.0f;
+    demod->iq_dc_avg_i = 0.0f;
+    (void)rtl_demod_note_am_iq_dc_bypass(demod->iq_dc_block_enable, dsd_demod_am_active(demod));
+    return 1;
+}
+
+int
+rtl_demod_note_am_iq_dc_bypass(int iq_dc_block_enabled, int am_active) {
+    static std::atomic<int> noted{0};
+    if (!iq_dc_block_enabled || !am_active) {
+        return 0;
+    }
+    if (noted.exchange(1, std::memory_order_relaxed) == 0) {
+        LOG_INFO("NOTICE: The I/Q DC blocker stays off while AM is demodulated: it would remove an AM carrier at "
+                 "0 Hz. It applies again to FM.\n");
+    }
     return 1;
 }
 

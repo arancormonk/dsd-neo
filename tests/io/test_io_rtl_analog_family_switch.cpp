@@ -64,6 +64,12 @@
  * there, as a width change on the running monitor and as a digital session's
  * switch onto it: the front end keeps the receive profile it has, never a
  * monitor running an explicit width without its channel filter.
+ *
+ * AM (issue #524) switches live the same way: digital -> AM -> digital and an
+ * AM start switched to digital each land on a fresh open, the AM detector's
+ * carrier estimate included, and a live FM <-> AM switch on the running monitor
+ * swaps the detector and de-emphasis and starts the monitor audio, the carrier
+ * estimate and the channel filter over as a fresh open of the new kind would.
  */
 
 #include <cstdio>
@@ -113,6 +119,7 @@ expect_fields_equal(const char* label, const rtl_stream_test_demod_fields& got,
     FIELD(cqpsk_enable);
     FIELD(demod_is_fm);
     FIELD(demod_is_qpsk);
+    FIELD(demod_is_am);
     FIELD(deemph);
     FIELD(deemph_a_q15);
     FIELD(audio_lpf_enable);
@@ -145,6 +152,7 @@ expect_fields_equal(const char* label, const rtl_stream_test_demod_fields& got,
     FIELD(squelch_env_u);
     FIELD(squelch_gate_open);
     FIELD(squelch_hits);
+    FIELD(am_carrier_u);
     FIELD(channel_hist_clear);
     FIELD(hb_hist_clear);
     FIELD(resamp_hist_clear);
@@ -170,6 +178,7 @@ expect_analog_fields_equal(const char* label, const rtl_stream_test_demod_fields
     FIELD(cqpsk_enable);
     FIELD(demod_is_fm);
     FIELD(demod_is_qpsk);
+    FIELD(demod_is_am);
     FIELD(deemph);
     FIELD(deemph_a_q15);
     FIELD(audio_lpf_enable);
@@ -194,6 +203,7 @@ expect_analog_fields_equal(const char* label, const rtl_stream_test_demod_fields
     FIELD(squelch_env_u);
     FIELD(squelch_gate_open);
     FIELD(squelch_hits);
+    FIELD(am_carrier_u);
     FIELD(channel_hist_clear);
     FIELD(hb_hist_clear);
     FIELD(resamp_hist_clear);
@@ -373,6 +383,147 @@ run_analog_start_case(const family_case& c, int rate_hz, int forced_rate_out_hz)
     rc |= expect_int("-fA start: CQPSK and back returns to the FSK discriminator", r.output_kind_after_cqpsk_round_trip,
                      RTL_STREAM_OUTPUT_FSK_DISCRIMINATOR);
     rc |= expect_int("-fA start: the digital family is not the analog family", r.family_active_after_digital, 0);
+    return rc;
+}
+
+/* Digital -> AM -> digital on a running stream, then an AM start switched to digital (issue #524). The AM leg is a
+ * fresh AM open: the envelope detector, no de-emphasis, the channel filter on at the AM width and a cold carrier
+ * estimate, whatever the digital session and the stale monitor state before it left. */
+static int
+run_am_case(const family_case& c, int rate_hz, int am_width_hz) {
+    static dsd_opts digital;
+    static dsd_opts am;
+    DSD_MEMSET(&digital, 0, sizeof digital);
+    DSD_MEMSET(&am, 0, sizeof am);
+    c.configure(&digital);
+    am.analog_only = 1;
+    am.monitor_input_audio = 1;
+    am.analog_demod = DSD_ANALOG_DEMOD_AM;
+    am.analog_am_bandwidth_hz = am_width_hz;
+    const int want_width = am_width_hz > 0 ? am_width_hz : DSD_ANALOG_AM_WIDTH_DEFAULT_HZ;
+
+    rtl_stream_test_family_switch_result r;
+    DSD_MEMSET(&r, 0, sizeof r);
+    char label[128];
+    DSD_SNPRINTF(label, sizeof label, "%s@%d -> AM", c.name, rate_hz);
+    int rc = expect_int(label, rtl_stream_test_analog_family_switch(&digital, &am, rate_hz, 0, &c.request, &r), 0);
+    rc |= expect_int(label, r.analog_request_rc, 0);
+    rc |= expect_int("a fresh AM open runs the AM detector", r.fresh_analog.demod_is_am, 1);
+    rc |= expect_int("a fresh AM open has no de-emphasis", r.fresh_analog.deemph, 0);
+    rc |= expect_int("a fresh AM open filters at the AM width", r.fresh_analog.channel_lpf_width_hz, want_width);
+    rc |= expect_analog_fields_equal(label, r.switched_analog, r.fresh_analog);
+    rc |= expect_int("AM switch clears the ring", (int)r.used_after_analog, 0);
+    rc |= expect_int("AM profile published", r.published_analog_rc, 1);
+    rc |= expect_int("published AM kind", r.published_kind, DSD_ANALOG_DEMOD_AM);
+    rc |= expect_int("published AM width", r.published_width_hz, want_width);
+    rc |= expect_int("published AM width is filtered", r.published_lpf_on, 1);
+    DSD_SNPRINTF(label, sizeof label, "%s@%d AM -> digital", c.name, rate_hz);
+    rc |= expect_int(label, r.digital_request_rc, 0);
+    rc |= expect_fields_equal(label, r.switched_digital, r.fresh_digital);
+
+    DSD_MEMSET(&r, 0, sizeof r);
+    DSD_SNPRINTF(label, sizeof label, "AM start, %s@%d -> digital", c.name, rate_hz);
+    rc |= expect_int(label, rtl_stream_test_analog_start_family_switch(&digital, &am, rate_hz, 0, &c.request, &r), 0);
+    rc |= expect_int("AM start runs the AM detector", r.fresh_analog.demod_is_am, 1);
+    rc |= expect_int("AM start publishes the AM kind", r.published_kind, DSD_ANALOG_DEMOD_AM);
+    rc |= expect_int(label, r.digital_request_rc, 0);
+    rc |= expect_fields_equal(label, r.switched_digital, r.fresh_digital);
+    rc |= expect_int("AM start: analog profile withdrawn", r.published_after_digital_rc, 0);
+    return rc;
+}
+
+/* A live FM <-> AM switch on the running monitor lands where a fresh open of the new kind does for everything that
+ * shapes its audio: the detector, de-emphasis and its coefficient, the audio filters, the channel filter width and a
+ * fresh channel plan, and the de-emphasis, DC, audio-LPF, squelch-envelope and AM carrier state. Only the new kind's
+ * request moves it: until the demod thread consumes it the running kind stays. */
+static int
+expect_kind_switch(const char* label, const dsd_opts* from, const dsd_opts* to, int rate_hz) {
+    rtl_stream_test_kind_switch_result r;
+    DSD_MEMSET(&r, 0, sizeof r);
+    char name[160];
+    int rc = expect_int(label, rtl_stream_test_analog_kind_switch(from, to, rate_hz, &r), 0);
+    DSD_SNPRINTF(name, sizeof name, "%s: request accepted", label);
+    rc |= expect_int(name, r.request_rc, 0);
+    DSD_SNPRINTF(name, sizeof name, "%s: request waits for the demod thread", label);
+    rc |= expect_int(name, r.deferred_until_consume, 1);
+#define KIND_FIELD(f)                                                                                                  \
+    do {                                                                                                               \
+        DSD_SNPRINTF(name, sizeof name, "%s: " #f, label);                                                             \
+        rc |= expect_int(name, r.switched.f, r.fresh.f);                                                               \
+    } while (0)
+    KIND_FIELD(output_kind);
+    KIND_FIELD(analog_family);
+    KIND_FIELD(analog_demod);
+    KIND_FIELD(demod_is_fm);
+    KIND_FIELD(demod_is_am);
+    KIND_FIELD(deemph);
+    KIND_FIELD(deemph_a_q15);
+    KIND_FIELD(audio_lpf_enable);
+    KIND_FIELD(channel_lpf_enable);
+    KIND_FIELD(channel_lpf_profile);
+    KIND_FIELD(channel_lpf_width_hz);
+    KIND_FIELD(deemph_avg_u);
+    KIND_FIELD(dc_avg_u);
+    KIND_FIELD(audio_lpf_state_u);
+    KIND_FIELD(squelch_env_u);
+    KIND_FIELD(squelch_gate_open);
+    KIND_FIELD(am_carrier_u);
+    KIND_FIELD(channel_hist_clear);
+    KIND_FIELD(hb_hist_clear);
+#undef KIND_FIELD
+    DSD_SNPRINTF(name, sizeof name, "%s: published kind", label);
+    rc |= expect_int(name, r.published_kind, to->analog_demod);
+    DSD_SNPRINTF(name, sizeof name, "%s: published width", label);
+    rc |= expect_int(name, r.published_width_hz, r.switched.channel_lpf_width_hz);
+    return rc;
+}
+
+static int
+test_fm_am_kind_switch(void) {
+    static dsd_opts fm;
+    static dsd_opts am;
+    DSD_MEMSET(&fm, 0, sizeof fm);
+    fm.analog_only = 1;
+    fm.monitor_input_audio = 1;
+    fm.analog_demod = DSD_ANALOG_DEMOD_FM;
+    am = fm;
+    am.analog_demod = DSD_ANALOG_DEMOD_AM;
+    int rc = expect_kind_switch("FM -> AM @48k", &fm, &am, 48000);
+    rc |= expect_kind_switch("AM -> FM @48k", &am, &fm, 48000);
+    /* An explicit width on each side; 24 kHz resamples the monitor to 48 kHz. */
+    fm.analog_nfm_bandwidth_hz = 12500;
+    am.analog_am_bandwidth_hz = 10000;
+    rc |= expect_kind_switch("FM 12.5k -> AM 10k @24k", &fm, &am, 24000);
+    rc |= expect_kind_switch("AM 10k -> FM 12.5k @24k", &am, &fm, 24000);
+    return rc;
+}
+
+/* An AM width is held to the running stream's rate like an NFM one: 20 kHz does not fit a 16 kHz DSP rate, whose
+ * largest width is 13.2 kHz, and is refused before anything is queued; the AM default fits and is applied, on the
+ * running monitor and as a DMR session's switch onto it. */
+static int
+test_am_requests_against_running_stream(void) {
+    rtl_stream_test_live_request_result r;
+    DSD_MEMSET(&r, 0, sizeof r);
+    g_last_error[0] = '\0';
+    int rc = expect_int("AM 20 kHz @16k run",
+                        rtl_stream_test_analog_request_with_stream(16000, 1, 1, DSD_ANALOG_DEMOD_AM, 20000, &r), 0);
+    rc |= expect_int("AM 20 kHz @16k check refused", r.check_rc, -1);
+    rc |= expect_int("AM 20 kHz @16k request refused", r.request_rc, -1);
+    rc |= expect_int("AM 20 kHz @16k nothing queued", r.request_queued, 0);
+    rc |= expect_int("AM 20 kHz @16k refusal names the fix",
+                     std::strstr(g_last_error, "AM bandwidth 20 kHz does not fit the 16 kHz DSP rate") != NULL, 1);
+    for (int analog_stream = 0; analog_stream <= 1; analog_stream++) {
+        DSD_MEMSET(&r, 0, sizeof r);
+        rc |= expect_int(
+            "AM default @16k run",
+            rtl_stream_test_analog_request_with_stream(16000, analog_stream, 1, DSD_ANALOG_DEMOD_AM, 0, &r), 0);
+        rc |= expect_int("AM default @16k check accepted", r.check_rc, 0);
+        rc |= expect_int("AM default @16k request accepted", r.request_rc, 0);
+        rc |= expect_int("AM default @16k lands on the analog family", r.family_after, 1);
+        rc |= expect_int("AM default @16k filters at 6 kHz", r.width_after, DSD_ANALOG_AM_WIDTH_DEFAULT_HZ);
+        rc |= expect_int("AM default @16k runs the monitor", r.monitor_after, 1);
+    }
     return rc;
 }
 
@@ -625,9 +776,13 @@ test_requests_without_stream(void) {
                      rtl_stream_test_analog_request_without_stream(48000, DSD_ANALOG_DEMOD_FM, 30000, &retune_rc), -1);
     rc |= expect_int("no-stream out-of-range retune width refused", retune_rc, -1);
     retune_rc = 99;
-    rc |= expect_int("no-stream AM refused",
-                     rtl_stream_test_analog_request_without_stream(48000, DSD_ANALOG_DEMOD_AM, 0, &retune_rc), -1);
-    rc |= expect_int("no-stream AM retune refused", retune_rc, -1);
+    rc |= expect_int("no-stream AM accepted",
+                     rtl_stream_test_analog_request_without_stream(48000, DSD_ANALOG_DEMOD_AM, 0, &retune_rc), 0);
+    rc |= expect_int("no-stream AM retune accepted", retune_rc, 0);
+    retune_rc = 99;
+    rc |= expect_int("no-stream out-of-range AM width refused",
+                     rtl_stream_test_analog_request_without_stream(48000, DSD_ANALOG_DEMOD_AM, 25000, &retune_rc), -1);
+    rc |= expect_int("no-stream out-of-range AM retune width refused", retune_rc, -1);
     /* A stale mirror is no rate to hold a request to, for the scanners' width checks either. */
     rc |= expect_int("no-stream request rate", rtl_stream_get_request_rate_hz(), 0);
     return rc;
@@ -1251,8 +1406,16 @@ main(void) {
     rc |= test_read_before_switch_clear();
     rc |= test_noted_digital_modes_scope();
 
+    /* AM (issue #524): digital <-> AM on running streams, AM start to digital, live FM <-> AM, and AM widths held to
+       the running rate. */
+    rc |= run_am_case(cases[2], 48000, 0);
+    rc |= run_am_case(cases[0], 24000, 20000);
+    rc |= test_fm_am_kind_switch();
+    rc |= test_am_requests_against_running_stream();
+    rc |= expect_int("AM accepted with no stream",
+                     rtl_stream_request_analog_profile(DSD_RX_FAMILY_ANALOG, DSD_ANALOG_DEMOD_AM, 0), 0);
+
     /* Requests the front end cannot honour are refused up front. */
-    rc |= expect_int("AM refused", rtl_stream_request_analog_profile(DSD_RX_FAMILY_ANALOG, DSD_ANALOG_DEMOD_AM, 0), -1);
     rc |= expect_int("bad family refused", rtl_stream_request_analog_profile(7, DSD_ANALOG_DEMOD_FM, 0), -1);
     rc |= expect_int("out-of-range width refused",
                      rtl_stream_request_analog_profile(DSD_RX_FAMILY_ANALOG, DSD_ANALOG_DEMOD_FM, 30000), -1);

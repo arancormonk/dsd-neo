@@ -3445,17 +3445,20 @@ demod_write_output_block(struct demod_state* d, struct output_state* o) {
     const int digital_output =
         (d->output_kind == DSD_DEMOD_OUTPUT_SYMBOL_CQPSK || d->output_kind == DSD_DEMOD_OUTPUT_FSK_DISCRIMINATOR);
     const int resample = d->resamp_enabled && (d->output_kind != DSD_DEMOD_OUTPUT_SYMBOL_CQPSK);
+    /* The AM detector normalises its own level to the carrier (dsd_am_demod()); the 1/pi scale turns FM discriminator
+       radians into audio and would only shrink it. */
+    const int scaled = !digital_output && !dsd_demod_am_active(d);
     if (resample) {
         int out_n = resamp_process_block(d, d->result, d->result_len, d->resamp_outbuf);
         if (out_n <= 0) {
             return 0U;
         }
-        if (!digital_output) {
+        if (scaled) {
             apply_output_scale(d, d->resamp_outbuf, out_n);
         }
         return demod_write_output_samples_interruptible(o, d->resamp_outbuf, (size_t)out_n);
     }
-    if (!digital_output) {
+    if (scaled) {
         apply_output_scale(d, d->result, d->result_len);
     }
     return demod_write_output_samples_interruptible(o, d->result, (size_t)d->result_len);
@@ -8065,6 +8068,9 @@ rtl_stream_set_iq_dc(int enable, int shift_k) {
     /* If enabling now, precharge DC estimate to the current block mean. */
     if (!was && demod.iq_dc_block_enable) {
         iq_dc_precharge();
+        int kind = DSD_ANALOG_DEMOD_FM;
+        const int analog = rtl_stream_get_analog_profile(&kind, NULL, NULL);
+        (void)rtl_demod_note_am_iq_dc_bypass(1, analog == 1 && kind == DSD_ANALOG_DEMOD_AM);
     }
 }
 
@@ -11314,7 +11320,8 @@ family_test_seed_stale_monitor_state(void) {
     demod.audio_lpf_state = 0.125f;
     demod.squelch_env = 0.0f;
     demod.squelch_gate_open = 0;
-    demod.squelch_hits = 11; /* a run of squelched blocks one short of a hop */
+    demod.squelch_hits = 11;  /* a run of squelched blocks one short of a hop */
+    demod.am_carrier = 0.75f; /* the carrier the AM detector tracked on the old channel */
     family_test_seed_stale_filter_histories();
     if (demod.resamp_hist && demod.resamp_taps_per_phase > 0) {
         for (int k = 0; k < demod.resamp_taps_per_phase * 2; k++) {
@@ -11353,6 +11360,7 @@ family_test_capture(void) {
     f.cqpsk_enable = demod.cqpsk_enable;
     f.demod_is_fm = demod.mode_demod == &dsd_fm_demod ? 1 : 0;
     f.demod_is_qpsk = demod.mode_demod == &qpsk_differential_demod ? 1 : 0;
+    f.demod_is_am = dsd_demod_am_active(&demod);
     f.deemph = demod.deemph;
     f.deemph_a_q15 = (int)lrintf(demod.deemph_a * 32768.0f);
     f.audio_lpf_enable = demod.audio_lpf_enable;
@@ -11386,6 +11394,7 @@ family_test_capture(void) {
     f.squelch_env_u = family_test_micro(demod.squelch_env);
     f.squelch_gate_open = demod.squelch_gate_open;
     f.squelch_hits = demod.squelch_hits;
+    f.am_carrier_u = family_test_micro(demod.am_carrier);
     f.channel_hist_clear = family_test_channel_hist_clear();
     f.hb_hist_clear = family_test_hb_hist_clear();
     f.resamp_hist_clear = (demod.resamp_hist && demod.resamp_taps_per_phase > 0)
@@ -12076,7 +12085,14 @@ family_test_land_retune(const dsd_opts* opts, int rate_before_hz, int landed_rat
 extern "C" int
 rtl_stream_test_audio_monitor_retune(int rate_before_hz, int rate_after_hz, int nfm_width_hz,
                                      rtl_stream_test_audio_reset_result* out) {
-    if (!out || rate_before_hz <= 0 || rate_after_hz <= 0) {
+    return rtl_stream_test_audio_monitor_retune_kind(DSD_ANALOG_DEMOD_FM, rate_before_hz, rate_after_hz, nfm_width_hz,
+                                                     out);
+}
+
+extern "C" int
+rtl_stream_test_audio_monitor_retune_kind(int kind, int rate_before_hz, int rate_after_hz, int width_hz,
+                                          rtl_stream_test_audio_reset_result* out) {
+    if (!out || rate_before_hz <= 0 || rate_after_hz <= 0 || !dsd_analog_demod_is_valid(kind)) {
         return -1;
     }
     *out = {};
@@ -12086,7 +12102,12 @@ rtl_stream_test_audio_monitor_retune(int rate_before_hz, int rate_after_hz, int 
     DSD_MEMSET(&analog_opts, 0, sizeof analog_opts);
     analog_opts.analog_only = 1;
     analog_opts.monitor_input_audio = 1;
-    analog_opts.analog_nfm_bandwidth_hz = nfm_width_hz;
+    analog_opts.analog_demod = kind;
+    if (kind == DSD_ANALOG_DEMOD_AM) {
+        analog_opts.analog_am_bandwidth_hz = width_hz;
+    } else {
+        analog_opts.analog_nfm_bandwidth_hz = width_hz;
+    }
     if (family_test_seed_open(&analog_opts, rate_before_hz, 0) != 0) {
         family_test_restore(saved);
         return -2;
@@ -12114,6 +12135,10 @@ rtl_stream_test_audio_monitor_retune(int rate_before_hz, int rate_after_hz, int 
     out->dc_avg = demod.dc_avg;
     out->audio_lpf_state = demod.audio_lpf_state;
     out->squelch_env = demod.squelch_env;
+    out->am_carrier = demod.am_carrier;
+    out->demod_is_am = dsd_demod_am_active(&demod);
+    out->deemph_after = demod.deemph;
+    out->analog_kind = demod.analog_demod;
     out->channel_hist_cleared = family_test_channel_hist_clear();
     out->hb_hist_cleared = family_test_hb_hist_clear();
     out->resamp_hist_cleared = (demod.resamp_hist && demod.resamp_taps_per_phase > 0)
@@ -12401,6 +12426,48 @@ rtl_stream_test_analog_width_change(int rate_hz, int width_before_hz, int width_
     family_test_release_buffers();
     fsk_reacquire_test_cleanup_output_ring(initialized_output);
     return open_rc == 0 ? 0 : -3;
+}
+
+extern "C" int
+rtl_stream_test_analog_kind_switch(const dsd_opts* from_opts, const dsd_opts* to_opts, int rate_hz,
+                                   rtl_stream_test_kind_switch_result* out) {
+    if (!from_opts || !to_opts || !out || rate_hz <= 0) {
+        return -1;
+    }
+    *out = {};
+    const size_t queued = 64U;
+    int initialized_output = 0;
+    if (fsk_reacquire_test_prepare_output_ring(queued, &initialized_output) != 0) {
+        fsk_reacquire_test_cleanup_output_ring(initialized_output);
+        return -2;
+    }
+    const FamilyTestSaved saved = family_test_save();
+    static dsd_opts stream_opts;
+    stream_opts = *from_opts;
+    g_cqpsk_toggle_test_stream.output = &output;
+    g_cqpsk_toggle_test_stream.opts = &stream_opts;
+    g_stream = NULL; /* fresh opens seed before any pipeline exists */
+    int rc = family_test_seed_open(to_opts, rate_hz, 0);
+    out->fresh = family_test_capture();
+    rc |= family_test_seed_open(from_opts, rate_hz, 0);
+    g_stream = &g_cqpsk_toggle_test_stream; /* live: requests queue for the demod thread */
+
+    family_test_seed_ring(queued);
+    rc |= family_test_seed_stale_monitor_state();
+    const int kind_before = demod.analog_demod;
+    out->generation_before = rtl_stream_output_generation();
+    out->request_rc = rtl_stream_request_analog_profile(DSD_RX_FAMILY_ANALOG, to_opts->analog_demod,
+                                                        dsd_opts_analog_width_hz(to_opts));
+    out->deferred_until_consume = demod.analog_demod == kind_before ? 1 : 0;
+    family_test_demod_thread_boundary();
+    out->switched = family_test_capture();
+    out->generation_after = rtl_stream_output_generation();
+    out->published_rc = rtl_stream_get_analog_profile(&out->published_kind, &out->published_width_hz, NULL);
+
+    family_test_restore(saved);
+    family_test_release_buffers();
+    fsk_reacquire_test_cleanup_output_ring(initialized_output);
+    return rc == 0 ? 0 : -3;
 }
 
 extern "C" int
