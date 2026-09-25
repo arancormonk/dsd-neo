@@ -164,29 +164,55 @@ is known:
   (`dsd_analog_width_parse()`); `--validate-config` reports the same text as an
   error.
 - For RTL-SDR and rtl_tcp inputs the DSP rate is the DSP bandwidth, so engine
-  setup checks an explicit width against it once the input spec is parsed,
-  before the device opens (`--validate-config` does the same for a config
+  setup checks an explicit width against the bandwidth the input spec sets,
+  from the spec alone, before an RTL-SDR input looks for its device (so the
+  refusal needs no dongle); `--validate-config` does the same for a config
   whose `[input]` builds an `rtl`/`rtltcp` input with `rtl_bw_khz`, that is
-  with `rtl_freq` set and, for rtl_tcp, a host, under `decode = "analog"`).
-  SoapySDR and Airspy devices can force another rate and IQ replay takes the
-  capture's, so for them the stream-start check above is the only one, and its
-  refusal names narrowing the width as the fix
-  (`dsd_analog_width_check_forced_rate()`), since no RTL DSP bandwidth moves
-  that rate.
+  with `rtl_freq` set and, for rtl_tcp, a host, under `decode = "analog"`.
+  For SoapySDR, Airspy and IQ replay inputs the stream-start check above is
+  the only one, and its refusal names the fix that rate allows
+  (`dsd_analog_width_check_at()` with a `dsd_analog_rate_source`): a device's
+  capture rate is halved down to the first rate at or above the DSP
+  bandwidth, so raising the DSP bandwidth or narrowing the width; a replay
+  runs at its capture's rate, so narrowing the width. Where the rate filters
+  no width of the kind, narrowing is never named: an NFM refusal names
+  leaving the width unset, which runs at any rate.
+- `DSD_NEO_CHANNEL_LPF=0` refuses every explicit width at any rate
+  (`dsd_analog_channel_lpf_off_check()`), at stream start and, first, in every
+  change that would commit to a start with one: a width with no stream
+  running, a config reopen at an RTL DSP bandwidth or a device's rate, a DSP
+  bandwidth change and Input > Switch source > RTL-SDR, so the running input is
+  not torn down for a start that cannot open.
 - The command checks a width the analog preset uses against the running
   stream (`rtl_stream_check_analog_profile()`), or with no stream against an
   RTL-SDR/rtl_tcp input's DSP bandwidth, and requests it live from a running
   front end whose options in force are `-fA` (`rtl_stream_request_analog_profile()`):
   a width-only change on the monitor, or the width a queued switch onto the
-  analog family carries. Under a typed digital scan row it is stored and
-  applied when the row's leave republishes the analog profile; with CQPSK
-  toggled on under `-fA` it is stored, and turning CQPSK off returns to the
-  monitor through the analog profile with it. Whether CQPSK holds the front
-  end off the monitor is read from the requests the decoder has queued, not
-  only from the published state, which lags them until the demod thread takes
-  them: `symbol_profile.c` keeps the CQPSK state of the last request with the
-  stream's output generation, and the published state is the stream's again
-  once the generation moves (a family switch landing, a restart).
+  analog family carries. The width is not a scan row setting, so the command
+  edits it in place rather than suspending a row's scope (which would read a
+  row's live acquisition as a change); under a typed digital scan row it is
+  stored and applied when the row's leave republishes the analog profile;
+  with CQPSK toggled on under `-fA` it is stored, and turning CQPSK off
+  returns to the monitor through the analog profile with it. Whether CQPSK
+  holds the front end off the monitor is read from the requests the decoder
+  has queued, not only from the published state, which lags them until the
+  demod thread takes them: `symbol_profile.c` keeps the CQPSK state of the
+  last request with the request's number (`rtl_stream_receive_request_seq()`),
+  and the published state is the stream's again once the stream reports that
+  request settled (`rtl_stream_receive_request_outcome()`: taken and
+  published, replaced, refused where it landed, or dropped by a restart). The
+  output generation says nothing about that: the demod thread moves it when it
+  clears the output for a request, before it publishes, and a retune moves it
+  without taking a request.
+- A width the front end took when asked can still be refused: by the request
+  itself, when a retune moved the published rate after the check, or by the
+  demod thread where the request lands, when the rate moved after that. The
+  first is refused to the caller with the previous width put back; for the
+  second the demod thread records the request as refused
+  (`RTL_STREAM_RX_REQUEST_REFUSED`), and the decoder's next command drain puts
+  back the width the front end kept and says why
+  (`svc_take_nfm_bandwidth_refusal()`), so the configured width never stays one
+  the filter does not run.
 - A switch to Analog (a decode-mode change, a config's `[mode]`) holds an
   explicit width to the rate first, under a scan row too, so a decoder is
   never committed to Analog on a front end that refuses the profile.
@@ -195,9 +221,10 @@ is known:
   `rtl_bw_khz` the reopen stores, as given, when the config's `[input]` builds
   an input spec other than the running one (from any RTL-family input),
   otherwise the running stream. A refusal leaves the whole config unapplied.
-  An `[input]` that reopens a SoapySDR or Airspy device instead is held to
-  neither: the reopened stream's start checks the width at the rate that
-  device delivers.
+  An `[input]` that reopens a SoapySDR or Airspy device instead (an Airspy
+  source over a running Airspy reopens it for a new sample rate, serial, DSP
+  bandwidth or volume, `svc_airspy_settings_reopen()`) is held to neither: the
+  reopened stream's start checks the width at the rate that device delivers.
 - `DSD_APP_CMD_RTL_SET_BW` refuses a DSP bandwidth that the explicit width of
   the configured analog preset cannot run at on an RTL-SDR or rtl_tcp input,
   naming both; the width is never adjusted to fit the new rate.

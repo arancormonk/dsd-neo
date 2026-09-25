@@ -58,9 +58,10 @@ Generated (do not edit/commit):
   - Installs runtime hook tables used by DSP/frame-sync code
     (`src/engine/frame_sync_hooks_install.c`, `include/dsd-neo/runtime/frame_sync_hooks.h`)
   - Input setup refuses an explicit analog channel width the DSP bandwidth of an RTL-SDR or rtl_tcp input cannot
-    filter (`dsd_engine_setup_check_analog_width()`, issue #525), once the input spec has set that bandwidth and
-    before the device opens; other radio inputs are held to the rate they deliver at stream start. Test:
-    `RUNTIME_ANALOG_WIDTH_RATE_REFUSED` (`tests/cmake/RunCliSmoke.cmake`: the message and a non-zero exit)
+    filter (`dsd_engine_setup_check_analog_width()`, issue #525), from the bandwidth the input spec sets and before an
+    RTL-SDR input looks for its device, so the refusal depends on no dongle; other radio inputs are held to the rate
+    they deliver at stream start. Tests: `RUNTIME_ANALOG_WIDTH_RATE_REFUSED` and `_RTL` (`tests/cmake/RunCliSmoke.cmake`:
+    the message, a non-zero exit, and for `rtl` no device enumeration before it)
 - Build files: `src/engine/CMakeLists.txt`
 
 Key public headers:
@@ -318,9 +319,13 @@ Tests: `tests/engine/test_engine_trunk_scan.c` (`ENGINE_TRUNK_SCAN`) and
     tap count fits the 288-tap analog capacity; the refusal names the width, the rate, the largest width that rate
     fits and the RTL DSP bandwidths that would fit (`dsd_analog_width_fitting_rtl_bandwidths()`, which the short
     refusals reuse; `dsd_analog_rtl_dsp_bw_is_selectable()` is the list of selectable DSP bandwidths that the services,
-    config apply and validation share). `dsd_analog_width_check_forced_rate()` words a rate refusal for a rate a
-    SoapySDR or Airspy device or an I/Q replay forces, where the fix is narrowing the width. It is pure integer
-    arithmetic so callers need not link the DSP;
+    config apply and validation share). `dsd_analog_width_check_at()` words a rate refusal for what sets the rate
+    (`dsd_analog_rate_source`, fix text from `dsd_analog_width_rate_fix()`): the RTL DSP bandwidth, a SoapySDR or Airspy
+    device (whose capture rate is halved down to the first rate at or above the DSP bandwidth: raise the DSP bandwidth or
+    narrow the width) or an I/Q replay's capture (narrow the width); where the rate filters no width of the kind it
+    never names narrowing, and for NFM names leaving the width unset. `dsd_analog_channel_lpf_off_check()` is the
+    `DSD_NEO_CHANNEL_LPF=0` rule (an explicit width, or the AM default, cannot run), taking that state as an argument.
+    It is pure integer arithmetic so callers need not link the DSP;
     `src/dsp/demod_pipeline.cpp` static-asserts its design constants against the ones here. Tests:
     `RUNTIME_ANALOG_CHANNEL`, `DSP_CHANNEL_FILTERS` (validator and design agree across a width/rate grid; the
     analog design gates on `dsd_analog_width_realizable()` itself).
@@ -483,37 +488,50 @@ installs from `src/engine/trunk_tuning.c` in `src/engine/trunk_tuning_hooks_inst
   analog and digital families drops the analog monitor block it has part-collected (`dsd_symbol_analog_block_reset()`),
   whose samples are the old family's; a change inside a family keeps it. Tests:
   `APP_COMMAND_QUEUE`, `APP_CONTROL_ACTIONS_RTL`.
-- NFM channel width (issue #525): `DSD_APP_CMD_NFM_BANDWIDTH_SET` (508, int32 Hz, 0 = default; a coalescible, scoped
-  setter) runs `svc_set_nfm_bandwidth()`: a width outside 0 or 8000..25000 Hz is refused, and while the configured -fA
-  preset uses it `svc_check_nfm_bandwidth()` holds it to the running stream (`rtl_stream_check_analog_profile()`) or,
-  with none, to an RTL-SDR/rtl_tcp input's DSP bandwidth; a refusal is a toast naming the width, the rate, the limit and
-  the fix, and changes nothing (the validator's full text is logged). The fix is a DSP bandwidth on an RTL-SDR or
-  rtl_tcp input; on a SoapySDR, Airspy or I/Q replay stream the toast names the demod rate the stream publishes
-  (`rtl_stream_get_demod_rate_hz()`) and says to narrow the width (`svc_running_nfm_refusal()`). An accepted width goes
-  to a running front end whose options in force are -fA as a live analog profile request (`svc_publish_nfm_bandwidth()`
-  in `symbol_profile.c`), which also replaces the width a queued switch onto analog carries. Under a scan row's
-  suspended scope it waits for `apply_cmd_scoped()` to publish it after the resume, so a typed digital row keeps its
-  profile until its leave; CQPSK toggled on under -fA holds it too, and the DSP op that turns CQPSK off
-  (`svc_toggle_rtl_cqpsk()`) returns to the monitor through the analog profile with it. Whether CQPSK holds the front
-  end is what the decoder last queued, not only what the stream publishes, since a toggle or a switch drained with the
-  width has not landed yet: `symbol_profile.c` keeps the CQPSK state of its last receive request with the stream's
-  output generation (`symbol_profile_cqpsk_requested()`), and falls back to the published state once the generation
-  moves (the request landing, a restart). The toggle flips that requested state too. A switch to Analog
+- NFM channel width (issue #525): `DSD_APP_CMD_NFM_BANDWIDTH_SET` (508, int32 Hz, 0 = default; a coalescible setter)
+  runs `svc_set_nfm_bandwidth()`: a width outside 0 or 8000..25000 Hz is refused, and while the configured -fA preset
+  uses it (the scan scope's configured view) `svc_check_nfm_bandwidth()` holds it to `DSD_NEO_CHANNEL_LPF` and to the
+  running stream (`rtl_stream_check_analog_profile()`) or, with none, to an RTL-SDR/rtl_tcp input's DSP bandwidth; a
+  refusal is a toast naming the width, the rate, the limit and the fix, and changes nothing (the validator's full text
+  is logged). `svc_describe_nfm_refusal()` words it: a DSP bandwidth on an RTL-SDR or rtl_tcp input; on a SoapySDR,
+  Airspy or I/Q replay stream the demod rate the stream publishes (`rtl_stream_get_demod_rate_hz()`) with the fix for
+  that source. The width is not a scan row setting, so the command is not scoped (`command_updates_scan_mode()`): it
+  edits the configured width in place instead of suspending and re-applying a row, which would read the row's live
+  acquisition (a detected Phase 2 polarity, a followed call) as a change and end it. An accepted width goes to a
+  running front end whose options in force are -fA as a live analog profile request (`svc_publish_nfm_bandwidth()` in
+  `symbol_profile.c`), which also replaces the width a queued switch onto analog carries; a typed digital row keeps its
+  profile until its leave, and under a scan row's suspended scope (a config apply) the request waits for
+  `apply_cmd_scoped()` to publish it after the resume. CQPSK toggled on under -fA holds it too, and the DSP op that
+  turns CQPSK off (`svc_toggle_rtl_cqpsk()`) returns to the monitor through the analog profile with it. Whether CQPSK
+  holds the front end is what the decoder last queued, not only what the stream publishes, since a toggle or a switch
+  drained with the width has not landed yet: `symbol_profile.c` keeps the CQPSK state of its last receive request with
+  that request's number (`rtl_stream_receive_request_seq()`), and falls back to the published state once the stream
+  reports the request settled (`rtl_stream_receive_request_outcome()`), never on the output generation, which the demod
+  thread moves before it publishes and a retune moves without taking a request. The toggle flips that requested state
+  too. A width the front end refuses after the check is never left configured: refused by its request (a retune moved
+  the published rate), the change is refused with the previous width put back; refused by the demod thread where it
+  lands, the request reads `RTL_STREAM_RX_REQUEST_REFUSED`, and the next `dsd_app_drain_cmds()` puts back the width the
+  front end kept and toasts why (`svc_take_nfm_bandwidth_refusal()`, `ui_settle_nfm_bandwidth()`). A switch to Analog
   (`DECODE_MODE_SET`, a config's `[mode]`) holds an explicit width to the rate first, under a scan row as well
-  (`ui_check_mode_receive_profile()`). `DSD_APP_CMD_CONFIG_APPLY` holds the explicit width it leaves in force to the
-  rate it will run at before applying anything: `svc_check_nfm_bandwidth_for_rtl_bw()` at the `rtl_bw_khz` a hot restart
-  stores, as given, when the `[input]` builds an RTL-SDR or rtl_tcp spec other than the running RTL-family input's
-  (`cfg_radio_reopen()`), otherwise the check above; one that reopens a SoapySDR or Airspy device is left to that
-  stream's start, which checks the width at the rate the device delivers. An `rtl_bw_khz` above every selectable
-  bandwidth that no width fits is refused as the setting, not as a rate. `svc_rtl_set_bandwidth()` (RTL_SET_BW) refuses
-  a DSP bandwidth the configured preset's explicit width cannot run at on an RTL-SDR or rtl_tcp input, naming both and
-  saying to narrow the width first, and `DSD_APP_CMD_RTL_ENABLE_INPUT` (Input > Switch source > RTL-SDR) asks
-  `svc_check_rtl_input_analog_width()` before it rewrites the input and tears the running stream down, refusing a width
-  the DSP bandwidth of the device it opens cannot filter. Every one of these classifies the input as the stream's
-  `detect_radio_source()` does (`dsd_app_analog_rtl_bw_rate_hz()`): an `rtl`/`rtltcp` spec, or any device string on an
-  RTL input that names no SoapySDR, Airspy or replay device (Input > Switch source > RTL-SDR leaves `pulse` there), runs
-  at `rtl_dsp_bw_khz`, saturated rather than overflowed for a loaded config's out-of-range `rtl_bw_khz`. Tests:
-  `APP_COMMAND_QUEUE`, `UI_MENU_SERVICES`.
+  (`ui_check_mode_receive_profile()`); a `[mode]` without a decode key keeps the session's family.
+  `DSD_APP_CMD_CONFIG_APPLY` holds the explicit width it leaves in force to the rate it will run at before applying
+  anything: `svc_check_nfm_bandwidth_for_rtl_bw()` at the `rtl_bw_khz` a hot restart stores, as given, when the
+  `[input]` builds an RTL-SDR or rtl_tcp spec other than the running RTL-family input's (`cfg_radio_reopen()`),
+  otherwise the check above; one that reopens a SoapySDR or Airspy device (an Airspy `[input]` over a running Airspy
+  reopens it for a new sample rate, serial, DSP bandwidth or volume, `svc_airspy_settings_reopen()`) is held only to the
+  rules every rate shares (`svc_check_nfm_bandwidth_at_device_rate()`) and left to that stream's start, which checks the
+  width at the rate the device delivers. An `rtl_bw_khz` above every selectable bandwidth that no width fits is refused
+  as the setting, not as a rate. `svc_rtl_set_bandwidth()` (RTL_SET_BW) refuses a DSP bandwidth the configured preset's
+  explicit width cannot run at on an RTL-SDR or rtl_tcp input, naming both and saying to narrow the width first, and
+  `DSD_APP_CMD_RTL_ENABLE_INPUT` (Input > Switch source > RTL-SDR) asks `svc_check_rtl_input_analog_width()` before it
+  rewrites the input and tears the running stream down, refusing a width the DSP bandwidth of the device it opens
+  cannot filter. Every change that commits to a stream start with an explicit width refuses it first while
+  `DSD_NEO_CHANNEL_LPF=0` (`svc_analog_width_env_allows()`), since the start would refuse it at any rate. Every one of
+  these classifies the input as the stream's `detect_radio_source()` does (`dsd_app_analog_rtl_bw_rate_hz()`): an
+  `rtl`/`rtltcp` spec, or any device string on an RTL input that names no SoapySDR, Airspy or replay device (Input >
+  Switch source > RTL-SDR leaves `pulse` there), runs at `rtl_dsp_bw_khz`, saturated rather than overflowed for a
+  loaded config's out-of-range `rtl_bw_khz`. Tests: `APP_COMMAND_QUEUE`, `UI_MENU_SERVICES`, `IO_RTL_DEMOD_CONFIG`
+  (request numbering and outcomes).
 - Shared display decisions, so no frontend has to restate one: `include/dsd-neo/app_control/call_view.h` and
   `src/app_control/call_view.c` fold the canonical call state into a per-slot line, and
   `include/dsd-neo/app_control/scan_timing_view.h` and `src/app_control/scan_timing_view.c` fold
@@ -880,8 +898,16 @@ Notes:
     the front end keeps its receive profile. That includes a live request that moves the stream onto the analog
     monitor output, whose caller has already put the decoder on Analog (after `rtl_stream_check_analog_profile()` held
     it to the published rate, or as the session's configured family): a retune that moved the rate since gets it
-    refused, and the front end stays where it was rather than run the width without its channel filter; the log is
-    all the decoder hears of it. The unset NFM default is never refused for its rate. A digital family
+    refused, and the front end stays where it was rather than run the width without its channel filter; the log
+    reports it, and the request reads `RTL_STREAM_RX_REQUEST_REFUSED` (below). The unset NFM default is never refused
+    for its rate. Every queued receive request (analog profile or demod profile) is numbered
+    (`rtl_stream_receive_request_seq()`), and `rtl_stream_receive_request_outcome()` says whether the demod thread has
+    settled it: pending until it takes it and has published what it applied (the consume publishes the demod snapshot
+    before it settles), settled with a later request that replaced it, and settled by a stream open (which drops the
+    queue) or a request with no pipeline to take the queue; an analog request refused where it landed reads refused.
+    That, not the output generation (which the clear for a request moves before the publish, and a retune moves without
+    taking a request), is what tells the decoder the published CQPSK state includes its request. Test:
+    `IO_RTL_DEMOD_CONFIG` (`rtl_stream_test_rx_request_outcomes()`). A digital family
     request leaves the analog family whenever the stream
     runs it (`demod_state::analog_family`, published as `rtl_stream_analog_family_active()`), including after a symbol
     profile applied on its own (a typed digital scan row under `-fA`, a CQPSK toggle) has moved the front end off the
