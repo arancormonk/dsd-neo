@@ -939,10 +939,50 @@ test_rtl_service_option_contracts(void) {
     opts.audio_in_type = 0;
     rc |= expect_int("rtl gain clamps high", svc_rtl_set_gain(&opts, &state, 99), 0);
     rc |= expect_int("rtl gain stored", opts.rtl_gain_value, 49);
-    rc |= expect_int("rtl bandwidth invalid defaults", svc_rtl_set_bandwidth(&opts, &state, 7, NULL, 0U), 0);
+    char why[160];
+    rc |= expect_int("rtl bandwidth invalid defaults", svc_rtl_set_bandwidth(&opts, &state, 7, why, sizeof why), 0);
     rc |= expect_int("rtl bandwidth default stored", opts.rtl_dsp_bw_khz, 48);
-    rc |= expect_int("rtl bandwidth valid stored", svc_rtl_set_bandwidth(&opts, &state, 12, NULL, 0U), 0);
+    rc |= expect_int("rtl bandwidth valid stored", svc_rtl_set_bandwidth(&opts, &state, 12, why, sizeof why), 0);
     rc |= expect_int("rtl bandwidth exact stored", opts.rtl_dsp_bw_khz, 12);
+
+    /* Issue #524: under AM an RTL-SDR or rtl_tcp input's DSP bandwidth is the rate the AM width has to fit, the 6 kHz
+     * default included (8 kHz is the narrowest bandwidth that fits it). A bandwidth that cannot is refused before
+     * anything changes, instead of a restart whose stream start refuses it and leaves no input. */
+    opts.analog_only = 1;
+    opts.monitor_input_audio = 1;
+    opts.analog_demod = DSD_ANALOG_DEMOD_AM;
+    opts.rtl_needs_restart = 0;
+    DSD_SNPRINTF(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", "rtl:0:118.1M:22:0:12");
+    rc |= expect_int("am default refuses a 6 kHz bandwidth", svc_rtl_set_bandwidth(&opts, &state, 6, why, sizeof why),
+                     -1);
+    rc |= expect_int("refused bandwidth not stored", opts.rtl_dsp_bw_khz, 12);
+    rc |= expect_int("refused bandwidth marks no restart", opts.rtl_needs_restart, 0);
+    rc |= expect_int("refusal names the bandwidth, the width and the fix",
+                     strcmp(why, "DSP BW 6 kHz cannot filter AM 6 kHz (max 4.2 kHz); no AM width fits it; keep a "
+                                 "wider DSP bandwidth")
+                         == 0,
+                     1);
+    rc |= expect_int("am default fits an 8 kHz bandwidth", svc_rtl_set_bandwidth(&opts, &state, 8, why, sizeof why), 0);
+    rc |= expect_int("fitting bandwidth stored", opts.rtl_dsp_bw_khz, 8);
+    opts.analog_am_bandwidth_hz = 10000;
+    rc |= expect_int("explicit am width refuses a bandwidth that cannot filter it",
+                     svc_rtl_set_bandwidth(&opts, &state, 12, why, sizeof why), -1);
+    rc |= expect_int("an explicit width that narrowing fixes says so",
+                     strcmp(why, "DSP BW 12 kHz cannot filter AM 10 kHz (max 9.6 kHz); narrow the AM width first") == 0,
+                     1);
+    rc |= expect_int("explicit am width fits 16 kHz", svc_rtl_set_bandwidth(&opts, &state, 16, why, sizeof why), 0);
+    /* A SoapySDR or Airspy device may force another rate: its stream start holds the width to that. */
+    DSD_SNPRINTF(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", "airspy");
+    rc |= expect_int("airspy bandwidth is left to the device rate",
+                     svc_rtl_set_bandwidth(&opts, &state, 4, why, sizeof why), 0);
+    /* FM (the unset NFM default, which no rate refuses) and digital modes hold no bandwidth. */
+    DSD_SNPRINTF(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", "rtl");
+    opts.analog_demod = DSD_ANALOG_DEMOD_FM;
+    rc |= expect_int("fm default takes any bandwidth", svc_rtl_set_bandwidth(&opts, &state, 4, why, sizeof why), 0);
+    opts.analog_only = 0;
+    opts.monitor_input_audio = 0;
+    opts.analog_am_bandwidth_hz = 0;
+    opts.rtl_dsp_bw_khz = 12;
 
     rc |= expect_int("rtl squelch stores converted threshold", svc_rtl_set_sql_db(&opts, &state, -12.5), 0);
     rc |= expect_double("rtl squelch level stored", opts.rtl_squelch_level, pow(10.0, -1.25));

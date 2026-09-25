@@ -243,10 +243,22 @@ int svc_check_mode_receive_profile(const dsd_opts* opts, const dsd_state* state,
  * @brief svc_check_mode_receive_profile() for an explicit analog kind and width (issue #524): whether a running RTL
  * front end takes the analog profile (@p kind: dsd_analog_demod; @p width_hz: 0 for the kind's default).
  *
- * @return 0 when it would, or when nothing would publish it here (the M17 encoder, no running RTL stream, a scope
- *         update); -1 when it would refuse it (logged with the validator's text).
+ * Asked under a scan row's scope too, while a command updates the configuration there: the row's leave switches the
+ * front end to the configured profile at the rate it runs at now.
+ *
+ * @return 0 when it would, or when nothing would publish it here (the M17 encoder, no running RTL stream); -1 when it
+ *         would refuse it (logged with the validator's text).
  */
 int svc_check_analog_receive_profile(const dsd_opts* opts, const dsd_state* state, int kind, int width_hz);
+
+/**
+ * @brief The AM channel width the configured preset runs, in Hz (issue #524): the explicit width, or the 6000 Hz
+ * default, which is held to the DSP rate like an explicit one; 0 when the configured preset is not AM.
+ *
+ * Configured means the scan scope's configured view under a row: a typed digital row on an AM session returns to the
+ * AM monitor when it ends. The M17 encoder's monitor path is never AM.
+ */
+int svc_configured_am_width_hz(const dsd_opts* opts, const dsd_state* state);
 
 /**
  * @brief Note the configured digital decode modes with a running RTL front end.
@@ -481,18 +493,18 @@ int svc_rtl_set_gain(dsd_opts* opts, dsd_state* state, int value);
 /**
  * @brief Set RTL DSP baseband bandwidth (kHz: 4,6,8,12,16,24,48), restarting if needed.
  *
- * An unsupported value becomes 48. A bandwidth an explicit analog channel width in use cannot run at, on an RTL-SDR
- * or rtl_tcp input, whose DSP rate this sets, is refused and nothing changes: the width is never clamped to fit. The
- * widths held to it are the configured analog preset's (a typed digital scan row on an analog session included), on
- * any other session the configured NFM width while the scan has an nfm row or target without a width of its own to
- * visit (issue #526, dsd_engine_scan_runs_configured_nfm_width()), and, since the reopened stream starts on the
- * settings in force, the width in force while an nfm scan row runs the analog family: the row's own
- * --nfm-bandwidth-hz, or on a digital session the configured NFM width the row runs. @p why receives a short reason
- * naming both values, the widest width the bandwidth filters and the fix on that refusal (may be NULL): narrow the
- * width first, or, for a scan row's own width, which the width controls do not edit, keep a wider DSP bandwidth ("DSP
- * BW 12 kHz cannot filter the scan row's NFM 12.5 kHz (max 9.6 kHz); keep a wider DSP bandwidth"). The validator's full
- * text is logged. The reopen is also refused while DSD_NEO_CHANNEL_LPF=0 turns off the channel filter that explicit
- * width needs, which its start would refuse at any rate.
+ * An unsupported value becomes 48. A bandwidth an analog channel width in use cannot run at, on an RTL-SDR or rtl_tcp
+ * input, whose DSP rate this sets, is refused and nothing changes: the width is never clamped to fit. The widths held
+ * to it are the configured analog preset's explicit width, or the AM default, which AM always filters at (a typed
+ * digital scan row on an analog session included), on any other session the configured NFM width while the scan has
+ * an nfm row or target without a width of its own to visit (issue #526, dsd_engine_scan_runs_configured_nfm_width()),
+ * and, since the reopened stream starts on the settings in force, the width in force while an nfm scan row runs the
+ * analog family: the row's own --nfm-bandwidth-hz, or on a digital session the configured NFM width the row runs.
+ * @p why receives a short reason naming both values, the widest width the bandwidth filters and the fix on that
+ * refusal (may be NULL): narrow the width first, or, for a scan row's own width, which the width controls do not edit,
+ * keep a wider DSP bandwidth ("DSP BW 12 kHz cannot filter the scan row's NFM 12.5 kHz (max 9.6 kHz); keep a wider DSP
+ * bandwidth"). The validator's full text is logged. The reopen is also refused while DSD_NEO_CHANNEL_LPF=0 turns off
+ * the channel filter that width needs, which its start would refuse at any rate.
  */
 int svc_rtl_set_bandwidth(dsd_opts* opts, dsd_state* state, int khz, char* why, size_t why_size);
 /**

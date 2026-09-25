@@ -903,6 +903,23 @@ svc_analog_width_fits_rtl_rate(int kind, int width_hz, int rate_hz, char* why, s
     return 0;
 }
 
+int
+svc_configured_am_width_hz(const dsd_opts* opts, const dsd_state* state) {
+    if (!opts) {
+        return 0;
+    }
+    /* Under a scan row the configured view decides: a typed digital row on an AM session returns to the AM monitor
+       when it ends, and the options it runs on carry the row's mode meanwhile. */
+    const dsd_scan_settings* configured = state ? dsd_scan_mode_configured_view(state) : NULL;
+    const int analog_only = configured ? configured->analog_only : opts->analog_only;
+    const int monitor = configured ? configured->monitor_input_audio : opts->monitor_input_audio;
+    const int kind = configured ? configured->analog_demod : opts->analog_demod;
+    if (analog_only != 1 || monitor != 1 || opts->m17encoder == 1 || kind != DSD_ANALOG_DEMOD_AM) {
+        return 0;
+    }
+    return dsd_analog_width_effective_hz(DSD_ANALOG_DEMOD_AM, opts->analog_am_bandwidth_hz);
+}
+
 #ifdef USE_RADIO
 /* The DSP rate an RTL DSP bandwidth gives this input where that bandwidth is the rate: an RTL-SDR or rtl_tcp input,
    classified as the stream classifies it (dsd_app_analog_rtl_bw_rate_hz()). 0 elsewhere: SoapySDR and Airspy devices
@@ -1111,12 +1128,13 @@ svc_set_nfm_bandwidth(dsd_opts* opts, const dsd_state* state, int width_hz, char
 
 #ifdef USE_RADIO
 
-/* The explicit analog width a DSP rate is held to, 0 for none: the configured analog preset's own kind and width
-   (app_control's analog width view shows the preset), so a scan row on an analog session, whose leave returns to the
-   monitor, still holds it: a typed digital row, or an nfm row (issue #526) on a session whose preset runs another
-   demodulator (AM), which runs FM at a width of its own meanwhile and is held to the rate apart. On any other session,
-   the configured NFM width while the scan has an nfm row or target without a width of its own, which runs it when it
-   comes on air. */
+/* The analog width a DSP rate is held to, 0 for none: the configured analog preset's own kind and width (app_control's
+   analog width view shows the preset), so a scan row on an analog session, whose leave returns to the monitor, still
+   holds it: a typed digital row, or an nfm row (issue #526) on a session whose preset runs another demodulator (AM),
+   which runs FM at a width of its own meanwhile and is held to the rate apart. AM always runs its channel filter, so
+   its unset default is held to the rate like an explicit width (issue #524); the unset NFM default keeps its legacy
+   rule and holds nothing. On any other session, the configured NFM width while the scan has an nfm row or target
+   without a width of its own, which runs it when it comes on air. */
 static int
 svc_configured_analog_width(const dsd_opts* opts, const dsd_state* state, int* kind) {
     dsd_app_analog_width_view view;
@@ -1124,7 +1142,9 @@ svc_configured_analog_width(const dsd_opts* opts, const dsd_state* state, int* k
     if (view.shown) {
         const dsd_scan_settings* configured = dsd_scan_mode_configured_view(state);
         *kind = configured ? configured->analog_demod : opts->analog_demod;
-        return dsd_scan_mode_configured_analog_width(opts, state, *kind);
+        const int configured_hz = dsd_scan_mode_configured_analog_width(opts, state, *kind);
+        return *kind == DSD_ANALOG_DEMOD_AM ? dsd_analog_width_effective_hz(DSD_ANALOG_DEMOD_AM, configured_hz)
+                                            : configured_hz;
     }
     *kind = DSD_ANALOG_DEMOD_FM;
     return dsd_engine_scan_runs_configured_nfm_width(opts, state)

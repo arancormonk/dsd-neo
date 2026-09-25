@@ -133,7 +133,10 @@ svc_note_digital_decode_modes(const dsd_opts* opts, const dsd_state* state) {
 
 int
 svc_check_analog_receive_profile(const dsd_opts* opts, const dsd_state* state, int kind, int width_hz) {
-    if (!opts || !state || opts->m17encoder == 1 || dsd_scan_mode_updating(state)) {
+    /* Also while a command updates the configuration under a scan row (dsd_scan_mode_updating()): the front end may
+       only switch to the profile when the row ends, but it switches at the rate it runs at now (a row never changes
+       the DSP rate), so a profile it would refuse then is refused now, before anything is committed. */
+    if (!opts || !state || opts->m17encoder == 1) {
         return 0;
     }
 #ifdef USE_RADIO
@@ -191,12 +194,13 @@ symbol_profile_publish(const dsd_opts* opts, dsd_state* state, dsd_decode_mode_p
        it and falls back on 4800/4, which would ask rtl_stream_set_symbol_profile()
        for the P25 C4FM filter and narrow the monitor audio to a digital channel.
        The analog request is also what moves a live digital front end onto the
-       analog family when the operator picks Analog mid-session. Only an
-       explicit analog width can be refused for its rate, and every path that
-       commits the decoder to one held it to that rate first, refusing with a
-       toast and changing nothing: a decode-mode change or a config's [mode]
-       onto Analog (under a scan row too), the NFM width command, a config's
-       [analog] width or DSP bandwidth, and RTL_SET_BW. The front end refuses it
+       analog family when the operator picks Analog or AM mid-session. Only an
+       explicit analog width, or the AM default, can be refused for its rate,
+       and every path that commits the decoder to one held it to that rate
+       first, refusing with a toast and changing nothing: a decode-mode change
+       or a config's [mode] onto Analog or AM (under a scan row too), the NFM
+       and AM width commands, a config's [analog] width or DSP bandwidth, and
+       RTL_SET_BW. The front end refuses it
        only when a retune moved the rate since: here, which the -1 returned
        tells the caller, or where it lands on the demod thread, which the
        request's record tells svc_take_monitor_request_outcome(). Either way the
