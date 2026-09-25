@@ -1374,13 +1374,19 @@ lbl_rtl_bw(const void* v, char* b, size_t n) {
 }
 
 /* The configured NFM channel width, a setting rather than a reading: an explicit width as set, the unset default as
-   "default" (the status line's "Analog:" field shows what that gives at the DSP rate). App-control's spelling. */
+   "default" (the status line's "Analog:" field shows what that gives at the DSP rate). App-control's spelling. The
+   scan scope's configured view while one is live: an nfm row's own width (issue #526) runs over dsd_opts, and the row
+   edits the configured width. */
 const char*
 lbl_rtl_nfm_bw(const void* v, char* b, size_t n) {
     const UiCtx* c = (const UiCtx*)v;
+    const dsd_scan_settings* configured = c ? menu_configured_scan_settings() : NULL;
+    int configured_hz = (c && c->opts) ? c->opts->analog_nfm_bandwidth_hz : 0;
+    if (configured) {
+        configured_hz = configured->analog_nfm_bandwidth_hz;
+    }
     char width[DSD_APP_ANALOG_WIDTH_TEXT_MAX];
-    (void)dsd_app_analog_width_setting_format((c && c->opts) ? c->opts->analog_nfm_bandwidth_hz : 0, width,
-                                              sizeof width);
+    (void)dsd_app_analog_width_setting_format(configured_hz, width, sizeof width);
     DSD_SNPRINTF(b, n, "NFM bandwidth... [%s]", width);
     return b;
 }

@@ -10,6 +10,7 @@
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/decode_mode.h>
 #include <dsd-neo/runtime/scan_mode.h>
+#include <dsd-neo/runtime/scan_options.h>
 #include <stddef.h>
 #include "scan_mode_label_stubs.h"
 
@@ -19,6 +20,27 @@ static int snapshots_available = 1;
 static dsd_scan_mode active_mode;
 static dsd_scan_settings configured_settings;
 static int have_configured;
+static dsd_scan_option_values row_options;
+static int have_row_options;
+
+void
+dsd_test_scan_labels_row_options(const dsd_scan_option_values* values) {
+    have_row_options = values != NULL;
+    if (values) {
+        row_options = *values;
+    }
+}
+
+const dsd_scan_option_values*
+dsd_scan_mode_row_options(const dsd_state* state) {
+    assert(state == &snapshot_state || state == NULL);
+    return state && have_row_options ? &row_options : NULL;
+}
+
+int
+dsd_scan_mode_is_analog(dsd_scan_mode mode) {
+    return mode == DSD_SCAN_MODE_NFM;
+}
 
 void
 dsd_test_scan_labels_configured(const dsd_scan_settings* settings) {

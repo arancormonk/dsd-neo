@@ -517,6 +517,11 @@ dsd_scan_mode_active(const dsd_state* state) { // NOLINT(misc-use-internal-linka
     return g_scan_mode_active;
 }
 
+int
+dsd_scan_mode_is_analog(dsd_scan_mode mode) { // NOLINT(misc-use-internal-linkage)
+    return mode == DSD_SCAN_MODE_NFM;
+}
+
 uint8_t
 m17_address_classify(unsigned long long address) { // NOLINT(misc-use-internal-linkage)
     (void)address;
@@ -962,6 +967,7 @@ test_analog_channel_status_rendering(void) {
     DSD_MEMSET(&configured, 0, sizeof(configured));
     configured.analog_only = 1;
     configured.analog_demod = DSD_ANALOG_DEMOD_FM;
+    configured.analog_nfm_bandwidth_hz = 12500;
     g_scan_configured = &configured;
     opts.analog_only = 0;
     opts.frame_dmr = 1;
@@ -970,18 +976,45 @@ test_analog_channel_status_rendering(void) {
     assert_capture_contains(" Analog: NFM 12.5 kHz;");
     /* ...and with the unset default at a 12 kHz DSP rate, what that leave returns to: the rate itself, DSP-limited,
        not the 16 kHz the rate cannot filter. The row's front end reports its own channel meanwhile. */
+    configured.analog_nfm_bandwidth_hz = 0;
     opts.analog_nfm_bandwidth_hz = 0;
     opts.rtl_dsp_bw_khz = 12;
     g_demod_rate_hz = 12000;
     reset_printw_capture();
     ui_render_rtl_input_source(&opts, &state);
     assert_capture_contains(" DSP-BW: 12 kHz; Analog: NFM 12 kHz (DSP-limited);");
-    opts.analog_nfm_bandwidth_hz = 12500;
     opts.rtl_dsp_bw_khz = 48;
     g_demod_rate_hz = 0;
-    g_scan_configured = NULL;
+
+    /* Issue #526: an nfm row with its own width, on a digital session too. The row's width is in force, and the line
+       names the configured width the row's leave returns to, whatever dsd_opts reads under the row. */
+    configured.analog_only = 0;
+    configured.analog_nfm_bandwidth_hz = 20000;
+    dsd_scan_option_values row;
+    DSD_MEMSET(&row, 0, sizeof(row));
+    row.present = DSD_SCAN_OPT_BANDWIDTH;
+    row.channel_bw_hz = 12500;
+    g_scan_row_options = &row;
+    g_scan_mode_active = DSD_SCAN_MODE_NFM;
     opts.frame_dmr = 0;
     opts.analog_only = 1;
+    opts.analog_nfm_bandwidth_hz = 12500;
+    g_channel_bandwidth_hz = 12500;
+    reset_printw_capture();
+    ui_render_rtl_input_source(&opts, &state);
+    assert_capture_contains(" Analog: NFM 12.5 kHz (row; default 20 kHz);");
+    /* ...and an nfm row without one shows the configured width it runs. */
+    g_scan_row_options = NULL;
+    opts.analog_nfm_bandwidth_hz = 20000;
+    g_channel_bandwidth_hz = 20000;
+    reset_printw_capture();
+    ui_render_rtl_input_source(&opts, &state);
+    assert_capture_contains(" Analog: NFM 20 kHz;");
+    assert(strstr(g_printw_capture, "(row") == NULL);
+    g_scan_mode_active = DSD_SCAN_MODE_INHERIT;
+    g_channel_bandwidth_hz = 20000;
+    opts.analog_nfm_bandwidth_hz = 12500;
+    g_scan_configured = NULL;
 
     /* The default below a 20 kHz DSP rate runs no channel filter: the 12 kHz rate itself bounds the channel. */
     opts.analog_nfm_bandwidth_hz = 0;

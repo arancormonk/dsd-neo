@@ -1360,6 +1360,25 @@ main(int argc, char** argv) {
         expect("under a typed row the configured preset still shows", model.analogBandwidthConfiguredHz() == 12500);
         dsd_scan_mode_leave(&opts, &state);
 
+        /* Issue #526: an nfm row with its own width runs over the configured one. The reading is the row's width with
+         * the configured width it returns to, and the stepper still edits the configured width, not the row's. */
+        dsd_scan_option_values width_row{};
+        width_row.present = DSD_SCAN_OPT_BANDWIDTH;
+        width_row.channel_bw_hz = 16000;
+        expect("nfm width row", dsd_scan_mode_enter(&opts, &state, DSD_SCAN_MODE_NFM) == 0);
+        expect("nfm width row options", dsd_scan_mode_options(&opts, &state, &width_row) == 0);
+        expect("nfm width row in force", opts.analog_nfm_bandwidth_hz == 16000);
+        g_stub_channel_bandwidth_hz = 16000;
+        model.refresh(&opts, &state);
+        expect("under a width row the row's width", model.analogBandwidthHz() == 16000);
+        expect("under a width row the stepper edits the configured width",
+               model.analogBandwidthConfiguredHz() == 12500);
+        expect("under a width row the reading names both",
+               model.analogBandwidthReading() == QStringLiteral("16 kHz (row; default 12.5 kHz)"));
+        dsd_scan_mode_leave(&opts, &state);
+        expect("the width row's leave restores the configured width", opts.analog_nfm_bandwidth_hz == 12500);
+        g_stub_channel_bandwidth_hz = 10800;
+
         /* PCM input: no channel filter runs, so no width is in force (the terminal shows no Analog field there
          * either); the configured width is still published for the control. */
         opts.audio_in_type = AUDIO_IN_PULSE;

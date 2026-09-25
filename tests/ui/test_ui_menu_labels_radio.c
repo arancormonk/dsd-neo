@@ -19,9 +19,11 @@
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/decode_mode.h>
 #include <dsd-neo/runtime/radioreference.h>
+#include <dsd-neo/runtime/scan_mode.h>
 #include <stdio.h>
 #include <string.h>
 
+#include "../test_support/scan_mode_label_stubs.h"
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/state_fwd.h"
 #include "dsd-neo/io/rtl_stream_fwd.h"
@@ -322,6 +324,15 @@ test_radio_tuning_labels(void) {
                      "NFM bandwidth... [16 kHz]");
     opts.analog_nfm_bandwidth_hz = 11250;
     rc |= expect_str("nfm bandwidth 11.25", lbl_rtl_nfm_bw(&ctx, b, sizeof(b)), "NFM bandwidth... [11.25 kHz]");
+    /* Issue #526: under an nfm scan row with its own width, dsd_opts holds the row's 12.5 kHz; the row names the
+       configured width, the one it edits. */
+    dsd_scan_settings configured = {0};
+    configured.analog_nfm_bandwidth_hz = 20000;
+    dsd_test_scan_labels_configured(&configured);
+    opts.analog_nfm_bandwidth_hz = 12500;
+    rc |=
+        expect_str("nfm bandwidth under a width row", lbl_rtl_nfm_bw(&ctx, b, sizeof(b)), "NFM bandwidth... [20 kHz]");
+    dsd_test_scan_labels_configured(NULL);
     opts.analog_nfm_bandwidth_hz = 0;
     rc |= expect_str("rtl volume", lbl_rtl_vol(&ctx, b, sizeof(b)), "Volume multiplier... [2]");
     rc |= expect_str("rtl frequency null ctx", lbl_rtl_freq(NULL, b, sizeof(b)), "Frequency... [0.000000 MHz]");

@@ -416,14 +416,16 @@ ui_print_rtl_auto_ppm_status(void) {
 #endif
 }
 
-/* The analog channel width in force beside the DSP rate it has to fit (issue #525), under the configured analog preset,
-   as app_control's analog width view decides and spells it for every frontend. */
+/* The analog channel width in force beside the DSP rate it has to fit (issue #525), under the configured analog preset
+   or an analog scan row on air ("12.5 kHz (row; default 16 kHz)" for a row's own width, issue #526), as app_control's
+   analog width view decides and spells it for every frontend. */
 static void
 ui_print_analog_channel_field(const dsd_opts* opts, const dsd_state* state) {
     dsd_frontend_metrics metrics;
     (void)dsd_app_frontend_get_metrics(&metrics);
     dsd_app_analog_width_view view;
-    if (dsd_app_analog_width_view_get(opts, state, &metrics, &view) != 0 || !view.shown || !view.radio_input) {
+    if (dsd_app_analog_width_view_get(opts, state, &metrics, &view) != 0 || (!view.shown && !view.row_analog)
+        || !view.radio_input) {
         return;
     }
     char width[DSD_APP_ANALOG_WIDTH_TEXT_MAX];

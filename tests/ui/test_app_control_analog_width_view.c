@@ -5,7 +5,8 @@
 
 /* The shared analog channel width readout (issue #525): the width in force under the configured analog preset, the
  * front end's while a running stream runs the monitor for it, the configured one otherwise; the DSP-limited flag; and
- * the one spelling of the reading and of a configured width that every frontend shows. */
+ * the one spelling of the reading and of a configured width that every frontend shows. Issue #526: an nfm scan row's
+ * own width is in force over the configured one, which the reading names as the row's default. */
 
 #include <assert.h>
 #include <dsd-neo/app_control/analog_width_view.h>
@@ -21,6 +22,7 @@
 #include <dsd-neo/runtime/analog_channel.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/scan_mode.h>
+#include <dsd-neo/runtime/scan_options.h>
 #include <limits.h>
 #include <stdlib.h>
 #include <string.h>
@@ -210,18 +212,75 @@ main(void) {
     assert(dsd_app_analog_width_view_get(opts, copy, &m, &view) == 0);
     assert(view.shown && view.width_hz == 20000);
     /* The unset default under the row at a 12 kHz DSP rate reads as what the leave returns to: the rate itself,
-       DSP-limited, not the 16 kHz the rate cannot filter. An explicit width the rate filters stays the width. */
-    opts->analog_nfm_bandwidth_hz = 0;
+       DSP-limited, not the 16 kHz the rate cannot filter. An explicit width the rate filters stays the width. Under a
+       live scope the configured width is the scope's baseline, which the width command edits. */
+    assert(dsd_scan_mode_set_configured_nfm_bandwidth(opts, state, 0) == 1);
     m = monitor_metrics(12500, 0, 12000);
     assert(dsd_app_analog_width_view_get(opts, state, &m, &view) == 0);
     assert(view.shown && view.width_hz == 12000 && view.dsp_limited && view.configured_hz == 0);
     expect_reading(&view, "12 kHz (DSP-limited)");
-    opts->analog_nfm_bandwidth_hz = 8000;
+    assert(dsd_scan_mode_set_configured_nfm_bandwidth(opts, state, 8000) == 1);
     assert(dsd_app_analog_width_view_get(opts, state, &m, &view) == 0);
     assert(view.width_hz == 8000 && !view.dsp_limited && view.max_hz == 9600);
-    opts->analog_nfm_bandwidth_hz = 20000;
+    assert(dsd_scan_mode_set_configured_nfm_bandwidth(opts, state, 20000) == 1);
     dsd_scan_mode_leave(opts, state);
     assert(opts->analog_only == 1);
+
+    /* Issue #526: an nfm row with its own width on the analog session. The row's width is in force (the front end's
+       report while it runs the monitor, the row's own with no stream), and the reading names the configured width the
+       leave returns to; the configured width stays what the controls edit, however dsd_opts reads under the row. */
+    dsd_scan_option_values row = {0};
+    row.present = DSD_SCAN_OPT_BANDWIDTH;
+    row.channel_bw_hz = 12500;
+    assert(dsd_scan_mode_enter(opts, state, DSD_SCAN_MODE_NFM) == 0);
+    assert(dsd_scan_mode_options(opts, state, &row) == 0);
+    assert(opts->analog_nfm_bandwidth_hz == 12500);
+    assert(dsd_app_analog_width_view_get(opts, state, NULL, &view) == 0);
+    assert(view.shown && view.row_analog && view.row_override && view.row_hz == 12500);
+    assert(view.width_hz == 12500 && view.configured_hz == 20000 && !view.dsp_limited);
+    expect_reading(&view, "12.5 kHz (row; default 20 kHz)");
+    m = monitor_metrics(12500, 0, 48000);
+    assert(dsd_app_analog_width_view_get(opts, state, &m, &view) == 0);
+    assert(view.width_hz == 12500 && view.max_hz == 42000);
+    expect_reading(&view, "12.5 kHz (row; default 20 kHz)");
+    char notice[96];
+    assert(dsd_app_analog_width_view_edit_notice(&view, notice, sizeof notice) == 0);
+    assert(strcmp(notice, "Default NFM bandwidth -> 20 kHz; this channel overrides it (12.5 kHz)") == 0);
+    /* The unset default under the row is named by the width it gives, and never read as the DSP-limited default. */
+    assert(dsd_scan_mode_set_configured_nfm_bandwidth(opts, state, 0) == 0);
+    m = monitor_metrics(12500, 0, 16000);
+    assert(dsd_app_analog_width_view_get(opts, state, &m, &view) == 0);
+    assert(view.width_hz == 12500 && !view.dsp_limited && view.configured_hz == 0);
+    expect_reading(&view, "12.5 kHz (row; default 16 kHz)");
+    assert(dsd_app_analog_width_view_edit_notice(&view, notice, sizeof notice) == 0);
+    assert(strcmp(notice, "Default NFM bandwidth -> default; this channel overrides it (12.5 kHz)") == 0);
+    /* A row without a width runs the configured one, which reads and notifies as it would outside a row. */
+    assert(dsd_scan_mode_set_configured_nfm_bandwidth(opts, state, 20000) == 0);
+    assert(dsd_scan_mode_options(opts, state, NULL) == 0);
+    m = monitor_metrics(20000, 0, 48000);
+    assert(dsd_app_analog_width_view_get(opts, state, &m, &view) == 0);
+    assert(view.row_analog && !view.row_override && view.width_hz == 20000 && view.configured_hz == 20000);
+    expect_reading(&view, "20 kHz");
+    assert(dsd_app_analog_width_view_edit_notice(&view, notice, sizeof notice) == 0);
+    assert(strcmp(notice, "Applied: NFM bandwidth -> 20 kHz") == 0);
+    dsd_scan_mode_leave(opts, state);
+    assert(opts->analog_only == 1 && opts->analog_nfm_bandwidth_hz == 20000);
+
+    /* ...and on a digital session, where the nfm row is the only analog receiver: shown while it is on air, with the
+       configured width it would otherwise run, and nothing once it leaves. */
+    opts->analog_only = 0;
+    opts->frame_dmr = 1;
+    assert(dsd_scan_mode_enter(opts, state, DSD_SCAN_MODE_NFM) == 0);
+    assert(dsd_scan_mode_options(opts, state, &row) == 0);
+    assert(dsd_app_analog_width_view_get(opts, state, NULL, &view) == 0);
+    assert(!view.shown && view.row_analog && view.row_override && view.kind == DSD_ANALOG_DEMOD_FM);
+    expect_reading(&view, "12.5 kHz (row; default 20 kHz)");
+    dsd_scan_mode_leave(opts, state);
+    assert(dsd_app_analog_width_view_get(opts, state, NULL, &view) == 0);
+    assert(!view.shown && !view.row_analog && !view.row_override && view.width_hz == 0);
+    expect_reading(&view, "");
+    opts->analog_only = 1;
+    opts->frame_dmr = 0;
 
     /* ...and the reverse: a digital configured preset under a row whose options read analog shows nothing. */
     opts->analog_only = 0;
@@ -275,6 +334,19 @@ main(void) {
     expect_setting(16000, "16 kHz");
     expect_setting(0, "default");
     expect_setting(-1, "default");
+
+    /* The edit notice outside a scope: the configured width as set. */
+    DSD_MEMSET(&view, 0, sizeof view);
+    view.kind = DSD_ANALOG_DEMOD_FM;
+    view.configured_hz = 11250;
+    char applied[96];
+    assert(dsd_app_analog_width_view_edit_notice(&view, applied, sizeof applied) == 0);
+    assert(strcmp(applied, "Applied: NFM bandwidth -> 11.25 kHz") == 0);
+    view.configured_hz = 0;
+    assert(dsd_app_analog_width_view_edit_notice(&view, applied, sizeof applied) == 0);
+    assert(strcmp(applied, "Applied: NFM bandwidth -> default") == 0);
+    assert(dsd_app_analog_width_view_edit_notice(NULL, applied, sizeof applied) == -1 && applied[0] == '\0');
+    assert(dsd_app_analog_width_view_edit_notice(&view, NULL, 0) == -1);
 
     char out[8];
     assert(dsd_app_analog_width_view_get(NULL, state, NULL, &view) == -1 && !view.shown);
