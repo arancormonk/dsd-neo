@@ -261,8 +261,9 @@ void svc_note_digital_decode_modes(const dsd_opts* opts, const dsd_state* state)
  * width outside the kind's range (NFM 8000..25000 Hz, AM 5000..20000 Hz) is refused, and so, on a radio input while
  * DSD_NEO_CHANNEL_LPF=0 turns the channel filter off (dsd_analog_channel_lpf_off_check()), is an explicit width or the
  * AM default, at any rate. On PCM input no channel filter runs, so the width is only stored there (a switch to a radio
- * input holds it). An explicit width, and the AM default (AM always runs its channel filter, issue #524), is also held
- * to the DSP rate it would run at: with a running RTL-family stream, the front end's own check at its published demod
+ * input holds it), whatever device string a live switch from an RTL-SDR left behind. On a radio input an explicit
+ * width, and the AM default (AM always runs its channel filter, issue #524), is also held to the DSP rate it would run
+ * at: with a running RTL-family stream, the front end's own check at its published demod
  * rate (rtl_stream_check_analog_profile(), which also logs a refusal with the validator's text); without one, the rate
  * an RTL-SDR or rtl_tcp input's DSP bandwidth (rtl_dsp_bw_khz) gives. Other inputs are checked by their next stream
  * start, against the rate the device delivers. The unset NFM default is never refused. Callers decide whether the width

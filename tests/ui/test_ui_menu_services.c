@@ -1723,6 +1723,7 @@ test_nfm_bandwidth_services(void) {
     DSD_MEMSET(&opts, 0, sizeof opts);
     DSD_MEMSET(&state, 0, sizeof state);
     DSD_SNPRINTF(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", "rtl:0:851.375M:0:0:16");
+    opts.audio_in_type = AUDIO_IN_RTL;
     opts.rtl_dsp_bw_khz = 16;
     opts.analog_only = 1;
     char why[128];
@@ -1744,6 +1745,17 @@ test_nfm_bandwidth_services(void) {
     rc |= expect_int("nfm svc range reason", strcmp(why, "NFM bandwidth 7.999 kHz is outside 8 kHz to 25 kHz") == 0, 1);
     rc |= expect_int("nfm svc default never refused",
                      svc_check_analog_bandwidth(&opts, &state, DSD_ANALOG_DEMOD_FM, 0, why, sizeof why), 0);
+
+    /* PCM input, here TCP audio a live switch put the RTL-SDR session on, keeping its device string: no channel filter
+       runs there, so no DSP rate holds the width, which is stored for a switch back to a radio input. */
+    opts.audio_in_type = AUDIO_IN_TCP;
+    rc |= expect_int("nfm svc pcm 16000 not held to the old rate",
+                     svc_set_analog_bandwidth(&opts, &state, DSD_ANALOG_DEMOD_FM, 16000, why, sizeof why), 0);
+    rc |= expect_int("nfm svc pcm 16000 stored", opts.analog_nfm_bandwidth_hz, 16000);
+    rc |= expect_int("nfm svc pcm range still checked",
+                     svc_check_analog_bandwidth(&opts, &state, DSD_ANALOG_DEMOD_FM, 7999, why, sizeof why), -1);
+    opts.analog_nfm_bandwidth_hz = 12500;
+    opts.audio_in_type = AUDIO_IN_RTL;
 
     /* A reopen at another DSP bandwidth is checked against that bandwidth alone. */
     rc |= expect_int("nfm svc 25 kHz at a 48 kHz reopen",
@@ -1879,6 +1891,7 @@ test_am_bandwidth_services(void) {
     DSD_MEMSET(&opts, 0, sizeof opts);
     DSD_MEMSET(&state, 0, sizeof state);
     DSD_SNPRINTF(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", "rtl:0:118.1M:22:0:6");
+    opts.audio_in_type = AUDIO_IN_RTL;
     opts.rtl_dsp_bw_khz = 6;
     opts.analog_only = 1;
     opts.analog_demod = DSD_ANALOG_DEMOD_AM;

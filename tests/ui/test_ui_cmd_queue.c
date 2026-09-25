@@ -6211,6 +6211,52 @@ test_input_switch_to_pcm_leaves_am(void) {
     return rc;
 }
 
+/*
+ * The fallback lands on Analog whatever the NFM width. An AM session on an RTL-SDR at a 24 kHz DSP bandwidth may keep
+ * an explicit NFM width that rate cannot filter (25 kHz), since AM does not run it. A live switch to TCP audio keeps
+ * the RTL device string, but no channel filter runs on PCM input, so no DSP rate holds the width there: the fallback
+ * goes ahead with the width stored, and no later command repeats a refusal.
+ */
+static int
+test_tcp_switch_leaves_am_with_unfit_nfm_width(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static void* fake_ctx[2];
+    int rc = 0;
+    init_decode_mode_context(&opts, &state);
+    opts.audio_in_type = AUDIO_IN_RTL;
+    DSD_SNPRINTF(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", "rtl:0:118.1M:22:0:24");
+    opts.rtl_dsp_bw_khz = 24;
+    opts.analog_nfm_bandwidth_hz = 25000;
+    state.rtl_ctx = (RtlSdrContext*)fake_ctx;
+    g_analog_check_result = 0;
+    rc |= submit_decode_mode(&opts, &state, DSDCFG_MODE_AM, "tcp switch: am start");
+    rc |= expect_int("tcp switch: on AM", dsd_infer_decode_mode_preset(&opts) == DSDCFG_MODE_AM, 1);
+
+    state.rtl_ctx = NULL;
+    state.ui_msg[0] = '\0';
+    arm_tcp_connect_stub(1, 0);
+    rc |= expect_int("tcp switch: connect queued", post_host_port(DSD_APP_CMD_TCP_CONNECT_AUDIO_CFG, "127.0.0.1", 7355),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("tcp switch: connect drained", dsd_app_drain_cmds(&opts, &state), 1);
+    arm_tcp_connect_stub(0, 0);
+    rc |= expect_int("tcp switch: on TCP audio", opts.audio_in_type, AUDIO_IN_TCP);
+    rc |= expect_str("tcp switch: device string kept", opts.audio_in_dev, "rtl:0:118.1M:22:0:24");
+    rc |= expect_int("tcp switch: fell back to Analog", dsd_infer_decode_mode_preset(&opts) == DSDCFG_MODE_ANALOG, 1);
+    rc |= expect_int("tcp switch: FM detector", opts.analog_demod, DSD_ANALOG_DEMOD_FM);
+    rc |= expect_int("tcp switch: NFM width kept", opts.analog_nfm_bandwidth_hz, 25000);
+    rc |= expect_int("tcp switch: toast gives the reason",
+                     strstr(state.ui_msg, "Decoding Analog: AM demodulation needs an IQ radio input") != NULL, 1);
+
+    /* A width set on the PCM session is stored, not held to the old device's rate (22 kHz does not fit 24 kHz). */
+    rc |= submit_nfm_width(&opts, &state, 22000, "tcp switch: pcm width");
+    rc |= expect_int("tcp switch: pcm width stored", opts.analog_nfm_bandwidth_hz, 22000);
+    rc |= expect_toast("tcp switch: pcm width toast", &state, "Applied: NFM bandwidth -> 22 kHz");
+    opts.analog_nfm_bandwidth_hz = 0;
+    freeState(&state);
+    return rc;
+}
+
 /* An -fA session on an RTL-SDR input whose DSP bandwidth is 24 kHz, with the front end on the analog monitor. */
 static void
 init_nfm_session(dsd_opts* opts, dsd_state* state, RtlSdrContext* fake_ctx) {
@@ -8847,6 +8893,7 @@ main(void) {
     rc |= test_config_apply_am_within_the_analog_family();
     rc |= test_am_bandwidth_set_under_scan_rows();
     rc |= test_input_switch_to_pcm_leaves_am();
+    rc |= test_tcp_switch_leaves_am_with_unfit_nfm_width();
     rc |= test_nfm_bandwidth_set_applies_live_and_refuses();
     rc |= test_nfm_bandwidth_set_replaces_a_queued_switch();
     rc |= test_nfm_bandwidth_set_after_a_queued_cqpsk_toggle();

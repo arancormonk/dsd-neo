@@ -1064,9 +1064,13 @@ svc_check_analog_bandwidth(const dsd_opts* opts, const dsd_state* state, int kin
         return 0; /* the unset NFM default keeps the historical filter rule and is never refused for its rate */
     }
     /* No channel filter runs on PCM input, which takes the width as stored and unused (as a PCM start does): only a
-       radio input needs the filter DSD_NEO_CHANNEL_LPF=0 turns off, and a switch onto one holds the width to it
-       (svc_check_rtl_input_analog_width()). */
-    if (dsd_opts_input_is_radio(opts) && !svc_analog_width_env_allows(kind, width_hz, why, why_size)) {
+       radio input needs the filter DSD_NEO_CHANNEL_LPF=0 turns off and runs at a DSP rate, and a switch onto one holds
+       the width to both (svc_check_rtl_input_analog_width()). A PCM input a live switch put an RTL session on keeps
+       the RTL device string, whose DSP bandwidth is no rate that input runs at. */
+    if (!dsd_opts_input_is_radio(opts)) {
+        return 0;
+    }
+    if (!svc_analog_width_env_allows(kind, width_hz, why, why_size)) {
         return -1;
     }
 #ifdef USE_RADIO
