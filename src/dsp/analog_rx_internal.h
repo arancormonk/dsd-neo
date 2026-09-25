@@ -15,7 +15,8 @@
  * Signal path (issue #522):
  *   raw block @ fs -> stage 1: polyphase Blackman FIR, decimate by D = floor(fs / 2400)
  *                  -> stage 2: Blackman LPF at fs/D, 290 Hz cutoff, 60 Hz transition
- *                  -> DC blocker -> every detector in the core's table (CTCSS, then DCS)
+ *                  -> DC blocker -> every detector in the core's table (DCS, then CTCSS: the first
+ *                     lock in table order is published, see k_detectors in analog_rx.c)
  * Detectors also get the stage-1 output delayed to line up with stage 2 (the "wide" stream,
  * about 0-1 kHz): the CTCSS detector uses it to see a voice fundamental's harmonics, which a
  * tone does not have. And they get the "full" stream, aligned the same way: the raw input's

@@ -322,10 +322,13 @@ user guide states; the per-row pins are tighter and record what these seeds meas
 - Rejection: 67.0/69.3/71.9 Hz are each identified; off-table tones lock nothing over 3 s runs down to 0 dB in-band
   (150.0 Hz, and 68.2, 161.0 and 166.7 Hz between two table tones), nor do 100.85 and 100.9 Hz, just outside the snap
   gate of 100.0, at +10 and +20 dB; a locked tone that moves off the table is dropped within 450 ms (one window plus
-  four failing hops) and nothing locks in its place; no DCS code locks -- every rotation class of the Golay (23,12)
-  code, forward and bit-reversed, which is every periodic DCS waveform in either polarity, plus the nearest words at
-  every rate, clean, at +10 dB and at 0 dB; and a minute each of unfiltered speech, transmitter-filtered speech and
-  noise never locks and reaches the `none` verdict, which the speech runs hold for 87% of their carrier time (the rows
+  four failing hops) and nothing locks in its place; no DCS waveform locks a CTCSS tone, in the publication or in the
+  CTCSS detector's own state, where the DCS lock that outranks it would hide one -- every rotation class of the Golay
+  (23,12) code, forward and bit-reversed, which is every periodic DCS waveform in either polarity (what the DCS
+  detector makes of each is under [Received code (DCS)](#received-code-dcs-on-the-analog-monitor)), plus the words that
+  come nearest a table tone, which lock nothing at all at every rate, clean, at +10 dB and at 0 dB; and a minute each
+  of unfiltered speech, transmitter-filtered speech and noise never locks and reaches the `none` verdict, which the
+  speech runs hold for 87% of their carrier time (the rows
   assert 80%; each pause that closes the carrier starts the verdict again). Two more minutes of speech, one filtered and
   one not, in which a high voice holds a pitch near 225.7 or 229.1 Hz for most of a late acquisition window and then
   moves on, never lock: the late windows qualify that pitch, and only the check that the newest 250 ms still carry it
@@ -1132,6 +1135,9 @@ request:
   `nfm_ctcss_real` audible only at the widest setting (#525).
 - [ ] AM on `am_airband_real` at several widths and with the AGC: speech intelligible, level steady across the
   excerpt, no pumping or clipping (#524).
+- [ ] DCS on the air (#523), against a radio or repeater with a published DPL: a radio set to D023N reads
+  `DCS D023N`, one set to D023I reads `DCS D047N`, and the turn-off code ends the lock (the N polarity and the bit
+  order, which the synthetic fixtures cannot check).
 - [ ] Tone filtering: allowed traffic opens within the detection window, rejected and untoned traffic stays silent,
   and nothing leaks at the start of a rejected transmission (#527).
 - [ ] The A/B report agrees with what was heard; where it does not, say which one the pull request relies on.

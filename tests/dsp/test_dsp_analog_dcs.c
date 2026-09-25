@@ -804,7 +804,7 @@ test_a_code_outranks_a_tone(void) {
 
 /*
  * A code's own waveform in noise can read as a CTCSS tone before the code locks: it happened
- * twice in 6,000,000 starts at 10 dB in the long-run sweeps (docs/testing.md), D274N read as
+ * twice in 7,000,000 starts at 10 dB in the long-run sweeps (docs/testing.md), D274N read as
  * 67.0 Hz at 8 kHz and D122N as 77.0 Hz at 78.125 kHz, both with 75 us de-emphasis. The code
  * outranks the tone the moment it locks, so each still shows within the 10 dB bound of its
  * onset; the rule that let the first lock keep the publication showed D122N only after 535 ms,
