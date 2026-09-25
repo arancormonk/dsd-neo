@@ -10601,15 +10601,15 @@ test_nfm_target_refused_width_skipped_quietly(void) {
     g_scan_dsp_rate_hz = 0;
     trunk_scan_test_clear_now();
     cleanup_paths(dir, target_path, NULL);
-    const int squelch = count_text(buf, "Trunk scan target 'open': the analog channel's squelch is off");
+    const int open_squelch_lines = count_text(buf, "Trunk scan target 'open': the analog channel's squelch is off");
     const int width =
         count_text(buf, "Trunk scan target 'fire': NFM bandwidth 20 kHz does not fit the 16 kHz DSP rate");
     const int failed = count_text(buf, "Trunk scan target 'fire' retune failed");
-    if (rc != 0 || squelch != 1 || width != 2 || refusals < 2 || failed != 0) {
+    if (rc != 0 || open_squelch_lines != 1 || width != 2 || refusals < 2 || failed != 0) {
         DSD_FPRINTF(
             stderr,
             "refused nfm target (rc=%d %s): squelch named %d, width named %d, refused %d, retune-failed %d\n%s\n", rc,
-            err, squelch, width, refusals, failed, buf);
+            err, open_squelch_lines, width, refusals, failed, buf);
         return 1;
     }
     return 0;
