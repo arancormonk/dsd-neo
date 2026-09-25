@@ -635,6 +635,7 @@ print_dsp_status(dsd_opts* opts, dsd_state* state) { // NOLINT(misc-use-internal
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/secret_redaction.h"
 #include "dsd-neo/core/state_fwd.h"
+#include "dsd-neo/runtime/analog_channel.h"
 
 static int g_requested_ppm;
 /* The channel the front end reports (issue #525): its width, whether the DSP rate limits it, and its output. */
