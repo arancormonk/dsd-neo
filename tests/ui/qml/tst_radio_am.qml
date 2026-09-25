@@ -14,6 +14,11 @@ import QtTest
 // filter, a way back to the default, and the width in force as app_control's
 // analog width view spells it for every frontend (the same section the NFM
 // width uses under -fA).
+//
+// An explicit width of the kind the configured preset does not run (AM under
+// -fA or a digital mode, NFM under -fM) keeps a control of its own on a radio:
+// a switch between the kinds is held to it, and where the device forces a DSP
+// rate that cannot filter it, the refusal says to narrow it before the switch.
 Item {
     width: 420
     height: 900
@@ -43,6 +48,8 @@ Item {
             testContext.setMetric("analogBandwidthHz", 0);
             testContext.setMetric("analogBandwidthDspLimited", false);
             testContext.setMetric("analogBandwidthConfiguredHz", 0);
+            testContext.setMetric("nfmBandwidthConfiguredHz", 0);
+            testContext.setMetric("amBandwidthConfiguredHz", 0);
             testContext.setMetric("analogBandwidthMaxHz", 0);
             testContext.setMetric("analogBandwidthReading", "");
             if (sheet) {
@@ -81,8 +88,10 @@ Item {
         function onAm(widthHz, configuredHz, maxHz) {
             testContext.setMetric("analogBandwidthHz", widthHz);
             testContext.setMetric("analogBandwidthConfiguredHz", configuredHz);
+            testContext.setMetric("amBandwidthConfiguredHz", configuredHz);
             testContext.setMetric("analogBandwidthMaxHz", maxHz === undefined ? 0 : maxHz);
-            testContext.setMetric("analogBandwidthReading", (widthHz / 1000) + " kHz" + (configuredHz === 0 ? " (default)" : ""));
+            testContext.setMetric("analogBandwidthReading",
+                                  (widthHz / 1000) + " kHz" + (configuredHz === 0 ? " (default)" : ""));
             testContext.setMetric("decodeMode", commands.decodeModeForFlag("-fM"));
             tryVerify(function () { return findChild(sheet, "radioAnalogSection").visible });
         }
@@ -145,6 +154,58 @@ Item {
             findChild(sheet, "radioAnalogBandwidthDefault").clicked();
             compare(testContext.lastAmBandwidthHz(), 0, "the default is sent as 0, not as 6000");
             compare(testContext.nfmBandwidthCalls(), 0);
+        }
+
+        function otherSection() {
+            return findChild(sheet, "radioAnalogOtherSection");
+        }
+
+        function test_explicit_am_width_offered_under_nfm() {
+            testContext.setMetric("analogBandwidthHz", 16000);
+            testContext.setMetric("analogBandwidthReading", "16 kHz (default)");
+            testContext.setMetric("decodeMode", commands.decodeModeForFlag("-fA"));
+            tryVerify(function () { return findChild(sheet, "radioAnalogSection").visible });
+            verify(!otherSection().visible, "an AM width showed with none set");
+            testContext.setMetric("amBandwidthConfiguredHz", 20000);
+            tryVerify(function () { return otherSection().visible }, 2000,
+                      "an explicit AM width under NFM could not be narrowed");
+            compare(findChild(sheet, "radioAnalogSectionTitle").text, "NFM channel width");
+            compare(findChild(sheet, "radioAnalogOtherSectionTitle").text, "AM channel width");
+            compare(findChild(sheet, "radioAnalogOtherBandwidthValue").text, "20 kHz");
+            verify(findChild(sheet, "radioAnalogOtherBandwidthIdleNote").visible);
+            verify(!findChild(sheet, "radioAnalogOtherBandwidthUp").enabled, "20 kHz is the widest AM width");
+            findChild(sheet, "radioAnalogOtherBandwidthDown").clicked();
+            compare(testContext.lastAmBandwidthHz(), 15000);
+            compare(testContext.nfmBandwidthCalls(), 0, "the AM step went to the NFM command");
+            compare(findChild(sheet, "radioAnalogOtherBandwidthValue").text, "15 kHz", "the request stands in");
+            sheet.forgetRequests();
+            findChild(sheet, "radioAnalogOtherBandwidthDefault").clicked();
+            compare(testContext.lastAmBandwidthHz(), 0, "the default is sent as 0");
+            sheet.forgetRequests();
+            // The DSP rate bounds its steps as it bounds the section's.
+            testContext.setMetric("amBandwidthConfiguredHz", 10000);
+            testContext.setMetric("analogBandwidthMaxHz", 13200);
+            tryVerify(function () { return !findChild(sheet, "radioAnalogOtherBandwidthUp").enabled });
+            // Under a digital preset too, and never on PCM input.
+            testContext.setMetric("decodeMode", 1);
+            tryVerify(function () { return !findChild(sheet, "radioAnalogSection").visible });
+            verify(otherSection().visible, "an explicit AM width under a digital mode could not be narrowed");
+            testContext.setMetric("radioInput", false);
+            tryVerify(function () { return !otherSection().visible });
+        }
+
+        function test_explicit_nfm_width_offered_under_am() {
+            onAm(6000, 0);
+            verify(!otherSection().visible, "an NFM width showed with none set");
+            testContext.setMetric("nfmBandwidthConfiguredHz", 25000);
+            tryVerify(function () { return otherSection().visible }, 2000,
+                      "an explicit NFM width under AM could not be narrowed");
+            compare(findChild(sheet, "radioAnalogSectionTitle").text, "AM channel width");
+            compare(findChild(sheet, "radioAnalogOtherSectionTitle").text, "NFM channel width");
+            compare(findChild(sheet, "radioAnalogOtherBandwidthValue").text, "25 kHz");
+            findChild(sheet, "radioAnalogOtherBandwidthDown").clicked();
+            compare(testContext.lastNfmBandwidthHz(), 20000);
+            compare(testContext.amBandwidthCalls(), 0, "the NFM step went to the AM command");
         }
 
         function test_am_width_disabled_off_a_radio() {

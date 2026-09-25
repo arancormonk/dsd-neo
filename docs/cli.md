@@ -587,8 +587,9 @@ row's own width reads first, with a `row` badge naming the configured default th
 11.25, 12.5, 16, 20 and 25 kHz (NFM) or 5, 6, 8, 10, 15 and 20 kHz (AM, under the AM chip) that skips the widths the DSP
 rate cannot filter (the running stream's, or with none running the rate an RTL-SDR or rtl_tcp input's DSP bandwidth
 sets), and *Use the default width* to return an explicit width to the unset default. On PCM input it reads *not used on
-PCM input* and the controls are disabled. Under another mode, both keep the width control of a kind on a radio input
-while an explicit width of it is set, with the setting as its reading: a switch to that mode is held to the width, so a
+PCM input* and the controls are disabled. Under another mode, the other analog kind's included, both keep the width
+control of a kind on a radio input while an explicit width of it is set, with the setting as its reading (on the Radio
+sheet, a second width control below the first under `-fA` or `-fM`): a switch to that mode is held to the width, so a
 width the device or the capture cannot filter can be narrowed before the switch. The setup wizard offers the NFM and AM
 chips too, and picking either suggests no trunking. Both controls always edit the configured width, which is also what a
 saved config writes: a scan row's own width is never saved. While a row that sets its own width is on air, an edit waits

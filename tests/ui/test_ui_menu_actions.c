@@ -1488,17 +1488,24 @@ test_additional_prompt_and_toggle_actions(void) {
     }
 
     /* Issue #524: the AM width row. Shown while the configured analog preset runs AM on a radio input, as the NFM row
-     * is while it runs FM, and under another preset while an explicit AM width is configured; the prompt offers the
-     * configured width (0 for the default) and hands what was typed to the width command, which refuses what it cannot
-     * apply. */
+     * is while it runs FM, and under another preset -- a digital one, or NFM -- while an explicit AM width is
+     * configured, as the NFM row is under AM for an explicit NFM width: a switch between the two is held to that width
+     * where the device forces the rate, and the refusal says to narrow it. The prompt offers the configured width (0
+     * for the default) and hands what was typed to the width command, which refuses what it cannot apply. */
     reset_capture();
     opts.audio_in_type = AUDIO_IN_RTL;
     opts.analog_only = 1;
     opts.analog_demod = DSD_ANALOG_DEMOD_AM;
     rc |= expect_int("am width row shown under AM on a radio", is_am_width_editable(&ctx), 1);
     rc |= expect_int("nfm width row hidden under AM", is_nfm_width_editable(&ctx), 0);
+    opts.analog_nfm_bandwidth_hz = 25000;
+    rc |= expect_int("nfm width row shown under AM for an explicit NFM width", is_nfm_width_editable(&ctx), 1);
+    opts.analog_nfm_bandwidth_hz = 0;
     opts.analog_demod = DSD_ANALOG_DEMOD_FM;
     rc |= expect_int("am width row hidden under Analog", is_am_width_editable(&ctx), 0);
+    opts.analog_am_bandwidth_hz = 20000;
+    rc |= expect_int("am width row shown under Analog for an explicit AM width", is_am_width_editable(&ctx), 1);
+    rc |= expect_int("nfm width row still shown under Analog", is_nfm_width_editable(&ctx), 1);
     opts.analog_am_bandwidth_hz = 10000;
     opts.analog_only = 0;
     rc |= expect_int("am width row shown for an explicit width on a digital session", is_am_width_editable(&ctx), 1);

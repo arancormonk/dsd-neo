@@ -38,6 +38,7 @@
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/core/talkgroup_policy.h>
+#include <dsd-neo/runtime/analog_channel.h>
 #include <dsd-neo/runtime/scan_mode.h>
 
 #include <dsd-neo/core/opts_fwd.h>
@@ -799,6 +800,8 @@ MetricsModel::fillAnalogChannel(View& next, const dsd_opts* opts_snapshot, const
     /* The view leaves the width, its bound and the flag at 0 outside the analog preset, with no analog scan row on
      * air. */
     next.analog_bandwidth_configured_hz = view.configured_hz;
+    next.nfm_bandwidth_configured_hz = dsd_app_analog_width_setting_hz(opts_snapshot, DSD_ANALOG_DEMOD_FM);
+    next.am_bandwidth_configured_hz = dsd_app_analog_width_setting_hz(opts_snapshot, DSD_ANALOG_DEMOD_AM);
     next.analog_bandwidth_hz = view.width_hz;
     next.analog_bandwidth_max_hz = view.max_hz;
     next.analog_bandwidth_dsp_limited = view.dsp_limited != 0U;

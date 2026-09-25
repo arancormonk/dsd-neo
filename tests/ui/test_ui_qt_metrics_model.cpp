@@ -1475,6 +1475,22 @@ main(int argc, char** argv) {
                model.analogBandwidthHz() == 0 && model.analogBandwidthMaxHz() == 0);
         expect("am: the configured AM width stays off a radio", model.analogBandwidthConfiguredHz() == 10000);
 
+        /* Each kind's configured width is published whichever preset runs, for the control of the kind the preset
+         * does not run: an explicit NFM width under AM, an explicit AM width under a digital mode. */
+        opts.audio_in_type = AUDIO_IN_RTL;
+        opts.analog_nfm_bandwidth_hz = 25000;
+        model.refresh(&opts, &state);
+        expect("am: the configured NFM width under AM", model.nfmBandwidthConfiguredHz() == 25000);
+        expect("am: the configured AM width under AM", model.amBandwidthConfiguredHz() == 10000);
+        opts.analog_only = 0;
+        opts.monitor_input_audio = 0;
+        opts.analog_demod = DSD_ANALOG_DEMOD_FM;
+        model.refresh(&opts, &state);
+        expect("digital: the configured AM width", model.amBandwidthConfiguredHz() == 10000);
+        expect("digital: the configured NFM width", model.nfmBandwidthConfiguredHz() == 25000);
+        expect("digital: the section's width is the NFM one", model.analogBandwidthConfiguredHz() == 25000);
+        opts.analog_nfm_bandwidth_hz = 0;
+
         opts.analog_only = 0;
         opts.monitor_input_audio = 0;
         opts.analog_demod = DSD_ANALOG_DEMOD_FM;

@@ -45,6 +45,7 @@ ModalSheet {
     property real pendingPpm: NaN
     property real pendingSquelch: NaN
     property real pendingAnalogWidth: NaN
+    property real pendingOtherWidth: NaN
 
     // What each control steps from and displays.
     readonly property bool airspyActive: metrics.airspy !== undefined && metrics.airspy.gain_mode !== undefined
@@ -146,6 +147,29 @@ ModalSheet {
     readonly property string analogWidthDefaultText: qsTr("default %1").arg(Util.widthKhzText(
         analogWidthConfigured > 0 ? analogWidthConfigured : Util.NFM_DEFAULT_WIDTH_HZ))
 
+    // The width of the analog kind the section above does not edit: AM, or NFM
+    // under the AM preset. Offered on a radio while an explicit one is set, as
+    // the terminal offers its row: a switch between NFM and AM is held to it too,
+    // and where the device or the capture forces a DSP rate that cannot filter
+    // it, the refusal says to narrow it, which has to be possible before the
+    // switch. It is a setting only; no width of that kind is in force.
+    readonly property bool otherKindAm: !amPreset
+    readonly property var otherWidths: otherKindAm ? Util.AM_WIDTHS_HZ : Util.NFM_WIDTHS_HZ
+    readonly property int otherWidthSetting: (otherKindAm
+        ? metrics.amBandwidthConfiguredHz : metrics.nfmBandwidthConfiguredHz) || 0
+    readonly property int otherWidthConfigured: isNaN(pendingOtherWidth) ? otherWidthSetting : pendingOtherWidth
+    readonly property bool otherWidthOffered: analogWidthEditable
+        && (otherWidthSetting > 0 || !isNaN(pendingOtherWidth))
+    readonly property int otherWidthStepFrom: {
+        if (otherWidthConfigured > 0)
+            return otherWidthConfigured;
+        return otherKindAm ? Util.AM_DEFAULT_WIDTH_HZ : Util.NFM_DEFAULT_WIDTH_HZ;
+    }
+    readonly property bool otherWidthCanNarrow: analogWidthEditable
+        && Util.nextWidthIn(otherWidths, otherWidthStepFrom, -1, analogWidthMax) > 0
+    readonly property bool otherWidthCanWiden: analogWidthEditable
+        && Util.nextWidthIn(otherWidths, otherWidthStepFrom, 1, analogWidthMax) > 0
+
     function open() {
         // Whatever was outstanding belongs to the last time this was open, and on
         // Android the service may have been driven from elsewhere since.
@@ -164,10 +188,12 @@ ModalSheet {
         pendingPpm = NaN;
         pendingSquelch = NaN;
         pendingAnalogWidth = NaN;
+        pendingOtherWidth = NaN;
         gainTtl.stop();
         ppmTtl.stop();
         squelchTtl.stop();
         analogWidthTtl.stop();
+        otherWidthTtl.stop();
     }
 
     // The width command of the kind the section edits: AM under the AM preset,
@@ -205,6 +231,33 @@ ModalSheet {
         pendingAnalogWidth = 0;
         analogWidthTtl.restart();
         sendAnalogWidth(0);
+    }
+
+    // The width command of the other kind (otherKindAm).
+    function sendOtherWidth(hz) {
+        if (otherKindAm)
+            commands.setAmBandwidthHz(hz);
+        else
+            commands.setNfmBandwidthHz(hz);
+    }
+
+    /** Step the other kind's width, as stepAnalogWidth() steps the section's. */
+    function stepOtherWidth(direction) {
+        if (!(direction > 0 ? otherWidthCanWiden : otherWidthCanNarrow))
+            return;
+        var next = Util.nextWidthIn(otherWidths, otherWidthStepFrom, direction, analogWidthMax);
+        pendingOtherWidth = next;
+        otherWidthTtl.restart();
+        sendOtherWidth(next);
+    }
+
+    /** Return the other kind's width to its unset default (0). */
+    function resetOtherWidth() {
+        if (!analogWidthEditable || otherWidthConfigured <= 0)
+            return;
+        pendingOtherWidth = 0;
+        otherWidthTtl.restart();
+        sendOtherWidth(0);
     }
 
     /**
@@ -297,6 +350,13 @@ ModalSheet {
 
         interval: sheet.requestTtlMs
         onTriggered: sheet.pendingAnalogWidth = NaN
+    }
+
+    Timer {
+        id: otherWidthTtl
+
+        interval: sheet.requestTtlMs
+        onTriggered: sheet.pendingOtherWidth = NaN
     }
 
     MicroLabel {
@@ -656,6 +716,70 @@ ModalSheet {
             width: parent.width
             wrapMode: Text.WordWrap
             text: qsTr("The channel width filters a radio input; this audio arrives already demodulated.")
+            color: Theme.textSecondary
+            font.pixelSize: Theme.fontSize(12)
+        }
+    }
+
+    // The explicit width of the other analog kind (AM, or NFM under the AM
+    // preset): a setting for the next switch to it, with no reading in force.
+    Column {
+        objectName: "radioAnalogOtherSection"
+        visible: sheet.otherWidthOffered
+        width: parent.width
+        spacing: 8
+        Text {
+            objectName: "radioAnalogOtherSectionTitle"
+            text: sheet.otherKindAm ? qsTr("AM channel width") : qsTr("NFM channel width")
+            color: Theme.textSecondary
+            font.pixelSize: Theme.fontSize(14)
+        }
+        Row {
+            objectName: "radioAnalogOtherBandwidth"
+            width: parent.width
+            spacing: 10
+            Text {
+                objectName: "radioAnalogOtherBandwidthValue"
+                width: parent.width - 116
+                anchors.verticalCenter: parent.verticalCenter
+                text: sheet.otherWidthConfigured > 0 ? Util.widthKhzText(sheet.otherWidthConfigured) : qsTr("default")
+                color: Theme.textPrimary
+                font.family: Theme.mono
+                font.pixelSize: Theme.fontSize(14)
+            }
+            OutlineButton {
+                objectName: "radioAnalogOtherBandwidthDown"
+                width: 48
+                text: "−"
+                accessibleName: sheet.otherKindAm ? qsTr("Narrower AM Channel") : qsTr("Narrower NFM Channel")
+                enabled: sheet.otherWidthCanNarrow
+                onClicked: sheet.stepOtherWidth(-1)
+            }
+            OutlineButton {
+                objectName: "radioAnalogOtherBandwidthUp"
+                width: 48
+                text: "+"
+                accessibleName: sheet.otherKindAm ? qsTr("Wider AM Channel") : qsTr("Wider NFM Channel")
+                enabled: sheet.otherWidthCanWiden
+                onClicked: sheet.stepOtherWidth(1)
+            }
+        }
+        OutlineButton {
+            objectName: "radioAnalogOtherBandwidthDefault"
+            visible: sheet.otherWidthConfigured > 0
+            width: parent.width
+            text: qsTr("Use the default width")
+            accessibleName: sheet.otherKindAm ? qsTr("Default AM Channel Width") : qsTr("Default NFM Channel Width")
+            enabled: sheet.analogWidthEditable
+            onClicked: sheet.resetOtherWidth()
+        }
+        Text {
+            objectName: "radioAnalogOtherBandwidthIdleNote"
+            width: parent.width
+            wrapMode: Text.WordWrap
+            text: sheet.otherKindAm
+                ? qsTr("Used when AM is chosen, which needs a width the DSP rate can filter.")
+                : qsTr("Used when NFM is chosen, which needs a width the DSP rate can filter.")
             color: Theme.textSecondary
             font.pixelSize: Theme.fontSize(12)
         }

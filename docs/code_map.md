@@ -1374,8 +1374,9 @@ Build files: `src/protocol/CMakeLists.txt` and per‑protocol `src/protocol/<nam
   - AM (issue #524): the decoder picker lists AM after Analog; on an input that is not an I/Q radio (the snapshot's
     input type) its row reads `AM (needs an I/Q radio input)` and choosing it only repeats the reason in the status
     line. Input > RTL-SDR has `rtl.am_bw` beside `rtl.nfm_bw` (`AM bandwidth... [default]`, `lbl_rtl_am_bw()`,
-    `is_am_width_editable()`: the configured AM preset on a radio input, or an explicit AM width under another preset;
-    both rows share one predicate over the analog width view), whose prompt hands the value as typed to
+    `is_am_width_editable()`: the configured AM preset on a radio input, or an explicit AM width under another preset,
+    NFM included, as the NFM row stays under AM for an explicit NFM width; both rows share one predicate over the
+    analog width view and `dsd_app_analog_width_setting_hz()`), whose prompt hands the value as typed to
     `DSD_APP_CMD_AM_BANDWIDTH_SET`; the Auto-PPM switch leads the `Auto-PPM & rtl_tcp` submenu, so the RTL menu keeps
     fifteen rows. The status line's `Analog:` field reads `Analog: AM 6 kHz (default);` under AM, from the same view.
     Tests: `UI_MENU_ACTIONS`, `UI_MENU_LABELS_RADIO`, `UI_MENU_TREE_AUDIT`, `UI_NCURSES_PRINTER_HELPERS`.
@@ -1390,7 +1391,10 @@ Qt Quick frontend (`src/ui/qt`):
   section is kind-aware: under the AM preset (`amPreset`) its title reads `AM channel width`, it steps over
   `Util.AM_WIDTHS_HZ` (5000/6000/8000/10000/15000/20000; `Util.nextWidthIn()`, which `nextNfmWidth()`/`nextAmWidth()`
   wrap) through `CommandBridge::setAmBandwidthHz()`, and it reads the same `MetricsModel::analogBandwidth*` properties,
-  which the analog width view fills for the configured kind. Tests: `tests/ui/qml/tst_radio_am.qml`,
+  which the analog width view fills for the configured kind. `MetricsModel::nfmBandwidthConfiguredHz`/
+  `amBandwidthConfiguredHz` publish each kind's setting whichever preset runs, so a second control
+  (`radioAnalogOtherSection`) edits an explicit width of the kind the section does not (AM under `-fA` or a digital
+  mode, NFM under `-fM`), which a switch between the kinds is held to. Tests: `tests/ui/qml/tst_radio_am.qml`,
   `tst_wizard_decode_chip.qml`, `UI_QT_METRICS_MODEL`, `UI_QT_SESSION_ARGS`, `UI_QT_CONTROLLER`.
 
 - After the session's first decoder redraw, `UiController` refreshes live metrics on every timer tick so scan

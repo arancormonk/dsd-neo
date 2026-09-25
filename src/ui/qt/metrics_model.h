@@ -105,6 +105,8 @@ class MetricsModel : public QObject {
     Q_PROPERTY(bool analogBandwidthDspLimited READ analogBandwidthDspLimited NOTIFY tunerChanged)
     Q_PROPERTY(int analogBandwidthMaxHz READ analogBandwidthMaxHz NOTIFY tunerChanged)
     Q_PROPERTY(int analogBandwidthConfiguredHz READ analogBandwidthConfiguredHz NOTIFY controlChanged)
+    Q_PROPERTY(int nfmBandwidthConfiguredHz READ nfmBandwidthConfiguredHz NOTIFY controlChanged)
+    Q_PROPERTY(int amBandwidthConfiguredHz READ amBandwidthConfiguredHz NOTIFY controlChanged)
     Q_PROPERTY(QString analogBandwidthReading READ analogBandwidthReading NOTIFY tunerChanged)
     /* Issue #526: an analog scan row on air, and whether it sets its own width over the configured one. */
     Q_PROPERTY(bool analogBandwidthRowActive READ analogBandwidthRowActive NOTIFY tunerChanged)
@@ -446,6 +448,25 @@ class MetricsModel : public QObject {
     int
     analogBandwidthConfiguredHz() const {
         return m_view.analog_bandwidth_configured_hz;
+    }
+
+    /**
+     * @brief The configured NFM channel width in Hz, 0 for the default, whichever preset runs
+     * (dsd_app_analog_width_setting_hz()).
+     *
+     * With amBandwidthConfiguredHz(), what lets the Radio sheet offer the width of the analog kind the configured
+     * preset does not run while an explicit one is set: a switch to that kind is held to it, and where the device or
+     * the capture forces a DSP rate that cannot filter it, the refusal says to narrow it before the switch.
+     */
+    int
+    nfmBandwidthConfiguredHz() const {
+        return m_view.nfm_bandwidth_configured_hz;
+    }
+
+    /** @brief The configured AM channel width in Hz, 0 for the default, whichever preset runs (issue #524). */
+    int
+    amBandwidthConfiguredHz() const {
+        return m_view.am_bandwidth_configured_hz;
     }
 
     /**
@@ -1361,6 +1382,8 @@ class MetricsModel : public QObject {
         int channel_bandwidth_hz = 0;
         int analog_bandwidth_hz = 0;
         int analog_bandwidth_configured_hz = 0;
+        int nfm_bandwidth_configured_hz = 0;
+        int am_bandwidth_configured_hz = 0;
         int analog_bandwidth_max_hz = 0;
         QString analog_bandwidth_reading;
         int decode_mode = 0;
@@ -1495,7 +1518,9 @@ class MetricsModel : public QObject {
             return modulation == other.modulation && tuner_gain_db == other.tuner_gain_db
                    && squelch_db == other.squelch_db && squelch_off == other.squelch_off && ppm == other.ppm
                    && airspy == other.airspy && squelchOverrideEquals(other)
-                   && analog_bandwidth_configured_hz == other.analog_bandwidth_configured_hz;
+                   && analog_bandwidth_configured_hz == other.analog_bandwidth_configured_hz
+                   && nfm_bandwidth_configured_hz == other.nfm_bandwidth_configured_hz
+                   && am_bandwidth_configured_hz == other.am_bandwidth_configured_hz;
         }
 
         /* The configured/effective pair is whole-dB configuration, not a measurement, so a

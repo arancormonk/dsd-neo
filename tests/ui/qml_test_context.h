@@ -2033,6 +2033,10 @@ class Setup : public QObject {
         metrics[QStringLiteral("analogBandwidthHz")] = 0;
         metrics[QStringLiteral("analogBandwidthDspLimited")] = false;
         metrics[QStringLiteral("analogBandwidthConfiguredHz")] = 0;
+        // #524: the configured NFM and AM widths whichever preset runs (0 = default), for the
+        // width of the analog kind the configured preset does not run.
+        metrics[QStringLiteral("nfmBandwidthConfiguredHz")] = 0;
+        metrics[QStringLiteral("amBandwidthConfiguredHz")] = 0;
         metrics[QStringLiteral("analogBandwidthMaxHz")] = 0;
         metrics[QStringLiteral("analogBandwidthReading")] = QString();
         // #526: an nfm scan row on air (its width is in force on any session), and whether it sets its own.
