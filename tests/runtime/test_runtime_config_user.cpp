@@ -2368,7 +2368,8 @@ load_am_config_text(const char* ini, dsdneoUserConfig* cfg) {
  * Issue #524: [mode] decode = am and [analog] am_bandwidth_hz ride INI -> cfg -> opts -> snapshot -> render. 0 in the
  * options is the AM default, not a request, so a save writes the key only for an explicit width (6000 included); the
  * section itself is always written, so a config saved at the default loads back as the default. A width outside
- * 5000..20000, or not whole Hz, is refused by the loader, which keeps the default.
+ * 5000..20000, 0 or not whole Hz, is refused by the loader, which keeps the width it had loaded (the default, for a
+ * base file).
  */
 static int
 test_am_mode_and_bandwidth_roundtrip(void) {
@@ -2433,12 +2434,15 @@ test_am_mode_and_bandwidth_roundtrip(void) {
         rc |= 1;
     }
 
-    const char* invalid[] = {"[analog]\nam_bandwidth_hz = 25000\n", "[analog]\nam_bandwidth_hz = 6k\n",
-                             "[analog]\nam_bandwidth_hz = 4999\n", "[analog]\nam_bandwidth_hz = 0\n"};
-    for (const char* ini : invalid) {
-        if (load_am_config_text(ini, &cfg) != 0 || cfg.analog_am_bandwidth_hz != 0) {
-            DSD_FPRINTF(stderr, "FAIL: invalid AM width was not refused (width %d) for:\n%s",
-                        cfg.analog_am_bandwidth_hz, ini);
+    /* Each invalid value follows a valid width in the same section: the loader refuses it and keeps that width, so a
+       value it took instead (0 as the default included) reads as a change. */
+    const char* invalid[] = {"25000", "6k", "4999", "0"};
+    for (const char* value : invalid) {
+        char ini[128];
+        DSD_SNPRINTF(ini, sizeof ini, "[analog]\nam_bandwidth_hz = 10000\nam_bandwidth_hz = %s\n", value);
+        if (load_am_config_text(ini, &cfg) != 0 || cfg.analog_am_bandwidth_hz != 10000) {
+            DSD_FPRINTF(stderr, "FAIL: invalid AM width %s was not refused (width %d)\n", value,
+                        cfg.analog_am_bandwidth_hz);
             rc |= 1;
         }
     }
