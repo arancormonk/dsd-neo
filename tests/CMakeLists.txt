@@ -5657,6 +5657,7 @@ if(
             "LINKER:--wrap=rtl_stream_receive_request_refusal"
             "LINKER:--wrap=rtl_stream_requested_cqpsk"
             "LINKER:--wrap=rtl_stream_get_demod_rate_hz"
+            "LINKER:--wrap=rtl_stream_output_rate"
     )
 endif()
 add_test(NAME APP_COMMAND_QUEUE COMMAND dsd-neo_test_app_command_queue)

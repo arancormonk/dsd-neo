@@ -3716,9 +3716,9 @@ ui_resume_scope_and_publish(dsd_opts* opts, dsd_state* state, int* out_changed) 
 
 /*
  * The front end refused the switch onto the analog monitor (@p width_hz: the NFM width it refused) and stayed digital:
- * put the decoder back on the configured settings it had before the switch, under a scan row's scope as well, and say
- * why. Returns 1 when it did; 0 when no switch is armed, or the configured settings have moved on since (a later
- * command published its own profile).
+ * put the decoder back on the configured settings it had before the switch, timed for the demod rate the front end runs
+ * now, under a scan row's scope as well, and say why. Returns 1 when it did; 0 when no switch is armed, or the
+ * configured settings have moved on since (a later command published its own profile).
  */
 static int
 ui_revert_analog_entry(dsd_opts* opts, dsd_state* state, int width_hz) {
@@ -3735,6 +3735,17 @@ ui_revert_analog_entry(dsd_opts* opts, dsd_state* state, int width_hz) {
         /* The row-scoped options lead the snapshot (dsd_scan_settings): the ones in force now stay. */
         DSD_MEMCPY(&back, &now, offsetof(dsd_scan_settings, frame_dstar));
         dsd_scan_settings_restore(&back, opts, state);
+        if (!opts->analog_only) {
+            /* The snapshot timed the mode for the demod rate of its day, and the retune that got the switch refused
+               can have moved that rate: timed again for the rate the front end runs now, with the profile the
+               restored hunt index describes, as a change onto the mode would time it (decode_mode_republish()). The
+               publish below hands the front end this timing, and a modulation lock keeps the SPS hunt from
+               correcting a stale one. */
+            const dsd_decode_mode_profile profile = dsd_scan_mode_effective_profile(opts, state);
+            state->samplesPerSymbol =
+                dsd_opts_compute_sps_rate(opts, profile.symbol_rate_hz, current_demod_rate(opts, state));
+            state->symbolCenter = dsd_opts_symbol_center(state->samplesPerSymbol);
+        }
         (void)dsd_audio_ensure_digital_output(opts);
         dsd_symbol_analog_block_reset(state);
     }

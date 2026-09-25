@@ -5206,6 +5206,9 @@ static int g_fake_cqpsk_after;
 static int g_analog_req_result;
 /* What rtl_stream_get_demod_rate_hz() reports: the demod rate the stream publishes. */
 static int g_fake_demod_rate_hz;
+/* What rtl_stream_output_rate() reports: the rate the decoder reads and times symbols for. 0, as the real one answers
+   for the tests' fake context, has the decoder time for the input's own rate. */
+static uint32_t g_fake_output_rate_hz;
 /* The CQPSK state of the last demod profile requested. */
 static int g_demod_req_cqpsk;
 /* The digital decode modes the decoder notes with the front end (rtl_stream_set_digital_decode_modes()). */
@@ -5228,6 +5231,7 @@ int __wrap_rtl_stream_receive_request_outcome(uint32_t seq);
 int __wrap_rtl_stream_receive_request_refusal(uint32_t seq, int* out_analog_family, int* out_width_hz);
 int __wrap_rtl_stream_requested_cqpsk(void);
 int __wrap_rtl_stream_get_demod_rate_hz(void);
+uint32_t __wrap_rtl_stream_output_rate(const RtlSdrContext* ctx);
 
 uint32_t
 __wrap_rtl_stream_receive_request_seq(void) {
@@ -5266,6 +5270,11 @@ __wrap_rtl_stream_requested_cqpsk(void) {
 int
 __wrap_rtl_stream_get_demod_rate_hz(void) {
     return g_fake_demod_rate_hz;
+}
+
+uint32_t
+__wrap_rtl_stream_output_rate(const RtlSdrContext* ctx) {
+    return ctx ? g_fake_output_rate_hz : 0U;
 }
 
 int
@@ -6877,6 +6886,79 @@ test_refused_switch_onto_analog_under_a_row(void) {
     return rc;
 }
 
+/* The decoder is back on DMR, timed for the 24 kHz demod rate the front end runs now (5 samples per symbol), and the
+   front end was handed that timing with the DMR profile. */
+static int
+expect_dmr_timed_for_24k(const char* label, const dsd_opts* opts, const dsd_state* state) {
+    int rc = expect_int(label, opts->analog_only, 0);
+    rc |= expect_int(label, dsd_infer_decode_mode_preset(opts) == DSDCFG_MODE_DMR, 1);
+    rc |= expect_int(label, state->samplesPerSymbol, 5);
+    rc |= expect_int(label, state->symbolCenter, dsd_opts_symbol_center(5));
+    rc |= expect_int(label, g_demod_req_calls >= 1 && g_demod_req_rate == 4800 && g_demod_req_ted_sps == 5, 1);
+    return rc;
+}
+
+/*
+ * The retune that gets a switch onto Analog refused moves the demod rate, here from 48 to 24 kHz. The decoder goes back
+ * to the mode it had, but not to the symbol timing it had at 48 kHz: 10 samples per symbol at 24 kHz, handed to the
+ * front end with the modulation locked, would keep the SPS hunt from ever correcting it. It is timed for the rate the
+ * front end runs now, whether the request itself or the demod thread refused the switch, and under a scan row too.
+ */
+static int
+test_refused_switch_onto_analog_retimes_the_mode(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static void* fake_ctx[2];
+    int rc = 0;
+
+    /* Refused where it landed, after the rate moved. */
+    g_fake_output_rate_hz = 48000U;
+    init_dmr_session_with_nfm_width(&opts, &state, (RtlSdrContext*)fake_ctx, 16000);
+    rc |= expect_int("retime: DMR timed for 48 kHz", state.samplesPerSymbol, 10);
+    (void)dsd_app_command_set_i32(DSD_APP_CMD_DECODE_MODE_SET, (int32_t)DSDCFG_MODE_ANALOG);
+    (void)dsd_app_drain_cmds(&opts, &state);
+    rc |= expect_int("retime landing: on Analog while pending", opts.analog_only, 1);
+    g_fake_output_rate_hz = 24000U;
+    demod_thread_refuses_analog_keeping(0, 0);
+    g_demod_req_calls = g_demod_req_rate = g_demod_req_ted_sps = 0;
+    (void)dsd_app_drain_cmds(&opts, &state);
+    rc |= expect_dmr_timed_for_24k("retime landing: DMR at 24 kHz", &opts, &state);
+
+    /* Refused by its request: the rate moved between the session's timing and the switch. */
+    freeState(&state);
+    g_fake_output_rate_hz = 48000U;
+    init_dmr_session_with_nfm_width(&opts, &state, (RtlSdrContext*)fake_ctx, 16000);
+    g_fake_output_rate_hz = 24000U;
+    g_analog_req_result = -1;
+    (void)dsd_app_command_set_i32(DSD_APP_CMD_DECODE_MODE_SET, (int32_t)DSDCFG_MODE_ANALOG);
+    (void)dsd_app_drain_cmds(&opts, &state);
+    rc |= expect_dmr_timed_for_24k("retime request: DMR at 24 kHz", &opts, &state);
+    g_analog_req_result = 0;
+
+    /* Under a row that inherits the configured mode, refused where it landed. */
+    freeState(&state);
+    g_fake_output_rate_hz = 48000U;
+    init_dmr_session_with_nfm_width(&opts, &state, (RtlSdrContext*)fake_ctx, 16000);
+    rc |= expect_int("retime row: inherit", dsd_scan_mode_enter(&opts, &state, DSD_SCAN_MODE_INHERIT), 0);
+    rc |= expect_int("retime row: options", dsd_scan_mode_options(&opts, &state, NULL), 0);
+    (void)dsd_app_command_set_i32(DSD_APP_CMD_DECODE_MODE_SET, (int32_t)DSDCFG_MODE_ANALOG);
+    (void)dsd_app_drain_cmds(&opts, &state);
+    rc |= expect_int("retime row: on Analog while pending", opts.analog_only, 1);
+    g_fake_output_rate_hz = 24000U;
+    demod_thread_refuses_analog_keeping(0, 0);
+    g_demod_req_calls = g_demod_req_rate = g_demod_req_ted_sps = 0;
+    (void)dsd_app_drain_cmds(&opts, &state);
+    rc |= expect_dmr_timed_for_24k("retime row: DMR at 24 kHz", &opts, &state);
+    rc |= expect_int("retime row: the row stays", dsd_scan_mode_configured_view(&state) != NULL, 1);
+
+    dsd_scan_mode_leave(&opts, &state);
+    g_fake_output_rate_hz = 0U;
+    opts.analog_nfm_bandwidth_hz = 0;
+    state.rtl_ctx = NULL;
+    freeState(&state);
+    return rc;
+}
+
 /*
  * DSD_NEO_CHANNEL_LPF=0 turns off the channel filter every explicit NFM width needs, and every stream start refuses
  * such a width for it, whatever the rate. A change that would commit to a start with one is refused first and changes
@@ -7366,6 +7448,7 @@ main(void) {
     rc |= test_nfm_width_follows_a_queued_scan_leave();
     rc |= test_refused_switch_onto_analog_puts_the_mode_back();
     rc |= test_refused_switch_onto_analog_under_a_row();
+    rc |= test_refused_switch_onto_analog_retimes_the_mode();
     rc |= test_nfm_width_changes_held_to_channel_lpf_off();
 #endif
 #ifdef USE_RADIO
