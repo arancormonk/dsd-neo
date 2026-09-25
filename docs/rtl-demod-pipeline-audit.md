@@ -483,10 +483,12 @@ invariant to it, so it is left as is.
   `_16K` and `_25K` show the 1 kHz tone keeping its level through each width
   (-36.1 dBFS, bounded to -37.5..-34.5 dBFS; the explicit 16 kHz measuring the
   same as the default) and, at 8 and 25 kHz, a demodulator noise level at
-  12.5 kHz the default does not reach (-80.4 and -48.9 dBc against -66.7), and
+  12.5 kHz the default does not reach (-80.4 and -48.9 dBc against -66.7),
   `DECODE_IQ_ANALOG_NFM_BW_8K`
   and `_25K` that the neighbour 12.5 kHz away is rejected at 8 kHz (-79.5 dBc)
-  and inside the passband at 25 kHz (-8.2 dBc).
+  and inside the passband at 25 kHz (-8.2 dBc), and
+  `DECODE_IQ_ANALOG_CTCSS_1000_NFM_8K` and `_NFM_25K` that received-tone
+  detection (issue #522) still reports the 100.0 Hz tone through both widths.
 
 Run the focused audit checks with:
 

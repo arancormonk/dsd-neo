@@ -11153,6 +11153,28 @@ if(DSD_HAS_RADIO)
         DECODE_IQ_ANALOG_CTCSS_NOTONE
         PROPERTIES LABELS "iq-decode;analog"
     )
+    # Issue #525: the tone detector listens behind the NFM channel filter, so the width
+    # must not cost it the tone. DECODE_IQ_ANALOG_CTCSS_1000 through the narrowest and
+    # the widest channel, held to the same verdict and the same "no other tone" guard.
+    dsd_neo_add_iq_decode_test(
+        DECODE_IQ_ANALOG_CTCSS_1000_NFM_8K
+        nfm_ctcss_synth_1000
+        "-fA --nfm-bandwidth-hz 8000"
+        "Received tone: CTCSS 100\\.0 Hz"
+        "Received tone: (none|CTCSS ([0-9]|[0-9][0-9]|[02-9][0-9][0-9]|1[1-9][0-9]|10[1-9])\\.[0-9] Hz|CTCSS 100\\.[1-9] Hz)"
+    )
+    dsd_neo_add_iq_decode_test(
+        DECODE_IQ_ANALOG_CTCSS_1000_NFM_25K
+        nfm_ctcss_synth_1000
+        "-fA --nfm-bandwidth-hz 25000"
+        "Received tone: CTCSS 100\\.0 Hz"
+        "Received tone: (none|CTCSS ([0-9]|[0-9][0-9]|[02-9][0-9][0-9]|1[1-9][0-9]|10[1-9])\\.[0-9] Hz|CTCSS 100\\.[1-9] Hz)"
+    )
+    set_tests_properties(
+        DECODE_IQ_ANALOG_CTCSS_1000_NFM_8K
+        DECODE_IQ_ANALOG_CTCSS_1000_NFM_25K
+        PROPERTIES LABELS "iq-decode;analog"
+    )
 
     # Restart safety: bootstrap + engine lifecycle twice inside one process, the
     # shape an embedding host (Android service, GUI shell) uses. Lives here

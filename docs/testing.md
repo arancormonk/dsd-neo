@@ -287,6 +287,10 @@ drained with nothing decoded. The analog family now stands the vote down, and th
 symbol profile at all in analog-only mode, as the app-control modulation path does not; `FRAME_SYNC_INTERNAL_HELPERS`
 pins both, with a digital session as the control.
 
+The detector listens behind the NFM channel filter, so `DECODE_IQ_ANALOG_CTCSS_1000_NFM_8K` and `_NFM_25K`
+(issue #525) replay `nfm_ctcss_synth_1000` through the narrowest and the widest channel (`--nfm-bandwidth-hz 8000`
+and `25000`) and hold it to `DECODE_IQ_ANALOG_CTCSS_1000`'s assertions: a width must not cost the tone.
+
 The detector's own bounds are pinned in sample time by `DSP_ANALOG_CTCSS`, through the pure receive core
 (`src/dsp/analog_rx_internal.h`) and seeded generators in `tests/dsp/analog_tone_synth.h`. Every figure it asserts
 holds for its fixed seeds, and each row prints its measured share and p50/p95/worst for the PR evidence.
