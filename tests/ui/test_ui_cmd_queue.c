@@ -5808,6 +5808,201 @@ test_config_apply_refused_analog_profile_changes_nothing(void) {
     return rc;
 }
 
+/* One DECODE_MODE_SET through the queue. */
+static int
+submit_decode_mode(dsd_opts* opts, dsd_state* state, dsdneoUserDecodeMode mode, const char* label) {
+    int rc = expect_int(label, dsd_app_command_set_i32(DSD_APP_CMD_DECODE_MODE_SET, (int32_t)mode),
+                        DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int(label, dsd_app_drain_cmds(opts, state), 1);
+    return rc;
+}
+
+/*
+ * AM (issue #524) switches live across the analog and digital families on a running RTL session. DMR -> AM asks the
+ * front end about the AM profile first, then publishes it (the analog family, the AM kind, the configured AM width) and
+ * opens the monitor's raw sink. AM -> Analog and back is a live FM <-> AM switch on the running monitor: the kind the
+ * request carries changes, nothing else. AM -> DMR leaves the analog family ahead of DMR's symbol profile. The AM width
+ * a refused check would not run leaves the session where it was.
+ */
+static int
+test_decode_mode_set_am_switches_live(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static void* fake_ctx[2];
+    int rc = 0;
+    init_decode_mode_context(&opts, &state);
+    opts.audio_in_type = AUDIO_IN_RTL;
+    state.rtl_ctx = (RtlSdrContext*)fake_ctx;
+    rc |= submit_decode_mode(&opts, &state, DSDCFG_MODE_DMR, "am: dmr start");
+
+    reset_rx_family_wrap();
+    rc |= submit_decode_mode(&opts, &state, DSDCFG_MODE_AM, "am: dmr -> am");
+    rc |= expect_int("am: preset applied", dsd_infer_decode_mode_preset(&opts) == DSDCFG_MODE_AM, 1);
+    rc |= expect_int("am: AM detector chosen", opts.analog_demod, DSD_ANALOG_DEMOD_AM);
+    rc |= expect_int("am: front end asked about AM", g_analog_check_kind, DSD_ANALOG_DEMOD_AM);
+    rc |= expect_int("am: front end asked for the default width", g_analog_check_width_hz, 0);
+    rc |= expect_int("am: analog family requested", g_analog_req_family, DSD_RX_FAMILY_ANALOG);
+    rc |= expect_int("am: AM requested", g_analog_req_kind, DSD_ANALOG_DEMOD_AM);
+    rc |= expect_int("am: default width travels as 0", g_analog_req_width_hz, 0);
+    rc |= expect_int("am: no symbol profile", g_demod_req_calls, 0);
+    rc |= expect_int("am: raw sink ensured", g_ensure_analog_calls, 1);
+    rc |= expect_int("am: toast names AM", strstr(state.ui_msg, "Decoding AM") != NULL, 1);
+
+    reset_rx_family_wrap();
+    rc |= submit_decode_mode(&opts, &state, DSDCFG_MODE_ANALOG, "am: am -> analog");
+    rc |= expect_int("am -> analog: FM monitor", opts.analog_only == 1 && opts.analog_demod == DSD_ANALOG_DEMOD_FM, 1);
+    rc |= expect_int("am -> analog: FM requested", g_analog_req_kind, DSD_ANALOG_DEMOD_FM);
+    rc |= expect_int("am -> analog: still the analog family", g_analog_req_family, DSD_RX_FAMILY_ANALOG);
+    rc |= expect_int("am -> analog: no symbol profile", g_demod_req_calls, 0);
+
+    reset_rx_family_wrap();
+    g_fake_analog_family = 1;
+    opts.analog_am_bandwidth_hz = 8000;
+    rc |= submit_decode_mode(&opts, &state, DSDCFG_MODE_AM, "am: analog -> am");
+    rc |= expect_int("analog -> am: AM requested", g_analog_req_kind, DSD_ANALOG_DEMOD_AM);
+    rc |= expect_int("analog -> am: configured width travels", g_analog_req_width_hz, 8000);
+    rc |= expect_int("analog -> am: checked at that width", g_analog_check_width_hz, 8000);
+
+    reset_rx_family_wrap();
+    g_fake_digital_rate = 48000U;
+    rc |= submit_decode_mode(&opts, &state, DSDCFG_MODE_DMR, "am: am -> dmr");
+    rc |= expect_int("am -> dmr: digital", opts.analog_only == 0 && opts.frame_dmr == 1, 1);
+    rc |= expect_int("am -> dmr: detector back to FM", opts.analog_demod, DSD_ANALOG_DEMOD_FM);
+    rc |= expect_int("am -> dmr: digital family requested", g_analog_req_family, DSD_RX_FAMILY_DIGITAL);
+    rc |= expect_int("am -> dmr: symbol profile follows",
+                     g_demod_req_calls == 1 && g_analog_req_order < g_demod_req_order, 1);
+    rc |= expect_int("am -> dmr: digital sink ensured", g_ensure_digital_calls, 1);
+
+    /* The front end would refuse the AM profile: nothing changes. */
+    reset_rx_family_wrap();
+    g_fake_analog_family = 0;
+    g_analog_check_result = -1;
+    rc |= submit_decode_mode(&opts, &state, DSDCFG_MODE_AM, "am: refused");
+    rc |= expect_int("am refused: still DMR", dsd_infer_decode_mode_preset(&opts) == DSDCFG_MODE_DMR, 1);
+    rc |= expect_int("am refused: no request", g_analog_req_calls, 0);
+
+    g_analog_check_result = 0;
+    g_fake_digital_rate = 0U;
+    opts.analog_am_bandwidth_hz = 0;
+    state.rtl_ctx = NULL;
+    freeState(&state);
+    return rc;
+}
+
+/* Post DSD_APP_CMD_AM_BANDWIDTH_SET and drain it. */
+static int
+submit_am_width(dsd_opts* opts, dsd_state* state, int32_t hz, const char* label) {
+    state->ui_msg[0] = '\0';
+    int rc =
+        expect_int(label, dsd_app_command_set_i32(DSD_APP_CMD_AM_BANDWIDTH_SET, hz), DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int(label, dsd_app_drain_cmds(opts, state), 1);
+    return rc;
+}
+
+/*
+ * The AM width command on a running RTL session (issue #524). With AM on air the width is held to the running front
+ * end (the check the request makes) and applied live; a width it refuses is not stored and the toast says why. Under
+ * another preset the width is only stored, for the next switch to AM.
+ */
+static int
+test_am_bandwidth_set_applies_live(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static void* fake_ctx[2];
+    int rc = 0;
+    init_decode_mode_context(&opts, &state);
+    opts.audio_in_type = AUDIO_IN_RTL;
+    state.rtl_ctx = (RtlSdrContext*)fake_ctx;
+    rc |= submit_decode_mode(&opts, &state, DSDCFG_MODE_AM, "am width: am start");
+
+    reset_rx_family_wrap();
+    rc |= submit_am_width(&opts, &state, 12000, "am width: 12 kHz");
+    rc |= expect_int("am width: stored", opts.analog_am_bandwidth_hz, 12000);
+    rc |= expect_int(
+        "am width: checked against the front end",
+        g_analog_check_calls == 1 && g_analog_check_kind == DSD_ANALOG_DEMOD_AM && g_analog_check_width_hz == 12000, 1);
+    rc |= expect_int("am width: applied live",
+                     g_analog_req_calls == 1 && g_analog_req_family == DSD_RX_FAMILY_ANALOG
+                         && g_analog_req_kind == DSD_ANALOG_DEMOD_AM && g_analog_req_width_hz == 12000,
+                     1);
+    rc |= expect_int("am width: toast", strstr(state.ui_msg, "AM bandwidth -> 12 kHz") != NULL, 1);
+
+    reset_rx_family_wrap();
+    g_analog_check_result = -1;
+    rc |= submit_am_width(&opts, &state, 20000, "am width: refused by the front end");
+    rc |= expect_int("am width: refused width not stored", opts.analog_am_bandwidth_hz, 12000);
+    rc |= expect_int("am width: refused width not requested", g_analog_req_calls, 0);
+    rc |= expect_int("am width: refusal toast", strstr(state.ui_msg, "Refused: AM bandwidth 20 kHz") != NULL, 1);
+    g_analog_check_result = 0;
+
+    reset_rx_family_wrap();
+    rc |= submit_am_width(&opts, &state, 0, "am width: back to the default");
+    rc |= expect_int("am width: default stored as 0", opts.analog_am_bandwidth_hz, 0);
+    rc |= expect_int("am width: default applied live", g_analog_req_calls == 1 && g_analog_req_width_hz == 0, 1);
+    rc |= expect_int("am width: default toast", strstr(state.ui_msg, "AM bandwidth -> default") != NULL, 1);
+
+    /* On the FM monitor the AM width waits for the next switch to AM. */
+    rc |= submit_decode_mode(&opts, &state, DSDCFG_MODE_ANALOG, "am width: analog");
+    reset_rx_family_wrap();
+    rc |= submit_am_width(&opts, &state, 10000, "am width: under analog");
+    rc |= expect_int("am width: stored under analog", opts.analog_am_bandwidth_hz, 10000);
+    rc |= expect_int("am width: nothing requested under analog", g_analog_req_calls, 0);
+
+    opts.analog_am_bandwidth_hz = 0;
+    state.rtl_ctx = NULL;
+    freeState(&state);
+    return rc;
+}
+
+/*
+ * A config whose [mode] picks AM on the running FM monitor is a live FM -> AM switch: asked about first, then published
+ * with the AM kind, although the session never leaves the analog family. A config that only changes the AM width
+ * under AM republishes the profile with the new width.
+ */
+static int
+test_config_apply_am_within_the_analog_family(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static void* fake_ctx[2];
+    int rc = 0;
+    init_decode_mode_context(&opts, &state);
+    opts.audio_in_type = AUDIO_IN_RTL;
+    state.rtl_ctx = (RtlSdrContext*)fake_ctx;
+    rc |= submit_config_mode(&opts, &state, DSDCFG_MODE_ANALOG, "config am: analog start");
+
+    reset_rx_family_wrap();
+    rc |= submit_config_mode(&opts, &state, DSDCFG_MODE_AM, "config am: analog -> am");
+    rc |= expect_int("config am: on AM", dsd_infer_decode_mode_preset(&opts) == DSDCFG_MODE_AM, 1);
+    rc |= expect_int("config am: front end asked about AM", g_analog_check_kind, DSD_ANALOG_DEMOD_AM);
+    rc |= expect_int("config am: AM published", g_analog_req_calls == 1 && g_analog_req_kind == DSD_ANALOG_DEMOD_AM, 1);
+
+    reset_rx_family_wrap();
+    dsdneoUserConfig cfg;
+    DSD_MEMSET(&cfg, 0, sizeof cfg);
+    cfg.has_mode = 1;
+    cfg.decode_mode = DSDCFG_MODE_AM;
+    cfg.has_analog = 1;
+    cfg.analog_am_bandwidth_hz = 9000;
+    rc |= expect_int("config am width queued", dsd_app_command_submit(DSD_APP_CMD_CONFIG_APPLY, &cfg, sizeof cfg),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("config am width drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("config am width: stored", opts.analog_am_bandwidth_hz, 9000);
+    rc |= expect_int("config am width: checked at the new width", g_analog_check_width_hz, 9000);
+    rc |= expect_int("config am width: republished", g_analog_req_calls == 1 && g_analog_req_width_hz == 9000, 1);
+
+    /* Restating the same config changes nothing on the front end. */
+    reset_rx_family_wrap();
+    rc |= expect_int("config am same queued", dsd_app_command_submit(DSD_APP_CMD_CONFIG_APPLY, &cfg, sizeof cfg),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("config am same drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("config am same: nothing republished", g_analog_req_calls, 0);
+
+    opts.analog_am_bandwidth_hz = 0;
+    state.rtl_ctx = NULL;
+    freeState(&state);
+    return rc;
+}
+
 /* An -fA session on an RTL-SDR input whose DSP bandwidth is 24 kHz, with the front end on the analog monitor. */
 static void
 init_nfm_session(dsd_opts* opts, dsd_state* state, RtlSdrContext* fake_ctx) {
@@ -8005,6 +8200,86 @@ test_config_group_path_reloads_before_persist(int scoped) {
     return rc;
 }
 
+/*
+ * AM on a PCM input (issue #524): the audio arrives demodulated, so DECODE_MODE_SET AM and a config whose [mode] is am
+ * are refused with the reason and the -fA alternative, and the session keeps its mode. The preset ids end at AM.
+ */
+static int
+test_am_refused_on_pcm_input(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    int rc = 0;
+    init_decode_mode_context(&opts, &state);
+    opts.audio_in_type = AUDIO_IN_PULSE;
+    rc |= expect_int("pcm am: dmr queued", dsd_app_command_set_i32(DSD_APP_CMD_DECODE_MODE_SET, DSDCFG_MODE_DMR),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("pcm am: dmr drained", dsd_app_drain_cmds(&opts, &state), 1);
+
+    state.ui_msg[0] = '\0';
+    rc |= expect_int("pcm am: am queued", dsd_app_command_set_i32(DSD_APP_CMD_DECODE_MODE_SET, DSDCFG_MODE_AM),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("pcm am: am drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("pcm am: still DMR", dsd_infer_decode_mode_preset(&opts) == DSDCFG_MODE_DMR, 1);
+    rc |= expect_int("pcm am: detector left alone", opts.analog_demod, DSD_ANALOG_DEMOD_FM);
+    rc |= expect_int("pcm am: toast gives the reason",
+                     strstr(state.ui_msg, "AM demodulation needs an IQ radio input") != NULL, 1);
+
+    state.ui_msg[0] = '\0';
+    rc |= submit_config_mode(&opts, &state, DSDCFG_MODE_AM, "pcm am: config am");
+    rc |= expect_int("pcm am: config left DMR", dsd_infer_decode_mode_preset(&opts) == DSDCFG_MODE_DMR, 1);
+    rc |= expect_int("pcm am: config toast", strstr(state.ui_msg, "Config not applied: AM demodulation needs") != NULL,
+                     1);
+
+    /* Analog stays available on PCM: it monitors the audio as it arrives. */
+    rc |= expect_int("pcm analog queued", dsd_app_command_set_i32(DSD_APP_CMD_DECODE_MODE_SET, DSDCFG_MODE_ANALOG),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("pcm analog drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("pcm analog applied", dsd_infer_decode_mode_preset(&opts) == DSDCFG_MODE_ANALOG, 1);
+
+    /* AM is the last preset id: one past it is not a mode. */
+    state.ui_msg[0] = '\0';
+    rc |= expect_int("past-am queued", dsd_app_command_set_i32(DSD_APP_CMD_DECODE_MODE_SET, DSDCFG_MODE_AM + 1),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("past-am drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("past-am refused", strstr(state.ui_msg, "Decode mode not available") != NULL, 1);
+    freeState(&state);
+    return rc;
+}
+
+/* The AM width command stores whole Hz from 5000 to 20000, or 0 for the default, and refuses anything else with the
+ * range; with no radio running it is only configuration. */
+static int
+test_am_bandwidth_set_validates(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    int rc = 0;
+    init_decode_mode_context(&opts, &state);
+
+    const struct {
+        int32_t hz;
+        int want_hz;
+        const char* toast;
+    } cases[] = {
+        {8000, 8000, "Applied: AM bandwidth -> 8 kHz"},
+        {25000, 8000, "Refused: AM bandwidth 25 kHz is outside the supported range of 5 to 20 kHz"},
+        {4999, 8000, "Refused: AM bandwidth 4.999 kHz is outside the supported range"},
+        {-1, 8000, "Refused: AM bandwidth"},
+        {5000, 5000, "Applied: AM bandwidth -> 5 kHz"},
+        {0, 0, "Applied: AM bandwidth -> default"},
+    };
+
+    for (size_t i = 0; i < sizeof cases / sizeof cases[0]; i++) {
+        state.ui_msg[0] = '\0';
+        rc |= expect_int("am width queued", dsd_app_command_set_i32(DSD_APP_CMD_AM_BANDWIDTH_SET, cases[i].hz),
+                         DSD_APP_COMMAND_SUBMIT_QUEUED);
+        rc |= expect_int("am width drained", dsd_app_drain_cmds(&opts, &state), 1);
+        rc |= expect_int(cases[i].toast, opts.analog_am_bandwidth_hz, cases[i].want_hz);
+        rc |= expect_int(cases[i].toast, strstr(state.ui_msg, cases[i].toast) != NULL, 1);
+    }
+    freeState(&state);
+    return rc;
+}
+
 int
 main(void) {
     int rc = test_session_queue_cancellation();
@@ -8029,6 +8304,9 @@ main(void) {
     rc |= test_mode_change_under_row_notes_configured_modes();
     rc |= test_config_apply_switches_rtl_receive_family();
     rc |= test_config_apply_refused_analog_profile_changes_nothing();
+    rc |= test_decode_mode_set_am_switches_live();
+    rc |= test_am_bandwidth_set_applies_live();
+    rc |= test_config_apply_am_within_the_analog_family();
     rc |= test_nfm_bandwidth_set_applies_live_and_refuses();
     rc |= test_nfm_bandwidth_set_replaces_a_queued_switch();
     rc |= test_nfm_bandwidth_set_after_a_queued_cqpsk_toggle();
@@ -8063,6 +8341,8 @@ main(void) {
 #if defined(USE_RADIO) && defined(DSD_NEO_TEST_RTL_WRAP)
     rc |= test_rtl_enable_input_holds_the_nfm_width();
 #endif
+    rc |= test_am_refused_on_pcm_input();
+    rc |= test_am_bandwidth_set_validates();
 #ifdef DSD_NEO_TEST_IO_CONTROL_WRAP
     rc |= test_dmr_policy_command_ticks_owner(DSD_APP_CMD_LOCKOUT_SLOT);
     rc |= test_dmr_policy_command_ticks_owner(DSD_APP_CMD_SKIP_SLOT);

@@ -240,6 +240,15 @@ int svc_publish_symbol_profile_changing_width(const dsd_opts* opts, dsd_state* s
 int svc_check_mode_receive_profile(const dsd_opts* opts, const dsd_state* state, dsdneoUserDecodeMode mode);
 
 /**
+ * @brief svc_check_mode_receive_profile() for an explicit analog kind and width (issue #524): whether a running RTL
+ * front end takes the analog profile (@p kind: dsd_analog_demod; @p width_hz: 0 for the kind's default).
+ *
+ * @return 0 when it would, or when nothing would publish it here (the M17 encoder, no running RTL stream, a scope
+ *         update); -1 when it would refuse it (logged with the validator's text).
+ */
+int svc_check_analog_receive_profile(const dsd_opts* opts, const dsd_state* state, int kind, int width_hz);
+
+/**
  * @brief Note the configured digital decode modes with a running RTL front end.
  *
  * Once a live switch has moved the front end onto the digital family, the options its stream opened with no longer name

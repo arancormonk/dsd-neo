@@ -22,9 +22,10 @@
 #include "dsd-neo/core/state_fwd.h"
 #include "services.h"
 
+#include <dsd-neo/runtime/analog_channel.h>
+
 #ifdef USE_RADIO
 #include <dsd-neo/io/rtl_stream_c.h>
-#include <dsd-neo/runtime/analog_channel.h>
 #include <stdint.h>
 
 /* Whether the decoder's configured mode, not a scan row's constraint over it, is digital. A typed digital scan row on
@@ -131,20 +132,33 @@ svc_note_digital_decode_modes(const dsd_opts* opts, const dsd_state* state) {
 }
 
 int
-svc_check_mode_receive_profile(const dsd_opts* opts, const dsd_state* state, dsdneoUserDecodeMode mode) {
-    if (!opts || !state || mode != DSDCFG_MODE_ANALOG || opts->m17encoder == 1 || dsd_scan_mode_updating(state)) {
+svc_check_analog_receive_profile(const dsd_opts* opts, const dsd_state* state, int kind, int width_hz) {
+    if (!opts || !state || opts->m17encoder == 1 || dsd_scan_mode_updating(state)) {
         return 0;
     }
 #ifdef USE_RADIO
     if (opts->audio_in_type != AUDIO_IN_RTL || !state->rtl_ctx) {
         return 0;
     }
-    /* What svc_publish_symbol_profile() will request once the Analog preset has run: the preset selects NFM
-       (dsd_apply_decode_mode_preset() sets analog_demod to FM) and keeps the configured NFM width. */
-    return rtl_stream_check_analog_profile(DSD_RX_FAMILY_ANALOG, DSD_ANALOG_DEMOD_FM, opts->analog_nfm_bandwidth_hz);
+    return rtl_stream_check_analog_profile(DSD_RX_FAMILY_ANALOG, kind, width_hz);
 #else
+    (void)kind;
+    (void)width_hz;
     return 0;
 #endif
+}
+
+int
+svc_check_mode_receive_profile(const dsd_opts* opts, const dsd_state* state, dsdneoUserDecodeMode mode) {
+    /* What svc_publish_symbol_profile() will request once the preset has run: Analog selects NFM and AM the AM
+       detector (dsd_apply_decode_mode_preset() sets analog_demod), each with its configured width. */
+    if (!opts || (mode != DSDCFG_MODE_ANALOG && mode != DSDCFG_MODE_AM)) {
+        return 0;
+    }
+    if (mode == DSDCFG_MODE_AM) {
+        return svc_check_analog_receive_profile(opts, state, DSD_ANALOG_DEMOD_AM, opts->analog_am_bandwidth_hz);
+    }
+    return svc_check_analog_receive_profile(opts, state, DSD_ANALOG_DEMOD_FM, opts->analog_nfm_bandwidth_hz);
 }
 
 /* svc_publish_symbol_profile(), with @p configured_before_hz the configured NFM width from before a change the caller
