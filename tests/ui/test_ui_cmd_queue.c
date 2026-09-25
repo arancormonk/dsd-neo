@@ -6463,6 +6463,60 @@ test_nfm_bandwidth_set_after_a_queued_cqpsk_toggle(void) {
 }
 
 /*
+ * CQPSK toggled on under AM from the DSP menu, then off again while the front end cannot filter the AM width (the
+ * default included, which AM always filters): the CQPSK-off demod profile on its own would put the FSK channel profile
+ * on the monitor output with the FM discriminator, AM audio lost. So nothing is queued and CQPSK stays on, as when the
+ * return is refused where it lands. When the rate moves between the check and the request, the CQPSK-on profile goes
+ * back in place of the CQPSK-off one.
+ */
+static int
+test_cqpsk_off_under_am_refused_keeps_cqpsk(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static void* fake_ctx[2];
+    int rc = 0;
+    init_decode_mode_context(&opts, &state);
+    opts.audio_in_type = AUDIO_IN_RTL;
+    state.rtl_ctx = (RtlSdrContext*)fake_ctx;
+    rc |= submit_decode_mode(&opts, &state, DSDCFG_MODE_AM, "am cqpsk: am start");
+
+    reset_rx_family_wrap();
+    g_fake_cqpsk = 1;
+    g_analog_check_result = -1;
+    submit_cqpsk_toggle();
+    rc |= expect_int("am cqpsk off refused: drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("am cqpsk off refused: checked as AM",
+                     g_analog_check_calls == 1 && g_analog_check_kind == DSD_ANALOG_DEMOD_AM, 1);
+    rc |= expect_int("am cqpsk off refused: nothing queued", g_demod_req_calls + g_analog_req_calls, 0);
+    rc |= expect_int("am cqpsk off refused: CQPSK stays on", __wrap_rtl_stream_requested_cqpsk(), 1);
+
+    reset_rx_family_wrap();
+    g_fake_cqpsk = 1;
+    g_analog_req_result = -1;
+    submit_cqpsk_toggle();
+    rc |= expect_int("am cqpsk off refused late: drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("am cqpsk off refused late: CQPSK off, then on again",
+                     g_demod_req_calls == 2 && g_demod_req_cqpsk == 1 && g_analog_req_calls == 1, 1);
+    rc |= expect_int("am cqpsk off refused late: CQPSK stays on", __wrap_rtl_stream_requested_cqpsk(), 1);
+
+    /* Accepted, the return is the analog request with the AM kind, after the CQPSK-off profile. */
+    reset_rx_family_wrap();
+    g_fake_cqpsk = 1;
+    submit_cqpsk_toggle();
+    rc |= expect_int("am cqpsk off: drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("am cqpsk off: back to the AM monitor",
+                     g_demod_req_calls == 1 && g_demod_req_cqpsk == 0 && g_analog_req_calls == 1
+                         && g_analog_req_kind == DSD_ANALOG_DEMOD_AM && g_analog_req_order > g_demod_req_order,
+                     1);
+
+    reset_rx_family_wrap();
+    g_fake_cqpsk = 0;
+    state.rtl_ctx = NULL;
+    freeState(&state);
+    return rc;
+}
+
+/*
  * A P25 session on CQPSK switched to Analog, and a width set, in the same drain: the front end still publishes CQPSK,
  * the digital session's, but the switch has asked for the monitor. The width's request replaces the switch's, so the
  * monitor opens on the new width.
@@ -8726,6 +8780,7 @@ main(void) {
     rc |= test_nfm_bandwidth_set_applies_live_and_refuses();
     rc |= test_nfm_bandwidth_set_replaces_a_queued_switch();
     rc |= test_nfm_bandwidth_set_after_a_queued_cqpsk_toggle();
+    rc |= test_cqpsk_off_under_am_refused_keeps_cqpsk();
     rc |= test_nfm_bandwidth_set_after_a_queued_switch_from_cqpsk();
     rc |= test_nfm_bandwidth_set_under_scan_rows();
     rc |= test_nfm_width_edit_keeps_live_acquisition();

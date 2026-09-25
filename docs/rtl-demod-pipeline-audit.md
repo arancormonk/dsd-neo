@@ -275,7 +275,9 @@ refuses rather than clamps, and the checks sit where the rate is known:
   edit until the row leaves; under a typed digital scan row it is
   stored and applied when the row's leave republishes the analog profile;
   with CQPSK toggled on under `-fA` it is stored, and turning CQPSK off
-  returns to the monitor through the analog profile with it. Whether CQPSK
+  returns to the monitor through the analog profile with it (a return the
+  front end refuses, for an explicit width or the AM default, leaves CQPSK on
+  instead of the FSK profile on the monitor output). Whether CQPSK
   holds the front end off the monitor is read from the requests queued, not
   only from the published state, which lags them until the demod thread takes
   them: the stream notes the CQPSK state each numbered request leaves it on,

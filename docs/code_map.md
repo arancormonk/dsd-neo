@@ -647,7 +647,9 @@ installs from `src/engine/trunk_tuning.c` in `src/engine/trunk_tuning_hooks_inst
   profile until its leave, and under a scan row's suspended scope (a config apply) the request waits for
   `apply_cmd_scoped()` to publish it after the resume, with the width in force from before the command
   (`svc_publish_symbol_profile_changing_width()`). CQPSK toggled on under an analog preset holds it too, and the DSP op
-  that turns CQPSK off (`svc_toggle_rtl_cqpsk()`) returns to the monitor through the analog profile with it. Whether
+  that turns CQPSK off (`svc_toggle_rtl_cqpsk()`) returns to the monitor through the analog profile with it; one the
+  front end refuses (the AM default included) leaves CQPSK on rather than a CQPSK-off profile alone, which would put
+  the FSK channel profile on the monitor output with the FM discriminator. Whether
   CQPSK holds the front end is what was last queued, not only what the stream publishes, since a toggle, a switch or a
   scan row's leave (queued through the runtime hooks) drained with the width has not landed yet: the stream answers for
   every request queued, whoever queued it (`rtl_stream_requested_cqpsk()`), falling back to the published state once
