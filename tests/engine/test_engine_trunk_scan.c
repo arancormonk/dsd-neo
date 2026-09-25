@@ -104,6 +104,10 @@ static int g_scan_tune_to_freq_failures_remaining = 0;
    dsd_engine_scan_tune_to_freq() does, counting each refusal. */
 static int g_scan_tune_refuses_unfit_width = 0;
 static int g_scan_tune_width_refusals = 0;
+/* Issue #526: leave each scan tune in flight, as an RTL retune the controller has not landed yet: the request stays
+   pending until the test completes it. */
+static int g_scan_tune_to_freq_pending = 0;
+static uint64_t g_scan_tune_pending_request = 0U;
 static int g_p25_tick_guard_available = 1;
 static int g_p25_tick_guard_depth = 0;
 static int g_p25_tick_guard_enter_calls = 0;
@@ -348,6 +352,12 @@ dsd_engine_scan_tune_to_freq(dsd_opts* opts, dsd_state* state, long int freq, in
     if (g_scan_tune_to_freq_failures_remaining > 0) {
         g_scan_tune_to_freq_failures_remaining--;
         return DSD_TRUNK_TUNE_RESULT_FAILED;
+    }
+    if (g_scan_tune_to_freq_pending && out_request_id) {
+        g_scan_tune_pending_request = dsd_trunk_tuning_request_begin();
+        dsd_trunk_tuning_request_mark_ready(g_scan_tune_pending_request);
+        *out_request_id = g_scan_tune_pending_request;
+        return DSD_TRUNK_TUNE_RESULT_PENDING;
     }
     opts->trunk_is_tuned = 0;
     state->last_cc_sync_time_m = dsd_engine_trunk_scan_active_index(state) == (size_t)-1 ? 0.0 : 1.0;
@@ -10690,6 +10700,96 @@ test_nfm_target_configured_width_held_to_the_dsp_rate(void) {
     return 0;
 }
 
+/* What the front end was last asked for live (issue #526): the analog profile's family, demodulator and width. */
+static int g_live_analog_profile_calls;
+static int g_live_analog_profile_width_hz;
+
+static int
+record_live_analog_profile(int family, int kind, int width_hz) {
+    if (family == DSD_RX_FAMILY_ANALOG && kind == DSD_ANALOG_DEMOD_FM) {
+        g_live_analog_profile_calls++;
+        g_live_analog_profile_width_hz = width_hz;
+    }
+    return 0;
+}
+
+/* Park the first of an nfm target and a DMR target on a retune left in flight, apply @p edit_hz as the configured NFM
+ * width while it is (0: no edit), land it, and count the live analog requests the landing makes. */
+static int
+nfm_target_pending_retune_requests(int edit_hz, int* out_width_hz) {
+    char dir[DSD_TEST_PATH_MAX];
+    char target_path[DSD_TEST_PATH_MAX];
+    static dsd_opts opts;
+    static dsd_state state;
+    if (make_temp_dir(dir, sizeof dir) != 0
+        || write_targets_file_with_header(dir, k_squelch_targets_header,
+                                          "fire,nfm-conventional,154430000,,250,250,,--squelch-db -50\n"
+                                          "dmr,dmr-conventional,461000000,,250,250,,\n",
+                                          target_path, sizeof target_path)
+               != 0) {
+        return -1;
+    }
+    reset_scan_opts_state(&opts, &state);
+    DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", target_path);
+    opts.analog_nfm_bandwidth_hz = 16000;
+    dsd_trunk_tuning_requests_reset();
+    const dsd_rtl_stream_metrics_hooks hooks = {.apply_analog_profile = record_live_analog_profile};
+    dsd_rtl_stream_metrics_hooks_set(&hooks);
+    g_live_analog_profile_calls = 0;
+    g_live_analog_profile_width_hz = 0;
+    g_scan_tune_to_freq_pending = 1;
+    g_scan_tune_pending_request = 0U;
+    char err[256] = {0};
+    trunk_scan_test_set_now(0.0);
+    int calls = -1;
+    if (dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err) == 0 && g_scan_tune_pending_request != 0U
+        && g_scan_tune_to_freq_nfm_width_hz == 16000) {
+        trunk_scan_test_set_now(0.05);
+        dsd_engine_trunk_scan_tick(&opts, &state); /* still in flight: nothing asked */
+        if (edit_hz > 0) {
+            (void)dsd_scan_mode_set_configured_nfm_bandwidth(&opts, &state, edit_hz);
+        }
+        const int before_landing = g_live_analog_profile_calls;
+        dsd_trunk_tuning_request_complete(g_scan_tune_pending_request, DSD_TRUNK_TUNE_RESULT_OK);
+        trunk_scan_test_set_now(0.1);
+        dsd_engine_trunk_scan_tick(&opts, &state);
+        calls = before_landing == 0 ? g_live_analog_profile_calls : -1;
+        *out_width_hz = g_live_analog_profile_width_hz;
+    } else {
+        DSD_FPRINTF(stderr, "pending nfm retune init: %s (request %llu, width %d)\n", err,
+                    (unsigned long long)g_scan_tune_pending_request, g_scan_tune_to_freq_nfm_width_hz);
+    }
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    g_scan_tune_to_freq_pending = 0;
+    dsd_rtl_stream_metrics_hooks_set(NULL);
+    dsd_trunk_tuning_requests_reset();
+    trunk_scan_test_clear_now();
+    cleanup_paths(dir, target_path, NULL);
+    return calls;
+}
+
+/* The retune queues the nfm target's analog profile with the width in force then, and a width edit made while it is
+ * in flight reaches the front end as a live request the landing retune can land over: once the retune lands, the
+ * width in force is asked for again. A landing with no edit in between asks for nothing more. */
+static int
+test_nfm_target_width_edit_during_a_pending_retune(void) {
+    int width_hz = 0;
+    const int edited = nfm_target_pending_retune_requests(12500, &width_hz);
+    int test_rc = 0;
+    if (edited != 1 || width_hz != 12500) {
+        DSD_FPRINTF(stderr, "width edit during a pending nfm retune: %d requests, last %d Hz; want one at 12500\n",
+                    edited, width_hz);
+        test_rc = 1;
+    }
+    width_hz = 0;
+    const int unedited = nfm_target_pending_retune_requests(0, &width_hz);
+    if (unedited != 0) {
+        DSD_FPRINTF(stderr, "pending nfm retune without an edit made %d live requests\n", unedited);
+        test_rc = 1;
+    }
+    return test_rc;
+}
+
 int
 main(void) {
     int rc = 0;
@@ -10843,6 +10943,7 @@ main(void) {
     rc |= run_with_default_tune_hook(test_nfm_target_width_rechecked_when_the_dsp_rate_changes);
     rc |= run_with_default_tune_hook(test_nfm_target_refused_width_skipped_quietly);
     rc |= run_with_default_tune_hook(test_nfm_target_configured_width_held_to_the_dsp_rate);
+    rc |= run_with_default_tune_hook(test_nfm_target_width_edit_during_a_pending_retune);
     return rc;
 }
 

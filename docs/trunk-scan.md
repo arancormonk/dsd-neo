@@ -506,7 +506,8 @@ its analog monitor and width, and no symbol profile is applied over the monitor.
   cannot filter, the target's own or the configured one it runs, is named with the fix at scan start (and again if
   that rate changes, or, for a target without its own width, if the configured width does), and that target's retune
   is then refused at every visit without a further warning. While the target is parked, an RTL DSP bandwidth that
-  cannot filter its width is refused.
+  cannot filter its width is refused. A configured-width edit made while the target's retune is still in flight is
+  applied once the retune lands.
   With rigctl tuning an audio input, the peer demodulates: the width has no effect (scan start says so) and `-B`
   sets the peer's passband.
 - **Controls.** `--scan-max-visit-ms`, the `Y` hold, advance and avoid work exactly as for digital targets, including

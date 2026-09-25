@@ -40,6 +40,7 @@
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #include <dsd-neo/runtime/log.h>
 #include <dsd-neo/runtime/path_policy.h>
+#include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
 #include <dsd-neo/runtime/trunk_cc_candidates.h>
 #include <dsd-neo/runtime/trunk_scan_hooks.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
@@ -230,6 +231,9 @@ typedef struct {
     double last_allowed_activity_m;
     uint64_t tune_request_id;
     int tune_pending;
+    /* The analog demodulator and width an analog target's last retune queued with its profile (issue #526). */
+    int tune_analog_kind;
+    int tune_analog_width_hz;
     int retry_released_park; /* failed forced eviction: recover the park before idle dwell */
     int avoided;             /* operator avoid for the session: skipped by the rotation (#380) */
     /* Identity the peer IDEN share last ran against (#402): the tick re-runs it only when the
@@ -2427,6 +2431,8 @@ trunk_scan_retune_active(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_target
     if (trunk_scan_type_is_analog(rt->target.type)) {
         /* No symbol clock: the tune queues the target's analog receive profile (its options already hold
          * the width), and no symbol rate ever reaches the SPS arithmetic. */
+        rt->tune_analog_kind = opts->analog_demod;
+        rt->tune_analog_width_hz = dsd_opts_analog_width_hz(opts);
         return dsd_engine_scan_tune_to_freq(opts, state, freq, 0, out_request_id);
     }
     if (trunk_scan_type_is_conventional(rt->target.type)) {
@@ -3116,8 +3122,30 @@ trunk_scan_reconcile_p25_retune_recovery(dsd_trunk_scan_target_runtime* rt, uint
     return -1;
 }
 
+/*
+ * An analog target's retune lands the analog profile it queued, captured with the width in force then. A width edit
+ * made while it was in flight (the width command, a config apply, on a target that runs the configured NFM width)
+ * reached the front end as a live request, which that profile may then have landed over: the front end would run the
+ * old width while the options and the Radio controls say the new one, until the next rotation. Once the retune lands,
+ * the width in force is requested again wherever it differs from the one queued, as the -Y scanner restages a tune
+ * whose configured width moved while it was outstanding.
+ */
+static void
+trunk_scan_reapply_analog_width(const dsd_opts* opts, const dsd_trunk_scan_target_runtime* rt) {
+    if (!opts || opts->audio_in_type != AUDIO_IN_RTL || !trunk_scan_type_is_analog(rt->target.type)
+        || !dsd_opts_is_analog_family(opts)) {
+        return;
+    }
+    const int width_hz = dsd_opts_analog_width_hz(opts);
+    if (width_hz == rt->tune_analog_width_hz && opts->analog_demod == rt->tune_analog_kind) {
+        return;
+    }
+    (void)dsd_rtl_stream_metrics_hook_apply_analog_profile(DSD_RX_FAMILY_ANALOG, opts->analog_demod, width_hz);
+}
+
 static int
-trunk_scan_resolve_pending_retune(dsd_state* state, dsd_trunk_scan_target_runtime* rt, double now_m) {
+trunk_scan_resolve_pending_retune(const dsd_opts* opts, dsd_state* state, dsd_trunk_scan_target_runtime* rt,
+                                  double now_m) {
     if (!rt || !rt->tune_pending) {
         return 1;
     }
@@ -3132,6 +3160,7 @@ trunk_scan_resolve_pending_retune(dsd_state* state, dsd_trunk_scan_target_runtim
         rt->tune_request_id = 0U;
         rt->tune_pending = 0;
         rt->idle_since_m = -1.0;
+        trunk_scan_reapply_analog_width(opts, rt);
         /* The visit began when the backend finished the tune, not when this tick noticed. */
         trunk_scan_arm_visit(rt, completed_m);
         return 1;
@@ -3436,7 +3465,7 @@ trunk_scan_tick_targets_locked(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_
          * the coordinator waiting for its request. */
         trunk_scan_tick_active_target_sm(opts, state, rt);
     }
-    int pending_status = trunk_scan_resolve_pending_retune(state, rt, now_m);
+    int pending_status = trunk_scan_resolve_pending_retune(opts, state, rt, now_m);
     if (pending_status == 0) {
         return;
     }
