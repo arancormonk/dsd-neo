@@ -1005,6 +1005,61 @@ test_nfm_rows_switch_family_width_and_sink(void) {
     tunes = reset_count = 0;
 }
 
+/* The configured NFM width is what an nfm row without its own width tunes with, on a digital session too. The width
+ * command edits it without suspending the scope, so an edit made while such a row's tune is outstanding restages the
+ * tune, as any configured acquisition change does, rather than committing the row on a front end tuned for the old
+ * width. A width edit under a digital row's outstanding tune is no acquisition change there, and commits. */
+static void
+test_nfm_row_restages_after_a_configured_width_edit(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
+    assert(opts && state);
+    opts->scanner_mode = 1;
+    opts->audio_in_type = AUDIO_IN_WAV;
+    opts->wav_sample_rate = 48000;
+    assert(dsd_apply_decode_mode_preset(DSDCFG_MODE_DMR, DSD_DECODE_PRESET_PROFILE_CLI, opts, state) == 0);
+    opts->analog_nfm_bandwidth_hz = 20000;
+    state->samplesPerSymbol = 10;
+    state->lcn_freq_count = 2;
+    for (int row = 0; row < 2; row++) {
+        *dsd_state_trunk_lcn_slot(state, row) = 150000000;
+    }
+    assert(dsd_channel_mode_set(state, 0, DSD_SCAN_MODE_DMR) == 0);
+    assert(dsd_channel_mode_set(state, 1, DSD_SCAN_MODE_NFM) == 0);
+    expected_nxdn = 0;
+
+    /* The DMR row's tune is outstanding when the width changes: it commits as staged. */
+    tune_result = DSD_TRUNK_TUNE_RESULT_PENDING;
+    assert(dsd_engine_channel_scan_step(opts, state) == 0);
+    assert(dsd_scan_mode_set_configured_nfm_bandwidth(opts, state, 16000) == 1);
+    int before = tunes;
+    dsd_trunk_tuning_request_publish(request, DSD_TRUNK_TUNE_RESULT_OK);
+    assert(dsd_engine_channel_scan_pending(opts, state) == 0);
+    assert(tunes == before && state->lcn_freq_roll == 1 && opts->frame_dmr && !opts->analog_only);
+    assert(opts->analog_nfm_bandwidth_hz == 16000);
+
+    /* The nfm row's tune carried 16 kHz; an edit to 11.25 kHz before it lands restages it at the new width. */
+    assert(dsd_engine_channel_scan_step(opts, state) == 0);
+    assert(tuned_analog_only == 1 && tuned_nfm_width_hz == 16000);
+    assert(dsd_scan_mode_set_configured_nfm_bandwidth(opts, state, 11250) == 1);
+    before = tunes;
+    dsd_trunk_tuning_request_publish(request, DSD_TRUNK_TUNE_RESULT_OK);
+    assert(dsd_engine_channel_scan_pending(opts, state) == 1);
+    assert(tunes == before && state->lcn_freq_roll == 1);
+    tune_result = DSD_TRUNK_TUNE_RESULT_OK;
+    assert(dsd_engine_channel_scan_pending(opts, state) == 0);
+    assert(tunes == before + 1 && tuned_analog_only == 1 && tuned_nfm_width_hz == 11250);
+    assert(state->lcn_freq_roll == 2 && opts->analog_only && opts->analog_nfm_bandwidth_hz == 11250);
+
+    dsd_engine_channel_scan_leave(opts, state);
+    assert(!opts->analog_only && opts->frame_dmr && opts->analog_nfm_bandwidth_hz == 11250);
+    dsd_state_trunk_lcn_free(state);
+    dsd_state_ext_free_all(state);
+    free(state);
+    free(opts);
+    tunes = reset_count = 0;
+}
+
 /* Four rows on one frequency: nfm with a 20 kHz width and its own -50 dB squelch, nfm with its squelch off, DMR with a
  * squelch, and nfm on the configured squelch. */
 static void
@@ -1042,12 +1097,15 @@ nfm_warning_rows_visit(dsd_opts* opts, dsd_state* state, int visits) {
 /* What the nfm rows owe the operator: once per row per map when the scan starts, a squelch that holds on noise; and
  * once per map and DSP rate, a width on an input with no demodulator for it or a width the running DSP rate cannot
  * filter. Digital rows and well-set nfm rows say nothing. */
+static const char* g_nfm_warning_input_dev = "";
+
 static int
 nfm_row_warnings(int audio_in_type, int dsp_rate_hz, double configured_sql_db) {
     dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
     dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
     assert(opts && state);
     nfm_warning_rows_setup(opts, state, audio_in_type, configured_sql_db);
+    DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", g_nfm_warning_input_dev);
     g_scan_dsp_rate_hz = dsp_rate_hz;
     nfm_warning_rows_visit(opts, state, 8);
     dsd_engine_channel_scan_leave(opts, state);
@@ -1076,6 +1134,18 @@ test_nfm_row_warnings_once_per_row(void) {
     assert(strstr(g_analog_warning_rows[1], "Scan channel 1 (150.000000 MHz): NFM bandwidth 20 kHz does not fit the "
                                             "16 kHz DSP rate"));
     assert(strstr(g_analog_warning_rows[1], "until then it is skipped at every visit"));
+    /* The fix is the one the input allows (issue #525's wording): an RTL-SDR's DSP bandwidth is its rate, a SoapySDR or
+       Airspy device's capture rate only follows the DSP bandwidth, and an I/Q replay's is fixed. */
+    assert(strstr(g_analog_warning_rows[1], "set the RTL DSP bandwidth to 24 or 48 kHz"));
+    g_nfm_warning_input_dev = "soapy:driver=airspy";
+    assert(nfm_row_warnings(AUDIO_IN_RTL, 16000, -60.0) == 2);
+    assert(strstr(g_analog_warning_rows[1], "raise the DSP bandwidth or narrow the NFM width"));
+    assert(!strstr(g_analog_warning_rows[1], "RTL DSP bandwidth"));
+    g_nfm_warning_input_dev = "iqreplay:capture.iq.json";
+    assert(nfm_row_warnings(AUDIO_IN_RTL, 16000, -60.0) == 2);
+    assert(strstr(g_analog_warning_rows[1], "narrow the NFM width"));
+    assert(!strstr(g_analog_warning_rows[1], "DSP bandwidth"));
+    g_nfm_warning_input_dev = "";
     /* Audio input: the width has nothing to act on, while an nfm row's squelch still gates its monitor and
        carrier there, so only the digital row's squelch draws the #521 warning. */
     assert(nfm_row_warnings(AUDIO_IN_WAV, 0, -60.0) == 2);
@@ -1134,6 +1204,7 @@ main(void) {
     test_row_squelch_warns_once_per_row_on_pcm_input();
     test_rx_tone_row_commit_and_step_clear();
     test_nfm_rows_switch_family_width_and_sink();
+    test_nfm_row_restages_after_a_configured_width_edit();
     test_nfm_row_warnings_once_per_row();
     test_nfm_row_warnings_follow_the_dsp_rate();
     dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));

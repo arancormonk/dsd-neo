@@ -93,6 +93,19 @@ channel_scan_end_calls(dsd_opts* opts, dsd_state* state) {
     opts->trunk_is_tuned = 0;
 }
 
+/* Whether a configured setting the staged tune was prepared from changed while it was outstanding. The configured
+ * channel widths count for an analog row, which tunes with them whatever the configured family, although
+ * dsd_scan_settings_equal() compares them for the analog family only (issue #526). */
+static int
+channel_scan_configured_changed(const dsd_scan_settings* latest, const channel_scan* scan) {
+    if (!dsd_scan_settings_equal(latest, &scan->configured, 1)) {
+        return 1;
+    }
+    return dsd_scan_mode_is_analog(scan->mode)
+           && (latest->analog_nfm_bandwidth_hz != scan->configured.analog_nfm_bandwidth_hz
+               || latest->analog_am_bandwidth_hz != scan->configured.analog_am_bandwidth_hz);
+}
+
 static int
 channel_scan_commit(dsd_opts* opts, dsd_state* state, channel_scan* scan) {
     /* Row commits run only in conventional scanner mode. Entry into that mode
@@ -103,7 +116,7 @@ channel_scan_commit(dsd_opts* opts, dsd_state* state, channel_scan* scan) {
     scan->needs_commit = 1;
     dsd_scan_settings latest;
     dsd_scan_mode_configured(opts, state, &latest);
-    if (!dsd_scan_settings_equal(&latest, &scan->configured, 1) || scan->key_epoch != state->enc_lockout_key_epoch) {
+    if (channel_scan_configured_changed(&latest, scan) || scan->key_epoch != state->enc_lockout_key_epoch) {
         /* A configured setting changed while tuning. Stage the new effective
          * profile in a fresh request before any frame can use it. */
         scan->request = 0;
@@ -310,6 +323,20 @@ dsd_engine_scan_warn_analog_squelch(const dsd_opts* opts, const dsd_state* state
     return 1;
 }
 
+/* What sets the DSP rate of this radio input (dsd_analog_rate_source), as the stream start classifies it: an I/Q
+ * replay's capture, a SoapySDR or Airspy device, or else the RTL DSP bandwidth. It picks the fix a refusal names. */
+static int
+scan_input_rate_source(const dsd_opts* opts) {
+    const char* dev = opts->audio_in_dev;
+    if (opts->iq_replay_active || dsd_opts_audio_in_dev_is_iqreplay_spec(dev)) {
+        return DSD_ANALOG_RATE_CAPTURE;
+    }
+    if (dsd_opts_audio_in_dev_is_soapy_spec(dev) || dsd_opts_audio_in_dev_is_airspy_spec(dev)) {
+        return DSD_ANALOG_RATE_DEVICE;
+    }
+    return DSD_ANALOG_RATE_RTL_BW;
+}
+
 int
 dsd_engine_scan_warn_analog_width(const dsd_opts* opts, const dsd_scan_option_values* row, int dsp_rate_hz,
                                   const char* label) {
@@ -322,8 +349,11 @@ dsd_engine_scan_warn_analog_width(const dsd_opts* opts, const dsd_scan_option_va
                  label, row->channel_bw_hz);
         return 1;
     }
-    char why[DSD_ANALOG_ERROR_TEXT_MAX];
-    if (dsd_scan_option_width_check(DSD_SCAN_MODE_NFM, row, dsp_rate_hz, why, sizeof why) != 0) {
+    if (dsd_scan_option_width_check(DSD_SCAN_MODE_NFM, row, dsp_rate_hz, NULL, 0U) != 0) {
+        /* Worded with the fix this input allows, as the stream start's refusal is (issue #525). */
+        char why[DSD_ANALOG_ERROR_TEXT_MAX];
+        (void)dsd_analog_width_check_at(DSD_ANALOG_DEMOD_FM, row->channel_bw_hz, dsp_rate_hz,
+                                        scan_input_rate_source(opts), why, sizeof why);
         LOG_WARN("WARNING: %s: %s; until then it is skipped at every visit.\n", label, why);
         return 1;
     }

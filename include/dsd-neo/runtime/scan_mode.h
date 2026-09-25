@@ -125,9 +125,9 @@ dsd_scan_mode dsd_scan_mode_active(const dsd_state* state);
 void dsd_scan_settings_capture(const dsd_opts* opts, const dsd_state* state, dsd_scan_settings* out);
 void dsd_scan_settings_restore(const dsd_scan_settings* saved, dsd_opts* opts, dsd_state* state);
 /** Compare the acquisition-relevant settings (decoder set, modulation, inversion, slot policy, analog
- * demodulator and channel widths, output name), ignoring unused label bytes and the row-scoped option
- * fields; optionally include live timing/modulation. A difference means a staged tune or parked row must
- * be re-acquired. */
+ * demodulator, output name, and for the analog family the channel widths), ignoring unused label bytes and the
+ * row-scoped option fields; optionally include live timing/modulation. A difference means a staged tune or parked
+ * row must be re-acquired. */
 int dsd_scan_settings_equal(const dsd_scan_settings* a, const dsd_scan_settings* b, int include_timing);
 /** Prepare production row settings without committing the row or baseline. @p row carries the row's
  * nonsecret options (NULL = none): the acquisition ones among them, the analog channel width, are in
@@ -202,6 +202,15 @@ const dsd_scan_option_values* dsd_scan_mode_row_options(const dsd_state* state);
  * thread with the live state, never with a frontend snapshot (dsd_app_get_latest_snapshot()): it
  * would edit the snapshot's scope copy while frontends read it, and the live scope would not change. */
 int dsd_scan_mode_set_configured_squelch(dsd_opts* opts, const dsd_state* state, double level);
+/** Edit the configured NFM channel width (dsd_opts::analog_nfm_bandwidth_hz, Hz, 0 = the default) without
+ * suspending the scope, as the squelch setter does, so no acquisition a row has made is compared or reset (issue #526).
+ * Without a scope, or while one is suspended, dsd_opts holds the configured values and takes the width. Under a live
+ * scope the configured baseline takes it, and dsd_opts does too unless the installed row options set their own width
+ * (DSD_SCAN_OPT_BANDWIDTH), which stays in force until the row leaves. Nothing reaches the front end here. Returns 1
+ * when the width is now in force in dsd_opts (the caller hands it to the front end), 0 when a row width shadows it,
+ * -1 without opts. The width is not validated. Same thread and snapshot rules as dsd_scan_mode_set_configured_squelch().
+ */
+int dsd_scan_mode_set_configured_nfm_bandwidth(dsd_opts* opts, const dsd_state* state, int width_hz);
 /** Deep-copy scalar scope metadata for frontend snapshots. No live extension pointer is shared. */
 void dsd_scan_mode_copy_snapshot(dsd_state* dst, const dsd_state* src);
 /** Current class profile; combined P25 and inherited settings follow the active hunt index. */

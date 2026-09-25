@@ -592,6 +592,14 @@ test_nfm_row_width_scope(void) {
     assert(dsd_scan_settings_equal(&with_width, &without_width, 0));
     without_width.analog_am_bandwidth_hz = 5000;
     assert(!dsd_scan_settings_equal(&with_width, &without_width, 0));
+    /* A digital row runs its own channel profile: the widths it carries for the leave are no acquisition setting. */
+    dsd_scan_settings digital_a;
+    dsd_scan_settings digital_b;
+    assert(dsd_scan_mode_prepare(o, s, DSD_SCAN_MODE_DMR, NULL, &digital_a) == 0);
+    digital_b = digital_a;
+    digital_b.analog_nfm_bandwidth_hz = 8000;
+    digital_b.analog_am_bandwidth_hz = 5000;
+    assert(digital_a.analog_only == 0 && dsd_scan_settings_equal(&digital_a, &digital_b, 1));
 
     /* Suspended, dsd_opts holds the configured width; resume puts the row's back, and an edit
      * the row shadows is no acquisition change. */
@@ -654,9 +662,62 @@ test_nfm_class_on_analog_session(void) {
     free(o);
 }
 
+/* The NFM width command edits the configured width without suspending the scope, like the squelch
+ * setter: a row that sets its own width keeps it (0) while the baseline takes the edit, which the
+ * next row without a width and the leave put in force; anything else takes it at once (1). */
+static void
+test_configured_nfm_width_edit(void) {
+    dsd_opts* o = (dsd_opts*)calloc(1, sizeof(*o));
+    dsd_state* s = (dsd_state*)calloc(1, sizeof(*s));
+    assert(o && s);
+    nfm_fixture(o, s);
+    o->analog_nfm_bandwidth_hz = 20000;
+
+    assert(dsd_scan_mode_set_configured_nfm_bandwidth(NULL, s, 12500) == -1);
+    /* No scope: dsd_opts is the configured width. */
+    assert(dsd_scan_mode_set_configured_nfm_bandwidth(o, s, 18000) == 1 && o->analog_nfm_bandwidth_hz == 18000);
+    assert(dsd_scan_mode_set_configured_nfm_bandwidth(o, NULL, 20000) == 1 && o->analog_nfm_bandwidth_hz == 20000);
+
+    dsd_scan_option_values row = {0};
+    row.present = DSD_SCAN_OPT_BANDWIDTH;
+    row.channel_bw_hz = 12500;
+    assert(dsd_scan_mode_enter(o, s, DSD_SCAN_MODE_NFM) == 0);
+    assert(dsd_scan_mode_options(o, s, &row) == 0);
+    /* Shadowed: the row keeps its width in dsd_opts, the baseline takes the edit, nothing is suspended. */
+    assert(dsd_scan_mode_set_configured_nfm_bandwidth(o, s, 16000) == 0);
+    assert(o->analog_nfm_bandwidth_hz == 12500);
+    assert(dsd_scan_mode_configured_view(s)->analog_nfm_bandwidth_hz == 16000);
+    assert(dsd_scan_mode_updating(s) == 0);
+    /* The next row without a width runs the edited default. */
+    assert(dsd_scan_mode_options(o, s, NULL) == 0);
+    assert(o->analog_nfm_bandwidth_hz == 16000);
+    /* In force: both take it, and the AM width is never touched. */
+    assert(dsd_scan_mode_set_configured_nfm_bandwidth(o, s, 0) == 1);
+    assert(o->analog_nfm_bandwidth_hz == 0 && dsd_scan_mode_configured_view(s)->analog_nfm_bandwidth_hz == 0);
+    assert(o->analog_am_bandwidth_hz == 7000);
+    /* A digital row carries the configured width too, for the leave. */
+    assert(dsd_scan_mode_enter(o, s, DSD_SCAN_MODE_DMR) == 0);
+    assert(dsd_scan_mode_options(o, s, NULL) == 0);
+    assert(dsd_scan_mode_set_configured_nfm_bandwidth(o, s, 11250) == 1 && o->analog_nfm_bandwidth_hz == 11250);
+    /* Suspended: dsd_opts holds the configured values, and resume recaptures the edit. */
+    assert(dsd_scan_mode_enter(o, s, DSD_SCAN_MODE_NFM) == 0);
+    assert(dsd_scan_mode_options(o, s, &row) == 0);
+    assert(dsd_scan_mode_suspend(o, s));
+    assert(dsd_scan_mode_set_configured_nfm_bandwidth(o, s, 8000) == 1 && o->analog_nfm_bandwidth_hz == 8000);
+    assert(dsd_scan_mode_resume(o, s) == 0);
+    assert(o->analog_nfm_bandwidth_hz == 12500);
+    assert(dsd_scan_mode_configured_view(s)->analog_nfm_bandwidth_hz == 8000);
+    dsd_scan_mode_leave(o, s);
+    assert(o->analog_nfm_bandwidth_hz == 8000 && o->analog_only == 0 && o->frame_dmr == 1);
+    dsd_state_ext_free_all(s);
+    free(s);
+    free(o);
+}
+
 int
 main(void) {
     test_nfm_class_names();
+    test_configured_nfm_width_edit();
     test_nfm_class_enters_analog_monitor();
     test_nfm_row_width_scope();
     test_nfm_class_on_analog_session();

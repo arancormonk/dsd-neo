@@ -365,6 +365,10 @@ dsd_scan_settings_equal(const dsd_scan_settings* a, const dsd_scan_settings* b, 
         offsetof(dsd_scan_settings, analog_only),
         offsetof(dsd_scan_settings, monitor_input_audio),
         offsetof(dsd_scan_settings, analog_demod),
+    };
+    /* The channel widths filter only the analog family: a digital row runs its own channel profile, so a configured
+     * width edited under it (the width command, a config apply) is no acquisition change there. */
+    static const size_t analog[] = {
         offsetof(dsd_scan_settings, analog_nfm_bandwidth_hz),
         offsetof(dsd_scan_settings, analog_am_bandwidth_hz),
     };
@@ -377,6 +381,7 @@ dsd_scan_settings_equal(const dsd_scan_settings* a, const dsd_scan_settings* b, 
         return 0;
     }
     return scan_settings_fields_equal(a, b, options, sizeof(options) / sizeof(options[0]))
+           && (a->analog_only != 1 || scan_settings_fields_equal(a, b, analog, sizeof(analog) / sizeof(analog[0])))
            && strncmp(a->output_name, b->output_name, sizeof(a->output_name)) == 0
            && (!include_timing || scan_settings_fields_equal(a, b, timing, sizeof(timing) / sizeof(timing[0])));
 }
@@ -907,6 +912,23 @@ dsd_scan_mode_set_configured_squelch(dsd_opts* opts, const dsd_state* state, dou
         }
     }
     opts->rtl_squelch_level = level;
+    return 1;
+}
+
+int
+dsd_scan_mode_set_configured_nfm_bandwidth(dsd_opts* opts, const dsd_state* state, int width_hz) {
+    if (!opts) {
+        return -1;
+    }
+    scan_scope* scope = state ? scan_scope_get(state) : NULL;
+    /* Suspended or absent, dsd_opts holds the configured values and resume recaptures them. */
+    if (scope && !scope->suspended) {
+        scope->configured.analog_nfm_bandwidth_hz = width_hz;
+        if (scope->options.present & DSD_SCAN_OPT_BANDWIDTH) {
+            return 0;
+        }
+    }
+    opts->analog_nfm_bandwidth_hz = width_hz;
     return 1;
 }
 
