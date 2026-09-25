@@ -25,7 +25,6 @@
 #ifdef USE_RADIO
 #include <dsd-neo/io/rtl_stream_c.h>
 #include <dsd-neo/runtime/analog_channel.h>
-#include <stddef.h>
 #include <stdint.h>
 
 /* Whether the decoder's configured mode, not a scan row's constraint over it, is digital. A typed digital scan row on
