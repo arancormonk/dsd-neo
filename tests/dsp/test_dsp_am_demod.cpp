@@ -16,7 +16,6 @@
  */
 
 #include <cmath>
-#include <cstddef>
 #include <cstdint>
 #include <cstdio>
 #include <dsd-neo/dsp/demod_pipeline.h>
