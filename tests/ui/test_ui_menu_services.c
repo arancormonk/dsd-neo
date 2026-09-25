@@ -21,6 +21,7 @@
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/source_alias.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/talkgroup_policy.h>
 #include <dsd-neo/dsp/demod_pipeline.h>
 #include <dsd-neo/engine/p25_bandplan_export.h>
@@ -35,6 +36,7 @@
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/log.h>
 #include <dsd-neo/runtime/scan_mode.h>
+#include <dsd-neo/runtime/scan_options.h>
 #include <math.h>
 #include <sndfile.h>
 #include <stdint.h>
@@ -965,6 +967,66 @@ test_rtl_service_option_contracts(void) {
 }
 #endif
 
+#ifdef USE_RADIO
+/* Issue #526: RTL_SET_BW is unscoped, so the stream it reopens starts on the settings in force: while an nfm scan row
+ * with its own width is on air, that width. A start refuses a width its DSP rate cannot filter, which would leave the
+ * session with no radio input, so a bandwidth that cannot run the width is refused before anything changes, and the
+ * running stream is kept. One that can reopens as before, and so does any bandwidth once the row has left. */
+static int
+test_rtl_bandwidth_holds_the_analog_width_in_force(void) {
+    int rc = 0;
+    static dsd_opts opts;
+    static dsd_state state;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    reset_rtl_restart_stubs();
+    opts.audio_in_type = AUDIO_IN_RTL;
+    DSD_SNPRINTF(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", "rtl:0:154430000:0:0:24");
+    opts.rtl_dsp_bw_khz = 24;
+    RtlSdrContext* const running = (RtlSdrContext*)&state;
+    state.rtl_ctx = running;
+
+    dsd_scan_option_values row = {0};
+    row.present = DSD_SCAN_OPT_BANDWIDTH;
+    row.channel_bw_hz = 12500;
+    rc |= expect_int("nfm row entered", dsd_scan_mode_enter(&opts, &state, DSD_SCAN_MODE_NFM), 0);
+    rc |= expect_int("nfm row options", dsd_scan_mode_options(&opts, &state, &row), 0);
+    rc |= expect_int("nfm row width in force", dsd_opts_analog_width_hz(&opts), 12500);
+
+    /* 12 kHz filters at most 9.6 kHz. The toast names the row's width, which the width controls do not edit. */
+    char why[128];
+    rc |= expect_int("unfit bandwidth refused", svc_rtl_set_bandwidth(&opts, &state, 12, why, sizeof why), -1);
+    rc |= expect_int("unfit bandwidth reason",
+                     strcmp(why, "DSP BW 12 kHz cannot filter the scan row's NFM 12.5 kHz (max 9.6 kHz); keep a wider "
+                                 "DSP bandwidth")
+                         == 0,
+                     1);
+    rc |= expect_int("refused bandwidth keeps the DSP bandwidth", opts.rtl_dsp_bw_khz, 24);
+    rc |= expect_int("refused bandwidth keeps the running stream", state.rtl_ctx == running, 1);
+    rc |= expect_int("refused bandwidth never reopens",
+                     g_rtl_stop_calls + g_rtl_destroy_calls + g_rtl_create_calls + g_rtl_start_calls, 0);
+
+    /* 16 kHz filters up to 13.2 kHz. */
+    g_rtl_create_result = 0;
+    g_rtl_start_result = 0;
+    rc |= expect_int("fitting bandwidth applied", svc_rtl_set_bandwidth(&opts, &state, 16, why, sizeof why), 0);
+    rc |= expect_int("fitting bandwidth stored", opts.rtl_dsp_bw_khz, 16);
+    rc |= expect_int("fitting bandwidth reopens", g_rtl_start_calls, 1);
+
+    /* The row has left: nothing in force holds the bandwidth. */
+    dsd_scan_mode_leave(&opts, &state);
+    rc |= expect_int("configured width after the row", dsd_opts_analog_width_hz(&opts), 0);
+    rc |= expect_int("bandwidth after the row applied", svc_rtl_set_bandwidth(&opts, &state, 12, why, sizeof why), 0);
+    rc |= expect_int("bandwidth after the row stored", opts.rtl_dsp_bw_khz, 12);
+
+    reset_rtl_restart_stubs();
+    dsd_state_ext_free_all(&state);
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    return rc;
+}
+#endif
+
 static int
 test_file_network_and_import_failure_contracts(void) {
     int rc = 0;
@@ -1711,6 +1773,7 @@ main(void) {
     rc |= test_locked_restarts();
     rc |= test_rtl_service_option_contracts();
     rc |= test_nfm_bandwidth_services();
+    rc |= test_rtl_bandwidth_holds_the_analog_width_in_force();
 #endif
     rc |= test_file_network_and_import_failure_contracts();
     rc |= test_udp_output_analog_socket_failure();

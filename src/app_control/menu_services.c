@@ -1302,13 +1302,13 @@ svc_rtl_set_gain(dsd_opts* opts, dsd_state* state, int value) {
     return 0;
 }
 
-/* The DSP rate an explicit analog width runs at: a bandwidth that cannot filter it is refused rather than leaving the
-   next start to fail, or the width to be clamped. The configured preset decides: a typed digital scan row on an analog
-   session still returns to the analog monitor, at this rate. */
+/* Whether a stream reopened at an RTL DSP bandwidth of @p khz can filter the explicit analog width @p width_hz of
+   @p kind (0: none, never refused). A refusal gives the toast text and logs the validator's full message. @p row says
+   the width is a scan row's own (--nfm-bandwidth-hz), which the width controls do not edit: the toast names the row,
+   and the only fix is the bandwidth. */
 static int
-svc_rtl_bandwidth_fits_analog_width(const dsd_opts* opts, const dsd_state* state, int khz, char* why, size_t why_size) {
-    int kind = DSD_ANALOG_DEMOD_FM;
-    const int width_hz = svc_configured_analog_width(opts, state, &kind);
+svc_rtl_bandwidth_fits_width(const dsd_opts* opts, int kind, int width_hz, int row, int khz, char* why,
+                             size_t why_size) {
     if (width_hz > 0 && !svc_analog_width_env_allows(kind, width_hz, why, why_size)) {
         return 0; /* the reopen's start would refuse the width at any rate */
     }
@@ -1326,10 +1326,13 @@ svc_rtl_bandwidth_fits_analog_width(const dsd_opts* opts, const dsd_state* state
     const char* label = dsd_analog_demod_label(kind);
     /* Narrowing helps only where the bandwidth filters some width of the kind; below that, the unset NFM default (which
        runs DSP-limited at any rate) is the width left to fall back on, and for any other kind only a bandwidth this
-       one is not. */
+       one is not. A scan row's width stays until the row leaves. */
     char fix[64];
     int width_fix = 1;
-    if (max_hz >= dsd_analog_width_min_hz(kind)) {
+    if (row) {
+        DSD_SNPRINTF(fix, sizeof fix, "%s", "keep a wider DSP bandwidth");
+        width_fix = 0;
+    } else if (max_hz >= dsd_analog_width_min_hz(kind)) {
         DSD_SNPRINTF(fix, sizeof fix, "narrow the %s width first", label);
     } else if (kind == DSD_ANALOG_DEMOD_FM) {
         DSD_SNPRINTF(fix, sizeof fix, "%s", "leave the NFM width unset first");
@@ -1337,14 +1340,34 @@ svc_rtl_bandwidth_fits_analog_width(const dsd_opts* opts, const dsd_state* state
         DSD_SNPRINTF(fix, sizeof fix, "no %s width fits it; keep a wider DSP bandwidth", label);
         width_fix = 0;
     }
-    svc_why(why, why_size, "DSP BW %d kHz cannot filter %s %s (max %s); %s", khz, label, width, max, fix);
+    svc_why(why, why_size, "DSP BW %d kHz cannot filter %s%s %s (max %s); %s", khz, row ? "the scan row's " : "", label,
+            width, max, fix);
     char err[DSD_ANALOG_ERROR_TEXT_MAX];
     if (dsd_analog_width_check(kind, width_hz, rate_hz, err, sizeof err) != 0) {
         /* The validator's fix names the DSP bandwidths that fit; the width's own fix, where one exists, follows. */
-        LOG_WARN("RTL DSP bandwidth %d kHz refused: %s%s%s.\n", khz, err, width_fix ? ", or " : "",
-                 width_fix ? fix : "");
+        LOG_WARN("RTL DSP bandwidth %d kHz refused%s: %s%s%s.\n", khz, row ? " for the scan row's width" : "", err,
+                 width_fix ? ", or " : "", width_fix ? fix : "");
     }
     return 0;
+}
+
+/* The DSP rate an explicit analog width runs at: a bandwidth that cannot filter it is refused rather than leaving the
+   next start to fail, or the width to be clamped. The configured preset decides: a typed digital scan row on an analog
+   session still returns to the analog monitor, at this rate. RTL_SET_BW is unscoped, so the stream it reopens starts
+   on the settings in force: while a scan row runs the analog family with its own width (issue #526), that width is
+   held to the rate as well, since a start that refuses it would leave the session with no radio input. */
+static int
+svc_rtl_bandwidth_fits_analog_width(const dsd_opts* opts, const dsd_state* state, int khz, char* why, size_t why_size) {
+    int kind = DSD_ANALOG_DEMOD_FM;
+    const int width_hz = svc_configured_analog_width(opts, state, &kind);
+    if (!svc_rtl_bandwidth_fits_width(opts, kind, width_hz, 0, khz, why, why_size)) {
+        return 0;
+    }
+    const int in_force_hz = dsd_opts_analog_width_hz(opts);
+    if (!dsd_opts_is_analog_family(opts) || in_force_hz <= 0 || (in_force_hz == width_hz && opts->analog_demod == kind)) {
+        return 1;
+    }
+    return svc_rtl_bandwidth_fits_width(opts, opts->analog_demod, in_force_hz, 1, khz, why, why_size);
 }
 
 int
