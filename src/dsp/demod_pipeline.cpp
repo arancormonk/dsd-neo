@@ -757,6 +757,89 @@ dsd_fm_demod(struct demod_state* fm) {
     fm->result_len = pairs;
 }
 
+/* AM envelope detector (issue #524): output = kAmOutputGain x clamp(|z| / C - 1, +/-kAmEnvelopeClamp). The gain puts
+   100% modulation at 0.25, where live FM sits at about 6 kHz deviation, so the downstream voice filters and AGC see the
+   level they see for FM. Below kAmCarrierFloor there is no carrier to normalise by. */
+static const float kAmOutputGain = 0.25f;
+static const float kAmEnvelopeClamp = 2.0f;
+static const float kAmCarrierFloor = 1e-9f;
+
+/* One-pole coefficient for the DSD_AM_CARRIER_TAU_MS carrier estimate at the rate the detector runs: the demod rate, or
+   its multiple where an I/Q replay decimates after the demodulator. */
+static float
+am_carrier_alpha(const struct demod_state* d) {
+    int rate_hz = d->rate_out > 0 ? d->rate_out : 48000;
+    if (d->post_downsample > 1) {
+        rate_hz *= d->post_downsample;
+    }
+    const double tau_s = (double)DSD_AM_CARRIER_TAU_MS / 1000.0;
+    return (float)(1.0 - exp(-1.0 / ((double)rate_hz * tau_s)));
+}
+
+static float
+am_block_mean_magnitude(const float* iq, int pairs) {
+    double sum = 0.0;
+    for (int n = 0; n < pairs; n++) {
+        const double i = (double)iq[(size_t)(n << 1) + 0];
+        const double q = (double)iq[(size_t)(n << 1) + 1];
+        sum += sqrt(i * i + q * q);
+    }
+    return pairs > 0 ? (float)(sum / (double)pairs) : 0.0f;
+}
+
+/**
+ * @brief AM envelope detector on interleaved low-passed I/Q (issue #524).
+ *
+ * @param fm Demodulator state (uses lowpassed as input, writes to result, updates am_carrier).
+ */
+void
+dsd_am_demod(struct demod_state* fm) {
+    const int pairs = fm->lp_len >> 1;
+    if (pairs <= 0) {
+        fm->result_len = 0;
+        return;
+    }
+    float* out = assume_aligned_ptr(fm->result, DSD_NEO_ALIGN);
+    fm->result_len = pairs;
+    if (fm->channel_squelched) {
+        /* The squelch zeroed the block. A zero envelope would read as -0.25 under the held carrier estimate; the block
+           is silence instead, and the estimate stays for the audio the squelch lets through next. */
+        for (int n = 0; n < pairs; n++) {
+            out[n] = 0.0f;
+        }
+        return;
+    }
+    const float* iq = assume_aligned_ptr(fm->lowpassed, DSD_NEO_ALIGN);
+    float carrier = fm->am_carrier;
+    if (!(carrier >= kAmCarrierFloor)) {
+        /* Reset (or no carrier yet): start from this block's own level rather than fading in from nothing. */
+        carrier = am_block_mean_magnitude(iq, pairs);
+    }
+    const float alpha = am_carrier_alpha(fm);
+    for (int n = 0; n < pairs; n++) {
+        const float i = iq[(size_t)(n << 1) + 0];
+        const float q = iq[(size_t)(n << 1) + 1];
+        const float a = sqrtf(i * i + q * q);
+        if (carrier >= kAmCarrierFloor) {
+            out[n] = kAmOutputGain * clamp_float((a / carrier) - 1.0f, -kAmEnvelopeClamp, kAmEnvelopeClamp);
+        } else {
+            out[n] = 0.0f;
+        }
+        carrier += alpha * (a - carrier);
+    }
+    fm->am_carrier = carrier;
+}
+
+int
+dsd_demod_am_active(const struct demod_state* d) {
+    return (d && d->mode_demod == &dsd_am_demod) ? 1 : 0;
+}
+
+int
+dsd_demod_iq_dc_block_active(const struct demod_state* d) {
+    return (d && d->iq_dc_block_enable && !dsd_demod_am_active(d)) ? 1 : 0;
+}
+
 /**
  * @brief Pass-through demodulator: copies low-passed samples to output unchanged.
  *
@@ -1036,10 +1119,11 @@ mean_power(const float* samples, int len, int step) {
     return (float)(energy / (double)(len > 0 ? len : 1));
 }
 
-/* Optional complex DC blocker prior to FM discrimination (per-sample leaky integrator) */
+/* Optional complex DC blocker prior to FM discrimination (per-sample leaky integrator). Never under the AM detector,
+   whose carrier sits at 0 Hz (dsd_demod_iq_dc_block_active()); its estimate then holds where it was. */
 static inline void
 iq_dc_block(struct demod_state* d) {
-    if (!d || !d->iq_dc_block_enable || !d->lowpassed || d->lp_len < 2) {
+    if (!dsd_demod_iq_dc_block_active(d) || !d->lowpassed || d->lp_len < 2) {
         return;
     }
     int k = d->iq_dc_shift;

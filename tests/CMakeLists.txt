@@ -7802,6 +7802,16 @@ target_include_directories(
 dsd_neo_link_dsp_test(dsd-neo_test_dsp_fm_demod_ref)
 add_test(NAME DSP_FM_DEMOD_REF COMMAND dsd-neo_test_dsp_fm_demod_ref)
 
+# The carrier-normalised AM envelope detector (issue #524), alone and through the
+# monitor pipeline with the 6 kHz AM channel filter.
+add_executable(dsd-neo_test_dsp_am_demod dsp/test_dsp_am_demod.cpp)
+target_include_directories(
+    dsd-neo_test_dsp_am_demod
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+dsd_neo_link_dsp_test(dsd-neo_test_dsp_am_demod ${DSD_NEO_TEST_MATH_LIB})
+add_test(NAME DSP_AM_DEMOD COMMAND dsd-neo_test_dsp_am_demod)
+
 add_executable(dsd-neo_test_dsp_demod_misc dsp/test_dsp_demod_misc.cpp)
 target_include_directories(
     dsd-neo_test_dsp_demod_misc

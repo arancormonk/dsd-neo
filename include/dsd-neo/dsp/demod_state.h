@@ -188,6 +188,11 @@ struct demod_state {
        kept so a later rate change can resolve the channel again: the unset default between 16 kHz and the legacy
        WIDE design, and a requested width against the new rate. */
     int analog_width_request_hz;
+    /* AM envelope detector (dsd_am_demod(), issue #524): the carrier estimate the envelope is divided by, a one-pole
+       average of |z| with a DSD_AM_CARRIER_TAU_MS time constant. A squelched block leaves it where it was. Every reset
+       of the monitor audio state (stream open, retune, receive-family or FM/AM switch) sets it to 0, and the next
+       unsquelched block warm-starts it from that block's mean magnitude. */
+    float am_carrier;
     float channel_pwr; /* mean power (RMS^2 proxy) measured after channel LPF */
     /* Squelch threshold (linear power); 0 = disabled. Written from the control thread
      * (config apply, menus) while the demod thread reads it per block. */

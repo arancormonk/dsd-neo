@@ -47,6 +47,43 @@ void low_pass_real(struct demod_state* s);
  */
 void dsd_fm_demod(struct demod_state* fm);
 
+/* AM envelope detector design (issue #524). The carrier estimate is a one-pole average of |z| with this time constant
+   in milliseconds, recomputed for the rate the detector runs at. */
+#define DSD_AM_CARRIER_TAU_MS 50
+
+/**
+ * AM envelope detector on interleaved low-passed I/Q (issue #524).
+ *
+ * Output is 0.25 x clamp(|z| / C - 1, -2, 2), where C is the carrier estimate held in `am_carrier`: a one-pole average
+ * of |z| with a DSD_AM_CARRIER_TAU_MS time constant. Dividing by the carrier makes the level the modulation depth,
+ * whatever the RF level or input scaling (100% modulation peaks at 0.25, as live FM does at about 6 kHz deviation), so
+ * the RTL output scale is not applied to it. The envelope has no phase, so a carrier offset inside the channel changes
+ * nothing. A block the channel squelch zeroed (`channel_squelched`) is silence and leaves C where it was. C at 0 (a
+ * reset) is warm-started from the block's mean magnitude; with no carrier at all the output is silence.
+ *
+ * @param fm Demodulator state (uses lowpassed as input, writes to result, updates am_carrier).
+ */
+void dsd_am_demod(struct demod_state* fm);
+
+/**
+ * Whether the AM envelope detector demodulates the monitor audio (the analog family's AM kind installs it).
+ *
+ * @param d Demodulator state; NULL reads as not AM.
+ * @return 1 when `mode_demod` is dsd_am_demod(), else 0.
+ */
+int dsd_demod_am_active(const struct demod_state* d);
+
+/**
+ * Whether the complex I/Q DC blocker runs on the next block.
+ *
+ * It runs when enabled (`iq_dc_block_enable`), except under the AM detector: AM keeps its carrier at 0 Hz after
+ * tuning (centred I/Q, offset tuning), where the blocker would remove it. The setting itself is kept.
+ *
+ * @param d Demodulator state; NULL reads as not running.
+ * @return 1 when the blocker runs, else 0.
+ */
+int dsd_demod_iq_dc_block_active(const struct demod_state* d);
+
 /**
  * Pass-through demodulator: copies low-passed samples to output unchanged.
  *
