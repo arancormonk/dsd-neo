@@ -406,7 +406,9 @@ validate_composed_scan_max_visit_ms(const dsdneoUserConfig* cfg, const char* sec
 
 /* An explicit NFM width the analog preset will use, on an input whose DSP rate is the configured RTL DSP bandwidth
    (RTL-SDR and rtl_tcp), must fit that rate. Devices that can force another rate (SoapySDR, Airspy) are checked
-   against the rate they deliver when the stream starts. */
+   against the rate they deliver when the stream starts. rtl_bw_khz is that rate only where startup builds the input
+   with it, which takes rtl_freq: without one an rtl source leaves the input as it was, and an rtl_tcp source connects
+   as "rtltcp:host:port" at the 48 kHz default (apply_input_source_rtl()/_rtltcp()). */
 static int
 validate_configured_rtl_bw_khz(int bw) {
     /* What applying the config leaves in force: an unset or unsupported value is the 48 kHz default. */
@@ -421,8 +423,11 @@ validate_configured_rtl_bw_khz(int bw) {
 
 static int
 validate_analog_width_rate_applies(const dsdneoUserConfig* cfg) {
-    return cfg->analog_nfm_bandwidth_hz > 0 && cfg->has_mode && cfg->decode_mode == DSDCFG_MODE_ANALOG && cfg->has_input
-           && (cfg->input_source == DSDCFG_INPUT_RTL || cfg->input_source == DSDCFG_INPUT_RTLTCP);
+    const int builds_rtl_input = cfg->has_input && cfg->rtl_freq[0] != '\0'
+                                 && (cfg->input_source == DSDCFG_INPUT_RTL
+                                     || (cfg->input_source == DSDCFG_INPUT_RTLTCP && cfg->rtltcp_host[0] != '\0'));
+    return cfg->analog_nfm_bandwidth_hz > 0 && cfg->has_mode && cfg->decode_mode == DSDCFG_MODE_ANALOG
+           && builds_rtl_input;
 }
 
 static void

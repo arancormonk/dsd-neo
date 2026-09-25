@@ -1318,31 +1318,40 @@ test_analog_nfm_bandwidth_validation(void) {
     rc |= run_analog_width_case("[analog]\nnfm_bandwidth_hz = 12.5k\n", "whole number of Hz", "12.5k");
     rc |= run_analog_width_case("[profile.narrow]\nanalog.nfm_bandwidth_hz = 30000\n", "30000 Hz", "8000 to 25000");
 
-    /* The composed rate rule: the width against the DSP rate rtl_bw_khz gives an RTL or rtl_tcp input. */
-    rc |= run_analog_width_case("[input]\nsource = \"rtl\"\nrtl_bw_khz = 24\n[mode]\ndecode = \"analog\"\n"
-                                "[analog]\nnfm_bandwidth_hz = 25000\n",
+    /* The composed rate rule: the width against the DSP rate rtl_bw_khz gives an RTL or rtl_tcp input that startup
+       builds with it (an rtl_freq, and for rtl_tcp a host). */
+    rc |= run_analog_width_case("[input]\nsource = \"rtl\"\nrtl_freq = \"146.52M\"\nrtl_bw_khz = 24\n[mode]\n"
+                                "decode = \"analog\"\n[analog]\nnfm_bandwidth_hz = 25000\n",
                                 "does not fit the 24 kHz DSP rate", "set the RTL DSP bandwidth to 48 kHz");
-    rc |= run_analog_width_case("[input]\nsource = \"rtltcp\"\nrtl_bw_khz = 16\n[mode]\ndecode = \"analog\"\n"
-                                "[analog]\nnfm_bandwidth_hz = 16000\n",
+    rc |= run_analog_width_case("[input]\nsource = \"rtltcp\"\nrtltcp_host = \"127.0.0.1\"\nrtl_freq = \"146.52M\"\n"
+                                "rtl_bw_khz = 16\n[mode]\ndecode = \"analog\"\n[analog]\nnfm_bandwidth_hz = 16000\n",
                                 "does not fit the 16 kHz DSP rate", "24 or 48 kHz");
-    rc |= run_analog_width_case("[input]\nsource = \"rtl\"\nrtl_bw_khz = 16\n[mode]\ndecode = \"analog\"\n"
-                                "[analog]\nnfm_bandwidth_hz = 12500\n",
+    rc |= run_analog_width_case("[input]\nsource = \"rtl\"\nrtl_freq = \"146.52M\"\nrtl_bw_khz = 16\n[mode]\n"
+                                "decode = \"analog\"\n[analog]\nnfm_bandwidth_hz = 12500\n",
                                 "", NULL);
     /* rtl_bw_khz left out is the 48 kHz default, which fits every NFM width. */
-    rc |= run_analog_width_case("[input]\nsource = \"rtl\"\n[mode]\ndecode = \"analog\"\n"
+    rc |= run_analog_width_case("[input]\nsource = \"rtl\"\nrtl_freq = \"146.52M\"\n[mode]\ndecode = \"analog\"\n"
                                 "[analog]\nnfm_bandwidth_hz = 25000\n",
+                                "", NULL);
+    /* Without rtl_freq, startup does not build the input with rtl_bw_khz: an rtl source leaves the input as it was,
+       and rtl_tcp connects as "rtltcp:host:port" at the 48 kHz default, where 25 kHz runs. */
+    rc |= run_analog_width_case("[input]\nsource = \"rtl\"\nrtl_bw_khz = 24\n[mode]\ndecode = \"analog\"\n"
+                                "[analog]\nnfm_bandwidth_hz = 25000\n",
+                                "", NULL);
+    rc |= run_analog_width_case("[input]\nsource = \"rtltcp\"\nrtltcp_host = \"127.0.0.1\"\nrtltcp_port = 1234\n"
+                                "rtl_bw_khz = 24\n[mode]\ndecode = \"analog\"\n[analog]\nnfm_bandwidth_hz = 25000\n",
                                 "", NULL);
     /* Not the analog preset: the width is not in use. */
-    rc |= run_analog_width_case("[input]\nsource = \"rtl\"\nrtl_bw_khz = 24\n[mode]\ndecode = \"dmr\"\n"
-                                "[analog]\nnfm_bandwidth_hz = 25000\n",
+    rc |= run_analog_width_case("[input]\nsource = \"rtl\"\nrtl_freq = \"146.52M\"\nrtl_bw_khz = 24\n[mode]\n"
+                                "decode = \"dmr\"\n[analog]\nnfm_bandwidth_hz = 25000\n",
                                 "", NULL);
     /* A device that may force its own rate is checked against the rate it delivers, at stream start. */
-    rc |= run_analog_width_case("[input]\nsource = \"soapy\"\nrtl_bw_khz = 24\n[mode]\ndecode = \"analog\"\n"
-                                "[analog]\nnfm_bandwidth_hz = 25000\n",
+    rc |= run_analog_width_case("[input]\nsource = \"soapy\"\nrtl_freq = \"146.52M\"\nrtl_bw_khz = 24\n[mode]\n"
+                                "decode = \"analog\"\n[analog]\nnfm_bandwidth_hz = 25000\n",
                                 "", NULL);
     /* Profiles compose the same rule. */
-    rc |= run_analog_width_case("[input]\nsource = \"rtl\"\nrtl_bw_khz = 24\n[mode]\ndecode = \"analog\"\n"
-                                "[profile.wide]\nanalog.nfm_bandwidth_hz = 25000\n",
+    rc |= run_analog_width_case("[input]\nsource = \"rtl\"\nrtl_freq = \"146.52M\"\nrtl_bw_khz = 24\n[mode]\n"
+                                "decode = \"analog\"\n[profile.wide]\nanalog.nfm_bandwidth_hz = 25000\n",
                                 "does not fit the 24 kHz DSP rate", NULL);
     return rc;
 }
