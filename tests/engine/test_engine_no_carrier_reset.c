@@ -119,6 +119,8 @@ static int g_analog_attach_calls = 0;
 static int g_rtl_analog_family = 0;
 static int g_rtl_analog_width_hz = 0;
 static int g_request_demod_calls = 0;
+/* 1: the output rate follows the family, the analog monitor at 48 kHz and the digital family at 24 kHz (bw=24). */
+static int g_rtl_family_rates = 0;
 
 static void
 reset_rtl_profile_fakes(void) {
@@ -149,6 +151,7 @@ reset_rtl_profile_fakes(void) {
     g_rtl_analog_family = 0;
     g_rtl_analog_width_hz = 0;
     g_request_demod_calls = 0;
+    g_rtl_family_rates = 0;
     g_check_p25_tick_guard = 0;
     g_p25_tick_guard_held_during_tune = 0;
 }
@@ -168,6 +171,19 @@ static long int g_rigctl_setfreq_freq = 0;
 uint32_t
 __wrap_rtl_stream_output_rate(const RtlSdrContext* ctx) {
     (void)ctx;
+    if (g_rtl_family_rates) {
+        return g_rtl_analog_family ? 48000U : 24000U;
+    }
+    return (uint32_t)g_rtl_output_rate;
+}
+
+unsigned int
+__wrap_rtl_stream_output_rate_for_family(int family, int cqpsk_enable, int symbol_rate_hz) {
+    (void)cqpsk_enable;
+    (void)symbol_rate_hz;
+    if (g_rtl_family_rates) {
+        return family == DSD_RX_FAMILY_ANALOG ? 48000U : 24000U;
+    }
     return (uint32_t)g_rtl_output_rate;
 }
 
@@ -902,6 +918,144 @@ test_visit_cap_scanner_hops(void) {
     dsd_trunk_tuning_requests_reset();
     return rc;
 }
+
+/* --- Issue #526: a front end whose output rate follows its receive family, as the RTL stream's does at bw=24: the
+ * analog monitor resampled to 48 kHz, the digital family at the 24 kHz DSP rate. --- */
+static unsigned int
+fake_family_output_rate_hz(void) {
+    return __wrap_rtl_stream_output_rate(NULL);
+}
+
+static int
+fake_family_analog_active(void) {
+    return g_rtl_analog_family;
+}
+
+/* The decoder side reads the stream through the metrics hooks, the tuning side through the wrapped stream calls: both
+ * see the same front end. */
+static void
+install_family_rate_hooks(void) {
+    g_rtl_family_rates = 1;
+    dsd_rtl_stream_metrics_hooks hooks = {0};
+    hooks.output_rate_hz = fake_family_output_rate_hz;
+    hooks.analog_family_active = fake_family_analog_active;
+    hooks.output_rate_for_family = __wrap_rtl_stream_output_rate_for_family;
+    dsd_rtl_stream_metrics_hooks_set(&hooks);
+}
+
+/* A digital -Y row after an nfm row is timed for the family its tune lands: the decoder and the TED the retune profile
+ * carries alike, since nothing re-pushes the TED once the switch has landed. DMR gets 5 samples per symbol at 24 kHz
+ * and NXDN48 10, not the 10 and 20 the monitor's 48 kHz would give. */
+static int
+test_typed_scan_digital_row_after_nfm_timed_for_digital(void) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    int rc = 0;
+    reset_rtl_profile_fakes();
+    dsd_trunk_tuning_requests_reset();
+    install_family_rate_hooks();
+    opts->audio_in_type = AUDIO_IN_RTL;
+    opts->scanner_mode = 1;
+    opts->trunk_hangtime = 1;
+    state->rtl_ctx = (RtlSdrContext*)state;
+    state->lcn_freq_count = 4;
+    const long freqs[] = {154230000L, 461200000L, 155230000L, 461300000L};
+    const dsd_scan_mode modes[] = {DSD_SCAN_MODE_NFM, DSD_SCAN_MODE_DMR, DSD_SCAN_MODE_NFM, DSD_SCAN_MODE_NXDN48};
+    for (int i = 0; i < 4; i++) {
+        state->trunk_lcn_freq[i] = freqs[i];
+        rc |= expect_true("family timing row mode", dsd_channel_mode_set(state, (size_t)i, modes[i]) == 0);
+    }
+    state->last_cc_sync_time = time(NULL) - 11;
+    noCarrier(opts, state);
+    rc |= expect_true("family timing nfm row", state->lcn_freq_roll == 1 && g_rtl_analog_family == 1);
+
+    state->last_cc_sync_time -= 11;
+    noCarrier(opts, state);
+    rc |= expect_true("dmr row after nfm lands digital",
+                      state->lcn_freq_roll == 2 && g_rtl_analog_family == 0 && g_rtl_symbol_rate_hz == 4800);
+    rc |= expect_true("dmr row after nfm timed for 24 kHz", state->samplesPerSymbol == 5 && g_rtl_ted_sps == 5);
+    if (state->samplesPerSymbol != 5 || g_rtl_ted_sps != 5) {
+        DSD_FPRINTF(stderr, "  dmr row: decoder sps=%d, TED %d\n", state->samplesPerSymbol, g_rtl_ted_sps);
+    }
+
+    state->last_cc_sync_time -= 11;
+    noCarrier(opts, state);
+    rc |= expect_true("family timing second nfm row", state->lcn_freq_roll == 3 && g_rtl_analog_family == 1);
+
+    state->last_cc_sync_time -= 11;
+    noCarrier(opts, state);
+    rc |= expect_true("nxdn48 row after nfm lands digital",
+                      state->lcn_freq_roll == 4 && g_rtl_analog_family == 0 && g_rtl_symbol_rate_hz == 2400);
+    rc |= expect_true("nxdn48 row after nfm timed for 24 kHz", state->samplesPerSymbol == 10 && g_rtl_ted_sps == 10);
+    if (state->samplesPerSymbol != 10 || g_rtl_ted_sps != 10) {
+        DSD_FPRINTF(stderr, "  nxdn48 row: decoder sps=%d, TED %d\n", state->samplesPerSymbol, g_rtl_ted_sps);
+    }
+
+    dsd_engine_channel_scan_leave(opts, state);
+    dsd_rtl_stream_metrics_hooks_set(NULL);
+    state->rtl_ctx = NULL;
+    free_test_runtime(opts, state);
+    dsd_trunk_tuning_requests_reset();
+    return rc;
+}
+
+/* The same through --trunk-scan and the real tuning: a DMR conventional target after an nfm-conventional one. */
+static int
+test_trunk_scan_digital_target_after_nfm_timed_for_digital(void) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    char path[DSD_TEST_PATH_MAX];
+    const int fd = dsd_test_mkstemp(path, sizeof path, "nfm-family-timing-");
+    if (fd < 0) {
+        free_test_runtime(opts, state);
+        return 1;
+    }
+    dsd_close(fd);
+    FILE* fp = dsd_fopen_private(path, "w");
+    int rc = expect_true("family timing targets file", fp != NULL);
+    if (fp) {
+        DSD_FPRINTF(fp, "id,type,frequency_hz,chan_csv,dwell_ms,activity_hold_ms,notes,options\n"
+                        "fire,nfm-conventional,154330000,,250,250,,\n"
+                        "dmr,dmr-conventional,461400000,,250,250,,\n");
+        (void)fclose(fp);
+    }
+    reset_rtl_profile_fakes();
+    dsd_trunk_tuning_requests_reset();
+    install_family_rate_hooks();
+    dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){.tune_to_freq_request = dsd_engine_trunk_tune_to_freq_request,
+                                                        .tune_to_cc_request = dsd_engine_trunk_tune_to_cc_request,
+                                                        .return_to_cc_request = dsd_engine_return_to_cc_request});
+    opts->audio_in_type = AUDIO_IN_RTL;
+    opts->trunk_scan_enabled = 1;
+    state->rtl_ctx = (RtlSdrContext*)state;
+    DSD_SNPRINTF(opts->trunk_scan_targets_csv, sizeof opts->trunk_scan_targets_csv, "%s", path);
+    char err[256] = {0};
+    rc |= expect_true("family timing trunk scan init", dsd_engine_trunk_scan_init(opts, state, err, sizeof err) == 0);
+    rc |= expect_true("family timing nfm target", g_rtl_analog_family == 1 && g_rtl_tune_freq == 154330000U);
+    rc |= expect_true("family timing advance",
+                      dsd_engine_trunk_scan_control(opts, state, DSD_TRUNK_SCAN_CONTROL_ADVANCE) == 0);
+    rc |= expect_true("dmr target after nfm lands digital",
+                      g_rtl_analog_family == 0 && g_rtl_tune_freq == 461400000U && g_rtl_symbol_rate_hz == 4800);
+    rc |= expect_true("dmr target after nfm timed for 24 kHz", state->samplesPerSymbol == 5 && g_rtl_ted_sps == 5);
+    if (state->samplesPerSymbol != 5 || g_rtl_ted_sps != 5) {
+        DSD_FPRINTF(stderr, "  dmr target: decoder sps=%d, TED %d\n", state->samplesPerSymbol, g_rtl_ted_sps);
+    }
+    dsd_engine_trunk_scan_shutdown(opts, state);
+    dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){0});
+    dsd_rtl_stream_metrics_hooks_set(NULL);
+    dsd_trunk_tuning_requests_reset();
+    state->rtl_ctx = NULL;
+    (void)remove(path);
+    free_test_runtime(opts, state);
+    return rc;
+}
+
 #endif
 
 #ifdef DSD_NEO_TEST_RTL_WRAP
@@ -2755,6 +2909,8 @@ main(void) {
     rc |= test_typed_scan_nfm_rows_switch_family(1);
     rc |= test_trunk_scan_nfm_target_then_trunked_target();
     rc |= test_visit_cap_scanner_hops();
+    rc |= test_typed_scan_digital_row_after_nfm_timed_for_digital();
+    rc |= test_trunk_scan_digital_target_after_nfm_timed_for_digital();
     rc |= test_trunk_cache_with_mode_metadata();
     rc |= test_dmr_explicit_return_destination();
 #endif

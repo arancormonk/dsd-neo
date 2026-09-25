@@ -38,6 +38,7 @@
 #include <dsd-neo/protocol/p25/p25_cc_candidates.h>
 #include <dsd-neo/protocol/p25/p25_sm_watchdog.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
+#include <dsd-neo/runtime/analog_channel.h>
 #include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
 #include <dsd-neo/runtime/scan_mode.h>
 #include <dsd-neo/runtime/scan_options.h>
@@ -105,10 +106,32 @@ static int g_p25_tick_guard_enter_calls = 0;
 static int g_p25_tick_guard_leave_calls = 0;
 static unsigned int g_fake_rtl_output_rate_hz = 0;
 static int g_explicit_call_ends = 0;
+/* Issue #526: a front end whose output rate follows its receive family -- the analog monitor resampled to 48 kHz, the
+   digital family at a 24 kHz DSP rate (the RTL bw=24 case) -- and which a landed scan tune moves between them. */
+static int g_fake_family_tracking = 0;
+static int g_fake_family_analog = 0;
+static int g_fake_family_last_cqpsk = -1;
 
 static unsigned int
 fake_rtl_output_rate_hz(void) {
     return g_fake_rtl_output_rate_hz;
+}
+
+static unsigned int
+fake_family_output_rate_hz(void) {
+    return g_fake_family_analog ? 48000U : 24000U;
+}
+
+static int
+fake_family_analog_active(void) {
+    return g_fake_family_analog;
+}
+
+static unsigned int
+fake_family_landing_rate_hz(int family, int cqpsk_enable, int symbol_rate_hz) {
+    (void)symbol_rate_hz;
+    g_fake_family_last_cqpsk = cqpsk_enable;
+    return family == DSD_RX_FAMILY_ANALOG ? 48000U : 24000U;
 }
 
 int
@@ -317,6 +340,10 @@ dsd_engine_scan_tune_to_freq(dsd_opts* opts, dsd_state* state, long int freq, in
     }
     opts->trunk_is_tuned = 0;
     state->last_cc_sync_time_m = dsd_engine_trunk_scan_active_index(state) == (size_t)-1 ? 0.0 : 1.0;
+    if (g_fake_family_tracking) {
+        /* The tune lands: the front end now runs the family the target asked for. */
+        g_fake_family_analog = opts->analog_only == 1 ? 1 : 0;
+    }
     return DSD_TRUNK_TUNE_RESULT_OK;
 }
 
@@ -10365,6 +10392,94 @@ test_nfm_target_refuses_live_decryption(void) {
     return test_rc;
 }
 
+/* A digital target after an nfm-conventional one is timed for the family its tune lands, not for the analog monitor
+ * still running when the switch times it: at bw=24 the monitor output is 48 kHz and the digital output 24 kHz, so DMR
+ * and P25 get 5 samples per symbol and NXDN48 10, in the decoder and in the TED the tune queues alike. The P25 target
+ * runs CQPSK, whose landing rate is asked for the CQPSK output. */
+static int
+test_digital_target_after_nfm_timed_for_digital_family(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    char target_path[DSD_TEST_PATH_MAX];
+    static dsd_opts opts;
+    static dsd_state state;
+    if (make_temp_dir(dir, sizeof dir) != 0
+        || write_targets_file_with_header(dir, k_nfm_targets_header,
+                                          "fire,nfm-conventional,154430000,,250,250,,,,,,,\n"
+                                          "dmr,dmr-conventional,461000000,,250,250,,,,,,,\n"
+                                          "ops,nfm-conventional,155475000,,250,250,,,,,,,\n"
+                                          "p25,p25-conventional,851012500,,250,250,,cqpsk,,,,,\n"
+                                          "oth,nfm-conventional,156000000,,250,250,,,,,,,\n"
+                                          "n48,nxdn48-conventional,461556250,,250,250,,,,,,,\n",
+                                          target_path, sizeof target_path)
+               != 0) {
+        cleanup_paths(dir, NULL, NULL);
+        return 1;
+    }
+    reset_scan_opts_state(&opts, &state);
+    DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", target_path);
+    dsd_rtl_stream_metrics_hooks hooks = {0};
+    hooks.output_rate_hz = fake_family_output_rate_hz;
+    hooks.analog_family_active = fake_family_analog_active;
+    hooks.output_rate_for_family = fake_family_landing_rate_hz;
+    dsd_rtl_stream_metrics_hooks_set(&hooks);
+    g_fake_family_tracking = 1;
+    g_fake_family_analog = 0;
+    g_scan_tune_to_freq_failures_remaining = 0;
+    char err[256] = {0};
+    trunk_scan_test_set_now(0.0);
+    int test_rc = 0;
+    if (dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err) != 0) {
+        DSD_FPRINTF(stderr, "family timing init failed: %s\n", err);
+        test_rc = 1;
+    }
+    test_rc |= expect_active_target(&state, "family timing init", 0U);
+    if (g_fake_family_analog != 1) {
+        DSD_FPRINTF(stderr, "the nfm target did not land the analog family\n");
+        test_rc = 1;
+    }
+
+    const struct {
+        size_t target;
+        int sps;
+        int cqpsk;
+    } digital[] = {{1U, 5, 0}, {3U, 5, 1}, {5U, 10, 0}};
+
+    double now = 0.0;
+    for (size_t i = 0; i < sizeof(digital) / sizeof(digital[0]); i++) {
+        now += 0.26;
+        trunk_scan_test_set_now(now);
+        g_fake_family_last_cqpsk = -1;
+        g_scan_tune_to_freq_ted_sps = 0;
+        dsd_engine_trunk_scan_tick(&opts, &state);
+        test_rc |= expect_active_target(&state, "digital after nfm", digital[i].target);
+        if (state.samplesPerSymbol != digital[i].sps || g_scan_tune_to_freq_ted_sps != digital[i].sps
+            || g_fake_family_last_cqpsk != digital[i].cqpsk || g_fake_family_analog != 0) {
+            DSD_FPRINTF(stderr,
+                        "target %zu after an nfm target: sps=%d ted=%d cqpsk asked=%d analog=%d, want sps/ted %d "
+                        "cqpsk %d on the digital family\n",
+                        digital[i].target, state.samplesPerSymbol, g_scan_tune_to_freq_ted_sps,
+                        g_fake_family_last_cqpsk, g_fake_family_analog, digital[i].sps, digital[i].cqpsk);
+            test_rc = 1;
+        }
+        now += 0.26;
+        trunk_scan_test_set_now(now);
+        dsd_engine_trunk_scan_tick(&opts, &state);
+        test_rc |= expect_active_target(&state, "nfm after digital", (digital[i].target + 1U) % 6U);
+        if (g_scan_tune_to_freq_ted_sps != 0 || g_fake_family_analog != 1) {
+            DSD_FPRINTF(stderr, "nfm target after target %zu: ted=%d analog=%d\n", digital[i].target,
+                        g_scan_tune_to_freq_ted_sps, g_fake_family_analog);
+            test_rc = 1;
+        }
+    }
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    g_fake_family_tracking = 0;
+    g_fake_family_analog = 0;
+    dsd_rtl_stream_metrics_hooks_set(NULL);
+    trunk_scan_test_clear_now();
+    cleanup_paths(dir, target_path, NULL);
+    return test_rc;
+}
+
 int
 main(void) {
     int rc = 0;
@@ -10514,6 +10629,7 @@ main(void) {
     rc |= run_with_default_tune_hook(test_nfm_target_visit_cap_and_controls_under_carrier);
     rc |= run_with_default_tune_hook(test_nfm_target_refuses_live_decryption);
     rc |= run_with_default_tune_hook(test_nfm_target_warnings_at_scan_start);
+    rc |= run_with_default_tune_hook(test_digital_target_after_nfm_timed_for_digital_family);
     return rc;
 }
 

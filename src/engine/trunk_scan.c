@@ -39,7 +39,6 @@
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #include <dsd-neo/runtime/log.h>
 #include <dsd-neo/runtime/path_policy.h>
-#include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
 #include <dsd-neo/runtime/trunk_cc_candidates.h>
 #include <dsd-neo/runtime/trunk_scan_hooks.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
@@ -2074,21 +2073,13 @@ trunk_scan_has_tuning_backend(const dsd_opts* opts, const dsd_state* state) {
            && (opts->use_rigctl == 1 || trunk_scan_has_open_rtl_stream(opts, state));
 }
 
-static int
-trunk_scan_demod_rate(const dsd_opts* opts) {
-    if (opts && opts->audio_in_type == AUDIO_IN_RTL) {
-        int rtl_rate = (int)dsd_rtl_stream_metrics_hook_output_rate_hz();
-        if (rtl_rate > 0) {
-            return rtl_rate;
-        }
-    }
-    return dsd_opts_current_input_timing_rate(opts);
-}
-
+/* The P25 class runs the CQPSK symbol output when the target's decoder does (state->rf_mod, decided before this is
+ * asked); the rate is the one the target's tune lands on, which differs from the live rate while the front end still
+ * runs the analog family after an nfm-conventional target (dsd_scan_mode_symbol_timing_rate_hz()). */
 static int
 trunk_scan_p25_cc_sps(const dsd_opts* opts, const dsd_state* state) {
     int sym_rate = (state && state->p25_cc_is_tdma == 1) ? 6000 : 4800;
-    int demod_rate = trunk_scan_demod_rate(opts);
+    const int demod_rate = dsd_scan_mode_symbol_timing_rate_hz(opts, state, sym_rate, state && state->rf_mod == 1);
     return dsd_opts_compute_sps_rate(opts, sym_rate, demod_rate);
 }
 
@@ -2096,12 +2087,11 @@ trunk_scan_p25_cc_sps(const dsd_opts* opts, const dsd_state* state) {
  * target, so a symbol rate of 0 never reaches the SPS division whichever branch asked. */
 static int
 trunk_scan_gfsk_sps(const dsd_opts* opts, const dsd_state* state, dsd_trunk_scan_target_type type) {
-    (void)state;
     const int symbol_rate_hz = trunk_scan_type_gfsk_symbol_rate(type);
     if (symbol_rate_hz <= 0) {
         return 0;
     }
-    int demod_rate = trunk_scan_demod_rate(opts);
+    const int demod_rate = dsd_scan_mode_symbol_timing_rate_hz(opts, state, symbol_rate_hz, 0);
     return dsd_opts_compute_sps_rate(opts, symbol_rate_hz, demod_rate);
 }
 
@@ -2118,9 +2108,8 @@ trunk_scan_apply_p25_target_demod(const dsd_opts* opts, dsd_state* state, const 
     state->sps_hunt_idx =
         state->p25_cc_is_tdma == 1 ? DSD_FRAME_SYNC_SPS_PROFILE_6000_4 : DSD_FRAME_SYNC_SPS_PROFILE_4800_4;
     state->sps_hunt_counter = 0;
-    int p25_sps = trunk_scan_p25_cc_sps(opts, state);
-    state->samplesPerSymbol = p25_sps;
-    state->symbolCenter = dsd_opts_symbol_center(p25_sps);
+    /* The modulation first: a front end leaving the analog family lands on the CQPSK output or the FSK one, whose
+       rates can differ, and the timing below is for the one this target runs. */
     if (target->modulation == DSD_TRUNK_SCAN_MODULATION_CQPSK) {
         state->rf_mod = 1;
     } else if (target->modulation == DSD_TRUNK_SCAN_MODULATION_C4FM) {
@@ -2128,6 +2117,9 @@ trunk_scan_apply_p25_target_demod(const dsd_opts* opts, dsd_state* state, const 
     } else if (target->modulation == DSD_TRUNK_SCAN_MODULATION_AUTO || !opts->mod_cli_lock) {
         state->rf_mod = (state->p25_cc_is_tdma == 1 || state->p25_p1_validated_rf_mod == 1) ? 1 : 0;
     }
+    int p25_sps = trunk_scan_p25_cc_sps(opts, state);
+    state->samplesPerSymbol = p25_sps;
+    state->symbolCenter = dsd_opts_symbol_center(p25_sps);
 }
 
 static void

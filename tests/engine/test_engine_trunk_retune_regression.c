@@ -466,15 +466,23 @@ rtl_stream_analog_family_active(void) {
     return 0;
 }
 
+unsigned int
+rtl_stream_output_rate_for_family(int family, int cqpsk_enable, int symbol_rate_hz) {
+    (void)family;
+    (void)cqpsk_enable;
+    (void)symbol_rate_hz;
+    return 48000U;
+}
+
 int
 rtl_stream_get_demod_rate_hz(void) {
     return 48000;
 }
 
-const dsd_scan_settings*
-dsd_scan_mode_configured_view(const dsd_state* state) {
+int
+dsd_scan_mode_configured_digital(const dsd_opts* opts, const dsd_state* state) {
     (void)state;
-    return NULL;
+    return opts && !(opts->analog_only == 1 && opts->m17encoder != 1);
 }
 
 /* Model the queued profile request as an immediate apply (the real demod

@@ -206,6 +206,20 @@ int dsd_scan_mode_set_configured_squelch(dsd_opts* opts, const dsd_state* state,
 void dsd_scan_mode_copy_snapshot(dsd_state* dst, const dsd_state* src);
 /** Current class profile; combined P25 and inherited settings follow the active hunt index. */
 dsd_decode_mode_profile dsd_scan_mode_effective_profile(const dsd_opts* opts, const dsd_state* state);
+/** Whether the configured decode mode, not a row's class over it, is digital (issue #526): the configured view's
+ * analog_only (dsd_opts' own without a live scope), with the M17 encoder, which rides the analog front end, counted as
+ * digital. Only then does a digital scan row move an RTL front end still on the analog family (after an analog row)
+ * onto the digital family; a typed digital row on an analog (-fA) session keeps the monitor output it has always had,
+ * as svc_publish_symbol_profile() decides for a configured-mode change. */
+int dsd_scan_mode_configured_digital(const dsd_opts* opts, const dsd_state* state);
+/** The output rate, in Hz, a scan row's symbol timing is computed for (issue #526): the input's timing rate, or on RTL
+ * input the stream's live output rate. While the RTL front end still runs the analog family after an analog row and
+ * the configured mode is digital (dsd_scan_mode_configured_digital()), a row with a symbol clock (@p symbol_rate_hz >
+ * 0) lands the digital family with its tune, whose output rate differs from the monitor's resampled audio rate: the
+ * rate is then the one that family will run at for @p symbol_rate_hz and @p cqpsk
+ * (dsd_rtl_stream_metrics_hook_output_rate_for_family()), so the decoder and the TED the tune queues are timed for the
+ * samples they will get. 0 without opts. */
+int dsd_scan_mode_symbol_timing_rate_hz(const dsd_opts* opts, const dsd_state* state, int symbol_rate_hz, int cqpsk);
 #ifdef __cplusplus
 }
 #endif

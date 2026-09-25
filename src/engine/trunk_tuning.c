@@ -334,6 +334,28 @@ dsd_engine_prepare_p25_cc_rtl_chain(const dsd_opts* opts, dsd_state* state, long
                                                  profile, ted_sps, 0);
 }
 
+/* Whether a digital retune moves the front end off the analog family it still runs after an analog scan row (issue
+ * #526): only when the configured mode is digital, the rule the row's timing followed
+ * (dsd_scan_mode_symbol_timing_rate_hz()), so the TED queued here is for the family the retune lands. */
+static int
+dsd_engine_retune_leaves_analog_family(const dsd_opts* opts, const dsd_state* state) {
+    return dsd_scan_mode_configured_digital(opts, state) && rtl_stream_analog_family_active();
+}
+
+/* The output rate a four-level GFSK profile for @p symbol_rate_hz runs at once the retune lands: the stream's live
+ * rate, or the digital family's while the retune leaves the analog family, whose monitor output is resampled to its
+ * audio rate. */
+static int
+dsd_engine_gfsk_landing_rate(const dsd_opts* opts, const dsd_state* state, int symbol_rate_hz) {
+    if (dsd_engine_retune_leaves_analog_family(opts, state)) {
+        const unsigned int landing_hz = rtl_stream_output_rate_for_family(DSD_RX_FAMILY_DIGITAL, 0, symbol_rate_hz);
+        if (landing_hz > 0U) {
+            return (int)landing_hz;
+        }
+    }
+    return (int)rtl_stream_output_rate(state->rtl_ctx);
+}
+
 /*
  * Four-level GFSK control/park channel. The symbol rate is a parameter because the family spans
  * two of them: DMR and NXDN96 at 4800 sym/s in a 12.5 kHz channel, NXDN48 at 2400 sym/s in a
@@ -345,7 +367,8 @@ dsd_engine_prepare_gfsk_cc_rtl_chain(const dsd_opts* opts, const dsd_state* stat
                                      int symbol_rate_hz) {
     int retune_ted_sps = ted_sps;
     if (state->rtl_ctx) {
-        retune_ted_sps = dsd_opts_compute_sps_rate(opts, symbol_rate_hz, (int)rtl_stream_output_rate(state->rtl_ctx));
+        retune_ted_sps =
+            dsd_opts_compute_sps_rate(opts, symbol_rate_hz, dsd_engine_gfsk_landing_rate(opts, state, symbol_rate_hz));
     }
     dsd_engine_prepare_retune_profile_for_target(opts, state, (uint32_t)target_freq_hz, 0, symbol_rate_hz, 4,
                                                  dsd_rtl_channel_profile_for(opts, symbol_rate_hz, 4, 2),
@@ -389,16 +412,6 @@ dsd_engine_prepare_current_cc_rtl_chain(const dsd_opts* opts, const dsd_state* s
     }
 }
 
-/* Whether the configured mode, not the row's constraint over it, is digital. Only then does a digital row
- * move the front end off the analog family: a typed digital row on an analog (-fA) session keeps the monitor
- * output it has always had, as svc_publish_symbol_profile() decides for a configured-mode change. */
-static int
-dsd_engine_configured_mode_digital(const dsd_opts* opts, const dsd_state* state) {
-    const dsd_scan_settings* configured = dsd_scan_mode_configured_view(state);
-    const int analog_only = configured ? configured->analog_only : opts->analog_only;
-    return (analog_only == 1 && opts->m17encoder != 1) ? 0 : 1;
-}
-
 /* An analog scan row (issue #526): the analog monitor, the row's demodulator and its width (0 = the
  * kind's default), bound to the target with the scan's gain profile and no symbol profile. Returns -1
  * when the front end refuses the width at the rate it runs; the refusal is logged there. */
@@ -416,7 +429,7 @@ dsd_engine_prepare_scan_analog_profile(const dsd_opts* opts, const dsd_state* st
  * the front end runs the digital family, so a digital-only session retunes exactly as it always has. */
 static void
 dsd_engine_prepare_digital_family(const dsd_opts* opts, const dsd_state* state, long int freq) {
-    if (!dsd_engine_configured_mode_digital(opts, state) || !rtl_stream_analog_family_active()) {
+    if (!dsd_engine_retune_leaves_analog_family(opts, state)) {
         return;
     }
     const rtl_stream_retune_analog_profile digital = {DSD_RX_FAMILY_DIGITAL, DSD_ANALOG_DEMOD_FM, 0};

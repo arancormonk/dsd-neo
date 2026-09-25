@@ -10,6 +10,7 @@
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/dsp/frame_sync.h>
+#include <dsd-neo/runtime/analog_channel.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/decode_mode.h>
 #include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
@@ -392,16 +393,57 @@ dsd_scan_mode_active(const dsd_state* state) {
     return scope && !scope->suspended ? scope->mode : DSD_SCAN_MODE_INHERIT;
 }
 
-static void
-scan_scope_apply_timing(const dsd_opts* opts, dsd_state* state, dsd_decode_mode_profile profile) {
-    int input_rate = dsd_opts_current_input_timing_rate(opts);
-    if (opts->audio_in_type == AUDIO_IN_RTL) {
-        const int live_rate = (int)dsd_rtl_stream_metrics_hook_output_rate_hz();
-        if (live_rate > 0) {
-            input_rate = live_rate;
+static int
+scan_configured_digital(const dsd_opts* opts, int configured_analog_only) {
+    return (configured_analog_only == 1 && opts->m17encoder != 1) ? 0 : 1;
+}
+
+int
+dsd_scan_mode_configured_digital(const dsd_opts* opts, const dsd_state* state) {
+    if (!opts) {
+        return 0;
+    }
+    const dsd_scan_settings* configured = dsd_scan_mode_configured_view(state);
+    return scan_configured_digital(opts, configured ? configured->analog_only : opts->analog_only);
+}
+
+/* The rate a row with @p symbol_rate_hz (0: no symbol clock) is timed for; see dsd_scan_mode_symbol_timing_rate_hz(). */
+static int
+scan_timing_rate_hz(const dsd_opts* opts, int configured_digital, int symbol_rate_hz, int cqpsk) {
+    const int input_rate = dsd_opts_current_input_timing_rate(opts);
+    if (opts->audio_in_type != AUDIO_IN_RTL) {
+        return input_rate;
+    }
+    if (symbol_rate_hz > 0 && configured_digital && dsd_rtl_stream_metrics_hook_analog_family_active()) {
+        /* The tune switches the family, and the output rate with it, only once it lands on the demod thread. */
+        const unsigned int landing_hz =
+            dsd_rtl_stream_metrics_hook_output_rate_for_family(DSD_RX_FAMILY_DIGITAL, cqpsk ? 1 : 0, symbol_rate_hz);
+        if (landing_hz > 0U) {
+            return (int)landing_hz;
         }
     }
-    state->samplesPerSymbol = dsd_opts_compute_sps_rate(opts, profile.symbol_rate_hz, input_rate);
+    const int live_rate = (int)dsd_rtl_stream_metrics_hook_output_rate_hz();
+    return live_rate > 0 ? live_rate : input_rate;
+}
+
+int
+dsd_scan_mode_symbol_timing_rate_hz(const dsd_opts* opts, const dsd_state* state, int symbol_rate_hz, int cqpsk) {
+    if (!opts) {
+        return 0;
+    }
+    return scan_timing_rate_hz(opts, dsd_scan_mode_configured_digital(opts, state), symbol_rate_hz, cqpsk);
+}
+
+/* Time the decoder for the row @p scope describes. The scope's own configured baseline says whether the configured
+ * mode is digital: dsd_opts already holds the row's class here, and the configured view is gone while suspended. An
+ * analog row has no symbol clock and keeps the live rate. */
+static void
+scan_scope_apply_timing(const dsd_opts* opts, dsd_state* state, const scan_scope* scope,
+                        dsd_decode_mode_profile profile) {
+    const int clock_hz = dsd_scan_mode_is_analog(scope->mode) ? 0 : profile.symbol_rate_hz;
+    const int rate_hz = scan_timing_rate_hz(opts, scan_configured_digital(opts, scope->configured.analog_only),
+                                            clock_hz, state->rf_mod == 1);
+    state->samplesPerSymbol = dsd_opts_compute_sps_rate(opts, profile.symbol_rate_hz, rate_hz);
     state->symbolCenter = dsd_opts_symbol_center(state->samplesPerSymbol);
     state->sps_hunt_idx = (int)profile.sps_profile_index;
 }
@@ -443,7 +485,7 @@ scan_scope_apply_decoder(dsd_opts* opts, dsd_state* state, const scan_scope* sco
         && scope->configured.state_sps_hunt_idx == DSD_FRAME_SYNC_SPS_PROFILE_6000_4) {
         profile = dsd_decode_mode_profile_for(DSDCFG_MODE_P25P2);
     }
-    scan_scope_apply_timing(opts, state, profile);
+    scan_scope_apply_timing(opts, state, scope, profile);
 }
 
 typedef void (*scan_option_applier)(dsd_opts* opts, dsd_state* state, const dsd_scan_option_values* values);
@@ -739,7 +781,7 @@ dsd_scan_mode_resume(dsd_opts* opts, dsd_state* state) {
         /* Configuration updates do not move the receiver off its Phase 2 channel
          * or erase an unlocked modulation acquired on the current P25 row. */
         if (scope->effective.state_sps_hunt_idx == DSD_FRAME_SYNC_SPS_PROFILE_6000_4) {
-            scan_scope_apply_timing(opts, state, dsd_decode_mode_profile_for(DSDCFG_MODE_P25P2));
+            scan_scope_apply_timing(opts, state, scope, dsd_decode_mode_profile_for(DSDCFG_MODE_P25P2));
         }
         if (!opts->mod_cli_lock) {
             state->rf_mod = scope->effective.state_rf_mod;
