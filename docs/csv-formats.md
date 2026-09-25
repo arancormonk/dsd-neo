@@ -269,9 +269,14 @@ analog channel never carries, and are rejected with `not supported for this mode
 `--nfm-bandwidth-hz` is the full RF channel width the analog channel filter protects while the row is on air (the
 same contract as the receiver's NFM width); a row without it uses the configured NFM width (16 kHz by default). It
 is applied when the row is tuned and restored when the scanner moves on, and Config->Save never writes it (nor the
-row's analog class) as a default. A width the running DSP rate cannot filter (the channel filter needs
+row's analog class) as a default. The status line shows it with the configured width it returns to, `Analog: NFM
+12.5 kHz (row; default 16 kHz)`, and the NFM width controls (the terminal row, the Radio sheet) keep editing the
+configured width: while the row is on air the edit waits for it to leave, and the message says the channel overrides
+it. A width the running DSP rate cannot filter (the channel filter needs
 `width / 2 + 600 Hz` within 0.45 of the DSP rate: at a 24 kHz DSP bandwidth the widest is 20.4 kHz, at 16 kHz
-13.2 kHz) is named with the fix when the scan starts, against the rate the running stream publishes (an import cannot
+13.2 kHz) is named with the fix the input allows (an RTL DSP bandwidth that fits; on a SoapySDR or Airspy device a
+wider DSP bandwidth or a narrower width; on an I/Q replay a narrower width) when the scan starts, against the rate
+the running stream publishes (an import cannot
 know it: the rate is set when the stream opens and changes with the RTL DSP bandwidth), and again whenever that rate
 changes; that row is then skipped at every visit rather than received without its filter. While a row with its own
 width is on air, an RTL DSP bandwidth that cannot filter the width is refused rather than reopening the stream on it.

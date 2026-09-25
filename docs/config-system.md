@@ -437,7 +437,9 @@ generated template's `# nfm_bandwidth_hz = 16000` shows the width the default re
 width explicit. A section that is present sets every key it owns, so a save always writes the `[analog]` header, even
 with no key under it: loading a config saved at the default puts the default back over an explicit width the session
 had, from the Config menu's load and a profile switch alike. An `[analog]` section whose width the loader refused leaves
-the default too. A hand-written config with no `[analog]` section leaves the width as it was.
+the default too. A hand-written config with no `[analog]` section leaves the width as it was. A save during a scan
+writes the configured width, never the one an `nfm` channel-map row or `nfm-conventional` target sets for itself with
+`--nfm-bandwidth-hz` (see [csv-formats.md](csv-formats.md#analog-rows)).
 
 A value outside 8000-25000, or anything but whole Hz (`12.5k`, `12500Hz`), is refused, never clamped: startup logs a
 warning and keeps the default, and `--validate-config` reports an error with the same text the CLI prints. With

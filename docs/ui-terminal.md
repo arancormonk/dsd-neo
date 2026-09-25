@@ -400,10 +400,14 @@ digital protocol shows the width its leave returns to. The unset default reads `
 the channel, which is what the unset default does below a 20 kHz DSP rate: no channel filter runs there, so the rate
 itself is the bound. With the stream stopped, the line reads what the next start runs at `DSP-BW:`, so a 12 kHz DSP
 bandwidth still shows `Analog: NFM 12 kHz (DSP-limited);`, and so does a scan row running a digital protocol at a
-12 kHz rate. `NFM bandwidth...` (offered on a radio input while `-fA` is the configured mode, or while an explicit
-width is set under another mode, so that a width a switch to `-fA` would be refused for can be narrowed first) shows
-the setting, `[12.5 kHz]` or `[default]`, takes any width from 8000 to 25000 Hz, or `0` for the default, and applies
-it live; a width the DSP rate cannot filter is refused with a message naming both and the fix, and a
+12 kHz rate. An `nfm` scan row shows the field on any session, and one that sets its own `--nfm-bandwidth-hz` reads
+`Analog: NFM 12.5 kHz (row; default 16 kHz);`, naming the configured width its leave returns to.
+`NFM bandwidth...` (offered on a radio input while `-fA` is the configured mode or an `nfm` scan row is on air, or
+while an explicit width is set under another mode, so that a width a switch to `-fA` would be refused for can be
+narrowed first) shows the configured setting, `[12.5 kHz]` or `[default]`, takes any width from 8000 to 25000 Hz, or
+`0` for the default, and applies it live (while a row's own width is on air the edit waits for the row to leave, and
+the message says the channel overrides it); a width the DSP rate cannot filter is refused with a message naming both
+and the fix, and a
 `DSP bandwidth...` value the explicit NFM width cannot run at is refused with one saying to narrow the width first.
 Input > Switch source > RTL-SDR refuses the switch, keeping the running input, when its DSP bandwidth cannot filter the
 explicit NFM width (see `docs/cli.md`, Analog reception). The Qt and Android Radio sheet shows the same reading,
