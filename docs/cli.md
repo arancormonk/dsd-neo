@@ -10,8 +10,8 @@ Friendly, practical overview of the `dsd-neo` command line. This covers what you
 - Record/Logs/Debug: `-6 file.wav`, `-w file.wav`, `-P`, `-7 ./calls`, `-d ./mbe`, `-J events.log`, `--frame-log frames.log`, `--p25-sm-log p25-sm.log`, `-L lrrp.log`, `-Q dsp.bin`, `-c symbols.bin`, `-r *.mbe`, `--dmr-debug-burst`, `--dmr-debug-unsynced`
 - IQ capture/replay: `--iq-capture <path>`, `--iq-capture-format cu8|cf32`, `--iq-capture-max-mb <n>`, `--iq-replay <path>`, `--iq-replay-rate fast|realtime`, `--iq-loop`, `--iq-info <path>`
 - Levels/Audio: `-g 0|1..50`, `-n 0..100`, `-nm`, `-8`, `-V 0|1|2|3`, `-z 0|1|2`, `-y`, `-v 0xF`
-- Modes: `-fa | -fs | -fr | -f1 | -f2 | -fd | -fx | -fy | -fz | -fU | -fi | -fn | -fp | -fh | -fH | -fe | -fE | -fm | -fA`
-- Analog: `-fA` (NFM monitor), `--nfm-bandwidth-hz <Hz>` (8000..25000, default 16000; see [Analog reception](#analog-reception--fa))
+- Modes: `-fa | -fs | -fr | -f1 | -f2 | -fd | -fx | -fy | -fz | -fU | -fi | -fn | -fp | -fh | -fH | -fe | -fE | -fm | -fA | -fM`
+- Analog: `-fA` (NFM monitor), `--nfm-bandwidth-hz <Hz>` (8000..25000, default 16000; see [Analog reception](#analog-reception--fa)); `-fM` (native AM, radio/I/Q inputs only), `--am-bandwidth-hz <Hz>` (5000..20000, default 6000)
 - Inversions/filtering: `-xx`, `-xr`, `-xd`, `-xz`, `-l`, `-q`
 - Trunking/scan: `-T`, `-Y`, `--trunk-scan targets.csv` (P25/DMR/NXDN96/NXDN48 trunk and conventional targets and analog NFM conventional targets; each type selects its decoder class), `-C chan.csv`, `-G group.csv`, `--src-csv src.csv`, `--p25-bandplan plan.csv`, `--p25-bandplan-export plan.csv`, `-W`, `-E`, `-p`, `-e`, `-I 1234`, `-U 4532`, `-B 12000`, `-t 1`, `--enc-lockout|--enc-follow`, `--tg-lockout-session|--tg-lockout-persist`, `--scan-voice-only`, `--scan-voice-qualify-ms <ms>`, `--scan-voice-hold-ms <ms>`, `--scan-max-visit-ms <ms>`
 - RTL‑SDR strings: `-i rtl:dev:freq:gain:ppm:bw:sql:vol[:bias=on|off]` or `-i rtltcp:host:port:freq:gain:ppm:bw:sql:vol[:bias=on|off]`
@@ -335,6 +335,7 @@ Notes
 
 - Auto: `-fa`
 - Passive analog monitor: `-fA`
+- Native AM receiver: `-fM` (I/Q radio inputs only; see [Native AM](#native-am--fm) below)
 - Trunking helper: `-ft` (P25p1 CC + P25p1/p2/DMR voice)
 - DMR simplex (BS/MS): `-fs` uses the dual-slot decoder; `-fr` uses the single-slot mono decoder
 - P25 Phase 1 only: `-f1`
@@ -602,6 +603,47 @@ than accepted and that row skipped at every visit.
   the width lowers the noise power by about 3 dB. Re-check a squelch threshold (`sql`, `rtl_sql`) after changing the
   width.
 
+### Native AM (`-fM`)
+
+`-fM` receives AM voice (airband, HF broadcast and utility AM) by demodulating it from the radio's I/Q. It is its own
+decode preset (`[mode] decode = am` in a config, "AM" in the terminal decoder picker and the Qt decode chips, entry 15
+of the setup wizard): the analog monitor with an AM envelope detector in place of the FM discriminator.
+
+- Inputs: only inputs that deliver I/Q to DSD-neo's own front end run it: RTL-SDR (`-i rtl`), `rtl_tcp`
+  (`-i rtltcp`), SoapySDR (`-i soapy`), Airspy (`-i airspy`) and `--iq-replay`. PCM inputs (Pulse, WAV and other
+  files, stdin, TCP and UDP audio) arrive already demodulated, so `-fM` on one stops at startup with
+  `AM demodulation needs an IQ radio input; monitor externally demodulated AM audio with -fA`. That is the existing
+  contract for such audio: `-fA` plays PCM input as it arrives, whatever demodulated it (an SDR program's AM output
+  over TCP, say). A config whose `[mode] decode = am` meets a PCM input logs the same text and runs the Analog monitor
+  for that session instead, with autosave off so the saved `decode = am` is kept. A decode-mode change to AM on a PCM
+  session (terminal picker, Qt chip, a config apply) is refused with the same reason, and the Qt chip is not offered
+  there.
+- Channel width: `--am-bandwidth-hz <Hz>` (or `--am-bandwidth-hz=<Hz>`) sets the AM channel filter, a whole number of
+  Hz from 5000 to 20000; the default is 6000. It is the full RF passband centred on the tuned frequency, the
+  protected passband with edges at +/- half the width: the filter's cutoff sits 600 Hz outside each edge with a fixed
+  1200 Hz transition beyond it. It is neither the tuner bandwidth (`bw` in the RTL string, the DSP rate) nor the audio
+  bandwidth. A value outside 5000..20000, or not whole Hz, is refused, never clamped:
+  `--am-bandwidth-hz: AM bandwidth 25000 Hz is outside the supported range of 5000 to 20000 Hz`. On a PCM input the
+  option parses but has no effect, and says so.
+- The width has to fit the DSP rate: width/2 + 600 Hz must stay at or below 45% of the rate. The largest AM width per
+  RTL DSP bandwidth is 20 kHz at 24 and 48 kHz, 13.2 kHz at 16, 9.6 kHz at 12 and 6 kHz at 8; 4 and 6 kHz fit no AM
+  width. The stream checks it once the device has settled on its rate (a SoapySDR or Airspy device can force one) and
+  refuses to start on a width it cannot filter, naming the width, the rate, the largest width that rate fits and the
+  fix: `AM bandwidth 20 kHz does not fit the 16 kHz DSP rate (the largest width it fits is 13.2 kHz); set the RTL DSP
+  bandwidth to 24 or 48 kHz`. The unset default is held to the same rule, since AM always runs its channel filter;
+  `DSD_NEO_CHANNEL_LPF=0` therefore refuses AM.
+- Level: the detector divides the envelope by its own carrier estimate (a 50 ms average of the carrier), so the audio
+  level is the modulation depth whatever the signal strength: 100% modulation peaks where live FM does at about 6 kHz
+  deviation. A squelched block is silence and leaves the carrier estimate where it was, so audio resumes at its level
+  when the squelch opens; a retune, a mode change and a stream start take it back to the new signal's own level from
+  the first block. AM runs without de-emphasis. The I/Q DC blocker (`DSD_NEO_IQ_DC_BLOCK`, `[dsp] iq_dc_block`) would
+  remove a carrier tuned to 0 Hz, so it stays off while AM runs, with a one-time log note; it applies again to FM.
+- Received-tone detection (CTCSS, below) is FM signalling and does not run for AM.
+- Live changes: switching between AM, the Analog (FM) monitor and the digital modes from a frontend applies to the
+  running stream without reopening it, and so does a new AM width (Input > RTL-SDR > `AM bandwidth (Hz)...` in the
+  terminal while AM runs; it takes any value and the engine refuses what the running rate cannot filter). The terminal
+  status line shows the width in force (`Analog: AM 6 kHz;`) next to `DSP-BW`.
+
 ### Received tone (CTCSS) on the analog monitor
 
 While the passive analog monitor runs (`-fA`, which enables input monitoring), DSD-neo listens below the voice band
@@ -681,8 +723,8 @@ tone setting, and it runs with `-o null` too.
   stdin fed from a file faster than real time is heard again after that. Files and RTL-family streams are not skipped:
   a file holds no other channel, and an RTL-family stream clears its own output at a retune.
 - Where it runs: analog-only decoding with input monitoring, on PCM inputs (TCP, UDP, Pulse, WAV, stdin) or on an
-  RTL-family stream that outputs monitor audio. It does not run for the `-8` source monitor during digital decoding, for
-  EDACS analog voice, or on symbol-file input, and the `Rx tone:` line and `RECEIVED TONE` row are shown exactly while
+  RTL-family stream that outputs monitor audio. It does not run for the AM monitor (`-fM`), for the `-8` source monitor
+  during digital decoding, for EDACS analog voice, or on symbol-file input, and the `Rx tone:` line and `RECEIVED TONE` row are shown exactly while
   it runs. The front end needs an input rate from 2400 Hz up to 320 kHz; outside that range detection logs that it is
   inactive, once each time the input moves to such a rate, and the row is left out. Detection reads the input at least
   every 20 ms of it, whatever the length of the blocks the monitor handles audio in (on PCM input 960 samples at the
@@ -1202,7 +1244,7 @@ paths; they are not part of RTL-family digital FSK symbol decode.
 - `DSD_NEO_COSTAS_BW=<float>`, `DSD_NEO_COSTAS_DAMPING=<float>` — Costas loop tuning
 - `DSD_NEO_CHANNEL_LPF=0|1` — channel LPF enable/disable (auto-enabled at RTL DSP rates >=20 kHz; mode passbands protect nominal channel edges). An explicit analog width (`--nfm-bandwidth-hz`) always runs the filter, and `0` with one is an error
 - `DSD_NEO_WINDOW_FREEZE=1` — freeze symbol‑center window timing for debugging
-- `DSD_NEO_CQPSK=1` — enable CQPSK demodulation (`0` forces the FSK discriminator) for digital modes; the analog monitor (`-fA`) always demodulates FM
+- `DSD_NEO_CQPSK=1` — enable CQPSK demodulation (`0` forces the FSK discriminator) for digital modes; the analog monitor always demodulates FM (`-fA`) or AM (`-fM`)
 - `DSD_NEO_CQPSK_SYNC_INV=1`, `DSD_NEO_CQPSK_SYNC_NEG=1` — CQPSK sync polarity tweaks
 
 Misc

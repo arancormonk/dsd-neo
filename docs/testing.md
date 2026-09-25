@@ -514,10 +514,10 @@ Known gaps and caveats:
 - Fixtures are timing-insensitive by construction. Do not add assertions that
   depend on wall-clock call-state timers, because `fast` replay compresses them;
   use `--iq-replay-rate realtime` for that.
-- **AM** has a fixture (`am_airband_real`) but no AM case until native AM reception (#524) adds `-fM`. Under `-fA`
-  the FM monitor demodulates it, which measures an FM discriminator on an AM signal, so `-fA` cannot stand in for an
-  AM case (`DECODE_IQ_ANALOG_REAL_CTCSS_NOFALSE_AM` uses it under `-fA` only as no-false-lock material for the tone
-  detector). The excerpt serves `-fA` for another reason: its carrier sits within a few hertz of 0 Hz, where the
+- **AM** cases run `-fM`, native AM reception (issue #524): `DECODE_IQ_ANALOG_AM_*` in the table below. Under `-fA`
+  the FM monitor demodulates `am_airband_real`, which measures an FM discriminator on an AM signal, so `-fA` cannot
+  stand in for an AM case (`DECODE_IQ_ANALOG_REAL_CTCSS_NOFALSE_AM` uses it under `-fA` only as no-false-lock material
+  for the tone detector). The excerpt serves `-fA` for another reason: its carrier sits within a few hertz of 0 Hz, where the
   modulation auto-switch (`frame_sync_maybe_auto_switch_modulation()` in `src/dsp/dsd_frame_sync.c`) votes for CQPSK.
   The switch used to run in analog-only mode too, because `-fA` does not set `opts->mod_cli_lock`: it applied the
   P25 CQPSK demod profile to the RTL front end, which then delivered CQPSK symbols instead of monitor audio, after 0
@@ -616,6 +616,10 @@ two cases with their own limits, not a comparison between runs. Measured on the 
 | `DECODE_IQ_ANALOG_NO_MOD_AUTO_SWITCH` | `am_airband_real` under `-fA` (monitor path only, not AM reception) | total and captured 8000 ms, no CQPSK symbols (before the fix: total 751 ms, captured 0 to 20 ms, CQPSK warning) | captured ≥ 7800 ms, total 7800 to 8200 ms |
 | `DECODE_IQ_ANALOG_REAL_CTCSS_1514` | `nfm_ctcss_real` | tone 151.4, first lock at 300 ms, locked 88.67% | tone lock ≤ 400 ms; tone 151.4 and no other tone logged |
 | `DECODE_IQ_ANALOG_REAL_CTCSS_NOFALSE_SQUELCH_A`, `_B`, `_AM` | `nfm_squelch_real_a`, `nfm_squelch_real_b`, `am_airband_real` | `none` verdict, no tone, locked 0.00% | `none` logged, `tone=NA`, 0.00% locked, no tone logged |
+| `DECODE_IQ_ANALOG_AM_TONE` | `am_tone_synth` under `-fM` | tone SNR 24.4 dB, in-band 35.4 dB, RMS -45.2 dBFS, audible 1500 of 1500 ms from 0 ms, no clipping; a 1 kHz probe reads 0.00 dBc | SNR ≥ 18, captured and audible ≥ 1400 ms, first audible ≤ 100 ms, in-band ≥ 28, RMS -50 to -40 dBFS, clip 0, 1 kHz probe within ±1 dBc |
+| `DECODE_IQ_ANALOG_AM_ADJ_6K` | `am_adjacent_synth` under `-fM` (6 kHz default) | tone SNR 24.2 dB; 8333 Hz probe -72.2 dBc | SNR ≥ 18, captured ≥ 1400 ms, 8333 Hz ≤ -40 dBc |
+| `DECODE_IQ_ANALOG_AM_ADJ_20K` | `am_adjacent_synth` under `-fM --am-bandwidth-hz 20000` | 8333 Hz probe +13.0 dBc (tone SNR -13.1 dB: the beat dominates) | captured ≥ 1400 ms, 8333 Hz ≥ 0 dBc |
+| `DECODE_IQ_ANALOG_AM_REAL` | `am_airband_real` under `-fM` | captured 8000 ms, audible 1120 ms, in-band 14.6 dB (-2.4 under `-fA`), RMS -53.7 dBFS, no clipping | captured ≥ 7800, audible ≥ 800, in-band ≥ 10, RMS -60 to -48 dBFS, clip 0; no `Received tone:` logged |
 
 Every `-fA` case in the table also fails if the host warns that the front end delivered CQPSK symbols instead of
 monitor audio (see the `am_airband_real` note above).
@@ -635,6 +639,7 @@ a missed bound), the named `ANALOG AUDIO FAIL:` line, an `ANALOG METRIC:` line (
 | `DECODE_IQ_ANALOG_NEG_MISSING_VALUE` | a host option as the last argument, with no value | exit status 2 and "needs a value" before the replay starts |
 | `DECODE_IQ_ANALOG_NEG_TONE_LOCK_MS` | a 50 ms tone-lock bound on `nfm_ctcss_synth_1000` (300 ms) | tone lock ms, on the measured value |
 | `DECODE_IQ_ANALOG_NEG_TONE_LOCK_NOT_MEASURED` | a 400 ms tone-lock bound on `nfm_notone_synth`, where no tone locks | tone lock ms "not measured" |
+| `DECODE_IQ_ANALOG_NEG_AM_TONE_THROUGH_FM` | `DECODE_IQ_ANALOG_AM_TONE`'s 18 dB tone SNR floor on `am_tone_synth` under `-fA` (the FM monitor) | tone SNR, measured at -39.7 dB: the AM case's tone is the AM detector's |
 
 When a later change adds a bound or a new kind of check to the host, add a negative control beside it.
 
@@ -668,6 +673,8 @@ carrier inside the passband (5 kHz up, a variant fixture that is not committed) 
 | `nfm_squelch_real_a` | sigidwiki `Unknown_NFM_squelch_IQ.zip`, `855111kHz_IQ.wav` (s16, 39.0625 kHz) | 4 s from 0.3 s: speech, then carrier only; 150 bit/s sub-audible data, not CTCSS or DCS |
 | `nfm_squelch_real_b` | the same zip, `855361kHz_IQ.wav` | 4 s from 0.5 s: speech, then carrier only; the same data signalling |
 | `am_airband_real` | sigidwiki `AM_IQ.zip` (u8, 64 kHz) | 8 s from 22 s: AM airband voice on a continuous carrier |
+| `am_tone_synth` | synthetic, seed 5241 | 1.5 s: 1 kHz at 50% AM depth on a 0 Hz carrier, complex noise 30 dB under the carrier across 48 kHz (#524) |
+| `am_adjacent_synth` | synthetic, seed 5242 | the same plus an unmodulated carrier 8.333 kHz up at -6 dB (the next 8.33 kHz airband channel) |
 | `nfm_ctcss_synth_1000` | synthetic, seed 5221000 | 2 s: voice-band audio at up to 4 kHz deviation plus CTCSS 100.0 Hz at 600 Hz deviation, receiver noise at baseband (#522) |
 | `nfm_ctcss_synth_670` | synthetic, seed 5220670 | the same with CTCSS 67.0 Hz |
 | `nfm_ctcss_synth_drop` | synthetic, seed 5221001 | 2.5 s: CTCSS 100.0 Hz that stops at 1.2 s while the carrier and voice carry on |
@@ -936,8 +943,10 @@ replay_ab.sh names each build by its basename and refuses two with the same one,
 name. Per-variant flags or settings within one build go in a wrapper script per variant; its name is the variant's
 name. The example compares main with a branch and, on the branch, the land-mobile de-emphasis (`DSD_NEO_DEEMPH=nfm`)
 with the default. A channel-width variant is the same kind of wrapper passing `--nfm-bandwidth-hz`
-(`printf '#!/bin/sh\nexec /tmp/ab/analog_replay.branch --nfm-bandwidth-hz 12500 "$@"\n' > /tmp/ab/nfm_12k5`); an AGC
-variant passes `-n 0`, since the default gain is fixed.
+(`printf '#!/bin/sh\nexec /tmp/ab/analog_replay.branch --nfm-bandwidth-hz 12500 "$@"\n' > /tmp/ab/nfm_12k5`), or
+`--am-bandwidth-hz` under `-fM`; an AGC variant passes `-n 0`, since the default gain is fixed. AM has no main-branch
+baseline before #524: its variants are paired against the branch's default width, and the FM monitor cases (`-fA` on
+the NFM excerpts and on `am_airband_real`) are paired against main to show them unchanged.
 
 ```sh
 mkdir -p /tmp/ab

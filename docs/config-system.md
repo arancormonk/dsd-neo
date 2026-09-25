@@ -422,7 +422,19 @@ Rdio API uploads do not follow HTTP redirects. Configure `rdio_api_url` as the f
 | Key | Type | Description | Default |
 |-----|------|-------------|---------|
 | `iq_balance` | BOOL | Enable RTL IQ balance (image suppression) | `false` |
-| `iq_dc_block` | BOOL | Enable RTL I/Q DC blocker | `false` |
+| `iq_dc_block` | BOOL | Enable RTL I/Q DC blocker (kept off while AM runs: it would remove a carrier at 0 Hz) | `false` |
+
+**[analog] section:**
+| Key | Type | Description | Default |
+|-----|------|-------------|---------|
+| `am_bandwidth_hz` | INT | AM channel-filter width in whole Hz, 5000..20000 (`--am-bandwidth-hz`) | `6000` |
+
+The width is the full RF passband centred on the tuned frequency, not the tuner or audio bandwidth, and it has to fit
+the DSP rate (see "Native AM" in `docs/cli.md`). A value outside the range, or not whole Hz, is an error under
+`--validate-config`, and the loader refuses it (logging the reason) and keeps the default rather than clamping it. The
+key is written only for a width that was set explicitly, 6000 included; a width left at its default is not saved, so a
+later default reaches the config. The section itself is always written: a config saved at the default loads back as
+the default over a session's explicit width.
 
 **[analog] section:**
 | Key | Type | Description | Default |
@@ -583,7 +595,13 @@ Output format:
 The `decode` key in `[mode]` configures the frame types and modulation.
 Supported values: `auto`, `p25p1`, `p25p2`, `dmr`, `dmr_mono`, `nxdn48`,
 `nxdn96`, `x2tdma`, `ysf`, `dstar`, `edacs_pv`, `dpmr`, `m17`, `tdma`,
-`analog`. `dmr_mono` selects the same single-slot decoder as CLI `-fr`.
+`analog`, `am`. `dmr_mono` selects the same single-slot decoder as CLI `-fr`.
+`am` is native AM (CLI `-fM`), which needs an I/Q radio input: RTL-SDR,
+rtl_tcp, SoapySDR, Airspy or an I/Q replay. On a PCM input the session logs
+`AM demodulation needs an IQ radio input; monitor externally demodulated AM
+audio with -fA`, runs the Analog monitor instead, and turns autosave off so
+the saved `decode = "am"` is kept; a runtime config apply with `am` on a PCM
+session is refused with that text.
 Persisted compatibility values `p25p1_only`, `p25p2_only`, `edacs`,
 `provoice`, and `analog_monitor` are translated to their canonical modes when
 read. Generated configurations always use the canonical values above.
@@ -616,8 +634,8 @@ Autosave records the decoder set only when a preset reproduces it exactly: an
 while a session whose decoder set matches no preset saves no `decode` key at
 all and reloads with the initialization defaults left alone. Independent keys
 such as `dmr_mono` are still saved either way.
-Passive analog monitoring and already-framed M17 UDP input are outside this
-frame-sync hunt.
+Passive analog monitoring, native AM and already-framed M17 UDP input are
+outside this frame-sync hunt.
 
 The optional `demod` key selects a demodulator path (`auto`, `c4fm`, `gfsk`,
 `qpsk`). When set, it locks demodulator selection similarly to the `-m*`
@@ -766,7 +784,9 @@ When using `source = "file"` with a non-48 kHz sample rate:
 ## Interactive Bootstrap
 
 The interactive bootstrap wizard (`--interactive-setup`) guides you
-through selecting input, mode, trunking, and UI options.
+through selecting input, mode, trunking, and UI options. Its AM receiver entry
+(15) needs an RTL-SDR or rtl_tcp source; on any other source it is refused with
+the reason and the mode question is asked again.
 
 ### Auto-Saving
 

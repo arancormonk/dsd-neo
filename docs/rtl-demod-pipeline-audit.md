@@ -76,6 +76,58 @@ Per block: half-band decimation, channel LPF, carrier squelch, FM
 discrimination, de-emphasis, optional audio LPF, DC block, and the squelch
 envelope.
 
+`-fM` (native AM, issue #524) is the same family with the AM kind: the envelope
+detector (`dsd_am_demod`) takes the discriminator's place, and the chain runs
+without de-emphasis and without the I/Q DC blocker.
+
+### AM Detector
+
+- Output = 0.25 x clamp(|z| / C - 1, -2, 2), after the channel LPF, where C is
+  the carrier estimate `demod_state::am_carrier`: a one-pole average of |z| with
+  a 50 ms time constant (`DSD_AM_CARRIER_TAU_MS`), its coefficient recomputed
+  each block from the rate the detector runs at (`rate_out`, times a replay's
+  `post_downsample`). Below 1e-9 there is no carrier and the output is silence.
+- Carrier normalisation makes the level the modulation depth, independent of RF
+  level, tuner gain and input scaling (x and x/pi give the same audio), and a
+  carrier offset inside the channel changes nothing (the envelope has no phase).
+  The 0.25 gain puts 100% modulation where live FM sits at about 6 kHz
+  deviation, so the decoder's monitor filters and gain stage see the level they
+  see for FM.
+- The estimate holds while the channel squelch mutes a block (the detector
+  writes silence rather than the -0.25 a zero envelope would read as), so audio
+  resumes at its level when the squelch opens. Every monitor audio reset (open,
+  retune, family or FM <-> AM switch; `rtl_demod_reset_audio_monitor_state()`)
+  sets it to 0, and the next unsquelched block warm-starts it from that block's
+  mean magnitude rather than dividing the new channel by the old one's carrier.
+- `iq_dc_block()` never runs under the AM detector
+  (`dsd_demod_iq_dc_block_active()`): after tuning, an AM carrier sits at 0 Hz
+  (centred I/Q, offset tuning), where the blocker would notch it out. The
+  configured setting is kept and applies again to FM; the first time it is
+  bypassed, per process, a note is logged (`rtl_demod_note_am_iq_dc_bypass()`).
+  The DC spike of a centred-I/Q device (Airspy, offset tuning) then adds to the
+  carrier: a hardware check is open below.
+- The output scale is not applied to AM (see Output Scale), and de-emphasis is
+  off at open and on every switch to AM (its coefficient cleared), restored from
+  the config on the way back to FM.
+- Measured on the deterministic fixtures through the replay host: a 1 kHz tone at
+  50% depth with noise 30 dB below the carrier reads 24.4 dB tone SNR and
+  35.4 dB in-band ratio (`DECODE_IQ_ANALOG_AM_TONE`); an unmodulated neighbour
+  8.333 kHz up at -6 dB beats at -72.2 dBc through the default 6 kHz channel and
+  +13.0 dBc through a 20 kHz one (`DECODE_IQ_ANALOG_AM_ADJ_6K`/`_20K`). The
+  detector alone keeps the 0.125 tone level within 0.05% from carrier 0.01 to
+  1.0 and at 1/pi of each, THD -62 dB (`DSP_AM_DEMOD`).
+- Paired replays of `am_airband_real` (`tools/replay_ab.sh --metric analog`, 12
+  realtime repeats, `-fM -v 0`, sample-deterministic: an A-vs-A control reads
+  +0.00 with no differing repeat): at the 6 kHz default the excerpt is audible for
+  6780 ms at -27.1 dBFS RMS with a 30.9 dB in-band ratio (300-3000 Hz against
+  3.4-6 kHz), no clipping. The width moves the in-band ratio as a channel filter
+  should and leaves the level alone (within 0.02 dB): 39.3 dB at 5 kHz (which
+  also trims the top of the voice band: 120 ms less audible), 27.2, 26.8 and
+  26.6 dB at 8, 10 and 20 kHz. The per-block AGC (`-n 0`) lowers the level by
+  6.0 dB, as it does for FM. The FM monitor is unchanged against main on
+  `nfm_ctcss_real`, `nfm_tone_synth` and `am_airband_real` under `-fA` (every
+  column +0.00, no differing repeat).
+
 ### Channel Width
 
 The analog channel filter is designed from a full RF channel width `W`: the
@@ -118,7 +170,8 @@ Enable rule and validation:
   the rate (about 78.5 kHz at 128 kHz), rather than the whole DSP span.
 - An explicit width turns the channel LPF on. With `DSD_NEO_CHANNEL_LPF=0` it
   is refused. The unset AM default is held to the same rules as an explicit
-  width (AM itself is refused until the front end can demodulate it).
+  width: AM always runs its channel filter, so it is refused at a rate that
+  cannot fit 6 kHz (6 kHz and below) and with `DSD_NEO_CHANNEL_LPF=0`.
 - The check that counts runs at stream start once the rate chain is final,
   including a rate the device forced; a refusal fails the start. A runtime
   request is checked against the running stream's rate; with no stream running
@@ -332,8 +385,10 @@ drained in the same pass of the command queue as the mode change):
   not from the rate the decoder read when it queued the profile: a retune can
   settle the device on another rate first (a CQPSK profile queued at 48 kHz and
   landing at a forced 78,125 Hz runs 16 samples per symbol, not 10);
-- FM <-> AM: demodulator and de-emphasis swap with a monitor-state reset (AM is
-  refused until the front end can demodulate it).
+- FM <-> AM: the detector and de-emphasis swap with a monitor-state reset (the
+  AM carrier estimate included) and the I/Q DC estimate starts over (AM leaves
+  it where FM had it); a changed width also redesigns the channel filter from
+  empty histories.
 
 The decoder keeps reading the output ring while the demod thread clears it for a
 switch. A read holds the ring's `ready_m` from its tail snapshot to its tail
@@ -409,7 +464,9 @@ FSK discriminator and CQPSK symbol output, so digital decoding and the digital
 `DECODE_IQ_*` baselines do not depend on it. The analog replay checks
 (`DECODE_IQ_ANALOG_*`) do: their level bounds (RMS, peak and audible thresholds
 in dBFS) were measured at the replay scale. Ratio-based audio metrics are
-invariant to it, so it is left as is.
+invariant to it, so it is left as is. The AM detector normalises its own level
+and is exempt (`dsd_demod_am_active()`), so AM monitor audio is the same live
+and in replay; the `DECODE_IQ_ANALOG_AM_*` level bounds hold on both.
 
 ## Regression Coverage
 
@@ -434,7 +491,9 @@ invariant to it, so it is left as is.
   across DSP rates.
 - `IO_RTL_DEMOD_CONFIG` covers the analog enable rule at 12/16/24/48 kHz, the
   explicit-width and `DSD_NEO_CHANNEL_LPF=0` cases, the unchanged M17 encoder, a
-  `-fA` open under `DSD_NEO_CQPSK=1` (FM monitor) and the AM refusal; `IO_RTL_RETUNE_PREPARE` covers the analog retune resets, the
+  `-fA` open under `DSD_NEO_CQPSK=1` (FM monitor), AM opens (the detector, no de-emphasis, the filter forced on
+  at 8 to 48 kHz), AM rate refusals, the I/Q DC bypass and live FM <-> AM switches; `IO_RTL_RETUNE_PREPARE` covers the
+  analog retune resets (an AM retune included), the
   coefficient refresh after a forced rate change, the channel a rate change
   resolves (the fallback prototype's width published past the tap capacity),
   the retune refused when its rate cannot realize an explicit width (the
@@ -491,12 +550,19 @@ invariant to it, so it is left as is.
   and inside the passband at 25 kHz (-8.2 dBc), and
   `DECODE_IQ_ANALOG_CTCSS_1000_NFM_8K` and `_NFM_25K` that received-tone
   detection (issue #522) still reports the 100.0 Hz tone through both widths.
+- AM (issue #524): `DSP_AM_DEMOD` holds the detector to its level, distortion,
+  DC, offset, reset and squelch contract and runs it through `full_demod()` with
+  the 6 kHz channel and the I/Q DC blocker configured; `IO_RTL_ANALOG_FAMILY_SWITCH`
+  checks digital -> AM -> digital and an AM start switched to digital against
+  fresh opens (the carrier estimate included), live FM <-> AM switches against a
+  fresh open of the new kind, and AM widths held to a running stream's rate;
+  `IO_RTL_RETUNE_PREPARE` retunes while AM runs.
 
 Run the focused audit checks with:
 
 ```bash
 ctest --preset dev-debug --output-on-failure \
-  -R '^(IO_RTL_DEMOD_CONFIG|RTL_SYMBOL_PIPELINE|DSP_FSK_MODEM|DSP_DEMOD_MISC|DSP_CHANNEL_FILTERS|IO_RTL_ANALOG_FAMILY_SWITCH|IO_RTL_ANALOG_OPEN|RUNTIME_ANALOG_CHANNEL|IO_RTL_RETUNE_PREPARE)$'
+  -R '^(IO_RTL_DEMOD_CONFIG|RTL_SYMBOL_PIPELINE|DSP_FSK_MODEM|DSP_DEMOD_MISC|DSP_CHANNEL_FILTERS|DSP_AM_DEMOD|IO_RTL_ANALOG_FAMILY_SWITCH|IO_RTL_ANALOG_OPEN|RUNTIME_ANALOG_CHANNEL|IO_RTL_RETUNE_PREPARE)$'
 ```
 
 For release readiness, run the full suite:
@@ -517,3 +583,7 @@ ctest --preset dev-debug --output-on-failure
   baselines (digital output never takes the scale).
 - The forced-rate analog channel filter (Airspy 2.5 MS/s -> 78,125 Hz) needs a
   hardware listen check.
+- AM (issue #524): the 50 ms carrier time constant and the 0.25 gain were set
+  on the synthetic fixtures and the `am_airband_real` excerpt; they need an
+  on-air listen check, and so does the DC spike of a centred-I/Q device (Airspy,
+  offset tuning), which the bypassed I/Q DC blocker leaves on the AM carrier.

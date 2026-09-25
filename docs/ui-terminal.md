@@ -81,6 +81,7 @@ Main Menu
 │       ├── PPM correction... [0]                { }
 │       ├── DSP bandwidth... [48 kHz]
 │       ├── NFM bandwidth... [default]           (-fA, or a width set, on a radio input)
+│       ├── AM bandwidth (Hz)...                 (while AM runs)
 │       ├── Squelch (dB)...
 │       ├── Volume multiplier... [1]             v
 │       ├── Auto-PPM [On]
@@ -293,9 +294,16 @@ Main Menu
 ### Decoder mode
 
 **Decoder -> Mode** opens a picker of the decode presets — Auto, P25 (Phase 1 + 2), P25 Phase 1, P25 Phase 2, DMR,
-DMR (single slot), NXDN48, NXDN96, X2-TDMA, YSF, D-STAR, EDACS / ProVoice, dPMR, M17, Analog — and switches which
+DMR (single slot), NXDN48, NXDN96, X2-TDMA, YSF, D-STAR, EDACS / ProVoice, dPMR, M17, Analog, AM — and switches which
 protocols are decoded without restarting, the same way the CLI `-f` presets do at startup. The row reads the live
 preset back (`Mode... [P25 Phase 1]`), and the footer toasts `Decoding <mode>` once the change has applied.
+
+AM (`-fM`) needs an I/Q radio input; on a PCM input the pick is refused and the footer says why (`Refused: AM
+demodulation needs an IQ radio input; monitor externally demodulated AM audio with -fA`). While AM runs on a radio
+input, **Input -> RTL-SDR -> AM bandwidth (Hz)...** sets the AM channel-filter width (5000..20000 Hz, 0 for the 6000
+default) live; it passes the value as typed, and the engine refuses one outside the range or one the DSP rate cannot
+filter, keeping the width it had. The status line shows the width in force next to the DSP bandwidth:
+`DSP-BW: 48 kHz; Analog: AM 6 kHz;`.
 
 Group policy reload:
 

@@ -53,15 +53,19 @@ The primary UDP output carries decoded digital voice:
 With `-o udp`, DSD-neo also opens an **analog monitor** UDP socket on `<port + 2>` (for example, `23458` when the
 base port is `23456`) whenever something writes analog or source audio:
 
-- at start, for source monitoring (`-8`), the analog monitor preset (`-fA`) and ProVoice;
-- during a session, when the decode mode switches to Analog (or ProVoice) from the terminal menu, the Qt/Android app
-  or a config apply, even while output is muted. If that socket cannot be opened, the failure is logged once and analog
-  audio stays silent.
+- at start, for source monitoring (`-8`), the analog monitor presets (`-fA` for FM, `-fM` for native AM) and
+  ProVoice;
+- during a session, when the decode mode switches to Analog, AM (or ProVoice) from the terminal menu, the Qt/Android
+  app or a config apply, even while output is muted. If that socket cannot be opened, the failure is logged once and
+  analog audio stays silent.
+
+Under `-fM` the stream carries the AM detector's audio, at the same level live FM has at about 6 kHz deviation for 100%
+modulation; a switch between AM and Analog keeps the socket, since both write it.
 
 Changing the UDP output target during a session moves an open port + 2 socket to the new host and port: it is closed,
 since it still sends to the old target, and reopened for the new one at once, so source monitoring turned back on
 later still has it. With no port + 2 socket open, the change opens one only when the current mode writes analog or
-source audio, and otherwise the next switch to Analog or ProVoice does.
+source audio, and otherwise the next switch to Analog, AM or ProVoice does.
 
 The analog/source monitor stream is:
 
