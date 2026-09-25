@@ -200,6 +200,9 @@ typedef struct {
     int64_t none_blocks;    /**< ... of which read NONE */
     int64_t first_closed;   /**< first block end at which the carrier read closed */
     int64_t ctcss_locks;    /**< transitions into a CTCSS lock */
+    /** Transitions of the CTCSS detector itself into LOCKED, published or not: a DCS lock
+        outranks a CTCSS one in the publication (issue #523), which would hide it. */
+    int64_t ctcss_detector_locks;
     int final_state;
     int final_dcs; /**< 1 when the run ended on a DCS lock */
 } run_result;
@@ -211,11 +214,12 @@ typedef struct {
  */
 static run_result
 run_signal(dsd_analog_rx_core* core, signal_src* src, int64_t total, int block, int expect_tenths) {
-    run_result r = {-1, -1, -1, -1, -1, 0, 0, 0, -1, 0, 0, 0};
+    run_result r = {-1, -1, -1, -1, -1, 0, 0, 0, -1, 0, 0, 0, 0};
     float buf[4096];
     assert(block > 0 && block <= (int)(sizeof(buf) / sizeof(buf[0])));
     int prev_locked = 0;
     int prev_dcs = 0;
+    int prev_ctcss_detector_locked = 0;
     for (int64_t n = 0; n < total; n += block) {
         const int m = (total - n) < block ? (int)(total - n) : block;
         for (int i = 0; i < m; i++) {
@@ -230,6 +234,11 @@ run_signal(dsd_analog_rx_core* core, signal_src* src, int64_t total, int block, 
         if (locked && !o.dcs && (!prev_locked || prev_dcs)) {
             r.ctcss_locks++;
         }
+        const int ctcss_detector_locked = core->ctcss.state == DSD_ANALOG_TONE_STATE_LOCKED;
+        if (ctcss_detector_locked && !prev_ctcss_detector_locked) {
+            r.ctcss_detector_locks++;
+        }
+        prev_ctcss_detector_locked = ctcss_detector_locked;
         if (locked && o.tenths == expect_tenths && r.first_lock < 0) {
             r.first_lock = n + m;
         }
@@ -782,13 +791,14 @@ run_dcs(int fs, uint32_t word, double snr_db, uint64_t seed) {
  * bits is a 67.2 Hz square wave, 0.2 Hz from 67.0. Every rotation class of the code -- all
  * 178 non-constant periodic waveforms, which covers every DCS code in both polarities, since
  * a word's complement is a code word too -- sent forward and bit-reversed (the reciprocal
- * generator's code), for 3 s at 8 kHz, never locks a CTCSS tone. Each ends as the DCS detector
- * (issue #523) names it, with no lock that comes and goes on the way: locked once on its code
- * when it is a supported code's signal, locked once on a supported code one bit away, the way a
- * DCS decoder tolerates a bit error, or never locked and positively "no tone". The words that
- * come nearest (the most rho at a snapped table tone), which are at least three bits from every
- * supported code's word, never lock at all at every rate, clean, at +10 dB and at 0 dB in-band,
- * in both polarities.
+ * generator's code), for 3 s at 8 kHz, never locks a CTCSS tone: not in the publication, and not
+ * in the CTCSS detector's own state either, where the DCS lock, which outranks it in the
+ * publication, would hide one. Each ends as the DCS detector (issue #523) names it, with no lock
+ * that comes and goes on the way: locked once on its code when it is a supported code's signal,
+ * locked once on a supported code one bit away, the way a DCS decoder tolerates a bit error, or
+ * never locked and positively "no tone". The words that come nearest (the most rho at a snapped
+ * table tone), which are at least three bits from every supported code's word, never lock at
+ * all at every rate, clean, at +10 dB and at 0 dB in-band, in both polarities.
  */
 static void
 test_dcs_never_locks(void) {
@@ -804,10 +814,11 @@ test_dcs_never_locks(void) {
         for (int reversed = 0; reversed < 2; reversed++) {
             const uint32_t word = reversed ? synth_dcs_reverse(classes[i]) : classes[i];
             const run_result r = run_dcs(8000, word, 200.0, 1ULL);
-            if (r.ctcss_locks != 0) {
+            if (r.ctcss_locks != 0 || r.ctcss_detector_locks != 0) {
                 DSD_FPRINTF(stderr, "CTCSS lock on DCS: word 0x%06X\n", (unsigned int)word);
             }
-            assert(r.ctcss_locks == 0);
+            /* Neither published nor hidden behind the DCS lock that outranks it. */
+            assert(r.ctcss_locks == 0 && r.ctcss_detector_locks == 0);
             int code = -1;
             int inverted = -1;
             if (dsd_dcs_match(word, &code, &inverted)) {
@@ -832,7 +843,8 @@ test_dcs_never_locks(void) {
             for (int ri = 0; ri < RATE_COUNT; ri++) {
                 for (int s = 0; s < 3; s++) {
                     const run_result r = run_dcs(k_rates[ri], word, snrs[s], 23ULL + (uint64_t)(w * 12 + ri * 3 + s));
-                    assert(r.locks == 0 && r.final_state == DSD_ANALOG_TONE_STATE_NONE);
+                    assert(r.locks == 0 && r.ctcss_detector_locks == 0);
+                    assert(r.final_state == DSD_ANALOG_TONE_STATE_NONE);
                 }
             }
         }
