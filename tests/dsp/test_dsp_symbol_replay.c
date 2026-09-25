@@ -1520,11 +1520,29 @@ rx_code_cleared(const dsd_state* state) {
 }
 
 /*
+ * After a boundary the detector reads the code from scratch: twice in a row, 46 bits (342 ms),
+ * before it can lock. Feeds 15 blocks of 20 ms of @p word, fewer than that, and checks after
+ * each that nothing is locked and nothing was logged, as a detector that kept its lock across
+ * the boundary would at once.
+ */
+static void
+feed_dcs_blocks_before_a_fresh_lock(dsd_opts* opts, dsd_state* state, uint32_t word) {
+    const int lines = g_rx_tone_lines;
+    for (int b = 0; b < 15; b++) {
+        feed_dcs_blocks(opts, state, 1, word);
+        assert(rx_code_cleared(state));
+        assert(g_rx_tone_lines == lines);
+    }
+}
+
+/*
  * DCS through the real tap (issue #523): D023N locks, is published as code 023 in normal
  * polarity and logged once as "Received tone: DCS D023N"; the inverted word reads as its normal
  * alias, D047N. Every boundary that clears a tone clears a code the same way: a retune the RTL
- * stream or the tuning hooks report, and an announced reset, after which the code locks again
- * from scratch.
+ * stream or the tuning hooks report, and an announced reset. The detector keeps nothing of the
+ * lock: the same code running on through the boundary is not shown, nor logged, until it has
+ * been read twice from scratch, then logged once more for the new reception; after the
+ * announced reset the inverted word locks as D047N and D023N never shows again.
  */
 static void
 test_rx_tone_dcs_through_the_tap(void) {
@@ -1551,8 +1569,10 @@ test_rx_tone_dcs_through_the_tap(void) {
     dsd_trunk_tuning_generation_advance();
     feed_dcs_blocks(&opts, &state, 1, d023n);
     assert(rx_code_cleared(&state) && state.analog_rx.generation != generation);
+    feed_dcs_blocks_before_a_fresh_lock(&opts, &state, d023n);
     feed_dcs_blocks(&opts, &state, 60, d023n);
     assert(rx_code_locked(&state, 0023));
+    assert(g_rx_tone_d023n_lines == 2 && g_rx_tone_lines == 2);
 
     /* RTL: a manual or UDP-driven retune is a new stream generation. */
     install_fake_rtl_hooks(1);
@@ -1560,11 +1580,14 @@ test_rx_tone_dcs_through_the_tap(void) {
     feed_dcs_blocks(&opts, &state, 60, d023n);
     assert(rx_code_locked(&state, 0023));
     generation = state.analog_rx.generation;
+    const int lines_before_retune = g_rx_tone_d023n_lines;
     g_fake_rtl_generation++;
     feed_dcs_blocks(&opts, &state, 1, d023n);
     assert(rx_code_cleared(&state) && state.analog_rx.generation != generation);
+    feed_dcs_blocks_before_a_fresh_lock(&opts, &state, d023n);
     feed_dcs_blocks(&opts, &state, 60, d023n);
     assert(rx_code_locked(&state, 0023));
+    assert(g_rx_tone_d023n_lines == lines_before_retune + 1);
     install_fake_rtl_hooks(0);
     opts.audio_in_type = AUDIO_IN_WAV;
 
@@ -1575,10 +1598,15 @@ test_rx_tone_dcs_through_the_tap(void) {
     assert(rx_code_cleared(&state) && state.analog_rx.carrier_open == 0);
     assert(state.analog_rx.generation != generation);
 
-    /* The inverted word is D047N's signal. */
-    feed_dcs_blocks(&opts, &state, 60, dsd_dcs_word(0023, 1));
+    /* The inverted word is D047N's signal, and D023N is never shown or logged again. */
+    const int d023n_lines = g_rx_tone_d023n_lines;
+    feed_dcs_blocks_before_a_fresh_lock(&opts, &state, dsd_dcs_word(0023, 1));
+    for (int b = 0; b < 60; b++) {
+        feed_dcs_blocks(&opts, &state, 1, dsd_dcs_word(0023, 1));
+        assert(!rx_code_locked(&state, 0023));
+    }
     assert(rx_code_locked(&state, 0047));
-    assert(g_rx_tone_d047n_lines == 1);
+    assert(g_rx_tone_d047n_lines == 1 && g_rx_tone_d023n_lines == d023n_lines);
     dsd_state_ext_free_all(&state);
 }
 
