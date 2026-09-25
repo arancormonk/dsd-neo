@@ -3420,8 +3420,8 @@ ui_render_call_info_channel_line(const dsd_opts* opts, const dsd_state* state) {
     printw("\n");
 }
 
-/* The received sub-audible tone (issue #522) without its newline: the shared app-control
-   view's text, so the terminal and the Qt/Android row say the same thing. Pure, for the
+/* The received sub-audible tone or code (issues #522, #523) without its newline: the shared
+   app-control view's text, so the terminal and the Qt/Android row say the same thing. Pure, for the
    goldens: @p now_m is the caller's monotonic clock, which ages the publication of an input
    that has gone quiet. Returns the length written, or 0 when the analog FM monitor is not running. */
 static int
