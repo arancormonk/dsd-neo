@@ -57,17 +57,17 @@
 
 static const char k_header[] = "id,type,frequency_hz,chan_csv,dwell_ms,activity_hold_ms,notes\n";
 
-/* --- Issue #526: scanner sinks and DSP rate, from engine/trunk_tuning.c and core/audio, which this fixture does not
- * link. The stubs record which sink each row commit asked for. --- */
-static int g_ensure_analog_calls;
-
-/* From dsp/analog_rx.c, which this fixture does not link: with no detector session there is no generation to
-   compare, so the published carrier stands as it is -- exactly what the real function returns then. */
+/* --- Issue #526: the analog carrier, from dsp/analog_rx.c, which this fixture does not link: with no detector session
+ * there is no generation to compare, so the published carrier stands as it is -- exactly what the real function
+ * returns then. --- */
 int
 dsd_analog_rx_carrier_open_now(const dsd_opts* opts, const dsd_state* state) {
     return (opts && state && state->analog_rx.carrier_open) ? 1 : 0;
 }
 
+/* --- Issue #526: scanner sinks and DSP rate, from engine/trunk_tuning.c and core/audio, which this fixture does not
+ * link. The stubs record which sink each row commit asked for. --- */
+static int g_ensure_analog_calls;
 static int g_ensure_digital_calls;
 static int g_scan_dsp_rate_hz;
 
@@ -100,6 +100,10 @@ static int g_scan_tune_to_freq_ted_sps = 0;
 static int g_scan_tune_to_freq_analog_only = -1;
 static int g_scan_tune_to_freq_nfm_width_hz = -1;
 static int g_scan_tune_to_freq_failures_remaining = 0;
+/* Issue #526: refuse an analog width the published DSP rate cannot fit before any backend moves, as the real
+   dsd_engine_scan_tune_to_freq() does, counting each refusal. */
+static int g_scan_tune_refuses_unfit_width = 0;
+static int g_scan_tune_width_refusals = 0;
 static int g_p25_tick_guard_available = 1;
 static int g_p25_tick_guard_depth = 0;
 static int g_p25_tick_guard_enter_calls = 0;
@@ -334,6 +338,13 @@ dsd_engine_scan_tune_to_freq(dsd_opts* opts, dsd_state* state, long int freq, in
     }
     g_scan_tune_to_freq_analog_only = opts->analog_only;
     g_scan_tune_to_freq_nfm_width_hz = opts->analog_nfm_bandwidth_hz;
+    if (g_scan_tune_refuses_unfit_width && dsd_opts_is_analog_family(opts) && dsd_opts_analog_width_hz(opts) > 0
+        && g_scan_dsp_rate_hz > 0
+        && dsd_analog_width_check(opts->analog_demod, dsd_opts_analog_width_hz(opts), g_scan_dsp_rate_hz, NULL, 0U)
+               != 0) {
+        g_scan_tune_width_refusals++;
+        return DSD_TRUNK_TUNE_RESULT_FAILED;
+    }
     if (g_scan_tune_to_freq_failures_remaining > 0) {
         g_scan_tune_to_freq_failures_remaining--;
         return DSD_TRUNK_TUNE_RESULT_FAILED;
@@ -10343,8 +10354,10 @@ test_nfm_target_warnings_at_scan_start(void) {
         (void)dsd_test_capture_stderr_read(&cap, buf, sizeof buf);
         const char* width = rtl ? "Trunk scan target 'fire': NFM bandwidth 20 kHz does not fit the 16 kHz DSP rate"
                                 : "Trunk scan target 'fire': --nfm-bandwidth-hz 20000 has no effect on audio input";
-        if (rc != 0 || !strstr(buf, width) || !strstr(buf, "Trunk scan target 'open': the nfm row's squelch is off")
-            || strstr(buf, "Trunk scan target 'fire': the nfm") || strstr(buf, "Trunk scan target 'fire': --squelch-db")
+        if (rc != 0 || !strstr(buf, width)
+            || !strstr(buf, "Trunk scan target 'open': the analog channel's squelch is off")
+            || strstr(buf, "Trunk scan target 'fire': the analog")
+            || strstr(buf, "Trunk scan target 'fire': --squelch-db")
             || strstr(buf, "Trunk scan target 'open': --squelch-db")
             || (strstr(buf, "Trunk scan target 'dmr': --squelch-db") != NULL) == rtl) {
             DSD_FPRINTF(stderr, "nfm target warnings on %s input (rc=%d %s):\n%s\n", rtl ? "RTL" : "audio", rc, err,
@@ -10540,6 +10553,68 @@ test_nfm_target_width_rechecked_when_the_dsp_rate_changes(void) {
     return 0;
 }
 
+/* The two warnings keep their own schedules: an nfm target's open squelch is named once when the scan starts, before an
+ * RTL stream has published a DSP rate and never again as that rate changes, while its width is named for each new rate.
+ * A width the rate cannot fit is then refused at every visit, before any backend moves, and the coordinator adds no
+ * "retune failed" line of its own each time the rotation reaches it. */
+static int
+test_nfm_target_refused_width_skipped_quietly(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    char target_path[DSD_TEST_PATH_MAX];
+    static dsd_opts opts;
+    static dsd_state state;
+    if (make_temp_dir(dir, sizeof dir) != 0
+        || write_targets_file_with_header(dir, k_squelch_targets_header,
+                                          "fire,nfm-conventional,154430000,,250,250,,"
+                                          "--nfm-bandwidth-hz 20000 --squelch-db -50\n"
+                                          "open,nfm-conventional,155475000,,250,250,,--squelch-db 0\n"
+                                          "dmr,dmr-conventional,461000000,,250,250,,\n",
+                                          target_path, sizeof target_path)
+               != 0) {
+        return 1;
+    }
+    reset_scan_opts_state(&opts, &state);
+    DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", target_path);
+    dsd_test_capture_stderr cap;
+    char buf[16384] = {0};
+    char err[256] = {0};
+    if (dsd_test_capture_stderr_begin(&cap, "trunkscanrefused") != 0) {
+        cleanup_paths(dir, target_path, NULL);
+        return 1;
+    }
+    g_scan_tune_refuses_unfit_width = 1;
+    g_scan_tune_width_refusals = 0;
+    g_scan_dsp_rate_hz = 0;
+    trunk_scan_test_set_now(0.0);
+    int rc = dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err);
+    /* 16 kHz for many rotations (past the refused target's retry cooldown), 24 kHz, then 16 kHz again. */
+    for (int i = 0; i < 40; i++) {
+        g_scan_dsp_rate_hz = (i >= 24 && i < 28) ? 24000 : 16000;
+        trunk_scan_test_set_now(0.26 * (double)(i + 1));
+        dsd_engine_trunk_scan_tick(&opts, &state);
+    }
+    const int refusals = g_scan_tune_width_refusals;
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    (void)dsd_test_capture_stderr_end(&cap);
+    (void)dsd_test_capture_stderr_read(&cap, buf, sizeof buf);
+    g_scan_tune_refuses_unfit_width = 0;
+    g_scan_dsp_rate_hz = 0;
+    trunk_scan_test_clear_now();
+    cleanup_paths(dir, target_path, NULL);
+    const int squelch = count_text(buf, "Trunk scan target 'open': the analog channel's squelch is off");
+    const int width =
+        count_text(buf, "Trunk scan target 'fire': NFM bandwidth 20 kHz does not fit the 16 kHz DSP rate");
+    const int failed = count_text(buf, "Trunk scan target 'fire' retune failed");
+    if (rc != 0 || squelch != 1 || width != 2 || refusals < 2 || failed != 0) {
+        DSD_FPRINTF(
+            stderr,
+            "refused nfm target (rc=%d %s): squelch named %d, width named %d, refused %d, retune-failed %d\n%s\n", rc,
+            err, squelch, width, refusals, failed, buf);
+        return 1;
+    }
+    return 0;
+}
+
 int
 main(void) {
     int rc = 0;
@@ -10691,6 +10766,7 @@ main(void) {
     rc |= run_with_default_tune_hook(test_nfm_target_warnings_at_scan_start);
     rc |= run_with_default_tune_hook(test_digital_target_after_nfm_timed_for_digital_family);
     rc |= run_with_default_tune_hook(test_nfm_target_width_rechecked_when_the_dsp_rate_changes);
+    rc |= run_with_default_tune_hook(test_nfm_target_refused_width_skipped_quietly);
     return rc;
 }
 

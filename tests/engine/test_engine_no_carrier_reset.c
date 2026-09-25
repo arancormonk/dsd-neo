@@ -1015,6 +1015,105 @@ test_typed_scan_digital_row_after_nfm_timed_for_digital(void) {
     return rc;
 }
 
+static int g_leave_demod_ted_sps = 0;
+
+static int
+record_leave_demod_profile(int cqpsk_enable, int symbol_rate_hz, int levels, int channel_profile, int ted_sps) {
+    (void)cqpsk_enable;
+    (void)symbol_rate_hz;
+    (void)levels;
+    (void)channel_profile;
+    g_leave_demod_ted_sps = ted_sps;
+    return 0;
+}
+
+/* A decode-mode change made while an nfm row is on air, as apply_cmd_scoped() runs DECODE_MODE_SET: the command runs on
+ * the configured baseline with the front end still on the row's analog family, so it times the new mode at the live
+ * rate, the monitor's 48 kHz. The baseline the scope keeps is timed for the digital family (24 kHz), which an untyped
+ * row's tune and the leave land on and which nothing retimes afterwards: the untyped row after it, and the session
+ * after leaving the scan on a DMR row, run DMR at 5 samples per symbol in the decoder and the TED alike, not 10. */
+static int
+test_scoped_mode_change_on_nfm_row_times_the_baseline_for_digital(void) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    int rc = 0;
+    reset_rtl_profile_fakes();
+    dsd_trunk_tuning_requests_reset();
+    install_family_rate_hooks();
+    dsd_rtl_stream_metrics_hooks hooks = {0};
+    hooks.output_rate_hz = fake_family_output_rate_hz;
+    hooks.analog_family_active = fake_family_analog_active;
+    hooks.output_rate_for_family = __wrap_rtl_stream_output_rate_for_family;
+    hooks.apply_demod_profile = record_leave_demod_profile;
+    dsd_rtl_stream_metrics_hooks_set(&hooks);
+    g_leave_demod_ted_sps = 0;
+    opts->audio_in_type = AUDIO_IN_RTL;
+    opts->scanner_mode = 1;
+    opts->trunk_hangtime = 1;
+    state->rtl_ctx = (RtlSdrContext*)state;
+    /* A configured P25 Phase 1 session on the digital family at 24 kHz. */
+    rc |= expect_true("baseline p25",
+                      dsd_apply_decode_mode_preset(DSDCFG_MODE_P25P1, DSD_DECODE_PRESET_PROFILE_CLI, opts, state) == 0);
+    const dsd_decode_mode_profile p25 = dsd_decode_mode_profile_for(DSDCFG_MODE_P25P1);
+    state->samplesPerSymbol = dsd_opts_compute_sps_rate(opts, p25.symbol_rate_hz, 24000);
+    state->symbolCenter = dsd_opts_symbol_center(state->samplesPerSymbol);
+    state->sps_hunt_idx = (int)p25.sps_profile_index;
+    state->lcn_freq_count = 3;
+    const long freqs[] = {154730000L, 461600000L, 461700000L};
+    const dsd_scan_mode modes[] = {DSD_SCAN_MODE_NFM, DSD_SCAN_MODE_INHERIT, DSD_SCAN_MODE_DMR};
+    for (int i = 0; i < 3; i++) {
+        state->trunk_lcn_freq[i] = freqs[i];
+        rc |= expect_true("scoped mode row", dsd_channel_mode_set(state, (size_t)i, modes[i]) == 0);
+    }
+    state->last_cc_sync_time = time(NULL) - 11;
+    noCarrier(opts, state);
+    rc |= expect_true("scoped mode nfm row on air", state->lcn_freq_roll == 1 && g_rtl_analog_family == 1);
+
+    /* DECODE_MODE_SET -> DMR under the row: suspend, the preset, decode_mode_republish()'s timing at the live rate,
+       svc_publish_symbol_profile()'s hunt index (it stops there while the scope is suspended), resume. */
+    rc |= expect_true("scoped mode suspends", dsd_scan_mode_suspend(opts, state) == 1);
+    rc |= expect_true("scoped mode dmr preset",
+                      dsd_apply_decode_mode_preset(DSDCFG_MODE_DMR, DSD_DECODE_PRESET_PROFILE_CLI, opts, state) == 0);
+    const dsd_decode_mode_profile dmr = dsd_decode_mode_profile_for(DSDCFG_MODE_DMR);
+    state->samplesPerSymbol = dsd_opts_compute_sps_rate(opts, dmr.symbol_rate_hz, (int)fake_family_output_rate_hz());
+    state->symbolCenter = dsd_opts_symbol_center(state->samplesPerSymbol);
+    state->sps_hunt_idx = (int)dmr.sps_profile_index;
+    rc |= expect_true("the command timed dmr at the monitor's rate", state->samplesPerSymbol == 10);
+    (void)dsd_scan_mode_resume(opts, state);
+    const dsd_scan_settings* configured = dsd_scan_mode_configured_view(state);
+    rc |= expect_true("configured dmr timed for the digital family",
+                      configured != NULL && configured->state_samplesPerSymbol == 5);
+    rc |= expect_true("the nfm row stays on its monitor", g_rtl_analog_family == 1 && opts->analog_only == 1);
+
+    state->last_cc_sync_time -= 11;
+    noCarrier(opts, state);
+    rc |= expect_true("untyped row after the change lands digital",
+                      state->lcn_freq_roll == 2 && g_rtl_analog_family == 0);
+    rc |= expect_true("untyped row runs dmr at 24 kHz", state->samplesPerSymbol == 5 && g_rtl_ted_sps == 5);
+    if (state->samplesPerSymbol != 5 || g_rtl_ted_sps != 5) {
+        DSD_FPRINTF(stderr, "  untyped row: decoder sps=%d, TED %d\n", state->samplesPerSymbol, g_rtl_ted_sps);
+    }
+
+    state->last_cc_sync_time -= 11;
+    noCarrier(opts, state);
+    rc |= expect_true("dmr row on air", state->lcn_freq_roll == 3 && g_rtl_analog_family == 0);
+    dsd_engine_channel_scan_leave(opts, state);
+    rc |= expect_true("leaving on the dmr row keeps dmr at 24 kHz",
+                      state->samplesPerSymbol == 5 && g_leave_demod_ted_sps == 5);
+    if (state->samplesPerSymbol != 5 || g_leave_demod_ted_sps != 5) {
+        DSD_FPRINTF(stderr, "  after leave: decoder sps=%d, TED %d\n", state->samplesPerSymbol, g_leave_demod_ted_sps);
+    }
+
+    dsd_rtl_stream_metrics_hooks_set(NULL);
+    state->rtl_ctx = NULL;
+    free_test_runtime(opts, state);
+    dsd_trunk_tuning_requests_reset();
+    return rc;
+}
+
 /* The same through --trunk-scan and the real tuning: a DMR conventional target after an nfm-conventional one. */
 static int
 test_trunk_scan_digital_target_after_nfm_timed_for_digital(void) {
@@ -1118,16 +1217,18 @@ test_typed_scan_refused_width_skipped_without_the_stream(void) {
     return rc;
 }
 
-/* The monitor stamps carrier activity whatever audio_out says (DSP_SYMBOL_REPLAY proves the stamp with audio_out = 0);
- * here the -Y rotation keeps an nfm row on air while those stamps keep arriving, a visit already past -t included,
- * and a global --scan-voice-only does not take the row over. Once they stop, the row steps -t later; and a row
- * --scan-max-visit-ms ends a visit whose carrier never drops. */
+/* What the analog monitor does for each block while its carrier is open: stamp carrier activity, the -Y hangtime
+ * anchor. */
 static void
 stamp_monitor_carrier(dsd_state* state) {
     state->last_cc_sync_time = time(NULL);
     state->last_cc_sync_time_m = dsd_time_now_monotonic_s();
 }
 
+/* The monitor stamps carrier activity whatever audio_out says (DSP_SYMBOL_REPLAY proves the stamp with audio_out = 0);
+ * here the -Y rotation keeps an nfm row on air while those stamps keep arriving, a visit already past -t included,
+ * and a global --scan-voice-only does not take the row over. Once they stop, the row steps -t later; and a row
+ * --scan-max-visit-ms ends a visit whose carrier never drops. */
 static int
 test_typed_scan_nfm_row_holds_on_carrier(void) {
     dsd_opts* opts = NULL;
@@ -3054,6 +3155,7 @@ main(void) {
     rc |= test_visit_cap_scanner_hops();
     rc |= test_typed_scan_digital_row_after_nfm_timed_for_digital();
     rc |= test_trunk_scan_digital_target_after_nfm_timed_for_digital();
+    rc |= test_scoped_mode_change_on_nfm_row_times_the_baseline_for_digital();
     rc |= test_typed_scan_refused_width_skipped_without_the_stream();
     rc |= test_typed_scan_nfm_row_holds_on_carrier();
     rc |= test_trunk_cache_with_mode_metadata();
