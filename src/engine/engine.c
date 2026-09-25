@@ -1167,23 +1167,42 @@ dsd_engine_setup_open_audio_paths(dsd_opts* opts, dsd_state* state) {
     return 0;
 }
 
+/* The DSP bandwidth an RTL-SDR spec ("rtl:dev:freq:gain:ppm:bw:...") sets, read the way
+ * dsd_engine_setup_parse_rtl_spec_tokens() reads its sixth field, but without looking for a device; @p fallback (the
+ * bandwidth the options already hold) when the spec leaves the field out. */
+static int
+dsd_engine_setup_rtl_spec_bw_khz(const char* spec, int fallback) {
+    char inbuf[1024];
+    char* saveptr = NULL;
+    dsd_engine_setup_copy_spec(inbuf, sizeof(inbuf), spec);
+    const char* curr = dsd_strtok_r(inbuf, ":", &saveptr);
+    for (int field = 1; curr && field <= 5; field++) {
+        curr = dsd_strtok_r(NULL, ":", &saveptr);
+    }
+    return curr ? dsd_engine_setup_parse_bw_token_or_default(curr) : fallback;
+}
+
 /*
  * An explicit analog channel width, from --nfm-bandwidth-hz or [analog] nfm_bandwidth_hz, has to fit the DSP rate the
  * stream will run at. For an RTL-SDR or rtl_tcp input that rate is the DSP bandwidth the input spec (or [input]
  * rtl_bw_khz) sets, known here, so a width it cannot filter is refused before the device opens, with the validator's
- * actionable text. Inputs whose device may force another rate (SoapySDR, Airspy) and I/Q replay, whose sidecar sets
- * the rate, are checked where the rate is final, at stream start (rtl_demod_finalize_analog_channel()).
+ * actionable text. It runs before an RTL-SDR input looks for its device, so the refusal does not depend on a dongle
+ * being plugged in (or on RTL-SDR support in the build): the spec alone decides it. An rtl_tcp spec has set
+ * rtl_dsp_bw_khz already. Inputs whose device may force another rate (SoapySDR, Airspy) and I/Q replay, whose sidecar
+ * sets the rate, are checked where the rate is final, at stream start (rtl_demod_finalize_analog_channel()).
  */
 static int
 dsd_engine_setup_check_analog_width(const dsd_opts* opts) {
     const int width_hz = dsd_opts_analog_width_hz(opts);
+    const int rtl_spec = dsd_opts_audio_in_dev_is_rtl_spec(opts->audio_in_dev);
     if (!dsd_opts_is_analog_family(opts) || width_hz <= 0 || opts->iq_replay_active
-        || !(dsd_opts_audio_in_dev_is_rtl_spec(opts->audio_in_dev)
-             || dsd_opts_audio_in_dev_is_rtltcp_spec(opts->audio_in_dev))) {
+        || !(rtl_spec || dsd_opts_audio_in_dev_is_rtltcp_spec(opts->audio_in_dev))) {
         return 0;
     }
+    const int bw_khz =
+        rtl_spec ? dsd_engine_setup_rtl_spec_bw_khz(opts->audio_in_dev, opts->rtl_dsp_bw_khz) : opts->rtl_dsp_bw_khz;
     char err[DSD_ANALOG_ERROR_TEXT_MAX];
-    if (dsd_analog_width_check(opts->analog_demod, width_hz, opts->rtl_dsp_bw_khz * 1000, err, sizeof err) == 0) {
+    if (dsd_analog_width_check(opts->analog_demod, width_hz, bw_khz * 1000, err, sizeof err) == 0) {
         return 0;
     }
     LOG_ERROR("%s.\n", err);
@@ -1218,10 +1237,10 @@ dsd_engine_setup_io(dsd_opts* opts, dsd_state* state) {
     if (dsd_normalize_airspy_input_spec(opts) != 0) {
         return -1;
     }
-    if (dsd_engine_setup_parse_rtl_input(opts, state) != 0) {
+    if (dsd_engine_setup_check_analog_width(opts) != 0) {
         return -1;
     }
-    if (dsd_engine_setup_check_analog_width(opts) != 0) {
+    if (dsd_engine_setup_parse_rtl_input(opts, state) != 0) {
         return -1;
     }
     dsd_engine_setup_parse_pulse_input(opts);
