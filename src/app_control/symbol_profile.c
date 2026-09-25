@@ -252,11 +252,11 @@ svc_publish_analog_bandwidth(const dsd_opts* opts, const dsd_state* state, int k
         return 0;
     }
     /* CQPSK toggled on under an analog preset from the DSP menu holds the front end off the monitor on purpose, queued
-       or taken:
-       turning it off requests the analog profile with this width (svc_toggle_rtl_cqpsk()). Otherwise the front end is
-       headed for the monitor whether or not it has reached it: a switch onto the analog family, a CQPSK toggle back to
-       it or a scan row's leave, still queued, has its width replaced, since the requests are last-writer-wins. The
-       stream answers for every request queued, whoever queued it (rtl_stream_requested_cqpsk()). */
+       or taken: turning it off requests the analog profile with this width (svc_toggle_rtl_cqpsk()). Otherwise the
+       front end is headed for the monitor whether or not it has reached it: a switch onto the analog family, a CQPSK
+       toggle back to it or a scan row's leave, still queued, has its width replaced, since the requests are
+       last-writer-wins. The stream answers for every request queued, whoever queued it
+       (rtl_stream_requested_cqpsk()). */
     if (rtl_stream_requested_cqpsk()) {
         return 0;
     }

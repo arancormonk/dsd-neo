@@ -7995,9 +7995,9 @@ test_am_width_refused_where_it_lands(void) {
 }
 
 /*
- * Issue #524: DSD_NEO_CHANNEL_LPF=0 turns off the channel filter AM always runs, its default width included, so a switch
- * to AM on a radio input is refused with the reason whatever the rate, where Analog with its unset NFM default goes
- * ahead.
+ * Issue #524: DSD_NEO_CHANNEL_LPF=0 turns off the channel filter AM always runs, its default width included, so a
+ * switch to AM on a radio input is refused with the reason whatever the rate, where Analog with its unset NFM default
+ * goes ahead.
  */
 static int
 test_am_held_to_channel_lpf_off(void) {
