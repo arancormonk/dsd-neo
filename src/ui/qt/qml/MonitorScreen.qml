@@ -908,10 +908,9 @@ Item {
             // The sub-audible tone or code the analog FM monitor hears (#522, #523):
             // "CTCSS 100.0 Hz" or "DCS D023N" once locked, "detecting" while a carrier is
             // being evaluated, "none" when it carries no supported tone or code, an em
-            // dash with no carrier. Shown only while
-            // the FM monitor runs, which app-control decides for this row and the
-            // terminal alike. Cyan once locked (rxToneStatus 3 is
-            // DSD_APP_RX_TONE_LOCKED), like the other signal readings.
+            // dash with no carrier. Shown only while the FM monitor runs, which
+            // app-control decides for this row and the terminal alike. Cyan once locked
+            // (rxToneStatus 3 is DSD_APP_RX_TONE_LOCKED), like the other signal readings.
             Row {
                 // Named so UI_QT_QML_CALL_LISTS can reach it with findChild().
                 objectName: "monitorRxTone"

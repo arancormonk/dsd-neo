@@ -476,9 +476,9 @@ MetricsModel::fillScanTimingView(View& next, const dsd_opts* opts_snapshot, cons
  *
  * The phrase and the visibility rule are app-control's (rx_tone_view), shared with the
  * terminal. Only the words are translated here; a tone or code is a value and stays as the
- * view wrote it ("CTCSS 100.0 Hz", "DCS D023N"). The configured text comes from its own field of the view and nothing
- * received is ever copied into it. @p now_m is the frame's one clock reading, which ages the
- * publication of an input that has gone quiet.
+ * view wrote it ("CTCSS 100.0 Hz", "DCS D023N"). The configured text comes from its own
+ * field of the view and nothing received is ever copied into it. @p now_m is the frame's one
+ * clock reading, which ages the publication of an input that has gone quiet.
  */
 void
 MetricsModel::fillRxToneView(View& next, const dsd_opts* opts_snapshot, const dsd_state* snapshot, double now_m) const {
