@@ -208,6 +208,37 @@ Item {
             compare(testContext.amBandwidthCalls(), 0, "the NFM step went to the AM command");
         }
 
+        /* A width request not yet answered belongs to the kind it was sent for. When the preset moves between NFM and
+           AM the sections swap kinds, and the request must not stand in for the other kind's width or be stepped
+           from. */
+        function test_pending_width_stays_with_its_kind() {
+            onAm(6000, 0);
+            findChild(sheet, "radioAnalogBandwidthUp").clicked();
+            compare(testContext.lastAmBandwidthHz(), 8000);
+            compare(valueText(), "8 kHz", "the request stands in for the reading");
+            testContext.setMetric("analogBandwidthHz", 16000);
+            testContext.setMetric("analogBandwidthConfiguredHz", 0);
+            testContext.setMetric("analogBandwidthReading", "16 kHz (default)");
+            testContext.setMetric("decodeMode", commands.decodeModeForFlag("-fA"));
+            tryCompare(findChild(sheet, "radioAnalogSectionTitle"), "text", "NFM channel width");
+            compare(valueText(), "16 kHz (default)", "the AM request read as the NFM width");
+            verify(!otherSection().visible, "the AM request showed a control for an AM width that is not set");
+            verify(findChild(sheet, "radioAnalogBandwidthDown").enabled, "the NFM steps started from the AM request");
+            findChild(sheet, "radioAnalogBandwidthUp").clicked();
+            compare(testContext.lastNfmBandwidthHz(), 20000, "the NFM step went on from the AM request");
+
+            // The other section's request likewise: an AM step made under NFM does not read as the NFM width under AM.
+            sheet.forgetRequests();
+            testContext.setMetric("amBandwidthConfiguredHz", 20000);
+            tryVerify(function () { return otherSection().visible });
+            findChild(sheet, "radioAnalogOtherBandwidthDown").clicked();
+            compare(testContext.lastAmBandwidthHz(), 15000);
+            compare(findChild(sheet, "radioAnalogOtherBandwidthValue").text, "15 kHz");
+            onAm(20000, 20000);
+            tryCompare(findChild(sheet, "radioAnalogOtherSectionTitle"), "text", "NFM channel width");
+            verify(!otherSection().visible, "the AM request showed as an explicit NFM width");
+        }
+
         function test_am_width_disabled_off_a_radio() {
             onAm(6000, 0);
             testContext.setMetric("radioInput", false);

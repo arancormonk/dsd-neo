@@ -131,16 +131,6 @@ function nextWidthIn(widths, hz, direction, maxHz) {
     return -1
 }
 
-// The NFM channel plan after or before @a hz (nextWidthIn()).
-function nextNfmWidth(hz, direction, maxHz) {
-    return nextWidthIn(NFM_WIDTHS_HZ, hz, direction, maxHz)
-}
-
-// The AM step after or before @a hz (nextWidthIn()).
-function nextAmWidth(hz, direction, maxHz) {
-    return nextWidthIn(AM_WIDTHS_HZ, hz, direction, maxHz)
-}
-
 // Flags a saved system may carry that the chip catalog above does not offer:
 // one left over from an older catalog, and the composite forms the
 // RadioReference import picks on the user's behalf. They keep their saved

@@ -170,6 +170,11 @@ ModalSheet {
     readonly property bool otherWidthCanWiden: analogWidthEditable
         && Util.nextWidthIn(otherWidths, otherWidthStepFrom, 1, analogWidthMax) > 0
 
+    // An outstanding width request belongs to the kind it was sent for, and the
+    // two sections swap kinds when the preset moves between NFM and AM: a request
+    // left standing would read as the other kind's width, and step from it.
+    onAmPresetChanged: forgetWidthRequests()
+
     function open() {
         // Whatever was outstanding belongs to the last time this was open, and on
         // Android the service may have been driven from elsewhere since.
@@ -187,11 +192,16 @@ ModalSheet {
         pendingGain = NaN;
         pendingPpm = NaN;
         pendingSquelch = NaN;
-        pendingAnalogWidth = NaN;
-        pendingOtherWidth = NaN;
         gainTtl.stop();
         ppmTtl.stop();
         squelchTtl.stop();
+        forgetWidthRequests();
+    }
+
+    /** Drop the outstanding channel width requests of both analog sections. */
+    function forgetWidthRequests() {
+        pendingAnalogWidth = NaN;
+        pendingOtherWidth = NaN;
         analogWidthTtl.stop();
         otherWidthTtl.stop();
     }

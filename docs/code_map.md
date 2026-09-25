@@ -1396,12 +1396,14 @@ Qt Quick frontend (`src/ui/qt`):
   radio (`dropRadioOnlyDecodeFlag()`) and holds step 1 while one remains, and `session_args_build()` refuses `-fM` on
   a network or file source (`SessionArgsError::AmNeedsRadio`), for a system saved before. The Radio sheet's analog
   section is kind-aware: under the AM preset (`amPreset`) its title reads `AM channel width`, it steps over
-  `Util.AM_WIDTHS_HZ` (5000/6000/8000/10000/15000/20000; `Util.nextWidthIn()`, which `nextNfmWidth()`/`nextAmWidth()`
-  wrap) through `CommandBridge::setAmBandwidthHz()`, and it reads the same `MetricsModel::analogBandwidth*` properties,
+  `Util.AM_WIDTHS_HZ` (5000/6000/8000/10000/15000/20000) with `Util.nextWidthIn()`, which takes the kind's list,
+  through `CommandBridge::setAmBandwidthHz()`, and it reads the same `MetricsModel::analogBandwidth*` properties,
   which the analog width view fills for the configured kind. `MetricsModel::nfmBandwidthConfiguredHz`/
   `amBandwidthConfiguredHz` publish each kind's setting whichever preset runs, so a second control
   (`radioAnalogOtherSection`) edits an explicit width of the kind the section does not (AM under `-fA` or a digital
-  mode, NFM under `-fM`), which a switch between the kinds is held to. Tests: `tests/ui/qml/tst_radio_am.qml`,
+  mode, NFM under `-fM`), which a switch between the kinds is held to. A width request not yet answered belongs to its
+  kind, so a preset change between NFM and AM drops both sections' outstanding requests (`onAmPresetChanged`) rather
+  than show one kind's request under the other. Tests: `tests/ui/qml/tst_radio_am.qml`,
   `tst_wizard_decode_chip.qml`, `UI_QT_METRICS_MODEL`, `UI_QT_SESSION_ARGS`, `UI_QT_CONTROLLER`.
 
 - After the session's first decoder redraw, `UiController` refreshes live metrics on every timer tick so scan
