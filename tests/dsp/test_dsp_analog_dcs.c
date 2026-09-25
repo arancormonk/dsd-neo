@@ -30,16 +30,28 @@
 #include "analog_rx_internal.h"
 #include "analog_tone_synth.h"
 
-/* The timing pins under test (docs/cli.md "Received code"): <dsd-neo/dsp/analog_rx.h> states the
-   same bounds as the DCS timing contract. */
+/* The timing pins under test (docs/cli.md "Received code"), from the DCS timing contract in
+   <dsd-neo/dsp/analog_rx.h>, and stronger than its per-event ceilings: every stop is held to
+   the loss p95 target on its own, every start at 10 dB to the 10 dB lock bound, and at 3 dB
+   every row meets the lock p95 target and every start on these fixed seeds locks within
+   700 ms. */
 enum {
     LOCK_10DB_MS = DSD_ANALOG_DCS_LOCK_MS,
-    LOCK_3DB_MS = DSD_ANALOG_DCS_LOCK_CEILING_MS,
-    LOSS_MS = DSD_ANALOG_DCS_LOSS_MS,
-    TURNOFF_LOSS_MS = DSD_ANALOG_DCS_TURNOFF_LOSS_MS,
+    LOCK_3DB_P95_MS = DSD_ANALOG_DCS_LOCK_P95_MS,
+    LOCK_3DB_SEEDED_MS = 700,
+    LOSS_MS = DSD_ANALOG_DCS_LOSS_P95_MS,
+    TURNOFF_LOSS_MS = DSD_ANALOG_DCS_TURNOFF_LOSS_P95_MS,
     /* One 23-bit word at 134.4 bit/s, rounded up. */
     WORD_MS = 172,
 };
+
+_Static_assert((int)LOCK_3DB_P95_MS <= (int)LOCK_3DB_SEEDED_MS
+                   && (int)LOCK_3DB_SEEDED_MS <= (int)DSD_ANALOG_DCS_LOCK_CEILING_MS,
+               "the fixed seeds sit between the 3 dB target and the ceiling");
+_Static_assert((int)LOCK_10DB_MS <= (int)DSD_ANALOG_DCS_LOCK_CEILING_MS, "the ceiling covers 10 dB as well");
+_Static_assert((int)LOSS_MS <= (int)DSD_ANALOG_DCS_LOSS_CEILING_MS, "a loss target sits under its ceiling");
+_Static_assert((int)TURNOFF_LOSS_MS <= (int)DSD_ANALOG_DCS_TURNOFF_LOSS_CEILING_MS,
+               "a loss target sits under its ceiling");
 
 /* The level of a DCS signal: the NRZ amplitude (a 600 Hz deviation against a 0.1-per-kHz
    scale, as the CTCSS tests use for a tone). */
@@ -126,6 +138,12 @@ typedef struct {
     synth_voice_hpf voice_hpf;
     double voice_gain;
     int voice_filtered;
+    /* A steady sine added on top of whatever is sent from hum_from until hum_to (hum.amp 0 =
+       none): an interferer or a voice holding its pitch near the turn-off tone, or a CTCSS
+       tone. */
+    synth_tone hum;
+    int64_t hum_from;
+    int64_t hum_to;
 } dcs_src;
 
 static int64_t
@@ -158,6 +176,9 @@ src_init(dcs_src* src, double fs, uint64_t seed, int code, int inverted, double 
     src->tone.fs = fs;
     src->tone.amp = DCS_AMP;
     src->tone.phase = synth_range(&src->rng, 0.0, 2.0 * M_PI);
+    src->hum.fs = fs; /* no draw from the generator: the other signals stay as they were */
+    src->hum_from = INT64_MAX;
+    src->hum_to = INT64_MAX;
     src->on = 0;
     src->switch_at = INT64_MAX;
     src->send = code >= 0 ? SEND_WORD : SEND_NOTHING;
@@ -230,6 +251,9 @@ src_next(dcs_src* src, int64_t n) {
             voice = synth_voice_hpf_next(&src->voice_hpf, voice);
         }
         v += src->voice_gain * voice;
+    }
+    if (src->hum.amp > 0.0 && n >= src->hum_from && n < src->hum_to) {
+        v += synth_tone_next(&src->hum);
     }
     /* The receiver: de-emphasis, then the demodulator's DC block, then the noise. */
     src->deemph_y += (v - src->deemph_y) * src->deemph_alpha;
@@ -341,20 +365,24 @@ compare_doubles(const void* a, const void* b) {
     return (x > y) - (x < y);
 }
 
-/* Print p50/p95/worst of @p count lock times for the evidence, then assert every one locked
-   within @p bound_ms. A time of -1 (never locked) sorts first and fails. */
+/* Print p50/p95/worst of @p count lock or loss times for the evidence, then assert every one
+   within @p bound_ms and, when @p p95_ms is positive, the p95 within it. A time of -1 (never
+   locked) sorts first and fails. */
 static void
-check_bound(const char* what, double* times, int count, int bound_ms) {
+check_bound(const char* what, double* times, int count, int bound_ms, int p95_ms) {
     assert(count > 0);
     qsort(times, (size_t)count, sizeof(times[0]), compare_doubles);
-    printf("%s: p50 %.0f ms, p95 %.0f ms, worst %.0f ms (%d cases; each <= %d ms)\n", what, times[count / 2],
-           times[(count * 95) / 100], times[count - 1], count, bound_ms);
+    const double p95 = times[(count * 95) / 100];
+    printf("%s: p50 %.0f ms, p95 %.0f ms, worst %.0f ms (%d cases; each <= %d ms)\n", what, times[count / 2], p95,
+           times[count - 1], count, bound_ms);
     (void)fflush(stdout);
-    if (times[0] < 0.0 || times[count - 1] > (double)bound_ms) {
-        DSD_FPRINTF(stderr, "lock bound broken: %s (fastest %.0f, slowest %.0f)\n", what, times[0], times[count - 1]);
+    if (times[0] < 0.0 || times[count - 1] > (double)bound_ms || (p95_ms > 0 && p95 > (double)p95_ms)) {
+        DSD_FPRINTF(stderr, "lock bound broken: %s (fastest %.0f, p95 %.0f, slowest %.0f)\n", what, times[0], p95,
+                    times[count - 1]);
     }
     assert(times[0] >= 0.0);
     assert(times[count - 1] <= (double)bound_ms);
+    assert(p95_ms <= 0 || p95 <= (double)p95_ms);
 }
 
 /* ------------------------------------------------------------------------------------------
@@ -364,13 +392,15 @@ check_bound(const char* what, double* times, int count, int bound_ms) {
 /*
  * Every supported code in both polarities, through the demodulator's DC block with 75 and
  * 750 us de-emphasis, at 48 kHz: within 520 ms of its onset at 10 dB in-band and within 700 ms
- * at 3 dB, under its canonical name. The onset lands anywhere in a word and in a bit.
+ * at 3 dB, where each row also meets the 3 dB p95 target, under its canonical name. The onset
+ * lands anywhere in a word and in a bit.
  */
 static void
 test_every_code_locks_within_bound(void) {
     static double times[2 * DSD_DCS_CODE_COUNT];
     static const double snrs[] = {10.0, 3.0};
-    static const int bounds[] = {LOCK_10DB_MS, LOCK_3DB_MS};
+    static const int bounds[] = {LOCK_10DB_MS, LOCK_3DB_SEEDED_MS};
+    static const int p95s[] = {0, LOCK_3DB_P95_MS};
     for (int di = 0; di < 2; di++) {
         for (int si = 0; si < 2; si++) {
             int count = 0;
@@ -384,7 +414,7 @@ test_every_code_locks_within_bound(void) {
             char what[96];
             DSD_SNPRINTF(what, sizeof(what), "lock at 48 kHz, %.0f dB in-band, %.0f us de-emphasis", snrs[si],
                          k_deemph_us[di]);
-            check_bound(what, times, count, bounds[si]);
+            check_bound(what, times, count, bounds[si], p95s[si]);
         }
     }
 }
@@ -395,7 +425,8 @@ static void
 test_codes_lock_at_every_rate(void) {
     static double times[64];
     static const double snrs[] = {10.0, 3.0};
-    static const int bounds[] = {LOCK_10DB_MS, LOCK_3DB_MS};
+    static const int bounds[] = {LOCK_10DB_MS, LOCK_3DB_SEEDED_MS};
+    static const int p95s[] = {0, LOCK_3DB_P95_MS};
     for (int ri = 0; ri < RATE_COUNT; ri++) {
         for (int si = 0; si < 2; si++) {
             int count = 0;
@@ -409,7 +440,7 @@ test_codes_lock_at_every_rate(void) {
             }
             char what[64];
             DSD_SNPRINTF(what, sizeof(what), "lock at %d Hz, %.0f dB in-band", k_rates[ri], snrs[si]);
-            check_bound(what, times, count, bounds[si]);
+            check_bound(what, times, count, bounds[si], p95s[si]);
         }
     }
 }
@@ -509,7 +540,7 @@ test_two_bit_errors_per_word_lose(void) {
         assert(r.final_state == DSD_ANALOG_TONE_STATE_NONE);
         times[k] = samples_to_ms(48000.0, r.first_unlocked - src.flip_from);
     }
-    check_bound("loss when two bits of every word go wrong", times, 8, LOSS_MS + WORD_MS);
+    check_bound("loss when two bits of every word go wrong", times, 8, LOSS_MS + WORD_MS, 0);
 }
 
 /* The word stops under a live carrier, with no turn-off tone: lost within the loss bound, and
@@ -535,7 +566,7 @@ test_code_stop_under_carrier_loses(void) {
         assert(r.final_state == DSD_ANALOG_TONE_STATE_NONE);
         times[count++] = samples_to_ms(48000.0, r.first_unlocked - src.switch_at);
     }
-    check_bound("loss when the code stops under a live carrier", times, count, LOSS_MS);
+    check_bound("loss when the code stops under a live carrier", times, count, LOSS_MS, 0);
 }
 
 /* The 134.4 Hz turn-off tone ends a lock at once: within the turn-off bound of its start, well
@@ -561,7 +592,99 @@ test_turnoff_tone_loses_fast(void) {
         assert(r.final_state == DSD_ANALOG_TONE_STATE_NONE);
         times[count++] = samples_to_ms(48000.0, r.first_unlocked - src.switch_at);
     }
-    check_bound("loss on the turn-off tone", times, count, TURNOFF_LOSS_MS);
+    check_bound("loss on the turn-off tone", times, count, TURNOFF_LOSS_MS, 0);
+}
+
+/*
+ * A steady component near the turn-off tone under a code the slicers still read -- an
+ * interferer, or a voice holding its pitch -- leaves the lock alone: 130, 134.4 and 140 Hz at
+ * the code's power and 3 dB above it, from 2 s into a 6 s transmission. The turn-off tone
+ * detector sees it dominate the band, but a lock ends on it only once the code has gone too.
+ */
+static void
+test_steady_component_keeps_the_lock(void) {
+    static const double hums[] = {130.0, 134.4, 140.0};
+    static const double amps[] = {0.1414, 0.2};
+    for (int h = 0; h < 3; h++) {
+        for (int a = 0; a < 2; a++) {
+            const int code = dsd_dcs_code(h * 30 + a * 7 + 5);
+            const int sent_inverted = (h + a) % 2;
+            dsd_analog_rx_core_init(&g_core);
+            dcs_src src;
+            src_init(&src, 48000.0, 1340ULL + (uint64_t)(h * 2 + a), code, sent_inverted, 20.0, 75.0);
+            src.hum.hz = hums[h];
+            src.hum.amp = amps[a];
+            src.hum_from = ms_to_samples(48000.0, 2000.0);
+            int want_code = -1;
+            int want_inverted = -1;
+            expected_name(code, sent_inverted, &want_code, &want_inverted);
+            const run_result r = run_signal(&src, ms_to_samples(48000.0, 6000.0), 480, want_code, want_inverted);
+            assert(r.first_wrong < 0 && r.first_lock >= 0 && r.first_lock < src.hum_from);
+            assert(r.first_unlocked < 0 && r.dcs_locks == 1);
+        }
+    }
+}
+
+/*
+ * The lock that came first keeps the publication: a CTCSS tone that locks under a held code
+ * (a voice's talk-off on a coded channel) never replaces the code, nor a code that locks under
+ * a held tone the tone; once the first lock is lost, the other shows. Both are real locks
+ * here, so the rule, not a missed detection, is what keeps the display.
+ */
+static void
+test_first_lock_keeps_the_publication(void) {
+    for (int dcs_first = 0; dcs_first < 2; dcs_first++) {
+        dsd_analog_rx_core_init(&g_core);
+        dcs_src src;
+        src_init(&src, 48000.0, 2500ULL + (uint64_t)dcs_first, 0754, 0, 20.0, 75.0);
+        src.hum.hz = 250.3;
+        src.hum.amp = 0.1;
+        if (dcs_first) {
+            src.hum_from = ms_to_samples(48000.0, 2000.0);
+            src.switch_at = ms_to_samples(48000.0, 5000.0);
+            src.then_send = SEND_NOTHING;
+        } else {
+            src.hum_from = 0;
+            src.hum_to = ms_to_samples(48000.0, 5000.0);
+            src.on = ms_to_samples(48000.0, 2000.0);
+        }
+        const int64_t first_stops = ms_to_samples(48000.0, 5000.0);
+        int64_t first_published = -1;
+        int both_locked = 0;
+        int handed_over = 0;
+        float buf[480];
+        for (int64_t n = 0; n < ms_to_samples(48000.0, 7000.0); n += 480) {
+            for (int i = 0; i < 480; i++) {
+                buf[i] = src_next(&src, n + i);
+            }
+            assert(dsd_analog_rx_core_process(&g_core, buf, 480, 48000, 1) == 1);
+            dsd_analog_rx_publication pub;
+            dsd_analog_rx_core_publish(&g_core, &pub);
+            const int dcs_shown = pub.tone_state == DSD_ANALOG_TONE_STATE_LOCKED
+                                  && pub.tone_kind == DSD_ANALOG_TONE_KIND_DCS && pub.dcs_code == 0754;
+            const int tone_shown = pub.tone_state == DSD_ANALOG_TONE_STATE_LOCKED
+                                   && pub.tone_kind == DSD_ANALOG_TONE_KIND_CTCSS && pub.ctcss_tenths_hz == 2503;
+            assert(pub.tone_state != DSD_ANALOG_TONE_STATE_LOCKED || dcs_shown || tone_shown);
+            const int first_shown = dcs_first ? dcs_shown : tone_shown;
+            const int second_shown = dcs_first ? tone_shown : dcs_shown;
+            if (first_shown && first_published < 0) {
+                first_published = n + 480;
+            }
+            if (g_core.dcs.state == DSD_ANALOG_TONE_STATE_LOCKED && g_core.ctcss.state == DSD_ANALOG_TONE_STATE_LOCKED
+                && n + 480 <= first_stops) {
+                both_locked = 1;
+            }
+            if (n + 480 <= first_stops) {
+                /* Until the first lock's signal stops, only it is ever shown. */
+                assert(!second_shown);
+            } else if (second_shown) {
+                handed_over = 1;
+            }
+        }
+        assert(first_published >= 0 && first_published < ms_to_samples(48000.0, 2000.0));
+        assert(both_locked);
+        assert(handed_over);
+    }
 }
 
 /* The carrier drops with the code still on and no turn-off tone: the core's 200 ms hangover
@@ -713,7 +836,7 @@ test_other_code_words_never_lock(void) {
 }
 
 /* No CTCSS tone is a DCS code: every table tone, clean and at 10 dB, at 8 and 48 kHz, for 3 s,
-   never locks the DCS detector (the CTCSS detector names it). */
+   never locks the DCS detector, not even for a moment (the CTCSS detector names it). */
 static void
 test_ctcss_tones_never_lock(void) {
     static const int rates[] = {8000, 48000};
@@ -726,7 +849,8 @@ test_ctcss_tones_never_lock(void) {
                          clean ? 200.0 : 10.0, 75.0);
                 src.send = SEND_TONE;
                 src.tone_hz = (double)dsd_ctcss_tone_tenths(t) / 10.0;
-                (void)run_signal(&src, ms_to_samples((double)rates[ri], 3000.0), rates[ri] / 50, -1, -1);
+                const run_result r = run_signal(&src, ms_to_samples((double)rates[ri], 3000.0), rates[ri] / 50, -1, -1);
+                assert(r.dcs_locks == 0);
                 assert(g_core.dcs.state != DSD_ANALOG_TONE_STATE_LOCKED);
                 assert(g_core.dcs.bits_decided > 350);
             }
@@ -737,7 +861,7 @@ test_ctcss_tones_never_lock(void) {
 /* Speech with no code never locks, unfiltered (the hostile case: a voice fundamental in the
    band) or through a transmitter's voice high-pass, over two minutes each; and a code under
    transmitter-filtered speech 10 dB above it (speech level 1.09: a long-run RMS of 0.32 against
-   the code's 0.1) still locks within the 3 dB bound. */
+   the code's 0.1) still locks within the 3 dB bound and, once locked, holds for 20 s. */
 static void
 test_speech(void) {
     for (int filtered = 0; filtered < 2; filtered++) {
@@ -765,11 +889,28 @@ test_speech(void) {
         int inverted = -1;
         expected_name(dsd_dcs_code(k * 4 + 1), k % 2, &code, &inverted);
         const run_result r =
-            run_signal(&src, src.on + ms_to_samples(48000.0, LOCK_3DB_MS + 150.0), 480, code, inverted);
+            run_signal(&src, src.on + ms_to_samples(48000.0, LOCK_3DB_SEEDED_MS + 150.0), 480, code, inverted);
         assert(r.first_wrong < 0);
         times[k] = r.first_lock >= 0 ? samples_to_ms(48000.0, r.first_lock - src.on) : -1.0;
     }
-    check_bound("lock under transmitter-filtered speech 10 dB above the code", times, 24, LOCK_3DB_MS);
+    check_bound("lock under transmitter-filtered speech 10 dB above the code", times, 24, LOCK_3DB_SEEDED_MS, 0);
+    for (int k = 0; k < 4; k++) {
+        dsd_analog_rx_core_init(&g_core);
+        dcs_src src;
+        const int code = dsd_dcs_code(k * 25 + 3);
+        src_init(&src, 48000.0, 6000ULL + (uint64_t)k, code, k % 2, 200.0, k < 2 ? 75.0 : 750.0);
+        synth_speech_init(&src.speech, 48000.0, 6100ULL + (uint64_t)k, 1.09);
+        synth_voice_hpf_init(&src.voice_hpf, 48000.0);
+        src.voice_filtered = 1;
+        src.voice_gain = 1.0;
+        int want_code = -1;
+        int want_inverted = -1;
+        expected_name(code, k % 2, &want_code, &want_inverted);
+        const run_result r = run_signal(&src, ms_to_samples(48000.0, 21000.0), 480, want_code, want_inverted);
+        assert(r.first_wrong < 0 && r.first_lock >= 0);
+        assert(samples_to_ms(48000.0, r.first_lock) <= (double)LOCK_3DB_SEEDED_MS);
+        assert(r.first_unlocked < 0 && r.dcs_locks == 1);
+    }
 }
 
 /* ------------------------------------------------------------------------------------------
@@ -819,8 +960,36 @@ test_block_size_does_not_move_the_verdict(void) {
     }
 }
 
+/* A rate the front end never delivers (every decimated rate is below 4800 Hz) leaves the
+   detector inert rather than reading past its sample ring: it decides nothing and reports "no
+   code", so the core never waits on it. */
+static void
+test_unusable_rate_is_inert(void) {
+    static dsd_analog_dcs det;
+    static const double rates[] = {9600.0, 48000.0};
+    for (int i = 0; i < 2; i++) {
+        DSD_MEMSET(&det, 0, sizeof(det));
+        dsd_analog_dcs_ops.configure(&det, rates[i]);
+        assert(det.rate_hz <= 0.0 && det.box_len == 1);
+        float band[256];
+        for (int k = 0; k < 256; k++) {
+            band[k] = (k / 16) % 2 ? 0.1f : -0.1f;
+        }
+        dsd_analog_dcs_ops.process(&det, band, band, band, 256, 0);
+        assert(det.bits_decided == 0 && det.n == 0);
+        dsd_analog_rx_report report;
+        dsd_analog_dcs_ops.report(&det, &report);
+        assert(report.state == DSD_ANALOG_TONE_STATE_NONE && report.kind == DSD_ANALOG_TONE_KIND_NONE);
+    }
+    /* The highest rate it does serve: just under 4800 Hz (a 4799 Hz input, decimated by 1). */
+    DSD_MEMSET(&det, 0, sizeof(det));
+    dsd_analog_dcs_ops.configure(&det, 4799.0);
+    assert(det.rate_hz > 4798.0 && det.box_len == 36);
+}
+
 int
 main(void) {
+    test_unusable_rate_is_inert();
     test_aliases_through_the_detector();
     test_no_code_verdict_then_late_code();
     test_block_size_does_not_move_the_verdict();
@@ -831,6 +1000,8 @@ main(void) {
     test_code_stop_under_carrier_loses();
     test_turnoff_tone_loses_fast();
     test_carrier_drop_and_dropout();
+    test_steady_component_keeps_the_lock();
+    test_first_lock_keeps_the_publication();
     test_other_code_words_never_lock();
     test_ctcss_tones_never_lock();
     test_every_code_locks_within_bound();

@@ -53,7 +53,7 @@ typedef struct {
     uint8_t carrier_open;                 /**< 1 while a carrier is open (held through the short hangover). */
     int ctcss_tenths_hz;                  /**< Locked CTCSS tone in tenths of a hertz; 0 otherwise. */
     int dcs_code;                         /**< Locked DCS code as its value (023 octal = 19); 0 otherwise. */
-    uint8_t dcs_inverted;                 /**< 1 when the locked DCS code is named in inverted polarity. */
+    uint8_t dcs_inverted;                 /**< 1 = inverted polarity; never for a standard code (analog_tones.h). */
     uint32_t generation;                  /**< The publication's reset counter, to tell one reception from the next. */
     char text[DSD_APP_RX_TONE_TEXT_SIZE]; /**< "CTCSS 100.0 Hz", "DCS D023N", "detecting", "none", "—" or "". */
     char configured_text[DSD_APP_RX_TONE_TEXT_SIZE]; /**< The configured tone policy: "off" for now. */
