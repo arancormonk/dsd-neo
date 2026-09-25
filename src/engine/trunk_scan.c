@@ -52,6 +52,8 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+
+#include "scan_analog_internal.h"
 #if defined(DSD_TRUNK_SCAN_TEST_CLOCK)
 #include "trunk_scan_internal.h"
 #include "trunk_scan_test_support.h"
@@ -4065,6 +4067,45 @@ size_t
 dsd_engine_trunk_scan_target_count(const dsd_state* state) {
     const dsd_trunk_scan_coord* coord = trunk_scan_get_const(state);
     return coord ? coord->count : 0;
+}
+
+/* Whether an analog target sets no width of its own, and so runs the configured NFM width while it is parked. */
+static int
+trunk_scan_targets_run_configured_nfm_width(const dsd_trunk_scan_coord* coord) {
+    for (size_t i = 0; i < coord->count; i++) {
+        const dsd_trunk_scan_target* target = &coord->targets[i].target;
+        if (trunk_scan_type_is_analog(target->type) && !(target->row_options.present & DSD_SCAN_OPT_BANDWIDTH)) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+/* The same for the -Y channel map's rows. */
+static int
+channel_rows_run_configured_nfm_width(const dsd_state* state) {
+    for (int row = 0; row < state->lcn_freq_count; row++) {
+        if (!dsd_scan_mode_is_analog(dsd_channel_mode_get(state, (size_t)row))) {
+            continue;
+        }
+        const dsd_scan_row_profile* profile = dsd_channel_profile_get(state, (size_t)row);
+        if (!profile || !(profile->values.present & DSD_SCAN_OPT_BANDWIDTH)) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+int
+dsd_engine_scan_runs_configured_nfm_width(const dsd_opts* opts, const dsd_state* state) {
+    if (!opts || !state) {
+        return 0;
+    }
+    const dsd_trunk_scan_coord* coord = trunk_scan_get_const(state);
+    if (coord) {
+        return trunk_scan_targets_run_configured_nfm_width(coord);
+    }
+    return opts->scanner_mode == 1 && opts->trunk_scan_enabled != 1 && channel_rows_run_configured_nfm_width(state);
 }
 
 int

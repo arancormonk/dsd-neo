@@ -6,7 +6,6 @@
 #define DSD_NEO_ENGINE_CHANNEL_SCAN_H
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/state_fwd.h>
-#include <dsd-neo/runtime/scan_options.h>
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -25,29 +24,6 @@ int dsd_engine_channel_scan_pending(dsd_opts* opts, dsd_state* state);
 int dsd_engine_channel_scan_service_sync(dsd_opts* opts, dsd_state* state);
 /** Cancel row ownership and restore configured settings. Late completions cannot adopt a row. */
 void dsd_engine_channel_scan_leave(dsd_opts* opts, dsd_state* state);
-/** Open the audio sink the row now on air plays through (issue #526): the analog monitor's for an analog row, the
- * digital voice output otherwise. A list mixing the families needs whichever the session did not open; each is opened
- * once, idempotently, and a failure is logged once and leaves that row silent. Call after the row's options. */
-void dsd_engine_scan_ensure_output(dsd_opts* opts);
-/** Warn, as one WARNING line beginning with @p label ("Scan channel 2 (154.430000 MHz)", "Trunk scan target 'fire'"),
- * about an analog (nfm) scan row or target whose squelch -- its own --squelch-db, else the configured one -- is off or at
- * -100 dB or below (issue #526): noise then holds it on air until the visit cap or a manual advance or avoid moves on.
- * Said once when a scan (or a new map or target list) starts; it does not depend on the DSP rate. @p row may be NULL
- * (no options). Returns 1 when it warned, else 0. */
-int dsd_engine_scan_warn_analog_squelch(const dsd_opts* opts, const dsd_state* state, const dsd_scan_option_values* row,
-                                        const char* label);
-/** Warn, in the same form, about the width an analog row runs (issue #526), which is then skipped at every visit:
- * its own --nfm-bandwidth-hz on an input with no demodulator to apply it, or one @p dsp_rate_hz cannot filter; or, for
- * a row that sets none, the configured NFM width it runs (dsd_engine_scan_configured_nfm_width_hz()) where
- * @p dsp_rate_hz cannot filter that. Said when a scan starts, again whenever the DSP rate changes, and for the rows
- * without a width of their own whenever the configured NFM width does; @p dsp_rate_hz 0 skips the rate check. @p row
- * may be NULL (no options). Returns 1 when it warned. */
-int dsd_engine_scan_warn_analog_width(const dsd_opts* opts, const dsd_state* state, const dsd_scan_option_values* row,
-                                      int dsp_rate_hz, const char* label);
-/** The explicit NFM width an analog row without one of its own runs (issue #526): the configured width, from the scan
- * scope's configured view while one is live and dsd_opts otherwise; 0 for the unset default, which no DSP rate
- * refuses, and when @p opts is NULL. */
-int dsd_engine_scan_configured_nfm_width_hz(const dsd_opts* opts, const dsd_state* state);
 #ifdef __cplusplus
 }
 #endif

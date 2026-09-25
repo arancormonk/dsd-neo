@@ -35,6 +35,8 @@
 #include <stdlib.h>
 #include <time.h>
 
+#include "scan_analog_internal.h"
+
 typedef struct {
     uint64_t request;
     uint64_t map_sequence;
@@ -365,8 +367,9 @@ dsd_engine_scan_configured_nfm_width_hz(const dsd_opts* opts, const dsd_state* s
     return width_hz > 0 ? width_hz : 0;
 }
 
-/* A row without a width of its own runs the configured NFM width, which no command holds to the DSP rate while a
- * digital preset or row runs (it is no width in use there): a rate that cannot filter it skips the row at every visit
+/* A row without a width of its own runs the configured NFM width. The width commands hold that width to the DSP rate
+ * while the scan has such a row (dsd_engine_scan_runs_configured_nfm_width()), but a list loaded over a width the rate
+ * cannot filter, or a rate a device forced, still leaves one the rate cannot filter: that skips the row at every visit
  * as well. Audio input filters nothing, and the configured width is no row's to name there. */
 static int
 scan_warn_configured_nfm_width(const dsd_opts* opts, const dsd_state* state, int dsp_rate_hz, const char* label) {
