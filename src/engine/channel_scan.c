@@ -45,10 +45,12 @@ typedef struct {
     dsd_scan_settings configured;
     dsd_scan_key_change keys;
     uint64_t key_epoch;
-    /* The map generation, and the DSP rate, whose rows were last checked against the input (issues #521, #526). */
+    /* The map generation whose rows were last checked against the input (issues #521, #526), and the DSP rate its
+     * analog row widths were last held to (issue #526). */
     uint64_t rows_checked_map;
-    int rows_checked_rate_hz;
     int rows_checked;
+    int widths_checked_rate_hz;
+    int widths_checked;
 } channel_scan;
 
 static void
@@ -214,40 +216,64 @@ channel_scan_warn_row_squelch(const dsd_opts* opts, int row, long freq, const ds
              row + 1, (double)freq / 1000000.0, values->squelch_db);
 }
 
-/* What the rows owe the operator, said once per row when a scan (or a newly imported map) starts, and again when the
- * DSP rate an analog row width must fit changes. An RTL stream that has published no rate yet leaves the check to the
- * next row start: a width would go unchecked, and the rows are skipped quietly at every visit it refuses
- * (dsd_engine_scan_tune_to_freq()). */
 static void
-channel_scan_check_rows(const dsd_opts* opts, const dsd_state* state, channel_scan* scan) {
-    const int dsp_rate_hz = dsd_engine_scan_dsp_rate_hz(opts, state);
-    if (opts->audio_in_type == AUDIO_IN_RTL && dsp_rate_hz <= 0) {
-        return;
-    }
-    if (scan->rows_checked && scan->rows_checked_map == state->trunk_chan_map_seq
-        && scan->rows_checked_rate_hz == dsp_rate_hz) {
-        return;
-    }
-    scan->rows_checked = 1;
-    scan->rows_checked_map = state->trunk_chan_map_seq;
-    scan->rows_checked_rate_hz = dsp_rate_hz;
+channel_scan_row_label(const dsd_state* state, int row, char* label, size_t label_size) {
+    const long freq = *dsd_state_trunk_lcn_slot_const(state, row);
+    DSD_SNPRINTF(label, label_size, "Scan channel %d (%.6lf MHz)", row + 1, (double)freq / 1000000.0);
+}
+
+/* What the rows owe the operator about their squelch, said once per row when a scan (or a newly imported map)
+ * starts: a digital row's squelch that cannot gate digital acquisition on this input (issue #521), and an analog
+ * row's squelch that lets noise hold it (issue #526). Neither depends on the DSP rate. */
+static void
+channel_scan_warn_rows_squelch(const dsd_opts* opts, const dsd_state* state) {
     for (int row = 0; row < state->lcn_freq_count; row++) {
         const dsd_scan_row_profile* profile = dsd_channel_profile_get(state, (size_t)row);
         const dsd_scan_option_values* values = profile ? &profile->values : NULL;
-        const long freq = *dsd_state_trunk_lcn_slot_const(state, row);
         /* An analog row's squelch gates exactly what it is for on any input: its monitor and carrier. */
         if (!dsd_scan_mode_is_analog(dsd_channel_mode_get(state, (size_t)row))) {
-            channel_scan_warn_row_squelch(opts, row, freq, values);
+            channel_scan_warn_row_squelch(opts, row, *dsd_state_trunk_lcn_slot_const(state, row), values);
             continue;
         }
         char label[64];
-        DSD_SNPRINTF(label, sizeof label, "Scan channel %d (%.6lf MHz)", row + 1, (double)freq / 1000000.0);
-        (void)dsd_engine_scan_warn_analog_row(opts, state, values, dsp_rate_hz, label);
+        channel_scan_row_label(state, row, label, sizeof label);
+        (void)dsd_engine_scan_warn_analog_squelch(opts, state, values, label);
+    }
+}
+
+/* Once per map the rows' squelch, and the analog row widths once the DSP rate they must fit is known: an RTL stream
+ * that has published no rate yet leaves the widths to a later row start, and a changed rate (the operator changed the
+ * RTL DSP bandwidth) names them again, since a row whose width the rate cannot fit is skipped quietly at every visit
+ * (dsd_engine_scan_tune_to_freq()). */
+static void
+channel_scan_check_rows(const dsd_opts* opts, const dsd_state* state, channel_scan* scan) {
+    if (!scan->rows_checked || scan->rows_checked_map != state->trunk_chan_map_seq) {
+        scan->rows_checked = 1;
+        scan->rows_checked_map = state->trunk_chan_map_seq;
+        scan->widths_checked = 0;
+        channel_scan_warn_rows_squelch(opts, state);
+    }
+    const int dsp_rate_hz = dsd_engine_scan_dsp_rate_hz(opts, state);
+    if ((opts->audio_in_type == AUDIO_IN_RTL && dsp_rate_hz <= 0)
+        || (scan->widths_checked && scan->widths_checked_rate_hz == dsp_rate_hz)) {
+        return;
+    }
+    scan->widths_checked = 1;
+    scan->widths_checked_rate_hz = dsp_rate_hz;
+    for (int row = 0; row < state->lcn_freq_count; row++) {
+        if (!dsd_scan_mode_is_analog(dsd_channel_mode_get(state, (size_t)row))) {
+            continue;
+        }
+        const dsd_scan_row_profile* profile = dsd_channel_profile_get(state, (size_t)row);
+        char label[64];
+        channel_scan_row_label(state, row, label, sizeof label);
+        (void)dsd_engine_scan_warn_analog_width(opts, profile ? &profile->values : NULL, dsp_rate_hz, label);
     }
 }
 
 /* The squelch an analog row runs with: its own, else the configured one. Off, or at -100 dB and below, holds the row
- * on noise until -t or the visit cap moves on. The -100 dB comparison allows for the rounding of the level's power. */
+ * on noise: every block re-arms its carrier hold, so only the visit cap or a manual advance or avoid moves on. The
+ * -100 dB comparison allows for the rounding of the level's power. */
 static int
 channel_scan_analog_squelch_open(const dsd_opts* opts, const dsd_state* state, const dsd_scan_option_values* row) {
     const dsd_scan_settings* configured = dsd_scan_mode_configured_view(state);
@@ -272,33 +298,36 @@ dsd_engine_scan_ensure_output(dsd_opts* opts) {
 }
 
 int
-dsd_engine_scan_warn_analog_row(const dsd_opts* opts, const dsd_state* state, const dsd_scan_option_values* row,
-                                int dsp_rate_hz, const char* label) {
-    if (!opts || !state || !label) {
+dsd_engine_scan_warn_analog_squelch(const dsd_opts* opts, const dsd_state* state, const dsd_scan_option_values* row,
+                                    const char* label) {
+    if (!opts || !state || !label || !channel_scan_analog_squelch_open(opts, state, row)) {
         return 0;
     }
-    int warnings = 0;
-    if (channel_scan_analog_squelch_open(opts, state, row)) {
-        LOG_WARN("WARNING: %s: the nfm row's squelch is off or at -100 dB or below, so noise holds it until -t or "
-                 "--scan-max-visit-ms moves on; set --squelch-db on the row or a squelch level.\n",
-                 label);
-        warnings++;
-    }
-    if (!row || !(row->present & DSD_SCAN_OPT_BANDWIDTH)) {
-        return warnings;
+    LOG_WARN(
+        "WARNING: %s: the analog channel's squelch is off or at -100 dB or below, so noise holds it on air until "
+        "--scan-max-visit-ms or a manual advance or avoid moves on; give it --squelch-db or set a squelch level.\n",
+        label);
+    return 1;
+}
+
+int
+dsd_engine_scan_warn_analog_width(const dsd_opts* opts, const dsd_scan_option_values* row, int dsp_rate_hz,
+                                  const char* label) {
+    if (!opts || !label || !row || !(row->present & DSD_SCAN_OPT_BANDWIDTH)) {
+        return 0;
     }
     if (opts->audio_in_type != AUDIO_IN_RTL) {
         LOG_WARN("WARNING: %s: --nfm-bandwidth-hz %d has no effect on audio input, which arrives demodulated; set "
                  "the demodulator's own passband (-B for a rigctl peer).\n",
                  label, row->channel_bw_hz);
-        return warnings + 1;
+        return 1;
     }
     char why[DSD_ANALOG_ERROR_TEXT_MAX];
     if (dsd_scan_option_width_check(DSD_SCAN_MODE_NFM, row, dsp_rate_hz, why, sizeof why) != 0) {
-        LOG_WARN("WARNING: %s: %s; the row is skipped at every visit.\n", label, why);
-        warnings++;
+        LOG_WARN("WARNING: %s: %s; until then it is skipped at every visit.\n", label, why);
+        return 1;
     }
-    return warnings;
+    return 0;
 }
 
 static int

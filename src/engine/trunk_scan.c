@@ -2634,16 +2634,20 @@ trunk_scan_analog_check_rate(const dsd_opts* opts, const dsd_state* state) {
 }
 
 static void
-trunk_scan_warn_analog_target(const dsd_opts* opts, const dsd_state* state, const dsd_trunk_scan_target* target,
-                              int dsp_rate_hz) {
+trunk_scan_analog_target_label(const dsd_trunk_scan_target* target, char* label, size_t label_size) {
+    DSD_SNPRINTF(label, label_size, "Trunk scan target '%s'", target->id);
+}
+
+static void
+trunk_scan_warn_analog_width(const dsd_opts* opts, const dsd_trunk_scan_target* target, int dsp_rate_hz) {
     char label[96];
-    DSD_SNPRINTF(label, sizeof label, "Trunk scan target '%s'", target->id);
-    (void)dsd_engine_scan_warn_analog_row(opts, state, &target->row_options, dsp_rate_hz, label);
+    trunk_scan_analog_target_label(target, label, sizeof label);
+    (void)dsd_engine_scan_warn_analog_width(opts, &target->row_options, dsp_rate_hz, label);
 }
 
 /* The retune skips an analog target whose width the DSP rate cannot fit without a word (dsd_engine_scan_tune_to_freq()),
- * so the analog targets are named again whenever that rate has changed since they were checked -- the operator changed
- * the RTL DSP bandwidth -- or first became known. */
+ * so the analog targets' widths are named again whenever that rate has changed since they were checked -- the operator
+ * changed the RTL DSP bandwidth -- or first became known. Their squelch was named when the scan started. */
 static void
 trunk_scan_recheck_analog_targets(const dsd_opts* opts, const dsd_state* state, dsd_trunk_scan_coord* coord) {
     const int rate_hz = trunk_scan_analog_check_rate(opts, state);
@@ -2653,9 +2657,22 @@ trunk_scan_recheck_analog_targets(const dsd_opts* opts, const dsd_state* state, 
     coord->analog_checked_rate_hz = rate_hz;
     for (size_t i = 0; i < coord->count; i++) {
         if (trunk_scan_type_is_analog(coord->targets[i].target.type)) {
-            trunk_scan_warn_analog_target(opts, state, &coord->targets[i].target, rate_hz);
+            trunk_scan_warn_analog_width(opts, &coord->targets[i].target, rate_hz);
         }
     }
+}
+
+/* Whether the retune refuses an analog target's width at the published DSP rate before any backend moves
+ * (dsd_engine_scan_tune_to_freq()). trunk_scan_recheck_analog_targets(), which runs before every retune, has named such
+ * a target for that rate already, with the fact that it is skipped at every visit, so the failed visit adds nothing. */
+static int
+trunk_scan_analog_width_refused(const dsd_opts* opts, const dsd_state* state, const dsd_trunk_scan_target* target) {
+    if (!trunk_scan_type_is_analog(target->type)) {
+        return 0;
+    }
+    return dsd_scan_option_width_check(DSD_SCAN_MODE_NFM, &target->row_options,
+                                       dsd_engine_scan_dsp_rate_hz(opts, state), NULL, 0U)
+           != 0;
 }
 
 static int
@@ -2715,7 +2732,9 @@ trunk_scan_switch_to(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_coord* coo
     dsd_trunk_tune_result tune_result = trunk_scan_retune_active(opts, state, rt, &tune_request_id);
     if (!dsd_trunk_tune_result_is_ok(tune_result)) {
         rt->retry_until_m = now_m + TRUNK_SCAN_RETUNE_RETRY_COOLDOWN_S;
-        LOG_WARN("WARNING: Trunk scan target '%s' retune failed; cooling down briefly\n", rt->target.id);
+        if (!trunk_scan_analog_width_refused(opts, state, &rt->target)) {
+            LOG_WARN("WARNING: Trunk scan target '%s' retune failed; cooling down briefly\n", rt->target.id);
+        }
         return -1;
     }
 
@@ -3006,9 +3025,10 @@ trunk_scan_warn_ignored_target_gain(const dsd_opts* opts, const dsd_state* state
  * demodulator for it to gate, so it cannot gate digital acquisition; the threshold in dsd_opts
  * only reaches the analog input monitor (-8, with audio output on) and the carrier activity that
  * monitor stamps. Said once per affected digital target when the scan starts, beside what an analog
- * target owes the operator (dsd_engine_scan_warn_analog_row()). Returns the DSP rate the analog
- * targets were checked at, or TRUNK_SCAN_ANALOG_CHECK_DEFERRED when that check waits for the rate
- * (trunk_scan_recheck_analog_targets()). */
+ * target owes the operator: a squelch that lets noise hold it (dsd_engine_scan_warn_analog_squelch()),
+ * also said once here, and its width (dsd_engine_scan_warn_analog_width()), which is held to the DSP
+ * rate. Returns the rate the widths were checked at, or TRUNK_SCAN_ANALOG_CHECK_DEFERRED when that
+ * check waits for the rate (trunk_scan_recheck_analog_targets()). */
 static int
 trunk_scan_warn_targets(const dsd_opts* opts, const dsd_state* state, const dsd_trunk_scan_target_list* list) {
     if (!opts || !list) {
@@ -3017,15 +3037,20 @@ trunk_scan_warn_targets(const dsd_opts* opts, const dsd_state* state, const dsd_
     const int check_rate_hz = trunk_scan_analog_check_rate(opts, state);
     for (size_t i = 0; i < list->count; i++) {
         const dsd_trunk_scan_target* target = &list->targets[i];
-        const int analog = trunk_scan_type_is_analog(target->type);
-        if (!analog && opts->audio_in_type != AUDIO_IN_RTL && (target->row_options.present & DSD_SCAN_OPT_SQUELCH)) {
-            LOG_WARN("WARNING: Trunk scan target '%s': --squelch-db %d cannot gate digital acquisition without a "
-                     "radio input; here it gates only the analog input monitor (-8) and the carrier activity it "
-                     "stamps.\n",
-                     target->id, target->row_options.squelch_db);
+        if (!trunk_scan_type_is_analog(target->type)) {
+            if (opts->audio_in_type != AUDIO_IN_RTL && (target->row_options.present & DSD_SCAN_OPT_SQUELCH)) {
+                LOG_WARN("WARNING: Trunk scan target '%s': --squelch-db %d cannot gate digital acquisition without a "
+                         "radio input; here it gates only the analog input monitor (-8) and the carrier activity it "
+                         "stamps.\n",
+                         target->id, target->row_options.squelch_db);
+            }
+            continue;
         }
-        if (analog && check_rate_hz != TRUNK_SCAN_ANALOG_CHECK_DEFERRED) {
-            trunk_scan_warn_analog_target(opts, state, target, check_rate_hz);
+        char label[96];
+        trunk_scan_analog_target_label(target, label, sizeof label);
+        (void)dsd_engine_scan_warn_analog_squelch(opts, state, &target->row_options, label);
+        if (check_rate_hz != TRUNK_SCAN_ANALOG_CHECK_DEFERRED) {
+            trunk_scan_warn_analog_width(opts, target, check_rate_hz);
         }
     }
     return check_rate_hz;

@@ -29,13 +29,18 @@ void dsd_engine_channel_scan_leave(dsd_opts* opts, dsd_state* state);
  * digital voice output otherwise. A list mixing the families needs whichever the session did not open; each is opened
  * once, idempotently, and a failure is logged once and leaves that row silent. Call after the row's options. */
 void dsd_engine_scan_ensure_output(dsd_opts* opts);
-/** Log what an analog (nfm) scan row or target owes the operator when a scan starts (issue #526), each as one
- * WARNING line beginning with @p label ("Scan channel 2 (154.430000 MHz)", "Trunk scan target 'fire'"): a squelch
- * that is off or at -100 dB or below, so noise holds the row; a row width (--nfm-bandwidth-hz) on an input with no
- * demodulator to apply it; and a row width @p dsp_rate_hz cannot filter, whose row is then skipped at every visit.
- * @p row may be NULL (no options); @p dsp_rate_hz 0 skips the rate check. Returns the number of warnings. */
-int dsd_engine_scan_warn_analog_row(const dsd_opts* opts, const dsd_state* state, const dsd_scan_option_values* row,
-                                    int dsp_rate_hz, const char* label);
+/** Warn, as one WARNING line beginning with @p label ("Scan channel 2 (154.430000 MHz)", "Trunk scan target 'fire'"),
+ * about an analog (nfm) scan row or target whose squelch -- its own --squelch-db, else the configured one -- is off or at
+ * -100 dB or below (issue #526): noise then holds it on air until the visit cap or a manual advance or avoid moves on.
+ * Said once when a scan (or a new map or target list) starts; it does not depend on the DSP rate. @p row may be NULL
+ * (no options). Returns 1 when it warned, else 0. */
+int dsd_engine_scan_warn_analog_squelch(const dsd_opts* opts, const dsd_state* state, const dsd_scan_option_values* row,
+                                        const char* label);
+/** Warn, in the same form, about an analog row's own width (--nfm-bandwidth-hz, issue #526): on an input with no
+ * demodulator to apply it, or one @p dsp_rate_hz cannot filter, which is then skipped at every visit. Said when a scan
+ * starts and again whenever the DSP rate changes; @p dsp_rate_hz 0 skips the rate check. Returns 1 when it warned. */
+int dsd_engine_scan_warn_analog_width(const dsd_opts* opts, const dsd_scan_option_values* row, int dsp_rate_hz,
+                                      const char* label);
 #ifdef __cplusplus
 }
 #endif

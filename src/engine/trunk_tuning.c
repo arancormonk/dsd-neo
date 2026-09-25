@@ -417,9 +417,10 @@ dsd_engine_prepare_current_cc_rtl_chain(const dsd_opts* opts, const dsd_state* s
  * when the front end refuses the width at the rate it runs.
  *
  * A width the published DSP rate cannot fit was named when the scan started, or when that rate last changed
- * (dsd_engine_scan_warn_analog_row() checks it against the same rate), together with the fact that the row is skipped
- * at every visit, so it is refused here without calling into the stream, whose refusal log a valid row's request
- * would re-arm and repeat at every rotation. Any other refusal is the stream's to log. */
+ * (dsd_engine_scan_warn_analog_width() checks it against the same rate), together with the fact that the row is
+ * skipped at every visit, so it is refused here without calling into the stream, whose refusal log a valid row's
+ * request would re-arm and repeat at every rotation; the trunk-scan coordinator stays quiet about the failed visit for
+ * the same reason. Any other refusal is the stream's to log. */
 static int
 dsd_engine_prepare_scan_analog_profile(const dsd_opts* opts, const dsd_state* state, long int freq) {
     const int width_hz = dsd_opts_analog_width_hz(opts);

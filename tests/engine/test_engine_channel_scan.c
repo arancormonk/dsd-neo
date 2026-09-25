@@ -411,13 +411,14 @@ record_squelch_push(double mean_power) {
 }
 
 static int g_analog_warnings;
-static char g_analog_warning_rows[8][256];
+static char g_analog_warning_rows[8][384];
 
 static void
 count_squelch_warnings(dsd_neo_log_level_t level, const char* text, void* ctx) {
     (void)ctx;
     if (level == LOG_LEVEL_WARN && text
-        && (strstr(text, "nfm row") || strstr(text, "--nfm-bandwidth-hz") || strstr(text, "row is skipped"))) {
+        && (strstr(text, "analog channel's squelch") || strstr(text, "--nfm-bandwidth-hz")
+            || strstr(text, "skipped at every visit"))) {
         if (g_analog_warnings < 8) {
             DSD_SNPRINTF(g_analog_warning_rows[g_analog_warnings], sizeof g_analog_warning_rows[0], "%s", text);
         }
@@ -1038,9 +1039,9 @@ nfm_warning_rows_visit(dsd_opts* opts, dsd_state* state, int visits) {
     }
 }
 
-/* What the nfm rows owe the operator, said once per row per map when the scan starts: a squelch
- * that holds on noise, a width on an input with no demodulator for it, and a width the running
- * DSP rate cannot filter. Digital rows and well-set nfm rows say nothing. */
+/* What the nfm rows owe the operator: once per row per map when the scan starts, a squelch that holds on noise; and
+ * once per map and DSP rate, a width on an input with no demodulator for it or a width the running DSP rate cannot
+ * filter. Digital rows and well-set nfm rows say nothing. */
 static int
 nfm_row_warnings(int audio_in_type, int dsp_rate_hz, double configured_sql_db) {
     dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
@@ -1061,27 +1062,31 @@ nfm_row_warnings(int audio_in_type, int dsp_rate_hz, double configured_sql_db) {
 
 static void
 test_nfm_row_warnings_once_per_row(void) {
-    /* RTL input at a 48 kHz DSP rate with a -60 dB default: only row 2 (squelch off) holds on noise. */
+    /* RTL input at a 48 kHz DSP rate with a -60 dB default: only row 2 (squelch off) holds on noise, and the text
+       says what does move on from it: the visit cap or the operator, never -t, which its carrier keeps re-arming. */
     assert(nfm_row_warnings(AUDIO_IN_RTL, 48000, -60.0) == 1);
-    assert(strstr(g_analog_warning_rows[0], "Scan channel 2 (150.000000 MHz): the nfm row's squelch is off"));
+    assert(strstr(g_analog_warning_rows[0], "Scan channel 2 (150.000000 MHz): the analog channel's squelch is off"));
+    assert(strstr(g_analog_warning_rows[0], "until --scan-max-visit-ms or a manual advance or avoid moves on"));
+    assert(!strstr(g_analog_warning_rows[0], "-t "));
     /* The default is open as well (-110 dB, the unset level): row 4 inherits it. */
     assert(nfm_row_warnings(AUDIO_IN_RTL, 48000, -110.0) == 2);
     assert(strstr(g_analog_warning_rows[1], "Scan channel 4 "));
-    /* A 16 kHz DSP rate cannot filter row 1's 20 kHz: named with the validator's text. */
+    /* A 16 kHz DSP rate cannot filter row 1's 20 kHz: named with the validator's text, after the squelch. */
     assert(nfm_row_warnings(AUDIO_IN_RTL, 16000, -60.0) == 2);
-    assert(strstr(g_analog_warning_rows[0], "Scan channel 1 (150.000000 MHz): NFM bandwidth 20 kHz does not fit the "
+    assert(strstr(g_analog_warning_rows[1], "Scan channel 1 (150.000000 MHz): NFM bandwidth 20 kHz does not fit the "
                                             "16 kHz DSP rate"));
-    assert(strstr(g_analog_warning_rows[0], "the row is skipped at every visit"));
+    assert(strstr(g_analog_warning_rows[1], "until then it is skipped at every visit"));
     /* Audio input: the width has nothing to act on, while an nfm row's squelch still gates its monitor and
        carrier there, so only the digital row's squelch draws the #521 warning. */
     assert(nfm_row_warnings(AUDIO_IN_WAV, 0, -60.0) == 2);
-    assert(strstr(g_analog_warning_rows[0], "Scan channel 1 (150.000000 MHz): --nfm-bandwidth-hz 20000 has no effect"));
+    assert(strstr(g_analog_warning_rows[1], "Scan channel 1 (150.000000 MHz): --nfm-bandwidth-hz 20000 has no effect"));
     assert(g_squelch_warnings == 1 && strstr(g_squelch_warning_rows[0], "Scan channel 3 "));
 }
 
-/* The row checks follow the DSP rate a width must fit. An RTL stream that has published none yet leaves them to a
- * later row start rather than skip the width check for good, and a new rate names the rows again: a width that fit
- * the old rate may not fit the new one, and the scanner skips such a row quietly. */
+/* The width checks follow the DSP rate a width must fit. An RTL stream that has published none yet leaves them to a
+ * later row start rather than skip the width check for good, and a new rate names the widths again: a width that fit
+ * the old rate may not fit the new one, and the scanner skips such a row quietly. The squelch does not depend on the
+ * rate: it is named once, when the scan starts, whatever the rate does after. */
 static void
 test_nfm_row_warnings_follow_the_dsp_rate(void) {
     dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
@@ -1090,22 +1095,23 @@ test_nfm_row_warnings_follow_the_dsp_rate(void) {
     nfm_warning_rows_setup(opts, state, AUDIO_IN_RTL, -60.0);
     g_scan_dsp_rate_hz = 0;
     nfm_warning_rows_visit(opts, state, 4);
-    assert(g_analog_warnings == 0);
-    /* The rate arrives: row 2's open squelch and row 1's 20 kHz, once. */
+    assert(g_analog_warnings == 1);
+    assert(strstr(g_analog_warning_rows[0], "Scan channel 2 (150.000000 MHz): the analog channel's squelch is off"));
+    /* The rate arrives: row 1's 20 kHz, once. */
     g_scan_dsp_rate_hz = 16000;
     nfm_warning_rows_visit(opts, state, 8);
     assert(g_analog_warnings == 2);
-    assert(strstr(g_analog_warning_rows[0], "Scan channel 1 (150.000000 MHz): NFM bandwidth 20 kHz does not fit the "
+    assert(strstr(g_analog_warning_rows[1], "Scan channel 1 (150.000000 MHz): NFM bandwidth 20 kHz does not fit the "
                                             "16 kHz DSP rate"));
-    /* A 24 kHz rate fits the 20 kHz width: only the squelch is named again. */
+    /* A 24 kHz rate fits the 20 kHz width, and the squelch is not named again. */
     g_scan_dsp_rate_hz = 24000;
     nfm_warning_rows_visit(opts, state, 8);
-    assert(g_analog_warnings == 3);
-    assert(strstr(g_analog_warning_rows[2], "Scan channel 2 (150.000000 MHz): the nfm row's squelch is off"));
-    /* Back to 16 kHz: the width is named again. */
+    assert(g_analog_warnings == 2);
+    /* Back to 16 kHz: the width is named again, the squelch still not. */
     g_scan_dsp_rate_hz = 16000;
     nfm_warning_rows_visit(opts, state, 8);
-    assert(g_analog_warnings == 5);
+    assert(g_analog_warnings == 3);
+    assert(strstr(g_analog_warning_rows[2], "Scan channel 1 (150.000000 MHz): NFM bandwidth 20 kHz"));
     dsd_engine_channel_scan_leave(opts, state);
     g_scan_dsp_rate_hz = 0;
     dsd_state_trunk_lcn_free(state);
