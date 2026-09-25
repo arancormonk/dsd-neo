@@ -7,9 +7,10 @@
  * @file
  * @brief Analog receive tap: sub-audible front end, carrier hangover and tone publication.
  *
- * Issue #522. The pure core (front end, detectors, carrier) is the first half of this file;
- * the decoder-thread glue that owns DSD_STATE_EXT_DSP_ANALOG_RX, dsd_state::analog_rx and the
- * "Received tone:" log line is the second. See analog_rx_internal.h for the signal path.
+ * Issues #522 (CTCSS) and #523 (DCS). The pure core (front end, detectors, carrier) is the
+ * first half of this file; the decoder-thread glue that owns DSD_STATE_EXT_DSP_ANALOG_RX,
+ * dsd_state::analog_rx and the "Received tone:" log line is the second. See
+ * analog_rx_internal.h for the signal path.
  */
 
 #include <dsd-neo/core/input_level.h>
@@ -41,7 +42,6 @@
    transition, about 28 ms of delay at 2.4 kHz; stage 1 only has to stop what would fold into
    that band. */
 static const double k_stage2_transition_hz = 60.0;
-static const double k_dc_corner_hz = 10.0;
 
 /* ------------------------------------------------------------------------------------------
  * Sub-audible front end
@@ -117,7 +117,7 @@ dsd_analog_subaudible_fe_configure(dsd_analog_subaudible_fe* fe, int rate_hz) {
         full_len = full_cap;
     }
     fe->full_delay_len = full_len > 0 ? full_len : 0;
-    fe->dc_alpha = exp(-2.0 * M_PI * k_dc_corner_hz / fe->out_rate_hz);
+    fe->dc_alpha = exp(-2.0 * M_PI * DSD_ANALOG_RX_DC_CORNER_HZ / fe->out_rate_hz);
     dsd_analog_subaudible_fe_clear(fe);
     fe->active = 1;
     return 1;
@@ -210,7 +210,7 @@ dsd_analog_subaudible_fe_process(dsd_analog_subaudible_fe* fe, const float* in, 
  * ---------------------------------------------------------------------------------------- */
 
 /* The detectors the core runs, in the order their reports are merged. A detector is its ops
-   and the core member holding its working state; the DCS detector (#523) adds a row here. */
+   and the core member holding its working state. */
 typedef struct {
     const dsd_analog_rx_detector_ops* ops;
     size_t ctx_offset;
@@ -218,6 +218,7 @@ typedef struct {
 
 static const analog_rx_detector_slot k_detectors[] = {
     {&dsd_analog_ctcss_ops, offsetof(dsd_analog_rx_core, ctcss)},
+    {&dsd_analog_dcs_ops, offsetof(dsd_analog_rx_core, dcs)},
 };
 
 enum { ANALOG_RX_DETECTOR_COUNT = (int)(sizeof(k_detectors) / sizeof(k_detectors[0])) };
@@ -396,8 +397,16 @@ dsd_analog_rx_core_publish(const dsd_analog_rx_core* core, dsd_analog_rx_publica
  * Decoder-thread glue
  * ---------------------------------------------------------------------------------------- */
 
-/* Log key for "Received tone:" lines: nothing logged yet this reception, "none", or a tone. */
-enum { ANALOG_RX_LOG_UNSET = -1, ANALOG_RX_LOG_NONE = 0 };
+/* Log key for "Received tone:" lines: nothing logged yet this reception, "none", a CTCSS tone
+   (its tenths of a hertz, 1..9999) or a DCS code (ANALOG_RX_LOG_DCS plus the code, doubled, plus
+   its polarity). */
+enum { ANALOG_RX_LOG_UNSET = -1, ANALOG_RX_LOG_NONE = 0, ANALOG_RX_LOG_DCS = 10000 };
+
+/* Room for either label. */
+enum { ANALOG_RX_LABEL_SIZE = 24 };
+
+_Static_assert((int)ANALOG_RX_LABEL_SIZE >= (int)DSD_CTCSS_LABEL_SIZE, "a CTCSS label fits");
+_Static_assert((int)ANALOG_RX_LABEL_SIZE >= (int)DSD_DCS_LABEL_SIZE, "a DCS label fits");
 
 /* Every boundary the tap resets at when it moves: the trunk-tuning generation, and on RTL input the stream generation
    and the analog receive profile the stream published (kind, width, channel filter on; all 0 on other inputs and while
@@ -414,7 +423,7 @@ typedef struct {
     dsd_analog_rx_core core;
     /** The boundaries as the tap saw them at its last read. */
     analog_rx_generations noted;
-    int log_key;              /**< ANALOG_RX_LOG_* or the logged tone in tenths of a hertz */
+    int log_key;              /**< ANALOG_RX_LOG_*, or the logged tone or code (see ANALOG_RX_LOG_DCS) */
     uint32_t log_generation;  /**< the publication generation log_key belongs to */
     int unusable_rate_logged; /**< the unusable rate reported for the current stretch of such input; 0 = none */
     /** Input that may pause: the monotonic ms past which the next read arrives after a pause
@@ -535,6 +544,22 @@ analog_rx_session_create(const dsd_opts* opts, dsd_state* state) {
     return session;
 }
 
+/* The log key of what @p pub reports, @p current while it is still being evaluated, or
+   ANALOG_RX_LOG_UNSET when it reports no verdict (no carrier, or no detection at this rate). */
+static int
+analog_rx_log_key(const dsd_analog_rx_publication* pub, int current) {
+    switch (pub->tone_state) {
+        case DSD_ANALOG_TONE_STATE_LOCKED:
+            if (pub->tone_kind == DSD_ANALOG_TONE_KIND_DCS) {
+                return ANALOG_RX_LOG_DCS + (pub->dcs_code * 2) + (pub->dcs_inverted ? 1 : 0);
+            }
+            return pub->tone_kind == DSD_ANALOG_TONE_KIND_CTCSS ? pub->ctcss_tenths_hz : current;
+        case DSD_ANALOG_TONE_STATE_NONE: return ANALOG_RX_LOG_NONE;
+        case DSD_ANALOG_TONE_STATE_ACQUIRING: return current;
+        default: return ANALOG_RX_LOG_UNSET;
+    }
+}
+
 static void
 analog_rx_log_change(analog_rx_session* session, const dsd_analog_rx_publication* pub) {
     if (pub->generation != session->log_generation) {
@@ -544,16 +569,8 @@ analog_rx_log_change(analog_rx_session* session, const dsd_analog_rx_publication
         session->log_generation = pub->generation;
         session->log_key = ANALOG_RX_LOG_UNSET;
     }
-    int key = session->log_key;
-    if (pub->tone_state == DSD_ANALOG_TONE_STATE_LOCKED && pub->tone_kind == DSD_ANALOG_TONE_KIND_CTCSS) {
-        key = pub->ctcss_tenths_hz;
-    } else if (pub->tone_state == DSD_ANALOG_TONE_STATE_NONE) {
-        key = ANALOG_RX_LOG_NONE;
-    } else if (pub->tone_state != DSD_ANALOG_TONE_STATE_ACQUIRING) {
-        /* No verdict to report: no carrier, or no detection at this input rate. */
-        return;
-    }
-    if (key == session->log_key) {
+    const int key = analog_rx_log_key(pub, session->log_key);
+    if (key == ANALOG_RX_LOG_UNSET || key == session->log_key) {
         return;
     }
     session->log_key = key;
@@ -561,8 +578,11 @@ analog_rx_log_change(analog_rx_session* session, const dsd_analog_rx_publication
         LOG_INFO("Received tone: none\n");
         return;
     }
-    char label[DSD_CTCSS_LABEL_SIZE];
-    if (dsd_ctcss_format_label(key, label, sizeof(label)) > 0) {
+    char label[ANALOG_RX_LABEL_SIZE];
+    const int written = (key >= ANALOG_RX_LOG_DCS)
+                            ? dsd_dcs_format_label(pub->dcs_code, pub->dcs_inverted, label, sizeof(label))
+                            : dsd_ctcss_format_label(key, label, sizeof(label));
+    if (written > 0) {
         LOG_INFO("Received tone: %s\n", label);
     }
 }

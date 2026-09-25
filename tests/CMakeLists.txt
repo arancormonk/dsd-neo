@@ -7658,6 +7658,22 @@ dsd_neo_link_dsp_test(dsd-neo_test_dsp_analog_ctcss ${DSD_NEO_TEST_MATH_LIB})
 add_test(NAME DSP_ANALOG_CTCSS COMMAND dsd-neo_test_dsp_analog_ctcss)
 set_tests_properties(DSP_ANALOG_CTCSS PROPERTIES TIMEOUT 300)
 
+# DCS detection (issue #523) through the pure analog receive core, in sample time: every
+# supported code in both polarities through the receiver's DC block and de-emphasis at two
+# SNRs, the alias rule, hold under bit errors, loss on a stop and on the turn-off tone, and
+# random bits, other code words and every CTCSS tone never locking.
+add_executable(dsd-neo_test_dsp_analog_dcs dsp/test_dsp_analog_dcs.c)
+target_include_directories(
+    dsd-neo_test_dsp_analog_dcs
+    PRIVATE
+        ${PROJECT_SOURCE_DIR}/include
+        ${PROJECT_SOURCE_DIR}/src/dsp
+        ${PROJECT_SOURCE_DIR}/tests/dsp
+)
+dsd_neo_link_dsp_test(dsd-neo_test_dsp_analog_dcs ${DSD_NEO_TEST_MATH_LIB})
+add_test(NAME DSP_ANALOG_DCS COMMAND dsd-neo_test_dsp_analog_dcs)
+set_tests_properties(DSP_ANALOG_DCS PROPERTIES TIMEOUT 300)
+
 # The DCS words runtime generates, checked against Golay24.hpp through the explicit layout
 # mapping between the two, with the cited reference words pinned on both sides (issue #523).
 add_executable(

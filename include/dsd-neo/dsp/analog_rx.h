@@ -93,6 +93,32 @@ enum {
 };
 
 /**
+ * @brief DCS timing contract, in sample time (docs/cli.md "Received code").
+ *
+ * Lock runs from the onset of a code's word to the first bit that reports it, through the
+ * demodulator's DC block and 75 or 750 us de-emphasis, and holds for every supported code in
+ * both polarities in DSP_ANALOG_DCS:
+ *
+ * - DSD_ANALOG_DCS_LOCK_MS at 10 dB in-band signal-to-noise (0-290 Hz) or better;
+ * - DSD_ANALOG_DCS_LOCK_CEILING_MS at 3 dB.
+ *
+ * A lock needs the code's 23-bit word read twice in a row, 46 bits or 342 ms, so a lock
+ * typically comes 350-370 ms after the code starts. Loss runs from the moment the word stops
+ * under a live carrier to the first bit that no longer reports it: DSD_ANALOG_DCS_LOSS_MS,
+ * 32 bits and the front end's delay. The 134.4 Hz turn-off tone a transmitter sends as it
+ * unkeys ends a lock within DSD_ANALOG_DCS_TURNOFF_LOSS_MS of its start.
+ *
+ * A tone policy that waits for a lock before deciding there is no code must wait at least
+ * DSD_ANALOG_DCS_LOCK_CEILING_MS plus 100 ms.
+ */
+enum {
+    DSD_ANALOG_DCS_LOCK_MS = 520,
+    DSD_ANALOG_DCS_LOCK_CEILING_MS = 700,
+    DSD_ANALOG_DCS_LOSS_MS = 350,
+    DSD_ANALOG_DCS_TURNOFF_LOSS_MS = 150,
+};
+
+/**
  * @brief Shortest gap in an input that may pause that counts as the carrier dropping.
  *
  * Inputs that may pause: stdin, UDP and TCP, and live RTL-family radio streams (not IQ
