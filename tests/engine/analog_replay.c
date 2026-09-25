@@ -42,21 +42,30 @@
  *                       locked, 0 to 100 with two decimals: 0.00 when nothing locked, NA when no audio came out.
  * When the label changes during a run, tone= is the last one confirmed and tone_lock_ms the first lock of any.
  * --analog-max-tone-lock-ms bounds tone_lock_ms; like every bound, it fails as not measured when nothing locked.
+ *
+ * --analog-scan-row ROW (issue #526) enters row ROW of the -C channel map before the engine runs, the way the
+ * conventional scanner commits a row: its declared class, then its own options (an nfm row's --nfm-bandwidth-hz and
+ * --squelch-db included), so the replay opens the front end with the row's receive family and width. I/Q replay
+ * cannot retune, so one row is all a run can visit; the host prints "Scan row applied: ..." before the replay.
  */
 
+#include <dsd-neo/core/channel_mode.h>
 #include <dsd-neo/core/init.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/parse.h>
 #include <dsd-neo/core/safe_api.h>
+#include <dsd-neo/core/scan_profile.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/engine/engine.h>
 #include <dsd-neo/io/rtl_stream_c.h>
+#include <dsd-neo/runtime/analog_channel.h>
 #include <dsd-neo/runtime/analog_tones.h>
 #include <dsd-neo/runtime/bootstrap.h>
 #include <dsd-neo/runtime/rtl_stream_io_hooks.h>
 #include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
+#include <dsd-neo/runtime/scan_mode.h>
 #include <dsd-neo/runtime/udp_audio_hooks.h>
 #include <math.h>
 #include <stdint.h>
@@ -149,6 +158,8 @@ static int g_probe_count;
 static analog_totals g_totals;
 static analog_tone_track g_tone;
 static int g_failed;
+/* The -C map row to enter before the replay (--analog-scan-row); unset runs no scan row. */
+static analog_limit g_scan_row;
 
 /* ---- argument handling ---------------------------------------------------------------------------------------- */
 
@@ -176,6 +187,7 @@ static const analog_scalar_arg k_scalar_args[] = {
     {"--analog-max-clip", &g_limits.max_clip, 0.0, 1e12},
     {"--analog-audible-dbfs", &g_limits.audible_dbfs, -ANALOG_DB_LIMIT, 0.0},
     {"--analog-max-tone-lock-ms", &g_limits.max_tone_lock_ms, 0.0, 1e9},
+    {"--analog-scan-row", &g_scan_row, 0.0, 65535.0},
 };
 
 static const char* const k_probe_limit_args[PROBE_LIMIT_COUNT] = {
@@ -210,6 +222,7 @@ analog_usage(void) {
                 "  --analog-probe-hz HZ              report the level at HZ (repeatable, up to 8)\n"
                 "  --analog-probe-{min,max}-dbc HZ:DB   probe level relative to the expected tone\n"
                 "  --analog-probe-{min,max}-dbfs HZ:DB  probe level relative to full scale\n"
+                "  --analog-scan-row ROW             enter row ROW of the -C channel map before the replay\n"
                 "Other --analog-* arguments go to dsd-neo unchanged.\n");
 }
 
@@ -839,6 +852,34 @@ analog_report(void) {
     }
 }
 
+/* Commit a -C map row the way the conventional scanner does (issue #526): prepare with the row's options, enter its
+ * class, then install the options. Returns 0, or -1 when the row does not exist or declares no class. */
+static int
+analog_enter_scan_row(dsd_opts* opts, dsd_state* state, double requested) {
+    const int row = (int)floor(requested);
+    if (fabs(requested - (double)row) > ANALOG_HZ_EPSILON || row >= state->lcn_freq_count) {
+        DSD_FPRINTF(stderr, "analog replay: --analog-scan-row %g is not a row of the -C map\n", requested);
+        return -1;
+    }
+    const dsd_scan_mode mode = dsd_channel_mode_get(state, (size_t)row);
+    const dsd_scan_row_profile* profile = dsd_channel_profile_get(state, (size_t)row);
+    const dsd_scan_option_values* values = profile ? &profile->values : NULL;
+    dsd_scan_settings prepared;
+    if (mode == DSD_SCAN_MODE_INHERIT || dsd_scan_mode_prepare(opts, state, mode, values, &prepared) != 0
+        || dsd_scan_mode_enter(opts, state, mode) != 0 || dsd_scan_mode_options(opts, state, values) != 0) {
+        DSD_FPRINTF(stderr, "analog replay: row %d declares no scan class the replay can enter\n", row);
+        return -1;
+    }
+    char width[DSD_ANALOG_WIDTH_TEXT_MAX] = "-";
+    if (dsd_opts_is_analog_family(opts)) {
+        (void)dsd_analog_width_format(dsd_analog_width_effective_hz(opts->analog_demod, dsd_opts_analog_width_hz(opts)),
+                                      width, sizeof width);
+    }
+    DSD_FPRINTF(stderr, "Scan row applied: %d %s; width %s%s\n", row, dsd_scan_mode_name(mode), width,
+                (dsd_scan_mode_option_fields(state) & DSD_SCAN_OPT_BANDWIDTH) ? " (row)" : "");
+    return 0;
+}
+
 static void
 analog_stop(dsd_opts* opts, dsd_state* state, void* context) {
     (void)opts;
@@ -869,11 +910,16 @@ main(int argc, char** argv) {
         initState(state);
         dsd_engine_lifecycle_hooks hooks = {analog_start, analog_stop, NULL};
         if (dsd_runtime_bootstrap(kept, args, opts, state, NULL, &rc) == DSD_BOOTSTRAP_CONTINUE) {
-            rc = dsd_engine_run_with_lifecycle(opts, state, &hooks);
+            if (g_scan_row.set && analog_enter_scan_row(opts, state, g_scan_row.value) != 0) {
+                rc = 2;
+            } else {
+                rc = dsd_engine_run_with_lifecycle(opts, state, &hooks);
+            }
             if (rc == 0 && g_failed) {
                 rc = 1;
             }
         }
+        dsd_scan_mode_leave(opts, state);
         freeState(state);
     }
     free(state);

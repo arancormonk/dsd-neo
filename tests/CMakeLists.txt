@@ -11445,6 +11445,24 @@ if(DSD_HAS_RADIO)
         ""
         "${_analog_off_path}"
     )
+    # Issue #526: a -Y map row declaring nfm with --nfm-bandwidth-hz 12500 on a digital
+    # (-fa) session. The host enters row 0 the way the scanner commits it, so the replay's
+    # front end opens on the analog family at the row's width: the neighbour 12.5 kHz up,
+    # which the same row without a width (the default 16 kHz channel) passes at -64.9 dBc,
+    # reads -81.3 dBc through the row's 12.5 kHz channel, with 27.2 dB tone SNR. The
+    # -72 dBc bound sits between the two, so it fails if the row width does not apply.
+    set(_scan_nfm_csv "${CMAKE_CURRENT_BINARY_DIR}/scan_mode_nfm_row.csv")
+    file(
+        WRITE "${_scan_nfm_csv}"
+        "channel,frequency_hz,mode,options\n1,150000000,nfm,--nfm-bandwidth-hz 12500\n"
+    )
+    dsd_neo_add_analog_replay_test(
+        DECODE_IQ_SCAN_NFM_TONE
+        nfm_adjacent_synth
+        "-fa -C ${_scan_nfm_csv} --analog-scan-row 0 --analog-expect-tone-hz 1000 --analog-min-snr-db 20 --analog-min-captured-ms 1400 --analog-probe-max-dbc 12500:-72"
+        "Scan row applied: 0 nfm; width 12.5 kHz \\(row\\).*ANALOG AUDIO OK"
+        "${_analog_off_path}"
+    )
     # A run in which no audio reaches the hook at all: -fi leaves the analog monitor
     # off. The never-audible bound is paired with stream time (1500 ms measured), the
     # pattern every silent or muted case uses so that a stalled or empty replay
