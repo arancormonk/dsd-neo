@@ -527,49 +527,81 @@ pin against the published words, so the fixtures are correct by construction. No
 - `_NOCODE`: `nfm_notone_synth`, voice with no code: `none`, never a code.
 
 The CTCSS cases and the off-air cases fail on any DCS code too, so none of the tone fixtures, the squelch captures'
-150 bit/s data or AM airband voice reads as a code.
+150 bit/s data or AM airband voice reads as a code. `DECODE_IQ_ANALOG_DCS_023N_HOST` and `_023I_HOST` replay the two
+accept fixtures through the analog replay host and match its `tone=` field, which reads the detector's canonical label
+from the publication: `tone=D023N` and `tone=D047N` (never `D023I` or `D023N` for the inverted word), locked within the
+520 ms bound (360 ms measured, 83% of each run locked). Over 12 realtime `replay_ab.sh --metric analog` repeats against
+`main` (see [Analog A/B](#analog-ab)), this build read `D023N`, `D047N` and `D023N` on `_023n`, `_023i` and `_drop` on
+every repeat (first lock 360, 360 and 380 ms; 83, 83 and 56% locked), where `main`, which has no DCS detector, reads
+`NA`; `_noisy`, both squelch captures and `nfm_ctcss_real` (151.4 Hz at 300 ms, 88.67% locked) read the same in both
+builds, with every audio column unchanged.
 
 The detector's own bounds are pinned in sample time by `DSP_ANALOG_DCS`, through the pure receive core. Its signals are
 built the way a receiver hears them: the transmitter's NRZ word through the receiver's de-emphasis (75 us, or the
 750 us land-mobile option) and the demodulator's DC block (`dc += (x - dc) / 2^11`, as `demod_pipeline.cpp` runs it),
 plus white noise at an in-band (0-290 Hz) signal-to-noise ratio against the NRZ's power, all from seeded generators.
+Its pins are stronger than the per-event ceilings in `<dsd-neo/dsp/analog_rx.h>`: every stop meets the loss p95
+target on its own, and at 3 dB every row meets the lock p95 target and every fixed-seed start locks within 700 ms.
 
 - Lock: every code in both polarities at 48 kHz, with both de-emphasis settings, within 520 ms of its onset at 10 dB
-  and 700 ms at 3 dB (p50 350 ms; the slowest 400 ms at 10 dB and 573 ms at 3 dB); every eighth code at 8, 44.1, 48 and 78.125 kHz the same
-  (worst 589 ms at 3 dB, 78.125 kHz); a code under transmitter-filtered speech 10 dB above it within 700 ms; a
-  transmitter at 134.3 or 134.5 bit/s locks and holds for 8 s; the alias pins (D023I reads D047N, D047I D023N, D754I
-  D116N and others) through the detector.
+  and 700 ms at 3 dB (p50 350 ms; the slowest 400 ms at 10 dB and 573 ms at 3 dB), each 3 dB row within the 450 ms
+  p95 target; every eighth code at 8, 44.1, 48 and 78.125 kHz the same (worst 589 ms at 3 dB, 78.125 kHz); a code
+  under transmitter-filtered speech 10 dB above it within 700 ms, and held from then on for 20 s; a transmitter at
+  134.3 or 134.5 bit/s locks and holds for 8 s; the alias pins (D023I reads D047N, D047I D023N, D754I D116N and
+  others) through the detector.
 - Hold and loss: one wrong bit in every word, in the same bit or moving through the word, holds for 20 s; two wrong
   bits in every word lose the lock within 522 ms of the damage (a window holds both errors only once it lies wholly
   after the damage started, up to a word later), and nothing locks in its place; a code that stops under a live
-  carrier is lost within 350 ms (p50 294 ms), and the 134.4 Hz turn-off tone within 150 ms (p50 80 ms, worst 108 ms);
-  a carrier drop is forgotten within the 200 ms hangover, and a 150 ms dropout inside a transmission keeps the lock.
+  carrier is lost within 350 ms (p50 293 ms), and the 134.4 Hz turn-off tone within 150 ms (p50 76 ms, worst 99 ms);
+  a steady 130, 134.4 or 140 Hz component at the code's power or 3 dB above it, starting under a held code, never
+  ends the lock (the turn-off rule waits for the code to go too); a carrier drop is forgotten within the 200 ms
+  hangover, and a 150 ms dropout inside a transmission keeps the lock.
+- Publication: when a CTCSS tone locks under a held code, or a code under a held tone, the one that locked first stays
+  published until its signal stops, and only then the other shows; both detectors are locked meanwhile, so the rule,
+  not a missed detection, keeps the display.
 - Rejection: ten minutes of random bits at 134.4 bit/s; the 74 rotation classes of the Golay (23,12) code that carry
   no standard code, in both polarities; every standard word sent bit-reversed that is more than one bit from every
-  standard word; every CTCSS tone at 8 and 48 kHz, clean and at 10 dB; and two minutes each of unfiltered and
-  transmitter-filtered speech: none locks. A carrier with no code reads `detecting` until 500 ms, then `none`, and a
-  code that starts later still locks within its bound.
+  standard word; every CTCSS tone at 8 and 48 kHz, clean and at 10 dB, never locking even for a moment; and two
+  minutes each of unfiltered and transmitter-filtered speech: none locks. A carrier with no code reads `detecting`
+  until 500 ms, then `none`, and a code that starts later still locks within its bound. A rate beyond the detector's
+  sample ring (none the front end delivers) leaves it inert, reporting no code.
 - Invariance: the RTL live, replay and int16 PCM scales lock in the same block, and block size never moves the lock.
 
-`DSP_ANALOG_CTCSS` now also checks that every supported code's waveform locks as DCS and never as a CTCSS tone, and
-that every other periodic waveform reads no tone unless it is one bit from a supported word. `DSP_SYMBOL_REPLAY` runs
-D023N and the inverted word through the real tap and checks the `Received tone: DCS` line, and the resets that clear a
-tone are shown to clear a code as well: a trunk-tuning or RTL stream generation move and an announced reset in
-`DSP_SYMBOL_REPLAY`, `RTL_SET_FREQ`, `MANUAL_TUNE` and a decode-mode change in `APP_COMMAND_QUEUE`, and a `-Y` row
-commit in `ENGINE_CHANNEL_SCAN`. `APP_CONTROL_RX_TONE_VIEW`, `UI_NCURSES_PRINTER_HELPERS`, `UI_QT_METRICS_MODEL` and
-`UI_QT_QML_CALL_LISTS` pin the `DCS D023N` text, the names the view refuses (an unsupported code, a rotation alias, a
-non-canonical polarity), and the received code kept apart from a configured policy value.
+`DSP_ANALOG_CTCSS` also checks that every supported code's waveform locks once as DCS, under its canonical name, and
+never as a CTCSS tone; that every other periodic waveform locks nothing, not even for a moment, unless it is one bit
+from a supported word, when it locks once as that code; and that the words that come nearest to a table tone, at
+least three bits from every supported word, lock nothing at every rate and SNR. `DSP_SYMBOL_REPLAY` runs D023N and the
+inverted word through the real tap and checks the `Received tone: DCS` line, and the resets that clear a tone are shown
+to clear a code as well: a trunk-tuning or RTL stream generation move and an announced reset in `DSP_SYMBOL_REPLAY`,
+`RTL_SET_FREQ`, `MANUAL_TUNE` and a decode-mode change in `APP_COMMAND_QUEUE` (each named for the tone and the code
+pass), and a `-Y` row commit in `ENGINE_CHANNEL_SCAN`. `APP_CONTROL_RX_TONE_VIEW`, `UI_NCURSES_PRINTER_HELPERS`,
+`UI_QT_METRICS_MODEL` and `UI_QT_QML_CALL_LISTS` pin the `DCS D023N` text, the names the view refuses (an unsupported
+code, a rotation alias, a non-canonical polarity), and the received code kept apart from a configured policy value.
+`RUNTIME_ANALOG_TONES` and `DSP_ANALOG_DCS_GOLAY_XCHECK` pin the published words of 023, the inverted 023, 047, 020
+and 000 (onfreq's DPL/DCS page), 047 a standard code of its own and 020 a word of another rotation class, so check bits
+that do not follow from 023's, before and after the mapping onto `Golay24.hpp`.
 
-Long-run sweeps (offline, the `DSP_ANALOG_DCS` signal model, every code in both polarities with the onset anywhere in
-a word):
+Long-run sweeps (offline, the `DSP_ANALOG_DCS` signal model through the pure receive core, a random code and polarity
+per start with the onset anywhere in a word; `<dsd-neo/dsp/analog_rx.h>` sets its ceilings above the slowest event):
 
-- 10 dB, 4,160 starts each with 75 and 750 us de-emphasis at 48 kHz: p95 369 ms, the slowest 398 and 402 ms.
-- 3 dB at 48 kHz, 10,400 starts each: with 75 us p95 389 ms, p99.9 632 ms, one start beyond 700 ms (926 ms); with
-  750 us p95 403 ms, p99.9 662 ms, four beyond 700 ms (the slowest 866 ms).
-- 3 dB, 4,160 starts each: at 78.125 kHz, where the demodulator's DC block sags the most, p99.9 687 ms and two beyond
-  700 ms (the slowest 717 ms); at 8 and 44.1 kHz none beyond (the slowest 554 and 649 ms).
-- Holds of 60 s: at 3 dB and 10 dB no lock was lost over 24 runs at 48 and 78.125 kHz; at 0 dB, outside the contract,
-  a held code dropped about twice a minute and locked again.
+- Lock at 10 dB, 500,000 starts each with 75 and 750 us at 48 kHz: p95 370 and 371 ms, the slowest 435 and 429 ms.
+- Lock at 3 dB, 8,500,000 starts: with 75 us, p95 381, 389, 391 and 405 ms at 8, 44.1, 48 and 78.125 kHz (500,000,
+  500,000, 1,000,000 and 1,000,000 starts), the slowest 824, 963, 1,069 and 1,006 ms; with 750 us, p95 392, 400, 404
+  and 425 ms (500,000, 500,000, 2,000,000 and 2,500,000 starts), p99.9 at most 716 ms, the slowest 961, 1,007, 1,087
+  and 1,448 ms. 59 starts took longer than a second, 48 of them with 750 us at 78.125 kHz, where the demodulator's DC
+  block sags the most and the de-emphasis smears a code's isolated bits; the slowest read one bit of nearly every word
+  wrong, a different bit each time, for over a second.
+- Loss when the code stops under a live carrier, 1,000,000 stops at 3 and 10 dB over the same rates and de-emphasis:
+  p95 at most 328 ms, p99.9 at most 376 ms, the slowest 572 ms. About 5 stops in 100,000 take longer than 450 ms: the
+  noise that follows reads as the code within one bit once, which starts the 32 bits over.
+- Loss on the turn-off tone, 1,000,000 at 3 and 10 dB: p95 at most 135 ms (750 us at 3 dB; 97-109 ms otherwise), p99.9
+  at most 225 ms, the slowest 307 ms.
+- Holds: at 3 dB with nothing else in the band, a held code dropped 5 times in 200 minutes with 750 us at
+  78.125 kHz and once in 200 minutes at 48 kHz, each time locking again, and never in 8 minutes at 10 dB; with a
+  steady 130 Hz component 3 dB above the code or 134.4 Hz at its power, about once or twice a minute at 3 dB and never
+  at 10 dB; under transmitter-filtered speech 10 and 20 dB above the code never in 12 minutes each; under unfiltered
+  speech 10 dB above it, outside the contract, about 8 times a minute (the code shown 94% of the time); at 0 dB
+  in-band, outside the contract, about twice a minute.
 
 Known gaps and caveats:
 
@@ -783,8 +815,9 @@ names with the new ones and refuses any name it does not build). A real DCS acce
 Every DCS waveform has two spellings, because inverting a DCS word gives another valid word: the oracle prints both
 (`D023N = D047I`, and `D023I = D047N` for the inverted waveform). The DCS detector (#523) reports the normal-polarity
 spelling (`dsd_dcs_canonical()`; the alias table is in the [CLI guide](cli.md#received-code-dcs-on-the-analog-monitor));
-compare an oracle label with a detector's by waveform, not by spelling. The wiki's CTCSS page, which links the I/Q recording, carries audio samples at
-151.4, 173.8 and 186.2 Hz without saying which tones the recording holds; the oracle finds the first two. A
+compare an oracle label with a detector's by waveform, not by spelling. The wiki's CTCSS page, which links the I/Q
+recording, carries audio samples at 151.4, 173.8 and 186.2 Hz without saying which tones the recording holds; the
+oracle finds the first two. A
 maintainer has confirmed the CTCSS labels in the table, "none" for both squelch captures included, and the received-tone
 cases pin them: `DECODE_IQ_ANALOG_REAL_CTCSS_1514` the 151.4 Hz of `nfm_ctcss_real`, and the
 `DECODE_IQ_ANALOG_REAL_CTCSS_NOFALSE_*` cases the absence of any tone on both squelch captures (see

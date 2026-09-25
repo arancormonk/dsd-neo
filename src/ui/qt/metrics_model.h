@@ -1061,7 +1061,13 @@ class MetricsModel : public QObject {
         return m_view.rx_tone_dcs_code;
     }
 
-    /** @brief The locked DCS code is named in inverted polarity. */
+    /**
+     * @brief The locked DCS code is named in inverted polarity.
+     *
+     * Always false for the standard codes: every standard code's inverted signal is another
+     * standard code's normal one, and that normal name is the one shown. Kept because a code
+     * is named with its polarity everywhere else (the publication, the formatters).
+     */
     bool
     rxToneDcsInverted() const {
         return m_view.rx_tone_dcs_inverted;

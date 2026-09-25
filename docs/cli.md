@@ -728,10 +728,15 @@ detection it only reports: it never mutes or gates audio, it needs no setting, a
   226, 243, 244, 245, 246, 251, 252, 255, 261, 263, 265, 266, 271, 274, 306, 311, 315, 325, 331, 332, 343, 346, 351,
   356, 364, 365, 371, 411, 412, 413, 423, 431, 432, 445, 446, 452, 454, 455, 462, 464, 465, 466, 503, 506, 516, 523,
   526, 532, 546, 565, 606, 612, 624, 627, 631, 632, 654, 662, 664, 703, 712, 723, 731, 732, 734, 743 and 754. A code is
-  shown as `D`, its three octal digits with leading zeros, and `N` (normal) or `I` (inverted): `DCS D023N`.
+  shown as `D`, its three octal digits with leading zeros, and its polarity, `N` (normal) or `I` (inverted):
+  `DCS D023N`. A received standard code always shows `N`: the inverted signal of every standard code is another standard
+  code's normal one (see Aliases). The `I` spelling, and the received polarity the monitor publishes, exist because a
+  code is named with its polarity everywhere; for the standard codes that polarity always reads normal.
 - What is sent: a DCS transmitter repeats one 23-bit word at 134.4 bit/s, the code's nine bits (least significant
   first), the fixed bits 0, 0, 1 and 11 Golay (23,12) check bits. Normal polarity sends a one as positive deviation (the
-  carrier above the tuned frequency); inverted polarity sends the complement of the word.
+  carrier above the tuned frequency); inverted polarity sends the complement of the word. This convention and the bit
+  order follow the published reference words; checking them on the air against a transmitter with a known code, in
+  both polarities, is still to be done.
 - Aliases: a receiver cannot tell where a word starts, and the complement of a code's word is another code's word
   shifted in time, so every standard code sent in inverted polarity is exactly the signal of one standard code in
   normal polarity: D023I is D047N, and D047I is D023N. DSD-neo names each signal by its normal-polarity code, so a radio
@@ -768,27 +773,40 @@ detection it only reports: it never mutes or gates audio, it needs no setting, a
 
 - What is shown: the terminal's `Rx tone:` line and the Qt/Android `RECEIVED TONE` row read `DCS D023N` once a code is
   confirmed, with `detecting`, `none` and the em dash as for CTCSS. The log prints `Received tone: DCS D023N` whenever
-  the verdict changes.
-- Timing, in sample time, through a receiver's DC block and 75 or 750 us de-emphasis: a code is confirmed once its word
-  has been read twice in a row, 46 bits, so typically 350-370 ms after it starts. At 10 dB in-band signal-to-noise
-  (0-290 Hz) or better every start is confirmed within 520 ms (over 8,320 seeded starts the slowest took 402 ms); at
-  3 dB within 700 ms on 999 starts in 1,000 (7 of 33,280 starts at 8 to 78.125 kHz took longer, the slowest 926 ms).
-  The tests hold every code in both polarities within both bounds on fixed seeds. A code that stops under a live
-  carrier is dropped within 350 ms (32 bits and the front end's delay); the 134.4 Hz turn-off tone a transmitter sends
-  as it unkeys drops it within 150 ms (typically 80 ms). One wrong bit in every word keeps the lock; two do not. A
-  transmitter a little off 134.4 bit/s (some send 134.3) locks and holds. A carrier with no code reads `detecting`
-  until 500 ms of it and `none` after, so a code that takes longer than that to confirm, near 3 dB, shows `none` first.
+  the verdict changes. When a CTCSS tone and a DCS code both lock (a voice holding a tone's pitch on a coded channel),
+  the one that locked first stays shown until it is lost.
+- Timing, in sample time, through a receiver's DC block and 75 or 750 us de-emphasis at 8 to 78.125 kHz: a code is
+  confirmed once its word has been read twice in a row, 46 bits, so typically 350-370 ms after it starts. At 10 dB
+  in-band signal-to-noise (0-290 Hz) or better every start is confirmed within 520 ms (over 1,000,000 starts the
+  slowest took 435 ms). At 3 dB, 95 starts in 100 are confirmed within 450 ms and 999 in 1,000 within 716 ms; the
+  ceiling is 1,500 ms, above the slowest of 8,500,000 starts (1,448 ms), and the slow tail comes mostly from 750 us
+  de-emphasis, which smears a code's isolated bits. Lock time in noise has no absolute bound. The tests hold every code
+  in both polarities within 520 ms at 10 dB and 700 ms at 3 dB on fixed seeds. A code that stops under a live carrier is
+  dropped within 350 ms on 95 stops in 100 (32 bits and the front end's delay), with a 600 ms ceiling above the slowest
+  of 1,000,000 stops (572 ms); the 134.4 Hz turn-off tone a transmitter sends as it unkeys drops it sooner, within
+  150 ms on 95 in 100 (typically 80 ms), with a 350 ms ceiling (the slowest of 1,000,000 took 307 ms). The ceilings are
+  in `<dsd-neo/dsp/analog_rx.h>`. One wrong bit in every word keeps the lock; two do not. A transmitter
+  a little off 134.4 bit/s (some send 134.3) locks and holds. A carrier with no code reads `detecting` until 500 ms of
+  it and `none` after, so a code that takes longer than that to confirm, near 3 dB, shows `none` first.
+- Holding: the turn-off tone ends a lock only once the code has gone too, so a steady component near 134.4 Hz under a
+  code that is still read (an interferer, a voice holding its pitch) leaves the lock alone: at 10 dB it never ended one,
+  and at 3 dB, where the noise now and then costs the code a bit, a component at the code's power or 3 dB above it
+  ended one or two a minute, each confirmed again. Transmitter-filtered speech 10 and 20 dB
+  above the code never lost a lock in the long runs. Unfiltered speech 10 dB above the code (a voice fundamental in the
+  band, which a transmitter's voice high-pass removes) is outside these bounds: it lost the lock about 8 times a
+  minute, each time confirming the code again, so the code showed 94% of the time.
 - Rejection: in the tests random bits, the Golay code words that carry no standard code, every CTCSS tone and speech
   never read as a code. A signal one bit from a standard code's word may read as that code, the way DCS decoders
   tolerate a bit error; one two bits from every code's word does not. Noise reads as a code twice in a row about once
-  in 6 x 10^8 bits for each of the detector's four slicers, some 50 days of continuous noise each.
+  in 6 x 10^8 bits for each of the detector's four slicers, some 50 days of continuous noise each; any of the four can
+  lock, so the detector as a whole does so at most four times as often, once in 1.6 x 10^8 bits or some 13 days.
 - The received code is forgotten at the same boundaries as the tone (retune, row or target change, decode-mode change,
   input switch, stop, 200 ms without carrier, a paused input stream), and detection runs where tone detection runs.
 - Externally demodulated audio (PCM inputs): keep everything below 300 Hz, as for CTCSS. The detector expects the
   low-frequency sag a DC-blocked path puts on long runs of equal bits (the demodulator's own DC block, a sound card's
-  coupling down to about a 10 Hz corner), and a harder high-pass costs sensitivity. The audio's polarity matters: an inverted
-  audio path (some receivers' discriminator outputs, some sound cards) turns every code into its alias, so a D023N
-  transmitter reads as `DCS D047N`.
+  coupling down to about a 10 Hz corner), and a harder high-pass costs sensitivity. The audio's polarity matters: an
+  inverted audio path (some receivers' discriminator outputs, some sound cards) turns every code into its alias, so a
+  D023N transmitter reads as `DCS D047N`.
 
 ## Mode Tweaks & Advanced
 

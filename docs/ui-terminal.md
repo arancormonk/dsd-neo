@@ -665,9 +665,9 @@ the channel line and in compact view too:
 ```
 
 It reads `CTCSS 100.0 Hz` once a supported tone is confirmed, `DCS D023N` once a DCS code is (three octal digits with
-leading zeros, then `N` or `I` for the polarity; an inverted code reads as the normal code whose signal it is, so D023I
-reads `DCS D047N`), `detecting` while a carrier is being evaluated, `none` when the carrier carries no supported tone
-or code (or it was lost), and `—` when there is no carrier (`-` on a terminal
+leading zeros, then the polarity, always `N` for a received standard code: an inverted code reads as the normal code
+whose signal it is, so D023I reads `DCS D047N`), `detecting` while a carrier is being evaluated, `none` when the
+carrier carries no supported tone or code (or it was lost), and `—` when there is no carrier (`-` on a terminal
 without UTF-8), including while a stdin, UDP or TCP stream, or a live radio stream such as an `rtl_tcp` connection, has
 stopped delivering audio for about half a second. The line is shown exactly while detection runs, so it is absent
 outside the analog FM monitor, while an RTL stream is not yet outputting monitor audio, and at an input rate detection

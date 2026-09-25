@@ -96,30 +96,55 @@ enum {
  * @brief DCS timing contract, in sample time (docs/cli.md "Received code").
  *
  * Lock runs from the onset of a code's word to the first bit that reports it, through the
- * demodulator's DC block and 75 or 750 us de-emphasis, for a code in noise at an in-band
- * signal-to-noise ratio (0-290 Hz) of:
+ * demodulator's DC block and 75 or 750 us de-emphasis at 8 to 78.125 kHz, for a code in noise
+ * at an in-band signal-to-noise ratio (0-290 Hz) of:
  *
- * - 10 dB or better: every start within DSD_ANALOG_DCS_LOCK_MS. Over 8,320 seeded starts (every
- *   code in both polarities, 75 and 750 us, 48 kHz) the slowest took 402 ms.
- * - 3 dB: within DSD_ANALOG_DCS_LOCK_CEILING_MS for every code in both polarities in
- *   DSP_ANALOG_DCS and on 999 starts in 1,000 in the long-run sweeps. Lock time in noise has
- *   no absolute bound: 7 of 33,280 starts at 8 to 78.125 kHz took longer (the slowest 926 ms).
+ * - 10 dB or better: every start within DSD_ANALOG_DCS_LOCK_MS. Over 1,000,000 starts (random
+ *   codes in either polarity, the onset anywhere in a word, 75 and 750 us at 48 kHz) the
+ *   slowest took 435 ms.
+ * - 3 dB: a p95 target, DSD_ANALOG_DCS_LOCK_P95_MS, and a per-event ceiling,
+ *   DSD_ANALOG_DCS_LOCK_CEILING_MS, above the slowest start of the long-run sweeps. Over
+ *   8,500,000 starts at 8, 44.1, 48 and 78.125 kHz with both de-emphasis settings, p95 was at
+ *   most 425 ms and p99.9 at most 716 ms; 59 took longer than a second, 48 of them with 750 us
+ *   at 78.125 kHz, where the DC block sags the most and the de-emphasis smears a code's isolated
+ *   bits, and the slowest took 1,448 ms there. Lock time in noise has no absolute bound. Every
+ *   code in both polarities in DSP_ANALOG_DCS locks within 700 ms on its fixed seeds.
  *
  * A lock needs the code's 23-bit word read twice in a row, 46 bits or 342 ms, so a lock
- * typically comes 350-370 ms after the code starts. Loss runs from the moment the word stops
- * under a live carrier to the first bit that no longer reports it: DSD_ANALOG_DCS_LOSS_MS,
- * 32 bits and the front end's delay. The 134.4 Hz turn-off tone a transmitter sends as it
- * unkeys ends a lock within DSD_ANALOG_DCS_TURNOFF_LOSS_MS of its start.
+ * typically comes 350-370 ms after the code starts.
+ *
+ * Loss runs from the moment the word stops under a live carrier to the first bit that no longer
+ * reports it: 32 bits and the front end's delay, with a p95 target, DSD_ANALOG_DCS_LOSS_P95_MS,
+ * and a ceiling, DSD_ANALOG_DCS_LOSS_CEILING_MS. Over 1,000,000 stops at 3 and 10 dB, p95 was
+ * at most 328 ms and the slowest 572 ms: in about 5 stops in 100,000 the noise that follows
+ * reads as the code within one bit once more, which starts the 32 bits over. The 134.4 Hz
+ * turn-off tone a transmitter sends as it unkeys ends a lock sooner, once the code has gone
+ * with it: p95 target DSD_ANALOG_DCS_TURNOFF_LOSS_P95_MS, ceiling
+ * DSD_ANALOG_DCS_TURNOFF_LOSS_CEILING_MS; over 1,000,000 turn-offs at 3 and 10 dB, p95 was at
+ * most 135 ms and the slowest 307 ms. A steady component near 134.4 Hz under a code that is
+ * still read (an interferer, a voice holding its pitch) ends no lock at 10 dB; at 3 dB, where
+ * the noise now and then costs the code a bit, one at the code's power or 3 dB above it ended
+ * one or two locks a minute, each locking again.
+ *
+ * Speech louder than the code is outside the contract. Transmitter-filtered speech 10 and 20 dB
+ * above the code never lost a lock in 12 minutes at each level, but unfiltered speech 10 dB
+ * above it (a voice fundamental in the band) lost it about 8 times a minute, each time locking
+ * again, leaving the code shown 94% of the time. A held code at 3 dB with nothing else in the
+ * band drops now and then too (5 times in 200 minutes with 750 us at 78.125 kHz, once in 200
+ * minutes at 48 kHz) and locks again.
  *
  * A tone policy that waits for a lock before deciding there is no code must wait at least
- * DSD_ANALOG_DCS_LOCK_CEILING_MS plus 100 ms, and still meets a late lock near 3 dB at the rate
- * above.
+ * DSD_ANALOG_DCS_LOCK_CEILING_MS plus 100 ms. When a CTCSS tone and a DCS code both lock, the
+ * one that locked first stays published in dsd_state::analog_rx until it is lost.
  */
 enum {
     DSD_ANALOG_DCS_LOCK_MS = 520,
-    DSD_ANALOG_DCS_LOCK_CEILING_MS = 700,
-    DSD_ANALOG_DCS_LOSS_MS = 350,
-    DSD_ANALOG_DCS_TURNOFF_LOSS_MS = 150,
+    DSD_ANALOG_DCS_LOCK_P95_MS = 450,
+    DSD_ANALOG_DCS_LOCK_CEILING_MS = 1500,
+    DSD_ANALOG_DCS_LOSS_P95_MS = 350,
+    DSD_ANALOG_DCS_LOSS_CEILING_MS = 600,
+    DSD_ANALOG_DCS_TURNOFF_LOSS_P95_MS = 150,
+    DSD_ANALOG_DCS_TURNOFF_LOSS_CEILING_MS = 350,
 };
 
 /**
