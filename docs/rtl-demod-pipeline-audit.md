@@ -109,6 +109,12 @@ without de-emphasis and without the I/Q DC blocker.
 - The output scale is not applied to AM (see Output Scale), and de-emphasis is
   off at open and on every switch to AM (its coefficient cleared), restored from
   the config on the way back to FM.
+- The detector runs only while the monitor is on its own (WIDE) channel. A typed
+  digital scan row's symbol profile on an AM session keeps the monitor output
+  with the row's channel profile, as under `-fA`, and its signal is
+  FM-demodulated there, with the I/Q DC blocker and the output scale applied as
+  for FM; the carrier estimate is untouched, and the row's leave (a family
+  switch) resets it.
 - Measured on the deterministic fixtures through the replay host: a 1 kHz tone at
   50% depth with noise 30 dB below the carrier reads 24.4 dB tone SNR and
   35.4 dB in-band ratio (`DECODE_IQ_ANALOG_AM_TONE`); an unmodulated neighbour

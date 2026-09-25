@@ -832,7 +832,7 @@ dsd_am_demod(struct demod_state* fm) {
 
 int
 dsd_demod_am_active(const struct demod_state* d) {
-    return (d && d->mode_demod == &dsd_am_demod) ? 1 : 0;
+    return (d && d->mode_demod == &dsd_am_demod && dsd_demod_analog_monitor_active(d)) ? 1 : 0;
 }
 
 int
@@ -1428,6 +1428,10 @@ full_demod_run_output_demod(struct demod_state* d) {
     if (d->cqpsk_enable) {
         qpsk_differential_demod(d);
         full_demod_debug_cqpsk_symbols(d);
+    } else if (d->mode_demod == &dsd_am_demod && !dsd_demod_am_active(d)) {
+        /* A typed digital scan row's profile on an AM session: its signal is FM, as under -fA, and the AM detector's
+           carrier estimate is left for the monitor's return (a family switch, which resets it). */
+        dsd_fm_demod(d);
     } else {
         d->mode_demod(d);
     }

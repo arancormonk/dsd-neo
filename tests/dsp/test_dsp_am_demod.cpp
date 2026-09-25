@@ -399,6 +399,48 @@ run_pipeline(double carrier, double offset_hz, double cnr_db, float* out_iq_dc_r
     return fit;
 }
 
+/* A typed digital scan row's symbol profile on an AM session keeps the monitor output but puts the row's channel
+ * profile in place of the analog one (dsd_demod_analog_monitor_active() reads 0): the row's digital signal is then
+ * FM-demodulated, as under -fA, not run through the AM detector, whose carrier estimate the row leaves alone; the I/Q
+ * DC blocker and the output scale apply to it as to FM. */
+int
+test_typed_row_profile_under_am(void) {
+    demod_state* s = new_demod();
+    if (!s) {
+        return 1;
+    }
+    int rc = 0;
+    prime_am_pipeline(s);
+    s->channel_lpf_profile = DSD_CH_LPF_PROFILE_12K5;
+    s->am_carrier = 0.5f;
+    rc |= expect("a typed row under AM reported as the AM detector", dsd_demod_am_active(s) == 0);
+    rc |= expect("a typed row under AM keeps the I/Q DC blocker off", dsd_demod_iq_dc_block_active(s) == 1);
+    /* A constant 3 kHz frequency deviation: the FM discriminator reads a constant phase step, the AM detector a flat
+     * envelope (0). */
+    const double dphi = 2.0 * kPi * 3000.0 / (double)kRate;
+    for (int k = 0; k < kBlockPairs; k++) {
+        s->input_cb_buf[(size_t)(2 * k)] = (float)(0.5 * std::cos(dphi * k));
+        s->input_cb_buf[(size_t)(2 * k) + 1] = (float)(0.5 * std::sin(dphi * k));
+    }
+    s->iq_dc_block_enable = 0;
+    s->dc_block = 0;
+    s->lowpassed = s->input_cb_buf;
+    s->lp_len = kBlockPairs * 2;
+    full_demod(s);
+    rc |= expect("a typed row under AM produced no samples", s->result_len > 100);
+    if (s->result_len > 100) {
+        const double got = (double)s->result[s->result_len / 2]; /* past the channel filter's start-up */
+        if (std::fabs(got - dphi) > 0.02) {
+            DSD_FPRINTF(stderr, "DSP_AM_DEMOD: typed row under AM: output %.4f, want the FM phase step %.4f\n", got,
+                        dphi);
+            rc = 1;
+        }
+    }
+    rc |= expect("a typed row moved the AM carrier estimate", std::fabs(s->am_carrier - 0.5f) < 1e-9f);
+    dsd_neo_aligned_free(s);
+    return rc;
+}
+
 int
 test_pipeline(void) {
     int rc = 0;
@@ -416,6 +458,8 @@ test_pipeline(void) {
     rc |= expect("a disabled I/Q DC blocker is reported as running", dsd_demod_iq_dc_block_active(s) == 0);
     rc |= expect("no state reports AM", dsd_demod_am_active(NULL) == 0 && dsd_demod_iq_dc_block_active(NULL) == 0);
     dsd_neo_aligned_free(s);
+
+    rc |= test_typed_row_profile_under_am();
 
     const double offsets[] = {0.0, 1500.0};
     const double carriers[] = {1.0, 0.1, 0.01};
