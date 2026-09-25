@@ -10,6 +10,7 @@
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/dsp/frame_sync.h>
+#include <dsd-neo/runtime/analog_channel.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/decode_mode.h>
 #include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
@@ -479,12 +480,13 @@ test_configured_squelch_edit(void) {
 
 /* --- Issue #526: the NFM scan class --- */
 
+_Static_assert(DSD_SCAN_MODE_NFM == 9 && DSD_SCAN_MODE_LAST == DSD_SCAN_MODE_NFM, "nfm is reserved as the last class");
+
 /* "nfm" is the one spelling: trimmed and case-insensitive like every class, with no aliases, and
  * it is the last class so the bounds that used to stop at M17 now stop at it. */
 static void
 test_nfm_class_names(void) {
     dsd_scan_mode parsed = DSD_SCAN_MODE_INHERIT;
-    assert(DSD_SCAN_MODE_NFM == 9 && DSD_SCAN_MODE_LAST == DSD_SCAN_MODE_NFM);
     assert(dsd_scan_mode_parse(" NfM ", &parsed) == 0 && parsed == DSD_SCAN_MODE_NFM);
     assert(strcmp(dsd_scan_mode_name(DSD_SCAN_MODE_NFM), "nfm") == 0);
     static const char* const aliases[] = {"fm", "analog", "wfm", "nbfm", "fm-conventional", "am"};

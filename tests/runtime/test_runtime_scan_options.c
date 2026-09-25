@@ -5,6 +5,7 @@
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/runtime/scan_mode.h>
 #include <dsd-neo/runtime/scan_options.h>
+#include <stdio.h>
 #include <string.h>
 
 typedef struct {

@@ -40,6 +40,7 @@
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
 #include <dsd-neo/runtime/scan_mode.h>
+#include <dsd-neo/runtime/scan_options.h>
 #include <dsd-neo/runtime/trunk_scan_hooks.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <limits.h>
@@ -10145,8 +10146,8 @@ nfm_carrier_hold_case(int voice_only) {
         DSD_FPRINTF(stderr, "voice gate phase %u published on an nfm target\n", (unsigned)state.scan_voice_gate_phase);
         test_rc = 1;
     }
-    for (double t = 0.30; t < 1.05; t += 0.20) {
-        trunk_scan_test_set_now(t);
+    for (int tick = 0; tick < 4; tick++) {
+        trunk_scan_test_set_now(0.30 + (0.20 * tick));
         dsd_engine_trunk_scan_tick(&opts, &state);
     }
     test_rc |= expect_active_target(&state, "carrier held past the dwell", 0U);
@@ -10230,9 +10231,9 @@ test_nfm_target_visit_cap_and_controls_under_carrier(void) {
         return 1;
     }
     int test_rc = 0;
-    for (double t = 0.10; t < 0.95; t += 0.20) {
+    for (int tick = 0; tick < 5; tick++) {
         state.analog_rx.carrier_open = 1;
-        trunk_scan_test_set_now(t);
+        trunk_scan_test_set_now(0.10 + (0.20 * tick));
         dsd_engine_trunk_scan_tick(&opts, &state);
     }
     test_rc |= expect_active_target(&state, "carrier inside the cap", 0U);
@@ -10255,9 +10256,9 @@ test_nfm_target_visit_cap_and_controls_under_carrier(void) {
     /* Hold keeps the target past its cap however long the carrier lasts. */
     test_rc |=
         expect_control_rc("hold", dsd_engine_trunk_scan_control(&opts, &state, DSD_TRUNK_SCAN_CONTROL_HOLD_TOGGLE), 1);
-    for (double t = 1.20; t < 3.5; t += 0.25) {
+    for (int tick = 0; tick < 10; tick++) {
         state.analog_rx.carrier_open = 1;
-        trunk_scan_test_set_now(t);
+        trunk_scan_test_set_now(1.20 + (0.25 * tick));
         dsd_engine_trunk_scan_tick(&opts, &state);
     }
     test_rc |= expect_active_target(&state, "held under a carrier", 0U);
