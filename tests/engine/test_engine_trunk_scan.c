@@ -22,6 +22,7 @@
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/core/talkgroup_policy.h>
 #include <dsd-neo/dsp/frame_sync.h>
+#include <dsd-neo/dsp/symbol.h>
 #include <dsd-neo/engine/frame_processing.h>
 #include <dsd-neo/engine/p25_bandplan_export.h>
 #include <dsd-neo/engine/trunk_scan.h>
@@ -9929,4 +9930,10 @@ dsd_frame_sync_reset_acquisition(const dsd_opts* opts, dsd_state* state, int for
     (void)forget;
     state->profile_proof_valid = 0;
     state->sps_hunt_counter = 0;
+}
+
+/* The channel-scan leave's analog monitor block drop; covered by ENGINE_CHANNEL_SCAN and APP_COMMAND_QUEUE. */
+void
+dsd_symbol_analog_block_reset(dsd_state* state) {
+    (void)state;
 }

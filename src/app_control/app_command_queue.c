@@ -35,6 +35,7 @@
 #include <dsd-neo/core/time_format.h>
 #include <dsd-neo/crypto/dmr_keystream.h>
 #include <dsd-neo/dsp/frame_sync.h>
+#include <dsd-neo/dsp/symbol.h>
 #include <dsd-neo/engine/channel_scan.h>
 #include <dsd-neo/engine/frame_processing.h>
 #include <dsd-neo/engine/scan_voice_gate.h>
@@ -3661,6 +3662,15 @@ decode_mode_apply_value(dsd_opts* opts, dsd_state* state, dsdneoUserDecodeMode m
        bootstrap against BS voice and nothing at all against MS voice. */
     const int audio_channels = opts->pulse_digi_out_channels;
     const int audio_rate = opts->pulse_digi_rate_out;
+    const int was_analog = opts->analog_only != 0;
+    /* Asked before anything changes: a running RTL front end that would refuse the analog receive profile the new
+       mode publishes (logged with the reason) leaves the session in its mode, instead of an Analog decoder on a
+       digital front end. */
+    if (svc_check_mode_receive_profile(opts, state, mode) != 0) {
+        ui_set_toast(state, 4, "Failed: %s -> RTL front end refused its channel (see log)",
+                     dsd_decode_mode_display_name(mode));
+        return UI_CMD_APPLY_FAILED;
+    }
     /* Released before the preset runs, not after. The presets skip their whole
        modulation block under mod_cli_lock (decode_mode_apply_dmr() and siblings),
        so on a session started with `-mq`/`-mg` the new protocol would keep the old
@@ -3686,6 +3696,19 @@ decode_mode_apply_value(dsd_opts* opts, dsd_state* state, dsdneoUserDecodeMode m
     }
     opts->pulse_digi_out_channels = audio_channels;
     opts->pulse_digi_rate_out = audio_rate;
+    /* The session's sinks were opened for the mode it started in: an analog start has no digital voice stream and
+       a digital one no raw monitor stream. Open whichever the new mode writes to, if it is missing. */
+    if (opts->analog_only) {
+        (void)dsd_audio_ensure_analog_output(opts);
+    } else {
+        (void)dsd_audio_ensure_digital_output(opts);
+    }
+    /* The analog monitor block the decoder has part-collected holds the old family's samples (a digital session
+       collects its unsynced input there too, monitored or not): dropped, so the first block the new family plays
+       does not start with them. */
+    if ((opts->analog_only != 0) != was_analog) {
+        dsd_symbol_analog_block_reset(state);
+    }
     /* The presets write symbol timing for a 48 kHz input, and on an RTL front end
        the demod output rate is whatever the capture rate decimates to, so the
        timing has to be recomputed at the live rate or the decoder is put on the
@@ -4985,10 +5008,30 @@ cfg_airspy_settings_valid(const dsdneoUserConfig* cfg) {
     return !cfg->airspy_invalid && dsd_airspy_config_valid(&cfg->airspy);
 }
 
+/*
+ * Asked before anything changes, as DSD_APP_CMD_DECODE_MODE_SET asks: a [mode] that moves a running RTL session onto
+ * the analog monitor publishes the analog receive profile (apply_cfg_receive_family_change()), and a front end that
+ * would refuse it (logged with the reason) leaves the whole config unapplied, instead of an Analog decoder on a
+ * digital front end.
+ */
+static int
+cfg_check_receive_family(const dsd_opts* opts, dsd_state* state, const dsdneoUserConfig* cfg) {
+    if (!cfg->has_mode || opts->analog_only || svc_check_mode_receive_profile(opts, state, cfg->decode_mode) == 0) {
+        return UI_CMD_APPLY_COMPLETED;
+    }
+    ui_set_toast(state, 4, "Config not applied: RTL front end refused the %s channel (see log)",
+                 dsd_decode_mode_display_name(cfg->decode_mode));
+    return UI_CMD_APPLY_FAILED;
+}
+
 static int
 cfg_prepare_runtime_apply(dsd_opts* opts, dsd_state* state, const dsdneoUserConfig* cfg) {
     if (!cfg_airspy_settings_valid(cfg)) {
         return UI_CMD_APPLY_INVALID_PAYLOAD;
+    }
+    const int family_rc = cfg_check_receive_family(opts, state, cfg);
+    if (family_rc != UI_CMD_APPLY_COMPLETED) {
+        return family_rc;
     }
     /* Refused before any mutation: the conventional scanner and a trunk-scan
      * coordinator are exclusive tuner owners (same rule as the scanner toggle). */
@@ -5033,6 +5076,42 @@ cfg_restore_lifecycle_owned(dsd_opts* opts, const dsdneoUserConfig* cfg, dsd_fro
     return frontend_changed || trunk_scan_changed;
 }
 
+/*
+ * A [mode] that moves a running session between the analog monitor and a digital decoder needs what
+ * DSD_APP_CMD_DECODE_MODE_SET does for the same move: the sink the new family writes to, the part-collected analog
+ * monitor block of the old family's samples dropped, and on an RTL front end the receive-family switch with symbol
+ * timing at the live demod rate (decode_mode_republish()). Without it the front end stays on the old family's
+ * demodulator. A [mode] that stays inside its family keeps the config-apply behaviour it
+ * had, except that a digital mode writing raw audio (ProVoice, or the -8 source monitor) gets the raw sink a session
+ * started in another digital mode never opened, as DECODE_MODE_SET gives it (dsd_audio_ensure_digital_output() is
+ * idempotent), and that the digital modes it configures are noted with an RTL front end, as DECODE_MODE_SET notes them
+ * (svc_note_digital_decode_modes()): after a live switch onto the digital family they pick the FSK channel profile the
+ * front end's CQPSK toggle returns to.
+ */
+static void
+apply_cfg_receive_family_change(dsd_opts* opts, dsd_state* state, const dsdneoUserConfig* cfg, int old_analog_only) {
+    if (!cfg->has_mode) {
+        return;
+    }
+    const int analog_only = opts->analog_only ? 1 : 0;
+    if (analog_only == old_analog_only) {
+        if (!analog_only && (opts->frame_provoice == 1 || opts->monitor_input_audio == 1)) {
+            (void)dsd_audio_ensure_digital_output(opts);
+        }
+        svc_note_digital_decode_modes(opts, state);
+        return;
+    }
+    if (analog_only) {
+        (void)dsd_audio_ensure_analog_output(opts);
+    } else {
+        (void)dsd_audio_ensure_digital_output(opts);
+    }
+    dsd_symbol_analog_block_reset(state);
+    if (opts->audio_in_type == AUDIO_IN_RTL) {
+        decode_mode_republish(opts, state, cfg->decode_mode);
+    }
+}
+
 static int
 ui_cmd_handle_config_apply(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
     if (!state || c->n < sizeof(dsdneoUserConfig)) {
@@ -5052,6 +5131,9 @@ ui_cmd_handle_config_apply(dsd_opts* opts, dsd_state* state, const struct dsd_ap
     int old_jitter = state->jitter;
     dsd_frontend_kind old_frontend_kind = opts->frontend_kind;
     const int old_trunk_scan_enabled = opts->trunk_scan_enabled;
+    const int old_analog_only = opts->analog_only ? 1 : 0;
+    const int old_audio_channels = opts->pulse_digi_out_channels;
+    const int old_audio_rate = opts->pulse_digi_rate_out;
 #ifdef USE_RADIO
     int airspy_rc = 0;
     dsd_airspy_config old_airspy = opts->airspy;
@@ -5068,6 +5150,13 @@ ui_cmd_handle_config_apply(dsd_opts* opts, dsd_state* state, const struct dsd_ap
         return prepare_rc;
     }
     dsd_apply_user_config_to_opts(&cfg, opts, state);
+    /* A [mode] preset carries an audio layout too, but the session's output streams were opened with the layout in
+       force then, which the backend fixes for their life: the session's layout is kept, as decode_mode_apply_value()
+       keeps it for DSD_APP_CMD_DECODE_MODE_SET. Put back before anything below opens or reopens an output (a changed
+       output device, the input-policy reconfigure, the sink a family change opens), so every stream is opened with
+       the layout the decoder writes. */
+    opts->pulse_digi_out_channels = old_audio_channels;
+    opts->pulse_digi_rate_out = old_audio_rate;
     const int restart_required = cfg_restore_lifecycle_owned(opts, &cfg, old_frontend_kind, old_trunk_scan_enabled);
 #ifdef USE_RADIO
     if (cfg_is_live_airspy(&cfg, old_audio_in_dev, old_audio_in_type)) {
@@ -5083,6 +5172,7 @@ ui_cmd_handle_config_apply(dsd_opts* opts, dsd_state* state, const struct dsd_ap
     apply_cfg_file_runtime_rate(opts, state, &cfg, old_runtime_input_rate, old_samples_per_symbol, old_symbol_center,
                                 old_jitter);
     int reconfigure_rc = ui_reconfigure_output_for_input_policy(opts, state);
+    apply_cfg_receive_family_change(opts, state, &cfg, old_analog_only);
 #ifdef USE_RADIO
     if (airspy_rc != 0) {
         return UI_CMD_APPLY_FAILED;

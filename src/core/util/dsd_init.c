@@ -17,6 +17,7 @@
 #include <dsd-neo/dsp/symbol_timing_debug.h>
 #include <dsd-neo/dsp/sync_calibration.h>
 #include <dsd-neo/platform/posix_compat.h>
+#include <dsd-neo/runtime/analog_channel.h>
 #include <dsd-neo/runtime/log.h>
 #include <dsd-neo/runtime/shutdown.h>
 #include <mbelib-neo/mbelib.h>
@@ -279,6 +280,9 @@ init_opts_runtime_and_network_defaults(dsd_opts* opts) {
 
     opts->monitor_input_audio = 0; //enable with -8
     opts->analog_only = 0;         //only turned on with -fA
+    opts->analog_demod = DSD_ANALOG_DEMOD_FM;
+    opts->analog_nfm_bandwidth_hz = 0; // 0 = default NFM channel width, not an explicit request
+    opts->analog_am_bandwidth_hz = 0;  // 0 = default AM channel width, not an explicit request
 
     opts->inverted_p2 = 0;
     opts->p2counter = 0;

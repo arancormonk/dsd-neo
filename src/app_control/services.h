@@ -17,6 +17,7 @@
 
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/state_fwd.h>
+#include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/decode_mode.h>
 
 #ifdef USE_RADIO
@@ -184,6 +185,35 @@ void svc_set_scan_voice_hold_ms(dsd_opts* opts, int ms);
  * a second request from here would fight it.
  */
 void svc_publish_symbol_profile(const dsd_opts* opts, dsd_state* state, dsd_decode_mode_profile profile);
+
+/**
+ * @brief Ask a running RTL front end, before a decode-mode change commits, whether it takes the receive profile
+ * @p mode will publish.
+ *
+ * Only a mode that moves the front end onto the analog family can be refused (an analog width the running demod rate
+ * cannot realize, for one): rtl_stream_check_analog_profile() holds it to the running stream's rate and logs a
+ * refusal with the validator's text. A caller that gets -1 leaves the decoder's mode as it was, so the decoder and the
+ * front end agree about the family. The request svc_publish_symbol_profile() makes once the caller has committed is
+ * held to the same rules again, at the rate the stream runs when it is made and when it lands: only a retune that
+ * moves the rate in between gets it refused there, logged, with the front end kept on its receive profile rather than
+ * running the width without its channel filter, and with the decoder left on the mode it committed to.
+ *
+ * @return 0 when the front end would take it, or when @p mode publishes no analog profile here (a digital mode, the
+ *         M17 encoder, no running RTL stream, or a scope update that defers the publish); -1 when it would refuse it.
+ */
+int svc_check_mode_receive_profile(const dsd_opts* opts, const dsd_state* state, dsdneoUserDecodeMode mode);
+
+/**
+ * @brief Note the configured digital decode modes with a running RTL front end.
+ *
+ * Once a live switch has moved the front end onto the digital family, the options its stream opened with no longer name
+ * the modes it runs, and the modes noted here pick the FSK channel profile its CQPSK toggle returns to
+ * (rtl_stream_set_digital_decode_modes()). svc_publish_symbol_profile() notes them with every profile it publishes; a
+ * handler that changes the digital modes without publishing one (a config apply whose [mode] stays digital) calls this.
+ * Nothing is noted for the analog family, off an RTL front end, or from a running scan row's options, which carry the
+ * row's constraint rather than the configured modes.
+ */
+void svc_note_digital_decode_modes(const dsd_opts* opts, const dsd_state* state);
 
 // Per-protocol inversion toggles
 /** @brief Toggle X2-TDMA symbol inversion. */

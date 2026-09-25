@@ -945,7 +945,7 @@ paths; they are not part of RTL-family digital FSK symbol decode.
 - `DSD_NEO_COSTAS_BW=<float>`, `DSD_NEO_COSTAS_DAMPING=<float>` — Costas loop tuning
 - `DSD_NEO_CHANNEL_LPF=0|1` — channel LPF enable/disable (auto-enabled at RTL DSP rates >=20 kHz; mode passbands protect nominal channel edges)
 - `DSD_NEO_WINDOW_FREEZE=1` — freeze symbol‑center window timing for debugging
-- `DSD_NEO_CQPSK=1` — enable CQPSK demodulation
+- `DSD_NEO_CQPSK=1` — enable CQPSK demodulation (`0` forces the FSK discriminator) for digital modes; the analog monitor (`-fA`) always demodulates FM
 - `DSD_NEO_CQPSK_SYNC_INV=1`, `DSD_NEO_CQPSK_SYNC_NEG=1` — CQPSK sync polarity tweaks
 
 Misc

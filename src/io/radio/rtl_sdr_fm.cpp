@@ -44,8 +44,10 @@
 #include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/platform/threading.h>
 #include <dsd-neo/platform/timing.h>
+#include <dsd-neo/runtime/analog_channel.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/exitflag.h>
+#include <dsd-neo/runtime/input_failure.h>
 #include <dsd-neo/runtime/input_ring.h>
 #include <dsd-neo/runtime/input_ring_watermark.h>
 #include <dsd-neo/runtime/log.h>
@@ -104,8 +106,6 @@ static inline void eye_ring_append_i_chan(const float* iq_interleaved, int len_i
 
 static int lcm_post[17] = {1, 1, 1, 3, 1, 5, 3, 7, 1, 9, 5, 11, 3, 13, 7, 15, 1};
 static int ACTUAL_BUF_LENGTH;
-
-static const double kPi = 3.14159265358979323846;
 
 #if defined(__clang__)
 #define DSD_NEO_PRAGMA(x) _Pragma(#x)
@@ -190,6 +190,11 @@ struct FllRetuneSeed {
 
 struct RtlRetuneProfile {
     int active = 0;
+    /* Receive family to switch to at this retune (dsd_rx_family); negative leaves the family alone. With the
+       analog family, analog_kind/analog_width_hz select the demodulator and channel width (0 = default). */
+    int analog_family = -1;
+    int analog_kind = 0;
+    int analog_width_hz = 0;
     int cqpsk_enable = 0;
     int symbol_rate_hz = 0;
     int levels = 0;
@@ -364,6 +369,7 @@ static const int kRetuneDiagBlocks = 20;
 static uint32_t rtl_stream_bump_output_generation(void);
 static void rtl_stream_signal_output_waiters(struct output_state* outp);
 static void rtl_stream_clear_retune_profile(RtlRetuneProfile* profile);
+static int rtl_stream_clamp_retune_ted_sps(int sps);
 static int rtl_stream_take_pending_retune_profile(RtlRetuneProfile* out_profile, uint32_t request_id,
                                                   uint32_t target_freq_hz);
 static void rtl_stream_store_pending_retune_profile(uint32_t target_freq_hz, int cqpsk_enable, int symbol_rate_hz,
@@ -493,6 +499,7 @@ struct CaptureSettingsSnapshot {
     int downsample_passes;
     float output_scale;
     int rate_out;
+    int capture_rate_device_forced;
     uint32_t dongle_frequency_hz;
     uint32_t dongle_rate_hz;
 };
@@ -503,6 +510,7 @@ capture_settings_snapshot(void) {
     snapshot.downsample_passes = demod.downsample_passes;
     snapshot.output_scale = demod.output_scale;
     snapshot.rate_out = demod.rate_out;
+    snapshot.capture_rate_device_forced = demod.capture_rate_device_forced;
     snapshot.dongle_frequency_hz = load_dongle_frequency();
     snapshot.dongle_rate_hz = load_dongle_rate();
     return snapshot;
@@ -525,6 +533,7 @@ restore_capture_rate_settings(const CaptureSettingsSnapshot* snapshot) {
     demod.downsample_passes = snapshot->downsample_passes;
     demod.output_scale = snapshot->output_scale;
     demod.rate_out = snapshot->rate_out;
+    demod.capture_rate_device_forced = snapshot->capture_rate_device_forced;
     store_dongle_rate(snapshot->dongle_rate_hz);
 }
 
@@ -547,6 +556,13 @@ controller_request_input_purge(void) {
 
 namespace {
 
+/* Receive family a live switch moved a running stream onto; see RtlSdrInternals::rx_family_switch. */
+enum RtlRxFamilySwitch : int {
+    kRxFamilyFromOptions = 0, /* no live switch yet: the options the stream opened with decide */
+    kRxFamilySwitchedDigital = 1,
+    kRxFamilySwitchedAnalog = 2,
+};
+
 struct RtlSdrInternals {
     struct rtl_device* device = nullptr;
     struct dongle_state* dongle = nullptr;
@@ -556,6 +572,13 @@ struct RtlSdrInternals {
     struct input_ring_state* input_ring = nullptr;
     struct udp_control** udp_ctrl_ptr = nullptr;
     const dsd_opts* opts = nullptr; /* snapshot for mode hints (P25p1/2, etc.) */
+    /* The receive family a live switch (rtl_stream_request_analog_profile(), a retune profile) moved this stream
+       onto, or kRxFamilyFromOptions while it still runs the family `opts` opened it on. `opts` is the orchestrator's
+       private copy, taken before the open, so a decode-mode change on the decoder side never reaches it: once the
+       stream has switched, this is what decides whether a symbol profile without CQPSK runs the FSK discriminator or
+       monitor audio (rtl_stream_runs_digital_family()). Written by the demod thread, or under the family-switch
+       gate. */
+    std::atomic<int> rx_family_switch{kRxFamilyFromOptions};
     /* Cooperative shutdown flag for threads launched by this stream */
     std::atomic<int> should_exit{0};
     std::atomic<int> controller_thread_started{0};
@@ -584,13 +607,23 @@ struct RtlSdrInternals {
 static struct RtlSdrInternals* g_stream = NULL;
 #if defined(DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS)
 static struct RtlSdrInternals g_cqpsk_toggle_test_stream;
+/* Called by ring_read_available() between its copy and the tail it publishes, with ready_m held. */
+static void (*g_test_live_read_pause_hook)(void*) = NULL;
+static void* g_test_live_read_pause_ctx = NULL;
+/* Called by rtl_stream_clear_output_ring() after its first generation bump, before it takes ready_m. */
+static void (*g_test_output_clear_pause_hook)(void*) = NULL;
+static void* g_test_output_clear_pause_ctx = NULL;
 #endif
+/* The consumer's tail snapshot, copy and tail store run under ready_m, which a clear of the ring from another thread
+ * (rtl_stream_clear_output_ring()) also takes. Otherwise a clear landing between the snapshot and the store would be
+ * undone by the store: the old tail over the reset head reads as a ring nearly full of the old stream's samples. */
 static int
 ring_read_available(struct output_state* o, float* out, size_t count) {
-    if (!o || !o->buffer || !out || count == 0) {
+    if (!o || !o->buffer || !out || count == 0 || ring_is_empty(o)) {
         return 0;
     }
     size_t got = 0;
+    dsd_mutex_lock(&o->ready_m);
     size_t tail = o->tail.load();
     const size_t head = o->head.load();
     while (got < count && tail != head) {
@@ -600,10 +633,16 @@ ring_read_available(struct output_state* o, float* out, size_t count) {
             tail = 0;
         }
     }
+#if defined(DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS)
+    if (g_test_live_read_pause_hook) {
+        g_test_live_read_pause_hook(g_test_live_read_pause_ctx);
+    }
+#endif
     if (got > 0) {
         o->tail.store(tail);
-        safe_cond_signal(&o->space, &o->ready_m);
+        dsd_cond_signal(&o->space);
     }
+    dsd_mutex_unlock(&o->ready_m);
     return (int)got;
 }
 
@@ -817,41 +856,69 @@ opts_has_12k5_or_cqpsk_bw_mode(const dsd_opts* opts) {
             || opts->mod_qpsk == 1);
 }
 
-static int
-rtl_stream_fsk_profile_for_opts_by_sym_rate(const dsd_opts* opts, int sym_rate) {
+namespace {
+/* The decode modes that pick an FSK channel profile (rtl_stream_fsk_channel_profile_for_current_mode()), as bits. */
+enum RtlFskModeBits : uint32_t {
+    kFskModeProvoice = 1U << 0,   /* frame_provoice */
+    kFskModeNxdn48Dpmr = 1U << 1, /* frame_nxdn48 or frame_dpmr */
+    kFskModeX2tdma = 1U << 2,     /* frame_x2tdma */
+    kFskModeWide4800 = 1U << 3,   /* dsd_opts_uses_wide_4800_profile() */
+    kFskModeP25 = 1U << 4,        /* frame_p25p1 or frame_p25p2 */
+    kFskModeDstar = 1U << 5,      /* frame_dstar */
+    kFskModesNoted = 1U << 31,    /* g_noted_digital_modes holds a note */
+};
+} // namespace
+
+/* Digital decode modes the decoder noted since the stream opened (rtl_stream_set_digital_decode_modes()), with
+ * kFskModesNoted set, or 0 for none. They pick the FSK channel profile once a live switch has moved the stream onto
+ * the digital family (rtl_stream_fsk_profile_modes()). Written by the decoder thread, read by whichever thread applies
+ * a CQPSK toggle; cleared when a stream opens (rtl_stream_clear_demod_profile_request()). */
+static std::atomic<uint32_t> g_noted_digital_modes{0U};
+
+static uint32_t
+rtl_stream_fsk_modes_from_opts(const dsd_opts* opts) {
     if (!opts) {
-        return -1;
+        return 0U;
     }
-    if (sym_rate == 9600 && opts->frame_provoice == 1) {
+    uint32_t modes = 0U;
+    modes |= opts->frame_provoice == 1 ? (uint32_t)kFskModeProvoice : 0U;
+    modes |= (opts->frame_nxdn48 == 1 || opts->frame_dpmr == 1) ? (uint32_t)kFskModeNxdn48Dpmr : 0U;
+    modes |= opts->frame_x2tdma == 1 ? (uint32_t)kFskModeX2tdma : 0U;
+    modes |= dsd_opts_uses_wide_4800_profile(opts) ? (uint32_t)kFskModeWide4800 : 0U;
+    modes |= (opts->frame_p25p1 == 1 || opts->frame_p25p2 == 1) ? (uint32_t)kFskModeP25 : 0U;
+    modes |= opts->frame_dstar == 1 ? (uint32_t)kFskModeDstar : 0U;
+    return modes;
+}
+
+static int
+rtl_stream_fsk_profile_for_modes_by_sym_rate(uint32_t modes, int sym_rate) {
+    if (sym_rate == 9600 && (modes & kFskModeProvoice) != 0U) {
         return DSD_CH_LPF_PROFILE_PROVOICE;
     }
-    if (sym_rate == 2400 && (opts->frame_nxdn48 == 1 || opts->frame_dpmr == 1)) {
+    if (sym_rate == 2400 && (modes & kFskModeNxdn48Dpmr) != 0U) {
         return DSD_CH_LPF_PROFILE_6K25;
     }
-    if (sym_rate == 6000 && opts->frame_x2tdma == 1) {
+    if (sym_rate == 6000 && (modes & kFskModeX2tdma) != 0U) {
         return DSD_CH_LPF_PROFILE_12K5;
     }
     return -1;
 }
 
 static int
-rtl_stream_fsk_profile_for_opts_by_frame(const dsd_opts* opts) {
-    if (!opts) {
-        return -1;
-    }
-    if (dsd_opts_uses_wide_4800_profile(opts)) {
+rtl_stream_fsk_profile_for_modes_by_frame(uint32_t modes) {
+    if ((modes & kFskModeWide4800) != 0U) {
         return DSD_CH_LPF_PROFILE_12K5;
     }
-    if (opts->frame_p25p1 == 1 || opts->frame_p25p2 == 1) {
+    if ((modes & kFskModeP25) != 0U) {
         return DSD_CH_LPF_PROFILE_P25_C4FM;
     }
-    if (opts->frame_nxdn48 == 1 || opts->frame_dpmr == 1 || opts->frame_dstar == 1) {
+    if ((modes & (kFskModeNxdn48Dpmr | kFskModeDstar)) != 0U) {
         return DSD_CH_LPF_PROFILE_6K25;
     }
-    if (opts->frame_x2tdma == 1) {
+    if ((modes & kFskModeX2tdma) != 0U) {
         return DSD_CH_LPF_PROFILE_12K5;
     }
-    if (opts->frame_provoice == 1) {
+    if ((modes & kFskModeProvoice) != 0U) {
         return DSD_CH_LPF_PROFILE_PROVOICE;
     }
     return -1;
@@ -877,20 +944,44 @@ rtl_stream_fsk_profile_for_symbol_rate(int sym_rate, int levels) {
     return DSD_CH_LPF_PROFILE_WIDE;
 }
 
+/* The decode modes that pick the FSK channel profile now. The options the stream opened with decide until a live
+ * switch has moved it onto the digital family (see RtlSdrInternals::rx_family_switch); from then on the modes the
+ * decoder noted do, as they would for an open with its options: the options the stream opened with are the
+ * orchestrator's copy from before the open and never see a mode change (a -fA session's name no digital mode). With
+ * no note since the open, the options still decide. */
+static uint32_t
+rtl_stream_fsk_profile_modes(void) {
+    if (g_stream && g_stream->rx_family_switch.load(std::memory_order_relaxed) == kRxFamilySwitchedDigital) {
+        const uint32_t noted = g_noted_digital_modes.load(std::memory_order_acquire);
+        if ((noted & kFskModesNoted) != 0U) {
+            return noted;
+        }
+    }
+    return rtl_stream_fsk_modes_from_opts(g_stream ? g_stream->opts : NULL);
+}
+
 static int
 rtl_stream_fsk_channel_profile_for_current_mode(void) {
-    const dsd_opts* opts = (g_stream && g_stream->opts) ? g_stream->opts : NULL;
+    const uint32_t modes = rtl_stream_fsk_profile_modes();
     const int sym_rate = demod.symbol_rate_hz > 0 ? demod.symbol_rate_hz : 4800;
     const int levels = demod.symbol_levels == 2 ? 2 : 4;
-    int profile = rtl_stream_fsk_profile_for_opts_by_sym_rate(opts, sym_rate);
+    int profile = rtl_stream_fsk_profile_for_modes_by_sym_rate(modes, sym_rate);
     if (profile >= 0) {
         return profile;
     }
-    profile = rtl_stream_fsk_profile_for_opts_by_frame(opts);
+    profile = rtl_stream_fsk_profile_for_modes_by_frame(modes);
     if (profile >= 0) {
         return profile;
     }
     return rtl_stream_fsk_profile_for_symbol_rate(sym_rate, levels);
+}
+
+extern "C" void
+rtl_stream_set_digital_decode_modes(const dsd_opts* opts) {
+    if (!opts) {
+        return;
+    }
+    g_noted_digital_modes.store(rtl_stream_fsk_modes_from_opts(opts) | kFskModesNoted, std::memory_order_release);
 }
 
 static void
@@ -1554,22 +1645,12 @@ demod_effective_ted_sps(const struct demod_state* s) {
 
 static void
 demod_clear_filter_histories(struct demod_state* s) {
-    for (int st = 0; st < 10; st++) {
-        DSD_MEMSET(s->hb_hist_i[st], 0, sizeof(s->hb_hist_i[st]));
-        DSD_MEMSET(s->hb_hist_q[st], 0, sizeof(s->hb_hist_q[st]));
-    }
-    DSD_MEMSET(s->channel_lpf_hist_i, 0, sizeof(s->channel_lpf_hist_i));
-    DSD_MEMSET(s->channel_lpf_hist_q, 0, sizeof(s->channel_lpf_hist_q));
-    s->channel_lpf_hist_len = 0;
+    rtl_demod_clear_filter_histories(s);
 }
 
 static void
 demod_reset_resampler_state(struct demod_state* s) {
-    s->resamp_phase = 0;
-    s->resamp_hist_head = 0;
-    if (s->resamp_hist && s->resamp_taps_per_phase > 0) {
-        DSD_MEMSET(s->resamp_hist, 0, (size_t)s->resamp_taps_per_phase * 2U * sizeof(float));
-    }
+    rtl_demod_reset_resampler_state(s);
 }
 
 static void
@@ -1677,6 +1758,15 @@ demod_apply_pending_ted_override(struct demod_state* s) {
 
 static void
 demod_reset_histories_for_output_mode(struct demod_state* s) {
+    if (s->output_kind == DSD_DEMOD_OUTPUT_AUDIO_MONITOR && !s->cqpsk_enable) {
+        /* Monitor audio: nothing from the previous channel may bleed into the new one, whether it is the
+           de-emphasis/DC/audio-LPF memory, a closed squelch envelope fading the new audio in, or the channel,
+           half-band and resampler histories. */
+        rtl_demod_reset_audio_monitor_state(s);
+        demod_clear_filter_histories(s);
+        demod_reset_resampler_state(s);
+        return;
+    }
     if (!(s->cqpsk_enable || s->output_kind == DSD_DEMOD_OUTPUT_FSK_DISCRIMINATOR)) {
         return;
     }
@@ -1753,6 +1843,21 @@ static std::atomic<int> g_pub_ted_sps_override{0};
 static std::atomic<int> g_pub_cqpsk_enable{0};
 static std::atomic<int> g_pub_ted_bias_q14{0};
 static std::atomic<int> g_pub_rate_out{48000};
+static std::atomic<int> g_pub_post_downsample{1};
+/* Analog receive profile as frontends see it: whether the analog family is active, its demodulator kind, the
+ * effective channel width (the configured width while the width-driven filter runs, otherwise the width the DSP
+ * rate leaves), and whether the width-driven filter is what sets it. */
+static std::atomic<int> g_pub_analog_family{0};
+static std::atomic<int> g_pub_analog_kind{0};
+static std::atomic<int> g_pub_analog_width_hz{0};
+static std::atomic<int> g_pub_analog_lpf_on{0};
+/* demod_state::analog_family: set on the analog family even while a symbol profile applied under it (a CQPSK toggle, a
+ * typed digital scan row) has moved the front end off the monitor output and g_pub_analog_family reads 0. */
+static std::atomic<int> g_pub_rx_analog_family{0};
+/* Resampler policy inputs, so callers can predict the output rate of a family switch before it lands. */
+static std::atomic<int> g_pub_resamp_target_hz{0};
+static std::atomic<int> g_pub_digital_resample_mode{0};
+static std::atomic<int> g_pub_capture_rate_forced{0};
 
 static void rtl_stream_publish_demod_profile_snapshot(void);
 static void rtl_stream_publish_ted_bias(void);
@@ -3931,6 +4036,182 @@ rtl_stream_consume_cqpsk_reacquire_pending(struct demod_state* d) {
     return 1;
 }
 
+/* Identifies one refused analog profile (kind, width, demod rate) for the once-per-refusal logs below; never 0. */
+static uint64_t
+rtl_stream_analog_refusal_key(int kind, int width_hz, int rate_hz) {
+    return (1ULL << 63) | ((uint64_t)((uint32_t)kind & 0x7FU) << 56)
+           | ((uint64_t)((uint32_t)width_hz & 0xFFFFFFU) << 32) | (uint64_t)(uint32_t)rate_hz;
+}
+
+/* Whether the analog channel @p kind / @p width_hz (0 = the kind's default) runs at demod rate @p rate_hz with the
+ * stream's post-demod decimation: the checks a stream start makes (rtl_demod_finalize_analog_channel()). The unset NFM
+ * default always runs; @p err gets the validator's text otherwise. */
+static int
+rtl_stream_analog_channel_fits_rate(int kind, int width_hz, int rate_hz, char* err, size_t err_size) {
+    return (rtl_demod_check_analog_channel(kind, width_hz, rate_hz, err, err_size) == 0
+            && rtl_demod_check_analog_post_decimation(kind, width_hz, rate_hz, demod.post_downsample, err, err_size)
+                   == 0)
+               ? 1
+               : 0;
+}
+
+/* Whether a retune the device settled on the demod rate now in demod_state lands the running analog monitor on a
+ * channel that rate runs. Only an explicit width can fail (@p err then has the validator's text): the unset NFM
+ * default moves between the 16 kHz design and the legacy WIDE design as the rate allows, and a front end off the
+ * monitor output (the digital family, CQPSK toggled on under -fA, a typed digital scan row) keeps its own profile
+ * filter. A retune profile for the centre it lands on decides for itself when it takes the monitor's width away: a
+ * switch to the digital family, or an analog profile that fits the rate (one that does not is refused when it applies,
+ * rtl_stream_apply_retune_family(), and leaves the monitor as it is, which is what is held to the rate here). */
+static int
+controller_retune_keeps_analog_width(int previous_rate_out_hz, const RtlRetuneProfile* profile, uint32_t center_freq_hz,
+                                     char* err, size_t err_size) {
+    if (demod.rate_out == previous_rate_out_hz || !dsd_demod_analog_monitor_active(&demod)) {
+        return 1;
+    }
+    if (profile && profile->active && profile->analog_family >= 0
+        && (profile->target_freq_hz == 0U || profile->target_freq_hz == center_freq_hz)) {
+        char profile_err[DSD_ANALOG_ERROR_TEXT_MAX];
+        if (profile->analog_family == DSD_RX_FAMILY_DIGITAL
+            || rtl_stream_analog_channel_fits_rate(profile->analog_kind, profile->analog_width_hz, demod.rate_out,
+                                                   profile_err, sizeof profile_err)) {
+            return 1;
+        }
+    }
+    return rtl_stream_analog_channel_fits_rate(demod.analog_demod, demod.analog_width_request_hz, demod.rate_out, err,
+                                               err_size);
+}
+
+namespace {
+/* The device calls that put a refused retune's capture back (controller_restore_refused_capture()). */
+struct RefusedCaptureDeviceOps {
+    int (*set_frequency)(struct rtl_device* dev, uint32_t frequency_hz);
+    int (*set_sample_rate)(struct rtl_device* dev, uint32_t rate_hz);
+    int (*get_sample_rate)(struct rtl_device* dev);
+};
+} // namespace
+
+static const RefusedCaptureDeviceOps kRefusedCaptureDeviceOps = {rtl_device_set_frequency, rtl_device_set_sample_rate,
+                                                                 rtl_device_get_sample_rate};
+#if defined(DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS)
+/* Stands in for the device a refused retune programs back, whether or not one is open. */
+static const RefusedCaptureDeviceOps* g_test_refused_capture_device_ops = NULL;
+#endif
+
+/* The device a refused retune's capture is programmed back on; NULL with none open (nothing to program). */
+static const RefusedCaptureDeviceOps*
+controller_refused_capture_device(void) {
+#if defined(DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS)
+    if (g_test_refused_capture_device_ops) {
+        return g_test_refused_capture_device_ops;
+    }
+#endif
+    return rtl_device_handle ? &kRefusedCaptureDeviceOps : NULL;
+}
+
+/* Put the device back on the capture a refused retune moved it from: the rate chain restore_capture_settings() keeps,
+ * then that capture frequency and rate on the device, synced to the rate the device then reports as any programming
+ * is (apply_actual_capture_rate()). With no device open there is nothing to program.
+ * @return 0 when the device took the capture frequency and rate back (or none is open); otherwise the return code of
+ * the first of the two calls it refused, after which the device can still run the capture the retune programmed. */
+static int
+controller_restore_refused_capture(const CaptureSettingsSnapshot* previous, uint32_t center_freq_hz) {
+    restore_capture_settings(previous);
+    const RefusedCaptureDeviceOps* device = controller_refused_capture_device();
+    if (!device) {
+        return 0;
+    }
+    const int frequency_rc = device->set_frequency(rtl_device_handle, previous->dongle_frequency_hz);
+    if (frequency_rc != 0) {
+        LOG_ERROR("Failed to return the RTL-SDR to center frequency %u Hz (rc=%d).\n", previous->dongle_frequency_hz,
+                  frequency_rc);
+    }
+    const int rate_rc = device->set_sample_rate(rtl_device_handle, previous->dongle_rate_hz);
+    if (rate_rc != 0) {
+        LOG_ERROR("Failed to return the RTL-SDR to sample rate %u Hz (rc=%d).\n", previous->dongle_rate_hz, rate_rc);
+    }
+    uint32_t capture_rate_hz = previous->dongle_rate_hz;
+    const int actual = device->get_sample_rate(rtl_device_handle);
+    if (actual > 0 && (uint32_t)actual != capture_rate_hz) {
+        capture_rate_hz =
+            apply_actual_capture_rate(center_freq_hz, previous->dongle_frequency_hz, capture_rate_hz, (uint32_t)actual);
+    }
+    (void)apply_capture_tuner_bandwidth(capture_rate_hz, g_stream ? g_stream->opts : NULL, 0);
+    stream_refresh_watermark_for_current_rate();
+    return frequency_rc != 0 ? frequency_rc : rate_rc;
+}
+
+/* A refused retune whose capture the device would not take back: the device can still run the capture the retune
+ * programmed while the stream finalizes on the centre and rate it kept, and nothing then holds the monitor's width to
+ * the rate the device delivers. The stream stops (logged, reported as a device failure of the input with @p device_rc),
+ * rather than run on a capture it cannot vouch for. */
+static void
+controller_stop_for_unrestored_capture(uint32_t kept_center_hz, int device_rc) {
+    LOG_ERROR("The RTL-SDR could not be put back on %u Hz after a retune refused for the analog channel width (rc=%d); "
+              "the stream stops.\n",
+              kept_center_hz, device_rc);
+    dsd_input_failure_report(DSD_INPUT_FAILURE_DEVICE, device_rc);
+    dsd_exitflag_store(1);
+}
+
+/* The return code of a retune refused for its analog width (controller_refuse_retune_for_analog_width()). */
+static const int kRetuneRefusedForAnalogWidth = -1;
+
+/* Last retune refused for an analog width (kind, width, landed demod rate), so a hop loop the device keeps settling on
+ * the same rate does not repeat the message; a retune that lands re-arms it. */
+static std::atomic<uint64_t> g_retune_width_refusal_logged{0};
+
+/* Hold a retune to the demod rate the device settled on (controller_retune_keeps_analog_width()) before it finalizes:
+ * one that would run the analog monitor's explicit width at a rate that cannot realize it is refused, as a live request
+ * or retune profile for that width at that rate is. The validator's text is logged (once per kind, width and rate),
+ * the device goes back to the capture it had (@p previous_capture, where the width runs), and the retune finalizes on
+ * the centre it left (@p previous_center_freq_hz) without its profile, which the caller reports as a failed retune.
+ * A device that refuses to go back stops the stream (controller_stop_for_unrestored_capture()).
+ * @p center_freq_hz and @p profile are updated to what the retune then finalizes on.
+ * @return 1 when the retune is refused, 0 when it lands. */
+static int
+controller_refuse_retune_for_analog_width(const CaptureSettingsSnapshot* previous_capture, int previous_rate_out_hz,
+                                          uint32_t previous_center_freq_hz, uint32_t* center_freq_hz,
+                                          const RtlRetuneProfile** profile) {
+    char err[DSD_ANALOG_ERROR_TEXT_MAX];
+    if (controller_retune_keeps_analog_width(previous_rate_out_hz, *profile, *center_freq_hz, err, sizeof err)) {
+        g_retune_width_refusal_logged.store(0, std::memory_order_relaxed);
+        return 0;
+    }
+    const uint32_t kept_center_hz = previous_center_freq_hz != 0U ? previous_center_freq_hz : *center_freq_hz;
+    const uint64_t key =
+        rtl_stream_analog_refusal_key(demod.analog_demod, demod.analog_width_request_hz, demod.rate_out);
+    if (g_retune_width_refusal_logged.exchange(key, std::memory_order_relaxed) != key) {
+        LOG_ERROR("%s. The retune to %u Hz is refused; the front end stays on %u Hz at the %d Hz DSP rate.\n", err,
+                  *center_freq_hz, kept_center_hz, previous_rate_out_hz);
+    }
+    const int restore_rc = controller_restore_refused_capture(previous_capture, kept_center_hz);
+    if (restore_rc != 0) {
+        controller_stop_for_unrestored_capture(kept_center_hz, restore_rc);
+    }
+    *center_freq_hz = kept_center_hz;
+    *profile = NULL;
+    return 1;
+}
+
+/* A retune that leaves the stream on another demod rate resolves the analog channel for that rate. Stream open makes
+ * the authoritative check itself (stream_open_finalize_analog_channel()), where a refusal fails the start, and a
+ * retune that would land an explicit width on a rate that cannot realize it is refused before it gets here
+ * (controller_refuse_retune_for_analog_width()). Such a width is still met here when the device did not return to the
+ * rate that refusal put back: no receive profile the stream can keep runs it, so the stream stops, as a start at that
+ * rate fails, rather than run the width without its channel filter. */
+static void
+controller_refresh_analog_channel_for_rate(DemodRetuneResetReason reset_reason, int previous_rate_out_hz) {
+    if (reset_reason == DemodRetuneResetReason::FreshStream || demod.rate_out == previous_rate_out_hz) {
+        return;
+    }
+    char err[DSD_ANALOG_ERROR_TEXT_MAX];
+    if (rtl_demod_refresh_analog_channel_for_rate(&demod, err, sizeof err) != 0) {
+        LOG_ERROR("%s. The device did not return to a DSP rate that fits it; the stream stops.\n", err);
+        dsd_input_failure_report(DSD_INPUT_FAILURE_CONFIGURATION, 0);
+        dsd_exitflag_store(1);
+    }
+}
+
 static void
 controller_finalize_rate_chain(struct controller_state* s, const dsd_opts* opts, uint32_t center_freq_hz,
                                int mark_reconfigure, DemodRetuneResetReason reset_reason,
@@ -3946,6 +4227,9 @@ controller_finalize_rate_chain(struct controller_state* s, const dsd_opts* opts,
     rtl_demod_maybe_refresh_ted_sps_after_rate_change(&demod, opts, &output, /*preserve_active_profile=*/1);
     rtl_stream_apply_retune_profile(retune_profile, center_freq_hz);
     rtl_demod_maybe_update_resampler_after_rate_change(&demod, &output, rtl_dsp_bw_hz);
+    /* De-emphasis and audio-LPF coefficients depend on the output rate, which a device may only fix here. */
+    rtl_demod_refresh_audio_coefficients(&demod);
+    controller_refresh_analog_channel_for_rate(reset_reason, previous_rate_out_hz);
     DemodRetuneResetPlan reset_plan = demod_retune_reset_plan(reset_reason, previous_center_freq_hz, center_freq_hz,
                                                               previous_rate_out_hz, demod.rate_out);
     demod_reset_on_retune(&demod, reset_plan);
@@ -4049,11 +4333,16 @@ controller_reconfigure_active_stream_locked(struct controller_state* s, uint32_t
     }
     uint32_t finalized_center_freq_hz =
         controller_reconfigure_finalized_center(center_freq_hz, previous_center_freq_hz, rc, hardware_changed);
+    const RtlRetuneProfile* finalized_profile = NULL;
     controller_arm_retune_mute("post", 1);
+    if (controller_refuse_retune_for_analog_width(&previous_capture, previous_rate_out_hz, previous_center_freq_hz,
+                                                  &finalized_center_freq_hz, &finalized_profile)) {
+        rc = kRetuneRefusedForAnalogWidth;
+    }
     rtl_device_record_capture_retune(rtl_device_handle, finalized_center_freq_hz, load_dongle_frequency(),
                                      load_dongle_rate(), retune_reset_reason_name(reset_reason));
     controller_finalize_reconfigure(s, g_stream ? g_stream->opts : NULL, finalized_center_freq_hz, reset_reason,
-                                    previous_center_freq_hz, previous_rate_out_hz, NULL);
+                                    previous_center_freq_hz, previous_rate_out_hz, finalized_profile);
     controller_arm_retune_mute("post-reset", 1);
     rtl_device_end_capture_reconfigure(rtl_device_handle);
     if (out_reconfigured) {
@@ -4062,11 +4351,18 @@ controller_reconfigure_active_stream_locked(struct controller_state* s, uint32_t
     return rc;
 }
 
+/* @p out_refused is set to 1 when the retune was refused for the analog monitor's width
+ * (controller_refuse_retune_for_analog_width()): it then finalized without its profile on the centre it left, which
+ * can be the centre it asked for, and reports kRetuneRefusedForAnalogWidth. */
 static int
 controller_apply_reconfigure(struct controller_state* s, uint32_t center_freq_hz, int ppm_error,
-                             const RtlRetuneProfile* retune_profile, int* out_ppm_rc, int* out_reconfigured) {
+                             const RtlRetuneProfile* retune_profile, int* out_ppm_rc, int* out_reconfigured,
+                             int* out_refused) {
     if (out_reconfigured) {
         *out_reconfigured = 0;
+    }
+    if (out_refused) {
+        *out_refused = 0;
     }
     if (!s || center_freq_hz == 0) {
         return -1;
@@ -4095,6 +4391,15 @@ controller_apply_reconfigure(struct controller_state* s, uint32_t center_freq_hz
         controller_reconfigure_finalized_profile(retune_profile, center_freq_hz, finalized_center_freq_hz);
     controller_arm_retune_mute("post", 1);
     store_dongle_ppm_error_if_applied(ppm_rc, ppm_error);
+    const int refused =
+        controller_refuse_retune_for_analog_width(&previous_capture, previous_rate_out_hz, previous_center_freq_hz,
+                                                  &finalized_center_freq_hz, &finalized_profile);
+    if (refused) {
+        apply_rc = kRetuneRefusedForAnalogWidth;
+    }
+    if (out_refused) {
+        *out_refused = refused;
+    }
     DemodRetuneResetReason reset_reason =
         ppm_changed ? DemodRetuneResetReason::PpmCorrection : DemodRetuneResetReason::FrequencyRetune;
     rtl_device_record_capture_retune(rtl_device_handle, finalized_center_freq_hz, load_dongle_frequency(),
@@ -4341,6 +4646,11 @@ controller_apply_replay_settings(struct controller_state* s, const dsd_opts* opt
     if (demod.rate_in < 1) {
         demod.rate_in = 1;
     }
+    /* low_pass_real() takes monitor audio from rate_in to rate_out2. A live open sets both to the DSP bandwidth, so
+       that stage passes audio through and the rational resampler alone brings rate_out to the output rate. Replay
+       takes rate_in from the capture instead, so rate_out2 has to follow it: left at the sidecar's DSP bandwidth, a
+       capture at any other rate (a device-forced 78125 Hz, say) was resampled twice and played back fast. */
+    demod.rate_out2 = demod.rate_in;
     demod.rate_out = (int)cfg->demod_rate_hz;
     /* The capture file dictates the rate chain, exactly like a device with a fixed rate grid. */
     demod.capture_rate_device_forced = 1;
@@ -4513,9 +4823,15 @@ controller_gate_tune_timeout(struct controller_state* s, uint32_t request_id) {
     }
 }
 
+/* A retune refused for the analog monitor's width (@p refused) fails whatever centre it finalized on: it kept the
+ * capture it had and dropped its profile, even when the centre it kept is the one it asked for. Any other failed apply
+ * that still reconfigured onto its target reports OK, with a warning logged. */
 static int
-controller_manual_retune_completion_result(int retune_rc, int reconfigured, uint32_t target_hz,
+controller_manual_retune_completion_result(int retune_rc, int reconfigured, int refused, uint32_t target_hz,
                                            uint32_t applied_freq_hz) {
+    if (refused) {
+        return RTL_STREAM_TUNE_FAILED;
+    }
     if (retune_rc == 0) {
         return RTL_STREAM_TUNE_OK;
     }
@@ -4624,15 +4940,16 @@ controller_process_manual_retune(struct controller_state* s, const ControllerRet
     int target_ppm = work->ppm_changed ? work->requested_ppm : work->current_ppm;
     int ppm_rc = 0;
     int reconfigured = 0;
+    int refused = 0;
     int retune_rc =
-        controller_apply_reconfigure(s, target_hz, target_ppm, &work->manual_profile, &ppm_rc, &reconfigured);
+        controller_apply_reconfigure(s, target_hz, target_ppm, &work->manual_profile, &ppm_rc, &reconfigured, &refused);
     if (work->ppm_changed && ppm_rc != 0) {
         note_failed_ppm_request(work->requested_ppm, work->requested_ppm_request_id, work->current_ppm, ppm_rc);
     }
     controller_clear_active_ppm_request(s, work->ppm_pending);
     uint32_t applied_freq_hz = s->last_applied_freq_hz.load(std::memory_order_acquire);
     int completion_result =
-        controller_manual_retune_completion_result(retune_rc, reconfigured, target_hz, applied_freq_hz);
+        controller_manual_retune_completion_result(retune_rc, reconfigured, refused, target_hz, applied_freq_hz);
     controller_finish_manual_retune(s, work, completion_result, retune_rc == 0 || reconfigured);
     if (retune_rc != 0 && completion_result == RTL_STREAM_TUNE_OK) {
         LOG_INFO("NOTICE: Retune applied with warning: %u Hz (rc=%d).\n", target_hz, retune_rc);
@@ -4727,7 +5044,7 @@ static DSD_THREAD_RETURN_TYPE
         int ppm_rc = 0;
         int reconfigured = 0;
         int retune_rc = controller_apply_reconfigure(s, (uint32_t)s->freqs[s->freq_now], work.current_ppm, NULL,
-                                                     &ppm_rc, &reconfigured);
+                                                     &ppm_rc, &reconfigured, NULL);
         if (retune_rc == 0 || reconfigured) {
             drain_output_on_retune();
         }
@@ -6265,70 +6582,26 @@ stream_open_apply_runtime_controls(const dsd_opts* opts) {
     }
 }
 
+/* De-emphasis and the audio LPF come from the runtime config at open. Their coefficients are computed here for the
+ * provisional rate and again once the rate chain is final (controller_finalize_rate_chain()). */
 static void
-stream_open_apply_deemphasis_from_config(void) {
-    if (!demod.deemph) {
-        return;
+stream_open_apply_audio_filters_from_config(void) {
+    if (rtl_demod_apply_audio_filters_from_config(&demod)) {
+        const char* approx = dsd_unicode_or_ascii("≈", "~");
+        LOG_INFO("Audio LPF enabled: fc%s%d Hz, alpha=%.4f\n", approx, demod.audio_lpf_cutoff_hz,
+                 demod.audio_lpf_alpha);
     }
-    const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
-    double tau_s = 75e-6;
-    if (cfg && cfg->deemph_is_set) {
-        if (cfg->deemph_mode == DSD_NEO_DEEMPH_OFF) {
-            demod.deemph = 0;
-        } else if (cfg->deemph_mode == DSD_NEO_DEEMPH_50) {
-            tau_s = 50e-6;
-        } else if (cfg->deemph_mode == DSD_NEO_DEEMPH_NFM) {
-            tau_s = 750e-6;
-        } else if (cfg->deemph_mode == DSD_NEO_DEEMPH_75) {
-            tau_s = 75e-6;
-        }
-    }
-    if (!demod.deemph) {
-        return;
-    }
-    double Fs = (double)demod.rate_out;
-    if (Fs < 1.0) {
-        Fs = 1.0;
-    }
-    double a = exp(-1.0 / (Fs * tau_s));
-    double alpha = 1.0 - a;
-    int coef_q15 = (int)lrint(alpha * (double)(1 << 15));
-    if (coef_q15 < 1) {
-        coef_q15 = 1;
-    } else if (coef_q15 > ((1 << 15) - 1)) {
-        coef_q15 = ((1 << 15) - 1);
-    }
-    demod.deemph_a = (float)((double)coef_q15 / (double)(1 << 15));
 }
 
-static void
-stream_open_apply_audio_lpf_from_config(void) {
-    const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
-    demod.audio_lpf_enable = 0;
-    demod.audio_lpf_alpha = 0;
-    demod.audio_lpf_state = 0;
-    if (!cfg || !cfg->audio_lpf_is_set || cfg->audio_lpf_disable || cfg->audio_lpf_cutoff_hz <= 0) {
-        return;
+/* The authoritative analog channel check: rate_out is final here, including a rate the device forced. */
+static int
+stream_open_finalize_analog_channel(const dsd_opts* opts) {
+    char err[DSD_ANALOG_ERROR_TEXT_MAX];
+    if (rtl_demod_finalize_analog_channel(&demod, opts, err, sizeof err) != 0) {
+        LOG_ERROR("%s.\n", err);
+        return -1;
     }
-    int cutoff_hz = cfg->audio_lpf_cutoff_hz;
-    if (cutoff_hz < 100) {
-        cutoff_hz = 100;
-    }
-    double Fs = (double)demod.rate_out;
-    if (Fs < 1.0) {
-        Fs = 1.0;
-    }
-    double a = 1.0 - exp(-2.0 * kPi * (double)cutoff_hz / Fs);
-    if (a < 0.0) {
-        a = 0.0;
-    }
-    if (a > 1.0) {
-        a = 1.0;
-    }
-    demod.audio_lpf_alpha = (float)a;
-    demod.audio_lpf_enable = 1;
-    const char* approx = dsd_unicode_or_ascii("≈", "~");
-    LOG_INFO("Audio LPF enabled: fc%s%d Hz, alpha=%.4f\n", approx, cutoff_hz, demod.audio_lpf_alpha);
+    return 0;
 }
 
 /**
@@ -6468,7 +6741,7 @@ static void
 stream_open_update_output_rates(void) {
     if (demod.resamp_enabled && demod.resamp_target_hz > 0) {
         output.rate = demod.resamp_target_hz;
-        LOG_INFO("Output rate set to %d Hz via resampler.\n", output.rate);
+        LOG_INFO("Output rate set to %d Hz via resampler.\n", output.rate.load());
     } else {
         output.rate = demod.rate_out;
     }
@@ -6660,6 +6933,36 @@ stream_open_validate_source_selection(dsd_opts* opts, RadioSourceKind source_kin
     return 0;
 }
 
+/* The demodulator half of stream open once rate_out is final: the authoritative analog channel check, the resampler
+ * chain, symbol timing from the options, and the output rate. The receive-family tests build their fresh-open
+ * baselines through this same function. */
+static int
+stream_open_finalize_demod_chain(const dsd_opts* opts) {
+    if (stream_open_finalize_analog_channel(opts) != 0) {
+        return -1;
+    }
+    stream_open_configure_resampler_chain();
+    /* Stream open is the one place the profile legitimately comes from the option flags: nothing
+     * has hunted yet, and demod_apply_output_kind() just seeded the same defaults. */
+    rtl_demod_maybe_refresh_ted_sps_after_rate_change(&demod, opts, &output, /*preserve_active_profile=*/0);
+    stream_open_update_output_rates();
+    return 0;
+}
+
+/* Everything that needs the final rate chain: the device (or replay file) settles rate_out first. */
+static int
+stream_open_finalize_rate_chain(RadioSourceKind source_kind, const dsd_opts* opts,
+                                const dsd_iq_replay_config* replay_cfg, int replay_cfg_loaded) {
+    if (stream_open_apply_controller_settings(source_kind, opts, replay_cfg, replay_cfg_loaded) != 0) {
+        return -1;
+    }
+    if (stream_open_finalize_demod_chain(opts) != 0) {
+        return -1;
+    }
+    stream_open_log_rate_chain_summary();
+    return 0;
+}
+
 static int
 stream_open_configure_pipeline_state(dsd_opts* opts, RadioSourceKind source_kind,
                                      const dsd_iq_replay_config* replay_cfg, int replay_cfg_loaded) {
@@ -6709,8 +7012,7 @@ stream_open_configure_pipeline_state(dsd_opts* opts, RadioSourceKind source_kind
         return -1;
     }
     stream_open_apply_runtime_controls(opts);
-    stream_open_apply_deemphasis_from_config();
-    stream_open_apply_audio_lpf_from_config();
+    stream_open_apply_audio_filters_from_config();
 
     int gain_rc = source_kind == RADIO_SOURCE_AIRSPY ? 0 : rtl_device_set_gain(rtl_device_handle, dongle.gain);
     log_unsupported_control_if_needed("Gain control", gain_rc);
@@ -6720,16 +7022,7 @@ stream_open_configure_pipeline_state(dsd_opts* opts, RadioSourceKind source_kind
     stream_open_note_ppm_capability();
     stream_open_apply_requested_ppm(opts);
 
-    if (stream_open_apply_controller_settings(source_kind, opts, replay_cfg, replay_cfg_loaded) != 0) {
-        return -1;
-    }
-    stream_open_configure_resampler_chain();
-    /* Stream open is the one place the profile legitimately comes from the option flags: nothing
-     * has hunted yet, and demod_apply_output_kind() just seeded the same defaults. */
-    rtl_demod_maybe_refresh_ted_sps_after_rate_change(&demod, opts, &output, /*preserve_active_profile=*/0);
-    stream_open_update_output_rates();
-    stream_open_log_rate_chain_summary();
-    return 0;
+    return stream_open_finalize_rate_chain(source_kind, opts, replay_cfg, replay_cfg_loaded);
 }
 
 static int
@@ -7315,8 +7608,57 @@ rtl_stream_test_publish_demod_snapshot(void) {
 }
 #endif
 
+/* Width the analog channel actually has when the width-driven filter is not what bounds it: the legacy WIDE plan (an
+ * unset default the rate cannot fit) protects the width that plan passes at this rate, the largest width the rate fits
+ * below ~19.1 kHz and the 63-tap fallback prototype's above the 288-tap capacity; with no channel filter, or a width
+ * the rate cannot realize, the DSP rate itself is the bound. */
+static int
+rtl_stream_analog_dsp_limited_width_hz(void) {
+    const int rate = demod.rate_out;
+    if (demod.channel_lpf_enable && demod.channel_lpf_width_hz <= 0) {
+        return dsd_channel_lpf_legacy_wide_width_hz(rate);
+    }
+    return rate > 0 ? rate : 0;
+}
+
+/* The analog width published while the monitor runs, and whether it is the configured width (@p out_lpf_on). An I/Q
+ * replay that decimates after the demodulator (post_downsample above 1) runs the channel filter at that multiple of
+ * the demod rate its design is made for, so the channel it passes is that many times wider: never the configured
+ * width, and published as DSP-limited. Live sources never decimate there. */
+static int
+rtl_stream_analog_published_width_hz(int* out_lpf_on) {
+    const int designed = (demod.channel_lpf_enable && demod.channel_lpf_width_hz > 0
+                          && dsd_analog_width_realizable(demod.channel_lpf_width_hz, demod.rate_out))
+                             ? 1
+                             : 0;
+    const int filter_rate_scale = demod.post_downsample > 1 ? demod.post_downsample : 1;
+    *out_lpf_on = (designed && filter_rate_scale == 1) ? 1 : 0;
+    const int64_t width_hz =
+        (int64_t)(designed ? demod.channel_lpf_width_hz : rtl_stream_analog_dsp_limited_width_hz()) * filter_rate_scale;
+    return width_hz > (int64_t)INT_MAX ? INT_MAX : (int)width_hz;
+}
+
+static void
+rtl_stream_publish_analog_profile_snapshot(void) {
+    const int family = dsd_demod_analog_monitor_active(&demod);
+    int lpf_on = 0;
+    int width_hz = 0;
+    if (family) {
+        width_hz = rtl_stream_analog_published_width_hz(&lpf_on);
+    }
+    g_pub_analog_kind.store(family ? demod.analog_demod : 0, std::memory_order_relaxed);
+    g_pub_analog_width_hz.store(width_hz, std::memory_order_relaxed);
+    g_pub_analog_lpf_on.store(lpf_on, std::memory_order_relaxed);
+    g_pub_analog_family.store(family, std::memory_order_relaxed);
+    g_pub_rx_analog_family.store(demod.analog_family ? 1 : 0, std::memory_order_relaxed);
+    g_pub_resamp_target_hz.store(demod.resamp_target_hz, std::memory_order_relaxed);
+    g_pub_digital_resample_mode.store(demod.digital_resample_mode, std::memory_order_relaxed);
+    g_pub_capture_rate_forced.store(demod.capture_rate_device_forced ? 1 : 0, std::memory_order_relaxed);
+}
+
 static void
 rtl_stream_publish_demod_profile_snapshot(void) {
+    rtl_stream_publish_analog_profile_snapshot();
     g_pub_cqpsk_enable.store(demod.cqpsk_enable ? 1 : 0, std::memory_order_relaxed);
     g_pub_output_kind.store(demod.output_kind, std::memory_order_relaxed);
     g_pub_symbol_rate.store(demod.symbol_rate_hz, std::memory_order_relaxed);
@@ -7325,6 +7667,7 @@ rtl_stream_publish_demod_profile_snapshot(void) {
     g_pub_ted_sps.store(demod.ted_sps, std::memory_order_relaxed);
     g_pub_ted_sps_override.store(demod.ted_sps_override, std::memory_order_relaxed);
     g_pub_rate_out.store(demod.rate_out, std::memory_order_relaxed);
+    g_pub_post_downsample.store(demod.post_downsample, std::memory_order_relaxed);
 }
 
 /* The getters below read the published mirrors rather than demod fields: the
@@ -7348,6 +7691,46 @@ rtl_stream_get_output_kind(void) {
 extern "C" int
 rtl_stream_is_active(void) {
     return rtl_stream_context_active();
+}
+
+extern "C" int
+rtl_stream_get_analog_profile(int* out_kind, int* out_width_hz, int* out_lpf_on) {
+    const int family = g_pub_analog_family.load(std::memory_order_relaxed);
+    if (out_kind) {
+        *out_kind = family ? g_pub_analog_kind.load(std::memory_order_relaxed) : 0;
+    }
+    if (out_width_hz) {
+        *out_width_hz = family ? g_pub_analog_width_hz.load(std::memory_order_relaxed) : 0;
+    }
+    if (out_lpf_on) {
+        *out_lpf_on = family ? g_pub_analog_lpf_on.load(std::memory_order_relaxed) : 0;
+    }
+    return family ? 1 : 0;
+}
+
+extern "C" int
+rtl_stream_analog_family_active(void) {
+    return g_pub_rx_analog_family.load(std::memory_order_relaxed) ? 1 : 0;
+}
+
+extern "C" unsigned int
+rtl_stream_output_rate_for_family(int family, int cqpsk_enable, int symbol_rate_hz) {
+    const int rate_out = g_pub_rate_out.load(std::memory_order_relaxed);
+    const int resamp_target = g_pub_resamp_target_hz.load(std::memory_order_relaxed);
+    if (rate_out <= 0) {
+        return 0U;
+    }
+    if (family == DSD_RX_FAMILY_ANALOG) {
+        return (unsigned int)rtl_demod_monitor_output_rate_for(resamp_target, rate_out);
+    }
+    /* The switch lands on the CQPSK family an open of the mode would (rtl_stream_leave_analog_family()). */
+    if (rtl_demod_open_cqpsk_request(cqpsk_enable) > 0) {
+        return (unsigned int)rate_out;
+    }
+    const int target = rtl_demod_digital_resample_target_for(
+        DSD_DEMOD_OUTPUT_FSK_DISCRIMINATOR, g_pub_digital_resample_mode.load(std::memory_order_relaxed), resamp_target,
+        symbol_rate_hz, rate_out, g_pub_capture_rate_forced.load(std::memory_order_relaxed));
+    return (unsigned int)(target > 0 ? rtl_demod_monitor_output_rate_for(target, rate_out) : rate_out);
 }
 
 extern "C" uint32_t
@@ -7771,13 +8154,28 @@ rtl_stream_enable_cqpsk_mode(void) {
     demod.channel_lpf_profile = DSD_CH_LPF_PROFILE_P25_CQPSK;
 }
 
+/* Whether a symbol profile without CQPSK runs the FSK discriminator for a digital decoder rather than monitor audio.
+ * The options the stream opened with decide until a live receive-family switch has moved the stream; from then on the
+ * switch does, since those options are the orchestrator's copy from before the open and never see a mode change. */
+static int
+rtl_stream_runs_digital_family(void) {
+    if (!g_stream || !radio_source_is_rtl_family(g_stream->opts)) {
+        return 0;
+    }
+    switch (g_stream->rx_family_switch.load(std::memory_order_relaxed)) {
+        case kRxFamilySwitchedDigital: return 1;
+        case kRxFamilySwitchedAnalog: return 0;
+        default: return dsd_opts_has_digital_decode_mode(g_stream->opts);
+    }
+}
+
 static void
 rtl_stream_disable_cqpsk_mode(void) {
     demod.mode_demod = &dsd_fm_demod;
     if (demod.channel_lpf_profile == DSD_CH_LPF_PROFILE_P25_CQPSK) {
         demod.channel_lpf_profile = rtl_stream_fsk_channel_profile_for_current_mode();
     }
-    if (g_stream && dsd_opts_has_digital_decode_mode(g_stream->opts) && radio_source_is_rtl_family(g_stream->opts)) {
+    if (rtl_stream_runs_digital_family()) {
         demod.output_kind = DSD_DEMOD_OUTPUT_FSK_DISCRIMINATOR;
     } else {
         demod.output_kind = DSD_DEMOD_OUTPUT_AUDIO_MONITOR;
@@ -7872,6 +8270,12 @@ rtl_stream_toggle_cqpsk(int onoff) {
 static std::mutex g_profile_req_m;
 static std::atomic<int> g_profile_req_pending{0};
 /* Guarded by g_profile_req_m: */
+static int g_profile_req_has_demod = 0; /* a demod (symbol/CQPSK/timing) profile is queued */
+/* Receive-family request (rtl_stream_request_analog_profile), applied before the demod profile of the same
+ * consume so that a family switch followed by the new family's symbol profile lands in that order. */
+static int g_profile_req_analog_family = -1; /* -1 = none queued */
+static int g_profile_req_analog_kind = 0;
+static int g_profile_req_analog_width_hz = 0;
 static int g_profile_req_cqpsk = -1;   /* -1 = leave unchanged */
 static int g_profile_req_sym_rate = 0; /* <=0 = leave symbol profile unchanged */
 static int g_profile_req_levels = 0;
@@ -7935,6 +8339,7 @@ rtl_stream_request_demod_profile(int cqpsk_enable, int symbol_rate_hz, int level
         return 0;
     }
     std::lock_guard<std::mutex> lock(g_profile_req_m);
+    g_profile_req_has_demod = 1;
     g_profile_req_cqpsk = cqpsk_enable;
     g_profile_req_sym_rate = symbol_rate_hz;
     g_profile_req_levels = levels;
@@ -7945,11 +8350,264 @@ rtl_stream_request_demod_profile(int cqpsk_enable, int symbol_rate_hz, int level
     return 0;
 }
 
+/* ---------------- Receive family and analog profile ----------------
+ * Width-only changes, FM<->AM and analog<->digital switches all arrive through
+ * rtl_stream_request_analog_profile(). Only the demod thread (or a caller holding
+ * the family-switch gate with no demod block in flight) writes demod_state here. */
+
+static struct output_state*
+rtl_stream_active_output(void) {
+    return (g_stream && g_stream->output) ? g_stream->output : &output;
+}
+
+/* Finish a family switch: record the family the stream now runs (its options snapshot no longer says), publish the
+ * new output rate, drop everything the old family produced, and bump the generation so decoder-side caches of the old
+ * stream are discarded. */
+static void
+rtl_stream_commit_family_switch(int family, int output_rate) {
+    if (g_stream) {
+        g_stream->rx_family_switch.store(family == DSD_RX_FAMILY_DIGITAL ? kRxFamilySwitchedDigital
+                                                                         : kRxFamilySwitchedAnalog,
+                                         std::memory_order_relaxed);
+    }
+    struct output_state* outp = rtl_stream_active_output();
+    outp->rate = output_rate;
+    demod.costas_reset_pending = 1;
+    rtl_stream_invalidate_fsk_phase_cfo_snapshot();
+    rtl_stream_clear_output_ring(outp, 1);
+}
+
+static void
+rtl_stream_enter_analog_family(int kind, int width_hz) {
+    struct output_state scratch;
+    scratch.rate = rtl_stream_active_output()->rate.load();
+    rtl_demod_enter_analog_family(&demod, &scratch, kind, width_hz, rtl_dsp_bw_hz);
+    rtl_stream_commit_family_switch(DSD_RX_FAMILY_ANALOG, scratch.rate);
+}
+
+/* @p cqpsk_enable and @p symbol_rate_hz name the symbol profile applied right after the switch (-1 / 0 when none is
+ * queued), which decides the digital resampler and so the output rate committed here. The CQPSK family is the one an
+ * open of the mode lands on (rtl_demod_open_cqpsk_request()); the caller applies the same one with the profile. */
+static void
+rtl_stream_leave_analog_family(int cqpsk_enable, int symbol_rate_hz) {
+    struct output_state scratch;
+    scratch.rate = rtl_stream_active_output()->rate.load();
+    rtl_demod_enter_digital_family(&demod, &scratch, rtl_stream_fsk_channel_profile_for_current_mode(),
+                                   rtl_demod_open_cqpsk_request(cqpsk_enable), symbol_rate_hz, rtl_dsp_bw_hz);
+    rtl_stream_commit_family_switch(DSD_RX_FAMILY_DIGITAL, scratch.rate);
+}
+
+static void
+rtl_stream_apply_analog_request(int kind, int width_hz) {
+    if (!dsd_demod_analog_monitor_active(&demod)) {
+        rtl_stream_enter_analog_family(kind, width_hz);
+        return;
+    }
+    (void)rtl_demod_set_analog_kind(&demod, kind);
+    if (rtl_demod_apply_analog_channel(&demod, kind, width_hz)) {
+        /* Width-only change: the next block designs a new plan and starts from empty filter histories. */
+        demod.channel_lpf_plan_taps_len = 0;
+        demod.channel_lpf_plan_width_hz = 0;
+        rtl_demod_clear_filter_histories(&demod);
+    }
+}
+
+/* Body of an analog profile request. Callers hold the family-switch gate or run on the demod thread.
+ * @p next_cqpsk and @p next_symbol_rate_hz describe the symbol profile applied after a switch to digital (-1 / 0
+ * when none follows).
+ *
+ * A switch to digital leaves the analog family whenever the stream runs it, the state rtl_stream_analog_family_active()
+ * publishes and the decoder times the switch by. That includes a front end a symbol profile applied without a family
+ * request (a CQPSK toggle under -fA, a typed digital scan row) has moved off the monitor output with the family flag
+ * still set: such a profile never leaves the family, so without the switch the digital mode's own profile would land
+ * on the analog session, where a profile without CQPSK runs monitor audio. The decoder asks for the digital family
+ * only when its configured mode is digital (svc_publish_symbol_profile()), so a typed digital row on an analog session
+ * republishes its symbol profile without one and keeps the monitor output it has always had. */
+static void
+rtl_stream_apply_analog_profile_params(int family, int kind, int width_hz, int next_cqpsk, int next_symbol_rate_hz) {
+    if (family == DSD_RX_FAMILY_ANALOG) {
+        rtl_stream_apply_analog_request(kind, width_hz);
+    } else if (family == DSD_RX_FAMILY_DIGITAL && demod.analog_family) {
+        rtl_stream_leave_analog_family(next_cqpsk, next_symbol_rate_hz);
+    }
+    rtl_stream_publish_demod_profile_snapshot();
+}
+
+static void
+rtl_stream_apply_analog_profile_gated(int family, int kind, int width_hz, int next_cqpsk, int next_symbol_rate_hz) {
+    int gate_armed = rtl_stream_enter_demod_family_switch_gate();
+    rtl_stream_apply_analog_profile_params(family, kind, width_hz, next_cqpsk, next_symbol_rate_hz);
+    rtl_stream_leave_demod_family_switch_gate(gate_armed);
+}
+
+/* Last refused analog request (live, or attached to a retune target), so a caller repeating the same request does not
+ * repeat the message. An accepted analog request re-arms it. */
+static std::atomic<uint64_t> g_analog_request_refusal_logged{0};
+
+static int
+rtl_stream_check_analog_request(int family, int kind, int width_hz, int rate_hz, char* err, size_t err_size) {
+    if (family != DSD_RX_FAMILY_ANALOG) {
+        DSD_SNPRINTF(err, err_size, "unknown receive family %d", family);
+        return -1;
+    }
+    if (rtl_demod_check_analog_channel(kind, width_hz, rate_hz, err, err_size) != 0) {
+        return -1;
+    }
+    if (rate_hz > 0
+        && rtl_demod_check_analog_post_decimation(kind, width_hz, rate_hz,
+                                                  g_pub_post_downsample.load(std::memory_order_relaxed), err, err_size)
+               != 0) {
+        return -1;
+    }
+    return 0;
+}
+
+/* Hold an analog profile to the demod rate it lands on. A request is checked when it is made, against the rate the
+ * stream published then (or none, with no stream running); a retune can settle the device on another rate before the
+ * profile applies, so its callers check again where rate_out is final: the demod thread consuming a live request
+ * between blocks, and a retune's rate-chain finalize. A refusal is logged once per kind, width and rate through
+ * @p logged, with @p refused_result saying what the caller does instead. */
+static int
+rtl_stream_analog_profile_fits_demod_rate(int kind, int width_hz, std::atomic<uint64_t>* logged,
+                                          const char* refused_result) {
+    char err[DSD_ANALOG_ERROR_TEXT_MAX];
+    if (rtl_stream_analog_channel_fits_rate(kind, width_hz, demod.rate_out, err, sizeof err)) {
+        logged->store(0, std::memory_order_relaxed);
+        return 1;
+    }
+    const uint64_t key = rtl_stream_analog_refusal_key(kind, width_hz, demod.rate_out);
+    if (logged->exchange(key, std::memory_order_relaxed) != key) {
+        LOG_ERROR("%s. %s\n", err, refused_result);
+    }
+    return 0;
+}
+
+/* The demod rate a request is checked against on the caller's thread: the one the running stream published. With no
+ * stream running the mirror only holds a previous session's rate (or its initial value), which says nothing about the
+ * rate the next open will deliver, so there is none (0): only the kind, range and environment rules apply then, and
+ * that open's finalize check is the authoritative one. */
+static int
+rtl_stream_published_request_rate(void) {
+    return g_stream ? g_pub_rate_out.load(std::memory_order_relaxed) : 0;
+}
+
+/* Validate on the caller's thread against @p rate_hz (0: no rate, see rtl_stream_published_request_rate()), and log a
+ * refusal with the validator's text (once per kind, width and rate) so it is never silent. @p refused_result says what
+ * a refusal leaves in place. */
+static int
+rtl_stream_analog_request_valid(int family, int kind, int width_hz, int rate_hz, const char* refused_result) {
+    if (family == DSD_RX_FAMILY_DIGITAL) {
+        return 1;
+    }
+    char err[DSD_ANALOG_ERROR_TEXT_MAX];
+    if (rtl_stream_check_analog_request(family, kind, width_hz, rate_hz, err, sizeof err) == 0) {
+        g_analog_request_refusal_logged.store(0, std::memory_order_relaxed);
+        return 1;
+    }
+    const uint64_t key = rtl_stream_analog_refusal_key(family == DSD_RX_FAMILY_ANALOG ? kind : 0x7F, width_hz, rate_hz);
+    if (g_analog_request_refusal_logged.exchange(key, std::memory_order_relaxed) != key) {
+        LOG_ERROR("%s. %s\n", err, refused_result);
+    }
+    return 0;
+}
+
+/* What a refused request leaves in place, for its log line. */
+static const char*
+rtl_stream_analog_refused_result(void) {
+    return g_stream ? "The front end keeps its current receive profile."
+                    : "No stream is running; the next start configures the front end from the options.";
+}
+
+extern "C" int
+rtl_stream_check_analog_profile(int family, int kind, int width_hz) {
+    const int valid = rtl_stream_analog_request_valid(family, kind, width_hz, rtl_stream_published_request_rate(),
+                                                      rtl_stream_analog_refused_result());
+    return valid ? 0 : -1;
+}
+
+extern "C" int
+rtl_stream_request_analog_profile(int family, int kind, int width_hz) {
+    if (!rtl_stream_analog_request_valid(family, kind, width_hz, rtl_stream_published_request_rate(),
+                                         rtl_stream_analog_refused_result())) {
+        return -1;
+    }
+    if (!g_stream) {
+        /* No pipeline, nothing to switch: the next stream open configures the front end from the options. */
+        return 0;
+    }
+    std::lock_guard<std::mutex> lock(g_profile_req_m);
+    g_profile_req_analog_family = family;
+    g_profile_req_analog_kind = kind;
+    g_profile_req_analog_width_hz = width_hz;
+    /* A demod profile still queued from before this request is obsolete either way. The analog family has no symbol
+       clock. A digital family runs on the symbol profile its caller queues right after this request, and that
+       profile decides the digital resampler and the output rate the switch commits; an older one (a CQPSK toggle
+       drained in the same pass of the decoder's command queue) must not stand in for it at a block boundary between
+       the two requests, where the consume holds the family request for its own profile instead. */
+    g_profile_req_has_demod = 0;
+    g_profile_req_pending.store(1, std::memory_order_release);
+    return 0;
+}
+
+/* The symbol profile a switch out of the analog family lands on: its CQPSK family and channel filter become the ones
+ * an open of the mode picks, which DSD_NEO_CQPSK decides when set, and the channel-filter enable rule of the open
+ * (rtl_demod_open_cqpsk_request(), rtl_demod_open_channel_profile()), for the switch and for the profile applied after
+ * it alike. */
+static void
+rtl_stream_resolve_landing_profile(int* cqpsk, int* channel_profile, int symbol_rate_hz) {
+    const int landing = rtl_demod_open_cqpsk_request(*cqpsk);
+    *channel_profile = rtl_demod_open_channel_profile(landing, *cqpsk, *channel_profile, symbol_rate_hz,
+                                                      demod.channel_lpf_default_enable);
+    *cqpsk = landing;
+}
+
+/* Hold a live analog request to the demod rate the demod thread finds when it consumes it; a retune can have moved the
+ * rate since the request was checked against the published one. A width that rate cannot realize is refused there as
+ * it would have been when the request was made: logged with the validator's text, and the front end keeps its current
+ * receive profile, whether the request changes the running monitor's width or kind or moves the stream onto the
+ * monitor output (from the digital family, or from a symbol profile applied under the analog family). The unset NFM
+ * default is never refused. @return 1 when the request applies, 0 when it is refused. */
+static int
+rtl_stream_analog_request_fits_landed_rate(int kind, int width_hz) {
+    return rtl_stream_analog_profile_fits_demod_rate(kind, width_hz, &g_analog_request_refusal_logged,
+                                                     "The front end keeps its current receive profile.");
+}
+
+/* An open times its symbol profile with at least two samples per symbol (rtl_demod_clamp_sps(), the floor the decoder's
+ * dsd_opts_compute_sps_rate() keeps too); the symbol-profile setter keeps as few as one. A switch out of the analog
+ * family lands where an open of the mode would, so a symbol rate the demod rate gives under two samples per symbol
+ * (ProVoice's 9600 sym/s at a 12 kHz DSP rate) is timed with the open's two. */
+static void
+rtl_stream_apply_landing_ted_floor(void) {
+    if (demod.ted_sps_override <= 0 && demod.ted_sps < 2) {
+        demod.ted_sps = 2;
+        rtl_stream_publish_demod_profile_snapshot();
+    }
+}
+
+/* The timing a switch out of the analog family lands on. The decoder queued its symbol profile timed for the demod rate
+ * the stream published when it picked the mode, and a retune can have settled the device on another rate before this
+ * block boundary; an open times a profile it does not override for the rate it runs at
+ * (rtl_demod_maybe_refresh_ted_sps_after_rate_change()), and so does the switch. The FSK discriminator's profile setter
+ * derives its timing from the rate itself; the CQPSK timing loop takes what it is given, so it is given this. An
+ * override, or a request that leaves the timing alone, is kept as queued. */
+static int
+rtl_stream_landing_ted_sps(int ted_sps, int ted_sps_is_override, int symbol_rate_hz) {
+    if (ted_sps <= 0 || ted_sps_is_override || symbol_rate_hz <= 0 || demod.rate_out <= 0) {
+        return ted_sps;
+    }
+    return rtl_stream_clamp_retune_ted_sps((demod.rate_out + (symbol_rate_hz / 2)) / symbol_rate_hz);
+}
+
 static void
 rtl_stream_consume_demod_profile_request(void) {
     if (!g_profile_req_pending.load(std::memory_order_acquire)) {
         return;
     }
+    int has_demod;
+    int analog_family;
+    int analog_kind;
+    int analog_width_hz;
     int cqpsk;
     int sym_rate;
     int levels;
@@ -7959,24 +8617,61 @@ rtl_stream_consume_demod_profile_request(void) {
     {
         std::lock_guard<std::mutex> lock(g_profile_req_m);
         g_profile_req_pending.store(0, std::memory_order_relaxed);
+        if (g_profile_req_analog_family == DSD_RX_FAMILY_DIGITAL && !g_profile_req_has_demod && demod.analog_family) {
+            /* Leaving analog lands on the symbol profile queued with it, which decides the digital resampler and the
+               output rate committed at the switch. Callers queue that profile as a second request right after the
+               family (svc_publish_symbol_profile(), the channel-scan leave), and this block boundary fell between
+               the two: keep the family request queued until its profile arrives and re-arms the consume, rather than
+               switching for the analog monitor's placeholder profile. */
+            return;
+        }
+        has_demod = g_profile_req_has_demod;
+        analog_family = g_profile_req_analog_family;
+        analog_kind = g_profile_req_analog_kind;
+        analog_width_hz = g_profile_req_analog_width_hz;
         cqpsk = g_profile_req_cqpsk;
         sym_rate = g_profile_req_sym_rate;
         levels = g_profile_req_levels;
         chan = g_profile_req_chan;
         ted_sps = g_profile_req_ted_sps;
         ted_sps_is_override = g_profile_req_ted_sps_is_override;
+        g_profile_req_has_demod = 0;
+        g_profile_req_analog_family = -1;
     }
-    rtl_stream_apply_demod_profile_params(cqpsk, sym_rate, levels, chan, ted_sps, ted_sps_is_override, 0);
+    if (analog_family == DSD_RX_FAMILY_ANALOG
+        && !rtl_stream_analog_request_fits_landed_rate(analog_kind, analog_width_hz)) {
+        analog_family = -1;
+    }
+    const bool lands_on_digital = has_demod && analog_family == DSD_RX_FAMILY_DIGITAL && demod.analog_family;
+    if (lands_on_digital) {
+        rtl_stream_resolve_landing_profile(&cqpsk, &chan, sym_rate);
+        ted_sps = rtl_stream_landing_ted_sps(ted_sps, ted_sps_is_override, sym_rate);
+    }
+    if (analog_family >= 0) {
+        rtl_stream_apply_analog_profile_params(analog_family, analog_kind, analog_width_hz, has_demod ? cqpsk : -1,
+                                               has_demod ? sym_rate : 0);
+    }
+    if (has_demod) {
+        rtl_stream_apply_demod_profile_params(cqpsk, sym_rate, levels, chan, ted_sps, ted_sps_is_override, 0);
+    }
+    if (lands_on_digital) {
+        rtl_stream_apply_landing_ted_floor();
+    }
 }
 
-/* Discard any unconsumed queued request. Called from dsd_rtl_stream_open
- * before the pipeline threads start, so a request queued while a previous
- * session was tearing down cannot override the new session's startup profile
- * when the demod thread consumes its first block. */
+/* Discard any unconsumed queued request, and the digital decode modes a
+ * decoder noted. Called from dsd_rtl_stream_open before the pipeline threads
+ * start, so a request queued while a previous session was tearing down cannot
+ * override the new session's startup profile when the demod thread consumes
+ * its first block, and the options the new session opens with decide its FSK
+ * channel profile until its own decoder notes a mode change. */
 static void
 rtl_stream_clear_demod_profile_request(void) {
     std::lock_guard<std::mutex> lock(g_profile_req_m);
     g_profile_req_pending.store(0, std::memory_order_relaxed);
+    g_profile_req_has_demod = 0;
+    g_profile_req_analog_family = -1;
+    g_noted_digital_modes.store(0U, std::memory_order_release);
 }
 
 static int
@@ -8079,6 +8774,31 @@ rtl_stream_prepare_retune_profile_for_target_with_gain(uint32_t target_freq_hz, 
                                             ted_sps, persist_ted_override, gain_profile);
 }
 
+extern "C" int
+rtl_stream_prepare_retune_analog_profile_for_target(uint32_t target_freq_hz,
+                                                    const rtl_stream_retune_analog_profile* analog) {
+    if (!analog
+        || !rtl_stream_analog_request_valid(analog->family, analog->kind, analog->width_hz,
+                                            rtl_stream_published_request_rate(),
+                                            "The retune keeps the current receive profile.")) {
+        return -1;
+    }
+    std::lock_guard<std::mutex> lock(g_pending_retune_profile_mutex);
+    if (!g_pending_retune_profile.active || g_pending_retune_profile.target_freq_hz != target_freq_hz) {
+        /* No symbol profile queued for this target: an analog-only profile leaves the CQPSK family, symbol profile
+           and timing alone. */
+        RtlRetuneProfile profile{};
+        profile.active = 1;
+        profile.cqpsk_enable = -1;
+        profile.target_freq_hz = target_freq_hz;
+        g_pending_retune_profile = profile;
+    }
+    g_pending_retune_profile.analog_family = analog->family;
+    g_pending_retune_profile.analog_kind = analog->kind;
+    g_pending_retune_profile.analog_width_hz = analog->width_hz;
+    return 0;
+}
+
 extern "C" void
 rtl_stream_clear_pending_retune_profile(void) {
     std::lock_guard<std::mutex> lock(g_pending_retune_profile_mutex);
@@ -8136,6 +8856,57 @@ rtl_stream_apply_retune_gain_profile(const RtlRetuneProfile* profile) {
     }
 }
 
+/* Last refused retune analog profile (kind, width, demod rate), so a scanner revisiting the same target does not
+ * repeat the message on every pass. */
+static std::atomic<uint64_t> g_retune_analog_refusal_logged{0};
+
+/* A retune profile carries an analog width that was checked when it was queued, against the rate running then, or
+ * against no rate at all when no stream was running. The retune lands on the rate that holds now (rate_out is final
+ * here, in controller_finalize_rate_chain()), so the width is held to that rate before it is applied: a refusal
+ * keeps the receive profile the front end has, as a refused live request does. */
+static int
+rtl_stream_retune_analog_profile_fits(const RtlRetuneProfile* profile) {
+    return rtl_stream_analog_profile_fits_demod_rate(profile->analog_kind, profile->analog_width_hz,
+                                                     &g_retune_analog_refusal_logged,
+                                                     "The retune keeps the current receive profile.");
+}
+
+/* A retune profile's receive-family switch, applied before its symbol profile: a switch back to digital is what that
+ * profile runs on, and is decided for it. Returns 1 when the rest of the profile must not apply: the profile moves the
+ * front end onto the analog family, or asks for an analog channel the demod rate cannot run (refused, and the front
+ * end keeps its receive profile). */
+static int
+rtl_stream_apply_retune_family(const RtlRetuneProfile* profile) {
+    if (profile->analog_family < 0) {
+        return 0;
+    }
+    if (profile->analog_family == DSD_RX_FAMILY_ANALOG && !rtl_stream_retune_analog_profile_fits(profile)) {
+        return 1;
+    }
+    const int levels_valid = (profile->levels == 2 || profile->levels == 4) ? 1 : 0;
+    const int next_symbol_rate_hz = (profile->symbol_rate_hz > 0 && levels_valid) ? profile->symbol_rate_hz : 0;
+    rtl_stream_apply_analog_profile_gated(profile->analog_family, profile->analog_kind, profile->analog_width_hz,
+                                          profile->cqpsk_enable, next_symbol_rate_hz);
+    return profile->analog_family == DSD_RX_FAMILY_ANALOG ? 1 : 0;
+}
+
+/* Whether @p profile moves the front end off the analog family (read before its family switch applies). */
+static int
+rtl_stream_retune_leaves_analog(const RtlRetuneProfile* profile) {
+    return (profile->analog_family == DSD_RX_FAMILY_DIGITAL && demod.analog_family) ? 1 : 0;
+}
+
+/* The CQPSK family and channel filter a retune profile's symbol profile runs on: the ones its family switch landed on
+ * when @p leaves_analog (rtl_stream_resolve_landing_profile()), otherwise its own. */
+static void
+rtl_stream_retune_symbol_family(const RtlRetuneProfile* profile, int leaves_analog, int* cqpsk, int* channel_profile) {
+    *cqpsk = profile->cqpsk_enable;
+    *channel_profile = profile->channel_profile;
+    if (leaves_analog) {
+        rtl_stream_resolve_landing_profile(cqpsk, channel_profile, profile->symbol_rate_hz);
+    }
+}
+
 static void
 rtl_stream_apply_retune_profile(const RtlRetuneProfile* profile, uint32_t center_freq_hz) {
     if (!profile || !profile->active) {
@@ -8149,14 +8920,24 @@ rtl_stream_apply_retune_profile(const RtlRetuneProfile* profile, uint32_t center
 
     rtl_stream_apply_retune_gain_profile(profile);
 
-    int cqpsk = profile->cqpsk_enable;
+    const int leaves_analog = rtl_stream_retune_leaves_analog(profile);
+    if (rtl_stream_apply_retune_family(profile)) {
+        /* The analog family has no symbol clock. A symbol profile queued for the same target would toggle the
+           CQPSK family or the FSK discriminator back on and take the monitor output away, so it is dropped here,
+           as rtl_stream_request_analog_profile() drops one queued before an analog request. A refused analog
+           profile drops it too: it was queued for an analog target. */
+        return;
+    }
+
+    int cqpsk = -1;
+    int channel_profile = -1;
+    rtl_stream_retune_symbol_family(profile, leaves_analog, &cqpsk, &channel_profile);
     if (cqpsk >= 0) {
         rtl_stream_toggle_cqpsk(cqpsk);
     }
 
     int symbol_rate_hz = profile->symbol_rate_hz;
     int levels = profile->levels;
-    int channel_profile = profile->channel_profile;
     if (symbol_rate_hz > 0 && (levels == 2 || levels == 4)) {
         (void)rtl_stream_set_symbol_profile(symbol_rate_hz, levels, channel_profile);
     }
@@ -8648,9 +9429,9 @@ dsd_rtl_stream_test_tune_completion_result(int wait_result, int completion_resul
 }
 
 extern "C" int
-dsd_rtl_stream_test_manual_retune_completion_result(int retune_rc, int reconfigured, uint32_t target_hz,
+dsd_rtl_stream_test_manual_retune_completion_result(int retune_rc, int reconfigured, int refused, uint32_t target_hz,
                                                     uint32_t applied_freq_hz) {
-    return controller_manual_retune_completion_result(retune_rc, reconfigured, target_hz, applied_freq_hz);
+    return controller_manual_retune_completion_result(retune_rc, reconfigured, refused, target_hz, applied_freq_hz);
 }
 
 extern "C" int
@@ -9337,6 +10118,17 @@ rtl_stream_test_mode_policy_matrix(int* out_values, size_t count) {
     return 0;
 }
 
+/* The profile an open's options pick by symbol rate, and by frame flags alone (-1: they pick none). */
+static int
+rtl_stream_fsk_profile_for_opts_by_sym_rate(const dsd_opts* opts, int sym_rate) {
+    return rtl_stream_fsk_profile_for_modes_by_sym_rate(rtl_stream_fsk_modes_from_opts(opts), sym_rate);
+}
+
+static int
+rtl_stream_fsk_profile_for_opts_by_frame(const dsd_opts* opts) {
+    return rtl_stream_fsk_profile_for_modes_by_frame(rtl_stream_fsk_modes_from_opts(opts));
+}
+
 extern "C" int
 rtl_stream_test_fsk_profile_policy_matrix(int* out_profiles, size_t count) {
     if (!out_profiles || count < 21U) {
@@ -10017,6 +10809,1439 @@ rtl_stream_test_finalize_rate_chain_profile(const dsd_opts* opts, int rate_out_h
     rtl_stream_publish_demod_profile_snapshot();
     return 0;
 }
+
+/* ---- Receive-family test hooks ----
+ * These drive the global demodulator the way stream open and the demod thread do, without a device. */
+
+static const uint32_t kFamilyTestCenterHz = 460125000U;
+/* The next 25 kHz channel, where a test retunes the stream to. */
+static const uint32_t kFamilyTestRetuneHz = 460150000U;
+
+static void
+family_test_release_buffers(void) {
+    if (demod.resamp_taps) {
+        dsd_neo_aligned_free(demod.resamp_taps);
+        demod.resamp_taps = NULL;
+    }
+    if (demod.resamp_hist) {
+        dsd_neo_aligned_free(demod.resamp_hist);
+        demod.resamp_hist = NULL;
+    }
+    if (demod.post_polydecim_hist) {
+        dsd_neo_aligned_free(demod.post_polydecim_hist);
+        demod.post_polydecim_hist = NULL;
+    }
+    demod.post_polydecim_K = 0;
+}
+
+/*
+ * The demodulator configuration of dsd_rtl_stream_open() for a DSP bandwidth of @p rate_hz, in its order and through
+ * its functions: stream_open_init_pipeline()'s demod steps, stream_open_apply_audio_filters_from_config(), the
+ * controller's fresh-stream rate-chain finalize (which the device settings step ends with), and
+ * stream_open_finalize_demod_chain(). With @p forced_rate_out_hz > 0 the device settles on that demod rate before the
+ * finalize, as optimal_settings() records a rate a fixed-grid device forces. Left out, because none of it writes
+ * demod_state or the output rate: the dongle, the input/output ring allocation (the output rate output_init() sets is
+ * reproduced), controller_init(), the device open, runtime device controls, gain and PPM, and the rate-chain log
+ * summary.
+ */
+static int
+family_test_seed_open(const dsd_opts* opts, int rate_hz, int forced_rate_out_hz) {
+    family_test_release_buffers();
+    rtl_dsp_bw_hz = rate_hz;
+    rtl_demod_init_for_mode(&demod, &output, opts, rate_hz);
+    output.rate = rtl_dsp_bw_hz;
+    rtl_demod_config_from_env_and_opts(&demod, opts);
+    rtl_demod_select_defaults_for_mode(&demod, opts, &output);
+    stream_open_apply_audio_filters_from_config();
+    if (forced_rate_out_hz > 0) {
+        demod.rate_out = forced_rate_out_hz;
+        demod.capture_rate_device_forced = 1;
+    }
+    controller_finalize_rate_chain(&controller, opts, kFamilyTestCenterHz, /*mark_reconfigure=*/0,
+                                   DemodRetuneResetReason::FreshStream, 0U, 0, NULL);
+    if (stream_open_finalize_demod_chain(opts) != 0) {
+        return -1;
+    }
+    rtl_stream_publish_demod_profile_snapshot();
+    return 0;
+}
+
+/* Cleared, with the explicit tolerance float comparisons carry: the stale values seeded here are +/-1. */
+static int
+family_test_all_zero(const float* v, size_t n) {
+    for (size_t i = 0; i < n; i++) {
+        if (fabsf(v[i]) > 1e-12f) {
+            return 0;
+        }
+    }
+    return 1;
+}
+
+static int
+family_test_channel_hist_clear(void) {
+    return family_test_all_zero(demod.channel_lpf_hist_i, DSD_CHANNEL_LPF_MAX_TAPS)
+           && family_test_all_zero(demod.channel_lpf_hist_q, DSD_CHANNEL_LPF_MAX_TAPS);
+}
+
+static int
+family_test_hb_hist_clear(void) {
+    return family_test_all_zero(&demod.hb_hist_i[0][0], sizeof(demod.hb_hist_i) / sizeof(float))
+           && family_test_all_zero(&demod.hb_hist_q[0][0], sizeof(demod.hb_hist_q) / sizeof(float));
+}
+
+static void
+family_test_seed_stale_filter_histories(void) {
+    for (int k = 0; k < DSD_CHANNEL_LPF_MAX_TAPS; k++) {
+        demod.channel_lpf_hist_i[k] = 1.0f;
+        demod.channel_lpf_hist_q[k] = -1.0f;
+    }
+    for (int st = 0; st < 10; st++) {
+        for (int k = 0; k < HB_TAPS_MAX - 1; k++) {
+            demod.hb_hist_i[st][k] = 1.0f;
+            demod.hb_hist_q[st][k] = -1.0f;
+        }
+    }
+}
+
+/* Taps per phase of the post-demod decimator a replay decimating after the demodulator runs (16, as the pipeline
+ * designs it). */
+static const int kFamilyTestPostDecimTaps = 16;
+
+/* A replay's post-demod decimator part-way through a block: its delay line full of the old family's samples and its
+ * head and phase off their start. Only the state a switch has to reset: nothing here runs the decimator. */
+static int
+family_test_seed_stale_post_decimator(void) {
+    if (!demod.post_polydecim_hist) {
+        demod.post_polydecim_hist =
+            static_cast<float*>(dsd_neo_aligned_malloc((size_t)kFamilyTestPostDecimTaps * sizeof(float)));
+        if (!demod.post_polydecim_hist) {
+            return -1;
+        }
+        demod.post_polydecim_K = kFamilyTestPostDecimTaps;
+    }
+    for (int k = 0; k < demod.post_polydecim_K; k++) {
+        demod.post_polydecim_hist[k] = 1.0f;
+    }
+    demod.post_polydecim_hist_head = 3;
+    demod.post_polydecim_phase = 1;
+    return 0;
+}
+
+/* A running monitor's audio and filter state, far from where a fresh open starts it. */
+static int
+family_test_seed_stale_monitor_state(void) {
+    demod.deemph_avg = 0.5f;
+    demod.dc_avg = 0.25f;
+    demod.audio_lpf_state = 0.125f;
+    demod.squelch_env = 0.0f;
+    demod.squelch_gate_open = 0;
+    demod.squelch_hits = 11; /* a run of squelched blocks one short of a hop */
+    family_test_seed_stale_filter_histories();
+    if (demod.resamp_hist && demod.resamp_taps_per_phase > 0) {
+        for (int k = 0; k < demod.resamp_taps_per_phase * 2; k++) {
+            demod.resamp_hist[k] = 1.0f;
+        }
+    }
+    /* The I/Q DC blocker and balance estimates the old session converged on. */
+    demod.iq_dc_avg_r = 0.25f;
+    demod.iq_dc_avg_i = -0.25f;
+    demod.iqbal_alpha_ema_r = 0.125f;
+    demod.iqbal_alpha_ema_i = -0.125f;
+    return family_test_seed_stale_post_decimator();
+}
+
+/* No decimator counts as clear: the pipeline allocates one from nothing, head and phase included. */
+static int
+family_test_post_decim_clear(void) {
+    if (!demod.post_polydecim_hist || demod.post_polydecim_K <= 0) {
+        return 1;
+    }
+    return (demod.post_polydecim_hist_head == 0 && demod.post_polydecim_phase == 0
+            && family_test_all_zero(demod.post_polydecim_hist, (size_t)demod.post_polydecim_K))
+               ? 1
+               : 0;
+}
+
+static int
+family_test_micro(float v) {
+    return (int)lrintf(v * 1e6f);
+}
+
+static rtl_stream_test_demod_fields
+family_test_capture(void) {
+    rtl_stream_test_demod_fields f = {};
+    f.output_kind = demod.output_kind;
+    f.cqpsk_enable = demod.cqpsk_enable;
+    f.demod_is_fm = demod.mode_demod == &dsd_fm_demod ? 1 : 0;
+    f.demod_is_qpsk = demod.mode_demod == &qpsk_differential_demod ? 1 : 0;
+    f.deemph = demod.deemph;
+    f.deemph_a_q15 = (int)lrintf(demod.deemph_a * 32768.0f);
+    f.audio_lpf_enable = demod.audio_lpf_enable;
+    f.channel_lpf_enable = demod.channel_lpf_enable;
+    f.channel_lpf_profile = demod.channel_lpf_profile;
+    f.channel_lpf_width_hz = demod.channel_lpf_width_hz;
+    f.analog_family = demod.analog_family;
+    f.analog_demod = demod.analog_demod;
+    f.symbol_rate_hz = demod.symbol_rate_hz;
+    f.symbol_levels = demod.symbol_levels;
+    f.ted_enabled = demod.ted_enabled;
+    f.ted_sps = demod.ted_sps;
+    f.sps_is_integer = demod.sps_is_integer;
+    f.resamp_enabled = demod.resamp_enabled;
+    f.resamp_l = demod.resamp_L;
+    f.resamp_m = demod.resamp_M;
+    f.output_rate = output.rate;
+    f.fsk_sample_rate_hz = demod.fsk_modem_state.cfg.sample_rate_hz;
+    f.fsk_symbol_rate_hz = demod.fsk_modem_state.cfg.symbol_rate_hz;
+    f.fsk_levels = demod.fsk_modem_state.cfg.levels;
+    f.fsk_channel_profile = demod.fsk_modem_state.cfg.channel_profile;
+    f.costas_freq_urad = (int)lrintf(demod.costas_state.freq * 1e6f);
+    f.costas_phase_urad = (int)lrintf(demod.costas_state.phase * 1e6f);
+    f.fll_freq_urad = (int)lrintf(demod.fll_band_edge_state.freq * 1e6f);
+    f.fll_phase_urad = (int)lrintf(demod.fll_band_edge_state.phase * 1e6f);
+    /* The Gardner loop's first-initialisation test (gardner_need_reinit()), with a tolerance on omega_mid. */
+    f.ted_awaiting_init = (fabsf(demod.ted_state.omega_mid) < 1e-12f || demod.ted_state.twice_sps < 2) ? 1 : 0;
+    f.deemph_avg_u = family_test_micro(demod.deemph_avg);
+    f.dc_avg_u = family_test_micro(demod.dc_avg);
+    f.audio_lpf_state_u = family_test_micro(demod.audio_lpf_state);
+    f.squelch_env_u = family_test_micro(demod.squelch_env);
+    f.squelch_gate_open = demod.squelch_gate_open;
+    f.squelch_hits = demod.squelch_hits;
+    f.channel_hist_clear = family_test_channel_hist_clear();
+    f.hb_hist_clear = family_test_hb_hist_clear();
+    f.resamp_hist_clear = (demod.resamp_hist && demod.resamp_taps_per_phase > 0)
+                              ? family_test_all_zero(demod.resamp_hist, (size_t)demod.resamp_taps_per_phase * 2U)
+                              : 1;
+    const float iq_correction[4] = {demod.iq_dc_avg_r, demod.iq_dc_avg_i, demod.iqbal_alpha_ema_r,
+                                    demod.iqbal_alpha_ema_i};
+    f.iq_correction_clear = family_test_all_zero(iq_correction, 4U);
+    f.post_decim_clear = family_test_post_decim_clear();
+    return f;
+}
+
+/* A running session's carrier and timing loops, far from where a fresh open starts them. */
+static void
+family_test_seed_running_loops(void) {
+    demod.costas_state.freq = 0.05f;
+    demod.costas_state.phase = 1.25f;
+    demod.fll_band_edge_state.freq = 0.02f;
+    demod.fll_band_edge_state.phase = 0.5f;
+    demod.ted_state.omega_mid = 10.0f;
+    demod.ted_state.twice_sps = 22;
+    demod.ted_state.mu = 3.5f;
+}
+
+/* One demod-thread block boundary: the consumes that precede full_demod(), and the profile snapshot the demod thread
+ * publishes after it (a consumed CQPSK toggle with no symbol profile publishes nothing of its own). */
+static void
+family_test_demod_thread_boundary(void) {
+    rtl_stream_consume_demod_profile_request();
+    (void)rtl_stream_consume_fsk_modem_config_pending(&demod);
+    (void)rtl_stream_consume_fsk_modem_reset_pending(&demod);
+    rtl_stream_publish_demod_profile_snapshot();
+}
+
+static void
+family_test_seed_ring(size_t queued_samples) {
+    ring_clear(&output);
+    output.head.store(queued_samples, std::memory_order_release);
+}
+
+namespace {
+struct FamilyTestSaved {
+    RtlSdrInternals* stream;
+    int rtl_dsp_bw_hz;
+    int retune_in_progress;
+    uint32_t last_applied_freq_hz;
+};
+} // namespace
+
+static FamilyTestSaved
+family_test_save(void) {
+    FamilyTestSaved saved = {g_stream, rtl_dsp_bw_hz,
+                             controller.retune_in_progress.exchange(0, std::memory_order_acq_rel),
+                             controller.last_applied_freq_hz.load(std::memory_order_acquire)};
+    /* Each test's stream starts on the family its options open it on, with no decode modes noted, as a newly opened
+       stream does. */
+    g_cqpsk_toggle_test_stream.rx_family_switch.store(kRxFamilyFromOptions, std::memory_order_relaxed);
+    g_noted_digital_modes.store(0U, std::memory_order_release);
+    return saved;
+}
+
+static void
+family_test_restore(const FamilyTestSaved& saved) {
+    g_cqpsk_toggle_test_stream.rx_family_switch.store(kRxFamilyFromOptions, std::memory_order_relaxed);
+    g_stream = saved.stream;
+    rtl_dsp_bw_hz = saved.rtl_dsp_bw_hz;
+    controller.retune_in_progress.store(saved.retune_in_progress, std::memory_order_release);
+    controller.last_applied_freq_hz.store(saved.last_applied_freq_hz, std::memory_order_release);
+    rtl_stream_clear_demod_profile_request();
+    g_fsk_modem_config_pending.store(0, std::memory_order_release);
+    g_fsk_modem_reset_pending.store(0, std::memory_order_release);
+    ring_clear(&output);
+    rtl_stream_publish_demod_profile_snapshot();
+}
+
+/* The decoder thread has applied the analog preset to its own options; the stream's snapshot is not those options and
+ * does not change: the family request is all the stream learns. */
+static void
+family_test_switch_to_analog(const dsd_opts* analog_opts, rtl_stream_test_family_switch_result* out) {
+    out->predicted_analog_output_rate = rtl_stream_output_rate_for_family(DSD_RX_FAMILY_ANALOG, 0, 0);
+    out->analog_request_rc = rtl_stream_request_analog_profile(DSD_RX_FAMILY_ANALOG, analog_opts->analog_demod,
+                                                               dsd_opts_analog_width_hz(analog_opts));
+    out->analog_deferred_until_consume = demod.analog_family == 0 ? 1 : 0;
+    family_test_demod_thread_boundary();
+    out->switched_analog = family_test_capture();
+    out->generation_after_analog = rtl_stream_output_generation();
+    out->used_after_analog = ring_used(&output);
+    out->published_analog_rc =
+        rtl_stream_get_analog_profile(&out->published_kind, &out->published_width_hz, &out->published_lpf_on);
+}
+
+/* The DSP menu's CQPSK toggle made twice, each consumed at a block boundary: the opposite of the published CQPSK state
+ * with no symbol profile, as apply_dsp_op_cqpsk_toggle() queues it. Records the channel profile, output kind and
+ * symbol levels after each. */
+static void
+family_test_menu_cqpsk_toggles(int* profiles, int* kinds, int* levels) {
+    for (int i = 0; i < 2; i++) {
+        int cqpsk = 0;
+        rtl_stream_get_cqpsk_status(&cqpsk, NULL);
+        (void)rtl_stream_request_demod_profile(cqpsk ? 0 : 1, 0, 0, -1, -1, 0);
+        family_test_demod_thread_boundary();
+        profiles[i] = demod.channel_lpf_profile;
+        kinds[i] = demod.output_kind;
+        levels[i] = demod.symbol_levels;
+    }
+}
+
+/* The DSP menu's toggles on the fresh open just seeded, running as a stream that opened with @p opts does. */
+static void
+family_test_fresh_menu_cqpsk_toggles(const dsd_opts* opts, rtl_stream_test_family_switch_result* out) {
+    const dsd_opts* stream_opts = g_cqpsk_toggle_test_stream.opts;
+    g_cqpsk_toggle_test_stream.opts = opts;
+    g_stream = &g_cqpsk_toggle_test_stream;
+    family_test_menu_cqpsk_toggles(out->fresh_toggle_channel_profile, out->fresh_toggle_output_kind,
+                                   out->fresh_toggle_levels);
+    g_stream = NULL;
+    g_cqpsk_toggle_test_stream.opts = stream_opts;
+}
+
+/* As family_test_switch_to_analog(): the decoder's mode change reaches the stream only as the digital decode modes it
+ * notes (@p digital_opts), the family request and the symbol profile svc_publish_symbol_profile() queues. With
+ * @p landed_rate_out_hz > 0 a retune lands after both requests are queued and before the demod thread consumes them,
+ * and the device settles it on that demod rate, finalized as the controller finalizes one. */
+static void
+family_test_switch_to_digital(const dsd_opts* digital_opts, const rtl_stream_test_digital_request* req,
+                              int landed_rate_out_hz, rtl_stream_test_family_switch_result* out) {
+    out->predicted_digital_output_rate =
+        rtl_stream_output_rate_for_family(DSD_RX_FAMILY_DIGITAL, req->cqpsk_enable, req->symbol_rate_hz);
+    rtl_stream_set_digital_decode_modes(digital_opts);
+    int rc = rtl_stream_request_analog_profile(DSD_RX_FAMILY_DIGITAL, DSD_ANALOG_DEMOD_FM, 0);
+    if (req->boundary_between_requests) {
+        family_test_demod_thread_boundary();
+        out->digital_held_until_profile = demod.analog_family ? 1 : 0;
+    }
+    rc |= rtl_stream_request_demod_profile(req->cqpsk_enable, req->symbol_rate_hz, req->levels, req->channel_profile,
+                                           req->ted_sps, 0);
+    out->digital_request_rc = rc;
+    if (landed_rate_out_hz > 0) {
+        const int rate_before_hz = demod.rate_out;
+        demod.rate_out = landed_rate_out_hz;
+        demod.capture_rate_device_forced = 1;
+        controller_finalize_rate_chain(&controller, g_stream ? g_stream->opts : NULL, kFamilyTestCenterHz,
+                                       /*mark_reconfigure=*/1, DemodRetuneResetReason::FrequencyRetune,
+                                       kFamilyTestCenterHz, rate_before_hz, NULL);
+        rtl_stream_publish_demod_profile_snapshot();
+    }
+    family_test_demod_thread_boundary();
+    out->switched_digital = family_test_capture();
+    out->generation_after_digital = rtl_stream_output_generation();
+    out->used_after_digital = ring_used(&output);
+    out->published_after_digital_rc = rtl_stream_get_analog_profile(NULL, NULL, NULL);
+    out->family_active_after_digital = rtl_stream_analog_family_active();
+    family_test_menu_cqpsk_toggles(out->switched_toggle_channel_profile, out->switched_toggle_output_kind,
+                                   out->switched_toggle_levels);
+    /* The digital session goes on to a CQPSK profile and back, as a modulation change or a typed row does. */
+    (void)rtl_stream_request_demod_profile(1, 4800, 4, DSD_CH_LPF_PROFILE_P25_CQPSK, 10, 0);
+    family_test_demod_thread_boundary();
+    (void)rtl_stream_request_demod_profile(0, 4800, 4, DSD_CH_LPF_PROFILE_P25_C4FM, 10, 0);
+    family_test_demod_thread_boundary();
+    out->output_kind_after_cqpsk_round_trip = demod.output_kind;
+}
+
+/* The DMR symbol profile a typed scan row queues, timed for the monitor's 48 kHz output. */
+static int
+family_test_request_dmr_row_profile(void) {
+    return rtl_stream_request_demod_profile(0, 4800, 4, DSD_CH_LPF_PROFILE_12K5, 10, 0);
+}
+
+/* A symbol profile the -fA session applies on its own, with no family request, consumed at a block boundary: the DSP
+ * menu's CQPSK toggle (apply_dsp_op_cqpsk_toggle() queues exactly this), or a typed DMR scan row's profile. The queued
+ * variant leaves the toggle unconsumed for the family request to find. */
+static void
+family_test_apply_profile_under_analog(int which, rtl_stream_test_family_switch_result* out) {
+    if (which == RTL_STREAM_TEST_UNDER_ANALOG_CQPSK_TOGGLE
+        || which == RTL_STREAM_TEST_UNDER_ANALOG_CQPSK_TOGGLE_QUEUED) {
+        (void)rtl_stream_request_demod_profile(1, 0, 0, -1, -1, 0);
+    } else if (which == RTL_STREAM_TEST_UNDER_ANALOG_TYPED_ROW) {
+        (void)family_test_request_dmr_row_profile();
+    } else {
+        return;
+    }
+    if (which != RTL_STREAM_TEST_UNDER_ANALOG_CQPSK_TOGGLE_QUEUED) {
+        family_test_demod_thread_boundary();
+    }
+    out->under_analog_output_kind = demod.output_kind;
+    out->under_analog_channel_profile = demod.channel_lpf_profile;
+    out->under_analog_family = demod.analog_family;
+    out->under_analog_published = rtl_stream_get_analog_profile(NULL, NULL, NULL);
+    out->under_analog_family_active = rtl_stream_analog_family_active();
+}
+
+extern "C" int
+rtl_stream_test_analog_family_switch(const dsd_opts* digital_opts, const dsd_opts* analog_opts, int rate_hz,
+                                     int forced_rate_out_hz, const rtl_stream_test_digital_request* digital_request,
+                                     rtl_stream_test_family_switch_result* out) {
+    if (!digital_opts || !analog_opts || !digital_request || !out || rate_hz <= 0) {
+        return -1;
+    }
+    *out = {};
+    const size_t queued = 64U;
+    int initialized_output = 0;
+    if (fsk_reacquire_test_prepare_output_ring(queued, &initialized_output) != 0) {
+        fsk_reacquire_test_cleanup_output_ring(initialized_output);
+        return -2;
+    }
+    const FamilyTestSaved saved = family_test_save();
+    /* The stream's own copy of the options it opened with, as the orchestrator keeps one. */
+    static dsd_opts stream_opts;
+    stream_opts = *digital_opts;
+    g_cqpsk_toggle_test_stream.output = &output;
+    g_cqpsk_toggle_test_stream.opts = &stream_opts;
+    g_stream = NULL; /* fresh opens seed before any pipeline exists */
+    int rc = family_test_seed_open(digital_opts, rate_hz, forced_rate_out_hz);
+    out->fresh_digital = family_test_capture();
+    family_test_fresh_menu_cqpsk_toggles(digital_opts, out);
+    rc |= family_test_seed_open(analog_opts, rate_hz, forced_rate_out_hz);
+    out->fresh_analog = family_test_capture();
+    rc |= family_test_seed_open(digital_opts, rate_hz, forced_rate_out_hz);
+    g_stream = &g_cqpsk_toggle_test_stream; /* live from here on: requests queue for the demod thread */
+
+    family_test_seed_ring(queued);
+    family_test_seed_running_loops();
+    rc |= family_test_seed_stale_monitor_state();
+    out->used_before = ring_used(&output);
+    out->generation_before = rtl_stream_output_generation();
+    family_test_switch_to_analog(analog_opts, out);
+    family_test_seed_ring(queued);
+    family_test_seed_running_loops();
+    rc |= family_test_seed_stale_monitor_state();
+    family_test_switch_to_digital(digital_opts, digital_request, 0, out);
+
+    family_test_restore(saved);
+    family_test_release_buffers();
+    fsk_reacquire_test_cleanup_output_ring(initialized_output);
+    return rc == 0 ? 0 : -3;
+}
+
+/* rtl_stream_test_analog_start_family_switch(), with @p landed_rate_out_hz > 0 landing a retune on that demod rate
+ * between the digital requests and their consume; fresh_digital is then an open the device forces to that rate. */
+static int
+family_test_analog_start_switch(const dsd_opts* digital_opts, const dsd_opts* analog_opts, int rate_hz,
+                                int forced_rate_out_hz, int landed_rate_out_hz,
+                                const rtl_stream_test_digital_request* digital_request,
+                                rtl_stream_test_family_switch_result* out) {
+    *out = {};
+    const size_t queued = 64U;
+    int initialized_output = 0;
+    if (fsk_reacquire_test_prepare_output_ring(queued, &initialized_output) != 0) {
+        fsk_reacquire_test_cleanup_output_ring(initialized_output);
+        return -2;
+    }
+    const FamilyTestSaved saved = family_test_save();
+    /* The -fA session's own copy of its options: no digital mode in it, however the decoder's options change. */
+    static dsd_opts stream_opts;
+    stream_opts = *analog_opts;
+    g_cqpsk_toggle_test_stream.output = &output;
+    g_cqpsk_toggle_test_stream.opts = &stream_opts;
+    g_stream = NULL; /* fresh opens seed before any pipeline exists */
+    int rc =
+        family_test_seed_open(digital_opts, rate_hz, landed_rate_out_hz > 0 ? landed_rate_out_hz : forced_rate_out_hz);
+    out->fresh_digital = family_test_capture();
+    family_test_fresh_menu_cqpsk_toggles(digital_opts, out);
+    rc |= family_test_seed_open(analog_opts, rate_hz, forced_rate_out_hz);
+    out->fresh_analog = family_test_capture();
+    g_stream = &g_cqpsk_toggle_test_stream; /* live on the -fA open: requests queue for the demod thread */
+    out->published_analog_rc =
+        rtl_stream_get_analog_profile(&out->published_kind, &out->published_width_hz, &out->published_lpf_on);
+    family_test_apply_profile_under_analog(digital_request->profile_under_analog, out);
+
+    family_test_seed_ring(queued);
+    family_test_seed_running_loops();
+    rc |= family_test_seed_stale_monitor_state();
+    out->used_before = ring_used(&output);
+    out->generation_before = rtl_stream_output_generation();
+    out->generation_after_analog = out->generation_before;
+    family_test_switch_to_digital(digital_opts, digital_request, landed_rate_out_hz, out);
+
+    family_test_restore(saved);
+    family_test_release_buffers();
+    fsk_reacquire_test_cleanup_output_ring(initialized_output);
+    return rc == 0 ? 0 : -3;
+}
+
+extern "C" int
+rtl_stream_test_analog_start_family_switch(const dsd_opts* digital_opts, const dsd_opts* analog_opts, int rate_hz,
+                                           int forced_rate_out_hz,
+                                           const rtl_stream_test_digital_request* digital_request,
+                                           rtl_stream_test_family_switch_result* out) {
+    if (!digital_opts || !analog_opts || !digital_request || !out || rate_hz <= 0) {
+        return -1;
+    }
+    return family_test_analog_start_switch(digital_opts, analog_opts, rate_hz, forced_rate_out_hz, 0, digital_request,
+                                           out);
+}
+
+extern "C" int
+rtl_stream_test_analog_start_family_switch_across_retune(const dsd_opts* digital_opts, const dsd_opts* analog_opts,
+                                                         int rate_hz, int landed_rate_out_hz,
+                                                         const rtl_stream_test_digital_request* digital_request,
+                                                         rtl_stream_test_family_switch_result* out) {
+    if (!digital_opts || !analog_opts || !digital_request || !out || rate_hz <= 0 || landed_rate_out_hz <= 0) {
+        return -1;
+    }
+    return family_test_analog_start_switch(digital_opts, analog_opts, rate_hz, 0, landed_rate_out_hz, digital_request,
+                                           out);
+}
+
+/* Switch the running test stream to the analog monitor and back to D-STAR, noting @p noted_modes (none for NULL) before
+ * the digital family request as the decoder does, then make the DSP menu's CQPSK toggle twice: returns the channel
+ * profile the toggle turning CQPSK off again landed on through @p out_profile. */
+static int
+family_test_scope_switch_and_toggle(const dsd_opts* noted_modes, int* out_profile) {
+    int rc = rtl_stream_request_analog_profile(DSD_RX_FAMILY_ANALOG, DSD_ANALOG_DEMOD_FM, 0);
+    family_test_demod_thread_boundary();
+    if (noted_modes) {
+        rtl_stream_set_digital_decode_modes(noted_modes);
+    }
+    rc |= rtl_stream_request_analog_profile(DSD_RX_FAMILY_DIGITAL, DSD_ANALOG_DEMOD_FM, 0);
+    rc |= rtl_stream_request_demod_profile(0, 4800, 2, DSD_CH_LPF_PROFILE_6K25, 10, 0);
+    family_test_demod_thread_boundary();
+    int profiles[2] = {0, 0};
+    int kinds[2] = {0, 0};
+    int levels[2] = {0, 0};
+    family_test_menu_cqpsk_toggles(profiles, kinds, levels);
+    *out_profile = profiles[1];
+    return rc;
+}
+
+extern "C" int
+rtl_stream_test_noted_digital_modes_scope(rtl_stream_test_noted_modes_result* out) {
+    if (!out) {
+        return -1;
+    }
+    *out = {};
+    const size_t queued = 64U;
+    int initialized_output = 0;
+    if (fsk_reacquire_test_prepare_output_ring(queued, &initialized_output) != 0) {
+        fsk_reacquire_test_cleanup_output_ring(initialized_output);
+        return -2;
+    }
+    const FamilyTestSaved saved = family_test_save();
+    static dsd_opts p25_opts;
+    static dsd_opts dstar_opts;
+    DSD_MEMSET(&p25_opts, 0, sizeof p25_opts);
+    DSD_MEMSET(&dstar_opts, 0, sizeof dstar_opts);
+    p25_opts.frame_p25p1 = 1;
+    p25_opts.mod_c4fm = 1;
+    dstar_opts.frame_dstar = 1;
+    dstar_opts.mod_gfsk = 1;
+    g_cqpsk_toggle_test_stream.output = &output;
+    g_cqpsk_toggle_test_stream.opts = &p25_opts; /* the P25 open's own copy of its options */
+    g_stream = NULL;
+    int rc = family_test_seed_open(&p25_opts, 48000, 0);
+    g_stream = &g_cqpsk_toggle_test_stream;
+
+    /* A digital-to-digital mode change: the decoder notes D-STAR and queues its symbol profile, with no family switch. */
+    rtl_stream_set_digital_decode_modes(&dstar_opts);
+    rc |= rtl_stream_request_demod_profile(0, 4800, 2, DSD_CH_LPF_PROFILE_6K25, 10, 0);
+    family_test_demod_thread_boundary();
+    int profiles[2] = {0, 0};
+    int kinds[2] = {0, 0};
+    int levels[2] = {0, 0};
+    family_test_menu_cqpsk_toggles(profiles, kinds, levels);
+    out->unswitched_profile = profiles[1];
+
+    rc |= family_test_scope_switch_and_toggle(&dstar_opts, &out->switched_profile);
+
+    /* A new open of the same options: it drops the note and starts on the family its options open it on. */
+    rtl_stream_clear_demod_profile_request();
+    g_cqpsk_toggle_test_stream.rx_family_switch.store(kRxFamilyFromOptions, std::memory_order_relaxed);
+    g_stream = NULL;
+    rc |= family_test_seed_open(&p25_opts, 48000, 0);
+    g_stream = &g_cqpsk_toggle_test_stream;
+    rc |= family_test_scope_switch_and_toggle(NULL, &out->reopened_profile);
+
+    family_test_restore(saved);
+    family_test_release_buffers();
+    fsk_reacquire_test_cleanup_output_ring(initialized_output);
+    return rc == 0 ? 0 : -3;
+}
+
+namespace {
+struct ReadRaceContext {
+    std::atomic<int> paused{0};
+    std::atomic<int> release{0};
+    std::atomic<int> switch_done{0};
+    std::atomic<int> read_got{0};
+};
+
+/* Static storage, because the pause hooks keep its address in file-scope pointers while the race runs. */
+ReadRaceContext g_read_race_ctx;
+} // namespace
+
+/* Clear the shared race context for a new run, before any thread that uses it starts. */
+static ReadRaceContext*
+read_race_context_reset(void) {
+    g_read_race_ctx.paused.store(0, std::memory_order_relaxed);
+    g_read_race_ctx.release.store(0, std::memory_order_relaxed);
+    g_read_race_ctx.switch_done.store(0, std::memory_order_relaxed);
+    g_read_race_ctx.read_got.store(0, std::memory_order_relaxed);
+    return &g_read_race_ctx;
+}
+
+/* The stop a race test puts in the read (between its copy and its tail store) or in the switch's ring clear (after its
+ * first generation bump, before it takes ready_m): it waits there for the release (bounded, so a broken test cannot
+ * hang the suite). */
+static void
+read_race_pause(void* arg) {
+    ReadRaceContext* ctx = static_cast<ReadRaceContext*>(arg);
+    ctx->paused.store(1, std::memory_order_release);
+    for (int waited_ms = 0; waited_ms < 5000 && !ctx->release.load(std::memory_order_acquire); waited_ms++) {
+        dsd_sleep_ms(1);
+    }
+}
+
+static DSD_THREAD_RETURN_TYPE
+#if DSD_PLATFORM_WIN_NATIVE
+    __stdcall
+#endif
+    read_race_reader(void* arg) {
+    ReadRaceContext* ctx = static_cast<ReadRaceContext*>(arg);
+    float samples[16];
+    int gated = 0;
+    ctx->read_got.store(rtl_stream_read_live_available(&controller, &output, samples, 16U, &gated),
+                        std::memory_order_release);
+    DSD_THREAD_RETURN;
+}
+
+/* The demod thread's block boundary, which consumes the queued switch. */
+static DSD_THREAD_RETURN_TYPE
+#if DSD_PLATFORM_WIN_NATIVE
+    __stdcall
+#endif
+    read_race_switcher(void* arg) {
+    ReadRaceContext* ctx = static_cast<ReadRaceContext*>(arg);
+    family_test_demod_thread_boundary();
+    ctx->switch_done.store(1, std::memory_order_release);
+    DSD_THREAD_RETURN;
+}
+
+static int
+read_race_wait_for(const std::atomic<int>* flag, int max_ms) {
+    for (int waited_ms = 0; waited_ms < max_ms && !flag->load(std::memory_order_acquire); waited_ms++) {
+        dsd_sleep_ms(1);
+    }
+    return flag->load(std::memory_order_acquire);
+}
+
+/* Run the paused read and the switch against each other; 0 when both threads ran. */
+static int
+read_race_run(ReadRaceContext* ctx, int hold_ms, rtl_stream_test_read_race_result* out) {
+    g_test_live_read_pause_ctx = ctx;
+    g_test_live_read_pause_hook = read_race_pause;
+    dsd_thread_t reader{};
+    dsd_thread_t switcher{};
+    const int reader_started = dsd_thread_create(&reader, read_race_reader, ctx) == 0 ? 1 : 0;
+    out->paused = reader_started ? read_race_wait_for(&ctx->paused, 5000) : 0;
+    const int switcher_started = (out->paused && dsd_thread_create(&switcher, read_race_switcher, ctx) == 0) ? 1 : 0;
+    if (switcher_started) {
+        out->switch_done_during_read = read_race_wait_for(&ctx->switch_done, hold_ms);
+    }
+    ctx->release.store(1, std::memory_order_release);
+    if (reader_started) {
+        (void)dsd_thread_join(reader);
+    }
+    if (switcher_started) {
+        (void)dsd_thread_join(switcher);
+    }
+    g_test_live_read_pause_hook = NULL;
+    g_test_live_read_pause_ctx = NULL;
+    out->read_got = ctx->read_got.load(std::memory_order_acquire);
+    return (reader_started && switcher_started) ? 0 : -1;
+}
+
+/* Open DMR at 48 kHz as a live stream with @p queued samples in its output ring and a switch to analog queued for the
+ * demod thread. */
+static int
+read_race_seed_live_switch(size_t queued, size_t* out_used_before, uint32_t* out_generation_before) {
+    static dsd_opts stream_opts;
+    DSD_MEMSET(&stream_opts, 0, sizeof stream_opts);
+    stream_opts.frame_dmr = 1;
+    stream_opts.mod_c4fm = 1;
+    g_cqpsk_toggle_test_stream.output = &output;
+    g_cqpsk_toggle_test_stream.opts = &stream_opts;
+    g_stream = NULL; /* the open seeds before any pipeline exists */
+    int rc = family_test_seed_open(&stream_opts, 48000, 0);
+    g_stream = &g_cqpsk_toggle_test_stream; /* live from here on: the request queues for the demod thread */
+    family_test_seed_ring(queued);
+    *out_used_before = ring_used(&output);
+    *out_generation_before = rtl_stream_output_generation();
+    rc |= rtl_stream_request_analog_profile(DSD_RX_FAMILY_ANALOG, DSD_ANALOG_DEMOD_FM, 0);
+    return rc;
+}
+
+extern "C" int
+rtl_stream_test_family_switch_during_live_read(int hold_ms, rtl_stream_test_read_race_result* out) {
+    if (!out || hold_ms <= 0) {
+        return -1;
+    }
+    *out = {};
+    const size_t queued = 64U;
+    int initialized_output = 0;
+    if (fsk_reacquire_test_prepare_output_ring(queued, &initialized_output) != 0) {
+        fsk_reacquire_test_cleanup_output_ring(initialized_output);
+        return -2;
+    }
+    const FamilyTestSaved saved = family_test_save();
+    int rc = read_race_seed_live_switch(queued, &out->used_before, &out->generation_before);
+
+    rc |= read_race_run(read_race_context_reset(), hold_ms, out);
+    out->used_after = ring_used(&output);
+    out->tail_after = output.tail.load();
+    out->head_after = output.head.load();
+    out->generation_after = rtl_stream_output_generation();
+    out->analog_family_after = demod.analog_family;
+
+    family_test_restore(saved);
+    family_test_release_buffers();
+    fsk_reacquire_test_cleanup_output_ring(initialized_output);
+    return rc == 0 ? 0 : -3;
+}
+
+extern "C" int
+rtl_stream_test_live_read_during_family_switch_clear(rtl_stream_test_clear_race_result* out) {
+    if (!out) {
+        return -1;
+    }
+    *out = {};
+    const size_t queued = 64U;
+    int initialized_output = 0;
+    if (fsk_reacquire_test_prepare_output_ring(queued, &initialized_output) != 0) {
+        fsk_reacquire_test_cleanup_output_ring(initialized_output);
+        return -2;
+    }
+    const FamilyTestSaved saved = family_test_save();
+    int rc = read_race_seed_live_switch(queued, &out->used_before, &out->generation_before);
+
+    ReadRaceContext* ctx = read_race_context_reset();
+    g_test_output_clear_pause_ctx = ctx;
+    g_test_output_clear_pause_hook = read_race_pause;
+    dsd_thread_t switcher{};
+    const int switcher_started = dsd_thread_create(&switcher, read_race_switcher, ctx) == 0 ? 1 : 0;
+    out->paused = switcher_started ? read_race_wait_for(&ctx->paused, 5000) : 0;
+    if (out->paused) {
+        /* The decoder's read, from its generation load to its tail store, while the clear waits to take ready_m. */
+        float samples[16];
+        int gated = 0;
+        out->read_generation = rtl_stream_output_generation();
+        out->read_got = rtl_stream_read_live_available(&controller, &output, samples, 16U, &gated);
+        out->switch_done_during_read = ctx->switch_done.load(std::memory_order_acquire);
+    }
+    ctx->release.store(1, std::memory_order_release);
+    if (switcher_started) {
+        (void)dsd_thread_join(switcher);
+    }
+    g_test_output_clear_pause_hook = NULL;
+    g_test_output_clear_pause_ctx = NULL;
+    out->used_after = ring_used(&output);
+    out->tail_after = output.tail.load();
+    out->head_after = output.head.load();
+    out->generation_after = rtl_stream_output_generation();
+    out->analog_family_after = demod.analog_family;
+
+    family_test_restore(saved);
+    family_test_release_buffers();
+    fsk_reacquire_test_cleanup_output_ring(initialized_output);
+    return (rc == 0 && switcher_started) ? 0 : -3;
+}
+
+static int
+family_test_digital_family_held(void) {
+    std::lock_guard<std::mutex> lock(g_profile_req_m);
+    return g_profile_req_analog_family == DSD_RX_FAMILY_DIGITAL ? 1 : 0;
+}
+
+extern "C" int
+rtl_stream_test_digital_row_on_analog_session(int rate_hz, int start_digital, rtl_stream_test_digital_row_result* out) {
+    if (!out || rate_hz <= 0) {
+        return -1;
+    }
+    *out = {};
+    const size_t queued = 64U;
+    int initialized_output = 0;
+    if (fsk_reacquire_test_prepare_output_ring(queued, &initialized_output) != 0) {
+        fsk_reacquire_test_cleanup_output_ring(initialized_output);
+        return -2;
+    }
+    const FamilyTestSaved saved = family_test_save();
+    /* The stream's own copy of the options it opened with. The row constraint later puts DMR on the decoder's
+       options, never on this copy: row entry reaches the stream only as the row's symbol profile. */
+    static dsd_opts stream_opts;
+    DSD_MEMSET(&stream_opts, 0, sizeof stream_opts);
+    if (start_digital) {
+        stream_opts.frame_dmr = 1;
+        stream_opts.mod_c4fm = 1;
+    } else {
+        stream_opts.analog_only = 1;
+        stream_opts.monitor_input_audio = 1;
+    }
+    g_cqpsk_toggle_test_stream.output = &output;
+    g_cqpsk_toggle_test_stream.opts = &stream_opts;
+    g_stream = NULL;
+    out->open_rc = family_test_seed_open(&stream_opts, rate_hz, 0);
+    g_stream = &g_cqpsk_toggle_test_stream; /* live: requests queue for the demod thread */
+    if (start_digital) {
+        /* The operator picked Analog on the DMR session before the scan reached the row. */
+        out->open_rc |= rtl_stream_request_analog_profile(DSD_RX_FAMILY_ANALOG, DSD_ANALOG_DEMOD_FM, 0);
+        family_test_demod_thread_boundary();
+    }
+
+    int rc = family_test_request_dmr_row_profile();
+    family_test_demod_thread_boundary();
+    out->row_output_kind = demod.output_kind;
+    out->row_analog_family = demod.analog_family;
+    out->row_published_family = rtl_stream_get_analog_profile(NULL, NULL, NULL);
+    out->row_output_rate = output.rate;
+    out->row_resamp_l = demod.resamp_L;
+    out->row_resamp_m = demod.resamp_M;
+
+    out->lone_request_rc = rtl_stream_request_analog_profile(DSD_RX_FAMILY_DIGITAL, DSD_ANALOG_DEMOD_FM, 0);
+    family_test_demod_thread_boundary();
+    out->lone_request_held = family_test_digital_family_held();
+    rtl_stream_clear_demod_profile_request();
+
+    family_test_seed_ring(queued);
+    out->used_before = ring_used(&output);
+    out->generation_before = rtl_stream_output_generation();
+    rc |= family_test_request_dmr_row_profile();
+    family_test_demod_thread_boundary();
+    out->republish_rc = rc;
+    out->generation_after = rtl_stream_output_generation();
+    out->used_after = ring_used(&output);
+    out->output_kind_after = demod.output_kind;
+    out->output_rate_after = output.rate;
+    out->resamp_l_after = demod.resamp_L;
+    out->resamp_m_after = demod.resamp_M;
+
+    out->restore_rc = rtl_stream_request_analog_profile(DSD_RX_FAMILY_ANALOG, DSD_ANALOG_DEMOD_FM, 0);
+    family_test_demod_thread_boundary();
+    out->restored_output_kind = demod.output_kind;
+    out->restored_published_family = rtl_stream_get_analog_profile(NULL, NULL, NULL);
+    out->restored_output_rate = output.rate;
+    out->generation_after_restore = rtl_stream_output_generation();
+
+    family_test_restore(saved);
+    family_test_release_buffers();
+    fsk_reacquire_test_cleanup_output_ring(initialized_output);
+    return 0;
+}
+
+/* Land a retune from @p running_center_hz (0: no centre applied yet) to @p target_hz (with @p retune_profile, or none)
+ * the way controller_apply_reconfigure() lands one once the device is programmed: the device settled on
+ * @p landed_rate_hz, the landing check may refuse the retune and put the capture back, and the rate chain finalizes.
+ * @p reported_rate_hz is the rate the device reports after that restore (the rate it was put back to when equal to
+ * @p rate_before_hz). Returns 1 when the retune was refused. */
+static int
+family_test_land_retune_between(const dsd_opts* opts, uint32_t running_center_hz, uint32_t target_hz,
+                                int rate_before_hz, int landed_rate_hz, int reported_rate_hz,
+                                const RtlRetuneProfile* retune_profile) {
+    controller.last_applied_freq_hz.store(running_center_hz, std::memory_order_release);
+    const CaptureSettingsSnapshot previous_capture = capture_settings_snapshot_for_center(running_center_hz);
+    uint32_t center_hz = target_hz;
+    const RtlRetuneProfile* profile = retune_profile;
+    demod.rate_out = landed_rate_hz;
+    const int refused = controller_refuse_retune_for_analog_width(&previous_capture, rate_before_hz, running_center_hz,
+                                                                  &center_hz, &profile);
+    if (refused && reported_rate_hz != rate_before_hz) {
+        demod.rate_out = reported_rate_hz; /* the device did not return to the rate the capture was put back to */
+    }
+    controller_finalize_rate_chain(&controller, opts, center_hz, /*mark_reconfigure=*/1,
+                                   DemodRetuneResetReason::FrequencyRetune, running_center_hz, rate_before_hz, profile);
+    return refused;
+}
+
+/* A retune from kFamilyTestCenterHz to kFamilyTestRetuneHz, landed as family_test_land_retune_between() lands it. */
+static int
+family_test_land_retune(const dsd_opts* opts, int rate_before_hz, int landed_rate_hz, int reported_rate_hz,
+                        const RtlRetuneProfile* retune_profile) {
+    return family_test_land_retune_between(opts, kFamilyTestCenterHz, kFamilyTestRetuneHz, rate_before_hz,
+                                           landed_rate_hz, reported_rate_hz, retune_profile);
+}
+
+extern "C" int
+rtl_stream_test_audio_monitor_retune(int rate_before_hz, int rate_after_hz, int nfm_width_hz,
+                                     rtl_stream_test_audio_reset_result* out) {
+    if (!out || rate_before_hz <= 0 || rate_after_hz <= 0) {
+        return -1;
+    }
+    *out = {};
+    const FamilyTestSaved saved = family_test_save();
+    g_stream = NULL;
+    static dsd_opts analog_opts;
+    DSD_MEMSET(&analog_opts, 0, sizeof analog_opts);
+    analog_opts.analog_only = 1;
+    analog_opts.monitor_input_audio = 1;
+    analog_opts.analog_nfm_bandwidth_hz = nfm_width_hz;
+    if (family_test_seed_open(&analog_opts, rate_before_hz, 0) != 0) {
+        family_test_restore(saved);
+        return -2;
+    }
+    out->channel_lpf_width_before = demod.channel_lpf_width_hz;
+    demod.audio_lpf_enable = 1;
+    demod.audio_lpf_cutoff_hz = 3000;
+    rtl_demod_refresh_audio_coefficients(&demod);
+    out->deemph_a_before = demod.deemph_a;
+    out->audio_lpf_alpha_before = demod.audio_lpf_alpha;
+    if (family_test_seed_stale_monitor_state() != 0) {
+        family_test_restore(saved);
+        family_test_release_buffers();
+        return -3;
+    }
+
+    /* A retune to the next channel that the device settles on another rate, landed as the controller lands it. */
+    out->center_before = kFamilyTestCenterHz;
+    out->retune_target_hz = kFamilyTestRetuneHz;
+    out->retune_refused = family_test_land_retune(&analog_opts, rate_before_hz, rate_after_hz, rate_before_hz, NULL);
+    out->center_after = controller.last_applied_freq_hz.load(std::memory_order_acquire);
+    out->rate_out_after = demod.rate_out;
+
+    out->deemph_avg = demod.deemph_avg;
+    out->dc_avg = demod.dc_avg;
+    out->audio_lpf_state = demod.audio_lpf_state;
+    out->squelch_env = demod.squelch_env;
+    out->channel_hist_cleared = family_test_channel_hist_clear();
+    out->hb_hist_cleared = family_test_hb_hist_clear();
+    out->resamp_hist_cleared = (demod.resamp_hist && demod.resamp_taps_per_phase > 0)
+                                   ? family_test_all_zero(demod.resamp_hist, (size_t)demod.resamp_taps_per_phase * 2U)
+                                   : 0;
+    out->deemph_a_after = demod.deemph_a;
+    out->audio_lpf_alpha_after = demod.audio_lpf_alpha;
+    out->channel_lpf_width_after = demod.channel_lpf_width_hz;
+    out->channel_lpf_enable_after = demod.channel_lpf_enable;
+    rtl_stream_publish_demod_profile_snapshot();
+    (void)rtl_stream_get_analog_profile(NULL, &out->published_width_after, &out->published_lpf_on_after);
+
+    demod.audio_lpf_enable = 0;
+    demod.audio_lpf_cutoff_hz = 0;
+    family_test_restore(saved);
+    family_test_release_buffers();
+    return 0;
+}
+
+extern "C" int
+rtl_stream_test_audio_monitor_retune_completion(int rate_before_hz, int rate_after_hz, int nfm_width_hz,
+                                                uint32_t running_center_hz, uint32_t target_hz,
+                                                rtl_stream_test_retune_completion_result* out) {
+    if (!out || rate_before_hz <= 0 || rate_after_hz <= 0 || target_hz == 0U) {
+        return -1;
+    }
+    *out = {};
+    const FamilyTestSaved saved = family_test_save();
+    g_stream = NULL;
+    static dsd_opts analog_opts;
+    DSD_MEMSET(&analog_opts, 0, sizeof analog_opts);
+    analog_opts.analog_only = 1;
+    analog_opts.monitor_input_audio = 1;
+    analog_opts.analog_nfm_bandwidth_hz = nfm_width_hz;
+    if (family_test_seed_open(&analog_opts, rate_before_hz, 0) != 0) {
+        family_test_restore(saved);
+        return -2;
+    }
+    /* What controller_apply_reconfigure() reports once the device is programmed, landed as it lands it. */
+    const int refused = family_test_land_retune_between(&analog_opts, running_center_hz, target_hz, rate_before_hz,
+                                                        rate_after_hz, rate_before_hz, NULL);
+    out->retune_refused = refused;
+    out->center_after = controller.last_applied_freq_hz.load(std::memory_order_acquire);
+    out->completion_result = controller_manual_retune_completion_result(
+        refused ? kRetuneRefusedForAnalogWidth : 0, /*reconfigured=*/1, refused, target_hz, out->center_after);
+
+    family_test_restore(saved);
+    family_test_release_buffers();
+    return 0;
+}
+
+extern "C" int
+rtl_stream_test_audio_monitor_rate_not_restored(int rate_before_hz, int rate_after_hz, int nfm_width_hz,
+                                                rtl_stream_test_rate_not_restored_result* out) {
+    if (!out || rate_before_hz <= 0 || rate_after_hz <= 0) {
+        return -1;
+    }
+    *out = {};
+    const FamilyTestSaved saved = family_test_save();
+    g_stream = NULL;
+    static dsd_opts analog_opts;
+    DSD_MEMSET(&analog_opts, 0, sizeof analog_opts);
+    analog_opts.analog_only = 1;
+    analog_opts.monitor_input_audio = 1;
+    analog_opts.analog_nfm_bandwidth_hz = nfm_width_hz;
+    if (family_test_seed_open(&analog_opts, rate_before_hz, 0) != 0) {
+        family_test_restore(saved);
+        return -2;
+    }
+    dsd_input_failure_clear();
+    out->retune_refused = family_test_land_retune(&analog_opts, rate_before_hz, rate_after_hz, rate_after_hz, NULL);
+    out->exit_requested = dsd_exitflag_load() ? 1 : 0;
+    dsd_input_failure failure = {};
+    dsd_input_failure_get(&failure);
+    out->input_failure_kind = failure.kind;
+    dsd_exitflag_store(0);
+    dsd_input_failure_clear();
+    family_test_restore(saved);
+    family_test_release_buffers();
+    return 0;
+}
+
+namespace {
+/* The device rtl_stream_test_audio_monitor_restore_failure() puts a refused retune's capture back on: each call answers
+ * with the return code the test gave, and the rate it reports is the last one it was asked for. */
+struct RefusedCaptureTestDevice {
+    int frequency_rc;
+    int rate_rc;
+    int frequency_calls;
+    uint32_t frequency_hz;
+    uint32_t rate_hz;
+};
+
+RefusedCaptureTestDevice g_refused_capture_test_device;
+} // namespace
+
+static int
+refused_capture_test_set_frequency(struct rtl_device* dev, uint32_t frequency_hz) {
+    (void)dev;
+    g_refused_capture_test_device.frequency_calls++;
+    g_refused_capture_test_device.frequency_hz = frequency_hz;
+    return g_refused_capture_test_device.frequency_rc;
+}
+
+static int
+refused_capture_test_set_sample_rate(struct rtl_device* dev, uint32_t rate_hz) {
+    (void)dev;
+    g_refused_capture_test_device.rate_hz = rate_hz;
+    return g_refused_capture_test_device.rate_rc;
+}
+
+static int
+refused_capture_test_get_sample_rate(struct rtl_device* dev) {
+    (void)dev;
+    return (int)g_refused_capture_test_device.rate_hz;
+}
+
+static const RefusedCaptureDeviceOps kRefusedCaptureTestDeviceOps = {
+    refused_capture_test_set_frequency, refused_capture_test_set_sample_rate, refused_capture_test_get_sample_rate};
+
+extern "C" int
+rtl_stream_test_audio_monitor_restore_failure(int rate_before_hz, int rate_after_hz, int nfm_width_hz, int frequency_rc,
+                                              int rate_rc, rtl_stream_test_restore_failure_result* out) {
+    if (!out || rate_before_hz <= 0 || rate_after_hz <= 0) {
+        return -1;
+    }
+    *out = {};
+    const FamilyTestSaved saved = family_test_save();
+    const uint32_t saved_capture_freq_hz = load_dongle_frequency();
+    const uint32_t saved_capture_rate_hz = load_dongle_rate();
+    g_stream = NULL;
+    static dsd_opts analog_opts;
+    DSD_MEMSET(&analog_opts, 0, sizeof analog_opts);
+    analog_opts.analog_only = 1;
+    analog_opts.monitor_input_audio = 1;
+    analog_opts.analog_nfm_bandwidth_hz = nfm_width_hz;
+    if (family_test_seed_open(&analog_opts, rate_before_hz, 0) != 0) {
+        family_test_restore(saved);
+        return -2;
+    }
+    /* The capture the stream ran before the retune: 20 times the DSP rate, placed for the running centre. */
+    store_dongle_rate((uint32_t)rate_before_hz * 20U);
+    store_dongle_frequency(capture_frequency_for_rate((int64_t)kFamilyTestCenterHz, load_dongle_rate()));
+    out->capture_freq_before_hz = load_dongle_frequency();
+    out->capture_rate_before_hz = load_dongle_rate();
+    g_refused_capture_test_device = {};
+    g_refused_capture_test_device.frequency_rc = frequency_rc;
+    g_refused_capture_test_device.rate_rc = rate_rc;
+    g_test_refused_capture_device_ops = &kRefusedCaptureTestDeviceOps;
+    dsd_input_failure_clear();
+    out->retune_refused = family_test_land_retune(&analog_opts, rate_before_hz, rate_after_hz, rate_before_hz, NULL);
+    g_test_refused_capture_device_ops = NULL;
+    out->program_calls = g_refused_capture_test_device.frequency_calls;
+    out->program_freq_hz = g_refused_capture_test_device.frequency_hz;
+    out->program_rate_hz = g_refused_capture_test_device.rate_hz;
+    out->rate_out_after = demod.rate_out;
+    out->exit_requested = dsd_exitflag_load() ? 1 : 0;
+    dsd_input_failure failure = {};
+    dsd_input_failure_get(&failure);
+    out->input_failure_kind = failure.kind;
+    out->input_failure_code = failure.native_code;
+    dsd_exitflag_store(0);
+    dsd_input_failure_clear();
+    store_dongle_frequency(saved_capture_freq_hz);
+    store_dongle_rate(saved_capture_rate_hz);
+    family_test_restore(saved);
+    family_test_release_buffers();
+    return 0;
+}
+
+extern "C" int
+rtl_stream_test_audio_monitor_retune_with_profile(int rate_before_hz, int rate_after_hz, int nfm_width_hz,
+                                                  int profile_family, int profile_width_hz,
+                                                  rtl_stream_test_retune_profile_landing_result* out) {
+    if (!out || rate_before_hz <= 0 || rate_after_hz <= 0) {
+        return -1;
+    }
+    *out = {};
+    const FamilyTestSaved saved = family_test_save();
+    g_stream = NULL;
+    static dsd_opts analog_opts;
+    DSD_MEMSET(&analog_opts, 0, sizeof analog_opts);
+    analog_opts.analog_only = 1;
+    analog_opts.monitor_input_audio = 1;
+    analog_opts.analog_nfm_bandwidth_hz = nfm_width_hz;
+    if (family_test_seed_open(&analog_opts, rate_before_hz, 0) != 0) {
+        family_test_restore(saved);
+        return -2;
+    }
+    /* The shape rtl_stream_prepare_retune_analog_profile_for_target() queues for a target with no symbol profile. */
+    RtlRetuneProfile profile{};
+    profile.active = 1;
+    profile.cqpsk_enable = -1;
+    profile.target_freq_hz = kFamilyTestRetuneHz;
+    profile.analog_family = profile_family;
+    profile.analog_kind = DSD_ANALOG_DEMOD_FM;
+    profile.analog_width_hz = profile_width_hz;
+    out->retune_refused =
+        family_test_land_retune(&analog_opts, rate_before_hz, rate_after_hz, rate_before_hz, &profile);
+    out->rate_out_after = demod.rate_out;
+    out->analog_family_after = demod.analog_family;
+    out->monitor_after = dsd_demod_analog_monitor_active(&demod);
+    out->channel_lpf_width_after = demod.channel_lpf_width_hz;
+    family_test_restore(saved);
+    family_test_release_buffers();
+    return 0;
+}
+
+/* A running analog monitor's channel plan, as full_demod() leaves it after designing for the current width. */
+static void
+family_test_seed_channel_plan(void) {
+    demod.channel_lpf_plan_rate_out = demod.rate_out;
+    demod.channel_lpf_plan_profile = demod.channel_lpf_profile;
+    demod.channel_lpf_plan_width_hz = demod.channel_lpf_width_hz;
+    demod.channel_lpf_plan_taps_len = 99;
+}
+
+static int
+family_test_channel_plan_dropped(void) {
+    return (demod.channel_lpf_plan_taps_len == 0 && demod.channel_lpf_plan_width_hz == 0) ? 1 : 0;
+}
+
+/* Queue an NFM width request while the analog stream runs and consume it at one demod-thread block boundary. */
+static int
+family_test_request_width(int width_hz) {
+    const int rc = rtl_stream_request_analog_profile(DSD_RX_FAMILY_ANALOG, DSD_ANALOG_DEMOD_FM, width_hz);
+    family_test_demod_thread_boundary();
+    return rc;
+}
+
+extern "C" int
+rtl_stream_test_analog_width_change(int rate_hz, int width_before_hz, int width_after_hz,
+                                    rtl_stream_test_width_change_result* out) {
+    if (!out || rate_hz <= 0) {
+        return -1;
+    }
+    *out = {};
+    const size_t queued = 64U;
+    int initialized_output = 0;
+    if (fsk_reacquire_test_prepare_output_ring(queued, &initialized_output) != 0) {
+        fsk_reacquire_test_cleanup_output_ring(initialized_output);
+        return -2;
+    }
+    const FamilyTestSaved saved = family_test_save();
+    static dsd_opts analog_opts;
+    DSD_MEMSET(&analog_opts, 0, sizeof analog_opts);
+    analog_opts.analog_only = 1;
+    analog_opts.monitor_input_audio = 1;
+    analog_opts.analog_nfm_bandwidth_hz = width_before_hz;
+    g_cqpsk_toggle_test_stream.output = &output;
+    g_cqpsk_toggle_test_stream.opts = &analog_opts;
+    g_stream = NULL;
+    const int open_rc = family_test_seed_open(&analog_opts, rate_hz, 0);
+    g_stream = &g_cqpsk_toggle_test_stream; /* live: requests queue for the demod thread */
+
+    const int width_before = demod.channel_lpf_width_hz;
+    family_test_seed_channel_plan();
+    family_test_seed_stale_filter_histories();
+    family_test_seed_ring(queued);
+    out->used_before = ring_used(&output);
+    out->generation_before = rtl_stream_output_generation();
+    out->request_rc = rtl_stream_request_analog_profile(DSD_RX_FAMILY_ANALOG, DSD_ANALOG_DEMOD_FM, width_after_hz);
+    out->deferred_until_consume = demod.channel_lpf_width_hz == width_before ? 1 : 0;
+    family_test_demod_thread_boundary();
+    out->width_after = demod.channel_lpf_width_hz;
+    out->lpf_enable_after = demod.channel_lpf_enable;
+    out->output_kind_after = demod.output_kind;
+    out->analog_family_after = demod.analog_family;
+    out->plan_invalidated = family_test_channel_plan_dropped();
+    out->channel_hist_cleared = family_test_channel_hist_clear();
+    out->hb_hist_cleared = family_test_hb_hist_clear();
+    out->generation_after = rtl_stream_output_generation();
+    out->used_after = ring_used(&output);
+    (void)rtl_stream_get_analog_profile(NULL, &out->published_width_hz, &out->published_lpf_on);
+
+    family_test_seed_channel_plan();
+    family_test_seed_stale_filter_histories();
+    out->same_width_rc = family_test_request_width(width_after_hz);
+    out->same_width_kept_histories = !family_test_channel_hist_clear() && !family_test_hb_hist_clear();
+    out->same_width_kept_plan = !family_test_channel_plan_dropped();
+
+    family_test_restore(saved);
+    family_test_release_buffers();
+    fsk_reacquire_test_cleanup_output_ring(initialized_output);
+    return open_rc == 0 ? 0 : -3;
+}
+
+extern "C" int
+rtl_stream_test_analog_request_without_stream(int stale_rate_out_hz, int kind, int width_hz, int* out_retune_rc) {
+    if (!out_retune_rc) {
+        return -2;
+    }
+    const FamilyTestSaved saved = family_test_save();
+    const int prev_rate_out = demod.rate_out;
+    g_stream = NULL;
+    demod.rate_out = stale_rate_out_hz;
+    rtl_stream_publish_demod_profile_snapshot(); /* what the earlier session left in the mirror */
+    const int rc = rtl_stream_request_analog_profile(DSD_RX_FAMILY_ANALOG, kind, width_hz);
+    const rtl_stream_retune_analog_profile analog = {DSD_RX_FAMILY_ANALOG, kind, width_hz};
+    *out_retune_rc = rtl_stream_prepare_retune_analog_profile_for_target(kFamilyTestCenterHz, &analog);
+    rtl_stream_clear_pending_retune_profile();
+    demod.rate_out = prev_rate_out;
+    family_test_restore(saved);
+    return rc;
+}
+
+extern "C" int
+rtl_stream_test_analog_request_with_stream(int rate_hz, int analog_stream, int post_downsample, int kind, int width_hz,
+                                           rtl_stream_test_live_request_result* out) {
+    if (!out || rate_hz <= 0 || post_downsample < 1) {
+        return -1;
+    }
+    *out = {};
+    const size_t queued = 64U;
+    int initialized_output = 0;
+    if (fsk_reacquire_test_prepare_output_ring(queued, &initialized_output) != 0) {
+        fsk_reacquire_test_cleanup_output_ring(initialized_output);
+        return -2;
+    }
+    const FamilyTestSaved saved = family_test_save();
+    static dsd_opts stream_opts;
+    DSD_MEMSET(&stream_opts, 0, sizeof stream_opts);
+    if (analog_stream) {
+        stream_opts.analog_only = 1;
+        stream_opts.monitor_input_audio = 1;
+    } else {
+        stream_opts.frame_dmr = 1;
+        stream_opts.mod_c4fm = 1;
+    }
+    g_cqpsk_toggle_test_stream.output = &output;
+    g_cqpsk_toggle_test_stream.opts = &stream_opts;
+    g_stream = NULL;
+    const int open_rc = family_test_seed_open(&stream_opts, rate_hz, 0);
+    /* An I/Q replay sidecar can decimate after the demodulator; the stream publishes that beside its rate. */
+    const int prev_post_downsample = demod.post_downsample;
+    demod.post_downsample = post_downsample;
+    rtl_stream_publish_demod_profile_snapshot();
+    g_stream = &g_cqpsk_toggle_test_stream; /* live: requests are checked against the published rate */
+    rtl_stream_clear_demod_profile_request();
+    rtl_stream_clear_pending_retune_profile();
+
+    family_test_seed_channel_plan();
+    out->family_before = demod.analog_family;
+    out->width_before = demod.channel_lpf_width_hz;
+    (void)rtl_stream_get_analog_profile(NULL, &out->published_width_before, NULL);
+    out->check_rc = rtl_stream_check_analog_profile(DSD_RX_FAMILY_ANALOG, kind, width_hz);
+    out->request_rc = rtl_stream_request_analog_profile(DSD_RX_FAMILY_ANALOG, kind, width_hz);
+    out->request_queued = g_profile_req_pending.load(std::memory_order_acquire);
+    family_test_demod_thread_boundary();
+    out->family_after = demod.analog_family;
+    out->monitor_after = dsd_demod_analog_monitor_active(&demod);
+    out->width_after = demod.channel_lpf_width_hz;
+    out->plan_kept = !family_test_channel_plan_dropped();
+    (void)rtl_stream_get_analog_profile(NULL, &out->published_width_after, &out->published_lpf_on_after);
+
+    const rtl_stream_retune_analog_profile analog = {DSD_RX_FAMILY_ANALOG, kind, width_hz};
+    out->retune_rc = rtl_stream_prepare_retune_analog_profile_for_target(kFamilyTestCenterHz, &analog);
+    RtlRetuneProfile pending{};
+    out->retune_queued = rtl_stream_take_pending_retune_profile(&pending, 0U, kFamilyTestCenterHz);
+
+    rtl_stream_clear_pending_retune_profile();
+    demod.post_downsample = prev_post_downsample;
+    family_test_restore(saved);
+    family_test_release_buffers();
+    fsk_reacquire_test_cleanup_output_ring(initialized_output);
+    return open_rc == 0 ? 0 : -3;
+}
+
+/* A retune that settles the device on @p landed_rate_hz, finalized as the controller finalizes one, and published. */
+static void
+family_test_retune_to_rate(const dsd_opts* opts, int rate_hz, int landed_rate_hz) {
+    demod.rate_out = landed_rate_hz;
+    controller_finalize_rate_chain(&controller, opts, kFamilyTestCenterHz, /*mark_reconfigure=*/1,
+                                   DemodRetuneResetReason::FrequencyRetune, kFamilyTestCenterHz, rate_hz, NULL);
+    rtl_stream_publish_demod_profile_snapshot();
+}
+
+/* A live NFM request and a retune to another rate, in either order: @p request_after_retune 0 queues the request and
+ * lets the retune land before the demod thread consumes it; 1 checks the request (as a decode-mode change does before
+ * it commits), lets the retune land, and only then requests it. */
+static int
+family_test_request_and_rate_change(int rate_hz, int landed_rate_hz, int width_hz, int analog_stream,
+                                    int request_after_retune, rtl_stream_test_live_request_result* out) {
+    *out = {};
+    const size_t queued = 64U;
+    int initialized_output = 0;
+    if (fsk_reacquire_test_prepare_output_ring(queued, &initialized_output) != 0) {
+        fsk_reacquire_test_cleanup_output_ring(initialized_output);
+        return -2;
+    }
+    const FamilyTestSaved saved = family_test_save();
+    static dsd_opts stream_opts;
+    DSD_MEMSET(&stream_opts, 0, sizeof stream_opts);
+    if (analog_stream) {
+        stream_opts.analog_only = 1;
+        stream_opts.monitor_input_audio = 1;
+    } else {
+        stream_opts.frame_dmr = 1;
+    }
+    g_cqpsk_toggle_test_stream.output = &output;
+    g_cqpsk_toggle_test_stream.opts = &stream_opts;
+    g_stream = NULL;
+    const int open_rc = family_test_seed_open(&stream_opts, rate_hz, 0);
+    g_stream = &g_cqpsk_toggle_test_stream; /* live: requests are checked against the published rate */
+    rtl_stream_clear_demod_profile_request();
+
+    if (request_after_retune) {
+        out->check_rc = rtl_stream_check_analog_profile(DSD_RX_FAMILY_ANALOG, DSD_ANALOG_DEMOD_FM, width_hz);
+    } else {
+        out->request_rc = rtl_stream_request_analog_profile(DSD_RX_FAMILY_ANALOG, DSD_ANALOG_DEMOD_FM, width_hz);
+        out->request_queued = g_profile_req_pending.load(std::memory_order_acquire);
+    }
+    family_test_retune_to_rate(&stream_opts, rate_hz, landed_rate_hz);
+    family_test_seed_channel_plan();
+    out->family_before = demod.analog_family;
+    out->width_before = demod.channel_lpf_width_hz;
+    (void)rtl_stream_get_analog_profile(NULL, &out->published_width_before, NULL);
+    if (request_after_retune) {
+        out->request_rc = rtl_stream_request_analog_profile(DSD_RX_FAMILY_ANALOG, DSD_ANALOG_DEMOD_FM, width_hz);
+        out->request_queued = g_profile_req_pending.load(std::memory_order_acquire);
+    }
+    family_test_demod_thread_boundary();
+    rtl_stream_publish_demod_profile_snapshot(); /* as the end of that block does */
+    out->family_after = demod.analog_family;
+    out->monitor_after = dsd_demod_analog_monitor_active(&demod);
+    out->width_after = demod.channel_lpf_width_hz;
+    out->plan_kept = !family_test_channel_plan_dropped();
+    (void)rtl_stream_get_analog_profile(NULL, &out->published_width_after, &out->published_lpf_on_after);
+
+    family_test_restore(saved);
+    family_test_release_buffers();
+    fsk_reacquire_test_cleanup_output_ring(initialized_output);
+    return open_rc == 0 ? 0 : -3;
+}
+
+extern "C" int
+rtl_stream_test_analog_request_across_rate_change(int rate_hz, int landed_rate_hz, int width_hz, int analog_stream,
+                                                  rtl_stream_test_live_request_result* out) {
+    if (!out || rate_hz <= 0 || landed_rate_hz <= 0) {
+        return -1;
+    }
+    return family_test_request_and_rate_change(rate_hz, landed_rate_hz, width_hz, analog_stream,
+                                               /*request_after_retune=*/0, out);
+}
+
+extern "C" int
+rtl_stream_test_analog_switch_request_after_rate_change(int rate_hz, int landed_rate_hz, int width_hz,
+                                                        rtl_stream_test_live_request_result* out) {
+    if (!out || rate_hz <= 0 || landed_rate_hz <= 0) {
+        return -1;
+    }
+    return family_test_request_and_rate_change(rate_hz, landed_rate_hz, width_hz, /*analog_stream=*/0,
+                                               /*request_after_retune=*/1, out);
+}
+
+extern "C" int
+rtl_stream_test_retune_analog_profile_at_rate(uint32_t target_hz, int rate_hz, int family, int kind, int width_hz,
+                                              int with_cqpsk_symbol_profile,
+                                              rtl_stream_test_retune_analog_result* out) {
+    if (!out || target_hz == 0U || rate_hz <= 0) {
+        return -1;
+    }
+    *out = {};
+    const FamilyTestSaved saved = family_test_save();
+    g_stream = NULL;
+    static dsd_opts dmr_opts;
+    DSD_MEMSET(&dmr_opts, 0, sizeof dmr_opts);
+    dmr_opts.frame_dmr = 1;
+    if (family_test_seed_open(&dmr_opts, rate_hz, 0) != 0) {
+        family_test_restore(saved);
+        return -2;
+    }
+    rtl_stream_clear_pending_retune_profile();
+    if (with_cqpsk_symbol_profile) {
+        rtl_stream_prepare_retune_profile_for_target_with_gain(target_hz, 1, 4800, 4, DSD_CH_LPF_PROFILE_P25_CQPSK, 10,
+                                                               0, NULL);
+    }
+    const rtl_stream_retune_analog_profile analog = {family, kind, width_hz};
+    out->queued_rc = rtl_stream_prepare_retune_analog_profile_for_target(target_hz, &analog);
+
+    RtlRetuneProfile other{};
+    out->other_target_left_alone = rtl_stream_take_pending_retune_profile(&other, 0U, target_hz + 12500U) ? 0 : 1;
+    RtlRetuneProfile profile{};
+    out->taken = rtl_stream_take_pending_retune_profile(&profile, 7U, target_hz);
+    out->profile_family = profile.analog_family;
+    out->profile_kind = profile.analog_kind;
+    out->profile_width_hz = profile.analog_width_hz;
+    out->profile_target_hz = profile.target_freq_hz;
+    /* The retune keeps the demod rate, so nothing but the profile itself can hold its width to that rate. */
+    controller_finalize_rate_chain(&controller, &dmr_opts, target_hz, /*mark_reconfigure=*/1,
+                                   DemodRetuneResetReason::FrequencyRetune, target_hz, demod.rate_out,
+                                   out->taken ? &profile : NULL);
+    out->applied_family = demod.analog_family;
+    out->applied_kind = demod.analog_demod;
+    out->applied_width_hz = demod.channel_lpf_width_hz;
+    out->applied_output_kind = demod.output_kind;
+    out->applied_lpf_enable = demod.channel_lpf_enable;
+    out->applied_cqpsk_enable = demod.cqpsk_enable;
+    out->applied_demod_is_fm = demod.mode_demod == &dsd_fm_demod ? 1 : 0;
+
+    rtl_stream_clear_pending_retune_profile();
+    family_test_restore(saved);
+    family_test_release_buffers();
+    return 0;
+}
+
+extern "C" int
+rtl_stream_test_retune_analog_profile(uint32_t target_hz, int family, int kind, int width_hz,
+                                      int with_cqpsk_symbol_profile, rtl_stream_test_retune_analog_result* out) {
+    return rtl_stream_test_retune_analog_profile_at_rate(target_hz, 48000, family, kind, width_hz,
+                                                         with_cqpsk_symbol_profile, out);
+}
 #endif
 
 extern "C" int
@@ -10069,11 +12294,27 @@ rtl_stream_clear_output_ring(struct output_state* outp, int bump_generation) {
         return;
     }
     if (bump_generation) {
-        /* Invalidate decoder-owned cached symbols before clearing the shared output. */
+        /* Invalidate decoder-owned cached symbols before clearing the shared output, and discard a read already
+           copying from it. */
         rtl_stream_bump_output_generation();
     }
-    /* Clear the entire ring to prevent sample 'lag' */
+#if defined(DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS)
+    if (g_test_output_clear_pause_hook) {
+        g_test_output_clear_pause_hook(g_test_output_clear_pause_ctx);
+    }
+#endif
+    /* Clear the entire ring to prevent sample 'lag'. Under ready_m, which a consumer holds from its tail snapshot to
+       its tail store (ring_read_available(), ring_read_batch()), so a read in flight cannot put its old tail back over
+       the cleared indices. A read can also load the generation after the bump above and still reach ready_m before
+       the clear does, copying samples the clear was meant to drop under that generation. Bumping again under ready_m,
+       once the ring is empty, leaves the stream on a generation that only reads made after the clear can load, so the
+       decoder never takes pre-clear samples under the generation it runs on from here. */
+    dsd_mutex_lock(&outp->ready_m);
     ring_clear(outp);
+    if (bump_generation) {
+        rtl_stream_bump_output_generation();
+    }
+    dsd_mutex_unlock(&outp->ready_m);
     dsd_rtl_stream_metrics_hook_symbol_cache_pending_reset();
     rtl_stream_signal_output_waiters(outp);
 }

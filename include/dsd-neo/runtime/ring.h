@@ -18,7 +18,9 @@
 #include <dsd-neo/platform/threading.h>
 
 struct output_state {
-    int rate = 0;
+    /* Sample rate of the ring's contents. Written by the controller and demod threads (rate-chain finalize, family
+       switch) and read by the decoder and UI threads through dsd_rtl_stream_output_rate(). */
+    std::atomic<int> rate{0};
     float* buffer = nullptr;
     size_t capacity = 0;
     std::atomic<size_t> head{0U};
@@ -74,6 +76,10 @@ ring_is_empty(const struct output_state* o) {
 
 /**
  * @brief Clear the output ring head/tail indices.
+ *
+ * A consumer holds ready_m from its tail snapshot to its tail store (ring_read_batch()), so a caller that clears the
+ * ring while a consumer may be reading holds ready_m too; otherwise the consumer's store of its old tail can land
+ * after the clear and turn the reset indices into a backlog of stale samples.
  *
  * @param o Output ring state to clear.
  */

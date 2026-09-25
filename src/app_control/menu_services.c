@@ -309,13 +309,28 @@ svc_udp_output_config(dsd_opts* opts, dsd_state* state, const char* host, int po
     opts->udp_portno = port;
     int err = udp_socket_connect(opts, state);
     if (err < 0) {
+        /* The new target is refused: an open analog socket keeps sending where it did. */
         return -1;
     }
     opts->audio_out_type = 8;
-    if (opts->monitor_input_audio == 1 || opts->frame_provoice == 1) {
-        if (udp_socket_connectA(opts, state) < 0) {
-            opts->udp_sockfdA = 0;
+    /* An open analog socket (port + 2) sends to the previous host and port. Close it and reopen it below for the new
+       target, whether or not the current mode writes to it: the -8 source monitor can be turned back on later, and its
+       toggle opens no socket, so it has to find this one, as it found the old one. With no analog socket open, one is
+       opened below only when the current mode writes to it, and otherwise by the lazy open on a later switch to
+       Analog or ProVoice (dsd_audio_ensure_analog_output()), which opens only an invalid descriptor. */
+    const int analog_socket_was_open = (opts->udp_sockfdA != DSD_INVALID_SOCKET) ? 1 : 0;
+    if (analog_socket_was_open) {
+        (void)dsd_socket_close(opts->udp_sockfdA);
+        opts->udp_sockfdA = DSD_INVALID_SOCKET;
+    }
+    const int analog_writer = (opts->monitor_input_audio == 1 || opts->frame_provoice == 1) ? 1 : 0;
+    if ((analog_writer || analog_socket_was_open) && udp_socket_connectA(opts, state) < 0) {
+        /* udp_socket_connectA() can fail after it created the socket: close that one, and leave the descriptor
+           invalid, not 0 (a valid descriptor), since the analog sink is reopened lazily only from invalid. */
+        if (opts->udp_sockfdA != DSD_INVALID_SOCKET) {
+            (void)dsd_socket_close(opts->udp_sockfdA);
         }
+        opts->udp_sockfdA = DSD_INVALID_SOCKET;
     }
     return 0;
 }

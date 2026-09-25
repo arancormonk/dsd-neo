@@ -104,6 +104,14 @@ int rtl_stream_destroy(RtlSdrContext* ctx);
 /* Control */
 /**
  * @brief Tune to a new center frequency.
+ *
+ * A retune the device settles on another demod rate is refused when that rate cannot realize the explicit width the
+ * running analog monitor runs (dsd_analog_width_check()): the refusal is logged with the validator's text, the device
+ * goes back to the capture frequency and rate it had, and the tune fails. When the device refuses to be put back, the
+ * stream stops (logged, reported as a device input failure with the device's return code); when it does not return to
+ * a rate that fits the width, the stream stops as a start at that rate fails (logged, reported as a configuration
+ * input failure), rather than run the width without its channel filter.
+ *
  * @param ctx Stream context.
  * @param center_freq_hz New center frequency in Hz.
  * @return rtl_stream_tune_result: 0 on success, 1 when deferred, negative on error/timeout.
@@ -251,6 +259,122 @@ int rtl_stream_set_symbol_profile(int symbol_rate_hz, int levels, int channel_pr
 int rtl_stream_request_demod_profile(int cqpsk_enable, int symbol_rate_hz, int levels, int channel_profile, int ted_sps,
                                      int ted_sps_is_override);
 
+/**
+ * @brief Queue a receive-family / analog profile change for the demod thread.
+ *
+ * Covers a width-only change, an FM<->AM switch and an analog<->digital switch. The request is validated on the
+ * caller's thread, then applied by the demod thread between blocks, before any demod profile queued after it; a newer
+ * request overwrites an unconsumed older one, and drops any demod profile queued before it (for a digital request, the
+ * symbol profile that follows is the one the switch lands on). An analog request, a width or kind change on the
+ * running monitor and a switch onto the monitor alike, is validated against the published demod rate, and checked
+ * again by the demod thread against the rate the stream is on when it applies it (a retune may have moved it). A width
+ * that rate cannot realize is refused either time, never clamped, replaced or run without its channel filter: the
+ * refusal is logged with the validator's text and the front end keeps its current receive profile (a digital session
+ * asked to switch stays on the digital family). The unset NFM default is never refused for its rate. A refusal at the
+ * demod thread reaches the caller only through that log: a decoder that has already committed to Analog stays on it,
+ * which is why a decode-mode change asks rtl_stream_check_analog_profile() before it commits. With no pipeline running
+ * there is nothing to switch and no demod rate to check against: only the kind, range and DSD_NEO_CHANNEL_LPF rules
+ * apply, and the next stream open configures the front end from the options and checks the width against the rate it
+ * actually delivers.
+ *
+ * Entering the analog family (or leaving it) re-applies the defaults a fresh stream open of that family would choose,
+ * resets the filter state, clears the output ring and bumps the output generation. The stream remembers the family it
+ * switched to: the options it runs on are the copy taken before the open, so that record, not those options, decides
+ * from then on whether a symbol profile without CQPSK runs the FSK discriminator or monitor audio (and on the digital
+ * family, the modes noted with rtl_stream_set_digital_decode_modes() pick its FSK channel profile). Leaving the analog
+ * family for digital expects the digital symbol profile to follow through rtl_stream_request_demod_profile(), and waits
+ * for it: that profile decides the digital resampler and output rate, so a digital family request the demod thread
+ * finds without a symbol profile stays queued until one arrives, and the two apply at the same block boundary. A
+ * digital family request leaves the analog family whenever the stream runs it (rtl_stream_analog_family_active()),
+ * including after a symbol profile applied on its own (a typed digital scan row, a CQPSK toggle) has moved the front
+ * end off the monitor output: such a profile never leaves the family itself, and the decoder asks for the digital
+ * family only when its configured mode is digital, not for a typed digital scan row on an analog session.
+ *
+ * @param family   dsd_rx_family: DSD_RX_FAMILY_ANALOG or DSD_RX_FAMILY_DIGITAL.
+ * @param kind     dsd_analog_demod for the analog family (AM is refused until the front end can demodulate it).
+ * @param width_hz Explicit analog channel width in Hz, or 0 for the kind's default (ignored for digital).
+ * @return 0 when queued or applied; -1 when refused (unknown family/kind, AM, a width outside the kind's range, a
+ *         width the running stream's published rate cannot realize, or an explicit width while
+ *         DSD_NEO_CHANNEL_LPF=0). A refusal is
+ *         logged as an error with the validator's text (for a width the rate cannot realize: the width, the DSP rate,
+ *         the largest width that rate fits and the DSP bandwidths that would fit), once per kind, width and rate until
+ *         an analog request is accepted.
+ */
+int rtl_stream_request_analog_profile(int family, int kind, int width_hz);
+
+/**
+ * @brief Note the digital decode modes the decoder is configured for.
+ *
+ * An open picks the FSK channel profile a symbol profile without one of its own lands on (the DSP menu's CQPSK toggle
+ * turning CQPSK off) from the decode modes in the options it opens with. Those options are the copy taken before the
+ * open, and a live switch can move the stream onto the digital family for modes they do not name (a -fA session names
+ * none), so once a live switch has done that, the modes noted here pick that profile instead, as an open with them
+ * would. A stream still on the family it opened on keeps picking from its own options. Called on the decoder thread
+ * with its configured options whenever it publishes a digital mode's symbol profile (svc_publish_symbol_profile()); the
+ * latest note stands until the next stream open drops it. Does nothing for NULL.
+ *
+ * @param opts Decoder options whose frame flags name the configured digital decode modes.
+ */
+void rtl_stream_set_digital_decode_modes(const dsd_opts* opts);
+
+/**
+ * @brief Check a receive-family / analog profile request without queuing it.
+ *
+ * Applies the family and kind, the width's range, DSD_NEO_CHANNEL_LPF, and while a stream runs its published demod
+ * rate and a replay's post-demod decimation, and logs a refusal the way rtl_stream_request_analog_profile() does. For
+ * a caller that must change nothing else when the front end refuses, such as a decode-mode change: asked before the
+ * caller commits its decoder, it keeps the decoder and the front end on the same family whenever the rate holds until
+ * the request that follows lands (a retune that moves the rate in between gets that request refused, logged, with
+ * the front end left on its current receive profile).
+ *
+ * @return 0 when the front end takes the profile at the rate it runs now; -1 when it refuses it.
+ */
+int rtl_stream_check_analog_profile(int family, int kind, int width_hz);
+
+/**
+ * @brief Report the published analog receive profile.
+ *
+ * @param out_kind     dsd_analog_demod of the active analog family (0 otherwise). May be NULL.
+ * @param out_width_hz Effective channel width in Hz: the configured width while the width-driven channel filter runs,
+ *                     otherwise the width the DSP rate leaves: the passband of the legacy WIDE plan an unset default
+ *                     runs where the rate cannot fit it (dsd_channel_lpf_legacy_wide_width_hz()), or the DSP rate
+ *                     with no channel filter (0 outside the analog family). An I/Q replay that
+ *                     decimates after the demodulator runs the filter at post_downsample times its design rate, and
+ *                     reports that many times the designed width. May be NULL.
+ * @param out_lpf_on   1 when the width-driven channel filter sets the width, 0 when the DSP rate limits it (including
+ *                     a replay's post-demod decimation). May be NULL.
+ * @return 1 while the analog family is active, 0 otherwise (digital output, or the M17 encoder's monitor path).
+ */
+int rtl_stream_get_analog_profile(int* out_kind, int* out_width_hz, int* out_lpf_on);
+
+/**
+ * @brief Report whether the stream runs the analog receive family.
+ *
+ * Unlike rtl_stream_get_analog_profile(), this stays 1 while a symbol profile applied without a family request (a
+ * CQPSK toggle, a typed digital scan row's profile) has moved the front end off the analog monitor output. A digital
+ * family request leaves the analog family from there too, so a caller that times the decoder for that switch reads
+ * this rather than the published analog profile.
+ *
+ * @return 1 while the stream runs the analog family, 0 otherwise (the digital family, the M17 encoder's monitor
+ *         path, or before a stream has published its profile).
+ */
+int rtl_stream_analog_family_active(void);
+
+/**
+ * @brief Predict the output rate the stream will have once it runs @p family.
+ *
+ * A family switch is deferred to the demod thread, so a caller that sets symbol timing for the new family must not
+ * read the current output rate (the analog monitor resamples to its audio rate; a digital stream usually does not).
+ *
+ * @param family         dsd_rx_family.
+ * @param cqpsk_enable   Non-zero for the CQPSK symbol output (digital family only). DSD_NEO_CQPSK overrides it when
+ *                       set, as it does at stream open and at the switch itself.
+ * @param symbol_rate_hz Digital symbol rate, which decides the digital resampling policy.
+ * @return Predicted output rate in Hz, derived from the last published demod rate (48000 until a stream has opened
+ *         and published its own), or 0 when that rate is not positive.
+ */
+unsigned int rtl_stream_output_rate_for_family(int family, int cqpsk_enable, int symbol_rate_hz);
+
 typedef struct rtl_stream_retune_gain_profile {
     int tuner_gain_is_set;
     int tuner_gain_tenth_db;
@@ -280,6 +404,27 @@ void rtl_stream_prepare_retune_profile_for_target_with_gain(uint32_t target_freq
                                                             int symbol_rate_hz, int levels, int channel_profile,
                                                             int ted_sps, int persist_ted_override,
                                                             const rtl_stream_retune_gain_profile* gain_profile);
+
+/** @brief Receive family, analog demodulator and channel width to apply at a retune. */
+typedef struct rtl_stream_retune_analog_profile {
+    int family;   /**< dsd_rx_family to switch to: DSD_RX_FAMILY_DIGITAL or DSD_RX_FAMILY_ANALOG. */
+    int kind;     /**< dsd_analog_demod (analog family only). */
+    int width_hz; /**< Explicit analog channel width in Hz; 0 selects the kind's default. */
+} rtl_stream_retune_analog_profile;
+
+/**
+ * @brief Attach a receive-family / analog profile to the retune queued for @p target_freq_hz.
+ *
+ * Applied at the same retune boundary as the symbol profile and before it. Queue any symbol profile for the target
+ * first (rtl_stream_prepare_retune_profile_for_target_with_gain() replaces the whole queued profile); with none
+ * queued for this target, an analog-only profile is queued that leaves the CQPSK family, symbol profile and timing
+ * alone. A DSD_RX_FAMILY_DIGITAL switch then applies the queued symbol profile; a DSD_RX_FAMILY_ANALOG switch
+ * applies none of it (the analog family has no symbol clock), only the gain profile.
+ *
+ * @return 0 when attached; -1 when refused (same rules and refusal log as rtl_stream_request_analog_profile()).
+ */
+int rtl_stream_prepare_retune_analog_profile_for_target(uint32_t target_freq_hz,
+                                                        const rtl_stream_retune_analog_profile* analog);
 
 /**
  * @brief Apply and clear a queued retune profile for a specific external retune target.

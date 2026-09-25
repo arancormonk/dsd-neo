@@ -109,6 +109,57 @@ rtl_stream_request_demod_profile(int cqpsk_enable, int symbol_rate_hz, int level
     return -21;
 }
 
+static int g_request_analog_calls;
+static int g_analog_profile_calls;
+static int g_last_analog_family;
+static int g_last_analog_kind;
+static int g_last_analog_width_hz;
+
+int
+rtl_stream_request_analog_profile(int family, int kind, int width_hz) {
+    ++g_request_analog_calls;
+    g_last_analog_family = family;
+    g_last_analog_kind = kind;
+    g_last_analog_width_hz = width_hz;
+    return -22;
+}
+
+int
+rtl_stream_get_analog_profile(int* out_kind, int* out_width_hz, int* out_lpf_on) {
+    ++g_analog_profile_calls;
+    if (out_kind) {
+        *out_kind = 0;
+    }
+    if (out_width_hz) {
+        *out_width_hz = 12500;
+    }
+    if (out_lpf_on) {
+        *out_lpf_on = 1;
+    }
+    return 1;
+}
+
+static int g_analog_family_active_calls;
+static int g_output_rate_for_family_calls;
+static int g_last_rate_family;
+static int g_last_rate_cqpsk;
+static int g_last_rate_symbol_rate;
+
+int
+rtl_stream_analog_family_active(void) {
+    ++g_analog_family_active_calls;
+    return 1;
+}
+
+unsigned int
+rtl_stream_output_rate_for_family(int family, int cqpsk_enable, int symbol_rate_hz) {
+    ++g_output_rate_for_family_calls;
+    g_last_rate_family = family;
+    g_last_rate_cqpsk = cqpsk_enable;
+    g_last_rate_symbol_rate = symbol_rate_hz;
+    return 24000U;
+}
+
 int
 rtl_stream_get_cqpsk_status(int* cqpsk_enable, int* cqpsk_timing_active) {
     ++g_cqpsk_status_calls;
@@ -269,6 +320,27 @@ main(void) {
     assert(g_request_profile_calls == 4);
     assert(g_last_ted_sps == 0);
     assert(g_last_ted_sps_is_override == 0);
+
+    /* The analog profile request and readback go straight to the stream. */
+    assert(dsd_rtl_stream_metrics_hook_apply_analog_profile(1, 0, 12500) == -22);
+    assert(g_request_analog_calls == 1);
+    assert(g_last_analog_family == 1);
+    assert(g_last_analog_kind == 0);
+    assert(g_last_analog_width_hz == 12500);
+    int analog_kind = -1;
+    int analog_width = -1;
+    int analog_lpf_on = -1;
+    assert(dsd_rtl_stream_metrics_hook_analog_profile(&analog_kind, &analog_width, &analog_lpf_on) == 1);
+    assert(g_analog_profile_calls == 1);
+    assert(analog_kind == 0);
+    assert(analog_width == 12500);
+    assert(analog_lpf_on == 1);
+    /* So do the family readback and the output rate a family switch lands on. */
+    assert(dsd_rtl_stream_metrics_hook_analog_family_active() == 1);
+    assert(g_analog_family_active_calls == 1);
+    assert(dsd_rtl_stream_metrics_hook_output_rate_for_family(0, 1, 6000) == 24000U);
+    assert(g_output_rate_for_family_calls == 1);
+    assert(g_last_rate_family == 0 && g_last_rate_cqpsk == 1 && g_last_rate_symbol_rate == 6000);
 
     int cqpsk_enable = -1;
     int cqpsk_timing = -1;

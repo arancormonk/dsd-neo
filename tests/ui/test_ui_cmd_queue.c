@@ -37,6 +37,7 @@
 #include <dsd-neo/protocol/p25/p25_cc_candidates.h>
 #include <dsd-neo/protocol/p25/p25_sm_watchdog.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
+#include <dsd-neo/runtime/analog_channel.h>
 #include <dsd-neo/runtime/decode_mode.h>
 #include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
 #include <dsd-neo/runtime/scan_mode.h>
@@ -204,6 +205,17 @@ init_test_context(dsd_opts* opts, dsd_state* state) {
     state->cli_argc_effective = 0;
     state->cli_argv = NULL;
     dsd_app_frontend_runtime_start(opts, state);
+}
+
+/*
+ * DECODE_MODE_SET opens the sink the new mode writes to when the session plays to a local audio device, which is
+ * what initOpts() selects. Cases that change the decode mode play to the null output instead, so no test opens a
+ * host audio stream whether or not the ensure helpers are link-time wrapped on this toolchain.
+ */
+static void
+init_decode_mode_context(dsd_opts* opts, dsd_state* state) {
+    init_test_context(opts, state);
+    opts->audio_out_type = 9;
 }
 
 static int
@@ -1910,7 +1922,7 @@ test_modulation_and_decode_mode_setters(void) {
 
     /* Decode mode goes through the same preset helper the CLI uses, so a mode
      * chosen here means what it means at startup. DMR must leave P25 off. */
-    init_test_context(&opts, &state);
+    init_decode_mode_context(&opts, &state);
     opts.frame_p25p1 = 1;
     opts.frame_p25p2 = 1;
     opts.frame_dmr = 0;
@@ -1940,7 +1952,7 @@ test_modulation_and_decode_mode_setters(void) {
     /* A mode on a different symbol rate has to carry the hunt with it: NXDN48 is
      * 2400 sym/s, and a decoder left on the 4800 profile is looking for it at
      * twice the symbol clock through a 12.5 kHz filter. */
-    init_test_context(&opts, &state);
+    init_decode_mode_context(&opts, &state);
     opts.frame_dmr = 1;
     opts.frame_p25p1 = 0;
     state.sps_hunt_idx = DSD_FRAME_SYNC_SPS_PROFILE_4800_4;
@@ -1962,7 +1974,7 @@ test_modulation_and_decode_mode_setters(void) {
      * (playSynthesizedVoiceSS3/FS3). Held to dmr_stereo == 1 here because the
      * alternative pairs it with dmr_mono == 0, which no preset produces and which
      * dmr_handle_voice() has no branch for on MS voice. */
-    init_test_context(&opts, &state);
+    init_decode_mode_context(&opts, &state);
     opts.frame_p25p1 = 1;
     opts.frame_dmr = 0;
     opts.pulse_digi_out_channels = 1;
@@ -1984,7 +1996,7 @@ test_modulation_and_decode_mode_setters(void) {
      * put the modulation back to the preset's, discarding the operator's own pick.
      * ui_handle_mod_set() has held this contract since it was written; this is the
      * same one for the decode chips beside it. */
-    init_test_context(&opts, &state);
+    init_decode_mode_context(&opts, &state);
     opts.frame_p25p1 = 1;
     opts.frame_p25p2 = 1;
     opts.frame_dmr = 0;
@@ -2013,7 +2025,7 @@ test_modulation_and_decode_mode_setters(void) {
     /* Two picker rows spell DMR, and this toast is the only thing that says which
      * one landed. It has to name the row the operator chose, which means reading
      * the same table the picker was built from rather than a second one. */
-    init_test_context(&opts, &state);
+    init_decode_mode_context(&opts, &state);
     opts.frame_p25p1 = 1;
     opts.frame_dmr = 0;
     rc |= expect_int("dmr mono mode queued",
@@ -2027,7 +2039,7 @@ test_modulation_and_decode_mode_setters(void) {
      * byte, so an out-of-range value does not stay out of range: 260 casts to 4,
      * which is DSDCFG_MODE_DMR, and the DMR preset would run for a command nobody
      * could have meant. */
-    init_test_context(&opts, &state);
+    init_decode_mode_context(&opts, &state);
     opts.frame_p25p1 = 1;
     opts.frame_dmr = 0;
     rc |= expect_int("out-of-range mode queued", dsd_app_command_set_i32(DSD_APP_CMD_DECODE_MODE_SET, 260),
@@ -2038,7 +2050,7 @@ test_modulation_and_decode_mode_setters(void) {
     freeState(&state);
 
     /* Back to auto re-enables the set the engine starts with. */
-    init_test_context(&opts, &state);
+    init_decode_mode_context(&opts, &state);
     opts.frame_dmr = 1;
     opts.frame_p25p1 = 0;
     rc |=
@@ -2626,7 +2638,7 @@ test_scoped_mode_commands_and_config(void) {
         free(state);
         return 1;
     }
-    init_test_context(opts, state);
+    init_decode_mode_context(opts, state);
     opts->audio_in_type = AUDIO_IN_WAV;
     opts->wav_sample_rate = 96000;
     int rc = 0;
@@ -4391,6 +4403,725 @@ test_squelch_edit_keeps_live_acquisition(void) {
 }
 #endif
 
+/* A config apply carrying only a [mode], drained on this thread as the decoder drains it. */
+static int
+submit_config_mode(dsd_opts* opts, dsd_state* state, dsdneoUserDecodeMode mode, const char* label) {
+    dsdneoUserConfig cfg;
+    DSD_MEMSET(&cfg, 0, sizeof cfg);
+    cfg.has_mode = 1;
+    cfg.decode_mode = mode;
+    int rc = expect_int(label, dsd_app_command_submit(DSD_APP_CMD_CONFIG_APPLY, &cfg, sizeof(cfg)),
+                        DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int(label, dsd_app_drain_cmds(opts, state), 1);
+    return rc;
+}
+
+#ifdef DSD_NEO_TEST_AUDIO_ENSURE_WRAP
+/* The sink helpers a decode-mode change calls, recorded instead of run (every build, radio or not). */
+static int g_ensure_analog_calls;
+static int g_ensure_digital_calls;
+/* The output layout in the options when the digital sink was last asked for: the one a stream opened there gets. */
+static int g_ensure_digital_channels;
+static int g_ensure_digital_rate;
+
+// GNU ld --wrap entry points must keep the reserved __wrap_* symbol name.
+// NOLINTBEGIN(bugprone-reserved-identifier,cert-dcl37-c,cert-dcl51-cpp,misc-use-internal-linkage)
+int __wrap_dsd_audio_ensure_analog_output(dsd_opts* opts);
+int __wrap_dsd_audio_ensure_digital_output(dsd_opts* opts);
+
+int
+__wrap_dsd_audio_ensure_analog_output(dsd_opts* opts) {
+    (void)opts;
+    g_ensure_analog_calls++;
+    return 0;
+}
+
+int
+__wrap_dsd_audio_ensure_digital_output(dsd_opts* opts) {
+    g_ensure_digital_calls++;
+    g_ensure_digital_channels = opts->pulse_digi_out_channels;
+    g_ensure_digital_rate = opts->pulse_digi_rate_out;
+    return 0;
+}
+
+// NOLINTEND(bugprone-reserved-identifier,cert-dcl37-c,cert-dcl51-cpp,misc-use-internal-linkage)
+
+/*
+ * DECODE_MODE_SET opens the sink the new mode writes to: the raw monitor sink for Analog, the digital voice sink for
+ * a digital mode. Holds without a radio front end.
+ */
+static int
+test_decode_mode_set_ensures_family_sink(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    int rc = 0;
+    init_decode_mode_context(&opts, &state);
+    g_ensure_analog_calls = g_ensure_digital_calls = 0;
+    rc |= expect_int("analog sink mode queued",
+                     dsd_app_command_set_i32(DSD_APP_CMD_DECODE_MODE_SET, (int32_t)DSDCFG_MODE_ANALOG),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("analog sink mode drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("analog mode ensures the raw sink", g_ensure_analog_calls, 1);
+    rc |= expect_int("analog mode leaves the digital sink", g_ensure_digital_calls, 0);
+
+    g_ensure_analog_calls = g_ensure_digital_calls = 0;
+    rc |= expect_int("digital sink mode queued",
+                     dsd_app_command_set_i32(DSD_APP_CMD_DECODE_MODE_SET, (int32_t)DSDCFG_MODE_NXDN48),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("digital sink mode drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("digital mode ensures the digital sink", g_ensure_digital_calls, 1);
+    rc |= expect_int("digital mode leaves the raw sink", g_ensure_analog_calls, 0);
+    freeState(&state);
+    return rc;
+}
+
+/*
+ * A [mode] preset also carries an audio layout, but the session's output streams keep the one they were opened with,
+ * so a config apply keeps the session's layout as DECODE_MODE_SET does. A config that moves a -fA session (mono) to
+ * DMR opens the digital sink mono, and a later [mode] keeps the options on the layout that stream has: here P25
+ * Phase 1 after Analog, which reuses the stream the DMR config opened. A stereo DMR session keeps its two channels
+ * through a mono [mode]. Letting the preset change it would dispatch mono writes into the stereo stream (reading past
+ * each buffer) or stereo writes into a mono one.
+ */
+static int
+test_config_apply_keeps_session_output_layout(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    int rc = 0;
+    init_decode_mode_context(&opts, &state);
+    rc |= expect_int("layout: -fA session",
+                     dsd_apply_decode_mode_preset(DSDCFG_MODE_ANALOG, DSD_DECODE_PRESET_PROFILE_CLI, &opts, &state), 0);
+    rc |= expect_int("layout: -fA session is mono", opts.pulse_digi_out_channels, 1);
+    g_ensure_analog_calls = g_ensure_digital_calls = 0;
+    g_ensure_digital_channels = g_ensure_digital_rate = 0;
+    rc |= submit_config_mode(&opts, &state, DSDCFG_MODE_DMR, "layout: config dmr");
+    rc |= expect_int("layout: dmr applied", opts.analog_only == 0 && opts.frame_dmr == 1, 1);
+    rc |= expect_int("layout: digital sink asked for", g_ensure_digital_calls, 1);
+    rc |= expect_int("layout: digital sink opened mono", g_ensure_digital_channels, 1);
+    rc |= expect_int("layout: digital sink at the session rate", g_ensure_digital_rate, 8000);
+    rc |= expect_int("layout: dmr keeps the session's channel", opts.pulse_digi_out_channels, 1);
+    rc |= expect_int("layout: dmr still decodes both slots", opts.dmr_stereo, 1);
+    rc |= submit_config_mode(&opts, &state, DSDCFG_MODE_ANALOG, "layout: config analog");
+    rc |= expect_int("layout: analog applied", opts.analog_only, 1);
+    rc |= expect_int("layout: analog keeps the session's channel", opts.pulse_digi_out_channels, 1);
+    g_ensure_digital_calls = 0;
+    g_ensure_digital_channels = 0;
+    rc |= submit_config_mode(&opts, &state, DSDCFG_MODE_P25P1, "layout: config p25p1");
+    rc |= expect_int("layout: p25p1 applied", opts.analog_only == 0 && opts.frame_p25p1 == 1, 1);
+    rc |= expect_int("layout: p25p1 asks for the digital sink", g_ensure_digital_calls, 1);
+    rc |= expect_int("layout: p25p1 asks for it mono", g_ensure_digital_channels, 1);
+    rc |= expect_int("layout: p25p1 keeps the stream's channel", opts.pulse_digi_out_channels, 1);
+    freeState(&state);
+
+    init_decode_mode_context(&opts, &state);
+    rc |= expect_int("layout: stereo dmr session",
+                     dsd_apply_decode_mode_preset(DSDCFG_MODE_DMR, DSD_DECODE_PRESET_PROFILE_CLI, &opts, &state), 0);
+    rc |= expect_int("layout: dmr session is stereo", opts.pulse_digi_out_channels, 2);
+    rc |= submit_config_mode(&opts, &state, DSDCFG_MODE_P25P1, "layout: stereo session to p25p1");
+    rc |= expect_int("layout: stereo session runs p25p1", opts.frame_p25p1 == 1 && opts.frame_dmr == 0, 1);
+    rc |= expect_int("layout: stereo session keeps two channels", opts.pulse_digi_out_channels, 2);
+    rc |= expect_int("layout: stereo session keeps its rate", opts.pulse_digi_rate_out, 8000);
+    freeState(&state);
+    return rc;
+}
+#endif
+
+/* A part-collected analog monitor block the decoder holds: 400 of its 960 samples, first and last marked. */
+static void
+seed_partial_analog_block(dsd_state* state) {
+    state->analog_sample_counter = 400;
+    state->analog_out_f[0] = 1234.0f;
+    state->analog_out_f[399] = -77.0f;
+}
+
+static int
+expect_partial_analog_block(const char* tag, const dsd_state* state, int kept) {
+    if (kept) {
+        return expect_true(tag, state->analog_sample_counter == 400 && fabsf(state->analog_out_f[0] - 1234.0f) < 1e-3f
+                                    && fabsf(state->analog_out_f[399] + 77.0f) < 1e-3f);
+    }
+    return expect_true(tag, state->analog_sample_counter == 0 && fabsf(state->analog_out_f[0]) < 1e-6f
+                                && fabsf(state->analog_out_f[399]) < 1e-6f);
+}
+
+/*
+ * The decoder collects every unsynced sample into the analog monitor block (analog_out_f), whether or not a digital
+ * session monitors it, and plays a block once it is full. The samples a digital session collected are the old
+ * family's (on an RTL front end, the digital discriminator rather than monitor audio), so a change that moves the
+ * decoder between the analog and digital families drops the part-collected block: otherwise the first block the new
+ * family completes would start with them, audible once Analog opens the raw sink. A change inside a family keeps it.
+ * DECODE_MODE_SET and a config apply's [mode] both hold to this.
+ */
+static int
+test_family_change_discards_partial_analog_block(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    int rc = 0;
+    init_decode_mode_context(&opts, &state);
+    rc |= expect_int("block: dmr start queued",
+                     dsd_app_command_set_i32(DSD_APP_CMD_DECODE_MODE_SET, (int32_t)DSDCFG_MODE_DMR),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("block: dmr start drained", dsd_app_drain_cmds(&opts, &state), 1);
+
+    seed_partial_analog_block(&state);
+    rc |= expect_int("block: nxdn48 queued",
+                     dsd_app_command_set_i32(DSD_APP_CMD_DECODE_MODE_SET, (int32_t)DSDCFG_MODE_NXDN48),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("block: nxdn48 drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("block: nxdn48 applied", opts.frame_nxdn48 == 1 && opts.analog_only == 0, 1);
+    rc |= expect_partial_analog_block("block: digital to digital keeps the block", &state, 1);
+
+    rc |= expect_int("block: analog queued",
+                     dsd_app_command_set_i32(DSD_APP_CMD_DECODE_MODE_SET, (int32_t)DSDCFG_MODE_ANALOG),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("block: analog drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("block: analog applied", opts.analog_only, 1);
+    rc |= expect_partial_analog_block("block: digital to analog drops the block", &state, 0);
+
+    seed_partial_analog_block(&state);
+    rc |=
+        expect_int("block: dmr queued", dsd_app_command_set_i32(DSD_APP_CMD_DECODE_MODE_SET, (int32_t)DSDCFG_MODE_DMR),
+                   DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("block: dmr drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("block: dmr applied", opts.frame_dmr == 1 && opts.analog_only == 0, 1);
+    rc |= expect_partial_analog_block("block: analog to digital drops the block", &state, 0);
+
+    seed_partial_analog_block(&state);
+    rc |= submit_config_mode(&opts, &state, DSDCFG_MODE_P25P1, "block: config p25p1");
+    rc |= expect_int("block: config p25p1 applied", opts.frame_p25p1 == 1 && opts.analog_only == 0, 1);
+    rc |= expect_partial_analog_block("block: config inside the digital family keeps the block", &state, 1);
+
+    rc |= submit_config_mode(&opts, &state, DSDCFG_MODE_ANALOG, "block: config analog");
+    rc |= expect_int("block: config analog applied", opts.analog_only, 1);
+    rc |= expect_partial_analog_block("block: config onto analog drops the block", &state, 0);
+
+    seed_partial_analog_block(&state);
+    rc |= submit_config_mode(&opts, &state, DSDCFG_MODE_ANALOG, "block: config analog again");
+    rc |= expect_partial_analog_block("block: config staying analog keeps the block", &state, 1);
+
+    rc |= submit_config_mode(&opts, &state, DSDCFG_MODE_DMR, "block: config dmr");
+    rc |= expect_int("block: config dmr applied", opts.frame_dmr == 1 && opts.analog_only == 0, 1);
+    rc |= expect_partial_analog_block("block: config off analog drops the block", &state, 0);
+    freeState(&state);
+    return rc;
+}
+
+#if defined(USE_RADIO) && defined(DSD_NEO_TEST_ANALOG_WRAP) && defined(DSD_NEO_TEST_AUDIO_ENSURE_WRAP)
+/* The RTL receive-family requests a decode-mode change makes, recorded instead of run. */
+static int g_rx_sequence;
+static int g_analog_req_calls;
+static int g_analog_req_family;
+static int g_analog_req_kind;
+static int g_analog_req_width_hz;
+static int g_analog_req_order;
+static int g_demod_req_calls;
+static int g_demod_req_order;
+static int g_demod_req_rate;
+static int g_demod_req_ted_sps;
+/* What rtl_stream_analog_family_active() reports: the front end runs the analog family (its monitor output, or a
+   symbol profile a CQPSK toggle or typed row applied under it). */
+static int g_fake_analog_family;
+static unsigned int g_fake_digital_rate;
+/* What rtl_stream_check_analog_profile() answers (0 accepts), and what it was asked. */
+static int g_analog_check_result;
+static int g_analog_check_calls;
+static int g_analog_check_family;
+static int g_analog_check_kind;
+static int g_analog_check_width_hz;
+/* The digital decode modes the decoder notes with the front end (rtl_stream_set_digital_decode_modes()). */
+static int g_modes_note_calls;
+static int g_modes_note_order;
+static int g_modes_note_dmr;
+static int g_modes_note_nxdn48;
+
+// GNU ld --wrap entry points must keep the reserved __wrap_* symbol name.
+// NOLINTBEGIN(bugprone-reserved-identifier,cert-dcl37-c,cert-dcl51-cpp,misc-use-internal-linkage)
+int __wrap_rtl_stream_check_analog_profile(int family, int kind, int width_hz);
+int __wrap_rtl_stream_request_analog_profile(int family, int kind, int width_hz);
+int __wrap_rtl_stream_request_demod_profile(int cqpsk_enable, int symbol_rate_hz, int levels, int channel_profile,
+                                            int ted_sps, int ted_sps_is_override);
+int __wrap_rtl_stream_analog_family_active(void);
+unsigned int __wrap_rtl_stream_output_rate_for_family(int family, int cqpsk_enable, int symbol_rate_hz);
+void __wrap_rtl_stream_set_digital_decode_modes(const dsd_opts* opts);
+
+int
+__wrap_rtl_stream_check_analog_profile(int family, int kind, int width_hz) {
+    g_analog_check_calls++;
+    g_analog_check_family = family;
+    g_analog_check_kind = kind;
+    g_analog_check_width_hz = width_hz;
+    return g_analog_check_result;
+}
+
+int
+__wrap_rtl_stream_request_analog_profile(int family, int kind, int width_hz) {
+    g_analog_req_calls++;
+    g_analog_req_family = family;
+    g_analog_req_kind = kind;
+    g_analog_req_width_hz = width_hz;
+    g_analog_req_order = ++g_rx_sequence;
+    return 0;
+}
+
+int
+__wrap_rtl_stream_request_demod_profile(int cqpsk_enable, int symbol_rate_hz, int levels, int channel_profile,
+                                        int ted_sps, int ted_sps_is_override) {
+    (void)cqpsk_enable;
+    (void)levels;
+    (void)channel_profile;
+    (void)ted_sps_is_override;
+    g_demod_req_calls++;
+    g_demod_req_rate = symbol_rate_hz;
+    g_demod_req_ted_sps = ted_sps;
+    g_demod_req_order = ++g_rx_sequence;
+    return 0;
+}
+
+int
+__wrap_rtl_stream_analog_family_active(void) {
+    return g_fake_analog_family;
+}
+
+unsigned int
+__wrap_rtl_stream_output_rate_for_family(int family, int cqpsk_enable, int symbol_rate_hz) {
+    (void)family;
+    (void)cqpsk_enable;
+    (void)symbol_rate_hz;
+    return g_fake_digital_rate;
+}
+
+void
+__wrap_rtl_stream_set_digital_decode_modes(const dsd_opts* opts) {
+    g_modes_note_calls++;
+    g_modes_note_dmr = opts ? opts->frame_dmr : -1;
+    g_modes_note_nxdn48 = opts ? opts->frame_nxdn48 : -1;
+    g_modes_note_order = ++g_rx_sequence;
+}
+
+// NOLINTEND(bugprone-reserved-identifier,cert-dcl37-c,cert-dcl51-cpp,misc-use-internal-linkage)
+
+static void
+reset_rx_family_wrap(void) {
+    g_analog_check_result = 0;
+    g_analog_check_calls = g_analog_check_family = g_analog_check_kind = g_analog_check_width_hz = 0;
+    g_rx_sequence = 0;
+    g_analog_req_calls = g_analog_req_family = g_analog_req_kind = g_analog_req_width_hz = g_analog_req_order = 0;
+    g_demod_req_calls = g_demod_req_order = g_demod_req_rate = g_demod_req_ted_sps = 0;
+    g_modes_note_calls = g_modes_note_order = g_modes_note_dmr = g_modes_note_nxdn48 = 0;
+    g_ensure_analog_calls = g_ensure_digital_calls = 0;
+}
+
+/*
+ * DECODE_MODE_SET Analog on a live digital RTL session has to move the front end
+ * onto the analog family (it used to publish nothing for analog, leaving the RTL
+ * stream on the old digital demodulator) and open the monitor's raw sink. Going
+ * back to a digital mode asks for the digital family before its symbol profile,
+ * and times the decoder for the rate the digital stream will run at -- not the
+ * analog monitor's resampled rate it is still reading when the command runs.
+ */
+static int
+test_decode_mode_set_switches_rtl_receive_family(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static void* fake_ctx[2];
+    int rc = 0;
+    init_decode_mode_context(&opts, &state);
+    opts.audio_in_type = AUDIO_IN_RTL;
+    state.rtl_ctx = (RtlSdrContext*)fake_ctx;
+    rc |= expect_int("dmr start queued", dsd_app_command_set_i32(DSD_APP_CMD_DECODE_MODE_SET, (int32_t)DSDCFG_MODE_DMR),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("dmr start drained", dsd_app_drain_cmds(&opts, &state), 1);
+
+    reset_rx_family_wrap();
+    rc |= expect_int("analog queued", dsd_app_command_set_i32(DSD_APP_CMD_DECODE_MODE_SET, (int32_t)DSDCFG_MODE_ANALOG),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("analog drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("analog preset applied", opts.analog_only, 1);
+    rc |= expect_int("analog profile published", g_analog_req_calls, 1);
+    rc |= expect_int("analog family requested", g_analog_req_family, DSD_RX_FAMILY_ANALOG);
+    rc |= expect_int("FM requested", g_analog_req_kind, DSD_ANALOG_DEMOD_FM);
+    rc |= expect_int("default width travels as 0", g_analog_req_width_hz, 0);
+    rc |= expect_int("no symbol profile for analog", g_demod_req_calls, 0);
+    rc |= expect_int("analog notes no digital modes", g_modes_note_calls, 0);
+    rc |= expect_int("raw sink ensured", g_ensure_analog_calls, 1);
+    rc |= expect_int("digital sink not asked for", g_ensure_digital_calls, 0);
+
+    /* Back to DMR while the front end still runs the analog monitor at a 24 kHz DSP rate. */
+    reset_rx_family_wrap();
+    g_fake_analog_family = 1;
+    g_fake_digital_rate = 24000U;
+    rc |= expect_int("dmr queued", dsd_app_command_set_i32(DSD_APP_CMD_DECODE_MODE_SET, (int32_t)DSDCFG_MODE_DMR),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("dmr drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("family request made", g_analog_req_calls, 1);
+    rc |= expect_int("digital family requested", g_analog_req_family, DSD_RX_FAMILY_DIGITAL);
+    rc |= expect_int("symbol profile follows", g_demod_req_calls, 1);
+    rc |= expect_int("family before profile", g_analog_req_order < g_demod_req_order, 1);
+    /* The stream's options are the -fA session's, which name no digital mode: the decoder notes DMR's with it. */
+    rc |= expect_int("dmr modes noted", g_modes_note_calls, 1);
+    rc |= expect_int("noted modes are DMR's", g_modes_note_dmr, 1);
+    rc |= expect_int("modes noted before the family request", g_modes_note_order < g_analog_req_order, 1);
+    rc |= expect_int("decoder timed for the digital rate", state.samplesPerSymbol, 5);
+    rc |= expect_int("front end timed for the digital rate", g_demod_req_ted_sps, 5);
+    rc |= expect_int("digital sink ensured", g_ensure_digital_calls, 1);
+    rc |= expect_int("raw sink not asked for", g_ensure_analog_calls, 0);
+
+    /* A configured width travels with the next analog request. */
+    reset_rx_family_wrap();
+    g_fake_analog_family = 0;
+    opts.analog_nfm_bandwidth_hz = 12500;
+    rc |= expect_int("analog again queued",
+                     dsd_app_command_set_i32(DSD_APP_CMD_DECODE_MODE_SET, (int32_t)DSDCFG_MODE_ANALOG),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("analog again drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("configured width requested", g_analog_req_width_hz, 12500);
+
+    g_fake_digital_rate = 0U;
+    state.rtl_ctx = NULL;
+    freeState(&state);
+    return rc;
+}
+
+/*
+ * DECODE_MODE_SET Analog that the running RTL front end would refuse (an explicit NFM width its demod rate cannot
+ * realize, say) is asked about before anything changes: the command fails with a toast, and the session stays in its
+ * digital mode with the digital front end, sink and options it had. Committing the preset first would leave an Analog
+ * decoder on the digital demodulator, and a second Analog pick would take the already-selected shortcut and never
+ * retry. Once the front end takes the profile, the same command switches.
+ */
+static int
+test_decode_mode_set_refused_analog_profile_changes_nothing(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static void* fake_ctx[2];
+    int rc = 0;
+    init_decode_mode_context(&opts, &state);
+    opts.audio_in_type = AUDIO_IN_RTL;
+    state.rtl_ctx = (RtlSdrContext*)fake_ctx;
+    rc |= expect_int("refusal: dmr start queued",
+                     dsd_app_command_set_i32(DSD_APP_CMD_DECODE_MODE_SET, (int32_t)DSDCFG_MODE_DMR),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("refusal: dmr start drained", dsd_app_drain_cmds(&opts, &state), 1);
+    opts.analog_nfm_bandwidth_hz = 25000;
+    opts.mod_cli_lock = 1;
+
+    reset_rx_family_wrap();
+    g_analog_check_result = -1;
+    state.ui_msg[0] = '\0';
+    rc |= expect_int("refusal: analog queued",
+                     dsd_app_command_set_i32(DSD_APP_CMD_DECODE_MODE_SET, (int32_t)DSDCFG_MODE_ANALOG),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("refusal: analog drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("refusal: front end asked once", g_analog_check_calls, 1);
+    rc |= expect_int("refusal: asked for the analog family", g_analog_check_family, DSD_RX_FAMILY_ANALOG);
+    rc |= expect_int("refusal: asked for NFM", g_analog_check_kind, DSD_ANALOG_DEMOD_FM);
+    rc |= expect_int("refusal: asked for the configured width", g_analog_check_width_hz, 25000);
+    rc |= expect_int("refusal: decoder stays digital", opts.analog_only, 0);
+    rc |= expect_int("refusal: DMR still decoded", opts.frame_dmr, 1);
+    rc |= expect_int("refusal: mode still DMR", dsd_infer_decode_mode_preset(&opts) == DSDCFG_MODE_DMR, 1);
+    rc |= expect_int("refusal: modulation lock kept", opts.mod_cli_lock, 1);
+    rc |= expect_int("refusal: no family request", g_analog_req_calls, 0);
+    rc |= expect_int("refusal: no symbol profile", g_demod_req_calls, 0);
+    rc |= expect_int("refusal: no raw sink opened", g_ensure_analog_calls, 0);
+    rc |= expect_int("refusal: toast names the refusal", strstr(state.ui_msg, "refused") != NULL, 1);
+
+    /* The front end takes it now: the same pick switches, with no already-selected shortcut in the way. */
+    reset_rx_family_wrap();
+    rc |= expect_int("accepted: analog queued",
+                     dsd_app_command_set_i32(DSD_APP_CMD_DECODE_MODE_SET, (int32_t)DSDCFG_MODE_ANALOG),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("accepted: analog drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("accepted: decoder on analog", opts.analog_only, 1);
+    rc |= expect_int("accepted: analog family requested", g_analog_req_family, DSD_RX_FAMILY_ANALOG);
+    rc |= expect_int("accepted: width travels", g_analog_req_width_hz, 25000);
+    rc |= expect_int("accepted: raw sink ensured", g_ensure_analog_calls, 1);
+
+    /* A digital pick is never asked about. */
+    reset_rx_family_wrap();
+    g_analog_check_result = -1;
+    rc |= expect_int("digital: dmr queued",
+                     dsd_app_command_set_i32(DSD_APP_CMD_DECODE_MODE_SET, (int32_t)DSDCFG_MODE_DMR),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("digital: dmr drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("digital: front end not asked", g_analog_check_calls, 0);
+    rc |= expect_int("digital: DMR applied", opts.analog_only == 0 && opts.frame_dmr == 1, 1);
+
+    g_analog_check_result = 0;
+    opts.analog_nfm_bandwidth_hz = 0;
+    state.rtl_ctx = NULL;
+    freeState(&state);
+    return rc;
+}
+
+/*
+ * A -fA session whose front end a CQPSK toggle has moved onto symbols: the analog profile is no longer published, but
+ * the stream still runs the analog family, and picking a digital mode leaves it. The decoder asks for the digital
+ * family before the mode's symbol profile and times itself for the rate the digital stream will run at, as it does
+ * from the monitor output.
+ */
+static int
+test_decode_mode_set_leaves_analog_family_off_the_monitor(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static void* fake_ctx[2];
+    int rc = 0;
+    init_decode_mode_context(&opts, &state);
+    opts.audio_in_type = AUDIO_IN_RTL;
+    state.rtl_ctx = (RtlSdrContext*)fake_ctx;
+    rc |= expect_int("cqpsk -fA start queued",
+                     dsd_app_command_set_i32(DSD_APP_CMD_DECODE_MODE_SET, (int32_t)DSDCFG_MODE_ANALOG),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("cqpsk -fA start drained", dsd_app_drain_cmds(&opts, &state), 1);
+
+    reset_rx_family_wrap();
+    g_fake_analog_family = 1;
+    g_fake_digital_rate = 24000U;
+    rc |= expect_int("cqpsk dmr queued", dsd_app_command_set_i32(DSD_APP_CMD_DECODE_MODE_SET, (int32_t)DSDCFG_MODE_DMR),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("cqpsk dmr drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("cqpsk: digital family requested", g_analog_req_family, DSD_RX_FAMILY_DIGITAL);
+    rc |= expect_int("cqpsk: family request made once", g_analog_req_calls, 1);
+    rc |= expect_int("cqpsk: symbol profile follows", g_demod_req_calls, 1);
+    rc |= expect_int("cqpsk: family before profile", g_analog_req_order < g_demod_req_order, 1);
+    rc |= expect_int("cqpsk: decoder timed for the digital rate", state.samplesPerSymbol, 5);
+    rc |= expect_int("cqpsk: front end timed for the digital rate", g_demod_req_ted_sps, 5);
+
+    g_fake_analog_family = 0;
+    g_fake_digital_rate = 0U;
+    state.rtl_ctx = NULL;
+    freeState(&state);
+    return rc;
+}
+
+/*
+ * A typed digital scan row on an analog session runs its symbol profile on the analog family, as it always has. A
+ * scoped command that republishes the row's profile asks for the digital family only when the configured mode is
+ * digital: on the -fA baseline it queues the row's symbol profile alone, so the front end is not switched in the
+ * middle of the row. On a digital baseline the same republish asks for the digital family first (a no-op on a
+ * digital front end).
+ */
+static int
+test_typed_row_republish_follows_configured_family(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static void* fake_ctx[2];
+    int rc = 0;
+    init_decode_mode_context(&opts, &state);
+    opts.audio_in_type = AUDIO_IN_RTL;
+    state.rtl_ctx = (RtlSdrContext*)fake_ctx;
+    rc |= expect_int("row -fA baseline queued",
+                     dsd_app_command_set_i32(DSD_APP_CMD_DECODE_MODE_SET, (int32_t)DSDCFG_MODE_ANALOG),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("row -fA baseline drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("typed DMR row on -fA", dsd_scan_mode_enter(&opts, &state, DSD_SCAN_MODE_DMR), 0);
+    rc |= expect_int("typed DMR row options", dsd_scan_mode_options(&opts, &state, NULL), 0);
+    rc |= expect_int("row runs DMR", opts.frame_dmr, 1);
+
+    reset_rx_family_wrap();
+    g_fake_analog_family = 1;
+    rc |= expect_int("row republish queued", dsd_app_command_action(DSD_APP_CMD_INV_DMR_TOGGLE),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("row republish drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("-fA row: row profile republished", g_demod_req_calls, 1);
+    rc |= expect_int("-fA row: no family request", g_analog_req_calls, 0);
+    rc |= expect_int("-fA row: the row's modes are not noted", g_modes_note_calls, 0);
+    dsd_scan_mode_leave(&opts, &state);
+    rc |= expect_int("-fA row left", opts.analog_only, 1);
+
+    rc |= expect_int("row dmr baseline queued",
+                     dsd_app_command_set_i32(DSD_APP_CMD_DECODE_MODE_SET, (int32_t)DSDCFG_MODE_DMR),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("row dmr baseline drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("typed NXDN row on DMR", dsd_scan_mode_enter(&opts, &state, DSD_SCAN_MODE_NXDN48), 0);
+    rc |= expect_int("typed NXDN row options", dsd_scan_mode_options(&opts, &state, NULL), 0);
+    reset_rx_family_wrap();
+    g_fake_analog_family = 0;
+    rc |= expect_int("digital row republish queued", dsd_app_command_action(DSD_APP_CMD_INV_DMR_TOGGLE),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("digital row republish drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("digital row: digital family requested", g_analog_req_family, DSD_RX_FAMILY_DIGITAL);
+    rc |= expect_int("digital row: family request made once", g_analog_req_calls, 1);
+    rc |= expect_int("digital row: row profile follows", g_demod_req_calls, 1);
+    rc |= expect_int("digital row: family before profile", g_analog_req_order < g_demod_req_order, 1);
+    rc |= expect_int("digital row: the row's modes are not noted", g_modes_note_calls, 0);
+    dsd_scan_mode_leave(&opts, &state);
+
+    state.rtl_ctx = NULL;
+    freeState(&state);
+    return rc;
+}
+
+/*
+ * A digital mode picked while a typed scan row runs on a -fA session is the configured mode, noted with the front end
+ * for the switch the row's leave makes: the decoder notes the options it applies the preset to (the configuration,
+ * before the row's constraint is reapplied), not the row's, and republishing the row's profile after the update notes
+ * nothing more.
+ */
+static int
+test_mode_change_under_row_notes_configured_modes(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static void* fake_ctx[2];
+    int rc = 0;
+    init_decode_mode_context(&opts, &state);
+    opts.audio_in_type = AUDIO_IN_RTL;
+    state.rtl_ctx = (RtlSdrContext*)fake_ctx;
+    rc |= expect_int("under row: -fA baseline queued",
+                     dsd_app_command_set_i32(DSD_APP_CMD_DECODE_MODE_SET, (int32_t)DSDCFG_MODE_ANALOG),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("under row: -fA baseline drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("under row: typed NXDN row", dsd_scan_mode_enter(&opts, &state, DSD_SCAN_MODE_NXDN48), 0);
+    rc |= expect_int("under row: typed NXDN row options", dsd_scan_mode_options(&opts, &state, NULL), 0);
+    rc |= expect_int("under row: row runs NXDN48", opts.frame_nxdn48, 1);
+
+    reset_rx_family_wrap();
+    g_fake_analog_family = 1;
+    rc |= expect_int("under row: dmr queued",
+                     dsd_app_command_set_i32(DSD_APP_CMD_DECODE_MODE_SET, (int32_t)DSDCFG_MODE_DMR),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("under row: dmr drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("under row: configured modes noted once", g_modes_note_calls, 1);
+    rc |= expect_int("under row: noted modes are the configured DMR", g_modes_note_dmr, 1);
+    rc |= expect_int("under row: not the row's NXDN48", g_modes_note_nxdn48, 0);
+    rc |= expect_int("under row: the row still runs NXDN48", opts.frame_nxdn48, 1);
+    dsd_scan_mode_leave(&opts, &state);
+
+    g_fake_analog_family = 0;
+    state.rtl_ctx = NULL;
+    freeState(&state);
+    return rc;
+}
+
+/*
+ * A config whose [mode] moves a live RTL session into or out of analog has to switch the receive family and open the
+ * new family's sink the way DECODE_MODE_SET does, or the analog preset runs on the digital demodulator (and back). A
+ * [mode] that stays inside its family asks the front end for nothing new, and opens no sink unless it writes raw audio
+ * a digital start did not open a sink for (ProVoice).
+ */
+static int
+test_config_apply_switches_rtl_receive_family(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static void* fake_ctx[2];
+    int rc = 0;
+    init_decode_mode_context(&opts, &state);
+    opts.audio_in_type = AUDIO_IN_RTL;
+    state.rtl_ctx = (RtlSdrContext*)fake_ctx;
+    rc |= submit_config_mode(&opts, &state, DSDCFG_MODE_DMR, "config dmr start");
+
+    reset_rx_family_wrap();
+    rc |= submit_config_mode(&opts, &state, DSDCFG_MODE_ANALOG, "config analog");
+    rc |= expect_int("config analog preset applied", opts.analog_only, 1);
+    rc |= expect_int("config analog profile published", g_analog_req_calls, 1);
+    rc |= expect_int("config analog family requested", g_analog_req_family, DSD_RX_FAMILY_ANALOG);
+    rc |= expect_int("config analog FM requested", g_analog_req_kind, DSD_ANALOG_DEMOD_FM);
+    rc |= expect_int("config analog asks for no symbol profile", g_demod_req_calls, 0);
+    rc |= expect_int("config analog ensures the raw sink", g_ensure_analog_calls, 1);
+    rc |= expect_int("config analog leaves the digital sink", g_ensure_digital_calls, 0);
+
+    /* Back to DMR while the front end still runs the analog monitor at a 24 kHz DSP rate. */
+    reset_rx_family_wrap();
+    g_fake_analog_family = 1;
+    g_fake_digital_rate = 24000U;
+    rc |= submit_config_mode(&opts, &state, DSDCFG_MODE_DMR, "config dmr");
+    rc |= expect_int("config dmr leaves analog", opts.analog_only, 0);
+    rc |= expect_int("config digital family requested", g_analog_req_family, DSD_RX_FAMILY_DIGITAL);
+    rc |= expect_int("config family request made once", g_analog_req_calls, 1);
+    rc |= expect_int("config symbol profile follows", g_demod_req_calls, 1);
+    rc |= expect_int("config family before profile", g_analog_req_order < g_demod_req_order, 1);
+    rc |= expect_int("config decoder timed for the digital rate", state.samplesPerSymbol, 5);
+    rc |= expect_int("config digital sink ensured", g_ensure_digital_calls, 1);
+    rc |= expect_int("config raw sink not asked for", g_ensure_analog_calls, 0);
+
+    /* A [mode] inside the same family keeps the earlier config-apply behaviour, except that the front end learns the
+       digital modes it now configures: after the live switch above its opening options name none, and the noted ones
+       pick the FSK channel profile its CQPSK toggle returns to (NXDN48's 6.25 kHz, not DMR's 12.5 kHz). */
+    reset_rx_family_wrap();
+    g_fake_analog_family = 0;
+    rc |= submit_config_mode(&opts, &state, DSDCFG_MODE_NXDN48, "config nxdn48");
+    rc |= expect_int("config same family asks for no family", g_analog_req_calls, 0);
+    rc |= expect_int("config same family asks for no profile", g_demod_req_calls, 0);
+    rc |= expect_int("config same family opens no sink", g_ensure_analog_calls + g_ensure_digital_calls, 0);
+    rc |= expect_int("config same family notes its digital modes", g_modes_note_calls, 1);
+    rc |= expect_int("config same family notes NXDN48", g_modes_note_nxdn48, 1);
+    rc |= expect_int("config same family no longer notes DMR", g_modes_note_dmr, 0);
+
+    /* DMR-family session to ProVoice: still digital, but ProVoice writes the raw stream (UDP port + 2 with UDP output)
+       that a digital start did not open. */
+    reset_rx_family_wrap();
+    rc |= submit_config_mode(&opts, &state, DSDCFG_MODE_EDACS_PV, "config provoice");
+    rc |= expect_int("config provoice stays digital", opts.analog_only, 0);
+    rc |= expect_int("config provoice preset applied", opts.frame_provoice, 1);
+    rc |= expect_int("config provoice asks for no family", g_analog_req_calls, 0);
+    rc |= expect_int("config provoice opens its raw sink", g_ensure_digital_calls, 1);
+    rc |= expect_int("config provoice is not the analog monitor", g_ensure_analog_calls, 0);
+
+    g_fake_digital_rate = 0U;
+    state.rtl_ctx = NULL;
+    freeState(&state);
+    return rc;
+}
+
+/*
+ * A config whose [mode] picks Analog on a live digital RTL session is asked about before it is applied, as
+ * DECODE_MODE_SET is: when the running front end would refuse the analog profile (an explicit NFM width its demod rate
+ * cannot realize, say), the whole config is refused with a toast and the session keeps its digital mode, front end,
+ * sink and options. Applying the preset first would leave an Analog decoder on the digital demodulator, and picking
+ * Analog again would take the already-selected shortcut and never retry. Once the front end takes the profile, the
+ * same config switches. A config that stays digital is never asked about.
+ */
+static int
+test_config_apply_refused_analog_profile_changes_nothing(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static void* fake_ctx[2];
+    int rc = 0;
+    init_decode_mode_context(&opts, &state);
+    opts.audio_in_type = AUDIO_IN_RTL;
+    state.rtl_ctx = (RtlSdrContext*)fake_ctx;
+    rc |= submit_config_mode(&opts, &state, DSDCFG_MODE_DMR, "config refusal: dmr start");
+    opts.analog_nfm_bandwidth_hz = 25000;
+
+    reset_rx_family_wrap();
+    g_analog_check_result = -1;
+    state.ui_msg[0] = '\0';
+    rc |= submit_config_mode(&opts, &state, DSDCFG_MODE_ANALOG, "config refusal: analog");
+    rc |= expect_int("config refusal: front end asked once", g_analog_check_calls, 1);
+    rc |= expect_int("config refusal: asked for the analog family", g_analog_check_family, DSD_RX_FAMILY_ANALOG);
+    rc |= expect_int("config refusal: asked for NFM", g_analog_check_kind, DSD_ANALOG_DEMOD_FM);
+    rc |= expect_int("config refusal: asked for the configured width", g_analog_check_width_hz, 25000);
+    rc |= expect_int("config refusal: decoder stays digital", opts.analog_only, 0);
+    rc |= expect_int("config refusal: DMR still decoded", opts.frame_dmr, 1);
+    rc |= expect_int("config refusal: mode still DMR", dsd_infer_decode_mode_preset(&opts) == DSDCFG_MODE_DMR, 1);
+    rc |= expect_int("config refusal: no family request", g_analog_req_calls, 0);
+    rc |= expect_int("config refusal: no symbol profile", g_demod_req_calls, 0);
+    rc |= expect_int("config refusal: no raw sink opened", g_ensure_analog_calls, 0);
+    rc |= expect_int("config refusal: toast names the refusal", strstr(state.ui_msg, "refused") != NULL, 1);
+
+    /* The front end takes it now: the same config switches. */
+    reset_rx_family_wrap();
+    rc |= submit_config_mode(&opts, &state, DSDCFG_MODE_ANALOG, "config accepted: analog");
+    rc |= expect_int("config accepted: front end asked", g_analog_check_calls, 1);
+    rc |= expect_int("config accepted: decoder on analog", opts.analog_only, 1);
+    rc |= expect_int("config accepted: analog family requested", g_analog_req_family, DSD_RX_FAMILY_ANALOG);
+    rc |= expect_int("config accepted: width travels", g_analog_req_width_hz, 25000);
+    rc |= expect_int("config accepted: raw sink ensured", g_ensure_analog_calls, 1);
+
+    /* Back to a digital [mode]: never asked about. */
+    reset_rx_family_wrap();
+    g_analog_check_result = -1;
+    rc |= submit_config_mode(&opts, &state, DSDCFG_MODE_DMR, "config digital: dmr");
+    rc |= expect_int("config digital: front end not asked", g_analog_check_calls, 0);
+    rc |= expect_int("config digital: DMR applied", opts.analog_only == 0 && opts.frame_dmr == 1, 1);
+
+    g_analog_check_result = 0;
+    opts.analog_nfm_bandwidth_hz = 0;
+    state.rtl_ctx = NULL;
+    freeState(&state);
+    return rc;
+}
+#endif
+
 #ifdef DSD_NEO_TEST_IO_CONTROL_WRAP
 static int g_dmr_policy_returns;
 
@@ -4538,6 +5269,20 @@ main(void) {
     rc |= test_config_rtl_restart_under_policy_guard();
     rc |= test_squelch_commands_edit_the_configured_default();
     rc |= test_squelch_edit_keeps_live_acquisition();
+#endif
+#ifdef DSD_NEO_TEST_AUDIO_ENSURE_WRAP
+    rc |= test_decode_mode_set_ensures_family_sink();
+    rc |= test_config_apply_keeps_session_output_layout();
+#endif
+    rc |= test_family_change_discards_partial_analog_block();
+#if defined(USE_RADIO) && defined(DSD_NEO_TEST_ANALOG_WRAP) && defined(DSD_NEO_TEST_AUDIO_ENSURE_WRAP)
+    rc |= test_decode_mode_set_switches_rtl_receive_family();
+    rc |= test_decode_mode_set_refused_analog_profile_changes_nothing();
+    rc |= test_decode_mode_set_leaves_analog_family_off_the_monitor();
+    rc |= test_typed_row_republish_follows_configured_family();
+    rc |= test_mode_change_under_row_notes_configured_modes();
+    rc |= test_config_apply_switches_rtl_receive_family();
+    rc |= test_config_apply_refused_analog_profile_changes_nothing();
 #endif
 #ifdef DSD_NEO_TEST_IO_CONTROL_WRAP
     rc |= test_dmr_policy_command_ticks_owner(DSD_APP_CMD_LOCKOUT_SLOT);

@@ -324,6 +324,18 @@ dsd_neo_add_public_header_smoke_test(
   C
 )
 dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_runtime_analog_channel
+  HEADERS_PUBLIC_RUNTIME_ANALOG_CHANNEL
+  dsd-neo/runtime/analog_channel.h
+  C
+)
+dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_runtime_analog_channel_cxx
+  HEADERS_PUBLIC_RUNTIME_ANALOG_CHANNEL_CXX
+  dsd-neo/runtime/analog_channel.h
+  CXX
+)
+dsd_neo_add_public_header_smoke_test(
   dsd-neo_test_headers_public_runtime_bootstrap
   HEADERS_PUBLIC_RUNTIME_BOOTSTRAP
   dsd-neo/runtime/bootstrap.h
@@ -4389,6 +4401,32 @@ if(NOT APPLE AND NOT WIN32 AND (CMAKE_C_COMPILER_ID MATCHES "GNU|Clang"))
 endif()
 add_test(NAME CORE_AUDIO_GAIN COMMAND dsd-neo_test_core_audio_gain)
 
+# The audio backend is replaced with GNU ld --wrap, so the test exists only where that links.
+if(NOT APPLE AND NOT WIN32 AND (CMAKE_C_COMPILER_ID MATCHES "GNU|Clang"))
+    add_executable(
+        dsd-neo_test_core_audio_ensure_output
+        core/test_core_audio_ensure_output.c
+    )
+    target_include_directories(
+        dsd-neo_test_core_audio_ensure_output
+        PRIVATE ${PROJECT_SOURCE_DIR}/include
+    )
+    target_link_libraries(
+        dsd-neo_test_core_audio_ensure_output
+        PRIVATE dsd-neo_core
+    )
+    target_link_options(
+        dsd-neo_test_core_audio_ensure_output
+        PRIVATE
+            "LINKER:--wrap=dsd_audio_open_output"
+            "LINKER:--wrap=dsd_audio_close"
+    )
+    add_test(
+        NAME CORE_AUDIO_ENSURE_OUTPUT
+        COMMAND dsd-neo_test_core_audio_ensure_output
+    )
+endif()
+
 add_executable(
     dsd-neo_test_core_audio2_helpers
     core/test_core_audio2_helpers.c
@@ -5288,6 +5326,23 @@ target_link_libraries(dsd-neo_test_runtime_decode_mode PRIVATE dsd-neo_runtime)
 add_test(NAME RUNTIME_DECODE_MODE COMMAND dsd-neo_test_runtime_decode_mode)
 
 add_executable(
+    dsd-neo_test_runtime_analog_channel
+    runtime/test_runtime_analog_channel.c
+)
+target_include_directories(
+    dsd-neo_test_runtime_analog_channel
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+target_link_libraries(
+    dsd-neo_test_runtime_analog_channel
+    PRIVATE dsd-neo_runtime
+)
+add_test(
+    NAME RUNTIME_ANALOG_CHANNEL
+    COMMAND dsd-neo_test_runtime_analog_channel
+)
+
+add_executable(
     dsd-neo_test_runtime_config_env
     runtime/test_runtime_config_env.cpp
 )
@@ -5448,7 +5503,7 @@ endif()
 if(NOT APPLE AND NOT WIN32 AND (CMAKE_C_COMPILER_ID MATCHES "GNU|Clang"))
     target_compile_definitions(
         dsd-neo_test_app_command_queue
-        PRIVATE DSD_NEO_TEST_IO_CONTROL_WRAP
+        PRIVATE DSD_NEO_TEST_IO_CONTROL_WRAP DSD_NEO_TEST_AUDIO_ENSURE_WRAP
     )
     target_link_options(
         dsd-neo_test_app_command_queue
@@ -5456,6 +5511,8 @@ if(NOT APPLE AND NOT WIN32 AND (CMAKE_C_COMPILER_ID MATCHES "GNU|Clang"))
             "LINKER:--wrap=dsd_trunk_tuning_hook_tune_to_cc"
             "LINKER:--wrap=io_control_set_freq"
             "LINKER:--wrap=dsd_tg_policy_call_skip_arm"
+            "LINKER:--wrap=dsd_audio_ensure_analog_output"
+            "LINKER:--wrap=dsd_audio_ensure_digital_output"
     )
 endif()
 if(
@@ -5466,13 +5523,19 @@ if(
 )
     target_compile_definitions(
         dsd-neo_test_app_command_queue
-        PRIVATE DSD_NEO_TEST_RTL_WRAP
+        PRIVATE DSD_NEO_TEST_RTL_WRAP DSD_NEO_TEST_ANALOG_WRAP
     )
     target_link_options(
         dsd-neo_test_app_command_queue
         PRIVATE
             "LINKER:--wrap=rtl_stream_create"
             "LINKER:--wrap=rtl_stream_set_channel_squelch"
+            "LINKER:--wrap=rtl_stream_check_analog_profile"
+            "LINKER:--wrap=rtl_stream_request_analog_profile"
+            "LINKER:--wrap=rtl_stream_request_demod_profile"
+            "LINKER:--wrap=rtl_stream_analog_family_active"
+            "LINKER:--wrap=rtl_stream_output_rate_for_family"
+            "LINKER:--wrap=rtl_stream_set_digital_decode_modes"
     )
 endif()
 add_test(NAME APP_COMMAND_QUEUE COMMAND dsd-neo_test_app_command_queue)
@@ -5560,11 +5623,14 @@ endif()
 if(NOT APPLE AND NOT WIN32 AND (CMAKE_C_COMPILER_ID MATCHES "GNU|Clang"))
     target_compile_definitions(
         dsd-neo_test_app_control_rr_apply
-        PRIVATE DSD_NEO_TEST_IO_CONTROL_WRAP
+        PRIVATE DSD_NEO_TEST_IO_CONTROL_WRAP DSD_NEO_TEST_AUDIO_ENSURE_WRAP
     )
     target_link_options(
         dsd-neo_test_app_control_rr_apply
-        PRIVATE "LINKER:--wrap=io_control_set_freq"
+        PRIVATE
+            "LINKER:--wrap=io_control_set_freq"
+            "LINKER:--wrap=dsd_audio_ensure_analog_output"
+            "LINKER:--wrap=dsd_audio_ensure_digital_output"
     )
 endif()
 add_test(NAME APP_CONTROL_RR_APPLY COMMAND dsd-neo_test_app_control_rr_apply)
@@ -10024,6 +10090,56 @@ if(DSD_HAS_RADIO)
     )
 
     add_executable(
+        dsd-neo_test_io_rtl_analog_family_switch
+        io/test_io_rtl_analog_family_switch.cpp
+    )
+    target_include_directories(
+        dsd-neo_test_io_rtl_analog_family_switch
+        PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/io/radio
+    )
+    target_link_libraries(
+        dsd-neo_test_io_rtl_analog_family_switch
+        PRIVATE dsd-neo_io_radio_private_test_support dsd-neo_core
+    )
+    if(DSD_HAS_RTLSDR)
+        target_link_libraries(
+            dsd-neo_test_io_rtl_analog_family_switch
+            PRIVATE ${RTLSDR_LIBRARIES} ${CMAKE_THREAD_LIBS_INIT}
+        )
+    endif()
+    add_test(
+        NAME IO_RTL_ANALOG_FAMILY_SWITCH
+        COMMAND dsd-neo_test_io_rtl_analog_family_switch
+    )
+
+    add_executable(
+        dsd-neo_test_io_rtl_analog_open
+        io/test_io_rtl_analog_open.cpp
+    )
+    target_include_directories(
+        dsd-neo_test_io_rtl_analog_open
+        PRIVATE
+            ${PROJECT_SOURCE_DIR}/include
+            ${PROJECT_SOURCE_DIR}/src/io/radio
+            ${PROJECT_SOURCE_DIR}/tests/test_support
+    )
+    target_link_libraries(
+        dsd-neo_test_io_rtl_analog_open
+        PRIVATE
+            dsd-neo_io_radio_private_test_support
+            dsd-neo_io_iq
+            dsd-neo_core
+            dsd-neo_test_support
+    )
+    if(DSD_HAS_RTLSDR)
+        target_link_libraries(
+            dsd-neo_test_io_rtl_analog_open
+            PRIVATE ${RTLSDR_LIBRARIES} ${CMAKE_THREAD_LIBS_INIT}
+        )
+    endif()
+    add_test(NAME IO_RTL_ANALOG_OPEN COMMAND dsd-neo_test_io_rtl_analog_open)
+
+    add_executable(
         dsd-neo_test_io_rtl_retune_mute_window
         io/test_io_rtl_retune_mute_window.cpp
     )
@@ -10986,7 +11102,8 @@ if(DSD_HAS_RADIO)
     endfunction()
 
     # Under -fA the front end must stay on the monitor path; the host warns when it
-    # delivers CQPSK symbols instead (the modulation auto-switch, see docs/testing.md).
+    # delivers CQPSK symbols instead (the modulation auto-switch did this before the
+    # analog family stood it down; see docs/testing.md).
     set(_analog_off_path "CQPSK symbols instead of monitor samples")
 
     # 1 kHz at 3 kHz deviation through the default monitor chain: 25.9 dB tone SNR,
@@ -11043,6 +11160,18 @@ if(DSD_HAS_RADIO)
         DECODE_IQ_ANALOG_NFM_REAL_SQUELCH_B_SMOKE
         nfm_squelch_real_b
         "-fA --analog-min-captured-ms 3900 --analog-min-audible-ms 2000 --analog-min-inband-db 5"
+        ""
+        "${_analog_off_path}"
+    )
+    # A carrier within a few hertz of 0 Hz votes for CQPSK, and the modulation
+    # auto-switch used to follow that vote under -fA and move the front end to the
+    # P25 CQPSK path. The analog family stands the switch down, so the whole 8 s
+    # excerpt reaches the monitor (8000 ms captured and stream time measured) with
+    # no CQPSK symbols. This checks the monitor path only, not AM reception.
+    dsd_neo_add_analog_replay_test(
+        DECODE_IQ_ANALOG_NO_MOD_AUTO_SWITCH
+        am_airband_real
+        "-fA --analog-min-captured-ms 7800 --analog-min-total-ms 7800 --analog-max-total-ms 8200"
         ""
         "${_analog_off_path}"
     )

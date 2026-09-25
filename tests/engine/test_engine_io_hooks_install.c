@@ -8,6 +8,8 @@
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/io/rtl_stream_c.h>
 #include <dsd-neo/io/udp_audio.h>
+#include <dsd-neo/io/udp_socket_connect.h>
+#include <dsd-neo/platform/sockets.h>
 #include <dsd-neo/runtime/rtl_stream_io_hooks.h>
 #include <dsd-neo/runtime/udp_audio_hooks.h>
 #include <stddef.h>
@@ -45,6 +47,19 @@ udp_socket_blasterA(const dsd_opts* opts, dsd_state* state, size_t nsam, const v
     g_last_state = state;
     g_last_nsam = nsam;
     g_last_data = data;
+}
+
+static int g_udp_connect_analog_calls = 0;
+static int g_udp_connect_analog_result = 0;
+
+int
+udp_socket_connectA(dsd_opts* opts, dsd_state* state) {
+    (void)state;
+    ++g_udp_connect_analog_calls;
+    if (g_udp_connect_analog_result == 0) {
+        opts->udp_sockfdA = (dsd_socket_t)5;
+    }
+    return g_udp_connect_analog_result;
 }
 
 int
@@ -112,7 +127,23 @@ test_udp_audio_installer(void) {
     assert(g_last_nsam == 2U);
     assert(g_last_data == data);
 
+    /* The analog socket a runtime switch to the analog family opens lazily. */
+    opts.udp_sockfdA = DSD_INVALID_SOCKET;
+    g_udp_connect_analog_calls = 0;
+    g_udp_connect_analog_result = 0;
+    assert(dsd_udp_audio_hook_connect_analog(&opts) == 0);
+    assert(g_udp_connect_analog_calls == 1);
+    assert(opts.udp_sockfdA == (dsd_socket_t)5);
+    opts.udp_sockfdA = DSD_INVALID_SOCKET;
+    g_udp_connect_analog_result = -1;
+    assert(dsd_udp_audio_hook_connect_analog(&opts) == -1);
+    assert(g_udp_connect_analog_calls == 2);
+    assert(opts.udp_sockfdA == DSD_INVALID_SOCKET);
+    assert(dsd_udp_audio_hook_connect_analog(NULL) == -1);
+    assert(g_udp_connect_analog_calls == 2);
+
     dsd_udp_audio_hooks_set((dsd_udp_audio_hooks){0});
+    assert(dsd_udp_audio_hook_connect_analog(&opts) == -1);
 }
 
 static void

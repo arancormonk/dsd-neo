@@ -58,19 +58,39 @@ frontend_input_is_radio(const dsd_opts* opts) {
     return dsd_opts_input_is_radio(opts);
 }
 
-static void
-frontend_metrics_from_runtime_hooks(dsd_frontend_metrics* out) {
-    out->output_rate_hz = dsd_rtl_stream_metrics_hook_output_rate_hz();
-    out->output_kind = dsd_rtl_stream_metrics_hook_output_kind();
-    (void)dsd_rtl_stream_metrics_hook_symbol_profile(&out->symbol_rate_hz, &out->symbol_levels, &out->channel_profile);
+/*
+ * The channel width to draw. On the analog monitor it is the analog width the front
+ * end published: the configured width while the width-driven filter runs, otherwise
+ * the width the DSP rate leaves (flagged). The M17 encoder shares the monitor output
+ * without being the analog family, and publishes no analog profile.
+ */
+static int
+frontend_channel_bandwidth_hz(const dsd_frontend_metrics* m, int* out_dsp_limited) {
+    *out_dsp_limited = 0;
+    if (m->output_kind == DSD_FRONTEND_RTL_OUTPUT_AUDIO_MONITOR) {
+        int kind = 0;
+        int width_hz = 0;
+        int lpf_on = 0;
+        if (dsd_rtl_stream_metrics_hook_analog_profile(&kind, &width_hz, &lpf_on) > 0 && width_hz > 0) {
+            *out_dsp_limited = lpf_on ? 0 : 1;
+            return width_hz;
+        }
+    }
     /* Only once the front end has actually published a profile. The mirror behind
      * channel_profile is process-global and reads WIDE until the first publish, so
      * deriving a width from it unconditionally reports 16 kHz for a session that
      * has not chosen a channel yet -- and a consumer drawing that shades a channel
      * band over the waterfall that belongs to nothing. 0 is the documented "there
      * is nothing to draw". */
-    out->channel_bandwidth_hz =
-        (out->symbol_rate_hz > 0) ? (int)(2.0 * dsd_channel_lpf_protected_edge_hz(out->channel_profile)) : 0;
+    return (m->symbol_rate_hz > 0) ? (int)(2.0 * dsd_channel_lpf_protected_edge_hz(m->channel_profile)) : 0;
+}
+
+static void
+frontend_metrics_from_runtime_hooks(dsd_frontend_metrics* out) {
+    out->output_rate_hz = dsd_rtl_stream_metrics_hook_output_rate_hz();
+    out->output_kind = dsd_rtl_stream_metrics_hook_output_kind();
+    (void)dsd_rtl_stream_metrics_hook_symbol_profile(&out->symbol_rate_hz, &out->symbol_levels, &out->channel_profile);
+    out->channel_bandwidth_hz = frontend_channel_bandwidth_hz(out, &out->channel_bandwidth_dsp_limited);
     out->stream_generation = dsd_rtl_stream_metrics_hook_stream_generation();
     out->stream_active = dsd_rtl_stream_metrics_hook_stream_active();
     (void)dsd_rtl_stream_metrics_hook_input_level(&out->input_level);

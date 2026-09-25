@@ -140,6 +140,7 @@ dsd_scan_settings_capture(const dsd_opts* opts, const dsd_state* state, dsd_scan
     out->msize = opts->msize;
     out->analog_only = opts->analog_only;
     out->monitor_input_audio = opts->monitor_input_audio;
+    out->analog_demod = opts->analog_demod;
     DSD_MEMCPY(out->output_name, opts->output_name, sizeof(out->output_name));
     out->state_rf_mod = state->rf_mod;
     out->state_samplesPerSymbol = state->samplesPerSymbol;
@@ -225,6 +226,7 @@ scan_settings_restore_opts(const dsd_scan_settings* saved, dsd_opts* opts) {
     opts->msize = saved->msize;
     opts->analog_only = saved->analog_only;
     opts->monitor_input_audio = saved->monitor_input_audio;
+    opts->analog_demod = saved->analog_demod;
     DSD_MEMCPY(opts->output_name, saved->output_name, sizeof(opts->output_name));
 }
 
@@ -288,6 +290,7 @@ dsd_scan_settings_equal(const dsd_scan_settings* a, const dsd_scan_settings* b, 
         offsetof(dsd_scan_settings, msize),
         offsetof(dsd_scan_settings, analog_only),
         offsetof(dsd_scan_settings, monitor_input_audio),
+        offsetof(dsd_scan_settings, analog_demod),
     };
     static const size_t timing[] = {
         offsetof(dsd_scan_settings, state_rf_mod),       offsetof(dsd_scan_settings, state_samplesPerSymbol),

@@ -8,6 +8,7 @@
 
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/runtime/analog_channel.h>
 #include <dsd-neo/runtime/decode_mode.h>
 #include <stdio.h>
 #include <string.h>
@@ -604,6 +605,53 @@ test_analog_monitor_is_not_a_one_way_door(void) {
 }
 
 /*
+ * The analog demodulator kind is owned by the presets: the analog preset asks for
+ * FM, and leaving analog for any other mode puts it back to FM so no digital
+ * session carries an analog kind it never chose. The configured widths are not a
+ * preset's business and survive both directions.
+ */
+static int
+test_analog_demod_follows_the_preset(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    DSD_MEMSET(&opts, 0, sizeof opts);
+    DSD_MEMSET(&state, 0, sizeof state);
+    opts.analog_demod = DSD_ANALOG_DEMOD_AM;
+    opts.analog_nfm_bandwidth_hz = 12500;
+    opts.analog_am_bandwidth_hz = 8000;
+
+    if (dsd_apply_decode_mode_preset(DSDCFG_MODE_ANALOG, DSD_DECODE_PRESET_PROFILE_CLI, &opts, &state) != 0
+        || opts.analog_demod != DSD_ANALOG_DEMOD_FM) {
+        DSD_FPRINTF(stderr, "analog preset should select the FM analog demodulator\n");
+        return 1;
+    }
+    opts.analog_demod = DSD_ANALOG_DEMOD_AM;
+    if (dsd_apply_decode_mode_preset(DSDCFG_MODE_DMR, DSD_DECODE_PRESET_PROFILE_CLI, &opts, &state) != 0
+        || opts.analog_demod != DSD_ANALOG_DEMOD_FM) {
+        DSD_FPRINTF(stderr, "leaving analog should reset the analog demodulator to FM\n");
+        return 1;
+    }
+    opts.analog_demod = DSD_ANALOG_DEMOD_AM;
+    if (dsd_apply_decode_mode_preset(DSDCFG_MODE_AUTO, DSD_DECODE_PRESET_PROFILE_CLI, &opts, &state) != 0
+        || opts.analog_demod != DSD_ANALOG_DEMOD_FM) {
+        DSD_FPRINTF(stderr, "the profiled presets should reset the analog demodulator too\n");
+        return 1;
+    }
+    /* A refused mode changes nothing, the kind included. */
+    opts.analog_demod = DSD_ANALOG_DEMOD_AM;
+    if (dsd_apply_decode_mode_preset(DSDCFG_MODE_UNSET, DSD_DECODE_PRESET_PROFILE_CLI, &opts, &state) != -1
+        || opts.analog_demod != DSD_ANALOG_DEMOD_AM) {
+        DSD_FPRINTF(stderr, "a rejected mode should leave the analog demodulator alone\n");
+        return 1;
+    }
+    if (opts.analog_nfm_bandwidth_hz != 12500 || opts.analog_am_bandwidth_hz != 8000) {
+        DSD_FPRINTF(stderr, "presets must not touch the configured analog widths\n");
+        return 1;
+    }
+    return 0;
+}
+
+/*
  * The menu's mode picker and the label that reads the mode back both come from
  * this table; every preset needs a name and nothing outside the enum may crash.
  */
@@ -668,6 +716,7 @@ main(void) {
     rc |= test_remaining_preset_modes();
     rc |= test_symbol_timing_and_inference();
     rc |= test_analog_monitor_is_not_a_one_way_door();
+    rc |= test_analog_demod_follows_the_preset();
     return rc;
 }
 

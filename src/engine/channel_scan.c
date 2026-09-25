@@ -16,10 +16,12 @@
 #include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/dsp/frame_sync.h>
+#include <dsd-neo/dsp/symbol.h>
 #include <dsd-neo/engine/channel_scan.h>
 #include <dsd-neo/engine/frame_processing.h>
 #include <dsd-neo/engine/scan_voice_gate.h>
 #include <dsd-neo/engine/trunk_tuning.h>
+#include <dsd-neo/runtime/analog_channel.h>
 #include <dsd-neo/runtime/decode_mode.h>
 #include <dsd-neo/runtime/log.h>
 #include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
@@ -320,6 +322,50 @@ dsd_engine_channel_scan_step_manual(dsd_opts* opts, dsd_state* state) {
     return 0;
 }
 
+/* Put the RTL front end back on the configured receive family. Under -fA that is the configured analog profile
+ * (demodulator and channel width, 0 meaning the default); otherwise the digital family and the symbol profile the
+ * restored decoder runs on, in that order, so the demod thread switches family before it applies the profile.
+ *
+ * A front end still on the analog family (the -fA session whose configured mode was changed to a digital one while a
+ * row ran) switches to digital only here, after the configured timing was saved for the analog family's output rate:
+ * the monitor's resampled audio, or the rate a typed row's profile ran at. The decoder, and the profile it publishes,
+ * are timed for the rate the digital family lands on instead, as svc_publish_symbol_profile() times a mode change
+ * outside a row.
+ *
+ * A leave that switches the front end's family also drops the analog monitor block the decoder has part-collected
+ * from the old family's output, as a decode-mode change between the families does. */
+static void
+channel_scan_restore_frontend(const dsd_opts* opts, dsd_state* state) {
+    if (opts->audio_in_type != AUDIO_IN_RTL) {
+        return;
+    }
+    const int analog_family_active = dsd_rtl_stream_metrics_hook_analog_family_active();
+    if (dsd_opts_is_analog_family(opts)) {
+        if (!analog_family_active) {
+            dsd_symbol_analog_block_reset(state);
+        }
+        (void)dsd_rtl_stream_metrics_hook_apply_analog_profile(DSD_RX_FAMILY_ANALOG, opts->analog_demod,
+                                                               dsd_opts_analog_width_hz(opts));
+        return;
+    }
+    const dsd_decode_mode_profile profile = dsd_scan_mode_effective_profile(opts, state);
+    if (analog_family_active) {
+        dsd_symbol_analog_block_reset(state);
+        const unsigned int rate_hz = dsd_rtl_stream_metrics_hook_output_rate_for_family(
+            DSD_RX_FAMILY_DIGITAL, state->rf_mod == 1, profile.symbol_rate_hz);
+        if (rate_hz > 0U) {
+            state->samplesPerSymbol = dsd_opts_compute_sps_rate(opts, profile.symbol_rate_hz, (int)rate_hz);
+            state->symbolCenter = dsd_opts_symbol_center(state->samplesPerSymbol);
+        }
+    }
+    const int filter = opts->analog_only || !dsd_opts_has_digital_decode_mode(opts)
+                           ? DSD_RTL_STREAM_CHANNEL_PROFILE_WIDE
+                           : dsd_rtl_channel_profile_for(opts, profile.symbol_rate_hz, profile.levels, state->rf_mod);
+    (void)dsd_rtl_stream_metrics_hook_apply_analog_profile(DSD_RX_FAMILY_DIGITAL, DSD_ANALOG_DEMOD_FM, 0);
+    (void)dsd_rtl_stream_metrics_hook_apply_demod_profile(state->rf_mod == 1, profile.symbol_rate_hz, profile.levels,
+                                                          filter, state->samplesPerSymbol);
+}
+
 void
 dsd_engine_channel_scan_leave(dsd_opts* opts, dsd_state* state) {
     if (!opts || !state) {
@@ -336,14 +382,6 @@ dsd_engine_channel_scan_leave(dsd_opts* opts, dsd_state* state) {
     dsd_scan_mode_leave(opts, state);
     if (active) {
         dsd_frame_sync_reset_acquisition(opts, state, opts->trunk_scan_enabled != 1);
-        if (opts->audio_in_type == AUDIO_IN_RTL) {
-            const dsd_decode_mode_profile profile = dsd_scan_mode_effective_profile(opts, state);
-            const int filter =
-                opts->analog_only || !dsd_opts_has_digital_decode_mode(opts)
-                    ? DSD_RTL_STREAM_CHANNEL_PROFILE_WIDE
-                    : dsd_rtl_channel_profile_for(opts, profile.symbol_rate_hz, profile.levels, state->rf_mod);
-            (void)dsd_rtl_stream_metrics_hook_apply_demod_profile(state->rf_mod == 1, profile.symbol_rate_hz,
-                                                                  profile.levels, filter, state->samplesPerSymbol);
-        }
+        channel_scan_restore_frontend(opts, state);
     }
 }

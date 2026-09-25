@@ -86,6 +86,7 @@ typedef struct {
     int msize;
     int analog_only;
     int monitor_input_audio;
+    int analog_demod;
     char output_name[1024];
     int state_rf_mod;
     int state_samplesPerSymbol;

@@ -25,6 +25,7 @@
 #include <dsd-neo/platform/audio.h>
 #include <dsd-neo/platform/sndfile_fwd.h>
 #include <dsd-neo/platform/sockets.h>
+#include <dsd-neo/runtime/analog_channel.h>
 
 #include <stdint.h>
 #include <stdio.h>
@@ -191,6 +192,14 @@ struct dsd_opts {
     /* Minimum seconds between repeated low-level warnings. */
     int input_warn_cooldown_sec;
     int analog_only;
+    /* Analog demodulator kind (dsd_analog_demod): set by the decode presets (and restored with the scan-settings
+       snapshot when a typed row is left); no width, CLI or menu code writes it directly. */
+    int analog_demod;
+    /* Configured analog channel widths in Hz (runtime/analog_channel.h ranges). 0 = the kind's default,
+       not an explicit request, and not saved. An explicit width, or the AM default, forces the channel filter on;
+       the unset NFM default keeps the historical enable rule. */
+    int analog_nfm_bandwidth_hz;
+    int analog_am_bandwidth_hz;
     int pulse_raw_rate_in;
     int pulse_raw_rate_out;
     int pulse_digi_rate_in;
@@ -428,6 +437,26 @@ dsd_opts_uses_wide_4800_profile(const dsd_opts* opts) {
         return 0;
     }
     return opts->frame_dmr == 1 || opts->frame_nxdn96 == 1 || opts->frame_ysf == 1 || opts->frame_m17 == 1;
+}
+
+/**
+ * @brief Return 1 for the analog receive family (the `-fA` monitor).
+ *
+ * The M17 encoder shares the analog front end but is not part of the family: its channel filter, demodulator and
+ * de-emphasis stay on the fixed WIDE/FM path whatever the analog settings say.
+ */
+static inline int
+dsd_opts_is_analog_family(const dsd_opts* opts) {
+    return (opts && opts->analog_only == 1 && opts->m17encoder != 1) ? 1 : 0;
+}
+
+/** @brief Explicit channel width configured for the active analog demodulator in Hz; 0 selects its default. */
+static inline int
+dsd_opts_analog_width_hz(const dsd_opts* opts) {
+    if (!opts) {
+        return 0;
+    }
+    return (opts->analog_demod == DSD_ANALOG_DEMOD_AM) ? opts->analog_am_bandwidth_hz : opts->analog_nfm_bandwidth_hz;
 }
 
 /**

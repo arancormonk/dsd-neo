@@ -2917,6 +2917,57 @@ test_modulation_cli_lock_prevents_votes(void) {
     dsd_rtl_stream_metrics_hooks_set(NULL);
 }
 
+/* The analog preset (-fA) leaves the modulation unlocked, but an analog channel has no digital modulation to pick.
+ * A CQPSK vote there applied the P25 CQPSK demod profile to the RTL front end, which then delivered symbols instead
+ * of monitor audio (a carrier near 0 Hz votes CQPSK). The analog family stands the auto-switch down; the same
+ * unlocked options and metrics outside it still switch on the second vote. */
+static void
+test_analog_family_never_auto_switches_modulation(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static int fake_rtl_context;
+    int c4fm_votes = -1;
+    int qpsk_votes = -1;
+    int gfsk_votes = -1;
+
+    reset(&opts, &state);
+    assert(dsd_apply_decode_mode_preset(DSDCFG_MODE_ANALOG, DSD_DECODE_PRESET_PROFILE_CLI, &opts, &state) == 0);
+    assert(dsd_opts_is_analog_family(&opts) == 1);
+    assert(opts.mod_cli_lock == 0);
+    opts.audio_in_type = AUDIO_IN_RTL;
+    state.rtl_ctx = (struct RtlSdrContext*)&fake_rtl_context;
+    /* CQPSK 14 dB above C4FM after its 6 dB offset: every vote goes to CQPSK. */
+    set_fake_snr(0.0, -100.0, 20.0, -100.0);
+    install_fake_snr_hooks();
+    dsd_frame_sync_reset_mod_state();
+    reset_fake_profile_capture();
+
+    for (int i = 0; i < 8; i++) {
+        int lastt = 24;
+        frame_sync_maybe_auto_switch_modulation(&opts, &state, 24, &lastt);
+    }
+    dsd_frame_sync_test_get_mod_votes(&c4fm_votes, &qpsk_votes, &gfsk_votes);
+    assert(state.rf_mod == 0);
+    assert(c4fm_votes == 0);
+    assert(qpsk_votes == 0);
+    assert(gfsk_votes == 0);
+    assert(g_profile_set_calls == 0);
+
+    /* Control: only the analog family differs. */
+    opts.analog_only = 0;
+    assert(dsd_opts_is_analog_family(&opts) == 0);
+    for (int i = 0; i < 2; i++) {
+        int lastt = 24;
+        frame_sync_maybe_auto_switch_modulation(&opts, &state, 24, &lastt);
+    }
+    assert(state.rf_mod == 1);
+    assert(g_profile_set_calls == 1);
+    assert(g_profile_cqpsk == 1);
+
+    dsd_frame_sync_reset_mod_state();
+    dsd_rtl_stream_metrics_hooks_set(NULL);
+}
+
 static void
 test_hamming_override_can_select_qpsk(void) {
     static dsd_opts opts;
@@ -3083,6 +3134,7 @@ main(void) {
     test_nxdn_only_profiles_use_gfsk_snr_gate();
     test_modulation_snr_fallback_votes_and_dwell();
     test_modulation_cli_lock_prevents_votes();
+    test_analog_family_never_auto_switches_modulation();
     test_hamming_override_can_select_qpsk();
     test_p25_trunk_tick_recency();
 #endif
