@@ -3,9 +3,9 @@ import QtQuick
 import QtTest
 import "../../../src/ui/qt/qml" as Ui
 
-// The received sub-audible tone row (#522) and the reserved Tone filter row beside it:
-// the received row shows only what was received, whatever the configured policy says,
-// and it clears when the session stops or the receiver retunes.
+// The received sub-audible tone or code row (#522, #523) and the reserved Tone filter
+// row beside it: the received row shows only what was received, whatever the configured
+// policy says, and it clears when the session stops or the receiver retunes.
 Item {
     id: root
     width: 411
@@ -27,11 +27,24 @@ Item {
             testContext.setMetric("rxToneCarrier", true);
             testContext.setMetric("rxToneText", text);
         }
+        // A received DCS code (rxToneKind 2 is DSD_ANALOG_TONE_KIND_DCS).
+        function showCode(code, text) {
+            testContext.setMetric("rxToneVisible", true);
+            testContext.setMetric("rxToneStatus", 3);
+            testContext.setMetric("rxToneKind", 2);
+            testContext.setMetric("rxToneTenthsHz", 0);
+            testContext.setMetric("rxToneDcsCode", code);
+            testContext.setMetric("rxToneDcsInverted", false);
+            testContext.setMetric("rxToneCarrier", true);
+            testContext.setMetric("rxToneText", text);
+        }
         function cleanup() {
             testContext.setMetric("rxToneVisible", false);
             testContext.setMetric("rxToneStatus", 0);
             testContext.setMetric("rxToneKind", 0);
             testContext.setMetric("rxToneTenthsHz", 0);
+            testContext.setMetric("rxToneDcsCode", 0);
+            testContext.setMetric("rxToneDcsInverted", false);
             testContext.setMetric("rxToneCarrier", false);
             testContext.setMetric("rxToneText", "");
             testContext.setMetric("rxToneConfiguredText", "off");
@@ -63,6 +76,25 @@ Item {
             tryCompare(item("monitorRxToneValue"), "text", "CTCSS 131.8 Hz");
             compare(item("monitorToneFilterValue").text, "allow 67.0/D023N");
         }
+        function test_received_row_shows_the_locked_code() {
+            testContext.setHostRunning(true);
+            showCode(19, "DCS D023N");
+            var row = item("monitorRxTone");
+            tryCompare(row, "visible", true);
+            compare(item("monitorRxToneValue").text, "DCS D023N");
+        }
+        function test_received_code_is_not_the_configured_value() {
+            testContext.setHostRunning(true);
+            showCode(19, "DCS D023N");
+            // A configured policy naming another code, and the inverted spelling of the
+            // received one: the received row still says what was received.
+            testContext.setMetric("rxToneConfiguredText", "block D047N/D023I");
+            tryCompare(item("monitorToneFilterValue"), "text", "block D047N/D023I");
+            compare(item("monitorRxToneValue").text, "DCS D023N");
+            showCode(492, "DCS D754N");
+            tryCompare(item("monitorRxToneValue"), "text", "DCS D754N");
+            compare(item("monitorToneFilterValue").text, "block D047N/D023I");
+        }
         function test_detecting_none_and_no_carrier() {
             testContext.setHostRunning(true);
             testContext.setMetric("rxToneVisible", true);
@@ -91,6 +123,33 @@ Item {
             tryCompare(item("monitorRxToneValue"), "text", "—");
             verify(item("monitorRxTone").visible);
             compare(item("monitorToneFilterValue").text, "allow 100.0");
+        }
+        function test_code_clears_after_retune_and_stop() {
+            testContext.setHostRunning(true);
+            testContext.setMetric("rxToneConfiguredText", "allow D023N");
+            showCode(19, "DCS D023N");
+            tryCompare(item("monitorRxToneValue"), "text", "DCS D023N");
+            // The decoder's retune reset: nothing heard on the new channel yet.
+            testContext.setMetric("rxToneStatus", 1);
+            testContext.setMetric("rxToneKind", 0);
+            testContext.setMetric("rxToneDcsCode", 0);
+            testContext.setMetric("rxToneCarrier", false);
+            testContext.setMetric("rxToneText", "—");
+            tryCompare(item("monitorRxToneValue"), "text", "—");
+            verify(item("monitorRxTone").visible);
+            compare(item("monitorToneFilterValue").text, "allow D023N");
+            // Locked again, then the session stops: MetricsModel::clear().
+            showCode(19, "DCS D023N");
+            tryCompare(item("monitorRxToneValue"), "text", "DCS D023N");
+            testContext.setMetric("rxToneVisible", false);
+            testContext.setMetric("rxToneStatus", 0);
+            testContext.setMetric("rxToneKind", 0);
+            testContext.setMetric("rxToneDcsCode", 0);
+            testContext.setMetric("rxToneCarrier", false);
+            testContext.setMetric("rxToneText", "");
+            testContext.setHostRunning(false);
+            tryCompare(item("monitorRxTone"), "visible", false);
+            compare(item("monitorRxToneValue").text, "");
         }
         function test_clears_after_stop() {
             testContext.setHostRunning(true);
