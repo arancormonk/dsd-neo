@@ -217,17 +217,17 @@ Options are parsed once when the list is loaded. They are a restricted argument 
 | `-1 <hex>` | Direct RC4/DES key, 1..16 digits; DMR/P25/NXDN. |
 | `-R <decimal>` | Direct scrambler key, `0..32767`; NXDN/dPMR. |
 | `-k <file>`, `-K <file>` | Decimal/hex key files; DMR/P25/NXDN. |
-| `-G <file>` | Group names and policy for this row or system. |
+| `-G <file>` | Group names and policy for this row or system; digital modes (an `nfm` row rejects it). |
 | `-4` | Force loaded privacy keys over signalling; DMR/NXDN. |
 | `-0`, `--dmr-force-algid <hex>` | DMR algorithm fallback when identifiers are missing. `-0` means ALGID `21`. |
 | `-F` | Relax CRC checks; DMR/P25/M17. |
 | `-^` | Prefer learned P25 control-channel candidates for this target; P25. Restores the configured default on target exit. |
-| `--strict-crc` | Restore strict CRC checks; all modes, including inherited mode. |
-| `--no-force-key` | Disable privacy forcing and algorithm fallback for this row. |
-| `-e`, `--no-data-calls` | Enable/disable data-call tuning and conventional data-header holds; all modes. |
-| `--enc-lockout`, `--enc-follow` | Disable/enable encrypted-call following; all modes. |
-| `--scan-voice-only`, `--no-scan-voice-only` | Enable/disable the conventional voice gate. |
-| `--scan-voice-qualify-ms`, `--scan-voice-hold-ms` | Conventional voice-gate intervals, `100..600000` milliseconds. |
+| `--strict-crc` | Restore strict CRC checks; every digital mode, including inherited mode. |
+| `--no-force-key` | Disable privacy forcing and algorithm fallback for this row; digital modes. |
+| `-e`, `--no-data-calls` | Enable/disable data-call tuning and conventional data-header holds; all digital modes. |
+| `--enc-lockout`, `--enc-follow` | Disable/enable encrypted-call following; all digital modes. |
+| `--scan-voice-only`, `--no-scan-voice-only` | Enable/disable the conventional voice gate; digital modes (an `nfm` row holds on carrier instead). |
+| `--scan-voice-qualify-ms`, `--scan-voice-hold-ms` | Conventional voice-gate intervals, `100..600000` milliseconds; digital modes. |
 | `--scan-max-visit-ms <ms>` | Maximum time on this row or target per visit; `0` disables the cap for it, otherwise `1000..3600000` milliseconds. All modes, and every trunk-target type. |
 | `--squelch-db <dB>` | This row's or target's squelch threshold, in whole dB from `-100` to `0`, the same units as `[input] rtl_sql` and the `sql` field of `-i rtl:`; `0` switches the squelch off for this row alone. All modes, and every trunk-target type. |
 | `--nfm-bandwidth-hz <Hz>` | This analog row's or target's NFM channel width, whole Hz from `8000` to `25000` (for example `12500`). `nfm` rows and `nfm-conventional` targets only; any other row is told it `needs mode nfm`. |

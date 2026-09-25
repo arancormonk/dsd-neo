@@ -184,7 +184,8 @@ dsd-neo -ft -i rtl:0:851.0125M:22:0:48:0:2 \
 - Standalone `-T` auto decoding also retains the validated P25 or DMR recovery owner through loss of sync.
   Unrelated decodes and stray syncs cannot take ownership; validated P25/DMR control or grants can. Explicit
   decoder modes and trunk-scan target selection still constrain which protocol may recover.
-- `--scan-voice-only`: conventional targets hold only from decoded voice media (headers and data no longer hold),
+- `--scan-voice-only`: digital conventional targets hold only from decoded voice media (headers and data no longer
+  hold; an `nfm-conventional` target keeps holding on its carrier, see [Analog NFM targets](#analog-nfm-targets)),
   with the per-target `dwell_ms` as the qualify window in which voice must appear and `activity_hold_ms` as the
   hold after the last voice frame, including when a terminator closes the call before the next scan tick; trunked
   targets are unchanged (control-only rotates after dwell). The scanner-wide
@@ -374,8 +375,9 @@ During scanning:
   does not refresh the hold, so `-e` has no effect on this row.
   Phase 2 PTT holds are evaluated after crypto classification; Phase 1 late joins honor the LCW encryption bit
   before HDU/LDU2 metadata arrives.
-- With `--scan-voice-only`, all conventional types, including P25, hold only from decoded voice media, not headers
-  or voice-start reports alone. The hold refreshes from decoded voice media (stamped
+- With `--scan-voice-only`, all digital conventional types, including P25, hold only from decoded voice media, not
+  headers or voice-start reports alone (`nfm-conventional` holds on carrier; see
+  [Analog NFM targets](#analog-nfm-targets)). The hold refreshes from decoded voice media (stamped
   with a retained media time, so LC-less and just-ended voice hold), `dwell_ms` is the qualify window and
   `activity_hold_ms` the hold. The terminal status line marks the parked conventional target `Voice: QUALIFY`,
   `VOICE` while a media-bearing call is active, or `TAIL` after it ends while the hold runs. Trunked
