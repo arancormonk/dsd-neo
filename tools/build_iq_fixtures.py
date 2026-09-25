@@ -202,6 +202,7 @@ TETRA_TWO_RAY_PHASE_RAD = 2.2
 TETRA_CLOCK_ERROR_PPM = 100.0
 TETRA_SSB_SYNC = "3001213032213001213"
 TETRA_NTS_SYNC = "31003221310"
+TETRA_NTS2_SYNC = "13221003132"
 TETRA_PHASE_STEP = {0: math.pi / 4.0, 1: 3.0 * math.pi / 4.0,
                     2: -math.pi / 4.0, 3: -3.0 * math.pi / 4.0}
 
@@ -730,11 +731,12 @@ def build_tetra_synth(out_dir):
     # handler. Their payload is irrelevant to BSCH but their exact lengths are
     # part of the over-the-air burst framing exercised here.
     sb = ([0] * 40) + bsch + sync + ([0] * 15) + ([0] * 108) + [0]
-    nts = [int(char) for char in TETRA_NTS_SYNC]
-    cb = [1, 3, 0, 0, 0]  # CC=1, both blocks stolen for SCH-HD
-    ndb = sysinfo + nts + allocation + [0] + cb
-    voice_cb = [1, 0, 0, 0, 0]  # CC=1, both blocks are TCH/FS
-    voice_ndb = tch_b1 + nts + tch_b2 + [0] + voice_cb
+    nts1 = [int(char) for char in TETRA_NTS_SYNC]
+    nts2 = [int(char) for char in TETRA_NTS2_SYNC]
+    # AACH wraps the training sequence. NTS2 has two independently coded
+    # SCH/HD half-slots; NTS1 joins its blocks into one TCH/FS codeword.
+    ndb = sysinfo + ([0] * 7) + nts2 + ([0] * 8) + allocation
+    voice_ndb = tch_b1 + ([0] * 7) + nts1 + ([0] * 8) + tch_b2
     samples = modulate_tetra((sb + ndb + voice_ndb) * TETRA_BURST_REPEATS)
     written = write_fixture(out_dir, TETRA_SYNTH_NAME, samples, sample_rate=54000, dsp_bw_khz=54)
     print(f"{TETRA_SYNTH_NAME:28s} synth   {written // 1024:6d} KiB")

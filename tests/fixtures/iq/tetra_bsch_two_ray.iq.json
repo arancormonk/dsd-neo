@@ -24,7 +24,7 @@
   "source_args": "fixture",
   "capture_started_utc": "1970-01-01T00:00:00Z",
   "data_file": "tetra_bsch_two_ray.iq",
-  "data_bytes": 437400,
+  "data_bytes": 448200,
   "capture_drops": 0,
   "capture_drop_blocks": 0,
   "input_ring_drops": 0,

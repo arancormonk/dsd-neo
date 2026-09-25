@@ -305,11 +305,25 @@ void processTetraFrame(dsd_opts* opts, dsd_state* state)
                 state->tetra_nts2 ? 2 : 1, (int)state->tetra_polarity);
     }
 
+    /* NTS2 carries two independently scrambled half-slot channels. Try the
+     * SCH/HD CRC on each half before dispatching its MAC payload. */
+    int b1_valid = state->tetra_b1_valid;
+    if (state->tetra_nts2) {
+        uint16_t block_soft[TETRA_NDB_BLOCK_BITS];
+        if (b1_valid) {
+            tetra_prepare_block(state->tetra_b1_dibuf,
+                                state->tetra_b1_soft_valid ? state->tetra_b1_soft : NULL,
+                                cc, state, block_soft, 1);
+            tetra_decode_schd(block_soft, cc, 1, opts, state);
+        }
+        tetra_prepare_block(b2_dibuf, b2_soft_in, cc, state, block_soft, 1);
+        tetra_decode_schd(block_soft, cc, 2, opts, state);
+    }
+
     /* NTS1 carries one 432-bit logical channel. Scrambling runs across
      * Block1||Block2; restarting the LFSR on Block 2 descrambles the second
      * half with the wrong keystream. SCH/F and TCH/FS share those bits and
      * are separated by the SCH/F CRC. NTS2 is two half-slots, not TCH/FS. */
-    int b1_valid = state->tetra_b1_valid;
     if (!state->tetra_nts2 && b1_valid) {
         uint16_t b1_soft[TETRA_NDB_BLOCK_BITS];
         uint16_t b2_soft[TETRA_NDB_BLOCK_BITS];

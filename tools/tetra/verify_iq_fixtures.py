@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Regenerate deterministic TETRA IQ fixtures and require byte identity."""
+"""Regenerate deterministic TETRA IQ fixtures and verify their contents."""
 
 import argparse
 import hashlib
@@ -22,6 +22,13 @@ def digest(path: Path) -> str:
         for chunk in iter(lambda: handle.read(1024 * 1024), b""):
             value.update(chunk)
     return value.hexdigest()
+
+
+def fixture_bytes(path: Path) -> bytes:
+    data = path.read_bytes()
+    # Git may check JSON metadata out with CRLF on Windows. IQ payloads must
+    # remain byte-identical; only normalize JSON line endings for comparison.
+    return data.replace(b"\r\n", b"\n") if path.suffix == ".json" else data
 
 
 def load_generator(path: Path):
@@ -63,7 +70,7 @@ def main() -> int:
                 actual = generated_dir / f"{name}{suffix}"
                 if not expected.is_file():
                     failures.append(f"missing fixture: {expected}")
-                elif expected.read_bytes() != actual.read_bytes():
+                elif fixture_bytes(expected) != fixture_bytes(actual):
                     failures.append(
                         f"stale fixture: {expected} "
                         f"(expected sha256 {digest(actual)}, found {digest(expected)})"
