@@ -1269,6 +1269,58 @@ expect_analog_explicit_width_forces_lpf(void) {
     return rc;
 }
 
+/*
+ * Where the device or the capture forces the DSP rate (an I/Q replay's sidecar, a SoapySDR or Airspy device), no RTL DSP
+ * bandwidth moves it: a width that rate cannot filter fails the start with narrowing the width as the fix, the fix a
+ * running stream's refusal names too. An RTL-SDR or rtl_tcp input at the same rate still names the DSP bandwidths.
+ */
+static int
+expect_forced_rate_refusal_names_the_width(void) {
+    struct {
+        const char* dev;
+        uint8_t replay_active;
+        int forced;
+    } rows[] = {
+        {"iqreplay:/tmp/capture24k.iq.json", 1, 1},
+        {"soapy:driver=airspy", 0, 1},
+        {"airspy", 0, 1},
+        {"rtl:0:851.375M:0:0:24", 0, 0},
+        {"rtltcp:127.0.0.1:1234", 0, 0},
+    };
+
+    int rc = 0;
+    set_channel_lpf_env(NULL);
+    for (size_t i = 0; i < sizeof rows / sizeof rows[0]; i++) {
+        demod_state* demod = alloc_zeroed_demod();
+        if (!demod) {
+            DSD_FPRINTF(stderr, "forced-rate refusal: allocation failed\n");
+            return 1;
+        }
+        static dsd_opts opts;
+        make_analog_opts(&opts);
+        DSD_SNPRINTF(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", rows[i].dev);
+        opts.iq_replay_active = rows[i].replay_active;
+        opts.analog_nfm_bandwidth_hz = 25000;
+        char err[DSD_ANALOG_ERROR_TEXT_MAX] = {0};
+        char label[96];
+        DSD_SNPRINTF(label, sizeof label, "25 kHz at 24 kHz on %s refused", rows[i].dev);
+        rc |= expect_int_eq(label, configure_and_finalize(demod, &opts, 24000, err, sizeof err), -1);
+        if (!std::strstr(err, "NFM bandwidth 25 kHz does not fit the 24 kHz DSP rate (the largest width it fits is "
+                              "20.4 kHz)")
+            || !std::strstr(err, rows[i].forced ? "narrow the NFM width" : "set the RTL DSP bandwidth to 48 kHz")) {
+            DSD_FPRINTF(stderr, "forced-rate refusal on %s: %s\n", rows[i].dev, err);
+            rc = 1;
+        }
+        if (rows[i].forced && std::strstr(err, "RTL DSP bandwidth")) {
+            DSD_FPRINTF(stderr, "forced-rate refusal on %s names the RTL DSP bandwidth: %s\n", rows[i].dev, err);
+            rc = 1;
+        }
+        rtl_demod_cleanup(demod);
+        dsd_neo_aligned_free(demod);
+    }
+    return rc;
+}
+
 /* DSD_NEO_CHANNEL_LPF=0 turns the filter off; an explicit width cannot run without it. */
 static int
 expect_analog_env_off_conflict(void) {
@@ -1798,6 +1850,7 @@ main(void) {
     rc |= expect_analog_legacy_default_enable();
     rc |= expect_analog_default_enable_survives_replay_rate();
     rc |= expect_analog_explicit_width_forces_lpf();
+    rc |= expect_forced_rate_refusal_names_the_width();
     rc |= expect_analog_env_off_conflict();
     rc |= expect_m17_encoder_unchanged();
     rc |= expect_analog_open_ignores_cqpsk();

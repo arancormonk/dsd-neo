@@ -303,11 +303,38 @@ test_check_messages(void) {
     expect_int("no buffer still rejects", dsd_analog_width_check(DSD_ANALOG_DEMOD_FM, 25000, 24000, NULL, 0), -1);
 }
 
+/* At a rate the device or the capture forces, no RTL DSP bandwidth moves it: the same acceptance and wording, with
+   narrowing the width as the fix, or no width at all past the tap ceiling. */
+static void
+test_check_forced_rate_messages(void) {
+    char err[DSD_ANALOG_ERROR_TEXT_MAX];
+    expect_int("forced 25k at 24k rejected",
+               dsd_analog_width_check_forced_rate(DSD_ANALOG_DEMOD_FM, 25000, 24000, err, sizeof err), -1);
+    expect_str("forced 25k at 24k text", err,
+               "NFM bandwidth 25 kHz does not fit the 24 kHz DSP rate (the largest width it fits is 20.4 kHz); narrow "
+               "the NFM width");
+    expect_int("forced 16k at 128k rejected",
+               dsd_analog_width_check_forced_rate(DSD_ANALOG_DEMOD_FM, 16000, 128000, err, sizeof err), -1);
+    expect_contains("forced 128k names the filter limit", err, "more than 288 taps");
+    expect_contains("forced 128k says no width fits", err, "no NFM width fits this DSP rate");
+    expect_int("forced rate never names an RTL DSP bandwidth", strstr(err, "RTL DSP bandwidth") == NULL, 1);
+    /* What the check accepts is unchanged, and so is every other refusal. */
+    expect_int("forced 20k at 24k accepted",
+               dsd_analog_width_check_forced_rate(DSD_ANALOG_DEMOD_FM, 20000, 24000, err, sizeof err), 0);
+    expect_str("forced accepted clears the text", err, "");
+    expect_int("forced 25k at 78125 accepted",
+               dsd_analog_width_check_forced_rate(DSD_ANALOG_DEMOD_FM, 25000, 78125, err, sizeof err), 0);
+    expect_int("forced range rejected",
+               dsd_analog_width_check_forced_rate(DSD_ANALOG_DEMOD_FM, 30000, 48000, err, sizeof err), -1);
+    expect_contains("forced range names bounds", err, "8 to 25 kHz");
+}
+
 /* The selectable RTL DSP bandwidths, and the list of them that filter a width: the fix the validator names, and what
    the width and bandwidth refusals in app-control put in their toasts. */
 static void
 test_rtl_bandwidth_helpers(void) {
-    static const int selectable[] = {4, 6, 8, 12, 16, 24, 48};
+    static const int selectable[] = {4, 6, 8, 12, 16, 24, DSD_ANALOG_RTL_DSP_BW_MAX_KHZ};
+    expect_int("the widest selectable bandwidth", DSD_ANALOG_RTL_DSP_BW_MAX_KHZ, 48);
     for (size_t i = 0; i < sizeof selectable / sizeof selectable[0]; i++) {
         char label[48];
         DSD_SNPRINTF(label, sizeof label, "%d kHz selectable", selectable[i]);
@@ -355,6 +382,7 @@ main(void) {
     test_max_width_by_rate();
     test_check_table();
     test_check_messages();
+    test_check_forced_rate_messages();
     test_rtl_bandwidth_helpers();
     if (g_failures) {
         DSD_FPRINTF(stderr, "RUNTIME_ANALOG_CHANNEL: %d failure(s)\n", g_failures);

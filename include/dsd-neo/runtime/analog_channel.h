@@ -136,6 +136,9 @@ int dsd_analog_width_realizable(int width_hz, int rate_hz);
 /** @brief Largest width realizable at @p rate_hz in Hz, or 0 when no width fits that rate. */
 int dsd_analog_width_max_for_rate(int rate_hz);
 
+/** @brief The widest selectable RTL DSP bandwidth, in kHz. */
+#define DSD_ANALOG_RTL_DSP_BW_MAX_KHZ 48
+
 /** @brief Return 1 when @p khz is a selectable RTL DSP bandwidth (rtl_bw_khz): 4, 6, 8, 12, 16, 24 or 48 kHz. */
 int dsd_analog_rtl_dsp_bw_is_selectable(int khz);
 
@@ -163,6 +166,16 @@ int dsd_analog_width_fitting_rtl_bandwidths(int width_hz, char* out, size_t out_
  * @return 0 when accepted, -1 otherwise.
  */
 int dsd_analog_width_check(int kind, int width_hz, int rate_hz, char* err, size_t err_size);
+
+/**
+ * @brief dsd_analog_width_check() at a DSP rate the device or the capture forces (a SoapySDR or Airspy device, an I/Q
+ * replay), which no RTL DSP bandwidth moves.
+ *
+ * Accepts exactly what dsd_analog_width_check() accepts, and words every refusal the same, except that a width the
+ * rate cannot filter names narrowing the width as the fix ("...; narrow the NFM width"), or says that no width fits
+ * where the rate is past what the channel filter's taps cover, instead of naming RTL DSP bandwidths.
+ */
+int dsd_analog_width_check_forced_rate(int kind, int width_hz, int rate_hz, char* err, size_t err_size);
 
 /**
  * @brief Format a width in Hz as kHz text with trailing zeros dropped ("12.5 kHz", "16 kHz").

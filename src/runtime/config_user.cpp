@@ -1250,14 +1250,28 @@ format_rtltcp_input_spec(const dsdneoUserConfig* cfg, const dsd_opts* opts, char
     return 0;
 }
 
+static void
+format_soapy_input_spec(const dsdneoUserConfig* cfg, char* out, size_t out_size) {
+    if (cfg->soapy_args[0]) {
+        DSD_SNPRINTF(out, out_size, "soapy:%s", cfg->soapy_args);
+    } else {
+        DSD_SNPRINTF(out, out_size, "%s", "soapy");
+    }
+}
+
+/* An Airspy [input] opens the first Airspy; its serial and settings travel in dsd_opts.airspy, not in the spec. */
+static const char kAirspyInputSpec[] = "airspy";
+
 int
-dsd_user_config_rtl_input_spec(const dsdneoUserConfig* cfg, const dsd_opts* opts, char* out, size_t out_size) {
+dsd_user_config_radio_input_spec(const dsdneoUserConfig* cfg, const dsd_opts* opts, char* out, size_t out_size) {
     if (!cfg || !opts || !out || out_size == 0U || !cfg->has_input) {
         return -1;
     }
     switch (cfg->input_source) {
         case DSDCFG_INPUT_RTL: return format_rtl_input_spec(cfg, opts, out, out_size);
         case DSDCFG_INPUT_RTLTCP: return format_rtltcp_input_spec(cfg, opts, out, out_size);
+        case DSDCFG_INPUT_SOAPY: format_soapy_input_spec(cfg, out, out_size); return 0;
+        case DSDCFG_INPUT_AIRSPY: DSD_SNPRINTF(out, out_size, "%s", kAirspyInputSpec); return 0;
         default: return -1;
     }
 }
@@ -1280,11 +1294,7 @@ apply_input_source_rtltcp(const dsdneoUserConfig* cfg, dsd_opts* opts) {
 
 static void
 apply_input_source_soapy(const dsdneoUserConfig* cfg, dsd_opts* opts) {
-    if (cfg->soapy_args[0]) {
-        DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "soapy:%s", cfg->soapy_args);
-    } else {
-        DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", "soapy");
-    }
+    format_soapy_input_spec(cfg, opts->audio_in_dev, sizeof opts->audio_in_dev);
     apply_shared_radio_tuning_from_config(cfg, opts);
     apply_soapy_tuning_from_config(cfg, opts);
 }
@@ -1341,7 +1351,7 @@ apply_input_source_config(const dsdneoUserConfig* cfg, dsd_opts* opts, int apply
         case DSDCFG_INPUT_AIRSPY:
             opts->airspy = cfg->airspy;
             opts->airspy_config_error = cfg->airspy_invalid;
-            DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", "airspy");
+            DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", kAirspyInputSpec);
             opts->rtltcp_enabled = 0;
             apply_shared_radio_tuning_from_config(cfg, opts);
             break;

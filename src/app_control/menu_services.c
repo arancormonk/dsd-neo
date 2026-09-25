@@ -840,12 +840,15 @@ svc_analog_rate_refusal(int kind, int width_hz, int rate_hz, int rtl_bandwidth_s
     if (rtl_bandwidth_sets_rate) {
         (void)dsd_analog_width_fitting_rtl_bandwidths(width_hz, fits, sizeof fits);
     }
+    const int max_hz = dsd_analog_width_max_for_rate(rate_hz);
     if (fits[0] != '\0') {
         DSD_SNPRINTF(fix, sizeof fix, "use a %s kHz DSP bandwidth", fits);
-    } else {
+    } else if (max_hz > 0) {
         DSD_SNPRINTF(fix, sizeof fix, "narrow the %s width", dsd_analog_demod_label(kind));
+    } else {
+        /* Past what the channel filter's taps cover: narrowing does not help (dsd_analog_width_check_forced_rate()). */
+        DSD_SNPRINTF(fix, sizeof fix, "no %s width fits this DSP rate", dsd_analog_demod_label(kind));
     }
-    const int max_hz = dsd_analog_width_max_for_rate(rate_hz);
     if (max_hz > 0 && dsd_analog_width_format(max_hz, max, sizeof max) == 0) {
         svc_why(why, why_size, "%s %s does not fit the %s DSP rate (max %s); %s", dsd_analog_demod_label(kind), width,
                 rate, max, fix);
@@ -947,8 +950,20 @@ svc_check_nfm_bandwidth_for_rtl_bw(int width_hz, int rtl_bw_khz, char* why, size
     /* The reopened device is an RTL-SDR or rtl_tcp one, whose rate is its DSP bandwidth: saturated, never overflowed,
        for a loaded config's out-of-range rtl_bw_khz, which no width then fits. */
     const int rate_hz = dsd_app_analog_rtl_bw_rate_hz("rtl", AUDIO_IN_RTL, rtl_bw_khz);
-    if (width_hz == 0 || rate_hz <= 0) {
+    if (width_hz == 0 || rate_hz <= 0 || dsd_analog_width_realizable(width_hz, rate_hz)) {
         return 0;
+    }
+    if (rtl_bw_khz > DSD_ANALOG_RTL_DSP_BW_MAX_KHZ) {
+        /* Above every selectable DSP bandwidth (a loaded config keeps any integer), the rate it would give is no DSP
+           rate to name: the setting is what is wrong. */
+        char fits[32];
+        char text[128];
+        (void)dsd_analog_width_fitting_rtl_bandwidths(width_hz, fits, sizeof fits);
+        DSD_SNPRINTF(text, sizeof text, "rtl_bw_khz %d is not a DSP bandwidth; use a %s kHz DSP bandwidth", rtl_bw_khz,
+                     fits);
+        svc_why(why, why_size, "%s", text);
+        LOG_WARN("%s.\n", text);
+        return -1;
     }
     return svc_analog_width_fits_rtl_rate(DSD_ANALOG_DEMOD_FM, width_hz, rate_hz, why, why_size) ? 0 : -1;
 }
@@ -990,9 +1005,9 @@ svc_check_rtl_input_analog_width(const dsd_opts* opts, const dsd_state* state, c
     if (width_hz <= 0) {
         return 0;
     }
-    /* Input > RTL-SDR turns an Airspy spec into "rtl" and reopens every other device string but a SoapySDR or I/Q
-       replay one as an RTL-SDR or rtl_tcp device, at its DSP bandwidth. A SoapySDR device may force its own rate and a
-       replay runs at its capture's: their start checks those. */
+    /* Input > Switch source > RTL-SDR turns an Airspy spec into "rtl" and reopens every other device string but a
+       SoapySDR or I/Q replay one as an RTL-SDR or rtl_tcp device, at its DSP bandwidth. A SoapySDR device may force its
+       own rate and a replay runs at its capture's: their start checks those. */
     const char* dev = dsd_opts_audio_in_dev_is_airspy_spec(opts->audio_in_dev) ? "rtl" : opts->audio_in_dev;
     const int rate_hz = dsd_app_analog_rtl_bw_rate_hz(dev, AUDIO_IN_RTL, opts->rtl_dsp_bw_khz);
     return svc_analog_width_fits_rtl_rate(kind, width_hz, rate_hz, why, why_size) ? 0 : -1;

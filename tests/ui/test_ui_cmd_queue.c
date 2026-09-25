@@ -10,6 +10,7 @@
 #include <dsd-neo/app_control/commands.h>
 #include <dsd-neo/app_control/frontend_runtime.h>
 #include <dsd-neo/app_control/rx_tone_view.h>
+#include <dsd-neo/core/airspy_config.h>
 #include <dsd-neo/core/audio.h>
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/channel_mode.h>
@@ -6234,12 +6235,18 @@ test_config_apply_holds_nfm_width_to_the_rate_the_reopen_runs_at(void) {
                        "Config not applied: NFM 20 kHz does not fit the 20 kHz DSP rate (max 16.8 kHz); use a 24 or 48 "
                        "kHz DSP bandwidth");
     /* The loader keeps any integer for rtl_bw_khz (its range only warns). One too large for a rate in Hz is held as
-       the saturated rate, which no width fits, rather than overflowing into a negative one. */
+       the saturated rate, which no width fits, rather than overflowing into a negative one, and the refusal names the
+       setting rather than a DSP rate built from it. So does one above every selectable bandwidth that no width fits
+       (the channel filter would need more taps than it has). */
     rc |= submit_config_rtl_bw(&opts, &state, 3000000, -1, "cfg rtl_bw_khz 3000000");
     rc |= expect_int("cfg rtl_bw_khz 3000000: refused, rate kept", opts.rtl_dsp_bw_khz, 48);
     rc |= expect_toast("cfg rtl_bw_khz 3000000 toast", &state,
-                       "Config not applied: NFM 20 kHz cannot be filtered at the 2147483.647 kHz DSP rate; use a 24 or "
-                       "48 kHz DSP bandwidth");
+                       "Config not applied: rtl_bw_khz 3000000 is not a DSP bandwidth; use a 24 or 48 kHz DSP "
+                       "bandwidth");
+    rc |= submit_config_rtl_bw(&opts, &state, 200, -1, "cfg rtl_bw_khz 200");
+    rc |= expect_int("cfg rtl_bw_khz 200: refused, rate kept", opts.rtl_dsp_bw_khz, 48);
+    rc |= expect_toast("cfg rtl_bw_khz 200 toast", &state,
+                       "Config not applied: rtl_bw_khz 200 is not a DSP bandwidth; use a 24 or 48 kHz DSP bandwidth");
 
     /* An Airspy running an explicit 25 kHz at its forced rate; a config moving to an RTL-SDR at the same 24 kHz
        rtl_bw_khz value would reopen at 24 kHz, which cannot filter it. */
@@ -6274,6 +6281,83 @@ test_config_apply_holds_nfm_width_to_the_rate_the_reopen_runs_at(void) {
     rc |= expect_int("cfg same rtl_tcp: rate unchanged", opts.rtl_dsp_bw_khz, 48);
     rc |= expect_int("cfg same rtl_tcp: width unchanged", opts.analog_nfm_bandwidth_hz, 25000);
 
+    opts.analog_nfm_bandwidth_hz = 0;
+    state.rtl_ctx = NULL;
+    freeState(&state);
+    return rc;
+}
+
+/* A config whose [input] reopens a SoapySDR or Airspy device (source @p source) at rtl_bw_khz @p rtl_bw_khz, with an
+   [analog] NFM width. */
+static int
+submit_config_device_source(dsd_opts* opts, dsd_state* state, dsdneoUserInputSource source, int rtl_bw_khz,
+                            int width_hz, const char* label) {
+    dsdneoUserConfig cfg;
+    DSD_MEMSET(&cfg, 0, sizeof cfg);
+    cfg.has_input = 1;
+    cfg.input_source = source;
+    if (source == DSDCFG_INPUT_AIRSPY) {
+        dsd_airspy_config_defaults(&cfg.airspy);
+    } else {
+        DSD_SNPRINTF(cfg.soapy_args, sizeof cfg.soapy_args, "%s", "driver=airspy");
+    }
+    cfg.rtl_bw_khz = rtl_bw_khz;
+    cfg.has_analog = 1;
+    cfg.analog_nfm_bandwidth_hz = width_hz;
+    int rc = expect_int(label, dsd_app_command_submit(DSD_APP_CMD_CONFIG_APPLY, &cfg, sizeof(cfg)),
+                        DSD_APP_COMMAND_SUBMIT_QUEUED);
+    state->ui_msg[0] = '\0';
+    rc |= expect_int(label, dsd_app_drain_cmds(opts, state), 1);
+    return rc;
+}
+
+/*
+ * A config whose [input] reopens a SoapySDR or Airspy device over the running RTL-SDR runs an explicit NFM width at the
+ * rate that device delivers (an Airspy's 78,125 Hz, say), which neither the running input's DSP rate nor rtl_bw_khz
+ * gives. It is held to neither: the reopened stream's start checks the width at the delivered rate. An Airspy source
+ * over a running Airspy reopens nothing (it applies live), so the running front end still holds it.
+ */
+static int
+test_config_apply_leaves_a_soapy_or_airspy_reopen_to_its_start(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static void* fake_ctx[2];
+    int rc = 0;
+    init_nfm_session(&opts, &state, (RtlSdrContext*)fake_ctx);
+    /* No stream (the reopen's failure is the wrapped stream create's, not the width's): the 24 kHz RTL-SDR input's DSP
+       bandwidth cannot filter 25 kHz, and would refuse it if it were the rate. */
+    state.rtl_ctx = NULL;
+    g_analog_check_result = -1;
+    rc |= submit_config_device_source(&opts, &state, DSDCFG_INPUT_AIRSPY, 0, 25000, "cfg airspy over rtl");
+    rc |= expect_int("cfg airspy over rtl: not refused", strstr(state.ui_msg, "Config not applied") == NULL, 1);
+    rc |= expect_int("cfg airspy over rtl: front end not asked", g_analog_check_calls, 0);
+    rc |= expect_int("cfg airspy over rtl: width applied", opts.analog_nfm_bandwidth_hz, 25000);
+    rc |= expect_str("cfg airspy over rtl: reopened as the Airspy", opts.audio_in_dev, "airspy");
+
+    /* A SoapySDR source at rtl_bw_khz 48, over the same 24 kHz RTL-SDR input. */
+    opts.analog_nfm_bandwidth_hz = 0;
+    opts.rtl_dsp_bw_khz = 24;
+    DSD_SNPRINTF(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", "rtl:0:851.375M:0:0:24");
+    reset_rx_family_wrap();
+    g_analog_check_result = -1;
+    rc |= submit_config_device_source(&opts, &state, DSDCFG_INPUT_SOAPY, 48, 25000, "cfg soapy over rtl");
+    rc |= expect_int("cfg soapy over rtl: not refused", strstr(state.ui_msg, "Config not applied") == NULL, 1);
+    rc |= expect_int("cfg soapy over rtl: width applied", opts.analog_nfm_bandwidth_hz, 25000);
+    rc |= expect_str("cfg soapy over rtl: reopened as the SoapySDR device", opts.audio_in_dev, "soapy:driver=airspy");
+
+    /* An Airspy source over a running Airspy reopens nothing: the running front end holds the new width. */
+    opts.analog_nfm_bandwidth_hz = 12500;
+    DSD_SNPRINTF(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", "airspy");
+    state.rtl_ctx = (RtlSdrContext*)fake_ctx;
+    reset_rx_family_wrap();
+    g_analog_check_result = -1;
+    rc |= submit_config_device_source(&opts, &state, DSDCFG_INPUT_AIRSPY, 0, 25000, "cfg airspy over airspy");
+    rc |= expect_int("cfg airspy over airspy: front end asked",
+                     g_analog_check_calls == 1 && g_analog_check_width_hz == 25000, 1);
+    rc |= expect_int("cfg airspy over airspy: width kept", opts.analog_nfm_bandwidth_hz, 12500);
+    rc |= expect_int("cfg airspy over airspy: refused", strstr(state.ui_msg, "Config not applied") != NULL, 1);
+
+    g_analog_check_result = 0;
     opts.analog_nfm_bandwidth_hz = 0;
     state.rtl_ctx = NULL;
     freeState(&state);
@@ -6382,9 +6466,9 @@ test_rtl_set_bw_refuses_a_rate_the_nfm_width_cannot_run_at(void) {
     rc |=
         expect_toast("rtl_tcp: bw 24 toast", &state, "Refused: DSP BW 24 kHz cannot filter NFM 25 kHz (max 20.4 kHz)");
 
-    /* The terminal's Input > RTL-SDR leaves "pulse" on the RTL input it enables, which the stream opens as an RTL-SDR
-       at the DSP bandwidth: the bandwidth is held to the width there too, refused before the restart that would tear
-       the running stream down and fail to open the next one. */
+    /* The terminal's Input > Switch source > RTL-SDR leaves "pulse" on the RTL input it enables, which the stream opens
+       as an RTL-SDR at the DSP bandwidth: the bandwidth is held to the width there too, refused before the restart that
+       would tear the running stream down and fail to open the next one. */
     opts.audio_in_type = AUDIO_IN_RTL;
     DSD_SNPRINTF(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", "pulse");
     opts.analog_nfm_bandwidth_hz = 16000;
@@ -6411,9 +6495,9 @@ test_rtl_set_bw_refuses_a_rate_the_nfm_width_cannot_run_at(void) {
 
 #if defined(USE_RADIO) && defined(DSD_NEO_TEST_RTL_WRAP)
 /*
- * Input > RTL-SDR opens a device at the RTL DSP bandwidth, so an explicit NFM width that bandwidth cannot filter is
- * refused before the running input is rewritten and torn down: the new stream's start would refuse the width and leave
- * no stream, with only a generic failure to show for it. The config path refuses the same move. The unset default, a
+ * Input > Switch source > RTL-SDR opens a device at the RTL DSP bandwidth, so an explicit NFM width that bandwidth
+ * cannot filter is refused before the running input is rewritten and torn down: the new stream's start would refuse the
+ * width and leave no stream, with only a generic failure to show for it. The config path refuses the same move. The unset default, a
  * bandwidth that fits, and inputs whose device or capture sets the rate (SoapySDR, the Airspy enable) are not held.
  */
 static int
@@ -6666,6 +6750,7 @@ main(void) {
     rc |= test_config_apply_holds_nfm_width_to_the_front_end();
     rc |= test_config_apply_holds_nfm_width_to_a_new_dsp_bandwidth();
     rc |= test_config_apply_holds_nfm_width_to_the_rate_the_reopen_runs_at();
+    rc |= test_config_apply_leaves_a_soapy_or_airspy_reopen_to_its_start();
     rc |= test_config_apply_restores_the_default_nfm_width();
 #endif
 #ifdef USE_RADIO

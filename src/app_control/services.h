@@ -242,7 +242,9 @@ int svc_check_nfm_bandwidth(const dsd_opts* opts, const dsd_state* state, int wi
  * For a change that reopens the device at another DSP bandwidth (a config apply whose [input] sets rtl_bw_khz), where
  * the running stream's rate says nothing about the rate the width will run at. The range is checked as
  * svc_check_nfm_bandwidth() checks it; an explicit width must then fit the rate @p rtl_bw_khz gives, and a refusal is
- * reported and logged the same way. The unset default (0) and @p rtl_bw_khz <= 0 are never refused for a rate.
+ * reported and logged the same way. A value above every selectable DSP bandwidth that no width fits (a loaded config
+ * keeps any integer) is refused as the setting it is, with the DSP bandwidths that would fit, rather than as a rate.
+ * The unset default (0) and @p rtl_bw_khz <= 0 are never refused for a rate.
  *
  * @return 0 when the width may be applied, -1 otherwise (reason in @p why, may be NULL).
  */

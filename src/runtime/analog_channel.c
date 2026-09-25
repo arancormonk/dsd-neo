@@ -18,7 +18,7 @@
 #include <string.h>
 
 /* RTL DSP bandwidths a user can select (rtl_bw_khz), in kHz, ascending. */
-static const int kRtlDspBandwidthsKhz[] = {4, 6, 8, 12, 16, 24, 48};
+static const int kRtlDspBandwidthsKhz[] = {4, 6, 8, 12, 16, 24, DSD_ANALOG_RTL_DSP_BW_MAX_KHZ};
 
 enum { kRtlDspBandwidthCount = (int)(sizeof kRtlDspBandwidthsKhz / sizeof kRtlDspBandwidthsKhz[0]) };
 
@@ -247,28 +247,39 @@ dsd_analog_width_fitting_rtl_bandwidths(int width_hz, char* out, size_t out_size
     return 0;
 }
 
+/* @p rtl_fix: the rate is an RTL DSP bandwidth, so the fix names the bandwidths that would fit; otherwise the device
+   or the capture forces the rate and the fix is the width. */
 static void
-analog_format_rate_error(int kind, int width_hz, int rate_hz, char* err, size_t err_size) {
+analog_format_rate_error(int kind, int width_hz, int rate_hz, int rtl_fix, char* err, size_t err_size) {
     char width_text[DSD_ANALOG_WIDTH_TEXT_MAX];
     char rate_text[DSD_ANALOG_WIDTH_TEXT_MAX];
     char fits_text[64];
+    char fix_text[96];
     (void)dsd_analog_width_format(width_hz, width_text, sizeof width_text);
     (void)dsd_analog_width_format(rate_hz, rate_text, sizeof rate_text);
     (void)dsd_analog_width_fitting_rtl_bandwidths(width_hz, fits_text, sizeof fits_text);
     const int max_hz = dsd_analog_width_max_for_rate(rate_hz);
     if (max_hz <= 0 && dsd_analog_channel_taps_for_rate(rate_hz) > DSD_ANALOG_CHANNEL_MAX_TAPS) {
+        if (rtl_fix) {
+            DSD_SNPRINTF(fix_text, sizeof fix_text, "set the RTL DSP bandwidth to %s kHz", fits_text);
+        } else {
+            DSD_SNPRINTF(fix_text, sizeof fix_text, "no %s width fits this DSP rate", dsd_analog_demod_label(kind));
+        }
         DSD_SNPRINTF(err, err_size,
                      "%s bandwidth %s cannot be filtered at the %s DSP rate: the channel filter would need more than "
-                     "%d taps; set the RTL DSP bandwidth to %s kHz",
-                     dsd_analog_demod_label(kind), width_text, rate_text, DSD_ANALOG_CHANNEL_MAX_TAPS, fits_text);
+                     "%d taps; %s",
+                     dsd_analog_demod_label(kind), width_text, rate_text, DSD_ANALOG_CHANNEL_MAX_TAPS, fix_text);
         return;
+    }
+    if (rtl_fix) {
+        DSD_SNPRINTF(fix_text, sizeof fix_text, "set the RTL DSP bandwidth to %s kHz", fits_text);
+    } else {
+        DSD_SNPRINTF(fix_text, sizeof fix_text, "narrow the %s width", dsd_analog_demod_label(kind));
     }
     char max_text[DSD_ANALOG_WIDTH_TEXT_MAX];
     (void)dsd_analog_width_format(max_hz, max_text, sizeof max_text);
-    DSD_SNPRINTF(err, err_size,
-                 "%s bandwidth %s does not fit the %s DSP rate (the largest width it fits is %s); set the RTL DSP "
-                 "bandwidth to %s kHz",
-                 dsd_analog_demod_label(kind), width_text, rate_text, max_text, fits_text);
+    DSD_SNPRINTF(err, err_size, "%s bandwidth %s does not fit the %s DSP rate (the largest width it fits is %s); %s",
+                 dsd_analog_demod_label(kind), width_text, rate_text, max_text, fix_text);
 }
 
 static void
@@ -283,8 +294,8 @@ analog_format_range_error(int kind, int width_hz, char* err, size_t err_size) {
                  dsd_analog_demod_label(kind), width_text, min_text, max_text);
 }
 
-int
-dsd_analog_width_check(int kind, int width_hz, int rate_hz, char* err, size_t err_size) {
+static int
+analog_width_check(int kind, int width_hz, int rate_hz, int rtl_fix, char* err, size_t err_size) {
     analog_error_clear(err, err_size);
     const int want_text = (err && err_size > 0U) ? 1 : 0;
     if (!dsd_analog_demod_is_valid(kind)) {
@@ -308,9 +319,19 @@ dsd_analog_width_check(int kind, int width_hz, int rate_hz, char* err, size_t er
     }
     if (!dsd_analog_width_realizable(width_hz, rate_hz)) {
         if (want_text) {
-            analog_format_rate_error(kind, width_hz, rate_hz, err, err_size);
+            analog_format_rate_error(kind, width_hz, rate_hz, rtl_fix, err, err_size);
         }
         return -1;
     }
     return 0;
+}
+
+int
+dsd_analog_width_check(int kind, int width_hz, int rate_hz, char* err, size_t err_size) {
+    return analog_width_check(kind, width_hz, rate_hz, 1, err, err_size);
+}
+
+int
+dsd_analog_width_check_forced_rate(int kind, int width_hz, int rate_hz, char* err, size_t err_size) {
+    return analog_width_check(kind, width_hz, rate_hz, 0, err, err_size);
 }
