@@ -263,9 +263,11 @@ test_dcs_table(void) {
  *
  * - onfreq "DPL / DCS Information" (mirrored at kb8zqz.org/onfreq_mirror/syntorx/dcs.html)
  *   prints words most significant bit first as "11 check bits - 100 - code": 023 as
- *   11101100011-100-000/010/011, the inverted 023 word as 00010011100-011-111/101/100 and 000
- *   as 11000111010-100-000/000/000, and states the word "is actually sent in the reverse
- *   order": 023 as 110/010/000-001-11000110111.
+ *   11101100011-100-000/010/011, the inverted 023 word as 00010011100-011-111/101/100, 047
+ *   (the inverted 023 word rotated to its third 100 signature match) as
+ *   00011111101-100-000/100/111, 020 (a word of another rotation class) as
+ *   11110001001100000010000 and 000 as 11000111010-100-000/000/000, and states the word "is
+ *   actually sent in the reverse order": 023 as 110/010/000-001-11000110111.
  * - "Manually Decoding a DCS Tone" (ambientmemory.com, 2017) lists bits received off the air,
  *   in arrival order, that decode to 023:
  *   10000001110001101111100100000011100011011111001.
@@ -276,6 +278,10 @@ test_dcs_reference_words(void) {
     assert(dsd_dcs_word(0023, 0) == bits_msb_first("11101100011-100-000/010/011"));
     assert(dsd_dcs_word(0023, 0) == 0x763813U);
     assert(dsd_dcs_word(0023, 1) == bits_msb_first("00010011100-011-111/101/100"));
+    assert(dsd_dcs_word(0047, 0) == bits_msb_first("00011111101-100-000/100/111"));
+    assert(dsd_dcs_word(0047, 0) == 0x0FD827U);
+    assert(dsd_dcs_word(0020, 0) == bits_msb_first("11110001001100000010000"));
+    assert(dsd_dcs_word(0020, 0) == 0x789810U);
     assert(dsd_dcs_word(0, 0) == bits_msb_first("11000111010-100-000/000/000"));
     assert((dsd_dcs_word(0525, 0) & 0xFFFU) == (bits_msb_first("00000000000100101010101") & 0xFFFU));
 
