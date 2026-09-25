@@ -16,7 +16,10 @@
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/state_fwd.h>
+#include <dsd-neo/dsp/demod_pipeline.h>
+#include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/runtime/analog_channel.h>
+#include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/scan_mode.h>
 #include <limits.h>
 #include <stdlib.h>
@@ -135,6 +138,29 @@ main(void) {
     assert(dsd_app_analog_width_view_get(opts, state, &m, &view) == 0);
     assert(view.width_hz == 12000 && view.dsp_limited && view.configured_hz == 0 && view.max_hz == 9600);
     expect_reading(&view, "12 kHz (DSP-limited)");
+    /* At a 128 kHz demod rate (an I/Q replay, a SoapySDR or Airspy device) the channel filter runs, but the rate cannot
+       realize the default's own design: the legacy WIDE plan runs instead, and its passband bounds the channel the
+       monitor returns to, as the front end publishes it there, not the rate. */
+    m = monitor_metrics(12500, 0, 128000);
+    m.output_kind = DSD_FRONTEND_RTL_OUTPUT_SYMBOL_CQPSK;
+    assert(dsd_app_analog_width_view_get(opts, state, &m, &view) == 0);
+    assert(view.width_hz == dsd_channel_lpf_legacy_wide_width_hz(128000) && view.dsp_limited);
+    assert(view.width_hz > 70000 && view.width_hz < 90000);
+    /* ...and with DSD_NEO_CHANNEL_LPF=0 no channel filter runs there: the rate itself. */
+    assert(dsd_setenv("DSD_NEO_CHANNEL_LPF", "0", 1) == 0);
+    dsd_neo_config_init();
+    assert(dsd_app_analog_width_view_get(opts, state, &m, &view) == 0);
+    assert(view.width_hz == 128000 && view.dsp_limited);
+    expect_reading(&view, "128 kHz (DSP-limited)");
+    /* DSD_NEO_CHANNEL_LPF=1 turns the filter on below 20 kHz too, where the rate cannot realize the default either. */
+    assert(dsd_setenv("DSD_NEO_CHANNEL_LPF", "1", 1) == 0);
+    dsd_neo_config_init();
+    m = monitor_metrics(12500, 0, 12000);
+    m.output_kind = DSD_FRONTEND_RTL_OUTPUT_SYMBOL_CQPSK;
+    assert(dsd_app_analog_width_view_get(opts, state, &m, &view) == 0);
+    assert(view.width_hz == dsd_channel_lpf_legacy_wide_width_hz(12000) && view.width_hz < 12000 && view.dsp_limited);
+    assert(dsd_unsetenv("DSD_NEO_CHANNEL_LPF") == 0);
+    dsd_neo_config_init();
 
     /* A typed digital row on the analog session: the configured preset is still NFM, and the row's front end filters
        with the row's profile, so the configured width shows, the one the row's leave returns to. */

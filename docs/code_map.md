@@ -573,12 +573,15 @@ installs from `src/engine/trunk_tuning.c` in `src/engine/trunk_tuning_hooks_inst
   row does not hide it; never for the M17 encoder): the front end's reported width while a running stream's options in
   force run the monitor, flagged DSP-limited when the rate bounds it, otherwise the configured width, and none on PCM
   input. With no stream running on an input whose RTL DSP bandwidth sets the rate, that rate bounds the widths offered
-  (`max_hz`); an unset default below 20 kHz reads as the rate, DSP-limited, as the next start publishes it, and so it
-  does at a running stream's demod rate while the front end is off the monitor (a typed digital row, CQPSK toggled on
-  under -fA), as the monitor it returns to publishes it. They spell the reading (`12.5 kHz`, `16 kHz (default)`, `12 kHz
-  (DSP-limited)`, `not used on PCM input`) and the configured setting (`12.5 kHz`, `default`). The terminal's `Analog:`
-  status field, the `rtl.nfm_bw` row's label and predicate, the width command's toast, RTL_SET_BW's configured-width
-  check and Qt's `analogBandwidth*` properties all come from it. Test: `APP_CONTROL_ANALOG_WIDTH_VIEW`.
+  (`max_hz`); an unset default reads as what the monitor runs at that rate, as the next start publishes it: the rate
+  itself where no channel filter runs (below 20 kHz, or as `DSD_NEO_CHANNEL_LPF` says), the legacy WIDE plan's passband
+  (`dsd_channel_lpf_legacy_wide_width_hz()`) where the filter runs but the rate cannot realize the default, both
+  DSP-limited, and so it does at a running stream's demod rate while the front end is off the monitor (a typed digital
+  row, CQPSK toggled on under -fA), as the monitor it returns to publishes it. They spell the reading (`12.5 kHz`,
+  `16 kHz (default)`, `12 kHz (DSP-limited)`, `not used on PCM input`) and the configured setting (`12.5 kHz`,
+  `default`). The terminal's `Analog:` status field, the `rtl.nfm_bw` row's label and predicate, the width command's
+  toast, RTL_SET_BW's configured-width check and Qt's `analogBandwidth*` properties all come from it. Test:
+  `APP_CONTROL_ANALOG_WIDTH_VIEW`.
 - Decode quality: `include/dsd-neo/app_control/p25_metrics.h` and `src/app_control/p25_metrics.c`
   copy FEC ok percentages, populated P25 voice-error averages, and non-P25 last-frame
   errors from the caller's held snapshot. The core vocoder maintains ring counts;

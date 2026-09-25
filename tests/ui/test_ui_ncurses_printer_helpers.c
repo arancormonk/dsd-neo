@@ -18,10 +18,12 @@
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/core/talkgroup_policy.h>
+#include <dsd-neo/dsp/demod_pipeline.h>
 #include <dsd-neo/protocol/edacs/edacs_afs.h>
 #include <dsd-neo/protocol/m17/m17_parse.h>
 #include <dsd-neo/protocol/p25/p25_callsign.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
+#include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/scan_mode.h>
 #include <dsd-neo/runtime/scan_options.h>
 #include <dsd-neo/runtime/unicode.h>
@@ -627,6 +629,20 @@ void
 print_dsp_status(dsd_opts* opts, dsd_state* state) { // NOLINT(misc-use-internal-linkage)
     (void)opts;
     (void)state;
+}
+
+/* The analog width view's reading of the unset NFM default asks DSD_NEO_CHANNEL_LPF (unset here) and, where the
+   channel filter runs but the rate cannot realize the default, the legacy WIDE plan's passband, which no rate these
+   cases run at falls back on. */
+const dsdneoRuntimeConfig*
+dsd_neo_get_config(void) {
+    return NULL;
+}
+
+int
+dsd_channel_lpf_legacy_wide_width_hz(int rate_hz) {
+    (void)rate_hz;
+    return 0;
 }
 
 #include "../../src/ui/terminal/dsd_ncurses_printer.c"

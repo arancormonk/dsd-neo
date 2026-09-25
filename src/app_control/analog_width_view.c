@@ -9,7 +9,9 @@
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state_fwd.h>
+#include <dsd-neo/dsp/demod_pipeline.h>
 #include <dsd-neo/runtime/analog_channel.h>
+#include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/scan_mode.h>
 #include <limits.h>
 #include <stddef.h>
@@ -29,21 +31,38 @@ dsd_app_analog_rtl_bw_rate_hz(const char* audio_in_dev, int audio_in_type, int r
     return rtl_bw_khz > INT_MAX / 1000 ? INT_MAX : rtl_bw_khz * 1000;
 }
 
-/* The rate from which the unset NFM default runs a channel filter (demod_channel_lpf_default_enable(), without a
-   DSD_NEO_CHANNEL_LPF override, which shows once the stream runs). */
+/* The rate from which the unset NFM default runs a channel filter when DSD_NEO_CHANNEL_LPF does not say
+   (demod_channel_lpf_default_enable()). */
 #define ANALOG_WIDTH_VIEW_DEFAULT_FILTER_MIN_RATE_HZ 20000
 
-/* The unset NFM default reads as what the monitor runs at DSP rate @p rate_hz (rtl_demod_apply_analog_channel()):
-   below the rate from which the default runs a channel filter, or where that rate cannot filter it, the rate itself
-   bounds the channel. Every RTL DSP bandwidth that cannot filter the default lies below that rate. */
+/* Whether the unset NFM default runs a channel filter at DSP rate @p rate_hz: as DSD_NEO_CHANNEL_LPF sets it, otherwise
+   from the rate the stream turns it on at. */
+static int
+analog_width_view_default_filter_on(int rate_hz) {
+    const dsdneoRuntimeConfig* env = dsd_neo_get_config();
+    if (env && env->channel_lpf_is_set) {
+        return env->channel_lpf_enable != 0;
+    }
+    return rate_hz >= ANALOG_WIDTH_VIEW_DEFAULT_FILTER_MIN_RATE_HZ;
+}
+
+/* The unset NFM default reads as what the monitor runs at DSP rate @p rate_hz (rtl_demod_apply_analog_channel(), and
+   the width the stream publishes for it): its own design where the channel filter runs and the rate realizes it;
+   otherwise the rate bounds the channel, DSP-limited, through the legacy WIDE plan's passband while the filter runs
+   (dsd_channel_lpf_legacy_wide_width_hz(): a 128 kHz replay protects about 78.5 kHz, not 128), or the rate itself with
+   no channel filter. Every RTL DSP bandwidth that cannot realize the default lies below the rate the filter starts at,
+   so there the rate itself is the reading. */
 static void
 analog_width_view_take_default_rate(int rate_hz, dsd_app_analog_width_view* out) {
-    if (rate_hz > 0 && out->kind == DSD_ANALOG_DEMOD_FM && out->configured_hz <= 0
-        && (rate_hz < ANALOG_WIDTH_VIEW_DEFAULT_FILTER_MIN_RATE_HZ
-            || !dsd_analog_width_realizable(out->width_hz, rate_hz))) {
-        out->width_hz = rate_hz;
-        out->dsp_limited = 1U;
+    if (rate_hz <= 0 || out->kind != DSD_ANALOG_DEMOD_FM || out->configured_hz > 0) {
+        return;
     }
+    const int filter_on = analog_width_view_default_filter_on(rate_hz);
+    if (filter_on && dsd_analog_width_realizable(out->width_hz, rate_hz)) {
+        return;
+    }
+    out->width_hz = filter_on ? dsd_channel_lpf_legacy_wide_width_hz(rate_hz) : rate_hz;
+    out->dsp_limited = 1U;
 }
 
 /* With no stream running, the rate the next start runs at, where the RTL DSP bandwidth sets it, bounds the widths the
@@ -61,7 +80,7 @@ analog_width_view_take_rtl_rate(const dsd_opts* opts, dsd_app_analog_width_view*
 /* The front end's width is the channel in force only while it runs the monitor for the analog family the options in
    force select. Its mirror outlives a stopped stream, and under a typed digital row (or CQPSK toggled on under -fA)
    it describes that profile's channel; the width in force is then the one the monitor returns to at the running demod
-   rate, which for the unset default is the rate itself below the rate from which the default filters. */
+   rate (analog_width_view_take_default_rate() for the unset default). */
 static void
 analog_width_view_take_front_end(const dsd_opts* opts, const dsd_frontend_metrics* metrics,
                                  dsd_app_analog_width_view* out) {
