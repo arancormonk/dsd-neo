@@ -571,7 +571,7 @@ installs from `src/engine/trunk_tuning.c` in `src/engine/trunk_tuning_hooks_inst
   runs the configured width (no width of its own) holds the edit to the rate on any session. While the row on air sets
   its own width (issue #526), that width stays in force: the edit lands on the configured baseline only, reaches the
   front end with the next row that takes it or the leave, and the toast says the row overrides it
-  (`dsd_app_analog_width_view_edit_notice()`). A refused width is put back through `svc_restore_nfm_width()`, onto the
+  (`dsd_app_analog_width_edit_notice()`). A refused width is put back through `svc_restore_nfm_width()`, onto the
   configured baseline, or onto the row's width in force when that was the one refused. An accepted width in force goes
   to a running front end whose options in force are -fA as a live analog profile request
   (`svc_publish_nfm_bandwidth()` in `symbol_profile.c`), which also replaces the width a queued switch onto analog

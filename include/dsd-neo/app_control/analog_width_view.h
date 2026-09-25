@@ -29,7 +29,8 @@
  * force until the row leaves, while the configured width stays what the controls edit and a save writes.
  *
  * This view owns those decisions, the reading's text ("12.5 kHz", "16 kHz (default)", "12 kHz (DSP-limited)",
- * "12.5 kHz (row; default 16 kHz)"), the width command's notice, and the one spelling of a configured width
+ * "12.5 kHz (row; default 16 kHz)"), the width command's notice (for the kind the command edits), and the one spelling
+ * of a configured width
  * ("12.5 kHz", "default"). The terminal's status field, RTL menu row and its predicate, the width command's toast, the
  * services that hold a DSP rate to the configured width, and the Qt/Android Radio sheet all take them from here. A
  * reading carries at most one note: "(default)" marks the unset default, which a save leaves out and which keeps its
@@ -93,13 +94,18 @@ int dsd_app_analog_width_view_get(const dsd_opts* opts, const dsd_state* state, 
 int dsd_app_analog_width_view_format(const dsd_app_analog_width_view* view, char* out, size_t out_size);
 
 /**
- * @brief Render the notice after the configured width was edited (DSD_APP_CMD_NFM_BANDWIDTH_SET).
+ * @brief Render the notice after the configured width of demodulator @p kind was edited.
  *
+ * The width command names the kind it edits (DSD_APP_CMD_NFM_BANDWIDTH_SET edits DSD_ANALOG_DEMOD_FM's), whatever kind
+ * the configured preset runs: the notice names that kind and its configured width, read as
+ * dsd_app_analog_width_view_get() reads it (the scan scope's configured view while one is live, dsd_opts otherwise).
  * "Applied: NFM bandwidth -> 12.5 kHz" ("-> default" for the unset default), or, while the scan row on air sets its own
- * width and so shadows the edit, "Default NFM bandwidth -> 16 kHz; this channel overrides it (12.5 kHz)". Returns 0, or
- * -1 when @p view or @p out is NULL or @p out_size is zero.
+ * width of @p kind and so shadows the edit, "Default NFM bandwidth -> 16 kHz; this channel overrides it (12.5 kHz)".
+ * @p state may be NULL (no scan scope). Returns 0, or -1 when @p opts or @p out is NULL, @p out_size is zero or @p kind
+ * is no analog demodulator (@p out is then empty where it can be).
  */
-int dsd_app_analog_width_view_edit_notice(const dsd_app_analog_width_view* view, char* out, size_t out_size);
+int dsd_app_analog_width_edit_notice(const dsd_opts* opts, const dsd_state* state, int kind, char* out,
+                                     size_t out_size);
 
 /**
  * @brief Render a configured width: "12.5 kHz", or "default" for 0. The spelling every frontend uses for the setting

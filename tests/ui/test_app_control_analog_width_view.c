@@ -244,7 +244,7 @@ main(void) {
     assert(view.width_hz == 12500 && view.max_hz == 42000);
     expect_reading(&view, "12.5 kHz (row; default 20 kHz)");
     char notice[96];
-    assert(dsd_app_analog_width_view_edit_notice(&view, notice, sizeof notice) == 0);
+    assert(dsd_app_analog_width_edit_notice(opts, state, DSD_ANALOG_DEMOD_FM, notice, sizeof notice) == 0);
     assert(strcmp(notice, "Default NFM bandwidth -> 20 kHz; this channel overrides it (12.5 kHz)") == 0);
     /* The unset default under the row is named by the width it gives, and never read as the DSP-limited default. */
     assert(dsd_scan_mode_set_configured_nfm_bandwidth(opts, state, 0) == 0);
@@ -252,7 +252,7 @@ main(void) {
     assert(dsd_app_analog_width_view_get(opts, state, &m, &view) == 0);
     assert(view.width_hz == 12500 && !view.dsp_limited && view.configured_hz == 0);
     expect_reading(&view, "12.5 kHz (row; default 16 kHz)");
-    assert(dsd_app_analog_width_view_edit_notice(&view, notice, sizeof notice) == 0);
+    assert(dsd_app_analog_width_edit_notice(opts, state, DSD_ANALOG_DEMOD_FM, notice, sizeof notice) == 0);
     assert(strcmp(notice, "Default NFM bandwidth -> default; this channel overrides it (12.5 kHz)") == 0);
     /* A row without a width runs the configured one, which reads and notifies as it would outside a row. */
     assert(dsd_scan_mode_set_configured_nfm_bandwidth(opts, state, 20000) == 0);
@@ -261,7 +261,7 @@ main(void) {
     assert(dsd_app_analog_width_view_get(opts, state, &m, &view) == 0);
     assert(view.row_analog && !view.row_override && view.width_hz == 20000 && view.configured_hz == 20000);
     expect_reading(&view, "20 kHz");
-    assert(dsd_app_analog_width_view_edit_notice(&view, notice, sizeof notice) == 0);
+    assert(dsd_app_analog_width_edit_notice(opts, state, DSD_ANALOG_DEMOD_FM, notice, sizeof notice) == 0);
     assert(strcmp(notice, "Applied: NFM bandwidth -> 20 kHz") == 0);
     dsd_scan_mode_leave(opts, state);
     assert(opts->analog_only == 1 && opts->analog_nfm_bandwidth_hz == 20000);
@@ -336,17 +336,43 @@ main(void) {
     expect_setting(-1, "default");
 
     /* The edit notice outside a scope: the configured width as set. */
-    DSD_MEMSET(&view, 0, sizeof view);
-    view.kind = DSD_ANALOG_DEMOD_FM;
-    view.configured_hz = 11250;
     char applied[96];
-    assert(dsd_app_analog_width_view_edit_notice(&view, applied, sizeof applied) == 0);
+    opts->analog_nfm_bandwidth_hz = 11250;
+    assert(dsd_app_analog_width_edit_notice(opts, state, DSD_ANALOG_DEMOD_FM, applied, sizeof applied) == 0);
     assert(strcmp(applied, "Applied: NFM bandwidth -> 11.25 kHz") == 0);
-    view.configured_hz = 0;
-    assert(dsd_app_analog_width_view_edit_notice(&view, applied, sizeof applied) == 0);
+    opts->analog_nfm_bandwidth_hz = 0;
+    assert(dsd_app_analog_width_edit_notice(opts, state, DSD_ANALOG_DEMOD_FM, applied, sizeof applied) == 0);
     assert(strcmp(applied, "Applied: NFM bandwidth -> default") == 0);
-    assert(dsd_app_analog_width_view_edit_notice(NULL, applied, sizeof applied) == -1 && applied[0] == '\0');
-    assert(dsd_app_analog_width_view_edit_notice(&view, NULL, 0) == -1);
+    /* The notice names the kind the command edited, not the configured preset's: an NFM width edit on an AM session
+       reads the NFM width, never the AM one the view shows. */
+    opts->analog_demod = DSD_ANALOG_DEMOD_AM;
+    opts->analog_am_bandwidth_hz = 10000;
+    opts->analog_nfm_bandwidth_hz = 12500;
+    assert(dsd_app_analog_width_view_get(opts, state, NULL, &view) == 0);
+    assert(view.kind == DSD_ANALOG_DEMOD_AM && view.configured_hz == 10000);
+    assert(dsd_app_analog_width_edit_notice(opts, state, DSD_ANALOG_DEMOD_FM, applied, sizeof applied) == 0);
+    assert(strcmp(applied, "Applied: NFM bandwidth -> 12.5 kHz") == 0);
+    assert(dsd_app_analog_width_edit_notice(opts, state, DSD_ANALOG_DEMOD_AM, applied, sizeof applied) == 0);
+    assert(strcmp(applied, "Applied: AM bandwidth -> 10 kHz") == 0);
+    /* ...and under an nfm row with its own width on that AM session, only the NFM edit is shadowed. */
+    dsd_scan_option_values am_session_row = {0};
+    am_session_row.present = DSD_SCAN_OPT_BANDWIDTH;
+    am_session_row.channel_bw_hz = 20000;
+    assert(dsd_scan_mode_enter(opts, state, DSD_SCAN_MODE_NFM) == 0);
+    assert(dsd_scan_mode_options(opts, state, &am_session_row) == 0);
+    assert(dsd_app_analog_width_edit_notice(opts, state, DSD_ANALOG_DEMOD_FM, applied, sizeof applied) == 0);
+    assert(strcmp(applied, "Default NFM bandwidth -> 12.5 kHz; this channel overrides it (20 kHz)") == 0);
+    assert(dsd_app_analog_width_edit_notice(opts, state, DSD_ANALOG_DEMOD_AM, applied, sizeof applied) == 0);
+    assert(strcmp(applied, "Applied: AM bandwidth -> 10 kHz") == 0);
+    dsd_scan_mode_leave(opts, state);
+    assert(opts->analog_demod == DSD_ANALOG_DEMOD_AM && opts->analog_nfm_bandwidth_hz == 12500);
+    opts->analog_demod = DSD_ANALOG_DEMOD_FM;
+    opts->analog_am_bandwidth_hz = 0;
+    opts->analog_nfm_bandwidth_hz = 0;
+    assert(dsd_app_analog_width_edit_notice(NULL, state, DSD_ANALOG_DEMOD_FM, applied, sizeof applied) == -1
+           && applied[0] == '\0');
+    assert(dsd_app_analog_width_edit_notice(opts, state, -1, applied, sizeof applied) == -1 && applied[0] == '\0');
+    assert(dsd_app_analog_width_edit_notice(opts, state, DSD_ANALOG_DEMOD_FM, NULL, 0) == -1);
 
     char out[8];
     assert(dsd_app_analog_width_view_get(NULL, state, NULL, &view) == -1 && !view.shown);

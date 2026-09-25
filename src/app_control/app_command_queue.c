@@ -1644,11 +1644,9 @@ ui_cmd_handle_nfm_bandwidth_set(dsd_opts* opts, dsd_state* state, const struct d
         ui_set_toast(state, 5, "Refused: %s", why);
         return UI_CMD_APPLY_FAILED;
     }
-    /* The command edits the configured width, so while a scan row sets its own the notice says the row still wins. */
-    dsd_app_analog_width_view view;
+    /* The command edits the configured NFM width: while a scan row sets its own, the notice says the row still wins. */
     char notice[96];
-    (void)dsd_app_analog_width_view_get(opts, state, NULL, &view);
-    (void)dsd_app_analog_width_view_edit_notice(&view, notice, sizeof notice);
+    (void)dsd_app_analog_width_edit_notice(opts, state, DSD_ANALOG_DEMOD_FM, notice, sizeof notice);
     ui_set_toast(state, 3, "%s", notice);
     return UI_CMD_APPLY_COMPLETED;
 }
@@ -3673,9 +3671,10 @@ decode_mode_set_early_verdict(const dsd_opts* opts, dsd_state* state, const stru
  * to the demod rate before the switch committed, but a retune that moves the rate in between gets the front end to
  * refuse the analog profile, at once or where it lands, and stay on the digital family. The decoder then goes back to
  * the settings it had rather than decode Analog from a digital front end, provided its configured settings are still
- * the ones the switch left; the row-scoped options (squelch, forcing, the voice gate) stay as they are, since the
- * switch did not set them. Staged before such a command changes anything, armed once it has switched a running RTL
- * session, and dropped once the front end takes the switch (or a request after it).
+ * the ones the switch left; the row-scoped options (squelch, forcing, the voice gate) and the channel widths (a width
+ * command made after the switch) stay as they are, since the switch did not set them. Staged before such a command
+ * changes anything, armed once it has switched a running RTL session, and dropped once the front end takes the switch
+ * (or a request after it).
  */
 static dsd_scan_settings g_analog_entry_staged;
 
@@ -3717,6 +3716,13 @@ ui_resume_scope_and_publish(dsd_opts* opts, dsd_state* state, int* out_changed) 
     return svc_publish_symbol_profile(opts, state, dsd_scan_mode_effective_profile(opts, state));
 }
 
+/* The configured channel widths of @p now over @p settings. */
+static void
+ui_analog_entry_keep_widths(dsd_scan_settings* settings, const dsd_scan_settings* now) {
+    settings->analog_nfm_bandwidth_hz = now->analog_nfm_bandwidth_hz;
+    settings->analog_am_bandwidth_hz = now->analog_am_bandwidth_hz;
+}
+
 /*
  * The front end refused the switch onto the analog monitor (@p width_hz: the NFM width it refused) and stayed digital:
  * put the decoder back on the configured settings it had before the switch, timed for the demod rate the front end runs
@@ -3732,11 +3738,17 @@ ui_revert_analog_entry(dsd_opts* opts, dsd_state* state, int width_hz) {
     const int scoped = dsd_scan_mode_suspend(opts, state);
     dsd_scan_settings now;
     dsd_scan_settings_capture(opts, state, &now);
-    const int reverted = dsd_scan_settings_equal(&now, &g_analog_entry.after, 0);
+    /* The channel widths are configuration a width command sets on its own (DSD_APP_CMD_NFM_BANDWIDTH_SET), not part of
+       the switch: one set after the switch, even in the same drain, does not mean the settings moved on, and the
+       revert keeps it (dsd_scan_settings_equal() compares them for the analog family the switch left). */
+    dsd_scan_settings after = g_analog_entry.after;
+    ui_analog_entry_keep_widths(&after, &now);
+    const int reverted = dsd_scan_settings_equal(&now, &after, 0);
     if (reverted) {
         dsd_scan_settings back = g_analog_entry.before;
         /* The row-scoped options lead the snapshot (dsd_scan_settings): the ones in force now stay. */
         DSD_MEMCPY(&back, &now, offsetof(dsd_scan_settings, frame_dstar));
+        ui_analog_entry_keep_widths(&back, &now);
         dsd_scan_settings_restore(&back, opts, state);
         if (!opts->analog_only) {
             /* The snapshot timed the mode for the demod rate of its day, and the retune that got the switch refused

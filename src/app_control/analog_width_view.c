@@ -198,23 +198,27 @@ dsd_app_analog_width_view_format(const dsd_app_analog_width_view* view, char* ou
 }
 
 int
-dsd_app_analog_width_view_edit_notice(const dsd_app_analog_width_view* view, char* out, size_t out_size) {
+dsd_app_analog_width_edit_notice(const dsd_opts* opts, const dsd_state* state, int kind, char* out, size_t out_size) {
     if (!out || out_size == 0U) {
         return -1;
     }
     out[0] = '\0';
-    if (!view) {
+    dsd_app_analog_width_view view;
+    if (!dsd_analog_demod_is_valid(kind) || dsd_app_analog_width_view_get(opts, state, NULL, &view) != 0) {
         return -1;
     }
+    /* The kind the command edited, not the configured preset's: an NFM edit on an AM session names the NFM width. */
     char configured[DSD_APP_ANALOG_WIDTH_TEXT_MAX];
-    (void)dsd_app_analog_width_setting_format(view->configured_hz, configured, sizeof configured);
-    const char* label = dsd_analog_demod_label(view->kind);
-    if (!view->row_override) {
+    (void)dsd_app_analog_width_setting_format(
+        analog_width_view_configured_hz(opts, dsd_scan_mode_configured_view(state), kind), configured,
+        sizeof configured);
+    const char* label = dsd_analog_demod_label(kind);
+    if (!view.row_override || view.kind != kind) {
         DSD_SNPRINTF(out, out_size, "Applied: %s bandwidth -> %s", label, configured);
         return 0;
     }
     char row[DSD_ANALOG_WIDTH_TEXT_MAX];
-    if (dsd_analog_width_format(view->row_hz, row, sizeof row) != 0) {
+    if (dsd_analog_width_format(view.row_hz, row, sizeof row) != 0) {
         row[0] = '\0';
     }
     DSD_SNPRINTF(out, out_size, "Default %s bandwidth -> %s; this channel overrides it (%s)", label, configured, row);
