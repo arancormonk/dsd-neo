@@ -45,7 +45,7 @@ Item {
         // and labels do not.
         readonly property var everyLabel: [
             "Auto — P25/DMR/YSF", "P25", "P25 Simulcast", "DMR", "NXDN48",
-            "NXDN96", "D-STAR", "YSF", "M17",
+            "NXDN96", "D-STAR", "YSF", "M17", "NFM — analog FM",
             "P25 LSM", "DMR Scan", "P25 Scan", "P25 LSM Scan",
             "NXDN48 Scan", "NXDN96 Scan", "EDACS", "EDACS EA"]
 
@@ -147,6 +147,22 @@ Item {
                     "the surviving P25 chip must carry the saved flag")
             verify(tc.chipFor("P25 Simulcast") !== null,
                    "the rest of the catalog is untouched")
+        }
+
+        // Issue #525: the NFM chip (-fA, the analog monitor) comes with the
+        // shared catalog, so the wizard offers it too. It selects on its own
+        // flag, and it names a system type that is not trunked: picked on the
+        // 800 MHz prefill, it must not suggest call-following, which an analog
+        // monitor cannot do.
+        function test_09_the_nfm_chip_is_offered_and_never_suggests_trunking() {
+            var chip = tc.chipFor("NFM — analog FM")
+            verify(chip !== null, "the wizard offers no NFM chip")
+            compare(chip.modelData.flag, "-fA")
+            compare(tc.wizard.trunking, true, "the 800 MHz prefill suggests trunking before the pick")
+            tc.wizard.pickDecodeFlag("-fA")
+            compare(tc.wizard.decodeFlag, "-fA")
+            compare(tc.selectedLabels(), ["NFM — analog FM"])
+            compare(tc.wizard.trunking, false, "picking NFM suggested call-following")
         }
 
         // A flag nobody has a name for must not invent a chip; the row falls

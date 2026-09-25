@@ -18,6 +18,7 @@
 #include <dsd-neo/platform/audio.h>
 #include <dsd-neo/platform/platform.h>
 #include <dsd-neo/platform/posix_compat.h>
+#include <dsd-neo/runtime/analog_channel.h>
 #include <dsd-neo/runtime/call_alert.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/decode_mode.h>
@@ -1953,11 +1954,56 @@ test_scan_voice_gate_actions(void) {
     return rc;
 }
 
+/*
+ * Issue #525: the NFM bandwidth row is offered while the configured analog preset runs FM on a radio input. A typed
+ * digital scan row on an analog session does not end that preset (its leave returns to the width set under it), so the
+ * row reads the configured preset, as the status line's "Analog:" field does, not the row's options.
+ */
+static int
+test_nfm_bandwidth_row_follows_the_configured_preset(void) {
+    int rc = 0;
+    static dsd_opts opts;
+    static dsd_state state;
+    DSD_MEMSET(&opts, 0, sizeof opts);
+    DSD_MEMSET(&state, 0, sizeof state);
+    static UiCtx ctx;
+    ctx = make_ctx(&opts, &state);
+
+    opts.audio_in_type = AUDIO_IN_RTL;
+    rc |= expect_int("nfm row: hidden on a digital session", is_nfm_analog_active(&ctx), 0);
+    opts.analog_only = 1;
+    opts.analog_demod = DSD_ANALOG_DEMOD_FM;
+    rc |= expect_int("nfm row: shown under -fA on a radio", is_nfm_analog_active(&ctx), 1);
+
+    /* A typed DMR row over the -fA session: its options are digital, the configured preset is still NFM. */
+    dsd_scan_settings configured = {0};
+    configured.analog_only = 1;
+    configured.analog_demod = DSD_ANALOG_DEMOD_FM;
+    dsd_test_scan_labels_configured(&configured);
+    opts.analog_only = 0;
+    opts.frame_dmr = 1;
+    rc |= expect_int("nfm row: shown under a typed digital row", is_nfm_analog_active(&ctx), 1);
+    /* ...and the reverse: a digital configured preset under a row whose options read analog. */
+    configured.analog_only = 0;
+    dsd_test_scan_labels_configured(&configured);
+    opts.analog_only = 1;
+    rc |= expect_int("nfm row: hidden when the configured preset is digital", is_nfm_analog_active(&ctx), 0);
+    dsd_test_scan_labels_configured(NULL);
+
+    opts.m17encoder = 1;
+    rc |= expect_int("nfm row: hidden for the M17 encoder's monitor", is_nfm_analog_active(&ctx), 0);
+    opts.m17encoder = 0;
+    opts.audio_in_type = AUDIO_IN_PULSE;
+    rc |= expect_int("nfm row: hidden on PCM input", is_nfm_analog_active(&ctx), 0);
+    return rc;
+}
+
 int
 main(void) {
     int rc = 0;
     rc |= test_simple_commands_and_prompts();
     rc |= test_scan_voice_gate_actions();
+    rc |= test_nfm_bandwidth_row_follows_the_configured_preset();
     rc |= test_p25_bandplan_actions();
     rc |= test_config_profile_and_env_actions();
     rc |= test_io_actions_and_choosers();

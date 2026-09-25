@@ -51,6 +51,9 @@ int g_failures = 0;
  * every other case wants the at-rest 0. */
 static int g_stub_channel_bandwidth_hz = 0;
 static int g_stub_channel_bandwidth_dsp_limited = 0;
+/* Whether the stubbed front end says a stream runs, and its demod rate (issue #525). */
+static int g_stub_stream_active = 0;
+static int g_stub_demod_rate_hz = 0;
 
 /* The scan-timing view a case feeds the model. Zeroed between cases: reason NONE
  * is the contract's "nothing to show", which is what every other case wants. */
@@ -82,6 +85,8 @@ dsd_app_frontend_get_metrics_for_snapshot(const dsd_opts* opts, const dsd_state*
     *out = dsd_frontend_metrics{};
     out->channel_bandwidth_hz = g_stub_channel_bandwidth_hz;
     out->channel_bandwidth_dsp_limited = g_stub_channel_bandwidth_dsp_limited;
+    out->stream_active = g_stub_stream_active;
+    out->demod_rate_hz = g_stub_demod_rate_hz;
     return 0;
 }
 
@@ -1284,23 +1289,30 @@ main(int argc, char** argv) {
         g_stub_channel_bandwidth_hz = 0;
     }
 
-    /* Issue #525: the analog channel width the Radio sheet shows and steps from. While the analog monitor runs it is
-     * the width the front end reports (with its DSP-limited flag); otherwise the configured width, the default when
-     * none is set. The configured value (0 = default) is published on its own for the stepper. */
+    /* Issue #525: the analog channel width the Radio sheet shows and steps from. While a running stream runs the
+     * analog monitor it is the width the front end reports (with its DSP-limited flag); otherwise the configured
+     * width, the default when none is set. The configured value (0 = default) is published on its own for the stepper,
+     * and with a stream running the widest width its DSP rate filters. The front end's width is kept apart from the
+     * configured one throughout, so each case shows which of the two the model took. */
     {
         opts.audio_in_type = AUDIO_IN_RTL;
+        g_stub_stream_active = 1;
+        g_stub_demod_rate_hz = 24000;
         model.refresh(&opts, &state);
-        expect("digital: no analog width", model.analogBandwidthHz() == 0 && !model.analogBandwidthDspLimited());
+        expect("digital: no analog width", model.analogBandwidthHz() == 0 && !model.analogBandwidthDspLimited()
+                                               && model.analogBandwidthMaxHz() == 0);
         opts.analog_only = 1;
         opts.analog_demod = DSD_ANALOG_DEMOD_FM;
         model.refresh(&opts, &state);
         expect("analog before a published width reads the default", model.analogBandwidthHz() == 16000);
         expect("the default is configured as 0", model.analogBandwidthConfiguredHz() == 0);
+        expect("the widest width the 24 kHz rate filters", model.analogBandwidthMaxHz() == 20400);
 
         opts.analog_nfm_bandwidth_hz = 12500;
-        g_stub_channel_bandwidth_hz = 12500;
+        g_stub_channel_bandwidth_hz = 10800;
         model.refresh(&opts, &state);
-        expect("the front end's width", model.analogBandwidthHz() == 12500 && !model.analogBandwidthDspLimited());
+        expect("on the monitor, the front end's width", model.analogBandwidthHz() == 10800);
+        expect("not DSP-limited", !model.analogBandwidthDspLimited());
         expect("the configured width", model.analogBandwidthConfiguredHz() == 12500);
 
         /* The flag must move on its own: everything else holds still here. */
@@ -1309,12 +1321,24 @@ main(int argc, char** argv) {
         expect("DSP-limited alone moves the tuner group", model.analogBandwidthDspLimited());
         g_stub_channel_bandwidth_dsp_limited = 0;
 
+        /* The front end's mirror outlives its stream: once the stream stops, what it still says is the last
+         * session's width, not this one's. */
+        g_stub_stream_active = 0;
+        g_stub_channel_bandwidth_dsp_limited = 1;
+        model.refresh(&opts, &state);
+        expect("no stream: the configured width", model.analogBandwidthHz() == 12500);
+        expect("no stream: not DSP-limited", !model.analogBandwidthDspLimited());
+        expect("no stream: no rate to bound the steps", model.analogBandwidthMaxHz() == 0);
+        g_stub_stream_active = 1;
+        g_stub_channel_bandwidth_dsp_limited = 0;
+
         /* A typed digital row on the analog session filters with its own profile: the front end's width is the row's
-         * channel, so the sheet shows the configured analog width it will return to. */
+         * channel, so the sheet shows the configured analog width the row's leave returns to. */
         expect("typed row on analog", dsd_scan_mode_enter(&opts, &state, DSD_SCAN_MODE_DMR) == 0);
         expect("typed row options", dsd_scan_mode_options(&opts, &state, nullptr) == 0);
         model.refresh(&opts, &state);
         expect("under a typed row the configured width", model.analogBandwidthHz() == 12500);
+        expect("under a typed row the configured preset still shows", model.analogBandwidthConfiguredHz() == 12500);
         dsd_scan_mode_leave(&opts, &state);
 
         /* No tuner: the configured width, never a reading. */
@@ -1328,6 +1352,8 @@ main(int argc, char** argv) {
         opts.analog_only = 0;
         opts.analog_nfm_bandwidth_hz = 0;
         g_stub_channel_bandwidth_hz = 0;
+        g_stub_stream_active = 0;
+        g_stub_demod_rate_hz = 0;
         opts.audio_in_type = AUDIO_IN_RTL;
     }
 

@@ -789,10 +789,11 @@ MetricsModel::fillSquelchOverride(View& next, const dsd_opts* opts_snapshot, con
 }
 
 /* Issue #525: the analog width the Radio sheet shows and the configured one its control edits. The analog preset is
- * the configured one (a typed digital scan row does not end it), but the front end's width is the analog channel only
- * while the options in force are the analog family on the monitor output: under a typed digital row it is the row's
- * channel profile, and the sheet shows the configured width the row's leave returns to. The same rule as the
- * terminal's "Analog:" status field. */
+ * the configured one (a typed digital scan row does not end it, and its leave returns to the configured width). While
+ * a running stream's options in force run the analog family on the monitor output, the width is the one the front end
+ * reports; otherwise (no stream, a typed digital row filtering with its own profile) the configured width. With a
+ * stream running, the widest width its published DSP rate filters bounds the control's steps. The same rule as the
+ * terminal's "Analog:" status field (ui_print_analog_channel_field()). */
 void
 MetricsModel::fillAnalogChannel(View& next, const dsd_opts* opts_snapshot, const dsd_state* snapshot,
                                 const dsd_frontend_metrics& metrics) {
@@ -803,13 +804,18 @@ MetricsModel::fillAnalogChannel(View& next, const dsd_opts* opts_snapshot, const
         (kind == DSD_ANALOG_DEMOD_AM) ? opts_snapshot->analog_am_bandwidth_hz : opts_snapshot->analog_nfm_bandwidth_hz;
     next.analog_bandwidth_configured_hz = configured_hz > 0 ? configured_hz : 0;
     next.analog_bandwidth_hz = 0;
+    next.analog_bandwidth_max_hz = 0;
     next.analog_bandwidth_dsp_limited = false;
     if (analog_only != 1 || opts_snapshot->m17encoder == 1) {
         return;
     }
     next.analog_bandwidth_hz = dsd_analog_width_effective_hz(kind, next.analog_bandwidth_configured_hz);
-    if (next.radio_input && dsd_opts_is_analog_family(opts_snapshot)
-        && metrics.output_kind == DSD_FRONTEND_RTL_OUTPUT_AUDIO_MONITOR && metrics.channel_bandwidth_hz > 0) {
+    if (!next.radio_input || !next.stream_active) {
+        return;
+    }
+    next.analog_bandwidth_max_hz = metrics.demod_rate_hz > 0 ? dsd_analog_width_max_for_rate(metrics.demod_rate_hz) : 0;
+    if (dsd_opts_is_analog_family(opts_snapshot) && metrics.output_kind == DSD_FRONTEND_RTL_OUTPUT_AUDIO_MONITOR
+        && metrics.channel_bandwidth_hz > 0) {
         next.analog_bandwidth_hz = metrics.channel_bandwidth_hz;
         next.analog_bandwidth_dsp_limited = metrics.channel_bandwidth_dsp_limited != 0;
     }

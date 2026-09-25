@@ -1322,12 +1322,19 @@ is_non_airspy_input(const void* v) {
     return !is_airspy_input(v);
 }
 
-/* The NFM width row: while the analog preset runs FM on a radio input, where the width is the channel filter. */
+/* The NFM width row: while the configured analog preset runs FM on a radio input, where the width is the channel
+   filter. The configured preset, as the status line's "Analog:" field reads it: a typed digital scan row on an analog
+   session does not end it, and the width set under the row is the one its leave returns to. */
 bool
 is_nfm_analog_active(const void* v) {
     const UiCtx* c = (const UiCtx*)v;
-    return c && c->opts && dsd_opts_is_analog_family(c->opts) && c->opts->analog_demod == DSD_ANALOG_DEMOD_FM
-           && dsd_opts_input_is_radio(c->opts);
+    if (!c || !c->opts || c->opts->m17encoder == 1 || !dsd_opts_input_is_radio(c->opts)) {
+        return false;
+    }
+    const dsd_scan_settings* configured = dsd_scan_mode_configured_view(dsd_app_get_latest_snapshot());
+    const int analog_only = configured ? configured->analog_only : c->opts->analog_only;
+    const int kind = configured ? configured->analog_demod : c->opts->analog_demod;
+    return analog_only == 1 && kind == DSD_ANALOG_DEMOD_FM;
 }
 
 // NcMenuItem action callbacks require a mutable context signature.

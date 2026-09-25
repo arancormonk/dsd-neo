@@ -412,19 +412,28 @@ ui_print_rtl_auto_ppm_status(void) {
 #endif
 }
 
-/* The analog channel width beside the DSP rate it has to fit (issue #525): the width the front end reports while it
-   runs the analog monitor, otherwise the configured one; "(DSP-limited)" when the DSP rate rather than the channel
-   filter bounds it. The M17 encoder shares the monitor output without being the analog receiver. */
+/* The analog channel width beside the DSP rate it has to fit (issue #525), under the configured analog preset: a typed
+   digital scan row on an analog session does not end it, and the row's leave returns to this width. While a running
+   stream's options in force run the analog monitor it is the width the front end reports, "(DSP-limited)" when the
+   DSP rate rather than the channel filter bounds it; otherwise (a stream not running, a typed digital row filtering
+   with its own profile) the configured width, the kind's default when none is set. The M17 encoder shares the monitor
+   output without being the analog receiver. The same rule as Qt's MetricsModel::fillAnalogChannel(). */
 static void
-ui_print_analog_channel_field(const dsd_opts* opts) {
-    if (!dsd_opts_is_analog_family(opts)) {
+ui_print_analog_channel_field(const dsd_opts* opts, const dsd_state* state) {
+    const dsd_scan_settings* configured = dsd_scan_mode_configured_view(state);
+    const int analog_only = configured ? configured->analog_only : opts->analog_only;
+    const int kind = configured ? configured->analog_demod : opts->analog_demod;
+    if (analog_only != 1 || opts->m17encoder == 1) {
         return;
     }
+    const int configured_hz =
+        (kind == DSD_ANALOG_DEMOD_AM) ? opts->analog_am_bandwidth_hz : opts->analog_nfm_bandwidth_hz;
+    int width_hz = dsd_analog_width_effective_hz(kind, configured_hz > 0 ? configured_hz : 0);
+    int limited = 0;
     dsd_frontend_metrics metrics;
     (void)dsd_app_frontend_get_metrics(&metrics);
-    int width_hz = dsd_analog_width_effective_hz(opts->analog_demod, dsd_opts_analog_width_hz(opts));
-    int limited = 0;
-    if (metrics.output_kind == DSD_FRONTEND_RTL_OUTPUT_AUDIO_MONITOR && metrics.channel_bandwidth_hz > 0) {
+    if (metrics.stream_active && dsd_opts_is_analog_family(opts)
+        && metrics.output_kind == DSD_FRONTEND_RTL_OUTPUT_AUDIO_MONITOR && metrics.channel_bandwidth_hz > 0) {
         width_hz = metrics.channel_bandwidth_hz;
         limited = metrics.channel_bandwidth_dsp_limited;
     }
@@ -432,7 +441,7 @@ ui_print_analog_channel_field(const dsd_opts* opts) {
     if (dsd_analog_width_format(width_hz, width, sizeof width) != 0) {
         return;
     }
-    printw(" Analog: %s %s%s;", dsd_analog_demod_label(opts->analog_demod), width, limited ? " (DSP-limited)" : "");
+    printw(" Analog: %s %s%s;", dsd_analog_demod_label(kind), width, limited ? " (DSP-limited)" : "");
 }
 
 static void
@@ -461,7 +470,7 @@ ui_render_rtl_input_source(dsd_opts* opts, dsd_state* state) {
         (void)dsd_app_squelch_view_format(&squelch, sql, sizeof sql);
         printw(" SQL: %s;", sql);
         printw(" DSP-BW: %i kHz;", opts->rtl_dsp_bw_khz);
-        ui_print_analog_channel_field(opts);
+        ui_print_analog_channel_field(opts, state);
         printw(" FRQ: %i;", opts->rtlsdr_center_freq);
         ui_print_rtl_auto_ppm_status();
         if (!soapy_input && opts->rtl_udp_port != 0) {

@@ -84,11 +84,23 @@ ModalSheet {
     readonly property bool analogWidthEditable: metrics.radioInput === true
     readonly property int analogWidthConfigured: isNaN(pendingAnalogWidth)
         ? metrics.analogBandwidthConfiguredHz : pendingAnalogWidth
-    readonly property int analogWidthStepFrom: analogWidthConfigured > 0
-        ? analogWidthConfigured : Util.NFM_DEFAULT_WIDTH_HZ
+    // An explicit width steps from itself. The default steps from the width in
+    // force, which below a 20 kHz DSP rate is the width the rate leaves rather
+    // than 16 kHz, so the first step from there is one the rate can take.
+    readonly property int analogWidthStepFrom: {
+        if (analogWidthConfigured > 0)
+            return analogWidthConfigured;
+        return metrics.analogBandwidthHz > 0 ? metrics.analogBandwidthHz : Util.NFM_DEFAULT_WIDTH_HZ;
+    }
+    // The widest width the running stream's DSP rate filters (0 = not known):
+    // the steps skip what the engine would refuse.
+    readonly property int analogWidthMax: metrics.analogBandwidthMaxHz > 0 ? metrics.analogBandwidthMaxHz : 0
     readonly property string analogWidthReading: {
-        if (!isNaN(pendingAnalogWidth))
-            return Util.widthKhzText(pendingAnalogWidth);
+        if (!isNaN(pendingAnalogWidth)) {
+            if (pendingAnalogWidth > 0)
+                return Util.widthKhzText(pendingAnalogWidth);
+            return Util.widthKhzText(Util.NFM_DEFAULT_WIDTH_HZ) + " " + qsTr("(default)");
+        }
         var text = Util.widthKhzText(metrics.analogBandwidthHz);
         if (metrics.analogBandwidthDspLimited === true)
             return text + " " + qsTr("(DSP-limited)");
@@ -127,12 +139,26 @@ ModalSheet {
     function stepAnalogWidth(direction) {
         if (!analogWidthEditable)
             return;
-        var next = Util.nextNfmWidth(analogWidthStepFrom, direction);
+        var next = Util.nextNfmWidth(analogWidthStepFrom, direction, analogWidthMax);
         if (next < 0)
             return;
         pendingAnalogWidth = next;
         analogWidthTtl.restart();
         commands.setNfmBandwidthHz(next);
+    }
+
+    /**
+     * Return the NFM channel width to the unset default (0). Not a step to
+     * 16 kHz: the default keeps its own rule (the channel filter runs only at
+     * DSP rates of 20 kHz or more) and a save leaves it out of the config, so a
+     * later default reaches it.
+     */
+    function resetAnalogWidth() {
+        if (!analogWidthEditable || analogWidthConfigured <= 0)
+            return;
+        pendingAnalogWidth = 0;
+        analogWidthTtl.restart();
+        commands.setNfmBandwidthHz(0);
     }
 
     /**
@@ -488,7 +514,7 @@ ModalSheet {
                 width: 48
                 text: "−"
                 accessibleName: qsTr("Narrower Channel")
-                enabled: sheet.analogWidthEditable && Util.nextNfmWidth(sheet.analogWidthStepFrom, -1) > 0
+                enabled: sheet.analogWidthEditable && Util.nextNfmWidth(sheet.analogWidthStepFrom, -1, sheet.analogWidthMax) > 0
                 onClicked: sheet.stepAnalogWidth(-1)
             }
             OutlineButton {
@@ -496,9 +522,19 @@ ModalSheet {
                 width: 48
                 text: "+"
                 accessibleName: qsTr("Wider Channel")
-                enabled: sheet.analogWidthEditable && Util.nextNfmWidth(sheet.analogWidthStepFrom, 1) > 0
+                enabled: sheet.analogWidthEditable && Util.nextNfmWidth(sheet.analogWidthStepFrom, 1, sheet.analogWidthMax) > 0
                 onClicked: sheet.stepAnalogWidth(1)
             }
+        }
+        // Back to the unset default, offered while an explicit width is set.
+        OutlineButton {
+            objectName: "radioAnalogBandwidthDefault"
+            visible: sheet.analogWidthConfigured > 0
+            width: parent.width
+            text: qsTr("Use the default width")
+            accessibleName: qsTr("Default Channel Width")
+            enabled: sheet.analogWidthEditable
+            onClicked: sheet.resetAnalogWidth()
         }
         // Why the stepper is greyed out, rather than leaving a dead control.
         Text {

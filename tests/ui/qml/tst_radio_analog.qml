@@ -7,9 +7,10 @@ import QtTest
 // Issue #525: the Radio sheet's NFM channel width. Under the analog preset it
 // shows the width in force -- the one the engine reports, "DSP-limited" when the
 // DSP rate bounds it, "default" when none is configured -- and its stepper edits
-// the configured width through the common channel plans. On PCM input the width
-// cannot act, so the stepper is disabled with the reason beside it. The NFM chip
-// selects the analog preset.
+// the configured width through the common channel plans, skipping the ones the
+// running DSP rate cannot filter. An explicit width can go back to the unset
+// default. On PCM input the width cannot act, so the stepper is disabled with the
+// reason beside it. The NFM chip selects the analog preset.
 Item {
     width: 420
     height: 1100
@@ -41,6 +42,7 @@ Item {
             testContext.setMetric("analogBandwidthHz", 0);
             testContext.setMetric("analogBandwidthDspLimited", false);
             testContext.setMetric("analogBandwidthConfiguredHz", 0);
+            testContext.setMetric("analogBandwidthMaxHz", 0);
             testContext.setMetric("radioInput", true);
             if (sheet) {
                 sheet.forgetRequests();
@@ -50,11 +52,13 @@ Item {
         }
 
         // What the engine publishes for an analog session: the width in force, the
-        // DSP-limited flag and the configured width (0 = default).
-        function analogSession(widthHz, limited, configuredHz) {
+        // DSP-limited flag, the configured width (0 = default) and, with a stream
+        // running, the widest width its DSP rate filters (0 or left out = not known).
+        function analogSession(widthHz, limited, configuredHz, maxHz) {
             testContext.setMetric("analogBandwidthHz", widthHz);
             testContext.setMetric("analogBandwidthDspLimited", limited);
             testContext.setMetric("analogBandwidthConfiguredHz", configuredHz);
+            testContext.setMetric("analogBandwidthMaxHz", maxHz === undefined ? 0 : maxHz);
             testContext.setMetric("decodeMode", analogMode);
             tryVerify(function () { return metrics.decodeMode === analogMode });
         }
@@ -80,9 +84,10 @@ Item {
             compare(findChild(sheet, "radioAnalogBandwidthValue").text, "12.5 kHz");
             analogSession(16000, false, 0);
             compare(findChild(sheet, "radioAnalogBandwidthValue").text, "16 kHz (default)");
-            // The legacy default below a 20 kHz DSP rate: the rate bounds the channel.
-            analogSession(10800, true, 0);
-            compare(findChild(sheet, "radioAnalogBandwidthValue").text, "10.8 kHz (DSP-limited)");
+            // The legacy default below a 20 kHz DSP rate runs no channel filter:
+            // the 12 kHz rate itself bounds the channel.
+            analogSession(12000, true, 0, 9600);
+            compare(findChild(sheet, "radioAnalogBandwidthValue").text, "12 kHz (DSP-limited)");
         }
 
         function test_stepper_edits_the_configured_width() {
@@ -95,10 +100,56 @@ Item {
             findChild(sheet, "radioAnalogBandwidthDown").clicked();
             compare(testContext.lastNfmBandwidthHz(), 11250);
             sheet.forgetRequests();
-            // From the default, whatever the DSP rate leaves: the steps start at 16 kHz.
-            analogSession(10800, true, 0);
+            // The default at a 48 kHz DSP rate: the steps start at 16 kHz.
+            analogSession(16000, false, 0, 42000);
             findChild(sheet, "radioAnalogBandwidthUp").clicked();
             compare(testContext.lastNfmBandwidthHz(), 20000);
+        }
+
+        // The default below a 20 kHz DSP rate reads the width the rate leaves, and
+        // the steps start from there and skip what the rate cannot filter, so no
+        // click asks for a width the engine would refuse.
+        function test_stepper_steps_within_the_dsp_rate() {
+            // 12 kHz DSP rate: nothing wider than 9.6 kHz fits.
+            analogSession(12000, true, 0, 9600);
+            verify(!findChild(sheet, "radioAnalogBandwidthUp").enabled, "a width the 12 kHz rate cannot filter was offered");
+            findChild(sheet, "radioAnalogBandwidthDown").clicked();
+            compare(testContext.lastNfmBandwidthHz(), 8000);
+            sheet.forgetRequests();
+            // 16 kHz DSP rate: 12.5 kHz fits, 20 kHz does not.
+            analogSession(16000, true, 0, 13200);
+            verify(!findChild(sheet, "radioAnalogBandwidthUp").enabled, "a width the 16 kHz rate cannot filter was offered");
+            findChild(sheet, "radioAnalogBandwidthDown").clicked();
+            compare(testContext.lastNfmBandwidthHz(), 12500);
+            sheet.forgetRequests();
+            // An explicit width at a 24 kHz rate: 20 kHz fits, 25 kHz does not.
+            analogSession(20000, false, 20000, 20400);
+            verify(!findChild(sheet, "radioAnalogBandwidthUp").enabled, "25 kHz was offered at a 24 kHz DSP rate");
+            verify(findChild(sheet, "radioAnalogBandwidthDown").enabled);
+        }
+
+        // An explicit width can go back to the unset default, which is not the
+        // same as 16 kHz: the control sends 0.
+        function test_default_returns_to_the_unset_default() {
+            analogSession(16000, false, 0);
+            verify(!findChild(sheet, "radioAnalogBandwidthDefault").visible, "the default offered itself");
+            analogSession(12500, false, 12500);
+            var reset = findChild(sheet, "radioAnalogBandwidthDefault");
+            verify(reset.visible, "an explicit width offered no way back to the default");
+            verify(reset.enabled);
+            reset.clicked();
+            compare(testContext.lastNfmBandwidthHz(), 0);
+            compare(findChild(sheet, "radioAnalogBandwidthValue").text, "16 kHz (default)");
+            // The request stands in until the engine answers; the default hides the control.
+            verify(!reset.visible);
+            sheet.forgetRequests();
+            // On PCM input it cannot act.
+            testContext.setMetric("radioInput", false);
+            tryVerify(function () { return metrics.radioInput === false });
+            verify(!findChild(sheet, "radioAnalogBandwidthDefault").enabled);
+            var calls = testContext.nfmBandwidthCalls();
+            sheet.resetAnalogWidth();
+            compare(testContext.nfmBandwidthCalls(), calls);
         }
 
         function test_stepper_stops_at_the_ends_of_the_range() {

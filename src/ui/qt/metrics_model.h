@@ -103,6 +103,7 @@ class MetricsModel : public QObject {
     Q_PROPERTY(int channelBandwidthHz READ channelBandwidthHz NOTIFY tunerChanged)
     Q_PROPERTY(int analogBandwidthHz READ analogBandwidthHz NOTIFY tunerChanged)
     Q_PROPERTY(bool analogBandwidthDspLimited READ analogBandwidthDspLimited NOTIFY tunerChanged)
+    Q_PROPERTY(int analogBandwidthMaxHz READ analogBandwidthMaxHz NOTIFY tunerChanged)
     Q_PROPERTY(int analogBandwidthConfiguredHz READ analogBandwidthConfiguredHz NOTIFY controlChanged)
     Q_PROPERTY(int slot1CallState READ slot1CallState NOTIFY slot1Changed)
     Q_PROPERTY(int slot2CallState READ slot2CallState NOTIFY slot2Changed)
@@ -401,12 +402,12 @@ class MetricsModel : public QObject {
     }
 
     /**
-     * @brief The analog channel width in force, in Hz (issue #525); 0 outside the analog preset.
+     * @brief The analog channel width in force, in Hz (issue #525); 0 outside the configured analog preset.
      *
-     * While the front end runs the analog monitor, the width it reports (the configured width while its channel filter
-     * runs, otherwise the width the DSP rate leaves: see analogBandwidthDspLimited()). Otherwise -- no tuner, a stream
-     * not started, a typed digital scan row filtering with its own profile -- the configured width, the kind's default
-     * when none is set. The same rule as the terminal's "Analog:" status field.
+     * While a running stream runs the analog monitor, the width it reports (the configured width while its channel
+     * filter runs, otherwise the width the DSP rate leaves: see analogBandwidthDspLimited()). Otherwise -- no tuner, a
+     * stream not running, a typed digital scan row filtering with its own profile -- the configured width, the kind's
+     * default when none is set. The same rule as the terminal's "Analog:" status field.
      */
     int
     analogBandwidthHz() const {
@@ -417,6 +418,18 @@ class MetricsModel : public QObject {
     bool
     analogBandwidthDspLimited() const {
         return m_view.analog_bandwidth_dsp_limited;
+    }
+
+    /**
+     * @brief The widest analog channel width the running stream's DSP rate filters, in Hz; 0 when unknown.
+     *
+     * Published under the analog preset while a radio stream runs, from the demod rate it reports
+     * (dsd_analog_width_max_for_rate()), so the width control offers only steps the engine would take. 0 with no
+     * stream: the engine then holds a width to the rate the next start gives.
+     */
+    int
+    analogBandwidthMaxHz() const {
+        return m_view.analog_bandwidth_max_hz;
     }
 
     /**
@@ -1312,6 +1325,7 @@ class MetricsModel : public QObject {
         int channel_bandwidth_hz = 0;
         int analog_bandwidth_hz = 0;
         int analog_bandwidth_configured_hz = 0;
+        int analog_bandwidth_max_hz = 0;
         int decode_mode = 0;
         int configured_force = 0;
         int effective_force = 0;
@@ -1384,8 +1398,8 @@ class MetricsModel : public QObject {
                    && center_freq_hz == other.center_freq_hz && channel_bandwidth_hz == other.channel_bandwidth_hz
                    && analog_bandwidth_hz == other.analog_bandwidth_hz
                    && analog_bandwidth_dsp_limited == other.analog_bandwidth_dsp_limited
-                   && synced_here == other.synced_here && sync_label == other.sync_label
-                   && trunkable_sync == other.trunkable_sync;
+                   && analog_bandwidth_max_hz == other.analog_bandwidth_max_hz && synced_here == other.synced_here
+                   && sync_label == other.sync_label && trunkable_sync == other.trunkable_sync;
         }
 
         /* The scan controls (#380) ride controlChanged with the rest; split out only so

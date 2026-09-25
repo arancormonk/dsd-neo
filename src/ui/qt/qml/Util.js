@@ -90,15 +90,18 @@ function widthKhzText(hz) {
 
 // The preset after (direction 1) or before (-1) a width, or -1 at the end of the
 // list. A width between presets steps to the nearest one in that direction.
-function nextNfmWidth(hz, direction) {
+// @a maxHz, when above 0, is the widest width the DSP rate filters: presets
+// above it are skipped, since the engine would refuse them.
+function nextNfmWidth(hz, direction, maxHz) {
+    var fits = function (w) { return !(maxHz > 0) || w <= maxHz }
     if (direction > 0) {
         for (var i = 0; i < NFM_WIDTHS_HZ.length; i++) {
-            if (NFM_WIDTHS_HZ[i] > hz)
+            if (NFM_WIDTHS_HZ[i] > hz && fits(NFM_WIDTHS_HZ[i]))
                 return NFM_WIDTHS_HZ[i]
         }
     } else {
         for (var j = NFM_WIDTHS_HZ.length - 1; j >= 0; j--) {
-            if (NFM_WIDTHS_HZ[j] < hz)
+            if (NFM_WIDTHS_HZ[j] < hz && fits(NFM_WIDTHS_HZ[j]))
                 return NFM_WIDTHS_HZ[j]
         }
     }

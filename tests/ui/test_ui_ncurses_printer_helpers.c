@@ -638,10 +638,12 @@ print_dsp_status(dsd_opts* opts, dsd_state* state) { // NOLINT(misc-use-internal
 #include "dsd-neo/runtime/analog_channel.h"
 
 static int g_requested_ppm;
-/* The channel the front end reports (issue #525): its width, whether the DSP rate limits it, and its output. */
+/* The channel the front end reports (issue #525): its width, whether the DSP rate limits it, its output, and whether
+   a stream runs at all (the mirror behind the width outlives the stream). */
 static int g_channel_bandwidth_hz;
 static int g_channel_bandwidth_dsp_limited;
 static int g_output_kind = DSD_FRONTEND_RTL_OUTPUT_AUDIO_MONITOR;
+static int g_stream_active;
 
 int
 dsd_app_frontend_get_metrics(dsd_frontend_metrics* out) { // NOLINT(misc-use-internal-linkage)
@@ -650,6 +652,7 @@ dsd_app_frontend_get_metrics(dsd_frontend_metrics* out) { // NOLINT(misc-use-int
     out->output_kind = g_output_kind;
     out->channel_bandwidth_hz = g_channel_bandwidth_hz;
     out->channel_bandwidth_dsp_limited = g_channel_bandwidth_dsp_limited;
+    out->stream_active = g_stream_active;
     return 0;
 }
 
@@ -892,9 +895,10 @@ test_rtl_and_soapy_input_source_rendering(void) {
 }
 
 /*
- * Issue #525: beside the DSP rate, the status line names the analog channel width in force -- the front end's while it
- * runs the monitor, else the configured one -- and says when the DSP rate rather than the filter bounds it. The same
- * width the NFM bandwidth row and the Qt Radio sheet show.
+ * Issue #525: beside the DSP rate, the status line names the analog channel width in force -- the front end's while a
+ * running stream runs the monitor, else the configured one -- and says when the DSP rate rather than the filter bounds
+ * it. The same width the NFM bandwidth row and the Qt Radio sheet show. The front end's width is kept apart from the
+ * configured one, so each case shows which of the two the line took.
  */
 static void
 test_analog_channel_status_rendering(void) {
@@ -905,6 +909,7 @@ test_analog_channel_status_rendering(void) {
     opts.audio_in_type = AUDIO_IN_RTL;
     opts.rtl_dsp_bw_khz = 48;
     DSD_SNPRINTF(opts.audio_in_dev, sizeof(opts.audio_in_dev), "rtl");
+    g_stream_active = 1;
 
     /* Digital: no analog field. */
     reset_printw_capture();
@@ -920,19 +925,42 @@ test_analog_channel_status_rendering(void) {
     assert_capture_contains(" DSP-BW: 48 kHz; Analog: NFM 16 kHz;");
 
     opts.analog_nfm_bandwidth_hz = 12500;
-    g_channel_bandwidth_hz = 12500;
+    g_channel_bandwidth_hz = 20000;
+    reset_printw_capture();
+    ui_render_rtl_input_source(&opts, &state);
+    assert_capture_contains(" Analog: NFM 20 kHz;");
+
+    /* A stopped stream: the mirror still holds the last session's width, which is not this one's. */
+    g_stream_active = 0;
     reset_printw_capture();
     ui_render_rtl_input_source(&opts, &state);
     assert_capture_contains(" Analog: NFM 12.5 kHz;");
+    g_stream_active = 1;
 
-    /* The default below a 20 kHz DSP rate keeps its legacy filter: the rate bounds the channel. */
+    /* A typed digital scan row on the analog session: the configured preset stays analog, and the row filters with its
+       own profile, so the line shows the configured width the row's leave returns to. */
+    static dsd_scan_settings configured;
+    DSD_MEMSET(&configured, 0, sizeof(configured));
+    configured.analog_only = 1;
+    configured.analog_demod = DSD_ANALOG_DEMOD_FM;
+    g_scan_configured = &configured;
+    opts.analog_only = 0;
+    opts.frame_dmr = 1;
+    reset_printw_capture();
+    ui_render_rtl_input_source(&opts, &state);
+    assert_capture_contains(" Analog: NFM 12.5 kHz;");
+    g_scan_configured = NULL;
+    opts.frame_dmr = 0;
+    opts.analog_only = 1;
+
+    /* The default below a 20 kHz DSP rate runs no channel filter: the 12 kHz rate itself bounds the channel. */
     opts.analog_nfm_bandwidth_hz = 0;
     opts.rtl_dsp_bw_khz = 12;
-    g_channel_bandwidth_hz = 10800;
+    g_channel_bandwidth_hz = 12000;
     g_channel_bandwidth_dsp_limited = 1;
     reset_printw_capture();
     ui_render_rtl_input_source(&opts, &state);
-    assert_capture_contains(" DSP-BW: 12 kHz; Analog: NFM 10.8 kHz (DSP-limited);");
+    assert_capture_contains(" DSP-BW: 12 kHz; Analog: NFM 12 kHz (DSP-limited);");
 
     /* The M17 encoder shares the monitor output without being the analog receiver. */
     opts.m17encoder = 1;
@@ -942,6 +970,7 @@ test_analog_channel_status_rendering(void) {
 
     g_channel_bandwidth_hz = 0;
     g_channel_bandwidth_dsp_limited = 0;
+    g_stream_active = 0;
 }
 
 static void
