@@ -1644,9 +1644,12 @@ ui_cmd_handle_nfm_bandwidth_set(dsd_opts* opts, dsd_state* state, const struct d
         ui_set_toast(state, 5, "Refused: %s", why);
         return UI_CMD_APPLY_FAILED;
     }
-    char text[DSD_APP_ANALOG_WIDTH_TEXT_MAX];
-    (void)dsd_app_analog_width_setting_format(opts->analog_nfm_bandwidth_hz, text, sizeof text);
-    ui_set_toast(state, 3, "Applied: NFM bandwidth -> %s", text);
+    /* The command edits the configured width, so while a scan row sets its own the notice says the row still wins. */
+    dsd_app_analog_width_view view;
+    char notice[96];
+    (void)dsd_app_analog_width_view_get(opts, state, NULL, &view);
+    (void)dsd_app_analog_width_view_edit_notice(&view, notice, sizeof notice);
+    ui_set_toast(state, 3, "%s", notice);
     return UI_CMD_APPLY_COMPLETED;
 }
 
@@ -5210,7 +5213,7 @@ cfg_airspy_settings_valid(const dsdneoUserConfig* cfg) {
    the front end kept, and the toast says why. */
 static void
 ui_restore_refused_nfm_width(dsd_opts* opts, dsd_state* state, int width_hz, int kept_hz) {
-    opts->analog_nfm_bandwidth_hz = kept_hz;
+    svc_restore_nfm_width(opts, state, kept_hz);
     char why[128];
     svc_describe_nfm_refusal(opts, width_hz, why, sizeof why);
     ui_set_toast(state, 5, "Refused: %s", why);
@@ -5649,9 +5652,10 @@ command_updates_scan_mode(const struct dsd_app_command* c) {
         DSD_APP_CMD_SCAN_VOICE_ONLY_SET,
         DSD_APP_CMD_SCAN_VOICE_QUALIFY_MS_SET,
         DSD_APP_CMD_SCAN_VOICE_HOLD_MS_SET,
-        /* DSD_APP_CMD_NFM_BANDWIDTH_SET is deliberately not here: the width is not a row setting, so the command edits
-         * the configured width in place (svc_set_nfm_bandwidth()) instead of suspending and re-applying the row, which
-         * would read the live acquisition the row has made as a change and end a followed call. */
+        /* DSD_APP_CMD_NFM_BANDWIDTH_SET is deliberately not here: like squelch, the command edits the configured
+         * width through dsd_scan_mode_set_configured_nfm_bandwidth() (svc_set_nfm_bandwidth()) instead of suspending
+         * and re-applying the row, which would read the live acquisition the row has made as a change and end a
+         * followed call. An nfm row's own width (--nfm-bandwidth-hz, issue #526) stays in force over the edit. */
         DSD_APP_CMD_IMPORT_GROUP_LIST,
         DSD_APP_CMD_IMPORT_GROUP_LIST_CLEAR,
         DSD_APP_CMD_DECODE_MODE_SET,
@@ -5753,9 +5757,11 @@ apply_cmd_resume_scope(dsd_opts* opts, dsd_state* state, int nfm_width_before) {
             ui_restore_refused_nfm_width(opts, state, opts->analog_nfm_bandwidth_hz, nfm_width_before);
         }
     } else if (!changed && opts->analog_nfm_bandwidth_hz != nfm_width_before) {
-        /* The NFM width is not a row setting, so changing it alone (a config apply) leaves the row's constraint as it
-           was: the new width reaches the front end now that the options in force are the row's again (a row that runs
-           the -fA monitor), which it could not while the command ran against the configured ones. */
+        /* A configured width change that reads as no acquisition change (dsd_scan_settings_equal() compares widths for
+           the analog family only) leaves the row's constraint as it was: the new width reaches the front end now that
+           the options in force are the row's again (a row that runs the -fA monitor), which it could not while the
+           command ran against the configured ones. @p nfm_width_before is the width in force before the command, so a
+           row that sets its own width (issue #526), unchanged over the edit, publishes nothing. */
         (void)ui_publish_nfm_bandwidth(opts, state, nfm_width_before);
     }
     return 0;
@@ -5765,12 +5771,13 @@ static int
 apply_cmd_scoped(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c, int guarded) {
     const int mode_update = command_updates_scan_mode(c);
     const int was_scanner = opts && opts->scanner_mode == 1;
+    /* The width in force, taken before a suspend puts the configured one in dsd_opts. */
+    const int nfm_width_before = opts ? opts->analog_nfm_bandwidth_hz : 0;
     const int scoped = mode_update && opts && state && dsd_scan_mode_suspend(opts, state);
     const int group_update = c
                              && (c->id == DSD_APP_CMD_IMPORT_GROUP_LIST || c->id == DSD_APP_CMD_IMPORT_GROUP_LIST_CLEAR
                                  || c->id == DSD_APP_CMD_CONFIG_APPLY);
     const int groups_suspended = group_update && dsd_scan_groups_suspend(state);
-    const int nfm_width_before = opts ? opts->analog_nfm_bandwidth_hz : 0;
     const int result = apply_cmd_unscoped(opts, state, c);
     if (groups_suspended) {
         dsd_scan_groups_resume(state);

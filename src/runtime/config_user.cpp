@@ -1965,12 +1965,14 @@ snapshot_dsp_config(dsdneoUserConfig* cfg) {
     cfg->iq_dc_block = (dsd_parse_int_strict(dcb, 10, INT_MIN, INT_MAX, &parsed) == 0 && parsed != 0) ? 1 : 0;
 }
 
-/* The configured width, 0 when the default is in force. No scan row sets a width yet, so the options are the
-   configured values here; rows that do will have to save from dsd_scan_mode_configured_view() instead. The section is
-   always part of a snapshot, as every other section is, so a saved default is a setting that loads back. */
+/* The configured width, 0 when the default is in force. A scan row's own --nfm-bandwidth-hz (issue #526) runs over
+   it in dsd_opts while the row is on air, so it comes from the configured view, as the decode mode does. The section
+   is always part of a snapshot, as every other section is, so a saved default is a setting that loads back. */
 static void
-snapshot_analog_config(const dsd_opts* opts, dsdneoUserConfig* cfg) {
-    cfg->analog_nfm_bandwidth_hz = opts->analog_nfm_bandwidth_hz > 0 ? opts->analog_nfm_bandwidth_hz : 0;
+snapshot_analog_config(const dsd_opts* opts, const dsd_state* state, dsdneoUserConfig* cfg) {
+    const dsd_scan_settings* configured = dsd_scan_mode_configured_view(state);
+    const int width_hz = configured ? configured->analog_nfm_bandwidth_hz : opts->analog_nfm_bandwidth_hz;
+    cfg->analog_nfm_bandwidth_hz = width_hz > 0 ? width_hz : 0;
     cfg->has_analog = 1;
 }
 
@@ -1992,7 +1994,7 @@ dsd_snapshot_opts_to_user_config(const dsd_opts* opts, const dsd_state* state, d
     snapshot_alerts_config(opts, cfg);
     snapshot_recording_config(opts, cfg);
     snapshot_dsp_config(cfg);
-    snapshot_analog_config(opts, cfg);
+    snapshot_analog_config(opts, state, cfg);
 }
 
 // Template generation ---------------------------------------------------------

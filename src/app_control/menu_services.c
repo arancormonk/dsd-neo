@@ -36,6 +36,7 @@
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/log.h>
 #include <dsd-neo/runtime/scan_mode.h>
+#include <dsd-neo/runtime/scan_options.h>
 #include <math.h>
 #include <stdarg.h>
 #include <stdint.h>
@@ -952,14 +953,40 @@ svc_describe_nfm_refusal(const dsd_opts* opts, int width_hz, char* why, size_t w
     svc_why(why, why_size, "the RTL front end refused NFM %s (see log)", width);
 }
 
+/* Whether the scan row on air sets its own NFM width (--nfm-bandwidth-hz, issue #526), which is in force over the
+   configured one until the row leaves. */
+static int
+svc_row_sets_nfm_width(const dsd_state* state) {
+    const dsd_scan_option_values* row = dsd_scan_mode_row_options(state);
+    return row && (row->present & DSD_SCAN_OPT_BANDWIDTH) != 0U;
+}
+
 /* The NFM width is in use while the configured -fA preset runs FM (the scan scope's configured view: a typed digital
-   row on an analog session returns to the monitor when it ends); the M17 encoder's monitor path never uses it. */
+   row on an analog session returns to the monitor when it ends), and while an nfm scan row that sets no width of its
+   own runs it on any session (issue #526); the M17 encoder's monitor path never uses it. */
 static int
 svc_nfm_width_in_use(const dsd_opts* opts, const dsd_state* state) {
     const dsd_scan_settings* configured = dsd_scan_mode_configured_view(state);
     const int analog_only = configured ? configured->analog_only : opts->analog_only;
     const int kind = configured ? configured->analog_demod : opts->analog_demod;
-    return analog_only == 1 && opts->m17encoder != 1 && kind == DSD_ANALOG_DEMOD_FM;
+    if (analog_only == 1 && opts->m17encoder != 1 && kind == DSD_ANALOG_DEMOD_FM) {
+        return 1;
+    }
+    return dsd_scan_mode_is_analog(dsd_scan_mode_active(state)) && dsd_opts_is_analog_family(opts)
+           && opts->analog_demod == DSD_ANALOG_DEMOD_FM && !svc_row_sets_nfm_width(state);
+}
+
+void
+svc_restore_nfm_width(dsd_opts* opts, const dsd_state* state, int width_hz) {
+    if (!opts) {
+        return;
+    }
+    if (dsd_scan_mode_configured_view(state) && svc_row_sets_nfm_width(state)) {
+        /* The row's own width was the one refused: the configured one never reached the front end. */
+        opts->analog_nfm_bandwidth_hz = width_hz;
+        return;
+    }
+    (void)dsd_scan_mode_set_configured_nfm_bandwidth(opts, state, width_hz);
 }
 
 int
@@ -1040,11 +1067,14 @@ svc_set_nfm_bandwidth(dsd_opts* opts, const dsd_state* state, int width_hz, char
     if (svc_nfm_width_in_use(opts, state) && svc_check_nfm_bandwidth(opts, state, width_hz, why, why_size) != 0) {
         return -1;
     }
-    const int previous_hz = opts->analog_nfm_bandwidth_hz;
-    opts->analog_nfm_bandwidth_hz = width_hz;
-    if (svc_publish_nfm_bandwidth(opts, state) != 0) {
+    const dsd_scan_settings* configured = dsd_scan_mode_configured_view(state);
+    const int previous_hz = configured ? configured->analog_nfm_bandwidth_hz : opts->analog_nfm_bandwidth_hz;
+    /* The configured width, without suspending a scan row (issue #526): a row that sets its own width keeps it in force
+       until it leaves, and nothing reaches the front end until then. */
+    if (dsd_scan_mode_set_configured_nfm_bandwidth(opts, state, width_hz) == 1
+        && svc_publish_nfm_bandwidth(opts, state) != 0) {
         /* The front end refused the request after all: the rate moved since the check (a retune). */
-        opts->analog_nfm_bandwidth_hz = previous_hz;
+        (void)dsd_scan_mode_set_configured_nfm_bandwidth(opts, state, previous_hz);
         svc_describe_nfm_refusal(opts, width_hz, why, why_size);
         return -1;
     }
@@ -1364,7 +1394,8 @@ svc_rtl_bandwidth_fits_analog_width(const dsd_opts* opts, const dsd_state* state
         return 0;
     }
     const int in_force_hz = dsd_opts_analog_width_hz(opts);
-    if (!dsd_opts_is_analog_family(opts) || in_force_hz <= 0 || (in_force_hz == width_hz && opts->analog_demod == kind)) {
+    if (!dsd_opts_is_analog_family(opts) || in_force_hz <= 0
+        || (in_force_hz == width_hz && opts->analog_demod == kind)) {
         return 1;
     }
     return svc_rtl_bandwidth_fits_width(opts, opts->analog_demod, in_force_hz, 1, khz, why, why_size);

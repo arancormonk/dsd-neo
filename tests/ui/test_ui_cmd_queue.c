@@ -6187,6 +6187,84 @@ test_nfm_width_edit_keeps_live_acquisition(void) {
 }
 
 /*
+ * Issue #526: an nfm scan row's own --nfm-bandwidth-hz runs over the configured width while the row is on air. The width
+ * command still edits the configured width, without suspending the row: the row keeps its width, the front end is asked
+ * for nothing, and the toast says the row overrides the edit. A row without a width of its own, and the row's leave, put
+ * the edited width in force. On a digital session an nfm row without a width runs the configured width, so an edit is
+ * held to the front end's rate and handed to it live there too.
+ */
+static int
+test_nfm_bandwidth_set_under_a_width_row(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static void* fake_ctx[2];
+    int rc = 0;
+    init_nfm_session(&opts, &state, (RtlSdrContext*)fake_ctx);
+    rc |= submit_nfm_width(&opts, &state, 20000, "width row: configured 20 kHz");
+    dsd_scan_option_values row = {0};
+    row.present = DSD_SCAN_OPT_BANDWIDTH;
+    row.channel_bw_hz = 12500;
+    rc |= expect_int("width row: nfm row", dsd_scan_mode_enter(&opts, &state, DSD_SCAN_MODE_NFM), 0);
+    rc |= expect_int("width row: its width", dsd_scan_mode_options(&opts, &state, &row), 0);
+    rc |= expect_int("width row: in force", opts.analog_nfm_bandwidth_hz, 12500);
+
+    reset_rx_family_wrap();
+    rc |= submit_nfm_width(&opts, &state, 16000, "width row: shadowed edit");
+    rc |= expect_int("width row: row keeps its width", opts.analog_nfm_bandwidth_hz, 12500);
+    rc |= expect_int("width row: baseline takes the edit",
+                     dsd_scan_mode_configured_view(&state)->analog_nfm_bandwidth_hz, 16000);
+    rc |= expect_int("width row: held to the front end", g_analog_check_calls, 1);
+    rc |= expect_int("width row: front end not asked to change", g_analog_req_calls, 0);
+    rc |= expect_int("width row: row not suspended",
+                     dsd_scan_mode_active(&state) == DSD_SCAN_MODE_NFM && !dsd_scan_mode_updating(&state), 1);
+    rc |= expect_toast("width row: toast names the row", &state,
+                       "Default NFM bandwidth -> 16 kHz; this channel overrides it (12.5 kHz)");
+    /* Refused, the baseline keeps its width. */
+    reset_rx_family_wrap();
+    g_analog_check_result = -1;
+    rc |= submit_nfm_width(&opts, &state, 25000, "width row: refused edit");
+    rc |= expect_int("width row: refused edit keeps the baseline",
+                     dsd_scan_mode_configured_view(&state)->analog_nfm_bandwidth_hz, 16000);
+    rc |= expect_int("width row: refused edit keeps the row", opts.analog_nfm_bandwidth_hz, 12500);
+    g_analog_check_result = 0;
+
+    /* The same row without a width runs the edited default, and takes the next edit at once. */
+    rc |= expect_int("width row: no width", dsd_scan_mode_options(&opts, &state, NULL), 0);
+    rc |= expect_int("width row: default in force", opts.analog_nfm_bandwidth_hz, 16000);
+    reset_rx_family_wrap();
+    rc |= submit_nfm_width(&opts, &state, 11250, "width row: edit in force");
+    rc |= expect_int("width row: edit in force stored", opts.analog_nfm_bandwidth_hz, 11250);
+    rc |= expect_int("width row: edit requested live", g_analog_req_calls == 1 && g_analog_req_width_hz == 11250, 1);
+    rc |= expect_toast("width row: edit in force toast", &state, "Applied: NFM bandwidth -> 11.25 kHz");
+    dsd_scan_mode_leave(&opts, &state);
+    rc |= expect_int("width row: leave keeps the edit", opts.analog_nfm_bandwidth_hz, 11250);
+
+    /* A digital session: the nfm row without a width is the one receiver the configured width runs on. */
+    (void)dsd_app_command_set_i32(DSD_APP_CMD_DECODE_MODE_SET, (int32_t)DSDCFG_MODE_DMR);
+    (void)dsd_app_drain_cmds(&opts, &state);
+    rc |= expect_int("width row digital: session", opts.analog_only, 0);
+    rc |= expect_int("width row digital: nfm row", dsd_scan_mode_enter(&opts, &state, DSD_SCAN_MODE_NFM), 0);
+    rc |= expect_int("width row digital: no width", dsd_scan_mode_options(&opts, &state, NULL), 0);
+    reset_rx_family_wrap();
+    g_analog_check_result = -1;
+    rc |= submit_nfm_width(&opts, &state, 25000, "width row digital: refused");
+    rc |= expect_int("width row digital: refused keeps the width", opts.analog_nfm_bandwidth_hz, 11250);
+    rc |= expect_int("width row digital: refused asks for nothing", g_analog_req_calls, 0);
+    g_analog_check_result = 0;
+    reset_rx_family_wrap();
+    rc |= submit_nfm_width(&opts, &state, 12500, "width row digital: applied");
+    rc |= expect_int("width row digital: requested live", g_analog_req_calls == 1 && g_analog_req_width_hz == 12500, 1);
+    dsd_scan_mode_leave(&opts, &state);
+    rc |= expect_int("width row digital: leave keeps the edit",
+                     opts.analog_only == 0 && opts.analog_nfm_bandwidth_hz == 12500, 1);
+
+    opts.analog_nfm_bandwidth_hz = 0;
+    state.rtl_ctx = NULL;
+    freeState(&state);
+    return rc;
+}
+
+/*
  * A switch onto Analog under a scan row is held to the explicit NFM width's rate too. Checking the front end is skipped
  * under a row for the default, which no rate refuses, but the row's resume or leave requests the analog profile with
  * an explicit width, and a width the front end refused there would leave an Analog decoder on a digital front end.
@@ -7473,6 +7551,7 @@ main(void) {
     rc |= test_nfm_bandwidth_set_after_a_queued_switch_from_cqpsk();
     rc |= test_nfm_bandwidth_set_under_scan_rows();
     rc |= test_nfm_width_edit_keeps_live_acquisition();
+    rc |= test_nfm_bandwidth_set_under_a_width_row();
     rc |= test_decode_mode_analog_under_a_row_holds_the_nfm_width();
     rc |= test_config_apply_holds_nfm_width_to_the_front_end();
     rc |= test_config_apply_holds_nfm_width_to_a_new_dsp_bandwidth();

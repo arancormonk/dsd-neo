@@ -288,19 +288,30 @@ void svc_describe_nfm_refusal(const dsd_opts* opts, int width_hz, char* why, siz
  * @brief Set the configured NFM channel width (DSD_APP_CMD_NFM_BANDWIDTH_SET), live when the analog monitor runs.
  *
  * Refuses, and changes nothing, a width outside 0 or 8000..25000 Hz, and, while the configured NFM preset uses the
- * width (the scan scope's configured view, so a typed digital scan row on an analog session still holds it), one the
- * front end would refuse (svc_check_nfm_bandwidth()). The width is not a scan row setting, so the command edits it in
- * place rather than suspending a row's scope, and never disturbs the acquisition a row has made. An accepted width is
- * stored and handed to a running RTL front end (svc_publish_nfm_bandwidth()): on the analog monitor a width-only change
- * redesigns the channel filter from empty histories at the next block. A request the front end refuses there after all
- * (a retune moved the rate since the check) is refused here too, with the previous width put back; one refused where it
- * lands is put back by the next command drain (svc_take_monitor_request_outcome()). Anywhere else (a digital session, a
- * typed digital scan row on an analog session, CQPSK toggled on under -fA, a stopped stream) the stored width applies
- * the next time the analog profile is requested or the stream opens. Decoder thread only.
+ * width (the scan scope's configured view, so a typed digital scan row on an analog session still holds it) or an nfm
+ * scan row without a width of its own runs it, one the front end would refuse (svc_check_nfm_bandwidth()). The command
+ * edits the configured width through dsd_scan_mode_set_configured_nfm_bandwidth() rather than suspending a row's scope,
+ * so it never disturbs the acquisition a row has made; an nfm row's own width (--nfm-bandwidth-hz, issue #526) stays in
+ * force until the row leaves, and the edit reaches the front end with the next row that takes the configured width or
+ * the leave. A width in force is handed to a running RTL front end (svc_publish_nfm_bandwidth()): on the analog monitor
+ * a width-only change redesigns the channel filter from empty histories at the next block. A request the front end
+ * refuses there after all (a retune moved the rate since the check) is refused here too, with the previous width put
+ * back; one refused where it lands is put back by the next command drain (svc_take_monitor_request_outcome()). Anywhere
+ * else (a digital session, a typed digital scan row on an analog session, CQPSK toggled on under -fA, a stopped stream)
+ * the stored width applies the next time the analog profile is requested or the stream opens. Decoder thread only.
  *
  * @return 0 when stored, -1 when refused (reason in @p why).
  */
 int svc_set_nfm_bandwidth(dsd_opts* opts, const dsd_state* state, int width_hz, char* why, size_t why_size);
+
+/**
+ * @brief Put the NFM width back to @p width_hz, the one the front end kept, after it refused the width in force.
+ *
+ * While the scan row on air sets its own width (issue #526), that width was the one refused: the width in force takes
+ * @p width_hz and the configured width, which never reached the front end, stays. Otherwise the configured width takes
+ * it (dsd_scan_mode_set_configured_nfm_bandwidth()). Decoder thread only.
+ */
+void svc_restore_nfm_width(dsd_opts* opts, const dsd_state* state, int width_hz);
 
 /**
  * @brief Hand the configured NFM width to a running RTL front end, as a live analog profile request.
