@@ -13,7 +13,7 @@ Friendly, practical overview of the `dsd-neo` command line. This covers what you
 - Modes: `-fa | -fs | -fr | -f1 | -f2 | -fd | -fx | -fy | -fz | -fU | -fi | -fn | -fp | -fh | -fH | -fe | -fE | -fm | -fA`
 - Analog: `-fA` (NFM monitor), `--nfm-bandwidth-hz <Hz>` (8000..25000, default 16000; see [Analog reception](#analog-reception--fa))
 - Inversions/filtering: `-xx`, `-xr`, `-xd`, `-xz`, `-l`, `-q`
-- Trunking/scan: `-T`, `-Y`, `--trunk-scan targets.csv` (P25/DMR/NXDN96/NXDN48 trunk and conventional targets; each type selects its decoder class), `-C chan.csv`, `-G group.csv`, `--src-csv src.csv`, `--p25-bandplan plan.csv`, `--p25-bandplan-export plan.csv`, `-W`, `-E`, `-p`, `-e`, `-I 1234`, `-U 4532`, `-B 12000`, `-t 1`, `--enc-lockout|--enc-follow`, `--tg-lockout-session|--tg-lockout-persist`, `--scan-voice-only`, `--scan-voice-qualify-ms <ms>`, `--scan-voice-hold-ms <ms>`, `--scan-max-visit-ms <ms>`
+- Trunking/scan: `-T`, `-Y`, `--trunk-scan targets.csv` (P25/DMR/NXDN96/NXDN48 trunk and conventional targets and analog NFM conventional targets; each type selects its decoder class), `-C chan.csv`, `-G group.csv`, `--src-csv src.csv`, `--p25-bandplan plan.csv`, `--p25-bandplan-export plan.csv`, `-W`, `-E`, `-p`, `-e`, `-I 1234`, `-U 4532`, `-B 12000`, `-t 1`, `--enc-lockout|--enc-follow`, `--tg-lockout-session|--tg-lockout-persist`, `--scan-voice-only`, `--scan-voice-qualify-ms <ms>`, `--scan-voice-hold-ms <ms>`, `--scan-max-visit-ms <ms>`
 - RTL‑SDR strings: `-i rtl:dev:freq:gain:ppm:bw:sql:vol[:bias=on|off]` or `-i rtltcp:host:port:freq:gain:ppm:bw:sql:vol[:bias=on|off]`
 - Soapy selection: `-i soapy`, `-i soapy:driver=airspy[,serial=...]`, or `-i soapy[:args]:freq[:gain[:ppm[:bw[:sql[:vol]]]]]` (discover args with `SoapySDRUtil --find`)
 - RTL retune control: `--rtl-udp-control <port>` binds to loopback by default; use
@@ -780,7 +780,9 @@ is delayed.
   `--scan-voice-hold-ms <100..600000>` (default `2000`) is the time to stay after the last voice frame. Encrypted
   voice without a key holds unless the talkgroup policy blocks it; unknown identity counts as voice. The last-media
   time survives an over-the-air terminator, so the full hold still runs when a protocol closes the call before the
-  scanner's next tick.
+  scanner's next tick. The voice gate never applies to an analog row, where there is no decoded voice to wait for:
+  an `nfm` row, and every row of an untyped list scanned under `-fA`, holds on its carrier under `-t` instead, so
+  `--scan-voice-only` never blocks one.
   Per-visit ceiling: `--scan-max-visit-ms <ms>` (also `--scan-max-visit-ms=<ms>`; `0` disables, otherwise
   `1000..3600000`; default `0`) is the longest one visit to a row may last, with or without `--scan-voice-only`. It is a
   ceiling, not a reason to stay, so it can cut an ongoing call short: that is the point on an open microphone, and why
@@ -801,10 +803,10 @@ is delayed.
   Optional channel-map `mode` values select `p25`, `dmr`, `nxdn96`, `nxdn48`, `dpmr`, `dstar`, `ysf`, `m17`, or
   `nfm` (analog narrowband FM) for each row. See [the mixed-mode example](../examples/conventional_scan_modes.csv).
   Declared rows work even when excluded by the global preset; blank rows inherit it. An `nfm` row runs the analog
-  monitor at its own `--nfm-bandwidth-hz` width (the row's `options`) or the configured one, switching the receiver
+  monitor at its own `--nfm-bandwidth-hz` width (the row's `options`) or the default 16 kHz, switching the receiver
   between the analog monitor and the digital decoder at each row without reopening the device, and holds under
   `-t` for as long as its carrier (squelch open) lasts, whether or not audio is played: `-o null` and a muted frontend
-  no longer let the scanner leave an active analog row. `--scan-voice-only` never applies to an `nfm` row. Details
+  no longer let the scanner leave an active analog row. `--scan-voice-only` never applies to an analog row. Details
   and the options an analog row accepts: [csv-formats.md](csv-formats.md#analog-rows). Modes take effect at the first scheduled row entry, including
   manual `L` cycling. Existing dwell and voice-hold defaults remain unchanged.
   The open audio sink retains its rate/channel count while logical DMR slot decoding may change. Global mode and
@@ -820,7 +822,7 @@ is delayed.
     (`nfm-conventional`, held on carrier) targets. Full guide: `docs/trunk-scan.md`.
   - Requires a live retuning path: RTL-family input opened by DSD-neo, or rigctl control such as `-U 4532`.
   - Use per-target `chan_csv` (and `p25_bandplan_csv`) entries in the target CSV; leave both empty on conventional
-    rows, including `p25-conventional`. Global `-C` and `--p25-bandplan` are rejected in this mode. P25 trunk targets
+    rows, including `p25-conventional` and `nfm-conventional`. Global `-C` and `--p25-bandplan` are rejected in this mode. P25 trunk targets
     that are sites of one system (same WACN/SYS) share the band plan one of them learned over the air.
   - Optional per-target `modulation` and `rtl_gain` columns can override demod hints and RTL-family tuner gain for the
     active target. Both P25 types accept `auto`, `c4fm`, or `cqpsk`. Optional `keys_hex_csv`/`keys_dec_csv` columns load a per-target key set, while
@@ -838,9 +840,10 @@ is delayed.
     group/private and encrypted-call policy. PDU data never refreshes its hold, so `-e` has no effect on that row.
     Phase 1 decode captures are available for replay checks, not proof of on-air target holds; Phase 2 conventional
     parking is untested on air.
-  - Voice-only scan (`--scan-voice-only`): conventional targets hold only from
+  - Voice-only scan (`--scan-voice-only`): digital conventional targets hold only from
     decoded voice, with `dwell_ms` as the qualify window and `activity_hold_ms` as the hold; trunked targets are
-    unchanged (control-only rotates after dwell) and show no `Voice:` marker on the status line. A conventional
+    unchanged (control-only rotates after dwell) and show no `Voice:` marker on the status line, and an
+    `nfm-conventional` target keeps holding on its carrier. A conventional
     target shows `VOICE` while its call is active and `TAIL` after the call ends while the hold remains.
   - Cannot be combined with conventional `-Y` scan mode or IQ replay.
   - Single-tuner limitation: systems not currently parked can be missed while another target is being monitored.

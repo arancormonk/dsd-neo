@@ -159,6 +159,13 @@ Tests: `tests/engine/test_engine_trunk_scan.c` (`ENGINE_TRUNK_SCAN`) and
   before a row's options install; a row width (`DSD_SCAN_OPT_BANDWIDTH`) lands there through its applier.
   `dsd_scan_mode_prepare()` takes the row's option values (NULL = none) so the prepared settings a scanner tunes with
   already carry the row width; its callers are `channel_scan.c` and the `scan_mode_replay` / `analog_replay` hosts.
+  A row's symbol timing is computed for the output rate its tune lands on, `dsd_scan_mode_symbol_timing_rate_hz()`:
+  the live rate, except while the RTL front end still runs the analog family after an analog row and the configured
+  mode is digital (`dsd_scan_mode_configured_digital()`), when a digital row's tune switches the family and the rate
+  is the digital family's (`output_rate_for_family`), not the monitor's resampled audio rate. The -Y scope timing and
+  the trunk-scan target timing (`trunk_scan_p25_cc_sps()`, `trunk_scan_gfsk_sps()`) read it, and `trunk_tuning.c`
+  decides the family switch and the GFSK chain's TED by the same predicate, so the decoder and the TED the retune
+  profile carries are timed for one family.
 - Runtime owns the exact configured decoder baseline and temporary class through `runtime/scan_mode.h` and
   `runtime/scan_mode.c` (extension slot 6). It uses the existing preset definitions while keeping the audio sink fixed.
   Suspend/update/resume supports global commands; scalar snapshot copies keep frontend state independent of live storage.
@@ -181,8 +188,12 @@ Tests: `tests/engine/test_engine_trunk_scan.c` (`ENGINE_TRUNK_SCAN`) and
   `trunk_scan.c` selects the same classes from target types while retaining target snapshots and modulation/gain ownership.
   Each row commit (and trunk-scan target switch) opens the sink the row plays through,
   `dsd_engine_scan_ensure_output()` (analog or digital, idempotent), and scan start logs what an analog row owes the
-  operator once per map, `dsd_engine_scan_warn_analog_row()`: an open squelch, a width on audio input, a width the
-  DSP rate (`dsd_engine_scan_dsp_rate_hz()`) cannot filter.
+  operator, `dsd_engine_scan_warn_analog_row()`: an open squelch, a width on audio input, a width the DSP rate
+  (`dsd_engine_scan_dsp_rate_hz()`, the rate the RTL stream holds analog requests to,
+  `rtl_stream_get_request_rate_hz()`) cannot filter. Both scanners say it once per map (-Y) or list (trunk scan) and
+  DSP rate: an RTL stream that has published no rate defers the checks, and a changed rate repeats them, because the
+  tune refuses such a row without calling into the stream (whose refusal log a valid row's request would re-arm at
+  every rotation).
   The receive family a row runs on is queued with its tune in `trunk_tuning.c` (`dsd_engine_prepare_scan_profile()`,
   issue #526): an analog row attaches the analog family, demodulator and width to the retune profile
   (`rtl_stream_prepare_retune_analog_profile_for_target()`) with no symbol profile, and a width the front end refuses
@@ -861,7 +872,8 @@ Runtime controls (via `include/dsd-neo/io/rtl_stream_c.h`):
   stream's published rate, or only for kind, range and `DSD_NEO_CHANNEL_LPF` with no stream running, and checked
   again on the demod thread at the rate it lands on; a refusal logged with the validator's text once per kind, width
   and rate, and applied on the demod thread ahead of any demod profile queued after it; a demod profile queued
-  before it is dropped), `rtl_stream_check_analog_profile()`, `rtl_stream_get_analog_profile()`,
+  before it is dropped), `rtl_stream_check_analog_profile()`, `rtl_stream_get_request_rate_hz()` (the published rate
+  those caller-thread checks use, from the stream's start; 0 with no stream), `rtl_stream_get_analog_profile()`,
   `rtl_stream_analog_family_active()` (the analog family, including
   while a CQPSK toggle or a typed row's profile has moved the front end off the monitor output),
   `rtl_stream_output_rate_for_family()` (the output rate a pending switch will produce),
@@ -1423,7 +1435,8 @@ External dependencies (resolved via CMake):
 - `DSD_SCAN_OPT_BANDWIDTH` (`--nfm-bandwidth-hz`, issue #526) is an analog row option: `ANALOG_MODES` (the analog
   classes) keep it off digital and blank rows, which are told `needs mode nfm` (`option_mode_allowed()` names the
   analog classes an analog-only switch serves), while `ANY_MODES` (digital plus analog) carries `--squelch-db` and
-  `--scan-max-visit-ms` onto analog rows and every other switch stays `DIGITAL_MODES`. The value is whole Hz in the
+  `--scan-max-visit-ms` onto analog rows and every other switch stays `DIGITAL_MODES`. The diagnostic names only
+  the classes the switch serves (`needs mode nfm`), not every analog class. The value is whole Hz in the
   NFM range (`dsd_analog_width_parse()`); `dsd_scan_option_width_check()` holds it to a DSP rate with the validator's
   message. Unlike squelch it is an acquisition setting (see Per-channel decoder modes), so a width change restages a
   parked row and the configured width is never replaced by a row's in the configured view.

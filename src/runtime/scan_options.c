@@ -120,7 +120,7 @@ static const scan_option_spec specifications[] = {
      * control channels included (issue #521). Units and range are rtl_sql's. */
     {"--squelch-db", DSD_SCAN_OPT_SQUELCH, ANY_MODES, 1, 0, 0, 1, SQUELCH_HINT, option_set_squelch},
     /* The channel width of the analog demodulator the row runs (issue #526), spelled per kind and
-     * in whole Hz as on the command line; a row carries one width. */
+     * in whole Hz; a row carries one width. */
     {"--nfm-bandwidth-hz", DSD_SCAN_OPT_BANDWIDTH, NFM, 1, 0, 0, 0, NFM_BANDWIDTH_HINT, option_set_bandwidth},
 };
 

@@ -250,7 +250,8 @@ gates the demodulator, so a row set well above its signal level decodes nothing:
 the control channel too, and a high threshold there makes the whole system look dead. On any other input (rigctl
 tuning a PCM, UDP or TCP audio source) there is no demodulator for it to gate, so it cannot gate digital
 acquisition: it only gates the analog input monitor (`-8`, with audio output on) and the carrier activity that
-monitor stamps, and scan start logs one warning per affected row or target. Frontends show
+monitor stamps, and scan start logs one warning per affected digital row or target. On an analog row that monitor
+and its carrier are exactly what the squelch is for, so an analog row draws no such warning. Frontends show
 the value in force first and, while a row overrides it, the configured default beside it
 (`SQL: -60.0 dB (row; default -80.0 dB)`); the Qt/Android channel-map review and target preview list each row's
 squelch, or `inherit`. The squelch controls and Config->Save work on the configured default, never the row's value;
@@ -266,21 +267,23 @@ encrypted-call policy (`-e`, `--no-data-calls`, `--enc-*`) and the voice-gate sw
 analog channel never carries, and are rejected with `not supported for this mode/target`.
 
 `--nfm-bandwidth-hz` is the full RF channel width the analog channel filter protects while the row is on air (the
-same contract as the receiver's NFM width); a row without it uses the configured width, 16 kHz by default. It is
-applied when the row is tuned and restored when the scanner moves on, and it is never saved as a default. A width
-the running DSP rate cannot filter (the channel filter needs `width / 2 + 600 Hz` within 0.45 of the DSP rate: at a
-24 kHz DSP bandwidth the widest is 20.4 kHz, at 16 kHz 13.2 kHz) is named with the fix when the scan starts, and
-that row is skipped at every visit rather than received without its filter. On audio input (rigctl tuning a PCM,
-UDP or TCP source) the audio arrives demodulated, so a row width has no effect and scan start says so; set the
-peer's own passband (`-B`).
+same contract as the receiver's NFM width); a row without it uses the default 16 kHz width. It is applied when the
+row is tuned and restored when the scanner moves on, and Config->Save never writes it (nor the row's analog class)
+as a default. A width the running DSP rate cannot filter (the channel filter needs `width / 2 + 600 Hz` within 0.45
+of the DSP rate: at a 24 kHz DSP bandwidth the widest is 20.4 kHz, at 16 kHz 13.2 kHz) is named with the fix when
+the scan starts, and again whenever that rate changes, and that row is skipped at every visit rather than received
+without its filter. On audio input (rigctl tuning a PCM, UDP or TCP source) the audio arrives demodulated, so a row
+width has no effect and scan start says so; set the peer's own passband (`-B`).
 
 An analog row holds while its carrier is open: the squelch is open over the monitor audio (above the input's level
-floor, through a 200 ms hangover), whether or not audio is played, so `-o null` or a muted frontend no longer lets
-the scanner leave an active channel. A `-Y` row holds for `-t` after the last carrier; an `nfm-conventional` target
-holds for its `activity_hold_ms` after the last carrier and rotates after its `dwell_ms` of silence. The per-visit
-cap and the hold, advance and avoid controls apply as for any row, and the voice gate never applies to an analog
-row, so a global `--scan-voice-only` does not block one. Scan start warns about an analog row whose squelch is off
-or at -100 dB or below, since noise would then hold it until `-t` or the visit cap moves on.
+floor, through a 200 ms hangover; at an input rate the received-tone detector cannot run at, the squelch alone),
+whether or not audio is played, so `-o null` or a muted frontend no longer lets the scanner leave an active channel.
+A `-Y` row holds for `-t` after the last carrier; an `nfm-conventional` target holds for its `activity_hold_ms`
+after the last carrier and rotates after its `dwell_ms` of silence. The per-visit cap and the hold, advance and
+avoid controls apply as for any row, and the voice gate never applies to an analog row, so a global
+`--scan-voice-only` does not block one. That includes the rows of an untyped list scanned under `-fA`, which hold on
+their carrier under `-t` as well. Scan start warns about an analog row whose squelch is off or at -100 dB or below,
+since noise would then hold it until `-t` or the visit cap moves on.
 
 A list may mix analog and digital rows: each row switches the receiver between the analog monitor and the digital
 decoder at its own width when it is tuned, without reopening the device, and opens the audio output the row plays
