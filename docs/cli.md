@@ -118,6 +118,11 @@ Tip: If paths or names contain spaces, wrap them in single quotes.
   to protect the screen, and warns before opening the UI if payload logging is enabled without a redirect.
   Already-redirected stderr is preserved; `--frontend none -Z` leaves console payload output visible.
 - `--frame-log <file>` Append one-line timestamped frame traces (separate from event log)
+- The terminal frontend (`-N`) keeps the latest 16 decoded TETRA call, SYSINFO,
+  channel-allocation and SDS summaries, showing up to four rows when space permits.
+  Set `DSD_TETRA_UI_FILTER=call`, `control`, `sds`, or `none` before starting to filter the list;
+  the default shows all three categories. Per-frame diagnostics remain on stderr and can be
+  captured with `2> tetra.log`.
 - `--p25-sm-log <file>` Append one-line P25 state-machine decision diagnostics (separate from stdout/stderr, event log, and frame log)
 - `-O` List PulseAudio input sources and output sinks
 - The terminal input section shows advisory `Input Level`/`RF Level` health when metrics are available. `LOW` uses

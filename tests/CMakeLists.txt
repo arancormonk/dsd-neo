@@ -8731,6 +8731,7 @@ set(_dsd_tetra_test_sources
     depuncture_regression
     interleaver_dims
     mac_state
+    messages
     mle_cmce
     mm_dispatch
     osmo_shim

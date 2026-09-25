@@ -37,6 +37,21 @@
  * truncated to 63 characters plus the terminator. */
 #define DSD_CHANNEL_LABEL_SIZE 64
 
+/* Recent decoded TETRA messages for the terminal UI. The decoder owns writes;
+ * the UI reads the published state snapshot, never the live decoder state. */
+#define DSD_TETRA_MESSAGE_CAPACITY 16
+#define DSD_TETRA_MESSAGE_TEXT_SIZE 144
+typedef enum {
+    DSD_TETRA_MESSAGE_CALL = 1,
+    DSD_TETRA_MESSAGE_CONTROL = 2,
+    DSD_TETRA_MESSAGE_SDS = 3,
+} dsd_tetra_message_category;
+
+typedef struct {
+    uint8_t category;
+    char text[DSD_TETRA_MESSAGE_TEXT_SIZE];
+} dsd_tetra_message;
+
 enum DSD_ATTR_PACKED {
     DSD_P25_P2_AUDIO_RING_DEPTH = 4,
     DSD_P25_MAC_FRAGMENT_MAX_OCTETS = 256,
@@ -1826,6 +1841,8 @@ struct dsd_state {
     uint8_t  tetra_ssi_valid;
     uint32_t tetra_active_ssi;
     uint8_t  tetra_enc_mode;
+    uint32_t tetra_message_sequence;
+    dsd_tetra_message tetra_messages[DSD_TETRA_MESSAGE_CAPACITY];
 
     /* ───────────────────────────────────────────────────────────────────────
      * TETRA MLE / CMCE call-event state — updated by tetra_mle_dispatch().

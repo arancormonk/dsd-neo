@@ -3385,6 +3385,39 @@ ui_render_call_info_channel_line(const dsd_opts* opts, const dsd_state* state) {
     printw("\n");
 }
 
+/* Decoder summaries are copied into the published state snapshot. Keep raw
+ * per-frame diagnostics on stderr; rendering them here would flood the UI. */
+static void
+ui_render_tetra_messages(const dsd_state* state) {
+    if (!DSD_SYNC_IS_TETRA(ncurses_last_synctype) || state->tetra_message_sequence == 0) {
+        return;
+    }
+    const char* filter = getenv("DSD_TETRA_UI_FILTER");
+    uint8_t category = 0;
+    if (filter != NULL) {
+        if (strcmp(filter, "call") == 0) category = DSD_TETRA_MESSAGE_CALL;
+        else if (strcmp(filter, "control") == 0) category = DSD_TETRA_MESSAGE_CONTROL;
+        else if (strcmp(filter, "sds") == 0) category = DSD_TETRA_MESSAGE_SDS;
+        else if (strcmp(filter, "none") == 0) return;
+    }
+    const int width = getmaxx(stdscr) - 3;
+    if (width < 8 || getcury(stdscr) >= getmaxy(stdscr) - 3) {
+        return;
+    }
+    printw("| TETRA messages (%s)\n", category == 0 ? "all" : filter);
+    const uint32_t available = state->tetra_message_sequence < DSD_TETRA_MESSAGE_CAPACITY
+        ? state->tetra_message_sequence : DSD_TETRA_MESSAGE_CAPACITY;
+    int shown = 0;
+    for (uint32_t back = 0; back < available && shown < 4; ++back) {
+        const uint32_t index = (state->tetra_message_sequence - 1u - back) % DSD_TETRA_MESSAGE_CAPACITY;
+        const dsd_tetra_message* item = &state->tetra_messages[index];
+        if (category != 0 && item->category != category) continue;
+        if (getcury(stdscr) >= getmaxy(stdscr) - 3) break;
+        printw("| %.*s\n", width, item->text);
+        shown++;
+    }
+}
+
 static void
 ui_render_call_info_and_history(const dsd_opts* opts, dsd_state* state) {
     ui_print_header("Call Info");
@@ -3406,6 +3439,8 @@ ui_render_call_info_and_history(const dsd_opts* opts, dsd_state* state) {
     ui_render_call_info_edacs(opts, state);
 
     ui_render_call_info_patches(state);
+
+    ui_render_tetra_messages(state);
 
     // Bottom border for Call Info section
     ui_print_hr();

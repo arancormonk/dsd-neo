@@ -9,6 +9,7 @@
 
 #include <dsd-neo/protocol/tetra/tetra_mle.h>
 #include <dsd-neo/protocol/tetra/tetra_mm.h>
+#include <dsd-neo/protocol/tetra/tetra_messages.h>
 #include <dsd-neo/protocol/tetra/tetra_trunk_sm.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
@@ -2059,6 +2060,13 @@ publish_sds:
             state->tetra_sds_short_src = src_ssi;
             state->tetra_sds_short_valid = 1;
         }
+        char summary[DSD_TETRA_MESSAGE_TEXT_SIZE];
+        if (decoded_length != 0) {
+            DSD_SNPRINTF(summary, sizeof summary, "SDS from %u: %s", src_ssi, decoded_text);
+        } else {
+            DSD_SNPRINTF(summary, sizeof summary, "SDS from %u: %d bits", src_ssi, payload_bits);
+        }
+        tetra_message_push(state, DSD_TETRA_MESSAGE_SDS, summary);
     }
     free(assembled);
     return;
@@ -2120,6 +2128,8 @@ static void tetra_cmce_parse(const uint8_t *bits, int nbits,
     }
 
     uint32_t pdu_type = mle_bits_to_uint(bits, 0, 5);
+    const uint32_t call_generation = state ? state->tetra_cmce_call_generation : 0;
+    const uint8_t call_active = state ? state->tetra_call_active : 0;
 
     switch (pdu_type) {
 
@@ -2195,6 +2205,14 @@ static void tetra_cmce_parse(const uint8_t *bits, int nbits,
                     cc, pdu_type, nbits);
         }
         break;
+    }
+    if (state && (state->tetra_cmce_call_generation != call_generation
+                  || state->tetra_call_active != call_active)) {
+        char summary[DSD_TETRA_MESSAGE_TEXT_SIZE];
+        DSD_SNPRINTF(summary, sizeof summary, "Call %s CC=%d ID=%u SSI=%u enc=%u",
+                     state->tetra_call_active ? "active" : "ended", cc,
+                     state->tetra_call_id, state->tetra_active_ssi, state->tetra_enc_mode);
+        tetra_message_push(state, DSD_TETRA_MESSAGE_CALL, summary);
     }
 }
 

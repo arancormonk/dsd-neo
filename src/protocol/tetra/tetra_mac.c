@@ -13,6 +13,7 @@
 
 #include <dsd-neo/protocol/tetra/tetra_mac.h>
 #include <dsd-neo/protocol/tetra/tetra_mle.h>
+#include <dsd-neo/protocol/tetra/tetra_messages.h>
 #include <dsd-neo/protocol/tetra/tetra_mm.h>
 #include <dsd-neo/protocol/tetra/tetra_trunk_sm.h>
 #include <dsd-neo/core/opts.h>
@@ -308,6 +309,13 @@ static int parse_resource_optional_elements(const uint8_t *bits, int nbits, int 
             bandwidth_code, modulation);
 
     if (state) {
+        if (!state->tetra_vc_assignment_valid || state->tetra_vc_timeslot_bitmap != (timeslots & 0x0Fu)
+            || (timeslots != 0 && state->tetra_vc_carrier != carrier)) {
+            char summary[DSD_TETRA_MESSAGE_TEXT_SIZE];
+            DSD_SNPRINTF(summary, sizeof summary, "Allocation CC=%d carrier=%u slots=0x%X freq=%ld",
+                         cc, carrier, timeslots, vc_hz);
+            tetra_message_push(state, DSD_TETRA_MESSAGE_CONTROL, summary);
+        }
         state->tetra_vc_assignment_valid = 1;
         state->tetra_vc_assignment_type = (uint8_t)allocation_type;
         state->tetra_vc_timeslot_bitmap = (uint8_t)(timeslots & 0x0Fu);
@@ -574,6 +582,11 @@ static void parse_mac_sysinfo(const uint8_t *bits, int nbits, int cc,
 
     /* Phase 11+12: cache DL carrier frequency + band params; arm trunking CC. */
     if (state) {
+        if (state->tetra_frames_sysinfo == 1 || state->tetra_sysinfo_main_carrier != main_carrier) {
+            char summary[DSD_TETRA_MESSAGE_TEXT_SIZE];
+            DSD_SNPRINTF(summary, sizeof summary, "SYSINFO CC=%d carrier=%u band=%u", cc, main_carrier, freq_band);
+            tetra_message_push(state, DSD_TETRA_MESSAGE_CONTROL, summary);
+        }
         long dl_hz = tetra_carrier_to_dl_hz(main_carrier, freq_band, freq_offset);
         if (dl_hz != 0L) {
             state->tetra_dl_carrier_hz = dl_hz;

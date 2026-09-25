@@ -32,7 +32,10 @@ int main(void) {
         && state->tetra_cmce_sds_data_type == 3
         && state->tetra_sds_msg_ref == 32
         && state->tetra_sds_text_len == 4
-        && strcmp(state->tetra_sds_text, "Ahoj") == 0;
+        && strcmp(state->tetra_sds_text, "Ahoj") == 0
+        && state->tetra_message_sequence == 1
+        && state->tetra_messages[0].category == DSD_TETRA_MESSAGE_SDS
+        && strstr(state->tetra_messages[0].text, "Ahoj") != NULL;
     if (!ok) {
         fprintf(stderr,
                 "reference SDS mismatch: resources=%llu type=%u ref=%u len=%u text='%s'\n",

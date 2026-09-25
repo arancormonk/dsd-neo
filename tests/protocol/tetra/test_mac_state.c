@@ -112,6 +112,12 @@ static int test_sysinfo(void)
     tetra_mac_parse_schd(bits, NBITS, 0, opts, state);
 
     int ok = 1;
+    if (state->tetra_message_sequence != 1
+        || state->tetra_messages[0].category != DSD_TETRA_MESSAGE_CONTROL
+        || strstr(state->tetra_messages[0].text, "SYSINFO") == NULL) {
+        fprintf(stderr, "FAIL(sysinfo): terminal summary missing\n");
+        ok = 0;
+    }
 
     if (!state->tetra_sysinfo_known) {
         fprintf(stderr, "FAIL(sysinfo): tetra_sysinfo_known not set\n");
@@ -130,6 +136,11 @@ static int test_sysinfo(void)
     if (state->tetra_bs_service_det != (uint16_t)TEST_BS_SVC) {
         fprintf(stderr, "FAIL(sysinfo): tetra_bs_service_det=0x%03X expect=0x%03X\n",
                 (unsigned)state->tetra_bs_service_det, (unsigned)TEST_BS_SVC);
+        ok = 0;
+    }
+    tetra_mac_parse_schd(bits, NBITS, 0, opts, state);
+    if (state->tetra_message_sequence != 1) {
+        fprintf(stderr, "FAIL(sysinfo): repeated broadcast flooded terminal summaries\n");
         ok = 0;
     }
 
