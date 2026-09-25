@@ -5,7 +5,7 @@
 
 /**
  * @file
- * @brief Received sub-audible tone detection on the analog FM monitor (issue #522).
+ * @brief Received sub-audible tone and code detection on the analog FM monitor (issues #522, #523).
  *
  * The decoder thread taps the raw monitor audio as the symbol path assembles each unsynced
  * analog block, before the voice filters that would remove everything below 300 Hz, and

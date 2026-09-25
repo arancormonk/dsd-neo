@@ -444,8 +444,8 @@ struct dsd_scan_timing_publication {
     uint8_t conventional; /**< 1 = conventional / -Y row, so hold_ms means something */
 };
 
-/** Which sub-audible signalling the analog receiver has identified (issue #522). DCS is
- * reserved for #523; this build publishes NONE or CTCSS. */
+/** Which sub-audible signalling the analog receiver has identified: a CTCSS tone (issue #522)
+ * or a DCS code (issue #523). */
 typedef enum {
     DSD_ANALOG_TONE_KIND_NONE = 0,
     DSD_ANALOG_TONE_KIND_CTCSS = 1,
@@ -494,8 +494,9 @@ struct dsd_analog_rx_publication {
     int tone_kind;       /**< dsd_analog_tone_kind; NONE unless tone_state is LOCKED */
     int tone_state;      /**< dsd_analog_tone_state */
     int ctcss_tenths_hz; /**< locked CTCSS tone in tenths of a hertz (1000 = 100.0 Hz); 0 = none */
-    int dcs_code;        /**< DCS code as its octal value (023 octal = 19); reserved for #523 */
-    int dcs_inverted;    /**< 1 = inverted DCS polarity; reserved for #523 */
+    int dcs_code;        /**< locked DCS code as its value (023 octal = 19); 0 = none */
+    int dcs_inverted;    /**< 1 = the locked code is named in inverted polarity (the canonical member
+                              of its alias class, runtime/analog_tones.h: never, for the standard set) */
     int gate;            /**< dsd_analog_tone_gate; always OFF until #527 */
     /** Bumped on every reset (retune, row or target change, input switch, mode change, stop,
      * input-rate change, carrier hangover, stream pause), so a reader can tell a new reception
