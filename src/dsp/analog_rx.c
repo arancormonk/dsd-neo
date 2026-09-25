@@ -392,15 +392,21 @@ dsd_analog_rx_core_publish(const dsd_analog_rx_core* core, dsd_analog_rx_publica
 /* Log key for "Received tone:" lines: nothing logged yet this reception, "none", or a tone. */
 enum { ANALOG_RX_LOG_UNSET = -1, ANALOG_RX_LOG_NONE = 0 };
 
+/* Every boundary the tap resets at when it moves: the trunk-tuning generation, and on RTL input the stream generation
+   and the analog receive profile the stream published (kind, width, channel filter on; all 0 on other inputs and while
+   the stream runs no analog monitor). A new kind of boundary is added here and in analog_rx_generations_read() only. */
 typedef struct {
-    dsd_analog_rx_core core;
     uint32_t rtl_generation;
     uint64_t tune_generation;
-    /** The analog receive profile the RTL stream published at the tap's last look (kind, width,
-        channel filter on); all 0 on other inputs and while the stream runs no analog monitor. */
     int rtl_profile_kind;
     int rtl_profile_width_hz;
     int rtl_profile_lpf_on;
+} analog_rx_generations;
+
+typedef struct {
+    dsd_analog_rx_core core;
+    /** The boundaries as the tap saw them at its last read. */
+    analog_rx_generations noted;
     int log_key;              /**< ANALOG_RX_LOG_* or the logged tone in tenths of a hertz */
     uint32_t log_generation;  /**< the publication generation log_key belongs to */
     int unusable_rate_logged; /**< the unusable rate reported for the current stretch of such input; 0 = none */
@@ -453,18 +459,29 @@ analog_rx_session_get(const dsd_state* state) {
     return DSD_STATE_EXT_GET_AS(analog_rx_session, state, DSD_STATE_EXT_DSP_ANALOG_RX);
 }
 
+/* The boundaries as they stand now. */
+static void
+analog_rx_generations_read(const dsd_opts* opts, analog_rx_generations* out) {
+    DSD_MEMSET(out, 0, sizeof(*out));
+    const int rtl = (opts && opts->audio_in_type == AUDIO_IN_RTL) ? 1 : 0;
+    out->rtl_generation = rtl ? dsd_rtl_stream_metrics_hook_stream_generation() : 0U;
+    out->tune_generation = dsd_trunk_tuning_generation();
+    if (rtl) {
+        (void)dsd_rtl_stream_metrics_hook_analog_profile(&out->rtl_profile_kind, &out->rtl_profile_width_hz,
+                                                         &out->rtl_profile_lpf_on);
+    }
+}
+
+static int
+analog_rx_generations_equal(const analog_rx_generations* a, const analog_rx_generations* b) {
+    return a->rtl_generation == b->rtl_generation && a->tune_generation == b->tune_generation
+           && a->rtl_profile_kind == b->rtl_profile_kind && a->rtl_profile_width_hz == b->rtl_profile_width_hz
+           && a->rtl_profile_lpf_on == b->rtl_profile_lpf_on;
+}
+
 static void
 analog_rx_note_generations(const dsd_opts* opts, analog_rx_session* session) {
-    const int rtl = (opts && opts->audio_in_type == AUDIO_IN_RTL) ? 1 : 0;
-    session->rtl_generation = rtl ? dsd_rtl_stream_metrics_hook_stream_generation() : 0U;
-    session->tune_generation = dsd_trunk_tuning_generation();
-    session->rtl_profile_kind = 0;
-    session->rtl_profile_width_hz = 0;
-    session->rtl_profile_lpf_on = 0;
-    if (rtl) {
-        (void)dsd_rtl_stream_metrics_hook_analog_profile(&session->rtl_profile_kind, &session->rtl_profile_width_hz,
-                                                         &session->rtl_profile_lpf_on);
-    }
+    analog_rx_generations_read(opts, &session->noted);
 }
 
 static int
@@ -714,14 +731,11 @@ analog_rx_publish_skipped(dsd_state* state, analog_rx_session* session, int rate
    thread updates as it applies the request. */
 static int
 analog_rx_generation_moved(const dsd_opts* opts, analog_rx_session* session) {
-    const uint32_t rtl = session->rtl_generation;
-    const uint64_t tune = session->tune_generation;
-    const int kind = session->rtl_profile_kind;
-    const int width_hz = session->rtl_profile_width_hz;
-    const int lpf_on = session->rtl_profile_lpf_on;
-    analog_rx_note_generations(opts, session);
-    return rtl != session->rtl_generation || tune != session->tune_generation || kind != session->rtl_profile_kind
-           || width_hz != session->rtl_profile_width_hz || lpf_on != session->rtl_profile_lpf_on;
+    analog_rx_generations now;
+    analog_rx_generations_read(opts, &now);
+    const int moved = !analog_rx_generations_equal(&now, &session->noted);
+    session->noted = now;
+    return moved;
 }
 
 static void
@@ -958,25 +972,13 @@ dsd_analog_rx_block_restart(const dsd_state* state) {
     }
 }
 
-/* Whether the generations the tap noted at its last read still hold: the comparison analog_rx_generation_moved()
-   makes, without noting anything. */
+/* Whether the boundaries the tap noted at its last read still hold: analog_rx_generation_moved()'s comparison,
+   without noting anything. */
 static int
 analog_rx_generations_current(const dsd_opts* opts, const analog_rx_session* session) {
-    if (session->tune_generation != dsd_trunk_tuning_generation()) {
-        return 0;
-    }
-    if (opts->audio_in_type != AUDIO_IN_RTL) {
-        return 1;
-    }
-    if (session->rtl_generation != dsd_rtl_stream_metrics_hook_stream_generation()) {
-        return 0;
-    }
-    int kind = 0;
-    int width_hz = 0;
-    int lpf_on = 0;
-    (void)dsd_rtl_stream_metrics_hook_analog_profile(&kind, &width_hz, &lpf_on);
-    return kind == session->rtl_profile_kind && width_hz == session->rtl_profile_width_hz
-           && lpf_on == session->rtl_profile_lpf_on;
+    analog_rx_generations now;
+    analog_rx_generations_read(opts, &now);
+    return analog_rx_generations_equal(&now, &session->noted);
 }
 
 int
