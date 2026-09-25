@@ -1118,6 +1118,87 @@ test_typed_scan_refused_width_skipped_without_the_stream(void) {
     return rc;
 }
 
+/* The monitor stamps carrier activity whatever audio_out says (DSP_SYMBOL_REPLAY proves the stamp with audio_out = 0);
+ * here the -Y rotation keeps an nfm row on air while those stamps keep arriving, a visit already past -t included,
+ * and a global --scan-voice-only does not take the row over. Once they stop, the row steps -t later; and a row
+ * --scan-max-visit-ms ends a visit whose carrier never drops. */
+static void
+stamp_monitor_carrier(dsd_state* state) {
+    state->last_cc_sync_time = time(NULL);
+    state->last_cc_sync_time_m = dsd_time_now_monotonic_s();
+}
+
+static int
+test_typed_scan_nfm_row_holds_on_carrier(void) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    int rc = 0;
+    reset_rtl_profile_fakes();
+    dsd_trunk_tuning_requests_reset();
+    opts->audio_in_type = AUDIO_IN_RTL;
+    opts->scanner_mode = 1;
+    opts->trunk_hangtime = 1;
+    opts->audio_out = 0;
+    opts->scan_voice_only = 1;
+    state->rtl_ctx = (RtlSdrContext*)state;
+    state->lcn_freq_count = 2;
+    state->trunk_lcn_freq[0] = 154630000L;
+    state->trunk_lcn_freq[1] = 461500000L;
+    rc |= expect_true("hold nfm row", dsd_channel_mode_set(state, 0, DSD_SCAN_MODE_NFM) == 0);
+    rc |= expect_true("hold dmr row", dsd_channel_mode_set(state, 1, DSD_SCAN_MODE_DMR) == 0);
+    dsd_scan_row_profile* profile = NULL;
+    rc |= expect_true("hold row profile", dsd_scan_profile_ensure(&profile) == 0 && profile);
+    if (profile) {
+        profile->values.present = DSD_SCAN_OPT_MAX_VISIT;
+        profile->values.max_visit_ms = 1000;
+        rc |= expect_true("hold row cap", dsd_channel_profile_set(state, 0, profile) == 0);
+    }
+
+    state->last_cc_sync_time = time(NULL) - 11;
+    noCarrier(opts, state);
+    rc |= expect_true("hold nfm row on air",
+                      state->lcn_freq_roll == 1 && opts->analog_only == 1 && opts->scan_max_visit_ms == 1000);
+    rc |= expect_true("voice gate never owns the nfm row", !dsd_scan_voice_gate_owns_step(opts, state));
+
+    /* Carrier keeps arriving on a visit already 5 s old, past -t: the row stays. The cap is out of the way here. */
+    opts->scan_max_visit_ms = 0;
+    const int tunes_before = g_rtl_tune_calls;
+    for (int pass = 0; pass < 4; pass++) {
+        stamp_monitor_carrier(state);
+        seed_visit_anchor(state, dsd_time_now_monotonic_s() - 5.0);
+        dsd_engine_scan_visit_tick(opts, state, dsd_time_now_monotonic_s());
+        noCarrier(opts, state);
+    }
+    rc |=
+        expect_true("carrier holds the nfm row past -t", state->lcn_freq_roll == 1 && g_rtl_tune_calls == tunes_before);
+
+    /* The carrier stops: -t after the last stamp the rotation moves on. */
+    state->last_cc_sync_time = time(NULL) - 2;
+    dsd_engine_scan_visit_tick(opts, state, dsd_time_now_monotonic_s());
+    noCarrier(opts, state);
+    rc |= expect_true("nfm row steps -t after the carrier", state->lcn_freq_roll == 2 && g_rtl_tune_freq == 461500000U);
+
+    /* Back on the nfm row with its --scan-max-visit-ms 1000 in force: a carrier that never drops still ends a visit
+       that has lasted past the cap. The voice gate is off, so the DMR row between does not wait out its window. */
+    opts->scan_voice_only = 0;
+    state->last_cc_sync_time = time(NULL) - 11;
+    noCarrier(opts, state);
+    rc |= expect_true("nfm row again", state->lcn_freq_roll == 1 && opts->scan_max_visit_ms == 1000);
+    stamp_monitor_carrier(state);
+    seed_visit_anchor(state, dsd_time_now_monotonic_s() - 5.0);
+    noCarrier(opts, state);
+    rc |= expect_true("visit cap ends a carrier-held nfm row",
+                      state->lcn_freq_roll == 2 && g_rtl_tune_freq == 461500000U);
+
+    dsd_engine_channel_scan_leave(opts, state);
+    state->rtl_ctx = NULL;
+    free_test_runtime(opts, state);
+    dsd_trunk_tuning_requests_reset();
+    return rc;
+}
 #endif
 
 #ifdef DSD_NEO_TEST_RTL_WRAP
@@ -2974,6 +3055,7 @@ main(void) {
     rc |= test_typed_scan_digital_row_after_nfm_timed_for_digital();
     rc |= test_trunk_scan_digital_target_after_nfm_timed_for_digital();
     rc |= test_typed_scan_refused_width_skipped_without_the_stream();
+    rc |= test_typed_scan_nfm_row_holds_on_carrier();
     rc |= test_trunk_cache_with_mode_metadata();
     rc |= test_dmr_explicit_return_destination();
 #endif
