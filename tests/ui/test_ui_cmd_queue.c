@@ -5217,8 +5217,8 @@ static int g_fake_rx_kept_analog;
 static int g_fake_rx_kept_width_hz;
 /* The CQPSK state the requests queued since the last landing leave the stream on (rtl_stream_requested_cqpsk()). */
 static int g_fake_cqpsk_after;
-/* What rtl_stream_request_analog_profile() answers (0 queues it): -1 is a front end that refuses the request at the rate
-   it publishes now, although rtl_stream_check_analog_profile() took it (a retune in between). */
+/* What rtl_stream_request_analog_profile() answers (0 queues it): -1 is a front end that refuses the request at the
+   rate it publishes now, although rtl_stream_check_analog_profile() took it (a retune in between). */
 static int g_analog_req_result;
 /* What rtl_stream_get_demod_rate_hz() reports: the demod rate the stream publishes. */
 static int g_fake_demod_rate_hz;
@@ -6542,9 +6542,9 @@ test_config_apply_leaves_a_soapy_or_airspy_reopen_to_its_start(void) {
     rc |= expect_int("cfg airspy over airspy: width kept", opts.analog_nfm_bandwidth_hz, 12500);
     rc |= expect_int("cfg airspy over airspy: refused", strstr(state.ui_msg, "Config not applied") != NULL, 1);
 
-    /* ...unless it moves the DSP bandwidth (12 -> 48 kHz), which the Airspy path applies by reopening the device, at the
-       rate it delivers for the new bandwidth: an Airspy's 2.5 MS/s capture is decimated to 19,531 Hz at 12 kHz but to
-       78,125 Hz at 48 kHz. The running front end's rate says nothing about that, so the width waits for the reopened
+    /* ...unless it moves the DSP bandwidth (12 -> 48 kHz), which the Airspy path applies by reopening the device, at
+       the rate it delivers for the new bandwidth: an Airspy's 2.5 MS/s capture is decimated to 19,531 Hz at 12 kHz but
+       to 78,125 Hz at 48 kHz. The running front end's rate says nothing about that, so the width waits for the reopened
        stream's start, as it does for any SoapySDR or Airspy reopen. */
     opts.rtl_dsp_bw_khz = 12;
     reset_rx_family_wrap();
@@ -7136,12 +7136,16 @@ test_rtl_set_bw_refuses_a_rate_the_nfm_width_cannot_run_at(void) {
     opts.analog_nfm_bandwidth_hz = 16000;
     opts.rtl_dsp_bw_khz = 48;
 
+    /* A refused bandwidth keeps the running stream and its filter, so the tone received on it (issue #522) stays. */
+    seed_received_tone(&state);
+    uint32_t seeded = state.analog_rx.generation;
     rc |=
         expect_int("bw 16 queued", dsd_app_command_set_i32(DSD_APP_CMD_RTL_SET_BW, 16), DSD_APP_COMMAND_SUBMIT_QUEUED);
     rc |= expect_int("bw 16 drained", dsd_app_drain_cmds(&opts, &state), 1);
     rc |= expect_int("bw 16 refused", opts.rtl_dsp_bw_khz, 48);
     rc |= expect_toast("bw 16 toast", &state,
                        "Refused: DSP BW 16 kHz cannot filter NFM 16 kHz (max 13.2 kHz); narrow the NFM width first");
+    rc |= expect_received_tone_kept("bw 16 refused: received tone kept", &state, seeded);
 
     /* A typed digital scan row does not end the analog session: its leave returns to the monitor at this rate. */
     rc |= expect_int("bw row: typed DMR row", dsd_scan_mode_enter(&opts, &state, DSD_SCAN_MODE_DMR), 0);
@@ -7187,6 +7191,8 @@ test_rtl_set_bw_refuses_a_rate_the_nfm_width_cannot_run_at(void) {
     DSD_SNPRINTF(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", "pulse");
     opts.analog_nfm_bandwidth_hz = 16000;
     opts.rtl_dsp_bw_khz = 48;
+    seed_received_tone(&state);
+    seeded = state.analog_rx.generation;
     rc |= expect_int("pulse on rtl: bw 16 queued", dsd_app_command_set_i32(DSD_APP_CMD_RTL_SET_BW, 16),
                      DSD_APP_COMMAND_SUBMIT_QUEUED);
     state.ui_msg[0] = '\0';
@@ -7194,6 +7200,7 @@ test_rtl_set_bw_refuses_a_rate_the_nfm_width_cannot_run_at(void) {
     rc |= expect_int("pulse on rtl: bw 16 refused", opts.rtl_dsp_bw_khz, 48);
     rc |= expect_toast("pulse on rtl: bw 16 toast", &state,
                        "Refused: DSP BW 16 kHz cannot filter NFM 16 kHz (max 13.2 kHz); narrow the NFM width first");
+    rc |= expect_received_tone_kept("pulse on rtl: bw 16 refused: received tone kept", &state, seeded);
     /* The same device string on PCM input is Pulse audio, which no DSP bandwidth filters: nothing to hold. */
     opts.audio_in_type = AUDIO_IN_PULSE;
     (void)dsd_app_command_set_i32(DSD_APP_CMD_RTL_SET_BW, 16);
@@ -7211,8 +7218,9 @@ test_rtl_set_bw_refuses_a_rate_the_nfm_width_cannot_run_at(void) {
 /*
  * Input > Switch source > RTL-SDR opens a device at the RTL DSP bandwidth, so an explicit NFM width that bandwidth
  * cannot filter is refused before the running input is rewritten and torn down: the new stream's start would refuse the
- * width and leave no stream, with only a generic failure to show for it. The config path refuses the same move. The unset default, a
- * bandwidth that fits, and inputs whose device or capture sets the rate (SoapySDR, the Airspy enable) are not held.
+ * width and leave no stream, with only a generic failure to show for it. The config path refuses the same move. The
+ * unset default, a bandwidth that fits, and inputs whose device or capture sets the rate (SoapySDR, the Airspy enable)
+ * are not held.
  */
 static int
 test_rtl_enable_input_holds_the_nfm_width(void) {

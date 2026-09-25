@@ -8711,8 +8711,9 @@ rtl_stream_drop_refused_analog_request(int* analog_family, int kind, int width_h
 }
 
 /* Settle every request up to @p taken_seq once it is applied, recording @p refused_seq (0: none) as refused first, with
- * the family and analog width the stream kept (rtl_stream_receive_request_refusal()). What was applied is published before it is settled, so a decoder that reads a request as settled reads the state it
- * left (the block loop publishes again after the block). */
+ * the family and analog width the stream kept (rtl_stream_receive_request_refusal()). What was applied is published
+ * before it is settled, so a decoder that reads a request as settled reads the state it left (the block loop publishes
+ * again after the block). */
 static void
 rtl_stream_settle_taken_requests(uint32_t taken_seq, uint32_t refused_seq) {
     if (refused_seq != 0U) {

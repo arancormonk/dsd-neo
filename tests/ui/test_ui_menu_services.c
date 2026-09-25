@@ -1614,8 +1614,8 @@ test_nfm_bandwidth_services(void) {
 
     /* On SoapySDR, Airspy and I/Q replay inputs the RTL DSP bandwidth is not the rate: the refusal names the demod
        rate the stream publishes and the width's limit there. A device's rate is its capture rate decimated toward the
-       DSP bandwidth, so a wider DSP bandwidth raises it; a replay runs at its capture's rate, which only a narrower width
-       can suit. Where no NFM width fits the rate, narrowing is never the fix: leaving the width unset is. */
+       DSP bandwidth, so a wider DSP bandwidth raises it; a replay runs at its capture's rate, which only a narrower
+       width can suit. Where no NFM width fits the rate, narrowing is never the fix: leaving the width unset is. */
     const struct {
         const char* dev;
         const char* at_24k;

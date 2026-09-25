@@ -287,16 +287,16 @@ void svc_describe_nfm_refusal(const dsd_opts* opts, int width_hz, char* why, siz
 /**
  * @brief Set the configured NFM channel width (DSD_APP_CMD_NFM_BANDWIDTH_SET), live when the analog monitor runs.
  *
- * Refuses, and changes nothing, a width outside 0 or 8000..25000 Hz, and, while the configured NFM preset uses the width
- * (the scan scope's configured view, so a typed digital scan row on an analog session still holds it), one the front
- * end would refuse (svc_check_nfm_bandwidth()). The width is not a scan row setting, so the command edits it in place
- * rather than suspending a row's scope, and never disturbs the acquisition a row has made. An accepted width is stored
- * and handed to a running RTL front end (svc_publish_nfm_bandwidth()): on the analog monitor a width-only change
+ * Refuses, and changes nothing, a width outside 0 or 8000..25000 Hz, and, while the configured NFM preset uses the
+ * width (the scan scope's configured view, so a typed digital scan row on an analog session still holds it), one the
+ * front end would refuse (svc_check_nfm_bandwidth()). The width is not a scan row setting, so the command edits it in
+ * place rather than suspending a row's scope, and never disturbs the acquisition a row has made. An accepted width is
+ * stored and handed to a running RTL front end (svc_publish_nfm_bandwidth()): on the analog monitor a width-only change
  * redesigns the channel filter from empty histories at the next block. A request the front end refuses there after all
- * (a retune moved the rate since the check) is refused here too, with the previous width put back; one refused where
- * it lands is put back by the next command drain (svc_take_monitor_request_outcome()). Anywhere else (a digital
- * session, a typed digital scan row on an analog session, CQPSK toggled on under -fA, a stopped stream) the stored
- * width applies the next time the analog profile is requested or the stream opens. Decoder thread only.
+ * (a retune moved the rate since the check) is refused here too, with the previous width put back; one refused where it
+ * lands is put back by the next command drain (svc_take_monitor_request_outcome()). Anywhere else (a digital session, a
+ * typed digital scan row on an analog session, CQPSK toggled on under -fA, a stopped stream) the stored width applies
+ * the next time the analog profile is requested or the stream opens. Decoder thread only.
  *
  * @return 0 when stored, -1 when refused (reason in @p why).
  */
@@ -360,10 +360,10 @@ int svc_airspy_settings_reopen(const dsd_airspy_config* previous, const dsd_airs
 /**
  * @brief The DSP menu's CQPSK toggle on a running RTL front end (DSD_APP_DSP_OP_TOGGLE_CQ).
  *
- * Flips the CQPSK state the front end was last asked for (rtl_stream_requested_cqpsk(): the state the requests the demod
- * thread has not taken yet leave it on, whoever queued them, otherwise the state it publishes) and queues it for the
- * demod thread, leaving the symbol profile and timing alone. Turning CQPSK off under -fA returns to the analog monitor
- * through the analog profile with the configured channel width. Decoder thread only.
+ * Flips the CQPSK state the front end was last asked for (rtl_stream_requested_cqpsk(): the state the requests the
+ * demod thread has not taken yet leave it on, whoever queued them, otherwise the state it publishes) and queues it for
+ * the demod thread, leaving the symbol profile and timing alone. Turning CQPSK off under -fA returns to the analog
+ * monitor through the analog profile with the configured channel width. Decoder thread only.
  */
 void svc_toggle_rtl_cqpsk(const dsd_opts* opts);
 
