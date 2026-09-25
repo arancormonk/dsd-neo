@@ -30,12 +30,12 @@
  *
  * This view owns those decisions, the reading's text ("12.5 kHz", "16 kHz (default)", "12 kHz (DSP-limited)",
  * "12.5 kHz (row; default 16 kHz)"), the width command's notice (for the kind the command edits), and the one spelling
- * of a configured width
- * ("12.5 kHz", "default"). The terminal's status field, RTL menu row and its predicate, the width command's toast, the
- * services that hold a DSP rate to the configured width, and the Qt/Android Radio sheet all take them from here. A
- * reading carries at most one note: "(default)" marks the unset default, which a save leaves out and which keeps its
- * own filter rule, apart from an explicit 16 kHz. A scan row that sets its own width replaces that note with its own,
- * "(row; default X)", naming the configured width the row's leave returns to, rather than adding a second one.
+ * of a configured width ("12.5 kHz", "default"). The terminal's status field, RTL menu row and its predicate, the width
+ * command's toast, the services that hold a DSP rate to the configured width, and the Qt/Android Radio sheet all take
+ * them from here. A reading carries at most one note: "(default)" marks the unset default, which a save leaves out and
+ * which keeps its own filter rule, apart from an explicit 16 kHz. A scan row that sets its own width replaces that note
+ * with its own, "(row; default X)", naming the configured width the row's leave returns to, rather than adding a second
+ * one.
  */
 
 #ifndef DSD_NEO_INCLUDE_DSD_NEO_APP_CONTROL_ANALOG_WIDTH_VIEW_H_

@@ -102,10 +102,10 @@ Target list limits and validation:
 - Duplicate `(type, frequency_hz)` pairs are rejected.
 - A duplicated key header is rejected. An unloadable key path fails the whole import like a bad `-K`/`-k`; a malformed
   direct key or a row mixing direct and file sources also fails, without repeating direct key material in the error.
-- `chan_csv` is only valid for `p25-trunk`, `dmr-trunk`, `nxdn-trunk` and `nxdn48-trunk` targets; `p25_bandplan_csv` is refused
-  on conventional targets, including `p25-conventional` and `nfm-conventional`, a duplicated `p25_bandplan_csv` header is rejected, and a band plan that fails to load
-  fails the whole import. A global `--p25-bandplan`/`[trunking] p25_bandplan_csv` is rejected in this mode like
-  `-C`.
+- `chan_csv` is only valid for `p25-trunk`, `dmr-trunk`, `nxdn-trunk` and `nxdn48-trunk` targets; `p25_bandplan_csv` is
+  refused on conventional targets, including `p25-conventional` and `nfm-conventional`, a duplicated `p25_bandplan_csv`
+  header is rejected, and a band plan that fails to load fails the whole import. A global `--p25-bandplan`/`[trunking]
+  p25_bandplan_csv` is rejected in this mode like `-C`.
 - `modulation` values are target-type specific: `cqpsk`/`c4fm` are valid for both P25 types, and `gfsk` is valid for
   DMR and both NXDN target rates, not P25. An `nfm-conventional` target rejects any `modulation` value, and every key
   column, without echoing a key.
@@ -198,8 +198,8 @@ dsd-neo -ft -i rtl:0:851.0125M:22:0:48:0:2 \
   default.
 
 Each target's `type` selects its decoder class regardless of the configured global preset. Both `p25-trunk` and
-`p25-conventional` enable both phases and exclude DMR and X2-TDMA; DMR and NXDN targets enable only their declared
-class and rate; an `nfm-conventional` target runs the analog monitor instead of a digital decoder ([Analog NFM
+`p25-conventional` enable both phases and exclude DMR and X2-TDMA; DMR and NXDN targets enable only their declared class
+and rate; an `nfm-conventional` target runs the analog monitor instead of a digital decoder ([Analog NFM
 targets](#analog-nfm-targets)). Mixed lists, including both NXDN rates and analog targets, work without `-fa`. The
 target's `modulation` column keeps its existing precedence: an explicit value, including `auto`, overrides global
 modulation handling. An empty value preserves an explicit global modulation lock. Modes declared in a target's
@@ -312,12 +312,11 @@ During scanning:
   and a `| Target: county-p25` line at the top of Call Info, which is the one that survives compact view.
   While idle, Call Info follows the parked target's protocol panel; an unknown NXDN RAN or IDAS area
   is shown as `--`.
-- A `| Scan Timing:` row directly under the Trunk Scan row says why the receiver is staying on that target —
-  `Acquiring control`, `Following call`, `Retune pending`, `Retune retry`, `Manual hold`, `Idle dwell`, and the
-  conventional `Voice` / `Voice tail` / `Activity hold` / `Qualify` — with a countdown on whichever window is
-  running and the target's effective dwell and hold beside it, and `Carrier` while an `nfm-conventional` target's
-  carrier holds it. The phrase table is in
-  [the terminal UI guide](ui-terminal.md); the Qt and Android panels show the same thing.
+- A `| Scan Timing:` row directly under the Trunk Scan row says why the receiver is staying on that target — `Acquiring
+  control`, `Following call`, `Retune pending`, `Retune retry`, `Manual hold`, `Idle dwell`, and the conventional
+  `Voice` / `Voice tail` / `Activity hold` / `Qualify` — with a countdown on whichever window is running and the
+  target's effective dwell and hold beside it, and `Carrier` while an `nfm-conventional` target's carrier holds it. The
+  phrase table is in [the terminal UI guide](ui-terminal.md); the Qt and Android panels show the same thing.
 - Idle targets rotate after their dwell time. Call following or a conventional activity hold suspends that dwell;
   once the target becomes idle again, a fresh full dwell starts. Time spent following the call or holding activity
   does not use up the next idle dwell.
@@ -502,12 +501,14 @@ its analog monitor and width, and no symbol profile is applied over the monitor.
   `-i rtl:`. With the squelch off, or at -100 dB or below, noise holds the target until the per-visit cap or a
   manual advance or avoid moves on, and scan start warns about it once.
 - **Width.** `--nfm-bandwidth-hz <Hz>` in the `options` column sets the target's NFM channel width (whole Hz,
-  `8000..25000`); without it the configured NFM width (16 kHz by default) applies. A width the running DSP rate
-  cannot filter, the target's own or the configured one it runs, is named with the fix at scan start (and again if
-  that rate changes, or, for a target without its own width, if the configured width does), and that target's retune
-  is then refused at every visit without a further warning. While the target is parked, an RTL DSP bandwidth that
-  cannot filter its width is refused. A configured-width edit made while the target's retune is still in flight is
-  applied once the retune lands.
+  `8000..25000`); without it the configured NFM width (16 kHz by default) applies. A width the running DSP rate cannot
+  filter, the target's own or the configured one it runs, is named with the fix at scan start (and again if that rate
+  changes, or, for a target without its own width, if the configured width does), and that target's retune is then
+  refused at every visit without a further warning. While the target is parked, an RTL DSP bandwidth that cannot filter
+  its width is refused, from the DSP bandwidth control, Input > Switch source and a loaded config alike. While the list
+  has a target without a width of its own, the configured NFM width is in use on any session, as under `-fA`: a width
+  edit, a loaded config or a DSP bandwidth that would leave it unfiltered is refused, whichever target is parked. A
+  configured-width edit made while the target's retune is still in flight is applied once the retune lands.
   With rigctl tuning an audio input, the peer demodulates: the width has no effect (scan start says so) and `-B`
   sets the peer's passband.
 - **Controls.** `--scan-max-visit-ms`, the `Y` hold, advance and avoid work exactly as for digital targets, including
@@ -520,10 +521,10 @@ its analog monitor and width, and no symbol profile is applied over the monitor.
 ## Limitations
 
 - P25 trunk, P25 conventional, DMR trunk, DMR conventional, NXDN trunk at both rates (`nxdn-trunk`, `nxdn48-trunk`),
-  NXDN96 conventional, NXDN48 conventional and analog NFM conventional targets are supported. NXDN Type-C sites use one control-channel
-  format at 4800 and 9600 bps (NXDN TS 1-A), so `nxdn48-trunk` shares every decoding path with `nxdn-trunk`
-  and differs only in symbol rate and channel filter; neither the Type-C nor the Type-D NXDN48 path has been
-  verified against a live NXDN48 trunked site from trunk scan. `-Y` with `-fi` remains available for scanning
+  NXDN96 conventional, NXDN48 conventional and analog NFM conventional targets are supported. NXDN Type-C sites use one
+  control-channel format at 4800 and 9600 bps (NXDN TS 1-A), so `nxdn48-trunk` shares every decoding path with
+  `nxdn-trunk` and differs only in symbol rate and channel filter; neither the Type-C nor the Type-D NXDN48 path has
+  been verified against a live NXDN48 trunked site from trunk scan. `-Y` with `-fi` remains available for scanning
   NXDN48 channels outside trunk scan.
 - Phase 1 P25 decode captures are available for replay verification; a replay checks decoding, not live target
   rotation or conventional activity holds. P25 conventional target holds have not been verified on air, and
@@ -566,12 +567,11 @@ Saving configuration while parked also records the global data/encrypted-call ba
 
 Group policies and keys are preloaded and isolated between targets. Re-parking, failed-tune recovery and shutdown
 restore the associated options with the target. Conventional voice-gate switches are accepted on digital conventional
-target types only; trunk systems keep their existing activity-hold policy, and an `nfm-conventional` target holds on
-its carrier. While the voice gate is on, a conventional
-target's `--scan-voice-hold-ms` replaces its `activity_hold_ms` as the hold after the last voice frame and
-`--scan-voice-qualify-ms` replaces its `dwell_ms` as the window in which voice must appear; targets without them
-keep the column values. Row metadata in a target's `chan_csv` is validated and discarded; put system options on the
-target itself.
+target types only; trunk systems keep their existing activity-hold policy, and an `nfm-conventional` target holds on its
+carrier. While the voice gate is on, a conventional target's `--scan-voice-hold-ms` replaces its `activity_hold_ms` as
+the hold after the last voice frame and `--scan-voice-qualify-ms` replaces its `dwell_ms` as the window in which voice
+must appear; targets without them keep the column values. Row metadata in a target's `chan_csv` is validated and
+discarded; put system options on the target itself.
 
 `--scan-max-visit-ms <ms>` is the exception to that conventional-only rule: every target type accepts it, trunked
 included. A target that carries it wins over the global `--scan-max-visit-ms` / `[trunking] scan_max_visit_ms`

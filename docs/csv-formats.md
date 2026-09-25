@@ -266,24 +266,27 @@ analog channel: `--scan-max-visit-ms`, `--squelch-db` and `--nfm-bandwidth-hz`. 
 encrypted-call policy (`-e`, `--no-data-calls`, `--enc-*`) and the voice-gate switches describe digital frames an
 analog channel never carries, and are rejected with `not supported for this mode/target`.
 
-`--nfm-bandwidth-hz` is the full RF channel width the analog channel filter protects while the row is on air (the
-same contract as the receiver's NFM width); a row without it uses the configured NFM width (16 kHz by default). It
-is applied when the row is tuned and restored when the scanner moves on, and Config->Save never writes it (nor the
-row's analog class) as a default. The status line shows it with the configured width it returns to, `Analog: NFM
-12.5 kHz (row; default 16 kHz)`, and the NFM width controls (the terminal row, the Radio sheet) keep editing the
-configured width: while the row is on air the edit waits for it to leave, and the message says the channel overrides
-it. A width the running DSP rate cannot filter (the channel filter needs
-`width / 2 + 600 Hz` within 0.45 of the DSP rate: at a 24 kHz DSP bandwidth the widest is 20.4 kHz, at 16 kHz
-13.2 kHz) is named with the fix the input allows (an RTL DSP bandwidth that fits; on a SoapySDR or Airspy device a
-wider DSP bandwidth or a narrower width; on an I/Q replay a narrower width) when the scan starts, against the rate
-the running stream publishes (an import cannot
-know it: the rate is set when the stream opens and changes with the RTL DSP bandwidth), and again whenever that rate
-changes; that row is then skipped at every visit rather than received without its filter. A row without a width of
-its own is held to the rate with the configured NFM width it runs, which a digital session never holds to it
-otherwise, and is named again whenever that configured width changes. While a row with its own
-width is on air, an RTL DSP bandwidth that cannot filter the width is refused rather than reopening the stream on it.
-On audio input (rigctl tuning a PCM, UDP or TCP source) the audio arrives demodulated, so a row width has no effect
-and scan start says so; set the peer's own passband (`-B`).
+`--nfm-bandwidth-hz` is the full RF channel width the analog channel filter protects while the row is on air (the same
+contract as the receiver's NFM width); a row without it uses the configured NFM width (16 kHz by default). It is applied
+when the row is tuned and restored when the scanner moves on, and Config->Save never writes it (nor the row's analog
+class) as a default. The status line shows it with the configured width it returns to, `Analog: NFM 12.5 kHz (row;
+default 16 kHz)`, and the NFM width controls (the terminal row, the Radio sheet) keep editing the configured width:
+while the row is on air the edit waits for it to leave, and the message says the channel overrides it. A width the
+running DSP rate cannot filter (the channel filter needs `width / 2 + 600 Hz` within 0.45 of the DSP rate: at a 24 kHz
+DSP bandwidth the widest is 20.4 kHz, at 16 kHz 13.2 kHz) is named with the fix the input allows (an RTL DSP bandwidth
+that fits; on a SoapySDR or Airspy device a wider DSP bandwidth or a narrower width; on an I/Q replay a narrower width)
+when the scan starts, against the rate the running stream publishes, and again whenever that rate changes. An import
+does not check it: the configured RTL DSP bandwidth is only what the next stream is asked to open at (a SoapySDR or
+Airspy device may deliver another rate), and the rate changes live with the DSP bandwidth, so a list may be loaded
+before the bandwidth that fits it is set. A row the rate cannot filter is skipped at every visit rather than received
+without its filter. A row without a width of its own is held to the rate with the configured NFM width it runs, and is
+named again whenever that configured width changes. While the scan has such a row, the configured NFM width is in use on
+any session, as under `-fA`: a width edit or a loaded config that sets a width the DSP rate cannot filter, and a DSP
+bandwidth or an input switch whose rate cannot filter the configured width, is refused, whichever row is on air. While a
+row with its own width is on air, an RTL DSP bandwidth that cannot filter the width is refused rather than reopening the
+stream on it, from the DSP bandwidth control, Input > Switch source and a loaded config alike. On audio input (rigctl
+tuning a PCM, UDP or TCP source) the audio arrives demodulated, so a row width has no effect and scan start says so; set
+the peer's own passband (`-B`).
 
 An analog row holds while its carrier is open: the squelch is open over the monitor audio (above the input's level
 floor, through a 200 ms hangover; at an input rate the received-tone detector cannot run at, the squelch alone),

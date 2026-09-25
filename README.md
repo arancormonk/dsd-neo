@@ -60,8 +60,9 @@ This project is an active work in progress as we decouple from the upstream fork
 
   - Follow P25 and DMR trunked voice automatically using channel maps and group lists (`-C ...csv`, `-G group.csv`, `-T`, `--frontend terminal`; `-N` is the short alias).
   - Name source radio IDs separately with `--src-csv examples/src.csv` (labels only, with group-list fallback; works in conventional decode too).
-  - Rotate one tuner across CSV-defined P25 trunk, DMR trunk, NXDN trunk, and one-frequency DMR, NXDN96 and NXDN48
-    targets with `--trunk-scan targets.csv`.
+  - Rotate one tuner across CSV-defined P25 trunk, DMR trunk, NXDN trunk, and one-frequency P25, DMR, NXDN96, NXDN48
+    and analog NFM targets with `--trunk-scan targets.csv`; conventional `-Y` channel maps can mix `nfm` rows with
+    digital ones too.
   - On‑the‑fly retune control via rigctl (`-U`) for external SDR front-ends (e.g., SDR++). For RTL/RTL‑TCP input, DSD-neo retunes directly (optional external UDP retune control can be enabled on loopback with `--rtl-udp-control <port>`; remote exposure requires `--rtl-udp-control-bind <ipv4>`; see `docs/udp-control.md`).
 
 - RTL‑SDR quality‑of‑life features
@@ -400,7 +401,7 @@ Quick examples
 
 - UDP in → Pulse out with UI: `dsd-neo -i udp -o pulse --frontend terminal`
 - DMR trunking from TCP PCM input (with rigctl): `dsd-neo -fs -i tcp -U 4532 -T -C dmr_t3_chan.csv -G group.csv --frontend terminal`
-- Single-tuner P25/DMR/NXDN trunk scan from RTL-SDR: `dsd-neo -fa -i rtl:0:851.0125M:22:0:48:0:2 --trunk-scan examples/trunk_scan_targets.csv -G examples/group.csv --frontend terminal`
+- Single-tuner P25/DMR/NXDN/NFM trunk scan from RTL-SDR: `dsd-neo -fa -i rtl:0:851.0125M:22:0:48:0:2 --trunk-scan examples/trunk_scan_targets.csv -G examples/group.csv --frontend terminal`
 - Source radio names during replay: `dsd-neo --iq-replay p25-control.iq.json -f1 -G examples/group.csv --src-csv examples/src.csv --frontend terminal`
 - IQ capture + inspect + replay: `dsd-neo -i rtl:0:851.375M:22:0:48:0:2 --iq-capture p25-control.iq --frontend terminal` then `dsd-neo --iq-info p25-control.iq.json` then `dsd-neo --iq-replay p25-control.iq.json -f1 --frontend terminal`
 
