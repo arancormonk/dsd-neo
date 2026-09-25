@@ -193,18 +193,23 @@ Tests: `tests/engine/test_engine_trunk_scan.c` (`ENGINE_TRUNK_SCAN`) and
   `dsd_engine_reset_no_carrier_state()` shares decoder cleanup without recursively stepping or changing tuner ownership.
   `trunk_scan.c` selects the same classes from target types while retaining target snapshots and modulation/gain ownership.
   Each row commit (and trunk-scan target switch) opens the sink the row plays through, `dsd_engine_scan_ensure_output()`
-  (analog or digital, idempotent; it, the two warnings below and `dsd_engine_scan_configured_nfm_width_hz()` are private
-  to the engine, `src/engine/scan_analog_internal.h`), and scan start logs what an analog row owes the operator on two
-  schedules. An open squelch, which lets noise hold the row until the visit cap or the operator moves on,
+  (analog or digital, idempotent; it, the two warnings below, the width rule `dsd_engine_scan_width_refused()`,
+  `dsd_engine_scan_note_skipped_rows()` and `dsd_engine_scan_configured_nfm_width_hz()` are private to the engine,
+  `src/engine/scan_analog_internal.h`), and scan start logs what an analog row owes the operator on two schedules. An
+  open squelch, which lets noise hold the row until the visit cap or the operator moves on,
   `dsd_engine_scan_warn_analog_squelch()`, is said once per map (-Y) or list (trunk scan). A width on audio input, or
-  one the DSP rate (`dsd_engine_scan_dsp_rate_hz()`, the rate the RTL stream holds analog requests to,
-  `rtl_stream_get_request_rate_hz()`) cannot filter, `dsd_engine_scan_warn_analog_width()`, worded with the fix the
-  input allows as the stream start's refusal is (`dsd_analog_width_check_at()`: an RTL DSP bandwidth, a wider DSP
-  bandwidth or a narrower width on a SoapySDR or Airspy device, a narrower width on an I/Q replay), is said once per map
-  or list and DSP rate: an RTL stream that has published no rate defers it, and a changed rate repeats it, because the
-  tune refuses such a row without calling into the stream (whose refusal log a valid row's request would re-arm at every
-  rotation) and the trunk-scan coordinator logs no retune failure for it (`trunk_scan_analog_width_refused()`, which
-  holds the width in force once the target's options apply). A row without a width of its own is held with the
+  one the front end refuses, `dsd_engine_scan_warn_analog_width()`, is said once per map or list and DSP rate. The front
+  end refuses a width the DSP rate (`dsd_engine_scan_dsp_rate_hz()`, the rate the RTL stream holds analog requests to,
+  `rtl_stream_get_request_rate_hz()`) cannot filter, worded with the fix the input allows as the stream start's refusal
+  is (`dsd_analog_width_check_at()`: an RTL DSP bandwidth, a wider DSP bandwidth or a narrower width on a SoapySDR or
+  Airspy device, a narrower width on an I/Q replay), and any explicit width while `DSD_NEO_CHANNEL_LPF=0` turns the
+  channel filter off (`dsd_engine_scan_width_refused()`). An RTL stream that has published no rate defers the check, and
+  a changed rate repeats it, because the tune refuses such a row without calling into the stream (whose refusal log a
+  valid row's request would re-arm at every rotation) and the trunk-scan coordinator logs no retune failure for it
+  (`trunk_scan_analog_width_refused()`, which holds the width in force once the target's options apply). Each check that
+  finds rows skipped at every visit also puts the first of them on the status line every frontend shows
+  (`dsd_engine_scan_note_skipped_rows()`: `ui_msg`, as the input-level advisories are), so Android, which has no log
+  view, learns why a row is never on air. A row without a width of its own is held with the
   configured NFM width it runs (`dsd_engine_scan_configured_nfm_width_hz()`), and a changed configured width names those
   rows again. While the scan has such a row or target (`dsd_engine_scan_runs_configured_nfm_width()`, public in
   `trunk_scan.h`), app-control holds the configured width to the rate on any session, as under -fA: the width command, a

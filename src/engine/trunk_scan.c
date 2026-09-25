@@ -2649,12 +2649,26 @@ trunk_scan_analog_target_label(const dsd_trunk_scan_target* target, char* label,
     DSD_SNPRINTF(label, label_size, "Trunk scan target '%s'", target->id);
 }
 
+/* The analog targets a width check found skipped at every visit, for the status line
+ * (dsd_engine_scan_note_skipped_rows()): how many, and the first one's label and reason. */
+typedef struct {
+    int count;
+    char label[96];
+    char brief[DSD_ANALOG_ERROR_TEXT_MAX];
+} trunk_scan_skipped_targets;
+
 static void
 trunk_scan_warn_analog_width(const dsd_opts* opts, const dsd_state* state, const dsd_trunk_scan_target* target,
-                             int dsp_rate_hz) {
+                             int dsp_rate_hz, trunk_scan_skipped_targets* skipped) {
     char label[96];
+    char brief[DSD_ANALOG_ERROR_TEXT_MAX];
     trunk_scan_analog_target_label(target, label, sizeof label);
-    (void)dsd_engine_scan_warn_analog_width(opts, state, &target->row_options, dsp_rate_hz, label);
+    if (dsd_engine_scan_warn_analog_width(opts, state, &target->row_options, dsp_rate_hz, label, brief, sizeof brief)
+            == DSD_ENGINE_SCAN_WIDTH_SKIPPED
+        && skipped->count++ == 0) {
+        DSD_SNPRINTF(skipped->label, sizeof skipped->label, "%s", label);
+        DSD_SNPRINTF(skipped->brief, sizeof skipped->brief, "%s", brief);
+    }
 }
 
 /* The retune skips an analog target whose width the DSP rate cannot fit without a word (dsd_engine_scan_tune_to_freq()),
@@ -2663,7 +2677,7 @@ trunk_scan_warn_analog_width(const dsd_opts* opts, const dsd_state* state, const
  * width whenever that width has changed (the width command, a config apply). Their squelch was named when the scan
  * started. */
 static void
-trunk_scan_recheck_analog_targets(const dsd_opts* opts, const dsd_state* state, dsd_trunk_scan_coord* coord) {
+trunk_scan_recheck_analog_targets(const dsd_opts* opts, dsd_state* state, dsd_trunk_scan_coord* coord) {
     const int rate_hz = trunk_scan_analog_check_rate(opts, state);
     const int nfm_hz = dsd_engine_scan_configured_nfm_width_hz(opts, state);
     if (rate_hz == TRUNK_SCAN_ANALOG_CHECK_DEFERRED
@@ -2673,27 +2687,31 @@ trunk_scan_recheck_analog_targets(const dsd_opts* opts, const dsd_state* state, 
     const int inherited_only = rate_hz == coord->analog_checked_rate_hz;
     coord->analog_checked_rate_hz = rate_hz;
     coord->analog_checked_nfm_hz = nfm_hz;
+    trunk_scan_skipped_targets skipped = {0};
     for (size_t i = 0; i < coord->count; i++) {
         const dsd_trunk_scan_target* target = &coord->targets[i].target;
         if (trunk_scan_type_is_analog(target->type)
             && !(inherited_only && (target->row_options.present & DSD_SCAN_OPT_BANDWIDTH))) {
-            trunk_scan_warn_analog_width(opts, state, target, rate_hz);
+            trunk_scan_warn_analog_width(opts, state, target, rate_hz, &skipped);
         }
     }
+    dsd_engine_scan_note_skipped_rows(state, skipped.count, skipped.label, skipped.brief);
 }
 
 /* Whether the retune refuses an analog target's width at the published DSP rate before any backend moves
  * (dsd_engine_scan_tune_to_freq()): the width in force once the target's options apply, its own or the configured NFM
- * width it runs. trunk_scan_recheck_analog_targets(), which runs before every retune, has named such a target for that
- * rate and width already, with the fact that it is skipped at every visit, so the failed visit adds nothing. */
+ * width it runs, which that rate cannot filter or DSD_NEO_CHANNEL_LPF=0 refuses (dsd_engine_scan_width_refused()).
+ * trunk_scan_recheck_analog_targets(), which runs before every retune, has named such a target for that rate and
+ * width already, with the fact that it is skipped at every visit, so the failed visit adds nothing. */
 static int
 trunk_scan_analog_width_refused(const dsd_opts* opts, const dsd_state* state, const dsd_trunk_scan_target* target) {
     if (!trunk_scan_type_is_analog(target->type) || !dsd_opts_is_analog_family(opts)) {
         return 0;
     }
-    const int width_hz = dsd_opts_analog_width_hz(opts);
     const int rate_hz = dsd_engine_scan_dsp_rate_hz(opts, state);
-    return width_hz > 0 && rate_hz > 0 && dsd_analog_width_check(opts->analog_demod, width_hz, rate_hz, NULL, 0U) != 0;
+    return rate_hz > 0
+           && dsd_engine_scan_width_refused(opts, opts->analog_demod, dsd_opts_analog_width_hz(opts), rate_hz, NULL,
+                                            0U);
 }
 
 static int
@@ -3051,11 +3069,12 @@ trunk_scan_warn_ignored_target_gain(const dsd_opts* opts, const dsd_state* state
  * rate. Returns the rate the widths were checked at, or TRUNK_SCAN_ANALOG_CHECK_DEFERRED when that
  * check waits for the rate (trunk_scan_recheck_analog_targets()). */
 static int
-trunk_scan_warn_targets(const dsd_opts* opts, const dsd_state* state, const dsd_trunk_scan_target_list* list) {
+trunk_scan_warn_targets(const dsd_opts* opts, dsd_state* state, const dsd_trunk_scan_target_list* list) {
     if (!opts || !list) {
         return TRUNK_SCAN_ANALOG_CHECK_DEFERRED;
     }
     const int check_rate_hz = trunk_scan_analog_check_rate(opts, state);
+    trunk_scan_skipped_targets skipped = {0};
     for (size_t i = 0; i < list->count; i++) {
         const dsd_trunk_scan_target* target = &list->targets[i];
         if (!trunk_scan_type_is_analog(target->type)) {
@@ -3071,9 +3090,10 @@ trunk_scan_warn_targets(const dsd_opts* opts, const dsd_state* state, const dsd_
         trunk_scan_analog_target_label(target, label, sizeof label);
         (void)dsd_engine_scan_warn_analog_squelch(opts, state, &target->row_options, label);
         if (check_rate_hz != TRUNK_SCAN_ANALOG_CHECK_DEFERRED) {
-            trunk_scan_warn_analog_width(opts, state, target, check_rate_hz);
+            trunk_scan_warn_analog_width(opts, state, target, check_rate_hz, &skipped);
         }
     }
+    dsd_engine_scan_note_skipped_rows(state, skipped.count, skipped.label, skipped.brief);
     return check_rate_hz;
 }
 

@@ -31,6 +31,7 @@
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
 #include "dsd-neo/runtime/trunk_tuning_hooks.h"
+#include "scan_analog_internal.h"
 
 static int DSD_ATTR_USED
 dsd_engine_current_demod_rate(const dsd_opts* opts, const dsd_state* state) {
@@ -421,12 +422,15 @@ dsd_engine_prepare_current_cc_rtl_chain(const dsd_opts* opts, const dsd_state* s
  * (dsd_engine_scan_warn_analog_width() checks it against the same rate), together with the fact that the row is
  * skipped at every visit, so it is refused here without calling into the stream, whose refusal log a valid row's
  * request would re-arm and repeat at every rotation; the trunk-scan coordinator stays quiet about the failed visit for
- * the same reason. Any other refusal is the stream's to log. */
+ * the same reason. So is any explicit width while DSD_NEO_CHANNEL_LPF=0 turns the channel filter off, which the stream
+ * refuses at every rate and the same warning names. Any other refusal is the stream's to log. */
 static int
 dsd_engine_prepare_scan_analog_profile(const dsd_opts* opts, const dsd_state* state, long int freq) {
     const int width_hz = dsd_opts_analog_width_hz(opts);
     const int rate_hz = dsd_engine_scan_dsp_rate_hz(opts, state);
-    if (width_hz > 0 && rate_hz > 0 && dsd_analog_width_check(opts->analog_demod, width_hz, rate_hz, NULL, 0U) != 0) {
+    if (width_hz > 0 && rate_hz > 0
+        && (dsd_engine_scan_channel_lpf_forced_off()
+            || dsd_analog_width_check(opts->analog_demod, width_hz, rate_hz, NULL, 0U) != 0)) {
         return -1;
     }
     dsd_engine_prepare_retune_profile_for_target(opts, state, (uint32_t)freq, -1, 0, 4, RTL_STREAM_CHANNEL_PROFILE_WIDE,

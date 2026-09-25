@@ -258,9 +258,13 @@ channel_scan_warn_rows_squelch(const dsd_opts* opts, const dsd_state* state) {
 }
 
 /* The widths the analog rows run, held to @p dsp_rate_hz: every row's, or only those of the rows that run the
- * configured NFM width (@p inherited_only, after that width alone changed). */
+ * configured NFM width (@p inherited_only, after that width alone changed). The rows skipped at every visit also reach
+ * the status line, since a frontend without the log (Android) would otherwise never learn why a row is not visited. */
 static void
-channel_scan_warn_rows_width(const dsd_opts* opts, const dsd_state* state, int dsp_rate_hz, int inherited_only) {
+channel_scan_warn_rows_width(const dsd_opts* opts, dsd_state* state, int dsp_rate_hz, int inherited_only) {
+    int skipped = 0;
+    char first_label[64] = "";
+    char first_brief[DSD_ANALOG_ERROR_TEXT_MAX] = "";
     for (int row = 0; row < state->lcn_freq_count; row++) {
         if (!dsd_scan_mode_is_analog(dsd_channel_mode_get(state, (size_t)row))) {
             continue;
@@ -271,9 +275,17 @@ channel_scan_warn_rows_width(const dsd_opts* opts, const dsd_state* state, int d
             continue;
         }
         char label[64];
+        char brief[DSD_ANALOG_ERROR_TEXT_MAX];
         channel_scan_row_label(state, row, label, sizeof label);
-        (void)dsd_engine_scan_warn_analog_width(opts, state, values, dsp_rate_hz, label);
+        if (dsd_engine_scan_warn_analog_width(opts, state, values, dsp_rate_hz, label, brief, sizeof brief)
+            == DSD_ENGINE_SCAN_WIDTH_SKIPPED) {
+            if (skipped++ == 0) {
+                DSD_SNPRINTF(first_label, sizeof first_label, "%s", label);
+                DSD_SNPRINTF(first_brief, sizeof first_brief, "%s", brief);
+            }
+        }
     }
+    dsd_engine_scan_note_skipped_rows(state, skipped, first_label, first_brief);
 }
 
 /* Once per map the rows' squelch, and the analog row widths once the DSP rate they must fit is known: an RTL stream
@@ -282,7 +294,7 @@ channel_scan_warn_rows_width(const dsd_opts* opts, const dsd_state* state, int d
  * (dsd_engine_scan_tune_to_freq()). A changed configured NFM width (the width command, a config apply) names again the
  * rows that run it. */
 static void
-channel_scan_check_rows(const dsd_opts* opts, const dsd_state* state, channel_scan* scan) {
+channel_scan_check_rows(const dsd_opts* opts, dsd_state* state, channel_scan* scan) {
     if (!scan->rows_checked || scan->rows_checked_map != state->trunk_chan_map_seq) {
         scan->rows_checked = 1;
         scan->rows_checked_map = state->trunk_chan_map_seq;
@@ -367,52 +379,112 @@ dsd_engine_scan_configured_nfm_width_hz(const dsd_opts* opts, const dsd_state* s
     return width_hz > 0 ? width_hz : 0;
 }
 
+int
+dsd_engine_scan_width_refused(const dsd_opts* opts, int kind, int width_hz, int dsp_rate_hz, char* why,
+                              size_t why_size) {
+    if (why && why_size > 0U) {
+        why[0] = '\0';
+    }
+    if (!opts || width_hz <= 0 || opts->audio_in_type != AUDIO_IN_RTL) {
+        return 0;
+    }
+    char err[DSD_ANALOG_ERROR_TEXT_MAX];
+    if (dsd_analog_channel_lpf_off_check(kind, width_hz, dsd_engine_scan_channel_lpf_forced_off(), err, sizeof err)
+        != 0) {
+        if (why && why_size > 0U) {
+            DSD_SNPRINTF(why, why_size, "%s", err);
+        }
+        return 1;
+    }
+    /* Worded with the fix this input allows, as the stream start's refusal is (issue #525). */
+    return dsp_rate_hz > 0
+           && dsd_analog_width_check_at(kind, width_hz, dsp_rate_hz, scan_input_rate_source(opts), why, why_size) != 0;
+}
+
+/* The status-line reason a refused width is skipped for (dsd_engine_scan_width_refused()): short, as the log line
+ * beside it carries the full text and the fix. */
+static void
+scan_width_refusal_brief(int kind, int width_hz, int dsp_rate_hz, char* brief, size_t brief_size) {
+    if (!brief || brief_size == 0U) {
+        return;
+    }
+    char width[DSD_ANALOG_WIDTH_TEXT_MAX];
+    char rate[DSD_ANALOG_WIDTH_TEXT_MAX];
+    (void)dsd_analog_width_format(width_hz, width, sizeof width);
+    if (dsd_engine_scan_channel_lpf_forced_off()) {
+        DSD_SNPRINTF(brief, brief_size, "%s %s needs the filter DSD_NEO_CHANNEL_LPF=0 turns off",
+                     dsd_analog_demod_label(kind), width);
+        return;
+    }
+    (void)dsd_analog_width_format(dsp_rate_hz, rate, sizeof rate);
+    DSD_SNPRINTF(brief, brief_size, "%s %s does not fit the %s DSP rate", dsd_analog_demod_label(kind), width, rate);
+}
+
+void
+dsd_engine_scan_note_skipped_rows(dsd_state* state, int skipped, const char* label, const char* brief) {
+    if (!state || skipped <= 0 || !label || !brief) {
+        return;
+    }
+    if (skipped == 1) {
+        DSD_SNPRINTF(state->ui_msg, sizeof state->ui_msg, "Skipped at every visit: %s: %s", label, brief);
+    } else {
+        DSD_SNPRINTF(state->ui_msg, sizeof state->ui_msg, "Skipped at every visit: %s and %d more: %s", label,
+                     skipped - 1, brief);
+    }
+    state->ui_msg_expire = time(NULL) + 5;
+}
+
 /* A row without a width of its own runs the configured NFM width. The width commands hold that width to the DSP rate
  * while the scan has such a row (dsd_engine_scan_runs_configured_nfm_width()), but a list loaded over a width the rate
  * cannot filter, or a rate a device forced, still leaves one the rate cannot filter: that skips the row at every visit
  * as well. Audio input filters nothing, and the configured width is no row's to name there. */
 static int
-scan_warn_configured_nfm_width(const dsd_opts* opts, const dsd_state* state, int dsp_rate_hz, const char* label) {
+scan_warn_configured_nfm_width(const dsd_opts* opts, const dsd_state* state, int dsp_rate_hz, const char* label,
+                               char* brief, size_t brief_size) {
     const int width_hz = dsd_engine_scan_configured_nfm_width_hz(opts, state);
     if (width_hz <= 0 || dsp_rate_hz <= 0 || opts->audio_in_type != AUDIO_IN_RTL) {
-        return 0;
+        return DSD_ENGINE_SCAN_WIDTH_OK;
     }
     char why[DSD_ANALOG_ERROR_TEXT_MAX];
-    if (dsd_analog_width_check_at(DSD_ANALOG_DEMOD_FM, width_hz, dsp_rate_hz, scan_input_rate_source(opts), why,
-                                  sizeof why)
-        == 0) {
-        return 0;
+    if (!dsd_engine_scan_width_refused(opts, DSD_ANALOG_DEMOD_FM, width_hz, dsp_rate_hz, why, sizeof why)) {
+        return DSD_ENGINE_SCAN_WIDTH_OK;
     }
     LOG_WARN("WARNING: %s: it sets no NFM width of its own, and the configured %s; until then it is skipped at every "
              "visit.\n",
              label, why);
-    return 1;
+    scan_width_refusal_brief(DSD_ANALOG_DEMOD_FM, width_hz, dsp_rate_hz, brief, brief_size);
+    return DSD_ENGINE_SCAN_WIDTH_SKIPPED;
 }
 
 int
 dsd_engine_scan_warn_analog_width(const dsd_opts* opts, const dsd_state* state, const dsd_scan_option_values* row,
-                                  int dsp_rate_hz, const char* label) {
+                                  int dsp_rate_hz, const char* label, char* brief, size_t brief_size) {
+    if (brief && brief_size > 0U) {
+        brief[0] = '\0';
+    }
     if (!opts || !label) {
-        return 0;
+        return DSD_ENGINE_SCAN_WIDTH_OK;
     }
     if (!row || !(row->present & DSD_SCAN_OPT_BANDWIDTH)) {
-        return scan_warn_configured_nfm_width(opts, state, dsp_rate_hz, label);
+        return scan_warn_configured_nfm_width(opts, state, dsp_rate_hz, label, brief, brief_size);
     }
     if (opts->audio_in_type != AUDIO_IN_RTL) {
         LOG_WARN("WARNING: %s: --nfm-bandwidth-hz %d has no effect on audio input, which arrives demodulated; set "
                  "the demodulator's own passband (-B for a rigctl peer).\n",
                  label, row->channel_bw_hz);
-        return 1;
+        return DSD_ENGINE_SCAN_WIDTH_NO_EFFECT;
     }
-    if (dsd_scan_option_width_check(DSD_SCAN_MODE_NFM, row, dsp_rate_hz, NULL, 0U) != 0) {
-        /* Worded with the fix this input allows, as the stream start's refusal is (issue #525). */
-        char why[DSD_ANALOG_ERROR_TEXT_MAX];
-        (void)dsd_analog_width_check_at(DSD_ANALOG_DEMOD_FM, row->channel_bw_hz, dsp_rate_hz,
-                                        scan_input_rate_source(opts), why, sizeof why);
-        LOG_WARN("WARNING: %s: %s; until then it is skipped at every visit.\n", label, why);
-        return 1;
+    /* The row's rate rule (dsd_scan_option_width_check()), and DSD_NEO_CHANNEL_LPF=0, which refuses the width at any
+     * rate; the text is the front end's (dsd_engine_scan_width_refused()). */
+    if (dsd_scan_option_width_check(DSD_SCAN_MODE_NFM, row, dsp_rate_hz, NULL, 0U) == 0
+        && !dsd_engine_scan_channel_lpf_forced_off()) {
+        return DSD_ENGINE_SCAN_WIDTH_OK;
     }
-    return 0;
+    char why[DSD_ANALOG_ERROR_TEXT_MAX];
+    (void)dsd_engine_scan_width_refused(opts, DSD_ANALOG_DEMOD_FM, row->channel_bw_hz, dsp_rate_hz, why, sizeof why);
+    LOG_WARN("WARNING: %s: %s; until then it is skipped at every visit.\n", label, why);
+    scan_width_refusal_brief(DSD_ANALOG_DEMOD_FM, row->channel_bw_hz, dsp_rate_hz, brief, brief_size);
+    return DSD_ENGINE_SCAN_WIDTH_SKIPPED;
 }
 
 static int

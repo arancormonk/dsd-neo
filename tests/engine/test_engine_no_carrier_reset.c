@@ -23,6 +23,7 @@
 #include <dsd-neo/engine/trunk_tuning.h>
 #include <dsd-neo/io/rtl_stream_c.h>
 #include <dsd-neo/platform/file_compat.h>
+#include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/platform/sockets.h>
 #include <dsd-neo/protocol/dmr/dmr_trunk_sm.h>
 #include <dsd-neo/protocol/p25/p25_sm_watchdog.h>
@@ -1212,6 +1213,56 @@ test_typed_scan_refused_width_skipped_without_the_stream(void) {
     }
     dsd_engine_channel_scan_leave(opts, state);
     state->rtl_ctx = NULL;
+    free_test_runtime(opts, state);
+    dsd_trunk_tuning_requests_reset();
+    return rc;
+}
+
+/* DSD_NEO_CHANNEL_LPF=0 turns off the channel filter every explicit width needs, and the stream refuses such a width
+ * at any rate. A row with its own width is then skipped at every visit without asking the stream, as a width the rate
+ * cannot fit is, so a valid row beside it cannot re-arm the stream's refusal log at every rotation; a row on the unset
+ * default still runs. */
+static int
+test_typed_scan_width_skipped_under_channel_lpf_override(void) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    (void)dsd_setenv("DSD_NEO_CHANNEL_LPF", "0", 1);
+    dsd_neo_config_init();
+    int rc = 0;
+    reset_rtl_profile_fakes();
+    dsd_trunk_tuning_requests_reset();
+    opts->audio_in_type = AUDIO_IN_RTL;
+    opts->scanner_mode = 1;
+    opts->trunk_hangtime = 1;
+    state->rtl_ctx = (RtlSdrContext*)state;
+    g_rtl_request_rate_hz = 48000;
+    state->lcn_freq_count = 2;
+    state->trunk_lcn_freq[0] = 154530000L;
+    state->trunk_lcn_freq[1] = 155530000L;
+    for (int row = 0; row < 2; row++) {
+        rc |= expect_true("lpf row mode", dsd_channel_mode_set(state, (size_t)row, DSD_SCAN_MODE_NFM) == 0);
+    }
+    dsd_scan_row_profile* profile = NULL;
+    rc |= expect_true("lpf row profile", dsd_scan_profile_ensure(&profile) == 0 && profile);
+    if (profile) {
+        profile->values.present = DSD_SCAN_OPT_BANDWIDTH;
+        profile->values.channel_bw_hz = 12500;
+        rc |= expect_true("lpf row width", dsd_channel_profile_set(state, 1U, profile) == 0);
+    }
+    for (int visit = 0; visit < 6; visit++) {
+        state->last_cc_sync_time = time(NULL) - 11;
+        noCarrier(opts, state);
+    }
+    rc |= expect_true("explicit width never reaches the stream",
+                      g_analog_attach_calls > 0 && g_analog_attach_max_width_hz == 0);
+    rc |= expect_true("default-width row tuned", g_rtl_tune_freq == 154530000U && g_rtl_analog_width_hz == 0);
+    dsd_engine_channel_scan_leave(opts, state);
+    state->rtl_ctx = NULL;
+    (void)dsd_unsetenv("DSD_NEO_CHANNEL_LPF");
+    dsd_neo_config_init();
     free_test_runtime(opts, state);
     dsd_trunk_tuning_requests_reset();
     return rc;
@@ -3157,6 +3208,7 @@ main(void) {
     rc |= test_trunk_scan_digital_target_after_nfm_timed_for_digital();
     rc |= test_scoped_mode_change_on_nfm_row_times_the_baseline_for_digital();
     rc |= test_typed_scan_refused_width_skipped_without_the_stream();
+    rc |= test_typed_scan_width_skipped_under_channel_lpf_override();
     rc |= test_typed_scan_nfm_row_holds_on_carrier();
     rc |= test_trunk_cache_with_mode_metadata();
     rc |= test_dmr_explicit_return_destination();

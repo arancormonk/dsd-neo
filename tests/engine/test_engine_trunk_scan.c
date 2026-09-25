@@ -32,6 +32,7 @@
 #include <dsd-neo/io/rtl_stream_c.h>
 #include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/platform/platform.h>
+#include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/platform/sockets.h>
 #include <dsd-neo/protocol/dmr/dmr_trunk_sm.h>
 #include <dsd-neo/protocol/nxdn/nxdn_trunk_diag.h>
@@ -39,6 +40,7 @@
 #include <dsd-neo/protocol/p25/p25_sm_watchdog.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #include <dsd-neo/runtime/analog_channel.h>
+#include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
 #include <dsd-neo/runtime/scan_mode.h>
 #include <dsd-neo/runtime/scan_options.h>
@@ -342,10 +344,13 @@ dsd_engine_scan_tune_to_freq(dsd_opts* opts, dsd_state* state, long int freq, in
     }
     g_scan_tune_to_freq_analog_only = opts->analog_only;
     g_scan_tune_to_freq_nfm_width_hz = opts->analog_nfm_bandwidth_hz;
+    const dsdneoRuntimeConfig* env = dsd_neo_get_config();
+    const int lpf_off = env && env->channel_lpf_is_set && env->channel_lpf_enable == 0;
     if (g_scan_tune_refuses_unfit_width && dsd_opts_is_analog_family(opts) && dsd_opts_analog_width_hz(opts) > 0
         && g_scan_dsp_rate_hz > 0
-        && dsd_analog_width_check(opts->analog_demod, dsd_opts_analog_width_hz(opts), g_scan_dsp_rate_hz, NULL, 0U)
-               != 0) {
+        && (lpf_off
+            || dsd_analog_width_check(opts->analog_demod, dsd_opts_analog_width_hz(opts), g_scan_dsp_rate_hz, NULL, 0U)
+                   != 0)) {
         g_scan_tune_width_refusals++;
         return DSD_TRUNK_TUNE_RESULT_FAILED;
     }
@@ -10625,6 +10630,72 @@ test_nfm_target_refused_width_skipped_quietly(void) {
     return 0;
 }
 
+/* DSD_NEO_CHANNEL_LPF=0 turns off the channel filter every explicit width needs, and the front end refuses such a
+ * width at any rate: an nfm target with its own width is named for it once when the scan starts, in the log and on the
+ * status line, then refused at every visit before any backend moves, with no "retune failed" line of the
+ * coordinator's own, although the DSP rate fits the width. */
+static int
+test_nfm_target_width_skipped_under_channel_lpf_override(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    char target_path[DSD_TEST_PATH_MAX];
+    static dsd_opts opts;
+    static dsd_state state;
+    if (make_temp_dir(dir, sizeof dir) != 0
+        || write_targets_file_with_header(dir, k_squelch_targets_header,
+                                          "fire,nfm-conventional,154430000,,250,250,,"
+                                          "--nfm-bandwidth-hz 12500 --squelch-db -50\n"
+                                          "dmr,dmr-conventional,461000000,,250,250,,\n",
+                                          target_path, sizeof target_path)
+               != 0) {
+        return 1;
+    }
+    reset_scan_opts_state(&opts, &state);
+    DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", target_path);
+    (void)dsd_setenv("DSD_NEO_CHANNEL_LPF", "0", 1);
+    dsd_neo_config_init();
+    dsd_test_capture_stderr cap;
+    char buf[16384] = {0};
+    char err[256] = {0};
+    if (dsd_test_capture_stderr_begin(&cap, "trunkscanlpfoff") != 0) {
+        cleanup_paths(dir, target_path, NULL);
+        return 1;
+    }
+    g_scan_tune_refuses_unfit_width = 1;
+    g_scan_tune_width_refusals = 0;
+    g_scan_dsp_rate_hz = 48000;
+    trunk_scan_test_set_now(0.0);
+    int rc = dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err);
+    char status[sizeof state.ui_msg];
+    DSD_SNPRINTF(status, sizeof status, "%s", state.ui_msg);
+    for (int i = 0; i < 24; i++) {
+        trunk_scan_test_set_now(0.26 * (double)(i + 1));
+        dsd_engine_trunk_scan_tick(&opts, &state);
+    }
+    const int refusals = g_scan_tune_width_refusals;
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    (void)dsd_test_capture_stderr_end(&cap);
+    (void)dsd_test_capture_stderr_read(&cap, buf, sizeof buf);
+    g_scan_tune_refuses_unfit_width = 0;
+    g_scan_dsp_rate_hz = 0;
+    (void)dsd_unsetenv("DSD_NEO_CHANNEL_LPF");
+    dsd_neo_config_init();
+    trunk_scan_test_clear_now();
+    cleanup_paths(dir, target_path, NULL);
+    const int width = count_text(buf, "Trunk scan target 'fire': NFM bandwidth 12.5 kHz needs the channel filter, but "
+                                      "DSD_NEO_CHANNEL_LPF=0 turns it off");
+    const int failed = count_text(buf, "Trunk scan target 'fire' retune failed");
+    const int status_named = strcmp(status, "Skipped at every visit: Trunk scan target 'fire': NFM 12.5 kHz needs the "
+                                            "filter DSD_NEO_CHANNEL_LPF=0 turns off")
+                             == 0;
+    if (rc != 0 || width != 1 || refusals < 2 || failed != 0 || !status_named) {
+        DSD_FPRINTF(stderr,
+                    "lpf-off nfm target (rc=%d %s): width named %d, refused %d, retune-failed %d, status '%s'\n%s\n",
+                    rc, err, width, refusals, failed, status, buf);
+        return 1;
+    }
+    return 0;
+}
+
 /* An nfm target that sets no width of its own runs the configured NFM width, which nothing holds to the DSP rate on a
  * digital session. A rate that cannot filter it is named with that width when the scan starts, and the width again
  * whenever it changes (the width command, a config apply); the retune then refuses the target at every visit, before
@@ -10942,6 +11013,7 @@ main(void) {
     rc |= run_with_default_tune_hook(test_digital_target_after_nfm_timed_for_digital_family);
     rc |= run_with_default_tune_hook(test_nfm_target_width_rechecked_when_the_dsp_rate_changes);
     rc |= run_with_default_tune_hook(test_nfm_target_refused_width_skipped_quietly);
+    rc |= run_with_default_tune_hook(test_nfm_target_width_skipped_under_channel_lpf_override);
     rc |= run_with_default_tune_hook(test_nfm_target_configured_width_held_to_the_dsp_rate);
     rc |= run_with_default_tune_hook(test_nfm_target_width_edit_during_a_pending_retune);
     return rc;

@@ -24,6 +24,7 @@
 #include <dsd-neo/engine/frame_processing.h>
 #include <dsd-neo/engine/scan_voice_gate.h>
 #include <dsd-neo/engine/trunk_tuning.h>
+#include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/runtime/analog_channel.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/decode_mode.h>
@@ -1167,16 +1168,23 @@ test_nfm_row_warnings_follow_the_dsp_rate(void) {
     nfm_warning_rows_visit(opts, state, 4);
     assert(g_analog_warnings == 1);
     assert(strstr(g_analog_warning_rows[0], "Scan channel 2 (150.000000 MHz): the analog channel's squelch is off"));
-    /* The rate arrives: row 1's 20 kHz, once. */
+    assert(state->ui_msg[0] == '\0');
+    /* The rate arrives: row 1's 20 kHz, once, in the log and on the status line every frontend shows. */
     g_scan_dsp_rate_hz = 16000;
     nfm_warning_rows_visit(opts, state, 8);
     assert(g_analog_warnings == 2);
     assert(strstr(g_analog_warning_rows[1], "Scan channel 1 (150.000000 MHz): NFM bandwidth 20 kHz does not fit the "
                                             "16 kHz DSP rate"));
+    assert(strcmp(state->ui_msg, "Skipped at every visit: Scan channel 1 (150.000000 MHz): NFM 20 kHz does not fit the "
+                                 "16 kHz DSP rate")
+           == 0);
+    assert(state->ui_msg_expire > 0);
     /* A 24 kHz rate fits the 20 kHz width, and the squelch is not named again. */
+    state->ui_msg[0] = '\0';
     g_scan_dsp_rate_hz = 24000;
     nfm_warning_rows_visit(opts, state, 8);
     assert(g_analog_warnings == 2);
+    assert(state->ui_msg[0] == '\0');
     /* Back to 16 kHz: the width is named again, the squelch still not. */
     g_scan_dsp_rate_hz = 16000;
     nfm_warning_rows_visit(opts, state, 8);
@@ -1212,6 +1220,9 @@ test_nfm_row_warnings_for_the_configured_width(void) {
     assert(strstr(g_analog_warning_rows[2], "set the RTL DSP bandwidth to 24 or 48 kHz; until then it is skipped at "
                                             "every visit"));
     assert(strstr(g_analog_warning_rows[3], "Scan channel 4 (150.000000 MHz): it sets no NFM width of its own"));
+    assert(strcmp(state->ui_msg, "Skipped at every visit: Scan channel 1 (150.000000 MHz) and 2 more: NFM 20 kHz does "
+                                 "not fit the 16 kHz DSP rate")
+           == 0);
     /* A configured width the rate fits names nothing; one it does not names the two rows again, not row 1. */
     assert(dsd_scan_mode_configured_view(state) != NULL);
     (void)dsd_scan_mode_set_configured_nfm_bandwidth(opts, state, 12500);
@@ -1236,6 +1247,42 @@ test_nfm_row_warnings_for_the_configured_width(void) {
     tunes = reset_count = 0;
 }
 
+/* DSD_NEO_CHANNEL_LPF=0 turns off the channel filter every explicit width needs, and the front end refuses such a
+ * width at any rate, so a row with its own width is skipped at every visit even where the rate fits it: the scan start
+ * names it once with that reason, in the log and on the status line, as it names a width the rate cannot fit. A row
+ * on the unset default width still runs, and names nothing. */
+static void
+test_nfm_row_warnings_under_the_channel_lpf_override(void) {
+    (void)dsd_setenv("DSD_NEO_CHANNEL_LPF", "0", 1);
+    dsd_neo_config_init();
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
+    assert(opts && state);
+    nfm_warning_rows_setup(opts, state, AUDIO_IN_RTL, -60.0);
+    g_scan_dsp_rate_hz = 48000;
+    nfm_warning_rows_visit(opts, state, 8);
+    /* Row 2's open squelch, then row 1's 20 kHz, which the 48 kHz rate fits. */
+    assert(g_analog_warnings == 2);
+    assert(strstr(g_analog_warning_rows[1], "Scan channel 1 (150.000000 MHz): NFM bandwidth 20 kHz needs the channel "
+                                            "filter, but DSD_NEO_CHANNEL_LPF=0 turns it off"));
+    assert(strstr(g_analog_warning_rows[1], "until then it is skipped at every visit"));
+    assert(strcmp(state->ui_msg, "Skipped at every visit: Scan channel 1 (150.000000 MHz): NFM 20 kHz needs the "
+                                 "filter DSD_NEO_CHANNEL_LPF=0 turns off")
+           == 0);
+    /* Said once: more rotations at the same rate name nothing more. */
+    nfm_warning_rows_visit(opts, state, 8);
+    assert(g_analog_warnings == 2);
+    dsd_engine_channel_scan_leave(opts, state);
+    g_scan_dsp_rate_hz = 0;
+    dsd_state_trunk_lcn_free(state);
+    dsd_state_ext_free_all(state);
+    free(state);
+    free(opts);
+    tunes = reset_count = 0;
+    (void)dsd_unsetenv("DSD_NEO_CHANNEL_LPF");
+    dsd_neo_config_init();
+}
+
 int
 main(void) {
     dsd_neo_log_set_tap(count_squelch_warnings, NULL);
@@ -1253,6 +1300,7 @@ main(void) {
     test_nfm_row_warnings_once_per_row();
     test_nfm_row_warnings_follow_the_dsp_rate();
     test_nfm_row_warnings_for_the_configured_width();
+    test_nfm_row_warnings_under_the_channel_lpf_override();
     dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
     dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
     assert(opts && state);
