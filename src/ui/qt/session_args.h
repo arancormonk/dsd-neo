@@ -70,6 +70,10 @@ enum class SessionArgsError {
     AmNeedsRadio
 };
 
+/* The last SessionArgsError value. A value added after it takes its place here, and session_args_error_text() then
+ * needs its text: a static_assert there holds the text table to this value. */
+constexpr SessionArgsError SessionArgsErrorLast = SessionArgsError::AmNeedsRadio;
+
 /** ASCII whitespace removed, optional 0x stripped, uppercase hex. QString copies
  * cannot promise erasure; never expose returned key text in diagnostics. */
 QString session_args_key_hex_normalize(const QString& value);

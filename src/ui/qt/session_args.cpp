@@ -13,7 +13,7 @@
 
 #include <algorithm>
 #include <cmath>
-#include <iterator>
+#include <cstddef>
 
 #include <QChar>
 #include <QLatin1String>
@@ -459,35 +459,61 @@ session_args_key_valid(const QString& type, const QString& value) {
     return hex_key_width_valid(type, hex);
 }
 
+namespace {
+
+struct SessionArgsErrorText {
+    SessionArgsError error;
+    const char* text;
+};
+
+/* One row per SessionArgsError value, in the enum's order (None has no text), so a value is its row's index. */
+constexpr SessionArgsErrorText k_error_texts[] = {
+    {SessionArgsError::None, ""},
+    {SessionArgsError::Frequency, "Enter a positive frequency in MHz."},
+    {SessionArgsError::Ppm, "Enter a whole number for PPM."},
+    {SessionArgsError::Hangtime, "Enter hang time in seconds from 0 to 30."},
+    {SessionArgsError::KeyType, "Choose one encryption key type."},
+    {SessionArgsError::KeyBasic, "Enter a basic key from 0 to 255."},
+    {SessionArgsError::KeyHex, "Enter 10, 32, or 64 hexadecimal digits."},
+    {SessionArgsError::KeyRc4, "Enter 1 to 16 hexadecimal digits."},
+    {SessionArgsError::KeyScrambler, "Enter a scrambler key from 0 to 32767."},
+    {SessionArgsError::KeyM17Scrambler, "Enter a nonzero M17 seed with 2, 4, or 6 hex digits."},
+    {SessionArgsError::KeyM17Aes,
+     "Enter an M17 AES key with 32, 48, or 64 hex digits; an all-zero key is unavailable to the decoder."},
+    {SessionArgsError::KeyConflict, "Choose either a direct key or a key CSV file."},
+    {SessionArgsError::ForceKey, "Choose force key mode 0, 1, or 2."},
+    {SessionArgsError::UnsafeOption, "Extra options contain a prohibited option or grouped short options. "
+                                     "Remove prohibited options and write each short option separately."},
+    {SessionArgsError::AmNeedsRadio, "AM needs a radio source (USB, Airspy or rtl_tcp): network and file audio "
+                                     "arrives already demodulated. Choose a radio source, or another decode mode."},
+};
+
+constexpr std::size_t k_error_text_count = sizeof k_error_texts / sizeof k_error_texts[0];
+
+constexpr bool
+error_texts_in_enum_order() {
+    for (std::size_t i = 0; i < k_error_text_count; i++) {
+        if (static_cast<std::size_t>(k_error_texts[i].error) != i) {
+            return false;
+        }
+    }
+    return true;
+}
+
+/* A value added to SessionArgsError needs its row: the last value (SessionArgsErrorLast) closes the table. */
+static_assert(k_error_text_count == static_cast<std::size_t>(SessionArgsErrorLast) + 1U,
+              "every SessionArgsError value needs a row in k_error_texts");
+static_assert(error_texts_in_enum_order(), "k_error_texts rows must follow the SessionArgsError order");
+
+} // namespace
+
 QString
 session_args_error_text(SessionArgsError error) {
-    static const struct {
-        SessionArgsError error;
-        const char* text;
-    } k_error_texts[] = {
-        {SessionArgsError::KeyM17Scrambler, "Enter a nonzero M17 seed with 2, 4, or 6 hex digits."},
-        {SessionArgsError::KeyM17Aes,
-         "Enter an M17 AES key with 32, 48, or 64 hex digits; an all-zero key is unavailable to the decoder."},
-        {SessionArgsError::Frequency, "Enter a positive frequency in MHz."},
-        {SessionArgsError::Ppm, "Enter a whole number for PPM."},
-        {SessionArgsError::Hangtime, "Enter hang time in seconds from 0 to 30."},
-        {SessionArgsError::KeyType, "Choose one encryption key type."},
-        {SessionArgsError::KeyBasic, "Enter a basic key from 0 to 255."},
-        {SessionArgsError::KeyHex, "Enter 10, 32, or 64 hexadecimal digits."},
-        {SessionArgsError::KeyRc4, "Enter 1 to 16 hexadecimal digits."},
-        {SessionArgsError::KeyScrambler, "Enter a scrambler key from 0 to 32767."},
-        {SessionArgsError::KeyConflict, "Choose either a direct key or a key CSV file."},
-        {SessionArgsError::ForceKey, "Choose force key mode 0, 1, or 2."},
-        {SessionArgsError::UnsafeOption, "Extra options contain a prohibited option or grouped short options. "
-                                         "Remove prohibited options and write each short option separately."},
-        {SessionArgsError::AmNeedsRadio, "AM needs a radio source (USB, Airspy or rtl_tcp): network and file audio "
-                                         "arrives already demodulated. Choose a radio source, or another decode mode."},
-    };
-
-    const auto* const end = std::end(k_error_texts);
-    const auto* const found =
-        std::find_if(std::begin(k_error_texts), end, [error](const auto& entry) { return entry.error == error; });
-    return found != end ? QString::fromUtf8(found->text) : QString();
+    const auto index = static_cast<std::size_t>(error);
+    if (error == SessionArgsError::None || index >= k_error_text_count) {
+        return QString();
+    }
+    return QString::fromUtf8(k_error_texts[index].text);
 }
 
 bool

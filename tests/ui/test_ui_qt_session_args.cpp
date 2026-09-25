@@ -600,6 +600,24 @@ test_extra_short_options(void) {
     }
 }
 
+/* Every error value the builder can report has a sentence for the rejection UI (the Qt start error shows it), and
+ * None has none: a value without its text would show an empty or generic start error. */
+void
+test_every_error_has_text() {
+    const auto last = static_cast<int>(dsd_qt::SessionArgsErrorLast);
+    expect("None has no text", dsd_qt::session_args_error_text(SessionArgsError::None).isEmpty());
+    for (int value = static_cast<int>(SessionArgsError::None) + 1; value <= last; value++) {
+        if (dsd_qt::session_args_error_text(static_cast<SessionArgsError>(value)).trimmed().isEmpty()) {
+            DSD_FPRINTF(stderr, "FAIL: SessionArgsError %d has no error text\n", value);
+            g_failures++;
+        }
+    }
+    expect("the last error value is AM on a source without I/Q",
+           dsd_qt::SessionArgsErrorLast == SessionArgsError::AmNeedsRadio);
+    expect("a value past the last one has no text",
+           dsd_qt::session_args_error_text(static_cast<SessionArgsError>(last + 1)).isEmpty());
+}
+
 } // namespace
 
 int
@@ -626,6 +644,7 @@ main(int argc, char** argv) {
     test_defaults_and_overrides();
     test_nfm_system();
     test_am_system();
+    test_every_error_has_text();
     test_airspy_bandwidth();
     test_csv_args();
     test_ppm_shapes();
