@@ -10,6 +10,7 @@
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/power.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/dsp/frame_sync.h>
 #include <dsd-neo/dsp/symbol.h>
@@ -289,6 +290,9 @@ reset_stream_fixture(void) {
 
 static void
 reset_decoder_fixture(dsd_opts* opts, dsd_state* state, void* rtl_context) {
+    /* The analog monitor starts received-tone detection, which keeps its state in a state extension (issue #522):
+       released before the state is wiped, so no case leaks what the previous one left attached. */
+    dsd_state_ext_free_all(state);
     DSD_MEMSET(opts, 0, sizeof(*opts));
     DSD_MEMSET(state, 0, sizeof(*state));
     opts->audio_in_type = AUDIO_IN_RTL;
@@ -768,5 +772,6 @@ main(void) {
     dsd_rtl_stream_io_hooks_set((dsd_rtl_stream_io_hooks){0});
     dsd_rtl_stream_metrics_hooks_set(NULL);
     dsd_rtl_stream_metrics_hook_symbol_cache_pending_reset();
+    dsd_state_ext_free_all(&state);
     return 0;
 }
