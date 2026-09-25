@@ -11320,8 +11320,9 @@ family_test_seed_stale_monitor_state(void) {
     demod.audio_lpf_state = 0.125f;
     demod.squelch_env = 0.0f;
     demod.squelch_gate_open = 0;
-    demod.squelch_hits = 11;  /* a run of squelched blocks one short of a hop */
-    demod.am_carrier = 0.75f; /* the carrier the AM detector tracked on the old channel */
+    demod.squelch_hits = 11;            /* a run of squelched blocks one short of a hop */
+    demod.am_carrier = 0.75f;           /* the carrier the AM detector tracked on the old channel */
+    demod.am_squelched_samples = 48000; /* a second of closed squelch on it */
     family_test_seed_stale_filter_histories();
     if (demod.resamp_hist && demod.resamp_taps_per_phase > 0) {
         for (int k = 0; k < demod.resamp_taps_per_phase * 2; k++) {
@@ -11395,6 +11396,7 @@ family_test_capture(void) {
     f.squelch_gate_open = demod.squelch_gate_open;
     f.squelch_hits = demod.squelch_hits;
     f.am_carrier_u = family_test_micro(demod.am_carrier);
+    f.am_squelched_samples = demod.am_squelched_samples;
     f.channel_hist_clear = family_test_channel_hist_clear();
     f.hb_hist_clear = family_test_hb_hist_clear();
     f.resamp_hist_clear = (demod.resamp_hist && demod.resamp_taps_per_phase > 0)
@@ -11671,6 +11673,17 @@ family_test_analog_start_switch(const dsd_opts* digital_opts, const dsd_opts* an
     out->generation_before = rtl_stream_output_generation();
     out->generation_after_analog = out->generation_before;
     family_test_switch_to_digital(digital_opts, digital_request, landed_rate_out_hz, out);
+
+    /* The operator picks the analog preset again on the same running stream. */
+    family_test_seed_ring(queued);
+    family_test_seed_running_loops();
+    rc |= family_test_seed_stale_monitor_state();
+    out->reentered_analog_request_rc = rtl_stream_request_analog_profile(
+        DSD_RX_FAMILY_ANALOG, analog_opts->analog_demod, dsd_opts_analog_width_hz(analog_opts));
+    family_test_demod_thread_boundary();
+    out->reentered_analog = family_test_capture();
+    out->reentered_published_rc =
+        rtl_stream_get_analog_profile(&out->reentered_published_kind, &out->reentered_published_width_hz, NULL);
 
     family_test_restore(saved);
     family_test_release_buffers();

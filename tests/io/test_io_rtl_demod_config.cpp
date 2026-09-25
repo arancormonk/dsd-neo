@@ -1839,6 +1839,12 @@ expect_post_decimation_rule(void) {
     }
     rc |= expect_int_eq("unset AM default is a requested width",
                         rtl_demod_check_analog_post_decimation(DSD_ANALOG_DEMOD_AM, 0, 16000, 2, err, sizeof err), -1);
+    /* No AM width runs there, the default included, so the fix is the capture, not dropping a width. */
+    if (!std::strstr(err, "AM bandwidth 6 kHz cannot be applied to this I/Q replay: post_downsample 2")
+        || !std::strstr(err, "; AM needs a capture with post_downsample 1") || std::strstr(err, "drop the explicit")) {
+        DSD_FPRINTF(stderr, "AM post-decimation message: %s\n", err);
+        rc = 1;
+    }
 
     /* The stream-start finalize applies the same rule against the stream's own chain. */
     set_channel_lpf_env(NULL);

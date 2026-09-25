@@ -12,6 +12,7 @@
  */
 
 #include <atomic>
+#include <climits>
 #include <dsd-neo/dsp/costas.h>
 #include <dsd-neo/dsp/demod_pipeline.h>
 #include <dsd-neo/dsp/demod_state.h>
@@ -764,16 +765,34 @@ static const float kAmOutputGain = 0.25f;
 static const float kAmEnvelopeClamp = 2.0f;
 static const float kAmCarrierFloor = 1e-9f;
 
-/* One-pole coefficient for the DSD_AM_CARRIER_TAU_MS carrier estimate at the rate the detector runs: the demod rate, or
-   its multiple where an I/Q replay decimates after the demodulator. */
+/* The rate the AM detector runs at: the demod rate. An I/Q replay that decimates after the demodulator
+   (post_downsample above 1) would run it faster, but no AM front end runs there: the stream start and every runtime
+   request refuse AM on such a capture (rtl_demod_check_analog_post_decimation()). */
+static int
+am_detector_rate_hz(const struct demod_state* d) {
+    return d->rate_out > 0 ? d->rate_out : 48000;
+}
+
+/* One-pole coefficient for the DSD_AM_CARRIER_TAU_MS carrier estimate at the rate the detector runs. */
 static float
 am_carrier_alpha(const struct demod_state* d) {
-    int rate_hz = d->rate_out > 0 ? d->rate_out : 48000;
-    if (d->post_downsample > 1) {
-        rate_hz *= d->post_downsample;
-    }
     const double tau_s = (double)DSD_AM_CARRIER_TAU_MS / 1000.0;
-    return (float)(1.0 - exp(-1.0 / ((double)rate_hz * tau_s)));
+    return (float)(1.0 - exp(-1.0 / ((double)am_detector_rate_hz(d) * tau_s)));
+}
+
+/* Count a squelched block into the closed run, saturating. */
+static void
+am_note_squelched_block(struct demod_state* d, int pairs) {
+    const int room = INT_MAX - d->am_squelched_samples;
+    d->am_squelched_samples = pairs < room ? d->am_squelched_samples + pairs : INT_MAX;
+}
+
+/* Whether the squelch has been closed long enough (DSD_AM_CARRIER_HOLD_MS) for the audio it lets through now to be
+   another transmission, whose carrier the estimate must start over on. */
+static int
+am_squelch_ended_transmission(const struct demod_state* d) {
+    const long long hold_samples = (long long)am_detector_rate_hz(d) * DSD_AM_CARRIER_HOLD_MS / 1000;
+    return (long long)d->am_squelched_samples > hold_samples ? 1 : 0;
 }
 
 static float
@@ -803,14 +822,22 @@ dsd_am_demod(struct demod_state* fm) {
     fm->result_len = pairs;
     if (fm->channel_squelched) {
         /* The squelch zeroed the block. A zero envelope would read as -0.25 under the held carrier estimate; the block
-           is silence instead, and the estimate stays for the audio the squelch lets through next. */
+           is silence instead, and the estimate stays for the audio the squelch lets through next, unless the squelch
+           stays closed past the hold. */
         for (int n = 0; n < pairs; n++) {
             out[n] = 0.0f;
         }
+        am_note_squelched_block(fm, pairs);
         return;
     }
     const float* iq = assume_aligned_ptr(fm->lowpassed, DSD_NEO_ALIGN);
     float carrier = fm->am_carrier;
+    if (am_squelch_ended_transmission(fm)) {
+        /* The squelch was closed long enough to end the transmission: whatever opened it is measured afresh, not
+           divided by the last station's carrier. */
+        carrier = 0.0f;
+    }
+    fm->am_squelched_samples = 0;
     if (!(carrier >= kAmCarrierFloor)) {
         /* Reset (or no carrier yet): start from this block's own level rather than fading in from nothing. */
         carrier = am_block_mean_magnitude(iq, pairs);

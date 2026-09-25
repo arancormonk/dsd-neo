@@ -193,6 +193,9 @@ struct demod_state {
        of the monitor audio state (stream open, retune, receive-family or FM/AM switch) sets it to 0, and the next
        unsquelched block warm-starts it from that block's mean magnitude. */
     float am_carrier;
+    /* Samples the channel squelch has kept closed since the AM detector last ran on audio (saturating); past
+       DSD_AM_CARRIER_HOLD_MS the next unsquelched block warm-starts am_carrier. Cleared with it. */
+    int am_squelched_samples;
     float channel_pwr; /* mean power (RMS^2 proxy) measured after channel LPF */
     /* Squelch threshold (linear power); 0 = disabled. Written from the control thread
      * (config apply, menus) while the demod thread reads it per block. */

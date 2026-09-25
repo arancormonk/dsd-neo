@@ -10,7 +10,8 @@
  * detector divides the envelope by its own carrier estimate), with low distortion and no DC; a frequency offset leaves
  * the envelope alone; a reset (retune, family or FM/AM switch) warm-starts the carrier estimate from the next block
  * rather than fading in from the old channel's level; and a squelched block is silence that holds the estimate, so the
- * audio resumes at its level when the squelch opens. The last cases run the whole monitor pipeline (full_demod()) with
+ * audio resumes at its level when the squelch opens after a fade, while a squelch closed past the hold starts the
+ * estimate over on the next station. The last cases run the whole monitor pipeline (full_demod()) with
  * the 6 kHz AM channel filter, 30 dB carrier-to-noise (over the full 48 kHz complex band) and the I/Q DC blocker
  * switched on, which the AM path must bypass: it would remove a carrier tuned to 0 Hz.
  */
@@ -270,8 +271,31 @@ test_reset_warm_start(void) {
     return rc;
 }
 
-/* A squelched block (the pipeline zeroes it and sets channel_squelched) is silence, not the -0.25 a zero envelope
- * would read as, and the carrier estimate holds: the first unsquelched block is at its level from its first sample. */
+/* One squelched block: the pipeline zeroes it and sets channel_squelched. */
+int
+squelched_block(demod_state* s) {
+    int rc = 0;
+    s->channel_squelched = 1;
+    for (int k = 0; k < kBlockPairs * 2; k++) {
+        s->input_cb_buf[k] = 0.0f;
+    }
+    s->lowpassed = s->input_cb_buf;
+    s->lp_len = kBlockPairs * 2;
+    dsd_am_demod(s);
+    rc |= expect("a squelched block keeps its length", s->result_len == kBlockPairs);
+    for (int k = 0; k < s->result_len; k++) {
+        if (std::fabs(s->result[k]) > 1e-9f) {
+            DSD_FPRINTF(stderr, "DSP_AM_DEMOD: squelched output[%d] = %g, want silence\n", k, (double)s->result[k]);
+            rc = 1;
+            break;
+        }
+    }
+    s->channel_squelched = 0;
+    return rc;
+}
+
+/* A squelched block is silence, not the -0.25 a zero envelope would read as, and a closure shorter than the hold (a
+ * fade, 60 ms here) keeps the carrier estimate: the first unsquelched block is at its level from its first sample. */
 int
 test_squelch_hold(void) {
     demod_state* s = new_demod();
@@ -285,26 +309,12 @@ test_squelch_hold(void) {
         am_block(s, src, out);
     }
     const float held = s->am_carrier;
-    s->channel_squelched = 1;
-    for (int b = 0; b < 5; b++) {
-        for (int k = 0; k < kBlockPairs * 2; k++) {
-            s->input_cb_buf[k] = 0.0f;
-        }
-        s->lowpassed = s->input_cb_buf;
-        s->lp_len = kBlockPairs * 2;
-        dsd_am_demod(s);
-        rc |= expect("a squelched block keeps its length", s->result_len == kBlockPairs);
-        for (int k = 0; k < s->result_len; k++) {
-            if (std::fabs(s->result[k]) > 1e-9f) {
-                DSD_FPRINTF(stderr, "DSP_AM_DEMOD: squelched output[%d] = %g, want silence\n", k, (double)s->result[k]);
-                rc = 1;
-                break;
-            }
-        }
+    for (int b = 0; b < 3; b++) {
+        rc |= squelched_block(s);
         src.n += kBlockPairs; /* the source runs on while the squelch holds */
     }
     rc |= expect("the squelch moved the carrier estimate", std::fabs(s->am_carrier - held) < 1e-9f);
-    s->channel_squelched = 0;
+    rc |= expect("the closed run was not counted", s->am_squelched_samples == 3 * kBlockPairs);
     const long first = src.n;
     const size_t start = out.size();
     am_block(s, src, out);
@@ -313,6 +323,75 @@ test_squelch_hold(void) {
         DSD_FPRINTF(stderr, "DSP_AM_DEMOD: first block after the squelch opened deviates %.5f\n", worst);
         rc = 1;
     }
+    rc |= expect("an open squelch left the closed run counted", s->am_squelched_samples == 0);
+    dsd_neo_aligned_free(s);
+    return rc;
+}
+
+/* A squelch closed past the hold (DSD_AM_CARRIER_HOLD_MS) ended the transmission: what opens it next is usually
+ * another station at another level. Its first block is measured afresh (warm start), so a station 10x stronger or 10x
+ * weaker than the last is at its level from its first sample; divided by the old carrier it would clamp at +0.5 or
+ * step to about -0.225. A fade the same length as the hold still keeps the estimate. */
+int
+test_squelch_reopen_new_station(void) {
+    int rc = 0;
+    const double levels[] = {10.0, 0.1};
+    for (double ratio : levels) {
+        demod_state* s = new_demod();
+        if (!s) {
+            return 1;
+        }
+        AmSource first_station = {0.2, 0.0, 0.0, {1}, 0};
+        std::vector<float> out;
+        for (int b = 0; b < 25; b++) {
+            am_block(s, first_station, out);
+        }
+        const int closed_blocks = 15; /* 300 ms */
+        for (int b = 0; b < closed_blocks; b++) {
+            rc |= squelched_block(s);
+        }
+        AmSource next_station = {0.2 * ratio, 700.0, 0.0, {7}, first_station.n + (long)closed_blocks * kBlockPairs};
+        const long first = next_station.n;
+        const size_t start = out.size();
+        am_block(s, next_station, out);
+        const double worst = worst_error(out, start, (size_t)kBlockPairs, first);
+        if (worst > 0.005) {
+            DSD_FPRINTF(stderr,
+                        "DSP_AM_DEMOD: first block of a station at %.1fx after a closed squelch deviates %.5f from the "
+                        "ideal output\n",
+                        ratio, worst);
+            rc = 1;
+        }
+        if (std::fabs((double)s->am_carrier - 0.2 * ratio) > 0.02 * 0.2 * ratio) {
+            DSD_FPRINTF(stderr, "DSP_AM_DEMOD: station at %.1fx: carrier estimate %.5f, want %.5f\n", ratio,
+                        (double)s->am_carrier, 0.2 * ratio);
+            rc = 1;
+        }
+        dsd_neo_aligned_free(s);
+    }
+
+    /* Exactly the hold (5 blocks of 20 ms = 100 ms) is still a fade: the estimate stays. */
+    demod_state* s = new_demod();
+    if (!s) {
+        return 1;
+    }
+    AmSource src = {0.2, 0.0, 0.0, {1}, 0};
+    std::vector<float> out;
+    for (int b = 0; b < 25; b++) {
+        am_block(s, src, out);
+    }
+    const float held = s->am_carrier;
+    const int hold_blocks = (kRate * DSD_AM_CARRIER_HOLD_MS / 1000) / kBlockPairs;
+    for (int b = 0; b < hold_blocks; b++) {
+        rc |= squelched_block(s);
+        src.n += kBlockPairs;
+    }
+    /* Held, the 50 ms estimate covers a third of the way to a 10x louder carrier over one 20 ms block (about 0.8);
+     * started over, it would read the new carrier (2.0). */
+    AmSource louder = {2.0, 0.0, 0.0, {1}, src.n};
+    am_block(s, louder, out);
+    rc |= expect("a closure no longer than the hold started the estimate over",
+                 s->am_carrier > held && s->am_carrier < 1.2f);
     dsd_neo_aligned_free(s);
     return rc;
 }
@@ -487,6 +566,7 @@ main(void) {
     rc |= test_level_independence();
     rc |= test_reset_warm_start();
     rc |= test_squelch_hold();
+    rc |= test_squelch_reopen_new_station();
     rc |= test_floor_and_clamp();
     rc |= test_pipeline();
     if (rc == 0) {

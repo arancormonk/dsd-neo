@@ -253,8 +253,9 @@ typedef struct rtl_stream_test_demod_fields {
     int audio_lpf_state_u;
     int squelch_env_u;
     int squelch_gate_open;
-    int squelch_hits; /* consecutive squelched blocks toward a multi-frequency hop: 0 after an open */
-    int am_carrier_u; /* the AM detector's carrier estimate, in millionths: 0 (cold) after an open */
+    int squelch_hits;         /* consecutive squelched blocks toward a multi-frequency hop: 0 after an open */
+    int am_carrier_u;         /* the AM detector's carrier estimate, in millionths: 0 (cold) after an open */
+    int am_squelched_samples; /* the AM detector's closed-squelch run: 0 after an open */
     /* 1 when the filter delay lines hold nothing (no resampler counts as clear), as after a fresh open. */
     int channel_hist_clear;
     int hb_hist_clear;
@@ -333,6 +334,14 @@ typedef struct rtl_stream_test_family_switch_result {
     int under_analog_family_active; /* rtl_stream_analog_family_active(), what the decoder times the switch by */
     /* After the switch: rtl_stream_analog_family_active() */
     int family_active_after_digital;
+    /* rtl_stream_test_analog_start_family_switch() only: the same running stream switched back onto the analog
+       family it started on (the start's kind and width, after stale monitor state was seeded again), as the operator
+       picking the analog preset again does. reentered_* are its request, its demod state and what it published. */
+    int reentered_analog_request_rc;
+    rtl_stream_test_demod_fields reentered_analog;
+    int reentered_published_rc;
+    int reentered_published_kind;
+    int reentered_published_width_hz;
 } rtl_stream_test_family_switch_result;
 
 /* Open @p digital_opts at @p rate_hz, switch live to @p analog_opts and back (each request consumed the way the
@@ -355,7 +364,8 @@ int rtl_stream_test_analog_family_switch(const dsd_opts* digital_opts, const dsd
  * generation_after_analog is the generation the -fA session ran at (after the profile_under_analog, if any, which is
  * applied and consumed at a block boundary before the stale state is seeded, and reported in the under_analog_*
  * fields; RTL_STREAM_TEST_UNDER_ANALOG_CQPSK_TOGGLE_QUEUED is queued the same way but left unconsumed, so the
- * under_analog_* fields still show the monitor). */
+ * under_analog_* fields still show the monitor). Then the digital session, with stale state seeded again, is switched
+ * back onto @p analog_opts' analog profile (the reentered_* fields). */
 int rtl_stream_test_analog_start_family_switch(const dsd_opts* digital_opts, const dsd_opts* analog_opts, int rate_hz,
                                                int forced_rate_out_hz,
                                                const rtl_stream_test_digital_request* digital_request,

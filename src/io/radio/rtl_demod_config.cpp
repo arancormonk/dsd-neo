@@ -278,6 +278,7 @@ demod_init_common_defaults(struct demod_state* s, int rtl_dsp_bw_hz, struct outp
     s->deemph_a = 0.0f;
     s->deemph_avg = 0.0f;
     s->am_carrier = 0.0f;
+    s->am_squelched_samples = 0;
     s->channel_lpf_enable = 0;
     s->channel_lpf_hist_len = 143;
     s->channel_lpf_profile = DSD_CH_LPF_PROFILE_WIDE;
@@ -1064,12 +1065,16 @@ rtl_demod_check_analog_post_decimation(int kind, int explicit_width_hz, int rate
         char width_text[DSD_ANALOG_WIDTH_TEXT_MAX];
         (void)dsd_analog_width_format(rtl_demod_analog_requested_width_hz(kind, explicit_width_hz), width_text,
                                       sizeof width_text);
+        /* NFM can fall back on its unset default, which keeps the legacy design at any rate chain; AM has no width
+           that runs here, its default included. */
+        const char* fix = kind == DSD_ANALOG_DEMOD_FM
+                              ? "drop the explicit bandwidth or use a capture with post_downsample 1"
+                              : "AM needs a capture with post_downsample 1";
         DSD_SNPRINTF(err, err_size,
                      "%s bandwidth %s cannot be applied to this I/Q replay: post_downsample %d runs the channel filter "
-                     "at %d Hz, not the %d Hz demod rate; drop the explicit bandwidth or use a capture with "
-                     "post_downsample 1",
+                     "at %d Hz, not the %d Hz demod rate; %s",
                      dsd_analog_demod_label(kind), width_text, post_downsample, rate_out_hz * post_downsample,
-                     rate_out_hz);
+                     rate_out_hz, fix);
     }
     return -1;
 }
@@ -1232,6 +1237,7 @@ rtl_demod_reset_audio_monitor_state(struct demod_state* demod) {
     /* Cold, so the AM detector warm-starts from the new channel's own level rather than dividing it by the last one's
        carrier. */
     demod->am_carrier = 0.0f;
+    demod->am_squelched_samples = 0;
     /* Fresh-open envelope: open, so the first block of a live channel is not faded in from the last one's squelch. */
     demod->squelch_env = 1.0f;
     demod->squelch_gate_open = 1;

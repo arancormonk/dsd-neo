@@ -153,6 +153,7 @@ expect_fields_equal(const char* label, const rtl_stream_test_demod_fields& got,
     FIELD(squelch_gate_open);
     FIELD(squelch_hits);
     FIELD(am_carrier_u);
+    FIELD(am_squelched_samples);
     FIELD(channel_hist_clear);
     FIELD(hb_hist_clear);
     FIELD(resamp_hist_clear);
@@ -204,6 +205,7 @@ expect_analog_fields_equal(const char* label, const rtl_stream_test_demod_fields
     FIELD(squelch_gate_open);
     FIELD(squelch_hits);
     FIELD(am_carrier_u);
+    FIELD(am_squelched_samples);
     FIELD(channel_hist_clear);
     FIELD(hb_hist_clear);
     FIELD(resamp_hist_clear);
@@ -386,9 +388,9 @@ run_analog_start_case(const family_case& c, int rate_hz, int forced_rate_out_hz)
     return rc;
 }
 
-/* Digital -> AM -> digital on a running stream, then an AM start switched to digital (issue #524). The AM leg is a
- * fresh AM open: the envelope detector, no de-emphasis, the channel filter on at the AM width and a cold carrier
- * estimate, whatever the digital session and the stale monitor state before it left. */
+/* Digital -> AM -> digital on a running stream, then an AM start switched to digital and back to AM on that same
+ * stream (issue #524). Each AM leg is a fresh AM open: the envelope detector, no de-emphasis, the channel filter on at
+ * the AM width and a cold carrier estimate, whatever the digital session and the stale monitor state before it left. */
 static int
 run_am_case(const family_case& c, int rate_hz, int am_width_hz) {
     static dsd_opts digital;
@@ -429,6 +431,17 @@ run_am_case(const family_case& c, int rate_hz, int am_width_hz) {
     rc |= expect_int(label, r.digital_request_rc, 0);
     rc |= expect_fields_equal(label, r.switched_digital, r.fresh_digital);
     rc |= expect_int("AM start: analog profile withdrawn", r.published_after_digital_rc, 0);
+
+    /* ... and AM again on the same running stream: a fresh AM open once more, the detector's carrier estimate and
+     * closed-squelch run cold, whatever the AM leg before the digital one and the stale state left. */
+    DSD_SNPRINTF(label, sizeof label, "AM start, %s@%d -> digital -> AM", c.name, rate_hz);
+    rc |= expect_int(label, r.reentered_analog_request_rc, 0);
+    rc |= expect_analog_fields_equal(label, r.reentered_analog, r.fresh_analog);
+    rc |= expect_int("AM again runs the AM detector", r.reentered_analog.demod_is_am, 1);
+    rc |= expect_int("AM again starts the carrier estimate cold", r.reentered_analog.am_carrier_u, 0);
+    rc |= expect_int("AM again publishes the analog profile", r.reentered_published_rc, 1);
+    rc |= expect_int("AM again publishes the AM kind", r.reentered_published_kind, DSD_ANALOG_DEMOD_AM);
+    rc |= expect_int("AM again publishes the AM width", r.reentered_published_width_hz, want_width);
     return rc;
 }
 
@@ -468,6 +481,7 @@ expect_kind_switch(const char* label, const dsd_opts* from, const dsd_opts* to, 
     KIND_FIELD(squelch_env_u);
     KIND_FIELD(squelch_gate_open);
     KIND_FIELD(am_carrier_u);
+    KIND_FIELD(am_squelched_samples);
     KIND_FIELD(channel_hist_clear);
     KIND_FIELD(hb_hist_clear);
 #undef KIND_FIELD

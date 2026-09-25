@@ -49,7 +49,13 @@ void dsd_fm_demod(struct demod_state* fm);
 
 /* AM envelope detector design (issue #524). The carrier estimate is a one-pole average of |z| with this time constant
    in milliseconds, recomputed for the rate the detector runs at. */
-#define DSD_AM_CARRIER_TAU_MS 50
+#define DSD_AM_CARRIER_TAU_MS  50
+
+/* A channel squelch that stays closed longer than this, in milliseconds, ends the transmission the carrier estimate
+   was tracking: the next unsquelched block warm-starts it, as after a reset, since what opens the squelch next is
+   usually another station at another level. A shorter closure (a fade) keeps the estimate. Twice the carrier time
+   constant, so a dip the estimate would not have forgotten anyway is not treated as a new station. */
+#define DSD_AM_CARRIER_HOLD_MS (2 * DSD_AM_CARRIER_TAU_MS)
 
 /**
  * AM envelope detector on interleaved low-passed I/Q (issue #524).
@@ -58,10 +64,12 @@ void dsd_fm_demod(struct demod_state* fm);
  * of |z| with a DSD_AM_CARRIER_TAU_MS time constant. Dividing by the carrier makes the level the modulation depth,
  * whatever the RF level or input scaling (100% modulation peaks at 0.25, as live FM does at about 6 kHz deviation), so
  * the RTL output scale is not applied to it. The envelope has no phase, so a carrier offset inside the channel changes
- * nothing. A block the channel squelch zeroed (`channel_squelched`) is silence and leaves C where it was. C at 0 (a
- * reset) is warm-started from the block's mean magnitude; with no carrier at all the output is silence.
+ * nothing. A block the channel squelch zeroed (`channel_squelched`) is silence and leaves C where it was; once the
+ * squelch has been closed for longer than DSD_AM_CARRIER_HOLD_MS (`am_squelched_samples`), the next unsquelched block
+ * starts C over. C at 0 (a reset) is warm-started from the block's mean magnitude; with no carrier at all the output
+ * is silence.
  *
- * @param fm Demodulator state (uses lowpassed as input, writes to result, updates am_carrier).
+ * @param fm Demodulator state (uses lowpassed as input, writes to result, updates am_carrier and am_squelched_samples).
  */
 void dsd_am_demod(struct demod_state* fm);
 
