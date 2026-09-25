@@ -204,24 +204,35 @@ typedef struct {
 extern const dsd_analog_rx_detector_ops dsd_analog_ctcss_ops;
 
 /** @brief DCS bit rate, bit/s. */
-#define DSD_ANALOG_DCS_BAUD         134.4
+#define DSD_ANALOG_DCS_BAUD              134.4
 
 /** @brief Pole the DCS detector moves the front end's DC blocker to: about 0.3 s per 1/e. */
-#define DSD_ANALOG_DCS_DC_CORNER_HZ 0.5
+#define DSD_ANALOG_DCS_DC_CORNER_HZ      0.5
+
+/**
+ * @brief Pole of the DCS detector's balance stream, the front end's DC blocker undone almost
+ * entirely: about 16 s per 1/e, so a DC offset holds within 2% over the two words a lock is read
+ * from, and the stream stays bounded.
+ */
+#define DSD_ANALOG_DCS_BALANCE_CORNER_HZ 0.01
 
 /**
  * @brief DCS detector geometry and verdict rules (see analog_dcs.c).
  *
- * - HYPOTHESES: slicers, one per model of the low-frequency droop a receiver's DC block puts
- *   on the bit levels (none, and three one-pole high-passes).
- * - RING: re-poled band samples kept for the bit integrals (a power of two). The bit clock's
+ * - HYPOTHESES: droop slicers, one per model of the low-frequency droop a receiver's DC block
+ *   puts on the bit levels (none, and three one-pole high-passes).
+ * - SLICERS: every slicer: the droop slicers, then the balance slicer, which reads the balance
+ *   stream and slices each of its two words against that word's own mean, so a DC offset that
+ *   holds over a word costs it nothing.
+ * - RING: samples of each stream kept for the bit integrals (a power of two). The bit clock's
  *   edge reaches back two bit integrals, 2 * box_len samples, and a bit read one sample more,
  *   for the interpolation; below 4800 Hz, above every decimated rate, a bit is at most 36
  *   samples, so 74 samples are enough.
  * - HISTORY_BITS: decisions each slicer keeps: two words.
  * - ACQUIRE_DISTANCE: bits the two words a lock is read from may differ by (one of them must be
  *   a supported code's word exactly).
- * - HOLD_DISTANCE: bits a held word may differ from the expected one.
+ * - HOLD_DISTANCE: bits a held word may differ from the expected one (the balance slicer's may
+ *   differ in none).
  * - LOSE_BITS: bits without a held word that lose the lock, counting only bits whose window
  *   was read wholly with the carrier open (after a dropout the windows hold bits of it for a
  *   word, which no signal reads through).
@@ -233,6 +244,7 @@ extern const dsd_analog_rx_detector_ops dsd_analog_ctcss_ops;
  */
 enum {
     DSD_ANALOG_DCS_HYPOTHESES = 4,
+    DSD_ANALOG_DCS_SLICERS = DSD_ANALOG_DCS_HYPOTHESES + 1,
     DSD_ANALOG_DCS_RING = 128,
     DSD_ANALOG_DCS_HISTORY_BITS = 46,
     DSD_ANALOG_DCS_ACQUIRE_DISTANCE = 1,
@@ -243,7 +255,10 @@ enum {
     DSD_ANALOG_DCS_TURNOFF_RUN = 2,
 };
 
-/** @brief One droop hypothesis: a slicer with its own decisions. */
+/**
+ * @brief One slicer with its own decisions: a droop hypothesis, or the balance slicer, which
+ * uses only bits and count.
+ */
 typedef struct {
     double droop;    /**< per-bit decay of the modelled high-pass, e^(-T/tau); 1 = none */
     double gain;     /**< a bit integral's share of its level under that droop, (1 - d) / -ln d */
@@ -258,9 +273,11 @@ typedef struct {
  *
  * The band is re-poled (the front end's 10 Hz DC blocker undone, 0.5 Hz put in its place),
  * integrated over each bit at the instants a bit clock recovers from the signal's own edges,
- * and sliced by every droop hypothesis. A lock is a supported code's word read twice in a row
- * by one slicer; it holds while some slicer reads the expected word within one bit, or the
- * locked code exactly at another place in its word.
+ * and sliced by every droop hypothesis; the balance stream (the blocker undone, 0.01 Hz in its
+ * place) is integrated at the same instants and sliced by the balance slicer. A lock is a
+ * supported code's word read twice in a row by one slicer; it holds while some slicer reads the
+ * expected word within one bit (the balance slicer exactly), or the locked code exactly at
+ * another place in its word.
  */
 typedef struct {
     double rate_hz;                /**< decimated rate this detector is designed for; 0 = unconfigured */
@@ -268,18 +285,24 @@ typedef struct {
     int box_len;                   /**< bit integral length in samples: samples_per_bit rounded */
     double fe_pole;                /**< the front end's DC blocker pole, which the detector undoes */
     double slow_pole;              /**< the pole the detector puts in its place */
+    double balance_pole;           /**< the pole the balance stream puts in its place */
     double clock_alpha;            /**< per-sample weight of the bit clock's edge-energy average */
     double x1;                     /**< previous band sample */
     double u1;                     /**< previous re-poled sample */
     double u[DSD_ANALOG_DCS_RING]; /**< re-poled samples, sample k at k & (RING - 1) */
-    int64_t n;                     /**< samples since the last reset */
-    double next_bit;               /**< sample time the next bit ends at */
+    double v1;                     /**< previous balance-stream sample */
+    double v[DSD_ANALOG_DCS_RING]; /**< balance-stream samples, sample k at k & (RING - 1) */
+    /** The balance stream's newest HISTORY_BITS bit integrals, the newest last: the balance
+        slicer's two words. */
+    double balance_integrals[DSD_ANALOG_DCS_HISTORY_BITS];
+    int64_t n;       /**< samples since the last reset */
+    double next_bit; /**< sample time the next bit ends at */
     /** The bit clock: the edge energy's component at the bit rate, averaged; its angle says
         where in the bit the edges fall. */
     double clock_re;
     double clock_im;
     int clock_heard; /**< 1 once the clock has averaged a sample with the carrier open */
-    dsd_analog_dcs_slicer slicer[DSD_ANALOG_DCS_HYPOTHESES];
+    dsd_analog_dcs_slicer slicer[DSD_ANALOG_DCS_SLICERS]; /**< the droop slicers, then the balance slicer */
     /* A phasor at the bit rate, e^(-j 2 pi n / samples_per_bit): the bit clock's reference and
        the turn-off tone's correlator, which runs per bit over the newest TURNOFF_BITS bits. */
     double osc_re;

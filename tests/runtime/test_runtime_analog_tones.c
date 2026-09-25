@@ -327,6 +327,31 @@ test_dcs_words(void) {
     assert(dsd_dcs_word(DSD_DCS_CODE_MAX + 1, 0) == 0U);
 }
 
+/* Every supported code's word is balanced: 11 or 12 ones of 23, in either polarity, so its level
+   averages to within 1/23 of zero over any 23 bits, and the DCS detector's balance slicer can
+   slice a word against its own mean. It is a property of the standard set, not of the code: the
+   Golay (23,12) words weigh 0, 7, 8, 11, 12, 15, 16 or 23, and 000's word weighs 7. */
+static void
+test_dcs_words_are_balanced(void) {
+    for (int i = 0; i < DSD_DCS_CODE_COUNT; i++) {
+        for (int inverted = 0; inverted < 2; inverted++) {
+            const uint32_t word = dsd_dcs_word(dsd_dcs_code(i), inverted);
+            int ones = 0;
+            for (int bit = 0; bit < DSD_DCS_WORD_BITS; bit++) {
+                ones += (int)((word >> bit) & 1U);
+            }
+            assert(ones == 11 || ones == 12);
+        }
+    }
+    uint32_t unsupported = dsd_dcs_word(0, 0);
+    int ones = 0;
+    while (unsupported != 0U) {
+        unsupported &= unsupported - 1U;
+        ones++;
+    }
+    assert(ones == 7);
+}
+
 /* The alias rule, pinned code by code, and every rotation of every supported word in either
    polarity names its class the same way. */
 static void
@@ -436,6 +461,7 @@ main(void) {
     test_dcs_table();
     test_dcs_reference_words();
     test_dcs_words();
+    test_dcs_words_are_balanced();
     test_dcs_aliases();
     test_dcs_match_rejects();
     test_dcs_format();

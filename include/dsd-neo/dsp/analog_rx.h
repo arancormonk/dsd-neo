@@ -101,59 +101,76 @@ enum {
  *
  * - 10 dB or better: every start within DSD_ANALOG_DCS_LOCK_MS. Over 7,000,000 starts (random
  *   codes in either polarity, the onset anywhere in a word, 75 and 750 us at 8, 44.1, 48 and
- *   78.125 kHz) the slowest took 451 ms.
+ *   78.125 kHz) the slowest took 445 ms.
  * - 3 dB: a p95 target, DSD_ANALOG_DCS_LOCK_P95_MS, and a per-event ceiling,
  *   DSD_ANALOG_DCS_LOCK_CEILING_MS, above the slowest start of the long-run sweeps. Over
  *   8,500,000 starts at 8, 44.1, 48 and 78.125 kHz with both de-emphasis settings, p95 was at
- *   most 425 ms and p99.9 at most 716 ms; 59 took longer than a second, 48 of them with 750 us
- *   at 78.125 kHz, where the DC block sags the most and the de-emphasis smears a code's isolated
- *   bits, and the slowest took 1,448 ms there. Lock time in noise has no absolute bound. Every
- *   code in both polarities in DSP_ANALOG_DCS locks within 700 ms on its fixed seeds.
+ *   most 415 ms and p99.9 at most 690 ms; 23 took longer than a second, all at 78.125 kHz and 21
+ *   of them with 750 us, where the DC block sags the most and the de-emphasis smears a code's
+ *   isolated bits, and the slowest took 1,224 ms there. Lock time in noise has no absolute
+ *   bound. Every code in both polarities in DSP_ANALOG_DCS locks within 700 ms on its fixed
+ *   seeds.
  *
  * A lock needs the code's 23-bit word read twice in a row, 46 bits or 342 ms, so a lock
- * typically comes 350-370 ms after the code starts.
+ * typically comes 345-370 ms after the code starts.
+ *
+ * A carrier off frequency (the transmitter's error or the receiver's) adds a DC level to the
+ * discriminator's output that steps in with the carrier. The balance slicer reads through any
+ * level that holds over a word, however large; the droop slicers only once the DC blocking
+ * ahead of them has taken it below the code's level. With a step at the code's onset of up to
+ * twice the code's deviation, up or down, through the demodulator's DC block at every rate, a
+ * DC-coupled PCM input or a 1 Hz coupling, the bounds above hold: at 10 dB every one of
+ * 1,200,000 starts locked within DSD_ANALOG_DCS_LOCK_MS (the slowest after 473 ms), and at 3 dB
+ * p95 was at most 421 ms and the slowest 882 ms. A step of four times the deviation is past
+ * them: 1 of 1,000,000 starts at 10 dB took 526 ms (DC-coupled, 48 kHz, 750 us), and at 3 dB
+ * p95 reached 474 ms, the slowest 1,020 ms, within the ceiling.
  *
  * PCM input reaches the detector through the sound card's coupling instead of the demodulator's
- * DC block (a one-pole high-pass at 3.7 Hz at 48 kHz, 6.1 Hz at 78.125 kHz). A one-pole
- * coupling with a corner up to 10 Hz keeps the 10 dB bound: over 800,000 starts through a 10 Hz
- * corner at 44.1 and 48 kHz with both de-emphasis settings, the slowest took 498 ms. At 3 dB it
- * is outside the contract, since the steeper sag costs bits: over 1,400,000 such starts p95 was
- * 494-558 ms, p99.9 859-960 ms and the slowest 1,581 ms. A 15 Hz corner misses the 10 dB bound
- * too (9 of 100,000 starts past it, the slowest 686 ms; p95 730 ms at 3 dB).
+ * DC block (a one-pole high-pass at 3.7 Hz at 48 kHz, 6.1 Hz at 78.125 kHz), or through none.
+ * A DC-coupled input or a coupling with a corner up to 10 Hz keeps the 10 dB bound: over 800,000
+ * starts through a 10 Hz corner at 44.1 and 48 kHz with both de-emphasis settings, the slowest
+ * took 477 ms, and with a step of up to four times the deviation at the onset the slowest of
+ * 600,000 took 511 ms. At 3 dB a 10 Hz corner is outside the contract, since the steeper sag
+ * costs bits: over 1,400,000 such starts p95 was 475-535 ms, p99.9 837-930 ms and the slowest
+ * 1,702 ms. A 15 Hz corner misses the 10 dB bound too (5 of 100,000 starts past it, the
+ * slowest 649 ms; p95 716 ms at 3 dB).
  *
  * Loss runs from the moment the word stops under a live carrier to the first bit that no longer
  * reports it: 32 bits and the front end's delay, with a p95 target, DSD_ANALOG_DCS_LOSS_P95_MS,
  * and a ceiling, DSD_ANALOG_DCS_LOSS_CEILING_MS. Over 1,000,000 stops at 3 and 10 dB, p95 was
- * at most 328 ms and the slowest 587 ms: in about 6 stops in 100,000 the noise that follows
+ * at most 328 ms and the slowest 591 ms: in about 9 stops in 100,000 the noise that follows
  * reads as the code once more (within one bit of the word expected next, or exactly at another
  * place in it), which starts the 32 bits over. The 134.4 Hz turn-off tone a transmitter sends as
  * it unkeys ends a lock sooner, once the code has gone with it: p95 target
  * DSD_ANALOG_DCS_TURNOFF_LOSS_P95_MS, ceiling DSD_ANALOG_DCS_TURNOFF_LOSS_CEILING_MS; over
- * 1,000,000 turn-offs at 3 and 10 dB, p95 was at most 134 ms and the slowest 335 ms. A steady
+ * 1,000,000 turn-offs at 3 and 10 dB, p95 was at most 134 ms and the slowest 353 ms (78.125 kHz,
+ * 750 us, 3 dB; the detector without its balance slicer reads that turn-off the same). A steady
  * component near 134.4 Hz under a code that is still read (an interferer, a voice holding its
  * pitch) ends no lock at 10 dB; at 3 dB, where the noise now and then costs the code a bit, one
  * at the code's power or 3 dB above it ended one or two locks a minute, each locking again.
  *
  * The same code starting over at another place in its word (a radio re-keying inside the carrier
- * hangover without a turn-off tone, another transmitter behind a repeater whose carrier stays
- * up) keeps the lock: at 10 dB or better, none of 7,040 such restarts at 8 to 78.125 kHz, on a
- * continuous carrier or after a 120 or 190 ms gap, moved by 1-22 bits and any share of a bit,
- * ever reported anything else; at 3 dB, where the new place must be read exactly, 2-5% dropped
- * and locked again. The windows read across a dropout hold bits of it for a word, so only
- * windows read wholly with the carrier open count toward the 32 bits, and a lock that has not
- * held for 64 bits (476 ms), carrier open or closed, is lost. Under a carrier that keeps dropping
- * out, each time for less than the hangover, a code that stops is lost within that span and a
- * word of the stop: over 16,000 stops under random flicker (openings of 1-60 ms between dropouts
- * of 10-199 ms) at 3 and 10 dB, p95 was at most 546 ms and the slowest 612 ms, past the
- * live-carrier ceiling. A carrier that comes back from a dropout without the code loses it the
- * span after it last held, less the dropout: p95 367 ms after a 120 ms dropout.
+ * hangover without a turn-off tone, another transmitter behind a repeater whose carrier stays up)
+ * keeps the lock: at 10 dB or better, of 7,040 such restarts at 8 to 78.125 kHz, on a continuous
+ * carrier or after a 120 or 190 ms gap, moved by 1-22 bits and any share of a bit, one showed no
+ * code briefly (48 kHz, 10 dB, after a 190 ms gap, as the detector without its balance slicer
+ * does too) and none showed another; at 3 dB, where the new place must be read exactly, up to 19
+ * of 440 per condition dropped and locked again. The windows read across a dropout hold bits of
+ * it for a word, so only windows read wholly with the carrier open count toward the 32 bits, and
+ * a lock that has not held for 64 bits (476 ms), carrier open or closed, is lost. Under a carrier
+ * that keeps dropping out, each time for less than the hangover, a code that stops is lost within
+ * that span and a word of the stop: over 16,000 stops under random flicker (openings of 1-60 ms
+ * between dropouts of 10-199 ms) at 3 and 10 dB, p95 was at most 548 ms and the slowest 619 ms,
+ * past the live-carrier ceiling. A carrier that comes back from a dropout without the code loses
+ * it the span after it last held, less the dropout: p95 368 ms after a 120 ms dropout (the
+ * slowest of 16,000 after 591 ms, when the noise read as the code once more).
  *
  * Speech louder than the code is outside the contract. Transmitter-filtered speech 10 and 20 dB
  * above the code never lost a lock in 12 minutes at each level, but unfiltered speech 10 dB
- * above it (a voice fundamental in the band) lost it about 8 times a minute, each time locking
- * again, leaving the code shown 94% of the time. A held code at 3 dB with nothing else in the
- * band drops now and then too (5 times in 200 minutes with 750 us at 78.125 kHz, once in 200
- * minutes at 48 kHz) and locks again.
+ * above it (a voice fundamental in the band) lost it about 7 times a minute, each time locking
+ * again, leaving the code shown 96% of the time. A held code at 3 dB with nothing else in the
+ * band drops now and then too (once in 200 minutes with 750 us at 78.125 kHz and once in 200
+ * minutes with 75 us at 48 kHz) and locks again.
  *
  * A tone policy that waits for a lock before deciding there is no code must wait at least
  * DSD_ANALOG_DCS_LOCK_CEILING_MS plus 100 ms.
@@ -161,10 +178,11 @@ enum {
  * A DCS code outranks a CTCSS tone: while both are locked, dsd_state::analog_rx publishes the
  * code, so a voice's talk-off on a coded channel never hides it. A code's own waveform in noise
  * can read as a CTCSS tone before the code locks, and the publication shows that tone until the
- * code does, which a policy that acts on the first lock meets too: twice in the 7,000,000 starts
- * at 10 dB (D274N as 67.0 Hz at 8 kHz for 161 ms, D122N as 77.0 Hz at 78.125 kHz for 71 ms) and
- * once in the 1,400,000 at 3 dB through a 10 Hz coupling (D274N as 69.3 Hz for 11 ms), never in
- * the 8,500,000 at 3 dB through the demodulator's DC block.
+ * code does, which a policy that acts on the first lock meets too: twice in 7,000,000 starts at
+ * 10 dB of an earlier sweep (D274N as 67.0 Hz at 8 kHz for 161 ms, D122N as 77.0 Hz at
+ * 78.125 kHz for 71 ms, which DSP_ANALOG_DCS replays), once in 2,800,000 starts at 10 dB with a
+ * DC step at the onset (D225I as 77.0 Hz for 50 ms, through a 10 Hz coupling), never in this
+ * sweep's 7,000,000 at 10 dB or 8,500,000 at 3 dB.
  */
 enum {
     DSD_ANALOG_DCS_LOCK_MS = 520,
@@ -173,7 +191,7 @@ enum {
     DSD_ANALOG_DCS_LOSS_P95_MS = 350,
     DSD_ANALOG_DCS_LOSS_CEILING_MS = 600,
     DSD_ANALOG_DCS_TURNOFF_LOSS_P95_MS = 150,
-    DSD_ANALOG_DCS_TURNOFF_LOSS_CEILING_MS = 350,
+    DSD_ANALOG_DCS_TURNOFF_LOSS_CEILING_MS = 400,
 };
 
 /**

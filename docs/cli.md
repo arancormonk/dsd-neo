@@ -778,52 +778,59 @@ detection it only reports: it never mutes or gates audio, it needs no setting, a
   confirmed (see Timing) shows only until it is.
 - Timing, in sample time, through the demodulator's DC block and 75 or 750 us de-emphasis at 8 to 78.125 kHz (for PCM
   input see the last item): a code is confirmed once its word has been read twice in a row, 46 bits, so typically
-  350-370 ms after it starts. At 10 dB in-band signal-to-noise (0-290 Hz) or better every start is confirmed within
-  520 ms (over 7,000,000 starts at 8, 44.1, 48 and 78.125 kHz the slowest took 451 ms). At 3 dB, 95 starts in 100 are
-  confirmed within 450 ms and 999 in 1,000 within 716 ms; the ceiling is 1,500 ms, above the slowest of 8,500,000 starts
-  (1,448 ms), and the slow tail comes mostly from 750 us de-emphasis, which smears a code's isolated bits. Lock time in
-  noise has no absolute bound. The tests hold every code in both polarities within 520 ms at 10 dB and 700 ms at 3 dB on
-  fixed seeds. A code that stops under a live carrier is dropped within 350 ms on 95 stops in 100 (32 bits and the front
-  end's delay), with a 600 ms ceiling above the slowest of 1,000,000 stops (587 ms); the 134.4 Hz turn-off tone a
-  transmitter sends as it unkeys drops it sooner, within 150 ms on 95 in 100 (typically 80 ms), with a 350 ms ceiling
-  (the slowest of 1,000,000 took 335 ms). The ceilings are in `<dsd-neo/dsp/analog_rx.h>`. One wrong bit in every word
-  keeps the lock; two do not. A transmitter a little off 134.4 bit/s (some send 134.3) locks and holds. A carrier with
-  no code reads `detecting` until 500 ms of it and `none` after, so a code that takes longer than that to confirm, near
-  3 dB, shows `none` first. Rarely a code's own waveform in noise reads as a CTCSS tone before the code is confirmed,
-  and that tone shows until it is: twice in 7,000,000 starts at 10 dB (D274N as 67.0 Hz for 161 ms, D122N as 77.0 Hz for
-  71 ms).
+  345-370 ms after it starts. At 10 dB in-band signal-to-noise (0-290 Hz) or better every start is confirmed within
+  520 ms (over 7,000,000 starts at 8, 44.1, 48 and 78.125 kHz the slowest took 445 ms). At 3 dB, 95 starts in 100 are
+  confirmed within 450 ms and 999 in 1,000 within 690 ms; the ceiling is 1,500 ms, above the slowest of 8,500,000 starts
+  (1,224 ms), and the slow tail comes mostly from 750 us de-emphasis at 78.125 kHz, which smears a code's isolated bits.
+  Lock time in noise has no absolute bound. The tests hold every code in both polarities within 520 ms at 10 dB and
+  700 ms at 3 dB on fixed seeds. A transmitter or receiver off frequency puts a DC level under the code, which steps in
+  with the carrier; up to twice the code's deviation it keeps these bounds (over 1,200,000 such starts at 10 dB the
+  slowest took 473 ms, and at 3 dB 95 in 100 were confirmed within 421 ms), and at four times one start in 1,000,000 at
+  10 dB took 526 ms and at 3 dB 95 in 100 took up to 474 ms. A code that stops under a live carrier is dropped within
+  350 ms on 95 stops in 100 (32 bits and the front end's delay), with a 600 ms ceiling above the slowest of 1,000,000
+  stops (591 ms); the 134.4 Hz turn-off tone a transmitter sends as it unkeys drops it sooner, within 150 ms on 95 in 100
+  (typically 80 ms), with a 400 ms ceiling (the slowest of 1,000,000 took 353 ms). The ceilings are in
+  `<dsd-neo/dsp/analog_rx.h>`. One wrong bit in every word keeps the lock; two do not. A transmitter a little off
+  134.4 bit/s (some send 134.3) locks and holds. A carrier with no code reads `detecting` until 500 ms of it and `none`
+  after, so a code that takes longer than that to confirm, near 3 dB, shows `none` first. Rarely a code's own waveform
+  in noise reads as a CTCSS tone before the code is confirmed, and that tone shows until it is: three times in
+  16,800,000 starts at 10 dB over the long-run sweeps (D274N as 67.0 Hz for 161 ms, D122N as 77.0 Hz for 71 ms, D225I
+  as 77.0 Hz for 50 ms).
 - Holding: the turn-off tone ends a lock only once the code has gone too, so a steady component near 134.4 Hz under a
   code that is still read (an interferer, a voice holding its pitch) leaves the lock alone: at 10 dB it never ended one,
   and at 3 dB, where the noise now and then costs the code a bit, a component at the code's power or 3 dB above it ended
   one or two a minute, each confirmed again. The same code starting over at another place in its word (a radio that
   re-keys inside the 200 ms hangover without a turn-off tone, another transmitter behind a repeater whose carrier stays
-  up) keeps the code shown: at 10 dB or better it never showed anything else in 7,040 such restarts, on a steady carrier
-  or after a gap of up to 190 ms; at 3 dB, where the new place has to be read without an error, 2-5 in 100 showed `none`
-  briefly before the code was confirmed again. What is read across a dropout says nothing about the code, so a word that
-  holds any of it never counts toward the 32 bits, but time still runs: a code is dropped 64 bits (476 ms) after it was
-  last read, carrier open or closed. A code that stops under a carrier that keeps dropping out (squelch chatter after a
-  transmission, say) is dropped within about 650 ms (over 16,000 such stops, 95 in 100 within 546 ms, the slowest
-  612 ms), and a carrier that comes back from a dropout without the code drops it about 365 ms after it returns from a
-  120 ms dropout. Transmitter-filtered speech 10 and 20 dB above the code never lost a lock in the long runs. Unfiltered
-  speech 10 dB above the code (a voice fundamental in the band, which a transmitter's voice high-pass removes) is
-  outside these bounds: it lost the lock about 8 times a minute, each time confirming the code again, so the code showed
-  94% of the time.
+  up) keeps the code shown: at 10 dB or better it showed `none` briefly once in 7,040 such restarts, on a steady carrier
+  or after a gap of up to 190 ms, and never another code; at 3 dB, where the new place has to be read without an error,
+  up to 5 in 100 showed `none` briefly before the code was confirmed again. What is read across a dropout says nothing
+  about the code, so a word that holds any of it never counts toward the 32 bits, but time still runs: a code is dropped
+  64 bits (476 ms) after it was last read, carrier open or closed. A code that stops under a carrier that keeps dropping
+  out (squelch chatter after a transmission, say) is dropped within about 650 ms (over 16,000 such stops, 95 in 100
+  within 548 ms, the slowest 619 ms), and a carrier that comes back from a 120 ms dropout without the code drops it about
+  365 ms after it returns. Transmitter-filtered speech 10 and 20 dB above the code never lost a lock in the long runs.
+  Unfiltered speech 10 dB above the code (a voice fundamental in the band, which a transmitter's voice high-pass
+  removes) is outside these bounds: it lost the lock about 7 times a minute, each time confirming the code again, so the
+  code showed 96% of the time.
 - Rejection: in the tests random bits, the Golay code words that carry no standard code, every CTCSS tone and speech
   never read as a code. A signal one bit from a standard code's word may read as that code, the way DCS decoders
   tolerate a bit error; one two bits from every code's word does not. Noise reads as a code twice in a row about once
-  in 6 x 10^8 bits for each of the detector's four slicers, some 50 days of continuous noise each; any of the four can
-  lock, so the detector as a whole does so at most four times as often, once in 1.6 x 10^8 bits or some 13 days.
+  in 6 x 10^8 bits for each of the detector's four droop slicers, some 50 days of continuous noise each, and about 2.3
+  times as often for its balance slicer, which reads noise in windows balanced the way a code's words are; any of the
+  five can lock, so the detector as a whole does so at most once in 10^8 bits, some 8 days.
 - The received code is forgotten at the same boundaries as the tone (retune, row or target change, decode-mode change,
   input switch, stop, 200 ms without carrier, a paused input stream), and detection runs where tone detection runs.
 - Externally demodulated audio (PCM inputs): keep everything below 300 Hz, as for CTCSS. The timing above is for the RTL
   path, through the demodulator's own DC block (a one-pole high-pass at 3.7 Hz at 48 kHz). PCM input comes through the
-  sound card's coupling instead, which sags long runs of equal bits faster the higher its corner; the detector allows
-  for a corner up to about 10 Hz. Through a 10 Hz coupling every start at 10 dB is still confirmed within 520 ms (over
-  800,000 starts at 44.1 and 48 kHz the slowest took 498 ms), but at 3 dB it costs bits: 95 starts in 100 are confirmed
-  within 494-558 ms and 999 in 1,000 within 859-960 ms, with the slowest past the 1,500 ms ceiling (1,581 ms). A 15 Hz
-  corner is slower still (at 10 dB, 9 starts in 100,000 past 520 ms), so prefer a DC-coupled input or one with a low
-  corner. The audio's polarity matters: an inverted audio path (some receivers' discriminator outputs, some sound cards)
-  turns every code into its alias, so a D023N transmitter reads as `DCS D047N`.
+  sound card's coupling instead, or through none, and a coupling sags long runs of equal bits faster the higher its
+  corner; the detector allows for a corner up to about 10 Hz. A DC-coupled input keeps the bounds above, also when the
+  producer hands on a frequency offset as a DC level (`rtl_fm` without `-E dc`, for one), up to the offsets under
+  Timing. Through a 10 Hz coupling every start at 10 dB is still confirmed within 520 ms (over 800,000 starts at 44.1
+  and 48 kHz the slowest took 477 ms), but at 3 dB it costs bits: 95 starts in 100 are confirmed within 475-535 ms and
+  999 in 1,000 within 837-930 ms, with the slowest past the 1,500 ms ceiling (1,702 ms). A 15 Hz corner is slower still
+  (at 10 dB, 5 starts in 100,000 past 520 ms), so prefer a DC-coupled input or one with a low corner. The audio's
+  polarity matters: an inverted audio path (some receivers' discriminator outputs, some sound cards) turns every code
+  into its alias, so a D023N transmitter reads as `DCS D047N`.
 
 ## Mode Tweaks & Advanced
 

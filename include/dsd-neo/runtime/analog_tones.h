@@ -18,7 +18,9 @@
  * bits, and bit 0 is the first bit sent. As a polynomial with bit i the coefficient of x^i the
  * word is a multiple of g(x) = x^11 + x^10 + x^6 + x^5 + x^4 + x^2 + 1. The transmitter repeats
  * the word at 134.4 bit/s, a one as positive deviation in normal (N) polarity and as negative
- * deviation in inverted (I) polarity, which sends the word's complement.
+ * deviation in inverted (I) polarity, which sends the word's complement. Every supported code's
+ * word carries 11 or 12 ones, so its level averages to within 1/23 of zero over any 23 bits,
+ * in either polarity (the DCS detector's balance slicer relies on it).
  *
  * A receiver cannot tell where a word starts, so every rotation of a word is the same signal,
  * and every complement is a code word too: each supported code shares its waveform with other

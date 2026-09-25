@@ -548,15 +548,21 @@ target on its own, and at 3 dB every row through the demodulator's DC block meet
 fixed-seed start there locks within 700 ms.
 
 - Lock: every code in both polarities at 48 kHz, with both de-emphasis settings, within 520 ms of its onset at 10 dB and
-  700 ms at 3 dB (p50 350 ms; the slowest 400 ms at 10 dB and 573 ms at 3 dB), each 3 dB row within the 450 ms p95
+  700 ms at 3 dB (p50 347-356 ms; the slowest 400 ms at 10 dB and 529 ms at 3 dB), each 3 dB row within the 450 ms p95
   target; at 8, 44.1, 48 and 78.125 kHz, every eighth code in both polarities within 520 ms at 10 dB and every second
-  code, 104 starts a row, within 700 ms at 3 dB, each 3 dB row within the p95 target (p95 371, 388, 404 and 417 ms;
-  worst 589 ms at 78.125 kHz); PCM input through a 10 Hz sound card coupling in place of the demodulator's DC block, at
+  code, 104 starts a row, within 700 ms at 3 dB, each 3 dB row within the p95 target (p95 370, 379, 393 and 415 ms;
+  worst 529 ms at 78.125 kHz); PCM input through a 10 Hz sound card coupling in place of the demodulator's DC block, at
   48 kHz with 75 us, every second code in both polarities within 520 ms at 10 dB (worst 376 ms), and at 3 dB, which the
   timing contract does not cover through a coupling, every code in both polarities within the row's own pins, p95 550 ms
-  and 1,000 ms a start (p95 439 ms, worst 698 ms); a code under transmitter-filtered speech 10 dB above it within
-  700 ms, and held from then on for 20 s; a transmitter at 134.3 or 134.5 bit/s locks and holds for 8 s; the alias pins
-  (D023I reads D047N, D047I D023N, D754I D116N and others) through the detector.
+  and 1,000 ms a start (p95 436 ms, worst 683 ms); a DC step at the onset, as a carrier off frequency puts under the
+  code: through a DC-coupled PCM input at 48 kHz, every second code in both polarities with a step of 1, 2 and 4 times
+  its level, up or down, within 520 ms at 10 dB (worst 413 ms), and every code in both polarities with a 4x step within
+  700 ms at 3 dB and the 450 ms p95 target (p95 390 ms, worst 473 ms); through the demodulator's DC block at 8 kHz,
+  where it removes a step slowest, every second code with a 4x step within 520 ms at 10 dB (worst 422 ms) -- the
+  detector without its balance slicer fails the first row (some starts not locked within 670 ms, p95 639 ms); a code
+  under transmitter-filtered speech 10 dB above it within 700 ms, and held from then on for 20 s; a transmitter at 134.3
+  or 134.5 bit/s locks and holds for 8 s; the alias pins (D023I reads D047N, D047I D023N, D754I D116N and others)
+  through the detector.
 - Hold and loss: one wrong bit in every word, in the same bit or moving through the word, holds for 20 s; two wrong bits
   in every word lose the lock within 522 ms of the damage (a window holds both errors only once it lies wholly after the
   damage started, up to a word later), and nothing locks in its place; a code that stops under a live carrier is lost
@@ -600,54 +606,74 @@ hangover running out, and `dsd_analog_rx_core_reset()` under a running code) and
 and the old code never shows again. A reset that kept a held lock fails both. `APP_CONTROL_RX_TONE_VIEW`,
 `UI_NCURSES_PRINTER_HELPERS`, `UI_QT_METRICS_MODEL` and `UI_QT_QML_CALL_LISTS` pin the `DCS D023N` text, the names the
 view refuses (an unsupported code, a rotation alias, a non-canonical polarity), and the received code kept apart from a
-configured policy value. `RUNTIME_ANALOG_TONES` and `DSP_ANALOG_DCS_GOLAY_XCHECK` pin the published words of 023, the
-inverted 023, 047, 020 and 000 (onfreq's DPL/DCS page), 047 a standard code of its own and 020 a word of another
-rotation class, so check bits that do not follow from 023's, before and after the mapping onto `Golay24.hpp`.
+configured policy value. `RUNTIME_ANALOG_TONES` pins that every supported code's word carries 11 or 12 ones in either
+polarity (000's carries 7), which the balance slicer relies on. `RUNTIME_ANALOG_TONES` and `DSP_ANALOG_DCS_GOLAY_XCHECK`
+pin the published words of 023, the inverted 023, 047, 020 and 000 (onfreq's DPL/DCS page), 047 a standard code of its
+own and 020 a word of another rotation class, so check bits that do not follow from 023's, before and after the mapping
+onto `Golay24.hpp`.
 
 Long-run sweeps (offline, the `DSP_ANALOG_DCS` signal model through the pure receive core, a random code and polarity
 per start with the onset anywhere in a word; `<dsd-neo/dsp/analog_rx.h>` sets its ceilings above the slowest event):
 
-- Lock at 10 dB, 7,000,000 starts: 500,000 each with 75 and 750 us at 48 kHz, p95 370 and 371 ms, the slowest 435 and
-  429 ms; 1,000,000 each with 75 and 750 us at 8, 44.1 and 78.125 kHz, p95 368-371 ms, p99.99 400-412 ms, the slowest
-  451 and 438 ms at 8 kHz, 437 and 437 ms at 44.1 kHz and 430 and 436 ms at 78.125 kHz (75, then 750 us). Twice a code's
-  own waveform in the noise read as a CTCSS tone before the code locked (D274N as 67.0 Hz at 8 kHz, D122N as 77.0 Hz at
-  78.125 kHz, both 75 us), shown for 161 and 71 ms until the code outranked it; under a rule that let the first lock
-  keep the publication, D122N showed only after 535 ms, when the tone was lost, the one start of the 7,000,000 past
-  520 ms. The 3 dB sweeps below never read a tone first.
+- Lock at 10 dB, 7,000,000 starts: 500,000 each with 75 and 750 us at 48 kHz, p95 369 and 370 ms, the slowest 429 and
+  422 ms; 1,000,000 each with 75 and 750 us at 8, 44.1 and 78.125 kHz, p95 367-370 ms, p99.99 398-412 ms, the slowest
+  437 and 445 ms at 8 kHz, 428 and 434 ms at 44.1 kHz and 428 and 424 ms at 78.125 kHz (75, then 750 us). No code's own
+  waveform read as a CTCSS tone first. An earlier 7,000,000-start sweep, on other seeds and before the balance slicer,
+  found it twice (D274N as 67.0 Hz at 8 kHz, D122N as 77.0 Hz at 78.125 kHz, both 75 us), shown for 161 and 71 ms
+  until the code outranked it; `DSP_ANALOG_DCS` replays both on this detector. Under a rule that let the first lock
+  keep the publication, D122N showed only after 535 ms, when the tone was lost.
+- Lock at 3 dB, 8,500,000 starts: with 75 us, p95 376, 382, 385 and 399 ms at 8, 44.1, 48 and 78.125 kHz (500,000,
+  500,000, 1,000,000 and 1,000,000 starts), the slowest 868, 830, 861 and 1,022 ms; with 750 us, p95 385, 392, 396
+  and 415 ms (500,000, 500,000, 2,000,000 and 2,500,000 starts), p99.9 at most 690 ms, the slowest 781, 910, 992 and
+  1,224 ms. 23 starts took longer than a second, all at 78.125 kHz and 21 of them with 750 us, where the demodulator's
+  DC block sags the most and the de-emphasis smears a code's isolated bits. None read a tone first.
+- A DC step at the code's onset, from a carrier off frequency, of 1, 2 and 4 times the code's deviation up or down,
+  50,000 starts per rate (8, 44.1, 48 and 78.125 kHz) and condition, 75 us (and 750 us for the 4x step through the
+  demodulator's DC block and a DC-coupled input): through the demodulator's DC block, a DC-coupled PCM input and a 1 Hz
+  coupling, every one of the 1,200,000 starts at 10 dB with a 1 or 2x step within 520 ms (the slowest 473 ms,
+  DC-coupled) and p95 at most 421 ms at 3 dB (the slowest 882 ms); with a 4x step 1 of 1,000,000 at 10 dB past 520 ms
+  (526 ms, DC-coupled at 48 kHz with 750 us, the next 496 ms) and at 3 dB p95 up to 474 ms (a 1 Hz coupling; 473 ms
+  through the demodulator's DC block at 8 kHz with 750 us), the slowest 1,020 ms. Through a 10 Hz coupling every start
+  at 10 dB within 520 ms (the slowest 511 ms), and at 3 dB p95 482-544 ms (475-483 ms without a step). A DC-coupled
+  input with no step: p95 367 ms at 10 dB and 377 ms at 3 dB. Once a code's own waveform read as a CTCSS tone first
+  (D225I as 77.0 Hz for 50 ms, a 2x step through a 10 Hz coupling at 44.1 kHz and 10 dB). The detector before the
+  balance slicer, through a DC-coupled input with a 2x step at 48 kHz and 10 dB: p50 617 ms, 19,990 of 20,000 starts
+  past 520 ms; with a 4x step p50 837 ms, every one past it.
 - PCM input through a sound card's coupling in place of the demodulator's DC block (a one-pole high-pass, 75 and 750 us,
   75 then 750 us in each pair below): with a 10 Hz corner at 10 dB, 200,000 starts each at 44.1 and 48 kHz, p95
-  371-373 ms, the slowest 449 and 449 ms at 44.1 kHz and 498 and 473 ms at 48 kHz; at 3 dB, 200,000 each at 44.1 kHz and
-  500,000 each at 48 kHz, p95 494 and 549 ms at 44.1 kHz and 502 and 558 ms at 48 kHz, p99.9 859-960 ms, the slowest
-  1,403 and 1,581 ms at 44.1 kHz and 1,494 and 1,538 ms at 48 kHz (once D274N read as 69.3 Hz for 11 ms before it
-  locked). With a 15 Hz corner at 48 kHz and 75 us, 100,000 starts each: 9 past 520 ms at 10 dB (the slowest 686 ms),
-  and at 3 dB p95 730 ms, the slowest 2,470 ms. A slicer whose droop hypothesis matched the 10 Hz coupling (0.63 a bit
-  in place of 0.55) was slower there (p95 539 against 500 ms at 48 kHz, 75 us, 3 dB, 100,000 starts each).
-- Lock at 3 dB, 8,500,000 starts: with 75 us, p95 381, 389, 391 and 405 ms at 8, 44.1, 48 and 78.125 kHz (500,000,
-  500,000, 1,000,000 and 1,000,000 starts), the slowest 824, 963, 1,069 and 1,006 ms; with 750 us, p95 392, 400, 404
-  and 425 ms (500,000, 500,000, 2,000,000 and 2,500,000 starts), p99.9 at most 716 ms, the slowest 961, 1,007, 1,087
-  and 1,448 ms. 59 starts took longer than a second, 48 of them with 750 us at 78.125 kHz, where the demodulator's DC
-  block sags the most and the de-emphasis smears a code's isolated bits; the slowest read one bit of nearly every word
-  wrong, a different bit each time, for over a second.
+  371-372 ms, the slowest 441 and 451 ms at 44.1 kHz and 477 and 465 ms at 48 kHz; at 3 dB, 200,000 each at 44.1 kHz and
+  500,000 each at 48 kHz, p95 475 and 525 ms at 44.1 kHz and 483 and 535 ms at 48 kHz, p99.9 837-930 ms, the slowest
+  1,372 and 1,605 ms at 44.1 kHz and 1,463 and 1,702 ms at 48 kHz. With a 15 Hz corner at 48 kHz and 75 us, 100,000
+  starts each: 5 past 520 ms at 10 dB (the slowest 649 ms), and at 3 dB p95 716 ms, the slowest 2,284 ms. A droop
+  slicer that matched the 10 Hz coupling (0.63 a bit in place of 0.55) was slower there (p95 518 against 485 ms at
+  48 kHz, 75 us, 3 dB, the same 100,000 starts).
 - Loss when the code stops under a live carrier, 1,000,000 stops at 3 and 10 dB over the same rates and de-emphasis:
-  p95 at most 328 ms, p99.9 at most 376 ms, the slowest 587 ms. About 6 stops in 100,000 take longer than 450 ms: the
+  p95 at most 328 ms, p99.9 at most 377 ms, the slowest 591 ms. About 9 stops in 100,000 take longer than 450 ms: the
   noise that follows reads as the code once more (within one bit of the word expected next, or exactly at another
-  place in it), which starts the 32 bits over.
+  place in it), which starts the 32 bits over. The balance slicer holds only on an exact read: allowed a bit of slack,
+  it read noise as the code about twice as often (25 against 14 of 200,000 stops past 450 ms at 48 kHz, 75 us, 3 dB).
 - Loss on the turn-off tone, 1,000,000 at 3 and 10 dB: p95 at most 134 ms (750 us at 3 dB; 97-109 ms otherwise), p99.9
-  at most 225 ms, the slowest 335 ms.
+  at most 224 ms, the slowest 353 ms (78.125 kHz, 750 us, 3 dB, a turn-off the detector before the balance slicer reads
+  the same, which is why the ceiling is 400 ms and not 350).
 - Loss under a flickering carrier (openings of 1-60 ms between dropouts of 10-199 ms from the stop), 16,000 stops at 8,
-  44.1, 48 and 78.125 kHz, 3 and 10 dB: p95 at most 546 ms, the slowest 612 ms (a loss that counted only bits read with
+  44.1, 48 and 78.125 kHz, 3 and 10 dB: p95 at most 548 ms, the slowest 619 ms (a loss that counted only bits read with
   the carrier open, with no span, took p95 1,270 ms and the slowest 1,755 ms at 48 kHz). After a single 120 ms dropout
-  with the code gone, 16,000 returns: lost p95 367 ms after the carrier came back, the slowest 469 ms.
+  with the code gone, 16,000 returns: lost p95 368 ms after the carrier came back, the slowest 591 ms (twice in 16,000
+  the noise read as the code once more).
 - The same code at another place in its word, a shift of 1-22 bits and a random share of a bit, half on a continuous
-  carrier and half after a 120 or 190 ms gap: at 10 and 20 dB, none of 7,040 restarts at 8, 44.1, 48 and 78.125 kHz
-  reported anything else (a hold that followed only the expected place dropped 396 of 440 to `none` at 48 kHz, 20 dB);
-  at 3 dB, 2-5% dropped and locked again.
-- Holds: at 3 dB with nothing else in the band, a held code dropped 5 times in 200 minutes with 750 us at
-  78.125 kHz and once in 200 minutes at 48 kHz, each time locking again, and never in 8 minutes at 10 dB; with a
-  steady 130 Hz component 3 dB above the code or 134.4 Hz at its power, about once or twice a minute at 3 dB and never
-  at 10 dB; under transmitter-filtered speech 10 and 20 dB above the code never in 12 minutes each; under unfiltered
-  speech 10 dB above it, outside the contract, about 8 times a minute (the code shown 94% of the time); at 0 dB
-  in-band, outside the contract, about twice a minute.
+  carrier and half after a 120 or 190 ms gap: at 10 and 20 dB, of 7,040 restarts at 8, 44.1, 48 and 78.125 kHz one
+  showed `none` briefly (48 kHz, 10 dB, after a 190 ms gap, as the detector before the balance slicer does too) and none
+  another code (a hold that followed only the expected place dropped 396 of 440 to `none` at 48 kHz, 20 dB); at 3 dB,
+  0-19 of 440 per condition dropped and locked again.
+- Holds (random codes, 60 s each): at 3 dB with nothing else in the band, a held code dropped once in 200 minutes with
+  750 us at 78.125 kHz and once in 200 minutes with 75 us at 48 kHz, never in 200 minutes with 750 us at 48 kHz, each
+  time locking again, and never in 20 minutes at 10 dB; with a steady 130 Hz component 3 dB above the code or 134.4 Hz
+  at its power, about once or twice a minute at 3 dB and never at 10 dB; under transmitter-filtered speech 10 and 20 dB
+  above the code never in 12 minutes each; under unfiltered speech 10 dB above it, outside the contract, about 7 times
+  a minute (the code shown 96% of the time; before the balance slicer 9 times a minute and 94%); at 0 dB in-band,
+  outside the contract, about twice a minute. A DC-coupled input with a 4x step at the onset of each 10 s hold, at 3 and
+  10 dB, and the demodulator's DC block with the same step at 8 kHz and at 48 kHz with 750 us, 3 dB: 200 holds each, no
+  loss.
 
 Known gaps and caveats:
 
