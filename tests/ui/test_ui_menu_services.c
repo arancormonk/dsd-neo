@@ -561,6 +561,9 @@ static int g_analog_check_calls;
 static int g_demod_rate_hz;
 static int g_nfm_publish_calls;
 static int g_nfm_publish_width_hz;
+static int g_nfm_publish_previous_hz;
+/* What the publish answers: -1 is a front end that refused the request after all (a retune moved its rate). */
+static int g_nfm_publish_result;
 
 int
 rtl_stream_check_analog_profile(int family, int kind, int width_hz) {
@@ -576,11 +579,13 @@ rtl_stream_get_demod_rate_hz(void) {
     return g_demod_rate_hz;
 }
 
-void
-svc_publish_nfm_bandwidth(const dsd_opts* opts, const dsd_state* state) {
+int
+svc_publish_nfm_bandwidth(const dsd_opts* opts, const dsd_state* state, int previous_width_hz) {
     (void)state;
     g_nfm_publish_calls++;
     g_nfm_publish_width_hz = opts ? opts->analog_nfm_bandwidth_hz : -1;
+    g_nfm_publish_previous_hz = previous_width_hz;
+    return g_nfm_publish_result;
 }
 
 static int
@@ -1600,18 +1605,35 @@ test_nfm_bandwidth_services(void) {
     rc |= expect_int("nfm svc live other refusal", strcmp(why, "the RTL front end refused NFM 12.5 kHz (see log)") == 0,
                      1);
 
-    /* A device or a capture forces the rate on SoapySDR, Airspy and I/Q replay inputs, where no RTL DSP bandwidth
-       gives it: the refusal names the demod rate the stream publishes and the width's limit there, and the fix is to
-       narrow the width, since no DSP bandwidth setting moves that rate. */
-    const char* forced_rate_devs[] = {"soapy:driver=rtlsdr", "airspy", "iqreplay:capture.cu8"};
+    /* On SoapySDR, Airspy and I/Q replay inputs the RTL DSP bandwidth is not the rate: the refusal names the demod
+       rate the stream publishes and the width's limit there. A device's rate is its capture rate decimated toward the
+       DSP bandwidth, so a wider DSP bandwidth raises it; a replay runs at its capture's rate, which only a narrower width
+       can suit. Where no NFM width fits the rate, narrowing is never the fix: leaving the width unset is. */
+    const struct {
+        const char* dev;
+        const char* at_24k;
+        const char* at_8k;
+    } forced_rate_devs[] = {
+        {"soapy:driver=rtlsdr",
+         "NFM 25 kHz does not fit the 24 kHz DSP rate (max 20.4 kHz); raise the DSP bandwidth or narrow the NFM width",
+         "NFM 8 kHz does not fit the 8 kHz DSP rate (max 6 kHz); raise the DSP bandwidth or leave the NFM width unset"},
+        {"airspy",
+         "NFM 25 kHz does not fit the 24 kHz DSP rate (max 20.4 kHz); raise the DSP bandwidth or narrow the NFM width",
+         "NFM 8 kHz does not fit the 8 kHz DSP rate (max 6 kHz); raise the DSP bandwidth or leave the NFM width unset"},
+        {"iqreplay:capture.cu8", "NFM 25 kHz does not fit the 24 kHz DSP rate (max 20.4 kHz); narrow the NFM width",
+         "NFM 8 kHz does not fit the 8 kHz DSP rate (max 6 kHz); no NFM width fits this DSP rate; leave the NFM width "
+         "unset"},
+    };
+
     for (size_t i = 0; i < sizeof forced_rate_devs / sizeof forced_rate_devs[0]; i++) {
-        DSD_SNPRINTF(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", forced_rate_devs[i]);
+        DSD_SNPRINTF(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", forced_rate_devs[i].dev);
         g_demod_rate_hz = 24000;
         rc |=
             expect_int("nfm svc forced rate refusal", svc_set_nfm_bandwidth(&opts, &state, 25000, why, sizeof why), -1);
-        rc |= expect_int(
-            "nfm svc forced rate reason",
-            strcmp(why, "NFM 25 kHz does not fit the 24 kHz DSP rate (max 20.4 kHz); narrow the NFM width") == 0, 1);
+        rc |= expect_str("nfm svc forced rate reason", why, forced_rate_devs[i].at_24k);
+        g_demod_rate_hz = 8000;
+        rc |= expect_int("nfm svc no width fits", svc_set_nfm_bandwidth(&opts, &state, 8000, why, sizeof why), -1);
+        rc |= expect_str("nfm svc no width fits reason", why, forced_rate_devs[i].at_8k);
         /* At a rate that filters it, the refusal is not the rate's. */
         g_demod_rate_hz = 78125;
         rc |= expect_int("nfm svc forced rate other refusal",
@@ -1624,6 +1646,16 @@ test_nfm_bandwidth_services(void) {
     g_analog_check_result = 0;
     rc |= expect_int("nfm svc live 12500", svc_set_nfm_bandwidth(&opts, &state, 12500, why, sizeof why), 0);
     rc |= expect_int("nfm svc live 12500 published", g_nfm_publish_calls == 2 && g_nfm_publish_width_hz == 12500, 1);
+    rc |= expect_int("nfm svc live 12500 published with the width before", g_nfm_publish_previous_hz, 8000);
+
+    /* The front end took the check but refused the request itself (a retune moved its rate in between): refused
+       here too, with the previous width put back, never reported as applied. */
+    g_nfm_publish_result = -1;
+    rc |= expect_int("nfm svc request refused", svc_set_nfm_bandwidth(&opts, &state, 16000, why, sizeof why), -1);
+    rc |= expect_int("nfm svc request refused keeps the width", opts.analog_nfm_bandwidth_hz, 12500);
+    rc |= expect_str("nfm svc request refused reason", why,
+                     "NFM 16 kHz does not fit the 16 kHz DSP rate (max 13.2 kHz); use a 24 or 48 kHz DSP bandwidth");
+    g_nfm_publish_result = 0;
 
     /* RTL_SET_BW: 12.5 kHz needs at least a 16 kHz DSP bandwidth. */
     opts.audio_in_type = 0;

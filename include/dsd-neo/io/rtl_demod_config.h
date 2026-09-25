@@ -147,9 +147,10 @@ int rtl_demod_refresh_analog_channel_for_rate(struct demod_state* demod, char* e
 /**
  * Validate and apply the analog channel @p opts ask for once rate_out is final (stream start): the checks of
  * rtl_demod_check_analog_channel() at rate_out and of rtl_demod_check_analog_post_decimation(). No-op outside the
- * analog family (including the M17 encoder). Where a SoapySDR or Airspy device or an I/Q replay forces rate_out, a
- * width it cannot filter is refused with narrowing the width as the fix, not an RTL DSP bandwidth, which does not move
- * that rate (dsd_analog_width_check_forced_rate()).
+ * analog family (including the M17 encoder). Where a SoapySDR or Airspy device or an I/Q replay sets rate_out rather
+ * than the RTL DSP bandwidth, a width it cannot filter is refused with the fix that rate allows
+ * (dsd_analog_width_check_at()): on a device, raising the DSP bandwidth (which raises the rate its capture is decimated
+ * to) or narrowing the width; on a replay, narrowing the width.
  *
  * @return 0 on success, -1 with the refusal text in @p err (the stream must not start).
  */

@@ -1270,9 +1270,40 @@ expect_analog_explicit_width_forces_lpf(void) {
 }
 
 /*
- * Where the device or the capture forces the DSP rate (an I/Q replay's sidecar, a SoapySDR or Airspy device), no RTL DSP
- * bandwidth moves it: a width that rate cannot filter fails the start with narrowing the width as the fix, the fix a
- * running stream's refusal names too. An RTL-SDR or rtl_tcp input at the same rate still names the DSP bandwidths.
+ * Issue #525: the decoder tells a receive request the demod thread has taken from one still queued by the request's
+ * number, not by the output generation, which moves before the demod thread publishes what it applied and also on a
+ * retune that takes no request. An analog width refused where it lands reads as refused, so the decoder can put its
+ * configured width back; a stream open, or a request with no pipeline to take the queue, settles what was queued.
+ */
+static int
+expect_rx_request_outcomes(void) {
+    set_channel_lpf_env(NULL);
+    rtl_stream_test_rx_request_result r{};
+    int rc = expect_int_eq("rx request outcomes ran", rtl_stream_test_rx_request_outcomes(&r), 0);
+    rc |= expect_int_eq("rx request numbered", r.first_seq != 0U ? 1 : 0, 1);
+    rc |= expect_int_eq("rx request numbers follow", r.second_seq_follows, 1);
+    rc |= expect_int_eq("rx request queued: pending", r.queued_outcome, RTL_STREAM_RX_REQUEST_PENDING);
+    rc |= expect_int_eq("rx request pending across a generation move", r.outcome_across_generation,
+                        RTL_STREAM_RX_REQUEST_PENDING);
+    rc |= expect_int_eq("rx request pending: stream still publishes CQPSK off", r.published_cqpsk_while_pending, 0);
+    rc |= expect_int_eq("rx request taken: settled", r.outcome_after_consume, RTL_STREAM_RX_REQUEST_SETTLED);
+    rc |= expect_int_eq("rx request settled: stream publishes CQPSK on", r.published_cqpsk_after_consume, 1);
+    rc |= expect_int_eq("rx request replaced: settled", r.replaced_outcome, RTL_STREAM_RX_REQUEST_SETTLED);
+    rc |= expect_int_eq("rx analog request queued", r.analog_request_rc, 0);
+    rc |= expect_int_eq("rx analog request refused where it landed", r.analog_outcome, RTL_STREAM_RX_REQUEST_REFUSED);
+    rc |= expect_int_eq("rx request after a refusal: settled", r.after_refused_outcome, RTL_STREAM_RX_REQUEST_SETTLED);
+    rc |= expect_int_eq("rx refusal still reads refused", r.refused_outcome_kept, RTL_STREAM_RX_REQUEST_REFUSED);
+    rc |= expect_int_eq("rx request dropped by an open: settled", r.open_outcome, RTL_STREAM_RX_REQUEST_SETTLED);
+    rc |= expect_int_eq("rx request stranded without a pipeline: settled", r.no_stream_outcome,
+                        RTL_STREAM_RX_REQUEST_SETTLED);
+    return rc;
+}
+
+/*
+ * Where the RTL DSP bandwidth is not the DSP rate, a width that rate cannot filter fails the start with the fix that
+ * rate allows, the fix a running stream's refusal names too: an I/Q replay's sidecar fixes the rate, so the width has
+ * to narrow; a SoapySDR or Airspy device's capture rate is decimated toward the DSP bandwidth, so a wider DSP bandwidth
+ * raises it. An RTL-SDR or rtl_tcp input at the same rate names the DSP bandwidths that would fit.
  */
 static int
 expect_forced_rate_refusal_names_the_width(void) {
@@ -1280,12 +1311,13 @@ expect_forced_rate_refusal_names_the_width(void) {
         const char* dev;
         uint8_t replay_active;
         int forced;
+        const char* fix;
     } rows[] = {
-        {"iqreplay:/tmp/capture24k.iq.json", 1, 1},
-        {"soapy:driver=airspy", 0, 1},
-        {"airspy", 0, 1},
-        {"rtl:0:851.375M:0:0:24", 0, 0},
-        {"rtltcp:127.0.0.1:1234", 0, 0},
+        {"iqreplay:/tmp/capture24k.iq.json", 1, 1, "; narrow the NFM width"},
+        {"soapy:driver=airspy", 0, 1, "; raise the DSP bandwidth or narrow the NFM width"},
+        {"airspy", 0, 1, "; raise the DSP bandwidth or narrow the NFM width"},
+        {"rtl:0:851.375M:0:0:24", 0, 0, "; set the RTL DSP bandwidth to 48 kHz"},
+        {"rtltcp:127.0.0.1:1234", 0, 0, "; set the RTL DSP bandwidth to 48 kHz"},
     };
 
     int rc = 0;
@@ -1307,7 +1339,7 @@ expect_forced_rate_refusal_names_the_width(void) {
         rc |= expect_int_eq(label, configure_and_finalize(demod, &opts, 24000, err, sizeof err), -1);
         if (!std::strstr(err, "NFM bandwidth 25 kHz does not fit the 24 kHz DSP rate (the largest width it fits is "
                               "20.4 kHz)")
-            || !std::strstr(err, rows[i].forced ? "narrow the NFM width" : "set the RTL DSP bandwidth to 48 kHz")) {
+            || !std::strstr(err, rows[i].fix)) {
             DSD_FPRINTF(stderr, "forced-rate refusal on %s: %s\n", rows[i].dev, err);
             rc = 1;
         }
@@ -1851,6 +1883,7 @@ main(void) {
     rc |= expect_analog_default_enable_survives_replay_rate();
     rc |= expect_analog_explicit_width_forces_lpf();
     rc |= expect_forced_rate_refusal_names_the_width();
+    rc |= expect_rx_request_outcomes();
     rc |= expect_analog_env_off_conflict();
     rc |= expect_m17_encoder_unchanged();
     rc |= expect_analog_open_ignores_cqpsk();

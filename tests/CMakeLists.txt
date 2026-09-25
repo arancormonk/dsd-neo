@@ -5643,6 +5643,8 @@ if(
         dsd-neo_test_app_command_queue
         PRIVATE
             "LINKER:--wrap=rtl_stream_create"
+            "LINKER:--wrap=rtl_stream_stop"
+            "LINKER:--wrap=rtl_stream_destroy"
             "LINKER:--wrap=rtl_stream_set_channel_squelch"
             "LINKER:--wrap=rtl_stream_check_analog_profile"
             "LINKER:--wrap=rtl_stream_request_analog_profile"
@@ -5651,7 +5653,9 @@ if(
             "LINKER:--wrap=rtl_stream_output_rate_for_family"
             "LINKER:--wrap=rtl_stream_set_digital_decode_modes"
             "LINKER:--wrap=rtl_stream_get_cqpsk_status"
-            "LINKER:--wrap=rtl_stream_output_generation"
+            "LINKER:--wrap=rtl_stream_receive_request_seq"
+            "LINKER:--wrap=rtl_stream_receive_request_outcome"
+            "LINKER:--wrap=rtl_stream_get_demod_rate_hz"
     )
 endif()
 add_test(NAME APP_COMMAND_QUEUE COMMAND dsd-neo_test_app_command_queue)

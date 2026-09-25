@@ -15,6 +15,7 @@
 #ifndef DSD_NEO_INCLUDE_DSD_NEO_APP_CONTROL_SERVICES_H_
 #define DSD_NEO_INCLUDE_DSD_NEO_APP_CONTROL_SERVICES_H_
 
+#include <dsd-neo/core/airspy_config.h>
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/runtime/config.h>
@@ -22,7 +23,6 @@
 #include <stddef.h>
 
 #ifdef USE_RADIO
-#include <dsd-neo/core/airspy_config.h>
 #include <stdint.h>
 #endif
 
@@ -220,15 +220,15 @@ void svc_note_digital_decode_modes(const dsd_opts* opts, const dsd_state* state)
  * @brief Check an NFM channel width against the receive front end it would run on, before anything changes.
  *
  * @p width_hz is the full RF channel-filter width in Hz, or 0 for the default (runtime/analog_channel.h). A width
- * outside 8000..25000 Hz is refused. An explicit width is also held to the DSP rate it would run at: with a running
- * RTL-family stream, the front end's own check at its published demod rate (rtl_stream_check_analog_profile(), which
- * also logs a refusal with the validator's text); without one, the rate an RTL-SDR or rtl_tcp input's DSP bandwidth
- * (rtl_dsp_bw_khz) gives. Other inputs are checked by their next stream start, against the rate the device delivers.
- * The unset default is never refused for its rate. Callers decide whether the width is in use; this only says whether
- * the front end would take it. A rate refusal's reason names the width, the rate, the widest width that rate filters
- * and the fix: the DSP bandwidths that would fit on an RTL-SDR or rtl_tcp input, or narrowing the width where a running
- * SoapySDR, Airspy or I/Q replay stream's device or capture forces its demod rate (the rate named is then the one the
- * stream publishes). The validator's full text is logged (by the front end, with a stream running).
+ * outside 8000..25000 Hz is refused, and so is an explicit width while DSD_NEO_CHANNEL_LPF=0 turns the channel filter
+ * off (dsd_analog_channel_lpf_off_check()), at any rate. An explicit width is also held to the DSP rate it would run
+ * at: with a running RTL-family stream, the front end's own check at its published demod rate
+ * (rtl_stream_check_analog_profile(), which also logs a refusal with the validator's text); without one, the rate an
+ * RTL-SDR or rtl_tcp input's DSP bandwidth (rtl_dsp_bw_khz) gives. Other inputs are checked by their next stream start,
+ * against the rate the device delivers. The unset default is never refused. Callers decide whether the width is in
+ * use; this only says whether the front end would take it. A rate refusal's reason names the width, the rate, the
+ * widest width that rate filters and the fix (svc_describe_nfm_refusal()). The validator's full text is logged (by the
+ * front end, with a stream running).
  *
  * @param why      Receives a short reason on refusal, for a toast (may be NULL).
  * @param why_size Size of @p why.
@@ -251,14 +251,38 @@ int svc_check_nfm_bandwidth(const dsd_opts* opts, const dsd_state* state, int wi
 int svc_check_nfm_bandwidth_for_rtl_bw(int width_hz, int rtl_bw_khz, char* why, size_t why_size);
 
 /**
+ * @brief Check an NFM channel width for a SoapySDR or Airspy device a change reopens, whose rate is not known yet.
+ *
+ * The rules that hold at every rate: the range, and DSD_NEO_CHANNEL_LPF=0 against an explicit width. The reopened
+ * stream's start checks the width against the rate the device delivers. The unset default (0) is never refused.
+ *
+ * @return 0 when the width may be applied, -1 otherwise (reason in @p why, may be NULL).
+ */
+int svc_check_nfm_bandwidth_at_device_rate(int width_hz, char* why, size_t why_size);
+
+/**
+ * @brief A short reason the front end refused NFM width @p width_hz, for a toast.
+ *
+ * Where the input's DSP rate cannot filter the width, it names the width, the rate, the widest width it filters and the
+ * fix for what sets that rate (dsd_analog_width_rate_fix()): the DSP bandwidths that fit on an RTL-SDR or rtl_tcp input
+ * (whose rate is its DSP bandwidth); raising the DSP bandwidth or narrowing the width on a running SoapySDR or Airspy
+ * stream; narrowing the width on an I/Q replay (the rate named is then the one the stream publishes). A refusal that
+ * rate does not explain points at the log.
+ */
+void svc_describe_nfm_refusal(const dsd_opts* opts, int width_hz, char* why, size_t why_size);
+
+/**
  * @brief Set the configured NFM channel width (DSD_APP_CMD_NFM_BANDWIDTH_SET), live when the analog monitor runs.
  *
- * Refuses, and changes nothing, a width outside 0 or 8000..25000 Hz, and, while the NFM preset uses the width, one the
- * front end would refuse (svc_check_nfm_bandwidth()). An accepted width is stored and handed to a running RTL front end
- * (svc_publish_nfm_bandwidth()): on the analog monitor a width-only change redesigns the channel filter from empty
- * histories at the next block. Anywhere else (a digital session, a typed digital scan row on an analog session, CQPSK
- * toggled on under -fA, a stopped stream) the stored width applies the next time the analog profile is requested or
- * the stream opens. Decoder thread only.
+ * Refuses, and changes nothing, a width outside 0 or 8000..25000 Hz, and, while the configured NFM preset uses the width
+ * (the scan scope's configured view, so a typed digital scan row on an analog session still holds it), one the front
+ * end would refuse (svc_check_nfm_bandwidth()). The width is not a scan row setting, so the command edits it in place
+ * rather than suspending a row's scope, and never disturbs the acquisition a row has made. An accepted width is stored
+ * and handed to a running RTL front end (svc_publish_nfm_bandwidth()): on the analog monitor a width-only change
+ * redesigns the channel filter from empty histories at the next block. A request the front end refuses there after all
+ * (a retune moved the rate since the check) is refused here too, with the previous width put back. Anywhere else (a
+ * digital session, a typed digital scan row on an analog session, CQPSK toggled on under -fA, a stopped stream) the
+ * stored width applies the next time the analog profile is requested or the stream opens. Decoder thread only.
  *
  * @return 0 when stored, -1 when refused (reason in @p why).
  */
@@ -274,8 +298,35 @@ int svc_set_nfm_bandwidth(dsd_opts* opts, const dsd_state* state, int width_hz, 
  * end off the monitor, whether the demod thread has taken that toggle yet or not; svc_toggle_rtl_cqpsk() turning it
  * off requests the analog profile with the configured width. For callers that changed the width (the width command, a
  * config apply). Decoder thread only: it reads and keeps the record of the receive requests queued from it.
+ *
+ * A queued width is recorded with @p previous_width_hz, the configured width before the change (or, while an earlier
+ * width request has not landed, the width that one left in force), so that svc_take_nfm_bandwidth_refusal() can put it
+ * back should the demod thread refuse the new one where it lands.
+ *
+ * @return 0 when requested or when there is nothing to request; -1 when the front end refused the request (at the rate
+ *         it publishes now, logged with the validator's text), which leaves its receive profile as it was.
  */
-void svc_publish_nfm_bandwidth(const dsd_opts* opts, const dsd_state* state);
+int svc_publish_nfm_bandwidth(const dsd_opts* opts, const dsd_state* state, int previous_width_hz);
+
+/**
+ * @brief Collect the outcome of the last NFM width request svc_publish_nfm_bandwidth() queued.
+ *
+ * Returns 1, once, when the demod thread refused that request where it landed (a retune moved the demod rate after the
+ * width was checked; rtl_stream_receive_request_outcome()), with the width it asked for in @p out_width_hz and the width
+ * the front end kept in @p out_in_force_hz: the caller puts the configured width back and says so. Returns 0 while the
+ * request is pending, once it settled otherwise (taken, or replaced by a later request), and with none outstanding or
+ * no stream running. Decoder thread only.
+ */
+int svc_take_nfm_bandwidth_refusal(const dsd_opts* opts, const dsd_state* state, int* out_width_hz,
+                                   int* out_in_force_hz);
+
+/**
+ * @brief Whether applying Airspy settings to a running Airspy reopens it (svc_airspy_apply_config()), rather than
+ * applying them live: a new sample rate or serial, or a DSP bandwidth or monitor volume other than the stream opened
+ * with. A reopen runs at the rate the device delivers for the new settings.
+ */
+int svc_airspy_settings_reopen(const dsd_airspy_config* previous, const dsd_airspy_config* next, int previous_bw_khz,
+                               int next_bw_khz, int previous_volume, int next_volume);
 
 /**
  * @brief The DSP menu's CQPSK toggle on a running RTL front end (DSD_APP_DSP_OP_TOGGLE_CQ).
@@ -308,8 +359,9 @@ int svc_rtl_enable_input(dsd_opts* opts, dsd_state* state);
  * explicit width (as RTL_SET_BW holds it, a typed digital scan row included) must fit the rate the RTL DSP bandwidth
  * (rtl_dsp_bw_khz) gives the device the switch opens: an RTL-SDR from an Airspy spec, "pulse" or any other device
  * string, rtl_tcp from an rtl_tcp spec. A SoapySDR or I/Q replay input is reopened at a rate its device or capture
- * sets, which its start checks. The unset default is never refused for a rate. A refusal's reason names the width,
- * the rate, the widest width it filters and the DSP bandwidths that would fit; the validator's text is logged.
+ * sets, which its start checks. The unset default is never refused. An explicit width is refused, whatever the rate,
+ * while DSD_NEO_CHANNEL_LPF=0 turns the channel filter off. A rate refusal's reason names the width, the rate, the
+ * widest width it filters and the DSP bandwidths that would fit; the validator's text is logged.
  *
  * @return 0 when the switch may go ahead, -1 otherwise (reason in @p why, may be NULL).
  */
@@ -346,7 +398,9 @@ int svc_rtl_set_gain(dsd_opts* opts, dsd_state* state, int value);
  * An unsupported value becomes 48. A bandwidth the explicit analog channel width in use cannot run at (the analog
  * preset on an RTL-SDR or rtl_tcp input, whose DSP rate this sets) is refused and nothing changes: the width is never
  * clamped to fit. @p why receives a short reason naming both values, the widest width the bandwidth filters and the
- * fix (narrow the width first) on that refusal (may be NULL); the validator's full text is logged.
+ * fix (narrow the width first) on that refusal (may be NULL); the validator's full text is logged. The reopen is also
+ * refused while DSD_NEO_CHANNEL_LPF=0 turns off the channel filter that explicit width needs, which its start would
+ * refuse at any rate.
  */
 int svc_rtl_set_bandwidth(dsd_opts* opts, dsd_state* state, int khz, char* why, size_t why_size);
 /**

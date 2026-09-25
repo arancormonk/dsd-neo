@@ -39,32 +39,47 @@ symbol_profile_configured_digital(const dsd_opts* opts, const dsd_state* state) 
 }
 
 /*
- * The CQPSK state of the last receive request queued here, and the stream's output generation when it was queued
- * (decoder thread only). The demod thread takes a request between DSP blocks, so until it has, the published state
- * (rtl_stream_get_cqpsk_status()) still describes the stream before it: a command drained in the same pass as a CQPSK
- * toggle or a switch onto the analog monitor would read it wrongly. A request that moves the front end between the
- * monitor and CQPSK clears the output as it lands, which moves the generation on, as a restart and a retune do; from
- * then the published state is the stream's, and the note has served its purpose.
+ * The CQPSK state of the last receive request queued here, and its number (decoder thread only). The demod thread takes
+ * a request between DSP blocks, so until it has, the published state (rtl_stream_get_cqpsk_status()) can still describe
+ * the stream before it: for a command drained in the same pass as a CQPSK toggle or a switch onto the analog monitor,
+ * and also once the demod thread has cleared the output for it (which moves the output generation) but not yet
+ * published, or across a retune (which moves the generation and takes no request). The note stands while the stream
+ * reports the request pending (rtl_stream_receive_request_outcome()); once it is taken, replaced, refused where it
+ * landed or dropped by a restart, the published state is the stream's.
  */
 static int g_rx_request_cqpsk = -1; /* -1: nothing noted */
-static uint32_t g_rx_request_generation;
+static uint32_t g_rx_request_seq;
 
 static void
 symbol_profile_note_cqpsk_request(int cqpsk) {
     g_rx_request_cqpsk = cqpsk ? 1 : 0;
-    g_rx_request_generation = rtl_stream_output_generation();
+    g_rx_request_seq = rtl_stream_receive_request_seq();
 }
 
 /* Whether the RTL front end runs CQPSK, or has been asked to by a request it has not taken yet. */
 static int
 symbol_profile_cqpsk_requested(void) {
-    if (g_rx_request_cqpsk >= 0 && rtl_stream_output_generation() == g_rx_request_generation) {
+    if (g_rx_request_cqpsk >= 0
+        && rtl_stream_receive_request_outcome(g_rx_request_seq) == RTL_STREAM_RX_REQUEST_PENDING) {
         return g_rx_request_cqpsk;
     }
+    g_rx_request_cqpsk = -1;
     int cqpsk = 0;
     (void)rtl_stream_get_cqpsk_status(&cqpsk, NULL);
     return cqpsk ? 1 : 0;
 }
+
+/*
+ * The last NFM width svc_publish_nfm_bandwidth() handed a running front end (decoder thread only): its request number,
+ * the width it asked for and the width in force before it, which the front end keeps should it refuse the request where
+ * it lands (svc_take_nfm_bandwidth_refusal()).
+ */
+static struct {
+    int pending;
+    uint32_t seq;
+    int width_hz;
+    int in_force_hz;
+} g_nfm_width_request;
 
 /* A running RTL-family stream the decoder's requests reach. */
 static int
@@ -72,13 +87,16 @@ symbol_profile_rtl_running(const dsd_opts* opts, const dsd_state* state) {
     return opts->audio_in_type == AUDIO_IN_RTL && state->rtl_ctx;
 }
 
-/* The analog monitor with the configured kind and channel width. Entering it turns CQPSK off. */
-static void
+/* The analog monitor with the configured kind and channel width. Entering it turns CQPSK off. Returns the request's
+   result: -1 when the front end refused it at the rate it publishes now. */
+static int
 symbol_profile_request_monitor(const dsd_opts* opts) {
     if (rtl_stream_request_analog_profile(DSD_RX_FAMILY_ANALOG, opts->analog_demod, dsd_opts_analog_width_hz(opts))
-        == 0) {
-        symbol_profile_note_cqpsk_request(0);
+        != 0) {
+        return -1;
     }
+    symbol_profile_note_cqpsk_request(0);
+    return 0;
 }
 
 /* The symbol profile a digital mode runs on: the CQPSK family for @p rf_mod 1, otherwise the FSK discriminator. The
@@ -173,7 +191,7 @@ svc_publish_symbol_profile(const dsd_opts* opts, dsd_state* state, dsd_decode_mo
        its channel filter; the decoder, already committed to Analog, is not
        told, and that log is the report. */
     if (dsd_opts_is_analog_family(opts)) {
-        symbol_profile_request_monitor(opts);
+        (void)symbol_profile_request_monitor(opts);
         return;
     }
     /* The M17 encoder rides the analog front end without being the analog family. */
@@ -204,8 +222,8 @@ svc_publish_symbol_profile(const dsd_opts* opts, dsd_state* state, dsd_decode_mo
 #endif
 }
 
-void
-svc_publish_nfm_bandwidth(const dsd_opts* opts, const dsd_state* state) {
+int
+svc_publish_nfm_bandwidth(const dsd_opts* opts, const dsd_state* state, int previous_width_hz) {
 #ifdef USE_RADIO
     /* The options in force decide. Under a scan row's suspended scope (a scoped command) they are the configured ones,
        not the row's, so the request waits for the row's constraint to be back: apply_cmd_scoped() publishes after the
@@ -213,18 +231,68 @@ svc_publish_nfm_bandwidth(const dsd_opts* opts, const dsd_state* state) {
        width. The M17 encoder rides the monitor output without being the analog family. */
     if (!opts || !state || !dsd_opts_is_analog_family(opts) || opts->analog_demod != DSD_ANALOG_DEMOD_FM
         || !symbol_profile_rtl_running(opts, state) || dsd_scan_mode_updating(state)) {
-        return;
+        return 0;
     }
     /* CQPSK toggled on under -fA from the DSP menu holds the front end off the monitor on purpose, queued or taken:
        turning it off requests the analog profile with this width (svc_toggle_rtl_cqpsk()). Otherwise the front end is
        asked whether or not it has reached the monitor yet: a switch onto the analog family, or a CQPSK toggle back to
        it, still queued has its width replaced, since the requests are last-writer-wins. */
-    if (!symbol_profile_cqpsk_requested()) {
-        symbol_profile_request_monitor(opts);
+    if (symbol_profile_cqpsk_requested()) {
+        return 0;
     }
+    /* The width in force until this request lands: the one an earlier width request left, while that one has not
+       landed (or was refused where it did), otherwise the configured width before this change. */
+    const int in_force_hz =
+        (g_nfm_width_request.pending
+         && rtl_stream_receive_request_outcome(g_nfm_width_request.seq) != RTL_STREAM_RX_REQUEST_SETTLED)
+            ? g_nfm_width_request.in_force_hz
+            : previous_width_hz;
+    if (symbol_profile_request_monitor(opts) != 0) {
+        return -1;
+    }
+    g_nfm_width_request.pending = 1;
+    g_nfm_width_request.seq = rtl_stream_receive_request_seq();
+    g_nfm_width_request.width_hz = opts->analog_nfm_bandwidth_hz;
+    g_nfm_width_request.in_force_hz = in_force_hz;
 #else
     (void)opts;
     (void)state;
+    (void)previous_width_hz;
+#endif
+    return 0;
+}
+
+int
+svc_take_nfm_bandwidth_refusal(const dsd_opts* opts, const dsd_state* state, int* out_width_hz, int* out_in_force_hz) {
+#ifdef USE_RADIO
+    if (!g_nfm_width_request.pending) {
+        return 0;
+    }
+    if (!opts || !state || !symbol_profile_rtl_running(opts, state)) {
+        g_nfm_width_request.pending = 0; /* the stream it went to is gone; the next start checks the width itself */
+        return 0;
+    }
+    const int outcome = rtl_stream_receive_request_outcome(g_nfm_width_request.seq);
+    if (outcome == RTL_STREAM_RX_REQUEST_PENDING) {
+        return 0;
+    }
+    g_nfm_width_request.pending = 0;
+    if (outcome != RTL_STREAM_RX_REQUEST_REFUSED) {
+        return 0;
+    }
+    if (out_width_hz) {
+        *out_width_hz = g_nfm_width_request.width_hz;
+    }
+    if (out_in_force_hz) {
+        *out_in_force_hz = g_nfm_width_request.in_force_hz;
+    }
+    return 1;
+#else
+    (void)opts;
+    (void)state;
+    (void)out_width_hz;
+    (void)out_in_force_hz;
+    return 0;
 #endif
 }
 
@@ -246,7 +314,7 @@ svc_toggle_rtl_cqpsk(const dsd_opts* opts) {
            width), it leaves that demod profile queued on its own; refused where it lands (a retune moved the rate
            since), it has already replaced it, so CQPSK stays on. Either refusal is logged with the validator's
            text. */
-        symbol_profile_request_monitor(opts);
+        (void)symbol_profile_request_monitor(opts);
     }
 #else
     (void)opts;

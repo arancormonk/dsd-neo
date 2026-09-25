@@ -5095,6 +5095,27 @@ cfg_airspy_settings_valid(const dsdneoUserConfig* cfg) {
     return !cfg->airspy_invalid && dsd_airspy_config_valid(&cfg->airspy);
 }
 
+/* An NFM width the front end refused after the change was committed (@p width_hz) is put back to @p kept_hz, the width
+   the front end kept, and the toast says why. */
+static void
+ui_restore_refused_nfm_width(dsd_opts* opts, dsd_state* state, int width_hz, int kept_hz) {
+    opts->analog_nfm_bandwidth_hz = kept_hz;
+    char why[128];
+    svc_describe_nfm_refusal(opts, width_hz, why, sizeof why);
+    ui_set_toast(state, 5, "Refused: %s", why);
+}
+
+/* Hand a changed NFM width to the running front end. One it refuses now (a retune moved the rate since the width was
+   checked) is put back to @p previous_hz. Returns -1 then. */
+static int
+ui_publish_nfm_bandwidth(dsd_opts* opts, dsd_state* state, int previous_hz) {
+    if (svc_publish_nfm_bandwidth(opts, state, previous_hz) == 0) {
+        return 0;
+    }
+    ui_restore_refused_nfm_width(opts, state, opts->analog_nfm_bandwidth_hz, previous_hz);
+    return -1;
+}
+
 /* The NFM width the session has once the config is applied: [analog] sets it (its loader keeps only in-range widths,
    and the apply treats anything else as the default), otherwise it stays. */
 static int
@@ -5106,11 +5127,21 @@ cfg_nfm_width_after(const dsd_opts* opts, const dsdneoUserConfig* cfg) {
                                                                                         : 0;
 }
 
-/* Whether the session runs the -fA analog family once the config's [mode] is applied. */
+/* Whether the session runs the -fA analog family once the config's [mode] is applied. A [mode] without a decode key (a
+   demod or LRRP setting alone) applies no preset (dsd_apply_decode_mode_preset() refuses DSDCFG_MODE_UNSET), so the
+   session keeps its family, as it does without a [mode]. */
 static int
 cfg_analog_family_after(const dsd_opts* opts, const dsdneoUserConfig* cfg) {
-    const int analog = cfg->has_mode ? (cfg->decode_mode == DSDCFG_MODE_ANALOG) : (opts->analog_only == 1);
+    const int sets_decode = cfg->has_mode && cfg->decode_mode != DSDCFG_MODE_UNSET;
+    const int analog = sets_decode ? (cfg->decode_mode == DSDCFG_MODE_ANALOG) : (opts->analog_only == 1);
     return analog && opts->m17encoder != 1;
+}
+
+/* The DSP bandwidth, in kHz, an RTL-SDR or rtl_tcp reopen runs at: rtl_bw_khz as the config gives it, the session's
+   when it gives none (apply_cfg_rtl_common()). */
+static int
+cfg_reopen_rtl_bw_khz(const dsd_opts* opts, const dsdneoUserConfig* cfg) {
+    return cfg->rtl_bw_khz ? cfg->rtl_bw_khz : opts->rtl_dsp_bw_khz;
 }
 
 /* How a config's [input] reopens the running input's device (apply_cfg_rtl_hot_restart()). */
@@ -5132,21 +5163,29 @@ typedef enum {
 static cfg_reopen_kind
 cfg_radio_reopen(const dsd_opts* opts, const dsdneoUserConfig* cfg) {
     char spec[sizeof opts->audio_in_dev];
-    if (opts->audio_in_type != AUDIO_IN_RTL || cfg_is_live_airspy(cfg, opts->audio_in_dev, opts->audio_in_type)
-        || dsd_user_config_radio_input_spec(cfg, opts, spec, sizeof spec) != 0
+    if (opts->audio_in_type != AUDIO_IN_RTL) {
+        return CFG_REOPEN_NONE;
+    }
+    if (cfg_is_live_airspy(cfg, opts->audio_in_dev, opts->audio_in_type)) {
+        /* The Airspy path applies what it can live, but reopens the device for a new sample rate or serial, or a DSP
+           bandwidth or monitor volume other than the stream opened with (svc_airspy_settings_reopen()), with the
+           shared tuning the config applies (apply_shared_radio_tuning_from_config()). A reopen runs at the rate the
+           device delivers for the new settings: a wider DSP bandwidth decimates its capture less. */
+        const int bw_khz = cfg_reopen_rtl_bw_khz(opts, cfg);
+        const int next_bw_khz = dsd_analog_rtl_dsp_bw_is_selectable(bw_khz) ? bw_khz : DSD_ANALOG_RTL_DSP_BW_MAX_KHZ;
+        const int next_volume = cfg->rtl_volume ? cfg->rtl_volume : opts->rtl_volume_multiplier;
+        return svc_airspy_settings_reopen(&opts->airspy, &cfg->airspy, opts->rtl_dsp_bw_khz, next_bw_khz,
+                                          opts->rtl_volume_multiplier, next_volume)
+                   ? CFG_REOPEN_AT_DEVICE_RATE
+                   : CFG_REOPEN_NONE;
+    }
+    if (dsd_user_config_radio_input_spec(cfg, opts, spec, sizeof spec) != 0
         || strncmp(spec, opts->audio_in_dev, sizeof opts->audio_in_dev) == 0) {
         return CFG_REOPEN_NONE;
     }
     return (cfg->input_source == DSDCFG_INPUT_RTL || cfg->input_source == DSDCFG_INPUT_RTLTCP)
                ? CFG_REOPEN_AT_RTL_BW
                : CFG_REOPEN_AT_DEVICE_RATE;
-}
-
-/* The DSP bandwidth, in kHz, an RTL-SDR or rtl_tcp reopen runs at: rtl_bw_khz as the config gives it, the session's
-   when it gives none (apply_cfg_rtl_common()). */
-static int
-cfg_reopen_rtl_bw_khz(const dsd_opts* opts, const dsdneoUserConfig* cfg) {
-    return cfg->rtl_bw_khz ? cfg->rtl_bw_khz : opts->rtl_dsp_bw_khz;
 }
 
 /*
@@ -5188,7 +5227,13 @@ cfg_check_receive_family(const dsd_opts* opts, dsd_state* state, const dsdneoUse
     if (width_hz > 0) {
         const cfg_reopen_kind reopen = cfg_radio_reopen(opts, cfg);
         if (reopen == CFG_REOPEN_AT_DEVICE_RATE) {
-            return UI_CMD_APPLY_COMPLETED;
+            /* No rate to hold it to before the device opens, but the rules every rate shares still apply. */
+            char why[128];
+            if (svc_check_nfm_bandwidth_at_device_rate(width_hz, why, sizeof why) == 0) {
+                return UI_CMD_APPLY_COMPLETED;
+            }
+            ui_set_toast(state, 5, "Config not applied: %s", why);
+            return UI_CMD_APPLY_FAILED;
         }
         const int reopen_bw_khz = (reopen == CFG_REOPEN_AT_RTL_BW) ? cfg_reopen_rtl_bw_khz(opts, cfg) : 0;
         const int holds =
@@ -5268,23 +5313,25 @@ cfg_restore_lifecycle_owned(dsd_opts* opts, const dsdneoUserConfig* cfg, dsd_fro
  * (svc_note_digital_decode_modes()): after a live switch onto the digital family they pick the FSK channel profile the
  * front end's CQPSK toggle returns to.
  */
-static void
+static int
 apply_cfg_receive_family_change(dsd_opts* opts, dsd_state* state, const dsdneoUserConfig* cfg, int old_analog_only,
                                 int old_nfm_width_hz) {
     const int analog_only = opts->analog_only ? 1 : 0;
+    int rc = 0;
     if (analog_only && old_analog_only && opts->analog_nfm_bandwidth_hz != old_nfm_width_hz) {
-        /* Still on the analog monitor with a new width: a width-only change for the front end. */
-        svc_publish_nfm_bandwidth(opts, state);
+        /* Still on the analog monitor with a new width: a width-only change for the front end, which put back when
+           the front end refuses it after all (a retune moved the rate since cfg_check_receive_family()). */
+        rc = ui_publish_nfm_bandwidth(opts, state, old_nfm_width_hz);
     }
     if (!cfg->has_mode) {
-        return;
+        return rc;
     }
     if (analog_only == old_analog_only) {
         if (!analog_only && (opts->frame_provoice == 1 || opts->monitor_input_audio == 1)) {
             (void)dsd_audio_ensure_digital_output(opts);
         }
         svc_note_digital_decode_modes(opts, state);
-        return;
+        return rc;
     }
     if (analog_only) {
         (void)dsd_audio_ensure_analog_output(opts);
@@ -5295,6 +5342,7 @@ apply_cfg_receive_family_change(dsd_opts* opts, dsd_state* state, const dsdneoUs
     if (opts->audio_in_type == AUDIO_IN_RTL) {
         decode_mode_republish(opts, state, cfg->decode_mode);
     }
+    return rc;
 }
 
 /* A config apply that moved the input is an input switch like the commands that make one, and
@@ -5375,7 +5423,8 @@ ui_cmd_handle_config_apply(dsd_opts* opts, dsd_state* state, const struct dsd_ap
                                 old_jitter);
     cfg_forget_rx_tone_on_boundary(opts, state, old_audio_in_type, old_audio_in_dev, old_decode_mode);
     int reconfigure_rc = ui_reconfigure_output_for_input_policy(opts, state);
-    apply_cfg_receive_family_change(opts, state, &cfg, old_analog_only, old_nfm_width_hz);
+    /* A width the front end refused after the check (put back, with a toast) fails the apply like a reconfigure. */
+    reconfigure_rc |= apply_cfg_receive_family_change(opts, state, &cfg, old_analog_only, old_nfm_width_hz);
 #ifdef USE_RADIO
     if (airspy_rc != 0) {
         return UI_CMD_APPLY_FAILED;
@@ -5482,9 +5531,9 @@ command_updates_scan_mode(const struct dsd_app_command* c) {
         DSD_APP_CMD_SCAN_VOICE_ONLY_SET,
         DSD_APP_CMD_SCAN_VOICE_QUALIFY_MS_SET,
         DSD_APP_CMD_SCAN_VOICE_HOLD_MS_SET,
-        /* The width edits the configured value: under a row it runs against the baseline, and a row that carries
-         * its own width keeps it until the scanner moves on. */
-        DSD_APP_CMD_NFM_BANDWIDTH_SET,
+        /* DSD_APP_CMD_NFM_BANDWIDTH_SET is deliberately not here: the width is not a row setting, so the command edits
+         * the configured width in place (svc_set_nfm_bandwidth()) instead of suspending and re-applying the row, which
+         * would read the live acquisition the row has made as a change and end a followed call. */
         DSD_APP_CMD_IMPORT_GROUP_LIST,
         DSD_APP_CMD_IMPORT_GROUP_LIST_CLEAR,
         DSD_APP_CMD_DECODE_MODE_SET,
@@ -5578,10 +5627,10 @@ apply_cmd_resume_scope(dsd_opts* opts, dsd_state* state, int nfm_width_before) {
         dsd_frame_sync_reset_acquisition(opts, state, opts->trunk_scan_enabled != 1);
         svc_publish_symbol_profile(opts, state, dsd_scan_mode_effective_profile(opts, state));
     } else if (opts->analog_nfm_bandwidth_hz != nfm_width_before) {
-        /* The NFM width is not a row setting, so changing it alone leaves the row's constraint as it was: the new
-           width reaches the front end now that the options in force are the row's again (a row that runs the -fA
-           monitor), which it could not while the command ran against the configured ones. */
-        svc_publish_nfm_bandwidth(opts, state);
+        /* The NFM width is not a row setting, so changing it alone (a config apply) leaves the row's constraint as it
+           was: the new width reaches the front end now that the options in force are the row's again (a row that runs
+           the -fA monitor), which it could not while the command ran against the configured ones. */
+        (void)ui_publish_nfm_bandwidth(opts, state, nfm_width_before);
     }
 }
 
@@ -5626,10 +5675,27 @@ apply_cmd(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
     return result;
 }
 
+/* A width the demod thread refused where it landed (a retune moved the demod rate after the width was checked) is not
+   in force: the configured width goes back to the one the front end kept, the toast says why, and frontends see it
+   at once. */
+static void
+ui_settle_nfm_bandwidth(dsd_opts* opts, dsd_state* state) {
+    int width_hz = 0;
+    int kept_hz = 0;
+    if (!opts || !state || !svc_take_nfm_bandwidth_refusal(opts, state, &width_hz, &kept_hz)
+        || opts->analog_nfm_bandwidth_hz != width_hz) {
+        return; /* nothing refused, or the width has changed again since */
+    }
+    ui_restore_refused_nfm_width(opts, state, width_hz, kept_hz);
+    dsd_telemetry_publish_opts_snapshot(opts);
+    dsd_telemetry_publish_snapshot(state);
+}
+
 int
 dsd_app_drain_cmds(dsd_opts* opts, dsd_state* state) {
     int n_applied = 0;
     ensure_mu_init();
+    ui_settle_nfm_bandwidth(opts, state);
     for (;;) {
         struct dsd_app_command cmd;
         int have = 0;

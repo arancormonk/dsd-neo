@@ -302,6 +302,37 @@ int rtl_stream_request_demod_profile(int cqpsk_enable, int symbol_rate_hz, int l
  */
 int rtl_stream_request_analog_profile(int family, int kind, int width_hz);
 
+/** @brief What became of a queued receive request (rtl_stream_receive_request_outcome()). */
+enum rtl_stream_rx_request_outcome {
+    RTL_STREAM_RX_REQUEST_PENDING = 0, /**< Queued: the demod thread has not taken it yet. */
+    RTL_STREAM_RX_REQUEST_SETTLED = 1, /**< Taken and its result published, replaced by a later request, or dropped. */
+    RTL_STREAM_RX_REQUEST_REFUSED = 2, /**< An analog profile request refused at the demod rate it landed at. */
+};
+
+/**
+ * @brief Number of the last receive request queued for the demod thread (rtl_stream_request_demod_profile(),
+ * rtl_stream_request_analog_profile()), for rtl_stream_receive_request_outcome().
+ *
+ * Read it on the thread that queued the request, right after the request: the decoder thread queues them all. Numbers
+ * rise by one per queued request and are never 0. A request applied at once, with no pipeline running, is not queued
+ * and gets no number of its own; it settles every request queued before it, since no demod thread will take them.
+ */
+uint32_t rtl_stream_receive_request_seq(void);
+
+/**
+ * @brief What became of the receive request numbered @p seq (RTL_STREAM_RX_REQUEST_*).
+ *
+ * While a request is pending, what the stream publishes (the CQPSK state rtl_stream_get_cqpsk_status() reports, the
+ * analog profile) can still describe the stream before it: the demod thread clears the output, which moves the output
+ * generation, before it publishes what it applied, and a retune moves the generation without taking a request. Once
+ * the request is settled or refused, what the stream publishes includes its effect. The demod thread settles every
+ * request it took at a block boundary, a later request that replaced an earlier one settles that one with it, and a
+ * stream open settles whatever the previous stream left queued. An analog profile request whose width the demod rate
+ * it landed at cannot filter (a retune moved the rate after the request was checked) is refused there, logged with the
+ * validator's text, and the front end keeps the receive profile it had; its number then reads REFUSED.
+ */
+int rtl_stream_receive_request_outcome(uint32_t seq);
+
 /**
  * @brief Note the digital decode modes the decoder is configured for.
  *
