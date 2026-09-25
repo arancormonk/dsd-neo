@@ -1349,8 +1349,11 @@ Build files: `src/protocol/CMakeLists.txt` and per‑protocol `src/protocol/<nam
   - AM (issue #524): the decoder picker lists AM after Analog; Input > RTL-SDR has `rtl.am_bw` (`AM bandwidth
     (Hz)...`, `is_am_width_editable()`: the AM preset on a radio input), whose prompt hands the value as typed to
     `DSD_APP_CMD_AM_BANDWIDTH_SET`; `rtl.rtltcp_autotune` moved into the advanced tuning submenu to keep the RTL menu at
-    fifteen rows. The status line's `Analog: AM <width>;` field (`ui_print_am_channel_field()`) shows the width the
-    running stream publishes, or the configured one before it does. Tests: `UI_MENU_ACTIONS`, `UI_MENU_TREE_AUDIT`.
+    fifteen rows. The status line's `Analog: AM <width>;` field (`ui_print_am_channel_field()`) shows the AM profile the
+    running stream publishes (`dsd_rtl_stream_metrics_hook_analog_profile()`), or the configured width where none is
+    published: before the stream starts, while a kind switch is in flight, or while a typed digital scan row's profile
+    is on air (the frontend metrics' channel width would then be that row's). Tests: `UI_MENU_ACTIONS`,
+    `UI_MENU_TREE_AUDIT`, `UI_NCURSES_PRINTER_HELPERS`.
 
 Qt Quick frontend (`src/ui/qt`):
 
