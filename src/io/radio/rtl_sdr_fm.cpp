@@ -4083,8 +4083,8 @@ rtl_stream_analog_channel_fits_rate(int kind, int width_hz, int rate_hz, char* e
 }
 
 /* Whether a retune the device settled on the demod rate now in demod_state lands the running analog monitor on a
- * channel that rate runs. Only an explicit width can fail (@p err then has the validator's text): the unset NFM
- * default moves between the 16 kHz design and the legacy WIDE design as the rate allows, and a front end off the
+ * channel that rate runs. Only an explicit width, or the AM default, can fail (@p err then has the validator's text):
+ * the unset NFM default moves between the 16 kHz design and the legacy WIDE design as the rate allows, and a front end off the
  * monitor output (the digital family, CQPSK toggled on under -fA, a typed digital scan row) keeps its own profile
  * filter. A retune profile for the centre it lands on decides for itself when it takes the monitor's width away: a
  * switch to the digital family, or an analog profile that fits the rate (one that does not is refused when it applies,
