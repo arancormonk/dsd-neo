@@ -2,8 +2,8 @@
 
 Single-tuner trunk scan lets one retunable receiver rotate across several explicit targets instead of staying on one
 system. Use it when you want one DSD-neo instance to check a small set of P25 trunk, P25 conventional, DMR trunk,
-DMR conventional, and NXDN (trunk, NXDN96 conventional, and NXDN48 conventional) targets, but you do not have a
-separate receiver for each system.
+DMR conventional, NXDN (trunk, NXDN96 conventional, and NXDN48 conventional) and analog NFM conventional targets, but
+you do not have a separate receiver for each system.
 
 The scan coordinator parks on one target, watches for activity, and moves to the next idle target after the configured
 dwell time. Trunking state and per-target channel maps are kept separate, so a channel number or learned control-channel
@@ -44,6 +44,7 @@ site-nxdn,nxdn-trunk,461037500,,3000,,NXDN Type-C control channel,auto,,,
 site-nxdn48,nxdn48-trunk,461556250,nxdn_chan_map.csv,3000,,NXDN48 Type-C control channel (6.25 kHz),gfsk,,,
 field-nxdn,nxdn-conventional,461550000,,1500,1200,one-frequency NXDN96,gfsk,,,
 field-nxdn48,nxdn48-conventional,461556250,,1500,1200,one-frequency NXDN48 (6.25 kHz),gfsk,,,
+fire-nfm,nfm-conventional,154430000,,2000,3000,analog NFM channel,,,--nfm-bandwidth-hz 12500 --squelch-db -60,
 ```
 
 The repository includes a starter file at `examples/trunk_scan_targets.csv`. Companion paths in these examples
@@ -57,7 +58,7 @@ Column behavior:
 | Column | Required | Meaning |
 |--------|----------|---------|
 | `id` | Yes | Unique short name shown in the terminal status row and Call Info, as the `[id]` prefix on event-history rows, `-J` log lines and the rdio `talkgroup_tag` fallback, and in log messages. Keep it under 64 bytes. |
-| `type` | Yes | `p25-trunk`, `p25-conventional`, `dmr-trunk`, `dmr-conventional`, `nxdn-trunk` (NXDN96, 12.5 kHz), `nxdn48-trunk` (NXDN48, 6.25 kHz), `nxdn-conventional` (NXDN96, 12.5 kHz), or `nxdn48-conventional` (NXDN48, 6.25 kHz). |
+| `type` | Yes | `p25-trunk`, `p25-conventional`, `dmr-trunk`, `dmr-conventional`, `nxdn-trunk` (NXDN96, 12.5 kHz), `nxdn48-trunk` (NXDN48, 6.25 kHz), `nxdn-conventional` (NXDN96, 12.5 kHz), `nxdn48-conventional` (NXDN48, 6.25 kHz), or `nfm-conventional` (one analog NFM channel, held on carrier; see [Analog NFM targets](#analog-nfm-targets)). |
 | `frequency_hz` | Yes | Initial park/control frequency in decimal Hz. Suffixes such as `M` are not accepted in CSV. |
 | `chan_csv` | No | Channel map for a trunk target. Paths are resolved relative to the target CSV file. Leave empty for conventional DMR, P25 and both conventional NXDN types. |
 | `dwell_ms` | No | Idle dwell for this target. Empty uses the CLI/config default. Valid range: `250..600000`. |
@@ -310,7 +311,8 @@ During scanning:
 - A `| Scan Timing:` row directly under the Trunk Scan row says why the receiver is staying on that target —
   `Acquiring control`, `Following call`, `Retune pending`, `Retune retry`, `Manual hold`, `Idle dwell`, and the
   conventional `Voice` / `Voice tail` / `Activity hold` / `Qualify` — with a countdown on whichever window is
-  running and the target's effective dwell and hold beside it. The phrase table is in
+  running and the target's effective dwell and hold beside it, and `Carrier` while an `nfm-conventional` target's
+  carrier holds it. The phrase table is in
   [the terminal UI guide](ui-terminal.md); the Qt and Android panels show the same thing.
 - Idle targets rotate after their dwell time. Call following or a conventional activity hold suspends that dwell;
   once the target becomes idle again, a fresh full dwell starts. Time spent following the call or holding activity
@@ -388,6 +390,7 @@ During scanning:
   symbol profile throughout dead air, including with empty or `auto` modulation. The parked target's type selects the
   symbol rate and channel filter even under a global `-m` modulation lock; the lock still governs symbol slicing, so
   DMR and NXDN rows under `-mc` or `-mq` need `modulation = gfsk` (or `auto`) to decode.
+- An `nfm-conventional` target holds on its carrier; see [Analog NFM targets](#analog-nfm-targets).
 - NXDN Type-D (distributed trunking, Icom IDAS Type-D; 6.25 kHz only) has no dedicated control channel: an idle
   home repeater sends an Idle Repeater Message on its SCCH and a busy one carries `Go to Repeater` messages.
   To follow one, park an `nxdn48-trunk` target on the home repeater's outbound frequency with a `chan_csv` that
@@ -474,10 +477,39 @@ inputs cannot scan by themselves because DSD-neo has no tuner to retune.
 Run trunk scan against live input. IQ replay remains useful for testing one captured control/voice path, but not for
 rotating across unrelated scan targets.
 
+## Analog NFM targets
+
+An `nfm-conventional` target parks on one analog narrowband FM channel and plays it through the analog monitor (the
+`-fA` receive path), whatever the decode mode the session started with. Lists may mix these targets with digital
+ones: each retune switches the receiver between the analog monitor and the digital decoder, and the channel width,
+without reopening the device, and opens the audio output the target plays through. Leaving the target, failing to
+retune off it and shutdown all restore the configured decoder and width.
+
+- **Activity is carrier.** The target holds while its squelch is open over the monitor audio (above the input's level
+  floor, through a 200 ms hangover), whether or not audio is played, so `-o null` or a muted frontend still hold it.
+  Each coordinator tick with the carrier open restarts `activity_hold_ms`; once the carrier drops, the hold runs
+  out and `dwell_ms` of silence rotates to the next target. The Scan Timing row reads `Carrier` while the carrier is
+  open and `Activity hold` for the tail. No decoded frame, header or voice verdict is involved, and digital activity
+  reports never claim an analog target.
+- **Squelch matters.** Set a threshold with the target's `--squelch-db`, `[input] rtl_sql` or the `sql` field of
+  `-i rtl:`. With the squelch off, or at -100 dB or below, noise holds the target until the per-visit cap moves on,
+  and scan start warns about it.
+- **Width.** `--nfm-bandwidth-hz <Hz>` in the `options` column sets the target's NFM channel width (whole Hz,
+  `8000..25000`); without it the configured width applies (16 kHz by default). A width the running DSP rate cannot
+  filter is named at scan start with the fix, and that target's retune is refused at every visit. With rigctl tuning
+  an audio input, the peer demodulates: the width has no effect (scan start says so) and `-B` sets the peer's
+  passband.
+- **Controls.** `--scan-max-visit-ms`, the `Y` hold, advance and avoid work exactly as for digital targets, including
+  while a carrier holds the target. `--scan-voice-only` never blocks an analog target, and voice-gate switches are
+  rejected in its `options`.
+- **What it refuses.** An analog target takes no `modulation`, `chan_csv`, `p25_bandplan_csv` or key column, and its
+  `options` accept only `--scan-max-visit-ms`, `--squelch-db` and `--nfm-bandwidth-hz`
+  ([details](csv-formats.md#analog-rows)). Live decryption changes are refused while it is parked.
+
 ## Limitations
 
 - P25 trunk, P25 conventional, DMR trunk, DMR conventional, NXDN trunk at both rates (`nxdn-trunk`, `nxdn48-trunk`),
-  NXDN96 conventional, and NXDN48 conventional targets are supported. NXDN Type-C sites use one control-channel
+  NXDN96 conventional, NXDN48 conventional and analog NFM conventional targets are supported. NXDN Type-C sites use one control-channel
   format at 4800 and 9600 bps (NXDN TS 1-A), so `nxdn48-trunk` shares every decoding path with `nxdn-trunk`
   and differs only in symbol rate and channel filter; neither the Type-C nor the Type-D NXDN48 path has been
   verified against a live NXDN48 trunked site from trunk scan. `-Y` with `-fi` remains available for scanning

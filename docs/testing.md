@@ -577,6 +577,7 @@ fixed gain, or with `-n 0` the per-block AGC.
 | `--analog-probe-hz HZ` | Level at `HZ` (Hann-windowed Goertzel), repeatable up to 8 frequencies: `dbfs`, and `dbc` against the expected tone. |
 | `--analog-probe-{min,max}-{dbc,dbfs} HZ:DB` | Bounds on a probe's level; each also adds the probe. |
 | `--analog-max-tone-lock-ms MS` | Upper bound on `tone_lock_ms`, the stream time of the first received-tone lock. Fails as not measured when no tone locked. |
+| `--analog-scan-row ROW` | Enter row `ROW` of the `-C` channel map before the replay, the way the conventional scanner commits it (its class, then its own options), and print `Scan row applied: ROW <class>; width <W>` with `(row)` when the row sets the width. I/Q replay cannot retune, so one row is all a run visits (issue #526). |
 
 A case that expects silence (a muted or rejected transmission) pairs `--analog-max-audible-ms 0` with
 `--analog-min-total-ms`: silence alone is also what a replay that stalled or never started produces.
@@ -607,6 +608,7 @@ two cases with their own limits, not a comparison between runs. Measured on the 
 | `DECODE_IQ_ANALOG_NFM_TONE_25K` | `nfm_tone_synth`, `--nfm-bandwidth-hz=25000` | tone SNR 23.6 dB (more receiver noise in the wider channel), in-band 30.4 dB, RMS -36.1 dBFS, 1 kHz tone -36.1 dBFS; 12.5 kHz probe -48.9 dBc | `NFM_TONE`'s bounds with SNR ≥ 18, the 1 kHz tone at -37.5 to -34.5 dBFS, and 12.5 kHz ≥ -58 dBc (the default width reads -66.7) |
 | `DECODE_IQ_ANALOG_NFM_BW_8K` | `nfm_adjacent_synth`, `--nfm-bandwidth-hz 8000` | tone SNR 17.0 dB; 12.5 kHz probe -79.5 dBc | SNR ≥ 12, captured ≥ 1400 ms, 12.5 kHz ≤ -72 dBc (the default width reads -64.9) |
 | `DECODE_IQ_ANALOG_NFM_BW_25K` | `nfm_adjacent_synth`, `--nfm-bandwidth-hz 25000` | the neighbour is in the passband: 12.5 kHz probe -8.2 dBc, tone SNR -3.5 dB (the beat counts as noise), tone level -36.1 dBFS | captured ≥ 1400 ms, 12.5 kHz ≥ -20 dBc, 1 kHz level -38 to -34 dBFS |
+| `DECODE_IQ_SCAN_NFM_TONE` | `nfm_adjacent_synth` through an `nfm` map row with `--nfm-bandwidth-hz 12500` on a `-fa` session (`--analog-scan-row 0`) | tone SNR 27.2 dB; 12.5 kHz probe -81.3 dBc (the same row without a width: 25.8 dB, -64.9 dBc) | row banner with `width 12.5 kHz (row)`, SNR ≥ 20, captured ≥ 1400 ms, 12.5 kHz ≤ -72 dBc |
 | `DECODE_IQ_ANALOG_SILENT_STREAM_TIME` | `nfm_tone_synth` under `-fi` (monitor off) | total 1500 ms, no audio at all | audible 0 ms, total 1400 to 1600 ms |
 | `DECODE_IQ_ANALOG_NFM_REAL_CTCSS_SMOKE` | `nfm_ctcss_real` | captured and audible 6000 ms, in-band -1.0 dB, RMS -44.6 dBFS | captured ≥ 5800, audible ≥ 4500, in-band ≥ -4, RMS ≤ -34 dBFS |
 | `DECODE_IQ_ANALOG_NFM_REAL_SQUELCH_A_SMOKE` | `nfm_squelch_real_a` | captured 4000 ms, audible 1460 ms from 460 ms, in-band 8.0 dB | captured ≥ 3900, audible ≥ 900, first audible 250 to 1000 ms, in-band ≥ 4 |

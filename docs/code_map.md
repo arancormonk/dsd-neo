@@ -52,7 +52,12 @@ Generated (do not edit/commit):
     (`dsd_scan_timing_clear()` / `dsd_scan_timing_publish()`) and the -Y timing tick
     `dsd_engine_scan_y_timing_tick()`, which stamps `dsd_state::scan_timing` with the stay reason and the absolute
     monotonic deadline of the window that is running (issue #508); the deadline it publishes is the same instant
-    `dsd_scan_voice_gate_should_step()` flips, so the readout cannot drift from the rotation it describes
+    `dsd_scan_voice_gate_should_step()` flips, so the readout cannot drift from the rotation it describes. It also
+    owns the analog carrier probe both scanners hold analog rows on, `dsd_scan_analog_carrier_open()` (issue #526):
+    the received-tone tap's `dsd_state::analog_rx.carrier_open` while the analog FM monitor runs, never on a stale
+    publication, a flagged digital carrier or a trunking-owned channel, and independent of audio output. The -Y voice
+    gate never owns an analog row (`scan_voice_gate_enabled()` is false under the analog family), and the -Y timing tick
+    reports `DSD_SCAN_STAY_CARRIER` for the hangtime window while that probe is open
   - Stepped slicer threshold refresh after each getFrameSync() return: `src/engine/slicer_thresholds.c` behind
     `include/dsd-neo/engine/slicer_thresholds.h` (test: `ENGINE_SLICER_THRESHOLDS`)
   - Installs runtime hook tables used by DSP/frame-sync code
@@ -74,7 +79,8 @@ Key public headers:
 ### Single-Tuner Trunk Scan
 
 `src/engine/trunk_scan.c` owns the coordinator that rotates one retunable receiver across the explicit targets of a
-target-list CSV (P25 trunk/conventional, DMR trunk/conventional, and NXDN96/NXDN48 trunk/conventional). Operator-facing
+target-list CSV (P25 trunk/conventional, DMR trunk/conventional, NXDN96/NXDN48 trunk/conventional, and analog
+`nfm-conventional`). Operator-facing
 behavior, the CSV columns, and the CLI/config options live in `docs/trunk-scan.md`;
 `include/dsd-neo/engine/trunk_scan.h` is the whole public surface:
 
@@ -93,6 +99,15 @@ behavior, the CSV columns, and the CLI/config options live in `docs/trunk-scan.m
 - Conventional activity reports: `dsd_engine_trunk_scan_dmr_conventional_activity()`,
   `dsd_engine_trunk_scan_nxdn_conventional_activity()`, and `dsd_engine_trunk_scan_p25_conventional_activity()`,
   reached from protocol code through the runtime hooks.
+- Analog targets (`DSD_TRUNK_SCAN_TARGET_NFM_CONVENTIONAL`, issue #526): every exhaustive type switch classifies the
+  type (conventional, no GFSK or P25 symbol rate, no conventional family a protocol report can claim), and
+  `trunk_scan_type_is_analog()` gates the rest. The type column is parsed from the `k_trunk_scan_types[]` table, which
+  also lists the accepted spellings in the invalid-type diagnostic. An analog target's retune passes no timing
+  (`trunk_scan_retune_active()`), so no zero symbol rate reaches `dsd_opts_compute_sps_rate()`; its tick refreshes
+  `last_allowed_activity_m` from `dsd_scan_analog_carrier_open()` instead of the voice-media hold
+  (`trunk_scan_refresh_activity()`), and its stay reason reads `CARRIER` while the carrier is open, then
+  `ACTIVITY_HOLD` for the tail. The parser refuses key columns, `modulation`, `chan_csv` and `p25_bandplan_csv` on
+  it, and the live decryption command refuses it.
 
 Beside the active-target publication the coordinator also publishes the stay reason and live timing for the parked
 target into `dsd_state::scan_timing` once per tick (issue #508), from the same effective dwell/hold resolvers the
@@ -132,6 +147,17 @@ Tests: `tests/engine/test_engine_trunk_scan.c` (`ENGINE_TRUNK_SCAN`) and
 
 - Core owns positional channel-map modes through `core/channel_mode.h`, implemented beside the LCN heap stores in
   `core/util/dsd_state_trunk_lcn.c`. Extension slot 5 transfers with map adoption and is cleared on map teardown.
+- Classes: `dsd_scan_mode` runs INHERIT..M17 and the analog `DSD_SCAN_MODE_NFM` (9, issue #526), whose preset is the
+  analog FM monitor (`DSDCFG_MODE_ANALOG`). `DSD_SCAN_MODE_LAST` is the one bound every range check uses (the option
+  parser, `dsd_channel_mode_set()`), `dsd_scan_mode_is_analog()` the one analog predicate (key compatibility, the
+  importer, trunk-scan target classes), and appending a class keeps stored values and `MODE_BIT()` masks stable.
+  `dsd_scan_mode_alias_hint()` names the class to suggest for an alias (`fm`, `analog`, `wfm` -> `nfm`; none is
+  accepted) and `dsd_scan_mode_names_list()` the accepted spellings for a diagnostic. The analog channel widths
+  (`analog_nfm_bandwidth_hz`, `analog_am_bandwidth_hz`) are acquisition fields of `dsd_scan_settings`: captured,
+  restored, compared by `dsd_scan_settings_equal()` (so a width change restages a parked row) and restored again
+  before a row's options install; a row width (`DSD_SCAN_OPT_BANDWIDTH`) lands there through its applier.
+  `dsd_scan_mode_prepare()` takes the row's option values (NULL = none) so the prepared settings a scanner tunes with
+  already carry the row width; its callers are `channel_scan.c` and the `scan_mode_replay` / `analog_replay` hosts.
 - Runtime owns the exact configured decoder baseline and temporary class through `runtime/scan_mode.h` and
   `runtime/scan_mode.c` (extension slot 6). It uses the existing preset definitions while keeping the audio sink fixed.
   Suspend/update/resume supports global commands; scalar snapshot copies keep frontend state independent of live storage.
@@ -152,6 +178,16 @@ Tests: `tests/engine/test_engine_trunk_scan.c` (`ENGINE_TRUNK_SCAN`) and
   work and invalidates sync gathered before the transaction. Pending rows defer no-carrier call finalization until commit.
   `dsd_engine_reset_no_carrier_state()` shares decoder cleanup without recursively stepping or changing tuner ownership.
   `trunk_scan.c` selects the same classes from target types while retaining target snapshots and modulation/gain ownership.
+  Each row commit (and trunk-scan target switch) opens the sink the row plays through,
+  `dsd_engine_scan_ensure_output()` (analog or digital, idempotent), and scan start logs what an analog row owes the
+  operator once per map, `dsd_engine_scan_warn_analog_row()`: an open squelch, a width on audio input, a width the
+  DSP rate (`dsd_engine_scan_dsp_rate_hz()`) cannot filter.
+  The receive family a row runs on is queued with its tune in `trunk_tuning.c` (`dsd_engine_prepare_scan_profile()`,
+  issue #526): an analog row attaches the analog family, demodulator and width to the retune profile
+  (`rtl_stream_prepare_retune_analog_profile_for_target()`) with no symbol profile, and a width the front end refuses
+  fails the tune before any backend moves; a digital row attaches the digital family ahead of its symbol profile only
+  while the front end runs the analog family and the configured mode is digital (a typed digital row on an `-fA`
+  session keeps the monitor output). A failed hop off the analog monitor re-requests no symbol profile over it.
   Leaving the scan (`dsd_engine_channel_scan_leave()`) restores the configured RTL receive family through the metrics
   hooks: under `-fA` the configured analog profile (`apply_analog_profile`, analog family, demodulator kind and
   channel width with 0 meaning the default), otherwise the digital family first and then the restored symbol profile
@@ -545,7 +581,8 @@ installs from `src/engine/trunk_tuning.c` in `src/engine/trunk_tuning_hooks_inst
   `src/app_control/call_view.c` fold the canonical call state into a per-slot line, and
   `include/dsd-neo/app_control/scan_timing_view.h` and `src/app_control/scan_timing_view.c` fold
   `dsd_state::scan_timing` into the Scan Timing row — the stay phrase, the remaining/total of the window that is
-  running, and which of dwell/hold/hang is worth printing (issue #508). The decoder owns every deadline; these
+  running, and which of dwell/hold/hang is worth printing (issue #508), including `Carrier` for an analog row's
+  carrier hold (issue #526). The decoder owns every deadline; these
   views only difference it against the caller's monotonic clock, which is what keeps the terminal row, the Qt panel
   and the Android app from drifting on what "suspended" or "hold" means. Tests: `APP_CONTROL_CALL_VIEW`,
   `APP_CONTROL_SCAN_TIMING_VIEW`, and the terminal goldens in `UI_NCURSES_PRINTER_HELPERS`.
@@ -605,7 +642,8 @@ installs from `src/engine/trunk_tuning.c` in `src/engine/trunk_tuning_hooks_inst
   per accepted frame sync, behind `DSD_NEO_DEBUG_SYMBOL_TIMING` (see `docs/cli.md`). The sample trace it correlates
   over is filled by `dsd_symbol.c` and owned by decoder-state setup/teardown in `src/core/util/dsd_init.c`.
 - Received-tone detection (issue #522), public entry points in `include/dsd-neo/dsp/analog_rx.h`: `dsd_analog_rx_tap()`,
-  `dsd_analog_rx_tap_partial()`, `dsd_analog_rx_block_restart()`, `dsd_analog_rx_reset()` and the monitor playback
+  `dsd_analog_rx_tap_partial()`, `dsd_analog_rx_block_restart()`, `dsd_analog_rx_reset()`,
+  `dsd_analog_rx_block_straddles_boundary()` and the monitor playback
   bracket `dsd_analog_rx_playback_begin()` / `dsd_analog_rx_playback_end()`. The same header holds the CTCSS timing
   contract in sample time: p95 targets `DSD_ANALOG_CTCSS_LOCK_P95_MS` (400) and `DSD_ANALOG_CTCSS_LOSS_P95_MS` (350) and
   per-event ceilings `DSD_ANALOG_CTCSS_LOCK_CEILING_MS` (700) and `DSD_ANALOG_CTCSS_LOSS_CEILING_MS` (800).
@@ -621,7 +659,12 @@ installs from `src/engine/trunk_tuning.c` in `src/engine/trunk_tuning_hooks_inst
   `symbol_apply_unsynced_filters()`, whose in-place `hpf_f` (960 Hz) and `pbf_f` would remove every CTCSS tone. The
   block is 20 ms on RTL but 960 samples on PCM at any rate (384 ms at 2500 Hz), and read only at block ends the
   publication would trail the sample-time contract by up to a block. One decoder-thread tap covers RTL and PCM, sees
-  only live (not seam-replayed) samples, only reads the block, and runs whatever `audio_out` says. It is active only
+  only live (not seam-replayed) samples, only reads the block, and runs whatever `audio_out` says.
+  `symbol_output_unsynced_analog()` is its monitor gate, sink and carrier stamp (issue #526): the stamp that holds a
+  -Y row under the hangtime rule follows the tap's `carrier_open` while the analog FM monitor runs, whether or not
+  the block plays (the `-8` monitor under digital decoding keeps stamping only what it plays), and the gate writes
+  nothing while a retune is in flight (`dsd_trunk_tuning_pending_request()`) or from a block that began before a
+  retune, profile change or reset the tap noticed (`dsd_analog_rx_block_straddles_boundary()`). It is active only
   while `dsd_analog_tone_detection_active()` (runtime, above) says so: the analog FM monitor on PCM input or on RTL with
   an AUDIO_MONITOR output kind. The rate comes from the RTL output-rate hook or `dsd_opts_current_input_timing_rate()`.
   The sync hunt keeps that output kind: the analog family stands the modulation auto-switch down, and in analog-only
@@ -1374,6 +1417,13 @@ External dependencies (resolved via CMake):
   `ENGINE_CHANNEL_SCAN`, `ENGINE_TRUNK_SCAN` (levels and pushes per row and target), `ENGINE_SCAN_SQUELCH_GATE` and
   `ENGINE_CHANNEL_SCAN_SQUELCH_GATE` (trunk-scan targets and `-Y` rows through the production frame-sync power gate),
   `APP_COMMAND_QUEUE`, and the `DECODE_IQ_SCAN_NXDN48_SQUELCH_*` replays (a row through the real demod gate).
+- `DSD_SCAN_OPT_BANDWIDTH` (`--nfm-bandwidth-hz`, issue #526) is an analog row option: `ANALOG_MODES` (the analog
+  classes) keep it off digital and blank rows, which are told `needs mode nfm` (`option_mode_allowed()` names the
+  analog classes an analog-only switch serves), while `ANY_MODES` (digital plus analog) carries `--squelch-db` and
+  `--scan-max-visit-ms` onto analog rows and every other switch stays `DIGITAL_MODES`. The value is whole Hz in the
+  NFM range (`dsd_analog_width_parse()`); `dsd_scan_option_width_check()` holds it to a DSP rate with the validator's
+  message. Unlike squelch it is an acquisition setting (see Per-channel decoder modes), so a width change restages a
+  parked row and the configured width is never replaced by a row's in the configured view.
 - Adding a row option: add the `DSD_SCAN_OPT_*` bit (reserved values only), a `dsd_scan_option_values` field and a
   `specifications[]` row with its setter in `runtime/scan_options.c` (use `ANY_MODES` only for options that mean the
   same on every class); add a `scan_option_appliers[]` row in `runtime/scan_mode.c`; if it lands in `dsd_opts`, add

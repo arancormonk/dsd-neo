@@ -603,9 +603,13 @@ last sync. NXDN's additional grace period is described below.
 | `Qualify` | synced under `--scan-voice-only`, no allowed voice yet | the qualify window |
 | `Idle dwell` | nothing holds the row | the idle dwell |
 | `Hangtime` | `-Y` without `--scan-voice-only`: waiting out `-t` since the last sync | next whole second after `-t` |
+| `Carrier` | an analog (`nfm`) row's carrier is open: squelch open, whether or not audio plays | `-Y`: the hangtime window; trunk scan: the activity hold |
 
 Which phrases you can see depends on the protocol: an NXDN trunked target has no state machine to report control
-acquisition, so it never reads `Acquiring control`.
+acquisition, so it never reads `Acquiring control`. An analog `nfm` row never reads `Voice`, `Voice tail` or
+`Qualify`, since the voice gate does not apply to it: it reads `Carrier` while its carrier holds it, then `Hangtime`
+(`-Y`) or `Activity hold` (trunk scan) for the tail. While a typed scan row is on air, the decoder picker's label
+names its class beside the configured mode, `Mode... [DMR; scan nfm]`.
 
 The values that follow are the *effective* ones for the row on air, after CSV and option overrides:
 

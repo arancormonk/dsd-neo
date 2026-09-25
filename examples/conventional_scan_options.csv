@@ -5,3 +5,4 @@ channel,frequency_hz,name,mode,options
 4,472000000,Clear P25 example,p25,--no-force-key --strict-crc --scan-max-visit-ms 15000 --squelch-db -60
 5,456425000,NXDN scrambler example,nxdn48,-R 1 --no-force-key
 6,462637500,Squelch off example,dmr,--squelch-db 0
+7,154430000,Analog NFM 12.5 kHz example,nfm,--nfm-bandwidth-hz 12500 --squelch-db -60 --scan-max-visit-ms 30000

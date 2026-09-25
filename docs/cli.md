@@ -798,9 +798,14 @@ is delayed.
   "hops" to the same frequency, ending the call as an explicit hop rather than moving the receiver, and a low `-t`
   already steps a quiet row about a second after
   its last sync, so the cap only changes what happens on a row that keeps syncing.
-  Optional channel-map `mode` values select `p25`, `dmr`, `nxdn96`, `nxdn48`, `dpmr`, `dstar`, `ysf`, or `m17` for
-  each row. See [the mixed-mode example](../examples/conventional_scan_modes.csv). Declared rows work even when
-  excluded by the global preset; blank rows inherit it. Modes take effect at the first scheduled row entry, including
+  Optional channel-map `mode` values select `p25`, `dmr`, `nxdn96`, `nxdn48`, `dpmr`, `dstar`, `ysf`, `m17`, or
+  `nfm` (analog narrowband FM) for each row. See [the mixed-mode example](../examples/conventional_scan_modes.csv).
+  Declared rows work even when excluded by the global preset; blank rows inherit it. An `nfm` row runs the analog
+  monitor at its own `--nfm-bandwidth-hz` width (the row's `options`) or the configured one, switching the receiver
+  between the analog monitor and the digital decoder at each row without reopening the device, and holds under
+  `-t` for as long as its carrier (squelch open) lasts, whether or not audio is played: `-o null` and a muted frontend
+  no longer let the scanner leave an active analog row. `--scan-voice-only` never applies to an `nfm` row. Details
+  and the options an analog row accepts: [csv-formats.md](csv-formats.md#analog-rows). Modes take effect at the first scheduled row entry, including
   manual `L` cycling. Existing dwell and voice-hold defaults remain unchanged.
   The open audio sink retains its rate/channel count while logical DMR slot decoding may change. Global mode and
   modulation commands update the saved configuration, and exiting scanning restores it.
@@ -811,7 +816,8 @@ is delayed.
 - Single-tuner trunk scan mode: `--trunk-scan <targets.csv>`
   - Rotates one tuner across CSV-defined P25 trunk, P25 conventional (`p25-conventional`), DMR trunk, DMR
     conventional, NXDN trunk (`nxdn-trunk` NXDN96, `nxdn48-trunk` NXDN48), NXDN96 conventional
-    (`nxdn-conventional`) and NXDN48 conventional (`nxdn48-conventional`) targets. Full guide: `docs/trunk-scan.md`.
+    (`nxdn-conventional`), NXDN48 conventional (`nxdn48-conventional`) and analog NFM conventional
+    (`nfm-conventional`, held on carrier) targets. Full guide: `docs/trunk-scan.md`.
   - Requires a live retuning path: RTL-family input opened by DSD-neo, or rigctl control such as `-U 4532`.
   - Use per-target `chan_csv` (and `p25_bandplan_csv`) entries in the target CSV; leave both empty on conventional
     rows, including `p25-conventional`. Global `-C` and `--p25-bandplan` are rejected in this mode. P25 trunk targets
