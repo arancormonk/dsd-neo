@@ -424,6 +424,25 @@ Rdio API uploads do not follow HTTP redirects. Configure `rdio_api_url` as the f
 | `iq_balance` | BOOL | Enable RTL IQ balance (image suppression) | `false` |
 | `iq_dc_block` | BOOL | Enable RTL I/Q DC blocker | `false` |
 
+**[analog] section:**
+| Key | Type | Description | Default |
+|-----|------|-------------|---------|
+| `nfm_bandwidth_hz` | INT (8000-25000) | NFM channel-filter width in whole Hz: the full RF passband the analog monitor (`decode = "analog"`) keeps, not the tuner, DSP or audio bandwidth. Same as `--nfm-bandwidth-hz` | (unset: `16000`) |
+
+The `[analog]` keys are written only when set explicitly: a save leaves `nfm_bandwidth_hz` out while the default is in
+force, so the key left out and the default are the same thing, and a later default reaches the config. An explicit
+`16000` is saved, because it differs from the default in one way: an explicit width always runs the channel filter,
+while the unset default keeps the historical rule and runs it only at DSP rates of 20 kHz or more. A section that is
+present sets every key it owns, so an `[analog]` section whose width the loader refused leaves the default.
+
+A value outside 8000-25000, or anything but whole Hz (`12.5k`, `12500Hz`), is refused, never clamped: startup logs a
+warning and keeps the default, and `--validate-config` reports an error with the same text the CLI prints. With
+`[input] source = "rtl"` or `"rtltcp"` and `[mode] decode = "analog"`, `--validate-config` also reports an error when
+the width does not fit the DSP rate `rtl_bw_khz` gives (for example `25000` needs `rtl_bw_khz = 48`; see the DSP-rate
+table in `docs/cli.md`, Analog reception). The width applies live when a config is loaded into a running analog
+session, and a width the running front end refuses leaves the whole config unapplied. Scan rows do not carry a width
+yet, so the configured width is what a save writes.
+
 Note: The defaults shown match the generated template (`--dump-config-template`).
 Missing keys generally mean “leave the engine default unchanged”; some input
 sources require specific keys to actually switch the input at startup (see
@@ -435,7 +454,8 @@ Notes on Input Sources).
 
 The config system validates files and reports issues with line numbers:
 
-- **Error**: Invalid enum value, type mismatch, parse failure
+- **Error**: Invalid enum value, type mismatch, parse failure, an `[analog]` width outside its range or one the
+  configured RTL DSP bandwidth cannot filter
 - **Warning**: Unknown key or section, integer out of range
 
 ```bash

@@ -151,6 +151,39 @@ Enable rule and validation:
   other rate twice (a 1 kHz tone recorded at 78,125 Hz played back at 1628 Hz,
   in 0.61 of its duration).
 
+### Setting The Width
+
+The configured NFM width (`dsd_opts::analog_nfm_bandwidth_hz`, 0 for the
+default) comes from `--nfm-bandwidth-hz`, `[analog] nfm_bandwidth_hz`, the
+terminal's NFM bandwidth row and the Qt Radio sheet, the last two through
+`DSD_APP_CMD_NFM_BANDWIDTH_SET` (user docs: `docs/cli.md`, Analog reception).
+Every entry point refuses rather than clamps, and the checks sit where the rate
+is known:
+
+- The CLI and the INI loader take whole Hz in range only
+  (`dsd_analog_width_parse()`); `--validate-config` reports the same text as an
+  error.
+- For RTL-SDR and rtl_tcp inputs the DSP rate is the DSP bandwidth, so engine
+  setup checks an explicit width against it once the input spec is parsed,
+  before the device opens (`--validate-config` does the same for a config
+  whose input is `rtl`/`rtltcp` and whose decode mode is `analog`). SoapySDR and
+  Airspy devices can force another rate and IQ replay takes the capture's, so
+  for them the stream-start check above is the only one.
+- The command checks a width the analog preset uses against the running
+  stream (`rtl_stream_check_analog_profile()`), or with no stream against an
+  RTL-SDR/rtl_tcp input's DSP bandwidth, and on a front end that runs the
+  monitor requests it live (`rtl_stream_request_analog_profile()`): a
+  width-only change. Under a typed digital scan row it is stored and applied
+  when the row's leave republishes the analog profile. A config apply that
+  changes the width is held to the same check, and a refusal leaves the whole
+  config unapplied.
+- `DSD_APP_CMD_RTL_SET_BW` refuses a DSP bandwidth that the explicit width of
+  the configured analog preset cannot run at on an RTL-SDR or rtl_tcp input,
+  naming both; the width is never adjusted to fit the new rate.
+
+The channel squelch measures power after the channel filter, so its noise
+floor moves with the width (about 3 dB per halving).
+
 ### State Hygiene
 
 - De-emphasis and audio-LPF coefficients are recomputed from stored settings
@@ -380,6 +413,16 @@ invariant to it, so it is left as is.
   replay publishes, that a tone captured at 78,125 Hz reaches the output once,
   at 48 kHz and at its own frequency, and that a `-fA` replay switched to DMR
   through the stream API runs the FSK discriminator and returns to the monitor.
+- The configured width (issue #525): `RUNTIME_CLI_PARSE`, `CONFIG_VALIDATION`
+  and `RUNTIME_CONFIG_USER` cover the option, the `[analog]` key and their
+  refusals; `RUNTIME_ANALOG_WIDTH_RATE_REFUSED` the startup refusal of a width
+  an rtl_tcp input's DSP bandwidth cannot filter; `APP_COMMAND_QUEUE` and
+  `UI_MENU_SERVICES` the command's live request and refusals, a config apply's
+  width, scan rows, and the DSP bandwidth refusal. `DECODE_IQ_ANALOG_NFM_TONE_8K`,
+  `_16K` and `_25K` show the 1 kHz tone keeping its level through each width
+  (the explicit 16 kHz equal to the default), and `DECODE_IQ_ANALOG_NFM_BW_8K`
+  and `_25K` that the neighbour 12.5 kHz away is rejected at 8 kHz (-79.5 dBc)
+  and inside the passband at 25 kHz (-8.2 dBc).
 
 Run the focused audit checks with:
 

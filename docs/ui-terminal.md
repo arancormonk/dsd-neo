@@ -79,13 +79,13 @@ Main Menu
 │       ├── Frequency... [769.768750 MHz]
 │       ├── Gain... [AGC]
 │       ├── PPM correction... [0]                { }
-│       ├── Bandwidth... [48 kHz]
+│       ├── DSP bandwidth... [48 kHz]
+│       ├── NFM bandwidth... [default 16 kHz]    (-fA on a radio input)
 │       ├── Squelch (dB)...
 │       ├── Volume multiplier... [1]             v
 │       ├── Auto-PPM [On]
 │       ├── Tuner autogain [On]
 │       ├── Bias tee [Off]
-│       ├── rtl_tcp adaptive buffering [On]
 │       ├── ─────
 │       ├── Device index...
 │       ├── Restart stream
@@ -96,6 +96,7 @@ Main Menu
 │       │   ├── Auto-PPM zero-lock Hz... [60]
 │       │   ├── Auto-PPM freeze [Off]
 │       │   ├── ─────
+│       │   ├── rtl_tcp adaptive buffering [On]
 │       │   ├── rtl_tcp prebuffer... [30 ms]
 │       │   ├── rtl_tcp SO_RCVBUF... [system default]
 │       │   ├── rtl_tcp SO_RCVTIMEO... [Off]
@@ -390,6 +391,14 @@ reads the same way after the measured power, and the DSP panel's `Squelch` line 
 `(row)`. Enable the DSP panel when you
 need to inspect post-channel-filter squelch power. `RF Level` and `Squelch` are measured at different stages and are not
 expected to match exactly.
+
+`DSP-BW:` on the RTL input line is the DSP bandwidth, the demodulator's sample rate that `DSP bandwidth...` sets. Under
+`-fA` the line also shows the analog channel width in force beside it, `Analog: NFM 12.5 kHz;`: the width the front
+end reports while it runs the analog monitor, otherwise the configured one (the 16 kHz default when none is set). It
+reads `Analog: NFM 10.8 kHz (DSP-limited);` when the DSP rate rather than the channel filter bounds the channel, which
+is what the unset default does below a 20 kHz DSP rate. `NFM bandwidth...` takes any width from 8000 to 25000 Hz, or
+`0` for the default, and applies it live; a width the DSP rate cannot filter is refused with a message naming both,
+and so is a `DSP bandwidth...` value the explicit NFM width cannot run at (see `docs/cli.md`, Analog reception).
 
 The low-level threshold is controlled by `--input-level-warn-db`, `DSD_NEO_INPUT_WARN_DB`, or the `[input]`
 `input_warn_db` user-config key, and defaults to `-40 dBFS`. Changes made through the terminal menu persist through
