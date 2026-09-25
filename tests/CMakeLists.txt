@@ -11226,11 +11226,13 @@ if(DSD_HAS_RADIO)
         "Received tone: DCS D023N.*Received tone: none"
         "Received tone: (CTCSS|DCS D([1-7][0-7][0-7]|0[013-7][0-7]|02[0-24-7])[NI]|DCS D023I)"
     )
-    # Voice with no code: positively "none", and never a code.
+    # Voice with no code through the narrowest NFM channel: positively "none", and never a
+    # code. DECODE_IQ_ANALOG_CTCSS_NOTONE covers the same voice at the default width, which
+    # fails on a code too, so this case replays it through another channel filter.
     dsd_neo_add_iq_decode_test(
         DECODE_IQ_ANALOG_DCS_NOCODE
         nfm_notone_synth
-        -fA
+        "-fA --nfm-bandwidth-hz 8000"
         "Received tone: none"
         "Received tone: DCS"
     )

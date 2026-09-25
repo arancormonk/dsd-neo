@@ -527,7 +527,9 @@ pin against the published words, so the fixtures are correct by construction. No
   D023N and, the code words being at least 7 bits apart, at least 5 from every other); it must log `none` and never a
   code or a tone.
 - `_DROP`: the code stops at 1.2 s with no turn-off tone while the carrier and voice carry on: D023N, then `none`.
-- `_NOCODE`: `nfm_notone_synth`, voice with no code: `none`, never a code.
+- `_NOCODE`: `nfm_notone_synth` through the narrowest NFM channel (`--nfm-bandwidth-hz 8000`), voice with no code:
+  `none`, never a code. `DECODE_IQ_ANALOG_CTCSS_NOTONE`, which fails on a code too, replays the same voice at the
+  default width.
 
 The CTCSS cases and the off-air cases fail on any DCS code too, so none of the tone fixtures, the squelch captures'
 150 bit/s data or AM airband voice reads as a code. `DECODE_IQ_ANALOG_DCS_023N_HOST` and `_023I_HOST` replay the two
