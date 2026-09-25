@@ -41,6 +41,7 @@
 #include <dsd-neo/engine/channel_scan.h>
 #include <dsd-neo/engine/frame_processing.h>
 #include <dsd-neo/engine/scan_voice_gate.h>
+#include <dsd-neo/engine/trunk_scan.h>
 #include <dsd-neo/io/control.h>
 #include <dsd-neo/io/rigctl_client.h>
 #include <dsd-neo/io/rtl_stream_c.h>
@@ -64,6 +65,7 @@
 #include <dsd-neo/runtime/freq_parse.h>
 #include <dsd-neo/runtime/log.h>
 #include <dsd-neo/runtime/scan_mode.h>
+#include <dsd-neo/runtime/scan_options.h>
 #include <dsd-neo/runtime/telemetry.h>
 #include <dsd-neo/runtime/trunk_cc_candidates.h>
 #include <dsd-neo/runtime/trunk_scan_hooks.h>
@@ -5334,37 +5336,82 @@ cfg_check_analog_width(const dsd_opts* opts, dsd_state* state, int reopen_bw_khz
 }
 
 /*
+ * An explicit NFM width @p width_hz the session runs once the config is applied, held to the rate it will run at
+ * whenever the config changes it, reopens an RTL-SDR or rtl_tcp device under it (cfg_radio_reopen()) or, with
+ * @p onto_monitor, moves the session onto the monitor with it. A config that reopens a SoapySDR or Airspy device instead
+ * runs the width at the rate that device delivers, which neither the running stream's rate nor rtl_bw_khz says: the
+ * reopened stream's start checks it there (rtl_demod_finalize_analog_channel()), as it does for Input > Switch source >
+ * RTL-SDR over a SoapySDR input.
+ */
+static int
+cfg_hold_nfm_width(const dsd_opts* opts, dsd_state* state, const dsdneoUserConfig* cfg, int width_hz,
+                   int onto_monitor) {
+    const cfg_reopen_kind reopen = cfg_radio_reopen(opts, cfg);
+    if (reopen == CFG_REOPEN_AT_DEVICE_RATE) {
+        /* No rate to hold it to before the device opens, but the rules every rate shares still apply. */
+        char why[128];
+        if (svc_check_nfm_bandwidth_at_device_rate(width_hz, why, sizeof why) == 0) {
+            return UI_CMD_APPLY_COMPLETED;
+        }
+        ui_set_toast(state, 5, "Config not applied: %s", why);
+        return UI_CMD_APPLY_FAILED;
+    }
+    const int reopen_bw_khz = (reopen == CFG_REOPEN_AT_RTL_BW) ? cfg_reopen_rtl_bw_khz(opts, cfg) : 0;
+    const int holds = width_hz != opts->analog_nfm_bandwidth_hz || reopen_bw_khz > 0 || onto_monitor;
+    return holds ? cfg_check_analog_width(opts, state, reopen_bw_khz, width_hz) : UI_CMD_APPLY_COMPLETED;
+}
+
+/*
+ * A config apply is scoped: while it runs, dsd_opts holds the configured options, but the stream a reopen starts runs
+ * the scan row on air again once the scope resumes. An nfm row's own width (--nfm-bandwidth-hz, issue #526) is
+ * therefore held to the rate a reopened device runs at, as RTL_SET_BW and Input > Switch source hold it: a reopen that
+ * cannot filter it leaves the whole config unapplied, rather than the row refused where it lands. A config that reopens
+ * nothing moves no rate.
+ */
+static int
+cfg_check_scan_row_width(const dsd_opts* opts, dsd_state* state, const dsdneoUserConfig* cfg) {
+    const dsd_scan_option_values* row = dsd_scan_mode_row_options(state);
+    if (!row || !(row->present & DSD_SCAN_OPT_BANDWIDTH) || row->channel_bw_hz <= 0) {
+        return UI_CMD_APPLY_COMPLETED;
+    }
+    const cfg_reopen_kind reopen = cfg_radio_reopen(opts, cfg);
+    char why[128];
+    int rc = 0;
+    if (reopen == CFG_REOPEN_AT_RTL_BW) {
+        rc = svc_check_nfm_bandwidth_for_rtl_bw(row->channel_bw_hz, cfg_reopen_rtl_bw_khz(opts, cfg), why, sizeof why);
+    } else if (reopen == CFG_REOPEN_AT_DEVICE_RATE) {
+        rc = svc_check_nfm_bandwidth_at_device_rate(row->channel_bw_hz, why, sizeof why);
+    }
+    if (rc == 0) {
+        return UI_CMD_APPLY_COMPLETED;
+    }
+    ui_set_toast(state, 5, "Config not applied: %s", why);
+    return UI_CMD_APPLY_FAILED;
+}
+
+/*
  * Asked before anything changes, as DSD_APP_CMD_DECODE_MODE_SET asks. A config that leaves the -fA monitor on an
- * explicit NFM width is held to the rate that width will run at whenever it changes the width, reopens an RTL-SDR or
- * rtl_tcp device under it (cfg_radio_reopen()) or moves the session onto the monitor with it (under a scan row too),
- * as the width command and RTL_SET_BW hold it. A config that reopens a SoapySDR or Airspy device instead runs the width
- * at the rate that device delivers, which neither the running stream's rate nor rtl_bw_khz says: the reopened stream's
- * start checks it there (rtl_demod_finalize_analog_channel()), as it does for Input > Switch source > RTL-SDR over a
- * SoapySDR input. With the unset default, which no rate refuses, a [mode] that moves a running RTL session onto the
- * monitor publishes the analog receive profile (apply_cfg_receive_family_change()), and a front end that would refuse
- * it (logged with the reason) leaves the whole config unapplied, instead of an Analog decoder on a digital front end.
+ * explicit NFM width is held to the rate that width will run at (cfg_hold_nfm_width()), under a scan row too, as the
+ * width command and RTL_SET_BW hold it. So is one that leaves the session digital while the scan has an nfm row or
+ * target that runs the configured width (issue #526), and an nfm row's own width on air (cfg_check_scan_row_width()).
+ * With the unset default, which no rate refuses, a [mode] that moves a running RTL session onto the monitor publishes
+ * the analog receive profile (apply_cfg_receive_family_change()), and a front end that would refuse it (logged with the
+ * reason) leaves the whole config unapplied, instead of an Analog decoder on a digital front end.
  */
 static int
 cfg_check_receive_family(const dsd_opts* opts, dsd_state* state, const dsdneoUserConfig* cfg) {
-    if (!cfg_analog_family_after(opts, cfg)) {
-        return UI_CMD_APPLY_COMPLETED;
+    const int row_rc = cfg_check_scan_row_width(opts, state, cfg);
+    if (row_rc != UI_CMD_APPLY_COMPLETED) {
+        return row_rc;
     }
     const int width_hz = cfg_nfm_width_after(opts, cfg);
+    if (!cfg_analog_family_after(opts, cfg)) {
+        return (width_hz > 0 && dsd_engine_scan_runs_configured_nfm_width(opts, state))
+                   ? cfg_hold_nfm_width(opts, state, cfg, width_hz, 0)
+                   : UI_CMD_APPLY_COMPLETED;
+    }
     if (width_hz > 0) {
-        const cfg_reopen_kind reopen = cfg_radio_reopen(opts, cfg);
-        if (reopen == CFG_REOPEN_AT_DEVICE_RATE) {
-            /* No rate to hold it to before the device opens, but the rules every rate shares still apply. */
-            char why[128];
-            if (svc_check_nfm_bandwidth_at_device_rate(width_hz, why, sizeof why) == 0) {
-                return UI_CMD_APPLY_COMPLETED;
-            }
-            ui_set_toast(state, 5, "Config not applied: %s", why);
-            return UI_CMD_APPLY_FAILED;
-        }
-        const int reopen_bw_khz = (reopen == CFG_REOPEN_AT_RTL_BW) ? cfg_reopen_rtl_bw_khz(opts, cfg) : 0;
-        const int holds =
-            width_hz != opts->analog_nfm_bandwidth_hz || reopen_bw_khz > 0 || !dsd_opts_is_analog_family(opts);
-        return holds ? cfg_check_analog_width(opts, state, reopen_bw_khz, width_hz) : UI_CMD_APPLY_COMPLETED;
+        return cfg_hold_nfm_width(opts, state, cfg, width_hz, !dsd_opts_is_analog_family(opts));
     }
     if (!cfg->has_mode || opts->analog_only || opts->analog_nfm_bandwidth_hz != 0
         || svc_check_mode_receive_profile(opts, state, cfg->decode_mode) == 0) {

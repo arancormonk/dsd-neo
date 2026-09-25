@@ -288,8 +288,9 @@ void svc_describe_nfm_refusal(const dsd_opts* opts, int width_hz, char* why, siz
  * @brief Set the configured NFM channel width (DSD_APP_CMD_NFM_BANDWIDTH_SET), live when the analog monitor runs.
  *
  * Refuses, and changes nothing, a width outside 0 or 8000..25000 Hz, and, while the configured NFM preset uses the
- * width (the scan scope's configured view, so a typed digital scan row on an analog session still holds it) or an nfm
- * scan row without a width of its own runs it, one the front end would refuse (svc_check_nfm_bandwidth()). The command
+ * width (the scan scope's configured view, so a typed digital scan row on an analog session still holds it), an nfm
+ * scan row without a width of its own runs it, or the scan has such a row or target to visit
+ * (dsd_engine_scan_runs_configured_nfm_width()), one the front end would refuse (svc_check_nfm_bandwidth()). The command
  * edits the configured width through dsd_scan_mode_set_configured_nfm_bandwidth() rather than suspending a row's scope,
  * so it never disturbs the acquisition a row has made; an nfm row's own width (--nfm-bandwidth-hz, issue #526) stays in
  * force until the row leaves, and the edit reaches the front end with the next row that takes the configured width or
@@ -400,7 +401,9 @@ int svc_rtl_enable_input(dsd_opts* opts, dsd_state* state);
  * (rtl_dsp_bw_khz) gives the device the switch opens: an RTL-SDR from an Airspy spec, "pulse" or any other device
  * string, rtl_tcp from an rtl_tcp spec. The switch is unscoped, so the stream it opens starts on the settings in
  * force: while an nfm scan row runs the analog family (issue #526), the explicit width in force there, the row's own
- * --nfm-bandwidth-hz or, on a digital session, the configured NFM width the row runs, must fit that rate as well. A
+ * --nfm-bandwidth-hz or, on a digital session, the configured NFM width the row runs, must fit that rate as well. On a
+ * digital session the configured NFM width is held while the scan has an nfm row or target without a width of its own
+ * to visit (dsd_engine_scan_runs_configured_nfm_width()), whichever row is on air. A
  * SoapySDR or I/Q replay input is reopened at a rate its device or capture sets, which its start checks. The unset
  * default is never refused. An explicit width is refused, whatever the rate, while DSD_NEO_CHANNEL_LPF=0 turns the
  * channel filter off. A rate refusal's reason names the width, the rate, the widest width it filters and the DSP
@@ -440,10 +443,11 @@ int svc_rtl_set_gain(dsd_opts* opts, dsd_state* state, int value);
  *
  * An unsupported value becomes 48. A bandwidth an explicit analog channel width in use cannot run at, on an RTL-SDR
  * or rtl_tcp input, whose DSP rate this sets, is refused and nothing changes: the width is never clamped to fit. The
- * widths held to it are the configured analog preset's (a typed digital scan row on an analog session included) and,
- * since the reopened stream starts on the settings in force, the width in force while an nfm scan row runs the analog
- * family (issue #526): the row's own --nfm-bandwidth-hz, or on a digital session the configured NFM width the row
- * runs. @p why receives a short reason naming both values, the widest width the bandwidth filters and the fix on that
+ * widths held to it are the configured analog preset's (a typed digital scan row on an analog session included), on
+ * any other session the configured NFM width while the scan has an nfm row or target without a width of its own to
+ * visit (issue #526, dsd_engine_scan_runs_configured_nfm_width()), and, since the reopened stream starts on the
+ * settings in force, the width in force while an nfm scan row runs the analog family: the row's own
+ * --nfm-bandwidth-hz, or on a digital session the configured NFM width the row runs. @p why receives a short reason naming both values, the widest width the bandwidth filters and the fix on that
  * refusal (may be NULL): narrow the width first, or, for a scan row's own width, which the width controls do not edit,
  * keep a wider DSP bandwidth ("DSP BW 12 kHz cannot filter the scan row's NFM 12.5 kHz (max 9.6 kHz); keep a wider DSP
  * bandwidth"). The validator's full text is logged. The reopen is also refused while DSD_NEO_CHANNEL_LPF=0 turns off

@@ -7195,6 +7195,153 @@ test_nfm_width_changes_held_to_channel_lpf_off(void) {
     return rc;
 }
 
+/* A -Y channel map of a DMR row and an nfm row (row 1), the nfm row with its own width when @p row_width_hz > 0. */
+static void
+load_dmr_and_nfm_rows(dsd_state* state, int row_width_hz) {
+    state->lcn_freq_count = 2;
+    state->trunk_lcn_freq[0] = 851012500L;
+    state->trunk_lcn_freq[1] = 154430000L;
+    (void)dsd_channel_mode_set(state, 0, DSD_SCAN_MODE_DMR);
+    (void)dsd_channel_mode_set(state, 1, DSD_SCAN_MODE_NFM);
+    dsd_scan_row_profile* profile = NULL;
+    if (row_width_hz > 0 && dsd_scan_profile_ensure(&profile) == 0) {
+        profile->values.present = DSD_SCAN_OPT_BANDWIDTH;
+        profile->values.channel_bw_hz = row_width_hz;
+    }
+    if (dsd_channel_profile_set(state, 1, profile) != 0) {
+        dsd_scan_profile_free(profile);
+    }
+}
+
+/*
+ * Issue #526: on a digital session an nfm scan row without a width of its own runs the configured NFM width whenever it
+ * comes on air, so while the scan has one the configured width is in use, whichever row is on air: the width command
+ * and a config holding [analog] hold an edit to the front end's rate, and a DSP bandwidth that cannot filter the width
+ * is refused, as they are under -fA. Otherwise the same edit made while the DMR row is on air was accepted and the nfm
+ * row skipped at every visit. The rows that set their own width, and a scanner that is not running, hold nothing.
+ */
+static int
+test_scan_list_holds_the_configured_nfm_width(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static void* fake_ctx[2];
+    int rc = 0;
+    init_dmr_session_with_nfm_width(&opts, &state, (RtlSdrContext*)fake_ctx, 12500);
+    load_dmr_and_nfm_rows(&state, 0);
+    opts.scanner_mode = 1;
+
+    g_analog_check_result = -1; /* 16 kHz does not fit the 16 kHz DSP rate (max 13.2 kHz) */
+    rc |= submit_nfm_width(&opts, &state, 16000, "scan list: unfit width");
+    rc |= expect_int("scan list: unfit width refused", opts.analog_nfm_bandwidth_hz, 12500);
+    rc |= expect_int("scan list: held to the front end", g_analog_check_calls == 1 && g_analog_check_width_hz == 16000,
+                     1);
+    rc |= expect_toast("scan list: refusal names the rate", &state,
+                       "Refused: NFM 16 kHz does not fit the 16 kHz DSP rate (max 13.2 kHz)");
+
+    reset_rx_family_wrap();
+    g_analog_check_result = -1;
+    rc |= submit_config_nfm_width(&opts, &state, DSDCFG_MODE_UNSET, 16000, "scan list: config width");
+    rc |= expect_int("scan list: config width not applied", opts.analog_nfm_bandwidth_hz, 12500);
+    rc |= expect_toast("scan list: config toast", &state,
+                       "Config not applied: NFM 16 kHz does not fit the 16 kHz DSP rate (max 13.2 kHz)");
+    reset_rx_family_wrap();
+    rc |= submit_config_nfm_width(&opts, &state, DSDCFG_MODE_UNSET, 12500, "scan list: config same width");
+    rc |= expect_int("scan list: the same width asks nothing", g_analog_check_calls, 0);
+    rc |= submit_config_nfm_width(&opts, &state, DSDCFG_MODE_UNSET, 11250, "scan list: config fitting width");
+    rc |= expect_int("scan list: fitting config width applied", opts.analog_nfm_bandwidth_hz, 11250);
+    rc |= expect_int("scan list: fitting config width held", g_analog_check_width_hz, 11250);
+    rc |= expect_int("scan list: digital session kept", opts.analog_only, 0);
+
+    /* The DSP bandwidth is held to the configured width too (on the options alone: no restart). */
+    opts.audio_in_type = AUDIO_IN_NULL;
+    DSD_SNPRINTF(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", "rtl:0:851.375M");
+    (void)dsd_app_command_set_i32(DSD_APP_CMD_RTL_SET_BW, 12);
+    state.ui_msg[0] = '\0';
+    (void)dsd_app_drain_cmds(&opts, &state);
+    rc |= expect_int("scan list: unfit DSP bandwidth refused", opts.rtl_dsp_bw_khz, 16);
+    rc |= expect_toast("scan list: DSP bandwidth toast", &state,
+                       "Refused: DSP BW 12 kHz cannot filter NFM 11.25 kHz (max 9.6 kHz); narrow the NFM width first");
+    opts.audio_in_type = AUDIO_IN_RTL;
+    DSD_SNPRINTF(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", "rtl:0:851.375M:0:0:16");
+
+    /* The nfm row with a width of its own does not run the configured one. */
+    load_dmr_and_nfm_rows(&state, 12500);
+    reset_rx_family_wrap();
+    g_analog_check_result = -1;
+    rc |= submit_nfm_width(&opts, &state, 16000, "own width row: width");
+    rc |= expect_int("own width row: not held", g_analog_check_calls, 0);
+    rc |= expect_int("own width row: stored", opts.analog_nfm_bandwidth_hz, 16000);
+
+    /* Nor does a map the scanner is not running. */
+    load_dmr_and_nfm_rows(&state, 0);
+    opts.scanner_mode = 0;
+    reset_rx_family_wrap();
+    g_analog_check_result = -1;
+    rc |= submit_nfm_width(&opts, &state, 20000, "scanner off: width");
+    rc |= expect_int("scanner off: not held", g_analog_check_calls, 0);
+    rc |= expect_int("scanner off: stored", opts.analog_nfm_bandwidth_hz, 20000);
+
+    g_analog_check_result = 0;
+    dsd_channel_modes_clear(&state);
+    (void)dsd_channel_profile_set(&state, 1, NULL);
+    state.lcn_freq_count = 0;
+    opts.analog_nfm_bandwidth_hz = 0;
+    state.rtl_ctx = NULL;
+    freeState(&state);
+    return rc;
+}
+
+/*
+ * Issue #526: a config apply is scoped, so the options it sees are the configured ones, but the stream its [input]
+ * reopens runs the nfm scan row on air again once the scope resumes. The row's own width is therefore held to the rate
+ * the reopened RTL-SDR runs at, as RTL_SET_BW holds it: a DSP bandwidth that cannot filter it leaves the whole config
+ * unapplied and the running stream in place, rather than the row refused where it lands. One that can reopens.
+ */
+static int
+test_config_apply_holds_a_scan_row_width_to_a_reopen(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static void* fake_ctx[2];
+    int rc = 0;
+    init_dmr_session_with_nfm_width(&opts, &state, (RtlSdrContext*)fake_ctx, 0);
+    DSD_SNPRINTF(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", "rtl:0:154.43M:0:0:24");
+    opts.rtl_dsp_bw_khz = 24;
+    dsd_scan_option_values row = {0};
+    row.present = DSD_SCAN_OPT_BANDWIDTH;
+    row.channel_bw_hz = 20000;
+    rc |= expect_int("row reopen: nfm row", dsd_scan_mode_enter(&opts, &state, DSD_SCAN_MODE_NFM), 0);
+    rc |= expect_int("row reopen: its width", dsd_scan_mode_options(&opts, &state, &row), 0);
+    rc |= expect_int("row reopen: in force", opts.analog_nfm_bandwidth_hz, 20000);
+
+    char dev_before[sizeof opts.audio_in_dev];
+    DSD_SNPRINTF(dev_before, sizeof dev_before, "%s", opts.audio_in_dev);
+    reset_rx_family_wrap();
+    rc |= submit_config_rtl_bw(&opts, &state, 16, -1, "row reopen: 24->16");
+    rc |= expect_int("row reopen 24->16: rate kept", opts.rtl_dsp_bw_khz, 24);
+    rc |= expect_str("row reopen 24->16: input unchanged", opts.audio_in_dev, dev_before);
+    rc |= expect_int("row reopen 24->16: stream kept", state.rtl_ctx == (RtlSdrContext*)fake_ctx, 1);
+    rc |= expect_toast("row reopen 24->16 toast", &state,
+                       "Config not applied: NFM 20 kHz does not fit the 16 kHz DSP rate (max 13.2 kHz); use a 24 or 48 "
+                       "kHz DSP bandwidth");
+    rc |= expect_int("row reopen 24->16: the row keeps its width",
+                     dsd_scan_mode_active(&state) == DSD_SCAN_MODE_NFM && opts.analog_nfm_bandwidth_hz == 20000, 1);
+    const dsd_scan_settings* configured = dsd_scan_mode_configured_view(&state);
+    rc |= expect_int("row reopen 24->16: the configured session kept",
+                     configured && configured->analog_only == 0 && configured->analog_nfm_bandwidth_hz == 0, 1);
+
+    /* No stream (the reopen's failure is the wrapped stream create's, not the width's): 24 -> 48 kHz applies. */
+    state.rtl_ctx = NULL;
+    rc |= submit_config_rtl_bw(&opts, &state, 48, -1, "row reopen: 24->48");
+    rc |= expect_int("row reopen 24->48: rate applied", opts.rtl_dsp_bw_khz, 48);
+    rc |= expect_int("row reopen 24->48: not refused", strstr(state.ui_msg, "Config not applied") == NULL, 1);
+
+    dsd_scan_mode_leave(&opts, &state);
+    opts.analog_nfm_bandwidth_hz = 0;
+    state.rtl_ctx = NULL;
+    freeState(&state);
+    return rc;
+}
+
 /*
  * A config saved at the default NFM width carries [analog] with no width under it, and loading it into a session that
  * has an explicit width puts the default back (and hands it to the running monitor), rather than keeping the explicit
@@ -7625,6 +7772,8 @@ main(void) {
     rc |= test_config_apply_holds_nfm_width_to_the_rate_the_reopen_runs_at();
     rc |= test_config_apply_leaves_a_soapy_or_airspy_reopen_to_its_start();
     rc |= test_config_apply_restores_the_default_nfm_width();
+    rc |= test_scan_list_holds_the_configured_nfm_width();
+    rc |= test_config_apply_holds_a_scan_row_width_to_a_reopen();
     rc |= test_nfm_width_waits_for_an_unsettled_cqpsk_toggle();
     rc |= test_nfm_width_refused_after_the_check();
     rc |= test_nfm_width_follows_a_queued_scan_leave();

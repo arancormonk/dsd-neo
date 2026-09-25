@@ -179,6 +179,16 @@ void dsd_engine_trunk_scan_nxdn_conventional_activity(const dsd_opts* opts, cons
 void dsd_engine_trunk_scan_p25_conventional_activity(const dsd_opts* opts, const dsd_state* state, uint32_t target,
                                                      uint32_t source, int is_private, int encrypted, int data_call);
 size_t dsd_engine_trunk_scan_target_count(const dsd_state* state);
+/**
+ * @brief Whether the scan running now visits an analog row that runs the configured NFM width (issue #526).
+ *
+ * True while the trunk-scan coordinator holds an nfm-conventional target, or the conventional -Y scanner runs a channel
+ * map with an nfm row, that sets no --nfm-bandwidth-hz of its own: such a row runs the configured NFM width whenever it
+ * is on air, on any session. The width controls, a loaded config, the RTL DSP bandwidth and Input > Switch source hold
+ * the configured width to the DSP rate while this holds, as they do under -fA, so a row is not skipped for a width an
+ * edit made while another row was on air. Read-only; 0 when @p opts or @p state is NULL.
+ */
+int dsd_engine_scan_runs_configured_nfm_width(const dsd_opts* opts, const dsd_state* state);
 int dsd_engine_trunk_scan_saved_tuner_autogain(const dsd_state* state, int* out_on);
 int dsd_engine_trunk_scan_active_p25_cqpsk_request(const dsd_state* state, int* out_enable);
 /**
