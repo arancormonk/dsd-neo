@@ -326,9 +326,10 @@ Tests: `tests/engine/test_engine_trunk_scan.c` (`ENGINE_TRUNK_SCAN`) and
 - State extension slots (`<dsd-neo/core/state_ext.h>`): engine owns 0, 1, 3 and 7; core 2, 4, 5, 8, 10 and 11;
   runtime 6; DSP 9 (`DSD_STATE_EXT_DSP_ANALOG_RX`, taken from the core range as runtime took 6 from the engine's), the
   analog receive working state. `CORE_STATE_EXT` pins slot 9.
-- API note: `dsd_state::analog_rx` (`dsd_analog_rx_publication` in `<dsd-neo/core/state.h>`, issue #522) is the
-  received-tone publication every frontend reads: int-only (`carrier_open`, `tone_kind`, `tone_state`,
-  `ctcss_tenths_hz`, `dcs_code` and `dcs_inverted` reserved for #523, `gate` reserved for #527 and always OFF, a
+- API note: `dsd_state::analog_rx` (`dsd_analog_rx_publication` in `<dsd-neo/core/state.h>`, issues #522 and #523) is
+  the received-tone publication every frontend reads: int-only (`carrier_open`, `tone_kind`, `tone_state`,
+  `ctcss_tenths_hz`, `dcs_code` (the code as its value, 023 octal = 19) and `dcs_inverted` for a DCS lock, always the
+  canonical member of the code's alias class, `gate` reserved for #527 and always OFF, a
   `generation` bumped by every reset, input switch and input-rate change, and `stale_after_ms`, the monotonic deadline
   past which the publication of an input that may pause (stdin, UDP, TCP, a live RTL-family radio stream) no longer
   describes the channel, 0 on inputs that never pause: files, Pulse and IQ replay).
@@ -456,7 +457,15 @@ Tests: `tests/engine/test_engine_trunk_scan.c` (`ENGINE_TRUNK_SCAN`) and
     the one answer to "does received-tone detection run": the analog FM monitor on PCM input, or on an RTL stream whose
     output kind (the stream-metrics hook) is monitor audio. The DSP tap and `app_control/rx_tone_view` both ask it, so
     a frontend row is shown exactly while the tap listens. `RUNTIME_ANALOG_TONES` pins the table value by value, and
-    the predicate case by case.
+    the predicate case by case. DCS (issue #523): the standard 104-code set, `dsd_dcs_word()` (any 9-bit code's 23-bit
+    Golay word: code, the fixed 100, 11 check bits; bit 0 sent first, a multiple of `0xC75`; inverted polarity is the
+    complement), `dsd_dcs_match()` (names the signal in 23 received bits when some rotation, in either polarity, is a
+    supported code's word), `dsd_dcs_canonical()` (the alias rule: normal polarity first, then the lowest code, so
+    every inverted standard code reads as its one normal alias, D023I as D047N) and the `D023N` / `DCS D023N`
+    formatters, leading zeros always. The DSP detector cannot link `dsd-neo_fec`, so runtime has its own encoder;
+    `DSP_ANALOG_DCS_GOLAY_XCHECK` checks every word against `Golay24.hpp` through the explicit layout mapping (reversed
+    23 bits; Golay24's encoding of the reversed data rotated left by 11) and `RUNTIME_ANALOG_TONES` pins the published
+    reference words and the golden alias table for all 104 codes.
   - RadioReference.com import client (`src/runtime/radioreference/`): SOAP envelope builder, expat response parser,
     worker-thread client with cancellation, and the generators that turn fetched systems into the channel-map and
     talkgroup CSVs `src/core/file/dsd_import.c` already parses. UI-agnostic C API in
@@ -678,14 +687,16 @@ installs from `src/engine/trunk_tuning.c` in `src/engine/trunk_tuning_hooks_inst
   reads the row's value from `dsd_scan_mode_row_options()`, so it is also right on the decoder thread while a command
   has the scope suspended. Test: `APP_CONTROL_SQUELCH_VIEW`.
   `include/dsd-neo/app_control/rx_tone_view.h` and `src/app_control/rx_tone_view.c` fold `dsd_state::analog_rx` into
-  the received-tone text (issue #522): hidden unless `dsd_analog_tone_detection_active()` says the tap listens
+  the received-tone text (issues #522, #523): hidden unless `dsd_analog_tone_detection_active()` says the tap listens
   (decided from the options and the RTL output kind, not from INACTIVE in the publication, so a reset does not blink
   the row) and hidden while the publication reads UNAVAILABLE (an input rate the front end cannot use, where an em
-  dash would claim no carrier), then `CTCSS 100.0 Hz`, `detecting`, `none` or an em dash (the terminal prints a hyphen
-  without UTF-8). Like the scan timing view it takes the caller's monotonic clock: a publication past its
+  dash would claim no carrier), then `CTCSS 100.0 Hz`, `DCS D023N`, `detecting`, `none` or an em dash (the terminal
+  prints a hyphen without UTF-8). Like the scan timing view it takes the caller's monotonic clock: a publication past its
   `stale_after_ms` deadline (a stdin, UDP or TCP producer that stopped sending, or a live radio stream whose source
   stopped, while the decoder waits for samples and cannot say so itself) reads as the em dash. A locked value this
-  build cannot name (an unsupported frequency, DCS until #523) reads `detecting`, never a value. The same view carries
+  build cannot name (an unsupported frequency, a DCS code that is unsupported or not the canonical member of its alias
+  class) reads `detecting`, never a value. It carries the locked code and polarity in `dcs_code` / `dcs_inverted`
+  beside `ctcss_tenths_hz`. The same view carries
   `configured_text`, the configured tone policy, which reads `off` until #527 and is never derived from the received
   tone. Tests: `APP_CONTROL_RX_TONE_VIEW`, the terminal goldens, `UI_QT_METRICS_MODEL`.
   `include/dsd-neo/app_control/analog_width_view.h` and `src/app_control/analog_width_view.c` (issue #525) decide the
@@ -732,8 +743,8 @@ installs from `src/engine/trunk_tuning.c` in `src/engine/trunk_tuning_hooks_inst
 - `symbol_timing_debug.c`: measures the sub-symbol offset the decoder's symbol grid settled on and reports it once
   per accepted frame sync, behind `DSD_NEO_DEBUG_SYMBOL_TIMING` (see `docs/cli.md`). The sample trace it correlates
   over is filled by `dsd_symbol.c` and owned by decoder-state setup/teardown in `src/core/util/dsd_init.c`.
-- Received-tone detection (issue #522), public entry points in `include/dsd-neo/dsp/analog_rx.h`: `dsd_analog_rx_tap()`,
-  `dsd_analog_rx_tap_partial()`, `dsd_analog_rx_block_restart()`, `dsd_analog_rx_reset()`,
+- Received-tone detection (issues #522 CTCSS, #523 DCS), public entry points in `include/dsd-neo/dsp/analog_rx.h`:
+  `dsd_analog_rx_tap()`, `dsd_analog_rx_tap_partial()`, `dsd_analog_rx_block_restart()`, `dsd_analog_rx_reset()`,
   `dsd_analog_rx_carrier_open_now()`, `dsd_analog_rx_block_straddles_boundary()` and the monitor playback
   bracket `dsd_analog_rx_playback_begin()` / `dsd_analog_rx_playback_end()`. The same header holds the CTCSS timing
   contract in sample time: p95 targets `DSD_ANALOG_CTCSS_LOCK_P95_MS` (400) and `DSD_ANALOG_CTCSS_LOSS_P95_MS` (350) and
@@ -742,7 +753,11 @@ installs from `src/engine/trunk_tuning.c` in `src/engine/trunk_tuning_hooks_inst
   ceiling by at least 100 ms. Each ceiling sits above the slowest event of the long-run sweeps in `docs/testing.md`
   (1,000,000 starts per condition at 0 dB, 800,000 stops), as the header states; change them only with new sweeps. The
   header also states the measured wrong-tone rates (neighbour locks near 0 dB, talk-off), which a policy acting on the
-  first lock has to budget for. `dsd_symbol.c` taps each unsynced analog block while it is still raw:
+  first lock has to budget for. The DCS timing contract sits beside it: `DSD_ANALOG_DCS_LOCK_MS` (520, every start at
+  10 dB in-band or better), `DSD_ANALOG_DCS_LOCK_CEILING_MS` (700 at 3 dB: every code in `DSP_ANALOG_DCS`, 999 starts
+  in 1,000 in the long-run sweeps; lock time in noise has no absolute bound), `DSD_ANALOG_DCS_LOSS_MS` (350) and
+  `DSD_ANALOG_DCS_TURNOFF_LOSS_MS` (150); a policy window must exceed the DCS lock ceiling by 100 ms too.
+  `dsd_symbol.c` taps each unsynced analog block while it is still raw:
   `symbol_process_unsynced_analog()` offers the tap the block after every sample it adds, the one that completes the
   block included (`dsd_analog_rx_tap_partial()`), and the tap reads what is waiting once
   `DSD_ANALOG_RX_TAP_READ_MS` (20 ms) of input, at the input's current rate, has built up;
@@ -773,8 +788,8 @@ installs from `src/engine/trunk_tuning.c` in `src/engine/trunk_tuning_hooks_inst
     290 Hz cutoff, 60 Hz transition; a 10 Hz DC blocker), the per-read carrier test (the caller's squelch reading plus
     an absolute mean-square floor that only rejects zeroed or squelched blocks) with the 200 ms sample-time hangover
     (`DSD_ANALOG_CARRIER_HANGOVER_MS`), and the detector plug-in table `k_detectors`: each row is a
-    `dsd_analog_rx_detector_ops` (configure/reset/process/report) and the core member holding that detector's state, so
-    the DCS detector (#523) is one more row. Detectors get the band stream, a time-aligned stage-1 "wide" stream (about
+    `dsd_analog_rx_detector_ops` (configure/reset/process/report) and the core member holding that detector's state:
+    CTCSS, then DCS. Detectors get the band stream, a time-aligned stage-1 "wide" stream (about
     0-1 kHz, for the harmonic test) and a "full" stream aligned the same way: the raw input's mean square over each
     decimated sample's span, before any filter. Decimation folds a residue of voice-band content into the band (stage 1
     leaves it at least 58 dB down, 74 dB from 20 kHz inputs up), and on a carrier with nothing else below 290 Hz that
@@ -841,6 +856,21 @@ installs from `src/engine/trunk_tuning.c` in `src/engine/trunk_tuning_hooks_inst
     missed every hop's end; this way each opening makes the two hops that read it count, and a dropout the hangover
     allows leaves at most three hops in a row without one. Every threshold is a ratio, so the RTL live (~1/pi), replay
     and int16 PCM scales read the same.
+  - `src/dsp/analog_dcs.c` is the DCS detector (issue #523), the second row of the table. It undoes the front end's known
+    10 Hz DC blocker (`DSD_ANALOG_RX_DC_CORNER_HZ`) and puts a 0.5 Hz pole in its place, integrates each bit (the NRZ
+    matched filter) at bit ends recovered by square-law timing recovery (the edge energy's component at 134.4 Hz,
+    averaged over about eight bits; an early/late gate has a stable false lock half a bit off), and slices with
+    decision feedback once per droop hypothesis (`k_droop`: none, and one-pole sags of 0.84, 0.72 and 0.55 per bit for
+    the demodulator's 2^11-sample DC block at 8 to 78 kHz and a sound card's coupling), since every DC block upstream
+    sags a run of equal bits. A lock is one slicer reading a supported code's word twice in a row, exactly in one
+    23-bit window and within one bit in the other (both exact would need 46 clean bits in a row, which at 3 dB several
+    starts in a hundred do not deliver within 700 ms), named by `dsd_dcs_match()`. It holds while some slicer reads the
+    expected rotation within one bit, following a one-bit slip either way, and is lost after 32 bits without, or
+    within two bits once the 134.4 Hz turn-off tone carries half the band's power over the newest six bits (a bit
+    integral over one period of 134.4 Hz is zero, so the slicers hear nothing of it). NONE after 500 ms of carrier
+    without a lock, like CTCSS. Samples inside the hangover keep the clock and the windows moving but change no
+    verdict. A signal one bit from a supported word can read as that code, the way a DCS decoder tolerates a bit
+    error; `DSP_ANALOG_DCS` pins that nothing further away does.
   - Invariant: resets never happen in `noCarrier()` / `dsd_engine_reset_no_carrier_state()` (they run every ~375 ms in
     analog mode and would stop any tone locking). They happen in `dsd_frame_sync_reset_acquisition()` (row commit and
     leave, trunk-scan target switch, decode-mode change, scope resume, RR apply), on an RTL stream-generation or
@@ -927,7 +957,8 @@ installs from `src/engine/trunk_tuning.c` in `src/engine/trunk_tuning_hooks_inst
   (`docs/testing.md`). The host's own options are the `--analog-*` names it lists; other `--analog-*` arguments pass
   through to the CLI parser. After each delivered block it also reads the received-tone publication
   (`dsd_state::analog_rx`, which the tap updated from the same block) into its `tone`, `tone_lock_ms` and
-  `tone_lock_pct` fields, which the `DECODE_IQ_ANALOG_REAL_CTCSS_*` cases and `tools/replay_ab.sh` read.
+  `tone_lock_pct` fields (`tone=151.4` for CTCSS, `tone=D023N` for DCS), which the `DECODE_IQ_ANALOG_REAL_CTCSS_*`
+  cases and `tools/replay_ab.sh` read.
 - `frame_sync_maybe_auto_switch_modulation()` (`dsd_frame_sync.c`) votes the C4FM/CQPSK/GFSK choice from SNR and
   sync hamming and applies the winner's demod profile to the RTL front end. It stands down under a modulation lock
   (`mod_cli_lock`) and in the analog family (`dsd_opts_is_analog_family()`), which has no digital modulation to
@@ -1307,8 +1338,9 @@ Qt Quick frontend (`src/ui/qt`):
 - After the session's first decoder redraw, `UiController` refreshes live metrics on every timer tick so scan
   countdowns and the sync-loss hold continue aging if input stalls. History, network and policy models still
   refresh on decoder redraws; session lifecycle clears live metrics and prevents stale snapshots from restoring them.
-- Received tone (issue #522): `MetricsModel` publishes the `rxTone*` group (`rxToneVisible`, `rxToneStatus`,
-  `rxToneText`, `rxToneKind`, `rxToneTenthsHz`, `rxToneCarrier`) with its own `rxToneChanged` signal, filled from
+- Received tone or code (issues #522, #523): `MetricsModel` publishes the `rxTone*` group (`rxToneVisible`,
+  `rxToneStatus`, `rxToneText`, `rxToneKind`, `rxToneTenthsHz`, `rxToneDcsCode`, `rxToneDcsInverted`,
+  `rxToneCarrier`) with its own `rxToneChanged` signal, filled from
   `app_control/rx_tone_view` in `fillRxToneView()` against the frame's one clock reading, and returned to unknown by
   `clear()` on stop. `rxToneConfiguredText` sits beside it with a signal of its own, `rxToneConfiguredTextChanged`,
   because it is configuration rather than session state: it reads the view's `off` from construction, keeps its value

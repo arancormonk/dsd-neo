@@ -96,11 +96,14 @@ enum {
  * @brief DCS timing contract, in sample time (docs/cli.md "Received code").
  *
  * Lock runs from the onset of a code's word to the first bit that reports it, through the
- * demodulator's DC block and 75 or 750 us de-emphasis, and holds for every supported code in
- * both polarities in DSP_ANALOG_DCS:
+ * demodulator's DC block and 75 or 750 us de-emphasis, for a code in noise at an in-band
+ * signal-to-noise ratio (0-290 Hz) of:
  *
- * - DSD_ANALOG_DCS_LOCK_MS at 10 dB in-band signal-to-noise (0-290 Hz) or better;
- * - DSD_ANALOG_DCS_LOCK_CEILING_MS at 3 dB.
+ * - 10 dB or better: every start within DSD_ANALOG_DCS_LOCK_MS. Over 8,320 seeded starts (every
+ *   code in both polarities, 75 and 750 us, 48 kHz) the slowest took 402 ms.
+ * - 3 dB: within DSD_ANALOG_DCS_LOCK_CEILING_MS for every code in both polarities in
+ *   DSP_ANALOG_DCS and on 999 starts in 1,000 in the long-run sweeps. Lock time in noise has
+ *   no absolute bound: 7 of 33,280 starts at 8 to 78.125 kHz took longer (the slowest 926 ms).
  *
  * A lock needs the code's 23-bit word read twice in a row, 46 bits or 342 ms, so a lock
  * typically comes 350-370 ms after the code starts. Loss runs from the moment the word stops
@@ -109,7 +112,8 @@ enum {
  * unkeys ends a lock within DSD_ANALOG_DCS_TURNOFF_LOSS_MS of its start.
  *
  * A tone policy that waits for a lock before deciding there is no code must wait at least
- * DSD_ANALOG_DCS_LOCK_CEILING_MS plus 100 ms.
+ * DSD_ANALOG_DCS_LOCK_CEILING_MS plus 100 ms, and still meets a late lock near 3 dB at the rate
+ * above.
  */
 enum {
     DSD_ANALOG_DCS_LOCK_MS = 520,

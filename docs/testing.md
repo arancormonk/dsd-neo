@@ -127,8 +127,9 @@ Covered: P25 Phase 1 C4FM (control and voice), P25 Phase 1 CQPSK/LSM (control an
 voice, plus a two-ray simulcast-impaired control channel), P25 Phase 2, DMR
 voice, DMR Tier III control (including a CSBK-only RAS control channel replayed
 with `-F`, colour code 0 — regression coverage for issue #348), NXDN48, NXDN96,
-dPMR, D-STAR, YSF, EDACS, and M17, plus the received CTCSS tone on synthetic analog NFM
-under `-fA` (see "Received tone (CTCSS) on the analog monitor" below). The analog FM
+dPMR, D-STAR, YSF, EDACS, and M17, plus the received CTCSS tone and DCS code on synthetic
+analog NFM under `-fA` (see "Received tone (CTCSS) on the analog monitor" and "Received code
+(DCS) on the analog monitor" below). The analog FM
 monitor's audio has its own cases, which score the audio rather than a log line; see
 [Analog monitor audio checks](#analog-monitor-audio-checks).
 
@@ -503,6 +504,73 @@ The hosts are set up as under [Analog A/B](#analog-ab). Over those 12 realtime r
 300 ms on every one, reported no other tone, and dropped and re-locked it once around a similar reversal and gap at
 2.44 s, 90.33% locked in all.
 
+#### Received code (DCS) on the analog monitor
+
+`DECODE_IQ_ANALOG_DCS_023N`, `_023I`, `_NOISY`, `_DROP` and `_NOCODE` (issue #523) replay synthetic NFM under
+`-fA -o null` like the CTCSS cases. The fixtures (`nfm_dcs_synth_023n`, `nfm_dcs_synth_023i`, `nfm_dcs_synth_noisy`,
+`nfm_dcs_synth_drop`) are built by `python3 tools/build_iq_fixtures.py --derived-only`: the same voice-band audio and
+receiver noise with a DCS word in place of the tone, repeated at 134.4 bit/s, bit 0 first, as NRZ at 600 Hz deviation
+(a one as positive deviation in normal polarity, the complement in inverted polarity), low-passed below 300 Hz. The
+words come from the builder's own Golay encoder, whose layout `RUNTIME_ANALOG_TONES` and `DSP_ANALOG_DCS_GOLAY_XCHECK`
+pin against the published words, so the fixtures are correct by construction. No public off-air DCS recording exists
+(see [Tone and code labels](#tone-and-code-labels)); a real accept fixture waits for a maintainer recording.
+
+- `_023N`: must log `Received tone: DCS D023N`, and never `none`, a tone or another code.
+- `_023I`: D023 sent in inverted polarity is the signal of D047N and must log `Received tone: DCS D047N`, never D023N,
+  which a detector that ignored polarity would report. Together the two cases pin the polarity convention end to end,
+  through the RTL replay chain; `DSP_FM_DEMOD_REF` pins the discriminator's sign on its own (a carrier above the tuned
+  frequency demodulates positive, and D023N sent as +/-600 Hz NRZ reads back as D023N).
+- `_NOISY`: D023N's word sent two bits wrong, the same two bits in every repetition, which is no code (two bits from
+  D023N and, the code words being at least 7 bits apart, at least 5 from every other); it must log `none` and never a
+  code or a tone.
+- `_DROP`: the code stops at 1.2 s with no turn-off tone while the carrier and voice carry on: D023N, then `none`.
+- `_NOCODE`: `nfm_notone_synth`, voice with no code: `none`, never a code.
+
+The CTCSS cases and the off-air cases fail on any DCS code too, so none of the tone fixtures, the squelch captures'
+150 bit/s data or AM airband voice reads as a code.
+
+The detector's own bounds are pinned in sample time by `DSP_ANALOG_DCS`, through the pure receive core. Its signals are
+built the way a receiver hears them: the transmitter's NRZ word through the receiver's de-emphasis (75 us, or the
+750 us land-mobile option) and the demodulator's DC block (`dc += (x - dc) / 2^11`, as `demod_pipeline.cpp` runs it),
+plus white noise at an in-band (0-290 Hz) signal-to-noise ratio against the NRZ's power, all from seeded generators.
+
+- Lock: every code in both polarities at 48 kHz, with both de-emphasis settings, within 520 ms of its onset at 10 dB
+  and 700 ms at 3 dB (p50 350 ms; the slowest 400 ms at 10 dB and 573 ms at 3 dB); every eighth code at 8, 44.1, 48 and 78.125 kHz the same
+  (worst 589 ms at 3 dB, 78.125 kHz); a code under transmitter-filtered speech 10 dB above it within 700 ms; a
+  transmitter at 134.3 or 134.5 bit/s locks and holds for 8 s; the alias pins (D023I reads D047N, D047I D023N, D754I
+  D116N and others) through the detector.
+- Hold and loss: one wrong bit in every word, in the same bit or moving through the word, holds for 20 s; two wrong
+  bits in every word lose the lock within 522 ms of the damage (a window holds both errors only once it lies wholly
+  after the damage started, up to a word later), and nothing locks in its place; a code that stops under a live
+  carrier is lost within 350 ms (p50 294 ms), and the 134.4 Hz turn-off tone within 150 ms (p50 80 ms, worst 108 ms);
+  a carrier drop is forgotten within the 200 ms hangover, and a 150 ms dropout inside a transmission keeps the lock.
+- Rejection: ten minutes of random bits at 134.4 bit/s; the 74 rotation classes of the Golay (23,12) code that carry
+  no standard code, in both polarities; every standard word sent bit-reversed that is more than one bit from every
+  standard word; every CTCSS tone at 8 and 48 kHz, clean and at 10 dB; and two minutes each of unfiltered and
+  transmitter-filtered speech: none locks. A carrier with no code reads `detecting` until 500 ms, then `none`, and a
+  code that starts later still locks within its bound.
+- Invariance: the RTL live, replay and int16 PCM scales lock in the same block, and block size never moves the lock.
+
+`DSP_ANALOG_CTCSS` now also checks that every supported code's waveform locks as DCS and never as a CTCSS tone, and
+that every other periodic waveform reads no tone unless it is one bit from a supported word. `DSP_SYMBOL_REPLAY` runs
+D023N and the inverted word through the real tap and checks the `Received tone: DCS` line, and the resets that clear a
+tone are shown to clear a code as well: a trunk-tuning or RTL stream generation move and an announced reset in
+`DSP_SYMBOL_REPLAY`, `RTL_SET_FREQ`, `MANUAL_TUNE` and a decode-mode change in `APP_COMMAND_QUEUE`, and a `-Y` row
+commit in `ENGINE_CHANNEL_SCAN`. `APP_CONTROL_RX_TONE_VIEW`, `UI_NCURSES_PRINTER_HELPERS`, `UI_QT_METRICS_MODEL` and
+`UI_QT_QML_CALL_LISTS` pin the `DCS D023N` text, the names the view refuses (an unsupported code, a rotation alias, a
+non-canonical polarity), and the received code kept apart from a configured policy value.
+
+Long-run sweeps (offline, the `DSP_ANALOG_DCS` signal model, every code in both polarities with the onset anywhere in
+a word):
+
+- 10 dB, 4,160 starts each with 75 and 750 us de-emphasis at 48 kHz: p95 369 ms, the slowest 398 and 402 ms.
+- 3 dB at 48 kHz, 10,400 starts each: with 75 us p95 389 ms, p99.9 632 ms, one start beyond 700 ms (926 ms); with
+  750 us p95 403 ms, p99.9 662 ms, four beyond 700 ms (the slowest 866 ms).
+- 3 dB, 4,160 starts each: at 78.125 kHz, where the demodulator's DC block sags the most, p99.9 687 ms and two beyond
+  700 ms (the slowest 717 ms); at 8 and 44.1 kHz none beyond (the slowest 554 and 649 ms).
+- Holds of 60 s: at 3 dB and 10 dB no lock was lost over 24 runs at 48 and 78.125 kHz; at 0 dB, outside the contract,
+  a held code dropped about twice a minute and locked again.
+
 Known gaps and caveats:
 
 - **ProVoice** and **X2-TDMA** have no usable public sample and are untested here.
@@ -538,8 +606,8 @@ Known gaps and caveats:
 ### Analog monitor audio checks
 
 The `DECODE_IQ_ANALOG_*` audio cases (CTest labels `iq-decode` and `analog`, radio builds only) check what the analog
-FM monitor lets a listener hear; the received-tone cases `DECODE_IQ_ANALOG_CTCSS_*` carry the same labels but match a
-log line, and `DECODE_IQ_ANALOG_REAL_CTCSS_*` read the received tone through this host (see
+FM monitor lets a listener hear; the received-tone cases `DECODE_IQ_ANALOG_CTCSS_*` and `DECODE_IQ_ANALOG_DCS_*` carry
+the same labels but match a log line, and `DECODE_IQ_ANALOG_REAL_CTCSS_*` read the received tone through this host (see
 [Received tone (CTCSS) on the analog monitor](#received-tone-ctcss-on-the-analog-monitor)).
 `iq_decode_check.cmake` can only match log lines, and the `-6` WAV is taken before the monitor's filters, gain stage
 and squelch gate, so neither can say whether the monitor produced the right audio. The
@@ -672,6 +740,10 @@ carrier inside the passband (5 kHz up, a variant fixture that is not committed) 
 | `nfm_ctcss_synth_670` | synthetic, seed 5220670 | the same with CTCSS 67.0 Hz |
 | `nfm_ctcss_synth_drop` | synthetic, seed 5221001 | 2.5 s: CTCSS 100.0 Hz that stops at 1.2 s while the carrier and voice carry on |
 | `nfm_notone_synth` | synthetic, seed 5220000 | 2 s: the same voice and noise with no tone |
+| `nfm_dcs_synth_023n` | synthetic, seed 5230023 | 2 s: the same voice and noise plus DCS D023N at 600 Hz deviation, NRZ low-passed below 300 Hz (#523) |
+| `nfm_dcs_synth_023i` | synthetic, seed 5231023 | the same with D023 in inverted polarity, the signal of D047N |
+| `nfm_dcs_synth_noisy` | synthetic, seed 5232023 | the same with D023N's word two bits wrong in every repetition: no code |
+| `nfm_dcs_synth_drop` | synthetic, seed 5233023 | 2 s: D023N that stops at 1.2 s, with no turn-off tone, while the carrier and voice carry on |
 
 `tools/build_iq_fixtures.py` pins each zip's SHA-256, reads the WAV members sample-exact (u8 centred on 127.5),
 shifts each wanted carrier to 0 Hz by an offset measured over the excerpt (`ANALOG_EXCERPTS` documents each), and
@@ -683,8 +755,9 @@ The whole analog effort (issue #518) stays within 5 MB of new fixture bytes. The
 `nxdn48_attenuated` replay that #521 committed 0.58 MB and the four received-tone synthetics of #522 0.82 MB
 (`nfm_ctcss_synth_drop` runs 2.5 s: after its tone stops at 1.2 s it still has to lose the tone and reach the no-tone
 verdict), 3.8 MB in all, which leaves about 1.2 MB. A 48 kHz cu8 fixture takes 96 kB a second, so keep each later
-synthetic fixture to 2 s (192 kB) or less: the ones still reserved (three for #523, two for #524) then take at most
-0.96 MB. A pull request that adds analog fixtures states the running total.
+synthetic fixture to 2 s (192 kB) or less. The four DCS synthetics of #523 take 0.77 MB (the no-code case reuses
+`nfm_notone_synth`), 4.57 MB in all, which leaves the two reserved for #524 0.43 MB. A pull request that adds analog
+fixtures states the running total.
 
 #### Tone and code labels
 
@@ -708,14 +781,19 @@ because they hold no DCS, and the corpus has no real DCS recording yet (`build_i
 names with the new ones and refuses any name it does not build). A real DCS accept case needs another source.
 
 Every DCS waveform has two spellings, because inverting a DCS word gives another valid word: the oracle prints both
-(`D023N = D047I`, and `D023I = D047N` for the inverted waveform). A detector reports one canonical label per waveform,
-and the DCS detector (#523) defines which; compare an oracle label with a detector's by waveform, not by spelling. The wiki's CTCSS page, which links the I/Q recording, carries audio samples at
+(`D023N = D047I`, and `D023I = D047N` for the inverted waveform). The DCS detector (#523) reports the normal-polarity
+spelling (`dsd_dcs_canonical()`; the alias table is in the [CLI guide](cli.md#received-code-dcs-on-the-analog-monitor));
+compare an oracle label with a detector's by waveform, not by spelling. The wiki's CTCSS page, which links the I/Q recording, carries audio samples at
 151.4, 173.8 and 186.2 Hz without saying which tones the recording holds; the oracle finds the first two. A
 maintainer has confirmed the CTCSS labels in the table, "none" for both squelch captures included, and the received-tone
 cases pin them: `DECODE_IQ_ANALOG_REAL_CTCSS_1514` the 151.4 Hz of `nfm_ctcss_real`, and the
 `DECODE_IQ_ANALOG_REAL_CTCSS_NOFALSE_*` cases the absence of any tone on both squelch captures (see
 [Received tone (CTCSS) on the analog monitor](#received-tone-ctcss-on-the-analog-monitor), which also says why the
-neighbour's 173.8 Hz has no case). The DCS labels stay unpinned until a DCS detector exists.
+neighbour's 173.8 Hz has no case). No committed excerpt carries DCS, so no DCS label is pinned; the DCS detector
+(#523) is held to the "none" labels instead, by the same `DECODE_IQ_ANALOG_REAL_CTCSS_NOFALSE_*` cases and by
+`DECODE_IQ_ANALOG_REAL_CTCSS_1514`, all of which fail on any `Received tone: DCS` line. A real DCS accept fixture is a
+maintainer follow-up: record a transmitter with a known code in both polarities (and its turn-off tone), add it under
+`LOCAL_SOURCES`, and pin it here.
 
 ### Qt frontend and QML screen tests
 
