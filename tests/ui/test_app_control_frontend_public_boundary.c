@@ -3,6 +3,7 @@
  * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
+#include <dsd-neo/app_control/analog_width_view.h>
 #include <dsd-neo/app_control/commands.h>
 #include <dsd-neo/app_control/frontend.h>
 #include <dsd-neo/app_control/frontend_runtime.h>
@@ -67,5 +68,10 @@ main(void) {
     (void)sizeof(dsd_app_squelch_view);
     (void)&dsd_app_squelch_view_get;
     (void)&dsd_app_squelch_view_format;
+    (void)sizeof(dsd_app_analog_width_view);
+    (void)&dsd_app_analog_width_view_get;
+    (void)&dsd_app_analog_width_view_format;
+    (void)&dsd_app_analog_width_setting_format;
+    (void)&dsd_app_analog_rtl_bw_rate_hz;
     return 0;
 }
