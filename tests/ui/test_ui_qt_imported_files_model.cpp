@@ -1409,14 +1409,17 @@ test_example_targets() {
     dsd_qt::ImportedFilesModel model(&host);
     const auto result = model.importFile(QStringLiteral(DSD_NEO_TEST_EXAMPLES_DIR "/trunk_scan_targets.csv"),
                                          "Examples.csv", "trunkTargets");
-    expect("shipped example imports all targets", result.value("ok").toBool() && result.value("accepted").toInt() == 8);
+    expect("shipped example imports all targets", result.value("ok").toBool() && result.value("accepted").toInt() == 9);
     if (!result.value("ok").toBool()) {
         return;
     }
     const QString path = result.value("path").toString();
     const auto rows = model.targetPreview(path).value("rows").toList();
-    expect("shipped row order retained", rows.size() == 8 && rows[0].toMap().value("id") == "county-p25"
-                                             && rows[7].toMap().value("id") == "field-nxdn48");
+    /* Issue #526: the analog nfm-conventional target previews with its canonical type. */
+    expect("shipped row order retained", rows.size() == 9 && rows[0].toMap().value("id") == "county-p25"
+                                             && rows[7].toMap().value("id") == "field-nxdn48"
+                                             && rows[8].toMap().value("id") == "fire-nfm"
+                                             && rows[8].toMap().value("type") == "nfm-conventional");
     auto* opts = static_cast<dsd_opts*>(std::calloc(1, sizeof(dsd_opts)));
     auto* state = static_cast<dsd_state*>(std::calloc(1, sizeof(dsd_state)));
     expect("allocate example engine state", opts && state);
@@ -1438,7 +1441,7 @@ test_example_targets() {
     const bool initialized = dsd_engine_trunk_scan_init(opts, state, error, sizeof error) == 0;
     expect("imported example initializes", initialized);
     if (initialized) {
-        expect("engine owns all eight imported targets", dsd_engine_trunk_scan_target_count(state) == 8);
+        expect("engine owns all nine imported targets", dsd_engine_trunk_scan_target_count(state) == 9);
         expect("first target visit limit applies", opts->scan_max_visit_ms == 20000);
         expect("advance imported target",
                dsd_engine_trunk_scan_control(opts, state, DSD_TRUNK_SCAN_CONTROL_ADVANCE) == 0);
