@@ -262,7 +262,12 @@ Tests: `tests/engine/test_engine_trunk_scan.c` (`ENGINE_TRUNK_SCAN`) and
   one while a row ran, saving its timing for the analog output rate), the leave times the decoder, and the profile it
   publishes, for the rate the digital family lands on (`output_rate_for_family`). A leave that switches the front
   end's family either way also drops the analog monitor block the decoder has part-collected
-  (`dsd_symbol_analog_block_reset()`). The M17 encoder is not the analog family. Test: `ENGINE_CHANNEL_SCAN`.
+  (`dsd_symbol_analog_block_reset()`). The M17 encoder is not the analog family. Test: `ENGINE_CHANNEL_SCAN`. A row's
+  retune (`dsd_engine_scan_tune_to_freq()` in `trunk_tuning.c`) carries the RTL profile of the settings the row runs: a
+  row that runs the analog family (a row without a decode mode on an `-fA` or `-fM` session keeps it) queues the
+  configured analog profile for its target (`rtl_stream_prepare_retune_analog_profile_for_target()`) and no symbol
+  profile, so the monitor keeps its own channel and detector, and gets them back after a typed digital row. Test:
+  `ENGINE_TRUNK_RETUNE_REGRESSION`.
 - DSP `dsd_frame_sync_reset_acquisition()` drops outgoing profile proof, modulation votes, symbol history, hunt budgets,
   and slicer windows at committed row boundaries. Conventional rows also discard learned P25 modulation; trunk targets
   retain their own learned modulation. Normal no-carrier protocol confirmation resets remain in use.
@@ -648,41 +653,39 @@ installs from `src/engine/trunk_tuning.c` in `src/engine/trunk_tuning_hooks_inst
   `apply_cmd_scoped()` to publish it after the resume, with the width in force from before the command
   (`svc_publish_symbol_profile_changing_width()`). CQPSK toggled on under an analog preset holds it too, and the DSP op
   that turns CQPSK off (`svc_toggle_rtl_cqpsk()`) returns to the monitor through the analog profile with it; one the
-  front end refuses (the AM default included) leaves CQPSK on rather than a CQPSK-off profile alone, which would put
-  the FSK channel profile on the monitor output with the FM discriminator. Whether
-  CQPSK holds the front end is what was last queued, not only what the stream publishes, since a toggle, a switch or a
-  scan row's leave (queued through the runtime hooks) drained with the width has not landed yet: the stream answers for
-  every request queued, whoever queued it (`rtl_stream_requested_cqpsk()`), falling back to the published state once
-  every request has settled (`rtl_stream_receive_request_outcome()`), never on the output generation, which the demod
-  thread moves before it publishes and a retune moves without taking a request. The toggle flips that requested state
-  too. A width the front end refuses after the check is never left configured: refused by its request (a retune moved
-  the published rate), the change is refused with the previous width put back; refused by the demod thread where it
-  lands, the request reads `RTL_STREAM_RX_REQUEST_REFUSED`, and the next `dsd_app_drain_cmds()` puts back the width the
-  front end kept, as the stream recorded it when it refused (`rtl_stream_receive_request_refusal()`, so an earlier width
-  that landed in between stands; the stream records the configured setting it kept,
-  `demod_state::analog_width_setting_hz`, 0 for the default, so an unset AM default goes back as the default and an
-  explicit 6000 Hz stays explicit), and toasts why (`svc_take_monitor_request_outcome()`, which follows the last analog
-  monitor request `symbol_profile.c` queued, and `ui_settle_receive_requests()`). A switch to Analog or AM
-  (`DECODE_MODE_SET`, a config's `[mode]`) holds an
-  explicit width, or the AM width, to the rate first, under a scan row as well (`ui_check_mode_receive_profile()`); a
-  `[mode]` without a decode key keeps the session's family and kind. A switch between FM and AM on the monitor is armed
-  like a switch onto it (`ui_arm_analog_entry()`), and the stream records the kind it kept with a refusal, so one the
-  front end refuses, at once or where it lands, puts the decoder back on the mode it had (`Failed: AM -> ...`), while a
-  width refused after the switch landed restores the width. `DSD_APP_CMD_CONFIG_APPLY` holds the width it leaves in
-  force (an explicit one, or AM's; `cfg_analog_kind_after()`, `cfg_check_held_analog_width()`) to the rate it will run
-  at before applying anything: `svc_check_analog_bandwidth_for_rtl_bw()` at the `rtl_bw_khz` a hot restart stores, as
-  given, when the `[input]` builds an RTL-SDR or rtl_tcp spec other than the running RTL-family input's
-  (`cfg_radio_reopen()`), otherwise the check above; one that reopens a SoapySDR or Airspy device (an Airspy `[input]`
-  over a running Airspy reopens it for a new sample rate, serial, DSP bandwidth or volume,
-  `svc_airspy_settings_reopen()`) is held only to the rules every rate shares
-  (`svc_check_analog_bandwidth_at_device_rate()`) and left to that stream's start, which checks the width at the rate
-  the device delivers. Since the stream a reopen starts runs the scan row on air again once the scope resumes, an nfm
-  row's own width is held to the reopened rate the same way (`cfg_check_scan_row_width()`), and on a session that stays
-  digital the configured NFM width is held while the scan has an nfm row or target without a width of its own. An
-  `rtl_bw_khz` above every selectable bandwidth that no width fits is refused as the setting, not as a rate.
-  `svc_rtl_set_bandwidth()` (RTL_SET_BW) refuses a DSP bandwidth the configured preset's explicit width, or AM's width,
-  cannot run at on an RTL-SDR or rtl_tcp input, naming both and saying to narrow the width first (or, at a bandwidth
-  that filters no width of the kind, to leave the NFM width unset, or keep a wider bandwidth for AM), and
+  front end refuses (the AM default included) leaves CQPSK on rather than a CQPSK-off profile alone, which would put the
+  FSK channel profile on the monitor output with the FM discriminator. Whether CQPSK holds the front end is what was
+  last queued, not only what the stream publishes, since a toggle, a switch or a scan row's leave (queued through the
+  runtime hooks) drained with the width has not landed yet: the stream answers for every request queued, whoever queued
+  it (`rtl_stream_requested_cqpsk()`), falling back to the published state once every request has settled
+  (`rtl_stream_receive_request_outcome()`), never on the output generation, which the demod thread moves before it
+  publishes and a retune moves without taking a request. The toggle flips that requested state too. A width the front
+  end refuses after the check is never left configured: refused by its request (a retune moved the published rate), the
+  change is refused with the previous width put back; refused by the demod thread where it lands, the request reads
+  `RTL_STREAM_RX_REQUEST_REFUSED`, and the next `dsd_app_drain_cmds()` puts back the width the front end kept, as the
+  stream recorded it when it refused (`rtl_stream_receive_request_refusal()`, so an earlier width that landed in between
+  stands; the stream records the configured setting it kept, `demod_state::analog_width_setting_hz`, 0 for the default,
+  so an unset AM default goes back as the default and an explicit 6000 Hz stays explicit), and toasts why
+  (`svc_take_monitor_request_outcome()`, which follows the last analog monitor request `symbol_profile.c` queued, and
+  `ui_settle_receive_requests()`). A switch to Analog or AM (`DECODE_MODE_SET`, a config's `[mode]`) holds an explicit
+  width, or the AM width, to the rate first, under a scan row as well (`ui_check_mode_receive_profile()`); a `[mode]`
+  without a decode key keeps the session's family and kind. A switch between FM and AM on the monitor is armed like a
+  switch onto it (`ui_arm_analog_entry()`), and the stream records the kind it kept with a refusal, so one the front end
+  refuses, at once or where it lands, puts the decoder back on the mode it had (`Failed: AM -> ...`), while a width
+  refused after the switch landed restores the width. `DSD_APP_CMD_CONFIG_APPLY` holds the width it leaves in force (an
+  explicit one, or AM's; `cfg_analog_kind_after()`, `cfg_check_held_analog_width()`) to the rate it will run at before
+  applying anything: `svc_check_analog_bandwidth_for_rtl_bw()` at the `rtl_bw_khz` a hot restart stores, as given, when
+  the `[input]` builds an RTL-SDR or rtl_tcp spec other than the running RTL-family input's (`cfg_radio_reopen()`),
+  otherwise the check above; one that reopens a SoapySDR or Airspy device (an Airspy `[input]` over a running Airspy
+  reopens it for a new sample rate, serial, DSP bandwidth or volume, `svc_airspy_settings_reopen()`) is held only to the
+  rules every rate shares (`svc_check_analog_bandwidth_at_device_rate()`) and left to that stream's start, which checks
+  the width at the rate the device delivers. Since the stream a reopen starts runs the scan row on air again once the
+  scope resumes, an nfm row's own width is held to the reopened rate the same way (`cfg_check_scan_row_width()`), and on
+  a session that stays digital the configured NFM width is held while the scan has an nfm row or target without a width
+  of its own. An `rtl_bw_khz` above every selectable bandwidth that no width fits is refused as the setting, not as a
+  rate. `svc_rtl_set_bandwidth()` (RTL_SET_BW) refuses a DSP bandwidth the configured preset's explicit width, or AM's
+  width, cannot run at on an RTL-SDR or rtl_tcp input, naming both and saying to narrow the width first (or, at a
+  bandwidth that filters no width of the kind, to leave the NFM width unset, or keep a wider bandwidth for AM), and
   `DSD_APP_CMD_RTL_ENABLE_INPUT` (Input > Switch source > RTL-SDR) asks `svc_check_rtl_input_analog_width()` before it
   rewrites the input and tears the running stream down, refusing a width the DSP bandwidth of the device it opens cannot
   filter. Every change that commits to a radio stream start with an explicit width, or with AM, refuses it first while
@@ -690,21 +693,22 @@ installs from `src/engine/trunk_tuning.c` in `src/engine/trunk_tuning_hooks_inst
   these classifies the input as the stream's `detect_radio_source()` does (`dsd_app_analog_rtl_bw_rate_hz()`): an
   `rtl`/`rtltcp` spec, or any device string on an RTL input that names no SoapySDR, Airspy or replay device (Input >
   Switch source > RTL-SDR leaves `pulse` there), runs at `rtl_dsp_bw_khz`, saturated rather than overflowed for a loaded
-  config's out-of-range `rtl_bw_khz`. Tests: `APP_COMMAND_QUEUE`, `UI_MENU_SERVICES`, `IO_RTL_DEMOD_CONFIG` (request
-  numbering and outcomes, the kept kind).
+  config's out-of-range `rtl_bw_khz`. `svc_check_analog_bandwidth()` holds a width to no rate on a PCM input, which runs
+  no channel filter, whatever device string a live switch from an RTL-SDR left there. Tests: `APP_COMMAND_QUEUE`,
+  `UI_MENU_SERVICES`, `IO_RTL_DEMOD_CONFIG` (request numbering and outcomes, the kept kind).
 - AM (issue #524): `DSD_APP_CMD_DECODE_MODE_SET` takes `DSDCFG_MODE_AM` (the preset ids end there, as do the
   RadioReference import's) and refuses it on a PCM input (`dsd_decode_mode_runs_on_input()`); on a running RTL session
   it holds the AM width to the rate (above) and switches live across AM, Analog and the digital modes. A switch between
   FM and AM, by DECODE_MODE_SET or a config's `[mode]`, drops the analog monitor block the decoder part-collected, as a
   family change does (`decode_mode_drop_old_analog_block()`), and one the front end refuses goes back to the monitor's
-  raw sink, not the digital one (`ui_revert_analog_entry()`). `[mode] decode =
-  am` in a config applied to a PCM session applies, and then falls back. That fallback is
-  `apply_cmd_fall_back_from_am_on_pcm()`, run after every command (`apply_cmd_scoped()`): a configured AM preset on an
-  input that is not I/Q (a live input switch to Pulse, a file, TCP or UDP audio, or a config's `decode = am` on PCM)
-  becomes the Analog monitor through the scope, as DECODE_MODE_SET would make it, with the reason in the log and the
-  toast. After a config apply whose own `[mode]` is `am` it also turns autosave off (`dsd_decode_mode_keep_saved_am()`),
-  as a start with that config does, so the loaded file keeps `decode = am`; a live input switch leaves autosave on.
-  Neither width command is scoped (`command_updates_scan_mode()`): each edits the configured width as above rather than
+  raw sink, not the digital one (`ui_revert_analog_entry()`). `[mode] decode = am` in a config applied to a PCM session
+  applies, and then falls back. That fallback is `apply_cmd_fall_back_from_am_on_pcm()`, run after every command
+  (`apply_cmd_scoped()`): a configured AM preset on an input that is not I/Q (a live input switch to Pulse, a file, TCP
+  or UDP audio, or a config's `decode = am` on PCM) becomes the Analog monitor through the scope, as DECODE_MODE_SET
+  would make it, whatever its NFM width (no rate holds a width on PCM input), with the reason in the log and the toast.
+  After a config apply whose own `[mode]` is `am` it also turns autosave off (`dsd_decode_mode_keep_saved_am()`), as a
+  start with that config does, so the loaded file keeps `decode = am`; a live input switch leaves autosave on. Neither
+  width command is scoped (`command_updates_scan_mode()`): each edits the configured width as above rather than
   suspending and re-applying the row. Tests: `APP_COMMAND_QUEUE`, `UI_MENU_SERVICES`.
 - Shared display decisions, so no frontend has to restate one: `include/dsd-neo/app_control/call_view.h` and
   `src/app_control/call_view.c` fold the canonical call state into a per-slot line, and
@@ -1083,17 +1087,22 @@ Notes:
     de-emphasis back. `rtl_demod_reset_audio_monitor_state()`, which every open, retune and family or kind switch runs,
     returns the detector's carrier estimate to cold (`demod_state::am_carrier` 0 and its closed-squelch run
     `am_squelched_samples` 0; the next block warm-starts it), and `demod_init_common_defaults()` clears both for a fresh
-    open. An AM start on a replay whose sidecar decimates after the demodulator is refused with `AM needs a capture with
-    post_downsample 1`: no AM width runs there, the default included. `demod_write_output_block()` skips the output
-    scale for AM (`dsd_demod_am_active()`), which normalises its own level. A configured I/Q DC blocker is bypassed
-    under AM with a one-time note (`rtl_demod_note_am_iq_dc_bypass()`, from configuration, a kind switch, a switch onto
-    the analog family (`rtl_demod_enter_analog_family()`) and the runtime toggle). A live FM <-> AM switch on the
-    running monitor (`rtl_stream_apply_analog_request()`) also resets the resampler history and clears the output ring
-    with a generation bump, so the new kind's audio does not follow the old detector's; a width-only change keeps both.
-    Tests: `IO_RTL_DEMOD_CONFIG`, `IO_RTL_ANALOG_FAMILY_SWITCH` (digital <-> AM, an AM start to digital and back to AM
-    on the same stream, live FM <-> AM against fresh opens via `rtl_stream_test_analog_kind_switch()`, and the live
-    output scale through `demod_write_output_block()` via `rtl_stream_test_monitor_output_scale()`: 1/pi for FM, none
-    for AM or digital output), `IO_RTL_RETUNE_PREPARE` (`rtl_stream_test_audio_monitor_retune_kind()`).
+    open. An AM start on a replay whose sidecar decimates after the demodulator is refused with
+    `AM needs a capture with post_downsample 1`: no AM width runs there, the default included.
+    `demod_write_output_block()` skips the output scale for AM (`dsd_demod_am_active()`), which normalises its own
+    level. A configured I/Q DC blocker is bypassed under AM with a one-time note (`rtl_demod_note_am_iq_dc_bypass()`,
+    from configuration, a kind switch, a switch onto the analog family (`rtl_demod_enter_analog_family()`) and the
+    runtime toggle). A live FM <-> AM switch on the running monitor (`rtl_stream_apply_analog_request()`) also resets
+    the resampler history and clears the output ring with a generation bump, so the new kind's audio does not follow the
+    old detector's; a width-only change keeps both. Only a family or kind switch changes the detector: a profile that
+    turns CQPSK off (`rtl_stream_disable_cqpsk_mode()`) installs the analog family's own, so an AM monitor keeps the
+    envelope detector through a CQPSK-off toggle, a failed tune's restore and a typed digital row's profile, which
+    `full_demod()` reads with the discriminator while its channel is not the monitor's. Tests: `IO_RTL_DEMOD_CONFIG`,
+    `IO_RTL_ANALOG_FAMILY_SWITCH` (digital <-> AM, an AM start to digital and back to AM on the same stream, live FM <->
+    AM against fresh opens via `rtl_stream_test_analog_kind_switch()`, the CQPSK-off profiles via
+    `rtl_stream_test_am_monitor_symbol_profiles()`, and the live output scale through `demod_write_output_block()` via
+    `rtl_stream_test_monitor_output_scale()`: 1/pi for FM, none for AM or digital output), `IO_RTL_RETUNE_PREPARE`
+    (`rtl_stream_test_audio_monitor_retune_kind()`).
   - The monitor's legacy `low_pass_real()` stage (`rate_in` to `rate_out2`) passes audio through: a live open sets both
     to the DSP bandwidth, and IQ replay (`controller_apply_replay_settings()`) sets `rate_out2` to the `rate_in` it
     takes from the capture, so only the rational resampler converts `rate_out` to the output rate. Test:
