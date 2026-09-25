@@ -308,7 +308,7 @@ ANALOG_DCS_SYNTH = [
     # other code's, so it is no code at all. It must read "none".
     ("nfm_dcs_synth_noisy", 5232023, 2.0, 0o023, False, None, 2),
     # The code stops at 1.2 s with no turn-off tone while the carrier and the voice carry on.
-    ("nfm_dcs_synth_drop", 5233023, 2.5, 0o023, False, 1.2, 0),
+    ("nfm_dcs_synth_drop", 5233023, 2.0, 0o023, False, 1.2, 0),
 ]
 DCS_BAUD = 134.4
 DCS_WORD_BITS = 23
