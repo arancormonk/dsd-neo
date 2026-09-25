@@ -598,9 +598,9 @@ two cases with their own limits, not a comparison between runs. Measured on the 
 | --- | --- | --- | --- |
 | `DECODE_IQ_ANALOG_NFM_TONE` | `nfm_tone_synth` | tone SNR 25.9 dB, in-band 30.5 dB, RMS -36.1 dBFS, audible 1500 of 1500 ms from 0 ms, no clipping; a 1 kHz probe reads 0.00 dBc | SNR ≥ 20, captured and audible ≥ 1400 ms, first audible ≤ 100 ms, in-band ≥ 24, RMS -42 to -30 dBFS, clip 0, 1 kHz probe within ±1 dBc |
 | `DECODE_IQ_ANALOG_NFM_ADJACENT` | `nfm_adjacent_synth` | tone SNR 25.8 dB; 12.5 kHz probe -64.9 dBc | SNR ≥ 20, captured ≥ 1400 ms, 12.5 kHz ≤ -40 dBc |
-| `DECODE_IQ_ANALOG_NFM_TONE_8K` | `nfm_tone_synth`, `--nfm-bandwidth-hz 8000` | tone SNR 17.0 dB (the 8 kHz channel trims the 3 kHz-deviation sidebands), RMS -36.1 dBFS, 1 kHz probe 0.00 dBc | `NFM_TONE`'s bounds with SNR ≥ 12 |
-| `DECODE_IQ_ANALOG_NFM_TONE_16K` | `nfm_tone_synth`, `--nfm-bandwidth-hz 16000` | identical to the default: tone SNR 25.9 dB | `NFM_TONE`'s bounds |
-| `DECODE_IQ_ANALOG_NFM_TONE_25K` | `nfm_tone_synth`, `--nfm-bandwidth-hz=25000` | tone SNR 23.6 dB (more receiver noise in the wider channel), RMS -36.1 dBFS | `NFM_TONE`'s bounds with SNR ≥ 18 |
+| `DECODE_IQ_ANALOG_NFM_TONE_8K` | `nfm_tone_synth`, `--nfm-bandwidth-hz 8000` | tone SNR 17.0 dB (the 8 kHz channel trims the 3 kHz-deviation sidebands), in-band 28.5 dB, RMS -36.1 dBFS, 1 kHz probe 0.00 dBc | `NFM_TONE`'s bounds with SNR ≥ 12 |
+| `DECODE_IQ_ANALOG_NFM_TONE_16K` | `nfm_tone_synth`, `--nfm-bandwidth-hz 16000` | measures the same as the default: tone SNR 25.9 dB, in-band 30.5 dB | `NFM_TONE`'s bounds with SNR ≥ 25 and in-band ≥ 30, which neither other width meets together |
+| `DECODE_IQ_ANALOG_NFM_TONE_25K` | `nfm_tone_synth`, `--nfm-bandwidth-hz=25000` | tone SNR 23.6 dB (more receiver noise in the wider channel), in-band 30.4 dB, RMS -36.1 dBFS | `NFM_TONE`'s bounds with SNR ≥ 18 |
 | `DECODE_IQ_ANALOG_NFM_BW_8K` | `nfm_adjacent_synth`, `--nfm-bandwidth-hz 8000` | tone SNR 17.0 dB; 12.5 kHz probe -79.5 dBc | SNR ≥ 12, captured ≥ 1400 ms, 12.5 kHz ≤ -72 dBc (the default width reads -64.9) |
 | `DECODE_IQ_ANALOG_NFM_BW_25K` | `nfm_adjacent_synth`, `--nfm-bandwidth-hz 25000` | the neighbour is in the passband: 12.5 kHz probe -8.2 dBc, tone SNR -3.5 dB (the beat counts as noise), tone level -36.1 dBFS | captured ≥ 1400 ms, 12.5 kHz ≥ -20 dBc, 1 kHz level -38 to -34 dBFS |
 | `DECODE_IQ_ANALOG_SILENT_STREAM_TIME` | `nfm_tone_synth` under `-fi` (monitor off) | total 1500 ms, no audio at all | audible 0 ms, total 1400 to 1600 ms |

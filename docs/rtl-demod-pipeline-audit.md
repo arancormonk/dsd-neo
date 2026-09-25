@@ -171,12 +171,20 @@ is known:
   for them the stream-start check above is the only one.
 - The command checks a width the analog preset uses against the running
   stream (`rtl_stream_check_analog_profile()`), or with no stream against an
-  RTL-SDR/rtl_tcp input's DSP bandwidth, and on a front end that runs the
-  monitor requests it live (`rtl_stream_request_analog_profile()`): a
-  width-only change. Under a typed digital scan row it is stored and applied
-  when the row's leave republishes the analog profile. A config apply that
-  changes the width is held to the same check, and a refusal leaves the whole
-  config unapplied.
+  RTL-SDR/rtl_tcp input's DSP bandwidth, and requests it live from a running
+  front end whose options in force are `-fA` (`rtl_stream_request_analog_profile()`):
+  a width-only change on the monitor, or the width a queued switch onto the
+  analog family carries. Under a typed digital scan row it is stored and
+  applied when the row's leave republishes the analog profile; with CQPSK
+  toggled on under `-fA` it is stored, and turning CQPSK off returns to the
+  monitor through the analog profile with it.
+- A switch to Analog (a decode-mode change, a config's `[mode]`) holds an
+  explicit width to the rate first, under a scan row too, so a decoder is
+  never committed to Analog on a front end that refuses the profile.
+- A config apply that changes the width, or moves the DSP bandwidth under an
+  explicit one, is held to the rate the width will run at: the new bandwidth
+  when the config reopens the device at one, otherwise the running stream. A
+  refusal leaves the whole config unapplied.
 - `DSD_APP_CMD_RTL_SET_BW` refuses a DSP bandwidth that the explicit width of
   the configured analog preset cannot run at on an RTL-SDR or rtl_tcp input,
   naming both; the width is never adjusted to fit the new rate.
@@ -420,7 +428,7 @@ invariant to it, so it is left as is.
   `UI_MENU_SERVICES` the command's live request and refusals, a config apply's
   width, scan rows, and the DSP bandwidth refusal. `DECODE_IQ_ANALOG_NFM_TONE_8K`,
   `_16K` and `_25K` show the 1 kHz tone keeping its level through each width
-  (the explicit 16 kHz equal to the default), and `DECODE_IQ_ANALOG_NFM_BW_8K`
+  (the explicit 16 kHz measuring the same as the default), and `DECODE_IQ_ANALOG_NFM_BW_8K`
   and `_25K` that the neighbour 12.5 kHz away is rejected at 8 kHz (-79.5 dBc)
   and inside the passband at 25 kHz (-8.2 dBc).
 

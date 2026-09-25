@@ -60,7 +60,7 @@ Generated (do not edit/commit):
   - Input setup refuses an explicit analog channel width the DSP bandwidth of an RTL-SDR or rtl_tcp input cannot
     filter (`dsd_engine_setup_check_analog_width()`, issue #525), once the input spec has set that bandwidth and
     before the device opens; other radio inputs are held to the rate they deliver at stream start. Test:
-    `RUNTIME_ANALOG_WIDTH_RATE_REFUSED`
+    `RUNTIME_ANALOG_WIDTH_RATE_REFUSED` (`tests/cmake/RunCliSmoke.cmake`: the message and a non-zero exit)
 - Build files: `src/engine/CMakeLists.txt`
 
 Key public headers:
@@ -324,7 +324,8 @@ Tests: `tests/engine/test_engine_trunk_scan.c` (`ENGINE_TRUNK_SCAN`) and
     value before getopt; a warning on PCM input) and the `[analog]` INI section (`has_analog`,
     `analog_nfm_bandwidth_hz`) parse through `dsd_analog_width_parse()` and never clamp: the loader warns and keeps
     the default, `--validate-config` reports an error, and also one when the width does not fit the DSP rate
-    `rtl_bw_khz` gives an `rtl`/`rtltcp` input under `decode = "analog"`. A save writes the key only for an explicit
+    `rtl_bw_khz` gives an `rtl`/`rtltcp` input that startup builds with it (`rtl_freq` set) under
+    `decode = "analog"`. A save writes the key only for an explicit
     width (0 is the default); no scan row sets a width yet, so the options are the configured value there. `[analog]`
     is the home of the analog keys, in the order `nfm_bandwidth_hz`, `am_bandwidth_hz`, `tone_filter`, `tone_list`.
     Tests: `RUNTIME_CLI_PARSE`, `CONFIG_VALIDATION`, `CONFIG_TEMPLATE`, `RUNTIME_CONFIG_USER`.
@@ -479,12 +480,19 @@ installs from `src/engine/trunk_tuning.c` in `src/engine/trunk_tuning_hooks_inst
   scoped setter) runs `svc_set_nfm_bandwidth()`: a width outside 0 or 8000..25000 Hz is refused, and while the
   configured -fA preset uses it `svc_check_nfm_bandwidth()` holds it to the running stream
   (`rtl_stream_check_analog_profile()`) or, with none, to an RTL-SDR/rtl_tcp input's DSP bandwidth; a refusal is a
-  toast naming the values and changes nothing. An accepted width reaches a front end that runs the analog monitor
-  (`rtl_stream_get_analog_profile()`) as a live width-only request (`svc_publish_nfm_bandwidth()`); under a typed
-  digital scan row it waits for the leave's analog profile. `DSD_APP_CMD_CONFIG_APPLY` holds a changed `[analog]`
-  width to the same check before applying anything, and publishes it. `svc_rtl_set_bandwidth()` (RTL_SET_BW) refuses
-  a DSP bandwidth the configured preset's explicit width cannot run at on an RTL-SDR or rtl_tcp input, naming both.
-  Tests: `APP_COMMAND_QUEUE`, `UI_MENU_SERVICES`.
+  toast naming the width, the rate, the limit and the fix, and changes nothing (the validator's full text is logged).
+  An accepted width goes to a running front end whose options in force are -fA as a live analog profile request
+  (`svc_publish_nfm_bandwidth()`), which also replaces the width a queued switch onto analog carries. Under a scan
+  row's suspended scope it waits for `apply_cmd_scoped()` to publish it after the resume, so a typed digital row keeps
+  its profile until its leave; CQPSK toggled on under -fA holds it too, and the DSP op that turns CQPSK off
+  (`apply_dsp_op_cqpsk_toggle()`) returns to the monitor through the analog profile with it. A switch to Analog
+  (`DECODE_MODE_SET`, a config's `[mode]`) holds an explicit width to the rate first, under a scan row as well
+  (`ui_check_mode_receive_profile()`). `DSD_APP_CMD_CONFIG_APPLY` holds the explicit width it leaves in force to the
+  rate it will run at before applying anything: `svc_check_nfm_bandwidth_for_rtl_bw()` at the new DSP bandwidth when
+  `[input]` reopens the device at one (`cfg_rtl_bw_khz_after()`), otherwise the check above.
+  `svc_rtl_set_bandwidth()` (RTL_SET_BW) refuses a DSP bandwidth the configured preset's explicit width cannot run at
+  on an RTL-SDR or rtl_tcp input, naming both and saying to narrow the width first. Tests: `APP_COMMAND_QUEUE`,
+  `UI_MENU_SERVICES`.
 - Shared display decisions, so no frontend has to restate one: `include/dsd-neo/app_control/call_view.h` and
   `src/app_control/call_view.c` fold the canonical call state into a per-slot line, and
   `include/dsd-neo/app_control/scan_timing_view.h` and `src/app_control/scan_timing_view.c` fold
@@ -1036,16 +1044,21 @@ Build files: `src/protocol/CMakeLists.txt` and per‑protocol `src/protocol/<nam
     integrations.
   - Radio-driven UI controls are gated by `USE_RADIO`; visualizers consume app-control frontend metric APIs.
   - Analog channel width (issue #525): the RTL-SDR menu's `rtl.nfm_bw` row (`NFM bandwidth... [12.5 kHz]`, shown
-    while -fA runs FM on a radio input) prompts for Hz and submits `DSD_APP_CMD_NFM_BANDWIDTH_SET` as typed; the
-    DSP rate row reads `DSP bandwidth...`, and the rtl_tcp adaptive buffering toggle lives in `Auto-PPM & rtl_tcp`.
-    The input status line prints `Analog: NFM 16 kHz;` beside `DSP-BW:` (`(DSP-limited)` when the rate bounds the
-    channel): the frontend metrics' `channel_bandwidth_hz` while the -fA options run on the monitor output, otherwise
-    the configured width. Qt's `MetricsModel::analogBandwidthHz`/`analogBandwidthDspLimited` use the same rule, with
-    the configured preset deciding whether the analog section shows at all, and `analogBandwidthConfiguredHz` is the
-    value `qml/RadioSheet.qml`'s NFM width stepper (`radioAnalogBandwidth`, presets in `Util.NFM_WIDTHS_HZ`) edits
-    through `CommandBridge::setNfmBandwidthHz()`; the stepper is disabled on PCM input with the reason shown. The
-    `NFM` decode chip (`-fA`) sits in `Util.DECODE_MODES`. Tests: `UI_MENU_TREE_AUDIT`, `UI_MENU_LABELS_RADIO`,
-    `UI_NCURSES_PRINTER_HELPERS`, `UI_QT_METRICS_MODEL`, `UI_QT_QML_CALL_LISTS` (`tst_radio_analog.qml`).
+    while the configured -fA preset runs FM on a radio input, `is_nfm_analog_active()`) prompts for Hz and submits
+    `DSD_APP_CMD_NFM_BANDWIDTH_SET` as typed; the DSP rate row reads `DSP bandwidth...`, and the rtl_tcp adaptive
+    buffering toggle lives in `Auto-PPM & rtl_tcp`. The input status line prints `Analog: NFM 16 kHz;` beside
+    `DSP-BW:` (`(DSP-limited)` when the rate bounds the channel) under the configured analog preset (the scan scope's
+    configured view, so a typed digital row does not hide it): the frontend metrics' `channel_bandwidth_hz` while a
+    running stream's options in force run the monitor output, otherwise the configured width. Qt's
+    `MetricsModel::analogBandwidthHz`/`analogBandwidthDspLimited` use the same rule, `analogBandwidthMaxHz` is the
+    widest width the running stream's demod rate filters, and `analogBandwidthConfiguredHz` is the value
+    `qml/RadioSheet.qml`'s NFM width stepper (`radioAnalogBandwidth`, presets in `Util.NFM_WIDTHS_HZ`, stepping from
+    the width in force when the default is set and skipping presets above the max) edits through
+    `CommandBridge::setNfmBandwidthHz()`; `radioAnalogBandwidthDefault` sends 0 to return an explicit width to the
+    default, and the controls are disabled on PCM input with the reason shown. The `NFM` decode chip (`-fA`) sits in
+    `Util.DECODE_MODES`, so the setup wizard offers it too (it suggests no trunking). Tests: `UI_MENU_TREE_AUDIT`,
+    `UI_MENU_ACTIONS`, `UI_MENU_LABELS_RADIO`, `UI_NCURSES_PRINTER_HELPERS`, `UI_QT_METRICS_MODEL`,
+    `UI_QT_SESSION_ARGS`, `UI_QT_QML_CALL_LISTS` (`tst_radio_analog.qml`, `tst_wizard_decode_chip.qml`).
 
 Qt Quick frontend (`src/ui/qt`):
 

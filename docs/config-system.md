@@ -437,11 +437,20 @@ present sets every key it owns, so an `[analog]` section whose width the loader 
 
 A value outside 8000-25000, or anything but whole Hz (`12.5k`, `12500Hz`), is refused, never clamped: startup logs a
 warning and keeps the default, and `--validate-config` reports an error with the same text the CLI prints. With
-`[input] source = "rtl"` or `"rtltcp"` and `[mode] decode = "analog"`, `--validate-config` also reports an error when
-the width does not fit the DSP rate `rtl_bw_khz` gives (for example `25000` needs `rtl_bw_khz = 48`; see the DSP-rate
-table in `docs/cli.md`, Analog reception). The width applies live when a config is loaded into a running analog
-session, and a width the running front end refuses leaves the whole config unapplied. Scan rows do not carry a width
-yet, so the configured width is what a save writes.
+`[input] source = "rtl"` or `"rtltcp"` (with `rtl_freq`, which is what builds the input with `rtl_bw_khz`) and
+`[mode] decode = "analog"`, `--validate-config` also reports an error when the width does not fit the DSP rate
+`rtl_bw_khz` gives (for example `25000` needs `rtl_bw_khz = 48`; see the DSP-rate table in `docs/cli.md`, Analog
+reception). Scan rows do not carry a width yet, so the configured width is what a save writes.
+
+When `[analog]` changes apply (the full table, with the terminal and Qt controls, is in `docs/cli.md`, Analog
+reception, "When changes apply"):
+
+| Change | When it applies |
+| --- | --- |
+| `nfm_bandwidth_hz` at startup | When the stream opens. An RTL-SDR or rtl_tcp input whose DSP bandwidth cannot filter the width stops startup before the device opens; other radio inputs are held to the rate they deliver when the stream starts. |
+| `nfm_bandwidth_hz` in a config loaded into a running session | Live, on the next DSP block of the analog monitor; no reopen. A width the DSP rate it will run at cannot filter leaves the whole config unapplied, with a message naming the width, the rate and the fix. |
+| `[input] rtl_bw_khz` in a config loaded into a running analog session | Reopens the device at the new DSP bandwidth. A bandwidth the explicit NFM width in force (the config's or the session's) cannot run at leaves the whole config unapplied; the width is checked at the new bandwidth, not the running one. |
+| `[mode] decode = "analog"` in a config loaded into a digital session | Live receive-family switch. With an explicit NFM width the DSP rate cannot filter, the whole config is left unapplied. |
 
 Note: The defaults shown match the generated template (`--dump-config-template`).
 Missing keys generally mean “leave the engine default unchanged”; some input
@@ -455,7 +464,7 @@ Notes on Input Sources).
 The config system validates files and reports issues with line numbers:
 
 - **Error**: Invalid enum value, type mismatch, parse failure, an `[analog]` width outside its range or one the
-  configured RTL DSP bandwidth cannot filter
+  configured RTL DSP bandwidth cannot filter (for an `rtl`/`rtltcp` input with `rtl_freq` under `decode = "analog"`)
 - **Warning**: Unknown key or section, integer out of range
 
 ```bash
@@ -864,6 +873,8 @@ The following can be changed without restarting:
 
 - PulseAudio input/output device
 - RTL-SDR, RTL-TCP, and Soapy tuning parameters (frequency, gain, PPM, etc.)
+- The NFM channel width (`[analog] nfm_bandwidth_hz`), applied to a running analog monitor without a reopen (see
+  "When `[analog]` changes apply" above)
 - TCP/UDP connection parameters
 - File input path
 
