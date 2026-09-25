@@ -209,6 +209,23 @@ NFM_SYNTH_TONE_HZ = 1000.0
 NFM_SYNTH_DEVIATION_HZ = 3000.0
 NFM_SYNTH_NOISE_DB = -30.0
 
+# Synthetic AM (issue #524), deterministic from the seed: a steady 1 kHz test tone at 50% modulation depth on a
+# carrier centred at 0 Hz, the reference the analog replay host scores tone SNR against, plus complex Gaussian noise
+# 30 dB below the carrier across the whole 48 kHz span. am_adjacent_synth adds an unmodulated carrier 8.333 kHz up at
+# -6 dB -- the next channel of the 8.33 kHz airband plan -- whose beat with the wanted carrier the replay host's probe
+# measures at 8333 Hz. It lies beyond the default 6 kHz AM channel filter's stopband edge (4.5 kHz from the centre) and
+# inside a 20 kHz one.
+#
+# name, seed, interferer offset Hz (None = none), interferer level dB re carrier
+AM_SYNTH = [
+    ("am_tone_synth", 5241, None, None),
+    ("am_adjacent_synth", 5242, 8333.0, -6.0),
+]
+AM_SYNTH_DURATION_S = 1.5
+AM_SYNTH_TONE_HZ = 1000.0
+AM_SYNTH_DEPTH = 0.5
+AM_SYNTH_NOISE_DB = -30.0
+
 # Derived fixtures synthesized from already-committed fixtures (no network or
 # ffmpeg needed; run with --derived-only to regenerate just these).
 #
@@ -498,6 +515,29 @@ def build_nfm_synth(out_dir):
     total = 0
     for name, seed, interferer_hz, interferer_db in NFM_SYNTH:
         written = write_fixture(out_dir, name, nfm_synth_samples(seed, interferer_hz, interferer_db))
+        total += written
+        print(f"{name:28s} synth   {written // 1024:6d} KiB")
+    return total
+
+
+def am_synth_samples(seed, interferer_hz, interferer_db):
+    """AM-modulate the test tone on a 0 Hz carrier, then add the optional adjacent carrier and the noise floor."""
+    count = int(round(AM_SYNTH_DURATION_S * SAMPLE_RATE_HZ))
+    t = np.arange(count) / SAMPLE_RATE_HZ
+    samples = (1.0 + AM_SYNTH_DEPTH * np.cos(2.0 * math.pi * AM_SYNTH_TONE_HZ * t)).astype(np.complex128)
+    if interferer_hz is not None:
+        amplitude = 10.0 ** (interferer_db / 20.0)
+        samples = samples + amplitude * np.exp(2j * math.pi * interferer_hz * t)
+    rng = np.random.default_rng(seed)
+    sigma = math.sqrt(10.0 ** (AM_SYNTH_NOISE_DB / 10.0) / 2.0)
+    return samples + rng.normal(0.0, sigma, count) + 1j * rng.normal(0.0, sigma, count)
+
+
+def build_am_synth(out_dir):
+    """Write the deterministic AM test-tone fixtures (issue #524)."""
+    total = 0
+    for name, seed, interferer_hz, interferer_db in AM_SYNTH:
+        written = write_fixture(out_dir, name, am_synth_samples(seed, interferer_hz, interferer_db))
         total += written
         print(f"{name:28s} synth   {written // 1024:6d} KiB")
     return total
@@ -810,6 +850,7 @@ def derived_fixture_names():
         + [entry[0] for entry in DERIVED_NOISE]
         + [DPMR_SYNTH_NAME]
         + [entry[0] for entry in NFM_SYNTH]
+        + [entry[0] for entry in AM_SYNTH]
         + [entry[0] for entry in ANALOG_CTCSS_SYNTH]
     )
 
@@ -856,6 +897,7 @@ def main():
         total += build_noise(args.out)
         total += build_dpmr_synth(args.out)
         total += build_nfm_synth(args.out)
+        total += build_am_synth(args.out)
         total += build_analog_synth(args.out)
     else:
         for name in derived_fixture_names():

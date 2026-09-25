@@ -11562,6 +11562,50 @@ if(DSD_HAS_RADIO)
         "Received tone: CTCSS|${_analog_off_path}"
     )
 
+    # Native AM (issue #524). am_tone_synth is a 1 kHz tone at 50% depth on a 0 Hz
+    # carrier with noise 30 dB down across the band: through -fM it measures 24.4 dB
+    # tone SNR, 35.4 dB in-band ratio and -45.2 dBFS RMS (the detector's 0.25 x depth,
+    # unscaled in replay), audible from the first block, unclipped; the probe on the
+    # tone agrees with the fit. The FM monitor finds no tone on it (see the negative
+    # control below), so the level comes from the AM detector.
+    dsd_neo_add_analog_replay_test(
+        DECODE_IQ_ANALOG_AM_TONE
+        am_tone_synth
+        "-fM --analog-expect-tone-hz 1000 --analog-min-snr-db 18 --analog-min-captured-ms 1400 --analog-min-audible-ms 1400 --analog-max-first-audible-ms 100 --analog-min-inband-db 28 --analog-min-rms-dbfs -50 --analog-max-rms-dbfs -40 --analog-max-clip 0 --analog-probe-min-dbc 1000:-1 --analog-probe-max-dbc 1000:1"
+        ""
+        "${_analog_off_path}"
+    )
+    # The same tone with an unmodulated carrier 8.333 kHz up at -6 dB (the next
+    # 8.33 kHz airband channel). The default 6 kHz channel filter rejects it: its beat
+    # with the wanted carrier probes at -72.2 dBc. A 20 kHz channel passes it (+13.0
+    # dBc), which shows the AM width reaches the filter; each case holds its own bound.
+    dsd_neo_add_analog_replay_test(
+        DECODE_IQ_ANALOG_AM_ADJ_6K
+        am_adjacent_synth
+        "-fM --analog-expect-tone-hz 1000 --analog-min-snr-db 18 --analog-min-captured-ms 1400 --analog-probe-max-dbc 8333:-40"
+        ""
+        "${_analog_off_path}"
+    )
+    dsd_neo_add_analog_replay_test(
+        DECODE_IQ_ANALOG_AM_ADJ_20K
+        am_adjacent_synth
+        "-fM --am-bandwidth-hz 20000 --analog-expect-tone-hz 1000 --analog-min-captured-ms 1400 --analog-probe-min-dbc 8333:0"
+        ""
+        "${_analog_off_path}"
+    )
+    # AM airband voice (the excerpt DECODE_IQ_ANALOG_NO_MOD_AUTO_SWITCH plays through
+    # the FM monitor) through the AM detector: the whole excerpt delivered, 1120 ms
+    # audible, -53.7 dBFS RMS, unclipped, and speech-shaped (14.6 dB in-band ratio,
+    # where the FM monitor reads -2.4 dB on it). Received-tone detection is FM-only,
+    # so it never reports on AM.
+    dsd_neo_add_analog_replay_test(
+        DECODE_IQ_ANALOG_AM_REAL
+        am_airband_real
+        "-fM --analog-min-captured-ms 7800 --analog-min-audible-ms 800 --analog-min-inband-db 10 --analog-min-rms-dbfs -60 --analog-max-rms-dbfs -48 --analog-max-clip 0"
+        ""
+        "Received tone:|${_analog_off_path}"
+    )
+
     # Negative controls: bounds that must NOT hold, run through
     # analog_replay_fail_check.cmake, which requires the host's exit code (1 for a
     # missed bound), the named ANALOG AUDIO FAIL line and no ANALOG AUDIO OK. Without
@@ -11659,6 +11703,15 @@ if(DSD_HAS_RADIO)
         nfm_notone_synth
         "-fA --analog-max-tone-lock-ms 400"
         "ANALOG AUDIO FAIL: tone lock ms not measured"
+    )
+    # DECODE_IQ_ANALOG_AM_TONE's tone bound through the FM monitor: the discriminator
+    # finds no 1 kHz tone on an AM carrier (-39.7 dB measured), so that case's level
+    # is the AM detector's doing.
+    dsd_neo_add_analog_replay_fail_test(
+        DECODE_IQ_ANALOG_NEG_AM_TONE_THROUGH_FM
+        am_tone_synth
+        "-fA --analog-expect-tone-hz 1000 --analog-min-snr-db 18"
+        "ANALOG AUDIO FAIL: tone SNR dB -?[0-9]+[.][0-9]+ [(]limit 18[.]00[)]"
     )
     # A malformed bound stops the host before the replay (exit 2), rather than being
     # dropped or handed to the CLI parser.
