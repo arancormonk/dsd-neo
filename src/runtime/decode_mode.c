@@ -16,7 +16,7 @@
 #include "dsd-neo/runtime/config.h"
 
 /* The -f selectors that are decode presets. The others (ProVoice/EDACS, the M17 encoder and the like) are handled by
-   the CLI itself; 'r' (single-slot DMR) reaches here as 's'. A table rather than a switch, so a new preset adds a row. */
+   the CLI itself; 'r' (single-slot DMR) reaches here as 's'. A table, so a new preset adds a row. */
 static const struct {
     char selector;
     dsdneoUserDecodeMode mode;

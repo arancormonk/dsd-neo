@@ -531,7 +531,7 @@ demod_install_analog_detector(struct demod_state* demod, int kind) {
     demod->mode_demod = am ? &dsd_am_demod : &dsd_fm_demod;
     demod->deemph = am ? 0 : 1;
     if (am) {
-        /* As an AM open has it: no de-emphasis coefficient either (FM's is recomputed from the config on the way back). */
+        /* As an AM open has it: no de-emphasis coefficient either (FM's comes back from the config on the way back). */
         demod->deemph_tau_us = 0;
         demod->deemph_a = 0.0f;
     }

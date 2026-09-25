@@ -264,7 +264,7 @@ interactive_choose_decode_mode(int src) {
     return mode;
 }
 
-/* The wizard's menu numbers, in menu order (0 is not an entry). A table rather than a switch, so an entry adds a row. */
+/* The wizard's menu numbers, in menu order (0 is not an entry). A table, so a new entry adds a row. */
 static const dsdneoUserDecodeMode k_interactive_menu_modes[] = {
     DSDCFG_MODE_UNSET, DSDCFG_MODE_AUTO,   DSDCFG_MODE_P25P1,    DSDCFG_MODE_P25P2,
     DSDCFG_MODE_DMR,   DSDCFG_MODE_NXDN48, DSDCFG_MODE_NXDN96,   DSDCFG_MODE_X2TDMA,

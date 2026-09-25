@@ -95,10 +95,11 @@ int rtl_demod_analog_requested_width_hz(int kind, int explicit_width_hz);
  * Check the analog channel a stream would run at @p rate_hz.
  *
  * Refuses a negative @p explicit_width_hz (only 0 selects the default), a requested width while DSD_NEO_CHANNEL_LPF=0
- * turns the channel filter off, and a requested width the rate cannot realize (dsd_analog_width_check()). The unset NFM default (@p explicit_width_hz 0 with FM) never
- * fails: it keeps the historical filter behaviour. The unset AM default is checked like an explicit width (see
- * rtl_demod_analog_requested_width_hz()). @p rate_hz <= 0 means no DSP rate is known yet (no stream running): then only
- * the kind, environment and range rules apply, and the next stream open checks the width against the rate it delivers.
+ * turns the channel filter off, and a requested width the rate cannot realize (dsd_analog_width_check()). The unset
+ * NFM default (@p explicit_width_hz 0 with FM) never fails: it keeps the historical filter behaviour. The unset AM
+ * default is checked like an explicit width (see rtl_demod_analog_requested_width_hz()). @p rate_hz <= 0 means no DSP
+ * rate is known yet (no stream running): then only the kind, environment and range rules apply, and the next stream
+ * open checks the width against the rate it delivers.
  *
  * @return 0 when the stream may run it, -1 with an actionable message in @p err otherwise.
  */
