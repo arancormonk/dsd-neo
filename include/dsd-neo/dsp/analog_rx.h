@@ -5,7 +5,8 @@
 
 /**
  * @file
- * @brief The analog monitor's receive tap: its carrier, and received sub-audible tone detection on FM (issue #522).
+ * @brief The analog monitor's receive tap: its carrier, and received sub-audible tone and code detection on FM
+ * (issues #522, #523).
  *
  * The decoder thread taps the raw monitor audio as the symbol path assembles each unsynced
  * analog block, before the voice filters that would remove everything below 300 Hz, and
