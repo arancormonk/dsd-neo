@@ -76,7 +76,8 @@ void dsd_am_demod(struct demod_state* fm);
 /**
  * Whether the AM envelope detector demodulates the monitor audio: the analog family's AM kind installed it and the
  * monitor runs on its own channel (dsd_demod_analog_monitor_active()). A typed digital scan row's profile on an AM
- * session is FM-demodulated instead, as under the FM monitor, so it reads 0 there.
+ * session is FM-demodulated instead, as under the FM monitor, so it reads 0 there; the AM session's de-emphasis (none)
+ * still applies to it, where the FM monitor's de-emphasizes it.
  *
  * @param d Demodulator state; NULL reads as not AM.
  * @return 1 when the AM detector produces the monitor audio, else 0.

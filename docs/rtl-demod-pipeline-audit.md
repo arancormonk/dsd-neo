@@ -120,7 +120,12 @@ without de-emphasis and without the I/Q DC blocker.
   with the row's channel profile, as under `-fA`, and its signal is
   FM-demodulated there, with the I/Q DC blocker and the output scale applied as
   for FM; the carrier estimate is untouched, and the row's leave (a family
-  switch) resets it.
+  switch) resets it. The audio chain after the discriminator is the session's,
+  though: an AM session runs no de-emphasis, so the row's discriminator output
+  reaches the decoder un-de-emphasized, as a digital open delivers it, where
+  under `-fA` the FM monitor's de-emphasis (75 us by default) still filters it.
+  The same typed row can therefore decode slightly differently under `-fA` and
+  `-fM`; the `-fA` side predates AM and is left as it was.
 - Measured on the deterministic fixtures through the replay host: a 1 kHz tone at
   50% depth with noise 30 dB below the carrier reads 24.4 dB tone SNR and
   35.4 dB in-band ratio (`DECODE_IQ_ANALOG_AM_TONE`); an unmodulated neighbour

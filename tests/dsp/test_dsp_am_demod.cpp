@@ -481,7 +481,8 @@ run_pipeline(double carrier, double offset_hz, double cnr_db, float* out_iq_dc_r
 /* A typed digital scan row's symbol profile on an AM session keeps the monitor output but puts the row's channel
  * profile in place of the analog one (dsd_demod_analog_monitor_active() reads 0): the row's digital signal is then
  * FM-demodulated, as under -fA, not run through the AM detector, whose carrier estimate the row leaves alone; the I/Q
- * DC blocker and the output scale apply to it as to FM. */
+ * DC blocker and the output scale apply to it as to FM. De-emphasis does not: the AM session runs none (deemph 0, as
+ * here), where -fA's FM monitor de-emphasizes the row's discriminator output. */
 int
 test_typed_row_profile_under_am(void) {
     demod_state* s = new_demod();

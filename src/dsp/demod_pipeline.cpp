@@ -1457,8 +1457,10 @@ full_demod_run_output_demod(struct demod_state* d) {
         qpsk_differential_demod(d);
         full_demod_debug_cqpsk_symbols(d);
     } else if (d->mode_demod == &dsd_am_demod && !dsd_demod_am_active(d)) {
-        /* A typed digital scan row's profile on an AM session: its signal is FM, as under -fA, and the AM detector's
-           carrier estimate is left for the monitor's return (a family switch, which resets it). */
+        /* A typed digital scan row's profile on an AM session: its signal is FM, so the discriminator reads it as under
+           -fA, and the AM detector's carrier estimate is left for the monitor's return (a family switch, which resets
+           it). The audio chain after it is the AM session's, not -fA's: AM runs no de-emphasis, so the row's
+           discriminator output is not de-emphasized, as on a digital open, where -fA's FM monitor de-emphasizes it. */
         dsd_fm_demod(d);
     } else {
         d->mode_demod(d);
