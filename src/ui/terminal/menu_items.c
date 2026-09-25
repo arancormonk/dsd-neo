@@ -182,6 +182,12 @@ static const NcMenuItem RTL_MENU_ITEMS[] = {
      .help = "NFM channel-filter width in Hz (8000..25000; 0 = default 16000), applied live. It must fit the DSP "
              "bandwidth.",
      .on_select = rtl_set_nfm_bw},
+    {.id = "rtl.am_bw",
+     .is_enabled = is_am_width_editable,
+     .label = "AM bandwidth (Hz)...",
+     .help = "AM channel-filter width in Hz (5000..20000; 0 = default 6000), applied live. It must fit the DSP "
+             "bandwidth.",
+     .on_select = rtl_set_am_bw},
     {.id = "rtl.sql",
      .label = "Squelch (dB)...",
      .help = "Post-filter squelch threshold in dB; more negative opens more; 0 switches squelch off.",

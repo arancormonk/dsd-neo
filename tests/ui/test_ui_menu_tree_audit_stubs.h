@@ -187,6 +187,7 @@
     X(lr_off)                                                                                                          \
     X(rtl_restart)                                                                                                     \
     X(rtl_set_bw)                                                                                                      \
+    X(rtl_set_am_bw)                                                                                                   \
     X(rtl_set_dev)                                                                                                     \
     X(rtl_set_freq)                                                                                                    \
     X(rtl_set_gain)                                                                                                    \
@@ -336,6 +337,7 @@
     X(is_airspy_input)                                                                                                 \
     X(is_non_airspy_input)                                                                                             \
     X(is_nfm_width_editable)                                                                                           \
+    X(is_am_width_editable)                                                                                            \
     X(const_view_active)                                                                                               \
     X(eye_view_active)                                                                                                 \
     X(io_rtl_active)                                                                                                   \

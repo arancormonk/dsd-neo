@@ -334,8 +334,8 @@ dsd_infer_decode_mode_preset(const dsd_opts* opts) {
    lets the test see which preset landed on which row. */
 const char*
 dsd_decode_mode_display_name(dsdneoUserDecodeMode mode) {
-    static const char* const names[] = {"m0", "m1", "m2",  "m3",  "m4",  "m5",  "m6",  "m7",
-                                        "m8", "m9", "m10", "m11", "m12", "m13", "m14", "m15"};
+    static const char* const names[] = {"m0", "m1",  "m2",  "m3",  "m4",  "m5",  "m6",  "m7", "m8",
+                                        "m9", "m10", "m11", "m12", "m13", "m14", "m15", "m16"};
     const int i = (int)mode;
     return (i >= 0 && i < (int)(sizeof names / sizeof names[0])) ? names[i] : "m?";
 }
@@ -1487,6 +1487,33 @@ test_additional_prompt_and_toggle_actions(void) {
         dsd_test_scan_labels_configured(NULL);
     }
 
+    /* Issue #524: the AM width row. Shown while AM runs on a radio input; the prompt offers the configured width (0
+     * for the default) and hands what was typed to the width command, which refuses what it cannot apply. */
+    reset_capture();
+    opts.audio_in_type = AUDIO_IN_RTL;
+    g_infer_mode = DSDCFG_MODE_AM;
+    rc |= expect_int("am width row shown under AM on a radio", is_am_width_editable(&ctx), 1);
+    g_infer_mode = DSDCFG_MODE_ANALOG;
+    rc |= expect_int("am width row hidden under Analog", is_am_width_editable(&ctx), 0);
+    g_infer_mode = DSDCFG_MODE_AM;
+    opts.audio_in_type = AUDIO_IN_PULSE;
+    rc |= expect_int("am width row hidden on PCM input", is_am_width_editable(&ctx), 0);
+    rc |= expect_int("am width row hidden with no context", is_am_width_editable(NULL), 0);
+    opts.audio_in_type = AUDIO_IN_RTL;
+    opts.analog_am_bandwidth_hz = 8000;
+    rtl_set_am_bw(&ctx);
+    rc |= expect_str("am width prompt", g_prompt.title, "AM bandwidth Hz (5000..20000; 0 = default 6000)");
+    rc |= expect_int("am width prompt offers the configured width", g_prompt.initial_int, 8000);
+    g_prompt.int_cb(g_prompt.user, 1, 12000);
+    rc |= expect_int("am width command", g_cmd.id, DSD_APP_CMD_AM_BANDWIDTH_SET);
+    rc |= expect_int("am width payload", cmd_i32(), 12000);
+    reset_capture();
+    rtl_set_am_bw(&ctx);
+    g_prompt.int_cb(g_prompt.user, 0, 12000);
+    rc |= expect_int("am width cancel posts nothing", g_cmd.calls, 0);
+    opts.analog_am_bandwidth_hz = 0;
+    g_infer_mode = DSDCFG_MODE_AUTO;
+
 #if defined(__SSE__) || defined(__SSE2__)
     reset_capture();
     g_cfg.ftz_daz_enable = 0;
@@ -1798,11 +1825,12 @@ test_signal_chain_rows(void) {
     reset_capture();
     act_decode_mode(NULL);
     rc |= expect_str("decode mode chooser title", g_chooser.title, "Decoder mode");
-    rc |= expect_int("decode mode chooser count", g_chooser.n, 15);
+    rc |= expect_int("decode mode chooser count", g_chooser.n, 16);
     rc |= expect_str("decode mode first row is auto", g_chooser.labels[0], "m1");
     rc |= expect_str("decode mode second row is p25 both phases", g_chooser.labels[1], "m13");
     rc |= expect_str("decode mode fifth row is dmr", g_chooser.labels[4], "m4");
-    rc |= expect_str("decode mode last row is analog", g_chooser.labels[14], "m14");
+    rc |= expect_str("decode mode analog row", g_chooser.labels[14], "m14");
+    rc |= expect_str("decode mode last row is AM, after analog", g_chooser.labels[15], "m16");
     rc |= expect_int("decode mode opens without posting", g_cmd.calls, 0);
     g_chooser.on_done(g_chooser.user, 4);
     rc |= expect_int("decode mode set command", g_cmd.id, DSD_APP_CMD_DECODE_MODE_SET);
@@ -1812,8 +1840,11 @@ test_signal_chain_rows(void) {
     act_decode_mode(NULL);
     g_chooser.on_done(g_chooser.user, -1);
     rc |= expect_int("decode mode cancel posts nothing", g_cmd.calls, 0);
-    g_chooser.on_done(g_chooser.user, 15);
+    g_chooser.on_done(g_chooser.user, 16);
     rc |= expect_int("decode mode out-of-range posts nothing", g_cmd.calls, 0);
+    g_chooser.on_done(g_chooser.user, 15);
+    rc |= expect_int("decode mode AM posts AM", g_cmd.id == DSD_APP_CMD_DECODE_MODE_SET && cmd_i32() == DSDCFG_MODE_AM,
+                     1);
 
     /* The picker opens on the mode in effect. Row 0 is Auto, and Auto is the one
        choice the command layer never treats as a no-op, so opening there turned a

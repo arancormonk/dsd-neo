@@ -1343,6 +1343,13 @@ is_nfm_width_editable(const void* v) {
     return (view.shown || view.row_analog) ? view.kind == DSD_ANALOG_DEMOD_FM : view.configured_hz > 0;
 }
 
+/* Issue #524: the AM width row, while the AM preset runs on a radio input, where the width is the channel filter. */
+bool
+is_am_width_editable(const void* v) {
+    const UiCtx* c = (const UiCtx*)v;
+    return c && c->opts && dsd_opts_input_is_radio(c->opts) && dsd_infer_decode_mode_preset(c->opts) == DSDCFG_MODE_AM;
+}
+
 // NcMenuItem action callbacks require a mutable context signature.
 // cppcheck-suppress-begin constParameterPointer
 void
@@ -1491,6 +1498,15 @@ cb_rtl_nfm_bw(void* u, int ok, int hz) {
     }
 }
 
+/* Any value goes to the command as typed, as for the NFM width. */
+static void
+cb_rtl_am_bw(void* u, int ok, int hz) {
+    UNUSED(u);
+    if (ok) {
+        (void)dsd_app_command_set_i32(DSD_APP_CMD_AM_BANDWIDTH_SET, (int32_t)hz);
+    }
+}
+
 void
 rtl_set_nfm_bw(void* v) {
     UiCtx* c = (UiCtx*)v;
@@ -1499,6 +1515,13 @@ rtl_set_nfm_bw(void* v) {
     const int configured_hz =
         dsd_scan_mode_configured_analog_width(c->opts, dsd_app_get_latest_snapshot(), DSD_ANALOG_DEMOD_FM);
     ui_prompt_open_int_async("NFM bandwidth Hz (8000..25000; 0 = default 16000)", configured_hz, cb_rtl_nfm_bw, c);
+}
+
+void
+rtl_set_am_bw(void* v) {
+    UiCtx* c = (UiCtx*)v;
+    ui_prompt_open_int_async("AM bandwidth Hz (5000..20000; 0 = default 6000)", c->opts->analog_am_bandwidth_hz,
+                             cb_rtl_am_bw, c);
 }
 
 void
@@ -1677,9 +1700,23 @@ act_lockout_slot2(void* v) {
    roughly by how often they are asked for. The names come from the runtime so
    the picker and the label that reads the mode back cannot disagree. */
 static const dsdneoUserDecodeMode k_decode_mode_choices[] = {
-    DSDCFG_MODE_AUTO,     DSDCFG_MODE_TDMA,     DSDCFG_MODE_P25P1,  DSDCFG_MODE_P25P2,  DSDCFG_MODE_DMR,
-    DSDCFG_MODE_DMR_MONO, DSDCFG_MODE_NXDN48,   DSDCFG_MODE_NXDN96, DSDCFG_MODE_X2TDMA, DSDCFG_MODE_YSF,
-    DSDCFG_MODE_DSTAR,    DSDCFG_MODE_EDACS_PV, DSDCFG_MODE_DPMR,   DSDCFG_MODE_M17,    DSDCFG_MODE_ANALOG,
+    DSDCFG_MODE_AUTO,
+    DSDCFG_MODE_TDMA,
+    DSDCFG_MODE_P25P1,
+    DSDCFG_MODE_P25P2,
+    DSDCFG_MODE_DMR,
+    DSDCFG_MODE_DMR_MONO,
+    DSDCFG_MODE_NXDN48,
+    DSDCFG_MODE_NXDN96,
+    DSDCFG_MODE_X2TDMA,
+    DSDCFG_MODE_YSF,
+    DSDCFG_MODE_DSTAR,
+    DSDCFG_MODE_EDACS_PV,
+    DSDCFG_MODE_DPMR,
+    DSDCFG_MODE_M17,
+    DSDCFG_MODE_ANALOG,
+    /* AM needs an I/Q radio input; on PCM input the command refuses it and says why. */
+    DSDCFG_MODE_AM,
 };
 #define DECODE_MODE_CHOICE_COUNT (sizeof k_decode_mode_choices / sizeof k_decode_mode_choices[0])
 /* Filled once: every entry is a pointer into the runtime's own static name table,
