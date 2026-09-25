@@ -840,14 +840,17 @@ installs from `src/engine/trunk_tuning.c` in `src/engine/trunk_tuning_hooks_inst
   ceiling by at least 100 ms. Each ceiling sits above the slowest event of the long-run sweeps in `docs/testing.md`
   (1,000,000 starts per condition at 0 dB, 800,000 stops), as the header states; change them only with new sweeps. The
   header also states the measured wrong-tone rates (neighbour locks near 0 dB, talk-off), which a policy acting on the
-  first lock has to budget for. The DCS timing contract sits beside it, built the same way: `DSD_ANALOG_DCS_LOCK_MS`
-  (520, every start at 10 dB in-band or better), at 3 dB the p95 target `DSD_ANALOG_DCS_LOCK_P95_MS` (450) and the
-  ceiling `DSD_ANALOG_DCS_LOCK_CEILING_MS` (1,500; lock time in noise has no absolute bound), and for loss the p95
-  targets `DSD_ANALOG_DCS_LOSS_P95_MS` (350) and `DSD_ANALOG_DCS_TURNOFF_LOSS_P95_MS` (150) with the ceilings
-  `DSD_ANALOG_DCS_LOSS_CEILING_MS` (600) and `DSD_ANALOG_DCS_TURNOFF_LOSS_CEILING_MS` (350). Each DCS ceiling sits above
-  the slowest event of the long-run sweeps in `docs/testing.md` (8,500,000 starts at 3 dB, 1,000,000 stops and
-  1,000,000 turn-offs); change them only with new sweeps. `DSP_ANALOG_DCS` holds every fixed-seed case to the p95
-  targets (at 3 dB, every start within 700 ms). A policy window must exceed the DCS lock ceiling by 100 ms too.
+  first lock has to budget for. The DCS timing contract sits beside it, built the same way, for the demodulator's DC
+  block at 8 to 78.125 kHz: `DSD_ANALOG_DCS_LOCK_MS` (520, every start at 10 dB in-band or better; 7,000,000 starts
+  over those rates), at 3 dB the p95 target `DSD_ANALOG_DCS_LOCK_P95_MS` (450) and the ceiling
+  `DSD_ANALOG_DCS_LOCK_CEILING_MS` (1,500; lock time in noise has no absolute bound), and for loss the p95 targets
+  `DSD_ANALOG_DCS_LOSS_P95_MS` (350) and `DSD_ANALOG_DCS_TURNOFF_LOSS_P95_MS` (150) with the ceilings
+  `DSD_ANALOG_DCS_LOSS_CEILING_MS` (600) and `DSD_ANALOG_DCS_TURNOFF_LOSS_CEILING_MS` (350). PCM input through a sound
+  card's coupling keeps the 10 dB bound up to a 10 Hz corner but not the 3 dB target or ceiling, as the header states.
+  Each DCS ceiling sits above the slowest event of the long-run sweeps in `docs/testing.md` (8,500,000 starts at 3 dB,
+  1,000,000 stops and 1,000,000 turn-offs); change them only with new sweeps. `DSP_ANALOG_DCS` holds every fixed-seed
+  case to the p95 targets (at 3 dB through the demodulator's DC block, every start within 700 ms; the coupled row has
+  pins of its own). A policy window must exceed the DCS lock ceiling by 100 ms too.
   `dsd_symbol.c` taps each unsynced analog block while it is still raw:
   `symbol_process_unsynced_analog()` offers the tap the block after every sample it adds, the one that completes the
   block included (`dsd_analog_rx_tap_partial()`), and the tap reads what is waiting once
@@ -1064,8 +1067,8 @@ installs from `src/engine/trunk_tuning.c` in `src/engine/trunk_tuning_hooks_inst
   (`docs/testing.md`). The host's own options are the `--analog-*` names it lists; other `--analog-*` arguments pass
   through to the CLI parser. After each delivered block it also reads the received-tone publication
   (`dsd_state::analog_rx`, which the tap updated from the same block) into its `tone`, `tone_lock_ms` and
-  `tone_lock_pct` fields (`tone=151.4` for CTCSS, `tone=D023N` for DCS), which the `DECODE_IQ_ANALOG_REAL_CTCSS_*`
-  cases and `tools/replay_ab.sh` read.
+  `tone_lock_pct` fields (`tone=151.4` for CTCSS, `tone=D023N` for DCS), which the `DECODE_IQ_ANALOG_REAL_CTCSS_*`,
+  `DECODE_IQ_ANALOG_DCS_023N_HOST` and `DECODE_IQ_ANALOG_DCS_023I_HOST` cases and `tools/replay_ab.sh` read.
 - AM envelope detector (issue #524, `demod_pipeline.cpp`, declared in `<dsd-neo/dsp/demod_pipeline.h>`):
   `dsd_am_demod()` outputs 0.25 x clamp(|z| / C - 1, +/-2), C being `demod_state::am_carrier`, a one-pole average of
   |z| with a `DSD_AM_CARRIER_TAU_MS` (50 ms) time constant recomputed per block for the detector's rate (`rate_out`:
