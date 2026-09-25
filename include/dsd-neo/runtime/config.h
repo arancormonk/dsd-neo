@@ -738,6 +738,19 @@ int dsd_user_config_save_atomic(const char* path, const dsdneoUserConfig* cfg);
 void dsd_apply_user_config_to_opts(const dsdneoUserConfig* cfg, dsd_opts* opts, dsd_state* state);
 
 /**
+ * @brief The RTL-SDR or rtl_tcp input spec the config's [input] sets, without applying anything.
+ *
+ * What dsd_apply_user_config_to_opts() writes to opts->audio_in_dev for an `rtl` source with `rtl_freq` or an `rtltcp`
+ * source with `rtltcp_host` ("rtl:dev:freq:gain:ppm:bw:sql:vol", "rtltcp:host:port[:freq:...]"), with the values the
+ * config leaves out taken from @p opts as the apply takes them. A caller compares it with the running input to know
+ * whether the apply reopens the device.
+ *
+ * @return 0 when the config sets such a spec (written to @p out), -1 when its [input] leaves the input spec alone or
+ *         sets another kind of input (or on bad arguments).
+ */
+int dsd_user_config_rtl_input_spec(const dsdneoUserConfig* cfg, const dsd_opts* opts, char* out, size_t out_size);
+
+/**
  * @brief Apply config defaults before CLI parsing without activating file-rate timing yet.
  *
  * Bootstrap uses this to stage config-backed input/output defaults first, then

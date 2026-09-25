@@ -519,22 +519,29 @@ rate), and the filter within its 288 taps. For an RTL-SDR or rtl_tcp input the D
 A width the DSP rate cannot filter is refused with the width, the rate, the widest width that rate filters and the
 DSP bandwidths that would fit, for example `NFM bandwidth 25 kHz does not fit the 24 kHz DSP rate (the largest width
 it fits is 20.4 kHz); set the RTL DSP bandwidth to 48 kHz`. For RTL-SDR and rtl_tcp inputs this happens at startup,
-before the device opens. A refusal while running (the terminal row, the Radio sheet, a loaded config, a switch to
-Analog) says the same in a short message, `NFM 25 kHz does not fit the 24 kHz DSP rate (max 20.4 kHz); use a 48 kHz
-DSP bandwidth`, and logs the full text; a DSP bandwidth refused for the width in use says to narrow the width first. A SoapySDR or Airspy device can deliver a rate other than the one asked for (an Airspy's
+before the device opens. A SoapySDR or Airspy device can deliver a rate other than the one asked for (an Airspy's
 78,125 Hz, say), and an I/Q replay runs at its capture's rate, so for those the check runs when the stream starts,
 against the rate actually delivered, and a width that rate cannot filter stops the stream from starting with the same
 text. `--validate-config` applies the RTL-SDR/rtl_tcp check to a config whose `[mode] decode` is `analog` and whose
 `[input]` builds the input with `rtl_bw_khz` (it sets `rtl_freq`; an rtl_tcp source without one connects at the
 48 kHz default).
 
-The terminal shows the width in force on the input status line, `Analog: NFM 16 kHz;` beside `DSP-BW:` (with
-`(DSP-limited)` when the rate bounds it), and sets it from Input > RTL-SDR > NFM bandwidth... while `-fA` is the
-configured mode on a radio input (a scan row running a digital protocol does not hide it). The Qt and Android Radio
-sheet shows the same reading under the NFM decode chip, with a stepper over 8, 11.25, 12.5, 16, 20 and 25 kHz that
-skips the widths the running DSP rate cannot filter, and *Use the default width* to return an explicit width to the
-unset default; it is disabled on PCM input. The setup wizard offers the NFM chip too, and picking it suggests no
-trunking.
+A refusal while running (the terminal row, the Radio sheet, a loaded config, a switch to Analog) is a short message
+that names the width, the rate, the widest width it filters and the fix, and the full text goes to the log. On an
+RTL-SDR or rtl_tcp input the fix is a DSP bandwidth: `NFM 25 kHz does not fit the 24 kHz DSP rate (max 20.4 kHz); use
+a 48 kHz DSP bandwidth`. On a running SoapySDR, Airspy or I/Q replay stream the rate is the one the device or the
+capture forces, so the message names that rate and says to narrow the width instead: `NFM 25 kHz does not fit the
+24 kHz DSP rate (max 20.4 kHz); narrow the NFM width`. A DSP bandwidth refused for the width in use says to narrow the
+width first.
+
+The terminal shows the width in force on the input status line beside `DSP-BW:`: `Analog: NFM 12.5 kHz;` for an
+explicit width, `Analog: NFM 16 kHz (default);` for the unset default, and `Analog: NFM 12 kHz (DSP-limited);` when
+the rate bounds it. It sets the width from Input > RTL-SDR > NFM bandwidth..., whose label shows the setting
+(`[12.5 kHz]`, or `[default]`), while `-fA` is the configured mode on a radio input (a scan row running a digital
+protocol does not hide it). The Qt and Android Radio sheet shows the same reading under the NFM decode chip, with a
+stepper over 8, 11.25, 12.5, 16, 20 and 25 kHz that skips the widths the running DSP rate cannot filter, and *Use the
+default width* to return an explicit width to the unset default. On PCM input it reads *not used on PCM input* and
+the controls are disabled. The setup wizard offers the NFM chip too, and picking it suggests no trunking.
 
 ### When changes apply
 
@@ -542,7 +549,7 @@ trunking.
 | --- | --- |
 | NFM width from the terminal row, the Radio sheet or a loaded config | Live, on the next DSP block of a running analog monitor, with a filter designed from empty histories; no reopen. Refused with a message, and the width unchanged, when the DSP rate it will run at cannot filter it (a config is then not applied at all). A width set while a scan row runs a digital protocol, or while CQPSK is toggled on under `-fA`, applies when the front end returns to the monitor. With no stream running, the next start uses it. |
 | Decode mode to or from Analog (`-fA`, the NFM chip, `[mode] decode`) | Live: the front end switches receive family between DSP blocks. A switch to Analog with an explicit NFM width the DSP rate cannot filter is refused, naming both, and the mode stays (under a scan row too). |
-| DSP bandwidth (`bw`, `rtl_bw_khz`, DSP bandwidth...) | Reopens the device. On an RTL-SDR or rtl_tcp input a bandwidth the explicit NFM width in use cannot run at is refused, naming both, from the DSP bandwidth... row and from a loaded config alike; a loaded config that changes both is checked at the new bandwidth. |
+| DSP bandwidth (`bw`, `rtl_bw_khz`, DSP bandwidth...) | Reopens the device. On an RTL-SDR or rtl_tcp input a bandwidth the explicit NFM width in use cannot run at is refused, naming both, from the DSP bandwidth... row and from a loaded config alike. A loaded config is checked at the bandwidth its `[input]` reopens the device at (its `rtl_bw_khz` as given), from whatever input runs now; one that builds the input already running (an rtl_tcp source without `rtl_freq` for the host and port in use) reopens nothing and changes no rate. |
 | A retune (scanner, trunking, manual tune) | The channel filter, de-emphasis, audio filter and squelch start from empty state on the new channel; a retune that lands on another DSP rate resolves the channel for that rate. |
 | `--nfm-bandwidth-hz`, `[analog] nfm_bandwidth_hz` at startup | When the stream opens. |
 

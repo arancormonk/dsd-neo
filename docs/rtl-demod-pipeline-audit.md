@@ -177,14 +177,20 @@ is known:
   analog family carries. Under a typed digital scan row it is stored and
   applied when the row's leave republishes the analog profile; with CQPSK
   toggled on under `-fA` it is stored, and turning CQPSK off returns to the
-  monitor through the analog profile with it.
+  monitor through the analog profile with it. Whether CQPSK holds the front
+  end off the monitor is read from the requests the decoder has queued, not
+  only from the published state, which lags them until the demod thread takes
+  them: `symbol_profile.c` keeps the CQPSK state of the last request with the
+  stream's output generation, and the published state is the stream's again
+  once the generation moves (a family switch landing, a restart).
 - A switch to Analog (a decode-mode change, a config's `[mode]`) holds an
   explicit width to the rate first, under a scan row too, so a decoder is
   never committed to Analog on a front end that refuses the profile.
-- A config apply that changes the width, or moves the DSP bandwidth under an
-  explicit one, is held to the rate the width will run at: the new bandwidth
-  when the config reopens the device at one, otherwise the running stream. A
-  refusal leaves the whole config unapplied.
+- A config apply that changes the width, or reopens an RTL-SDR or rtl_tcp
+  device under an explicit one, is held to the rate the width will run at: the
+  `rtl_bw_khz` the reopen stores, as given, when the config's `[input]` builds
+  an input spec other than the running one (from any RTL-family input),
+  otherwise the running stream. A refusal leaves the whole config unapplied.
 - `DSD_APP_CMD_RTL_SET_BW` refuses a DSP bandwidth that the explicit width of
   the configured analog preset cannot run at on an RTL-SDR or rtl_tcp input,
   naming both; the width is never adjusted to fit the new rate.
@@ -424,9 +430,12 @@ invariant to it, so it is left as is.
 - The configured width (issue #525): `RUNTIME_CLI_PARSE`, `CONFIG_VALIDATION`
   and `RUNTIME_CONFIG_USER` cover the option, the `[analog]` key and their
   refusals; `RUNTIME_ANALOG_WIDTH_RATE_REFUSED` the startup refusal of a width
-  an rtl_tcp input's DSP bandwidth cannot filter; `APP_COMMAND_QUEUE` and
-  `UI_MENU_SERVICES` the command's live request and refusals, a config apply's
-  width, scan rows, and the DSP bandwidth refusal. `DECODE_IQ_ANALOG_NFM_TONE_8K`,
+  an rtl_tcp input's DSP bandwidth cannot filter, and
+  `RUNTIME_ANALOG_NFM_DEFAULT_LOW_RATE` and `_WIDTH_FITS_LOW_RATE` that the
+  unset default and a fitting width still start at a low DSP rate;
+  `APP_COMMAND_QUEUE` and `UI_MENU_SERVICES` the command's live request and
+  refusals, a CQPSK toggle or switch drained with it, a config apply's width
+  and reopen rate, scan rows, and the DSP bandwidth refusal. `DECODE_IQ_ANALOG_NFM_TONE_8K`,
   `_16K` and `_25K` show the 1 kHz tone keeping its level through each width
   (the explicit 16 kHz measuring the same as the default), and `DECODE_IQ_ANALOG_NFM_BW_8K`
   and `_25K` that the neighbour 12.5 kHz away is rejected at 8 kHz (-79.5 dBc)

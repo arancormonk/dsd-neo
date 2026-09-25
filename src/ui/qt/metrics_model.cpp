@@ -24,6 +24,7 @@
 #include <QChar>
 #include <QDateTime>
 #include <QtGlobal>
+#include <dsd-neo/app_control/analog_width_view.h>
 #include <dsd-neo/app_control/call_view.h>
 #include <dsd-neo/app_control/frontend.h>
 #include <dsd-neo/app_control/rx_tone_view.h>
@@ -37,7 +38,6 @@
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/core/talkgroup_policy.h>
-#include <dsd-neo/runtime/analog_channel.h>
 #include <dsd-neo/runtime/scan_mode.h>
 
 #include <dsd-neo/core/opts_fwd.h>
@@ -788,37 +788,21 @@ MetricsModel::fillSquelchOverride(View& next, const dsd_opts* opts_snapshot, con
     next.squelch_readout = QString::fromUtf8(readout);
 }
 
-/* Issue #525: the analog width the Radio sheet shows and the configured one its control edits. The analog preset is
- * the configured one (a typed digital scan row does not end it, and its leave returns to the configured width). While
- * a running stream's options in force run the analog family on the monitor output, the width is the one the front end
- * reports; otherwise (no stream, a typed digital row filtering with its own profile) the configured width. With a
- * stream running, the widest width its published DSP rate filters bounds the control's steps. The same rule as the
- * terminal's "Analog:" status field (ui_print_analog_channel_field()). */
+/* Issue #525: the analog width the Radio sheet shows and the configured one its control edits, as app_control's analog
+ * width view decides them for every frontend (the terminal's "Analog:" status field too). */
 void
 MetricsModel::fillAnalogChannel(View& next, const dsd_opts* opts_snapshot, const dsd_state* snapshot,
                                 const dsd_frontend_metrics& metrics) {
-    const dsd_scan_settings* configured = dsd_scan_mode_configured_view(snapshot);
-    const int analog_only = configured ? configured->analog_only : opts_snapshot->analog_only;
-    const int kind = configured ? configured->analog_demod : opts_snapshot->analog_demod;
-    const int configured_hz =
-        (kind == DSD_ANALOG_DEMOD_AM) ? opts_snapshot->analog_am_bandwidth_hz : opts_snapshot->analog_nfm_bandwidth_hz;
-    next.analog_bandwidth_configured_hz = configured_hz > 0 ? configured_hz : 0;
-    next.analog_bandwidth_hz = 0;
-    next.analog_bandwidth_max_hz = 0;
-    next.analog_bandwidth_dsp_limited = false;
-    if (analog_only != 1 || opts_snapshot->m17encoder == 1) {
-        return;
-    }
-    next.analog_bandwidth_hz = dsd_analog_width_effective_hz(kind, next.analog_bandwidth_configured_hz);
-    if (!next.radio_input || !next.stream_active) {
-        return;
-    }
-    next.analog_bandwidth_max_hz = metrics.demod_rate_hz > 0 ? dsd_analog_width_max_for_rate(metrics.demod_rate_hz) : 0;
-    if (dsd_opts_is_analog_family(opts_snapshot) && metrics.output_kind == DSD_FRONTEND_RTL_OUTPUT_AUDIO_MONITOR
-        && metrics.channel_bandwidth_hz > 0) {
-        next.analog_bandwidth_hz = metrics.channel_bandwidth_hz;
-        next.analog_bandwidth_dsp_limited = metrics.channel_bandwidth_dsp_limited != 0;
-    }
+    dsd_app_analog_width_view view;
+    (void)dsd_app_analog_width_view_get(opts_snapshot, snapshot, &metrics, &view);
+    /* The view leaves the width, its bound and the flag at 0 outside the analog preset. */
+    next.analog_bandwidth_configured_hz = view.configured_hz;
+    next.analog_bandwidth_hz = view.width_hz;
+    next.analog_bandwidth_max_hz = view.max_hz;
+    next.analog_bandwidth_dsp_limited = view.dsp_limited != 0U;
+    char reading[DSD_APP_ANALOG_WIDTH_TEXT_MAX];
+    (void)dsd_app_analog_width_view_format(&view, reading, sizeof reading);
+    next.analog_bandwidth_reading = QString::fromUtf8(reading);
 }
 
 void

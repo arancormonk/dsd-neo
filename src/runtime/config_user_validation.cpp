@@ -412,13 +412,7 @@ validate_composed_scan_max_visit_ms(const dsdneoUserConfig* cfg, const char* sec
 static int
 validate_configured_rtl_bw_khz(int bw) {
     /* What applying the config leaves in force: an unset or unsupported value is the 48 kHz default. */
-    static const int supported[] = {4, 6, 8, 12, 16, 24, 48};
-    for (size_t i = 0; i < sizeof supported / sizeof supported[0]; i++) {
-        if (supported[i] == bw) {
-            return bw;
-        }
-    }
-    return 48;
+    return dsd_analog_rtl_dsp_bw_is_selectable(bw) ? bw : 48;
 }
 
 static int

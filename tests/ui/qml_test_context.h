@@ -1994,13 +1994,15 @@ class Setup : public QObject {
         metrics[QStringLiteral("effectiveSquelchOff")] = false;
         metrics[QStringLiteral("squelchRowOverride")] = false;
         metrics[QStringLiteral("squelchReadout")] = QStringLiteral("-120.0 dB");
-        // #525: the analog channel width in force (0 outside the analog preset), whether the
-        // DSP rate bounds it, the configured width the control edits (0 = default), and the
-        // widest width the running stream's DSP rate filters (0 = not known).
+        // #525: the analog channel width in force (0 outside the analog preset and on PCM input),
+        // whether the DSP rate bounds it, the configured width the control edits (0 = default),
+        // the widest width the running stream's DSP rate filters (0 = not known), and the
+        // reading as app_control's analog width view spells it.
         metrics[QStringLiteral("analogBandwidthHz")] = 0;
         metrics[QStringLiteral("analogBandwidthDspLimited")] = false;
         metrics[QStringLiteral("analogBandwidthConfiguredHz")] = 0;
         metrics[QStringLiteral("analogBandwidthMaxHz")] = 0;
+        metrics[QStringLiteral("analogBandwidthReading")] = QString();
         metrics[QStringLiteral("ppm")] = 0;
         m_metrics = metrics;
         m_engine = engine;

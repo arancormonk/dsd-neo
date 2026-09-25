@@ -5071,8 +5071,7 @@ test_family_change_discards_partial_analog_block(void) {
     return rc;
 }
 
-#ifdef USE_RADIO
-/* Guarded as broadly as its widest caller (the RTL_SET_BW case needs only USE_RADIO), not by the wraps. */
+/* Unguarded: the NFM width command's range and store run in every build, radio or not. */
 static int
 expect_toast(const char* label, const dsd_state* state, const char* text) {
     if (strstr(state->ui_msg, text) == NULL) {
@@ -5081,7 +5080,48 @@ expect_toast(const char* label, const dsd_state* state, const char* text) {
     }
     return 0;
 }
-#endif
+
+static int
+submit_nfm_width(dsd_opts* opts, dsd_state* state, int32_t hz, const char* label) {
+    int rc =
+        expect_int(label, dsd_app_command_set_i32(DSD_APP_CMD_NFM_BANDWIDTH_SET, hz), DSD_APP_COMMAND_SUBMIT_QUEUED);
+    state->ui_msg[0] = '\0';
+    rc |= expect_int(label, dsd_app_drain_cmds(opts, state), 1);
+    return rc;
+}
+
+/*
+ * Issue #525: DSD_APP_CMD_NFM_BANDWIDTH_SET is compiled into every build, radio or not, and so are its range check,
+ * its store and its toasts. On PCM input (no front end, no wraps) the width is configuration only: a width outside
+ * 8000..25000 Hz is refused and the previous one stays, an in-range one is stored, and 0 selects the default.
+ */
+static int
+test_nfm_bandwidth_set_on_pcm_input(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    int rc = 0;
+    init_decode_mode_context(&opts, &state);
+    opts.audio_in_type = AUDIO_IN_PULSE;
+    opts.analog_only = 1;
+    opts.analog_demod = DSD_ANALOG_DEMOD_FM;
+
+    rc |= submit_nfm_width(&opts, &state, 30000, "pcm nfm 30000");
+    rc |= expect_int("pcm nfm 30000 keeps the default", opts.analog_nfm_bandwidth_hz, 0);
+    rc |= expect_toast("pcm nfm 30000 toast", &state, "Refused: NFM bandwidth 30 kHz is outside 8 kHz to 25 kHz");
+    rc |= submit_nfm_width(&opts, &state, 12500, "pcm nfm 12500");
+    rc |= expect_int("pcm nfm 12500 stored", opts.analog_nfm_bandwidth_hz, 12500);
+    rc |= expect_toast("pcm nfm 12500 toast", &state, "Applied: NFM bandwidth -> 12.5 kHz");
+    rc |= submit_nfm_width(&opts, &state, 7999, "pcm nfm 7999");
+    rc |= expect_int("pcm nfm 7999 keeps 12500", opts.analog_nfm_bandwidth_hz, 12500);
+    rc |= expect_toast("pcm nfm 7999 toast", &state, "Refused: NFM bandwidth 7.999 kHz is outside 8 kHz to 25 kHz");
+    rc |= submit_nfm_width(&opts, &state, 0, "pcm nfm default");
+    rc |= expect_int("pcm nfm default stored", opts.analog_nfm_bandwidth_hz, 0);
+    rc |= expect_toast("pcm nfm default toast", &state, "Applied: NFM bandwidth -> default");
+
+    opts.analog_only = 0;
+    freeState(&state);
+    return rc;
+}
 
 #if defined(USE_RADIO) && defined(DSD_NEO_TEST_ANALOG_WRAP) && defined(DSD_NEO_TEST_AUDIO_ENSURE_WRAP)
 /* The RTL receive-family requests a decode-mode change makes, recorded instead of run. */
@@ -5108,6 +5148,11 @@ static int g_analog_check_width_hz;
 /* What rtl_stream_get_cqpsk_status() reports: 1 while CQPSK runs (under -fA, the DSP menu's toggle holding the front
    end off the monitor). */
 static int g_fake_cqpsk;
+/* rtl_stream_output_generation(): moves on when the demod thread has taken what was queued (a CQPSK or family switch
+   landing), or the stream restarts. The published CQPSK state above is the stream's only from then. */
+static uint32_t g_fake_generation = 1U;
+/* The CQPSK state of the last demod profile requested. */
+static int g_demod_req_cqpsk;
 /* The digital decode modes the decoder notes with the front end (rtl_stream_set_digital_decode_modes()). */
 static int g_modes_note_calls;
 static int g_modes_note_order;
@@ -5124,6 +5169,12 @@ int __wrap_rtl_stream_analog_family_active(void);
 unsigned int __wrap_rtl_stream_output_rate_for_family(int family, int cqpsk_enable, int symbol_rate_hz);
 void __wrap_rtl_stream_set_digital_decode_modes(const dsd_opts* opts);
 int __wrap_rtl_stream_get_cqpsk_status(int* cqpsk_enable, int* cqpsk_timing_active);
+uint32_t __wrap_rtl_stream_output_generation(void);
+
+uint32_t
+__wrap_rtl_stream_output_generation(void) {
+    return g_fake_generation;
+}
 
 int
 __wrap_rtl_stream_get_cqpsk_status(int* cqpsk_enable, int* cqpsk_timing_active) {
@@ -5158,11 +5209,11 @@ __wrap_rtl_stream_request_analog_profile(int family, int kind, int width_hz) {
 int
 __wrap_rtl_stream_request_demod_profile(int cqpsk_enable, int symbol_rate_hz, int levels, int channel_profile,
                                         int ted_sps, int ted_sps_is_override) {
-    (void)cqpsk_enable;
     (void)levels;
     (void)channel_profile;
     (void)ted_sps_is_override;
     g_demod_req_calls++;
+    g_demod_req_cqpsk = cqpsk_enable;
     g_demod_req_rate = symbol_rate_hz;
     g_demod_req_ted_sps = ted_sps;
     g_demod_req_order = ++g_rx_sequence;
@@ -5192,13 +5243,23 @@ __wrap_rtl_stream_set_digital_decode_modes(const dsd_opts* opts) {
 
 // NOLINTEND(bugprone-reserved-identifier,cert-dcl37-c,cert-dcl51-cpp,misc-use-internal-linkage)
 
+/* The demod thread has taken everything queued so far: the stream publishes @p cqpsk from here. */
+static void
+demod_thread_lands(int cqpsk) {
+    g_fake_cqpsk = cqpsk;
+    g_fake_generation++;
+}
+
+/* Each step starts on a stream that has taken the last step's requests (demod_thread_lands()), so what the step sets
+   in g_fake_cqpsk is what the stream publishes. */
 static void
 reset_rx_family_wrap(void) {
+    demod_thread_lands(g_fake_cqpsk);
     g_analog_check_result = 0;
     g_analog_check_calls = g_analog_check_family = g_analog_check_kind = g_analog_check_width_hz = 0;
     g_rx_sequence = 0;
     g_analog_req_calls = g_analog_req_family = g_analog_req_kind = g_analog_req_width_hz = g_analog_req_order = 0;
-    g_demod_req_calls = g_demod_req_order = g_demod_req_rate = g_demod_req_ted_sps = 0;
+    g_demod_req_calls = g_demod_req_order = g_demod_req_rate = g_demod_req_ted_sps = g_demod_req_cqpsk = 0;
     g_modes_note_calls = g_modes_note_order = g_modes_note_dmr = g_modes_note_nxdn48 = 0;
     g_ensure_analog_calls = g_ensure_digital_calls = 0;
 }
@@ -5613,15 +5674,6 @@ test_config_apply_refused_analog_profile_changes_nothing(void) {
     return rc;
 }
 
-static int
-submit_nfm_width(dsd_opts* opts, dsd_state* state, int32_t hz, const char* label) {
-    int rc =
-        expect_int(label, dsd_app_command_set_i32(DSD_APP_CMD_NFM_BANDWIDTH_SET, hz), DSD_APP_COMMAND_SUBMIT_QUEUED);
-    state->ui_msg[0] = '\0';
-    rc |= expect_int(label, dsd_app_drain_cmds(opts, state), 1);
-    return rc;
-}
-
 /* An -fA session on an RTL-SDR input whose DSP bandwidth is 24 kHz, with the front end on the analog monitor. */
 static void
 init_nfm_session(dsd_opts* opts, dsd_state* state, RtlSdrContext* fake_ctx) {
@@ -5697,7 +5749,7 @@ test_nfm_bandwidth_set_applies_live_and_refuses(void) {
     rc |= expect_int("nfm default stored", opts.analog_nfm_bandwidth_hz, 0);
     rc |= expect_int("nfm default not checked", g_analog_check_calls, 0);
     rc |= expect_int("nfm default requested", g_analog_req_calls == 1 && g_analog_req_width_hz == 0, 1);
-    rc |= expect_toast("nfm default toast", &state, "Applied: NFM bandwidth -> default (16 kHz)");
+    rc |= expect_toast("nfm default toast", &state, "Applied: NFM bandwidth -> default");
 
     /* CQPSK toggled on under -fA holds the front end off the monitor: the width is stored and waits, and turning CQPSK
        off returns to the monitor through the analog profile with that width, not with the one it had. */
@@ -5742,7 +5794,8 @@ test_nfm_bandwidth_set_applies_live_and_refuses(void) {
     rc |= expect_int("nfm digital stored", opts.analog_nfm_bandwidth_hz, 25000);
     rc |= expect_int("nfm digital asks nothing", g_analog_check_calls + g_analog_req_calls, 0);
 
-    /* ...but a switch back to Analog holds the stored width to the rate first, and changes nothing when it cannot run. */
+    /* ...but a switch back to Analog holds the stored width to the rate first, and changes nothing when it cannot
+       run. */
     reset_rx_family_wrap();
     g_analog_check_result = -1;
     rc |= expect_int("analog with 25 kHz queued",
@@ -5794,6 +5847,113 @@ test_nfm_bandwidth_set_replaces_a_queued_switch(void) {
     rc |= expect_int("the last request carries the new width", g_analog_req_width_hz, 12500);
     rc |= expect_int("the last request is the analog family", g_analog_req_family, DSD_RX_FAMILY_ANALOG);
 
+    opts.analog_nfm_bandwidth_hz = 0;
+    state.rtl_ctx = NULL;
+    freeState(&state);
+    return rc;
+}
+
+/* Submit a DSP-menu CQPSK toggle and an NFM width, in that order, for one drain. */
+static int
+queue_cqpsk_toggle_then_width(int32_t hz, const char* label) {
+    submit_cqpsk_toggle();
+    return expect_int(label, dsd_app_command_set_i32(DSD_APP_CMD_NFM_BANDWIDTH_SET, hz), DSD_APP_COMMAND_SUBMIT_QUEUED);
+}
+
+/*
+ * A CQPSK toggle and a width change drained in the same pass, before the demod thread has taken the toggle: the front
+ * end still publishes the CQPSK state it had, so the width has to go by what was queued, not by what is published.
+ * Turning CQPSK on must not be undone by the width's analog request (which would drop the queued toggle); turning it
+ * off must end on the new width, not on the one the toggle's return to the monitor carries. The same holds when the
+ * stream moves on (a restart) after a toggle it never took: the published state is the stream's again.
+ */
+static int
+test_nfm_bandwidth_set_after_a_queued_cqpsk_toggle(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static void* fake_ctx[2];
+    int rc = 0;
+    init_nfm_session(&opts, &state, (RtlSdrContext*)fake_ctx);
+    opts.analog_nfm_bandwidth_hz = 16000;
+
+    /* CQPSK on, then a width, one drain: the toggle stands and the width waits for the monitor. */
+    reset_rx_family_wrap();
+    g_fake_cqpsk = 0;
+    rc |= queue_cqpsk_toggle_then_width(12500, "cqpsk on + width queued");
+    rc |= expect_int("cqpsk on + width drained", dsd_app_drain_cmds(&opts, &state), 2);
+    rc |= expect_int("cqpsk on + width: CQPSK requested on", g_demod_req_calls == 1 && g_demod_req_cqpsk == 1, 1);
+    rc |= expect_int("cqpsk on + width: the toggle is not undone", g_analog_req_calls, 0);
+    rc |= expect_int("cqpsk on + width: width stored", opts.analog_nfm_bandwidth_hz, 12500);
+
+    /* The toggle has landed: CQPSK off, then a width, one drain. The last request carries the new width. */
+    reset_rx_family_wrap();
+    g_fake_cqpsk = 1;
+    rc |= queue_cqpsk_toggle_then_width(20000, "cqpsk off + width queued");
+    rc |= expect_int("cqpsk off + width drained", dsd_app_drain_cmds(&opts, &state), 2);
+    rc |= expect_int("cqpsk off + width: CQPSK requested off", g_demod_req_calls == 1 && g_demod_req_cqpsk == 0, 1);
+    rc |= expect_int("cqpsk off + width: toggle and width both requested", g_analog_req_calls, 2);
+    rc |= expect_int("cqpsk off + width: the last request carries the new width", g_analog_req_width_hz, 20000);
+    rc |= expect_int("cqpsk off + width: after the demod profile", g_analog_req_order > g_demod_req_order, 1);
+
+    /* Two toggles in one drain flip twice: the second reads the first, queued but not taken. */
+    reset_rx_family_wrap();
+    g_fake_cqpsk = 0;
+    submit_cqpsk_toggle();
+    submit_cqpsk_toggle();
+    rc |= expect_int("two toggles drained", dsd_app_drain_cmds(&opts, &state), 2);
+    rc |= expect_int("two toggles: on, then off", g_demod_req_calls == 2 && g_demod_req_cqpsk == 0, 1);
+    rc |= expect_int("two toggles: back to the monitor with the width", g_analog_req_width_hz, 20000);
+
+    /* CQPSK on, never taken, then the stream restarts (it opens on the -fA monitor): a width goes straight to it. */
+    reset_rx_family_wrap();
+    g_fake_cqpsk = 0;
+    submit_cqpsk_toggle();
+    (void)dsd_app_drain_cmds(&opts, &state);
+    demod_thread_lands(0);
+    g_analog_req_calls = 0;
+    rc |= submit_nfm_width(&opts, &state, 12500, "width after a restart");
+    rc |= expect_int("width after a restart: requested", g_analog_req_calls == 1 && g_analog_req_width_hz == 12500, 1);
+
+    g_fake_cqpsk = 0;
+    opts.analog_nfm_bandwidth_hz = 0;
+    state.rtl_ctx = NULL;
+    freeState(&state);
+    return rc;
+}
+
+/*
+ * A P25 session on CQPSK switched to Analog, and a width set, in the same drain: the front end still publishes CQPSK,
+ * the digital session's, but the switch has asked for the monitor. The width's request replaces the switch's, so the
+ * monitor opens on the new width.
+ */
+static int
+test_nfm_bandwidth_set_after_a_queued_switch_from_cqpsk(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static void* fake_ctx[2];
+    int rc = 0;
+    init_decode_mode_context(&opts, &state);
+    opts.audio_in_type = AUDIO_IN_RTL;
+    DSD_SNPRINTF(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", "rtl:0:851.375M:0:0:48");
+    opts.rtl_dsp_bw_khz = 48;
+    state.rtl_ctx = (RtlSdrContext*)fake_ctx;
+    (void)dsd_app_command_set_i32(DSD_APP_CMD_DECODE_MODE_SET, (int32_t)DSDCFG_MODE_P25P1);
+    (void)dsd_app_drain_cmds(&opts, &state);
+
+    reset_rx_family_wrap();
+    g_fake_cqpsk = 1;
+    g_fake_analog_family = 0;
+    rc |= expect_int("cqpsk to analog queued",
+                     dsd_app_command_set_i32(DSD_APP_CMD_DECODE_MODE_SET, (int32_t)DSDCFG_MODE_ANALOG),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("cqpsk to analog width queued", dsd_app_command_set_i32(DSD_APP_CMD_NFM_BANDWIDTH_SET, 12500),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("cqpsk to analog drained", dsd_app_drain_cmds(&opts, &state), 2);
+    rc |= expect_int("cqpsk to analog: switch and width both requested", g_analog_req_calls, 2);
+    rc |= expect_int("cqpsk to analog: the last request carries the new width", g_analog_req_width_hz, 12500);
+    rc |= expect_int("cqpsk to analog: the analog family", g_analog_req_family, DSD_RX_FAMILY_ANALOG);
+
+    g_fake_cqpsk = 0;
     opts.analog_nfm_bandwidth_hz = 0;
     state.rtl_ctx = NULL;
     freeState(&state);
@@ -6024,6 +6184,108 @@ test_config_apply_holds_nfm_width_to_a_new_dsp_bandwidth(void) {
     freeState(&state);
     return rc;
 }
+
+/*
+ * What a config's [input] does to the rate is what its hot restart does: a reopen only when it builds an RTL-SDR or
+ * rtl_tcp spec other than the running input's, at rtl_bw_khz as the config gives it. An unsupported value (20) is the
+ * rate the reopened device runs at; an RTL spec over a running Airspy reopens an RTL-SDR even at the rtl_bw_khz the
+ * session already has, where the Airspy ran at the rate it forced; and an rtl_tcp source that names the host and port
+ * in use without rtl_freq reopens nothing, so its rtl_bw_khz changes no rate and refuses nothing.
+ */
+static int
+test_config_apply_holds_nfm_width_to_the_rate_the_reopen_runs_at(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static void* fake_ctx[2];
+    int rc = 0;
+    init_nfm_session(&opts, &state, (RtlSdrContext*)fake_ctx);
+
+    /* rtl_bw_khz = 20 reopens at 20 kHz, which cannot filter 20 kHz (the reopen would fail and leave no stream). */
+    opts.analog_nfm_bandwidth_hz = 20000;
+    opts.rtl_dsp_bw_khz = 48;
+    DSD_SNPRINTF(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", "rtl:0:146.52M:0:0:48");
+    reset_rx_family_wrap();
+    rc |= submit_config_rtl_bw(&opts, &state, 20, -1, "cfg rtl_bw_khz 20");
+    rc |= expect_int("cfg rtl_bw_khz 20: refused, rate kept", opts.rtl_dsp_bw_khz, 48);
+    rc |= expect_toast("cfg rtl_bw_khz 20 toast", &state,
+                       "Config not applied: NFM 20 kHz does not fit the 20 kHz DSP rate (max 16.8 kHz); use a 24 or 48 "
+                       "kHz DSP bandwidth");
+
+    /* An Airspy running an explicit 25 kHz at its forced rate; a config moving to an RTL-SDR at the same 24 kHz
+       rtl_bw_khz value would reopen at 24 kHz, which cannot filter it. */
+    opts.analog_nfm_bandwidth_hz = 25000;
+    opts.rtl_dsp_bw_khz = 24;
+    DSD_SNPRINTF(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", "airspy");
+    reset_rx_family_wrap();
+    rc |= submit_config_rtl_bw(&opts, &state, 24, -1, "cfg airspy to rtl");
+    rc |= expect_str("cfg airspy to rtl: input unchanged", opts.audio_in_dev, "airspy");
+    rc |= expect_int("cfg airspy to rtl: front end not asked", g_analog_check_calls, 0);
+    rc |= expect_toast("cfg airspy to rtl toast", &state,
+                       "Config not applied: NFM 25 kHz does not fit the 24 kHz DSP rate (max 20.4 kHz); use a 48 kHz "
+                       "DSP bandwidth");
+
+    /* rtl_tcp at the host and port in use, no rtl_freq: nothing reopens, so the rtl_bw_khz it carries moves nothing. */
+    opts.rtl_dsp_bw_khz = 48;
+    DSD_SNPRINTF(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", "rtltcp:127.0.0.1:1234");
+    dsdneoUserConfig cfg;
+    DSD_MEMSET(&cfg, 0, sizeof cfg);
+    cfg.has_input = 1;
+    cfg.input_source = DSDCFG_INPUT_RTLTCP;
+    DSD_SNPRINTF(cfg.rtltcp_host, sizeof cfg.rtltcp_host, "%s", "127.0.0.1");
+    cfg.rtltcp_port = 1234;
+    cfg.rtl_bw_khz = 24;
+    reset_rx_family_wrap();
+    rc |= expect_int("cfg same rtl_tcp queued", dsd_app_command_submit(DSD_APP_CMD_CONFIG_APPLY, &cfg, sizeof(cfg)),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    state.ui_msg[0] = '\0';
+    rc |= expect_int("cfg same rtl_tcp drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("cfg same rtl_tcp: not refused", strstr(state.ui_msg, "Config not applied") == NULL, 1);
+    rc |= expect_str("cfg same rtl_tcp: input unchanged", opts.audio_in_dev, "rtltcp:127.0.0.1:1234");
+    rc |= expect_int("cfg same rtl_tcp: rate unchanged", opts.rtl_dsp_bw_khz, 48);
+    rc |= expect_int("cfg same rtl_tcp: width unchanged", opts.analog_nfm_bandwidth_hz, 25000);
+
+    opts.analog_nfm_bandwidth_hz = 0;
+    state.rtl_ctx = NULL;
+    freeState(&state);
+    return rc;
+}
+
+/*
+ * A config saved at the default NFM width carries [analog] with no width under it, and loading it into a session that
+ * has an explicit width puts the default back (and hands it to the running monitor), rather than keeping the explicit
+ * width and writing it into that file on the next save.
+ */
+static int
+test_config_apply_restores_the_default_nfm_width(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static void* fake_ctx[2];
+    int rc = 0;
+    init_nfm_session(&opts, &state, (RtlSdrContext*)fake_ctx);
+
+    static dsdneoUserConfig saved;
+    dsd_snapshot_opts_to_user_config(&opts, &state, &saved);
+    rc |= expect_int("saved default: [analog] present", saved.has_analog, 1);
+    rc |= expect_int("saved default: no width", saved.analog_nfm_bandwidth_hz, 0);
+
+    rc |= submit_nfm_width(&opts, &state, 12500, "explicit width before the load");
+    rc |= expect_int("explicit width set", opts.analog_nfm_bandwidth_hz, 12500);
+    dsdneoUserConfig cfg;
+    DSD_MEMSET(&cfg, 0, sizeof cfg);
+    cfg.has_analog = saved.has_analog;
+    cfg.analog_nfm_bandwidth_hz = saved.analog_nfm_bandwidth_hz;
+    reset_rx_family_wrap();
+    rc |= expect_int("load saved default queued", dsd_app_command_submit(DSD_APP_CMD_CONFIG_APPLY, &cfg, sizeof(cfg)),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("load saved default drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("load saved default: the default is back", opts.analog_nfm_bandwidth_hz, 0);
+    rc |=
+        expect_int("load saved default: the monitor gets it", g_analog_req_calls == 1 && g_analog_req_width_hz == 0, 1);
+
+    state.rtl_ctx = NULL;
+    freeState(&state);
+    return rc;
+}
 #endif
 
 #ifdef USE_RADIO
@@ -6239,6 +6501,7 @@ main(void) {
     int rc = test_session_queue_cancellation();
     rc |= test_config_refuses_scanner_under_trunk_scan();
     rc |= test_config_keeps_trunk_scan_lifecycle();
+    rc |= test_nfm_bandwidth_set_on_pcm_input();
 #if defined(USE_RADIO) && defined(DSD_NEO_TEST_RTL_WRAP)
     rc |= test_config_rtl_restart_under_policy_guard();
     rc |= test_squelch_commands_edit_the_configured_default();
@@ -6259,10 +6522,14 @@ main(void) {
     rc |= test_config_apply_refused_analog_profile_changes_nothing();
     rc |= test_nfm_bandwidth_set_applies_live_and_refuses();
     rc |= test_nfm_bandwidth_set_replaces_a_queued_switch();
+    rc |= test_nfm_bandwidth_set_after_a_queued_cqpsk_toggle();
+    rc |= test_nfm_bandwidth_set_after_a_queued_switch_from_cqpsk();
     rc |= test_nfm_bandwidth_set_under_scan_rows();
     rc |= test_decode_mode_analog_under_a_row_holds_the_nfm_width();
     rc |= test_config_apply_holds_nfm_width_to_the_front_end();
     rc |= test_config_apply_holds_nfm_width_to_a_new_dsp_bandwidth();
+    rc |= test_config_apply_holds_nfm_width_to_the_rate_the_reopen_runs_at();
+    rc |= test_config_apply_restores_the_default_nfm_width();
 #endif
 #ifdef USE_RADIO
     rc |= test_rtl_set_bw_refuses_a_rate_the_nfm_width_cannot_run_at();

@@ -5,6 +5,7 @@
 
 /* Frontend → decoder app-command queue (bounded). */
 
+#include <dsd-neo/app_control/analog_width_view.h>
 #include <dsd-neo/app_control/call_view.h>
 #include <dsd-neo/app_control/commands.h>
 #include <dsd-neo/app_control/history.h>
@@ -705,19 +706,7 @@ apply_dsp_op_cqpsk_toggle(const dsd_app_dsp_payload* p, const dsd_opts* opts) {
     if (!p || p->op != DSD_APP_DSP_OP_TOGGLE_CQ) {
         return 0;
     }
-    int cq = 0;
-    rtl_stream_get_cqpsk_status(&cq, NULL);
-    /* Queue the family flip for the demod thread; leave the symbol profile
-     * (rate<=0) and timing (ted_sps<0) untouched. */
-    (void)rtl_stream_request_demod_profile(cq ? 0 : 1, 0, 0, -1, -1, 0);
-    if (cq && opts && dsd_opts_is_analog_family(opts)) {
-        /* Back onto the -fA monitor: through the analog profile, which carries the configured channel width, rather
-           than returning to the width the monitor had when CQPSK was switched on. An NFM width set meanwhile waited
-           for this (svc_publish_nfm_bandwidth()). It supersedes the demod profile just queued, and entering the
-           monitor turns CQPSK off; a front end that refuses it keeps that demod profile. */
-        (void)rtl_stream_request_analog_profile(DSD_RX_FAMILY_ANALOG, opts->analog_demod,
-                                                dsd_opts_analog_width_hz(opts));
-    }
+    svc_toggle_rtl_cqpsk(opts);
     return 1;
 }
 
@@ -1625,21 +1614,6 @@ ui_cmd_handle_scan_voice_hold_ms_set(dsd_opts* opts, dsd_state* state, const str
     return 1;
 }
 
-/* The configured NFM width, as the kHz text every frontend shows ("12.5 kHz"; the default says so). */
-static void
-ui_nfm_width_text(int width_hz, char* out, size_t out_size) {
-    char width[DSD_ANALOG_WIDTH_TEXT_MAX];
-    if (dsd_analog_width_format(dsd_analog_width_effective_hz(DSD_ANALOG_DEMOD_FM, width_hz), width, sizeof width)
-        != 0) {
-        width[0] = '\0';
-    }
-    if (width_hz > 0) {
-        DSD_SNPRINTF(out, out_size, "%s", width);
-    } else {
-        DSD_SNPRINTF(out, out_size, "default (%s)", width);
-    }
-}
-
 static int
 ui_cmd_handle_nfm_bandwidth_set(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
     int32_t hz = 0;
@@ -1651,8 +1625,8 @@ ui_cmd_handle_nfm_bandwidth_set(dsd_opts* opts, dsd_state* state, const struct d
         ui_set_toast(state, 5, "Refused: %s", why);
         return UI_CMD_APPLY_FAILED;
     }
-    char text[DSD_ANALOG_WIDTH_TEXT_MAX + 16];
-    ui_nfm_width_text(opts->analog_nfm_bandwidth_hz, text, sizeof text);
+    char text[DSD_APP_ANALOG_WIDTH_TEXT_MAX];
+    (void)dsd_app_analog_width_setting_format(opts->analog_nfm_bandwidth_hz, text, sizeof text);
     ui_set_toast(state, 3, "Applied: NFM bandwidth -> %s", text);
     return UI_CMD_APPLY_COMPLETED;
 }
@@ -5121,44 +5095,36 @@ cfg_analog_family_after(const dsd_opts* opts, const dsdneoUserConfig* cfg) {
 }
 
 /*
- * The RTL DSP bandwidth, in kHz, the session has once the config is applied. An [input] that builds an RTL-SDR or
- * rtl_tcp input (apply_input_source_rtl()/_rtltcp()) with rtl_bw_khz sets it: a running device reopens at it
- * (apply_cfg_rtl_hot_restart()), and a stopped one starts at it, where an unsupported value is 48 as the input spec
- * makes it. Otherwise it stays.
+ * The DSP bandwidth, in kHz, an RTL-SDR or rtl_tcp device reopens at once the config is applied, 0 when the config
+ * reopens none. A running RTL-family input (an RTL-SDR, rtl_tcp, SoapySDR or Airspy one) is reopened when the config's
+ * [input] builds an RTL-SDR or rtl_tcp input spec other than the one it runs (dsd_user_config_rtl_input_spec(),
+ * apply_cfg_rtl_hot_restart()); the reopen stores rtl_bw_khz as the config gives it, the session's when it gives none
+ * (apply_cfg_rtl_common()), and runs at that rate. The same spec (an rtl_tcp source without rtl_freq for the host and
+ * port already in use, say) reopens nothing and changes no rate. Another input keeps running as it is, and the spec it
+ * is given waits for the next start, which checks it (dsd_engine_setup_check_analog_width()).
  */
 static int
-cfg_rtl_bw_khz_after(const dsd_opts* opts, const dsdneoUserConfig* cfg) {
-    const int builds_rtl_input = cfg->has_input
-                                 && ((cfg->input_source == DSDCFG_INPUT_RTL && cfg->rtl_freq[0] != '\0')
-                                     || (cfg->input_source == DSDCFG_INPUT_RTLTCP && cfg->rtltcp_host[0] != '\0'));
-    if (!builds_rtl_input || cfg->rtl_bw_khz == 0) {
-        return opts->rtl_dsp_bw_khz;
+cfg_reopen_rtl_bw_khz(const dsd_opts* opts, const dsdneoUserConfig* cfg) {
+    char spec[sizeof opts->audio_in_dev];
+    if (opts->audio_in_type != AUDIO_IN_RTL || dsd_user_config_rtl_input_spec(cfg, opts, spec, sizeof spec) != 0
+        || strncmp(spec, opts->audio_in_dev, sizeof opts->audio_in_dev) == 0) {
+        return 0;
     }
-    switch (cfg->rtl_bw_khz) {
-        case 4:
-        case 6:
-        case 8:
-        case 12:
-        case 16:
-        case 24:
-        case 48: return cfg->rtl_bw_khz;
-        default: return 48;
-    }
+    return cfg->rtl_bw_khz ? cfg->rtl_bw_khz : opts->rtl_dsp_bw_khz;
 }
 
 /*
  * An explicit NFM width the config leaves the analog monitor on, held to the DSP rate it will run at. When the config
- * moves that rate (rtl_bw_khz), the device reopens at the new one, so the width is held to it and not to the running
- * stream; otherwise to the front end as DSD_APP_CMD_NFM_BANDWIDTH_SET holds it. A refusal leaves the whole config
- * unapplied, with a toast naming the width, the rate and the fix.
+ * reopens an RTL-SDR or rtl_tcp device, that is the reopened device's DSP bandwidth, whatever runs now (another
+ * bandwidth, or a SoapySDR or Airspy device whose rate the device forced); otherwise the running front end holds it, as
+ * DSD_APP_CMD_NFM_BANDWIDTH_SET does. A refusal leaves the whole config unapplied, with a toast naming the width, the
+ * rate and the fix.
  */
 static int
-cfg_check_analog_width(const dsd_opts* opts, dsd_state* state, const dsdneoUserConfig* cfg, int width_hz) {
+cfg_check_analog_width(const dsd_opts* opts, dsd_state* state, int reopen_bw_khz, int width_hz) {
     char why[128];
-    const int rtl_bw_khz = cfg_rtl_bw_khz_after(opts, cfg);
-    const int rc = (rtl_bw_khz != opts->rtl_dsp_bw_khz)
-                       ? svc_check_nfm_bandwidth_for_rtl_bw(width_hz, rtl_bw_khz, why, sizeof why)
-                       : svc_check_nfm_bandwidth(opts, state, width_hz, why, sizeof why);
+    const int rc = (reopen_bw_khz > 0) ? svc_check_nfm_bandwidth_for_rtl_bw(width_hz, reopen_bw_khz, why, sizeof why)
+                                       : svc_check_nfm_bandwidth(opts, state, width_hz, why, sizeof why);
     if (rc == 0) {
         return UI_CMD_APPLY_COMPLETED;
     }
@@ -5168,11 +5134,12 @@ cfg_check_analog_width(const dsd_opts* opts, dsd_state* state, const dsdneoUserC
 
 /*
  * Asked before anything changes, as DSD_APP_CMD_DECODE_MODE_SET asks. A config that leaves the -fA monitor on an
- * explicit NFM width is held to the rate that width will run at whenever it changes the width, moves the DSP rate
- * under it or moves the session onto the monitor with it (under a scan row too), as the width command and RTL_SET_BW
- * hold it. With the unset default, which no rate refuses, a [mode] that moves a running RTL session onto the monitor
- * publishes the analog receive profile (apply_cfg_receive_family_change()), and a front end that would refuse it
- * (logged with the reason) leaves the whole config unapplied, instead of an Analog decoder on a digital front end.
+ * explicit NFM width is held to the rate that width will run at whenever it changes the width, reopens an RTL-SDR or
+ * rtl_tcp device under it (cfg_reopen_rtl_bw_khz()) or moves the session onto the monitor with it (under a scan row
+ * too), as the width command and RTL_SET_BW hold it. With the unset default, which no rate refuses, a [mode] that moves
+ * a running RTL session onto the monitor publishes the analog receive profile (apply_cfg_receive_family_change()), and
+ * a front end that would refuse it (logged with the reason) leaves the whole config unapplied, instead of an Analog
+ * decoder on a digital front end.
  */
 static int
 cfg_check_receive_family(const dsd_opts* opts, dsd_state* state, const dsdneoUserConfig* cfg) {
@@ -5181,10 +5148,10 @@ cfg_check_receive_family(const dsd_opts* opts, dsd_state* state, const dsdneoUse
     }
     const int width_hz = cfg_nfm_width_after(opts, cfg);
     if (width_hz > 0) {
-        const int holds = width_hz != opts->analog_nfm_bandwidth_hz
-                          || cfg_rtl_bw_khz_after(opts, cfg) != opts->rtl_dsp_bw_khz
-                          || !dsd_opts_is_analog_family(opts);
-        return holds ? cfg_check_analog_width(opts, state, cfg, width_hz) : UI_CMD_APPLY_COMPLETED;
+        const int reopen_bw_khz = cfg_reopen_rtl_bw_khz(opts, cfg);
+        const int holds =
+            width_hz != opts->analog_nfm_bandwidth_hz || reopen_bw_khz > 0 || !dsd_opts_is_analog_family(opts);
+        return holds ? cfg_check_analog_width(opts, state, reopen_bw_khz, width_hz) : UI_CMD_APPLY_COMPLETED;
     }
     if (!cfg->has_mode || opts->analog_only || opts->analog_nfm_bandwidth_hz != 0
         || svc_check_mode_receive_profile(opts, state, cfg->decode_mode) == 0) {

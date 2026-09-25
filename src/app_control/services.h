@@ -226,7 +226,9 @@ void svc_note_digital_decode_modes(const dsd_opts* opts, const dsd_state* state)
  * (rtl_dsp_bw_khz) gives. Other inputs are checked by their next stream start, against the rate the device delivers.
  * The unset default is never refused for its rate. Callers decide whether the width is in use; this only says whether
  * the front end would take it. A rate refusal's reason names the width, the rate, the widest width that rate filters
- * and the DSP bandwidths that would fit; the validator's full text is logged (by the front end, with a stream running).
+ * and the fix: the DSP bandwidths that would fit on an RTL-SDR or rtl_tcp input, or narrowing the width where a running
+ * SoapySDR, Airspy or I/Q replay stream's device or capture forces its demod rate (the rate named is then the one the
+ * stream publishes). The validator's full text is logged (by the front end, with a stream running).
  *
  * @param why      Receives a short reason on refusal, for a toast (may be NULL).
  * @param why_size Size of @p why.
@@ -264,13 +266,24 @@ int svc_set_nfm_bandwidth(dsd_opts* opts, const dsd_state* state, int width_hz, 
  * @brief Hand the configured NFM width to a running RTL front end, as a live analog profile request.
  *
  * Does nothing unless the options in force run the -fA NFM preset with a stream running. A switch onto the analog
- * family that the demod thread has not taken yet has its queued width replaced. Under a scan row's suspended scope
- * (dsd_scan_mode_updating()) it waits: the scoped command dispatcher calls it again once the row's constraint is back,
- * so a typed digital row keeps its own profile. CQPSK toggled on under -fA keeps the front end off the monitor; the
- * toggle that turns it off requests the analog profile with the configured width. For callers that changed the width
- * (the width command, a config apply).
+ * family, or a CQPSK toggle back to it, that the demod thread has not taken yet has its queued width replaced. Under a
+ * scan row's suspended scope (dsd_scan_mode_updating()) it waits: the scoped command dispatcher calls it again once the
+ * row's constraint is back, so a typed digital row keeps its own profile. CQPSK toggled on under -fA keeps the front
+ * end off the monitor, whether the demod thread has taken that toggle yet or not; svc_toggle_rtl_cqpsk() turning it
+ * off requests the analog profile with the configured width. For callers that changed the width (the width command, a
+ * config apply). Decoder thread only: it reads and keeps the record of the receive requests queued from it.
  */
 void svc_publish_nfm_bandwidth(const dsd_opts* opts, const dsd_state* state);
+
+/**
+ * @brief The DSP menu's CQPSK toggle on a running RTL front end (DSD_APP_DSP_OP_TOGGLE_CQ).
+ *
+ * Flips the CQPSK state the front end was last asked for (by an earlier toggle or a published symbol profile the demod
+ * thread may not have taken yet, otherwise the state it publishes) and queues it for the demod thread, leaving the
+ * symbol profile and timing alone. Turning CQPSK off under -fA returns to the analog monitor through the analog profile
+ * with the configured channel width. Decoder thread only.
+ */
+void svc_toggle_rtl_cqpsk(const dsd_opts* opts);
 
 // Per-protocol inversion toggles
 /** @brief Toggle X2-TDMA symbol inversion. */

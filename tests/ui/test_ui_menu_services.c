@@ -553,12 +553,14 @@ rtl_stream_set_auto_ppm(int onoff) {
     (void)onoff;
 }
 
-/* The analog receive profile calls the NFM width services make (issue #525), answered and recorded here. */
+/* The front-end calls the NFM width services make (issue #525), answered and recorded here: the running front end's
+   check, the demod rate it publishes, and the publish of an accepted width (symbol_profile.c, which holds the record
+   of queued receive requests and is covered by APP_COMMAND_QUEUE). */
 static int g_analog_check_result;
 static int g_analog_check_calls;
-static int g_cqpsk_running;
-static int g_analog_request_calls;
-static int g_analog_request_width_hz;
+static int g_demod_rate_hz;
+static int g_nfm_publish_calls;
+static int g_nfm_publish_width_hz;
 
 int
 rtl_stream_check_analog_profile(int family, int kind, int width_hz) {
@@ -570,23 +572,15 @@ rtl_stream_check_analog_profile(int family, int kind, int width_hz) {
 }
 
 int
-rtl_stream_request_analog_profile(int family, int kind, int width_hz) {
-    (void)family;
-    (void)kind;
-    g_analog_request_calls++;
-    g_analog_request_width_hz = width_hz;
-    return 0;
+rtl_stream_get_demod_rate_hz(void) {
+    return g_demod_rate_hz;
 }
 
-int
-rtl_stream_get_cqpsk_status(int* cqpsk_enable, int* cqpsk_timing_active) {
-    if (cqpsk_enable) {
-        *cqpsk_enable = g_cqpsk_running;
-    }
-    if (cqpsk_timing_active) {
-        *cqpsk_timing_active = g_cqpsk_running;
-    }
-    return 0;
+void
+svc_publish_nfm_bandwidth(const dsd_opts* opts, const dsd_state* state) {
+    (void)state;
+    g_nfm_publish_calls++;
+    g_nfm_publish_width_hz = opts ? opts->analog_nfm_bandwidth_hz : -1;
 }
 
 static int
@@ -1591,23 +1585,45 @@ test_nfm_bandwidth_services(void) {
     rc |= expect_int("nfm svc default at any reopen", svc_check_nfm_bandwidth_for_rtl_bw(0, 4, why, sizeof why), 0);
     rc |= expect_int("nfm svc reopen range", svc_check_nfm_bandwidth_for_rtl_bw(30000, 48, why, sizeof why), -1);
 
-    /* A running stream answers for itself; the width is requested unless CQPSK holds the front end off the monitor. */
+    /* A running stream answers for itself, and an accepted width is published to it once stored. */
     opts.audio_in_type = AUDIO_IN_RTL;
     state.rtl_ctx = (RtlSdrContext*)fake_ctx;
-    g_analog_check_calls = g_analog_request_calls = 0;
-    g_cqpsk_running = 0;
+    g_analog_check_calls = g_nfm_publish_calls = 0;
     rc |= expect_int("nfm svc live 8000", svc_set_nfm_bandwidth(&opts, &state, 8000, why, sizeof why), 0);
     rc |= expect_int("nfm svc live asks the front end", g_analog_check_calls, 1);
-    rc |= expect_int("nfm svc live request", g_analog_request_calls == 1 && g_analog_request_width_hz == 8000, 1);
+    rc |= expect_int("nfm svc live publish", g_nfm_publish_calls == 1 && g_nfm_publish_width_hz == 8000, 1);
     g_analog_check_result = -1;
     rc |= expect_int("nfm svc live refusal", svc_set_nfm_bandwidth(&opts, &state, 12500, why, sizeof why), -1);
     rc |= expect_int("nfm svc live refusal keeps the width", opts.analog_nfm_bandwidth_hz, 8000);
+    rc |= expect_int("nfm svc live refusal publishes nothing", g_nfm_publish_calls, 1);
+    /* The front end refused a width its RTL DSP bandwidth (16 kHz) can filter: something else refused it. */
+    rc |= expect_int("nfm svc live other refusal", strcmp(why, "the RTL front end refused NFM 12.5 kHz (see log)") == 0,
+                     1);
+
+    /* A device or a capture forces the rate on SoapySDR, Airspy and I/Q replay inputs, where no RTL DSP bandwidth
+       gives it: the refusal names the demod rate the stream publishes and the width's limit there, and the fix is to
+       narrow the width, since no DSP bandwidth setting moves that rate. */
+    const char* forced_rate_devs[] = {"soapy:driver=rtlsdr", "airspy", "iqreplay:capture.cu8"};
+    for (size_t i = 0; i < sizeof forced_rate_devs / sizeof forced_rate_devs[0]; i++) {
+        DSD_SNPRINTF(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", forced_rate_devs[i]);
+        g_demod_rate_hz = 24000;
+        rc |=
+            expect_int("nfm svc forced rate refusal", svc_set_nfm_bandwidth(&opts, &state, 25000, why, sizeof why), -1);
+        rc |= expect_int(
+            "nfm svc forced rate reason",
+            strcmp(why, "NFM 25 kHz does not fit the 24 kHz DSP rate (max 20.4 kHz); narrow the NFM width") == 0, 1);
+        /* At a rate that filters it, the refusal is not the rate's. */
+        g_demod_rate_hz = 78125;
+        rc |= expect_int("nfm svc forced rate other refusal",
+                         svc_set_nfm_bandwidth(&opts, &state, 25000, why, sizeof why), -1);
+        rc |= expect_int("nfm svc forced rate other reason",
+                         strcmp(why, "the RTL front end refused NFM 25 kHz (see log)") == 0, 1);
+    }
+    g_demod_rate_hz = 0;
+    DSD_SNPRINTF(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", "rtl:0:851.375M:0:0:16");
     g_analog_check_result = 0;
-    g_cqpsk_running = 1;
-    g_analog_request_calls = 0;
-    rc |= expect_int("nfm svc under cqpsk", svc_set_nfm_bandwidth(&opts, &state, 12500, why, sizeof why), 0);
-    rc |= expect_int("nfm svc under cqpsk not requested", g_analog_request_calls, 0);
-    g_cqpsk_running = 0;
+    rc |= expect_int("nfm svc live 12500", svc_set_nfm_bandwidth(&opts, &state, 12500, why, sizeof why), 0);
+    rc |= expect_int("nfm svc live 12500 published", g_nfm_publish_calls == 2 && g_nfm_publish_width_hz == 12500, 1);
 
     /* RTL_SET_BW: 12.5 kHz needs at least a 16 kHz DSP bandwidth. */
     opts.audio_in_type = 0;

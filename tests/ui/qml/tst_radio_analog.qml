@@ -5,12 +5,13 @@ import QtQuick
 import QtTest
 
 // Issue #525: the Radio sheet's NFM channel width. Under the analog preset it
-// shows the width in force -- the one the engine reports, "DSP-limited" when the
-// DSP rate bounds it, "default" when none is configured -- and its stepper edits
-// the configured width through the common channel plans, skipping the ones the
-// running DSP rate cannot filter. An explicit width can go back to the unset
-// default. On PCM input the width cannot act, so the stepper is disabled with the
-// reason beside it. The NFM chip selects the analog preset.
+// shows the width in force as the engine spells it for every frontend -- the
+// width the front end reports, "DSP-limited" when the DSP rate bounds it,
+// "default" when none is configured -- and its stepper edits the configured
+// width through the common channel plans, skipping the ones the running DSP rate
+// cannot filter. An explicit width can go back to the unset default. On PCM input
+// the width cannot act, so the stepper is disabled with the reason beside it. The
+// NFM chip selects the analog preset.
 Item {
     width: 420
     height: 1100
@@ -43,6 +44,7 @@ Item {
             testContext.setMetric("analogBandwidthDspLimited", false);
             testContext.setMetric("analogBandwidthConfiguredHz", 0);
             testContext.setMetric("analogBandwidthMaxHz", 0);
+            testContext.setMetric("analogBandwidthReading", "");
             testContext.setMetric("radioInput", true);
             if (sheet) {
                 sheet.forgetRequests();
@@ -52,13 +54,20 @@ Item {
         }
 
         // What the engine publishes for an analog session: the width in force, the
-        // DSP-limited flag, the configured width (0 = default) and, with a stream
-        // running, the widest width its DSP rate filters (0 or left out = not known).
+        // DSP-limited flag, the configured width (0 = default), with a stream
+        // running the widest width its DSP rate filters (0 or left out = not known),
+        // and the reading app_control's analog width view spells from those.
         function analogSession(widthHz, limited, configuredHz, maxHz) {
             testContext.setMetric("analogBandwidthHz", widthHz);
             testContext.setMetric("analogBandwidthDspLimited", limited);
             testContext.setMetric("analogBandwidthConfiguredHz", configuredHz);
             testContext.setMetric("analogBandwidthMaxHz", maxHz === undefined ? 0 : maxHz);
+            var reading = (widthHz / 1000) + " kHz";
+            if (limited)
+                reading += " (DSP-limited)";
+            else if (configuredHz === 0)
+                reading += " (default)";
+            testContext.setMetric("analogBandwidthReading", reading);
             testContext.setMetric("decodeMode", analogMode);
             tryVerify(function () { return metrics.decodeMode === analogMode });
         }
@@ -139,7 +148,8 @@ Item {
             verify(reset.enabled);
             reset.clicked();
             compare(testContext.lastNfmBandwidthHz(), 0);
-            compare(findChild(sheet, "radioAnalogBandwidthValue").text, "16 kHz (default)");
+            // The request stands in as the setting it is, spelled as every frontend spells it.
+            compare(findChild(sheet, "radioAnalogBandwidthValue").text, "default");
             // The request stands in until the engine answers; the default hides the control.
             verify(!reset.visible);
             sheet.forgetRequests();
@@ -164,8 +174,13 @@ Item {
 
         function test_pcm_input_disables_the_stepper_and_says_why() {
             analogSession(16000, false, 0);
+            // On PCM input no width is in force: the engine publishes none, and the
+            // reading says the width does not apply.
+            testContext.setMetric("analogBandwidthHz", 0);
+            testContext.setMetric("analogBandwidthReading", "not used on PCM input");
             testContext.setMetric("radioInput", false);
             tryVerify(function () { return metrics.radioInput === false });
+            compare(findChild(sheet, "radioAnalogBandwidthValue").text, "not used on PCM input");
             verify(!findChild(sheet, "radioAnalogBandwidthUp").enabled);
             verify(!findChild(sheet, "radioAnalogBandwidthDown").enabled);
             verify(findChild(sheet, "radioAnalogBandwidthNote").visible, "no reason shown for the disabled control");

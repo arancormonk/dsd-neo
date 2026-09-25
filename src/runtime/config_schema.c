@@ -156,7 +156,8 @@ static const dsdcfg_schema_entry_t s_schema[] = {
 
     /* [analog] section */
     {"analog", "nfm_bandwidth_hz",
-     "NFM channel-filter width in Hz: the full RF passband, not the tuner or audio bandwidth (omit for the default)",
+     "NFM channel-filter width in Hz: the full RF passband, not the tuner or audio bandwidth. Leave it out for the "
+     "default; an explicit value, 16000 included, always runs the channel filter and must fit the DSP rate",
      "16000", NULL, DSDCFG_TYPE_INT, 8000, 25000},
 };
 

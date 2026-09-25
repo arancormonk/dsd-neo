@@ -212,9 +212,21 @@ dsd_analog_width_max_for_rate(int rate_hz) {
     return max_hz > (int64_t)INT_MAX ? INT_MAX : (int)max_hz;
 }
 
-/* "24 or 48" / "16, 24 or 48": every selectable RTL DSP bandwidth that fits @p width_hz, in kHz. */
-static void
-analog_format_fitting_bandwidths(int width_hz, char* out, size_t out_size) {
+int
+dsd_analog_rtl_dsp_bw_is_selectable(int khz) {
+    for (int i = 0; i < kRtlDspBandwidthCount; i++) {
+        if (kRtlDspBandwidthsKhz[i] == khz) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+int
+dsd_analog_width_fitting_rtl_bandwidths(int width_hz, char* out, size_t out_size) {
+    if (!out || out_size == 0U) {
+        return -1;
+    }
     int fitting[kRtlDspBandwidthCount];
     int count = 0;
     for (int i = 0; i < kRtlDspBandwidthCount; i++) {
@@ -228,10 +240,11 @@ analog_format_fitting_bandwidths(int width_hz, char* out, size_t out_size) {
         const char* sep = (i == 0) ? "" : ((i + 1 == count) ? " or " : ", ");
         const int n = DSD_SNPRINTF(out + used, out_size - used, "%s%d", sep, fitting[i]);
         if (n < 0) {
-            return;
+            break;
         }
         used += (size_t)n;
     }
+    return 0;
 }
 
 static void
@@ -241,7 +254,7 @@ analog_format_rate_error(int kind, int width_hz, int rate_hz, char* err, size_t 
     char fits_text[64];
     (void)dsd_analog_width_format(width_hz, width_text, sizeof width_text);
     (void)dsd_analog_width_format(rate_hz, rate_text, sizeof rate_text);
-    analog_format_fitting_bandwidths(width_hz, fits_text, sizeof fits_text);
+    (void)dsd_analog_width_fitting_rtl_bandwidths(width_hz, fits_text, sizeof fits_text);
     const int max_hz = dsd_analog_width_max_for_rate(rate_hz);
     if (max_hz <= 0 && dsd_analog_channel_taps_for_rate(rate_hz) > DSD_ANALOG_CHANNEL_MAX_TAPS) {
         DSD_SNPRINTF(err, err_size,

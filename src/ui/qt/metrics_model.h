@@ -105,6 +105,7 @@ class MetricsModel : public QObject {
     Q_PROPERTY(bool analogBandwidthDspLimited READ analogBandwidthDspLimited NOTIFY tunerChanged)
     Q_PROPERTY(int analogBandwidthMaxHz READ analogBandwidthMaxHz NOTIFY tunerChanged)
     Q_PROPERTY(int analogBandwidthConfiguredHz READ analogBandwidthConfiguredHz NOTIFY controlChanged)
+    Q_PROPERTY(QString analogBandwidthReading READ analogBandwidthReading NOTIFY tunerChanged)
     Q_PROPERTY(int slot1CallState READ slot1CallState NOTIFY slot1Changed)
     Q_PROPERTY(int slot2CallState READ slot2CallState NOTIFY slot2Changed)
     Q_PROPERTY(QString slot1CallName READ slot1CallName NOTIFY slot1Changed)
@@ -402,12 +403,13 @@ class MetricsModel : public QObject {
     }
 
     /**
-     * @brief The analog channel width in force, in Hz (issue #525); 0 outside the configured analog preset.
+     * @brief The analog channel width in force, in Hz (issue #525); 0 outside the configured analog preset, and on PCM
+     * input, where no channel filter runs.
      *
      * While a running stream runs the analog monitor, the width it reports (the configured width while its channel
-     * filter runs, otherwise the width the DSP rate leaves: see analogBandwidthDspLimited()). Otherwise -- no tuner, a
-     * stream not running, a typed digital scan row filtering with its own profile -- the configured width, the kind's
-     * default when none is set. The same rule as the terminal's "Analog:" status field.
+     * filter runs, otherwise the width the DSP rate leaves: see analogBandwidthDspLimited()). Otherwise -- a stream not
+     * running, a typed digital scan row filtering with its own profile -- the configured width, the kind's default when
+     * none is set. App-control's analog width view decides it, for the terminal's "Analog:" status field too.
      */
     int
     analogBandwidthHz() const {
@@ -440,6 +442,16 @@ class MetricsModel : public QObject {
     int
     analogBandwidthConfiguredHz() const {
         return m_view.analog_bandwidth_configured_hz;
+    }
+
+    /**
+     * @brief The analog width reading, as every frontend spells it: "12.5 kHz", "16 kHz (default)",
+     * "12 kHz (DSP-limited)", or "not used on PCM input" (dsd_app_analog_width_view_format()); empty outside the
+     * configured analog preset.
+     */
+    QString
+    analogBandwidthReading() const {
+        return m_view.analog_bandwidth_reading;
     }
 
     /**
@@ -1326,6 +1338,7 @@ class MetricsModel : public QObject {
         int analog_bandwidth_hz = 0;
         int analog_bandwidth_configured_hz = 0;
         int analog_bandwidth_max_hz = 0;
+        QString analog_bandwidth_reading;
         int decode_mode = 0;
         int configured_force = 0;
         int effective_force = 0;
@@ -1396,10 +1409,18 @@ class MetricsModel : public QObject {
                    && cfo_hz == other.cfo_hz && tuner_gain_text == other.tuner_gain_text
                    && radio_input == other.radio_input && stream_active == other.stream_active
                    && center_freq_hz == other.center_freq_hz && channel_bandwidth_hz == other.channel_bandwidth_hz
-                   && analog_bandwidth_hz == other.analog_bandwidth_hz
+                   && analogChannelEquals(other) && synced_here == other.synced_here && sync_label == other.sync_label
+                   && trunkable_sync == other.trunkable_sync;
+        }
+
+        /* The analog channel width in force (#525) rides tunerChanged with the rest; split out only so the
+           comparison stays under the complexity ceiling. */
+        bool
+        analogChannelEquals(const View& other) const {
+            return analog_bandwidth_hz == other.analog_bandwidth_hz
                    && analog_bandwidth_dsp_limited == other.analog_bandwidth_dsp_limited
-                   && analog_bandwidth_max_hz == other.analog_bandwidth_max_hz && synced_here == other.synced_here
-                   && sync_label == other.sync_label && trunkable_sync == other.trunkable_sync;
+                   && analog_bandwidth_max_hz == other.analog_bandwidth_max_hz
+                   && analog_bandwidth_reading == other.analog_bandwidth_reading;
         }
 
         /* The scan controls (#380) ride controlChanged with the rest; split out only so

@@ -1,0 +1,173 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+/*
+ * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
+ */
+
+/* The shared analog channel width readout (issue #525): the width in force under the configured analog preset, the
+ * front end's while a running stream runs the monitor for it, the configured one otherwise; the DSP-limited flag; and
+ * the one spelling of the reading and of a configured width that every frontend shows. */
+
+#include <assert.h>
+#include <dsd-neo/app_control/analog_width_view.h>
+#include <dsd-neo/app_control/frontend.h>
+#include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/opts_fwd.h>
+#include <dsd-neo/core/safe_api.h>
+#include <dsd-neo/core/state.h>
+#include <dsd-neo/core/state_ext.h>
+#include <dsd-neo/core/state_fwd.h>
+#include <dsd-neo/runtime/analog_channel.h>
+#include <dsd-neo/runtime/scan_mode.h>
+#include <stdlib.h>
+#include <string.h>
+
+static void
+expect_reading(const dsd_app_analog_width_view* view, const char* want) {
+    char out[DSD_APP_ANALOG_WIDTH_TEXT_MAX];
+    assert(dsd_app_analog_width_view_format(view, out, sizeof out) == 0);
+    assert(strcmp(out, want) == 0);
+}
+
+static void
+expect_setting(int configured_hz, const char* want) {
+    char out[DSD_APP_ANALOG_WIDTH_TEXT_MAX];
+    assert(dsd_app_analog_width_setting_format(configured_hz, out, sizeof out) == 0);
+    assert(strcmp(out, want) == 0);
+}
+
+/* What a running stream on the analog monitor reports. */
+static dsd_frontend_metrics
+monitor_metrics(int width_hz, int dsp_limited, int demod_rate_hz) {
+    dsd_frontend_metrics m;
+    DSD_MEMSET(&m, 0, sizeof m);
+    m.stream_active = 1;
+    m.output_kind = DSD_FRONTEND_RTL_OUTPUT_AUDIO_MONITOR;
+    m.channel_bandwidth_hz = width_hz;
+    m.channel_bandwidth_dsp_limited = dsp_limited;
+    m.demod_rate_hz = demod_rate_hz;
+    return m;
+}
+
+int
+main(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
+    assert(opts && state);
+    opts->wav_sample_rate = 48000;
+    opts->audio_in_type = AUDIO_IN_RTL;
+    opts->rtl_dsp_bw_khz = 48;
+    opts->frame_dmr = 1;
+
+    dsd_app_analog_width_view view;
+    /* A digital session shows nothing, but the configured width is still configuration. */
+    opts->analog_nfm_bandwidth_hz = 12500;
+    assert(dsd_app_analog_width_view_get(opts, state, NULL, &view) == 0);
+    assert(!view.shown && view.width_hz == 0 && view.configured_hz == 12500);
+    expect_reading(&view, "");
+
+    opts->frame_dmr = 0;
+    opts->analog_only = 1;
+    opts->analog_demod = DSD_ANALOG_DEMOD_FM;
+    opts->analog_nfm_bandwidth_hz = 0;
+    /* No stream: the configured width, the default here, marked as such. */
+    assert(dsd_app_analog_width_view_get(opts, state, NULL, &view) == 0);
+    assert(view.shown && view.radio_input && view.kind == DSD_ANALOG_DEMOD_FM);
+    assert(view.width_hz == 16000 && view.configured_hz == 0 && !view.dsp_limited && view.max_hz == 0);
+    expect_reading(&view, "16 kHz (default)");
+
+    /* On the monitor, the front end's width and the widest its demod rate filters. */
+    opts->analog_nfm_bandwidth_hz = 12500;
+    dsd_frontend_metrics m = monitor_metrics(12500, 0, 24000);
+    assert(dsd_app_analog_width_view_get(opts, state, &m, &view) == 0);
+    assert(view.width_hz == 12500 && view.configured_hz == 12500 && view.max_hz == 20400 && !view.dsp_limited);
+    expect_reading(&view, "12.5 kHz");
+    /* The front end's report wins over the configured width: they are kept apart so the case shows which it took. */
+    m.channel_bandwidth_hz = 11250;
+    assert(dsd_app_analog_width_view_get(opts, state, &m, &view) == 0);
+    assert(view.width_hz == 11250);
+
+    /* The unset default below a 20 kHz DSP rate runs no channel filter: the rate bounds the channel. */
+    opts->analog_nfm_bandwidth_hz = 0;
+    m = monitor_metrics(12000, 1, 12000);
+    assert(dsd_app_analog_width_view_get(opts, state, &m, &view) == 0);
+    assert(view.width_hz == 12000 && view.dsp_limited && view.configured_hz == 0 && view.max_hz == 9600);
+    expect_reading(&view, "12 kHz (DSP-limited)");
+
+    /* The front end's mirror outlives a stopped stream, and describes another output than the monitor's. */
+    m.stream_active = 0;
+    assert(dsd_app_analog_width_view_get(opts, state, &m, &view) == 0);
+    assert(view.width_hz == 16000 && !view.dsp_limited && view.max_hz == 0);
+    m = monitor_metrics(12500, 0, 48000);
+    m.output_kind = DSD_FRONTEND_RTL_OUTPUT_SYMBOL_CQPSK;
+    assert(dsd_app_analog_width_view_get(opts, state, &m, &view) == 0);
+    assert(view.width_hz == 16000 && view.max_hz == 42000);
+
+    /* A typed digital row on the analog session: the configured preset is still NFM, and the row's front end filters
+       with the row's profile, so the configured width shows, the one the row's leave returns to. */
+    opts->analog_nfm_bandwidth_hz = 20000;
+    assert(dsd_scan_mode_enter(opts, state, DSD_SCAN_MODE_DMR) == 0);
+    assert(dsd_scan_mode_options(opts, state, NULL) == 0);
+    assert(opts->analog_only == 0);
+    m = monitor_metrics(12500, 0, 48000);
+    assert(dsd_app_analog_width_view_get(opts, state, &m, &view) == 0);
+    assert(view.shown && view.width_hz == 20000 && view.configured_hz == 20000);
+    expect_reading(&view, "20 kHz");
+    /* A frontend snapshot pair reads the same as the live state. */
+    dsd_state* copy = (dsd_state*)calloc(1, sizeof(*copy));
+    assert(copy);
+    dsd_scan_mode_copy_snapshot(copy, state);
+    assert(dsd_app_analog_width_view_get(opts, copy, &m, &view) == 0);
+    assert(view.shown && view.width_hz == 20000);
+    dsd_scan_mode_leave(opts, state);
+    assert(opts->analog_only == 1);
+
+    /* ...and the reverse: a digital configured preset under a row whose options read analog shows nothing. */
+    opts->analog_only = 0;
+    opts->frame_dmr = 1;
+    assert(dsd_scan_mode_enter(opts, state, DSD_SCAN_MODE_INHERIT) == 0);
+    opts->analog_only = 1;
+    assert(dsd_app_analog_width_view_get(opts, state, NULL, &view) == 0);
+    assert(!view.shown);
+    dsd_scan_mode_leave(opts, state);
+    opts->analog_only = 1;
+    opts->frame_dmr = 0;
+
+    /* No state yet (no snapshot published): no scan scope, the options decide. */
+    assert(dsd_app_analog_width_view_get(opts, NULL, NULL, &view) == 0);
+    assert(view.shown && view.width_hz == 20000);
+
+    /* PCM input: the width filters nothing, so none is in force; the configured one is still published. */
+    opts->audio_in_type = AUDIO_IN_PULSE;
+    m = monitor_metrics(12500, 0, 48000);
+    assert(dsd_app_analog_width_view_get(opts, state, &m, &view) == 0);
+    assert(view.shown && !view.radio_input && view.width_hz == 0 && view.max_hz == 0 && view.configured_hz == 20000);
+    expect_reading(&view, "not used on PCM input");
+    opts->audio_in_type = AUDIO_IN_RTL;
+
+    /* The M17 encoder rides the monitor output without being the analog receiver. */
+    opts->m17encoder = 1;
+    assert(dsd_app_analog_width_view_get(opts, state, &m, &view) == 0);
+    assert(!view.shown && view.width_hz == 0);
+    opts->m17encoder = 0;
+
+    /* The configured width, spelled one way everywhere: the value, or "default". */
+    expect_setting(12500, "12.5 kHz");
+    expect_setting(11250, "11.25 kHz");
+    expect_setting(16000, "16 kHz");
+    expect_setting(0, "default");
+    expect_setting(-1, "default");
+
+    char out[8];
+    assert(dsd_app_analog_width_view_get(NULL, state, NULL, &view) == -1 && !view.shown);
+    assert(dsd_app_analog_width_view_get(opts, state, NULL, NULL) == -1);
+    assert(dsd_app_analog_width_view_format(&view, NULL, 0) == -1);
+    assert(dsd_app_analog_width_view_format(NULL, out, sizeof out) == -1 && out[0] == '\0');
+    assert(dsd_app_analog_width_setting_format(0, NULL, 0) == -1);
+
+    dsd_state_ext_free_all(copy);
+    dsd_state_ext_free_all(state);
+    free(copy);
+    free(state);
+    free(opts);
+    return 0;
+}

@@ -1307,6 +1307,8 @@ main(int argc, char** argv) {
         expect("analog before a published width reads the default", model.analogBandwidthHz() == 16000);
         expect("the default is configured as 0", model.analogBandwidthConfiguredHz() == 0);
         expect("the widest width the 24 kHz rate filters", model.analogBandwidthMaxHz() == 20400);
+        expect("the reading says it is the default",
+               model.analogBandwidthReading() == QStringLiteral("16 kHz (default)"));
 
         opts.analog_nfm_bandwidth_hz = 12500;
         g_stub_channel_bandwidth_hz = 10800;
@@ -1314,11 +1316,14 @@ main(int argc, char** argv) {
         expect("on the monitor, the front end's width", model.analogBandwidthHz() == 10800);
         expect("not DSP-limited", !model.analogBandwidthDspLimited());
         expect("the configured width", model.analogBandwidthConfiguredHz() == 12500);
+        expect("the reading is the front end's width", model.analogBandwidthReading() == QStringLiteral("10.8 kHz"));
 
         /* The flag must move on its own: everything else holds still here. */
         g_stub_channel_bandwidth_dsp_limited = 1;
         model.refresh(&opts, &state);
         expect("DSP-limited alone moves the tuner group", model.analogBandwidthDspLimited());
+        expect("the reading says DSP-limited",
+               model.analogBandwidthReading() == QStringLiteral("10.8 kHz (DSP-limited)"));
         g_stub_channel_bandwidth_dsp_limited = 0;
 
         /* The front end's mirror outlives its stream: once the stream stops, what it still says is the last
@@ -1341,12 +1346,15 @@ main(int argc, char** argv) {
         expect("under a typed row the configured preset still shows", model.analogBandwidthConfiguredHz() == 12500);
         dsd_scan_mode_leave(&opts, &state);
 
-        /* No tuner: the configured width, never a reading. */
+        /* PCM input: no channel filter runs, so no width is in force (the terminal shows no Analog field there
+         * either); the configured width is still published for the control. */
         opts.audio_in_type = AUDIO_IN_PULSE;
         opts.analog_nfm_bandwidth_hz = 20000;
         model.refresh(&opts, &state);
-        expect("PCM input reads the configured width",
-               model.analogBandwidthHz() == 20000 && !model.analogBandwidthDspLimited());
+        expect("PCM input has no width in force", model.analogBandwidthHz() == 0 && !model.analogBandwidthDspLimited()
+                                                      && model.analogBandwidthMaxHz() == 0);
+        expect("PCM input says the width does not apply",
+               model.analogBandwidthReading() == QStringLiteral("not used on PCM input"));
         expect("the configured width moves the control group", model.analogBandwidthConfiguredHz() == 20000);
 
         opts.analog_only = 0;

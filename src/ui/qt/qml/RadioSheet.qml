@@ -76,8 +76,9 @@ ModalSheet {
 
     // Issue #525: the NFM channel width, shown under the analog preset. The
     // stepper edits the configured width (0 is the default), and the reading is
-    // the width in force: what the front end reports while the monitor runs,
-    // with "DSP-limited" when the DSP rate rather than the filter bounds it.
+    // the width in force as the engine spells it for every frontend: what the
+    // front end reports while the monitor runs, with "DSP-limited" when the DSP
+    // rate rather than the filter bounds it.
     readonly property int analogMode: commands.decodeModeForFlag("-fA")
     readonly property bool analogPreset: analogMode >= 0 && metrics.decodeMode === analogMode
     // The width is the radio front end's filter; PCM audio arrives demodulated.
@@ -95,16 +96,16 @@ ModalSheet {
     // The widest width the running stream's DSP rate filters (0 = not known):
     // the steps skip what the engine would refuse.
     readonly property int analogWidthMax: metrics.analogBandwidthMaxHz > 0 ? metrics.analogBandwidthMaxHz : 0
+    readonly property bool analogWidthCanNarrow: analogWidthEditable
+        && Util.nextNfmWidth(analogWidthStepFrom, -1, analogWidthMax) > 0
+    readonly property bool analogWidthCanWiden: analogWidthEditable
+        && Util.nextNfmWidth(analogWidthStepFrom, 1, analogWidthMax) > 0
+    // A request stands in for the reading until the engine answers, spelled as
+    // the setting it is ("12.5 kHz", or "default" for 0).
     readonly property string analogWidthReading: {
-        if (!isNaN(pendingAnalogWidth)) {
-            if (pendingAnalogWidth > 0)
-                return Util.widthKhzText(pendingAnalogWidth);
-            return Util.widthKhzText(Util.NFM_DEFAULT_WIDTH_HZ) + " " + qsTr("(default)");
-        }
-        var text = Util.widthKhzText(metrics.analogBandwidthHz);
-        if (metrics.analogBandwidthDspLimited === true)
-            return text + " " + qsTr("(DSP-limited)");
-        return metrics.analogBandwidthConfiguredHz > 0 ? text : text + " " + qsTr("(default)");
+        if (!isNaN(pendingAnalogWidth))
+            return pendingAnalogWidth > 0 ? Util.widthKhzText(pendingAnalogWidth) : qsTr("default");
+        return metrics.analogBandwidthReading;
     }
 
     function open() {
@@ -137,11 +138,9 @@ ModalSheet {
      * one it had; the pending value then expires back to the reading.
      */
     function stepAnalogWidth(direction) {
-        if (!analogWidthEditable)
+        if (!(direction > 0 ? analogWidthCanWiden : analogWidthCanNarrow))
             return;
         var next = Util.nextNfmWidth(analogWidthStepFrom, direction, analogWidthMax);
-        if (next < 0)
-            return;
         pendingAnalogWidth = next;
         analogWidthTtl.restart();
         commands.setNfmBandwidthHz(next);
@@ -514,7 +513,7 @@ ModalSheet {
                 width: 48
                 text: "−"
                 accessibleName: qsTr("Narrower Channel")
-                enabled: sheet.analogWidthEditable && Util.nextNfmWidth(sheet.analogWidthStepFrom, -1, sheet.analogWidthMax) > 0
+                enabled: sheet.analogWidthCanNarrow
                 onClicked: sheet.stepAnalogWidth(-1)
             }
             OutlineButton {
@@ -522,7 +521,7 @@ ModalSheet {
                 width: 48
                 text: "+"
                 accessibleName: qsTr("Wider Channel")
-                enabled: sheet.analogWidthEditable && Util.nextNfmWidth(sheet.analogWidthStepFrom, 1, sheet.analogWidthMax) > 0
+                enabled: sheet.analogWidthCanWiden
                 onClicked: sheet.stepAnalogWidth(1)
             }
         }
@@ -542,7 +541,7 @@ ModalSheet {
             visible: !sheet.analogWidthEditable
             width: parent.width
             wrapMode: Text.WordWrap
-            text: qsTr("The channel width filters a radio input; this session's audio arrives already demodulated.")
+            text: qsTr("The channel width filters a radio input; this audio arrives already demodulated.")
             color: Theme.textSecondary
             font.pixelSize: Theme.fontSize(12)
         }

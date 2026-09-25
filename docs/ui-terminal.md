@@ -80,7 +80,7 @@ Main Menu
 │       ├── Gain... [AGC]
 │       ├── PPM correction... [0]                { }
 │       ├── DSP bandwidth... [48 kHz]
-│       ├── NFM bandwidth... [default 16 kHz]    (-fA on a radio input)
+│       ├── NFM bandwidth... [default]           (-fA on a radio input)
 │       ├── Squelch (dB)...
 │       ├── Volume multiplier... [1]             v
 │       ├── Auto-PPM [On]
@@ -394,14 +394,15 @@ expected to match exactly.
 
 `DSP-BW:` on the RTL input line is the DSP bandwidth, the demodulator's sample rate that `DSP bandwidth...` sets. Under
 `-fA` the line also shows the analog channel width in force beside it, `Analog: NFM 12.5 kHz;`: the width the front
-end reports while a running stream runs the analog monitor, otherwise the configured one (the 16 kHz default when none
-is set), so a scan row running a digital protocol shows the width its leave returns to. It reads
+end reports while a running stream runs the analog monitor, otherwise the configured one, so a scan row running a
+digital protocol shows the width its leave returns to. The unset default reads `Analog: NFM 16 kHz (default);`, and
 `Analog: NFM 12 kHz (DSP-limited);` beside `DSP-BW: 12 kHz;` when the DSP rate rather than the channel filter bounds
 the channel, which is what the unset default does below a 20 kHz DSP rate: no channel filter runs there, so the rate
-itself is the bound. `NFM bandwidth...` (offered while `-fA` is the configured mode on a radio input) takes any width
-from 8000 to 25000 Hz, or `0` for the default, and applies it live; a width the DSP rate cannot filter is refused with a
-message naming both and the DSP bandwidths that would fit, and a `DSP bandwidth...` value the explicit NFM width cannot
-run at is refused with one saying to narrow the width first (see `docs/cli.md`, Analog reception).
+itself is the bound. `NFM bandwidth...` (offered while `-fA` is the configured mode on a radio input) shows the
+setting, `[12.5 kHz]` or `[default]`, takes any width from 8000 to 25000 Hz, or `0` for the default, and applies it
+live; a width the DSP rate cannot filter is refused with a message naming both and the fix, and a `DSP bandwidth...`
+value the explicit NFM width cannot run at is refused with one saying to narrow the width first (see `docs/cli.md`,
+Analog reception). The Qt and Android Radio sheet shows the same reading, spelled the same way.
 
 The low-level threshold is controlled by `--input-level-warn-db`, `DSD_NEO_INPUT_WARN_DB`, or the `[input]`
 `input_warn_db` user-config key, and defaults to `-40 dBFS`. Changes made through the terminal menu persist through

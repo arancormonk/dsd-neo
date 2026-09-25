@@ -743,6 +743,15 @@ static int process_includes(const char* path, dsdneoUserConfig* cfg, int depth, 
 static int process_includes_stream(FILE* fp, dsdneoUserConfig* cfg, int depth, const char** include_stack,
                                    int include_stack_size);
 
+/* A section that sets every key it owns is present even with no key under it: a saved [analog] at the default has
+   none, and loading it puts the default back. */
+static void
+note_section_present(dsdneoUserConfig* cfg, const char* section) {
+    if (strcmp(section, "analog") == 0) {
+        cfg->has_analog = 1;
+    }
+}
+
 /* Internal loader that does NOT reset the config struct.
  * Used for accumulating values from multiple files (includes). */
 static int
@@ -763,6 +772,7 @@ user_config_load_no_reset_stream(FILE* fp, dsdneoUserConfig* cfg) {
 
         int section_result = parse_section_header_line(line, current_section, sizeof current_section);
         if (section_result > 0) {
+            note_section_present(cfg, current_section);
             continue;
         }
 

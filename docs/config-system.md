@@ -430,10 +430,14 @@ Rdio API uploads do not follow HTTP redirects. Configure `rdio_api_url` as the f
 | `nfm_bandwidth_hz` | INT (8000-25000) | NFM channel-filter width in whole Hz: the full RF passband the analog monitor (`decode = "analog"`) keeps, not the tuner, DSP or audio bandwidth. Same as `--nfm-bandwidth-hz` | (unset: `16000`) |
 
 The `[analog]` keys are written only when set explicitly: a save leaves `nfm_bandwidth_hz` out while the default is in
-force, so the key left out and the default are the same thing, and a later default reaches the config. An explicit
-`16000` is saved, because it differs from the default in one way: an explicit width always runs the channel filter,
-while the unset default keeps the historical rule and runs it only at DSP rates of 20 kHz or more. A section that is
-present sets every key it owns, so an `[analog]` section whose width the loader refused leaves the default.
+force, so within the section the key left out and the default are the same thing, and a later default reaches the
+config. An explicit `16000` is saved, because it differs from the default in one way: an explicit width always runs the
+channel filter, while the unset default keeps the historical rule and runs it only at DSP rates of 20 kHz or more. The
+generated template's `# nfm_bandwidth_hz = 16000` shows the width the default resolves to; uncommenting it makes the
+width explicit. A section that is present sets every key it owns, so a save always writes the `[analog]` header, even
+with no key under it: loading a config saved at the default puts the default back over an explicit width the session
+had, from the Config menu's load and a profile switch alike. An `[analog]` section whose width the loader refused leaves
+the default too. A hand-written config with no `[analog]` section leaves the width as it was.
 
 A value outside 8000-25000, or anything but whole Hz (`12.5k`, `12500Hz`), is refused, never clamped: startup logs a
 warning and keeps the default, and `--validate-config` reports an error with the same text the CLI prints. With
@@ -449,7 +453,7 @@ reception, "When changes apply"):
 | --- | --- |
 | `nfm_bandwidth_hz` at startup | When the stream opens. An RTL-SDR or rtl_tcp input whose DSP bandwidth cannot filter the width stops startup before the device opens; other radio inputs are held to the rate they deliver when the stream starts. |
 | `nfm_bandwidth_hz` in a config loaded into a running session | Live, on the next DSP block of the analog monitor; no reopen. A width the DSP rate it will run at cannot filter leaves the whole config unapplied, with a message naming the width, the rate and the fix. |
-| `[input] rtl_bw_khz` in a config loaded into a running analog session | Reopens the device at the new DSP bandwidth. A bandwidth the explicit NFM width in force (the config's or the session's) cannot run at leaves the whole config unapplied; the width is checked at the new bandwidth, not the running one. |
+| `[input] rtl_bw_khz` in a config loaded into a running analog session | Reopens the device at that DSP bandwidth, as given, when the `[input]` builds an RTL-SDR or rtl_tcp input other than the running one (another bandwidth, frequency or device, or an RTL spec over a running SoapySDR or Airspy input). A bandwidth the explicit NFM width in force (the config's or the session's) cannot run at leaves the whole config unapplied; the width is checked at the bandwidth the reopen runs at, not the running one. An `[input]` that builds the input already running reopens nothing and changes no rate. |
 | `[mode] decode = "analog"` in a config loaded into a digital session | Live receive-family switch. With an explicit NFM width the DSP rate cannot filter, the whole config is left unapplied. |
 
 Note: The defaults shown match the generated template (`--dump-config-template`).

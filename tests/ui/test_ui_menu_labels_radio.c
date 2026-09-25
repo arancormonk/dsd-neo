@@ -303,7 +303,9 @@ test_radio_tuning_labels(void) {
     rc |= expect_str("rtl ppm", lbl_rtl_ppm(&ctx, b, sizeof(b)), "PPM correction... [-3]");
     /* The DSP rate, not a channel width: the NFM channel width has its own row (issue #525). */
     rc |= expect_str("rtl bandwidth", lbl_rtl_bw(&ctx, b, sizeof(b)), "DSP bandwidth... [48 kHz]");
-    rc |= expect_str("nfm bandwidth default", lbl_rtl_nfm_bw(&ctx, b, sizeof(b)), "NFM bandwidth... [default 16 kHz]");
+    /* A setting, not a reading: the unset default is "default", whatever width the DSP rate leaves it (the status
+       line's "Analog:" field shows that). */
+    rc |= expect_str("nfm bandwidth default", lbl_rtl_nfm_bw(&ctx, b, sizeof(b)), "NFM bandwidth... [default]");
     opts.analog_nfm_bandwidth_hz = 12500;
     rc |= expect_str("nfm bandwidth explicit", lbl_rtl_nfm_bw(&ctx, b, sizeof(b)), "NFM bandwidth... [12.5 kHz]");
     opts.analog_nfm_bandwidth_hz = 16000;

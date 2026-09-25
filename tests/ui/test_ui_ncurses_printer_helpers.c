@@ -897,8 +897,9 @@ test_rtl_and_soapy_input_source_rendering(void) {
 /*
  * Issue #525: beside the DSP rate, the status line names the analog channel width in force -- the front end's while a
  * running stream runs the monitor, else the configured one -- and says when the DSP rate rather than the filter bounds
- * it. The same width the NFM bandwidth row and the Qt Radio sheet show. The front end's width is kept apart from the
- * configured one, so each case shows which of the two the line took.
+ * it, or that it is the default. App-control's analog width view decides and spells it for the Qt Radio sheet too, and
+ * runs here for real. The front end's width is kept apart from the configured one, so each case shows which of the two
+ * the line took.
  */
 static void
 test_analog_channel_status_rendering(void) {
@@ -918,11 +919,11 @@ test_analog_channel_status_rendering(void) {
 
     opts.analog_only = 1;
     opts.analog_demod = DSD_ANALOG_DEMOD_FM;
-    /* No published width yet: the configured one, the default here. */
+    /* No published width yet: the configured one, the default here, marked as such. */
     g_channel_bandwidth_hz = 0;
     reset_printw_capture();
     ui_render_rtl_input_source(&opts, &state);
-    assert_capture_contains(" DSP-BW: 48 kHz; Analog: NFM 16 kHz;");
+    assert_capture_contains(" DSP-BW: 48 kHz; Analog: NFM 16 kHz (default);");
 
     opts.analog_nfm_bandwidth_hz = 12500;
     g_channel_bandwidth_hz = 20000;

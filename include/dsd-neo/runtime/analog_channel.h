@@ -136,6 +136,18 @@ int dsd_analog_width_realizable(int width_hz, int rate_hz);
 /** @brief Largest width realizable at @p rate_hz in Hz, or 0 when no width fits that rate. */
 int dsd_analog_width_max_for_rate(int rate_hz);
 
+/** @brief Return 1 when @p khz is a selectable RTL DSP bandwidth (rtl_bw_khz): 4, 6, 8, 12, 16, 24 or 48 kHz. */
+int dsd_analog_rtl_dsp_bw_is_selectable(int khz);
+
+/**
+ * @brief List the selectable RTL DSP bandwidths that filter @p width_hz, in kHz: "48", "24 or 48", "16, 24 or 48".
+ *
+ * The list dsd_analog_width_check() names as the fix. @p out is empty when no bandwidth fits.
+ *
+ * @return 0 on success, -1 on a NULL or empty buffer.
+ */
+int dsd_analog_width_fitting_rtl_bandwidths(int width_hz, char* out, size_t out_size);
+
 /**
  * @brief Validate an explicit width for @p kind at a DSP rate.
  *

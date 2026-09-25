@@ -657,6 +657,19 @@ dsd_neo_add_public_header_smoke_test(
   dsd-neo/app_control/squelch_view.h
   CXX
 )
+# Issue #525: the shared analog channel width readout.
+dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_app_control_analog_width_view
+  HEADERS_PUBLIC_APP_CONTROL_ANALOG_WIDTH_VIEW
+  dsd-neo/app_control/analog_width_view.h
+  C
+)
+dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_app_control_analog_width_view_cxx
+  HEADERS_PUBLIC_APP_CONTROL_ANALOG_WIDTH_VIEW_CXX
+  dsd-neo/app_control/analog_width_view.h
+  CXX
+)
 dsd_neo_add_public_header_smoke_test(
   dsd-neo_test_headers_public_app_control_rx_tone_view
   HEADERS_PUBLIC_APP_CONTROL_RX_TONE_VIEW
@@ -1808,6 +1821,7 @@ add_executable(
     test_support/scan_group_stubs.c
     ui/test_ui_menu_services.c
     ${PROJECT_SOURCE_DIR}/src/core/util/bit_packing.c
+    ${PROJECT_SOURCE_DIR}/src/app_control/analog_width_view.c
     ${PROJECT_SOURCE_DIR}/src/app_control/menu_services.c
     # svc_clear_keys() drops the DMR TG->key ID map through keyring_dmr_tg_map_reset().
     ${PROJECT_SOURCE_DIR}/src/core/vocoder/keyring.c
@@ -1864,6 +1878,7 @@ if(DSD_ENABLE_TERMINAL_UI)
         ui/test_ui_menu_labels_radio.c
         ${PROJECT_SOURCE_DIR}/src/ui/terminal/menu_labels.c
         ${PROJECT_SOURCE_DIR}/src/core/util/enc_lockout.c
+        ${PROJECT_SOURCE_DIR}/src/app_control/analog_width_view.c
         ${PROJECT_SOURCE_DIR}/src/runtime/analog_channel.c
     )
     target_include_directories(
@@ -2131,6 +2146,22 @@ add_test(
     COMMAND dsd-neo_test_app_control_rx_tone_view
 )
 
+# Issue #525: the analog channel width in force under the configured analog preset, the
+# DSP-limited flag, and the one spelling of the reading and of the configured width.
+add_executable(
+    dsd-neo_test_app_control_analog_width_view
+    ui/test_app_control_analog_width_view.c
+    ${PROJECT_SOURCE_DIR}/src/app_control/analog_width_view.c
+)
+target_link_libraries(
+    dsd-neo_test_app_control_analog_width_view
+    PRIVATE dsd-neo_core dsd-neo_runtime
+)
+add_test(
+    NAME APP_CONTROL_ANALOG_WIDTH_VIEW
+    COMMAND dsd-neo_test_app_control_analog_width_view
+)
+
 add_executable(
     dsd-neo_test_app_control_notification_status
     ui/test_app_control_notification_status.c
@@ -2204,6 +2235,7 @@ if(DSD_ENABLE_TERMINAL_UI)
     add_executable(
         dsd-neo_test_ui_ncurses_printer_helpers
         ui/test_ui_ncurses_printer_helpers.c
+        ${PROJECT_SOURCE_DIR}/src/app_control/analog_width_view.c
         ${PROJECT_SOURCE_DIR}/src/app_control/scan_timing_view.c
         ${PROJECT_SOURCE_DIR}/src/app_control/squelch_view.c
         ${PROJECT_SOURCE_DIR}/src/app_control/rx_tone_view.c
@@ -2256,6 +2288,8 @@ if(DSD_ENABLE_TERMINAL_UI)
         dsd-neo_test_ui_menu_actions
         ui/test_ui_menu_actions.c
         ${PROJECT_SOURCE_DIR}/src/ui/terminal/menu_actions.c
+        ${PROJECT_SOURCE_DIR}/src/app_control/analog_width_view.c
+        ${PROJECT_SOURCE_DIR}/src/runtime/analog_channel.c
     )
     target_include_directories(
         dsd-neo_test_ui_menu_actions
@@ -2892,6 +2926,7 @@ if(DSD_ENABLE_QT_UI)
         dsd-neo_test_ui_qt_metrics_model
         ui/test_ui_qt_metrics_model.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/metrics_model.cpp
+        ${PROJECT_SOURCE_DIR}/src/app_control/analog_width_view.c
         ${PROJECT_SOURCE_DIR}/src/app_control/call_view.c
         ${PROJECT_SOURCE_DIR}/src/app_control/p25_metrics.c
         ${PROJECT_SOURCE_DIR}/src/app_control/squelch_view.c
@@ -5616,6 +5651,7 @@ if(
             "LINKER:--wrap=rtl_stream_output_rate_for_family"
             "LINKER:--wrap=rtl_stream_set_digital_decode_modes"
             "LINKER:--wrap=rtl_stream_get_cqpsk_status"
+            "LINKER:--wrap=rtl_stream_output_generation"
     )
 endif()
 add_test(NAME APP_COMMAND_QUEUE COMMAND dsd-neo_test_app_command_queue)
@@ -5894,6 +5930,28 @@ if(DSD_HAS_RADIO)
     )
     set_tests_properties(
         RUNTIME_ANALOG_WIDTH_RATE_REFUSED
+        PROPERTIES ENVIRONMENT "DSD_NEO_NO_BOOTSTRAP=1" TIMEOUT 30
+    )
+    # The same check lets existing low-rate -fA command lines start: the unset
+    # default below a 20 kHz DSP rate, and an explicit width that fits one. Both
+    # get as far as opening the stream (which fails: nothing listens on port 1).
+    add_test(
+        NAME RUNTIME_ANALOG_NFM_DEFAULT_LOW_RATE
+        COMMAND
+            ${CMAKE_COMMAND} -D DSD_NEO_CLI=$<TARGET_FILE:dsd-neo> -D
+            DSD_NEO_CLI_SMOKE_MODE=nfm-default-low-rate -P
+            ${CMAKE_CURRENT_SOURCE_DIR}/cmake/RunCliSmoke.cmake
+    )
+    add_test(
+        NAME RUNTIME_ANALOG_NFM_WIDTH_FITS_LOW_RATE
+        COMMAND
+            ${CMAKE_COMMAND} -D DSD_NEO_CLI=$<TARGET_FILE:dsd-neo> -D
+            DSD_NEO_CLI_SMOKE_MODE=nfm-width-fits-low-rate -P
+            ${CMAKE_CURRENT_SOURCE_DIR}/cmake/RunCliSmoke.cmake
+    )
+    set_tests_properties(
+        RUNTIME_ANALOG_NFM_DEFAULT_LOW_RATE
+        RUNTIME_ANALOG_NFM_WIDTH_FITS_LOW_RATE
         PROPERTIES ENVIRONMENT "DSD_NEO_NO_BOOTSTRAP=1" TIMEOUT 30
     )
 endif()

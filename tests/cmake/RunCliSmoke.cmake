@@ -48,6 +48,45 @@ elseif(DSD_NEO_CLI_SMOKE_MODE STREQUAL "nfm-width-rate-refused")
         "NFM bandwidth 25 kHz does not fit the 24 kHz DSP rate [(]the largest width it fits is 20[.]4 kHz[)]; set the RTL DSP bandwidth to 48 kHz"
     )
     set(_forbid_output_regex "radio stream")
+elseif(DSD_NEO_CLI_SMOKE_MODE STREQUAL "nfm-default-low-rate")
+    # Issue #525: an existing low-rate -fA command line keeps starting. With
+    # no width given, the unset default is DSP-limited below a 20 kHz DSP rate
+    # and never refused for it, so startup goes on to open the rtl_tcp stream
+    # (and fails there only because nothing listens on port 1). The negative
+    # control for nfm-width-rate-refused: the stream failure, not a refusal.
+    set(_args
+        --frontend
+        none
+        -fA
+        -i
+        rtltcp:127.0.0.1:1:851.375M:0:0:12
+        -o
+        null
+    )
+    set(_want_rc 1)
+    set(_want_stdout_regex "")
+    set(_want_stderr_regex "")
+    set(_want_output_regex "Failed to open radio stream")
+    set(_forbid_output_regex "does not fit|cannot be filtered")
+elseif(DSD_NEO_CLI_SMOKE_MODE STREQUAL "nfm-width-fits-low-rate")
+    # An explicit width the 16 kHz DSP rate filters (12.5 kHz of its 13.2 kHz
+    # maximum) passes the pre-open check the same way.
+    set(_args
+        --frontend
+        none
+        -fA
+        -i
+        rtltcp:127.0.0.1:1:851.375M:0:0:16
+        --nfm-bandwidth-hz
+        12500
+        -o
+        null
+    )
+    set(_want_rc 1)
+    set(_want_stdout_regex "")
+    set(_want_stderr_regex "")
+    set(_want_output_regex "Failed to open radio stream")
+    set(_forbid_output_regex "does not fit|cannot be filtered")
 else()
     message(
         FATAL_ERROR

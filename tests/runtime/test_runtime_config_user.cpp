@@ -2552,9 +2552,10 @@ load_config_text(const char* ini, dsdneoUserConfig* cfg) {
 
 /*
  * Issue #525: [analog] nfm_bandwidth_hz rides INI -> cfg -> opts -> snapshot -> render. 0 in the
- * options is the default, not a request, so a save writes the key (and the section) only for an
- * explicit width -- an explicit 16000 included, since it forces the channel filter on where the
- * default would not. An invalid value is refused by the loader, which keeps the default.
+ * options is the default, not a request, so a save writes the key only for an explicit width -- an
+ * explicit 16000 included, since it forces the channel filter on where the default would not. The
+ * section itself is always saved, so a config saved at the default loads back as the default over a
+ * session's explicit width. An invalid value is refused by the loader, which keeps the default.
  */
 static int
 test_analog_nfm_bandwidth_roundtrip(void) {
@@ -2597,14 +2598,28 @@ test_analog_nfm_bandwidth_roundtrip(void) {
     }
     rc |= expect_contains("explicit default-valued NFM width", rendered, "nfm_bandwidth_hz = 16000\n");
 
-    /* The default is not saved at all, so a later default change reaches this config. */
+    /* The default's key is not saved, so a later default change reaches this config, but its section is: loading the
+       file into a session with an explicit width puts the default back rather than keeping that width. */
     reset_opts_and_state(opts, state);
     dsd_snapshot_opts_to_user_config(&opts, &state, &snap);
     if (render_config_to_buffer(&snap, rendered, sizeof rendered) != 0) {
         return 1;
     }
-    if (strstr(rendered, "nfm_bandwidth_hz") != NULL || strstr(rendered, "[analog]") != NULL) {
+    if (strstr(rendered, "nfm_bandwidth_hz") != NULL) {
         DSD_FPRINTF(stderr, "FAIL: the default NFM width was saved:\n%s\n", rendered);
+        rc |= 1;
+    }
+    rc |= expect_contains("the section of a default width", rendered, "[analog]\n\n");
+    if (load_config_text(rendered, &cfg) != 0 || !cfg.has_analog || cfg.analog_nfm_bandwidth_hz != 0) {
+        DSD_FPRINTF(stderr, "FAIL: a saved default did not load back as a present [analog] (has=%d width=%d)\n",
+                    cfg.has_analog, cfg.analog_nfm_bandwidth_hz);
+        rc |= 1;
+    }
+    opts.analog_nfm_bandwidth_hz = 12500;
+    dsd_apply_user_config_to_opts(&cfg, &opts, &state);
+    if (opts.analog_nfm_bandwidth_hz != 0) {
+        DSD_FPRINTF(stderr, "FAIL: loading a config saved at the default kept width %d\n",
+                    opts.analog_nfm_bandwidth_hz);
         rc |= 1;
     }
 
