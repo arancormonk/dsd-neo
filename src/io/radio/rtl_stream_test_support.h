@@ -87,6 +87,7 @@ typedef struct rtl_stream_test_rx_request_result {
     int refusal_reported;              /* rtl_stream_receive_request_refusal() for the refused request */
     int kept_analog_family;            /* the family it says the stream kept (on the analog family, at 12.5 kHz) */
     int kept_width_hz;                 /* the analog width it says the stream kept */
+    int kept_kind;                     /* the analog kind it says the stream kept (FM) */
     int settled_refusal_reported;      /* rtl_stream_receive_request_refusal() for a settled request */
     int entry_kept_analog_family;      /* the family kept when a switch onto the monitor was refused */
     uint32_t refused_seq;              /* the number of that refused switch */

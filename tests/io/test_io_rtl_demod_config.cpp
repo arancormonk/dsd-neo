@@ -1345,6 +1345,8 @@ expect_rx_request_outcomes(void) {
     rc |= expect_int_eq("rx refusal reported", r.refusal_reported, 1);
     rc |= expect_int_eq("rx refusal: the analog family kept", r.kept_analog_family, 1);
     rc |= expect_int_eq("rx refusal: the width the stream kept, not the one refused", r.kept_width_hz, 12500);
+    rc |= expect_int_eq("rx refusal: the kind the stream kept, not the one refused (AM, asked for NFM)", r.kept_kind,
+                        DSD_ANALOG_DEMOD_AM);
     rc |= expect_int_eq("rx settled request: no refusal", r.settled_refusal_reported, 0);
     rc |= expect_int_eq("rx refused switch: the digital family kept", r.entry_kept_analog_family, 0);
     rc |= expect_int_eq("rx request dropped by an open: settled", r.open_outcome, RTL_STREAM_RX_REQUEST_SETTLED);

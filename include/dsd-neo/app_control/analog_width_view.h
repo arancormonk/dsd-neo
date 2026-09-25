@@ -5,15 +5,17 @@
 
 /**
  * @file
- * @brief Frontend-neutral analog channel width readout: the width in force under the configured analog preset,
- * whether the DSP rate bounds it, and the configured width the controls edit (issue #525).
+ * @brief Frontend-neutral analog channel width readout: the width in force under the configured analog preset (NFM,
+ * issue #525, or AM, issue #524), whether the DSP rate bounds it, and the configured width the controls edit.
  *
  * The analog preset is the configured one (dsd_scan_mode_configured_view()): a typed digital scan row on an analog
  * session does not end it, and the row's leave returns to the configured width. The M17 encoder rides the monitor
  * output without being the analog receiver, so it has no width. While a running stream's options in force run the
- * analog family on the monitor output, the width in force is the one the front end reports, flagged when the DSP rate
- * rather than the channel filter bounds it; otherwise (no stream, a typed digital row filtering with its own profile)
- * it is the configured width, the kind's default when none is set. An unset NFM default reads as what the monitor
+ * analog family on the monitor output with the configured kind, the width in force is the one the front end reports,
+ * flagged when the DSP rate rather than the channel filter bounds it; otherwise (no stream, a typed digital row
+ * filtering with its own profile, an FM <-> AM switch that has not landed yet) it is the configured width, the kind's
+ * default when none is set. The unset AM default is its 6 kHz filter, which no DSP rate limits: a rate that cannot
+ * filter it is refused rather than run without it. An unset NFM default reads as what the monitor
  * runs at the DSP rate it returns to: where no channel filter runs there, the rate itself, and where the filter runs
  * but the rate cannot realize the default, the passband of the legacy WIDE plan that runs instead
  * (dsd_channel_lpf_legacy_wide_width_hz()), both DSP-limited. Whether the filter runs is the running stream's own
