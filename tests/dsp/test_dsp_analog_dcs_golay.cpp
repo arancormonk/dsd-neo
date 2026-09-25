@@ -27,21 +27,32 @@
  * before and after the mapping.
  */
 
-#include <cassert>
 #include <cstdint>
-#include <cstdio>
+#include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/fec/Golay24.hpp>
 #include <dsd-neo/runtime/analog_tones.h>
+#include <stdio.h>
 
 namespace {
 
 constexpr uint32_t kMask = (1U << DSD_DCS_WORD_BITS) - 1U;
 
+int g_failures = 0;
+
+/* Every check runs and reports; main() fails if any did. */
+void
+check(bool ok, const char* what) {
+    if (!ok) {
+        DSD_FPRINTF(stderr, "DSP_ANALOG_DCS_GOLAY_XCHECK: %s\n", what);
+        ++g_failures;
+    }
+}
+
 uint32_t
 reverse_bits(uint32_t value, int bits) {
     uint32_t out = 0U;
     for (int i = 0; i < bits; i++) {
-        if ((value >> i) & 1U) {
+        if (((value >> i) & 1U) != 0U) {
             out |= 1U << (bits - 1 - i);
         }
     }
@@ -86,9 +97,9 @@ test_every_word_is_a_golay24_word() {
     for (int code = 0; code <= DSD_DCS_CODE_MAX; code++) {
         for (int inverted = 0; inverted < 2; inverted++) {
             const uint32_t word = dsd_dcs_word(code, inverted);
-            assert(word != 0U);
+            check(word != 0U, "word != 0U");
             const uint32_t mapped = to_golay24(word);
-            assert(golay24_accepts(mapped));
+            check(golay24_accepts(mapped), "golay24_accepts(mapped)");
             if (!golay24_accepts(word)) {
                 not_valid_unmapped++;
             }
@@ -96,17 +107,18 @@ test_every_word_is_a_golay24_word() {
             for (int bit = 0; bit < DSD_DCS_WORD_BITS; bit++) {
                 int errs = 0;
                 unsigned int detected = 0U;
-                assert(Golay24::correct(mapped ^ (1U << bit), &errs, &detected) == mapped);
-                assert(errs == 1);
+                check(Golay24::correct(mapped ^ (1U << bit), &errs, &detected) == mapped,
+                      "Golay24::correct(mapped ^ (1U << bit), &errs, &detected) == mapped");
+                check(errs == 1, "errs == 1");
             }
         }
         /* The layout mapping, stated exactly, for the normal word (the inverted one is its
            complement, and the all-ones word is in the code). */
         const uint32_t word = dsd_dcs_word(code, 0);
-        assert(to_golay24(word) == golay24_encoding_of(word));
+        check(to_golay24(word) == golay24_encoding_of(word), "to_golay24(word) == golay24_encoding_of(word)");
     }
     /* Without the reversal the check means nothing: most words would fail it. */
-    assert(not_valid_unmapped > DSD_DCS_CODE_MAX);
+    check(not_valid_unmapped > DSD_DCS_CODE_MAX, "not_valid_unmapped > DSD_DCS_CODE_MAX");
 }
 
 /*
@@ -117,19 +129,19 @@ test_every_word_is_a_golay24_word() {
  */
 void
 test_reference_words() {
-    assert(dsd_dcs_word(0023, 0) == 0x763813U);
-    assert(to_golay24(0x763813U) == 0x640E37U);
-    assert(golay24_accepts(0x640E37U));
-    assert(!golay24_accepts(0x763813U));
+    check(dsd_dcs_word(0023, 0) == 0x763813U, "dsd_dcs_word(0023, 0) == 0x763813U");
+    check(to_golay24(0x763813U) == 0x640E37U, "to_golay24(0x763813U) == 0x640E37U");
+    check(golay24_accepts(0x640E37U), "golay24_accepts(0x640E37U)");
+    check(!golay24_accepts(0x763813U), "!golay24_accepts(0x763813U)");
 
-    assert(dsd_dcs_word(0023, 1) == 0x09C7ECU);
-    assert(to_golay24(0x09C7ECU) == 0x1BF1C8U);
-    assert(golay24_accepts(0x1BF1C8U));
+    check(dsd_dcs_word(0023, 1) == 0x09C7ECU, "dsd_dcs_word(0023, 1) == 0x09C7ECU");
+    check(to_golay24(0x09C7ECU) == 0x1BF1C8U, "to_golay24(0x09C7ECU) == 0x1BF1C8U");
+    check(golay24_accepts(0x1BF1C8U), "golay24_accepts(0x1BF1C8U)");
 
-    assert(dsd_dcs_word(0, 0) == 0x63A800U);
-    assert(to_golay24(0x63A800U) == 0x000AE3U);
-    assert(to_golay24(0x63A800U) == (unsigned int)POLY);
-    assert(golay24_accepts(0x000AE3U));
+    check(dsd_dcs_word(0, 0) == 0x63A800U, "dsd_dcs_word(0, 0) == 0x63A800U");
+    check(to_golay24(0x63A800U) == 0x000AE3U, "to_golay24(0x63A800U) == 0x000AE3U");
+    check(to_golay24(0x63A800U) == static_cast<unsigned int>(POLY), "to_golay24(0x63A800U) == POLY");
+    check(golay24_accepts(0x000AE3U), "golay24_accepts(0x000AE3U)");
 }
 
 /* dsd_dcs_match() names only Golay24.hpp code words: a window that is not one (one bit off a
@@ -140,8 +152,8 @@ test_match_needs_a_code_word() {
         const uint32_t word = dsd_dcs_word(dsd_dcs_code(i), 0);
         for (int bit = 0; bit < DSD_DCS_WORD_BITS; bit++) {
             const uint32_t damaged = word ^ (1U << bit);
-            assert(!golay24_accepts(to_golay24(damaged)));
-            assert(dsd_dcs_match(damaged, nullptr, nullptr) == 0);
+            check(!golay24_accepts(to_golay24(damaged)), "!golay24_accepts(to_golay24(damaged))");
+            check(dsd_dcs_match(damaged, nullptr, nullptr) == 0, "dsd_dcs_match(damaged, nullptr, nullptr) == 0");
         }
     }
 }
@@ -153,6 +165,9 @@ main() {
     test_reference_words();
     test_every_word_is_a_golay24_word();
     test_match_needs_a_code_word();
-    std::printf("DSP_ANALOG_DCS_GOLAY_XCHECK: OK\n");
+    if (g_failures != 0) {
+        return 1;
+    }
+    DSD_FPRINTF(stdout, "DSP_ANALOG_DCS_GOLAY_XCHECK: OK\n");
     return 0;
 }
