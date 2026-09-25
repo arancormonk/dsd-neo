@@ -99,9 +99,9 @@ enum {
  * demodulator's DC block and 75 or 750 us de-emphasis at 8 to 78.125 kHz, for a code in noise
  * at an in-band signal-to-noise ratio (0-290 Hz) of:
  *
- * - 10 dB or better: every start within DSD_ANALOG_DCS_LOCK_MS. Over 1,000,000 starts (random
- *   codes in either polarity, the onset anywhere in a word, 75 and 750 us at 48 kHz) the
- *   slowest took 435 ms.
+ * - 10 dB or better: every start within DSD_ANALOG_DCS_LOCK_MS. Over 7,000,000 starts (random
+ *   codes in either polarity, the onset anywhere in a word, 75 and 750 us at 8, 44.1, 48 and
+ *   78.125 kHz) the slowest took 451 ms.
  * - 3 dB: a p95 target, DSD_ANALOG_DCS_LOCK_P95_MS, and a per-event ceiling,
  *   DSD_ANALOG_DCS_LOCK_CEILING_MS, above the slowest start of the long-run sweeps. Over
  *   8,500,000 starts at 8, 44.1, 48 and 78.125 kHz with both de-emphasis settings, p95 was at
@@ -112,6 +112,14 @@ enum {
  *
  * A lock needs the code's 23-bit word read twice in a row, 46 bits or 342 ms, so a lock
  * typically comes 350-370 ms after the code starts.
+ *
+ * PCM input reaches the detector through the sound card's coupling instead of the demodulator's
+ * DC block (a one-pole high-pass at 3.7 Hz at 48 kHz, 6.1 Hz at 78.125 kHz). A one-pole
+ * coupling with a corner up to 10 Hz keeps the 10 dB bound: over 800,000 starts through a 10 Hz
+ * corner at 44.1 and 48 kHz with both de-emphasis settings, the slowest took 498 ms. At 3 dB it
+ * is outside the contract, since the steeper sag costs bits: over 1,400,000 such starts p95 was
+ * 494-558 ms, p99.9 859-960 ms and the slowest 1,581 ms. A 15 Hz corner misses the 10 dB bound
+ * too (9 of 100,000 starts past it, the slowest 686 ms; p95 730 ms at 3 dB).
  *
  * Loss runs from the moment the word stops under a live carrier to the first bit that no longer
  * reports it: 32 bits and the front end's delay, with a p95 target, DSD_ANALOG_DCS_LOSS_P95_MS,
@@ -148,8 +156,15 @@ enum {
  * minutes at 48 kHz) and locks again.
  *
  * A tone policy that waits for a lock before deciding there is no code must wait at least
- * DSD_ANALOG_DCS_LOCK_CEILING_MS plus 100 ms. When a CTCSS tone and a DCS code both lock, the
- * one that locked first stays published in dsd_state::analog_rx until it is lost.
+ * DSD_ANALOG_DCS_LOCK_CEILING_MS plus 100 ms.
+ *
+ * A DCS code outranks a CTCSS tone: while both are locked, dsd_state::analog_rx publishes the
+ * code, so a voice's talk-off on a coded channel never hides it. A code's own waveform in noise
+ * can read as a CTCSS tone before the code locks, and the publication shows that tone until the
+ * code does, which a policy that acts on the first lock meets too: twice in the 7,000,000 starts
+ * at 10 dB (D274N as 67.0 Hz at 8 kHz for 161 ms, D122N as 77.0 Hz at 78.125 kHz for 71 ms) and
+ * once in the 1,400,000 at 3 dB through a 10 Hz coupling (D274N as 69.3 Hz for 11 ms), never in
+ * the 8,500,000 at 3 dB through the demodulator's DC block.
  */
 enum {
     DSD_ANALOG_DCS_LOCK_MS = 520,

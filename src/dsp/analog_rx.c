@@ -210,15 +210,18 @@ dsd_analog_subaudible_fe_process(dsd_analog_subaudible_fe* fe, const float* in, 
  * ---------------------------------------------------------------------------------------- */
 
 /* The detectors the core runs, in the order their reports are merged. A detector is its ops
-   and the core member holding its working state. */
+   and the core member holding its working state. A DCS lock outranks a CTCSS one: it needs a
+   code's 23-bit word read twice in a row, far stronger evidence than a tone's correlation, so a
+   CTCSS lock beside it is a voice's talk-off on a coded channel, or the code's own waveform read
+   as a tone in noise before the code locked, and never hides the code. */
 typedef struct {
     const dsd_analog_rx_detector_ops* ops;
     size_t ctx_offset;
 } analog_rx_detector_slot;
 
 static const analog_rx_detector_slot k_detectors[] = {
-    {&dsd_analog_ctcss_ops, offsetof(dsd_analog_rx_core, ctcss)},
     {&dsd_analog_dcs_ops, offsetof(dsd_analog_rx_core, dcs)},
+    {&dsd_analog_ctcss_ops, offsetof(dsd_analog_rx_core, ctcss)},
 };
 
 enum { ANALOG_RX_DETECTOR_COUNT = (int)(sizeof(k_detectors) / sizeof(k_detectors[0])) };
@@ -252,7 +255,6 @@ dsd_analog_rx_core_reset(dsd_analog_rx_core* core) {
     }
     core->carrier_open = 0;
     core->closed_samples = 0;
-    core->held_by = 0;
     core->resets++;
 }
 
@@ -265,32 +267,7 @@ core_configure(dsd_analog_rx_core* core, int rate_hz) {
     }
     core->carrier_open = 0;
     core->closed_samples = 0;
-    core->held_by = 0;
     core->resets++;
-}
-
-static int
-core_detector_locked(const dsd_analog_rx_core* core, int i) {
-    dsd_analog_rx_report report;
-    k_detectors[i].ops->report(core_detector_const(core, i), &report);
-    return report.state == DSD_ANALOG_TONE_STATE_LOCKED;
-}
-
-/* After the detectors moved: the detector holding the publication keeps it while it stays
-   locked; once it is not, the first locked detector in table order takes it. */
-static void
-core_update_holder(dsd_analog_rx_core* core) {
-    if (core->held_by > 0 && core->held_by <= ANALOG_RX_DETECTOR_COUNT
-        && core_detector_locked(core, core->held_by - 1)) {
-        return;
-    }
-    core->held_by = 0;
-    for (int i = 0; i < ANALOG_RX_DETECTOR_COUNT; i++) {
-        if (core_detector_locked(core, i)) {
-            core->held_by = i + 1;
-            return;
-        }
-    }
 }
 
 static double
@@ -314,7 +291,6 @@ core_feed(dsd_analog_rx_core* core, const float* block, int count, int freeze) {
             k_detectors[i].ops->process(core_detector(core, i), core->scratch, core->scratch_wide, core->scratch_full,
                                         produced, freeze);
         }
-        core_update_holder(core);
     }
 }
 
@@ -364,23 +340,14 @@ dsd_analog_rx_core_process(dsd_analog_rx_core* core, const float* block, int cou
     return 1;
 }
 
-/* One verdict from every detector's: the detector holding the publication names the tone or
-   code (the lock that came first, see held_by), else the first locked detector; otherwise the
-   carrier is still being evaluated while any detector is, and carries no tone once every
-   detector has said so. */
+/* One verdict from every detector's: the first locked detector in table order names the code
+   or tone (a code outranks a tone, see k_detectors); otherwise the carrier is still being
+   evaluated while any detector is, and carries no tone once every detector has said so. */
 static void
 core_merge_reports(const dsd_analog_rx_core* core, dsd_analog_rx_report* out) {
     DSD_MEMSET(out, 0, sizeof(*out));
     out->state = DSD_ANALOG_TONE_STATE_NONE;
     out->kind = DSD_ANALOG_TONE_KIND_NONE;
-    if (core->held_by > 0 && core->held_by <= ANALOG_RX_DETECTOR_COUNT) {
-        dsd_analog_rx_report held;
-        k_detectors[core->held_by - 1].ops->report(core_detector_const(core, core->held_by - 1), &held);
-        if (held.state == DSD_ANALOG_TONE_STATE_LOCKED) {
-            *out = held;
-            return;
-        }
-    }
     for (int i = 0; i < ANALOG_RX_DETECTOR_COUNT; i++) {
         dsd_analog_rx_report report;
         k_detectors[i].ops->report(core_detector_const(core, i), &report);

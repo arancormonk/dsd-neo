@@ -794,21 +794,22 @@ installs from `src/engine/trunk_tuning.c` in `src/engine/trunk_tuning_hooks_inst
     an absolute mean-square floor that only rejects zeroed or squelched blocks) with the 200 ms sample-time hangover
     (`DSD_ANALOG_CARRIER_HANGOVER_MS`), and the detector plug-in table `k_detectors`: each row is a
     `dsd_analog_rx_detector_ops` (configure/reset/process/report) and the core member holding that detector's state:
-    CTCSS, then DCS. Detectors get the band stream, a time-aligned stage-1 "wide" stream (about
+    DCS, then CTCSS. Detectors get the band stream, a time-aligned stage-1 "wide" stream (about
     0-1 kHz, for the harmonic test) and a "full" stream aligned the same way: the raw input's mean square over each
     decimated sample's span, before any filter. Decimation folds a residue of voice-band content into the band (stage 1
     leaves it at least 58 dB down, 74 dB from 20 kHz inputs up), and on a carrier with nothing else below 290 Hz that
     residue alone looks like a pure tone; the full stream is how a detector tells it from one. The carrier test reads
     the raw samples' mean square, and each detector's thresholds are ratios against those streams' energy. Reports merge
-    by lock order: the detector that locked first (`held_by`, updated after every slice the detectors read) names the
-    tone or code until its lock is lost, then the first LOCKED report in table order; otherwise the verdict is ACQUIRING
-    while any detector still is, and NONE once all have said so. So a CTCSS talk-off on a coded channel never hides the
-    held code, nor a code the held tone. The front end accepts 2400 Hz up to `DSD_ANALOG_RX_MAX_RATE_HZ` (320 kHz, below
-    the ~333 kHz its tap budget can design), logs which side of that range an unusable rate is on (once for each stretch
-    of input at such a rate: a usable block ends the stretch, a reset does not) and publishes UNAVAILABLE there (after a
-    reset, from the next block on), keeping the carrier (floor, test and hangover) at every rate all the same, which the
-    scanners hold analog rows on (issue #526). The core, not a detector, owns the absolute floor and the carrier test;
-    `process(band, wide, full, count, freeze)` is the whole interface a detector gets. It also holds the decoder-thread
+    in table order: the first LOCKED report names the code or tone, so a DCS lock outranks a CTCSS one (a code's word
+    read twice in a row is far stronger evidence than a tone's correlation); otherwise the verdict is ACQUIRING while
+    any detector still is, and NONE once all have said so. So a CTCSS talk-off on a coded channel never hides the code,
+    and a tone that a code's own waveform raises in noise before the code locks gives way the moment it does. The front
+    end accepts 2400 Hz up to `DSD_ANALOG_RX_MAX_RATE_HZ` (320 kHz, below the ~333 kHz its tap budget can design), logs
+    which side of that range an unusable rate is on (once for each stretch of input at such a rate: a usable block ends
+    the stretch, a reset does not) and publishes UNAVAILABLE there (after a reset, from the next block on), keeping the
+    carrier (floor, test and hangover) at every rate all the same, which the scanners hold analog rows on (issue #526).
+    The core, not a detector, owns the absolute floor and the carrier test; `process(band, wide, full, count, freeze)`
+    is the whole interface a detector gets. It also holds the decoder-thread
     glue: the working state in `DSD_STATE_EXT_DSP_ANALOG_RX` (slot 9, heap, never deep-copied), the publication
     `dsd_state::analog_rx`, and the `Received tone:` LOG_INFO line on each change of verdict (every reset moves the
     publication's generation on and starts a new reception, which logs its verdict again, the same tone included). The

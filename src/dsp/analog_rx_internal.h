@@ -352,10 +352,6 @@ typedef struct {
     int carrier_open;       /**< 1 from the first open block until the hangover expires */
     int64_t closed_samples; /**< input samples since the carrier last read open */
     uint32_t resets;        /**< bumped by every reset, published as the generation */
-    /** 1 + the table index of the detector whose lock the publication shows, 0 while none is
-        locked: the lock that came first keeps the publication until it is lost, so a later
-        lock of the other kind (a voice's talk-off on a coded channel) never hides it. */
-    int held_by;
     float scratch[DSD_ANALOG_RX_SCRATCH];
     float scratch_wide[DSD_ANALOG_RX_SCRATCH];
     float scratch_full[DSD_ANALOG_RX_SCRATCH];
