@@ -257,8 +257,8 @@ void svc_note_digital_decode_modes(const dsd_opts* opts, const dsd_state* state)
  * @brief Check a channel width of analog @p kind (dsd_analog_demod) against the receive front end it would run on,
  * before anything changes.
  *
- * @p width_hz is the full RF channel-filter width in Hz, or 0 for the kind's default (runtime/analog_channel.h). A width
- * outside the kind's range (NFM 8000..25000 Hz, AM 5000..20000 Hz) is refused, and so, on a radio input while
+ * @p width_hz is the full RF channel-filter width in Hz, or 0 for the kind's default (runtime/analog_channel.h). A
+ * width outside the kind's range (NFM 8000..25000 Hz, AM 5000..20000 Hz) is refused, and so, on a radio input while
  * DSD_NEO_CHANNEL_LPF=0 turns the channel filter off (dsd_analog_channel_lpf_off_check()), is an explicit width or the
  * AM default, at any rate. On PCM input no channel filter runs, so the width is only stored there (a switch to a radio
  * input holds it). An explicit width, and the AM default (AM always runs its channel filter, issue #524), is also held
@@ -353,6 +353,19 @@ int svc_set_analog_bandwidth(dsd_opts* opts, const dsd_state* state, int kind, i
 void svc_restore_analog_width(dsd_opts* opts, const dsd_state* state, int kind, int kept_hz, int configured_before_hz);
 
 /**
+ * @brief Store @p width_hz (0 for the default) as the configured width of analog @p kind, and nothing else.
+ *
+ * The one writer of the two width settings, for callers that have already decided the width: svc_set_analog_bandwidth()
+ * and putting back a width the front end refused. It edits the configured width without suspending a scan row's scope:
+ * the NFM width through dsd_scan_mode_set_configured_nfm_bandwidth() (issue #526), where an nfm row's own width stays
+ * in force until the row leaves, and the AM width, which no row sets, in dsd_opts. dsd_scan_mode_configured_analog_width()
+ * reads the configured widths, dsd_app_analog_width_setting_hz() the ones in force. Decoder thread only.
+ *
+ * @return 1 when the width is now in force in dsd_opts, 0 when a row's own width shadows it or without @p opts.
+ */
+int svc_store_analog_width_setting(dsd_opts* opts, const dsd_state* state, int kind, int width_hz);
+
+/**
  * @brief Hand the configured width of analog @p kind to a running RTL front end, as a live analog profile request.
  *
  * Does nothing unless the options in force run an analog preset of @p kind with a stream running. A switch onto the
@@ -386,8 +399,8 @@ typedef struct {
                             leave, so a switch onto the analog monitor did not happen. */
     int kept_kind;     /**< The dsd_analog_demod the analog family kept: another kind than @c kind when a switch
                             between FM and AM did not happen. */
-    int kept_width_hz; /**< The analog width the analog family kept, as the stream requests it (0 = the NFM default;
-                            the AM default reads as its 6 kHz). */
+    int kept_width_hz; /**< The configured analog width the analog family kept (0 = the kind's default, AM's
+                            included). */
     int configured_before_hz; /**< The configured width of @c kind the front end ran before the refused change: from
                                    before the change the request carried, or, when it replaced earlier changes the front
                                    end ran none of and kept another width, from before the first of them; -1: none. */
@@ -421,7 +434,9 @@ int svc_airspy_settings_reopen(const dsd_airspy_config* previous, const dsd_airs
  * Flips the CQPSK state the front end was last asked for (rtl_stream_requested_cqpsk(): the state the requests the
  * demod thread has not taken yet leave it on, whoever queued them, otherwise the state it publishes) and queues it for
  * the demod thread, leaving the symbol profile and timing alone. Turning CQPSK off under an analog preset returns to
- * the analog monitor through the analog profile with the configured kind and channel width. Decoder thread only.
+ * the analog monitor through the analog profile with the configured kind and channel width; when the front end refuses
+ * that profile (its rate cannot filter the width, the AM default included), CQPSK stays on, whether the refusal comes
+ * at once or where the request lands, rather than leaving the monitor output on the FSK profile. Decoder thread only.
  */
 void svc_toggle_rtl_cqpsk(const dsd_opts* opts);
 

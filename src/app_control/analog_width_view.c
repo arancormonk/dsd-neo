@@ -148,6 +148,14 @@ dsd_app_analog_width_view_get(const dsd_opts* opts, const dsd_state* state, cons
 }
 
 int
+dsd_app_analog_width_setting_hz(const dsd_opts* opts, int kind) {
+    if (!opts) {
+        return 0;
+    }
+    return (kind == DSD_ANALOG_DEMOD_AM) ? opts->analog_am_bandwidth_hz : opts->analog_nfm_bandwidth_hz;
+}
+
+int
 dsd_app_analog_width_view_format(const dsd_app_analog_width_view* view, char* out, size_t out_size) {
     if (!out || out_size == 0U) {
         return -1;

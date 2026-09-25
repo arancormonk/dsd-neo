@@ -373,6 +373,16 @@ main(void) {
            && applied[0] == '\0');
     assert(dsd_app_analog_width_edit_notice(opts, state, -1, applied, sizeof applied) == -1 && applied[0] == '\0');
     assert(dsd_app_analog_width_edit_notice(opts, state, DSD_ANALOG_DEMOD_FM, NULL, 0) == -1);
+    /* Each kind's configured width reads the same whichever preset runs. */
+    opts->analog_nfm_bandwidth_hz = 12500;
+    opts->analog_am_bandwidth_hz = 8000;
+    opts->analog_demod = DSD_ANALOG_DEMOD_FM;
+    assert(dsd_app_analog_width_setting_hz(opts, DSD_ANALOG_DEMOD_FM) == 12500);
+    assert(dsd_app_analog_width_setting_hz(opts, DSD_ANALOG_DEMOD_AM) == 8000);
+    opts->analog_demod = DSD_ANALOG_DEMOD_AM;
+    assert(dsd_app_analog_width_setting_hz(opts, DSD_ANALOG_DEMOD_FM) == 12500);
+    assert(dsd_app_analog_width_setting_hz(opts, DSD_ANALOG_DEMOD_AM) == 8000);
+    assert(dsd_app_analog_width_setting_hz(NULL, DSD_ANALOG_DEMOD_AM) == 0);
 
     char out[8];
     assert(dsd_app_analog_width_view_get(NULL, state, NULL, &view) == -1 && !view.shown);

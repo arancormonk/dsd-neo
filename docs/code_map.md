@@ -736,19 +736,21 @@ installs from `src/engine/trunk_tuning.c` in `src/engine/trunk_tuning_hooks_inst
   row, CQPSK toggled on under -fA), as the monitor it returns to publishes it. There whether the filter runs is the
   stream's own decision (`rtl_stream_channel_lpf_default()`, carried as `dsd_frontend_metrics::channel_lpf_default`),
   which its configuration made from the rate it started at and keeps whatever rate the device then delivers (a forced
-  rate, a replay's capture rate), so the view does not re-derive it from the rate. The configured width comes from
-  the scan scope's configured view while one is live. An analog scan row on air (issue #526) shows its width on any
-  session (`row_analog`), and a row that sets its own width (`row_override`, `row_hz`) is the width in force, read as
-  `12.5 kHz (row; default 16 kHz)` with the configured width of its demodulator, which it overrides (on an AM session
-  its leave returns to the AM width instead). The services that hold a DSP rate to an analog session's width hold the
-  configured preset's own kind and width, not the row's. They spell the reading (`12.5 kHz`, `16 kHz (default)`,
-  `12 kHz (DSP-limited)`, `not used on PCM input`), the width command's notice
-  (`dsd_app_analog_width_edit_notice()`, for the kind the command edits whatever kind the configured preset runs:
-  `Applied: NFM bandwidth -> 12.5 kHz`, or `Default NFM bandwidth -> 16 kHz; this channel overrides it (12.5 kHz)`
-  under a row width) and the configured setting (`12.5 kHz`, `default`). The terminal's `Analog:` status field, the
-  `rtl.nfm_bw` row's label and predicate, the width command's toast, RTL_SET_BW's configured-width check and Qt's
-  `analogBandwidth*` properties (the row flags as `analogBandwidthRowActive`/`analogBandwidthRowOverride`) all come
-  from it. Test: `APP_CONTROL_ANALOG_WIDTH_VIEW`.
+  rate, a replay's capture rate), so the view does not re-derive it from the rate. The configured width comes from the
+  scan scope's configured view while one is live. An analog scan row on air (issue #526) shows its width on any session
+  (`row_analog`), and a row that sets its own width (`row_override`, `row_hz`) is the width in force, read as `12.5 kHz
+  (row; default 16 kHz)` with the configured width of its demodulator, which it overrides (on an AM session its leave
+  returns to the AM width instead). The services that hold a DSP rate to an analog session's width hold the configured
+  preset's own kind and width, not the row's. They spell the reading (`12.5 kHz`, `16 kHz (default)`, `12 kHz
+  (DSP-limited)`, `not used on PCM input`), the width command's notice (`dsd_app_analog_width_edit_notice()`, for the
+  kind the command edits whatever kind the configured preset runs: `Applied: NFM bandwidth -> 12.5 kHz`, or `Default NFM
+  bandwidth -> 16 kHz; this channel overrides it (12.5 kHz)` under a row width) and the configured setting (`12.5 kHz`,
+  `default`). The terminal's `Analog:` status field, the `rtl.nfm_bw` row's label and predicate, the width command's
+  toast, RTL_SET_BW's configured-width check and Qt's `analogBandwidth*` properties (the row flags as
+  `analogBandwidthRowActive`/`analogBandwidthRowOverride`) all come from it. `dsd_app_analog_width_setting_hz()` reads
+  either kind's width in `dsd_opts` (0 = default) whichever preset runs, for every caller that only reads the width in
+  force (`dsd_scan_mode_configured_analog_width()` reads the configured one); app-control's
+  `svc_store_analog_width_setting()` is the one writer. Test: `APP_CONTROL_ANALOG_WIDTH_VIEW`.
 - Decode quality: `include/dsd-neo/app_control/p25_metrics.h` and `src/app_control/p25_metrics.c`
   copy FEC ok percentages, populated P25 voice-error averages, and non-P25 last-frame
   errors from the caller's held snapshot. The core vocoder maintains ring counts;

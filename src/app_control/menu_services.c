@@ -968,12 +968,11 @@ svc_channel_map_refused_rows(const dsd_opts* opts, const dsd_state* state, char*
     return refused;
 }
 
-/* Store @p width_hz (0 = the kind's default) as the configured width of analog @p kind: the NFM width through the scan
-   scope's configured view (dsd_scan_mode_set_configured_nfm_bandwidth(), issue #526), which a row's own width shadows,
-   and the AM width, which no row sets, in dsd_opts. Returns 1 when the width is now in force in dsd_opts, 0 when a row
-   width shadows it. */
-static int
-svc_store_analog_width(dsd_opts* opts, const dsd_state* state, int kind, int width_hz) {
+int
+svc_store_analog_width_setting(dsd_opts* opts, const dsd_state* state, int kind, int width_hz) {
+    if (!opts) {
+        return 0;
+    }
     if (kind == DSD_ANALOG_DEMOD_AM) {
         opts->analog_am_bandwidth_hz = width_hz;
         return 1;
@@ -1039,13 +1038,13 @@ svc_restore_analog_width(dsd_opts* opts, const dsd_state* state, int kind, int k
         return;
     }
     if (!dsd_scan_mode_configured_view(state)) {
-        (void)svc_store_analog_width(opts, state, kind, kept_hz);
+        (void)svc_store_analog_width_setting(opts, state, kind, kept_hz);
         return;
     }
     /* Under a scan row the width the front end kept can be a row's own (the row on air's, or the one a retune in flight
        had not moved it off yet): the configured width only goes back to its own value from before the change. */
     if (configured_before_hz >= 0) {
-        (void)svc_store_analog_width(opts, state, kind, configured_before_hz);
+        (void)svc_store_analog_width_setting(opts, state, kind, configured_before_hz);
     }
     if (kind == DSD_ANALOG_DEMOD_FM && svc_row_sets_nfm_width(state)) {
         /* The row's own width was the one refused: the configured one never reached the front end. */
@@ -1139,10 +1138,10 @@ svc_set_analog_bandwidth(dsd_opts* opts, const dsd_state* state, int kind, int w
     const int previous_hz = dsd_scan_mode_configured_analog_width(opts, state, kind);
     /* The configured width, without suspending a scan row (issue #526): a row that sets its own width keeps it in force
        until it leaves, and nothing reaches the front end until then. */
-    if (svc_store_analog_width(opts, state, kind, width_hz) == 1
+    if (svc_store_analog_width_setting(opts, state, kind, width_hz) == 1
         && svc_publish_analog_bandwidth(opts, state, kind, previous_hz) != 0) {
         /* The front end refused the request after all: the rate moved since the check (a retune). */
-        (void)svc_store_analog_width(opts, state, kind, previous_hz);
+        (void)svc_store_analog_width_setting(opts, state, kind, previous_hz);
         svc_describe_analog_refusal(opts, kind, width_hz, why, why_size);
         return -1;
     }

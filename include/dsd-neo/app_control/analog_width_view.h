@@ -87,6 +87,16 @@ int dsd_app_analog_width_view_get(const dsd_opts* opts, const dsd_state* state, 
                                   dsd_app_analog_width_view* out);
 
 /**
+ * @brief The channel width of analog @p kind (dsd_analog_demod) in @p opts, in Hz; 0 for its default.
+ *
+ * Whichever preset runs: the NFM width for DSD_ANALOG_DEMOD_FM, the AM width for DSD_ANALOG_DEMOD_AM. Outside a scan
+ * scope, and while one is suspended, it is the setting the width commands edit and a save writes; under a live scan row
+ * dsd_opts holds the options in force, a row's own width (issue #526) included, and the configured width is
+ * dsd_scan_mode_configured_analog_width()'s. 0 when @p opts is NULL.
+ */
+int dsd_app_analog_width_setting_hz(const dsd_opts* opts, int kind);
+
+/**
  * @brief Render the width in force: "12.5 kHz", "16 kHz (default)" when the configured width is the default,
  * "12 kHz (DSP-limited)" when the rate bounds it (which only the default does), "12.5 kHz (row; default 16 kHz)" while a
  * scan row sets its own width (the default named is the configured width, or the kind's default width when none is
