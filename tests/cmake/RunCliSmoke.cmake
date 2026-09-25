@@ -48,6 +48,28 @@ elseif(DSD_NEO_CLI_SMOKE_MODE STREQUAL "nfm-width-rate-refused")
         "NFM bandwidth 25 kHz does not fit the 24 kHz DSP rate [(]the largest width it fits is 20[.]4 kHz[)]; set the RTL DSP bandwidth to 48 kHz"
     )
     set(_forbid_output_regex "radio stream")
+elseif(DSD_NEO_CLI_SMOKE_MODE STREQUAL "nfm-width-rate-refused-rtl")
+    # The same refusal for an RTL-SDR spec, whose DSP bandwidth the spec's
+    # sixth field sets. It happens before any device opens, so no dongle is
+    # needed: a run that went on to open one would print the stream failure.
+    set(_args
+        --frontend
+        none
+        -fA
+        -i
+        rtl:0:851.375M:0:0:24
+        --nfm-bandwidth-hz
+        25000
+        -o
+        null
+    )
+    set(_want_rc 1)
+    set(_want_stdout_regex "")
+    set(_want_stderr_regex "")
+    set(_want_output_regex
+        "NFM bandwidth 25 kHz does not fit the 24 kHz DSP rate [(]the largest width it fits is 20[.]4 kHz[)]; set the RTL DSP bandwidth to 48 kHz"
+    )
+    set(_forbid_output_regex "radio stream")
 elseif(DSD_NEO_CLI_SMOKE_MODE STREQUAL "nfm-default-low-rate")
     # Issue #525: an existing low-rate -fA command line keeps starting. With
     # no width given, the unset default is DSP-limited below a 20 kHz DSP rate

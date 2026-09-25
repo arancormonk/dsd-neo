@@ -5917,7 +5917,7 @@ set_tests_properties(
 
 # Issue #525: an explicit NFM width the input's DSP bandwidth cannot filter is refused
 # before the device opens, with the validator's actionable text, and startup fails.
-# rtl_tcp takes its DSP bandwidth from the input spec, so no device or server is
+# rtl_tcp and RTL-SDR specs carry their DSP bandwidth, so no device or server is
 # needed. RunCliSmoke.cmake checks the non-zero exit code together with the text
 # (and that the stream was never opened), which PASS_REGULAR_EXPRESSION alone cannot.
 if(DSD_HAS_RADIO)
@@ -5928,8 +5928,16 @@ if(DSD_HAS_RADIO)
             DSD_NEO_CLI_SMOKE_MODE=nfm-width-rate-refused -P
             ${CMAKE_CURRENT_SOURCE_DIR}/cmake/RunCliSmoke.cmake
     )
+    add_test(
+        NAME RUNTIME_ANALOG_WIDTH_RATE_REFUSED_RTL
+        COMMAND
+            ${CMAKE_COMMAND} -D DSD_NEO_CLI=$<TARGET_FILE:dsd-neo> -D
+            DSD_NEO_CLI_SMOKE_MODE=nfm-width-rate-refused-rtl -P
+            ${CMAKE_CURRENT_SOURCE_DIR}/cmake/RunCliSmoke.cmake
+    )
     set_tests_properties(
         RUNTIME_ANALOG_WIDTH_RATE_REFUSED
+        RUNTIME_ANALOG_WIDTH_RATE_REFUSED_RTL
         PROPERTIES ENVIRONMENT "DSD_NEO_NO_BOOTSTRAP=1" TIMEOUT 30
     )
     # The same check lets existing low-rate -fA command lines start: the unset
@@ -11356,13 +11364,17 @@ if(DSD_HAS_RADIO)
     # 30.4 dB), and an explicit 16 kHz measures the same as the default (25.9 dB,
     # 30.5 dB): its floors are ones neither other width meets together. That its taps
     # are the default's bit for bit is DSP_CHANNEL_FILTERS' golden, not this replay's.
+    # The 8 kHz and 25 kHz cases also bound the demodulator noise at 12.5 kHz, where
+    # the channel width shows: -80.4 dBc at 8 kHz and -48.9 dBc at 25 kHz, against
+    # -66.7 dBc at the default. Each bound is one the default fails, so a run that
+    # dropped the width would not pass.
     set(_analog_tone_bounds
         "--analog-expect-tone-hz 1000 --analog-min-captured-ms 1400 --analog-min-audible-ms 1400 --analog-max-first-audible-ms 100 --analog-min-rms-dbfs -42 --analog-max-rms-dbfs -30 --analog-max-clip 0 --analog-probe-min-dbc 1000:-1 --analog-probe-max-dbc 1000:1 --analog-probe-min-dbfs 1000:-37.5 --analog-probe-max-dbfs 1000:-34.5"
     )
     dsd_neo_add_analog_replay_test(
         DECODE_IQ_ANALOG_NFM_TONE_8K
         nfm_tone_synth
-        "-fA --nfm-bandwidth-hz 8000 ${_analog_tone_bounds} --analog-min-snr-db 12 --analog-min-inband-db 24"
+        "-fA --nfm-bandwidth-hz 8000 ${_analog_tone_bounds} --analog-min-snr-db 12 --analog-min-inband-db 24 --analog-probe-max-dbc 12500:-72"
         ""
         "${_analog_off_path}"
     )
@@ -11376,7 +11388,7 @@ if(DSD_HAS_RADIO)
     dsd_neo_add_analog_replay_test(
         DECODE_IQ_ANALOG_NFM_TONE_25K
         nfm_tone_synth
-        "-fA --nfm-bandwidth-hz=25000 ${_analog_tone_bounds} --analog-min-snr-db 18 --analog-min-inband-db 24"
+        "-fA --nfm-bandwidth-hz=25000 ${_analog_tone_bounds} --analog-min-snr-db 18 --analog-min-inband-db 24 --analog-probe-min-dbc 12500:-58"
         ""
         "${_analog_off_path}"
     )
