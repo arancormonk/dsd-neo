@@ -10,6 +10,7 @@
 #include <dsd-neo/core/init.h>
 #include <dsd-neo/core/key_set.h>
 #include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/scan_profile.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/synctype_ids.h>
@@ -24,6 +25,7 @@
 #include <dsd-neo/protocol/dmr/dmr_trunk_sm.h>
 #include <dsd-neo/protocol/p25/p25_sm_watchdog.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
+#include <dsd-neo/runtime/decode_mode.h>
 #include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
 #include <dsd-neo/runtime/scan_mode.h>
 #include <dsd-neo/runtime/trunk_cc_candidates.h>
@@ -101,6 +103,16 @@ static int g_pending_symbol_levels = 0;
 static int g_pending_channel_profile = 0;
 static int g_pending_ted_sps = 0;
 static int g_pending_ted_override = 0;
+/* The receive family a retune profile carries (issue #526): -1 none, else dsd_rx_family. */
+static int g_pending_analog_family = -1;
+static int g_pending_analog_kind = 0;
+static int g_pending_analog_width_hz = 0;
+static int g_refuse_analog_profile = 0;
+static int g_analog_attach_calls = 0;
+/* What the fake front end runs: the analog family (monitor output) or not, and its width. */
+static int g_rtl_analog_family = 0;
+static int g_rtl_analog_width_hz = 0;
+static int g_request_demod_calls = 0;
 
 static void
 reset_rtl_profile_fakes(void) {
@@ -123,6 +135,14 @@ reset_rtl_profile_fakes(void) {
     g_pending_channel_profile = 0;
     g_pending_ted_sps = 0;
     g_pending_ted_override = 0;
+    g_pending_analog_family = -1;
+    g_pending_analog_kind = 0;
+    g_pending_analog_width_hz = 0;
+    g_refuse_analog_profile = 0;
+    g_analog_attach_calls = 0;
+    g_rtl_analog_family = 0;
+    g_rtl_analog_width_hz = 0;
+    g_request_demod_calls = 0;
     g_check_p25_tick_guard = 0;
     g_p25_tick_guard_held_during_tune = 0;
 }
@@ -196,8 +216,61 @@ __wrap_rtl_stream_prepare_retune_profile_for_target_with_gain(uint32_t target_fr
     g_pending_ted_override = persist_ted_override ? 1 : 0;
 }
 
+int
+__wrap_rtl_stream_prepare_retune_analog_profile_for_target(uint32_t target_freq_hz,
+                                                           const rtl_stream_retune_analog_profile* analog) {
+    g_analog_attach_calls++;
+    if (!analog || (analog->family == DSD_RX_FAMILY_ANALOG && g_refuse_analog_profile)) {
+        return -1;
+    }
+    if (!g_pending_active || g_pending_target_freq_hz != target_freq_hz) {
+        g_pending_active = 1;
+        g_pending_target_freq_hz = target_freq_hz;
+        g_pending_cqpsk = -1;
+        g_pending_symbol_rate_hz = 0;
+        g_pending_ted_sps = 0;
+    }
+    g_pending_analog_family = analog->family;
+    g_pending_analog_kind = analog->kind;
+    g_pending_analog_width_hz = analog->width_hz;
+    return 0;
+}
+
+int
+__wrap_rtl_stream_analog_family_active(void) {
+    return g_rtl_analog_family;
+}
+
+int
+__wrap_rtl_stream_get_analog_profile(int* out_kind, int* out_width_hz, int* out_lpf_on) {
+    if (out_kind) {
+        *out_kind = DSD_ANALOG_DEMOD_FM;
+    }
+    if (out_width_hz) {
+        *out_width_hz = g_rtl_analog_family ? g_rtl_analog_width_hz : 0;
+    }
+    if (out_lpf_on) {
+        *out_lpf_on = g_rtl_analog_family;
+    }
+    return g_rtl_analog_family;
+}
+
+int
+__wrap_rtl_stream_request_demod_profile(int cqpsk_enable, int symbol_rate_hz, int levels, int channel_profile,
+                                        int ted_sps, int ted_sps_is_override) {
+    (void)cqpsk_enable;
+    (void)symbol_rate_hz;
+    (void)levels;
+    (void)channel_profile;
+    (void)ted_sps;
+    (void)ted_sps_is_override;
+    g_request_demod_calls++;
+    return 0;
+}
+
 void
 __wrap_rtl_stream_clear_pending_retune_profile(void) {
+    g_pending_analog_family = -1;
     g_pending_active = 0;
     g_pending_target_freq_hz = 0;
     g_pending_cqpsk = -1;
@@ -215,6 +288,19 @@ apply_pending_profile(uint32_t target_freq_hz) {
     }
     if (g_pending_target_freq_hz != 0 && g_pending_target_freq_hz != target_freq_hz) {
         return;
+    }
+    /* The family switch lands before the symbol profile, and the analog family takes none of it. */
+    const int family = g_pending_analog_family;
+    g_pending_analog_family = -1;
+    if (family == DSD_RX_FAMILY_ANALOG) {
+        g_rtl_analog_family = 1;
+        g_rtl_analog_width_hz = g_pending_analog_width_hz;
+        g_pending_active = 0;
+        g_pending_target_freq_hz = 0;
+        return;
+    }
+    if (family == DSD_RX_FAMILY_DIGITAL) {
+        g_rtl_analog_family = 0;
     }
     if (g_pending_cqpsk >= 0) {
         g_rtl_cqpsk_enable = g_pending_cqpsk ? 1 : 0;
@@ -438,6 +524,113 @@ test_typed_scan_tune_boundaries(void) {
     state->rtl_ctx = NULL;
     free_test_runtime(opts, state);
     dsd_trunk_tuning_requests_reset();
+    return rc;
+}
+
+/* Issue #526: a typed -Y map mixing nfm and digital rows, through the real noCarrier() step and
+ * the real scanner tune. Each nfm row queues the analog monitor at its own width (the configured
+ * one when the row sets none) with no symbol profile; the digital row after it puts the front end
+ * back on the digital family, but only because the configured mode is digital. A width the front
+ * end refuses skips the row without tuning, and a failed hop off an nfm row never applies a symbol
+ * profile over the monitor that is still running. */
+static int
+test_typed_scan_nfm_rows_switch_family(int configured_analog) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    int rc = 0;
+    reset_rtl_profile_fakes();
+    dsd_trunk_tuning_requests_reset();
+    opts->audio_in_type = AUDIO_IN_RTL;
+    opts->scanner_mode = 1;
+    opts->trunk_hangtime = 1;
+    if (configured_analog) {
+        rc |= expect_true("analog session",
+                          dsd_apply_decode_mode_preset(DSDCFG_MODE_ANALOG, DSD_DECODE_PRESET_PROFILE_CLI, opts, state)
+                              == 0);
+        g_rtl_analog_family = 1;
+    }
+    opts->analog_nfm_bandwidth_hz = 20000;
+    state->rtl_ctx = (RtlSdrContext*)state;
+    state->lcn_freq_count = 4;
+    const long freqs[] = {461000000L, 154430000L, 155475000L, 461100000L};
+    for (int i = 0; i < 4; i++) {
+        state->trunk_lcn_freq[i] = freqs[i] + (configured_analog ? 5000L : 0L);
+    }
+    rc |= expect_true("dmr row", dsd_channel_mode_set(state, 0, DSD_SCAN_MODE_DMR) == 0);
+    rc |= expect_true("nfm row with a width", dsd_channel_mode_set(state, 1, DSD_SCAN_MODE_NFM) == 0);
+    rc |= expect_true("nfm row", dsd_channel_mode_set(state, 2, DSD_SCAN_MODE_NFM) == 0);
+    rc |= expect_true("second dmr row", dsd_channel_mode_set(state, 3, DSD_SCAN_MODE_DMR) == 0);
+    dsd_scan_row_profile* profile = NULL;
+    rc |= expect_true("row profile", dsd_scan_profile_ensure(&profile) == 0 && profile);
+    if (profile) {
+        profile->values.present = DSD_SCAN_OPT_BANDWIDTH;
+        profile->values.channel_bw_hz = 12500;
+        rc |= expect_true("row width", dsd_channel_profile_set(state, 1, profile) == 0);
+    }
+
+    /* Row 0, DMR: a digital session's front end is digital already, so nothing is attached. On an
+       analog session the typed digital row keeps the monitor family. */
+    state->last_cc_sync_time = time(NULL) - 11;
+    noCarrier(opts, state);
+    rc |= expect_true("dmr row committed", state->lcn_freq_roll == 1 && opts->frame_dmr && !opts->analog_only);
+    rc |= expect_true("dmr row attaches no family", g_analog_attach_calls == 0);
+    rc |=
+        expect_true("dmr row symbol profile", g_rtl_symbol_rate_hz == 4800 && g_rtl_analog_family == configured_analog);
+
+    /* Row 1, NFM with --nfm-bandwidth-hz 12500. */
+    state->last_cc_sync_time -= 11;
+    noCarrier(opts, state);
+    rc |= expect_true("nfm row committed", state->lcn_freq_roll == 2 && opts->analog_only == 1 && !opts->frame_dmr
+                                               && opts->analog_nfm_bandwidth_hz == 12500);
+    rc |= expect_true("nfm row runs the monitor at its width",
+                      g_rtl_analog_family == 1 && g_rtl_analog_width_hz == 12500
+                          && g_rtl_tune_freq == (uint32_t)state->trunk_lcn_freq[1]);
+
+    /* Row 2, NFM without a width: the configured one. */
+    state->last_cc_sync_time -= 11;
+    noCarrier(opts, state);
+    rc |= expect_true("second nfm row", state->lcn_freq_roll == 3 && opts->analog_nfm_bandwidth_hz == 20000
+                                            && g_rtl_analog_family == 1 && g_rtl_analog_width_hz == 20000);
+
+    /* A failed hop off the nfm row leaves the monitor alone. */
+    const int requests_before = g_request_demod_calls;
+    g_rtl_tune_result = RTL_STREAM_TUNE_FAILED;
+    state->last_cc_sync_time -= 11;
+    noCarrier(opts, state);
+    rc |= expect_true("failed hop off an nfm row applies no symbol profile",
+                      g_request_demod_calls == requests_before && g_rtl_analog_family == 1 && !g_pending_active);
+    g_rtl_tune_result = RTL_STREAM_TUNE_OK;
+
+    /* Row 3, DMR after NFM: back to the digital family only on a digital session. */
+    state->lcn_freq_roll = 3;
+    state->last_cc_sync_time -= 11;
+    noCarrier(opts, state);
+    rc |= expect_true("digital row after nfm", state->lcn_freq_roll == 4 && opts->frame_dmr && !opts->analog_only
+                                                   && opts->analog_nfm_bandwidth_hz == 20000);
+    rc |= expect_true("digital row family", g_rtl_analog_family == configured_analog && g_rtl_symbol_rate_hz == 4800);
+
+    /* A width the front end refuses: the row is skipped without a tune. */
+    g_refuse_analog_profile = 1;
+    const int tunes_before = g_rtl_tune_calls;
+    state->lcn_freq_roll = 1;
+    state->last_cc_sync_time -= 11;
+    noCarrier(opts, state);
+    rc |= expect_true("refused nfm row is not tuned", g_rtl_tune_calls == tunes_before && state->lcn_freq_roll == 2
+                                                          && opts->frame_dmr && !opts->analog_only);
+    g_refuse_analog_profile = 0;
+
+    dsd_engine_channel_scan_leave(opts, state);
+    rc |= expect_true("leave restores the configured session",
+                      opts->analog_only == configured_analog && opts->analog_nfm_bandwidth_hz == 20000);
+    state->rtl_ctx = NULL;
+    free_test_runtime(opts, state);
+    dsd_trunk_tuning_requests_reset();
+    if (rc) {
+        DSD_FPRINTF(stderr, "typed nfm rows on a%s session failed\n", configured_analog ? "n analog" : " digital");
+    }
     return rc;
 }
 
@@ -2495,6 +2688,8 @@ main(void) {
 #if defined(USE_RADIO) && defined(DSD_NEO_TEST_RTL_WRAP)
     rc |= test_rx_tone_resets_on_legacy_scan_step();
     rc |= test_typed_scan_tune_boundaries();
+    rc |= test_typed_scan_nfm_rows_switch_family(0);
+    rc |= test_typed_scan_nfm_rows_switch_family(1);
     rc |= test_visit_cap_scanner_hops();
     rc |= test_trunk_cache_with_mode_metadata();
     rc |= test_dmr_explicit_return_destination();

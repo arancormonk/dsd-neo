@@ -3,6 +3,7 @@
  * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
+#include <dsd-neo/core/audio.h>
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/csv_import.h>
 #include <dsd-neo/core/csv_validate.h>
@@ -52,6 +53,34 @@
 #include "trunk_scan_test_support.h"
 
 static const char k_header[] = "id,type,frequency_hz,chan_csv,dwell_ms,activity_hold_ms,notes\n";
+
+/* --- Issue #526: scanner sinks and DSP rate, from engine/trunk_tuning.c and core/audio, which this fixture does not
+ * link. The stubs record which sink each row commit asked for. --- */
+static int g_ensure_analog_calls;
+static int g_ensure_digital_calls;
+static int g_scan_dsp_rate_hz;
+
+int
+dsd_audio_ensure_analog_output(dsd_opts* opts) {
+    (void)opts;
+    g_ensure_analog_calls++;
+    return 0;
+}
+
+int
+dsd_audio_ensure_digital_output(dsd_opts* opts) {
+    (void)opts;
+    g_ensure_digital_calls++;
+    return 0;
+}
+
+int
+dsd_engine_scan_dsp_rate_hz(const dsd_opts* opts, const dsd_state* state) {
+    (void)opts;
+    (void)state;
+    return g_scan_dsp_rate_hz;
+}
+
 static int g_dmr_tick_calls = 0;
 static int g_dmr_tick_release_tuned = 0;
 static int g_csv_import_result = 0;
@@ -9997,10 +10026,17 @@ test_nfm_target_rotation_restores_family_and_width(void) {
     }
     int test_rc = expect_active_target(&state, "nfm init", 0U);
     test_rc |= expect_nfm_front(&opts, "digital target", 0, 20000, 1);
+    const int analog_sinks = g_ensure_analog_calls;
+    const int digital_sinks = g_ensure_digital_calls;
     trunk_scan_test_set_now(0.26);
     dsd_engine_trunk_scan_tick(&opts, &state);
     test_rc |= expect_active_target(&state, "digital -> nfm", 1U);
     test_rc |= expect_nfm_front(&opts, "nfm target with a width", 1, 12500, 0);
+    if (g_ensure_analog_calls != analog_sinks + 1 || g_ensure_digital_calls != digital_sinks) {
+        DSD_FPRINTF(stderr, "nfm target did not open the analog sink (%d/%d)\n", g_ensure_analog_calls,
+                    g_ensure_digital_calls);
+        test_rc = 1;
+    }
     if (opts.frame_dmr != 0 || opts.monitor_input_audio != 1 || opts.trunk_enable != 0
         || dsd_scan_mode_active(&state) != DSD_SCAN_MODE_NFM) {
         DSD_FPRINTF(stderr, "nfm target did not run the analog monitor: frame_dmr=%d monitor=%d mode=%d\n",
@@ -10015,6 +10051,10 @@ test_nfm_target_rotation_restores_family_and_width(void) {
     dsd_engine_trunk_scan_tick(&opts, &state);
     test_rc |= expect_active_target(&state, "nfm -> digital", 0U);
     test_rc |= expect_nfm_front(&opts, "digital target again", 0, 20000, 1);
+    if (g_ensure_digital_calls != digital_sinks + 1) {
+        DSD_FPRINTF(stderr, "digital target after nfm did not open the digital sink\n");
+        test_rc = 1;
+    }
     if (opts.frame_dmr != 1) {
         test_rc = 1;
     }
@@ -10222,6 +10262,65 @@ test_nfm_target_visit_cap_and_controls_under_carrier(void) {
     return test_rc;
 }
 
+/* What the nfm targets owe the operator when the scan starts: a width the running DSP rate cannot
+ * filter, and a squelch that holds on noise. An nfm target's squelch is not the digital squelch the
+ * #521 warning is about, even on audio input. */
+static int
+test_nfm_target_warnings_at_scan_start(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    char target_path[DSD_TEST_PATH_MAX];
+    static dsd_opts opts;
+    static dsd_state state;
+    if (make_temp_dir(dir, sizeof dir) != 0
+        || write_targets_file_with_header(dir, k_squelch_targets_header,
+                                          "fire,nfm-conventional,154430000,,250,250,,"
+                                          "--nfm-bandwidth-hz 20000 --squelch-db -50\n"
+                                          "open,nfm-conventional,155475000,,250,250,,--squelch-db 0\n"
+                                          "dmr,dmr-conventional,461000000,,250,250,,--squelch-db -60\n",
+                                          target_path, sizeof target_path)
+               != 0) {
+        return 1;
+    }
+    int test_rc = 0;
+    for (int rtl = 1; rtl >= 0; rtl--) {
+        reset_scan_opts_state(&opts, &state);
+        opts.rtl_squelch_level = dsd_squelch_level_from_sql(-60.0);
+        if (!rtl) {
+            opts.audio_in_type = AUDIO_IN_UDP;
+            opts.use_rigctl = 1;
+            state.rtl_ctx = NULL;
+        }
+        g_scan_dsp_rate_hz = rtl ? 16000 : 0;
+        DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", target_path);
+        dsd_test_capture_stderr cap;
+        char buf[4096] = {0};
+        char err[256] = {0};
+        if (dsd_test_capture_stderr_begin(&cap, "trunkscannfm") != 0) {
+            test_rc = 1;
+            break;
+        }
+        trunk_scan_test_set_now(0.0);
+        const int rc = dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err);
+        dsd_engine_trunk_scan_shutdown(&opts, &state);
+        (void)dsd_test_capture_stderr_end(&cap);
+        (void)dsd_test_capture_stderr_read(&cap, buf, sizeof buf);
+        const char* width = rtl ? "Trunk scan target 'fire': NFM bandwidth 20 kHz does not fit the 16 kHz DSP rate"
+                                : "Trunk scan target 'fire': --nfm-bandwidth-hz 20000 has no effect on audio input";
+        if (rc != 0 || !strstr(buf, width) || !strstr(buf, "Trunk scan target 'open': the nfm row's squelch is off")
+            || strstr(buf, "Trunk scan target 'fire': the nfm") || strstr(buf, "Trunk scan target 'fire': --squelch-db")
+            || strstr(buf, "Trunk scan target 'open': --squelch-db")
+            || (strstr(buf, "Trunk scan target 'dmr': --squelch-db") != NULL) == rtl) {
+            DSD_FPRINTF(stderr, "nfm target warnings on %s input (rc=%d %s):\n%s\n", rtl ? "RTL" : "audio", rc, err,
+                        buf);
+            test_rc = 1;
+        }
+    }
+    g_scan_dsp_rate_hz = 0;
+    trunk_scan_test_clear_now();
+    cleanup_paths(dir, target_path, NULL);
+    return test_rc;
+}
+
 /* Keys, maps and forcing never reach an nfm target through the live decryption command either. */
 static int
 test_nfm_target_refuses_live_decryption(void) {
@@ -10404,6 +10503,7 @@ main(void) {
     rc |= run_with_default_tune_hook(test_nfm_targets_leave_digital_activity_accounting_intact);
     rc |= run_with_default_tune_hook(test_nfm_target_visit_cap_and_controls_under_carrier);
     rc |= run_with_default_tune_hook(test_nfm_target_refuses_live_decryption);
+    rc |= run_with_default_tune_hook(test_nfm_target_warnings_at_scan_start);
     return rc;
 }
 

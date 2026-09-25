@@ -2662,6 +2662,7 @@ trunk_scan_switch_to(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_coord* coo
     dsd_scan_mode_target_modulation(state, (dsd_scan_modulation)rt->target.modulation);
     (void)dsd_scan_key_change_commit(state, &key_change);
     (void)dsd_scan_mode_options(opts, state, rt->profile ? &rt->profile->values : NULL);
+    dsd_engine_scan_ensure_output(opts);
     dsd_scan_groups_enter(state, rt->profile);
     (void)dsd_scan_maps_enter(state, rt->profile);
     trunk_scan_apply_target_demod(opts, state, &rt->target);
@@ -2969,19 +2970,27 @@ trunk_scan_warn_ignored_target_gain(const dsd_opts* opts, const dsd_state* state
 /* A target squelch gates the RTL demodulator. With rigctl tuning a PCM input there is no
  * demodulator for it to gate, so it cannot gate digital acquisition; the threshold in dsd_opts
  * only reaches the analog input monitor (-8, with audio output on) and the carrier activity that
- * monitor stamps. Say so once per affected target when the scan starts. */
+ * monitor stamps. Said once per affected target when the scan starts, beside what an analog target
+ * owes the operator (dsd_engine_scan_warn_analog_row()). */
 static void
-trunk_scan_warn_target_squelch(const dsd_opts* opts, const dsd_trunk_scan_target_list* list) {
-    if (!opts || !list || opts->audio_in_type == AUDIO_IN_RTL) {
+trunk_scan_warn_targets(const dsd_opts* opts, const dsd_state* state, const dsd_trunk_scan_target_list* list) {
+    if (!opts || !list) {
         return;
     }
+    const int dsp_rate_hz = dsd_engine_scan_dsp_rate_hz(opts, state);
     for (size_t i = 0; i < list->count; i++) {
         const dsd_trunk_scan_target* target = &list->targets[i];
-        if (target->row_options.present & DSD_SCAN_OPT_SQUELCH) {
+        const int analog = trunk_scan_type_is_analog(target->type);
+        if (!analog && opts->audio_in_type != AUDIO_IN_RTL && (target->row_options.present & DSD_SCAN_OPT_SQUELCH)) {
             LOG_WARN("WARNING: Trunk scan target '%s': --squelch-db %d cannot gate digital acquisition without a "
                      "radio input; here it gates only the analog input monitor (-8) and the carrier activity it "
                      "stamps.\n",
                      target->id, target->row_options.squelch_db);
+        }
+        if (analog) {
+            char label[96];
+            DSD_SNPRINTF(label, sizeof label, "Trunk scan target '%s'", target->id);
+            (void)dsd_engine_scan_warn_analog_row(opts, state, &target->row_options, dsp_rate_hz, label);
         }
     }
 }
@@ -3868,7 +3877,7 @@ dsd_engine_trunk_scan_init(dsd_opts* opts, dsd_state* state, char* err, size_t e
         return -1;
     }
     trunk_scan_warn_ignored_target_gain(opts, state, &list);
-    trunk_scan_warn_target_squelch(opts, &list);
+    trunk_scan_warn_targets(opts, state, &list);
 
     dsd_trunk_scan_coord* coord = trunk_scan_coord_create(&list, opts, err, err_sz);
     if (!coord) {

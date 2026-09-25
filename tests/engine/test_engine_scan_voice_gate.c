@@ -1338,6 +1338,106 @@ test_visit_cap_trunk_scan_switch_starts_fresh(void) {
     fixture_free(&fix);
 }
 
+/* ---- Issue #526: analog rows ------------------------------------------------ */
+
+/* The analog FM monitor on PCM input, whose carrier the received-tone tap has published open. */
+static void
+analog_row(gate_fixture* fix, int carrier_open) {
+    fix->opts->analog_only = 1;
+    fix->opts->monitor_input_audio = 1;
+    fix->opts->audio_in_type = AUDIO_IN_WAV;
+    fix->state->analog_rx.carrier_open = carrier_open;
+}
+
+/* The carrier probe both scanners hold analog rows on: the tap's carrier while the analog monitor
+ * runs, with no digital carrier flagged, no trunking state machine owning the channel and the
+ * publication not stale -- and whether audio is played has no part in it. */
+static void
+test_analog_carrier_probe(void) {
+    gate_fixture fix;
+    if (fixture_init(&fix) != 0) {
+        DSD_FPRINTF(stderr, "FAIL: %s: fixture\n", __func__);
+        g_failures++;
+        return;
+    }
+    CHECK("no probe arguments", dsd_scan_analog_carrier_open(NULL, fix.state) == 0);
+    analog_row(&fix, 1);
+    CHECK("carrier open", dsd_scan_analog_carrier_open(fix.opts, fix.state) == 1);
+    fix.opts->audio_out = 0;
+    CHECK("carrier without audio out", dsd_scan_analog_carrier_open(fix.opts, fix.state) == 1);
+    fix.state->analog_rx.carrier_open = 0;
+    CHECK("carrier closed", dsd_scan_analog_carrier_open(fix.opts, fix.state) == 0);
+    fix.state->analog_rx.carrier_open = 1;
+    fix.state->carrier = 1;
+    CHECK("digital carrier flagged", dsd_scan_analog_carrier_open(fix.opts, fix.state) == 0);
+    fix.state->carrier = 0;
+    fix.opts->trunk_enable = 1;
+    CHECK("trunking owns the channel", dsd_scan_analog_carrier_open(fix.opts, fix.state) == 0);
+    fix.opts->trunk_enable = 0;
+    fix.state->analog_rx.stale_after_ms = 1U;
+    CHECK("stale publication", dsd_scan_analog_carrier_open(fix.opts, fix.state) == 0);
+    fix.state->analog_rx.stale_after_ms = UINT64_MAX;
+    CHECK("fresh publication", dsd_scan_analog_carrier_open(fix.opts, fix.state) == 1);
+    fix.state->analog_rx.stale_after_ms = 0U;
+    fix.opts->analog_only = 0;
+    CHECK("digital row", dsd_scan_analog_carrier_open(fix.opts, fix.state) == 0);
+    fixture_free(&fix);
+}
+
+/* The voice gate never owns an analog row: a global --scan-voice-only publishes no gate phase
+ * there, a sync the row cannot produce is ignored, and the hangtime rule decides the step. */
+static void
+test_voice_gate_exempts_analog_rows(void) {
+    gate_fixture fix;
+    if (fixture_init(&fix) != 0) {
+        DSD_FPRINTF(stderr, "FAIL: %s: fixture\n", __func__);
+        g_failures++;
+        return;
+    }
+    analog_row(&fix, 1);
+    dsd_scan_voice_gate_note_retune(fix.state, 100.0);
+    dsd_scan_voice_gate_tick(fix.opts, fix.state, 1, 100.0);
+    CHECK("analog phase off", fix.state->scan_voice_gate_phase == (uint8_t)DSD_SCAN_VOICE_GATE_OFF);
+    CHECK("analog gate abstains", dsd_scan_voice_gate_owns_step(fix.opts, fix.state) == 0);
+    CHECK("analog gate never steps", dsd_scan_voice_gate_should_step(fix.opts, fix.state, 500.0) == 0);
+    /* Back on a digital row the gate is the global one again. */
+    fix.opts->analog_only = 0;
+    dsd_scan_voice_gate_note_retune(fix.state, 200.0);
+    dsd_scan_voice_gate_tick(fix.opts, fix.state, 1, 200.0);
+    CHECK("digital gate owns", dsd_scan_voice_gate_owns_step(fix.opts, fix.state) != 0);
+    fixture_free(&fix);
+}
+
+/* -Y analog rows: the stay reads "Carrier" while the carrier is open -- the hangtime window it
+ * keeps restarting, with no dwell or hold of its own -- and "Hangtime" once it has dropped. */
+static void
+test_y_timing_carrier_on_analog_rows(void) {
+    gate_fixture fix;
+    if (fixture_init(&fix) != 0) {
+        DSD_FPRINTF(stderr, "FAIL: %s: fixture\n", __func__);
+        g_failures++;
+        return;
+    }
+    analog_row(&fix, 1);
+    fix.opts->trunk_hangtime = 1.0f;
+    fix.state->last_cc_sync_time = (time_t)1000;
+    dsd_engine_scan_y_timing_tick(fix.opts, fix.state, 100.25, 1000.25);
+    CHECK("carrier reason", fix.state->scan_timing.reason == (uint8_t)DSD_SCAN_STAY_CARRIER);
+    check_timing_window("carrier start", "carrier deadline", "carrier span", &fix.state->scan_timing, 100.0, 102.0,
+                        2000U);
+    CHECK("carrier has no dwell", fix.state->scan_timing.dwell_ms == 0U && fix.state->scan_timing.hold_ms == 0U);
+    fix.state->analog_rx.carrier_open = 0;
+    dsd_engine_scan_y_timing_tick(fix.opts, fix.state, 100.5, 1000.5);
+    CHECK("hangtime after the carrier", fix.state->scan_timing.reason == (uint8_t)DSD_SCAN_STAY_HANGTIME);
+    check_timing_window("tail start", "tail deadline", "tail span", &fix.state->scan_timing, 100.0, 102.0, 2000U);
+    /* An operator hold still wins. */
+    fix.state->analog_rx.carrier_open = 1;
+    fix.state->lcn_scan_hold = 1;
+    dsd_engine_scan_y_timing_tick(fix.opts, fix.state, 100.5, 1000.5);
+    CHECK("hold wins over carrier", fix.state->scan_timing.reason == (uint8_t)DSD_SCAN_STAY_MANUAL_HOLD);
+    fixture_free(&fix);
+}
+
 int
 main(void) {
     test_tick_leaves_phase_alone_without_scanner_mode();
@@ -1376,6 +1476,9 @@ main(void) {
     test_visit_cap_pending_tune_does_not_fire();
     test_visit_cap_publishes_the_visit_deadline();
     test_visit_cap_publication_pauses_under_hold();
+    test_analog_carrier_probe();
+    test_voice_gate_exempts_analog_rows();
+    test_y_timing_carrier_on_analog_rows();
     if (g_failures != 0) {
         DSD_FPRINTF(stderr, "%d voice-gate check(s) failed\n", g_failures);
         return 1;

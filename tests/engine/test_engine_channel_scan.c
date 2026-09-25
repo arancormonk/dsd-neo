@@ -2,6 +2,7 @@
 /* Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com> */
 
 #include <assert.h>
+#include <dsd-neo/core/audio.h>
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/channel_mode.h>
 #include <dsd-neo/core/csv_import.h>
@@ -38,6 +39,33 @@
 
 void dsd_key_set_test_alloc_fail_after(long count);
 
+/* --- Issue #526: scanner sinks and DSP rate, from engine/trunk_tuning.c and core/audio, which this fixture does not
+ * link. The stubs record which sink each row commit asked for. --- */
+static int g_ensure_analog_calls;
+static int g_ensure_digital_calls;
+static int g_scan_dsp_rate_hz;
+
+int
+dsd_audio_ensure_analog_output(dsd_opts* opts) {
+    (void)opts;
+    g_ensure_analog_calls++;
+    return 0;
+}
+
+int
+dsd_audio_ensure_digital_output(dsd_opts* opts) {
+    (void)opts;
+    g_ensure_digital_calls++;
+    return 0;
+}
+
+int
+dsd_engine_scan_dsp_rate_hz(const dsd_opts* opts, const dsd_state* state) {
+    (void)opts;
+    (void)state;
+    return g_scan_dsp_rate_hz;
+}
+
 static dsd_trunk_tune_result tune_result;
 static uint64_t request;
 static int tunes;
@@ -66,10 +94,16 @@ restore_frontend(int cqpsk, int rate, int levels, int filter, int sps) {
     return 0;
 }
 
+/* What the options said at the tune (issue #526): the row's family and width reach the front end through them. */
+static int tuned_analog_only = -1;
+static int tuned_nfm_width_hz = -1;
+
 dsd_trunk_tune_result
 dsd_engine_scan_tune_to_freq(dsd_opts* opts, dsd_state* state, long freq, int sps, uint64_t* out) {
     assert(freq == 150000000);
     assert(opts->frame_nxdn48 == expected_nxdn);
+    tuned_analog_only = opts->analog_only;
+    tuned_nfm_width_hz = opts->analog_nfm_bandwidth_hz;
     assert(sps == (change_rate_on_tune ? (int)reported_rate / 4800 : (expected_nxdn ? 20 : 10)));
     if (change_rate_on_tune) {
         assert(tunes < 100);
@@ -376,9 +410,20 @@ record_squelch_push(double mean_power) {
     g_squelch_pushed = mean_power;
 }
 
+static int g_analog_warnings;
+static char g_analog_warning_rows[8][256];
+
 static void
 count_squelch_warnings(dsd_neo_log_level_t level, const char* text, void* ctx) {
     (void)ctx;
+    if (level == LOG_LEVEL_WARN && text
+        && (strstr(text, "nfm row") || strstr(text, "--nfm-bandwidth-hz") || strstr(text, "row is skipped"))) {
+        if (g_analog_warnings < 8) {
+            DSD_SNPRINTF(g_analog_warning_rows[g_analog_warnings], sizeof g_analog_warning_rows[0], "%s", text);
+        }
+        g_analog_warnings++;
+        return;
+    }
     if (level == LOG_LEVEL_WARN && text && strstr(text, "--squelch-db")) {
         if (g_squelch_warnings < 8) {
             DSD_SNPRINTF(g_squelch_warning_rows[g_squelch_warnings], sizeof g_squelch_warning_rows[0], "%s", text);
@@ -876,6 +921,152 @@ test_rx_tone_row_commit_and_step_clear(void) {
     tunes = reset_count = 0;
 }
 
+/* --- Issue #526: nfm rows --- */
+
+static dsd_scan_row_profile*
+nfm_row_profile(dsd_state* state, int row, uint32_t present, int width_hz, int squelch_db) {
+    dsd_scan_row_profile* profile = (dsd_scan_row_profile*)calloc(1, sizeof(*profile));
+    assert(profile);
+    profile->values.present = present;
+    profile->values.channel_bw_hz = width_hz;
+    profile->values.squelch_db = squelch_db;
+    assert(dsd_channel_profile_set(state, (size_t)row, profile) == 0);
+    return profile;
+}
+
+/* A map mixing nfm and digital rows: every row tunes with its own family and width in force, the
+ * nfm row commits the analog monitor at its width (the configured one without its own), the next
+ * digital row puts the digital decoder and the configured width back, each commit opens the sink
+ * its row plays through, and leave restores the configured session. A manual step and a failed
+ * row move through nfm rows the way they move through digital ones. */
+static void
+test_nfm_rows_switch_family_width_and_sink(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
+    assert(opts && state);
+    opts->scanner_mode = 1;
+    opts->audio_in_type = AUDIO_IN_WAV;
+    opts->wav_sample_rate = 48000;
+    assert(dsd_apply_decode_mode_preset(DSDCFG_MODE_DMR, DSD_DECODE_PRESET_PROFILE_CLI, opts, state) == 0);
+    opts->analog_nfm_bandwidth_hz = 20000;
+    opts->rtl_squelch_level = dsd_squelch_level_from_sql(-60.0);
+    state->samplesPerSymbol = 10;
+    state->lcn_freq_count = 4;
+    for (int row = 0; row < 4; row++) {
+        *dsd_state_trunk_lcn_slot(state, row) = 150000000;
+    }
+    assert(dsd_channel_mode_set(state, 0, DSD_SCAN_MODE_DMR) == 0);
+    assert(dsd_channel_mode_set(state, 1, DSD_SCAN_MODE_NFM) == 0);
+    assert(dsd_channel_mode_set(state, 2, DSD_SCAN_MODE_NFM) == 0);
+    assert(dsd_channel_mode_set(state, 3, DSD_SCAN_MODE_DMR) == 0);
+    (void)nfm_row_profile(state, 1, DSD_SCAN_OPT_BANDWIDTH, 12500, 0);
+    expected_nxdn = 0;
+    tune_result = DSD_TRUNK_TUNE_RESULT_OK;
+    g_ensure_analog_calls = g_ensure_digital_calls = 0;
+
+    assert(dsd_engine_channel_scan_step(opts, state) == 1);
+    assert(state->lcn_freq_roll == 1 && opts->frame_dmr && !opts->analog_only && tuned_analog_only == 0);
+    assert(g_ensure_digital_calls == 1 && g_ensure_analog_calls == 0);
+
+    assert(dsd_engine_channel_scan_step(opts, state) == 1);
+    assert(tuned_analog_only == 1 && tuned_nfm_width_hz == 12500);
+    assert(state->lcn_freq_roll == 2 && opts->analog_only == 1 && opts->monitor_input_audio == 1 && !opts->frame_dmr);
+    assert(opts->analog_nfm_bandwidth_hz == 12500 && dsd_scan_mode_active(state) == DSD_SCAN_MODE_NFM);
+    assert(dsd_scan_mode_configured_view(state)->analog_nfm_bandwidth_hz == 20000);
+    assert(g_ensure_analog_calls == 1);
+
+    assert(dsd_engine_channel_scan_step(opts, state) == 1);
+    assert(tuned_analog_only == 1 && tuned_nfm_width_hz == 20000 && opts->analog_nfm_bandwidth_hz == 20000);
+    assert(g_ensure_analog_calls == 2);
+
+    assert(dsd_engine_channel_scan_step(opts, state) == 1);
+    assert(tuned_analog_only == 0 && tuned_nfm_width_hz == 20000);
+    assert(state->lcn_freq_roll == 4 && opts->frame_dmr && !opts->analog_only && !opts->monitor_input_audio);
+    assert(g_ensure_digital_calls == 2);
+
+    /* A manual step wraps onto the nfm row with its width. */
+    assert(dsd_engine_channel_scan_step_manual(opts, state) == 1);
+    assert(state->lcn_freq_roll == 1 && !opts->analog_only);
+    assert(dsd_engine_channel_scan_step_manual(opts, state) == 1);
+    assert(state->lcn_freq_roll == 2 && opts->analog_only && opts->analog_nfm_bandwidth_hz == 12500);
+    /* A row that cannot be tuned is skipped with the nfm row left in force. */
+    tune_result = DSD_TRUNK_TUNE_RESULT_FAILED;
+    assert(dsd_engine_channel_scan_step(opts, state) == -1);
+    assert(state->lcn_freq_roll == 3 && opts->analog_only && opts->analog_nfm_bandwidth_hz == 12500);
+    tune_result = DSD_TRUNK_TUNE_RESULT_OK;
+
+    dsd_engine_channel_scan_leave(opts, state);
+    assert(!opts->analog_only && opts->frame_dmr && opts->analog_nfm_bandwidth_hz == 20000);
+    dsd_state_trunk_lcn_free(state);
+    dsd_state_ext_free_all(state);
+    free(state);
+    free(opts);
+    tunes = reset_count = 0;
+}
+
+/* What the nfm rows owe the operator, said once per row per map when the scan starts: a squelch
+ * that holds on noise, a width on an input with no demodulator for it, and a width the running
+ * DSP rate cannot filter. Digital rows and well-set nfm rows say nothing. */
+static int
+nfm_row_warnings(int audio_in_type, int dsp_rate_hz, double configured_sql_db) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
+    assert(opts && state);
+    opts->scanner_mode = 1;
+    opts->audio_in_type = audio_in_type;
+    opts->wav_sample_rate = 48000;
+    opts->frame_dmr = 1;
+    opts->rtl_squelch_level = dsd_squelch_level_from_sql(configured_sql_db);
+    state->samplesPerSymbol = 10;
+    state->lcn_freq_count = 4;
+    for (int row = 0; row < 4; row++) {
+        *dsd_state_trunk_lcn_slot(state, row) = 150000000;
+    }
+    assert(dsd_channel_mode_set(state, 0, DSD_SCAN_MODE_NFM) == 0);
+    assert(dsd_channel_mode_set(state, 1, DSD_SCAN_MODE_NFM) == 0);
+    assert(dsd_channel_mode_set(state, 2, DSD_SCAN_MODE_DMR) == 0);
+    assert(dsd_channel_mode_set(state, 3, DSD_SCAN_MODE_NFM) == 0);
+    (void)nfm_row_profile(state, 0, DSD_SCAN_OPT_BANDWIDTH | DSD_SCAN_OPT_SQUELCH, 20000, -50);
+    (void)nfm_row_profile(state, 1, DSD_SCAN_OPT_SQUELCH, 0, 0);
+    (void)nfm_row_profile(state, 2, DSD_SCAN_OPT_SQUELCH, 0, 0);
+    g_scan_dsp_rate_hz = dsp_rate_hz;
+    g_analog_warnings = 0;
+    g_squelch_warnings = 0;
+    expected_nxdn = 0;
+    tune_result = DSD_TRUNK_TUNE_RESULT_OK;
+    for (int visit = 0; visit < 8; visit++) {
+        (void)dsd_engine_channel_scan_step(opts, state);
+    }
+    dsd_engine_channel_scan_leave(opts, state);
+    g_scan_dsp_rate_hz = 0;
+    dsd_state_trunk_lcn_free(state);
+    dsd_state_ext_free_all(state);
+    free(state);
+    free(opts);
+    tunes = reset_count = 0;
+    return g_analog_warnings;
+}
+
+static void
+test_nfm_row_warnings_once_per_row(void) {
+    /* RTL input at a 48 kHz DSP rate with a -60 dB default: only row 2 (squelch off) holds on noise. */
+    assert(nfm_row_warnings(AUDIO_IN_RTL, 48000, -60.0) == 1);
+    assert(strstr(g_analog_warning_rows[0], "Scan channel 2 (150.000000 MHz): the nfm row's squelch is off"));
+    /* The default is open as well (-110 dB, the unset level): row 4 inherits it. */
+    assert(nfm_row_warnings(AUDIO_IN_RTL, 48000, -110.0) == 2);
+    assert(strstr(g_analog_warning_rows[1], "Scan channel 4 "));
+    /* A 16 kHz DSP rate cannot filter row 1's 20 kHz: named with the validator's text. */
+    assert(nfm_row_warnings(AUDIO_IN_RTL, 16000, -60.0) == 2);
+    assert(strstr(g_analog_warning_rows[0], "Scan channel 1 (150.000000 MHz): NFM bandwidth 20 kHz does not fit the "
+                                            "16 kHz DSP rate"));
+    assert(strstr(g_analog_warning_rows[0], "the row is skipped at every visit"));
+    /* Audio input: the width has nothing to act on, while an nfm row's squelch still gates its monitor and
+       carrier there, so only the digital row's squelch draws the #521 warning. */
+    assert(nfm_row_warnings(AUDIO_IN_WAV, 0, -60.0) == 2);
+    assert(strstr(g_analog_warning_rows[0], "Scan channel 1 (150.000000 MHz): --nfm-bandwidth-hz 20000 has no effect"));
+    assert(g_squelch_warnings == 1 && strstr(g_squelch_warning_rows[0], "Scan channel 3 "));
+}
+
 int
 main(void) {
     dsd_neo_log_set_tap(count_squelch_warnings, NULL);
@@ -888,6 +1079,8 @@ main(void) {
     test_row_squelch_threshold_off_inherit();
     test_row_squelch_warns_once_per_row_on_pcm_input();
     test_rx_tone_row_commit_and_step_clear();
+    test_nfm_rows_switch_family_width_and_sink();
+    test_nfm_row_warnings_once_per_row();
     dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
     dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
     assert(opts && state);

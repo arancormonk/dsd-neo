@@ -21,6 +21,7 @@
 #include <dsd-neo/io/rigctl_client.h>
 #include <dsd-neo/io/rtl_stream_c.h>
 #include <dsd-neo/runtime/config.h>
+#include <dsd-neo/runtime/scan_mode.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -434,6 +435,46 @@ rtl_stream_clear_ted_sps_override(void) {
 void
 rtl_stream_set_ted_sps_no_override(int sps) {
     g_rtl_ted_sps = sps;
+}
+
+/* The scanner's receive-family side (issue #526): these fixtures tune digital rows on a digital front end, which
+ * attaches no family and never reads the analog profile back. */
+int
+rtl_stream_prepare_retune_analog_profile_for_target(uint32_t target_freq_hz,
+                                                    const rtl_stream_retune_analog_profile* analog) {
+    (void)target_freq_hz;
+    (void)analog;
+    return 0;
+}
+
+int
+rtl_stream_get_analog_profile(int* out_kind, int* out_width_hz, int* out_lpf_on) {
+    if (out_kind) {
+        *out_kind = 0;
+    }
+    if (out_width_hz) {
+        *out_width_hz = 0;
+    }
+    if (out_lpf_on) {
+        *out_lpf_on = 0;
+    }
+    return 0;
+}
+
+int
+rtl_stream_analog_family_active(void) {
+    return 0;
+}
+
+int
+rtl_stream_get_demod_rate_hz(void) {
+    return 48000;
+}
+
+const dsd_scan_settings*
+dsd_scan_mode_configured_view(const dsd_state* state) {
+    (void)state;
+    return NULL;
 }
 
 /* Model the queued profile request as an immediate apply (the real demod

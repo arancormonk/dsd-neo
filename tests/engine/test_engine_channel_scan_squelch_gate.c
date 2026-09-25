@@ -58,6 +58,14 @@ dsd_engine_reset_no_carrier_state(dsd_opts* opts, dsd_state* state) {
     (void)state;
 }
 
+/* The scanner's DSP-rate read beside the tune above (trunk_tuning.c): no rate, so no row width is checked. */
+int
+dsd_engine_scan_dsp_rate_hz(const dsd_opts* opts, const dsd_state* state) {
+    (void)opts;
+    (void)state;
+    return 0;
+}
+
 static void
 record_push(double mean_power) {
     g_pushes++;
