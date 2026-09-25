@@ -335,7 +335,7 @@
 #define AUDIT_PREDICATES(X)                                                                                            \
     X(is_airspy_input)                                                                                                 \
     X(is_non_airspy_input)                                                                                             \
-    X(is_nfm_analog_active)                                                                                            \
+    X(is_nfm_width_editable)                                                                                           \
     X(const_view_active)                                                                                               \
     X(eye_view_active)                                                                                                 \
     X(io_rtl_active)                                                                                                   \

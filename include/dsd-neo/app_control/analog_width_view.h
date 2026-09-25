@@ -13,15 +13,18 @@
  * output without being the analog receiver, so it has no width. While a running stream's options in force run the
  * analog family on the monitor output, the width in force is the one the front end reports, flagged when the DSP rate
  * rather than the channel filter bounds it; otherwise (no stream, a typed digital row filtering with its own profile)
- * it is the configured width, the kind's default when none is set. With no stream running on an input whose RTL DSP
- * bandwidth sets the rate (dsd_app_analog_rtl_bw_rate_hz()), that rate bounds the widths the controls offer, and an
- * unset default it cannot filter reads as what the next start runs: the rate itself, DSP-limited. On PCM input no
- * channel filter runs, so no width is in force.
+ * it is the configured width, the kind's default when none is set. An unset NFM default reads as what the monitor
+ * runs at the DSP rate it returns to: at a rate below the one from which the default filters (20 kHz), or one that
+ * cannot filter it, the rate itself, DSP-limited. That rate is the running stream's demod rate or, with no stream, the
+ * rate the next start runs at where the input's RTL DSP bandwidth sets it (dsd_app_analog_rtl_bw_rate_hz()), which
+ * also bounds the widths the controls offer. On PCM input no channel filter runs, so no width is in force.
  *
  * This view owns those decisions, the reading's text ("12.5 kHz", "16 kHz (default)", "12 kHz (DSP-limited)") and the
  * one spelling of a configured width ("12.5 kHz", "default"). The terminal's status field, RTL menu row and its
  * predicate, the width command's toast, the services that hold a DSP rate to the configured width, and the Qt/Android
- * Radio sheet all take them from here.
+ * Radio sheet all take them from here. A reading carries at most one note: "(default)" marks the unset default, which
+ * a save leaves out and which keeps its own filter rule, apart from an explicit 16 kHz. A scan row that sets its own
+ * width (#526) replaces that note with its own rather than adding a second one.
  */
 
 #ifndef DSD_NEO_INCLUDE_DSD_NEO_APP_CONTROL_ANALOG_WIDTH_VIEW_H_
@@ -83,10 +86,11 @@ int dsd_app_analog_width_setting_format(int configured_hz, char* out, size_t out
  * @brief The DSP rate, in Hz, an RTL DSP bandwidth of @p rtl_bw_khz gives an input, where that bandwidth sets the rate.
  *
  * It does on an RTL-SDR or rtl_tcp input. That is an "rtl" or "rtltcp" spec, and also any other device string on an RTL
- * input (@p audio_in_type AUDIO_IN_RTL), which the stream opens as an RTL-SDR: the terminal's Input > RTL-SDR row, say,
- * leaves "pulse" there. The result is 0 elsewhere: a SoapySDR or Airspy device may force another rate, an I/Q replay
- * runs at its capture's, and PCM input has none. It is 0 too for @p rtl_bw_khz <= 0. A value too large for a rate in
- * Hz (a loaded config keeps any integer) saturates at INT_MAX, a rate no channel width can be filtered at.
+ * input (@p audio_in_type AUDIO_IN_RTL), which the stream opens as an RTL-SDR: the terminal's Input > Switch source >
+ * RTL-SDR row, say, leaves "pulse" there. The result is 0 elsewhere: a SoapySDR or Airspy device may force another
+ * rate, an I/Q replay runs at its capture's, and PCM input has none. It is 0 too for @p rtl_bw_khz <= 0. A value too
+ * large for a rate in Hz (a loaded config keeps any integer) saturates at INT_MAX, a rate no channel width can be
+ * filtered at.
  *
  * @param audio_in_dev  The input's device string (dsd_opts.audio_in_dev); NULL reads as an RTL-SDR, as the stream reads
  *                      it.

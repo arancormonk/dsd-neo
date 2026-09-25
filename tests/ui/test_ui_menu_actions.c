@@ -1957,7 +1957,9 @@ test_scan_voice_gate_actions(void) {
 /*
  * Issue #525: the NFM bandwidth row is offered while the configured analog preset runs FM on a radio input. A typed
  * digital scan row on an analog session does not end that preset (its leave returns to the width set under it), so the
- * row reads the configured preset, as the status line's "Analog:" field does, not the row's options.
+ * row reads the configured preset, as the status line's "Analog:" field does, not the row's options. Under another
+ * preset it is offered while an explicit width is configured: a switch to Analog is held to that width, and where the
+ * device or capture forces a rate that cannot filter it the refusal says to narrow it, which this row then does.
  */
 static int
 test_nfm_bandwidth_row_follows_the_configured_preset(void) {
@@ -1970,10 +1972,17 @@ test_nfm_bandwidth_row_follows_the_configured_preset(void) {
     ctx = make_ctx(&opts, &state);
 
     opts.audio_in_type = AUDIO_IN_RTL;
-    rc |= expect_int("nfm row: hidden on a digital session", is_nfm_analog_active(&ctx), 0);
+    rc |= expect_int("nfm row: hidden on a digital session", is_nfm_width_editable(&ctx), 0);
+    /* An explicit width on a digital session, from a config or an earlier analog session. */
+    opts.analog_nfm_bandwidth_hz = 25000;
+    rc |= expect_int("nfm row: shown for an explicit width on a digital session", is_nfm_width_editable(&ctx), 1);
+    opts.audio_in_type = AUDIO_IN_PULSE;
+    rc |= expect_int("nfm row: hidden for an explicit width on PCM input", is_nfm_width_editable(&ctx), 0);
+    opts.audio_in_type = AUDIO_IN_RTL;
+    opts.analog_nfm_bandwidth_hz = 0;
     opts.analog_only = 1;
     opts.analog_demod = DSD_ANALOG_DEMOD_FM;
-    rc |= expect_int("nfm row: shown under -fA on a radio", is_nfm_analog_active(&ctx), 1);
+    rc |= expect_int("nfm row: shown under -fA on a radio", is_nfm_width_editable(&ctx), 1);
 
     /* A typed DMR row over the -fA session: its options are digital, the configured preset is still NFM. */
     dsd_scan_settings configured = {0};
@@ -1982,19 +1991,19 @@ test_nfm_bandwidth_row_follows_the_configured_preset(void) {
     dsd_test_scan_labels_configured(&configured);
     opts.analog_only = 0;
     opts.frame_dmr = 1;
-    rc |= expect_int("nfm row: shown under a typed digital row", is_nfm_analog_active(&ctx), 1);
+    rc |= expect_int("nfm row: shown under a typed digital row", is_nfm_width_editable(&ctx), 1);
     /* ...and the reverse: a digital configured preset under a row whose options read analog. */
     configured.analog_only = 0;
     dsd_test_scan_labels_configured(&configured);
     opts.analog_only = 1;
-    rc |= expect_int("nfm row: hidden when the configured preset is digital", is_nfm_analog_active(&ctx), 0);
+    rc |= expect_int("nfm row: hidden when the configured preset is digital", is_nfm_width_editable(&ctx), 0);
     dsd_test_scan_labels_configured(NULL);
 
     opts.m17encoder = 1;
-    rc |= expect_int("nfm row: hidden for the M17 encoder's monitor", is_nfm_analog_active(&ctx), 0);
+    rc |= expect_int("nfm row: hidden for the M17 encoder's monitor", is_nfm_width_editable(&ctx), 0);
     opts.m17encoder = 0;
     opts.audio_in_type = AUDIO_IN_PULSE;
-    rc |= expect_int("nfm row: hidden on PCM input", is_nfm_analog_active(&ctx), 0);
+    rc |= expect_int("nfm row: hidden on PCM input", is_nfm_width_editable(&ctx), 0);
     return rc;
 }
 

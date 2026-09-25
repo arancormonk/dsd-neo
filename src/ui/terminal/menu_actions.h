@@ -180,7 +180,7 @@ void act_toggle_ui_p25_callsign(void* v);
 #ifdef USE_RADIO
 bool is_airspy_input(const void* v);
 bool is_non_airspy_input(const void* v);
-bool is_nfm_analog_active(const void* v);
+bool is_nfm_width_editable(const void* v);
 void airspy_set_serial(void* v);
 void airspy_set_sample_rate(void* v);
 void airspy_set_gain_mode(void* v);

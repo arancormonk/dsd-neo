@@ -89,7 +89,8 @@ main(void) {
     assert(view.width_hz == 8000 && !view.dsp_limited && view.max_hz == 9600);
     expect_reading(&view, "8 kHz");
     opts->analog_nfm_bandwidth_hz = 0;
-    /* The terminal's Input > RTL-SDR leaves "pulse" on an RTL input: the stream opens it as an RTL-SDR, at this rate. */
+    /* The terminal's Input > Switch source > RTL-SDR leaves "pulse" on an RTL input: the stream opens it as an RTL-SDR,
+       at this rate. */
     DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", "pulse");
     assert(dsd_app_analog_width_view_get(opts, state, NULL, &view) == 0);
     assert(view.width_hz == 12000 && view.dsp_limited && view.max_hz == 9600);
@@ -127,6 +128,13 @@ main(void) {
     m.output_kind = DSD_FRONTEND_RTL_OUTPUT_SYMBOL_CQPSK;
     assert(dsd_app_analog_width_view_get(opts, state, &m, &view) == 0);
     assert(view.width_hz == 16000 && view.max_hz == 42000);
+    /* ...and at a 12 kHz demod rate the unset default the monitor returns to runs no channel filter: the rate bounds
+       it, as the front end will report once the monitor runs again. */
+    m = monitor_metrics(12500, 0, 12000);
+    m.output_kind = DSD_FRONTEND_RTL_OUTPUT_SYMBOL_CQPSK;
+    assert(dsd_app_analog_width_view_get(opts, state, &m, &view) == 0);
+    assert(view.width_hz == 12000 && view.dsp_limited && view.configured_hz == 0 && view.max_hz == 9600);
+    expect_reading(&view, "12 kHz (DSP-limited)");
 
     /* A typed digital row on the analog session: the configured preset is still NFM, and the row's front end filters
        with the row's profile, so the configured width shows, the one the row's leave returns to. */
@@ -144,6 +152,17 @@ main(void) {
     dsd_scan_mode_copy_snapshot(copy, state);
     assert(dsd_app_analog_width_view_get(opts, copy, &m, &view) == 0);
     assert(view.shown && view.width_hz == 20000);
+    /* The unset default under the row at a 12 kHz DSP rate reads as what the leave returns to: the rate itself,
+       DSP-limited, not the 16 kHz the rate cannot filter. An explicit width the rate filters stays the width. */
+    opts->analog_nfm_bandwidth_hz = 0;
+    m = monitor_metrics(12500, 0, 12000);
+    assert(dsd_app_analog_width_view_get(opts, state, &m, &view) == 0);
+    assert(view.shown && view.width_hz == 12000 && view.dsp_limited && view.configured_hz == 0);
+    expect_reading(&view, "12 kHz (DSP-limited)");
+    opts->analog_nfm_bandwidth_hz = 8000;
+    assert(dsd_app_analog_width_view_get(opts, state, &m, &view) == 0);
+    assert(view.width_hz == 8000 && !view.dsp_limited && view.max_hz == 9600);
+    opts->analog_nfm_bandwidth_hz = 20000;
     dsd_scan_mode_leave(opts, state);
     assert(opts->analog_only == 1);
 

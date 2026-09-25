@@ -644,6 +644,7 @@ static int g_channel_bandwidth_hz;
 static int g_channel_bandwidth_dsp_limited;
 static int g_output_kind = DSD_FRONTEND_RTL_OUTPUT_AUDIO_MONITOR;
 static int g_stream_active;
+static int g_demod_rate_hz;
 
 int
 dsd_app_frontend_get_metrics(dsd_frontend_metrics* out) { // NOLINT(misc-use-internal-linkage)
@@ -653,6 +654,7 @@ dsd_app_frontend_get_metrics(dsd_frontend_metrics* out) { // NOLINT(misc-use-int
     out->channel_bandwidth_hz = g_channel_bandwidth_hz;
     out->channel_bandwidth_dsp_limited = g_channel_bandwidth_dsp_limited;
     out->stream_active = g_stream_active;
+    out->demod_rate_hz = g_demod_rate_hz;
     return 0;
 }
 
@@ -950,6 +952,17 @@ test_analog_channel_status_rendering(void) {
     reset_printw_capture();
     ui_render_rtl_input_source(&opts, &state);
     assert_capture_contains(" Analog: NFM 12.5 kHz;");
+    /* ...and with the unset default at a 12 kHz DSP rate, what that leave returns to: the rate itself, DSP-limited,
+       not the 16 kHz the rate cannot filter. The row's front end reports its own channel meanwhile. */
+    opts.analog_nfm_bandwidth_hz = 0;
+    opts.rtl_dsp_bw_khz = 12;
+    g_demod_rate_hz = 12000;
+    reset_printw_capture();
+    ui_render_rtl_input_source(&opts, &state);
+    assert_capture_contains(" DSP-BW: 12 kHz; Analog: NFM 12 kHz (DSP-limited);");
+    opts.analog_nfm_bandwidth_hz = 12500;
+    opts.rtl_dsp_bw_khz = 48;
+    g_demod_rate_hz = 0;
     g_scan_configured = NULL;
     opts.frame_dmr = 0;
     opts.analog_only = 1;

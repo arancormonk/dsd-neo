@@ -177,7 +177,7 @@ static const NcMenuItem RTL_MENU_ITEMS[] = {
      .help = "DSP bandwidth (the demodulator's sample rate) in kHz: 4, 6, 8, 12, 16, 24 or 48.",
      .on_select = rtl_set_bw},
     {.id = "rtl.nfm_bw",
-     .is_enabled = is_nfm_analog_active,
+     .is_enabled = is_nfm_width_editable,
      .label_fn = lbl_rtl_nfm_bw,
      .help = "NFM channel-filter width in Hz (8000..25000; 0 = default 16000), applied live. It must fit the DSP "
              "bandwidth.",

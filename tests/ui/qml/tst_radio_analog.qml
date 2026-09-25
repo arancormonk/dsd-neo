@@ -9,9 +9,10 @@ import QtTest
 // width the front end reports, "DSP-limited" when the DSP rate bounds it,
 // "default" when none is configured -- and its stepper edits the configured
 // width through the common channel plans, skipping the ones the running DSP rate
-// cannot filter. An explicit width can go back to the unset default. On PCM input
-// the width cannot act, so the stepper is disabled with the reason beside it. The
-// NFM chip selects the analog preset.
+// cannot filter. An explicit width can go back to the unset default, and stays
+// editable on a radio under another preset. On PCM input the width cannot act, so
+// the stepper is disabled with the reason beside it. The NFM chip selects the
+// analog preset.
 Item {
     width: 420
     height: 1100
@@ -75,6 +76,36 @@ Item {
         function test_hidden_outside_the_analog_preset() {
             verify(analogMode >= 0, "-fA maps to a decode preset");
             verify(!findChild(sheet, "radioAnalogSection").visible, "the analog section showed on a digital preset");
+        }
+
+        // An explicit width stays editable under another preset on a radio: a
+        // switch to NFM is held to it, and where the device or the capture forces
+        // a DSP rate that cannot filter it, the refusal says to narrow it first.
+        function test_explicit_width_editable_outside_the_analog_preset() {
+            testContext.setMetric("analogBandwidthConfiguredHz", 25000);
+            tryVerify(function () { return metrics.analogBandwidthConfiguredHz === 25000 });
+            verify(metrics.decodeMode !== analogMode);
+            verify(findChild(sheet, "radioAnalogSection").visible, "an explicit width outside NFM could not be narrowed");
+            // No width is in force outside the preset: the setting stands in.
+            compare(findChild(sheet, "radioAnalogBandwidthValue").text, "25 kHz");
+            verify(findChild(sheet, "radioAnalogBandwidthIdleNote").visible, "the setting's purpose was not shown");
+            findChild(sheet, "radioAnalogBandwidthDown").clicked();
+            compare(testContext.lastNfmBandwidthHz(), 20000);
+            sheet.forgetRequests();
+            var reset = findChild(sheet, "radioAnalogBandwidthDefault");
+            verify(reset.visible && reset.enabled);
+            reset.clicked();
+            compare(testContext.lastNfmBandwidthHz(), 0);
+            sheet.forgetRequests();
+            // Under the preset the idle note gives way to the reading.
+            analogSession(20000, false, 20000);
+            verify(!findChild(sheet, "radioAnalogBandwidthIdleNote").visible);
+            testContext.setMetric("decodeMode", 1);
+            tryVerify(function () { return metrics.decodeMode === 1 });
+            // On PCM input the width filters nothing, so it is not offered there.
+            testContext.setMetric("radioInput", false);
+            tryVerify(function () { return metrics.radioInput === false });
+            verify(!findChild(sheet, "radioAnalogSection").visible, "the width was offered on PCM input outside NFM");
         }
 
         function test_nfm_chip_selects_the_analog_preset() {

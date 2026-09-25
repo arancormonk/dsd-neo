@@ -85,6 +85,12 @@ ModalSheet {
     readonly property bool analogWidthEditable: metrics.radioInput === true
     readonly property int analogWidthConfigured: isNaN(pendingAnalogWidth)
         ? metrics.analogBandwidthConfiguredHz : pendingAnalogWidth
+    // Under another preset an explicit width stays editable on a radio, as the
+    // terminal row does: a switch to NFM is held to it, and where the device or
+    // the capture forces a DSP rate that cannot filter it, the refusal says to
+    // narrow it, which has to be possible before the switch.
+    readonly property bool analogWidthOffered: analogPreset
+        || (analogWidthEditable && (metrics.analogBandwidthConfiguredHz > 0 || !isNaN(pendingAnalogWidth)))
     // An explicit width steps from itself. The default steps from the width in
     // force, which below a 20 kHz DSP rate is the width the rate leaves rather
     // than 16 kHz, so the first step from there is one the rate can take.
@@ -103,9 +109,12 @@ ModalSheet {
         && Util.nextNfmWidth(analogWidthStepFrom, 1, analogWidthMax) > 0
     // A request stands in for the reading until the engine answers, spelled as
     // the setting it is ("12.5 kHz", or "default" for 0).
+    // Outside the preset no width is in force, so the setting stands in.
     readonly property string analogWidthReading: {
         if (!isNaN(pendingAnalogWidth))
             return pendingAnalogWidth > 0 ? Util.widthKhzText(pendingAnalogWidth) : qsTr("default");
+        if (!analogPreset)
+            return analogWidthConfigured > 0 ? Util.widthKhzText(analogWidthConfigured) : qsTr("default");
         return metrics.analogBandwidthReading;
     }
 
@@ -488,7 +497,7 @@ ModalSheet {
     // not the tuner or the audio bandwidth. It has to fit the DSP rate.
     Column {
         objectName: "radioAnalogSection"
-        visible: sheet.analogPreset
+        visible: sheet.analogWidthOffered
         width: parent.width
         spacing: 8
         Text {
@@ -535,6 +544,16 @@ ModalSheet {
             accessibleName: qsTr("Default Channel Width")
             enabled: sheet.analogWidthEditable
             onClicked: sheet.resetAnalogWidth()
+        }
+        // Outside the preset: what the setting is for.
+        Text {
+            objectName: "radioAnalogBandwidthIdleNote"
+            visible: !sheet.analogPreset && sheet.analogWidthEditable
+            width: parent.width
+            wrapMode: Text.WordWrap
+            text: qsTr("Used when NFM is chosen, which needs a width the DSP rate can filter.")
+            color: Theme.textSecondary
+            font.pixelSize: Theme.fontSize(12)
         }
         // Why the stepper is greyed out, rather than leaving a dead control.
         Text {
