@@ -2092,11 +2092,17 @@ trunk_scan_p25_cc_sps(const dsd_opts* opts, const dsd_state* state) {
     return dsd_opts_compute_sps_rate(opts, sym_rate, demod_rate);
 }
 
+/* 0 (no TED override) for a type without a four-level GFSK symbol clock, the P25 class and an analog
+ * target, so a symbol rate of 0 never reaches the SPS division whichever branch asked. */
 static int
 trunk_scan_gfsk_sps(const dsd_opts* opts, const dsd_state* state, dsd_trunk_scan_target_type type) {
     (void)state;
+    const int symbol_rate_hz = trunk_scan_type_gfsk_symbol_rate(type);
+    if (symbol_rate_hz <= 0) {
+        return 0;
+    }
     int demod_rate = trunk_scan_demod_rate(opts);
-    return dsd_opts_compute_sps_rate(opts, trunk_scan_type_gfsk_symbol_rate(type), demod_rate);
+    return dsd_opts_compute_sps_rate(opts, symbol_rate_hz, demod_rate);
 }
 
 /* The four-level GFSK family spans two symbol rates, and the SPS hunt profile is the only thing
