@@ -34,6 +34,7 @@
 #include <dsd-neo/core/talkgroup_policy.h>
 #include <dsd-neo/core/time_format.h>
 #include <dsd-neo/crypto/dmr_keystream.h>
+#include <dsd-neo/dsp/analog_rx.h>
 #include <dsd-neo/dsp/frame_sync.h>
 #include <dsd-neo/dsp/symbol.h>
 #include <dsd-neo/engine/channel_scan.h>
@@ -362,9 +363,18 @@ ui_reconfigure_output_for_input_policy(dsd_opts* opts, dsd_state* state) {
     return 0;
 }
 
+/* The audio input changed. A tone heard on the old input does not describe the new one, so it
+   goes now rather than when the detector next loses it (issue #522); then the output follows
+   the new input's policy. */
+static int
+ui_input_switched(dsd_opts* opts, dsd_state* state) {
+    dsd_analog_rx_reset(state);
+    return ui_reconfigure_output_for_input_policy(opts, state);
+}
+
 static void
 ui_set_tcp_audio_connected_toast_if_output_ready(dsd_opts* opts, dsd_state* state, const char* host, int port) {
-    if (ui_reconfigure_output_for_input_policy(opts, state) != 0) {
+    if (ui_input_switched(opts, state) != 0) {
         return;
     }
     ui_set_toast(state, 3, "TCP audio connected: %s:%d", host, port);
@@ -881,7 +891,7 @@ ui_cmd_handle_symbol_in_open(dsd_opts* opts, dsd_state* state, const struct dsd_
             int rc = svc_open_symbol_in(opts, state, path);
             result = ui_cmd_apply_status_from_service_rc(rc);
             if (rc == 0) {
-                if (ui_reconfigure_output_for_input_policy(opts, state) == 0) {
+                if (ui_input_switched(opts, state) == 0) {
                     ui_set_toast(state, 3, "Applied: Symbol input -> %s", path);
                 } else {
                     result = UI_CMD_APPLY_FAILED;
@@ -898,7 +908,7 @@ static int
 ui_cmd_handle_input_wav_set(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
     if (c->n > 0 && ui_cmd_copy_payload_string(c, opts->audio_in_dev, sizeof opts->audio_in_dev)) {
         opts->audio_in_type = AUDIO_IN_WAV;
-        if (ui_reconfigure_output_for_input_policy(opts, state) == 0) {
+        if (ui_input_switched(opts, state) == 0) {
             ui_set_toast(state, 3, "Applied: WAV input -> %s", opts->audio_in_dev);
         } else {
             return UI_CMD_APPLY_FAILED;
@@ -911,7 +921,7 @@ static int
 ui_cmd_handle_input_sym_stream_set(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
     if (c->n > 0 && ui_cmd_copy_payload_string(c, opts->audio_in_dev, sizeof opts->audio_in_dev)) {
         opts->audio_in_type = AUDIO_IN_SYMBOL_FLT;
-        if (ui_reconfigure_output_for_input_policy(opts, state) == 0) {
+        if (ui_input_switched(opts, state) == 0) {
             ui_set_toast(state, 3, "Applied: Symbol stream input -> %s", opts->audio_in_dev);
         } else {
             return UI_CMD_APPLY_FAILED;
@@ -925,7 +935,7 @@ ui_cmd_handle_input_set_pulse(dsd_opts* opts, dsd_state* state, const struct dsd
     (void)c;
     DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", "pulse");
     opts->audio_in_type = AUDIO_IN_PULSE;
-    if (ui_reconfigure_output_for_input_policy(opts, state) == 0) {
+    if (ui_input_switched(opts, state) == 0) {
         ui_set_toast(state, 3, "Applied: Input switched to Pulse");
     } else {
         return UI_CMD_APPLY_FAILED;
@@ -1019,7 +1029,7 @@ ui_cmd_handle_udp_input_cfg(dsd_opts* opts, dsd_state* state, const struct dsd_a
         opts->udp_in_portno = port;
         DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", "udp");
         opts->audio_in_type = AUDIO_IN_UDP;
-        if (ui_reconfigure_output_for_input_policy(opts, state) == 0) {
+        if (ui_input_switched(opts, state) == 0) {
             ui_set_toast(state, 3, "UDP input set: %s:%d", bind[0] ? bind : "127.0.0.1", (int)port);
         } else {
             return UI_CMD_APPLY_FAILED;
@@ -1086,7 +1096,7 @@ ui_cmd_handle_rtl_enable_input(dsd_opts* opts, dsd_state* state, const struct ds
         int rc = svc_rtl_enable_input(opts, state);
         result = ui_cmd_apply_status_from_service_rc(rc);
         if (rc == 0) {
-            if (ui_reconfigure_output_for_input_policy(opts, state) == 0) {
+            if (ui_input_switched(opts, state) == 0) {
                 ui_set_toast(state, 3, "Applied: %s input enabled",
                              c->id == DSD_APP_CMD_AIRSPY_ENABLE_INPUT ? "Airspy" : "RTL");
             } else {
@@ -1224,6 +1234,11 @@ ui_cmd_handle_rtl_set_freq(dsd_opts* opts, dsd_state* state, const struct dsd_ap
         }
         int rc = svc_rtl_set_freq(opts, state, v);
         result = ui_cmd_apply_status_from_tune_rc(rc);
+        if (rc == 0 || rc == RTL_STREAM_TUNE_TIMEOUT) {
+            /* A new channel: the tone heard on the old one goes now, not when the analog tap
+               next notices the stream moved (issue #522). */
+            dsd_analog_rx_reset(state);
+        }
         const int stop_scanner = ui_cmd_leave_typed_scan_after_tune(opts, state, rc);
         if (rc == 0) {
             ui_set_toast(state, 3, "Applied: RTL frequency -> %u Hz%s", v, stop_scanner ? " (scanner stopped)" : "");
@@ -1288,6 +1303,7 @@ ui_cmd_handle_manual_tune(dsd_opts* opts, dsd_state* state, const struct dsd_app
         /* Only after the tune is accepted, matching how trunk_tuning.c and the
          * manual return-to-CC path order this — never on the failure path. */
         dsd_frame_sync_reset_mod_state();
+        dsd_analog_rx_reset(state);
         reset_call_tracking(opts, state, 1);
         if (rc == 0) {
             ui_set_toast(state, 3, "Applied: tuned -> %u Hz", v);
@@ -1647,7 +1663,7 @@ apply_cmd_io_and_import_pulse_io(dsd_opts* opts, dsd_state* state, const struct 
                 int rc = svc_set_pulse_input(opts, name);
                 result = ui_cmd_apply_status_from_service_rc(rc);
                 if (rc == 0) {
-                    if (ui_reconfigure_output_for_input_policy(opts, state) == 0) {
+                    if (ui_input_switched(opts, state) == 0) {
                         ui_set_toast(state, 3, "Applied: Pulse input -> %s", name);
                     } else {
                         result = UI_CMD_APPLY_FAILED;
@@ -2164,6 +2180,10 @@ request_manual_tune(dsd_opts* opts, dsd_state* state, long int freq, int p25_cc_
         *out_request_id = request_id;
     }
     if (accepted) {
+        /* The radio is moving (issue #522). With rigctl on PCM input nothing else reports this
+           hop: io_control does not advance the trunk-tuning generation, and there is no RTL
+           stream generation to move, so the tone heard on the old channel goes here. */
+        dsd_analog_rx_reset(state);
         return 1;
     }
     LOG_WARN("WARNING: %s tune to %ld Hz was not accepted (result=%d); preserving decoder state\n",
@@ -4886,7 +4906,7 @@ ui_cmd_handle_replay_last(dsd_opts* opts, dsd_state* state, const struct dsd_app
             state->symbol_replay_format = DSD_SYMBOL_REPLAY_FORMAT_UNKNOWN;
             state->symbol_replay_header_checked = 0;
             state->symbol_replay_has_soft = 0;
-            (void)ui_reconfigure_output_for_input_policy(opts, state);
+            (void)ui_input_switched(opts, state);
         }
     }
     return 1;
@@ -4941,12 +4961,14 @@ ui_cmd_handle_stop_playback(dsd_opts* opts, dsd_state* state, const struct dsd_a
         opts->audio_in_type = AUDIO_IN_PULSE;
         if (openAudioInput(opts) != 0) {
             LOG_ERROR("UI: failed to open PulseAudio input\n");
+            /* The playback is gone either way; its tone goes with it (issue #522). */
+            dsd_analog_rx_reset(state);
         } else {
-            (void)ui_reconfigure_output_for_input_policy(opts, state);
+            (void)ui_input_switched(opts, state);
         }
     } else {
         opts->audio_in_type = AUDIO_IN_STDIN;
-        (void)ui_reconfigure_output_for_input_policy(opts, state);
+        (void)ui_input_switched(opts, state);
     }
     return 1;
 }
@@ -5112,6 +5134,21 @@ apply_cfg_receive_family_change(dsd_opts* opts, dsd_state* state, const dsdneoUs
     }
 }
 
+/* A config apply that moved the input is an input switch like the commands that make one, and
+   one that changed the decode mode a decode-mode change: either way the tone heard before it
+   goes (issue #522). Out of the analog monitor nothing else forgets it before the row can come
+   back, since no monitor block need arrive in between. An unrelated settings change keeps it,
+   including the mode every runtime apply restates. */
+static void
+cfg_forget_rx_tone_on_boundary(const dsd_opts* opts, dsd_state* state, int old_audio_in_type,
+                               const char* old_audio_in_dev, dsdneoUserDecodeMode old_decode_mode) {
+    if (opts->audio_in_type != old_audio_in_type
+        || strncmp(old_audio_in_dev, opts->audio_in_dev, sizeof opts->audio_in_dev) != 0
+        || dsd_infer_decode_mode_preset_exact(opts) != old_decode_mode) {
+        dsd_analog_rx_reset(state);
+    }
+}
+
 static int
 ui_cmd_handle_config_apply(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
     if (!state || c->n < sizeof(dsdneoUserConfig)) {
@@ -5134,6 +5171,7 @@ ui_cmd_handle_config_apply(dsd_opts* opts, dsd_state* state, const struct dsd_ap
     const int old_analog_only = opts->analog_only ? 1 : 0;
     const int old_audio_channels = opts->pulse_digi_out_channels;
     const int old_audio_rate = opts->pulse_digi_rate_out;
+    const dsdneoUserDecodeMode old_decode_mode = dsd_infer_decode_mode_preset_exact(opts);
 #ifdef USE_RADIO
     int airspy_rc = 0;
     dsd_airspy_config old_airspy = opts->airspy;
@@ -5171,6 +5209,7 @@ ui_cmd_handle_config_apply(dsd_opts* opts, dsd_state* state, const struct dsd_ap
     restore_live_pcm_rate_after_staged_file_apply(opts, &cfg, old_wav_sample_rate);
     apply_cfg_file_runtime_rate(opts, state, &cfg, old_runtime_input_rate, old_samples_per_symbol, old_symbol_center,
                                 old_jitter);
+    cfg_forget_rx_tone_on_boundary(opts, state, old_audio_in_type, old_audio_in_dev, old_decode_mode);
     int reconfigure_rc = ui_reconfigure_output_for_input_policy(opts, state);
     apply_cfg_receive_family_change(opts, state, &cfg, old_analog_only);
 #ifdef USE_RADIO

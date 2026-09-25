@@ -26,6 +26,7 @@
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
+#include <dsd-neo/dsp/analog_rx.h>
 #include <dsd-neo/dsp/frame_sync.h>
 #include <dsd-neo/dsp/sps_filters.h>
 #include <dsd-neo/dsp/symbol.h>
@@ -1161,12 +1162,16 @@ symbol_output_unsynced_analog(dsd_opts* opts, dsd_state* state, unsigned int ana
         && opts->audio_out == 1) {
         symbol_convert_analog_block_to_i16(state, analog_block);
         size_t bytes = (size_t)analog_block * sizeof(short);
+        /* Synchronous playback can hold the decoder for the block's playing time; that is not
+           time spent waiting for input, which received-tone detection measures (issue #522). */
+        dsd_analog_rx_playback_begin(state);
         if (opts->audio_out_type == 0 && opts->audio_raw_out) {
             dsd_audio_write(opts->audio_raw_out, state->analog_out, analog_block);
         }
         if (opts->audio_out_type == 8) {
             dsd_udp_audio_hook_blast_analog(opts, state, bytes, state->analog_out);
         }
+        dsd_analog_rx_playback_end(state);
         if (opts->trunk_enable != 1) {
             state->last_cc_sync_time = time(NULL);
             state->last_cc_sync_time_m = dsd_time_now_monotonic_s();
@@ -1183,6 +1188,9 @@ symbol_reset_analog_buffers(dsd_state* state) {
     DSD_MEMSET(state->analog_out_f, 0, sizeof(state->analog_out_f));
     DSD_MEMSET(state->analog_out, 0, sizeof(state->analog_out));
     state->analog_sample_counter = 0;
+    /* The next block starts at its first sample for received-tone detection too (issue #522), also when this drops
+       one part-way through: dsd_symbol_analog_block_reset() and a receive-family switch landing. */
+    dsd_analog_rx_block_restart(state);
 }
 
 void
@@ -1197,10 +1205,32 @@ static inline void
 symbol_finalize_unsynced_analog_block(dsd_opts* opts, dsd_state* state, unsigned int analog_block) {
     symbol_update_unsynced_input_power(opts, state, analog_block);
     symbol_write_unsynced_raw_wav(opts, state, analog_block);
+    /* Received-tone detection (issue #522) reads the rest of the block here, while it is still
+       raw: the voice filters below run in place, and hpf_f alone takes out everything a CTCSS
+       tone lives in. It only reads, so the audio that follows is unchanged. */
+    dsd_analog_rx_tap(opts, state, state->analog_out_f, analog_block);
     symbol_apply_unsynced_filters(opts, state, analog_block);
     symbol_output_unsynced_analog(opts, state, analog_block);
     symbol_reset_analog_buffers(state);
 }
+
+#ifdef DSD_NEO_TEST_HOOKS
+unsigned int
+dsd_symbol_test_finalize_unsynced_analog_block(dsd_opts* opts, dsd_state* state, const float* input,
+                                               unsigned int count) {
+    if (!opts || !state || !input) {
+        return 0U;
+    }
+    const unsigned int cap = (unsigned int)(sizeof(state->analog_out_f) / sizeof(state->analog_out_f[0]));
+    const unsigned int n = count < cap ? count : cap;
+    for (unsigned int i = 0; i < n; i++) {
+        state->analog_out_f[i] = input[i];
+    }
+    state->analog_sample_counter = (int)n;
+    symbol_finalize_unsynced_analog_block(opts, state, n);
+    return n;
+}
+#endif
 
 static inline void
 symbol_process_unsynced_analog(dsd_opts* opts, dsd_state* state, unsigned int analog_out_cap, float sample) {
@@ -1212,10 +1242,26 @@ symbol_process_unsynced_analog(dsd_opts* opts, dsd_state* state, unsigned int an
         state->analog_sample_counter = (int)analog_block - 1;
     }
     state->analog_out_f[state->analog_sample_counter++] = sample;
+    /* Received-tone detection (issue #522) reads the raw block as it fills, so its verdicts keep
+       pace with the input however long the block is: 960 samples are 384 ms at 2500 Hz. Every
+       sample is offered, the one that completes the block too, so detection that starts on
+       that sample hears only it and not the block that began before it. */
+    dsd_analog_rx_tap_partial(opts, state, state->analog_out_f, (unsigned int)state->analog_sample_counter);
     if ((unsigned int)state->analog_sample_counter == analog_block) {
         symbol_finalize_unsynced_analog_block(opts, state, analog_block);
     }
 }
+
+#ifdef DSD_NEO_TEST_HOOKS
+void
+dsd_symbol_test_push_unsynced_analog_sample(dsd_opts* opts, dsd_state* state, float sample) {
+    if (!opts || !state) {
+        return;
+    }
+    const unsigned int cap = (unsigned int)(sizeof(state->analog_out) / sizeof(state->analog_out[0]));
+    symbol_process_unsynced_analog(opts, state, cap, sample);
+}
+#endif
 
 static inline void
 symbol_process_synced_analog(dsd_opts* opts, dsd_state* state, unsigned int analog_out_cap, float sample) {
@@ -1289,6 +1335,9 @@ symbol_stop_after_shutdown(float* sample_out) {
 static inline int
 symbol_open_pulse_input_and_reconfigure_output(dsd_opts* opts, dsd_state* state) {
     opts->audio_in_type = AUDIO_IN_PULSE;
+    /* A new input is a new receiver (issue #522): the tone the file or TCP stream carried does
+       not describe live Pulse audio, which at the same rate nothing else would tell the tap. */
+    dsd_analog_rx_reset(state);
     if (openAudioInput(opts) != 0) {
         dsd_request_shutdown(opts, state);
         return 0;
@@ -1593,6 +1642,10 @@ symbol_read_sample_tcp(dsd_opts* opts, dsd_state* state, float* sample_out) {
             backoff_ms = cfg_retry->tcpin_backoff_ms;
         }
         DSD_FPRINTF(stderr, "\nConnection to TCP Server Interrupted. Trying again in %d ms.\n", backoff_ms);
+        /* The stream ended, and whatever a reconnect brings may be another source: a new
+           reception (issue #522). The default backoff is shorter than a pause the received-tone
+           tap would notice, so the old tone would otherwise carry over onto the new connection. */
+        dsd_analog_rx_reset(state);
         dsd_net_audio_input_hook_tcp_close(opts->tcp_in_ctx);
         opts->tcp_in_ctx = NULL;
         dsd_socket_close(opts->tcp_sockfd);

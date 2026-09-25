@@ -9,6 +9,7 @@
 
 #include <dsd-neo/app_control/commands.h>
 #include <dsd-neo/app_control/frontend_runtime.h>
+#include <dsd-neo/app_control/rx_tone_view.h>
 #include <dsd-neo/core/audio.h>
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/channel_mode.h>
@@ -70,9 +71,20 @@ static long int g_cc_tune_freq = 0;
 static int g_cc_tune_ted_sps = 0;
 static int g_cc_profile_at_tune = -1;
 static int g_skip_arm_refused = 0;
+/* TCP audio connect and Pulse input open: the real functions unless a test arms a result. */
+static int g_tcp_connect_stub_armed = 0;
+static int g_tcp_connect_stub_rc = 0;
+static int g_tcp_connect_calls = 0;
+static int g_open_audio_input_stub_armed = 0;
+static int g_open_audio_input_stub_rc = 0;
+static int g_open_audio_input_calls = 0;
 
 // GNU ld --wrap entry points must keep the reserved __wrap_* symbol name.
 // NOLINTBEGIN(bugprone-reserved-identifier, cert-dcl37-c, cert-dcl51-cpp, misc-use-internal-linkage)
+int __real_svc_tcp_connect_audio(dsd_opts* opts, const char* host, int port);
+int __wrap_svc_tcp_connect_audio(dsd_opts* opts, const char* host, int port);
+int __real_openAudioInput(dsd_opts* opts);
+int __wrap_openAudioInput(dsd_opts* opts);
 int __wrap_io_control_set_freq(dsd_opts* opts, dsd_state* state, long int freq);
 dsd_trunk_tune_result __wrap_dsd_trunk_tuning_hook_tune_to_cc(dsd_opts* opts, dsd_state* state, long int freq,
                                                               int ted_sps, uint64_t* out_request_id);
@@ -82,6 +94,31 @@ int __wrap_dsd_tg_policy_call_skip_arm(dsd_state* state, uint32_t id, uint32_t s
 int
 __wrap_dsd_tg_policy_call_skip_arm(dsd_state* state, uint32_t id, uint32_t src, int fallback, double now_mono_s) {
     return g_skip_arm_refused ? -1 : __real_dsd_tg_policy_call_skip_arm(state, id, src, fallback, now_mono_s);
+}
+
+/* An armed connect succeeds or fails without a socket; a success leaves the options as the
+   real service does: TCP input on the requested endpoint. */
+int
+__wrap_svc_tcp_connect_audio(dsd_opts* opts, const char* host, int port) {
+    if (!g_tcp_connect_stub_armed) {
+        return __real_svc_tcp_connect_audio(opts, host, port);
+    }
+    g_tcp_connect_calls++;
+    if (g_tcp_connect_stub_rc == 0 && opts && host) {
+        DSD_SNPRINTF(opts->tcp_hostname, sizeof opts->tcp_hostname, "%s", host);
+        opts->tcp_portno = port;
+        opts->audio_in_type = AUDIO_IN_TCP;
+    }
+    return g_tcp_connect_stub_rc;
+}
+
+int
+__wrap_openAudioInput(dsd_opts* opts) {
+    if (!g_open_audio_input_stub_armed) {
+        return __real_openAudioInput(opts);
+    }
+    g_open_audio_input_calls++;
+    return g_open_audio_input_stub_rc;
 }
 
 int
@@ -114,6 +151,20 @@ reset_io_control_tune_stub(int result) {
     g_io_control_tune_result = result;
     g_io_control_tune_calls = 0;
     g_io_control_tune_freq = 0;
+}
+
+static void
+arm_tcp_connect_stub(int armed, int rc) {
+    g_tcp_connect_stub_armed = armed;
+    g_tcp_connect_stub_rc = rc;
+    g_tcp_connect_calls = 0;
+}
+
+static void
+arm_open_audio_input_stub(int armed, int rc) {
+    g_open_audio_input_stub_armed = armed;
+    g_open_audio_input_stub_rc = rc;
+    g_open_audio_input_calls = 0;
 }
 
 static void
@@ -151,6 +202,24 @@ expect_true(const char* tag, int cond) {
         return 1;
     }
     return 0;
+}
+
+/* A tone the receiver locked before the command, as the analog tap publishes it. */
+static void
+seed_received_tone(dsd_state* state) {
+    state->analog_rx.carrier_open = 1;
+    state->analog_rx.tone_state = DSD_ANALOG_TONE_STATE_LOCKED;
+    state->analog_rx.tone_kind = DSD_ANALOG_TONE_KIND_CTCSS;
+    state->analog_rx.ctcss_tenths_hz = 1000;
+}
+
+static int
+expect_received_tone_cleared(const char* tag, const dsd_state* state, uint32_t seeded_generation) {
+    const int cleared = state->analog_rx.tone_state != DSD_ANALOG_TONE_STATE_LOCKED
+                        && state->analog_rx.tone_kind == DSD_ANALOG_TONE_KIND_NONE
+                        && state->analog_rx.ctcss_tenths_hz == 0 && state->analog_rx.carrier_open == 0
+                        && state->analog_rx.generation != seeded_generation;
+    return expect_true(tag, cleared);
 }
 
 static int
@@ -210,7 +279,8 @@ init_test_context(dsd_opts* opts, dsd_state* state) {
 /*
  * DECODE_MODE_SET opens the sink the new mode writes to when the session plays to a local audio device, which is
  * what initOpts() selects. Cases that change the decode mode play to the null output instead, so no test opens a
- * host audio stream whether or not the ensure helpers are link-time wrapped on this toolchain.
+ * host audio stream whether or not the ensure helpers are link-time wrapped on this toolchain. Where they are wrapped,
+ * main() fails the run if any case reaches them off the null output.
  */
 static void
 init_decode_mode_context(dsd_opts* opts, dsd_state* state) {
@@ -1569,6 +1639,61 @@ test_channel_cycle_hands_p25_sm_back_to_cc(void) {
 }
 
 /*
+ * The manual channel cycle and scan avoid on an untyped -Y list move an external radio
+ * through rigctl on PCM input: no RTL stream generation moves and io_control does not advance
+ * the trunk-tuning generation, so nothing else tells the analog tap (issue #522). An accepted
+ * step -- pending included -- clears the received tone; a refused one leaves the radio, and so
+ * its tone, where they were.
+ */
+static int
+test_manual_scan_steps_clear_received_tone(void) {
+    static const struct {
+        int cmd;
+        int tune_result;
+        int clears;
+        const char* tag;
+    } cases[] = {
+        {DSD_APP_CMD_CHANNEL_CYCLE, RTL_STREAM_TUNE_OK, 1, "channel cycle by rigctl clears the received tone"},
+        {DSD_APP_CMD_CHANNEL_CYCLE, RTL_STREAM_TUNE_TIMEOUT, 1, "pending channel cycle clears the received tone"},
+        {DSD_APP_CMD_CHANNEL_CYCLE, RTL_STREAM_TUNE_FAILED, 0, "refused channel cycle keeps the received tone"},
+        {DSD_APP_CMD_SCAN_AVOID, RTL_STREAM_TUNE_OK, 1, "scan avoid by rigctl clears the received tone"},
+        {DSD_APP_CMD_SCAN_AVOID, RTL_STREAM_TUNE_FAILED, 0, "refused scan avoid step keeps the received tone"},
+    };
+
+    int rc = 0;
+    static dsd_opts opts;
+    static dsd_state state;
+    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+        init_test_context(&opts, &state);
+        opts.scanner_mode = 1;
+        opts.use_rigctl = 1;
+        opts.audio_in_type = AUDIO_IN_PULSE;
+        state.lcn_freq_count = 3;
+        state.trunk_lcn_freq[0] = 461012500L;
+        state.trunk_lcn_freq[1] = 462012500L;
+        state.trunk_lcn_freq[2] = 463012500L;
+        state.lcn_freq_roll = 1; /* row 0 is on air */
+        seed_received_tone(&state);
+        const uint32_t seeded = state.analog_rx.generation;
+        reset_io_control_tune_stub(cases[i].tune_result);
+        rc |= expect_int(cases[i].tag, dsd_app_command_action(cases[i].cmd), DSD_APP_COMMAND_SUBMIT_QUEUED);
+        rc |= expect_int(cases[i].tag, dsd_app_drain_cmds(&opts, &state), 1);
+        rc |= expect_int(cases[i].tag, g_io_control_tune_calls, 1);
+        rc |= expect_true(cases[i].tag, g_io_control_tune_freq == 462012500L);
+        if (cases[i].clears) {
+            rc |= expect_received_tone_cleared(cases[i].tag, &state, seeded);
+        } else {
+            rc |= expect_true(cases[i].tag, state.analog_rx.tone_state == DSD_ANALOG_TONE_STATE_LOCKED
+                                                && state.analog_rx.ctcss_tenths_hz == 1000
+                                                && state.analog_rx.generation == seeded);
+        }
+        freeState(&state);
+    }
+    reset_io_control_tune_stub(RTL_STREAM_TUNE_OK);
+    return rc;
+}
+
+/*
  * Tap-to-tune is gated on the live options at drain time, not on the frontend
  * hiding the affordance, and an accepted tap tears down call state so the
  * decoder re-acquires on the new frequency instead of aging out.
@@ -1659,6 +1784,58 @@ test_manual_tune_trunking_gate_and_reacquisition(void) {
 }
 #endif
 
+#ifdef USE_RADIO
+/*
+ * A frequency change from the menu or a spectrum tap is a new channel: the tone heard on
+ * the old one must not stay on screen (issue #522). Both commands clear it once the tune is
+ * accepted -- pending included, since the hardware is already moving -- and a refused tune
+ * leaves the receiver, and so its tone, where they were. These paths do not run the
+ * acquisition reset, so they clear it themselves rather than waiting for the tap to notice.
+ */
+static int
+test_retune_commands_clear_received_tone(void) {
+    static const struct {
+        int cmd;
+        int tune_result;
+        int clears;
+        const char* tag;
+    } cases[] = {
+        {DSD_APP_CMD_RTL_SET_FREQ, RTL_STREAM_TUNE_OK, 1, "rtl set freq applied"},
+        {DSD_APP_CMD_RTL_SET_FREQ, RTL_STREAM_TUNE_TIMEOUT, 1, "rtl set freq pending"},
+        {DSD_APP_CMD_RTL_SET_FREQ, RTL_STREAM_TUNE_FAILED, 0, "rtl set freq refused"},
+        {DSD_APP_CMD_MANUAL_TUNE, RTL_STREAM_TUNE_OK, 1, "manual tune applied"},
+        {DSD_APP_CMD_MANUAL_TUNE, RTL_STREAM_TUNE_TIMEOUT, 1, "manual tune pending"},
+        {DSD_APP_CMD_MANUAL_TUNE, RTL_STREAM_TUNE_FAILED, 0, "manual tune refused"},
+    };
+
+    int rc = 0;
+    static dsd_opts opts;
+    static dsd_state state;
+    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+        init_test_context(&opts, &state);
+        opts.trunk_enable = 0;
+        opts.scanner_mode = 0;
+        seed_received_tone(&state);
+        const uint32_t seeded = state.analog_rx.generation;
+        reset_io_control_tune_stub(cases[i].tune_result);
+        rc |=
+            expect_int(cases[i].tag, dsd_app_command_set_u32(cases[i].cmd, 853125000U), DSD_APP_COMMAND_SUBMIT_QUEUED);
+        rc |= expect_int(cases[i].tag, dsd_app_drain_cmds(&opts, &state), 1);
+        rc |= expect_int(cases[i].tag, g_io_control_tune_calls, 1);
+        if (cases[i].clears) {
+            rc |= expect_received_tone_cleared(cases[i].tag, &state, seeded);
+        } else {
+            rc |= expect_true(cases[i].tag, state.analog_rx.tone_state == DSD_ANALOG_TONE_STATE_LOCKED
+                                                && state.analog_rx.ctcss_tenths_hz == 1000
+                                                && state.analog_rx.generation == seeded);
+        }
+        freeState(&state);
+    }
+    reset_io_control_tune_stub(RTL_STREAM_TUNE_OK);
+    return rc;
+}
+#endif
+
 /*
  * Releasing the tuner is how a frontend says "stop moving this on your own"
  * without knowing which of the two owners is active — so it has to be an
@@ -1730,6 +1907,291 @@ test_tuner_release(void) {
                      DSD_APP_COMMAND_SUBMIT_REJECTED);
 
     reset_io_control_tune_stub(RTL_STREAM_TUNE_OK);
+    return rc;
+}
+#endif
+
+/* A decode-mode change is a boundary the received tone (issue #522) must not cross: it goes
+   through the acquisition reset, which forgets the tone. */
+static int
+test_decode_mode_change_clears_received_tone(void) {
+    int rc = 0;
+    static dsd_opts opts;
+    static dsd_state state;
+    init_decode_mode_context(&opts, &state);
+    seed_received_tone(&state);
+    const uint32_t seeded = state.analog_rx.generation;
+    rc |= expect_int("tone mode change queued",
+                     dsd_app_command_set_i32(DSD_APP_CMD_DECODE_MODE_SET, (int32_t)DSDCFG_MODE_DMR),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("tone mode change drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_received_tone_cleared("decode mode change clears the received tone", &state, seeded);
+    freeState(&state);
+    return rc;
+}
+
+/* A new audio input is a new receiver: the tone the old input carried goes when the input
+   switches (issue #522), not when the detector next loses it -- which, between two inputs at
+   the same rate, nothing else would tell it to. */
+static int
+test_input_switch_clears_received_tone(void) {
+    static const struct {
+        int cmd;
+        const char* value; /**< string payload, or NULL for none */
+        const char* tag;
+    } cases[] = {
+        {DSD_APP_CMD_INPUT_WAV_SET, "input.wav", "wav input clears the received tone"},
+        {DSD_APP_CMD_INPUT_SET_PULSE, NULL, "pulse input clears the received tone"},
+        {DSD_APP_CMD_PULSE_IN_SET, "source0", "named pulse source clears the received tone"},
+        {DSD_APP_CMD_UDP_INPUT_CFG, NULL, "udp input clears the received tone"},
+        {DSD_APP_CMD_INPUT_SYM_STREAM_SET, "symbols.f32", "symbol stream input clears the received tone"},
+    };
+
+    int rc = 0;
+    static dsd_opts opts;
+    static dsd_state state;
+    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+        init_test_context(&opts, &state);
+        seed_received_tone(&state);
+        const uint32_t seeded = state.analog_rx.generation;
+        int queued = 0;
+        if (cases[i].cmd == DSD_APP_CMD_UDP_INPUT_CFG) {
+            queued = post_host_port(cases[i].cmd, "0.0.0.0", 7355);
+        } else if (cases[i].value) {
+            queued = post_string(cases[i].cmd, cases[i].value);
+        } else {
+            queued = post_empty(cases[i].cmd);
+        }
+        rc |= expect_int(cases[i].tag, queued, DSD_APP_COMMAND_SUBMIT_QUEUED);
+        rc |= expect_int(cases[i].tag, dsd_app_drain_cmds(&opts, &state), 1);
+        rc |= expect_received_tone_cleared(cases[i].tag, &state, seeded);
+        freeState(&state);
+    }
+    return rc;
+}
+
+/*
+ * The input switches the table above cannot drive without a real file: replaying the last
+ * input as a symbol file, and stopping playback back onto a live input. Both clear the tone
+ * the old input carried (issue #522).
+ */
+static int
+test_playback_switches_clear_received_tone(void) {
+    int rc = 0;
+    static dsd_opts opts;
+    static dsd_state state;
+    char path[DSD_TEST_PATH_MAX];
+    const int fd = dsd_test_mkstemp(path, sizeof path, "dsd_rx_tone_replay");
+    if (fd < 0) {
+        return expect_true("replay temporary path available", 0);
+    }
+    dsd_close(fd);
+    static const unsigned char k_symbols[] = {0x01, 0x03, 0x00, 0x02};
+    rc |= write_file_bytes(path, k_symbols, sizeof k_symbols);
+
+    init_test_context(&opts, &state);
+    DSD_SNPRINTF(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", path);
+    seed_received_tone(&state);
+    uint32_t seeded = state.analog_rx.generation;
+    rc |= expect_int("replay last queued", post_empty(DSD_APP_CMD_REPLAY_LAST), DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("replay last drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("replay last switches to the symbol file", opts.audio_in_type, AUDIO_IN_SYMBOL_BIN);
+    rc |= expect_received_tone_cleared("replay last clears the received tone", &state, seeded);
+
+    /* Stopping that playback moves the input again: onto stdin when an output other than
+       Pulse is configured. */
+    opts.audio_out_type = 9;
+    seed_received_tone(&state);
+    seeded = state.analog_rx.generation;
+    rc |= expect_int("stop playback queued", post_empty(DSD_APP_CMD_STOP_PLAYBACK), DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("stop playback drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_true("stop playback closes the symbol file", opts.symbolfile == NULL);
+    rc |= expect_int("stop playback switches to stdin", opts.audio_in_type, AUDIO_IN_STDIN);
+    rc |= expect_received_tone_cleared("stop playback clears the received tone", &state, seeded);
+    freeState(&state);
+    remove(path);
+    return rc;
+}
+
+/*
+ * A config apply that moves the input is an input switch like the commands that make one,
+ * and clears the received tone (issue #522); one that changes an unrelated setting leaves the
+ * tone and its generation alone, so a settings change does not restart acquisition.
+ */
+static int
+test_config_apply_input_change_clears_received_tone(void) {
+    int rc = 0;
+    static dsd_opts opts;
+    static dsd_state state;
+
+    init_test_context(&opts, &state);
+    seed_received_tone(&state);
+    uint32_t seeded = state.analog_rx.generation;
+    dsdneoUserConfig cfg;
+    DSD_MEMSET(&cfg, 0, sizeof cfg);
+    cfg.has_alerts = 1;
+    cfg.call_alert_enabled = 1;
+    rc |= expect_true("unrelated config queued", dsd_app_command_apply_config(&cfg) > 0);
+    rc |= expect_int("unrelated config drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_true("unrelated config keeps the received tone",
+                      state.analog_rx.tone_state == DSD_ANALOG_TONE_STATE_LOCKED
+                          && state.analog_rx.ctcss_tenths_hz == 1000 && state.analog_rx.carrier_open == 1
+                          && state.analog_rx.generation == seeded);
+
+    DSD_MEMSET(&cfg, 0, sizeof cfg);
+    cfg.has_input = 1;
+    cfg.input_source = DSDCFG_INPUT_TCP;
+    DSD_SNPRINTF(cfg.tcp_host, sizeof cfg.tcp_host, "%s", "127.0.0.1");
+    cfg.tcp_port = 7355;
+    rc |= expect_true("input config queued", dsd_app_command_apply_config(&cfg) > 0);
+    rc |= expect_int("input config drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_str("input config moves the input", opts.audio_in_dev, "tcp:127.0.0.1:7355");
+    rc |= expect_received_tone_cleared("input config clears the received tone", &state, seeded);
+    freeState(&state);
+    return rc;
+}
+
+/* A config apply carrying only a [mode], drained on this thread as the decoder drains it. */
+static int
+submit_config_mode(dsd_opts* opts, dsd_state* state, dsdneoUserDecodeMode mode, const char* label) {
+    dsdneoUserConfig cfg;
+    DSD_MEMSET(&cfg, 0, sizeof cfg);
+    cfg.has_mode = 1;
+    cfg.decode_mode = mode;
+    int rc = expect_int(label, dsd_app_command_submit(DSD_APP_CMD_CONFIG_APPLY, &cfg, sizeof(cfg)),
+                        DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int(label, dsd_app_drain_cmds(opts, state), 1);
+    return rc;
+}
+
+/*
+ * A config apply that changes the decode mode is a decode-mode change like the command that
+ * makes one, and clears the received tone (issue #522). Out of the analog monitor, the row is
+ * hidden and no monitor block need arrive to forget the tone, so coming straight back would put
+ * the old reception's tone on screen again; into it, whatever the publication holds was heard
+ * before the change. Every runtime config apply carries the mode, so one that restates the
+ * mode the session is in keeps the tone and its generation.
+ */
+static int
+test_config_apply_mode_change_clears_received_tone(void) {
+    int rc = 0;
+    static dsd_opts opts;
+    static dsd_state state;
+    dsd_app_rx_tone view;
+
+    init_decode_mode_context(&opts, &state);
+    opts.audio_in_type = AUDIO_IN_PULSE;
+    rc |= expect_int("analog monitor set up",
+                     dsd_apply_decode_mode_preset(DSDCFG_MODE_ANALOG, DSD_DECODE_PRESET_PROFILE_CLI, &opts, &state), 0);
+    seed_received_tone(&state);
+    uint32_t seeded = state.analog_rx.generation;
+    rc |= submit_config_mode(&opts, &state, DSDCFG_MODE_ANALOG, "config restating analog");
+    rc |= expect_true("config restating analog keeps the received tone",
+                      state.analog_rx.tone_state == DSD_ANALOG_TONE_STATE_LOCKED
+                          && state.analog_rx.ctcss_tenths_hz == 1000 && state.analog_rx.carrier_open == 1
+                          && state.analog_rx.generation == seeded);
+    rc |= expect_int("received row shown in analog", dsd_app_rx_tone_view(&opts, &state, 0.0, &view), 1);
+    rc |= expect_str("received row shows the tone", view.text, "CTCSS 100.0 Hz");
+
+    rc |= submit_config_mode(&opts, &state, DSDCFG_MODE_DMR, "config to dmr");
+    rc |= expect_int("config to dmr leaves the analog monitor", opts.analog_only, 0);
+    rc |= expect_received_tone_cleared("config to dmr clears the received tone", &state, seeded);
+
+    /* Straight back, with no monitor block read in between. */
+    rc |= submit_config_mode(&opts, &state, DSDCFG_MODE_ANALOG, "config back to analog");
+    rc |= expect_int("config back to analog", opts.analog_only, 1);
+    rc |= expect_int("received row shown again", dsd_app_rx_tone_view(&opts, &state, 0.0, &view), 1);
+    rc |= expect_int("received row has no carrier yet", view.status, DSD_APP_RX_TONE_NO_CARRIER);
+    rc |= expect_true("received row does not bring the old tone back", view.ctcss_tenths_hz == 0);
+
+    /* Into the analog monitor, a tone the publication still holds goes too. */
+    rc |= expect_int("dmr set up",
+                     dsd_apply_decode_mode_preset(DSDCFG_MODE_DMR, DSD_DECODE_PRESET_PROFILE_CLI, &opts, &state), 0);
+    seed_received_tone(&state);
+    seeded = state.analog_rx.generation;
+    rc |= submit_config_mode(&opts, &state, DSDCFG_MODE_ANALOG, "config into analog");
+    rc |= expect_received_tone_cleared("config into analog clears the received tone", &state, seeded);
+    freeState(&state);
+    return rc;
+}
+
+#ifdef DSD_NEO_TEST_IO_CONTROL_WRAP
+/*
+ * Connecting TCP audio -- from the settings form with a host and port, or the menu's
+ * connect to the configured endpoint -- puts a new stream on the input, and the tone the old
+ * input carried goes with it (issue #522). That includes reconnecting TCP to TCP at the same
+ * rate, which moves no rate and no generation the tap could notice. A refused connection
+ * leaves the input, and so its tone, where they were.
+ */
+static int
+test_tcp_connect_clears_received_tone(void) {
+    static const struct {
+        int cmd;
+        int connect_rc;
+        int clears;
+        const char* tag;
+    } cases[] = {
+        {DSD_APP_CMD_TCP_CONNECT_AUDIO_CFG, 0, 1, "tcp connect to an endpoint clears the received tone"},
+        {DSD_APP_CMD_TCP_CONNECT_AUDIO_CFG, -1, 0, "refused tcp connect to an endpoint keeps the received tone"},
+        {DSD_APP_CMD_TCP_CONNECT_AUDIO, 0, 1, "tcp reconnect clears the received tone"},
+        {DSD_APP_CMD_TCP_CONNECT_AUDIO, -1, 0, "refused tcp reconnect keeps the received tone"},
+    };
+
+    int rc = 0;
+    static dsd_opts opts;
+    static dsd_state state;
+    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+        init_test_context(&opts, &state);
+        opts.audio_in_type = AUDIO_IN_TCP;
+        DSD_SNPRINTF(opts.tcp_hostname, sizeof opts.tcp_hostname, "%s", "127.0.0.1");
+        opts.tcp_portno = 7355;
+        seed_received_tone(&state);
+        const uint32_t seeded = state.analog_rx.generation;
+        arm_tcp_connect_stub(1, cases[i].connect_rc);
+        const int queued = cases[i].cmd == DSD_APP_CMD_TCP_CONNECT_AUDIO_CFG
+                               ? post_host_port(cases[i].cmd, "127.0.0.1", 7355)
+                               : post_empty(cases[i].cmd);
+        rc |= expect_int(cases[i].tag, queued, DSD_APP_COMMAND_SUBMIT_QUEUED);
+        rc |= expect_int(cases[i].tag, dsd_app_drain_cmds(&opts, &state), 1);
+        rc |= expect_int(cases[i].tag, g_tcp_connect_calls, 1);
+        rc |= expect_int(cases[i].tag, opts.audio_in_type, AUDIO_IN_TCP);
+        if (cases[i].clears) {
+            rc |= expect_received_tone_cleared(cases[i].tag, &state, seeded);
+        } else {
+            rc |= expect_true(cases[i].tag, state.analog_rx.tone_state == DSD_ANALOG_TONE_STATE_LOCKED
+                                                && state.analog_rx.ctcss_tenths_hz == 1000
+                                                && state.analog_rx.generation == seeded);
+        }
+        freeState(&state);
+    }
+    arm_tcp_connect_stub(0, 0);
+    return rc;
+}
+
+/*
+ * Stopping playback back onto live Pulse input clears the playback's tone even when Pulse
+ * then fails to open: the playback is gone either way, and its tone does not describe
+ * whatever the input becomes next (issue #522).
+ */
+static int
+test_stop_playback_pulse_failure_clears_received_tone(void) {
+    int rc = 0;
+    static dsd_opts opts;
+    static dsd_state state;
+    init_test_context(&opts, &state);
+    opts.audio_out_type = 0;
+    opts.audio_in_type = AUDIO_IN_WAV;
+    seed_received_tone(&state);
+    const uint32_t seeded = state.analog_rx.generation;
+    arm_open_audio_input_stub(1, -1);
+    rc |= expect_int("stop playback onto pulse queued", post_empty(DSD_APP_CMD_STOP_PLAYBACK),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("stop playback onto pulse drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("stop playback tried to open pulse", g_open_audio_input_calls, 1);
+    rc |= expect_int("stop playback switched to pulse", opts.audio_in_type, AUDIO_IN_PULSE);
+    rc |= expect_received_tone_cleared("failed pulse open still clears the received tone", &state, seeded);
+    arm_open_audio_input_stub(0, 0);
+    freeState(&state);
     return rc;
 }
 #endif
@@ -4403,19 +4865,6 @@ test_squelch_edit_keeps_live_acquisition(void) {
 }
 #endif
 
-/* A config apply carrying only a [mode], drained on this thread as the decoder drains it. */
-static int
-submit_config_mode(dsd_opts* opts, dsd_state* state, dsdneoUserDecodeMode mode, const char* label) {
-    dsdneoUserConfig cfg;
-    DSD_MEMSET(&cfg, 0, sizeof cfg);
-    cfg.has_mode = 1;
-    cfg.decode_mode = mode;
-    int rc = expect_int(label, dsd_app_command_submit(DSD_APP_CMD_CONFIG_APPLY, &cfg, sizeof(cfg)),
-                        DSD_APP_COMMAND_SUBMIT_QUEUED);
-    rc |= expect_int(label, dsd_app_drain_cmds(opts, state), 1);
-    return rc;
-}
-
 #ifdef DSD_NEO_TEST_AUDIO_ENSURE_WRAP
 /* The sink helpers a decode-mode change calls, recorded instead of run (every build, radio or not). */
 static int g_ensure_analog_calls;
@@ -4423,6 +4872,21 @@ static int g_ensure_digital_calls;
 /* The output layout in the options when the digital sink was last asked for: the one a stream opened there gets. */
 static int g_ensure_digital_channels;
 static int g_ensure_digital_rate;
+/*
+ * Calls that reached the sink helpers from a session not playing to the null output. Where the helpers are not wrapped
+ * (macOS, Windows, other compilers) each would open a host audio stream or socket, so every case that changes the
+ * decode mode starts from init_decode_mode_context(); main() checks this once every case has run.
+ */
+static int g_ensure_off_null_calls;
+
+static void
+note_ensure_output(const dsd_opts* opts, const char* helper) {
+    if (opts->audio_out_type != 9) {
+        g_ensure_off_null_calls++;
+        DSD_FPRINTF(stderr, "%s reached with audio_out_type %d; start the case from init_decode_mode_context()\n",
+                    helper, opts->audio_out_type);
+    }
+}
 
 // GNU ld --wrap entry points must keep the reserved __wrap_* symbol name.
 // NOLINTBEGIN(bugprone-reserved-identifier,cert-dcl37-c,cert-dcl51-cpp,misc-use-internal-linkage)
@@ -4431,13 +4895,14 @@ int __wrap_dsd_audio_ensure_digital_output(dsd_opts* opts);
 
 int
 __wrap_dsd_audio_ensure_analog_output(dsd_opts* opts) {
-    (void)opts;
+    note_ensure_output(opts, "dsd_audio_ensure_analog_output()");
     g_ensure_analog_calls++;
     return 0;
 }
 
 int
 __wrap_dsd_audio_ensure_digital_output(dsd_opts* opts) {
+    note_ensure_output(opts, "dsd_audio_ensure_digital_output()");
     g_ensure_digital_calls++;
     g_ensure_digital_channels = opts->pulse_digi_out_channels;
     g_ensure_digital_rate = opts->pulse_digi_rate_out;
@@ -5321,6 +5786,15 @@ main(void) {
     rc |= test_io_and_state_commands();
     rc |= test_compact_visualizer_toast();
     rc |= test_modulation_and_decode_mode_setters();
+    rc |= test_decode_mode_change_clears_received_tone();
+    rc |= test_input_switch_clears_received_tone();
+    rc |= test_playback_switches_clear_received_tone();
+    rc |= test_config_apply_input_change_clears_received_tone();
+    rc |= test_config_apply_mode_change_clears_received_tone();
+#ifdef DSD_NEO_TEST_IO_CONTROL_WRAP
+    rc |= test_tcp_connect_clears_received_tone();
+    rc |= test_stop_playback_pulse_failure_clears_received_tone();
+#endif
     rc |= test_trunk_set();
     rc |= test_scan_voice_gate_commands();
 #ifdef DSD_NEO_TEST_IO_CONTROL_WRAP
@@ -5330,12 +5804,17 @@ main(void) {
     rc |= test_skip_hands_p25_sm_back_to_cc();
     rc |= test_skip_command_reader_stress();
     rc |= test_channel_cycle_hands_p25_sm_back_to_cc();
+    rc |= test_manual_scan_steps_clear_received_tone();
 #ifdef USE_RADIO
     rc |= test_manual_tune_trunking_gate_and_reacquisition();
+    rc |= test_retune_commands_clear_received_tone();
 #endif
     rc |= test_tuner_release();
     rc |= test_scan_hold_avoid_commands();
     rc |= test_scan_row_keys_commands();
+#endif
+#ifdef DSD_NEO_TEST_AUDIO_ENSURE_WRAP
+    rc |= expect_int("every case reaching the sink helpers plays to the null output", g_ensure_off_null_calls, 0);
 #endif
     if (rc == 0) {
         printf("DSD_APP_CMD_QUEUE: OK\n");

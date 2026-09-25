@@ -470,6 +470,122 @@ Notes
   console diagnostics are suppressed.
 - P25p2 on a single frequency may require `-X` (below) if MAC_SIGNAL is missing.
 
+### Received tone (CTCSS) on the analog monitor
+
+While the passive analog monitor runs (`-fA`, which enables input monitoring), DSD-neo listens below the voice band
+for a CTCSS (PL) tone and reports what it hears. Detection only reports: it never mutes or gates audio, it needs no
+tone setting, and it runs with `-o null` too.
+
+- Supported tones: the standard 50-tone EIA/TIA table, 67.0-254.1 Hz (67.0, 69.3, 71.9 ... 250.3, 254.1). A tone is
+  confirmed only from estimates within 0.5 Hz of a table value, and a confirmed tone is held only while it stays within
+  0.8 Hz of it. 150.0 Hz is not supported and is never reported as 151.4 Hz; any other frequency within the sub-audible
+  band, such as 68.2 Hz, reads as no tone rather than as its nearest neighbour, and a confirmed tone that moves off the
+  table is dropped within about half a second. Near 0 dB in-band a noisy estimate can still confirm a neighbour for
+  200-260 ms before the same check drops it: over two hours of a continuous 0 dB carrier in offline seed sweeps, 68.2 Hz
+  read as 67.0 or 69.3 Hz about ten times an hour and 161.0 or 166.7 Hz as a neighbour two or three times an hour, while
+  150.0 Hz never did; from 3 dB up 68.2 and 161.0 Hz never did. DCS (DPL) signalling does not read as a CTCSS tone: in
+  the tests no DCS code did on a clean signal, nor did the codes nearest to a table tone at 10 or 0 dB in-band. Nor
+  does a steady tone in the voice band, such as a 2300 Hz test tone alone on a clean carrier: a tone is confirmed only
+  while it carries at least 1/100,000 (-50 dB) of the input's total power, far above what the decimating front end
+  folds down from the voice band and far below any real CTCSS tone.
+- Transmitter tone error: a tone slightly off its table value still reads as that value. Over 10,000 seeded starts
+  each, tones 0.2 and 0.35 Hz off were confirmed within 400 ms at 10 dB in-band tone-to-noise on all starts and on all
+  but 1 (the slowest at 331 and 424 ms), and 0.2 Hz off at 0 dB on 98 starts in 100 (the slowest at 553 ms). A tone
+  about 0.5 Hz or more off is confirmed late or not at all, and then reads `none`.
+- What is shown: the terminal's Call Info section carries an `Rx tone:` line (compact view too), and the Qt/Android
+  monitor a `RECEIVED TONE` row. Both read `CTCSS 100.0 Hz` once a tone is confirmed, `detecting` while a carrier is
+  being evaluated, `none` when the carrier carries no supported tone, and an em dash with no carrier (a hyphen on a
+  terminal without UTF-8). The log prints `Received tone: CTCSS 100.0 Hz` or `Received tone: none` whenever that
+  verdict changes.
+- Timing contract, in sample time, for a tone in noise at 0 dB in-band tone-to-noise (0-290 Hz) or better, on its table
+  value or up to 0.2 Hz off it (0.35 Hz at 10 dB): 95% of tones are confirmed within 400 ms of their start and 95% of
+  stops under a live carrier are dropped within 350 ms (the p95 targets). Single events have ceilings of 700 ms for a
+  start and 800 ms for a stop, above the slowest of the long-run sweeps, and the tests hold every timing row of their
+  fixed seeds within both. Over 1,000,000 seeded starts per condition at 0 dB, on the table value and 0.2 Hz off it, none
+  took longer than 700 ms (the slowest 651 ms), nor did any of 100,000 per condition at 10 dB (the slowest 452 ms). No
+  stop of 800,000 at 0 and 10 dB took longer than 800 ms (the slowest 738 ms). Lock time in noise has no absolute bound:
+  now and then noise keeps the usual 250 ms measurement from confirming a tone for well over half a second (on its own
+  it took longer than 700 ms on about one start in 125,000 at 0 dB, the slowest 1.1 s), so while no tone is confirmed
+  the detector also measures the last 400 and 600 ms, which average that noise away. Speech louder than the tone is
+  outside the contract (below).
+- Timing measured, in sample time, over 10,000 seeded starts per condition: a tone at 10 dB in-band is confirmed within
+  400 ms of its start on every start (p95 255 ms, the slowest at 331 ms), and at 0 dB on all but about 3 starts in
+  1,000 (p95 341 ms, the slowest at 447 ms). Under transmitted speech it can take longer, because a
+  transmitter's voice high-pass still lets a high voice's fundamental leak below 300 Hz in bursts: with speech 10 dB
+  louder than the tone, over 50,000 seeded starts 95% were confirmed within 301 ms, 1.4% took longer than 400 ms and
+  0.16% longer than 700 ms (the slowest 1.3 s), and twice a voice holding 254.1 Hz read as that tone for 150-250 ms,
+  once in place of the real tone. Over 100 minutes of that speech a confirmed tone at the top of the table (250.3 or
+  254.1 Hz) was lost four times, reading `none` for under a second before it was confirmed again. A tone that stops
+  while the carrier stays up is dropped within 350 ms on 98 stops in 100 at 0 and 10 dB alike (typically after
+  200-315 ms; the slowest of 8,000 took 515 ms). When the transmitter sends a reverse burst (the end-of-message phase
+  flip: 180 degrees, or 120 or 240 degrees on some radios) at 10 dB or more in-band, the tone is dropped within 150 ms:
+  all of 40,000 bursts at 180 degrees (the slowest took 123 ms), and all but 16 and 14 of 40,000 each at 120 and 240
+  degrees. Near 0 dB about one 180 degree burst in fourteen, and one 120 or 240 degree burst in six, is caught late or
+  missed. A missed burst leaves the tone to the carrier drop that follows, which ends it within the 200 ms hangover. A
+  carrier with no tone reads `detecting` until 500 ms of it have been evaluated and `none` by the next 50 ms step; a
+  tone that starts after that, such as one a repeater adds after its kerchunk, is still confirmed within 400 ms of its
+  own start. A tone that stops under a carrier that keeps dropping out, each time for less than the 200 ms hangover
+  (squelch chatter on the noise after a transmission, say), is still dropped, though later than under a steady
+  carrier: over 11,264 seeded stops under such carriers (openings of 1 to 60 ms between dropouts of 10 to 199 ms), 95%
+  were dropped within 465 ms and all within 800 ms (the slowest 693 ms).
+- The received tone is forgotten when the receiver moves or the session changes: a frequency set from a frontend or a
+  spectrum tap, any other retune the RTL stream or the tuning hooks report (UDP retune, rigctl-driven tuning), a
+  change of the analog channel filter the RTL front end runs (its width, or whether it runs), a
+  `-Y` scan step (including one that failed after rigctl had already moved the radio), a manual channel cycle or scan
+  avoid, a scan row or trunk-scan target change, a decode-mode change, an input switch (Pulse, WAV, UDP, TCP, RTL or
+  symbol input, replay and stop-playback, from a frontend or a config apply, and the switch to live Pulse input when
+  a WAV file ends), a dropped TCP audio connection, whether DSD-neo reconnects it or falls back to live Pulse input,
+  stop, 200 ms without carrier, and an input that stops delivering audio for about half a second: a stdin, UDP or TCP
+  stream (see below), or a live radio stream whose source stopped, such as an `rtl_tcp` server that went away while
+  DSD-neo retries the connection, or a stalled device. After half a second of such an outage the row shows no carrier,
+  and when the stream returns it starts a new reception; IQ replay never counts as paused, however slowly it is read.
+  The frequent no-carrier cleanup between syncs does not clear it. On Pulse, stdin, UDP and TCP input such a boundary
+  also skips the audio the input had already queued, which the old channel went on filling while a rigctl retune held
+  the decoder, also when the boundary came in a digital mode and detection starts with the switch to the analog
+  monitor: detection hears nothing until a read shows the input ran dry (20 ms or more of it that took at least half as
+  long to arrive, which a queue the decoder drains at its own speed never does, not counting time spent playing the
+  monitor audio, which on stdin input holds the decoder at real-time pace), and not that read either.
+  With nothing queued that costs the new channel two 20 ms reads, and no more than 2 s of input is ever skipped, so
+  stdin fed from a file faster than real time is heard again after that. Files and RTL-family streams are not skipped:
+  a file holds no other channel, and an RTL-family stream clears its own output at a retune.
+- Where it runs: analog-only decoding with input monitoring, on PCM inputs (TCP, UDP, Pulse, WAV, stdin) or on an
+  RTL-family stream that outputs monitor audio. It does not run for the `-8` source monitor during digital decoding, for
+  EDACS analog voice, or on symbol-file input, and the `Rx tone:` line and `RECEIVED TONE` row are shown exactly while
+  it runs. The front end needs an input rate from 2400 Hz up to 320 kHz; outside that range detection logs that it is
+  inactive, once each time the input moves to such a rate, and the row is left out. Detection reads the input at least
+  every 20 ms of it, whatever the length of the blocks the monitor handles audio in (on PCM input 960 samples at the
+  rate the monitor runs at: 20 ms at 48 kHz, which 8, 9.6, 12, 16 and 24 kHz input is brought up to first, but 384 ms
+  at 2500 Hz), so at every supported rate the verdict the decoder publishes trails the times above by at most two such
+  reads. The frontends show it at their next refresh: the decoder hands them a new snapshot at most every 50 ms while it
+  hunts for sync, the terminal redraws at up to about 15 frames a second, and the Qt/Android monitor polls every 250 ms
+  by default, so the screen can trail the published verdict by a few hundred milliseconds more. On RTL input, detection
+  hears the monitor audio after the RTL monitor gain (`vol`), so a gain of 0 leaves it nothing to hear and it reads no
+  carrier; to silence the monitor, mute the output instead.
+- Externally demodulated audio (PCM inputs): the tone has to survive the producer. Feed the discriminator or flat audio
+  with nothing below 300 Hz removed -- no voice high-pass, no de-emphasis that rolls off the low end -- and prefer
+  48 kHz. Sound cards and receivers that high-pass their audio output remove CTCSS before DSD-neo sees it. PCM carrier
+  detection only rejects digital silence, so hum on the audio path is heard too, between transmissions as well: a hum
+  that dominates the sub-audible band on a table tone reads as that tone. Power-supply ripple in a 50 Hz mains region is
+  exactly that -- a 100 Hz hum that reads `CTCSS 100.0 Hz` -- so keep ripple and ground loops off the audio feed. A
+  producer on stdin, UDP or TCP that squelches by sending nothing at all (`rtl_fm` without `-E pad`, a UDP sender that
+  stops between transmissions) pauses the stream instead: once nothing has arrived for about half a second, the row
+  shows no carrier, and the audio that follows starts a new reception that inherits nothing from the last one (the read
+  that spans the pause, up to 20 ms of audio from either side of it, is not used). Padded output (`rtl_fm -E pad`) keeps
+  samples flowing, and the 200 ms hangover then applies as on any other input. DSD-neo does not see a retune the
+  producer makes on its own, such as `rtl_fm` scanning several frequencies: a hop that leaves a gap shorter than half a
+  second (with padding, shorter than the 200 ms hangover) is not a new reception, so the previous channel's tone can
+  still show on the next channel for a few hundred milliseconds, until the detector drops it as it drops a tone that
+  stops (timing above). The same goes for audio a source still holds when DSD-neo moves it through rigctl -- in the
+  producer's own pipeline, or captured by the sound server but not yet handed over -- which arrives after the retune
+  like the new channel's. In offline runs of a clean tone followed by a carrier with no tone, about a tenth of a second
+  of the old channel's tone at the start of a reception was enough to show it again (on most seeds from 110 ms, on
+  every seed from 180 ms), for up to half a second.
+- Talk-off: a voice whose fundamental holds within 0.5 Hz of a table tone for a third of a second, with weak harmonics,
+  is indistinguishable from that tone in the time allowed and can be reported briefly. It is rare on transmitted voice
+  (which the transmitter high-passes at 300 Hz) and most likely near the top of the table. In offline seed sweeps, two
+  hours of unfiltered speech with no tone locked a tone three times (233.6, 241.8 and 254.1 Hz), and the same speech
+  high-passed as a transmitter does once (254.1 Hz).
+
 ## Mode Tweaks & Advanced
 
 - Inversions: `-xx` X2 non‑inverted, `-xr` DMR inverted, `-xd` dPMR inverted, `-xz` M17 inverted

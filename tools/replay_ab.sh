@@ -140,15 +140,17 @@ summary="$out/summary.tsv"
 analog_keys=(tone_snr_db inband_db clip audible_ms first_audible_ms rms_dbfs)
 probe_keys=(hz dbfs dbc)
 printf 'variant\tcase\trep\terrs\tvoice\tsync' > "$summary"
-printf '\t%s' "${analog_keys[@]}" probe_hz probe_dbfs probe_dbc tone tone_lock_ms rc off_path >> "$summary"
+printf '\t%s' "${analog_keys[@]}" probe_hz probe_dbfs probe_dbc \
+  tone tone_lock_ms tone_lock_pct rc off_path >> "$summary"
 printf '\n' >> "$summary"
 
 # Value of key=value on the last (or, with which=first, the first) line of the log
 # that starts with prefix, or NA. The line is split on spaces, so no value may
-# contain one. tone= (a label such as 151.4 or D023N) and tone_lock_ms= (stream
-# time of the first lock) follow the contract in tests/engine/analog_replay.c's
-# file comment and read NA until a tone detector publishes a received tone, like
-# every analog column of a digital run.
+# contain one. tone= (a label such as 151.4 or D023N), tone_lock_ms= (stream
+# time of the first lock) and tone_lock_pct= (share of the delivered audio the
+# tone was locked for) follow the contract in tests/engine/analog_replay.c's file
+# comment; a host that predates a field reads NA, like every analog column of a
+# digital run.
 line_value() {
   local log=$1 prefix=$2 key=$3 which=${4:-last} value pick=(tail -n 1)
   [ "$which" = first ] && pick=(head -n 1)
@@ -187,7 +189,9 @@ for r in $(seq 1 "$reps"); do
     for key in "${probe_keys[@]}"; do
       analog+=("$(line_value "$log" 'ANALOG PROBE:' "$key" first)")
     done
-    analog+=("$(line_value "$log" 'ANALOG METRIC:' tone)" "$(line_value "$log" 'ANALOG METRIC:' tone_lock_ms)")
+    for key in tone tone_lock_ms tone_lock_pct; do
+      analog+=("$(line_value "$log" 'ANALOG METRIC:' "$key")")
+    done
     # off_path is 1 when the analog replay host warned that the RTL front end left
     # the monitor path and delivered CQPSK symbols (the -fA modulation auto-switch):
     # such a repeat measures the switch, not the build, and is not deterministic.

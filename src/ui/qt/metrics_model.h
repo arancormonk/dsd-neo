@@ -167,6 +167,17 @@ class MetricsModel : public QObject {
     Q_PROPERTY(int scanVisitMs READ scanVisitMs NOTIFY scanTimingChanged)
     Q_PROPERTY(bool scanVisitLive READ scanVisitLive NOTIFY scanTimingChanged)
     Q_PROPERTY(int scanVisitRemainingDs READ scanVisitRemainingDs NOTIFY scanTimingChanged)
+    /* #522: the sub-audible tone the analog FM monitor hears, from the shared app-control
+       view, and the configured tone policy beside it -- never derived from each other. */
+    Q_PROPERTY(bool rxToneVisible READ rxToneVisible NOTIFY rxToneChanged)
+    Q_PROPERTY(int rxToneStatus READ rxToneStatus NOTIFY rxToneChanged)
+    Q_PROPERTY(QString rxToneText READ rxToneText NOTIFY rxToneChanged)
+    Q_PROPERTY(int rxToneKind READ rxToneKind NOTIFY rxToneChanged)
+    Q_PROPERTY(int rxToneTenthsHz READ rxToneTenthsHz NOTIFY rxToneChanged)
+    Q_PROPERTY(bool rxToneCarrier READ rxToneCarrier NOTIFY rxToneChanged)
+    /* Its own signal: configuration, not something received, so a received-tone change never
+       announces it and a policy change (#527) never announces the received tone. */
+    Q_PROPERTY(QString rxToneConfiguredText READ rxToneConfiguredText NOTIFY rxToneConfiguredTextChanged)
     Q_PROPERTY(bool syncedHere READ syncedHere NOTIFY tunerChanged)
     Q_PROPERTY(QString syncLabel READ syncLabel NOTIFY tunerChanged)
     Q_PROPERTY(bool trunkableSync READ trunkableSync NOTIFY tunerChanged)
@@ -925,6 +936,58 @@ class MetricsModel : public QObject {
     }
 
     /**
+     * @brief Whether the received-tone row belongs on screen (#522).
+     *
+     * True while the analog FM monitor runs, which is when detection runs. Decided in
+     * app-control, so this row and the terminal's Call Info line appear together.
+     */
+    bool
+    rxToneVisible() const {
+        return m_view.rx_tone_visible;
+    }
+
+    /** @brief DSD_APP_RX_TONE_*: hidden, no carrier, detecting, locked or none. */
+    int
+    rxToneStatus() const {
+        return m_view.rx_tone_status;
+    }
+
+    /** @brief "CTCSS 100.0 Hz", "detecting", "none" or an em dash; empty when hidden. */
+    const QString&
+    rxToneText() const {
+        return m_view.rx_tone_text;
+    }
+
+    /** @brief dsd_analog_tone_kind of a locked tone, 0 otherwise. */
+    int
+    rxToneKind() const {
+        return m_view.rx_tone_kind;
+    }
+
+    /** @brief The locked CTCSS tone in tenths of a hertz, 0 otherwise. */
+    int
+    rxToneTenthsHz() const {
+        return m_view.rx_tone_tenths_hz;
+    }
+
+    /** @brief A carrier is open (held through the decoder's short hangover). */
+    bool
+    rxToneCarrier() const {
+        return m_view.rx_tone_carrier;
+    }
+
+    /**
+     * @brief The configured tone policy, kept apart from what is received.
+     *
+     * Reads "off" until tone filtering exists (#527). The monitor's reserved Tone filter row
+     * binds to this, and nothing about the received tone ever changes it.
+     */
+    const QString&
+    rxToneConfiguredText() const {
+        return m_view.rx_tone_configured_text;
+    }
+
+    /**
      * @brief The engine's transient command acknowledgement, empty when none.
      *
      * Commands only enqueue a request; this is the engine saying what actually
@@ -1115,6 +1178,8 @@ class MetricsModel : public QObject {
     void leadSlotChanged();
     void controlChanged();
     void scanTimingChanged();
+    void rxToneChanged();
+    void rxToneConfiguredTextChanged();
     void uiMessageChanged();
 
   private:
@@ -1262,6 +1327,14 @@ class MetricsModel : public QObject {
         bool scan_timing_visible = false;
         bool scan_timer_live = false;
         bool scan_visit_live = false;
+        /* #522: the received tone and, separately, the configured policy. */
+        QString rx_tone_text;
+        QString rx_tone_configured_text;
+        int rx_tone_status = 0;
+        int rx_tone_kind = 0;
+        int rx_tone_tenths_hz = 0;
+        bool rx_tone_visible = false;
+        bool rx_tone_carrier = false;
 
         /* Exact comparison is right for the two doubles: they are carried through
          * unmodified from the metrics boundary, so "unchanged" means the identical
@@ -1298,6 +1371,14 @@ class MetricsModel : public QObject {
                    && scan_hang_ms == other.scan_hang_ms && scan_visit_ms == other.scan_visit_ms
                    && scan_visit_live == other.scan_visit_live
                    && scan_visit_remaining_ds == other.scan_visit_remaining_ds;
+        }
+
+        /* The received group only; the configured text has its own signal and comparison. */
+        bool
+        rxToneEquals(const View& other) const {
+            return rx_tone_visible == other.rx_tone_visible && rx_tone_status == other.rx_tone_status
+                   && rx_tone_text == other.rx_tone_text && rx_tone_kind == other.rx_tone_kind
+                   && rx_tone_tenths_hz == other.rx_tone_tenths_hz && rx_tone_carrier == other.rx_tone_carrier;
         }
 
         bool
@@ -1367,6 +1448,8 @@ class MetricsModel : public QObject {
     static void fillScanControlView(View& next, const dsd_opts* opts_snapshot, const dsd_state* snapshot);
     /** @brief Why the rotation is staying on this row and how long is left (#508). */
     void fillScanTimingView(View& next, const dsd_opts* opts_snapshot, const dsd_state* snapshot, double now_m) const;
+    /** @brief The received sub-audible tone and the configured tone policy (#522). */
+    void fillRxToneView(View& next, const dsd_opts* opts_snapshot, const dsd_state* snapshot, double now_m) const;
 
   public:
 #ifdef DSD_NEO_TEST_HOOKS

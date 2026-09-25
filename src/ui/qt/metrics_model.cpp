@@ -26,6 +26,7 @@
 #include <QtGlobal>
 #include <dsd-neo/app_control/call_view.h>
 #include <dsd-neo/app_control/frontend.h>
+#include <dsd-neo/app_control/rx_tone_view.h>
 #include <dsd-neo/app_control/scan_timing_view.h>
 #include <dsd-neo/app_control/squelch_view.h>
 #include <dsd-neo/core/audio.h>
@@ -301,6 +302,11 @@ MetricsModel::fillSiteView(View& next, const dsd_state* snapshot) const {
 }
 
 MetricsModel::MetricsModel(QObject* parent) : QObject(parent) {
+    /* The configured tone policy is configuration, so it reads as configured -- "off" until
+       #527 -- before the first frame too; the app-control view owns that text. */
+    dsd_app_rx_tone policy;
+    (void)dsd_app_rx_tone_view(nullptr, nullptr, 0.0, &policy);
+    m_view.rx_tone_configured_text = QString::fromUtf8(policy.configured_text);
     m_messageTimer.setSingleShot(true);
     connect(&m_messageTimer, &QTimer::timeout, this, [this]() {
         View next = m_view;
@@ -315,7 +321,8 @@ bool
 MetricsModel::View::operator==(const View& other) const {
     return site == other.site && qualityEquals(other) && tunerEquals(other) && slot_call[0] == other.slot_call[0]
            && slot_call[1] == other.slot_call[1] && lead_slot == other.lead_slot && controlEquals(other)
-           && scanTimingEquals(other) && ui_message == other.ui_message;
+           && scanTimingEquals(other) && rxToneEquals(other) && rx_tone_configured_text == other.rx_tone_configured_text
+           && ui_message == other.ui_message;
 }
 
 void
@@ -331,6 +338,8 @@ MetricsModel::publish(const View& next) {
     const bool leadMoved = next.lead_slot != m_view.lead_slot;
     const bool controlMoved = !next.controlEquals(m_view);
     const bool scanTimingMoved = !next.scanTimingEquals(m_view);
+    const bool rxToneMoved = !next.rxToneEquals(m_view);
+    const bool rxToneConfiguredMoved = next.rx_tone_configured_text != m_view.rx_tone_configured_text;
     const bool messageMoved = next.ui_message != m_view.ui_message;
     m_view = next;
     if (siteMoved) {
@@ -357,6 +366,12 @@ MetricsModel::publish(const View& next) {
     if (scanTimingMoved) {
         Q_EMIT scanTimingChanged();
     }
+    if (rxToneMoved) {
+        Q_EMIT rxToneChanged();
+    }
+    if (rxToneConfiguredMoved) {
+        Q_EMIT rxToneConfiguredTextChanged();
+    }
     if (messageMoved) {
         Q_EMIT uiMessageChanged();
     }
@@ -370,7 +385,10 @@ MetricsModel::clear() {
      * session's answer to "is there anything here". */
     m_sync_type_here = DSD_SYNC_NONE;
     m_sync_seen_m = 0.0;
-    publish(View());
+    View cleared;
+    /* The configured tone policy is not session state: stopping leaves it as configured. */
+    cleared.rx_tone_configured_text = m_view.rx_tone_configured_text;
+    publish(cleared);
 }
 
 /**
@@ -450,6 +468,35 @@ MetricsModel::fillScanTimingView(View& next, const dsd_opts* opts_snapshot, cons
     next.scan_visit_ms = view.show_visit != 0U ? static_cast<int>(view.visit_ms) : 0;
     next.scan_visit_live = view.visit_live != 0U;
     next.scan_visit_remaining_ds = static_cast<int>(view.visit_remaining_ms / 100U);
+}
+
+/**
+ * @brief The received sub-audible tone, and the configured policy beside it (#522).
+ *
+ * The phrase and the visibility rule are app-control's (rx_tone_view), shared with the
+ * terminal. Only the words are translated here; a tone value is a number and stays as the
+ * view wrote it. The configured text comes from its own field of the view and nothing
+ * received is ever copied into it. @p now_m is the frame's one clock reading, which ages the
+ * publication of an input that has gone quiet.
+ */
+void
+MetricsModel::fillRxToneView(View& next, const dsd_opts* opts_snapshot, const dsd_state* snapshot, double now_m) const {
+    dsd_app_rx_tone view;
+    const int shown = dsd_app_rx_tone_view(opts_snapshot, snapshot, now_m, &view);
+    next.rx_tone_configured_text = QString::fromUtf8(view.configured_text);
+    if (shown != 1) {
+        return;
+    }
+    next.rx_tone_visible = view.visible != 0U;
+    next.rx_tone_status = view.status;
+    next.rx_tone_kind = view.kind;
+    next.rx_tone_tenths_hz = view.ctcss_tenths_hz;
+    next.rx_tone_carrier = view.carrier_open != 0U;
+    switch (view.status) {
+        case DSD_APP_RX_TONE_DETECTING: next.rx_tone_text = tr("detecting"); break;
+        case DSD_APP_RX_TONE_NONE: next.rx_tone_text = tr("none"); break;
+        default: next.rx_tone_text = QString::fromUtf8(view.text); break;
+    }
 }
 
 namespace {
@@ -888,6 +935,7 @@ MetricsModel::refresh(const dsd_opts* opts_snapshot, const dsd_state* snapshot) 
      * clock read: one frame has to describe one instant, or the countdown and the
      * call durations beside it would come from moments either side of the poll. */
     fillScanTimingView(next, opts_snapshot, snapshot, now_m);
+    fillRxToneView(next, opts_snapshot, snapshot, now_m);
 
     /* The engine's command acknowledgement, shown until its own expiry stamp. The
      * timer takes an expired message down without waiting for another publish —

@@ -11,7 +11,9 @@
 #include <dsd-neo/core/key_set.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/synctype_ids.h>
+#include <dsd-neo/dsp/analog_rx.h>
 #include <dsd-neo/dsp/frame_sync.h>
 #include <dsd-neo/engine/channel_scan.h>
 #include <dsd-neo/engine/frame_processing.h>
@@ -33,6 +35,10 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <time.h>
+
+#ifndef M_PI
+#define M_PI 3.14159265358979323846
+#endif
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
@@ -73,7 +79,8 @@ p25_tick_guard_is_held(void) {
 
 #endif
 
-#if defined(USE_RADIO) && defined(DSD_NEO_TEST_RTL_WRAP)
+#ifdef DSD_NEO_TEST_RTL_WRAP
+#ifdef USE_RADIO
 static int g_p25_tick_guard_held_during_tune = 0;
 static int g_rtl_tune_calls = 0;
 static uint32_t g_rtl_tune_freq = 0;
@@ -119,9 +126,19 @@ reset_rtl_profile_fakes(void) {
     g_check_p25_tick_guard = 0;
     g_p25_tick_guard_held_during_tune = 0;
 }
+#endif
+
+// Rigctl needs a success path here, not just the socket-failure one the rest of the file uses:
+// the interesting cases are a hop whose rigctl leg lands and whose RTL leg then does not, and a
+// rigctl hop on PCM input, which radio-off builds have too. Failing by default is what the real
+// call does on the invalid socket every other case configures.
+static int g_rigctl_setfreq_ok = 0;
+static int g_rigctl_setfreq_calls = 0;
+static long int g_rigctl_setfreq_freq = 0;
 
 // GNU ld --wrap entry points must keep the reserved __wrap_* symbol names.
 // NOLINTBEGIN(bugprone-reserved-identifier, cert-dcl37-c, cert-dcl51-cpp, misc-use-internal-linkage)
+#ifdef USE_RADIO
 uint32_t
 __wrap_rtl_stream_output_rate(const RtlSdrContext* ctx) {
     (void)ctx;
@@ -240,12 +257,7 @@ __wrap_rtl_stream_request_fsk_reacquire(void) {
     g_rtl_fsk_reacquire_requests++;
     return 1;
 }
-
-// Rigctl needs a success path here, not just the socket-failure one the rest of the file uses:
-// the interesting case is a hop whose rigctl leg lands and whose RTL leg then does not.
-static int g_rigctl_setfreq_ok = 0;
-static int g_rigctl_setfreq_calls = 0;
-static long int g_rigctl_setfreq_freq = 0;
+#endif
 
 bool
 __wrap_SetFreq(dsd_socket_t sockfd, long int freq) {
@@ -632,6 +644,167 @@ test_visit_cap_scanner_hops(void) {
     state->rtl_ctx = NULL;
     free_test_runtime(opts, state);
     dsd_trunk_tuning_requests_reset();
+    return rc;
+}
+#endif
+
+#ifdef DSD_NEO_TEST_RTL_WRAP
+/* A tone the analog tap published before the step. Every case that uses these helpers needs
+   the RTL wrap, so they share its guard; without it they would be unused functions. */
+static void
+seed_rx_tone_publication(dsd_state* state, int tenths) {
+    state->analog_rx.carrier_open = 1;
+    state->analog_rx.tone_state = DSD_ANALOG_TONE_STATE_LOCKED;
+    state->analog_rx.tone_kind = DSD_ANALOG_TONE_KIND_CTCSS;
+    state->analog_rx.ctcss_tenths_hz = tenths;
+}
+
+static int
+rx_tone_publication_cleared(const dsd_state* state, uint32_t seeded_generation) {
+    return state->analog_rx.tone_state == DSD_ANALOG_TONE_STATE_INACTIVE
+           && state->analog_rx.tone_kind == DSD_ANALOG_TONE_KIND_NONE && state->analog_rx.ctcss_tenths_hz == 0
+           && state->analog_rx.carrier_open == 0 && state->analog_rx.generation != seeded_generation;
+}
+
+/* The legacy -Y step by rigctl on PCM input, the one radio-off builds have: a hop that lands
+   clears the received tone (issue #522), and a refused one leaves the receiver -- and so its
+   tone -- where they were. */
+static int
+test_rx_tone_rigctl_scan_step(void) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    int rc = 0;
+    opts->scanner_mode = 1;
+    opts->audio_in_type = AUDIO_IN_WAV;
+    opts->use_rigctl = 1;
+    opts->rigctl_sockfd = DSD_INVALID_SOCKET;
+    opts->setmod_bw = 0;
+    opts->trunk_hangtime = 1;
+    // Frequencies no other case uses: engine.c caches the last rigctl tune across cases.
+    state->trunk_lcn_freq[0] = 951012500;
+    state->trunk_lcn_freq[1] = 952012500;
+    state->lcn_freq_count = 2;
+    state->lcn_freq_roll = 0;
+    seed_rx_tone_publication(state, 1318);
+    const uint32_t generation = state->analog_rx.generation;
+
+    g_rigctl_setfreq_ok = 0;
+    state->last_cc_sync_time = time(NULL) - 11;
+    noCarrier(opts, state);
+    rc |= expect_true("rigctl-step-refused-keeps-rx-tone",
+                      state->lcn_freq_roll == 0 && state->analog_rx.tone_state == DSD_ANALOG_TONE_STATE_LOCKED
+                          && state->analog_rx.ctcss_tenths_hz == 1318 && state->analog_rx.generation == generation);
+
+    g_rigctl_setfreq_ok = 1;
+    g_rigctl_setfreq_calls = 0;
+    state->last_cc_sync_time = time(NULL) - 11;
+    noCarrier(opts, state);
+    rc |= expect_true("rigctl-step-moved",
+                      g_rigctl_setfreq_calls > 0 && g_rigctl_setfreq_freq == 951012500 && state->lcn_freq_roll == 1);
+    rc |= expect_true("rigctl-step-clears-rx-tone", rx_tone_publication_cleared(state, generation));
+    g_rigctl_setfreq_ok = 0;
+    free_test_runtime(opts, state);
+    return rc;
+}
+#endif
+
+/*
+ * The received tone (issue #522) has to survive noCarrier(): in analog mode it runs on every
+ * no-sync pass, about every 375 ms, and a reset there would keep any tone from ever locking.
+ * Locks one through the real tap, then checks the publication and the detector behind it
+ * come out of repeated no-carrier passes untouched.
+ */
+static void
+feed_rx_tone(dsd_opts* opts, dsd_state* state, int blocks) {
+    static double phase = 0.0;
+    float block[960];
+    for (int b = 0; b < blocks; b++) {
+        for (int i = 0; i < 960; i++) {
+            block[i] = (float)(3000.0 * cos(phase));
+            phase += 2.0 * M_PI * 100.0 / 48000.0;
+        }
+        dsd_analog_rx_tap(opts, state, block, 960U);
+    }
+}
+
+static int
+test_rx_tone_survives_no_carrier(void) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    int rc = 0;
+    opts->scanner_mode = 0;
+    opts->trunk_enable = 0;
+    opts->audio_in_type = AUDIO_IN_WAV;
+    opts->wav_sample_rate = 48000;
+    opts->analog_only = 1;
+    opts->monitor_input_audio = 1;
+    opts->rtl_pwr = 1.0;
+    opts->rtl_squelch_level = 0.0;
+    feed_rx_tone(opts, state, 30);
+    rc |= expect_true("rx-tone-locked-before-no-carrier", state->analog_rx.tone_state == DSD_ANALOG_TONE_STATE_LOCKED
+                                                              && state->analog_rx.ctcss_tenths_hz == 1000);
+    const uint32_t generation = state->analog_rx.generation;
+    const void* detector = dsd_state_ext_get_const(state, DSD_STATE_EXT_DSP_ANALOG_RX);
+    for (int pass = 0; pass < 3; pass++) {
+        noCarrier(opts, state);
+        dsd_engine_reset_no_carrier_state(opts, state);
+    }
+    rc |= expect_true("rx-tone-survives-no-carrier", state->analog_rx.tone_state == DSD_ANALOG_TONE_STATE_LOCKED
+                                                         && state->analog_rx.ctcss_tenths_hz == 1000
+                                                         && state->analog_rx.generation == generation);
+    rc |= expect_true("rx-tone-detector-survives-no-carrier",
+                      detector != NULL && dsd_state_ext_get_const(state, DSD_STATE_EXT_DSP_ANALOG_RX) == detector);
+    /* And the next block carries on from the same lock rather than starting over. */
+    feed_rx_tone(opts, state, 1);
+    rc |= expect_true("rx-tone-continues-after-no-carrier", state->analog_rx.tone_state == DSD_ANALOG_TONE_STATE_LOCKED
+                                                                && state->analog_rx.generation == generation);
+    free_test_runtime(opts, state);
+    return rc;
+}
+
+#if defined(USE_RADIO) && defined(DSD_NEO_TEST_RTL_WRAP)
+/* The legacy untyped -Y step never runs the acquisition reset the typed rows do, so it
+   clears the received tone itself: a new channel must not inherit the old one's. */
+static int
+test_rx_tone_resets_on_legacy_scan_step(void) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    int rc = 0;
+    reset_rtl_profile_fakes();
+    opts->scanner_mode = 1;
+    opts->audio_in_type = AUDIO_IN_RTL;
+    opts->trunk_hangtime = 1;
+    state->rtl_ctx = (RtlSdrContext*)state;
+    state->trunk_lcn_freq[0] = 946012500;
+    state->trunk_lcn_freq[1] = 947012500;
+    state->lcn_freq_count = 2;
+    state->lcn_freq_roll = 0;
+    g_rtl_tune_result = RTL_STREAM_TUNE_OK;
+
+    /* A fresh hangtime: noCarrier() runs but does not step, and the tone stays. */
+    seed_rx_tone_publication(state, 1318);
+    const uint32_t generation = state->analog_rx.generation;
+    state->last_cc_sync_time = time(NULL);
+    g_rtl_tune_calls = 0;
+    noCarrier(opts, state);
+    rc |= expect_true("rx-tone-no-step-keeps-tone",
+                      g_rtl_tune_calls == 0 && state->lcn_freq_roll == 0 && state->analog_rx.ctcss_tenths_hz == 1318);
+
+    /* The hangtime runs out: the step retunes and the tone is gone. */
+    state->last_cc_sync_time = time(NULL) - 11;
+    noCarrier(opts, state);
+    rc |= expect_true("rx-tone-step-retuned", g_rtl_tune_calls == 1 && state->lcn_freq_roll == 1);
+    rc |= expect_true("rx-tone-step-clears-tone", rx_tone_publication_cleared(state, generation));
+    free_test_runtime(opts, state);
     return rc;
 }
 #endif
@@ -1320,6 +1493,8 @@ main(void) {
     partial_hop_call.observed_m = 1.0;
     rc |= expect_true("partial-hop-seeds-call",
                       dsd_call_state_observe(state, &partial_hop_call, DSD_CALL_BOUNDARY_BEGIN) == 1);
+    seed_rx_tone_publication(state, 1318);
+    const uint32_t partial_hop_tone_generation = state->analog_rx.generation;
 
     noCarrier(opts, state);
 
@@ -1334,6 +1509,9 @@ main(void) {
     rc |= expect_true("partial-hop-ends-call", partial_hop_snapshot.phase == DSD_CALL_PHASE_ENDED);
     rc |= expect_true("partial-hop-ends-call-explicitly",
                       partial_hop_snapshot.end_reason == (uint8_t)DSD_CALL_END_EXPLICIT);
+    // The received tone (issue #522) goes the same way: the radio is on another frequency, so
+    // the tone heard on the old one no longer describes it, even though the step failed.
+    rc |= expect_true("partial-hop-clears-rx-tone", rx_tone_publication_cleared(state, partial_hop_tone_generation));
     g_rigctl_setfreq_ok = 0;
     g_rtl_tune_result = RTL_STREAM_TUNE_OK;
 #endif
@@ -2310,7 +2488,12 @@ main(void) {
 
     free_test_runtime(opts, state);
 
+    rc |= test_rx_tone_survives_no_carrier();
+#ifdef DSD_NEO_TEST_RTL_WRAP
+    rc |= test_rx_tone_rigctl_scan_step();
+#endif
 #if defined(USE_RADIO) && defined(DSD_NEO_TEST_RTL_WRAP)
+    rc |= test_rx_tone_resets_on_legacy_scan_step();
     rc |= test_typed_scan_tune_boundaries();
     rc |= test_visit_cap_scanner_hops();
     rc |= test_trunk_cache_with_mode_metadata();

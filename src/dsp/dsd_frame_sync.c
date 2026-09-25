@@ -30,6 +30,7 @@
 #include <dsd-neo/core/sync_patterns.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/core/time_format.h>
+#include <dsd-neo/dsp/analog_rx.h>
 #include <dsd-neo/dsp/dmr_sync.h>
 #include <dsd-neo/dsp/frame_sync.h>
 #include <dsd-neo/dsp/symbol.h>
@@ -142,6 +143,17 @@ dsd_frame_sync_test_rtl_profile_for_sps_index(const dsd_opts* opts, const dsd_st
 static void
 rtl_maybe_apply_demod_profile(const dsd_opts* opts, const dsd_state* state, const frame_sync_sps_profile* profile) {
     if (!opts || !state || !profile || opts->audio_in_type != AUDIO_IN_RTL || !state->rtl_ctx) {
+        return;
+    }
+    /* The analog monitor has no symbol clock, and its front end answers for itself with the
+       analog receive profile. The analog family stands the modulation vote down
+       (frame_sync_maybe_auto_switch_modulation()), but the hunt has other requests, such as a
+       two-level profile it re-normalises when its dwell runs out. Any symbol profile from the
+       hunt would turn the stream's monitor audio into CQPSK symbols, or narrow it to a digital
+       channel: the monitor, and received-tone detection with it, would go quiet until the mode
+       changed. app_control/symbol_profile.c sends the analog profile instead for the same
+       reason. */
+    if (opts->analog_only) {
         return;
     }
     const int ted_sps =
@@ -450,6 +462,9 @@ dsd_frame_sync_reset_acquisition(const dsd_opts* opts, dsd_state* state, int for
     state->synctype = DSD_SYNC_NONE;
     state->lastsynctype = DSD_SYNC_NONE;
     frame_sync_seed_p25_cqpsk_level_windows(opts, state);
+    /* Every caller is a boundary a received tone must not survive: a scan row or target
+       change, a decode-mode change, a scope resume (issue #522). */
+    dsd_analog_rx_reset(state);
 }
 
 #ifdef USE_RADIO

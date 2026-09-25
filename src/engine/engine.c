@@ -27,6 +27,7 @@
 #include <dsd-neo/core/talkgroup_policy.h>
 #include <dsd-neo/core/time_format.h>
 #include <dsd-neo/core/vocoder.h>
+#include <dsd-neo/dsp/analog_rx.h>
 #include <dsd-neo/dsp/frame_sync.h>
 #include <dsd-neo/dsp/sps_filters.h>
 #include <dsd-neo/dsp/symbol.h>
@@ -1454,12 +1455,20 @@ no_carrier_step_scanner_mode_if_needed(dsd_opts* opts, dsd_state* state, time_t 
     // reacquirable by whatever decodes next -- on a different frequency.
     int moved = 0;
     if (freq != 0 && no_carrier_step_retune(opts, state, freq, &moved) != 0) {
+        if (moved) {
+            /* The receiver is on another frequency even though the step failed, so the tone
+               heard on the old one no longer describes it (issue #522). */
+            dsd_analog_rx_reset(state);
+        }
         no_carrier_rearm_abandoned_scan(opts, state, now);
         return moved;
     }
     state->lcn_freq_roll++;
     if (freq != 0) {
         dsd_scan_row_keys_apply(state, state->lcn_freq_roll - 1);
+        /* The untyped step never runs the acquisition reset the typed rows do, so the received
+           tone is cleared here: a new channel must not inherit the old one's (issue #522). */
+        dsd_analog_rx_reset(state);
     }
     state->last_cc_sync_time = now;
     state->last_cc_sync_time_m = dsd_time_now_monotonic_s();
@@ -2908,6 +2917,8 @@ dsd_engine_cleanup(dsd_opts* opts, dsd_state* state) {
     closeAudioInDevice(opts);
     dsd_audio_cleanup();
 
+    /* A stopped decoder hears nothing: the next session starts with no received tone. */
+    dsd_analog_rx_reset(state);
     dsd_state_ext_free_all(state);
     dsd_socket_cleanup();
 }

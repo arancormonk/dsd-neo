@@ -19,6 +19,7 @@ target_sources(
         menu_services.c
         notification_status.c
         rr_import_apply.c
+        rx_tone_view.c
         scan_timing_view.c
         squelch_view.c
         symbol_profile.c

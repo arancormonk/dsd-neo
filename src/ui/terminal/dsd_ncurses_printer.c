@@ -21,6 +21,7 @@
 #include <curses.h>
 #include <dsd-neo/app_control/frontend.h>
 #include <dsd-neo/app_control/history.h>
+#include <dsd-neo/app_control/rx_tone_view.h>
 #include <dsd-neo/app_control/scan_timing_view.h>
 #include <dsd-neo/app_control/squelch_view.h>
 #include <dsd-neo/core/call_state.h>
@@ -39,6 +40,7 @@
 #include <dsd-neo/protocol/p25/p25_crypto.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #include <dsd-neo/runtime/scan_mode.h>
+#include <dsd-neo/runtime/unicode.h>
 #include <dsd-neo/ui/menu_core.h>
 #include <dsd-neo/ui/ncurses.h>
 #include <dsd-neo/ui/ncurses_dsp_display.h>
@@ -3393,11 +3395,53 @@ ui_render_call_info_channel_line(const dsd_opts* opts, const dsd_state* state) {
     printw("\n");
 }
 
+/* The received sub-audible tone (issue #522) without its newline: the shared app-control
+   view's text, so the terminal and the Qt/Android row say the same thing. Pure, for the
+   goldens: @p now_m is the caller's monotonic clock, which ages the publication of an input
+   that has gone quiet. Returns the length written, or 0 when the analog FM monitor is not running. */
+static int
+ui_format_rx_tone_line(const dsd_opts* opts, const dsd_state* state, double now_m, char* buf, size_t buf_sz) {
+    if (!buf || buf_sz == 0U) {
+        return 0;
+    }
+    buf[0] = '\0';
+    dsd_app_rx_tone view;
+    if (dsd_app_rx_tone_view(opts, state, now_m, &view) != 1) {
+        return 0;
+    }
+    /* The no-carrier mark is an em dash, the one non-ASCII text the view writes; a terminal
+       without UTF-8 gets a hyphen instead of mojibake. */
+    const char* text = (view.status == DSD_APP_RX_TONE_NO_CARRIER) ? dsd_unicode_or_ascii(view.text, "-") : view.text;
+    const int written = DSD_SNPRINTF(buf, buf_sz, "| Rx tone: %s", text);
+    if (written < 0) {
+        buf[0] = '\0';
+        return 0;
+    }
+    return ((size_t)written < buf_sz) ? written : (int)(buf_sz - 1U);
+}
+
+/* In Call Info rather than beside the analog monitor row in Input Output: compact view
+   hides that section, and the tone is what someone scanning analog channels looks for. */
+static void
+ui_render_call_info_rx_tone_line(const dsd_opts* opts, const dsd_state* state) {
+    char line[64];
+    if (ui_format_rx_tone_line(opts, state, dsd_time_now_monotonic_s(), line, sizeof(line)) <= 0) {
+        return;
+    }
+    printw("| ");
+    attron(COLOR_PAIR(4));
+    printw("%s", line + 2);
+    ui_restore_call_info_color(state);
+    printw("\n");
+}
+
 static void
 ui_render_call_info_and_history(const dsd_opts* opts, dsd_state* state) {
     ui_print_header("Call Info");
 
     ui_render_call_info_channel_line(opts, state);
+
+    ui_render_call_info_rx_tone_line(opts, state);
 
     ui_render_call_info_dstar(state);
 

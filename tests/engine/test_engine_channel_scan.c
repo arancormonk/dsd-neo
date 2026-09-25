@@ -102,6 +102,27 @@ dsd_frame_sync_reset_acquisition(const dsd_opts* opts, dsd_state* state, int for
     state->profile_proof_valid = 0;
     state->symbol_history_count = 0;
     state->sps_hunt_counter = 0;
+    /* The real reset also forgets the received tone (issue #522; pinned by
+       FRAME_SYNC_INTERNAL_HELPERS). Mirrored here so a row commit or a leave that stopped
+       calling it, or that seeded the tone again afterwards, shows up in their assertions. */
+    const uint32_t generation = state->analog_rx.generation + 1U;
+    DSD_MEMSET(&state->analog_rx, 0, sizeof(state->analog_rx));
+    state->analog_rx.generation = generation;
+}
+
+/* A tone the previous row left on the publication, as the analog tap would. */
+static void
+seed_received_tone(dsd_state* state) {
+    state->analog_rx.carrier_open = 1;
+    state->analog_rx.tone_state = DSD_ANALOG_TONE_STATE_LOCKED;
+    state->analog_rx.tone_kind = DSD_ANALOG_TONE_KIND_CTCSS;
+    state->analog_rx.ctcss_tenths_hz = 1000;
+}
+
+static int
+received_tone_cleared(const dsd_state* state) {
+    return state->analog_rx.tone_state != DSD_ANALOG_TONE_STATE_LOCKED && state->analog_rx.ctcss_tenths_hz == 0
+           && state->analog_rx.tone_kind == DSD_ANALOG_TONE_KIND_NONE && state->analog_rx.carrier_open == 0;
 }
 
 /* How many times the leave dropped the decoder's part-collected analog monitor block. */
@@ -726,7 +747,8 @@ test_leave_retimes_the_digital_landing(void) {
  * The decoder's part-collected analog monitor block holds samples of the front end's output family. A leave that
  * switches the front end between the analog and digital families drops it, so the first block the other family
  * completes does not start with them; a leave that keeps the family keeps it, and off RTL there is no front end family
- * to switch.
+ * to switch. A leave that switches the family also forgets the received tone (issue #522), which described the old
+ * family's reception.
  */
 static void
 test_leave_family_switch_drops_partial_analog_block(void) {
@@ -757,9 +779,12 @@ test_leave_family_switch_drops_partial_analog_block(void) {
     analog_block_resets = 0;
     fake_analog_family = 0;
     assert(dsd_scan_mode_enter(opts, state, DSD_SCAN_MODE_DMR) == 0);
+    seed_received_tone(state);
+    uint32_t generation = state->analog_rx.generation;
     dsd_engine_channel_scan_leave(opts, state);
     assert(analog_restore_calls == 1 && analog_restore_family == DSD_RX_FAMILY_ANALOG);
     assert(analog_block_resets == 1);
+    assert(received_tone_cleared(state) && state->analog_rx.generation != generation);
 
     /* A digital mode configured while the front end still runs the analog family. */
     assert(dsd_apply_decode_mode_preset(DSDCFG_MODE_DMR, DSD_DECODE_PRESET_PROFILE_CLI, opts, state) == 0);
@@ -768,9 +793,12 @@ test_leave_family_switch_drops_partial_analog_block(void) {
     fake_analog_family = 1;
     fake_digital_rate = 24000U;
     assert(dsd_scan_mode_enter(opts, state, DSD_SCAN_MODE_NXDN48) == 0);
+    seed_received_tone(state);
+    generation = state->analog_rx.generation;
     dsd_engine_channel_scan_leave(opts, state);
     assert(analog_restore_calls == 1 && analog_restore_family == DSD_RX_FAMILY_DIGITAL);
     assert(analog_block_resets == 1);
+    assert(received_tone_cleared(state) && state->analog_rx.generation != generation);
 
     /* Digital configured on a digital front end. */
     reset_frontend_records();
@@ -799,6 +827,55 @@ test_leave_family_switch_drops_partial_analog_block(void) {
     free(opts);
 }
 
+/* ---- Received tone (issue #522) ----------------------------------------------------------- */
+
+/* A row the scanner commits to starts with no received tone, whether its tune resolved later
+   (a pending request the sync service commits) or at once (a step whose tune completed): the
+   new row cannot inherit the outgoing row's. */
+static void
+test_rx_tone_row_commit_and_step_clear(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
+    assert(opts && state);
+    opts->audio_in_type = AUDIO_IN_WAV;
+    opts->wav_sample_rate = 48000;
+    opts->frame_dstar = 1;
+    opts->scanner_mode = 1;
+    state->samplesPerSymbol = 10;
+    state->lcn_freq_count = 2;
+    for (int row = 0; row < 2; row++) {
+        *dsd_state_trunk_lcn_slot(state, row) = 150000000;
+    }
+    expected_nxdn = 0;
+
+    /* The outgoing row's tone is still on the publication while the tune is pending ... */
+    tune_result = DSD_TRUNK_TUNE_RESULT_PENDING;
+    assert(dsd_engine_channel_scan_step(opts, state) == 0);
+    assert(state->lcn_freq_roll == 0 && dsd_engine_channel_scan_pending(opts, state) == 1);
+    seed_received_tone(state);
+    uint32_t generation = state->analog_rx.generation;
+    dsd_trunk_tuning_request_publish(request, DSD_TRUNK_TUNE_RESULT_OK);
+    state->synctype = DSD_SYNC_P25P1_POS;
+    assert(!dsd_engine_channel_scan_service_sync(opts, state));
+    assert(state->lcn_freq_roll == 1 && reset_count == 1);
+    /* ... and the row commit takes it away. */
+    assert(received_tone_cleared(state) && state->analog_rx.generation != generation);
+
+    /* A step whose tune completes at once commits the next row the same way. */
+    tune_result = DSD_TRUNK_TUNE_RESULT_OK;
+    seed_received_tone(state);
+    generation = state->analog_rx.generation;
+    assert(dsd_engine_channel_scan_step(opts, state) == 1);
+    assert(state->lcn_freq_roll == 2);
+    assert(received_tone_cleared(state) && state->analog_rx.generation != generation);
+
+    dsd_state_trunk_lcn_free(state);
+    dsd_state_ext_free_all(state);
+    free(state);
+    free(opts);
+    tunes = reset_count = 0;
+}
+
 int
 main(void) {
     dsd_neo_log_set_tap(count_squelch_warnings, NULL);
@@ -810,6 +887,7 @@ main(void) {
     test_row_max_visit_override_and_inherit();
     test_row_squelch_threshold_off_inherit();
     test_row_squelch_warns_once_per_row_on_pcm_input();
+    test_rx_tone_row_commit_and_step_clear();
     dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
     dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
     assert(opts && state);

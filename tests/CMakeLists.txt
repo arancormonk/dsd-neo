@@ -420,6 +420,18 @@ dsd_neo_add_public_header_smoke_test(
   C
 )
 dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_runtime_analog_tones
+  HEADERS_PUBLIC_RUNTIME_ANALOG_TONES
+  dsd-neo/runtime/analog_tones.h
+  C
+)
+dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_runtime_analog_tones_cxx
+  HEADERS_PUBLIC_RUNTIME_ANALOG_TONES_CXX
+  dsd-neo/runtime/analog_tones.h
+  CXX
+)
+dsd_neo_add_public_header_smoke_test(
   dsd-neo_test_headers_public_runtime_input_spec
   HEADERS_PUBLIC_RUNTIME_INPUT_SPEC
   dsd-neo/runtime/input_spec.h
@@ -646,6 +658,18 @@ dsd_neo_add_public_header_smoke_test(
   CXX
 )
 dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_app_control_rx_tone_view
+  HEADERS_PUBLIC_APP_CONTROL_RX_TONE_VIEW
+  dsd-neo/app_control/rx_tone_view.h
+  C
+)
+dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_app_control_rx_tone_view_cxx
+  HEADERS_PUBLIC_APP_CONTROL_RX_TONE_VIEW_CXX
+  dsd-neo/app_control/rx_tone_view.h
+  CXX
+)
+dsd_neo_add_public_header_smoke_test(
   dsd-neo_test_headers_public_app_control_commands
   HEADERS_PUBLIC_APP_CONTROL_COMMANDS
   dsd-neo/app_control/commands.h
@@ -796,6 +820,19 @@ dsd_neo_add_public_header_smoke_test(
   HEADERS_PUBLIC_DSP_SYMBOL_TIMING_DEBUG
   dsd-neo/dsp/symbol_timing_debug.h
   C
+)
+
+dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_dsp_analog_rx
+  HEADERS_PUBLIC_DSP_ANALOG_RX
+  dsd-neo/dsp/analog_rx.h
+  C
+)
+dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_dsp_analog_rx_cxx
+  HEADERS_PUBLIC_DSP_ANALOG_RX_CXX
+  dsd-neo/dsp/analog_rx.h
+  CXX
 )
 
 dsd_neo_add_public_header_smoke_test(
@@ -2073,6 +2110,26 @@ add_test(
     COMMAND dsd-neo_test_app_control_squelch_view
 )
 
+# The received-tone text every frontend shows (issue #522), and the configured policy kept
+# apart from it.
+add_executable(
+    dsd-neo_test_app_control_rx_tone_view
+    ui/test_app_control_rx_tone_view.c
+    ${PROJECT_SOURCE_DIR}/src/app_control/rx_tone_view.c
+)
+target_include_directories(
+    dsd-neo_test_app_control_rx_tone_view
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+target_link_libraries(
+    dsd-neo_test_app_control_rx_tone_view
+    PRIVATE dsd-neo_runtime
+)
+add_test(
+    NAME APP_CONTROL_RX_TONE_VIEW
+    COMMAND dsd-neo_test_app_control_rx_tone_view
+)
+
 add_executable(
     dsd-neo_test_app_control_notification_status
     ui/test_app_control_notification_status.c
@@ -2140,13 +2197,17 @@ if(DSD_ENABLE_TERMINAL_UI)
         COMMAND dsd-neo_test_ui_ncurses_p25_display_helpers
     )
 
-    # The shared scan-timing and squelch views come in as sources rather than stubs: the Scan
-    # Timing and SQL goldens are only worth anything if they run through the real display rules.
+    # The shared scan-timing, squelch and received-tone views come in as sources rather than
+    # stubs: the Scan Timing, SQL and Rx tone goldens are only worth anything if they run through
+    # the real display rules.
     add_executable(
         dsd-neo_test_ui_ncurses_printer_helpers
         ui/test_ui_ncurses_printer_helpers.c
         ${PROJECT_SOURCE_DIR}/src/app_control/scan_timing_view.c
         ${PROJECT_SOURCE_DIR}/src/app_control/squelch_view.c
+        ${PROJECT_SOURCE_DIR}/src/app_control/rx_tone_view.c
+        ${PROJECT_SOURCE_DIR}/src/runtime/analog_tones.c
+        ${PROJECT_SOURCE_DIR}/src/runtime/rtl_stream_metrics_hooks.c
     )
     target_compile_definitions(
         dsd-neo_test_ui_ncurses_printer_helpers
@@ -2832,6 +2893,7 @@ if(DSD_ENABLE_QT_UI)
         ${PROJECT_SOURCE_DIR}/src/app_control/call_view.c
         ${PROJECT_SOURCE_DIR}/src/app_control/p25_metrics.c
         ${PROJECT_SOURCE_DIR}/src/app_control/squelch_view.c
+        ${PROJECT_SOURCE_DIR}/src/app_control/rx_tone_view.c
     )
     target_include_directories(
         dsd-neo_test_ui_qt_metrics_model
@@ -3471,6 +3533,18 @@ target_include_directories(
 )
 target_link_libraries(dsd-neo_test_runtime_freq_parse PRIVATE dsd-neo_runtime)
 add_test(NAME RUNTIME_FREQ_PARSE COMMAND dsd-neo_test_runtime_freq_parse)
+
+# The CTCSS table and its text (issue #522), shared by the detector, the views and the policy.
+add_executable(
+    dsd-neo_test_runtime_analog_tones
+    runtime/test_runtime_analog_tones.c
+)
+target_include_directories(
+    dsd-neo_test_runtime_analog_tones
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+target_link_libraries(dsd-neo_test_runtime_analog_tones PRIVATE dsd-neo_runtime)
+add_test(NAME RUNTIME_ANALOG_TONES COMMAND dsd-neo_test_runtime_analog_tones)
 
 add_executable(
     dsd-neo_test_runtime_bootstrap_audio
@@ -4528,6 +4602,7 @@ target_include_directories(
         ${PROJECT_SOURCE_DIR}/include
         ${PROJECT_SOURCE_DIR}/src/dsp
         ${PROJECT_SOURCE_DIR}/tests/test_support
+        ${LIBSNDFILE_INCLUDE_DIR}
 )
 target_link_libraries(
     dsd-neo_test_dsp_symbol_replay
@@ -4835,7 +4910,7 @@ if(NOT APPLE AND (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"))
             "-Wl,--wrap=rtl_stream_get_ted_sps_override"
             "-Wl,--wrap=rtl_stream_output_rate"
             "-Wl,--wrap=rtl_stream_prepare_retune_profile_for_target_with_gain"
-            "$<$<BOOL:${DSD_HAS_RADIO}>:-Wl,--wrap=SetFreq>"
+            "-Wl,--wrap=SetFreq"
             "-Wl,--wrap=rtl_stream_request_fsk_reacquire"
             "-Wl,--wrap=rtl_stream_tune"
             "-Wl,--wrap=rtl_stream_tune_tagged"
@@ -5513,6 +5588,8 @@ if(NOT APPLE AND NOT WIN32 AND (CMAKE_C_COMPILER_ID MATCHES "GNU|Clang"))
             "LINKER:--wrap=dsd_tg_policy_call_skip_arm"
             "LINKER:--wrap=dsd_audio_ensure_analog_output"
             "LINKER:--wrap=dsd_audio_ensure_digital_output"
+            "LINKER:--wrap=svc_tcp_connect_audio"
+            "LINKER:--wrap=openAudioInput"
     )
 endif()
 if(
@@ -7465,6 +7542,21 @@ target_include_directories(
 )
 dsd_neo_link_dsp_test(dsd-neo_test_dsp_firdes ${DSD_NEO_TEST_MATH_LIB})
 add_test(NAME DSP_FIRDES COMMAND dsd-neo_test_dsp_firdes)
+
+# CTCSS detection (issue #522) through the pure analog receive core, in sample time: every
+# tone's lock bound at four rates and two SNRs, adjacent and unsupported frequencies, loss
+# and reverse burst, speech and noise that must never lock, and scale invariance.
+add_executable(dsd-neo_test_dsp_analog_ctcss dsp/test_dsp_analog_ctcss.c)
+target_include_directories(
+    dsd-neo_test_dsp_analog_ctcss
+    PRIVATE
+        ${PROJECT_SOURCE_DIR}/include
+        ${PROJECT_SOURCE_DIR}/src/dsp
+        ${PROJECT_SOURCE_DIR}/tests/dsp
+)
+dsd_neo_link_dsp_test(dsd-neo_test_dsp_analog_ctcss ${DSD_NEO_TEST_MATH_LIB})
+add_test(NAME DSP_ANALOG_CTCSS COMMAND dsd-neo_test_dsp_analog_ctcss)
+set_tests_properties(DSP_ANALOG_CTCSS PROPERTIES TIMEOUT 300)
 
 add_executable(dsd-neo_test_dsp_fsk_modem dsp/test_fsk_modem.c)
 target_include_directories(
@@ -10924,6 +11016,50 @@ if(DSD_HAS_RADIO)
         "Src=[0-9]"
     )
 
+    # Received-tone detection on the analog FM monitor (issue #522): synthetic NFM with voice
+    # and a CTCSS tone, replayed under -fA with -o null, so detection is shown to run with no
+    # audio output and no tone policy at all. Each asserts the "Received tone:" log line and
+    # that no other tone was ever reported. CMake regexes have no negative lookahead, so
+    # "any other tone" is spelled out as every value that is not the expected one.
+    dsd_neo_add_iq_decode_test(
+        DECODE_IQ_ANALOG_CTCSS_1000
+        nfm_ctcss_synth_1000
+        -fA
+        "Received tone: CTCSS 100\\.0 Hz"
+        "Received tone: (none|CTCSS ([0-9]|[0-9][0-9]|[02-9][0-9][0-9]|1[1-9][0-9]|10[1-9])\\.[0-9] Hz|CTCSS 100\\.[1-9] Hz)"
+    )
+    dsd_neo_add_iq_decode_test(
+        DECODE_IQ_ANALOG_CTCSS_670
+        nfm_ctcss_synth_670
+        -fA
+        "Received tone: CTCSS 67\\.0 Hz"
+        "Received tone: (none|CTCSS ([0-9]|[0-57-9][0-9]|6[0-689]|[0-9][0-9][0-9])\\.[0-9] Hz|CTCSS 67\\.[1-9] Hz)"
+    )
+    # The tone stops at 1.2 s while the carrier and voice carry on: 100.0, then none.
+    dsd_neo_add_iq_decode_test(
+        DECODE_IQ_ANALOG_CTCSS_DROP
+        nfm_ctcss_synth_drop
+        -fA
+        "Received tone: CTCSS 100\\.0 Hz.*Received tone: none"
+        "Received tone: CTCSS ([0-9]|[0-9][0-9]|[02-9][0-9][0-9]|1[1-9][0-9]|10[1-9])\\.[0-9] Hz|Received tone: CTCSS 100\\.[1-9] Hz"
+    )
+    # Voice with no tone: positively "none", and never a tone.
+    dsd_neo_add_iq_decode_test(
+        DECODE_IQ_ANALOG_CTCSS_NOTONE
+        nfm_notone_synth
+        -fA
+        "Received tone: none"
+        "Received tone: CTCSS"
+    )
+    # Analog monitor cases like the audio checks further down, so -L analog runs them too.
+    set_tests_properties(
+        DECODE_IQ_ANALOG_CTCSS_1000
+        DECODE_IQ_ANALOG_CTCSS_670
+        DECODE_IQ_ANALOG_CTCSS_DROP
+        DECODE_IQ_ANALOG_CTCSS_NOTONE
+        PROPERTIES LABELS "iq-decode;analog"
+    )
+
     # Restart safety: bootstrap + engine lifecycle twice inside one process, the
     # shape an embedding host (Android service, GUI shell) uses. Lives here
     # because it replays an I/Q fixture and therefore needs the radio pipeline.
@@ -11176,6 +11312,45 @@ if(DSD_HAS_RADIO)
         "${_analog_off_path}"
     )
 
+    # Received CTCSS on the off-air excerpts (issue #522), against the oracle labels in
+    # docs/testing.md that the maintainer confirmed. nfm_ctcss_real carries 151.4 Hz: it
+    # must lock within the 400 ms bound (300 ms measured) and never report another tone,
+    # least of all the neighbour's 173.8 Hz 12.5 kHz away. "none" is allowed: the excerpt
+    # carries a reverse burst and a short tone gap at 3.7-4.0 s, after which the tone locks
+    # again. The host's tone= field comes from the decoder's publication, not from the log.
+    dsd_neo_add_analog_replay_test(
+        DECODE_IQ_ANALOG_REAL_CTCSS_1514
+        nfm_ctcss_real
+        "-fA --analog-max-tone-lock-ms 400"
+        "Received tone: CTCSS 151[.]4 Hz.*ANALOG METRIC: .* tone=151[.]4 tone_lock_ms=[0-9]+[.][0-9][0-9] tone_lock_pct=[0-9]+[.][0-9][0-9]"
+        "Received tone: CTCSS (([0-9]|[0-9][0-9]|[02-9][0-9][0-9]|1[0-46-9][0-9]|15[02-9])[.][0-9]|151[.][0-35-9]) Hz|${_analog_off_path}"
+    )
+    # No false lock: speech and carrier with no CTCSS (the squelch excerpts carry 150 bit/s
+    # data below 300 Hz, which is neither CTCSS nor DCS), and AM airband voice through the
+    # FM monitor. Each must reach the "none" verdict, which shows detection ran, and never
+    # report a tone.
+    dsd_neo_add_analog_replay_test(
+        DECODE_IQ_ANALOG_REAL_CTCSS_NOFALSE_SQUELCH_A
+        nfm_squelch_real_a
+        -fA
+        "Received tone: none.*ANALOG METRIC: .* tone=NA tone_lock_ms=NA tone_lock_pct=0[.]00"
+        "Received tone: CTCSS|${_analog_off_path}"
+    )
+    dsd_neo_add_analog_replay_test(
+        DECODE_IQ_ANALOG_REAL_CTCSS_NOFALSE_SQUELCH_B
+        nfm_squelch_real_b
+        -fA
+        "Received tone: none.*ANALOG METRIC: .* tone=NA tone_lock_ms=NA tone_lock_pct=0[.]00"
+        "Received tone: CTCSS|${_analog_off_path}"
+    )
+    dsd_neo_add_analog_replay_test(
+        DECODE_IQ_ANALOG_REAL_CTCSS_NOFALSE_AM
+        am_airband_real
+        -fA
+        "Received tone: none.*ANALOG METRIC: .* tone=NA tone_lock_ms=NA tone_lock_pct=0[.]00"
+        "Received tone: CTCSS|${_analog_off_path}"
+    )
+
     # Negative controls: bounds that must NOT hold, run through
     # analog_replay_fail_check.cmake, which requires the host's exit code (1 for a
     # missed bound), the named ANALOG AUDIO FAIL line and no ANALOG AUDIO OK. Without
@@ -11258,6 +11433,21 @@ if(DSD_HAS_RADIO)
         nfm_tone_synth
         "-fA --analog-min-snr-db 20"
         "ANALOG AUDIO FAIL: tone SNR dB not measured"
+    )
+    # The received-tone lock bound (issue #522): a limit below the lock time
+    # nfm_ctcss_synth_1000 measures fails on the measured value, and on a replay with no
+    # tone at all the bound fails as not measured instead of passing unchecked.
+    dsd_neo_add_analog_replay_fail_test(
+        DECODE_IQ_ANALOG_NEG_TONE_LOCK_MS
+        nfm_ctcss_synth_1000
+        "-fA --analog-max-tone-lock-ms 50"
+        "ANALOG AUDIO FAIL: tone lock ms [0-9]+[.][0-9]+ [(]limit 50[.]00[)]"
+    )
+    dsd_neo_add_analog_replay_fail_test(
+        DECODE_IQ_ANALOG_NEG_TONE_LOCK_NOT_MEASURED
+        nfm_notone_synth
+        "-fA --analog-max-tone-lock-ms 400"
+        "ANALOG AUDIO FAIL: tone lock ms not measured"
     )
     # A malformed bound stops the host before the replay (exit 2), rather than being
     # dropped or handed to the CLI parser.
