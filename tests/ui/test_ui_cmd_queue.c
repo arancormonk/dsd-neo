@@ -6794,6 +6794,7 @@ test_refused_switch_onto_analog_puts_the_mode_back(void) {
 
     /* Switched to Analog and on to P25 before either landed; the stream then reports the Analog switch refused. The
        P25 request replaced it, so the decoder stays where the operator put it last. */
+    freeState(&state);
     init_dmr_session_with_nfm_width(&opts, &state, (RtlSdrContext*)fake_ctx, 16000);
     (void)dsd_app_command_set_i32(DSD_APP_CMD_DECODE_MODE_SET, (int32_t)DSDCFG_MODE_ANALOG);
     (void)dsd_app_drain_cmds(&opts, &state);
@@ -6804,6 +6805,7 @@ test_refused_switch_onto_analog_puts_the_mode_back(void) {
     rc |= expect_int("moved on: P25 stays", dsd_infer_decode_mode_preset(&opts) == DSDCFG_MODE_P25P1, 1);
 
     /* A config's [mode] onto Analog, refused where it landed. */
+    freeState(&state);
     init_dmr_session_with_nfm_width(&opts, &state, (RtlSdrContext*)fake_ctx, 16000);
     rc |= submit_config_mode(&opts, &state, DSDCFG_MODE_ANALOG, "config landing");
     rc |= expect_int("config landing: on Analog while pending", opts.analog_only, 1);
@@ -6813,6 +6815,7 @@ test_refused_switch_onto_analog_puts_the_mode_back(void) {
     rc |= expect_back_on_dmr("config landing: back on DMR", &opts, &state);
 
     /* ... and refused by its request: the apply fails. */
+    freeState(&state);
     init_dmr_session_with_nfm_width(&opts, &state, (RtlSdrContext*)fake_ctx, 16000);
     g_analog_req_result = -1;
     state.ui_msg[0] = '\0';
