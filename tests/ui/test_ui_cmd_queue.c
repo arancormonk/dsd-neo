@@ -6942,6 +6942,45 @@ test_refused_switch_onto_analog_puts_the_mode_back(void) {
 }
 
 /*
+ * A width set right after a switch onto Analog, in the same drain, is the width command's, not a later mode change:
+ * the front end still refusing the switch where it lands (its analog request now carries that width) puts the decoder
+ * back on the mode it had and says so, rather than leave Analog running on a digital front end, and the width the
+ * command set stays configured.
+ */
+static int
+test_refused_switch_onto_analog_with_a_width_set_after_it(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static void* fake_ctx[2];
+    int rc = 0;
+    init_dmr_session_with_nfm_width(&opts, &state, (RtlSdrContext*)fake_ctx, 16000);
+    rc |= expect_int("switch + width: switch queued",
+                     dsd_app_command_set_i32(DSD_APP_CMD_DECODE_MODE_SET, (int32_t)DSDCFG_MODE_ANALOG),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("switch + width: width queued", dsd_app_command_set_i32(DSD_APP_CMD_NFM_BANDWIDTH_SET, 12500),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("switch + width: one drain", dsd_app_drain_cmds(&opts, &state), 2);
+    rc |= expect_int("switch + width: on Analog while pending", opts.analog_only, 1);
+    rc |= expect_int("switch + width: the last request carries the width", g_analog_req_width_hz, 12500);
+    demod_thread_refuses_analog_keeping(0, 0);
+    state.ui_msg[0] = '\0';
+    g_demod_req_calls = 0;
+    rc |= expect_int("switch + width: settled on an empty drain", dsd_app_drain_cmds(&opts, &state), 0);
+    rc |= expect_int("switch + width: back off Analog", opts.analog_only, 0);
+    rc |= expect_int("switch + width: back on DMR", dsd_infer_decode_mode_preset(&opts) == DSDCFG_MODE_DMR, 1);
+    rc |= expect_int("switch + width: the modulation lock back", opts.mod_cli_lock, 1);
+    rc |= expect_toast("switch + width: says why", &state, "Failed: Analog -> the RTL front end refused NFM 12.5 kHz");
+    rc |= expect_int("switch + width: the command's width stays", opts.analog_nfm_bandwidth_hz, 12500);
+    rc |= expect_int("switch + width: the digital profile republished", g_demod_req_calls >= 1, 1);
+
+    g_fake_analog_family = 0;
+    opts.analog_nfm_bandwidth_hz = 0;
+    state.rtl_ctx = NULL;
+    freeState(&state);
+    return rc;
+}
+
+/*
  * The same refusals under a scan row that inherits the configured mode: the switch reaches the front end once the
  * row's constraint is back, and a refusal puts the configured mode back under the row as well, the row still running.
  */
@@ -7590,6 +7629,7 @@ main(void) {
     rc |= test_nfm_width_refused_after_the_check();
     rc |= test_nfm_width_follows_a_queued_scan_leave();
     rc |= test_refused_switch_onto_analog_puts_the_mode_back();
+    rc |= test_refused_switch_onto_analog_with_a_width_set_after_it();
     rc |= test_refused_switch_onto_analog_under_a_row();
     rc |= test_refused_switch_onto_analog_retimes_the_mode();
     rc |= test_nfm_width_changes_held_to_channel_lpf_off();
