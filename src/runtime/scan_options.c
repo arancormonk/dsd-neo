@@ -3,6 +3,7 @@
 
 #include <dsd-neo/core/parse.h>
 #include <dsd-neo/core/safe_api.h>
+#include <dsd-neo/runtime/analog_channel.h>
 #include <dsd-neo/runtime/scan_mode.h>
 #include <dsd-neo/runtime/scan_options.h>
 #include <errno.h>
@@ -15,11 +16,18 @@
 #define P25           MODE_BIT(DSD_SCAN_MODE_P25)
 #define NXDN          (MODE_BIT(DSD_SCAN_MODE_NXDN48) | MODE_BIT(DSD_SCAN_MODE_NXDN96))
 #define DPMR          MODE_BIT(DSD_SCAN_MODE_DPMR)
+#define NFM           MODE_BIT(DSD_SCAN_MODE_NFM)
 /* Blank rows and every digital class (INHERIT through M17). */
 #define DIGITAL_MODES 0x1FFU
-/* Every class a row or target can declare. Equal to DIGITAL_MODES until analog classes exist;
- * an option that is meaningful whatever the class (squelch) uses this, not DIGITAL_MODES. */
-#define ANY_MODES     DIGITAL_MODES
+/* The analog classes (issue #526): no frames, keys, talkgroups or voice verdicts. */
+#define ANALOG_MODES  NFM
+/* Every class a row or target can declare. An option that is meaningful whatever the class
+ * (squelch, the visit cap) uses this; DIGITAL_MODES keeps key, CRC, force, group, call-policy and
+ * voice-gate switches off the analog classes. */
+#define ANY_MODES     (DIGITAL_MODES | ANALOG_MODES)
+
+_Static_assert((DIGITAL_MODES & ANALOG_MODES) == 0U, "a class is digital or analog, never both");
+_Static_assert((ANY_MODES >> DSD_SCAN_MODE_LAST) == 1U, "ANY_MODES covers every class up to the last one");
 
 typedef struct scan_option_spec scan_option_spec;
 
@@ -65,10 +73,16 @@ static int option_set_max_visit(const scan_option_spec* spec, const char* argume
                                 dsd_scan_options* parsed);
 static int option_set_squelch(const scan_option_spec* spec, const char* argument, unsigned int mode,
                               dsd_scan_options* parsed);
+static int option_set_bandwidth(const scan_option_spec* spec, const char* argument, unsigned int mode,
+                                dsd_scan_options* parsed);
 static int option_set_path(const scan_option_spec* spec, const char* argument, unsigned int mode,
                            dsd_scan_options* parsed);
 
-#define SQUELCH_HINT "expects whole dB from -100 to 0 (0 = off)"
+#define SQUELCH_HINT   "expects whole dB from -100 to 0 (0 = off)"
+#define OPTION_TEXT(x) #x
+#define OPTION_HZ(x)   OPTION_TEXT(x)
+#define NFM_BANDWIDTH_HINT                                                                                             \
+    "expects whole Hz from " OPTION_HZ(DSD_ANALOG_NFM_WIDTH_MIN_HZ) " to " OPTION_HZ(DSD_ANALOG_NFM_WIDTH_MAX_HZ)
 
 static const scan_option_spec specifications[] = {
     {"-b", DSD_SCAN_OPT_BP, DMR, 1, 0, 0, 0, NULL, option_set_bp},
@@ -100,10 +114,13 @@ static const scan_option_spec specifications[] = {
     {"--scan-voice-hold-ms", DSD_SCAN_OPT_HOLD, DIGITAL_MODES, 1, 1, 0, 0, NULL, option_set_voice_ms},
     /* The per-visit cap applies to every trunk-scan target type, so unlike the voice-gate
      * switches above it is not conventional-only. */
-    {"--scan-max-visit-ms", DSD_SCAN_OPT_MAX_VISIT, DIGITAL_MODES, 1, 0, 0, 0, NULL, option_set_max_visit},
+    {"--scan-max-visit-ms", DSD_SCAN_OPT_MAX_VISIT, ANY_MODES, 1, 0, 0, 0, NULL, option_set_max_visit},
     /* Squelch is a receiver setting, so it is legal on every class and target type, trunked
      * control channels included (issue #521). Units and range are rtl_sql's. */
     {"--squelch-db", DSD_SCAN_OPT_SQUELCH, ANY_MODES, 1, 0, 0, 1, SQUELCH_HINT, option_set_squelch},
+    /* The channel width of the analog demodulator the row runs (issue #526), spelled per kind and
+     * in whole Hz as on the command line; a row carries one width. */
+    {"--nfm-bandwidth-hz", DSD_SCAN_OPT_BANDWIDTH, NFM, 1, 0, 0, 0, NFM_BANDWIDTH_HINT, option_set_bandwidth},
 };
 
 static int
@@ -374,6 +391,20 @@ option_set_squelch(const scan_option_spec* spec, const char* argument, unsigned 
     return 0;
 }
 
+/* The width's range is the kind's, and only the strict decimal spelling is taken. The rate it has
+ * to fit is not known here: dsd_scan_option_width_check() holds it to one. */
+static int
+option_set_bandwidth(const scan_option_spec* spec, const char* argument, unsigned int mode, dsd_scan_options* parsed) {
+    (void)spec;
+    (void)mode;
+    int width_hz = 0;
+    if (dsd_analog_width_parse(DSD_ANALOG_DEMOD_FM, argument, &width_hz, NULL, 0U) != 0) {
+        return -1;
+    }
+    parsed->values.channel_bw_hz = width_hz;
+    return 0;
+}
+
 static int
 option_set_path(const scan_option_spec* spec, const char* argument, unsigned int mode, dsd_scan_options* parsed) {
     (void)mode;
@@ -469,6 +500,32 @@ option_argument(const scan_option_spec* spec, const char** cursor, char* argumen
     return argument[0] != '-' || (spec->signed_numeric && option_negative_number(argument));
 }
 
+/* Whether @p spec may appear on a row of class @p mode. An analog-only switch on another class says
+ * which classes take it; every other refusal reads the same, so the classes a digital switch serves
+ * stay out of the diagnostic. */
+static int
+option_mode_allowed(const scan_option_spec* spec, unsigned int mode, int conventional, char* error, size_t error_size) {
+    if ((spec->modes & MODE_BIT(mode)) && (!spec->conventional || conventional)) {
+        return 1;
+    }
+    if ((spec->modes & ~ANALOG_MODES) != 0U || (MODE_BIT(mode) & ANALOG_MODES) != 0U) {
+        (void)option_error(error, error_size, spec->name, "not supported for this mode/target");
+        return 0;
+    }
+    char reason[64] = "needs mode";
+    const char* separator = " ";
+    for (unsigned int analog = 0; analog <= DSD_SCAN_MODE_LAST; analog++) {
+        if (spec->modes & ANALOG_MODES & MODE_BIT(analog)) {
+            const size_t used = strlen(reason);
+            DSD_SNPRINTF(reason + used, sizeof(reason) - used, "%s%s", separator,
+                         dsd_scan_mode_name((dsd_scan_mode)analog));
+            separator = " or ";
+        }
+    }
+    (void)option_error(error, error_size, spec->name, reason);
+    return 0;
+}
+
 static int
 option_read(const char** cursor, unsigned int mode, int conventional, dsd_scan_options* parsed,
             scan_force_options* forces, char* error, size_t error_size) {
@@ -491,8 +548,7 @@ option_read(const char** cursor, unsigned int mode, int conventional, dsd_scan_o
         option_error(error, error_size, "options", "unsupported switch or positional argument");
         goto done;
     }
-    if (!(spec->modes & MODE_BIT(mode)) || (spec->conventional && !conventional)) {
-        option_error(error, error_size, spec->name, "not supported for this mode/target");
+    if (!option_mode_allowed(spec, mode, conventional, error, error_size)) {
         goto done;
     }
     if (equals && !spec->argument) {
@@ -578,7 +634,7 @@ option_sources_valid(uint32_t present, char* error, size_t size) {
 int
 dsd_scan_options_parse(const char* text, unsigned int mode, int conventional, dsd_scan_options* out, char* error,
                        size_t error_size) {
-    if (!out || mode > DSD_SCAN_MODE_M17) {
+    if (!out || mode > DSD_SCAN_MODE_LAST) {
         return option_error(error, error_size, "options", "invalid argument");
     }
     dsd_scan_options parsed = {0};
@@ -602,4 +658,17 @@ dsd_scan_options_parse(const char* text, unsigned int mode, int conventional, ds
     }
     DSD_SECURE_ZERO(&parsed, sizeof(parsed));
     return rc;
+}
+
+int
+dsd_scan_option_width_check(unsigned int mode, const dsd_scan_option_values* values, int rate_hz, char* error,
+                            size_t error_size) {
+    if (error && error_size) {
+        error[0] = '\0';
+    }
+    /* NFM is the one class a width parses for; any other class has none to hold. */
+    if (!values || !(values->present & DSD_SCAN_OPT_BANDWIDTH) || rate_hz <= 0 || mode != DSD_SCAN_MODE_NFM) {
+        return 0;
+    }
+    return dsd_analog_width_check(DSD_ANALOG_DEMOD_FM, values->channel_bw_hz, rate_hz, error, error_size) == 0 ? 0 : -1;
 }

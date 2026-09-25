@@ -249,7 +249,9 @@ channel_scan_start_row(dsd_opts* opts, dsd_state* state, int row) {
     dsd_scan_settings before;
     dsd_scan_settings next;
     dsd_scan_settings_capture(opts, state, &before);
-    if (dsd_scan_mode_prepare(opts, state, scan->mode, &next) != 0) {
+    /* The row's own acquisition options (its analog channel width) are part of what the tune queues. */
+    const dsd_scan_row_profile* row_profile = dsd_channel_profile_get(state, (size_t)row);
+    if (dsd_scan_mode_prepare(opts, state, scan->mode, row_profile ? &row_profile->values : NULL, &next) != 0) {
         return -1;
     }
     dsd_scan_mode_configured(opts, state, &scan->configured);

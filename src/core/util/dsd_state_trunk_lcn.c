@@ -485,7 +485,7 @@ channel_profile_has_options(const dsd_scan_row_profile* profile) {
 
 int
 dsd_channel_mode_set(dsd_state* state, size_t row, dsd_scan_mode mode) {
-    if (!state || row >= SIZE_MAX / sizeof(dsd_scan_mode) || (unsigned)mode > DSD_SCAN_MODE_M17) {
+    if (!state || row >= SIZE_MAX / sizeof(dsd_scan_mode) || (unsigned)mode > DSD_SCAN_MODE_LAST) {
         return -1;
     }
     channel_modes* modes = DSD_STATE_EXT_GET_AS(channel_modes, state, DSD_STATE_EXT_CORE_CHANNEL_MODES);

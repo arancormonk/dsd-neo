@@ -42,14 +42,87 @@ typedef struct {
     scan_squelch_pending squelch_pending;
 } scan_scope;
 
-static const char* const mode_names[] = {"", "p25", "dmr", "nxdn96", "nxdn48", "dpmr", "dstar", "ysf", "m17"};
-static const dsdneoUserDecodeMode mode_presets[] = {DSDCFG_MODE_AUTO,   DSDCFG_MODE_TDMA,   DSDCFG_MODE_DMR,
-                                                    DSDCFG_MODE_NXDN96, DSDCFG_MODE_NXDN48, DSDCFG_MODE_DPMR,
-                                                    DSDCFG_MODE_DSTAR,  DSDCFG_MODE_YSF,    DSDCFG_MODE_M17};
+static const char* const mode_names[] = {"", "p25", "dmr", "nxdn96", "nxdn48", "dpmr", "dstar", "ysf", "m17", "nfm"};
+static const dsdneoUserDecodeMode mode_presets[] = {
+    DSDCFG_MODE_AUTO, DSDCFG_MODE_TDMA,  DSDCFG_MODE_DMR, DSDCFG_MODE_NXDN96, DSDCFG_MODE_NXDN48,
+    DSDCFG_MODE_DPMR, DSDCFG_MODE_DSTAR, DSDCFG_MODE_YSF, DSDCFG_MODE_M17,    DSDCFG_MODE_ANALOG};
+
+_Static_assert(sizeof(mode_names) / sizeof(mode_names[0]) == (size_t)DSD_SCAN_MODE_LAST + 1U,
+               "every scan class needs a name");
+_Static_assert(sizeof(mode_presets) / sizeof(mode_presets[0]) == (size_t)DSD_SCAN_MODE_LAST + 1U,
+               "every scan class needs a decode preset");
 
 const char*
 dsd_scan_mode_name(dsd_scan_mode mode) {
     return (unsigned)mode < sizeof(mode_names) / sizeof(mode_names[0]) ? mode_names[mode] : "";
+}
+
+int
+dsd_scan_mode_is_analog(dsd_scan_mode mode) {
+    return mode == DSD_SCAN_MODE_NFM;
+}
+
+/* Trim @p text into [*begin, *begin + *len). */
+static void
+scan_mode_trim(const char* text, const char** begin, size_t* len) {
+    while (isspace((unsigned char)*text)) {
+        text++;
+    }
+    size_t n = strlen(text);
+    while (n && isspace((unsigned char)text[n - 1])) {
+        n--;
+    }
+    *begin = text;
+    *len = n;
+}
+
+/* Whether the trimmed @p text of @p len bytes is @p lower, ignoring ASCII case. */
+static int
+scan_mode_text_is(const char* text, size_t len, const char* lower) {
+    if (strlen(lower) != len) {
+        return 0;
+    }
+    for (size_t i = 0; i < len; i++) {
+        if (tolower((unsigned char)text[i]) != lower[i]) {
+            return 0;
+        }
+    }
+    return 1;
+}
+
+const char*
+dsd_scan_mode_alias_hint(const char* text) {
+    static const char* const analog_fm[] = {"fm", "analog", "wfm", "nbfm", "fm-conventional"};
+    if (!text) {
+        return NULL;
+    }
+    const char* begin = NULL;
+    size_t len = 0;
+    scan_mode_trim(text, &begin, &len);
+    for (size_t i = 0; i < sizeof(analog_fm) / sizeof(analog_fm[0]); i++) {
+        if (scan_mode_text_is(begin, len, analog_fm[i])) {
+            return mode_names[DSD_SCAN_MODE_NFM];
+        }
+    }
+    return NULL;
+}
+
+int
+dsd_scan_mode_names_list(char* out, size_t out_size) {
+    if (!out || out_size == 0U) {
+        return -1;
+    }
+    out[0] = '\0';
+    size_t used = 0;
+    for (size_t i = DSD_SCAN_MODE_P25; i < sizeof(mode_names) / sizeof(mode_names[0]); i++) {
+        const int n = DSD_SNPRINTF(out + used, out_size - used, "%s%s", used ? ", " : "", mode_names[i]);
+        if (n < 0 || (size_t)n >= out_size - used) {
+            out[0] = '\0';
+            return -1;
+        }
+        used += (size_t)n;
+    }
+    return 0;
 }
 
 int
@@ -61,22 +134,11 @@ dsd_scan_mode_parse(const char* text, dsd_scan_mode* mode) {
         *mode = DSD_SCAN_MODE_INHERIT;
         return 0;
     }
-    while (isspace((unsigned char)*text)) {
-        text++;
-    }
-    size_t len = strlen(text);
-    while (len && isspace((unsigned char)text[len - 1])) {
-        len--;
-    }
+    const char* begin = NULL;
+    size_t len = 0;
+    scan_mode_trim(text, &begin, &len);
     for (size_t i = 0; i < sizeof(mode_names) / sizeof(mode_names[0]); i++) {
-        if (strlen(mode_names[i]) != len) {
-            continue;
-        }
-        size_t j = 0;
-        while (j < len && tolower((unsigned char)text[j]) == mode_names[i][j]) {
-            j++;
-        }
-        if (j == len) {
+        if (scan_mode_text_is(begin, len, mode_names[i])) {
             *mode = (dsd_scan_mode)i;
             return 0;
         }
@@ -141,6 +203,8 @@ dsd_scan_settings_capture(const dsd_opts* opts, const dsd_state* state, dsd_scan
     out->analog_only = opts->analog_only;
     out->monitor_input_audio = opts->monitor_input_audio;
     out->analog_demod = opts->analog_demod;
+    out->analog_nfm_bandwidth_hz = opts->analog_nfm_bandwidth_hz;
+    out->analog_am_bandwidth_hz = opts->analog_am_bandwidth_hz;
     DSD_MEMCPY(out->output_name, opts->output_name, sizeof(out->output_name));
     out->state_rf_mod = state->rf_mod;
     out->state_samplesPerSymbol = state->samplesPerSymbol;
@@ -193,9 +257,18 @@ scan_settings_copy_row_opts(dsd_scan_settings* dst, const dsd_scan_settings* src
     DSD_MEMCPY(dst->group_in_file, src->group_in_file, sizeof(dst->group_in_file));
 }
 
+/* The analog channel widths are acquisition settings a row may override (DSD_SCAN_OPT_BANDWIDTH), so
+ * they come back with the decoder settings and again before a row's options are installed. */
+static void
+scan_settings_restore_widths(const dsd_scan_settings* saved, dsd_opts* opts) {
+    opts->analog_nfm_bandwidth_hz = saved->analog_nfm_bandwidth_hz;
+    opts->analog_am_bandwidth_hz = saved->analog_am_bandwidth_hz;
+}
+
 static void
 scan_settings_restore_opts(const dsd_scan_settings* saved, dsd_opts* opts) {
     scan_settings_restore_row_opts(saved, opts);
+    scan_settings_restore_widths(saved, opts);
     opts->frame_dstar = saved->frame_dstar;
     opts->frame_x2tdma = saved->frame_x2tdma;
     opts->frame_p25p1 = saved->frame_p25p1;
@@ -291,6 +364,8 @@ dsd_scan_settings_equal(const dsd_scan_settings* a, const dsd_scan_settings* b, 
         offsetof(dsd_scan_settings, analog_only),
         offsetof(dsd_scan_settings, monitor_input_audio),
         offsetof(dsd_scan_settings, analog_demod),
+        offsetof(dsd_scan_settings, analog_nfm_bandwidth_hz),
+        offsetof(dsd_scan_settings, analog_am_bandwidth_hz),
     };
     static const size_t timing[] = {
         offsetof(dsd_scan_settings, state_rf_mod),       offsetof(dsd_scan_settings, state_samplesPerSymbol),
@@ -457,6 +532,13 @@ scan_option_apply_squelch(dsd_opts* opts, dsd_state* state, const dsd_scan_optio
     opts->rtl_squelch_level = dsd_squelch_level_from_sql((double)values->squelch_db);
 }
 
+static void
+scan_option_apply_bandwidth(dsd_opts* opts, dsd_state* state, const dsd_scan_option_values* values) {
+    (void)state;
+    /* Only an NFM row parses a width (--nfm-bandwidth-hz), so it is the NFM demodulator's. */
+    opts->analog_nfm_bandwidth_hz = values->channel_bw_hz;
+}
+
 /* One applier per row option that lands in dsd_opts/dsd_state. A new row option adds a row
  * here, never a branch: the lookup stays flat however many options the grammar grows. */
 static const struct {
@@ -476,6 +558,7 @@ static const struct {
     {DSD_SCAN_OPT_ENC, scan_option_apply_enc},
     {DSD_SCAN_OPT_GROUP, scan_option_apply_group},
     {DSD_SCAN_OPT_SQUELCH, scan_option_apply_squelch},
+    {DSD_SCAN_OPT_BANDWIDTH, scan_option_apply_bandwidth},
 };
 
 static void
@@ -539,6 +622,7 @@ dsd_scan_mode_options(dsd_opts* opts, dsd_state* state, const dsd_scan_option_va
     if (!scope->suspended) {
         const double squelch_before = opts->rtl_squelch_level;
         scan_settings_restore_row_opts(&scope->configured, opts);
+        scan_settings_restore_widths(&scope->configured, opts);
         state->M = scope->configured.force_key;
         scan_options_apply(opts, state, &scope->options);
         scan_squelch_settle(scope, opts, squelch_before);
@@ -816,7 +900,8 @@ dsd_scan_mode_effective_profile(const dsd_opts* opts, const dsd_state* state) {
 }
 
 int
-dsd_scan_mode_prepare(dsd_opts* opts, dsd_state* state, dsd_scan_mode mode, dsd_scan_settings* out) {
+dsd_scan_mode_prepare(dsd_opts* opts, dsd_state* state, dsd_scan_mode mode, const dsd_scan_option_values* row,
+                      dsd_scan_settings* out) {
     if (!opts || !state || !out || (unsigned)mode >= sizeof(mode_presets) / sizeof(mode_presets[0])) {
         return -1;
     }
@@ -829,6 +914,9 @@ dsd_scan_mode_prepare(dsd_opts* opts, dsd_state* state, dsd_scan_mode mode, dsd_
     DSD_MEMSET(&temporary, 0, sizeof(temporary));
     dsd_scan_mode_configured(opts, state, &temporary.configured);
     temporary.mode = mode;
+    if (row) {
+        temporary.options = *row;
+    }
     if (mode == DSD_SCAN_MODE_INHERIT) {
         *out = temporary.configured;
     } else {

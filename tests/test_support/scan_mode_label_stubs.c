@@ -74,7 +74,11 @@ dsd_scan_mode_active(const dsd_state* state) {
 
 const char*
 dsd_scan_mode_name(dsd_scan_mode mode) {
-    return mode == DSD_SCAN_MODE_P25 ? "p25" : "";
+    switch (mode) {
+        case DSD_SCAN_MODE_P25: return "p25";
+        case DSD_SCAN_MODE_NFM: return "nfm";
+        default: return "";
+    }
 }
 
 static size_t tg_avoid_count;

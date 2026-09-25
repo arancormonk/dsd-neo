@@ -9,6 +9,7 @@
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/decode_mode.h>
 #include <dsd-neo/runtime/scan_options.h>
+#include <stddef.h>
 #include <stdint.h>
 #ifdef __cplusplus
 extern "C" {
@@ -23,8 +24,14 @@ typedef enum {
     DSD_SCAN_MODE_DPMR,
     DSD_SCAN_MODE_DSTAR,
     DSD_SCAN_MODE_YSF,
-    DSD_SCAN_MODE_M17
+    DSD_SCAN_MODE_M17,
+    /** Analog narrowband FM monitor (issue #526): the -fA receive path, one channel width per row. */
+    DSD_SCAN_MODE_NFM
 } dsd_scan_mode;
+
+/** The last scan class: the bound every range check uses instead of a literal class. Appending a
+ * class moves it, so stored values and MODE_BIT() option masks keep their meaning. */
+#define DSD_SCAN_MODE_LAST DSD_SCAN_MODE_NFM
 
 /** Target modulation precedence shared by scope reapplication and trunk entry. */
 typedef enum {
@@ -87,6 +94,10 @@ typedef struct {
     int analog_only;
     int monitor_input_audio;
     int analog_demod;
+    /** dsd_opts::analog_nfm_bandwidth_hz / analog_am_bandwidth_hz (Hz, 0 = the kind's default). Acquisition
+     * fields: a row width (DSD_SCAN_OPT_BANDWIDTH) lands here, and a different width restages the tune. */
+    int analog_nfm_bandwidth_hz;
+    int analog_am_bandwidth_hz;
     char output_name[1024];
     int state_rf_mod;
     int state_samplesPerSymbol;
@@ -98,6 +109,15 @@ typedef struct {
 /** Parse a trimmed, case-insensitive class; empty means inherit. Returns -1 on invalid input. */
 int dsd_scan_mode_parse(const char* text, dsd_scan_mode* mode);
 const char* dsd_scan_mode_name(dsd_scan_mode mode);
+/** Nonzero for an analog class (NFM): no frames, keys, talkgroups or symbol clock, and activity is carrier. */
+int dsd_scan_mode_is_analog(dsd_scan_mode mode);
+/** The class to suggest for a spelling that is no class but names one (the analog FM aliases "fm", "analog",
+ * "wfm", "nbfm" and "fm-conventional" suggest "nfm"), trimmed and case-insensitive; NULL for anything else. No
+ * alias is ever accepted: a diagnostic offers the returned name instead. */
+const char* dsd_scan_mode_alias_hint(const char* text);
+/** Write every class name, "p25, dmr, ..., nfm", into @p out for a diagnostic. Returns 0, or -1 when @p out is
+ * NULL or too small (it then holds an empty string). */
+int dsd_scan_mode_names_list(char* out, size_t out_size);
 dsd_decode_mode_profile dsd_scan_mode_profile(dsd_scan_mode mode);
 /** Active class, including combined P25; INHERIT when no override is installed. */
 dsd_scan_mode dsd_scan_mode_active(const dsd_state* state);
@@ -108,8 +128,11 @@ void dsd_scan_settings_restore(const dsd_scan_settings* saved, dsd_opts* opts, d
  * name), ignoring unused label bytes and the row-scoped option fields; optionally include live
  * timing/modulation. A difference means a staged tune or parked row must be re-acquired. */
 int dsd_scan_settings_equal(const dsd_scan_settings* a, const dsd_scan_settings* b, int include_timing);
-/** Prepare production row settings without committing the row or baseline. */
-int dsd_scan_mode_prepare(dsd_opts* opts, dsd_state* state, dsd_scan_mode mode, dsd_scan_settings* out);
+/** Prepare production row settings without committing the row or baseline. @p row carries the row's
+ * nonsecret options (NULL = none): the acquisition ones among them, the analog channel width, are in
+ * @p out, so a scanner tunes with the settings the row will run on. */
+int dsd_scan_mode_prepare(dsd_opts* opts, dsd_state* state, dsd_scan_mode mode, const dsd_scan_option_values* row,
+                          dsd_scan_settings* out);
 /** Reserve scope storage before staging a tune or building trunk-target snapshots. */
 int dsd_scan_mode_begin(const dsd_opts* opts, dsd_state* state);
 /** Configured preset for mode selectors; active combined P25 remains a separate scan class. */
