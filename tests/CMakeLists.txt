@@ -11346,16 +11346,18 @@ if(DSD_HAS_RADIO)
     )
     # Issue #525: --nfm-bandwidth-hz changes the channel filter a listener hears
     # through. The same 1 kHz tone through an 8 kHz, an explicit 16 kHz and a 25 kHz
-    # channel, each held to NFM_TONE's bounds with its own SNR and in-band floors:
-    # the tone keeps its level at every width (probe on the tone within
-    # +/-1 dBc, RMS unchanged). 8 kHz trims the 3 kHz-deviation signal's outer
-    # sidebands (tone SNR 17.0 dB, in-band 28.5 dB), 25 kHz lets in more of the
-    # receiver noise (23.6 dB, 30.4 dB), and an explicit 16 kHz measures the same as
-    # the default (25.9 dB, 30.5 dB): its floors are ones neither other width meets
-    # together. That its taps are the default's bit for bit is DSP_CHANNEL_FILTERS'
-    # golden, not this replay's.
+    # channel, each held to NFM_TONE's bounds with its own SNR and in-band floors,
+    # and to the tone's absolute level: -36.1 dBFS at every width (-36.14 at 8 kHz),
+    # bounded to -37.5..-34.5 dBFS, so a width that costs the tone 1.5 dB fails. The
+    # 1 kHz probe's +/-1 dBc is NFM_TONE's self-check of the probe (it is measured
+    # against the fit of the same tone, so it reads 0.00 dBc at any level), not a
+    # level bound. 8 kHz trims the 3 kHz-deviation signal's outer sidebands (tone SNR
+    # 17.0 dB, in-band 28.5 dB), 25 kHz lets in more of the receiver noise (23.6 dB,
+    # 30.4 dB), and an explicit 16 kHz measures the same as the default (25.9 dB,
+    # 30.5 dB): its floors are ones neither other width meets together. That its taps
+    # are the default's bit for bit is DSP_CHANNEL_FILTERS' golden, not this replay's.
     set(_analog_tone_bounds
-        "--analog-expect-tone-hz 1000 --analog-min-captured-ms 1400 --analog-min-audible-ms 1400 --analog-max-first-audible-ms 100 --analog-min-rms-dbfs -42 --analog-max-rms-dbfs -30 --analog-max-clip 0 --analog-probe-min-dbc 1000:-1 --analog-probe-max-dbc 1000:1"
+        "--analog-expect-tone-hz 1000 --analog-min-captured-ms 1400 --analog-min-audible-ms 1400 --analog-max-first-audible-ms 100 --analog-min-rms-dbfs -42 --analog-max-rms-dbfs -30 --analog-max-clip 0 --analog-probe-min-dbc 1000:-1 --analog-probe-max-dbc 1000:1 --analog-probe-min-dbfs 1000:-37.5 --analog-probe-max-dbfs 1000:-34.5"
     )
     dsd_neo_add_analog_replay_test(
         DECODE_IQ_ANALOG_NFM_TONE_8K

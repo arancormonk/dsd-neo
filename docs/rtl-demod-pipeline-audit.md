@@ -437,7 +437,8 @@ invariant to it, so it is left as is.
   refusals, a CQPSK toggle or switch drained with it, a config apply's width
   and reopen rate, scan rows, and the DSP bandwidth refusal. `DECODE_IQ_ANALOG_NFM_TONE_8K`,
   `_16K` and `_25K` show the 1 kHz tone keeping its level through each width
-  (the explicit 16 kHz measuring the same as the default), and `DECODE_IQ_ANALOG_NFM_BW_8K`
+  (-36.1 dBFS, bounded to -37.5..-34.5 dBFS; the explicit 16 kHz measuring the
+  same as the default), and `DECODE_IQ_ANALOG_NFM_BW_8K`
   and `_25K` that the neighbour 12.5 kHz away is rejected at 8 kHz (-79.5 dBc)
   and inside the passband at 25 kHz (-8.2 dBc).
 
