@@ -3816,7 +3816,13 @@ ui_revert_analog_entry(dsd_opts* opts, dsd_state* state, int width_hz) {
                 dsd_opts_compute_sps_rate(opts, profile.symbol_rate_hz, current_demod_rate(opts, state));
             state->symbolCenter = dsd_opts_symbol_center(state->samplesPerSymbol);
         }
-        (void)dsd_audio_ensure_digital_output(opts);
+        /* The sink the restored mode writes to, as decode_mode_apply_value() opens it: a refused switch between FM and
+           AM goes back to the analog monitor, which has no digital voice stream to open. */
+        if (opts->analog_only) {
+            (void)dsd_audio_ensure_analog_output(opts);
+        } else {
+            (void)dsd_audio_ensure_digital_output(opts);
+        }
         dsd_symbol_analog_block_reset(state);
     }
     int changed = 0;
@@ -3885,6 +3891,18 @@ ui_check_mode_receive_profile(const dsd_opts* opts, const dsd_state* state, dsdn
                                           why_size);
     }
     return svc_check_mode_receive_profile(opts, state, mode);
+}
+
+/* The analog monitor block the decoder has part-collected holds the old family's samples (a digital session collects
+   its unsynced input there too, monitored or not), or on the monitor the old kind's (FM discriminator audio of an AM
+   carrier, or the reverse): dropped when a mode change moved the decoder off them (@p was_analog, @p was_kind: the
+   family and kind before it), so the first block the new family or kind plays does not start with them. */
+static void
+decode_mode_drop_old_analog_block(const dsd_opts* opts, dsd_state* state, int was_analog, int was_kind) {
+    const int analog = opts->analog_only != 0;
+    if (analog != was_analog || (analog && opts->analog_demod != was_kind)) {
+        dsd_symbol_analog_block_reset(state);
+    }
 }
 
 /**
@@ -3974,12 +3992,7 @@ decode_mode_apply_value(dsd_opts* opts, dsd_state* state, dsdneoUserDecodeMode m
     } else {
         (void)dsd_audio_ensure_digital_output(opts);
     }
-    /* The analog monitor block the decoder has part-collected holds the old family's samples (a digital session
-       collects its unsynced input there too, monitored or not): dropped, so the first block the new family plays
-       does not start with them. */
-    if ((opts->analog_only != 0) != was_analog) {
-        dsd_symbol_analog_block_reset(state);
-    }
+    decode_mode_drop_old_analog_block(opts, state, was_analog, was_kind);
     /* The presets write symbol timing for a 48 kHz input, and on an RTL front end
        the demod output rate is whatever the capture rate decimates to, so the
        timing has to be recomputed at the live rate or the decoder is put on the
@@ -5605,6 +5618,8 @@ apply_cfg_analog_profile_change(dsd_opts* opts, dsd_state* state, const cfg_rx_p
         if (opts->audio_in_type != AUDIO_IN_RTL) {
             return 0;
         }
+        /* The part-collected monitor block holds the old kind's audio, as decode_mode_apply_value() drops it. */
+        dsd_symbol_analog_block_reset(state);
         ui_arm_analog_entry(opts, state, 1, before->analog_kind);
         return (decode_mode_republish(opts, state, dsd_infer_decode_mode_preset(opts)) != 0
                 && ui_revert_analog_entry(opts, state, dsd_opts_analog_width_hz(opts)))

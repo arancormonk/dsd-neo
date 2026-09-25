@@ -692,7 +692,10 @@ installs from `src/engine/trunk_tuning.c` in `src/engine/trunk_tuning_hooks_inst
   numbering and outcomes, the kept kind).
 - AM (issue #524): `DSD_APP_CMD_DECODE_MODE_SET` takes `DSDCFG_MODE_AM` (the preset ids end there, as do the
   RadioReference import's) and refuses it on a PCM input (`dsd_decode_mode_runs_on_input()`); on a running RTL session
-  it holds the AM width to the rate (above) and switches live across AM, Analog and the digital modes. `[mode] decode =
+  it holds the AM width to the rate (above) and switches live across AM, Analog and the digital modes. A switch between
+  FM and AM, by DECODE_MODE_SET or a config's `[mode]`, drops the analog monitor block the decoder part-collected, as a
+  family change does (`decode_mode_drop_old_analog_block()`), and one the front end refuses goes back to the monitor's
+  raw sink, not the digital one (`ui_revert_analog_entry()`). `[mode] decode =
   am` in a config applied to a PCM session applies, and then falls back. That fallback is
   `apply_cmd_fall_back_from_am_on_pcm()`, run after every command (`apply_cmd_scoped()`): a configured AM preset on an
   input that is not I/Q (a live input switch to Pulse, a file, TCP or UDP audio, or a config's `decode = am` on PCM)

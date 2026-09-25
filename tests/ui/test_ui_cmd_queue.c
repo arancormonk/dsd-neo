@@ -7896,6 +7896,9 @@ test_refused_switch_between_fm_and_am_puts_the_mode_back(void) {
     rc |= expect_int("fm -> am request refused: checked first",
                      g_analog_check_calls == 1 && g_analog_check_kind == DSD_ANALOG_DEMOD_AM, 1);
     rc |= expect_back_on_nfm("fm -> am request refused: back on Analog", &opts, &state, k_refusal);
+    /* Back on the analog monitor, whose raw sink it has: no digital voice stream is opened for it. */
+    rc |= expect_int("fm -> am request refused: raw sink kept", g_ensure_analog_calls > 0, 1);
+    rc |= expect_int("fm -> am request refused: no digital sink opened", g_ensure_digital_calls, 0);
     g_analog_req_result = 0;
 
     /* Refused where it landed: on AM while pending, back on Analog once the stream says it kept FM. */
@@ -7907,8 +7910,11 @@ test_refused_switch_between_fm_and_am_puts_the_mode_back(void) {
                      g_analog_req_kind == DSD_ANALOG_DEMOD_AM && g_analog_req_width_hz == 15000, 1);
     demod_thread_refuses_analog_keeping_kind(1, DSD_ANALOG_DEMOD_FM, 0);
     state.ui_msg[0] = '\0';
+    g_ensure_analog_calls = g_ensure_digital_calls = 0;
     rc |= expect_int("fm -> am landing: settled on an empty drain", dsd_app_drain_cmds(&opts, &state), 0);
     rc |= expect_back_on_nfm("fm -> am landing: back on Analog", &opts, &state, k_refusal);
+    rc |= expect_int("fm -> am landing: raw sink ensured for Analog", g_ensure_analog_calls, 1);
+    rc |= expect_int("fm -> am landing: no digital sink opened", g_ensure_digital_calls, 0);
     state.ui_msg[0] = '\0';
     (void)dsd_app_drain_cmds(&opts, &state);
     rc |= expect_int("fm -> am landing: reported once", state.ui_msg[0] == '\0', 1);
@@ -7939,6 +7945,70 @@ test_refused_switch_between_fm_and_am_puts_the_mode_back(void) {
     rc |= submit_config_mode(&opts, &state, DSDCFG_MODE_AM, "config fm -> am request refused");
     rc |= expect_back_on_nfm("config fm -> am request refused: back on Analog", &opts, &state, k_refusal);
     g_analog_req_result = 0;
+
+    g_fake_analog_family = 0;
+    opts.analog_am_bandwidth_hz = 0;
+    state.rtl_ctx = NULL;
+    freeState(&state);
+    return rc;
+}
+
+/*
+ * Issue #524: a switch between FM and AM on the running monitor drops the analog monitor block the decoder has
+ * part-collected, as a family change does: it holds the old kind's audio (the FM discriminator reading an AM carrier,
+ * or the reverse). DECODE_MODE_SET and a config's [mode] both hold to this; staying on the kind, or a new width of it,
+ * keeps the block.
+ */
+static int
+test_fm_am_switch_discards_partial_analog_block(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static void* fake_ctx[2];
+    int rc = 0;
+    init_nfm_session_with_am_width(&opts, &state, (RtlSdrContext*)fake_ctx, 0);
+
+    seed_partial_analog_block(&state);
+    (void)dsd_app_command_set_i32(DSD_APP_CMD_DECODE_MODE_SET, (int32_t)DSDCFG_MODE_AM);
+    (void)dsd_app_drain_cmds(&opts, &state);
+    demod_thread_lands(0);
+    (void)dsd_app_drain_cmds(&opts, &state);
+    rc |= expect_int("kind block: on AM", dsd_infer_decode_mode_preset(&opts) == DSDCFG_MODE_AM, 1);
+    rc |= expect_partial_analog_block("kind block: FM to AM drops the block", &state, 0);
+
+    seed_partial_analog_block(&state);
+    rc |= submit_am_width(&opts, &state, 10000, "kind block: an AM width");
+    demod_thread_lands(0);
+    (void)dsd_app_drain_cmds(&opts, &state);
+    rc |= expect_int("kind block: AM width applied", opts.analog_am_bandwidth_hz, 10000);
+    rc |= expect_partial_analog_block("kind block: an AM width keeps the block", &state, 1);
+
+    (void)dsd_app_command_set_i32(DSD_APP_CMD_DECODE_MODE_SET, (int32_t)DSDCFG_MODE_AM);
+    (void)dsd_app_drain_cmds(&opts, &state);
+    rc |= expect_partial_analog_block("kind block: AM again keeps the block", &state, 1);
+
+    (void)dsd_app_command_set_i32(DSD_APP_CMD_DECODE_MODE_SET, (int32_t)DSDCFG_MODE_ANALOG);
+    (void)dsd_app_drain_cmds(&opts, &state);
+    demod_thread_lands(0);
+    (void)dsd_app_drain_cmds(&opts, &state);
+    rc |= expect_int("kind block: back on Analog", dsd_infer_decode_mode_preset(&opts) == DSDCFG_MODE_ANALOG, 1);
+    rc |= expect_partial_analog_block("kind block: AM to FM drops the block", &state, 0);
+
+    seed_partial_analog_block(&state);
+    rc |= submit_config_mode(&opts, &state, DSDCFG_MODE_AM, "kind block: config am");
+    demod_thread_lands(0);
+    (void)dsd_app_drain_cmds(&opts, &state);
+    rc |= expect_int("kind block: config onto AM", dsd_infer_decode_mode_preset(&opts) == DSDCFG_MODE_AM, 1);
+    rc |= expect_partial_analog_block("kind block: config FM to AM drops the block", &state, 0);
+
+    seed_partial_analog_block(&state);
+    rc |= submit_config_mode(&opts, &state, DSDCFG_MODE_AM, "kind block: config am again");
+    rc |= expect_partial_analog_block("kind block: config staying AM keeps the block", &state, 1);
+
+    rc |= submit_config_mode(&opts, &state, DSDCFG_MODE_ANALOG, "kind block: config analog");
+    demod_thread_lands(0);
+    (void)dsd_app_drain_cmds(&opts, &state);
+    rc |= expect_int("kind block: config onto Analog", dsd_infer_decode_mode_preset(&opts) == DSDCFG_MODE_ANALOG, 1);
+    rc |= expect_partial_analog_block("kind block: config AM to FM drops the block", &state, 0);
 
     g_fake_analog_family = 0;
     opts.analog_am_bandwidth_hz = 0;
@@ -8805,6 +8875,7 @@ main(void) {
     rc |= test_refused_switch_onto_analog_retimes_the_mode();
     rc |= test_nfm_width_changes_held_to_channel_lpf_off();
     rc |= test_refused_switch_between_fm_and_am_puts_the_mode_back();
+    rc |= test_fm_am_switch_discards_partial_analog_block();
     rc |= test_am_width_refused_where_it_lands();
     rc |= test_am_held_to_channel_lpf_off();
 #endif
