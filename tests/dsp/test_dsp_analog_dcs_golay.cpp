@@ -125,6 +125,10 @@ test_every_word_is_a_golay24_word() {
  * The cited words, before and after the mapping:
  *   023  11101100011-100-000/010/011 = 0x763813  ->  Golay24.hpp 0x640E37
  *   023 inverted  00010011100-011-111/101/100 = 0x09C7EC  ->  0x1BF1C8
+ *   047  00011111101-100-000/100/111 = 0x0FD827  ->  0x720DF8 (a standard code of its own,
+ *        printed as the inverted 023 word rotated to its third 100 signature match)
+ *   020  11110001001100000010000 = 0x789810  ->  0x040C8F (a word of another rotation class,
+ *        so check bits that do not follow from 023's)
  *   000  11000111010-100-000/000/000 = 0x63A800  ->  0x000AE3, POLY itself
  */
 void
@@ -137,6 +141,16 @@ test_reference_words() {
     check(dsd_dcs_word(0023, 1) == 0x09C7ECU, "dsd_dcs_word(0023, 1) == 0x09C7ECU");
     check(to_golay24(0x09C7ECU) == 0x1BF1C8U, "to_golay24(0x09C7ECU) == 0x1BF1C8U");
     check(golay24_accepts(0x1BF1C8U), "golay24_accepts(0x1BF1C8U)");
+
+    check(dsd_dcs_word(0047, 0) == 0x0FD827U, "dsd_dcs_word(0047, 0) == 0x0FD827U");
+    check(to_golay24(0x0FD827U) == 0x720DF8U, "to_golay24(0x0FD827U) == 0x720DF8U");
+    check(golay24_accepts(0x720DF8U), "golay24_accepts(0x720DF8U)");
+    check(golay24_encoding_of(0x0FD827U) == 0x720DF8U, "golay24_encoding_of(0x0FD827U) == 0x720DF8U");
+
+    check(dsd_dcs_word(0020, 0) == 0x789810U, "dsd_dcs_word(0020, 0) == 0x789810U");
+    check(to_golay24(0x789810U) == 0x040C8FU, "to_golay24(0x789810U) == 0x040C8FU");
+    check(golay24_accepts(0x040C8FU), "golay24_accepts(0x040C8FU)");
+    check(golay24_encoding_of(0x789810U) == 0x040C8FU, "golay24_encoding_of(0x789810U) == 0x040C8FU");
 
     check(dsd_dcs_word(0, 0) == 0x63A800U, "dsd_dcs_word(0, 0) == 0x63A800U");
     check(to_golay24(0x63A800U) == 0x000AE3U, "to_golay24(0x63A800U) == 0x000AE3U");
