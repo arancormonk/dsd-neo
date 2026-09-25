@@ -35,13 +35,17 @@
  *      exactly in one window and within one bit in the other -- locks the code's class under
  *      its canonical name (dsd_dcs_match()). Asking for both windows exactly would lock at 3 dB
  *      only when 46 bits in a row come through clean, which several starts in a hundred do not
- *      manage within 700 ms; one bit of slack in either window makes that rare. Random bits read that way about once in 6 x 10^8 bits per slicer, some 50
- *      days of noise at 134.4 bit/s.
+ *      manage within 700 ms; one bit of slack in either window makes that rare. Random bits
+ *      read that way about once in 6 x 10^8 bits per slicer, some 50 days of noise at
+ *      134.4 bit/s; with four slicers, at most once in 1.6 x 10^8 bits, some 13 days.
  *   6. Hold: every bit the expected window rotates by one; the lock holds while some slicer
  *      reads it within one bit (a slip of one bit either way is followed), and is lost after
- *      32 consecutive bits without, or at once when the 134.4 Hz turn-off tone dominates the
- *      band for two bits. A bit integral over exactly one period of 134.4 Hz is zero, so the
- *      tone reads as nothing to the slicers; a correlator over the newest six bits finds it.
+ *      32 consecutive bits without, or at the first bit without once the 134.4 Hz turn-off
+ *      tone has carried over a third of the band's power for two bits. A bit integral over
+ *      exactly one period of 134.4 Hz is zero, so the tone reads as nothing to the slicers; a
+ *      correlator over the newest six bits finds it. The tone ends a lock only once the code
+ *      has gone too: a steady component near 134.4 Hz under a code the slicers still read (an
+ *      interferer, a voice that holds the pitch) leaves the lock alone.
  *
  * A carrier with no code reads ACQUIRING until 500 ms of it have been evaluated, then NONE,
  * like the CTCSS detector. Samples inside the carrier hangover keep the bit clock and the
@@ -67,6 +71,13 @@ enum {
 _Static_assert((DSD_ANALOG_DCS_RING & (DSD_ANALOG_DCS_RING - 1)) == 0, "the sample ring is a power of two");
 _Static_assert(DSD_ANALOG_DCS_HISTORY_BITS == 2 * DSD_DCS_WORD_BITS, "each slicer keeps exactly two words");
 
+/* The longest bit integral the ring must serve: every decimated rate is below twice the target
+   rate (fs / floor(fs / 2400) < 4800 Hz), where a bit at 134.4 bit/s is under 36 samples. */
+enum { DCS_MAX_BOX_LEN = ((2 * DSD_ANALOG_RX_TARGET_RATE_HZ * 10) + 1343) / 1344 };
+
+_Static_assert(DSD_ANALOG_DCS_RING >= (2 * DCS_MAX_BOX_LEN) + 2,
+               "the ring holds two bit integrals and a sample for the interpolation");
+
 #define DCS_WORD_MASK ((1U << DCS_WORD_BITS) - 1U)
 
 /* Per-bit sag of each droop hypothesis: none; the demodulator's DC block (2048 samples) at
@@ -83,10 +94,12 @@ static const double k_clock_gain = 0.5;
 /* Weight of a new bit in each slicer's level estimate. */
 static const double k_amp_alpha = 1.0 / 16.0;
 
-/* The turn-off tone ends a lock when it carries this share of the band's power over the
-   newest TURNOFF_BITS bits: about 1 for the tone, a few percent for any DCS word, whose NRZ
-   spectrum is null at the bit rate. */
-static const double k_turnoff_share = 0.5;
+/* The turn-off tone counts once it carries this share of the band's power over the newest
+   TURNOFF_BITS bits: about 1 for the tone in the clear and about 0.5 at 3 dB in-band, a few
+   percent for any DCS word, whose NRZ spectrum is null at the bit rate. Anything else that
+   reaches it (a steady component near 134.4 Hz, a voice) ends no lock while the code is still
+   read (dcs_judge()), which is what lets it sit below the 3 dB level. */
+static const double k_turnoff_share = 0.35;
 
 /* Carrier time without a lock after which the verdict is "no code" (as for CTCSS). */
 static const double k_no_code_ms = 500.0;
@@ -173,6 +186,12 @@ dcs_configure(void* ctx, double rate_hz) {
     det->samples_per_bit = det->rate_hz / DSD_ANALOG_DCS_BAUD;
     det->box_len = (int)lround(det->samples_per_bit);
     if (det->box_len < 1) {
+        det->box_len = 1;
+    }
+    if (det->box_len > DCS_MAX_BOX_LEN) {
+        /* A rate the front end never delivers: the ring could not hold two bits of it. */
+        det->rate_hz = 0.0;
+        det->samples_per_bit = 0.0;
         det->box_len = 1;
     }
     det->clock_alpha = det->samples_per_bit > 0.0 ? 1.0 / (k_clock_bits * det->samples_per_bit) : 0.0;
@@ -402,18 +421,19 @@ dcs_turnoff_share(dsd_analog_dcs* det) {
 static void
 dcs_judge(dsd_analog_dcs* det, int turnoff) {
     if (det->state == DSD_ANALOG_TONE_STATE_LOCKED) {
-        if (turnoff) {
-            dcs_unlock(det);
-            /* What the slicers hold is the transmission that just ended. */
-            dcs_clear_slicers(det);
-            return;
-        }
         if (dcs_acquire(det) >= 0) {
             return;
         }
         if (dcs_hold(det)) {
             det->fail_run = 0;
-        } else if (++det->fail_run >= DSD_ANALOG_DCS_LOSE_BITS) {
+            return;
+        }
+        det->fail_run++;
+        if (turnoff) {
+            dcs_unlock(det);
+            /* What the slicers hold is the transmission that just ended. */
+            dcs_clear_slicers(det);
+        } else if (det->fail_run >= DSD_ANALOG_DCS_LOSE_BITS) {
             dcs_unlock(det);
         }
         return;
@@ -504,6 +524,11 @@ dcs_report(const void* ctx, dsd_analog_rx_report* out) {
     out->state = DSD_ANALOG_TONE_STATE_ACQUIRING;
     out->kind = DSD_ANALOG_TONE_KIND_NONE;
     if (!det) {
+        return;
+    }
+    if (det->rate_hz <= 0.0) {
+        /* Designed for no usable rate: it hears nothing, so the core need not wait for it. */
+        out->state = DSD_ANALOG_TONE_STATE_NONE;
         return;
     }
     out->state = det->state;
