@@ -3664,6 +3664,97 @@ decode_mode_set_early_verdict(const dsd_opts* opts, dsd_state* state, const stru
     return UI_CMD_APPLY_UNHANDLED;
 }
 
+/*
+ * A switch onto the analog monitor the RTL front end has not taken yet (DSD_APP_CMD_DECODE_MODE_SET, a config's
+ * [mode]): the configured decoder settings from before it and the ones it left. The explicit NFM width it runs was held
+ * to the demod rate before the switch committed, but a retune that moves the rate in between gets the front end to
+ * refuse the analog profile, at once or where it lands, and stay on the digital family. The decoder then goes back to
+ * the settings it had rather than decode Analog from a digital front end, provided its configured settings are still
+ * the ones the switch left; the row-scoped options (squelch, forcing, the voice gate) stay as they are, since the
+ * switch did not set them. Staged before such a command changes anything, armed once it has switched a running RTL
+ * session, and dropped once the front end takes the switch (or a request after it).
+ */
+static dsd_scan_settings g_analog_entry_staged;
+
+static struct {
+    int armed;
+    dsd_scan_settings before;
+    dsd_scan_settings after;
+} g_analog_entry;
+
+static void
+ui_stage_analog_entry(const dsd_opts* opts, const dsd_state* state) {
+    dsd_scan_settings_capture(opts, state, &g_analog_entry_staged);
+}
+
+/* The configured options now run the analog family where they did not (@p was_analog_family): note the switch while a
+   running RTL front end has it to make. */
+static void
+ui_arm_analog_entry(const dsd_opts* opts, const dsd_state* state, int was_analog_family) {
+    if (was_analog_family || !dsd_opts_is_analog_family(opts) || opts->audio_in_type != AUDIO_IN_RTL
+        || !state->rtl_ctx) {
+        return;
+    }
+    g_analog_entry.before = g_analog_entry_staged;
+    dsd_scan_settings_capture(opts, state, &g_analog_entry.after);
+    g_analog_entry.armed = 1;
+}
+
+/* The row's constraint back over the configured options a scoped update edited. When that changes the decoder, the
+   acquisition it made ends and the front end is told the effective profile: @p out_changed says whether it did, and
+   the result is that publish's (-1: the front end refused the analog profile at once). */
+static int
+ui_resume_scope_and_publish(dsd_opts* opts, dsd_state* state, int* out_changed) {
+    *out_changed = dsd_scan_mode_resume(opts, state) ? 1 : 0;
+    if (!*out_changed) {
+        return 0;
+    }
+    reset_call_tracking(opts, state, 1);
+    dsd_frame_sync_reset_acquisition(opts, state, opts->trunk_scan_enabled != 1);
+    return svc_publish_symbol_profile(opts, state, dsd_scan_mode_effective_profile(opts, state));
+}
+
+/*
+ * The front end refused the switch onto the analog monitor (@p width_hz: the NFM width it refused) and stayed digital:
+ * put the decoder back on the configured settings it had before the switch, under a scan row's scope as well, and say
+ * why. Returns 1 when it did; 0 when no switch is armed, or the configured settings have moved on since (a later
+ * command published its own profile).
+ */
+static int
+ui_revert_analog_entry(dsd_opts* opts, dsd_state* state, int width_hz) {
+    if (!g_analog_entry.armed) {
+        return 0;
+    }
+    g_analog_entry.armed = 0;
+    const int scoped = dsd_scan_mode_suspend(opts, state);
+    dsd_scan_settings now;
+    dsd_scan_settings_capture(opts, state, &now);
+    const int reverted = dsd_scan_settings_equal(&now, &g_analog_entry.after, 0);
+    if (reverted) {
+        dsd_scan_settings back = g_analog_entry.before;
+        /* The row-scoped options lead the snapshot (dsd_scan_settings): the ones in force now stay. */
+        DSD_MEMCPY(&back, &now, offsetof(dsd_scan_settings, frame_dstar));
+        dsd_scan_settings_restore(&back, opts, state);
+        (void)dsd_audio_ensure_digital_output(opts);
+        dsd_symbol_analog_block_reset(state);
+    }
+    int changed = 0;
+    if (scoped) {
+        (void)ui_resume_scope_and_publish(opts, state, &changed);
+    }
+    if (reverted && !scoped) {
+        (void)svc_publish_symbol_profile(opts, state, dsd_scan_mode_effective_profile(opts, state));
+        dsd_frame_sync_reset_acquisition(opts, state, opts->trunk_scan_enabled != 1);
+        reset_call_tracking(opts, state, 1);
+    }
+    if (reverted) {
+        char why[128];
+        svc_describe_nfm_refusal(opts, width_hz, why, sizeof why);
+        ui_set_toast(state, 5, "Failed: %s -> %s", dsd_decode_mode_display_name(DSDCFG_MODE_ANALOG), why);
+    }
+    return reverted;
+}
+
 /**
  * @brief Recompute symbol timing for @p mode at the live demod rate and publish it.
  *
@@ -3672,7 +3763,7 @@ decode_mode_set_early_verdict(const dsd_opts* opts, dsd_state* state, const stru
  * state->rf_mod, so a QPSK override applied after the preset needs a second
  * publish or the front end keeps the preset's demodulator and channel filter.
  */
-static void
+static int
 decode_mode_republish(const dsd_opts* opts, dsd_state* state, dsdneoUserDecodeMode mode) {
     const dsd_decode_mode_profile profile = dsd_decode_mode_profile_for(mode);
     state->samplesPerSymbol = dsd_opts_compute_sps_rate(opts, profile.symbol_rate_hz, current_demod_rate(opts, state));
@@ -3680,16 +3771,17 @@ decode_mode_republish(const dsd_opts* opts, dsd_state* state, dsdneoUserDecodeMo
     /* The SPS hunt resumes from wherever the previous mode left it, and its next
        pass overwrites the timing just computed; the RTL front end likewise keeps
        the old mode's demodulator family and channel filter until told otherwise. */
-    svc_publish_symbol_profile(opts, state, profile);
+    return svc_publish_symbol_profile(opts, state, profile);
 }
 
 /*
  * Whether the front end would take the receive profile a change to @p mode publishes. An explicit NFM width is held to
  * the DSP rate it will run at wherever the session is (svc_check_nfm_bandwidth()), under a scan row as well: the row's
- * resume or leave requests the analog profile with it, and a width the front end refused there, with the decoder
- * already on Analog, would leave an Analog decoder on a digital front end with nothing but a log line to say so. The
- * unset default, which no rate refuses, is asked about as before (svc_check_mode_receive_profile()). @p why receives a
- * reason for the toast when there is one beyond the front end's log.
+ * resume or leave requests the analog profile with it, and a width the front end refused there would switch the
+ * decoder to Analog only to put it back (ui_revert_analog_entry()), or, for a typed row's leave, leave an Analog
+ * decoder on a digital front end with nothing but a log line to say so. The unset default, which no rate refuses, is
+ * asked about as before (svc_check_mode_receive_profile()). @p why receives a reason for the toast when there is one
+ * beyond the front end's log.
  */
 static int
 ui_check_mode_receive_profile(const dsd_opts* opts, const dsd_state* state, dsdneoUserDecodeMode mode, char* why,
@@ -3744,6 +3836,7 @@ decode_mode_apply_value(dsd_opts* opts, dsd_state* state, dsdneoUserDecodeMode m
     const int audio_channels = opts->pulse_digi_out_channels;
     const int audio_rate = opts->pulse_digi_rate_out;
     const int was_analog = opts->analog_only != 0;
+    const int was_analog_family = dsd_opts_is_analog_family(opts);
     /* Asked before anything changes: a front end that would refuse the analog receive profile the new mode publishes
        leaves the session in its mode, instead of an Analog decoder on a digital front end. */
     char why[128];
@@ -3769,6 +3862,7 @@ decode_mode_apply_value(dsd_opts* opts, dsd_state* state, dsdneoUserDecodeMode m
        Restored if the mode turns out to be unsupported, so a refused command
        changes nothing -- which is the contract the preset helper itself keeps. */
     const int mod_locks[3] = {opts->mod_cli_lock, opts->mod_p25p2_c4fm, opts->mod_p25p2_profile_lock};
+    ui_stage_analog_entry(opts, state);
     opts->mod_p25p2_c4fm = 0;
     opts->mod_p25p2_profile_lock = 0;
     opts->mod_cli_lock = 0;
@@ -3803,8 +3897,14 @@ decode_mode_apply_value(dsd_opts* opts, dsd_state* state, dsdneoUserDecodeMode m
        starting timing, because the same profile decides the SPS hunt index and
        the channel filter published just below, and a mode running on one symbol
        clock with a hunt profile and a filter built for another is exactly what
-       that costs. */
-    decode_mode_republish(opts, state, mode);
+       that costs. A switch onto the monitor the front end refuses at once (a
+       retune moved the demod rate since the check above) puts the decoder back
+       as it was; one refused where it lands is put back by the next drain. */
+    ui_arm_analog_entry(opts, state, was_analog_family);
+    if (decode_mode_republish(opts, state, mode) != 0
+        && ui_revert_analog_entry(opts, state, opts->analog_nfm_bandwidth_hz)) {
+        return UI_CMD_APPLY_FAILED;
+    }
     /* The decoder was hunting for a different protocol a moment ago: its
        modulation votes describe frames of the old kind, and any call open on the
        old protocol will never be closed by the new one. */
@@ -4032,7 +4132,7 @@ apply_rr_import(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* 
     /* Unconditional, and after every write to state->rf_mod: svc_publish_symbol_profile()
        reads it, so the simulcast override needs a second publish, and a re-apply
        onto an already-matching mode needs the first one. */
-    decode_mode_republish(opts, state, mode);
+    (void)decode_mode_republish(opts, state, mode);
     rr_apply_tune(opts, state, &p);
     rr_apply_reacquire(opts, state);
 
@@ -5109,7 +5209,7 @@ ui_restore_refused_nfm_width(dsd_opts* opts, dsd_state* state, int width_hz, int
    checked) is put back to @p previous_hz. Returns -1 then. */
 static int
 ui_publish_nfm_bandwidth(dsd_opts* opts, dsd_state* state, int previous_hz) {
-    if (svc_publish_nfm_bandwidth(opts, state, previous_hz) == 0) {
+    if (svc_publish_nfm_bandwidth(opts, state) == 0) {
         return 0;
     }
     ui_restore_refused_nfm_width(opts, state, opts->analog_nfm_bandwidth_hz, previous_hz);
@@ -5340,7 +5440,13 @@ apply_cfg_receive_family_change(dsd_opts* opts, dsd_state* state, const dsdneoUs
     }
     dsd_symbol_analog_block_reset(state);
     if (opts->audio_in_type == AUDIO_IN_RTL) {
-        decode_mode_republish(opts, state, cfg->decode_mode);
+        /* A switch onto the monitor the front end refuses at once goes back to the mode the session had, as
+           DECODE_MODE_SET's does, and fails the apply; one refused where it lands is put back by the next drain. */
+        ui_arm_analog_entry(opts, state, old_analog_only && opts->m17encoder != 1);
+        if (decode_mode_republish(opts, state, cfg->decode_mode) != 0
+            && ui_revert_analog_entry(opts, state, opts->analog_nfm_bandwidth_hz)) {
+            rc = -1;
+        }
     }
     return rc;
 }
@@ -5399,6 +5505,7 @@ ui_cmd_handle_config_apply(dsd_opts* opts, dsd_state* state, const struct dsd_ap
     if (prepare_rc != UI_CMD_APPLY_COMPLETED) {
         return prepare_rc;
     }
+    ui_stage_analog_entry(opts, state);
     dsd_apply_user_config_to_opts(&cfg, opts, state);
     /* A [mode] preset carries an audio layout too, but the session's output streams were opened with the layout in
        force then, which the backend fixes for their life: the session's layout is kept, as decode_mode_apply_value()
@@ -5619,19 +5726,28 @@ apply_cmd_leave_scanner_scope(dsd_opts* opts, dsd_state* state, int guarded) {
 }
 
 /* The row's constraint back over the configured options a scoped command edited, and the front end told of what
-   changed. */
-static void
+   changed. Returns -1 when that was a switch onto the analog monitor the front end refused at once, which puts the
+   decoder back as it was and fails the command. */
+static int
 apply_cmd_resume_scope(dsd_opts* opts, dsd_state* state, int nfm_width_before) {
-    if (dsd_scan_mode_resume(opts, state)) {
-        reset_call_tracking(opts, state, 1);
-        dsd_frame_sync_reset_acquisition(opts, state, opts->trunk_scan_enabled != 1);
-        svc_publish_symbol_profile(opts, state, dsd_scan_mode_effective_profile(opts, state));
-    } else if (opts->analog_nfm_bandwidth_hz != nfm_width_before) {
+    int changed = 0;
+    if (ui_resume_scope_and_publish(opts, state, &changed) != 0) {
+        /* Refused at once (a retune moved the demod rate since the command held the width to it): the front end kept
+           its receive profile, so the decoder goes back to it, the mode it had before a switch onto the monitor or
+           else the width the monitor kept. */
+        if (ui_revert_analog_entry(opts, state, opts->analog_nfm_bandwidth_hz)) {
+            return -1;
+        }
+        if (opts->analog_nfm_bandwidth_hz != nfm_width_before) {
+            ui_restore_refused_nfm_width(opts, state, opts->analog_nfm_bandwidth_hz, nfm_width_before);
+        }
+    } else if (!changed && opts->analog_nfm_bandwidth_hz != nfm_width_before) {
         /* The NFM width is not a row setting, so changing it alone (a config apply) leaves the row's constraint as it
            was: the new width reaches the front end now that the options in force are the row's again (a row that runs
            the -fA monitor), which it could not while the command ran against the configured ones. */
         (void)ui_publish_nfm_bandwidth(opts, state, nfm_width_before);
     }
+    return 0;
 }
 
 static int
@@ -5651,8 +5767,8 @@ apply_cmd_scoped(dsd_opts* opts, dsd_state* state, const struct dsd_app_command*
     if (was_scanner) {
         apply_cmd_leave_scanner_scope(opts, state, guarded);
     }
-    if (scoped) {
-        apply_cmd_resume_scope(opts, state, nfm_width_before);
+    if (scoped && apply_cmd_resume_scope(opts, state, nfm_width_before) != 0) {
+        return UI_CMD_APPLY_FAILED;
     }
     return result;
 }
@@ -5675,27 +5791,51 @@ apply_cmd(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
     return result;
 }
 
-/* A width the demod thread refused where it landed (a retune moved the demod rate after the width was checked) is not
-   in force: the configured width goes back to the one the front end kept, the toast says why, and frontends see it
-   at once. */
+/*
+ * An analog monitor request the demod thread refused where it landed (a retune moved the demod rate after its width was
+ * checked) is not in force, so the decoder follows what the front end kept, the toast says why, and frontends see it at
+ * once: a front end still on the digital family never made the switch onto the monitor, and the decoder goes back to
+ * the mode it had (ui_revert_analog_entry()); one on the analog family kept the width it ran, and the configured width
+ * goes back to that one, as the stream recorded it (so of two requests queued back to back, the first taken and the
+ * second refused, the first one's width stands).
+ */
 static void
-ui_settle_nfm_bandwidth(dsd_opts* opts, dsd_state* state) {
-    int width_hz = 0;
-    int kept_hz = 0;
-    if (!opts || !state || !svc_take_nfm_bandwidth_refusal(opts, state, &width_hz, &kept_hz)
-        || opts->analog_nfm_bandwidth_hz != width_hz) {
-        return; /* nothing refused, or the width has changed again since */
+ui_settle_receive_requests(dsd_opts* opts, dsd_state* state) {
+    if (!opts || !state) {
+        return;
     }
-    ui_restore_refused_nfm_width(opts, state, width_hz, kept_hz);
-    dsd_telemetry_publish_opts_snapshot(opts);
-    dsd_telemetry_publish_snapshot(state);
+    svc_monitor_refusal refusal = {0};
+    const int outcome = svc_take_monitor_request_outcome(opts, state, &refusal);
+    if (outcome == SVC_MONITOR_REQUEST_TAKEN) {
+        g_analog_entry.armed = 0; /* the front end took the switch, or a request made after it */
+        return;
+    }
+    if (outcome != SVC_MONITOR_REQUEST_REFUSED) {
+        return;
+    }
+    int changed = 0;
+    if (!refusal.kept_analog) {
+        changed = ui_revert_analog_entry(opts, state, refusal.width_hz);
+    } else {
+        g_analog_entry.armed = 0;
+        if (refusal.kind == DSD_ANALOG_DEMOD_FM && opts->analog_nfm_bandwidth_hz == refusal.width_hz
+            && refusal.kept_width_hz != refusal.width_hz) {
+            /* The width has not changed again since. */
+            ui_restore_refused_nfm_width(opts, state, refusal.width_hz, refusal.kept_width_hz);
+            changed = 1;
+        }
+    }
+    if (changed) {
+        dsd_telemetry_publish_opts_snapshot(opts);
+        dsd_telemetry_publish_snapshot(state);
+    }
 }
 
 int
 dsd_app_drain_cmds(dsd_opts* opts, dsd_state* state) {
     int n_applied = 0;
     ensure_mu_init();
-    ui_settle_nfm_bandwidth(opts, state);
+    ui_settle_receive_requests(opts, state);
     for (;;) {
         struct dsd_app_command cmd;
         int have = 0;

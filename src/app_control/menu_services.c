@@ -971,7 +971,10 @@ svc_check_nfm_bandwidth(const dsd_opts* opts, const dsd_state* state, int width_
     if (width_hz == 0) {
         return 0; /* the unset default keeps the historical filter rule and is never refused for its rate */
     }
-    if (!svc_analog_width_env_allows(DSD_ANALOG_DEMOD_FM, width_hz, why, why_size)) {
+    /* No channel filter runs on PCM input, which takes the width as stored and unused (as a PCM start does): only a
+       radio input needs the filter DSD_NEO_CHANNEL_LPF=0 turns off, and a switch onto one holds the width to it
+       (svc_check_rtl_input_analog_width()). */
+    if (dsd_opts_input_is_radio(opts) && !svc_analog_width_env_allows(DSD_ANALOG_DEMOD_FM, width_hz, why, why_size)) {
         return -1;
     }
 #ifdef USE_RADIO
@@ -1039,7 +1042,7 @@ svc_set_nfm_bandwidth(dsd_opts* opts, const dsd_state* state, int width_hz, char
     }
     const int previous_hz = opts->analog_nfm_bandwidth_hz;
     opts->analog_nfm_bandwidth_hz = width_hz;
-    if (svc_publish_nfm_bandwidth(opts, state, previous_hz) != 0) {
+    if (svc_publish_nfm_bandwidth(opts, state) != 0) {
         /* The front end refused the request after all: the rate moved since the check (a retune). */
         opts->analog_nfm_bandwidth_hz = previous_hz;
         svc_describe_nfm_refusal(opts, width_hz, why, why_size);
@@ -1320,12 +1323,26 @@ svc_rtl_bandwidth_fits_analog_width(const dsd_opts* opts, const dsd_state* state
     if (max_hz <= 0 || dsd_analog_width_format(max_hz, max, sizeof max) != 0) {
         DSD_SNPRINTF(max, sizeof max, "%s", "none");
     }
-    svc_why(why, why_size, "DSP BW %d kHz cannot filter %s %s (max %s); narrow the %s width first", khz,
-            dsd_analog_demod_label(kind), width, max, dsd_analog_demod_label(kind));
+    const char* label = dsd_analog_demod_label(kind);
+    /* Narrowing helps only where the bandwidth filters some width of the kind; below that, the unset NFM default (which
+       runs DSP-limited at any rate) is the width left to fall back on, and for any other kind only a bandwidth this
+       one is not. */
+    char fix[64];
+    int width_fix = 1;
+    if (max_hz >= dsd_analog_width_min_hz(kind)) {
+        DSD_SNPRINTF(fix, sizeof fix, "narrow the %s width first", label);
+    } else if (kind == DSD_ANALOG_DEMOD_FM) {
+        DSD_SNPRINTF(fix, sizeof fix, "%s", "leave the NFM width unset first");
+    } else {
+        DSD_SNPRINTF(fix, sizeof fix, "no %s width fits it; keep a wider DSP bandwidth", label);
+        width_fix = 0;
+    }
+    svc_why(why, why_size, "DSP BW %d kHz cannot filter %s %s (max %s); %s", khz, label, width, max, fix);
     char err[DSD_ANALOG_ERROR_TEXT_MAX];
     if (dsd_analog_width_check(kind, width_hz, rate_hz, err, sizeof err) != 0) {
-        LOG_WARN("RTL DSP bandwidth %d kHz refused: %s, or narrow the %s width first.\n", khz, err,
-                 dsd_analog_demod_label(kind));
+        /* The validator's fix names the DSP bandwidths that fit; the width's own fix, where one exists, follows. */
+        LOG_WARN("RTL DSP bandwidth %d kHz refused: %s%s%s.\n", khz, err, width_fix ? ", or " : "",
+                 width_fix ? fix : "");
     }
     return 0;
 }

@@ -5652,9 +5652,10 @@ if(
             "LINKER:--wrap=rtl_stream_analog_family_active"
             "LINKER:--wrap=rtl_stream_output_rate_for_family"
             "LINKER:--wrap=rtl_stream_set_digital_decode_modes"
-            "LINKER:--wrap=rtl_stream_get_cqpsk_status"
             "LINKER:--wrap=rtl_stream_receive_request_seq"
             "LINKER:--wrap=rtl_stream_receive_request_outcome"
+            "LINKER:--wrap=rtl_stream_receive_request_refusal"
+            "LINKER:--wrap=rtl_stream_requested_cqpsk"
             "LINKER:--wrap=rtl_stream_get_demod_rate_hz"
     )
 endif()

@@ -561,7 +561,6 @@ static int g_analog_check_calls;
 static int g_demod_rate_hz;
 static int g_nfm_publish_calls;
 static int g_nfm_publish_width_hz;
-static int g_nfm_publish_previous_hz;
 /* What the publish answers: -1 is a front end that refused the request after all (a retune moved its rate). */
 static int g_nfm_publish_result;
 
@@ -580,11 +579,10 @@ rtl_stream_get_demod_rate_hz(void) {
 }
 
 int
-svc_publish_nfm_bandwidth(const dsd_opts* opts, const dsd_state* state, int previous_width_hz) {
+svc_publish_nfm_bandwidth(const dsd_opts* opts, const dsd_state* state) {
     (void)state;
     g_nfm_publish_calls++;
     g_nfm_publish_width_hz = opts ? opts->analog_nfm_bandwidth_hz : -1;
-    g_nfm_publish_previous_hz = previous_width_hz;
     return g_nfm_publish_result;
 }
 
@@ -1646,7 +1644,6 @@ test_nfm_bandwidth_services(void) {
     g_analog_check_result = 0;
     rc |= expect_int("nfm svc live 12500", svc_set_nfm_bandwidth(&opts, &state, 12500, why, sizeof why), 0);
     rc |= expect_int("nfm svc live 12500 published", g_nfm_publish_calls == 2 && g_nfm_publish_width_hz == 12500, 1);
-    rc |= expect_int("nfm svc live 12500 published with the width before", g_nfm_publish_previous_hz, 8000);
 
     /* The front end took the check but refused the request itself (a retune moved its rate in between): refused
        here too, with the previous width put back, never reported as applied. */
@@ -1667,6 +1664,25 @@ test_nfm_bandwidth_services(void) {
         strcmp(why, "DSP BW 12 kHz cannot filter NFM 12.5 kHz (max 9.6 kHz); narrow the NFM width first") == 0, 1);
     rc |= expect_int("bw 24 fits 12.5 kHz", svc_rtl_set_bandwidth(&opts, &state, 24, why, sizeof why), 0);
     rc |= expect_int("bw 24 stored", opts.rtl_dsp_bw_khz, 24);
+    /* A bandwidth that filters no NFM width at all (4, 6 or 8 kHz): narrowing cannot help, even from the narrowest
+       width; leaving the width unset, whose default runs at any rate, can. */
+    opts.analog_nfm_bandwidth_hz = 8000;
+
+    const struct {
+        int khz;
+        const char* why;
+    } none_fits[] = {
+        {4, "DSP BW 4 kHz cannot filter NFM 8 kHz (max 2.4 kHz); leave the NFM width unset first"},
+        {6, "DSP BW 6 kHz cannot filter NFM 8 kHz (max 4.2 kHz); leave the NFM width unset first"},
+        {8, "DSP BW 8 kHz cannot filter NFM 8 kHz (max 6 kHz); leave the NFM width unset first"},
+    };
+
+    for (size_t i = 0; i < sizeof none_fits / sizeof none_fits[0]; i++) {
+        rc |= expect_int("bw none fits refused",
+                         svc_rtl_set_bandwidth(&opts, &state, none_fits[i].khz, why, sizeof why), -1);
+        rc |= expect_str("bw none fits reason", why, none_fits[i].why);
+    }
+    rc |= expect_int("bw none fits: bandwidth kept", opts.rtl_dsp_bw_khz, 24);
     opts.analog_only = 0;
     rc |= expect_int("digital: bw 4 stored", svc_rtl_set_bandwidth(&opts, &state, 4, why, sizeof why), 0);
     opts.analog_nfm_bandwidth_hz = 0;

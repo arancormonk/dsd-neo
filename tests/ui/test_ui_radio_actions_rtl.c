@@ -122,13 +122,15 @@ rtl_stream_receive_request_outcome(uint32_t seq) {
 }
 
 int
-rtl_stream_get_cqpsk_status(int* cqpsk_enable, int* cqpsk_timing_active) {
-    if (cqpsk_enable) {
-        *cqpsk_enable = 0;
-    }
-    if (cqpsk_timing_active) {
-        *cqpsk_timing_active = 0;
-    }
+rtl_stream_receive_request_refusal(uint32_t seq, int* out_analog_family, int* out_width_hz) {
+    (void)seq;
+    (void)out_analog_family;
+    (void)out_width_hz;
+    return 0;
+}
+
+int
+rtl_stream_requested_cqpsk(void) {
     return 0;
 }
 

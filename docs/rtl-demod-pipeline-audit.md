@@ -178,11 +178,12 @@ is known:
   no width of the kind, narrowing is never named: an NFM refusal names
   leaving the width unset, which runs at any rate.
 - `DSD_NEO_CHANNEL_LPF=0` refuses every explicit width at any rate
-  (`dsd_analog_channel_lpf_off_check()`), at stream start and, first, in every
-  change that would commit to a start with one: a width with no stream
-  running, a config reopen at an RTL DSP bandwidth or a device's rate, a DSP
-  bandwidth change and Input > Switch source > RTL-SDR, so the running input is
-  not torn down for a start that cannot open.
+  (`dsd_analog_channel_lpf_off_check()`) on a radio input (PCM input runs no
+  channel filter, so a width there is only stored), at stream start and,
+  first, in every change that would commit to a start with one: a width with
+  no stream running, a config reopen at an RTL DSP bandwidth or a device's
+  rate, a DSP bandwidth change and Input > Switch source > RTL-SDR, so the
+  running input is not torn down for a start that cannot open.
 - The command checks a width the analog preset uses against the running
   stream (`rtl_stream_check_analog_profile()`), or with no stream against an
   RTL-SDR/rtl_tcp input's DSP bandwidth, and requests it live from a running
@@ -194,14 +195,15 @@ is known:
   stored and applied when the row's leave republishes the analog profile;
   with CQPSK toggled on under `-fA` it is stored, and turning CQPSK off
   returns to the monitor through the analog profile with it. Whether CQPSK
-  holds the front end off the monitor is read from the requests the decoder
-  has queued, not only from the published state, which lags them until the
-  demod thread takes them: `symbol_profile.c` keeps the CQPSK state of the
-  last request with the request's number (`rtl_stream_receive_request_seq()`),
-  and the published state is the stream's again once the stream reports that
-  request settled (`rtl_stream_receive_request_outcome()`: taken and
-  published, replaced, refused where it landed, or dropped by a restart). The
-  output generation says nothing about that: the demod thread moves it when it
+  holds the front end off the monitor is read from the requests queued, not
+  only from the published state, which lags them until the demod thread takes
+  them: the stream notes the CQPSK state each numbered request leaves it on,
+  whoever queues it (the DSP menu's toggle, a mode change, a scan row's
+  profile or its leave), and answers with it while a request is unsettled
+  (`rtl_stream_requested_cqpsk()`), with the published state once every one
+  has settled (`rtl_stream_receive_request_outcome()`: taken and published,
+  replaced, refused where it landed, or dropped by a restart). The output
+  generation says nothing about that: the demod thread moves it when it
   clears the output for a request, before it publishes, and a retune moves it
   without taking a request.
 - A width the front end took when asked can still be refused: by the request
@@ -209,13 +211,18 @@ is known:
   demod thread where the request lands, when the rate moved after that. The
   first is refused to the caller with the previous width put back; for the
   second the demod thread records the request as refused
-  (`RTL_STREAM_RX_REQUEST_REFUSED`), and the decoder's next command drain puts
-  back the width the front end kept and says why
-  (`svc_take_nfm_bandwidth_refusal()`), so the configured width never stays one
-  the filter does not run.
+  (`RTL_STREAM_RX_REQUEST_REFUSED`) with the family and width it kept
+  (`rtl_stream_receive_request_refusal()`), and the decoder's next command
+  drain puts back that width and says why (`svc_take_monitor_request_outcome()`),
+  so the configured width never stays one the filter does not run, even when
+  an earlier width request landed in between. A stream open forgets a refusal
+  its predecessor recorded: it opens on the options as they are.
 - A switch to Analog (a decode-mode change, a config's `[mode]`) holds an
-  explicit width to the rate first, under a scan row too, so a decoder is
-  never committed to Analog on a front end that refuses the profile.
+  explicit width to the rate first, under a scan row too. A retune that moves
+  the rate after that check gets the switch refused at once or where it lands,
+  and the front end stays on the digital family: the decoder then goes back to
+  the mode it had (the configured settings before the switch, under a scan row
+  too), so it is never left on Analog over a digital front end.
 - A config apply that changes the width, or reopens an RTL-SDR or rtl_tcp
   device under an explicit one, is held to the rate the width will run at: the
   `rtl_bw_khz` the reopen stores, as given, when the config's `[input]` builds
