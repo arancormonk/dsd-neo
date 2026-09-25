@@ -33,8 +33,9 @@
 /* The timing pins under test (docs/cli.md "Received code"), from the DCS timing contract in
    <dsd-neo/dsp/analog_rx.h>, and stronger than its per-event ceilings: every stop is held to
    the loss p95 target on its own, every start at 10 dB to the 10 dB lock bound, and at 3 dB
-   every row meets the lock p95 target and every start on these fixed seeds locks within
-   700 ms. */
+   every row through the demodulator's DC block meets the lock p95 target and every start on
+   these fixed seeds locks within 700 ms. PCM input through a sound card's coupling, which the
+   contract does not cover at 3 dB, has pins of its own. */
 enum {
     LOCK_10DB_MS = DSD_ANALOG_DCS_LOCK_MS,
     LOCK_3DB_P95_MS = DSD_ANALOG_DCS_LOCK_P95_MS,
@@ -46,12 +47,23 @@ enum {
     /* The span a lock survives without holding, DSD_ANALOG_DCS_SPAN_BITS at 134.4 bit/s, rounded
        up (477 ms). */
     SPAN_MS = ((DSD_ANALOG_DCS_SPAN_BITS * 10000) + 1343) / 1344,
+    /* Two words, 46 bits at 134.4 bit/s, is 342 ms: no lock read from scratch comes sooner. */
+    RESET_QUIET_MS = 330,
+    /* A sound card's AC coupling on PCM input (docs/cli.md "Received code"), outside the timing
+       contract at 3 dB: its own p95 pin there, above the long-run sweeps' p95 at 48 kHz with
+       75 us (502 ms), and a per-start pin on the fixed seeds more than a word (172 ms) above
+       their slowest (698 ms). */
+    COUPLING_HZ = 10,
+    LOCK_COUPLED_3DB_P95_MS = 550,
+    LOCK_COUPLED_3DB_SEEDED_MS = 1000,
 };
 
 _Static_assert((int)LOCK_3DB_P95_MS <= (int)LOCK_3DB_SEEDED_MS
                    && (int)LOCK_3DB_SEEDED_MS <= (int)DSD_ANALOG_DCS_LOCK_CEILING_MS,
                "the fixed seeds sit between the 3 dB target and the ceiling");
 _Static_assert((int)LOCK_10DB_MS <= (int)DSD_ANALOG_DCS_LOCK_CEILING_MS, "the ceiling covers 10 dB as well");
+_Static_assert((int)LOCK_COUPLED_3DB_P95_MS <= (int)LOCK_COUPLED_3DB_SEEDED_MS,
+               "the coupled p95 pin sits under its per-start pin");
 _Static_assert((int)LOSS_MS <= (int)DSD_ANALOG_DCS_LOSS_CEILING_MS, "a loss target sits under its ceiling");
 _Static_assert((int)TURNOFF_LOSS_MS <= (int)DSD_ANALOG_DCS_TURNOFF_LOSS_CEILING_MS,
                "a loss target sits under its ceiling");
@@ -143,7 +155,10 @@ typedef struct {
     /* Receiver model. */
     double deemph_alpha; /**< one-pole de-emphasis; 1 = off */
     double deemph_y;
-    double dc; /**< the demodulator's DC block state */
+    double dc; /**< the DC block's state */
+    /** The DC block's step, dc += (x - dc) * dc_k: the demodulator's 1/2048 by default, or a
+        sound card's AC coupling on PCM input (src_couple()). */
+    double dc_k;
     int dc_block;
     double noise_sigma;
     double scale;
@@ -204,9 +219,17 @@ src_init(dcs_src* src, double fs, uint64_t seed, int code, int inverted, double 
     src->rephase_at = INT64_MAX;
     src->flip_from = INT64_MAX;
     src->deemph_alpha = deemph_us > 0.0 ? 1.0 - exp(-1.0 / (fs * deemph_us * 1e-6)) : 1.0;
+    src->dc_k = 1.0 / 2048.0;
     src->dc_block = 1;
     src->noise_sigma = snr_db < 100.0 ? dcs_noise_sigma(DCS_AMP, snr_db, fs) : 0.0;
     src->scale = 1.0;
+}
+
+/* PCM input: audio a receiver demodulated and de-emphasised, through a sound card whose AC
+   coupling is a one-pole high-pass at @p corner_hz, in place of the demodulator's DC block. */
+static void
+src_couple(dcs_src* src, double corner_hz) {
+    src->dc_k = 1.0 - exp(-2.0 * M_PI * corner_hz / src->fs);
 }
 
 /* The NRZ level of the word bit the transmitter is sending, then the clock moves on. */
@@ -280,7 +303,7 @@ src_next(dcs_src* src, int64_t n) {
     src->deemph_y += (v - src->deemph_y) * src->deemph_alpha;
     double y = src->deemph_y;
     if (src->dc_block) {
-        src->dc += (y - src->dc) * (1.0 / 2048.0);
+        src->dc += (y - src->dc) * src->dc_k;
         y -= src->dc;
     }
     if (src->noise_sigma > 0.0) {
@@ -361,14 +384,19 @@ expected_name(int code, int inverted, int* out_code, int* out_inverted) {
     assert(dsd_dcs_canonical(code, inverted, out_code, out_inverted) == 0);
 }
 
-/* Lock time, from the onset of the word, of @p code in @p inverted polarity. Asserts nothing
-   else ever locked; returns -1 if it never locked within @p watch_ms. */
+/* Lock time, from the onset of the word, of @p code in @p inverted polarity, through the
+   demodulator's DC block or, when @p couple_hz is positive, a sound card's coupling with that
+   corner (src_couple()). Asserts nothing else ever locked; returns -1 if it never locked within
+   @p watch_ms. */
 static double
-lock_time_ms(double fs, int code, int inverted, double snr_db, double deemph_us, uint64_t seed, double onset_ms,
-             double watch_ms) {
+lock_time_through_ms(double fs, int code, int inverted, double snr_db, double deemph_us, double couple_hz,
+                     uint64_t seed, double onset_ms, double watch_ms) {
     dsd_analog_rx_core_init(&g_core);
     dcs_src src;
     src_init(&src, fs, seed, code, inverted, snr_db, deemph_us);
+    if (couple_hz > 0.0) {
+        src_couple(&src, couple_hz);
+    }
     src.on = ms_to_samples(fs, onset_ms);
     int want_code = -1;
     int want_inverted = -1;
@@ -384,6 +412,13 @@ lock_time_ms(double fs, int code, int inverted, double snr_db, double deemph_us,
         return -1.0;
     }
     return samples_to_ms(fs, r.first_lock - src.on);
+}
+
+/* Lock time through the demodulator's DC block (lock_time_through_ms()). */
+static double
+lock_time_ms(double fs, int code, int inverted, double snr_db, double deemph_us, uint64_t seed, double onset_ms,
+             double watch_ms) {
+    return lock_time_through_ms(fs, code, inverted, snr_db, deemph_us, 0.0, seed, onset_ms, watch_ms);
 }
 
 static int
@@ -448,17 +483,20 @@ test_every_code_locks_within_bound(void) {
 }
 
 /* The other rates: 8 kHz (the DC block barely sags), 44.1 kHz and the 78.125 kHz forced rate
-   (where it sags the most), every eighth code in both polarities, at both SNRs. */
+   (where it sags the most), at both SNRs, in both polarities: every eighth code at 10 dB, and
+   every second code at 3 dB, 104 starts a row, so that the row's p95 is its sixth slowest start
+   rather than its second. The de-emphasis alternates every eighth code. */
 static void
 test_codes_lock_at_every_rate(void) {
-    static double times[64];
+    static double times[DSD_DCS_CODE_COUNT];
     static const double snrs[] = {10.0, 3.0};
     static const int bounds[] = {LOCK_10DB_MS, LOCK_3DB_SEEDED_MS};
     static const int p95s[] = {0, LOCK_3DB_P95_MS};
+    static const int code_steps[] = {8, 2};
     for (int ri = 0; ri < RATE_COUNT; ri++) {
         for (int si = 0; si < 2; si++) {
             int count = 0;
-            for (int i = 0; i < DSD_DCS_CODE_COUNT; i += 8) {
+            for (int i = 0; i < DSD_DCS_CODE_COUNT; i += code_steps[si]) {
                 for (int inverted = 0; inverted < 2; inverted++) {
                     const uint64_t seed = 5231000ULL + (uint64_t)(ri * 1000 + i * 4 + inverted * 2 + si);
                     times[count++] =
@@ -470,6 +508,40 @@ test_codes_lock_at_every_rate(void) {
             DSD_SNPRINTF(what, sizeof(what), "lock at %d Hz, %.0f dB in-band", k_rates[ri], snrs[si]);
             check_bound(what, times, count, bounds[si], p95s[si]);
         }
+    }
+}
+
+/*
+ * PCM input through a sound card: audio a receiver demodulated and de-emphasised (75 us), at
+ * 48 kHz, through an AC coupling with a COUPLING_HZ corner in place of the demodulator's DC
+ * block. It sags a run of equal bits by 0.63 a bit, which the slicers' 0.55 hypothesis covers,
+ * about three times as much per bit as the demodulator's block does at 48 kHz. Every second code
+ * in both polarities locks within the 10 dB bound at 10 dB. At 3 dB the sag costs more bits
+ * than the demodulator's block does, and the timing contract does not cover it: every code in
+ * both polarities is held to the row's own pins, LOCK_COUPLED_3DB_P95_MS and
+ * LOCK_COUPLED_3DB_SEEDED_MS.
+ */
+static void
+test_codes_lock_through_a_sound_card_coupling(void) {
+    static double times[2 * DSD_DCS_CODE_COUNT];
+    static const double snrs[] = {10.0, 3.0};
+    static const int bounds[] = {LOCK_10DB_MS, LOCK_COUPLED_3DB_SEEDED_MS};
+    static const int p95s[] = {0, LOCK_COUPLED_3DB_P95_MS};
+    static const int code_steps[] = {2, 1};
+    for (int si = 0; si < 2; si++) {
+        int count = 0;
+        for (int i = 0; i < DSD_DCS_CODE_COUNT; i += code_steps[si]) {
+            for (int inverted = 0; inverted < 2; inverted++) {
+                const uint64_t seed = 524000ULL + (uint64_t)(i * 8 + inverted * 4 + si);
+                times[count++] =
+                    lock_time_through_ms(48000.0, dsd_dcs_code(i), inverted, snrs[si], 75.0, (double)COUPLING_HZ, seed,
+                                         300.0 + (double)(i % 7), (double)bounds[si] + 150.0);
+            }
+        }
+        char what[96];
+        DSD_SNPRINTF(what, sizeof(what), "lock through a %d Hz sound card coupling at 48 kHz, %.0f dB in-band",
+                     (int)COUPLING_HZ, snrs[si]);
+        check_bound(what, times, count, bounds[si], p95s[si]);
     }
 }
 
@@ -654,13 +726,13 @@ test_steady_component_keeps_the_lock(void) {
 }
 
 /*
- * The lock that came first keeps the publication: a CTCSS tone that locks under a held code
- * (a voice's talk-off on a coded channel) never replaces the code, nor a code that locks under
- * a held tone the tone; once the first lock is lost, the other shows. Both are real locks
- * here, so the rule, not a missed detection, is what keeps the display.
+ * A code outranks a tone: a CTCSS tone that locks under a held code (a voice's talk-off on a
+ * coded channel) never replaces the code, and a code that locks under a held tone replaces the
+ * tone at once; once the code is lost, a tone still locked shows. Both detectors are really
+ * locked here, so the rule, not a missed detection, decides the display.
  */
 static void
-test_first_lock_keeps_the_publication(void) {
+test_a_code_outranks_a_tone(void) {
     for (int dcs_first = 0; dcs_first < 2; dcs_first++) {
         dsd_analog_rx_core_init(&g_core);
         dcs_src src;
@@ -668,24 +740,29 @@ test_first_lock_keeps_the_publication(void) {
         src.hum.hz = 250.3;
         src.hum.amp = 0.1;
         if (dcs_first) {
+            /* The code throughout until 5 s, the tone from 2 s on. */
             src.hum_from = ms_to_samples(48000.0, 2000.0);
             src.switch_at = ms_to_samples(48000.0, 5000.0);
             src.then_send = SEND_NOTHING;
         } else {
+            /* The tone until 5 s, the code from 2 s on. */
             src.hum_from = 0;
             src.hum_to = ms_to_samples(48000.0, 5000.0);
             src.on = ms_to_samples(48000.0, 2000.0);
         }
+        const int64_t second_starts = ms_to_samples(48000.0, 2000.0);
         const int64_t first_stops = ms_to_samples(48000.0, 5000.0);
-        int64_t first_published = -1;
+        int64_t tone_published = -1;
+        int64_t code_published = -1;
         int both_locked = 0;
-        int handed_over = 0;
+        int tone_after_code = 0;
         float buf[480];
         for (int64_t n = 0; n < ms_to_samples(48000.0, 7000.0); n += 480) {
             for (int i = 0; i < 480; i++) {
                 buf[i] = src_next(&src, n + i);
             }
             assert(dsd_analog_rx_core_process(&g_core, buf, 480, 48000, 1) == 1);
+            const int64_t end = n + 480;
             dsd_analog_rx_publication pub;
             dsd_analog_rx_core_publish(&g_core, &pub);
             const int dcs_shown = pub.tone_state == DSD_ANALOG_TONE_STATE_LOCKED
@@ -693,25 +770,97 @@ test_first_lock_keeps_the_publication(void) {
             const int tone_shown = pub.tone_state == DSD_ANALOG_TONE_STATE_LOCKED
                                    && pub.tone_kind == DSD_ANALOG_TONE_KIND_CTCSS && pub.ctcss_tenths_hz == 2503;
             assert(pub.tone_state != DSD_ANALOG_TONE_STATE_LOCKED || dcs_shown || tone_shown);
-            const int first_shown = dcs_first ? dcs_shown : tone_shown;
-            const int second_shown = dcs_first ? tone_shown : dcs_shown;
-            if (first_shown && first_published < 0) {
-                first_published = n + 480;
-            }
-            if (g_core.dcs.state == DSD_ANALOG_TONE_STATE_LOCKED && g_core.ctcss.state == DSD_ANALOG_TONE_STATE_LOCKED
-                && n + 480 <= first_stops) {
+            const int code_locked = g_core.dcs.state == DSD_ANALOG_TONE_STATE_LOCKED;
+            /* Whenever the code is locked, it is what shows. */
+            assert(!code_locked || dcs_shown);
+            if (code_locked && g_core.ctcss.state == DSD_ANALOG_TONE_STATE_LOCKED) {
                 both_locked = 1;
             }
-            if (n + 480 <= first_stops) {
-                /* Until the first lock's signal stops, only it is ever shown. */
-                assert(!second_shown);
-            } else if (second_shown) {
-                handed_over = 1;
+            if (tone_shown && tone_published < 0) {
+                tone_published = end;
+            }
+            if (dcs_shown && code_published < 0) {
+                code_published = end;
+            }
+            if (tone_shown && code_published >= 0) {
+                tone_after_code = 1;
             }
         }
-        assert(first_published >= 0 && first_published < ms_to_samples(48000.0, 2000.0));
         assert(both_locked);
-        assert(handed_over);
+        if (dcs_first) {
+            /* The code from its lock until it stops, then the tone. */
+            assert(code_published >= 0 && code_published < second_starts);
+            assert(tone_published > first_stops);
+        } else {
+            /* The tone until the code locks, within the 10 dB bound of its start, and never again
+               while the code holds: the code outlasts the tone. */
+            assert(tone_published >= 0 && tone_published < second_starts);
+            assert(code_published > second_starts
+                   && samples_to_ms(48000.0, code_published - second_starts) <= (double)LOCK_10DB_MS);
+            assert(!tone_after_code);
+        }
+    }
+}
+
+/*
+ * A code's own waveform in noise can read as a CTCSS tone before the code locks: it happened
+ * twice in 6,000,000 starts at 10 dB in the long-run sweeps (docs/testing.md), D274N read as
+ * 67.0 Hz at 8 kHz and D122N as 77.0 Hz at 78.125 kHz, both with 75 us de-emphasis. The code
+ * outranks the tone the moment it locks, so each still shows within the 10 dB bound of its
+ * onset; the rule that let the first lock keep the publication showed D122N only after 535 ms,
+ * when the tone was lost. Those two starts, replayed exactly (seed, code and onset).
+ */
+static void
+test_a_code_read_as_a_tone_first_still_locks_in_time(void) {
+    static const struct {
+        double fs;
+        int code;
+        uint64_t seed;
+        double onset_ms;
+        int tone_tenths;
+    } k_starts[] = {
+        {8000.0, 0274, 6000125295ULL, 264.407, 670},
+        {78125.0, 0122, 6400372048ULL, 164.561, 770},
+    };
+
+    for (size_t k = 0; k < sizeof(k_starts) / sizeof(k_starts[0]); k++) {
+        const double fs = k_starts[k].fs;
+        dsd_analog_rx_core_init(&g_core);
+        dcs_src src;
+        src_init(&src, fs, k_starts[k].seed, k_starts[k].code, 0, 10.0, 75.0);
+        src.on = ms_to_samples(fs, k_starts[k].onset_ms);
+        const int block = (int)fs / 1000;
+        float buf[128];
+        assert(block <= (int)(sizeof(buf) / sizeof(buf[0])));
+        int64_t tone_shown = -1;
+        int64_t code_shown = -1;
+        for (int64_t n = 0; n < src.on + ms_to_samples(fs, (double)LOCK_10DB_MS + 150.0); n += block) {
+            for (int i = 0; i < block; i++) {
+                buf[i] = src_next(&src, n + i);
+            }
+            assert(dsd_analog_rx_core_process(&g_core, buf, block, (int)fs, 1) == 1);
+            const observation o = observe(&g_core);
+            if (o.state != DSD_ANALOG_TONE_STATE_LOCKED) {
+                continue;
+            }
+            if (o.kind == DSD_ANALOG_TONE_KIND_CTCSS) {
+                /* Only before the code, and only the tone the sweep saw. */
+                assert(code_shown < 0);
+                dsd_analog_rx_publication pub;
+                dsd_analog_rx_core_publish(&g_core, &pub);
+                assert(pub.ctcss_tenths_hz == k_starts[k].tone_tenths);
+                tone_shown = tone_shown < 0 ? n + block : tone_shown;
+            } else {
+                assert(o.code == k_starts[k].code && o.inverted == 0);
+                code_shown = code_shown < 0 ? n + block : code_shown;
+            }
+        }
+        /* The tone showed first, as in the sweep: the start still exercises the rule. */
+        assert(tone_shown >= 0 && code_shown > tone_shown);
+        const double lock_ms = samples_to_ms(fs, code_shown - src.on);
+        printf("code read as a %.1f Hz tone first at %.0f Hz: code shown %.0f ms after its onset (<= %d ms)\n",
+               (double)k_starts[k].tone_tenths / 10.0, fs, lock_ms, (int)LOCK_10DB_MS);
+        assert(lock_ms <= (double)LOCK_10DB_MS);
     }
 }
 
@@ -754,6 +903,87 @@ test_carrier_drop_and_dropout(void) {
     }
     assert(locked_before == 1);
     assert(held == 1);
+}
+
+/*
+ * A reset leaves nothing of a held code behind: the carrier hangover running out (a carrier
+ * down for 300 ms), and dsd_analog_rx_core_reset() under a running code, which is how the tap
+ * starts every new reception (a retune, a stream pause, a new input rate). The detector is no
+ * longer locked the moment the reset runs. A carrier that comes back with no code never locks,
+ * one that comes back with another code shows that code and never the old one, and the same
+ * code running on through the reset shows again only once it has been read twice from scratch
+ * (46 bits, 342 ms), not within RESET_QUIET_MS of the reset.
+ */
+static void
+test_a_reset_forgets_the_lock(void) {
+    enum { AFTER_NOTHING = 0, AFTER_OTHER_CODE = 1, AFTER_CORE_RESET = 2 };
+
+    const double fs = 48000.0;
+    const int64_t hangover = ms_to_samples(fs, (double)DSD_ANALOG_CARRIER_HANGOVER_MS);
+    for (int k = 0; k < 3; k++) {
+        dsd_analog_rx_core_init(&g_core);
+        dcs_src src;
+        src_init(&src, fs, 8100ULL + (uint64_t)k, 0071, 0, 10.0, 75.0);
+        /* Block-aligned (480 samples): the reset runs between two blocks. */
+        const int64_t boundary = ms_to_samples(fs, 1500.0);
+        int64_t reset_at = boundary + hangover;
+        int64_t fresh_from = boundary;
+        if (k != AFTER_CORE_RESET) {
+            src.carrier_off = boundary;
+            src.carrier_on = boundary + ms_to_samples(fs, 300.0);
+            fresh_from = src.carrier_on;
+            src.switch_at = boundary;
+            src.then_send = (k == AFTER_NOTHING) ? SEND_NOTHING : SEND_WORD;
+        } else {
+            reset_at = boundary;
+        }
+        int locked_before = 0;
+        int64_t new_lock = -1;
+        float buf[480];
+        for (int64_t n = 0; n < ms_to_samples(fs, 3000.0); n += 480) {
+            if (k == AFTER_OTHER_CODE && n == boundary) {
+                src.word = dsd_dcs_word(0754, 0);
+            }
+            if (k == AFTER_CORE_RESET && n == boundary) {
+                dsd_analog_rx_core_reset(&g_core);
+                assert(g_core.dcs.state != DSD_ANALOG_TONE_STATE_LOCKED && g_core.dcs.code < 0);
+            }
+            for (int i = 0; i < 480; i++) {
+                buf[i] = src_next(&src, n + i);
+            }
+            assert(dsd_analog_rx_core_process(&g_core, buf, 480, 48000, 1) == 1);
+            const int64_t end = n + 480;
+            const observation o = observe(&g_core);
+            const int locked = o.state == DSD_ANALOG_TONE_STATE_LOCKED;
+            if (end <= boundary) {
+                locked_before = locked && o.code == 0071;
+                continue;
+            }
+            if (end < reset_at) {
+                continue; /* inside the hangover the held lock may still show */
+            }
+            if (locked && new_lock < 0) {
+                /* A lock read from scratch, of the code now sent. */
+                new_lock = end;
+                assert(k != AFTER_NOTHING);
+                assert(end > fresh_from + ms_to_samples(fs, (double)RESET_QUIET_MS));
+                assert(o.code == (k == AFTER_OTHER_CODE ? 0754 : 0071) && o.inverted == 0);
+            }
+            if (new_lock < 0) {
+                /* Nothing of the old lock is left in the detector, whatever the publication. */
+                assert(!locked && g_core.dcs.state != DSD_ANALOG_TONE_STATE_LOCKED);
+            }
+            if (k == AFTER_OTHER_CODE) {
+                assert(o.code != 0071);
+            }
+        }
+        assert(locked_before);
+        if (k == AFTER_NOTHING) {
+            assert(new_lock < 0 && observe(&g_core).state == DSD_ANALOG_TONE_STATE_NONE);
+        } else {
+            assert(new_lock >= 0 && samples_to_ms(fs, new_lock - fresh_from) <= (double)LOCK_10DB_MS);
+        }
+    }
 }
 
 /*
@@ -1147,14 +1377,17 @@ main(void) {
     test_code_stop_under_carrier_loses();
     test_turnoff_tone_loses_fast();
     test_carrier_drop_and_dropout();
+    test_a_reset_forgets_the_lock();
     test_code_stop_under_a_flickering_carrier();
     test_same_code_at_another_word_phase_holds();
     test_steady_component_keeps_the_lock();
-    test_first_lock_keeps_the_publication();
+    test_a_code_outranks_a_tone();
+    test_a_code_read_as_a_tone_first_still_locks_in_time();
     test_other_code_words_never_lock();
     test_ctcss_tones_never_lock();
     test_every_code_locks_within_bound();
     test_codes_lock_at_every_rate();
+    test_codes_lock_through_a_sound_card_coupling();
     test_random_bits_never_lock();
     test_speech();
     return 0;
