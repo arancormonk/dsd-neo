@@ -81,7 +81,7 @@ Main Menu
 │       ├── PPM correction... [0]                { }
 │       ├── DSP bandwidth... [48 kHz]
 │       ├── NFM bandwidth... [default]           (-fA, or a width set, on a radio input)
-│       ├── AM bandwidth (Hz)...                 (while AM runs)
+│       ├── AM bandwidth... [default]            (while AM runs)
 │       ├── Squelch (dB)...
 │       ├── Volume multiplier... [1]             v
 │       ├── Auto-PPM [On]
@@ -298,11 +298,15 @@ DMR (single slot), NXDN48, NXDN96, X2-TDMA, YSF, D-STAR, EDACS / ProVoice, dPMR,
 protocols are decoded without restarting, the same way the CLI `-f` presets do at startup. The row reads the live
 preset back (`Mode... [P25 Phase 1]`), and the footer toasts `Decoding <mode>` once the change has applied.
 
-AM (`-fM`) needs an I/Q radio input; on a PCM input the pick is refused and the footer says why (`Refused: AM
-demodulation needs an IQ radio input; monitor externally demodulated AM audio with -fA`). While AM runs on a radio
-input, **Input -> RTL-SDR -> AM bandwidth (Hz)...** sets the AM channel-filter width (5000..20000 Hz, 0 for the 6000
-default) live; it passes the value as typed, and the engine refuses one outside the range or one the DSP rate cannot
-filter, keeping the width it had. The status line shows the width in force next to the DSP bandwidth:
+AM (`-fM`) needs an I/Q radio input. On a PCM input the picker's AM row reads `AM (needs an I/Q radio input)`, and
+choosing it sends nothing: the footer gives the reason (`AM demodulation needs an IQ radio input; monitor externally
+demodulated AM audio with -fA`). A running AM session whose input is switched to a PCM one falls back to Analog, and
+the footer says why. While AM runs on a radio input, **Input -> RTL-SDR -> AM bandwidth... [6 kHz (default)]** sets
+the AM channel-filter width (5000..20000 Hz, 0 for the 6000 default) live; the label reads the configured width back.
+It passes the value as typed, and the engine refuses one outside the range or one the DSP rate cannot filter, keeping
+the width it had. Under a `-Y` row with its own decode mode the width is saved and applies when the row ends, and the
+footer says so. **Bandwidth...** refuses a DSP bandwidth that cannot filter the AM width while AM runs (the 6 kHz
+default needs 8 kHz or more). The status line shows the width in force next to the DSP bandwidth:
 `DSP-BW: 48 kHz; Analog: AM 6 kHz;`.
 
 Group policy reload:

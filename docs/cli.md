@@ -610,14 +610,19 @@ decode preset (`[mode] decode = am` in a config, "AM" in the terminal decoder pi
 of the setup wizard): the analog monitor with an AM envelope detector in place of the FM discriminator.
 
 - Inputs: only inputs that deliver I/Q to DSD-neo's own front end run it: RTL-SDR (`-i rtl`), `rtl_tcp`
-  (`-i rtltcp`), SoapySDR (`-i soapy`), Airspy (`-i airspy`) and `--iq-replay`. PCM inputs (Pulse, WAV and other
-  files, stdin, TCP and UDP audio) arrive already demodulated, so `-fM` on one stops at startup with
-  `AM demodulation needs an IQ radio input; monitor externally demodulated AM audio with -fA`. That is the existing
-  contract for such audio: `-fA` plays PCM input as it arrives, whatever demodulated it (an SDR program's AM output
-  over TCP, say). A config whose `[mode] decode = am` meets a PCM input logs the same text and runs the Analog monitor
-  for that session instead, with autosave off so the saved `decode = am` is kept. A decode-mode change to AM on a PCM
-  session (terminal picker, Qt chip, a config apply) is refused with the same reason, and the Qt chip is not offered
-  there.
+  (`-i rtltcp`), SoapySDR (`-i soapy`), Airspy (`-i airspy`) and `--iq-replay`. A replay whose sidecar decimates after
+  the demodulator (`post_downsample` above 1) cannot run AM: the channel filter would run at a multiple of the demod
+  rate, so the stream start refuses it (`...; AM needs a capture with post_downsample 1`). PCM inputs (Pulse, WAV and
+  other files, stdin, symbol files, TCP and UDP audio) arrive already demodulated, so `-fM` on one stops at startup
+  with `AM demodulation needs an IQ radio input; monitor externally demodulated AM audio with -fA`. That is the
+  existing contract for such audio: `-fA` plays PCM input as it arrives, whatever demodulated it (an SDR program's AM
+  output over TCP, say). A config whose `[mode] decode = am` meets a PCM input logs the same text and runs the Analog
+  monitor for that session instead, with autosave off so the saved `decode = am` is kept; a toast says so, since
+  nothing else the session changes is saved either. A decode-mode change to AM on a PCM session (terminal picker, Qt
+  chip) is refused with the same reason; the terminal picker's AM entry reads `AM (needs an I/Q radio input)` there
+  and the Qt chip is greyed out. A runtime config apply with `decode = am` on a PCM session applies, and the session
+  runs the Analog monitor with that reason, as a start does; so does a live switch of a running AM session's input to
+  a PCM one (Pulse, a file, TCP or UDP audio).
 - Channel width: `--am-bandwidth-hz <Hz>` (or `--am-bandwidth-hz=<Hz>`) sets the AM channel filter, a whole number of
   Hz from 5000 to 20000; the default is 6000. It is the full RF passband centred on the tuned frequency, the
   protected passband with edges at +/- half the width: the filter's cutoff sits 600 Hz outside each edge with a fixed
@@ -627,22 +632,33 @@ of the setup wizard): the analog monitor with an AM envelope detector in place o
   option parses but has no effect, and says so.
 - The width has to fit the DSP rate: width/2 + 600 Hz must stay at or below 45% of the rate. The largest AM width per
   RTL DSP bandwidth is 20 kHz at 24 and 48 kHz, 13.2 kHz at 16, 9.6 kHz at 12 and 6 kHz at 8; 4 and 6 kHz fit no AM
-  width. The stream checks it once the device has settled on its rate (a SoapySDR or Airspy device can force one) and
-  refuses to start on a width it cannot filter, naming the width, the rate, the largest width that rate fits and the
-  fix: `AM bandwidth 20 kHz does not fit the 16 kHz DSP rate (the largest width it fits is 13.2 kHz); set the RTL DSP
-  bandwidth to 24 or 48 kHz`. The unset default is held to the same rule, since AM always runs its channel filter;
-  `DSD_NEO_CHANNEL_LPF=0` therefore refuses AM.
+  width. An RTL-SDR or rtl_tcp input's rate is its DSP bandwidth (the spec's `bw` field, or `[input] rtl_bw_khz`), so
+  a width it cannot filter is refused at startup before the device opens, and without a dongle plugged in:
+  `AM bandwidth 20 kHz does not fit the 16 kHz DSP rate (the largest width it fits is 13.2 kHz); set the RTL DSP
+  bandwidth to 24 or 48 kHz`, and a non-zero exit (`-fM -i rtl:0:118.1M:22:0:16 --am-bandwidth-hz 20000`).
+  `--validate-config` reports the same for `decode = am` with `[input] rtl_bw_khz`. The stream checks it again once the
+  device has settled on its rate (a SoapySDR or Airspy device can force one, and an I/Q replay runs at its capture's)
+  and refuses to start on a width it cannot filter, with the same text. The unset default is held to the same rule,
+  since AM always runs its channel filter; `DSD_NEO_CHANNEL_LPF=0` therefore refuses AM. While AM is the configured
+  mode on an RTL-SDR or rtl_tcp input, a DSP bandwidth that cannot filter its width (Input > RTL-SDR > `Bandwidth...`,
+  or a config apply's `rtl_bw_khz`) is refused before the stream restarts, with the width, the widest width it fits
+  and the fix, instead of a restart whose start would refuse AM and leave the decoder with no input.
 - Level: the detector divides the envelope by its own carrier estimate (a 50 ms average of the carrier), so the audio
   level is the modulation depth whatever the signal strength: 100% modulation peaks where live FM does at about 6 kHz
   deviation. A squelched block is silence and leaves the carrier estimate where it was, so audio resumes at its level
-  when the squelch opens; a retune, a mode change and a stream start take it back to the new signal's own level from
-  the first block. AM runs without de-emphasis. The I/Q DC blocker (`DSD_NEO_IQ_DC_BLOCK`, `[dsp] iq_dc_block`) would
+  when the squelch opens after a fade; a squelch closed longer than 100 ms ends the transmission, and whatever opens it
+  next (usually another station at another level) is measured from its own first block, as after a retune, a mode change
+  and a stream start. AM runs without de-emphasis. The I/Q DC blocker (`DSD_NEO_IQ_DC_BLOCK`, `[dsp] iq_dc_block`) would
   remove a carrier tuned to 0 Hz, so it stays off while AM runs, with a one-time log note; it applies again to FM.
 - Received-tone detection (CTCSS, below) is FM signalling and does not run for AM.
 - Live changes: switching between AM, the Analog (FM) monitor and the digital modes from a frontend applies to the
-  running stream without reopening it, and so does a new AM width (Input > RTL-SDR > `AM bandwidth (Hz)...` in the
-  terminal while AM runs; it takes any value and the engine refuses what the running rate cannot filter). The terminal
-  status line shows the width in force (`Analog: AM 6 kHz;`) next to `DSP-BW`.
+  running stream without reopening it, and so does a new AM width (Input > RTL-SDR > `AM bandwidth... [6 kHz
+  (default)]` in the terminal while AM runs, or the Radio sheet's AM channel width stepper in the Qt and Android app;
+  the terminal row takes any value, and the engine refuses what the running rate cannot filter). Under `-Y` scanning
+  the width is held to the running rate too: on a blank row, which keeps the configured mode, it applies live; under
+  a row with its own decode mode (a digital row) the row's profile runs, so the width is saved and applies when the
+  row ends, and the toast says so. The terminal status line shows the width in force (`Analog: AM 6 kHz;`) next to
+  `DSP-BW`, and the Radio sheet shows it as `AM 6 kHz`.
 
 ### Received tone (CTCSS) on the analog monitor
 
@@ -724,17 +740,17 @@ tone setting, and it runs with `-o null` too.
   a file holds no other channel, and an RTL-family stream clears its own output at a retune.
 - Where it runs: analog-only decoding with input monitoring, on PCM inputs (TCP, UDP, Pulse, WAV, stdin) or on an
   RTL-family stream that outputs monitor audio. It does not run for the AM monitor (`-fM`), for the `-8` source monitor
-  during digital decoding, for EDACS analog voice, or on symbol-file input, and the `Rx tone:` line and `RECEIVED TONE` row are shown exactly while
-  it runs. The front end needs an input rate from 2400 Hz up to 320 kHz; outside that range detection logs that it is
-  inactive, once each time the input moves to such a rate, and the row is left out. Detection reads the input at least
-  every 20 ms of it, whatever the length of the blocks the monitor handles audio in (on PCM input 960 samples at the
-  rate the monitor runs at: 20 ms at 48 kHz, which 8, 9.6, 12, 16 and 24 kHz input is brought up to first, but 384 ms
-  at 2500 Hz), so at every supported rate the verdict the decoder publishes trails the times above by at most two such
-  reads. The frontends show it at their next refresh: the decoder hands them a new snapshot at most every 50 ms while it
-  hunts for sync, the terminal redraws at up to about 15 frames a second, and the Qt/Android monitor polls every 250 ms
-  by default, so the screen can trail the published verdict by a few hundred milliseconds more. On RTL input, detection
-  hears the monitor audio after the RTL monitor gain (`vol`), so a gain of 0 leaves it nothing to hear and it reads no
-  carrier; to silence the monitor, mute the output instead.
+  during digital decoding, for EDACS analog voice, or on symbol-file input, and the `Rx tone:` line and `RECEIVED TONE`
+  row are shown exactly while it runs. The front end needs an input rate from 2400 Hz up to 320 kHz; outside that range
+  detection logs that it is inactive, once each time the input moves to such a rate, and the row is left out. Detection
+  reads the input at least every 20 ms of it, whatever the length of the blocks the monitor handles audio in (on PCM
+  input 960 samples at the rate the monitor runs at: 20 ms at 48 kHz, which 8, 9.6, 12, 16 and 24 kHz input is brought
+  up to first, but 384 ms at 2500 Hz), so at every supported rate the verdict the decoder publishes trails the times
+  above by at most two such reads. The frontends show it at their next refresh: the decoder hands them a new snapshot at
+  most every 50 ms while it hunts for sync, the terminal redraws at up to about 15 frames a second, and the Qt/Android
+  monitor polls every 250 ms by default, so the screen can trail the published verdict by a few hundred milliseconds
+  more. On RTL input, detection hears the monitor audio after the RTL monitor gain (`vol`), so a gain of 0 leaves it
+  nothing to hear and it reads no carrier; to silence the monitor, mute the output instead.
 - Externally demodulated audio (PCM inputs): the tone has to survive the producer. Feed the discriminator or flat audio
   with nothing below 300 Hz removed -- no voice high-pass, no de-emphasis that rolls off the low end -- and prefer
   48 kHz. Sound cards and receivers that high-pass their audio output remove CTCSS before DSD-neo sees it. PCM carrier

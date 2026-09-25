@@ -514,26 +514,26 @@ Known gaps and caveats:
 - Fixtures are timing-insensitive by construction. Do not add assertions that
   depend on wall-clock call-state timers, because `fast` replay compresses them;
   use `--iq-replay-rate realtime` for that.
-- **AM** cases run `-fM`, native AM reception (issue #524): `DECODE_IQ_ANALOG_AM_*` in the table below. Under `-fA`
-  the FM monitor demodulates `am_airband_real`, which measures an FM discriminator on an AM signal, so `-fA` cannot
-  stand in for an AM case (`DECODE_IQ_ANALOG_REAL_CTCSS_NOFALSE_AM` uses it under `-fA` only as no-false-lock material
-  for the tone detector). The excerpt serves `-fA` for another reason: its carrier sits within a few hertz of 0 Hz, where the
+- **AM** cases run `-fM`, native AM reception (issue #524): `DECODE_IQ_ANALOG_AM_*` in the table below. Under `-fA` the
+  FM monitor demodulates `am_airband_real`, which measures an FM discriminator on an AM signal, so `-fA` cannot stand in
+  for an AM case (`DECODE_IQ_ANALOG_REAL_CTCSS_NOFALSE_AM` uses it under `-fA` only as no-false-lock material for the
+  tone detector). The excerpt serves `-fA` for another reason: its carrier sits within a few hertz of 0 Hz, where the
   modulation auto-switch (`frame_sync_maybe_auto_switch_modulation()` in `src/dsp/dsd_frame_sync.c`) votes for CQPSK.
-  The switch used to run in analog-only mode too, because `-fA` does not set `opts->mod_cli_lock`: it applied the
-  P25 CQPSK demod profile to the RTL front end, which then delivered CQPSK symbols instead of monitor audio, after 0
-  or 20 ms of monitor audio in `fast` replay and 680 ms in `realtime` (the switch's dwell is timed by the wall clock).
-  The analog family (`dsd_opts_is_analog_family()`) now stands the switch down, so the front end stays on the monitor
-  path whatever the carrier offset, and replay of the excerpt is sample-deterministic. Two tests pin it:
+  The switch used to run in analog-only mode too, because `-fA` does not set `opts->mod_cli_lock`: it applied the P25
+  CQPSK demod profile to the RTL front end, which then delivered CQPSK symbols instead of monitor audio, after 0 or 20
+  ms of monitor audio in `fast` replay and 680 ms in `realtime` (the switch's dwell is timed by the wall clock). The
+  analog family (`dsd_opts_is_analog_family()`) now stands the switch down, so the front end stays on the monitor path
+  whatever the carrier offset, and replay of the excerpt is sample-deterministic. Two tests pin it:
   `FRAME_SYNC_INTERNAL_HELPERS` feeds the switch CQPSK-favouring metrics under the analog preset and requires no vote
   and no demod profile, with no clock involved, and `DECODE_IQ_ANALOG_NO_MOD_AUTO_SWITCH` replays the excerpt under
   `-fA` and requires all 8000 ms on the monitor path. The vote is not the hunt's only request: every symbol profile the
   sync hunt asks for goes through `rtl_maybe_apply_demod_profile()`, which sends the RTL front end nothing in
   analog-only mode, so a two-level profile the hunt re-normalises when its dwell runs out (a live switch to `-fA` from
   D-STAR leaves the hunt on 4800/2) cannot narrow the monitor to a digital channel either; `FRAME_SYNC_INTERNAL_HELPERS`
-  pins that guard on both paths. The analog replay host still warns whenever the front end
-  delivers CQPSK symbols, since symbols are not samples at the output rate and its stream clock then does not measure
-  stream time, and every registered `-fA` case fails on that warning (`NOT_EXPECTED`); `tools/replay_ab.sh` leaves
-  such repeats out (its `off_path` column). An AM case on this excerpt (`-fM`) carries the same guard.
+  pins that guard on both paths. The analog replay host still warns whenever the front end delivers CQPSK symbols, since
+  symbols are not samples at the output rate and its stream clock then does not measure stream time, and every
+  registered `-fA` case fails on that warning (`NOT_EXPECTED`); `tools/replay_ab.sh` leaves such repeats out (its
+  `off_path` column). An AM case on this excerpt (`-fM`) carries the same guard.
 
 ### Analog monitor audio checks
 
@@ -946,7 +946,10 @@ with the default. A channel-width variant is the same kind of wrapper passing `-
 (`printf '#!/bin/sh\nexec /tmp/ab/analog_replay.branch --nfm-bandwidth-hz 12500 "$@"\n' > /tmp/ab/nfm_12k5`), or
 `--am-bandwidth-hz` under `-fM`; an AGC variant passes `-n 0`, since the default gain is fixed. AM has no main-branch
 baseline before #524: its variants are paired against the branch's default width, and the FM monitor cases (`-fA` on
-the NFM excerpts and on `am_airband_real`) are paired against main to show them unchanged.
+the NFM excerpts and on `am_airband_real`) are paired against main to show them unchanged. A design constant with no
+runtime setting, such as the AM carrier time constant (`DSD_AM_CARRIER_TAU_MS`), is varied with temporary builds that
+change only that constant, paired against the default build; revert the constant afterwards and check the rebuilt
+default host is byte-identical to the one measured.
 
 ```sh
 mkdir -p /tmp/ab

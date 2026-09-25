@@ -431,7 +431,12 @@ Rdio API uploads do not follow HTTP redirects. Configure `rdio_api_url` as the f
 
 The width is the full RF passband centred on the tuned frequency, not the tuner or audio bandwidth, and it has to fit
 the DSP rate (see "Native AM" in `docs/cli.md`). A value outside the range, or not whole Hz, is an error under
-`--validate-config`, and the loader refuses it (logging the reason) and keeps the default rather than clamping it. The
+`--validate-config`, and the loader refuses it (logging the reason) and keeps the default rather than clamping it.
+With `[mode] decode = am` and an `rtl` or `rtltcp` `[input]` that startup builds (one with `rtl_freq`),
+`--validate-config` also holds the width, the 6000 default included, to the DSP rate `rtl_bw_khz` gives it, with the
+startup check's text (`AM bandwidth 20 kHz does not fit the 16 kHz DSP rate ...`). A SoapySDR or Airspy device, which
+can force another rate, is checked when its stream starts. A runtime config apply that leaves AM on an RTL-SDR or
+rtl_tcp input at an `rtl_bw_khz` that cannot filter the AM width is refused whole. The
 key is written only for a width that was set explicitly, 6000 included; a width left at its default is not saved, so a
 later default reaches the config. The section itself is always written: a config saved at the default loads back as
 the default over a session's explicit width.
@@ -600,8 +605,12 @@ Supported values: `auto`, `p25p1`, `p25p2`, `dmr`, `dmr_mono`, `nxdn48`,
 rtl_tcp, SoapySDR, Airspy or an I/Q replay. On a PCM input the session logs
 `AM demodulation needs an IQ radio input; monitor externally demodulated AM
 audio with -fA`, runs the Analog monitor instead, and turns autosave off so
-the saved `decode = "am"` is kept; a runtime config apply with `am` on a PCM
-session is refused with that text.
+the saved `decode = "am"` is kept; a toast says so in the terminal and the
+Qt/Android app, since no other change the session makes is saved either. A
+runtime config apply with `am` on a PCM session applies the rest of the config
+and runs the Analog monitor with the same reason, as a start does; the
+session's configuration then holds the Analog monitor, as after any other
+mode change, so a later save writes `analog`.
 Persisted compatibility values `p25p1_only`, `p25p2_only`, `edacs`,
 `provoice`, and `analog_monitor` are translated to their canonical modes when
 read. Generated configurations always use the canonical values above.
