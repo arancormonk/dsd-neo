@@ -773,21 +773,25 @@ detection it only reports: it never mutes or gates audio, it needs no setting, a
 
 - What is shown: the terminal's `Rx tone:` line and the Qt/Android `RECEIVED TONE` row read `DCS D023N` once a code is
   confirmed, with `detecting`, `none` and the em dash as for CTCSS. The log prints `Received tone: DCS D023N` whenever
-  the verdict changes. When a CTCSS tone and a DCS code both lock (a voice holding a tone's pitch on a coded channel),
-  the one that locked first stays shown until it is lost.
-- Timing, in sample time, through a receiver's DC block and 75 or 750 us de-emphasis at 8 to 78.125 kHz: a code is
-  confirmed once its word has been read twice in a row, 46 bits, so typically 350-370 ms after it starts. At 10 dB
-  in-band signal-to-noise (0-290 Hz) or better every start is confirmed within 520 ms (over 1,000,000 starts the
-  slowest took 435 ms). At 3 dB, 95 starts in 100 are confirmed within 450 ms and 999 in 1,000 within 716 ms; the
-  ceiling is 1,500 ms, above the slowest of 8,500,000 starts (1,448 ms), and the slow tail comes mostly from 750 us
-  de-emphasis, which smears a code's isolated bits. Lock time in noise has no absolute bound. The tests hold every code
-  in both polarities within 520 ms at 10 dB and 700 ms at 3 dB on fixed seeds. A code that stops under a live carrier is
-  dropped within 350 ms on 95 stops in 100 (32 bits and the front end's delay), with a 600 ms ceiling above the slowest
-  of 1,000,000 stops (587 ms); the 134.4 Hz turn-off tone a transmitter sends as it unkeys drops it sooner, within
-  150 ms on 95 in 100 (typically 80 ms), with a 350 ms ceiling (the slowest of 1,000,000 took 335 ms). The ceilings are
-  in `<dsd-neo/dsp/analog_rx.h>`. One wrong bit in every word keeps the lock; two do not. A transmitter
-  a little off 134.4 bit/s (some send 134.3) locks and holds. A carrier with no code reads `detecting` until 500 ms of
-  it and `none` after, so a code that takes longer than that to confirm, near 3 dB, shows `none` first.
+  the verdict changes. When a CTCSS tone and a DCS code both lock, the code is shown: a voice holding a tone's pitch on
+  a coded channel never replaces it, and a tone that the code's own waveform raises in noise before the code is
+  confirmed (see Timing) shows only until it is.
+- Timing, in sample time, through the demodulator's DC block and 75 or 750 us de-emphasis at 8 to 78.125 kHz (for PCM
+  input see the last item): a code is confirmed once its word has been read twice in a row, 46 bits, so typically
+  350-370 ms after it starts. At 10 dB in-band signal-to-noise (0-290 Hz) or better every start is confirmed within
+  520 ms (over 7,000,000 starts at 8, 44.1, 48 and 78.125 kHz the slowest took 451 ms). At 3 dB, 95 starts in 100 are
+  confirmed within 450 ms and 999 in 1,000 within 716 ms; the ceiling is 1,500 ms, above the slowest of 8,500,000 starts
+  (1,448 ms), and the slow tail comes mostly from 750 us de-emphasis, which smears a code's isolated bits. Lock time in
+  noise has no absolute bound. The tests hold every code in both polarities within 520 ms at 10 dB and 700 ms at 3 dB on
+  fixed seeds. A code that stops under a live carrier is dropped within 350 ms on 95 stops in 100 (32 bits and the front
+  end's delay), with a 600 ms ceiling above the slowest of 1,000,000 stops (587 ms); the 134.4 Hz turn-off tone a
+  transmitter sends as it unkeys drops it sooner, within 150 ms on 95 in 100 (typically 80 ms), with a 350 ms ceiling
+  (the slowest of 1,000,000 took 335 ms). The ceilings are in `<dsd-neo/dsp/analog_rx.h>`. One wrong bit in every word
+  keeps the lock; two do not. A transmitter a little off 134.4 bit/s (some send 134.3) locks and holds. A carrier with
+  no code reads `detecting` until 500 ms of it and `none` after, so a code that takes longer than that to confirm, near
+  3 dB, shows `none` first. Rarely a code's own waveform in noise reads as a CTCSS tone before the code is confirmed,
+  and that tone shows until it is: twice in 7,000,000 starts at 10 dB (D274N as 67.0 Hz for 161 ms, D122N as 77.0 Hz for
+  71 ms).
 - Holding: the turn-off tone ends a lock only once the code has gone too, so a steady component near 134.4 Hz under a
   code that is still read (an interferer, a voice holding its pitch) leaves the lock alone: at 10 dB it never ended one,
   and at 3 dB, where the noise now and then costs the code a bit, a component at the code's power or 3 dB above it ended
@@ -811,11 +815,15 @@ detection it only reports: it never mutes or gates audio, it needs no setting, a
   lock, so the detector as a whole does so at most four times as often, once in 1.6 x 10^8 bits or some 13 days.
 - The received code is forgotten at the same boundaries as the tone (retune, row or target change, decode-mode change,
   input switch, stop, 200 ms without carrier, a paused input stream), and detection runs where tone detection runs.
-- Externally demodulated audio (PCM inputs): keep everything below 300 Hz, as for CTCSS. The detector expects the
-  low-frequency sag a DC-blocked path puts on long runs of equal bits (the demodulator's own DC block, a sound card's
-  coupling down to about a 10 Hz corner), and a harder high-pass costs sensitivity. The audio's polarity matters: an
-  inverted audio path (some receivers' discriminator outputs, some sound cards) turns every code into its alias, so a
-  D023N transmitter reads as `DCS D047N`.
+- Externally demodulated audio (PCM inputs): keep everything below 300 Hz, as for CTCSS. The timing above is for the RTL
+  path, through the demodulator's own DC block (a one-pole high-pass at 3.7 Hz at 48 kHz). PCM input comes through the
+  sound card's coupling instead, which sags long runs of equal bits faster the higher its corner; the detector allows
+  for a corner up to about 10 Hz. Through a 10 Hz coupling every start at 10 dB is still confirmed within 520 ms (over
+  800,000 starts at 44.1 and 48 kHz the slowest took 498 ms), but at 3 dB it costs bits: 95 starts in 100 are confirmed
+  within 494-558 ms and 999 in 1,000 within 859-960 ms, with the slowest past the 1,500 ms ceiling (1,581 ms). A 15 Hz
+  corner is slower still (at 10 dB, 9 starts in 100,000 past 520 ms), so prefer a DC-coupled input or one with a low
+  corner. The audio's polarity matters: an inverted audio path (some receivers' discriminator outputs, some sound cards)
+  turns every code into its alias, so a D023N transmitter reads as `DCS D047N`.
 
 ## Mode Tweaks & Advanced
 
