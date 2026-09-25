@@ -39,7 +39,7 @@ int main(void) {
         int type2_len = params[p].type2_len;
         int type3_len = params[p].type3_len;
         int punct_id = params[p].punct;
-        int coded_per_input = 4; /* conv encoder emits 4 coded bits per input bit */
+        int coded_per_input = params[p].mother_rate;
         int mother_len = type2_len * coded_per_input;
 
         fprintf(stderr, "Regression test: type2=%d type3=%d coded_per_input=%d punct=%d\n",
@@ -61,10 +61,16 @@ int main(void) {
             /* random input bits */
             for (int i = 0; i < type2_len; i++) in_bits[i] = (uint8_t)(rand() & 1);
 
-            struct conv_enc_state ces;
-            conv_enc_init(&ces);
-            memset(mother_code, 0, mother_len);
-            conv_enc_input(&ces, in_bits, type2_len, mother_code);
+            if (coded_per_input == 4) {
+                struct conv_enc_state ces;
+                conv_enc_init(&ces);
+                conv_enc_input(&ces, in_bits, type2_len, mother_code);
+            } else {
+                /* Speech uses a rate-1/3 mother code. This data encoder emits
+                 * four bits per input, so exercise the speech puncturer's
+                 * independent mapping with a synthetic mother code instead. */
+                for (int i = 0; i < mother_len; i++) mother_code[i] = (uint8_t)(rand() & 1);
+            }
 
             /* puncture to get transmitted type3 bits */
             get_punctured_rate(punct_id, mother_code, type3_len, type3_buf);
@@ -75,6 +81,21 @@ int main(void) {
             /* depuncture into recon_costs (mother_len) */
             for (int i = 0; i < mother_len; i++) recon_costs[i] = 0x7FFFu;
             tetra_rcpc_depuncture_by_id(punct_id, in_costs, type3_len, recon_costs, mother_len);
+
+            if (coded_per_input == 3) {
+                for (int j = 1; j <= type3_len; j++) {
+                    int k = tetra_rcpc_map_j_to_k(punct_id, (uint32_t)j);
+                    if (k < 1 || k > mother_len || recon_costs[k - 1] != in_costs[j - 1]) {
+                        fprintf(stderr, "speech puncture mapping mismatch at j=%d k=%d\n", j, k);
+                        free(in_bits); free(mother_code); free(type3_buf); free(in_costs);
+                        free(recon_costs); free(decoded);
+                        return 3;
+                    }
+                }
+                free(in_bits); free(mother_code); free(type3_buf); free(in_costs);
+                free(recon_costs); free(decoded);
+                continue;
+            }
 
             /* run viterbi on reconstructed soft-costs */
             uint32_t cost = viterbi_decode(decoded, recon_costs, (uint16_t)mother_len);
