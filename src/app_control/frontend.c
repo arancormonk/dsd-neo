@@ -31,6 +31,7 @@ frontend_metrics_defaults(dsd_frontend_metrics* out, const dsd_opts* opts) {
     out->snr_qpsk_const_db = -100.0;
     out->requested_ppm = opts ? opts->rtlsdr_ppm_error : 0;
     out->tuner_gain_is_auto = 1;
+    out->channel_analog_kind = -1;
 }
 
 static int
@@ -61,18 +62,21 @@ frontend_input_is_radio(const dsd_opts* opts) {
 /*
  * The channel width to draw. On the analog monitor it is the analog width the front
  * end published: the configured width while the width-driven filter runs, otherwise
- * the width the DSP rate leaves (flagged). The M17 encoder shares the monitor output
- * without being the analog family, and publishes no analog profile.
+ * the width the DSP rate leaves (flagged), with the demodulator kind it belongs to.
+ * The M17 encoder shares the monitor output without being the analog family, and
+ * publishes no analog profile.
  */
 static int
-frontend_channel_bandwidth_hz(const dsd_frontend_metrics* m, int* out_dsp_limited) {
+frontend_channel_bandwidth_hz(const dsd_frontend_metrics* m, int* out_dsp_limited, int* out_analog_kind) {
     *out_dsp_limited = 0;
+    *out_analog_kind = -1;
     if (m->output_kind == DSD_FRONTEND_RTL_OUTPUT_AUDIO_MONITOR) {
         int kind = 0;
         int width_hz = 0;
         int lpf_on = 0;
         if (dsd_rtl_stream_metrics_hook_analog_profile(&kind, &width_hz, &lpf_on) > 0 && width_hz > 0) {
             *out_dsp_limited = lpf_on ? 0 : 1;
+            *out_analog_kind = kind;
             return width_hz;
         }
     }
@@ -90,7 +94,8 @@ frontend_metrics_from_runtime_hooks(dsd_frontend_metrics* out) {
     out->output_rate_hz = dsd_rtl_stream_metrics_hook_output_rate_hz();
     out->output_kind = dsd_rtl_stream_metrics_hook_output_kind();
     (void)dsd_rtl_stream_metrics_hook_symbol_profile(&out->symbol_rate_hz, &out->symbol_levels, &out->channel_profile);
-    out->channel_bandwidth_hz = frontend_channel_bandwidth_hz(out, &out->channel_bandwidth_dsp_limited);
+    out->channel_bandwidth_hz =
+        frontend_channel_bandwidth_hz(out, &out->channel_bandwidth_dsp_limited, &out->channel_analog_kind);
     out->stream_generation = dsd_rtl_stream_metrics_hook_stream_generation();
     out->stream_active = dsd_rtl_stream_metrics_hook_stream_active();
     (void)dsd_rtl_stream_metrics_hook_input_level(&out->input_level);

@@ -83,10 +83,11 @@ analog_width_view_take_rtl_rate(const dsd_opts* opts, dsd_app_analog_width_view*
     analog_width_view_take_default_rate(rate_hz, DSD_FRONTEND_CHANNEL_LPF_DEFAULT_UNKNOWN, out);
 }
 
-/* The front end's width is the channel in force only while it runs the monitor for the analog family the options in
-   force select. Its mirror outlives a stopped stream, and under a typed digital row (or CQPSK toggled on under -fA)
-   it describes that profile's channel; the width in force is then the one the monitor returns to at the running demod
-   rate (analog_width_view_take_default_rate() for the unset default, with the stream's own filter decision). */
+/* The front end's width is the channel in force only while it runs the monitor for the analog family and kind the
+   options in force select. Its mirror outlives a stopped stream, under a typed digital row (or CQPSK toggled on under
+   -fA) it describes that profile's channel, and across an FM <-> AM switch that has not landed yet it is the other
+   kind's (channel_analog_kind); the width in force is then the one the monitor returns to at the running demod rate
+   (analog_width_view_take_default_rate() for the unset default, with the stream's own filter decision). */
 static void
 analog_width_view_take_front_end(const dsd_opts* opts, const dsd_frontend_metrics* metrics,
                                  dsd_app_analog_width_view* out) {
@@ -96,7 +97,7 @@ analog_width_view_take_front_end(const dsd_opts* opts, const dsd_frontend_metric
     }
     out->max_hz = metrics->demod_rate_hz > 0 ? dsd_analog_width_max_for_rate(metrics->demod_rate_hz) : 0;
     if (dsd_opts_is_analog_family(opts) && metrics->output_kind == DSD_FRONTEND_RTL_OUTPUT_AUDIO_MONITOR
-        && metrics->channel_bandwidth_hz > 0) {
+        && metrics->channel_bandwidth_hz > 0 && metrics->channel_analog_kind == out->kind) {
         out->width_hz = metrics->channel_bandwidth_hz;
         out->dsp_limited = metrics->channel_bandwidth_dsp_limited ? 1U : 0U;
         return;

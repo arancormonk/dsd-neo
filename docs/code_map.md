@@ -455,9 +455,9 @@ Tests: `tests/engine/test_engine_trunk_scan.c` (`ENGINE_TRUNK_SCAN`) and
     `100.0` / `CTCSS 100.0 Hz` formatters (issue #522). Runtime owns it because the frontends format these values and
     the receive policy parses them, and neither may depend on DSP. It also holds `dsd_analog_tone_detection_active()`,
     the one answer to "does received-tone detection run": the analog FM monitor (not AM: `analog_demod` must be FM) on
-    PCM input, or on an RTL stream whose output kind (the stream-metrics hook) is monitor audio. The DSP tap and `app_control/rx_tone_view` both ask it, so
-    a frontend row is shown exactly while the tap listens. `RUNTIME_ANALOG_TONES` pins the table value by value, and
-    the predicate case by case.
+    PCM input, or on an RTL stream whose output kind (the stream-metrics hook) is monitor audio. The DSP tap and
+    `app_control/rx_tone_view` both ask it, so a frontend row is shown exactly while the tap listens.
+    `RUNTIME_ANALOG_TONES` pins the table value by value, and the predicate case by case.
   - Decode presets (`include/dsd-neo/runtime/decode_mode.h`, `src/runtime/decode_mode.c`): the `-f` selector map is
     a table (`k_cli_presets`), and AM (`DSDCFG_MODE_AM` = 16, `-fM`, issue #524) is the last preset: the analog monitor
     with `analog_demod` AM, read back as AM by `dsd_infer_decode_mode_preset()`. AM needs an I/Q radio input:
@@ -575,7 +575,9 @@ installs from `src/engine/trunk_tuning.c` in `src/engine/trunk_tuning_hooks_inst
   that filter bounds the channel (the historical default below a 20 kHz DSP rate, or a width the rate cannot realize);
   the reported width is then the one the rate leaves: the passband of the legacy WIDE plan when that plan runs
   (`dsd_channel_lpf_legacy_wide_width_hz()`), otherwise the DSP rate. Digital output and the M17 encoder's monitor
-  path keep twice the profile's protected edge. Test: `APP_CONTROL_FRONTEND_METRICS`.
+  path keep twice the profile's protected edge. `channel_analog_kind` names the demodulator kind (FM or AM, issue
+  #524) behind an analog width and is -1 for every other width, so a consumer can tell an AM width from a typed scan
+  row's digital profile or an FM profile still in force. Test: `APP_CONTROL_FRONTEND_METRICS`.
 - Receive family on a live mode change: `svc_publish_symbol_profile()` (`src/app_control/symbol_profile.c`)
   publishes the configured analog profile for the analog family, which is what moves a running digital RTL front end
   onto the analog monitor. For a digital configured mode it requests the digital family before the symbol profile;
@@ -676,9 +678,9 @@ installs from `src/engine/trunk_tuning.c` in `src/engine/trunk_tuning_hooks_inst
   PCM input (`dsd_decode_mode_runs_on_input()`); on a running RTL session it asks the front end about the AM profile
   (`svc_check_mode_receive_profile()`, which checks AM with the configured AM width, and
   `svc_check_analog_receive_profile()` for an explicit kind and width) and switches live across AM, Analog and the
-  digital modes. `DSD_APP_CMD_CONFIG_APPLY` refuses `[mode] decode = am` on a PCM session, holds an AM profile it has not
-  run yet (a switch onto AM, a new `[analog] am_bandwidth_hz`) to the running front end, and republishes the analog
-  profile when a config changes the kind or the AM width while the session stays on the monitor.
+  digital modes. `DSD_APP_CMD_CONFIG_APPLY` refuses `[mode] decode = am` on a PCM session, holds an AM profile it has
+  not run yet (a switch onto AM, a new `[analog] am_bandwidth_hz`) to the running front end, and republishes the
+  analog profile when a config changes the kind or the AM width while the session stays on the monitor.
   `DSD_APP_CMD_AM_BANDWIDTH_SET` (509, int32 Hz, 0 = default) edits the configured AM width: refused with the range
   or the rate refusal, applied live with `rtl_stream_request_analog_profile()` while AM is on air outside a scan row's
   scope, kept for the next switch to AM otherwise. It is not a scoped command (no row sets an analog width yet).
@@ -958,9 +960,9 @@ installs from `src/engine/trunk_tuning.c` in `src/engine/trunk_tuning_hooks_inst
   silent below a 1e-9 carrier. `dsd_demod_am_active()` says whether it produces the monitor audio: installed, and the
   monitor on its own channel (`dsd_demod_analog_monitor_active()`). A typed digital scan row's profile on an AM session
   is FM-demodulated instead, as under `-fA` (`full_demod_run_output_demod()`), with the carrier estimate left alone.
-  `dsd_demod_iq_dc_block_active()` is the I/Q DC blocker's gate (enabled, and not under AM), which `iq_dc_block()` uses. `am_carrier` is a float in a
-  scanned header, so `tools/semgrep_float_fields.py` regenerated the semgrep `$FLOAT_FIELD` list with it. Tests:
-  `DSP_AM_DEMOD`, `DSP_CHANNEL_FILTERS` (AM widths).
+  `dsd_demod_iq_dc_block_active()` is the I/Q DC blocker's gate (enabled, and not under AM), which `iq_dc_block()`
+  uses. `am_carrier` is a float in a scanned header, so `tools/semgrep_float_fields.py` regenerated the semgrep
+  `$FLOAT_FIELD` list with it. Tests: `DSP_AM_DEMOD`, `DSP_CHANNEL_FILTERS` (AM widths).
 - `frame_sync_maybe_auto_switch_modulation()` (`dsd_frame_sync.c`) votes the C4FM/CQPSK/GFSK choice from SNR and
   sync hamming and applies the winner's demod profile to the RTL front end. It stands down under a modulation lock
   (`mod_cli_lock`) and in the analog family (`dsd_opts_is_analog_family()`), which has no digital modulation to
@@ -1349,11 +1351,10 @@ Build files: `src/protocol/CMakeLists.txt` and per‑protocol `src/protocol/<nam
   - AM (issue #524): the decoder picker lists AM after Analog; Input > RTL-SDR has `rtl.am_bw` (`AM bandwidth
     (Hz)...`, `is_am_width_editable()`: the AM preset on a radio input), whose prompt hands the value as typed to
     `DSD_APP_CMD_AM_BANDWIDTH_SET`; `rtl.rtltcp_autotune` moved into the advanced tuning submenu to keep the RTL menu at
-    fifteen rows. The status line's `Analog: AM <width>;` field (`ui_print_am_channel_field()`) shows the AM profile the
-    running stream publishes (`dsd_rtl_stream_metrics_hook_analog_profile()`), or the configured width where none is
-    published: before the stream starts, while a kind switch is in flight, or while a typed digital scan row's profile
-    is on air (the frontend metrics' channel width would then be that row's). Tests: `UI_MENU_ACTIONS`,
-    `UI_MENU_TREE_AUDIT`, `UI_NCURSES_PRINTER_HELPERS`.
+    fifteen rows. The status line's `Analog: AM <width>;` field (`ui_print_am_channel_field()`) shows the frontend
+    metrics' channel width while `channel_analog_kind` reads AM, or the configured width otherwise: before the stream
+    starts, while a kind switch is in flight, or while a typed digital scan row's profile is on air. Tests:
+    `UI_MENU_ACTIONS`, `UI_MENU_TREE_AUDIT`, `UI_NCURSES_PRINTER_HELPERS`.
 
 Qt Quick frontend (`src/ui/qt`):
 

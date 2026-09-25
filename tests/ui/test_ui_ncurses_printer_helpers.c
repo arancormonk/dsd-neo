@@ -682,6 +682,8 @@ static int g_channel_bandwidth_dsp_limited;
 static int g_output_kind = DSD_FRONTEND_RTL_OUTPUT_AUDIO_MONITOR;
 static int g_stream_active;
 static int g_demod_rate_hz;
+/* The demodulator kind of the published analog width (DSD_ANALOG_DEMOD_*), or -1 for none (issue #524). */
+static int g_channel_analog_kind = DSD_ANALOG_DEMOD_FM;
 
 int
 dsd_app_frontend_get_metrics(dsd_frontend_metrics* out) { // NOLINT(misc-use-internal-linkage)
@@ -692,6 +694,7 @@ dsd_app_frontend_get_metrics(dsd_frontend_metrics* out) { // NOLINT(misc-use-int
     out->channel_bandwidth_dsp_limited = g_channel_bandwidth_dsp_limited;
     out->stream_active = g_stream_active;
     out->demod_rate_hz = g_demod_rate_hz;
+    out->channel_analog_kind = g_channel_analog_kind;
     return 0;
 }
 
@@ -1109,11 +1112,18 @@ test_am_channel_field_rendering(void) {
     ui_render_rtl_input_source(&opts, &state);
     assert_capture_contains(" Analog: AM 8.333 kHz;");
 
-    /* The running monitor's own width wins over the configured one. */
+    /* The running monitor's own width wins over the configured one, once it is an AM width. An FM width still
+       published (a switch to AM not landed yet) belongs to another channel, so the configured width stays. */
     g_channel_bandwidth_hz = 10000;
+    g_channel_analog_kind = DSD_ANALOG_DEMOD_FM;
+    reset_printw_capture();
+    ui_render_rtl_input_source(&opts, &state);
+    assert_capture_contains(" Analog: AM 8.333 kHz;");
+    g_channel_analog_kind = DSD_ANALOG_DEMOD_AM;
     reset_printw_capture();
     ui_render_rtl_input_source(&opts, &state);
     assert_capture_contains(" Analog: AM 10 kHz;");
+    g_channel_analog_kind = DSD_ANALOG_DEMOD_FM;
 
     /* Stopped, at a 12 kHz DSP bandwidth: the default AM channel fits that rate, so it is not DSP-limited. */
     g_stream_active = 0;
