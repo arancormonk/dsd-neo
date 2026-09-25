@@ -10095,6 +10095,12 @@ test_nfm_target_rotation_restores_family_and_width(void) {
     dsd_engine_trunk_scan_tick(&opts, &state);
     test_rc |= expect_active_target(&state, "digital -> nfm", 1U);
     test_rc |= expect_nfm_front(&opts, "nfm target with a width", 1, 12500, 0);
+    /* No symbol clock: the retune carried no TED override (above). A timing no GFSK or P25 target derives at 48 kHz,
+       left on the decoder while the target is parked, must come back with the target's snapshot on its next visit
+       rather than be replaced by an SPS derived for its type (trunk_scan_gfsk_sps() gives 0 for an analog type, and
+       the analog retune returns before any SPS arithmetic). */
+    state.samplesPerSymbol = 7;
+    state.symbolCenter = 3;
     if (g_ensure_analog_calls != analog_sinks + 1 || g_ensure_digital_calls != digital_sinks) {
         DSD_FPRINTF(stderr, "nfm target did not open the analog sink (%d/%d)\n", g_ensure_analog_calls,
                     g_ensure_digital_calls);
@@ -10130,6 +10136,12 @@ test_nfm_target_rotation_restores_family_and_width(void) {
     trunk_scan_test_set_now(1.04);
     dsd_engine_trunk_scan_tick(&opts, &state);
     test_rc |= expect_active_target(&state, "back to the nfm target", 1U);
+    test_rc |= expect_nfm_front(&opts, "nfm target again", 1, 12500, 0);
+    if (state.samplesPerSymbol != 7 || state.symbolCenter != 3) {
+        DSD_FPRINTF(stderr, "nfm target derived a symbol timing: sps %d, center %d\n", state.samplesPerSymbol,
+                    state.symbolCenter);
+        test_rc = 1;
+    }
     dsd_engine_trunk_scan_shutdown(&opts, &state);
     if (opts.analog_only != 0 || opts.monitor_input_audio != 0 || opts.frame_dmr != 1
         || opts.analog_nfm_bandwidth_hz != 20000) {
