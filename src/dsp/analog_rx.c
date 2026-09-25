@@ -983,7 +983,16 @@ analog_rx_generations_current(const dsd_opts* opts, const analog_rx_session* ses
 
 int
 dsd_analog_rx_carrier_open_now(const dsd_opts* opts, const dsd_state* state) {
-    if (!opts || !state || !state->analog_rx.carrier_open) {
+    if (!opts || !state) {
+        return 0;
+    }
+    int open = state->analog_rx.carrier_open;
+    if (state->analog_rx.tone_state == DSD_ANALOG_TONE_STATE_UNAVAILABLE) {
+        /* The tap's front end cannot run at this input rate, so it never opens a carrier of its own: the squelch
+           over the monitor block says, as it did before the tap existed. */
+        open = opts->rtl_pwr > opts->rtl_squelch_level;
+    }
+    if (!open) {
         return 0;
     }
     const analog_rx_session* session = analog_rx_session_get(state);

@@ -1188,9 +1188,9 @@ symbol_write_unsynced_audio(const dsd_opts* opts, dsd_state* state, unsigned int
 }
 
 /* Whether the block is carrier activity for the scanner's hold. The analog monitor's carrier is the received-tone
- * tap's (squelch open above its level floor, through its 200 ms hangover, dropped at every retune), whether or not the
- * block is played: -o null and a muted UI hold the row too (issue #526). The -8 source monitor under digital decoding
- * keeps its old rule, the carrier it plays. */
+ * tap's (squelch open above its level floor, through its 200 ms hangover, dropped at every retune; the squelch alone at
+ * an input rate the tap cannot run at), whether or not the block is played: -o null and a muted UI hold the row too
+ * (issue #526). The -8 source monitor under digital decoding keeps its old rule, the carrier it plays. */
 static inline int
 symbol_unsynced_carrier_active(const dsd_opts* opts, const dsd_state* state) {
     if (opts->monitor_input_audio != 1 || state->carrier != 0) {

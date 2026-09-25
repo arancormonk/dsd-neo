@@ -169,7 +169,9 @@ void dsd_analog_rx_block_restart(const dsd_state* state);
  * would see a boundary since that read -- the trunk-tuning generation, and on RTL input the stream generation or the
  * published analog profile, moved -- the read was of the channel before, so this returns 0 until the tap reads the new
  * one. A scanner that has just retuned therefore never holds the new row on the old row's carrier. Before detection
- * has run there is nothing to compare, and the publication stands as it is. Read-only.
+ * has run there is nothing to compare, and the publication stands as it is. At an input rate the tap's front end
+ * cannot use (tone_state UNAVAILABLE) the tap never opens a carrier, so the squelch alone decides: the receiver
+ * power (opts->rtl_pwr) above opts->rtl_squelch_level, held to the same boundaries. Read-only.
  */
 int dsd_analog_rx_carrier_open_now(const dsd_opts* opts, const dsd_state* state);
 

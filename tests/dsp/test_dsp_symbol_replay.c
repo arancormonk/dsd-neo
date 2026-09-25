@@ -2236,6 +2236,41 @@ test_carrier_stamp_does_not_need_audio_out(void) {
     dsd_state_ext_free_all(&state);
 }
 
+/* At an input rate the tap's front end cannot run at (a 384 kHz WAV) the tap publishes UNAVAILABLE and never opens a
+ * carrier of its own, so the squelch alone is the carrier: an open squelch still stamps with audio_out = 0, a closed
+ * one does not, and a retune the tap has not read past still keeps the old channel's squelch off the new row. */
+static void
+test_carrier_stamp_at_an_unusable_tap_rate(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    install_fake_rtl_hooks(0);
+    init_analog_monitor_fixture(&opts, &state);
+    opts.wav_sample_rate = 384000;
+    opts.audio_out = 0;
+    dsd_trunk_tuning_requests_reset();
+    clear_carrier_stamps(&state);
+    feed_tone_blocks(&opts, &state, 2);
+    assert(state.analog_rx.tone_state == DSD_ANALOG_TONE_STATE_UNAVAILABLE && state.analog_rx.carrier_open == 0);
+    assert(dsd_analog_rx_carrier_open_now(&opts, &state) == 1);
+    assert(state.last_cc_sync_time != 0 && state.last_cc_sync_time_m > 0.0);
+    assert(state.last_vc_sync_time != 0 && state.last_vc_sync_time_m > 0.0);
+
+    /* A completed retune the tap has not read past yet: the squelch it knows of is the old channel's. */
+    dsd_trunk_tuning_generation_advance();
+    assert(dsd_analog_rx_carrier_open_now(&opts, &state) == 0);
+    feed_tone_blocks(&opts, &state, 1);
+    assert(dsd_analog_rx_carrier_open_now(&opts, &state) == 1);
+
+    /* The squelch closes over the -23.8 dBFS block: nothing stamps. */
+    opts.rtl_squelch_level = dsd_squelch_level_from_sql(-10.0);
+    clear_carrier_stamps(&state);
+    feed_tone_blocks(&opts, &state, 2);
+    assert(dsd_analog_rx_carrier_open_now(&opts, &state) == 0);
+    assert(state.last_cc_sync_time == 0 && state.last_vc_sync_time == 0);
+    dsd_trunk_tuning_requests_reset();
+    dsd_state_ext_free_all(&state);
+}
+
 /* The monitor writes nothing while a retune is in flight (the front end still delivers the channel
  * being left) nor from a block that began before a retune or a reset the tap noticed -- one block
  * at most -- and plays the new channel from the next block on. */
@@ -2319,6 +2354,7 @@ main(void) {
     test_symbol_helper_rtl_cache_and_center_contract();
     test_rx_tone_tap_reads_raw_block_before_voice_filters();
     test_carrier_stamp_does_not_need_audio_out();
+    test_carrier_stamp_at_an_unusable_tap_rate();
     test_monitor_muted_across_a_retune();
     test_rx_tone_clears_on_unannounced_retune();
     test_rx_tone_clears_on_applied_analog_profile_change();
