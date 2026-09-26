@@ -8536,6 +8536,67 @@ test_scan_list_holds_the_configured_nfm_width(void) {
 }
 
 /*
+ * Issue #524 with #526: an AM session scanning a list with an nfm row that sets no width of its own runs the configured
+ * NFM width whenever that row comes on air, as a digital session does. A config holding [analog] and a DSP bandwidth
+ * are held to that width as well as to the AM width the preset runs, whichever row is on air: a DSP bandwidth that
+ * filters the AM default but not the NFM width is refused, rather than the nfm row skipped at every visit.
+ */
+static int
+test_scan_list_holds_the_configured_nfm_width_on_am(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static void* fake_ctx[2];
+    int rc = 0;
+    init_dmr_session_with_nfm_width(&opts, &state, (RtlSdrContext*)fake_ctx, 11250);
+    opts.analog_am_bandwidth_hz = 0;
+    rc |= submit_decode_mode(&opts, &state, DSDCFG_MODE_AM, "am scan list: AM session");
+    rc |= expect_int("am scan list: on AM", opts.analog_only == 1 && opts.analog_demod == DSD_ANALOG_DEMOD_AM, 1);
+    load_dmr_and_nfm_rows(&state, 0);
+    opts.scanner_mode = 1;
+
+    reset_rx_family_wrap();
+    g_analog_check_result = -1; /* 16 kHz does not fit the 16 kHz DSP rate (max 13.2 kHz) */
+    rc |= submit_config_nfm_width(&opts, &state, DSDCFG_MODE_UNSET, 16000, "am scan list: config width");
+    rc |= expect_int("am scan list: config width not applied", opts.analog_nfm_bandwidth_hz, 11250);
+    rc |= expect_int(
+        "am scan list: config width held",
+        g_analog_check_calls >= 1 && g_analog_check_kind == DSD_ANALOG_DEMOD_FM && g_analog_check_width_hz == 16000, 1);
+    rc |= expect_toast("am scan list: config toast", &state,
+                       "Config not applied: NFM 16 kHz does not fit the 16 kHz DSP rate (max 13.2 kHz)");
+    reset_rx_family_wrap();
+    rc |= submit_config_nfm_width(&opts, &state, DSDCFG_MODE_UNSET, 12500, "am scan list: config fitting width");
+    rc |= expect_int("am scan list: fitting config width applied", opts.analog_nfm_bandwidth_hz, 12500);
+    rc |= expect_int("am scan list: AM session kept", opts.analog_only == 1 && opts.analog_demod == DSD_ANALOG_DEMOD_AM,
+                     1);
+
+    /* The DSP bandwidth: 12 kHz filters the AM default (max 9.6 kHz) but not the NFM 12.5 kHz the nfm row runs. With
+       no stream running, one it takes restarts through the wrapped stream create. */
+    state.rtl_ctx = NULL;
+    (void)dsd_app_command_set_i32(DSD_APP_CMD_RTL_SET_BW, 12);
+    state.ui_msg[0] = '\0';
+    (void)dsd_app_drain_cmds(&opts, &state);
+    rc |= expect_int("am scan list: unfit DSP bandwidth refused", opts.rtl_dsp_bw_khz, 16);
+    rc |= expect_toast("am scan list: DSP bandwidth toast", &state,
+                       "Refused: DSP BW 12 kHz cannot filter NFM 12.5 kHz (max 9.6 kHz); narrow the NFM width first");
+    /* Without the scanner the nfm row runs nothing, and 12 kHz filters the AM default. */
+    opts.scanner_mode = 0;
+    (void)dsd_app_command_set_i32(DSD_APP_CMD_RTL_SET_BW, 12);
+    state.ui_msg[0] = '\0';
+    (void)dsd_app_drain_cmds(&opts, &state);
+    rc |= expect_int("am scan list: scanner off takes 12 kHz", opts.rtl_dsp_bw_khz, 12);
+
+    g_analog_check_result = 0;
+    opts.rtl_dsp_bw_khz = 16;
+    dsd_channel_modes_clear(&state);
+    (void)dsd_channel_profile_set(&state, 1, NULL);
+    state.lcn_freq_count = 0;
+    opts.analog_nfm_bandwidth_hz = 0;
+    state.rtl_ctx = NULL;
+    freeState(&state);
+    return rc;
+}
+
+/*
  * Issue #526: a config apply is scoped, so the options it sees are the configured ones, but the stream its [input]
  * reopens runs the nfm scan row on air again once the scope resumes. The row's own width is therefore held to the rate
  * the reopened RTL-SDR runs at, as RTL_SET_BW holds it: a DSP bandwidth that cannot filter it leaves the whole config
@@ -9231,6 +9292,7 @@ main(void) {
     rc |= test_config_apply_leaves_a_soapy_or_airspy_reopen_to_its_start();
     rc |= test_config_apply_restores_the_default_nfm_width();
     rc |= test_scan_list_holds_the_configured_nfm_width();
+    rc |= test_scan_list_holds_the_configured_nfm_width_on_am();
     rc |= test_config_apply_holds_a_scan_row_width_to_a_reopen();
     rc |= test_nfm_width_waits_for_an_unsettled_cqpsk_toggle();
     rc |= test_nfm_width_refused_after_the_check();

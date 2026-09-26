@@ -64,8 +64,8 @@ symbol_profile_rtl_running(const dsd_opts* opts, const dsd_state* state) {
 }
 
 /* The analog monitor with the configured kind and channel width. Entering it turns CQPSK off. @p configured_before_hz
-   is the configured NFM width from before the change the request carries (-1: it carries none). Returns the request's
-   result: -1 when the front end refused it at the rate it publishes now. */
+   is the configured width of that kind from before the change the request carries (-1: it carries none). Returns the
+   request's result: -1 when the front end refused it at the rate it publishes now. */
 static int
 symbol_profile_request_monitor(const dsd_opts* opts, int configured_before_hz) {
     /* Read before this request is queued: one the stream settled by then was taken there, and its width ran. */
@@ -86,9 +86,10 @@ symbol_profile_request_monitor(const dsd_opts* opts, int configured_before_hz) {
     return 0;
 }
 
-/* The configured NFM width the front end ran when it refused the last request, which kept @p kept_width_hz: the one
-   from before the request's own change when that is the width kept (the earlier change it followed had landed after
-   all), else the one from before the first change the front end ran none of (the same when none came before it). */
+/* The configured width of the last request's kind the front end ran when it refused that request, which kept
+   @p kept_width_hz: the one from before the request's own change when that is the width kept (the earlier change it
+   followed had landed after all), else the one from before the first change the front end ran none of (the same when
+   none came before it). The caller restores it only when the front end kept that kind (svc_restore_analog_width()). */
 static int
 symbol_profile_configured_width_run(int kept_width_hz) {
     if (g_monitor_request.configured_before_hz >= 0 && kept_width_hz == g_monitor_request.configured_before_hz) {

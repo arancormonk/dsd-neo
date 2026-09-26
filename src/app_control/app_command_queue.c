@@ -5544,11 +5544,25 @@ cfg_check_held_analog_width(const dsd_opts* opts, dsd_state* state, const dsdneo
 }
 
 /*
+ * A session the config leaves on a preset that runs no FM -- a digital one, or AM (issue #524) -- still runs the
+ * configured NFM width on the scan's nfm rows or targets without a width of their own (issue #526,
+ * dsd_engine_scan_runs_configured_nfm_width()), held to the rate as cfg_check_held_analog_width() holds a width.
+ */
+static int
+cfg_check_scan_nfm_width(const dsd_opts* opts, dsd_state* state, const dsdneoUserConfig* cfg) {
+    const int nfm_hz = cfg_analog_width_after(opts, cfg, DSD_ANALOG_DEMOD_FM);
+    return (nfm_hz > 0 && dsd_engine_scan_runs_configured_nfm_width(opts, state))
+               ? cfg_check_held_analog_width(opts, state, cfg, DSD_ANALOG_DEMOD_FM, nfm_hz, 0)
+               : UI_CMD_APPLY_COMPLETED;
+}
+
+/*
  * Asked before anything changes, as DSD_APP_CMD_DECODE_MODE_SET asks. A config that leaves the analog monitor on an
  * explicit width, or on AM (whose default the rate holds too, since AM always runs its channel filter), is held to the
  * rate that width will run at (cfg_check_held_analog_width()), under a scan row too, as the width commands and
- * RTL_SET_BW hold it. So is one that leaves the session digital while the scan has an nfm row or target that runs the
- * configured NFM width (issue #526), and an nfm row's own width on air (cfg_check_scan_row_width()). A config that
+ * RTL_SET_BW hold it. So is one that leaves the session digital or on AM while the scan has an nfm row or target that
+ * runs the configured NFM width (issue #526, cfg_check_scan_nfm_width()), and an nfm row's own width on air
+ * (cfg_check_scan_row_width()). A config that
  * reopens a SoapySDR or Airspy device instead runs the width at the rate that device delivers, which neither the
  * running stream's rate nor rtl_bw_khz says: the reopened stream's start checks it there
  * (rtl_demod_finalize_analog_channel()), as it does for Input > Switch source > RTL-SDR over a SoapySDR input. With the
@@ -5566,13 +5580,11 @@ cfg_check_receive_family(const dsd_opts* opts, dsd_state* state, const dsdneoUse
         return row_rc;
     }
     const int kind = cfg_analog_kind_after(opts, cfg);
-    if (kind < 0) {
-        /* A session that stays digital still runs the configured NFM width on the scan's nfm rows or targets without a
-           width of their own (issue #526). */
-        const int nfm_hz = cfg_analog_width_after(opts, cfg, DSD_ANALOG_DEMOD_FM);
-        return (nfm_hz > 0 && dsd_engine_scan_runs_configured_nfm_width(opts, state))
-                   ? cfg_check_held_analog_width(opts, state, cfg, DSD_ANALOG_DEMOD_FM, nfm_hz, 0)
-                   : UI_CMD_APPLY_COMPLETED;
+    if (kind != DSD_ANALOG_DEMOD_FM) {
+        const int nfm_rc = cfg_check_scan_nfm_width(opts, state, cfg);
+        if (kind < 0 || nfm_rc != UI_CMD_APPLY_COMPLETED) {
+            return nfm_rc;
+        }
     }
     const int width_hz = cfg_analog_width_after(opts, cfg, kind);
     if (width_hz > 0 || kind == DSD_ANALOG_DEMOD_AM) {

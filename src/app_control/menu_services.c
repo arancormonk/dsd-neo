@@ -1173,6 +1173,18 @@ svc_configured_analog_width(const dsd_opts* opts, const dsd_state* state, int* k
     return 1;
 }
 
+/* The configured NFM width a DSP rate is held to beside the configured preset's own width @p preset_kind: on a session
+   whose preset runs AM (issue #524), the scan's nfm rows or targets without a width of their own run the configured
+   NFM width whenever they come on air (dsd_engine_scan_runs_configured_nfm_width()), as they do on a digital session;
+   0 for none (an FM preset holds that width itself). */
+static int
+svc_scan_nfm_width_beside_preset(const dsd_opts* opts, const dsd_state* state, int preset_kind) {
+    if (preset_kind == DSD_ANALOG_DEMOD_FM || !dsd_engine_scan_runs_configured_nfm_width(opts, state)) {
+        return 0;
+    }
+    return dsd_scan_mode_configured_analog_width(opts, state, DSD_ANALOG_DEMOD_FM);
+}
+
 /* Whether analog width @p configured_hz of @p kind (0 = the kind's default) can open at @p rate_hz (0: no rate to hold
    it to). The unset NFM default always can. */
 static int
@@ -1197,7 +1209,9 @@ svc_check_rtl_input_analog_width(const dsd_opts* opts, const dsd_state* state, c
        own rate and a replay runs at its capture's: their start checks those. */
     const char* dev = dsd_opts_audio_in_dev_is_airspy_spec(opts->audio_in_dev) ? "rtl" : opts->audio_in_dev;
     const int rate_hz = dsd_app_analog_rtl_bw_rate_hz(dev, AUDIO_IN_RTL, opts->rtl_dsp_bw_khz);
-    if (!svc_rtl_input_width_fits(kind, configured_hz, rate_hz, why, why_size)) {
+    if (!svc_rtl_input_width_fits(kind, configured_hz, rate_hz, why, why_size)
+        || !svc_rtl_input_width_fits(DSD_ANALOG_DEMOD_FM, svc_scan_nfm_width_beside_preset(opts, state, kind), rate_hz,
+                                     why, why_size)) {
         return -1;
     }
     /* The switch is unscoped, so the stream it opens starts on the settings in force: while a scan row runs the analog
@@ -1497,7 +1511,9 @@ svc_rtl_bandwidth_fits_analog_width(const dsd_opts* opts, const dsd_state* state
     int kind = DSD_ANALOG_DEMOD_FM;
     int configured_hz = 0;
     (void)svc_configured_analog_width(opts, state, &kind, &configured_hz);
-    if (!svc_rtl_bandwidth_fits_width(opts, kind, configured_hz, 0, khz, why, why_size)) {
+    if (!svc_rtl_bandwidth_fits_width(opts, kind, configured_hz, 0, khz, why, why_size)
+        || !svc_rtl_bandwidth_fits_width(opts, DSD_ANALOG_DEMOD_FM, svc_scan_nfm_width_beside_preset(opts, state, kind),
+                                         0, khz, why, why_size)) {
         return 0;
     }
     const int in_force_hz = dsd_opts_analog_width_hz(opts);
