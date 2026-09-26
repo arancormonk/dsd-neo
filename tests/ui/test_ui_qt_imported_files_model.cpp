@@ -727,6 +727,36 @@ test_metadata_failure_keeps_file() {
 
 } // namespace
 
+/* Issue #526: the channel-map review carries an nfm row's own channel width in Hz, and nothing for a row that inherits
+   the configured width or a digital row. */
+static void
+test_channel_review_bandwidth() {
+    QTemporaryDir source;
+    TestHost host;
+    dsd_qt::ImportedFilesModel model(&host);
+    QFile file(source.filePath("nfm.csv"));
+    const QByteArray bytes = "channel,frequency_hz,mode,options\n1,154430000,nfm,--nfm-bandwidth-hz 12500\n"
+                             "2,155100000,nfm,\n3,461000000,dmr,\n";
+    expect("write nfm map", file.open(QIODevice::WriteOnly) && file.write(bytes) == bytes.size());
+    file.close();
+    const auto result = model.importFile(source.filePath("nfm.csv"), "Nfm.csv", "chan");
+    expect("nfm map imports", result.value("ok").toBool());
+    const int row = model.rowForPath(result.value("path").toString());
+    if (row < 0) {
+        return;
+    }
+    const auto review = model.channelProfiles(row);
+    const auto rows = review.value("rows").toList();
+    expect("nfm map review", review.value("ok").toBool() && rows.size() == 3);
+    if (rows.size() == 3) {
+        expect("reports the row's own width", rows[0].toMap().value("bandwidthHz").toInt() == 12500);
+        expect("an inheriting nfm row carries none", !rows[1].toMap().value("bandwidthHz").isValid());
+        expect("a digital row carries none", !rows[2].toMap().value("bandwidthHz").isValid());
+        expect("the nfm row names its mode", rows[0].toMap().value("mode") == "nfm");
+    }
+    model.remove(row);
+}
+
 static void
 test_channel_bundle() {
     QTemporaryDir source;
@@ -1415,11 +1445,16 @@ test_example_targets() {
     }
     const QString path = result.value("path").toString();
     const auto rows = model.targetPreview(path).value("rows").toList();
-    /* Issue #526: the analog nfm-conventional target previews with its canonical type. */
+    /* Issue #526: the analog nfm-conventional target previews with its canonical type and its own channel width; a
+       digital target carries no width. */
     expect("shipped row order retained", rows.size() == 9 && rows[0].toMap().value("id") == "county-p25"
                                              && rows[7].toMap().value("id") == "field-nxdn48"
                                              && rows[8].toMap().value("id") == "fire-nfm"
                                              && rows[8].toMap().value("type") == "nfm-conventional");
+    if (rows.size() == 9) {
+        expect("previews the nfm target's own width", rows[8].toMap().value("bandwidthHz").toInt() == 12500);
+        expect("a digital target previews no width", !rows[0].toMap().value("bandwidthHz").isValid());
+    }
     auto* opts = static_cast<dsd_opts*>(std::calloc(1, sizeof(dsd_opts)));
     auto* state = static_cast<dsd_state*>(std::calloc(1, sizeof(dsd_state)));
     expect("allocate example engine state", opts && state);
@@ -1489,6 +1524,7 @@ main(int argc, char** argv) {
     }
     test_metadata_failure_keeps_file();
     test_channel_bundle();
+    test_channel_review_bandwidth();
     test_target_bundle();
     test_library_companions();
     test_library_candidate_ranking();

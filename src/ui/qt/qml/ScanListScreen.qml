@@ -685,7 +685,7 @@ Rectangle {
                         textFormat: Text.PlainText
                         wrapMode: Text.Wrap
                         color: Theme.textPrimary
-                        text: modelData.id + " · " + modelData.type + " · " + modelData.frequency + " MHz\n" + qsTr("Dwell: %1 · Hold: %2 · Modulation: %3 · Gain: %4").arg(modelData.dwellMs < 0 ? qsTr("inherit") : modelData.dwellMs + " ms").arg(modelData.holdMs < 0 ? qsTr("inherit") : modelData.holdMs + " ms").arg(modelData.modulation || qsTr("inherit")).arg(modelData.gainDb < 0 ? qsTr("inherit") : modelData.gainDb === 0 ? qsTr("auto") : modelData.gainDb + " dB") + " · " + Util.squelchSummary(modelData.squelchDb)
+                        text: modelData.id + " · " + modelData.type + " · " + modelData.frequency + " MHz\n" + qsTr("Dwell: %1 · Hold: %2 · Modulation: %3 · Gain: %4").arg(modelData.dwellMs < 0 ? qsTr("inherit") : modelData.dwellMs + " ms").arg(modelData.holdMs < 0 ? qsTr("inherit") : modelData.holdMs + " ms").arg(modelData.modulation || qsTr("inherit")).arg(modelData.gainDb < 0 ? qsTr("inherit") : modelData.gainDb === 0 ? qsTr("auto") : modelData.gainDb + " dB") + " · " + Util.squelchSummary(modelData.squelchDb) + (modelData.type === "nfm-conventional" || modelData.bandwidthHz !== undefined ? " · " + Util.nfmBandwidthSummary(modelData.bandwidthHz) : "")
                     }
                 }
             }

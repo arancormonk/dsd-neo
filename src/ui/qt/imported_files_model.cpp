@@ -664,6 +664,9 @@ appendChannelProfile(const dsd_csv_channel_profile* row, void* context) {
                              {"mappings", row->dmr_mapping_count},
                              /* #521: invalid (not 0 or -1) when the row inherits the squelch. */
                              {"squelchDb", row->squelch_db_set ? QVariant(row->squelch_db) : QVariant()},
+                             /* #526: an nfm row's own channel width in Hz; invalid when it inherits the configured
+                                one. */
+                             {"bandwidthHz", row->bandwidth_hz >= 0 ? QVariant(row->bandwidth_hz) : QVariant()},
                              {"profileRef", QString::fromUtf8(row->profile_ref)}});
 }
 
@@ -722,6 +725,8 @@ appendTargetPreview(const dsd_app_scan_csv_target* target, void* context) {
                     {"gainDb", target->gain_db},
                     /* #521: invalid (not 0 or -1) when the target inherits the squelch. */
                     {"squelchDb", target->squelch_db_set ? QVariant(target->squelch_db) : QVariant()},
+                    /* #526: an nfm-conventional target's own channel width in Hz; invalid when it inherits. */
+                    {"bandwidthHz", target->bandwidth_hz >= 0 ? QVariant(target->bandwidth_hz) : QVariant()},
                     {"modulation", QString::fromUtf8(target->modulation)}});
 }
 } // namespace
