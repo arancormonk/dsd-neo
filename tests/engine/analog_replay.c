@@ -28,9 +28,9 @@
  * tone_lock_pct columns. They come from the decoder's received-tone publication (dsd_state::analog_rx), read after
  * every block the monitor delivers: the tap that detects tones runs on the same block just before the block reaches
  * the audio hook, and a tone can only lock while the monitor's gate is open. The CTCSS detector (#522) and the DCS
- * detector (#523) fill them. This file owns the field names and the contract below, and
- * replay_ab.sh and the report own the columns; a detector that wants more adds its own field and column. The
- * contract, which replay_ab.sh relies on because it splits the line on spaces:
+ * detector (#523) fill them. This file owns the field names and the contract below, and replay_ab.sh and the report
+ * own the columns; a detector that wants more adds its own field and column. The contract, which replay_ab.sh relies on
+ * because it splits the line on spaces:
  *   tone=<label>        the received tone or code as the decoder names it, with no whitespace: "151.4" (Hz, one
  *                       decimal) for CTCSS; for DCS both standard spellings of the code's signal, canonical first
  *                       (dsd_dcs_canonical(), then dsd_dcs_alias()), joined by a slash, such as "D023N/D047I": the
