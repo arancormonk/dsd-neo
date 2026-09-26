@@ -260,9 +260,10 @@ Tests: `tests/engine/test_engine_trunk_scan.c` (`ENGINE_TRUNK_SCAN`) and
   so the demod thread switches family before it applies the profile. When the front end still runs the analog family
   there (`analog_family_active`: an `-fA` session whose configured mode was changed to a digital one while a row ran,
   saving its timing for the analog output rate), the leave times the decoder, and the profile it publishes, for the rate
-  the digital family lands on (`output_rate_for_family`). A leave that switches the front end's family either way also
-  drops the analog monitor block the decoder has part-collected (`dsd_symbol_analog_block_reset()`). The M17 encoder is
-  not the analog family. Test: `ENGINE_CHANNEL_SCAN`. A row's retune (`dsd_engine_scan_tune_to_freq()` in
+  the digital family lands on (`output_rate_for_family`). A leave that switches the front end's family either way, or
+  its analog kind (an nfm row's FM monitor left for an `-fM` session's AM one, told by the published analog profile),
+  also drops the analog monitor block the decoder has part-collected (`dsd_symbol_analog_block_reset()`). The M17
+  encoder is not the analog family. Test: `ENGINE_CHANNEL_SCAN`. A row's retune (`dsd_engine_scan_tune_to_freq()` in
   `trunk_tuning.c`) carries the RTL profile of the settings the row runs: a row that runs the analog family (an nfm row,
   or a row without a decode mode on an `-fA` or `-fM` session, which keeps it) queues its analog profile, kind and
   width, for its target (`dsd_engine_prepare_scan_analog_profile()`,
