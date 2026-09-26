@@ -337,7 +337,7 @@ Tests: `tests/engine/test_engine_trunk_scan.c` (`ENGINE_TRUNK_SCAN`) and
   INACTIVE means nothing has been processed since the last reset, or detection is not running; it is not the
   "detection off" signal. Whether detection runs is `dsd_analog_tone_detection_active()` (runtime), which frontends
   and receive policy ask instead. UNAVAILABLE means detection is on but the input rate is one the front end cannot
-  use.
+  use; `carrier_open` is still kept there (issue #526).
 - API note: source ID aliases live in the opaque store declared by `<dsd-neo/core/source_alias.h>` and
   implemented in `src/core/util/source_alias.c`, attached to state extension slot 8
   (`DSD_STATE_EXT_CORE_SOURCE_ALIAS`). `dsd_source_alias_store_create()`/`dsd_source_alias_store_append()` build
@@ -612,8 +612,11 @@ installs from `src/engine/trunk_tuning.c` in `src/engine/trunk_tuning_hooks_inst
   (`dsd_engine_scan_runs_configured_nfm_width()`). While the row on air sets its own width (issue #526), that width
   stays in force: the edit lands on the configured baseline only, reaches the front end with the next row that takes it
   or the leave, and the toast says the row overrides it (`dsd_app_analog_width_edit_notice()`). A refused width is put
-  back through `svc_restore_nfm_width()`, onto the configured baseline, or onto the row's width in force when that was
-  the one refused. An accepted width in force goes to a running front end whose options in force are -fA as a live
+  back through `svc_restore_nfm_width()`: outside a scan the configured width takes the one the front end kept; under a
+  scan row, where that can be a row's own width (the row on air's, or one a retune in flight had not moved the front
+  end off yet), the configured width goes back to its value from before the refused change, which each monitor request
+  records (`svc_monitor_refusal::configured_before_hz`), and only a row with its own width takes the kept width in
+  force. An accepted width in force goes to a running front end whose options in force are -fA as a live
   analog profile request (`svc_publish_nfm_bandwidth()` in `symbol_profile.c`), which also replaces the width a queued
   switch onto analog carries; a typed digital row keeps its profile until its leave, and under a scan row's suspended
   scope (a config apply) the request waits for `apply_cmd_scoped()` to publish it after the resume. CQPSK toggled on
@@ -746,15 +749,16 @@ installs from `src/engine/trunk_tuning.c` in `src/engine/trunk_tuning_hooks_inst
   only live (not seam-replayed) samples, only reads the block, and runs whatever `audio_out` says.
   `symbol_output_unsynced_analog()` is its monitor gate, sink and carrier stamp (issue #526): the stamp that holds a -Y
   row under the hangtime rule follows the tap's carrier (`dsd_analog_rx_carrier_open_now()`, which reports none once the
-  tap's own generation check sees a retune or profile change since its last read) while the analog FM monitor runs,
+  tap's own generation check sees a retune or profile change since its last read, and while a retune is unresolved, so
+  a channel a failed retune left the receiver on lets the row's hangtime run out) while the analog FM monitor runs,
   whether or not the block plays (the `-8` monitor under digital decoding keeps stamping only what it plays), and the
   gate writes nothing while a retune is unresolved (`dsd_trunk_tuning_pending_request()`: in flight, or failed after
   the scanner moved on, until a later retune lands or the scan's end retires it, as for digital frames) or, on the
-  analog monitor, from a block that began before a retune, profile change or reset the tap noticed
-  (`dsd_analog_rx_block_straddles_boundary()`, 0 while detection is not running, so the `-8` monitor under digital
-  decoding plays every block as before). It is active only while `dsd_analog_tone_detection_active()` (runtime, above)
-  says so: the analog FM monitor on PCM input or on RTL with an AUDIO_MONITOR output kind. The rate comes from the RTL
-  output-rate hook or `dsd_opts_current_input_timing_rate()`.
+  analog monitor, from a block that began before a retune, profile change or reset the tap noticed, before detection
+  started, or before a boundary the tap has not read past yet (`dsd_analog_rx_block_straddles_boundary()`, 0 while
+  detection is not running, so the `-8` monitor under digital decoding plays every block as before). It is active only
+  while `dsd_analog_tone_detection_active()` (runtime, above) says so: the analog FM monitor on PCM input or on RTL with
+  an AUDIO_MONITOR output kind. The rate comes from the RTL output-rate hook or `dsd_opts_current_input_timing_rate()`.
   The sync hunt keeps that output kind: the analog family stands the modulation auto-switch down, and in analog-only
   mode `dsd_frame_sync.c` never sends the RTL front end any symbol profile the hunt requests, the profile a two-level
   hunt re-normalises included (a CQPSK one would turn the monitor audio into symbols and silence the tap, and a digital
@@ -776,14 +780,15 @@ installs from `src/engine/trunk_tuning.c` in `src/engine/trunk_tuning_hooks_inst
     is, and NONE once all have said so. The front end accepts 2400 Hz up to `DSD_ANALOG_RX_MAX_RATE_HZ` (320 kHz, below
     the ~333 kHz its tap budget can design), logs which side of that range an unusable rate is on (once for each stretch
     of input at such a rate: a usable block ends the stretch, a reset does not) and publishes UNAVAILABLE there (after a
-    reset, from the next block on). The core, not a detector, owns the absolute floor and the carrier test;
+    reset, from the next block on), keeping the carrier (floor, test and hangover) at every rate all the same, which the
+    scanners hold analog rows on (issue #526). The core, not a detector, owns the absolute floor and the carrier test;
     `process(band, wide, full, count, freeze)` is the whole interface a detector gets. It also holds the decoder-thread
     glue: the working state in `DSD_STATE_EXT_DSP_ANALOG_RX` (slot 9, heap, never deep-copied), the publication
     `dsd_state::analog_rx`, and the `Received tone:` LOG_INFO line on each change of verdict (every reset moves the
     publication's generation on and starts a new reception, which logs its verdict again, the same tone included). The
     glue judges the squelch for each read: on RTL from the receiver power the stream keeps current, on PCM from the
-    read's own level (`dsd_input_level_metrics_from_pcm_f32_i16_scale()`, the measurement that sets `opts->rtl_pwr`
-    for each whole block only once the block is complete). The carrier hangover counts samples, which only works while
+    read's own level (`dsd_input_level_metrics_from_pcm_f32_i16_scale()`, the measurement that sets `opts->rtl_pwr` for
+    each whole block only once the block is complete). The carrier hangover counts samples, which only works while
     samples arrive: on stdin, UDP and TCP input, whose producer may squelch by sending nothing, and on a live RTL-family
     radio stream, which stops when its source does (an `rtl_tcp` server that went away, whose client retries without
     end; a stalled device), each read also sets a monotonic deadline (its arrival plus its own duration and the
@@ -1045,11 +1050,17 @@ Notes:
     by `rtl_stream_live_family_request_count()`, which the `-Y` scanner compares across a row's retune): the
     retune lands on its target with neither that family nor the symbol profile queued with it, so a scanner that leaves
     while its row's retune is still in flight (the configured family put back by live requests) is not switched back
-    to the row's family when the device finishes the retune. An
+    to the row's family when the device finishes the retune. The other way round, a family that lands retires the live
+    requests still queued from before it was attached (`rtl_stream_retire_requests_before_family()`, by the request
+    number it records): a width or mode command drained just before the scan advanced would otherwise be taken at the
+    demod thread's next block boundary and put the front end back on the family or width the row just left. They
+    settle as replaced; a symbol profile queued after the attach is the row's own and still applies. An
     analog width is checked again against the demod rate it lands on, both a live request when the demod thread
     consumes it and a retune profile when the retune lands (a retune can move the rate after the request was checked
     against the published one); a width that rate cannot realize is refused (logged once per kind, width and rate) and
-    the front end keeps its receive profile. That includes a live request that moves the stream onto the analog
+    the front end keeps its receive profile. A retune whose own analog profile is refused that way reports itself
+    refused (`controller_finalize_rate_chain()`'s return, which `controller_apply_reconfigure()` turns into a failed
+    completion), so a scanner does not commit a row whose channel the front end is not running. That includes a live request that moves the stream onto the analog
     monitor output, whose caller has already put the decoder on Analog (after `rtl_stream_check_analog_profile()` held
     it to the published rate, or as the session's configured family): a retune that moved the rate since gets it
     refused, and the front end stays where it was rather than run the width without its channel filter; the log
@@ -1538,9 +1549,9 @@ External dependencies (resolved via CMake):
   scoped, so it holds a row's own width explicitly at a reopen (`cfg_check_scan_row_width()`). On a digital session the
   configured width counts as in use for all of these, and for the width command, while the scan has an nfm row or target
   without a width of its own (`dsd_engine_scan_runs_configured_nfm_width()`). The option's preview fields,
-  `bandwidth_hz` in `dsd_csv_channel_profile` and `dsd_app_scan_csv_target` (-1 when the row inherits), are filled, but
-  `ImportedFilesModel` does not publish them yet: the Qt/Android channel-map review and target preview gain the width
-  with the Qt scan-list editor that follows (issue #526), which carries the AM width as well.
+  `bandwidth_hz` in `dsd_csv_channel_profile` and `dsd_app_scan_csv_target` (-1 when the row inherits), reach the
+  Qt/Android channel-map review and target preview as `bandwidthHz` (invalid when the row inherits), which read
+  `NFM bandwidth: 12.5 kHz`, or `NFM bandwidth: inherit` on an nfm row without one (`Util.nfmBandwidthSummary()`).
 - Adding a row option: add the `DSD_SCAN_OPT_*` bit (reserved values only), a `dsd_scan_option_values` field and a
   `specifications[]` row with its setter in `runtime/scan_options.c` (use `ANY_MODES` only for options that mean the
   same on every class); add a `scan_option_appliers[]` row in `runtime/scan_mode.c`; if it lands in `dsd_opts`, add

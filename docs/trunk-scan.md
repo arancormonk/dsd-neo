@@ -491,8 +491,8 @@ restore the configured decoder and width; when no other target can be retuned, t
 its analog monitor and width, and no symbol profile is applied over the monitor.
 
 - **Activity is carrier.** The target holds while its squelch is open over the monitor audio (above the input's level
-  floor, through a 200 ms hangover; at an input rate the received-tone detector cannot run at, the squelch alone),
-  whether or not audio is played, so `-o null` or a muted frontend still hold it.
+  floor, through a 200 ms hangover, at any input rate), whether or not audio is played, so `-o null` or a muted
+  frontend still hold it. A retune that has not landed, or one that failed, holds nothing.
   Each coordinator tick with the carrier open restarts `activity_hold_ms`; once the carrier drops, the hold runs
   out and `dwell_ms` of silence rotates to the next target. The Scan Timing row reads `Carrier` while the carrier is
   open and `Activity hold` for the tail. No decoded frame, header or voice verdict is involved, and digital activity
@@ -625,7 +625,7 @@ review the target preview, name the list, select its receiver settings, and Save
 The list's Play button starts the imported CSV directly.
 
 The CSV stays authoritative. Its target IDs, order, columns and supported `options`
-are preserved; the preview shows inherited timing and squelch separately from explicit values.
+are preserved; the preview shows inherited timing, squelch and NFM bandwidth separately from explicit values.
 An explicit target option overrides the corresponding session default, and leaving
 the target restores the baseline. For example, a target can use `--enc-follow`,
 `--no-force-key`, or its own `--scan-max-visit-ms`. The manual editor's restriction

@@ -269,39 +269,40 @@ analog channel never carries, and are rejected with `not supported for this mode
 `--nfm-bandwidth-hz` is the full RF channel width the analog channel filter protects while the row is on air (the same
 contract as the receiver's NFM width); a row without it uses the configured NFM width (16 kHz by default). It is applied
 when the row is tuned and restored when the scanner moves on, and Config->Save never writes it (nor the row's analog
-class) as a default. The status line shows it with the configured NFM width it overrides, `Analog: NFM 12.5 kHz (row;
-default 16 kHz)`, and the NFM width controls (the terminal row, the Radio sheet) keep editing the configured width:
-while the row is on air the edit waits for it to leave, and the message says the channel overrides it. A width the
-running DSP rate cannot filter (the channel filter needs `width / 2 + 600 Hz` within 0.45 of the DSP rate: at a 24 kHz
-DSP bandwidth the widest is 20.4 kHz, at 16 kHz 13.2 kHz) is named with the fix the input allows (an RTL DSP bandwidth
-that fits; on a SoapySDR or Airspy device a wider DSP bandwidth or a narrower width; on an I/Q replay a narrower width)
-in the log and on the status line when the scan starts, against the rate the running stream publishes, and again
-whenever that rate changes. A channel map imported while DSD-neo runs (the terminal menu, Qt, Android) is held to the
-DSP rate known then: the running stream's, or on an RTL-SDR or rtl_tcp input with no stream running the one its DSP
-bandwidth sets. The map still loads, since the DSP bandwidth that fits it can be set afterwards, and the import message
-names the first row that rate cannot run and how many more there are. A SoapySDR or Airspy device, or an I/Q replay,
-delivers its rate only once its stream runs, so its rows are held to it at scan start; the Qt/Android review before an
-import, like a trunk-scan list's preview, checks the width's range only. A row the rate cannot filter is skipped at
-every visit rather than received without its filter, and so is every row with a width of its own while
-`DSD_NEO_CHANNEL_LPF=0` turns off the channel filter each explicit width needs. A row without a width of its own is held
-to the rate with the configured NFM width it runs, and is named again whenever that configured width changes. While the
-scan has such a row, the configured NFM width is in use on any session, as under `-fA`: a width edit or a loaded config
-that sets a width the DSP rate cannot filter, and a DSP bandwidth or an input switch whose rate cannot filter the
-configured width, is refused, whichever row is on air. While a row with its own width is on air, an RTL DSP bandwidth
-that cannot filter the width is refused rather than reopening the stream on it, from the DSP bandwidth control, Input >
-Switch source and a loaded config alike. On audio input (rigctl tuning a PCM, UDP or TCP source) the audio arrives
-demodulated, so a row width has no effect and scan start says so; set the peer's own passband (`-B`).
+class) as a default. The Qt/Android channel-map review and target preview list it (`NFM bandwidth: 12.5 kHz`), or
+`inherit` on an nfm row without one. The status line shows it with the configured NFM width it overrides,
+`Analog: NFM 12.5 kHz (row; default 16 kHz)`, and the NFM width controls (the terminal row, the Radio sheet) keep
+editing the configured width: while the row is on air the edit waits for it to leave, and the message says the channel
+overrides it. A width the running DSP rate cannot filter (the channel filter needs `width / 2 + 600 Hz` within 0.45 of
+the DSP rate: at a 24 kHz DSP bandwidth the widest is 20.4 kHz, at 16 kHz 13.2 kHz) is named with the fix the input
+allows (an RTL DSP bandwidth that fits; on a SoapySDR or Airspy device a wider DSP bandwidth or a narrower width; on an
+I/Q replay a narrower width) in the log and on the status line when the scan starts, against the rate the running stream
+publishes, and again whenever that rate changes. A channel map imported while DSD-neo runs (the terminal menu, Qt,
+Android) is held to the DSP rate known then: the running stream's, or on an RTL-SDR or rtl_tcp input with no stream
+running the one its DSP bandwidth sets. The map still loads, since the DSP bandwidth that fits it can be set afterwards,
+and the import message names the first row that rate cannot run and how many more there are. A SoapySDR or Airspy
+device, or an I/Q replay, delivers its rate only once its stream runs, so its rows are held to it at scan start; the
+Qt/Android review before an import, like a trunk-scan list's preview, checks the width's range only. A row the rate
+cannot filter is skipped at every visit rather than received without its filter, and so is every row with a width of its
+own while `DSD_NEO_CHANNEL_LPF=0` turns off the channel filter each explicit width needs. A row without a width of its
+own is held to the rate with the configured NFM width it runs, and is named again whenever that configured width
+changes. While the scan has such a row, the configured NFM width is in use on any session, as under `-fA`: a width edit
+or a loaded config that sets a width the DSP rate cannot filter, and a DSP bandwidth or an input switch whose rate
+cannot filter the configured width, is refused, whichever row is on air. While a row with its own width is on air, an
+RTL DSP bandwidth that cannot filter the width is refused rather than reopening the stream on it, from the DSP bandwidth
+control, Input > Switch source and a loaded config alike. On audio input (rigctl tuning a PCM, UDP or TCP source) the
+audio arrives demodulated, so a row width has no effect and scan start says so; set the peer's own passband (`-B`).
 
 An analog row holds while its carrier is open: the squelch is open over the monitor audio (above the input's level
-floor, through a 200 ms hangover; at an input rate the received-tone detector cannot run at, the squelch alone),
-whether or not audio is played, so `-o null` or a muted frontend no longer lets the scanner leave an active channel.
-A `-Y` row holds for `-t` after the last carrier; an `nfm-conventional` target holds for its `activity_hold_ms`
-after the last carrier and rotates after its `dwell_ms` of silence. The per-visit cap and the hold, advance and
-avoid controls apply as for any row, and the voice gate never applies to an analog row, so a global
-`--scan-voice-only` does not block one. That includes the rows of an untyped list scanned under `-fA`, which hold on
-their carrier under `-t` as well. Scan start warns once about an analog row whose squelch is off or at -100 dB or
-below: noise then keeps its carrier open, re-arming the hold with every block, so only the visit cap or a manual
-advance or avoid moves on.
+floor, through a 200 ms hangover, at any input rate), whether or not audio is played, so `-o null` or a muted frontend
+no longer lets the scanner leave an active channel. A retune that has not landed, or one that failed and left the
+receiver on another channel, holds nothing. A `-Y` row holds for `-t` after the last carrier; an `nfm-conventional`
+target holds for its `activity_hold_ms` after the last carrier and rotates after its `dwell_ms` of silence. The
+per-visit cap and the hold, advance and avoid controls apply as for any row, and the voice gate never applies to an
+analog row, so a global `--scan-voice-only` does not block one. That includes the rows of an untyped list scanned
+under `-fA`, which hold on their carrier under `-t` as well. Scan start warns once about an analog row whose squelch is
+off or at -100 dB or below: noise then keeps its carrier open, re-arming the hold with every block, so only the visit
+cap or a manual advance or avoid moves on.
 
 A list may mix analog and digital rows: each row switches the receiver between the analog monitor and the digital
 decoder at its own width when it is tuned, without reopening the device, and opens the audio output the row plays
