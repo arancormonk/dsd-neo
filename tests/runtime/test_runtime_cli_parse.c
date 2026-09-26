@@ -5835,7 +5835,7 @@ am_cli_parse(const char* const* args, int config_am, am_cli_run* run) {
     static char storage[8][96];
     char* argv[9] = {NULL};
     int argc = 0;
-    for (; args[argc] != NULL && argc < 8; argc++) {
+    for (; argc < 8 && args[argc] != NULL; argc++) {
         DSD_SNPRINTF(storage[argc], sizeof storage[argc], "%s", args[argc]);
         argv[argc] = storage[argc];
     }
