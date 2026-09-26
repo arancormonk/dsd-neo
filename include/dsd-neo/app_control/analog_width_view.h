@@ -62,7 +62,8 @@ typedef struct {
     int width_hz;         /**< The width in force; 0 when neither shown nor under an analog row, or on PCM input. */
     int configured_hz;    /**< The configured width, 0 for the default: what the controls edit and a save writes. */
     int max_hz;           /**< The widest width the DSP rate filters (the running stream's demod rate, else the
-                               rate the RTL DSP bandwidth sets); 0 when not known. */
+                               rate the RTL DSP bandwidth sets), under any preset on a radio input; 0 when not
+                               known. */
     int row_hz;           /**< The scan row's own width while row_override is set, else 0. */
     uint8_t shown;        /**< 1 under the configured analog preset (never for the M17 encoder's monitor). */
     uint8_t radio_input;  /**< 1 on a radio input, where the width is a channel filter; 0 on PCM input. */
@@ -95,6 +96,18 @@ int dsd_app_analog_width_view_get(const dsd_opts* opts, const dsd_state* state, 
  * dsd_scan_mode_configured_analog_width()'s. 0 when @p opts is NULL.
  */
 int dsd_app_analog_width_setting_hz(const dsd_opts* opts, int kind);
+
+/**
+ * @brief Whether the controls offer the configured channel width of analog @p kind (dsd_analog_demod) for editing.
+ *
+ * On a radio input only, where the width is a channel filter (@p view from dsd_app_analog_width_view_get() for the same
+ * @p opts): the width of the configured preset's kind; the other kind's (under a digital preset, both) while an
+ * explicit width of it is set, since a switch to that kind is held to it; and AM's unset default where the DSP rate
+ * (@c max_hz) cannot filter its 6 kHz channel but filters a narrower AM width, since a switch to AM is refused there
+ * with word to narrow the width. The unset NFM default is never refused for its rate. The terminal's width rows and
+ * the Qt/Android Radio sheet offer their controls by this. Returns 1 or 0 (0 for a NULL argument or an invalid kind).
+ */
+int dsd_app_analog_width_offered(const dsd_opts* opts, const dsd_app_analog_width_view* view, int kind);
 
 /**
  * @brief Render the width in force: "12.5 kHz", "16 kHz (default)" when the configured width is the default,

@@ -1325,24 +1325,25 @@ is_non_airspy_input(const void* v) {
 
 /* A channel width row of analog @p kind, on a radio input, where the width is the channel filter: while the configured
    analog preset runs that kind, and under any other preset -- a digital one, or the other analog kind -- while an
-   explicit width of the kind is configured. The configured preset, as the status line's "Analog:" field reads it
-   (app_control's analog width view): a typed digital scan row on an analog session does not end it, and the width set
-   under the row is the one its leave returns to. Outside the preset a switch to it is held to the explicit width, and
-   where a SoapySDR or Airspy device or an I/Q replay forces a DSP rate that cannot filter it, the refusal says to
-   narrow the width: this row is where that happens, a switch between NFM and AM included. */
+   explicit width of the kind is configured, or AM's default is one the DSP rate cannot filter
+   (dsd_app_analog_width_offered(), from the running stream's rate). The configured preset, as the status line's
+   "Analog:" field reads it (app_control's analog width view): a typed digital scan row on an analog session does not
+   end it, and the width set under the row is the one its leave returns to. Outside the preset a switch to it is held
+   to the width, and where a SoapySDR or Airspy device or an I/Q replay forces a DSP rate that cannot filter it, the
+   refusal says to narrow the width: this row is where that happens, a switch between NFM and AM included. */
 static bool
 is_analog_width_editable(const void* v, int kind) {
     const UiCtx* c = (const UiCtx*)v;
     if (!c || !c->opts) {
         return false;
     }
+    dsd_frontend_metrics metrics;
+    const dsd_frontend_metrics* running = dsd_app_frontend_get_metrics(&metrics) == 0 ? &metrics : NULL;
     dsd_app_analog_width_view view;
-    if (dsd_app_analog_width_view_get(c->opts, dsd_app_get_latest_snapshot(), NULL, &view) != 0 || !view.radio_input) {
+    if (dsd_app_analog_width_view_get(c->opts, dsd_app_get_latest_snapshot(), running, &view) != 0) {
         return false;
     }
-    /* An nfm scan row on air (issue #526) runs its width on any session; the configured width is the one edited. */
-    return ((view.shown || view.row_analog) && view.kind == kind)
-           || dsd_scan_mode_configured_analog_width(c->opts, dsd_app_get_latest_snapshot(), kind) > 0;
+    return dsd_app_analog_width_offered(c->opts, &view, kind) != 0;
 }
 
 /* The NFM width row (issue #525). */

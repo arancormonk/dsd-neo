@@ -19,6 +19,8 @@ import QtTest
 // -fA or a digital mode, NFM under -fM) keeps a control of its own on a radio:
 // a switch between the kinds is held to it, and where the device forces a DSP
 // rate that cannot filter it, the refusal says to narrow it before the switch.
+// So does AM's default where the engine reports that the DSP rate cannot filter
+// it (amBandwidthOffered).
 Item {
     width: 420
     height: 900
@@ -50,6 +52,8 @@ Item {
             testContext.setMetric("analogBandwidthConfiguredHz", 0);
             testContext.setMetric("nfmBandwidthConfiguredHz", 0);
             testContext.setMetric("amBandwidthConfiguredHz", 0);
+            testContext.setMetric("nfmBandwidthOffered", false);
+            testContext.setMetric("amBandwidthOffered", false);
             testContext.setMetric("analogBandwidthMaxHz", 0);
             testContext.setMetric("analogBandwidthReading", "");
             if (sheet) {
@@ -192,6 +196,33 @@ Item {
             verify(otherSection().visible, "an explicit AM width under a digital mode could not be narrowed");
             testContext.setMetric("radioInput", false);
             tryVerify(function () { return !otherSection().visible });
+        }
+
+        /* A replay or device forcing a 7.5 kHz DSP rate filters up to 5.55 kHz: AM's
+           6 kHz default is refused there, 5 kHz is not. The engine offers the AM
+           width then, unset, so the switch to AM the refusal names can be made. */
+        function test_am_default_offered_where_the_rate_refuses_it() {
+            testContext.setMetric("analogBandwidthHz", 7500);
+            testContext.setMetric("analogBandwidthReading", "7.5 kHz (DSP-limited)");
+            testContext.setMetric("analogBandwidthMaxHz", 5550);
+            testContext.setMetric("decodeMode", commands.decodeModeForFlag("-fA"));
+            tryVerify(function () { return findChild(sheet, "radioAnalogSection").visible });
+            verify(!otherSection().visible, "an AM width showed that the engine does not offer");
+            testContext.setMetric("amBandwidthOffered", true);
+            tryVerify(function () { return otherSection().visible }, 2000,
+                      "the AM default the rate refuses could not be narrowed");
+            compare(findChild(sheet, "radioAnalogOtherSectionTitle").text, "AM channel width");
+            compare(findChild(sheet, "radioAnalogOtherBandwidthValue").text, "default");
+            verify(!findChild(sheet, "radioAnalogOtherBandwidthUp").enabled, "a width the rate refuses is offered");
+            verify(!findChild(sheet, "radioAnalogOtherBandwidthDefault").visible);
+            findChild(sheet, "radioAnalogOtherBandwidthDown").clicked();
+            compare(testContext.lastAmBandwidthHz(), 5000);
+            compare(testContext.nfmBandwidthCalls(), 0, "the AM step went to the NFM command");
+            sheet.forgetRequests();
+            // Under a digital preset too.
+            testContext.setMetric("decodeMode", 1);
+            tryVerify(function () { return !findChild(sheet, "radioAnalogSection").visible });
+            verify(otherSection().visible, "the AM default the rate refuses could not be narrowed on a digital mode");
         }
 
         function test_explicit_nfm_width_offered_under_am() {

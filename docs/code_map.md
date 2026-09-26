@@ -722,53 +722,57 @@ installs from `src/engine/trunk_tuning.c` in `src/engine/trunk_tuning_hooks_inst
   hold (issue #526). The decoder owns every deadline; these views only difference it against the caller's monotonic
   clock, which is what keeps the terminal row, the Qt panel and the Android app from drifting on what "suspended" or
   "hold" means. Tests: `APP_CONTROL_CALL_VIEW`, `APP_CONTROL_SCAN_TIMING_VIEW`, and the terminal goldens in
-  `UI_NCURSES_PRINTER_HELPERS`.
-  `include/dsd-neo/app_control/squelch_view.h` and `src/app_control/squelch_view.c` (issue #521) pair the squelch in
-  force with the configured default, say whether a scan row overrides it and whether each level is off: the terminal
-  SQL field and M17 VOX field (`-60.0 dB (row; default -80.0 dB)`), the DSP panel's `(row)` mark, the shadowed-edit
-  toast, and Qt's `configuredSquelchDb`/`effectiveSquelchDb`, `configuredSquelchOff`/`effectiveSquelchOff`,
-  `squelchRowOverride` and `squelchReadout` all come from it. The Qt radio panel lays those out as its whole-dB
-  stepper reading, a `row` badge and `default X`, and uses `squelchReadout` as the reading's accessible name. It
-  reads the row's value from `dsd_scan_mode_row_options()`, so it is also right on the decoder thread while a command
-  has the scope suspended. Test: `APP_CONTROL_SQUELCH_VIEW`.
-  `include/dsd-neo/app_control/rx_tone_view.h` and `src/app_control/rx_tone_view.c` fold `dsd_state::analog_rx` into
-  the received-tone text (issue #522): hidden unless `dsd_analog_tone_detection_active()` says the tap listens
-  (decided from the options and the RTL output kind, not from INACTIVE in the publication, so a reset does not blink
-  the row) and hidden while the publication reads UNAVAILABLE (an input rate the front end cannot use, where an em
-  dash would claim no carrier), then `CTCSS 100.0 Hz`, `detecting`, `none` or an em dash (the terminal prints a hyphen
-  without UTF-8). Like the scan timing view it takes the caller's monotonic clock: a publication past its
-  `stale_after_ms` deadline (a stdin, UDP or TCP producer that stopped sending, or a live radio stream whose source
-  stopped, while the decoder waits for samples and cannot say so itself) reads as the em dash. A locked value this
-  build cannot name (an unsupported frequency, DCS until #523) reads `detecting`, never a value. The same view carries
-  `configured_text`, the configured tone policy, which reads `off` until #527 and is never derived from the received
-  tone. Tests: `APP_CONTROL_RX_TONE_VIEW`, the terminal goldens, `UI_QT_METRICS_MODEL`.
+  `UI_NCURSES_PRINTER_HELPERS`. `include/dsd-neo/app_control/squelch_view.h` and `src/app_control/squelch_view.c` (issue
+  #521) pair the squelch in force with the configured default, say whether a scan row overrides it and whether each
+  level is off: the terminal SQL field and M17 VOX field (`-60.0 dB (row; default -80.0 dB)`), the DSP panel's `(row)`
+  mark, the shadowed-edit toast, and Qt's `configuredSquelchDb`/`effectiveSquelchDb`,
+  `configuredSquelchOff`/`effectiveSquelchOff`, `squelchRowOverride` and `squelchReadout` all come from it. The Qt radio
+  panel lays those out as its whole-dB stepper reading, a `row` badge and `default X`, and uses `squelchReadout` as the
+  reading's accessible name. It reads the row's value from `dsd_scan_mode_row_options()`, so it is also right on the
+  decoder thread while a command has the scope suspended. Test: `APP_CONTROL_SQUELCH_VIEW`.
+  `include/dsd-neo/app_control/rx_tone_view.h` and `src/app_control/rx_tone_view.c` fold `dsd_state::analog_rx` into the
+  received-tone text (issue #522): hidden unless `dsd_analog_tone_detection_active()` says the tap listens (decided from
+  the options and the RTL output kind, not from INACTIVE in the publication, so a reset does not blink the row) and
+  hidden while the publication reads UNAVAILABLE (an input rate the front end cannot use, where an em dash would claim
+  no carrier), then `CTCSS 100.0 Hz`, `detecting`, `none` or an em dash (the terminal prints a hyphen without UTF-8).
+  Like the scan timing view it takes the caller's monotonic clock: a publication past its `stale_after_ms` deadline (a
+  stdin, UDP or TCP producer that stopped sending, or a live radio stream whose source stopped, while the decoder waits
+  for samples and cannot say so itself) reads as the em dash. A locked value this build cannot name (an unsupported
+  frequency, DCS until #523) reads `detecting`, never a value. The same view carries `configured_text`, the configured
+  tone policy, which reads `off` until #527 and is never derived from the received tone. Tests:
+  `APP_CONTROL_RX_TONE_VIEW`, the terminal goldens, `UI_QT_METRICS_MODEL`.
   `include/dsd-neo/app_control/analog_width_view.h` and `src/app_control/analog_width_view.c` (issue #525) decide the
   analog channel width in force under the configured analog preset (the scan scope's configured view, so a typed digital
   row does not hide it; never for the M17 encoder): the front end's reported width while a running stream's options in
   force run the monitor, flagged DSP-limited when the rate bounds it, otherwise the configured width, and none on PCM
-  input. With no stream running on an input whose RTL DSP bandwidth sets the rate, that rate bounds the widths offered
-  (`max_hz`); an unset default reads as what the monitor runs at that rate, as the next start publishes it: the rate
-  itself where no channel filter runs (below 20 kHz, or as `DSD_NEO_CHANNEL_LPF` says), the legacy WIDE plan's passband
-  (`dsd_channel_lpf_legacy_wide_width_hz()`) where the filter runs but the rate cannot realize the default, both
-  DSP-limited, and so it does at a running stream's demod rate while the front end is off the monitor (a typed digital
-  row, CQPSK toggled on under -fA), as the monitor it returns to publishes it. There whether the filter runs is the
-  stream's own decision (`rtl_stream_channel_lpf_default()`, carried as `dsd_frontend_metrics::channel_lpf_default`),
-  which its configuration made from the rate it started at and keeps whatever rate the device then delivers (a forced
-  rate, a replay's capture rate), so the view does not re-derive it from the rate. The configured width comes from the
-  scan scope's configured view while one is live. An analog scan row on air (issue #526) shows its width on any session
-  (`row_analog`), and a row that sets its own width (`row_override`, `row_hz`) is the width in force, read as `12.5 kHz
-  (row; default 16 kHz)` with the configured width of its demodulator, which it overrides (on an AM session its leave
-  returns to the AM width instead). The services that hold a DSP rate to an analog session's width hold the configured
-  preset's own kind and width, not the row's. They spell the reading (`12.5 kHz`, `16 kHz (default)`, `12 kHz
-  (DSP-limited)`, `not used on PCM input`), the width command's notice (`dsd_app_analog_width_edit_notice()`, for the
-  kind the command edits whatever kind the configured preset runs: `Applied: NFM bandwidth -> 12.5 kHz`, or `Default NFM
-  bandwidth -> 16 kHz; this channel overrides it (12.5 kHz)` under a row width) and the configured setting (`12.5 kHz`,
-  `default`). The terminal's `Analog:` status field, the `rtl.nfm_bw` row's label and predicate, the width command's
-  toast, RTL_SET_BW's configured-width check and Qt's `analogBandwidth*` properties (the row flags as
+  input. The running stream's demod rate, or with none running on an input whose RTL DSP bandwidth sets the rate that
+  rate, bounds the widths offered (`max_hz`, on a radio input under any preset); an unset default reads as what the
+  monitor runs at that rate, as the next start publishes it: the rate itself where no channel filter runs (below 20 kHz,
+  or as `DSD_NEO_CHANNEL_LPF` says), the legacy WIDE plan's passband (`dsd_channel_lpf_legacy_wide_width_hz()`) where
+  the filter runs but the rate cannot realize the default, both DSP-limited, and so it does at a running stream's demod
+  rate while the front end is off the monitor (a typed digital row, CQPSK toggled on under -fA), as the monitor it
+  returns to publishes it. There whether the filter runs is the stream's own decision
+  (`rtl_stream_channel_lpf_default()`, carried as `dsd_frontend_metrics::channel_lpf_default`), which its configuration
+  made from the rate it started at and keeps whatever rate the device then delivers (a forced rate, a replay's capture
+  rate), so the view does not re-derive it from the rate. The configured width comes from the scan scope's configured
+  view while one is live. An analog scan row on air (issue #526) shows its width on any session (`row_analog`), and a
+  row that sets its own width (`row_override`, `row_hz`) is the width in force, read as `12.5 kHz (row; default 16 kHz)`
+  with the configured width of its demodulator, which it overrides (on an AM session its leave returns to the AM width
+  instead). The services that hold a DSP rate to an analog session's width hold the configured preset's own kind and
+  width, not the row's. They spell the reading (`12.5 kHz`, `16 kHz (default)`, `12 kHz (DSP-limited)`,
+  `not used on PCM input`), the width command's notice (`dsd_app_analog_width_edit_notice()`, for the kind the command
+  edits whatever kind the configured preset runs: `Applied: NFM bandwidth -> 12.5 kHz`, or
+  `Default NFM bandwidth -> 16 kHz; this channel overrides it (12.5 kHz)` under a row width) and the configured setting
+  (`12.5 kHz`, `default`). The terminal's `Analog:` status field, the `rtl.nfm_bw` row's label and predicate, the width
+  command's toast, RTL_SET_BW's configured-width check and Qt's `analogBandwidth*` properties (the row flags as
   `analogBandwidthRowActive`/`analogBandwidthRowOverride`) all come from it. `dsd_app_analog_width_setting_hz()` reads
   either kind's width in `dsd_opts` (0 = default) whichever preset runs, for every caller that only reads the width in
   force (`dsd_scan_mode_configured_analog_width()` reads the configured one); app-control's
-  `svc_store_analog_width_setting()` is the one writer. Test: `APP_CONTROL_ANALOG_WIDTH_VIEW`.
+  `svc_store_analog_width_setting()` is the one writer. `dsd_app_analog_width_offered()` (issue #524) says which kind's
+  width the frontends offer for editing on a radio input: the configured preset's kind (or an analog scan row's on air),
+  the other kind's while an explicit width of it is set, and AM's unset default where `max_hz` cannot filter it but can
+  filter a narrower AM width (a switch to AM is refused there with word to narrow the width); the terminal's width rows
+  and Qt's `nfmBandwidthOffered`/`amBandwidthOffered` use it. Test: `APP_CONTROL_ANALOG_WIDTH_VIEW`.
 - Decode quality: `include/dsd-neo/app_control/p25_metrics.h` and `src/app_control/p25_metrics.c`
   copy FEC ok percentages, populated P25 voice-error averages, and non-P25 last-frame
   errors from the caller's held snapshot. The core vocoder maintains ring counts;
@@ -1400,8 +1404,9 @@ Build files: `src/protocol/CMakeLists.txt` and per‑protocol `src/protocol/<nam
     input type) its row reads `AM (needs an I/Q radio input)` and choosing it only repeats the reason in the status
     line. Input > RTL-SDR has `rtl.am_bw` beside `rtl.nfm_bw` (`AM bandwidth... [default]`, `lbl_rtl_am_bw()`,
     `is_am_width_editable()`: the configured AM preset on a radio input, or an explicit AM width under another preset,
-    NFM included, as the NFM row stays under AM for an explicit NFM width; both rows share one predicate over the
-    analog width view and `dsd_app_analog_width_setting_hz()`), whose prompt hands the value as typed to
+    NFM included, as the NFM row stays under AM for an explicit NFM width, or AM's default where the running stream's
+    rate cannot filter it but filters a narrower AM width; both rows share one predicate,
+    `dsd_app_analog_width_offered()` over the analog width view with the frontend metrics), whose prompt hands the value as typed to
     `DSD_APP_CMD_AM_BANDWIDTH_SET`; the Auto-PPM switch leads the `Auto-PPM & rtl_tcp` submenu, so the RTL menu keeps
     fifteen rows. The status line's `Analog:` field reads `Analog: AM 6 kHz (default);` under AM, from the same view.
     Tests: `UI_MENU_ACTIONS`, `UI_MENU_LABELS_RADIO`, `UI_MENU_TREE_AUDIT`, `UI_NCURSES_PRINTER_HELPERS`.

@@ -224,12 +224,17 @@ pwr_to_dB(double mean_power) { // NOLINT(misc-use-internal-linkage)
     return 10.0 * log10(mean_power);
 }
 
+/* The running stream the frontend metrics report: its demod rate, 0 for no stream. */
+static int g_metrics_demod_rate_hz;
+
 int
 dsd_app_frontend_get_metrics(dsd_frontend_metrics* out) { // NOLINT(misc-use-internal-linkage)
     if (!out) {
         return -1;
     }
     DSD_MEMSET(out, 0, sizeof *out);
+    out->stream_active = g_metrics_demod_rate_hz > 0 ? 1 : 0;
+    out->demod_rate_hz = g_metrics_demod_rate_hz;
     return 0;
 }
 
@@ -1510,6 +1515,24 @@ test_additional_prompt_and_toggle_actions(void) {
     opts.analog_only = 0;
     rc |= expect_int("am width row shown for an explicit width on a digital session", is_am_width_editable(&ctx), 1);
     opts.analog_am_bandwidth_hz = 0;
+    /* ...and for the unset AM default where the running stream's rate cannot filter it but filters a narrower AM
+     * width (an I/Q replay or a device forcing 7.5 kHz, which filters up to 5.55 kHz): a switch to AM is refused
+     * there with word to narrow the width, so the row has to be there before the switch. Not where the rate filters
+     * the default, nor where it filters no AM width at all. */
+    g_metrics_demod_rate_hz = 7500;
+    rc |= expect_int("am width row shown on a digital session whose rate refuses the AM default",
+                     is_am_width_editable(&ctx), 1);
+    opts.analog_only = 1;
+    opts.analog_demod = DSD_ANALOG_DEMOD_FM;
+    rc |= expect_int("am width row shown under Analog where the rate refuses the AM default",
+                     is_am_width_editable(&ctx), 1);
+    rc |= expect_int("nfm width row still shown there", is_nfm_width_editable(&ctx), 1);
+    g_metrics_demod_rate_hz = 48000;
+    rc |= expect_int("am width row hidden under Analog where the rate filters the AM default",
+                     is_am_width_editable(&ctx), 0);
+    g_metrics_demod_rate_hz = 6000;
+    rc |= expect_int("am width row hidden where the rate filters no AM width", is_am_width_editable(&ctx), 0);
+    g_metrics_demod_rate_hz = 0;
     opts.analog_only = 1;
     opts.analog_demod = DSD_ANALOG_DEMOD_AM;
     opts.audio_in_type = AUDIO_IN_PULSE;

@@ -107,6 +107,8 @@ class MetricsModel : public QObject {
     Q_PROPERTY(int analogBandwidthConfiguredHz READ analogBandwidthConfiguredHz NOTIFY controlChanged)
     Q_PROPERTY(int nfmBandwidthConfiguredHz READ nfmBandwidthConfiguredHz NOTIFY controlChanged)
     Q_PROPERTY(int amBandwidthConfiguredHz READ amBandwidthConfiguredHz NOTIFY controlChanged)
+    Q_PROPERTY(bool nfmBandwidthOffered READ nfmBandwidthOffered NOTIFY tunerChanged)
+    Q_PROPERTY(bool amBandwidthOffered READ amBandwidthOffered NOTIFY tunerChanged)
     Q_PROPERTY(QString analogBandwidthReading READ analogBandwidthReading NOTIFY tunerChanged)
     /* Issue #526: an analog scan row on air, and whether it sets its own width over the configured one. */
     Q_PROPERTY(bool analogBandwidthRowActive READ analogBandwidthRowActive NOTIFY tunerChanged)
@@ -430,8 +432,8 @@ class MetricsModel : public QObject {
     /**
      * @brief The widest analog channel width the DSP rate filters, in Hz; 0 when unknown.
      *
-     * Published under the analog preset on a radio input, from the demod rate a running stream reports
-     * (dsd_analog_width_max_for_rate()), so the width control offers only steps the engine would take. With no
+     * Published on a radio input under any preset, from the demod rate a running stream reports
+     * (dsd_analog_width_max_for_rate()), so the width controls offer only steps the engine would take. With no
      * stream it is the rate an RTL-SDR or rtl_tcp input's DSP bandwidth gives the next start, which the engine holds
      * a width to; 0 on an input whose device or capture sets the rate.
      */
@@ -467,6 +469,28 @@ class MetricsModel : public QObject {
     int
     amBandwidthConfiguredHz() const {
         return m_view.am_bandwidth_configured_hz;
+    }
+
+    /**
+     * @brief Whether the Radio sheet offers the NFM channel width for editing (dsd_app_analog_width_offered()).
+     *
+     * On a radio input: under the NFM preset, or under another preset while an explicit NFM width is set.
+     */
+    bool
+    nfmBandwidthOffered() const {
+        return m_view.nfm_bandwidth_offered;
+    }
+
+    /**
+     * @brief Whether the Radio sheet offers the AM channel width for editing (dsd_app_analog_width_offered()).
+     *
+     * On a radio input: under the AM preset; under another preset while an explicit AM width is set, or while the DSP
+     * rate cannot filter the 6 kHz AM default but filters a narrower AM width, where a switch to AM is refused with
+     * word to narrow the width (issue #524).
+     */
+    bool
+    amBandwidthOffered() const {
+        return m_view.am_bandwidth_offered;
     }
 
     /**
@@ -1407,6 +1431,8 @@ class MetricsModel : public QObject {
         bool analog_bandwidth_dsp_limited = false;
         bool analog_bandwidth_row_active = false;
         bool analog_bandwidth_row_override = false;
+        bool nfm_bandwidth_offered = false;
+        bool am_bandwidth_offered = false;
         bool synced_here = false;
         bool trunkable_sync = false;
         bool squelch_off = false;
@@ -1471,7 +1497,9 @@ class MetricsModel : public QObject {
                    && analog_bandwidth_max_hz == other.analog_bandwidth_max_hz
                    && analog_bandwidth_reading == other.analog_bandwidth_reading
                    && analog_bandwidth_row_active == other.analog_bandwidth_row_active
-                   && analog_bandwidth_row_override == other.analog_bandwidth_row_override;
+                   && analog_bandwidth_row_override == other.analog_bandwidth_row_override
+                   && nfm_bandwidth_offered == other.nfm_bandwidth_offered
+                   && am_bandwidth_offered == other.am_bandwidth_offered;
         }
 
         /* The scan controls (#380) ride controlChanged with the rest; split out only so

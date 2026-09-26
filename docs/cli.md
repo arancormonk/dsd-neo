@@ -592,13 +592,15 @@ sets), and *Use the default width* to return an explicit width to the unset defa
 PCM input* and the controls are disabled. Under another mode, the other analog kind's included, both keep the width
 control of a kind on a radio input while an explicit width of it is set, with the setting as its reading (on the Radio
 sheet, a second width control below the first under `-fA` or `-fM`): a switch to that mode is held to the width, so a
-width the device or the capture cannot filter can be narrowed before the switch. The setup wizard offers the NFM and AM
-chips too, and picking either suggests no trunking. Its AM chip is greyed out for a network or file source, with a note
-under the chips saying why, and on a USB or rtl_tcp radio whose bandwidth (the system's, or the app default) is 4 or 6
-kHz, where no AM width fits, the wizard waits at the tune step with the reason and the bandwidths that fit; a system
-saved with that pair earlier fails to start with the same reason. Both controls always edit the configured width, which
-is also what a saved config writes: a scan row's own width is never saved. While a row that sets its own width is on
-air, an edit waits for the row to leave (or for a row without a width), and the message says so:
+width the device or the capture cannot filter can be narrowed before the switch. The AM control is also offered, reading
+`default`, where the DSP rate cannot filter AM's 6 kHz default but can filter a narrower AM width (a replay or device at
+7.5 kHz filters up to 5.55 kHz), since a switch to AM is refused there with word to narrow the width. The setup wizard
+offers the NFM and AM chips too, and picking either suggests no trunking. Its AM chip is greyed out for a network or
+file source, with a note under the chips saying why, and on a USB or rtl_tcp radio whose bandwidth (the system's, or the
+app default) is 4 or 6 kHz, where no AM width fits, the wizard waits at the tune step with the reason and the bandwidths
+that fit; a system saved with that pair earlier fails to start with the same reason. Both controls always edit the
+configured width, which is also what a saved config writes: a scan row's own width is never saved. While a row that sets
+its own width is on air, an edit waits for the row to leave (or for a row without a width), and the message says so:
 `Default NFM bandwidth -> 20 kHz; this channel overrides it (12.5 kHz)`. On a digital session, while the scan has an
 `nfm` row or `nfm-conventional` target without a width of its own, which runs the configured width when it comes on air,
 an edit the DSP rate cannot filter is refused whichever row is on air, rather than accepted and that row skipped at

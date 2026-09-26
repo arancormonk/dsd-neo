@@ -152,14 +152,18 @@ ModalSheet {
     // the terminal offers its row: a switch between NFM and AM is held to it too,
     // and where the device or the capture forces a DSP rate that cannot filter
     // it, the refusal says to narrow it, which has to be possible before the
-    // switch. It is a setting only; no width of that kind is in force.
+    // switch. So is AM's default where the engine reports the DSP rate cannot
+    // filter it (amBandwidthOffered): a switch to AM is refused there with word
+    // to narrow the width. It is a setting only; no width of that kind is in
+    // force.
     readonly property bool otherKindAm: !amPreset
     readonly property var otherWidths: otherKindAm ? Util.AM_WIDTHS_HZ : Util.NFM_WIDTHS_HZ
     readonly property int otherWidthSetting: (otherKindAm
         ? metrics.amBandwidthConfiguredHz : metrics.nfmBandwidthConfiguredHz) || 0
     readonly property int otherWidthConfigured: isNaN(pendingOtherWidth) ? otherWidthSetting : pendingOtherWidth
     readonly property bool otherWidthOffered: analogWidthEditable
-        && (otherWidthSetting > 0 || !isNaN(pendingOtherWidth))
+        && (otherWidthSetting > 0 || !isNaN(pendingOtherWidth)
+            || (otherKindAm ? metrics.amBandwidthOffered : metrics.nfmBandwidthOffered) === true)
     readonly property int otherWidthStepFrom: {
         if (otherWidthConfigured > 0)
             return otherWidthConfigured;

@@ -2037,6 +2037,9 @@ class Setup : public QObject {
         // width of the analog kind the configured preset does not run.
         metrics[QStringLiteral("nfmBandwidthConfiguredHz")] = 0;
         metrics[QStringLiteral("amBandwidthConfiguredHz")] = 0;
+        // #524: whether the engine offers each kind's width for editing (dsd_app_analog_width_offered()).
+        metrics[QStringLiteral("nfmBandwidthOffered")] = false;
+        metrics[QStringLiteral("amBandwidthOffered")] = false;
         metrics[QStringLiteral("analogBandwidthMaxHz")] = 0;
         metrics[QStringLiteral("analogBandwidthReading")] = QString();
         // #526: an nfm scan row on air (its width is in force on any session), and whether it sets its own.
