@@ -180,34 +180,35 @@ Tests: `tests/engine/test_engine_trunk_scan.c` (`ENGINE_TRUNK_SCAN`) and
   digital; an untyped row's tune and the leave then land the digital family on the timing it runs at.
 - Runtime owns the exact configured decoder baseline and temporary class through `runtime/scan_mode.h` and
   `runtime/scan_mode.c` (extension slot 6). It uses the existing preset definitions while keeping the audio sink fixed.
-  Suspend/update/resume supports global commands; scalar snapshot copies keep frontend state independent of live storage.
-  Blank rows retain scope ownership. `dsd_scan_mode_configured_view()` borrows the baseline without copying its output
-  label; consumers use their published snapshot, and persistence uses the exact configured preset (including custom sets).
-  `dsd_scan_mode_apply_modulation()` owns target flags/locks for both entry and scope updates. Inherited profiles use the
-  restored SPS hunt index, so AUTO's saved timing and the frontend's rate/levels agree after leaving a row.
-  `dsd_scan_mode_row_options()` borrows the installed nonsecret row options (valid while suspended and on held
+  Suspend/update/resume supports global commands; scalar snapshot copies keep frontend state independent of live
+  storage. Blank rows retain scope ownership. `dsd_scan_mode_configured_view()` borrows the baseline without copying its
+  output label; consumers use their published snapshot, and persistence uses the exact configured preset (including
+  custom sets). `dsd_scan_mode_apply_modulation()` owns target flags/locks for both entry and scope updates. Inherited
+  profiles use the restored SPS hunt index, so AUTO's saved timing and the frontend's rate/levels agree after leaving a
+  row. `dsd_scan_mode_row_options()` borrows the installed nonsecret row options (valid while suspended and on held
   snapshots). Row options are applied through a per-field table (`scan_option_appliers[]`), and the row squelch is
-  pushed to the RTL demodulator from the scope's entry points only, once per row change. `dsd_scan_mode_enter()`
-  never pushes, so every caller must follow it with `dsd_scan_mode_options()` (NULL for a row without options);
-  `dsd_scan_mode_set_configured_squelch()` and `dsd_scan_mode_set_configured_nfm_bandwidth()` edit the configured
-  default without suspending (see Scoped scan options), and `dsd_scan_mode_configured_analog_width()` is the one reader
-  of a configured channel width (the configured view while a scope is live, `dsd_opts` otherwise), which the scanners,
-  app-control's width services and view, the config save and the terminal menu share.
+  pushed to the RTL demodulator from the scope's entry points only, once per row change. `dsd_scan_mode_enter()` never
+  pushes, so every caller must follow it with `dsd_scan_mode_options()` (NULL for a row without options);
+  `dsd_scan_mode_set_configured_squelch()` and `dsd_scan_mode_set_configured_analog_width()` (either kind's width, AM
+  included; `dsd_scan_mode_set_configured_nfm_bandwidth()` is its NFM call) edit the configured default without
+  suspending (see Scoped scan options), and `dsd_scan_mode_configured_analog_width()` is the one reader of a configured
+  channel width (the configured view while a scope is live, `dsd_opts` otherwise), which the scanners, app-control's
+  width services and view, the config save and the terminal menu share.
 - Engine `channel_scan.c` (extension slot 7) stages typed `-Y` entries for automatic, manual, and avoid stepping through
   tracked tuning. It commits mode/keys only after success and retains generation protection across pending requests.
   Configuration edits retry pending tunes on a later service pass; live output-rate changes do not trigger another tune.
-  Failed rows advance to the next candidate; a later successful tune recovers any gate held by a partial backend failure.
-  `dsd_engine_channel_scan_waiting()` only inspects ownership; `dsd_engine_channel_scan_service_sync()` services pending
-  work and invalidates sync gathered before the transaction. Pending rows defer no-carrier call finalization until commit.
-  `dsd_engine_reset_no_carrier_state()` shares decoder cleanup without recursively stepping or changing tuner ownership.
-  `trunk_scan.c` selects the same classes from target types while retaining target snapshots and modulation/gain ownership.
-  Each row commit (and trunk-scan target switch) opens the sink the row plays through, `dsd_engine_scan_ensure_output()`
-  (analog or digital, idempotent; it, the two warnings below, the width rule `dsd_engine_scan_width_refused()` and its
-  quiet per-row form `dsd_engine_scan_analog_width_skipped()`, and the skipped-row count `dsd_engine_scan_skipped` /
-  `dsd_engine_scan_note_skipped_rows()` are private to the engine, `src/engine/scan_analog_internal.h`), and scan start
-  logs what an analog row owes the operator on two schedules. An open squelch, which lets noise hold the row until the
-  visit cap or the operator moves on, `dsd_engine_scan_warn_analog_squelch()`, is said once per map (-Y) or list (trunk
-  scan). A width on audio input, or
+  Failed rows advance to the next candidate; a later successful tune recovers any gate held by a partial backend
+  failure. `dsd_engine_channel_scan_waiting()` only inspects ownership; `dsd_engine_channel_scan_service_sync()`
+  services pending work and invalidates sync gathered before the transaction. Pending rows defer no-carrier call
+  finalization until commit. `dsd_engine_reset_no_carrier_state()` shares decoder cleanup without recursively stepping
+  or changing tuner ownership. `trunk_scan.c` selects the same classes from target types while retaining target
+  snapshots and modulation/gain ownership. Each row commit (and trunk-scan target switch) opens the sink the row plays
+  through, `dsd_engine_scan_ensure_output()` (analog or digital, idempotent; it, the two warnings below, the width rule
+  `dsd_engine_scan_width_refused()` and its quiet per-row form `dsd_engine_scan_analog_width_skipped()`, and the
+  skipped-row count `dsd_engine_scan_skipped` / `dsd_engine_scan_note_skipped_rows()` are private to the engine,
+  `src/engine/scan_analog_internal.h`), and scan start logs what an analog row owes the operator on two schedules. An
+  open squelch, which lets noise hold the row until the visit cap or the operator moves on,
+  `dsd_engine_scan_warn_analog_squelch()`, is said once per map (-Y) or list (trunk scan). A width on audio input, or
   one the front end refuses, `dsd_engine_scan_warn_analog_width()`, is said once per map or list and DSP rate. The front
   end refuses a width the DSP rate (`dsd_engine_scan_dsp_rate_hz()`, the rate the RTL stream holds analog requests to,
   `rtl_stream_get_request_rate_hz()`) cannot filter, worded with the fix the input allows as the stream start's refusal
@@ -226,48 +227,48 @@ Tests: `tests/engine/test_engine_trunk_scan.c` (`ENGINE_TRUNK_SCAN`) and
   (`dsd_engine_scan_runs_configured_nfm_width()`, public in `trunk_scan.h`), app-control holds the configured width to
   the rate on any session, as under -fA: the width command, a config apply, `RTL_SET_BW` and Input > Switch source
   refuse a width or bandwidth that cannot run it, whichever row is on air. What is left to warn about is a list loaded
-  over such a width, or a rate a device forced. A trunk-scan retune
-  in flight on an analog target keeps the width it queued; a width edit made meanwhile reaches the front end as a live
-  request the landing retune can land over, so the coordinator requests the width in force again once the retune lands
-  wherever it differs (`trunk_scan_reapply_analog_width()`), as the `-Y` scanner restages such a tune. A channel map
-  loaded at runtime is held to the DSP rate as it loads: `svc_channel_map_refused_rows()` asks
-  `dsd_engine_channel_scan_refused_rows()` (public in `channel_scan.h`, read-only) for the rows the front end would
-  refuse at the running stream's rate, or on an RTL-SDR or rtl_tcp input with none running at the rate its DSP bandwidth
-  sets, and the import command's toast names the first and counts the rest. A map `-C` or `[trunking] chan_csv` loads at
-  startup is held to the rate at scan start, once the stream has published it. The map still loads, since the DSP
-  bandwidth that fits it can be set afterwards, and a width the rate cannot fit stays a warning and a skipped row, never
-  an import error: the rate a SoapySDR or Airspy device, or an I/Q replay, runs at is certain only once its stream runs,
-  so their rows are held to it at scan start, and the Qt/Android review and target-list preview (dry-run loaders with no
-  session) check the width's range only. The describe records carry each row's width (`bandwidth_hz`) for the Qt/Android
-  review to show it (see Scoped scan options).
-  The receive family a row runs on is queued with its tune in `trunk_tuning.c` (`dsd_engine_prepare_scan_profile()`,
-  issue #526): an analog row attaches the analog family, demodulator and width to the retune profile
-  (`rtl_stream_prepare_retune_analog_profile_for_target()`) with no symbol profile, and a width the front end refuses
-  fails the tune before any backend moves, dropping only the retune profile queued for it; a digital row attaches the
-  digital family ahead of its symbol profile only while the front end runs the analog family and the configured mode is
-  digital (a typed digital row on an `-fA` session keeps the monitor output). A failed hop off the analog monitor
-  re-requests no symbol profile over it. A live
-  receive-family request accepted while a `-Y` row's retune is outstanding supersedes the family, and the symbol
-  profile, that retune carries; it acts for the row still in scope (a width edit or a config apply republishing the
-  outgoing row's receive profile), so the commit restages the row rather than run it on the outgoing row's family
-  (`channel_scan_staged_stale()`, comparing `dsd_engine_scan_family_requests()`, the stream's
-  `rtl_stream_live_family_request_count()`, with the count when the tune was queued). Only a retune that carries a
-  family is superseded (`dsd_engine_scan_retune_attaches_family()`); one without lands its symbol profile whatever the
-  requests, and its row commits as staged.
-  Leaving the scan (`dsd_engine_channel_scan_leave()`) restores the configured RTL receive family through the metrics
-  hooks: under `-fA` the configured analog profile (`apply_analog_profile`, analog family, demodulator kind and
-  channel width with 0 meaning the default), otherwise the digital family first and then the restored symbol profile
-  (`apply_demod_profile`), so the demod thread switches family before it applies the profile. When the front end still
-  runs the analog family there (`analog_family_active`: an `-fA` session whose configured mode was changed to a digital
-  one while a row ran, saving its timing for the analog output rate), the leave times the decoder, and the profile it
-  publishes, for the rate the digital family lands on (`output_rate_for_family`). A leave that switches the front
-  end's family either way also drops the analog monitor block the decoder has part-collected
-  (`dsd_symbol_analog_block_reset()`). The M17 encoder is not the analog family. Test: `ENGINE_CHANNEL_SCAN`. A row's
-  retune (`dsd_engine_scan_tune_to_freq()` in `trunk_tuning.c`) carries the RTL profile of the settings the row runs: a
-  row that runs the analog family (a row without a decode mode on an `-fA` or `-fM` session keeps it) queues the
-  configured analog profile for its target (`rtl_stream_prepare_retune_analog_profile_for_target()`) and no symbol
-  profile, so the monitor keeps its own channel and detector, and gets them back after a typed digital row. Test:
-  `ENGINE_TRUNK_RETUNE_REGRESSION`.
+  over such a width, or a rate a device forced. A trunk-scan retune in flight on an analog target keeps the width it
+  queued; a width edit made meanwhile reaches the front end as a live request the landing retune can land over, so the
+  coordinator requests the width in force again once the retune lands wherever it differs
+  (`trunk_scan_reapply_analog_width()`), as the `-Y` scanner restages such a tune. A channel map loaded at runtime is
+  held to the DSP rate as it loads: `svc_channel_map_refused_rows()` asks `dsd_engine_channel_scan_refused_rows()`
+  (public in `channel_scan.h`, read-only) for the rows the front end would refuse at the running stream's rate, or on an
+  RTL-SDR or rtl_tcp input with none running at the rate its DSP bandwidth sets, and the import command's toast names
+  the first and counts the rest. A map `-C` or `[trunking] chan_csv` loads at startup is held to the rate at scan start,
+  once the stream has published it. The map still loads, since the DSP bandwidth that fits it can be set afterwards, and
+  a width the rate cannot fit stays a warning and a skipped row, never an import error: the rate a SoapySDR or Airspy
+  device, or an I/Q replay, runs at is certain only once its stream runs, so their rows are held to it at scan start,
+  and the Qt/Android review and target-list preview (dry-run loaders with no session) check the width's range only. The
+  describe records carry each row's width (`bandwidth_hz`) for the Qt/Android review to show it (see Scoped scan
+  options). The receive family a row runs on is queued with its tune in `trunk_tuning.c`
+  (`dsd_engine_prepare_scan_profile()`, issue #526): an analog row attaches the analog family, demodulator and width to
+  the retune profile (`rtl_stream_prepare_retune_analog_profile_for_target()`) with no symbol profile, and a width the
+  front end refuses fails the tune before any backend moves, dropping only the retune profile queued for it; a digital
+  row attaches the digital family ahead of its symbol profile only while the front end runs the analog family and the
+  configured mode is digital (a typed digital row on an `-fA` session keeps the monitor output). A failed hop off the
+  analog monitor re-requests no symbol profile over it. A live receive-family request accepted while a `-Y` row's retune
+  is outstanding supersedes the family, and the symbol profile, that retune carries; it acts for the row still in scope
+  (a width edit or a config apply republishing the outgoing row's receive profile), so the commit restages the row
+  rather than run it on the outgoing row's family (`channel_scan_staged_stale()`, comparing
+  `dsd_engine_scan_family_requests()`, the stream's `rtl_stream_live_family_request_count()`, with the count when the
+  tune was queued). Only a retune that carries a family is superseded (`dsd_engine_scan_retune_attaches_family()`); one
+  without lands its symbol profile whatever the requests, and its row commits as staged. Leaving the scan
+  (`dsd_engine_channel_scan_leave()`) restores the configured RTL receive family through the metrics hooks: under `-fA`
+  the configured analog profile (`apply_analog_profile`, analog family, demodulator kind and channel width with 0
+  meaning the default), otherwise the digital family first and then the restored symbol profile (`apply_demod_profile`),
+  so the demod thread switches family before it applies the profile. When the front end still runs the analog family
+  there (`analog_family_active`: an `-fA` session whose configured mode was changed to a digital one while a row ran,
+  saving its timing for the analog output rate), the leave times the decoder, and the profile it publishes, for the rate
+  the digital family lands on (`output_rate_for_family`). A leave that switches the front end's family either way also
+  drops the analog monitor block the decoder has part-collected (`dsd_symbol_analog_block_reset()`). The M17 encoder is
+  not the analog family. Test: `ENGINE_CHANNEL_SCAN`. A row's retune (`dsd_engine_scan_tune_to_freq()` in
+  `trunk_tuning.c`) carries the RTL profile of the settings the row runs: a row that runs the analog family (an nfm row,
+  or a row without a decode mode on an `-fA` or `-fM` session, which keeps it) queues its analog profile, kind and
+  width, for its target (`dsd_engine_prepare_scan_analog_profile()`,
+  `rtl_stream_prepare_retune_analog_profile_for_target()`) and no symbol profile, so the monitor keeps its own channel
+  and detector (the AM detector on a blank row of an `-fM` session), and gets them back after a typed digital row; a
+  width the front end refuses fails the tune before any backend moves. Test: `ENGINE_TRUNK_RETUNE_REGRESSION` (the `-fA`
+  and `-fM` blank rows among them).
 - DSP `dsd_frame_sync_reset_acquisition()` drops outgoing profile proof, modulation votes, symbol history, hunt budgets,
   and slicer windows at committed row boundaries. Conventional rows also discard learned P25 modulation; trunk targets
   retain their own learned modulation. Normal no-carrier protocol confirmation resets remain in use.
@@ -776,10 +777,12 @@ installs from `src/engine/trunk_tuning.c` in `src/engine/trunk_tuning_hooks_inst
   either kind's width in `dsd_opts` (0 = default) whichever preset runs, for every caller that only reads the width in
   force (`dsd_scan_mode_configured_analog_width()` reads the configured one); app-control's
   `svc_store_analog_width_setting()` is the one writer. `dsd_app_analog_width_offered()` (issue #524) says which kind's
-  width the frontends offer for editing on a radio input: the configured preset's kind (or an analog scan row's on air),
-  the other kind's while an explicit width of it is set, and AM's unset default where `max_hz` cannot filter it but can
-  filter a narrower AM width (a switch to AM is refused there with word to narrow the width); the terminal's width rows
-  and Qt's `nfmBandwidthOffered`/`amBandwidthOffered` use it. Test: `APP_CONTROL_ANALOG_WIDTH_VIEW`.
+  width the frontends offer for editing on a radio input: the configured preset's kind whatever an analog scan row on
+  air runs (an nfm row runs FM over an AM session), the kind that row runs, the other kind's while an explicit
+  configured width of it is set, and AM's unset default where `max_hz` cannot filter it but can filter a narrower AM
+  width (a switch to AM is refused there with word to narrow the width); it takes the scan state for the configured
+  view. The terminal's width rows and Qt's `nfmBandwidthOffered`/`amBandwidthOffered` use it, and Qt's
+  `analogBandwidthAm` says which kind the view's width is. Test: `APP_CONTROL_ANALOG_WIDTH_VIEW`.
 - Decode quality: `include/dsd-neo/app_control/p25_metrics.h` and `src/app_control/p25_metrics.c`
   copy FEC ok percentages, populated P25 voice-error averages, and non-P25 last-frame
   errors from the caller's held snapshot. The core vocoder maintains ring counts;
@@ -1422,24 +1425,25 @@ Qt Quick frontend (`src/ui/qt`):
 
 - AM (issue #524): `qml/Util.js` `DECODE_MODES` carries an `AM` chip (`-fM`) marked `iqOnly`, which the Radio sheet
   (`metrics.radioInput`, with a `radioDecodeIqNote` saying why) and the add-system wizard (`radioSource`) do not offer
-  for audio that arrives demodulated. The wizard drops an `iqOnly` flag back to Auto when its source moves off the
-  radio (`dropRadioOnlyDecodeFlag()`) and holds step 1 while one remains, and `session_args_build()` refuses `-fM` on
-  a network or file source (`SessionArgsError::AmNeedsRadio`), for a system saved before; the wizard's
+  for audio that arrives demodulated. The wizard drops an `iqOnly` flag back to Auto when its source moves off the radio
+  (`dropRadioOnlyDecodeFlag()`) and holds step 1 while one remains, and `session_args_build()` refuses `-fM` on a
+  network or file source (`SessionArgsError::AmNeedsRadio`), for a system saved before; the wizard's
   `wizardDecodeIqNote` says why the chip is greyed out. On a USB or rtl_tcp radio the AM default has to fit the DSP
   bandwidth the spec carries (the engine refuses 4 and 6 kHz before the device opens):
   `session_args_am_fits_bandwidth()` is that rule, `session_args_build()` refuses the pair
   (`SessionArgsError::AmBandwidth`), and the wizard holds step 1 with `wizardDecodeAmBandwidthNote` through the
-  `sessionArgs.amBandwidthError()` invokable. The Radio sheet's analog
-  section is kind-aware: under the AM preset (`amPreset`) its title reads `AM channel width`, it steps over
-  `Util.AM_WIDTHS_HZ` (5000/6000/8000/10000/15000/20000) with `Util.nextWidthIn()`, which takes the kind's list,
-  through `CommandBridge::setAmBandwidthHz()`, and it reads the same `MetricsModel::analogBandwidth*` properties,
-  which the analog width view fills for the configured kind. `MetricsModel::nfmBandwidthConfiguredHz`/
-  `amBandwidthConfiguredHz` publish each kind's setting whichever preset runs, so a second control
-  (`radioAnalogOtherSection`) edits an explicit width of the kind the section does not (AM under `-fA` or a digital
-  mode, NFM under `-fM`), which a switch between the kinds is held to. A width request not yet answered belongs to its
-  kind, so a preset change between NFM and AM drops both sections' outstanding requests (`onAmPresetChanged`) rather
-  than show one kind's request under the other. Tests: `tests/ui/qml/tst_radio_am.qml`,
-  `tst_wizard_decode_chip.qml`, `UI_QT_METRICS_MODEL`, `UI_QT_SESSION_ARGS`, `UI_QT_CONTROLLER`.
+  `sessionArgs.amBandwidthError()` invokable. The Radio sheet's analog section is kind-aware: under the AM preset
+  (`sectionAm`, which follows `MetricsModel::analogBandwidthAm` while an analog scan row is on air, since an nfm row
+  runs FM over an AM session) its title reads `AM channel width`, it steps over `Util.AM_WIDTHS_HZ`
+  (5000/6000/8000/10000/15000/20000) with `Util.nextWidthIn()`, which takes the kind's list, through
+  `CommandBridge::setAmBandwidthHz()`, and it reads the same `MetricsModel::analogBandwidth*` properties, which the
+  analog width view fills for the configured kind. `MetricsModel::nfmBandwidthConfiguredHz`/ `amBandwidthConfiguredHz`
+  publish each kind's setting whichever preset runs, from the configured view (never a row's own width), so a second
+  control (`radioAnalogOtherSection`) edits an explicit width of the kind the section does not (AM under `-fA` or a
+  digital mode, NFM under `-fM`), which a switch between the kinds is held to. A width request not yet answered belongs
+  to its kind, so a change of the section's kind drops both sections' outstanding requests (`onSectionAmChanged`) rather
+  than show one kind's request under the other. Tests: `tests/ui/qml/tst_radio_am.qml`, `tst_wizard_decode_chip.qml`,
+  `UI_QT_METRICS_MODEL`, `UI_QT_SESSION_ARGS`, `UI_QT_CONTROLLER`.
 
 - After the session's first decoder redraw, `UiController` refreshes live metrics on every timer tick so scan
   countdowns and the sync-loss hold continue aging if input stalls. History, network and policy models still
@@ -1683,18 +1687,20 @@ External dependencies (resolved via CMake):
   Unlike squelch it is an acquisition setting (see Per-channel decoder modes), so a width change restages a parked row
   and the configured width is never replaced by a row's in the configured view: saves write the configured width, and
   the width command edits it through `dsd_scan_mode_set_configured_nfm_bandwidth()`, which leaves a row's own width in
-  force. `RTL_SET_BW` stays unscoped, so the stream it reopens starts on the width in force, a row's included;
-  `svc_rtl_set_bandwidth()` refuses a bandwidth whose DSP rate cannot filter that width, as well as the configured one
-  (on RTL-SDR and rtl_tcp, where the bandwidth sets the rate), rather than let the start refuse it and leave no radio
-  input; the toast names the scan row's width (`DSP BW 12 kHz cannot filter the scan row's NFM 12.5 kHz (max 9.6 kHz);
-  keep a wider DSP bandwidth`), or gives the width's own fix where the row runs the configured width. Input > Switch
-  source > RTL-SDR (`svc_check_rtl_input_analog_width()`), unscoped too, holds the same two widths. A config apply is
-  scoped, so it holds a row's own width explicitly at a reopen (`cfg_check_scan_row_width()`). On a digital session the
-  configured width counts as in use for all of these, and for the width command, while the scan has an nfm row or target
-  without a width of its own (`dsd_engine_scan_runs_configured_nfm_width()`). The option's preview fields,
-  `bandwidth_hz` in `dsd_csv_channel_profile` and `dsd_app_scan_csv_target` (-1 when the row inherits), reach the
-  Qt/Android channel-map review and target preview as `bandwidthHz` (invalid when the row inherits), which read
-  `NFM bandwidth: 12.5 kHz`, or `NFM bandwidth: inherit` on an nfm row without one (`Util.nfmBandwidthSummary()`).
+  force (the AM width command edits the configured AM width the same way, which no row shadows). `RTL_SET_BW` stays
+  unscoped, so the stream it reopens starts on the width in force, a row's included; `svc_rtl_set_bandwidth()` refuses a
+  bandwidth whose DSP rate cannot filter that width, as well as the configured one (on RTL-SDR and rtl_tcp, where the
+  bandwidth sets the rate), rather than let the start refuse it and leave no radio input; the toast names the scan row's
+  width (`DSP BW 12 kHz cannot filter the scan row's NFM 12.5 kHz (max 9.6 kHz); keep a wider DSP bandwidth`), or gives
+  the width's own fix where the row runs the configured width. Input > Switch source > RTL-SDR
+  (`svc_check_rtl_input_analog_width()`), unscoped too, holds the same two widths. A config apply is scoped, so it holds
+  a row's own width explicitly at a reopen (`cfg_check_scan_row_width()`). On a digital or AM session the configured NFM
+  width counts as in use for all of these, and for the width command, while the scan has an nfm row or target without a
+  width of its own (`dsd_engine_scan_runs_configured_nfm_width()`; on AM beside the AM width,
+  `svc_scan_nfm_width_beside_preset()`, `cfg_check_scan_nfm_width()`). The option's preview fields, `bandwidth_hz` in
+  `dsd_csv_channel_profile` and `dsd_app_scan_csv_target` (-1 when the row inherits), reach the Qt/Android channel-map
+  review and target preview as `bandwidthHz` (invalid when the row inherits), which read `NFM bandwidth: 12.5 kHz`, or
+  `NFM bandwidth: inherit` on an nfm row without one (`Util.nfmBandwidthSummary()`).
 - Adding a row option: add the `DSD_SCAN_OPT_*` bit (reserved values only), a `dsd_scan_option_values` field and a
   `specifications[]` row with its setter in `runtime/scan_options.c` (use `ANY_MODES` only for options that mean the
   same on every class); add a `scan_option_appliers[]` row in `runtime/scan_mode.c`; if it lands in `dsd_opts`, add

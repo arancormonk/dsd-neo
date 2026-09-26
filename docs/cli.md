@@ -663,7 +663,9 @@ of the setup wizard): the analog monitor with an AM envelope detector in place o
   after an RTL-SDR or rtl_tcp source at a 4 or 6 kHz DSP bandwidth (or one the configured AM width does not fit) it
   prints that text and asks for the decode mode again. The other radio inputs are checked when the stream starts,
   against the rate the device or the capture delivers. While AM is the configured mode, the DSP bandwidth, a config's
-  `[input]` and Input > Switch source > RTL-SDR are held to its width as they are to an explicit NFM width.
+  `[input]` and Input > Switch source > RTL-SDR are held to its width as they are to an explicit NFM width, and, while a
+  `-Y` list or `--trunk-scan` has an `nfm` row or target without a width of its own, to the configured NFM width that
+  row runs as well.
 - Level: the detector divides the envelope by its own carrier estimate (a 50 ms average of the carrier), so the audio
   level is the modulation depth whatever the signal strength: 100% modulation peaks where live FM does at about 6 kHz
   deviation. A squelched block is silence and leaves the carrier estimate where it was, so audio resumes at its level
@@ -678,10 +680,13 @@ of the setup wizard): the analog monitor with an AM envelope detector in place o
   and the digital modes from a frontend applies to the running stream without reopening it, and so does a new AM width
   (Input > RTL-SDR > `AM bandwidth... [default]` in the terminal, or the Radio sheet's channel width stepper under the
   AM chip in the Qt and Android app; the terminal row takes any value, and the engine refuses what the rate cannot
-  filter). Under `-Y` scanning the width is held to the running rate too: on a blank row, which keeps the configured
-  mode (its retune brings the AM monitor back after a digital row), it applies live; under a row with its own decode
-  mode (a digital row) the row's profile runs, so the width applies when the row ends. The terminal status line shows
-  the width in force (`Analog: AM 6 kHz (default);`) next to `DSP-BW`, and the Radio sheet shows the same reading.
+  filter). Under `-Y` scanning the width is held to the running rate too, and it always edits the configured AM width,
+  which a save writes and every row's leave keeps: on a blank row, which keeps the configured mode (its retune brings
+  the AM monitor back after a digital or `nfm` row), it applies live; under a row with its own decode mode (a digital
+  row, or an `nfm` row, which runs the FM monitor at its own or the configured NFM width) the row's profile runs, so the
+  width applies when the scanner returns to a blank row. While an `nfm` row is on air the terminal and the Radio sheet
+  read its NFM width, and the AM width keeps its own control. The terminal status line shows the width in force
+  (`Analog: AM 6 kHz (default);`) next to `DSP-BW`, and the Radio sheet shows the same reading.
 
 ### Received tone (CTCSS) on the analog monitor
 
