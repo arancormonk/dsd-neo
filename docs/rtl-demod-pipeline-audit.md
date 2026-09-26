@@ -189,9 +189,11 @@ is known:
   RTL-SDR/rtl_tcp input's DSP bandwidth, and requests it live from a running
   front end whose options in force are `-fA` (`rtl_stream_request_analog_profile()`):
   a width-only change on the monitor, or the width a queued switch onto the
-  analog family carries. The width is not a scan row setting, so the command
-  edits it in place rather than suspending a row's scope (which would read a
-  row's live acquisition as a change); under a typed digital scan row it is
+  analog family carries. The command edits the configured width without
+  suspending a row's scope (which would read a row's live acquisition as a
+  change), through `dsd_scan_mode_set_configured_nfm_bandwidth()`; an `nfm`
+  scan row's own `--nfm-bandwidth-hz` (issue #526) stays in force over the
+  edit until the row leaves; under a typed digital scan row it is
   stored and applied when the row's leave republishes the analog profile;
   with CQPSK toggled on under `-fA` it is stored, and turning CQPSK off
   returns to the monitor through the analog profile with it. Whether CQPSK

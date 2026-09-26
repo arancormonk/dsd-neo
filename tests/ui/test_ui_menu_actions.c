@@ -2006,6 +2006,10 @@ test_nfm_bandwidth_row_follows_the_configured_preset(void) {
     dsd_test_scan_labels_configured(&configured);
     opts.analog_only = 1;
     rc |= expect_int("nfm row: hidden when the configured preset is digital", is_nfm_width_editable(&ctx), 0);
+    /* Issue #526: unless that row is an nfm scan row, which runs the width on a digital session. */
+    dsd_test_scan_labels_set(1, DSD_SCAN_MODE_NFM);
+    rc |= expect_int("nfm row: shown under an nfm scan row on a digital session", is_nfm_width_editable(&ctx), 1);
+    dsd_test_scan_labels_set(1, DSD_SCAN_MODE_INHERIT);
     dsd_test_scan_labels_configured(NULL);
 
     opts.m17encoder = 1;
@@ -2041,6 +2045,19 @@ test_nfm_bandwidth_prompt_submits_as_typed(void) {
     reset_capture();
     rtl_set_nfm_bw(&ctx);
     rc |= expect_int("nfm prompt seeds the default as 0", g_prompt.initial_int, 0);
+    /* Issue #526: under an nfm scan row with its own width, dsd_opts holds the row's; the prompt offers the configured
+       width, the one the command edits. */
+    dsd_scan_settings configured = {0};
+    configured.analog_nfm_bandwidth_hz = 20000;
+    dsd_test_scan_labels_configured(&configured);
+    opts.analog_nfm_bandwidth_hz = 12500;
+    reset_capture();
+    rtl_set_nfm_bw(&ctx);
+    rc |= expect_int("nfm prompt under a width row seeds the configured width", g_prompt.initial_int, 20000);
+    dsd_test_scan_labels_configured(NULL);
+    opts.analog_nfm_bandwidth_hz = 0;
+    reset_capture();
+    rtl_set_nfm_bw(&ctx);
 
     ui_prompt_int_done_fn cb = g_prompt.int_cb;
     void* user = g_prompt.user;

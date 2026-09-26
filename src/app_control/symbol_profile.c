@@ -40,14 +40,20 @@ symbol_profile_configured_digital(const dsd_opts* opts, const dsd_state* state) 
 /*
  * The last analog monitor request queued here (decoder thread only): a width change, a switch onto the analog family,
  * the analog profile a republish or a CQPSK toggle back to the monitor asks for. Its number, the NFM width and kind it
- * carried, until svc_take_monitor_request_outcome() collects what became of it. Every request in this file goes
- * through the stream's queue, which is last-writer-wins, so only the last one says what the front end is headed for.
+ * carried, and the configured NFM width from before the change that made it (-1: it changed none), until
+ * svc_take_monitor_request_outcome() collects what became of it. Every request in this file goes through the stream's
+ * queue, which is last-writer-wins, so only the last one says what the front end is headed for. A request made while
+ * the one before it had not reached the front end (still queued, which the new one replaces, or refused and not yet
+ * collected) also keeps the configured width from before that earlier change (first_configured_before_hz): the front
+ * end ran neither, so a refusal of the new one may leave it on the width from before both (issue #526).
  */
 static struct {
     int pending;
     uint32_t seq;
     int kind;
     int width_hz;
+    int configured_before_hz;
+    int first_configured_before_hz;
 } g_monitor_request;
 
 /* A running RTL-family stream the decoder's requests reach. */
@@ -56,19 +62,38 @@ symbol_profile_rtl_running(const dsd_opts* opts, const dsd_state* state) {
     return opts->audio_in_type == AUDIO_IN_RTL && state->rtl_ctx;
 }
 
-/* The analog monitor with the configured kind and channel width. Entering it turns CQPSK off. Returns the request's
+/* The analog monitor with the configured kind and channel width. Entering it turns CQPSK off. @p configured_before_hz
+   is the configured NFM width from before the change the request carries (-1: it carries none). Returns the request's
    result: -1 when the front end refused it at the rate it publishes now. */
 static int
-symbol_profile_request_monitor(const dsd_opts* opts) {
+symbol_profile_request_monitor(const dsd_opts* opts, int configured_before_hz) {
+    /* Read before this request is queued: one the stream settled by then was taken there, and its width ran. */
+    const int earlier_not_run =
+        g_monitor_request.pending && g_monitor_request.first_configured_before_hz >= 0
+        && rtl_stream_receive_request_outcome(g_monitor_request.seq) != RTL_STREAM_RX_REQUEST_SETTLED;
     if (rtl_stream_request_analog_profile(DSD_RX_FAMILY_ANALOG, opts->analog_demod, dsd_opts_analog_width_hz(opts))
         != 0) {
         return -1;
     }
+    g_monitor_request.first_configured_before_hz =
+        earlier_not_run ? g_monitor_request.first_configured_before_hz : configured_before_hz;
     g_monitor_request.pending = 1;
     g_monitor_request.seq = rtl_stream_receive_request_seq();
     g_monitor_request.kind = opts->analog_demod;
     g_monitor_request.width_hz = opts->analog_nfm_bandwidth_hz;
+    g_monitor_request.configured_before_hz = configured_before_hz;
     return 0;
+}
+
+/* The configured NFM width the front end ran when it refused the last request, which kept @p kept_width_hz: the one
+   from before the request's own change when that is the width kept (the earlier change it followed had landed after
+   all), else the one from before the first change the front end ran none of (the same when none came before it). */
+static int
+symbol_profile_configured_width_run(int kept_width_hz) {
+    if (g_monitor_request.configured_before_hz >= 0 && kept_width_hz == g_monitor_request.configured_before_hz) {
+        return g_monitor_request.configured_before_hz;
+    }
+    return g_monitor_request.first_configured_before_hz;
 }
 
 /* The symbol profile a digital mode runs on: the CQPSK family for @p rf_mod 1, otherwise the FSK discriminator. The
@@ -122,8 +147,14 @@ svc_check_mode_receive_profile(const dsd_opts* opts, const dsd_state* state, dsd
 #endif
 }
 
-int
-svc_publish_symbol_profile(const dsd_opts* opts, dsd_state* state, dsd_decode_mode_profile profile) {
+/* svc_publish_symbol_profile(), with @p configured_before_hz the configured NFM width from before a change the caller
+   made to the width it publishes (-1: none), which the analog monitor request records. */
+static int
+symbol_profile_publish(const dsd_opts* opts, dsd_state* state, dsd_decode_mode_profile profile,
+                       int configured_before_hz) {
+#ifndef USE_RADIO
+    (void)configured_before_hz;
+#endif
     if (!opts || !state) {
         return 0;
     }
@@ -165,7 +196,7 @@ svc_publish_symbol_profile(const dsd_opts* opts, dsd_state* state, dsd_decode_mo
        and the decoder puts itself back to match (the width it kept, or the
        mode it had before a switch onto the monitor). */
     if (dsd_opts_is_analog_family(opts)) {
-        return symbol_profile_request_monitor(opts);
+        return symbol_profile_request_monitor(opts, configured_before_hz);
     }
     /* The M17 encoder rides the analog front end without being the analog family. */
     if (opts->analog_only) {
@@ -197,7 +228,18 @@ svc_publish_symbol_profile(const dsd_opts* opts, dsd_state* state, dsd_decode_mo
 }
 
 int
-svc_publish_nfm_bandwidth(const dsd_opts* opts, const dsd_state* state) {
+svc_publish_symbol_profile(const dsd_opts* opts, dsd_state* state, dsd_decode_mode_profile profile) {
+    return symbol_profile_publish(opts, state, profile, -1);
+}
+
+int
+svc_publish_symbol_profile_changing_width(const dsd_opts* opts, dsd_state* state, dsd_decode_mode_profile profile,
+                                          int configured_before_hz) {
+    return symbol_profile_publish(opts, state, profile, configured_before_hz);
+}
+
+int
+svc_publish_nfm_bandwidth(const dsd_opts* opts, const dsd_state* state, int configured_before_hz) {
 #ifdef USE_RADIO
     /* The options in force decide. Under a scan row's suspended scope (a scoped command) they are the configured ones,
        not the row's, so the request waits for the row's constraint to be back: apply_cmd_scoped() publishes after the
@@ -215,10 +257,11 @@ svc_publish_nfm_bandwidth(const dsd_opts* opts, const dsd_state* state) {
     if (rtl_stream_requested_cqpsk()) {
         return 0;
     }
-    return symbol_profile_request_monitor(opts);
+    return symbol_profile_request_monitor(opts, configured_before_hz);
 #else
     (void)opts;
     (void)state;
+    (void)configured_before_hz;
     return 0;
 #endif
 }
@@ -249,6 +292,7 @@ svc_take_monitor_request_outcome(const dsd_opts* opts, const dsd_state* state, s
         out->width_hz = g_monitor_request.width_hz;
         out->kept_analog = kept_analog ? 1 : 0;
         out->kept_width_hz = kept_width_hz;
+        out->configured_before_hz = symbol_profile_configured_width_run(kept_width_hz);
     }
     return SVC_MONITOR_REQUEST_REFUSED;
 #else
@@ -276,7 +320,7 @@ svc_toggle_rtl_cqpsk(const dsd_opts* opts) {
            width), it leaves that demod profile queued on its own; refused where it lands (a retune moved the rate
            since), it has already replaced it, so CQPSK stays on. Either refusal is logged with the validator's
            text. */
-        (void)symbol_profile_request_monitor(opts);
+        (void)symbol_profile_request_monitor(opts, -1);
     }
 #else
     (void)opts;

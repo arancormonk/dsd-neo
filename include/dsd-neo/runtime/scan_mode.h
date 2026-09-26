@@ -9,6 +9,7 @@
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/decode_mode.h>
 #include <dsd-neo/runtime/scan_options.h>
+#include <stddef.h>
 #include <stdint.h>
 #ifdef __cplusplus
 extern "C" {
@@ -23,8 +24,14 @@ typedef enum {
     DSD_SCAN_MODE_DPMR,
     DSD_SCAN_MODE_DSTAR,
     DSD_SCAN_MODE_YSF,
-    DSD_SCAN_MODE_M17
+    DSD_SCAN_MODE_M17,
+    /** Analog narrowband FM monitor (issue #526): the -fA receive path, one channel width per row. */
+    DSD_SCAN_MODE_NFM
 } dsd_scan_mode;
+
+/** The last scan class: the bound every range check uses instead of a literal class. Appending a
+ * class moves it, so stored values and MODE_BIT() option masks keep their meaning. */
+#define DSD_SCAN_MODE_LAST DSD_SCAN_MODE_NFM
 
 /** Target modulation precedence shared by scope reapplication and trunk entry. */
 typedef enum {
@@ -87,6 +94,10 @@ typedef struct {
     int analog_only;
     int monitor_input_audio;
     int analog_demod;
+    /** dsd_opts::analog_nfm_bandwidth_hz / analog_am_bandwidth_hz (Hz, 0 = the kind's default). Acquisition
+     * fields: a row width (DSD_SCAN_OPT_BANDWIDTH) lands here, and a different width restages the tune. */
+    int analog_nfm_bandwidth_hz;
+    int analog_am_bandwidth_hz;
     char output_name[1024];
     int state_rf_mod;
     int state_samplesPerSymbol;
@@ -98,18 +109,31 @@ typedef struct {
 /** Parse a trimmed, case-insensitive class; empty means inherit. Returns -1 on invalid input. */
 int dsd_scan_mode_parse(const char* text, dsd_scan_mode* mode);
 const char* dsd_scan_mode_name(dsd_scan_mode mode);
+/** Nonzero for an analog class (NFM): no frames, keys, talkgroups or symbol clock, and activity is carrier. */
+int dsd_scan_mode_is_analog(dsd_scan_mode mode);
+/** The class to suggest for a spelling that is no class but names one (the analog FM aliases "fm", "analog",
+ * "wfm", "nbfm" and "fm-conventional" suggest "nfm"), trimmed and case-insensitive; NULL for anything else. No
+ * alias is ever accepted: a diagnostic offers the returned name instead. */
+const char* dsd_scan_mode_alias_hint(const char* text);
+/** Write every class name, "p25, dmr, ..., nfm", into @p out for a diagnostic. Returns 0, or -1 when @p out is
+ * NULL or too small (it then holds an empty string). */
+int dsd_scan_mode_names_list(char* out, size_t out_size);
 dsd_decode_mode_profile dsd_scan_mode_profile(dsd_scan_mode mode);
 /** Active class, including combined P25; INHERIT when no override is installed. */
 dsd_scan_mode dsd_scan_mode_active(const dsd_state* state);
 /** Capture/restore effective fields for a staged tune; no pointers or audio sink fields are changed. */
 void dsd_scan_settings_capture(const dsd_opts* opts, const dsd_state* state, dsd_scan_settings* out);
 void dsd_scan_settings_restore(const dsd_scan_settings* saved, dsd_opts* opts, dsd_state* state);
-/** Compare the acquisition-relevant settings (decoder set, modulation, inversion, slot policy, output
- * name), ignoring unused label bytes and the row-scoped option fields; optionally include live
- * timing/modulation. A difference means a staged tune or parked row must be re-acquired. */
+/** Compare the acquisition-relevant settings (decoder set, modulation, inversion, slot policy, analog
+ * demodulator, output name, and for the analog family the channel widths), ignoring unused label bytes and the
+ * row-scoped option fields; optionally include live timing/modulation. A difference means a staged tune or parked
+ * row must be re-acquired. */
 int dsd_scan_settings_equal(const dsd_scan_settings* a, const dsd_scan_settings* b, int include_timing);
-/** Prepare production row settings without committing the row or baseline. */
-int dsd_scan_mode_prepare(dsd_opts* opts, dsd_state* state, dsd_scan_mode mode, dsd_scan_settings* out);
+/** Prepare production row settings without committing the row or baseline. @p row carries the row's
+ * nonsecret options (NULL = none): the acquisition ones among them, the analog channel width, are in
+ * @p out, so a scanner tunes with the settings the row will run on. */
+int dsd_scan_mode_prepare(dsd_opts* opts, dsd_state* state, dsd_scan_mode mode, const dsd_scan_option_values* row,
+                          dsd_scan_settings* out);
 /** Reserve scope storage before staging a tune or building trunk-target snapshots. */
 int dsd_scan_mode_begin(const dsd_opts* opts, dsd_state* state);
 /** Configured preset for mode selectors; active combined P25 remains a separate scan class. */
@@ -135,7 +159,11 @@ int dsd_scan_mode_enter(dsd_opts* opts, dsd_state* state, dsd_scan_mode mode);
  * resume, and a leave that finds the scope suspended, always push, because the command that ran
  * while suspended may have pushed the configured default itself (or the demod still holds the
  * row's). After an enter that found the scope suspended, the options call that completes the row
- * pushes unconditionally for the same reason. prepare never pushes. */
+ * pushes unconditionally for the same reason. prepare never pushes.
+ *
+ * The analog channel width (DSD_SCAN_OPT_BANDWIDTH, issue #526) is an acquisition setting, not policy:
+ * options restores the configured widths and applies the row's, but nothing retunes here, so the tune
+ * that lands the row must already carry it (prepare with the row's values). */
 int dsd_scan_mode_options(dsd_opts* opts, dsd_state* state, const dsd_scan_option_values* values);
 /** Restore the exact configured baseline and release the scope. */
 void dsd_scan_mode_leave(dsd_opts* opts, dsd_state* state);
@@ -174,10 +202,39 @@ const dsd_scan_option_values* dsd_scan_mode_row_options(const dsd_state* state);
  * thread with the live state, never with a frontend snapshot (dsd_app_get_latest_snapshot()): it
  * would edit the snapshot's scope copy while frontends read it, and the live scope would not change. */
 int dsd_scan_mode_set_configured_squelch(dsd_opts* opts, const dsd_state* state, double level);
+/** Edit the configured NFM channel width (dsd_opts::analog_nfm_bandwidth_hz, Hz, 0 = the default) without
+ * suspending the scope, as the squelch setter does, so no acquisition a row has made is compared or reset (issue #526).
+ * Without a scope, or while one is suspended, dsd_opts holds the configured values and takes the width. Under a live
+ * scope the configured baseline takes it, and dsd_opts does too unless the installed row options set their own width
+ * (DSD_SCAN_OPT_BANDWIDTH), which stays in force until the row leaves. Nothing reaches the front end here. Returns 1
+ * when the width is now in force in dsd_opts (the caller hands it to the front end), 0 when a row width shadows it,
+ * -1 without opts. The width is not validated. Same thread and snapshot rules as dsd_scan_mode_set_configured_squelch().
+ */
+int dsd_scan_mode_set_configured_nfm_bandwidth(dsd_opts* opts, const dsd_state* state, int width_hz);
+/** The configured channel width (Hz, 0 = the default) of analog demodulator @p kind (dsd_analog_demod; anything but
+ * AM reads as NFM): what the width controls edit and a save writes, and what a row without a width of its own runs. It
+ * comes from the scan scope's configured view while a scope is live, since a row's own width (issue #526) runs over
+ * dsd_opts, and from dsd_opts otherwise; 0 when neither is given. Works on the live state (decoder thread) and on a
+ * frontend snapshot pair alike. */
+int dsd_scan_mode_configured_analog_width(const dsd_opts* opts, const dsd_state* state, int kind);
 /** Deep-copy scalar scope metadata for frontend snapshots. No live extension pointer is shared. */
 void dsd_scan_mode_copy_snapshot(dsd_state* dst, const dsd_state* src);
 /** Current class profile; combined P25 and inherited settings follow the active hunt index. */
 dsd_decode_mode_profile dsd_scan_mode_effective_profile(const dsd_opts* opts, const dsd_state* state);
+/** Whether the configured decode mode, not a row's class over it, is digital (issue #526): the configured view's
+ * analog_only (dsd_opts' own without a live scope), with the M17 encoder, which rides the analog front end, counted as
+ * digital. Only then does a digital scan row move an RTL front end still on the analog family (after an analog row)
+ * onto the digital family; a typed digital row on an analog (-fA) session keeps the monitor output it has always had,
+ * as svc_publish_symbol_profile() decides for a configured-mode change. */
+int dsd_scan_mode_configured_digital(const dsd_opts* opts, const dsd_state* state);
+/** The output rate, in Hz, a scan row's symbol timing is computed for (issue #526): the input's timing rate, or on RTL
+ * input the stream's live output rate. While the RTL front end still runs the analog family after an analog row and
+ * the configured mode is digital (dsd_scan_mode_configured_digital()), a row with a symbol clock (@p symbol_rate_hz >
+ * 0) lands the digital family with its tune, whose output rate differs from the monitor's resampled audio rate: the
+ * rate is then the one that family will run at for @p symbol_rate_hz and @p cqpsk
+ * (dsd_rtl_stream_metrics_hook_output_rate_for_family()), so the decoder and the TED the tune queues are timed for the
+ * samples they will get. 0 without opts. */
+int dsd_scan_mode_symbol_timing_rate_hz(const dsd_opts* opts, const dsd_state* state, int symbol_rate_hz, int cqpsk);
 #ifdef __cplusplus
 }
 #endif

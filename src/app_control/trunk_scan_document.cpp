@@ -319,6 +319,7 @@ targetTypeName(dsd_trunk_scan_target_type type) {
         case DSD_TRUNK_SCAN_TARGET_NXDN48_TRUNK: return "nxdn48-trunk";
         case DSD_TRUNK_SCAN_TARGET_NXDN48_CONVENTIONAL: return "nxdn48-conventional";
         case DSD_TRUNK_SCAN_TARGET_P25_CONVENTIONAL: return "p25-conventional";
+        case DSD_TRUNK_SCAN_TARGET_NFM_CONVENTIONAL: return "nfm-conventional";
     }
     return "";
 }
@@ -344,6 +345,7 @@ describe(const dsd_trunk_scan_target& t) {
     result.gain_db = t.rtl_gain_is_set ? t.rtl_gain_db : -1;
     result.squelch_db_set = (t.row_options.present & DSD_SCAN_OPT_SQUELCH) ? 1 : 0;
     result.squelch_db = result.squelch_db_set ? t.row_options.squelch_db : 0;
+    result.bandwidth_hz = (t.row_options.present & DSD_SCAN_OPT_BANDWIDTH) ? t.row_options.channel_bw_hz : -1;
     return result;
 }
 

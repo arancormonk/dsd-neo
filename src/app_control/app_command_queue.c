@@ -41,6 +41,7 @@
 #include <dsd-neo/engine/channel_scan.h>
 #include <dsd-neo/engine/frame_processing.h>
 #include <dsd-neo/engine/scan_voice_gate.h>
+#include <dsd-neo/engine/trunk_scan.h>
 #include <dsd-neo/io/control.h>
 #include <dsd-neo/io/rigctl_client.h>
 #include <dsd-neo/io/rtl_stream_c.h>
@@ -64,6 +65,7 @@
 #include <dsd-neo/runtime/freq_parse.h>
 #include <dsd-neo/runtime/log.h>
 #include <dsd-neo/runtime/scan_mode.h>
+#include <dsd-neo/runtime/scan_options.h>
 #include <dsd-neo/runtime/telemetry.h>
 #include <dsd-neo/runtime/trunk_cc_candidates.h>
 #include <dsd-neo/runtime/trunk_scan_hooks.h>
@@ -1644,9 +1646,10 @@ ui_cmd_handle_nfm_bandwidth_set(dsd_opts* opts, dsd_state* state, const struct d
         ui_set_toast(state, 5, "Refused: %s", why);
         return UI_CMD_APPLY_FAILED;
     }
-    char text[DSD_APP_ANALOG_WIDTH_TEXT_MAX];
-    (void)dsd_app_analog_width_setting_format(opts->analog_nfm_bandwidth_hz, text, sizeof text);
-    ui_set_toast(state, 3, "Applied: NFM bandwidth -> %s", text);
+    /* The command edits the configured NFM width: while a scan row sets its own, the notice says the row still wins. */
+    char notice[96];
+    (void)dsd_app_analog_width_edit_notice(opts, state, DSD_ANALOG_DEMOD_FM, notice, sizeof notice);
+    ui_set_toast(state, 3, "%s", notice);
     return UI_CMD_APPLY_COMPLETED;
 }
 
@@ -1818,7 +1821,11 @@ ui_cmd_handle_import_channel_map(dsd_opts* opts, dsd_state* state, const struct 
         if (ui_cmd_copy_payload_string(c, path, sizeof path)) {
             int rc = svc_import_channel_map(opts, state, path);
             result = ui_cmd_apply_status_from_service_rc(rc);
-            if (rc == 0) {
+            char skipped[160];
+            if (rc == 0 && svc_channel_map_refused_rows(opts, state, skipped, sizeof skipped) > 0) {
+                /* The rows load; the ones the DSP rate cannot run are named with the import (issue #526). */
+                ui_set_toast(state, 5, "Imported; %s", skipped);
+            } else if (rc == 0) {
                 ui_set_toast(state, 3, "Applied: Channel map imported -> %s", path);
             } else {
                 ui_set_toast(state, 4, "Failed: Channel map import -> %s", path);
@@ -3670,9 +3677,10 @@ decode_mode_set_early_verdict(const dsd_opts* opts, dsd_state* state, const stru
  * to the demod rate before the switch committed, but a retune that moves the rate in between gets the front end to
  * refuse the analog profile, at once or where it lands, and stay on the digital family. The decoder then goes back to
  * the settings it had rather than decode Analog from a digital front end, provided its configured settings are still
- * the ones the switch left; the row-scoped options (squelch, forcing, the voice gate) stay as they are, since the
- * switch did not set them. Staged before such a command changes anything, armed once it has switched a running RTL
- * session, and dropped once the front end takes the switch (or a request after it).
+ * the ones the switch left; the row-scoped options (squelch, forcing, the voice gate) and the channel widths (a width
+ * command made after the switch) stay as they are, since the switch did not set them. Staged before such a command
+ * changes anything, armed once it has switched a running RTL session, and dropped once the front end takes the switch
+ * (or a request after it).
  */
 static dsd_scan_settings g_analog_entry_staged;
 
@@ -3702,16 +3710,29 @@ ui_arm_analog_entry(const dsd_opts* opts, const dsd_state* state, int was_analog
 
 /* The row's constraint back over the configured options a scoped update edited. When that changes the decoder, the
    acquisition it made ends and the front end is told the effective profile: @p out_changed says whether it did, and
-   the result is that publish's (-1: the front end refused the analog profile at once). */
+   the result is that publish's (-1: the front end refused the analog profile at once). @p nfm_width_before is the NFM
+   width in force before the update (-1: the caller changes no width). Only a row that takes the configured width has
+   that width moved by the update, so the width before it was the configured one too, which the publish keeps for a
+   refusal where it lands (svc_publish_symbol_profile_changing_width()). */
 static int
-ui_resume_scope_and_publish(dsd_opts* opts, dsd_state* state, int* out_changed) {
+ui_resume_scope_and_publish(dsd_opts* opts, dsd_state* state, int* out_changed, int nfm_width_before) {
     *out_changed = dsd_scan_mode_resume(opts, state) ? 1 : 0;
     if (!*out_changed) {
         return 0;
     }
     reset_call_tracking(opts, state, 1);
     dsd_frame_sync_reset_acquisition(opts, state, opts->trunk_scan_enabled != 1);
-    return svc_publish_symbol_profile(opts, state, dsd_scan_mode_effective_profile(opts, state));
+    const int configured_before_hz =
+        (nfm_width_before >= 0 && opts->analog_nfm_bandwidth_hz != nfm_width_before) ? nfm_width_before : -1;
+    return svc_publish_symbol_profile_changing_width(opts, state, dsd_scan_mode_effective_profile(opts, state),
+                                                     configured_before_hz);
+}
+
+/* The configured channel widths of @p now over @p settings. */
+static void
+ui_analog_entry_keep_widths(dsd_scan_settings* settings, const dsd_scan_settings* now) {
+    settings->analog_nfm_bandwidth_hz = now->analog_nfm_bandwidth_hz;
+    settings->analog_am_bandwidth_hz = now->analog_am_bandwidth_hz;
 }
 
 /*
@@ -3729,11 +3750,17 @@ ui_revert_analog_entry(dsd_opts* opts, dsd_state* state, int width_hz) {
     const int scoped = dsd_scan_mode_suspend(opts, state);
     dsd_scan_settings now;
     dsd_scan_settings_capture(opts, state, &now);
-    const int reverted = dsd_scan_settings_equal(&now, &g_analog_entry.after, 0);
+    /* The channel widths are configuration a width command sets on its own (DSD_APP_CMD_NFM_BANDWIDTH_SET), not part of
+       the switch: one set after the switch, even in the same drain, does not mean the settings moved on, and the
+       revert keeps it (dsd_scan_settings_equal() compares them for the analog family the switch left). */
+    dsd_scan_settings after = g_analog_entry.after;
+    ui_analog_entry_keep_widths(&after, &now);
+    const int reverted = dsd_scan_settings_equal(&now, &after, 0);
     if (reverted) {
         dsd_scan_settings back = g_analog_entry.before;
         /* The row-scoped options lead the snapshot (dsd_scan_settings): the ones in force now stay. */
         DSD_MEMCPY(&back, &now, offsetof(dsd_scan_settings, frame_dstar));
+        ui_analog_entry_keep_widths(&back, &now);
         dsd_scan_settings_restore(&back, opts, state);
         if (!opts->analog_only) {
             /* The snapshot timed the mode for the demod rate of its day, and the retune that got the switch refused
@@ -3751,7 +3778,7 @@ ui_revert_analog_entry(dsd_opts* opts, dsd_state* state, int width_hz) {
     }
     int changed = 0;
     if (scoped) {
-        (void)ui_resume_scope_and_publish(opts, state, &changed);
+        (void)ui_resume_scope_and_publish(opts, state, &changed, -1);
     }
     if (reverted && !scoped) {
         (void)svc_publish_symbol_profile(opts, state, dsd_scan_mode_effective_profile(opts, state));
@@ -5206,11 +5233,12 @@ cfg_airspy_settings_valid(const dsdneoUserConfig* cfg) {
     return !cfg->airspy_invalid && dsd_airspy_config_valid(&cfg->airspy);
 }
 
-/* An NFM width the front end refused after the change was committed (@p width_hz) is put back to @p kept_hz, the width
-   the front end kept, and the toast says why. */
+/* An NFM width the front end refused after the change was committed (@p width_hz) is put back to match @p kept_hz, the
+   width the front end kept, with the configured width from before the change @p configured_before_hz (-1: none)
+   (svc_restore_nfm_width()), and the toast says why. */
 static void
-ui_restore_refused_nfm_width(dsd_opts* opts, dsd_state* state, int width_hz, int kept_hz) {
-    opts->analog_nfm_bandwidth_hz = kept_hz;
+ui_restore_refused_nfm_width(dsd_opts* opts, dsd_state* state, int width_hz, int kept_hz, int configured_before_hz) {
+    svc_restore_nfm_width(opts, state, kept_hz, configured_before_hz);
     char why[128];
     svc_describe_nfm_refusal(opts, width_hz, why, sizeof why);
     ui_set_toast(state, 5, "Refused: %s", why);
@@ -5220,10 +5248,10 @@ ui_restore_refused_nfm_width(dsd_opts* opts, dsd_state* state, int width_hz, int
    checked) is put back to @p previous_hz. Returns -1 then. */
 static int
 ui_publish_nfm_bandwidth(dsd_opts* opts, dsd_state* state, int previous_hz) {
-    if (svc_publish_nfm_bandwidth(opts, state) == 0) {
+    if (svc_publish_nfm_bandwidth(opts, state, previous_hz) == 0) {
         return 0;
     }
-    ui_restore_refused_nfm_width(opts, state, opts->analog_nfm_bandwidth_hz, previous_hz);
+    ui_restore_refused_nfm_width(opts, state, opts->analog_nfm_bandwidth_hz, previous_hz, previous_hz);
     return -1;
 }
 
@@ -5319,37 +5347,82 @@ cfg_check_analog_width(const dsd_opts* opts, dsd_state* state, int reopen_bw_khz
 }
 
 /*
+ * An explicit NFM width @p width_hz the session runs once the config is applied, held to the rate it will run at
+ * whenever the config changes it, reopens an RTL-SDR or rtl_tcp device under it (cfg_radio_reopen()) or, with
+ * @p onto_monitor, moves the session onto the monitor with it. A config that reopens a SoapySDR or Airspy device instead
+ * runs the width at the rate that device delivers, which neither the running stream's rate nor rtl_bw_khz says: the
+ * reopened stream's start checks it there (rtl_demod_finalize_analog_channel()), as it does for Input > Switch source >
+ * RTL-SDR over a SoapySDR input.
+ */
+static int
+cfg_hold_nfm_width(const dsd_opts* opts, dsd_state* state, const dsdneoUserConfig* cfg, int width_hz,
+                   int onto_monitor) {
+    const cfg_reopen_kind reopen = cfg_radio_reopen(opts, cfg);
+    if (reopen == CFG_REOPEN_AT_DEVICE_RATE) {
+        /* No rate to hold it to before the device opens, but the rules every rate shares still apply. */
+        char why[128];
+        if (svc_check_nfm_bandwidth_at_device_rate(width_hz, why, sizeof why) == 0) {
+            return UI_CMD_APPLY_COMPLETED;
+        }
+        ui_set_toast(state, 5, "Config not applied: %s", why);
+        return UI_CMD_APPLY_FAILED;
+    }
+    const int reopen_bw_khz = (reopen == CFG_REOPEN_AT_RTL_BW) ? cfg_reopen_rtl_bw_khz(opts, cfg) : 0;
+    const int holds = width_hz != opts->analog_nfm_bandwidth_hz || reopen_bw_khz > 0 || onto_monitor;
+    return holds ? cfg_check_analog_width(opts, state, reopen_bw_khz, width_hz) : UI_CMD_APPLY_COMPLETED;
+}
+
+/*
+ * A config apply is scoped: while it runs, dsd_opts holds the configured options, but the stream a reopen starts runs
+ * the scan row on air again once the scope resumes. An nfm row's own width (--nfm-bandwidth-hz, issue #526) is
+ * therefore held to the rate a reopened device runs at, as RTL_SET_BW and Input > Switch source hold it: a reopen that
+ * cannot filter it leaves the whole config unapplied, rather than the row refused where it lands. A config that reopens
+ * nothing moves no rate.
+ */
+static int
+cfg_check_scan_row_width(const dsd_opts* opts, dsd_state* state, const dsdneoUserConfig* cfg) {
+    const dsd_scan_option_values* row = dsd_scan_mode_row_options(state);
+    if (!row || !(row->present & DSD_SCAN_OPT_BANDWIDTH) || row->channel_bw_hz <= 0) {
+        return UI_CMD_APPLY_COMPLETED;
+    }
+    const cfg_reopen_kind reopen = cfg_radio_reopen(opts, cfg);
+    char why[128];
+    int rc = 0;
+    if (reopen == CFG_REOPEN_AT_RTL_BW) {
+        rc = svc_check_nfm_bandwidth_for_rtl_bw(row->channel_bw_hz, cfg_reopen_rtl_bw_khz(opts, cfg), why, sizeof why);
+    } else if (reopen == CFG_REOPEN_AT_DEVICE_RATE) {
+        rc = svc_check_nfm_bandwidth_at_device_rate(row->channel_bw_hz, why, sizeof why);
+    }
+    if (rc == 0) {
+        return UI_CMD_APPLY_COMPLETED;
+    }
+    ui_set_toast(state, 5, "Config not applied: %s", why);
+    return UI_CMD_APPLY_FAILED;
+}
+
+/*
  * Asked before anything changes, as DSD_APP_CMD_DECODE_MODE_SET asks. A config that leaves the -fA monitor on an
- * explicit NFM width is held to the rate that width will run at whenever it changes the width, reopens an RTL-SDR or
- * rtl_tcp device under it (cfg_radio_reopen()) or moves the session onto the monitor with it (under a scan row too),
- * as the width command and RTL_SET_BW hold it. A config that reopens a SoapySDR or Airspy device instead runs the width
- * at the rate that device delivers, which neither the running stream's rate nor rtl_bw_khz says: the reopened stream's
- * start checks it there (rtl_demod_finalize_analog_channel()), as it does for Input > Switch source > RTL-SDR over a
- * SoapySDR input. With the unset default, which no rate refuses, a [mode] that moves a running RTL session onto the
- * monitor publishes the analog receive profile (apply_cfg_receive_family_change()), and a front end that would refuse
- * it (logged with the reason) leaves the whole config unapplied, instead of an Analog decoder on a digital front end.
+ * explicit NFM width is held to the rate that width will run at (cfg_hold_nfm_width()), under a scan row too, as the
+ * width command and RTL_SET_BW hold it. So is one that leaves the session digital while the scan has an nfm row or
+ * target that runs the configured width (issue #526), and an nfm row's own width on air (cfg_check_scan_row_width()).
+ * With the unset default, which no rate refuses, a [mode] that moves a running RTL session onto the monitor publishes
+ * the analog receive profile (apply_cfg_receive_family_change()), and a front end that would refuse it (logged with the
+ * reason) leaves the whole config unapplied, instead of an Analog decoder on a digital front end.
  */
 static int
 cfg_check_receive_family(const dsd_opts* opts, dsd_state* state, const dsdneoUserConfig* cfg) {
-    if (!cfg_analog_family_after(opts, cfg)) {
-        return UI_CMD_APPLY_COMPLETED;
+    const int row_rc = cfg_check_scan_row_width(opts, state, cfg);
+    if (row_rc != UI_CMD_APPLY_COMPLETED) {
+        return row_rc;
     }
     const int width_hz = cfg_nfm_width_after(opts, cfg);
+    if (!cfg_analog_family_after(opts, cfg)) {
+        return (width_hz > 0 && dsd_engine_scan_runs_configured_nfm_width(opts, state))
+                   ? cfg_hold_nfm_width(opts, state, cfg, width_hz, 0)
+                   : UI_CMD_APPLY_COMPLETED;
+    }
     if (width_hz > 0) {
-        const cfg_reopen_kind reopen = cfg_radio_reopen(opts, cfg);
-        if (reopen == CFG_REOPEN_AT_DEVICE_RATE) {
-            /* No rate to hold it to before the device opens, but the rules every rate shares still apply. */
-            char why[128];
-            if (svc_check_nfm_bandwidth_at_device_rate(width_hz, why, sizeof why) == 0) {
-                return UI_CMD_APPLY_COMPLETED;
-            }
-            ui_set_toast(state, 5, "Config not applied: %s", why);
-            return UI_CMD_APPLY_FAILED;
-        }
-        const int reopen_bw_khz = (reopen == CFG_REOPEN_AT_RTL_BW) ? cfg_reopen_rtl_bw_khz(opts, cfg) : 0;
-        const int holds =
-            width_hz != opts->analog_nfm_bandwidth_hz || reopen_bw_khz > 0 || !dsd_opts_is_analog_family(opts);
-        return holds ? cfg_check_analog_width(opts, state, reopen_bw_khz, width_hz) : UI_CMD_APPLY_COMPLETED;
+        return cfg_hold_nfm_width(opts, state, cfg, width_hz, !dsd_opts_is_analog_family(opts));
     }
     if (!cfg->has_mode || opts->analog_only || opts->analog_nfm_bandwidth_hz != 0
         || svc_check_mode_receive_profile(opts, state, cfg->decode_mode) == 0) {
@@ -5649,9 +5722,10 @@ command_updates_scan_mode(const struct dsd_app_command* c) {
         DSD_APP_CMD_SCAN_VOICE_ONLY_SET,
         DSD_APP_CMD_SCAN_VOICE_QUALIFY_MS_SET,
         DSD_APP_CMD_SCAN_VOICE_HOLD_MS_SET,
-        /* DSD_APP_CMD_NFM_BANDWIDTH_SET is deliberately not here: the width is not a row setting, so the command edits
-         * the configured width in place (svc_set_nfm_bandwidth()) instead of suspending and re-applying the row, which
-         * would read the live acquisition the row has made as a change and end a followed call. */
+        /* DSD_APP_CMD_NFM_BANDWIDTH_SET is deliberately not here: like squelch, the command edits the configured
+         * width through dsd_scan_mode_set_configured_nfm_bandwidth() (svc_set_nfm_bandwidth()) instead of suspending
+         * and re-applying the row, which would read the live acquisition the row has made as a change and end a
+         * followed call. An nfm row's own width (--nfm-bandwidth-hz, issue #526) stays in force over the edit. */
         DSD_APP_CMD_IMPORT_GROUP_LIST,
         DSD_APP_CMD_IMPORT_GROUP_LIST_CLEAR,
         DSD_APP_CMD_DECODE_MODE_SET,
@@ -5737,12 +5811,16 @@ apply_cmd_leave_scanner_scope(dsd_opts* opts, dsd_state* state, int guarded) {
 }
 
 /* The row's constraint back over the configured options a scoped command edited, and the front end told of what
-   changed. Returns -1 when that was a switch onto the analog monitor the front end refused at once, which puts the
-   decoder back as it was and fails the command. */
+   changed. A width the row runs on the analog family is an acquisition setting there (dsd_scan_settings_equal()), so a
+   configured width it runs reaches the front end with the profile the resume publishes, which keeps the width from
+   before the command for a refusal where it lands (ui_settle_receive_requests()); a digital row's front end
+   takes no width, and a row that sets its own (issue #526) keeps it over the edit. Returns -1 when that was a switch
+   onto the analog monitor the front end refused at once, which puts the decoder back as it was and fails the
+   command. */
 static int
 apply_cmd_resume_scope(dsd_opts* opts, dsd_state* state, int nfm_width_before) {
     int changed = 0;
-    if (ui_resume_scope_and_publish(opts, state, &changed) != 0) {
+    if (ui_resume_scope_and_publish(opts, state, &changed, nfm_width_before) != 0) {
         /* Refused at once (a retune moved the demod rate since the command held the width to it): the front end kept
            its receive profile, so the decoder goes back to it, the mode it had before a switch onto the monitor or
            else the width the monitor kept. */
@@ -5750,13 +5828,11 @@ apply_cmd_resume_scope(dsd_opts* opts, dsd_state* state, int nfm_width_before) {
             return -1;
         }
         if (opts->analog_nfm_bandwidth_hz != nfm_width_before) {
-            ui_restore_refused_nfm_width(opts, state, opts->analog_nfm_bandwidth_hz, nfm_width_before);
+            /* Only a row that takes the configured width has its width in force changed by a scoped command, so the
+               width in force before it was the configured one as well. */
+            ui_restore_refused_nfm_width(opts, state, opts->analog_nfm_bandwidth_hz, nfm_width_before,
+                                         nfm_width_before);
         }
-    } else if (!changed && opts->analog_nfm_bandwidth_hz != nfm_width_before) {
-        /* The NFM width is not a row setting, so changing it alone (a config apply) leaves the row's constraint as it
-           was: the new width reaches the front end now that the options in force are the row's again (a row that runs
-           the -fA monitor), which it could not while the command ran against the configured ones. */
-        (void)ui_publish_nfm_bandwidth(opts, state, nfm_width_before);
     }
     return 0;
 }
@@ -5765,12 +5841,13 @@ static int
 apply_cmd_scoped(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c, int guarded) {
     const int mode_update = command_updates_scan_mode(c);
     const int was_scanner = opts && opts->scanner_mode == 1;
+    /* The width in force, taken before a suspend puts the configured one in dsd_opts. */
+    const int nfm_width_before = opts ? opts->analog_nfm_bandwidth_hz : 0;
     const int scoped = mode_update && opts && state && dsd_scan_mode_suspend(opts, state);
     const int group_update = c
                              && (c->id == DSD_APP_CMD_IMPORT_GROUP_LIST || c->id == DSD_APP_CMD_IMPORT_GROUP_LIST_CLEAR
                                  || c->id == DSD_APP_CMD_CONFIG_APPLY);
     const int groups_suspended = group_update && dsd_scan_groups_suspend(state);
-    const int nfm_width_before = opts ? opts->analog_nfm_bandwidth_hz : 0;
     const int result = apply_cmd_unscoped(opts, state, c);
     if (groups_suspended) {
         dsd_scan_groups_resume(state);
@@ -5808,7 +5885,9 @@ apply_cmd(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
  * once: a front end still on the digital family never made the switch onto the monitor, and the decoder goes back to
  * the mode it had (ui_revert_analog_entry()); one on the analog family kept the width it ran, and the configured width
  * goes back to that one, as the stream recorded it (so of two requests queued back to back, the first taken and the
- * second refused, the first one's width stands).
+ * second refused, the first one's width stands). Under a scan row it goes back to the configured width the front end
+ * ran, never to a row's own width (svc_restore_nfm_width()): from before the refused change, or from before the first
+ * of two the demod thread took together, the first replaced by the second in its queue.
  */
 static void
 ui_settle_receive_requests(dsd_opts* opts, dsd_state* state) {
@@ -5832,7 +5911,8 @@ ui_settle_receive_requests(dsd_opts* opts, dsd_state* state) {
         if (refusal.kind == DSD_ANALOG_DEMOD_FM && opts->analog_nfm_bandwidth_hz == refusal.width_hz
             && refusal.kept_width_hz != refusal.width_hz) {
             /* The width has not changed again since. */
-            ui_restore_refused_nfm_width(opts, state, refusal.width_hz, refusal.kept_width_hz);
+            ui_restore_refused_nfm_width(opts, state, refusal.width_hz, refusal.kept_width_hz,
+                                         refusal.configured_before_hz);
             changed = 1;
         }
     }

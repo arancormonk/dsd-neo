@@ -20,7 +20,9 @@
 #include <dsd-neo/engine/trunk_tuning.h>
 #include <dsd-neo/io/rigctl_client.h>
 #include <dsd-neo/io/rtl_stream_c.h>
+#include <dsd-neo/runtime/analog_channel.h>
 #include <dsd-neo/runtime/config.h>
+#include <dsd-neo/runtime/scan_mode.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -434,6 +436,70 @@ rtl_stream_clear_ted_sps_override(void) {
 void
 rtl_stream_set_ted_sps_no_override(int sps) {
     g_rtl_ted_sps = sps;
+}
+
+/* The scanner's receive-family side (issue #526): these fixtures tune digital rows on a digital front end, which
+ * attaches no family and never reads the analog profile back. */
+int
+rtl_stream_prepare_retune_analog_profile_for_target(uint32_t target_freq_hz,
+                                                    const rtl_stream_retune_analog_profile* analog) {
+    (void)target_freq_hz;
+    (void)analog;
+    return 0;
+}
+
+int
+rtl_stream_get_analog_profile(int* out_kind, int* out_width_hz, int* out_lpf_on) {
+    if (out_kind) {
+        *out_kind = 0;
+    }
+    if (out_width_hz) {
+        *out_width_hz = 0;
+    }
+    if (out_lpf_on) {
+        *out_lpf_on = 0;
+    }
+    return 0;
+}
+
+int
+rtl_stream_analog_family_active(void) {
+    return 0;
+}
+
+unsigned int
+rtl_stream_output_rate_for_family(int family, int cqpsk_enable, int symbol_rate_hz) {
+    (void)family;
+    (void)cqpsk_enable;
+    (void)symbol_rate_hz;
+    return 48000U;
+}
+
+int
+rtl_stream_get_request_rate_hz(void) {
+    return 48000;
+}
+
+uint32_t
+rtl_stream_live_family_request_count(void) {
+    return 0U;
+}
+
+int
+dsd_analog_width_check(int kind, int width_hz, int rate_hz, char* err, size_t err_size) {
+    (void)kind;
+    (void)width_hz;
+    (void)rate_hz;
+    if (err && err_size > 0U) {
+        err[0] = '\0';
+    }
+    return 0;
+}
+
+int
+dsd_scan_mode_configured_digital(const dsd_opts* opts, const dsd_state* state) {
+    (void)state;
+    return opts && !(opts->analog_only == 1 && opts->m17encoder != 1);
 }
 
 /* Model the queued profile request as an immediate apply (the real demod

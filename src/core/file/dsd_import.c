@@ -904,6 +904,43 @@ chan_import_options(dsd_state* state, char** fields, dsd_scan_mode mode, const c
     return rc;
 }
 
+/*
+ * Parse a row's mode cell. An unknown mode is refused with the accepted spellings; an analog FM alias is
+ * echoed with the one spelling that is accepted instead (the cell matched a fixed word, so it is safe to
+ * repeat; any other cell is not repeated). An analog row decrypts nothing, so a key column that would load
+ * key material for it is refused as well, without echoing the cell.
+ */
+static int
+chan_import_row_mode(char** fields, const char* base_path, int row_number, dsd_scan_mode* mode) {
+    if (dsd_scan_mode_parse(fields[CHAN_MODE], mode) != 0) {
+        const char* hint = dsd_scan_mode_alias_hint(fields[CHAN_MODE]);
+        char names[96] = "";
+        (void)dsd_scan_mode_names_list(names, sizeof names);
+        if (hint) {
+            LOG_ERROR("channel map file '%s' row %d: invalid mode '%s' (use %s)\n", base_path, row_number,
+                      trim_ws(fields[CHAN_MODE]), hint);
+        } else {
+            LOG_ERROR("channel map file '%s' row %d: invalid mode; expected %s or an empty cell\n", base_path,
+                      row_number, names);
+        }
+        return -1;
+    }
+    if (!dsd_scan_mode_is_analog(*mode)) {
+        return 0;
+    }
+    static const int key_columns[] = {CHAN_KEYS_HEX, CHAN_KEYS_DEC, CHAN_SINGLE_HEX, CHAN_SINGLE_DEC};
+    for (size_t i = 0; i < sizeof(key_columns) / sizeof(key_columns[0]); i++) {
+        if (chan_key_cell_present(chan_key_cell(fields, CHAN_FIELD_COUNT, key_columns[i]))) {
+            char row_text[32] = "?";
+            (void)DSD_SNPRINTF(row_text, sizeof(row_text), "%d", row_number);
+            LOG_ERROR("channel map file '%s' row %s: key columns are not supported for mode %s\n", base_path, row_text,
+                      dsd_scan_mode_name(*mode));
+            return -1;
+        }
+    }
+    return 0;
+}
+
 /**
  * @brief Parse one channel row into @p state.
  *
@@ -928,8 +965,7 @@ chan_import_row(dsd_state* state, char* buffer, const chan_header_cols* cols, co
     const int lcn_before = state->lcn_freq_count;
     const size_t field_count = chan_select_fields(buffer, cols, fields);
     dsd_scan_mode mode = DSD_SCAN_MODE_INHERIT;
-    if (dsd_scan_mode_parse(fields[CHAN_MODE], &mode) != 0) {
-        LOG_ERROR("channel map file '%s' row %d: invalid mode\n", base_path, row_number);
+    if (chan_import_row_mode(fields, base_path, row_number, &mode) != 0) {
         return -1;
     }
     for (int i = 0; i < 2 && fields[i]; i++) {
@@ -1524,6 +1560,8 @@ csv_describe_channel_profile(const dsd_state* state, int index, dsd_csv_channel_
     out->dmr_mapping_count = profile && (profile->values.present & DSD_SCAN_OPT_DMR_MAP) ? profile->dmr_map.count : -1;
     out->squelch_db_set = profile && (profile->values.present & DSD_SCAN_OPT_SQUELCH) ? 1 : 0;
     out->squelch_db = out->squelch_db_set ? profile->values.squelch_db : 0;
+    out->bandwidth_hz =
+        profile && (profile->values.present & DSD_SCAN_OPT_BANDWIDTH) ? profile->values.channel_bw_hz : -1;
 }
 
 int

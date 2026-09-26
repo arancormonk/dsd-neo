@@ -1041,21 +1041,6 @@ rtl_demod_check_analog_channel(int kind, int explicit_width_hz, int rate_hz, cha
     return demod_check_analog_channel(kind, explicit_width_hz, rate_hz, DSD_ANALOG_RATE_RTL_BW, err, err_size);
 }
 
-/* What sets the input's DSP rate (dsd_analog_rate_source), classified as the stream classifies its input
-   (detect_radio_source()): an I/Q replay's capture, a SoapySDR or Airspy device's capture rate decimated toward the
-   DSP bandwidth, or else the RTL DSP bandwidth itself. */
-static int
-demod_input_rate_source(const dsd_opts* opts) {
-    const char* dev = opts->audio_in_dev;
-    if (opts->iq_replay_active || dsd_opts_audio_in_dev_is_iqreplay_spec(dev)) {
-        return DSD_ANALOG_RATE_CAPTURE;
-    }
-    if (dsd_opts_audio_in_dev_is_soapy_spec(dev) || dsd_opts_audio_in_dev_is_airspy_spec(dev)) {
-        return DSD_ANALOG_RATE_DEVICE;
-    }
-    return DSD_ANALOG_RATE_RTL_BW;
-}
-
 int
 rtl_demod_check_analog_post_decimation(int kind, int explicit_width_hz, int rate_out_hz, int post_downsample, char* err,
                                        size_t err_size) {
@@ -1142,7 +1127,7 @@ rtl_demod_finalize_analog_channel(struct demod_state* demod, const dsd_opts* opt
     }
     const int kind = opts->analog_demod;
     const int explicit_width_hz = dsd_opts_analog_width_hz(opts);
-    if (demod_check_analog_channel(kind, explicit_width_hz, demod->rate_out, demod_input_rate_source(opts), err,
+    if (demod_check_analog_channel(kind, explicit_width_hz, demod->rate_out, dsd_opts_analog_rate_source(opts), err,
                                    err_size)
             != 0
         || rtl_demod_check_analog_post_decimation(kind, explicit_width_hz, demod->rate_out, demod->post_downsample, err,

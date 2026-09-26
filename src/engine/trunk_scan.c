@@ -20,6 +20,7 @@
 #include <dsd-neo/engine/scan_voice_gate.h>
 #include <dsd-neo/engine/trunk_scan.h>
 #include <dsd-neo/platform/posix_compat.h>
+#include <dsd-neo/runtime/analog_channel.h>
 #include <dsd-neo/runtime/scan_mode.h>
 #include <dsd-neo/runtime/scan_options.h>
 #ifdef USE_RADIO
@@ -51,6 +52,8 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+
+#include "scan_analog_internal.h"
 #if defined(DSD_TRUNK_SCAN_TEST_CLOCK)
 #include "trunk_scan_internal.h"
 #include "trunk_scan_test_support.h"
@@ -230,6 +233,9 @@ typedef struct {
     double last_allowed_activity_m;
     uint64_t tune_request_id;
     int tune_pending;
+    /* The analog demodulator and width an analog target's last retune queued with its profile (issue #526). */
+    int tune_analog_kind;
+    int tune_analog_width_hz;
     int retry_released_park; /* failed forced eviction: recover the park before idle dwell */
     int avoided;             /* operator avoid for the session: skipped by the rotation (#380) */
     /* Identity the peer IDEN share last ran against (#402): the tick re-runs it only when the
@@ -272,6 +278,10 @@ typedef struct {
     int saved_tuner_autogain_on;
     int saved_tuner_autogain_is_set;
     uint64_t last_trunk_chan_map_seq;
+    /* The DSP rate the analog targets were last checked at, or TRUNK_SCAN_ANALOG_CHECK_DEFERRED, and the configured NFM
+     * width a target without its own runs (issue #526). */
+    int analog_checked_rate_hz;
+    int analog_checked_nfm_hz;
 } dsd_trunk_scan_coord;
 
 static dsd_trunk_scan_coord* g_trunk_scan_coord;
@@ -406,7 +416,8 @@ trunk_scan_type_is_conventional(dsd_trunk_scan_target_type type) {
         case DSD_TRUNK_SCAN_TARGET_DMR_CONVENTIONAL:
         case DSD_TRUNK_SCAN_TARGET_P25_CONVENTIONAL:
         case DSD_TRUNK_SCAN_TARGET_NXDN_CONVENTIONAL:
-        case DSD_TRUNK_SCAN_TARGET_NXDN48_CONVENTIONAL: return 1;
+        case DSD_TRUNK_SCAN_TARGET_NXDN48_CONVENTIONAL:
+        case DSD_TRUNK_SCAN_TARGET_NFM_CONVENTIONAL: return 1;
     }
     return 0;
 }
@@ -426,7 +437,8 @@ trunk_scan_type_is_p25_class(dsd_trunk_scan_target_type type) {
         case DSD_TRUNK_SCAN_TARGET_NXDN_TRUNK:
         case DSD_TRUNK_SCAN_TARGET_NXDN_CONVENTIONAL:
         case DSD_TRUNK_SCAN_TARGET_NXDN48_TRUNK:
-        case DSD_TRUNK_SCAN_TARGET_NXDN48_CONVENTIONAL: return 0;
+        case DSD_TRUNK_SCAN_TARGET_NXDN48_CONVENTIONAL:
+        case DSD_TRUNK_SCAN_TARGET_NFM_CONVENTIONAL: return 0;
     }
     return 0;
 }
@@ -443,7 +455,8 @@ trunk_scan_type_is_nxdn_trunk(dsd_trunk_scan_target_type type) {
         case DSD_TRUNK_SCAN_TARGET_DMR_TRUNK:
         case DSD_TRUNK_SCAN_TARGET_DMR_CONVENTIONAL:
         case DSD_TRUNK_SCAN_TARGET_NXDN_CONVENTIONAL:
-        case DSD_TRUNK_SCAN_TARGET_NXDN48_CONVENTIONAL: return 0;
+        case DSD_TRUNK_SCAN_TARGET_NXDN48_CONVENTIONAL:
+        case DSD_TRUNK_SCAN_TARGET_NFM_CONVENTIONAL: return 0;
     }
     return 0;
 }
@@ -461,19 +474,22 @@ trunk_scan_type_anchors_p25_cc_freq(dsd_trunk_scan_target_type type) {
         case DSD_TRUNK_SCAN_TARGET_P25_CONVENTIONAL:
         case DSD_TRUNK_SCAN_TARGET_DMR_CONVENTIONAL:
         case DSD_TRUNK_SCAN_TARGET_NXDN_CONVENTIONAL:
-        case DSD_TRUNK_SCAN_TARGET_NXDN48_CONVENTIONAL: return 0;
+        case DSD_TRUNK_SCAN_TARGET_NXDN48_CONVENTIONAL:
+        case DSD_TRUNK_SCAN_TARGET_NFM_CONVENTIONAL: return 0;
     }
     return 0;
 }
 
-/* Symbol rate of a target's four-level GFSK demod profile, or 0 for the P25 class. DMR and NXDN96
- * share 4800 sym/s; NXDN48 runs the same four-level GFSK demodulator at 2400 sym/s, which is the
- * only axis that separates it from an nxdn-conventional target. */
+/* Symbol rate of a target's four-level GFSK demod profile, or 0 for the P25 class and for an analog
+ * target, which has no symbol clock at all. DMR and NXDN96 share 4800 sym/s; NXDN48 runs the same
+ * four-level GFSK demodulator at 2400 sym/s, which is the only axis that separates it from an
+ * nxdn-conventional target. */
 static int
 trunk_scan_type_gfsk_symbol_rate(dsd_trunk_scan_target_type type) {
     switch (type) {
         case DSD_TRUNK_SCAN_TARGET_P25_TRUNK:
-        case DSD_TRUNK_SCAN_TARGET_P25_CONVENTIONAL: return 0;
+        case DSD_TRUNK_SCAN_TARGET_P25_CONVENTIONAL:
+        case DSD_TRUNK_SCAN_TARGET_NFM_CONVENTIONAL: return 0;
         case DSD_TRUNK_SCAN_TARGET_DMR_TRUNK:
         case DSD_TRUNK_SCAN_TARGET_DMR_CONVENTIONAL:
         case DSD_TRUNK_SCAN_TARGET_NXDN_TRUNK:
@@ -489,44 +505,101 @@ trunk_scan_type_is_gfsk_family(dsd_trunk_scan_target_type type) {
     return trunk_scan_type_gfsk_symbol_rate(type) > 0;
 }
 
+typedef struct {
+    const char* resolved_path;
+    int default_dwell_ms;
+    int default_hold_ms;
+    int modulation_idx;
+    int rtl_gain_idx;
+    int keys_hex_idx;
+    int keys_dec_idx;
+    int single_key_hex_idx;
+    int single_key_dec_idx;
+    int p25_bandplan_idx;
+    int options_idx;
+    unsigned int row;
+    char* err;
+    size_t err_sz;
+} dsd_trunk_scan_row_parse;
+
+static dsd_scan_mode trunk_scan_target_mode(dsd_trunk_scan_target_type type);
+
+/* An analog target (issue #526): no frames, keys, talkgroups or symbol clock; its carrier is its activity. */
+static int
+trunk_scan_type_is_analog(dsd_trunk_scan_target_type type) {
+    return dsd_scan_mode_is_analog(trunk_scan_target_mode(type));
+}
+
+/* The type column's spellings, exact case, in the order a diagnostic lists them. */
+static const struct {
+    const char* name;
+    dsd_trunk_scan_target_type type;
+} k_trunk_scan_types[] = {
+    {"p25-trunk", DSD_TRUNK_SCAN_TARGET_P25_TRUNK},
+    {"p25-conventional", DSD_TRUNK_SCAN_TARGET_P25_CONVENTIONAL},
+    {"dmr-trunk", DSD_TRUNK_SCAN_TARGET_DMR_TRUNK},
+    {"dmr-conventional", DSD_TRUNK_SCAN_TARGET_DMR_CONVENTIONAL},
+    {"nxdn-trunk", DSD_TRUNK_SCAN_TARGET_NXDN_TRUNK},
+    {"nxdn-conventional", DSD_TRUNK_SCAN_TARGET_NXDN_CONVENTIONAL},
+    {"nxdn48-conventional", DSD_TRUNK_SCAN_TARGET_NXDN48_CONVENTIONAL},
+    {"nxdn48-trunk", DSD_TRUNK_SCAN_TARGET_NXDN48_TRUNK},
+    {"nfm-conventional", DSD_TRUNK_SCAN_TARGET_NFM_CONVENTIONAL},
+};
+
 static int
 scan_parse_type(const char* s, dsd_trunk_scan_target_type* out) {
     if (!s || !out) {
         return -1;
     }
-    if (strcmp(s, "p25-trunk") == 0) {
-        *out = DSD_TRUNK_SCAN_TARGET_P25_TRUNK;
-        return 0;
-    }
-    if (strcmp(s, "p25-conventional") == 0) {
-        *out = DSD_TRUNK_SCAN_TARGET_P25_CONVENTIONAL;
-        return 0;
-    }
-    if (strcmp(s, "dmr-trunk") == 0) {
-        *out = DSD_TRUNK_SCAN_TARGET_DMR_TRUNK;
-        return 0;
-    }
-    if (strcmp(s, "dmr-conventional") == 0) {
-        *out = DSD_TRUNK_SCAN_TARGET_DMR_CONVENTIONAL;
-        return 0;
-    }
-    if (strcmp(s, "nxdn-trunk") == 0) {
-        *out = DSD_TRUNK_SCAN_TARGET_NXDN_TRUNK;
-        return 0;
-    }
-    if (strcmp(s, "nxdn-conventional") == 0) {
-        *out = DSD_TRUNK_SCAN_TARGET_NXDN_CONVENTIONAL;
-        return 0;
-    }
-    if (strcmp(s, "nxdn48-conventional") == 0) {
-        *out = DSD_TRUNK_SCAN_TARGET_NXDN48_CONVENTIONAL;
-        return 0;
-    }
-    if (strcmp(s, "nxdn48-trunk") == 0) {
-        *out = DSD_TRUNK_SCAN_TARGET_NXDN48_TRUNK;
-        return 0;
+    for (size_t i = 0; i < sizeof(k_trunk_scan_types) / sizeof(k_trunk_scan_types[0]); i++) {
+        if (strcmp(s, k_trunk_scan_types[i].name) == 0) {
+            *out = k_trunk_scan_types[i].type;
+            return 0;
+        }
     }
     return -1;
+}
+
+/* Whether @p s names an analog class ("nfm") or one of the analog FM aliases, which are never accepted. */
+static int
+scan_type_names_analog_class(const char* s) {
+    dsd_scan_mode mode = DSD_SCAN_MODE_INHERIT;
+    return dsd_scan_mode_alias_hint(s) != NULL || (dsd_scan_mode_parse(s, &mode) == 0 && dsd_scan_mode_is_analog(mode));
+}
+
+/* An unknown type column. A spelling that names the analog class is pointed at the one type that carries
+ * it, and a trunked analog type is told why it does not exist; anything else gets the accepted list. */
+static void
+scan_report_invalid_type(const dsd_trunk_scan_row_parse* parse, const char* type_s) {
+    const char* dash = strrchr(type_s, '-');
+    char head[32] = "";
+    if (dash && strcmp(dash, "-trunk") == 0 && (size_t)(dash - type_s) < sizeof head) {
+        DSD_MEMCPY(head, type_s, (size_t)(dash - type_s));
+        head[dash - type_s] = '\0';
+    }
+    if (head[0] != '\0' && scan_type_names_analog_class(head)) {
+        scan_set_error(parse->err, parse->err_sz, "row %u: analog targets are conventional only (use %s)", parse->row,
+                       "nfm-conventional");
+        return;
+    }
+    if (scan_type_names_analog_class(type_s)) {
+        scan_set_error(parse->err, parse->err_sz, "row %u has invalid target type '%s' (use %s)", parse->row, type_s,
+                       "nfm-conventional");
+        return;
+    }
+    char names[256] = "";
+    size_t used = 0;
+    const size_t count = sizeof(k_trunk_scan_types) / sizeof(k_trunk_scan_types[0]);
+    for (size_t i = 0; i < count && used < sizeof names; i++) {
+        const char* separator = i == 0 ? "" : (i + 1 == count ? " or " : ", ");
+        const int n = DSD_SNPRINTF(names + used, sizeof names - used, "%s%s", separator, k_trunk_scan_types[i].name);
+        if (n < 0) {
+            break;
+        }
+        used += (size_t)n;
+    }
+    scan_set_error(parse->err, parse->err_sz, "row %u has invalid target type '%s'; expected %s", parse->row, type_s,
+                   names);
 }
 
 int
@@ -581,23 +654,6 @@ scan_has_duplicate_type_freq(const dsd_trunk_scan_target_list* list, dsd_trunk_s
     }
     return 0;
 }
-
-typedef struct {
-    const char* resolved_path;
-    int default_dwell_ms;
-    int default_hold_ms;
-    int modulation_idx;
-    int rtl_gain_idx;
-    int keys_hex_idx;
-    int keys_dec_idx;
-    int single_key_hex_idx;
-    int single_key_dec_idx;
-    int p25_bandplan_idx;
-    int options_idx;
-    unsigned int row;
-    char* err;
-    size_t err_sz;
-} dsd_trunk_scan_row_parse;
 
 static const char*
 scan_optional_field(char** fields, size_t field_count, int idx) {
@@ -675,7 +731,7 @@ scan_parse_target_base_fields(char** fields, const dsd_trunk_scan_target_list* p
     DSD_SNPRINTF(target->id, sizeof target->id, "%s", id);
     const char* type_s = scan_unquote(fields[1]);
     if (scan_parse_type(type_s, &target->type) != 0) {
-        scan_set_error(parse->err, parse->err_sz, "row %u has invalid target type '%s'", parse->row, type_s);
+        scan_report_invalid_type(parse, type_s);
         return -1;
     }
 
@@ -694,6 +750,10 @@ scan_parse_target_base_fields(char** fields, const dsd_trunk_scan_target_list* p
 static int
 scan_parse_target_overrides(dsd_trunk_scan_target* target, const dsd_trunk_scan_row_parse* parse,
                             const char* modulation_s, const char* rtl_gain_s) {
+    if (trunk_scan_type_is_analog(target->type) && modulation_s[0] != '\0') {
+        scan_set_error(parse->err, parse->err_sz, "row %u: an analog target takes no modulation", parse->row);
+        return -1;
+    }
     if (scan_parse_modulation(modulation_s, target->type, &target->modulation) != 0) {
         scan_set_error(parse->err, parse->err_sz, "row %u has invalid modulation '%s'", parse->row, modulation_s);
         return -1;
@@ -833,8 +893,6 @@ scan_parse_target_direct_keys(dsd_trunk_scan_target* target, const dsd_trunk_sca
     return 0;
 }
 
-static dsd_scan_mode trunk_scan_target_mode(dsd_trunk_scan_target_type type);
-
 static int
 scan_copy_target_key_path(char* dest, size_t capacity, const char* resolved) {
     if (strlen(resolved) >= capacity) {
@@ -887,6 +945,26 @@ scan_parse_target_options(dsd_trunk_scan_target* target, const char* text, char*
     return rc;
 }
 
+/* An analog target decrypts nothing, so a key column that would load material for it is refused; the
+ * cell itself never reaches the diagnostic. */
+static int
+scan_reject_analog_key_columns(const dsd_trunk_scan_target* target, char** fields, size_t count,
+                               const dsd_trunk_scan_row_parse* parse) {
+    if (!trunk_scan_type_is_analog(target->type)) {
+        return 0;
+    }
+    const int columns[] = {parse->keys_hex_idx, parse->keys_dec_idx, parse->single_key_hex_idx,
+                           parse->single_key_dec_idx};
+    for (size_t i = 0; i < sizeof(columns) / sizeof(columns[0]); i++) {
+        if (scan_optional_field(fields, count, columns[i])[0] != '\0') {
+            scan_set_error(parse->err, parse->err_sz, "row %u: key columns are not supported for an analog target",
+                           parse->row);
+            return -1;
+        }
+    }
+    return 0;
+}
+
 /*
  * Non-secret path work for one row. A row with an `options` cell hands its key cells to
  * the scoped-options merge later (scan_parse_target_secrets), so only the legacy row
@@ -895,6 +973,9 @@ scan_parse_target_options(dsd_trunk_scan_target* target, const char* text, char*
 static int
 scan_parse_target_key_paths(dsd_trunk_scan_target* target, char** fields, size_t count,
                             const dsd_trunk_scan_row_parse* parse, const char* chan_csv, int have_options) {
+    if (scan_reject_analog_key_columns(target, fields, count, parse) != 0) {
+        return -1;
+    }
     const char* keys_hex_s = have_options ? "" : scan_optional_field(fields, count, parse->keys_hex_idx);
     const char* keys_dec_s = have_options ? "" : scan_optional_field(fields, count, parse->keys_dec_idx);
     const char* single_hex_s = scan_optional_field(fields, count, parse->single_key_hex_idx);
@@ -2003,29 +2084,26 @@ trunk_scan_has_tuning_backend(const dsd_opts* opts, const dsd_state* state) {
            && (opts->use_rigctl == 1 || trunk_scan_has_open_rtl_stream(opts, state));
 }
 
-static int
-trunk_scan_demod_rate(const dsd_opts* opts) {
-    if (opts && opts->audio_in_type == AUDIO_IN_RTL) {
-        int rtl_rate = (int)dsd_rtl_stream_metrics_hook_output_rate_hz();
-        if (rtl_rate > 0) {
-            return rtl_rate;
-        }
-    }
-    return dsd_opts_current_input_timing_rate(opts);
-}
-
+/* The P25 class runs the CQPSK symbol output when the target's decoder does (state->rf_mod, decided before this is
+ * asked); the rate is the one the target's tune lands on, which differs from the live rate while the front end still
+ * runs the analog family after an nfm-conventional target (dsd_scan_mode_symbol_timing_rate_hz()). */
 static int
 trunk_scan_p25_cc_sps(const dsd_opts* opts, const dsd_state* state) {
     int sym_rate = (state && state->p25_cc_is_tdma == 1) ? 6000 : 4800;
-    int demod_rate = trunk_scan_demod_rate(opts);
+    const int demod_rate = dsd_scan_mode_symbol_timing_rate_hz(opts, state, sym_rate, state && state->rf_mod == 1);
     return dsd_opts_compute_sps_rate(opts, sym_rate, demod_rate);
 }
 
+/* 0 (no TED override) for a type without a four-level GFSK symbol clock, the P25 class and an analog
+ * target, so a symbol rate of 0 never reaches the SPS division whichever branch asked. */
 static int
 trunk_scan_gfsk_sps(const dsd_opts* opts, const dsd_state* state, dsd_trunk_scan_target_type type) {
-    (void)state;
-    int demod_rate = trunk_scan_demod_rate(opts);
-    return dsd_opts_compute_sps_rate(opts, trunk_scan_type_gfsk_symbol_rate(type), demod_rate);
+    const int symbol_rate_hz = trunk_scan_type_gfsk_symbol_rate(type);
+    if (symbol_rate_hz <= 0) {
+        return 0;
+    }
+    const int demod_rate = dsd_scan_mode_symbol_timing_rate_hz(opts, state, symbol_rate_hz, 0);
+    return dsd_opts_compute_sps_rate(opts, symbol_rate_hz, demod_rate);
 }
 
 /* The four-level GFSK family spans two symbol rates, and the SPS hunt profile is the only thing
@@ -2041,9 +2119,8 @@ trunk_scan_apply_p25_target_demod(const dsd_opts* opts, dsd_state* state, const 
     state->sps_hunt_idx =
         state->p25_cc_is_tdma == 1 ? DSD_FRAME_SYNC_SPS_PROFILE_6000_4 : DSD_FRAME_SYNC_SPS_PROFILE_4800_4;
     state->sps_hunt_counter = 0;
-    int p25_sps = trunk_scan_p25_cc_sps(opts, state);
-    state->samplesPerSymbol = p25_sps;
-    state->symbolCenter = dsd_opts_symbol_center(p25_sps);
+    /* The modulation first: a front end leaving the analog family lands on the CQPSK output or the FSK one, whose
+       rates can differ, and the timing below is for the one this target runs. */
     if (target->modulation == DSD_TRUNK_SCAN_MODULATION_CQPSK) {
         state->rf_mod = 1;
     } else if (target->modulation == DSD_TRUNK_SCAN_MODULATION_C4FM) {
@@ -2051,6 +2128,9 @@ trunk_scan_apply_p25_target_demod(const dsd_opts* opts, dsd_state* state, const 
     } else if (target->modulation == DSD_TRUNK_SCAN_MODULATION_AUTO || !opts->mod_cli_lock) {
         state->rf_mod = (state->p25_cc_is_tdma == 1 || state->p25_p1_validated_rf_mod == 1) ? 1 : 0;
     }
+    int p25_sps = trunk_scan_p25_cc_sps(opts, state);
+    state->samplesPerSymbol = p25_sps;
+    state->symbolCenter = dsd_opts_symbol_center(p25_sps);
 }
 
 static void
@@ -2128,7 +2208,8 @@ trunk_scan_apply_target_opts(dsd_opts* opts, const dsd_trunk_scan_coord* coord, 
         case DSD_TRUNK_SCAN_TARGET_DMR_CONVENTIONAL:
         case DSD_TRUNK_SCAN_TARGET_P25_CONVENTIONAL:
         case DSD_TRUNK_SCAN_TARGET_NXDN_CONVENTIONAL:
-        case DSD_TRUNK_SCAN_TARGET_NXDN48_CONVENTIONAL: opts->trunk_enable = 0; break;
+        case DSD_TRUNK_SCAN_TARGET_NXDN48_CONVENTIONAL:
+        case DSD_TRUNK_SCAN_TARGET_NFM_CONVENTIONAL: opts->trunk_enable = 0; break;
     }
 }
 
@@ -2349,6 +2430,13 @@ trunk_scan_retune_active(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_target
         *out_request_id = 0U;
     }
     const long int freq = trunk_scan_retune_freq(state, &rt->target);
+    if (trunk_scan_type_is_analog(rt->target.type)) {
+        /* No symbol clock: the tune queues the target's analog receive profile (its options already hold
+         * the width), and no symbol rate ever reaches the SPS arithmetic. */
+        rt->tune_analog_kind = opts->analog_demod;
+        rt->tune_analog_width_hz = dsd_opts_analog_width_hz(opts);
+        return dsd_engine_scan_tune_to_freq(opts, state, freq, 0, out_request_id);
+    }
     if (trunk_scan_type_is_conventional(rt->target.type)) {
         const int ted_sps = trunk_scan_target_is_p25(&rt->target) ? trunk_scan_p25_cc_sps(opts, state)
                                                                   : trunk_scan_gfsk_sps(opts, state, rt->target.type);
@@ -2438,6 +2526,7 @@ trunk_scan_target_mode(dsd_trunk_scan_target_type type) {
         case DSD_TRUNK_SCAN_TARGET_NXDN_CONVENTIONAL: return DSD_SCAN_MODE_NXDN96;
         case DSD_TRUNK_SCAN_TARGET_NXDN48_TRUNK:
         case DSD_TRUNK_SCAN_TARGET_NXDN48_CONVENTIONAL: return DSD_SCAN_MODE_NXDN48;
+        case DSD_TRUNK_SCAN_TARGET_NFM_CONVENTIONAL: return DSD_SCAN_MODE_NFM;
     }
     return DSD_SCAN_MODE_INHERIT;
 }
@@ -2506,7 +2595,8 @@ trunk_scan_release_active_carrier(dsd_opts* opts, dsd_state* state, dsd_trunk_sc
         case DSD_TRUNK_SCAN_TARGET_DMR_CONVENTIONAL:
         case DSD_TRUNK_SCAN_TARGET_P25_CONVENTIONAL:
         case DSD_TRUNK_SCAN_TARGET_NXDN_CONVENTIONAL:
-        case DSD_TRUNK_SCAN_TARGET_NXDN48_CONVENTIONAL: break;
+        case DSD_TRUNK_SCAN_TARGET_NXDN48_CONVENTIONAL:
+        case DSD_TRUNK_SCAN_TARGET_NFM_CONVENTIONAL: break;
     }
     dsd_engine_release_tuned_call_state(opts, state);
     rt->last_allowed_activity_m = 0.0;
@@ -2543,6 +2633,82 @@ trunk_scan_arm_tune_completion(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_
         (void)p25_sm_restart_pending_cc_acquisition(&rt->p25_ctx, opts, state, completed_m, "scan-retune");
     }
     trunk_scan_arm_visit(rt, completed_m);
+}
+
+/* An RTL stream that has published no DSP rate yet: an analog target's width cannot be checked, so the checks wait. */
+#define TRUNK_SCAN_ANALOG_CHECK_DEFERRED (-1)
+
+static int
+trunk_scan_analog_check_rate(const dsd_opts* opts, const dsd_state* state) {
+    const int rate_hz = dsd_engine_scan_dsp_rate_hz(opts, state);
+    return (opts->audio_in_type == AUDIO_IN_RTL && rate_hz <= 0) ? TRUNK_SCAN_ANALOG_CHECK_DEFERRED : rate_hz;
+}
+
+static void
+trunk_scan_analog_target_label(const dsd_trunk_scan_target* target, char* label, size_t label_size) {
+    DSD_SNPRINTF(label, label_size, "Trunk scan target '%s'", target->id);
+}
+
+/* Hold an analog target's width to @p dsp_rate_hz, counting it in @p skipped (for the status line) when that skips it
+ * at every visit. @p named: its width was named at this rate already (a width of its own, after the configured NFM
+ * width alone changed), so it is counted without being named again. */
+static void
+trunk_scan_warn_analog_width(const dsd_opts* opts, const dsd_state* state, const dsd_trunk_scan_target* target,
+                             int dsp_rate_hz, int named, dsd_engine_scan_skipped* skipped) {
+    char label[96];
+    char brief[DSD_ANALOG_ERROR_TEXT_MAX];
+    trunk_scan_analog_target_label(target, label, sizeof label);
+    const int target_skipped = named ? dsd_engine_scan_analog_width_skipped(opts, state, &target->row_options,
+                                                                            dsp_rate_hz, brief, sizeof brief)
+                                     : dsd_engine_scan_warn_analog_width(opts, state, &target->row_options, dsp_rate_hz,
+                                                                         label, brief, sizeof brief)
+                                           == DSD_ENGINE_SCAN_WIDTH_SKIPPED;
+    if (target_skipped) {
+        dsd_engine_scan_skipped_add(skipped, label, brief);
+    }
+}
+
+/* The retune skips an analog target whose width the DSP rate cannot fit without a word (dsd_engine_scan_tune_to_freq()),
+ * so the analog targets' widths are named again whenever that rate has changed since they were checked -- the operator
+ * changed the RTL DSP bandwidth -- or first became known, and the widths of the targets that run the configured NFM
+ * width whenever that width has changed (the width command, a config apply); the status line still counts every
+ * target skipped, those with a width of their own included. Their squelch was named when the scan started. */
+static void
+trunk_scan_recheck_analog_targets(const dsd_opts* opts, dsd_state* state, dsd_trunk_scan_coord* coord) {
+    const int rate_hz = trunk_scan_analog_check_rate(opts, state);
+    const int nfm_hz = dsd_scan_mode_configured_analog_width(opts, state, DSD_ANALOG_DEMOD_FM);
+    if (rate_hz == TRUNK_SCAN_ANALOG_CHECK_DEFERRED
+        || (rate_hz == coord->analog_checked_rate_hz && nfm_hz == coord->analog_checked_nfm_hz)) {
+        return;
+    }
+    const int inherited_only = rate_hz == coord->analog_checked_rate_hz;
+    coord->analog_checked_rate_hz = rate_hz;
+    coord->analog_checked_nfm_hz = nfm_hz;
+    dsd_engine_scan_skipped skipped = {0};
+    for (size_t i = 0; i < coord->count; i++) {
+        const dsd_trunk_scan_target* target = &coord->targets[i].target;
+        if (trunk_scan_type_is_analog(target->type)) {
+            const int named = inherited_only && (target->row_options.present & DSD_SCAN_OPT_BANDWIDTH);
+            trunk_scan_warn_analog_width(opts, state, target, rate_hz, named, &skipped);
+        }
+    }
+    dsd_engine_scan_note_skipped_rows(state, &skipped);
+}
+
+/* Whether the retune refuses an analog target's width at the published DSP rate before any backend moves
+ * (dsd_engine_scan_tune_to_freq()): the width in force once the target's options apply, its own or the configured NFM
+ * width it runs, which that rate cannot filter or DSD_NEO_CHANNEL_LPF=0 refuses (dsd_engine_scan_width_refused()).
+ * trunk_scan_recheck_analog_targets(), which runs before every retune, has named such a target for that rate and
+ * width already, with the fact that it is skipped at every visit, so the failed visit adds nothing. */
+static int
+trunk_scan_analog_width_refused(const dsd_opts* opts, const dsd_state* state, const dsd_trunk_scan_target* target) {
+    if (!trunk_scan_type_is_analog(target->type) || !dsd_opts_is_analog_family(opts)) {
+        return 0;
+    }
+    const int rate_hz = dsd_engine_scan_dsp_rate_hz(opts, state);
+    return rate_hz > 0
+           && dsd_engine_scan_width_refused(opts, opts->analog_demod, dsd_opts_analog_width_hz(opts), rate_hz, NULL,
+                                            0U);
 }
 
 static int
@@ -2583,6 +2749,7 @@ trunk_scan_switch_to(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_coord* coo
     dsd_scan_mode_target_modulation(state, (dsd_scan_modulation)rt->target.modulation);
     (void)dsd_scan_key_change_commit(state, &key_change);
     (void)dsd_scan_mode_options(opts, state, rt->profile ? &rt->profile->values : NULL);
+    dsd_engine_scan_ensure_output(opts);
     dsd_scan_groups_enter(state, rt->profile);
     (void)dsd_scan_maps_enter(state, rt->profile);
     trunk_scan_apply_target_demod(opts, state, &rt->target);
@@ -2596,11 +2763,14 @@ trunk_scan_switch_to(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_coord* coo
     rt->idle_since_m = now_m;
     /* The incoming target publishes its own voice-gate phase on the next tick. */
     state->scan_voice_gate_phase = (uint8_t)DSD_SCAN_VOICE_GATE_OFF;
+    trunk_scan_recheck_analog_targets(opts, state, coord);
     uint64_t tune_request_id = 0U;
     dsd_trunk_tune_result tune_result = trunk_scan_retune_active(opts, state, rt, &tune_request_id);
     if (!dsd_trunk_tune_result_is_ok(tune_result)) {
         rt->retry_until_m = now_m + TRUNK_SCAN_RETUNE_RETRY_COOLDOWN_S;
-        LOG_WARN("WARNING: Trunk scan target '%s' retune failed; cooling down briefly\n", rt->target.id);
+        if (!trunk_scan_analog_width_refused(opts, state, &rt->target)) {
+            LOG_WARN("WARNING: Trunk scan target '%s' retune failed; cooling down briefly\n", rt->target.id);
+        }
         return -1;
     }
 
@@ -2810,6 +2980,10 @@ trunk_scan_conventional_stay_reason(const dsd_opts* opts, const dsd_state* state
     if (span_ms) {
         *span_ms = hold_ms > 0 ? (uint32_t)hold_ms : 0U;
     }
+    if (trunk_scan_type_is_analog(rt->target.type)) {
+        /* The carrier is what holds an analog row; once it drops the hold's tail runs out. */
+        return dsd_scan_analog_carrier_open(opts, state) ? DSD_SCAN_STAY_CARRIER : DSD_SCAN_STAY_ACTIVITY_HOLD;
+    }
     return (state->scan_voice_gate_phase == (uint8_t)DSD_SCAN_VOICE_GATE_VOICE) ? DSD_SCAN_STAY_VOICE
                                                                                 : DSD_SCAN_STAY_ACTIVITY_HOLD;
 }
@@ -2886,21 +3060,38 @@ trunk_scan_warn_ignored_target_gain(const dsd_opts* opts, const dsd_state* state
 /* A target squelch gates the RTL demodulator. With rigctl tuning a PCM input there is no
  * demodulator for it to gate, so it cannot gate digital acquisition; the threshold in dsd_opts
  * only reaches the analog input monitor (-8, with audio output on) and the carrier activity that
- * monitor stamps. Say so once per affected target when the scan starts. */
-static void
-trunk_scan_warn_target_squelch(const dsd_opts* opts, const dsd_trunk_scan_target_list* list) {
-    if (!opts || !list || opts->audio_in_type == AUDIO_IN_RTL) {
-        return;
+ * monitor stamps. Said once per affected digital target when the scan starts, beside what an analog
+ * target owes the operator: a squelch that lets noise hold it (dsd_engine_scan_warn_analog_squelch()),
+ * also said once here, and its width (dsd_engine_scan_warn_analog_width()), which is held to the DSP
+ * rate. Returns the rate the widths were checked at, or TRUNK_SCAN_ANALOG_CHECK_DEFERRED when that
+ * check waits for the rate (trunk_scan_recheck_analog_targets()). */
+static int
+trunk_scan_warn_targets(const dsd_opts* opts, dsd_state* state, const dsd_trunk_scan_target_list* list) {
+    if (!opts || !list) {
+        return TRUNK_SCAN_ANALOG_CHECK_DEFERRED;
     }
+    const int check_rate_hz = trunk_scan_analog_check_rate(opts, state);
+    dsd_engine_scan_skipped skipped = {0};
     for (size_t i = 0; i < list->count; i++) {
         const dsd_trunk_scan_target* target = &list->targets[i];
-        if (target->row_options.present & DSD_SCAN_OPT_SQUELCH) {
-            LOG_WARN("WARNING: Trunk scan target '%s': --squelch-db %d cannot gate digital acquisition without a "
-                     "radio input; here it gates only the analog input monitor (-8) and the carrier activity it "
-                     "stamps.\n",
-                     target->id, target->row_options.squelch_db);
+        if (!trunk_scan_type_is_analog(target->type)) {
+            if (opts->audio_in_type != AUDIO_IN_RTL && (target->row_options.present & DSD_SCAN_OPT_SQUELCH)) {
+                LOG_WARN("WARNING: Trunk scan target '%s': --squelch-db %d cannot gate digital acquisition without a "
+                         "radio input; here it gates only the analog input monitor (-8) and the carrier activity it "
+                         "stamps.\n",
+                         target->id, target->row_options.squelch_db);
+            }
+            continue;
+        }
+        char label[96];
+        trunk_scan_analog_target_label(target, label, sizeof label);
+        (void)dsd_engine_scan_warn_analog_squelch(opts, state, &target->row_options, label);
+        if (check_rate_hz != TRUNK_SCAN_ANALOG_CHECK_DEFERRED) {
+            trunk_scan_warn_analog_width(opts, state, target, check_rate_hz, 0, &skipped);
         }
     }
+    dsd_engine_scan_note_skipped_rows(state, &skipped);
+    return check_rate_hz;
 }
 
 static void
@@ -2950,8 +3141,30 @@ trunk_scan_reconcile_p25_retune_recovery(dsd_trunk_scan_target_runtime* rt, uint
     return -1;
 }
 
+/*
+ * An analog target's retune lands the analog profile it queued, captured with the width in force then. A width edit
+ * made while it was in flight (the width command, a config apply, on a target that runs the configured NFM width)
+ * reached the front end as a live request, which that profile may then have landed over: the front end would run the
+ * old width while the options and the Radio controls say the new one, until the next rotation. Once the retune lands,
+ * the width in force is requested again wherever it differs from the one queued, as the -Y scanner restages a tune
+ * whose configured width moved while it was outstanding.
+ */
+static void
+trunk_scan_reapply_analog_width(const dsd_opts* opts, const dsd_trunk_scan_target_runtime* rt) {
+    if (!opts || opts->audio_in_type != AUDIO_IN_RTL || !trunk_scan_type_is_analog(rt->target.type)
+        || !dsd_opts_is_analog_family(opts)) {
+        return;
+    }
+    const int width_hz = dsd_opts_analog_width_hz(opts);
+    if (width_hz == rt->tune_analog_width_hz && opts->analog_demod == rt->tune_analog_kind) {
+        return;
+    }
+    (void)dsd_rtl_stream_metrics_hook_apply_analog_profile(DSD_RX_FAMILY_ANALOG, opts->analog_demod, width_hz);
+}
+
 static int
-trunk_scan_resolve_pending_retune(dsd_state* state, dsd_trunk_scan_target_runtime* rt, double now_m) {
+trunk_scan_resolve_pending_retune(const dsd_opts* opts, dsd_state* state, dsd_trunk_scan_target_runtime* rt,
+                                  double now_m) {
     if (!rt || !rt->tune_pending) {
         return 1;
     }
@@ -2966,6 +3179,7 @@ trunk_scan_resolve_pending_retune(dsd_state* state, dsd_trunk_scan_target_runtim
         rt->tune_request_id = 0U;
         rt->tune_pending = 0;
         rt->idle_since_m = -1.0;
+        trunk_scan_reapply_analog_width(opts, rt);
         /* The visit began when the backend finished the tune, not when this tick noticed. */
         trunk_scan_arm_visit(rt, completed_m);
         return 1;
@@ -3019,6 +3233,29 @@ trunk_scan_refresh_voice_media_hold(const dsd_opts* opts, dsd_state* state, dsd_
     } else {
         state->scan_voice_gate_phase = (uint8_t)DSD_SCAN_VOICE_GATE_QUALIFY;
     }
+}
+
+/* An analog target's activity is its carrier (issue #526): every tick that finds the squelch open
+ * restarts the activity hold, whatever the voice gate says, since an analog channel never produces
+ * the decoded voice media that gate waits for. The gate's phase is not this row's to publish. */
+static void
+trunk_scan_refresh_analog_carrier_hold(const dsd_opts* opts, dsd_state* state, dsd_trunk_scan_target_runtime* rt,
+                                       double now_m) {
+    state->scan_voice_gate_phase = (uint8_t)DSD_SCAN_VOICE_GATE_OFF;
+    if (dsd_scan_analog_carrier_open(opts, state)) {
+        rt->last_allowed_activity_m = now_m;
+    }
+}
+
+/* Refresh what holds the target on air besides protocol reports: its carrier on an analog target,
+ * decoded voice media under --scan-voice-only on a digital one. */
+static void
+trunk_scan_refresh_activity(const dsd_opts* opts, dsd_state* state, dsd_trunk_scan_target_runtime* rt, double now_m) {
+    if (trunk_scan_type_is_analog(rt->target.type)) {
+        trunk_scan_refresh_analog_carrier_hold(opts, state, rt, now_m);
+        return;
+    }
+    trunk_scan_refresh_voice_media_hold(opts, state, rt, now_m);
 }
 
 /* Pick the reason the row on air is staying, and the window it runs for when the coordinator
@@ -3247,7 +3484,7 @@ trunk_scan_tick_targets_locked(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_
          * the coordinator waiting for its request. */
         trunk_scan_tick_active_target_sm(opts, state, rt);
     }
-    int pending_status = trunk_scan_resolve_pending_retune(state, rt, now_m);
+    int pending_status = trunk_scan_resolve_pending_retune(opts, state, rt, now_m);
     if (pending_status == 0) {
         return;
     }
@@ -3266,7 +3503,7 @@ trunk_scan_tick_targets_locked(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_
     if (state->p2_wacn != rt->iden_share_wacn || state->p2_sysid != rt->iden_share_sysid) {
         trunk_scan_share_peer_idens(coord, state, rt);
     }
-    trunk_scan_refresh_voice_media_hold(opts, state, rt, now_m);
+    trunk_scan_refresh_activity(opts, state, rt, now_m);
     if (trunk_scan_service_visit_limit(opts, state, coord, rt, now_m)) {
         return;
     }
@@ -3490,8 +3727,10 @@ trunk_scan_apply_decryption(dsd_opts* opts, dsd_state* state, const char* target
     if (!opts || !state || !coord || coord->active >= coord->count || !keys || !map) {
         return DSD_TRUNK_KEY_UNAVAILABLE;
     }
-    if (validate_target_decryption(coord->targets[coord->active].target.type, fields, keys, map, force)
-        != DSD_TRUNK_KEY_APPLIED) {
+    const dsd_trunk_scan_target_type type = coord->targets[coord->active].target.type;
+    /* An analog target decrypts nothing: no material, map or forcing applies to it. */
+    if (trunk_scan_type_is_analog(type)
+        || validate_target_decryption(type, fields, keys, map, force) != DSD_TRUNK_KEY_APPLIED) {
         return DSD_TRUNK_KEY_INVALID;
     }
     if (!target_id || strcmp(coord->targets[coord->active].target.id, target_id) != 0
@@ -3562,6 +3801,8 @@ trunk_scan_type_in_conventional_family(dsd_trunk_scan_target_type type, trunk_sc
         case DSD_TRUNK_SCAN_TARGET_P25_CONVENTIONAL: return family == TRUNK_SCAN_CONVENTIONAL_FAMILY_P25;
         case DSD_TRUNK_SCAN_TARGET_NXDN_CONVENTIONAL:
         case DSD_TRUNK_SCAN_TARGET_NXDN48_CONVENTIONAL: return family == TRUNK_SCAN_CONVENTIONAL_FAMILY_NXDN;
+        /* No protocol reports claim an analog channel: its carrier holds it (trunk_scan_refresh_activity()). */
+        case DSD_TRUNK_SCAN_TARGET_NFM_CONVENTIONAL: return 0;
     }
     return 0;
 }
@@ -3758,13 +3999,15 @@ dsd_engine_trunk_scan_init(dsd_opts* opts, dsd_state* state, char* err, size_t e
         return -1;
     }
     trunk_scan_warn_ignored_target_gain(opts, state, &list);
-    trunk_scan_warn_target_squelch(opts, &list);
+    const int analog_checked_rate_hz = trunk_scan_warn_targets(opts, state, &list);
 
     dsd_trunk_scan_coord* coord = trunk_scan_coord_create(&list, opts, err, err_sz);
     if (!coord) {
         dsd_trunk_scan_target_list_reset(&list);
         return -1;
     }
+    coord->analog_checked_rate_hz = analog_checked_rate_hz;
+    coord->analog_checked_nfm_hz = dsd_scan_mode_configured_analog_width(opts, state, DSD_ANALOG_DEMOD_FM);
 
     if (dsd_scan_mode_begin(opts, state) != 0
         || trunk_scan_build_target_runtime(coord, opts, state, &list, err, err_sz) != 0) {
@@ -3841,6 +4084,46 @@ size_t
 dsd_engine_trunk_scan_target_count(const dsd_state* state) {
     const dsd_trunk_scan_coord* coord = trunk_scan_get_const(state);
     return coord ? coord->count : 0;
+}
+
+/* Whether an analog target sets no width of its own, and so runs the configured NFM width while it is parked. */
+static int
+trunk_scan_targets_run_configured_nfm_width(const dsd_trunk_scan_coord* coord) {
+    for (size_t i = 0; i < coord->count; i++) {
+        const dsd_trunk_scan_target* target = &coord->targets[i].target;
+        if (trunk_scan_type_is_analog(target->type) && !(target->row_options.present & DSD_SCAN_OPT_BANDWIDTH)) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+/* The same for the -Y channel map's rows, leaving out a placeholder row (frequency 0), which is never tuned. */
+static int
+channel_rows_run_configured_nfm_width(const dsd_state* state) {
+    for (int row = 0; row < state->lcn_freq_count; row++) {
+        if (*dsd_state_trunk_lcn_slot_const(state, row) == 0
+            || !dsd_scan_mode_is_analog(dsd_channel_mode_get(state, (size_t)row))) {
+            continue;
+        }
+        const dsd_scan_row_profile* profile = dsd_channel_profile_get(state, (size_t)row);
+        if (!profile || !(profile->values.present & DSD_SCAN_OPT_BANDWIDTH)) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+int
+dsd_engine_scan_runs_configured_nfm_width(const dsd_opts* opts, const dsd_state* state) {
+    if (!opts || !state) {
+        return 0;
+    }
+    const dsd_trunk_scan_coord* coord = trunk_scan_get_const(state);
+    if (coord) {
+        return trunk_scan_targets_run_configured_nfm_width(coord);
+    }
+    return opts->scanner_mode == 1 && opts->trunk_scan_enabled != 1 && channel_rows_run_configured_nfm_width(state);
 }
 
 int

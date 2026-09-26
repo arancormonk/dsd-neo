@@ -400,14 +400,19 @@ digital protocol shows the width its leave returns to. The unset default reads `
 the channel, which is what the unset default does below a 20 kHz DSP rate: no channel filter runs there, so the rate
 itself is the bound. With the stream stopped, the line reads what the next start runs at `DSP-BW:`, so a 12 kHz DSP
 bandwidth still shows `Analog: NFM 12 kHz (DSP-limited);`, and so does a scan row running a digital protocol at a
-12 kHz rate. `NFM bandwidth...` (offered on a radio input while `-fA` is the configured mode, or while an explicit
-width is set under another mode, so that a width a switch to `-fA` would be refused for can be narrowed first) shows
-the setting, `[12.5 kHz]` or `[default]`, takes any width from 8000 to 25000 Hz, or `0` for the default, and applies
-it live; a width the DSP rate cannot filter is refused with a message naming both and the fix, and a
-`DSP bandwidth...` value the explicit NFM width cannot run at is refused with one saying to narrow the width first.
+12 kHz rate. An `nfm` scan row shows the field on any session, and one that sets its own `--nfm-bandwidth-hz` reads
+`Analog: NFM 12.5 kHz (row; default 16 kHz);`, naming the configured NFM width it overrides. `NFM bandwidth...`
+(offered on a radio input while `-fA` is the configured mode or an `nfm` scan row is on air, or while an explicit width
+is set under another mode, so that a width a switch to `-fA` would be refused for can be narrowed first) shows the
+configured setting, `[12.5 kHz]` or `[default]`, takes any width from 8000 to 25000 Hz, or `0` for the default, and
+applies it live (while a row's own width is on air the edit waits for the row to leave, and the message says the channel
+overrides it); a width the DSP rate cannot filter is refused with a message naming both and the fix (on a digital
+session too, while the scan has an `nfm` row or target without a width of its own, which runs the configured width), and
+a `DSP bandwidth...` value the explicit NFM width cannot run at is refused with one saying to narrow the width first.
 Input > Switch source > RTL-SDR refuses the switch, keeping the running input, when its DSP bandwidth cannot filter the
-explicit NFM width (see `docs/cli.md`, Analog reception). The Qt and Android Radio sheet shows the same reading,
-spelled the same way.
+explicit NFM width (see `docs/cli.md`, Analog reception). The Qt and Android Radio sheet shows the same reading, spelled
+the same way, on any session while an `nfm` row is on air; a row's own width reads first there, with a `row` badge and
+the configured default the stepper edits beside it (`12.5 kHz` over a `row` badge and `default 16 kHz`).
 
 The low-level threshold is controlled by `--input-level-warn-db`, `DSD_NEO_INPUT_WARN_DB`, or the `[input]`
 `input_warn_db` user-config key, and defaults to `-40 dBFS`. Changes made through the terminal menu persist through
@@ -603,9 +608,13 @@ last sync. NXDN's additional grace period is described below.
 | `Qualify` | synced under `--scan-voice-only`, no allowed voice yet | the qualify window |
 | `Idle dwell` | nothing holds the row | the idle dwell |
 | `Hangtime` | `-Y` without `--scan-voice-only`: waiting out `-t` since the last sync | next whole second after `-t` |
+| `Carrier` | an analog row's carrier is open (an `nfm` row or `nfm-conventional` target, or a row of an untyped list scanned under `-fA`): squelch open, whether or not audio plays | `-Y`: the hangtime window; trunk scan: the activity hold |
 
 Which phrases you can see depends on the protocol: an NXDN trunked target has no state machine to report control
-acquisition, so it never reads `Acquiring control`.
+acquisition, so it never reads `Acquiring control`. An analog row (an `nfm` row or target, or any row of an untyped list
+scanned under `-fA`) never reads `Voice`, `Voice tail` or `Qualify`, since the voice gate does not apply to it: it reads
+`Carrier` while its carrier holds it, then `Hangtime` (`-Y`) or `Activity hold` (trunk scan) for the tail. While a typed
+scan row is on air, the decoder picker's label names its class beside the configured mode, `Mode... [DMR; scan nfm]`.
 
 The values that follow are the *effective* ones for the row on air, after CSV and option overrides:
 

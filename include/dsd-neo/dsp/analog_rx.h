@@ -163,6 +163,35 @@ void dsd_analog_rx_tap_partial(const dsd_opts* opts, dsd_state* state, const flo
 void dsd_analog_rx_block_restart(const dsd_state* state);
 
 /**
+ * @brief The published carrier, held to the channel the receiver is on now (issue #526).
+ *
+ * dsd_state::analog_rx.carrier_open says what the tap heard at its last read, at every input rate: one the tap's front
+ * end cannot use (tone_state UNAVAILABLE) keeps the carrier as well, above the level floor and through the hangover.
+ * When the tap's own generation check would see a boundary since that read -- the trunk-tuning generation, and on RTL
+ * input the stream generation or the published analog profile, moved -- the read was of the channel before, so this
+ * returns 0 until the tap reads the new one. So it does while a retune is unresolved
+ * (dsd_trunk_tuning_pending_request()): in flight, the front end still delivers the channel being left; failed after
+ * the scanner moved on, it delivers a channel other than the one the scanner shows. A scanner therefore never holds a
+ * row on another channel's carrier, and one a failed retune left the receiver on lets the row's hangtime run out.
+ * Before detection has run there is nothing to compare, and the publication stands as it is. Read-only.
+ */
+int dsd_analog_rx_carrier_open_now(const dsd_opts* opts, const dsd_state* state);
+
+/**
+ * @brief Whether the monitor block now being completed began before a boundary the tap knows of (issue #526).
+ *
+ * Set when the tap's own generation check found a retune or an applied receive-profile change part-way through the
+ * block (see dsd_analog_rx_tap()), when dsd_analog_rx_reset() set the samples collected before it aside, and when
+ * detection started part-way through it, with no word on the samples before; cleared when the symbol path empties its
+ * block (dsd_analog_rx_block_restart()). A boundary the tap has not read past yet, one that landed after its last read
+ * of the block, counts too. Part of such a block is the old channel's, so the analog monitor's output drops it (one
+ * block at most, or two when a boundary lands at a block's end); the raw WAV keeps it. 0 while detection is not running
+ * (dsd_analog_tone_detection_active() on @p opts), whatever a reset set aside: the -8 source monitor under digital
+ * decoding plays every block, as it did before the tap, whether or not an earlier analog row left the tap a session.
+ */
+int dsd_analog_rx_block_straddles_boundary(const dsd_opts* opts, const dsd_state* state);
+
+/**
  * @brief Forget the received tone: clears the publication and every detector's state.
  *
  * Call on retune, scan row or target change, input switch, decode-mode change and stop, so a

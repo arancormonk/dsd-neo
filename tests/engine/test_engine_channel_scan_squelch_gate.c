@@ -58,6 +58,30 @@ dsd_engine_reset_no_carrier_state(dsd_opts* opts, dsd_state* state) {
     (void)state;
 }
 
+/* The scanner's DSP-rate read beside the tune above (trunk_tuning.c): no rate, so no row width is checked. */
+int
+dsd_engine_scan_dsp_rate_hz(const dsd_opts* opts, const dsd_state* state) {
+    (void)opts;
+    (void)state;
+    return 0;
+}
+
+/* And its receive-family request count (trunk_tuning.c): no front end takes a live request here. */
+uint32_t
+dsd_engine_scan_family_requests(const dsd_opts* opts) {
+    (void)opts;
+    return 0U;
+}
+
+/* And whether a retune attaches a receive family (trunk_tuning.c): the request count above never moves here. */
+int
+dsd_engine_scan_retune_attaches_family(const dsd_opts* opts, const dsd_state* state, int ted_sps) {
+    (void)opts;
+    (void)state;
+    (void)ted_sps;
+    return 0;
+}
+
 static void
 record_push(double mean_power) {
     g_pushes++;

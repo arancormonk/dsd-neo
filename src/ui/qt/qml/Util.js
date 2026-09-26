@@ -467,3 +467,11 @@ function squelchSummary(db) {
         return qsTr("Squelch: inherit")
     return db === 0 ? qsTr("Squelch: off") : qsTr("Squelch: %1 dB").arg(db)
 }
+
+// An nfm row's or target's own channel width (--nfm-bandwidth-hz), for the channel-map review
+// and the target preview. Absent inherits the configured NFM width.
+function nfmBandwidthSummary(hz) {
+    if (hz === undefined || hz === null)
+        return qsTr("NFM bandwidth: inherit")
+    return qsTr("NFM bandwidth: %1").arg(widthKhzText(hz))
+}

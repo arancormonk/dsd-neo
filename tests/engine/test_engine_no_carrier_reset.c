@@ -10,6 +10,7 @@
 #include <dsd-neo/core/init.h>
 #include <dsd-neo/core/key_set.h>
 #include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/scan_profile.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/synctype_ids.h>
@@ -18,14 +19,21 @@
 #include <dsd-neo/engine/channel_scan.h>
 #include <dsd-neo/engine/frame_processing.h>
 #include <dsd-neo/engine/scan_voice_gate.h>
+#include <dsd-neo/engine/trunk_scan.h>
 #include <dsd-neo/engine/trunk_tuning.h>
 #include <dsd-neo/io/rtl_stream_c.h>
+#include <dsd-neo/platform/file_compat.h>
+#include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/platform/sockets.h>
 #include <dsd-neo/protocol/dmr/dmr_trunk_sm.h>
 #include <dsd-neo/protocol/p25/p25_sm_watchdog.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
+#include <dsd-neo/runtime/analog_channel.h>
+#include <dsd-neo/runtime/config.h>
+#include <dsd-neo/runtime/decode_mode.h>
 #include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
 #include <dsd-neo/runtime/scan_mode.h>
+#include <dsd-neo/runtime/scan_options.h>
 #include <dsd-neo/runtime/trunk_cc_candidates.h>
 #include <dsd-neo/runtime/trunk_scan_hooks.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
@@ -43,6 +51,7 @@
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
 #include "dsd-neo/io/rtl_stream_fwd.h"
+#include "test_support.h"
 
 #if defined(__GNUC__) && !defined(__cplusplus)
 #pragma GCC diagnostic push
@@ -101,6 +110,21 @@ static int g_pending_symbol_levels = 0;
 static int g_pending_channel_profile = 0;
 static int g_pending_ted_sps = 0;
 static int g_pending_ted_override = 0;
+/* The receive family a retune profile carries (issue #526): -1 none, else dsd_rx_family. */
+static int g_pending_analog_family = -1;
+static int g_pending_analog_kind = 0;
+static int g_pending_analog_width_hz = 0;
+static int g_refuse_analog_profile = 0;
+static int g_analog_attach_calls = 0;
+/* What the fake front end runs: the analog family (monitor output) or not, and its width. */
+static int g_rtl_analog_family = 0;
+static int g_rtl_analog_width_hz = 0;
+static int g_request_demod_calls = 0;
+/* The DSP rate the fake stream publishes for analog requests (0: none), and the widest analog width it was asked for. */
+static int g_rtl_request_rate_hz = 0;
+static int g_analog_attach_max_width_hz = 0;
+/* 1: the output rate follows the family, the analog monitor at 48 kHz and the digital family at 24 kHz (bw=24). */
+static int g_rtl_family_rates = 0;
 
 static void
 reset_rtl_profile_fakes(void) {
@@ -123,6 +147,17 @@ reset_rtl_profile_fakes(void) {
     g_pending_channel_profile = 0;
     g_pending_ted_sps = 0;
     g_pending_ted_override = 0;
+    g_pending_analog_family = -1;
+    g_pending_analog_kind = 0;
+    g_pending_analog_width_hz = 0;
+    g_refuse_analog_profile = 0;
+    g_analog_attach_calls = 0;
+    g_rtl_analog_family = 0;
+    g_rtl_analog_width_hz = 0;
+    g_request_demod_calls = 0;
+    g_rtl_request_rate_hz = 0;
+    g_analog_attach_max_width_hz = 0;
+    g_rtl_family_rates = 0;
     g_check_p25_tick_guard = 0;
     g_p25_tick_guard_held_during_tune = 0;
 }
@@ -142,6 +177,19 @@ static long int g_rigctl_setfreq_freq = 0;
 uint32_t
 __wrap_rtl_stream_output_rate(const RtlSdrContext* ctx) {
     (void)ctx;
+    if (g_rtl_family_rates) {
+        return g_rtl_analog_family ? 48000U : 24000U;
+    }
+    return (uint32_t)g_rtl_output_rate;
+}
+
+unsigned int
+__wrap_rtl_stream_output_rate_for_family(int family, int cqpsk_enable, int symbol_rate_hz) {
+    (void)cqpsk_enable;
+    (void)symbol_rate_hz;
+    if (g_rtl_family_rates) {
+        return family == DSD_RX_FAMILY_ANALOG ? 48000U : 24000U;
+    }
     return (uint32_t)g_rtl_output_rate;
 }
 
@@ -196,8 +244,69 @@ __wrap_rtl_stream_prepare_retune_profile_for_target_with_gain(uint32_t target_fr
     g_pending_ted_override = persist_ted_override ? 1 : 0;
 }
 
+int
+__wrap_rtl_stream_prepare_retune_analog_profile_for_target(uint32_t target_freq_hz,
+                                                           const rtl_stream_retune_analog_profile* analog) {
+    g_analog_attach_calls++;
+    if (analog && analog->family == DSD_RX_FAMILY_ANALOG && analog->width_hz > g_analog_attach_max_width_hz) {
+        g_analog_attach_max_width_hz = analog->width_hz;
+    }
+    if (!analog || (analog->family == DSD_RX_FAMILY_ANALOG && g_refuse_analog_profile)) {
+        return -1;
+    }
+    if (!g_pending_active || g_pending_target_freq_hz != target_freq_hz) {
+        g_pending_active = 1;
+        g_pending_target_freq_hz = target_freq_hz;
+        g_pending_cqpsk = -1;
+        g_pending_symbol_rate_hz = 0;
+        g_pending_ted_sps = 0;
+    }
+    g_pending_analog_family = analog->family;
+    g_pending_analog_kind = analog->kind;
+    g_pending_analog_width_hz = analog->width_hz;
+    return 0;
+}
+
+int
+__wrap_rtl_stream_analog_family_active(void) {
+    return g_rtl_analog_family;
+}
+
+int
+__wrap_rtl_stream_get_request_rate_hz(void) {
+    return g_rtl_request_rate_hz;
+}
+
+int
+__wrap_rtl_stream_get_analog_profile(int* out_kind, int* out_width_hz, int* out_lpf_on) {
+    if (out_kind) {
+        *out_kind = DSD_ANALOG_DEMOD_FM;
+    }
+    if (out_width_hz) {
+        *out_width_hz = g_rtl_analog_family ? g_rtl_analog_width_hz : 0;
+    }
+    if (out_lpf_on) {
+        *out_lpf_on = g_rtl_analog_family;
+    }
+    return g_rtl_analog_family;
+}
+
+int
+__wrap_rtl_stream_request_demod_profile(int cqpsk_enable, int symbol_rate_hz, int levels, int channel_profile,
+                                        int ted_sps, int ted_sps_is_override) {
+    (void)cqpsk_enable;
+    (void)symbol_rate_hz;
+    (void)levels;
+    (void)channel_profile;
+    (void)ted_sps;
+    (void)ted_sps_is_override;
+    g_request_demod_calls++;
+    return 0;
+}
+
 void
 __wrap_rtl_stream_clear_pending_retune_profile(void) {
+    g_pending_analog_family = -1;
     g_pending_active = 0;
     g_pending_target_freq_hz = 0;
     g_pending_cqpsk = -1;
@@ -215,6 +324,19 @@ apply_pending_profile(uint32_t target_freq_hz) {
     }
     if (g_pending_target_freq_hz != 0 && g_pending_target_freq_hz != target_freq_hz) {
         return;
+    }
+    /* The family switch lands before the symbol profile, and the analog family takes none of it. */
+    const int family = g_pending_analog_family;
+    g_pending_analog_family = -1;
+    if (family == DSD_RX_FAMILY_ANALOG) {
+        g_rtl_analog_family = 1;
+        g_rtl_analog_width_hz = g_pending_analog_width_hz;
+        g_pending_active = 0;
+        g_pending_target_freq_hz = 0;
+        return;
+    }
+    if (family == DSD_RX_FAMILY_DIGITAL) {
+        g_rtl_analog_family = 0;
     }
     if (g_pending_cqpsk >= 0) {
         g_rtl_cqpsk_enable = g_pending_cqpsk ? 1 : 0;
@@ -441,6 +563,187 @@ test_typed_scan_tune_boundaries(void) {
     return rc;
 }
 
+/* Issue #526: a typed -Y map mixing nfm and digital rows, through the real noCarrier() step and
+ * the real scanner tune. Each nfm row queues the analog monitor at its own width (the configured
+ * one when the row sets none) with no symbol profile; the digital row after it puts the front end
+ * back on the digital family, but only because the configured mode is digital. A width the front
+ * end refuses skips the row without tuning, and a failed hop off an nfm row never applies a symbol
+ * profile over the monitor that is still running. */
+static int
+test_typed_scan_nfm_rows_switch_family(int configured_analog) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    int rc = 0;
+    reset_rtl_profile_fakes();
+    dsd_trunk_tuning_requests_reset();
+    opts->audio_in_type = AUDIO_IN_RTL;
+    opts->scanner_mode = 1;
+    opts->trunk_hangtime = 1;
+    if (configured_analog) {
+        rc |= expect_true("analog session",
+                          dsd_apply_decode_mode_preset(DSDCFG_MODE_ANALOG, DSD_DECODE_PRESET_PROFILE_CLI, opts, state)
+                              == 0);
+        g_rtl_analog_family = 1;
+    }
+    opts->analog_nfm_bandwidth_hz = 20000;
+    state->rtl_ctx = (RtlSdrContext*)state;
+    state->lcn_freq_count = 4;
+    const long freqs[] = {461000000L, 154430000L, 155475000L, 461100000L};
+    for (int i = 0; i < 4; i++) {
+        state->trunk_lcn_freq[i] = freqs[i] + (configured_analog ? 5000L : 0L);
+    }
+    rc |= expect_true("dmr row", dsd_channel_mode_set(state, 0, DSD_SCAN_MODE_DMR) == 0);
+    rc |= expect_true("nfm row with a width", dsd_channel_mode_set(state, 1, DSD_SCAN_MODE_NFM) == 0);
+    rc |= expect_true("nfm row", dsd_channel_mode_set(state, 2, DSD_SCAN_MODE_NFM) == 0);
+    rc |= expect_true("second dmr row", dsd_channel_mode_set(state, 3, DSD_SCAN_MODE_DMR) == 0);
+    dsd_scan_row_profile* profile = NULL;
+    rc |= expect_true("row profile", dsd_scan_profile_ensure(&profile) == 0 && profile);
+    if (profile) {
+        profile->values.present = DSD_SCAN_OPT_BANDWIDTH;
+        profile->values.channel_bw_hz = 12500;
+        rc |= expect_true("row width", dsd_channel_profile_set(state, 1, profile) == 0);
+    }
+
+    /* Row 0, DMR: a digital session's front end is digital already, so nothing is attached. On an
+       analog session the typed digital row keeps the monitor family. */
+    state->last_cc_sync_time = time(NULL) - 11;
+    noCarrier(opts, state);
+    rc |= expect_true("dmr row committed", state->lcn_freq_roll == 1 && opts->frame_dmr && !opts->analog_only);
+    rc |= expect_true("dmr row attaches no family", g_analog_attach_calls == 0);
+    rc |=
+        expect_true("dmr row symbol profile", g_rtl_symbol_rate_hz == 4800 && g_rtl_analog_family == configured_analog);
+
+    /* Row 1, NFM with --nfm-bandwidth-hz 12500. */
+    state->last_cc_sync_time -= 11;
+    noCarrier(opts, state);
+    rc |= expect_true("nfm row committed", state->lcn_freq_roll == 2 && opts->analog_only == 1 && !opts->frame_dmr
+                                               && opts->analog_nfm_bandwidth_hz == 12500);
+    rc |= expect_true("nfm row runs the monitor at its width",
+                      g_rtl_analog_family == 1 && g_rtl_analog_width_hz == 12500
+                          && g_rtl_tune_freq == (uint32_t)state->trunk_lcn_freq[1]);
+
+    /* Row 2, NFM without a width: the configured one. */
+    state->last_cc_sync_time -= 11;
+    noCarrier(opts, state);
+    rc |= expect_true("second nfm row", state->lcn_freq_roll == 3 && opts->analog_nfm_bandwidth_hz == 20000
+                                            && g_rtl_analog_family == 1 && g_rtl_analog_width_hz == 20000);
+
+    /* A failed hop off the nfm row leaves the monitor alone. */
+    const int requests_before = g_request_demod_calls;
+    g_rtl_tune_result = RTL_STREAM_TUNE_FAILED;
+    state->last_cc_sync_time -= 11;
+    noCarrier(opts, state);
+    rc |= expect_true("failed hop off an nfm row applies no symbol profile",
+                      g_request_demod_calls == requests_before && g_rtl_analog_family == 1 && !g_pending_active);
+    g_rtl_tune_result = RTL_STREAM_TUNE_OK;
+
+    /* Row 3, DMR after NFM: back to the digital family only on a digital session. */
+    state->lcn_freq_roll = 3;
+    state->last_cc_sync_time -= 11;
+    noCarrier(opts, state);
+    rc |= expect_true("digital row after nfm", state->lcn_freq_roll == 4 && opts->frame_dmr && !opts->analog_only
+                                                   && opts->analog_nfm_bandwidth_hz == 20000);
+    rc |= expect_true("digital row family", g_rtl_analog_family == configured_analog && g_rtl_symbol_rate_hz == 4800);
+
+    /* A width the front end refuses: the row is skipped without a tune. Only the retune profile queued for it is
+       dropped: the profile the front end runs is not requested again, which on the digital family would re-apply the
+       DMR row's symbol profile at every rotation past the refused row. */
+    g_refuse_analog_profile = 1;
+    const int tunes_before = g_rtl_tune_calls;
+    const int demod_requests_before = g_request_demod_calls;
+    state->lcn_freq_roll = 1;
+    state->last_cc_sync_time -= 11;
+    noCarrier(opts, state);
+    rc |= expect_true("refused nfm row is not tuned", g_rtl_tune_calls == tunes_before && state->lcn_freq_roll == 2
+                                                          && opts->frame_dmr && !opts->analog_only);
+    rc |= expect_true("refused nfm row requests no demod profile",
+                      g_request_demod_calls == demod_requests_before && !g_pending_active);
+    g_refuse_analog_profile = 0;
+
+    /* A width the published DSP rate cannot fit is refused before the stream is asked, the same way: the nfm row
+       without a width of its own runs the configured 20 kHz, which a 16 kHz rate cannot filter. */
+    g_rtl_request_rate_hz = 16000;
+    state->lcn_freq_roll = 2;
+    state->last_cc_sync_time -= 11;
+    noCarrier(opts, state);
+    rc |= expect_true("rate-refused nfm row is not tuned",
+                      g_rtl_tune_calls == tunes_before && state->lcn_freq_roll == 3 && opts->frame_dmr);
+    rc |= expect_true("rate-refused nfm row requests no demod profile",
+                      g_request_demod_calls == demod_requests_before && !g_pending_active);
+    g_rtl_request_rate_hz = 0;
+
+    dsd_engine_channel_scan_leave(opts, state);
+    rc |= expect_true("leave restores the configured session",
+                      opts->analog_only == configured_analog && opts->analog_nfm_bandwidth_hz == 20000);
+    state->rtl_ctx = NULL;
+    free_test_runtime(opts, state);
+    dsd_trunk_tuning_requests_reset();
+    if (rc) {
+        DSD_FPRINTF(stderr, "typed nfm rows on a%s session failed\n", configured_analog ? "n analog" : " digital");
+    }
+    return rc;
+}
+
+/* Issue #526: --trunk-scan through the real coordinator and tuning. An nfm-conventional target
+ * runs the analog monitor; the trunked P25 target after it re-parks through the control-channel
+ * tune, which must put the front end back on the digital family before its symbol profile, or the
+ * P25 profile would land on the monitor output and decode nothing. */
+static int
+test_trunk_scan_nfm_target_then_trunked_target(void) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    char path[DSD_TEST_PATH_MAX];
+    const int fd = dsd_test_mkstemp(path, sizeof path, "nfm-trunk-scan-");
+    if (fd < 0) {
+        free_test_runtime(opts, state);
+        return 1;
+    }
+    dsd_close(fd);
+    FILE* fp = dsd_fopen_private(path, "w");
+    int rc = expect_true("targets file", fp != NULL);
+    if (fp) {
+        DSD_FPRINTF(fp, "id,type,frequency_hz,chan_csv,dwell_ms,activity_hold_ms,notes,options\n"
+                        "fire,nfm-conventional,154430000,,250,250,,--nfm-bandwidth-hz 12500\n"
+                        "county,p25-trunk,851012500,,250,,,\n");
+        (void)fclose(fp);
+    }
+    reset_rtl_profile_fakes();
+    g_rtl_symbol_rate_hz = 4800;
+    g_rtl_cqpsk_enable = 0;
+    dsd_trunk_tuning_requests_reset();
+    dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){.tune_to_freq_request = dsd_engine_trunk_tune_to_freq_request,
+                                                        .tune_to_cc_request = dsd_engine_trunk_tune_to_cc_request,
+                                                        .return_to_cc_request = dsd_engine_return_to_cc_request});
+    opts->audio_in_type = AUDIO_IN_RTL;
+    opts->trunk_scan_enabled = 1;
+    state->rtl_ctx = (RtlSdrContext*)state;
+    DSD_SNPRINTF(opts->trunk_scan_targets_csv, sizeof opts->trunk_scan_targets_csv, "%s", path);
+    char err[256] = {0};
+    rc |= expect_true("nfm trunk scan init", dsd_engine_trunk_scan_init(opts, state, err, sizeof err) == 0);
+    rc |= expect_true("nfm target runs the monitor at its width", opts->analog_only == 1 && g_rtl_analog_family == 1
+                                                                      && g_rtl_analog_width_hz == 12500
+                                                                      && g_rtl_tune_freq == 154430000U);
+    rc |= expect_true("advance to the trunked target",
+                      dsd_engine_trunk_scan_control(opts, state, DSD_TRUNK_SCAN_CONTROL_ADVANCE) == 0);
+    rc |= expect_true("trunked target leaves the monitor for the digital family",
+                      opts->analog_only == 0 && g_rtl_analog_family == 0 && g_rtl_tune_freq == 851012500U
+                          && g_rtl_symbol_rate_hz == 4800);
+    dsd_engine_trunk_scan_shutdown(opts, state);
+    rc |= expect_true("shutdown restores the digital session", opts->analog_only == 0);
+    dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){0});
+    dsd_trunk_tuning_requests_reset();
+    state->rtl_ctx = NULL;
+    (void)remove(path);
+    free_test_runtime(opts, state);
+    return rc;
+}
+
 // The live-scanner loop runs dsd_engine_scan_visit_tick() immediately before every noCarrier()
 // pass, so by the time the step predicate runs the row on air has always been reconciled with the
 // anchor. These cases drive noCarrier() in isolation, so they stand in for that tick.
@@ -641,6 +944,425 @@ test_visit_cap_scanner_hops(void) {
     noCarrier(opts, state);
     rc |= expect_true("abandoned-scan-recovers", g_rtl_tune_calls == 2 && state->lcn_freq_roll == 1);
 
+    state->rtl_ctx = NULL;
+    free_test_runtime(opts, state);
+    dsd_trunk_tuning_requests_reset();
+    return rc;
+}
+
+/* --- Issue #526: a front end whose output rate follows its receive family, as the RTL stream's does at bw=24: the
+ * analog monitor resampled to 48 kHz, the digital family at the 24 kHz DSP rate. --- */
+static unsigned int
+fake_family_output_rate_hz(void) {
+    return __wrap_rtl_stream_output_rate(NULL);
+}
+
+static int
+fake_family_analog_active(void) {
+    return g_rtl_analog_family;
+}
+
+/* The decoder side reads the stream through the metrics hooks, the tuning side through the wrapped stream calls: both
+ * see the same front end. */
+static void
+install_family_rate_hooks(void) {
+    g_rtl_family_rates = 1;
+    dsd_rtl_stream_metrics_hooks hooks = {0};
+    hooks.output_rate_hz = fake_family_output_rate_hz;
+    hooks.analog_family_active = fake_family_analog_active;
+    hooks.output_rate_for_family = __wrap_rtl_stream_output_rate_for_family;
+    dsd_rtl_stream_metrics_hooks_set(&hooks);
+}
+
+/* A digital -Y row after an nfm row is timed for the family its tune lands: the decoder and the TED the retune profile
+ * carries alike, since nothing re-pushes the TED once the switch has landed. DMR gets 5 samples per symbol at 24 kHz
+ * and NXDN48 10, not the 10 and 20 the monitor's 48 kHz would give. */
+static int
+test_typed_scan_digital_row_after_nfm_timed_for_digital(void) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    int rc = 0;
+    reset_rtl_profile_fakes();
+    dsd_trunk_tuning_requests_reset();
+    install_family_rate_hooks();
+    opts->audio_in_type = AUDIO_IN_RTL;
+    opts->scanner_mode = 1;
+    opts->trunk_hangtime = 1;
+    state->rtl_ctx = (RtlSdrContext*)state;
+    state->lcn_freq_count = 4;
+    const long freqs[] = {154230000L, 461200000L, 155230000L, 461300000L};
+    const dsd_scan_mode modes[] = {DSD_SCAN_MODE_NFM, DSD_SCAN_MODE_DMR, DSD_SCAN_MODE_NFM, DSD_SCAN_MODE_NXDN48};
+    for (int i = 0; i < 4; i++) {
+        state->trunk_lcn_freq[i] = freqs[i];
+        rc |= expect_true("family timing row mode", dsd_channel_mode_set(state, (size_t)i, modes[i]) == 0);
+    }
+    state->last_cc_sync_time = time(NULL) - 11;
+    noCarrier(opts, state);
+    rc |= expect_true("family timing nfm row", state->lcn_freq_roll == 1 && g_rtl_analog_family == 1);
+
+    state->last_cc_sync_time -= 11;
+    noCarrier(opts, state);
+    rc |= expect_true("dmr row after nfm lands digital",
+                      state->lcn_freq_roll == 2 && g_rtl_analog_family == 0 && g_rtl_symbol_rate_hz == 4800);
+    rc |= expect_true("dmr row after nfm timed for 24 kHz", state->samplesPerSymbol == 5 && g_rtl_ted_sps == 5);
+    if (state->samplesPerSymbol != 5 || g_rtl_ted_sps != 5) {
+        DSD_FPRINTF(stderr, "  dmr row: decoder sps=%d, TED %d\n", state->samplesPerSymbol, g_rtl_ted_sps);
+    }
+
+    state->last_cc_sync_time -= 11;
+    noCarrier(opts, state);
+    rc |= expect_true("family timing second nfm row", state->lcn_freq_roll == 3 && g_rtl_analog_family == 1);
+
+    state->last_cc_sync_time -= 11;
+    noCarrier(opts, state);
+    rc |= expect_true("nxdn48 row after nfm lands digital",
+                      state->lcn_freq_roll == 4 && g_rtl_analog_family == 0 && g_rtl_symbol_rate_hz == 2400);
+    rc |= expect_true("nxdn48 row after nfm timed for 24 kHz", state->samplesPerSymbol == 10 && g_rtl_ted_sps == 10);
+    if (state->samplesPerSymbol != 10 || g_rtl_ted_sps != 10) {
+        DSD_FPRINTF(stderr, "  nxdn48 row: decoder sps=%d, TED %d\n", state->samplesPerSymbol, g_rtl_ted_sps);
+    }
+
+    dsd_engine_channel_scan_leave(opts, state);
+    dsd_rtl_stream_metrics_hooks_set(NULL);
+    state->rtl_ctx = NULL;
+    free_test_runtime(opts, state);
+    dsd_trunk_tuning_requests_reset();
+    return rc;
+}
+
+static int g_leave_demod_ted_sps = 0;
+
+static int
+record_leave_demod_profile(int cqpsk_enable, int symbol_rate_hz, int levels, int channel_profile, int ted_sps) {
+    (void)cqpsk_enable;
+    (void)symbol_rate_hz;
+    (void)levels;
+    (void)channel_profile;
+    g_leave_demod_ted_sps = ted_sps;
+    return 0;
+}
+
+/* A decode-mode change made while an nfm row is on air, as apply_cmd_scoped() runs DECODE_MODE_SET: the command runs on
+ * the configured baseline with the front end still on the row's analog family, so it times the new mode at the live
+ * rate, the monitor's 48 kHz. The baseline the scope keeps is timed for the digital family (24 kHz), which an untyped
+ * row's tune and the leave land on and which nothing retimes afterwards: the untyped row after it, and the session
+ * after leaving the scan on a DMR row, run DMR at 5 samples per symbol in the decoder and the TED alike, not 10. */
+static int
+test_scoped_mode_change_on_nfm_row_times_the_baseline_for_digital(void) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    int rc = 0;
+    reset_rtl_profile_fakes();
+    dsd_trunk_tuning_requests_reset();
+    install_family_rate_hooks();
+    dsd_rtl_stream_metrics_hooks hooks = {0};
+    hooks.output_rate_hz = fake_family_output_rate_hz;
+    hooks.analog_family_active = fake_family_analog_active;
+    hooks.output_rate_for_family = __wrap_rtl_stream_output_rate_for_family;
+    hooks.apply_demod_profile = record_leave_demod_profile;
+    dsd_rtl_stream_metrics_hooks_set(&hooks);
+    g_leave_demod_ted_sps = 0;
+    opts->audio_in_type = AUDIO_IN_RTL;
+    opts->scanner_mode = 1;
+    opts->trunk_hangtime = 1;
+    state->rtl_ctx = (RtlSdrContext*)state;
+    /* A configured P25 Phase 1 session on the digital family at 24 kHz. */
+    rc |= expect_true("baseline p25",
+                      dsd_apply_decode_mode_preset(DSDCFG_MODE_P25P1, DSD_DECODE_PRESET_PROFILE_CLI, opts, state) == 0);
+    const dsd_decode_mode_profile p25 = dsd_decode_mode_profile_for(DSDCFG_MODE_P25P1);
+    state->samplesPerSymbol = dsd_opts_compute_sps_rate(opts, p25.symbol_rate_hz, 24000);
+    state->symbolCenter = dsd_opts_symbol_center(state->samplesPerSymbol);
+    state->sps_hunt_idx = (int)p25.sps_profile_index;
+    state->lcn_freq_count = 3;
+    const long freqs[] = {154730000L, 461600000L, 461700000L};
+    const dsd_scan_mode modes[] = {DSD_SCAN_MODE_NFM, DSD_SCAN_MODE_INHERIT, DSD_SCAN_MODE_DMR};
+    for (int i = 0; i < 3; i++) {
+        state->trunk_lcn_freq[i] = freqs[i];
+        rc |= expect_true("scoped mode row", dsd_channel_mode_set(state, (size_t)i, modes[i]) == 0);
+    }
+    state->last_cc_sync_time = time(NULL) - 11;
+    noCarrier(opts, state);
+    rc |= expect_true("scoped mode nfm row on air", state->lcn_freq_roll == 1 && g_rtl_analog_family == 1);
+
+    /* DECODE_MODE_SET -> DMR under the row: suspend, the preset, decode_mode_republish()'s timing at the live rate,
+       svc_publish_symbol_profile()'s hunt index (it stops there while the scope is suspended), resume. */
+    rc |= expect_true("scoped mode suspends", dsd_scan_mode_suspend(opts, state) == 1);
+    rc |= expect_true("scoped mode dmr preset",
+                      dsd_apply_decode_mode_preset(DSDCFG_MODE_DMR, DSD_DECODE_PRESET_PROFILE_CLI, opts, state) == 0);
+    const dsd_decode_mode_profile dmr = dsd_decode_mode_profile_for(DSDCFG_MODE_DMR);
+    state->samplesPerSymbol = dsd_opts_compute_sps_rate(opts, dmr.symbol_rate_hz, (int)fake_family_output_rate_hz());
+    state->symbolCenter = dsd_opts_symbol_center(state->samplesPerSymbol);
+    state->sps_hunt_idx = (int)dmr.sps_profile_index;
+    rc |= expect_true("the command timed dmr at the monitor's rate", state->samplesPerSymbol == 10);
+    (void)dsd_scan_mode_resume(opts, state);
+    const dsd_scan_settings* configured = dsd_scan_mode_configured_view(state);
+    rc |= expect_true("configured dmr timed for the digital family",
+                      configured != NULL && configured->state_samplesPerSymbol == 5);
+    rc |= expect_true("the nfm row stays on its monitor", g_rtl_analog_family == 1 && opts->analog_only == 1);
+
+    state->last_cc_sync_time -= 11;
+    noCarrier(opts, state);
+    rc |= expect_true("untyped row after the change lands digital",
+                      state->lcn_freq_roll == 2 && g_rtl_analog_family == 0);
+    rc |= expect_true("untyped row runs dmr at 24 kHz", state->samplesPerSymbol == 5 && g_rtl_ted_sps == 5);
+    if (state->samplesPerSymbol != 5 || g_rtl_ted_sps != 5) {
+        DSD_FPRINTF(stderr, "  untyped row: decoder sps=%d, TED %d\n", state->samplesPerSymbol, g_rtl_ted_sps);
+    }
+
+    state->last_cc_sync_time -= 11;
+    noCarrier(opts, state);
+    rc |= expect_true("dmr row on air", state->lcn_freq_roll == 3 && g_rtl_analog_family == 0);
+    dsd_engine_channel_scan_leave(opts, state);
+    rc |= expect_true("leaving on the dmr row keeps dmr at 24 kHz",
+                      state->samplesPerSymbol == 5 && g_leave_demod_ted_sps == 5);
+    if (state->samplesPerSymbol != 5 || g_leave_demod_ted_sps != 5) {
+        DSD_FPRINTF(stderr, "  after leave: decoder sps=%d, TED %d\n", state->samplesPerSymbol, g_leave_demod_ted_sps);
+    }
+
+    dsd_rtl_stream_metrics_hooks_set(NULL);
+    state->rtl_ctx = NULL;
+    free_test_runtime(opts, state);
+    dsd_trunk_tuning_requests_reset();
+    return rc;
+}
+
+/* The same through --trunk-scan and the real tuning: a DMR conventional target after an nfm-conventional one. */
+static int
+test_trunk_scan_digital_target_after_nfm_timed_for_digital(void) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    char path[DSD_TEST_PATH_MAX];
+    const int fd = dsd_test_mkstemp(path, sizeof path, "nfm-family-timing-");
+    if (fd < 0) {
+        free_test_runtime(opts, state);
+        return 1;
+    }
+    dsd_close(fd);
+    FILE* fp = dsd_fopen_private(path, "w");
+    int rc = expect_true("family timing targets file", fp != NULL);
+    if (fp) {
+        DSD_FPRINTF(fp, "id,type,frequency_hz,chan_csv,dwell_ms,activity_hold_ms,notes,options\n"
+                        "fire,nfm-conventional,154330000,,250,250,,\n"
+                        "dmr,dmr-conventional,461400000,,250,250,,\n");
+        (void)fclose(fp);
+    }
+    reset_rtl_profile_fakes();
+    dsd_trunk_tuning_requests_reset();
+    install_family_rate_hooks();
+    dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){.tune_to_freq_request = dsd_engine_trunk_tune_to_freq_request,
+                                                        .tune_to_cc_request = dsd_engine_trunk_tune_to_cc_request,
+                                                        .return_to_cc_request = dsd_engine_return_to_cc_request});
+    opts->audio_in_type = AUDIO_IN_RTL;
+    opts->trunk_scan_enabled = 1;
+    state->rtl_ctx = (RtlSdrContext*)state;
+    DSD_SNPRINTF(opts->trunk_scan_targets_csv, sizeof opts->trunk_scan_targets_csv, "%s", path);
+    char err[256] = {0};
+    rc |= expect_true("family timing trunk scan init", dsd_engine_trunk_scan_init(opts, state, err, sizeof err) == 0);
+    rc |= expect_true("family timing nfm target", g_rtl_analog_family == 1 && g_rtl_tune_freq == 154330000U);
+    rc |= expect_true("family timing advance",
+                      dsd_engine_trunk_scan_control(opts, state, DSD_TRUNK_SCAN_CONTROL_ADVANCE) == 0);
+    rc |= expect_true("dmr target after nfm lands digital",
+                      g_rtl_analog_family == 0 && g_rtl_tune_freq == 461400000U && g_rtl_symbol_rate_hz == 4800);
+    rc |= expect_true("dmr target after nfm timed for 24 kHz", state->samplesPerSymbol == 5 && g_rtl_ted_sps == 5);
+    if (state->samplesPerSymbol != 5 || g_rtl_ted_sps != 5) {
+        DSD_FPRINTF(stderr, "  dmr target: decoder sps=%d, TED %d\n", state->samplesPerSymbol, g_rtl_ted_sps);
+    }
+    dsd_engine_trunk_scan_shutdown(opts, state);
+    dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){0});
+    dsd_rtl_stream_metrics_hooks_set(NULL);
+    dsd_trunk_tuning_requests_reset();
+    state->rtl_ctx = NULL;
+    (void)remove(path);
+    free_test_runtime(opts, state);
+    return rc;
+}
+
+/* A row width the published DSP rate cannot fit is skipped at every visit without asking the stream for it: the stream
+ * would log its refusal again each time the valid row beside it re-armed the log. Only the valid row's width ever
+ * reaches the stream, and only its frequency is tuned. */
+static int
+test_typed_scan_refused_width_skipped_without_the_stream(void) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    int rc = 0;
+    reset_rtl_profile_fakes();
+    dsd_trunk_tuning_requests_reset();
+    opts->audio_in_type = AUDIO_IN_RTL;
+    opts->scanner_mode = 1;
+    opts->trunk_hangtime = 1;
+    state->rtl_ctx = (RtlSdrContext*)state;
+    g_rtl_request_rate_hz = 16000;
+    state->lcn_freq_count = 2;
+    state->trunk_lcn_freq[0] = 154530000L;
+    state->trunk_lcn_freq[1] = 155530000L;
+    const int widths[] = {12500, 20000};
+    for (int row = 0; row < 2; row++) {
+        rc |= expect_true("refusal row mode", dsd_channel_mode_set(state, (size_t)row, DSD_SCAN_MODE_NFM) == 0);
+        dsd_scan_row_profile* profile = NULL;
+        rc |= expect_true("refusal row profile", dsd_scan_profile_ensure(&profile) == 0 && profile);
+        if (profile) {
+            profile->values.present = DSD_SCAN_OPT_BANDWIDTH;
+            profile->values.channel_bw_hz = widths[row];
+            rc |= expect_true("refusal row width", dsd_channel_profile_set(state, (size_t)row, profile) == 0);
+        }
+    }
+    for (int visit = 0; visit < 6; visit++) {
+        state->last_cc_sync_time = time(NULL) - 11;
+        noCarrier(opts, state);
+    }
+    rc |= expect_true("refused width never reaches the stream",
+                      g_analog_attach_calls > 0 && g_analog_attach_max_width_hz == 12500);
+    rc |= expect_true("refused row never tuned", g_rtl_tune_freq == 154530000U && g_rtl_analog_width_hz == 12500);
+    if (g_analog_attach_max_width_hz != 12500) {
+        DSD_FPRINTF(stderr, "  widest width asked of the stream: %d Hz\n", g_analog_attach_max_width_hz);
+    }
+    dsd_engine_channel_scan_leave(opts, state);
+    state->rtl_ctx = NULL;
+    free_test_runtime(opts, state);
+    dsd_trunk_tuning_requests_reset();
+    return rc;
+}
+
+/* DSD_NEO_CHANNEL_LPF=0 turns off the channel filter every explicit width needs, and the stream refuses such a width
+ * at any rate. A row with its own width is then skipped at every visit without asking the stream, as a width the rate
+ * cannot fit is, so a valid row beside it cannot re-arm the stream's refusal log at every rotation; a row on the unset
+ * default still runs. */
+static int
+test_typed_scan_width_skipped_under_channel_lpf_override(void) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    (void)dsd_setenv("DSD_NEO_CHANNEL_LPF", "0", 1);
+    dsd_neo_config_init();
+    int rc = 0;
+    reset_rtl_profile_fakes();
+    dsd_trunk_tuning_requests_reset();
+    opts->audio_in_type = AUDIO_IN_RTL;
+    opts->scanner_mode = 1;
+    opts->trunk_hangtime = 1;
+    state->rtl_ctx = (RtlSdrContext*)state;
+    g_rtl_request_rate_hz = 48000;
+    state->lcn_freq_count = 2;
+    state->trunk_lcn_freq[0] = 154530000L;
+    state->trunk_lcn_freq[1] = 155530000L;
+    for (int row = 0; row < 2; row++) {
+        rc |= expect_true("lpf row mode", dsd_channel_mode_set(state, (size_t)row, DSD_SCAN_MODE_NFM) == 0);
+    }
+    dsd_scan_row_profile* profile = NULL;
+    rc |= expect_true("lpf row profile", dsd_scan_profile_ensure(&profile) == 0 && profile);
+    if (profile) {
+        profile->values.present = DSD_SCAN_OPT_BANDWIDTH;
+        profile->values.channel_bw_hz = 12500;
+        rc |= expect_true("lpf row width", dsd_channel_profile_set(state, 1U, profile) == 0);
+    }
+    for (int visit = 0; visit < 6; visit++) {
+        state->last_cc_sync_time = time(NULL) - 11;
+        noCarrier(opts, state);
+    }
+    rc |= expect_true("explicit width never reaches the stream",
+                      g_analog_attach_calls > 0 && g_analog_attach_max_width_hz == 0);
+    rc |= expect_true("default-width row tuned", g_rtl_tune_freq == 154530000U && g_rtl_analog_width_hz == 0);
+    dsd_engine_channel_scan_leave(opts, state);
+    state->rtl_ctx = NULL;
+    (void)dsd_unsetenv("DSD_NEO_CHANNEL_LPF");
+    dsd_neo_config_init();
+    free_test_runtime(opts, state);
+    dsd_trunk_tuning_requests_reset();
+    return rc;
+}
+
+/* What the analog monitor does for each block while its carrier is open: stamp carrier activity, the -Y hangtime
+ * anchor. */
+static void
+stamp_monitor_carrier(dsd_state* state) {
+    state->last_cc_sync_time = time(NULL);
+    state->last_cc_sync_time_m = dsd_time_now_monotonic_s();
+}
+
+/* The monitor stamps carrier activity whatever audio_out says (DSP_SYMBOL_REPLAY proves the stamp with audio_out = 0);
+ * here the -Y rotation keeps an nfm row on air while those stamps keep arriving, a visit already past -t included,
+ * and a global --scan-voice-only does not take the row over. Once they stop, the row steps -t later; and a row
+ * --scan-max-visit-ms ends a visit whose carrier never drops. */
+static int
+test_typed_scan_nfm_row_holds_on_carrier(void) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    int rc = 0;
+    reset_rtl_profile_fakes();
+    dsd_trunk_tuning_requests_reset();
+    opts->audio_in_type = AUDIO_IN_RTL;
+    opts->scanner_mode = 1;
+    opts->trunk_hangtime = 1;
+    opts->audio_out = 0;
+    opts->scan_voice_only = 1;
+    state->rtl_ctx = (RtlSdrContext*)state;
+    state->lcn_freq_count = 2;
+    state->trunk_lcn_freq[0] = 154630000L;
+    state->trunk_lcn_freq[1] = 461500000L;
+    rc |= expect_true("hold nfm row", dsd_channel_mode_set(state, 0, DSD_SCAN_MODE_NFM) == 0);
+    rc |= expect_true("hold dmr row", dsd_channel_mode_set(state, 1, DSD_SCAN_MODE_DMR) == 0);
+    dsd_scan_row_profile* profile = NULL;
+    rc |= expect_true("hold row profile", dsd_scan_profile_ensure(&profile) == 0 && profile);
+    if (profile) {
+        profile->values.present = DSD_SCAN_OPT_MAX_VISIT;
+        profile->values.max_visit_ms = 1000;
+        rc |= expect_true("hold row cap", dsd_channel_profile_set(state, 0, profile) == 0);
+    }
+
+    state->last_cc_sync_time = time(NULL) - 11;
+    noCarrier(opts, state);
+    rc |= expect_true("hold nfm row on air",
+                      state->lcn_freq_roll == 1 && opts->analog_only == 1 && opts->scan_max_visit_ms == 1000);
+    rc |= expect_true("voice gate never owns the nfm row", !dsd_scan_voice_gate_owns_step(opts, state));
+
+    /* Carrier keeps arriving on a visit already 5 s old, past -t: the row stays. The cap is out of the way here. */
+    opts->scan_max_visit_ms = 0;
+    const int tunes_before = g_rtl_tune_calls;
+    for (int pass = 0; pass < 4; pass++) {
+        stamp_monitor_carrier(state);
+        seed_visit_anchor(state, dsd_time_now_monotonic_s() - 5.0);
+        dsd_engine_scan_visit_tick(opts, state, dsd_time_now_monotonic_s());
+        noCarrier(opts, state);
+    }
+    rc |=
+        expect_true("carrier holds the nfm row past -t", state->lcn_freq_roll == 1 && g_rtl_tune_calls == tunes_before);
+
+    /* The carrier stops: -t after the last stamp the rotation moves on. */
+    state->last_cc_sync_time = time(NULL) - 2;
+    dsd_engine_scan_visit_tick(opts, state, dsd_time_now_monotonic_s());
+    noCarrier(opts, state);
+    rc |= expect_true("nfm row steps -t after the carrier", state->lcn_freq_roll == 2 && g_rtl_tune_freq == 461500000U);
+
+    /* Back on the nfm row with its --scan-max-visit-ms 1000 in force: a carrier that never drops still ends a visit
+       that has lasted past the cap. The voice gate is off, so the DMR row between does not wait out its window. */
+    opts->scan_voice_only = 0;
+    state->last_cc_sync_time = time(NULL) - 11;
+    noCarrier(opts, state);
+    rc |= expect_true("nfm row again", state->lcn_freq_roll == 1 && opts->scan_max_visit_ms == 1000);
+    stamp_monitor_carrier(state);
+    seed_visit_anchor(state, dsd_time_now_monotonic_s() - 5.0);
+    noCarrier(opts, state);
+    rc |= expect_true("visit cap ends a carrier-held nfm row",
+                      state->lcn_freq_roll == 2 && g_rtl_tune_freq == 461500000U);
+
+    dsd_engine_channel_scan_leave(opts, state);
     state->rtl_ctx = NULL;
     free_test_runtime(opts, state);
     dsd_trunk_tuning_requests_reset();
@@ -2495,7 +3217,16 @@ main(void) {
 #if defined(USE_RADIO) && defined(DSD_NEO_TEST_RTL_WRAP)
     rc |= test_rx_tone_resets_on_legacy_scan_step();
     rc |= test_typed_scan_tune_boundaries();
+    rc |= test_typed_scan_nfm_rows_switch_family(0);
+    rc |= test_typed_scan_nfm_rows_switch_family(1);
+    rc |= test_trunk_scan_nfm_target_then_trunked_target();
     rc |= test_visit_cap_scanner_hops();
+    rc |= test_typed_scan_digital_row_after_nfm_timed_for_digital();
+    rc |= test_trunk_scan_digital_target_after_nfm_timed_for_digital();
+    rc |= test_scoped_mode_change_on_nfm_row_times_the_baseline_for_digital();
+    rc |= test_typed_scan_refused_width_skipped_without_the_stream();
+    rc |= test_typed_scan_width_skipped_under_channel_lpf_override();
+    rc |= test_typed_scan_nfm_row_holds_on_carrier();
     rc |= test_trunk_cache_with_mode_metadata();
     rc |= test_dmr_explicit_return_destination();
 #endif

@@ -1362,6 +1362,62 @@ main(int argc, char** argv) {
         expect("under a typed row the configured preset still shows", model.analogBandwidthConfiguredHz() == 12500);
         dsd_scan_mode_leave(&opts, &state);
 
+        /* Issue #526: an nfm row with its own width runs over the configured one. The reading is the row's width with
+         * the configured width it returns to, and the stepper still edits the configured width, not the row's. */
+        dsd_scan_option_values width_row{};
+        width_row.present = DSD_SCAN_OPT_BANDWIDTH;
+        width_row.channel_bw_hz = 16000;
+        expect("nfm width row", dsd_scan_mode_enter(&opts, &state, DSD_SCAN_MODE_NFM) == 0);
+        expect("nfm width row options", dsd_scan_mode_options(&opts, &state, &width_row) == 0);
+        expect("nfm width row in force", opts.analog_nfm_bandwidth_hz == 16000);
+        g_stub_channel_bandwidth_hz = 16000;
+        model.refresh(&opts, &state);
+        expect("under a width row the row's width", model.analogBandwidthHz() == 16000);
+        expect("under a width row the stepper edits the configured width",
+               model.analogBandwidthConfiguredHz() == 12500);
+        expect("under a width row the reading names both",
+               model.analogBandwidthReading() == QStringLiteral("16 kHz (row; default 12.5 kHz)"));
+        expect("under a width row the row is on air", model.analogBandwidthRowActive());
+        expect("under a width row the override is flagged", model.analogBandwidthRowOverride());
+        dsd_scan_mode_leave(&opts, &state);
+        expect("the width row's leave restores the configured width", opts.analog_nfm_bandwidth_hz == 12500);
+
+        /* ...and on a digital session, where the nfm row is the only analog receiver: the width it runs is in force and
+         * read as the terminal reads it, flagged for the sheet as a row on air, and badged while the row sets its own
+         * width; nothing once it leaves. */
+        opts.analog_only = 0;
+        opts.frame_dmr = 1;
+        model.refresh(&opts, &state);
+        expect("digital session: no row, no width", !model.analogBandwidthRowActive() && model.analogBandwidthHz() == 0
+                                                        && model.analogBandwidthReading().isEmpty());
+        expect("digital nfm row", dsd_scan_mode_enter(&opts, &state, DSD_SCAN_MODE_NFM) == 0);
+        expect("digital nfm row without a width", dsd_scan_mode_options(&opts, &state, nullptr) == 0);
+        g_stub_channel_bandwidth_hz = 12500;
+        model.refresh(&opts, &state);
+        expect("digital nfm row: on air, no override",
+               model.analogBandwidthRowActive() && !model.analogBandwidthRowOverride());
+        expect("digital nfm row: the configured width in force", model.analogBandwidthHz() == 12500);
+        expect("digital nfm row: read as the terminal reads it",
+               model.analogBandwidthReading() == QStringLiteral("12.5 kHz"));
+        expect("digital nfm row: the stepper edits the configured width", model.analogBandwidthConfiguredHz() == 12500);
+        expect("digital nfm row with a width", dsd_scan_mode_options(&opts, &state, &width_row) == 0);
+        g_stub_channel_bandwidth_hz = 16000;
+        model.refresh(&opts, &state);
+        expect("digital width row: the override is flagged", model.analogBandwidthRowOverride());
+        expect("digital width row: the row's width", model.analogBandwidthHz() == 16000);
+        expect("digital width row: the reading names both",
+               model.analogBandwidthReading() == QStringLiteral("16 kHz (row; default 12.5 kHz)"));
+        expect("digital width row: the stepper edits the configured width",
+               model.analogBandwidthConfiguredHz() == 12500);
+        dsd_scan_mode_leave(&opts, &state);
+        model.refresh(&opts, &state);
+        expect("digital session after the row: no row, no width",
+               !model.analogBandwidthRowActive() && !model.analogBandwidthRowOverride()
+                   && model.analogBandwidthHz() == 0 && model.analogBandwidthReading().isEmpty());
+        opts.frame_dmr = 0;
+        opts.analog_only = 1;
+        g_stub_channel_bandwidth_hz = 10800;
+
         /* PCM input: no channel filter runs, so no width is in force (the terminal shows no Analog field there
          * either); the configured width is still published for the control. */
         opts.audio_in_type = AUDIO_IN_PULSE;

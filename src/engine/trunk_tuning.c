@@ -20,8 +20,10 @@
 #include <dsd-neo/protocol/dmr/dmr_block.h>
 #include <dsd-neo/protocol/p25/p25_sm_watchdog.h>
 #include <dsd-neo/protocol/p25/p25p2_frame.h>
+#include <dsd-neo/runtime/analog_channel.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/decode_mode.h>
+#include <dsd-neo/runtime/scan_mode.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <time.h>
@@ -29,6 +31,7 @@
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
 #include "dsd-neo/runtime/trunk_tuning_hooks.h"
+#include "scan_analog_internal.h"
 
 static int DSD_ATTR_USED
 dsd_engine_current_demod_rate(const dsd_opts* opts, const dsd_state* state) {
@@ -209,6 +212,8 @@ dsd_engine_release_tuned_call_state(dsd_opts* opts, dsd_state* state) {
 #ifdef USE_RADIO
 typedef struct {
     int active;
+    /* The front end runs the analog monitor output (rtl_stream_get_analog_profile()). */
+    int analog_monitor;
     int rf_mod;
     int p25_vc_cqpsk_override;
     int rtl_cqpsk_enable;
@@ -267,6 +272,7 @@ dsd_engine_rtl_profile_snapshot_capture(const dsd_opts* opts, const dsd_state* s
         return;
     }
     snapshot->active = 1;
+    snapshot->analog_monitor = rtl_stream_get_analog_profile(NULL, NULL, NULL) ? 1 : 0;
     snapshot->rf_mod = state->rf_mod;
     snapshot->p25_vc_cqpsk_override = state->p25_vc_cqpsk_override;
     (void)rtl_stream_get_cqpsk_status(&snapshot->rtl_cqpsk_enable, NULL);
@@ -284,6 +290,12 @@ dsd_engine_rtl_profile_snapshot_restore(dsd_state* state, const dsd_engine_rtl_p
     rtl_stream_clear_pending_retune_profile();
     state->rf_mod = snapshot->rf_mod;
     state->p25_vc_cqpsk_override = snapshot->p25_vc_cqpsk_override;
+    if (snapshot->analog_monitor) {
+        /* The front end was on the analog monitor (an analog scan row, issue #526) and the retune that
+         * would have moved it never landed. It still runs that profile, and a symbol profile applied on
+         * top of it would take the monitor output away. */
+        return;
+    }
     /* Queue the restore for the demod thread instead of mutating demod state
      * from this thread. A saved override wins over the plain TED SPS; with
      * neither saved, ted_sps=0 clears any override left behind. */
@@ -323,6 +335,28 @@ dsd_engine_prepare_p25_cc_rtl_chain(const dsd_opts* opts, dsd_state* state, long
                                                  profile, ted_sps, 0);
 }
 
+/* Whether a digital retune moves the front end off the analog family it still runs after an analog scan row (issue
+ * #526): only when the configured mode is digital, the rule the row's timing followed
+ * (dsd_scan_mode_symbol_timing_rate_hz()), so the TED queued here is for the family the retune lands. */
+static int
+dsd_engine_retune_leaves_analog_family(const dsd_opts* opts, const dsd_state* state) {
+    return dsd_scan_mode_configured_digital(opts, state) && rtl_stream_analog_family_active();
+}
+
+/* The output rate a four-level GFSK profile for @p symbol_rate_hz runs at once the retune lands: the stream's live
+ * rate, or the digital family's while the retune leaves the analog family, whose monitor output is resampled to its
+ * audio rate. */
+static int
+dsd_engine_gfsk_landing_rate(const dsd_opts* opts, const dsd_state* state, int symbol_rate_hz) {
+    if (dsd_engine_retune_leaves_analog_family(opts, state)) {
+        const unsigned int landing_hz = rtl_stream_output_rate_for_family(DSD_RX_FAMILY_DIGITAL, 0, symbol_rate_hz);
+        if (landing_hz > 0U) {
+            return (int)landing_hz;
+        }
+    }
+    return (int)rtl_stream_output_rate(state->rtl_ctx);
+}
+
 /*
  * Four-level GFSK control/park channel. The symbol rate is a parameter because the family spans
  * two of them: DMR and NXDN96 at 4800 sym/s in a 12.5 kHz channel, NXDN48 at 2400 sym/s in a
@@ -334,7 +368,8 @@ dsd_engine_prepare_gfsk_cc_rtl_chain(const dsd_opts* opts, const dsd_state* stat
                                      int symbol_rate_hz) {
     int retune_ted_sps = ted_sps;
     if (state->rtl_ctx) {
-        retune_ted_sps = dsd_opts_compute_sps_rate(opts, symbol_rate_hz, (int)rtl_stream_output_rate(state->rtl_ctx));
+        retune_ted_sps =
+            dsd_opts_compute_sps_rate(opts, symbol_rate_hz, dsd_engine_gfsk_landing_rate(opts, state, symbol_rate_hz));
     }
     dsd_engine_prepare_retune_profile_for_target(opts, state, (uint32_t)target_freq_hz, 0, symbol_rate_hz, 4,
                                                  dsd_rtl_channel_profile_for(opts, symbol_rate_hz, 4, 2),
@@ -376,6 +411,44 @@ dsd_engine_prepare_current_cc_rtl_chain(const dsd_opts* opts, const dsd_state* s
     } else {
         rtl_stream_clear_pending_retune_profile();
     }
+}
+
+/* An analog scan row (issue #526): the analog monitor, the row's demodulator and its width (0 = the
+ * kind's default), bound to the target with the scan's gain profile and no symbol profile. Returns -1
+ * when the front end refuses the width at the rate it runs.
+ *
+ * A width the published DSP rate cannot fit -- the row's own, or the configured NFM width a row without one runs --
+ * was named when the scan started, or when that rate or the configured width last changed
+ * (dsd_engine_scan_warn_analog_width() checks it against the same rate), together with the fact that the row is
+ * skipped at every visit, so it is refused here without calling into the stream, whose refusal log a valid row's
+ * request would re-arm and repeat at every rotation; the trunk-scan coordinator stays quiet about the failed visit for
+ * the same reason. So is any explicit width while DSD_NEO_CHANNEL_LPF=0 turns the channel filter off, which the stream
+ * refuses at every rate and the same warning names. Any other refusal is the stream's to log. */
+static int
+dsd_engine_prepare_scan_analog_profile(const dsd_opts* opts, const dsd_state* state, long int freq) {
+    const int width_hz = dsd_opts_analog_width_hz(opts);
+    const int rate_hz = dsd_engine_scan_dsp_rate_hz(opts, state);
+    if (width_hz > 0 && rate_hz > 0
+        && (dsd_engine_scan_channel_lpf_forced_off()
+            || dsd_analog_width_check(opts->analog_demod, width_hz, rate_hz, NULL, 0U) != 0)) {
+        return -1;
+    }
+    dsd_engine_prepare_retune_profile_for_target(opts, state, (uint32_t)freq, -1, 0, 4, RTL_STREAM_CHANNEL_PROFILE_WIDE,
+                                                 0, 0);
+    const rtl_stream_retune_analog_profile analog = {DSD_RX_FAMILY_ANALOG, opts->analog_demod, width_hz};
+    return rtl_stream_prepare_retune_analog_profile_for_target((uint32_t)freq, &analog);
+}
+
+/* A digital tune after an analog scan row (a -Y row, a conventional or trunked target, a return to a control
+ * channel): the symbol profile already queued for the target lands on the digital family. Nothing is attached while
+ * the front end runs the digital family, so a digital-only session retunes exactly as it always has. */
+static void
+dsd_engine_prepare_digital_family(const dsd_opts* opts, const dsd_state* state, long int freq) {
+    if (!dsd_engine_retune_leaves_analog_family(opts, state)) {
+        return;
+    }
+    const rtl_stream_retune_analog_profile digital = {DSD_RX_FAMILY_DIGITAL, DSD_ANALOG_DEMOD_FM, 0};
+    (void)rtl_stream_prepare_retune_analog_profile_for_target((uint32_t)freq, &digital);
 }
 
 static void
@@ -740,6 +813,7 @@ dsd_engine_trunk_tune_to_cc_request(dsd_opts* opts, dsd_state* state, long int f
     if (opts->audio_in_type == AUDIO_IN_RTL) {
 #ifdef USE_RADIO
         dsd_engine_prepare_cc_rtl_chain(opts, state, freq, ted_sps);
+        dsd_engine_prepare_digital_family(opts, state, freq);
 #endif
     }
     result = dsd_engine_tune_with_backend(opts, state, freq, request_id);
@@ -762,9 +836,16 @@ dsd_engine_trunk_tune_to_cc_request(dsd_opts* opts, dsd_state* state, long int f
 }
 
 #ifdef USE_RADIO
-static void
+/* Queue the receive profile a scanner row runs on. Returns -1 when the front end refuses it. */
+static int
 dsd_engine_prepare_scan_profile(const dsd_opts* opts, dsd_state* state, long int freq, int ted_sps) {
-    if (opts->audio_in_type == AUDIO_IN_RTL && ted_sps > 0) {
+    if (opts->audio_in_type != AUDIO_IN_RTL) {
+        return 0;
+    }
+    if (dsd_opts_is_analog_family(opts)) {
+        return dsd_engine_prepare_scan_analog_profile(opts, state, freq);
+    }
+    if (ted_sps > 0) {
         if (dsd_engine_conventional_scan_active(opts)) {
             const int rate = dsd_frame_sync_active_profile_symbol_rate_hz(state);
             const int levels = dsd_frame_sync_active_profile_levels(state);
@@ -774,9 +855,56 @@ dsd_engine_prepare_scan_profile(const dsd_opts* opts, dsd_state* state, long int
         } else {
             dsd_engine_prepare_cc_rtl_chain(opts, state, freq, ted_sps);
         }
+        dsd_engine_prepare_digital_family(opts, state, freq);
     }
+    return 0;
 }
 #endif
+
+int
+dsd_engine_scan_dsp_rate_hz(const dsd_opts* opts, const dsd_state* state) {
+#ifdef USE_RADIO
+    if (opts && state && opts->audio_in_type == AUDIO_IN_RTL && state->rtl_ctx) {
+        /* The rate the stream holds an analog request to, published from its start; not the CFO metrics rate, which
+           stays 0 until the demod thread has processed a block. */
+        const int rate_hz = rtl_stream_get_request_rate_hz();
+        return rate_hz > 0 ? rate_hz : 0;
+    }
+#else
+    (void)opts;
+    (void)state;
+#endif
+    return 0;
+}
+
+uint32_t
+dsd_engine_scan_family_requests(const dsd_opts* opts) {
+#ifdef USE_RADIO
+    if (opts && opts->audio_in_type == AUDIO_IN_RTL) {
+        return rtl_stream_live_family_request_count();
+    }
+#else
+    (void)opts;
+#endif
+    return 0U;
+}
+
+int
+dsd_engine_scan_retune_attaches_family(const dsd_opts* opts, const dsd_state* state, int ted_sps) {
+#ifdef USE_RADIO
+    if (!opts || !state || opts->audio_in_type != AUDIO_IN_RTL) {
+        return 0;
+    }
+    /* As dsd_engine_prepare_scan_profile() queues them: the analog profile, or a symbol profile with the digital
+       family (dsd_engine_prepare_digital_family()). */
+    return dsd_opts_is_analog_family(opts) || (ted_sps > 0 && dsd_engine_retune_leaves_analog_family(opts, state));
+#else
+    (void)opts;
+    (void)state;
+    (void)ted_sps;
+    return 0;
+#endif
+}
 
 static void
 dsd_engine_scan_tune_failed(const dsd_opts* opts, uint64_t request_id, dsd_trunk_tune_result result) {
@@ -813,7 +941,15 @@ dsd_engine_scan_tune_to_freq(dsd_opts* opts, dsd_state* state, long int freq, in
     (void)ted_sps;
 #else
     dsd_engine_rtl_profile_snapshot_capture(opts, state, &rtl_snapshot);
-    dsd_engine_prepare_scan_profile(opts, state, freq, ted_sps);
+    if (dsd_engine_prepare_scan_profile(opts, state, freq, ted_sps) != 0) {
+        /* The row's analog width does not fit the DSP rate: the row cannot be received, so it is not tuned,
+         * and no backend moved. The retune profile queued for it is all that changed, so only that is dropped:
+         * requesting the profile the front end already runs again would re-apply it at every rotation past the
+         * row. */
+        rtl_stream_clear_pending_retune_profile();
+        dsd_trunk_tuning_request_complete(tune_request_id, DSD_TRUNK_TUNE_RESULT_FAILED);
+        return DSD_TRUNK_TUNE_RESULT_FAILED;
+    }
 #endif
 
     dsd_engine_maybe_drain_audio(opts, state);

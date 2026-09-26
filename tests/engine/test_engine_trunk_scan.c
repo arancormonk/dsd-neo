@@ -3,6 +3,7 @@
  * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
+#include <dsd-neo/core/audio.h>
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/csv_import.h>
 #include <dsd-neo/core/csv_validate.h>
@@ -21,6 +22,7 @@
 #include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/core/talkgroup_policy.h>
+#include <dsd-neo/dsp/analog_rx.h>
 #include <dsd-neo/dsp/frame_sync.h>
 #include <dsd-neo/dsp/symbol.h>
 #include <dsd-neo/engine/frame_processing.h>
@@ -30,14 +32,18 @@
 #include <dsd-neo/io/rtl_stream_c.h>
 #include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/platform/platform.h>
+#include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/platform/sockets.h>
 #include <dsd-neo/protocol/dmr/dmr_trunk_sm.h>
 #include <dsd-neo/protocol/nxdn/nxdn_trunk_diag.h>
 #include <dsd-neo/protocol/p25/p25_cc_candidates.h>
 #include <dsd-neo/protocol/p25/p25_sm_watchdog.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
+#include <dsd-neo/runtime/analog_channel.h>
+#include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
 #include <dsd-neo/runtime/scan_mode.h>
+#include <dsd-neo/runtime/scan_options.h>
 #include <dsd-neo/runtime/trunk_scan_hooks.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <limits.h>
@@ -57,20 +63,106 @@
 #include "trunk_scan_test_support.h"
 
 static const char k_header[] = "id,type,frequency_hz,chan_csv,dwell_ms,activity_hold_ms,notes\n";
+
+/* --- Issue #526: the analog carrier, from dsp/analog_rx.c, which this fixture does not link: with no detector session
+ * there is no generation to compare, so the published carrier stands as it is -- exactly what the real function
+ * returns then. --- */
+int
+dsd_analog_rx_carrier_open_now(const dsd_opts* opts, const dsd_state* state) {
+    return (opts && state && state->analog_rx.carrier_open) ? 1 : 0;
+}
+
+/* --- Issue #526: scanner sinks and DSP rate, from engine/trunk_tuning.c and core/audio, which this fixture does not
+ * link. The stubs record which sink each row commit asked for. --- */
+static int g_ensure_analog_calls;
+static int g_ensure_digital_calls;
+static int g_scan_dsp_rate_hz;
+
+int
+dsd_audio_ensure_analog_output(dsd_opts* opts) {
+    (void)opts;
+    g_ensure_analog_calls++;
+    return 0;
+}
+
+int
+dsd_audio_ensure_digital_output(dsd_opts* opts) {
+    (void)opts;
+    g_ensure_digital_calls++;
+    return 0;
+}
+
+int
+dsd_engine_scan_dsp_rate_hz(const dsd_opts* opts, const dsd_state* state) {
+    (void)opts;
+    (void)state;
+    return g_scan_dsp_rate_hz;
+}
+
+/* The -Y scanner's receive-family request count (trunk_tuning.c), linked with channel_scan.c. */
+uint32_t
+dsd_engine_scan_family_requests(const dsd_opts* opts) {
+    (void)opts;
+    return 0U;
+}
+
+/* And whether a -Y retune attaches a receive family (trunk_tuning.c): the request count above never moves here. */
+int
+dsd_engine_scan_retune_attaches_family(const dsd_opts* opts, const dsd_state* state, int ted_sps) {
+    (void)opts;
+    (void)state;
+    (void)ted_sps;
+    return 0;
+}
+
 static int g_dmr_tick_calls = 0;
 static int g_dmr_tick_release_tuned = 0;
 static int g_csv_import_result = 0;
 static int g_scan_tune_to_freq_ted_sps = 0;
+/* What the options said when the coordinator tuned (issue #526): the family and width the row asked for. */
+static int g_scan_tune_to_freq_analog_only = -1;
+static int g_scan_tune_to_freq_nfm_width_hz = -1;
+static int g_scan_tune_to_freq_failures_remaining = 0;
+/* Issue #526: refuse an analog width the published DSP rate cannot fit before any backend moves, as the real
+   dsd_engine_scan_tune_to_freq() does, counting each refusal. */
+static int g_scan_tune_refuses_unfit_width = 0;
+static int g_scan_tune_width_refusals = 0;
+/* Issue #526: leave each scan tune in flight, as an RTL retune the controller has not landed yet: the request stays
+   pending until the test completes it. */
+static int g_scan_tune_to_freq_pending = 0;
+static uint64_t g_scan_tune_pending_request = 0U;
 static int g_p25_tick_guard_available = 1;
 static int g_p25_tick_guard_depth = 0;
 static int g_p25_tick_guard_enter_calls = 0;
 static int g_p25_tick_guard_leave_calls = 0;
 static unsigned int g_fake_rtl_output_rate_hz = 0;
 static int g_explicit_call_ends = 0;
+/* Issue #526: a front end whose output rate follows its receive family -- the analog monitor resampled to 48 kHz, the
+   digital family at a 24 kHz DSP rate (the RTL bw=24 case) -- and which a landed scan tune moves between them. */
+static int g_fake_family_tracking = 0;
+static int g_fake_family_analog = 0;
+static int g_fake_family_last_cqpsk = -1;
 
 static unsigned int
 fake_rtl_output_rate_hz(void) {
     return g_fake_rtl_output_rate_hz;
+}
+
+static unsigned int
+fake_family_output_rate_hz(void) {
+    return g_fake_family_analog ? 48000U : 24000U;
+}
+
+static int
+fake_family_analog_active(void) {
+    return g_fake_family_analog;
+}
+
+static unsigned int
+fake_family_landing_rate_hz(int family, int cqpsk_enable, int symbol_rate_hz) {
+    (void)symbol_rate_hz;
+    g_fake_family_last_cqpsk = cqpsk_enable;
+    return family == DSD_RX_FAMILY_ANALOG ? 48000U : 24000U;
 }
 
 int
@@ -271,8 +363,34 @@ dsd_engine_scan_tune_to_freq(dsd_opts* opts, dsd_state* state, long int freq, in
     if (!opts || !state || freq <= 0) {
         return DSD_TRUNK_TUNE_RESULT_FAILED;
     }
+    g_scan_tune_to_freq_analog_only = opts->analog_only;
+    g_scan_tune_to_freq_nfm_width_hz = opts->analog_nfm_bandwidth_hz;
+    const dsdneoRuntimeConfig* env = dsd_neo_get_config();
+    const int lpf_off = env && env->channel_lpf_is_set && env->channel_lpf_enable == 0;
+    if (g_scan_tune_refuses_unfit_width && dsd_opts_is_analog_family(opts) && dsd_opts_analog_width_hz(opts) > 0
+        && g_scan_dsp_rate_hz > 0
+        && (lpf_off
+            || dsd_analog_width_check(opts->analog_demod, dsd_opts_analog_width_hz(opts), g_scan_dsp_rate_hz, NULL, 0U)
+                   != 0)) {
+        g_scan_tune_width_refusals++;
+        return DSD_TRUNK_TUNE_RESULT_FAILED;
+    }
+    if (g_scan_tune_to_freq_failures_remaining > 0) {
+        g_scan_tune_to_freq_failures_remaining--;
+        return DSD_TRUNK_TUNE_RESULT_FAILED;
+    }
+    if (g_scan_tune_to_freq_pending && out_request_id) {
+        g_scan_tune_pending_request = dsd_trunk_tuning_request_begin();
+        dsd_trunk_tuning_request_mark_ready(g_scan_tune_pending_request);
+        *out_request_id = g_scan_tune_pending_request;
+        return DSD_TRUNK_TUNE_RESULT_PENDING;
+    }
     opts->trunk_is_tuned = 0;
     state->last_cc_sync_time_m = dsd_engine_trunk_scan_active_index(state) == (size_t)-1 ? 0.0 : 1.0;
+    if (g_fake_family_tracking) {
+        /* The tune lands: the front end now runs the family the target asked for. */
+        g_fake_family_analog = opts->analog_only == 1 ? 1 : 0;
+    }
     return DSD_TRUNK_TUNE_RESULT_OK;
 }
 
@@ -9847,6 +9965,1007 @@ test_target_squelch_warns_once_per_target_on_pcm_input(void) {
     return test_rc;
 }
 
+/* --- Issue #526: nfm-conventional targets --- */
+
+static const char k_nfm_targets_header[] =
+    "id,type,frequency_hz,chan_csv,dwell_ms,activity_hold_ms,notes,modulation,rtl_gain,keys_hex_csv,single_key_dec,"
+    "options,p25_bandplan_csv\n";
+
+/* Load @p body under the full header; returns the loader's result and leaves its diagnostic in @p err. */
+static int
+load_nfm_targets(const char* body, dsd_trunk_scan_target_list* list, char* err, size_t err_sz) {
+    char dir[DSD_TEST_PATH_MAX];
+    char target_path[DSD_TEST_PATH_MAX];
+    if (make_temp_dir(dir, sizeof dir) != 0
+        || write_targets_file_with_header(dir, k_nfm_targets_header, body, target_path, sizeof target_path) != 0) {
+        cleanup_paths(dir, NULL, NULL);
+        return -2;
+    }
+    DSD_MEMSET(list, 0, sizeof(*list));
+    const int rc = dsd_trunk_scan_load_targets_csv(target_path, NULL, list, err, err_sz);
+    cleanup_paths(dir, target_path, NULL);
+    return rc;
+}
+
+/* The one analog type parses with its own options; the columns and switches an analog channel has
+ * no use for, and the spellings that are not the canonical one, are refused with a row diagnostic. */
+static int
+test_nfm_target_parse_and_row_diagnostics(void) {
+    int test_rc = 0;
+    dsd_trunk_scan_target_list list;
+    char err[256] = {0};
+    if (load_nfm_targets("fire,nfm-conventional,154430000,,1500,2000,county fire,,20,,,"
+                         "--nfm-bandwidth-hz 12500 --squelch-db -60 --scan-max-visit-ms 5000,\n"
+                         "dmr,dmr-conventional,461000000,,1500,1200,,gfsk,,,,,\n",
+                         &list, err, sizeof err)
+        != 0) {
+        DSD_FPRINTF(stderr, "nfm-conventional target refused: %s\n", err);
+        return 1;
+    }
+    const dsd_trunk_scan_target* nfm = &list.targets[0];
+    if (list.count != 2 || nfm->type != DSD_TRUNK_SCAN_TARGET_NFM_CONVENTIONAL || nfm->frequency_hz != 154430000U
+        || nfm->modulation != DSD_TRUNK_SCAN_MODULATION_UNSET || !nfm->rtl_gain_is_set || nfm->rtl_gain_db != 20
+        || nfm->dwell_ms != 1500 || nfm->activity_hold_ms != 2000
+        || nfm->row_options.present != (DSD_SCAN_OPT_BANDWIDTH | DSD_SCAN_OPT_SQUELCH | DSD_SCAN_OPT_MAX_VISIT)
+        || nfm->row_options.channel_bw_hz != 12500) {
+        DSD_FPRINTF(stderr, "nfm-conventional target parsed wrong: type=%d present=0x%x width=%d\n", (int)nfm->type,
+                    (unsigned)nfm->row_options.present, nfm->row_options.channel_bw_hz);
+        test_rc = 1;
+    }
+    dsd_trunk_scan_target_list_reset(&list);
+
+    const struct {
+        const char* row;
+        const char* diagnostic;
+    } refused[] = {
+        {"a,nfm-trunk,154430000,,,,,,,,,,\n", "row 2: analog targets are conventional only (use nfm-conventional)"},
+        {"a,fm-conventional,154430000,,,,,,,,,,\n",
+         "row 2 has invalid target type 'fm-conventional' (use nfm-conventional)"},
+        {"a,nfm,154430000,,,,,,,,,,\n", "row 2 has invalid target type 'nfm' (use nfm-conventional)"},
+        {"a,NFM-conventional,154430000,,,,,,,,,,\n",
+         "row 2 has invalid target type 'NFM-conventional'; expected p25-trunk, p25-conventional, dmr-trunk, "
+         "dmr-conventional, nxdn-trunk, nxdn-conventional, nxdn48-conventional, nxdn48-trunk or nfm-conventional"},
+        {"a,nfm-conventional,154430000,,,,,auto,,,,,\n", "row 2: an analog target takes no modulation"},
+        {"a,nfm-conventional,154430000,chan.csv,,,,,,,,,\n", "row 2 sets chan_csv for a conventional target"},
+        {"a,nfm-conventional,154430000,,,,,,,,,,plan.csv\n", "row 2 sets p25_bandplan_csv for a conventional target"},
+        {"a,nfm-conventional,154430000,,,,,,,keys.csv,,,\n",
+         "row 2: key columns are not supported for an analog target"},
+        {"a,nfm-conventional,154430000,,,,,,,,12345,,\n", "row 2: key columns are not supported for an analog target"},
+        {"a,nfm-conventional,154430000,,,,,,,,,-G groups.csv,\n", "row 2: -G: not supported for this mode/target"},
+        {"a,nfm-conventional,154430000,,,,,,,,,--scan-voice-only,\n",
+         "row 2: --scan-voice-only: not supported for this mode/target"},
+        {"a,nfm-conventional,154430000,,,,,,,,,--no-decryption-keys,\n",
+         "row 2: --no-decryption-keys: not supported for this mode/target"},
+        {"a,dmr-conventional,461000000,,,,,,,,,--nfm-bandwidth-hz 12500,\n",
+         "row 2: --nfm-bandwidth-hz: needs mode nfm"},
+    };
+
+    for (size_t i = 0; i < sizeof(refused) / sizeof(refused[0]); i++) {
+        DSD_MEMSET(err, 0, sizeof err);
+        const int rc = load_nfm_targets(refused[i].row, &list, err, sizeof err);
+        if (rc != -1 || !strstr(err, refused[i].diagnostic) || strstr(err, "12345")) {
+            DSD_FPRINTF(stderr, "nfm row '%s': rc=%d err='%s', want '%s'\n", refused[i].row, rc, err,
+                        refused[i].diagnostic);
+            test_rc = 1;
+            dsd_trunk_scan_target_list_reset(&list);
+        }
+    }
+    return test_rc;
+}
+
+static int
+nfm_targets_init(const char* body, dsd_opts* opts, dsd_state* state, char* dir, size_t dir_sz, char* target_path,
+                 size_t target_sz) {
+    if (make_temp_dir(dir, dir_sz) != 0
+        || write_targets_file_with_header(dir, k_squelch_targets_header, body, target_path, target_sz) != 0) {
+        cleanup_paths(dir, NULL, NULL);
+        return -1;
+    }
+    reset_scan_opts_state(opts, state);
+    opts->frame_dmr = 1;
+    opts->dmr_stereo = 1;
+    opts->analog_nfm_bandwidth_hz = 20000;
+    DSD_SNPRINTF(opts->trunk_scan_targets_csv, sizeof opts->trunk_scan_targets_csv, "%s", target_path);
+    g_scan_tune_to_freq_failures_remaining = 0;
+    char err[256] = {0};
+    trunk_scan_test_set_now(0.0);
+    if (dsd_engine_trunk_scan_init(opts, state, err, sizeof err) != 0) {
+        DSD_FPRINTF(stderr, "nfm targets init failed: %s\n", err);
+        cleanup_paths(dir, target_path, NULL);
+        return -1;
+    }
+    return 0;
+}
+
+static int
+expect_nfm_front(const dsd_opts* opts, const char* stage, int analog, int width_hz, int tuned_sps) {
+    if (opts->analog_only != analog || opts->analog_nfm_bandwidth_hz != width_hz
+        || g_scan_tune_to_freq_analog_only != analog || g_scan_tune_to_freq_nfm_width_hz != width_hz
+        || (tuned_sps == 0) != (g_scan_tune_to_freq_ted_sps == 0)) {
+        DSD_FPRINTF(stderr,
+                    "%s: analog_only=%d width=%d (tuned with analog_only=%d width=%d ted_sps=%d), want %d/%d/%s\n",
+                    stage, opts->analog_only, opts->analog_nfm_bandwidth_hz, g_scan_tune_to_freq_analog_only,
+                    g_scan_tune_to_freq_nfm_width_hz, g_scan_tune_to_freq_ted_sps, analog, width_hz,
+                    tuned_sps ? "a symbol clock" : "none");
+        return 1;
+    }
+    return 0;
+}
+
+/* A mixed list moves between the families at every rotation: the nfm target tunes with its own
+ * width and no symbol clock (so no symbol rate reaches the SPS arithmetic), the digital target
+ * gets its decoder and the configured width back, and shutdown restores the digital session. */
+static int
+test_nfm_target_rotation_restores_family_and_width(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    char target_path[DSD_TEST_PATH_MAX];
+    static dsd_opts opts;
+    static dsd_state state;
+    if (nfm_targets_init("dmr,dmr-conventional,461000000,,250,250,\n"
+                         "fire,nfm-conventional,154430000,,250,250,,--nfm-bandwidth-hz 12500\n"
+                         "ops,nfm-conventional,155475000,,250,250,\n",
+                         &opts, &state, dir, sizeof dir, target_path, sizeof target_path)
+        != 0) {
+        return 1;
+    }
+    int test_rc = expect_active_target(&state, "nfm init", 0U);
+    test_rc |= expect_nfm_front(&opts, "digital target", 0, 20000, 1);
+    const int analog_sinks = g_ensure_analog_calls;
+    const int digital_sinks = g_ensure_digital_calls;
+    trunk_scan_test_set_now(0.26);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    test_rc |= expect_active_target(&state, "digital -> nfm", 1U);
+    test_rc |= expect_nfm_front(&opts, "nfm target with a width", 1, 12500, 0);
+    /* No symbol clock: the retune carried no TED override (above). A timing no GFSK or P25 target derives at 48 kHz,
+       left on the decoder while the target is parked, must come back with the target's snapshot on its next visit
+       rather than be replaced by an SPS derived for its type (trunk_scan_gfsk_sps() gives 0 for an analog type, and
+       the analog retune returns before any SPS arithmetic). */
+    state.samplesPerSymbol = 7;
+    state.symbolCenter = 3;
+    if (g_ensure_analog_calls != analog_sinks + 1 || g_ensure_digital_calls != digital_sinks) {
+        DSD_FPRINTF(stderr, "nfm target did not open the analog sink (%d/%d)\n", g_ensure_analog_calls,
+                    g_ensure_digital_calls);
+        test_rc = 1;
+    }
+    if (opts.frame_dmr != 0 || opts.monitor_input_audio != 1 || opts.trunk_enable != 0
+        || dsd_scan_mode_active(&state) != DSD_SCAN_MODE_NFM) {
+        DSD_FPRINTF(stderr, "nfm target did not run the analog monitor: frame_dmr=%d monitor=%d mode=%d\n",
+                    opts.frame_dmr, opts.monitor_input_audio, (int)dsd_scan_mode_active(&state));
+        test_rc = 1;
+    }
+    trunk_scan_test_set_now(0.52);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    test_rc |= expect_active_target(&state, "nfm -> nfm", 2U);
+    test_rc |= expect_nfm_front(&opts, "nfm target without a width", 1, 20000, 0);
+    trunk_scan_test_set_now(0.78);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    test_rc |= expect_active_target(&state, "nfm -> digital", 0U);
+    test_rc |= expect_nfm_front(&opts, "digital target again", 0, 20000, 1);
+    if (g_ensure_digital_calls != digital_sinks + 1) {
+        DSD_FPRINTF(stderr, "digital target after nfm did not open the digital sink\n");
+        test_rc = 1;
+    }
+    if (opts.frame_dmr != 1) {
+        test_rc = 1;
+    }
+    const dsd_scan_settings* configured = dsd_scan_mode_configured_view(&state);
+    if (!configured || configured->analog_nfm_bandwidth_hz != 20000 || configured->analog_only != 0) {
+        DSD_FPRINTF(stderr, "a target's width reached the configured view\n");
+        test_rc = 1;
+    }
+    /* Shutdown while an nfm target is on air puts the digital session back. */
+    trunk_scan_test_set_now(1.04);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    test_rc |= expect_active_target(&state, "back to the nfm target", 1U);
+    test_rc |= expect_nfm_front(&opts, "nfm target again", 1, 12500, 0);
+    if (state.samplesPerSymbol != 7 || state.symbolCenter != 3) {
+        DSD_FPRINTF(stderr, "nfm target derived a symbol timing: sps %d, center %d\n", state.samplesPerSymbol,
+                    state.symbolCenter);
+        test_rc = 1;
+    }
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    if (opts.analog_only != 0 || opts.monitor_input_audio != 0 || opts.frame_dmr != 1
+        || opts.analog_nfm_bandwidth_hz != 20000) {
+        DSD_FPRINTF(stderr, "shutdown on an nfm target left analog_only=%d width=%d\n", opts.analog_only,
+                    opts.analog_nfm_bandwidth_hz);
+        test_rc = 1;
+    }
+    trunk_scan_test_clear_now();
+    cleanup_paths(dir, target_path, NULL);
+    return test_rc;
+}
+
+/* Every alternate fails to retune, so the advance rolls back: the nfm target on air keeps its
+ * analog monitor and width rather than the failed digital alternate's decoder. */
+static int
+test_nfm_target_rollback_restores_the_analog_row(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    char target_path[DSD_TEST_PATH_MAX];
+    static dsd_opts opts;
+    static dsd_state state;
+    if (nfm_targets_init("fire,nfm-conventional,154430000,,250,250,,--nfm-bandwidth-hz 12500\n"
+                         "dmr,dmr-conventional,461000000,,250,250,\n",
+                         &opts, &state, dir, sizeof dir, target_path, sizeof target_path)
+        != 0) {
+        return 1;
+    }
+    int test_rc = expect_nfm_front(&opts, "nfm init", 1, 12500, 0);
+    g_scan_tune_to_freq_failures_remaining = 2;
+    trunk_scan_test_set_now(0.26);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    g_scan_tune_to_freq_failures_remaining = 0;
+    test_rc |= expect_active_target(&state, "rollback", 0U);
+    if (opts.analog_only != 1 || opts.analog_nfm_bandwidth_hz != 12500 || opts.frame_dmr != 0) {
+        DSD_FPRINTF(stderr, "rollback onto the nfm target left analog_only=%d width=%d frame_dmr=%d\n",
+                    opts.analog_only, opts.analog_nfm_bandwidth_hz, opts.frame_dmr);
+        test_rc = 1;
+    }
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    trunk_scan_test_clear_now();
+    cleanup_paths(dir, target_path, NULL);
+    return test_rc;
+}
+
+/* Carrier holds an nfm target: each tick with the squelch open refreshes the activity hold, the
+ * publication reads "Carrier", the hold's tail runs out after the carrier drops and the idle dwell
+ * then rotates. A global --scan-voice-only does not block it, and digital activity reports for
+ * another family never claim it. */
+static int
+nfm_carrier_hold_case(int voice_only) {
+    char dir[DSD_TEST_PATH_MAX];
+    char target_path[DSD_TEST_PATH_MAX];
+    static dsd_opts opts;
+    static dsd_state state;
+    if (nfm_targets_init("fire,nfm-conventional,154430000,,250,250,\n"
+                         "dmr,dmr-conventional,461000000,,250,250,\n",
+                         &opts, &state, dir, sizeof dir, target_path, sizeof target_path)
+        != 0) {
+        return 1;
+    }
+    opts.scan_voice_only = voice_only;
+    int test_rc = 0;
+    trunk_scan_test_set_now(0.10);
+    state.analog_rx.carrier_open = 1;
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    test_rc |= expect_scan_timing(&state, "carrier", DSD_SCAN_STAY_CARRIER, 0.35, 250U, 250U);
+    if (state.scan_voice_gate_phase != (uint8_t)DSD_SCAN_VOICE_GATE_OFF) {
+        DSD_FPRINTF(stderr, "voice gate phase %u published on an nfm target\n", (unsigned)state.scan_voice_gate_phase);
+        test_rc = 1;
+    }
+    for (int tick = 0; tick < 4; tick++) {
+        trunk_scan_test_set_now(0.30 + (0.20 * tick));
+        dsd_engine_trunk_scan_tick(&opts, &state);
+    }
+    test_rc |= expect_active_target(&state, "carrier held past the dwell", 0U);
+    /* The carrier drops: the hold's tail runs from the last tick that heard it. */
+    state.analog_rx.carrier_open = 0;
+    trunk_scan_test_set_now(1.10);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    test_rc |= expect_active_target(&state, "hold tail", 0U);
+    test_rc |= expect_scan_timing(&state, "hold tail", DSD_SCAN_STAY_ACTIVITY_HOLD, 1.15, 250U, 250U);
+    /* DMR activity cannot claim an nfm target. */
+    dsd_engine_trunk_scan_dmr_conventional_activity(&opts, &state, 1001, 2002, 0, 0, 0);
+    trunk_scan_test_set_now(1.16);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    test_rc |= expect_scan_timing(&state, "idle", DSD_SCAN_STAY_IDLE_DWELL, 1.41, 250U, 250U);
+    trunk_scan_test_set_now(1.42);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    test_rc |= expect_active_target(&state, "idle dwell rotation", 1U);
+    /* A carrier on a digital target is no activity of its own. */
+    state.analog_rx.carrier_open = 1;
+    trunk_scan_test_set_now(1.50);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    trunk_scan_test_set_now(1.70);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    test_rc |= expect_active_target(&state, "carrier on a digital target", 0U);
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    trunk_scan_test_clear_now();
+    cleanup_paths(dir, target_path, NULL);
+    if (test_rc) {
+        DSD_FPRINTF(stderr, "nfm carrier hold failed with --scan-voice-only %d\n", voice_only);
+    }
+    return test_rc;
+}
+
+static int
+test_nfm_target_carrier_holds_and_idle_dwell_rotates(void) {
+    return nfm_carrier_hold_case(0) | nfm_carrier_hold_case(1);
+}
+
+/* Digital verdict accounting is unchanged beside nfm targets: a DMR header still holds a DMR
+ * target with voice-only off, and with voice-only on headers alone still never hold it. */
+static int
+test_nfm_targets_leave_digital_activity_accounting_intact(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    char target_path[DSD_TEST_PATH_MAX];
+    static dsd_opts opts;
+    static dsd_state state;
+    int test_rc = 0;
+    for (int voice_only = 0; voice_only <= 1; voice_only++) {
+        if (nfm_targets_init("dmr,dmr-conventional,461000000,,250,250,\n"
+                             "fire,nfm-conventional,154430000,,250,250,\n",
+                             &opts, &state, dir, sizeof dir, target_path, sizeof target_path)
+            != 0) {
+            return 1;
+        }
+        opts.scan_voice_only = voice_only;
+        trunk_scan_test_set_now(0.10);
+        dsd_engine_trunk_scan_dmr_conventional_activity(&opts, &state, 1001, 2002, 0, 0, 0);
+        trunk_scan_test_set_now(0.30);
+        dsd_engine_trunk_scan_tick(&opts, &state);
+        test_rc |= expect_active_target(&state, voice_only ? "voice-only header" : "header hold", voice_only ? 1U : 0U);
+        dsd_engine_trunk_scan_shutdown(&opts, &state);
+        cleanup_paths(dir, target_path, NULL);
+    }
+    trunk_scan_test_clear_now();
+    return test_rc;
+}
+
+/* The per-visit cap outlasts a continuous carrier, and the operator controls act on an nfm target
+ * while its carrier holds it: advance moves now, hold keeps it past the cap, avoid steps on. */
+static int
+test_nfm_target_visit_cap_and_controls_under_carrier(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    char target_path[DSD_TEST_PATH_MAX];
+    static dsd_opts opts;
+    static dsd_state state;
+    if (nfm_targets_init("fire,nfm-conventional,154430000,,250,250,,--scan-max-visit-ms 1000\n"
+                         "dmr,dmr-conventional,461000000,,250,250,\n"
+                         "ops,nfm-conventional,155475000,,250,250,\n",
+                         &opts, &state, dir, sizeof dir, target_path, sizeof target_path)
+        != 0) {
+        return 1;
+    }
+    int test_rc = 0;
+    for (int tick = 0; tick < 5; tick++) {
+        state.analog_rx.carrier_open = 1;
+        trunk_scan_test_set_now(0.10 + (0.20 * tick));
+        dsd_engine_trunk_scan_tick(&opts, &state);
+    }
+    test_rc |= expect_active_target(&state, "carrier inside the cap", 0U);
+    state.analog_rx.carrier_open = 1;
+    trunk_scan_test_set_now(1.05);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    test_rc |= expect_active_target(&state, "cap expired under a carrier", 1U);
+
+    /* Advance during a carrier on the other nfm target moves at once. */
+    test_rc |=
+        expect_control_rc("advance", dsd_engine_trunk_scan_control(&opts, &state, DSD_TRUNK_SCAN_CONTROL_ADVANCE), 0);
+    test_rc |= expect_active_target(&state, "advance onto ops", 2U);
+    state.analog_rx.carrier_open = 1;
+    trunk_scan_test_set_now(1.10);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    test_rc |=
+        expect_control_rc("advance", dsd_engine_trunk_scan_control(&opts, &state, DSD_TRUNK_SCAN_CONTROL_ADVANCE), 0);
+    test_rc |= expect_active_target(&state, "advance under a carrier", 0U);
+
+    /* Hold keeps the target past its cap however long the carrier lasts. */
+    test_rc |=
+        expect_control_rc("hold", dsd_engine_trunk_scan_control(&opts, &state, DSD_TRUNK_SCAN_CONTROL_HOLD_TOGGLE), 1);
+    for (int tick = 0; tick < 10; tick++) {
+        state.analog_rx.carrier_open = 1;
+        trunk_scan_test_set_now(1.20 + (0.25 * tick));
+        dsd_engine_trunk_scan_tick(&opts, &state);
+    }
+    test_rc |= expect_active_target(&state, "held under a carrier", 0U);
+    /* Avoid steps off even while the carrier holds. */
+    test_rc |= expect_control_rc("avoid",
+                                 dsd_engine_trunk_scan_control(&opts, &state, DSD_TRUNK_SCAN_CONTROL_AVOID_ACTIVE), 0);
+    test_rc |= expect_active_target(&state, "avoid under a carrier", 1U);
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    trunk_scan_test_clear_now();
+    cleanup_paths(dir, target_path, NULL);
+    return test_rc;
+}
+
+/* What the nfm targets owe the operator when the scan starts: a width the running DSP rate cannot
+ * filter, and a squelch that holds on noise. An nfm target's squelch is not the digital squelch the
+ * #521 warning is about, even on audio input. */
+static int
+test_nfm_target_warnings_at_scan_start(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    char target_path[DSD_TEST_PATH_MAX];
+    static dsd_opts opts;
+    static dsd_state state;
+    if (make_temp_dir(dir, sizeof dir) != 0
+        || write_targets_file_with_header(dir, k_squelch_targets_header,
+                                          "fire,nfm-conventional,154430000,,250,250,,"
+                                          "--nfm-bandwidth-hz 20000 --squelch-db -50\n"
+                                          "open,nfm-conventional,155475000,,250,250,,--squelch-db 0\n"
+                                          "dmr,dmr-conventional,461000000,,250,250,,--squelch-db -60\n",
+                                          target_path, sizeof target_path)
+               != 0) {
+        return 1;
+    }
+    int test_rc = 0;
+    for (int rtl = 1; rtl >= 0; rtl--) {
+        reset_scan_opts_state(&opts, &state);
+        opts.rtl_squelch_level = dsd_squelch_level_from_sql(-60.0);
+        if (!rtl) {
+            opts.audio_in_type = AUDIO_IN_UDP;
+            opts.use_rigctl = 1;
+            state.rtl_ctx = NULL;
+        }
+        g_scan_dsp_rate_hz = rtl ? 16000 : 0;
+        DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", target_path);
+        dsd_test_capture_stderr cap;
+        char buf[4096] = {0};
+        char err[256] = {0};
+        if (dsd_test_capture_stderr_begin(&cap, "trunkscannfm") != 0) {
+            test_rc = 1;
+            break;
+        }
+        trunk_scan_test_set_now(0.0);
+        const int rc = dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err);
+        dsd_engine_trunk_scan_shutdown(&opts, &state);
+        (void)dsd_test_capture_stderr_end(&cap);
+        (void)dsd_test_capture_stderr_read(&cap, buf, sizeof buf);
+        const char* width = rtl ? "Trunk scan target 'fire': NFM bandwidth 20 kHz does not fit the 16 kHz DSP rate"
+                                : "Trunk scan target 'fire': --nfm-bandwidth-hz 20000 has no effect on audio input";
+        if (rc != 0 || !strstr(buf, width)
+            || !strstr(buf, "Trunk scan target 'open': the analog channel's squelch is off")
+            || strstr(buf, "Trunk scan target 'fire': the analog")
+            || strstr(buf, "Trunk scan target 'fire': --squelch-db")
+            || strstr(buf, "Trunk scan target 'open': --squelch-db")
+            || (strstr(buf, "Trunk scan target 'dmr': --squelch-db") != NULL) == rtl) {
+            DSD_FPRINTF(stderr, "nfm target warnings on %s input (rc=%d %s):\n%s\n", rtl ? "RTL" : "audio", rc, err,
+                        buf);
+            test_rc = 1;
+        }
+    }
+    g_scan_dsp_rate_hz = 0;
+    trunk_scan_test_clear_now();
+    cleanup_paths(dir, target_path, NULL);
+    return test_rc;
+}
+
+/* Keys, maps and forcing never reach an nfm target through the live decryption command either. */
+static int
+test_nfm_target_refuses_live_decryption(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    char target_path[DSD_TEST_PATH_MAX];
+    static dsd_opts opts;
+    static dsd_state state;
+    if (nfm_targets_init("fire,nfm-conventional,154430000,,250,250,\n", &opts, &state, dir, sizeof dir, target_path,
+                         sizeof target_path)
+        != 0) {
+        return 1;
+    }
+    dsd_key_set keys = {0};
+    keys.present = 1U;
+    keys.scalars.basic_key_present = 1;
+    keys.scalars.K = 1U;
+    dsd_dmr_key_map map = {0};
+    int test_rc = 0;
+    const uint64_t generation = dsd_trunk_tuning_generation();
+    const uint32_t fields[] = {DSD_TRUNK_KEY_MATERIAL, DSD_TRUNK_KEY_FORCE};
+    for (size_t i = 0; i < sizeof(fields) / sizeof(fields[0]); i++) {
+        if (dsd_trunk_scan_hook_decryption_apply(&opts, &state, "fire", generation, fields[i], &keys, &map, 1)
+            != DSD_TRUNK_KEY_INVALID) {
+            DSD_FPRINTF(stderr, "live decryption field 0x%x reached an nfm target\n", (unsigned)fields[i]);
+            test_rc = 1;
+        }
+    }
+    DSD_SECURE_ZERO(&keys, sizeof(keys));
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    trunk_scan_test_clear_now();
+    cleanup_paths(dir, target_path, NULL);
+    return test_rc;
+}
+
+/* A digital target after an nfm-conventional one is timed for the family its tune lands, not for the analog monitor
+ * still running when the switch times it: at bw=24 the monitor output is 48 kHz and the digital output 24 kHz, so DMR
+ * and P25 get 5 samples per symbol and NXDN48 10, in the decoder and in the TED the tune queues alike. The P25 target
+ * runs CQPSK, whose landing rate is asked for the CQPSK output. */
+static int
+test_digital_target_after_nfm_timed_for_digital_family(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    char target_path[DSD_TEST_PATH_MAX];
+    static dsd_opts opts;
+    static dsd_state state;
+    if (make_temp_dir(dir, sizeof dir) != 0
+        || write_targets_file_with_header(dir, k_nfm_targets_header,
+                                          "fire,nfm-conventional,154430000,,250,250,,,,,,,\n"
+                                          "dmr,dmr-conventional,461000000,,250,250,,,,,,,\n"
+                                          "ops,nfm-conventional,155475000,,250,250,,,,,,,\n"
+                                          "p25,p25-conventional,851012500,,250,250,,cqpsk,,,,,\n"
+                                          "oth,nfm-conventional,156000000,,250,250,,,,,,,\n"
+                                          "n48,nxdn48-conventional,461556250,,250,250,,,,,,,\n",
+                                          target_path, sizeof target_path)
+               != 0) {
+        cleanup_paths(dir, NULL, NULL);
+        return 1;
+    }
+    reset_scan_opts_state(&opts, &state);
+    DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", target_path);
+    dsd_rtl_stream_metrics_hooks hooks = {0};
+    hooks.output_rate_hz = fake_family_output_rate_hz;
+    hooks.analog_family_active = fake_family_analog_active;
+    hooks.output_rate_for_family = fake_family_landing_rate_hz;
+    dsd_rtl_stream_metrics_hooks_set(&hooks);
+    g_fake_family_tracking = 1;
+    g_fake_family_analog = 0;
+    g_scan_tune_to_freq_failures_remaining = 0;
+    char err[256] = {0};
+    trunk_scan_test_set_now(0.0);
+    int test_rc = 0;
+    if (dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err) != 0) {
+        DSD_FPRINTF(stderr, "family timing init failed: %s\n", err);
+        test_rc = 1;
+    }
+    test_rc |= expect_active_target(&state, "family timing init", 0U);
+    if (g_fake_family_analog != 1) {
+        DSD_FPRINTF(stderr, "the nfm target did not land the analog family\n");
+        test_rc = 1;
+    }
+
+    const struct {
+        size_t target;
+        int sps;
+        int cqpsk;
+    } digital[] = {{1U, 5, 0}, {3U, 5, 1}, {5U, 10, 0}};
+
+    double now = 0.0;
+    for (size_t i = 0; i < sizeof(digital) / sizeof(digital[0]); i++) {
+        now += 0.26;
+        trunk_scan_test_set_now(now);
+        g_fake_family_last_cqpsk = -1;
+        g_scan_tune_to_freq_ted_sps = 0;
+        dsd_engine_trunk_scan_tick(&opts, &state);
+        test_rc |= expect_active_target(&state, "digital after nfm", digital[i].target);
+        if (state.samplesPerSymbol != digital[i].sps || g_scan_tune_to_freq_ted_sps != digital[i].sps
+            || g_fake_family_last_cqpsk != digital[i].cqpsk || g_fake_family_analog != 0) {
+            DSD_FPRINTF(stderr,
+                        "target %zu after an nfm target: sps=%d ted=%d cqpsk asked=%d analog=%d, want sps/ted %d "
+                        "cqpsk %d on the digital family\n",
+                        digital[i].target, state.samplesPerSymbol, g_scan_tune_to_freq_ted_sps,
+                        g_fake_family_last_cqpsk, g_fake_family_analog, digital[i].sps, digital[i].cqpsk);
+            test_rc = 1;
+        }
+        now += 0.26;
+        trunk_scan_test_set_now(now);
+        dsd_engine_trunk_scan_tick(&opts, &state);
+        test_rc |= expect_active_target(&state, "nfm after digital", (digital[i].target + 1U) % 6U);
+        if (g_scan_tune_to_freq_ted_sps != 0 || g_fake_family_analog != 1) {
+            DSD_FPRINTF(stderr, "nfm target after target %zu: ted=%d analog=%d\n", digital[i].target,
+                        g_scan_tune_to_freq_ted_sps, g_fake_family_analog);
+            test_rc = 1;
+        }
+    }
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    g_fake_family_tracking = 0;
+    g_fake_family_analog = 0;
+    dsd_rtl_stream_metrics_hooks_set(NULL);
+    trunk_scan_test_clear_now();
+    cleanup_paths(dir, target_path, NULL);
+    return test_rc;
+}
+
+static int
+count_text(const char* haystack, const char* needle) {
+    int count = 0;
+    for (const char* at = strstr(haystack, needle); at; at = strstr(at + 1, needle)) {
+        count++;
+    }
+    return count;
+}
+
+/* An nfm target's width is checked against the DSP rate the stream publishes: not before an RTL stream has published
+ * one, then once for that rate, and again whenever it changes, since the retune skips a target it cannot fit without
+ * a word of its own. */
+static int
+test_nfm_target_width_rechecked_when_the_dsp_rate_changes(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    char target_path[DSD_TEST_PATH_MAX];
+    static dsd_opts opts;
+    static dsd_state state;
+    if (make_temp_dir(dir, sizeof dir) != 0
+        || write_targets_file_with_header(dir, k_squelch_targets_header,
+                                          "fire,nfm-conventional,154430000,,250,250,,"
+                                          "--nfm-bandwidth-hz 20000 --squelch-db -50\n"
+                                          "dmr,dmr-conventional,461000000,,250,250,,\n",
+                                          target_path, sizeof target_path)
+               != 0) {
+        return 1;
+    }
+    reset_scan_opts_state(&opts, &state);
+    DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", target_path);
+    dsd_test_capture_stderr cap;
+    char buf[8192] = {0};
+    char err[256] = {0};
+    if (dsd_test_capture_stderr_begin(&cap, "trunkscanrate") != 0) {
+        cleanup_paths(dir, target_path, NULL);
+        return 1;
+    }
+    g_scan_dsp_rate_hz = 0;
+    trunk_scan_test_set_now(0.0);
+    int rc = dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err);
+    /* No rate yet, then 16 kHz over two rotations, 24 kHz (which fits 20 kHz), and 16 kHz again. */
+    const int rates[] = {0, 16000, 16000, 16000, 16000, 24000, 24000, 16000};
+    for (size_t i = 0; i < sizeof(rates) / sizeof(rates[0]); i++) {
+        g_scan_dsp_rate_hz = rates[i];
+        trunk_scan_test_set_now(0.26 * (double)(i + 1U));
+        dsd_engine_trunk_scan_tick(&opts, &state);
+    }
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    (void)dsd_test_capture_stderr_end(&cap);
+    (void)dsd_test_capture_stderr_read(&cap, buf, sizeof buf);
+    g_scan_dsp_rate_hz = 0;
+    trunk_scan_test_clear_now();
+    cleanup_paths(dir, target_path, NULL);
+    const int at16 = count_text(buf, "Trunk scan target 'fire': NFM bandwidth 20 kHz does not fit the 16 kHz DSP rate");
+    if (rc != 0 || at16 != 2 || strstr(buf, "does not fit the 24 kHz") || strstr(buf, "squelch is off")) {
+        DSD_FPRINTF(stderr, "nfm target width rechecks (rc=%d %s): %d at 16 kHz\n%s\n", rc, err, at16, buf);
+        return 1;
+    }
+    return 0;
+}
+
+/* The two warnings keep their own schedules: an nfm target's open squelch is named once when the scan starts, before an
+ * RTL stream has published a DSP rate and never again as that rate changes, while its width is named for each new rate.
+ * A width the rate cannot fit is then refused at every visit, before any backend moves, and the coordinator adds no
+ * "retune failed" line of its own each time the rotation reaches it. */
+static int
+test_nfm_target_refused_width_skipped_quietly(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    char target_path[DSD_TEST_PATH_MAX];
+    static dsd_opts opts;
+    static dsd_state state;
+    if (make_temp_dir(dir, sizeof dir) != 0
+        || write_targets_file_with_header(dir, k_squelch_targets_header,
+                                          "fire,nfm-conventional,154430000,,250,250,,"
+                                          "--nfm-bandwidth-hz 20000 --squelch-db -50\n"
+                                          "open,nfm-conventional,155475000,,250,250,,--squelch-db 0\n"
+                                          "dmr,dmr-conventional,461000000,,250,250,,\n",
+                                          target_path, sizeof target_path)
+               != 0) {
+        return 1;
+    }
+    reset_scan_opts_state(&opts, &state);
+    DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", target_path);
+    dsd_test_capture_stderr cap;
+    char buf[16384] = {0};
+    char err[256] = {0};
+    if (dsd_test_capture_stderr_begin(&cap, "trunkscanrefused") != 0) {
+        cleanup_paths(dir, target_path, NULL);
+        return 1;
+    }
+    g_scan_tune_refuses_unfit_width = 1;
+    g_scan_tune_width_refusals = 0;
+    g_scan_dsp_rate_hz = 0;
+    trunk_scan_test_set_now(0.0);
+    int rc = dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err);
+    /* 16 kHz for many rotations (past the refused target's retry cooldown), 24 kHz, then 16 kHz again. */
+    for (int i = 0; i < 40; i++) {
+        g_scan_dsp_rate_hz = (i >= 24 && i < 28) ? 24000 : 16000;
+        trunk_scan_test_set_now(0.26 * (double)(i + 1));
+        dsd_engine_trunk_scan_tick(&opts, &state);
+    }
+    const int refusals = g_scan_tune_width_refusals;
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    (void)dsd_test_capture_stderr_end(&cap);
+    (void)dsd_test_capture_stderr_read(&cap, buf, sizeof buf);
+    g_scan_tune_refuses_unfit_width = 0;
+    g_scan_dsp_rate_hz = 0;
+    trunk_scan_test_clear_now();
+    cleanup_paths(dir, target_path, NULL);
+    const int open_squelch_lines = count_text(buf, "Trunk scan target 'open': the analog channel's squelch is off");
+    const int width =
+        count_text(buf, "Trunk scan target 'fire': NFM bandwidth 20 kHz does not fit the 16 kHz DSP rate");
+    const int failed = count_text(buf, "Trunk scan target 'fire' retune failed");
+    if (rc != 0 || open_squelch_lines != 1 || width != 2 || refusals < 2 || failed != 0) {
+        DSD_FPRINTF(
+            stderr,
+            "refused nfm target (rc=%d %s): squelch named %d, width named %d, refused %d, retune-failed %d\n%s\n", rc,
+            err, open_squelch_lines, width, refusals, failed, buf);
+        return 1;
+    }
+    return 0;
+}
+
+/* DSD_NEO_CHANNEL_LPF=0 turns off the channel filter every explicit width needs, and the front end refuses such a
+ * width at any rate: an nfm target with its own width is named for it once when the scan starts, in the log and on the
+ * status line, then refused at every visit before any backend moves, with no "retune failed" line of the
+ * coordinator's own, although the DSP rate fits the width. */
+static int
+test_nfm_target_width_skipped_under_channel_lpf_override(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    char target_path[DSD_TEST_PATH_MAX];
+    static dsd_opts opts;
+    static dsd_state state;
+    if (make_temp_dir(dir, sizeof dir) != 0
+        || write_targets_file_with_header(dir, k_squelch_targets_header,
+                                          "fire,nfm-conventional,154430000,,250,250,,"
+                                          "--nfm-bandwidth-hz 12500 --squelch-db -50\n"
+                                          "dmr,dmr-conventional,461000000,,250,250,,\n",
+                                          target_path, sizeof target_path)
+               != 0) {
+        return 1;
+    }
+    reset_scan_opts_state(&opts, &state);
+    DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", target_path);
+    (void)dsd_setenv("DSD_NEO_CHANNEL_LPF", "0", 1);
+    dsd_neo_config_init();
+    dsd_test_capture_stderr cap;
+    char buf[16384] = {0};
+    char err[256] = {0};
+    if (dsd_test_capture_stderr_begin(&cap, "trunkscanlpfoff") != 0) {
+        cleanup_paths(dir, target_path, NULL);
+        return 1;
+    }
+    g_scan_tune_refuses_unfit_width = 1;
+    g_scan_tune_width_refusals = 0;
+    g_scan_dsp_rate_hz = 48000;
+    trunk_scan_test_set_now(0.0);
+    int rc = dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err);
+    char status[sizeof state.ui_msg];
+    DSD_SNPRINTF(status, sizeof status, "%s", state.ui_msg);
+    for (int i = 0; i < 24; i++) {
+        trunk_scan_test_set_now(0.26 * (double)(i + 1));
+        dsd_engine_trunk_scan_tick(&opts, &state);
+    }
+    const int refusals = g_scan_tune_width_refusals;
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    (void)dsd_test_capture_stderr_end(&cap);
+    (void)dsd_test_capture_stderr_read(&cap, buf, sizeof buf);
+    g_scan_tune_refuses_unfit_width = 0;
+    g_scan_dsp_rate_hz = 0;
+    (void)dsd_unsetenv("DSD_NEO_CHANNEL_LPF");
+    dsd_neo_config_init();
+    trunk_scan_test_clear_now();
+    cleanup_paths(dir, target_path, NULL);
+    const int width = count_text(buf, "Trunk scan target 'fire': NFM bandwidth 12.5 kHz needs the channel filter, but "
+                                      "DSD_NEO_CHANNEL_LPF=0 turns it off");
+    const int failed = count_text(buf, "Trunk scan target 'fire' retune failed");
+    const int status_named = strcmp(status, "Skipped at every visit: Trunk scan target 'fire': NFM 12.5 kHz needs the "
+                                            "filter DSD_NEO_CHANNEL_LPF=0 turns off")
+                             == 0;
+    if (rc != 0 || width != 1 || refusals < 2 || failed != 0 || !status_named) {
+        DSD_FPRINTF(stderr,
+                    "lpf-off nfm target (rc=%d %s): width named %d, refused %d, retune-failed %d, status '%s'\n%s\n",
+                    rc, err, width, refusals, failed, status, buf);
+        return 1;
+    }
+    return 0;
+}
+
+/* An nfm target that sets no width of its own runs the configured NFM width, which nothing holds to the DSP rate on a
+ * digital session. A rate that cannot filter it is named with that width when the scan starts, and the width again
+ * whenever it changes (the width command, a config apply); the retune then refuses the target at every visit, before
+ * any backend moves, with no "retune failed" line of the coordinator's own, until the configured width fits. */
+static int
+test_nfm_target_configured_width_held_to_the_dsp_rate(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    char target_path[DSD_TEST_PATH_MAX];
+    static dsd_opts opts;
+    static dsd_state state;
+    if (make_temp_dir(dir, sizeof dir) != 0
+        || write_targets_file_with_header(dir, k_squelch_targets_header,
+                                          "plain,nfm-conventional,154430000,,250,250,,--squelch-db -50\n"
+                                          "dmr,dmr-conventional,461000000,,250,250,,\n",
+                                          target_path, sizeof target_path)
+               != 0) {
+        return 1;
+    }
+    reset_scan_opts_state(&opts, &state);
+    DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", target_path);
+    opts.analog_nfm_bandwidth_hz = 16000;
+    dsd_test_capture_stderr cap;
+    char buf[16384] = {0};
+    char err[256] = {0};
+    if (dsd_test_capture_stderr_begin(&cap, "trunkscaninherited") != 0) {
+        cleanup_paths(dir, target_path, NULL);
+        return 1;
+    }
+    g_scan_tune_refuses_unfit_width = 1;
+    g_scan_tune_width_refusals = 0;
+    g_scan_dsp_rate_hz = 16000;
+    trunk_scan_test_set_now(0.0);
+    int rc = dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err);
+    int refused_at_16 = 0;
+    int refused_at_12_5 = 0;
+    /* The configured 16 kHz, then 20 kHz (neither fits the 16 kHz rate), then 12.5 kHz, which does. */
+    for (int i = 0; i < 36; i++) {
+        if (i == 12) {
+            refused_at_16 = g_scan_tune_width_refusals;
+            (void)dsd_scan_mode_set_configured_nfm_bandwidth(&opts, &state, 20000);
+        } else if (i == 24) {
+            (void)dsd_scan_mode_set_configured_nfm_bandwidth(&opts, &state, 12500);
+            refused_at_12_5 = g_scan_tune_width_refusals;
+        }
+        trunk_scan_test_set_now(0.26 * (double)(i + 1));
+        dsd_engine_trunk_scan_tick(&opts, &state);
+    }
+    const int refused_after = g_scan_tune_width_refusals - refused_at_12_5;
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    (void)dsd_test_capture_stderr_end(&cap);
+    (void)dsd_test_capture_stderr_read(&cap, buf, sizeof buf);
+    g_scan_tune_refuses_unfit_width = 0;
+    g_scan_dsp_rate_hz = 0;
+    trunk_scan_test_clear_now();
+    cleanup_paths(dir, target_path, NULL);
+    const int named_16 = count_text(buf, "Trunk scan target 'plain': it sets no NFM width of its own, and the "
+                                         "configured NFM bandwidth 16 kHz does not fit the 16 kHz DSP rate");
+    const int named_20 = count_text(buf, "Trunk scan target 'plain': it sets no NFM width of its own, and the "
+                                         "configured NFM bandwidth 20 kHz does not fit the 16 kHz DSP rate");
+    const int named_fix = count_text(buf, "set the RTL DSP bandwidth to 24 or 48 kHz; until then it is skipped at "
+                                          "every visit");
+    const int named_12_5 = count_text(buf, "configured NFM bandwidth 12.5 kHz");
+    const int failed = count_text(buf, "Trunk scan target 'plain' retune failed");
+    if (rc != 0 || named_16 != 1 || named_20 != 1 || named_fix != 2 || named_12_5 != 0 || refused_at_16 < 1
+        || refused_at_12_5 <= refused_at_16 || refused_after != 0 || failed != 0) {
+        DSD_FPRINTF(stderr,
+                    "inherited nfm width (rc=%d %s): named 16 kHz %d, 20 kHz %d, fix %d, 12.5 kHz %d; refused %d/%d/"
+                    "%d after; retune-failed %d\n%s\n",
+                    rc, err, named_16, named_20, named_fix, named_12_5, refused_at_16, refused_at_12_5, refused_after,
+                    failed, buf);
+        return 1;
+    }
+    return 0;
+}
+
+/* The status line counts every target skipped at every visit. After the configured NFM width alone changes, only the
+ * targets that run it are named again in the log; a target whose own width the rate cannot filter was named when the
+ * scan started and is not named again, but it is still counted beside them. */
+static int
+test_nfm_target_status_counts_every_skipped_target(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    char target_path[DSD_TEST_PATH_MAX];
+    static dsd_opts opts;
+    static dsd_state state;
+    if (make_temp_dir(dir, sizeof dir) != 0
+        || write_targets_file_with_header(dir, k_squelch_targets_header,
+                                          "own,nfm-conventional,154430000,,250,250,,"
+                                          "--nfm-bandwidth-hz 20000 --squelch-db -50\n"
+                                          "plain,nfm-conventional,154445000,,250,250,,--squelch-db -50\n"
+                                          "dmr,dmr-conventional,461000000,,250,250,,\n",
+                                          target_path, sizeof target_path)
+               != 0) {
+        return 1;
+    }
+    reset_scan_opts_state(&opts, &state);
+    DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", target_path);
+    opts.analog_nfm_bandwidth_hz = 12500;
+    dsd_test_capture_stderr cap;
+    char buf[16384] = {0};
+    char err[256] = {0};
+    if (dsd_test_capture_stderr_begin(&cap, "trunkscanskipcount") != 0) {
+        cleanup_paths(dir, target_path, NULL);
+        return 1;
+    }
+    g_scan_tune_refuses_unfit_width = 1;
+    g_scan_tune_width_refusals = 0;
+    g_scan_dsp_rate_hz = 16000;
+    trunk_scan_test_set_now(0.0);
+    int rc = dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err);
+    char at_start[sizeof state.ui_msg];
+    DSD_SNPRINTF(at_start, sizeof at_start, "%s", state.ui_msg);
+    state.ui_msg[0] = '\0';
+    (void)dsd_scan_mode_set_configured_nfm_bandwidth(&opts, &state, 20000);
+    for (int i = 0; i < 4; i++) {
+        trunk_scan_test_set_now(0.26 * (double)(i + 1));
+        dsd_engine_trunk_scan_tick(&opts, &state);
+    }
+    char after_edit[sizeof state.ui_msg];
+    DSD_SNPRINTF(after_edit, sizeof after_edit, "%s", state.ui_msg);
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    (void)dsd_test_capture_stderr_end(&cap);
+    (void)dsd_test_capture_stderr_read(&cap, buf, sizeof buf);
+    g_scan_tune_refuses_unfit_width = 0;
+    g_scan_dsp_rate_hz = 0;
+    trunk_scan_test_clear_now();
+    cleanup_paths(dir, target_path, NULL);
+    const int own_named = count_text(buf, "Trunk scan target 'own': NFM bandwidth 20 kHz does not fit the 16 kHz DSP "
+                                          "rate");
+    const int plain_named = count_text(buf, "Trunk scan target 'plain': it sets no NFM width of its own, and the "
+                                            "configured NFM bandwidth 20 kHz does not fit the 16 kHz DSP rate");
+    const int start_ok =
+        strcmp(at_start, "Skipped at every visit: Trunk scan target 'own': NFM 20 kHz does not fit the 16 kHz DSP rate")
+        == 0;
+    const int edit_ok =
+        strcmp(after_edit, "Skipped at every visit: Trunk scan target 'own' and 1 more: NFM 20 kHz does "
+                           "not fit the 16 kHz DSP rate")
+        == 0;
+    if (rc != 0 || own_named != 1 || plain_named != 1 || !start_ok || !edit_ok) {
+        DSD_FPRINTF(stderr,
+                    "skipped target count (rc=%d %s): own named %d, plain named %d, at start '%s', after the edit "
+                    "'%s'\n%s\n",
+                    rc, err, own_named, plain_named, at_start, after_edit, buf);
+        return 1;
+    }
+    return 0;
+}
+
+/* What the front end was last asked for live (issue #526): the analog profile's family, demodulator and width. */
+static int g_live_analog_profile_calls;
+static int g_live_analog_profile_width_hz;
+
+static int
+record_live_analog_profile(int family, int kind, int width_hz) {
+    if (family == DSD_RX_FAMILY_ANALOG && kind == DSD_ANALOG_DEMOD_FM) {
+        g_live_analog_profile_calls++;
+        g_live_analog_profile_width_hz = width_hz;
+    }
+    return 0;
+}
+
+/* Park the first of an nfm target and a DMR target on a retune left in flight, apply @p edit_hz as the configured NFM
+ * width while it is (0: no edit), land it, and count the live analog requests the landing makes. */
+static int
+nfm_target_pending_retune_requests(int edit_hz, int* out_width_hz) {
+    char dir[DSD_TEST_PATH_MAX];
+    char target_path[DSD_TEST_PATH_MAX];
+    static dsd_opts opts;
+    static dsd_state state;
+    if (make_temp_dir(dir, sizeof dir) != 0
+        || write_targets_file_with_header(dir, k_squelch_targets_header,
+                                          "fire,nfm-conventional,154430000,,250,250,,--squelch-db -50\n"
+                                          "dmr,dmr-conventional,461000000,,250,250,,\n",
+                                          target_path, sizeof target_path)
+               != 0) {
+        return -1;
+    }
+    reset_scan_opts_state(&opts, &state);
+    DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", target_path);
+    opts.analog_nfm_bandwidth_hz = 16000;
+    dsd_trunk_tuning_requests_reset();
+    const dsd_rtl_stream_metrics_hooks hooks = {.apply_analog_profile = record_live_analog_profile};
+    dsd_rtl_stream_metrics_hooks_set(&hooks);
+    g_live_analog_profile_calls = 0;
+    g_live_analog_profile_width_hz = 0;
+    g_scan_tune_to_freq_pending = 1;
+    g_scan_tune_pending_request = 0U;
+    char err[256] = {0};
+    trunk_scan_test_set_now(0.0);
+    int calls = -1;
+    if (dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err) == 0 && g_scan_tune_pending_request != 0U
+        && g_scan_tune_to_freq_nfm_width_hz == 16000) {
+        trunk_scan_test_set_now(0.05);
+        dsd_engine_trunk_scan_tick(&opts, &state); /* still in flight: nothing asked */
+        if (edit_hz > 0) {
+            (void)dsd_scan_mode_set_configured_nfm_bandwidth(&opts, &state, edit_hz);
+        }
+        const int before_landing = g_live_analog_profile_calls;
+        dsd_trunk_tuning_request_complete(g_scan_tune_pending_request, DSD_TRUNK_TUNE_RESULT_OK);
+        trunk_scan_test_set_now(0.1);
+        dsd_engine_trunk_scan_tick(&opts, &state);
+        calls = before_landing == 0 ? g_live_analog_profile_calls : -1;
+        *out_width_hz = g_live_analog_profile_width_hz;
+    } else {
+        DSD_FPRINTF(stderr, "pending nfm retune init: %s (request %llu, width %d)\n", err,
+                    (unsigned long long)g_scan_tune_pending_request, g_scan_tune_to_freq_nfm_width_hz);
+    }
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    g_scan_tune_to_freq_pending = 0;
+    dsd_rtl_stream_metrics_hooks_set(NULL);
+    dsd_trunk_tuning_requests_reset();
+    trunk_scan_test_clear_now();
+    cleanup_paths(dir, target_path, NULL);
+    return calls;
+}
+
+/* The retune queues the nfm target's analog profile with the width in force then, and a width edit made while it is
+ * in flight reaches the front end as a live request the landing retune can land over: once the retune lands, the
+ * width in force is asked for again. A landing with no edit in between asks for nothing more. */
+static int
+test_nfm_target_width_edit_during_a_pending_retune(void) {
+    int width_hz = 0;
+    const int edited = nfm_target_pending_retune_requests(12500, &width_hz);
+    int test_rc = 0;
+    if (edited != 1 || width_hz != 12500) {
+        DSD_FPRINTF(stderr, "width edit during a pending nfm retune: %d requests, last %d Hz; want one at 12500\n",
+                    edited, width_hz);
+        test_rc = 1;
+    }
+    width_hz = 0;
+    const int unedited = nfm_target_pending_retune_requests(0, &width_hz);
+    if (unedited != 0) {
+        DSD_FPRINTF(stderr, "pending nfm retune without an edit made %d live requests\n", unedited);
+        test_rc = 1;
+    }
+    return test_rc;
+}
+
 int
 main(void) {
     int rc = 0;
@@ -9987,6 +11106,22 @@ main(void) {
     rc |= run_with_default_tune_hook(test_target_squelch_warns_once_per_target_on_pcm_input);
     /* Issue #522 */
     rc |= run_with_default_tune_hook(test_target_switch_clears_received_tone);
+    /* Issue #526 */
+    rc |= run_with_default_tune_hook(test_nfm_target_parse_and_row_diagnostics);
+    rc |= run_with_default_tune_hook(test_nfm_target_rotation_restores_family_and_width);
+    rc |= run_with_default_tune_hook(test_nfm_target_rollback_restores_the_analog_row);
+    rc |= run_with_default_tune_hook(test_nfm_target_carrier_holds_and_idle_dwell_rotates);
+    rc |= run_with_default_tune_hook(test_nfm_targets_leave_digital_activity_accounting_intact);
+    rc |= run_with_default_tune_hook(test_nfm_target_visit_cap_and_controls_under_carrier);
+    rc |= run_with_default_tune_hook(test_nfm_target_refuses_live_decryption);
+    rc |= run_with_default_tune_hook(test_nfm_target_warnings_at_scan_start);
+    rc |= run_with_default_tune_hook(test_digital_target_after_nfm_timed_for_digital_family);
+    rc |= run_with_default_tune_hook(test_nfm_target_width_rechecked_when_the_dsp_rate_changes);
+    rc |= run_with_default_tune_hook(test_nfm_target_refused_width_skipped_quietly);
+    rc |= run_with_default_tune_hook(test_nfm_target_width_skipped_under_channel_lpf_override);
+    rc |= run_with_default_tune_hook(test_nfm_target_configured_width_held_to_the_dsp_rate);
+    rc |= run_with_default_tune_hook(test_nfm_target_status_counts_every_skipped_target);
+    rc |= run_with_default_tune_hook(test_nfm_target_width_edit_during_a_pending_retune);
     return rc;
 }
 

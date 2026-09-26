@@ -39,11 +39,11 @@ static void
 enter_row_zero(dsd_opts* opts, dsd_state* state) {
     const dsd_scan_mode mode = dsd_channel_mode_get(state, 0);
     assert(mode != DSD_SCAN_MODE_INHERIT);
+    const dsd_scan_row_profile* profile = dsd_channel_profile_get(state, 0);
     dsd_scan_settings prepared;
-    assert(dsd_scan_mode_prepare(opts, state, mode, &prepared) == 0);
+    assert(dsd_scan_mode_prepare(opts, state, mode, profile ? &profile->values : NULL, &prepared) == 0);
     assert(dsd_scan_mode_enter(opts, state, mode) == 0);
     assert(dsd_scan_mode_active(state) == mode);
-    const dsd_scan_row_profile* profile = dsd_channel_profile_get(state, 0);
     assert(dsd_scan_mode_options(opts, state, profile ? &profile->values : NULL) == 0);
     char sql[24];
     (void)dsd_squelch_format(opts->rtl_squelch_level, " dB", sql, sizeof sql);

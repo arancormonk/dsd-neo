@@ -418,16 +418,17 @@ dsd_cli_usage_section_trunking_and_tools(void) {
     printf("      --p25-bandplan-export <file>  Write the learned P25 band plan CSV once at clean shutdown.\n");
     printf("  -T            Enable Trunking Features (NXDN/P25/EDACS/DMR) with RIGCTL/TCP or RTL Input\n");
     printf("  -Y            Enable Scanning Mode with RIGCTL/TCP or RTL Input\n");
-    printf("                 Row mode: p25, dmr, nxdn96, nxdn48, dpmr, dstar, ysf or m17; blank inherits globals.\n");
+    printf("                 Row mode: p25, dmr, nxdn96, nxdn48, dpmr, dstar, ysf, m17 or nfm (analog);\n");
+    printf("                 blank inherits globals.\n");
     printf("                 Scans conventional frequencies; use -T for trunking.\n");
     printf("      --trunk-scan <targets.csv>  Enable single-tuner trunk scan target rotation.\n");
     printf("                 Uses per-target chan_csv values; cannot be combined with global -C or IQ replay.\n");
     printf("      --trunk-scan-dwell-ms <ms>  Set default idle dwell per target (250..600000, default 3000).\n");
-    printf(
-        "      --trunk-scan-activity-hold-ms <ms>  Set conventional DMR/P25/NXDN activity hold (250..600000, default "
-        "1200).\n");
-    printf("      --scan-voice-only  Conventional scan/targets: hold only for decoded voice.\n");
+    printf("      --trunk-scan-activity-hold-ms <ms>  Set conventional DMR/P25/NXDN activity hold\n");
+    printf("                 and the nfm-conventional carrier tail (250..600000, default 1200).\n");
+    printf("      --scan-voice-only  Digital conventional scan rows/targets: hold only for decoded voice.\n");
     printf("                 Trunked targets use idle dwell and protocol call-following timers.\n");
+    printf("                 Analog rows and nfm-conventional targets ignore it and hold on carrier.\n");
     printf("      --scan-voice-qualify-ms <ms>  Window after sync in which voice must appear or the scan moves on "
            "(100..600000, default 1000).\n");
     printf("      --scan-voice-hold-ms <ms>  Time to stay after the last voice frame (100..600000, default 2000).\n");

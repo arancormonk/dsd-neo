@@ -10,6 +10,7 @@
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/dsp/frame_sync.h>
+#include <dsd-neo/runtime/analog_channel.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/decode_mode.h>
 #include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
@@ -42,14 +43,87 @@ typedef struct {
     scan_squelch_pending squelch_pending;
 } scan_scope;
 
-static const char* const mode_names[] = {"", "p25", "dmr", "nxdn96", "nxdn48", "dpmr", "dstar", "ysf", "m17"};
-static const dsdneoUserDecodeMode mode_presets[] = {DSDCFG_MODE_AUTO,   DSDCFG_MODE_TDMA,   DSDCFG_MODE_DMR,
-                                                    DSDCFG_MODE_NXDN96, DSDCFG_MODE_NXDN48, DSDCFG_MODE_DPMR,
-                                                    DSDCFG_MODE_DSTAR,  DSDCFG_MODE_YSF,    DSDCFG_MODE_M17};
+static const char* const mode_names[] = {"", "p25", "dmr", "nxdn96", "nxdn48", "dpmr", "dstar", "ysf", "m17", "nfm"};
+static const dsdneoUserDecodeMode mode_presets[] = {
+    DSDCFG_MODE_AUTO, DSDCFG_MODE_TDMA,  DSDCFG_MODE_DMR, DSDCFG_MODE_NXDN96, DSDCFG_MODE_NXDN48,
+    DSDCFG_MODE_DPMR, DSDCFG_MODE_DSTAR, DSDCFG_MODE_YSF, DSDCFG_MODE_M17,    DSDCFG_MODE_ANALOG};
+
+_Static_assert(sizeof(mode_names) / sizeof(mode_names[0]) == (size_t)DSD_SCAN_MODE_LAST + 1U,
+               "every scan class needs a name");
+_Static_assert(sizeof(mode_presets) / sizeof(mode_presets[0]) == (size_t)DSD_SCAN_MODE_LAST + 1U,
+               "every scan class needs a decode preset");
 
 const char*
 dsd_scan_mode_name(dsd_scan_mode mode) {
     return (unsigned)mode < sizeof(mode_names) / sizeof(mode_names[0]) ? mode_names[mode] : "";
+}
+
+int
+dsd_scan_mode_is_analog(dsd_scan_mode mode) {
+    return mode == DSD_SCAN_MODE_NFM;
+}
+
+/* Trim @p text into [*begin, *begin + *len). */
+static void
+scan_mode_trim(const char* text, const char** begin, size_t* len) {
+    while (isspace((unsigned char)*text)) {
+        text++;
+    }
+    size_t n = strlen(text);
+    while (n && isspace((unsigned char)text[n - 1])) {
+        n--;
+    }
+    *begin = text;
+    *len = n;
+}
+
+/* Whether the trimmed @p text of @p len bytes is @p lower, ignoring ASCII case. */
+static int
+scan_mode_text_is(const char* text, size_t len, const char* lower) {
+    if (strlen(lower) != len) {
+        return 0;
+    }
+    for (size_t i = 0; i < len; i++) {
+        if (tolower((unsigned char)text[i]) != lower[i]) {
+            return 0;
+        }
+    }
+    return 1;
+}
+
+const char*
+dsd_scan_mode_alias_hint(const char* text) {
+    static const char* const analog_fm[] = {"fm", "analog", "wfm", "nbfm", "fm-conventional"};
+    if (!text) {
+        return NULL;
+    }
+    const char* begin = NULL;
+    size_t len = 0;
+    scan_mode_trim(text, &begin, &len);
+    for (size_t i = 0; i < sizeof(analog_fm) / sizeof(analog_fm[0]); i++) {
+        if (scan_mode_text_is(begin, len, analog_fm[i])) {
+            return mode_names[DSD_SCAN_MODE_NFM];
+        }
+    }
+    return NULL;
+}
+
+int
+dsd_scan_mode_names_list(char* out, size_t out_size) {
+    if (!out || out_size == 0U) {
+        return -1;
+    }
+    out[0] = '\0';
+    size_t used = 0;
+    for (size_t i = DSD_SCAN_MODE_P25; i < sizeof(mode_names) / sizeof(mode_names[0]); i++) {
+        const int n = DSD_SNPRINTF(out + used, out_size - used, "%s%s", used ? ", " : "", mode_names[i]);
+        if (n < 0 || (size_t)n >= out_size - used) {
+            out[0] = '\0';
+            return -1;
+        }
+        used += (size_t)n;
+    }
+    return 0;
 }
 
 int
@@ -61,22 +135,11 @@ dsd_scan_mode_parse(const char* text, dsd_scan_mode* mode) {
         *mode = DSD_SCAN_MODE_INHERIT;
         return 0;
     }
-    while (isspace((unsigned char)*text)) {
-        text++;
-    }
-    size_t len = strlen(text);
-    while (len && isspace((unsigned char)text[len - 1])) {
-        len--;
-    }
+    const char* begin = NULL;
+    size_t len = 0;
+    scan_mode_trim(text, &begin, &len);
     for (size_t i = 0; i < sizeof(mode_names) / sizeof(mode_names[0]); i++) {
-        if (strlen(mode_names[i]) != len) {
-            continue;
-        }
-        size_t j = 0;
-        while (j < len && tolower((unsigned char)text[j]) == mode_names[i][j]) {
-            j++;
-        }
-        if (j == len) {
+        if (scan_mode_text_is(begin, len, mode_names[i])) {
             *mode = (dsd_scan_mode)i;
             return 0;
         }
@@ -141,6 +204,8 @@ dsd_scan_settings_capture(const dsd_opts* opts, const dsd_state* state, dsd_scan
     out->analog_only = opts->analog_only;
     out->monitor_input_audio = opts->monitor_input_audio;
     out->analog_demod = opts->analog_demod;
+    out->analog_nfm_bandwidth_hz = opts->analog_nfm_bandwidth_hz;
+    out->analog_am_bandwidth_hz = opts->analog_am_bandwidth_hz;
     DSD_MEMCPY(out->output_name, opts->output_name, sizeof(out->output_name));
     out->state_rf_mod = state->rf_mod;
     out->state_samplesPerSymbol = state->samplesPerSymbol;
@@ -193,9 +258,18 @@ scan_settings_copy_row_opts(dsd_scan_settings* dst, const dsd_scan_settings* src
     DSD_MEMCPY(dst->group_in_file, src->group_in_file, sizeof(dst->group_in_file));
 }
 
+/* The analog channel widths are acquisition settings a row may override (DSD_SCAN_OPT_BANDWIDTH), so
+ * they come back with the decoder settings and again before a row's options are installed. */
+static void
+scan_settings_restore_widths(const dsd_scan_settings* saved, dsd_opts* opts) {
+    opts->analog_nfm_bandwidth_hz = saved->analog_nfm_bandwidth_hz;
+    opts->analog_am_bandwidth_hz = saved->analog_am_bandwidth_hz;
+}
+
 static void
 scan_settings_restore_opts(const dsd_scan_settings* saved, dsd_opts* opts) {
     scan_settings_restore_row_opts(saved, opts);
+    scan_settings_restore_widths(saved, opts);
     opts->frame_dstar = saved->frame_dstar;
     opts->frame_x2tdma = saved->frame_x2tdma;
     opts->frame_p25p1 = saved->frame_p25p1;
@@ -292,6 +366,12 @@ dsd_scan_settings_equal(const dsd_scan_settings* a, const dsd_scan_settings* b, 
         offsetof(dsd_scan_settings, monitor_input_audio),
         offsetof(dsd_scan_settings, analog_demod),
     };
+    /* The channel widths filter only the analog family: a digital row runs its own channel profile, so a configured
+     * width edited under it (the width command, a config apply) is no acquisition change there. */
+    static const size_t analog[] = {
+        offsetof(dsd_scan_settings, analog_nfm_bandwidth_hz),
+        offsetof(dsd_scan_settings, analog_am_bandwidth_hz),
+    };
     static const size_t timing[] = {
         offsetof(dsd_scan_settings, state_rf_mod),       offsetof(dsd_scan_settings, state_samplesPerSymbol),
         offsetof(dsd_scan_settings, state_symbolCenter), offsetof(dsd_scan_settings, state_dmr_stereo),
@@ -301,6 +381,7 @@ dsd_scan_settings_equal(const dsd_scan_settings* a, const dsd_scan_settings* b, 
         return 0;
     }
     return scan_settings_fields_equal(a, b, options, sizeof(options) / sizeof(options[0]))
+           && (a->analog_only != 1 || scan_settings_fields_equal(a, b, analog, sizeof(analog) / sizeof(analog[0])))
            && strncmp(a->output_name, b->output_name, sizeof(a->output_name)) == 0
            && (!include_timing || scan_settings_fields_equal(a, b, timing, sizeof(timing) / sizeof(timing[0])));
 }
@@ -317,16 +398,57 @@ dsd_scan_mode_active(const dsd_state* state) {
     return scope && !scope->suspended ? scope->mode : DSD_SCAN_MODE_INHERIT;
 }
 
-static void
-scan_scope_apply_timing(const dsd_opts* opts, dsd_state* state, dsd_decode_mode_profile profile) {
-    int input_rate = dsd_opts_current_input_timing_rate(opts);
-    if (opts->audio_in_type == AUDIO_IN_RTL) {
-        const int live_rate = (int)dsd_rtl_stream_metrics_hook_output_rate_hz();
-        if (live_rate > 0) {
-            input_rate = live_rate;
+static int
+scan_configured_digital(const dsd_opts* opts, int configured_analog_only) {
+    return (configured_analog_only == 1 && opts->m17encoder != 1) ? 0 : 1;
+}
+
+int
+dsd_scan_mode_configured_digital(const dsd_opts* opts, const dsd_state* state) {
+    if (!opts) {
+        return 0;
+    }
+    const dsd_scan_settings* configured = dsd_scan_mode_configured_view(state);
+    return scan_configured_digital(opts, configured ? configured->analog_only : opts->analog_only);
+}
+
+/* The rate a row with @p symbol_rate_hz (0: no symbol clock) is timed for; see dsd_scan_mode_symbol_timing_rate_hz(). */
+static int
+scan_timing_rate_hz(const dsd_opts* opts, int configured_digital, int symbol_rate_hz, int cqpsk) {
+    const int input_rate = dsd_opts_current_input_timing_rate(opts);
+    if (opts->audio_in_type != AUDIO_IN_RTL) {
+        return input_rate;
+    }
+    if (symbol_rate_hz > 0 && configured_digital && dsd_rtl_stream_metrics_hook_analog_family_active()) {
+        /* The tune switches the family, and the output rate with it, only once it lands on the demod thread. */
+        const unsigned int landing_hz =
+            dsd_rtl_stream_metrics_hook_output_rate_for_family(DSD_RX_FAMILY_DIGITAL, cqpsk ? 1 : 0, symbol_rate_hz);
+        if (landing_hz > 0U) {
+            return (int)landing_hz;
         }
     }
-    state->samplesPerSymbol = dsd_opts_compute_sps_rate(opts, profile.symbol_rate_hz, input_rate);
+    const int live_rate = (int)dsd_rtl_stream_metrics_hook_output_rate_hz();
+    return live_rate > 0 ? live_rate : input_rate;
+}
+
+int
+dsd_scan_mode_symbol_timing_rate_hz(const dsd_opts* opts, const dsd_state* state, int symbol_rate_hz, int cqpsk) {
+    if (!opts) {
+        return 0;
+    }
+    return scan_timing_rate_hz(opts, dsd_scan_mode_configured_digital(opts, state), symbol_rate_hz, cqpsk);
+}
+
+/* Time the decoder for the row @p scope describes. The scope's own configured baseline says whether the configured
+ * mode is digital: dsd_opts already holds the row's class here, and the configured view is gone while suspended. An
+ * analog row has no symbol clock and keeps the live rate. */
+static void
+scan_scope_apply_timing(const dsd_opts* opts, dsd_state* state, const scan_scope* scope,
+                        dsd_decode_mode_profile profile) {
+    const int clock_hz = dsd_scan_mode_is_analog(scope->mode) ? 0 : profile.symbol_rate_hz;
+    const int rate_hz = scan_timing_rate_hz(opts, scan_configured_digital(opts, scope->configured.analog_only),
+                                            clock_hz, state->rf_mod == 1);
+    state->samplesPerSymbol = dsd_opts_compute_sps_rate(opts, profile.symbol_rate_hz, rate_hz);
     state->symbolCenter = dsd_opts_symbol_center(state->samplesPerSymbol);
     state->sps_hunt_idx = (int)profile.sps_profile_index;
 }
@@ -368,7 +490,7 @@ scan_scope_apply_decoder(dsd_opts* opts, dsd_state* state, const scan_scope* sco
         && scope->configured.state_sps_hunt_idx == DSD_FRAME_SYNC_SPS_PROFILE_6000_4) {
         profile = dsd_decode_mode_profile_for(DSDCFG_MODE_P25P2);
     }
-    scan_scope_apply_timing(opts, state, profile);
+    scan_scope_apply_timing(opts, state, scope, profile);
 }
 
 typedef void (*scan_option_applier)(dsd_opts* opts, dsd_state* state, const dsd_scan_option_values* values);
@@ -457,6 +579,13 @@ scan_option_apply_squelch(dsd_opts* opts, dsd_state* state, const dsd_scan_optio
     opts->rtl_squelch_level = dsd_squelch_level_from_sql((double)values->squelch_db);
 }
 
+static void
+scan_option_apply_bandwidth(dsd_opts* opts, dsd_state* state, const dsd_scan_option_values* values) {
+    (void)state;
+    /* Only an NFM row parses a width (--nfm-bandwidth-hz), so it is the NFM demodulator's. */
+    opts->analog_nfm_bandwidth_hz = values->channel_bw_hz;
+}
+
 /* One applier per row option that lands in dsd_opts/dsd_state. A new row option adds a row
  * here, never a branch: the lookup stays flat however many options the grammar grows. */
 static const struct {
@@ -476,6 +605,7 @@ static const struct {
     {DSD_SCAN_OPT_ENC, scan_option_apply_enc},
     {DSD_SCAN_OPT_GROUP, scan_option_apply_group},
     {DSD_SCAN_OPT_SQUELCH, scan_option_apply_squelch},
+    {DSD_SCAN_OPT_BANDWIDTH, scan_option_apply_bandwidth},
 };
 
 static void
@@ -539,6 +669,7 @@ dsd_scan_mode_options(dsd_opts* opts, dsd_state* state, const dsd_scan_option_va
     if (!scope->suspended) {
         const double squelch_before = opts->rtl_squelch_level;
         scan_settings_restore_row_opts(&scope->configured, opts);
+        scan_settings_restore_widths(&scope->configured, opts);
         state->M = scope->configured.force_key;
         scan_options_apply(opts, state, &scope->options);
         scan_squelch_settle(scope, opts, squelch_before);
@@ -641,12 +772,34 @@ dsd_scan_mode_updating(const dsd_state* state) {
     return scope && scope->suspended;
 }
 
+/* A command run while the scope was suspended timed the configured decoder at the live output rate. While the RTL front
+ * end still runs the analog family for the analog row on air (issue #526) and the configured mode is digital, that is
+ * the monitor's resampled audio rate, not the rate the configured decoder runs at: the digital family's, which an
+ * untyped row's tune or the leave lands it on, and which nothing retimes it for once it is the saved baseline. Time it
+ * for that family, as svc_publish_symbol_profile() times a mode change made outside a row. The profile is the
+ * configured one (the scope is still suspended); a front end on the digital family needs nothing. */
+static void
+scan_configured_retime(const dsd_opts* opts, dsd_state* state) {
+    if (opts->audio_in_type != AUDIO_IN_RTL || !scan_configured_digital(opts, opts->analog_only)
+        || !dsd_rtl_stream_metrics_hook_analog_family_active()) {
+        return;
+    }
+    const dsd_decode_mode_profile profile = dsd_scan_mode_effective_profile(opts, state);
+    if (profile.symbol_rate_hz <= 0) {
+        return;
+    }
+    const int rate_hz = scan_timing_rate_hz(opts, 1, profile.symbol_rate_hz, state->rf_mod == 1);
+    state->samplesPerSymbol = dsd_opts_compute_sps_rate(opts, profile.symbol_rate_hz, rate_hz);
+    state->symbolCenter = dsd_opts_symbol_center(state->samplesPerSymbol);
+}
+
 int
 dsd_scan_mode_resume(dsd_opts* opts, dsd_state* state) {
     scan_scope* scope = scan_scope_get(state);
     if (!scope || !opts || !state || !scope->suspended) {
         return 0;
     }
+    scan_configured_retime(opts, state);
     dsd_scan_settings_capture(opts, state, &scope->configured);
     scope->configured_mode = dsd_infer_decode_mode_preset_exact(opts);
     scope->suspended = 0;
@@ -655,7 +808,7 @@ dsd_scan_mode_resume(dsd_opts* opts, dsd_state* state) {
         /* Configuration updates do not move the receiver off its Phase 2 channel
          * or erase an unlocked modulation acquired on the current P25 row. */
         if (scope->effective.state_sps_hunt_idx == DSD_FRAME_SYNC_SPS_PROFILE_6000_4) {
-            scan_scope_apply_timing(opts, state, dsd_decode_mode_profile_for(DSDCFG_MODE_P25P2));
+            scan_scope_apply_timing(opts, state, scope, dsd_decode_mode_profile_for(DSDCFG_MODE_P25P2));
         }
         if (!opts->mod_cli_lock) {
             state->rf_mod = scope->effective.state_rf_mod;
@@ -762,6 +915,36 @@ dsd_scan_mode_set_configured_squelch(dsd_opts* opts, const dsd_state* state, dou
     return 1;
 }
 
+int
+dsd_scan_mode_set_configured_nfm_bandwidth(dsd_opts* opts, const dsd_state* state, int width_hz) {
+    if (!opts) {
+        return -1;
+    }
+    scan_scope* scope = state ? scan_scope_get(state) : NULL;
+    /* Suspended or absent, dsd_opts holds the configured values and resume recaptures them. */
+    if (scope && !scope->suspended) {
+        scope->configured.analog_nfm_bandwidth_hz = width_hz;
+        if (scope->options.present & DSD_SCAN_OPT_BANDWIDTH) {
+            return 0;
+        }
+    }
+    opts->analog_nfm_bandwidth_hz = width_hz;
+    return 1;
+}
+
+int
+dsd_scan_mode_configured_analog_width(const dsd_opts* opts, const dsd_state* state, int kind) {
+    const dsd_scan_settings* configured = dsd_scan_mode_configured_view(state);
+    int width_hz = 0;
+    if (configured) {
+        width_hz =
+            kind == DSD_ANALOG_DEMOD_AM ? configured->analog_am_bandwidth_hz : configured->analog_nfm_bandwidth_hz;
+    } else if (opts) {
+        width_hz = kind == DSD_ANALOG_DEMOD_AM ? opts->analog_am_bandwidth_hz : opts->analog_nfm_bandwidth_hz;
+    }
+    return width_hz > 0 ? width_hz : 0;
+}
+
 void
 dsd_scan_mode_copy_snapshot(dsd_state* dst, const dsd_state* src) {
     if (!dst || dst == src) {
@@ -816,7 +999,8 @@ dsd_scan_mode_effective_profile(const dsd_opts* opts, const dsd_state* state) {
 }
 
 int
-dsd_scan_mode_prepare(dsd_opts* opts, dsd_state* state, dsd_scan_mode mode, dsd_scan_settings* out) {
+dsd_scan_mode_prepare(dsd_opts* opts, dsd_state* state, dsd_scan_mode mode, const dsd_scan_option_values* row,
+                      dsd_scan_settings* out) {
     if (!opts || !state || !out || (unsigned)mode >= sizeof(mode_presets) / sizeof(mode_presets[0])) {
         return -1;
     }
@@ -829,6 +1013,9 @@ dsd_scan_mode_prepare(dsd_opts* opts, dsd_state* state, dsd_scan_mode mode, dsd_
     DSD_MEMSET(&temporary, 0, sizeof(temporary));
     dsd_scan_mode_configured(opts, state, &temporary.configured);
     temporary.mode = mode;
+    if (row) {
+        temporary.options = *row;
+    }
     if (mode == DSD_SCAN_MODE_INHERIT) {
         *out = temporary.configured;
     } else {

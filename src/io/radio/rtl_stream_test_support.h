@@ -506,6 +506,7 @@ typedef struct rtl_stream_test_live_request_result {
     int retune_queued; /* 1 when a retune profile for the target was left pending */
     int monitor_after; /* dsd_demod_analog_monitor_active() after the boundary */
     int published_lpf_on_after;
+    int request_rate_hz; /* rtl_stream_get_request_rate_hz() while the stream runs */
 } rtl_stream_test_live_request_result;
 
 /* Run a stream at @p rate_hz (the analog monitor at its default width, or a DMR session when @p analog_stream is 0)
@@ -565,6 +566,7 @@ int rtl_stream_test_audio_monitor_retune(int rate_before_hz, int rate_after_hz, 
 
 typedef struct rtl_stream_test_retune_profile_landing_result {
     int retune_refused;          /* 1 when the landing check refused the retune */
+    int profile_refused;         /* 1 when the retune landed and refused its own profile, which the retune reports */
     int rate_out_after;          /* demod_state::rate_out once the retune finalized */
     int analog_family_after;     /* demod_state::analog_family, likewise */
     int monitor_after;           /* dsd_demod_analog_monitor_active(), likewise */
@@ -652,6 +654,56 @@ int rtl_stream_test_retune_analog_profile(uint32_t target_hz, int family, int ki
 int rtl_stream_test_retune_analog_profile_at_rate(uint32_t target_hz, int rate_hz, int family, int kind, int width_hz,
                                                   int with_cqpsk_symbol_profile,
                                                   rtl_stream_test_retune_analog_result* out);
+
+/* A live request queued for the demod thread around a scan row's retune, and still unconsumed when the retune lands
+ * (rtl_stream_test_retune_step::queued_live_request): queued before the row's retune profile is, or made on the
+ * decoder's thread while the retune lands, once the controller has found the profile's family not superseded
+ * (rtl_stream_retune_family_superseded()) and before it retires the requests older than that family. */
+enum {
+    RTL_STREAM_TEST_QUEUED_NONE = 0,
+    RTL_STREAM_TEST_QUEUED_NFM_WIDTH = 1,    /* an NFM width command: the analog family at queued_live_width_hz */
+    RTL_STREAM_TEST_QUEUED_SYMBOL_AFTER = 2, /* the same, then a C4FM symbol profile queued once the profile is */
+    RTL_STREAM_TEST_QUEUED_NFM_WIDTH_AT_LANDING = 3, /* an NFM width command at queued_live_width_hz, while it lands */
+    RTL_STREAM_TEST_QUEUED_DIGITAL_AT_LANDING = 4,   /* a scan leave to a digital session while it lands: the digital
+                                                        family, then its C4FM symbol profile */
+};
+
+/* One scan row's retune (issue #526): the receive family its profile attaches, and the live family request a scanner
+ * or a command makes around it. */
+typedef struct rtl_stream_test_retune_step {
+    int family; /* dsd_rx_family the retune profile attaches */
+    int kind;   /* analog demodulator (with the analog family) */
+    int width_hz;
+    int with_symbol_profile;    /* queue a P25 CQPSK symbol profile for the target first, as a digital row does */
+    int live_family_before;     /* -1, or a live family request made before the profile is queued */
+    int live_family_after_take; /* -1, or a live family request made once the controller has taken the profile */
+    int queued_live_request;    /* RTL_STREAM_TEST_QUEUED_*: made with a pipeline running, so it waits in the queue */
+    int queued_live_width_hz;
+} rtl_stream_test_retune_step;
+
+typedef struct rtl_stream_test_retune_landing {
+    int queued_rc;           /* rtl_stream_prepare_retune_analog_profile_for_target() */
+    int taken;               /* the controller took a profile for the step's target */
+    int applied_family;      /* demod_state::analog_family once the retune finalized */
+    int applied_width_hz;    /* demod_state::channel_lpf_width_hz then */
+    int applied_output_kind; /* demod_state::output_kind then */
+    int applied_cqpsk_enable;
+    /* With a queued_live_request: the same once the demod thread reached its next block boundary after the retune,
+       and what became of the queued request (rtl_stream_receive_request_outcome()). */
+    int boundary_family;
+    int boundary_width_hz;
+    int boundary_output_kind;
+    int boundary_symbol_rate_hz;
+    int queued_request_outcome;
+} rtl_stream_test_retune_landing;
+
+/* Land @p count scan-row retunes one after another on a DMR stream opened at 48 kHz, each on its own channel, the way
+ * the controller does (queue the profile, take it, finalize the retune with it), and report what the demodulator ended
+ * on after each. With no stream running a live family request switches nothing itself; it only stands, as it does on
+ * the demod thread, for a newer request than the profile queued before it. A queued_live_request is made with a
+ * pipeline running instead, so it waits for the demod thread, which reaches a block boundary once the retune landed. */
+int rtl_stream_test_retune_profile_sequence(const rtl_stream_test_retune_step* steps, size_t count,
+                                            rtl_stream_test_retune_landing* out);
 
 typedef struct rtl_stream_test_replay_state {
     int replay_input_eof;

@@ -2348,10 +2348,139 @@ test_channel_map_examples_import_cleanly(void) {
     return rc;
 }
 
+/* --- Issue #526: nfm channel-map rows --- */
+
+typedef struct {
+    size_t count;
+    char mode[6][16];
+    int bandwidth_hz[6];
+    int squelch_db_set[6];
+    int key_source[6];
+} nfm_profiles;
+
+static void
+collect_nfm_profile(const dsd_csv_channel_profile* row, void* context) {
+    nfm_profiles* seen = (nfm_profiles*)context;
+    if (seen->count < 6) {
+        DSD_SNPRINTF(seen->mode[seen->count], sizeof seen->mode[seen->count], "%s", row->mode);
+        seen->bandwidth_hz[seen->count] = row->bandwidth_hz;
+        seen->squelch_db_set[seen->count] = row->squelch_db_set;
+        seen->key_source[seen->count] = row->key_source;
+    }
+    seen->count++;
+}
+
+/* Import @p body as a channel map; returns csvChanImport()'s result and the diagnostics it logged. */
+static int
+import_channel_map_text(const char* path, const char* body, char* log, size_t log_size) {
+    FILE* fp = dsd_fopen_private(path, "w");
+    assert(fp);
+    assert(fputs(body, fp) >= 0);
+    assert(fclose(fp) == 0);
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
+    assert(opts && state);
+    DSD_SNPRINTF(opts->chan_in_file, sizeof opts->chan_in_file, "%s", path);
+    int imported = -2;
+    dsd_test_capture_stderr cap;
+    log[0] = '\0';
+    if (dsd_test_capture_stderr_begin(&cap, "chan_nfm") == 0) {
+        imported = csvChanImport(opts, state);
+        (void)dsd_test_capture_stderr_end(&cap);
+        (void)dsd_test_capture_stderr_read(&cap, log, log_size);
+    }
+    free(opts);
+    free_test_state(state);
+    return imported;
+}
+
+static int
+expect_import_refused(const char* path, const char* body, const char* diagnostic) {
+    char log[4096];
+    const int imported = import_channel_map_text(path, body, log, sizeof log);
+    if (imported != -1 || !strstr(log, diagnostic)) {
+        DSD_FPRINTF(stderr, "want refusal '%s', got import=%d log:\n%s\n", diagnostic, imported, log);
+        return 1;
+    }
+    return 0;
+}
+
+/* A map mixing nfm and digital rows imports with each row's class and options, previews the
+ * nfm row's width, and refuses the settings an analog channel cannot use with a row diagnostic. */
+static int
+test_nfm_channel_map_rows(void) {
+    char path[DSD_TEST_PATH_MAX];
+    const int fd = dsd_test_mkstemp(path, sizeof path, "nfm-map-");
+    assert(fd >= 0);
+    dsd_close(fd);
+    char log[4096];
+    int rc = 0;
+    const char* mixed = "channel,frequency_hz,name,mode,options\n"
+                        "1,461000000,DMR,dmr,--scan-max-visit-ms 20000\n"
+                        "2,154430000,Fire,NFM,--nfm-bandwidth-hz 12500 --squelch-db -60 --scan-max-visit-ms 5000\n"
+                        "3,851012500,P25,p25,\n"
+                        "4,155475000,Ops, nfm ,\n"
+                        "5,150000000,Blank,,\n";
+    if (import_channel_map_text(path, mixed, log, sizeof log) != 0 || strstr(log, " row ")) {
+        DSD_FPRINTF(stderr, "mixed nfm map: %s\n", log);
+        rc = 1;
+    }
+    nfm_profiles seen = {0};
+    assert(dsd_csv_inspect_channel_profiles(path, &seen, collect_nfm_profile) == 0);
+    assert(seen.count == 5);
+    assert(strcmp(seen.mode[0], "dmr") == 0 && seen.bandwidth_hz[0] == -1);
+    assert(strcmp(seen.mode[1], "nfm") == 0 && seen.bandwidth_hz[1] == 12500 && seen.squelch_db_set[1]);
+    assert(strcmp(seen.mode[3], "nfm") == 0 && seen.bandwidth_hz[3] == -1 && seen.key_source[3] == 0);
+    assert(strcmp(seen.mode[4], "") == 0);
+
+    const char* header = "channel,frequency_hz,mode,options\n";
+
+    const struct {
+        const char* row;
+        const char* diagnostic;
+    } refused[] = {
+        {"1,154430000,nfm,-G groups.csv\n", "row 2: -G: not supported for this mode/target"},
+        {"1,154430000,nfm,--strict-crc\n", "row 2: --strict-crc: not supported for this mode/target"},
+        {"1,154430000,nfm,--scan-voice-only\n", "row 2: --scan-voice-only: not supported for this mode/target"},
+        {"1,154430000,nfm,-b 1\n", "row 2: -b: not supported for this mode/target"},
+        {"1,154430000,nfm,--nfm-bandwidth-hz 30000\n",
+         "row 2: --nfm-bandwidth-hz: expects whole Hz from 8000 to 25000"},
+        {"1,461000000,dmr,--nfm-bandwidth-hz 12500\n", "row 2: --nfm-bandwidth-hz: needs mode nfm"},
+        {"1,461000000,,--nfm-bandwidth-hz 12500\n", "row 2: --nfm-bandwidth-hz: needs mode nfm"},
+        {"1,154430000,fm,\n", "row 2: invalid mode 'fm' (use nfm)"},
+        {"1,154430000,Analog,\n", "row 2: invalid mode 'Analog' (use nfm)"},
+        {"1,154430000,wfm,\n", "row 2: invalid mode 'wfm' (use nfm)"},
+        {"1,154430000,typo,\n", "row 2: invalid mode; expected p25, dmr, nxdn96, nxdn48, dpmr, dstar, ysf, m17, nfm or "
+                                "an empty cell"},
+    };
+
+    for (size_t i = 0; i < sizeof(refused) / sizeof(refused[0]); i++) {
+        char body[256];
+        DSD_SNPRINTF(body, sizeof body, "%s%s", header, refused[i].row);
+        rc |= expect_import_refused(path, body, refused[i].diagnostic);
+    }
+    /* Legacy key columns load key material, which an analog row has no use for: refused on the
+     * options path and without it, and the key text never reaches the diagnostic. */
+    const char* keyed[] = {
+        "channel,frequency_hz,mode,single_key_dec\n1,154430000,nfm,SECRET123\n",
+        "channel,frequency_hz,mode,keys_hex_csv\n1,154430000,nfm,keys.csv\n",
+        "channel,frequency_hz,mode,single_key_hex,options\n1,154430000,nfm,SECRETAB,--squelch-db -60\n"};
+    for (size_t i = 0; i < sizeof(keyed) / sizeof(keyed[0]); i++) {
+        rc |= expect_import_refused(path, keyed[i], "row 2: key columns are not supported for mode nfm");
+        (void)import_channel_map_text(path, keyed[i], log, sizeof log);
+        assert(strstr(log, "SECRET") == NULL);
+    }
+    assert(remove(path) == 0);
+    return rc;
+}
+
 int
 main(void) {
     test_csv_physical_lines();
     if (test_channel_map_examples_import_cleanly() != 0) {
+        return 1;
+    }
+    if (test_nfm_channel_map_rows() != 0) {
         return 1;
     }
     test_mapping_and_channel_nul_rows_are_atomic();

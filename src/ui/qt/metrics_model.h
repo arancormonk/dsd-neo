@@ -106,6 +106,9 @@ class MetricsModel : public QObject {
     Q_PROPERTY(int analogBandwidthMaxHz READ analogBandwidthMaxHz NOTIFY tunerChanged)
     Q_PROPERTY(int analogBandwidthConfiguredHz READ analogBandwidthConfiguredHz NOTIFY controlChanged)
     Q_PROPERTY(QString analogBandwidthReading READ analogBandwidthReading NOTIFY tunerChanged)
+    /* Issue #526: an analog scan row on air, and whether it sets its own width over the configured one. */
+    Q_PROPERTY(bool analogBandwidthRowActive READ analogBandwidthRowActive NOTIFY tunerChanged)
+    Q_PROPERTY(bool analogBandwidthRowOverride READ analogBandwidthRowOverride NOTIFY tunerChanged)
     Q_PROPERTY(int slot1CallState READ slot1CallState NOTIFY slot1Changed)
     Q_PROPERTY(int slot2CallState READ slot2CallState NOTIFY slot2Changed)
     Q_PROPERTY(QString slot1CallName READ slot1CallName NOTIFY slot1Changed)
@@ -412,8 +415,8 @@ class MetricsModel : public QObject {
     }
 
     /**
-     * @brief The analog channel width in force, in Hz (issue #525); 0 outside the configured analog preset, and on PCM
-     * input, where no channel filter runs.
+     * @brief The analog channel width in force, in Hz (issue #525); 0 outside the configured analog preset with no
+     * analog scan row on air, and on PCM input, where no channel filter runs.
      *
      * While a running stream runs the analog monitor, the width it reports (the configured width while its channel
      * filter runs, otherwise the width the DSP rate leaves: see analogBandwidthDspLimited()). Otherwise -- a stream not
@@ -456,12 +459,32 @@ class MetricsModel : public QObject {
 
     /**
      * @brief The analog width reading, as every frontend spells it: "12.5 kHz", "16 kHz (default)",
-     * "12 kHz (DSP-limited)", or "not used on PCM input" (dsd_app_analog_width_view_format()); empty outside the
-     * configured analog preset.
+     * "12 kHz (DSP-limited)", "12.5 kHz (row; default 16 kHz)" while a scan row sets its own width, or "not used on PCM
+     * input" (dsd_app_analog_width_view_format()); empty outside the configured analog preset with no analog scan row
+     * on air.
      */
     QString
     analogBandwidthReading() const {
         return m_view.analog_bandwidth_reading;
+    }
+
+    /**
+     * @brief Whether an analog (nfm) scan row is on air (issue #526): it runs the analog family, and so a width,
+     * whatever the configured preset, digital sessions included.
+     */
+    bool
+    analogBandwidthRowActive() const {
+        return m_view.analog_bandwidth_row_active;
+    }
+
+    /**
+     * @brief Whether the scan row on air sets its own width (--nfm-bandwidth-hz, issue #526): analogBandwidthHz() is
+     * then the row's, in force until it leaves, while analogBandwidthConfiguredHz() stays what the width control
+     * edits.
+     */
+    bool
+    analogBandwidthRowOverride() const {
+        return m_view.analog_bandwidth_row_override;
     }
 
     /**
@@ -1387,6 +1410,8 @@ class MetricsModel : public QObject {
         bool radio_input = false;
         bool stream_active = false;
         bool analog_bandwidth_dsp_limited = false;
+        bool analog_bandwidth_row_active = false;
+        bool analog_bandwidth_row_override = false;
         bool synced_here = false;
         bool trunkable_sync = false;
         bool squelch_off = false;
@@ -1449,7 +1474,9 @@ class MetricsModel : public QObject {
             return analog_bandwidth_hz == other.analog_bandwidth_hz
                    && analog_bandwidth_dsp_limited == other.analog_bandwidth_dsp_limited
                    && analog_bandwidth_max_hz == other.analog_bandwidth_max_hz
-                   && analog_bandwidth_reading == other.analog_bandwidth_reading;
+                   && analog_bandwidth_reading == other.analog_bandwidth_reading
+                   && analog_bandwidth_row_active == other.analog_bandwidth_row_active
+                   && analog_bandwidth_row_override == other.analog_bandwidth_row_override;
         }
 
         /* The scan controls (#380) ride controlChanged with the rest; split out only so
@@ -1558,7 +1585,7 @@ class MetricsModel : public QObject {
     void fillDecoderView(View& next, const dsd_opts* opts_snapshot, const dsd_state* snapshot, double now_m);
     /** @brief The configured/effective squelch pair and the row badge (#521). */
     static void fillSquelchOverride(View& next, const dsd_opts* opts_snapshot, const dsd_state* snapshot);
-    /** @brief The analog channel width in force and the configured one (#525). */
+    /** @brief The analog channel width in force and the configured one (#525), and the nfm scan row on air (#526). */
     static void fillAnalogChannel(View& next, const dsd_opts* opts_snapshot, const dsd_state* snapshot,
                                   const dsd_frontend_metrics& metrics);
     /** @brief Listening settings, talkgroup Hold, and lockout state from the held snapshot. */

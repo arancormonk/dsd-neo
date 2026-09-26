@@ -10,6 +10,7 @@
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/dsp/frame_sync.h>
+#include <dsd-neo/runtime/analog_channel.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/decode_mode.h>
 #include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
@@ -258,7 +259,7 @@ test_squelch_row_override_scope(void) {
     g_squelch_pushes = 0;
 
     dsd_scan_settings prepared;
-    assert(dsd_scan_mode_prepare(o, s, DSD_SCAN_MODE_P25, &prepared) == 0);
+    assert(dsd_scan_mode_prepare(o, s, DSD_SCAN_MODE_P25, NULL, &prepared) == 0);
     assert(level_is(prepared.rtl_squelch_level, configured));
     assert(g_squelch_pushes == 0);
     /* Entering a row that carries no squelch leaves the demod where it already is. */
@@ -299,7 +300,7 @@ test_squelch_row_override_scope(void) {
     row.squelch_db = -60;
     assert(dsd_scan_mode_options(o, s, &row) == 0);
     assert(g_squelch_pushes == 4);
-    assert(dsd_scan_mode_prepare(o, s, DSD_SCAN_MODE_P25, &prepared) == 0);
+    assert(dsd_scan_mode_prepare(o, s, DSD_SCAN_MODE_P25, NULL, &prepared) == 0);
     assert(level_is(prepared.rtl_squelch_level, configured));
     assert(level_is(o->rtl_squelch_level, row_level) && g_squelch_pushes == 4);
 
@@ -477,8 +478,300 @@ test_configured_squelch_edit(void) {
     free(o);
 }
 
+/* --- Issue #526: the NFM scan class --- */
+
+_Static_assert(DSD_SCAN_MODE_NFM == 9 && DSD_SCAN_MODE_LAST == DSD_SCAN_MODE_NFM, "nfm is reserved as the last class");
+
+/* "nfm" is the one spelling: trimmed and case-insensitive like every class, with no aliases, and
+ * it is the last class so the bounds that used to stop at M17 now stop at it. */
+static void
+test_nfm_class_names(void) {
+    dsd_scan_mode parsed = DSD_SCAN_MODE_INHERIT;
+    assert(dsd_scan_mode_parse(" NfM ", &parsed) == 0 && parsed == DSD_SCAN_MODE_NFM);
+    assert(strcmp(dsd_scan_mode_name(DSD_SCAN_MODE_NFM), "nfm") == 0);
+    static const char* const aliases[] = {"fm", "analog", "wfm", "nbfm", "fm-conventional", "am"};
+    for (size_t i = 0; i < sizeof(aliases) / sizeof(aliases[0]); i++) {
+        assert(dsd_scan_mode_parse(aliases[i], &parsed) == -1);
+    }
+    assert(dsd_scan_mode_is_analog(DSD_SCAN_MODE_NFM));
+    for (int m = DSD_SCAN_MODE_INHERIT; m <= DSD_SCAN_MODE_M17; m++) {
+        assert(!dsd_scan_mode_is_analog((dsd_scan_mode)m));
+    }
+    assert(!dsd_scan_mode_is_analog((dsd_scan_mode)(DSD_SCAN_MODE_LAST + 1)));
+    assert(strcmp(dsd_scan_mode_name((dsd_scan_mode)(DSD_SCAN_MODE_LAST + 1)), "") == 0);
+}
+
+static void
+nfm_fixture(dsd_opts* o, dsd_state* s) {
+    o->wav_sample_rate = 48000;
+    o->audio_in_type = AUDIO_IN_WAV;
+    o->pulse_digi_out_channels = 2;
+    o->pulse_digi_rate_out = 8000;
+    assert(dsd_apply_decode_mode_preset(DSDCFG_MODE_DMR, DSD_DECODE_PRESET_PROFILE_CLI, o, s) == 0);
+    o->analog_nfm_bandwidth_hz = 0;
+    o->analog_am_bandwidth_hz = 7000;
+}
+
+/* An NFM row runs the analog FM monitor on a digital session and puts the digital decoders back
+ * when it ends; the audio sink layout and the configured widths are never touched. */
+static void
+test_nfm_class_enters_analog_monitor(void) {
+    dsd_opts* o = (dsd_opts*)calloc(1, sizeof(*o));
+    dsd_state* s = (dsd_state*)calloc(1, sizeof(*s));
+    assert(o && s);
+    nfm_fixture(o, s);
+    dsd_scan_settings baseline;
+    dsd_scan_settings_capture(o, s, &baseline);
+    assert(dsd_scan_mode_enter(o, s, DSD_SCAN_MODE_NFM) == 0);
+    assert(dsd_scan_mode_options(o, s, NULL) == 0);
+    assert(dsd_scan_mode_active(s) == DSD_SCAN_MODE_NFM);
+    assert(o->analog_only == 1 && o->monitor_input_audio == 1 && o->analog_demod == DSD_ANALOG_DEMOD_FM);
+    assert(dsd_opts_is_analog_family(o));
+    assert(!o->frame_dmr && !o->frame_p25p1 && !o->frame_nxdn48 && !o->frame_dstar && !o->frame_m17);
+    assert(o->pulse_digi_out_channels == 2 && o->pulse_digi_rate_out == 8000);
+    assert(o->analog_nfm_bandwidth_hz == 0 && o->analog_am_bandwidth_hz == 7000);
+    /* The configured view still describes the digital session. */
+    const dsd_scan_settings* configured = dsd_scan_mode_configured_view(s);
+    assert(configured && configured->analog_only == 0 && configured->frame_dmr == 1);
+    assert(dsd_scan_mode_configured_preset(o, s) == DSDCFG_MODE_DMR);
+    /* NFM -> DMR -> NFM moves between the families through the scope alone. */
+    assert(dsd_scan_mode_enter(o, s, DSD_SCAN_MODE_DMR) == 0);
+    assert(dsd_scan_mode_options(o, s, NULL) == 0);
+    assert(o->analog_only == 0 && o->monitor_input_audio == 0 && o->frame_dmr == 1);
+    assert(dsd_scan_mode_enter(o, s, DSD_SCAN_MODE_NFM) == 0);
+    assert(dsd_scan_mode_options(o, s, NULL) == 0);
+    dsd_scan_mode_leave(o, s);
+    dsd_scan_settings restored;
+    dsd_scan_settings_capture(o, s, &restored);
+    assert(settings_identical(&baseline, &restored));
+    assert(o->analog_only == 0 && o->frame_dmr == 1);
+    dsd_state_ext_free_all(s);
+    free(s);
+    free(o);
+}
+
+/* The row width is an acquisition setting: it is applied with the row, a different width
+ * restages the tune, and the configured width -- what a save would write -- never moves. */
+static void
+test_nfm_row_width_scope(void) {
+    dsd_opts* o = (dsd_opts*)calloc(1, sizeof(*o));
+    dsd_state* s = (dsd_state*)calloc(1, sizeof(*s));
+    assert(o && s);
+    nfm_fixture(o, s);
+    o->analog_nfm_bandwidth_hz = 20000;
+    dsd_scan_option_values row = {0};
+    row.present = DSD_SCAN_OPT_BANDWIDTH | DSD_SCAN_OPT_SQUELCH;
+    row.channel_bw_hz = 12500;
+    row.squelch_db = -60;
+
+    /* prepare tunes with the row width and leaves nothing behind. */
+    dsd_scan_settings prepared;
+    assert(dsd_scan_mode_prepare(o, s, DSD_SCAN_MODE_NFM, &row, &prepared) == 0);
+    assert(prepared.analog_only == 1 && prepared.analog_nfm_bandwidth_hz == 12500);
+    assert(o->analog_only == 0 && o->analog_nfm_bandwidth_hz == 20000);
+    assert(dsd_scan_mode_prepare(o, s, DSD_SCAN_MODE_NFM, NULL, &prepared) == 0);
+    assert(prepared.analog_nfm_bandwidth_hz == 20000);
+    /* A digital row ignores a width it cannot use (the parser never lets one through). */
+    assert(dsd_scan_mode_prepare(o, s, DSD_SCAN_MODE_DMR, NULL, &prepared) == 0);
+    assert(prepared.analog_only == 0 && prepared.analog_nfm_bandwidth_hz == 20000);
+
+    assert(dsd_scan_mode_enter(o, s, DSD_SCAN_MODE_NFM) == 0);
+    assert(dsd_scan_mode_options(o, s, &row) == 0);
+    assert(o->analog_nfm_bandwidth_hz == 12500);
+    assert(dsd_scan_mode_configured_view(s)->analog_nfm_bandwidth_hz == 20000);
+    assert(dsd_scan_mode_option_fields(s) & DSD_SCAN_OPT_BANDWIDTH);
+    dsd_scan_settings with_width;
+    dsd_scan_settings_capture(o, s, &with_width);
+    /* Unlike squelch, a width change is an acquisition change. */
+    assert(dsd_scan_mode_options(o, s, NULL) == 0);
+    assert(o->analog_nfm_bandwidth_hz == 20000);
+    dsd_scan_settings without_width;
+    dsd_scan_settings_capture(o, s, &without_width);
+    assert(!dsd_scan_settings_equal(&with_width, &without_width, 0));
+    without_width.analog_nfm_bandwidth_hz = 12500;
+    assert(dsd_scan_settings_equal(&with_width, &without_width, 0));
+    without_width.analog_am_bandwidth_hz = 5000;
+    assert(!dsd_scan_settings_equal(&with_width, &without_width, 0));
+    /* A digital row runs its own channel profile: the widths it carries for the leave are no acquisition setting. */
+    dsd_scan_settings digital_a;
+    dsd_scan_settings digital_b;
+    assert(dsd_scan_mode_prepare(o, s, DSD_SCAN_MODE_DMR, NULL, &digital_a) == 0);
+    digital_b = digital_a;
+    digital_b.analog_nfm_bandwidth_hz = 8000;
+    digital_b.analog_am_bandwidth_hz = 5000;
+    assert(digital_a.analog_only == 0 && dsd_scan_settings_equal(&digital_a, &digital_b, 1));
+
+    /* Suspended, dsd_opts holds the configured width; resume puts the row's back, and an edit
+     * the row shadows is no acquisition change. */
+    assert(dsd_scan_mode_options(o, s, &row) == 0);
+    assert(dsd_scan_mode_suspend(o, s));
+    assert(o->analog_nfm_bandwidth_hz == 20000 && o->analog_only == 0);
+    o->analog_nfm_bandwidth_hz = 18000;
+    assert(dsd_scan_mode_resume(o, s) == 0);
+    assert(o->analog_nfm_bandwidth_hz == 12500);
+    assert(dsd_scan_mode_configured_view(s)->analog_nfm_bandwidth_hz == 18000);
+    /* Without a row width the configured edit reaches the row, and the tune must follow it. */
+    assert(dsd_scan_mode_options(o, s, NULL) == 0);
+    assert(o->analog_nfm_bandwidth_hz == 18000);
+    assert(dsd_scan_mode_suspend(o, s));
+    o->analog_nfm_bandwidth_hz = 16000;
+    assert(dsd_scan_mode_resume(o, s) == 1);
+    assert(o->analog_nfm_bandwidth_hz == 16000 && o->analog_only == 1);
+    /* A digital row keeps the configured width in dsd_opts, and the next NFM row gets its own. */
+    assert(dsd_scan_mode_enter(o, s, DSD_SCAN_MODE_DMR) == 0);
+    assert(dsd_scan_mode_options(o, s, NULL) == 0);
+    assert(o->analog_nfm_bandwidth_hz == 16000 && o->analog_only == 0);
+    assert(dsd_scan_mode_enter(o, s, DSD_SCAN_MODE_NFM) == 0);
+    assert(o->analog_nfm_bandwidth_hz == 16000);
+    assert(dsd_scan_mode_options(o, s, &row) == 0);
+    assert(o->analog_nfm_bandwidth_hz == 12500);
+    dsd_scan_mode_leave(o, s);
+    assert(o->analog_nfm_bandwidth_hz == 16000 && o->analog_am_bandwidth_hz == 7000 && o->analog_only == 0);
+    dsd_state_ext_free_all(s);
+    free(s);
+    free(o);
+}
+
+/* On an analog (-fA) session a typed digital row leaves the monitor and an NFM row returns to
+ * it at the configured width unless the row sets its own; leave restores the analog session. */
+static void
+test_nfm_class_on_analog_session(void) {
+    dsd_opts* o = (dsd_opts*)calloc(1, sizeof(*o));
+    dsd_state* s = (dsd_state*)calloc(1, sizeof(*s));
+    assert(o && s);
+    nfm_fixture(o, s);
+    assert(dsd_apply_decode_mode_preset(DSDCFG_MODE_ANALOG, DSD_DECODE_PRESET_PROFILE_CLI, o, s) == 0);
+    o->analog_nfm_bandwidth_hz = 11250;
+    dsd_scan_settings baseline;
+    dsd_scan_settings_capture(o, s, &baseline);
+    assert(dsd_scan_mode_enter(o, s, DSD_SCAN_MODE_P25) == 0);
+    assert(dsd_scan_mode_options(o, s, NULL) == 0);
+    assert(o->analog_only == 0 && o->frame_p25p1 == 1);
+    assert(dsd_scan_mode_enter(o, s, DSD_SCAN_MODE_NFM) == 0);
+    assert(dsd_scan_mode_options(o, s, NULL) == 0);
+    assert(o->analog_only == 1 && o->analog_nfm_bandwidth_hz == 11250);
+    assert(dsd_scan_mode_enter(o, s, DSD_SCAN_MODE_INHERIT) == 0);
+    assert(dsd_scan_mode_options(o, s, NULL) == 0);
+    assert(o->analog_only == 1 && o->analog_nfm_bandwidth_hz == 11250);
+    dsd_scan_mode_leave(o, s);
+    dsd_scan_settings restored;
+    dsd_scan_settings_capture(o, s, &restored);
+    assert(settings_identical(&baseline, &restored));
+    dsd_state_ext_free_all(s);
+    free(s);
+    free(o);
+}
+
+/* An AM session (analog_demod AM, as the AM preset sets it, with its own AM width): an nfm row runs the FM demodulator at
+ * its own width or the configured NFM width, and leaves the AM width alone; a typed digital row and an untyped row in
+ * between switch AM -> NFM -> digital -> AM -> NFM, and the leave puts the AM session back with both widths. */
+static void
+test_nfm_class_on_am_session(void) {
+    dsd_opts* o = (dsd_opts*)calloc(1, sizeof(*o));
+    dsd_state* s = (dsd_state*)calloc(1, sizeof(*s));
+    assert(o && s);
+    nfm_fixture(o, s);
+    assert(dsd_apply_decode_mode_preset(DSDCFG_MODE_ANALOG, DSD_DECODE_PRESET_PROFILE_CLI, o, s) == 0);
+    o->analog_demod = DSD_ANALOG_DEMOD_AM;
+    o->analog_am_bandwidth_hz = 10000;
+    o->analog_nfm_bandwidth_hz = 11250;
+    dsd_scan_settings baseline;
+    dsd_scan_settings_capture(o, s, &baseline);
+    assert(dsd_opts_analog_width_hz(o) == 10000);
+
+    dsd_scan_option_values row = {0};
+    row.present = DSD_SCAN_OPT_BANDWIDTH;
+    row.channel_bw_hz = 12500;
+    assert(dsd_scan_mode_enter(o, s, DSD_SCAN_MODE_NFM) == 0);
+    assert(dsd_scan_mode_options(o, s, &row) == 0);
+    assert(o->analog_only == 1 && o->analog_demod == DSD_ANALOG_DEMOD_FM && dsd_opts_analog_width_hz(o) == 12500);
+    assert(o->analog_am_bandwidth_hz == 10000);
+    assert(dsd_scan_mode_configured_analog_width(o, s, DSD_ANALOG_DEMOD_AM) == 10000);
+    assert(dsd_scan_mode_configured_analog_width(o, s, DSD_ANALOG_DEMOD_FM) == 11250);
+
+    assert(dsd_scan_mode_enter(o, s, DSD_SCAN_MODE_P25) == 0);
+    assert(dsd_scan_mode_options(o, s, NULL) == 0);
+    assert(o->analog_only == 0 && o->frame_p25p1 == 1);
+
+    assert(dsd_scan_mode_enter(o, s, DSD_SCAN_MODE_INHERIT) == 0);
+    assert(dsd_scan_mode_options(o, s, NULL) == 0);
+    assert(o->analog_only == 1 && o->analog_demod == DSD_ANALOG_DEMOD_AM && dsd_opts_analog_width_hz(o) == 10000);
+
+    assert(dsd_scan_mode_enter(o, s, DSD_SCAN_MODE_NFM) == 0);
+    assert(dsd_scan_mode_options(o, s, NULL) == 0);
+    assert(o->analog_demod == DSD_ANALOG_DEMOD_FM && dsd_opts_analog_width_hz(o) == 11250);
+    assert(o->analog_am_bandwidth_hz == 10000);
+
+    dsd_scan_mode_leave(o, s);
+    dsd_scan_settings restored;
+    dsd_scan_settings_capture(o, s, &restored);
+    assert(settings_identical(&baseline, &restored));
+    assert(o->analog_demod == DSD_ANALOG_DEMOD_AM && dsd_opts_analog_width_hz(o) == 10000);
+    dsd_state_ext_free_all(s);
+    free(s);
+    free(o);
+}
+
+/* The NFM width command edits the configured width without suspending the scope, like the squelch
+ * setter: a row that sets its own width keeps it (0) while the baseline takes the edit, which the
+ * next row without a width and the leave put in force; anything else takes it at once (1). */
+static void
+test_configured_nfm_width_edit(void) {
+    dsd_opts* o = (dsd_opts*)calloc(1, sizeof(*o));
+    dsd_state* s = (dsd_state*)calloc(1, sizeof(*s));
+    assert(o && s);
+    nfm_fixture(o, s);
+    o->analog_nfm_bandwidth_hz = 20000;
+
+    assert(dsd_scan_mode_set_configured_nfm_bandwidth(NULL, s, 12500) == -1);
+    /* No scope: dsd_opts is the configured width. */
+    assert(dsd_scan_mode_set_configured_nfm_bandwidth(o, s, 18000) == 1 && o->analog_nfm_bandwidth_hz == 18000);
+    assert(dsd_scan_mode_set_configured_nfm_bandwidth(o, NULL, 20000) == 1 && o->analog_nfm_bandwidth_hz == 20000);
+
+    dsd_scan_option_values row = {0};
+    row.present = DSD_SCAN_OPT_BANDWIDTH;
+    row.channel_bw_hz = 12500;
+    assert(dsd_scan_mode_enter(o, s, DSD_SCAN_MODE_NFM) == 0);
+    assert(dsd_scan_mode_options(o, s, &row) == 0);
+    /* Shadowed: the row keeps its width in dsd_opts, the baseline takes the edit, nothing is suspended. */
+    assert(dsd_scan_mode_set_configured_nfm_bandwidth(o, s, 16000) == 0);
+    assert(o->analog_nfm_bandwidth_hz == 12500);
+    assert(dsd_scan_mode_configured_view(s)->analog_nfm_bandwidth_hz == 16000);
+    assert(dsd_scan_mode_updating(s) == 0);
+    /* The next row without a width runs the edited default. */
+    assert(dsd_scan_mode_options(o, s, NULL) == 0);
+    assert(o->analog_nfm_bandwidth_hz == 16000);
+    /* In force: both take it, and the AM width is never touched. */
+    assert(dsd_scan_mode_set_configured_nfm_bandwidth(o, s, 0) == 1);
+    assert(o->analog_nfm_bandwidth_hz == 0 && dsd_scan_mode_configured_view(s)->analog_nfm_bandwidth_hz == 0);
+    assert(o->analog_am_bandwidth_hz == 7000);
+    /* A digital row carries the configured width too, for the leave. */
+    assert(dsd_scan_mode_enter(o, s, DSD_SCAN_MODE_DMR) == 0);
+    assert(dsd_scan_mode_options(o, s, NULL) == 0);
+    assert(dsd_scan_mode_set_configured_nfm_bandwidth(o, s, 11250) == 1 && o->analog_nfm_bandwidth_hz == 11250);
+    /* Suspended: dsd_opts holds the configured values, and resume recaptures the edit. */
+    assert(dsd_scan_mode_enter(o, s, DSD_SCAN_MODE_NFM) == 0);
+    assert(dsd_scan_mode_options(o, s, &row) == 0);
+    assert(dsd_scan_mode_suspend(o, s));
+    assert(dsd_scan_mode_set_configured_nfm_bandwidth(o, s, 8000) == 1 && o->analog_nfm_bandwidth_hz == 8000);
+    assert(dsd_scan_mode_resume(o, s) == 0);
+    assert(o->analog_nfm_bandwidth_hz == 12500);
+    assert(dsd_scan_mode_configured_view(s)->analog_nfm_bandwidth_hz == 8000);
+    dsd_scan_mode_leave(o, s);
+    assert(o->analog_nfm_bandwidth_hz == 8000 && o->analog_only == 0 && o->frame_dmr == 1);
+    dsd_state_ext_free_all(s);
+    free(s);
+    free(o);
+}
+
 int
 main(void) {
+    test_nfm_class_names();
+    test_configured_nfm_width_edit();
+    test_nfm_class_enters_analog_monitor();
+    test_nfm_row_width_scope();
+    test_nfm_class_on_analog_session();
+    test_nfm_class_on_am_session();
     test_row_option_edits_are_not_acquisition_changes();
     test_max_visit_row_override_scope();
     test_squelch_row_override_scope();
@@ -510,7 +803,7 @@ main(void) {
         dsd_scan_mode parsed;
         assert(dsd_scan_mode_parse(dsd_scan_mode_name((dsd_scan_mode)m), &parsed) == 0 && parsed == (dsd_scan_mode)m);
         dsd_scan_settings prepared;
-        assert(dsd_scan_mode_prepare(o, s, parsed, &prepared) == 0);
+        assert(dsd_scan_mode_prepare(o, s, parsed, NULL, &prepared) == 0);
         assert(dsd_scan_mode_active(s) == DSD_SCAN_MODE_INHERIT);
         assert(dsd_scan_mode_enter(o, s, parsed) == 0);
         assert(dsd_scan_mode_active(s) == parsed);
