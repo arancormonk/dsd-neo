@@ -297,6 +297,13 @@ channel_scan_warn_rows_squelch(const dsd_opts* opts, const dsd_state* state) {
     }
 }
 
+/* Whether @p row is an analog row the scanner visits: a placeholder row (frequency 0) is never tuned. */
+static int
+channel_scan_row_visited_analog(const dsd_state* state, int row) {
+    return *dsd_state_trunk_lcn_slot_const(state, row) != 0
+           && dsd_scan_mode_is_analog(dsd_channel_mode_get(state, (size_t)row));
+}
+
 /* The widths the analog rows run, held to @p dsp_rate_hz: every row's, or, after the configured NFM width alone
  * changed (@p inherited_only), those of the rows that run it; a row with a width of its own was named at this rate
  * already, so it is counted without being named again. Every row skipped at every visit reaches the status line, since
@@ -306,8 +313,7 @@ static void
 channel_scan_warn_rows_width(const dsd_opts* opts, dsd_state* state, int dsp_rate_hz, int inherited_only) {
     dsd_engine_scan_skipped skipped = {0};
     for (int row = 0; row < state->lcn_freq_count; row++) {
-        if (*dsd_state_trunk_lcn_slot_const(state, row) == 0
-            || !dsd_scan_mode_is_analog(dsd_channel_mode_get(state, (size_t)row))) {
+        if (!channel_scan_row_visited_analog(state, row)) {
             continue;
         }
         const dsd_scan_row_profile* profile = dsd_channel_profile_get(state, (size_t)row);
@@ -534,33 +540,44 @@ dsd_engine_scan_analog_width_skipped(const dsd_opts* opts, const dsd_state* stat
     return 1;
 }
 
-int
-dsd_engine_channel_scan_refused_rows(const dsd_opts* opts, const dsd_state* state, int dsp_rate_hz, int* first_row,
-                                     char* brief, size_t brief_size) {
-    if (first_row) {
-        *first_row = -1;
-    }
-    if (brief && brief_size > 0U) {
-        brief[0] = '\0';
-    }
-    if (!opts || !state || opts->audio_in_type != AUDIO_IN_RTL) {
-        return 0;
-    }
+/* The analog rows the front end refuses at @p dsp_rate_hz, with the first one's index and status-line reason
+ * (dsd_engine_channel_scan_refused_rows()). */
+static int
+channel_scan_count_refused_rows(const dsd_opts* opts, const dsd_state* state, int dsp_rate_hz, int* first_row,
+                                char* brief, size_t brief_size) {
     int refused = 0;
     for (int row = 0; row < state->lcn_freq_count; row++) {
-        if (*dsd_state_trunk_lcn_slot_const(state, row) == 0
-            || !dsd_scan_mode_is_analog(dsd_channel_mode_get(state, (size_t)row))) {
+        if (!channel_scan_row_visited_analog(state, row)) {
             continue;
         }
         const dsd_scan_row_profile* profile = dsd_channel_profile_get(state, (size_t)row);
-        /* The first refused row's reason only. */
+        char row_brief[DSD_ANALOG_ERROR_TEXT_MAX];
         if (!dsd_engine_scan_analog_width_skipped(opts, state, profile ? &profile->values : NULL, dsp_rate_hz,
-                                                  refused == 0 ? brief : NULL, refused == 0 ? brief_size : 0U)) {
+                                                  row_brief, sizeof row_brief)) {
             continue;
         }
-        if (refused++ == 0 && first_row) {
+        if (refused++ == 0) {
             *first_row = row;
+            DSD_SNPRINTF(brief, brief_size, "%s", row_brief);
         }
+    }
+    return refused;
+}
+
+int
+dsd_engine_channel_scan_refused_rows(const dsd_opts* opts, const dsd_state* state, int dsp_rate_hz, int* first_row,
+                                     char* brief, size_t brief_size) {
+    int refused = 0;
+    int first = -1;
+    char first_brief[DSD_ANALOG_ERROR_TEXT_MAX] = "";
+    if (opts && state && opts->audio_in_type == AUDIO_IN_RTL) {
+        refused = channel_scan_count_refused_rows(opts, state, dsp_rate_hz, &first, first_brief, sizeof first_brief);
+    }
+    if (first_row) {
+        *first_row = first;
+    }
+    if (brief && brief_size > 0U) {
+        DSD_SNPRINTF(brief, brief_size, "%s", first_brief);
     }
     return refused;
 }
