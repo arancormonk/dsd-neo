@@ -5167,7 +5167,7 @@ add_executable(
 )
 target_include_directories(
     dsd-neo_test_engine_trunk_retune_regression
-    PRIVATE ${PROJECT_SOURCE_DIR}/include
+    PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/engine
 )
 target_link_libraries(
     dsd-neo_test_engine_trunk_retune_regression

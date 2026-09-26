@@ -37,11 +37,15 @@ check(bool ok) {
     }
 }
 
+namespace {
+
 struct InspectedTargets {
     QStringList types;
     QList<int> widths;
     QList<int> squelchDb;
 };
+
+} // namespace
 
 static void
 collectTarget(const dsd_app_scan_csv_target* target, void* context) {

@@ -37,6 +37,7 @@
 #include "dsd-neo/io/rtl_stream_fwd.h"
 #include "dsd-neo/platform/sockets.h"
 #include "dsd-neo/runtime/trunk_tuning_hooks.h"
+#include "scan_analog_internal.h"
 
 #if defined(__GNUC__) && !defined(__cplusplus)
 #pragma GCC diagnostic push
