@@ -36,6 +36,23 @@
       "cwd": "${workspaceFolder}",
       "environment": [],
       "externalConsole": false
+    },
+    {
+      "name": "dsd-neo Debug (win-msvc-debug)",
+      "type": "cppvsdbg",
+      "request": "launch",
+      "program": "${workspaceFolder}/build/win-msvc-debug/apps/dsd-cli/Debug/dsd-neo.exe",
+      "args": [],
+      "stopAtEntry": false,
+      "cwd": "${workspaceFolder}/build/win-msvc-debug/apps/dsd-cli/Debug",
+      "environment": [
+        {
+          "name": "PATH",
+          "value": "${workspaceFolder}/build/win-msvc-debug/vcpkg_installed/x64-windows/debug/bin;${env:PATH}"
+        }
+      ],
+      "externalConsole": false,
+      "symbolSearchPath": "${workspaceFolder}/build/win-msvc-debug/apps/dsd-cli/Debug"
     }
   ]
 }

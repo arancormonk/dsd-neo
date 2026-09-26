@@ -3,8 +3,7 @@
  * Copyright (C) 2025 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
-#ifndef DSD_NEO_INCLUDE_DSD_NEO_PLATFORM_CURSES_COMPAT_H_
-#define DSD_NEO_INCLUDE_DSD_NEO_PLATFORM_CURSES_COMPAT_H_
+#pragma once
 
 /**
  * @file
@@ -14,13 +13,11 @@
  * along with any compatibility macros needed to bridge API differences.
  */
 
+#include <dsd-neo/platform/platform.h>
+
 #if defined(DSD_USE_PDCURSES)
 /* PDCurses backend */
-/*
- * PDC_WIDE only controls the declarations visible from curses.h. It does not
- * prove that the linked PDCurses library exports the wide-character entrypoints.
- */
-#if defined(DSD_HAS_PDCURSES_WIDE_API) && !defined(PDC_WIDE)
+#ifndef PDC_WIDE
 #define PDC_WIDE
 #endif
 #include <curses.h>
@@ -80,4 +77,20 @@ dsd_curses_set_escdelay(int delay_ms) {
 #endif
 }
 
-#endif /* DSD_NEO_INCLUDE_DSD_NEO_PLATFORM_CURSES_COMPAT_H_ */
+#if defined(DSD_USE_PDCURSES)
+/* Some PDCurses distributions expose resize_term without declaring it. */
+#ifdef PDCEX
+PDCEX int resize_term(int, int);
+#else
+extern int resize_term(int, int);
+#endif
+#endif
+
+static inline int
+dsd_curses_resize_term(int lines, int columns) {
+#if defined(DSD_USE_PDCURSES)
+    return resize_term(lines, columns);
+#else
+    return resizeterm(lines, columns);
+#endif
+}

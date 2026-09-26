@@ -867,7 +867,82 @@ Item {
                 }
             }
 
-            // Why an empty log can still be a working decoder. On an almost entirely
+        Flow {
+            objectName: "tetraNetworkRow"
+            width: parent.width
+            visible: metrics.tetraNetworkKnown
+            spacing: 10
+
+            Text {
+                text: "TETRA " + metrics.tetraNetworkText
+                font.family: Theme.mono
+                font.pixelSize: 11
+                color: Theme.cyan
+            }
+            Text {
+                objectName: "tetraTrunkStateValue"
+                text: qsTr("STATE") + " " + metrics.tetraTrunkStateText
+                font.family: Theme.mono
+                font.pixelSize: 11
+                color: metrics.tetraTrunkStateText === "Traffic" ? Theme.cyan : Theme.textSubdued
+            }
+            Text {
+                visible: metrics.tetraControlChannelText.length > 0
+                text: qsTr("CONTROL") + " " + metrics.tetraControlChannelText
+                font.family: Theme.mono
+                font.pixelSize: 11
+                color: Theme.textSubdued
+            }
+            Text {
+                visible: metrics.tetraTrafficChannelText.length > 0
+                text: qsTr("TRAFFIC") + " " + metrics.tetraTrafficChannelText
+                font.family: Theme.mono
+                font.pixelSize: 11
+                color: Theme.textSubdued
+            }
+        }
+
+        Row {
+            objectName: "tetraMmStatusRow"
+            visible: metrics.tetraMmStatusKnown
+            spacing: 5
+
+            Text {
+                text: qsTr("MM STATUS")
+                font.family: Theme.mono
+                font.pixelSize: 11
+                color: Theme.textSubdued
+            }
+            Text {
+                objectName: "tetraMmStatusValue"
+                text: metrics.tetraMmStatusText
+                font.family: Theme.mono
+                font.pixelSize: 11
+                color: Theme.cyan
+            }
+        }
+
+        Row {
+            objectName: "tetraVocoderStatusRow"
+            visible: metrics.tetraVocoderStatusKnown
+            spacing: 5
+
+            Text {
+                text: qsTr("ACELP")
+                font.family: Theme.mono
+                font.pixelSize: 11
+                color: Theme.textSubdued
+            }
+            Text {
+                objectName: "tetraVocoderStatusValue"
+                text: metrics.tetraVocoderStatusText
+                font.family: Theme.mono
+                font.pixelSize: 11
+                color: Theme.cyan
+            }
+        }
+
+        // Why an empty log can still be a working decoder. On an almost entirely
             // encrypted site the control channel decodes, every grant is declined and
             // no call is ever logged, which is indistinguishable from a decoder that
             // stopped. Outside the strip above and its tuner gate on purpose: this is

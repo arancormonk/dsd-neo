@@ -520,15 +520,13 @@ test_group_csv(void) {
      * a lone 0xC3 lead byte in the file. */
     char over[64];
     DSD_MEMSET(over, 'A', 48U);
-    over[48] = (char)0xC3;
-    over[49] = (char)0x98; /* U+00D8 */
+    DSD_MEMCPY(&over[48], "\xC3\x98", 2U); /* U+00D8 */
     over[50] = '\0';
 
     /* 47 ASCII bytes then the same codepoint fits exactly in 49. */
     char exact[64];
     DSD_MEMSET(exact, 'B', 47U);
-    exact[47] = (char)0xC3;
-    exact[48] = (char)0x98;
+    DSD_MEMCPY(&exact[47], "\xC3\x98", 2U);
     exact[49] = '\0';
 
     dsd_rr_talkgroup tgs[8];

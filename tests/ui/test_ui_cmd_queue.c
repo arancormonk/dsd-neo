@@ -1011,6 +1011,37 @@ test_compact_visualizer_toast(void) {
     return rc;
 }
 
+static int
+seed_active_canonical_calls(dsd_opts* opts, dsd_state* state, long vc_freq, int tg) {
+    int rc = 0;
+    for (int slot = 0; slot < DSD_CALL_STATE_SLOT_COUNT; slot++) {
+        dsd_call_observation observation = {
+            .protocol = DSD_SYNC_P25P1_POS,
+            .slot = (uint8_t)slot,
+            .kind = DSD_CALL_KIND_GROUP_VOICE,
+            .ota_target_id = (uint32_t)(tg + slot),
+            .policy_target_id = (uint32_t)(tg + slot),
+            .ota_source_id = (uint32_t)(tg + slot + 10),
+            .frequency_hz = vc_freq,
+            .observed_m = 1.0 + slot,
+        };
+        rc |=
+            expect_int("seed canonical call", dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_BEGIN), 1);
+        dsd_event_sync_slot(opts, state, (uint8_t)slot);
+    }
+    return rc;
+}
+
+static int
+expect_call_phase(const char* tag, const dsd_state* state, uint8_t slot, dsd_call_phase want) {
+    dsd_call_snapshot snapshot;
+    if (dsd_call_state_get(state, slot, &snapshot) != 1) {
+        DSD_FPRINTF(stderr, "%s: canonical call unavailable\n", tag);
+        return 1;
+    }
+    return expect_int(tag, snapshot.phase, want);
+}
+
 #ifdef DSD_NEO_TEST_IO_CONTROL_WRAP
 // A patched call's policy target is the member WG the grant matched, while its
 // over-the-air target stays the supergroup the frontends show.
@@ -1051,37 +1082,6 @@ seed_active_p25_patched_voice(dsd_opts* opts, dsd_state* state, long cc_freq, lo
 static void
 seed_active_p25_voice(dsd_opts* opts, dsd_state* state, long cc_freq, long vc_freq, int tg) {
     seed_active_p25_patched_voice(opts, state, cc_freq, vc_freq, tg, tg);
-}
-
-static int
-seed_active_canonical_calls(dsd_opts* opts, dsd_state* state, long vc_freq, int tg) {
-    int rc = 0;
-    for (int slot = 0; slot < DSD_CALL_STATE_SLOT_COUNT; slot++) {
-        dsd_call_observation observation = {
-            .protocol = DSD_SYNC_P25P1_POS,
-            .slot = (uint8_t)slot,
-            .kind = DSD_CALL_KIND_GROUP_VOICE,
-            .ota_target_id = (uint32_t)(tg + slot),
-            .policy_target_id = (uint32_t)(tg + slot),
-            .ota_source_id = (uint32_t)(tg + slot + 10),
-            .frequency_hz = vc_freq,
-            .observed_m = 1.0 + slot,
-        };
-        rc |=
-            expect_int("seed canonical call", dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_BEGIN), 1);
-        dsd_event_sync_slot(opts, state, (uint8_t)slot);
-    }
-    return rc;
-}
-
-static int
-expect_call_phase(const char* tag, const dsd_state* state, uint8_t slot, dsd_call_phase want) {
-    dsd_call_snapshot snapshot;
-    if (dsd_call_state_get(state, slot, &snapshot) != 1) {
-        DSD_FPRINTF(stderr, "%s: canonical call unavailable\n", tag);
-        return 1;
-    }
-    return expect_int(tag, snapshot.phase, want);
 }
 
 static int
@@ -2625,6 +2625,7 @@ fake_scan_control(dsd_opts* opts, dsd_state* state, int op) {
  * --trunk-scan they are handed to the coordinator through the control hook; with neither
  * scanner running they are accepted and declined with a status message.
  */
+#ifdef DSD_NEO_TEST_IO_CONTROL_WRAP
 static int
 test_scan_hold_avoid_commands(void) {
     int rc = 0;
@@ -2841,6 +2842,7 @@ test_scan_hold_avoid_commands(void) {
     reset_cc_tune_stub(DSD_TRUNK_TUNE_RESULT_OK);
     return rc;
 }
+#endif
 
 #ifdef DSD_NEO_TEST_IO_CONTROL_WRAP
 /*
@@ -4400,7 +4402,9 @@ test_temporary_lockout_commands(uint8_t slot) {
 
     // Export uses the same canonical writer even when its source snapshot has avoids.
     union {
-        max_align_t alignment;
+        long double floating_alignment;
+        void* pointer_alignment;
+        uint64_t integer_alignment;
         unsigned char bytes[1200];
     } storage = {0};
 
@@ -4559,7 +4563,7 @@ test_skip_commands(uint8_t slot) {
     rc |= expect_int("export seed skip", dsd_tg_policy_call_skip_arm(&state, 123, 1, 0, dsd_time_now_monotonic_s()), 0);
 
     union {
-        max_align_t alignment;
+        dsd_app_tg_export_payload alignment;
         unsigned char bytes[1200];
     } storage = {0};
 

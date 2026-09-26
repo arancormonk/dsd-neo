@@ -20,6 +20,7 @@ target_sources(
         vocoder/keyring_dmr_tg_map.c
         vocoder/dsd_mbe.c
         vocoder/dsd_mbe_purge.c
+        vocoder/dsd_vocoder_type.c
         frames/dsd_frame.c
         frames/dsd_dibit.c
         time/dsd_time.c

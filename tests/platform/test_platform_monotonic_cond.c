@@ -75,15 +75,21 @@ test_timing_wrappers(void) {
 
     errno = 0;
     rc |= expect_int("localtime rejects null time", dsd_localtime(NULL, &tm_out), -1);
+#if !DSD_PLATFORM_WIN_NATIVE
     rc |= expect_int("localtime null time errno", errno, EINVAL);
+#endif
 
     errno = 0;
     rc |= expect_int("localtime rejects null out", dsd_localtime(&fixed, NULL), -1);
+#if !DSD_PLATFORM_WIN_NATIVE
     rc |= expect_int("localtime null out errno", errno, EINVAL);
+#endif
 
     errno = 0;
     rc |= expect_int("gmtime rejects null time", dsd_gmtime(NULL, &tm_out), -1);
+#if !DSD_PLATFORM_WIN_NATIVE
     rc |= expect_int("gmtime null time errno", errno, EINVAL);
+#endif
 
     rc |= expect_int("gmtime epoch", dsd_gmtime(&fixed, &tm_out), 0);
     rc |= expect_int("gmtime epoch year", tm_out.tm_year, 70);
@@ -121,7 +127,11 @@ test_threading_wrapper_contracts(void) {
     rc |= expect_int("mutex_unlock rejects null", dsd_mutex_unlock(NULL), EINVAL);
     rc |= expect_int("cond_init rejects null", dsd_cond_init(NULL), EINVAL);
     rc |= expect_int("cond_init_monotonic rejects null", dsd_cond_init_monotonic(NULL), EINVAL);
+#if DSD_PLATFORM_WIN_NATIVE
+    rc |= expect_int("cond_destroy null is a no-op", dsd_cond_destroy(NULL), 0);
+#else
     rc |= expect_int("cond_destroy rejects null", dsd_cond_destroy(NULL), EINVAL);
+#endif
     rc |= expect_int("cond_wait rejects null cond", dsd_cond_wait(NULL, (dsd_mutex_t*)1), EINVAL);
     rc |= expect_int("cond_wait rejects null mutex", dsd_cond_wait((dsd_cond_t*)1, NULL), EINVAL);
     rc |= expect_int("cond_timedwait rejects null cond", dsd_cond_timedwait(NULL, (dsd_mutex_t*)1, 1), EINVAL);

@@ -1786,6 +1786,51 @@ test_apply_demod_lock(void) {
 }
 
 static int
+test_dpmr_ignores_incompatible_demod_lock(void) {
+    static const char* ini = "version = 1\n"
+                             "\n"
+                             "[mode]\n"
+                             "decode = \"dpmr\"\n"
+                             "demod = \"gfsk\"\n";
+
+    char path[DSD_TEST_PATH_MAX];
+    if (write_temp_config(ini, path, sizeof path) != 0) {
+        return 1;
+    }
+
+    dsdneoUserConfig cfg;
+    if (dsd_user_config_load(path, &cfg) != 0) {
+        DSD_FPRINTF(stderr, "dsd_user_config_load failed for %s\n", path);
+        (void)remove(path);
+        return 1;
+    }
+
+    static dsd_opts opts;
+    static dsd_state state;
+    reset_opts_and_state(opts, state);
+
+    dsd_apply_user_config_to_opts(&cfg, &opts, &state);
+
+    int rc = 0;
+    if (!(opts.frame_dpmr == 1 && opts.mod_c4fm == 1 && opts.mod_qpsk == 0 && opts.mod_gfsk == 0)) {
+        DSD_FPRINTF(stderr, "dPMR demod coercion mismatch frame=%d mod=%d/%d/%d\n", opts.frame_dpmr, opts.mod_c4fm,
+                    opts.mod_qpsk, opts.mod_gfsk);
+        rc |= 1;
+    }
+    if (state.rf_mod != 0) {
+        DSD_FPRINTF(stderr, "dPMR rf_mod should remain 0, got %d\n", state.rf_mod);
+        rc |= 1;
+    }
+    if (opts.mod_cli_lock != 0) {
+        DSD_FPRINTF(stderr, "dPMR should not retain incompatible demod lock, got lock=%d\n", opts.mod_cli_lock);
+        rc |= 1;
+    }
+
+    (void)remove(path);
+    return rc;
+}
+
+static int
 test_snapshot_persists_demod_lock(void) {
     static dsd_opts opts;
     static dsd_state state;
@@ -3573,6 +3618,7 @@ main(void) {
     rc |= test_load_and_apply_rtltcp_regression();
     rc |= test_snapshot_roundtrip();
     rc |= test_apply_demod_lock();
+    rc |= test_dpmr_ignores_incompatible_demod_lock();
     rc |= test_snapshot_persists_demod_lock();
     rc |= test_apply_logging_retargets_frame_log_file();
     rc |= test_apply_mode_ysf_uses_config_profile_behavior();

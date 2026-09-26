@@ -36,6 +36,8 @@
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/core/talkgroup_policy.h>
+#include <dsd-neo/protocol/tetra/tetra_acelp.h>
+#include <dsd-neo/protocol/tetra/tetra_trunk_sm.h>
 #include <dsd-neo/runtime/scan_mode.h>
 #include <dsd-neo/runtime/scan_options.h>
 
@@ -1457,6 +1459,45 @@ main(int argc, char** argv) {
             expect("the talkgroup text stays the number", model.slot1TgText() == QStringLiteral("0"));
         }
     }
+
+    /* TETRA network and allocation state reaches QML as display-ready values. */
+    state.tetra_net_known = 1;
+    state.tetra_mcc = 460;
+    state.tetra_mnc = 1001;
+    state.tetra_colour = 17;
+    state.tetra_trunk_state = TETRA_SM_TUNED;
+    state.tetra_sysinfo_main_carrier = 321;
+    state.tetra_vc_assignment_valid = 1;
+    state.tetra_vc_carrier = 654;
+    state.tetra_vc_timeslot_bitmap = 0x05;
+    state.tetra_vc_freq_hz = 392125000;
+    state.tetra_mm_status_valid = 1;
+    state.tetra_mm_status_code = 7;
+    state.tetra_vocoder_status = TETRA_VOCODER_STATUS_TIMEOUT;
+    state.tetra_vocoder_frames = 18;
+    state.tetra_vocoder_errors = 2;
+    model.refresh(&opts, &state);
+    expect("TETRA network becomes visible", model.tetraNetworkKnown());
+    expect("TETRA identity is formatted", model.tetraNetworkText() == QStringLiteral("MCC 460 · MNC 1001 · CC 17"));
+    expect("TETRA trunk state is formatted", model.tetraTrunkStateText() == QStringLiteral("Traffic"));
+    expect("TETRA control carrier is formatted", model.tetraControlChannelText() == QStringLiteral("Carrier 321"));
+    expect("TETRA traffic allocation includes frequency and slots",
+           model.tetraTrafficChannelText() == QStringLiteral("392.1250 MHz · Carrier 654 · TS 1,3"));
+    expect("TETRA MM status becomes visible", model.tetraMmStatusKnown());
+    expect("TETRA MM status is formatted",
+           model.tetraMmStatusText() == QStringLiteral("7 · MS frequency bands request"));
+    expect("TETRA vocoder status becomes visible", model.tetraVocoderStatusKnown());
+    expect("TETRA vocoder health is formatted",
+           model.tetraVocoderStatusText() == QStringLiteral("Timed out · 18 frames · 2 errors"));
+    state.tetra_net_known = 0;
+    state.tetra_mm_status_valid = 0;
+    state.tetra_vocoder_status = TETRA_VOCODER_STATUS_UNKNOWN;
+    model.refresh(&opts, &state);
+    expect("unknown TETRA network hides the row", !model.tetraNetworkKnown() && model.tetraNetworkText().isEmpty());
+    expect("unknown TETRA network clears trunk state", model.tetraTrunkStateText().isEmpty());
+    expect("unknown TETRA MM status hides the row", !model.tetraMmStatusKnown() && model.tetraMmStatusText().isEmpty());
+    expect("unknown TETRA vocoder status hides the row",
+           !model.tetraVocoderStatusKnown() && model.tetraVocoderStatusText().isEmpty());
 
     if (g_failures != 0) {
         DSD_FPRINTF(stderr, "%d failure(s)\n", g_failures);

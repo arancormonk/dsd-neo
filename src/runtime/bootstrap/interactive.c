@@ -239,8 +239,9 @@ interactive_choose_decode_mode(void) {
     DSD_FPRINTF(stderr, " 11) dPMR\n");
     DSD_FPRINTF(stderr, " 12) M17\n");
     DSD_FPRINTF(stderr, " 13) P25 + DMR (TDMA)\n");
-    DSD_FPRINTF(stderr, " 14) Analog monitor (passive)\n");
-    return prompt_int("Selection", 1, 1, 14);
+    DSD_FPRINTF(stderr, " 14) TETRA (pi/4-DQPSK, 18 kHz)\n");
+    DSD_FPRINTF(stderr, " 15) Analog monitor (passive)\n");
+    return prompt_int("Selection", 1, 1, 15);
 }
 
 static dsdneoUserDecodeMode
@@ -259,7 +260,8 @@ interactive_mode_to_decode_mode(int mode) {
         case 11: return DSDCFG_MODE_DPMR;
         case 12: return DSDCFG_MODE_M17;
         case 13: return DSDCFG_MODE_TDMA;
-        case 14: return DSDCFG_MODE_ANALOG;
+        case 14: return DSDCFG_MODE_TETRA;
+        case 15: return DSDCFG_MODE_ANALOG;
         default: return DSDCFG_MODE_UNSET;
     }
 }

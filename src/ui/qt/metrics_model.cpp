@@ -38,6 +38,10 @@
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/core/talkgroup_policy.h>
+#include <dsd-neo/protocol/tetra/tetra_acelp.h>
+#include <dsd-neo/protocol/tetra/tetra_mm.h>
+#include <dsd-neo/protocol/tetra/tetra_trunk_sm.h>
+#include <dsd-neo/runtime/decode_mode.h>
 #include <dsd-neo/runtime/scan_mode.h>
 
 #include <dsd-neo/core/opts_fwd.h>
@@ -46,6 +50,33 @@
 namespace dsd_qt {
 
 namespace {
+
+QString
+formatTetraVocoderStatusText(const dsd_state* state) {
+    const char* label = "Unknown";
+    switch ((tetra_vocoder_status_e)state->tetra_vocoder_status) {
+        case TETRA_VOCODER_STATUS_READY:           label = "Ready"; break;
+        case TETRA_VOCODER_STATUS_COMMAND_MISSING: label = "Command missing"; break;
+        case TETRA_VOCODER_STATUS_START_FAILED:    label = "Start failed"; break;
+        case TETRA_VOCODER_STATUS_TIMEOUT:         label = "Timed out"; break;
+        case TETRA_VOCODER_STATUS_SHORT_OUTPUT:    label = "Short output"; break;
+        case TETRA_VOCODER_STATUS_UNKNOWN:         break;
+    }
+    return QStringLiteral("%1 · %2 frames · %3 errors")
+        .arg(QString::fromLatin1(label))
+        .arg(state->tetra_vocoder_frames)
+        .arg(state->tetra_vocoder_errors);
+}
+
+QString
+formatTetraTrunkStateText(const dsd_state* state) {
+    switch ((tetra_sm_state_e)state->tetra_trunk_state) {
+        case TETRA_SM_ON_CC: return QStringLiteral("Control");
+        case TETRA_SM_TUNED: return QStringLiteral("Traffic");
+        case TETRA_SM_IDLE:  return QStringLiteral("Idle");
+    }
+    return QStringLiteral("Unknown");
+}
 
 /**
  * @brief How long a lock keeps reading as locked after the last synced frame.
@@ -760,6 +791,46 @@ MetricsModel::fillDecoderView(View& next, const dsd_opts* opts_snapshot, const d
     next.squelch_db = next.radio_input ? pwr_to_dB(opts_snapshot->rtl_squelch_level) : 0.0;
     next.squelch_off = next.radio_input && dsd_squelch_is_off(opts_snapshot->rtl_squelch_level);
     next.ppm = next.radio_input ? opts_snapshot->rtlsdr_ppm_error : 0;
+    next.tetra_network_known = snapshot->tetra_net_known != 0;
+    if (next.tetra_network_known) {
+        next.tetra_trunk_state_text = formatTetraTrunkStateText(snapshot);
+        next.tetra_network_text = QStringLiteral("MCC %1 · MNC %2 · CC %3")
+                                      .arg(snapshot->tetra_mcc)
+                                      .arg(snapshot->tetra_mnc)
+                                      .arg(snapshot->tetra_colour);
+        if (snapshot->tetra_sysinfo_main_carrier != 0U)
+            next.tetra_control_channel_text = QStringLiteral("Carrier %1").arg(snapshot->tetra_sysinfo_main_carrier);
+        if (snapshot->tetra_vc_assignment_valid != 0U) {
+            QStringList slots;
+            for (unsigned slot = 0; slot < 4U; ++slot) {
+                if ((snapshot->tetra_vc_timeslot_bitmap & (1U << slot)) != 0U)
+                    slots.append(QString::number(slot + 1U));
+            }
+            const QString allocation = QStringLiteral("Carrier %1 · TS %2")
+                                           .arg(snapshot->tetra_vc_carrier)
+                                           .arg(slots.isEmpty() ? QStringLiteral("—") : slots.join(QLatin1Char(',')));
+            next.tetra_traffic_channel_text = snapshot->tetra_vc_freq_hz > 0
+                                                  ? QStringLiteral("%1 MHz · %2")
+                                                        .arg(static_cast<double>(snapshot->tetra_vc_freq_hz) / 1.0e6,
+                                                             0, 'f', 4)
+                                                        .arg(allocation)
+                                                  : allocation;
+        }
+    } else {
+        next.tetra_network_text.clear();
+        next.tetra_trunk_state_text.clear();
+        next.tetra_control_channel_text.clear();
+        next.tetra_traffic_channel_text.clear();
+    }
+    next.tetra_mm_status_known = snapshot->tetra_mm_status_valid != 0U;
+    next.tetra_mm_status_text = next.tetra_mm_status_known
+                                    ? QStringLiteral("%1 · %2")
+                                          .arg(snapshot->tetra_mm_status_code)
+                                          .arg(QString::fromLatin1(tetra_mm_status_name(snapshot->tetra_mm_status_code)))
+                                    : QString();
+    next.tetra_vocoder_status_known = snapshot->tetra_vocoder_status != TETRA_VOCODER_STATUS_UNKNOWN;
+    next.tetra_vocoder_status_text =
+        next.tetra_vocoder_status_known ? formatTetraVocoderStatusText(snapshot) : QString();
     fillSquelchOverride(next, opts_snapshot, snapshot);
 }
 
@@ -819,7 +890,6 @@ MetricsModel::fillSlotCalls(View& next, const dsd_state* snapshot, double now_m)
         started[slot] = next.slot_call[slot].started_m;
     }
     next.lead_slot = dsd_app_lead_slot(line_states, started, DSD_CALL_STATE_SLOT_COUNT);
-}
 
 void
 MetricsModel::fillQualityView(View& next, const dsd_state* snapshot) {

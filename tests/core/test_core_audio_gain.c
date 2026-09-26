@@ -27,6 +27,7 @@
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
+#include "test_support.h"
 
 enum { DSD_AUDIO_TEST_PATH_MAX = 512 };
 
@@ -136,11 +137,7 @@ expect_float_close(const char* label, float got, float want, float tol) {
 
 static int
 create_temp_wav_path(const char* prefix, char* out_path, size_t out_path_sz) {
-    if (DSD_SNPRINTF(out_path, out_path_sz, "/tmp/%s_XXXXXX", prefix) >= (int)out_path_sz) {
-        DSD_FPRINTF(stderr, "FAIL: temp path too long for %s\n", prefix);
-        return 1;
-    }
-    int fd = dsd_mkstemp(out_path);
+    int fd = dsd_test_mkstemp(out_path, out_path_sz, prefix);
     if (fd < 0) {
         DSD_FPRINTF(stderr, "FAIL: dsd_mkstemp failed for %s\n", prefix);
         return 1;
@@ -152,12 +149,7 @@ create_temp_wav_path(const char* prefix, char* out_path, size_t out_path_sz) {
 
 static int
 create_temp_file_fd(const char* prefix, char* out_path, size_t out_path_sz) {
-    if (DSD_SNPRINTF(out_path, out_path_sz, "/tmp/%s_XXXXXX", prefix) >= (int)out_path_sz) {
-        DSD_FPRINTF(stderr, "FAIL: temp file path too long for %s\n", prefix);
-        return -1;
-    }
-
-    int fd = dsd_mkstemp(out_path);
+    int fd = dsd_test_mkstemp(out_path, out_path_sz, prefix);
     if (fd < 0) {
         DSD_FPRINTF(stderr, "FAIL: dsd_mkstemp failed for %s\n", prefix);
     }

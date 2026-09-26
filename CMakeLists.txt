@@ -43,6 +43,12 @@ if(MSVC)
     endif()
     # MSVC does not define common math constants (e.g., M_PI) unless explicitly enabled.
     add_compile_definitions(_USE_MATH_DEFINES)
+    # Ensure MSVC interprets source files as UTF-8 to avoid mojibake and
+    # compilation errors caused by non-ASCII glyphs in source/header files.
+    add_compile_options(
+        $<$<COMPILE_LANGUAGE:C>:/utf-8>
+        $<$<COMPILE_LANGUAGE:CXX>:/utf-8>
+    )
 endif()
 
 # Modern build options (aligned with mbelib-neo style)
@@ -492,7 +498,8 @@ if(DSD_ENABLE_WARNINGS)
             target_compile_options(dsd-neo_warnings INTERFACE /WX)
             target_link_options(
                 dsd-neo_warnings
-                INTERFACE "$<${_dsd_linkable_target}:/WX>"
+                INTERFACE
+                    "$<$<AND:${_dsd_linkable_target},$<NOT:$<BOOL:$<TARGET_PROPERTY:DSD_NEO_ALLOW_LINK_WARNINGS>>>>:/WX>"
             )
         endif()
     endif()

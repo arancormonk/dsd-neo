@@ -16,6 +16,7 @@
 #include <dsd-neo/core/source_alias.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
+#include <dsd-neo/protocol/tetra/tetra_messages.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/core/talkgroup_policy.h>
 #include <dsd-neo/dsp/demod_pipeline.h>
@@ -204,6 +205,16 @@ wattr_off(WINDOW* win, attr_t attrs, void* opts) { // NOLINT(misc-use-internal-l
     (void)opts;
     append_color_trace('-', attrs);
     return 0;
+}
+
+int
+attron(chtype attrs) { // NOLINT(misc-use-internal-linkage)
+    return wattr_on(stdscr, (attr_t)attrs, NULL);
+}
+
+int
+attroff(chtype attrs) { // NOLINT(misc-use-internal-linkage)
+    return wattr_off(stdscr, (attr_t)attrs, NULL);
 }
 
 static int
@@ -2848,6 +2859,31 @@ test_scan_timing_row_real_cursor(void) {
 
 int
 main(void) {
+    dsd_state* tetra_state = (dsd_state*)calloc(1U, sizeof(*tetra_state));
+    assert(tetra_state != NULL);
+    ncurses_last_synctype = DSD_SYNC_TETRA_NDB_POS;
+    tetra_message_push(tetra_state, DSD_TETRA_MESSAGE_CONTROL, "SYSINFO carrier=321");
+    tetra_message_push(tetra_state, DSD_TETRA_MESSAGE_SDS, "SDS hello");
+    reset_printw_capture();
+    ui_render_tetra_messages(tetra_state);
+    assert(strstr(g_printw_capture, "SDS hello") != NULL);
+    assert(strstr(g_printw_capture, "SYSINFO carrier=321") != NULL);
+#ifdef _WIN32
+    assert(_putenv_s("DSD_TETRA_UI_FILTER", "sds") == 0);
+#else
+    assert(setenv("DSD_TETRA_UI_FILTER", "sds", 1) == 0);
+#endif
+    reset_printw_capture();
+    ui_render_tetra_messages(tetra_state);
+    assert(strstr(g_printw_capture, "SDS hello") != NULL);
+    assert(strstr(g_printw_capture, "SYSINFO carrier=321") == NULL);
+#ifdef _WIN32
+    assert(_putenv_s("DSD_TETRA_UI_FILTER", "") == 0);
+#else
+    assert(unsetenv("DSD_TETRA_UI_FILTER") == 0);
+#endif
+    ncurses_last_synctype = DSD_SYNC_NONE;
+    free(tetra_state);
     test_voice_average_units();
     test_source_alias_rendering();
     test_input_source_helpers();

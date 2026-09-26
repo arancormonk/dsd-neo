@@ -34,6 +34,17 @@ Thumbs.db
 /logs/
 *.log
 *.out
+/captures/
+/Testing/
+# Local ETSI EN 300 395-2 speech sources. Never commit these.
+/third_party/tetra_acelp/en_30039502v010301p0.zip
+/third_party/tetra_acelp/reference/
+/tools/tetra/etsi/
+/tools/tetra/acelp_adapter/C-CODE/
+
+# Scratch content under tmp is ignored; the two tracked ETSI reference files
+# remain versioned because ignore rules do not affect tracked files.
+/tmp/*
 /.cmake-format.local.out
 /.gitleaks.sarif
 /.osv-scanner.local.out
@@ -46,5 +57,7 @@ Thumbs.db
 /.preflight-baseline*/
 /.scan-build.local/
 /.cppcheck-build/
+# Regression and trace artifacts
+artifacts/
 /.iq-fixture-cache/
 __pycache__/

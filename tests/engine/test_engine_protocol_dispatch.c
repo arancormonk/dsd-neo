@@ -29,6 +29,7 @@ enum {
     TEST_HANDLER_YSF,
     TEST_HANDLER_M17,
     TEST_HANDLER_P25P2,
+    TEST_HANDLER_TETRA,
     TEST_HANDLER_DPMR,
     TEST_HANDLER_P25P1,
 };
@@ -157,6 +158,18 @@ dsd_dispatch_handle_p25p2(dsd_opts* opts, dsd_state* state) {
 }
 
 int
+dsd_dispatch_matches_tetra(int synctype) {
+    return DSD_SYNC_IS_TETRA(synctype);
+}
+
+void
+dsd_dispatch_handle_tetra(dsd_opts* opts, dsd_state* state) {
+    (void)opts;
+    (void)state;
+    record_handler(TEST_HANDLER_TETRA);
+}
+
+int
 dsd_dispatch_matches_dpmr(int synctype) {
     return DSD_SYNC_IS_DPMR(synctype);
 }
@@ -223,8 +236,9 @@ check_public_handler_table(void) {
     assert(strcmp(dsd_protocol_handlers[1].name, "D-STAR") == 0);
     assert(strcmp(dsd_protocol_handlers[2].name, "DMR") == 0);
     assert(strcmp(dsd_protocol_handlers[9].name, "dPMR") == 0);
-    assert(strcmp(dsd_protocol_handlers[10].name, "P25P1") == 0);
-    assert(dsd_protocol_handlers[11].name == NULL);
+    assert(strcmp(dsd_protocol_handlers[10].name, "TETRA") == 0);
+    assert(strcmp(dsd_protocol_handlers[11].name, "P25P1") == 0);
+    assert(dsd_protocol_handlers[12].name == NULL);
 }
 
 /* #391: the zero value is PRODUCTIVE, which is what makes the contract safe by omission --
@@ -253,6 +267,7 @@ main(void) {
     g_retune_during_handler = 0;
     run_dispatch_case(DSD_SYNC_DMR_BS_VOICE_POS, TEST_HANDLER_DMR);
     run_dispatch_case(DSD_SYNC_DPMR_FS1_POS, TEST_HANDLER_DPMR);
+    run_dispatch_case(DSD_SYNC_TETRA_NDB_POS, TEST_HANDLER_TETRA);
     run_dispatch_case(DSD_SYNC_P25P1_POS, TEST_HANDLER_P25P1);
     run_dispatch_case(-1, TEST_HANDLER_NONE);
     run_dispatch_case_verdict(DSD_SYNC_YSF_POS, TEST_HANDLER_YSF, DSD_FRAME_VERDICT_UNPRODUCTIVE, 0);

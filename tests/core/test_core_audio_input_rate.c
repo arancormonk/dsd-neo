@@ -145,12 +145,7 @@ create_temp_raw_pcm_no_suffix(const char* prefix, const short* samples, size_t s
         return 1;
     }
 
-    if (DSD_SNPRINTF(out_path, out_path_sz, "/tmp/%s_XXXXXX", prefix) >= (int)out_path_sz) {
-        DSD_FPRINTF(stderr, "FAIL: temp raw path too long for %s\n", prefix);
-        return 1;
-    }
-
-    int fd = dsd_mkstemp(out_path);
+    int fd = dsd_test_mkstemp(out_path, out_path_sz, prefix);
     if (fd < 0) {
         DSD_FPRINTF(stderr, "FAIL: dsd_test_mkstemp failed for %s\n", prefix);
         return 1;

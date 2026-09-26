@@ -22,8 +22,15 @@ elseif(DSD_NEO_CLI_SMOKE_MODE STREQUAL "invalid-option")
     set(_args "--definitely-not-an-option")
     set(_want_rc 1)
     set(_want_stdout_regex "Usage: dsd-neo \\[options\\]")
+    if(CMAKE_HOST_WIN32)
+    # getopt diagnostics are not emitted consistently by the MSVC getopt
+    # compatibility layer. The non-zero status and usage text are the stable
+    # public contract on every platform.
+        set(_want_stderr_regex "")
+    else()
     # glibc getopt reports "invalid option", musl reports "unrecognized option".
-    set(_want_stderr_regex "invalid option|unrecognized option")
+        set(_want_stderr_regex "invalid option|unrecognized option")
+    endif()
 elseif(DSD_NEO_CLI_SMOKE_MODE STREQUAL "nfm-width-rate-refused")
     # Issue #525: an explicit NFM width the rtl_tcp input's 24 kHz DSP
     # bandwidth cannot filter is refused before the device opens, with the

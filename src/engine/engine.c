@@ -62,6 +62,8 @@
 #include <dsd-neo/protocol/p25/p25_sm_watchdog.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #include <dsd-neo/protocol/provoice/provoice.h>
+#include <dsd-neo/protocol/tetra/tetra_acelp.h>
+#include <dsd-neo/protocol/tetra/tetra_trunk_sm.h>
 #include <dsd-neo/runtime/airspy_config.h>
 #include <dsd-neo/runtime/analog_channel.h>
 #include <dsd-neo/runtime/cli.h>
@@ -546,7 +548,7 @@ dsd_engine_setup_parse_bw_token_or_default(const char* token) {
     if (token && dsd_parse_int_arg(token, &bw) != 0) {
         bw = 0;
     }
-    if (bw == 4 || bw == 6 || bw == 8 || bw == 12 || bw == 16 || bw == 24 || bw == 48) {
+    if (bw == 4 || bw == 6 || bw == 8 || bw == 12 || bw == 16 || bw == 24 || bw == 48 || bw == 72) {
         return bw;
     }
     return 48;
@@ -1567,7 +1569,8 @@ no_carrier_p25_frames_enabled(const dsd_opts* opts) {
 
 static int
 no_carrier_generic_trunk_synctype(int synctype) {
-    if (DSD_SYNC_IS_DMR(synctype) || DSD_SYNC_IS_NXDN(synctype) || DSD_SYNC_IS_EDACS(synctype)) {
+    if (DSD_SYNC_IS_DMR(synctype) || DSD_SYNC_IS_NXDN(synctype) || DSD_SYNC_IS_EDACS(synctype)
+        || DSD_SYNC_IS_TETRA(synctype)) {
         return 1;
     }
     return DSD_SYNC_IS_X2TDMA(synctype) ? 1 : 0;
@@ -1988,6 +1991,10 @@ no_carrier_finish_cc_return(dsd_opts* opts, dsd_state* state, long cc, int accep
                                           accepted_cc_return ? DSD_CALL_END_EXPLICIT : DSD_CALL_END_SYNC_LOSS);
         if (accepted_cc_return && dsd_trunk_dmr_recovery_allowed(opts, state)) {
             dmr_sm_begin_cc_acquisition(dmr_sm_get_ctx(), opts, state, cc, request_id);
+        }
+        if (tetra_sm_get_state() == TETRA_SM_TUNED || DSD_SYNC_IS_TETRA(state->lastsynctype)) {
+            tetra_vocoder_close();
+            tetra_sm_on_external_cc_return(state);
         }
         (void)dsd_recent_activity_clear_all(state);
         state->is_con_plus = 0;

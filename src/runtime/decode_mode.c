@@ -35,6 +35,7 @@ dsd_decode_mode_from_cli_preset(char preset, dsdneoUserDecodeMode* out_mode) {
         case 'y': *out_mode = DSDCFG_MODE_YSF; return 0;
         case 'm': *out_mode = DSDCFG_MODE_DPMR; return 0;
         case 'z': *out_mode = DSDCFG_MODE_M17; return 0;
+        case 'T': *out_mode = DSDCFG_MODE_TETRA; return 0;
         default: return -1;
     }
 }
@@ -44,6 +45,13 @@ dsd_decode_mode_profile_for(dsdneoUserDecodeMode mode) {
     dsd_decode_mode_profile profile = {4800, 4, DSD_FRAME_SYNC_SPS_PROFILE_4800_4};
 
     switch (mode) {
+        case DSDCFG_MODE_TETRA:
+            /* TETRA owns a dedicated 18 ksym/s timing path rather than taking
+               part in the multi-protocol SPS hunt. COUNT is therefore the
+               intentional no-hunt-profile sentinel. */
+            profile.symbol_rate_hz = 18000;
+            profile.sps_profile_index = DSD_FRAME_SYNC_SPS_PROFILE_COUNT;
+            break;
         case DSDCFG_MODE_P25P2:
             profile.symbol_rate_hz = 6000;
             profile.sps_profile_index = DSD_FRAME_SYNC_SPS_PROFILE_6000_4;
@@ -84,6 +92,9 @@ dsd_decode_mode_profile_for(dsdneoUserDecodeMode mode) {
 
 int
 dsd_rtl_channel_profile_for(const dsd_opts* opts, int symbol_rate_hz, int levels, int rf_mod) {
+    if (symbol_rate_hz == 18000) {
+        return DSD_RTL_STREAM_CHANNEL_PROFILE_WIDE;
+    }
     if (symbol_rate_hz == 2400 || (symbol_rate_hz == 4800 && levels == 2)) {
         return DSD_RTL_STREAM_CHANNEL_PROFILE_6K25;
     }
@@ -117,6 +128,7 @@ decode_mode_base_symbol_timing(dsdneoUserDecodeMode mode, int* out_sps, int* out
         case DSDCFG_MODE_NXDN96:
         case DSDCFG_MODE_DPMR: sps = 20; break;
         case DSDCFG_MODE_EDACS_PV: sps = 5; break;
+        case DSDCFG_MODE_TETRA: sps = 3; break;
         default: sps = 10; break;
     }
 
@@ -546,6 +558,33 @@ decode_mode_apply_tdma(dsd_opts* o, dsd_state* s) {
 }
 
 static void
+decode_mode_apply_tetra(dsd_opts* o, dsd_state* s) {
+    o->frame_dstar = 0;
+    o->frame_x2tdma = 0;
+    o->frame_p25p1 = 0;
+    o->frame_p25p2 = 0;
+    o->frame_nxdn48 = 0;
+    o->frame_nxdn96 = 0;
+    o->frame_dmr = 0;
+    o->frame_dpmr = 0;
+    o->frame_provoice = 0;
+    o->frame_ysf = 0;
+    o->frame_m17 = 0;
+    o->frame_tetra = 1;
+    s->samplesPerSymbol = 3;
+    s->symbolCenter = 1;
+    o->mod_c4fm = 0;
+    o->mod_qpsk = 1;
+    o->mod_gfsk = 0;
+    s->rf_mod = 1;
+    o->dmr_stereo = 0;
+    s->dmr_stereo = 0;
+    o->pulse_digi_rate_out = 8000;
+    o->pulse_digi_out_channels = 1;
+    DSD_SNPRINTF(o->output_name, sizeof o->output_name, "%s", "TETRA");
+}
+
+static void
 decode_mode_apply_analog(dsd_opts* o, dsd_state* s) {
     o->frame_dstar = 0;
     o->frame_x2tdma = 0;
@@ -607,6 +646,7 @@ decode_mode_dispatch(dsdneoUserDecodeMode mode, dsdDecodePresetProfile profile, 
         case DSDCFG_MODE_DPMR: decode_mode_apply_dpmr(opts, state); return 0;
         case DSDCFG_MODE_M17: decode_mode_apply_m17(opts, state); return 0;
         case DSDCFG_MODE_TDMA: decode_mode_apply_tdma(opts, state); return 0;
+        case DSDCFG_MODE_TETRA: decode_mode_apply_tetra(opts, state); return 0;
         case DSDCFG_MODE_ANALOG: decode_mode_apply_analog(opts, state); return 0;
         default: return -1;
     }
@@ -617,6 +657,11 @@ dsd_apply_decode_mode_preset(dsdneoUserDecodeMode mode, dsdDecodePresetProfile p
                              dsd_state* state) {
     if (!opts || !state) {
         return -1;
+    }
+
+    /* Every preset other than TETRA must leave the TETRA decoder disabled. */
+    if (mode != DSDCFG_MODE_TETRA) {
+        opts->frame_tetra = 0;
     }
 
     if (decode_mode_dispatch(mode, profile, opts, state) != 0) {
@@ -665,6 +710,7 @@ dsd_infer_decode_mode_preset_exact(const dsd_opts* opts) {
         DSD_MODE_BIT_PROVOICE = 1u << 8,
         DSD_MODE_BIT_YSF = 1u << 9,
         DSD_MODE_BIT_M17 = 1u << 10,
+        DSD_MODE_BIT_TETRA = 1u << 11,
     };
 
     if (!opts) {
@@ -687,6 +733,7 @@ dsd_infer_decode_mode_preset_exact(const dsd_opts* opts) {
     mask |= ((unsigned)(opts->frame_provoice != 0) << 8);
     mask |= ((unsigned)(opts->frame_ysf != 0) << 9);
     mask |= ((unsigned)(opts->frame_m17 != 0) << 10);
+    mask |= ((unsigned)(opts->frame_tetra != 0) << 11);
 
     if (mask == DSD_MODE_BIT_DMR && opts->dmr_mono == 1) {
         return DSDCFG_MODE_DMR_MONO;
@@ -712,6 +759,7 @@ dsd_infer_decode_mode_preset_exact(const dsd_opts* opts) {
         {DSD_MODE_BIT_PROVOICE, DSDCFG_MODE_EDACS_PV},
         {DSD_MODE_BIT_DPMR, DSDCFG_MODE_DPMR},
         {DSD_MODE_BIT_M17, DSDCFG_MODE_M17},
+        {DSD_MODE_BIT_TETRA, DSDCFG_MODE_TETRA},
     };
 
     for (int i = 0; i < (int)(sizeof(map) / sizeof(map[0])); i++) {

@@ -1881,6 +1881,44 @@ replay_convert_cf32_to_f32(const struct rtl_device* s, const uint8_t* in, size_t
     return (int)float_count;
 }
 
+static int
+replay_convert_cs16_to_f32(const struct rtl_device* s, const uint8_t* in, size_t in_bytes, float* out_f32,
+                           size_t out_cap_f32, int* io_phase) {
+    if (!s || !in || !out_f32 || !io_phase || (in_bytes & 3U) != 0U) {
+        return -1;
+    }
+    if (strcmp(s->replay_cfg.capture_stage, "post_mute_pre_widen") != 0) {
+        return -1;
+    }
+
+    size_t complex_count = in_bytes / 4U;
+    size_t float_count = complex_count * 2U;
+    if (float_count > out_cap_f32) {
+        return -1;
+    }
+
+    const float scale = 1.0f / 32768.0f;
+    int phase = *io_phase & 3;
+    for (size_t i = 0; i < complex_count; ++i) {
+        int16_t raw_i = 0;
+        int16_t raw_q = 0;
+        DSD_MEMCPY(&raw_i, in + i * 4U, sizeof(raw_i));
+        DSD_MEMCPY(&raw_q, in + i * 4U + 2U, sizeof(raw_q));
+        float sample_i = (float)raw_i * scale;
+        float sample_q = (float)raw_q * scale;
+        if (s->replay_cfg.fs4_shift_enabled) {
+            rtl_apply_j4_rotation(sample_i, sample_q, phase,
+                                  &out_f32[i * 2U], &out_f32[i * 2U + 1U]);
+            phase = (phase + 1) & 3;
+        } else {
+            out_f32[i * 2U] = sample_i;
+            out_f32[i * 2U + 1U] = sample_q;
+        }
+    }
+    *io_phase = phase;
+    return (int)float_count;
+}
+
 static void
 replay_advance_omitted_cu8(const struct rtl_device* s, uint64_t duration_bytes, int* io_phase, int* io_have_carry,
                            uint8_t* io_carry_byte, uint64_t* complex_written) {
@@ -2224,6 +2262,9 @@ replay_convert_block_to_f32(const struct rtl_device* s, const uint8_t* raw_block
     }
     if (s->replay_cfg.format == DSD_IQ_FORMAT_CF32) {
         return replay_convert_cf32_to_f32(s, raw_block, out_bytes, f32_block, f32_cap, phase);
+    }
+    if (s->replay_cfg.format == DSD_IQ_FORMAT_CS16) {
+        return replay_convert_cs16_to_f32(s, raw_block, out_bytes, f32_block, f32_cap, phase);
     }
     return -1;
 }

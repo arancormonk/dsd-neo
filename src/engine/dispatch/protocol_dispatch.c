@@ -12,6 +12,9 @@
 #include "dsd-neo/core/state_fwd.h"
 #include "protocol_dispatch_impl.h"
 
+extern int dsd_dispatch_matches_tetra(int synctype);
+extern dsd_frame_verdict dsd_dispatch_handle_tetra(dsd_opts* opts, dsd_state* state);
+
 static const dsd_protocol_handler*
 dsd_find_protocol_handler(int synctype) {
     const dsd_protocol_handler* handler = dsd_protocol_handlers;
@@ -59,6 +62,7 @@ const dsd_protocol_handler dsd_protocol_handlers[] = {
     {"M17", dsd_dispatch_matches_m17, dsd_dispatch_handle_m17, NULL},
     {"P25P2", dsd_dispatch_matches_p25p2, dsd_dispatch_handle_p25p2, NULL},
     {"dPMR", dsd_dispatch_matches_dpmr, dsd_dispatch_handle_dpmr, NULL},
+    {"TETRA", dsd_dispatch_matches_tetra, dsd_dispatch_handle_tetra, NULL},
     {"P25P1", dsd_dispatch_matches_p25p1, dsd_dispatch_handle_p25p1, NULL},
     {0, 0, 0, 0},
 };

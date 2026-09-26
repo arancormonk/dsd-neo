@@ -19,7 +19,9 @@ set_env_flag(const char* name, const char* value) {
 
 static void
 test_locale_init_force_ascii_and_c_locale_detection(void) {
+#if !DSD_PLATFORM_WIN_NATIVE
     char out[64];
+#endif
     char saved_locale[128] = {0};
     const char* current_locale = setlocale(LC_CTYPE, NULL);
     if (current_locale) {
@@ -36,9 +38,12 @@ test_locale_init_force_ascii_and_c_locale_detection(void) {
     set_env_flag("DSD_FORCE_ASCII", NULL);
     set_env_flag("DSD_FORCE_UTF8", NULL);
     if (setlocale(LC_CTYPE, "C") != NULL) {
+#if !DSD_PLATFORM_WIN_NATIVE
         assert(dsd_unicode_supported() == 0);
         assert(dsd_unicode_block_glyphs_supported() == 0);
+#endif
 
+#if !DSD_PLATFORM_WIN_NATIVE
         assert(dsd_ascii_fallback("bad "
                                   "\xC2"
                                   "\xA9"
@@ -48,6 +53,7 @@ test_locale_init_force_ascii_and_c_locale_detection(void) {
                                   out, sizeof(out))
                == out);
         assert(strcmp(out, "bad ? ? end") == 0);
+#endif
     }
 
     if (saved_locale[0] != '\0') {

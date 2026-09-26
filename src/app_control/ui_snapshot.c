@@ -265,6 +265,7 @@ ui_snapshot_copy_render_state(dsd_state* dst, const dsd_state* src) {
     ui_snapshot_copy_trunk_lcn_avoid(dst, src);
     UI_SNAPSHOT_COPY_RANGE(dst, src, m17_pbc_ct, straight_frame_step);
     UI_SNAPSHOT_COPY_RANGE(dst, src, vertex_ks_count, ui_msg);
+    UI_SNAPSHOT_COPY_RANGE(dst, src, tetra_message_sequence, tetra_messages);
 }
 
 static void

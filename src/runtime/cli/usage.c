@@ -149,7 +149,7 @@ dsd_cli_usage_section_radio_and_encoder(void) {
     printf("  freq <num>    RTL-SDR Frequency (851800000 or 851.8M)\n");
     printf("  gain <num>    RTL-SDR Device Gain (0-49)(default = 0; Hardware AGC recommended)\n");
     printf("  ppm  <num>    RTL-SDR PPM Error (default = 0)\n");
-    printf("  bw   <num>    RTL-SDR DSP Bandwidth (kHz) (default 48). Allowed: 4,6,8,12,16,24,48.\n");
+    printf("  bw   <num>    RTL-SDR DSP Bandwidth (kHz) (default 48). Allowed: 4,6,8,12,16,24,48,72.\n");
     printf("                   Note: This is the DSP baseband used to derive capture rate;\n");
     printf("                         it is NOT the tuner IF filter.\n");
     printf("  sq   <val>    RTL-SDR Squelch Threshold (Optional)\n");
@@ -264,6 +264,7 @@ dsd_cli_usage_section_decode(void) {
     printf("  -fe           Decode only EDACS EA/ProVoice\n");
     printf("  -fE           Decode only EDACS EA/ProVoice with ESK 0xA0\n");
     printf("  -fm           Decode only dPMR\n");
+    printf("  -fT           Decode only TETRA NDB (pi/4-DQPSK, 18 kHz channel)\n");
     printf("  -l            Disable DMR, dPMR, NXDN, M17 input filtering\n");
     printf("  -xx           Expect non-inverted X2-TDMA signal\n");
     printf("  -xr           Expect inverted DMR signal\n");

@@ -20,7 +20,14 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
+#if defined(_WIN32)
+#include <io.h>
+#define close _close
+#define dup2 _dup2
+#define fileno _fileno
+#else
 #include <unistd.h>
+#endif
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"

@@ -232,6 +232,7 @@ struct dsd_opts {
     int inverted_ysf;
     int frame_m17;
     int inverted_m17;
+    int frame_tetra; /**< 1 = attempt TETRA NDB sync detection */
     int call_alert;
 
     // rigctl / sockets / streaming
@@ -280,6 +281,9 @@ struct dsd_opts {
     int use_hpf;
     int use_pbf;
     int use_hpf_d;
+    int uvquality;
+    int p25_p2_soft_erasure;
+    int p25_p1_soft_voice;
     int floating_point;
     float input_upsample_buf[6];
     dsd_frontend_common_display_opts frontend_display;
@@ -396,7 +400,7 @@ dsd_opts_has_digital_decode_mode(const dsd_opts* opts) {
     }
     return opts->frame_p25p1 == 1 || opts->frame_p25p2 == 1 || opts->frame_provoice == 1 || opts->frame_dmr == 1
            || opts->frame_nxdn48 == 1 || opts->frame_nxdn96 == 1 || opts->frame_x2tdma == 1 || opts->frame_ysf == 1
-           || opts->frame_dstar == 1 || opts->frame_dpmr == 1 || opts->frame_m17 == 1;
+           || opts->frame_dstar == 1 || opts->frame_dpmr == 1 || opts->frame_m17 == 1 || opts->frame_tetra == 1;
 }
 
 /**

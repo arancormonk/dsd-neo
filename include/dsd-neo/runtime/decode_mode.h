@@ -87,9 +87,9 @@ void dsd_apply_decode_mode_symbol_timing(dsdneoUserDecodeMode mode, int effectiv
  * is not always where @c dsd_apply_decode_mode_symbol_timing() starts a mode off.
  */
 typedef struct {
-    int symbol_rate_hz;                                 /**< 2400, 4800, 6000 or 9600. */
+    int symbol_rate_hz;                                 /**< 2400, 4800, 6000, 9600 or 18000. */
     int levels;                                         /**< 2 or 4. */
-    dsd_frame_sync_sps_profile_index sps_profile_index; /**< Hunt profile carrying this mode. */
+    dsd_frame_sync_sps_profile_index sps_profile_index; /**< Hunt profile, or COUNT for dedicated timing. */
 } dsd_decode_mode_profile;
 
 /**

@@ -17,6 +17,7 @@
 #include <sys/types.h>
 
 #include "rtl_perf.h"
+#include "test_support.h"
 
 static uint64_t g_now_ns = 1000;
 static char* g_csv_data = nullptr;
@@ -35,8 +36,34 @@ test_dsd_fopen_private(const char* path, const char* mode) {
     assert(std::strcmp(path, "dsd-neo-rtl-perf.csv") == 0);
     assert(std::strcmp(mode, "a") == 0);
     g_open_count++;
+#if DSD_PLATFORM_WIN_NATIVE
+    g_csv_file = tmpfile();
+#else
     g_csv_file = open_memstream(&g_csv_data, &g_csv_size);
+#endif
     return g_csv_file;
+}
+
+static void
+refresh_csv_data(void) {
+#if DSD_PLATFORM_WIN_NATIVE
+    if (!g_csv_file) {
+        return;
+    }
+    fflush(g_csv_file);
+    long end = ftell(g_csv_file);
+    assert(end >= 0);
+    free(g_csv_data);
+    g_csv_size = (size_t)end;
+    g_csv_data = (char*)malloc(g_csv_size + 1);
+    assert(g_csv_data != nullptr);
+    rewind(g_csv_file);
+    assert(fread(g_csv_data, 1, g_csv_size, g_csv_file) == g_csv_size);
+    g_csv_data[g_csv_size] = '\0';
+    fseek(g_csv_file, end, SEEK_SET);
+#else
+    fflush(g_csv_file);
+#endif
 }
 
 extern "C" int
@@ -59,8 +86,8 @@ test_dsd_fstat(int fd, dsd_stat_t* st) {
 static void
 reset_fixture(void) {
     rtl_perf_shutdown();
-    unsetenv("DSD_NEO_RTL_PERF_CSV");
-    unsetenv("DSD_NEO_RTL_PERF_INTERVAL_MS");
+    dsd_test_unsetenv("DSD_NEO_RTL_PERF_CSV");
+    dsd_test_unsetenv("DSD_NEO_RTL_PERF_INTERVAL_MS");
     free(g_csv_data);
     g_csv_data = nullptr;
     g_csv_size = 0;
@@ -87,8 +114,8 @@ test_disabled_without_env(void) {
 static void
 test_csv_logging_aggregates_and_resets(void) {
     reset_fixture();
-    setenv("DSD_NEO_RTL_PERF_CSV", "1", 1);
-    setenv("DSD_NEO_RTL_PERF_INTERVAL_MS", "1", 1);
+    dsd_test_setenv("DSD_NEO_RTL_PERF_CSV", "1", 1);
+    dsd_test_setenv("DSD_NEO_RTL_PERF_INTERVAL_MS", "1", 1);
 
     assert(rtl_perf_enabled() == 1);
     assert(g_open_count == 1);
@@ -112,14 +139,14 @@ test_csv_logging_aggregates_and_resets(void) {
     snapshot.carrier_lock = 1;
 
     rtl_perf_maybe_log(&snapshot);
-    fflush(g_csv_file);
+    refresh_csv_data();
     std::string before_interval(g_csv_data ? g_csv_data : "", g_csv_size);
     assert(before_interval.find("rtltcp") == std::string::npos);
     assert(before_interval.find("time_ms,source,rate_hz") != std::string::npos);
 
     g_now_ns = 100001000ULL;
     rtl_perf_maybe_log(&snapshot);
-    fflush(g_csv_file);
+    refresh_csv_data();
     std::string first_log(g_csv_data ? g_csv_data : "", g_csv_size);
     assert(first_log.find(",rtltcp,48000,2,10,20,30,40,50,6,2,27,4,24,1,29,31,17,19,23,1,41,37,7.250,-12.500,1\n")
            != std::string::npos);
@@ -129,6 +156,7 @@ test_csv_logging_aggregates_and_resets(void) {
     snapshot.sample_rate_hz = 24000;
     snapshot.output_kind = 9;
     rtl_perf_maybe_log(&snapshot);
+    refresh_csv_data();
     rtl_perf_shutdown();
     std::string final_log(g_csv_data ? g_csv_data : "", g_csv_size);
     assert(final_log.find(",unknown,24000,9,10,20,30,40,50,6,0,0,0,0,0,0,0,0,0,0,0,0,0,7.250,-12.500,1\n")
@@ -143,10 +171,10 @@ static void
 test_existing_file_skips_header(void) {
     reset_fixture();
     g_stub_size = 99;
-    setenv("DSD_NEO_RTL_PERF_CSV", "1", 1);
-    setenv("DSD_NEO_RTL_PERF_INTERVAL_MS", "60001", 1);
+    dsd_test_setenv("DSD_NEO_RTL_PERF_CSV", "1", 1);
+    dsd_test_setenv("DSD_NEO_RTL_PERF_INTERVAL_MS", "60001", 1);
     assert(rtl_perf_enabled() == 1);
-    fflush(g_csv_file);
+    refresh_csv_data();
     std::string output(g_csv_data ? g_csv_data : "", g_csv_size);
     assert(output.find("time_ms,source") == std::string::npos);
 }

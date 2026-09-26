@@ -7,7 +7,6 @@
  * behavior without requiring a live rigctl server or network service.
  */
 
-#include <arpa/inet.h>
 #include <assert.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
@@ -27,6 +26,7 @@
 #include "dsd-neo/platform/platform.h"
 
 #if !DSD_PLATFORM_WIN_NATIVE
+#include <arpa/inet.h>
 #include <netinet/in.h>
 #include <netinet/tcp.h>
 #include <sys/socket.h>
@@ -60,7 +60,7 @@ static dsdneoRuntimeConfig g_config;
 static void
 reset_stubs(void) {
     DSD_MEMSET(g_commands, 0, sizeof(g_commands));
-    DSD_MEMSET(g_responses, 0, sizeof(g_responses));
+    DSD_MEMSET((void*)g_responses, 0, sizeof(g_responses));
     g_command_count = 0;
     g_response_count = 0;
     g_response_index = 0;

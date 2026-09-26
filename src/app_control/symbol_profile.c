@@ -159,7 +159,12 @@ symbol_profile_publish(const dsd_opts* opts, dsd_state* state, dsd_decode_mode_p
         return 0;
     }
 
-    state->sps_hunt_idx = (int)profile.sps_profile_index;
+    /* TETRA deliberately uses COUNT as a no-hunt sentinel.  Do not publish it
+       as an array index, while still letting scan mode defer a valid profile. */
+    if ((int)profile.sps_profile_index >= 0
+        && (int)profile.sps_profile_index < (int)DSD_FRAME_SYNC_SPS_PROFILE_COUNT) {
+        state->sps_hunt_idx = (int)profile.sps_profile_index;
+    }
     svc_note_digital_decode_modes(opts, state);
     if (dsd_scan_mode_updating(state)) {
         /* The saved configuration needs its new profile, but acquisition and

@@ -235,6 +235,12 @@ wtimeout(WINDOW* win, int delay) {
     g_timeout_calls++;
 }
 
+void
+timeout(int delay) {
+    (void)delay;
+    g_timeout_calls++;
+}
+
 int
 wgetch(WINDOW* win) {
     (void)win;
@@ -449,7 +455,11 @@ test_ui_single_frame_snapshot_input_and_draw_helpers(void) {
     stdscr = (WINDOW*)0x1;
     g_getch_value = 'a';
     dsd_neo_ui_async_test_process_input_frame(&opts);
+#if DSD_PLATFORM_WIN_NATIVE
+    rc |= expect_int("PDCurses does not configure escdelay", g_escdelay_calls, 0);
+#else
     rc |= expect_int("configure escdelay once", g_escdelay_calls, 1);
+#endif
     rc |= expect_int("configure keypad once", g_keypad_calls, 1);
     rc |= expect_int("configure timeout once", g_timeout_calls, 1);
     rc |= expect_int("normal input delivered", g_ncurses_input_calls, 1);
@@ -457,7 +467,11 @@ test_ui_single_frame_snapshot_input_and_draw_helpers(void) {
 
     g_getch_value = KEY_RESIZE;
     dsd_neo_ui_async_test_process_input_frame(&opts);
+#if DSD_PLATFORM_WIN_NATIVE
+    rc |= expect_int("PDCurses escdelay remains unused", g_escdelay_calls, 0);
+#else
     rc |= expect_int("configure not repeated", g_escdelay_calls, 1);
+#endif
     rc |= expect_int("resize clearok", g_clearok_calls, 1);
 
     uint64_t last_draw_ns = 100U;

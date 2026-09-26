@@ -108,13 +108,21 @@ dsd_stat_path(const char* path, dsd_stat_t* st) {
         return -1;
     }
     DSD_MEMSET(st, 0, sizeof *st);
+#if defined(_WIN32)
+    st->st_mode = _S_IFREG;
+#else
     st->st_mode = S_IFREG;
+#endif
     return 0;
 }
 
 int
 dsd_stat_is_regular(const dsd_stat_t* st) {
+#if defined(_WIN32)
+    return st && (st->st_mode & _S_IFMT) == _S_IFREG;
+#else
     return st && S_ISREG(st->st_mode);
+#endif
 }
 
 int
@@ -345,7 +353,7 @@ test_file_input_applies_clamped_low_sample_rate(void) {
     const char* input = "4\n"
                         "capture.raw\n"
                         "1\n"
-                        "14\n"
+                        "15\n"
                         "n\n"
                         "n\n"
                         "n\n";
@@ -405,7 +413,7 @@ test_rtl_input_formats_clamped_radio_options(void) {
                         "3\n"
                         "-1001\n"
                         "9\n"
-                        "14\n"
+                        "15\n"
                         "n\n"
                         "n\n"
                         "n\n";
@@ -450,7 +458,7 @@ test_rtl_empty_frequency_falls_back_to_pulse_devices(void) {
     static dsd_state state;
     const char* input = "2\n"
                         "\n"
-                        "14\n"
+                        "15\n"
                         "n\n";
 
     reset_harness();

@@ -84,6 +84,21 @@
 #define INV_PROVOICE_EA_SYNC           "13313133113113333311313133133311"
 #define PROVOICE_EA_SYNC               "31131311331331111133131311311133"
 
+/* TETRA Normal Downlink Burst training sequences, 22 bits (ETSI EN 300 392-2
+ * Table 9.33). NTS1: 1,1,0,1,0,0,0,0,1,1,1,0,1,0,0,1,1,1,0,1,0,0.
+ * NTS2 is exactly NTS1 with every dibit XOR 2, so it aliases a polarity-
+ * inverted NTS1. Polarity has to come from the synchronisation burst.
+ * NTS1 carries one logical channel (TCH/FS or SCH/F). NTS2 carries two. */
+#define TETRA_NDB_NTS_SYNC         "31003221310" /* NTS1 */
+#define INV_TETRA_NDB_NTS_SYNC     "13221003132" /* NTS2, also inverted NTS1 */
+
+/* TETRA Synchronisation Burst SSB training sequence (ETSI EN 300 392-2 §9.4.4.3.4).
+ * y_bits[38] = { 1,1, 0,0, 0,0, 0,1, 1,0, 0,1, 1,1, 0,0, 1,1, 1,0, 1,0, 0,1,
+ *                1,1, 0,0, 0,0, 0,1, 1,0, 0,1, 1,1 }
+ * Mapped to 19 dibits: (b0<<1)|b1 per dibit pair. */
+#define TETRA_SB_SSB_SYNC          "3001213032213001213" /* all 19 SSB dibits (non-inverted) */
+#define INV_TETRA_SB_SSB_SYNC      "1223031210031223031" /* all 19 SSB dibits (inverted, XOR 2) */
+
 /* EDACS/PV EOT dotting sequence */
 #define DOTTING_SEQUENCE_A             "131313131313131313131313131313131313131313131313" /* 0xAAAA... */
 #define DOTTING_SEQUENCE_B             "313131313131313131313131313131313131313131313131" /* 0x5555... */

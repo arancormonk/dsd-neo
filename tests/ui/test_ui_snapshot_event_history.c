@@ -14,6 +14,7 @@
 #include <dsd-neo/core/source_alias.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
+#include <dsd-neo/protocol/tetra/tetra_messages.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/core/talkgroup_policy.h>
 #include <dsd-neo/runtime/config.h>
@@ -265,7 +266,9 @@ main(void) {
     mark_history(&history[1]);
 
     dsd_app_snapshot_test_reset_event_history_copy_counts();
+    tetra_message_push(state, DSD_TETRA_MESSAGE_SDS, "first SDS");
     dsd_app_telemetry_publish_snapshot(state);
+    tetra_message_push(state, DSD_TETRA_MESSAGE_CALL, "later call");
     observation.ota_source_id = 999U;
     observation.observed_m = 2.0;
     assert(dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_CONTINUE) == 1);
@@ -284,6 +287,8 @@ main(void) {
     assert(dsd_state_trunk_lcn_avoid_set(state, 0U, 1) == 0);
 
     const dsd_state* snap = dsd_app_get_latest_snapshot();
+    assert(snap->tetra_message_sequence == 1);
+    assert(strcmp(snap->tetra_messages[0].text, "first SDS") == 0);
     assert_slot_tail(snap, 123U, 456U);
     assert(strcmp(snap->event_history_s[0].Event_History_Items[1].src_str, "RADIO-123") == 0);
     /* A shared pointer would let the next reserve() on either side realloc the other's
@@ -307,6 +312,7 @@ main(void) {
     // Repeated publications with unchanged revisions do not copy either history slot.
     dsd_app_snapshot_test_reset_event_history_copy_counts();
     dsd_app_telemetry_publish_snapshot(state);
+    assert(dsd_app_get_latest_snapshot()->tetra_message_sequence == 2);
     assert_slot_tail(dsd_app_get_latest_snapshot(), 123U, 456U);
     assert_history_copy_counts(0U, 0U, 0U, 0U);
 

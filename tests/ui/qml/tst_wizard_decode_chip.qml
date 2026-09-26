@@ -45,7 +45,8 @@ Item {
         // and labels do not.
         readonly property var everyLabel: [
             "Auto — P25/DMR/YSF", "P25", "P25 Simulcast", "DMR", "NXDN48",
-            "NXDN96", "D-STAR", "YSF", "M17", "NFM — analog FM",
+            "NXDN96", "D-STAR", "YSF", "M17", "TETRA",
+            "NFM — analog FM",
             "P25 LSM", "DMR Scan", "P25 Scan", "P25 LSM Scan",
             "NXDN48 Scan", "NXDN96 Scan", "EDACS", "EDACS EA"]
 
@@ -72,6 +73,13 @@ Item {
                     "a composite chip must not appear for a catalog flag")
             verify(tc.chipFor("P25 Simulcast") !== null,
                    "the catalog must be intact for an ordinary flag")
+        }
+
+        function test_01b_tetra_is_a_trunked_catalog_mode() {
+            tc.wizard.pickDecodeFlag("-fT")
+            compare(tc.selectedLabels(), ["TETRA"])
+            compare(tc.chipFor("TETRA").modelData.flag, "-fT")
+            verify(tc.chipFor("TETRA").modelData.trunked)
         }
 
         // The simulcast import. "-mq -^" is what dsd_rr_decode_flag() answers

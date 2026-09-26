@@ -23,6 +23,10 @@
 
 #if DSD_PLATFORM_WIN_NATIVE
 #include <direct.h>
+#include <fcntl.h>
+#include <io.h>
+#include <process.h>
+#include <sys/stat.h>
 #else
 #include <pwd.h>
 #include <sys/types.h>
@@ -121,7 +125,14 @@ dsd_test_make_temp_template(char* out, size_t out_sz, const char* prefix) {
     }
 
     char leaf[256];
+#if DSD_PLATFORM_WIN_NATIVE
+    /* MSVCRT's _mktemp_s() starts different test processes with the same
+     * candidate sequence. Include the PID so parallel CTest workers cannot
+     * collide on an otherwise identical template. */
+    int n = DSD_SNPRINTF(leaf, sizeof(leaf), "%s_%ld_XXXXXX", prefix, (long)_getpid());
+#else
     int n = DSD_SNPRINTF(leaf, sizeof(leaf), "%s_XXXXXX", prefix);
+#endif
     if (n < 0 || (size_t)n >= sizeof(leaf)) {
         errno = ENAMETOOLONG;
         return -1;
@@ -136,11 +147,33 @@ dsd_test_mkstemp(char* out_path, size_t out_sz, const char* prefix) {
         errno = EINVAL;
         return -1;
     }
+#if DSD_PLATFORM_WIN_NATIVE
+    /* Avoid _mktemp_s(): separate CRT processes can generate the same first
+     * candidate. Generate an explicit per-process/per-attempt name and let
+     * O_EXCL arbitrate safely. */
+    for (unsigned int attempt = 0; attempt < 1024; ++attempt) {
+        char leaf[256];
+        int n = DSD_SNPRINTF(leaf, sizeof(leaf), "%s_%ld_%u.tmp", prefix, (long)_getpid(), attempt);
+        if (n < 0 || (size_t)n >= sizeof(leaf) || dsd_test_path_join(out_path, out_sz, dsd_test_tmpdir(), leaf) != 0) {
+            return -1;
+        }
+        int fd = _open(out_path, _O_CREAT | _O_EXCL | _O_RDWR | _O_BINARY, _S_IREAD | _S_IWRITE);
+        if (fd >= 0) {
+            return fd;
+        }
+        if (errno != EEXIST) {
+            return -1;
+        }
+    }
+    errno = EEXIST;
+    return -1;
+#else
     DSD_MEMSET(out_path, 0, out_sz);
     if (dsd_test_make_temp_template(out_path, out_sz, prefix) != 0) {
         return -1;
     }
     return dsd_mkstemp(out_path);
+#endif
 }
 
 static inline char*

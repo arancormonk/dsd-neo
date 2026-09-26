@@ -1891,6 +1891,15 @@ main(void) {
     rc |= expect_configured_mode("ProVoice keeps 9.6 ksps binary FSK at 24 kHz", provoice, 24000,
                                  DSD_DEMOD_OUTPUT_FSK_DISCRIMINATOR, 9600, 2, DSD_CH_LPF_PROFILE_PROVOICE);
 
+    static dsd_opts tetra;
+    DSD_MEMSET(&tetra, 0, sizeof(tetra));
+    tetra.frame_tetra = 1;
+    tetra.mod_qpsk = 1;
+    rc |= expect_configured_mode("TETRA uses 18 ksps CQPSK symbols", tetra, 48000,
+                                 DSD_DEMOD_OUTPUT_SYMBOL_CQPSK, 18000, 4, DSD_CH_LPF_PROFILE_WIDE);
+    rc |= expect_configured_mode("TETRA keeps 18 ksps CQPSK symbols at 96 kHz DSP BW", tetra, 96000,
+                                 DSD_DEMOD_OUTPUT_SYMBOL_CQPSK, 18000, 4, DSD_CH_LPF_PROFILE_WIDE);
+
     static dsd_opts auto_all;
     DSD_MEMSET(&auto_all, 0, sizeof(auto_all));
     auto_all.frame_p25p1 = 1;

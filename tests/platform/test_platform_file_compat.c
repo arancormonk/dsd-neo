@@ -13,7 +13,11 @@
 #include <string.h>
 
 #include "dsd-neo/platform/platform.h"
-#if !DSD_PLATFORM_WIN_NATIVE
+#if DSD_PLATFORM_WIN_NATIVE
+#include <direct.h>
+#define mkdir(path, mode) _mkdir(path)
+#define rmdir(path)       _rmdir(path)
+#else
 #include <sys/stat.h>
 #include <unistd.h>
 #endif
