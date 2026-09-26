@@ -675,10 +675,10 @@ of the setup wizard): the analog monitor with an AM envelope detector in place o
   iq_dc_block`) would remove a carrier tuned to 0 Hz, and I/Q balance (`DSD_NEO_IQ_BALANCE`, `[dsp] iq_balance`) would
   read that carrier as an image and cancel it with its sidebands, so both stay off while AM runs, each with a one-time
   log note; they apply again to FM.
-- Received-tone detection (CTCSS, below) is FM signalling and does not run for AM. The AM monitor's carrier is still
-  kept as the FM monitor's is: under `-Y` a blank row of an `-fM` session holds on it under `-t`, as an `nfm` row does,
-  whether or not audio plays (`-o null` and a muted frontend included), and the Scan Timing row reads `Carrier` while
-  it holds.
+- Received-tone detection (CTCSS and DCS, below) is FM signalling and does not run for AM. The AM monitor's carrier is
+  still kept as the FM monitor's is: under `-Y` a blank row of an `-fM` session holds on it under `-t`, as an `nfm` row
+  does, whether or not audio plays (`-o null` and a muted frontend included), and the Scan Timing row reads `Carrier`
+  while it holds.
 - Live changes follow the [When changes apply](#when-changes-apply) table: switching between AM, the Analog (FM) monitor
   and the digital modes from a frontend applies to the running stream without reopening it, and so does a new AM width
   (Input > RTL-SDR > `AM bandwidth... [default]` in the terminal, or the Radio sheet's channel width stepper under the

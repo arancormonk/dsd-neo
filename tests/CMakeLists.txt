@@ -11759,10 +11759,10 @@ if(DSD_HAS_RADIO)
     # the FM monitor) through the AM detector: the whole excerpt delivered, 1120 ms
     # audible, -53.7 dBFS RMS, unclipped, and speech-shaped (14.6 dB in-band ratio,
     # where the FM monitor reads -2.4 dB on it). The excerpt carries no sub-audible
-    # tone, so the "Received tone:" forbid only guards against a false report; the
-    # FM-only detection gate is proven by DSP_SYMBOL_REPLAY, which feeds the same
-    # CTCSS-bearing monitor audio through the tap on FM (locks) and AM (publishes
-    # nothing), and by RUNTIME_ANALOG_TONES.
+    # tone or code, so the "Received tone:" forbid only guards against a false report;
+    # the FM-only detection gate is proven by DSP_SYMBOL_REPLAY, which feeds the same
+    # CTCSS-bearing and DCS-bearing monitor audio through the tap on FM (locks) and AM
+    # (publishes nothing), and by RUNTIME_ANALOG_TONES.
     dsd_neo_add_analog_replay_test(
         DECODE_IQ_ANALOG_AM_REAL
         am_airband_real

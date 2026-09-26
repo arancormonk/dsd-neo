@@ -406,10 +406,12 @@ identical results), and they are the numbers the user guide quotes:
   (at 254.1 Hz). The 250 ms window alone locked the 233.6 Hz and the filtered 254.1 Hz voice too; without the check
   that the newest 250 ms still carry the tone, the late windows would lock another five unfiltered and one filtered.
 
-Detection runs on the FM monitor only (issue #524). `DSP_SYMBOL_REPLAY` feeds the same CTCSS-bearing monitor blocks
-through the tap on the FM monitor, where they lock, and on the AM monitor, where nothing is published and a live switch
-to AM forgets the FM lock; `RUNTIME_ANALOG_TONES` pins the predicate every frontend's row asks. The `Received tone:`
-forbid on `DECODE_IQ_ANALOG_AM_REAL` only guards against a false report: that excerpt carries no sub-audible tone.
+Detection runs on the FM monitor only (issue #524), DCS (issue #523) as well as CTCSS. `DSP_SYMBOL_REPLAY` feeds the
+same CTCSS-bearing monitor blocks, and the same D023N-bearing ones, through the tap on the FM monitor, where they lock,
+and on the AM monitor, where nothing is published or logged and a live switch to AM forgets the FM lock;
+`APP_COMMAND_QUEUE` checks that the decode-mode switch from Analog to AM clears a received tone or code, and
+`RUNTIME_ANALOG_TONES` pins the predicate every frontend's row asks. The `Received tone:` forbid on
+`DECODE_IQ_ANALOG_AM_REAL` only guards against a false report: that excerpt carries no sub-audible tone or code.
 
 Retune clearing is covered where each path lives: `DSP_SYMBOL_REPLAY` (the tap reads the raw block before the voice
 high-pass removes the tone, leaves the audio byte-identical, clears on an RTL stream-generation or
