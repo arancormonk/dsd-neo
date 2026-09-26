@@ -160,12 +160,15 @@ Tests: `tests/engine/test_engine_trunk_scan.c` (`ENGINE_TRUNK_SCAN`) and
   `dsd_scan_mode_alias_hint()` names the class to suggest for an alias (`fm`, `analog`, `wfm`, `nbfm`, `fm-conventional`
   -> `nfm`; none is accepted) and `dsd_scan_mode_names_list()` the accepted spellings for a diagnostic. The analog
   channel widths (`analog_nfm_bandwidth_hz`, `analog_am_bandwidth_hz`) are acquisition fields of `dsd_scan_settings`:
-  captured, restored, compared by `dsd_scan_settings_equal()` for the analog family (so a width change restages a parked
-  analog row, while a digital row, which runs its own channel profile, is not disturbed by a configured width edit) and
-  restored again before a row's options install; a row width (`DSD_SCAN_OPT_BANDWIDTH`) lands there through its applier.
-  `channel_scan.c` restages an outstanding row's tune when a configured width that tune carries changes
-  (`channel_scan_configured_changed()`): an analog row's without a width of its own, whatever the configured family,
-  and an untyped row's on the analog family. A typed digital row, or an nfm row with its own width, commits as staged.
+  captured, restored, and compared by `dsd_scan_settings_equal()` for the analog family, only the width of the kind the
+  settings run (`analog_demod`; issue #524), so a change of that width restages a parked analog row, while a digital
+  row, which runs its own channel profile, and an analog row of the other kind are not disturbed by a configured width
+  edit; `dsd_scan_mode_resume()` keeps such an idle width as the scoped command left it rather than put it back. They
+  are restored again before a row's options install; a row width (`DSD_SCAN_OPT_BANDWIDTH`) lands there through its
+  applier. `channel_scan.c` restages an outstanding row's tune when the configured width that tune carries changes
+  (`channel_scan_configured_changed()`, the width of the kind the prepared row runs): an analog row's without a width
+  of its own, whatever the configured family (an nfm row's NFM width, on an AM session too), and an untyped row's on
+  the analog family (the configured kind's). A typed digital row, or an nfm row with its own width, commits as staged.
   `dsd_scan_mode_prepare()` takes the row's option values (NULL = none) so the prepared settings a scanner tunes with
   already carry the row width; its callers are `channel_scan.c` and the `scan_mode_replay` / `analog_replay` hosts.
   A row's symbol timing is computed for the output rate its tune lands on, `dsd_scan_mode_symbol_timing_rate_hz()`:

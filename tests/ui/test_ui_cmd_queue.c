@@ -7083,6 +7083,102 @@ test_config_apply_width_under_scan_rows(void) {
     return rc;
 }
 
+/* A config apply whose only [analog] change is the channel widths @p nfm_hz and @p am_hz, with no [mode]. */
+static int
+submit_config_widths(dsd_opts* opts, dsd_state* state, int nfm_hz, int am_hz, const char* label) {
+    dsdneoUserConfig cfg;
+    DSD_MEMSET(&cfg, 0, sizeof cfg);
+    cfg.has_analog = 1;
+    cfg.analog_nfm_bandwidth_hz = nfm_hz;
+    cfg.analog_am_bandwidth_hz = am_hz;
+    int rc = expect_int(label, dsd_app_command_submit(DSD_APP_CMD_CONFIG_APPLY, &cfg, sizeof(cfg)),
+                        DSD_APP_COMMAND_SUBMIT_QUEUED);
+    state->ui_msg[0] = '\0';
+    rc |= expect_int(label, dsd_app_drain_cmds(opts, state), 1);
+    return rc;
+}
+
+/* A config that changed only a width the row on air does not filter with left the row alone: nothing republished
+   and no acquisition reset (the received tone the row's monitor published is still there), with both widths
+   configured as the config gives them, in dsd_opts as in the scope's baseline. */
+static int
+expect_row_left_alone(const char* label, const dsd_opts* opts, const dsd_state* state, uint32_t seeded, int nfm_hz,
+                      int am_hz) {
+    int rc = expect_int(label, g_analog_req_calls + g_demod_req_calls, 0);
+    rc |= expect_received_tone_kept(label, state, seeded);
+    const dsd_scan_settings* baseline = dsd_scan_mode_configured_view(state);
+    rc |= expect_int(label, baseline != NULL, 1);
+    if (baseline) {
+        rc |= expect_int(label,
+                         baseline->analog_nfm_bandwidth_hz == nfm_hz && baseline->analog_am_bandwidth_hz == am_hz, 1);
+    }
+    rc |= expect_int(label, opts->analog_nfm_bandwidth_hz == nfm_hz && opts->analog_am_bandwidth_hz == am_hz, 1);
+    return rc;
+}
+
+/*
+ * Issue #524: only the channel width of the analog kind the row on air runs is an acquisition setting there. A config
+ * apply, a scoped command, that changes only the other kind's width -- am_bandwidth_hz under an nfm row or a blank row
+ * of an -fA session, nfm_bandwidth_hz under a blank row of an AM session -- leaves the row alone, and the width waits in
+ * the configuration for the next switch to its kind. One that changes the width in force still reaches the front end.
+ */
+static int
+test_config_apply_idle_width_under_scan_rows(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static void* fake_ctx[2];
+    int rc = 0;
+    init_nfm_session(&opts, &state, (RtlSdrContext*)fake_ctx);
+    opts.analog_nfm_bandwidth_hz = 12500;
+
+    rc |= expect_int("idle am, blank fm row", dsd_scan_mode_enter(&opts, &state, DSD_SCAN_MODE_INHERIT), 0);
+    rc |= expect_int("idle am, blank fm row: options", dsd_scan_mode_options(&opts, &state, NULL), 0);
+    reset_rx_family_wrap();
+    seed_received_tone(&state);
+    uint32_t seeded = state.analog_rx.generation;
+    rc |= submit_config_widths(&opts, &state, 12500, 10000, "idle am, blank fm row: config");
+    rc |= expect_row_left_alone("idle am, blank fm row: left alone", &opts, &state, seeded, 12500, 10000);
+    dsd_scan_mode_leave(&opts, &state);
+
+    rc |= expect_int("idle am, nfm row", dsd_scan_mode_enter(&opts, &state, DSD_SCAN_MODE_NFM), 0);
+    rc |= expect_int("idle am, nfm row: options", dsd_scan_mode_options(&opts, &state, NULL), 0);
+    reset_rx_family_wrap();
+    seed_received_tone(&state);
+    seeded = state.analog_rx.generation;
+    rc |= submit_config_widths(&opts, &state, 12500, 8000, "idle am, nfm row: config");
+    rc |= expect_row_left_alone("idle am, nfm row: left alone", &opts, &state, seeded, 12500, 8000);
+    /* The NFM width the row runs is in force: it reaches the front end. */
+    reset_rx_family_wrap();
+    rc |= submit_config_widths(&opts, &state, 16000, 8000, "nfm in force, nfm row: config");
+    rc |= expect_int(
+        "nfm in force, nfm row: requested at the new width",
+        g_analog_req_calls >= 1 && g_analog_req_kind == DSD_ANALOG_DEMOD_FM && g_analog_req_width_hz == 16000, 1);
+    dsd_scan_mode_leave(&opts, &state);
+
+    /* An AM session's blank row runs the AM width: the NFM width is the idle one there. */
+    rc |= submit_decode_mode(&opts, &state, DSDCFG_MODE_AM, "idle nfm: am session");
+    rc |= expect_int("idle nfm, blank am row", dsd_scan_mode_enter(&opts, &state, DSD_SCAN_MODE_INHERIT), 0);
+    rc |= expect_int("idle nfm, blank am row: options", dsd_scan_mode_options(&opts, &state, NULL), 0);
+    rc |= expect_int("idle nfm, blank am row: runs AM", opts.analog_demod, DSD_ANALOG_DEMOD_AM);
+    reset_rx_family_wrap();
+    seed_received_tone(&state);
+    seeded = state.analog_rx.generation;
+    rc |= submit_config_widths(&opts, &state, 20000, 8000, "idle nfm, blank am row: config");
+    rc |= expect_row_left_alone("idle nfm, blank am row: left alone", &opts, &state, seeded, 20000, 8000);
+    reset_rx_family_wrap();
+    rc |= submit_config_widths(&opts, &state, 20000, 10000, "am in force, blank am row: config");
+    rc |= expect_int(
+        "am in force, blank am row: requested at the new width",
+        g_analog_req_calls >= 1 && g_analog_req_kind == DSD_ANALOG_DEMOD_AM && g_analog_req_width_hz == 10000, 1);
+    dsd_scan_mode_leave(&opts, &state);
+
+    opts.analog_nfm_bandwidth_hz = 0;
+    opts.analog_am_bandwidth_hz = 0;
+    state.rtl_ctx = NULL;
+    freeState(&state);
+    return rc;
+}
+
 /* An nfm row that takes the configured NFM width, which is @p width_hz, with the front end running that width. */
 static int
 enter_inheriting_nfm_row(dsd_opts* opts, dsd_state* state, int width_hz, const char* label) {
@@ -9286,6 +9382,7 @@ main(void) {
     rc |= test_decode_mode_analog_under_a_row_holds_the_nfm_width();
     rc |= test_config_apply_holds_nfm_width_to_the_front_end();
     rc |= test_config_apply_width_under_scan_rows();
+    rc |= test_config_apply_idle_width_under_scan_rows();
     rc |= test_refused_width_under_a_row_returns_to_the_width_run();
     rc |= test_config_apply_holds_nfm_width_to_a_new_dsp_bandwidth();
     rc |= test_config_apply_holds_nfm_width_to_the_rate_the_reopen_runs_at();

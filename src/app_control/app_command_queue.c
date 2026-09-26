@@ -3738,7 +3738,7 @@ ui_analog_entry_keep_widths(dsd_scan_settings* settings, const dsd_scan_settings
    than @p was_kind: note the switch while a running RTL front end has it to make. One that supersedes a switch still
    armed keeps that switch's settings from before it (g_analog_entry). The channel widths are configuration a width
    command sets on its own, not part of a switch, as ui_revert_analog_entry() compares them: a width set between the
-   two switches (dsd_scan_settings_equal() compares the widths for the analog family, issue #526) does not mean the
+   two switches (dsd_scan_settings_equal() compares the width of the analog kind in force, issue #526) does not mean the
    settings moved on from the earlier one. */
 static void
 ui_arm_analog_entry(const dsd_opts* opts, const dsd_state* state, int was_analog_family, int was_kind) {
@@ -3855,7 +3855,7 @@ ui_revert_analog_entry(dsd_opts* opts, dsd_state* state, int width_hz, const svc
     dsd_scan_settings_capture(opts, state, &now);
     /* The channel widths are configuration a width command sets on its own (DSD_APP_CMD_NFM_BANDWIDTH_SET), not part of
        the switch: one set after the switch, even in the same drain, does not mean the settings moved on, and the
-       revert keeps it (dsd_scan_settings_equal() compares them for the analog family the switch left). */
+       revert keeps it (dsd_scan_settings_equal() compares the width of the analog kind the switch left). */
     dsd_scan_settings after = g_analog_entry.after;
     ui_analog_entry_keep_widths(&after, &now);
     const int reverted = dsd_scan_settings_equal(&now, &after, 0);
