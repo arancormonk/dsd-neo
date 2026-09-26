@@ -518,28 +518,30 @@ words come from the builder's own Golay encoder, whose layout `RUNTIME_ANALOG_TO
 pin against the published words, so the fixtures are correct by construction. No public off-air DCS recording exists
 (see [Tone and code labels](#tone-and-code-labels)); a real accept fixture waits for a maintainer recording.
 
-- `_023N`: must log `Received tone: DCS D023N`, and never `none`, a tone or another code.
-- `_023I`: D023 sent in inverted polarity is the signal of D047N and must log `Received tone: DCS D047N`, never D023N,
-  which a detector that ignored polarity would report. Together the two cases pin the polarity convention end to end,
-  through the RTL replay chain; `DSP_FM_DEMOD_REF` pins the discriminator's sign on its own (a carrier above the tuned
-  frequency demodulates positive, and D023N sent as +/-600 Hz NRZ reads back as D023N).
+- `_023N`: must log `Received tone: DCS D023N / D047I` (both spellings of the signal, canonical first), and never
+  `none`, a tone or another code.
+- `_023I`: D023 sent in inverted polarity is the signal of D047N and must log `Received tone: DCS D047N / D023I`, never
+  `DCS D023N / D047I`, which a detector that ignored polarity would report. Together the two cases pin the polarity
+  convention end to end, through the RTL replay chain; `DSP_FM_DEMOD_REF` pins the discriminator's sign on its own (a
+  carrier above the tuned frequency demodulates positive, and D023N sent as +/-600 Hz NRZ reads back as D023N).
 - `_NOISY`: D023N's word sent two bits wrong, the same two bits in every repetition, which is no code (two bits from
   D023N and, the code words being at least 7 bits apart, at least 5 from every other); it must log `none` and never a
   code or a tone.
-- `_DROP`: the code stops at 1.2 s with no turn-off tone while the carrier and voice carry on: D023N, then `none`.
+- `_DROP`: the code stops at 1.2 s with no turn-off tone while the carrier and voice carry on: `DCS D023N / D047I`, then
+  `none`.
 - `_NOCODE`: `nfm_notone_synth` through the narrowest NFM channel (`--nfm-bandwidth-hz 8000`), voice with no code:
   `none`, never a code. `DECODE_IQ_ANALOG_CTCSS_NOTONE`, which fails on a code too, replays the same voice at the
   default width.
 
 The CTCSS cases and the off-air cases fail on any DCS code too, so none of the tone fixtures, the squelch captures'
 150 bit/s data or AM airband voice reads as a code. `DECODE_IQ_ANALOG_DCS_023N_HOST` and `_023I_HOST` replay the two
-accept fixtures through the analog replay host and match its `tone=` field, which reads the detector's canonical label
-from the publication: `tone=D023N` and `tone=D047N` (never `D023I` or `D023N` for the inverted word), locked within the
-520 ms bound (360 ms measured, 83% of each run locked). Over 12 realtime `replay_ab.sh --metric analog` repeats against
-`main` (see [Analog A/B](#analog-ab)), this build read `D023N`, `D047N` and `D023N` on `_023n`, `_023i` and `_drop` on
-every repeat (first lock 360 ms on each; 83, 83 and 57% locked), where `main`, which has no DCS detector, reads
-`NA`; `_noisy`, both squelch captures and `nfm_ctcss_real` (151.4 Hz at 300 ms, 88.67% locked) read the same in both
-builds, with every audio column unchanged.
+accept fixtures through the analog replay host and match its `tone=` field, which reads the publication's code as both
+spellings of its signal, canonical first: `tone=D023N/D047I` and `tone=D047N/D023I` (never `D023N/D047I` for the
+inverted word), locked within the 520 ms bound (360 ms measured, 83% of each run locked). Over 12 realtime
+`replay_ab.sh --metric analog` repeats against `main` (see [Analog A/B](#analog-ab)), this build read `D023N/D047I`,
+`D047N/D023I` and `D023N/D047I` on `_023n`, `_023i` and `_drop` on every repeat (first lock 360 ms on each; 83, 83 and
+57% locked), where `main`, which has no DCS detector, reads `NA`; `_noisy`, both squelch captures and `nfm_ctcss_real`
+(151.4 Hz at 300 ms, 88.67% locked) read the same in both builds, with every audio column unchanged.
 
 The detector's own bounds are pinned in sample time by `DSP_ANALOG_DCS`, through the pure receive core. Its signals are
 built the way a receiver hears them: the transmitter's NRZ word through the receiver's de-emphasis (75 us, or the
@@ -563,8 +565,8 @@ fixed-seed start there locks within 700 ms.
   where it removes a step slowest, every second code with a 4x step within 520 ms at 10 dB (worst 422 ms) -- the
   detector without its balance slicer fails the first row (some starts not locked within 670 ms, p95 639 ms); a code
   under transmitter-filtered speech 10 dB above it within 700 ms, and held from then on for 20 s; a transmitter at 134.3
-  or 134.5 bit/s locks and holds for 8 s; the alias pins (D023I reads D047N, D047I D023N, D754I D116N and others)
-  through the detector.
+  or 134.5 bit/s locks and holds for 8 s; the alias pins (D023I is published as D047N, D047I as D023N, D754I as D116N
+  and others) through the detector.
 - Hold and loss: one wrong bit in every word, in the same bit or moving through the word, holds for 20 s; two wrong bits
   in every word lose the lock within 522 ms of the damage (a window holds both errors only once it lies wholly after the
   damage started, up to a word later), and nothing locks in its place; a code that stops under a live carrier is lost
@@ -606,10 +608,13 @@ nor logged for 300 ms after it, less than the 342 ms a lock read from scratch ne
 inverted word locks as D047N with D023N never shown again; `DSP_ANALOG_DCS` runs the core's own reset (the carrier
 hangover running out, and `dsd_analog_rx_core_reset()` under a running code) and checks the detector is unlocked at once
 and the old code never shows again. A reset that kept a held lock fails both. `APP_CONTROL_RX_TONE_VIEW`,
-`UI_NCURSES_PRINTER_HELPERS`, `UI_QT_METRICS_MODEL` and `UI_QT_QML_CALL_LISTS` pin the `DCS D023N` text, the names the
+`UI_NCURSES_PRINTER_HELPERS`, `UI_QT_METRICS_MODEL` and `UI_QT_QML_CALL_LISTS` pin the `DCS D023N / D047I` text (both
+spellings of the signal, canonical first, with the second one's code and polarity beside the first's), the names the
 view refuses (an unsupported code, a rotation alias, a non-canonical polarity), and the received code kept apart from a
-configured policy value. `RUNTIME_ANALOG_TONES` pins that every supported code's word carries 11 or 12 ones in either
-polarity (000's carries 7), which the balance slicer relies on. `RUNTIME_ANALOG_TONES` and `DSP_ANALOG_DCS_GOLAY_XCHECK`
+configured policy value. `RUNTIME_ANALOG_TONES` pins that every standard signal has exactly two standard spellings, the
+canonical normal code and one inverted code, against the golden alias table, and the label that names both; and that
+every supported code's word carries 11 or 12 ones in either polarity (000's carries 7), which the balance slicer relies
+on. `RUNTIME_ANALOG_TONES` and `DSP_ANALOG_DCS_GOLAY_XCHECK`
 pin the published words of 023, the inverted 023, 047, 020 and 000 (onfreq's DPL/DCS page), 047 a standard code of its
 own and 020 a word of another rotation class, so check bits that do not follow from 023's, before and after the mapping
 onto `Golay24.hpp`.
@@ -889,9 +894,10 @@ because they hold no DCS, and the corpus has no real DCS recording yet (`build_i
 names with the new ones and refuses any name it does not build). A real DCS accept case needs another source.
 
 Every DCS waveform has two spellings, because inverting a DCS word gives another valid word: the oracle prints both
-(`D023N = D047I`, and `D023I = D047N` for the inverted waveform). The DCS detector (#523) reports the normal-polarity
-spelling (`dsd_dcs_canonical()`; the alias table is in the [CLI guide](cli.md#received-code-dcs-on-the-analog-monitor));
-compare an oracle label with a detector's by waveform, not by spelling. The wiki's CTCSS page, which links the I/Q
+(`D023N = D047I`, and `D023I = D047N` for the inverted waveform). The DCS detector (#523) publishes the normal-polarity
+spelling (`dsd_dcs_canonical()`) and shows and logs both, normal first (`DCS D023N / D047I`; the alias table is in the
+[CLI guide](cli.md#received-code-dcs-on-the-analog-monitor)), so an oracle label and the detector's name the same two
+spellings. The wiki's CTCSS page, which links the I/Q
 recording, carries audio samples at 151.4, 173.8 and 186.2 Hz without saying which tones the recording holds; the
 oracle finds the first two. A
 maintainer has confirmed the CTCSS labels in the table, "none" for both squelch captures included, and the received-tone
@@ -1109,9 +1115,11 @@ CTCSS detector (#522) fills them for CTCSS, the DCS detector (#523) adds its lab
 statistic adds its own field and column. The contract (also in the file comment of `tests/engine/analog_replay.c`),
 which matters because replay_ab.sh splits the line on spaces:
 
-- `tone=<label>`: the received tone or code with no whitespace, `151.4` (Hz, one decimal) for CTCSS and the DCS
-  detector's canonical label, such as `D023N`, for DCS (see [Tone and code labels](#tone-and-code-labels)); `NA` when
-  none was confirmed. When the label changes during a run, the last one confirmed.
+- `tone=<label>`: the received tone or code with no whitespace, `151.4` (Hz, one decimal) for CTCSS, and for DCS both
+  spellings of the code's signal, canonical first, joined by a slash, such as `D023N/D047I`: the log's
+  `DCS D023N / D047I` as one token, since a receiver cannot tell the two apart (see
+  [Tone and code labels](#tone-and-code-labels)); `NA` when none was confirmed. When the label changes during a run, the
+  last one confirmed.
 - `tone_lock_ms=<ms>`: stream time of the first confirmed lock, on the same clock as `first_audible_ms`: the end of
   the block after which the publication first read locked, with two decimals; `NA` when nothing locked.
 - `tone_lock_pct=<pct>`: the share of the delivered audio (`captured_ms`) in blocks after which the publication read
@@ -1164,8 +1172,8 @@ request:
 - [ ] AM on `am_airband_real` at several widths and with the AGC: speech intelligible, level steady across the
   excerpt, no pumping or clipping (#524).
 - [ ] DCS on the air (#523), against a radio or repeater with a published DPL: a radio set to D023N reads
-  `DCS D023N`, one set to D023I reads `DCS D047N`, and the turn-off code ends the lock (the N polarity and the bit
-  order, which the synthetic fixtures cannot check).
+  `DCS D023N / D047I`, one set to D023I reads `DCS D047N / D023I`, and the turn-off code ends the lock (the N polarity
+  and the bit order, which the synthetic fixtures cannot check).
 - [ ] Tone filtering: allowed traffic opens within the detection window, rejected and untoned traffic stays silent,
   and nothing leaks at the start of a rejected transmission (#527).
 - [ ] The A/B report agrees with what was heard; where it does not, say which one the pull request relies on.

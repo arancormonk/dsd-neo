@@ -1250,8 +1250,8 @@ count_rx_tone_log_lines(dsd_neo_log_level_t level, const char* text, void* ctx) 
         g_rx_tone_lines++;
         g_rx_tone_100_lines += strcmp(text, "Received tone: CTCSS 100.0 Hz\n") == 0 ? 1 : 0;
         g_rx_tone_none_lines += strcmp(text, "Received tone: none\n") == 0 ? 1 : 0;
-        g_rx_tone_d023n_lines += strcmp(text, "Received tone: DCS D023N\n") == 0 ? 1 : 0;
-        g_rx_tone_d047n_lines += strcmp(text, "Received tone: DCS D047N\n") == 0 ? 1 : 0;
+        g_rx_tone_d023n_lines += strcmp(text, "Received tone: DCS D023N / D047I\n") == 0 ? 1 : 0;
+        g_rx_tone_d047n_lines += strcmp(text, "Received tone: DCS D047N / D023I\n") == 0 ? 1 : 0;
     }
 }
 
@@ -1537,12 +1537,13 @@ feed_dcs_blocks_before_a_fresh_lock(dsd_opts* opts, dsd_state* state, uint32_t w
 
 /*
  * DCS through the real tap (issue #523): D023N locks, is published as code 023 in normal
- * polarity and logged once as "Received tone: DCS D023N"; the inverted word reads as its normal
- * alias, D047N. Every boundary that clears a tone clears a code the same way: a retune the RTL
- * stream or the tuning hooks report, and an announced reset. The detector keeps nothing of the
- * lock: the same code running on through the boundary is not shown, nor logged, until it has
- * been read twice from scratch, then logged once more for the new reception; after the
- * announced reset the inverted word locks as D047N and D023N never shows again.
+ * polarity and logged once as "Received tone: DCS D023N / D047I", both spellings of its signal;
+ * the inverted word is published as its normal alias, D047N, and logged as "DCS D047N / D023I".
+ * Every boundary that clears a tone clears a code the same way: a retune the RTL stream or the
+ * tuning hooks report, and an announced reset. The detector keeps nothing of the lock: the same
+ * code running on through the boundary is not shown, nor logged, until it has been read twice
+ * from scratch, then logged once more for the new reception; after the announced reset the
+ * inverted word locks as D047N and D023N never shows again.
  */
 static void
 test_rx_tone_dcs_through_the_tap(void) {

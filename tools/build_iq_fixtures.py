@@ -301,7 +301,7 @@ ANALOG_CTCSS_SYNTH = [
 ANALOG_DCS_SYNTH = [
     # D023N, the most common code.
     ("nfm_dcs_synth_023n", 5230023, 2.0, 0o023, False, None, 0),
-    # The same code in inverted polarity: the signal of D047N, which is what it reads as.
+    # The same code in inverted polarity: the signal of D047N, which reads "DCS D047N / D023I".
     ("nfm_dcs_synth_023i", 5231023, 2.0, 0o023, True, None, 0),
     # Malformed: D023N's word sent two bits wrong, the same two in every repetition. That is two
     # bits from D023N and, the code's words being at least 7 bits apart, at least 5 from every

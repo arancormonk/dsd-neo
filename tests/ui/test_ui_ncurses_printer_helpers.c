@@ -1523,15 +1523,15 @@ test_call_info_rx_tone_line_rendering(void) {
     seed_rx_tone(state, 0, DSD_ANALOG_TONE_STATE_INACTIVE, 0);
     assert_rx_tone_line(&opts, state, "| Rx tone: \xE2\x80\x94");
 
-    /* A received DCS code: three octal digits with leading zeros and the polarity letter. The
-       policy gate the publication carries is configuration's business and never changes the
-       received line. */
+    /* A received DCS code: both standard spellings of its signal, canonical first, each three
+       octal digits with leading zeros and the polarity letter. The policy gate the publication
+       carries is configuration's business and never changes the received line. */
     seed_rx_code(state, 0023, 0);
-    assert_rx_tone_line(&opts, state, "| Rx tone: DCS D023N");
+    assert_rx_tone_line(&opts, state, "| Rx tone: DCS D023N / D047I");
     state->analog_rx.gate = DSD_ANALOG_TONE_GATE_REJECTED;
-    assert_rx_tone_line(&opts, state, "| Rx tone: DCS D023N");
+    assert_rx_tone_line(&opts, state, "| Rx tone: DCS D023N / D047I");
     seed_rx_code(state, 0754, 0);
-    assert_rx_tone_line(&opts, state, "| Rx tone: DCS D754N");
+    assert_rx_tone_line(&opts, state, "| Rx tone: DCS D754N / D116I");
     seed_rx_tone(state, 0, DSD_ANALOG_TONE_STATE_INACTIVE, 0);
 
     /* Without UTF-8 the em dash is a hyphen; everything else the line says is ASCII already. */
@@ -1540,7 +1540,7 @@ test_call_info_rx_tone_line_rendering(void) {
     seed_rx_tone(state, 1, DSD_ANALOG_TONE_STATE_LOCKED, 1000);
     assert_rx_tone_line(&opts, state, "| Rx tone: CTCSS 100.0 Hz");
     seed_rx_code(state, 0047, 0);
-    assert_rx_tone_line(&opts, state, "| Rx tone: DCS D047N");
+    assert_rx_tone_line(&opts, state, "| Rx tone: DCS D047N / D023I");
     g_unicode_stub = 1;
 
     /* A paused live stream's publication, past its deadline on the caller's clock, is no
@@ -1565,7 +1565,7 @@ test_call_info_rx_tone_line_rendering(void) {
     reset_printw_capture();
     reset_color_trace();
     ui_render_call_info_rx_tone_line(&opts, state);
-    assert_capture_equals("| Rx tone: DCS D245N\n");
+    assert_capture_equals("| Rx tone: DCS D245N / D072I\n");
     assert(strcmp(g_color_trace, "+4+4") == 0);
     seed_rx_tone(state, 1, DSD_ANALOG_TONE_STATE_LOCKED, 1318);
 

@@ -16,6 +16,7 @@
 
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/opts_fwd.h>
+#include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/io/rtl_stream_c.h>
 #include <dsd-neo/runtime/analog_tones.h>
 #include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
@@ -393,6 +394,67 @@ test_dcs_aliases(void) {
     assert(dsd_dcs_canonical(DSD_DCS_CODE_MAX + 1, 0, NULL, NULL) == -1);
 }
 
+/*
+ * The two spellings of every signal. Of the standard codes, exactly two send each signal, one
+ * in each polarity: the canonical normal code and one inverted code (D023N and D047I, D047N and
+ * D023I). A receiver cannot tell which of the two a transmitter was set to, so a received code
+ * is shown as both, "DCS D023N / D047I", and dsd_dcs_alias() names the inverted one from either.
+ * Pinned against the golden alias table, over every standard code in both polarities.
+ */
+static void
+test_dcs_two_spellings(void) {
+    for (int i = 0; i < DSD_DCS_CODE_COUNT; i++) {
+        const int code = k_inverted_alias[i][0];
+        const int partner = k_inverted_alias[i][1];
+        /* Every standard spelling of code's normal signal: code itself, and partner inverted. */
+        int spellings = 0;
+        for (int j = 0; j < DSD_DCS_CODE_COUNT; j++) {
+            for (int inverted = 0; inverted < 2; inverted++) {
+                int canon_code = -1;
+                int canon_inverted = -1;
+                assert(dsd_dcs_canonical(dsd_dcs_code(j), inverted, &canon_code, &canon_inverted) == 0);
+                if (canon_code == code && canon_inverted == 0) {
+                    spellings++;
+                    assert((dsd_dcs_code(j) == code && inverted == 0) || (dsd_dcs_code(j) == partner && inverted == 1));
+                }
+            }
+        }
+        assert(spellings == 2);
+
+        /* The same second spelling from either one, and the label names both, canonical first. */
+        int alias_code = -1;
+        int alias_inverted = -1;
+        assert(dsd_dcs_alias(code, 0, &alias_code, &alias_inverted) == 0);
+        assert(alias_code == partner && alias_inverted == 1);
+        alias_code = -1;
+        alias_inverted = -1;
+        assert(dsd_dcs_alias(partner, 1, &alias_code, &alias_inverted) == 0);
+        assert(alias_code == partner && alias_inverted == 1);
+        char expected[DSD_DCS_LABEL_SIZE];
+        DSD_SNPRINTF(expected, sizeof(expected), "DCS D%03oN / D%03oI", (unsigned int)code, (unsigned int)partner);
+        char label[DSD_DCS_LABEL_SIZE];
+        assert(dsd_dcs_format_label(code, 0, label, sizeof(label)) == 17);
+        assert(strcmp(label, expected) == 0);
+        assert(dsd_dcs_format_label(partner, 1, label, sizeof(label)) == 17);
+        assert(strcmp(label, expected) == 0);
+    }
+
+    /* A rotation outside the standard set spells a standard signal too. */
+    int alias_code = -1;
+    int alias_inverted = -1;
+    assert(dsd_dcs_alias(0340, 0, &alias_code, &alias_inverted) == 0);
+    assert(alias_code == 0047 && alias_inverted == 1);
+    assert(dsd_dcs_alias(0023, 0, NULL, NULL) == 0);
+    /* No standard code sends 000's signal, and a value past nine bits is no code: the outputs
+       are left alone. */
+    alias_code = 1234;
+    alias_inverted = 5678;
+    assert(dsd_dcs_alias(0, 0, &alias_code, &alias_inverted) == -1);
+    assert(dsd_dcs_alias(-1, 0, &alias_code, &alias_inverted) == -1);
+    assert(dsd_dcs_alias(DSD_DCS_CODE_MAX + 1, 1, &alias_code, &alias_inverted) == -1);
+    assert(alias_code == 1234 && alias_inverted == 5678);
+}
+
 /* Windows that are not a supported code's signal name nothing and leave the outputs alone. */
 static void
 test_dcs_match_rejects(void) {
@@ -432,10 +494,29 @@ test_dcs_format(void) {
     assert(dsd_dcs_format(0777, 0, buf, sizeof(buf)) == 5);
     assert(strcmp(buf, "D777N") == 0);
 
-    assert(dsd_dcs_format_label(0023, 0, buf, sizeof(buf)) == 9);
-    assert(strcmp(buf, "DCS D023N") == 0);
-    assert(dsd_dcs_format_label(0047, 1, buf, sizeof(buf)) == 9);
-    assert(strcmp(buf, "DCS D047I") == 0);
+    /* The received label names the signal by both of its standard spellings, the canonical
+       normal one first, whichever of them it is given: a receiver cannot tell which one the
+       transmitter was set to. */
+    assert(dsd_dcs_format_label(0023, 0, buf, sizeof(buf)) == 17);
+    assert(strcmp(buf, "DCS D023N / D047I") == 0);
+    assert(dsd_dcs_format_label(0047, 1, buf, sizeof(buf)) == 17);
+    assert(strcmp(buf, "DCS D023N / D047I") == 0);
+    assert(dsd_dcs_format_label(0023, 1, buf, sizeof(buf)) == 17);
+    assert(strcmp(buf, "DCS D047N / D023I") == 0);
+    assert(dsd_dcs_format_label(0047, 0, buf, sizeof(buf)) == 17);
+    assert(strcmp(buf, "DCS D047N / D023I") == 0);
+    assert(dsd_dcs_format_label(0754, 0, buf, sizeof(buf)) == 17);
+    assert(strcmp(buf, "DCS D754N / D116I") == 0);
+    /* A code outside the standard set whose word is a rotation of a standard word names that
+       signal; one whose signal no standard code sends names nothing. */
+    assert(dsd_dcs_format_label(0340, 0, buf, sizeof(buf)) == 17);
+    assert(strcmp(buf, "DCS D023N / D047I") == 0);
+    buf[0] = 'x';
+    assert(dsd_dcs_format_label(0, 0, buf, sizeof(buf)) == -1);
+    assert(buf[0] == '\0');
+    buf[0] = 'x';
+    assert(dsd_dcs_format_label(01000, 0, buf, sizeof(buf)) == -1);
+    assert(buf[0] == '\0');
 
     buf[0] = 'x';
     assert(dsd_dcs_format(-1, 0, buf, sizeof(buf)) == -1);
@@ -446,9 +527,12 @@ test_dcs_format(void) {
     char tiny[5];
     assert(dsd_dcs_format(0023, 0, tiny, sizeof(tiny)) == -1);
     assert(tiny[0] == '\0');
-    char label_tiny[9];
+    char label_tiny[17];
     assert(dsd_dcs_format_label(0023, 0, label_tiny, sizeof(label_tiny)) == -1);
     assert(label_tiny[0] == '\0');
+    char label_exact[18];
+    assert(dsd_dcs_format_label(0023, 0, label_exact, sizeof(label_exact)) == 17);
+    assert(strcmp(label_exact, "DCS D023N / D047I") == 0);
     assert(dsd_dcs_format(0023, 0, NULL, 8) == -1);
     assert(dsd_dcs_format_label(0023, 0, buf, 0) == -1);
 }
@@ -463,6 +547,7 @@ main(void) {
     test_dcs_words();
     test_dcs_words_are_balanced();
     test_dcs_aliases();
+    test_dcs_two_spellings();
     test_dcs_match_rejects();
     test_dcs_format();
     return 0;

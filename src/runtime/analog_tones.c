@@ -227,16 +227,48 @@ dsd_dcs_canonical(int code, int inverted, int* canon_code, int* canon_inverted) 
     return 0;
 }
 
+/*
+ * A code sent inverted sends the complement of its normal word, so the inverted spellings of a
+ * signal are the normal spellings of its complement, and the other way round: the complement's
+ * canonical member, in the other polarity, spells this signal too. In the standard set every
+ * signal has exactly one spelling in each polarity, so the complement's canonical member is its
+ * normal spelling, and in the other polarity it is this signal's one inverted spelling, never
+ * the canonical (normal) one. RUNTIME_ANALOG_TONES checks that over every standard code in both
+ * polarities.
+ */
+int
+dsd_dcs_alias(int code, int inverted, int* alias_code, int* alias_inverted) {
+    int canon_code = -1;
+    int canon_inverted = -1;
+    if (dsd_dcs_canonical(code, inverted, &canon_code, &canon_inverted) != 0) {
+        return -1;
+    }
+    int other_code = -1;
+    int other_inverted = -1;
+    if (dsd_dcs_canonical(canon_code, canon_inverted ? 0 : 1, &other_code, &other_inverted) != 0) {
+        return -1;
+    }
+    other_inverted = other_inverted ? 0 : 1;
+    if (other_code == canon_code && other_inverted == canon_inverted) {
+        return -1;
+    }
+    if (alias_code) {
+        *alias_code = other_code;
+    }
+    if (alias_inverted) {
+        *alias_inverted = other_inverted;
+    }
+    return 0;
+}
+
+static char
+dcs_polarity_letter(int inverted) {
+    return inverted ? 'I' : 'N';
+}
+
+/* Keeps @p buf terminated: an empty string unless the whole text fit. */
 static int
-dcs_format_with(const char* prefix, int code, int inverted, char* buf, size_t buf_size) {
-    if (buf == NULL || buf_size == 0U) {
-        return -1;
-    }
-    buf[0] = '\0';
-    if (code < 0 || code > DSD_DCS_CODE_MAX) {
-        return -1;
-    }
-    const int written = DSD_SNPRINTF(buf, buf_size, "%sD%03o%c", prefix, (unsigned int)code, inverted ? 'I' : 'N');
+dcs_format_result(int written, char* buf, size_t buf_size) {
     if (written < 0 || (size_t)written >= buf_size) {
         buf[0] = '\0';
         return -1;
@@ -246,12 +278,35 @@ dcs_format_with(const char* prefix, int code, int inverted, char* buf, size_t bu
 
 int
 dsd_dcs_format(int code, int inverted, char* buf, size_t buf_size) {
-    return dcs_format_with("", code, inverted, buf, buf_size);
+    if (buf == NULL || buf_size == 0U) {
+        return -1;
+    }
+    buf[0] = '\0';
+    if (code < 0 || code > DSD_DCS_CODE_MAX) {
+        return -1;
+    }
+    const int written = DSD_SNPRINTF(buf, buf_size, "D%03o%c", (unsigned int)code, dcs_polarity_letter(inverted));
+    return dcs_format_result(written, buf, buf_size);
 }
 
 int
 dsd_dcs_format_label(int code, int inverted, char* buf, size_t buf_size) {
-    return dcs_format_with("DCS ", code, inverted, buf, buf_size);
+    if (buf == NULL || buf_size == 0U) {
+        return -1;
+    }
+    buf[0] = '\0';
+    int canon_code = -1;
+    int canon_inverted = -1;
+    int alias_code = -1;
+    int alias_inverted = -1;
+    if (dsd_dcs_canonical(code, inverted, &canon_code, &canon_inverted) != 0
+        || dsd_dcs_alias(code, inverted, &alias_code, &alias_inverted) != 0) {
+        return -1;
+    }
+    const int written = DSD_SNPRINTF(buf, buf_size, "DCS D%03o%c / D%03o%c", (unsigned int)canon_code,
+                                     dcs_polarity_letter(canon_inverted), (unsigned int)alias_code,
+                                     dcs_polarity_letter(alias_inverted));
+    return dcs_format_result(written, buf, buf_size);
 }
 
 /* RTL stream output kind that carries monitor audio: RTL_STREAM_OUTPUT_AUDIO_MONITOR in the IO

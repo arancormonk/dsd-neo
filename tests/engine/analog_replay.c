@@ -31,10 +31,11 @@
  * detector (#523) fill them. This file owns the field names and the contract below, and
  * replay_ab.sh and the report own the columns; a detector that wants more adds its own field and column. The
  * contract, which replay_ab.sh relies on because it splits the line on spaces:
- *   tone=<label>        the received tone or code as the detector names it, with no whitespace: "151.4" (Hz, one
- *                       decimal) for CTCSS; for DCS the detector's one canonical label, such as "D023N". Every DCS
- *                       waveform has two spellings (D023N is also D047I), and the detector names each by its
- *                       normal-polarity member (dsd_dcs_canonical()); NA when none was confirmed.
+ *   tone=<label>        the received tone or code as the decoder names it, with no whitespace: "151.4" (Hz, one
+ *                       decimal) for CTCSS; for DCS both standard spellings of the code's signal, canonical first
+ *                       (dsd_dcs_canonical(), then dsd_dcs_alias()), joined by a slash, such as "D023N/D047I": the
+ *                       log's "DCS D023N / D047I" as one token. A receiver cannot tell the two spellings apart, so
+ *                       neither alone names what was received. NA when none was confirmed.
  *   tone_lock_ms=<ms>   stream time of the first confirmed lock, on the same clock as first_audible_ms (see above):
  *                       the end of the block after which the publication first read locked, with two decimals; NA
  *                       when nothing locked.
@@ -541,6 +542,23 @@ analog_score_block(const double* x, size_t n, double block_start_ms) {
     g_totals.outband_energy += analog_band_energy(xw, n, rate, ANALOG_OUTBAND_LO_HZ, ANALOG_OUTBAND_HI_HZ);
 }
 
+/* A DCS code in the tone= field's spelling (see the file comment): the published, canonical spelling, a slash and the
+ * signal's other standard spelling, "D023N/D047I". A publication that names no supported signal leaves the last
+ * label as it was. */
+static void
+analog_format_dcs_label(int code, int inverted) {
+    char canon[DSD_DCS_LABEL_SIZE];
+    char alias[DSD_DCS_LABEL_SIZE];
+    int alias_code = -1;
+    int alias_inverted = -1;
+    if (dsd_dcs_format(code, inverted, canon, sizeof(canon)) <= 0
+        || dsd_dcs_alias(code, inverted, &alias_code, &alias_inverted) != 0
+        || dsd_dcs_format(alias_code, alias_inverted, alias, sizeof(alias)) <= 0) {
+        return;
+    }
+    DSD_SNPRINTF(g_tone.label, sizeof(g_tone.label), "%s/%s", canon, alias);
+}
+
 /* Reads the received-tone publication after one delivered block, which ended at block_end_ms. The tap updated it
  * from this same block just before the block came here. */
 static void
@@ -555,8 +573,7 @@ analog_note_tone(const dsd_state* state, double block_end_ms, double block_ms) {
     if (state->analog_rx.tone_kind == DSD_ANALOG_TONE_KIND_CTCSS) {
         (void)dsd_ctcss_format(state->analog_rx.ctcss_tenths_hz, g_tone.label, sizeof(g_tone.label));
     } else if (state->analog_rx.tone_kind == DSD_ANALOG_TONE_KIND_DCS) {
-        (void)dsd_dcs_format(state->analog_rx.dcs_code, state->analog_rx.dcs_inverted, g_tone.label,
-                             sizeof(g_tone.label));
+        analog_format_dcs_label(state->analog_rx.dcs_code, state->analog_rx.dcs_inverted);
     }
 }
 

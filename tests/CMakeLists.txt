@@ -3573,7 +3573,8 @@ add_test(NAME RUNTIME_FREQ_PARSE COMMAND dsd-neo_test_runtime_freq_parse)
 
 # The CTCSS and DCS tables and their text (issues #522, #523), shared by the detectors, the
 # views and the policy: the tone table, the DCS codes, their Golay words against the published
-# reference words, the alias rule and its golden table, and the formatters.
+# reference words, the alias rule and its golden table, the two standard spellings of every
+# code's signal, and the formatters.
 add_executable(
     dsd-neo_test_runtime_analog_tones
     runtime/test_runtime_analog_tones.c
@@ -11191,21 +11192,23 @@ if(DSD_HAS_RADIO)
     )
     # Received DCS on the analog FM monitor (issue #523): synthetic NFM with voice and a DCS
     # word at 600 Hz deviation, correct by construction (tools/build_iq_fixtures.py), replayed
-    # the same way. Each asserts the code and polarity the log names -- the inverted word is
-    # the signal of D047N and must read as D047N, never D023N -- and that nothing else was
-    # reported. "Any other code" is spelled out digit by digit, as for the tones above.
+    # the same way. Each asserts the signal the log names by both of its standard spellings,
+    # canonical first -- D023N is also D047I, and the inverted word is the signal of D047N,
+    # also D023I, so it must read "D047N / D023I", never "D023N / D047I" -- and that nothing
+    # else was reported: any label led by another spelling. "Any other code" is spelled out
+    # digit by digit, as for the tones above.
     dsd_neo_add_iq_decode_test(
         DECODE_IQ_ANALOG_DCS_023N
         nfm_dcs_synth_023n
         -fA
-        "Received tone: DCS D023N"
+        "Received tone: DCS D023N / D047I"
         "Received tone: (none|CTCSS|DCS D([1-7][0-7][0-7]|0[013-7][0-7]|02[0-24-7])[NI]|DCS D023I)"
     )
     dsd_neo_add_iq_decode_test(
         DECODE_IQ_ANALOG_DCS_023I
         nfm_dcs_synth_023i
         -fA
-        "Received tone: DCS D047N"
+        "Received tone: DCS D047N / D023I"
         "Received tone: (none|CTCSS|DCS D([1-7][0-7][0-7]|0[0-35-7][0-7]|04[0-6])[NI]|DCS D047I)"
     )
     # Malformed: D023N's word two bits wrong in every repetition, no code at all. It must be
@@ -11218,12 +11221,12 @@ if(DSD_HAS_RADIO)
         "Received tone: (CTCSS|DCS)"
     )
     # The code stops at 1.2 s with no turn-off tone while the carrier and voice carry on:
-    # D023N, then none.
+    # D023N (also D047I), then none.
     dsd_neo_add_iq_decode_test(
         DECODE_IQ_ANALOG_DCS_DROP
         nfm_dcs_synth_drop
         -fA
-        "Received tone: DCS D023N.*Received tone: none"
+        "Received tone: DCS D023N / D047I.*Received tone: none"
         "Received tone: (CTCSS|DCS D([1-7][0-7][0-7]|0[013-7][0-7]|02[0-24-7])[NI]|DCS D023I)"
     )
     # Voice with no code through the narrowest NFM channel: positively "none", and never a
@@ -11618,22 +11621,23 @@ if(DSD_HAS_RADIO)
         "Received tone: CTCSS (([0-9]|[0-9][0-9]|[02-9][0-9][0-9]|1[0-46-9][0-9]|15[02-9])[.][0-9]|151[.][0-35-9]) Hz|Received tone: DCS|${_analog_off_path}"
     )
     # Received DCS through the host (issue #523): the synthetic DCS fixtures carry the code
-    # from their start, and the host's tone= field reads the detector's one canonical label
-    # from the publication: D023N for the normal word, D047N for the inverted D023 word,
-    # never the other spelling. Each locks within the 10 dB lock bound (360 ms measured,
-    # 83% of the run locked) and reports no other code, no tone and no "none".
+    # from their start, and the host's tone= field reads the publication's code as both of
+    # its standard spellings, canonical first, joined by a slash with no space:
+    # D023N/D047I for the normal word, D047N/D023I for the inverted D023 word. Each locks
+    # within the 10 dB lock bound (360 ms measured, 83% of the run locked) and reports no
+    # other code, no tone and no "none".
     dsd_neo_add_analog_replay_test(
         DECODE_IQ_ANALOG_DCS_023N_HOST
         nfm_dcs_synth_023n
         "-fA --analog-max-tone-lock-ms 520"
-        "Received tone: DCS D023N.*ANALOG METRIC: .* tone=D023N tone_lock_ms=[0-9]+[.][0-9][0-9] tone_lock_pct=[0-9]+[.][0-9][0-9]"
+        "Received tone: DCS D023N / D047I.*ANALOG METRIC: .* tone=D023N/D047I tone_lock_ms=[0-9]+[.][0-9][0-9] tone_lock_pct=[0-9]+[.][0-9][0-9]"
         "Received tone: (none|CTCSS|DCS D([1-7][0-7][0-7]|0[013-7][0-7]|02[0-24-7])[NI]|DCS D023I)|${_analog_off_path}"
     )
     dsd_neo_add_analog_replay_test(
         DECODE_IQ_ANALOG_DCS_023I_HOST
         nfm_dcs_synth_023i
         "-fA --analog-max-tone-lock-ms 520"
-        "Received tone: DCS D047N.*ANALOG METRIC: .* tone=D047N tone_lock_ms=[0-9]+[.][0-9][0-9] tone_lock_pct=[0-9]+[.][0-9][0-9]"
+        "Received tone: DCS D047N / D023I.*ANALOG METRIC: .* tone=D047N/D023I tone_lock_ms=[0-9]+[.][0-9][0-9] tone_lock_pct=[0-9]+[.][0-9][0-9]"
         "Received tone: (none|CTCSS|DCS D([1-7][0-7][0-7]|0[0-35-7][0-7]|04[0-6])[NI]|DCS D047I)|tone=D023|${_analog_off_path}"
     )
     # No false lock: speech and carrier with no CTCSS or DCS (the squelch excerpts carry

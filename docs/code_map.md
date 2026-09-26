@@ -461,11 +461,14 @@ Tests: `tests/engine/test_engine_trunk_scan.c` (`ENGINE_TRUNK_SCAN`) and
     Golay word: code, the fixed 100, 11 check bits; bit 0 sent first, a multiple of `0xC75`; inverted polarity is the
     complement), `dsd_dcs_match()` (names the signal in 23 received bits when some rotation, in either polarity, is a
     supported code's word), `dsd_dcs_canonical()` (the alias rule: normal polarity first, then the lowest code, so
-    every inverted standard code reads as its one normal alias, D023I as D047N) and the `D023N` / `DCS D023N`
-    formatters, leading zeros always. The DSP detector cannot link `dsd-neo_fec`, so runtime has its own encoder;
-    `DSP_ANALOG_DCS_GOLAY_XCHECK` checks every word against `Golay24.hpp` through the explicit layout mapping (reversed
-    23 bits; Golay24's encoding of the reversed data rotated left by 11) and `RUNTIME_ANALOG_TONES` pins the published
-    reference words and the golden alias table for all 104 codes.
+    every inverted standard code is named by its one normal alias, D023I by D047N), `dsd_dcs_alias()` (the signal's
+    other standard spelling, its one inverted code: D047I for D023N) and the `D023N` / `DCS D023N / D047I`
+    formatters, leading zeros always. A received code is labelled with both spellings, canonical first, because a
+    receiver cannot tell which one a transmitter was set to. The DSP detector cannot link `dsd-neo_fec`, so runtime
+    has its own encoder; `DSP_ANALOG_DCS_GOLAY_XCHECK` checks every word against `Golay24.hpp` through the explicit
+    layout mapping (reversed 23 bits; Golay24's encoding of the reversed data rotated left by 11) and
+    `RUNTIME_ANALOG_TONES` pins the published reference words, the golden alias table for all 104 codes and the two
+    spellings of every signal.
   - RadioReference.com import client (`src/runtime/radioreference/`): SOAP envelope builder, expat response parser,
     worker-thread client with cancellation, and the generators that turn fetched systems into the channel-map and
     talkgroup CSVs `src/core/file/dsd_import.c` already parses. UI-agnostic C API in
@@ -686,20 +689,21 @@ installs from `src/engine/trunk_tuning.c` in `src/engine/trunk_tuning_hooks_inst
   stepper reading, a `row` badge and `default X`, and uses `squelchReadout` as the reading's accessible name. It
   reads the row's value from `dsd_scan_mode_row_options()`, so it is also right on the decoder thread while a command
   has the scope suspended. Test: `APP_CONTROL_SQUELCH_VIEW`.
-  `include/dsd-neo/app_control/rx_tone_view.h` and `src/app_control/rx_tone_view.c` fold `dsd_state::analog_rx` into
-  the received-tone text (issues #522, #523): hidden unless `dsd_analog_tone_detection_active()` says the tap listens
-  (decided from the options and the RTL output kind, not from INACTIVE in the publication, so a reset does not blink
-  the row) and hidden while the publication reads UNAVAILABLE (an input rate the front end cannot use, where an em
-  dash would claim no carrier), then `CTCSS 100.0 Hz`, `DCS D023N`, `detecting`, `none` or an em dash (the terminal
+  `include/dsd-neo/app_control/rx_tone_view.h` and `src/app_control/rx_tone_view.c` fold `dsd_state::analog_rx` into the
+  received-tone text (issues #522, #523): hidden unless `dsd_analog_tone_detection_active()` says the tap listens
+  (decided from the options and the RTL output kind, not from INACTIVE in the publication, so a reset does not blink the
+  row) and hidden while the publication reads UNAVAILABLE (an input rate the front end cannot use, where an em dash
+  would claim no carrier), then `CTCSS 100.0 Hz`, `DCS D023N / D047I`, `detecting`, `none` or an em dash (the terminal
   prints a hyphen without UTF-8). Like the scan timing view it takes the caller's monotonic clock: a publication past
   its `stale_after_ms` deadline (a stdin, UDP or TCP producer that stopped sending, or a live radio stream whose source
-  stopped, while the decoder waits for samples and cannot say so itself) reads as the em dash. A locked value this
-  build cannot name (an unsupported frequency, a DCS code that is unsupported or not the canonical member of its alias
-  class) reads `detecting`, never a value. It carries the locked code and polarity in `dcs_code` / `dcs_inverted`
-  beside `ctcss_tenths_hz`; the polarity reads normal for every standard code, whose inverted signal is another
-  standard code's normal one, and is kept because a code is named with its polarity everywhere. The same view carries
-  `configured_text`, the configured tone policy, which reads `off` until #527 and is never derived from the received
-  tone. Tests: `APP_CONTROL_RX_TONE_VIEW`, the terminal goldens, `UI_QT_METRICS_MODEL`.
+  stopped, while the decoder waits for samples and cannot say so itself) reads as the em dash. A locked value this build
+  cannot name (an unsupported frequency, a DCS code that is unsupported or not the canonical member of its alias class)
+  reads `detecting`, never a value. It carries the locked code and polarity in `dcs_code` / `dcs_inverted` beside
+  `ctcss_tenths_hz`, and the same signal's other standard spelling in `dcs_alias_code` / `dcs_alias_inverted`: the text
+  names both, canonical first. The first polarity reads normal and the second inverted for every standard code, whose
+  inverted signal is another standard code's normal one; both are kept because a code is named with its polarity
+  everywhere. The same view carries `configured_text`, the configured tone policy, which reads `off` until #527 and is
+  never derived from the received tone. Tests: `APP_CONTROL_RX_TONE_VIEW`, the terminal goldens, `UI_QT_METRICS_MODEL`.
   `include/dsd-neo/app_control/analog_width_view.h` and `src/app_control/analog_width_view.c` (issue #525) decide the
   analog channel width in force under the configured analog preset (the scan scope's configured view, so a typed digital
   row does not hide it; never for the M17 encoder): the front end's reported width while a running stream's options in
@@ -986,8 +990,9 @@ installs from `src/engine/trunk_tuning.c` in `src/engine/trunk_tuning_hooks_inst
   (`docs/testing.md`). The host's own options are the `--analog-*` names it lists; other `--analog-*` arguments pass
   through to the CLI parser. After each delivered block it also reads the received-tone publication
   (`dsd_state::analog_rx`, which the tap updated from the same block) into its `tone`, `tone_lock_ms` and
-  `tone_lock_pct` fields (`tone=151.4` for CTCSS, `tone=D023N` for DCS), which the `DECODE_IQ_ANALOG_REAL_CTCSS_*`,
-  `DECODE_IQ_ANALOG_DCS_023N_HOST` and `DECODE_IQ_ANALOG_DCS_023I_HOST` cases and `tools/replay_ab.sh` read.
+  `tone_lock_pct` fields (`tone=151.4` for CTCSS, `tone=D023N/D047I` for DCS: both spellings in one token), which the
+  `DECODE_IQ_ANALOG_REAL_CTCSS_*`, `DECODE_IQ_ANALOG_DCS_023N_HOST` and `DECODE_IQ_ANALOG_DCS_023I_HOST` cases and
+  `tools/replay_ab.sh` read.
 - `frame_sync_maybe_auto_switch_modulation()` (`dsd_frame_sync.c`) votes the C4FM/CQPSK/GFSK choice from SNR and
   sync hamming and applies the winner's demod profile to the RTL front end. It stands down under a modulation lock
   (`mod_cli_lock`) and in the analog family (`dsd_opts_is_analog_family()`), which has no digital modulation to
@@ -1369,7 +1374,7 @@ Qt Quick frontend (`src/ui/qt`):
   refresh on decoder redraws; session lifecycle clears live metrics and prevents stale snapshots from restoring them.
 - Received tone or code (issues #522, #523): `MetricsModel` publishes the `rxTone*` group (`rxToneVisible`,
   `rxToneStatus`, `rxToneText`, `rxToneKind`, `rxToneTenthsHz`, `rxToneDcsCode`, `rxToneDcsInverted`,
-  `rxToneCarrier`) with its own `rxToneChanged` signal, filled from
+  `rxToneDcsAliasCode`, `rxToneDcsAliasInverted`, `rxToneCarrier`) with its own `rxToneChanged` signal, filled from
   `app_control/rx_tone_view` in `fillRxToneView()` against the frame's one clock reading, and returned to unknown by
   `clear()` on stop. `rxToneConfiguredText` sits beside it with a signal of its own, `rxToneConfiguredTextChanged`,
   because it is configuration rather than session state: it reads the view's `off` from construction, keeps its value

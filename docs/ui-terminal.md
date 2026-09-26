@@ -661,23 +661,24 @@ the channel line and in compact view too:
 
 ```
 | Rx tone: CTCSS 100.0 Hz
-| Rx tone: DCS D023N
+| Rx tone: DCS D023N / D047I
 ```
 
-It reads `CTCSS 100.0 Hz` once a supported tone is confirmed, `DCS D023N` once a DCS code is (three octal digits with
-leading zeros, then the polarity, always `N` for a received standard code: an inverted code reads as the normal code
-whose signal it is, so D023I reads `DCS D047N`), `detecting` while a carrier is being evaluated, `none` when the
-carrier carries no supported tone or code (or it was lost), and `—` when there is no carrier (`-` on a terminal
-without UTF-8), including while a stdin, UDP or TCP stream, or a live radio stream such as an `rtl_tcp` connection, has
-stopped delivering audio for about half a second. The line is shown exactly while detection runs, so it is absent
-outside the analog FM monitor, while an RTL stream is not yet outputting monitor audio, and at an input rate detection
-cannot use (below 2400 Hz or above 320 kHz). This is only what is received; it never reflects a tone filter setting, and
-it clears on a retune, a manual channel cycle, a scan row or target change, a mode change, an input switch and stop. A
-retune the audio producer makes on its own, such as `rtl_fm` scanning several frequencies into stdin, is not one of
-these: after a hop that leaves a gap shorter than half a second, the previous channel's tone can show for a few hundred
-milliseconds until it is dropped. The same text comes from the shared app-control view the Qt/Android monitor uses, so
-both always agree. Supported tones and codes, timing, the DCS alias table and the requirements on externally
-demodulated audio are in the CLI guide: [CTCSS](cli.md#received-tone-ctcss-on-the-analog-monitor) and
+It reads `CTCSS 100.0 Hz` once a supported tone is confirmed, and `DCS D023N / D047I` once a DCS code is: both codes
+that send the same signal, since the receiver cannot tell which one the transmitter was set to, each as three octal
+digits with leading zeros and the polarity, normal first. D023N and D047I both read `DCS D023N / D047I`, and D023I reads
+`DCS D047N / D023I`. It reads `detecting` while a carrier is being evaluated, `none` when the carrier carries no
+supported tone or code (or it was lost), and `—` when there is no carrier (`-` on a terminal without UTF-8), including
+while a stdin, UDP or TCP stream, or a live radio stream such as an `rtl_tcp` connection, has stopped delivering audio
+for about half a second. The line is shown exactly while detection runs, so it is absent outside the analog FM monitor,
+while an RTL stream is not yet outputting monitor audio, and at an input rate detection cannot use (below 2400 Hz or
+above 320 kHz). This is only what is received; it never reflects a tone filter setting, and it clears on a retune, a
+manual channel cycle, a scan row or target change, a mode change, an input switch and stop. A retune the audio producer
+makes on its own, such as `rtl_fm` scanning several frequencies into stdin, is not one of these: after a hop that leaves
+a gap shorter than half a second, the previous channel's tone can show for a few hundred milliseconds until it is
+dropped. The same text comes from the shared app-control view the Qt/Android monitor uses, so both always agree.
+Supported tones and codes, timing, the DCS alias table and the requirements on externally demodulated audio are in the
+CLI guide: [CTCSS](cli.md#received-tone-ctcss-on-the-analog-monitor) and
 [DCS](cli.md#received-code-dcs-on-the-analog-monitor).
 
 ## Compact View

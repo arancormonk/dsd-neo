@@ -884,36 +884,39 @@ test_rx_tone() {
     expect("a carrier with no tone reads none",
            model.rxToneStatus() == DSD_APP_RX_TONE_NONE && model.rxToneText() == QStringLiteral("none"));
 
-    /* A received DCS code (#523): its canonical name with leading zeros, apart from the
-       configured policy, which neither it nor a gate value moves. */
+    /* A received DCS code (#523): both standard spellings of its signal, canonical first, with
+       leading zeros, apart from the configured policy, which neither it nor a gate value
+       moves. */
     state.analog_rx.tone_state = DSD_ANALOG_TONE_STATE_LOCKED;
     state.analog_rx.tone_kind = DSD_ANALOG_TONE_KIND_DCS;
     state.analog_rx.dcs_code = 023;
     state.analog_rx.dcs_inverted = 0;
     const int before_code = changes;
     model.refresh(&opts, &state);
-    expect("a locked code shows its name",
-           model.rxToneStatus() == DSD_APP_RX_TONE_LOCKED && model.rxToneText() == QStringLiteral("DCS D023N")
+    expect("a locked code shows both of its spellings",
+           model.rxToneStatus() == DSD_APP_RX_TONE_LOCKED && model.rxToneText() == QStringLiteral("DCS D023N / D047I")
                && model.rxToneKind() == DSD_ANALOG_TONE_KIND_DCS && model.rxToneDcsCode() == 023
-               && !model.rxToneDcsInverted() && model.rxToneTenthsHz() == 0);
+               && !model.rxToneDcsInverted() && model.rxToneDcsAliasCode() == 047 && model.rxToneDcsAliasInverted()
+               && model.rxToneTenthsHz() == 0);
     expect("the received code notifies its own group", changes > before_code && configured_changes == 0);
     state.analog_rx.gate = DSD_ANALOG_TONE_GATE_REJECTED;
     model.refresh(&opts, &state);
     expect("a gate value changes neither text for a code",
-           model.rxToneText() == QStringLiteral("DCS D023N") && model.rxToneConfiguredText() == QStringLiteral("off"));
+           model.rxToneText() == QStringLiteral("DCS D023N / D047I")
+               && model.rxToneConfiguredText() == QStringLiteral("off"));
     state.analog_rx.gate = DSD_ANALOG_TONE_GATE_OFF;
     state.analog_rx.dcs_code = 0754;
     model.refresh(&opts, &state);
-    expect("another code replaces it",
-           model.rxToneText() == QStringLiteral("DCS D754N") && model.rxToneDcsCode() == 0754);
+    expect("another code replaces it", model.rxToneText() == QStringLiteral("DCS D754N / D116I")
+                                           && model.rxToneDcsCode() == 0754 && model.rxToneDcsAliasCode() == 0116);
 
     /* A retune clears the code as it clears a tone. */
     DSD_MEMSET(&state.analog_rx, 0, sizeof(state.analog_rx));
     state.analog_rx.generation = 3U;
     model.refresh(&opts, &state);
-    expect("after a retune the code is gone", model.rxToneStatus() == DSD_APP_RX_TONE_NO_CARRIER
-                                                  && model.rxToneKind() == 0 && model.rxToneDcsCode() == 0
-                                                  && !model.rxToneDcsInverted());
+    expect("after a retune the code is gone",
+           model.rxToneStatus() == DSD_APP_RX_TONE_NO_CARRIER && model.rxToneKind() == 0 && model.rxToneDcsCode() == 0
+               && !model.rxToneDcsInverted() && model.rxToneDcsAliasCode() == 0 && !model.rxToneDcsAliasInverted());
     state.analog_rx.carrier_open = 1;
 
     /* Stop with a code locked clears it too. */
@@ -921,11 +924,13 @@ test_rx_tone() {
     state.analog_rx.tone_kind = DSD_ANALOG_TONE_KIND_DCS;
     state.analog_rx.dcs_code = 047;
     model.refresh(&opts, &state);
-    expect("locked on a code before a stop", model.rxToneDcsCode() == 047);
+    expect("locked on a code before a stop", model.rxToneDcsCode() == 047 && model.rxToneDcsAliasCode() == 023
+                                                 && model.rxToneText() == QStringLiteral("DCS D047N / D023I"));
     model.clear();
     expect("stop clears the received code", !model.rxToneVisible() && model.rxToneText().isEmpty()
                                                 && model.rxToneKind() == 0 && model.rxToneDcsCode() == 0
-                                                && !model.rxToneDcsInverted());
+                                                && !model.rxToneDcsInverted() && model.rxToneDcsAliasCode() == 0
+                                                && !model.rxToneDcsAliasInverted());
     expect("stop keeps the configured policy with a code too", model.rxToneConfiguredText() == QStringLiteral("off"));
     DSD_MEMSET(&state.analog_rx, 0, sizeof(state.analog_rx));
     state.analog_rx.carrier_open = 1;

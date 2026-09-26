@@ -476,9 +476,9 @@ MetricsModel::fillScanTimingView(View& next, const dsd_opts* opts_snapshot, cons
  *
  * The phrase and the visibility rule are app-control's (rx_tone_view), shared with the
  * terminal. Only the words are translated here; a tone or code is a value and stays as the
- * view wrote it ("CTCSS 100.0 Hz", "DCS D023N"). The configured text comes from its own
- * field of the view and nothing received is ever copied into it. @p now_m is the frame's one
- * clock reading, which ages the publication of an input that has gone quiet.
+ * view wrote it ("CTCSS 100.0 Hz", "DCS D023N / D047I"). The configured text comes from its
+ * own field of the view and nothing received is ever copied into it. @p now_m is the frame's
+ * one clock reading, which ages the publication of an input that has gone quiet.
  */
 void
 MetricsModel::fillRxToneView(View& next, const dsd_opts* opts_snapshot, const dsd_state* snapshot, double now_m) const {
@@ -494,6 +494,8 @@ MetricsModel::fillRxToneView(View& next, const dsd_opts* opts_snapshot, const ds
     next.rx_tone_tenths_hz = view.ctcss_tenths_hz;
     next.rx_tone_dcs_code = view.dcs_code;
     next.rx_tone_dcs_inverted = view.dcs_inverted != 0U;
+    next.rx_tone_dcs_alias_code = view.dcs_alias_code;
+    next.rx_tone_dcs_alias_inverted = view.dcs_alias_inverted != 0U;
     next.rx_tone_carrier = view.carrier_open != 0U;
     switch (view.status) {
         case DSD_APP_RX_TONE_DETECTING: next.rx_tone_text = tr("detecting"); break;

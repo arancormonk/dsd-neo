@@ -1968,6 +1968,8 @@ class Setup : public QObject {
         metrics[QStringLiteral("rxToneTenthsHz")] = 0;
         metrics[QStringLiteral("rxToneDcsCode")] = 0;
         metrics[QStringLiteral("rxToneDcsInverted")] = false;
+        metrics[QStringLiteral("rxToneDcsAliasCode")] = 0;
+        metrics[QStringLiteral("rxToneDcsAliasInverted")] = false;
         metrics[QStringLiteral("rxToneCarrier")] = false;
         metrics[QStringLiteral("rxToneConfiguredText")] = QStringLiteral("off");
         // Whether an automatic controller owns the tuner, which one, and where it
