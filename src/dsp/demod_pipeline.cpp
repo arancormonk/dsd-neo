@@ -868,6 +868,11 @@ dsd_demod_iq_dc_block_active(const struct demod_state* d) {
     return (d && d->iq_dc_block_enable && !dsd_demod_am_active(d)) ? 1 : 0;
 }
 
+int
+dsd_demod_iq_balance_active(const struct demod_state* d) {
+    return (d && d->iqbal_enable && !d->cqpsk_enable && !dsd_demod_am_active(d)) ? 1 : 0;
+}
+
 /**
  * @brief Pass-through demodulator: copies low-passed samples to output unchanged.
  *
@@ -1333,9 +1338,12 @@ full_demod_run_non_cqpsk_chain(struct demod_state* d) {
     }
 }
 
+/* Optional I/Q image suppression before the discriminator. Never under the AM detector (dsd_demod_iq_balance_active()):
+   its estimate reads a carrier at 0 Hz, whose I/Q is a fixed phasor, as a full image and subtracts the wanted signal
+   with it; the estimate then holds where it was. */
 static void
 full_demod_apply_iq_balance(struct demod_state* d) {
-    if (!d->iqbal_enable || d->cqpsk_enable || d->channel_squelched || !d->lowpassed || d->lp_len < 2) {
+    if (!dsd_demod_iq_balance_active(d) || d->channel_squelched || !d->lowpassed || d->lp_len < 2) {
         return;
     }
     double s2r = 0.0, s2i = 0.0, p2 = 0.0;

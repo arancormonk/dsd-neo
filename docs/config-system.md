@@ -421,7 +421,7 @@ Rdio API uploads do not follow HTTP redirects. Configure `rdio_api_url` as the f
 **[dsp] section:**
 | Key | Type | Description | Default |
 |-----|------|-------------|---------|
-| `iq_balance` | BOOL | Enable RTL IQ balance (image suppression) | `false` |
+| `iq_balance` | BOOL | Enable RTL IQ balance (image suppression; kept off while AM runs: it would cancel a carrier at 0 Hz) | `false` |
 | `iq_dc_block` | BOOL | Enable RTL I/Q DC blocker (kept off while AM runs: it would remove a carrier at 0 Hz) | `false` |
 
 **[analog] section:**

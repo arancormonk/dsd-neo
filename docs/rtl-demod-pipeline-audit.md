@@ -78,7 +78,7 @@ envelope.
 
 `-fM` (native AM, issue #524) is the same family with the AM kind: the envelope
 detector (`dsd_am_demod`) takes the discriminator's place, and the chain runs
-without de-emphasis and without the I/Q DC blocker.
+without de-emphasis and without the I/Q DC blocker or I/Q balance.
 
 ### AM Detector
 
@@ -112,14 +112,20 @@ without de-emphasis and without the I/Q DC blocker.
   bypassed, per process, a note is logged (`rtl_demod_note_am_iq_dc_bypass()`).
   The DC spike of a centred-I/Q device (Airspy, offset tuning) then adds to the
   carrier: a hardware check is open below.
+- I/Q balance (`full_demod_apply_iq_balance()`) never runs under the AM detector
+  either (`dsd_demod_iq_balance_active()`): its image estimate is the block's
+  second moment over its power, which a carrier at 0 Hz, a fixed phasor, drives
+  to full scale, so the correction would subtract the carrier and its sidebands
+  (the 1 kHz tone at 50% comes out about 30 dB down). The setting is kept for
+  FM, with its own one-time note (`rtl_demod_note_am_iq_balance_bypass()`).
 - The output scale is not applied to AM (see Output Scale), and de-emphasis is
   off at open and on every switch to AM (its coefficient cleared), restored from
   the config on the way back to FM.
 - The detector runs only while the monitor is on its own (WIDE) channel. A typed
   digital scan row's symbol profile on an AM session keeps the monitor output
   with the row's channel profile, as under `-fA`, and its signal is
-  FM-demodulated there, with the I/Q DC blocker and the output scale applied as
-  for FM; the carrier estimate is untouched, and the row's leave (a family
+  FM-demodulated there, with the I/Q DC blocker, I/Q balance and the output
+  scale applied as for FM; the carrier estimate is untouched, and the row's leave (a family
   switch) resets it. The audio chain after the discriminator is the session's,
   though: an AM session runs no de-emphasis, so the row's discriminator output
   reaches the decoder un-de-emphasized, as a digital open delivers it, where
@@ -594,8 +600,9 @@ discriminator output unchanged, at 48 kHz and through the 24 kHz resampler.
   detection (issue #522) still reports the 100.0 Hz tone through both widths.
 - AM (issue #524): `DSP_AM_DEMOD` holds the detector to its level, distortion,
   DC, offset, reset and squelch contract and runs it through `full_demod()` with
-  the 6 kHz channel and the I/Q DC blocker configured (the squelch hold and the
-  start-over past it included); `IO_RTL_ANALOG_FAMILY_SWITCH` checks digital ->
+  the 6 kHz channel and the I/Q DC blocker and I/Q balance configured (the
+  squelch hold and the start-over past it included);
+  `IO_RTL_ANALOG_FAMILY_SWITCH` checks digital ->
   AM -> digital and an AM start switched to digital and back to AM on the same
   stream against fresh opens (the carrier estimate and its closed-squelch run
   included), live FM <-> AM switches against a fresh open of the new kind (the

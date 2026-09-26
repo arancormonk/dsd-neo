@@ -8185,10 +8185,16 @@ rtl_stream_get_decode_health(rtl_stream_decode_health* out) {
     return 0;
 }
 
-/* Toggle generic IQ balance prefilter */
+/* Toggle generic IQ balance prefilter. Kept as set under AM, which bypasses it: switched on there, the bypass is noted. */
 extern "C" void
 rtl_stream_toggle_iq_balance(int onoff) {
+    const int was = demod.iqbal_enable ? 1 : 0;
     demod.iqbal_enable = onoff ? 1 : 0;
+    if (!was && demod.iqbal_enable) {
+        int kind = DSD_ANALOG_DEMOD_FM;
+        const int analog = rtl_stream_get_analog_profile(&kind, NULL, NULL);
+        (void)rtl_demod_note_am_iq_balance_bypass(1, analog == 1 && kind == DSD_ANALOG_DEMOD_AM);
+    }
 }
 
 extern "C" int

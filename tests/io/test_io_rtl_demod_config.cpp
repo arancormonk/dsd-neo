@@ -1552,8 +1552,19 @@ set_iq_dc_block_env(const char* value) {
     dsd_neo_config_init();
 }
 
-/* The notes the log tap has seen that a configured I/Q DC blocker is bypassed for AM. */
+/* I/Q balance as DSD_NEO_IQ_BALANCE configures it for the next start (NULL: unset). */
+static void
+set_iq_balance_env(const char* value) {
+    if (value) {
+        (void)dsd_setenv("DSD_NEO_IQ_BALANCE", value, 1);
+    } else {
+        (void)dsd_unsetenv("DSD_NEO_IQ_BALANCE");
+    }
+}
+
+/* The notes the log tap has seen that a configured I/Q DC blocker, or I/Q balance, is bypassed for AM. */
 static std::atomic<int> g_iq_dc_bypass_notes{0};
+static std::atomic<int> g_iq_balance_bypass_notes{0};
 
 static void
 count_iq_dc_bypass_notes(dsd_neo_log_level_t level, const char* text, void* ctx) {
@@ -1562,19 +1573,24 @@ count_iq_dc_bypass_notes(dsd_neo_log_level_t level, const char* text, void* ctx)
     if (text && std::strstr(text, "The I/Q DC blocker stays off while AM is demodulated")) {
         g_iq_dc_bypass_notes.fetch_add(1, std::memory_order_relaxed);
     }
+    if (text && std::strstr(text, "I/Q balance stays off while AM is demodulated")) {
+        g_iq_balance_bypass_notes.fetch_add(1, std::memory_order_relaxed);
+    }
 }
 
 /* A digital start switched live onto AM (rtl_demod_enter_analog_family(), the decoder picker's AM on a DMR session)
- * notes a configured I/Q DC blocker's bypass, as an AM start and a live FM -> AM switch do: the family is off until the
- * analog channel goes in, so the note has to wait for it. The note is logged once per process, so main() runs this
- * before any other AM start. */
+ * notes the bypass of a configured I/Q DC blocker and I/Q balance, as an AM start and a live FM -> AM switch do: the
+ * family is off until the analog channel goes in, so the notes have to wait for it. Each note is logged once per
+ * process, so main() runs this before any other AM start. */
 static int
 expect_family_entry_notes_am_iq_dc_bypass(void) {
     dsd_neo_log_set_tap(count_iq_dc_bypass_notes, NULL);
     set_iq_dc_block_env("1");
+    set_iq_balance_env("1");
     demod_state* demod = alloc_zeroed_demod();
     if (!demod) {
         set_iq_dc_block_env(NULL);
+        set_iq_balance_env(NULL);
         return 1;
     }
     static dsd_opts dmr;
@@ -1583,7 +1599,10 @@ expect_family_entry_notes_am_iq_dc_bypass(void) {
     char err[256];
     int rc = expect_int_eq("digital start with the I/Q DC blocker",
                            configure_and_finalize(demod, &dmr, 48000, err, sizeof err), 0);
-    rc |= expect_int_eq("digital start notes nothing", g_iq_dc_bypass_notes.load(std::memory_order_relaxed), 0);
+    rc |= expect_int_eq("digital start notes nothing",
+                        g_iq_dc_bypass_notes.load(std::memory_order_relaxed)
+                            + g_iq_balance_bypass_notes.load(std::memory_order_relaxed),
+                        0);
     output_state output;
     DSD_MEMSET(&output, 0, sizeof(output));
     output.rate = 48000;
@@ -1591,9 +1610,13 @@ expect_family_entry_notes_am_iq_dc_bypass(void) {
     rc |= expect_int_eq("digital -> AM runs the AM detector", dsd_demod_am_active(demod), 1);
     rc |= expect_int_eq("digital -> AM bypasses the I/Q DC blocker", dsd_demod_iq_dc_block_active(demod), 0);
     rc |= expect_int_eq("digital -> AM notes the bypass", g_iq_dc_bypass_notes.load(std::memory_order_relaxed), 1);
+    rc |= expect_int_eq("digital -> AM bypasses I/Q balance", dsd_demod_iq_balance_active(demod), 0);
+    rc |= expect_int_eq("digital -> AM notes the I/Q balance bypass",
+                        g_iq_balance_bypass_notes.load(std::memory_order_relaxed), 1);
     rtl_demod_cleanup(demod);
     dsd_neo_aligned_free(demod);
     set_iq_dc_block_env(NULL);
+    set_iq_balance_env(NULL);
     return rc;
 }
 
@@ -1687,26 +1710,36 @@ expect_analog_am_open(void) {
     rtl_demod_cleanup(demod);
     dsd_neo_aligned_free(demod);
 
-    /* The configured I/Q DC blocker is kept (it comes back for FM) but bypassed while AM runs. */
+    /* The configured I/Q DC blocker and I/Q balance are kept (they come back for FM) but bypassed while AM runs. */
     set_iq_dc_block_env("1");
+    set_iq_balance_env("1");
     demod = alloc_zeroed_demod();
     if (!demod) {
         set_iq_dc_block_env(NULL);
+        set_iq_balance_env(NULL);
         return 1;
     }
-    rc |= expect_int_eq("AM start with the I/Q DC blocker",
+    rc |= expect_int_eq("AM start with the I/Q DC blocker and I/Q balance",
                         configure_and_finalize(demod, &opts, 48000, err, sizeof err), 0);
     rc |= expect_int_eq("AM keeps the configured I/Q DC blocker", demod->iq_dc_block_enable, 1);
     rc |= expect_int_eq("AM bypasses the I/Q DC blocker", dsd_demod_iq_dc_block_active(demod), 0);
     rc |= expect_int_eq("AM notes the bypass",
                         rtl_demod_note_am_iq_dc_bypass(demod->iq_dc_block_enable, dsd_demod_am_active(demod)), 1);
+    rc |= expect_int_eq("AM keeps the configured I/Q balance", demod->iqbal_enable, 1);
+    rc |= expect_int_eq("AM bypasses I/Q balance", dsd_demod_iq_balance_active(demod), 0);
+    rc |= expect_int_eq("AM notes the I/Q balance bypass",
+                        rtl_demod_note_am_iq_balance_bypass(demod->iqbal_enable, dsd_demod_am_active(demod)), 1);
     (void)rtl_demod_set_analog_kind(demod, DSD_ANALOG_DEMOD_FM);
     rc |= expect_int_eq("FM runs the configured I/Q DC blocker", dsd_demod_iq_dc_block_active(demod), 1);
     rc |= expect_int_eq("FM has no bypass to note",
                         rtl_demod_note_am_iq_dc_bypass(demod->iq_dc_block_enable, dsd_demod_am_active(demod)), 0);
+    rc |= expect_int_eq("FM runs the configured I/Q balance", dsd_demod_iq_balance_active(demod), 1);
+    rc |= expect_int_eq("FM has no I/Q balance bypass to note",
+                        rtl_demod_note_am_iq_balance_bypass(demod->iqbal_enable, dsd_demod_am_active(demod)), 0);
     rtl_demod_cleanup(demod);
     dsd_neo_aligned_free(demod);
     set_iq_dc_block_env(NULL);
+    set_iq_balance_env(NULL);
     return rc;
 }
 
@@ -1727,7 +1760,8 @@ expect_audio_monitor_reset_clears_am_carrier(void) {
 }
 
 /* A live FM <-> AM switch swaps the detector and the de-emphasis and starts the monitor audio over, the carrier
- * estimate and the frozen I/Q DC estimate included; asking for the kind already running changes nothing. */
+ * estimate and the frozen I/Q DC and I/Q balance estimates included; asking for the kind already running changes
+ * nothing. */
 static int
 expect_analog_kind_switch(void) {
     int rc = 0;
@@ -1747,6 +1781,8 @@ expect_analog_kind_switch(void) {
     demod->dc_avg = 0.25f;
     demod->iq_dc_avg_r = 0.125f;
     demod->iq_dc_avg_i = -0.125f;
+    demod->iqbal_alpha_ema_r = 0.0625f;
+    demod->iqbal_alpha_ema_i = -0.0625f;
     demod->fm_demod_history_valid = 1;
     rc |= expect_int_eq("FM -> AM switches", rtl_demod_set_analog_kind(demod, DSD_ANALOG_DEMOD_AM), 1);
     rc |= expect_int_eq("FM -> AM runs the AM detector", dsd_demod_am_active(demod), 1);
@@ -1756,6 +1792,8 @@ expect_analog_kind_switch(void) {
     rc |= expect_int_eq("FM -> AM clears the DC state", demod->dc_avg > 0.0f ? 1 : 0, 0);
     rc |= expect_int_eq("FM -> AM clears the I/Q DC estimate",
                         (std::fabs(demod->iq_dc_avg_r) + std::fabs(demod->iq_dc_avg_i)) > 0.0f ? 1 : 0, 0);
+    rc |= expect_int_eq("FM -> AM clears the I/Q balance estimate",
+                        (std::fabs(demod->iqbal_alpha_ema_r) + std::fabs(demod->iqbal_alpha_ema_i)) > 0.0f ? 1 : 0, 0);
     rc |= expect_int_eq("FM -> AM drops the discriminator history", demod->fm_demod_history_valid, 0);
     demod->am_carrier = 0.5f;
     rc |= expect_int_eq("AM -> AM changes nothing", rtl_demod_set_analog_kind(demod, DSD_ANALOG_DEMOD_AM), 0);

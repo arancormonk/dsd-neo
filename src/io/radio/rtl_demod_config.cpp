@@ -539,6 +539,15 @@ demod_install_analog_detector(struct demod_state* demod, int kind) {
     }
 }
 
+/* Note the configured input corrections the AM detector bypasses (dsd_demod_iq_dc_block_active(),
+   dsd_demod_iq_balance_active()), once each per process. */
+static void
+demod_note_am_input_bypasses(const struct demod_state* demod) {
+    const int am_active = dsd_demod_am_active(demod);
+    (void)rtl_demod_note_am_iq_dc_bypass(demod->iq_dc_block_enable, am_active);
+    (void)rtl_demod_note_am_iq_balance_bypass(demod->iqbal_enable, am_active);
+}
+
 static void
 demod_finalize_runtime_profile(struct demod_state* demod, const dsd_opts* opts) {
     demod->channel_squelch_level.store((float)opts->rtl_squelch_level, std::memory_order_relaxed);
@@ -617,7 +626,7 @@ rtl_demod_config_from_env_and_opts(struct demod_state* demod, const dsd_opts* op
     demod_apply_iq_defaults(demod, cfg);
     demod_apply_channel_lpf_defaults(demod, opts, cfg);
     demod_finalize_runtime_profile(demod, opts);
-    (void)rtl_demod_note_am_iq_dc_bypass(demod->iq_dc_block_enable, dsd_demod_am_active(demod));
+    demod_note_am_input_bypasses(demod);
 }
 
 static int
@@ -1351,24 +1360,47 @@ rtl_demod_set_analog_kind(struct demod_state* demod, int kind) {
     demod_install_analog_detector(demod, kind);
     (void)rtl_demod_apply_audio_filters_from_config(demod);
     rtl_demod_reset_audio_monitor_state(demod);
-    /* AM does not run the I/Q DC blocker, so FM would otherwise resume from the estimate it had before AM. */
+    /* AM runs neither the I/Q DC blocker nor I/Q balance, so FM would otherwise resume from the estimates it had
+       before AM. */
     demod->iq_dc_avg_r = 0.0f;
     demod->iq_dc_avg_i = 0.0f;
-    (void)rtl_demod_note_am_iq_dc_bypass(demod->iq_dc_block_enable, dsd_demod_am_active(demod));
+    demod->iqbal_alpha_ema_r = 0.0f;
+    demod->iqbal_alpha_ema_i = 0.0f;
+    demod_note_am_input_bypasses(demod);
     return 1;
 }
+
+namespace {
+
+/* The first time, per process, that a configured input correction (@p enabled) is bypassed because the AM detector
+   runs (@p am_active), log @p text. Returns 1 while it is bypassed, else 0. */
+int
+note_am_bypass_once(std::atomic<int>& noted, int enabled, int am_active, const char* text) {
+    if (!enabled || !am_active) {
+        return 0;
+    }
+    if (noted.exchange(1, std::memory_order_relaxed) == 0) {
+        LOG_INFO("%s", text);
+    }
+    return 1;
+}
+
+} // namespace
 
 int
 rtl_demod_note_am_iq_dc_bypass(int iq_dc_block_enabled, int am_active) {
     static std::atomic<int> noted{0};
-    if (!iq_dc_block_enabled || !am_active) {
-        return 0;
-    }
-    if (noted.exchange(1, std::memory_order_relaxed) == 0) {
-        LOG_INFO("NOTICE: The I/Q DC blocker stays off while AM is demodulated: it would remove an AM carrier at "
-                 "0 Hz. It applies again to FM.\n");
-    }
-    return 1;
+    return note_am_bypass_once(noted, iq_dc_block_enabled, am_active,
+                               "NOTICE: The I/Q DC blocker stays off while AM is demodulated: it would remove an AM "
+                               "carrier at 0 Hz. It applies again to FM.\n");
+}
+
+int
+rtl_demod_note_am_iq_balance_bypass(int iq_balance_enabled, int am_active) {
+    static std::atomic<int> noted{0};
+    return note_am_bypass_once(noted, iq_balance_enabled, am_active,
+                               "NOTICE: I/Q balance stays off while AM is demodulated: it would read an AM carrier at "
+                               "0 Hz as an image and cancel it. It applies again to FM.\n");
 }
 
 void
@@ -1390,10 +1422,10 @@ rtl_demod_enter_analog_family(struct demod_state* demod, struct output_state* ou
     rtl_demod_maybe_update_resampler_after_rate_change(demod, output, rtl_dsp_bw_hz);
     rtl_demod_maybe_refresh_ted_sps_after_rate_change(demod, NULL, output, /*preserve_active_profile=*/1);
     demod_family_switch_reset(demod);
-    /* rtl_demod_set_analog_kind() notes the bypass on the running monitor only: here the family was off until the
+    /* rtl_demod_set_analog_kind() notes the bypasses on the running monitor only: here the family was off until the
        analog channel went in, so a switch onto AM from the digital family (or from a profile CQPSK or a typed digital
        row put in place) is noted now that the AM detector runs. */
-    (void)rtl_demod_note_am_iq_dc_bypass(demod->iq_dc_block_enable, dsd_demod_am_active(demod));
+    demod_note_am_input_bypasses(demod);
 }
 
 int

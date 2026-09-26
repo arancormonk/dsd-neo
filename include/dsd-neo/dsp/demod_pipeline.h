@@ -96,6 +96,18 @@ int dsd_demod_am_active(const struct demod_state* d);
 int dsd_demod_iq_dc_block_active(const struct demod_state* d);
 
 /**
+ * Whether the I/Q balance (image suppression) correction runs on the next block.
+ *
+ * It runs when enabled (`iqbal_enable`) and CQPSK is off, except under the AM detector: its image estimate reads an AM
+ * carrier at 0 Hz after tuning, whose I/Q is a fixed phasor, as a full image and would subtract the wanted carrier and
+ * sidebands with it. The setting itself is kept.
+ *
+ * @param d Demodulator state; NULL reads as not running.
+ * @return 1 when the correction runs, else 0.
+ */
+int dsd_demod_iq_balance_active(const struct demod_state* d);
+
+/**
  * Pass-through demodulator: copies low-passed samples to output unchanged.
  *
  * @param fm Demodulator state (copies lowpassed to result).

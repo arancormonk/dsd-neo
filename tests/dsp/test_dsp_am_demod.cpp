@@ -12,8 +12,9 @@
  * rather than fading in from the old channel's level; and a squelched block is silence that holds the estimate, so the
  * audio resumes at its level when the squelch opens after a fade, while a squelch closed past the hold starts the
  * estimate over on the next station. The last cases run the whole monitor pipeline (full_demod()) with
- * the 6 kHz AM channel filter, 30 dB carrier-to-noise (over the full 48 kHz complex band) and the I/Q DC blocker
- * switched on, which the AM path must bypass: it would remove a carrier tuned to 0 Hz.
+ * the 6 kHz AM channel filter, 30 dB carrier-to-noise (over the full 48 kHz complex band) and the I/Q DC blocker and
+ * I/Q balance switched on, which the AM path must bypass: the blocker would remove a carrier tuned to 0 Hz, and the
+ * balance would read it as a full image and subtract it with its sidebands.
  */
 
 #include <cmath>
@@ -437,7 +438,8 @@ test_floor_and_clamp(void) {
 }
 
 /* The whole monitor pipeline as the AM front end runs it: the 6 kHz channel filter, the AM detector, no
- * de-emphasis, the audio DC blocker and an open squelch envelope, with the I/Q DC blocker switched on. */
+ * de-emphasis, the audio DC blocker and an open squelch envelope, with the I/Q DC blocker and I/Q balance switched
+ * on. */
 void
 prime_am_pipeline(demod_state* s) {
     s->analog_family = 1;
@@ -453,10 +455,18 @@ prime_am_pipeline(demod_state* s) {
     s->squelch_gate_open = 1;
     s->iq_dc_block_enable = 1;
     s->iq_dc_shift = 11;
+    s->iqbal_enable = 1;
 }
 
+/* The estimates of the I/Q corrections the AM path bypasses, as a run of the pipeline leaves them. */
+struct IqCorrections {
+    float dc_r;
+    float balance_r;
+    float balance_i;
+};
+
 ToneFit
-run_pipeline(double carrier, double offset_hz, double cnr_db, float* out_iq_dc_r) {
+run_pipeline(double carrier, double offset_hz, double cnr_db, IqCorrections* out_iq) {
     demod_state* s = new_demod();
     ToneFit fit = {0.0, 0.0, 0.0};
     if (!s) {
@@ -473,7 +483,9 @@ run_pipeline(double carrier, double offset_hz, double cnr_db, float* out_iq_dc_r
         out.insert(out.end(), s->result, s->result + s->result_len);
     }
     fit = fit_tone(out, out.size() - (size_t)kRate, (size_t)kRate);
-    *out_iq_dc_r = s->iq_dc_avg_r;
+    out_iq->dc_r = s->iq_dc_avg_r;
+    out_iq->balance_r = s->iqbal_alpha_ema_r;
+    out_iq->balance_i = s->iqbal_alpha_ema_i;
     dsd_neo_aligned_free(s);
     return fit;
 }
@@ -481,8 +493,8 @@ run_pipeline(double carrier, double offset_hz, double cnr_db, float* out_iq_dc_r
 /* A typed digital scan row's symbol profile on an AM session keeps the monitor output but puts the row's channel
  * profile in place of the analog one (dsd_demod_analog_monitor_active() reads 0): the row's digital signal is then
  * FM-demodulated, as under -fA, not run through the AM detector, whose carrier estimate the row leaves alone; the I/Q
- * DC blocker and the output scale apply to it as to FM. De-emphasis does not: the AM session runs none (deemph 0, as
- * here), where -fA's FM monitor de-emphasizes the row's discriminator output. */
+ * DC blocker, I/Q balance and the output scale apply to it as to FM. De-emphasis does not: the AM session runs none
+ * (deemph 0, as here), where -fA's FM monitor de-emphasizes the row's discriminator output. */
 int
 test_typed_row_profile_under_am(void) {
     demod_state* s = new_demod();
@@ -495,6 +507,7 @@ test_typed_row_profile_under_am(void) {
     s->am_carrier = 0.5f;
     rc |= expect("a typed row under AM reported as the AM detector", dsd_demod_am_active(s) == 0);
     rc |= expect("a typed row under AM keeps the I/Q DC blocker off", dsd_demod_iq_dc_block_active(s) == 1);
+    rc |= expect("a typed row under AM keeps I/Q balance off", dsd_demod_iq_balance_active(s) == 1);
     /* A constant 3 kHz frequency deviation: the FM discriminator reads a constant phase step, the AM detector a flat
      * envelope (0). */
     const double dphi = 2.0 * kPi * 3000.0 / (double)kRate;
@@ -503,6 +516,7 @@ test_typed_row_profile_under_am(void) {
         s->input_cb_buf[(size_t)(2 * k) + 1] = (float)(0.5 * std::sin(dphi * k));
     }
     s->iq_dc_block_enable = 0;
+    s->iqbal_enable = 0;
     s->dc_block = 0;
     s->lowpassed = s->input_cb_buf;
     s->lp_len = kBlockPairs * 2;
@@ -531,12 +545,20 @@ test_pipeline(void) {
     prime_am_pipeline(s);
     rc |= expect("the AM detector is not reported as active", dsd_demod_am_active(s) == 1);
     rc |= expect("the I/Q DC blocker is reported as running under AM", dsd_demod_iq_dc_block_active(s) == 0);
+    rc |= expect("I/Q balance is reported as running under AM", dsd_demod_iq_balance_active(s) == 0);
     s->mode_demod = &dsd_fm_demod;
     rc |= expect("FM reported as AM", dsd_demod_am_active(s) == 0);
     rc |= expect("the I/Q DC blocker is not reported as running under FM", dsd_demod_iq_dc_block_active(s) == 1);
+    rc |= expect("I/Q balance is not reported as running under FM", dsd_demod_iq_balance_active(s) == 1);
+    s->cqpsk_enable = 1;
+    rc |= expect("I/Q balance is reported as running under CQPSK", dsd_demod_iq_balance_active(s) == 0);
+    s->cqpsk_enable = 0;
     s->iq_dc_block_enable = 0;
+    s->iqbal_enable = 0;
     rc |= expect("a disabled I/Q DC blocker is reported as running", dsd_demod_iq_dc_block_active(s) == 0);
-    rc |= expect("no state reports AM", dsd_demod_am_active(NULL) == 0 && dsd_demod_iq_dc_block_active(NULL) == 0);
+    rc |= expect("a disabled I/Q balance is reported as running", dsd_demod_iq_balance_active(s) == 0);
+    rc |= expect("no state reports AM", dsd_demod_am_active(NULL) == 0 && dsd_demod_iq_dc_block_active(NULL) == 0
+                                            && dsd_demod_iq_balance_active(NULL) == 0);
     dsd_neo_aligned_free(s);
 
     rc |= test_typed_row_profile_under_am();
@@ -545,13 +567,18 @@ test_pipeline(void) {
     const double carriers[] = {1.0, 0.1, 0.01};
     for (double off : offsets) {
         for (double c : carriers) {
-            float iq_dc = 1.0f;
+            IqCorrections iq = {1.0f, 1.0f, 1.0f};
             char what[96];
             DSD_SNPRINTF(what, sizeof what, "pipeline, carrier %.2f at %+.0f Hz, 30 dB CNR", c, off);
-            rc |= expect_level(what, run_pipeline(c, off, 30.0, &iq_dc), 0.02, -30.0);
-            /* Bypassed, not merely harmless: the blocker's estimate never moved off the carrier. */
-            if (std::fabs(iq_dc) > 1e-12f) {
-                DSD_FPRINTF(stderr, "DSP_AM_DEMOD: %s: the I/Q DC blocker ran (estimate %g)\n", what, (double)iq_dc);
+            rc |= expect_level(what, run_pipeline(c, off, 30.0, &iq), 0.02, -30.0);
+            /* Bypassed, not merely harmless: neither estimate ever moved off its reset value. */
+            if (std::fabs(iq.dc_r) > 1e-12f) {
+                DSD_FPRINTF(stderr, "DSP_AM_DEMOD: %s: the I/Q DC blocker ran (estimate %g)\n", what, (double)iq.dc_r);
+                rc = 1;
+            }
+            if (std::fabs(iq.balance_r) > 1e-12f || std::fabs(iq.balance_i) > 1e-12f) {
+                DSD_FPRINTF(stderr, "DSP_AM_DEMOD: %s: I/Q balance ran (estimate %g%+gj)\n", what, (double)iq.balance_r,
+                            (double)iq.balance_i);
                 rc = 1;
             }
         }

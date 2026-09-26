@@ -994,7 +994,8 @@ installs from `src/engine/trunk_tuning.c` in `src/engine/trunk_tuning_hooks_inst
   is FM-demodulated instead, as under `-fA` (`full_demod_run_output_demod()`), with the carrier estimate left alone;
   the AM session runs no de-emphasis, so, unlike under `-fA`, the row's discriminator output is not de-emphasized.
   `dsd_demod_iq_dc_block_active()` is the I/Q DC blocker's gate (enabled, and not under AM), which `iq_dc_block()`
-  uses. `am_carrier` is a float in a scanned header, so `tools/semgrep_float_fields.py` regenerated the semgrep
+  uses; `dsd_demod_iq_balance_active()` is I/Q balance's (enabled, CQPSK off, and not under AM), which
+  `full_demod_apply_iq_balance()` uses. `am_carrier` is a float in a scanned header, so `tools/semgrep_float_fields.py` regenerated the semgrep
   `$FLOAT_FIELD` list with it. Tests: `DSP_AM_DEMOD`, `DSP_CHANNEL_FILTERS` (AM widths).
 - `frame_sync_maybe_auto_switch_modulation()` (`dsd_frame_sync.c`) votes the C4FM/CQPSK/GFSK choice from SNR and
   sync hamming and applies the winner's demod profile to the RTL front end. It stands down under a modulation lock
@@ -1092,9 +1093,10 @@ Notes:
     open. An AM start on a replay whose sidecar decimates after the demodulator is refused with
     `AM needs a capture with post_downsample 1`: no AM width runs there, the default included.
     `demod_write_output_block()` skips the output scale for AM (`dsd_demod_am_active()`), which normalises its own
-    level. A configured I/Q DC blocker is bypassed under AM with a one-time note (`rtl_demod_note_am_iq_dc_bypass()`,
-    from configuration, a kind switch, a switch onto the analog family (`rtl_demod_enter_analog_family()`) and the
-    runtime toggle). A live FM <-> AM switch on the running monitor (`rtl_stream_apply_analog_request()`) also resets
+    level. A configured I/Q DC blocker and I/Q balance are bypassed under AM, each with a one-time note
+    (`rtl_demod_note_am_iq_dc_bypass()`, `rtl_demod_note_am_iq_balance_bypass()`, from configuration, a kind switch, a
+    switch onto the analog family (`rtl_demod_enter_analog_family()`) and the runtime toggles); a kind switch clears
+    both estimates. A live FM <-> AM switch on the running monitor (`rtl_stream_apply_analog_request()`) also resets
     the resampler history and clears the output ring with a generation bump, so the new kind's audio does not follow the
     old detector's; a width-only change keeps both. Only a family or kind switch changes the detector: a profile that
     turns CQPSK off (`rtl_stream_disable_cqpsk_mode()`) installs the analog family's own, so an AM monitor keeps the

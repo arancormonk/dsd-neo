@@ -665,8 +665,9 @@ of the setup wizard): the analog monitor with an AM envelope detector in place o
   when the squelch opens after a fade; a squelch closed longer than 100 ms ends the transmission, and whatever opens it
   next (usually another station at another level) is measured from its own first block, as after a retune, a mode
   change and a stream start. AM runs without de-emphasis. The I/Q DC blocker (`DSD_NEO_IQ_DC_BLOCK`, `[dsp]
-  iq_dc_block`) would remove a carrier tuned to 0 Hz, so it stays off while AM runs, with a one-time log note; it
-  applies again to FM.
+  iq_dc_block`) would remove a carrier tuned to 0 Hz, and I/Q balance (`DSD_NEO_IQ_BALANCE`, `[dsp] iq_balance`) would
+  read that carrier as an image and cancel it with its sidebands, so both stay off while AM runs, each with a one-time
+  log note; they apply again to FM.
 - Received-tone detection (CTCSS, below) is FM signalling and does not run for AM.
 - Live changes follow the [When changes apply](#when-changes-apply) table: switching between AM, the Analog (FM) monitor
   and the digital modes from a frontend applies to the running stream without reopening it, and so does a new AM width
