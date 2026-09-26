@@ -893,9 +893,9 @@ The whole analog effort (issue #518) stays within 5 MB of new fixture bytes. The
 `nxdn48_attenuated` replay that #521 committed 0.58 MB and the four received-tone synthetics of #522 0.82 MB
 (`nfm_ctcss_synth_drop` runs 2.5 s: after its tone stops at 1.2 s it still has to lose the tone and reach the no-tone
 verdict), 3.8 MB in all, which leaves about 1.2 MB. A 48 kHz cu8 fixture takes 96 kB a second, so keep each later
-synthetic fixture to 2 s (192 kB) or less. The four DCS synthetics of #523 take 0.77 MB (the no-code case reuses
-`nfm_notone_synth`), 4.57 MB in all, which leaves the two reserved for #524 0.43 MB. A pull request that adds analog
-fixtures states the running total.
+synthetic fixture to 2 s (192 kB) or less. The two AM synthetics of #524 (1.5 s each) take 0.29 MB and the four DCS
+synthetics of #523 0.77 MB (the no-code case reuses `nfm_notone_synth`), 4.86 MB in all, which leaves 0.14 MB. A pull
+request that adds analog fixtures states the running total.
 
 #### Tone and code labels
 
