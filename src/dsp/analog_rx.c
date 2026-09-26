@@ -318,11 +318,17 @@ dsd_analog_rx_core_process(dsd_analog_rx_core* core, const float* block, int cou
     if (rate_hz != core->fe.in_rate_hz) {
         core_configure(core, rate_hz);
     }
+    if (core->fe.in_rate_hz <= 0) {
+        return 0; /* no rate to time the hangover by */
+    }
+    /* The carrier is kept at every rate, one the front end cannot use included: the scanners hold an analog row on it
+       (issue #526), whether or not the detectors can hear anything below the voice band there. */
+    const int carrier_now = squelch_open && core_mean_square(block, count) > DSD_ANALOG_RX_FLOOR_MEAN_SQUARE;
+    const int feed = core_update_carrier(core, carrier_now, count);
     if (!core->fe.active) {
         return 0;
     }
-    const int carrier_now = squelch_open && core_mean_square(block, count) > DSD_ANALOG_RX_FLOOR_MEAN_SQUARE;
-    if (core_update_carrier(core, carrier_now, count)) {
+    if (feed) {
         /* Inside the hangover the detectors keep time but may not change their verdict on
            these samples alone. */
         core_feed(core, block, count, !carrier_now);
@@ -363,15 +369,16 @@ dsd_analog_rx_core_publish(const dsd_analog_rx_core* core, dsd_analog_rx_publica
         return;
     }
     out->generation = core->resets;
+    out->carrier_open = core->carrier_open;
     if (!core->fe.active) {
-        /* Designed for a rate the front end cannot use: detection is on but hears nothing.
-           An unconfigured core (no block yet) is still INACTIVE. */
+        /* Designed for a rate the front end cannot use: detection is on but hears nothing,
+           though the carrier is still kept. An unconfigured core (no block yet) is still
+           INACTIVE. */
         if (core->fe.in_rate_hz != 0) {
             out->tone_state = DSD_ANALOG_TONE_STATE_UNAVAILABLE;
         }
         return;
     }
-    out->carrier_open = core->carrier_open;
     if (!core->carrier_open) {
         out->tone_state = DSD_ANALOG_TONE_STATE_IDLE;
         return;
@@ -933,8 +940,13 @@ dsd_analog_rx_tap_partial(const dsd_opts* opts, dsd_state* state, const float* b
         }
         /* Detection starts listening with the sample just added. The ones before it in the
            block arrived while it was not, and perhaps before a boundary that had no session to
-           set them aside (dsd_analog_rx_reset()). */
+           set them aside (dsd_analog_rx_reset()): the first nfm row of a scan that began in a
+           digital mode, on input no receive-family switch empties the block for. Nothing vouches
+           for them, so the analog monitor's output drops the block too (issue #526). */
         session->block_taken = filled - 1U;
+        if (filled > 1U) {
+            session->block_straddled = 1;
+        }
     }
     /* The quota follows the input rate as it is now, not as it was at the last read: after a
        drop in rate, the old rate's quota would hold the first read at the new one back for up
@@ -984,16 +996,12 @@ analog_rx_generations_current(const dsd_opts* opts, const analog_rx_session* ses
 
 int
 dsd_analog_rx_carrier_open_now(const dsd_opts* opts, const dsd_state* state) {
-    if (!opts || !state) {
+    if (!opts || !state || !state->analog_rx.carrier_open) {
         return 0;
     }
-    int open = state->analog_rx.carrier_open;
-    if (state->analog_rx.tone_state == DSD_ANALOG_TONE_STATE_UNAVAILABLE) {
-        /* The tap's front end cannot run at this input rate, so it never opens a carrier of its own: the squelch
-           over the monitor block says, as it did before the tap existed. */
-        open = opts->rtl_pwr > opts->rtl_squelch_level;
-    }
-    if (!open) {
+    /* Nor while a retune is unresolved: in flight, the front end still delivers the channel being left; failed after
+       the scanner moved on, it delivers a channel other than the one the scanner shows. */
+    if (dsd_trunk_tuning_pending_request() != 0U) {
         return 0;
     }
     const analog_rx_session* session = analog_rx_session_get(state);
@@ -1007,7 +1015,12 @@ dsd_analog_rx_block_straddles_boundary(const dsd_opts* opts, const dsd_state* st
         return 0;
     }
     const analog_rx_session* session = analog_rx_session_get(state);
-    return session ? session->block_straddled : 0;
+    if (!session) {
+        return 0;
+    }
+    /* A boundary the tap has not read past yet -- one that landed after its last read of this block -- leaves the
+       block the channel before it as well. */
+    return session->block_straddled || !analog_rx_generations_current(opts, session);
 }
 
 void

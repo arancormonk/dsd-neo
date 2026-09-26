@@ -1186,9 +1186,9 @@ test_rx_tone_keeps_pace_with_a_long_pcm_block(void) {
 /*
  * An input rate the sub-audible front end cannot use (here a 384 kHz WAV): the tap publishes
  * UNAVAILABLE, so the frontends leave the row out instead of reading "no carrier" over a
- * strong carrier. A reset reads INACTIVE only until the next block, and the tap does not reset
- * itself block after block -- nor once detection is switched off, when it reads INACTIVE once
- * and then stays put.
+ * strong carrier, which the tap still keeps for the scanners (issue #526). A reset reads
+ * INACTIVE only until the next block, and the tap does not reset itself block after block --
+ * nor once detection is switched off, when it reads INACTIVE once and then stays put.
  */
 static void
 test_rx_tone_unusable_rate_is_unavailable(void) {
@@ -1199,7 +1199,7 @@ test_rx_tone_unusable_rate_is_unavailable(void) {
     opts.wav_sample_rate = 384000;
     feed_tone_blocks(&opts, &state, 3);
     assert(state.analog_rx.tone_state == DSD_ANALOG_TONE_STATE_UNAVAILABLE);
-    assert(state.analog_rx.carrier_open == 0 && state.analog_rx.ctcss_tenths_hz == 0);
+    assert(state.analog_rx.carrier_open == 1 && state.analog_rx.ctcss_tenths_hz == 0);
     uint32_t generation = state.analog_rx.generation;
     feed_tone_blocks(&opts, &state, 3);
     assert(state.analog_rx.generation == generation);
@@ -2233,13 +2233,21 @@ test_carrier_stamp_does_not_need_audio_out(void) {
     opts.audio_out = 1;
     feed_tone_blocks(&opts, &state, 1);
     assert(state.last_cc_sync_time != 0 && g_monitor_blocks == 1);
+    /* Nor while a retune is unresolved, when it plays nothing: the carrier is the channel being left. */
+    dsd_trunk_tuning_requests_reset();
+    (void)dsd_trunk_tuning_request_begin();
+    clear_carrier_stamps(&state);
+    feed_tone_blocks(&opts, &state, 1);
+    assert(state.last_cc_sync_time == 0 && state.last_vc_sync_time == 0 && g_monitor_blocks == 1);
+    dsd_trunk_tuning_requests_reset();
     dsd_udp_audio_hooks_set((dsd_udp_audio_hooks){0});
     dsd_state_ext_free_all(&state);
 }
 
-/* At an input rate the tap's front end cannot run at (a 384 kHz WAV) the tap publishes UNAVAILABLE and never opens a
- * carrier of its own, so the squelch alone is the carrier: an open squelch still stamps with audio_out = 0, a closed
- * one does not, and a retune the tap has not read past still keeps the old channel's squelch off the new row. */
+/* At an input rate the tap's front end cannot run at (a 384 kHz WAV) the tap publishes UNAVAILABLE for the tone and
+ * still keeps the carrier, as at every other rate (the squelch open over the block above the level floor, through the
+ * 200 ms hangover): an open squelch stamps with audio_out = 0, a closed one stops stamping once the hangover is over,
+ * and a retune the tap has not read past still keeps the old channel's carrier off the new row. */
 static void
 test_carrier_stamp_at_an_unusable_tap_rate(void) {
     static dsd_opts opts;
@@ -2251,19 +2259,28 @@ test_carrier_stamp_at_an_unusable_tap_rate(void) {
     dsd_trunk_tuning_requests_reset();
     clear_carrier_stamps(&state);
     feed_tone_blocks(&opts, &state, 2);
-    assert(state.analog_rx.tone_state == DSD_ANALOG_TONE_STATE_UNAVAILABLE && state.analog_rx.carrier_open == 0);
+    assert(state.analog_rx.tone_state == DSD_ANALOG_TONE_STATE_UNAVAILABLE && state.analog_rx.carrier_open == 1);
     assert(dsd_analog_rx_carrier_open_now(&opts, &state) == 1);
     assert(state.last_cc_sync_time != 0 && state.last_cc_sync_time_m > 0.0);
     assert(state.last_vc_sync_time != 0 && state.last_vc_sync_time_m > 0.0);
 
-    /* A completed retune the tap has not read past yet: the squelch it knows of is the old channel's. */
+    /* A completed retune the tap has not read past yet: the carrier it knows of is the old channel's. The read that
+       sees the retune is dropped (at this rate a read is a whole block), and the next one opens the new channel's. */
     dsd_trunk_tuning_generation_advance();
+    assert(dsd_analog_rx_carrier_open_now(&opts, &state) == 0);
+    feed_tone_blocks(&opts, &state, 1);
     assert(dsd_analog_rx_carrier_open_now(&opts, &state) == 0);
     feed_tone_blocks(&opts, &state, 1);
     assert(dsd_analog_rx_carrier_open_now(&opts, &state) == 1);
 
-    /* The squelch closes over the -23.8 dBFS block: nothing stamps. */
+    /* The squelch closes over the -23.8 dBFS block: the carrier holds through the 200 ms hangover (76800 samples, 80
+       blocks), then nothing stamps. */
     opts.rtl_squelch_level = dsd_squelch_level_from_sql(-10.0);
+    feed_tone_blocks(&opts, &state, 79);
+    assert(state.analog_rx.carrier_open == 1 && dsd_analog_rx_carrier_open_now(&opts, &state) == 1);
+    feed_tone_blocks(&opts, &state, 1);
+    assert(state.analog_rx.carrier_open == 0 && dsd_analog_rx_carrier_open_now(&opts, &state) == 0);
+    assert(state.analog_rx.tone_state == DSD_ANALOG_TONE_STATE_UNAVAILABLE);
     clear_carrier_stamps(&state);
     feed_tone_blocks(&opts, &state, 2);
     assert(dsd_analog_rx_carrier_open_now(&opts, &state) == 0);
@@ -2306,8 +2323,12 @@ test_monitor_muted_across_a_retune(void) {
     /* A retune nobody announced shows up as a new stream generation: until the tap reads the new channel, the
        carrier it published belongs to the old one, and the block that straddles it is dropped. */
     assert(state.analog_rx.carrier_open == 1 && dsd_analog_rx_carrier_open_now(&opts, &state) == 1);
+    assert(dsd_analog_rx_block_straddles_boundary(&opts, &state) == 0);
     g_fake_rtl_generation++;
     assert(state.analog_rx.carrier_open == 1 && dsd_analog_rx_carrier_open_now(&opts, &state) == 0);
+    /* The block completing now holds the channel before the move, even when the move landed after the tap's last read
+       of it (the controller finishing a retune while the voice filters run), so it is dropped all the same. */
+    assert(dsd_analog_rx_block_straddles_boundary(&opts, &state) == 1);
     feed_tone_blocks(&opts, &state, 1);
     assert(g_monitor_blocks == 4);
     feed_tone_blocks(&opts, &state, 1);
@@ -2357,15 +2378,68 @@ test_monitor_muted_across_a_retune(void) {
     dsd_trunk_tuning_request_mark_ready(failed);
     dsd_trunk_tuning_request_publish(failed, DSD_TRUNK_TUNE_RESULT_FAILED);
     assert(dsd_trunk_tuning_pending_request() == failed);
+    clear_carrier_stamps(&state);
     feed_tone_blocks(&opts, &state, 2);
     assert(g_monitor_blocks == played);
+    /* Nor does that channel's carrier hold the row the scanner shows, which would keep the -Y hangtime from ever
+       running out and the scanner from making the retune that clears the failure. */
+    assert(dsd_analog_rx_carrier_open_now(&opts, &state) == 0);
+    assert(state.last_cc_sync_time == 0 && state.last_vc_sync_time == 0);
     dsd_trunk_tuning_retire_failed_requests();
     assert(dsd_trunk_tuning_pending_request() == 0U);
     feed_tone_blocks(&opts, &state, 1);
     assert(g_monitor_blocks == played + 1);
+    assert(dsd_analog_rx_carrier_open_now(&opts, &state) == 1 && state.last_cc_sync_time != 0);
     dsd_trunk_tuning_requests_reset();
     dsd_udp_audio_hooks_set((dsd_udp_audio_hooks){0});
     install_fake_rtl_hooks(0);
+    dsd_state_ext_free_all(&state);
+}
+
+/* Detection that starts part-way through a block -- the first nfm row of a scan that began in a digital mode, on PCM
+ * input, where no receive-family switch empties the block -- has no word on the samples collected before it started:
+ * they can be the channel before a retune it had no session to set aside. The monitor drops that block rather than play
+ * them as the new row's, and plays from the next block on. */
+static void
+test_monitor_drops_the_block_detection_starts_in(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    install_fake_rtl_hooks(0);
+    init_analog_monitor_fixture(&opts, &state);
+    opts.audio_out = 1;
+    opts.audio_out_type = 8;
+    dsd_udp_audio_hooks monitor = {0};
+    monitor.blast_analog = count_monitor_block;
+    dsd_udp_audio_hooks_set(monitor);
+    dsd_trunk_tuning_requests_reset();
+    g_monitor_blocks = 0;
+
+    opts.analog_only = 0;
+    float block[960];
+    fill_tone_block(block, 960U, 100.0, 3000.0);
+    for (unsigned int i = 0; i < 800U; i++) {
+        dsd_symbol_test_push_unsynced_analog_sample(&opts, &state, block[i]);
+    }
+    assert(dsd_state_ext_get(&state, DSD_STATE_EXT_DSP_ANALOG_RX) == NULL);
+    dsd_analog_rx_reset(&state);
+    opts.analog_only = 1;
+    for (unsigned int i = 800U; i < 960U; i++) {
+        dsd_symbol_test_push_unsynced_analog_sample(&opts, &state, block[i]);
+    }
+    assert(state.analog_sample_counter == 0);
+    assert(g_monitor_blocks == 0);
+    feed_tone_blocks(&opts, &state, 1);
+    assert(g_monitor_blocks == 1);
+
+    /* Detection that starts on the block's first sample has nothing before it to drop. */
+    opts.analog_only = 0;
+    dsd_state_ext_free_all(&state);
+    opts.analog_only = 1;
+    for (unsigned int i = 0; i < 960U; i++) {
+        dsd_symbol_test_push_unsynced_analog_sample(&opts, &state, block[i]);
+    }
+    assert(g_monitor_blocks == 2);
+    dsd_udp_audio_hooks_set((dsd_udp_audio_hooks){0});
     dsd_state_ext_free_all(&state);
 }
 
@@ -2390,6 +2464,7 @@ main(void) {
     test_carrier_stamp_does_not_need_audio_out();
     test_carrier_stamp_at_an_unusable_tap_rate();
     test_monitor_muted_across_a_retune();
+    test_monitor_drops_the_block_detection_starts_in();
     test_rx_tone_clears_on_unannounced_retune();
     test_rx_tone_clears_on_applied_analog_profile_change();
     test_rx_tone_reset_sets_the_pending_block_aside();

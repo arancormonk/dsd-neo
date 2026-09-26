@@ -1162,8 +1162,8 @@ symbol_apply_unsynced_filters(dsd_opts* opts, dsd_state* state, unsigned int ana
  * Nothing plays while a retune is unresolved (dsd_trunk_tuning_pending_request()): in flight, when the front end still
  * delivers the channel being left, or failed after the scanner had moved on, when it delivers a channel other than the
  * one the scanner shows, until a later retune lands or the scan ends -- the same gate that holds back digital frames.
- * Nor, on the analog monitor, from a block that began before a retune or reset the received-tone tap noticed
- * (issue #526). */
+ * Nor, on the analog monitor, from a block that began before a retune or reset, or before detection started, or that a
+ * boundary the tap has not read past yet leaves the old channel's (issue #526). */
 static inline int
 symbol_unsynced_audio_allowed(const dsd_opts* opts, const dsd_state* state) {
     if (!(opts->rtl_pwr > opts->rtl_squelch_level) || opts->monitor_input_audio != 1 || state->carrier != 0
@@ -1191,9 +1191,11 @@ symbol_write_unsynced_audio(const dsd_opts* opts, dsd_state* state, unsigned int
 }
 
 /* Whether the block is carrier activity for the scanner's hold. The analog monitor's carrier is the received-tone
- * tap's (squelch open above its level floor, through its 200 ms hangover, dropped at every retune; the squelch alone at
- * an input rate the tap cannot run at), whether or not the block is played: -o null and a muted UI hold the row too
- * (issue #526). The -8 source monitor under digital decoding keeps its old rule, the carrier it plays. */
+ * tap's (squelch open above its level floor, through its 200 ms hangover, at every input rate, dropped at every retune
+ * and while one is unresolved), whether or not the block is played: -o null and a muted UI hold the row too
+ * (issue #526). The -8 source monitor under digital decoding keeps its old rule, the carrier it plays, which is none
+ * while a retune is unresolved. Either way the channel a retune leaves, or one a failed retune left the receiver on,
+ * never holds the row the scanner shows: its hangtime runs out and the scanner tunes on. */
 static inline int
 symbol_unsynced_carrier_active(const dsd_opts* opts, const dsd_state* state) {
     if (opts->monitor_input_audio != 1 || state->carrier != 0) {
@@ -1202,7 +1204,7 @@ symbol_unsynced_carrier_active(const dsd_opts* opts, const dsd_state* state) {
     if (dsd_analog_tone_detection_active(opts)) {
         return dsd_analog_rx_carrier_open_now(opts, state);
     }
-    return opts->audio_out == 1 && opts->rtl_pwr > opts->rtl_squelch_level;
+    return opts->audio_out == 1 && opts->rtl_pwr > opts->rtl_squelch_level && dsd_trunk_tuning_pending_request() == 0U;
 }
 
 /* Stamp carrier activity: the -Y hangtime anchor and, off a tuned trunked voice channel, the voice anchor. */

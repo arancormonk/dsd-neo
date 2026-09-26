@@ -1429,7 +1429,9 @@ test_carrier_hangover(void) {
 }
 
 /* Below 2.4 kHz there is no sub-audible band to keep: detection says so and stays out. A core
-   that has seen no block yet is INACTIVE; one designed for an unusable rate is UNAVAILABLE. */
+   that has seen no block yet is INACTIVE; one designed for an unusable rate is UNAVAILABLE. The
+   carrier is kept at every rate all the same (issue #526: the scanners hold an analog row on it),
+   above the level floor and through the hangover, 400 samples at 2000 Hz. */
 static void
 test_unusable_rate(void) {
     float block[100];
@@ -1439,7 +1441,20 @@ test_unusable_rate(void) {
     assert(observe(&g_core).state == DSD_ANALOG_TONE_STATE_INACTIVE);
     assert(dsd_analog_rx_core_process(&g_core, block, 100, 2000, 1) == 0);
     const observation o = observe(&g_core);
-    assert(o.state == DSD_ANALOG_TONE_STATE_UNAVAILABLE && o.carrier == 0);
+    assert(o.state == DSD_ANALOG_TONE_STATE_UNAVAILABLE && o.carrier == 1);
+    float silence[100];
+    DSD_MEMSET(silence, 0, sizeof(silence));
+    for (int i = 0; i < 3; i++) {
+        assert(dsd_analog_rx_core_process(&g_core, block, 100, 2000, 0) == 0);
+        assert(observe(&g_core).carrier == 1);
+    }
+    assert(dsd_analog_rx_core_process(&g_core, block, 100, 2000, 0) == 0);
+    assert(observe(&g_core).carrier == 0 && observe(&g_core).state == DSD_ANALOG_TONE_STATE_UNAVAILABLE);
+    /* An open squelch over a block below the floor is no carrier either. */
+    assert(dsd_analog_rx_core_process(&g_core, silence, 100, 2000, 1) == 0);
+    assert(observe(&g_core).carrier == 0);
+    assert(dsd_analog_rx_core_process(&g_core, block, 100, 2000, 1) == 0);
+    assert(observe(&g_core).carrier == 1);
     /* A reset keeps the rate design, and with it the verdict. */
     dsd_analog_rx_core_reset(&g_core);
     assert(observe(&g_core).state == DSD_ANALOG_TONE_STATE_UNAVAILABLE);
@@ -1451,7 +1466,7 @@ test_unusable_rate(void) {
     assert(dsd_analog_rx_core_process(&g_core, block, 100, DSD_ANALOG_RX_MAX_RATE_HZ, 1) == 1);
     assert(g_core.fe.active == 1 && g_core.fe.n1 > 0);
     assert(dsd_analog_rx_core_process(&g_core, block, 100, 384000, 1) == 0);
-    assert(observe(&g_core).state == DSD_ANALOG_TONE_STATE_UNAVAILABLE);
+    assert(observe(&g_core).state == DSD_ANALOG_TONE_STATE_UNAVAILABLE && observe(&g_core).carrier == 1);
 }
 
 /* A window of silence fed straight to the detector leaves every correlator bin empty. The

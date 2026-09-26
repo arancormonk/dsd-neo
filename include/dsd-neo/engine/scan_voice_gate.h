@@ -47,9 +47,9 @@ int dsd_scan_voice_probe(const dsd_opts* opts, const dsd_state* state, dsd_scan_
  *
  * It reads the received-tone tap's carrier (dsd_state::analog_rx, issue #522) rather than deriving one:
  * the squelch open over the monitor audio, above the tap's level floor, held through its 200 ms hangover,
- * and dropped at every reset the tap makes -- a retune, a stream generation or receive-profile change, a
- * stream pause -- so a block that straddles a retune never counts for the new channel. At an input rate the
- * tap cannot run at, the squelch alone decides (dsd_analog_rx_carrier_open_now()). So it holds only
+ * at every input rate, and dropped at every reset the tap makes -- a retune, a stream generation or
+ * receive-profile change, a stream pause -- and while a retune is unresolved, so a block that straddles a
+ * retune never counts for the new channel (dsd_analog_rx_carrier_open_now()). So it holds only
  * while the analog FM monitor runs (dsd_analog_tone_detection_active()), never on a publication past its
  * stale_after_ms, never while a digital carrier is flagged (dsd_state::carrier) and never while a trunking
  * state machine owns the channel. Whether audio is played has no part in it: -o null or a muted UI still
