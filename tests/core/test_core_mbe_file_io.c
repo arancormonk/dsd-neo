@@ -14,6 +14,7 @@
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/synctype_ids.h>
+#include <dsd-neo/core/talkgroup_policy.h>
 #include <dsd-neo/core/time_format.h>
 #include <dsd-neo/fec/block_codes.h>
 #include <dsd-neo/runtime/rdio_export.h>
@@ -1445,6 +1446,109 @@ test_sdrtrunk_json_hex_voice_writes_unencrypted_mbe_records(void) {
     return rc;
 }
 
+/* SDRTrunk JSON playback writes its static and per-call WAVs itself; both
+ * honour the replayed call's talkgroup policy, as live decode does. */
+static int
+test_sdrtrunk_json_wav_honors_talkgroup_policy(void) {
+    static const char json[] =
+        "{\"version\":\"2\",\"protocol\":\"DMR\",\"call_type\":\"GROUP\",\"encrypted\":\"false\","
+        "\"to\":\"1234\",\"from\":\"5678\",\"hex\":\"000000000000000000\"}";
+    static dsd_opts opts;
+    static dsd_state state;
+    static Event_History_I history[2];
+    int rc = 0;
+    for (int per_call = 0; per_call <= 1; ++per_call) {
+        for (int blocked = 1; blocked >= 0; --blocked) {
+            DSD_MEMSET(&opts, 0, sizeof opts);
+            DSD_MEMSET(&state, 0, sizeof state);
+            DSD_MEMSET(history, 0, sizeof history);
+            opts.playfiles = 1;
+            opts.floating_point = 1;
+            state.event_history_s = history;
+            char wav_path[DSD_TEST_PATH_MAX];
+            const int fd = dsd_test_mkstemp(wav_path, sizeof wav_path, "sdrtrunk_json_wav");
+            if (fd < 0) {
+                return 1;
+            }
+            dsd_close(fd);
+            SF_INFO info;
+            DSD_MEMSET(&info, 0, sizeof info);
+            info.samplerate = 8000;
+            info.channels = per_call ? 1 : 2;
+            info.format = SF_FORMAT_WAV | SF_FORMAT_PCM_16;
+            opts.wav_out_f = sf_open(wav_path, SFM_WRITE, &info);
+            if (!opts.wav_out_f) {
+                (void)remove(wav_path);
+                return 1;
+            }
+            if (per_call) {
+                opts.dmr_stereo_wav = 1;
+            } else {
+                opts.static_wav_file = 1;
+            }
+            if (blocked) {
+                rc |= expect_int("sdrtrunk wav blocked row", dsd_tg_policy_set_mode(&state, 1234, 1234, "B"), 0);
+            }
+
+            rc |= run_sdrtrunk_json(json, &opts, &state);
+            sf_close(opts.wav_out_f);
+            opts.wav_out_f = NULL;
+
+            DSD_MEMSET(&info, 0, sizeof info);
+            SNDFILE* written = sf_open(wav_path, SFM_READ, &info);
+            rc |= expect_true("sdrtrunk wav readable", written != NULL);
+            if (written) {
+                sf_close(written);
+            }
+            rc |=
+                expect_int(blocked ? "sdrtrunk wav omits blocked talkgroup" : "sdrtrunk wav records allowed talkgroup",
+                           info.frames > 0, !blocked);
+            dsd_state_ext_free_all(&state);
+            (void)remove(wav_path);
+        }
+    }
+    return rc;
+}
+
+/* SDRTrunk JSON playback's MBE capture answers to the replayed call's talkgroup
+ * policy like its WAVs. */
+static int
+test_sdrtrunk_json_mbe_capture_honors_talkgroup_policy(void) {
+    static const char json[] =
+        "{\"version\":\"2\",\"protocol\":\"DMR\",\"call_type\":\"GROUP\",\"encrypted\":\"false\","
+        "\"to\":\"1234\",\"from\":\"5678\",\"hex\":\"000000000000000000\"}";
+    static dsd_opts opts;
+    static dsd_state state;
+    static Event_History_I history[2];
+    int rc = 0;
+    for (int blocked = 1; blocked >= 0; --blocked) {
+        DSD_MEMSET(&opts, 0, sizeof opts);
+        DSD_MEMSET(&state, 0, sizeof state);
+        DSD_MEMSET(history, 0, sizeof history);
+        opts.playfiles = 1;
+        opts.floating_point = 1;
+        state.event_history_s = history;
+        FILE* out = tmpfile();
+        if (!out) {
+            return 1;
+        }
+        opts.mbe_out_f = out;
+        if (blocked) {
+            rc |= expect_int("sdrtrunk capture blocked row", dsd_tg_policy_set_mode(&state, 1234, 1234, "B"), 0);
+        }
+        rc |= run_sdrtrunk_json(json, &opts, &state);
+        (void)fflush(out);
+        (void)fseek(out, 0, SEEK_END);
+        rc |= expect_int(blocked ? "sdrtrunk capture omits blocked talkgroup"
+                                 : "sdrtrunk capture keeps allowed talkgroup",
+                         ftell(out) > 0, !blocked);
+        fclose(out);
+        opts.mbe_out_f = NULL;
+        dsd_state_ext_free_all(&state);
+    }
+    return rc;
+}
+
 static int
 test_sdrtrunk_json_hex_voice_blocks_encrypted_without_keystream(void) {
     int rc = 0;
@@ -2696,6 +2800,8 @@ main(void) {
     rc |= test_sdrtrunk_json_invalid_numeric_fields_reset_to_zero();
     rc |= test_sdrtrunk_json_protocol_opens_and_closes_mbe_out_file();
     rc |= test_sdrtrunk_json_hex_voice_writes_unencrypted_mbe_records();
+    rc |= test_sdrtrunk_json_wav_honors_talkgroup_policy();
+    rc |= test_sdrtrunk_json_mbe_capture_honors_talkgroup_policy();
     rc |= test_sdrtrunk_json_hex_voice_blocks_encrypted_without_keystream();
     rc |= test_sdrtrunk_json_encrypted_keystreams_write_voice_records();
     rc |= test_sdrtrunk_nxdn_published_voice_vectors();

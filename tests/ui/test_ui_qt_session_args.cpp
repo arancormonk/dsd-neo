@@ -184,6 +184,36 @@ test_explore_system(void) {
            session_args_build(sys, SessionArgPrefs(), &error).isEmpty() && error == SessionArgsError::Frequency);
 }
 
+/*
+ * Issue #525: the NFM chip (-fA, the analog monitor) sits in the shared decode catalog, so the setup wizard and a
+ * saved system can carry it, not only the Radio sheet. It has to reach the session as the bare -fA, on a local dongle
+ * and over rtl_tcp, with no trunking flag: the monitor follows no control channel.
+ */
+void
+test_nfm_system(void) {
+    QVariantMap sys = usb_system();
+    sys.insert(QStringLiteral("decodeFlag"), QStringLiteral("-fA"));
+    SessionArgsError error = SessionArgsError::None;
+    const QStringList args = session_args_build(sys, SessionArgPrefs(), &error);
+    expect("an NFM system builds", error == SessionArgsError::None);
+    expect("the NFM chip reaches the session as -fA", args.count(QStringLiteral("-fA")) == 1);
+    expect("an NFM system follows no calls", !args.contains(QStringLiteral("-T")));
+    expect("an NFM system names no digital decoder", !args.contains(QStringLiteral("-fa"))
+                                                         && !args.contains(QStringLiteral("-ft"))
+                                                         && !args.contains(QStringLiteral("-fs")));
+    expect("an NFM system tunes where it was told", input_spec(args) == QStringLiteral("rtl:0:851.375M:30:0:48:0:2"));
+
+    sys.insert(QStringLiteral("sourceType"), QStringLiteral("rtltcp"));
+    sys.insert(QStringLiteral("host"), QStringLiteral("10.0.2.2"));
+    sys.insert(QStringLiteral("port"), 1234);
+    const QStringList remote = session_args_build(sys, SessionArgPrefs(), &error);
+    expect("an NFM system builds over rtl_tcp", error == SessionArgsError::None);
+    expect("NFM over rtl_tcp is still -fA",
+           remote.count(QStringLiteral("-fA")) == 1 && !remote.contains(QStringLiteral("-T")));
+    expect("NFM over rtl_tcp reaches the remote tuner",
+           input_spec(remote) == QStringLiteral("rtltcp:10.0.2.2:1234:851.375M:30:0:48:0:2"));
+}
+
 void
 test_defaults_and_overrides(void) {
     SessionArgsError error = SessionArgsError::None;
@@ -551,6 +581,7 @@ main(int argc, char** argv) {
     test_hangtime();
     test_tg_lockout_preference();
     test_defaults_and_overrides();
+    test_nfm_system();
     test_airspy_bandwidth();
     test_csv_args();
     test_ppm_shapes();

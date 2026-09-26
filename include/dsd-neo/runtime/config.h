@@ -668,6 +668,12 @@ typedef struct dsdneoUserConfig {
     int has_dsp;
     int iq_balance;  /* bool */
     int iq_dc_block; /* bool */
+
+    /* [analog] (runtime/analog_channel.h). A width is the full RF channel-filter width in Hz; 0 is the kind's
+       default (the key left out), which a save does not write. The loader refuses a value outside the kind's range
+       and keeps the default. */
+    int has_analog;
+    int analog_nfm_bandwidth_hz;
 } dsdneoUserConfig;
 
 /**
@@ -731,6 +737,20 @@ int dsd_user_config_save_atomic(const char* path, const dsdneoUserConfig* cfg);
  * @param state Decoder state to mutate.
  */
 void dsd_apply_user_config_to_opts(const dsdneoUserConfig* cfg, dsd_opts* opts, dsd_state* state);
+
+/**
+ * @brief The radio input spec the config's [input] sets, without applying anything.
+ *
+ * What dsd_apply_user_config_to_opts() writes to opts->audio_in_dev for an `rtl` source with `rtl_freq`, an `rtltcp`
+ * source with `rtltcp_host` ("rtl:dev:freq:gain:ppm:bw:sql:vol", "rtltcp:host:port[:freq:...]"), a `soapy` source
+ * ("soapy" or "soapy:<soapy_args>") or an `airspy` source ("airspy"), with the values the config leaves out taken from
+ * @p opts as the apply takes them. A caller compares it with the running input to know whether the apply reopens the
+ * device, and which kind of device then sets the rate.
+ *
+ * @return 0 when the config sets such a spec (written to @p out), -1 when its [input] leaves the input spec alone or
+ *         sets a non-radio input (or on bad arguments).
+ */
+int dsd_user_config_radio_input_spec(const dsdneoUserConfig* cfg, const dsd_opts* opts, char* out, size_t out_size);
 
 /**
  * @brief Apply config defaults before CLI parsing without activating file-rate timing yet.

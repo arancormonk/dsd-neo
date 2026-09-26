@@ -213,6 +213,7 @@ Options are parsed once when the list is loaded. They are a restricted argument 
 | `--scan-voice-only`, `--no-scan-voice-only` | Enable/disable the conventional voice gate. |
 | `--scan-voice-qualify-ms`, `--scan-voice-hold-ms` | Conventional voice-gate intervals, `100..600000` milliseconds. |
 | `--scan-max-visit-ms <ms>` | Maximum time on this row or target per visit; `0` disables the cap for it, otherwise `1000..3600000` milliseconds. All modes, and every trunk-target type. |
+| `--squelch-db <dB>` | This row's or target's squelch threshold, in whole dB from `-100` to `0`, the same units as `[input] rtl_sql` and the `sql` field of `-i rtl:`; `0` switches the squelch off for this row alone. All modes, and every trunk-target type. |
 
 Protocol-specific options require a declared `mode`; trunk targets use their `type`. A channel map whose rows carry
 `options` but no `mode` still runs through the typed scanner (blank rows inherit the configured decoder), since the
@@ -222,6 +223,21 @@ legacy `-Y` scanner applies row keys but not row options, so a legacy list alway
 columns while the gate is on (see `docs/trunk-scan.md`). `--scan-max-visit-ms` is the one scan-timing switch
 trunk-system targets do accept, since the per-visit cap applies to every target type. Input/output, frontend
 selection, decoder flags and scanner-wide `-t` are not accepted in `options`.
+
+`--squelch-db` sets the channel squelch while the row or target is on air and restores the configured default
+when the scanner moves on or stops. A row that omits it inherits the default (`[input] rtl_sql`, the `sql` field of
+`-i rtl:...`, or whatever the squelch control last set); `0` switches the squelch off for that row only; any other
+value is a threshold in dB. Positive numbers (the legacy linear form some CLI inputs accept), values below `-100` and
+fractional dB are rejected with a row diagnostic. On an RTL-SDR, rtl_tcp, SoapySDR or Airspy input the threshold
+gates the demodulator, so a row set well above its signal level decodes nothing: on a trunk-system target it gates
+the control channel too, and a high threshold there makes the whole system look dead. On any other input (rigctl
+tuning a PCM, UDP or TCP audio source) there is no demodulator for it to gate, so it cannot gate digital
+acquisition: it only gates the analog input monitor (`-8`, with audio output on) and the carrier activity that
+monitor stamps, and scan start logs one warning per affected row or target. Frontends show
+the value in force first and, while a row overrides it, the configured default beside it
+(`SQL: -60.0 dB (row; default -80.0 dB)`); the Qt/Android channel-map review and target preview list each row's
+squelch, or `inherit`. The squelch controls and Config->Save work on the configured default, never the row's value;
+a squelch edit made while a row overrides it says so.
 
 Omitted settings inherit the outer CLI/configuration, including forcing. Use `--no-force-key` on a normal mixed
 clear/BP channel when forcing is configured globally. `-b 1` with normal signalling processes clear and BP calls;
@@ -249,9 +265,15 @@ Separate switches with whitespace; quote an argument with single or double quote
 Backslashes are literal, so `-G "C:\Radio Lists\groups.csv"` works without shell escaping. Hex keys may
 include an optional `0x` prefix and whitespace inside a quoted argument. Long switches that take an argument
 also accept `--name=value`; argument-free switches reject it (for example, `--scan-voice-only=yes`). An
-argument must not start with `-`; use `./-name.csv` for a filename that starts with a dash. CSV commas remain
-field separators, including inside quotes. Unknown switches, positional text, malformed quotes and duplicate
-settings are errors. Diagnostics name the row and option without repeating raw option text or key values.
+argument must not start with `-`; use `./-name.csv` for a filename that starts with a dash. The one exception is
+`--squelch-db`, whose value is negative: a following token that reads as a negative number, a minus sign and a digit
+followed only by digits, `.`, `e`, `E`, `+` or `-` (`--squelch-db -60`), is its value, while anything else starting
+with `-` (`--squelch-db --strict-crc`) is still refused as a missing value. A malformed number such as
+`--squelch-db -5.5` is therefore reported as an out-of-range value, the same as `--squelch-db=-5.5`. The digit
+switches `-0`, `-1` and `-4` read as numbers there too: `--squelch-db -4` sets -4 dB and is never the `-4` switch.
+`--squelch-db=-60` also works. CSV commas remain field separators, including inside quotes. Unknown switches,
+positional text, malformed quotes and duplicate settings are errors. Diagnostics name the row and option without
+repeating raw option text or key values.
 
 File paths resolve relative to the containing CSV. Key-file paths (`-K`, `-k` and the legacy columns) are
 limited to 2047 bytes for channel maps and 1023 bytes for trunk targets, after resolution and excluding the
@@ -452,6 +474,9 @@ Important behavior:
 - Exact duplicates preserve first-match behavior.
 - `audio=off` forces `record=off` and `stream=off`.
 - `mode=B`/`DE` forces media fields off regardless of optional values.
+- `record` covers every recording: the per-call WAV (`-P`), the static WAV (`-w`) and MBE capture (`-d`).
+- Rows, `-W` and the Hold match numeric talkgroup IDs. M17 addresses calls by callsign, so M17 traffic is not
+  matched by them; use the M17 CAN filter to select M17 traffic.
 - Android: **TG list** on the live monitor lists configured talkgroups/ranges plus voice talkgroups heard this
   session that no listed row covers. Tap a card to choose **Listening** (`A`) or **Not tuned** (`B`); the screen
   waits for the decoder snapshot before showing the change. Search matches names or IDs; category chips use the
@@ -460,7 +485,8 @@ Important behavior:
   **All**. Search text does not narrow bulk edits. Learned radio-ID alias rows and mode `D` rows are excluded.
   In allow-list mode, heard-but-unlisted talkgroups remain blocked until individually allowed.
 - A listening edit preserves a row's name, category, priority and preemption setting, but resets its media flags
-  from the selected mode. By default, the monitor's **Skip** uses the same name-preserving block path.
+  from the selected mode. The monitor's **Lock out** uses the same name-preserving block path. **Skip** leaves the
+  call without editing the list.
 - When a group file is configured, edits atomically rewrite that file in table order, preserving ranges and
   modeled fields. Existing extended policy headers remain extended; otherwise the output is `id,mode,name,tags`
   when categories exist, or `id,mode,name`. Unmodeled metadata/note columns are discarded. Android rewrites its
@@ -478,20 +504,23 @@ Important behavior:
 - Without a group file, edits last only for the session. A scan row's own effective list is also edited only
   in memory, never written into the global group file. If saving fails, the decoder keeps the live edit and
   reports that it is session-only; the previous file remains intact.
-- `--tg-lockout-session` (or `[trunking] persist_tg_lockouts = false`) makes terminal `!`/`@` and Qt/Android
-  **Skip** temporary avoids. They block tuning and all media without editing policy rows or the file. Later
+- `--tg-lockout-session` (or `[trunking] persist_tg_lockouts = false`) makes terminal `!`/`@` temporary avoids
+  and changes Qt/Android **Lock out** to **Avoid TG**. They block tuning and all media without editing policy rows or the file. Later
   list edits, exports and configuration saves cannot serialize these avoids. `--tg-lockout-persist` restores
   the default behavior for subsequent lockouts; switching modes never converts existing entries.
-- Qt/Android **Settings → Listening → Save skipped talkgroups** and the terminal **Save user TG lockouts**
+- Qt/Android **Settings → Listening → Save avoided talkgroups** and the terminal **Save user TG lockouts**
   menu setting take effect immediately. Explicit **Listening**, **Not tuned**, and bulk list edits still
   modify the canonical list, and temporary avoids continue to override it, including when a talkgroup Hold
-  matches. The TG list shows temporary counts separately from its saved listening controls.
+  matches. The TG list shows temporary counts separately from its saved listening controls. **Skip** is unaffected
+  by the setting: its expiring blocks never change policy rows or appear in saves or exports. See
+  [Skip lifetimes](cli.md#trunking--scanning).
 - Temporary avoids also mark the terminal's active-channel lockout indicator. The preference controls quick
   user lockouts only; existing over-the-air radio-alias learning can still append alias rows to the groups file.
-- **Clear temporary TG avoids — current list** clears only the active list's temporary avoids. It leaves saved
-  blocks, encryption lockouts, and channel/target avoids intact. Retunes and scan visits preserve avoids;
-  reloading, replacing, or clearing a list resets that scope's avoids. Stopping the decoder clears the session;
-  reopening the Android Activity while its service runs does not.
+- Qt/Android **Clear temporary avoids and call skips — current list** (terminal **Clear temporary TG avoids - current
+  list**) clears only the active list's temporary avoids and call skips. It leaves saved blocks, encryption lockouts,
+  and channel/target avoids intact. Retunes and scan visits preserve avoids and unexpired call skips; reloading,
+  replacing, or clearing a list resets both in that scope. Stopping the decoder clears the session; reopening the
+  Android Activity while its service runs does not.
 
 Example:
 

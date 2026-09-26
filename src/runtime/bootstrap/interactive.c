@@ -334,6 +334,7 @@ interactive_maybe_configure_trunking(int mode, int src, dsd_opts* opts, dsd_stat
         return;
     }
     opts->trunk_enable = 1;
+    opts->scanner_mode = 0;
     if (src == 5) {
         if (opts->rigctlportno == 0) {
             opts->rigctlportno = 4532;

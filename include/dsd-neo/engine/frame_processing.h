@@ -20,6 +20,9 @@ extern "C" {
 
 void processFrame(dsd_opts* opts, dsd_state* state);
 void noCarrier(dsd_opts* opts, dsd_state* state);
+/** Caller holds the P25 SM tick guard; ticks the DMR owner without acquiring it.
+ * The P25 CC-return helper still defers under the held guard. */
+void dsd_engine_no_carrier_locked(dsd_opts* opts, dsd_state* state);
 /** Reset decoder buffers and protocol state after calls have been finalized.
  * Performs no scanner step or return-to-control-channel tuning. */
 void dsd_engine_reset_no_carrier_state(dsd_opts* opts, dsd_state* state);

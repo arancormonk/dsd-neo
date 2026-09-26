@@ -208,9 +208,15 @@ typedef struct {
 } Event_History;
 
 //event history for number of each items above
-// Ring length, shared with every consumer that walks the items: index 0 is the
-// staged (still-active) row, indexes 1..DSD_EVENT_HISTORY_LEN-1 are committed rows.
+// Ring length, shared with every consumer that walks the items: index 0 is the active
+// call's row, retaining its enrichment until commit; indexes 1..DSD_EVENT_HISTORY_LEN-1
+// are committed rows. Data-PDU payloads for notices live separately in staged.
 #define DSD_EVENT_HISTORY_LEN 255
+
+typedef struct {
+    char gps_s[2000];
+    char text_message[2000];
+} Event_History_Staged;
 
 typedef struct Event_History_I {
     Event_History Event_History_Items[DSD_EVENT_HISTORY_LEN];
@@ -227,6 +233,8 @@ typedef struct Event_History_I {
     // `revision`, so a consumer that mirrors committed rows only (the Qt call
     // history) can skip rescanning the ring while this is unchanged.
     uint64_t commit_rev;
+    // Decoder-thread scratch consumed by next data notice; snapshots incidental, no dirty marks; frontends never render
+    Event_History_Staged staged;
 } Event_History_I;
 
 //new audio filter stuff from: https://github.com/NedSimao/FilteringLibrary
@@ -448,6 +456,74 @@ struct dsd_scan_timing_publication {
     uint32_t hang_ms;     /**< active protocol's effective hangtime budget; 0 when n/a */
     uint8_t reason;       /**< dsd_scan_stay_reason */
     uint8_t conventional; /**< 1 = conventional / -Y row, so hold_ms means something */
+};
+
+/** Which sub-audible signalling the analog receiver has identified (issue #522). DCS is
+ * reserved for #523; this build publishes NONE or CTCSS. */
+typedef enum {
+    DSD_ANALOG_TONE_KIND_NONE = 0,
+    DSD_ANALOG_TONE_KIND_CTCSS = 1,
+    DSD_ANALOG_TONE_KIND_DCS = 2,
+} dsd_analog_tone_kind;
+
+/** Where received-tone detection stands (issue #522).
+ * INACTIVE: nothing has been processed since the last reset (a retune, row or target change,
+ * input switch, mode change or stop), or detection is not running at all. It does not by
+ * itself mean detection is off: whether detection runs is dsd_analog_tone_detection_active()
+ * (runtime/analog_tones.h), which frontends and receive policy ask instead.
+ * IDLE: detection runs but there is no carrier. ACQUIRING: carrier present, no verdict yet.
+ * LOCKED: a supported tone is confirmed. NONE: carrier present and no supported tone found
+ * (or the tone was lost). UNAVAILABLE: detection is on, but the input rate is one the
+ * sub-audible front end cannot use (below 2400 Hz or above 320 kHz), so nothing can be
+ * detected until the rate changes. */
+typedef enum {
+    DSD_ANALOG_TONE_STATE_INACTIVE = 0,
+    DSD_ANALOG_TONE_STATE_IDLE = 1,
+    DSD_ANALOG_TONE_STATE_ACQUIRING = 2,
+    DSD_ANALOG_TONE_STATE_LOCKED = 3,
+    DSD_ANALOG_TONE_STATE_NONE = 4,
+    DSD_ANALOG_TONE_STATE_UNAVAILABLE = 5,
+} dsd_analog_tone_state;
+
+/** Receive-policy verdict on the received tone. Reserved for #527: detection never gates
+ * audio, so this build always publishes OFF. */
+typedef enum {
+    DSD_ANALOG_TONE_GATE_OFF = 0,
+    DSD_ANALOG_TONE_GATE_PENDING = 1,
+    DSD_ANALOG_TONE_GATE_ALLOWED = 2,
+    DSD_ANALOG_TONE_GATE_REJECTED = 3,
+} dsd_analog_tone_gate;
+
+/** What the analog receiver hears below the voice band, for every frontend (issue #522).
+ * Written only by the DSP tap on the decoder thread (src/dsp/analog_rx.c). Plain int
+ * scalars: it rides the vertex_ks_count..ui_msg snapshot copy range (ui_snapshot.c static
+ * assert), so it must never grow a pointer, and it holds no float, so the semgrep float-field
+ * list does not change. The detector's working state lives in DSD_STATE_EXT_DSP_ANALOG_RX. */
+struct dsd_analog_rx_publication {
+    /** 1 while a carrier is open, held through the 200 ms hangover. On stdin, UDP and TCP input
+     * and on a live radio stream the tap cannot clear it while no samples arrive, so a reader of
+     * carrier_open or tone_state must also honour stale_after_ms, as dsd_app_rx_tone_view()
+     * does. */
+    int carrier_open;
+    int tone_kind;       /**< dsd_analog_tone_kind; NONE unless tone_state is LOCKED */
+    int tone_state;      /**< dsd_analog_tone_state */
+    int ctcss_tenths_hz; /**< locked CTCSS tone in tenths of a hertz (1000 = 100.0 Hz); 0 = none */
+    int dcs_code;        /**< DCS code as its octal value (023 octal = 19); reserved for #523 */
+    int dcs_inverted;    /**< 1 = inverted DCS polarity; reserved for #523 */
+    int gate;            /**< dsd_analog_tone_gate; always OFF until #527 */
+    /** Bumped on every reset (retune, row or target change, input switch, mode change, stop,
+     * input-rate change, carrier hangover, stream pause), so a reader can tell a new reception
+     * from the one it last saw. */
+    uint32_t generation;
+    /** Monotonic ms (dsd_time_monotonic_ms()) after which this publication no longer describes
+     * the channel if the tap has not run again since. Set only on input that may pause: stdin,
+     * UDP and TCP, whose producer may stop sending between transmissions, and live RTL-family
+     * radio streams, which stop when their source does (an rtl_tcp server that went away, a
+     * stalled device). Then no samples arrive for the sample-time hangover to count, and a
+     * frontend reads the publication past this point as no carrier
+     * (app_control/rx_tone_view.h). 0 = never stale (files, Pulse and IQ replay deliver
+     * continuously). */
+    uint64_t stale_after_ms;
 };
 
 // dsd_state is a C aggregate, not a C++ class: it is allocated once and zeroed by
@@ -1761,6 +1837,9 @@ struct dsd_state {
      * --trunk-scan coordinator for its parked target, or by the -Y timing tick when trunk
      * scan is off; the two never both write it. Rides the vertex_ks_count..ui_msg range. */
     dsd_scan_timing_publication scan_timing;
+    /* Received sub-audible tone (issue #522), published by the analog tap for every frontend.
+     * Rides the vertex_ks_count..ui_msg range; see dsd_analog_rx_publication. */
+    dsd_analog_rx_publication analog_rx;
 
     // Transient UI message (shown briefly in ncurses printer)
     char ui_msg[128];

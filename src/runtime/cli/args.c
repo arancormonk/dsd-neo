@@ -29,6 +29,7 @@
 #include <dsd-neo/platform/platform.h>
 #include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/runtime/airspy_config.h>
+#include <dsd-neo/runtime/analog_channel.h>
 #include <dsd-neo/runtime/call_alert.h>
 #include <dsd-neo/runtime/cli.h>
 #include <dsd-neo/runtime/colors.h>
@@ -466,6 +467,40 @@ cli_parse_ms_range_or_off_option(const char* option_name, const char* in, int mi
     }
     *out = (int)parsed;
     return 1;
+}
+
+/* An analog channel width in whole Hz (runtime/analog_channel.h): refused, never clamped, with a message that names
+ * the option, the kind's range and the value given. */
+static int
+cli_parse_analog_width_option(const char* option_name, int kind, const char* in, int* out, int* out_exit_rc) {
+    if (!in) {
+        LOG_ERROR("%s requires a width in Hz (%d to %d)\n", option_name, dsd_analog_width_min_hz(kind),
+                  dsd_analog_width_max_hz(kind));
+        cli_set_exit_rc(out_exit_rc, 1);
+        return 0;
+    }
+    char err[DSD_ANALOG_ERROR_TEXT_MAX];
+    if (dsd_analog_width_parse(kind, in, out, err, sizeof err) != 0) {
+        LOG_ERROR("%s: %s\n", option_name, err);
+        cli_set_exit_rc(out_exit_rc, 1);
+        return 0;
+    }
+    return 1;
+}
+
+/* The analog channel width is the radio front end's filter. PCM inputs (Pulse, files, UDP and TCP audio) arrive
+ * already demodulated, so a width given for one of them parses but cannot act. */
+static void
+cli_warn_analog_width_without_radio(const dsd_opts* opts, const char* option_name) {
+    const char* dev = opts->audio_in_dev;
+    if (opts->iq_replay_requested || dsd_opts_audio_in_dev_is_rtl_spec(dev) || dsd_opts_audio_in_dev_is_rtltcp_spec(dev)
+        || dsd_opts_audio_in_dev_is_soapy_spec(dev) || dsd_opts_audio_in_dev_is_airspy_spec(dev)
+        || dsd_opts_audio_in_dev_is_iqreplay_spec(dev)) {
+        return;
+    }
+    LOG_WARN("WARNING: %s has no effect on PCM input; it sets the channel filter of a radio input (RTL-SDR, rtl_tcp, "
+             "SoapySDR, Airspy or --iq-replay).\n",
+             option_name);
 }
 
 static int
@@ -1019,6 +1054,15 @@ cli_parse_airspy_option(int argc, char** argv, int i, dsd_opts* opts) {
                                                   &opts->scan_max_visit_ms, out_exit_rc)) {                            \
                 return DSD_PARSE_ERROR;                                                                                \
             }                                                                                                          \
+            continue;                                                                                                  \
+        }                                                                                                              \
+        if (strcmp(argv[i], "--nfm-bandwidth-hz") == 0 || strncmp(argv[i], "--nfm-bandwidth-hz=", 19) == 0) {          \
+            const char* value = argv[i][18] == '=' ? argv[i] + 19 : (i + 1 < argc ? DSD_PARSE_ARGS_NEXT_ARG() : NULL); \
+            if (!cli_parse_analog_width_option("--nfm-bandwidth-hz", DSD_ANALOG_DEMOD_FM, value,                       \
+                                               &opts->analog_nfm_bandwidth_hz, out_exit_rc)) {                         \
+                return DSD_PARSE_ERROR;                                                                                \
+            }                                                                                                          \
+            nfm_bandwidth_cli_seen = 1;                                                                                \
             continue;                                                                                                  \
         }                                                                                                              \
         if (strcmp(argv[i], "--auto-ppm") == 0) {                                                                      \
@@ -1849,6 +1893,16 @@ cli_finish_airspy_input(dsd_opts* opts, int parse_rc, int* out_exit_rc) {
     return parse_rc;
 }
 
+/* What runs once every option has been read, whatever order they came in. */
+static int
+cli_finish_parse(dsd_opts* opts, int parse_rc, int nfm_bandwidth_cli_seen, int* out_exit_rc) {
+    parse_rc = cli_finish_airspy_input(opts, parse_rc, out_exit_rc);
+    if (parse_rc == DSD_PARSE_CONTINUE && nfm_bandwidth_cli_seen) {
+        cli_warn_analog_width_without_radio(opts, "--nfm-bandwidth-hz");
+    }
+    return parse_rc;
+}
+
 int
 dsd_parse_args(int argc, char** argv, dsd_opts* opts, dsd_state* state, int* out_argc, int* out_exit_rc) {
     dsd_neo_config_init();
@@ -1901,6 +1955,7 @@ dsd_parse_args(int argc, char** argv, dsd_opts* opts, dsd_state* state, int* out
     int trunk_scan_cli_seen = 0;
     int chan_csv_cli_seen = 0;
     int p25_bandplan_cli_seen = 0;
+    int nfm_bandwidth_cli_seen = 0;
     int config_one_shot_cli_seen = cli_has_config_one_shot_arg(argc, argv);
     DSD_PARSE_ARGS_PRESCAN_BLOCK();
     DSD_PARSE_ARGS_IQ_PRE_BLOCK();
@@ -1943,7 +1998,7 @@ dsd_parse_args(int argc, char** argv, dsd_opts* opts, dsd_state* state, int* out
             return DSD_PARSE_ERROR;
         }
     }
-    parse_rc = cli_finish_airspy_input(opts, parse_rc, out_exit_rc);
+    parse_rc = cli_finish_parse(opts, parse_rc, nfm_bandwidth_cli_seen, out_exit_rc);
     if (out_argc) {
         *out_argc = new_argc;
     }
@@ -2212,6 +2267,7 @@ dsd_parse_args(int argc, char** argv, dsd_opts* opts, dsd_state* state, int* out
             break;                                                                                                     \
         case 'T':                                                                                                      \
             /* Enable trunking features. */                                                                            \
+            opts->scanner_mode = 0;                                                                                    \
             opts->trunk_enable = 1;                                                                                    \
             opts->trunk_cli_seen = 1;                                                                                  \
             break;                                                                                                     \

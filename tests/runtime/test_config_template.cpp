@@ -201,6 +201,22 @@ test_template_contains_keys(void) {
         DSD_FPRINTF(stderr, "FAIL: template missing scan_max_visit_ms range hint or default\n");
         rc = 1;
     }
+    /* [analog] (issue #525): the NFM width's range and the width its default resolves to. Uncommenting the line is not
+     * the same as leaving the key out: an explicit 16000 always runs the channel filter and is held to the DSP rate,
+     * where the unset default runs DSP-limited below a 20 kHz rate. The description has to say so. */
+    if (!strstr(content, "[analog]\n")) {
+        DSD_FPRINTF(stderr, "FAIL: template missing [analog] section\n");
+        rc = 1;
+    }
+    if (!strstr(content, "# Range: 8000 to 25000\n# nfm_bandwidth_hz = 16000\n")) {
+        DSD_FPRINTF(stderr, "FAIL: template missing nfm_bandwidth_hz range hint or default\n");
+        rc = 1;
+    }
+    if (!strstr(content, "Leave it out for the default; an explicit value, 16000 included, always runs the channel "
+                         "filter and must fit the DSP rate")) {
+        DSD_FPRINTF(stderr, "FAIL: template does not say an explicit nfm_bandwidth_hz differs from the default\n");
+        rc = 1;
+    }
     if (strstr(content, "version =") != NULL) {
         DSD_FPRINTF(stderr, "FAIL: template must not emit the persisted version marker\n");
         rc = 1;

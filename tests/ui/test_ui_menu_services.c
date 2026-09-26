@@ -22,6 +22,7 @@
 #include <dsd-neo/core/source_alias.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/talkgroup_policy.h>
+#include <dsd-neo/dsp/demod_pipeline.h>
 #include <dsd-neo/engine/p25_bandplan_export.h>
 #include <dsd-neo/io/control.h>
 #include <dsd-neo/io/rigctl_client.h>
@@ -45,7 +46,11 @@
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/io/rtl_stream_fwd.h>
+#include <dsd-neo/platform/platform.h>
 #include <dsd-neo/platform/sockets.h>
+#if !DSD_PLATFORM_WIN_NATIVE
+#include <sys/socket.h>
+#endif
 
 void
 dsd_neo_log_write(dsd_neo_log_level_t level, const char* format, ...) {
@@ -397,18 +402,26 @@ Connect(char* hostname, int portno) {
     return DSD_INVALID_SOCKET;
 }
 
+static int g_udp_connect_result = -1;
+static int g_udp_connectA_calls = 0;
+static int g_udp_connectA_result = -1;
+/* What udp_socket_connectA() leaves in udp_sockfdA: the socket it opened when it succeeds; when it fails, a socket it
+ * created before its setsockopt or address resolve failed, or DSD_INVALID_SOCKET when the create itself failed. */
+static dsd_socket_t g_udp_connectA_leftover = DSD_INVALID_SOCKET;
+
 int
 udp_socket_connect(dsd_opts* opts, dsd_state* state) {
     (void)opts;
     (void)state;
-    return -1;
+    return g_udp_connect_result;
 }
 
 int
 udp_socket_connectA(dsd_opts* opts, dsd_state* state) {
-    (void)opts;
     (void)state;
-    return -1;
+    g_udp_connectA_calls++;
+    opts->udp_sockfdA = g_udp_connectA_leftover;
+    return g_udp_connectA_result;
 }
 
 int
@@ -539,6 +552,47 @@ rtl_stream_set_rtltcp_autotune(int onoff) {
 void
 rtl_stream_set_auto_ppm(int onoff) {
     (void)onoff;
+}
+
+/* The front-end calls the NFM width services make (issue #525), answered and recorded here: the running front end's
+   check, the demod rate it publishes, and the publish of an accepted width (symbol_profile.c, which holds the record
+   of queued receive requests and is covered by APP_COMMAND_QUEUE). */
+static int g_analog_check_result;
+static int g_analog_check_calls;
+static int g_demod_rate_hz;
+static int g_nfm_publish_calls;
+static int g_nfm_publish_width_hz;
+/* What the publish answers: -1 is a front end that refused the request after all (a retune moved its rate). */
+static int g_nfm_publish_result;
+
+int
+rtl_stream_check_analog_profile(int family, int kind, int width_hz) {
+    (void)family;
+    (void)kind;
+    (void)width_hz;
+    g_analog_check_calls++;
+    return g_analog_check_result;
+}
+
+int
+rtl_stream_get_demod_rate_hz(void) {
+    return g_demod_rate_hz;
+}
+
+/* The analog width view's reading of the unset NFM default where the channel filter runs but the rate cannot realize
+   the default: the legacy WIDE plan's passband, which no rate these cases run at falls back on. */
+int
+dsd_channel_lpf_legacy_wide_width_hz(int rate_hz) {
+    (void)rate_hz;
+    return 0;
+}
+
+int
+svc_publish_nfm_bandwidth(const dsd_opts* opts, const dsd_state* state) {
+    (void)state;
+    g_nfm_publish_calls++;
+    g_nfm_publish_width_hz = opts ? opts->analog_nfm_bandwidth_hz : -1;
+    return g_nfm_publish_result;
 }
 
 static int
@@ -802,6 +856,49 @@ test_rtl_restart_quiesces_p25_retunes(void) {
 }
 
 static int
+test_locked_restarts(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    opts.audio_in_type = AUDIO_IN_RTL;
+    reset_rtl_restart_stubs();
+    g_p25_tick_guard_depth = 1;
+    g_rtl_create_result = 0;
+    int rc = expect_int("locked RTL restart reports start failure", svc_rtl_restart_locked(&opts, &state), -1);
+    rc |= expect_int("locked RTL restart never enters", g_p25_tick_guard_enter_calls, 0);
+    rc |= expect_int("locked RTL restart never leaves", g_p25_tick_guard_leave_calls, 0);
+    rc |= expect_int("locked RTL restart retains caller hold", g_p25_tick_guard_depth, 1);
+    rc |= expect_int("locked RTL lifecycle guarded", g_rtl_lifecycle_outside_guard, 0);
+    rc |= expect_int("locked RTL destroys failed stream", g_rtl_destroy_calls, 1);
+
+    for (int locked = 0; locked <= 1; ++locked) {
+        reset_rtl_restart_stubs();
+        g_p25_tick_guard_depth = locked;
+        g_rtl_create_result = 0;
+        dsd_airspy_config_defaults(&opts.airspy);
+        DSD_SNPRINTF(opts.audio_in_dev, sizeof(opts.audio_in_dev), "airspy");
+        dsd_airspy_config next = opts.airspy;
+        next.sample_rate = 2500000;
+        const svc_airspy_tuning tuning = {851000000, 12, 0.0, 2};
+        const int result = locked ? svc_airspy_apply_config_locked(&opts, &state, &next, &tuning)
+                                  : svc_airspy_apply_config(&opts, &state, &next, &tuning);
+        rc |= expect_int("Airspy reopen reports start failure", result, -1);
+        rc |= expect_int("Airspy candidate and rollback both restart", g_rtl_start_calls, 2);
+        rc |= expect_int("Airspy candidate and rollback both destroyed", g_rtl_destroy_calls, 2);
+        rc |= expect_int("Airspy restart enter count", g_p25_tick_guard_enter_calls, locked ? 0 : 2);
+        rc |= expect_int("Airspy restart leave count", g_p25_tick_guard_leave_calls, locked ? 0 : 2);
+        rc |= expect_int("Airspy restart preserves caller depth", g_p25_tick_guard_depth, locked);
+        rc |= expect_int("Airspy restart does not nest", g_p25_tick_guard_errors, 0);
+        rc |= expect_int("Airspy lifecycle guarded", g_rtl_lifecycle_outside_guard, 0);
+        rc |= expect_int("Airspy restores previous rate", (int)opts.airspy.sample_rate, 0);
+        rc |= expect_int("Airspy restores previous frequency", (int)opts.rtlsdr_center_freq, 851000000);
+    }
+    reset_rtl_restart_stubs();
+    return rc;
+}
+
+static int
 test_rtl_service_option_contracts(void) {
     int rc = 0;
     static dsd_opts opts;
@@ -832,20 +929,20 @@ test_rtl_service_option_contracts(void) {
     opts.audio_in_type = 0;
     rc |= expect_int("rtl gain clamps high", svc_rtl_set_gain(&opts, &state, 99), 0);
     rc |= expect_int("rtl gain stored", opts.rtl_gain_value, 49);
-    rc |= expect_int("rtl bandwidth invalid defaults", svc_rtl_set_bandwidth(&opts, &state, 7), 0);
+    rc |= expect_int("rtl bandwidth invalid defaults", svc_rtl_set_bandwidth(&opts, &state, 7, NULL, 0U), 0);
     rc |= expect_int("rtl bandwidth default stored", opts.rtl_dsp_bw_khz, 48);
-    rc |= expect_int("rtl bandwidth valid stored", svc_rtl_set_bandwidth(&opts, &state, 12), 0);
+    rc |= expect_int("rtl bandwidth valid stored", svc_rtl_set_bandwidth(&opts, &state, 12, NULL, 0U), 0);
     rc |= expect_int("rtl bandwidth exact stored", opts.rtl_dsp_bw_khz, 12);
 
-    rc |= expect_int("rtl squelch stores converted threshold", svc_rtl_set_sql_db(&opts, -12.5), 0);
+    rc |= expect_int("rtl squelch stores converted threshold", svc_rtl_set_sql_db(&opts, &state, -12.5), 0);
     rc |= expect_double("rtl squelch level stored", opts.rtl_squelch_level, pow(10.0, -1.25));
 
     /* 0 dB is full scale: as a threshold it closes the gate forever, so it is the
      * natural spelling of "off" and matches what 0 means in the CLI and config.
      * Without it neither UI could switch the squelch off at all. */
-    rc |= expect_int("rtl squelch accepts zero", svc_rtl_set_sql_db(&opts, 0.0), 0);
+    rc |= expect_int("rtl squelch accepts zero", svc_rtl_set_sql_db(&opts, &state, 0.0), 0);
     rc |= expect_double("rtl squelch zero switches off", opts.rtl_squelch_level, 0.0);
-    rc |= expect_int("rtl squelch accepts positive", svc_rtl_set_sql_db(&opts, 3.0), 0);
+    rc |= expect_int("rtl squelch accepts positive", svc_rtl_set_sql_db(&opts, &state, 3.0), 0);
     rc |= expect_double("rtl squelch positive switches off", opts.rtl_squelch_level, 0.0);
     rc |= expect_int("rtl volume invalid defaults", svc_rtl_set_volume_mult(&opts, -1), 0);
     rc |= expect_int("rtl volume default stored", opts.rtl_volume_multiplier, 1);
@@ -874,6 +971,7 @@ test_file_network_and_import_failure_contracts(void) {
     static dsd_opts opts;
     static dsd_state state;
     DSD_MEMSET(&opts, 0, sizeof(opts));
+    opts.udp_sockfdA = DSD_INVALID_SOCKET; /* as dsd_init() leaves it: no analog socket */
     DSD_MEMSET(&state, 0, sizeof(state));
 
     rc |= expect_int("symbol out empty path", svc_open_symbol_out(&opts, &state, ""), -1);
@@ -917,6 +1015,152 @@ test_file_network_and_import_failure_contracts(void) {
     rc |= expect_int("keys hex import failure", svc_import_keys_hex(&opts, &state, "keys.hex"), -1);
     rc |= expect_str("keys hex import path stored", opts.key_in_file, "keys.hex");
 
+    return rc;
+}
+
+/* UDP output with the source monitor on also opens the analog socket (port + 2). When that fails, the descriptor must
+ * end invalid, not 0 (a valid descriptor), since a later switch to Analog reopens the sink only from invalid, and a
+ * socket udp_socket_connectA() created before failing must be closed, not leaked. */
+static int
+test_udp_output_analog_socket_failure(void) {
+    int rc = 0;
+    static dsd_opts opts;
+    static dsd_state state;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    if (dsd_socket_init() != 0) {
+        DSD_FPRINTF(stderr, "FAIL: socket init\n");
+        return 1;
+    }
+    g_udp_connect_result = 0;
+
+    /* Failing after it created the socket. */
+    const dsd_socket_t half_open = dsd_socket_create(AF_INET, SOCK_DGRAM, 0);
+    if (half_open == DSD_INVALID_SOCKET) {
+        DSD_FPRINTF(stderr, "FAIL: UDP socket create\n");
+        g_udp_connect_result = -1;
+        return 1;
+    }
+    g_udp_connectA_leftover = half_open;
+    g_udp_connectA_calls = 0;
+    opts.monitor_input_audio = 1;
+    opts.udp_sockfdA = DSD_INVALID_SOCKET;
+    rc |= expect_int("udp output with a failing analog socket",
+                     svc_udp_output_config(&opts, &state, "127.0.0.1", 23456), 0);
+    rc |= expect_int("udp output enabled", opts.audio_out_type, 8);
+    rc |= expect_int("analog socket attempted", g_udp_connectA_calls, 1);
+    rc |= expect_int("failed analog socket left invalid", opts.udp_sockfdA == DSD_INVALID_SOCKET, 1);
+    rc |= expect_int("half-created analog socket closed", dsd_socket_close(half_open) != 0, 1);
+
+    /* Failing before it created one. */
+    g_udp_connectA_leftover = DSD_INVALID_SOCKET;
+    opts.udp_sockfdA = DSD_INVALID_SOCKET;
+    rc |= expect_int("udp output with no analog socket", svc_udp_output_config(&opts, &state, "127.0.0.1", 23456), 0);
+    rc |= expect_int("uncreated analog socket left invalid", opts.udp_sockfdA == DSD_INVALID_SOCKET, 1);
+
+    /* Without the source monitor or ProVoice there is no analog socket to open. */
+    g_udp_connectA_calls = 0;
+    opts.monitor_input_audio = 0;
+    rc |= expect_int("digital-only udp output", svc_udp_output_config(&opts, &state, "127.0.0.1", 23456), 0);
+    rc |= expect_int("digital-only udp output opens no analog socket", g_udp_connectA_calls, 0);
+
+    g_udp_connect_result = -1;
+    return rc;
+}
+
+/* A new UDP target while an analog socket (port + 2) is open: that socket sends to the old host and port, so it is
+ * closed and reopened for the new target, whether or not the current mode writes to it. The -8 source monitor can be
+ * turned back on later, and its toggle opens no socket: it must find one, as it did before the target changed. A
+ * reopen that fails leaves the descriptor invalid, for the lazy open of a later switch to Analog
+ * (dsd_audio_ensure_analog_output() opens from an invalid descriptor only, see CORE_AUDIO_ENSURE_OUTPUT). A target
+ * the primary connection refuses changes nothing about the analog socket. */
+static int
+test_udp_output_target_change_moves_analog_socket(void) {
+    int rc = 0;
+    static dsd_opts opts;
+    static dsd_state state;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    if (dsd_socket_init() != 0) {
+        DSD_FPRINTF(stderr, "FAIL: socket init\n");
+        return 1;
+    }
+    g_udp_connect_result = 0;
+
+    /* A -8 session with the source monitor turned off since: the analog socket is still open. */
+    const dsd_socket_t old_analog = dsd_socket_create(AF_INET, SOCK_DGRAM, 0);
+    const dsd_socket_t moved = dsd_socket_create(AF_INET, SOCK_DGRAM, 0);
+    if (old_analog == DSD_INVALID_SOCKET || moved == DSD_INVALID_SOCKET) {
+        DSD_FPRINTF(stderr, "FAIL: UDP socket create\n");
+        g_udp_connect_result = -1;
+        return 1;
+    }
+    opts.udp_sockfdA = old_analog;
+    opts.monitor_input_audio = 0;
+    g_udp_connectA_leftover = moved;
+    g_udp_connectA_result = 0;
+    g_udp_connectA_calls = 0;
+    rc |=
+        expect_int("new udp target with the monitor off", svc_udp_output_config(&opts, &state, "127.0.0.2", 23466), 0);
+    rc |= expect_int("an open analog socket is reopened with the monitor off", g_udp_connectA_calls, 1);
+    rc |= expect_int("analog socket moved to the new target", opts.udp_sockfdA == moved, 1);
+    rc |= expect_int("stale analog socket closed", dsd_socket_close(old_analog) != 0, 1);
+    /* Source monitoring back on: the toggle only sets the flag, and the socket is there for it. */
+    opts.monitor_input_audio = 1;
+    rc |= expect_int("monitor back on finds the analog socket", opts.udp_sockfdA != DSD_INVALID_SOCKET, 1);
+    opts.monitor_input_audio = 0;
+
+    /* The reopen fails: the descriptor is left invalid for the lazy open. */
+    g_udp_connectA_leftover = DSD_INVALID_SOCKET;
+    g_udp_connectA_result = -1;
+    g_udp_connectA_calls = 0;
+    rc |=
+        expect_int("new udp target with a failing reopen", svc_udp_output_config(&opts, &state, "127.0.0.4", 23486), 0);
+    rc |= expect_int("failing reopen attempted", g_udp_connectA_calls, 1);
+    rc |= expect_int("failed reopen left invalid for the lazy open", opts.udp_sockfdA == DSD_INVALID_SOCKET, 1);
+    rc |= expect_int("moved analog socket closed before the reopen", dsd_socket_close(moved) != 0, 1);
+
+    /* The same with the source monitor on: the analog socket is reopened for the new target at once. */
+    const dsd_socket_t stale = dsd_socket_create(AF_INET, SOCK_DGRAM, 0);
+    const dsd_socket_t fresh = dsd_socket_create(AF_INET, SOCK_DGRAM, 0);
+    if (stale == DSD_INVALID_SOCKET || fresh == DSD_INVALID_SOCKET) {
+        DSD_FPRINTF(stderr, "FAIL: UDP socket create\n");
+        g_udp_connect_result = -1;
+        return 1;
+    }
+    opts.udp_sockfdA = stale;
+    opts.monitor_input_audio = 1;
+    g_udp_connectA_leftover = fresh;
+    g_udp_connectA_result = 0;
+    g_udp_connectA_calls = 0;
+    rc |= expect_int("new udp target with the monitor on", svc_udp_output_config(&opts, &state, "127.0.0.3", 23476), 0);
+    rc |= expect_int("monitor on reopens the analog socket", g_udp_connectA_calls, 1);
+    rc |= expect_int("analog socket is the reopened one", opts.udp_sockfdA == fresh, 1);
+    rc |= expect_int("stale analog socket closed before the reopen", dsd_socket_close(stale) != 0, 1);
+    rc |= expect_int("reopened analog socket left open", dsd_socket_close(fresh), 0);
+
+    /* A new target the primary connection refuses leaves a working analog socket where it was, still open and
+       untouched, as before the analog socket followed the target. */
+    const dsd_socket_t working = dsd_socket_create(AF_INET, SOCK_DGRAM, 0);
+    if (working == DSD_INVALID_SOCKET) {
+        DSD_FPRINTF(stderr, "FAIL: UDP socket create\n");
+        g_udp_connect_result = -1;
+        return 1;
+    }
+    opts.udp_sockfdA = working;
+    opts.monitor_input_audio = 1;
+    g_udp_connect_result = -1;
+    g_udp_connectA_leftover = DSD_INVALID_SOCKET;
+    g_udp_connectA_calls = 0;
+    rc |= expect_int("refused udp target", svc_udp_output_config(&opts, &state, "bad.invalid", 23496), -1);
+    rc |= expect_int("refused udp target keeps the analog socket", opts.udp_sockfdA == working, 1);
+    rc |= expect_int("refused udp target does not reopen the analog socket", g_udp_connectA_calls, 0);
+    rc |= expect_int("working analog socket left open", dsd_socket_close(working), 0);
+
+    opts.udp_sockfdA = DSD_INVALID_SOCKET;
+    g_udp_connectA_leftover = DSD_INVALID_SOCKET;
+    g_udp_connectA_result = -1;
+    g_udp_connect_result = -1;
     return rc;
 }
 
@@ -1307,6 +1551,153 @@ test_source_alias_services(void) {
     return rc;
 }
 
+/*
+ * Issue #525: the NFM width services. A width is 0 (the default) or 8000..25000 Hz; while the -fA preset uses it, an
+ * explicit width is held to the DSP rate it would run at (the running front end's own check, or an RTL input's DSP
+ * bandwidth with no stream), and an accepted one reaches a running front end unless CQPSK holds it off the monitor.
+ * Rate refusals name the width, the rate, the limit and the fix. RTL_SET_BW's service refuses a bandwidth that explicit
+ * width cannot run at, naming both and the fix.
+ */
+static int
+test_nfm_bandwidth_services(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static void* fake_ctx[2];
+    int rc = 0;
+    DSD_MEMSET(&opts, 0, sizeof opts);
+    DSD_MEMSET(&state, 0, sizeof state);
+    DSD_SNPRINTF(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", "rtl:0:851.375M:0:0:16");
+    opts.rtl_dsp_bw_khz = 16;
+    opts.analog_only = 1;
+    char why[128];
+
+    /* No stream: the RTL DSP bandwidth is the rate. 12.5 kHz fits 16 kHz, 16 kHz does not. */
+    rc |= expect_int("nfm svc 12500 fits 16 kHz", svc_set_nfm_bandwidth(&opts, &state, 12500, why, sizeof why), 0);
+    rc |= expect_int("nfm svc 12500 stored", opts.analog_nfm_bandwidth_hz, 12500);
+    rc |=
+        expect_int("nfm svc 16000 refused at 16 kHz", svc_set_nfm_bandwidth(&opts, &state, 16000, why, sizeof why), -1);
+    rc |= expect_int("nfm svc 16000 not stored", opts.analog_nfm_bandwidth_hz, 12500);
+    rc |= expect_int(
+        "nfm svc 16000 reason",
+        strcmp(why, "NFM 16 kHz does not fit the 16 kHz DSP rate (max 13.2 kHz); use a 24 or 48 kHz DSP bandwidth")
+            == 0,
+        1);
+    rc |= expect_int("nfm svc out of range", svc_check_nfm_bandwidth(&opts, &state, 7999, why, sizeof why), -1);
+    rc |= expect_int("nfm svc range reason", strcmp(why, "NFM bandwidth 7.999 kHz is outside 8 kHz to 25 kHz") == 0, 1);
+    rc |= expect_int("nfm svc default never refused", svc_check_nfm_bandwidth(&opts, &state, 0, why, sizeof why), 0);
+
+    /* A reopen at another DSP bandwidth is checked against that bandwidth alone. */
+    rc |= expect_int("nfm svc 25 kHz at a 48 kHz reopen",
+                     svc_check_nfm_bandwidth_for_rtl_bw(25000, 48, why, sizeof why), 0);
+    rc |= expect_int("nfm svc 25 kHz at a 24 kHz reopen",
+                     svc_check_nfm_bandwidth_for_rtl_bw(25000, 24, why, sizeof why), -1);
+    rc |= expect_int(
+        "nfm svc 24 kHz reopen reason",
+        strcmp(why, "NFM 25 kHz does not fit the 24 kHz DSP rate (max 20.4 kHz); use a 48 kHz DSP bandwidth") == 0, 1);
+    rc |= expect_int("nfm svc default at any reopen", svc_check_nfm_bandwidth_for_rtl_bw(0, 4, why, sizeof why), 0);
+    rc |= expect_int("nfm svc reopen range", svc_check_nfm_bandwidth_for_rtl_bw(30000, 48, why, sizeof why), -1);
+
+    /* A running stream answers for itself, and an accepted width is published to it once stored. */
+    opts.audio_in_type = AUDIO_IN_RTL;
+    state.rtl_ctx = (RtlSdrContext*)fake_ctx;
+    g_analog_check_calls = g_nfm_publish_calls = 0;
+    rc |= expect_int("nfm svc live 8000", svc_set_nfm_bandwidth(&opts, &state, 8000, why, sizeof why), 0);
+    rc |= expect_int("nfm svc live asks the front end", g_analog_check_calls, 1);
+    rc |= expect_int("nfm svc live publish", g_nfm_publish_calls == 1 && g_nfm_publish_width_hz == 8000, 1);
+    g_analog_check_result = -1;
+    rc |= expect_int("nfm svc live refusal", svc_set_nfm_bandwidth(&opts, &state, 12500, why, sizeof why), -1);
+    rc |= expect_int("nfm svc live refusal keeps the width", opts.analog_nfm_bandwidth_hz, 8000);
+    rc |= expect_int("nfm svc live refusal publishes nothing", g_nfm_publish_calls, 1);
+    /* The front end refused a width its RTL DSP bandwidth (16 kHz) can filter: something else refused it. */
+    rc |= expect_int("nfm svc live other refusal", strcmp(why, "the RTL front end refused NFM 12.5 kHz (see log)") == 0,
+                     1);
+
+    /* On SoapySDR, Airspy and I/Q replay inputs the RTL DSP bandwidth is not the rate: the refusal names the demod
+       rate the stream publishes and the width's limit there. A device's rate is its capture rate decimated toward the
+       DSP bandwidth, so a wider DSP bandwidth raises it; a replay runs at its capture's rate, which only a narrower
+       width can suit. Where no NFM width fits the rate, narrowing is never the fix: leaving the width unset is. */
+    const struct {
+        const char* dev;
+        const char* at_24k;
+        const char* at_8k;
+    } forced_rate_devs[] = {
+        {"soapy:driver=rtlsdr",
+         "NFM 25 kHz does not fit the 24 kHz DSP rate (max 20.4 kHz); raise the DSP bandwidth or narrow the NFM width",
+         "NFM 8 kHz does not fit the 8 kHz DSP rate (max 6 kHz); raise the DSP bandwidth or leave the NFM width unset"},
+        {"airspy",
+         "NFM 25 kHz does not fit the 24 kHz DSP rate (max 20.4 kHz); raise the DSP bandwidth or narrow the NFM width",
+         "NFM 8 kHz does not fit the 8 kHz DSP rate (max 6 kHz); raise the DSP bandwidth or leave the NFM width unset"},
+        {"iqreplay:capture.cu8", "NFM 25 kHz does not fit the 24 kHz DSP rate (max 20.4 kHz); narrow the NFM width",
+         "NFM 8 kHz does not fit the 8 kHz DSP rate (max 6 kHz); no NFM width fits this DSP rate; leave the NFM width "
+         "unset"},
+    };
+
+    for (size_t i = 0; i < sizeof forced_rate_devs / sizeof forced_rate_devs[0]; i++) {
+        DSD_SNPRINTF(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", forced_rate_devs[i].dev);
+        g_demod_rate_hz = 24000;
+        rc |=
+            expect_int("nfm svc forced rate refusal", svc_set_nfm_bandwidth(&opts, &state, 25000, why, sizeof why), -1);
+        rc |= expect_str("nfm svc forced rate reason", why, forced_rate_devs[i].at_24k);
+        g_demod_rate_hz = 8000;
+        rc |= expect_int("nfm svc no width fits", svc_set_nfm_bandwidth(&opts, &state, 8000, why, sizeof why), -1);
+        rc |= expect_str("nfm svc no width fits reason", why, forced_rate_devs[i].at_8k);
+        /* At a rate that filters it, the refusal is not the rate's. */
+        g_demod_rate_hz = 78125;
+        rc |= expect_int("nfm svc forced rate other refusal",
+                         svc_set_nfm_bandwidth(&opts, &state, 25000, why, sizeof why), -1);
+        rc |= expect_int("nfm svc forced rate other reason",
+                         strcmp(why, "the RTL front end refused NFM 25 kHz (see log)") == 0, 1);
+    }
+    g_demod_rate_hz = 0;
+    DSD_SNPRINTF(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", "rtl:0:851.375M:0:0:16");
+    g_analog_check_result = 0;
+    rc |= expect_int("nfm svc live 12500", svc_set_nfm_bandwidth(&opts, &state, 12500, why, sizeof why), 0);
+    rc |= expect_int("nfm svc live 12500 published", g_nfm_publish_calls == 2 && g_nfm_publish_width_hz == 12500, 1);
+
+    /* The front end took the check but refused the request itself (a retune moved its rate in between): refused
+       here too, with the previous width put back, never reported as applied. */
+    g_nfm_publish_result = -1;
+    rc |= expect_int("nfm svc request refused", svc_set_nfm_bandwidth(&opts, &state, 16000, why, sizeof why), -1);
+    rc |= expect_int("nfm svc request refused keeps the width", opts.analog_nfm_bandwidth_hz, 12500);
+    rc |= expect_str("nfm svc request refused reason", why,
+                     "NFM 16 kHz does not fit the 16 kHz DSP rate (max 13.2 kHz); use a 24 or 48 kHz DSP bandwidth");
+    g_nfm_publish_result = 0;
+
+    /* RTL_SET_BW: 12.5 kHz needs at least a 16 kHz DSP bandwidth. */
+    opts.audio_in_type = 0;
+    state.rtl_ctx = NULL;
+    rc |= expect_int("bw 12 refused for 12.5 kHz", svc_rtl_set_bandwidth(&opts, &state, 12, why, sizeof why), -1);
+    rc |= expect_int("bw 12 not stored", opts.rtl_dsp_bw_khz, 16);
+    rc |= expect_int(
+        "bw 12 reason",
+        strcmp(why, "DSP BW 12 kHz cannot filter NFM 12.5 kHz (max 9.6 kHz); narrow the NFM width first") == 0, 1);
+    rc |= expect_int("bw 24 fits 12.5 kHz", svc_rtl_set_bandwidth(&opts, &state, 24, why, sizeof why), 0);
+    rc |= expect_int("bw 24 stored", opts.rtl_dsp_bw_khz, 24);
+    /* A bandwidth that filters no NFM width at all (4, 6 or 8 kHz): narrowing cannot help, even from the narrowest
+       width; leaving the width unset, whose default runs at any rate, can. */
+    opts.analog_nfm_bandwidth_hz = 8000;
+
+    const struct {
+        int khz;
+        const char* why;
+    } none_fits[] = {
+        {4, "DSP BW 4 kHz cannot filter NFM 8 kHz (max 2.4 kHz); leave the NFM width unset first"},
+        {6, "DSP BW 6 kHz cannot filter NFM 8 kHz (max 4.2 kHz); leave the NFM width unset first"},
+        {8, "DSP BW 8 kHz cannot filter NFM 8 kHz (max 6 kHz); leave the NFM width unset first"},
+    };
+
+    for (size_t i = 0; i < sizeof none_fits / sizeof none_fits[0]; i++) {
+        rc |= expect_int("bw none fits refused",
+                         svc_rtl_set_bandwidth(&opts, &state, none_fits[i].khz, why, sizeof why), -1);
+        rc |= expect_str("bw none fits reason", why, none_fits[i].why);
+    }
+    rc |= expect_int("bw none fits: bandwidth kept", opts.rtl_dsp_bw_khz, 24);
+    opts.analog_only = 0;
+    rc |= expect_int("digital: bw 4 stored", svc_rtl_set_bandwidth(&opts, &state, 4, why, sizeof why), 0);
+    opts.analog_nfm_bandwidth_hz = 0;
+    return rc;
+}
+
 int
 main(void) {
     int rc = 0;
@@ -1317,9 +1708,13 @@ main(void) {
     rc |= test_payload_symbol_and_pulse_state();
 #ifdef USE_RADIO
     rc |= test_rtl_restart_quiesces_p25_retunes();
+    rc |= test_locked_restarts();
     rc |= test_rtl_service_option_contracts();
+    rc |= test_nfm_bandwidth_services();
 #endif
     rc |= test_file_network_and_import_failure_contracts();
+    rc |= test_udp_output_analog_socket_failure();
+    rc |= test_udp_output_target_change_moves_analog_socket();
     rc |= test_channel_map_reimport_replaces_previous_map();
     rc |= test_channel_map_keys_adopt_and_clear();
     rc |= test_key_import_arms_keyloader();

@@ -98,7 +98,12 @@ continues to report invalid values.
   squelch immediately. Bandwidth or monitor-volume changes restart the stream,
   combined with any serial or sample-rate change in the same restart. A failed
   reopen restores the previous receiver settings; other config changes, including
-  audio output, still finish applying and the command reports failure.
+  audio output, still finish applying and the command reports failure. While a
+  `-Y` row or `--trunk-scan` target carries `--squelch-db`, an applied squelch
+  (from a config or the squelch control) changes the configured default, which
+  takes effect when the scanner leaves that row; see
+  [CSV Formats](csv-formats.md). Airspy setting edits leave the squelch alone, so
+  a stream they reopen starts on the row's threshold.
 - **Unsupported controls:** libairspy has no PPM-correction API. Auto-PPM and
   RTL-specific direct sampling, oscillator, and tuner controls do not apply.
 

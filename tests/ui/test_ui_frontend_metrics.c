@@ -404,6 +404,109 @@ test_channel_bandwidth_is_zero_off_radio(void) {
     assert(metrics.channel_bandwidth_hz == 0);
 }
 
+static int g_analog_kind;
+static int g_analog_width_hz;
+static int g_analog_lpf_on;
+static int g_analog_active;
+
+static int
+hook_output_kind_monitor(void) {
+    return DSD_FRONTEND_RTL_OUTPUT_AUDIO_MONITOR;
+}
+
+static int
+hook_symbol_profile_wide(int* out_symbol_rate_hz, int* out_levels, int* out_channel_profile) {
+    if (out_symbol_rate_hz) {
+        *out_symbol_rate_hz = 4800;
+    }
+    if (out_levels) {
+        *out_levels = 4;
+    }
+    if (out_channel_profile) {
+        *out_channel_profile = 0; /* DSD_CH_LPF_PROFILE_WIDE */
+    }
+    return 0;
+}
+
+static int
+hook_analog_profile(int* out_kind, int* out_width_hz, int* out_lpf_on) {
+    if (out_kind) {
+        *out_kind = g_analog_active ? g_analog_kind : 0;
+    }
+    if (out_width_hz) {
+        *out_width_hz = g_analog_active ? g_analog_width_hz : 0;
+    }
+    if (out_lpf_on) {
+        *out_lpf_on = g_analog_active ? g_analog_lpf_on : 0;
+    }
+    return g_analog_active;
+}
+
+/*
+ * On the analog monitor the channel is the analog width the front end published,
+ * not twice a digital profile's edge: the width-driven filter reports its own
+ * width, and where the DSP rate is what bounds the channel (the historical
+ * default below a 20 kHz DSP rate) the width is flagged as DSP-limited. Digital
+ * output and the M17 encoder's monitor path keep the profile rule.
+ */
+static void
+test_analog_channel_bandwidth(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    dsd_frontend_metrics metrics;
+    fill_metric_inputs(&opts, &state);
+    g_latest_opts = &opts;
+    g_latest_state = &state;
+
+    dsd_rtl_stream_metrics_hooks hooks = {0};
+    hooks.output_kind = hook_output_kind_monitor;
+    hooks.symbol_profile = hook_symbol_profile_wide;
+    hooks.analog_profile = hook_analog_profile;
+    dsd_rtl_stream_metrics_hooks_set(&hooks);
+
+    g_analog_active = 1;
+    g_analog_kind = 0;
+    g_analog_width_hz = 12500;
+    g_analog_lpf_on = 1;
+    assert(dsd_app_frontend_get_metrics(&metrics) == 0);
+    assert(metrics.channel_bandwidth_hz == 12500);
+    assert(metrics.channel_bandwidth_dsp_limited == 0);
+
+    g_analog_width_hz = 12000;
+    g_analog_lpf_on = 0;
+    assert(dsd_app_frontend_get_metrics(&metrics) == 0);
+    assert(metrics.channel_bandwidth_hz == 12000);
+    assert(metrics.channel_bandwidth_dsp_limited == 1);
+
+    /* Monitor output without the analog family (the M17 encoder): the profile rule. */
+    g_analog_active = 0;
+    assert(dsd_app_frontend_get_metrics(&metrics) == 0);
+    assert(metrics.channel_bandwidth_hz == 12500); /* the stub's 6250 Hz edge, doubled */
+    assert(metrics.channel_bandwidth_dsp_limited == 0);
+
+    /* Digital output ignores a stale analog mirror. */
+    g_analog_active = 1;
+    g_analog_width_hz = 8000;
+    hooks.output_kind = hook_output_kind;
+    hooks.symbol_profile = hook_symbol_profile;
+    dsd_rtl_stream_metrics_hooks_set(&hooks);
+    assert(dsd_app_frontend_get_metrics(&metrics) == 0);
+    assert(metrics.channel_bandwidth_hz == 12500);
+    assert(metrics.channel_bandwidth_dsp_limited == 0);
+
+    /* Off radio nothing is reported, analog or not. */
+    hooks.output_kind = hook_output_kind_monitor;
+    dsd_rtl_stream_metrics_hooks_set(&hooks);
+    opts.audio_in_type = AUDIO_IN_PULSE;
+    metrics.channel_bandwidth_dsp_limited = 1;
+    assert(dsd_app_frontend_get_metrics_for_snapshot(&opts, &state, &metrics, 0) == 0);
+    assert(metrics.channel_bandwidth_hz == 0);
+    assert(metrics.channel_bandwidth_dsp_limited == 0);
+
+    g_analog_active = 0;
+    dsd_rtl_stream_metrics_hooks_set(NULL);
+}
+
 /*
  * Visualizer accessors on a build with no radio backend.
  *
@@ -444,6 +547,7 @@ main(void) {
     test_metrics_fallback_and_runtime_hooks();
     test_metrics_ignore_stream_hooks_off_radio();
     test_channel_bandwidth_is_zero_off_radio();
+    test_analog_channel_bandwidth();
     test_visualizer_getters_without_radio();
     printf("UI_FRONTEND_METRICS: OK\n");
     return 0;

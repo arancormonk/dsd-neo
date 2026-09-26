@@ -28,6 +28,8 @@ target_sources(
         dmr_sync.c
         sync_calibration.c
         symbol_timing_debug.c
+        analog_rx.c
+        analog_ctcss.c
 )
 
 set(_dsd_neo_dsp_target_arch "${CMAKE_SYSTEM_PROCESSOR}")

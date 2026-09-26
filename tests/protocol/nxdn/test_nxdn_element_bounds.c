@@ -9,6 +9,7 @@
 
 #include <assert.h>
 #include <dsd-neo/core/call_state.h>
+#include <dsd-neo/core/events.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
@@ -138,7 +139,7 @@ nxdn_trunk_diag_log_missing_channel_once(const dsd_opts* opts, dsd_state* state,
 
 void
 // NOLINTNEXTLINE(misc-use-internal-linkage)
-watchdog_event_current(dsd_opts* opts, dsd_state* state, uint8_t slot) {
+watchdog_event_current(const dsd_opts* opts, dsd_state* state, uint8_t slot) {
     (void)opts;
     (void)state;
     (void)slot;
@@ -1027,7 +1028,7 @@ set_parked_scan_target_ctx(int parked_ctx) {
     } else if (parked_ctx == 2) {
         hooks.dmr_ctx = parked_scan_ctx_marker;
     }
-    dsd_trunk_scan_hooks_set(hooks);
+    dsd_trunk_scan_hooks_set(&hooks);
 }
 
 /*
@@ -1158,7 +1159,7 @@ reset_scan_activity_capture(void) {
 
     dsd_trunk_scan_hooks hooks = {0};
     hooks.nxdn_conventional_activity = capture_scan_nxdn_conventional_activity;
-    dsd_trunk_scan_hooks_set(hooks);
+    dsd_trunk_scan_hooks_set(&hooks);
 }
 
 /*
@@ -1214,7 +1215,7 @@ run_data_header_scan_activity_case(const char* tag, uint8_t message_type, uint8_
         rc |= expect_int(label, g_scan_activity_data_call, 1);
     }
 
-    dsd_trunk_scan_hooks_set((dsd_trunk_scan_hooks){0});
+    dsd_trunk_scan_hooks_set(NULL);
     free(state);
     free(opts);
     return rc;
@@ -1355,8 +1356,7 @@ test_sdcall_des_data_decrypts_and_resets(void) {
     rc |= expect_u64("sdcall-des-mi", (uint64_t)g_des_mi, 0ULL);
     rc |= expect_u64("sdcall-des-key", (uint64_t)g_des_key, des_key);
     rc |= expect_int("sdcall-des-len", g_des_len, 2);
-    rc |= expect_string("sdcall-des-event", state->event_history_s[0].Event_History_Items[0].text_message,
-                        "Unknown Data Call Format: 1234;");
+    rc |= expect_string("sdcall-des-event", dsd_event_staged_text(state, 0), "Unknown Data Call Format: 1234;");
     rc |= expect_string("sdcall-des-watchdog", g_datacall_event, "DATA CALL SRC: 4660; TGT: 17767;");
     rc |= expect_int("sdcall-des-src", (int)g_datacall_src, 0x1234);
     rc |= expect_int("sdcall-des-dst", (int)g_datacall_dst, 0x4567);
@@ -1453,8 +1453,7 @@ test_dcall_aes_data_decrypts_with_manual_key_and_iv(void) {
     rc |= expect_bytes("dcall-aes-key", g_aes_key, expected_key, sizeof(expected_key));
     rc |= expect_contains("dcall-aes-reveal-full-key", output,
                           "Key: 0102030405060708111213141516171821222324252627280000000000000000;");
-    rc |= expect_string("dcall-aes-event", state->event_history_s[0].Event_History_Items[0].text_message,
-                        "Unknown Data Call Format: ABCD;");
+    rc |= expect_string("dcall-aes-event", dsd_event_staged_text(state, 0), "Unknown Data Call Format: ABCD;");
     rc |= expect_string("dcall-aes-watchdog", g_datacall_event, "DATA CALL SRC: 513; TGT: 770;");
     rc |= expect_int("dcall-aes-src", (int)g_datacall_src, 0x0201);
     rc |= expect_int("dcall-aes-dst", (int)g_datacall_dst, 0x0302);

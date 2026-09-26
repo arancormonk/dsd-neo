@@ -43,8 +43,9 @@ _Static_assert(offsetof(Event_History_I, push_seq) == sizeof(Event_History) * 25
                "event history push sequence must follow the revision");
 _Static_assert(offsetof(Event_History_I, commit_rev) == sizeof(Event_History) * 255U + (2U * sizeof(uint64_t)),
                "event history commit revision must follow the push sequence");
-_Static_assert(sizeof(Event_History_I) == sizeof(Event_History) * 255U + (3U * sizeof(uint64_t)),
-               "event history bookkeeping must add exactly three 64-bit counters");
+_Static_assert(sizeof(Event_History_I)
+                   == sizeof(Event_History) * 255U + (3U * sizeof(uint64_t)) + sizeof(Event_History_Staged),
+               "event history appends three counters and a separate staged data payload");
 
 #if defined(__GNUC__) && !defined(__cplusplus)
 #pragma GCC diagnostic push
@@ -84,12 +85,9 @@ canonical_snapshot_writer(void* arg) {
         }
         dsd_event_sync_slot(ctx->opts, ctx->state, 0U);
         if ((i & 7U) == 0U) {
-            dsd_event_history_transaction transaction;
-            dsd_event_history_transaction_begin(ctx->state, &transaction);
-            DSD_SNPRINTF(ctx->history[0].Event_History_Items[0].text_message,
-                         sizeof(ctx->history[0].Event_History_Items[0].text_message), "packet-%u", i);
-            dsd_event_history_mark_dirty(&ctx->history[0]);
-            dsd_event_history_transaction_end(&transaction);
+            char text[32];
+            DSD_SNPRINTF(text, sizeof text, "packet-%u", i);
+            dsd_event_stage_text(ctx->state, 0, text);
 
             const dsd_call_observation data =
                 dsd_call_observation_data(DSD_SYNC_DMR_BS_DATA_POS, 0U, 9000U + i, 10000U + i);
@@ -410,6 +408,10 @@ event_history_item_equal(const Event_History* lhs, const Event_History* rhs) {
 static int
 event_histories_equal(const Event_History_I lhs[2], const Event_History_I rhs[2]) {
     for (size_t slot = 0U; slot < 2U; slot++) {
+        if (strcmp(lhs[slot].staged.text_message, rhs[slot].staged.text_message) != 0
+            || strcmp(lhs[slot].staged.gps_s, rhs[slot].staged.gps_s) != 0) {
+            return 0;
+        }
         if (lhs[slot].revision != rhs[slot].revision) {
             return 0;
         }
@@ -696,23 +698,24 @@ test_data_notice_preserves_decoded_payload_fields(void) {
     Event_History* decoded = &event_history[0].Event_History_Items[0];
     decoded->pdu[0] = 0x12U;
     decoded->pdu[1] = 0x34U;
-    DSD_SNPRINTF(decoded->text_message, sizeof(decoded->text_message), "%s", "$GPRMC,validated");
-    DSD_SNPRINTF(decoded->gps_s, sizeof(decoded->gps_s), "%s", "41.500000 -87.250000");
+    dsd_event_stage_text(&state, 0, "$GPRMC,validated");
+    dsd_event_stage_gps(&state, 0, "41.500000 -87.250000");
 
     assert(emit_test_data_notice(&opts, &state, 1234U, 5678U, "NMEA SRC: 1234; TGT: 5678;", 0U) == 0);
 
     const Event_History* committed = &event_history[0].Event_History_Items[1];
     int rc = 0;
-    rc |= expect_int("data payload first byte", committed->pdu[0], 0x12);
-    rc |= expect_int("data payload second byte", committed->pdu[1], 0x34);
+    rc |= expect_int("data payload first byte", committed->pdu[0], 0);
+    rc |= expect_int("data payload second byte", committed->pdu[1], 0);
     rc |= expect_str_eq("data payload text", committed->text_message, "$GPRMC,validated");
     rc |= expect_str_eq("data payload GPS", committed->gps_s, "41.500000 -87.250000");
     rc |= expect_int("data payload category", committed->category, DSD_EVENT_CATEGORY_DATA);
     rc |= expect_has_substr("data payload notice", committed->event_string, "NMEA SRC: 1234; TGT: 5678;");
     const Event_History* current = &event_history[0].Event_History_Items[0];
-    rc |= expect_int("staged data PDU is cleared from current row", current->pdu[0], 0);
-    rc |= expect_int("staged data text is cleared from current row", current->text_message[0], '\0');
-    rc |= expect_int("staged data GPS is cleared from current row", current->gps_s[0], '\0');
+    rc |= expect_int("active PDU sentinel is preserved", current->pdu[0], 0x12);
+    rc |= expect_int("consumed staged data text is cleared", dsd_event_staged_text(&state, 0)[0], '\0');
+    rc |= expect_int("consumed staged data GPS is cleared", dsd_event_staged_gps(&state, 0)[0], '\0');
+    rc |= expect_int("second active PDU sentinel is preserved", current->pdu[1], 0x34);
     return rc;
 }
 
@@ -727,8 +730,8 @@ test_classified_control_notice_preserves_data_notice_behavior(void) {
     Event_History* decoded = &event_history[0].Event_History_Items[0];
     decoded->pdu[0] = 0x56U;
     decoded->pdu[1] = 0x78U;
-    DSD_SNPRINTF(decoded->text_message, sizeof(decoded->text_message), "%s", "registration payload");
-    DSD_SNPRINTF(decoded->gps_s, sizeof(decoded->gps_s), "%s", "staged location");
+    dsd_event_stage_text(&state, 0, "registration payload");
+    dsd_event_stage_gps(&state, 0, "staged location");
     const uint64_t revision_before = event_history[0].revision;
 
     const dsd_call_observation observation = dsd_call_observation_data(DSD_SYNC_DMR_BS_DATA_POS, 0U, 1234U, 5678U);
@@ -743,20 +746,21 @@ test_classified_control_notice_preserves_data_notice_behavior(void) {
     rc |= expect_int("classified control severity", committed->severity, DSD_EVENT_SEVERITY_INFO);
     rc |= expect_int("classified control source", (int)committed->source_id, 1234);
     rc |= expect_int("classified control target", (int)committed->target_id, 5678);
-    rc |= expect_int("classified control first payload byte", committed->pdu[0], 0x56);
-    rc |= expect_int("classified control second payload byte", committed->pdu[1], 0x78);
+    rc |= expect_int("classified control first payload byte", committed->pdu[0], 0);
+    rc |= expect_int("classified control second payload byte", committed->pdu[1], 0);
     rc |= expect_str_eq("classified control text payload", committed->text_message, "registration payload");
     rc |= expect_str_eq("classified control GPS payload", committed->gps_s, "staged location");
     rc |= expect_has_substr("classified control notice", committed->event_string, "MNIS ARS;");
-    rc |= expect_int("classified control clears staged PDU", current->pdu[0], 0);
-    rc |= expect_int("classified control clears staged text", current->text_message[0], '\0');
-    rc |= expect_int("classified control clears staged GPS", current->gps_s[0], '\0');
+    rc |= expect_int("classified control preserves active PDU", current->pdu[0], 0x56);
+    rc |= expect_int("classified control clears staged text", dsd_event_staged_text(&state, 0)[0], '\0');
+    rc |= expect_int("classified control clears staged GPS", dsd_event_staged_gps(&state, 0)[0], '\0');
     rc |= expect_u64("classified control revision behavior", event_history[0].revision, revision_before + 3U);
     rc |= expect_int("classified control emits data alert", g_beeper_count, 1);
     rc |= expect_int("classified control uses data tone", g_last_beeper_id, 80);
     rc |= expect_int("classified control emits frame log", g_frame_log_count, 1);
     rc |= expect_has_substr("classified control frame log text", g_last_frame_log, "MNIS ARS;");
     dsd_state_ext_free_all(&state);
+    rc |= expect_int("classified control preserves second active PDU byte", current->pdu[1], 0x78);
     return rc;
 }
 
@@ -775,8 +779,7 @@ test_classified_data_notice_rejects_invalid_categories_without_mutation(void) {
     reset_fixture(&opts, &state, event_history);
 
     event_history[0].Event_History_Items[0].pdu[0] = 0xABU;
-    DSD_SNPRINTF(event_history[0].Event_History_Items[0].text_message,
-                 sizeof(event_history[0].Event_History_Items[0].text_message), "%s", "staged text");
+    dsd_event_stage_text(&state, 0, "staged text");
     DSD_MEMCPY(before, event_history, sizeof(before));
     const dsd_call_observation observation = dsd_call_observation_data(DSD_SYNC_DMR_BS_DATA_POS, 0U, 1234U, 5678U);
 
@@ -4650,10 +4653,8 @@ test_active_canonical_call_does_not_suppress_explicit_data(void) {
 
     state.lastsynctype = DSD_SYNC_P25P1_POS;
     event_history[0].Event_History_Items[0].pdu[0] = 0xABU;
-    DSD_SNPRINTF(event_history[0].Event_History_Items[0].text_message,
-                 sizeof(event_history[0].Event_History_Items[0].text_message), "%s", "packet text");
-    DSD_SNPRINTF(event_history[0].Event_History_Items[0].gps_s, sizeof(event_history[0].Event_History_Items[0].gps_s),
-                 "%s", "packet GPS");
+    dsd_event_stage_text(&state, 0, "packet text");
+    dsd_event_stage_gps(&state, 0, "packet GPS");
     (void)emit_test_data_notice(&opts, &state, 700U, 800U, "P25 packet data;", 0U);
     dsd_event_sync_slot(&opts, &state, 0U);
 
@@ -4665,10 +4666,11 @@ test_active_canonical_call_does_not_suppress_explicit_data(void) {
     rc |= expect_int("active-call data source is preserved", (int)committed->source_id, 700);
     rc |= expect_int("active-call data subtype is preserved", committed->subtype, INT8_MAX);
     rc |= expect_has_substr("active-call data detail is preserved", committed->event_string, "P25 packet data");
-    rc |= expect_int("active voice row drops staged data PDU", current->pdu[0], 0);
-    rc |= expect_int("active voice row drops staged data text", current->text_message[0], '\0');
-    rc |= expect_int("active voice row drops staged data GPS", current->gps_s[0], '\0');
+    rc |= expect_int("active voice row preserves PDU sentinel", current->pdu[0], 0xAB);
+    rc |= expect_int("explicit notice consumes staged data text", dsd_event_staged_text(&state, 0)[0], '\0');
+    rc |= expect_int("explicit notice consumes staged data GPS", dsd_event_staged_gps(&state, 0)[0], '\0');
     dsd_state_ext_free_all(&state);
+    rc |= expect_int("explicit notice does not inherit active PDU", committed->pdu[0], 0);
     return rc;
 }
 
@@ -4933,9 +4935,8 @@ test_crc_invalid_data_notice_isolation(void) {
     assert(fd >= 0);
     assert(dsd_close(fd) == 0);
     DSD_SNPRINTF(opts.event_out_file, sizeof opts.event_out_file, "%s", path);
-    Event_History* staged = &event_history[0].Event_History_Items[0];
-    DSD_SNPRINTF(staged->text_message, sizeof staged->text_message, "decoded text");
-    DSD_SNPRINTF(staged->gps_s, sizeof staged->gps_s, "decoded position");
+    dsd_event_stage_text(&state, 0, "decoded text");
+    dsd_event_stage_gps(&state, 0, "decoded position");
     char notice[4096];
     DSD_MEMSET(notice, 'X', sizeof notice - 1U);
     notice[sizeof notice - 1U] = '\0';

@@ -741,7 +741,8 @@ test_channel_bundle() {
     const QString map = write("map.csv", "tg_dec,keyid_hex\n123,02\n");
     const QString channels =
         write("channels.csv",
-              "channel,frequency_hz,mode,keys_hex_csv,options\n1,461000000,dmr,keys.csv,--dmr-tg-key-csv 'map.csv'\n");
+              "channel,frequency_hz,mode,keys_hex_csv,options\n1,461000000,dmr,keys.csv,--dmr-tg-key-csv 'map.csv' "
+              "--squelch-db -60\n");
     auto result = model.importBundle(channels, "Bundle.csv", "chan", {});
     expect("bundle imports with local companions", result.value("ok").toBool());
     const QString stored = result.value("path").toString();
@@ -759,6 +760,8 @@ test_channel_bundle() {
         const auto profile = profileRows.first().toMap();
         expect("row review identifies collection and mapping",
                profile.value("keySource").toInt() == 2 && profile.value("mappings").toInt() == 1);
+        /* #521: the row's own squelch reaches the review; an inheriting row carries none. */
+        expect("row review reports the row squelch", profile.value("squelchDb").toInt() == -60);
         expect("row review never contains key material",
                !QJsonDocument::fromVariant(profile).toJson().contains("ABCDE"));
     }
@@ -807,7 +810,7 @@ test_target_bundle() {
                               "gain,p25_bandplan_csv\r\n";
     const QByteArray csv = header
                            + "site 1,p25-trunk,851012500,\"map, one.csv\",,,\"note, keep\",--enc-follow "
-                             "--scan-max-visit-ms 20000,auto,0,band.csv\r\n"
+                             "--scan-max-visit-ms 20000 --squelch-db -60,auto,0,band.csv\r\n"
                              "plant,dmr-conventional,461112500,,250,1200,private,-H 0123456789 --no-force-key -G "
                              "\"groups file.csv\" --dmr-tg-key-csv='dmr.csv',gfsk,18,\r\n";
     const auto targets = write("targets.csv", csv);
@@ -828,6 +831,9 @@ test_target_bundle() {
                rows[0].toMap().value("id") == "site 1" && rows[0].toMap().value("dwellMs").toInt() == -1);
         expect("preserves explicit auto and timing",
                rows[0].toMap().value("modulation") == "auto" && rows[1].toMap().value("dwellMs").toInt() == 250);
+        /* #521: a target's own squelch previews as dB; one that inherits previews as nothing. */
+        expect("previews the target squelch", rows[0].toMap().value("squelchDb").toInt() == -60);
+        expect("an inheriting target previews no squelch", !rows[1].toMap().value("squelchDb").isValid());
     }
     expect("preview contains no keys", !QJsonDocument::fromVariant(preview).toJson().contains("0123456789"));
     expect("metadata contains no keys",
@@ -1440,7 +1446,7 @@ test_example_targets() {
     }
     dsd_engine_trunk_scan_shutdown(opts, state);
     dsd_trunk_tuning_hooks_set({});
-    dsd_trunk_scan_hooks_set({});
+    dsd_trunk_scan_hooks_set(nullptr);
     dsd_state_trunk_lcn_free(state);
     dsd_state_ext_free_all(state);
     DSD_SECURE_ZERO(state, sizeof *state);

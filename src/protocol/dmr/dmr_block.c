@@ -748,22 +748,12 @@ dmr_udt_append_text_event(dsd_state* state, uint8_t slot, char c) {
     char tmp[2];
     tmp[0] = c;
     tmp[1] = 0;
-    dsd_event_history_transaction transaction;
-    dsd_event_history_transaction_begin(state, &transaction);
-    dsd_append(state->event_history_s[slot].Event_History_Items[0].text_message,
-               sizeof state->event_history_s[slot].Event_History_Items[0].text_message, tmp);
-    dsd_event_history_mark_dirty(&state->event_history_s[slot]);
-    dsd_event_history_transaction_end(&transaction);
+    dsd_event_stage_text_append(state, slot, tmp);
 }
 
 static void
 dmr_udt_set_text_event(dsd_state* state, uint8_t slot, const char* text) {
-    dsd_event_history_transaction transaction;
-    dsd_event_history_transaction_begin(state, &transaction);
-    DSD_SNPRINTF(state->event_history_s[slot].Event_History_Items[0].text_message,
-                 sizeof(state->event_history_s[slot].Event_History_Items[0].text_message), "%s", text);
-    dsd_event_history_mark_dirty(&state->event_history_s[slot]);
-    dsd_event_history_transaction_end(&transaction);
+    dsd_event_stage_text(state, slot, text);
 }
 
 static void
@@ -999,7 +989,7 @@ dmr_udt_handle_lip(dmr_udt_ctx* ctx) {
     char previous_gps[sizeof(ctx->state->dmr_embedded_gps[ctx->slot])];
     DSD_SNPRINTF(previous_gps, sizeof(previous_gps), "%s", ctx->state->dmr_embedded_gps[ctx->slot]);
     ctx->state->dmr_embedded_gps[ctx->slot][0] = '\0';
-    lip_protocol_decoder(ctx->opts, ctx->state, ctx->cs_bits + 96);
+    lip_pdu_decoder(ctx->opts, ctx->state, ctx->cs_bits + 96, (size_t)ctx->payload_bits, ctx->udt_source);
     DSD_SNPRINTF(ctx->event_gps, sizeof(ctx->event_gps), "%s", ctx->state->dmr_embedded_gps[ctx->slot]);
     if (ctx->event_gps[0] == '\0') {
         DSD_SNPRINTF(ctx->state->dmr_embedded_gps[ctx->slot], sizeof(ctx->state->dmr_embedded_gps[ctx->slot]), "%s",
@@ -1286,7 +1276,7 @@ static void
 dmr_block_type1_handle_mnis_payload(dmr_block_assembler_ctx* ctx, uint16_t len, uint8_t mnis_type, uint32_t msrc,
                                     uint32_t mdst, uint16_t mnis_ip_id) {
     if (mnis_type == 0x11) {
-        uint8_t pdu_crc_ok = dmr_block_type1_lrrp_crc_ok(ctx->state, ctx->slot);
+        uint8_t pdu_crc_ok = (uint8_t)(ctx->state->event_crc_invalid[ctx->slot] == 0);
         dmr_lrrp(ctx->opts, ctx->state, len, msrc, mdst, ctx->state->dmr_pdu_sf[ctx->slot] + 7, pdu_crc_ok);
     } else if (mnis_type == 0x33) {
         // ARS records are length prefixed; a fixed dump window would run past the record
@@ -1299,13 +1289,7 @@ dmr_block_type1_handle_mnis_payload(dmr_block_assembler_ctx* ctx, uint16_t len, 
         // dmr_locn() call on the next line passes the same pointer with the unadjusted length.
         utf8_to_text(ctx->state, 0, len, ctx->state->dmr_pdu_sf[ctx->slot] + 7);
         dmr_locn(ctx->opts, ctx->state, len, ctx->state->dmr_pdu_sf[ctx->slot] + 7);
-        dsd_event_history_transaction transaction;
-        dsd_event_history_transaction_begin(ctx->state, &transaction);
-        DSD_SNPRINTF(ctx->state->event_history_s[ctx->slot].Event_History_Items[0].gps_s,
-                     sizeof(ctx->state->event_history_s[ctx->slot].Event_History_Items[0].gps_s), "%s",
-                     ctx->state->dmr_lrrp_gps[ctx->slot]);
-        dsd_event_history_mark_dirty(&ctx->state->event_history_s[ctx->slot]);
-        dsd_event_history_transaction_end(&transaction);
+        dsd_event_stage_gps(ctx->state, ctx->slot, ctx->state->dmr_lrrp_gps[ctx->slot]);
     }
 
     // LRRP/LOCN rewrite dmr_lrrp_gps with the decoded position and ARS appends its summary to it,

@@ -4,6 +4,7 @@
 #include <assert.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/opts_fwd.h>
+#include <dsd-neo/core/power.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
@@ -11,8 +12,11 @@
 #include <dsd-neo/dsp/frame_sync.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/decode_mode.h>
+#include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
 #include <dsd-neo/runtime/scan_mode.h>
 #include <dsd-neo/runtime/scan_options.h>
+#include <math.h>
+#include <stddef.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -206,10 +210,279 @@ test_max_visit_row_override_scope(void) {
     free(o);
 }
 
+/* --- Issue #521: per-row squelch overrides --- */
+
+static int g_squelch_pushes;
+static double g_squelch_pushed = -1.0;
+
+static void
+record_squelch_push(double mean_power) {
+    g_squelch_pushes++;
+    g_squelch_pushed = mean_power;
+}
+
+static int
+level_is(double got, double want) {
+    return fabs(got - want) <= 1e-12 + 1e-9 * fabs(want);
+}
+
+/* Every captured field matches. dsd_scan_settings_equal() covers acquisition and timing but
+ * leaves out the leading row-option block, so that block is checked here as well: the squelch
+ * double with a tolerance, and its integer and group-file fields byte for byte. */
+static int
+settings_identical(const dsd_scan_settings* a, const dsd_scan_settings* b) {
+    const size_t row_begin = offsetof(dsd_scan_settings, force_key);
+    const size_t row_end = offsetof(dsd_scan_settings, frame_dstar);
+    return dsd_scan_settings_equal(a, b, 1) && level_is(a->rtl_squelch_level, b->rtl_squelch_level)
+           && memcmp((const char*)a + row_begin, (const char*)b + row_begin, row_end - row_begin) == 0;
+}
+
+/* A row squelch is policy carried beside the acquisition settings: an omitted value inherits,
+ * 0 switches the gate off for that row alone, and a threshold replaces the configured one only
+ * while the row is on air. The RTL demodulator hears about it at the scope's entry points and
+ * nowhere else -- never from prepare, which works on a temporary scope. */
+static void
+test_squelch_row_override_scope(void) {
+    dsd_opts* o = (dsd_opts*)calloc(1, sizeof(*o));
+    dsd_state* s = (dsd_state*)calloc(1, sizeof(*s));
+    assert(o && s);
+    o->wav_sample_rate = 48000;
+    o->audio_in_type = AUDIO_IN_RTL;
+    o->rtl_dsp_bw_khz = 48;
+    o->frame_dmr = 1;
+    const double configured = dsd_squelch_level_from_sql(-80.0);
+    const double row_level = dsd_squelch_level_from_sql(-60.0);
+    o->rtl_squelch_level = configured;
+    const dsd_rtl_stream_metrics_hooks hooks = {.set_channel_squelch = record_squelch_push};
+    dsd_rtl_stream_metrics_hooks_set(&hooks);
+    g_squelch_pushes = 0;
+
+    dsd_scan_settings prepared;
+    assert(dsd_scan_mode_prepare(o, s, DSD_SCAN_MODE_P25, &prepared) == 0);
+    assert(level_is(prepared.rtl_squelch_level, configured));
+    assert(g_squelch_pushes == 0);
+    /* Entering a row that carries no squelch leaves the demod where it already is. */
+    assert(dsd_scan_mode_enter(o, s, DSD_SCAN_MODE_DMR) == 0);
+    assert(g_squelch_pushes == 0 && dsd_scan_mode_row_options(s) != NULL);
+
+    dsd_scan_option_values row = {0};
+    row.present = DSD_SCAN_OPT_SQUELCH;
+    row.squelch_db = -60;
+    assert(dsd_scan_mode_options(o, s, &row) == 0);
+    assert(level_is(o->rtl_squelch_level, row_level));
+    assert(g_squelch_pushes == 1 && level_is(g_squelch_pushed, row_level));
+    assert(level_is(dsd_scan_mode_configured_view(s)->rtl_squelch_level, configured));
+    assert((dsd_scan_mode_option_fields(s) & DSD_SCAN_OPT_SQUELCH) != 0);
+    assert(dsd_scan_mode_row_options(s)->squelch_db == -60);
+    /* Reinstalling the same threshold is not a change the demod needs to hear about. */
+    assert(dsd_scan_mode_options(o, s, &row) == 0);
+    assert(g_squelch_pushes == 1);
+
+    /* The row value is policy, not acquisition: it never restages a tune. */
+    dsd_scan_settings before;
+    dsd_scan_settings after;
+    dsd_scan_settings_capture(o, s, &before);
+    row.squelch_db = 0;
+    assert(dsd_scan_mode_options(o, s, &row) == 0);
+    assert(dsd_squelch_is_off(o->rtl_squelch_level));
+    assert(g_squelch_pushes == 2 && dsd_squelch_is_off(g_squelch_pushed));
+    dsd_scan_settings_capture(o, s, &after);
+    assert(dsd_scan_settings_equal(&before, &after, 1));
+    assert(!level_is(before.rtl_squelch_level, after.rtl_squelch_level));
+
+    /* A row without the bit inherits the configured threshold again. */
+    assert(dsd_scan_mode_options(o, s, NULL) == 0);
+    assert(level_is(o->rtl_squelch_level, configured));
+    assert(g_squelch_pushes == 3 && level_is(g_squelch_pushed, configured));
+
+    /* prepare runs on a temporary scope and restores the live values: nothing is pushed. */
+    row.squelch_db = -60;
+    assert(dsd_scan_mode_options(o, s, &row) == 0);
+    assert(g_squelch_pushes == 4);
+    assert(dsd_scan_mode_prepare(o, s, DSD_SCAN_MODE_P25, &prepared) == 0);
+    assert(level_is(prepared.rtl_squelch_level, configured));
+    assert(level_is(o->rtl_squelch_level, row_level) && g_squelch_pushes == 4);
+
+    /* An operator edit beneath the row changes the configured default and survives the row;
+     * resume always re-pushes the effective level, because the edit itself may have pushed
+     * the new default straight to the demod while the scope was suspended. */
+    assert(dsd_scan_mode_suspend(o, s));
+    assert(level_is(o->rtl_squelch_level, configured) && g_squelch_pushes == 4);
+    const double edited = dsd_squelch_level_from_sql(-75.0);
+    o->rtl_squelch_level = edited;
+    assert(dsd_scan_mode_resume(o, s) == 0);
+    assert(level_is(o->rtl_squelch_level, row_level));
+    assert(g_squelch_pushes == 5 && level_is(g_squelch_pushed, row_level));
+    assert(level_is(dsd_scan_mode_configured_view(s)->rtl_squelch_level, edited));
+
+    /* A row update installed while suspended is recorded and takes effect at resume. */
+    assert(dsd_scan_mode_suspend(o, s));
+    row.squelch_db = -50;
+    assert(dsd_scan_mode_options(o, s, &row) == 0);
+    assert(level_is(o->rtl_squelch_level, edited) && g_squelch_pushes == 5);
+    assert(dsd_scan_mode_resume(o, s) == 0);
+    assert(level_is(o->rtl_squelch_level, dsd_squelch_level_from_sql(-50.0)));
+    assert(g_squelch_pushes == 6 && level_is(g_squelch_pushed, dsd_squelch_level_from_sql(-50.0)));
+
+    /* Frontend snapshots carry the row values without sharing live storage. */
+    dsd_state* copy = (dsd_state*)calloc(1, sizeof(*copy));
+    assert(copy);
+    dsd_scan_mode_copy_snapshot(copy, s);
+    assert(dsd_scan_mode_row_options(copy) != dsd_scan_mode_row_options(s));
+    assert(dsd_scan_mode_row_options(copy)->squelch_db == -50);
+    dsd_state_ext_free_all(copy);
+    free(copy);
+
+    /* Entering the next row drops the outgoing override, but the demod hears only the net
+     * change once the row's own options are in: never the configured default in between. */
+    assert(dsd_scan_mode_enter(o, s, DSD_SCAN_MODE_P25) == 0);
+    assert(level_is(o->rtl_squelch_level, edited));
+    assert(g_squelch_pushes == 6);
+    row.squelch_db = -40;
+    assert(dsd_scan_mode_options(o, s, &row) == 0);
+    assert(g_squelch_pushes == 7 && level_is(g_squelch_pushed, dsd_squelch_level_from_sql(-40.0)));
+    /* A row with the same override hands the demod nothing at all. */
+    assert(dsd_scan_mode_enter(o, s, DSD_SCAN_MODE_DMR) == 0);
+    assert(dsd_scan_mode_options(o, s, &row) == 0);
+    assert(g_squelch_pushes == 7);
+    /* A row that inherits hands it the default, once. */
+    assert(dsd_scan_mode_enter(o, s, DSD_SCAN_MODE_P25) == 0);
+    assert(dsd_scan_mode_options(o, s, NULL) == 0);
+    assert(g_squelch_pushes == 8 && level_is(g_squelch_pushed, edited));
+    /* Two enters before the options still judge against what the demod held before the first. */
+    assert(dsd_scan_mode_enter(o, s, DSD_SCAN_MODE_DMR) == 0);
+    assert(dsd_scan_mode_enter(o, s, DSD_SCAN_MODE_P25) == 0);
+    assert(dsd_scan_mode_options(o, s, NULL) == 0);
+    assert(g_squelch_pushes == 8);
+    /* Leaving restores the configured value; the demod already holds it. */
+    assert(dsd_scan_mode_options(o, s, &row) == 0);
+    assert(g_squelch_pushes == 9);
+    dsd_scan_mode_leave(o, s);
+    assert(level_is(o->rtl_squelch_level, edited));
+    assert(g_squelch_pushes == 10 && level_is(g_squelch_pushed, edited));
+    assert(dsd_scan_mode_row_options(s) == NULL);
+    /* An enter whose options never came still settles against the pre-enter level on leave. */
+    assert(dsd_scan_mode_enter(o, s, DSD_SCAN_MODE_DMR) == 0);
+    assert(dsd_scan_mode_options(o, s, &row) == 0);
+    assert(g_squelch_pushes == 11);
+    assert(dsd_scan_mode_enter(o, s, DSD_SCAN_MODE_P25) == 0);
+    dsd_scan_mode_leave(o, s);
+    assert(g_squelch_pushes == 12 && level_is(g_squelch_pushed, edited));
+
+    /* A command that ends the scan while the scope is suspended for it (CONFIG_APPLY stopping the
+     * scanner) leaves from the configured values already in dsd_opts. The demod was last told the
+     * row's threshold, so leaving has to tell it the default even though dsd_opts did not move. */
+    assert(dsd_scan_mode_enter(o, s, DSD_SCAN_MODE_DMR) == 0);
+    assert(dsd_scan_mode_options(o, s, &row) == 0);
+    assert(level_is(g_squelch_pushed, dsd_squelch_level_from_sql(-40.0)));
+    assert(dsd_scan_mode_suspend(o, s));
+    const int before_suspended_leave = g_squelch_pushes;
+    dsd_scan_mode_leave(o, s);
+    assert(level_is(o->rtl_squelch_level, edited));
+    assert(g_squelch_pushes == before_suspended_leave + 1 && level_is(g_squelch_pushed, edited));
+    /* Entering a row while a command holds the scope suspended is the same story: the row's
+     * options push even though dsd_opts reads the default before and after. */
+    assert(dsd_scan_mode_enter(o, s, DSD_SCAN_MODE_DMR) == 0);
+    assert(dsd_scan_mode_options(o, s, &row) == 0);
+    assert(dsd_scan_mode_suspend(o, s));
+    const int before_suspended_enter = g_squelch_pushes;
+    assert(dsd_scan_mode_enter(o, s, DSD_SCAN_MODE_P25) == 0);
+    assert(g_squelch_pushes == before_suspended_enter);
+    assert(dsd_scan_mode_options(o, s, NULL) == 0);
+    assert(g_squelch_pushes == before_suspended_enter + 1 && level_is(g_squelch_pushed, edited));
+    dsd_scan_mode_leave(o, s);
+    assert(g_squelch_pushes == before_suspended_enter + 1);
+
+    /* A PCM input has no demodulator to push to, but the row still owns the threshold the
+     * analog input monitor (-8) and its carrier stamp read from dsd_opts. */
+    const int before_pcm = g_squelch_pushes;
+    o->audio_in_type = AUDIO_IN_WAV;
+    assert(dsd_scan_mode_enter(o, s, DSD_SCAN_MODE_DMR) == 0);
+    assert(dsd_scan_mode_options(o, s, &row) == 0);
+    assert(level_is(o->rtl_squelch_level, dsd_squelch_level_from_sql(-40.0)));
+    assert(dsd_scan_mode_suspend(o, s));
+    assert(dsd_scan_mode_resume(o, s) == 0);
+    dsd_scan_mode_leave(o, s);
+    assert(level_is(o->rtl_squelch_level, edited));
+    assert(g_squelch_pushes == before_pcm);
+
+    dsd_rtl_stream_metrics_hooks_set(NULL);
+    dsd_state_ext_free_all(s);
+    free(s);
+    free(o);
+}
+
+/* An operator squelch edit changes the configured default without suspending the scope. A row
+ * override keeps its threshold (0); anything else takes the edit at once (1), and the caller
+ * hands it to the demod. Nothing is pushed, and no acquisition setting is compared, either way. */
+static void
+test_configured_squelch_edit(void) {
+    dsd_opts* o = (dsd_opts*)calloc(1, sizeof(*o));
+    dsd_state* s = (dsd_state*)calloc(1, sizeof(*s));
+    assert(o && s);
+    o->wav_sample_rate = 48000;
+    o->audio_in_type = AUDIO_IN_RTL;
+    o->frame_dmr = 1;
+    o->rtl_squelch_level = dsd_squelch_level_from_sql(-80.0);
+    const dsd_rtl_stream_metrics_hooks hooks = {.set_channel_squelch = record_squelch_push};
+    dsd_rtl_stream_metrics_hooks_set(&hooks);
+    g_squelch_pushes = 0;
+
+    assert(dsd_scan_mode_set_configured_squelch(NULL, s, 0.0) == -1);
+    /* No scope: dsd_opts is the configured default. */
+    assert(dsd_scan_mode_set_configured_squelch(o, s, dsd_squelch_level_from_sql(-70.0)) == 1);
+    assert(level_is(o->rtl_squelch_level, dsd_squelch_level_from_sql(-70.0)));
+    assert(dsd_scan_mode_set_configured_squelch(o, NULL, dsd_squelch_level_from_sql(-72.0)) == 1);
+    assert(level_is(o->rtl_squelch_level, dsd_squelch_level_from_sql(-72.0)));
+
+    assert(dsd_scan_mode_enter(o, s, DSD_SCAN_MODE_DMR) == 0);
+    dsd_scan_option_values row = {0};
+    row.present = DSD_SCAN_OPT_SQUELCH;
+    row.squelch_db = -60;
+    assert(dsd_scan_mode_options(o, s, &row) == 0);
+    assert(g_squelch_pushes == 1);
+    /* Shadowed: the row keeps dsd_opts, the baseline takes the edit, the demod hears nothing. */
+    assert(dsd_scan_mode_set_configured_squelch(o, s, dsd_squelch_level_from_sql(-75.0)) == 0);
+    assert(level_is(o->rtl_squelch_level, dsd_squelch_level_from_sql(-60.0)));
+    assert(level_is(dsd_scan_mode_configured_view(s)->rtl_squelch_level, dsd_squelch_level_from_sql(-75.0)));
+    assert(dsd_scan_mode_updating(s) == 0 && g_squelch_pushes == 1);
+    /* The next row that inherits gets the edited default. */
+    assert(dsd_scan_mode_options(o, s, NULL) == 0);
+    assert(level_is(o->rtl_squelch_level, dsd_squelch_level_from_sql(-75.0)));
+    assert(g_squelch_pushes == 2 && level_is(g_squelch_pushed, dsd_squelch_level_from_sql(-75.0)));
+    /* In force: both take it, and pushing is left to the caller. */
+    assert(dsd_scan_mode_set_configured_squelch(o, s, 0.0) == 1);
+    assert(dsd_squelch_is_off(o->rtl_squelch_level));
+    assert(dsd_squelch_is_off(dsd_scan_mode_configured_view(s)->rtl_squelch_level));
+    assert(g_squelch_pushes == 2);
+    /* An edit between a row's enter and its options (the caller pushed it) is what the demod
+     * holds when the options judge the change: a row overriding with that level pushes nothing. */
+    assert(dsd_scan_mode_enter(o, s, DSD_SCAN_MODE_DMR) == 0);
+    assert(dsd_scan_mode_set_configured_squelch(o, s, dsd_squelch_level_from_sql(-60.0)) == 1);
+    assert(dsd_scan_mode_options(o, s, &row) == 0);
+    assert(g_squelch_pushes == 2);
+    assert(dsd_scan_mode_options(o, s, NULL) == 0);
+    assert(g_squelch_pushes == 2 && level_is(o->rtl_squelch_level, dsd_squelch_level_from_sql(-60.0)));
+    /* Suspended: dsd_opts holds the configured values, and resume recaptures the edit. */
+    assert(dsd_scan_mode_suspend(o, s));
+    assert(dsd_scan_mode_set_configured_squelch(o, s, dsd_squelch_level_from_sql(-50.0)) == 1);
+    assert(dsd_scan_mode_resume(o, s) == 0);
+    assert(level_is(dsd_scan_mode_configured_view(s)->rtl_squelch_level, dsd_squelch_level_from_sql(-50.0)));
+    dsd_scan_mode_leave(o, s);
+    assert(level_is(o->rtl_squelch_level, dsd_squelch_level_from_sql(-50.0)));
+
+    dsd_rtl_stream_metrics_hooks_set(NULL);
+    dsd_state_ext_free_all(s);
+    free(s);
+    free(o);
+}
+
 int
 main(void) {
     test_row_option_edits_are_not_acquisition_changes();
     test_max_visit_row_override_scope();
+    test_squelch_row_override_scope();
+    test_configured_squelch_edit();
     dsd_opts* o = (dsd_opts*)calloc(1, sizeof(*o));
     dsd_state* s = (dsd_state*)calloc(1, sizeof(*s));
     dsd_state* copy = (dsd_state*)calloc(1, sizeof(*copy));
@@ -263,12 +536,12 @@ main(void) {
             assert(o->use_cosine_filter == 0);
         }
         dsd_scan_mode_configured(o, s, &restored);
-        assert(memcmp(&baseline, &restored, sizeof(baseline)) == 0);
+        assert(settings_identical(&baseline, &restored));
         dsd_scan_mode_copy_snapshot(copy, s);
         assert(copy->state_ext[6] != s->state_ext[6]);
         dsd_scan_mode_leave(o, s);
         dsd_scan_settings_capture(o, s, &restored);
-        assert(memcmp(&baseline, &restored, sizeof(baseline)) == 0);
+        assert(settings_identical(&baseline, &restored));
         assert(dsd_scan_mode_active(copy) == parsed);
     }
     assert(dsd_scan_mode_enter(o, s, DSD_SCAN_MODE_M17) == 0);

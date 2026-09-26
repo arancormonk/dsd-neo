@@ -181,6 +181,13 @@ CommandBridge::lockoutSlot(int slot) const {
 
 bool
 // cppcheck-suppress functionStatic -- Q_INVOKABLE members cannot be static (Qt meta-object)
+CommandBridge::skipSlot(int slot) const {
+    const uint8_t index = (slot > 0) ? 1U : 0U;
+    return accepted(dsd_app_command_set_u8(DSD_APP_CMD_SKIP_SLOT, index));
+}
+
+bool
+// cppcheck-suppress functionStatic -- Q_INVOKABLE members cannot be static (Qt meta-object)
 CommandBridge::setTalkgroupListening(unsigned int idStart, unsigned int idEnd, bool listen) const {
     dsd_app_tg_listen_payload payload;
     DSD_MEMSET(&payload, 0, sizeof(payload));
@@ -274,6 +281,11 @@ bool
 // cppcheck-suppress functionStatic -- Q_INVOKABLE members cannot be static (Qt meta-object)
 CommandBridge::setSquelchDb(double db) const {
     return accepted(dsd_app_command_set_double(DSD_APP_CMD_RTL_SET_SQL_DB, db));
+}
+
+bool
+CommandBridge::setNfmBandwidthHz(int hz) const {
+    return accepted(dsd_app_command_set_i32(DSD_APP_CMD_NFM_BANDWIDTH_SET, static_cast<int32_t>(hz)));
 }
 
 bool

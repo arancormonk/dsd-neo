@@ -23,6 +23,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include "dmr_pdu_internal.h"
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
@@ -66,9 +67,11 @@ dsd_unicode_supported(void) {
 
 void
 // NOLINTNEXTLINE(misc-use-internal-linkage)
-lip_protocol_decoder(dsd_opts* opts, dsd_state* state, uint8_t* input) {
+lip_pdu_decoder(const dsd_opts* opts, dsd_state* state, const uint8_t* bits, size_t bit_count, uint32_t src) {
+    (void)bit_count;
+    (void)src;
     (void)opts;
-    (void)input;
+    (void)bits;
     g_lip_calls++;
     uint8_t slot = (state->currentslot == 1) ? 1U : 0U;
     DSD_SNPRINTF(state->dmr_embedded_gps[slot], sizeof(state->dmr_embedded_gps[slot]), "%s",
@@ -131,7 +134,6 @@ dsd_format_local_datetime(time_t timestamp, dsd_local_datetime_format format, ch
 
 // Under test
 int decode_ip_pdu(dsd_opts* opts, dsd_state* state, uint16_t len, uint8_t* input);
-void dmr_sd_pdu(dsd_opts* opts, dsd_state* state, uint16_t len, const uint8_t* DMR_PDU);
 void dmr_udp_comp_pdu(dsd_opts* opts, dsd_state* state, uint16_t len, const uint8_t* DMR_PDU);
 void utf8_to_text(dsd_state* state, uint8_t wr, uint16_t len, const uint8_t* input);
 
@@ -539,10 +541,10 @@ main(void) {
         size_t plen = build_ipv4_udp_vertex_tms(pkt, sizeof pkt, 5);
         st.data_block_poc[0] = 2; // non-zero from RF block framing; not part of UDP payload length
         st.dmr_lrrp_gps[0][0] = '\0';
-        st.event_history_s[0].Event_History_Items[0].text_message[0] = '\0';
+        dsd_event_stage_text(&st, 0, "");
         decode_ip_pdu(&opts, &st, (uint16_t)plen, pkt);
         rc |= expect_has_substr(st.dmr_lrrp_gps[0], "VTX TMS SRC:", "vtx5007 label");
-        rc |= expect_has_substr(st.event_history_s[0].Event_History_Items[0].text_message, "HI", "vtx5007 text");
+        rc |= expect_has_substr(dsd_event_staged_text(&st, 0), "HI", "vtx5007 text");
     }
 
     // Case 4: EF Johnson Atlas Data Registration Server on UDP/9361 should be labeled.
@@ -585,16 +587,15 @@ main(void) {
     {
         reset_spies();
         const uint8_t text[] = {'A', 'B', 'C'};
-        st.event_history_s[0].Event_History_Items[0].text_message[0] = '\0';
+        dsd_event_stage_text(&st, 0, "");
         const uint64_t revision = st.event_history_s[0].revision;
         utf8_to_text(&st, 1, (uint16_t)sizeof text, text);
-        if (strcmp(st.event_history_s[0].Event_History_Items[0].text_message, "ABC") != 0) {
-            DSD_FPRINTF(stderr, "utf8 text append: got '%s'\n",
-                        st.event_history_s[0].Event_History_Items[0].text_message);
+        if (strcmp(dsd_event_staged_text(&st, 0), "ABC") != 0) {
+            DSD_FPRINTF(stderr, "utf8 text append: got '%s'\n", dsd_event_staged_text(&st, 0));
             rc |= 1;
         }
-        if (st.event_history_s[0].revision != revision + 1U) {
-            DSD_FPRINTF(stderr, "utf8 text append did not advance history revision once\n");
+        if (st.event_history_s[0].revision != revision) {
+            DSD_FPRINTF(stderr, "utf8 text staging changed history revision\n");
             rc |= 1;
         }
     }
@@ -606,10 +607,9 @@ main(void) {
         st.currentslot = 1;
         st.dmr_lrrp_source[1] = 4321;
         st.dmr_lrrp_target[1] = 8765;
-        st.event_history_s[1].Event_History_Items[0].text_message[0] = '\0';
+        dsd_event_stage_text(&st, 1, "");
         dmr_udp_comp_pdu(&opts, &st, (uint16_t)plen, pkt);
-        rc |= expect_has_substr(st.event_history_s[1].Event_History_Items[0].text_message, "OK",
-                                "compressed text payload");
+        rc |= expect_has_substr(dsd_event_staged_text(&st, 1), "OK", "compressed text payload");
         if (g_datacall_calls != 1U || g_datacall_src != 4321U || g_datacall_dst != 8765U || g_datacall_slot != 1U) {
             DSD_FPRINTF(stderr, "compressed datacall metadata mismatch calls=%u src=%u dst=%u slot=%u\n",
                         g_datacall_calls, g_datacall_src, g_datacall_dst, g_datacall_slot);
@@ -680,7 +680,7 @@ main(void) {
         st.data_header_format[0] = 0;
         st.dmr_lrrp_source[0] = 1234;
         st.dmr_lrrp_target[0] = 5678;
-        dmr_sd_pdu(&opts, &st, (uint16_t)sizeof text, text);
+        dmr_sd_pdu_process(&opts, &st, (uint16_t)sizeof text, text, 1U);
         if (g_datacall_calls != 1U || g_datacall_src != 1234U || g_datacall_dst != 5678U) {
             DSD_FPRINTF(stderr, "short data datacall mismatch calls=%u src=%u dst=%u\n", g_datacall_calls,
                         g_datacall_src, g_datacall_dst);
@@ -753,11 +753,11 @@ main(void) {
         // as Motorola radios send it (#466).
         const uint8_t text_payload[] = {0x00, 0x08, 0xA0, 0x00, 0x8F, 0x04, 'O', 0x00, 'K', 0x00};
         plen = build_ipv4_udp_payload(pkt, sizeof pkt, 4007U, text_payload, sizeof(text_payload));
-        st.event_history_s[0].Event_History_Items[0].text_message[0] = '\0';
+        dsd_event_stage_text(&st, 0, "");
         st.dmr_lrrp_gps[0][0] = '\0';
         decode_ip_pdu(&opts, &st, (uint16_t)plen, pkt);
         rc |= expect_has_substr(st.dmr_lrrp_gps[0], "TMS SRC:", "tms text label");
-        rc |= expect_has_substr(st.event_history_s[0].Event_History_Items[0].text_message, "OK", "tms text payload");
+        rc |= expect_has_substr(dsd_event_staged_text(&st, 0), "OK", "tms text payload");
     }
 
     // Case 15: unknown UDP and truncated UDP headers emit bounded datacall summaries.

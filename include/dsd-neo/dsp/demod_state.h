@@ -26,12 +26,18 @@
 #include <dsd-neo/platform/threading.h>
 
 /* Buffer sizing constants shared by the demodulator and radio front-end. */
-#define DEFAULT_BUF_LENGTH 16384
-#define MAXIMUM_OVERSAMPLE 16
-#define MAXIMUM_BUF_LENGTH (MAXIMUM_OVERSAMPLE * DEFAULT_BUF_LENGTH)
+#define DEFAULT_BUF_LENGTH       16384
+#define MAXIMUM_OVERSAMPLE       16
+#define MAXIMUM_BUF_LENGTH       (MAXIMUM_OVERSAMPLE * DEFAULT_BUF_LENGTH)
 
 /* Maximum half-band tap count used to dimension complex-decimator histories. */
-#define HB_TAPS_MAX        31
+#define HB_TAPS_MAX              31
+
+/* Channel LPF plan/history capacity. Digital profiles design at most 144 taps
+ * (and keep their 63-tap fallback); the analog family uses the full capacity so
+ * device-forced rates up to ~102 kHz get a real design. Static-asserted against
+ * DSD_ANALOG_CHANNEL_MAX_TAPS in demod_pipeline.cpp. */
+#define DSD_CHANNEL_LPF_MAX_TAPS 288
 
 /* Channel LPF profile ids */
 enum DSD_ATTR_PACKED {
@@ -79,9 +85,9 @@ struct demod_state {
     alignas(64) float result[MAXIMUM_BUF_LENGTH];
     alignas(64) float timing_buf[MAXIMUM_BUF_LENGTH];
     alignas(64) float resamp_outbuf[MAXIMUM_BUF_LENGTH * 4];
-    alignas(64) float channel_lpf_hist_i[144]; /* sized for up to 144-tap symmetric FIR (tap-1) */
-    alignas(64) float channel_lpf_hist_q[144];
-    alignas(64) float channel_lpf_plan_taps[144];
+    alignas(64) float channel_lpf_hist_i[DSD_CHANNEL_LPF_MAX_TAPS]; /* symmetric FIR history (taps - 1) */
+    alignas(64) float channel_lpf_hist_q[DSD_CHANNEL_LPF_MAX_TAPS];
+    alignas(64) float channel_lpf_plan_taps[DSD_CHANNEL_LPF_MAX_TAPS];
 
     /* Pointers and 64-bit items next */
     dsd_thread_t thread;
@@ -138,8 +144,13 @@ struct demod_state {
     int deemph;
     float deemph_a; /* deemphasis alpha [0.0, 1.0] for one-pole IIR */
     float deemph_avg;
+    /* De-emphasis time constant in microseconds (0 = none); deemph_a is recomputed from it whenever rate_out
+       changes. */
+    int deemph_tau_us;
     /* Optional post-demod audio low-pass filter (one-pole) */
     int audio_lpf_enable;
+    /* Audio LPF cutoff in Hz (0 = none); audio_lpf_alpha is recomputed from it whenever rate_out changes. */
+    int audio_lpf_cutoff_hz;
     float audio_lpf_alpha; /* alpha [0.0, 1.0] for one-pole LPF */
     float audio_lpf_state; /* state/output y[n-1] */
     float now_lpr;
@@ -152,15 +163,32 @@ struct demod_state {
     float hb_hist_q[10][HB_TAPS_MAX - 1];
 
     /* Fixed channel low-pass (post-HB) to bound noise bandwidth at higher Fs.
-     * At 48 kHz with 1200 Hz transition, Blackman needs up to 135 taps (hist = 134).
-     * Size 144 provides headroom for higher sample rates. */
+     * At 48 kHz with 1200 Hz transition, Blackman needs 135 taps (hist = 134).
+     * Digital profiles cap the design at 144 taps; the analog family may use
+     * the full DSD_CHANNEL_LPF_MAX_TAPS. */
     int channel_lpf_enable; /* gate */
+    /* The historical enable rule (DSD_NEO_CHANNEL_LPF, else a 20 kHz rate_in) as decided when the stream was
+       configured. The unset analog default and a switch back to digital restore it; an explicit analog width
+       overrides it. */
+    int channel_lpf_default_enable;
     int channel_lpf_hist_len;
     int channel_lpf_profile;       /* see DSD_CH_LPF_PROFILE_* */
     int channel_lpf_plan_rate_out; /* cached rate for channel_lpf_plan_taps */
     int channel_lpf_plan_profile;  /* cached profile for channel_lpf_plan_taps */
-    int channel_lpf_plan_taps_len; /* cached tap count; 0 = not designed */
-    float channel_pwr;             /* mean power (RMS^2 proxy) measured after channel LPF */
+    int channel_lpf_plan_width_hz; /* cached analog width for channel_lpf_plan_taps (0 = profile design) */
+    int channel_lpf_plan_taps_len; /* cached tap count; 0 = not designed, or the analog width is unrealizable */
+    /* Analog receive family (the -fA monitor; not the M17 encoder, which shares the analog front end). While set,
+       channel_lpf_width_hz > 0 drives the channel filter instead of channel_lpf_profile. */
+    int analog_family;
+    int analog_demod; /* dsd_analog_demod (runtime/analog_channel.h); 0 = FM */
+    /* Full RF channel width in Hz the analog filter protects (cutoff W/2 + 600 Hz, 1200 Hz transition).
+       0 keeps the profile design, including the legacy WIDE design for an unset default the rate cannot fit. */
+    int channel_lpf_width_hz;
+    /* The analog width the stream was asked for (0 = the unset NFM default; the AM default counts as requested),
+       kept so a later rate change can resolve the channel again: the unset default between 16 kHz and the legacy
+       WIDE design, and a requested width against the new rate. */
+    int analog_width_request_hz;
+    float channel_pwr; /* mean power (RMS^2 proxy) measured after channel LPF */
     /* Squelch threshold (linear power); 0 = disabled. Written from the control thread
      * (config apply, menus) while the demod thread reads it per block. */
     std::atomic<float> channel_squelch_level;
@@ -261,5 +289,20 @@ struct demod_state {
 };
 
 // NOLINTEND(clang-analyzer-optin.performance.Padding)
+
+/*
+ * Whether the analog family's monitor audio, on the analog channel, is what the demodulator produces. The width-driven
+ * channel filter and the published analog profile describe that path only. A symbol profile applied without a family
+ * switch leaves the family flag set but moves the front end off that path, and keeps its own profile filter: a CQPSK
+ * toggle under -fA moves the output to symbols, and a typed digital scan row's profile puts the row's channel profile
+ * in place of the analog (WIDE) one while the monitor output stays.
+ */
+static inline int
+dsd_demod_analog_monitor_active(const struct demod_state* d) {
+    return (d && d->analog_family && d->output_kind == DSD_DEMOD_OUTPUT_AUDIO_MONITOR && !d->cqpsk_enable
+            && d->channel_lpf_profile == DSD_CH_LPF_PROFILE_WIDE)
+               ? 1
+               : 0;
+}
 
 #endif /* DSD_NEO_INCLUDE_DSD_NEO_DSP_DEMOD_STATE_H_ */

@@ -57,6 +57,33 @@ reset_io_control_tune_stub(int result) {
 }
 #endif
 
+#ifdef DSD_NEO_TEST_AUDIO_ENSURE_WRAP
+/* The sink helpers an import's decode-mode change calls, recorded instead of run. */
+static int g_ensure_analog_calls = 0;
+static int g_ensure_digital_calls = 0;
+
+// GNU ld --wrap entry points must keep the reserved __wrap_* symbol name.
+// NOLINTBEGIN(bugprone-reserved-identifier, cert-dcl37-c, cert-dcl51-cpp, misc-use-internal-linkage)
+int __wrap_dsd_audio_ensure_analog_output(dsd_opts* opts);
+int __wrap_dsd_audio_ensure_digital_output(dsd_opts* opts);
+
+int
+__wrap_dsd_audio_ensure_analog_output(dsd_opts* opts) {
+    (void)opts;
+    g_ensure_analog_calls++;
+    return 0;
+}
+
+int
+__wrap_dsd_audio_ensure_digital_output(dsd_opts* opts) {
+    (void)opts;
+    g_ensure_digital_calls++;
+    return 0;
+}
+
+// NOLINTEND(bugprone-reserved-identifier, cert-dcl37-c, cert-dcl51-cpp, misc-use-internal-linkage)
+#endif
+
 static int
 expect_int(const char* tag, int got, int want) {
     if (got != want) {
@@ -245,6 +272,9 @@ init_test_context(dsd_opts* opts, dsd_state* state) {
     DSD_MEMSET(opts, 0, sizeof(*opts));
     DSD_MEMSET(state, 0, sizeof(*state));
     initOpts(opts);
+    /* An import's decode-mode change opens the new mode's sink when the session plays to a local audio device, which
+       is what initOpts() selects; the tests play to the null output so none of them opens a host audio stream. */
+    opts->audio_out_type = 9;
     initState(state);
     dsd_app_frontend_runtime_start(opts, state);
     state->cli_argc_effective = 0;
@@ -290,8 +320,15 @@ test_apply_dmr_trunked_with_files(void) {
     p.trunking = 1U;
     payload_files(&p, chan_csv, group_csv);
 
+#ifdef DSD_NEO_TEST_AUDIO_ENSURE_WRAP
+    g_ensure_analog_calls = g_ensure_digital_calls = 0;
+#endif
     rc |= expect_int("rr apply queued", dsd_app_command_set_rr_apply(&p), DSD_APP_COMMAND_SUBMIT_QUEUED);
     rc |= expect_int("rr apply drained", dsd_app_drain_cmds(&opts, &state), 1);
+#ifdef DSD_NEO_TEST_AUDIO_ENSURE_WRAP
+    rc |= expect_int("rr import ensures the digital sink", g_ensure_digital_calls, 1);
+    rc |= expect_int("rr import leaves the raw sink", g_ensure_analog_calls, 0);
+#endif
     rc |= expect_int("dmr framing on", opts.frame_dmr, 1);
     rc |= expect_int("trunking on", opts.trunk_enable, 1);
     rc |= expect_int("scanner off", opts.scanner_mode, 0);

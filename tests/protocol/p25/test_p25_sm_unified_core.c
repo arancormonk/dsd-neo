@@ -755,7 +755,7 @@ conventional_ptt_payload(int payload[180], int facch, int encrypted) {
 static int
 test_conventional_voice_start_encryption_policy(void) {
     int fail = 0;
-    dsd_trunk_scan_hooks_set((dsd_trunk_scan_hooks){.p25_conventional_activity = observe_conventional_activity});
+    dsd_trunk_scan_hooks_set(&(dsd_trunk_scan_hooks){.p25_conventional_activity = observe_conventional_activity});
     for (int encrypted = 0; encrypted <= 1; encrypted++) {
         reset_test_state();
         g_opts.trunk_enable = 0;
@@ -823,7 +823,7 @@ test_conventional_voice_start_encryption_policy(void) {
             fail = 1;
         }
     }
-    dsd_trunk_scan_hooks_set((dsd_trunk_scan_hooks){0});
+    dsd_trunk_scan_hooks_set(NULL);
     return fail;
 }
 

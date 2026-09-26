@@ -40,6 +40,7 @@ Item {
         }
 
         function init() {
+            testContext.resetCommands()
             monitorView.minWhen = 0
             callHistory.clearAll()
             callHistory.pushMany(12, "TODAY")
@@ -49,6 +50,7 @@ Item {
         }
 
         function cleanup() {
+            testContext.resetCommands()
             findChild(screenLoader.item, "monitorHistoryDetail").visible = false
             for (var slot = 1; slot <= 2; ++slot) {
                 for (var field of ["CallName", "TgText", "SrcText"])
@@ -99,6 +101,20 @@ Item {
             tryCompare(sheet, "visible", true)
             compare(sheet.record.name, name)
             compare(sheet.record.systemUid, "test-system")
+        }
+
+        function test_seven_digit_ids_are_not_rendered_in_exponent_form() {
+            var name = callHistory.pushWithIds(1234567, 2501010)
+            tc.list.positionViewAtBeginning()
+            var row = null
+            tryVerify(function () { row = tc.list.itemAtIndex(0); return row !== null && row.name === name })
+            waitForRendering(row)
+            mouseClick(row, row.width / 2, row.height / 2)
+            var sheet = findChild(screenLoader.item, "monitorHistoryDetail")
+            tryCompare(sheet, "visible", true)
+            compare(sheet.detailLines[4], "Talkgroup 1234567")
+            compare(sheet.detailLines[6], "Radio ID 2501010")
+            compare(findChild(sheet, "historyHoldButton").text, "Hold TG 1234567")
         }
 
         function test_source_alias_is_visible() {

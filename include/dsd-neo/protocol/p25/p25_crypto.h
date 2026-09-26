@@ -96,6 +96,19 @@ p25_crypto_audio_permitted(const dsd_opts* opts, const dsd_state* state, int slo
     return opts->unmute_encrypted_p25 == 1 || opts->reverse_mute == 1;
 }
 
+/**
+ * Return non-zero when a P25 slot's voice may be heard: the frame may reach the
+ * vocoder, and reverse mute (-q) does not silence it for being clear. Speaker
+ * output and per-call recording share this rule.
+ */
+static inline int
+p25_crypto_audio_output_permitted(const dsd_opts* opts, const dsd_state* state, int slot) {
+    if (!p25_crypto_audio_permitted(opts, state, slot)) {
+        return 0;
+    }
+    return !opts || opts->reverse_mute != 1 || state->p25_crypto_state[slot] != DSD_P25_CRYPTO_CLEAR;
+}
+
 /** Start a voice-call classification window from grant service options. */
 void p25_crypto_begin_voice_call(dsd_state* state, dsd_p25_crypto_phase phase, int slot, int svc_bits, int force_clear);
 

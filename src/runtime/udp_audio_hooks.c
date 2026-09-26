@@ -28,3 +28,11 @@ dsd_udp_audio_hook_blast_analog(const dsd_opts* opts, dsd_state* state, size_t n
         g_udp_audio_hooks.blast_analog(opts, state, nsam, data);
     }
 }
+
+int
+dsd_udp_audio_hook_connect_analog(dsd_opts* opts) {
+    if (g_udp_audio_hooks.connect_analog) {
+        return g_udp_audio_hooks.connect_analog(opts) == 0 ? 0 : -1;
+    }
+    return -1;
+}

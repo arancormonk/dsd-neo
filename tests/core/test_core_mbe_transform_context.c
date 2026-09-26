@@ -8,12 +8,14 @@
 
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/file_io.h>
+#include <dsd-neo/core/init.h>
 #include <dsd-neo/core/keyring.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/synctype_ids.h>
+#include <dsd-neo/core/talkgroup_policy.h>
 #include <dsd-neo/core/vocoder.h>
 #include <dsd-neo/crypto/aes.h>
 #include <dsd-neo/crypto/des.h>
@@ -745,6 +747,80 @@ test_play_mbe_files_processes_imbe_ambe_and_dstar_records(void) {
     (void)remove(imbe_path);
     (void)remove(amb_path);
     (void)remove(dmb_path);
+    return rc;
+}
+
+/* Each file replays its own traffic. An SDRTrunk JSON export leaves its last
+ * call open at EOF; a raw .imb that follows carries no identity, so the
+ * talkgroup gate must not judge it on that call and mute it. */
+static int
+test_play_mbe_files_does_not_carry_call_identity_across_files(void) {
+    char imbe_path[1024];
+    char wav_path[1024];
+    char imbe_bits[88] = {0};
+    for (int i = 0; i < 88; i++) {
+        imbe_bits[i] = (char)(((i * 5) + 1) & 1);
+    }
+    int rc = create_mbe_playback_file(imbe_path, sizeof imbe_path, ".imb", saveImbe4400Data, imbe_bits, 0x12,
+                                      "mbe_play_carry");
+    if (rc != 0) {
+        return rc;
+    }
+    SNDFILE* wav = create_wav_temp(wav_path, sizeof wav_path, "mbe_play_carry_wav");
+    dsd_opts* opts = calloc(1, sizeof(*opts));
+    dsd_state* state = calloc(1, sizeof(*state));
+    if (!wav || !opts || !state) {
+        if (wav) {
+            sf_close(wav);
+            (void)remove(wav_path);
+        }
+        free(opts);
+        free(state);
+        (void)remove(imbe_path);
+        return 1;
+    }
+    initOpts(opts);
+    initState(state);
+    opts->audio_out = 0;
+    opts->slot1_on = 1;
+    opts->floating_point = 0;
+    opts->wav_out_f = wav;
+    opts->static_wav_file = 1;
+    state->optind = 1;
+    // A P25 JSON export leaves its protocol and an unclassified live crypto state behind.
+    state->synctype = DSD_SYNC_P25P1_POS;
+    state->lastsynctype = DSD_SYNC_P25P1_POS;
+    rc |= expect_eq_int("carry blocked talkgroup row", dsd_tg_policy_set_mode(state, 123, 123, "B"), 0);
+    const dsd_call_observation previous_file_call = {.protocol = DSD_SYNC_P25P1_POS,
+                                                     .slot = 0U,
+                                                     .kind = DSD_CALL_KIND_GROUP_VOICE,
+                                                     .ota_target_id = 123U,
+                                                     .policy_target_id = 123U,
+                                                     .ota_source_id = 1U};
+    rc |= expect_eq_int("carry previous file call open",
+                        dsd_call_state_observe(state, &previous_file_call, DSD_CALL_BOUNDARY_BEGIN), 1);
+
+    char* argv[] = {"dsd-neo", imbe_path};
+    playMbeFiles(opts, state, 2, argv);
+
+    dsd_call_snapshot call;
+    rc |= expect_eq_int("carry previous file call ended",
+                        dsd_call_state_get(state, 0U, &call) > 0 && call.phase == DSD_CALL_PHASE_ACTIVE, 0);
+    sf_close(wav);
+    opts->wav_out_f = NULL;
+    SF_INFO info;
+    DSD_MEMSET(&info, 0, sizeof(info));
+    SNDFILE* written = sf_open(wav_path, SFM_READ, &info);
+    rc |= expect_eq_int("carry raw file audible in static wav", written != NULL && info.frames > 0, 1);
+    if (written) {
+        sf_close(written);
+    }
+
+    freeState(state);
+    free(state);
+    free(opts);
+    (void)remove(imbe_path);
+    (void)remove(wav_path);
     return rc;
 }
 
@@ -1685,6 +1761,221 @@ test_process_mbe_frame_hard_dstar_stages_audio(void) {
     rc |= expect_eq_mem("frame-hard-dstar staged left", state.f_l, expected_audio, sizeof(expected_audio));
     rc |= expect_eq_int("frame-hard-dstar debug errors", state.debug_audio_errors, state.errs2);
 
+    return rc;
+}
+
+/* X2-TDMA and D-STAR write their WAV straight from the MBE post-processing;
+ * like every other protocol there, it honours the call's talkgroup policy. */
+static int
+test_process_mbe_frame_x2_dstar_wav_honors_talkgroup_policy(void) {
+    // D-STAR publishes on slot 0 even when a TDMA decode left currentslot at 1;
+    // X2-TDMA records the slot it is decoding.
+    static const struct {
+        int protocol;
+        uint8_t call_slot;
+        int current_slot;
+    } cases[] = {
+        {DSD_SYNC_X2TDMA_VOICE_POS, 0U, 0},
+        {DSD_SYNC_X2TDMA_VOICE_POS, 1U, 1},
+        {DSD_SYNC_DSTAR_VOICE_POS, 0U, 0},
+        {DSD_SYNC_DSTAR_VOICE_POS, 0U, 1},
+    };
+
+    static dsd_opts opts;
+    static dsd_state state;
+    static mbe_parms cur;
+    static mbe_parms prev;
+    static mbe_parms prev_enhanced;
+    static mbe_parms cur2;
+    static mbe_parms prev2;
+    static mbe_parms prev_enhanced2;
+    char imbe_fr[8][23] = {{0}};
+    char ambe_fr[4][24] = {{0}};
+    char imbe7100_fr[7][24] = {{0}};
+    ambe_fr[0][0] = 1;
+    ambe_fr[2][9] = 1;
+    int rc = 0;
+    for (size_t p = 0; p < sizeof(cases) / sizeof(cases[0]); p++) {
+        for (int blocked = 1; blocked >= 0; --blocked) {
+            char wav_path[1024];
+            SNDFILE* wav = create_wav_temp(wav_path, sizeof(wav_path), "x2_dstar_wav_policy");
+            if (!wav) {
+                return 1;
+            }
+            DSD_MEMSET(&opts, 0, sizeof(opts));
+            opts.floating_point = 1;
+            opts.wav_out_f = wav;
+            opts.dmr_stereo_wav = 1;
+            init_mbe_state(&state, &cur, &prev, &prev_enhanced, &cur2, &prev2, &prev_enhanced2);
+            state.synctype = cases[p].protocol;
+            state.currentslot = cases[p].current_slot;
+            if (blocked) {
+                rc |= expect_eq_int("wav policy blocked row", dsd_tg_policy_set_mode(&state, 123, 123, "B"), 0);
+            }
+            const dsd_call_observation call = {.protocol = cases[p].protocol,
+                                               .slot = cases[p].call_slot,
+                                               .kind = DSD_CALL_KIND_GROUP_VOICE,
+                                               .ota_target_id = 123U,
+                                               .policy_target_id = 123U,
+                                               .ota_source_id = 1U};
+            rc |= expect_eq_int("wav policy call", dsd_call_state_observe(&state, &call, DSD_CALL_BOUNDARY_BEGIN), 1);
+
+            processMbeFrame(&opts, &state, imbe_fr, ambe_fr, imbe7100_fr);
+
+            sf_close(wav);
+            opts.wav_out_f = NULL;
+            SF_INFO info;
+            DSD_MEMSET(&info, 0, sizeof(info));
+            SNDFILE* written = sf_open(wav_path, SFM_READ, &info);
+            if (written) {
+                sf_close(written);
+            }
+            rc |= expect_eq_int(blocked ? "wav omits blocked talkgroup" : "wav records allowed talkgroup",
+                                written != NULL && info.frames > 0, !blocked);
+            (void)remove(wav_path);
+        }
+    }
+    dsd_state_ext_free_all(&state);
+    return rc;
+}
+
+/* MBE capture (-d) is a recording too: every save point skips a call whose
+ * talkgroup policy blocks recording and keeps an allowed one, on the slot the
+ * protocol publishes. */
+static int
+test_process_mbe_frame_mbe_capture_honors_record_policy(void) {
+    static const struct {
+        const char* tag;
+        int protocol;
+        uint8_t call_slot;
+        int current_slot;
+        int right_file;
+    } cases[] = {
+        {"p25p1", DSD_SYNC_P25P1_POS, 0U, 0, 0},
+        {"nxdn", DSD_SYNC_NXDN_POS, 0U, 0, 0},
+        {"dstar stale slot", DSD_SYNC_DSTAR_VOICE_POS, 0U, 1, 0},
+        {"x2 slot 1", DSD_SYNC_X2TDMA_VOICE_POS, 1U, 1, 0},
+        {"dmr slot 1", DSD_SYNC_DMR_BS_VOICE_POS, 1U, 1, 1},
+    };
+
+    static dsd_opts opts;
+    static dsd_state state;
+    static mbe_parms cur;
+    static mbe_parms prev;
+    static mbe_parms prev_enhanced;
+    static mbe_parms cur2;
+    static mbe_parms prev2;
+    static mbe_parms prev_enhanced2;
+    char imbe_fr[8][23] = {{0}};
+    char ambe_fr[4][24] = {{0}};
+    char imbe7100_fr[7][24] = {{0}};
+    ambe_fr[0][0] = 1;
+    ambe_fr[2][9] = 1;
+    int rc = 0;
+    for (size_t c = 0; c < sizeof(cases) / sizeof(cases[0]); c++) {
+        for (int blocked = 1; blocked >= 0; --blocked) {
+            FILE* out = tmpfile();
+            if (!out) {
+                return 1;
+            }
+            DSD_MEMSET(&opts, 0, sizeof(opts));
+            opts.floating_point = 1;
+            opts.slot1_on = 1;
+            opts.slot2_on = 1;
+            if (cases[c].right_file) {
+                opts.mbe_out_fR = out;
+            } else {
+                opts.mbe_out_f = out;
+            }
+            init_mbe_state(&state, &cur, &prev, &prev_enhanced, &cur2, &prev2, &prev_enhanced2);
+            state.synctype = cases[c].protocol;
+            state.lastsynctype = cases[c].protocol;
+            state.currentslot = cases[c].current_slot;
+            state.p25_crypto_state[0] = DSD_P25_CRYPTO_CLEAR;
+            if (blocked) {
+                rc |= expect_eq_int("capture blocked row", dsd_tg_policy_set_mode(&state, 123, 123, "B"), 0);
+            }
+            const dsd_call_observation call = {.protocol = cases[c].protocol,
+                                               .slot = cases[c].call_slot,
+                                               .kind = DSD_CALL_KIND_GROUP_VOICE,
+                                               .ota_target_id = 123U,
+                                               .policy_target_id = 123U,
+                                               .ota_source_id = 1U};
+            rc |= expect_eq_int("capture call", dsd_call_state_observe(&state, &call, DSD_CALL_BOUNDARY_BEGIN), 1);
+
+            processMbeFrame(&opts, &state, imbe_fr, ambe_fr, imbe7100_fr);
+
+            (void)fflush(out);
+            (void)fseek(out, 0, SEEK_END);
+            const long saved = ftell(out);
+            fclose(out);
+            opts.mbe_out_f = NULL;
+            opts.mbe_out_fR = NULL;
+            if ((saved > 0) != !blocked) {
+                DSD_FPRINTF(stderr, "mbe capture %s %s: saved %ld bytes\n", cases[c].tag,
+                            blocked ? "blocked" : "allowed", saved);
+                rc = 1;
+            }
+        }
+    }
+    dsd_state_ext_free_all(&state);
+    return rc;
+}
+
+/* Reverse mute (-q) keeps a clear live P25 call out of MBE capture as it keeps it
+ * off the speakers; YSF full rate borrowing the Phase 1 decoder is not a P25 call. */
+static int
+test_process_mbe_frame_p25p1_capture_honors_reverse_mute(void) {
+    static const struct {
+        const char* tag;
+        int call_protocol;
+        int reverse_mute;
+        int want_saved;
+    } cases[] = {
+        {"clear p25 under -q", DSD_SYNC_P25P1_POS, 1, 0},
+        {"clear p25 without -q", DSD_SYNC_P25P1_POS, 0, 1},
+        {"ysf full rate under -q", DSD_SYNC_YSF_POS, 1, 1},
+    };
+
+    static dsd_opts opts;
+    static dsd_state state;
+    static mbe_parms cur;
+    static mbe_parms prev;
+    static mbe_parms prev_enhanced;
+    static mbe_parms cur2;
+    static mbe_parms prev2;
+    static mbe_parms prev_enhanced2;
+    char imbe_fr[8][23] = {{0}};
+    int rc = 0;
+    for (size_t c = 0; c < sizeof(cases) / sizeof(cases[0]); c++) {
+        FILE* out = tmpfile();
+        if (!out) {
+            return 1;
+        }
+        DSD_MEMSET(&opts, 0, sizeof(opts));
+        opts.floating_point = 1;
+        opts.reverse_mute = cases[c].reverse_mute;
+        opts.mbe_out_f = out;
+        init_mbe_state(&state, &cur, &prev, &prev_enhanced, &cur2, &prev2, &prev_enhanced2);
+        state.synctype = DSD_SYNC_P25P1_POS;
+        state.p25_crypto_state[0] = DSD_P25_CRYPTO_CLEAR;
+        const dsd_call_observation call = {.protocol = cases[c].call_protocol,
+                                           .slot = 0U,
+                                           .kind = DSD_CALL_KIND_GROUP_VOICE,
+                                           .ota_target_id = 123U,
+                                           .policy_target_id = 123U,
+                                           .ota_source_id = 1U};
+        rc |= expect_eq_int("reverse capture call", dsd_call_state_observe(&state, &call, DSD_CALL_BOUNDARY_BEGIN), 1);
+
+        processMbeFrame(&opts, &state, imbe_fr, NULL, NULL);
+
+        (void)fflush(out);
+        (void)fseek(out, 0, SEEK_END);
+        rc |= expect_eq_int(cases[c].tag, ftell(out) > 0, cases[c].want_saved);
+        fclose(out);
+        opts.mbe_out_f = NULL;
+    }
+    dsd_state_ext_free_all(&state);
     return rc;
 }
 
@@ -2907,6 +3198,9 @@ main(void) {
     rc |= test_process_mbe_frame_nxdn_cipher2_clamps_stale_bit_counter();
     rc |= test_process_mbe_frame_nxdn_cipher3_uses_aes_voice_offset();
     rc |= test_process_mbe_frame_hard_dstar_stages_audio();
+    rc |= test_process_mbe_frame_x2_dstar_wav_honors_talkgroup_policy();
+    rc |= test_process_mbe_frame_mbe_capture_honors_record_policy();
+    rc |= test_process_mbe_frame_p25p1_capture_honors_reverse_mute();
     rc |= test_process_mbe_frame_hard_dmr_left_stages_audio();
     rc |= test_process_mbe_frame_trunked_mono_bs_fallback_gates_to_granted_slot();
     rc |= test_process_mbe_frame_dmr_rc4_transforms_left_and_right_slots();
@@ -2918,6 +3212,7 @@ main(void) {
     rc |= test_process_mbe_frame_activation_gate_and_wide_kid();
     rc |= test_process_mbe_frame_hard_p25p2_right_stages_audio();
     rc |= test_play_mbe_files_processes_imbe_ambe_and_dstar_records();
+    rc |= test_play_mbe_files_does_not_carry_call_identity_across_files();
     rc |= test_process_mbe_frame_p25p1_updates_error_history();
     rc |= test_process_mbe_frame_provoice_updates_debug_errors_without_p25_history();
     rc |= test_process_mbe_frame_hard_provoice_stages_audio();

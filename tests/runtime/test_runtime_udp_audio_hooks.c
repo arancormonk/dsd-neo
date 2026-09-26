@@ -26,6 +26,17 @@ fake_blast(const dsd_opts* opts, dsd_state* state, size_t nsam, const void* data
     g_last_data = data;
 }
 
+static int g_connect_analog_calls = 0;
+static int g_connect_analog_result = 0;
+static dsd_opts* g_connect_opts = NULL;
+
+static int
+fake_connect_analog(dsd_opts* opts) {
+    g_connect_analog_calls++;
+    g_connect_opts = opts;
+    return g_connect_analog_result;
+}
+
 static void
 fake_blast_analog(const dsd_opts* opts, dsd_state* state, size_t nsam, const void* data) {
     g_blast_analog_calls++;
@@ -40,6 +51,8 @@ main(void) {
     dsd_udp_audio_hooks_set((dsd_udp_audio_hooks){0});
     dsd_udp_audio_hook_blast(NULL, NULL, 0, NULL);
     dsd_udp_audio_hook_blast_analog(NULL, NULL, 0, NULL);
+    /* No UDP backend: there is no analog socket to open. */
+    assert(dsd_udp_audio_hook_connect_analog(NULL) == -1);
 
     dsd_opts* opts = (dsd_opts*)calloc(1, 1);
     dsd_state* state = (dsd_state*)calloc(1, 1);
@@ -57,6 +70,7 @@ main(void) {
     dsd_udp_audio_hooks_set((dsd_udp_audio_hooks){
         .blast = fake_blast,
         .blast_analog = fake_blast_analog,
+        .connect_analog = fake_connect_analog,
     });
 
     dsd_udp_audio_hook_blast(opts, state, 123u, data);
@@ -74,6 +88,15 @@ main(void) {
     assert(g_last_state == state);
     assert(g_last_nsam == 456u);
     assert(g_last_data == data);
+
+    g_connect_analog_result = 0;
+    assert(dsd_udp_audio_hook_connect_analog(opts) == 0);
+    assert(g_connect_analog_calls == 1);
+    assert(g_connect_opts == opts);
+    /* Any failure the backend reports comes back as -1. */
+    g_connect_analog_result = 7;
+    assert(dsd_udp_audio_hook_connect_analog(opts) == -1);
+    assert(g_connect_analog_calls == 2);
 
     free(state);
     free(opts);

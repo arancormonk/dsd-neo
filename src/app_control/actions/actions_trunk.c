@@ -11,6 +11,7 @@
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/engine/channel_scan.h>
+#include <dsd-neo/protocol/p25/p25_sm_watchdog.h>
 #include <dsd-neo/runtime/trunk_scan_hooks.h>
 #include <stdint.h>
 #include <time.h>
@@ -22,21 +23,33 @@
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
 
+static void
+trunk_enable_on(dsd_opts* opts, dsd_state* state) {
+    /* Leave the conventional row and transfer tuner ownership as one guarded
+     * step: watchdog admission also observes scanner_mode (#554). */
+    p25_sm_tick_guard_enter();
+    opts->trunk_enable = 1;
+    if (opts->trunk_scan_enabled != 1) {
+        dsd_engine_channel_scan_leave(opts, state);
+        dsd_scan_keys_leave(state);
+    }
+    opts->scanner_mode = 0;
+    p25_sm_tick_guard_leave();
+}
+
 static int
 ui_handle_trunk_toggle(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
-    (void)state;
     (void)c;
     if (opts->trunk_enable == 1) {
         opts->trunk_enable = 0;
     } else {
-        opts->trunk_enable = 1;
+        trunk_enable_on(opts, state);
     }
     return 1;
 }
 
 static int
 ui_handle_trunk_set(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
-    (void)state;
     int32_t want = 0;
     if (c->n < (int)sizeof(int32_t)) {
         /* A truncated payload is not a request to stop trunking. Falling through
@@ -52,17 +65,10 @@ ui_handle_trunk_set(dsd_opts* opts, dsd_state* state, const struct dsd_app_comma
     }
     DSD_MEMCPY(&want, c->data, sizeof(int32_t));
     const int on = (want != 0) ? 1 : 0;
-    opts->trunk_enable = on;
     if (on) {
-        // Scanner mode is the other automatic owner of the tuner, and
-        // ui_handle_scanner_toggle clears trunking for the same reason: whichever
-        // one was asked for last is the one driving, not both at once.
-        // Leaving -Y hands the foreground keyring back to the globals.
-        if (opts->trunk_scan_enabled != 1) {
-            dsd_engine_channel_scan_leave(opts, state);
-            dsd_scan_keys_leave(state);
-        }
-        opts->scanner_mode = 0;
+        trunk_enable_on(opts, state);
+    } else {
+        opts->trunk_enable = 0;
     }
     return 1;
 }

@@ -36,6 +36,7 @@
 #include "dsd-neo/core/state_ext.h"
 #include "dsd-neo/core/state_fwd.h"
 #include "dsd-neo/runtime/call_alert.h"
+#include "dsd_event_staging.h"
 
 enum {
     DSD_EVENT_SUBTYPE_DMR_DATA_BURST = 6,
@@ -2322,6 +2323,7 @@ dsd_event_history_reset(dsd_state* state) {
     dsd_call_state_ext* ext = dsd_call_state_ext_get(state, 0);
     for (int slot = 0; slot < DSD_CALL_STATE_SLOT_COUNT; slot++) {
         init_event_history(&state->event_history_s[slot], 0, DSD_EVENT_HISTORY_LEN);
+        dsd_event_staging_clear_locked(&state->event_history_s[slot]);
         if (ext != NULL) {
             // epoch and ended_committed are deliberately left alone. They say which call the slot
             // has already finished rendering, not which row it landed in: clearing them would
@@ -2459,20 +2461,6 @@ watchdog_event_status(dsd_state* state, const char* status_string, uint8_t slot)
     dsd_event_history_transaction_end(&transaction);
 }
 
-static void
-dsd_event_copy_data_payload(Event_History* dst, const Event_History* src) {
-    DSD_MEMCPY(dst->pdu, src->pdu, sizeof(dst->pdu));
-    DSD_SNPRINTF(dst->gps_s, sizeof(dst->gps_s), "%s", src->gps_s);
-    DSD_SNPRINTF(dst->text_message, sizeof(dst->text_message), "%s", src->text_message);
-}
-
-static void
-dsd_event_clear_data_payload(Event_History* item) {
-    DSD_MEMSET(item->pdu, 0, sizeof(item->pdu));
-    item->gps_s[0] = '\0';
-    item->text_message[0] = '\0';
-}
-
 // A notice line, with the scan channel it was heard on when there is one. Same shape as a voice
 // row: the label sits between the 20-character timestamp prefix and the notice text, so a frontend
 // parsing that prefix is unaffected, and the bracket is display only for the same reason it is on
@@ -2536,8 +2524,9 @@ dsd_event_emit_data_notice_impl(dsd_opts* opts, dsd_state* state, uint8_t slot, 
     DSD_SNPRINTF(item->src_str, sizeof(item->src_str), "%s", observation->source_text);
     DSD_SNPRINTF(item->tgt_str, sizeof(item->tgt_str), "%s", observation->target_text);
     if (consume_staged_payload) {
-        dsd_event_copy_data_payload(item, &active);
-        dsd_event_clear_data_payload(&active);
+        DSD_SNPRINTF(item->gps_s, sizeof item->gps_s, "%s", event_struct->staged.gps_s);
+        DSD_SNPRINTF(item->text_message, sizeof item->text_message, "%s", event_struct->staged.text_message);
+        dsd_event_staging_clear_locked(event_struct);
     } else {
         DSD_SNPRINTF(item->gps_s, sizeof(item->gps_s), "%s", gps);
     }

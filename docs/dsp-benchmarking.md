@@ -94,6 +94,14 @@ one call and uses the same CSV timing columns as the DSP and RTL benchmarks.
 Channel LPF CSV rows include `rate_hz`, `profile`, `tap_count`, and `variant`
 metadata so tap-count and profile changes can be compared directly.
 
+The analog channel filter cases (`channel_lpf_48k_analog_16k`,
+`channel_lpf_78k_analog_16k`, `channel_lpf_96k_analog_25k`) report profile
+`analog` and use the width-driven design. `channel_lpf_78k_wide_fallback`
+(variant `fallback`) runs the 63-tap prototype the WIDE profile falls back to
+at 78,125 Hz, which is what the analog monitor ran at that forced rate before
+the width-driven design. Paired with `channel_lpf_78k_analog_16k`, it is the
+before/after comparison for that rate under `--filter channel_lpf`.
+
 ## Comparing Runs
 
 Keep benchmark CSV files outside the repository, for example under `/tmp`:

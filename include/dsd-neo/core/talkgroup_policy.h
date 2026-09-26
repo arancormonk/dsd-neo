@@ -57,6 +57,7 @@ typedef enum {
     DSD_TG_POLICY_BLOCK_STREAM = 1u << 9,
     DSD_TG_POLICY_BLOCK_ENC_LOCKOUT = 1u << 10,
     DSD_TG_POLICY_BLOCK_SESSION_AVOID = 1u << 11,
+    DSD_TG_POLICY_BLOCK_CALL_SKIP = 1u << 12,
 } dsd_tg_policy_block_reason;
 
 /** @brief Return the highest-priority diagnostic label for a block-reason mask. */
@@ -124,6 +125,34 @@ int dsd_tg_policy_evaluate_group_call(const dsd_opts* opts, const dsd_state* sta
                                       int encrypted, int data_call, dsd_tg_policy_decision* out);
 int dsd_tg_policy_evaluate_private_call(const dsd_opts* opts, const dsd_state* state, uint32_t src, uint32_t dst,
                                         int encrypted, int data_call, dsd_tg_policy_decision* out);
+
+/**
+ * Blocks on a patched call's over-the-air supergroup (SG) that no member WG
+ * overrides: a call skip, the encryption lockout (armed on the SG), a session
+ * avoid or a mode B/DE row. Every member rides the SG's traffic, so an allowed
+ * or held member must not readmit it. An allow-list or Hold miss on the SG is
+ * not in the set: a listed or held member is how patch-aware following admits
+ * the patch.
+ */
+#define DSD_TG_POLICY_BLOCK_OTA_FINAL                                                                                  \
+    ((uint32_t)DSD_TG_POLICY_BLOCK_CALL_SKIP | (uint32_t)DSD_TG_POLICY_BLOCK_ENC_LOCKOUT                               \
+     | (uint32_t)DSD_TG_POLICY_BLOCK_SESSION_AVOID | (uint32_t)DSD_TG_POLICY_BLOCK_MODE)
+
+/**
+ * @brief Merge a patched call's final supergroup blocks into its member decision.
+ *
+ * P25 judges a patched call on the member WG its grant matched (@p policy_target,
+ * the decision in @p decision). When @p ota_target differs and its own group
+ * evaluation carries any DSD_TG_POLICY_BLOCK_OTA_FINAL reason, those reasons are
+ * merged, tuning is denied, and media is denied unless the only reason is the
+ * encryption lockout, which never gated media. Nothing else from the supergroup
+ * is merged.
+ *
+ * @return 1 when a block was merged; 0 when none applies, the targets match,
+ *         @p ota_target is 0 or @p decision is NULL.
+ */
+int dsd_tg_policy_apply_ota_final_blocks(const dsd_opts* opts, const dsd_state* state, uint32_t ota_target,
+                                         uint32_t policy_target, uint32_t src, dsd_tg_policy_decision* decision);
 /**
  * @brief Evaluate a private grant while allowing entirely unlisted endpoints.
  *
@@ -170,6 +199,35 @@ int dsd_tg_policy_session_avoid_contains(const dsd_state* state, uint32_t id);
 size_t dsd_tg_policy_session_avoid_count(const dsd_state* state, uint32_t start, uint32_t end);
 /** Clear only temporary blocks in the current scope; NULL/empty is a no-op. */
 void dsd_tg_policy_session_avoid_clear(dsd_state* state);
+
+/** Maximum concurrent call skips and their monotonic lifetime limits, in seconds. */
+#define DSD_TG_CALL_SKIP_MAX       8
+#define DSD_TG_CALL_SKIP_QUIET_S   15.0
+#define DSD_TG_CALL_SKIP_MAX_AGE_S 600.0
+
+/**
+ * @brief Arm or re-arm an exact-ID call skip without changing policy rows or generation.
+ *
+ * Fresh skips block group targets and private endpoints. Re-arming resets both clocks;
+ * a full ledger evicts the entry with the oldest last-seen time. Fallback skips expire
+ * from the press time and ignore touches. Retained policy contexts keep their skips.
+ * Live mutations require the caller's decoder/watchdog synchronization guard.
+ *
+ * @return 0 applied, 1 invalid (NULL state or zero ID), -1 allocation failure.
+ */
+int dsd_tg_policy_call_skip_arm(dsd_state* state, uint32_t id, uint32_t src, int fallback, double now_mono_s);
+/** Refresh a fresh non-fallback skip. Returns 1 refreshed, 0 otherwise; expired entries
+ * are dropped and missing entries are never armed. Requires the same guard as arm. */
+int dsd_tg_policy_call_skip_touch(dsd_state* state, uint32_t id, double now_mono_s);
+/** Return whether an ID has a fresh skip, without mutating the store. */
+int dsd_tg_policy_call_skip_active(const dsd_state* state, uint32_t id, double now_mono_s);
+/** Return whether the ledger has no entries, without reading the clock or checking expiry. */
+int dsd_tg_policy_call_skip_empty(const dsd_state* state);
+/** Count fresh skips; safe on a frontend snapshot store, without changing its clocks. */
+size_t dsd_tg_policy_call_skip_count(const dsd_state* state, double now_mono_s);
+/** Clear call skips without changing rows or generation. NULL/empty is a no-op.
+ * Live callers require the same guard as arm. */
+void dsd_tg_policy_call_skip_clear(dsd_state* state);
 
 /** Rows in table order (file order, then runtime appends). 0 without a policy context.
  * Works on live decoder state and frontend snapshot copies. */
@@ -234,6 +292,12 @@ int dsd_tg_policy_write_group_file(const dsd_opts* opts, const dsd_state* state)
  * result is one reference the caller must eventually dsd_tg_policy_release(); the state's
  * own extension slot holds its own reference, so installing a store never transfers the
  * caller's.
+ * Stores observable by a running P25 watchdog may only be replaced or edited (every
+ * replacement or edit: reload_group_file, clear, install, restore, the table editors,
+ * the session-avoid and call-skip ledgers) with the P25 SM tick guard held by the
+ * caller: release-time audio flushes read
+ * policy under that guard. These functions are non-acquiring. Detached construction
+ * (dsd_tg_policy_load, snapshot copies) and pre-start/post-stop lifecycle work are exceptions.
  */
 typedef struct dsd_tg_policy_store dsd_tg_policy_store;
 /** Take one reference on the state's effective context. NULL (no context) represents an

@@ -9,6 +9,7 @@
  */
 
 #include "menu_actions.h"
+#include <dsd-neo/app_control/analog_width_view.h>
 #include <dsd-neo/app_control/commands.h>
 #include <dsd-neo/app_control/frontend.h>
 #include <dsd-neo/app_control/snapshot.h>
@@ -20,6 +21,7 @@
 #include <dsd-neo/core/talkgroup_policy.h>
 #include <dsd-neo/platform/audio.h>
 #include <dsd-neo/platform/posix_compat.h>
+#include <dsd-neo/runtime/analog_channel.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/decode_mode.h>
 #include <dsd-neo/runtime/scan_mode.h>
@@ -1321,6 +1323,25 @@ is_non_airspy_input(const void* v) {
     return !is_airspy_input(v);
 }
 
+/* The NFM width row, on a radio input, where the width is the channel filter: while the configured analog preset runs
+   FM, and under any other preset while an explicit NFM width is configured. The configured preset, as the status
+   line's "Analog:" field reads it (app_control's analog width view): a typed digital scan row on an analog session does
+   not end it, and the width set under the row is the one its leave returns to. Outside the preset a switch to Analog
+   is held to the explicit width, and where a SoapySDR or Airspy device or an I/Q replay forces a DSP rate that cannot
+   filter it, the refusal says to narrow the width: this row is where that happens. */
+bool
+is_nfm_width_editable(const void* v) {
+    const UiCtx* c = (const UiCtx*)v;
+    if (!c || !c->opts) {
+        return false;
+    }
+    dsd_app_analog_width_view view;
+    if (dsd_app_analog_width_view_get(c->opts, dsd_app_get_latest_snapshot(), NULL, &view) != 0 || !view.radio_input) {
+        return false;
+    }
+    return view.shown ? view.kind == DSD_ANALOG_DEMOD_FM : c->opts->analog_nfm_bandwidth_hz > 0;
+}
+
 // NcMenuItem action callbacks require a mutable context signature.
 // cppcheck-suppress-begin constParameterPointer
 void
@@ -1459,13 +1480,34 @@ rtl_set_bw(void* v) {
     ui_prompt_open_int_async("DSP Bandwidth kHz (4,6,8,12,16,24,48)", c->opts->rtl_dsp_bw_khz, cb_rtl_bw, c);
 }
 
+/* Any value goes to the command as typed: it refuses what it cannot apply, with the reason, rather than the prompt
+   rounding it to something the operator did not ask for. */
+static void
+cb_rtl_nfm_bw(void* u, int ok, int hz) {
+    UNUSED(u);
+    if (ok) {
+        (void)dsd_app_command_set_i32(DSD_APP_CMD_NFM_BANDWIDTH_SET, (int32_t)hz);
+    }
+}
+
+void
+rtl_set_nfm_bw(void* v) {
+    UiCtx* c = (UiCtx*)v;
+    ui_prompt_open_int_async("NFM bandwidth Hz (8000..25000; 0 = default 16000)", c->opts->analog_nfm_bandwidth_hz,
+                             cb_rtl_nfm_bw, c);
+}
+
 void
 rtl_set_sql(void* v) {
     UiCtx* c = (UiCtx*)v;
     /* Offer 0 for a squelch that is off rather than pwr_to_dB()'s -120 floor:
      * accepting the value shown must not turn a disabled squelch into a real
      * threshold. 0 is also how the `sql` CLI field and rtl_sql spell "off". */
-    const double shown = dsd_squelch_is_off(c->opts->rtl_squelch_level) ? 0.0 : pwr_to_dB(c->opts->rtl_squelch_level);
+    /* The command edits the configured default: a scan row overriding the squelch (issue #521)
+     * keeps its own threshold, so offer the default rather than the row's value. */
+    const dsd_scan_settings* configured = dsd_scan_mode_configured_view(dsd_app_get_latest_snapshot());
+    const double level = configured ? configured->rtl_squelch_level : c->opts->rtl_squelch_level;
+    const double shown = dsd_squelch_is_off(level) ? 0.0 : pwr_to_dB(level);
     ui_prompt_open_double_async("Squelch (dB; 0 = off)", shown, cb_rtl_sql, c);
 }
 

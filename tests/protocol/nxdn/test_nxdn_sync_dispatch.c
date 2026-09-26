@@ -72,7 +72,10 @@ test_dispatch_calls_frame(void) {
     frame_calls = 0;
 
     state.synctype = DSD_SYNC_NXDN_POS;
+    /* FDMA voice is slot 0, whatever slot a TDMA decode left current. */
+    state.currentslot = 1;
     assert(dsd_dispatch_handle_nxdn(&opts, &state) == DSD_FRAME_VERDICT_PRODUCTIVE);
+    assert(state.currentslot == 0);
     state.synctype = DSD_SYNC_NXDN_NEG;
     assert(dsd_dispatch_handle_nxdn(&opts, &state) == DSD_FRAME_VERDICT_PRODUCTIVE);
 

@@ -11,6 +11,7 @@
 #include <dsd-neo/io/rtl_stream_c.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
+#include <math.h>
 #include <stddef.h>
 #include <stdint.h>
 
@@ -38,6 +39,8 @@ static int g_p25p1_ber_calls;
 static int g_p25p2_err_calls;
 static int g_stream_active_calls;
 static int g_input_level_calls;
+static int g_channel_squelch_calls;
+static float g_last_channel_squelch;
 static dsdneoRuntimeConfig g_runtime_config;
 
 static int g_last_symbol_rate;
@@ -104,6 +107,57 @@ rtl_stream_request_demod_profile(int cqpsk_enable, int symbol_rate_hz, int level
     g_last_ted_sps = ted_sps;
     g_last_ted_sps_is_override = ted_sps_is_override;
     return -21;
+}
+
+static int g_request_analog_calls;
+static int g_analog_profile_calls;
+static int g_last_analog_family;
+static int g_last_analog_kind;
+static int g_last_analog_width_hz;
+
+int
+rtl_stream_request_analog_profile(int family, int kind, int width_hz) {
+    ++g_request_analog_calls;
+    g_last_analog_family = family;
+    g_last_analog_kind = kind;
+    g_last_analog_width_hz = width_hz;
+    return -22;
+}
+
+int
+rtl_stream_get_analog_profile(int* out_kind, int* out_width_hz, int* out_lpf_on) {
+    ++g_analog_profile_calls;
+    if (out_kind) {
+        *out_kind = 0;
+    }
+    if (out_width_hz) {
+        *out_width_hz = 12500;
+    }
+    if (out_lpf_on) {
+        *out_lpf_on = 1;
+    }
+    return 1;
+}
+
+static int g_analog_family_active_calls;
+static int g_output_rate_for_family_calls;
+static int g_last_rate_family;
+static int g_last_rate_cqpsk;
+static int g_last_rate_symbol_rate;
+
+int
+rtl_stream_analog_family_active(void) {
+    ++g_analog_family_active_calls;
+    return 1;
+}
+
+unsigned int
+rtl_stream_output_rate_for_family(int family, int cqpsk_enable, int symbol_rate_hz) {
+    ++g_output_rate_for_family_calls;
+    g_last_rate_family = family;
+    g_last_rate_cqpsk = cqpsk_enable;
+    g_last_rate_symbol_rate = symbol_rate_hz;
+    return 24000U;
 }
 
 int
@@ -209,6 +263,12 @@ rtl_stream_get_input_level(dsd_input_level_snapshot* out) {
     return -9;
 }
 
+void
+rtl_stream_set_channel_squelch(float level) {
+    ++g_channel_squelch_calls;
+    g_last_channel_squelch = level;
+}
+
 int
 main(void) {
     dsd_rtl_stream_metrics_hooks_set(NULL);
@@ -261,6 +321,27 @@ main(void) {
     assert(g_last_ted_sps == 0);
     assert(g_last_ted_sps_is_override == 0);
 
+    /* The analog profile request and readback go straight to the stream. */
+    assert(dsd_rtl_stream_metrics_hook_apply_analog_profile(1, 0, 12500) == -22);
+    assert(g_request_analog_calls == 1);
+    assert(g_last_analog_family == 1);
+    assert(g_last_analog_kind == 0);
+    assert(g_last_analog_width_hz == 12500);
+    int analog_kind = -1;
+    int analog_width = -1;
+    int analog_lpf_on = -1;
+    assert(dsd_rtl_stream_metrics_hook_analog_profile(&analog_kind, &analog_width, &analog_lpf_on) == 1);
+    assert(g_analog_profile_calls == 1);
+    assert(analog_kind == 0);
+    assert(analog_width == 12500);
+    assert(analog_lpf_on == 1);
+    /* So do the family readback and the output rate a family switch lands on. */
+    assert(dsd_rtl_stream_metrics_hook_analog_family_active() == 1);
+    assert(g_analog_family_active_calls == 1);
+    assert(dsd_rtl_stream_metrics_hook_output_rate_for_family(0, 1, 6000) == 24000U);
+    assert(g_output_rate_for_family_calls == 1);
+    assert(g_last_rate_family == 0 && g_last_rate_cqpsk == 1 && g_last_rate_symbol_rate == 6000);
+
     int cqpsk_enable = -1;
     int cqpsk_timing = -1;
     assert(dsd_rtl_stream_metrics_hook_cqpsk_status(&cqpsk_enable, &cqpsk_timing) == -8);
@@ -308,6 +389,12 @@ main(void) {
     assert(level.status == DSD_INPUT_LEVEL_OK);
     assert(level.source == DSD_INPUT_LEVEL_SOURCE_RTL_CU8);
     assert(level.sample_count == 1024U);
+
+    /* Scan rows push their squelch through the runtime table to the same demod setter the
+     * operator's squelch command uses (issue #521). */
+    assert(dsd_rtl_stream_metrics_hook_set_channel_squelch(1e-6) == 0);
+    assert(g_channel_squelch_calls == 1);
+    assert(fabsf(g_last_channel_squelch - 1e-6f) < 1e-12f);
 
     dsd_rtl_stream_metrics_hooks_set(NULL);
     return 0;

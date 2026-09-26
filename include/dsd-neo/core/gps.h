@@ -16,6 +16,7 @@
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/state_fwd.h>
 
+#include <stddef.h>
 #include <stdint.h>
 
 #ifdef __cplusplus
@@ -25,6 +26,7 @@ extern "C" {
 void dmr_embedded_gps(const dsd_opts* opts, dsd_state* state, const uint8_t lc_bits[]);
 void apx_embedded_gps(const dsd_opts* opts, dsd_state* state, const uint8_t lc_bits[]);
 void lip_protocol_decoder(const dsd_opts* opts, dsd_state* state, const uint8_t* input);
+void lip_pdu_decoder(const dsd_opts* opts, dsd_state* state, const uint8_t* bits, size_t bit_count, uint32_t src);
 void nmea_iec_61162_1(const dsd_opts* opts, dsd_state* state, const uint8_t* input, uint32_t src, int type);
 uint8_t nmea_sentence_checker(const dsd_opts* opts, dsd_state* state, const uint8_t* input, uint8_t slot,
                               int len_bytes);

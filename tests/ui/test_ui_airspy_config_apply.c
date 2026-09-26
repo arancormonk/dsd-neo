@@ -159,7 +159,7 @@ test_config_apply(int failure) {
         DSD_SNPRINTF(cfg->rtl_freq, sizeof cfg->rtl_freq, "852M");
         test_fail_create = 1;
         DSD_MEMCPY(cmd->data, cfg, sizeof(*cfg));
-        assert(ui_cmd_handle_config_apply(opts, state, cmd) == UI_CMD_APPLY_FAILED);
+        assert(apply_cmd(opts, state, cmd) == UI_CMD_APPLY_FAILED);
         assert(test_outputs == 1);
         assert(test_creates == 2); /* failed candidate, then rollback */
         assert(opts->airspy.sample_rate == 0 && opts->rtl_dsp_bw_khz == 12);
@@ -170,14 +170,14 @@ test_config_apply(int failure) {
         cfg->rtl_bw_khz = 12;
         cfg->rtl_volume = 2;
         DSD_MEMCPY(cmd->data, cfg, sizeof(*cfg));
-        assert(ui_cmd_handle_config_apply(opts, state, cmd) == UI_CMD_APPLY_FAILED);
+        assert(apply_cmd(opts, state, cmd) == UI_CMD_APPLY_FAILED);
         assert(test_outputs == 2);
         assert(test_retunes == 0 && opts->rtlsdr_center_freq == 851000000);
     } else {
         DSD_SNPRINTF(cfg->rtl_freq, sizeof cfg->rtl_freq, "852M");
         cfg->rtl_sql = -55;
         DSD_MEMCPY(cmd->data, cfg, sizeof(*cfg));
-        assert(ui_cmd_handle_config_apply(opts, state, cmd) == UI_CMD_APPLY_COMPLETED);
+        assert(apply_cmd(opts, state, cmd) == UI_CMD_APPLY_COMPLETED);
         assert(test_retunes == 1 && test_freq == 852000000 && test_creates == 0);
         assert(test_squelches == 1 && fabsf(test_sql - (float)dsd_squelch_level_from_sql(-55)) < 1e-8f);
         cfg->airspy.sample_rate = 2500000;
@@ -186,17 +186,17 @@ test_config_apply(int failure) {
         cfg->rtl_volume = 3;
         DSD_SNPRINTF(cfg->rtl_freq, sizeof cfg->rtl_freq, "853M");
         DSD_MEMCPY(cmd->data, cfg, sizeof(*cfg));
-        assert(ui_cmd_handle_config_apply(opts, state, cmd) == UI_CMD_APPLY_COMPLETED);
+        assert(apply_cmd(opts, state, cmd) == UI_CMD_APPLY_COMPLETED);
         assert(test_creates == 1 && test_retunes == 1);
         assert(test_open_freq == 853000000 && test_open_bw == 24 && test_open_volume == 3);
         assert(test_open_rate == 2500000);
         cfg->rtl_volume = 1;
         DSD_MEMCPY(cmd->data, cfg, sizeof(*cfg));
-        assert(ui_cmd_handle_config_apply(opts, state, cmd) == UI_CMD_APPLY_COMPLETED);
+        assert(apply_cmd(opts, state, cmd) == UI_CMD_APPLY_COMPLETED);
         assert(test_creates == 2 && test_open_volume == 1);
         cfg->rtl_sql = 0;
         DSD_MEMCPY(cmd->data, cfg, sizeof(*cfg));
-        assert(ui_cmd_handle_config_apply(opts, state, cmd) == UI_CMD_APPLY_COMPLETED);
+        assert(apply_cmd(opts, state, cmd) == UI_CMD_APPLY_COMPLETED);
         assert(test_creates == 2 && test_retunes == 1 && test_sql == 0.0f);
         const int tune_results[] = {RTL_STREAM_TUNE_TIMEOUT, RTL_STREAM_TUNE_DEFERRED, RTL_STREAM_TUNE_FAILED};
         for (size_t i = 0; i < sizeof tune_results / sizeof tune_results[0]; ++i) {
@@ -204,7 +204,7 @@ test_config_apply(int failure) {
             DSD_SNPRINTF(cfg->rtl_freq, sizeof cfg->rtl_freq, "%u", old_frequency + 1000000);
             test_tune_result = tune_results[i];
             DSD_MEMCPY(cmd->data, cfg, sizeof(*cfg));
-            int status = ui_cmd_handle_config_apply(opts, state, cmd);
+            int status = apply_cmd(opts, state, cmd);
             if (test_tune_result != RTL_STREAM_TUNE_TIMEOUT) {
                 /* DEFERRED was never queued, so it must not be reported as applied. */
                 assert(status == UI_CMD_APPLY_FAILED && opts->rtlsdr_center_freq == old_frequency);

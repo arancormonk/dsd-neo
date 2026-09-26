@@ -51,16 +51,32 @@ typedef enum DSD_ATTR_PACKED {
     DSD_FRONTEND_RTL_OUTPUT_SYMBOL_CQPSK = 2
 } dsd_frontend_rtl_output_kind;
 
+/* Whether a running RTL stream runs its channel filter where no width requests one (the unset NFM default, a
+ * digital profile): the decision its configuration made (rtl_stream_channel_lpf_default()). */
+typedef enum {
+    DSD_FRONTEND_CHANNEL_LPF_DEFAULT_UNKNOWN = 0, /* no stream has published it (or not a radio build) */
+    DSD_FRONTEND_CHANNEL_LPF_DEFAULT_OFF = 1,
+    DSD_FRONTEND_CHANNEL_LPF_DEFAULT_ON = 2,
+} dsd_frontend_channel_lpf_default;
+
 typedef struct dsd_frontend_metrics {
     unsigned int output_rate_hz;
     int output_kind;
     int symbol_rate_hz;
     int symbol_levels;
     int channel_profile;
-    /* Full width in Hz of the channel the demodulator is filtering — twice the
-     * protected edge of channel_profile. 0 when the input is not a radio. The
-     * channel, not the filter: see dsd_channel_lpf_protected_edge_hz(). */
+    /* Full width in Hz of the channel the demodulator is filtering. Digital:
+     * twice the protected edge of channel_profile (the channel, not the filter:
+     * see dsd_channel_lpf_protected_edge_hz()). Analog monitor: the published
+     * analog channel width. 0 when the input is not a radio. */
     int channel_bandwidth_hz;
+    /* 1 when channel_bandwidth_hz is the width the DSP rate leaves rather than
+     * the configured analog width (the width-driven filter is off, or the rate
+     * cannot realize the width). Always 0 for digital output. */
+    int channel_bandwidth_dsp_limited;
+    /* dsd_frontend_channel_lpf_default. The width the analog monitor returns to from a CQPSK toggle or a typed
+     * digital scan row follows it, not the demod rate it runs at then. */
+    int channel_lpf_default;
     uint32_t stream_generation;
     int stream_active;
     dsd_input_level_snapshot input_level;

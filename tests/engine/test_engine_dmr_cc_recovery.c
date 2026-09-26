@@ -3,6 +3,9 @@
 
 /* Real scan coordinator, control-message parser and sync-loss callbacks, with
  * only the tuner replaced. In particular, neither protocol SM is stubbed. */
+#include <dsd-neo/app_control/commands.h>
+#include <dsd-neo/app_control/frontend_runtime.h>
+#include <dsd-neo/core/audio.h>
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/dsd_time.h>
 #include <dsd-neo/core/frame.h>
@@ -11,9 +14,12 @@
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
+#include <dsd-neo/core/talkgroup_policy.h>
 #include <dsd-neo/engine/frame_processing.h>
 #include <dsd-neo/engine/scan_voice_gate.h>
 #include <dsd-neo/engine/trunk_scan.h>
+#include <dsd-neo/platform/atomic_compat.h>
+#include <dsd-neo/platform/threading.h>
 #include <dsd-neo/platform/timing.h>
 #include <dsd-neo/protocol/dmr/dmr.h>
 #include <dsd-neo/protocol/dmr/dmr_trunk_sm.h>
@@ -22,14 +28,17 @@
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/frame_sync_hooks.h>
+#include <dsd-neo/runtime/p25_optional_hooks.h>
 #include <dsd-neo/runtime/rigctl_query_hooks.h>
 #include <dsd-neo/runtime/trunk_scan_hooks.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
+#include <dsd-neo/runtime/udp_audio_hooks.h>
 #include <math.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
 #include <time.h>
+#include "../../src/app_control/commands_internal.h"
 
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/state_fwd.h"
@@ -496,6 +505,9 @@ standalone_recovery(void) {
     p25_sm_try_tick(&g_opts, &g_state);
     rc |= expect(p25->state == P25_SM_ON_CC && dsd_trunk_p25_recovery_allowed(&g_opts, &g_state),
                  "decoded P25 control activity starts standalone recovery before the first voice grant");
+    g_opts.scanner_mode = 1;
+    rc |= expect(!dsd_trunk_p25_recovery_allowed(&g_opts, &g_state), "conventional scanner excludes P25 recovery");
+    g_opts.scanner_mode = 0;
     g_state.p25_last_cc_msg_time_m = old_try;
     p25->t_cc_sync_m = g_state.last_cc_sync_time_m = old_try;
     p25->t_hunt_try_m = old_try;
@@ -607,6 +619,221 @@ watchdog_ownership_thread(void) {
     dsd_sleep_ms(50U);
     p25_sm_watchdog_stop();
     rc |= expect(p25->t_hunt_try_m > old_try, "background watchdog positive control drives P25 recovery");
+    cleanup();
+    return rc;
+}
+
+static struct {
+    dsd_mutex_t mutex;
+    dsd_cond_t condition;
+    int pause_flush;
+    int entered;
+    int resume;
+    int skip_started;
+    atomic_int skip_finished;
+    int skip_waited;
+    int flushes;
+    int blocked;
+    int allowed;
+    int failures;
+    int audio_blocks;
+} g_skip_flush;
+
+static void
+skip_audio_sink(const dsd_opts* opts, dsd_state* state, size_t bytes, const void* data) {
+    (void)opts;
+    (void)state;
+    if (bytes > 0 && data) {
+        ++g_skip_flush.audio_blocks;
+    }
+}
+
+static void
+skip_watchdog_flush(dsd_opts* opts, dsd_state* state) {
+    dsd_mutex_lock(&g_skip_flush.mutex);
+    g_skip_flush.entered = 1;
+    dsd_cond_broadcast(&g_skip_flush.condition);
+    while (g_skip_flush.pause_flush && !g_skip_flush.resume) {
+        dsd_cond_wait(&g_skip_flush.condition, &g_skip_flush.mutex);
+    }
+    dsd_mutex_unlock(&g_skip_flush.mutex);
+    int left = -1, right = -1;
+    dsd_tg_policy_decision decision;
+    g_skip_flush.failures |= dsd_audio_group_gate_dual(opts, state, 1234, 0, 0, 1, &left, &right);
+    g_skip_flush.failures |= dsd_tg_policy_evaluate_group_call(opts, state, 1234, 42, 0, 0, &decision);
+    const int blocked = (decision.block_reasons & DSD_TG_POLICY_BLOCK_CALL_SKIP) != 0;
+    g_skip_flush.failures |= left != blocked || decision.audio_allowed != !blocked;
+    ++g_skip_flush.flushes;
+    if (blocked) {
+        ++g_skip_flush.blocked;
+    } else {
+        ++g_skip_flush.allowed;
+    }
+    dsd_p25p2_flush_partial_audio(opts, state);
+}
+
+static void
+release_barrier(void) {
+    dsd_mutex_lock(&g_skip_flush.mutex);
+    g_skip_flush.resume = 1;
+    dsd_cond_broadcast(&g_skip_flush.condition);
+    dsd_mutex_unlock(&g_skip_flush.mutex);
+}
+
+static DSD_THREAD_RETURN_TYPE
+resume_skip_flush(void* opaque) {
+    (void)opaque;
+    dsd_mutex_lock(&g_skip_flush.mutex);
+    while (!g_skip_flush.skip_started) {
+        dsd_cond_wait(&g_skip_flush.condition, &g_skip_flush.mutex);
+    }
+    dsd_mutex_unlock(&g_skip_flush.mutex);
+    dsd_sleep_ms(30);
+    g_skip_flush.skip_waited = !atomic_load(&g_skip_flush.skip_finished);
+    release_barrier();
+    DSD_THREAD_RETURN;
+}
+
+static int
+seed_skip_watchdog_call(void) {
+    g_opts.trunk_enable = 1;
+    g_opts.frame_p25p1 = g_opts.frame_p25p2 = 1;
+    g_opts.trunk_tune_group_calls = 1;
+    g_opts.floating_point = 0;
+    g_opts.pulse_digi_rate_out = 8000;
+    g_opts.audio_out = 1;
+    g_opts.audio_out_type = 8;
+    g_opts.slot1_on = g_opts.slot2_on = 1;
+    g_state.synctype = g_state.lastsynctype = DSD_SYNC_P25P2_POS;
+    g_state.p25_cc_freq = g_state.trunk_cc_freq = 851000000;
+    g_state.p2_wacn = 0xBEE00;
+    g_state.p2_sysid = 0x1A2;
+    g_state.p2_cc = 0x293;
+    g_state.p25_chan_tdma_explicit[1] = 2;
+    g_state.trunk_chan_map[0x1234] = 852000000;
+    dsd_trunk_recovery_note_protocol(&g_state, DSD_TRUNK_RECOVERY_P25);
+    dsd_tg_policy_call_skip_clear(&g_state);
+    p25_sm_ctx_t* ctx = p25_sm_get_ctx();
+    p25_sm_init_ctx(ctx, &g_opts, &g_state);
+    p25_sm_event_t grant = p25_sm_ev_group_grant(0x1234, 852000000, 1234, 42, 0);
+    p25_sm_event(ctx, &g_opts, &g_state, &grant);
+    int rc =
+        expect(p25_sm_emit_active_call(&g_opts, &g_state, 0, 1234, 0, 42, 1, 0), "watchdog fixture voice accepted");
+    rc |= expect(ctx->state == P25_SM_TUNED && ctx->vc_is_tdma, "watchdog fixture follows TDMA");
+    g_state.p25_p2_audio_allowed[0] = 1;
+    g_state.voice_counter[0] = 1;
+    for (int i = 0; i < 160; ++i) {
+        g_state.s_l4[0][i] = 1000;
+    }
+    g_skip_flush.pause_flush = g_skip_flush.entered = g_skip_flush.resume = 0;
+    g_skip_flush.skip_started = g_skip_flush.skip_waited = 0;
+    g_skip_flush.flushes = g_skip_flush.blocked = g_skip_flush.allowed = g_skip_flush.failures =
+        g_skip_flush.audio_blocks = 0;
+    atomic_store(&g_skip_flush.skip_finished, 0);
+    g_state.ui_msg[0] = '\0';
+    return rc;
+}
+
+static int
+watchdog_call_skip_phases(void) {
+    if (setup(0.0f)) {
+        cleanup();
+        return 1;
+    }
+    dsd_engine_trunk_scan_shutdown(&g_opts, &g_state);
+    g_opts.trunk_scan_enabled = 0;
+    dsd_app_frontend_runtime_start(&g_opts, &g_state);
+    dsd_mutex_init(&g_skip_flush.mutex);
+    dsd_cond_init(&g_skip_flush.condition);
+    atomic_init(&g_skip_flush.skip_finished, 0);
+    dsd_p25_optional_hooks_set((dsd_p25_optional_hooks){.p25p2_flush_partial_audio = skip_watchdog_flush});
+    dsd_udp_audio_hooks_set((dsd_udp_audio_hooks){.blast = skip_audio_sink});
+    int rc = 0;
+    for (int phase = 0; phase < 3; ++phase) {
+        rc |= seed_skip_watchdog_call();
+        if (phase == 1) {
+            // A refused manual tune leaves both the call and buffered audio for the watchdog.
+            g_result = DSD_TRUNK_TUNE_RESULT_FAILED;
+            rc |= expect(dsd_app_command_set_u8(DSD_APP_CMD_SKIP_SLOT, 0) > 0, "watchdog skip queued");
+            rc |= expect(dsd_app_drain_cmds(&g_opts, &g_state) == 1, "watchdog skip drained");
+            rc |= expect(dsd_tg_policy_call_skip_active(&g_state, 1234, dsd_time_now_monotonic_s()),
+                         "watchdog skip armed before release");
+            rc |= expect(p25_sm_get_ctx()->state == P25_SM_TUNED && g_state.s_l4[0][0] != 0,
+                         "refused Skip preserves releasable buffered carrier");
+            g_result = DSD_TRUNK_TUNE_RESULT_OK;
+        }
+        g_skip_flush.pause_flush = phase != 0;
+        g_state.p25_sm_force_release = 1;
+        p25_sm_watchdog_start(&g_opts, &g_state);
+        dsd_mutex_lock(&g_skip_flush.mutex);
+        while (!g_skip_flush.entered) {
+            if (dsd_cond_timedwait(&g_skip_flush.condition, &g_skip_flush.mutex, 2000) != 0) {
+                break;
+            }
+        }
+        const int entered = g_skip_flush.entered;
+        dsd_mutex_unlock(&g_skip_flush.mutex);
+        rc |= expect(entered, "real watchdog reached partial-audio flush");
+        if (phase != 0 && entered) {
+            rc |= expect(dsd_app_command_set_i32(DSD_APP_CMD_TRUNK_SET, 0) > 0, "in-flight trunk off queued");
+            rc |= expect(dsd_app_drain_cmds(&g_opts, &g_state) == 1 && !g_opts.trunk_enable,
+                         "in-flight trunk off applied");
+        }
+        if (phase == 2 && entered) {
+            dsd_thread_t releaser;
+            const int started = dsd_thread_create(&releaser, resume_skip_flush, NULL) == 0;
+            rc |= expect(started, "flush barrier releaser started");
+            rc |= expect(dsd_app_command_set_u8(DSD_APP_CMD_SKIP_SLOT, 0) > 0, "in-flight skip queued");
+            dsd_mutex_lock(&g_skip_flush.mutex);
+            g_skip_flush.skip_started = 1;
+            dsd_cond_broadcast(&g_skip_flush.condition);
+            dsd_mutex_unlock(&g_skip_flush.mutex);
+            if (!started) {
+                release_barrier();
+            }
+            rc |= expect(dsd_app_drain_cmds(&g_opts, &g_state) == 1, "in-flight skip drained");
+            atomic_store(&g_skip_flush.skip_finished, 1);
+            if (started) {
+                dsd_thread_join(releaser);
+                rc |= expect(g_skip_flush.skip_waited, "Skip waits for admitted tick even after trunking is disabled");
+            }
+        }
+        release_barrier();
+        p25_sm_watchdog_stop();
+        rc |= expect(g_skip_flush.flushes > 0 && !g_skip_flush.failures, "watchdog flush verdicts consistent");
+        dsd_call_snapshot call;
+        rc |= expect(dsd_call_state_get(&g_state, 0, &call) > 0 && call.phase == DSD_CALL_PHASE_ENDED,
+                     "watchdog release ends the call");
+        rc |= expect(g_state.event_history_s[0].Event_History_Items[1].target_id == 1234,
+                     "watchdog release commits the call row");
+        rc |= expect(g_state.event_history_s[0].Event_History_Items[0].target_id == 0
+                         && g_state.event_history_s[0].Event_History_Items[0].internal_str[0] == '\0',
+                     "watchdog release leaves no staged call or skip text");
+        if (phase == 1) {
+            rc |= expect(g_skip_flush.blocked > 0 && g_skip_flush.audio_blocks == 0,
+                         "fresh skip blocks real partial audio");
+            rc |= expect(
+                strcmp(g_state.event_history_s[0].Event_History_Items[1].internal_str, "Target: 1234; call skipped.")
+                    == 0,
+                "skip before release annotates the committed call row");
+        } else {
+            rc |= expect(g_skip_flush.allowed > 0 && g_skip_flush.audio_blocks > 0,
+                         "positive control flush plays buffered audio");
+            rc |=
+                expect(strstr(g_state.event_history_s[0].Event_History_Items[1].internal_str, "call skipped.") == NULL,
+                       "release before skip commits no skip text");
+        }
+        if (phase == 2) {
+            rc |= expect(!dsd_tg_policy_call_skip_active(&g_state, 1234, dsd_time_now_monotonic_s()),
+                         "in-flight skip cannot arm an ended call");
+            rc |= expect(g_state.ui_msg[0] == '\0', "in-flight skip of an ended call emits no toast");
+        }
+    }
+    dsd_p25_optional_hooks_set((dsd_p25_optional_hooks){0});
+    dsd_udp_audio_hooks_set((dsd_udp_audio_hooks){0});
+    dsd_cond_destroy(&g_skip_flush.condition);
+    dsd_mutex_destroy(&g_skip_flush.mutex);
+    dsd_app_frontend_runtime_stop();
     cleanup();
     return rc;
 }
@@ -900,6 +1127,7 @@ main(void) {
     rc |= busy_cap_plus_rest();
     rc |= pending_probe_dwell();
     rc |= watchdog_ownership_thread();
+    rc |= watchdog_call_skip_phases();
     rc |= probe_grant_and_missing_anchor();
     rc |= cap_plus_idle_preserves_hangtime();
     rc |= hunt_fade_and_avoids();

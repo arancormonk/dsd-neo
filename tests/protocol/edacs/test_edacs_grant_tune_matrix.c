@@ -22,6 +22,7 @@
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/sync_patterns.h>
 #include <dsd-neo/core/synctype_ids.h>
+#include <dsd-neo/core/talkgroup_policy.h>
 #include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/protocol/edacs/edacs.h>
@@ -1442,6 +1443,80 @@ edacs_run_analog_loop_helper_cases(void) {
     return rc;
 }
 
+/* Analog voice never passes the vocoder output gates, so EDACS applies the
+ * talkgroup policy at its own output: a blocked call is neither played nor
+ * recorded, an allowed one is both. */
+static int
+test_edacs_analog_media_honors_talkgroup_policy(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static short analog1[960];
+    static short analog2[960];
+    static short analog3[960];
+    for (int i = 0; i < 960; i++) {
+        analog1[i] = (short)(11 + i);
+        analog2[i] = (short)(22 + i);
+        analog3[i] = (short)(33 + i);
+    }
+    int rc = 0;
+    for (int blocked = 1; blocked >= 0; --blocked) {
+        edacs_reset_audio_hook_state();
+        DSD_MEMSET(&opts, 0, sizeof(opts));
+        DSD_MEMSET(&state, 0, sizeof(state));
+        opts.audio_out = 1;
+        opts.audio_out_type = 8;
+        edacs_install_udp_output_hooks();
+        const dsd_call_observation call = {.protocol = DSD_SYNC_EDACS_POS,
+                                           .slot = 0U,
+                                           .kind = DSD_CALL_KIND_GROUP_VOICE,
+                                           .ota_target_id = 321U,
+                                           .policy_target_id = 321U,
+                                           .ota_source_id = 1234U};
+        rc |= edacs_expect(dsd_call_state_observe(&state, &call, DSD_CALL_BOUNDARY_BEGIN) == 1, "analog-policy", "call",
+                           "seeded the analog call");
+        if (blocked) {
+            rc |= edacs_expect(dsd_tg_policy_set_mode(&state, 321, 321, "B") == 0, "analog-policy", "row",
+                               "blocked the analog talkgroup");
+        }
+        edacs_emit_analog_audio(&opts, &state, analog1, analog2, analog3);
+        rc |= edacs_expect(g_udp_blast_count == (blocked ? 0 : 3), "analog-policy", "audio",
+                           blocked ? "blocked analog call is not played" : "allowed analog call plays");
+
+        char wav_path[] = "dsdneo_edacs_policy_wav_XXXXXX";
+        const int wav_fd = dsd_mkstemp(wav_path);
+        if (wav_fd < 0) {
+            rc |= edacs_expect(0, "analog-policy", "wav", "created temporary wav");
+            dsd_state_ext_free_all(&state);
+            continue;
+        }
+        (void)dsd_close(wav_fd);
+        SF_INFO info;
+        DSD_MEMSET(&info, 0, sizeof(info));
+        info.samplerate = 48000;
+        info.channels = 1;
+        info.format = SF_FORMAT_WAV | SF_FORMAT_PCM_16;
+        opts.wav_out_f = sf_open(wav_path, SFM_WRITE, &info);
+        opts.dmr_stereo_wav = 1;
+        rc |= edacs_expect(opts.wav_out_f != NULL, "analog-policy", "wav", "opened temporary wav");
+        if (opts.wav_out_f != NULL) {
+            edacs_write_analog_wav(&opts, &state, analog1, analog2, analog3);
+            sf_close(opts.wav_out_f);
+            opts.wav_out_f = NULL;
+            DSD_MEMSET(&info, 0, sizeof(info));
+            SNDFILE* written = sf_open(wav_path, SFM_READ, &info);
+            if (written != NULL) {
+                sf_close(written);
+            }
+            rc |= edacs_expect((written != NULL && info.frames > 0) == !blocked, "analog-policy", "wav",
+                               blocked ? "blocked analog call is not recorded" : "allowed analog call records");
+        }
+        (void)remove(wav_path);
+        dsd_state_ext_free_all(&state);
+    }
+    edacs_reset_audio_hook_state();
+    return rc;
+}
+
 int
 main(void) {
     int rc = 0;
@@ -1524,6 +1599,7 @@ main(void) {
     rc |= edacs_run_extended_state_cases();
     rc |= edacs_run_helper_contract_cases();
     rc |= edacs_run_analog_loop_helper_cases();
+    rc |= test_edacs_analog_media_honors_talkgroup_policy();
 
     dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){0});
     dsd_rigctl_query_hooks_set((dsd_rigctl_query_hooks){0});

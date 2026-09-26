@@ -10,24 +10,31 @@
 #include <dsd-neo/core/key_set.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/opts_fwd.h>
+#include <dsd-neo/core/power.h>
+#include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/scan_profile.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/dsp/frame_sync.h>
+#include <dsd-neo/dsp/symbol.h>
 #include <dsd-neo/engine/channel_scan.h>
 #include <dsd-neo/engine/frame_processing.h>
 #include <dsd-neo/engine/scan_voice_gate.h>
 #include <dsd-neo/engine/trunk_tuning.h>
+#include <dsd-neo/runtime/analog_channel.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/decode_mode.h>
+#include <dsd-neo/runtime/log.h>
 #include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
 #include <dsd-neo/runtime/scan_mode.h>
 #include <dsd-neo/runtime/scan_options.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
+#include <math.h>
 #include <stdint.h>
 #include <stdlib.h>
+#include <string.h>
 
 void dsd_key_set_test_alloc_fail_after(long count);
 
@@ -95,6 +102,36 @@ dsd_frame_sync_reset_acquisition(const dsd_opts* opts, dsd_state* state, int for
     state->profile_proof_valid = 0;
     state->symbol_history_count = 0;
     state->sps_hunt_counter = 0;
+    /* The real reset also forgets the received tone (issue #522; pinned by
+       FRAME_SYNC_INTERNAL_HELPERS). Mirrored here so a row commit or a leave that stopped
+       calling it, or that seeded the tone again afterwards, shows up in their assertions. */
+    const uint32_t generation = state->analog_rx.generation + 1U;
+    DSD_MEMSET(&state->analog_rx, 0, sizeof(state->analog_rx));
+    state->analog_rx.generation = generation;
+}
+
+/* A tone the previous row left on the publication, as the analog tap would. */
+static void
+seed_received_tone(dsd_state* state) {
+    state->analog_rx.carrier_open = 1;
+    state->analog_rx.tone_state = DSD_ANALOG_TONE_STATE_LOCKED;
+    state->analog_rx.tone_kind = DSD_ANALOG_TONE_KIND_CTCSS;
+    state->analog_rx.ctcss_tenths_hz = 1000;
+}
+
+static int
+received_tone_cleared(const dsd_state* state) {
+    return state->analog_rx.tone_state != DSD_ANALOG_TONE_STATE_LOCKED && state->analog_rx.ctcss_tenths_hz == 0
+           && state->analog_rx.tone_kind == DSD_ANALOG_TONE_KIND_NONE && state->analog_rx.carrier_open == 0;
+}
+
+/* How many times the leave dropped the decoder's part-collected analog monitor block. */
+static int analog_block_resets;
+
+void
+dsd_symbol_analog_block_reset(dsd_state* state) {
+    (void)state;
+    analog_block_resets++;
 }
 
 void
@@ -326,11 +363,531 @@ test_row_max_visit_override_and_inherit(void) {
     tunes = reset_count = 0;
 }
 
+/* --- Issue #521: per-row squelch overrides --- */
+
+static int g_squelch_pushes;
+static double g_squelch_pushed = -1.0;
+static int g_squelch_warnings;
+static char g_squelch_warning_rows[8][96];
+
+static void
+record_squelch_push(double mean_power) {
+    g_squelch_pushes++;
+    g_squelch_pushed = mean_power;
+}
+
+static void
+count_squelch_warnings(dsd_neo_log_level_t level, const char* text, void* ctx) {
+    (void)ctx;
+    if (level == LOG_LEVEL_WARN && text && strstr(text, "--squelch-db")) {
+        if (g_squelch_warnings < 8) {
+            DSD_SNPRINTF(g_squelch_warning_rows[g_squelch_warnings], sizeof g_squelch_warning_rows[0], "%s", text);
+        }
+        g_squelch_warnings++;
+    }
+}
+
+static int
+squelch_level_is(double level, double db) {
+    const double expected = dsd_squelch_level_from_sql(db);
+    return fabs(level - expected) <= 1e-9 * fmax(fabs(level), fabs(expected));
+}
+
+/* Rows in succession -- a threshold, the same threshold again, an explicit off and one that
+ * inherits. The RTL demod hears each row's level through the runtime hook, once per change and
+ * never the configured default in between; dsd_opts carries the same level for the gates that
+ * read it. The DECODE_IQ_SCAN_NXDN48_SQUELCH_* replays put a row's level through the real demod
+ * gate, and ENGINE_SCAN_SQUELCH_GATE the frame-sync gate through trunk-scan targets. A manual
+ * step, an operator edit beneath a row and the scan teardown each leave the configured default
+ * where the operator put it. */
+static void
+test_row_squelch_threshold_off_inherit(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
+    assert(opts && state);
+    opts->scanner_mode = 1;
+    opts->audio_in_type = AUDIO_IN_RTL;
+    opts->wav_sample_rate = 48000;
+    opts->frame_dstar = 1;
+    opts->rtl_squelch_level = dsd_squelch_level_from_sql(-80.0);
+    state->samplesPerSymbol = 10;
+    state->lcn_freq_count = 4;
+    for (int row = 0; row < 4; row++) {
+        *dsd_state_trunk_lcn_slot(state, row) = 150000000;
+    }
+    const int row_db[] = {-60, -60, 0};
+    for (int row = 0; row < 3; row++) {
+        dsd_scan_row_profile* profile = (dsd_scan_row_profile*)calloc(1, sizeof(*profile));
+        assert(profile);
+        profile->values.present = DSD_SCAN_OPT_SQUELCH;
+        profile->values.squelch_db = row_db[row];
+        assert(dsd_channel_profile_set(state, (size_t)row, profile) == 0);
+    }
+    const dsd_rtl_stream_metrics_hooks hooks = {.output_rate_hz = output_rate,
+                                                .set_channel_squelch = record_squelch_push};
+    dsd_rtl_stream_metrics_hooks_set(&hooks);
+    g_squelch_pushes = 0;
+    g_squelch_warnings = 0;
+    expected_nxdn = 0;
+    tune_result = DSD_TRUNK_TUNE_RESULT_OK;
+
+    assert(dsd_engine_channel_scan_step(opts, state) == 1);
+    assert(state->lcn_freq_roll == 1 && squelch_level_is(opts->rtl_squelch_level, -60.0));
+    assert(g_squelch_pushes == 1 && squelch_level_is(g_squelch_pushed, -60.0));
+
+    /* The same threshold on the next row: nothing for the demod to hear. */
+    assert(dsd_engine_channel_scan_step(opts, state) == 1);
+    assert(state->lcn_freq_roll == 2 && squelch_level_is(opts->rtl_squelch_level, -60.0));
+    assert(g_squelch_pushes == 1);
+
+    assert(dsd_engine_channel_scan_step(opts, state) == 1);
+    assert(state->lcn_freq_roll == 3 && dsd_squelch_is_off(opts->rtl_squelch_level));
+    assert(g_squelch_pushes == 2 && dsd_squelch_is_off(g_squelch_pushed));
+
+    assert(dsd_engine_channel_scan_step(opts, state) == 1);
+    assert(state->lcn_freq_roll == 4 && squelch_level_is(opts->rtl_squelch_level, -80.0));
+    assert(g_squelch_pushes == 3 && squelch_level_is(g_squelch_pushed, -80.0));
+
+    /* A manual step wraps to the threshold row. */
+    assert(dsd_engine_channel_scan_step_manual(opts, state) == 1);
+    assert(state->lcn_freq_roll == 1 && squelch_level_is(opts->rtl_squelch_level, -60.0));
+    assert(g_squelch_pushes == 4 && squelch_level_is(g_squelch_pushed, -60.0));
+
+    /* The operator edits the default beneath the row: the row keeps its threshold, and the
+     * demod is re-told the row's level after the edit, not left on the new default. */
+    const int before_edit = g_squelch_pushes;
+    assert(dsd_scan_mode_suspend(opts, state));
+    assert(squelch_level_is(opts->rtl_squelch_level, -80.0));
+    opts->rtl_squelch_level = dsd_squelch_level_from_sql(-75.0);
+    assert(dsd_scan_mode_resume(opts, state) == 0);
+    assert(squelch_level_is(opts->rtl_squelch_level, -60.0));
+    assert(g_squelch_pushes == before_edit + 1 && squelch_level_is(g_squelch_pushed, -60.0));
+    assert(squelch_level_is(dsd_scan_mode_configured_view(state)->rtl_squelch_level, -75.0));
+
+    /* Teardown hands back the edited default, pushed once. */
+    dsd_engine_channel_scan_leave(opts, state);
+    assert(squelch_level_is(opts->rtl_squelch_level, -75.0));
+    assert(g_squelch_pushes == before_edit + 2 && squelch_level_is(g_squelch_pushed, -75.0));
+    /* An RTL input gates acquisition itself, so nothing needed saying. */
+    assert(g_squelch_warnings == 0);
+
+    dsd_rtl_stream_metrics_hooks_set(NULL);
+    dsd_state_trunk_lcn_free(state);
+    dsd_state_ext_free_all(state);
+    free(state);
+    free(opts);
+    tunes = reset_count = 0;
+}
+
+/* On a PCM input the row threshold still lands in dsd_opts, where the analog input monitor (-8)
+ * and its carrier stamp read it against rtl_pwr, but there is no demodulator to gate digital
+ * acquisition: the scan says so once per affected row when it starts (and again for a newly
+ * imported map), never per visit. */
+static void
+test_row_squelch_warns_once_per_row_on_pcm_input(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
+    assert(opts && state);
+    opts->scanner_mode = 1;
+    opts->audio_in_type = AUDIO_IN_WAV;
+    opts->wav_sample_rate = 48000;
+    opts->frame_dstar = 1;
+    opts->rtl_squelch_level = dsd_squelch_level_from_sql(-80.0);
+    state->samplesPerSymbol = 10;
+    state->lcn_freq_count = 3;
+    for (int row = 0; row < 3; row++) {
+        *dsd_state_trunk_lcn_slot(state, row) = 150000000;
+    }
+    for (int row = 0; row < 3; row += 2) {
+        dsd_scan_row_profile* profile = (dsd_scan_row_profile*)calloc(1, sizeof(*profile));
+        assert(profile);
+        profile->values.present = DSD_SCAN_OPT_SQUELCH;
+        profile->values.squelch_db = -60;
+        assert(dsd_channel_profile_set(state, (size_t)row, profile) == 0);
+    }
+    const dsd_rtl_stream_metrics_hooks hooks = {.set_channel_squelch = record_squelch_push};
+    dsd_rtl_stream_metrics_hooks_set(&hooks);
+    g_squelch_pushes = 0;
+    g_squelch_warnings = 0;
+    expected_nxdn = 0;
+    tune_result = DSD_TRUNK_TUNE_RESULT_OK;
+    for (int visit = 0; visit < 6; visit++) {
+        assert(dsd_engine_channel_scan_step(opts, state) == 1);
+        /* The row's level is in force even though nothing is pushed. */
+        const int row = (state->lcn_freq_roll + 2) % 3;
+        assert(squelch_level_is(opts->rtl_squelch_level, row == 1 ? -80.0 : -60.0));
+    }
+    assert(g_squelch_warnings == 2 && g_squelch_pushes == 0);
+    assert(strstr(g_squelch_warning_rows[0], "Scan channel 1 ") != NULL);
+    assert(strstr(g_squelch_warning_rows[1], "Scan channel 3 ") != NULL);
+    /* A new map is a new scan as far as the warning goes. */
+    state->trunk_chan_map_seq++;
+    assert(dsd_engine_channel_scan_step(opts, state) == 1);
+    assert(g_squelch_warnings == 4);
+    dsd_engine_channel_scan_leave(opts, state);
+    assert(squelch_level_is(opts->rtl_squelch_level, -80.0) && g_squelch_pushes == 0);
+
+    dsd_rtl_stream_metrics_hooks_set(NULL);
+    dsd_state_trunk_lcn_free(state);
+    dsd_state_ext_free_all(state);
+    free(state);
+    free(opts);
+    tunes = reset_count = 0;
+}
+
+/* ---- #518 analog receive core: the leave path restores the configured receive family ---- */
+
+static int frontend_sequence;
+static int analog_restore_calls;
+static int analog_restore_family;
+static int analog_restore_kind;
+static int analog_restore_width_hz;
+static int analog_restore_order;
+static int digital_restore_calls;
+static int digital_restore_order;
+static int digital_restore_sps;
+/* What the front end reports: whether it runs the analog family, and the output rate the digital family lands on. */
+static int fake_analog_family;
+static unsigned int fake_digital_rate;
+static int rate_for_family_calls;
+static int rate_for_family_family;
+static int rate_for_family_cqpsk;
+static int rate_for_family_symbol_rate;
+
+static int
+record_analog_restore(int family, int kind, int width_hz) {
+    analog_restore_calls++;
+    analog_restore_family = family;
+    analog_restore_kind = kind;
+    analog_restore_width_hz = width_hz;
+    analog_restore_order = ++frontend_sequence;
+    return 0;
+}
+
+static int
+record_digital_restore(int cqpsk, int rate, int levels, int filter, int sps) {
+    (void)cqpsk;
+    (void)rate;
+    (void)levels;
+    (void)filter;
+    digital_restore_calls++;
+    digital_restore_order = ++frontend_sequence;
+    digital_restore_sps = sps;
+    return 0;
+}
+
+static int
+report_analog_family(void) {
+    return fake_analog_family;
+}
+
+static unsigned int
+report_output_rate_for_family(int family, int cqpsk_enable, int symbol_rate_hz) {
+    rate_for_family_calls++;
+    rate_for_family_family = family;
+    rate_for_family_cqpsk = cqpsk_enable;
+    rate_for_family_symbol_rate = symbol_rate_hz;
+    return family == DSD_RX_FAMILY_DIGITAL ? fake_digital_rate : 48000U;
+}
+
+static void
+reset_frontend_records(void) {
+    frontend_sequence = 0;
+    analog_restore_calls = analog_restore_family = analog_restore_kind = analog_restore_width_hz = 0;
+    analog_restore_order = digital_restore_calls = digital_restore_order = digital_restore_sps = 0;
+    rate_for_family_calls = rate_for_family_family = rate_for_family_cqpsk = rate_for_family_symbol_rate = 0;
+}
+
+/*
+ * Leaving a typed row under -fA puts the front end back on the configured analog
+ * profile -- family, demodulator and channel width -- rather than a hard-coded
+ * WIDE digital profile that leaves the RTL stream on the row's digital family.
+ * A digital session gets the digital family first, then its symbol profile.
+ */
+static void
+test_leave_restores_configured_receive_family(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
+    assert(opts && state);
+    opts->scanner_mode = 1;
+    opts->audio_in_type = AUDIO_IN_RTL;
+    state->samplesPerSymbol = 10;
+    assert(dsd_apply_decode_mode_preset(DSDCFG_MODE_ANALOG, DSD_DECODE_PRESET_PROFILE_CLI, opts, state) == 0);
+    opts->analog_nfm_bandwidth_hz = 12500;
+    const dsd_rtl_stream_metrics_hooks hooks = {.apply_demod_profile = record_digital_restore,
+                                                .apply_analog_profile = record_analog_restore};
+    dsd_rtl_stream_metrics_hooks_set(&hooks);
+
+    reset_frontend_records();
+    assert(dsd_scan_mode_enter(opts, state, DSD_SCAN_MODE_DMR) == 0);
+    assert(opts->analog_only == 0 && opts->frame_dmr == 1);
+    dsd_engine_channel_scan_leave(opts, state);
+    assert(opts->analog_only == 1 && dsd_opts_is_analog_family(opts));
+    assert(analog_restore_calls == 1);
+    assert(analog_restore_family == DSD_RX_FAMILY_ANALOG);
+    assert(analog_restore_kind == DSD_ANALOG_DEMOD_FM);
+    assert(analog_restore_width_hz == 12500);
+    assert(digital_restore_calls == 0);
+
+    /* The configured demodulator kind survives a typed row: the row's digital preset puts the kind back to FM, and
+     * leaving the row restores the configured kind together with that kind's width. */
+    opts->analog_demod = DSD_ANALOG_DEMOD_AM;
+    opts->analog_am_bandwidth_hz = 9000;
+    reset_frontend_records();
+    assert(dsd_scan_mode_enter(opts, state, DSD_SCAN_MODE_DMR) == 0);
+    assert(opts->analog_only == 0 && opts->analog_demod == DSD_ANALOG_DEMOD_FM);
+    dsd_engine_channel_scan_leave(opts, state);
+    assert(opts->analog_demod == DSD_ANALOG_DEMOD_AM);
+    assert(analog_restore_calls == 1 && analog_restore_kind == DSD_ANALOG_DEMOD_AM);
+    assert(analog_restore_width_hz == 9000);
+    opts->analog_demod = DSD_ANALOG_DEMOD_FM;
+    opts->analog_am_bandwidth_hz = 0;
+    opts->analog_nfm_bandwidth_hz = 12500;
+
+    /* The unset default travels as 0, never as a resolved 16 kHz. */
+    opts->analog_nfm_bandwidth_hz = 0;
+    reset_frontend_records();
+    assert(dsd_scan_mode_enter(opts, state, DSD_SCAN_MODE_P25) == 0);
+    dsd_engine_channel_scan_leave(opts, state);
+    assert(analog_restore_calls == 1 && analog_restore_width_hz == 0);
+
+    /* A digital session: digital family first, then the symbol profile it runs on. */
+    assert(dsd_apply_decode_mode_preset(DSDCFG_MODE_DMR, DSD_DECODE_PRESET_PROFILE_CLI, opts, state) == 0);
+    reset_frontend_records();
+    assert(dsd_scan_mode_enter(opts, state, DSD_SCAN_MODE_NXDN48) == 0);
+    dsd_engine_channel_scan_leave(opts, state);
+    assert(analog_restore_calls == 1 && analog_restore_family == DSD_RX_FAMILY_DIGITAL);
+    assert(digital_restore_calls == 1 && analog_restore_order < digital_restore_order);
+
+    /* Off RTL nothing is asked of the front end. */
+    opts->audio_in_type = AUDIO_IN_WAV;
+    reset_frontend_records();
+    assert(dsd_scan_mode_enter(opts, state, DSD_SCAN_MODE_P25) == 0);
+    dsd_engine_channel_scan_leave(opts, state);
+    assert(analog_restore_calls == 0 && digital_restore_calls == 0);
+
+    dsd_rtl_stream_metrics_hooks_set(NULL);
+    dsd_state_trunk_lcn_free(state);
+    dsd_state_ext_free_all(state);
+    free(state);
+    free(opts);
+}
+
+/*
+ * A -fA session scanning a typed DMR row, whose configured mode the operator changes to P25 Phase 2 while the row
+ * runs. The command times the saved configuration for the rate it reads then, the analog monitor's resampled 48 kHz
+ * (8 samples per 6000 sym/s symbol), and leaves the front end alone until the row's constraint is gone. Leaving the
+ * scan is what switches the front end to the digital family, which runs at the 24 kHz DSP rate: the leave times the
+ * decoder, and the symbol profile it publishes, for the rate that family lands on (4 samples per symbol), as a mode
+ * change outside a row does. A front end already on the digital family keeps the timing the configuration saved.
+ */
+static void
+test_leave_retimes_the_digital_landing(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
+    assert(opts && state);
+    opts->scanner_mode = 1;
+    opts->audio_in_type = AUDIO_IN_RTL;
+    state->samplesPerSymbol = 10;
+    assert(dsd_apply_decode_mode_preset(DSDCFG_MODE_ANALOG, DSD_DECODE_PRESET_PROFILE_CLI, opts, state) == 0);
+    const dsd_rtl_stream_metrics_hooks hooks = {.apply_demod_profile = record_digital_restore,
+                                                .apply_analog_profile = record_analog_restore,
+                                                .analog_family_active = report_analog_family,
+                                                .output_rate_for_family = report_output_rate_for_family};
+    dsd_rtl_stream_metrics_hooks_set(&hooks);
+
+    assert(dsd_scan_mode_enter(opts, state, DSD_SCAN_MODE_DMR) == 0);
+    assert(dsd_scan_mode_options(opts, state, NULL) == 0);
+    assert(dsd_scan_mode_suspend(opts, state) == 1);
+    /* What DSD_APP_CMD_DECODE_MODE_SET does while the row's constraint is suspended: the preset, the timing at the
+     * 48 kHz the stream outputs now, and the mode's SPS hunt profile (svc_publish_symbol_profile()). */
+    assert(dsd_apply_decode_mode_preset(DSDCFG_MODE_P25P2, DSD_DECODE_PRESET_PROFILE_CLI, opts, state) == 0);
+    state->samplesPerSymbol = 8;
+    state->symbolCenter = dsd_opts_symbol_center(8);
+    state->sps_hunt_idx = DSD_FRAME_SYNC_SPS_PROFILE_6000_4;
+    (void)dsd_scan_mode_resume(opts, state);
+    assert(opts->frame_dmr == 1);
+
+    reset_frontend_records();
+    fake_analog_family = 1;
+    fake_digital_rate = 24000U;
+    dsd_engine_channel_scan_leave(opts, state);
+    assert(opts->analog_only == 0 && opts->frame_p25p2 == 1);
+    assert(analog_restore_calls == 1 && analog_restore_family == DSD_RX_FAMILY_DIGITAL);
+    assert(digital_restore_calls == 1 && analog_restore_order < digital_restore_order);
+    assert(rate_for_family_calls == 1 && rate_for_family_family == DSD_RX_FAMILY_DIGITAL);
+    assert(rate_for_family_symbol_rate == 6000);
+    assert(rate_for_family_cqpsk == (state->rf_mod == 1));
+    assert(state->samplesPerSymbol == 4);
+    assert(state->symbolCenter == dsd_opts_symbol_center(4));
+    assert(digital_restore_sps == 4);
+
+    /* A digital session's front end is already on the digital family: nothing to predict, the saved timing stands. */
+    assert(dsd_apply_decode_mode_preset(DSDCFG_MODE_DMR, DSD_DECODE_PRESET_PROFILE_CLI, opts, state) == 0);
+    state->samplesPerSymbol = 5;
+    state->symbolCenter = dsd_opts_symbol_center(5);
+    assert(dsd_scan_mode_enter(opts, state, DSD_SCAN_MODE_NXDN48) == 0);
+    assert(dsd_scan_mode_options(opts, state, NULL) == 0);
+    reset_frontend_records();
+    fake_analog_family = 0;
+    dsd_engine_channel_scan_leave(opts, state);
+    assert(opts->frame_dmr == 1);
+    assert(rate_for_family_calls == 0);
+    assert(state->samplesPerSymbol == 5 && digital_restore_sps == 5);
+
+    fake_digital_rate = 0U;
+    dsd_rtl_stream_metrics_hooks_set(NULL);
+    dsd_state_trunk_lcn_free(state);
+    dsd_state_ext_free_all(state);
+    free(state);
+    free(opts);
+}
+
+/*
+ * The decoder's part-collected analog monitor block holds samples of the front end's output family. A leave that
+ * switches the front end between the analog and digital families drops it, so the first block the other family
+ * completes does not start with them; a leave that keeps the family keeps it, and off RTL there is no front end family
+ * to switch. A leave that switches the family also forgets the received tone (issue #522), which described the old
+ * family's reception.
+ */
+static void
+test_leave_family_switch_drops_partial_analog_block(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
+    assert(opts && state);
+    opts->scanner_mode = 1;
+    opts->audio_in_type = AUDIO_IN_RTL;
+    state->samplesPerSymbol = 10;
+    assert(dsd_apply_decode_mode_preset(DSDCFG_MODE_ANALOG, DSD_DECODE_PRESET_PROFILE_CLI, opts, state) == 0);
+    const dsd_rtl_stream_metrics_hooks hooks = {.apply_demod_profile = record_digital_restore,
+                                                .apply_analog_profile = record_analog_restore,
+                                                .analog_family_active = report_analog_family,
+                                                .output_rate_for_family = report_output_rate_for_family};
+    dsd_rtl_stream_metrics_hooks_set(&hooks);
+
+    /* -fA with a typed DMR row, which runs on the analog family's monitor output: the leave keeps the family. */
+    reset_frontend_records();
+    analog_block_resets = 0;
+    fake_analog_family = 1;
+    assert(dsd_scan_mode_enter(opts, state, DSD_SCAN_MODE_DMR) == 0);
+    dsd_engine_channel_scan_leave(opts, state);
+    assert(analog_restore_calls == 1 && analog_restore_family == DSD_RX_FAMILY_ANALOG);
+    assert(analog_block_resets == 0);
+
+    /* Analog configured while the front end runs the digital family (Analog picked under a digital session's row). */
+    reset_frontend_records();
+    analog_block_resets = 0;
+    fake_analog_family = 0;
+    assert(dsd_scan_mode_enter(opts, state, DSD_SCAN_MODE_DMR) == 0);
+    seed_received_tone(state);
+    uint32_t generation = state->analog_rx.generation;
+    dsd_engine_channel_scan_leave(opts, state);
+    assert(analog_restore_calls == 1 && analog_restore_family == DSD_RX_FAMILY_ANALOG);
+    assert(analog_block_resets == 1);
+    assert(received_tone_cleared(state) && state->analog_rx.generation != generation);
+
+    /* A digital mode configured while the front end still runs the analog family. */
+    assert(dsd_apply_decode_mode_preset(DSDCFG_MODE_DMR, DSD_DECODE_PRESET_PROFILE_CLI, opts, state) == 0);
+    reset_frontend_records();
+    analog_block_resets = 0;
+    fake_analog_family = 1;
+    fake_digital_rate = 24000U;
+    assert(dsd_scan_mode_enter(opts, state, DSD_SCAN_MODE_NXDN48) == 0);
+    seed_received_tone(state);
+    generation = state->analog_rx.generation;
+    dsd_engine_channel_scan_leave(opts, state);
+    assert(analog_restore_calls == 1 && analog_restore_family == DSD_RX_FAMILY_DIGITAL);
+    assert(analog_block_resets == 1);
+    assert(received_tone_cleared(state) && state->analog_rx.generation != generation);
+
+    /* Digital configured on a digital front end. */
+    reset_frontend_records();
+    analog_block_resets = 0;
+    fake_analog_family = 0;
+    assert(dsd_scan_mode_enter(opts, state, DSD_SCAN_MODE_NXDN48) == 0);
+    dsd_engine_channel_scan_leave(opts, state);
+    assert(analog_restore_calls == 1 && analog_restore_family == DSD_RX_FAMILY_DIGITAL);
+    assert(analog_block_resets == 0);
+
+    /* Off RTL. */
+    opts->audio_in_type = AUDIO_IN_WAV;
+    reset_frontend_records();
+    analog_block_resets = 0;
+    fake_analog_family = 1;
+    assert(dsd_scan_mode_enter(opts, state, DSD_SCAN_MODE_P25) == 0);
+    dsd_engine_channel_scan_leave(opts, state);
+    assert(analog_restore_calls == 0 && analog_block_resets == 0);
+
+    fake_analog_family = 0;
+    fake_digital_rate = 0U;
+    dsd_rtl_stream_metrics_hooks_set(NULL);
+    dsd_state_trunk_lcn_free(state);
+    dsd_state_ext_free_all(state);
+    free(state);
+    free(opts);
+}
+
+/* ---- Received tone (issue #522) ----------------------------------------------------------- */
+
+/* A row the scanner commits to starts with no received tone, whether its tune resolved later
+   (a pending request the sync service commits) or at once (a step whose tune completed): the
+   new row cannot inherit the outgoing row's. */
+static void
+test_rx_tone_row_commit_and_step_clear(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
+    assert(opts && state);
+    opts->audio_in_type = AUDIO_IN_WAV;
+    opts->wav_sample_rate = 48000;
+    opts->frame_dstar = 1;
+    opts->scanner_mode = 1;
+    state->samplesPerSymbol = 10;
+    state->lcn_freq_count = 2;
+    for (int row = 0; row < 2; row++) {
+        *dsd_state_trunk_lcn_slot(state, row) = 150000000;
+    }
+    expected_nxdn = 0;
+
+    /* The outgoing row's tone is still on the publication while the tune is pending ... */
+    tune_result = DSD_TRUNK_TUNE_RESULT_PENDING;
+    assert(dsd_engine_channel_scan_step(opts, state) == 0);
+    assert(state->lcn_freq_roll == 0 && dsd_engine_channel_scan_pending(opts, state) == 1);
+    seed_received_tone(state);
+    uint32_t generation = state->analog_rx.generation;
+    dsd_trunk_tuning_request_publish(request, DSD_TRUNK_TUNE_RESULT_OK);
+    state->synctype = DSD_SYNC_P25P1_POS;
+    assert(!dsd_engine_channel_scan_service_sync(opts, state));
+    assert(state->lcn_freq_roll == 1 && reset_count == 1);
+    /* ... and the row commit takes it away. */
+    assert(received_tone_cleared(state) && state->analog_rx.generation != generation);
+
+    /* A step whose tune completes at once commits the next row the same way. */
+    tune_result = DSD_TRUNK_TUNE_RESULT_OK;
+    seed_received_tone(state);
+    generation = state->analog_rx.generation;
+    assert(dsd_engine_channel_scan_step(opts, state) == 1);
+    assert(state->lcn_freq_roll == 2);
+    assert(received_tone_cleared(state) && state->analog_rx.generation != generation);
+
+    dsd_state_trunk_lcn_free(state);
+    dsd_state_ext_free_all(state);
+    free(state);
+    free(opts);
+    tunes = reset_count = 0;
+}
+
 int
 main(void) {
+    dsd_neo_log_set_tap(count_squelch_warnings, NULL);
+    test_leave_restores_configured_receive_family();
+    test_leave_retimes_the_digital_landing();
+    test_leave_family_switch_drops_partial_analog_block();
     test_option_commit_boundary();
     test_option_only_rows_and_policy_edits();
     test_row_max_visit_override_and_inherit();
+    test_row_squelch_threshold_off_inherit();
+    test_row_squelch_warns_once_per_row_on_pcm_input();
+    test_rx_tone_row_commit_and_step_clear();
     dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
     dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
     assert(opts && state);

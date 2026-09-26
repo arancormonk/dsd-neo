@@ -448,8 +448,16 @@ class CommandRecorder : public QObject {
     }
 
     Q_INVOKABLE bool
-    // cppcheck-suppress functionStatic // Qt meta-object entry point must remain an instance method.
-    lockoutSlot(int) const {
+    lockoutSlot(int slot) {
+        ++m_lockout_slot_calls;
+        m_last_lockout_slot = slot;
+        return true;
+    }
+
+    Q_INVOKABLE bool
+    skipSlot(int slot) {
+        ++m_skip_slot_calls;
+        m_last_skip_slot = slot;
         return true;
     }
 
@@ -613,6 +621,13 @@ class CommandRecorder : public QObject {
     }
 
     Q_INVOKABLE bool
+    setNfmBandwidthHz(int hz) {
+        m_last_nfm_bandwidth_hz = hz;
+        m_nfm_bandwidth_calls++;
+        return true;
+    }
+
+    Q_INVOKABLE bool
     setModulation(int modulation) {
         m_last_modulation = modulation;
         return true;
@@ -642,6 +657,10 @@ class CommandRecorder : public QObject {
 
     void
     reset() {
+        m_lockout_slot_calls = 0;
+        m_last_lockout_slot = -1;
+        m_skip_slot_calls = 0;
+        m_last_skip_slot = -1;
         m_hold_calls = 0;
         m_last_hold_tg = 0;
         m_key_apply_calls = 0;
@@ -660,6 +679,8 @@ class CommandRecorder : public QObject {
         m_last_gain_db = -1;
         m_last_squelch_db = 0.0;
         m_squelch_calls = 0;
+        m_last_nfm_bandwidth_hz = -1;
+        m_nfm_bandwidth_calls = 0;
         m_last_modulation = -1;
         m_last_decode_mode = -1;
         m_last_ppm = 9999;
@@ -722,6 +743,16 @@ class CommandRecorder : public QObject {
     }
 
     int
+    lastNfmBandwidthHz() const {
+        return m_last_nfm_bandwidth_hz;
+    }
+
+    int
+    nfmBandwidthCalls() const {
+        return m_nfm_bandwidth_calls;
+    }
+
+    int
     lastModulation() const {
         return m_last_modulation;
     }
@@ -760,6 +791,26 @@ class CommandRecorder : public QObject {
     double
     lastManualTuneHz() const {
         return static_cast<double>(m_last_manual_tune_hz);
+    }
+
+    int
+    lockoutSlotCalls() const {
+        return m_lockout_slot_calls;
+    }
+
+    int
+    lastLockoutSlot() const {
+        return m_last_lockout_slot;
+    }
+
+    int
+    skipSlotCalls() const {
+        return m_skip_slot_calls;
+    }
+
+    int
+    lastSkipSlot() const {
+        return m_last_skip_slot;
     }
 
     int
@@ -808,6 +859,10 @@ class CommandRecorder : public QObject {
     }
 
   private:
+    int m_lockout_slot_calls = 0;
+    int m_last_lockout_slot = -1;
+    int m_skip_slot_calls = 0;
+    int m_last_skip_slot = -1;
     int m_hold_calls = 0;
     double m_last_hold_tg = 0;
     int m_key_apply_calls = 0;
@@ -833,6 +888,8 @@ class CommandRecorder : public QObject {
     int m_last_gain_db = -1;
     double m_last_squelch_db = 0.0;
     int m_squelch_calls = 0;
+    int m_last_nfm_bandwidth_hz = -1;
+    int m_nfm_bandwidth_calls = 0;
     int m_last_modulation = -1;
     int m_last_decode_mode = -1;
     int m_last_ppm = 9999;
@@ -989,6 +1046,16 @@ class CallLogStore : public QAbstractListModel {
         endInsertRows();
         Q_EMIT countChanged();
         return row.name;
+    }
+
+    Q_INVOKABLE QString
+    pushWithIds(qulonglong tg, qulonglong src) {
+        const QString call = push(QStringLiteral("TODAY"));
+        m_rows[0].tg = tg;
+        m_rows[0].src = src;
+        const QModelIndex idx = index(0);
+        Q_EMIT dataChanged(idx, idx, {CallHistoryModel::TgRole, CallHistoryModel::SrcRole});
+        return call;
     }
 
     Q_INVOKABLE QString
@@ -1199,6 +1266,26 @@ class Setup : public QObject {
         }
         m_talkgroups->refresh(m_talkgroup_opts.get(), m_talkgroup_state.get());
         return true;
+    }
+
+    Q_INVOKABLE int
+    lockoutSlotCalls() const {
+        return m_commands->lockoutSlotCalls();
+    }
+
+    Q_INVOKABLE int
+    lastLockoutSlot() const {
+        return m_commands->lastLockoutSlot();
+    }
+
+    Q_INVOKABLE int
+    skipSlotCalls() const {
+        return m_commands->skipSlotCalls();
+    }
+
+    Q_INVOKABLE int
+    lastSkipSlot() const {
+        return m_commands->lastSkipSlot();
     }
 
     Q_INVOKABLE int
@@ -1582,6 +1669,17 @@ class Setup : public QObject {
         return (m_commands != nullptr) ? m_commands->squelchCalls() : -1;
     }
 
+    /** @brief The last NFM channel width the Radio sheet asked for (issue #525), and how many times it asked. */
+    Q_INVOKABLE int
+    lastNfmBandwidthHz() const {
+        return (m_commands != nullptr) ? m_commands->lastNfmBandwidthHz() : -1;
+    }
+
+    Q_INVOKABLE int
+    nfmBandwidthCalls() const {
+        return (m_commands != nullptr) ? m_commands->nfmBandwidthCalls() : -1;
+    }
+
     Q_INVOKABLE int
     lastModulation() const {
         return (m_commands != nullptr) ? m_commands->lastModulation() : -1;
@@ -1839,6 +1937,7 @@ class Setup : public QObject {
         metrics[QStringLiteral("encLockoutCount")] = 0;
         metrics[QStringLiteral("persistTgLockouts")] = true;
         metrics[QStringLiteral("temporaryTgAvoidCount")] = 0;
+        metrics[QStringLiteral("callSkipCount")] = 0;
         metrics[QStringLiteral("tgPolicyContext")] = QStringLiteral("0");
         // On-the-fly scan controls (#380): no rotation running at rest.
         metrics[QStringLiteral("scanRotationActive")] = false;
@@ -1865,6 +1964,15 @@ class Setup : public QObject {
         metrics[QStringLiteral("scanVisitMs")] = 0;
         metrics[QStringLiteral("scanVisitLive")] = false;
         metrics[QStringLiteral("scanVisitRemainingDs")] = 0;
+        // The received sub-audible tone (#522): no analog FM monitor at rest, so the row is
+        // down. The configured policy is its own reading and says "off" until #527.
+        metrics[QStringLiteral("rxToneVisible")] = false;
+        metrics[QStringLiteral("rxToneStatus")] = 0;
+        metrics[QStringLiteral("rxToneText")] = QString();
+        metrics[QStringLiteral("rxToneKind")] = 0;
+        metrics[QStringLiteral("rxToneTenthsHz")] = 0;
+        metrics[QStringLiteral("rxToneCarrier")] = false;
+        metrics[QStringLiteral("rxToneConfiguredText")] = QStringLiteral("off");
         // Whether an automatic controller owns the tuner, which one, and where it
         // points. The two named owners word a message; tunerControlled is the gate.
         metrics[QStringLiteral("tunerControlled")] = false;
@@ -1884,6 +1992,22 @@ class Setup : public QObject {
         metrics[QStringLiteral("tunerGainDb")] = 30;
         metrics[QStringLiteral("squelchDb")] = -120.0;
         metrics[QStringLiteral("squelchOff")] = false;
+        // #521: a scan row's own squelch. 0 is off in these two, as in rtl_sql.
+        metrics[QStringLiteral("configuredSquelchDb")] = -120.0;
+        metrics[QStringLiteral("effectiveSquelchDb")] = -120.0;
+        metrics[QStringLiteral("configuredSquelchOff")] = false;
+        metrics[QStringLiteral("effectiveSquelchOff")] = false;
+        metrics[QStringLiteral("squelchRowOverride")] = false;
+        metrics[QStringLiteral("squelchReadout")] = QStringLiteral("-120.0 dB");
+        // #525: the analog channel width in force (0 outside the analog preset and on PCM input),
+        // whether the DSP rate bounds it, the configured width the control edits (0 = default),
+        // the widest width the running stream's DSP rate filters (0 = not known), and the
+        // reading as app_control's analog width view spells it.
+        metrics[QStringLiteral("analogBandwidthHz")] = 0;
+        metrics[QStringLiteral("analogBandwidthDspLimited")] = false;
+        metrics[QStringLiteral("analogBandwidthConfiguredHz")] = 0;
+        metrics[QStringLiteral("analogBandwidthMaxHz")] = 0;
+        metrics[QStringLiteral("analogBandwidthReading")] = QString();
         metrics[QStringLiteral("ppm")] = 0;
         // TETRA network identity and the current control/traffic allocations.
         // Hidden at rest until the decoder has accepted network information.

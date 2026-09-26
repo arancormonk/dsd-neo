@@ -124,6 +124,30 @@ Item {
             }
         }
 
+        // Issue #521: each target's own --squelch-db shows in the preview, and a target
+        // without one says it inherits.
+        function test_imported_target_preview_shows_squelch() {
+            var source = testContext.writeFixtureCsv("squelch-targets.csv",
+                "id,type,frequency_hz,chan_csv,dwell_ms,activity_hold_ms,notes,options\n"
+                + "thr,p25-conventional,851500000,,,,,--squelch-db -60\n"
+                + "off,dmr-conventional,461000000,,,,,--squelch-db 0\n"
+                + "inh,nxdn48-conventional,461556250,,,,,\n");
+            var result = importedFiles.importFile(source, "SquelchTargets.csv", "trunkTargets");
+            verify(result.ok, result.detail || "Import failed");
+            try {
+                screen.selectTargets(result.path);
+                compare(screen.targetRows.length, 3);
+                var preview = visualChild(screen, "scanTargetPreview");
+                verify(preview !== null);
+                tryVerify(function() { return preview.count === 3 && preview.itemAtIndex(2) !== null; });
+                verify(preview.itemAtIndex(0).text.indexOf("Squelch: -60 dB") >= 0, preview.itemAtIndex(0).text);
+                verify(preview.itemAtIndex(1).text.indexOf("Squelch: off") >= 0, preview.itemAtIndex(1).text);
+                verify(preview.itemAtIndex(2).text.indexOf("Squelch: inherit") >= 0, preview.itemAtIndex(2).text);
+            } finally {
+                importedFiles.remove(importedFiles.rowForPath(result.path));
+            }
+        }
+
         function test_reselect_manual_targets_keeps_entries() {
             screen.addFrequency("First unsaved target", "dmr", "461");
             screen.addFrequency("Second unsaved target", "nxdn", "462");

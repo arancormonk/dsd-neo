@@ -342,6 +342,8 @@ describe(const dsd_trunk_scan_target& t) {
     result.dwell_ms = t.dwell_is_set ? t.dwell_ms : -1;
     result.hold_ms = t.activity_hold_is_set ? t.activity_hold_ms : -1;
     result.gain_db = t.rtl_gain_is_set ? t.rtl_gain_db : -1;
+    result.squelch_db_set = (t.row_options.present & DSD_SCAN_OPT_SQUELCH) ? 1 : 0;
+    result.squelch_db = result.squelch_db_set ? t.row_options.squelch_db : 0;
     return result;
 }
 

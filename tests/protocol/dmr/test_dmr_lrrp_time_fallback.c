@@ -67,10 +67,12 @@ dsd_unicode_supported(void) {
 
 void
 // NOLINTNEXTLINE(misc-use-internal-linkage)
-lip_protocol_decoder(dsd_opts* opts, dsd_state* state, uint8_t* input) {
+lip_pdu_decoder(const dsd_opts* opts, dsd_state* state, const uint8_t* bits, size_t bit_count, uint32_t src) {
+    (void)bit_count;
+    (void)src;
     (void)opts;
     (void)state;
-    (void)input;
+    (void)bits;
 }
 
 void

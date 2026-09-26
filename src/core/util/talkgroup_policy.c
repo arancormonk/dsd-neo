@@ -5,6 +5,7 @@
 
 #include <ctype.h>
 #include <dsd-neo/core/csv_import.h>
+#include <dsd-neo/core/dsd_time.h>
 #include <dsd-neo/core/enc_lockout.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/opts_fwd.h>
@@ -32,6 +33,9 @@ typedef struct {
 
 const char*
 dsd_tg_policy_block_reason_label(uint32_t block_reasons) {
+    if (block_reasons & DSD_TG_POLICY_BLOCK_CALL_SKIP) {
+        return "call-skip";
+    }
     if (block_reasons & DSD_TG_POLICY_BLOCK_SESSION_AVOID) {
         return "session-avoid";
     }
@@ -96,6 +100,19 @@ struct dsd_tg_policy_store {
     uint32_t* session_avoids; /* Sorted exact IDs, separate from serializable rows. */
     size_t session_avoid_count;
     size_t session_avoid_capacity;
+
+    struct {
+        struct {
+            uint32_t id;
+            uint32_t src;
+            double armed_m;
+            double last_seen_m;
+            uint8_t fallback;
+        } entries[DSD_TG_CALL_SKIP_MAX];
+
+        size_t count;
+    } call_skips;
+
     size_t references;
     dsd_tg_policy_active_table active;
     uint64_t context_id;
@@ -539,6 +556,117 @@ dsd_tg_policy_session_avoid_clear(dsd_state* state) {
         ctx->session_avoid_count = 0;
         tg_policy_table_note_mutation(ctx);
     }
+}
+
+static int
+tg_policy_call_skip_fresh(const dsd_tg_policy_context* ctx, size_t index, double now_mono_s) {
+    const double armed = ctx->call_skips.entries[index].armed_m;
+    const double seen = ctx->call_skips.entries[index].fallback ? armed : ctx->call_skips.entries[index].last_seen_m;
+    return now_mono_s - armed <= DSD_TG_CALL_SKIP_MAX_AGE_S && now_mono_s - seen <= DSD_TG_CALL_SKIP_QUIET_S;
+}
+
+int
+dsd_tg_policy_call_skip_arm(dsd_state* state, uint32_t id, uint32_t src, int fallback, double now_mono_s) {
+    if (!state || !id) {
+        return 1;
+    }
+    dsd_tg_policy_context* ctx = tg_policy_ctx_get_mut(state, 1);
+    if (!ctx) {
+        return -1;
+    }
+    size_t index = 0;
+    size_t stalest = 0;
+    for (; index < ctx->call_skips.count; ++index) {
+        if (ctx->call_skips.entries[index].id == id) {
+            break;
+        }
+        if (ctx->call_skips.entries[index].last_seen_m < ctx->call_skips.entries[stalest].last_seen_m) {
+            stalest = index;
+        }
+    }
+    if (index == ctx->call_skips.count) {
+        if (index == DSD_TG_CALL_SKIP_MAX) {
+            index = stalest;
+        } else {
+            ++ctx->call_skips.count;
+        }
+    }
+    ctx->call_skips.entries[index].id = id;
+    ctx->call_skips.entries[index].src = src;
+    ctx->call_skips.entries[index].armed_m = now_mono_s;
+    ctx->call_skips.entries[index].last_seen_m = now_mono_s;
+    ctx->call_skips.entries[index].fallback = fallback != 0;
+    return 0;
+}
+
+int
+dsd_tg_policy_call_skip_touch(dsd_state* state, uint32_t id, double now_mono_s) {
+    dsd_tg_policy_context* ctx = tg_policy_ctx_get_mut(state, 0);
+    if (!ctx || !id) {
+        return 0;
+    }
+    for (size_t i = 0; i < ctx->call_skips.count; ++i) {
+        if (ctx->call_skips.entries[i].id != id) {
+            continue;
+        }
+        if (!tg_policy_call_skip_fresh(ctx, i, now_mono_s)) {
+            ctx->call_skips.entries[i] = ctx->call_skips.entries[--ctx->call_skips.count];
+            return 0;
+        }
+        if (ctx->call_skips.entries[i].fallback) {
+            return 0;
+        }
+        ctx->call_skips.entries[i].last_seen_m = now_mono_s;
+        return 1;
+    }
+    return 0;
+}
+
+int
+dsd_tg_policy_call_skip_active(const dsd_state* state, uint32_t id, double now_mono_s) {
+    const dsd_tg_policy_context* ctx = tg_policy_ctx_get_const(state);
+    if (ctx && id) {
+        for (size_t i = 0; i < ctx->call_skips.count; ++i) {
+            if (ctx->call_skips.entries[i].id == id) {
+                return tg_policy_call_skip_fresh(ctx, i, now_mono_s);
+            }
+        }
+    }
+    return 0;
+}
+
+int
+dsd_tg_policy_call_skip_empty(const dsd_state* state) {
+    const dsd_tg_policy_context* ctx = tg_policy_ctx_get_const(state);
+    return !ctx || ctx->call_skips.count == 0;
+}
+
+size_t
+dsd_tg_policy_call_skip_count(const dsd_state* state, double now_mono_s) {
+    const dsd_tg_policy_context* ctx = tg_policy_ctx_get_const(state);
+    size_t count = 0;
+    if (ctx) {
+        for (size_t i = 0; i < ctx->call_skips.count; ++i) {
+            count += tg_policy_call_skip_fresh(ctx, i, now_mono_s) != 0;
+        }
+    }
+    return count;
+}
+
+void
+dsd_tg_policy_call_skip_clear(dsd_state* state) {
+    dsd_tg_policy_context* ctx = tg_policy_ctx_get_mut(state, 0);
+    if (ctx) {
+        ctx->call_skips.count = 0;
+    }
+}
+
+static int
+tg_policy_call_skip_blocking(const dsd_state* state, uint32_t id) {
+    if (dsd_tg_policy_call_skip_empty(state)) {
+        return 0;
+    }
+    return dsd_tg_policy_call_skip_active(state, id, dsd_time_now_monotonic_s());
 }
 
 int
@@ -1087,6 +1215,7 @@ tg_policy_context_clone(const dsd_tg_policy_context* src, dsd_tg_policy_context*
     clone->table.capacity = src->table.count;
     clone->table.generation = src->table.generation;
     clone->active = src->active;
+    clone->call_skips = src->call_skips;
     if (src->session_avoid_count) {
         clone->session_avoids = tg_policy_calloc(src->session_avoid_count, sizeof(*clone->session_avoids));
         if (!clone->session_avoids) {
@@ -1134,6 +1263,7 @@ dsd_tg_policy_copy_snapshot(dsd_state* dst, const dsd_state* src) {
         && dst_ctx->snapshot_parent_context_id == src_ctx->context_id
         && dst_ctx->table.generation == src_ctx->table.generation && dst_ctx->table.count == src_ctx->table.count) {
         dst_ctx->active = src_ctx->active;
+        dst_ctx->call_skips = src_ctx->call_skips;
         return 0;
     }
 
@@ -1398,6 +1528,9 @@ dsd_tg_policy_evaluate_group_call(const dsd_opts* opts, const dsd_state* state, 
     if (dsd_tg_policy_session_avoid_contains(state, tg)) {
         tg_policy_block_decision_tune_and_media(out, DSD_TG_POLICY_BLOCK_SESSION_AVOID);
     }
+    if (tg_policy_call_skip_blocking(state, tg)) {
+        tg_policy_block_decision_tune_and_media(out, DSD_TG_POLICY_BLOCK_CALL_SKIP);
+    }
 
     if (mode_blocking) {
         tg_policy_block_decision_tune_and_media(out, DSD_TG_POLICY_BLOCK_MODE);
@@ -1411,6 +1544,30 @@ dsd_tg_policy_evaluate_group_call(const dsd_opts* opts, const dsd_state* state, 
     }
 
     return 0;
+}
+
+int
+dsd_tg_policy_apply_ota_final_blocks(const dsd_opts* opts, const dsd_state* state, uint32_t ota_target,
+                                     uint32_t policy_target, uint32_t src, dsd_tg_policy_decision* decision) {
+    if (!decision || ota_target == 0U || ota_target == policy_target) {
+        return 0;
+    }
+    dsd_tg_policy_decision ota;
+    if (dsd_tg_policy_evaluate_group_call(opts, state, ota_target, src, 0, 0, &ota) != 0) {
+        return 0;
+    }
+    const uint32_t final = ota.block_reasons & DSD_TG_POLICY_BLOCK_OTA_FINAL;
+    if (final == 0U) {
+        return 0;
+    }
+    decision->block_reasons |= final;
+    decision->tune_allowed = 0;
+    if (final & ~(uint32_t)DSD_TG_POLICY_BLOCK_ENC_LOCKOUT) {
+        decision->audio_allowed = 0;
+        decision->record_allowed = 0;
+        decision->stream_allowed = 0;
+    }
+    return 1;
 }
 
 static int
@@ -1443,6 +1600,9 @@ tg_policy_evaluate_private_call(const dsd_opts* opts, const dsd_state* state, ui
     tg_policy_apply_enc_lockout_block(opts, state, dst, 0, data_call, out);
     if (dsd_tg_policy_session_avoid_contains(state, src) || dsd_tg_policy_session_avoid_contains(state, dst)) {
         tg_policy_block_decision_tune_and_media(out, DSD_TG_POLICY_BLOCK_SESSION_AVOID);
+    }
+    if (tg_policy_call_skip_blocking(state, src) || tg_policy_call_skip_blocking(state, dst)) {
+        tg_policy_block_decision_tune_and_media(out, DSD_TG_POLICY_BLOCK_CALL_SKIP);
     }
     if (mode_blocking) {
         tg_policy_block_decision_tune_and_media(out, DSD_TG_POLICY_BLOCK_MODE);

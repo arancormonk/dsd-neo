@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 import QtQuick
+import "Util.js" as Util
 
 ModalSheet {
     id: sheet
@@ -316,7 +317,7 @@ ModalSheet {
             DisclosureRow {
                 required property var modelData
                 required property int index
-                title: qsTr("Talkgroup %1").arg(modelData.talkgroup)
+                title: qsTr("Talkgroup %1").arg(Util.idText(modelData.talkgroup))
                 subtitle: qsTr("Key ID %1").arg(Number(modelData.keyId).toString(16).toUpperCase())
                 onTapped: mappingDialog.openFor(index)
             }

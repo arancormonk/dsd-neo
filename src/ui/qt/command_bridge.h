@@ -69,6 +69,8 @@ class CommandBridge : public QObject {
 
     /** @brief Lock out the target currently active on @p slot (0 or 1). */
     Q_INVOKABLE bool lockoutSlot(int slot) const;
+    /** @brief Skip the call currently on @p slot (0 or 1) without editing the talkgroup list. */
+    Q_INVOKABLE bool skipSlot(int slot) const;
     Q_INVOKABLE bool setPersistTgLockouts(bool persist) const;
     Q_INVOKABLE bool clearTemporaryTgAvoids(const QString& context) const;
 
@@ -137,6 +139,14 @@ class CommandBridge : public QObject {
 
     /** @brief Set the dongle's crystal correction, in parts per million. */
     Q_INVOKABLE bool setPpm(int ppm) const;
+
+    /**
+     * @brief Set the NFM channel-filter width in Hz (8000..25000), or 0 for the default (issue #525).
+     *
+     * The engine refuses a width the front end cannot filter at its DSP rate, with a message, and keeps
+     * the one it had; a view reads the width back rather than trusting the request.
+     */
+    Q_INVOKABLE bool setNfmBandwidthHz(int hz) const;
 
     /**
      * @brief Choose the demodulator: 0 for C4FM, 1 for QPSK, 2 for GFSK.

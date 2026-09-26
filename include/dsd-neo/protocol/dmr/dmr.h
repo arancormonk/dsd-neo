@@ -68,7 +68,6 @@ size_t dmr_debug_format_burst_payload(char* out, size_t out_size, const int payl
                                       uint8_t burst_type);
 void dmr_debug_dump_burst(const dsd_opts* opts, const dsd_state* state, uint8_t slot_index, uint8_t burst_type);
 
-void dmr_sd_pdu(dsd_opts* opts, dsd_state* state, uint16_t len, const uint8_t* DMR_PDU);
 void dmr_udp_comp_pdu(dsd_opts* opts, dsd_state* state, uint16_t len, const uint8_t* DMR_PDU);
 void dmr_lrrp(const dsd_opts* opts, dsd_state* state, uint16_t len, uint32_t source, uint32_t dest,
               const uint8_t* DMR_PDU, uint8_t pdu_crc_ok);

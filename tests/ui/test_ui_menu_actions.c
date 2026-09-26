@@ -15,9 +15,11 @@
 #include <dsd-neo/core/power.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/dsp/demod_pipeline.h>
 #include <dsd-neo/platform/audio.h>
 #include <dsd-neo/platform/platform.h>
 #include <dsd-neo/platform/posix_compat.h>
+#include <dsd-neo/runtime/analog_channel.h>
 #include <dsd-neo/runtime/call_alert.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/decode_mode.h>
@@ -416,6 +418,14 @@ ui_chooser_start(const char* title, const char* const* items, int count, void (*
 const dsdneoRuntimeConfig*
 dsd_neo_get_config(void) {
     return g_cfg_valid ? &g_cfg : NULL;
+}
+
+/* The analog width view's reading of the unset NFM default where the channel filter runs but the rate cannot realize
+   the default: the legacy WIDE plan's passband, which no rate these cases run at falls back on. */
+int
+dsd_channel_lpf_legacy_wide_width_hz(int rate_hz) {
+    (void)rate_hz;
+    return 0;
 }
 
 const char*
@@ -1457,6 +1467,26 @@ test_additional_prompt_and_toggle_actions(void) {
     rtl_set_sql(&ctx);
     rc |= expect_int("rtl squelch prompt states a real threshold", fabs(g_prompt.initial_double - (-50.0)) < 0.001, 1);
 
+    /* Issue #521: a scan row can override the squelch while it is on air. The editor edits the
+     * configured default, so it has to offer that value, not the row's. */
+    {
+        dsd_scan_settings configured;
+        DSD_MEMSET(&configured, 0, sizeof configured);
+        configured.rtl_squelch_level = pow(10.0, -8.0);
+        dsd_test_scan_labels_configured(&configured);
+        reset_capture();
+        opts.rtl_squelch_level = pow(10.0, -6.0); /* the row's -60 dB */
+        rtl_set_sql(&ctx);
+        rc |= expect_int("rtl squelch prompt seeds the configured default",
+                         fabs(g_prompt.initial_double - (-80.0)) < 0.001, 1);
+        configured.rtl_squelch_level = 0.0;
+        dsd_test_scan_labels_configured(&configured);
+        reset_capture();
+        rtl_set_sql(&ctx);
+        rc |= expect_int("rtl squelch prompt offers a configured off", fabs(g_prompt.initial_double) < 1e-12, 1);
+        dsd_test_scan_labels_configured(NULL);
+    }
+
 #if defined(__SSE__) || defined(__SSE2__)
     reset_capture();
     g_cfg.ftz_daz_enable = 0;
@@ -1933,11 +1963,112 @@ test_scan_voice_gate_actions(void) {
     return rc;
 }
 
+/*
+ * Issue #525: the NFM bandwidth row is offered while the configured analog preset runs FM on a radio input. A typed
+ * digital scan row on an analog session does not end that preset (its leave returns to the width set under it), so the
+ * row reads the configured preset, as the status line's "Analog:" field does, not the row's options. Under another
+ * preset it is offered while an explicit width is configured: a switch to Analog is held to that width, and where the
+ * device or capture forces a rate that cannot filter it the refusal says to narrow it, which this row then does.
+ */
+static int
+test_nfm_bandwidth_row_follows_the_configured_preset(void) {
+    int rc = 0;
+    static dsd_opts opts;
+    static dsd_state state;
+    DSD_MEMSET(&opts, 0, sizeof opts);
+    DSD_MEMSET(&state, 0, sizeof state);
+    static UiCtx ctx;
+    ctx = make_ctx(&opts, &state);
+
+    opts.audio_in_type = AUDIO_IN_RTL;
+    rc |= expect_int("nfm row: hidden on a digital session", is_nfm_width_editable(&ctx), 0);
+    /* An explicit width on a digital session, from a config or an earlier analog session. */
+    opts.analog_nfm_bandwidth_hz = 25000;
+    rc |= expect_int("nfm row: shown for an explicit width on a digital session", is_nfm_width_editable(&ctx), 1);
+    opts.audio_in_type = AUDIO_IN_PULSE;
+    rc |= expect_int("nfm row: hidden for an explicit width on PCM input", is_nfm_width_editable(&ctx), 0);
+    opts.audio_in_type = AUDIO_IN_RTL;
+    opts.analog_nfm_bandwidth_hz = 0;
+    opts.analog_only = 1;
+    opts.analog_demod = DSD_ANALOG_DEMOD_FM;
+    rc |= expect_int("nfm row: shown under -fA on a radio", is_nfm_width_editable(&ctx), 1);
+
+    /* A typed DMR row over the -fA session: its options are digital, the configured preset is still NFM. */
+    dsd_scan_settings configured = {0};
+    configured.analog_only = 1;
+    configured.analog_demod = DSD_ANALOG_DEMOD_FM;
+    dsd_test_scan_labels_configured(&configured);
+    opts.analog_only = 0;
+    opts.frame_dmr = 1;
+    rc |= expect_int("nfm row: shown under a typed digital row", is_nfm_width_editable(&ctx), 1);
+    /* ...and the reverse: a digital configured preset under a row whose options read analog. */
+    configured.analog_only = 0;
+    dsd_test_scan_labels_configured(&configured);
+    opts.analog_only = 1;
+    rc |= expect_int("nfm row: hidden when the configured preset is digital", is_nfm_width_editable(&ctx), 0);
+    dsd_test_scan_labels_configured(NULL);
+
+    opts.m17encoder = 1;
+    rc |= expect_int("nfm row: hidden for the M17 encoder's monitor", is_nfm_width_editable(&ctx), 0);
+    opts.m17encoder = 0;
+    opts.audio_in_type = AUDIO_IN_PULSE;
+    rc |= expect_int("nfm row: hidden on PCM input", is_nfm_width_editable(&ctx), 0);
+    return rc;
+}
+
+/*
+ * The NFM bandwidth row prompts for Hz, seeded with the configured width (0 for the default), and hands the command
+ * whatever was typed: DSD_APP_CMD_NFM_BANDWIDTH_SET refuses what it cannot apply with the reason, rather than the
+ * prompt rounding or clamping a value into one the operator did not ask for. A cancelled prompt submits nothing.
+ */
+static int
+test_nfm_bandwidth_prompt_submits_as_typed(void) {
+    int rc = 0;
+    static dsd_opts opts;
+    static dsd_state state;
+    DSD_MEMSET(&opts, 0, sizeof opts);
+    DSD_MEMSET(&state, 0, sizeof state);
+    static UiCtx ctx;
+    ctx = make_ctx(&opts, &state);
+
+    opts.analog_nfm_bandwidth_hz = 12500;
+    reset_capture();
+    rtl_set_nfm_bw(&ctx);
+    rc |= expect_str("nfm prompt", g_prompt.title, "NFM bandwidth Hz (8000..25000; 0 = default 16000)");
+    rc |= expect_int("nfm prompt seeds the configured width", g_prompt.initial_int, 12500);
+    rc |= expect_int("nfm prompt is an int prompt", g_prompt.calls == 1 && g_prompt.int_cb != NULL, 1);
+    opts.analog_nfm_bandwidth_hz = 0;
+    reset_capture();
+    rtl_set_nfm_bw(&ctx);
+    rc |= expect_int("nfm prompt seeds the default as 0", g_prompt.initial_int, 0);
+
+    ui_prompt_int_done_fn cb = g_prompt.int_cb;
+    void* user = g_prompt.user;
+    static const int typed[] = {12345, 30000, 0, 7999, -1};
+    for (size_t i = 0; i < sizeof typed / sizeof typed[0]; i++) {
+        char tag[64];
+        DSD_MEMSET(&g_cmd, 0, sizeof g_cmd);
+        cb(user, 1, typed[i]);
+        DSD_SNPRINTF(tag, sizeof tag, "nfm %d submitted once", typed[i]);
+        rc |= expect_int(tag, g_cmd.calls, 1);
+        DSD_SNPRINTF(tag, sizeof tag, "nfm %d command", typed[i]);
+        rc |= expect_int(tag, g_cmd.id, DSD_APP_CMD_NFM_BANDWIDTH_SET);
+        DSD_SNPRINTF(tag, sizeof tag, "nfm %d sent as typed", typed[i]);
+        rc |= expect_int(tag, cmd_i32(), typed[i]);
+    }
+    DSD_MEMSET(&g_cmd, 0, sizeof g_cmd);
+    cb(user, 0, 12500);
+    rc |= expect_int("nfm cancelled submits nothing", g_cmd.calls, 0);
+    return rc;
+}
+
 int
 main(void) {
     int rc = 0;
     rc |= test_simple_commands_and_prompts();
     rc |= test_scan_voice_gate_actions();
+    rc |= test_nfm_bandwidth_row_follows_the_configured_preset();
+    rc |= test_nfm_bandwidth_prompt_submits_as_typed();
     rc |= test_p25_bandplan_actions();
     rc |= test_config_profile_and_env_actions();
     rc |= test_io_actions_and_choosers();

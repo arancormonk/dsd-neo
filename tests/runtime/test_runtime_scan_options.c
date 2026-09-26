@@ -45,9 +45,148 @@ check_file_spans(void) {
     assert(dsd_scan_options_visit_files("-K a.csv -K", &spans, collect_file_span) == -1 && spans.count == 1);
 }
 
+/* --- Issue #521: per-row and per-target squelch (--squelch-db) --- */
+
+static int
+count_file_spans(void* context, const char* option, const char* path, size_t offset, size_t length, int whole) {
+    (void)option;
+    (void)path;
+    (void)offset;
+    (void)length;
+    (void)whole;
+    ++*(size_t*)context;
+    return 0;
+}
+
+/* The row squelch uses the rtl_sql contract: whole dB from -100 to 0, 0 switches it off, and
+ * omitting it inherits. Both the separate-token and the = spellings work, and a negative number
+ * is the one exception to "a following token that starts with - is a switch". */
+static void
+check_squelch_option(void) {
+    dsd_scan_options parsed = {0};
+    char error[192] = {0};
+
+    const struct {
+        const char* text;
+        int db;
+    } accepted[] = {{"--squelch-db -60", -60}, {"--squelch-db=-60", -60},   {"--squelch-db 0", 0},
+                    {"--squelch-db=0", 0},     {"--squelch-db -100", -100}, {"--squelch-db '-45'", -45}};
+
+    for (size_t i = 0; i < sizeof(accepted) / sizeof(accepted[0]); i++) {
+        DSD_MEMSET(&parsed, 0, sizeof(parsed));
+        assert(dsd_scan_options_parse(accepted[i].text, DSD_SCAN_MODE_DMR, 1, &parsed, error, sizeof(error)) == 0);
+        assert(parsed.values.present == DSD_SCAN_OPT_SQUELCH);
+        assert(parsed.values.squelch_db == accepted[i].db);
+    }
+
+    /* Allowed on every declared class and on blank rows, conventional or trunked alike. */
+    for (unsigned int mode = DSD_SCAN_MODE_INHERIT; mode <= DSD_SCAN_MODE_M17; mode++) {
+        for (int conventional = 0; conventional <= 1; conventional++) {
+            DSD_MEMSET(&parsed, 0, sizeof(parsed));
+            assert(dsd_scan_options_parse("--squelch-db -70", mode, conventional, &parsed, error, sizeof(error)) == 0);
+            assert(parsed.values.present == DSD_SCAN_OPT_SQUELCH && parsed.values.squelch_db == -70);
+        }
+    }
+
+    /* The exception belongs to the squelch value alone: -4 after --squelch-db is its value,
+     * never the DMR force switch, while a bare -4 is still the force switch. */
+    DSD_MEMSET(&parsed, 0, sizeof(parsed));
+    assert(dsd_scan_options_parse("--squelch-db -4", DSD_SCAN_MODE_DMR, 1, &parsed, error, sizeof(error)) == 0);
+    assert(parsed.values.present == DSD_SCAN_OPT_SQUELCH && parsed.values.squelch_db == -4);
+    assert(parsed.values.force == 0);
+    DSD_MEMSET(&parsed, 0, sizeof(parsed));
+    assert(dsd_scan_options_parse("-4 --squelch-db -4", DSD_SCAN_MODE_DMR, 1, &parsed, error, sizeof(error)) == 0);
+    assert(parsed.values.present == (DSD_SCAN_OPT_FORCE | DSD_SCAN_OPT_SQUELCH));
+    assert(parsed.values.force == 1 && parsed.values.squelch_db == -4);
+    /* -0 and -1 are switches as well and read the same way after --squelch-db: values, so the
+     * key that would follow -1 is a stray positional argument. */
+    DSD_MEMSET(&parsed, 0, sizeof(parsed));
+    assert(dsd_scan_options_parse("--squelch-db -0", DSD_SCAN_MODE_DMR, 1, &parsed, error, sizeof(error)) == 0);
+    assert(parsed.values.present == DSD_SCAN_OPT_SQUELCH && parsed.values.squelch_db == 0);
+    DSD_MEMSET(&parsed, 0, sizeof(parsed));
+    assert(dsd_scan_options_parse("--squelch-db -1", DSD_SCAN_MODE_DMR, 1, &parsed, error, sizeof(error)) == 0);
+    assert(parsed.values.present == DSD_SCAN_OPT_SQUELCH && parsed.values.squelch_db == -1);
+    assert(dsd_scan_options_parse("--squelch-db -1 0123456789", DSD_SCAN_MODE_DMR, 1, &parsed, error, sizeof(error))
+           < 0);
+    /* -4 is not a P25 switch, but as a squelch value it is fine on a P25 row. */
+    assert(dsd_scan_options_parse("--squelch-db -4", DSD_SCAN_MODE_P25, 0, &parsed, error, sizeof(error)) == 0);
+    assert(dsd_scan_options_parse("-4", DSD_SCAN_MODE_P25, 0, &parsed, error, sizeof(error)) < 0);
+    /* Other value-taking switches still refuse a negative number as their value. */
+    assert(dsd_scan_options_parse("--scan-max-visit-ms -60", DSD_SCAN_MODE_DMR, 1, &parsed, error, sizeof(error)) < 0);
+    assert(dsd_scan_options_parse("-G -60", DSD_SCAN_MODE_DMR, 1, &parsed, error, sizeof(error)) < 0);
+
+    const char* rejected[] = {"--squelch-db +5",
+                              "--squelch-db 5",
+                              "--squelch-db=5",
+                              "--squelch-db -101",
+                              "--squelch-db=-101",
+                              "--squelch-db -5.5",
+                              "--squelch-db=-5.5",
+                              "--squelch-db -60dB",
+                              "--squelch-db 1e1",
+                              "--squelch-db -",
+                              "--squelch-db=",
+                              "--squelch-db",
+                              "--squelch-db --strict-crc",
+                              "--squelch-db -60 --squelch-db -50",
+                              "--squelch-db=-60 --squelch-db 0",
+                              "--squelch-db SENSITIVE"};
+    for (size_t i = 0; i < sizeof(rejected) / sizeof(rejected[0]); i++) {
+        DSD_MEMSET(&parsed, 0, sizeof(parsed));
+        DSD_MEMSET(error, 0, sizeof(error));
+        assert(dsd_scan_options_parse(rejected[i], DSD_SCAN_MODE_DMR, 1, &parsed, error, sizeof(error)) < 0);
+        assert(parsed.values.present == 0);
+        /* The diagnostic names the switch and never echoes the value. */
+        assert(strncmp(error, "--squelch-db: ", 14) == 0);
+        assert(strstr(error, "SENSITIVE") == NULL);
+    }
+    assert(
+        dsd_scan_options_parse("--squelch-db -60 --squelch-db -50", DSD_SCAN_MODE_DMR, 1, &parsed, error, sizeof(error))
+        < 0);
+    assert(strcmp(error, "--squelch-db: duplicate option") == 0);
+    /* A bad number gets the same diagnostic however it is spelled; only a token that is not a
+     * number at all reads as a missing value. */
+    const char* out_of_contract[] = {"--squelch-db 5",     "--squelch-db=5",     "--squelch-db -5.5",
+                                     "--squelch-db=-5.5",  "--squelch-db -101",  "--squelch-db -1e1",
+                                     "--squelch-db -60.0", "--squelch-db=-60.0", "--squelch-db +5"};
+    for (size_t i = 0; i < sizeof(out_of_contract) / sizeof(out_of_contract[0]); i++) {
+        assert(dsd_scan_options_parse(out_of_contract[i], DSD_SCAN_MODE_DMR, 1, &parsed, error, sizeof(error)) < 0);
+        assert(strcmp(error, "--squelch-db: expects whole dB from -100 to 0 (0 = off)") == 0);
+    }
+    const char* missing[] = {"--squelch-db", "--squelch-db -", "--squelch-db --strict-crc", "--squelch-db -G",
+                             "--squelch-db -60dB"};
+    for (size_t i = 0; i < sizeof(missing) / sizeof(missing[0]); i++) {
+        assert(dsd_scan_options_parse(missing[i], DSD_SCAN_MODE_DMR, 1, &parsed, error, sizeof(error)) < 0);
+        assert(strcmp(error, "--squelch-db: requires a valid argument") == 0);
+    }
+
+    /* The file visitor walks the same grammar, or the Qt/Android inspector would reject a row
+     * the importer accepts (or accept one it rejects). */
+    size_t visited = 0;
+    assert(dsd_scan_options_visit_files("--squelch-db -60", &visited, count_file_spans) == 0 && visited == 0);
+    assert(dsd_scan_options_visit_files("--squelch-db=-60", &visited, count_file_spans) == 0 && visited == 0);
+    assert(dsd_scan_options_visit_files("--squelch-db -4 -G groups.csv", &visited, count_file_spans) == 0);
+    assert(visited == 1);
+    /* A malformed number is still the value (the parser's setter rejects it), not a switch. */
+    assert(dsd_scan_options_visit_files("--squelch-db -5.5 -G groups.csv", &visited, count_file_spans) == 0);
+    assert(visited == 2);
+    visited = 0;
+    assert(dsd_scan_options_visit_files("--squelch-db", &visited, count_file_spans) == -1);
+    assert(dsd_scan_options_visit_files("--squelch-db --strict-crc", &visited, count_file_spans) == -1);
+    assert(dsd_scan_options_visit_files("--squelch-db -60x", &visited, count_file_spans) == -1);
+    assert(dsd_scan_options_visit_files("-G -60", &visited, count_file_spans) == -1);
+    assert(visited == 0);
+    file_spans spans = {0};
+    const char* text = "--squelch-db -60 -K keys.csv";
+    assert(dsd_scan_options_visit_files(text, &spans, collect_file_span) == 0 && spans.count == 1);
+    assert(spans.offsets[0] == strlen("--squelch-db -60 -K ") && strcmp(spans.paths[0], "keys.csv") == 0);
+    DSD_SECURE_ZERO(&parsed, sizeof(parsed));
+}
+
 int
 main(void) {
     check_file_spans();
+    check_squelch_option();
     dsd_scan_options parsed = {0};
     char error[192] = {0};
     assert(dsd_scan_options_parse("--dmr-tg-key-csv mapping.csv", DSD_SCAN_MODE_DMR, 1, &parsed, error, sizeof(error))

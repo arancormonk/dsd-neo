@@ -11,3 +11,7 @@ android/third_party/libairspy/** linguist-vendored
 # containers can execute/source them directly from archives produced on Windows.
 *.sh text eol=lf
 *.env text eol=lf
+
+# Binary I/Q fixtures (cu8): never line-ending converted or diffed as text. Git's
+# own detection can take a capture that happens to hold no NUL byte for text.
+tests/fixtures/iq/*.iq binary

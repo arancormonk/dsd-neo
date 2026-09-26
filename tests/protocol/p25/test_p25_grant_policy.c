@@ -271,6 +271,54 @@ main(void) {
                                    .is_group = 1});
     rc |= expect_true("patch no policy match blocked by allowlist", st.p25_sm_tune_count == before);
 
+    // A user lockout of a patched supergroup is final. In blacklist mode every
+    // unlisted member is allowed, so a member reprieve would let almost any
+    // patch through its supergroup's lockout; a held member does not override
+    // it either, just as a Hold does not override mode B on a plain talkgroup.
+    opts.trunk_use_allow_list = 0;
+    rc |= expect_true("seed patched supergroup B", seed_exact(&st, 1406, "B", "PATCH-SG-BLOCK", 0, 0) == 0);
+    p25_patch_add_wgid(&st, 1406, 1407);
+    before = st.p25_sm_tune_count;
+    opts.trunk_is_tuned = 0;
+    p25_sm_event(p25_sm_get_ctx(), &opts, &st,
+                 &(p25_sm_event_t){.type = P25_SM_EV_GRANT,
+                                   .slot = -1,
+                                   .channel = ch,
+                                   .tg = 1406,
+                                   .src = 2406,
+                                   .svc_bits = 0x00,
+                                   .is_group = 1});
+    rc |= expect_true("patched supergroup mode B not readmitted by member", st.p25_sm_tune_count == before);
+    st.tg_hold = 1407;
+    p25_sm_event(p25_sm_get_ctx(), &opts, &st,
+                 &(p25_sm_event_t){.type = P25_SM_EV_GRANT,
+                                   .slot = -1,
+                                   .channel = ch,
+                                   .tg = 1406,
+                                   .src = 2406,
+                                   .svc_bits = 0x00,
+                                   .is_group = 1});
+    rc |= expect_true("patched supergroup mode B not readmitted by held member", st.p25_sm_tune_count == before);
+    st.tg_hold = 0;
+
+    rc |= expect_true("session-avoid patched supergroup", dsd_tg_policy_session_avoid_add(&st, 1408) == 0);
+    p25_patch_add_wgid(&st, 1408, 1409);
+    p25_sm_event(p25_sm_get_ctx(), &opts, &st,
+                 &(p25_sm_event_t){.type = P25_SM_EV_GRANT,
+                                   .slot = -1,
+                                   .channel = ch,
+                                   .tg = 1408,
+                                   .src = 2408,
+                                   .svc_bits = 0x00,
+                                   .is_group = 1});
+    rc |= expect_true("patched supergroup session avoid not readmitted by member", st.p25_sm_tune_count == before);
+    dsd_tg_policy_session_avoid_clear(&st);
+    if (st.p25_sm_tune_count != before) {
+        p25_sm_release(p25_sm_get_ctx(), &opts, &st, "explicit-release");
+        mark_cc_reacquired(&st);
+    }
+    opts.trunk_use_allow_list = 1;
+
     // Explicit mode blocks remain enforced.
     rc |= expect_true("seed group B", seed_exact(&st, 1102, "B", "BLOCK", 0, 0) == 0);
     before = st.p25_sm_tune_count;
@@ -552,6 +600,41 @@ main(void) {
         rc |=
             expect_true("regroup clear override clears matching cache entry", enc_tg_cache_is_absent(&cache_st, 1303U));
         p25_sm_release(p25_sm_get_ctx(), &cache_opts, &cache_st, "explicit-release");
+        mark_cc_reacquired(&cache_st);
+
+        // A locked-out supergroup stays locked out while its patch is active.
+        // The lockout is keyed on the over-the-air SG, and its member WGs
+        // never carry the traffic themselves, so an unlocked member must not
+        // readmit the SG's grants (a retune / re-lock cycle per grant update).
+        p25_sm_note_encrypted_call_typed(&cache_opts, &cache_st, 1304, 1, 0x84, 0x0004);
+        p25_patch_add_wgid(&cache_st, 1304, 1305);
+        p25_patch_add_wgid(&cache_st, 1304, 1306);
+        p25_patch_set_kas(&cache_st, 1304, /*key*/ 0x0004, /*alg*/ 0x84, /*ssn*/ 10);
+        before = cache_st.p25_sm_tune_count;
+        cache_opts.trunk_is_tuned = 0;
+        p25_sm_event(p25_sm_get_ctx(), &cache_opts, &cache_st,
+                     &(p25_sm_event_t){.type = P25_SM_EV_GRANT,
+                                       .slot = -1,
+                                       .channel = ch,
+                                       .tg = 1304,
+                                       .src = 2306,
+                                       .svc_bits = 0x40,
+                                       .is_group = 1});
+        rc |= expect_true("locked patched supergroup encrypted grant suppressed", cache_st.p25_sm_tune_count == before);
+        p25_sm_event(p25_sm_get_ctx(), &cache_opts, &cache_st,
+                     &(p25_sm_event_t){.type = P25_SM_EV_GRANT,
+                                       .slot = -1,
+                                       .channel = ch,
+                                       .tg = 1304,
+                                       .src = 2306,
+                                       .svc_bits = P25_SM_SVC_UNKNOWN,
+                                       .is_group = 1});
+        rc |=
+            expect_true("locked patched supergroup unknown-svc grant suppressed", cache_st.p25_sm_tune_count == before);
+        rc |= expect_true("locked patched supergroup keeps its lockout", !enc_tg_cache_is_absent(&cache_st, 1304U));
+        if (cache_st.p25_sm_tune_count != before) {
+            p25_sm_release(p25_sm_get_ctx(), &cache_opts, &cache_st, "explicit-release");
+        }
         mark_cc_reacquired(&cache_st);
 
         // Group and private calls with the same numeric target retain separate

@@ -25,6 +25,7 @@
 #include <dsd-neo/app_control/call_view.h>
 #include <dsd-neo/app_control/frontend_runtime.h>
 #include <dsd-neo/app_control/snapshot.h>
+#include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/dsd_time.h>
 #include <dsd-neo/core/init.h>
 #include <dsd-neo/core/opts.h>
@@ -408,6 +409,32 @@ test_auto_start_requests() {
     check(requests == 2); // Suppressed requests do not retry when the gate opens.
 }
 
+// Issue #525: the Radio sheet's NFM width control goes through the real bridge and decoder queue as
+// DSD_APP_CMD_NFM_BANDWIDTH_SET with the width as typed; the decoder applies what it accepts (0 is the default)
+// and refuses the rest with the width unchanged. PCM input keeps the front end out of it.
+static void
+test_nfm_bandwidth_bridge() {
+    dsd_qt::CommandBridge bridge;
+    static dsd_opts opts;
+    static dsd_state state;
+    initOpts(&opts);
+    initState(&state);
+    opts.audio_in_type = AUDIO_IN_PULSE;
+    opts.audio_out_type = 9;
+    opts.analog_only = 1;
+    dsd_app_frontend_runtime_start(nullptr, nullptr);
+    check(bridge.setNfmBandwidthHz(12500));
+    check(dsd_app_drain_cmds(&opts, &state) == 1);
+    check(opts.analog_nfm_bandwidth_hz == 12500);
+    check(bridge.setNfmBandwidthHz(30000));
+    check(dsd_app_drain_cmds(&opts, &state) == 1);
+    check(opts.analog_nfm_bandwidth_hz == 12500);
+    check(bridge.setNfmBandwidthHz(0));
+    check(dsd_app_drain_cmds(&opts, &state) == 1);
+    check(opts.analog_nfm_bandwidth_hz == 0);
+    freeState(&state);
+}
+
 static void
 test_zero_bounds() {
     dsd_qt::CommandBridge bridge;
@@ -452,6 +479,7 @@ main(int argc, char** argv) {
     test_startup_options_wait_for_redraw();
     test_metrics_age_without_decoder_redraw();
     test_sheet_policy_edits();
+    test_nfm_bandwidth_bridge();
     test_zero_bounds();
     test_auto_start_requests();
     test_initial_usb_record();
@@ -569,6 +597,19 @@ main(int argc, char** argv) {
     check(bridge.setPersistTgLockouts(false));
     check(dsd_app_drain_cmds(&opts, &state) == 1);
     check(opts.persist_tg_lockouts == 0);
+    dsd_call_observation call = {};
+    call.protocol = DSD_SYNC_P25P1_POS;
+    call.slot = 0U;
+    call.kind = DSD_CALL_KIND_GROUP_VOICE;
+    call.ota_target_id = 42;
+    call.policy_target_id = 42;
+    call.ota_source_id = 1;
+    call.observed_m = dsd_time_now_monotonic_s();
+    check(dsd_call_state_observe(&state, &call, DSD_CALL_BOUNDARY_BEGIN) == 1);
+    check(!dsd_tg_policy_call_skip_active(&state, 42, dsd_time_now_monotonic_s()));
+    check(bridge.skipSlot(0));
+    check(dsd_app_drain_cmds(&opts, &state) == 1);
+    check(dsd_tg_policy_call_skip_active(&state, 42, dsd_time_now_monotonic_s()));
     check(dsd_tg_policy_session_avoid_add(&state, 42) == 0);
     check(!bridge.clearTemporaryTgAvoids("invalid context"));
     check(bridge.clearTemporaryTgAvoids(QString::number(context + 1)));
@@ -577,6 +618,7 @@ main(int argc, char** argv) {
     check(bridge.clearTemporaryTgAvoids(QString::number(context)));
     check(dsd_app_drain_cmds(&opts, &state) == 1);
     check(!dsd_tg_policy_session_avoid_contains(&state, 42));
+    check(!dsd_tg_policy_call_skip_active(&state, 42, dsd_time_now_monotonic_s()));
     refreshVersion();
     const QString version = QString::number(context);
     check(!bridge.renameTalkgroup(42, 42, version, generation, QString(50, QLatin1Char('x'))));

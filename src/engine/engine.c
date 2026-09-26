@@ -27,6 +27,7 @@
 #include <dsd-neo/core/talkgroup_policy.h>
 #include <dsd-neo/core/time_format.h>
 #include <dsd-neo/core/vocoder.h>
+#include <dsd-neo/dsp/analog_rx.h>
 #include <dsd-neo/dsp/frame_sync.h>
 #include <dsd-neo/dsp/sps_filters.h>
 #include <dsd-neo/dsp/symbol.h>
@@ -36,6 +37,7 @@
 #include <dsd-neo/engine/p25_bandplan_export.h>
 #include <dsd-neo/engine/protocol_dispatch.h>
 #include <dsd-neo/engine/scan_voice_gate.h>
+#include <dsd-neo/engine/slicer_thresholds.h>
 #include <dsd-neo/engine/trunk_scan.h>
 #include <dsd-neo/engine/trunk_tuning.h>
 #include <dsd-neo/fec/block_codes.h>
@@ -63,6 +65,7 @@
 #include <dsd-neo/protocol/tetra/tetra_acelp.h>
 #include <dsd-neo/protocol/tetra/tetra_trunk_sm.h>
 #include <dsd-neo/runtime/airspy_config.h>
+#include <dsd-neo/runtime/analog_channel.h>
 #include <dsd-neo/runtime/cli.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/control_pump.h>
@@ -1166,6 +1169,48 @@ dsd_engine_setup_open_audio_paths(dsd_opts* opts, dsd_state* state) {
     return 0;
 }
 
+/* The DSP bandwidth an RTL-SDR spec ("rtl:dev:freq:gain:ppm:bw:...") sets, read the way
+ * dsd_engine_setup_parse_rtl_spec_tokens() reads its sixth field, but without looking for a device; @p fallback (the
+ * bandwidth the options already hold) when the spec leaves the field out. */
+static int
+dsd_engine_setup_rtl_spec_bw_khz(const char* spec, int fallback) {
+    char inbuf[1024];
+    char* saveptr = NULL;
+    dsd_engine_setup_copy_spec(inbuf, sizeof(inbuf), spec);
+    const char* curr = dsd_strtok_r(inbuf, ":", &saveptr);
+    for (int field = 1; curr && field <= 5; field++) {
+        curr = dsd_strtok_r(NULL, ":", &saveptr);
+    }
+    return curr ? dsd_engine_setup_parse_bw_token_or_default(curr) : fallback;
+}
+
+/*
+ * An explicit analog channel width, from --nfm-bandwidth-hz or [analog] nfm_bandwidth_hz, has to fit the DSP rate the
+ * stream will run at. For an RTL-SDR or rtl_tcp input that rate is the DSP bandwidth the input spec (or [input]
+ * rtl_bw_khz) sets, known here, so a width it cannot filter is refused before the device opens, with the validator's
+ * actionable text. It runs before an RTL-SDR input looks for its device, so the refusal does not depend on a dongle
+ * being plugged in (or on RTL-SDR support in the build): the spec alone decides it. An rtl_tcp spec has set
+ * rtl_dsp_bw_khz already. Inputs whose device may force another rate (SoapySDR, Airspy) and I/Q replay, whose sidecar
+ * sets the rate, are checked where the rate is final, at stream start (rtl_demod_finalize_analog_channel()).
+ */
+static int
+dsd_engine_setup_check_analog_width(const dsd_opts* opts) {
+    const int width_hz = dsd_opts_analog_width_hz(opts);
+    const int rtl_spec = dsd_opts_audio_in_dev_is_rtl_spec(opts->audio_in_dev);
+    if (!dsd_opts_is_analog_family(opts) || width_hz <= 0 || opts->iq_replay_active
+        || !(rtl_spec || dsd_opts_audio_in_dev_is_rtltcp_spec(opts->audio_in_dev))) {
+        return 0;
+    }
+    const int bw_khz =
+        rtl_spec ? dsd_engine_setup_rtl_spec_bw_khz(opts->audio_in_dev, opts->rtl_dsp_bw_khz) : opts->rtl_dsp_bw_khz;
+    char err[DSD_ANALOG_ERROR_TEXT_MAX];
+    if (dsd_analog_width_check(opts->analog_demod, width_hz, bw_khz * 1000, err, sizeof err) == 0) {
+        return 0;
+    }
+    LOG_ERROR("%s.\n", err);
+    return -1;
+}
+
 static int
 dsd_engine_setup_io(dsd_opts* opts, dsd_state* state) {
     if (!opts || !state) {
@@ -1192,6 +1237,9 @@ dsd_engine_setup_io(dsd_opts* opts, dsd_state* state) {
     dsd_engine_setup_parse_rtltcp_input(opts);
     dsd_engine_setup_parse_soapy_input(opts);
     if (dsd_normalize_airspy_input_spec(opts) != 0) {
+        return -1;
+    }
+    if (dsd_engine_setup_check_analog_width(opts) != 0) {
         return -1;
     }
     if (dsd_engine_setup_parse_rtl_input(opts, state) != 0) {
@@ -1455,12 +1503,20 @@ no_carrier_step_scanner_mode_if_needed(dsd_opts* opts, dsd_state* state, time_t 
     // reacquirable by whatever decodes next -- on a different frequency.
     int moved = 0;
     if (freq != 0 && no_carrier_step_retune(opts, state, freq, &moved) != 0) {
+        if (moved) {
+            /* The receiver is on another frequency even though the step failed, so the tone
+               heard on the old one no longer describes it (issue #522). */
+            dsd_analog_rx_reset(state);
+        }
         no_carrier_rearm_abandoned_scan(opts, state, now);
         return moved;
     }
     state->lcn_freq_roll++;
     if (freq != 0) {
         dsd_scan_row_keys_apply(state, state->lcn_freq_roll - 1);
+        /* The untyped step never runs the acquisition reset the typed rows do, so the received
+           tone is cleared here: a new channel must not inherit the old one's (issue #522). */
+        dsd_analog_rx_reset(state);
     }
     state->last_cc_sync_time = now;
     state->last_cc_sync_time_m = dsd_time_now_monotonic_s();
@@ -1903,22 +1959,24 @@ no_carrier_apply_p25_cc_symbolrate(dsd_opts* opts, dsd_state* state) {
 }
 
 static int
-no_carrier_tick_dmr_owner(dsd_opts* opts, dsd_state* state) {
-    if (dsd_trunk_dmr_recovery_allowed(opts, state)) {
-        if (!p25_sm_tick_guard_try_enter()) {
-            return 1;
-        }
-        dmr_sm_ctx_t* ctx = dmr_sm_get_ctx();
-        if (dmr_sm_get_state(ctx) == DMR_SM_TUNED || ctx->cc_tune_request_id != 0U) {
-            /* The DMR owner applies its grant/voice deadlines and tracks the
-             * accepted return; generic/P25 recovery must not race it. */
-            dmr_sm_tick_ctx(ctx, opts, state);
-            p25_sm_tick_guard_leave();
-            return 1;
-        }
+no_carrier_tick_dmr_owner(dsd_opts* opts, dsd_state* state, int guard_held) {
+    if (!dsd_trunk_dmr_recovery_allowed(opts, state)) {
+        return 0;
+    }
+    if (!guard_held && !p25_sm_tick_guard_try_enter()) {
+        return 1;
+    }
+    dmr_sm_ctx_t* ctx = dmr_sm_get_ctx();
+    const int active = dmr_sm_get_state(ctx) == DMR_SM_TUNED || ctx->cc_tune_request_id != 0U;
+    if (active) {
+        /* The DMR owner applies its grant/voice deadlines and tracks the
+         * accepted return; generic/P25 recovery must not race it. */
+        dmr_sm_tick_ctx(ctx, opts, state);
+    }
+    if (!guard_held) {
         p25_sm_tick_guard_leave();
     }
-    return 0;
+    return active;
 }
 
 static void
@@ -1944,8 +2002,8 @@ no_carrier_finish_cc_return(dsd_opts* opts, dsd_state* state, long cc, int accep
 }
 
 static void
-no_carrier_return_to_control_channel_if_needed(dsd_opts* opts, dsd_state* state, time_t now) {
-    if (no_carrier_tick_dmr_owner(opts, state)) {
+no_carrier_return_to_control_channel_if_needed(dsd_opts* opts, dsd_state* state, time_t now, int guard_held) {
+    if (no_carrier_tick_dmr_owner(opts, state, guard_held)) {
         return;
     }
     if (!no_carrier_is_cc_return_due(opts, state, now)) {
@@ -2424,8 +2482,8 @@ no_carrier_reset_m17_and_sample_buffers(dsd_state* state) {
     DSD_MEMSET(state->static_ks_counter, 0, sizeof(state->static_ks_counter));
 }
 
-void
-noCarrier(dsd_opts* opts, dsd_state* state) {
+static void
+no_carrier_run(dsd_opts* opts, dsd_state* state, int guard_held) {
     const time_t now = time(NULL);
 
     if (opts->scanner_mode == 1 && opts->trunk_scan_enabled != 1 && dsd_channel_modes_present(state)) {
@@ -2458,9 +2516,19 @@ noCarrier(dsd_opts* opts, dsd_state* state) {
          * hop reason. A pending tune must not close them as sync loss first. */
         return;
     }
-    no_carrier_return_to_control_channel_if_needed(opts, state, now);
+    no_carrier_return_to_control_channel_if_needed(opts, state, now, guard_held);
     no_carrier_finalize_canonical_calls(opts, state, scanner_retuned);
     dsd_engine_reset_no_carrier_state(opts, state);
+}
+
+void
+noCarrier(dsd_opts* opts, dsd_state* state) {
+    no_carrier_run(opts, state, 0);
+}
+
+void
+dsd_engine_no_carrier_locked(dsd_opts* opts, dsd_state* state) {
+    no_carrier_run(opts, state, 1);
 }
 
 void
@@ -2603,26 +2671,14 @@ live_scanner_emit_start_log_if_enabled(const dsd_opts* opts, dsd_state* state) {
 }
 
 static void
-live_scanner_update_thresholds(dsd_state* state, int* last_max, int* last_min) {
-    int current_max = (int)state->max;
-    int current_min = (int)state->min;
-    if (current_max == *last_max && current_min == *last_min) {
-        return;
-    }
-    state->center = ((state->max) + (state->min)) / 2;
-    state->umid = (((state->max) - state->center) * 5 / 8) + state->center;
-    state->lmid = (((state->min) - state->center) * 5 / 8) + state->center;
-    *last_max = current_max;
-    *last_min = current_min;
-}
-
-static void
-live_scanner_process_synced_frames(dsd_opts* opts, dsd_state* state, int* last_max, int* last_min,
+live_scanner_process_synced_frames(dsd_opts* opts, dsd_state* state, dsd_engine_slicer_threshold_cache* threshold_cache,
                                    uint64_t* frame_tune_generation) {
     while (state->synctype != DSD_SYNC_NONE) {
         if (!dsd_engine_channel_scan_service_sync(opts, state)) {
             break;
         }
+        /* processFrame() runs under the tick guard: nothing below it may pump
+         * controls, since a guarded command apply would self-deadlock (#554). */
         p25_sm_tick_guard_enter();
         const uint64_t dispatch_generation =
             frame_tune_generation ? *frame_tune_generation : dsd_trunk_tuning_generation();
@@ -2668,15 +2724,16 @@ live_scanner_process_synced_frames(dsd_opts* opts, dsd_state* state, int* last_m
             *frame_tune_generation = dsd_trunk_tuning_generation();
         }
         state->synctype = getFrameSync(opts, state);
-        live_scanner_update_thresholds(state, last_max, last_min);
+        (void)dsd_engine_slicer_thresholds_refresh(state, threshold_cache);
     }
 }
 
 static void
 live_scanner_main_loop(dsd_opts* opts, dsd_state* state) {
-    int last_max = INT_MIN;
-    int last_min = INT_MAX;
+    dsd_engine_slicer_threshold_cache threshold_cache;
     uint64_t frame_tune_generation;
+
+    dsd_engine_slicer_threshold_cache_init(&threshold_cache);
 
     while (!dsd_exitflag_load()) {
         dsd_runtime_pump_controls(opts, state);
@@ -2708,8 +2765,8 @@ live_scanner_main_loop(dsd_opts* opts, dsd_state* state) {
         dsd_engine_scan_y_timing_tick(opts, state, dsd_time_now_monotonic_s(), dsd_time_now_realtime_s());
         frame_tune_generation = dsd_trunk_tuning_generation();
         state->synctype = getFrameSync(opts, state);
-        live_scanner_update_thresholds(state, &last_max, &last_min);
-        live_scanner_process_synced_frames(opts, state, &last_max, &last_min, &frame_tune_generation);
+        (void)dsd_engine_slicer_thresholds_refresh(state, &threshold_cache);
+        live_scanner_process_synced_frames(opts, state, &threshold_cache, &frame_tune_generation);
     }
 }
 
@@ -2913,6 +2970,8 @@ dsd_engine_cleanup(dsd_opts* opts, dsd_state* state) {
     closeAudioInDevice(opts);
     dsd_audio_cleanup();
 
+    /* A stopped decoder hears nothing: the next session starts with no received tone. */
+    dsd_analog_rx_reset(state);
     dsd_state_ext_free_all(state);
     dsd_socket_cleanup();
 }

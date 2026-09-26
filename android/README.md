@@ -67,8 +67,26 @@ do both at once:
   Settings, plus the add-system wizard and a failure banner when a start was
   abandoned.
 - **Monitor** (`Starting`, `Running`, `Stopping`) — the live session takes the
-  screen: the hero call, mute/hold/skip, the signal strip, and the session's
+  screen: the hero call, mute, hold, skip and avoid, the signal strip, and the session's
   recent calls.
+
+**Skip** leaves this call without changing the talkgroup list. On P25 a group-call
+skip lasts while the receiver keeps seeing the talkgroup's call: control-channel
+grant updates, or the call on the voice channel it is parked on for the other slot.
+It expires 15 s after the receiver last saw it and after 10 minutes at most. Quick
+replies and new calls within that 15 s window are skipped together. Following a
+call on another carrier for longer than 15 s lets the skipped call be followed
+again when next seen; tap **Skip** again. DMR, NXDN, EDACS and P25 private-call skips
+last 15 s from the tap in this version; ProVoice has no skip.
+
+**Avoid TG** blocks the talkgroup for the session, until stop or list reload/replacement.
+**Lock out** saves the block to the configured talkgroup list. **Settings → Listening
+→ Save avoided talkgroups** selects **Lock out** when on (the default) and **Avoid TG**
+when off. Without a group file, or on a scan row's own list, lockouts stay in memory.
+**Skip** is unaffected by this setting and never saves. Avoids and unexpired call
+skips survive scan-target revisits; **Clear temporary avoids and call skips — current
+list** clears both in the active list. List reload/replacement or stopping the decoder
+also clears them; reopening the Activity while the service runs does not.
 
 The Monitor's decode-quality row sits below the tuner strip and also works with
 PCM, network, and file inputs. `CC FEC` and P2 `RS` show successful blocks as a
@@ -831,6 +849,14 @@ those sessions or saved before system identities were recorded remain ineligible
 even after starting a single saved system. A running session can still release an
 existing hold, including from a different system's row with the same talkgroup ID.
 
+The other active slot's **SLOT n** strip has its own **Skip** and a **More actions**
+menu with **Hold TG** and **Avoid TG**/**Lock out**. Holding that talkgroup replaces any
+existing hold and silences the other slot; **Release hold** clears it. The menu closes
+if its slot or talkgroup changes or the call ends.
+
+The hero stays on the earliest-started identified active call when the other slot
+starts; the notification uses the same rule.
+
 ### Scan lists
 
 **Import target CSV** opens Android's document picker. Select the target CSV and
@@ -856,6 +882,12 @@ Scan lists use the app's voice hang time; per-system hang-time overrides do not 
 targets. The list editor can select imported group/source CSVs from the existing library.
 It has no field for the per-visit cap; add `--scan-max-visit-ms <ms>` to Extra decoder
 arguments to cap every target in the session.
+Per-target squelch is CSV-only: import a target CSV whose `options` carry
+`--squelch-db <dB>` (whole dB from -100 to 0, 0 = off, omitted = inherit). It is not a
+decoder argument, so Extra decoder arguments cannot set it. The target preview lists each
+target's squelch, or inherit. While such a target is on air, the Radio panel shows its
+threshold with a **row** badge and the default beside it; the squelch buttons change that
+default, not the target's value.
 Per-system groups and keys remain isolated on rotation; source aliases are global
 and differing system alias files produce a warning. Unsupported settings are
 refused rather than dropped. See [scan-list rules](../docs/trunk-scan.md#qt-and-android-scan-lists).

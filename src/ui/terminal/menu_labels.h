@@ -166,6 +166,7 @@ const char* lbl_rtl_freq(const void* v, char* b, size_t n);
 const char* lbl_rtl_gain(const void* v, char* b, size_t n);
 const char* lbl_rtl_ppm(const void* v, char* b, size_t n);
 const char* lbl_rtl_bw(const void* v, char* b, size_t n);
+const char* lbl_rtl_nfm_bw(const void* v, char* b, size_t n);
 const char* lbl_rtl_vol(const void* v, char* b, size_t n);
 const char* lbl_rtl_bias(const void* v, char* b, size_t n);
 const char* lbl_rtl_rtltcp_autotune(const void* v, char* b, size_t n);

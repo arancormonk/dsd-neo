@@ -79,13 +79,13 @@ Main Menu
 │       ├── Frequency... [769.768750 MHz]
 │       ├── Gain... [AGC]
 │       ├── PPM correction... [0]                { }
-│       ├── Bandwidth... [48 kHz]
+│       ├── DSP bandwidth... [48 kHz]
+│       ├── NFM bandwidth... [default]           (-fA, or a width set, on a radio input)
 │       ├── Squelch (dB)...
 │       ├── Volume multiplier... [1]             v
 │       ├── Auto-PPM [On]
 │       ├── Tuner autogain [On]
 │       ├── Bias tee [Off]
-│       ├── rtl_tcp adaptive buffering [On]
 │       ├── ─────
 │       ├── Device index...
 │       ├── Restart stream
@@ -96,6 +96,7 @@ Main Menu
 │       │   ├── Auto-PPM zero-lock Hz... [60]
 │       │   ├── Auto-PPM freeze [Off]
 │       │   ├── ─────
+│       │   ├── rtl_tcp adaptive buffering [On]
 │       │   ├── rtl_tcp prebuffer... [30 ms]
 │       │   ├── rtl_tcp SO_RCVBUF... [system default]
 │       │   ├── rtl_tcp SO_RCVTIMEO... [Off]
@@ -381,9 +382,32 @@ samples measured before demodulation. The line is advisory only; DSD-neo never c
 filtering automatically.
 
 The default RTL input line shows the SQL threshold, reading `off` when the squelch is disabled, but does not
-duplicate channel power. Enable the DSP panel when you
+duplicate channel power. While a scan row or target overrides the squelch with `--squelch-db`, the line shows the
+row's threshold first and the configured default beside it: `SQL: -60.0 dB (row; default -80.0 dB)`. The
+`Squelch (dB)...` prompt always offers and edits that configured default; if a row is overriding it, the change
+takes effect when the scanner leaves the row, and the toast says so
+(`Default squelch -75.0 dB; this channel overrides it (-60.0 dB)`). The M17 VOX `SQL:` field on a non-RTL input
+reads the same way after the measured power, and the DSP panel's `Squelch` line marks a row's threshold with
+`(row)`. Enable the DSP panel when you
 need to inspect post-channel-filter squelch power. `RF Level` and `Squelch` are measured at different stages and are not
 expected to match exactly.
+
+`DSP-BW:` on the RTL input line is the DSP bandwidth, the demodulator's sample rate that `DSP bandwidth...` sets. Under
+`-fA` the line also shows the analog channel width in force beside it, `Analog: NFM 12.5 kHz;`: the width the front
+end reports while a running stream runs the analog monitor, otherwise the configured one, so a scan row running a
+digital protocol shows the width its leave returns to. The unset default reads `Analog: NFM 16 kHz (default);`, and
+`Analog: NFM 12 kHz (DSP-limited);` beside `DSP-BW: 12 kHz;` when the DSP rate rather than the channel filter bounds
+the channel, which is what the unset default does below a 20 kHz DSP rate: no channel filter runs there, so the rate
+itself is the bound. With the stream stopped, the line reads what the next start runs at `DSP-BW:`, so a 12 kHz DSP
+bandwidth still shows `Analog: NFM 12 kHz (DSP-limited);`, and so does a scan row running a digital protocol at a
+12 kHz rate. `NFM bandwidth...` (offered on a radio input while `-fA` is the configured mode, or while an explicit
+width is set under another mode, so that a width a switch to `-fA` would be refused for can be narrowed first) shows
+the setting, `[12.5 kHz]` or `[default]`, takes any width from 8000 to 25000 Hz, or `0` for the default, and applies
+it live; a width the DSP rate cannot filter is refused with a message naming both and the fix, and a
+`DSP bandwidth...` value the explicit NFM width cannot run at is refused with one saying to narrow the width first.
+Input > Switch source > RTL-SDR refuses the switch, keeping the running input, when its DSP bandwidth cannot filter the
+explicit NFM width (see `docs/cli.md`, Analog reception). The Qt and Android Radio sheet shows the same reading,
+spelled the same way.
 
 The low-level threshold is controlled by `--input-level-warn-db`, `DSD_NEO_INPUT_WARN_DB`, or the `[input]`
 `input_warn_db` user-config key, and defaults to `-40 dBFS`. Changes made through the terminal menu persist through
@@ -430,13 +454,18 @@ modifiers (`<` `>`, `,` `.`) are named in their row's help text rather than in i
 | `d` | Toggle follow data calls |
 | `e` | Toggle encrypted call lockout (P25/DMR/NXDN trunking) |
 | `k` / `l` | Set/clear talkgroup hold from the most recent TG (slot-aware) |
-| `!` / `@` | Lock out slot 1 / slot 2 (where applicable); lifetime follows **Save user TG lockouts** |
+| `!` / `@` | Lock out slot 1 / slot 2 (where applicable); lifetime follows **Save user TG lockouts**, like Qt/Android **Avoid TG**/**Lock out** |
 
 **Save user TG lockouts** defaults to On: quick lockouts save to a configured global groups file. Turn it Off
 in **Trunking → Follow**, or start with `--tg-lockout-session`, to keep subsequent lockouts temporary. Clear them
 using **Clear temporary TG avoids - current list**, reload the list, or stop the decoder. List edits still save;
 changing this setting does not convert existing blocks. Scan rows with their own groups lists keep separate
 avoids, while rows inheriting the global list share its avoids.
+
+Qt/Android **Skip** is a separate call-skip action: it leaves the call without changing the talkgroup list and
+expires independently of **Save user TG lockouts**. See [Skip lifetimes](cli.md#trunking--scanning). The terminal's
+**Clear temporary TG avoids - current list** also clears call skips in that scope; Qt/Android labels this action
+**Clear temporary avoids and call skips — current list**.
 
 ### Slots, gain & privacy
 
@@ -616,6 +645,28 @@ scan is not running, and nothing at all when neither scanner is running or the r
 Input Output row it repeats: a target is a whole system, and "channel" already means a channel number lower in Call
 Info. Event history rows carry the same label as a bracketed prefix — see "Event History Rows" below.
 
+## Received Tone
+
+While the analog FM monitor runs (`-fA`), Call Info carries the sub-audible tone the receiver hears, under the
+channel line and in compact view too:
+
+```
+| Rx tone: CTCSS 100.0 Hz
+```
+
+It reads `CTCSS 100.0 Hz` once a supported tone is confirmed, `detecting` while a carrier is being evaluated, `none`
+when the carrier carries no supported tone (or the tone was lost), and `—` when there is no carrier (`-` on a terminal
+without UTF-8), including while a stdin, UDP or TCP stream, or a live radio stream such as an `rtl_tcp` connection, has
+stopped delivering audio for about half a second. The line is shown exactly while detection runs, so it is absent
+outside the analog FM monitor, while an RTL stream is not yet outputting monitor audio, and at an input rate detection
+cannot use (below 2400 Hz or above 320 kHz). This is only what is received; it never reflects a tone filter setting, and
+it clears on a retune, a manual channel cycle, a scan row or target change, a mode change, an input switch and stop. A
+retune the audio producer makes on its own, such as `rtl_fm` scanning several frequencies into stdin, is not one of
+these: after a hop that leaves a gap shorter than half a second, the previous channel's tone can show for a few hundred
+milliseconds until it is dropped. The same text comes from the shared app-control view the Qt/Android monitor uses, so
+both always agree. Supported tones, timing and the requirements on externally demodulated audio are in the
+[CLI guide](cli.md#received-tone-ctcss-on-the-analog-monitor).
+
 ## Compact View
 
 Press `c` (or use Menu -> Display -> Compact view) to collapse the main screen to a scanner-style
@@ -624,8 +675,8 @@ layout. While active, the header shows a `Compact (c)` indicator and the frame r
 - the header banner and any transient status toast;
 - a condensed `Status` block: decoder mode, demod/symbol rate, tuner Busy/Free (when trunking), SNR meter,
   input level, output mute state, and slot on/off states;
-- the full Call Info section (the `Channel:`/`Target:` line while scanning, per-slot TGT/SRC, active channels,
-  tuned frequency, TG HOLD);
+- the full Call Info section (the `Channel:`/`Target:` line while scanning, the `Rx tone:` line on the analog
+  monitor, per-slot TGT/SRC, active channels, tuned frequency, TG HOLD);
 - the event history, which expands into the freed rows.
 
 Suppressed while compact: the Input Output section, visual aids (including any enabled visualizers — their

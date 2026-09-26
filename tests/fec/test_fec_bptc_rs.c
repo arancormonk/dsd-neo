@@ -12,6 +12,7 @@
 #include <dsd-neo/fec/rs_12_9.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <string.h>
 #include "dsd-neo/core/safe_api.h"
 
 /* Fixed DMR BPTC(196,96) reference codeword. Bit 0 is the reserved bit; the
@@ -216,6 +217,8 @@ test_rs_12_9(void) {
     rs_12_9_correct_errors_result_t rc = rs_12_9_correct_errors(&cw, &syn, &fixed);
     assert(rc == RS_12_9_CORRECT_ERRORS_RESULT_ERRORS_CORRECTED);
 
+    assert(cw.data[2] == 37);
+
     // Two erroneous bytes -> uncorrectable
     cw.data[1] ^= 0x22;
     cw.data[7] ^= 0x11;
@@ -224,6 +227,47 @@ test_rs_12_9(void) {
     rc = rs_12_9_correct_errors(&cw, &syn, &fixed);
     assert(rc == RS_12_9_CORRECT_ERRORS_RESULT_ERRORS_CANT_BE_CORRECTED);
 
+    return 0;
+}
+
+static int
+test_rs_rejections(void) {
+    const rs_12_9_codeword_t vectors[] = {
+        {{0, 0, 0, 0, 7, 0xD2, 0, 3, 0xE9, 0x96, 0x96, 0x96}},
+        {{0, 0, 0, 0, 7, 0xD2, 0, 3, 0xE9, 0x93, 0x15, 0xAB}},
+        {{3, 20, 37, 54 ^ 0xB4, 71 ^ 0x53, 88, 105, 122, 139, 208, 63, 250}},
+    };
+    const char* tags[] = {"zero roots", "residual syndrome", "two roots"};
+    int failed = 0;
+    for (size_t i = 0; i < sizeof vectors / sizeof vectors[0]; ++i) {
+        rs_12_9_codeword_t cw = vectors[i];
+        rs_12_9_poly_t syn = {0};
+        uint8_t fixed = 0;
+        rs_12_9_calc_syndrome(&cw, &syn);
+        rs_12_9_correct_errors_result_t rc = rs_12_9_correct_errors(&cw, &syn, &fixed);
+        if (rc != RS_12_9_CORRECT_ERRORS_RESULT_ERRORS_CANT_BE_CORRECTED) {
+            DSD_FPRINTF(stderr, "T9 %s: expected ERRORS_CANT_BE_CORRECTED (2), got %u; roots=%u\n", tags[i], rc, fixed);
+            failed = 1;
+        }
+    }
+    return failed;
+}
+
+static int
+test_rs_all_single_symbols(void) {
+    const rs_12_9_codeword_t clean = {{3, 20, 37, 54, 71, 88, 105, 122, 139, 208, 63, 250}};
+    for (size_t pos = 0; pos < sizeof clean.data; ++pos) {
+        for (unsigned value = 1; value <= 255; ++value) {
+            rs_12_9_codeword_t cw = clean;
+            cw.data[pos] ^= (uint8_t)value;
+            rs_12_9_poly_t syn = {0};
+            uint8_t fixed = 0;
+            rs_12_9_calc_syndrome(&cw, &syn);
+            assert(rs_12_9_correct_errors(&cw, &syn, &fixed) == RS_12_9_CORRECT_ERRORS_RESULT_ERRORS_CORRECTED);
+            assert(fixed == 1);
+            assert(memcmp(cw.data, clean.data, sizeof clean.data) == 0);
+        }
+    }
     return 0;
 }
 
@@ -242,6 +286,10 @@ main(void) {
         return 1;
     }
     if (test_rs_12_9() != 0) {
+        return 1;
+    }
+    assert(test_rs_all_single_symbols() == 0);
+    if (test_rs_rejections() != 0) {
         return 1;
     }
     printf("FEC BPTC+RS tests passed.\n");

@@ -23,7 +23,7 @@ void utf8_to_text(dsd_state* state, uint8_t wr, uint16_t len, const uint8_t* inp
 
 /**
  * @brief Print @p len octets of UTF-16BE text (ETSI TS 102 361-3 text messaging) to stderr, with
- *        the printable characters copied as UTF-8 into the slot's event text when @p wr is 1.
+ *        the printable characters copied as UTF-8 into the slot's staged event text when @p wr is 1.
  *
  * Surrogate pairs are rendered as one character and unpaired halves as U+FFFD; a trailing odd
  * octet is ignored. Control characters print as markers and stay out of the event text.

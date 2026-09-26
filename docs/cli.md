@@ -10,7 +10,8 @@ Friendly, practical overview of the `dsd-neo` command line. This covers what you
 - Record/Logs/Debug: `-6 file.wav`, `-w file.wav`, `-P`, `-7 ./calls`, `-d ./mbe`, `-J events.log`, `--frame-log frames.log`, `--p25-sm-log p25-sm.log`, `-L lrrp.log`, `-Q dsp.bin`, `-c symbols.bin`, `-r *.mbe`, `--dmr-debug-burst`, `--dmr-debug-unsynced`
 - IQ capture/replay: `--iq-capture <path>`, `--iq-capture-format cu8|cf32`, `--iq-capture-max-mb <n>`, `--iq-replay <path>`, `--iq-replay-rate fast|realtime`, `--iq-loop`, `--iq-info <path>`
 - Levels/Audio: `-g 0|1..50`, `-n 0..100`, `-nm`, `-8`, `-V 0|1|2|3`, `-z 0|1|2`, `-y`, `-v 0xF`
-- Modes: `-fa | -fs | -fr | -f1 | -f2 | -fd | -fx | -fy | -fz | -fU | -fi | -fn | -fp | -fh | -fH | -fe | -fE | -fm`
+- Modes: `-fa | -fs | -fr | -f1 | -f2 | -fd | -fx | -fy | -fz | -fU | -fi | -fn | -fp | -fh | -fH | -fe | -fE | -fm | -fA`
+- Analog: `-fA` (NFM monitor), `--nfm-bandwidth-hz <Hz>` (8000..25000, default 16000; see [Analog reception](#analog-reception--fa))
 - Inversions/filtering: `-xx`, `-xr`, `-xd`, `-xz`, `-l`, `-q`
 - Trunking/scan: `-T`, `-Y`, `--trunk-scan targets.csv` (P25/DMR/NXDN96/NXDN48 trunk and conventional targets; each type selects its decoder class), `-C chan.csv`, `-G group.csv`, `--src-csv src.csv`, `--p25-bandplan plan.csv`, `--p25-bandplan-export plan.csv`, `-W`, `-E`, `-p`, `-e`, `-I 1234`, `-U 4532`, `-B 12000`, `-t 1`, `--enc-lockout|--enc-follow`, `--tg-lockout-session|--tg-lockout-persist`, `--scan-voice-only`, `--scan-voice-qualify-ms <ms>`, `--scan-voice-hold-ms <ms>`, `--scan-max-visit-ms <ms>`
 - RTL‑SDR strings: `-i rtl:dev:freq:gain:ppm:bw:sql:vol[:bias=on|off]` or `-i rtltcp:host:port:freq:gain:ppm:bw:sql:vol[:bias=on|off]`
@@ -70,6 +71,9 @@ Tip: If you run with no arguments and no config is loaded, `dsd-neo` starts the 
   - Examples: `rtl:0:851.375M:22:-2:24:0:2`, `rtl:1:450M:0:0:12:0:2`
   - `sql` is a power squelch in dB and is **off** when set to `0`, which is what the examples above use. The startup
     banner and the terminal input line say so (`SQ=off`, `SQL: off`). Give a negative value (`-60`) to gate on power.
+    A `-Y` channel-map row or `--trunk-scan` target can replace it while that row is on air with `--squelch-db <dB>`
+    in its `options` column (whole dB, `-100..0`, `0` = off, omitted = inherit this value); see
+    `docs/csv-formats.md`.
 - RTL‑TCP: `-i rtltcp[:host:port[:freq:gain:ppm:bw:sql:vol[:bias[=on|off]]]]`
 - SoapySDR: `-i soapy[:args[:freq[:gain[:ppm[:bw[:sql[:vol]]]]]]]`
 - TCP raw PCM16LE input (mono): `-i tcp[:host:port]` (bare `tcp` connects to `localhost:7355`; sample rate uses `-s`, default 48000)
@@ -200,6 +204,11 @@ Windows console runs:
 - `-6 <file>` Save raw audio WAV (48k/mono). Large files (≈360 MB/hour)
 - `-w <file>` Save decoded audio to a single WAV (mutually exclusive with `-P`)
 - `-P` Per‑call WAV saving (auto‑named files in a folder; mutually exclusive with `-w`)
+- Recordings (`-w`, `-P`, `-d`) follow each talkgroup's `record` policy: a lockout (`B`/`DE`), avoid, skip, an
+  allow-list or Hold miss, or `record=off` keeps the call out of the per-call WAV, the static WAV and MBE capture,
+  live and in SDRTrunk JSON playback. A matching Hold (`-I`) overrides a row's lockout or `record=off`, as it does
+  for audio; avoids and skips still apply. The static WAV holds only what is heard: on a two-slot mix a record-blocked
+  slot's channel is written silent while the other slot is still written.
 - `-7 <dir>` Set folder for per‑call WAVs (use before `-P`)
 - `--rdio-mode <off|dirwatch|api|both>` Enable rdio-scanner export from finalized per-call WAV calls
 - `--rdio-system-id <N>` Set rdio-scanner system ID (required for API upload mode)
@@ -246,6 +255,7 @@ Windows console runs:
   Suspected RAS voice events also retain the marker through delayed commits and reacquisition.
   The marker means a CRC check failed, not that every decoded field is wrong: RAS can intentionally
   alter the check. Absence of the marker is not a universal verification guarantee for every protocol.
+  A `-L` location file never receives a row from a PDU that would carry this marker.
 
   ```text
   2026-04-30 09:12:04 [Fire Dispatch] P25p1 TGT: 00050061; SRC: 00001234;
@@ -270,7 +280,13 @@ For rdio-scanner API uploads that should not persist on disk, use API-only mode 
 and post-upload deletion, for example `-7 /dev/shm/dsd-neo-rdio -P --rdio-mode api --rdio-api-delete-after-upload`.
 Rdio API uploads do not follow HTTP redirects; use the final trusted HTTP/HTTPS endpoint directly.
 DirWatch modes keep the WAV and JSON files because the watcher needs stable files to ingest.
-- `-L <file>` Append LRRP (location) data
+- `-L <file>` Append LRRP (location) data. Rows are gated by the dispatch CRC verdict for DMR data
+  PDUs (LRRP, LOCN, LIP, UDT NMEA), DMR voice-LC embedded GPS, and P25 Phase 1 data PDUs reaching
+  the IP/UDP LRRP ports; P25 Harris/APX voice-LC GPS and NXDN are unchanged. Under `-F`, CRC-failed
+  data still decodes on screen and reaches history / the `-J` log marked `[CRC ERR]`, with LRRP
+  position tokens shown as suppressed and no location row appended. Bursts accepted by the RAS
+  heuristic under `-F` are also excluded because their CRC could not be verified; the burst line
+  shows `-RAS`.
 - `--lrrp-extra-port <n>` Also decode UDP port `<n>` as LRRP. Repeatable, at most 8 ports.
   The registered location port 4001 is always decoded; this adds ports a system uses
   instead of it, which would otherwise be reported as `Unknown UDP Port`. Ports the decoder
@@ -278,7 +294,10 @@ DirWatch modes keep the WAV and JSON files because the watcher needs stable file
   only applies to ports that would otherwise be unknown. Config key: `mode.dmr_lrrp_ports`
   (comma-separated); a CLI list replaces the config list.
 - `-Q <file>` Write structured DSP or M17 stream data to `./DSP/<file>`
-- `-q` Reverse mute: mute clear audio, unmute encrypted audio
+- `-q` Reverse mute: mute clear audio, unmute encrypted audio. It applies to live DMR and P25 decoding. With integer
+  stereo output (the AUTO default), NXDN, dPMR and YSF voice decoded through the vocoder's DMR slot path follows it
+  too; YSF V/D2 and float output (`-y`) do not. SDRTrunk JSON playback ignores it. WAV recordings and P25 Phase 1
+  MBE capture follow what it mutes.
 
 ## IQ Capture And Replay
 
@@ -457,6 +476,244 @@ Notes
   console diagnostics are suppressed.
 - P25p2 on a single frequency may require `-X` (below) if MAC_SIGNAL is missing.
 
+## Analog reception (`-fA`)
+
+`-fA` is the analog monitor. On a radio input (RTL-SDR, rtl_tcp, SoapySDR, Airspy or `--iq-replay`) the front end
+demodulates narrowband FM (NFM) through a channel filter and plays what it hears; on PCM input (Pulse, files, UDP or
+TCP audio) the audio arrives already demodulated and is monitored as it is. Broadcast (wideband) FM is out of scope.
+
+### Channel width
+
+`--nfm-bandwidth-hz <Hz>` (or `--nfm-bandwidth-hz=<Hz>`) sets the NFM channel-filter width; the config key is
+`[analog] nfm_bandwidth_hz` (see `docs/config-system.md`). The width is the full RF channel centred on the tuned
+frequency, and it is the protected passband: its edges sit at +/- width/2, where the response is about -0.3 dB. The
+filter's cutoff is width/2 + 600 Hz with a fixed 1200 Hz Blackman transition outside the passband, so the response is
+about -30 dB at width/2 + 1200 Hz and -50 dB or better from about width/2 + 1450 Hz. The transition is not
+configurable. The width is not the tuner bandwidth (`soapy_bandwidth_hz`), not the DSP bandwidth (the `bw` field of an
+RTL input, `rtl_bw_khz`), and not the audio bandwidth.
+
+- Values are whole Hz from 8000 to 25000, with no `k` suffix: `12500` for a 12.5 kHz channel plan, `11250` for
+  11.25 kHz, `25000` for a wide 25 kHz channel. The default is 16000 (16 kHz), which is the historical analog
+  channel filter bit for bit wherever that design succeeded: at DSP rates from about 19.1 to 51.4 kHz, which takes in
+  the 24 and 48 kHz RTL DSP bandwidths. Above that range (a device-forced rate such as an Airspy's 78,125 Hz) 16 kHz
+  gets a full design where the historical filter fell back to a 63-tap prototype, and below it the unset default is
+  DSP-limited (see below).
+- Match the width to the channel plan in use. A width wider than the channel spacing lets the adjacent channel into
+  the demodulator: on a 12.5 kHz plan, 25000 passes the neighbours 12.5 kHz either side, which can clip the audio and
+  raise its level.
+- A value outside the range, or anything but whole Hz, is refused with an error that names the option, the range and
+  the value, and `dsd-neo` exits. A width is never clamped to something else.
+- An explicit width, 16000 included, always runs the channel filter, and `DSD_NEO_CHANNEL_LPF=0` with an explicit
+  width is an error. Left unset, the default keeps the historical rule: the filter runs only at DSP rates of 20 kHz or
+  more (`DSD_NEO_CHANNEL_LPF` overrides that), and below them the DSP rate bounds the channel instead. Frontends then
+  show the width the rate leaves, marked *DSP-limited*, so existing low-rate `-fA` command lines keep working
+  unchanged.
+- On PCM input the option parses but has no effect, and says so with a warning.
+
+The width has to fit the DSP rate it runs at: its cutoff must stay within 0.9 x Nyquist (width/2 + 600 Hz <= 0.45 x
+rate), and the filter within its 288 taps. For an RTL-SDR or rtl_tcp input the DSP rate is the DSP bandwidth:
+
+| DSP bandwidth (`bw`, `rtl_bw_khz`) | Widest channel it filters | NFM widths that fit |
+| --- | --- | --- |
+| 48 kHz (default) | 42 kHz | all, 8 to 25 kHz |
+| 24 kHz | 20.4 kHz | 8 to 20.4 kHz |
+| 16 kHz | 13.2 kHz | 8 to 13.2 kHz |
+| 12 kHz | 9.6 kHz | 8 to 9.6 kHz |
+| 8, 6, 4 kHz | 6, 4.2, 2.4 kHz | none; only the unset default runs there, DSP-limited |
+
+A width the DSP rate cannot filter is refused with the width, the rate, the widest width that rate filters and the
+DSP bandwidths that would fit, for example `NFM bandwidth 25 kHz does not fit the 24 kHz DSP rate (the largest width
+it fits is 20.4 kHz); set the RTL DSP bandwidth to 48 kHz`. For RTL-SDR and rtl_tcp inputs this happens at startup,
+from the input spec alone, before the input looks for its device. The other radio inputs are checked when the stream
+starts, against the rate actually delivered, and a width that rate cannot filter stops the stream from starting; the
+fix it names follows what sets that rate:
+
+- A SoapySDR or Airspy device delivers its own capture rate (an Airspy's 2.5 MS/s, say), which the front end halves
+  down to the first rate at or above the DSP bandwidth: 19,531 Hz at a 12 kHz DSP bandwidth, 78,125 Hz at 48 kHz. A
+  wider DSP bandwidth therefore raises the rate without choosing it, and the refusal says so: `NFM bandwidth 25 kHz
+  does not fit the 24 kHz DSP rate (the largest width it fits is 20.4 kHz); raise the DSP bandwidth or narrow the NFM
+  width`.
+- An I/Q replay runs at its capture's rate, which no setting moves, so the width has to narrow: `...; narrow the NFM
+  width`.
+- Where the rate filters no NFM width at all (below about 10.2 kHz), narrowing cannot help, and the refusal names
+  leaving the width unset instead, since the unset default runs at any rate (DSP-limited): `NFM bandwidth 8 kHz does not
+  fit the 8 kHz DSP rate (the largest width it fits is 6 kHz); raise the DSP bandwidth or leave the NFM width unset`.
+
+`--validate-config` applies the RTL-SDR/rtl_tcp check to a config whose `[mode] decode` is `analog` and whose
+`[input]` builds the input with `rtl_bw_khz` (it sets `rtl_freq`; an rtl_tcp source without one connects at the 48 kHz
+default).
+
+A refusal while running (the terminal row, the Radio sheet, a loaded config, a switch to Analog) is a short message
+that names the width, the rate, the widest width it filters and the fix, and the full text goes to the log. On an
+RTL-SDR or rtl_tcp input the fix is a DSP bandwidth: `NFM 25 kHz does not fit the 24 kHz DSP rate (max 20.4 kHz); use
+a 48 kHz DSP bandwidth`. On a running SoapySDR, Airspy or I/Q replay stream the message names the demod rate the
+stream runs at and the fix above for that input: `NFM 25 kHz does not fit the 24 kHz DSP rate (max 20.4 kHz); raise
+the DSP bandwidth or narrow the NFM width` on a device, `...; narrow the NFM width` on a replay. A DSP bandwidth
+refused for the width in use says to narrow the width first, or, at 4, 6 or 8 kHz, where no NFM width fits, to leave
+the width unset first (`DSP BW 8 kHz cannot filter NFM 8 kHz (max 6 kHz); leave the NFM width unset first`). The front
+end checks a width again where the change lands, between DSP blocks: should a retune have moved its rate in the
+meantime and the width no longer fit, the width is put back to the one the front end kept, with the same message,
+rather than staying configured while the filter runs another. A switch to Analog the front end refuses that way stays
+on the digital family, so the decoder goes back to the mode it had, with the message (`Failed: Analog -> ...`).
+
+With `DSD_NEO_CHANNEL_LPF=0` every explicit width on a radio input is refused, at any rate, since the channel filter it
+needs is off (`NFM 12.5 kHz needs the channel filter, which DSD_NEO_CHANNEL_LPF=0 turns off`). A change that would
+reopen the device with one (a loaded config's `[input]`, a DSP bandwidth, Input > Switch source > RTL-SDR) is refused
+before anything is torn down, and the running input stays. On PCM input, which runs no channel filter, the width is
+only stored, and a switch to Analog there goes ahead, as a PCM start with the same width does.
+
+The terminal shows the width in force on the input status line beside `DSP-BW:`: `Analog: NFM 12.5 kHz;` for an
+explicit width, `Analog: NFM 16 kHz (default);` for the unset default, and `Analog: NFM 12 kHz (DSP-limited);` when
+the rate bounds it. With the stream stopped, an RTL-SDR or rtl_tcp input shows what the next start runs at its DSP
+bandwidth, and while a scan row runs a digital protocol the line shows what the monitor returns to at the running
+rate: where the stream runs no channel filter for the unset default, the default reads as that rate, DSP-limited. The
+stream decides that when it opens, from the DSP bandwidth it opens at (below 20 kHz, or as `DSD_NEO_CHANNEL_LPF`
+says), and keeps it when the device delivers another rate. The terminal sets the width from Input >
+RTL-SDR > NFM bandwidth..., whose label shows the setting (`[12.5 kHz]`, or `[default]`), while `-fA` is the
+configured mode on a radio input (a scan row running a digital protocol does not hide it). The Qt and Android Radio
+sheet shows the same reading under the NFM decode chip, with a stepper over 8, 11.25, 12.5, 16, 20 and 25 kHz that
+skips the widths the DSP rate cannot filter (the running stream's, or with none running the rate an RTL-SDR or
+rtl_tcp input's DSP bandwidth sets), and *Use the default width* to return an explicit width to the unset default. On
+PCM input it reads *not used on PCM input* and the controls are disabled. Under another mode, both keep the width
+control on a radio input while an explicit width is set, with the setting as its reading: a switch to Analog is held
+to that width, so a width the device or the capture cannot filter can be narrowed before the switch. The setup
+wizard offers the NFM chip too, and picking it suggests no trunking.
+
+### When changes apply
+
+| Change | When it applies |
+| --- | --- |
+| NFM width from the terminal row, the Radio sheet or a loaded config | Live, on the next DSP block of a running analog monitor, with a filter designed from empty histories; no reopen. A width that changes the filter the front end runs also starts received-tone detection (below) over. Refused with a message, and the width unchanged, when the DSP rate it will run at cannot filter it (a config is then not applied at all); a width the front end refuses where it lands (a retune moved the rate) is put back, with the message. A width set while a scan row runs a digital protocol, or while CQPSK is toggled on under `-fA`, applies when the front end returns to the monitor; setting it under a scan row edits the configured width without disturbing the row. With no stream running, the next start uses it. |
+| Decode mode to or from Analog (`-fA`, the NFM chip, `[mode] decode`) | Live: the front end switches receive family between DSP blocks. A switch to Analog with an explicit NFM width the DSP rate cannot filter is refused, naming both, and the mode stays (under a scan row too); one the front end refuses where it lands (a retune moved the rate) puts the mode back, with the message. |
+| DSP bandwidth (`bw`, `rtl_bw_khz`, DSP bandwidth...) | Reopens the device. On an RTL-SDR or rtl_tcp input (an RTL input whose device string names no SoapySDR, Airspy or replay device opens as one) a bandwidth the explicit NFM width in use cannot run at is refused, naming both, from the DSP bandwidth... row and from a loaded config alike. A loaded config is checked at the bandwidth its `[input]` reopens an RTL-SDR or rtl_tcp device at (its `rtl_bw_khz` as given), from whatever input runs now; one that builds the input already running (an rtl_tcp source without `rtl_freq` for the host and port in use) reopens nothing and changes no rate. A config whose `[input]` reopens a SoapySDR or Airspy device (an Airspy source over a running Airspy reopens it for a new sample rate, serial, DSP bandwidth or volume) is held to neither rate: the reopened stream's start checks the width at the rate that device delivers. |
+| Input > Switch source > RTL-SDR | Reopens the input as an RTL-SDR or rtl_tcp device at the DSP bandwidth. An explicit NFM width that bandwidth cannot filter is refused, naming both and the DSP bandwidths that fit, and the running input stays. A SoapySDR input reopens at the rate its device sets, which its start checks. |
+| A retune (scanner, trunking, manual tune) | The channel filter, de-emphasis, audio filter and squelch start from empty state on the new channel; a retune that lands on another DSP rate resolves the channel for that rate. |
+| `--nfm-bandwidth-hz`, `[analog] nfm_bandwidth_hz` at startup | When the stream opens. |
+
+### De-emphasis and squelch
+
+- The width changes only the channel filter. De-emphasis stays at its 75 us default (`DSD_NEO_DEEMPH`), so existing
+  `-fA` audio sounds the same; `DSD_NEO_DEEMPH=nfm` selects the 750 us land-mobile curve (212 Hz corner).
+- The channel squelch measures power after the channel filter, so the noise it sees scales with the width: halving
+  the width lowers the noise power by about 3 dB. Re-check a squelch threshold (`sql`, `rtl_sql`) after changing the
+  width.
+
+### Received tone (CTCSS) on the analog monitor
+
+While the passive analog monitor runs (`-fA`, which enables input monitoring), DSD-neo listens below the voice band
+for a CTCSS (PL) tone and reports what it hears. Detection only reports: it never mutes or gates audio, it needs no
+tone setting, and it runs with `-o null` too.
+
+- Supported tones: the standard 50-tone EIA/TIA table, 67.0-254.1 Hz (67.0, 69.3, 71.9 ... 250.3, 254.1). A tone is
+  confirmed only from estimates within 0.5 Hz of a table value, and a confirmed tone is held only while it stays within
+  0.8 Hz of it. 150.0 Hz is not supported and is never reported as 151.4 Hz; any other frequency within the sub-audible
+  band, such as 68.2 Hz, reads as no tone rather than as its nearest neighbour, and a confirmed tone that moves off the
+  table is dropped within about half a second. Near 0 dB in-band a noisy estimate can still confirm a neighbour for
+  200-260 ms before the same check drops it: over two hours of a continuous 0 dB carrier in offline seed sweeps, 68.2 Hz
+  read as 67.0 or 69.3 Hz about ten times an hour and 161.0 or 166.7 Hz as a neighbour two or three times an hour, while
+  150.0 Hz never did; from 3 dB up 68.2 and 161.0 Hz never did. DCS (DPL) signalling does not read as a CTCSS tone: in
+  the tests no DCS code did on a clean signal, nor did the codes nearest to a table tone at 10 or 0 dB in-band. Nor
+  does a steady tone in the voice band, such as a 2300 Hz test tone alone on a clean carrier: a tone is confirmed only
+  while it carries at least 1/100,000 (-50 dB) of the input's total power, far above what the decimating front end
+  folds down from the voice band and far below any real CTCSS tone.
+- Transmitter tone error: a tone slightly off its table value still reads as that value. Over 10,000 seeded starts
+  each, tones 0.2 and 0.35 Hz off were confirmed within 400 ms at 10 dB in-band tone-to-noise on all starts and on all
+  but 1 (the slowest at 331 and 424 ms), and 0.2 Hz off at 0 dB on 98 starts in 100 (the slowest at 553 ms). A tone
+  about 0.5 Hz or more off is confirmed late or not at all, and then reads `none`.
+- What is shown: the terminal's Call Info section carries an `Rx tone:` line (compact view too), and the Qt/Android
+  monitor a `RECEIVED TONE` row. Both read `CTCSS 100.0 Hz` once a tone is confirmed, `detecting` while a carrier is
+  being evaluated, `none` when the carrier carries no supported tone, and an em dash with no carrier (a hyphen on a
+  terminal without UTF-8). The log prints `Received tone: CTCSS 100.0 Hz` or `Received tone: none` whenever that
+  verdict changes.
+- Timing contract, in sample time, for a tone in noise at 0 dB in-band tone-to-noise (0-290 Hz) or better, on its table
+  value or up to 0.2 Hz off it (0.35 Hz at 10 dB): 95% of tones are confirmed within 400 ms of their start and 95% of
+  stops under a live carrier are dropped within 350 ms (the p95 targets). Single events have ceilings of 700 ms for a
+  start and 800 ms for a stop, above the slowest of the long-run sweeps, and the tests hold every timing row of their
+  fixed seeds within both. Over 1,000,000 seeded starts per condition at 0 dB, on the table value and 0.2 Hz off it, none
+  took longer than 700 ms (the slowest 651 ms), nor did any of 100,000 per condition at 10 dB (the slowest 452 ms). No
+  stop of 800,000 at 0 and 10 dB took longer than 800 ms (the slowest 738 ms). Lock time in noise has no absolute bound:
+  now and then noise keeps the usual 250 ms measurement from confirming a tone for well over half a second (on its own
+  it took longer than 700 ms on about one start in 125,000 at 0 dB, the slowest 1.1 s), so while no tone is confirmed
+  the detector also measures the last 400 and 600 ms, which average that noise away. Speech louder than the tone is
+  outside the contract (below).
+- Timing measured, in sample time, over 10,000 seeded starts per condition: a tone at 10 dB in-band is confirmed within
+  400 ms of its start on every start (p95 255 ms, the slowest at 331 ms), and at 0 dB on all but about 3 starts in
+  1,000 (p95 341 ms, the slowest at 447 ms). Under transmitted speech it can take longer, because a
+  transmitter's voice high-pass still lets a high voice's fundamental leak below 300 Hz in bursts: with speech 10 dB
+  louder than the tone, over 50,000 seeded starts 95% were confirmed within 301 ms, 1.4% took longer than 400 ms and
+  0.16% longer than 700 ms (the slowest 1.3 s), and twice a voice holding 254.1 Hz read as that tone for 150-250 ms,
+  once in place of the real tone. Over 100 minutes of that speech a confirmed tone at the top of the table (250.3 or
+  254.1 Hz) was lost four times, reading `none` for under a second before it was confirmed again. A tone that stops
+  while the carrier stays up is dropped within 350 ms on 98 stops in 100 at 0 and 10 dB alike (typically after
+  200-315 ms; the slowest of 8,000 took 515 ms). When the transmitter sends a reverse burst (the end-of-message phase
+  flip: 180 degrees, or 120 or 240 degrees on some radios) at 10 dB or more in-band, the tone is dropped within 150 ms:
+  all of 40,000 bursts at 180 degrees (the slowest took 123 ms), and all but 16 and 14 of 40,000 each at 120 and 240
+  degrees. Near 0 dB about one 180 degree burst in fourteen, and one 120 or 240 degree burst in six, is caught late or
+  missed. A missed burst leaves the tone to the carrier drop that follows, which ends it within the 200 ms hangover. A
+  carrier with no tone reads `detecting` until 500 ms of it have been evaluated and `none` by the next 50 ms step; a
+  tone that starts after that, such as one a repeater adds after its kerchunk, is still confirmed within 400 ms of its
+  own start. A tone that stops under a carrier that keeps dropping out, each time for less than the 200 ms hangover
+  (squelch chatter on the noise after a transmission, say), is still dropped, though later than under a steady
+  carrier: over 11,264 seeded stops under such carriers (openings of 1 to 60 ms between dropouts of 10 to 199 ms), 95%
+  were dropped within 465 ms and all within 800 ms (the slowest 693 ms).
+- The received tone is forgotten when the receiver moves or the session changes: a frequency set from a frontend or a
+  spectrum tap, any other retune the RTL stream or the tuning hooks report (UDP retune, rigctl-driven tuning), a
+  change of the analog channel filter the RTL front end runs (its width, or whether it runs), a
+  `-Y` scan step (including one that failed after rigctl had already moved the radio), a manual channel cycle or scan
+  avoid, a scan row or trunk-scan target change, a decode-mode change, an input switch (Pulse, WAV, UDP, TCP, RTL or
+  symbol input, replay and stop-playback, from a frontend or a config apply, and the switch to live Pulse input when
+  a WAV file ends), a dropped TCP audio connection, whether DSD-neo reconnects it or falls back to live Pulse input,
+  stop, 200 ms without carrier, and an input that stops delivering audio for about half a second: a stdin, UDP or TCP
+  stream (see below), or a live radio stream whose source stopped, such as an `rtl_tcp` server that went away while
+  DSD-neo retries the connection, or a stalled device. After half a second of such an outage the row shows no carrier,
+  and when the stream returns it starts a new reception; IQ replay never counts as paused, however slowly it is read.
+  The frequent no-carrier cleanup between syncs does not clear it. On Pulse, stdin, UDP and TCP input such a boundary
+  also skips the audio the input had already queued, which the old channel went on filling while a rigctl retune held
+  the decoder, also when the boundary came in a digital mode and detection starts with the switch to the analog
+  monitor: detection hears nothing until a read shows the input ran dry (20 ms or more of it that took at least half as
+  long to arrive, which a queue the decoder drains at its own speed never does, not counting time spent playing the
+  monitor audio, which on stdin input holds the decoder at real-time pace), and not that read either.
+  With nothing queued that costs the new channel two 20 ms reads, and no more than 2 s of input is ever skipped, so
+  stdin fed from a file faster than real time is heard again after that. Files and RTL-family streams are not skipped:
+  a file holds no other channel, and an RTL-family stream clears its own output at a retune.
+- Where it runs: analog-only decoding with input monitoring, on PCM inputs (TCP, UDP, Pulse, WAV, stdin) or on an
+  RTL-family stream that outputs monitor audio. It does not run for the `-8` source monitor during digital decoding, for
+  EDACS analog voice, or on symbol-file input, and the `Rx tone:` line and `RECEIVED TONE` row are shown exactly while
+  it runs. The front end needs an input rate from 2400 Hz up to 320 kHz; outside that range detection logs that it is
+  inactive, once each time the input moves to such a rate, and the row is left out. Detection reads the input at least
+  every 20 ms of it, whatever the length of the blocks the monitor handles audio in (on PCM input 960 samples at the
+  rate the monitor runs at: 20 ms at 48 kHz, which 8, 9.6, 12, 16 and 24 kHz input is brought up to first, but 384 ms
+  at 2500 Hz), so at every supported rate the verdict the decoder publishes trails the times above by at most two such
+  reads. The frontends show it at their next refresh: the decoder hands them a new snapshot at most every 50 ms while it
+  hunts for sync, the terminal redraws at up to about 15 frames a second, and the Qt/Android monitor polls every 250 ms
+  by default, so the screen can trail the published verdict by a few hundred milliseconds more. On RTL input, detection
+  hears the monitor audio after the RTL monitor gain (`vol`), so a gain of 0 leaves it nothing to hear and it reads no
+  carrier; to silence the monitor, mute the output instead.
+- Externally demodulated audio (PCM inputs): the tone has to survive the producer. Feed the discriminator or flat audio
+  with nothing below 300 Hz removed -- no voice high-pass, no de-emphasis that rolls off the low end -- and prefer
+  48 kHz. Sound cards and receivers that high-pass their audio output remove CTCSS before DSD-neo sees it. PCM carrier
+  detection only rejects digital silence, so hum on the audio path is heard too, between transmissions as well: a hum
+  that dominates the sub-audible band on a table tone reads as that tone. Power-supply ripple in a 50 Hz mains region is
+  exactly that -- a 100 Hz hum that reads `CTCSS 100.0 Hz` -- so keep ripple and ground loops off the audio feed. A
+  producer on stdin, UDP or TCP that squelches by sending nothing at all (`rtl_fm` without `-E pad`, a UDP sender that
+  stops between transmissions) pauses the stream instead: once nothing has arrived for about half a second, the row
+  shows no carrier, and the audio that follows starts a new reception that inherits nothing from the last one (the read
+  that spans the pause, up to 20 ms of audio from either side of it, is not used). Padded output (`rtl_fm -E pad`) keeps
+  samples flowing, and the 200 ms hangover then applies as on any other input. DSD-neo does not see a retune the
+  producer makes on its own, such as `rtl_fm` scanning several frequencies: a hop that leaves a gap shorter than half a
+  second (with padding, shorter than the 200 ms hangover) is not a new reception, so the previous channel's tone can
+  still show on the next channel for a few hundred milliseconds, until the detector drops it as it drops a tone that
+  stops (timing above). The same goes for audio a source still holds when DSD-neo moves it through rigctl -- in the
+  producer's own pipeline, or captured by the sound server but not yet handed over -- which arrives after the retune
+  like the new channel's. In offline runs of a clean tone followed by a carrier with no tone, about a tenth of a second
+  of the old channel's tone at the start of a reception was enough to show it again (on most seeds from 110 ms, on
+  every seed from 180 ms), for up to half a second.
+- Talk-off: a voice whose fundamental holds within 0.5 Hz of a table tone for a third of a second, with weak harmonics,
+  is indistinguishable from that tone in the time allowed and can be reported briefly. It is rare on transmitted voice
+  (which the transmitter high-passes at 300 Hz) and most likely near the top of the table. In offline seed sweeps, two
+  hours of unfiltered speech with no tone locked a tone three times (233.6, 241.8 and 254.1 Hz), and the same speech
+  high-passed as a transmitter does once (254.1 Hz).
+
 ## Mode Tweaks & Advanced
 
 - Inversions: `-xx` X2 non‑inverted, `-xr` DMR inverted, `-xd` dPMR inverted, `-xz` M17 inverted
@@ -476,20 +733,44 @@ Notes
 
 ## Trunking & Scanning
 
-Quick talkgroup lockouts (`!`/`@` in the terminal and **Skip** in Qt/Android) save to the configured global
+Quick talkgroup lockouts (`!`/`@` in the terminal and **Avoid TG**/**Lock out** in Qt/Android) save to the configured global
 groups file by default. Use `--tg-lockout-session` to keep them temporary, or `--tg-lockout-persist` to select
 the default saving behavior explicitly. The equivalent configuration key is `[trunking] persist_tg_lockouts`.
-The terminal **Save user TG lockouts** menu and Qt/Android **Settings → Listening → Save skipped talkgroups**
+The terminal **Save user TG lockouts** menu and Qt/Android **Settings → Listening → Save avoided talkgroups**
 change this preference immediately for subsequent lockouts and preserve it through their normal settings save.
+The Qt/Android button reads **Lock out** when saving is on and **Avoid TG** when it is off.
 
 Temporary avoids block tuning, audio, recording and streaming without modifying the saved list. Explicit list
-edits still save, and exports omit temporary avoids. Use **Clear temporary TG avoids — current list** to undo
-them in the current scope. They also clear on list reload/replacement or decoder stop; ordinary retunes and
-scan visits preserve them. Scan rows with their own lists stay isolated; rows using the global list share its
-avoids. Changing the persistence setting does not change the lifetime of existing blocks.
+edits still save, and exports omit temporary avoids. Use Qt/Android **Clear temporary avoids and call skips — current
+list** or terminal **Clear temporary TG avoids - current list** to undo them in the current scope. They also clear
+on list reload/replacement or decoder stop; ordinary retunes and scan visits preserve them. Scan rows with their
+own lists stay isolated; rows using the global list share its avoids. Changing the persistence setting does not
+change the lifetime of existing blocks.
 
-- Enable trunking (NXDN/P25/EDACS/DMR): `-T`
-- Conventional scan mode: `-Y` (not trunking; scans for sync on the row's decoder class or the global decoders). For NXDN the hold is refreshed
+Qt/Android **Skip** leaves the call without touching the talkgroup list, blocking tuning and all media for its
+target. On P25 a group-call skip lasts while the receiver keeps seeing the talkgroup's call (control-channel
+grant updates, or the call on the voice channel the receiver is parked on for the other slot); it expires 15 s
+after the receiver last saw it and after 10 minutes at most. Transmissions with gaps under 15 s are skipped
+together, so the unit skipped is the conversation; a new call that starts within 15 s of the previous one ending
+is missed; and if the receiver follows another call on a different carrier for longer than 15 s while the skipped
+call continues, the skipped call is followed again when next seen (tap **Skip** again).
+
+P25 private calls, DMR, NXDN and EDACS skips last 15 s from the press in this version; ProVoice has no skip.
+Skips never persist, are unaffected by `persist_tg_lockouts`, and survive scan-target revisits like session avoids,
+subject to their expiry. **Clear temporary avoids and call skips — current list** clears both in the active scope;
+list reload/replacement or decoder stop also clears them.
+
+On P25, a lockout (`B`/`DE` row), avoid or skip of a patched supergroup blocks the whole patch: a member talkgroup
+that is allowed, listed or held does not readmit the supergroup's grants. A member still selects the patch when
+the supergroup is merely unlisted in allow-list mode (`-W`) or does not match the Hold. On a patched call, the
+quick lockout (`!`/`@`, **Lock out**/**Avoid TG**) applies to the supergroup shown for the call, as **Skip** does, not
+to the member talkgroup the grant matched. Blocking the supergroup in the list releases its active call, and a
+blocked supergroup's call is muted by the same rules as any blocked talkgroup if the return to the control channel
+is delayed.
+
+- Enable trunking (NXDN/P25/EDACS/DMR): `-T`. The later of `-T`/`-Y` wins.
+- Conventional scan mode: `-Y` (not trunking; scans for sync on the row's decoder class or the global decoders). The
+  later of `-T`/`-Y` wins. For NXDN the hold is refreshed
   only by frames whose content passed a CRC, so an open squelch on an empty channel no longer parks the scan.
   A channel map with a `name` column (see `docs/csv-formats.md`) names the row being listened to in the Scan Mode
   row, in Call Info, and on the event history rows recorded while it is tuned. A map can load a per-row key set from
@@ -591,6 +872,8 @@ avoids. Changing the persistence setting does not change the lifetime of existin
     ledger including the copies parked by trunk scan. DMR and NXDN lockouts share the same session ledger instead of
     writing "ENC LO" rows into the group list. While `--enc-follow` is active the ledger is suspended rather than
     erased, so toggling back to `--enc-lockout` does not owe a fresh probe per target.
+  - A locked P25 supergroup stays locked for the whole patch: its member talkgroups are not locked themselves, but
+    they do not readmit the supergroup's grants.
 - Hold talkgroup: `-I <dec>`
 - rigctl over TCP: `-U <port>` (SDR++ default 4532)
 - Set rigctl bandwidth (Hz): `-B <hertz>` (e.g., 7000–48000 by mode)
@@ -646,6 +929,10 @@ cache file. Direct frequency changes are disabled during `--trunk-scan`, whose t
 - A `sql` value that is not a number leaves the squelch as it was rather than switching it off. A disabled squelch is
   reported as `off` everywhere it is shown — the startup banner, the terminal input line, the DSP panel — so it is
   never mistaken for a threshold gating at the −120 dB display floor.
+- A scan row or target may carry its own `--squelch-db`. It uses these same dB units but only the
+  negative and `0` forms: the linear positive form is refused there. While the row is on air it replaces this
+  threshold; leaving it, or stopping the scan, restores this one. The squelch menu and Qt panel still edit this
+  configured value, and a save writes it, never the row's.
 - For DMR data/LRRP on direct RTL input, use `bw=48` when possible, or at least `bw=24`; lower basebands may still decode voice but corrupt data PDUs.
 - Note: For EDACS analog voice follow, `sql <= 0` now uses a bounded fallback watchdog to avoid indefinite VC hold when no release marker is detected.
 - RTL USB, RTL-TCP, SoapySDR, and IQ replay digital decode run in the symbol domain. The digital decoder receives one
@@ -900,9 +1187,9 @@ paths; they are not part of RTL-family digital FSK symbol decode.
 - `DSD_NEO_DEEMPH=off|50|75|nfm` — deemphasis curve
 - `DSD_NEO_AUDIO_LPF=<Hz>|off` — audio low‑pass filter cutoff (or disable)
 - `DSD_NEO_COSTAS_BW=<float>`, `DSD_NEO_COSTAS_DAMPING=<float>` — Costas loop tuning
-- `DSD_NEO_CHANNEL_LPF=0|1` — channel LPF enable/disable (auto-enabled at RTL DSP rates >=20 kHz; mode passbands protect nominal channel edges)
+- `DSD_NEO_CHANNEL_LPF=0|1` — channel LPF enable/disable (auto-enabled at RTL DSP rates >=20 kHz; mode passbands protect nominal channel edges). An explicit analog width (`--nfm-bandwidth-hz`) always runs the filter, and `0` with one is an error
 - `DSD_NEO_WINDOW_FREEZE=1` — freeze symbol‑center window timing for debugging
-- `DSD_NEO_CQPSK=1` — enable CQPSK demodulation
+- `DSD_NEO_CQPSK=1` — enable CQPSK demodulation (`0` forces the FSK discriminator) for digital modes; the analog monitor (`-fA`) always demodulates FM
 - `DSD_NEO_CQPSK_SYNC_INV=1`, `DSD_NEO_CQPSK_SYNC_NEG=1` — CQPSK sync polarity tweaks
 
 Misc

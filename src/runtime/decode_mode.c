@@ -6,6 +6,7 @@
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/dsp/frame_sync.h>
+#include <dsd-neo/runtime/analog_channel.h>
 #include <dsd-neo/runtime/decode_mode.h>
 #include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
 #include <stddef.h>
@@ -612,6 +613,7 @@ decode_mode_apply_analog(dsd_opts* o, dsd_state* s) {
     }
     o->monitor_input_audio = 1;
     o->analog_only = 1;
+    o->analog_demod = DSD_ANALOG_DEMOD_FM;
     DSD_SNPRINTF(o->output_name, sizeof o->output_name, "%s", "Analog Monitor");
 }
 
@@ -688,6 +690,8 @@ dsd_apply_decode_mode_preset(dsdneoUserDecodeMode mode, dsdDecodePresetProfile p
             opts->monitor_input_audio = 0;
         }
         opts->analog_only = 0;
+        /* The analog kind belongs to the analog presets; a digital session never carries one it did not choose. */
+        opts->analog_demod = DSD_ANALOG_DEMOD_FM;
     }
     return 0;
 }

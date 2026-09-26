@@ -14,6 +14,8 @@
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/dsp/frame_sync.h>
+#include <dsd-neo/protocol/p25/p25_sm_watchdog.h>
+#include <dsd-neo/runtime/scan_mode.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
@@ -55,6 +57,32 @@ csvKeyImportDecPath(const char* path, int show_keys, dsd_state* state, dsd_csv_v
 }
 
 static int g_open_audio_calls;
+static int g_guard_enters;
+static int g_guard_leaves;
+static int g_guard_depth;
+static int g_guard_errors;
+static dsd_opts* g_guard_opts;
+static dsd_state* g_guard_state;
+
+void
+p25_sm_tick_guard_enter(void) {
+    ++g_guard_enters;
+    g_guard_errors += g_guard_depth++ != 0;
+    if (g_guard_state) {
+        g_guard_errors += dsd_scan_mode_configured_view(g_guard_state) == NULL;
+    }
+}
+
+void
+p25_sm_tick_guard_leave(void) {
+    ++g_guard_leaves;
+    g_guard_errors += --g_guard_depth != 0;
+    if (g_guard_state) {
+        g_guard_errors += dsd_scan_mode_configured_view(g_guard_state) != NULL;
+        g_guard_errors += g_guard_opts->scanner_mode != 0 || g_guard_opts->trunk_enable != 1;
+    }
+}
+
 static int g_close_audio_calls;
 static int g_open_audio_rc;
 static int g_reset_history_calls;
@@ -297,6 +325,36 @@ seed_voice_call_ids(dsd_state* state, uint8_t slot, int protocol, uint64_t targe
 static int
 seed_voice_call(dsd_state* state, uint8_t slot, int protocol, uint64_t target) {
     return seed_voice_call_ids(state, slot, protocol, target, 0U);
+}
+
+static int
+test_trunk_ownership_guard(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    int rc = 0;
+    for (int toggle = 0; toggle <= 1; ++toggle) {
+        DSD_MEMSET(&opts, 0, sizeof(opts));
+        DSD_MEMSET(&state, 0, sizeof(state));
+        opts.scanner_mode = 1;
+        rc |= expect_int("seed conventional row scope", dsd_scan_mode_enter(&opts, &state, DSD_SCAN_MODE_P25), 0);
+        g_guard_enters = g_guard_leaves = g_guard_depth = g_guard_errors = 0;
+        g_guard_opts = &opts;
+        g_guard_state = &state;
+        struct dsd_app_command cmd = cmd_i32(toggle ? DSD_APP_CMD_TRUNK_TOGGLE : DSD_APP_CMD_TRUNK_SET, 1);
+        dispatch_one(dsd_app_actions_trunk, &opts, &state, &cmd);
+        rc |= expect_int("trunk on enters once", g_guard_enters, 1);
+        rc |= expect_int("trunk on leaves once", g_guard_leaves, 1);
+        rc |= expect_int("trunk on guards row leave and ownership assignments", g_guard_errors, 0);
+        rc |= expect_true("trunk on clears scanner", opts.trunk_enable == 1 && opts.scanner_mode == 0);
+        cmd = cmd_i32(toggle ? DSD_APP_CMD_TRUNK_TOGGLE : DSD_APP_CMD_TRUNK_SET, 0);
+        dispatch_one(dsd_app_actions_trunk, &opts, &state, &cmd);
+        rc |= expect_int("trunk off never enters", g_guard_enters, 1);
+        rc |= expect_int("trunk off never leaves", g_guard_leaves, 1);
+        rc |= expect_int("trunk off disables trunking", opts.trunk_enable, 0);
+        g_guard_opts = NULL;
+        g_guard_state = NULL;
+    }
+    return rc;
 }
 
 static int
@@ -588,6 +646,7 @@ main(void) {
     int rc = 0;
     rc |= test_audio_actions();
     rc |= test_trunk_actions();
+    rc |= test_trunk_ownership_guard();
     rc |= test_radio_actions();
     rc |= test_logging_actions();
     if (rc == 0) {

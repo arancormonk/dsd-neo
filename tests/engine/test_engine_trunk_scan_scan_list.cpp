@@ -143,7 +143,7 @@ keyMuteRotation(bool unmuteP25) {
     }
     dsd_engine_trunk_scan_shutdown(opts, state);
     dsd_trunk_tuning_hooks_set({});
-    dsd_trunk_scan_hooks_set({});
+    dsd_trunk_scan_hooks_set(nullptr);
     freeState(state);
     DSD_SECURE_ZERO(state, sizeof *state);
     delete state;
@@ -197,7 +197,7 @@ p25CandidateRotation(int configured) {
     dsd_engine_trunk_scan_shutdown(opts, state);
     check(opts->p25_prefer_candidates == configured);
     dsd_trunk_tuning_hooks_set({});
-    dsd_trunk_scan_hooks_set({});
+    dsd_trunk_scan_hooks_set(nullptr);
     freeState(state);
     delete state;
     delete opts;
@@ -283,7 +283,7 @@ main(int argc, char** argv) {
     policy(state, "Global", "A");
     check(state->R == 99 && state->M == 1);
     dsd_trunk_tuning_hooks_set({});
-    dsd_trunk_scan_hooks_set({});
+    dsd_trunk_scan_hooks_set(nullptr);
     dsd_state_trunk_lcn_free(state);
     dsd_state_ext_free_all(state);
     DSD_SECURE_ZERO(state, sizeof *state);

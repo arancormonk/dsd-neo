@@ -142,10 +142,10 @@ main(void) {
 
     dsd_trunk_scan_hooks hooks = {0};
     hooks.tick = fake_trunk_scan_tick;
-    dsd_trunk_scan_hooks_set(hooks);
+    dsd_trunk_scan_hooks_set(&hooks);
 
     int rc = dsd_engine_run_with_lifecycle(opts, state, NULL);
-    dsd_trunk_scan_hooks_set((dsd_trunk_scan_hooks){0});
+    dsd_trunk_scan_hooks_set(NULL);
 
     int test_rc = 0;
     if (rc != 0) {

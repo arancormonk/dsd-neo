@@ -307,9 +307,9 @@ dsd_p25p2_slot_crypto_permits_audio(const dsd_opts* opts, const dsd_state* state
 
 static int
 dsd_audio_hold_overrides_policy(const dsd_tg_policy_decision* decision) {
-    // Temporary avoids stay in force until explicitly cleared, including on a held TG.
+    // Explicit temporary blocks also mute a held talkgroup.
     return decision->tg_hold_active && decision->tg_hold_match
-           && !(decision->block_reasons & DSD_TG_POLICY_BLOCK_SESSION_AVOID);
+           && !(decision->block_reasons & (DSD_TG_POLICY_BLOCK_SESSION_AVOID | DSD_TG_POLICY_BLOCK_CALL_SKIP));
 }
 
 static int
@@ -353,11 +353,30 @@ dsd_p25p2_decode_audio_allowed(const dsd_opts* opts, const dsd_state* state, int
     } else {
         uint32_t policy_target = dsd_audio_p25_policy_target_for_slot(state, slot, target);
         if (dsd_tg_policy_evaluate_group_call(opts, state, policy_target, source, 0, 0, &decision) == 0) {
+            (void)dsd_tg_policy_apply_ota_final_blocks(opts, state, target, policy_target, source, &decision);
             return dsd_p25p2_media_decision_allows_audio(&decision);
         }
     }
 
     return 0;
+}
+
+// A private call is judged on its endpoints; a group call on its policy target
+// plus the over-the-air supergroup's final blocks.
+static int
+dsd_audio_group_gate_decision(const dsd_opts* opts, const dsd_state* state, const dsd_call_snapshot* call,
+                              uint32_t ota_tg, uint32_t policy_tg, dsd_tg_policy_decision* decision) {
+    const uint32_t source_id = call ? (uint32_t)call->ota_source_id : 0;
+    if (call && call->kind == DSD_CALL_KIND_PRIVATE_VOICE) {
+        return dsd_tg_policy_evaluate_private_call(opts, state, source_id, (uint32_t)call->ota_target_id, 0, 0,
+                                                   decision);
+    }
+    const int rc = dsd_tg_policy_evaluate_group_call(opts, state, policy_tg, source_id, 0, 0, decision);
+    if (rc == 0) {
+        (void)dsd_tg_policy_apply_ota_final_blocks(opts, state, call ? (uint32_t)call->ota_target_id : ota_tg,
+                                                   policy_tg, source_id, decision);
+    }
+    return rc;
 }
 
 static int
@@ -366,7 +385,6 @@ dsd_audio_group_gate_slot(const dsd_opts* opts, const dsd_state* state, int slot
     dsd_tg_policy_decision decision;
     uint32_t ota_tg = (uint32_t)tg;
     uint32_t policy_tg = 0;
-    uint32_t source_id = 0;
 
     if (!opts || !state || !enc_out) {
         return -1;
@@ -381,12 +399,7 @@ dsd_audio_group_gate_slot(const dsd_opts* opts, const dsd_state* state, int slot
 
     dsd_call_snapshot call;
     const int have_call = dsd_audio_call_for_target(state, slot, ota_tg, policy_tg, &call);
-    source_id = have_call ? (uint32_t)call.ota_source_id : 0;
-    const int rc =
-        have_call && call.kind == DSD_CALL_KIND_PRIVATE_VOICE
-            ? dsd_tg_policy_evaluate_private_call(opts, state, source_id, (uint32_t)call.ota_target_id, 0, 0, &decision)
-            : dsd_tg_policy_evaluate_group_call(opts, state, policy_tg, source_id, 0, 0, &decision);
-    if (rc == 0) {
+    if (dsd_audio_group_gate_decision(opts, state, have_call ? &call : NULL, ota_tg, policy_tg, &decision) == 0) {
         if (dsd_audio_hold_overrides_policy(&decision)) {
             enc = 0;
         } else if (!decision.audio_allowed || (decision.block_reasons & DSD_TG_POLICY_BLOCK_ALLOWLIST) != 0u) {
@@ -415,6 +428,16 @@ dsd_audio_group_gate_dual(const dsd_opts* opts, const dsd_state* state, unsigned
     return rc;
 }
 
+int
+dsd_audio_p25p1_live_voice(const dsd_state* state) {
+    if (!state || !DSD_SYNC_IS_P25P1(state->synctype) || state->mbe_file_type == 3) {
+        return 0;
+    }
+    dsd_call_snapshot call;
+    return !(dsd_call_state_get(state, 0U, &call) > 0 && call.phase == DSD_CALL_PHASE_ACTIVE
+             && !DSD_SYNC_IS_P25(call.protocol));
+}
+
 static int
 dsd_audio_record_slot_allows_audio(const dsd_opts* opts, const dsd_state* state, int slot) {
     int enc = 0;
@@ -424,13 +447,21 @@ dsd_audio_record_slot_allows_audio(const dsd_opts* opts, const dsd_state* state,
         return 0;
     }
 
+    // P25 recording follows the speaker rule, reverse mute (-q) included, so a
+    // clear call that -q keeps off the speakers stays out of the per-call WAV.
     if (DSD_SYNC_IS_P25P2(state->synctype)) {
-        return (state->p25_p2_audio_allowed[slot] != 0) ? 1 : 0;
+        return (state->p25_p2_audio_allowed[slot] != 0 && p25_crypto_audio_output_permitted(opts, state, slot)) ? 1 : 0;
+    }
+    if (dsd_audio_p25p1_live_voice(state)) {
+        return p25_crypto_audio_output_permitted(opts, state, 0);
     }
 
     enc = (slot == 1) ? state->dmr_encR : state->dmr_encL;
     dmr_unmute_slot = (slot == 1) ? (opts->dmr_mute_encR == 0) : (opts->dmr_mute_encL == 0);
-    if (opts->unmute_encrypted_p25 == 1 || enc == 0 || dmr_unmute_slot) {
+    // The P25 unmute override is not a DMR control: DMR audio answers to its slot
+    // flags alone, and so does its recording.
+    const int p25_unmute = opts->unmute_encrypted_p25 == 1 && !DSD_SYNC_IS_DMR(state->synctype);
+    if (p25_unmute || enc == 0 || dmr_unmute_slot) {
         return 1;
     }
     return 0;
@@ -443,7 +474,11 @@ dsd_audio_record_policy_evaluate(const dsd_opts* opts, const dsd_state* state, c
     if (call->kind == DSD_CALL_KIND_PRIVATE_VOICE) {
         return dsd_tg_policy_evaluate_private_call(opts, state, source_id, ota_target, 0, 0, decision);
     }
-    return dsd_tg_policy_evaluate_group_call(opts, state, policy_target, source_id, 0, 0, decision);
+    const int rc = dsd_tg_policy_evaluate_group_call(opts, state, policy_target, source_id, 0, 0, decision);
+    if (rc == 0) {
+        (void)dsd_tg_policy_apply_ota_final_blocks(opts, state, ota_target, policy_target, source_id, decision);
+    }
+    return rc;
 }
 
 static uint32_t
@@ -501,5 +536,14 @@ dsd_audio_record_gate_mono(const dsd_opts* opts, const dsd_state* state, int* al
     }
 
     *allow_out = allow;
+    return 0;
+}
+
+int
+dsd_audio_record_policy_gate_slot(const dsd_opts* opts, const dsd_state* state, int slot, int* allow_out) {
+    if (!opts || !state || !allow_out || slot < 0 || slot > 1) {
+        return -1;
+    }
+    *allow_out = !dsd_audio_record_policy_blocks(opts, state, slot);
     return 0;
 }

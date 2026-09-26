@@ -9,6 +9,9 @@
  *
  * Protocol/DSP code may call dsd_runtime_pump_controls() during long-running
  * loops to keep user controls responsive without depending on UI headers.
+ * Never call it from code that can run under the P25 SM tick guard (processFrame()
+ * does): the installed pump drains commands whose apply takes that non-recursive
+ * guard (#554).
  *
  * The default behavior is a safe no-op until a control pump is registered.
  */

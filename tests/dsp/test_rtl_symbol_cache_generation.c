@@ -10,6 +10,7 @@
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/power.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/dsp/frame_sync.h>
 #include <dsd-neo/dsp/symbol.h>
@@ -19,6 +20,7 @@
 #include <dsd-neo/runtime/rtl_stream_io_hooks.h>
 #include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
 #include <dsd-neo/runtime/shutdown.h>
+#include <dsd-neo/runtime/udp_audio_hooks.h>
 #include <math.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -132,12 +134,51 @@ agsm_f(dsd_opts* opts, dsd_state* state, float* input, int len) {
     (void)len;
 }
 
+/* The analog monitor blocks getSymbol() played (through the UDP analog hook): how many, and the first one's samples. */
+static int g_analog_blocks = 0;
+static size_t g_first_analog_block_samples = 0;
+static short g_first_analog_block_min = 0;
+static short g_first_analog_block_max = 0;
+
+static void
+reset_analog_block_capture(void) {
+    g_analog_blocks = 0;
+    g_first_analog_block_samples = 0;
+    g_first_analog_block_min = 0;
+    g_first_analog_block_max = 0;
+}
+
+static void
+fake_blast_analog(const dsd_opts* opts, dsd_state* state, size_t nbytes, const void* data) {
+    (void)opts;
+    (void)state;
+    const short* samples = (const short*)data;
+    const size_t count = nbytes / sizeof(short);
+    if (g_analog_blocks == 0 && count > 0U) {
+        g_first_analog_block_samples = count;
+        g_first_analog_block_min = samples[0];
+        g_first_analog_block_max = samples[0];
+        for (size_t i = 1; i < count; i++) {
+            if (samples[i] < g_first_analog_block_min) {
+                g_first_analog_block_min = samples[i];
+            }
+            if (samples[i] > g_first_analog_block_max) {
+                g_first_analog_block_max = samples[i];
+            }
+        }
+    }
+    g_analog_blocks++;
+}
+
 static int
 fake_rtl_read(void* rtl_ctx, float* out, size_t count, int* out_got) {
     assert(rtl_ctx != NULL);
     assert(out != NULL);
     assert(out_got != NULL);
-    assert(count >= 4U);
+    /* The direct outputs fill the symbol cache (at least four samples); the monitor output is read one sample at a
+       time. */
+    assert(count >= 1U);
+    const int n = count < 4U ? (int)count : 4;
 
     g_read_calls++;
     if (g_max_read_calls > 0 && g_read_calls > g_max_read_calls) {
@@ -180,11 +221,11 @@ fake_rtl_read(void* rtl_ctx, float* out, size_t count, int* out_got) {
         }
         g_bump_generation_during_read = 0;
     }
-    for (int i = 0; i < 4; i++) {
+    for (int i = 0; i < n; i++) {
         out[i] = read_base + (float)i;
     }
     g_read_base += g_read_base_step;
-    *out_got = 4;
+    *out_got = n;
     return 0;
 }
 
@@ -249,12 +290,127 @@ reset_stream_fixture(void) {
 
 static void
 reset_decoder_fixture(dsd_opts* opts, dsd_state* state, void* rtl_context) {
+    /* The analog monitor starts received-tone detection, which keeps its state in a state extension (issue #522):
+       released before the state is wiped, so no case leaks what the previous one left attached. */
+    dsd_state_ext_free_all(state);
     DSD_MEMSET(opts, 0, sizeof(*opts));
     DSD_MEMSET(state, 0, sizeof(*state));
     opts->audio_in_type = AUDIO_IN_RTL;
     state->rf_mod = 2;
     state->sps_hunt_idx = DSD_FRAME_SYNC_SPS_PROFILE_4800_4;
     state->rtl_ctx = (struct RtlSdrContext*)rtl_context;
+}
+
+/* A decoder that plays its analog monitor block over UDP (-o udp), squelch open, reading at the fixture's 48 kHz: the
+   block is 960 samples. */
+static void
+set_analog_block_output(dsd_opts* opts, int analog_family) {
+    opts->analog_only = analog_family;
+    opts->monitor_input_audio = 1;
+    opts->audio_out = 1;
+    opts->audio_out_type = 8;
+    opts->rtl_volume_multiplier = 1;
+    opts->rtl_squelch_level = -1.0;
+}
+
+/* Read until the decoder plays an analog block, at most @p max_symbols symbols. */
+static void
+read_until_analog_block(dsd_opts* opts, dsd_state* state, int max_symbols) {
+    for (int i = 0; i < max_symbols && g_analog_blocks == 0; i++) {
+        (void)getSymbol(opts, state, 0);
+    }
+}
+
+/*
+ * A live switch between the analog and digital families reaches the decoder in two steps: the decode-mode change
+ * commits the decoder (and drops its part-collected analog block) on the decoder thread, and the front end follows when
+ * the demod thread applies the family request at its next block boundary, clearing the output ring and bumping the
+ * stream generation. Until then the decoder still reads the old family's output. Neither the samples it reads in
+ * between nor a block part-collected before the boundary may reach the first block the new family plays.
+ */
+static void
+test_analog_block_follows_family_switch(dsd_opts* opts, dsd_state* state, void* rtl_context) {
+    /* Digital -> analog. A digital session collects its unsynced FSK discriminator samples into the block. */
+    reset_stream_fixture();
+    reset_decoder_fixture(opts, state, rtl_context);
+    reset_analog_block_capture();
+    g_output_kind = RTL_STREAM_OUTPUT_FSK_DISCRIMINATOR;
+    g_channel_profile = RTL_STREAM_CHANNEL_PROFILE_12K5;
+    g_read_base = 1000.0f;
+    state->rf_mod = 0;
+    for (int i = 0; i < 5; i++) {
+        (void)getSymbol(opts, state, 0);
+    }
+    assert(state->analog_sample_counter > 0);
+
+    /* The decoder commits to Analog and drops its block; the front end has not switched yet, so the ring still holds
+       well over a block of discriminator output. None of it is collected or played as monitor audio. */
+    set_analog_block_output(opts, 1);
+    dsd_symbol_analog_block_reset(state);
+    for (int i = 0; i < 200; i++) {
+        (void)getSymbol(opts, state, 0);
+    }
+    if (state->analog_sample_counter != 0 || g_analog_blocks != 0) {
+        DSD_FPRINTF(stderr, "pending analog switch: collected %d discriminator samples, played %d blocks\n",
+                    state->analog_sample_counter, g_analog_blocks);
+    }
+    assert(state->analog_sample_counter == 0);
+    assert(g_analog_blocks == 0);
+
+    /* The switch lands: monitor audio from a new stream generation. The first block is all monitor audio. */
+    g_output_kind = RTL_STREAM_OUTPUT_AUDIO_MONITOR;
+    g_stream_generation++;
+    g_read_base = -2000.0f;
+    read_until_analog_block(opts, state, 1000);
+    if (g_analog_blocks != 1 || g_first_analog_block_min != -2000 || g_first_analog_block_max != -2000) {
+        DSD_FPRINTF(stderr, "first monitor block: blocks=%d samples=%zu min=%d max=%d\n", g_analog_blocks,
+                    g_first_analog_block_samples, g_first_analog_block_min, g_first_analog_block_max);
+    }
+    assert(g_analog_blocks == 1);
+    assert(g_first_analog_block_samples == 960U);
+    assert(g_first_analog_block_min == -2000);
+    assert(g_first_analog_block_max == -2000);
+    assert(g_cleanup_calls == 0);
+
+    /* Analog -> digital, with the source monitor (-8) still playing the block. The monitor collects its audio. */
+    reset_stream_fixture();
+    reset_decoder_fixture(opts, state, rtl_context);
+    reset_analog_block_capture();
+    set_analog_block_output(opts, 1);
+    g_output_kind = RTL_STREAM_OUTPUT_AUDIO_MONITOR;
+    g_read_base = -2000.0f;
+    state->rf_mod = 0;
+    for (int i = 0; i < 5; i++) {
+        (void)getSymbol(opts, state, 0);
+    }
+    assert(state->analog_sample_counter > 0);
+
+    /* The decoder commits to a digital mode and drops its block, then reads monitor audio the front end still delivers
+       until the switch lands: the digital decoder's block collects it, as it collects any source it reads. */
+    opts->analog_only = 0;
+    dsd_symbol_analog_block_reset(state);
+    for (int i = 0; i < 5; i++) {
+        (void)getSymbol(opts, state, 0);
+    }
+    assert(state->analog_sample_counter > 0);
+    assert(g_analog_blocks == 0);
+
+    /* The switch lands on the FSK discriminator: the monitor audio collected before it is dropped there, and the first
+       block holds discriminator samples only. */
+    g_output_kind = RTL_STREAM_OUTPUT_FSK_DISCRIMINATOR;
+    g_channel_profile = RTL_STREAM_CHANNEL_PROFILE_12K5;
+    g_stream_generation++;
+    g_read_base = 1000.0f;
+    read_until_analog_block(opts, state, 1000);
+    if (g_analog_blocks != 1 || g_first_analog_block_min < 1000 || g_first_analog_block_max > 1003) {
+        DSD_FPRINTF(stderr, "first discriminator block: blocks=%d samples=%zu min=%d max=%d\n", g_analog_blocks,
+                    g_first_analog_block_samples, g_first_analog_block_min, g_first_analog_block_max);
+    }
+    assert(g_analog_blocks == 1);
+    assert(g_first_analog_block_samples == 960U);
+    assert(g_first_analog_block_min >= 1000);
+    assert(g_first_analog_block_max <= 1003);
+    assert(g_cleanup_calls == 0);
 }
 
 int
@@ -609,8 +765,13 @@ main(void) {
     assert(g_failed_read_calls == 1);
     assert(g_cleanup_calls == 1);
 
+    dsd_udp_audio_hooks_set((dsd_udp_audio_hooks){.blast_analog = fake_blast_analog});
+    test_analog_block_follows_family_switch(&opts, &state, &fake_rtl_context);
+    dsd_udp_audio_hooks_set((dsd_udp_audio_hooks){0});
+
     dsd_rtl_stream_io_hooks_set((dsd_rtl_stream_io_hooks){0});
     dsd_rtl_stream_metrics_hooks_set(NULL);
     dsd_rtl_stream_metrics_hook_symbol_cache_pending_reset();
+    dsd_state_ext_free_all(&state);
     return 0;
 }

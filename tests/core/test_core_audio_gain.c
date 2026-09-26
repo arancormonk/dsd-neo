@@ -4,9 +4,13 @@
  */
 
 #include <dsd-neo/core/audio.h>
+#include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/dibit.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/core/state_ext.h>
+#include <dsd-neo/core/synctype_ids.h>
+#include <dsd-neo/core/talkgroup_policy.h>
 #include <dsd-neo/platform/audio.h>
 #include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/platform/posix_compat.h>
@@ -790,6 +794,8 @@ test_play_synthesized_voice_fd_writes_pending_pcm_and_resets_index(void) {
     opts.audio_out_type = 1;
     opts.audio_out_fd = fd;
     opts.delay = 2;
+    // The legacy short output is reached only by SDRTrunk JSON playback.
+    state.mbe_file_type = 3;
     static short out[8];
     static float out_float[8];
     static const short initial_out[8] = {101, -202, 303, -404, 505, -606, 707, -808};
@@ -818,6 +824,62 @@ test_play_synthesized_voice_fd_writes_pending_pcm_and_resets_index(void) {
     return rc;
 }
 
+/* The legacy short output, which SDRTrunk JSON playback uses while a WAV is
+ * being written, applies the talkgroup gate like every other output path: a
+ * blocked call's pending samples are dropped, not written. */
+static int
+test_play_synthesized_voice_drops_blocked_talkgroup(void) {
+    static dsd_opts opts = {0};
+    static dsd_state state = {0};
+    DSD_MEMSET(&opts, 0, sizeof opts);
+    DSD_MEMSET(&state, 0, sizeof state);
+
+    char path[DSD_AUDIO_TEST_PATH_MAX] = {0};
+    int fd = create_temp_file_fd("dsdneo_audio_gate", path, sizeof path);
+    if (fd < 0) {
+        return 1;
+    }
+    opts.slot1_on = 1;
+    opts.audio_out = 1;
+    opts.audio_out_type = 1;
+    opts.audio_out_fd = fd;
+    opts.delay = 0;
+    // SDRTrunk JSON playback of a DMR call, the legacy output's only caller.
+    state.mbe_file_type = 3;
+    state.synctype = DSD_SYNC_DMR_BS_VOICE_POS;
+    static short out[8];
+    static const short initial_out[8] = {101, -202, 303, -404, 505, -606, 707, -808};
+    DSD_MEMCPY(out, initial_out, sizeof(out));
+    state.audio_out_buf = out;
+    state.audio_out_buf_p = out + 4;
+    state.audio_out_idx = 4;
+    state.audio_out_idx2 = 4;
+
+    int rc = expect_int_eq("blocked talkgroup row", dsd_tg_policy_set_mode(&state, 123, 123, "B"), 0);
+    const dsd_call_observation call = {.protocol = DSD_SYNC_DMR_BS_VOICE_POS,
+                                       .slot = 0U,
+                                       .kind = DSD_CALL_KIND_GROUP_VOICE,
+                                       .ota_target_id = 123U,
+                                       .policy_target_id = 123U,
+                                       .ota_source_id = 1U};
+    rc |= expect_int_eq("blocked talkgroup call", dsd_call_state_observe(&state, &call, DSD_CALL_BOUNDARY_BEGIN), 1);
+
+    playSynthesizedVoice(&opts, &state);
+    (void)dsd_close(fd);
+    opts.audio_out_fd = -1;
+
+    FILE* file = dsd_fopen_existing_regular_file(path, "rb");
+    rc |= expect_true("blocked talkgroup output readable", file != NULL);
+    if (file) {
+        rc |= expect_int_eq("blocked talkgroup writes no pcm", fgetc(file), EOF);
+        fclose(file);
+    }
+    rc |= expect_int_eq("blocked talkgroup drops pending index", state.audio_out_idx, 0);
+    dsd_state_ext_free_all(&state);
+    (void)remove(path);
+    return rc;
+}
+
 static int
 test_play_synthesized_voice_bad_fd_drops_pending_pcm(void) {
     static dsd_opts opts = {0};
@@ -830,6 +892,8 @@ test_play_synthesized_voice_bad_fd_drops_pending_pcm(void) {
     opts.audio_out_type = 1;
     opts.audio_out_fd = -1;
     opts.delay = 0;
+    // The legacy short output is reached only by SDRTrunk JSON playback.
+    state.mbe_file_type = 3;
     static short out[4];
     static const short initial_out[4] = {1, 2, 3, 4};
     DSD_MEMCPY(out, initial_out, sizeof(out));
@@ -1204,6 +1268,7 @@ main(void) {
     rc |= test_process_audio_upsampled_right_clamps_and_tracks_output();
     rc |= test_play_synthesized_voice_slot_off_clears_pending_output();
     rc |= test_play_synthesized_voice_fd_writes_pending_pcm_and_resets_index();
+    rc |= test_play_synthesized_voice_drops_blocked_talkgroup();
     rc |= test_play_synthesized_voice_bad_fd_drops_pending_pcm();
     rc |= test_drain_audio_output_guards_and_fd_sink();
     rc |= test_drain_audio_output_drains_all_local_streams();

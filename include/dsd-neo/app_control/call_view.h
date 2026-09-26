@@ -108,6 +108,7 @@ typedef struct {
      */
     char channel[DSD_APP_CALL_CHANNEL_SIZE];
     uint64_t tg_id;      /**< OTA target when one decoded, else the policy-resolved id. */
+    double started_m;    /**< Exact monotonic epoch start for ACTIVE and ENDED lines; 0 on other lines. */
     uint32_t elapsed_ms; /**< Since the epoch started; frozen at the end for ENDED. */
     uint16_t kid;
     uint8_t algid;
@@ -146,19 +147,30 @@ void dsd_app_slot_call_view(const dsd_state* state, uint8_t slot, double now_m, 
  * surfaces reading the same record named different units on a TDMA system with both
  * slots up, which is routine on DMR and P25 Phase 2.
  *
- * An open epoch outranks a merely-ended one. Between two of equal rank the lower slot
- * wins: a fixed order, so the headline does not swap between two simultaneous
- * transmissions as their relative timings shift.
+ * An ACTIVE line outranks an ENDED one. Among ACTIVE lines the earliest exact epoch
+ * start wins, keeping the headline while later calls open on other slots. Exact ties
+ * and a NULL @p started_m fall back to the lowest index. Among ENDED lines the lowest
+ * index wins, regardless of start time.
  *
- * Takes the line states rather than the whole views because that is all the rule reads,
- * and the Qt model keeps its slots in a QML-facing struct of its own.
+ * Compare the exact start, not truncated elapsed milliseconds: starts less than a
+ * millisecond apart can alternate between tied and distinct elapsed values as readers
+ * sample them. A remembered lead can also diverge when a slower reader misses an
+ * end/restart gap. Exact starts give every reader the same order at any sampling instant;
+ * epoch ids cannot order slots because each slot has its own counter.
+ *
+ * An identity-less epoch is suppressed by dsd_app_slot_call_view(). If it gains identity
+ * late, its line becomes ACTIVE with its true, earlier start and takes the headline
+ * once. It is the earlier transmission, and this late-identity takeover is accepted.
+ *
+ * Takes parallel arrays because the Qt model keeps a slot struct of its own.
  *
  * @param line_states Array of @p count DSD_APP_CALL_LINE_* values, indexed by slot.
- * @param count       Number of entries in @p line_states.
+ * @param started_m   Parallel exact epoch starts in monotonic seconds, or NULL.
+ * @param count       Number of entries in each supplied array.
  * @return Index of the headline slot, or -1 when no slot has anything to show and when
  *         @p line_states is NULL.
  */
-int dsd_app_lead_slot(const int* line_states, unsigned count);
+int dsd_app_lead_slot(const int* line_states, const double* started_m, unsigned count);
 
 /**
  * @brief The voice-channel frequency in Hz, or 0 when none resolves.

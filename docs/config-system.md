@@ -287,7 +287,7 @@ small subset is exposed as config keys for convenience (for example
 | `rtl_gain` | INT (0-49) | RTL-SDR gain in dB | `0` |
 | `rtl_ppm` | INT (-1000-1000) | Frequency correction | `0` |
 | `rtl_bw_khz` | INT (4-48) | DSP bandwidth | `48` |
-| `rtl_sql` | INT (-100-0) | Squelch threshold in dB; `0` switches squelch off (a disabled squelch is saved as `0`) | `0` |
+| `rtl_sql` | INT (-100-0) | Squelch threshold in dB; `0` switches squelch off (a disabled squelch is saved as `0`). The default a scan row's `--squelch-db` overrides and every row without one inherits; a save during a row override writes this default, not the row's value | `0` |
 | `rtl_volume` | INT (1-3) | RTL monitor/non-symbol gain multiplier | `2` |
 | `auto_ppm` | BOOL | Enable carrier/error-based RTL auto-PPM correction | `false` |
 | `rtl_auto_ppm` | BOOL | Deprecated read alias for `auto_ppm` | `false` |
@@ -342,7 +342,7 @@ small subset is exposed as config keys for convenience (for example
 | `tune_private_calls` | BOOL | Follow private calls | `true` |
 | `tune_data_calls` | BOOL | Follow data calls | `false` |
 | `tune_enc_calls` | BOOL | Follow P25 encrypted grants without key-aware lockout; `false` silently classifies and follows only usable matching keys | `true` |
-| `persist_tg_lockouts` | BOOL | Save quick `!`/`@` and Qt/Android **Skip** lockouts to the global groups file; `false` keeps temporary avoids in memory | `true` |
+| `persist_tg_lockouts` | BOOL | Save quick `!`/`@` and Qt/Android **Lock out** actions to the configured global groups file; `false` keeps temporary avoids in memory and labels the Qt/Android button **Avoid TG**. **Skip** is unaffected | `true` |
 | `scanner` | BOOL | Use the channel map as a conventional scanner (`-Y`) instead of following a control channel | `false` |
 | `scan_voice_only` | BOOL | Step `-Y`/conventional scan on unless decoded voice holds the row | `false` |
 | `scan_voice_qualify_ms` | INT (100-600000) | Window after sync in which voice must appear or the scan moves on | `1000` |
@@ -352,8 +352,11 @@ small subset is exposed as config keys for convenience (for example
 
 Loading a configuration during a session with a different `group_csv` imports that file before making it the
 save destination. If the import fails, the configuration is rejected and the previous list and destination stay
-in place. An unchanged path preserves temporary avoids. During scan-row visits, this updates the global list
-while retaining the row's own list and avoids.
+in place. An unchanged path preserves temporary avoids and unexpired call skips. During scan-row visits, this
+updates the global list while retaining the row's own list, avoids and call skips.
+
+Qt/Android **Settings → Listening → Save avoided talkgroups** controls `persist_tg_lockouts`. Explicit list edits
+still save; **Skip** never saves or changes the list. See [Skip lifetimes](cli.md#trunking--scanning).
 
 **[trunk_scan] section:**
 | Key | Type | Description | Default |
@@ -421,6 +424,38 @@ Rdio API uploads do not follow HTTP redirects. Configure `rdio_api_url` as the f
 | `iq_balance` | BOOL | Enable RTL IQ balance (image suppression) | `false` |
 | `iq_dc_block` | BOOL | Enable RTL I/Q DC blocker | `false` |
 
+**[analog] section:**
+| Key | Type | Description | Default |
+|-----|------|-------------|---------|
+| `nfm_bandwidth_hz` | INT (8000-25000) | NFM channel-filter width in whole Hz: the full RF passband the analog monitor (`decode = "analog"`) keeps, not the tuner, DSP or audio bandwidth. Same as `--nfm-bandwidth-hz` | (unset: `16000`) |
+
+The `[analog]` keys are written only when set explicitly: a save leaves `nfm_bandwidth_hz` out while the default is in
+force, so within the section the key left out and the default are the same thing, and a later default reaches the
+config. An explicit `16000` is saved, because it differs from the default in one way: an explicit width always runs the
+channel filter, while the unset default keeps the historical rule and runs it only at DSP rates of 20 kHz or more. The
+generated template's `# nfm_bandwidth_hz = 16000` shows the width the default resolves to; uncommenting it makes the
+width explicit. A section that is present sets every key it owns, so a save always writes the `[analog]` header, even
+with no key under it: loading a config saved at the default puts the default back over an explicit width the session
+had, from the Config menu's load and a profile switch alike. An `[analog]` section whose width the loader refused leaves
+the default too. A hand-written config with no `[analog]` section leaves the width as it was.
+
+A value outside 8000-25000, or anything but whole Hz (`12.5k`, `12500Hz`), is refused, never clamped: startup logs a
+warning and keeps the default, and `--validate-config` reports an error with the same text the CLI prints. With
+`[input] source = "rtl"` or `"rtltcp"` (with `rtl_freq`, which is what builds the input with `rtl_bw_khz`) and
+`[mode] decode = "analog"`, `--validate-config` also reports an error when the width does not fit the DSP rate
+`rtl_bw_khz` gives (for example `25000` needs `rtl_bw_khz = 48`; see the DSP-rate table in `docs/cli.md`, Analog
+reception). Scan rows do not carry a width yet, so the configured width is what a save writes.
+
+When `[analog]` changes apply (the full table, with the terminal and Qt controls, is in `docs/cli.md`, Analog
+reception, "When changes apply"):
+
+| Change | When it applies |
+| --- | --- |
+| `nfm_bandwidth_hz` at startup | When the stream opens. An RTL-SDR or rtl_tcp input whose DSP bandwidth cannot filter the width stops startup before the device opens; other radio inputs are held to the rate they deliver when the stream starts. |
+| `nfm_bandwidth_hz` in a config loaded into a running session | Live, on the next DSP block of the analog monitor; no reopen. A width the DSP rate it will run at cannot filter, or any explicit width while `DSD_NEO_CHANNEL_LPF=0`, leaves the whole config unapplied, with a message naming the width, the rate and the fix. A width the front end refuses where it lands (a retune moved its rate after the check) is put back, with the same message. |
+| `[input] rtl_bw_khz` in a config loaded into a running analog session | Reopens the device at that DSP bandwidth, as given, when the `[input]` builds an RTL-SDR or rtl_tcp input other than the running one (another bandwidth, frequency or device, or an RTL spec over a running SoapySDR or Airspy input). A bandwidth the explicit NFM width in force (the config's or the session's) cannot run at leaves the whole config unapplied; the width is checked at the bandwidth the reopen runs at, not the running one. An `[input]` that builds the input already running reopens nothing and changes no rate. An `[input]` that reopens a SoapySDR or Airspy device (an `airspy` source over a running Airspy reopens it for a new sample rate, serial, `rtl_bw_khz` or volume) is held to neither rate: the reopened stream's start checks the width at the rate that device delivers. |
+| `[mode] decode = "analog"` in a config loaded into a digital session | Live receive-family switch. With an explicit NFM width the DSP rate cannot filter, the whole config is left unapplied. A `[mode]` section without a `decode` key keeps the session's mode, and an analog session's width is held as above. |
+
 Note: The defaults shown match the generated template (`--dump-config-template`).
 Missing keys generally mean “leave the engine default unchanged”; some input
 sources require specific keys to actually switch the input at startup (see
@@ -432,7 +467,8 @@ Notes on Input Sources).
 
 The config system validates files and reports issues with line numbers:
 
-- **Error**: Invalid enum value, type mismatch, parse failure
+- **Error**: Invalid enum value, type mismatch, parse failure, an `[analog]` width outside its range or one the
+  configured RTL DSP bandwidth cannot filter (for an `rtl`/`rtltcp` input with `rtl_freq` under `decode = "analog"`)
 - **Warning**: Unknown key or section, integer out of range
 
 ```bash
@@ -841,6 +877,8 @@ The following can be changed without restarting:
 
 - PulseAudio input/output device
 - RTL-SDR, RTL-TCP, and Soapy tuning parameters (frequency, gain, PPM, etc.)
+- The NFM channel width (`[analog] nfm_bandwidth_hz`), applied to a running analog monitor without a reopen (see
+  "When `[analog]` changes apply" above)
 - TCP/UDP connection parameters
 - File input path
 

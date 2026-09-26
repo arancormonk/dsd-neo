@@ -19,9 +19,12 @@
 #include "dsd-neo/core/input_level.h"
 
 #include <curses.h>
+#include <dsd-neo/app_control/analog_width_view.h>
 #include <dsd-neo/app_control/frontend.h>
 #include <dsd-neo/app_control/history.h>
+#include <dsd-neo/app_control/rx_tone_view.h>
 #include <dsd-neo/app_control/scan_timing_view.h>
+#include <dsd-neo/app_control/squelch_view.h>
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/channel_label.h>
 #include <dsd-neo/core/dsd_time.h>
@@ -37,7 +40,9 @@
 #include <dsd-neo/protocol/p25/p25_callsign.h>
 #include <dsd-neo/protocol/p25/p25_crypto.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
+#include <dsd-neo/runtime/analog_channel.h>
 #include <dsd-neo/runtime/scan_mode.h>
+#include <dsd-neo/runtime/unicode.h>
 #include <dsd-neo/ui/menu_core.h>
 #include <dsd-neo/ui/ncurses.h>
 #include <dsd-neo/ui/ncurses_dsp_display.h>
@@ -408,6 +413,23 @@ ui_print_rtl_auto_ppm_status(void) {
 #endif
 }
 
+/* The analog channel width in force beside the DSP rate it has to fit (issue #525), under the configured analog preset,
+   as app_control's analog width view decides and spells it for every frontend. */
+static void
+ui_print_analog_channel_field(const dsd_opts* opts, const dsd_state* state) {
+    dsd_frontend_metrics metrics;
+    (void)dsd_app_frontend_get_metrics(&metrics);
+    dsd_app_analog_width_view view;
+    if (dsd_app_analog_width_view_get(opts, state, &metrics, &view) != 0 || !view.shown || !view.radio_input) {
+        return;
+    }
+    char width[DSD_APP_ANALOG_WIDTH_TEXT_MAX];
+    (void)dsd_app_analog_width_view_format(&view, width, sizeof width);
+    if (width[0] != '\0') {
+        printw(" Analog: %s %s;", dsd_analog_demod_label(view.kind), width);
+    }
+}
+
 static void
 ui_render_rtl_input_source(dsd_opts* opts, dsd_state* state) {
     if (opts->audio_in_type == AUDIO_IN_RTL) {
@@ -426,10 +448,15 @@ ui_render_rtl_input_source(dsd_opts* opts, dsd_state* state) {
         ui_print_rtl_gain_field(opts);
         printw(" Mon: %iX;", opts->rtl_volume_multiplier);
         ui_print_rtl_ppm_field(opts);
-        char sql[24];
-        (void)dsd_squelch_format(opts->rtl_squelch_level, " dB", sql, sizeof sql);
+        /* The shared readout: the threshold in force, plus "(row; default X)" while a scan row
+         * or target overrides it (issue #521). */
+        dsd_app_squelch_view squelch;
+        char sql[72];
+        (void)dsd_app_squelch_view_get(opts, state, &squelch);
+        (void)dsd_app_squelch_view_format(&squelch, sql, sizeof sql);
         printw(" SQL: %s;", sql);
         printw(" DSP-BW: %i kHz;", opts->rtl_dsp_bw_khz);
+        ui_print_analog_channel_field(opts, state);
         printw(" FRQ: %i;", opts->rtlsdr_center_freq);
         ui_print_rtl_auto_ppm_status();
         if (!soapy_input && opts->rtl_udp_port != 0) {
@@ -628,9 +655,12 @@ ui_render_m17_encoder_status(const dsd_opts* opts, const dsd_state* state) {
         }
         if (opts->audio_in_type != AUDIO_IN_RTL && state->m17_vox == 1) {
             /* Measured power then threshold: the first is always a reading, the
-             * second says "off" when it is not gating. */
-            char vox_sql[24];
-            (void)dsd_squelch_format(opts->rtl_squelch_level, " dB", vox_sql, sizeof vox_sql);
+             * second says "off" when it is not gating. A scan row can override the
+             * threshold on this input too, so it reads like the RTL line's SQL. */
+            dsd_app_squelch_view vox_view;
+            char vox_sql[72];
+            (void)dsd_app_squelch_view_get(opts, state, &vox_view);
+            (void)dsd_app_squelch_view_format(&vox_view, vox_sql, sizeof vox_sql);
             printw(" SQL: %.1f : %s;", pwr_to_dB(opts->rtl_pwr), vox_sql);
         }
         printw("\n");
@@ -3418,11 +3448,53 @@ ui_render_tetra_messages(const dsd_state* state) {
     }
 }
 
+/* The received sub-audible tone (issue #522) without its newline: the shared app-control
+   view's text, so the terminal and the Qt/Android row say the same thing. Pure, for the
+   goldens: @p now_m is the caller's monotonic clock, which ages the publication of an input
+   that has gone quiet. Returns the length written, or 0 when the analog FM monitor is not running. */
+static int
+ui_format_rx_tone_line(const dsd_opts* opts, const dsd_state* state, double now_m, char* buf, size_t buf_sz) {
+    if (!buf || buf_sz == 0U) {
+        return 0;
+    }
+    buf[0] = '\0';
+    dsd_app_rx_tone view;
+    if (dsd_app_rx_tone_view(opts, state, now_m, &view) != 1) {
+        return 0;
+    }
+    /* The no-carrier mark is an em dash, the one non-ASCII text the view writes; a terminal
+       without UTF-8 gets a hyphen instead of mojibake. */
+    const char* text = (view.status == DSD_APP_RX_TONE_NO_CARRIER) ? dsd_unicode_or_ascii(view.text, "-") : view.text;
+    const int written = DSD_SNPRINTF(buf, buf_sz, "| Rx tone: %s", text);
+    if (written < 0) {
+        buf[0] = '\0';
+        return 0;
+    }
+    return ((size_t)written < buf_sz) ? written : (int)(buf_sz - 1U);
+}
+
+/* In Call Info rather than beside the analog monitor row in Input Output: compact view
+   hides that section, and the tone is what someone scanning analog channels looks for. */
+static void
+ui_render_call_info_rx_tone_line(const dsd_opts* opts, const dsd_state* state) {
+    char line[64];
+    if (ui_format_rx_tone_line(opts, state, dsd_time_now_monotonic_s(), line, sizeof(line)) <= 0) {
+        return;
+    }
+    printw("| ");
+    attron(COLOR_PAIR(4));
+    printw("%s", line + 2);
+    ui_restore_call_info_color(state);
+    printw("\n");
+}
+
 static void
 ui_render_call_info_and_history(const dsd_opts* opts, dsd_state* state) {
     ui_print_header("Call Info");
 
     ui_render_call_info_channel_line(opts, state);
+
+    ui_render_call_info_rx_tone_line(opts, state);
 
     ui_render_call_info_dstar(state);
 

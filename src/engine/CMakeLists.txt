@@ -62,6 +62,7 @@ target_sources(
         p25_bandplan_export.c
         p25_optional_hooks_install.c
         scan_voice_gate.c
+        slicer_thresholds.c
         trunk_scan.c
         trunk_tuning.c
         trunk_tuning_hooks_install.c
@@ -72,6 +73,20 @@ target_sources(
         net_audio_input_hooks_install.c
         m17_udp_hooks_install.c
 )
+
+# The slicer refresh rejects NaN/infinite/out-of-range extremes before casting
+# them to int; keep IEEE semantics there even when global fast-math is on.
+if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
+    set_source_files_properties(
+        slicer_thresholds.c
+        PROPERTIES COMPILE_OPTIONS "-fno-fast-math"
+    )
+elseif(MSVC)
+    set_source_files_properties(
+        slicer_thresholds.c
+        PROPERTIES COMPILE_OPTIONS "/fp:precise"
+    )
+endif()
 
 target_include_directories(
     dsd-neo_engine

@@ -92,6 +92,11 @@ udp_socket_blasterA(const dsd_opts* opts, dsd_state* state, size_t nsam, const v
     //short 48k/1
     //socat stdio udp-listen:23456 | play --buffer 1920 -q -b 16 -r 48000 -c1 -t s16 -
 
+    if (opts->udp_sockfdA == DSD_INVALID_SOCKET) {
+        /* No analog socket (never opened, or opening it failed and was reported then): nothing to send to. */
+        return;
+    }
+
     //send audio or data to socket
     err = dsd_socket_sendto(opts->udp_sockfdA, data, nsam, 0, (const struct sockaddr*)&addressA,
                             sizeof(struct sockaddr_in));

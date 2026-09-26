@@ -7,6 +7,13 @@ function talkgroupHeadline(name, tgText, tgId) {
     return tgId > 0 && name === tgText ? "TG " + tgText : name.length > 0 ? name : tgText;
 }
 
+// String.arg(double) uses QString's six-significant-digit formatting. Convert
+// numeric IDs to decimal text first so seven-digit IDs never become exponents.
+function idText(id) {
+    var n = Number(id);
+    return isFinite(n) ? String(Math.round(n)) : "";
+}
+
 // Decode chip catalog: label ↔ CLI flags. The empty flag is the engine's own
 // default (P25 Phase 1+2, DMR and YSF enabled together), so "Auto" passes
 // nothing. Each entry carries the whole flag set its system type needs — the
@@ -63,8 +70,47 @@ var DECODE_MODES = [
     {
         label: "TETRA", short: "TETRA", flag: "-fT", trunked: true,
         hint: "TETRA — pi/4-DQPSK trunked voice and control channels."
+    },
+    {
+        // -fA is the analog monitor. On a radio it receives narrowband FM through
+        // the NFM channel filter, whose width the Radio sheet sets (issue #525).
+        label: "NFM — analog FM", short: "NFM", flag: "-fA",
+        hint: "Analog narrowband FM voice — repeaters, business and public-service radio."
     }
 ]
+
+// The NFM channel widths the Radio sheet steps through, in Hz: the full RF
+// passband the channel filter keeps, not the tuner or audio bandwidth. The
+// engine accepts any whole Hz from 8000 to 25000 (the terminal row and the CLI
+// take those); these are the common channel plans. 16000 is the default.
+var NFM_WIDTHS_HZ = [8000, 11250, 12500, 16000, 20000, 25000]
+var NFM_DEFAULT_WIDTH_HZ = 16000
+
+// A channel width as kHz text with trailing zeros dropped, as the engine prints
+// it (dsd_analog_width_format()): "12.5 kHz", "11.25 kHz", "16 kHz".
+function widthKhzText(hz) {
+    return String(hz / 1000) + " kHz"
+}
+
+// The preset after (direction 1) or before (-1) a width, or -1 at the end of the
+// list. A width between presets steps to the nearest one in that direction.
+// @a maxHz, when above 0, is the widest width the DSP rate filters: presets
+// above it are skipped, since the engine would refuse them.
+function nextNfmWidth(hz, direction, maxHz) {
+    var fits = function (w) { return !(maxHz > 0) || w <= maxHz }
+    if (direction > 0) {
+        for (var i = 0; i < NFM_WIDTHS_HZ.length; i++) {
+            if (NFM_WIDTHS_HZ[i] > hz && fits(NFM_WIDTHS_HZ[i]))
+                return NFM_WIDTHS_HZ[i]
+        }
+    } else {
+        for (var j = NFM_WIDTHS_HZ.length - 1; j >= 0; j--) {
+            if (NFM_WIDTHS_HZ[j] < hz && fits(NFM_WIDTHS_HZ[j]))
+                return NFM_WIDTHS_HZ[j]
+        }
+    }
+    return -1
+}
 
 // Flags a saved system may carry that the chip catalog above does not offer:
 // one left over from an older catalog, and the composite forms the
@@ -412,4 +458,12 @@ function decryptionProtocol(flags) {
     if (value.indexOf("-fd") >= 0) return "dstar"
     if (value.indexOf("-fy") >= 0) return "ysf"
     return "mixed"
+}
+
+// A scan row's or target's own squelch (--squelch-db), for the channel-map review and the
+// target preview. Absent inherits the session's default; 0 is off.
+function squelchSummary(db) {
+    if (db === undefined || db === null)
+        return qsTr("Squelch: inherit")
+    return db === 0 ? qsTr("Squelch: off") : qsTr("Squelch: %1 dB").arg(db)
 }

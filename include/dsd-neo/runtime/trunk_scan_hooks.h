@@ -74,7 +74,8 @@ typedef struct {
                             uint32_t fields, const dsd_key_set* keys, const dsd_dmr_key_map* map, int force);
 } dsd_trunk_scan_hooks;
 
-void dsd_trunk_scan_hooks_set(dsd_trunk_scan_hooks hooks);
+/** Install a copy of @p hooks; NULL clears every slot. */
+void dsd_trunk_scan_hooks_set(const dsd_trunk_scan_hooks* hooks);
 int dsd_trunk_scan_hook_decryption_apply(dsd_opts* opts, dsd_state* state, const char* target_id, uint64_t generation,
                                          uint32_t fields, const dsd_key_set* keys, const dsd_dmr_key_map* map,
                                          int force);

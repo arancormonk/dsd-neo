@@ -12,6 +12,7 @@
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/dsp/demod_pipeline.h>
 #include <dsd-neo/io/rtl_stream_c.h>
 #include <dsd-neo/io/tcp_input.h>
 #include <dsd-neo/platform/file_compat.h>
@@ -47,6 +48,14 @@ static int g_rtl_output_kind;
 const dsdneoRuntimeConfig*
 dsd_neo_get_config(void) {
     return g_cfg_valid ? &g_cfg : NULL;
+}
+
+/* The analog width view's reading of the unset NFM default where the channel filter runs but the rate cannot realize
+   the default: the legacy WIDE plan's passband, which no rate these cases run at falls back on. */
+int
+dsd_channel_lpf_legacy_wide_width_hz(int rate_hz) {
+    (void)rate_hz;
+    return 0;
 }
 
 int
@@ -301,7 +310,19 @@ test_radio_tuning_labels(void) {
     opts.rtl_gain_value = 28;
     rc |= expect_str("rtl gain set", lbl_rtl_gain(&ctx, b, sizeof(b)), "Gain... [28]");
     rc |= expect_str("rtl ppm", lbl_rtl_ppm(&ctx, b, sizeof(b)), "PPM correction... [-3]");
-    rc |= expect_str("rtl bandwidth", lbl_rtl_bw(&ctx, b, sizeof(b)), "Bandwidth... [48 kHz]");
+    /* The DSP rate, not a channel width: the NFM channel width has its own row (issue #525). */
+    rc |= expect_str("rtl bandwidth", lbl_rtl_bw(&ctx, b, sizeof(b)), "DSP bandwidth... [48 kHz]");
+    /* A setting, not a reading: the unset default is "default", whatever width the DSP rate leaves it (the status
+       line's "Analog:" field shows that). */
+    rc |= expect_str("nfm bandwidth default", lbl_rtl_nfm_bw(&ctx, b, sizeof(b)), "NFM bandwidth... [default]");
+    opts.analog_nfm_bandwidth_hz = 12500;
+    rc |= expect_str("nfm bandwidth explicit", lbl_rtl_nfm_bw(&ctx, b, sizeof(b)), "NFM bandwidth... [12.5 kHz]");
+    opts.analog_nfm_bandwidth_hz = 16000;
+    rc |= expect_str("nfm bandwidth explicit default value", lbl_rtl_nfm_bw(&ctx, b, sizeof(b)),
+                     "NFM bandwidth... [16 kHz]");
+    opts.analog_nfm_bandwidth_hz = 11250;
+    rc |= expect_str("nfm bandwidth 11.25", lbl_rtl_nfm_bw(&ctx, b, sizeof(b)), "NFM bandwidth... [11.25 kHz]");
+    opts.analog_nfm_bandwidth_hz = 0;
     rc |= expect_str("rtl volume", lbl_rtl_vol(&ctx, b, sizeof(b)), "Volume multiplier... [2]");
     rc |= expect_str("rtl frequency null ctx", lbl_rtl_freq(NULL, b, sizeof(b)), "Frequency... [0.000000 MHz]");
 

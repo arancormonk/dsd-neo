@@ -44,20 +44,79 @@ ModalSheet {
     property real pendingGain: NaN
     property real pendingPpm: NaN
     property real pendingSquelch: NaN
+    property real pendingAnalogWidth: NaN
 
     // What each control steps from and displays.
     readonly property bool airspyActive: metrics.airspy !== undefined && metrics.airspy.gain_mode !== undefined
     readonly property int gainDb: isNaN(pendingGain) ? metrics.tunerGainDb : pendingGain
     readonly property int ppm: isNaN(pendingPpm) ? metrics.ppm : pendingPpm
-    readonly property real squelchDb: isNaN(pendingSquelch) ? metrics.squelchDb : pendingSquelch
+    // A scan row or target can carry its own squelch (--squelch-db). While it is on
+    // air the readout is the row's, and the buttons edit the configured default
+    // beneath it: an edit made to the row would be gone the moment the scanner
+    // moved on. Whether each level is off is the engine's decision, not the sign
+    // of its dB reading: a full-scale default also reads 0 dB and gates everything.
+    readonly property bool squelchRowOverride: metrics.squelchRowOverride === true
+    readonly property real baseSquelchDb: squelchRowOverride ? metrics.configuredSquelchDb : metrics.squelchDb
+    readonly property bool baseSquelchOff: squelchRowOverride
+        ? metrics.configuredSquelchOff : metrics.squelchOff
+    readonly property real squelchDb: isNaN(pendingSquelch) ? baseSquelchDb : pendingSquelch
     // Off is a state of its own, not a very low threshold: squelchDb bottoms out
     // at the -120 dB display floor either way. A pending request speaks for
     // itself, since 0 is what the engine reads as "switch it off".
-    readonly property bool squelchOff: isNaN(pendingSquelch) ? metrics.squelchOff : pendingSquelch >= 0
+    readonly property bool squelchOff: isNaN(pendingSquelch) ? baseSquelchOff : pendingSquelch >= 0
+    // The threshold in force comes first; with a row override that is the row's,
+    // and the default being edited is named below it.
+    readonly property string squelchReading: squelchRowOverride
+        ? squelchText(metrics.effectiveSquelchOff, metrics.effectiveSquelchDb)
+        : squelchText(squelchOff, squelchDb)
 
     // 0 dB is the tuner's automatic gain, not silence — worth saying, because
     // "0" next to a signal that vanished reads as a mistake otherwise.
     readonly property bool autoGain: gainDb <= 0
+
+    // Issue #525: the NFM channel width, shown under the analog preset. The
+    // stepper edits the configured width (0 is the default), and the reading is
+    // the width in force as the engine spells it for every frontend: what the
+    // front end reports while the monitor runs, with "DSP-limited" when the DSP
+    // rate rather than the filter bounds it.
+    readonly property int analogMode: commands.decodeModeForFlag("-fA")
+    readonly property bool analogPreset: analogMode >= 0 && metrics.decodeMode === analogMode
+    // The width is the radio front end's filter; PCM audio arrives demodulated.
+    readonly property bool analogWidthEditable: metrics.radioInput === true
+    readonly property int analogWidthConfigured: isNaN(pendingAnalogWidth)
+        ? metrics.analogBandwidthConfiguredHz : pendingAnalogWidth
+    // Under another preset an explicit width stays editable on a radio, as the
+    // terminal row does: a switch to NFM is held to it, and where the device or
+    // the capture forces a DSP rate that cannot filter it, the refusal says to
+    // narrow it, which has to be possible before the switch.
+    readonly property bool analogWidthOffered: analogPreset
+        || (analogWidthEditable && (metrics.analogBandwidthConfiguredHz > 0 || !isNaN(pendingAnalogWidth)))
+    // An explicit width steps from itself. The default steps from the width in
+    // force, which below a 20 kHz DSP rate is the width the rate leaves rather
+    // than 16 kHz, so the first step from there is one the rate can take.
+    readonly property int analogWidthStepFrom: {
+        if (analogWidthConfigured > 0)
+            return analogWidthConfigured;
+        return metrics.analogBandwidthHz > 0 ? metrics.analogBandwidthHz : Util.NFM_DEFAULT_WIDTH_HZ;
+    }
+    // The widest width the DSP rate filters (the running stream's, or with none
+    // the rate an RTL-SDR input's DSP bandwidth sets; 0 = not known): the steps
+    // skip what the engine would refuse.
+    readonly property int analogWidthMax: metrics.analogBandwidthMaxHz > 0 ? metrics.analogBandwidthMaxHz : 0
+    readonly property bool analogWidthCanNarrow: analogWidthEditable
+        && Util.nextNfmWidth(analogWidthStepFrom, -1, analogWidthMax) > 0
+    readonly property bool analogWidthCanWiden: analogWidthEditable
+        && Util.nextNfmWidth(analogWidthStepFrom, 1, analogWidthMax) > 0
+    // A request stands in for the reading until the engine answers, spelled as
+    // the setting it is ("12.5 kHz", or "default" for 0).
+    // Outside the preset no width is in force, so the setting stands in.
+    readonly property string analogWidthReading: {
+        if (!isNaN(pendingAnalogWidth))
+            return pendingAnalogWidth > 0 ? Util.widthKhzText(pendingAnalogWidth) : qsTr("default");
+        if (!analogPreset)
+            return analogWidthConfigured > 0 ? Util.widthKhzText(analogWidthConfigured) : qsTr("default");
+        return metrics.analogBandwidthReading;
+    }
 
     function open() {
         // Whatever was outstanding belongs to the last time this was open, and on
@@ -66,14 +125,49 @@ ModalSheet {
         visible = true;
     }
 
+    /** A squelch reading as the panel prints it. */
+    function squelchText(off, db) {
+        return off ? qsTr("off") : Math.round(db) + " dB";
+    }
+
     /** Drop every outstanding request and go back to reading the engine. */
     function forgetRequests() {
         pendingGain = NaN;
         pendingPpm = NaN;
         pendingSquelch = NaN;
+        pendingAnalogWidth = NaN;
         gainTtl.stop();
         ppmTtl.stop();
         squelchTtl.stop();
+        analogWidthTtl.stop();
+    }
+
+    /**
+     * Step the NFM channel width through the common channel plans. The engine
+     * refuses a width the DSP rate cannot filter, with a message, and keeps the
+     * one it had; the pending value then expires back to the reading.
+     */
+    function stepAnalogWidth(direction) {
+        if (!(direction > 0 ? analogWidthCanWiden : analogWidthCanNarrow))
+            return;
+        var next = Util.nextNfmWidth(analogWidthStepFrom, direction, analogWidthMax);
+        pendingAnalogWidth = next;
+        analogWidthTtl.restart();
+        commands.setNfmBandwidthHz(next);
+    }
+
+    /**
+     * Return the NFM channel width to the unset default (0). Not a step to
+     * 16 kHz: the default keeps its own rule (the channel filter runs only at
+     * DSP rates of 20 kHz or more) and a save leaves it out of the config, so a
+     * later default reaches it.
+     */
+    function resetAnalogWidth() {
+        if (!analogWidthEditable || analogWidthConfigured <= 0)
+            return;
+        pendingAnalogWidth = 0;
+        analogWidthTtl.restart();
+        commands.setNfmBandwidthHz(0);
     }
 
     /**
@@ -161,6 +255,13 @@ ModalSheet {
         onTriggered: sheet.pendingSquelch = NaN
     }
 
+    Timer {
+        id: analogWidthTtl
+
+        interval: sheet.requestTtlMs
+        onTriggered: sheet.pendingAnalogWidth = NaN
+    }
+
     MicroLabel {
         text: qsTr("Radio")
     }
@@ -224,7 +325,10 @@ ModalSheet {
                 objectName: "radioSquelchValue"
                 width: parent.width - 116
                 anchors.verticalCenter: parent.verticalCenter
-                text: sheet.squelchOff ? qsTr("off") : Math.round(sheet.squelchDb) + " dB"
+                text: sheet.squelchReading
+                // Read aloud as the terminal prints it, row note and default included.
+                Accessible.role: Accessible.StaticText
+                Accessible.name: sheet.squelchRowOverride ? metrics.squelchReadout : sheet.squelchReading
                 color: Theme.textPrimary
                 font.family: Theme.mono
                 font.pixelSize: Theme.fontSize(14)
@@ -242,6 +346,41 @@ ModalSheet {
                 text: "+"
                 accessibleName: qsTr("Increase Squelch")
                 onClicked: sheet.stepSquelch(5)
+            }
+        }
+        // Shown only while the row on air overrides the squelch: says the row owns the
+        // reading above, and which default the buttons are changing.
+        Row {
+            objectName: "radioSquelchRowNote"
+            visible: sheet.squelchRowOverride
+            spacing: 8
+            Rectangle {
+                objectName: "radioSquelchRowBadge"
+                implicitWidth: rowBadge.implicitWidth + 14
+                implicitHeight: Math.max(20, rowBadge.implicitHeight + 8)
+                anchors.verticalCenter: parent.verticalCenter
+                radius: 5
+                color: "transparent"
+                border.width: 1
+                border.color: Theme.controlBorder
+
+                Text {
+                    id: rowBadge
+                    anchors.centerIn: parent
+                    text: qsTr("row")
+                    font.family: Theme.mono
+                    font.pixelSize: Theme.fontSize(10)
+                    font.letterSpacing: 1
+                    color: Theme.cyan
+                }
+            }
+            Text {
+                objectName: "radioSquelchDefault"
+                anchors.verticalCenter: parent.verticalCenter
+                text: qsTr("default %1").arg(sheet.squelchText(sheet.squelchOff, sheet.squelchDb))
+                color: Theme.textSecondary
+                font.family: Theme.mono
+                font.pixelSize: Theme.fontSize(12)
             }
         }
     }
@@ -350,6 +489,81 @@ ModalSheet {
                         commands.setDecodeMode(mode);
                 }
             }
+        }
+    }
+
+    // ---- Analog ----
+    // The NFM channel filter's width: the full RF passband the monitor keeps,
+    // not the tuner or the audio bandwidth. It has to fit the DSP rate.
+    Column {
+        objectName: "radioAnalogSection"
+        visible: sheet.analogWidthOffered
+        width: parent.width
+        spacing: 8
+        Text {
+            text: qsTr("NFM channel width")
+            color: Theme.textSecondary
+            font.pixelSize: Theme.fontSize(14)
+        }
+        Row {
+            objectName: "radioAnalogBandwidth"
+            width: parent.width
+            spacing: 10
+            Text {
+                objectName: "radioAnalogBandwidthValue"
+                width: parent.width - 116
+                anchors.verticalCenter: parent.verticalCenter
+                text: sheet.analogWidthReading
+                color: Theme.textPrimary
+                font.family: Theme.mono
+                font.pixelSize: Theme.fontSize(14)
+            }
+            OutlineButton {
+                objectName: "radioAnalogBandwidthDown"
+                width: 48
+                text: "−"
+                accessibleName: qsTr("Narrower Channel")
+                enabled: sheet.analogWidthCanNarrow
+                onClicked: sheet.stepAnalogWidth(-1)
+            }
+            OutlineButton {
+                objectName: "radioAnalogBandwidthUp"
+                width: 48
+                text: "+"
+                accessibleName: qsTr("Wider Channel")
+                enabled: sheet.analogWidthCanWiden
+                onClicked: sheet.stepAnalogWidth(1)
+            }
+        }
+        // Back to the unset default, offered while an explicit width is set.
+        OutlineButton {
+            objectName: "radioAnalogBandwidthDefault"
+            visible: sheet.analogWidthConfigured > 0
+            width: parent.width
+            text: qsTr("Use the default width")
+            accessibleName: qsTr("Default Channel Width")
+            enabled: sheet.analogWidthEditable
+            onClicked: sheet.resetAnalogWidth()
+        }
+        // Outside the preset: what the setting is for.
+        Text {
+            objectName: "radioAnalogBandwidthIdleNote"
+            visible: !sheet.analogPreset && sheet.analogWidthEditable
+            width: parent.width
+            wrapMode: Text.WordWrap
+            text: qsTr("Used when NFM is chosen, which needs a width the DSP rate can filter.")
+            color: Theme.textSecondary
+            font.pixelSize: Theme.fontSize(12)
+        }
+        // Why the stepper is greyed out, rather than leaving a dead control.
+        Text {
+            objectName: "radioAnalogBandwidthNote"
+            visible: !sheet.analogWidthEditable
+            width: parent.width
+            wrapMode: Text.WordWrap
+            text: qsTr("The channel width filters a radio input; this audio arrives already demodulated.")
+            color: Theme.textSecondary
+            font.pixelSize: Theme.fontSize(12)
         }
     }
 

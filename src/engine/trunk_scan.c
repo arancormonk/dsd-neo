@@ -1409,6 +1409,10 @@ trunk_scan_restore_call_snapshot(dsd_state* state, const dsd_trunk_scan_snapshot
         }
         dsd_event_history_transaction_end(&transaction);
     }
+    // A target change cancels any PDU in flight; staging is never part of a saved call row.
+    for (int slot = 0; slot < DSD_CALL_STATE_SLOT_COUNT; slot++) {
+        dsd_event_stage_clear(state, (uint8_t)slot);
+    }
     state->dmr_so = snapshot->dmr_so;
     state->dmr_soR = snapshot->dmr_soR;
 }
@@ -2879,6 +2883,26 @@ trunk_scan_warn_ignored_target_gain(const dsd_opts* opts, const dsd_state* state
     LOG_WARN("WARNING: Trunk scan rtl_gain target overrides require RTL-family input; ignoring target gain settings\n");
 }
 
+/* A target squelch gates the RTL demodulator. With rigctl tuning a PCM input there is no
+ * demodulator for it to gate, so it cannot gate digital acquisition; the threshold in dsd_opts
+ * only reaches the analog input monitor (-8, with audio output on) and the carrier activity that
+ * monitor stamps. Say so once per affected target when the scan starts. */
+static void
+trunk_scan_warn_target_squelch(const dsd_opts* opts, const dsd_trunk_scan_target_list* list) {
+    if (!opts || !list || opts->audio_in_type == AUDIO_IN_RTL) {
+        return;
+    }
+    for (size_t i = 0; i < list->count; i++) {
+        const dsd_trunk_scan_target* target = &list->targets[i];
+        if (target->row_options.present & DSD_SCAN_OPT_SQUELCH) {
+            LOG_WARN("WARNING: Trunk scan target '%s': --squelch-db %d cannot gate digital acquisition without a "
+                     "radio input; here it gates only the analog input monitor (-8) and the carrier activity it "
+                     "stamps.\n",
+                     target->id, target->row_options.squelch_db);
+        }
+    }
+}
+
 static void
 trunk_scan_tick_active_target_sm(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_target_runtime* rt) {
     if (!opts || !state || !rt) {
@@ -3601,8 +3625,7 @@ trunk_scan_uninstall_runtime_hooks(const dsd_trunk_scan_coord* coord) {
         return;
     }
     g_trunk_scan_coord = NULL;
-    dsd_trunk_scan_hooks hooks = {0};
-    dsd_trunk_scan_hooks_set(hooks);
+    dsd_trunk_scan_hooks_set(NULL);
 }
 
 static void
@@ -3646,7 +3669,7 @@ trunk_scan_install_runtime_hooks(dsd_trunk_scan_coord* coord) {
     hooks.enc_lockout_clear_snapshots = trunk_scan_clear_enc_lockout_snapshots;
     hooks.control = dsd_engine_trunk_scan_control;
     hooks.decryption_apply = trunk_scan_apply_decryption;
-    dsd_trunk_scan_hooks_set(hooks);
+    dsd_trunk_scan_hooks_set(&hooks);
 }
 
 static int
@@ -3735,6 +3758,7 @@ dsd_engine_trunk_scan_init(dsd_opts* opts, dsd_state* state, char* err, size_t e
         return -1;
     }
     trunk_scan_warn_ignored_target_gain(opts, state, &list);
+    trunk_scan_warn_target_squelch(opts, &list);
 
     dsd_trunk_scan_coord* coord = trunk_scan_coord_create(&list, opts, err, err_sz);
     if (!coord) {

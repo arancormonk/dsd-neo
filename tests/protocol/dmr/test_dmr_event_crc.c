@@ -108,6 +108,60 @@ send_unknown(dsd_opts* opts, dsd_state* state, int header_ok, int payload_ok, in
     dmr_block_assembler(opts, state, block, 12, 0x07, 1);
 }
 
+static int
+count_location_rows(const char* path) {
+    FILE* file = fopen(path, "rb");
+    if (file == NULL) {
+        return -1;
+    }
+    int rows = 0;
+    int ch;
+    while ((ch = fgetc(file)) != EOF) {
+        if (ch == '\n') {
+            ++rows;
+        }
+    }
+    int read_error = ferror(file);
+    int close_error = fclose(file);
+    return read_error || close_error ? -1 : rows;
+}
+
+static int
+test_mnis_location_file(dsd_opts* opts, dsd_state* state) {
+    char path[DSD_TEST_PATH_MAX];
+    int fd = dsd_test_mkstemp(path, sizeof path, "dmr-mnis-lrrp-crc");
+    if (fd < 0) {
+        return 1;
+    }
+    if (dsd_close(fd) != 0) {
+        remove(path);
+        return 1;
+    }
+    DSD_SNPRINTF(opts->lrrp_out_file, sizeof opts->lrrp_out_file, "%s", path);
+    opts->lrrp_file_output = 1;
+    opts->aggressive_framesync = 0;
+    opts->dmr_crc_relaxed_default = 1;
+    state->currentslot = 0;
+    int rc = 0;
+    for (int corrupt = 0; corrupt <= 1; ++corrupt) {
+        int before = count_location_rows(path);
+        send_captured_mnis(opts, state, corrupt);
+        int after = count_location_rows(path);
+        int expected = corrupt ? 0 : 1;
+        if (before < 0 || after < 0 || after != before + expected) {
+            DSD_FPRINTF(stderr, "\nMNIS %s -L rows: expected %d new row(s), before=%d after=%d\n",
+                        corrupt ? "corrupt" : "clean", expected, before, after);
+            rc = 1;
+            break;
+        }
+    }
+    opts->lrrp_file_output = 0;
+    if (remove(path) != 0) {
+        rc = 1;
+    }
+    return rc;
+}
+
 static void
 expect_event(dsd_state* state, uint8_t slot, uint64_t before, int emitted, int invalid, const char* payload) {
     assert(state->event_history_s[slot].push_seq == before + (uint64_t)emitted);
@@ -247,10 +301,14 @@ main(void) {
     fclose(log);
     assert(marked == 12 && clean == 9 && marked_text == 3);
     assert(remove(path) == 0);
+    opts->event_out_file[0] = '\0';
+    int rc = test_mnis_location_file(opts, state);
     dsd_state_ext_free_all(state);
     free(state->event_history_s);
     free(state);
     free(opts);
-    puts("DMR_EVENT_CRC: PASS");
-    return 0;
+    if (rc == 0) {
+        puts("DMR_EVENT_CRC: PASS");
+    }
+    return rc;
 }

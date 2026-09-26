@@ -26,7 +26,8 @@
 #include <QVariantList>
 #include <QVariantMap>
 #include <QtGlobal>
-#include <dsd-neo/app_control/call_view.h>
+#include <cmath>
+#include <dsd-neo/app_control/frontend.h>
 #include <dsd-neo/app_control/p25_metrics.h>
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/opts_fwd.h>
@@ -100,6 +101,11 @@ class MetricsModel : public QObject {
     Q_PROPERTY(bool streamActive READ streamActive NOTIFY tunerChanged)
     Q_PROPERTY(double centerFreqHz READ centerFreqHz NOTIFY tunerChanged)
     Q_PROPERTY(int channelBandwidthHz READ channelBandwidthHz NOTIFY tunerChanged)
+    Q_PROPERTY(int analogBandwidthHz READ analogBandwidthHz NOTIFY tunerChanged)
+    Q_PROPERTY(bool analogBandwidthDspLimited READ analogBandwidthDspLimited NOTIFY tunerChanged)
+    Q_PROPERTY(int analogBandwidthMaxHz READ analogBandwidthMaxHz NOTIFY tunerChanged)
+    Q_PROPERTY(int analogBandwidthConfiguredHz READ analogBandwidthConfiguredHz NOTIFY controlChanged)
+    Q_PROPERTY(QString analogBandwidthReading READ analogBandwidthReading NOTIFY tunerChanged)
     Q_PROPERTY(int slot1CallState READ slot1CallState NOTIFY slot1Changed)
     Q_PROPERTY(int slot2CallState READ slot2CallState NOTIFY slot2Changed)
     Q_PROPERTY(QString slot1CallName READ slot1CallName NOTIFY slot1Changed)
@@ -130,6 +136,7 @@ class MetricsModel : public QObject {
     Q_PROPERTY(int encLockoutCount READ encLockoutCount NOTIFY controlChanged)
     Q_PROPERTY(bool persistTgLockouts READ persistTgLockouts NOTIFY controlChanged)
     Q_PROPERTY(qulonglong temporaryTgAvoidCount READ temporaryTgAvoidCount NOTIFY controlChanged)
+    Q_PROPERTY(qulonglong callSkipCount READ callSkipCount NOTIFY controlChanged)
     Q_PROPERTY(QString tgPolicyContext READ tgPolicyContext NOTIFY controlChanged)
     Q_PROPERTY(bool tunerControlled READ tunerControlled NOTIFY controlChanged)
     Q_PROPERTY(bool trunkingEnabled READ trunkingEnabled NOTIFY controlChanged)
@@ -166,6 +173,17 @@ class MetricsModel : public QObject {
     Q_PROPERTY(int scanVisitMs READ scanVisitMs NOTIFY scanTimingChanged)
     Q_PROPERTY(bool scanVisitLive READ scanVisitLive NOTIFY scanTimingChanged)
     Q_PROPERTY(int scanVisitRemainingDs READ scanVisitRemainingDs NOTIFY scanTimingChanged)
+    /* #522: the sub-audible tone the analog FM monitor hears, from the shared app-control
+       view, and the configured tone policy beside it -- never derived from each other. */
+    Q_PROPERTY(bool rxToneVisible READ rxToneVisible NOTIFY rxToneChanged)
+    Q_PROPERTY(int rxToneStatus READ rxToneStatus NOTIFY rxToneChanged)
+    Q_PROPERTY(QString rxToneText READ rxToneText NOTIFY rxToneChanged)
+    Q_PROPERTY(int rxToneKind READ rxToneKind NOTIFY rxToneChanged)
+    Q_PROPERTY(int rxToneTenthsHz READ rxToneTenthsHz NOTIFY rxToneChanged)
+    Q_PROPERTY(bool rxToneCarrier READ rxToneCarrier NOTIFY rxToneChanged)
+    /* Its own signal: configuration, not something received, so a received-tone change never
+       announces it and a policy change (#527) never announces the received tone. */
+    Q_PROPERTY(QString rxToneConfiguredText READ rxToneConfiguredText NOTIFY rxToneConfiguredTextChanged)
     Q_PROPERTY(bool syncedHere READ syncedHere NOTIFY tunerChanged)
     Q_PROPERTY(QString syncLabel READ syncLabel NOTIFY tunerChanged)
     Q_PROPERTY(bool trunkableSync READ trunkableSync NOTIFY tunerChanged)
@@ -176,6 +194,14 @@ class MetricsModel : public QObject {
     Q_PROPERTY(int tunerGainDb READ tunerGainDb NOTIFY controlChanged)
     Q_PROPERTY(double squelchDb READ squelchDb NOTIFY controlChanged)
     Q_PROPERTY(bool squelchOff READ squelchOff NOTIFY controlChanged)
+    /* #521: a scan row's --squelch-db. rtl_sql convention: 0 is off, otherwise dB; the off
+     * flags and the readout text come from the app-control squelch view. */
+    Q_PROPERTY(double configuredSquelchDb READ configuredSquelchDb NOTIFY controlChanged)
+    Q_PROPERTY(double effectiveSquelchDb READ effectiveSquelchDb NOTIFY controlChanged)
+    Q_PROPERTY(bool configuredSquelchOff READ configuredSquelchOff NOTIFY controlChanged)
+    Q_PROPERTY(bool effectiveSquelchOff READ effectiveSquelchOff NOTIFY controlChanged)
+    Q_PROPERTY(bool squelchRowOverride READ squelchRowOverride NOTIFY controlChanged)
+    Q_PROPERTY(QString squelchReadout READ squelchReadout NOTIFY controlChanged)
     Q_PROPERTY(int ppm READ ppm NOTIFY controlChanged)
     Q_PROPERTY(bool tetraNetworkKnown READ tetraNetworkKnown NOTIFY controlChanged)
     Q_PROPERTY(QString tetraNetworkText READ tetraNetworkText NOTIFY controlChanged)
@@ -386,6 +412,59 @@ class MetricsModel : public QObject {
     }
 
     /**
+     * @brief The analog channel width in force, in Hz (issue #525); 0 outside the configured analog preset, and on PCM
+     * input, where no channel filter runs.
+     *
+     * While a running stream runs the analog monitor, the width it reports (the configured width while its channel
+     * filter runs, otherwise the width the DSP rate leaves: see analogBandwidthDspLimited()). Otherwise -- a stream not
+     * running, a typed digital scan row filtering with its own profile -- the configured width, the kind's default when
+     * none is set. App-control's analog width view decides it, for the terminal's "Analog:" status field too.
+     */
+    int
+    analogBandwidthHz() const {
+        return m_view.analog_bandwidth_hz;
+    }
+
+    /** @brief Whether the DSP rate, not the channel filter, bounds analogBandwidthHz(). */
+    bool
+    analogBandwidthDspLimited() const {
+        return m_view.analog_bandwidth_dsp_limited;
+    }
+
+    /**
+     * @brief The widest analog channel width the DSP rate filters, in Hz; 0 when unknown.
+     *
+     * Published under the analog preset on a radio input, from the demod rate a running stream reports
+     * (dsd_analog_width_max_for_rate()), so the width control offers only steps the engine would take. With no
+     * stream it is the rate an RTL-SDR or rtl_tcp input's DSP bandwidth gives the next start, which the engine holds
+     * a width to; 0 on an input whose device or capture sets the rate.
+     */
+    int
+    analogBandwidthMaxHz() const {
+        return m_view.analog_bandwidth_max_hz;
+    }
+
+    /**
+     * @brief The configured analog channel width in Hz, 0 for the default: what the width control edits.
+     *
+     * Configuration, not a reading, so it is published for any input; the control is only enabled on a radio.
+     */
+    int
+    analogBandwidthConfiguredHz() const {
+        return m_view.analog_bandwidth_configured_hz;
+    }
+
+    /**
+     * @brief The analog width reading, as every frontend spells it: "12.5 kHz", "16 kHz (default)",
+     * "12 kHz (DSP-limited)", or "not used on PCM input" (dsd_app_analog_width_view_format()); empty outside the
+     * configured analog preset.
+     */
+    QString
+    analogBandwidthReading() const {
+        return m_view.analog_bandwidth_reading;
+    }
+
+    /**
      * @brief Whether an automatic controller owns the tuner.
      *
      * True under trunking and under conventional scanner mode alike: both move
@@ -519,6 +598,56 @@ class MetricsModel : public QObject {
     }
 
     /**
+     * @brief The configured squelch default, which the panel's buttons edit (issue #521).
+     *
+     * In the rtl_sql convention: 0 when off, otherwise the threshold in dB. Equal to
+     * effectiveSquelchDb() unless a scan row or target overrides the squelch.
+     */
+    double
+    configuredSquelchDb() const {
+        return m_view.configured_squelch_db;
+    }
+
+    /** @brief The squelch in force on the row on air; 0 when off, otherwise dB. */
+    double
+    effectiveSquelchDb() const {
+        return m_view.effective_squelch_db;
+    }
+
+    /**
+     * @brief Whether the configured default gates nothing.
+     *
+     * The view's own decision (dsd_squelch_is_off()), not configuredSquelchDb() >= 0: a legacy
+     * linear default at full scale also reads 0 dB, and it gates everything.
+     */
+    bool
+    configuredSquelchOff() const {
+        return m_view.configured_squelch_off;
+    }
+
+    /** @brief Whether the squelch in force on the row on air gates nothing. */
+    bool
+    effectiveSquelchOff() const {
+        return m_view.effective_squelch_off;
+    }
+
+    /** @brief Whether the row or target on air sets its own squelch (--squelch-db). */
+    bool
+    squelchRowOverride() const {
+        return m_view.squelch_row_override;
+    }
+
+    /**
+     * @brief The squelch readout as the terminal prints it, from dsd_app_squelch_view_format():
+     * "-60.0 dB (row; default -80.0 dB)" under a row override, otherwise "-80.0 dB" or "off".
+     * Empty without a radio input.
+     */
+    QString
+    squelchReadout() const {
+        return m_view.squelch_readout;
+    }
+
+    /**
      * @brief The dongle's crystal correction, in parts per million.
      *
      * Adjustable live because a wrong one is not obvious at the point it is
@@ -555,11 +684,7 @@ class MetricsModel : public QObject {
      */
     int
     leadSlot() const {
-        int states[DSD_CALL_STATE_SLOT_COUNT];
-        for (int slot = 0; slot < DSD_CALL_STATE_SLOT_COUNT; slot++) {
-            states[slot] = m_view.slot_call[slot].state;
-        }
-        return dsd_app_lead_slot(states, static_cast<unsigned>(DSD_CALL_STATE_SLOT_COUNT)) + 1;
+        return m_view.lead_slot + 1;
     }
 
     const QString&
@@ -699,6 +824,11 @@ class MetricsModel : public QObject {
     bool
     persistTgLockouts() const {
         return m_view.persist_tg_lockouts;
+    }
+
+    qulonglong
+    callSkipCount() const {
+        return m_view.call_skip_count;
     }
 
     qulonglong
@@ -881,6 +1011,58 @@ class MetricsModel : public QObject {
     int
     scanVisitRemainingDs() const {
         return m_view.scan_visit_remaining_ds;
+    }
+
+    /**
+     * @brief Whether the received-tone row belongs on screen (#522).
+     *
+     * True while the analog FM monitor runs, which is when detection runs. Decided in
+     * app-control, so this row and the terminal's Call Info line appear together.
+     */
+    bool
+    rxToneVisible() const {
+        return m_view.rx_tone_visible;
+    }
+
+    /** @brief DSD_APP_RX_TONE_*: hidden, no carrier, detecting, locked or none. */
+    int
+    rxToneStatus() const {
+        return m_view.rx_tone_status;
+    }
+
+    /** @brief "CTCSS 100.0 Hz", "detecting", "none" or an em dash; empty when hidden. */
+    const QString&
+    rxToneText() const {
+        return m_view.rx_tone_text;
+    }
+
+    /** @brief dsd_analog_tone_kind of a locked tone, 0 otherwise. */
+    int
+    rxToneKind() const {
+        return m_view.rx_tone_kind;
+    }
+
+    /** @brief The locked CTCSS tone in tenths of a hertz, 0 otherwise. */
+    int
+    rxToneTenthsHz() const {
+        return m_view.rx_tone_tenths_hz;
+    }
+
+    /** @brief A carrier is open (held through the decoder's short hangover). */
+    bool
+    rxToneCarrier() const {
+        return m_view.rx_tone_carrier;
+    }
+
+    /**
+     * @brief The configured tone policy, kept apart from what is received.
+     *
+     * Reads "off" until tone filtering exists (#527). The monitor's reserved Tone filter row
+     * binds to this, and nothing about the received tone ever changes it.
+     */
+    const QString&
+    rxToneConfiguredText() const {
+        return m_view.rx_tone_configured_text;
     }
 
     /**
@@ -1074,6 +1256,8 @@ class MetricsModel : public QObject {
     void leadSlotChanged();
     void controlChanged();
     void scanTimingChanged();
+    void rxToneChanged();
+    void rxToneConfiguredTextChanged();
     void uiMessageChanged();
 
   private:
@@ -1102,6 +1286,7 @@ class MetricsModel : public QObject {
         bool emergency = false;
         int priority = 0;
         int seconds = 0;
+        double started_m = 0.0; // Lead ranking only; displayed duration equality uses seconds.
 
         bool
         operator==(const SlotCall& other) const {
@@ -1155,8 +1340,11 @@ class MetricsModel : public QObject {
         double cfo_hz = 0.0;
         double center_freq_hz = 0.0;
         double squelch_db = 0.0;
+        double configured_squelch_db = 0.0;
+        double effective_squelch_db = 0.0;
         qulonglong held_tg = 0;
         qulonglong temporary_tg_avoid_count = 0;
+        qulonglong call_skip_count = 0;
         QString tg_policy_context;
         QString tuner_gain_text;
         QString sync_label;
@@ -1171,11 +1359,15 @@ class MetricsModel : public QObject {
         bool tetra_vocoder_status_known = false;
         QString tetra_vocoder_status_text;
         QString ui_message;
-        /* Sized from the canonical constant rather than a literal 2: leadSlot() ranks the
-         * whole array through dsd_app_lead_slot(), so the two must agree or the ranking
-         * would read past the end the day a third slot appears. */
+        QString squelch_readout;
+        /* Slot views and lead ranking share the canonical slot count. */
         SlotCall slot_call[DSD_CALL_STATE_SLOT_COUNT];
+        int lead_slot = -1;
         int channel_bandwidth_hz = 0;
+        int analog_bandwidth_hz = 0;
+        int analog_bandwidth_configured_hz = 0;
+        int analog_bandwidth_max_hz = 0;
+        QString analog_bandwidth_reading;
         int decode_mode = 0;
         int configured_force = 0;
         int effective_force = 0;
@@ -1194,9 +1386,13 @@ class MetricsModel : public QObject {
         bool carrier_lock = false;
         bool radio_input = false;
         bool stream_active = false;
+        bool analog_bandwidth_dsp_limited = false;
         bool synced_here = false;
         bool trunkable_sync = false;
         bool squelch_off = false;
+        bool squelch_row_override = false;
+        bool configured_squelch_off = false;
+        bool effective_squelch_off = false;
         bool audio_muted = false;
         bool tuner_controlled = false;
         bool trunking_enabled = false;
@@ -1223,6 +1419,14 @@ class MetricsModel : public QObject {
         bool scan_timing_visible = false;
         bool scan_timer_live = false;
         bool scan_visit_live = false;
+        /* #522: the received tone and, separately, the configured policy. */
+        QString rx_tone_text;
+        QString rx_tone_configured_text;
+        int rx_tone_status = 0;
+        int rx_tone_kind = 0;
+        int rx_tone_tenths_hz = 0;
+        bool rx_tone_visible = false;
+        bool rx_tone_carrier = false;
 
         /* Exact comparison is right for the two doubles: they are carried through
          * unmodified from the metrics boundary, so "unchanged" means the identical
@@ -1234,8 +1438,18 @@ class MetricsModel : public QObject {
                    && cfo_hz == other.cfo_hz && tuner_gain_text == other.tuner_gain_text
                    && radio_input == other.radio_input && stream_active == other.stream_active
                    && center_freq_hz == other.center_freq_hz && channel_bandwidth_hz == other.channel_bandwidth_hz
-                   && synced_here == other.synced_here && sync_label == other.sync_label
+                   && analogChannelEquals(other) && synced_here == other.synced_here && sync_label == other.sync_label
                    && trunkable_sync == other.trunkable_sync;
+        }
+
+        /* The analog channel width in force (#525) rides tunerChanged with the rest; split out only so the
+           comparison stays under the complexity ceiling. */
+        bool
+        analogChannelEquals(const View& other) const {
+            return analog_bandwidth_hz == other.analog_bandwidth_hz
+                   && analog_bandwidth_dsp_limited == other.analog_bandwidth_dsp_limited
+                   && analog_bandwidth_max_hz == other.analog_bandwidth_max_hz
+                   && analog_bandwidth_reading == other.analog_bandwidth_reading;
         }
 
         /* The scan controls (#380) ride controlChanged with the rest; split out only so
@@ -1261,6 +1475,14 @@ class MetricsModel : public QObject {
                    && scan_visit_remaining_ds == other.scan_visit_remaining_ds;
         }
 
+        /* The received group only; the configured text has its own signal and comparison. */
+        bool
+        rxToneEquals(const View& other) const {
+            return rx_tone_visible == other.rx_tone_visible && rx_tone_status == other.rx_tone_status
+                   && rx_tone_text == other.rx_tone_text && rx_tone_kind == other.rx_tone_kind
+                   && rx_tone_tenths_hz == other.rx_tone_tenths_hz && rx_tone_carrier == other.rx_tone_carrier;
+        }
+
         bool
         decryptionEquals(const View& other) const {
             return configured_force == other.configured_force && effective_force == other.effective_force
@@ -1273,14 +1495,26 @@ class MetricsModel : public QObject {
         radioControlsEqual(const View& other) const {
             return modulation == other.modulation && tuner_gain_db == other.tuner_gain_db
                    && squelch_db == other.squelch_db && squelch_off == other.squelch_off && ppm == other.ppm
-                   && airspy == other.airspy;
+                   && airspy == other.airspy && squelchOverrideEquals(other)
+                   && analog_bandwidth_configured_hz == other.analog_bandwidth_configured_hz;
+        }
+
+        /* The configured/effective pair is whole-dB configuration, not a measurement, so a
+         * difference below a millionth of a dB is the same setting. */
+        bool
+        squelchOverrideEquals(const View& other) const {
+            return std::fabs(configured_squelch_db - other.configured_squelch_db) < 1e-6
+                   && std::fabs(effective_squelch_db - other.effective_squelch_db) < 1e-6
+                   && squelch_row_override == other.squelch_row_override
+                   && configured_squelch_off == other.configured_squelch_off
+                   && effective_squelch_off == other.effective_squelch_off && squelch_readout == other.squelch_readout;
         }
 
         bool
         tgLockoutsEqual(const View& other) const {
             return persist_tg_lockouts == other.persist_tg_lockouts
                    && temporary_tg_avoid_count == other.temporary_tg_avoid_count
-                   && tg_policy_context == other.tg_policy_context;
+                   && call_skip_count == other.call_skip_count && tg_policy_context == other.tg_policy_context;
         }
 
         bool
@@ -1314,6 +1548,7 @@ class MetricsModel : public QObject {
     static QStringList fillNxdnSite(SiteView& site, const dsd_state* snapshot);
     static QStringList fillEdacsSite(SiteView& site, const dsd_state* snapshot);
     void fillSiteView(View& next, const dsd_state* snapshot) const;
+    static void fillSlotCalls(View& next, const dsd_state* snapshot, double now_m);
     static void fillQualityView(View& next, const dsd_state* snapshot);
 
     /** @brief Build one slot's structured call identity from the snapshot. */
@@ -1321,12 +1556,19 @@ class MetricsModel : public QObject {
 
     /** @brief Fill in sync state and the live decoder/front-end settings. */
     void fillDecoderView(View& next, const dsd_opts* opts_snapshot, const dsd_state* snapshot, double now_m);
+    /** @brief The configured/effective squelch pair and the row badge (#521). */
+    static void fillSquelchOverride(View& next, const dsd_opts* opts_snapshot, const dsd_state* snapshot);
+    /** @brief The analog channel width in force and the configured one (#525). */
+    static void fillAnalogChannel(View& next, const dsd_opts* opts_snapshot, const dsd_state* snapshot,
+                                  const dsd_frontend_metrics& metrics);
     /** @brief Listening settings, talkgroup Hold, and lockout state from the held snapshot. */
     static void fillListeningControlView(View& next, const dsd_opts* opts_snapshot, const dsd_state* snapshot);
     /** @brief Scan hold and avoids (#380), read from whichever rotation is running. */
     static void fillScanControlView(View& next, const dsd_opts* opts_snapshot, const dsd_state* snapshot);
     /** @brief Why the rotation is staying on this row and how long is left (#508). */
     void fillScanTimingView(View& next, const dsd_opts* opts_snapshot, const dsd_state* snapshot, double now_m) const;
+    /** @brief The received sub-audible tone and the configured tone policy (#522). */
+    void fillRxToneView(View& next, const dsd_opts* opts_snapshot, const dsd_state* snapshot, double now_m) const;
 
   public:
 #ifdef DSD_NEO_TEST_HOOKS

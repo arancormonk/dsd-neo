@@ -96,7 +96,10 @@ test_voice_dispatch(void) {
         /* A confirmed transmission is productive: a second frame arrived behind its own
          * exact 32-symbol sync word, so the 736 dibits are earned (#421). */
         voice_confirm_result = 1;
+        /* FDMA voice is slot 0, whatever slot a TDMA decode left current. */
+        state.currentslot = 1;
         assert(dsd_dispatch_handle_provoice(&opts, &state) == DSD_FRAME_VERDICT_PRODUCTIVE);
+        assert(state.currentslot == 0);
 
         assert(strcmp(state.fsubtype, " VOICE        ") == 0);
         assert(open_calls == 1);

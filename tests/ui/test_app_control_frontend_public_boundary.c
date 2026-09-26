@@ -3,14 +3,17 @@
  * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
+#include <dsd-neo/app_control/analog_width_view.h>
 #include <dsd-neo/app_control/commands.h>
 #include <dsd-neo/app_control/frontend.h>
 #include <dsd-neo/app_control/frontend_runtime.h>
 #include <dsd-neo/app_control/history.h>
 #include <dsd-neo/app_control/p25_metrics.h>
 #include <dsd-neo/app_control/p25_network.h>
+#include <dsd-neo/app_control/rx_tone_view.h>
 #include <dsd-neo/app_control/scan_timing_view.h>
 #include <dsd-neo/app_control/snapshot.h>
+#include <dsd-neo/app_control/squelch_view.h>
 #include <dsd-neo/app_control/trunk_scan_validate.h>
 #include <dsd-neo/core/frontend_types.h>
 
@@ -60,6 +63,15 @@ main(void) {
     (void)&dsd_app_get_latest_opts_snapshot;
     (void)&dsd_app_frontend_get_metrics_for_snapshot;
     (void)&dsd_app_trunk_scan_validate_targets_csv;
+    (void)&dsd_app_rx_tone_view;
     (void)&dsd_app_scan_timing_view;
+    (void)sizeof(dsd_app_squelch_view);
+    (void)&dsd_app_squelch_view_get;
+    (void)&dsd_app_squelch_view_format;
+    (void)sizeof(dsd_app_analog_width_view);
+    (void)&dsd_app_analog_width_view_get;
+    (void)&dsd_app_analog_width_view_format;
+    (void)&dsd_app_analog_width_setting_format;
+    (void)&dsd_app_analog_rtl_bw_rate_hz;
     return 0;
 }

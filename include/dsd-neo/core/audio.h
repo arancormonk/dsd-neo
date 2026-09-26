@@ -53,6 +53,30 @@ void dsd_drain_audio_output(dsd_opts* opts);
 /** @brief Reopen local output streams when the active input changes async/sync output policy. */
 int dsd_audio_reconfigure_output_for_input_policy(dsd_opts* opts);
 
+/**
+ * @brief Make sure the analog monitor's raw output sink is open (decoder thread only).
+ *
+ * For a runtime switch into the analog family: with an unmuted local audio device, opens `audio_raw_out` with the
+ * parameters openAudioOutput() uses (unmuting reopens device streams itself); with UDP output (`-o udp`), muted or not,
+ * opens the analog socket on port + 2 (`udp_sockfdA`) through the UDP audio hook, since unmuting reopens no socket.
+ * Other outputs have no raw sink to open. Idempotent. A failure is logged once and leaves the sink closed, so analog
+ * audio stays silent.
+ *
+ * @return 0 when the sink is open or not needed, -1 when it could not be opened (or @p opts is NULL).
+ */
+int dsd_audio_ensure_analog_output(dsd_opts* opts);
+
+/**
+ * @brief Make sure the digital voice output sink is open (decoder thread only).
+ *
+ * The digital counterpart of dsd_audio_ensure_analog_output(): opens `audio_out_stream` on a local audio device (UDP
+ * output opened its digital socket at session start), plus the raw sink (device stream or UDP analog socket) when
+ * ProVoice or the source-audio monitor needs it, exactly as session start would for the current options.
+ *
+ * @return 0 when the sinks are open or not needed, -1 when one could not be opened (or @p opts is NULL).
+ */
+int dsd_audio_ensure_digital_output(dsd_opts* opts);
+
 /** @brief Write synthesized mono voice samples for slot 1. */
 void writeSynthesizedVoice(dsd_opts* opts, dsd_state* state);
 /** @brief Write synthesized mono voice samples for slot 2. */
@@ -206,6 +230,24 @@ int dsd_audio_group_gate_dual(const dsd_opts* opts, const dsd_state* state, unsi
                               int encL_in, int encR_in, int* encL_out, int* encR_out);
 /** @brief Mono per-call WAV gate combining decrypt state with TG/allow-list/TG-hold policy. */
 int dsd_audio_record_gate_mono(const dsd_opts* opts, const dsd_state* state, int* allow_out);
+/**
+ * @brief Non-zero when the current Phase 1 voice frame belongs to a live P25 call.
+ *
+ * Excludes SDRTrunk JSON playback and a protocol that borrows the Phase 1 decoder
+ * (YSF full rate runs its IMBE frames with synctype P25P1 for a YSF call).
+ * Recording applies the P25 speaker rule, reverse mute included, only then.
+ */
+int dsd_audio_p25p1_live_voice(const dsd_state* state);
+/**
+ * @brief WAV gate for TG/allow-list/TG-hold policy alone, on the call in @p slot.
+ *
+ * For writers whose decode path settles crypto itself and never sets the DMR
+ * slot encryption flags dsd_audio_record_gate_mono() reads: X2-TDMA, D-STAR and
+ * SDRTrunk JSON playback. The caller names the slot its protocol publishes on,
+ * since currentslot can be left over from another protocol's TDMA decode. A slot
+ * with no active call is allowed.
+ */
+int dsd_audio_record_policy_gate_slot(const dsd_opts* opts, const dsd_state* state, int slot, int* allow_out);
 
 /**
  * @brief Key material the DMR/P25 voice ALGID @p algid requires.

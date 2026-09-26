@@ -5,6 +5,7 @@ target_sources(
     dsd-neo_runtime
     PRIVATE
         state_ext.c
+        analog_channel.c
         config.cpp
         config_user.cpp
         config_user_loader.cpp
@@ -16,6 +17,7 @@ target_sources(
         config_expand.c
         control_pump.c
         freq_parse.c
+        analog_tones.c
         input_spec.c
         airspy_config.c
         input_level.c

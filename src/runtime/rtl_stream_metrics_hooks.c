@@ -94,6 +94,64 @@ dsd_rtl_stream_metrics_hook_apply_demod_profile(int cqpsk_enable, int symbol_rat
 }
 
 int
+dsd_rtl_stream_metrics_hook_set_channel_squelch(double mean_power) {
+    if (g_rtl_stream_metrics_hooks.set_channel_squelch) {
+        g_rtl_stream_metrics_hooks.set_channel_squelch(mean_power);
+        return 0;
+    }
+    return -1;
+}
+
+int
+dsd_rtl_stream_metrics_hook_apply_analog_profile(int family, int kind, int width_hz) {
+    if (g_rtl_stream_metrics_hooks.apply_analog_profile) {
+        return g_rtl_stream_metrics_hooks.apply_analog_profile(family, kind, width_hz);
+    }
+    (void)family;
+    (void)kind;
+    (void)width_hz;
+    return -1;
+}
+
+int
+dsd_rtl_stream_metrics_hook_analog_profile(int* out_kind, int* out_width_hz, int* out_lpf_on) {
+    /* Outputs are zeroed whenever this returns 0, whatever an installed hook left in them. */
+    if (g_rtl_stream_metrics_hooks.analog_profile
+        && g_rtl_stream_metrics_hooks.analog_profile(out_kind, out_width_hz, out_lpf_on) > 0) {
+        return 1;
+    }
+    if (out_kind) {
+        *out_kind = 0;
+    }
+    if (out_width_hz) {
+        *out_width_hz = 0;
+    }
+    if (out_lpf_on) {
+        *out_lpf_on = 0;
+    }
+    return 0;
+}
+
+int
+dsd_rtl_stream_metrics_hook_analog_family_active(void) {
+    if (g_rtl_stream_metrics_hooks.analog_family_active) {
+        return g_rtl_stream_metrics_hooks.analog_family_active() > 0 ? 1 : 0;
+    }
+    return 0;
+}
+
+unsigned int
+dsd_rtl_stream_metrics_hook_output_rate_for_family(int family, int cqpsk_enable, int symbol_rate_hz) {
+    if (g_rtl_stream_metrics_hooks.output_rate_for_family) {
+        return g_rtl_stream_metrics_hooks.output_rate_for_family(family, cqpsk_enable, symbol_rate_hz);
+    }
+    (void)family;
+    (void)cqpsk_enable;
+    (void)symbol_rate_hz;
+    return 0U;
+}
+
+int
 dsd_rtl_stream_metrics_hook_cqpsk_status(int* out_cqpsk_enable, int* out_cqpsk_timing_active) {
     if (g_rtl_stream_metrics_hooks.cqpsk_status) {
         return g_rtl_stream_metrics_hooks.cqpsk_status(out_cqpsk_enable, out_cqpsk_timing_active);

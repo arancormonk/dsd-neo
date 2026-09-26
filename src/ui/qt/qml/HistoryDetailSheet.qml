@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 import QtQuick
+import "Util.js" as Util
 
 ModalSheet {
     id: sheet
@@ -8,13 +9,14 @@ ModalSheet {
     readonly property double rowTg: record.tg || 0
     readonly property bool canHold: decoderHost.running && metrics.optionsKnown && !metrics.scanRotationActive && rowTg > 0 && rowUid.length > 0 && rowUid === callHistory.sessionUid
     readonly property bool heldHere: metrics.heldTg > 0 && metrics.heldTg === rowTg
+    readonly property var detailLines: [sheet.record.name || "", sheet.record.when > 0 ? Qt.formatDateTime(new Date(sheet.record.when * 1000), "yyyy-MM-dd hh:mm:ss") : "", sheet.record.systemName || "", sheet.record.channel || "", sheet.record.tg > 0 ? qsTr("Talkgroup %1").arg(Util.idText(sheet.record.tg)) : "", sheet.record.sourceName || "", sheet.record.src > 0 ? qsTr("Radio ID %1").arg(Util.idText(sheet.record.src)) : "", sheet.record.emergency ? qsTr("Emergency") : "", sheet.record.enc ? qsTr("Encrypted") : qsTr("Unencrypted"), sheet.record.durationSecs >= 0 ? qsTr("Duration: %1 seconds").arg(sheet.record.durationSecs) : "", sheet.record.detail || ""]
     accessibleName: qsTr("Activity details")
     function open(value) {
         record = value;
         visible = true;
     }
     Repeater {
-        model: [sheet.record.name || "", sheet.record.when > 0 ? Qt.formatDateTime(new Date(sheet.record.when * 1000), "yyyy-MM-dd hh:mm:ss") : "", sheet.record.systemName || "", sheet.record.channel || "", sheet.record.tg > 0 ? qsTr("Talkgroup %1").arg(sheet.record.tg) : "", sheet.record.sourceName || "", sheet.record.src > 0 ? qsTr("Radio ID %1").arg(sheet.record.src) : "", sheet.record.emergency ? qsTr("Emergency") : "", sheet.record.enc ? qsTr("Encrypted") : qsTr("Unencrypted"), sheet.record.durationSecs >= 0 ? qsTr("Duration: %1 seconds").arg(sheet.record.durationSecs) : "", sheet.record.detail || ""]
+        model: sheet.detailLines
         Text {
             required property string modelData
             width: parent.width
@@ -36,7 +38,7 @@ ModalSheet {
         objectName: "historyHoldButton"
         width: parent.width
         visible: sheet.rowTg > 0
-        text: sheet.heldHere ? qsTr("Release hold") : qsTr("Hold TG %1").arg(sheet.rowTg)
+        text: sheet.heldHere ? qsTr("Release hold") : qsTr("Hold TG %1").arg(Util.idText(sheet.rowTg))
         enabled: decoderHost.running && (sheet.canHold || sheet.heldHere)
         onClicked: {
             if (commands.holdTalkgroup(sheet.heldHere ? 0 : sheet.rowTg))

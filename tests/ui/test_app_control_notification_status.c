@@ -244,26 +244,41 @@ test_lead_slot_is_published_and_survives_encoding(void) {
     /* Slot 1 alone: the lead is the slot with the call, not simply the lowest one. */
     dsd_call_observation observation = dsd_call_observation_data(DSD_SYNC_P25P2_POS, 1U, 1234567U, 51023U);
     observation.kind = DSD_CALL_KIND_GROUP_VOICE;
-    observation.observed_m = dsd_time_now_monotonic_s();
+    observation.observed_m = dsd_time_now_monotonic_s() - 1.0;
     assert(dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_BEGIN) > 0);
     dsd_app_notification_publish_state(state);
     assert(dsd_app_notification_get(&status) == 1);
     assert(status.lead_slot == 1);
 
-    /* Both up: the lower slot takes the headline, matching MonitorScreen.qml's hero. */
+    /* Both up: the earlier call keeps the headline, matching MonitorScreen.qml's hero. */
     dsd_call_observation other = dsd_call_observation_data(DSD_SYNC_P25P2_POS, 0U, 7654321U, 51024U);
     other.kind = DSD_CALL_KIND_GROUP_VOICE;
     other.observed_m = dsd_time_now_monotonic_s();
     assert(dsd_call_state_observe(state, &other, DSD_CALL_BOUNDARY_BEGIN) > 0);
     dsd_app_notification_publish_state(state);
     assert(dsd_app_notification_get(&status) == 1);
-    assert(status.lead_slot == 0);
+    assert(status.lead_slot == 1);
 
     /* And it reaches the reader: the field sits at the end of the header, ahead of the
        first slot's state. */
     char record[DSD_APP_NOTIFICATION_RECORD_SIZE];
     assert(dsd_app_notification_encode(record, sizeof(record)) > 0);
     const char* eighth = record;
+    for (int field = 0; field < NOTIFICATION_HEADER_FIELDS - 1; field++) {
+        eighth = strchr(eighth, '\t');
+        assert(eighth != NULL);
+        eighth++;
+    }
+    assert(eighth[0] == '1' && eighth[1] == '\t');
+
+    assert(dsd_call_state_end(state, 1U, dsd_time_now_monotonic_s()) == 1);
+    dsd_app_notification_publish_state(state);
+    assert(dsd_app_notification_get(&status) == 1);
+    assert(status.slots[1].state == DSD_APP_CALL_LINE_ENDED);
+    assert(status.slots[0].state == DSD_APP_CALL_LINE_ACTIVE);
+    assert(status.lead_slot == 0);
+    assert(dsd_app_notification_encode(record, sizeof(record)) > 0);
+    eighth = record;
     for (int field = 0; field < NOTIFICATION_HEADER_FIELDS - 1; field++) {
         eighth = strchr(eighth, '\t');
         assert(eighth != NULL);

@@ -2301,9 +2301,59 @@ test_mapping_and_channel_nul_rows_are_atomic(void) {
     assert(remove(path) == 0);
 }
 
+/* Issue #521: every shipped channel-map example -- including the scoped-options one that
+ * documents --squelch-db -- imports through the real parser with no skipped row and no row
+ * diagnostic, so the documented spellings cannot drift from the grammar unnoticed. */
+static int
+test_channel_map_examples_import_cleanly(void) {
+    static const char* const examples[] = {"capacity_plus_chan.csv",
+                                           "connect_plus_chan.csv",
+                                           "conventional_scan_keyed.csv",
+                                           "conventional_scan_modes.csv",
+                                           "conventional_scan_named.csv",
+                                           "conventional_scan_options.csv",
+                                           "dmr_t3_chan.csv",
+                                           "edacs_channel_map.csv",
+                                           "hytera_xpt_chan.csv",
+                                           "nxdn_chan_map.csv"};
+    int rc = 0;
+    for (size_t i = 0; i < sizeof(examples) / sizeof(examples[0]); i++) {
+        dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+        dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
+        if (!opts || !state) {
+            free(opts);
+            free_test_state(state);
+            return 1;
+        }
+        DSD_SNPRINTF(opts->chan_in_file, sizeof opts->chan_in_file, "%s/%s", DSD_NEO_TEST_EXAMPLES_DIR, examples[i]);
+        dsd_csv_validation stats = {0};
+        const int validated = dsd_csv_validate_chan_file(opts->chan_in_file, &stats);
+        dsd_test_capture_stderr cap;
+        char log[8192] = {0};
+        int imported = -1;
+        if (dsd_test_capture_stderr_begin(&cap, "chan_example") == 0) {
+            imported = csvChanImport(opts, state);
+            (void)dsd_test_capture_stderr_end(&cap);
+            (void)dsd_test_capture_stderr_read(&cap, log, sizeof log);
+        }
+        if (validated != 0 || stats.skipped != 0U || stats.accepted == 0U || imported != 0 || state->lcn_freq_count <= 0
+            || strstr(log, " row ") || strstr(log, "WARNING")) {
+            DSD_FPRINTF(stderr, "%s: validate=%d accepted=%u skipped=%u import=%d channels=%d\n%s\n", examples[i],
+                        validated, stats.accepted, stats.skipped, imported, state->lcn_freq_count, log);
+            rc = 1;
+        }
+        free(opts);
+        free_test_state(state);
+    }
+    return rc;
+}
+
 int
 main(void) {
     test_csv_physical_lines();
+    if (test_channel_map_examples_import_cleanly() != 0) {
+        return 1;
+    }
     test_mapping_and_channel_nul_rows_are_atomic();
     test_source_csv();
     if (test_group_import_missing_file() != 0) {

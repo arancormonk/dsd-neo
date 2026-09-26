@@ -31,6 +31,12 @@ rtl_stream_metrics_apply_demod_profile(int cqpsk_enable, int symbol_rate_hz, int
     return rtl_stream_request_demod_profile(cqpsk, symbol_rate_hz, levels, channel_profile, ted_sps > 0 ? ted_sps : 0,
                                             0);
 }
+
+/* The demod keeps the threshold as a float, like the operator's own squelch command does. */
+static void
+rtl_stream_metrics_set_channel_squelch(double mean_power) {
+    rtl_stream_set_channel_squelch((float)mean_power);
+}
 #endif
 
 void
@@ -42,6 +48,10 @@ dsd_engine_rtl_stream_metrics_hooks_install(void) {
     hooks.symbol_profile = rtl_stream_get_symbol_profile_full;
     hooks.stream_generation = rtl_stream_output_generation;
     hooks.apply_demod_profile = rtl_stream_metrics_apply_demod_profile;
+    hooks.apply_analog_profile = rtl_stream_request_analog_profile;
+    hooks.analog_profile = rtl_stream_get_analog_profile;
+    hooks.analog_family_active = rtl_stream_analog_family_active;
+    hooks.output_rate_for_family = rtl_stream_output_rate_for_family;
     hooks.cqpsk_status = rtl_stream_get_cqpsk_status;
     hooks.request_cqpsk_reacquire = rtl_stream_request_cqpsk_reacquire;
     hooks.cqpsk_timing_bias = rtl_stream_metrics_cqpsk_timing_bias;
@@ -56,6 +66,7 @@ dsd_engine_rtl_stream_metrics_hooks_install(void) {
     hooks.p25p2_err_update = rtl_stream_p25p2_err_update;
     hooks.stream_active = rtl_stream_is_active;
     hooks.input_level = rtl_stream_get_input_level;
+    hooks.set_channel_squelch = rtl_stream_metrics_set_channel_squelch;
 #endif
     dsd_rtl_stream_metrics_hooks_set(&hooks);
 }

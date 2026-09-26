@@ -142,9 +142,11 @@ dsd_event_emit_data_notice_with_gps(dsd_opts* opts, dsd_state* state, uint8_t sl
 
 void
 // NOLINTNEXTLINE(misc-use-internal-linkage)
-lip_protocol_decoder(dsd_opts* opts, dsd_state* state, uint8_t* input) {
+lip_pdu_decoder(const dsd_opts* opts, dsd_state* state, const uint8_t* bits, size_t bit_count, uint32_t src) {
+    (void)bit_count;
+    (void)src;
     (void)opts;
-    (void)input;
+    (void)bits;
     g_lip_calls++;
     DSD_SNPRINTF(state->dmr_embedded_gps[state->currentslot], sizeof(state->dmr_embedded_gps[state->currentslot]), "%s",
                  "LIP: 41.500000, -87.250000");
@@ -253,16 +255,6 @@ decode_ip_pdu(dsd_opts* opts, dsd_state* state, uint16_t len, uint8_t* input) {
     g_decode_ip_last_len = len;
     g_decode_ip_first_byte = input ? input[0] : 0U;
     return 1;
-}
-
-void
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-dmr_sd_pdu(dsd_opts* opts, dsd_state* state, uint16_t len, uint8_t* DMR_PDU) {
-    (void)opts;
-    (void)state;
-    g_sd_pdu_calls++;
-    g_sd_pdu_last_len = len;
-    g_sd_pdu_first_byte = DMR_PDU ? DMR_PDU[0] : 0U;
 }
 
 void
@@ -607,7 +599,7 @@ test_udt_iso7_single_block_dispatches_text_event(void) {
     assert(g_datacall_last_dst == 0x000111U);
     assert(g_datacall_last_slot == 0U);
     assert(strstr(g_datacall_last_text, "ISO7 Text") != NULL);
-    assert(strstr(state.event_history_s[0].Event_History_Items[0].text_message, "HELLO") != NULL);
+    assert(strstr(dsd_event_staged_text(&state, 0), "HELLO") != NULL);
     assert(state.data_header_dd_format[0] == 0U);
     assert(state.data_header_bit_padding[0] == 0U);
     assert(state.data_header_valid[0] == 0);
@@ -662,25 +654,25 @@ test_udt_text_and_dispatch_formats(void) {
     run_udt_single_block(0x04U, block, &state_copy);
     assert(g_datacall_calls == 1U);
     assert(strstr(g_datacall_last_text, "ISO8 Text") != NULL);
-    assert(strstr(state_copy.event_history_s[0].Event_History_Items[0].text_message, "WORLD") != NULL);
+    assert(strstr(dsd_event_staged_text(&state_copy, 0), "WORLD") != NULL);
 
     build_udt_bcd_block(block, bcd, sizeof(bcd));
     run_udt_single_block(0x02U, block, &state_copy);
     assert(g_datacall_calls == 1U);
     assert(strstr(g_datacall_last_text, "Dialer Digits") != NULL);
-    assert(strstr(state_copy.event_history_s[0].Event_History_Items[0].text_message, "12*# ") != NULL);
+    assert(strstr(dsd_event_staged_text(&state_copy, 0), "12*# ") != NULL);
 
     build_udt_utf16_block(block, utf16_chars, sizeof(utf16_chars) / sizeof(utf16_chars[0]));
     run_udt_single_block(0x07U, block, &state_copy);
     assert(g_datacall_calls == 1U);
     assert(strstr(g_datacall_last_text, "UTF16 Text") != NULL);
-    assert(strstr(state_copy.event_history_s[0].Event_History_Items[0].text_message, "OK") != NULL);
+    assert(strstr(dsd_event_staged_text(&state_copy, 0), "OK") != NULL);
 
     build_udt_mixed_utf16_block(block, 0x00ABCDEFU, mixed_chars, sizeof(mixed_chars) / sizeof(mixed_chars[0]));
     run_udt_single_block(0x0AU, block, &state_copy);
     assert(g_datacall_calls == 1U);
     assert(strstr(g_datacall_last_text, "Mixed Add/Text") != NULL);
-    assert(strstr(state_copy.event_history_s[0].Event_History_Items[0].text_message, "Address: 11259375;GO") != NULL);
+    assert(strstr(dsd_event_staged_text(&state_copy, 0), "Address: 11259375;GO") != NULL);
 
     build_udt_ip4_block(block, 192U, 168U, 1U, 55U);
     run_udt_single_block(0x06U, block, &state_copy);
@@ -744,7 +736,7 @@ test_udt_binary_addressing_reserved_and_slot1_paths(void) {
     run_udt_single_block_on_slot(0x04U, block, 1U, &state_copy);
     assert(g_datacall_calls == 1U);
     assert(g_datacall_last_slot == 1U);
-    assert(strstr(state_copy.event_history_s[1].Event_History_Items[0].text_message, "SLOT1") != NULL);
+    assert(strstr(dsd_event_staged_text(&state_copy, 1), "SLOT1") != NULL);
 }
 
 static void
@@ -1499,7 +1491,7 @@ reset_scan_activity_capture(void) {
 
     dsd_trunk_scan_hooks hooks = {0};
     hooks.dmr_conventional_activity = capture_scan_dmr_conventional_activity;
-    dsd_trunk_scan_hooks_set(hooks);
+    dsd_trunk_scan_hooks_set(&hooks);
 }
 
 /*
@@ -1551,7 +1543,7 @@ run_dmr_data_header_scan_activity_case(const char* tag, uint8_t dpf, uint8_t gi,
         }
     }
 
-    dsd_trunk_scan_hooks_set((dsd_trunk_scan_hooks){0});
+    dsd_trunk_scan_hooks_set(NULL);
     return rc;
 }
 

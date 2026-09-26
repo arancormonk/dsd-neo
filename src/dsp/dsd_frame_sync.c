@@ -30,6 +30,7 @@
 #include <dsd-neo/core/sync_patterns.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/core/time_format.h>
+#include <dsd-neo/dsp/analog_rx.h>
 #include <dsd-neo/dsp/dmr_sync.h>
 #include <dsd-neo/dsp/frame_sync.h>
 #include <dsd-neo/dsp/symbol.h>
@@ -48,7 +49,6 @@
 #include <math.h>
 #include <stdint.h>
 #include <stdio.h>
-#include <stdlib.h>
 #include <string.h>
 #include <time.h>
 #include "dsd-neo/core/opts_fwd.h"
@@ -143,6 +143,17 @@ dsd_frame_sync_test_rtl_profile_for_sps_index(const dsd_opts* opts, const dsd_st
 static void
 rtl_maybe_apply_demod_profile(const dsd_opts* opts, const dsd_state* state, const frame_sync_sps_profile* profile) {
     if (!opts || !state || !profile || opts->audio_in_type != AUDIO_IN_RTL || !state->rtl_ctx) {
+        return;
+    }
+    /* The analog monitor has no symbol clock, and its front end answers for itself with the
+       analog receive profile. The analog family stands the modulation vote down
+       (frame_sync_maybe_auto_switch_modulation()), but the hunt has other requests, such as a
+       two-level profile it re-normalises when its dwell runs out. Any symbol profile from the
+       hunt would turn the stream's monitor audio into CQPSK symbols, or narrow it to a digital
+       channel: the monitor, and received-tone detection with it, would go quiet until the mode
+       changed. app_control/symbol_profile.c sends the analog profile instead for the same
+       reason. */
+    if (opts->analog_only) {
         return;
     }
     const int ted_sps =
@@ -460,6 +471,9 @@ dsd_frame_sync_reset_acquisition(const dsd_opts* opts, dsd_state* state, int for
     state->synctype = DSD_SYNC_NONE;
     state->lastsynctype = DSD_SYNC_NONE;
     frame_sync_seed_p25_cqpsk_level_windows(opts, state);
+    /* Every caller is a boundary a received tone must not survive: a scan row or target
+       change, a decode-mode change, a scope resume (issue #522). */
+    dsd_analog_rx_reset(state);
 }
 
 #ifdef USE_RADIO
@@ -2310,7 +2324,10 @@ frame_sync_maybe_auto_switch_modulation(const dsd_opts* opts, dsd_state* state, 
     }
 
     *lastt = 0;
-    if (opts->mod_cli_lock) {
+    /* A lock has made the choice already. The analog family has no digital modulation to choose: its RTL front end
+     * runs the monitor path, and a vote there (a carrier near 0 Hz votes CQPSK) would apply that modulation's demod
+     * profile and replace monitor audio with symbols. */
+    if (opts->mod_cli_lock || dsd_opts_is_analog_family(opts)) {
         return;
     }
 
@@ -2584,7 +2601,6 @@ typedef struct frame_sync_runtime_ctx {
     char modulation[8];
     char symbol_history[FRAME_SYNC_HISTORY_CAPACITY];
     float lbuf[48];
-    float lbuf2[48];
 } frame_sync_runtime_ctx;
 
 static void
@@ -2693,21 +2709,9 @@ frame_sync_materialize_ready_windows(frame_sync_runtime_ctx* rt) {
     }
 }
 
-static int
-frame_sync_compare_float(const void* left, const void* right) {
-    const float a = *(const float*)left;
-    const float b = *(const float*)right;
-    return (a > b) - (a < b);
-}
-
 static void
 frame_sync_window_levels(const dsd_opts* opts, dsd_state* state, frame_sync_runtime_ctx* rt) {
-    const int level_count = rt->level_count;
-    for (int i = 0; i < level_count; i++) {
-        rt->lbuf2[i] = rt->lbuf[i];
-    }
-    qsort(rt->lbuf2, level_count, sizeof(float), frame_sync_compare_float);
-    dsd_frame_sync_estimate_sorted_window_levels(rt->lbuf2, level_count, &rt->lmin, &rt->lmax);
+    dsd_frame_sync_estimate_window_levels(rt->lbuf, rt->level_count, &rt->lmin, &rt->lmax);
 
     if (frame_sync_active_profile_modulation(opts, state) == 1) {
         dsd_state_push_minmax_window(state, opts->msize, rt->lmin, rt->lmax);
