@@ -937,6 +937,19 @@ Item {
                     }
                 }
 
+                // Why the AM chip is greyed out on a network or file source,
+                // rather than leaving a dead control (issue #524).
+                Text {
+                    objectName: "wizardDecodeIqNote"
+                    visible: !wizard.radioSource
+                    width: parent.width
+                    text: qsTr("AM needs a radio source: network and file audio arrives already demodulated.")
+                    font.family: Theme.sans
+                    font.pixelSize: Theme.fontSize(12)
+                    color: Theme.textSecondary
+                    wrapMode: Text.Wrap
+                }
+
                 Text {
                     objectName: "wizardDecodeHint"
                     width: parent.width

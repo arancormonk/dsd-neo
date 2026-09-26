@@ -167,15 +167,19 @@ Item {
 
         // Issue #524: the AM chip (-fM) comes with the shared catalog. It is
         // offered for radio sources only (network and file audio arrives already
-        // demodulated), selects on its own flag, and names a system type that is
-        // not trunked, so picking it on the 800 MHz prefill suggests no
-        // call-following.
+        // demodulated), with a note saying why it is greyed out elsewhere,
+        // selects on its own flag, and names a system type that is not trunked,
+        // so picking it on the 800 MHz prefill suggests no call-following.
         function test_10_the_am_chip_needs_a_radio_source_and_never_suggests_trunking() {
             var chip = tc.chipFor("AM")
+            var note = findChild(tc.wizard, "wizardDecodeIqNote")
             verify(chip !== null, "the wizard offers no AM chip")
+            verify(note !== null, "the wizard has no note for a greyed-out AM chip")
             compare(chip.modelData.flag, "-fM")
             verify(tc.wizard.radioSource, "the wizard opens on a radio source")
             verify(chip.enabled, "the AM chip is disabled on a radio source")
+            tc.wizard.step = 1
+            verify(!note.visible, "the I/Q note shows on a radio source")
             compare(tc.wizard.trunking, true, "the 800 MHz prefill suggests trunking before the pick")
             tc.wizard.pickDecodeFlag("-fM")
             compare(tc.wizard.decodeFlag, "-fM")
@@ -183,8 +187,14 @@ Item {
             compare(tc.wizard.trunking, false, "picking AM suggested call-following")
             tc.wizard.sourceType = "tcp"
             verify(!chip.enabled, "the AM chip is offered for TCP audio")
+            verify(note.visible, "a greyed-out AM chip says nothing about why")
+            verify(note.text.indexOf("AM needs a radio source") === 0, "the note does not name the reason")
+            tc.wizard.sourceType = "file"
+            verify(note.visible, "a file source leaves the AM chip unexplained")
             tc.wizard.sourceType = "usb"
             verify(chip.enabled)
+            verify(!note.visible)
+            tc.wizard.step = 0
         }
 
         // Issue #524: the AM chip greyed out is not enough. Picking a network or
