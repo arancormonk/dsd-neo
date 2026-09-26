@@ -5804,8 +5804,11 @@ apply_cmd_leave_scanner_scope(dsd_opts* opts, dsd_state* state, int guarded) {
 }
 
 /* The row's constraint back over the configured options a scoped command edited, and the front end told of what
-   changed. Returns -1 when that was a switch onto the analog monitor the front end refused at once, which puts the
-   decoder back as it was and fails the command. */
+   changed. A width the row runs on the analog family is an acquisition setting there (dsd_scan_settings_equal()), so a
+   configured width it runs reaches the front end with the profile the resume publishes; a digital row's front end
+   takes no width, and a row that sets its own (issue #526) keeps it over the edit. Returns -1 when that was a switch
+   onto the analog monitor the front end refused at once, which puts the decoder back as it was and fails the
+   command. */
 static int
 apply_cmd_resume_scope(dsd_opts* opts, dsd_state* state, int nfm_width_before) {
     int changed = 0;
@@ -5819,13 +5822,6 @@ apply_cmd_resume_scope(dsd_opts* opts, dsd_state* state, int nfm_width_before) {
         if (opts->analog_nfm_bandwidth_hz != nfm_width_before) {
             ui_restore_refused_nfm_width(opts, state, opts->analog_nfm_bandwidth_hz, nfm_width_before);
         }
-    } else if (!changed && opts->analog_nfm_bandwidth_hz != nfm_width_before) {
-        /* A configured width change that reads as no acquisition change (dsd_scan_settings_equal() compares widths for
-           the analog family only) leaves the row's constraint as it was: the new width reaches the front end now that
-           the options in force are the row's again (a row that runs the -fA monitor), which it could not while the
-           command ran against the configured ones. @p nfm_width_before is the width in force before the command, so a
-           row that sets its own width (issue #526), unchanged over the edit, publishes nothing. */
-        (void)ui_publish_nfm_bandwidth(opts, state, nfm_width_before);
     }
     return 0;
 }

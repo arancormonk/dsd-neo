@@ -6402,6 +6402,51 @@ test_config_apply_holds_nfm_width_to_the_front_end(void) {
     return rc;
 }
 
+/*
+ * A config apply is a scoped command: the row on air is suspended while it runs and resumed after. The configured NFM
+ * width is an acquisition setting of the analog family an untyped -fA row runs, so a config that changes only that
+ * width reaches the front end with the profile the resume republishes. An nfm row that sets its own width keeps it
+ * over the apply, and the front end is asked for nothing until the row leaves.
+ */
+static int
+test_config_apply_width_under_scan_rows(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static void* fake_ctx[2];
+    int rc = 0;
+    init_nfm_session(&opts, &state, (RtlSdrContext*)fake_ctx);
+    rc |= expect_int("cfg inherit: row", dsd_scan_mode_enter(&opts, &state, DSD_SCAN_MODE_INHERIT), 0);
+    rc |= expect_int("cfg inherit: options", dsd_scan_mode_options(&opts, &state, NULL), 0);
+    reset_rx_family_wrap();
+    rc |= submit_config_nfm_width(&opts, &state, DSDCFG_MODE_UNSET, 12500, "cfg inherit");
+    rc |= expect_int("cfg inherit: width in force", opts.analog_nfm_bandwidth_hz, 12500);
+    rc |= expect_int("cfg inherit: row still scoped", dsd_scan_mode_configured_view(&state) != NULL, 1);
+    rc |= expect_int("cfg inherit: requested at the new width",
+                     g_analog_req_calls >= 1 && g_analog_req_width_hz == 12500, 1);
+    dsd_scan_mode_leave(&opts, &state);
+    rc |= expect_int("cfg inherit: configured width kept", opts.analog_nfm_bandwidth_hz, 12500);
+
+    dsd_scan_option_values row = {0};
+    row.present = DSD_SCAN_OPT_BANDWIDTH;
+    row.channel_bw_hz = 11250;
+    rc |= expect_int("cfg width row: nfm row", dsd_scan_mode_enter(&opts, &state, DSD_SCAN_MODE_NFM), 0);
+    rc |= expect_int("cfg width row: its width", dsd_scan_mode_options(&opts, &state, &row), 0);
+    reset_rx_family_wrap();
+    rc |= submit_config_nfm_width(&opts, &state, DSDCFG_MODE_UNSET, 16000, "cfg width row");
+    rc |= expect_int("cfg width row: row keeps its width", opts.analog_nfm_bandwidth_hz, 11250);
+    const dsd_scan_settings* baseline = dsd_scan_mode_configured_view(&state);
+    rc |=
+        expect_int("cfg width row: baseline takes the apply", baseline ? baseline->analog_nfm_bandwidth_hz : -1, 16000);
+    rc |= expect_int("cfg width row: front end not switched", g_analog_req_calls, 0);
+    dsd_scan_mode_leave(&opts, &state);
+    rc |= expect_int("cfg width row: configured width after the row", opts.analog_nfm_bandwidth_hz, 16000);
+
+    opts.analog_nfm_bandwidth_hz = 0;
+    state.rtl_ctx = NULL;
+    freeState(&state);
+    return rc;
+}
+
 /* A config whose [input] builds an RTL-SDR input at DSP bandwidth @p rtl_bw_khz, with an [analog] width when
    @p width_hz is not negative. */
 static int
@@ -7862,6 +7907,7 @@ main(void) {
     rc |= test_nfm_bandwidth_set_under_a_width_row();
     rc |= test_decode_mode_analog_under_a_row_holds_the_nfm_width();
     rc |= test_config_apply_holds_nfm_width_to_the_front_end();
+    rc |= test_config_apply_width_under_scan_rows();
     rc |= test_config_apply_holds_nfm_width_to_a_new_dsp_bandwidth();
     rc |= test_config_apply_holds_nfm_width_to_the_rate_the_reopen_runs_at();
     rc |= test_config_apply_leaves_a_soapy_or_airspy_reopen_to_its_start();
