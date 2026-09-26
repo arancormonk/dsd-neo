@@ -1683,6 +1683,53 @@ test_rx_tone_dcs_through_the_tap(void) {
     dsd_state_ext_free_all(&state);
 }
 
+/*
+ * DCS is FM signalling, like CTCSS, so the DCS detector runs on the FM monitor only (issues #523, #524). The same D023N
+ * monitor audio that locks on the FM monitor publishes no code on the AM monitor, only its carrier, and logs nothing.
+ * A live switch to AM forgets the FM lock at the next block without a "Received tone:" line, and the switch back reads
+ * the code from scratch, twice in a row, before it shows and logs it again.
+ */
+static void
+test_rx_tone_dcs_is_fm_only(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    const uint32_t d023n = dsd_dcs_word(0023, 0);
+    install_fake_rtl_hooks(1);
+    init_analog_monitor_fixture(&opts, &state);
+    opts.audio_in_type = AUDIO_IN_RTL;
+    g_rx_tone_lines = 0;
+    g_rx_tone_d023n_lines = 0;
+    g_dcs_bit_phase = 0.0;
+
+    set_monitor_kind(&opts, DSD_ANALOG_DEMOD_AM);
+    feed_dcs_blocks(&opts, &state, 60, d023n);
+    assert(rx_tone_publishes_no_tone(&state) && state.analog_rx.carrier_open == 1);
+    assert(g_rx_tone_lines == 0);
+
+    set_monitor_kind(&opts, DSD_ANALOG_DEMOD_FM);
+    feed_dcs_blocks(&opts, &state, 60, d023n);
+    assert(rx_code_locked(&state, 0023));
+    assert(g_rx_tone_d023n_lines == 1 && g_rx_tone_lines == 1);
+
+    /* The block that sees the switch (a new published profile) starts a new reception; the next ones keep the AM
+       carrier and still no code. */
+    set_monitor_kind(&opts, DSD_ANALOG_DEMOD_AM);
+    feed_dcs_blocks(&opts, &state, 1, d023n);
+    assert(rx_tone_publishes_nothing(&state));
+    feed_dcs_blocks(&opts, &state, 60, d023n);
+    assert(rx_tone_publishes_no_tone(&state) && state.analog_rx.carrier_open == 1);
+    assert(g_rx_tone_lines == 1);
+
+    set_monitor_kind(&opts, DSD_ANALOG_DEMOD_FM);
+    feed_dcs_blocks_before_a_fresh_lock(&opts, &state, d023n);
+    feed_dcs_blocks(&opts, &state, 60, d023n);
+    assert(rx_code_locked(&state, 0023));
+    assert(g_rx_tone_d023n_lines == 2 && g_rx_tone_lines == 2);
+
+    install_fake_rtl_hooks(0);
+    dsd_state_ext_free_all(&state);
+}
+
 static uint64_t g_fake_now_ms = 0U;
 
 static uint64_t
@@ -2765,6 +2812,7 @@ main(void) {
     test_rx_tone_rate_change_drops_the_unread_samples();
     test_rx_tone_logs_on_change_only();
     test_rx_tone_dcs_through_the_tap();
+    test_rx_tone_dcs_is_fm_only();
     test_rx_tone_paused_stream_starts_a_new_reception();
     test_rx_tone_pause_mid_block_inherits_nothing();
     test_rx_tone_pcm_squelch_follows_each_read();
