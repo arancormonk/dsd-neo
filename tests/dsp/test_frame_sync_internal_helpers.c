@@ -3148,6 +3148,19 @@ test_scan_class_matchers_and_no_sync(void) {
         assert(state->analog_rx.tone_state == DSD_ANALOG_TONE_STATE_INACTIVE);
         assert(state->analog_rx.tone_kind == DSD_ANALOG_TONE_KIND_NONE && state->analog_rx.ctcss_tenths_hz == 0);
         assert(state->analog_rx.carrier_open == 0 && state->analog_rx.generation != tone_generation);
+        /* Nor does a received DCS code (issue #523), through the reset a scan target switch makes
+           (forget 0), which the engine tests' stubs only mirror. */
+        state->analog_rx.carrier_open = 1;
+        state->analog_rx.tone_state = DSD_ANALOG_TONE_STATE_LOCKED;
+        state->analog_rx.tone_kind = DSD_ANALOG_TONE_KIND_DCS;
+        state->analog_rx.dcs_code = 023;
+        state->analog_rx.dcs_inverted = 1;
+        const uint32_t code_generation = state->analog_rx.generation;
+        dsd_frame_sync_reset_acquisition(opts, state, 0);
+        assert(state->analog_rx.tone_state == DSD_ANALOG_TONE_STATE_INACTIVE);
+        assert(state->analog_rx.tone_kind == DSD_ANALOG_TONE_KIND_NONE && state->analog_rx.dcs_code == 0);
+        assert(state->analog_rx.dcs_inverted == 0 && state->analog_rx.carrier_open == 0);
+        assert(state->analog_rx.generation != code_generation);
     }
     dsd_scan_mode_leave(opts, state);
     dsd_state_ext_free_all(state);
