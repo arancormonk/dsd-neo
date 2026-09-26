@@ -152,6 +152,20 @@ manualAnalogTargets(const QVariantMap& list, const SavedSystemsModel* systems) {
     return analog;
 }
 
+/* The DSP-rate warning for a CSV-backed list (analogRateWarning()), each analog target held at its own width. The file
+   was validated already; one the inspection cannot read says nothing more. */
+QStringList
+csvAnalogRateWarnings(const QVariantMap& list, const QString& path, const SessionArgPrefs& prefs) {
+    QList<AnalogTarget> analog;
+    const dsd_app_scan_csv_callbacks callbacks{collectCsvAnalogTarget, nullptr, &analog};
+    char detail[512] = {};
+    if (dsd_app_scan_csv_inspect(path.toUtf8().constData(), nullptr, 0, &callbacks, detail, sizeof detail) != 0) {
+        return {};
+    }
+    const QString warning = analogRateWarning(list, prefs, analog);
+    return warning.isEmpty() ? QStringList() : QStringList{warning};
+}
+
 QVariantMap
 absolutePaths(QVariantMap map) {
     for (const auto& field : {"chanCsvPath", "groupCsvPath", "srcCsvPath", "keyCsvPath", "p25BandplanCsvPath"}) {
@@ -427,19 +441,10 @@ ScanListStarter::prepareCsv(const QVariantMap& list, bool materialize) const {
     if (args.isEmpty()) {
         return fail(error);
     }
-    QList<AnalogTarget> analog;
-    const dsd_app_scan_csv_callbacks callbacks{collectCsvAnalogTarget, nullptr, &analog};
-    QStringList warnings;
-    if (dsd_app_scan_csv_inspect(path.toUtf8().constData(), nullptr, 0, &callbacks, detail, sizeof detail) == 0) {
-        const QString rateWarning = analogRateWarning(prepared, sessionPreferences(m_prefs), analog);
-        if (!rateWarning.isEmpty()) {
-            warnings << rateWarning;
-        }
-    }
     return {{"ok", true},
             {"args", materialize ? args : QStringList()},
             {"error", QString()},
-            {"warnings", warnings},
+            {"warnings", csvAnalogRateWarnings(prepared, path, sessionPreferences(m_prefs))},
             {"targetCount", count}};
 }
 } // namespace dsd_qt

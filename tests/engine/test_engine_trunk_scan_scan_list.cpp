@@ -219,6 +219,8 @@ p25CandidateRotation(int configured) {
 }
 
 #if !DSD_PLATFORM_WIN_NATIVE
+namespace {
+
 // A rigctl peer on a loopback socket (issue #526): it records each command line and accepts it, or refuses "M AM"
 // while refuseAm is set, as an FM-only rig does.
 class FakeRigctlPeer {
@@ -295,6 +297,8 @@ class FakeRigctlPeer {
     std::mutex mutex;
     QStringList seen;
 };
+
+} // namespace
 
 // Issue #526: a generated list mixing a keyed DMR system, a saved AM system (-fM) that still carries keys and a
 // talkgroup file, and nfm and am frequency entries, plus a target with its own NFM passband, through the real parser
