@@ -147,11 +147,22 @@ typedef struct {
     int no_rate;
 } analog_totals;
 
+/* Room for the tone= label (see the file comment): a CTCSS value ("151.4") or a DCS code's two spellings
+ * ("D023N/D047I"), the library's "DCS D023N / D047I" label less its prefix and spaces. Sized by both library label
+ * sizes, so a longer label format grows the field instead of cutting the tone= token short. */
+enum {
+    ANALOG_TONE_LABEL_SIZE =
+        (int)DSD_CTCSS_LABEL_SIZE > (int)DSD_DCS_LABEL_SIZE ? (int)DSD_CTCSS_LABEL_SIZE : (int)DSD_DCS_LABEL_SIZE
+};
+
+_Static_assert(sizeof("D023N/D047I") <= (size_t)ANALOG_TONE_LABEL_SIZE,
+               "a DCS code's two spellings fit the tone= label");
+
 /* The received tone as the decoder published it (see the file comment). */
 typedef struct {
-    char label[DSD_CTCSS_LABEL_SIZE]; /* last confirmed tone or code, "" = none */
-    double first_lock_ms;             /* stream time of the first lock, -1 if none */
-    double locked_ms;                 /* delivered audio in blocks after which the publication read locked */
+    char label[ANALOG_TONE_LABEL_SIZE]; /* last confirmed tone or code, "" = none */
+    double first_lock_ms;               /* stream time of the first lock, -1 if none */
+    double locked_ms;                   /* delivered audio in blocks after which the publication read locked */
 } analog_tone_track;
 
 static analog_limits g_limits;
