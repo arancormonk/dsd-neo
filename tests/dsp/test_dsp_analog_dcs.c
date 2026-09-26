@@ -145,13 +145,16 @@ typedef struct {
     int64_t rephase_at;
     double rephase_to;
     /* One bit error per word: flip word bit flip_bit (flip_step moves it on each repetition),
-       and a second one at flip2_bit when flip2 is set. */
+       and a second one at flip2_bit when flip2 is set. With flip_every above 1 only the last word
+       of every flip_every carries them, counting words from the first sent (words_sent). */
     int flip;
     int flip_bit;
     int flip_step;
     int flip2;
     int flip2_bit;
     int64_t flip_from;
+    int flip_every;
+    int64_t words_sent;
     /* Receiver model. */
     /** A DC level on the discriminator's output from @c on: a carrier off frequency (the
         transmitter's error or the receiver's) steps it in with the carrier. */
@@ -245,7 +248,8 @@ static double
 src_word_level(dcs_src* src, int64_t n) {
     const int bit = (int)src->bit_phase;
     uint32_t word = src->word;
-    if (src->flip && n >= src->flip_from) {
+    if (src->flip && n >= src->flip_from
+        && (src->flip_every <= 1 || (src->words_sent % src->flip_every) == src->flip_every - 1)) {
         word ^= 1U << src->flip_bit;
         if (src->flip2) {
             word ^= 1U << src->flip2_bit;
@@ -255,6 +259,7 @@ src_word_level(dcs_src* src, int64_t n) {
     src->bit_phase += src->baud / src->fs;
     if (src->bit_phase >= (double)DSD_DCS_WORD_BITS) {
         src->bit_phase -= (double)DSD_DCS_WORD_BITS;
+        src->words_sent++;
         if (src->flip) {
             src->flip_bit = (src->flip_bit + src->flip_step) % DSD_DCS_WORD_BITS;
         }
@@ -1211,8 +1216,63 @@ test_no_code_verdict_then_late_code(void) {
     assert(r.first_lock > src.on && samples_to_ms(48000.0, r.first_lock - src.on) <= (double)LOCK_10DB_MS);
 }
 
-/* Random bits at the DCS rate never lock, however long they run: a lock needs the same
-   supported word twice in a row. */
+/*
+ * Acquisition reads a supported word twice in a row, exactly in one 23-bit window and within one
+ * bit in the other (analog_dcs.c, step 5), pinned at both edges on a code whose every other word
+ * is damaged, so no two windows 23 bits apart are ever identical. Random bits first settle the
+ * bit clock and the slicers' levels without locking anything, and the code then starts at the
+ * top of a clean word, so no window reads the random bits as part of it. One bit off locks every
+ * code in both polarities, the damaged bit spread over the word, within the 10 dB bound of the
+ * code's start. Bits 3 and 12 off never lock. Later in the word a droop slicer whose hypothesis
+ * does not fit can read a damaged bit back as the code's own value, so a pair there now and then
+ * locks the right code; bits 3 and 12 every slicer reads as sent. Both edges fail on a rule one
+ * bit off: with both windows exact the one-bit case locks only where a slicer reads the damaged
+ * bit back, and with two bits of slack the two-bit case locks every code.
+ */
+static void
+test_acquisition_allows_one_bit_between_readings(void) {
+    const double fs = 8000.0;
+    const int64_t settle = ms_to_samples(fs, 500.0);
+    for (int i = 0; i < DSD_DCS_CODE_COUNT; i++) {
+        for (int inverted = 0; inverted < 2; inverted++) {
+            const int code = dsd_dcs_code(i);
+            int want_code = -1;
+            int want_inverted = -1;
+            expected_name(code, inverted, &want_code, &want_inverted);
+            for (int damage = 1; damage <= 2; damage++) {
+                dsd_analog_rx_core_init(&g_core);
+                dcs_src src;
+                src_init(&src, fs, 5230ULL + (uint64_t)((i * 4) + (inverted * 2) + damage), code, inverted, 200.0,
+                         75.0);
+                src.send = SEND_RANDOM;
+                src.switch_at = settle;
+                src.then_send = SEND_WORD;
+                src.rephase_at = settle;
+                src.rephase_to = 0.0;
+                src.flip = 1;
+                src.flip_every = 2;
+                src.flip_from = settle;
+                if (damage == 1) {
+                    src.flip_bit = (i + (11 * inverted)) % DSD_DCS_WORD_BITS;
+                } else {
+                    src.flip_bit = 3;
+                    src.flip2 = 1;
+                    src.flip2_bit = 12;
+                }
+                const run_result r = run_signal(&src, settle + ms_to_samples(fs, 2000.0), 80, want_code, want_inverted);
+                if (damage == 1) {
+                    assert(r.dcs_locks == 1 && r.first_lock > settle);
+                    assert(samples_to_ms(fs, r.first_lock - settle) <= (double)LOCK_10DB_MS);
+                } else {
+                    assert(r.dcs_locks == 0 && r.first_lock < 0);
+                }
+            }
+        }
+    }
+}
+
+/* Random bits at the DCS rate never lock, however long they run: a lock needs a supported word
+   read twice in a row, once exactly and once within a bit. */
 static void
 test_random_bits_never_lock(void) {
     dsd_analog_rx_core_init(&g_core);
@@ -1458,6 +1518,7 @@ main(void) {
     test_off_rate_transmitter_locks();
     test_one_bit_error_per_word_holds();
     test_two_bit_errors_per_word_lose();
+    test_acquisition_allows_one_bit_between_readings();
     test_code_stop_under_carrier_loses();
     test_turnoff_tone_loses_fast();
     test_carrier_drop_and_dropout();

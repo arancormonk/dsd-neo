@@ -567,6 +567,10 @@ fixed-seed start there locks within 700 ms.
   under transmitter-filtered speech 10 dB above it within 700 ms, and held from then on for 20 s; a transmitter at 134.3
   or 134.5 bit/s locks and holds for 8 s; the alias pins (D023I is published as D047N, D047I as D023N, D754I as D116N
   and others) through the detector.
+- Acquisition: a code whose every other word is damaged, so that no two windows 23 bits apart match, started at the top
+  of a clean word once random bits have settled the receiver, at 8 kHz: one bit off, the bit spread over the word, locks
+  every code in both polarities within 520 ms of its start, and bits 3 and 12 off lock none. A rule asking for both
+  windows exactly fails the first, and one allowing two bits the second.
 - Hold and loss: one wrong bit in every word, in the same bit or moving through the word, holds for 20 s; two wrong bits
   in every word lose the lock within 522 ms of the damage (a window holds both errors only once it lies wholly after the
   damage started, up to a word later), and nothing locks in its place; a code that stops under a live carrier is lost
