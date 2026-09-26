@@ -603,23 +603,24 @@ through the real tap and checks the `Received tone: DCS` line, and the resets th
 code as well: a trunk-tuning or RTL stream generation move and an announced reset in `DSP_SYMBOL_REPLAY`,
 `RTL_SET_FREQ`, `MANUAL_TUNE` and a decode-mode change in `APP_COMMAND_QUEUE` (each named for the tone and the code
 pass), a `-Y` row commit in `ENGINE_CHANNEL_SCAN`, and an `nfm-conventional` target switch in `ENGINE_TRUNK_SCAN` (the
-visit cap moving on under the carrier that carries a code, then an operator advance back). That a reset clears the
-detector itself, not only the publication, is shown twice: in `DSP_SYMBOL_REPLAY` the same code running on through a
-generation move is neither shown nor logged for 300 ms after it, less than the 342 ms a lock read from scratch needs,
-and after the announced reset the inverted word locks as D047N with D023N never shown again; `DSP_ANALOG_DCS` runs the
-core's own reset (the carrier hangover running out, and `dsd_analog_rx_core_reset()` under a running code) and checks
-the detector is unlocked at once and the old code never shows again. A reset that kept a held lock fails both.
-`APP_CONTROL_RX_TONE_VIEW`, `UI_NCURSES_PRINTER_HELPERS`, `UI_QT_METRICS_MODEL` and `UI_QT_QML_CALL_LISTS` pin the
-`DCS D023N / D047I` text (both
-spellings of the signal, canonical first, with the second one's code and polarity beside the first's), the names the
-view refuses (an unsupported code, a rotation alias, a non-canonical polarity), and the received code kept apart from a
-configured policy value. `RUNTIME_ANALOG_TONES` pins that every standard signal has exactly two standard spellings, the
-canonical normal code and one inverted code, against the golden alias table, and the label that names both; and that
-every supported code's word carries 11 or 12 ones in either polarity (000's carries 7), which the balance slicer relies
-on. `RUNTIME_ANALOG_TONES` and `DSP_ANALOG_DCS_GOLAY_XCHECK`
-pin the published words of 023, the inverted 023, 047, 020 and 000 (onfreq's DPL/DCS page), 047 a standard code of its
-own and 020 a word of another rotation class, so check bits that do not follow from 023's, before and after the mapping
-onto `Golay24.hpp`.
+visit cap moving on under the carrier that carries a code, then an operator advance back). The two scan tests clear the
+code through their own stub of the acquisition reset each switch calls, so they show that the switch calls it and that
+no parked state brings the code back; `FRAME_SYNC_INTERNAL_HELPERS` checks that the real reset clears a code, called as
+a trunk-scan target switch calls it. That a reset clears the detector itself, not only the publication, is shown twice:
+in `DSP_SYMBOL_REPLAY` the same code running on through a generation move is neither shown nor logged for 300 ms after
+it, less than the 342 ms a lock read from scratch needs, and after the announced reset the inverted word locks as D047N
+with D023N never shown again; `DSP_ANALOG_DCS` runs the core's own reset (the carrier hangover running out, and
+`dsd_analog_rx_core_reset()` under a running code) and checks the detector is unlocked at once and the old code never
+shows again. A reset that kept a held lock fails both. `APP_CONTROL_RX_TONE_VIEW`, `UI_NCURSES_PRINTER_HELPERS`,
+`UI_QT_METRICS_MODEL` and `UI_QT_QML_CALL_LISTS` pin the `DCS D023N / D047I` text (both spellings of the signal,
+canonical first, with the second one's code and polarity beside the first's), the names the view refuses (an unsupported
+code, a rotation alias, a non-canonical polarity), and the received code kept apart from a configured policy value.
+`RUNTIME_ANALOG_TONES` pins that every standard signal has exactly two standard spellings, the canonical normal code and
+one inverted code, against the golden alias table, and the label that names both; and that every supported code's word
+carries 11 or 12 ones in either polarity (000's carries 7), which the balance slicer relies on. `RUNTIME_ANALOG_TONES`
+and `DSP_ANALOG_DCS_GOLAY_XCHECK` pin the published words of 023, the inverted 023, 047, 020 and 000 (onfreq's DPL/DCS
+page), 047 a standard code of its own and 020 a word of another rotation class, so check bits that do not follow from
+023's, before and after the mapping onto `Golay24.hpp`.
 
 Long-run sweeps (offline, the `DSP_ANALOG_DCS` signal model through the pure receive core, a random code and polarity
 per start with the onset anywhere in a word; `<dsd-neo/dsp/analog_rx.h>` sets its ceilings above the slowest event):
@@ -899,9 +900,8 @@ Every DCS waveform has two spellings, because inverting a DCS word gives another
 (`D023N = D047I`, and `D023I = D047N` for the inverted waveform). The DCS detector (#523) publishes the normal-polarity
 spelling (`dsd_dcs_canonical()`) and shows and logs both, normal first (`DCS D023N / D047I`; the alias table is in the
 [CLI guide](cli.md#received-code-dcs-on-the-analog-monitor)), so an oracle label and the detector's name the same two
-spellings. The wiki's CTCSS page, which links the I/Q
-recording, carries audio samples at 151.4, 173.8 and 186.2 Hz without saying which tones the recording holds; the
-oracle finds the first two. A
+spellings. The wiki's CTCSS page, which links the I/Q recording, carries audio samples at 151.4, 173.8 and 186.2 Hz
+without saying which tones the recording holds; the oracle finds the first two. A
 maintainer has confirmed the CTCSS labels in the table, "none" for both squelch captures included, and the received-tone
 cases pin them: `DECODE_IQ_ANALOG_REAL_CTCSS_1514` the 151.4 Hz of `nfm_ctcss_real`, and the
 `DECODE_IQ_ANALOG_REAL_CTCSS_NOFALSE_*` cases the absence of any tone on both squelch captures (see
