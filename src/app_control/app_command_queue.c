@@ -3704,9 +3704,12 @@ decode_mode_set_early_verdict(const dsd_opts* opts, dsd_state* state, const stru
  * the channel widths (a width command made after the switch) stay as they are, since the switch did not set them.
  * Staged before such a command changes anything, armed once it has switched a running RTL session, and dropped once
  * the front end takes the switch (or a request after it). A switch made straight over one still armed (from the
- * settings that one left, before any drain found it taken) keeps that one's settings from before: the front end's
- * requests are last-writer-wins, so it never ran the settings in between, and going back to them would ask it for a
- * profile of their own that the moved rate can refuse as well.
+ * settings that one left, before any command found it taken) keeps that one's settings from before: the front end's
+ * requests are last-writer-wins, so while the earlier request was still queued it never ran the settings in between,
+ * and going back to them would ask it for a profile of their own that the moved rate can refuse as well. The demod
+ * thread can still have taken the earlier request after the last command asked, before the later one was queued, so
+ * the settings each superseded switch left are kept too, by the analog kind they run (between): a refusal the front
+ * end records as keeping that kind goes back to them (ui_analog_entry_rollback()).
  */
 static dsd_scan_settings g_analog_entry_staged;
 
@@ -3715,6 +3718,8 @@ static struct {
     int kind; /* the dsd_analog_demod the switch is onto */
     dsd_scan_settings before;
     dsd_scan_settings after;
+    int has_between[2];           /* by dsd_analog_demod */
+    dsd_scan_settings between[2]; /* the settings the last superseded switch onto that kind left */
 } g_analog_entry;
 
 static void
@@ -3733,8 +3738,13 @@ ui_arm_analog_entry(const dsd_opts* opts, const dsd_state* state, int was_analog
     }
     const int supersedes =
         g_analog_entry.armed && dsd_scan_settings_equal(&g_analog_entry_staged, &g_analog_entry.after, 0);
-    if (!supersedes) {
+    if (supersedes && dsd_analog_demod_is_valid(g_analog_entry.kind)) {
+        g_analog_entry.between[g_analog_entry.kind] = g_analog_entry.after;
+        g_analog_entry.has_between[g_analog_entry.kind] = 1;
+    } else if (!supersedes) {
         g_analog_entry.before = g_analog_entry_staged;
+        g_analog_entry.has_between[DSD_ANALOG_DEMOD_FM] = 0;
+        g_analog_entry.has_between[DSD_ANALOG_DEMOD_AM] = 0;
     }
     dsd_scan_settings_capture(opts, state, &g_analog_entry.after);
     g_analog_entry.kind = opts->analog_demod;
@@ -3786,14 +3796,52 @@ ui_analog_entry_keep_widths(dsd_scan_settings* settings, const dsd_scan_settings
 }
 
 /*
+ * The settings a refused switch goes back to: the ones from before it, unless the front end refused it where it landed
+ * and recorded keeping the analog family on a kind those settings do not run (@p kept), having taken a switch this one
+ * superseded before this one's request was queued: then the settings that switch left, for the kind it kept. NULL (a
+ * refusal by the request, which recorded nothing): the ones from before.
+ */
+static const dsd_scan_settings*
+ui_analog_entry_rollback(const svc_monitor_refusal* kept) {
+    const dsd_scan_settings* before = &g_analog_entry.before;
+    if (!kept || !kept->kept_analog || !dsd_analog_demod_is_valid(kept->kept_kind)
+        || (before->analog_only == 1 && before->analog_demod == kept->kept_kind)
+        || !g_analog_entry.has_between[kept->kept_kind]) {
+        return before;
+    }
+    return &g_analog_entry.between[kept->kept_kind];
+}
+
+/*
+ * The decoder is back on the analog kind the front end kept (@p kept): a width of that kind changed while the refused
+ * switch was pending never reached it (the switch's request replaced the width's), so one the rate it runs at now
+ * cannot filter goes back to the width it runs, and the republish asks it for what it runs; one the rate filters stays
+ * and is asked for again, as a width change would be.
+ */
+static void
+ui_hold_reverted_analog_width(dsd_opts* opts, const dsd_state* state, const svc_monitor_refusal* kept) {
+    if (!kept || !kept->kept_analog || opts->analog_only != 1 || opts->analog_demod != kept->kept_kind) {
+        return;
+    }
+    const int width_hz = dsd_app_analog_width_setting_hz(opts, kept->kept_kind);
+    char why[128];
+    if (width_hz != kept->kept_width_hz
+        && svc_check_analog_bandwidth(opts, state, kept->kept_kind, width_hz, why, sizeof why) != 0) {
+        svc_store_analog_width_setting(opts, kept->kept_kind, kept->kept_width_hz);
+    }
+}
+
+/*
  * The front end refused the switch onto the analog monitor or onto its other kind (@p width_hz: the width of that kind
- * it refused, 0 for its default) and stayed digital, or on the kind it ran: put the decoder back on the configured
- * settings it had before the switch, timed for the demod rate the front end runs now, under a scan row's scope as well,
- * and say why. Returns 1 when it did; 0 when no switch is armed, or the configured settings have moved on since (a
- * later command published its own profile).
+ * it refused, 0 for its default) and stayed digital, or on the kind it ran (@p kept: what it recorded keeping, for a
+ * refusal where the request landed; NULL for one by the request): put the decoder back on the configured settings it
+ * had before the switch, or on the ones the front end runs (ui_analog_entry_rollback(), ui_hold_reverted_analog_width()),
+ * timed for the demod rate the front end runs now, under a scan row's scope as well, and say why. Returns 1 when it
+ * did; 0 when no switch is armed, or the configured settings have moved on since (a later command published its own
+ * profile).
  */
 static int
-ui_revert_analog_entry(dsd_opts* opts, dsd_state* state, int width_hz) {
+ui_revert_analog_entry(dsd_opts* opts, dsd_state* state, int width_hz, const svc_monitor_refusal* kept) {
     if (!g_analog_entry.armed) {
         return 0;
     }
@@ -3808,11 +3856,12 @@ ui_revert_analog_entry(dsd_opts* opts, dsd_state* state, int width_hz) {
     ui_analog_entry_keep_widths(&after, &now);
     const int reverted = dsd_scan_settings_equal(&now, &after, 0);
     if (reverted) {
-        dsd_scan_settings back = g_analog_entry.before;
+        dsd_scan_settings back = *ui_analog_entry_rollback(kept);
         /* The row-scoped options lead the snapshot (dsd_scan_settings): the ones in force now stay. */
         DSD_MEMCPY(&back, &now, offsetof(dsd_scan_settings, frame_dstar));
         ui_analog_entry_keep_widths(&back, &now);
         dsd_scan_settings_restore(&back, opts, state);
+        ui_hold_reverted_analog_width(opts, state, kept);
         if (!opts->analog_only) {
             /* The snapshot timed the mode for the demod rate of its day, and the retune that got the switch refused
                can have moved that rate: timed again for the rate the front end runs now, with the profile the
@@ -4016,7 +4065,7 @@ decode_mode_apply_value(dsd_opts* opts, dsd_state* state, dsdneoUserDecodeMode m
        put back by the next drain. */
     ui_arm_analog_entry(opts, state, was_analog_family, was_kind);
     if (decode_mode_republish(opts, state, mode) != 0
-        && ui_revert_analog_entry(opts, state, dsd_opts_analog_width_hz(opts))) {
+        && ui_revert_analog_entry(opts, state, dsd_opts_analog_width_hz(opts), NULL)) {
         return UI_CMD_APPLY_FAILED;
     }
     /* The decoder was hunting for a different protocol a moment ago: its
@@ -5630,7 +5679,7 @@ apply_cfg_analog_profile_change(dsd_opts* opts, dsd_state* state, const cfg_rx_p
         dsd_symbol_analog_block_reset(state);
         ui_arm_analog_entry(opts, state, 1, before->analog_kind);
         return (decode_mode_republish(opts, state, dsd_infer_decode_mode_preset(opts)) != 0
-                && ui_revert_analog_entry(opts, state, dsd_opts_analog_width_hz(opts)))
+                && ui_revert_analog_entry(opts, state, dsd_opts_analog_width_hz(opts), NULL))
                    ? -1
                    : 0;
     }
@@ -5669,7 +5718,7 @@ apply_cfg_receive_family_change(dsd_opts* opts, dsd_state* state, const dsdneoUs
            DECODE_MODE_SET's does, and fails the apply; one refused where it lands is put back by the next drain. */
         ui_arm_analog_entry(opts, state, old_analog_only && opts->m17encoder != 1, before->analog_kind);
         if (decode_mode_republish(opts, state, cfg->decode_mode) != 0
-            && ui_revert_analog_entry(opts, state, dsd_opts_analog_width_hz(opts))) {
+            && ui_revert_analog_entry(opts, state, dsd_opts_analog_width_hz(opts), NULL)) {
             rc = -1;
         }
     }
@@ -5965,7 +6014,7 @@ apply_cmd_resume_scope(dsd_opts* opts, dsd_state* state, const ui_analog_widths*
         /* Refused at once (a retune moved the demod rate since the command held the width to it): the front end kept
            its receive profile, so the decoder goes back to it, the mode it had before a switch onto the monitor or
            between FM and AM, or else the width the monitor kept. */
-        if (ui_revert_analog_entry(opts, state, dsd_opts_analog_width_hz(opts))) {
+        if (ui_revert_analog_entry(opts, state, dsd_opts_analog_width_hz(opts), NULL)) {
             return -1;
         }
         const int kind = opts->analog_demod;
@@ -6102,7 +6151,7 @@ ui_settle_receive_requests(dsd_opts* opts, dsd_state* state) {
     }
     int changed = 0;
     if (!refusal.kept_analog || refusal.kept_kind != refusal.kind) {
-        changed = ui_revert_analog_entry(opts, state, refusal.width_hz);
+        changed = ui_revert_analog_entry(opts, state, refusal.width_hz, &refusal);
     } else {
         g_analog_entry.armed = 0;
         const int kept_hz = refusal.kept_width_hz;
@@ -6123,8 +6172,11 @@ int
 dsd_app_drain_cmds(dsd_opts* opts, dsd_state* state) {
     int n_applied = 0;
     ensure_mu_init();
-    ui_settle_receive_requests(opts, state);
     for (;;) {
+        /* Before each command, not only once per drain: the demod thread can take or refuse a receive request between
+           two commands, and a switch between analog kinds or onto the monitor keeps the baseline of one still armed
+           only while that one is unsettled (ui_arm_analog_entry()). */
+        ui_settle_receive_requests(opts, state);
         struct dsd_app_command cmd;
         int have = 0;
         dsd_mutex_lock(&g_mu);

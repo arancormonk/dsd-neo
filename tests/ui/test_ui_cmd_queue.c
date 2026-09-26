@@ -5275,6 +5275,13 @@ static int g_fake_cqpsk_after;
 /* What rtl_stream_request_analog_profile() answers (0 queues it): -1 is a front end that refuses the request at the
    rate it publishes now, although rtl_stream_check_analog_profile() took it (a retune in between). */
 static int g_analog_req_result;
+/* When the demod thread takes a request, at points the decoder's drain cannot see (one-shot, cleared once used). The
+   next analog request queued is taken as soon as it is queued, before the drain's next command: 1; and a retune then
+   moves the rate so that the front end refuses every request after it at once (g_analog_req_result): 2. */
+static int g_fake_take_next_analog_at_once;
+/* ... everything queued so far is taken just before the next analog request is queued, while the command making it
+   runs, after the drain has asked what became of the last one. */
+static int g_fake_take_before_next_analog;
 /* What rtl_stream_get_demod_rate_hz() reports: the demod rate the stream publishes. */
 static int g_fake_demod_rate_hz;
 /* What rtl_stream_output_rate() reports: the rate the decoder reads and times symbols for. 0, as the real one answers
@@ -5370,8 +5377,17 @@ __wrap_rtl_stream_request_analog_profile(int family, int kind, int width_hz) {
     if (g_analog_req_result != 0) {
         return g_analog_req_result;
     }
+    if (g_fake_take_before_next_analog) {
+        g_fake_take_before_next_analog = 0;
+        g_fake_rx_settled = g_fake_rx_seq;
+    }
     g_fake_cqpsk_after = (family == DSD_RX_FAMILY_ANALOG) ? 0 : __wrap_rtl_stream_requested_cqpsk();
     g_fake_rx_analog_seq = ++g_fake_rx_seq;
+    if (g_fake_take_next_analog_at_once) {
+        g_analog_req_result = (g_fake_take_next_analog_at_once == 2) ? -1 : 0;
+        g_fake_take_next_analog_at_once = 0;
+        g_fake_rx_settled = g_fake_rx_seq;
+    }
     return 0;
 }
 
@@ -5454,6 +5470,7 @@ reset_rx_family_wrap(void) {
     demod_thread_lands(g_fake_cqpsk);
     g_analog_check_result = 0;
     g_analog_req_result = 0;
+    g_fake_take_next_analog_at_once = g_fake_take_before_next_analog = 0;
     g_analog_check_calls = g_analog_check_family = g_analog_check_kind = g_analog_check_width_hz = 0;
     g_rx_sequence = 0;
     g_analog_req_calls = g_analog_req_family = g_analog_req_kind = g_analog_req_width_hz = g_analog_req_order = 0;
@@ -8111,6 +8128,142 @@ test_refused_switch_after_a_pending_switch_puts_the_running_mode_back(void) {
     return rc;
 }
 
+/* An Analog session with an explicit NFM 16 kHz width, switched to AM and back to Analog before any drain found the AM
+   switch taken. @p take_at_once nonzero: in one drain, the Analog switch a config's [mode] queued with the AM one, and
+   the front end takes the AM switch as soon as it is queued (g_fake_take_next_analog_at_once). 0: in the next drain,
+   which starts with the AM switch still pending, and the front end takes it while the Analog switch runs. */
+static void
+switch_nfm_to_am_and_back(dsd_opts* opts, dsd_state* state, RtlSdrContext* fake_ctx, int take_at_once) {
+    init_nfm_session_with_am_width(opts, state, fake_ctx, 0);
+    opts->analog_nfm_bandwidth_hz = 16000;
+    g_fake_take_next_analog_at_once = take_at_once;
+    (void)dsd_app_command_set_i32(DSD_APP_CMD_DECODE_MODE_SET, (int32_t)DSDCFG_MODE_AM);
+    if (take_at_once) {
+        dsdneoUserConfig cfg;
+        DSD_MEMSET(&cfg, 0, sizeof cfg);
+        cfg.has_mode = 1;
+        cfg.decode_mode = DSDCFG_MODE_ANALOG;
+        (void)dsd_app_command_submit(DSD_APP_CMD_CONFIG_APPLY, &cfg, sizeof(cfg));
+    } else {
+        (void)dsd_app_drain_cmds(opts, state);
+        g_fake_take_before_next_analog = 1;
+        (void)dsd_app_command_set_i32(DSD_APP_CMD_DECODE_MODE_SET, (int32_t)DSDCFG_MODE_ANALOG);
+    }
+    state->ui_msg[0] = '\0';
+    (void)dsd_app_drain_cmds(opts, state);
+}
+
+/* The decoder runs AM with the AM width @p am_width_hz, and the front end was last asked for that profile. */
+static int
+expect_on_am_as_asked(const char* label, const dsd_opts* opts, int am_width_hz) {
+    int rc = expect_int(label, opts->analog_only == 1 && opts->analog_demod == DSD_ANALOG_DEMOD_AM, 1);
+    rc |= expect_int(label, dsd_infer_decode_mode_preset(opts) == DSDCFG_MODE_AM, 1);
+    rc |= expect_int(label, opts->analog_am_bandwidth_hz, am_width_hz);
+    rc |= expect_int(label, g_analog_req_family == DSD_RX_FAMILY_ANALOG && g_analog_req_kind == DSD_ANALOG_DEMOD_AM, 1);
+    rc |= expect_int(label, g_analog_req_width_hz, am_width_hz);
+    return rc;
+}
+
+/*
+ * Issue #524: NFM 16 kHz, then AM, then NFM 16 kHz again, where the front end took the AM switch at a point no drain
+ * saw before the second switch was made: between the two commands of one drain, or while the second command ran. A
+ * retune then moves the DSP rate to 16 kHz, which filters AM's 6 kHz but not NFM 16 kHz, and the front end refuses the
+ * second switch, keeping AM. The decoder goes back to AM, the mode the front end runs, rather than to NFM 16 kHz from
+ * before the AM switch, whose own request the moved rate refuses as well: that would leave the decoder on FM against an
+ * AM front end. The same holds when the second switch is refused at once by its request.
+ */
+static int
+test_refused_switch_after_a_taken_switch_puts_the_running_mode_back(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static void* fake_ctx[2];
+    static const char k_refusal[] = "Failed: Analog -> NFM 16 kHz does not fit the 16 kHz DSP rate (max 13.2 kHz); use "
+                                    "a 24 or 48 kHz DSP bandwidth";
+    int rc = 0;
+
+    /* Taken between the two commands of one drain; the second refused where it landed. */
+    switch_nfm_to_am_and_back(&opts, &state, (RtlSdrContext*)fake_ctx, 1);
+    rc |= expect_int("taken between commands: both switches requested", g_analog_req_calls, 2);
+    rc |= expect_int("taken between commands: on Analog while pending", opts.analog_demod, DSD_ANALOG_DEMOD_FM);
+    demod_thread_refuses_analog_keeping_kind(1, DSD_ANALOG_DEMOD_AM, 0);
+    (void)dsd_app_drain_cmds(&opts, &state);
+    rc |= expect_on_am_as_asked("taken between commands, refused landing: back on AM", &opts, 0);
+    rc |= expect_toast("taken between commands, refused landing: says why", &state, k_refusal);
+
+    /* ... the second refused at once by its request. */
+    freeState(&state);
+    switch_nfm_to_am_and_back(&opts, &state, (RtlSdrContext*)fake_ctx, 2);
+    rc |= expect_int("taken between commands, refused at once: back on AM",
+                     opts.analog_only == 1 && opts.analog_demod == DSD_ANALOG_DEMOD_AM
+                         && dsd_infer_decode_mode_preset(&opts) == DSDCFG_MODE_AM,
+                     1);
+    rc |= expect_toast("taken between commands, refused at once: says why", &state, k_refusal);
+    g_analog_req_result = 0;
+
+    /* Taken while the second command ran, after the drain found the AM switch still pending; refused where it landed. */
+    freeState(&state);
+    switch_nfm_to_am_and_back(&opts, &state, (RtlSdrContext*)fake_ctx, 0);
+    rc |= expect_int("taken during the command: on Analog while pending", opts.analog_demod, DSD_ANALOG_DEMOD_FM);
+    demod_thread_refuses_analog_keeping_kind(1, DSD_ANALOG_DEMOD_AM, 0);
+    state.ui_msg[0] = '\0';
+    (void)dsd_app_drain_cmds(&opts, &state);
+    rc |= expect_on_am_as_asked("taken during the command, refused landing: back on AM", &opts, 0);
+    rc |= expect_toast("taken during the command, refused landing: says why", &state, k_refusal);
+
+    g_fake_analog_family = 0;
+    opts.analog_nfm_bandwidth_hz = 0;
+    state.rtl_ctx = NULL;
+    freeState(&state);
+    return rc;
+}
+
+/*
+ * Issue #524: an AM width changed on the running AM monitor, then a switch to NFM 16 kHz made before the front end took
+ * the width: the switch's request replaced the width's (the queue is last-writer-wins), so the front end still runs AM
+ * at the width it had. A retune to a 16 kHz DSP rate gets the switch refused where it lands, and the decoder goes back
+ * to AM with the width the front end runs when the moved rate cannot filter the one changed (20 kHz), so what it
+ * republishes is what the front end runs; a width the rate still filters (10 kHz) stays and is asked for again.
+ */
+static int
+test_refused_switch_after_a_width_change_holds_the_width(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static void* fake_ctx[2];
+    static const char k_refusal[] = "Failed: Analog -> NFM 16 kHz does not fit the 16 kHz DSP rate (max 13.2 kHz); use "
+                                    "a 24 or 48 kHz DSP bandwidth";
+    static const int32_t k_widths[2] = {20000, 10000};
+    int rc = 0;
+    for (int i = 0; i < 2; i++) {
+        const int fits = (k_widths[i] == 10000);
+        init_nfm_session_with_am_width(&opts, &state, (RtlSdrContext*)fake_ctx, 0);
+        opts.analog_nfm_bandwidth_hz = 16000;
+        (void)dsd_app_command_set_i32(DSD_APP_CMD_DECODE_MODE_SET, (int32_t)DSDCFG_MODE_AM);
+        (void)dsd_app_drain_cmds(&opts, &state);
+        demod_thread_lands(0);
+        (void)dsd_app_drain_cmds(&opts, &state);
+        rc |= submit_am_width(&opts, &state, k_widths[i], "width then switch: AM width");
+        (void)dsd_app_command_set_i32(DSD_APP_CMD_DECODE_MODE_SET, (int32_t)DSDCFG_MODE_ANALOG);
+        (void)dsd_app_drain_cmds(&opts, &state);
+        rc |= expect_int("width then switch: NFM requested last", g_analog_req_kind, DSD_ANALOG_DEMOD_FM);
+        demod_thread_refuses_analog_keeping_kind(1, DSD_ANALOG_DEMOD_AM, 0);
+        /* What the front end answers for the changed AM width at the rate the retune moved it to. */
+        g_analog_check_result = fits ? 0 : -1;
+        state.ui_msg[0] = '\0';
+        (void)dsd_app_drain_cmds(&opts, &state);
+        rc |= expect_on_am_as_asked(fits ? "width then switch: a width the rate filters stays"
+                                         : "width then switch: back to the width the front end runs",
+                                    &opts, fits ? k_widths[i] : 0);
+        rc |= expect_toast("width then switch: says why", &state, k_refusal);
+        g_analog_check_result = 0;
+        opts.analog_am_bandwidth_hz = 0;
+        state.rtl_ctx = NULL;
+        freeState(&state);
+    }
+    g_fake_analog_family = 0;
+    opts.analog_nfm_bandwidth_hz = 0;
+    return rc;
+}
+
 /*
  * Issue #524: a switch between FM and AM on the running monitor drops the analog monitor block the decoder has
  * part-collected, as a family change does: it holds the old kind's audio (the FM discriminator reading an AM carrier,
@@ -9035,6 +9188,8 @@ main(void) {
     rc |= test_nfm_width_changes_held_to_channel_lpf_off();
     rc |= test_refused_switch_between_fm_and_am_puts_the_mode_back();
     rc |= test_refused_switch_after_a_pending_switch_puts_the_running_mode_back();
+    rc |= test_refused_switch_after_a_taken_switch_puts_the_running_mode_back();
+    rc |= test_refused_switch_after_a_width_change_holds_the_width();
     rc |= test_fm_am_switch_discards_partial_analog_block();
     rc |= test_am_width_refused_where_it_lands();
     rc |= test_am_held_to_channel_lpf_off();

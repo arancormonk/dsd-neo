@@ -609,11 +609,17 @@ installs from `src/engine/trunk_tuning.c` in `src/engine/trunk_tuning_hooks_inst
   back to the configured settings it had before the switch (`ui_revert_analog_entry()`, from a snapshot
   `ui_arm_analog_entry()` takes when the switch commits, keeping the row-scoped options in force and only while the
   configured settings are still the ones the switch left; under a scan row through the scope's suspend and resume; a
-  switch made over one still armed, such as AM then Analog before the front end took AM, keeps the first one's
-  snapshot, since the last-writer-wins requests never ran the settings in between):
-  at once for a refusal by the request, which fails the command (`svc_publish_symbol_profile()` returns -1), and at
-  the next command drain for one where it landed (`svc_take_monitor_request_outcome()` reports the front end kept the
-  digital family, `ui_settle_receive_requests()`).
+  switch made over one still armed, such as AM then Analog before any command found AM taken, keeps the first one's
+  snapshot, since the last-writer-wins requests never ran the settings in between while the first was queued; it also
+  keeps the settings the first one left, by kind, and a refusal where the request landed that the stream records as
+  keeping the analog family on that kind, the demod thread having taken the first request after the last check and
+  before the second was queued, goes back to them instead, `ui_analog_entry_rollback()`; a width of the kind kept that
+  changed while the switch was pending, and that the rate now cannot filter, goes back to the width the front end
+  kept, `ui_hold_reverted_analog_width()`):
+  at once for a refusal by the request, which fails the command (`svc_publish_symbol_profile()` returns -1), and before
+  the next command, or at the next drain, for one where it landed (`svc_take_monitor_request_outcome()` reports the
+  front end kept the digital family, `ui_settle_receive_requests()`, which `dsd_app_drain_cmds()` runs before each
+  command).
   `DSD_APP_CMD_CONFIG_APPLY` runs the same sink and publish sequence when its `[mode]` moves the session between the
   analog and digital families, after the same check when the move is onto the analog family (a refusal leaves the
   whole config unapplied); a digital-to-digital `[mode]` change keeps its earlier behaviour, except that ProVoice
@@ -666,10 +672,11 @@ installs from `src/engine/trunk_tuning.c` in `src/engine/trunk_tuning_hooks_inst
   publishes and a retune moves without taking a request. The toggle flips that requested state too. A width the front
   end refuses after the check is never left configured: refused by its request (a retune moved the published rate), the
   change is refused with the previous width put back; refused by the demod thread where it lands, the request reads
-  `RTL_STREAM_RX_REQUEST_REFUSED`, and the next `dsd_app_drain_cmds()` puts back the width the front end kept, as the
-  stream recorded it when it refused (`rtl_stream_receive_request_refusal()`, so an earlier width that landed in between
-  stands; the stream records the configured setting it kept, `demod_state::analog_width_setting_hz`, 0 for the default,
-  so an unset AM default goes back as the default and an explicit 6000 Hz stays explicit), and toasts why
+  `RTL_STREAM_RX_REQUEST_REFUSED`, and `dsd_app_drain_cmds()`, before its next command, puts back the width the front
+  end kept, as the stream recorded it when it refused (`rtl_stream_receive_request_refusal()`, so an earlier width that
+  landed in between stands; the stream records the configured setting it kept, `demod_state::analog_width_setting_hz`,
+  0 for the default, so an unset AM default goes back as the default and an explicit 6000 Hz stays explicit), and
+  toasts why
   (`svc_take_monitor_request_outcome()`, which follows the last analog monitor request `symbol_profile.c` queued, and
   `ui_settle_receive_requests()`). A switch to Analog or AM (`DECODE_MODE_SET`, a config's `[mode]`) holds an explicit
   width, or the AM width, to the rate first, under a scan row as well (`ui_check_mode_receive_profile()`); a `[mode]`
