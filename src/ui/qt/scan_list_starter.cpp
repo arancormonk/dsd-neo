@@ -18,6 +18,7 @@
 #include <QVariantList>
 #include <dsd-neo/app_control/trunk_scan_validate.h>
 #include <dsd-neo/core/csv_validate.h>
+#include <dsd-neo/runtime/analog_channel.h>
 #include <initializer_list>
 #include <stdint.h>
 #include <utility>
@@ -63,6 +64,94 @@ sessionPreferences(const AppPrefs* source) {
     return prefs;
 }
 
+/* One analog target a list scans (issue #526): how the validation names it, its demodulator, and its own width in Hz
+   (0 when it sets none). */
+struct AnalogTarget {
+    QString label;
+    int kind = DSD_ANALOG_DEMOD_FM;
+    int widthHz = 0;
+};
+
+void
+collectCsvAnalogTarget(const dsd_app_scan_csv_target* target, void* context) {
+    const QString type = QString::fromUtf8(target->type);
+    const bool am = type == QStringLiteral("am-conventional");
+    if (!am && type != QStringLiteral("nfm-conventional")) {
+        return;
+    }
+    static_cast<QList<AnalogTarget>*>(context)->append({QStringLiteral("Target %1").arg(QString::fromUtf8(target->id)),
+                                                        am ? DSD_ANALOG_DEMOD_AM : DSD_ANALOG_DEMOD_FM,
+                                                        target->bandwidth_hz > 0 ? target->bandwidth_hz : 0});
+}
+
+/*
+ * Issue #526: the editor's own DSP-rate row diagnostic. An RTL-SDR or rtl_tcp list runs every target at the rate its
+ * DSP bandwidth sets -- the list's own, else the app's, read as the engine reads the spec's bandwidth field -- so an
+ * analog target whose width that rate cannot filter is skipped at every visit: its own width, or the AM default an am
+ * target without one runs, which always runs its channel filter. The unset NFM default runs at any rate. A SoapySDR or
+ * Airspy device sets its own rate, which the engine checks once the scan starts. Said beside the targets ready, as the
+ * engine names such a row when a map loads, not as a refusal: the rest of the list still scans.
+ */
+QString
+analogRateWarning(const QVariantMap& list, const SessionArgPrefs& prefs, const QList<AnalogTarget>& targets) {
+    const QString source = list.value("sourceType").toString();
+    if (targets.isEmpty() || (source != QStringLiteral("usb") && source != QStringLiteral("rtltcp"))) {
+        return {};
+    }
+    const int listKhz = list.value("bandwidthKhz", -1).toInt();
+    const int khz = listKhz > 0 ? listKhz : prefs.bandwidthKhz;
+    const int rateHz = (dsd_analog_rtl_dsp_bw_is_selectable(khz) ? khz : DSD_ANALOG_RTL_DSP_BW_MAX_KHZ) * 1000;
+    int skipped = 0;
+    QString first;
+    for (const auto& target : targets) {
+        const int heldHz = target.widthHz > 0                   ? target.widthHz
+                           : target.kind == DSD_ANALOG_DEMOD_AM ? dsd_analog_width_default_hz(DSD_ANALOG_DEMOD_AM)
+                                                                : 0;
+        char why[DSD_ANALOG_ERROR_TEXT_MAX] = {};
+        if (heldHz <= 0 || dsd_analog_width_check(target.kind, heldHz, rateHz, why, sizeof why) == 0) {
+            continue;
+        }
+        if (skipped++ == 0) {
+            first = target.label + QStringLiteral(": ") + QString::fromUtf8(why);
+        }
+    }
+    if (skipped == 0) {
+        return {};
+    }
+    return QStringLiteral("Skipped at every visit at this bandwidth: %1%2.")
+        .arg(first, skipped > 1 ? QStringLiteral(" (and %1 more)").arg(skipped - 1) : QString());
+}
+
+/* The analog demodulator a list entry runs, or -1 (scan_list_entry_analog_kind()), a saved system's by its saved decode
+   flags. An analog entry (issue #526) carries no decryption: the editor hides the choice, so whatever it holds is
+   resolved, retained and checked for no analog entry. */
+int
+entryAnalogKind(const QVariantMap& entry, const SavedSystemsModel* systems) {
+    const QString flag = entry.value("kind").toString() == QStringLiteral("system") && systems
+                             ? systems->getByUid(entry.value("systemUid").toString()).value("decodeFlag").toString()
+                             : QString();
+    return scan_list_entry_analog_kind(entry, flag);
+}
+
+/* The enabled analog entries of a manual list, each named as the editor shows it: a saved system by its name, a
+   frequency entry by its name, else its frequency. None sets a width of its own. */
+QList<AnalogTarget>
+manualAnalogTargets(const QVariantMap& list, const SavedSystemsModel* systems) {
+    QList<AnalogTarget> analog;
+    for (const auto& value : list.value("entries").toList()) {
+        const auto entry = value.toMap();
+        const int kind = entry.value("enabled", true).toBool() ? entryAnalogKind(entry, systems) : -1;
+        if (kind < 0) {
+            continue;
+        }
+        const QString name = entry.value("kind").toString() == QStringLiteral("system") && systems
+                                 ? systems->getByUid(entry.value("systemUid").toString()).value("name").toString()
+                                 : entry.value("name").toString();
+        analog.append({name.isEmpty() ? entry.value("freqMhz").toString() + QStringLiteral(" MHz") : name, kind, 0});
+    }
+    return analog;
+}
+
 QVariantMap
 absolutePaths(QVariantMap map) {
     for (const auto& field : {"chanCsvPath", "groupCsvPath", "srcCsvPath", "keyCsvPath", "p25BandplanCsvPath"}) {
@@ -95,7 +184,7 @@ ScanListStarter::start(const QVariantMap& list, DecoderHost* host) const {
     if (started && host->sessionActive() && m_profiles) {
         for (const auto& value : list.value("entries").toList()) {
             const auto entry = value.toMap();
-            if (!entry.value("enabled", true).toBool()) {
+            if (!entry.value("enabled", true).toBool() || entryAnalogKind(entry, m_systems) >= 0) {
                 continue;
             }
             const QString mode = entry.value("decryptionMode", "inherit").toString();
@@ -121,7 +210,8 @@ ScanListStarter::resolveSystems(const QVariantMap& list, QString* error) const {
     for (const auto& value : list.value("entries").toList()) {
         const auto entry = value.toMap();
         if (entry.value("kind").toString() == "system" && entry.value("enabled", true).toBool()
-            && entry.value("decryptionMode", "inherit").toString() == "inherit") {
+            && entry.value("decryptionMode", "inherit").toString() == "inherit"
+            && entryAnalogKind(entry, m_systems) < 0) {
             inheritedSystems.insert(entry.value("systemUid").toString());
         }
     }
@@ -159,7 +249,7 @@ ScanListStarter::resolveEntryProfiles(QVariantMap& prepared, QString* error) con
     QVariantList entries;
     for (const auto& value : prepared.value("entries").toList()) {
         auto entry = value.toMap();
-        if (!entry.value("enabled", true).toBool()) {
+        if (!entry.value("enabled", true).toBool() || entryAnalogKind(entry, m_systems) >= 0) {
             entries.append(entry);
             continue;
         }
@@ -261,6 +351,11 @@ ScanListStarter::prepare(const QVariantMap& list, bool materialize) const {
     if (!generated.ok) {
         return fail(generated.error, generated.warnings);
     }
+    const QString rateWarning =
+        analogRateWarning(prepared, sessionPreferences(m_prefs), manualAnalogTargets(prepared, m_systems));
+    if (!rateWarning.isEmpty()) {
+        generated.warnings << rateWarning;
+    }
     const QString uid = list.value("uid").toString();
     const QString inputError = generatedInputError(uid, generated.paths);
     if (!inputError.isEmpty()) {
@@ -332,10 +427,19 @@ ScanListStarter::prepareCsv(const QVariantMap& list, bool materialize) const {
     if (args.isEmpty()) {
         return fail(error);
     }
+    QList<AnalogTarget> analog;
+    const dsd_app_scan_csv_callbacks callbacks{collectCsvAnalogTarget, nullptr, &analog};
+    QStringList warnings;
+    if (dsd_app_scan_csv_inspect(path.toUtf8().constData(), nullptr, 0, &callbacks, detail, sizeof detail) == 0) {
+        const QString rateWarning = analogRateWarning(prepared, sessionPreferences(m_prefs), analog);
+        if (!rateWarning.isEmpty()) {
+            warnings << rateWarning;
+        }
+    }
     return {{"ok", true},
             {"args", materialize ? args : QStringList()},
             {"error", QString()},
-            {"warnings", QStringList()},
+            {"warnings", warnings},
             {"targetCount", count}};
 }
 } // namespace dsd_qt

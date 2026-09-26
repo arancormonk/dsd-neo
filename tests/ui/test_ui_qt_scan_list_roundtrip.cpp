@@ -130,6 +130,108 @@ checkMixedAnalogRoundTrip(const QTemporaryDir& dir) {
     check(model.remove(model.count() - 1));
 }
 
+/* Issue #526: the editor hides decryption for analog entries and keeps what it held, so nothing it held can stop the
+ * list: an am frequency entry left on "Use a profile" with no profile selected, and a saved AM system whose own
+ * profile no provider can resolve, still build (this starter has no profile provider at all). The same choices on a
+ * digital entry are still checked. */
+static void
+checkAnalogEntriesIgnoreHiddenDecryption() {
+    SavedSystemsModel systems;
+    check(systems.add({{"name", "Tower"}, {"decodeFlag", "-fM"}, {"freqMhz", "118.3"}}));
+    const QString towerUid = systems.get(systems.count() - 1).value("uid").toString();
+    check(systems.update(systems.count() - 1, {{"decryptionProfileUid", "missing-profile"}}));
+    const QVariantList entries{
+        QVariantMap{{"uid", "guard"},
+                    {"kind", "freq"},
+                    {"protocol", "am"},
+                    {"freqMhz", "121.5"},
+                    {"decryptionMode", "profile"},
+                    {"decryptionProfileUid", ""},
+                    {"enabled", true}},
+        QVariantMap{{"uid", "tower"}, {"kind", "system"}, {"systemUid", towerUid}, {"enabled", true}}};
+    const QVariantMap list{{"uid", "analog-decryption"}, {"name", "Air"}, {"sourceType", "usb"}, {"entries", entries}};
+    ScanListStarter starter(nullptr, &systems);
+    const auto validated = starter.validate(list);
+    check(validated.value("ok").toBool() && validated.value("targetCount").toInt() == 2);
+    if (!validated.value("ok").toBool()) {
+        std::fprintf(stderr, "analog entries with hidden decryption: %s\n",
+                     qPrintable(validated.value("error").toString()));
+    }
+    // A digital entry on the same choice is still held to it.
+    QVariantList digital = entries;
+    auto p25 = digital[0].toMap();
+    p25["protocol"] = "p25";
+    digital[0] = p25;
+    check(
+        !starter
+             .validate(QVariantMap{
+                 {"uid", "digital-decryption"}, {"name", "P25"}, {"sourceType", "usb"}, {"entries", QVariantList{p25}}})
+             .value("ok")
+             .toBool());
+}
+
+/* Issue #526: the editor's own DSP-rate row diagnostic. An RTL-SDR list at a DSP bandwidth that cannot filter the AM
+ * default names the am entries it would skip at every visit, as a warning beside the targets ready (the rest of the list
+ * still scans); a bandwidth that fits, an nfm entry at the unset NFM default and an Airspy list, whose device sets the
+ * rate, say nothing. A CSV-backed list is held the same way, each analog target at its own width. */
+static void
+checkAnalogRateDiagnostic(const QTemporaryDir& dir) {
+    const QVariantList entries{
+        QVariantMap{{"uid", "ops"}, {"kind", "freq"}, {"protocol", "nfm"}, {"freqMhz", "154.43"}, {"enabled", true}},
+        QVariantMap{{"uid", "guard"},
+                    {"kind", "freq"},
+                    {"name", "Guard"},
+                    {"protocol", "am"},
+                    {"freqMhz", "121.5"},
+                    {"enabled", true}}};
+    QVariantMap list{
+        {"uid", "analog-rate"}, {"name", "Air"}, {"sourceType", "usb"}, {"bandwidthKhz", 6}, {"entries", entries}};
+    ScanListStarter starter(nullptr, nullptr);
+    const auto narrow = starter.validate(list);
+    const QString warning = narrow.value("warnings").toStringList().join("\n");
+    check(narrow.value("ok").toBool() && narrow.value("targetCount").toInt() == 2);
+    check(warning.contains("Skipped at every visit at this bandwidth: Guard: AM bandwidth 6 kHz does not fit the 6 kHz "
+                           "DSP rate")
+          && !warning.contains("more") && !warning.contains("NFM"));
+    list["bandwidthKhz"] = 12;
+    check(starter.validate(list).value("warnings").toStringList().isEmpty());
+    list["bandwidthKhz"] = 6;
+    list["sourceType"] = "airspy";
+    check(starter.validate(list).value("warnings").toStringList().isEmpty());
+
+    const QString targetPath = dir.filePath("rate-targets.csv");
+    QFile targets(targetPath);
+    check(targets.open(QIODevice::WriteOnly));
+    targets.write("id,type,frequency_hz,chan_csv,dwell_ms,activity_hold_ms,notes,options\n"
+                  "fire,nfm-conventional,154430000,,,,,--nfm-bandwidth-hz 12500\n"
+                  "inh,nfm-conventional,155100000,,,,,\n"
+                  "tower,am-conventional,118300000,,,,,--am-bandwidth-hz 15000\n"
+                  "site,p25-conventional,851500000,,,,,\n");
+    targets.close();
+    ScanListStarter csvStarter(nullptr, nullptr);
+    csvStarter.setTargetFileLookup([&targetPath](const QString& candidate) { return candidate == targetPath; });
+    QVariantMap csvList{{"uid", "analog-rate-csv"},
+                        {"name", "CSV"},
+                        {"sourceType", "rtltcp"},
+                        {"host", "127.0.0.1"},
+                        {"port", 1234},
+                        {"bandwidthKhz", 12},
+                        {"targetSource", "csv"},
+                        {"targetsCsvPath", targetPath}};
+    const auto csvNarrow = csvStarter.validate(csvList);
+    const QString csvWarning = csvNarrow.value("warnings").toStringList().join("\n");
+    check(csvNarrow.value("ok").toBool() && csvNarrow.value("targetCount").toInt() == 4);
+    check(csvWarning.contains("Skipped at every visit at this bandwidth: Target fire: NFM bandwidth 12.5 kHz does not "
+                              "fit the 12 kHz DSP rate")
+          && csvWarning.contains("(and 1 more)"));
+    if (!csvWarning.contains("Target fire")) {
+        std::fprintf(stderr, "CSV rate diagnostic: '%s' (%s)\n", qPrintable(csvWarning),
+                     qPrintable(csvNarrow.value("error").toString()));
+    }
+    csvList["bandwidthKhz"] = 24;
+    check(csvStarter.validate(csvList).value("warnings").toStringList().isEmpty());
+}
+
 int
 main(int argc, char** argv) {
     QTemporaryDir dir;
@@ -294,6 +396,8 @@ main(int argc, char** argv) {
     check(!starter.build(model.get(0)).value("ok").toBool());
     check(model.remove(0) && QFile::exists(targetPath));
     checkMixedAnalogRoundTrip(dir);
+    checkAnalogEntriesIgnoreHiddenDecryption();
+    checkAnalogRateDiagnostic(dir);
     QDir(dataDir).removeRecursively();
     return failures ? 1 : 0;
 }

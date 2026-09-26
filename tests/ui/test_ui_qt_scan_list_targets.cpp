@@ -10,6 +10,7 @@
 #include <QVariantList>
 #include <QVariantMap>
 #include <cstdio>
+#include <dsd-neo/runtime/analog_channel.h>
 #include <initializer_list>
 #include <utility>
 #include "scan_list_targets.h"
@@ -88,6 +89,23 @@ main(int argc, char** argv) {
         sys["decodeFlag"] = flag;
         check(!build().ok);
     }
+    // A saved analog system with a channel map is told to remove it: no trunked type would take it either.
+    sys["decodeFlag"] = "-fM";
+    sys["trunking"] = false;
+    sys["chanCsvPath"] = "/imports/chan.csv";
+    check(!build().ok && build().error.contains("Example: Analog entries take no channel map; remove it"));
+    check(!build().error.contains("trunked"));
+    sys.remove("chanCsvPath");
+    // The analog kind the starter and the editor share: the protocol of a frequency entry, the exact flag of a
+    // saved system's.
+    const QVariantMap systemEntry{{"kind", "system"}};
+    check(scan_list_entry_analog_kind({{"kind", "freq"}, {"protocol", "nfm"}}, "-fs") == DSD_ANALOG_DEMOD_FM);
+    check(scan_list_entry_analog_kind({{"kind", "freq"}, {"protocol", "am"}}, QString()) == DSD_ANALOG_DEMOD_AM);
+    check(scan_list_entry_analog_kind({{"kind", "freq"}, {"protocol", "p25"}}, "-fA") == -1);
+    check(scan_list_entry_analog_kind(systemEntry, " -fA ") == DSD_ANALOG_DEMOD_FM);
+    check(scan_list_entry_analog_kind(systemEntry, "-fM") == DSD_ANALOG_DEMOD_AM);
+    check(scan_list_entry_analog_kind(systemEntry, "-fA -fM") == -1);
+    check(scan_list_entry_analog_kind(systemEntry, "-fs") == -1);
     // Frequency entries: nfm and am map to their conventional types beside digital ones.
     QVariantList mixed;
     const QStringList protocols{"p25", "nfm", "am", "dmr"};

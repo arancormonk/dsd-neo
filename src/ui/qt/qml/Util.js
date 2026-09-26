@@ -497,8 +497,10 @@ function analogBandwidthSummary(am, hz) {
 }
 
 // Whether a saved system's decode flags run an analog monitor (-fA NFM, -fM AM), whose scan
-// entries have no digital modulation, keys or talkgroups (issue #526).
+// entries have no digital modulation, keys or talkgroups (issue #526). Exactly one of those
+// flags, as the scan-list generator maps them (scan_list_entry_analog_kind()): any other
+// combination is refused there, so it keeps its digital controls here.
 function decodeFlagIsAnalog(flags) {
-    var tokens = String(flags || "").split(/\s+/)
-    return tokens.indexOf("-fA") >= 0 || tokens.indexOf("-fM") >= 0
+    var flag = String(flags || "").trim().split(/\s+/).join(" ")
+    return flag === "-fA" || flag === "-fM"
 }

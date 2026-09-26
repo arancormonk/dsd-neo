@@ -102,14 +102,18 @@ Item {
             }
         }
 
-        // Issue #526: the channel-map review reports an nfm row's own --nfm-bandwidth-hz, an
-        // nfm row without one says it inherits, and a digital row says nothing about it.
+        // Issue #526: the channel-map review reports an analog row's own width by its kind (an nfm
+        // row's --nfm-bandwidth-hz, an am row's --am-bandwidth-hz), an analog row without one says
+        // it inherits, and a digital row says nothing about it. Only a digital row lists keys and
+        // identifiers: the parser refuses them on an analog row.
         function test_channel_review_shows_row_bandwidth() {
             var map = testContext.writeFixtureCsv("bandwidth-map.csv",
                 "channel,frequency,mode,options\n"
                 + "1,154430000,nfm,--nfm-bandwidth-hz 12500\n"
                 + "2,155100000,nfm,\n"
-                + "3,853012500,dmr,\n");
+                + "3,853012500,dmr,\n"
+                + "4,118300000,am,--am-bandwidth-hz 8333\n"
+                + "5,121500000,am,\n");
             var result = importedFiles.importFile(map, "bandwidth-map.csv", "chan");
             verify(result.ok, result.detail || "the channel map did not import");
             var row = importedFiles.rowForPath(result.path);
@@ -123,10 +127,20 @@ Item {
                 sheet.visible = true;
                 var rows = findChild(tc.screen, "channelReviewRows");
                 verify(rows !== null);
-                tryVerify(function() { return rows.count === 3 && rows.itemAtIndex(2) !== null; });
+                tryVerify(function() { return rows.count === 5 && rows.itemAtIndex(4) !== null; });
                 verify(rows.itemAtIndex(0).text.indexOf("NFM bandwidth: 12.5 kHz") >= 0, rows.itemAtIndex(0).text);
                 verify(rows.itemAtIndex(1).text.indexOf("NFM bandwidth: inherit") >= 0, rows.itemAtIndex(1).text);
                 verify(rows.itemAtIndex(2).text.indexOf("NFM bandwidth") < 0, rows.itemAtIndex(2).text);
+                verify(rows.itemAtIndex(3).text.indexOf("AM bandwidth: 8.333 kHz") >= 0, rows.itemAtIndex(3).text);
+                verify(rows.itemAtIndex(4).text.indexOf("AM bandwidth: inherit") >= 0, rows.itemAtIndex(4).text);
+                for (var i = 0; i < 5; ++i) {
+                    var text = rows.itemAtIndex(i).text;
+                    var analog = i !== 2;
+                    verify((text.indexOf("Keys:") >= 0) === !analog, text);
+                    verify((text.indexOf("Identifier") >= 0) === !analog, text);
+                    if (i >= 3)
+                        verify(text.indexOf("NFM") < 0, text);
+                }
                 sheet.visible = false;
             } finally {
                 importedFiles.remove(importedFiles.rowForPath(result.path));

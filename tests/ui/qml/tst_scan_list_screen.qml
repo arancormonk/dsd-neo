@@ -173,6 +173,14 @@ Item {
                 verify(preview.itemAtIndex(3).text.indexOf("AM bandwidth: 8.333 kHz") >= 0, preview.itemAtIndex(3).text);
                 verify(preview.itemAtIndex(4).text.indexOf("AM bandwidth: inherit") >= 0, preview.itemAtIndex(4).text);
                 verify(preview.itemAtIndex(3).text.indexOf("NFM") < 0, preview.itemAtIndex(3).text);
+                // An analog target takes no modulation, so the preview names none; a digital one's
+                // inherits.
+                for (var i = 0; i < 5; ++i) {
+                    var text = preview.itemAtIndex(i).text;
+                    verify((text.indexOf("Modulation:") >= 0) === (i === 2), text);
+                    verify(text.indexOf("Dwell: inherit · Hold: inherit") >= 0 && text.indexOf("Gain: inherit") >= 0,
+                           text);
+                }
             } finally {
                 importedFiles.remove(importedFiles.rowForPath(result.path));
             }

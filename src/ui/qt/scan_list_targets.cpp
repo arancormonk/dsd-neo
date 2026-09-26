@@ -7,6 +7,7 @@
 #include <QVariant>
 #include <algorithm>
 #include <cmath>
+#include <dsd-neo/runtime/analog_channel.h>
 #include <initializer_list>
 #include <utility>
 #include "scan_list_targets.h"
@@ -64,6 +65,16 @@ resolveSystem(const QVariantMap& entry, const QVariantList& systems, QVariantMap
     return {};
 }
 
+/* The analog demodulator exactly -fA (NFM) or -fM (AM) runs, else -1: the only analog decode flags a scan list maps. */
+int
+analogKindForFlag(const QString& decodeFlag) {
+    const QString flag = decodeFlag.simplified();
+    if (flag == QStringLiteral("-fA")) {
+        return DSD_ANALOG_DEMOD_FM;
+    }
+    return flag == QStringLiteral("-fM") ? DSD_ANALOG_DEMOD_AM : -1;
+}
+
 QString
 validateIdentity(const QVariantMap& sys, const QVariantMap& entry, QSet<QString>& seen, QSet<QString>& ids,
                  Target& target) {
@@ -79,7 +90,7 @@ validateIdentity(const QVariantMap& sys, const QVariantMap& entry, QSet<QString>
         return QStringLiteral("This saved system has standalone Extra arguments. Remove them to use it in a manual "
                               "list, or import a target CSV with supported switches in its options column.");
     }
-    target.analog = target.decode == QStringLiteral("-fA") || target.decode == QStringLiteral("-fM");
+    target.analog = analogKindForFlag(target.decode) >= 0;
     target.trunk = sys.value("trunking").toBool();
     if (target.analog && target.trunk) {
         return QStringLiteral("Analog entries are conventional only; turn trunking off for this saved system.");
@@ -109,6 +120,10 @@ QString
 collectPaths(const QVariantMap& sys, const Target& target, ScanListTargets& out) {
     const QString chan = sys.value("chanCsvPath").toString();
     const QString band = sys.value("p25BandplanCsvPath").toString();
+    if (!chan.isEmpty() && target.analog) {
+        /* Analog entries are conventional only, so no trunked type would take the map either. */
+        return QStringLiteral("Analog entries take no channel map; remove it from this saved system.");
+    }
     if (!chan.isEmpty() && !target.trunk) {
         return QStringLiteral("remove the channel map or use a trunked type");
     }
@@ -324,6 +339,18 @@ scan_list_settings_error(const QVariantMap& list) {
         }
     }
     return {};
+}
+
+int
+scan_list_entry_analog_kind(const QVariantMap& entry, const QString& systemDecodeFlag) {
+    if (entry.value("kind") == "freq") {
+        const QString protocol = entry.value("protocol").toString();
+        if (protocol == QStringLiteral("nfm")) {
+            return DSD_ANALOG_DEMOD_FM;
+        }
+        return protocol == QStringLiteral("am") ? DSD_ANALOG_DEMOD_AM : -1;
+    }
+    return entry.value("kind") == "system" ? analogKindForFlag(systemDecodeFlag) : -1;
 }
 
 ScanListTargets

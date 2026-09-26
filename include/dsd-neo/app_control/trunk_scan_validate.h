@@ -17,8 +17,9 @@ int dsd_app_trunk_scan_validate_targets_csv(const char* path, int* target_count,
 
 /** Nonsecret configured target. Unset dwell/hold/gain/bandwidth are -1; empty modulation
  * inherits. squelch_db (whole dB, 0 = off) is meaningful only with squelch_db_set, since
- * -1 dB is a real threshold. bandwidth_hz is an analog target's channel width in Hz
- * (--nfm-bandwidth-hz). Strings belong to this fixed-size record, never to decoder state. */
+ * -1 dB is a real threshold. bandwidth_hz is an analog target's own channel width in Hz
+ * (an nfm-conventional target's --nfm-bandwidth-hz, an am-conventional target's
+ * --am-bandwidth-hz). Strings belong to this fixed-size record, never to decoder state. */
 typedef struct {
     char id[64];
     char type[24];
