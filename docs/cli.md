@@ -675,7 +675,10 @@ of the setup wizard): the analog monitor with an AM envelope detector in place o
   iq_dc_block`) would remove a carrier tuned to 0 Hz, and I/Q balance (`DSD_NEO_IQ_BALANCE`, `[dsp] iq_balance`) would
   read that carrier as an image and cancel it with its sidebands, so both stay off while AM runs, each with a one-time
   log note; they apply again to FM.
-- Received-tone detection (CTCSS, below) is FM signalling and does not run for AM.
+- Received-tone detection (CTCSS, below) is FM signalling and does not run for AM. The AM monitor's carrier is still
+  kept as the FM monitor's is: under `-Y` a blank row of an `-fM` session holds on it under `-t`, as an `nfm` row does,
+  whether or not audio plays (`-o null` and a muted frontend included), and the Scan Timing row reads `Carrier` while
+  it holds.
 - Live changes follow the [When changes apply](#when-changes-apply) table: switching between AM, the Analog (FM) monitor
   and the digital modes from a frontend applies to the running stream without reopening it, and so does a new AM width
   (Input > RTL-SDR > `AM bandwidth... [default]` in the terminal, or the Radio sheet's channel width stepper under the
@@ -876,8 +879,8 @@ is delayed.
   voice without a key holds unless the talkgroup policy blocks it; unknown identity counts as voice. The last-media
   time survives an over-the-air terminator, so the full hold still runs when a protocol closes the call before the
   scanner's next tick. The voice gate never applies to an analog row, where there is no decoded voice to wait for:
-  an `nfm` row, and every row of an untyped list scanned under `-fA`, holds on its carrier under `-t` instead, so
-  `--scan-voice-only` never blocks one.
+  an `nfm` row, and every row of an untyped list scanned under `-fA` or `-fM`, holds on its carrier under `-t`
+  instead, so `--scan-voice-only` never blocks one.
   Per-visit ceiling: `--scan-max-visit-ms <ms>` (also `--scan-max-visit-ms=<ms>`; `0` disables, otherwise
   `1000..3600000`; default `0`) is the longest one visit to a row may last, with or without `--scan-voice-only`. It is a
   ceiling, not a reason to stay, so it can cut an ongoing call short: that is the point on an open microphone, and why

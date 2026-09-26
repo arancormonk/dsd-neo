@@ -54,8 +54,9 @@ Generated (do not edit/commit):
     running (issue #508); the deadline it publishes is the same instant `dsd_scan_voice_gate_should_step()` flips, so
     the readout cannot drift from the rotation it describes. It also owns the analog carrier probe both scanners hold
     analog rows on, `dsd_scan_analog_carrier_open()` (issue #526): the received-tone tap's carrier held to the channel
-    on air (`dsd_analog_rx_carrier_open_now()`) while the analog FM monitor runs, never on a stale publication, a
-    flagged digital carrier or a trunking-owned channel, and independent of audio output. The -Y voice gate never owns
+    on air (`dsd_analog_rx_carrier_open_now()`) while the analog monitor runs, FM or AM
+    (`dsd_analog_monitor_tap_active()`, issue #524), never on a stale publication, a flagged digital carrier or a
+    trunking-owned channel, and independent of audio output. The -Y voice gate never owns
     an analog row (`scan_voice_gate_enabled()` is false under the analog family), and the -Y timing tick reports
     `DSD_SCAN_STAY_CARRIER` for the hangtime window while that probe is open
   - Stepped slicer threshold refresh after each getFrameSync() return: `src/engine/slicer_thresholds.c` behind
@@ -343,7 +344,8 @@ Tests: `tests/engine/test_engine_trunk_scan.c` (`ENGINE_TRUNK_SCAN`) and
   INACTIVE means nothing has been processed since the last reset, or detection is not running; it is not the
   "detection off" signal. Whether detection runs is `dsd_analog_tone_detection_active()` (runtime), which frontends
   and receive policy ask instead. UNAVAILABLE means detection is on but the input rate is one the front end cannot
-  use; `carrier_open` is still kept there (issue #526).
+  use; `carrier_open` is still kept there (issue #526), and on the AM monitor, where no detection runs and `tone_state`
+  stays INACTIVE (issue #524).
 - API note: source ID aliases live in the opaque store declared by `<dsd-neo/core/source_alias.h>` and
   implemented in `src/core/util/source_alias.c`, attached to state extension slot 8
   (`DSD_STATE_EXT_CORE_SOURCE_ALIAS`). `dsd_source_alias_store_create()`/`dsd_source_alias_store_append()` build
@@ -459,11 +461,13 @@ Tests: `tests/engine/test_engine_trunk_scan.c` (`ENGINE_TRUNK_SCAN`) and
   - Sub-audible signalling tables and text (`include/dsd-neo/runtime/analog_tones.h`, `src/runtime/analog_tones.c`):
     the standard 50-tone CTCSS table in tenths of a hertz (150.0 Hz deliberately absent), index lookup and the
     `100.0` / `CTCSS 100.0 Hz` formatters (issue #522). Runtime owns it because the frontends format these values and
-    the receive policy parses them, and neither may depend on DSP. It also holds `dsd_analog_tone_detection_active()`,
-    the one answer to "does received-tone detection run": the analog FM monitor (not AM: `analog_demod` must be FM) on
-    PCM input, or on an RTL stream whose output kind (the stream-metrics hook) is monitor audio. The DSP tap and
-    `app_control/rx_tone_view` both ask it, so a frontend row is shown exactly while the tap listens.
-    `RUNTIME_ANALOG_TONES` pins the table value by value, and the predicate case by case.
+    the receive policy parses them, and neither may depend on DSP. It also holds `dsd_analog_monitor_tap_active()`, the
+    one answer to "does the receive tap run": the analog monitor of either kind, FM or AM, on PCM input, or on an RTL
+    stream whose output kind (the stream-metrics hook) is monitor audio; the tap keeps the carrier the scanners hold a
+    row on and the boundaries the monitor output drops a block across. `dsd_analog_tone_detection_active()` is that with
+    `analog_demod` FM (issue #524: CTCSS and DCS are FM signalling), the one answer to "does received-tone detection
+    run". The DSP tap and `app_control/rx_tone_view` both ask it, so a frontend row is shown exactly while the detectors
+    listen. `RUNTIME_ANALOG_TONES` pins the table value by value, and both predicates case by case.
   - Decode presets (`include/dsd-neo/runtime/decode_mode.h`, `src/runtime/decode_mode.c`): the `-f` selector map is
     a table (`k_cli_presets`), and AM (`DSDCFG_MODE_AM` = 16, `-fM`, issue #524) is the last preset: the analog monitor
     with `analog_demod` AM, read back as AM by `dsd_infer_decode_mode_preset()`. AM needs an I/Q radio input, one rule
@@ -824,15 +828,18 @@ installs from `src/engine/trunk_tuning.c` in `src/engine/trunk_tuning_hooks_inst
   `symbol_output_unsynced_analog()` is its monitor gate, sink and carrier stamp (issue #526): the stamp that holds a -Y
   row under the hangtime rule follows the tap's carrier (`dsd_analog_rx_carrier_open_now()`, which reports none once the
   tap's own generation check sees a retune or profile change since its last read, and while a retune is unresolved, so
-  a channel a failed retune left the receiver on lets the row's hangtime run out) while the analog FM monitor runs,
-  whether or not the block plays (the `-8` monitor under digital decoding keeps stamping only what it plays), and the
-  gate writes nothing while a retune is unresolved (`dsd_trunk_tuning_pending_request()`: in flight, or failed after
-  the scanner moved on, until a later retune lands or the scan's end retires it, as for digital frames) or, on the
-  analog monitor, from a block that began before a retune, profile change or reset the tap noticed, before detection
-  started, or before a boundary the tap has not read past yet (`dsd_analog_rx_block_straddles_boundary()`, 0 while
-  detection is not running, so the `-8` monitor under digital decoding plays every block as before). It is active only
-  while `dsd_analog_tone_detection_active()` (runtime, above) says so: the analog FM monitor on PCM input or on RTL with
-  an AUDIO_MONITOR output kind. The rate comes from the RTL output-rate hook or `dsd_opts_current_input_timing_rate()`.
+  a channel a failed retune left the receiver on lets the row's hangtime run out) while the analog monitor runs, FM or
+  AM, whether or not the block plays (the `-8` monitor under digital decoding keeps stamping only what it plays), and
+  the gate writes nothing while a retune is unresolved (`dsd_trunk_tuning_pending_request()`: in flight, or failed
+  after the scanner moved on, until a later retune lands or the scan's end retires it, as for digital frames) or, on
+  the analog monitor, from a block that began before a retune, profile change or reset the tap noticed, before the tap
+  started, or before a boundary the tap has not read past yet (`dsd_analog_rx_block_straddles_boundary()`, 0 while the
+  tap is not running, so the `-8` monitor under digital decoding plays every block as before). The tap runs while
+  `dsd_analog_monitor_tap_active()` (runtime, above) says so: the analog monitor of either kind on PCM input or on RTL
+  with an AUDIO_MONITOR output kind. On the AM monitor (issue #524) it keeps only the carrier and those boundaries
+  (`dsd_analog_rx_core_track_carrier()`), publishing no tone (`tone_state` INACTIVE) and logging nothing; the detectors
+  run while `dsd_analog_tone_detection_active()` says so, and a switch between the kinds starts the core over. The rate
+  comes from the RTL output-rate hook or `dsd_opts_current_input_timing_rate()`.
   The sync hunt keeps that output kind: the analog family stands the modulation auto-switch down, and in analog-only
   mode `dsd_frame_sync.c` never sends the RTL front end any symbol profile the hunt requests, the profile a two-level
   hunt re-normalises included (a CQPSK one would turn the monitor audio into symbols and silence the tap, and a digital

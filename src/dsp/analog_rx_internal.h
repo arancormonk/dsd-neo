@@ -264,6 +264,15 @@ void dsd_analog_rx_core_reset(dsd_analog_rx_core* core);
 int dsd_analog_rx_core_process(dsd_analog_rx_core* core, const float* block, int count, int rate_hz, int squelch_open);
 
 /**
+ * @brief Keep only the carrier over one block, as dsd_analog_rx_core_process() keeps it, without feeding the detectors.
+ *
+ * For the AM monitor (issue #524), which has no sub-audible signalling to detect but holds a scan row on its carrier
+ * (issue #526) all the same. A new @p rate_hz designs the front end for it, as dsd_analog_rx_core_process() does.
+ */
+void dsd_analog_rx_core_track_carrier(dsd_analog_rx_core* core, const float* block, int count, int rate_hz,
+                                      int squelch_open);
+
+/**
  * @brief Where the core stands, in publication terms.
  *
  * Zeroes @p out, then fills carrier_open, tone_state (IDLE without carrier, else the merged
