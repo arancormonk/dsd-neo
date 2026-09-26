@@ -401,6 +401,26 @@ test_audio_monitor_retune_profile_decides(void) {
     failed |=
         expect_int_eq("the refusal names the monitor's width",
                       std::strstr(g_last_error, "NFM bandwidth 16 kHz does not fit the 16 kHz DSP rate") != NULL, 1);
+    failed |= expect_int_eq("a retune refused whole refuses no profile of its own", r.profile_refused, 0);
+
+    /* A width the new rate does not fit over a monitor width it does (48 kHz to 24 kHz, a 25 kHz row after a 12.5 kHz
+       one): the retune lands with the monitor as it was, and the refusal of its own profile is reported, so the
+       retune fails and a scanner does not commit the row it asked for (issue #526). */
+    DSD_MEMSET(&r, 0, sizeof r);
+    failed |= expect_int_eq(
+        "profile refused where it lands hook",
+        rtl_stream_test_audio_monitor_retune_with_profile(48000, 24000, 12500, DSD_RX_FAMILY_ANALOG, 25000, &r), 0);
+    failed |= expect_int_eq("the landing check passes the monitor's width", r.retune_refused, 0);
+    failed |= expect_int_eq("the retune's own profile is refused", r.profile_refused, 1);
+    failed |= expect_int_eq("at the rate it landed on", r.rate_out_after, 24000);
+    failed |= expect_int_eq("the monitor keeps its width", r.channel_lpf_width_after, 12500);
+
+    DSD_MEMSET(&r, 0, sizeof r);
+    failed |= expect_int_eq(
+        "profile landing hook",
+        rtl_stream_test_audio_monitor_retune_with_profile(48000, 24000, 12500, DSD_RX_FAMILY_ANALOG, 16000, &r), 0);
+    failed |= expect_int_eq("a profile the rate fits is no refusal", r.profile_refused, 0);
+    failed |= expect_int_eq("and runs its width", r.channel_lpf_width_after, 16000);
     return failed;
 }
 
@@ -664,9 +684,9 @@ expect_landing(const char* stage, const rtl_stream_test_retune_landing* r, int f
 static int
 test_retune_profiles_land_each_rows_family_and_width(void) {
     const rtl_stream_test_retune_step steps[] = {
-        {DSD_RX_FAMILY_ANALOG, DSD_ANALOG_DEMOD_FM, 12500, 0, -1, -1},
-        {DSD_RX_FAMILY_DIGITAL, DSD_ANALOG_DEMOD_FM, 0, 1, -1, -1},
-        {DSD_RX_FAMILY_ANALOG, DSD_ANALOG_DEMOD_FM, 0, 0, -1, -1},
+        {DSD_RX_FAMILY_ANALOG, DSD_ANALOG_DEMOD_FM, 12500, 0, -1, -1, RTL_STREAM_TEST_QUEUED_NONE, 0},
+        {DSD_RX_FAMILY_DIGITAL, DSD_ANALOG_DEMOD_FM, 0, 1, -1, -1, RTL_STREAM_TEST_QUEUED_NONE, 0},
+        {DSD_RX_FAMILY_ANALOG, DSD_ANALOG_DEMOD_FM, 0, 0, -1, -1, RTL_STREAM_TEST_QUEUED_NONE, 0},
     };
     rtl_stream_test_retune_landing r[3];
     DSD_MEMSET(r, 0, sizeof r);
@@ -688,8 +708,10 @@ static int
 test_retune_family_superseded_by_a_later_live_request(void) {
     /* A digital session leaves -Y while an nfm row's retune is in flight. */
     const rtl_stream_test_retune_step leave_to_digital[] = {
-        {DSD_RX_FAMILY_ANALOG, DSD_ANALOG_DEMOD_FM, 12500, 0, -1, DSD_RX_FAMILY_DIGITAL},
-        {DSD_RX_FAMILY_ANALOG, DSD_ANALOG_DEMOD_FM, 12500, 0, DSD_RX_FAMILY_DIGITAL, -1},
+        {DSD_RX_FAMILY_ANALOG, DSD_ANALOG_DEMOD_FM, 12500, 0, -1, DSD_RX_FAMILY_DIGITAL, RTL_STREAM_TEST_QUEUED_NONE,
+         0},
+        {DSD_RX_FAMILY_ANALOG, DSD_ANALOG_DEMOD_FM, 12500, 0, DSD_RX_FAMILY_DIGITAL, -1, RTL_STREAM_TEST_QUEUED_NONE,
+         0},
     };
     rtl_stream_test_retune_landing r[2];
     DSD_MEMSET(r, 0, sizeof r);
@@ -702,8 +724,8 @@ test_retune_family_superseded_by_a_later_live_request(void) {
 
     /* An -fA session leaves -Y while a digital row's retune (after an nfm row) is in flight. */
     const rtl_stream_test_retune_step leave_to_analog[] = {
-        {DSD_RX_FAMILY_ANALOG, DSD_ANALOG_DEMOD_FM, 12500, 0, -1, -1},
-        {DSD_RX_FAMILY_DIGITAL, DSD_ANALOG_DEMOD_FM, 0, 1, -1, DSD_RX_FAMILY_ANALOG},
+        {DSD_RX_FAMILY_ANALOG, DSD_ANALOG_DEMOD_FM, 12500, 0, -1, -1, RTL_STREAM_TEST_QUEUED_NONE, 0},
+        {DSD_RX_FAMILY_DIGITAL, DSD_ANALOG_DEMOD_FM, 0, 1, -1, DSD_RX_FAMILY_ANALOG, RTL_STREAM_TEST_QUEUED_NONE, 0},
     };
     DSD_MEMSET(r, 0, sizeof r);
     failed |= expect_int_eq("leave-to-analog hook", rtl_stream_test_retune_profile_sequence(leave_to_analog, 2U, r), 0);
@@ -711,6 +733,42 @@ test_retune_family_superseded_by_a_later_live_request(void) {
     failed |=
         expect_landing("digital retune after a later analog request", &r[1], 1, 12500, DSD_DEMOD_OUTPUT_AUDIO_MONITOR);
     failed |= expect_int_eq("superseded symbol profile not applied", r[1].applied_cqpsk_enable, 0);
+    return failed;
+}
+
+/* A width command the decoder drained just before the scanner advanced queues a live analog request the demod thread
+ * has not taken when the next row's retune lands (issue #526). That request is older than the retune's family: the
+ * retune retires it, so the demod thread's next block boundary does not put the front end back on the analog family
+ * over the digital row now on air, and the request settles as replaced, never refused. A symbol profile queued after
+ * the retune's profile is newer, and still applies. */
+static int
+test_retune_family_retires_older_queued_requests(void) {
+    const rtl_stream_test_retune_step steps[] = {
+        {DSD_RX_FAMILY_ANALOG, DSD_ANALOG_DEMOD_FM, 12500, 0, -1, -1, RTL_STREAM_TEST_QUEUED_NONE, 0},
+        {DSD_RX_FAMILY_DIGITAL, DSD_ANALOG_DEMOD_FM, 0, 1, -1, -1, RTL_STREAM_TEST_QUEUED_NFM_WIDTH, 16000},
+        {DSD_RX_FAMILY_ANALOG, DSD_ANALOG_DEMOD_FM, 12500, 0, -1, -1, RTL_STREAM_TEST_QUEUED_NONE, 0},
+        {DSD_RX_FAMILY_DIGITAL, DSD_ANALOG_DEMOD_FM, 0, 1, -1, -1, RTL_STREAM_TEST_QUEUED_SYMBOL_AFTER, 16000},
+        {DSD_RX_FAMILY_ANALOG, DSD_ANALOG_DEMOD_FM, 11250, 0, -1, -1, RTL_STREAM_TEST_QUEUED_NFM_WIDTH, 20000},
+    };
+    rtl_stream_test_retune_landing r[5];
+    DSD_MEMSET(r, 0, sizeof r);
+    int failed = expect_int_eq("queued request hook", rtl_stream_test_retune_profile_sequence(steps, 5U, r), 0);
+    failed |= expect_landing("digital row over a queued width", &r[1], 0, 0, DSD_DEMOD_OUTPUT_SYMBOL_CQPSK);
+    failed |= expect_int_eq("still digital after the boundary", r[1].boundary_family, 0);
+    failed |= expect_int_eq("still on its CQPSK profile", r[1].boundary_output_kind, DSD_DEMOD_OUTPUT_SYMBOL_CQPSK);
+    failed |= expect_int_eq("the queued width settled as replaced", r[1].queued_request_outcome,
+                            RTL_STREAM_RX_REQUEST_SETTLED);
+
+    failed |= expect_landing("digital row with a later symbol profile", &r[3], 0, 0, DSD_DEMOD_OUTPUT_SYMBOL_CQPSK);
+    failed |= expect_int_eq("the later profile keeps the digital family", r[3].boundary_family, 0);
+    failed |=
+        expect_int_eq("and applies at the boundary", r[3].boundary_output_kind, DSD_DEMOD_OUTPUT_FSK_DISCRIMINATOR);
+    failed |=
+        expect_int_eq("the older width settled with it", r[3].queued_request_outcome, RTL_STREAM_RX_REQUEST_SETTLED);
+
+    failed |= expect_landing("nfm row over a queued width", &r[4], 1, 11250, DSD_DEMOD_OUTPUT_AUDIO_MONITOR);
+    failed |= expect_int_eq("keeps the row's width after the boundary", r[4].boundary_width_hz, 11250);
+    failed |= expect_int_eq("on the monitor", r[4].boundary_output_kind, DSD_DEMOD_OUTPUT_AUDIO_MONITOR);
     return failed;
 }
 
@@ -727,7 +785,8 @@ test_live_family_request_count(void) {
                             rtl_stream_request_analog_profile(DSD_RX_FAMILY_ANALOG, DSD_ANALOG_DEMOD_FM, 1000), -1);
     failed |= expect_int_eq("refused request not counted", (int)(rtl_stream_live_family_request_count() - before), 1);
     const rtl_stream_test_retune_step supersede[] = {
-        {DSD_RX_FAMILY_ANALOG, DSD_ANALOG_DEMOD_FM, 12500, 0, DSD_RX_FAMILY_DIGITAL, DSD_RX_FAMILY_DIGITAL},
+        {DSD_RX_FAMILY_ANALOG, DSD_ANALOG_DEMOD_FM, 12500, 0, DSD_RX_FAMILY_DIGITAL, DSD_RX_FAMILY_DIGITAL,
+         RTL_STREAM_TEST_QUEUED_NONE, 0},
     };
     rtl_stream_test_retune_landing r[1];
     DSD_MEMSET(r, 0, sizeof r);
@@ -1555,6 +1614,7 @@ main(void) {
     failed |= test_retune_profile_width_checked_at_landing_rate();
     failed |= test_retune_profiles_land_each_rows_family_and_width();
     failed |= test_retune_family_superseded_by_a_later_live_request();
+    failed |= test_retune_family_retires_older_queued_requests();
     failed |= test_live_family_request_count();
 
     return failed ? 1 : 0;
