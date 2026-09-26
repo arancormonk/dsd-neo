@@ -1633,6 +1633,9 @@ test_process_mbe_frame_nxdn_cipher2_clamps_stale_bit_counter(void) {
     char ambe_fr[4][24] = {{0}};
     char imbe7100_fr[7][24] = {{0}};
     char decoded_ambe_d[49] = {0};
+    char expected_ambe_d[49] = {0};
+    float expected_audio[160] = {0};
+    char expected_err_str[96] = {0};
     int expected_errs = -1;
     int expected_errs2 = -1;
     mbe_process_result result;
@@ -1644,6 +1647,23 @@ test_process_mbe_frame_nxdn_cipher2_clamps_stale_bit_counter(void) {
     int ret = mbe_decodeAmbe3600x2450Frame((const char (*)[24])ambe_fr, decoded_ambe_d, &result);
     store_expected_decode_status(ret, &expected_errs, &expected_errs2, &result);
     rc |= expect_eq_int("nxdn-cipher2-clamp fixture decodes", ret >= 0, 1);
+    if (ret >= 0) {
+        // The all-ones keystream flips every bit. Build the expected audio from the
+        // same library instead of assuming the flipped frame is audible: mbelib-neo
+        // 2.2 treats it as a TIA-102.BABA-1 erasure and repeats the (silent) initial
+        // frame, while 2.1 synthesized audio for it.
+        copy_ambe49(expected_ambe_d, decoded_ambe_d);
+        for (size_t i = 0U; i < 49U; i++) {
+            expected_ambe_d[i] ^= 1;
+        }
+
+        (void)dsd_mbe_strip_ambe_context_if_changed(decoded_ambe_d, expected_ambe_d, &result);
+        mbe_initMbeParms(&cur, &prev, &prev_enhanced);
+        ret = mbe_processAmbe2450Dataf(expected_audio, &result, expected_ambe_d, &cur, &prev, &prev_enhanced);
+        store_expected_process_status(ret, expected_audio, &expected_errs, &expected_errs2, expected_err_str,
+                                      sizeof(expected_err_str), &result);
+        rc |= expect_eq_int("nxdn-cipher2-clamp fixture processes", ret >= 0, 1);
+    }
 
     DSD_MEMSET(&opts, 0, sizeof(opts));
     opts.floating_point = 1;
@@ -1657,11 +1677,12 @@ test_process_mbe_frame_nxdn_cipher2_clamps_stale_bit_counter(void) {
     processMbeFrame(&opts, &state, imbe_fr, ambe_fr, imbe7100_fr);
 
     rc |= expect_eq_int("nxdn-cipher2-clamp state bit-counter", state.bit_counterL, 1568);
-    rc |= expect_eq_int("nxdn-cipher2-clamp status populated", state.err_str[0] != '\0', 1);
-    rc |= expect_eq_int("nxdn-cipher2-clamp errs updated", state.errs2 >= expected_errs2, 1);
-    rc |= expect_any_nonzero_u8("nxdn-cipher2-clamp temp audio", (const uint8_t*)state.audio_out_temp_buf,
-                                sizeof(state.audio_out_temp_buf));
-    rc |= expect_eq_mem("nxdn-cipher2-clamp staged left", state.f_l, state.audio_out_temp_buf, sizeof(state.f_l));
+    rc |= expect_eq_int("nxdn-cipher2-clamp errs", state.errs, expected_errs);
+    rc |= expect_eq_int("nxdn-cipher2-clamp errs2", state.errs2, expected_errs2);
+    rc |= expect_eq_int("nxdn-cipher2-clamp status", strcmp(state.err_str, expected_err_str), 0);
+    rc |= expect_eq_mem("nxdn-cipher2-clamp temp audio", state.audio_out_temp_buf, expected_audio,
+                        sizeof(expected_audio));
+    rc |= expect_eq_mem("nxdn-cipher2-clamp staged left", state.f_l, expected_audio, sizeof(expected_audio));
 
     return rc;
 }

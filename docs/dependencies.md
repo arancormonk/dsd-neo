@@ -11,7 +11,7 @@ Required dependencies are:
 - C++ compiler with C++14 support
 - CMake 3.20 or newer
 - OpenSSL 3.x libcrypto
-- `mbe-neo` 2.x CMake package from mbelib-neo
+- `mbe-neo` 2.2+ CMake package from mbelib-neo
 - libsndfile
 - curses backend: ncursesw/PDCurses. macOS ships no `libncursesw` — its unified
   `libncurses` carries the wide entry points behind `_XOPEN_SOURCE_EXTENDED` —
