@@ -487,10 +487,18 @@ function squelchSummary(db) {
     return db === 0 ? qsTr("Squelch: off") : qsTr("Squelch: %1 dB").arg(db)
 }
 
-// An nfm row's or target's own channel width (--nfm-bandwidth-hz), for the channel-map review
-// and the target preview. Absent inherits the configured NFM width.
-function nfmBandwidthSummary(hz) {
+// An analog row's or target's own channel width, for the channel-map review and the target
+// preview (issue #526): an am row's --am-bandwidth-hz when @a am, else an nfm row's
+// --nfm-bandwidth-hz. Absent inherits the configured width of that kind.
+function analogBandwidthSummary(am, hz) {
     if (hz === undefined || hz === null)
-        return qsTr("NFM bandwidth: inherit")
-    return qsTr("NFM bandwidth: %1").arg(widthKhzText(hz))
+        return am ? qsTr("AM bandwidth: inherit") : qsTr("NFM bandwidth: inherit")
+    return am ? qsTr("AM bandwidth: %1").arg(widthKhzText(hz)) : qsTr("NFM bandwidth: %1").arg(widthKhzText(hz))
+}
+
+// Whether a saved system's decode flags run an analog monitor (-fA NFM, -fM AM), whose scan
+// entries have no digital modulation, keys or talkgroups (issue #526).
+function decodeFlagIsAnalog(flags) {
+    var tokens = String(flags || "").split(/\s+/)
+    return tokens.indexOf("-fA") >= 0 || tokens.indexOf("-fM") >= 0
 }

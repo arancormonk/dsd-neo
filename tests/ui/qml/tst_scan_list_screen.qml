@@ -155,18 +155,24 @@ Item {
                 "id,type,frequency_hz,chan_csv,dwell_ms,activity_hold_ms,notes,options\n"
                 + "own,nfm-conventional,154430000,,,,,--nfm-bandwidth-hz 11250\n"
                 + "inh,nfm-conventional,155100000,,,,,\n"
-                + "dig,dmr-conventional,461000000,,,,,\n");
+                + "dig,dmr-conventional,461000000,,,,,\n"
+                + "tower,am-conventional,118300000,,,,,--am-bandwidth-hz 8333\n"
+                + "guard,am-conventional,121500000,,,,,\n");
             var result = importedFiles.importFile(source, "BandwidthTargets.csv", "trunkTargets");
             verify(result.ok, result.detail || "Import failed");
             try {
                 screen.selectTargets(result.path);
-                compare(screen.targetRows.length, 3);
+                compare(screen.targetRows.length, 5);
                 var preview = visualChild(screen, "scanTargetPreview");
                 verify(preview !== null);
-                tryVerify(function() { return preview.count === 3 && preview.itemAtIndex(2) !== null; });
+                tryVerify(function() { return preview.count === 5 && preview.itemAtIndex(4) !== null; });
                 verify(preview.itemAtIndex(0).text.indexOf("NFM bandwidth: 11.25 kHz") >= 0, preview.itemAtIndex(0).text);
                 verify(preview.itemAtIndex(1).text.indexOf("NFM bandwidth: inherit") >= 0, preview.itemAtIndex(1).text);
-                verify(preview.itemAtIndex(2).text.indexOf("NFM bandwidth") < 0, preview.itemAtIndex(2).text);
+                verify(preview.itemAtIndex(2).text.indexOf("bandwidth") < 0, preview.itemAtIndex(2).text);
+                // Issue #526: an am-conventional target's width is the AM one.
+                verify(preview.itemAtIndex(3).text.indexOf("AM bandwidth: 8.333 kHz") >= 0, preview.itemAtIndex(3).text);
+                verify(preview.itemAtIndex(4).text.indexOf("AM bandwidth: inherit") >= 0, preview.itemAtIndex(4).text);
+                verify(preview.itemAtIndex(3).text.indexOf("NFM") < 0, preview.itemAtIndex(3).text);
             } finally {
                 importedFiles.remove(importedFiles.rowForPath(result.path));
             }
@@ -739,8 +745,8 @@ Item {
 
         function test_human_protocol_labels_map_to_ids() {
             edit("scanListName", "Protocols");
-            var names = ["P25", "DMR", "NXDN48", "NXDN96"];
-            var ids = ["p25", "dmr", "nxdn48", "nxdn"];
+            var names = ["P25", "DMR", "NXDN48", "NXDN96", "NFM (analog)", "AM (analog)"];
+            var ids = ["p25", "dmr", "nxdn48", "nxdn", "nfm", "am"];
             for (var i = 0; i < ids.length; ++i) {
                 var picker = control("scanAddProtocol");
                 compare(picker.textAt(i), names[i]);
@@ -756,7 +762,43 @@ Item {
                 compare(screen.entries[0].protocol, ids[j]);
             }
             screen.saveDraft();
-            compare(scanLists.get(0).entries[0].protocol, "nxdn");
+            compare(scanLists.get(0).entries[0].protocol, "am");
+        }
+
+        // Issue #526: an nfm or am entry, frequency or saved analog system, holds on carrier and
+        // has no digital modulation, keys or talkgroups: the modulation and decryption choices are
+        // hidden for it and come back for a digital protocol. The hidden values are kept, not
+        // written into the targets the list builds.
+        function test_analog_entries_hide_modulation_and_decryption() {
+            var savedRow = savedSystems.count;
+            verify(savedSystems.add({name: "Tower AM", sourceType: "usb", freqMhz: "118.3", decodeFlag: "-fM"}));
+            try {
+                edit("scanListName", "Analog");
+                screen.addFrequency("Fire", "p25", "154.43");
+                choose("scanEntryModulation", 3);
+                compare(screen.entries[0].modulation, "gfsk");
+                verify(control("scanEntryModulation").visible && control("scanEntryDecryptionScope").visible);
+                for (var analog of ["nfm", "am"]) {
+                    choose("scanEntryProtocol", ["p25", "dmr", "nxdn48", "nxdn", "nfm", "am"].indexOf(analog));
+                    compare(screen.entries[0].protocol, analog);
+                    verify(!control("scanEntryModulation").visible, analog);
+                    verify(!control("scanEntryDecryptionScope").visible, analog);
+                    verify(!control("scanEntryDecryptionProfile").visible, analog);
+                }
+                choose("scanEntryProtocol", 0);
+                verify(control("scanEntryModulation").visible && control("scanEntryDecryptionScope").visible);
+                compare(control("scanEntryModulation").currentIndex, 3);
+                choose("scanEntryProtocol", 5);
+                screen.removeEntry(0);
+                choose("scanSystemPicker", savedRow);
+                control("scanAddSystem").Accessible.pressAction();
+                verify(!control("scanEntryModulation").visible && !control("scanEntryDecryptionScope").visible);
+                screen.addFrequency("Guard", "am", "121.5");
+                verify(screen.validate(), screen.validationText);
+                verify(screen.validationText.indexOf("2 targets ready.") === 0, screen.validationText);
+            } finally {
+                savedSystems.remove(savedRow);
+            }
         }
 
         function test_save_empty_name_stays_open_data() {

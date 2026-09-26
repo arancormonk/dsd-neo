@@ -36,6 +36,8 @@ validGain(const QVariant& value) {
 struct Target {
     QString decode, type, freq, hzText, id, modulation;
     bool trunk = false;
+    /* An nfm or am entry (issue #526): carrier squelch only, so no keys, talkgroups or modulation. */
+    bool analog = false;
 };
 
 QString
@@ -52,7 +54,8 @@ resolveSystem(const QVariantMap& entry, const QVariantList& systems, QVariantMap
         }
     } else if (entry.value("kind") == "freq") {
         sys = entry;
-        const QMap<QString, QString> protocols{{"p25", "-ft"}, {"dmr", "-fs"}, {"nxdn48", "-fi"}, {"nxdn", "-fn"}};
+        const QMap<QString, QString> protocols{{"p25", "-ft"},  {"dmr", "-fs"}, {"nxdn48", "-fi"},
+                                               {"nxdn", "-fn"}, {"nfm", "-fA"}, {"am", "-fM"}};
         sys["decodeFlag"] = protocols.value(entry.value("protocol").toString());
         sys["trunking"] = false;
     } else {
@@ -65,9 +68,10 @@ QString
 validateIdentity(const QVariantMap& sys, const QVariantMap& entry, QSet<QString>& seen, QSet<QString>& ids,
                  Target& target) {
     target.decode = sys.value("decodeFlag").toString().simplified();
-    const QMap<QString, QString> types{{"-ft", "p25"},    {"-f1", "p25"},    {"-mq", "p25"},   {"-^", "p25"},
-                                       {"-fs", "dmr"},    {"-fi", "nxdn48"}, {"-fn", "nxdn"},  {"-ft -^", "p25"},
-                                       {"-mq -^", "p25"}, {"-^ -ft", "p25"}, {"-^ -mq", "p25"}};
+    const QMap<QString, QString> types{{"-ft", "p25"},    {"-f1", "p25"},    {"-mq", "p25"},    {"-^", "p25"},
+                                       {"-fs", "dmr"},    {"-fi", "nxdn48"}, {"-fn", "nxdn"},   {"-ft -^", "p25"},
+                                       {"-mq -^", "p25"}, {"-^ -ft", "p25"}, {"-^ -mq", "p25"}, {"-fA", "nfm"},
+                                       {"-fM", "am"}};
     if (!types.contains(target.decode)) {
         return QStringLiteral("This decode mode cannot be used in a scan list.");
     }
@@ -75,7 +79,11 @@ validateIdentity(const QVariantMap& sys, const QVariantMap& entry, QSet<QString>
         return QStringLiteral("This saved system has standalone Extra arguments. Remove them to use it in a manual "
                               "list, or import a target CSV with supported switches in its options column.");
     }
+    target.analog = target.decode == QStringLiteral("-fA") || target.decode == QStringLiteral("-fM");
     target.trunk = sys.value("trunking").toBool();
+    if (target.analog && target.trunk) {
+        return QStringLiteral("Analog entries are conventional only; turn trunking off for this saved system.");
+    }
     target.type =
         types.value(target.decode) + (target.trunk ? QStringLiteral("-trunk") : QStringLiteral("-conventional"));
     target.freq = sys.value("freqMhz").toString().trimmed();
@@ -113,7 +121,8 @@ collectPaths(const QVariantMap& sys, const Target& target, ScanListTargets& out)
         if (!safePath(path)) {
             return QStringLiteral("CSV paths cannot contain comma, quote, CR or LF.");
         }
-        if (!path.isEmpty()) {
+        /* An analog entry passes no key, talkgroup or key-map file (appendTarget()), so none has to exist. */
+        if (!path.isEmpty() && !target.analog) {
             out.paths << path;
         }
     }
@@ -212,7 +221,9 @@ validateTuning(const QVariantMap& entry, const QVariantMap& sys, Target& target)
             return QStringLiteral("Dwell and hold must be 250..600000 ms, or 0 to inherit.");
         }
     }
-    target.modulation = entry.value("modulation").toString();
+    /* An analog channel has no digital modulation: the editor hides the choice, so one left from another protocol is
+       not the entry's. */
+    target.modulation = target.analog ? QString() : entry.value("modulation").toString();
     if (target.modulation.isEmpty() && target.decode.split(QLatin1Char(' ')).contains(QStringLiteral("-mq"))) {
         target.modulation = QStringLiteral("cqpsk");
     }
@@ -231,6 +242,7 @@ targetCells(const QVariantMap& entry, const QVariantMap& sys, const Target& targ
         entry.value("gainDb", -1).toInt() >= 0 ? entry.value("gainDb").toInt() : sys.value("gainDb", -1).toInt();
     const int dwell = entry.value("dwellMs", 0).toInt();
     const int hold = entry.value("holdMs", 0).toInt();
+    const QString keyCsv = target.analog ? QString() : sys.value("keyCsvPath").toString();
     const QStringList cells{target.id,
                             target.type,
                             target.hzText,
@@ -238,8 +250,8 @@ targetCells(const QVariantMap& entry, const QVariantMap& sys, const Target& targ
                             dwell ? QString::number(dwell) : QString(),
                             hold ? QString::number(hold) : QString(),
                             QString(),
-                            sys.value("keyCsvHex").toBool() ? sys.value("keyCsvPath").toString() : QString(),
-                            sys.value("keyCsvHex").toBool() ? QString() : sys.value("keyCsvPath").toString(),
+                            sys.value("keyCsvHex").toBool() ? keyCsv : QString(),
+                            sys.value("keyCsvHex").toBool() ? QString() : keyCsv,
                             sys.value("p25BandplanCsvPath").toString(),
                             target.modulation,
                             gain >= 0 ? QString::number(gain) : QString(),
@@ -265,7 +277,9 @@ appendTarget(const QVariantMap& entry, const QVariantList& systems, const QVaria
     if (error.isEmpty()) {
         error = collectPaths(sys, target, out);
     }
-    if (error.isEmpty()) {
+    /* An analog channel carries no keys, talkgroups or encryption (issue #526): the editor hides decryption for it, and
+       a saved analog system's key and group settings have nothing to act on, so its options stay empty. */
+    if (error.isEmpty() && !target.analog) {
         error = buildOptions(sys, options);
     }
     if (error.isEmpty()) {
