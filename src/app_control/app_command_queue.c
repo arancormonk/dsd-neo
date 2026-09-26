@@ -3727,17 +3727,28 @@ ui_stage_analog_entry(const dsd_opts* opts, const dsd_state* state) {
     dsd_scan_settings_capture(opts, state, &g_analog_entry_staged);
 }
 
+/* The configured channel widths of @p now over @p settings. */
+static void
+ui_analog_entry_keep_widths(dsd_scan_settings* settings, const dsd_scan_settings* now) {
+    settings->analog_nfm_bandwidth_hz = now->analog_nfm_bandwidth_hz;
+    settings->analog_am_bandwidth_hz = now->analog_am_bandwidth_hz;
+}
+
 /* The configured options now run the analog family where they did not (@p was_analog_family), or another analog kind
    than @p was_kind: note the switch while a running RTL front end has it to make. One that supersedes a switch still
-   armed keeps that switch's settings from before it (g_analog_entry). */
+   armed keeps that switch's settings from before it (g_analog_entry). The channel widths are configuration a width
+   command sets on its own, not part of a switch, as ui_revert_analog_entry() compares them: a width set between the
+   two switches (dsd_scan_settings_equal() compares the widths for the analog family, issue #526) does not mean the
+   settings moved on from the earlier one. */
 static void
 ui_arm_analog_entry(const dsd_opts* opts, const dsd_state* state, int was_analog_family, int was_kind) {
     if ((was_analog_family && was_kind == opts->analog_demod) || !dsd_opts_is_analog_family(opts)
         || opts->audio_in_type != AUDIO_IN_RTL || !state->rtl_ctx) {
         return;
     }
-    const int supersedes =
-        g_analog_entry.armed && dsd_scan_settings_equal(&g_analog_entry_staged, &g_analog_entry.after, 0);
+    dsd_scan_settings armed_after = g_analog_entry.after;
+    ui_analog_entry_keep_widths(&armed_after, &g_analog_entry_staged);
+    const int supersedes = g_analog_entry.armed && dsd_scan_settings_equal(&g_analog_entry_staged, &armed_after, 0);
     if (supersedes && dsd_analog_demod_is_valid(g_analog_entry.kind)) {
         g_analog_entry.between[g_analog_entry.kind] = g_analog_entry.after;
         g_analog_entry.has_between[g_analog_entry.kind] = 1;
@@ -3786,13 +3797,6 @@ ui_resume_scope_and_publish(dsd_opts* opts, dsd_state* state, int* out_changed, 
         (width_before >= 0 && dsd_opts_analog_width_hz(opts) != width_before) ? width_before : -1;
     return svc_publish_symbol_profile_changing_width(opts, state, dsd_scan_mode_effective_profile(opts, state),
                                                      configured_before_hz);
-}
-
-/* The configured channel widths of @p now over @p settings. */
-static void
-ui_analog_entry_keep_widths(dsd_scan_settings* settings, const dsd_scan_settings* now) {
-    settings->analog_nfm_bandwidth_hz = now->analog_nfm_bandwidth_hz;
-    settings->analog_am_bandwidth_hz = now->analog_am_bandwidth_hz;
 }
 
 /*

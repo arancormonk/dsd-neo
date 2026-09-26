@@ -8134,6 +8134,26 @@ test_refused_switch_after_a_pending_switch_puts_the_running_mode_back(void) {
     rc |= expect_digital_family_requested_last("pending chain request refused: the digital family republished");
     g_analog_req_result = 0;
 
+    /* ... with an AM width set between the two switches (issue #526 compares the widths of analog settings): the width
+       is no part of either switch, so the Analog switch still supersedes the pending AM one, the refusal goes back to
+       DMR, and the width stays. */
+    freeState(&state);
+    init_dmr_session_with_nfm_width(&opts, &state, (RtlSdrContext*)fake_ctx, 16000);
+    opts.analog_am_bandwidth_hz = 15000;
+    (void)dsd_app_command_set_i32(DSD_APP_CMD_DECODE_MODE_SET, (int32_t)DSDCFG_MODE_AM);
+    (void)dsd_app_drain_cmds(&opts, &state);
+    (void)dsd_app_command_set_i32(DSD_APP_CMD_AM_BANDWIDTH_SET, 10000);
+    (void)dsd_app_drain_cmds(&opts, &state);
+    rc |= expect_int("width between: the AM width set", opts.analog_am_bandwidth_hz, 10000);
+    (void)dsd_app_command_set_i32(DSD_APP_CMD_DECODE_MODE_SET, (int32_t)DSDCFG_MODE_ANALOG);
+    (void)dsd_app_drain_cmds(&opts, &state);
+    demod_thread_refuses_analog_keeping(0, 0);
+    state.ui_msg[0] = '\0';
+    (void)dsd_app_drain_cmds(&opts, &state);
+    rc |= expect_back_on_dmr("width between: back on DMR", &opts, &state);
+    rc |= expect_int("width between: the AM width stays", opts.analog_am_bandwidth_hz, 10000);
+    rc |= expect_digital_family_requested_last("width between: the digital family republished");
+
     /* The AM switch taken before the Analog one: a refusal of Analog, the front end keeping AM, goes back to AM. */
     freeState(&state);
     init_dmr_session_with_nfm_width(&opts, &state, (RtlSdrContext*)fake_ctx, 16000);
