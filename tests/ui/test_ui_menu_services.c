@@ -597,8 +597,9 @@ dsd_channel_lpf_legacy_wide_width_hz(int rate_hz) {
 }
 
 int
-svc_publish_nfm_bandwidth(const dsd_opts* opts, const dsd_state* state) {
+svc_publish_nfm_bandwidth(const dsd_opts* opts, const dsd_state* state, int configured_before_hz) {
     (void)state;
+    (void)configured_before_hz;
     g_nfm_publish_calls++;
     g_nfm_publish_width_hz = opts ? opts->analog_nfm_bandwidth_hz : -1;
     return g_nfm_publish_result;

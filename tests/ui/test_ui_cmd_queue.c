@@ -62,6 +62,7 @@
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
 #include "dsd-neo/runtime/config.h"
+#include "services.h"
 #include "test_support.h"
 
 #ifdef DSD_NEO_TEST_IO_CONTROL_WRAP
@@ -6205,6 +6206,62 @@ load_dmr_and_nfm_rows(dsd_state* state, int row_width_hz) {
 }
 
 /*
+ * Issue #526: under a scan row that takes the configured NFM width, the front end can still run another row's own width
+ * (a retune in flight, or one a live request superseded, has not moved it off the row before). A width edit the front
+ * end then refuses where it lands puts the configured width back to what it was before the edit, never to the width
+ * the front end kept: that is the other row's, and must not become the default a save writes. A row with a width of
+ * its own keeps its width in force as the front end kept it, with the configured width as it was.
+ */
+static int
+test_refused_width_under_a_scan_row_keeps_the_configured_width(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static void* fake_ctx[2];
+    int rc = 0;
+    init_nfm_session(&opts, &state, (RtlSdrContext*)fake_ctx);
+    opts.analog_nfm_bandwidth_hz = 8000;
+    rc |= expect_int("inheriting row: nfm row", dsd_scan_mode_enter(&opts, &state, DSD_SCAN_MODE_NFM), 0);
+    rc |= expect_int("inheriting row: no width", dsd_scan_mode_options(&opts, &state, NULL), 0);
+    reset_rx_family_wrap();
+    rc |= submit_nfm_width(&opts, &state, 12500, "inheriting row: edit");
+    rc |= expect_int("inheriting row: requested", g_analog_req_calls == 1 && g_analog_req_width_hz == 12500, 1);
+    rc |= expect_int("inheriting row: configured while pending",
+                     dsd_scan_mode_configured_view(&state)->analog_nfm_bandwidth_hz, 12500);
+    demod_thread_refuses_analog_keeping(1, 9000);
+    state.ui_msg[0] = '\0';
+    (void)dsd_app_drain_cmds(&opts, &state);
+    rc |= expect_int("inheriting row: configured width from before the edit",
+                     dsd_scan_mode_configured_view(&state)->analog_nfm_bandwidth_hz, 8000);
+    rc |= expect_int("inheriting row: the row runs it", opts.analog_nfm_bandwidth_hz, 8000);
+    rc |= expect_int("inheriting row: refusal reported", strncmp(state.ui_msg, "Refused: ", 9) == 0, 1);
+    dsd_scan_mode_leave(&opts, &state);
+    rc |= expect_int("inheriting row: the leave keeps it", opts.analog_nfm_bandwidth_hz, 8000);
+
+    /* A row with its own width: an edit reaches no front end there, but a request that carried the row's width (its
+       entry) can still be refused where it lands; the width in force follows the front end, the configured width
+       stays. */
+    dsd_scan_option_values row = {0};
+    row.present = DSD_SCAN_OPT_BANDWIDTH;
+    row.channel_bw_hz = 12500;
+    rc |= expect_int("own width row: nfm row", dsd_scan_mode_enter(&opts, &state, DSD_SCAN_MODE_NFM), 0);
+    rc |= expect_int("own width row: its width", dsd_scan_mode_options(&opts, &state, &row), 0);
+    reset_rx_family_wrap();
+    rc |= expect_int("own width row: republished", svc_publish_nfm_bandwidth(&opts, &state, -1), 0);
+    demod_thread_refuses_analog_keeping(1, 9000);
+    (void)dsd_app_drain_cmds(&opts, &state);
+    rc |= expect_int("own width row: in force as kept", opts.analog_nfm_bandwidth_hz, 9000);
+    rc |= expect_int("own width row: configured width stays",
+                     dsd_scan_mode_configured_view(&state)->analog_nfm_bandwidth_hz, 8000);
+    dsd_scan_mode_leave(&opts, &state);
+    rc |= expect_int("own width row: the leave restores it", opts.analog_nfm_bandwidth_hz, 8000);
+
+    opts.analog_nfm_bandwidth_hz = 0;
+    state.rtl_ctx = NULL;
+    freeState(&state);
+    return rc;
+}
+
+/*
  * Issue #526: an nfm scan row's own --nfm-bandwidth-hz runs over the configured width while the row is on air. The width
  * command still edits the configured width, without suspending the row: the row keeps its width, the front end is asked
  * for nothing, and the toast says the row overrides the edit. A row without a width of its own, and the row's leave, put
@@ -7912,6 +7969,7 @@ main(void) {
     rc |= test_nfm_bandwidth_set_under_scan_rows();
     rc |= test_nfm_width_edit_keeps_live_acquisition();
     rc |= test_nfm_bandwidth_set_under_a_width_row();
+    rc |= test_refused_width_under_a_scan_row_keeps_the_configured_width();
     rc |= test_decode_mode_analog_under_a_row_holds_the_nfm_width();
     rc |= test_config_apply_holds_nfm_width_to_the_front_end();
     rc |= test_config_apply_width_under_scan_rows();

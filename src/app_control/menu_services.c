@@ -999,16 +999,23 @@ svc_nfm_width_in_use(const dsd_opts* opts, const dsd_state* state) {
 }
 
 void
-svc_restore_nfm_width(dsd_opts* opts, const dsd_state* state, int width_hz) {
+svc_restore_nfm_width(dsd_opts* opts, const dsd_state* state, int kept_hz, int configured_before_hz) {
     if (!opts) {
         return;
     }
-    if (dsd_scan_mode_configured_view(state) && svc_row_sets_nfm_width(state)) {
-        /* The row's own width was the one refused: the configured one never reached the front end. */
-        opts->analog_nfm_bandwidth_hz = width_hz;
+    if (!dsd_scan_mode_configured_view(state)) {
+        (void)dsd_scan_mode_set_configured_nfm_bandwidth(opts, state, kept_hz);
         return;
     }
-    (void)dsd_scan_mode_set_configured_nfm_bandwidth(opts, state, width_hz);
+    /* Under a scan row the width the front end kept can be a row's own (the row on air's, or the one a retune in flight
+       had not moved it off yet): the configured width only goes back to its own value from before the change. */
+    if (configured_before_hz >= 0) {
+        (void)dsd_scan_mode_set_configured_nfm_bandwidth(opts, state, configured_before_hz);
+    }
+    if (svc_row_sets_nfm_width(state)) {
+        /* The row's own width was the one refused: the configured one never reached the front end. */
+        opts->analog_nfm_bandwidth_hz = kept_hz;
+    }
 }
 
 int
@@ -1093,7 +1100,7 @@ svc_set_nfm_bandwidth(dsd_opts* opts, const dsd_state* state, int width_hz, char
     /* The configured width, without suspending a scan row (issue #526): a row that sets its own width keeps it in force
        until it leaves, and nothing reaches the front end until then. */
     if (dsd_scan_mode_set_configured_nfm_bandwidth(opts, state, width_hz) == 1
-        && svc_publish_nfm_bandwidth(opts, state) != 0) {
+        && svc_publish_nfm_bandwidth(opts, state, previous_hz) != 0) {
         /* The front end refused the request after all: the rate moved since the check (a retune). */
         (void)dsd_scan_mode_set_configured_nfm_bandwidth(opts, state, previous_hz);
         svc_describe_nfm_refusal(opts, width_hz, why, why_size);

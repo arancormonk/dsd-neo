@@ -318,13 +318,16 @@ void svc_describe_nfm_refusal(const dsd_opts* opts, int width_hz, char* why, siz
 int svc_set_nfm_bandwidth(dsd_opts* opts, const dsd_state* state, int width_hz, char* why, size_t why_size);
 
 /**
- * @brief Put the NFM width back to @p width_hz, the one the front end kept, after it refused the width in force.
+ * @brief Put the NFM width back after the front end refused the width in force, keeping @p kept_hz.
  *
- * While the scan row on air sets its own width (issue #526), that width was the one refused: the width in force takes
- * @p width_hz and the configured width, which never reached the front end, stays. Otherwise the configured width takes
- * it (dsd_scan_mode_set_configured_nfm_bandwidth()). Decoder thread only.
+ * On the -fA monitor outside a scan the configured width is the one the front end runs, so it takes @p kept_hz
+ * (dsd_scan_mode_set_configured_nfm_bandwidth()). Under a scan row (issue #526) the front end can run a row's own width
+ * instead, the one on air or one a retune still in flight has not moved it off, which never becomes the configured
+ * width: that goes back to @p configured_before_hz, what it was before the refused change (-1: the refused request
+ * changed none, and it stays), which a row without a width of its own runs as well; while the row on air sets its own
+ * width, the width in force takes @p kept_hz. Decoder thread only.
  */
-void svc_restore_nfm_width(dsd_opts* opts, const dsd_state* state, int width_hz);
+void svc_restore_nfm_width(dsd_opts* opts, const dsd_state* state, int kept_hz, int configured_before_hz);
 
 /**
  * @brief Hand the configured NFM width to a running RTL front end, as a live analog profile request.
@@ -336,12 +339,14 @@ void svc_restore_nfm_width(dsd_opts* opts, const dsd_state* state, int width_hz)
  * keeps the front end off the monitor, whether the demod thread has taken that toggle yet or not
  * (rtl_stream_requested_cqpsk(), which answers for every request queued); svc_toggle_rtl_cqpsk() turning it off
  * requests the analog profile with the configured width. For callers that changed the width (the width command, a
- * config apply). Decoder thread only: it keeps the record svc_take_monitor_request_outcome() reads.
+ * config apply), with @p configured_before_hz the configured width from before their change, which the record keeps for a
+ * refusal where the request lands (svc_restore_nfm_width()). Decoder thread only: it keeps the record
+ * svc_take_monitor_request_outcome() reads.
  *
  * @return 0 when requested or when there is nothing to request; -1 when the front end refused the request (at the rate
  *         it publishes now, logged with the validator's text), which leaves its receive profile as it was.
  */
-int svc_publish_nfm_bandwidth(const dsd_opts* opts, const dsd_state* state);
+int svc_publish_nfm_bandwidth(const dsd_opts* opts, const dsd_state* state, int configured_before_hz);
 
 /** @brief What became of the last analog monitor request (svc_take_monitor_request_outcome()). */
 typedef enum {
@@ -357,6 +362,7 @@ typedef struct {
     int kept_analog;   /**< 1: the front end stayed on the analog family; 0: on the digital family it was asked to
                             leave, so a switch onto Analog did not happen. */
     int kept_width_hz; /**< The analog width (0 = default) the analog family kept. */
+    int configured_before_hz; /**< The configured NFM width from before the change the request carried; -1: none. */
 } svc_monitor_refusal;
 
 /**

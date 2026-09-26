@@ -5227,11 +5227,12 @@ cfg_airspy_settings_valid(const dsdneoUserConfig* cfg) {
     return !cfg->airspy_invalid && dsd_airspy_config_valid(&cfg->airspy);
 }
 
-/* An NFM width the front end refused after the change was committed (@p width_hz) is put back to @p kept_hz, the width
-   the front end kept, and the toast says why. */
+/* An NFM width the front end refused after the change was committed (@p width_hz) is put back to match @p kept_hz, the
+   width the front end kept, with the configured width from before the change @p configured_before_hz (-1: none)
+   (svc_restore_nfm_width()), and the toast says why. */
 static void
-ui_restore_refused_nfm_width(dsd_opts* opts, dsd_state* state, int width_hz, int kept_hz) {
-    svc_restore_nfm_width(opts, state, kept_hz);
+ui_restore_refused_nfm_width(dsd_opts* opts, dsd_state* state, int width_hz, int kept_hz, int configured_before_hz) {
+    svc_restore_nfm_width(opts, state, kept_hz, configured_before_hz);
     char why[128];
     svc_describe_nfm_refusal(opts, width_hz, why, sizeof why);
     ui_set_toast(state, 5, "Refused: %s", why);
@@ -5241,10 +5242,10 @@ ui_restore_refused_nfm_width(dsd_opts* opts, dsd_state* state, int width_hz, int
    checked) is put back to @p previous_hz. Returns -1 then. */
 static int
 ui_publish_nfm_bandwidth(dsd_opts* opts, dsd_state* state, int previous_hz) {
-    if (svc_publish_nfm_bandwidth(opts, state) == 0) {
+    if (svc_publish_nfm_bandwidth(opts, state, previous_hz) == 0) {
         return 0;
     }
-    ui_restore_refused_nfm_width(opts, state, opts->analog_nfm_bandwidth_hz, previous_hz);
+    ui_restore_refused_nfm_width(opts, state, opts->analog_nfm_bandwidth_hz, previous_hz, previous_hz);
     return -1;
 }
 
@@ -5820,7 +5821,10 @@ apply_cmd_resume_scope(dsd_opts* opts, dsd_state* state, int nfm_width_before) {
             return -1;
         }
         if (opts->analog_nfm_bandwidth_hz != nfm_width_before) {
-            ui_restore_refused_nfm_width(opts, state, opts->analog_nfm_bandwidth_hz, nfm_width_before);
+            /* Only a row that takes the configured width has its width in force changed by a scoped command, so the
+               width in force before it was the configured one as well. */
+            ui_restore_refused_nfm_width(opts, state, opts->analog_nfm_bandwidth_hz, nfm_width_before,
+                                         nfm_width_before);
         }
     }
     return 0;
@@ -5898,7 +5902,8 @@ ui_settle_receive_requests(dsd_opts* opts, dsd_state* state) {
         if (refusal.kind == DSD_ANALOG_DEMOD_FM && opts->analog_nfm_bandwidth_hz == refusal.width_hz
             && refusal.kept_width_hz != refusal.width_hz) {
             /* The width has not changed again since. */
-            ui_restore_refused_nfm_width(opts, state, refusal.width_hz, refusal.kept_width_hz);
+            ui_restore_refused_nfm_width(opts, state, refusal.width_hz, refusal.kept_width_hz,
+                                         refusal.configured_before_hz);
             changed = 1;
         }
     }
