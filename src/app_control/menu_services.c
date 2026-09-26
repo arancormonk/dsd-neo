@@ -1187,13 +1187,13 @@ svc_configured_analog_width(const dsd_opts* opts, const dsd_state* state, int* k
     return 1;
 }
 
-/* Whether a DSP rate holds the configured width of analog @p kind beside the configured preset's own width
+/* Whether a DSP rate holds the configured width of analog @p row_kind beside the configured preset's own width
    (@p preset_kind, which holds its own): on a session whose preset runs another kind (AM, issue #524) or none, the
    scan's nfm or am rows or targets without a width of their own run the configured width of their kind whenever they
    come on air (svc_scan_runs_configured_width()), the AM default included, which AM holds as its 6 kHz. */
 static int
-svc_scan_width_beside_preset(const dsd_opts* opts, const dsd_state* state, int preset_kind, int kind) {
-    return kind != preset_kind && svc_scan_runs_configured_width(opts, state, kind);
+svc_scan_width_beside_preset(const dsd_opts* opts, const dsd_state* state, int preset_kind, int row_kind) {
+    return row_kind != preset_kind && svc_scan_runs_configured_width(opts, state, row_kind);
 }
 
 /* Whether analog width @p configured_hz of @p kind (0 = the kind's default) can open at @p rate_hz (0: no rate to hold
@@ -1223,10 +1223,10 @@ svc_check_rtl_input_analog_width(const dsd_opts* opts, const dsd_state* state, c
     if (!svc_rtl_input_width_fits(kind, configured_hz, rate_hz, why, why_size)) {
         return -1;
     }
-    for (int other = DSD_ANALOG_DEMOD_FM; other <= DSD_ANALOG_DEMOD_AM; other++) {
-        if (svc_scan_width_beside_preset(opts, state, kind, other)
-            && !svc_rtl_input_width_fits(other, dsd_scan_mode_configured_analog_width(opts, state, other), rate_hz, why,
-                                         why_size)) {
+    for (int row_kind = DSD_ANALOG_DEMOD_FM; row_kind <= DSD_ANALOG_DEMOD_AM; row_kind++) {
+        if (svc_scan_width_beside_preset(opts, state, kind, row_kind)
+            && !svc_rtl_input_width_fits(row_kind, dsd_scan_mode_configured_analog_width(opts, state, row_kind),
+                                         rate_hz, why, why_size)) {
             return -1;
         }
     }
@@ -1530,10 +1530,10 @@ svc_rtl_bandwidth_fits_analog_width(const dsd_opts* opts, const dsd_state* state
     if (!svc_rtl_bandwidth_fits_width(opts, kind, configured_hz, 0, khz, why, why_size)) {
         return 0;
     }
-    for (int other = DSD_ANALOG_DEMOD_FM; other <= DSD_ANALOG_DEMOD_AM; other++) {
-        if (svc_scan_width_beside_preset(opts, state, kind, other)
-            && !svc_rtl_bandwidth_fits_width(opts, other, dsd_scan_mode_configured_analog_width(opts, state, other), 0,
-                                             khz, why, why_size)) {
+    for (int row_kind = DSD_ANALOG_DEMOD_FM; row_kind <= DSD_ANALOG_DEMOD_AM; row_kind++) {
+        if (svc_scan_width_beside_preset(opts, state, kind, row_kind)
+            && !svc_rtl_bandwidth_fits_width(
+                opts, row_kind, dsd_scan_mode_configured_analog_width(opts, state, row_kind), 0, khz, why, why_size)) {
             return 0;
         }
     }
