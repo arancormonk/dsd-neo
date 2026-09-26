@@ -1006,7 +1006,7 @@ test_analog_channel_status_rendering(void) {
        names the configured width the row's leave returns to, whatever dsd_opts reads under the row. */
     configured.analog_only = 0;
     configured.analog_nfm_bandwidth_hz = 20000;
-    dsd_scan_option_values row;
+    static dsd_scan_option_values row;
     DSD_MEMSET(&row, 0, sizeof(row));
     row.present = DSD_SCAN_OPT_BANDWIDTH;
     row.channel_bw_hz = 12500;

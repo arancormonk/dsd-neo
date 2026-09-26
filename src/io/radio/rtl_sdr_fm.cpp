@@ -12701,7 +12701,9 @@ family_test_land_retune_step(const dsd_opts* opts, uint32_t target_hz, const rtl
     RtlRetuneProfile profile{};
     out->taken = rtl_stream_take_pending_retune_profile(&profile, 7U, target_hz);
     family_test_live_family_request(step->live_family_after_take);
-    FamilyTestLandingRequest landing_request = {step->queued_live_request, step->queued_live_width_hz, 0U};
+    /* Static storage: its address goes into the file-scope hook context, which never holds a stack address. */
+    static FamilyTestLandingRequest landing_request;
+    landing_request = {step->queued_live_request, step->queued_live_width_hz, 0U};
     g_test_retune_family_checked_hook = family_test_request_at_landing;
     g_test_retune_family_checked_ctx = &landing_request;
     const uint32_t previous_hz = controller.last_applied_freq_hz.load(std::memory_order_acquire);
