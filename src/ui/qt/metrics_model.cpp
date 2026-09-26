@@ -789,17 +789,21 @@ MetricsModel::fillSquelchOverride(View& next, const dsd_opts* opts_snapshot, con
 }
 
 /* Issue #525: the analog width the Radio sheet shows and the configured one its control edits, as app_control's analog
- * width view decides them for every frontend (the terminal's "Analog:" status field too). */
+ * width view decides them for every frontend (the terminal's "Analog:" status field too). Issue #526: an analog scan
+ * row on air shows its width on any session, and one that sets its own flags the row override the sheet badges. */
 void
 MetricsModel::fillAnalogChannel(View& next, const dsd_opts* opts_snapshot, const dsd_state* snapshot,
                                 const dsd_frontend_metrics& metrics) {
     dsd_app_analog_width_view view;
     (void)dsd_app_analog_width_view_get(opts_snapshot, snapshot, &metrics, &view);
-    /* The view leaves the width, its bound and the flag at 0 outside the analog preset. */
+    /* The view leaves the width, its bound and the flag at 0 outside the analog preset, with no analog scan row on
+     * air. */
     next.analog_bandwidth_configured_hz = view.configured_hz;
     next.analog_bandwidth_hz = view.width_hz;
     next.analog_bandwidth_max_hz = view.max_hz;
     next.analog_bandwidth_dsp_limited = view.dsp_limited != 0U;
+    next.analog_bandwidth_row_active = view.row_analog != 0U;
+    next.analog_bandwidth_row_override = view.row_override != 0U;
     char reading[DSD_APP_ANALOG_WIDTH_TEXT_MAX];
     (void)dsd_app_analog_width_view_format(&view, reading, sizeof reading);
     next.analog_bandwidth_reading = QString::fromUtf8(reading);

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 /* Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com> */
 
+#include <dsd-neo/core/audio.h>
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/channel_mode.h>
 #include <dsd-neo/core/dmr_key_map.h>
@@ -10,6 +11,8 @@
 #include <dsd-neo/core/key_set.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/opts_fwd.h>
+#include <dsd-neo/core/power.h>
+#include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/scan_profile.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
@@ -32,6 +35,8 @@
 #include <stdlib.h>
 #include <time.h>
 
+#include "scan_analog_internal.h"
+
 typedef struct {
     uint64_t request;
     uint64_t map_sequence;
@@ -42,9 +47,18 @@ typedef struct {
     dsd_scan_settings configured;
     dsd_scan_key_change keys;
     uint64_t key_epoch;
-    /* The map generation whose row squelch was last checked against the input (issue #521). */
-    uint64_t squelch_checked_map;
-    int squelch_checked;
+    /* The live receive-family requests the front end had accepted when the staged tune was queued
+     * (dsd_engine_scan_family_requests(); issue #526), and whether that tune attached a receive family, which is all a
+     * later request supersedes (dsd_engine_scan_retune_attaches_family()). */
+    uint32_t family_requests;
+    int family_attached;
+    /* The map generation whose rows were last checked against the input (issues #521, #526), and the DSP rate its
+     * analog row widths were last held to, with the configured NFM width a row without its own runs (issue #526). */
+    uint64_t rows_checked_map;
+    int rows_checked;
+    int widths_checked_rate_hz;
+    int widths_checked_nfm_hz;
+    int widths_checked;
 } channel_scan;
 
 static void
@@ -87,6 +101,52 @@ channel_scan_end_calls(dsd_opts* opts, dsd_state* state) {
     opts->trunk_is_tuned = 0;
 }
 
+/* Whether the tune staged for the row carries a configured channel width (issue #526): an untyped row's does on the
+ * analog family the configured options select, and an analog row's unless it sets a width of its own, whatever the
+ * configured family. A typed digital row filters with its own channel profile. */
+static int
+channel_scan_row_runs_configured_width(const dsd_state* state, const channel_scan* scan) {
+    if (scan->mode == DSD_SCAN_MODE_INHERIT) {
+        return scan->configured.analog_only == 1;
+    }
+    if (!dsd_scan_mode_is_analog(scan->mode)) {
+        return 0;
+    }
+    const dsd_scan_row_profile* profile = dsd_channel_profile_get(state, (size_t)scan->row);
+    return !(profile && (profile->values.present & DSD_SCAN_OPT_BANDWIDTH));
+}
+
+/* Whether a configured setting the staged tune was prepared from changed while it was outstanding. The configured
+ * channel widths count only where the tune carries one (channel_scan_row_runs_configured_width()), although
+ * dsd_scan_settings_equal() compares them whenever the configured family is analog. */
+static int
+channel_scan_configured_changed(const dsd_state* state, const dsd_scan_settings* latest, const channel_scan* scan) {
+    dsd_scan_settings others = *latest;
+    others.analog_nfm_bandwidth_hz = scan->configured.analog_nfm_bandwidth_hz;
+    others.analog_am_bandwidth_hz = scan->configured.analog_am_bandwidth_hz;
+    if (!dsd_scan_settings_equal(&others, &scan->configured, 1)) {
+        return 1;
+    }
+    return channel_scan_row_runs_configured_width(state, scan)
+           && (latest->analog_nfm_bandwidth_hz != scan->configured.analog_nfm_bandwidth_hz
+               || latest->analog_am_bandwidth_hz != scan->configured.analog_am_bandwidth_hz);
+}
+
+/* Whether the tune staged for the row no longer describes what it should land: a configured setting or the keyring it
+ * was prepared from changed while it was outstanding, or a live receive-family request superseded the family its
+ * retune carries. That request acts for the row still in scope (a width edit or a config apply republishing the
+ * outgoing nfm row's analog monitor), yet the front end takes it as the newer word on the family and lands the staged
+ * retune with neither its family nor its symbol profile (rtl_stream_prepare_retune_analog_profile_for_target()): a
+ * digital row would otherwise commit on the analog monitor, or an nfm row on the digital family (issue #526). A retune
+ * that carries no family lands its symbol profile whatever the requests, so it is not restaged for them. */
+static int
+channel_scan_staged_stale(const dsd_opts* opts, const dsd_state* state, const channel_scan* scan) {
+    dsd_scan_settings latest;
+    dsd_scan_mode_configured(opts, state, &latest);
+    return channel_scan_configured_changed(state, &latest, scan) || scan->key_epoch != state->enc_lockout_key_epoch
+           || (scan->family_attached && scan->family_requests != dsd_engine_scan_family_requests(opts));
+}
+
 static int
 channel_scan_commit(dsd_opts* opts, dsd_state* state, channel_scan* scan) {
     /* Row commits run only in conventional scanner mode. Entry into that mode
@@ -95,11 +155,9 @@ channel_scan_commit(dsd_opts* opts, dsd_state* state, channel_scan* scan) {
     /* Hardware has moved. Even if a later retry rolls back, frames cannot use
      * the outgoing profile until a row is successfully committed. */
     scan->needs_commit = 1;
-    dsd_scan_settings latest;
-    dsd_scan_mode_configured(opts, state, &latest);
-    if (!dsd_scan_settings_equal(&latest, &scan->configured, 1) || scan->key_epoch != state->enc_lockout_key_epoch) {
-        /* A configured setting changed while tuning. Stage the new effective
-         * profile in a fresh request before any frame can use it. */
+    if (channel_scan_staged_stale(opts, state, scan)) {
+        /* Stage the new effective profile in a fresh request before any frame
+         * can use it. */
         scan->request = 0;
         scan->retry = 1;
         return 0;
@@ -115,6 +173,7 @@ channel_scan_commit(dsd_opts* opts, dsd_state* state, channel_scan* scan) {
     state->lcn_freq_roll = scan->row + 1;
     const dsd_scan_row_profile* profile = dsd_channel_profile_get(state, (size_t)scan->row);
     (void)dsd_scan_mode_options(opts, state, profile ? &profile->values : NULL);
+    dsd_engine_scan_ensure_output(opts);
     dsd_scan_groups_enter(state, profile);
     const int maps_changed = dsd_scan_maps_enter(state, profile);
     const int keys_changed = dsd_scan_key_change_commit(state, &scan->keys);
@@ -197,28 +256,330 @@ channel_scan_next_row(const dsd_state* state) {
 
 /* A row squelch gates the RTL demodulator. Any other input has no demodulator for it to gate, so
  * it cannot gate digital acquisition; the threshold in dsd_opts only reaches the analog input
- * monitor (-8, with audio output on) and the carrier activity that monitor stamps. Say so once
- * per affected row when a scan (or a newly imported map) starts. */
+ * monitor (-8, with audio output on) and the carrier activity that monitor stamps. */
 static void
-channel_scan_check_row_squelch(const dsd_opts* opts, const dsd_state* state, channel_scan* scan) {
-    if (scan->squelch_checked && scan->squelch_checked_map == state->trunk_chan_map_seq) {
+channel_scan_warn_row_squelch(const dsd_opts* opts, int row, long freq, const dsd_scan_option_values* values) {
+    if (opts->audio_in_type == AUDIO_IN_RTL || !values || !(values->present & DSD_SCAN_OPT_SQUELCH)) {
         return;
     }
-    scan->squelch_checked = 1;
-    scan->squelch_checked_map = state->trunk_chan_map_seq;
-    if (opts->audio_in_type == AUDIO_IN_RTL) {
-        return;
-    }
+    LOG_WARN("WARNING: Scan channel %d (%.6lf MHz): --squelch-db %d cannot gate digital acquisition "
+             "without a radio input; here it gates only the analog input monitor (-8) and the carrier "
+             "activity it stamps.\n",
+             row + 1, (double)freq / 1000000.0, values->squelch_db);
+}
+
+static void
+channel_scan_row_label(const dsd_state* state, int row, char* label, size_t label_size) {
+    const long freq = *dsd_state_trunk_lcn_slot_const(state, row);
+    DSD_SNPRINTF(label, label_size, "Scan channel %d (%.6lf MHz)", row + 1, (double)freq / 1000000.0);
+}
+
+/* What the rows owe the operator about their squelch, said once per row when a scan (or a newly imported map)
+ * starts: a digital row's squelch that cannot gate digital acquisition on this input (issue #521), and an analog
+ * row's squelch that lets noise hold it (issue #526). Neither depends on the DSP rate. A placeholder row (frequency 0)
+ * is never tuned, so it owes nothing. */
+static void
+channel_scan_warn_rows_squelch(const dsd_opts* opts, const dsd_state* state) {
     for (int row = 0; row < state->lcn_freq_count; row++) {
+        if (*dsd_state_trunk_lcn_slot_const(state, row) == 0) {
+            continue;
+        }
         const dsd_scan_row_profile* profile = dsd_channel_profile_get(state, (size_t)row);
-        if (profile && (profile->values.present & DSD_SCAN_OPT_SQUELCH)) {
-            LOG_WARN("WARNING: Scan channel %d (%.6lf MHz): --squelch-db %d cannot gate digital acquisition "
-                     "without a radio input; here it gates only the analog input monitor (-8) and the carrier "
-                     "activity it stamps.\n",
-                     row + 1, (double)*dsd_state_trunk_lcn_slot_const(state, row) / 1000000.0,
-                     profile->values.squelch_db);
+        const dsd_scan_option_values* values = profile ? &profile->values : NULL;
+        /* An analog row's squelch gates exactly what it is for on any input: its monitor and carrier. */
+        if (!dsd_scan_mode_is_analog(dsd_channel_mode_get(state, (size_t)row))) {
+            channel_scan_warn_row_squelch(opts, row, *dsd_state_trunk_lcn_slot_const(state, row), values);
+            continue;
+        }
+        char label[64];
+        channel_scan_row_label(state, row, label, sizeof label);
+        (void)dsd_engine_scan_warn_analog_squelch(opts, state, values, label);
+    }
+}
+
+/* Whether @p row is an analog row the scanner visits: a placeholder row (frequency 0) is never tuned. */
+static int
+channel_scan_row_visited_analog(const dsd_state* state, int row) {
+    return *dsd_state_trunk_lcn_slot_const(state, row) != 0
+           && dsd_scan_mode_is_analog(dsd_channel_mode_get(state, (size_t)row));
+}
+
+/* The widths the analog rows run, held to @p dsp_rate_hz: every row's, or, after the configured NFM width alone
+ * changed (@p inherited_only), those of the rows that run it; a row with a width of its own was named at this rate
+ * already, so it is counted without being named again. Every row skipped at every visit reaches the status line, since
+ * a frontend without the log (Android) would otherwise never learn why a row is not visited. A placeholder row
+ * (frequency 0) is never tuned and is left out, as dsd_engine_channel_scan_refused_rows() leaves it out. */
+static void
+channel_scan_warn_rows_width(const dsd_opts* opts, dsd_state* state, int dsp_rate_hz, int inherited_only) {
+    dsd_engine_scan_skipped skipped = {0};
+    for (int row = 0; row < state->lcn_freq_count; row++) {
+        if (!channel_scan_row_visited_analog(state, row)) {
+            continue;
+        }
+        const dsd_scan_row_profile* profile = dsd_channel_profile_get(state, (size_t)row);
+        const dsd_scan_option_values* values = profile ? &profile->values : NULL;
+        char label[64];
+        char brief[DSD_ANALOG_ERROR_TEXT_MAX];
+        channel_scan_row_label(state, row, label, sizeof label);
+        const int named = inherited_only && values && (values->present & DSD_SCAN_OPT_BANDWIDTH);
+        const int row_skipped =
+            named ? dsd_engine_scan_analog_width_skipped(opts, state, values, dsp_rate_hz, brief, sizeof brief)
+                  : dsd_engine_scan_warn_analog_width(opts, state, values, dsp_rate_hz, label, brief, sizeof brief)
+                        == DSD_ENGINE_SCAN_WIDTH_SKIPPED;
+        if (row_skipped) {
+            dsd_engine_scan_skipped_add(&skipped, label, brief);
         }
     }
+    dsd_engine_scan_note_skipped_rows(state, &skipped);
+}
+
+/* Once per map the rows' squelch, and the analog row widths once the DSP rate they must fit is known: an RTL stream
+ * that has published no rate yet leaves the widths to a later row start, and a changed rate (the operator changed the
+ * RTL DSP bandwidth) names them again, since a row whose width the rate cannot fit is skipped quietly at every visit
+ * (dsd_engine_scan_tune_to_freq()). A changed configured NFM width (the width command, a config apply) names again the
+ * rows that run it. */
+static void
+channel_scan_check_rows(const dsd_opts* opts, dsd_state* state, channel_scan* scan) {
+    if (!scan->rows_checked || scan->rows_checked_map != state->trunk_chan_map_seq) {
+        scan->rows_checked = 1;
+        scan->rows_checked_map = state->trunk_chan_map_seq;
+        scan->widths_checked = 0;
+        channel_scan_warn_rows_squelch(opts, state);
+    }
+    const int dsp_rate_hz = dsd_engine_scan_dsp_rate_hz(opts, state);
+    const int nfm_hz = dsd_scan_mode_configured_analog_width(opts, state, DSD_ANALOG_DEMOD_FM);
+    if (opts->audio_in_type == AUDIO_IN_RTL && dsp_rate_hz <= 0) {
+        return;
+    }
+    const int same_rate = scan->widths_checked && scan->widths_checked_rate_hz == dsp_rate_hz;
+    if (same_rate && scan->widths_checked_nfm_hz == nfm_hz) {
+        return;
+    }
+    scan->widths_checked = 1;
+    scan->widths_checked_rate_hz = dsp_rate_hz;
+    scan->widths_checked_nfm_hz = nfm_hz;
+    channel_scan_warn_rows_width(opts, state, dsp_rate_hz, same_rate);
+}
+
+/* The squelch an analog row runs with: its own, else the configured one. Off, or at -100 dB and below, holds the row
+ * on noise: every block re-arms its carrier hold, so only the visit cap or a manual advance or avoid moves on. The
+ * -100 dB comparison allows for the rounding of the level's power. */
+static int
+channel_scan_analog_squelch_open(const dsd_opts* opts, const dsd_state* state, const dsd_scan_option_values* row) {
+    const dsd_scan_settings* configured = dsd_scan_mode_configured_view(state);
+    double level = configured ? configured->rtl_squelch_level : opts->rtl_squelch_level;
+    if (row && (row->present & DSD_SCAN_OPT_SQUELCH)) {
+        level = dsd_squelch_level_from_sql((double)row->squelch_db);
+    }
+    const double floor_level = dsd_squelch_level_from_sql(-100.0);
+    return dsd_squelch_is_off(level) || level <= floor_level * (1.0 + 1e-9);
+}
+
+void
+dsd_engine_scan_ensure_output(dsd_opts* opts) {
+    if (!opts) {
+        return;
+    }
+    if (dsd_opts_is_analog_family(opts)) {
+        (void)dsd_audio_ensure_analog_output(opts);
+    } else {
+        (void)dsd_audio_ensure_digital_output(opts);
+    }
+}
+
+int
+dsd_engine_scan_warn_analog_squelch(const dsd_opts* opts, const dsd_state* state, const dsd_scan_option_values* row,
+                                    const char* label) {
+    if (!opts || !state || !label || !channel_scan_analog_squelch_open(opts, state, row)) {
+        return 0;
+    }
+    LOG_WARN(
+        "WARNING: %s: the analog channel's squelch is off or at -100 dB or below, so noise holds it on air until "
+        "--scan-max-visit-ms or a manual advance or avoid moves on; give it --squelch-db or set a squelch level.\n",
+        label);
+    return 1;
+}
+
+int
+dsd_engine_scan_width_refused(const dsd_opts* opts, int kind, int width_hz, int dsp_rate_hz, char* why,
+                              size_t why_size) {
+    if (why && why_size > 0U) {
+        why[0] = '\0';
+    }
+    if (!opts || width_hz <= 0 || opts->audio_in_type != AUDIO_IN_RTL) {
+        return 0;
+    }
+    char err[DSD_ANALOG_ERROR_TEXT_MAX];
+    if (dsd_analog_channel_lpf_off_check(kind, width_hz, dsd_engine_scan_channel_lpf_forced_off(), err, sizeof err)
+        != 0) {
+        if (why && why_size > 0U) {
+            DSD_SNPRINTF(why, why_size, "%s", err);
+        }
+        return 1;
+    }
+    /* Worded with the fix this input allows, as the stream start's refusal is (issue #525). */
+    return dsp_rate_hz > 0
+           && dsd_analog_width_check_at(kind, width_hz, dsp_rate_hz, dsd_opts_analog_rate_source(opts), why, why_size)
+                  != 0;
+}
+
+/* The status-line reason a refused width is skipped for (dsd_engine_scan_width_refused()): short, as the log line
+ * beside it carries the full text and the fix. */
+static void
+scan_width_refusal_brief(int kind, int width_hz, int dsp_rate_hz, char* brief, size_t brief_size) {
+    if (!brief || brief_size == 0U) {
+        return;
+    }
+    char width[DSD_ANALOG_WIDTH_TEXT_MAX];
+    char rate[DSD_ANALOG_WIDTH_TEXT_MAX];
+    (void)dsd_analog_width_format(width_hz, width, sizeof width);
+    if (dsd_engine_scan_channel_lpf_forced_off()) {
+        DSD_SNPRINTF(brief, brief_size, "%s %s needs the filter DSD_NEO_CHANNEL_LPF=0 turns off",
+                     dsd_analog_demod_label(kind), width);
+        return;
+    }
+    (void)dsd_analog_width_format(dsp_rate_hz, rate, sizeof rate);
+    DSD_SNPRINTF(brief, brief_size, "%s %s does not fit the %s DSP rate", dsd_analog_demod_label(kind), width, rate);
+}
+
+void
+dsd_engine_scan_skipped_add(dsd_engine_scan_skipped* skipped, const char* label, const char* brief) {
+    if (!skipped) {
+        return;
+    }
+    if (skipped->count++ == 0) {
+        DSD_SNPRINTF(skipped->label, sizeof skipped->label, "%s", label ? label : "");
+        DSD_SNPRINTF(skipped->brief, sizeof skipped->brief, "%s", brief ? brief : "");
+    }
+}
+
+void
+dsd_engine_scan_note_skipped_rows(dsd_state* state, const dsd_engine_scan_skipped* skipped) {
+    if (!state || !skipped || skipped->count <= 0) {
+        return;
+    }
+    if (skipped->count == 1) {
+        DSD_SNPRINTF(state->ui_msg, sizeof state->ui_msg, "Skipped at every visit: %s: %s", skipped->label,
+                     skipped->brief);
+    } else {
+        DSD_SNPRINTF(state->ui_msg, sizeof state->ui_msg, "Skipped at every visit: %s and %d more: %s", skipped->label,
+                     skipped->count - 1, skipped->brief);
+    }
+    state->ui_msg_expire = time(NULL) + 5;
+}
+
+/* A row without a width of its own runs the configured NFM width. The width commands hold that width to the DSP rate
+ * while the scan has such a row (dsd_engine_scan_runs_configured_nfm_width()), but a list loaded over a width the rate
+ * cannot filter, or a rate a device forced, still leaves one the rate cannot filter: that skips the row at every visit
+ * as well. Audio input filters nothing, and the configured width is no row's to name there. */
+static int
+scan_warn_configured_nfm_width(const dsd_opts* opts, const dsd_state* state, int dsp_rate_hz, const char* label,
+                               char* brief, size_t brief_size) {
+    const int width_hz = dsd_scan_mode_configured_analog_width(opts, state, DSD_ANALOG_DEMOD_FM);
+    if (width_hz <= 0 || dsp_rate_hz <= 0 || opts->audio_in_type != AUDIO_IN_RTL) {
+        return DSD_ENGINE_SCAN_WIDTH_OK;
+    }
+    char why[DSD_ANALOG_ERROR_TEXT_MAX];
+    if (!dsd_engine_scan_width_refused(opts, DSD_ANALOG_DEMOD_FM, width_hz, dsp_rate_hz, why, sizeof why)) {
+        return DSD_ENGINE_SCAN_WIDTH_OK;
+    }
+    LOG_WARN("WARNING: %s: it sets no NFM width of its own, and the configured %s; until then it is skipped at every "
+             "visit.\n",
+             label, why);
+    scan_width_refusal_brief(DSD_ANALOG_DEMOD_FM, width_hz, dsp_rate_hz, brief, brief_size);
+    return DSD_ENGINE_SCAN_WIDTH_SKIPPED;
+}
+
+int
+dsd_engine_scan_warn_analog_width(const dsd_opts* opts, const dsd_state* state, const dsd_scan_option_values* row,
+                                  int dsp_rate_hz, const char* label, char* brief, size_t brief_size) {
+    if (brief && brief_size > 0U) {
+        brief[0] = '\0';
+    }
+    if (!opts || !label) {
+        return DSD_ENGINE_SCAN_WIDTH_OK;
+    }
+    if (!row || !(row->present & DSD_SCAN_OPT_BANDWIDTH)) {
+        return scan_warn_configured_nfm_width(opts, state, dsp_rate_hz, label, brief, brief_size);
+    }
+    if (opts->audio_in_type != AUDIO_IN_RTL) {
+        LOG_WARN("WARNING: %s: --nfm-bandwidth-hz %d has no effect on audio input, which arrives demodulated; set "
+                 "the demodulator's own passband (-B for a rigctl peer).\n",
+                 label, row->channel_bw_hz);
+        return DSD_ENGINE_SCAN_WIDTH_NO_EFFECT;
+    }
+    /* The row's rate rule (dsd_scan_option_width_check()), and DSD_NEO_CHANNEL_LPF=0, which refuses the width at any
+     * rate; the text is the front end's (dsd_engine_scan_width_refused()). */
+    if (dsd_scan_option_width_check(DSD_SCAN_MODE_NFM, row, dsp_rate_hz, NULL, 0U) == 0
+        && !dsd_engine_scan_channel_lpf_forced_off()) {
+        return DSD_ENGINE_SCAN_WIDTH_OK;
+    }
+    char why[DSD_ANALOG_ERROR_TEXT_MAX];
+    (void)dsd_engine_scan_width_refused(opts, DSD_ANALOG_DEMOD_FM, row->channel_bw_hz, dsp_rate_hz, why, sizeof why);
+    LOG_WARN("WARNING: %s: %s; until then it is skipped at every visit.\n", label, why);
+    scan_width_refusal_brief(DSD_ANALOG_DEMOD_FM, row->channel_bw_hz, dsp_rate_hz, brief, brief_size);
+    return DSD_ENGINE_SCAN_WIDTH_SKIPPED;
+}
+
+int
+dsd_engine_scan_analog_width_skipped(const dsd_opts* opts, const dsd_state* state, const dsd_scan_option_values* row,
+                                     int dsp_rate_hz, char* brief, size_t brief_size) {
+    if (brief && brief_size > 0U) {
+        brief[0] = '\0';
+    }
+    if (!opts) {
+        return 0;
+    }
+    const int width_hz = (row && (row->present & DSD_SCAN_OPT_BANDWIDTH))
+                             ? row->channel_bw_hz
+                             : dsd_scan_mode_configured_analog_width(opts, state, DSD_ANALOG_DEMOD_FM);
+    if (!dsd_engine_scan_width_refused(opts, DSD_ANALOG_DEMOD_FM, width_hz, dsp_rate_hz, NULL, 0U)) {
+        return 0;
+    }
+    scan_width_refusal_brief(DSD_ANALOG_DEMOD_FM, width_hz, dsp_rate_hz, brief, brief_size);
+    return 1;
+}
+
+/* The analog rows the front end refuses at @p dsp_rate_hz, with the first one's index and status-line reason
+ * (dsd_engine_channel_scan_refused_rows()). */
+static int
+channel_scan_count_refused_rows(const dsd_opts* opts, const dsd_state* state, int dsp_rate_hz, int* first_row,
+                                char* brief, size_t brief_size) {
+    int refused = 0;
+    for (int row = 0; row < state->lcn_freq_count; row++) {
+        if (!channel_scan_row_visited_analog(state, row)) {
+            continue;
+        }
+        const dsd_scan_row_profile* profile = dsd_channel_profile_get(state, (size_t)row);
+        char row_brief[DSD_ANALOG_ERROR_TEXT_MAX];
+        if (!dsd_engine_scan_analog_width_skipped(opts, state, profile ? &profile->values : NULL, dsp_rate_hz,
+                                                  row_brief, sizeof row_brief)) {
+            continue;
+        }
+        if (refused++ == 0) {
+            *first_row = row;
+            DSD_SNPRINTF(brief, brief_size, "%s", row_brief);
+        }
+    }
+    return refused;
+}
+
+int
+dsd_engine_channel_scan_refused_rows(const dsd_opts* opts, const dsd_state* state, int dsp_rate_hz, int* first_row,
+                                     char* brief, size_t brief_size) {
+    int refused = 0;
+    int first = -1;
+    char first_brief[DSD_ANALOG_ERROR_TEXT_MAX] = "";
+    if (opts && state && opts->audio_in_type == AUDIO_IN_RTL) {
+        refused = channel_scan_count_refused_rows(opts, state, dsp_rate_hz, &first, first_brief, sizeof first_brief);
+    }
+    if (first_row) {
+        *first_row = first;
+    }
+    if (brief && brief_size > 0U) {
+        DSD_SNPRINTF(brief, brief_size, "%s", first_brief);
+    }
+    return refused;
 }
 
 static int
@@ -242,14 +603,16 @@ channel_scan_start_row(dsd_opts* opts, dsd_state* state, int row) {
         }
         (void)dsd_state_ext_set(state, DSD_STATE_EXT_ENGINE_CHANNEL_SCAN, scan, channel_scan_free);
     }
-    channel_scan_check_row_squelch(opts, state, scan);
+    channel_scan_check_rows(opts, state, scan);
     scan->row = row;
     scan->mode = dsd_channel_mode_get(state, (size_t)row);
     scan->map_sequence = state->trunk_chan_map_seq;
     dsd_scan_settings before;
     dsd_scan_settings next;
     dsd_scan_settings_capture(opts, state, &before);
-    if (dsd_scan_mode_prepare(opts, state, scan->mode, &next) != 0) {
+    /* The row's own acquisition options (its analog channel width) are part of what the tune queues. */
+    const dsd_scan_row_profile* row_profile = dsd_channel_profile_get(state, (size_t)row);
+    if (dsd_scan_mode_prepare(opts, state, scan->mode, row_profile ? &row_profile->values : NULL, &next) != 0) {
         return -1;
     }
     dsd_scan_mode_configured(opts, state, &scan->configured);
@@ -262,6 +625,8 @@ channel_scan_start_row(dsd_opts* opts, dsd_state* state, int row) {
      * closed through preparation failures; the new request takes over below. */
     scan->retry = 0;
     dsd_scan_settings_restore(&next, opts, state);
+    scan->family_requests = dsd_engine_scan_family_requests(opts);
+    scan->family_attached = dsd_engine_scan_retune_attaches_family(opts, state, state->samplesPerSymbol);
     const dsd_trunk_tune_result result =
         dsd_engine_scan_tune_to_freq(opts, state, freq, state->samplesPerSymbol, &scan->request);
     dsd_scan_settings_restore(&before, opts, state);

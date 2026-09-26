@@ -2823,6 +2823,95 @@ test_squelch_snapshot_uses_configured_not_row_override(void) {
 }
 
 /*
+ * Issue #526: an nfm row's analog class and its --nfm-bandwidth-hz are effective state, not user defaults. Config->Save
+ * taken while such a row is on air keeps the configured decode mode and writes the row's width nowhere, and leaving
+ * the row puts the configured decoder and width back. The saved [analog] nfm_bandwidth_hz is the configured one, from
+ * the configured view, never the row's.
+ */
+static int
+test_nfm_row_snapshot_keeps_configured_mode_and_width(void) {
+    auto opts_storage = std::unique_ptr<dsd_opts>(new dsd_opts{});
+    auto state_storage = std::unique_ptr<dsd_state>(new dsd_state{});
+    dsd_opts& opts = *opts_storage;
+    dsd_state& state = *state_storage;
+    reset_opts_and_state(opts, state);
+    DSD_SNPRINTF(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", "rtl:0:851.375M:22:-2:24:-80:2");
+    opts.rtlsdr_center_freq = 851375000U;
+    opts.rtl_dsp_bw_khz = 24;
+    if (dsd_apply_decode_mode_preset(DSDCFG_MODE_DMR, DSD_DECODE_PRESET_PROFILE_CLI, &opts, &state) != 0
+        || dsd_scan_mode_enter(&opts, &state, DSD_SCAN_MODE_NFM) != 0) {
+        DSD_FPRINTF(stderr, "FAIL: could not open an nfm scan scope\n");
+        return 1;
+    }
+    int rc = 0;
+    dsd_scan_option_values row;
+    DSD_MEMSET(&row, 0, sizeof row);
+    row.present = DSD_SCAN_OPT_BANDWIDTH;
+    row.channel_bw_hz = 12500;
+    (void)dsd_scan_mode_options(&opts, &state, &row);
+    if (opts.analog_only != 1 || opts.analog_nfm_bandwidth_hz != 12500) {
+        DSD_FPRINTF(stderr, "FAIL: nfm row did not reach dsd_opts (analog_only=%d width=%d)\n", opts.analog_only,
+                    opts.analog_nfm_bandwidth_hz);
+        rc |= 1;
+    }
+    dsdneoUserConfig snap;
+    dsd_snapshot_opts_to_user_config(&opts, &state, &snap);
+    if (snap.decode_mode != DSDCFG_MODE_DMR) {
+        DSD_FPRINTF(stderr, "FAIL: save during an nfm row wrote decode mode %d, want the configured DMR\n",
+                    (int)snap.decode_mode);
+        rc |= 1;
+    }
+    char rendered[16384];
+    if (render_config_to_buffer(&snap, rendered, sizeof rendered) != 0) {
+        rc |= 1;
+    } else if (strstr(rendered, "12500") != NULL) {
+        DSD_FPRINTF(stderr, "FAIL: save during an nfm row wrote the row width:\n%s\n", rendered);
+        rc |= 1;
+    }
+    dsd_scan_mode_leave(&opts, &state);
+    if (opts.analog_only != 0 || opts.analog_nfm_bandwidth_hz != 0 || opts.frame_dmr != 1) {
+        DSD_FPRINTF(stderr, "FAIL: leaving the nfm row left analog_only=%d width=%d frame_dmr=%d\n", opts.analog_only,
+                    opts.analog_nfm_bandwidth_hz, opts.frame_dmr);
+        rc |= 1;
+    }
+
+    /* An explicit configured width is the one saved, not the row's that runs over it, and an edit made while the row
+       shadows it (the width command's path) is saved too. */
+    opts.analog_nfm_bandwidth_hz = 20000;
+    if (dsd_scan_mode_enter(&opts, &state, DSD_SCAN_MODE_NFM) != 0 || dsd_scan_mode_options(&opts, &state, &row) != 0
+        || opts.analog_nfm_bandwidth_hz != 12500) {
+        DSD_FPRINTF(stderr, "FAIL: nfm row width did not run over a configured 20 kHz (width=%d)\n",
+                    opts.analog_nfm_bandwidth_hz);
+        rc |= 1;
+    }
+    dsd_snapshot_opts_to_user_config(&opts, &state, &snap);
+    if (!snap.has_analog || snap.analog_nfm_bandwidth_hz != 20000) {
+        DSD_FPRINTF(stderr, "FAIL: save during an nfm row wrote nfm_bandwidth_hz %d, want the configured 20000\n",
+                    snap.analog_nfm_bandwidth_hz);
+        rc |= 1;
+    }
+    if (dsd_scan_mode_set_configured_nfm_bandwidth(&opts, &state, 11250) != 0) {
+        DSD_FPRINTF(stderr, "FAIL: the row width did not shadow a configured width edit\n");
+        rc |= 1;
+    }
+    dsd_snapshot_opts_to_user_config(&opts, &state, &snap);
+    if (render_config_to_buffer(&snap, rendered, sizeof rendered) != 0) {
+        rc |= 1;
+    } else if (strstr(rendered, "nfm_bandwidth_hz = 11250") == NULL || strstr(rendered, "12500") != NULL) {
+        DSD_FPRINTF(stderr, "FAIL: save after a shadowed width edit did not write the edited default:\n%s\n", rendered);
+        rc |= 1;
+    }
+    dsd_scan_mode_leave(&opts, &state);
+    if (opts.analog_nfm_bandwidth_hz != 11250) {
+        DSD_FPRINTF(stderr, "FAIL: leaving the nfm row put back width %d, want the edited 11250\n",
+                    opts.analog_nfm_bandwidth_hz);
+        rc |= 1;
+    }
+    dsd_state_ext_free_all(&state);
+    return rc;
+}
+
+/*
  * A parked row's own --scan-max-visit-ms is effective state, not a user default. The save path
  * has to read the configured baseline through dsd_scan_mode_configured_view(), or a
  * Config->Save taken while a row override is active would pin the row's value for every
@@ -3508,6 +3597,7 @@ main(void) {
     rc |= test_tg_lockout_persistence_roundtrip();
     rc |= test_scan_max_visit_snapshot_uses_configured_not_row_override();
     rc |= test_squelch_snapshot_uses_configured_not_row_override();
+    rc |= test_nfm_row_snapshot_keeps_configured_mode_and_width();
     rc |= test_src_csv_roundtrip();
     rc |= test_p25_bandplan_csv_roundtrip();
     rc |= test_edacs_variant_roundtrip();

@@ -13,6 +13,7 @@
 #include <dsd-neo/runtime/analog_channel.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/scan_mode.h>
+#include <dsd-neo/runtime/scan_options.h>
 #include <limits.h>
 #include <stddef.h>
 
@@ -59,7 +60,7 @@ analog_width_view_default_filter_on(int rate_hz, int lpf_default) {
    realize the default lies below the rate the filter starts at, so there the rate itself is the reading. */
 static void
 analog_width_view_take_default_rate(int rate_hz, int lpf_default, dsd_app_analog_width_view* out) {
-    if (rate_hz <= 0 || out->kind != DSD_ANALOG_DEMOD_FM || out->configured_hz > 0) {
+    if (rate_hz <= 0 || out->kind != DSD_ANALOG_DEMOD_FM || out->configured_hz > 0 || out->row_override) {
         return;
     }
     const int filter_on = analog_width_view_default_filter_on(rate_hz, lpf_default);
@@ -103,6 +104,21 @@ analog_width_view_take_front_end(const dsd_opts* opts, const dsd_frontend_metric
     analog_width_view_take_default_rate(metrics->demod_rate_hz, metrics->channel_lpf_default, out);
 }
 
+/* An analog scan row on air (issue #526) runs the analog family whatever the configured preset, and may set its own
+   width, which is in force until the row leaves. Only an nfm row parses a width, so it is the NFM demodulator's. */
+static void
+analog_width_view_take_row(const dsd_opts* opts, const dsd_state* state, dsd_app_analog_width_view* out) {
+    out->row_analog = dsd_scan_mode_is_analog(dsd_scan_mode_active(state)) ? 1U : 0U;
+    if (out->row_analog) {
+        out->kind = opts->analog_demod; /* a live row's options are in force */
+    }
+    const dsd_scan_option_values* row = dsd_scan_mode_row_options(state);
+    if (row && (row->present & DSD_SCAN_OPT_BANDWIDTH) && row->channel_bw_hz > 0 && out->kind == DSD_ANALOG_DEMOD_FM) {
+        out->row_override = 1U;
+        out->row_hz = row->channel_bw_hz;
+    }
+}
+
 int
 dsd_app_analog_width_view_get(const dsd_opts* opts, const dsd_state* state, const dsd_frontend_metrics* metrics,
                               dsd_app_analog_width_view* out) {
@@ -118,15 +134,14 @@ dsd_app_analog_width_view_get(const dsd_opts* opts, const dsd_state* state, cons
     const dsd_scan_settings* configured = dsd_scan_mode_configured_view(state);
     const int analog_only = configured ? configured->analog_only : opts->analog_only;
     out->kind = configured ? configured->analog_demod : opts->analog_demod;
-    const int configured_hz =
-        (out->kind == DSD_ANALOG_DEMOD_AM) ? opts->analog_am_bandwidth_hz : opts->analog_nfm_bandwidth_hz;
-    out->configured_hz = configured_hz > 0 ? configured_hz : 0;
-    out->radio_input = dsd_opts_input_is_radio(opts) ? 1U : 0U;
     out->shown = (analog_only == 1 && opts->m17encoder != 1) ? 1U : 0U;
-    if (!out->shown || !out->radio_input) {
+    analog_width_view_take_row(opts, state, out);
+    out->configured_hz = dsd_scan_mode_configured_analog_width(opts, state, out->kind);
+    out->radio_input = dsd_opts_input_is_radio(opts) ? 1U : 0U;
+    if ((!out->shown && !out->row_analog) || !out->radio_input) {
         return 0;
     }
-    out->width_hz = dsd_analog_width_effective_hz(out->kind, out->configured_hz);
+    out->width_hz = out->row_override ? out->row_hz : dsd_analog_width_effective_hz(out->kind, out->configured_hz);
     analog_width_view_take_front_end(opts, metrics, out);
     return 0;
 }
@@ -140,7 +155,7 @@ dsd_app_analog_width_view_format(const dsd_app_analog_width_view* view, char* ou
     if (!view) {
         return -1;
     }
-    if (!view->shown) {
+    if (!view->shown && !view->row_analog) {
         return 0;
     }
     if (!view->radio_input) {
@@ -151,6 +166,18 @@ dsd_app_analog_width_view_format(const dsd_app_analog_width_view* view, char* ou
     if (dsd_analog_width_format(view->width_hz, width, sizeof width) != 0) {
         return 0;
     }
+    if (view->row_override) {
+        /* The configured width of the row's demodulator, which the row's own overrides and the width controls edit;
+           the kind's default width when none is set. */
+        char configured[DSD_ANALOG_WIDTH_TEXT_MAX];
+        if (dsd_analog_width_format(dsd_analog_width_effective_hz(view->kind, view->configured_hz), configured,
+                                    sizeof configured)
+            != 0) {
+            configured[0] = '\0';
+        }
+        DSD_SNPRINTF(out, out_size, "%s (row; default %s)", width, configured);
+        return 0;
+    }
     const char* note = "";
     if (view->dsp_limited) {
         note = " (DSP-limited)";
@@ -158,6 +185,33 @@ dsd_app_analog_width_view_format(const dsd_app_analog_width_view* view, char* ou
         note = " (default)";
     }
     DSD_SNPRINTF(out, out_size, "%s%s", width, note);
+    return 0;
+}
+
+int
+dsd_app_analog_width_edit_notice(const dsd_opts* opts, const dsd_state* state, int kind, char* out, size_t out_size) {
+    if (!out || out_size == 0U) {
+        return -1;
+    }
+    out[0] = '\0';
+    dsd_app_analog_width_view view;
+    if (!dsd_analog_demod_is_valid(kind) || dsd_app_analog_width_view_get(opts, state, NULL, &view) != 0) {
+        return -1;
+    }
+    /* The kind the command edited, not the configured preset's: an NFM edit on an AM session names the NFM width. */
+    char configured[DSD_APP_ANALOG_WIDTH_TEXT_MAX];
+    (void)dsd_app_analog_width_setting_format(dsd_scan_mode_configured_analog_width(opts, state, kind), configured,
+                                              sizeof configured);
+    const char* label = dsd_analog_demod_label(kind);
+    if (!view.row_override || view.kind != kind) {
+        DSD_SNPRINTF(out, out_size, "Applied: %s bandwidth -> %s", label, configured);
+        return 0;
+    }
+    char row[DSD_ANALOG_WIDTH_TEXT_MAX];
+    if (dsd_analog_width_format(view.row_hz, row, sizeof row) != 0) {
+        row[0] = '\0';
+    }
+    DSD_SNPRINTF(out, out_size, "Default %s bandwidth -> %s; this channel overrides it (%s)", label, configured, row);
     return 0;
 }
 

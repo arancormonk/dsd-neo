@@ -776,8 +776,31 @@ test_squelch_rows_import_and_preview(void) {
     }
 }
 
+/* --- Issue #526: analog rows carry no keys --- */
+
+/* An analog class decrypts nothing: every source of key material, a key loader included, is
+ * incompatible with it, while "no keys" stays compatible, as it is for every class. */
+static void
+test_analog_rows_refuse_key_material(void) {
+    dsd_key_set keys = {0};
+    assert(!dsd_scan_keys_compatible(NULL, DSD_SCAN_MODE_NFM));
+    assert(dsd_scan_keys_compatible(&keys, DSD_SCAN_MODE_NFM));
+    keys.present = 1U;
+    assert(!dsd_scan_keys_compatible(&keys, DSD_SCAN_MODE_NFM));
+    keys.keyloader = 1;
+    assert(!dsd_scan_keys_compatible(&keys, DSD_SCAN_MODE_NFM));
+    assert(dsd_scan_keys_compatible(&keys, DSD_SCAN_MODE_DMR));
+    keys.keyloader = 0;
+    keys.scalars.basic_key_present = 1;
+    keys.scalars.K = 7U;
+    assert(!dsd_scan_keys_compatible(&keys, DSD_SCAN_MODE_NFM));
+    assert(dsd_scan_keys_compatible(&keys, DSD_SCAN_MODE_DMR));
+    DSD_SECURE_ZERO(&keys, sizeof(keys));
+}
+
 int
 main(void) {
+    test_analog_rows_refuse_key_material();
     test_squelch_rows_import_and_preview();
     test_move_unwinds_both_group_scopes();
     test_slotless_options_validate_files();

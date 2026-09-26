@@ -621,6 +621,23 @@ dsd_opts_audio_in_dev_is_m17udp_spec(const char* dev) {
 }
 
 /**
+ * @brief What sets the DSP rate of this radio input (dsd_analog_rate_source), as the stream start classifies the input
+ * (detect_radio_source()): an I/Q replay's capture, a SoapySDR or Airspy device, or else the RTL DSP bandwidth. It
+ * picks the fix an analog width refusal names.
+ */
+static inline int
+dsd_opts_analog_rate_source(const dsd_opts* opts) {
+    const char* dev = opts ? opts->audio_in_dev : NULL;
+    if ((opts && opts->iq_replay_active) || dsd_opts_audio_in_dev_is_iqreplay_spec(dev)) {
+        return DSD_ANALOG_RATE_CAPTURE;
+    }
+    if (dsd_opts_audio_in_dev_is_soapy_spec(dev) || dsd_opts_audio_in_dev_is_airspy_spec(dev)) {
+        return DSD_ANALOG_RATE_DEVICE;
+    }
+    return DSD_ANALOG_RATE_RTL_BW;
+}
+
+/**
  * @brief Compute samples-per-symbol for a given symbol rate and sample rate.
  *
  * Dynamically computes SPS based on the actual demodulator output sample rate.

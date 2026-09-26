@@ -2003,6 +2003,9 @@ class Setup : public QObject {
         metrics[QStringLiteral("analogBandwidthConfiguredHz")] = 0;
         metrics[QStringLiteral("analogBandwidthMaxHz")] = 0;
         metrics[QStringLiteral("analogBandwidthReading")] = QString();
+        // #526: an nfm scan row on air (its width is in force on any session), and whether it sets its own.
+        metrics[QStringLiteral("analogBandwidthRowActive")] = false;
+        metrics[QStringLiteral("analogBandwidthRowOverride")] = false;
         metrics[QStringLiteral("ppm")] = 0;
         m_metrics = metrics;
         m_engine = engine;

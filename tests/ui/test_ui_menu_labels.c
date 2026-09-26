@@ -219,6 +219,9 @@ test_decoder_labels(void) {
     rc |= expect_str("decode mode dmr", lbl_decode_mode(&ctx, b, sizeof(b)), "Mode... [DMR]");
     dsd_test_scan_labels_set(1, DSD_SCAN_MODE_P25);
     rc |= expect_str("decode mode with row override", lbl_decode_mode(&ctx, b, sizeof(b)), "Mode... [DMR; scan p25]");
+    /* Issue #526: an nfm row reads as its class, beside the configured digital mode it will return to. */
+    dsd_test_scan_labels_set(1, DSD_SCAN_MODE_NFM);
+    rc |= expect_str("decode mode on an nfm row", lbl_decode_mode(&ctx, b, sizeof(b)), "Mode... [DMR; scan nfm]");
     dsd_test_scan_labels_set(0, DSD_SCAN_MODE_INHERIT);
     opts.monitor_input_audio = 1;
     opts.use_cosine_filter = 1;

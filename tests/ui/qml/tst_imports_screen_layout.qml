@@ -102,6 +102,38 @@ Item {
             }
         }
 
+        // Issue #526: the channel-map review reports an nfm row's own --nfm-bandwidth-hz, an
+        // nfm row without one says it inherits, and a digital row says nothing about it.
+        function test_channel_review_shows_row_bandwidth() {
+            var map = testContext.writeFixtureCsv("bandwidth-map.csv",
+                "channel,frequency,mode,options\n"
+                + "1,154430000,nfm,--nfm-bandwidth-hz 12500\n"
+                + "2,155100000,nfm,\n"
+                + "3,853012500,dmr,\n");
+            var result = importedFiles.importFile(map, "bandwidth-map.csv", "chan");
+            verify(result.ok, result.detail || "the channel map did not import");
+            var row = importedFiles.rowForPath(result.path);
+            try {
+                var profiles = importedFiles.channelProfiles(row);
+                verify(profiles.ok);
+                var sheet = findChild(tc.screen, "channelReviewSheet");
+                verify(sheet !== null, "the channel review is missing");
+                sheet.rows = profiles.rows;
+                sheet.valid = profiles.ok;
+                sheet.visible = true;
+                var rows = findChild(tc.screen, "channelReviewRows");
+                verify(rows !== null);
+                tryVerify(function() { return rows.count === 3 && rows.itemAtIndex(2) !== null; });
+                verify(rows.itemAtIndex(0).text.indexOf("NFM bandwidth: 12.5 kHz") >= 0, rows.itemAtIndex(0).text);
+                verify(rows.itemAtIndex(1).text.indexOf("NFM bandwidth: inherit") >= 0, rows.itemAtIndex(1).text);
+                verify(rows.itemAtIndex(2).text.indexOf("NFM bandwidth") < 0, rows.itemAtIndex(2).text);
+                sheet.visible = false;
+            } finally {
+                importedFiles.remove(importedFiles.rowForPath(result.path));
+                tryCompare(tc.list, "count", 2);
+            }
+        }
+
         function test_cancel_import_cleanup_data() {
             return [{tag: "primary"}, {tag: "sheet"}];
         }

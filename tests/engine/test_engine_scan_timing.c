@@ -236,6 +236,47 @@ test_legacy_deadline_matches_rotation(void) {
     free(opts);
 }
 
+/* Issue #526: an untyped -Y row on the analog monitor holds on its carrier under the hangtime rule.
+ * The published "Carrier" deadline is the instant the real noCarrier() step hops, with audio output
+ * off and a global --scan-voice-only on: neither the audio write nor the voice gate has a say. */
+static void
+test_analog_carrier_deadline_matches_rotation(void) {
+    dsd_opts* opts = calloc(1, sizeof(*opts));
+    dsd_state* state = calloc(1, sizeof(*state));
+    assert(opts && state);
+    initOpts(opts);
+    initState(state);
+    opts->scanner_mode = 1;
+    opts->analog_only = 1;
+    opts->monitor_input_audio = 1;
+    opts->audio_in_type = AUDIO_IN_WAV;
+    opts->audio_out = 0;
+    opts->scan_voice_only = 1;
+    opts->trunk_hangtime = 1.0f;
+    state->lcn_freq_count = 2;
+    *dsd_state_trunk_lcn_slot(state, 0) = 0;
+    state->analog_rx.carrier_open = 1;
+    state->lcn_freq_roll = 0;
+    state->last_cc_sync_time = 100;
+    dsd_scan_voice_gate_note_retune(state, 999.0);
+    dsd_scan_voice_gate_tick(opts, state, 1, 1000.0);
+    assert(!dsd_scan_voice_gate_owns_step(opts, state));
+    dsd_engine_scan_y_timing_tick(opts, state, 1000.0, 100.0);
+    assert(state->scan_timing.reason == DSD_SCAN_STAY_CARRIER);
+    const double deadline = state->scan_timing.deadline_m;
+    assert(deadline > 1000.0);
+    g_test_wall = 100 + (time_t)(deadline - 1000.0) - 1;
+    noCarrier(opts, state);
+    assert(state->lcn_freq_roll == 0);
+    ++g_test_wall;
+    noCarrier(opts, state);
+    assert(state->lcn_freq_roll == 1);
+    g_test_wall = 0;
+    freeState(state);
+    free(state);
+    free(opts);
+}
+
 static void
 test_protocol_hangtime_publication(const char* protocol, float configured_hangtime) {
     char path[DSD_TEST_PATH_MAX];
@@ -318,6 +359,7 @@ test_protocol_hangtime_publication(const char* protocol, float configured_hangti
 int
 main(void) {
     test_legacy_deadline_matches_rotation();
+    test_analog_carrier_deadline_matches_rotation();
     test_scan_retune_publication(0, 0, 0);
     test_scan_retune_publication(1, 0, 0);
     test_scan_retune_publication(1, 1, 0);

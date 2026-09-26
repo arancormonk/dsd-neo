@@ -399,6 +399,18 @@ void rtl_stream_set_digital_decode_modes(const dsd_opts* opts);
 int rtl_stream_check_analog_profile(int family, int kind, int width_hz);
 
 /**
+ * @brief Report the demod (DSP) rate an analog profile request is held to on the caller's thread.
+ *
+ * The rate the running stream published, from its start on, which rtl_stream_check_analog_profile(),
+ * rtl_stream_request_analog_profile() and rtl_stream_prepare_retune_analog_profile_for_target() check a width against.
+ * Unlike rtl_stream_get_demod_rate_hz(), a metrics value the demod thread publishes with its first processed block,
+ * it needs no block to have run.
+ *
+ * @return The rate in Hz, or 0 with no stream running.
+ */
+int rtl_stream_get_request_rate_hz(void);
+
+/**
  * @brief Report the published analog receive profile.
  *
  * @param out_kind     dsd_analog_demod of the active analog family (0 otherwise). May be NULL.
@@ -501,10 +513,26 @@ typedef struct rtl_stream_retune_analog_profile {
  * alone. A DSD_RX_FAMILY_DIGITAL switch then applies the queued symbol profile; a DSD_RX_FAMILY_ANALOG switch
  * applies none of it (the analog family has no symbol clock), only the gain profile.
  *
+ * A live rtl_stream_request_analog_profile() accepted after this call is the newer word on the family: the retune then
+ * lands on its target with neither this family nor the symbol profile queued with it, so the front end stays on the
+ * family and profile the live requests chose. A scanner that leaves while its row's retune is still in flight puts
+ * the configured family back that way, and the late retune does not switch it back to the row's.
+ *
  * @return 0 when attached; -1 when refused (same rules and refusal log as rtl_stream_request_analog_profile()).
  */
 int rtl_stream_prepare_retune_analog_profile_for_target(uint32_t target_freq_hz,
                                                         const rtl_stream_retune_analog_profile* analog);
+
+/**
+ * @brief Number of live receive-family requests accepted so far (rtl_stream_request_analog_profile()).
+ *
+ * Rises by one per accepted request, running stream or not; a refused request does not count. A retune profile whose
+ * family was attached before the number last moved no longer lands that family or the symbol profile queued with it
+ * (rtl_stream_prepare_retune_analog_profile_for_target()). A scanner that queued a row's retune compares the number
+ * when the retune completes: a request made meanwhile (a command acting for the row still on air) chose the family
+ * the front end runs, so the row it tuned for must be restaged.
+ */
+uint32_t rtl_stream_live_family_request_count(void);
 
 /**
  * @brief Apply and clear a queued retune profile for a specific external retune target.

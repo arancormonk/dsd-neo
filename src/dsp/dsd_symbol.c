@@ -36,11 +36,13 @@
 #include <dsd-neo/platform/audio.h>
 #include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/platform/timing.h>
+#include <dsd-neo/runtime/analog_tones.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/exitflag.h>
 #include <dsd-neo/runtime/log.h>
 #include <dsd-neo/runtime/net_audio_input_hooks.h>
 #include <dsd-neo/runtime/shutdown.h>
+#include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <dsd-neo/runtime/udp_audio_hooks.h>
 #include <fcntl.h>
 #include <math.h>
@@ -1156,31 +1158,77 @@ symbol_apply_unsynced_filters(dsd_opts* opts, dsd_state* state, unsigned int ana
     }
 }
 
-static inline void
-symbol_output_unsynced_analog(dsd_opts* opts, dsd_state* state, unsigned int analog_block) {
-    if ((opts->rtl_pwr > opts->rtl_squelch_level) && opts->monitor_input_audio == 1 && state->carrier == 0
-        && opts->audio_out == 1) {
-        symbol_convert_analog_block_to_i16(state, analog_block);
-        size_t bytes = (size_t)analog_block * sizeof(short);
-        /* Synchronous playback can hold the decoder for the block's playing time; that is not
-           time spent waiting for input, which received-tone detection measures (issue #522). */
-        dsd_analog_rx_playback_begin(state);
-        if (opts->audio_out_type == 0 && opts->audio_raw_out) {
-            dsd_audio_write(opts->audio_raw_out, state->analog_out, analog_block);
-        }
-        if (opts->audio_out_type == 8) {
-            dsd_udp_audio_hook_blast_analog(opts, state, bytes, state->analog_out);
-        }
-        dsd_analog_rx_playback_end(state);
-        if (opts->trunk_enable != 1) {
-            state->last_cc_sync_time = time(NULL);
-            state->last_cc_sync_time_m = dsd_time_now_monotonic_s();
-        }
-        if (!(opts->trunk_enable == 1 && opts->trunk_is_tuned == 1)) {
-            state->last_vc_sync_time = time(NULL);
-            state->last_vc_sync_time_m = dsd_time_now_monotonic_s();
-        }
+/* The monitor gate: the squelch open over the block, the monitor on, no digital carrier flagged and audio out on.
+ * Nothing plays while a retune is unresolved (dsd_trunk_tuning_pending_request()): in flight, when the front end still
+ * delivers the channel being left, or failed after the scanner had moved on, when it delivers a channel other than the
+ * one the scanner shows, until a later retune lands or the scan ends -- the same gate that holds back digital frames.
+ * Nor, on the analog monitor, from a block that began before a retune or reset, or before detection started, or that a
+ * boundary the tap has not read past yet leaves the old channel's (issue #526). */
+static inline int
+symbol_unsynced_audio_allowed(const dsd_opts* opts, const dsd_state* state) {
+    if (!(opts->rtl_pwr > opts->rtl_squelch_level) || opts->monitor_input_audio != 1 || state->carrier != 0
+        || opts->audio_out != 1) {
+        return 0;
     }
+    return dsd_trunk_tuning_pending_request() == 0U && !dsd_analog_rx_block_straddles_boundary(opts, state);
+}
+
+/* The monitor sink: the local raw stream or the UDP analog socket. */
+static inline void
+symbol_write_unsynced_audio(const dsd_opts* opts, dsd_state* state, unsigned int analog_block) {
+    symbol_convert_analog_block_to_i16(state, analog_block);
+    size_t bytes = (size_t)analog_block * sizeof(short);
+    /* Synchronous playback can hold the decoder for the block's playing time; that is not
+       time spent waiting for input, which received-tone detection measures (issue #522). */
+    dsd_analog_rx_playback_begin(state);
+    if (opts->audio_out_type == 0 && opts->audio_raw_out) {
+        dsd_audio_write(opts->audio_raw_out, state->analog_out, analog_block);
+    }
+    if (opts->audio_out_type == 8) {
+        dsd_udp_audio_hook_blast_analog(opts, state, bytes, state->analog_out);
+    }
+    dsd_analog_rx_playback_end(state);
+}
+
+/* Whether the block is carrier activity for the scanner's hold. The analog monitor's carrier is the received-tone
+ * tap's (squelch open above its level floor, through its 200 ms hangover, at every input rate, dropped at every retune
+ * and while one is unresolved), whether or not the block is played: -o null and a muted UI hold the row too
+ * (issue #526). The -8 source monitor under digital decoding keeps its old rule, the carrier it plays, which is none
+ * while a retune is unresolved. Either way the channel a retune leaves, or one a failed retune left the receiver on,
+ * never holds the row the scanner shows: its hangtime runs out and the scanner tunes on. */
+static inline int
+symbol_unsynced_carrier_active(const dsd_opts* opts, const dsd_state* state) {
+    if (opts->monitor_input_audio != 1 || state->carrier != 0) {
+        return 0;
+    }
+    if (dsd_analog_tone_detection_active(opts)) {
+        return dsd_analog_rx_carrier_open_now(opts, state);
+    }
+    return opts->audio_out == 1 && opts->rtl_pwr > opts->rtl_squelch_level && dsd_trunk_tuning_pending_request() == 0U;
+}
+
+/* Stamp carrier activity: the -Y hangtime anchor and, off a tuned trunked voice channel, the voice anchor. */
+static inline void
+symbol_stamp_unsynced_carrier(const dsd_opts* opts, dsd_state* state) {
+    if (!symbol_unsynced_carrier_active(opts, state)) {
+        return;
+    }
+    if (opts->trunk_enable != 1) {
+        state->last_cc_sync_time = time(NULL);
+        state->last_cc_sync_time_m = dsd_time_now_monotonic_s();
+    }
+    if (!(opts->trunk_enable == 1 && opts->trunk_is_tuned == 1)) {
+        state->last_vc_sync_time = time(NULL);
+        state->last_vc_sync_time_m = dsd_time_now_monotonic_s();
+    }
+}
+
+static inline void
+symbol_output_unsynced_analog(const dsd_opts* opts, dsd_state* state, unsigned int analog_block) {
+    if (symbol_unsynced_audio_allowed(opts, state)) {
+        symbol_write_unsynced_audio(opts, state, analog_block);
+    }
+    symbol_stamp_unsynced_carrier(opts, state);
 }
 
 static inline void

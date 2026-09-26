@@ -12,7 +12,9 @@ import QtTest
 // cannot filter. An explicit width can go back to the unset default, and stays
 // editable on a radio under another preset. On PCM input the width cannot act, so
 // the stepper is disabled with the reason beside it. The NFM chip selects the
-// analog preset.
+// analog preset. Issue #526: an nfm scan row on air runs the width on any
+// session, so the sheet shows it under a digital preset too; a row that sets its
+// own width is read first and badged, and the stepper edits the default beneath.
 Item {
     width: 420
     height: 1100
@@ -46,6 +48,8 @@ Item {
             testContext.setMetric("analogBandwidthConfiguredHz", 0);
             testContext.setMetric("analogBandwidthMaxHz", 0);
             testContext.setMetric("analogBandwidthReading", "");
+            testContext.setMetric("analogBandwidthRowActive", false);
+            testContext.setMetric("analogBandwidthRowOverride", false);
             testContext.setMetric("radioInput", true);
             if (sheet) {
                 sheet.forgetRequests();
@@ -71,6 +75,20 @@ Item {
             testContext.setMetric("analogBandwidthReading", reading);
             testContext.setMetric("decodeMode", analogMode);
             tryVerify(function () { return metrics.decodeMode === analogMode });
+        }
+
+        // What the engine publishes while an nfm scan row is on air: the width in
+        // force (the row's own when @p rowHz is above 0), the configured width
+        // the stepper edits, and the reading app_control spells from them.
+        function nfmRowOnAir(widthHz, configuredHz, rowHz, reading) {
+            testContext.setMetric("analogBandwidthHz", widthHz);
+            testContext.setMetric("analogBandwidthDspLimited", false);
+            testContext.setMetric("analogBandwidthConfiguredHz", configuredHz);
+            testContext.setMetric("analogBandwidthMaxHz", 42000);
+            testContext.setMetric("analogBandwidthReading", reading);
+            testContext.setMetric("analogBandwidthRowOverride", rowHz > 0);
+            testContext.setMetric("analogBandwidthRowActive", true);
+            tryVerify(function () { return metrics.analogBandwidthRowActive === true });
         }
 
         function test_hidden_outside_the_analog_preset() {
@@ -201,6 +219,69 @@ Item {
             compare(testContext.nfmBandwidthCalls(), calls);
             analogSession(8000, false, 8000);
             verify(!findChild(sheet, "radioAnalogBandwidthDown").enabled, "a step below 8 kHz was offered");
+        }
+
+        // A digital session scanning an nfm row: the row runs the configured
+        // width, so the sheet reads it as the terminal does, not as an idle
+        // setting, and the stepper edits it.
+        function test_nfm_row_on_a_digital_session_shows_the_width_in_force() {
+            verify(metrics.decodeMode !== analogMode);
+            nfmRowOnAir(16000, 0, 0, "16 kHz (default)");
+            verify(findChild(sheet, "radioAnalogSection").visible, "an nfm row's width was hidden on a digital preset");
+            compare(findChild(sheet, "radioAnalogBandwidthValue").text, "16 kHz (default)");
+            verify(!findChild(sheet, "radioAnalogBandwidthIdleNote").visible, "the width in force read as idle");
+            verify(!findChild(sheet, "radioAnalogBandwidthRowNote").visible, "no row width, no badge");
+            findChild(sheet, "radioAnalogBandwidthDown").clicked();
+            compare(testContext.lastNfmBandwidthHz(), 12500);
+            sheet.forgetRequests();
+            // An explicit configured width reads as the width in force, not the setting.
+            nfmRowOnAir(20000, 20000, 0, "20 kHz");
+            compare(findChild(sheet, "radioAnalogBandwidthValue").text, "20 kHz");
+            verify(!findChild(sheet, "radioAnalogBandwidthIdleNote").visible);
+            // Once the row leaves, the digital session shows the setting again.
+            testContext.setMetric("analogBandwidthRowActive", false);
+            testContext.setMetric("analogBandwidthReading", "");
+            tryVerify(function () { return metrics.analogBandwidthRowActive === false });
+            verify(findChild(sheet, "radioAnalogBandwidthIdleNote").visible);
+        }
+
+        // A row that sets its own width owns the reading; the badge says so and
+        // names the configured default the stepper changes, which the row's leave
+        // returns to. The steps start from that default, never from the row's.
+        function test_row_width_reads_first_and_the_stepper_edits_the_default() {
+            nfmRowOnAir(12500, 20000, 12500, "12.5 kHz (row; default 20 kHz)");
+            compare(findChild(sheet, "radioAnalogBandwidthValue").text, "12.5 kHz");
+            verify(findChild(sheet, "radioAnalogBandwidthRowNote").visible);
+            verify(findChild(sheet, "radioAnalogBandwidthRowBadge").visible);
+            compare(findChild(sheet, "radioAnalogBandwidthRowDefault").text, "default 20 kHz");
+            // Read aloud as the terminal prints it.
+            compare(findChild(sheet, "radioAnalogBandwidthValue").Accessible.name, "12.5 kHz (row; default 20 kHz)");
+            findChild(sheet, "radioAnalogBandwidthUp").clicked();
+            compare(testContext.lastNfmBandwidthHz(), 25000);
+            // The row still owns the reading; only the named default moved.
+            compare(findChild(sheet, "radioAnalogBandwidthValue").text, "12.5 kHz");
+            compare(findChild(sheet, "radioAnalogBandwidthRowDefault").text, "default 25 kHz");
+            sheet.forgetRequests();
+            // The unset default under a row width: named as the width it gives, and
+            // stepped from it, not from the row's 12.5 kHz.
+            nfmRowOnAir(12500, 0, 12500, "12.5 kHz (row; default 16 kHz)");
+            compare(findChild(sheet, "radioAnalogBandwidthRowDefault").text, "default 16 kHz");
+            findChild(sheet, "radioAnalogBandwidthDown").clicked();
+            compare(testContext.lastNfmBandwidthHz(), 12500);
+            sheet.forgetRequests();
+            // The same on the analog preset.
+            analogSession(12500, false, 0, 42000);
+            nfmRowOnAir(12500, 0, 12500, "12.5 kHz (row; default 16 kHz)");
+            findChild(sheet, "radioAnalogBandwidthUp").clicked();
+            compare(testContext.lastNfmBandwidthHz(), 20000);
+            sheet.forgetRequests();
+            // On PCM input the width filters nothing, row or not.
+            testContext.setMetric("analogBandwidthHz", 0);
+            testContext.setMetric("analogBandwidthReading", "not used on PCM input");
+            testContext.setMetric("radioInput", false);
+            tryVerify(function () { return metrics.radioInput === false });
+            compare(findChild(sheet, "radioAnalogBandwidthValue").text, "not used on PCM input");
+            verify(!findChild(sheet, "radioAnalogBandwidthRowNote").visible);
         }
 
         function test_pcm_input_disables_the_stepper_and_says_why() {

@@ -7,9 +7,11 @@
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/core/talkgroup_policy.h>
+#include <dsd-neo/runtime/analog_channel.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/decode_mode.h>
 #include <dsd-neo/runtime/scan_mode.h>
+#include <dsd-neo/runtime/scan_options.h>
 #include <stddef.h>
 #include "scan_mode_label_stubs.h"
 
@@ -19,6 +21,27 @@ static int snapshots_available = 1;
 static dsd_scan_mode active_mode;
 static dsd_scan_settings configured_settings;
 static int have_configured;
+static dsd_scan_option_values row_options;
+static int have_row_options;
+
+void
+dsd_test_scan_labels_row_options(const dsd_scan_option_values* values) {
+    have_row_options = values != NULL;
+    if (values) {
+        row_options = *values;
+    }
+}
+
+const dsd_scan_option_values*
+dsd_scan_mode_row_options(const dsd_state* state) {
+    assert(state == &snapshot_state || state == NULL);
+    return state && have_row_options ? &row_options : NULL;
+}
+
+int
+dsd_scan_mode_is_analog(dsd_scan_mode mode) {
+    return mode == DSD_SCAN_MODE_NFM;
+}
 
 void
 dsd_test_scan_labels_configured(const dsd_scan_settings* settings) {
@@ -38,6 +61,20 @@ const dsd_scan_settings*
 dsd_scan_mode_configured_view(const dsd_state* state) {
     assert(state == &snapshot_state || state == NULL);
     return state && have_configured ? &configured_settings : NULL;
+}
+
+/* As scan_mode.c reads it: the stubbed configured view while one is set, dsd_opts otherwise. */
+int
+dsd_scan_mode_configured_analog_width(const dsd_opts* opts, const dsd_state* state, int kind) {
+    const dsd_scan_settings* configured = dsd_scan_mode_configured_view(state);
+    int width_hz = 0;
+    if (configured) {
+        width_hz =
+            kind == DSD_ANALOG_DEMOD_AM ? configured->analog_am_bandwidth_hz : configured->analog_nfm_bandwidth_hz;
+    } else if (opts) {
+        width_hz = kind == DSD_ANALOG_DEMOD_AM ? opts->analog_am_bandwidth_hz : opts->analog_nfm_bandwidth_hz;
+    }
+    return width_hz > 0 ? width_hz : 0;
 }
 
 void
@@ -74,7 +111,11 @@ dsd_scan_mode_active(const dsd_state* state) {
 
 const char*
 dsd_scan_mode_name(dsd_scan_mode mode) {
-    return mode == DSD_SCAN_MODE_P25 ? "p25" : "";
+    switch (mode) {
+        case DSD_SCAN_MODE_P25: return "p25";
+        case DSD_SCAN_MODE_NFM: return "nfm";
+        default: return "";
+    }
 }
 
 static size_t tg_avoid_count;

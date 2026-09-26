@@ -49,8 +49,15 @@ scan_aes_compatible(const dsd_key_scalars* k, unsigned int mode, int nxdn) {
 
 int
 dsd_scan_keys_compatible(const dsd_key_set* keys, unsigned int mode) {
-    if (!keys || !keys->present || keys->keyloader) {
+    if (!keys || !keys->present) {
         return keys != NULL;
+    }
+    /* An analog class decrypts nothing, so any key material -- a key loader included -- is refused. */
+    if (dsd_scan_mode_is_analog((dsd_scan_mode)mode)) {
+        return 0;
+    }
+    if (keys->keyloader) {
+        return 1;
     }
     const dsd_key_scalars* k = &keys->scalars;
     const int nxdn = mode == DSD_SCAN_MODE_NXDN48 || mode == DSD_SCAN_MODE_NXDN96;

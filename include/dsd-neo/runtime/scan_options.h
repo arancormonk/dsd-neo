@@ -39,6 +39,8 @@ enum {
     DSD_SCAN_OPT_MAX_VISIT = 1U << 20,
     /** The row sets its own squelch threshold (--squelch-db, issue #521). */
     DSD_SCAN_OPT_SQUELCH = 1U << 21,
+    /** The analog row sets its own channel width (--nfm-bandwidth-hz, issue #526). */
+    DSD_SCAN_OPT_BANDWIDTH = 1U << 22,
     DSD_SCAN_OPT_DIRECT = DSD_SCAN_OPT_BP | DSD_SCAN_OPT_HYTERA | DSD_SCAN_OPT_SCALAR | DSD_SCAN_OPT_SCRAMBLER,
     DSD_SCAN_OPT_FILES = DSD_SCAN_OPT_HEX_FILE | DSD_SCAN_OPT_DEC_FILE
 };
@@ -62,6 +64,8 @@ typedef struct {
     int max_visit_ms;
     /** Whole dB from -100 to 0 in the rtl_sql convention; 0 = explicit per-row off. */
     int squelch_db;
+    /** Full RF channel width in Hz for the row's analog demodulator (runtime/analog_channel.h ranges). */
+    int channel_bw_hz;
     int mute_dmr;
     int tune_data_calls;
     int tune_enc_calls;
@@ -97,6 +101,13 @@ int dsd_scan_options_parse(const char* text, unsigned int mode, int conventional
 typedef int (*dsd_scan_option_file_cb)(void* context, const char* option, const char* path, size_t offset,
                                        size_t length, int includes_option);
 int dsd_scan_options_visit_files(const char* text, void* context, dsd_scan_option_file_cb callback);
+
+/** Hold a row's channel width (DSD_SCAN_OPT_BANDWIDTH) to the DSP rate it would run at, for the
+ * demodulator its class @p mode uses. Returns 0 when the row carries no width, @p rate_hz is not known
+ * (<= 0) or the width fits; otherwise -1 with dsd_analog_width_check()'s message, which names the width,
+ * the rate, the widest width that rate fits and the fix. The width's range was checked when it parsed. */
+int dsd_scan_option_width_check(unsigned int mode, const dsd_scan_option_values* values, int rate_hz, char* error,
+                                size_t error_size);
 #ifdef __cplusplus
 }
 #endif

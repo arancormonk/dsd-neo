@@ -493,8 +493,8 @@ dsd_synctype_to_string(int synctype) { // NOLINT(misc-use-internal-linkage)
 }
 
 static dsd_scan_mode g_scan_mode_active = DSD_SCAN_MODE_INHERIT;
-/* Issue #521: the scan scope as the shared squelch view sees it. The two stubs below replace
- * the runtime definitions at link time, like the other link stubs here, so they keep external
+/* Issue #521: the scan scope as the shared squelch view sees it. The stubs below replace the
+ * runtime definitions at link time, like the other link stubs here, so they keep external
  * linkage; the pointers they hand back stay file-local. */
 static const dsd_scan_option_values* g_scan_row_options;
 static const dsd_scan_settings* g_scan_configured;
@@ -511,10 +511,31 @@ dsd_scan_mode_configured_view(const dsd_state* state) { // NOLINT(misc-use-inter
     return g_scan_configured;
 }
 
+/* Issue #526: the configured width the analog width view reads, as scan_mode.c reads it: the stubbed configured view
+ * while one is set, dsd_opts otherwise. */
+int
+// NOLINTNEXTLINE(misc-use-internal-linkage)
+dsd_scan_mode_configured_analog_width(const dsd_opts* opts, const dsd_state* state, int kind) {
+    const dsd_scan_settings* configured = dsd_scan_mode_configured_view(state);
+    int width_hz = 0;
+    if (configured) {
+        width_hz =
+            kind == DSD_ANALOG_DEMOD_AM ? configured->analog_am_bandwidth_hz : configured->analog_nfm_bandwidth_hz;
+    } else if (opts) {
+        width_hz = kind == DSD_ANALOG_DEMOD_AM ? opts->analog_am_bandwidth_hz : opts->analog_nfm_bandwidth_hz;
+    }
+    return width_hz > 0 ? width_hz : 0;
+}
+
 dsd_scan_mode
 dsd_scan_mode_active(const dsd_state* state) { // NOLINT(misc-use-internal-linkage)
     (void)state;
     return g_scan_mode_active;
+}
+
+int
+dsd_scan_mode_is_analog(dsd_scan_mode mode) { // NOLINT(misc-use-internal-linkage)
+    return mode == DSD_SCAN_MODE_NFM;
 }
 
 uint8_t
@@ -962,6 +983,7 @@ test_analog_channel_status_rendering(void) {
     DSD_MEMSET(&configured, 0, sizeof(configured));
     configured.analog_only = 1;
     configured.analog_demod = DSD_ANALOG_DEMOD_FM;
+    configured.analog_nfm_bandwidth_hz = 12500;
     g_scan_configured = &configured;
     opts.analog_only = 0;
     opts.frame_dmr = 1;
@@ -970,18 +992,45 @@ test_analog_channel_status_rendering(void) {
     assert_capture_contains(" Analog: NFM 12.5 kHz;");
     /* ...and with the unset default at a 12 kHz DSP rate, what that leave returns to: the rate itself, DSP-limited,
        not the 16 kHz the rate cannot filter. The row's front end reports its own channel meanwhile. */
+    configured.analog_nfm_bandwidth_hz = 0;
     opts.analog_nfm_bandwidth_hz = 0;
     opts.rtl_dsp_bw_khz = 12;
     g_demod_rate_hz = 12000;
     reset_printw_capture();
     ui_render_rtl_input_source(&opts, &state);
     assert_capture_contains(" DSP-BW: 12 kHz; Analog: NFM 12 kHz (DSP-limited);");
-    opts.analog_nfm_bandwidth_hz = 12500;
     opts.rtl_dsp_bw_khz = 48;
     g_demod_rate_hz = 0;
-    g_scan_configured = NULL;
+
+    /* Issue #526: an nfm row with its own width, on a digital session too. The row's width is in force, and the line
+       names the configured width the row's leave returns to, whatever dsd_opts reads under the row. */
+    configured.analog_only = 0;
+    configured.analog_nfm_bandwidth_hz = 20000;
+    static dsd_scan_option_values row;
+    DSD_MEMSET(&row, 0, sizeof(row));
+    row.present = DSD_SCAN_OPT_BANDWIDTH;
+    row.channel_bw_hz = 12500;
+    g_scan_row_options = &row;
+    g_scan_mode_active = DSD_SCAN_MODE_NFM;
     opts.frame_dmr = 0;
     opts.analog_only = 1;
+    opts.analog_nfm_bandwidth_hz = 12500;
+    g_channel_bandwidth_hz = 12500;
+    reset_printw_capture();
+    ui_render_rtl_input_source(&opts, &state);
+    assert_capture_contains(" Analog: NFM 12.5 kHz (row; default 20 kHz);");
+    /* ...and an nfm row without one shows the configured width it runs. */
+    g_scan_row_options = NULL;
+    opts.analog_nfm_bandwidth_hz = 20000;
+    g_channel_bandwidth_hz = 20000;
+    reset_printw_capture();
+    ui_render_rtl_input_source(&opts, &state);
+    assert_capture_contains(" Analog: NFM 20 kHz;");
+    assert(strstr(g_printw_capture, "(row") == NULL);
+    g_scan_mode_active = DSD_SCAN_MODE_INHERIT;
+    g_channel_bandwidth_hz = 20000;
+    opts.analog_nfm_bandwidth_hz = 12500;
+    g_scan_configured = NULL;
 
     /* The default below a 20 kHz DSP rate runs no channel filter: the 12 kHz rate itself bounds the channel. */
     opts.analog_nfm_bandwidth_hz = 0;
@@ -1866,6 +1915,13 @@ test_sync_tree_follows_scan_class(void) {
     reset_printw_capture();
     ui_render_nxdn_site_line(state, 1);
     assert_capture_contains("IDAS - Area: --;");
+    /* Issue #526: an analog row has no frame sync, so the last digital sync type is dropped
+       rather than shown beside an nfm row. */
+    g_scan_mode_active = DSD_SCAN_MODE_NFM;
+    ncurses_last_synctype = DSD_SYNC_DMR_BS_DATA_POS;
+    state->synctype = DSD_SYNC_NONE;
+    ui_update_sync_and_edacs_tree(state);
+    assert(ncurses_last_synctype == DSD_SYNC_NONE);
     g_scan_mode_active = DSD_SCAN_MODE_INHERIT;
     ncurses_last_synctype = DSD_SYNC_NONE;
     dsd_state_ext_free_all(state);
@@ -2603,6 +2659,15 @@ test_scan_timing_row_phrases(void) {
        to run from, and an unanchored timer is left off rather than shown as zero. */
     seed_scan_timing(&state, DSD_SCAN_STAY_HANGTIME, 1U, -1.0, 0U, 0U, 0U);
     assert_scan_timing_row(&opts, &state, "| Scan Timing: Hangtime");
+
+    /* Issue #526: an analog row's carrier holds it. On -Y it restarts the hangtime window; on a
+       trunk-scan nfm-conventional target it restarts the activity hold and suspends the dwell. */
+    seed_scan_timing(&state, DSD_SCAN_STAY_CARRIER, 1U, 101.9, 2000U, 0U, 0U);
+    assert_scan_timing_row(&opts, &state, "| Scan Timing: Carrier 1.9s/2.0s");
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    opts.trunk_scan_enabled = 1;
+    seed_scan_timing(&state, DSD_SCAN_STAY_CARRIER, 1U, 101.2, 1200U, 3000U, 1200U);
+    assert_scan_timing_row(&opts, &state, "| Scan Timing: Carrier 1.2s/1.2s  dwell 3.0s (suspended)");
 }
 
 /* The decoder decides when the receiver moves. A poll that lands after the deadline is a

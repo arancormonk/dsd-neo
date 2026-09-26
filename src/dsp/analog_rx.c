@@ -318,11 +318,17 @@ dsd_analog_rx_core_process(dsd_analog_rx_core* core, const float* block, int cou
     if (rate_hz != core->fe.in_rate_hz) {
         core_configure(core, rate_hz);
     }
+    if (core->fe.in_rate_hz <= 0) {
+        return 0; /* no rate to time the hangover by */
+    }
+    /* The carrier is kept at every rate, one the front end cannot use included: the scanners hold an analog row on it
+       (issue #526), whether or not the detectors can hear anything below the voice band there. */
+    const int carrier_now = squelch_open && core_mean_square(block, count) > DSD_ANALOG_RX_FLOOR_MEAN_SQUARE;
+    const int feed = core_update_carrier(core, carrier_now, count);
     if (!core->fe.active) {
         return 0;
     }
-    const int carrier_now = squelch_open && core_mean_square(block, count) > DSD_ANALOG_RX_FLOOR_MEAN_SQUARE;
-    if (core_update_carrier(core, carrier_now, count)) {
+    if (feed) {
         /* Inside the hangover the detectors keep time but may not change their verdict on
            these samples alone. */
         core_feed(core, block, count, !carrier_now);
@@ -363,15 +369,16 @@ dsd_analog_rx_core_publish(const dsd_analog_rx_core* core, dsd_analog_rx_publica
         return;
     }
     out->generation = core->resets;
+    out->carrier_open = core->carrier_open;
     if (!core->fe.active) {
-        /* Designed for a rate the front end cannot use: detection is on but hears nothing.
-           An unconfigured core (no block yet) is still INACTIVE. */
+        /* Designed for a rate the front end cannot use: detection is on but hears nothing,
+           though the carrier is still kept. An unconfigured core (no block yet) is still
+           INACTIVE. */
         if (core->fe.in_rate_hz != 0) {
             out->tone_state = DSD_ANALOG_TONE_STATE_UNAVAILABLE;
         }
         return;
     }
-    out->carrier_open = core->carrier_open;
     if (!core->carrier_open) {
         out->tone_state = DSD_ANALOG_TONE_STATE_IDLE;
         return;
@@ -392,15 +399,21 @@ dsd_analog_rx_core_publish(const dsd_analog_rx_core* core, dsd_analog_rx_publica
 /* Log key for "Received tone:" lines: nothing logged yet this reception, "none", or a tone. */
 enum { ANALOG_RX_LOG_UNSET = -1, ANALOG_RX_LOG_NONE = 0 };
 
+/* Every boundary the tap resets at when it moves: the trunk-tuning generation, and on RTL input the stream generation
+   and the analog receive profile the stream published (kind, width, channel filter on; all 0 on other inputs and while
+   the stream runs no analog monitor). A new kind of boundary is added here and in analog_rx_generations_read() only. */
 typedef struct {
-    dsd_analog_rx_core core;
     uint32_t rtl_generation;
     uint64_t tune_generation;
-    /** The analog receive profile the RTL stream published at the tap's last look (kind, width,
-        channel filter on); all 0 on other inputs and while the stream runs no analog monitor. */
     int rtl_profile_kind;
     int rtl_profile_width_hz;
     int rtl_profile_lpf_on;
+} analog_rx_generations;
+
+typedef struct {
+    dsd_analog_rx_core core;
+    /** The boundaries as the tap saw them at its last read. */
+    analog_rx_generations noted;
     int log_key;              /**< ANALOG_RX_LOG_* or the logged tone in tenths of a hertz */
     uint32_t log_generation;  /**< the publication generation log_key belongs to */
     int unusable_rate_logged; /**< the unusable rate reported for the current stretch of such input; 0 = none */
@@ -423,6 +436,8 @@ typedef struct {
     uint64_t backlog_skipped_us;     /**< input skipped since the boundary, in sample time */
     int playback_open;               /**< 1 between dsd_analog_rx_playback_begin() and _end() */
     uint64_t playback_started_ms;    /**< monotonic ms at dsd_analog_rx_playback_begin() */
+    /** 1 when the monitor block being assembled began before a retune, profile change or reset (issue #526). */
+    int block_straddled;
 } analog_rx_session;
 
 #ifdef DSD_NEO_TEST_HOOKS
@@ -451,18 +466,29 @@ analog_rx_session_get(const dsd_state* state) {
     return DSD_STATE_EXT_GET_AS(analog_rx_session, state, DSD_STATE_EXT_DSP_ANALOG_RX);
 }
 
+/* The boundaries as they stand now. */
+static void
+analog_rx_generations_read(const dsd_opts* opts, analog_rx_generations* out) {
+    DSD_MEMSET(out, 0, sizeof(*out));
+    const int rtl = (opts && opts->audio_in_type == AUDIO_IN_RTL) ? 1 : 0;
+    out->rtl_generation = rtl ? dsd_rtl_stream_metrics_hook_stream_generation() : 0U;
+    out->tune_generation = dsd_trunk_tuning_generation();
+    if (rtl) {
+        (void)dsd_rtl_stream_metrics_hook_analog_profile(&out->rtl_profile_kind, &out->rtl_profile_width_hz,
+                                                         &out->rtl_profile_lpf_on);
+    }
+}
+
+static int
+analog_rx_generations_equal(const analog_rx_generations* a, const analog_rx_generations* b) {
+    return a->rtl_generation == b->rtl_generation && a->tune_generation == b->tune_generation
+           && a->rtl_profile_kind == b->rtl_profile_kind && a->rtl_profile_width_hz == b->rtl_profile_width_hz
+           && a->rtl_profile_lpf_on == b->rtl_profile_lpf_on;
+}
+
 static void
 analog_rx_note_generations(const dsd_opts* opts, analog_rx_session* session) {
-    const int rtl = (opts && opts->audio_in_type == AUDIO_IN_RTL) ? 1 : 0;
-    session->rtl_generation = rtl ? dsd_rtl_stream_metrics_hook_stream_generation() : 0U;
-    session->tune_generation = dsd_trunk_tuning_generation();
-    session->rtl_profile_kind = 0;
-    session->rtl_profile_width_hz = 0;
-    session->rtl_profile_lpf_on = 0;
-    if (rtl) {
-        (void)dsd_rtl_stream_metrics_hook_analog_profile(&session->rtl_profile_kind, &session->rtl_profile_width_hz,
-                                                         &session->rtl_profile_lpf_on);
-    }
+    analog_rx_generations_read(opts, &session->noted);
 }
 
 static int
@@ -712,14 +738,11 @@ analog_rx_publish_skipped(dsd_state* state, analog_rx_session* session, int rate
    thread updates as it applies the request. */
 static int
 analog_rx_generation_moved(const dsd_opts* opts, analog_rx_session* session) {
-    const uint32_t rtl = session->rtl_generation;
-    const uint64_t tune = session->tune_generation;
-    const int kind = session->rtl_profile_kind;
-    const int width_hz = session->rtl_profile_width_hz;
-    const int lpf_on = session->rtl_profile_lpf_on;
-    analog_rx_note_generations(opts, session);
-    return rtl != session->rtl_generation || tune != session->tune_generation || kind != session->rtl_profile_kind
-           || width_hz != session->rtl_profile_width_hz || lpf_on != session->rtl_profile_lpf_on;
+    analog_rx_generations now;
+    analog_rx_generations_read(opts, &now);
+    const int moved = !analog_rx_generations_equal(&now, &session->noted);
+    session->noted = now;
+    return moved;
 }
 
 static void
@@ -789,12 +812,18 @@ dsd_analog_rx_reset(dsd_state* state) {
            (dsd_state::analog_out_f, dsd_symbol.c), and what it holds now arrived before the
            boundary: at a low input rate, a block's worth of the old channel is enough to lock
            its tone again. The tap sets those samples aside rather than reading them; they stay
-           in the block for the raw WAV and the monitor output, whose audio a reset leaves alone.
-           With no session, detection has not run since the engine started: the first read that
-           creates one starts at the newest sample (dsd_analog_rx_tap_partial()) and, after this
-           reset, arms the backlog skip (analog_rx_session_start()). */
+           in the block, which the raw WAV keeps as it is. With no session, detection has not run
+           since the engine started: the first read that creates one starts at the newest sample
+           (dsd_analog_rx_tap_partial()) and, after this reset, arms the backlog skip
+           (analog_rx_session_start()). */
         const int pending = state->analog_sample_counter;
         session->block_taken = pending > 0 ? (unsigned int)pending : 0U;
+        /* The analog monitor's output drops that block rather than play them as the new reception's (issue #526);
+           the -8 source monitor under digital decoding, which detection does not run on, still plays it
+           (dsd_analog_rx_block_straddles_boundary()). */
+        if (pending > 0) {
+            session->block_straddled = 1;
+        }
         session->read_rate_hz = 0;
         /* Nor may what a live input still holds, which arrived before the boundary too. */
         analog_rx_arm_backlog_skip(session);
@@ -836,7 +865,8 @@ analog_rx_boundary_dropped(const dsd_opts* opts, dsd_state* state, analog_rx_ses
     if (moved) {
         /* A retune starts the stream afresh: no deadline until it delivers again, and what the
            input had queued is the old channel's. This read, dropped here, starts the clock the
-           skip measures the next ones against. */
+           skip measures the next ones against. The block around it holds both channels. */
+        session->block_straddled = 1;
         session->stale_after_ms = 0;
         analog_rx_arm_backlog_skip(session);
         analog_rx_backlog_span_start(session, analog_rx_now_ms());
@@ -910,8 +940,13 @@ dsd_analog_rx_tap_partial(const dsd_opts* opts, dsd_state* state, const float* b
         }
         /* Detection starts listening with the sample just added. The ones before it in the
            block arrived while it was not, and perhaps before a boundary that had no session to
-           set them aside (dsd_analog_rx_reset()). */
+           set them aside (dsd_analog_rx_reset()): the first nfm row of a scan that began in a
+           digital mode, on input no receive-family switch empties the block for. Nothing vouches
+           for them, so the analog monitor's output drops the block too (issue #526). */
         session->block_taken = filled - 1U;
+        if (filled > 1U) {
+            session->block_straddled = 1;
+        }
     }
     /* The quota follows the input rate as it is now, not as it was at the last read: after a
        drop in rate, the old rate's quota would hold the first read at the new one back for up
@@ -946,7 +981,46 @@ dsd_analog_rx_block_restart(const dsd_state* state) {
     if (session) {
         /* Whatever the tap had read, or set aside, of the emptied block is gone with it. */
         session->block_taken = 0U;
+        session->block_straddled = 0;
     }
+}
+
+/* Whether the boundaries the tap noted at its last read still hold: analog_rx_generation_moved()'s comparison,
+   without noting anything. */
+static int
+analog_rx_generations_current(const dsd_opts* opts, const analog_rx_session* session) {
+    analog_rx_generations now;
+    analog_rx_generations_read(opts, &now);
+    return analog_rx_generations_equal(&now, &session->noted);
+}
+
+int
+dsd_analog_rx_carrier_open_now(const dsd_opts* opts, const dsd_state* state) {
+    if (!opts || !state || !state->analog_rx.carrier_open) {
+        return 0;
+    }
+    /* Nor while a retune is unresolved: in flight, the front end still delivers the channel being left; failed after
+       the scanner moved on, it delivers a channel other than the one the scanner shows. */
+    if (dsd_trunk_tuning_pending_request() != 0U) {
+        return 0;
+    }
+    const analog_rx_session* session = analog_rx_session_get(state);
+    return session ? analog_rx_generations_current(opts, session) : 1;
+}
+
+int
+dsd_analog_rx_block_straddles_boundary(const dsd_opts* opts, const dsd_state* state) {
+    /* Only the analog monitor drops such a block; the flag outlives detection until the block is emptied. */
+    if (!state || !dsd_analog_tone_detection_active(opts)) {
+        return 0;
+    }
+    const analog_rx_session* session = analog_rx_session_get(state);
+    if (!session) {
+        return 0;
+    }
+    /* A boundary the tap has not read past yet -- one that landed after its last read of this block -- leaves the
+       block the channel before it as well. */
+    return session->block_straddled || !analog_rx_generations_current(opts, session);
 }
 
 void

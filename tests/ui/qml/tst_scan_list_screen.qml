@@ -148,6 +148,30 @@ Item {
             }
         }
 
+        // Issue #526: an nfm-conventional target's own --nfm-bandwidth-hz shows in the preview,
+        // one without it says it inherits, and a digital target says nothing about it.
+        function test_imported_target_preview_shows_bandwidth() {
+            var source = testContext.writeFixtureCsv("bandwidth-targets.csv",
+                "id,type,frequency_hz,chan_csv,dwell_ms,activity_hold_ms,notes,options\n"
+                + "own,nfm-conventional,154430000,,,,,--nfm-bandwidth-hz 11250\n"
+                + "inh,nfm-conventional,155100000,,,,,\n"
+                + "dig,dmr-conventional,461000000,,,,,\n");
+            var result = importedFiles.importFile(source, "BandwidthTargets.csv", "trunkTargets");
+            verify(result.ok, result.detail || "Import failed");
+            try {
+                screen.selectTargets(result.path);
+                compare(screen.targetRows.length, 3);
+                var preview = visualChild(screen, "scanTargetPreview");
+                verify(preview !== null);
+                tryVerify(function() { return preview.count === 3 && preview.itemAtIndex(2) !== null; });
+                verify(preview.itemAtIndex(0).text.indexOf("NFM bandwidth: 11.25 kHz") >= 0, preview.itemAtIndex(0).text);
+                verify(preview.itemAtIndex(1).text.indexOf("NFM bandwidth: inherit") >= 0, preview.itemAtIndex(1).text);
+                verify(preview.itemAtIndex(2).text.indexOf("NFM bandwidth") < 0, preview.itemAtIndex(2).text);
+            } finally {
+                importedFiles.remove(importedFiles.rowForPath(result.path));
+            }
+        }
+
         function test_reselect_manual_targets_keeps_entries() {
             screen.addFrequency("First unsaved target", "dmr", "461");
             screen.addFrequency("Second unsaved target", "nxdn", "462");

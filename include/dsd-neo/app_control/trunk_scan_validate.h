@@ -15,9 +15,10 @@ extern "C" {
  * profiles) are not opened or checked for readability. Parsed key storage is erased before returning. */
 int dsd_app_trunk_scan_validate_targets_csv(const char* path, int* target_count, char* err, size_t err_sz);
 
-/** Nonsecret configured target. Unset dwell/hold/gain are -1; empty modulation
+/** Nonsecret configured target. Unset dwell/hold/gain/bandwidth are -1; empty modulation
  * inherits. squelch_db (whole dB, 0 = off) is meaningful only with squelch_db_set, since
- * -1 dB is a real threshold. Strings belong to this fixed-size record, never to decoder state. */
+ * -1 dB is a real threshold. bandwidth_hz is an analog target's channel width in Hz
+ * (--nfm-bandwidth-hz). Strings belong to this fixed-size record, never to decoder state. */
 typedef struct {
     char id[64];
     char type[24];
@@ -29,6 +30,7 @@ typedef struct {
     int gain_db;
     int squelch_db_set;
     int squelch_db;
+    int bandwidth_hz;
 } dsd_app_scan_csv_target;
 
 typedef enum {

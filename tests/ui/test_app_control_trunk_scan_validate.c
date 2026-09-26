@@ -80,6 +80,55 @@ test_target_squelch(const char* path) {
     }
 }
 
+/* --- Issue #526: nfm-conventional targets --- */
+
+typedef struct {
+    size_t count;
+    char type[4][24];
+    char modulation[4][8];
+    int bandwidth_hz[4];
+} nfm_targets;
+
+static void
+collect_nfm_target(const dsd_app_scan_csv_target* target, void* context) {
+    nfm_targets* seen = (nfm_targets*)context;
+    if (seen->count < 4) {
+        DSD_SNPRINTF(seen->type[seen->count], sizeof seen->type[seen->count], "%s", target->type);
+        DSD_SNPRINTF(seen->modulation[seen->count], sizeof seen->modulation[seen->count], "%s", target->modulation);
+        seen->bandwidth_hz[seen->count] = target->bandwidth_hz;
+    }
+    seen->count++;
+}
+
+/* A list mixing nfm-conventional and digital targets validates through the facade a frontend
+ * previews with, and each row reports its canonical type and its own channel width; the facade
+ * refuses what the engine refuses, with the same row diagnostic. */
+static void
+test_nfm_targets(const char* path) {
+    write_targets(path, "fire,nfm-conventional,154430000,,1500,2000,,--nfm-bandwidth-hz 12500 --squelch-db -60\n"
+                        "dmr,dmr-conventional,461000000,,1500,1200,,\n"
+                        "ops,nfm-conventional,155475000,,1500,2000,,\n");
+    int count = 0;
+    char err[256] = {0};
+    assert(dsd_app_trunk_scan_validate_targets_csv(path, &count, err, sizeof err) == 0);
+    assert(count == 3 && err[0] == '\0');
+    nfm_targets seen = {0};
+    const dsd_app_scan_csv_callbacks callbacks = {collect_nfm_target, NULL, &seen};
+    assert(dsd_app_scan_csv_inspect(path, NULL, 0, &callbacks, err, sizeof err) == 0);
+    assert(seen.count == 3);
+    assert(strcmp(seen.type[0], "nfm-conventional") == 0 && seen.bandwidth_hz[0] == 12500);
+    assert(strcmp(seen.modulation[0], "") == 0);
+    assert(strcmp(seen.type[1], "dmr-conventional") == 0 && seen.bandwidth_hz[1] == -1);
+    assert(strcmp(seen.type[2], "nfm-conventional") == 0 && seen.bandwidth_hz[2] == -1);
+
+    write_targets(path, "fire,nfm-trunk,154430000,,1500,2000,,\n");
+    assert(dsd_app_trunk_scan_validate_targets_csv(path, &count, err, sizeof err) != 0);
+    assert(strstr(err, "row 2: analog targets are conventional only (use nfm-conventional)") && count == 0);
+    write_targets(path, "fire,nfm-conventional,154430000,,1500,2000,,--strict-crc\n");
+    assert(dsd_app_trunk_scan_validate_targets_csv(path, &count, err, sizeof err) != 0);
+    assert(strstr(err, "row 2: --strict-crc: not supported for this mode/target"));
+}
+
 /* Every shipped trunk-scan example parses through the engine's own loader with no diagnostic, so
  * the documented option spellings cannot drift from the parser. */
 static void
@@ -124,6 +173,7 @@ main(void) {
     assert(dsd_app_trunk_scan_validate_targets_csv(path, &count, err, sizeof err) != 0);
     assert(count == 0 && err[0] != '\0');
     test_target_squelch(path);
+    test_nfm_targets(path);
     test_trunk_scan_examples_validate();
     remove(path);
     puts("APP_CONTROL_TRUNK_SCAN_VALIDATE ok");

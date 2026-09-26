@@ -421,6 +421,7 @@ typedef enum {
     DSD_SCAN_STAY_MANUAL_HOLD = 7,    /**< operator hold (Y): the dwell is paused, not expired */
     DSD_SCAN_STAY_IDLE_DWELL = 8,     /**< nothing holds it; the idle dwell / qualify window runs */
     DSD_SCAN_STAY_HANGTIME = 9,       /**< -Y legacy rule: waiting out -t since the last sync */
+    DSD_SCAN_STAY_CARRIER = 10,       /**< analog row: its carrier is open (issue #526) */
 } dsd_scan_stay_reason;
 
 /** Live scan timing for the frontends' Scan Timing row (issue #508). Plain inline

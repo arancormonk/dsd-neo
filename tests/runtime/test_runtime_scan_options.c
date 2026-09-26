@@ -5,6 +5,7 @@
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/runtime/scan_mode.h>
 #include <dsd-neo/runtime/scan_options.h>
+#include <stdio.h>
 #include <string.h>
 
 typedef struct {
@@ -183,10 +184,183 @@ check_squelch_option(void) {
     DSD_SECURE_ZERO(&parsed, sizeof(parsed));
 }
 
+/* --- Issue #526: NFM rows --- */
+
+/* An NFM row takes the options that mean something for an analog channel: the visit cap, the
+ * squelch and its own channel width, on -Y rows and on nfm-conventional targets alike. */
+static void
+check_nfm_row_accepts_analog_options(void) {
+    dsd_scan_options parsed = {0};
+    char error[192] = {0};
+    for (int conventional = 0; conventional <= 1; conventional++) {
+        DSD_MEMSET(&parsed, 0, sizeof(parsed));
+        assert(dsd_scan_options_parse("--scan-max-visit-ms 5000 --squelch-db -60 --nfm-bandwidth-hz 12500",
+                                      DSD_SCAN_MODE_NFM, conventional, &parsed, error, sizeof(error))
+               == 0);
+        assert(parsed.values.present == (DSD_SCAN_OPT_MAX_VISIT | DSD_SCAN_OPT_SQUELCH | DSD_SCAN_OPT_BANDWIDTH));
+        assert(parsed.values.max_visit_ms == 5000 && parsed.values.squelch_db == -60);
+        assert(parsed.values.channel_bw_hz == 12500);
+    }
+
+    const struct {
+        const char* text;
+        int hz;
+    } widths[] = {{"--nfm-bandwidth-hz=11250", 11250},
+                  {"--nfm-bandwidth-hz 8000", 8000},
+                  {"--nfm-bandwidth-hz 25000", 25000},
+                  {"--nfm-bandwidth-hz '16000'", 16000}};
+
+    for (size_t i = 0; i < sizeof(widths) / sizeof(widths[0]); i++) {
+        DSD_MEMSET(&parsed, 0, sizeof(parsed));
+        assert(dsd_scan_options_parse(widths[i].text, DSD_SCAN_MODE_NFM, 1, &parsed, error, sizeof(error)) == 0);
+        assert(parsed.values.present == DSD_SCAN_OPT_BANDWIDTH && parsed.values.channel_bw_hz == widths[i].hz);
+    }
+    /* The file visitor walks the width as a plain value, never a file operand. */
+    size_t visited = 0;
+    assert(dsd_scan_options_visit_files("--nfm-bandwidth-hz 12500 --squelch-db -60", &visited, count_file_spans) == 0);
+    assert(visited == 0);
+    DSD_SECURE_ZERO(&parsed, sizeof(parsed));
+}
+
+/* Keys, forcing, CRC policy, talkgroup groups, data/encrypted-call policy and the voice gate
+ * describe digital frames an analog channel never carries: each is refused on an NFM row with
+ * the same diagnostic a wrong-mode digital switch gets, and the value is never echoed. */
+static void
+check_nfm_row_rejects_digital_options(void) {
+    static const char* const refused[] = {"-b 1",
+                                          "-H 0123456789",
+                                          "-1 0123456789",
+                                          "-R 5",
+                                          "-K keys.csv",
+                                          "-k keys.csv",
+                                          "--dmr-tg-key-csv map.csv",
+                                          "--dmr-tg-key-clear",
+                                          "--no-decryption-keys",
+                                          "--key-profile-ref SENSITIVE",
+                                          "-4",
+                                          "-0",
+                                          "--dmr-force-algid 21",
+                                          "--no-force-key",
+                                          "-F",
+                                          "--strict-crc",
+                                          "-^",
+                                          "-G groups.csv",
+                                          "-e",
+                                          "--no-data-calls",
+                                          "--enc-follow",
+                                          "--enc-lockout",
+                                          "--scan-voice-only",
+                                          "--no-scan-voice-only",
+                                          "--scan-voice-qualify-ms 1000",
+                                          "--scan-voice-hold-ms 1000"};
+    dsd_scan_options parsed = {0};
+    char error[192] = {0};
+    for (size_t i = 0; i < sizeof(refused) / sizeof(refused[0]); i++) {
+        for (int conventional = 0; conventional <= 1; conventional++) {
+            DSD_MEMSET(&parsed, 0, sizeof(parsed));
+            DSD_MEMSET(error, 0, sizeof(error));
+            assert(dsd_scan_options_parse(refused[i], DSD_SCAN_MODE_NFM, conventional, &parsed, error, sizeof(error))
+                   < 0);
+            assert(parsed.values.present == 0);
+            char want[64];
+            const size_t name_len = strcspn(refused[i], " =");
+            DSD_SNPRINTF(want, sizeof(want), "%.*s: not supported for this mode/target", (int)name_len, refused[i]);
+            if (strcmp(error, want) != 0) {
+                DSD_FPRINTF(stderr, "'%s' on nfm: got '%s', want '%s'\n", refused[i], error, want);
+                assert(0);
+            }
+            assert(strstr(error, "SENSITIVE") == NULL);
+        }
+    }
+    DSD_SECURE_ZERO(&parsed, sizeof(parsed));
+}
+
+/* The width is an analog setting: a digital or blank row that names it is told which mode it
+ * needs, the value must be whole Hz inside the NFM range, and one row carries it once. */
+static void
+check_nfm_bandwidth_option_contract(void) {
+    dsd_scan_options parsed = {0};
+    char error[192] = {0};
+    for (unsigned int mode = DSD_SCAN_MODE_INHERIT; mode <= DSD_SCAN_MODE_LAST; mode++) {
+        if (dsd_scan_mode_is_analog((dsd_scan_mode)mode)) {
+            continue;
+        }
+        for (int conventional = 0; conventional <= 1; conventional++) {
+            DSD_MEMSET(&parsed, 0, sizeof(parsed));
+            assert(dsd_scan_options_parse("--nfm-bandwidth-hz 12500", mode, conventional, &parsed, error, sizeof(error))
+                   < 0);
+            assert(strcmp(error, "--nfm-bandwidth-hz: needs mode nfm") == 0);
+            assert(parsed.values.present == 0);
+        }
+    }
+    static const char* const invalid[] = {"--nfm-bandwidth-hz 7999",    "--nfm-bandwidth-hz 25001",
+                                          "--nfm-bandwidth-hz=0",       "--nfm-bandwidth-hz 12.5k",
+                                          "--nfm-bandwidth-hz 12500Hz", "--nfm-bandwidth-hz +12500",
+                                          "--nfm-bandwidth-hz 0x30d4",  "--nfm-bandwidth-hz ' 12500'",
+                                          "--nfm-bandwidth-hz 1e4",     "--nfm-bandwidth-hz SENSITIVE"};
+    for (size_t i = 0; i < sizeof(invalid) / sizeof(invalid[0]); i++) {
+        DSD_MEMSET(&parsed, 0, sizeof(parsed));
+        assert(dsd_scan_options_parse(invalid[i], DSD_SCAN_MODE_NFM, 1, &parsed, error, sizeof(error)) < 0);
+        if (strcmp(error, "--nfm-bandwidth-hz: expects whole Hz from 8000 to 25000") != 0) {
+            DSD_FPRINTF(stderr, "'%s': got '%s'\n", invalid[i], error);
+            assert(0);
+        }
+        assert(parsed.values.present == 0);
+    }
+    /* A negative number is a missing value, as for every switch but the squelch. */
+    const char* missing[] = {"--nfm-bandwidth-hz", "--nfm-bandwidth-hz -12500", "--nfm-bandwidth-hz --squelch-db -60"};
+    for (size_t i = 0; i < sizeof(missing) / sizeof(missing[0]); i++) {
+        assert(dsd_scan_options_parse(missing[i], DSD_SCAN_MODE_NFM, 1, &parsed, error, sizeof(error)) < 0);
+        assert(strcmp(error, "--nfm-bandwidth-hz: requires a valid argument") == 0);
+    }
+    assert(dsd_scan_options_parse("--nfm-bandwidth-hz 12500 --nfm-bandwidth-hz=12500", DSD_SCAN_MODE_NFM, 1, &parsed,
+                                  error, sizeof(error))
+           < 0);
+    assert(strcmp(error, "--nfm-bandwidth-hz: duplicate option") == 0);
+    /* The squelch stays legal on every class, the analog one included. */
+    for (unsigned int mode = DSD_SCAN_MODE_INHERIT; mode <= DSD_SCAN_MODE_LAST; mode++) {
+        DSD_MEMSET(&parsed, 0, sizeof(parsed));
+        assert(dsd_scan_options_parse("--squelch-db -70", mode, 0, &parsed, error, sizeof(error)) == 0);
+        assert(parsed.values.present == DSD_SCAN_OPT_SQUELCH);
+    }
+    /* Anything past the last class is refused outright. */
+    assert(dsd_scan_options_parse("", DSD_SCAN_MODE_LAST + 1U, 1, &parsed, error, sizeof(error)) < 0);
+    DSD_SECURE_ZERO(&parsed, sizeof(parsed));
+}
+
+/* A row width in range may still be one the DSP rate cannot filter: the check names the width,
+ * the rate, the widest width that rate fits and the fix, as the front end's own refusal does.
+ * A row without a width, a digital row and an unknown rate have nothing to check. */
+static void
+check_nfm_bandwidth_rate(void) {
+    dsd_scan_option_values row = {0};
+    row.present = DSD_SCAN_OPT_BANDWIDTH;
+    row.channel_bw_hz = 25000;
+    char error[256] = {0};
+    assert(dsd_scan_option_width_check(DSD_SCAN_MODE_NFM, &row, 48000, error, sizeof(error)) == 0);
+    assert(error[0] == '\0');
+    assert(dsd_scan_option_width_check(DSD_SCAN_MODE_NFM, &row, 24000, error, sizeof(error)) < 0);
+    assert(strstr(error, "25 kHz") && strstr(error, "24 kHz") && strstr(error, "20.4 kHz"));
+    row.channel_bw_hz = 20400;
+    assert(dsd_scan_option_width_check(DSD_SCAN_MODE_NFM, &row, 24000, error, sizeof(error)) == 0);
+    row.channel_bw_hz = 13200;
+    assert(dsd_scan_option_width_check(DSD_SCAN_MODE_NFM, &row, 16000, error, sizeof(error)) == 0);
+    row.channel_bw_hz = 13300;
+    assert(dsd_scan_option_width_check(DSD_SCAN_MODE_NFM, &row, 16000, error, sizeof(error)) < 0);
+    assert(dsd_scan_option_width_check(DSD_SCAN_MODE_NFM, &row, 0, error, sizeof(error)) == 0);
+    row.present = 0;
+    assert(dsd_scan_option_width_check(DSD_SCAN_MODE_NFM, &row, 16000, error, sizeof(error)) == 0);
+    assert(dsd_scan_option_width_check(DSD_SCAN_MODE_NFM, NULL, 16000, error, sizeof(error)) == 0);
+}
+
 int
 main(void) {
     check_file_spans();
     check_squelch_option();
+    check_nfm_row_accepts_analog_options();
+    check_nfm_row_rejects_digital_options();
+    check_nfm_bandwidth_option_contract();
+    check_nfm_bandwidth_rate();
     dsd_scan_options parsed = {0};
     char error[192] = {0};
     assert(dsd_scan_options_parse("--dmr-tg-key-csv mapping.csv", DSD_SCAN_MODE_DMR, 1, &parsed, error, sizeof(error))

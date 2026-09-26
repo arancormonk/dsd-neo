@@ -2,6 +2,7 @@
 /* Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com> */
 
 #include <assert.h>
+#include <dsd-neo/core/audio.h>
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/channel_mode.h>
 #include <dsd-neo/core/csv_import.h>
@@ -23,6 +24,7 @@
 #include <dsd-neo/engine/frame_processing.h>
 #include <dsd-neo/engine/scan_voice_gate.h>
 #include <dsd-neo/engine/trunk_tuning.h>
+#include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/runtime/analog_channel.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/decode_mode.h>
@@ -37,6 +39,57 @@
 #include <string.h>
 
 void dsd_key_set_test_alloc_fail_after(long count);
+
+/* --- Issue #526: scanner sinks and DSP rate, from engine/trunk_tuning.c and core/audio, which this fixture does not
+ * link. The stubs record which sink each row commit asked for. --- */
+static int g_ensure_analog_calls;
+static int g_ensure_digital_calls;
+static int g_scan_dsp_rate_hz;
+
+int
+dsd_audio_ensure_analog_output(dsd_opts* opts) {
+    (void)opts;
+    g_ensure_analog_calls++;
+    return 0;
+}
+
+int
+dsd_audio_ensure_digital_output(dsd_opts* opts) {
+    (void)opts;
+    g_ensure_digital_calls++;
+    return 0;
+}
+
+int
+dsd_engine_scan_dsp_rate_hz(const dsd_opts* opts, const dsd_state* state) {
+    (void)opts;
+    (void)state;
+    return g_scan_dsp_rate_hz;
+}
+
+/* The live receive-family requests the RTL front end has accepted (trunk_tuning.c). A case standing in for a command
+ * that makes one (the width command, a config apply) moves it. */
+static uint32_t g_family_requests;
+
+uint32_t
+dsd_engine_scan_family_requests(const dsd_opts* opts) {
+    (void)opts;
+    return g_family_requests;
+}
+
+/* Whether the staged retune attaches a receive family (trunk_tuning.c), which is all a live request supersedes: an
+ * analog row's always does, and a digital row's while the front end still runs the analog family an analog row left it
+ * on, which a case says with g_frontend_analog. */
+static int g_frontend_analog;
+
+int
+dsd_engine_scan_retune_attaches_family(const dsd_opts* opts, const dsd_state* state, int ted_sps) {
+    (void)state;
+    if (!opts || opts->audio_in_type != AUDIO_IN_RTL) {
+        return 0;
+    }
+    return dsd_opts_is_analog_family(opts) || (ted_sps > 0 && g_frontend_analog);
+}
 
 static dsd_trunk_tune_result tune_result;
 static uint64_t request;
@@ -66,10 +119,16 @@ restore_frontend(int cqpsk, int rate, int levels, int filter, int sps) {
     return 0;
 }
 
+/* What the options said at the tune (issue #526): the row's family and width reach the front end through them. */
+static int tuned_analog_only = -1;
+static int tuned_nfm_width_hz = -1;
+
 dsd_trunk_tune_result
 dsd_engine_scan_tune_to_freq(dsd_opts* opts, dsd_state* state, long freq, int sps, uint64_t* out) {
     assert(freq == 150000000);
     assert(opts->frame_nxdn48 == expected_nxdn);
+    tuned_analog_only = opts->analog_only;
+    tuned_nfm_width_hz = opts->analog_nfm_bandwidth_hz;
     assert(sps == (change_rate_on_tune ? (int)reported_rate / 4800 : (expected_nxdn ? 20 : 10)));
     if (change_rate_on_tune) {
         assert(tunes < 100);
@@ -376,9 +435,21 @@ record_squelch_push(double mean_power) {
     g_squelch_pushed = mean_power;
 }
 
+static int g_analog_warnings;
+static char g_analog_warning_rows[8][384];
+
 static void
 count_squelch_warnings(dsd_neo_log_level_t level, const char* text, void* ctx) {
     (void)ctx;
+    if (level == LOG_LEVEL_WARN && text
+        && (strstr(text, "analog channel's squelch") || strstr(text, "--nfm-bandwidth-hz")
+            || strstr(text, "skipped at every visit"))) {
+        if (g_analog_warnings < 8) {
+            DSD_SNPRINTF(g_analog_warning_rows[g_analog_warnings], sizeof g_analog_warning_rows[0], "%s", text);
+        }
+        g_analog_warnings++;
+        return;
+    }
     if (level == LOG_LEVEL_WARN && text && strstr(text, "--squelch-db")) {
         if (g_squelch_warnings < 8) {
             DSD_SNPRINTF(g_squelch_warning_rows[g_squelch_warnings], sizeof g_squelch_warning_rows[0], "%s", text);
@@ -876,6 +947,579 @@ test_rx_tone_row_commit_and_step_clear(void) {
     tunes = reset_count = 0;
 }
 
+/* --- Issue #526: nfm rows --- */
+
+static dsd_scan_row_profile*
+nfm_row_profile(dsd_state* state, int row, uint32_t present, int width_hz, int squelch_db) {
+    dsd_scan_row_profile* profile = (dsd_scan_row_profile*)calloc(1, sizeof(*profile));
+    assert(profile);
+    profile->values.present = present;
+    profile->values.channel_bw_hz = width_hz;
+    profile->values.squelch_db = squelch_db;
+    assert(dsd_channel_profile_set(state, (size_t)row, profile) == 0);
+    return profile;
+}
+
+/* A map mixing nfm and digital rows: every row tunes with its own family and width in force, the
+ * nfm row commits the analog monitor at its width (the configured one without its own), the next
+ * digital row puts the digital decoder and the configured width back, each commit opens the sink
+ * its row plays through, and leave restores the configured session. A manual step and a failed
+ * row move through nfm rows the way they move through digital ones. */
+static void
+test_nfm_rows_switch_family_width_and_sink(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
+    assert(opts && state);
+    opts->scanner_mode = 1;
+    opts->audio_in_type = AUDIO_IN_WAV;
+    opts->wav_sample_rate = 48000;
+    assert(dsd_apply_decode_mode_preset(DSDCFG_MODE_DMR, DSD_DECODE_PRESET_PROFILE_CLI, opts, state) == 0);
+    opts->analog_nfm_bandwidth_hz = 20000;
+    opts->rtl_squelch_level = dsd_squelch_level_from_sql(-60.0);
+    state->samplesPerSymbol = 10;
+    state->lcn_freq_count = 4;
+    for (int row = 0; row < 4; row++) {
+        *dsd_state_trunk_lcn_slot(state, row) = 150000000;
+    }
+    assert(dsd_channel_mode_set(state, 0, DSD_SCAN_MODE_DMR) == 0);
+    assert(dsd_channel_mode_set(state, 1, DSD_SCAN_MODE_NFM) == 0);
+    assert(dsd_channel_mode_set(state, 2, DSD_SCAN_MODE_NFM) == 0);
+    assert(dsd_channel_mode_set(state, 3, DSD_SCAN_MODE_DMR) == 0);
+    (void)nfm_row_profile(state, 1, DSD_SCAN_OPT_BANDWIDTH, 12500, 0);
+    expected_nxdn = 0;
+    tune_result = DSD_TRUNK_TUNE_RESULT_OK;
+    g_ensure_analog_calls = g_ensure_digital_calls = 0;
+
+    assert(dsd_engine_channel_scan_step(opts, state) == 1);
+    assert(state->lcn_freq_roll == 1 && opts->frame_dmr && !opts->analog_only && tuned_analog_only == 0);
+    assert(g_ensure_digital_calls == 1 && g_ensure_analog_calls == 0);
+
+    assert(dsd_engine_channel_scan_step(opts, state) == 1);
+    assert(tuned_analog_only == 1 && tuned_nfm_width_hz == 12500);
+    assert(state->lcn_freq_roll == 2 && opts->analog_only == 1 && opts->monitor_input_audio == 1 && !opts->frame_dmr);
+    assert(opts->analog_nfm_bandwidth_hz == 12500 && dsd_scan_mode_active(state) == DSD_SCAN_MODE_NFM);
+    assert(dsd_scan_mode_configured_view(state)->analog_nfm_bandwidth_hz == 20000);
+    assert(g_ensure_analog_calls == 1);
+
+    assert(dsd_engine_channel_scan_step(opts, state) == 1);
+    assert(tuned_analog_only == 1 && tuned_nfm_width_hz == 20000 && opts->analog_nfm_bandwidth_hz == 20000);
+    assert(g_ensure_analog_calls == 2);
+
+    assert(dsd_engine_channel_scan_step(opts, state) == 1);
+    assert(tuned_analog_only == 0 && tuned_nfm_width_hz == 20000);
+    assert(state->lcn_freq_roll == 4 && opts->frame_dmr && !opts->analog_only && !opts->monitor_input_audio);
+    assert(g_ensure_digital_calls == 2);
+
+    /* A manual step wraps onto the nfm row with its width. */
+    assert(dsd_engine_channel_scan_step_manual(opts, state) == 1);
+    assert(state->lcn_freq_roll == 1 && !opts->analog_only);
+    assert(dsd_engine_channel_scan_step_manual(opts, state) == 1);
+    assert(state->lcn_freq_roll == 2 && opts->analog_only && opts->analog_nfm_bandwidth_hz == 12500);
+    /* A row that cannot be tuned is skipped with the nfm row left in force. */
+    tune_result = DSD_TRUNK_TUNE_RESULT_FAILED;
+    assert(dsd_engine_channel_scan_step(opts, state) == -1);
+    assert(state->lcn_freq_roll == 3 && opts->analog_only && opts->analog_nfm_bandwidth_hz == 12500);
+    tune_result = DSD_TRUNK_TUNE_RESULT_OK;
+
+    dsd_engine_channel_scan_leave(opts, state);
+    assert(!opts->analog_only && opts->frame_dmr && opts->analog_nfm_bandwidth_hz == 20000);
+    dsd_state_trunk_lcn_free(state);
+    dsd_state_ext_free_all(state);
+    free(state);
+    free(opts);
+    tunes = reset_count = 0;
+}
+
+/* The configured NFM width is what an nfm row without its own width tunes with, on a digital session too. The width
+ * command edits it without suspending the scope, so an edit made while such a row's tune is outstanding restages the
+ * tune, as any configured acquisition change does, rather than committing the row on a front end tuned for the old
+ * width. A width edit under a digital row's outstanding tune is no acquisition change there, and commits. */
+static void
+test_nfm_row_restages_after_a_configured_width_edit(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
+    assert(opts && state);
+    opts->scanner_mode = 1;
+    opts->audio_in_type = AUDIO_IN_WAV;
+    opts->wav_sample_rate = 48000;
+    assert(dsd_apply_decode_mode_preset(DSDCFG_MODE_DMR, DSD_DECODE_PRESET_PROFILE_CLI, opts, state) == 0);
+    opts->analog_nfm_bandwidth_hz = 20000;
+    state->samplesPerSymbol = 10;
+    state->lcn_freq_count = 2;
+    for (int row = 0; row < 2; row++) {
+        *dsd_state_trunk_lcn_slot(state, row) = 150000000;
+    }
+    assert(dsd_channel_mode_set(state, 0, DSD_SCAN_MODE_DMR) == 0);
+    assert(dsd_channel_mode_set(state, 1, DSD_SCAN_MODE_NFM) == 0);
+    expected_nxdn = 0;
+
+    /* The DMR row's tune is outstanding when the width changes: it commits as staged. */
+    tune_result = DSD_TRUNK_TUNE_RESULT_PENDING;
+    assert(dsd_engine_channel_scan_step(opts, state) == 0);
+    assert(dsd_scan_mode_set_configured_nfm_bandwidth(opts, state, 16000) == 1);
+    int before = tunes;
+    dsd_trunk_tuning_request_publish(request, DSD_TRUNK_TUNE_RESULT_OK);
+    assert(dsd_engine_channel_scan_pending(opts, state) == 0);
+    assert(tunes == before && state->lcn_freq_roll == 1 && opts->frame_dmr && !opts->analog_only);
+    assert(opts->analog_nfm_bandwidth_hz == 16000);
+
+    /* The nfm row's tune carried 16 kHz; an edit to 11.25 kHz before it lands restages it at the new width. */
+    assert(dsd_engine_channel_scan_step(opts, state) == 0);
+    assert(tuned_analog_only == 1 && tuned_nfm_width_hz == 16000);
+    assert(dsd_scan_mode_set_configured_nfm_bandwidth(opts, state, 11250) == 1);
+    before = tunes;
+    dsd_trunk_tuning_request_publish(request, DSD_TRUNK_TUNE_RESULT_OK);
+    assert(dsd_engine_channel_scan_pending(opts, state) == 1);
+    assert(tunes == before && state->lcn_freq_roll == 1);
+    tune_result = DSD_TRUNK_TUNE_RESULT_OK;
+    assert(dsd_engine_channel_scan_pending(opts, state) == 0);
+    assert(tunes == before + 1 && tuned_analog_only == 1 && tuned_nfm_width_hz == 11250);
+    assert(state->lcn_freq_roll == 2 && opts->analog_only && opts->analog_nfm_bandwidth_hz == 11250);
+
+    dsd_engine_channel_scan_leave(opts, state);
+    assert(!opts->analog_only && opts->frame_dmr && opts->analog_nfm_bandwidth_hz == 11250);
+    dsd_state_trunk_lcn_free(state);
+    dsd_state_ext_free_all(state);
+    free(state);
+    free(opts);
+    tunes = reset_count = 0;
+}
+
+/* A command acting for the row still on air while the next row's tune is outstanding asks the RTL front end for a
+ * receive family live: the width command or a config apply republishing an nfm row's monitor, or a config apply
+ * republishing a DMR row's symbol profile on the digital family. The front end takes it as the newer word on the family
+ * and lands the staged retune with neither the family nor the symbol profile it carries, so the incoming row would
+ * commit on the outgoing row's family: DMR decoded from the analog monitor, or an nfm row played from the digital
+ * discriminator. The commit restages the row instead, and its retry lands the row's own family. A request made before
+ * the row's tune was queued is older than its retune, which lands over it, and the row commits as staged. */
+static void
+test_row_restages_after_a_live_family_request(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
+    assert(opts && state);
+    opts->scanner_mode = 1;
+    opts->audio_in_type = AUDIO_IN_RTL;
+    assert(dsd_apply_decode_mode_preset(DSDCFG_MODE_DMR, DSD_DECODE_PRESET_PROFILE_CLI, opts, state) == 0);
+    state->samplesPerSymbol = 10;
+    state->lcn_freq_count = 2;
+    for (int row = 0; row < 2; row++) {
+        *dsd_state_trunk_lcn_slot(state, row) = 150000000;
+    }
+    assert(dsd_channel_mode_set(state, 0, DSD_SCAN_MODE_NFM) == 0);
+    assert(dsd_channel_mode_set(state, 1, DSD_SCAN_MODE_DMR) == 0);
+    const dsd_rtl_stream_metrics_hooks hooks = {.output_rate_hz = output_rate};
+    dsd_rtl_stream_metrics_hooks_set(&hooks);
+    expected_nxdn = 0;
+    g_family_requests = 0U;
+
+    tune_result = DSD_TRUNK_TUNE_RESULT_OK;
+    assert(dsd_engine_channel_scan_step(opts, state) == 1);
+    assert(state->lcn_freq_roll == 1 && opts->analog_only == 1 && dsd_scan_mode_active(state) == DSD_SCAN_MODE_NFM);
+    g_frontend_analog = 1;
+
+    /* The DMR row's tune is outstanding when the width command changes the configured NFM width the nfm row on air
+     * runs, and republishes that row's monitor at it. The retune carries the digital family off the monitor. */
+    tune_result = DSD_TRUNK_TUNE_RESULT_PENDING;
+    assert(dsd_engine_channel_scan_step(opts, state) == 0);
+    assert(tuned_analog_only == 0);
+    assert(dsd_scan_mode_set_configured_nfm_bandwidth(opts, state, 12500) == 1);
+    g_family_requests++;
+    int before = tunes;
+    dsd_trunk_tuning_request_publish(request, DSD_TRUNK_TUNE_RESULT_OK);
+    assert(dsd_engine_channel_scan_pending(opts, state) == 1);
+    assert(tunes == before && state->lcn_freq_roll == 1 && opts->analog_only == 1 && !opts->frame_dmr);
+    tune_result = DSD_TRUNK_TUNE_RESULT_OK;
+    assert(dsd_engine_channel_scan_pending(opts, state) == 0);
+    assert(tunes == before + 1 && tuned_analog_only == 0);
+    assert(state->lcn_freq_roll == 2 && opts->frame_dmr && !opts->analog_only);
+    g_frontend_analog = 0;
+
+    /* The nfm row's tune is outstanding when a config apply republishes the DMR row's symbol profile, which asks for
+     * the digital family. */
+    tune_result = DSD_TRUNK_TUNE_RESULT_PENDING;
+    assert(dsd_engine_channel_scan_step(opts, state) == 0);
+    assert(tuned_analog_only == 1 && tuned_nfm_width_hz == 12500);
+    g_family_requests++;
+    before = tunes;
+    dsd_trunk_tuning_request_publish(request, DSD_TRUNK_TUNE_RESULT_OK);
+    assert(dsd_engine_channel_scan_pending(opts, state) == 1);
+    assert(tunes == before && state->lcn_freq_roll == 2 && opts->frame_dmr && !opts->analog_only);
+    tune_result = DSD_TRUNK_TUNE_RESULT_OK;
+    assert(dsd_engine_channel_scan_pending(opts, state) == 0);
+    assert(tunes == before + 1 && tuned_analog_only == 1);
+    assert(state->lcn_freq_roll == 1 && opts->analog_only == 1 && dsd_scan_mode_active(state) == DSD_SCAN_MODE_NFM);
+    g_frontend_analog = 1;
+
+    /* A request made before the DMR row's tune was queued: the row commits as staged. */
+    g_family_requests++;
+    tune_result = DSD_TRUNK_TUNE_RESULT_PENDING;
+    assert(dsd_engine_channel_scan_step(opts, state) == 0);
+    before = tunes;
+    dsd_trunk_tuning_request_publish(request, DSD_TRUNK_TUNE_RESULT_OK);
+    assert(dsd_engine_channel_scan_pending(opts, state) == 0);
+    assert(tunes == before && state->lcn_freq_roll == 2 && opts->frame_dmr && !opts->analog_only);
+
+    tune_result = DSD_TRUNK_TUNE_RESULT_OK;
+    g_family_requests = 0U;
+    g_frontend_analog = 0;
+    dsd_engine_channel_scan_leave(opts, state);
+    dsd_rtl_stream_metrics_hooks_set(NULL);
+    dsd_state_trunk_lcn_free(state);
+    dsd_state_ext_free_all(state);
+    free(state);
+    free(opts);
+    tunes = reset_count = 0;
+}
+
+/* The commit restages a row only for a change its staged tune carries. A live family request made while a digital row's
+ * tune is outstanding on the digital family (a config apply republishing the DMR row on air) supersedes nothing, since
+ * that retune attaches no family and lands its symbol profile whatever the requests. A configured NFM width edit made
+ * while an nfm row that sets its own width is being tuned, or while a typed digital row is on an analog session, leaves
+ * the width that tune carries as it was. Each commits as staged, with no second tune to the same channel. */
+static void
+test_row_commits_when_nothing_its_tune_carries_changed(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
+    assert(opts && state);
+    opts->scanner_mode = 1;
+    opts->audio_in_type = AUDIO_IN_RTL;
+    assert(dsd_apply_decode_mode_preset(DSDCFG_MODE_DMR, DSD_DECODE_PRESET_PROFILE_CLI, opts, state) == 0);
+    opts->analog_nfm_bandwidth_hz = 20000;
+    state->samplesPerSymbol = 10;
+    state->lcn_freq_count = 3;
+    for (int row = 0; row < 3; row++) {
+        *dsd_state_trunk_lcn_slot(state, row) = 150000000;
+    }
+    assert(dsd_channel_mode_set(state, 0, DSD_SCAN_MODE_DMR) == 0);
+    assert(dsd_channel_mode_set(state, 1, DSD_SCAN_MODE_DMR) == 0);
+    assert(dsd_channel_mode_set(state, 2, DSD_SCAN_MODE_NFM) == 0);
+    dsd_scan_row_profile* profile = (dsd_scan_row_profile*)calloc(1, sizeof(*profile));
+    assert(profile);
+    profile->values.present = DSD_SCAN_OPT_BANDWIDTH;
+    profile->values.channel_bw_hz = 12500;
+    assert(dsd_channel_profile_set(state, 2, profile) == 0);
+    const dsd_rtl_stream_metrics_hooks hooks = {.output_rate_hz = output_rate};
+    dsd_rtl_stream_metrics_hooks_set(&hooks);
+    expected_nxdn = 0;
+    g_family_requests = 0U;
+    g_frontend_analog = 0;
+
+    tune_result = DSD_TRUNK_TUNE_RESULT_OK;
+    assert(dsd_engine_channel_scan_step(opts, state) == 1);
+    assert(state->lcn_freq_roll == 1 && opts->frame_dmr && !opts->analog_only);
+
+    /* The second DMR row's tune is outstanding when a config apply republishes the first on the digital family. */
+    tune_result = DSD_TRUNK_TUNE_RESULT_PENDING;
+    assert(dsd_engine_channel_scan_step(opts, state) == 0);
+    g_family_requests++;
+    int before = tunes;
+    dsd_trunk_tuning_request_publish(request, DSD_TRUNK_TUNE_RESULT_OK);
+    assert(dsd_engine_channel_scan_pending(opts, state) == 0);
+    assert(tunes == before && state->lcn_freq_roll == 2 && opts->frame_dmr);
+
+    /* The nfm row's own 12.5 kHz tune is outstanding when the configured width is edited. */
+    assert(dsd_engine_channel_scan_step(opts, state) == 0);
+    assert(tuned_analog_only == 1 && tuned_nfm_width_hz == 12500);
+    assert(dsd_scan_mode_set_configured_nfm_bandwidth(opts, state, 16000) == 1);
+    before = tunes;
+    dsd_trunk_tuning_request_publish(request, DSD_TRUNK_TUNE_RESULT_OK);
+    assert(dsd_engine_channel_scan_pending(opts, state) == 0);
+    assert(tunes == before && state->lcn_freq_roll == 3 && opts->analog_only == 1);
+    assert(opts->analog_nfm_bandwidth_hz == 12500);
+    dsd_engine_channel_scan_leave(opts, state);
+    assert(!opts->analog_only && opts->analog_nfm_bandwidth_hz == 16000);
+
+    /* An analog session: a typed DMR row keeps the monitor family, so its tune carries no width either. */
+    assert(dsd_apply_decode_mode_preset(DSDCFG_MODE_ANALOG, DSD_DECODE_PRESET_PROFILE_CLI, opts, state) == 0);
+    g_frontend_analog = 1;
+    state->lcn_freq_roll = 0;
+    assert(dsd_engine_channel_scan_step(opts, state) == 0);
+    assert(tuned_analog_only == 0);
+    assert(dsd_scan_mode_set_configured_nfm_bandwidth(opts, state, 11250) == 1);
+    before = tunes;
+    dsd_trunk_tuning_request_publish(request, DSD_TRUNK_TUNE_RESULT_OK);
+    assert(dsd_engine_channel_scan_pending(opts, state) == 0);
+    assert(tunes == before && state->lcn_freq_roll == 1 && opts->frame_dmr && !opts->analog_only);
+
+    tune_result = DSD_TRUNK_TUNE_RESULT_OK;
+    g_family_requests = 0U;
+    g_frontend_analog = 0;
+    dsd_engine_channel_scan_leave(opts, state);
+    assert(opts->analog_only == 1 && opts->analog_nfm_bandwidth_hz == 11250);
+    dsd_rtl_stream_metrics_hooks_set(NULL);
+    dsd_state_trunk_lcn_free(state);
+    dsd_state_ext_free_all(state);
+    free(state);
+    free(opts);
+    tunes = reset_count = 0;
+}
+
+/* Four rows on one frequency: nfm with a 20 kHz width and its own -50 dB squelch, nfm with its squelch off, DMR with a
+ * squelch, and nfm on the configured squelch. */
+static void
+nfm_warning_rows_setup(dsd_opts* opts, dsd_state* state, int audio_in_type, double configured_sql_db) {
+    opts->scanner_mode = 1;
+    opts->audio_in_type = audio_in_type;
+    opts->wav_sample_rate = 48000;
+    opts->frame_dmr = 1;
+    opts->rtl_squelch_level = dsd_squelch_level_from_sql(configured_sql_db);
+    state->samplesPerSymbol = 10;
+    state->lcn_freq_count = 4;
+    for (int row = 0; row < 4; row++) {
+        *dsd_state_trunk_lcn_slot(state, row) = 150000000;
+    }
+    assert(dsd_channel_mode_set(state, 0, DSD_SCAN_MODE_NFM) == 0);
+    assert(dsd_channel_mode_set(state, 1, DSD_SCAN_MODE_NFM) == 0);
+    assert(dsd_channel_mode_set(state, 2, DSD_SCAN_MODE_DMR) == 0);
+    assert(dsd_channel_mode_set(state, 3, DSD_SCAN_MODE_NFM) == 0);
+    (void)nfm_row_profile(state, 0, DSD_SCAN_OPT_BANDWIDTH | DSD_SCAN_OPT_SQUELCH, 20000, -50);
+    (void)nfm_row_profile(state, 1, DSD_SCAN_OPT_SQUELCH, 0, 0);
+    (void)nfm_row_profile(state, 2, DSD_SCAN_OPT_SQUELCH, 0, 0);
+    g_analog_warnings = 0;
+    g_squelch_warnings = 0;
+    expected_nxdn = 0;
+    tune_result = DSD_TRUNK_TUNE_RESULT_OK;
+}
+
+static void
+nfm_warning_rows_visit(dsd_opts* opts, dsd_state* state, int visits) {
+    for (int visit = 0; visit < visits; visit++) {
+        (void)dsd_engine_channel_scan_step(opts, state);
+    }
+}
+
+/* What the nfm rows owe the operator: once per row per map when the scan starts, a squelch that holds on noise; and
+ * once per map and DSP rate, a width on an input with no demodulator for it or a width the running DSP rate cannot
+ * filter. Digital rows and well-set nfm rows say nothing. */
+static const char* g_nfm_warning_input_dev = "";
+
+static int
+nfm_row_warnings(int audio_in_type, int dsp_rate_hz, double configured_sql_db) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
+    assert(opts && state);
+    nfm_warning_rows_setup(opts, state, audio_in_type, configured_sql_db);
+    DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", g_nfm_warning_input_dev);
+    g_scan_dsp_rate_hz = dsp_rate_hz;
+    nfm_warning_rows_visit(opts, state, 8);
+    dsd_engine_channel_scan_leave(opts, state);
+    g_scan_dsp_rate_hz = 0;
+    dsd_state_trunk_lcn_free(state);
+    dsd_state_ext_free_all(state);
+    free(state);
+    free(opts);
+    tunes = reset_count = 0;
+    return g_analog_warnings;
+}
+
+static void
+test_nfm_row_warnings_once_per_row(void) {
+    /* RTL input at a 48 kHz DSP rate with a -60 dB default: only row 2 (squelch off) holds on noise, and the text
+       says what does move on from it: the visit cap or the operator, never -t, which its carrier keeps re-arming. */
+    assert(nfm_row_warnings(AUDIO_IN_RTL, 48000, -60.0) == 1);
+    assert(strstr(g_analog_warning_rows[0], "Scan channel 2 (150.000000 MHz): the analog channel's squelch is off"));
+    assert(strstr(g_analog_warning_rows[0], "until --scan-max-visit-ms or a manual advance or avoid moves on"));
+    assert(!strstr(g_analog_warning_rows[0], "-t "));
+    /* The default is open as well (-110 dB, the unset level): row 4 inherits it. */
+    assert(nfm_row_warnings(AUDIO_IN_RTL, 48000, -110.0) == 2);
+    assert(strstr(g_analog_warning_rows[1], "Scan channel 4 "));
+    /* A 16 kHz DSP rate cannot filter row 1's 20 kHz: named with the validator's text, after the squelch. */
+    assert(nfm_row_warnings(AUDIO_IN_RTL, 16000, -60.0) == 2);
+    assert(strstr(g_analog_warning_rows[1], "Scan channel 1 (150.000000 MHz): NFM bandwidth 20 kHz does not fit the "
+                                            "16 kHz DSP rate"));
+    assert(strstr(g_analog_warning_rows[1], "until then it is skipped at every visit"));
+    /* The fix is the one the input allows (issue #525's wording): an RTL-SDR's DSP bandwidth is its rate, a SoapySDR or
+       Airspy device's capture rate only follows the DSP bandwidth, and an I/Q replay's is fixed. */
+    assert(strstr(g_analog_warning_rows[1], "set the RTL DSP bandwidth to 24 or 48 kHz"));
+    g_nfm_warning_input_dev = "soapy:driver=airspy";
+    assert(nfm_row_warnings(AUDIO_IN_RTL, 16000, -60.0) == 2);
+    assert(strstr(g_analog_warning_rows[1], "raise the DSP bandwidth or narrow the NFM width"));
+    assert(!strstr(g_analog_warning_rows[1], "RTL DSP bandwidth"));
+    g_nfm_warning_input_dev = "iqreplay:capture.iq.json";
+    assert(nfm_row_warnings(AUDIO_IN_RTL, 16000, -60.0) == 2);
+    assert(strstr(g_analog_warning_rows[1], "narrow the NFM width"));
+    assert(!strstr(g_analog_warning_rows[1], "DSP bandwidth"));
+    g_nfm_warning_input_dev = "";
+    /* Audio input: the width has nothing to act on, while an nfm row's squelch still gates its monitor and
+       carrier there, so only the digital row's squelch draws the #521 warning. */
+    assert(nfm_row_warnings(AUDIO_IN_WAV, 0, -60.0) == 2);
+    assert(strstr(g_analog_warning_rows[1], "Scan channel 1 (150.000000 MHz): --nfm-bandwidth-hz 20000 has no effect"));
+    assert(g_squelch_warnings == 1 && strstr(g_squelch_warning_rows[0], "Scan channel 3 "));
+}
+
+/* The width checks follow the DSP rate a width must fit. An RTL stream that has published none yet leaves them to a
+ * later row start rather than skip the width check for good, and a new rate names the widths again: a width that fit
+ * the old rate may not fit the new one, and the scanner skips such a row quietly. The squelch does not depend on the
+ * rate: it is named once, when the scan starts, whatever the rate does after. */
+static void
+test_nfm_row_warnings_follow_the_dsp_rate(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
+    assert(opts && state);
+    nfm_warning_rows_setup(opts, state, AUDIO_IN_RTL, -60.0);
+    g_scan_dsp_rate_hz = 0;
+    nfm_warning_rows_visit(opts, state, 4);
+    assert(g_analog_warnings == 1);
+    assert(strstr(g_analog_warning_rows[0], "Scan channel 2 (150.000000 MHz): the analog channel's squelch is off"));
+    assert(state->ui_msg[0] == '\0');
+    /* The rate arrives: row 1's 20 kHz, once, in the log and on the status line every frontend shows. */
+    g_scan_dsp_rate_hz = 16000;
+    nfm_warning_rows_visit(opts, state, 8);
+    assert(g_analog_warnings == 2);
+    assert(strstr(g_analog_warning_rows[1], "Scan channel 1 (150.000000 MHz): NFM bandwidth 20 kHz does not fit the "
+                                            "16 kHz DSP rate"));
+    assert(strcmp(state->ui_msg, "Skipped at every visit: Scan channel 1 (150.000000 MHz): NFM 20 kHz does not fit the "
+                                 "16 kHz DSP rate")
+           == 0);
+    assert(state->ui_msg_expire > 0);
+    /* A 24 kHz rate fits the 20 kHz width, and the squelch is not named again. */
+    state->ui_msg[0] = '\0';
+    g_scan_dsp_rate_hz = 24000;
+    nfm_warning_rows_visit(opts, state, 8);
+    assert(g_analog_warnings == 2);
+    assert(state->ui_msg[0] == '\0');
+    /* Back to 16 kHz: the width is named again, the squelch still not. */
+    g_scan_dsp_rate_hz = 16000;
+    nfm_warning_rows_visit(opts, state, 8);
+    assert(g_analog_warnings == 3);
+    assert(strstr(g_analog_warning_rows[2], "Scan channel 1 (150.000000 MHz): NFM bandwidth 20 kHz"));
+    dsd_engine_channel_scan_leave(opts, state);
+    g_scan_dsp_rate_hz = 0;
+    dsd_state_trunk_lcn_free(state);
+    dsd_state_ext_free_all(state);
+    free(state);
+    free(opts);
+    tunes = reset_count = 0;
+}
+
+/* An nfm row that sets no width of its own runs the configured NFM width, which nothing holds to the DSP rate on a
+ * digital session: a rate that cannot filter it skips those rows at every visit, so the scan start names them with
+ * that width beside the rows whose own width does not fit, and a changed configured width names again only the rows
+ * that run it. */
+static void
+test_nfm_row_warnings_for_the_configured_width(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
+    assert(opts && state);
+    nfm_warning_rows_setup(opts, state, AUDIO_IN_RTL, -60.0);
+    opts->analog_nfm_bandwidth_hz = 16000;
+    g_scan_dsp_rate_hz = 16000;
+    nfm_warning_rows_visit(opts, state, 8);
+    /* Row 2's open squelch, row 1's own 20 kHz, and rows 2 and 4, which run the configured 16 kHz. */
+    assert(g_analog_warnings == 4);
+    assert(strstr(g_analog_warning_rows[1], "Scan channel 1 (150.000000 MHz): NFM bandwidth 20 kHz does not fit"));
+    assert(strstr(g_analog_warning_rows[2], "Scan channel 2 (150.000000 MHz): it sets no NFM width of its own, and the "
+                                            "configured NFM bandwidth 16 kHz does not fit the 16 kHz DSP rate"));
+    assert(strstr(g_analog_warning_rows[2], "set the RTL DSP bandwidth to 24 or 48 kHz; until then it is skipped at "
+                                            "every visit"));
+    assert(strstr(g_analog_warning_rows[3], "Scan channel 4 (150.000000 MHz): it sets no NFM width of its own"));
+    assert(strcmp(state->ui_msg, "Skipped at every visit: Scan channel 1 (150.000000 MHz) and 2 more: NFM 20 kHz does "
+                                 "not fit the 16 kHz DSP rate")
+           == 0);
+    /* A configured width the rate fits names nothing; one it does not names the two rows again, not row 1. The status
+       line still counts row 1, whose own width still does not fit, so it stays a full count of the rows skipped. */
+    assert(dsd_scan_mode_configured_view(state) != NULL);
+    state->ui_msg[0] = '\0';
+    (void)dsd_scan_mode_set_configured_nfm_bandwidth(opts, state, 12500);
+    nfm_warning_rows_visit(opts, state, 8);
+    assert(g_analog_warnings == 4);
+    assert(strcmp(state->ui_msg, "Skipped at every visit: Scan channel 1 (150.000000 MHz): NFM 20 kHz does not fit the "
+                                 "16 kHz DSP rate")
+           == 0);
+    state->ui_msg[0] = '\0';
+    (void)dsd_scan_mode_set_configured_nfm_bandwidth(opts, state, 20000);
+    nfm_warning_rows_visit(opts, state, 8);
+    assert(g_analog_warnings == 6);
+    assert(strstr(g_analog_warning_rows[4], "Scan channel 2 (150.000000 MHz): it sets no NFM width of its own, and the "
+                                            "configured NFM bandwidth 20 kHz does not fit"));
+    assert(strstr(g_analog_warning_rows[5], "Scan channel 4 "));
+    assert(strcmp(state->ui_msg, "Skipped at every visit: Scan channel 1 (150.000000 MHz) and 2 more: NFM 20 kHz does "
+                                 "not fit the 16 kHz DSP rate")
+           == 0);
+    /* The unset default runs at any rate (DSP-limited where it cannot filter), so it names nothing. */
+    (void)dsd_scan_mode_set_configured_nfm_bandwidth(opts, state, 0);
+    nfm_warning_rows_visit(opts, state, 8);
+    assert(g_analog_warnings == 6);
+    dsd_engine_channel_scan_leave(opts, state);
+    g_scan_dsp_rate_hz = 0;
+    dsd_state_trunk_lcn_free(state);
+    dsd_state_ext_free_all(state);
+    free(state);
+    free(opts);
+    tunes = reset_count = 0;
+}
+
+/* A placeholder row (frequency 0) is never tuned, so the scan start names nothing about it, neither its squelch nor
+ * its width, and the status line does not count it, as a channel-map import's count leaves it out
+ * (dsd_engine_channel_scan_refused_rows()). */
+static void
+test_nfm_placeholder_rows_owe_nothing(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
+    assert(opts && state);
+    nfm_warning_rows_setup(opts, state, AUDIO_IN_RTL, -110.0);
+    opts->analog_nfm_bandwidth_hz = 16000;
+    *dsd_state_trunk_lcn_slot(state, 3) = 0;
+    g_scan_dsp_rate_hz = 16000;
+    nfm_warning_rows_visit(opts, state, 8);
+    /* Row 2's open squelch, row 1's own 20 kHz and row 2's configured 16 kHz; row 4 inherits both the open squelch and
+       the configured width, but is neither named nor counted. */
+    assert(g_analog_warnings == 3);
+    for (int i = 0; i < g_analog_warnings; i++) {
+        assert(!strstr(g_analog_warning_rows[i], "Scan channel 4 "));
+    }
+    assert(strcmp(state->ui_msg, "Skipped at every visit: Scan channel 1 (150.000000 MHz) and 1 more: NFM 20 kHz does "
+                                 "not fit the 16 kHz DSP rate")
+           == 0);
+    char brief[DSD_ANALOG_ERROR_TEXT_MAX];
+    int first_row = -1;
+    assert(dsd_engine_channel_scan_refused_rows(opts, state, 16000, &first_row, brief, sizeof brief) == 2);
+    assert(first_row == 0 && strcmp(brief, "NFM 20 kHz does not fit the 16 kHz DSP rate") == 0);
+    dsd_engine_channel_scan_leave(opts, state);
+    g_scan_dsp_rate_hz = 0;
+    dsd_state_trunk_lcn_free(state);
+    dsd_state_ext_free_all(state);
+    free(state);
+    free(opts);
+    tunes = reset_count = 0;
+}
+
+/* DSD_NEO_CHANNEL_LPF=0 turns off the channel filter every explicit width needs, and the front end refuses such a
+ * width at any rate, so a row with its own width is skipped at every visit even where the rate fits it: the scan start
+ * names it once with that reason, in the log and on the status line, as it names a width the rate cannot fit. A row
+ * on the unset default width still runs, and names nothing. */
+static void
+test_nfm_row_warnings_under_the_channel_lpf_override(void) {
+    (void)dsd_setenv("DSD_NEO_CHANNEL_LPF", "0", 1);
+    dsd_neo_config_init();
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
+    assert(opts && state);
+    nfm_warning_rows_setup(opts, state, AUDIO_IN_RTL, -60.0);
+    g_scan_dsp_rate_hz = 48000;
+    nfm_warning_rows_visit(opts, state, 8);
+    /* Row 2's open squelch, then row 1's 20 kHz, which the 48 kHz rate fits. */
+    assert(g_analog_warnings == 2);
+    assert(strstr(g_analog_warning_rows[1], "Scan channel 1 (150.000000 MHz): NFM bandwidth 20 kHz needs the channel "
+                                            "filter, but DSD_NEO_CHANNEL_LPF=0 turns it off"));
+    assert(strstr(g_analog_warning_rows[1], "until then it is skipped at every visit"));
+    assert(strcmp(state->ui_msg, "Skipped at every visit: Scan channel 1 (150.000000 MHz): NFM 20 kHz needs the "
+                                 "filter DSD_NEO_CHANNEL_LPF=0 turns off")
+           == 0);
+    /* Said once: more rotations at the same rate name nothing more. */
+    nfm_warning_rows_visit(opts, state, 8);
+    assert(g_analog_warnings == 2);
+    dsd_engine_channel_scan_leave(opts, state);
+    g_scan_dsp_rate_hz = 0;
+    dsd_state_trunk_lcn_free(state);
+    dsd_state_ext_free_all(state);
+    free(state);
+    free(opts);
+    tunes = reset_count = 0;
+    (void)dsd_unsetenv("DSD_NEO_CHANNEL_LPF");
+    dsd_neo_config_init();
+}
+
 int
 main(void) {
     dsd_neo_log_set_tap(count_squelch_warnings, NULL);
@@ -888,6 +1532,15 @@ main(void) {
     test_row_squelch_threshold_off_inherit();
     test_row_squelch_warns_once_per_row_on_pcm_input();
     test_rx_tone_row_commit_and_step_clear();
+    test_nfm_rows_switch_family_width_and_sink();
+    test_nfm_row_restages_after_a_configured_width_edit();
+    test_row_restages_after_a_live_family_request();
+    test_row_commits_when_nothing_its_tune_carries_changed();
+    test_nfm_row_warnings_once_per_row();
+    test_nfm_row_warnings_follow_the_dsp_rate();
+    test_nfm_row_warnings_for_the_configured_width();
+    test_nfm_placeholder_rows_owe_nothing();
+    test_nfm_row_warnings_under_the_channel_lpf_override();
     dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
     dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
     assert(opts && state);
