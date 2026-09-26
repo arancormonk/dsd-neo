@@ -110,7 +110,10 @@ _Static_assert(DSD_ANALOG_DCS_RING >= (2 * DCS_MAX_BOX_LEN) + 2,
    48 kHz (0.84) and at 78.125 kHz (0.75, near 0.72); a 10 Hz coupling (0.63, near 0.55). The
    same block at 8 kHz sags by 0.97 per bit, which the first slicer reads as well as a
    matching one. */
-static const double k_droop[DSD_ANALOG_DCS_HYPOTHESES] = {1.0, 0.84, 0.72, 0.55};
+static const double k_droop[] = {1.0, 0.84, 0.72, 0.55};
+
+_Static_assert(sizeof(k_droop) / sizeof(k_droop[0]) == DSD_ANALOG_DCS_HYPOTHESES,
+               "one per-bit sag for each droop slicer");
 
 /* The bit clock: its edge-energy average spans about this many bits, and each bit end moves
    this share of the way onto the phase it reads. */
@@ -430,7 +433,7 @@ dcs_acquire(dsd_analog_dcs* det) {
 static int
 dcs_hold(dsd_analog_dcs* det) {
     static const int k_slips[] = {0, 1, -1};
-    for (int si = 0; si < 3; si++) {
+    for (int si = 0; si < (int)(sizeof(k_slips) / sizeof(k_slips[0])); si++) {
         const uint32_t expected = dcs_rotr(det->expected, k_slips[si]);
         for (int j = 0; j < DSD_ANALOG_DCS_SLICERS; j++) {
             const dsd_analog_dcs_slicer* s = &det->slicer[j];
