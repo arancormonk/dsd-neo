@@ -48,6 +48,7 @@
 /* Forward declarations for non-static rigctl helpers exported by this TU. */
 static bool Send(dsd_socket_t sockfd, const char* buf);
 static bool Recv(dsd_socket_t sockfd, char* buf);
+static void rigctl_peer_reset(dsd_socket_t sockfd);
 
 /**
  * @brief Establish a TCP RIGCTL connection to the given host/port.
@@ -105,6 +106,8 @@ Connect(char* hostname, int portno) {
         (void)dsd_socket_setsockopt(sockfd, IPPROTO_TCP, TCP_NODELAY, &nodelay, sizeof(nodelay));
     }
 
+    /* A new connection is a peer nothing was asked of, even on the number of a socket closed before it. */
+    rigctl_peer_reset(DSD_INVALID_SOCKET);
     return sockfd;
 }
 
@@ -226,11 +229,47 @@ SetFreq(dsd_socket_t sockfd, long int freq) {
     return true;
 }
 
-/* What the peer on one socket last accepted (issue #526): the demodulator and the passband, keyed together so an FM and
- * an AM request of the same width are two requests. */
-static dsd_socket_t s_modulation_sockfd = DSD_INVALID_SOCKET;
-static int s_modulation_kind = DSD_ANALOG_DEMOD_FM;
-static int s_modulation_bw = INT_MIN;
+/* What this client knows of the rigctl peer on one socket (issue #526).
+ *
+ * The cache is the demodulator and passband the peer last accepted, keyed together so an FM and an AM request of the
+ * same width are two requests; a passband of 0 is the peer's own, and INT_MIN means a reply was lost, so what the peer
+ * runs is not known. SDR++ and GQRX take a passband of 0 as "leave it unchanged", not as their normal one, and SDR++
+ * keeps every passband it is sent across restarts, so a scan row's own passband stays in force until it is sent back.
+ * The peer's own passband of each demodulator is therefore read ("m") before a scan row first changes it, and it is
+ * what the peer is asked for to undo that. */
+typedef struct {
+    dsd_socket_t sockfd;
+    int touched;        /* a request this client made on the socket may have changed the peer */
+    int kind;           /* cache: the demodulator last accepted */
+    int bw;             /* cache: the passband last accepted (0: the peer's own; INT_MIN: not known) */
+    int own_read[2];    /* per dsd_analog_demod: the peer's own passband was looked up */
+    int own_bw[2];      /* ...and is this many Hz (0: not known) */
+    int row_changed[2]; /* a scan row asked for a passband of this demodulator since the scan's last restore */
+} rigctl_peer;
+
+static rigctl_peer s_peer = {DSD_INVALID_SOCKET, 0, DSD_ANALOG_DEMOD_FM, INT_MIN, {0, 0}, {0, 0}, {0, 0}};
+
+static void
+rigctl_peer_reset(dsd_socket_t sockfd) {
+    DSD_MEMSET(&s_peer, 0, sizeof s_peer);
+    s_peer.sockfd = sockfd;
+    s_peer.kind = DSD_ANALOG_DEMOD_FM;
+    s_peer.bw = INT_MIN;
+}
+
+/* The record for @p sockfd: a socket the record does not describe is a peer nothing was asked of yet. */
+static rigctl_peer*
+rigctl_peer_on(dsd_socket_t sockfd) {
+    if (s_peer.sockfd != sockfd) {
+        rigctl_peer_reset(sockfd);
+    }
+    return &s_peer;
+}
+
+static int
+rigctl_kind(int kind) {
+    return kind == DSD_ANALOG_DEMOD_AM ? DSD_ANALOG_DEMOD_AM : DSD_ANALOG_DEMOD_FM;
+}
 
 /* Send "M <token> <bandwidth>" and read the reply into @p buf. Returns 1 when the peer accepted it, 0 when it refused,
  * -1 when the I/O failed. */
@@ -243,11 +282,129 @@ rigctl_set_mode(dsd_socket_t sockfd, const char* token, int bandwidth, char* buf
     return rigctl_response_ok(buf) ? 1 : 0;
 }
 
+/* Ask the peer for demodulator @p kind at passband @p send_bw and record the answer, with @p cache_bw as the passband
+ * the cache keeps (0 when @p send_bw is the peer's own). Returns what rigctl_set_mode() does. */
+static int
+rigctl_request(rigctl_peer* peer, int kind, int send_bw, int cache_bw, char* buf) {
+    int rc;
+    if (kind == DSD_ANALOG_DEMOD_AM) {
+        rc = rigctl_set_mode(peer->sockfd, "AM", send_bw, buf);
+    } else {
+        /* Active rigctl peers disagree on the narrow-FM token: some expect NFM, while GQRX, SDR++ and other
+         * Hamlib-compatible peers expect FM. */
+        rc = rigctl_set_mode(peer->sockfd, "NFM", send_bw, buf);
+        if (rc == 0) {
+            /* Retry with the token used by the other active peer family. */
+            rc = rigctl_set_mode(peer->sockfd, "FM", send_bw, buf);
+        }
+    }
+    if (rc == -1) {
+        /* The request may have reached the peer before the reply was lost, so what it runs is no longer known: no
+         * request matches the cache until one is answered, the FM undo at the peer's own passband included. */
+        peer->touched = 1;
+        peer->bw = INT_MIN;
+    } else if (rc == 1) {
+        peer->touched = 1;
+        peer->kind = kind;
+        peer->bw = cache_bw;
+    }
+    return rc;
+}
+
+/* Read the rest of a reply into @p buf (holding @p len bytes) until it has @p lines newline-terminated lines. */
+static int
+rigctl_recv_lines(dsd_socket_t sockfd, char* buf, size_t len, int lines) {
+    for (;;) {
+        int seen = 0;
+        for (const char* p = buf; (p = strchr(p, '\n')) != NULL; p++) {
+            seen++;
+        }
+        if (seen >= lines || len >= BUFSIZE) {
+            return seen >= lines;
+        }
+        const int n = dsd_socket_recv(sockfd, buf + len, BUFSIZE - len, 0);
+        if (n <= 0) {
+            return 0;
+        }
+        len += (size_t)n;
+        buf[len] = '\0';
+    }
+}
+
+/* The widest passband a peer's "m" reply is taken at (a RAW or WFM passband is far below it). */
+static const long k_rigctl_passband_max_hz = 100000000L;
+
+/* Ask the peer which demodulator and passband it runs ("m", answered "<MODE>\n<passband>\n" by SDR++, GQRX and
+ * Hamlib). Returns 1 with @p kind (dsd_analog_demod, or -1 for a mode that is neither narrow FM nor AM) and
+ * @p passband_hz (0 when the peer names none, or none a receiver passband can be), 0 when the peer answered something
+ * else, -1 when the I/O failed. */
+static int
+rigctl_get_mode(dsd_socket_t sockfd, char* buf, int* kind, int* passband_hz) {
+    if (!Send(sockfd, "m\n") || !Recv(sockfd, buf)) {
+        return -1;
+    }
+    if (strncmp(buf, "RPRT", 4) == 0) {
+        return 0;
+    }
+    if (!rigctl_recv_lines(sockfd, buf, strlen(buf), 2)) {
+        return -1;
+    }
+    char* mode = buf;
+    char* passband = strchr(buf, '\n');
+    if (passband == NULL) {
+        return 0; /* rigctl_recv_lines() found two lines; nothing to parse otherwise */
+    }
+    *passband++ = '\0';
+    mode[strcspn(mode, "\r")] = '\0';
+    char* end = NULL;
+    const long hz = strtol(passband, &end, 10);
+    if (end == passband || (*end != '\n' && *end != '\r')) {
+        return 0;
+    }
+    *kind = -1;
+    if (strcmp(mode, "FM") == 0 || strcmp(mode, "NFM") == 0) {
+        *kind = DSD_ANALOG_DEMOD_FM;
+    } else if (strcmp(mode, "AM") == 0) {
+        *kind = DSD_ANALOG_DEMOD_AM;
+    }
+    *passband_hz = (hz > 0 && hz <= k_rigctl_passband_max_hz) ? (int)hz : 0;
+    return 1;
+}
+
+/* Look up, once per socket and scan, the peer's own passband of demodulator @p kind before a scan row first changes
+ * it. A peer running another demodulator is switched to this one at passband 0, which keeps its own, and asked again;
+ * the passband of the one it ran is kept too, unless a row already changed it. A peer that cannot say leaves it not
+ * known. */
+static void
+rigctl_read_own_passband(rigctl_peer* peer, int kind, char* buf) {
+    if (peer->own_read[kind]) {
+        return;
+    }
+    peer->own_read[kind] = 1;
+    int now_kind = -1;
+    int passband = 0;
+    if (rigctl_get_mode(peer->sockfd, buf, &now_kind, &passband) != 1) {
+        return;
+    }
+    if (now_kind == kind) {
+        peer->own_bw[kind] = passband;
+        return;
+    }
+    if (now_kind >= 0 && !peer->own_read[now_kind]) {
+        peer->own_read[now_kind] = 1;
+        peer->own_bw[now_kind] = passband;
+    }
+    if (rigctl_request(peer, kind, 0, 0, buf) == 1 && rigctl_get_mode(peer->sockfd, buf, &now_kind, &passband) == 1
+        && now_kind == kind) {
+        peer->own_bw[kind] = passband;
+    }
+}
+
 /**
  * @brief Set modulation/bandwidth on the RIGCTL peer.
  *
- * Sends both the SDR++-specific "NFM" token and the generic "FM" token as a
- * fallback. Requests are cached to skip redundant updates.
+ * Sends the "NFM" token, then the generic "FM" token (SDR++, GQRX and Hamlib)
+ * when the peer refuses it. Requests are cached to skip redundant updates.
  *
  * @param sockfd Connected RIGCTL socket.
  * @param bandwidth Target bandwidth in Hz.
@@ -260,43 +417,61 @@ SetModulation(dsd_socket_t sockfd, int bandwidth) {
 
 bool
 SetModulationKind(dsd_socket_t sockfd, int kind, int bandwidth) {
-    const int am = kind == DSD_ANALOG_DEMOD_AM;
-    const int want_kind = am ? DSD_ANALOG_DEMOD_AM : DSD_ANALOG_DEMOD_FM;
-    const int same_peer = sockfd == s_modulation_sockfd;
-    if (same_peer && s_modulation_kind == want_kind && s_modulation_bw == bandwidth) {
+    rigctl_peer* peer = rigctl_peer_on(sockfd);
+    const int want_kind = rigctl_kind(kind);
+    int send_bw = bandwidth;
+    if (want_kind == DSD_ANALOG_DEMOD_FM && bandwidth == 0) {
+        /* FM at the peer's own passband only undoes a request this client made on the socket (an AM row's
+         * demodulator, or a row's own passband): a peer nothing was asked of keeps its own settings. */
+        if (!peer->touched) {
+            return true;
+        }
+        /* The passband read before a row changed it; where the peer could not say, Hamlib's 0 (normal passband). */
+        send_bw = peer->own_bw[DSD_ANALOG_DEMOD_FM];
+    }
+    if (peer->kind == want_kind && peer->bw == bandwidth) {
         return true; // unchanged
     }
-    /* FM at the peer's normal passband (0) only undoes a request this client made on the socket (an AM row's
-     * demodulator, or a row's own passband): a peer nothing was asked of keeps its own settings. */
-    if (!am && bandwidth == 0 && !same_peer) {
-        return true;
+    char buf[BUFSIZE + 1];
+    return rigctl_request(peer, want_kind, send_bw, bandwidth, buf) == 1;
+}
+
+bool
+SetScanRowModulation(dsd_socket_t sockfd, int kind, int bandwidth) {
+    rigctl_peer* peer = rigctl_peer_on(sockfd);
+    const int want_kind = rigctl_kind(kind);
+    if (bandwidth <= 0 || (peer->kind == want_kind && peer->bw == bandwidth)) {
+        return SetModulationKind(sockfd, want_kind, bandwidth);
     }
     char buf[BUFSIZE + 1];
-    int rc;
-    if (am) {
-        rc = rigctl_set_mode(sockfd, "AM", bandwidth, buf);
-    } else {
-        /* Active rigctl peers disagree on the narrow-FM token: SDR++ expects NFM,
-         * while GQRX and other Hamlib-compatible peers commonly expect FM. */
-        rc = rigctl_set_mode(sockfd, "NFM", bandwidth, buf);
-        if (rc == 0) {
-            /* Retry with the token used by the other active peer family. */
-            rc = rigctl_set_mode(sockfd, "FM", bandwidth, buf);
+    rigctl_read_own_passband(peer, want_kind, buf);
+    const int rc = rigctl_request(peer, want_kind, bandwidth, bandwidth, buf);
+    if (rc != 0) {
+        peer->row_changed[want_kind] = 1;
+    }
+    return rc == 1;
+}
+
+bool
+RestoreScanModulation(dsd_socket_t sockfd, int kind, int bandwidth) {
+    rigctl_peer* peer = rigctl_peer_on(sockfd);
+    const int want_kind = rigctl_kind(kind);
+    char buf[BUFSIZE + 1];
+    /* The other demodulator's passband first, so that the request for what the session runs comes last and leaves the
+     * peer on it; that request puts back its own passband where it asks for FM without -B. */
+    for (int other = DSD_ANALOG_DEMOD_FM; other <= DSD_ANALOG_DEMOD_AM; other++) {
+        if (other != want_kind && peer->row_changed[other] && peer->own_bw[other] > 0) {
+            (void)rigctl_request(peer, other, peer->own_bw[other], 0, buf);
         }
     }
-    if (rc == -1) {
-        /* The request may have reached the peer before the reply was lost, so what it runs is no longer known: no
-         * request matches the cache until one is answered, the FM undo at the peer's normal passband included. */
-        s_modulation_sockfd = sockfd;
-        s_modulation_bw = INT_MIN;
+    const bool ok = SetModulationKind(sockfd, want_kind, bandwidth);
+    /* The next scan reads the peer's own passbands again: the operator may change them between scans. */
+    for (int k = DSD_ANALOG_DEMOD_FM; k <= DSD_ANALOG_DEMOD_AM; k++) {
+        peer->own_read[k] = 0;
+        peer->own_bw[k] = 0;
+        peer->row_changed[k] = 0;
     }
-    if (rc != 1) {
-        return false;
-    }
-    s_modulation_sockfd = sockfd;
-    s_modulation_kind = want_kind;
-    s_modulation_bw = bandwidth;
-    return true;
+    return ok;
 }
 
 static int

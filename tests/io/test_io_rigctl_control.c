@@ -33,8 +33,8 @@
 #include <sys/socket.h>
 #endif
 
-#define MAX_COMMANDS  16
-#define MAX_RESPONSES 16
+#define MAX_COMMANDS  32
+#define MAX_RESPONSES 32
 
 static char g_commands[MAX_COMMANDS][64];
 static size_t g_command_count;
@@ -374,6 +374,133 @@ test_setmodulation_kind_am_and_passband_restore(void) {
     return 0;
 }
 
+/* Whether the commands sent since @p first are exactly @p want (NULL-terminated). */
+static int
+sent_since(size_t first, const char* const* want) {
+    size_t i = 0;
+    for (; want[i] != NULL; i++) {
+        if (first + i >= g_command_count || strcmp(g_commands[first + i], want[i]) != 0) {
+            return 0;
+        }
+    }
+    return first + i == g_command_count;
+}
+
+/*
+ * Issue #526: SDR++ and GQRX take a passband of 0 as "unchanged", and SDR++ keeps each passband it is sent, so an FM
+ * undo at passband 0 would leave a row's own passband in force. Before a scan row first changes a demodulator's
+ * passband the peer is asked for its own ("m"); a peer on the other demodulator is switched to this one at passband 0
+ * and asked again. The FM undo sends the own FM passband back explicitly, and the scan's restore puts back the other
+ * demodulator's before asking for what the session runs. The next scan reads them again.
+ */
+static int
+test_scan_row_modulation_reads_and_restores_the_own_passband(void) {
+    reset_stubs();
+    assert(SetModulationKind(130, DSD_ANALOG_DEMOD_FM, 0));
+    assert(g_command_count == 0);
+
+    /* An nfm row's own 25 kHz on a peer at FM 12.5 kHz that refuses the NFM token, as SDR++ and GQRX do. */
+    push_response("FM\n12500\n");
+    push_response("RPRT 1\n");
+    push_response("RPRT 0\n");
+    assert(SetScanRowModulation(130, DSD_ANALOG_DEMOD_FM, 25000));
+    static const char* const row_fm[] = {"m\n", "M NFM 25000\n", "M FM 25000\n", NULL};
+    assert(sent_since(0, row_fm));
+    /* A row without a width of its own: FM at the peer's own 12.5 kHz, sent as such, once. */
+    push_response("RPRT 1\n");
+    push_response("RPRT 0\n");
+    assert(SetModulationKind(130, DSD_ANALOG_DEMOD_FM, 0));
+    static const char* const undo_fm[] = {"M NFM 12500\n", "M FM 12500\n", NULL};
+    assert(sent_since(3, undo_fm));
+    assert(SetModulationKind(130, DSD_ANALOG_DEMOD_FM, 0));
+    assert(g_command_count == 5);
+
+    /* An am row: the peer runs FM, so it is switched to AM at its own passband and asked for that (10 kHz, whose reply
+       arrives in two reads), then for the row's 6 kHz. The FM passband read before stays the one to undo to. */
+    push_response("FM\n12500\n");
+    push_response("RPRT 0\n");
+    push_response("AM\n");
+    push_response("10000\n");
+    push_response("RPRT 0\n");
+    assert(SetScanRowModulation(130, DSD_ANALOG_DEMOD_AM, 6000));
+    static const char* const row_am[] = {"m\n", "M AM 0\n", "m\n", "M AM 6000\n", NULL};
+    assert(sent_since(5, row_am));
+    assert(SetScanRowModulation(130, DSD_ANALOG_DEMOD_AM, 6000));
+    assert(g_command_count == 9);
+
+    /* The scan leaves on the am row: AM goes back to its own 10 kHz first, then FM to its own 12.5 kHz. */
+    push_response("RPRT 0\n");
+    push_response("RPRT 1\n");
+    push_response("RPRT 0\n");
+    assert(RestoreScanModulation(130, DSD_ANALOG_DEMOD_FM, 0));
+    static const char* const restore[] = {"M AM 10000\n", "M NFM 12500\n", "M FM 12500\n", NULL};
+    assert(sent_since(9, restore));
+    assert(SetModulationKind(130, DSD_ANALOG_DEMOD_FM, 0));
+    assert(RestoreScanModulation(130, DSD_ANALOG_DEMOD_FM, 0));
+    assert(g_command_count == 12);
+
+    /* The next scan reads the peer's own passbands again, whatever it runs now (a WFM broadcast here). */
+    push_response("WFM\n200000\n");
+    push_response("RPRT 1\n");
+    push_response("RPRT 0\n");
+    push_response("FM\n11000\n");
+    push_response("RPRT 1\n");
+    push_response("RPRT 0\n");
+    assert(SetScanRowModulation(130, DSD_ANALOG_DEMOD_FM, 20000));
+    static const char* const reread[] = {"m\n", "M NFM 0\n", "M FM 0\n", "m\n", "M NFM 20000\n", "M FM 20000\n", NULL};
+    assert(sent_since(12, reread));
+    push_response("RPRT 1\n");
+    push_response("RPRT 0\n");
+    assert(RestoreScanModulation(130, DSD_ANALOG_DEMOD_FM, 0));
+    static const char* const restore_fm[] = {"M NFM 11000\n", "M FM 11000\n", NULL};
+    assert(sent_since(18, restore_fm));
+
+    /* A peer that cannot say what it runs: the row still gets its AM, the undo falls back to passband 0, and the AM
+       passband it never read is not put back. */
+    reset_stubs();
+    push_response("RPRT -11\n");
+    push_response("RPRT 0\n");
+    assert(SetScanRowModulation(131, DSD_ANALOG_DEMOD_AM, 6000));
+    push_response("RPRT 0\n");
+    assert(SetModulationKind(131, DSD_ANALOG_DEMOD_FM, 0));
+    static const char* const unknown[] = {"m\n", "M AM 6000\n", "M NFM 0\n", NULL};
+    assert(sent_since(0, unknown));
+    assert(RestoreScanModulation(131, DSD_ANALOG_DEMOD_FM, 0));
+    assert(g_command_count == 3);
+    /* ...nor one that answers with a passband it cannot parse, or cuts the reply short. */
+    reset_stubs();
+    push_response("FM\nwide\n");
+    push_response("RPRT 0\n");
+    assert(SetScanRowModulation(132, DSD_ANALOG_DEMOD_FM, 25000));
+    push_response("RPRT 0\n");
+    assert(SetModulationKind(132, DSD_ANALOG_DEMOD_FM, 0));
+    assert(g_command_count == 3 && strcmp(g_commands[2], "M NFM 0\n") == 0);
+    reset_stubs();
+    push_response("FM\n");
+    assert(!SetScanRowModulation(133, DSD_ANALOG_DEMOD_FM, 25000));
+
+    /* A refused row request leaves nothing to put back, and the session's own request goes out as asked. */
+    reset_stubs();
+    push_response("AM\n9000\n");
+    push_response("RPRT -1\n");
+    assert(!SetScanRowModulation(134, DSD_ANALOG_DEMOD_AM, 6000));
+    push_response("RPRT 0\n");
+    assert(RestoreScanModulation(134, DSD_ANALOG_DEMOD_FM, 7000));
+    static const char* const refused[] = {"m\n", "M AM 6000\n", "M NFM 7000\n", NULL};
+    assert(sent_since(0, refused));
+
+    /* A new connection on the number of a socket closed before it is a peer nothing was asked of. */
+    reset_stubs();
+    push_response("RPRT 0\n");
+    assert(SetModulationKind(135, DSD_ANALOG_DEMOD_AM, 6000));
+    char host[] = "127.0.0.1";
+    g_create_result = 135;
+    assert(Connect(host, 4532) == 135);
+    assert(SetModulationKind(135, DSD_ANALOG_DEMOD_FM, 0));
+    assert(g_command_count == 1);
+    return 0;
+}
+
 /* A reply that fills the whole receive buffer (1024 bytes) is terminated inside every caller's buffer: the frequency
  * query, the frequency set and the modulation set each read one. */
 static int
@@ -538,6 +665,7 @@ main(void) {
     rc |= test_setfreq_success_failure_and_cache();
     rc |= test_setmodulation_fallback_and_cache();
     rc |= test_setmodulation_kind_am_and_passband_restore();
+    rc |= test_scan_row_modulation_reads_and_restores_the_own_passband();
     rc |= test_full_size_replies_stay_in_bounds();
     rc |= test_get_current_freq_parses_first_line_and_errors();
     rc |= test_io_control_set_freq_validation_and_rigctl_dispatch();
