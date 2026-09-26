@@ -6003,6 +6003,44 @@ test_decode_mode_set_am_switches_live(void) {
     return rc;
 }
 
+/*
+ * A live switch from the FM monitor to AM (issue #524) is a decode-mode change like any other: it forgets a received
+ * CTCSS tone or DCS code (issues #522, #523) through the acquisition reset, so the AM monitor, which detects neither,
+ * never shows the FM monitor's lock.
+ */
+static int
+test_decode_mode_set_am_clears_received_tone(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static void* fake_ctx[2];
+    int rc = 0;
+    for (int code = 0; code < 2; code++) {
+        char tag[64];
+        DSD_SNPRINTF(tag, sizeof(tag), "analog -> am clears the received %s", code ? "code" : "tone");
+        init_decode_mode_context(&opts, &state);
+        opts.audio_in_type = AUDIO_IN_RTL;
+        state.rtl_ctx = (RtlSdrContext*)fake_ctx;
+        rc |= submit_decode_mode(&opts, &state, DSDCFG_MODE_ANALOG, "am clear: analog start");
+        reset_rx_family_wrap();
+        g_fake_analog_family = 1;
+        if (code) {
+            seed_received_code(&state);
+        } else {
+            seed_received_tone(&state);
+        }
+        const uint32_t seeded = state.analog_rx.generation;
+        rc |= submit_decode_mode(&opts, &state, DSDCFG_MODE_AM, tag);
+        rc |= expect_int(tag, opts.analog_only == 1 && opts.analog_demod == DSD_ANALOG_DEMOD_AM, 1);
+        rc |= expect_int(tag, g_analog_req_kind, DSD_ANALOG_DEMOD_AM);
+        rc |= expect_received_tone_cleared(tag, &state, seeded);
+        g_fake_analog_family = 0;
+        state.rtl_ctx = NULL;
+        freeState(&state);
+    }
+    reset_rx_family_wrap();
+    return rc;
+}
+
 /* Post DSD_APP_CMD_AM_BANDWIDTH_SET and drain it. */
 static int
 submit_am_width(dsd_opts* opts, dsd_state* state, int32_t hz, const char* label) {
@@ -9573,6 +9611,7 @@ main(void) {
     rc |= test_config_apply_switches_rtl_receive_family();
     rc |= test_config_apply_refused_analog_profile_changes_nothing();
     rc |= test_decode_mode_set_am_switches_live();
+    rc |= test_decode_mode_set_am_clears_received_tone();
     rc |= test_am_bandwidth_set_applies_live();
     rc |= test_config_apply_am_within_the_analog_family();
     rc |= test_am_bandwidth_set_under_scan_rows();
