@@ -665,7 +665,10 @@ installs from `src/engine/trunk_tuning.c` in `src/engine/trunk_tuning_hooks_inst
   (`svc_monitor_refusal::configured_before_hz`), and only a row with its own width takes the kept width in force. A
   request that replaced an earlier change still queued (or refused and not yet collected) also records the width from
   before that one: the front end ran neither, so when it kept another width than the one from before the refused change,
-  the configured width goes back to the one from before the first. An accepted width in force goes to a running front
+  the configured width goes back to the one from before the first. That width is kept for each analog kind apart, from
+  the first change of that kind, including a width of a kind not in force, which asks the front end for nothing
+  (`symbol_profile_note_width_change()`): a refusal puts back only a width of the kind the front end kept, never one of
+  the other kind (issue #524). An accepted width in force goes to a running front
   end whose options in force run that analog kind as a live analog profile request (`svc_publish_analog_bandwidth()` in
   `symbol_profile.c`), which also replaces the width a queued switch onto analog carries; a typed digital row keeps its
   profile until its leave, and under a scan row's suspended scope (a config apply) the request waits for

@@ -405,7 +405,9 @@ typedef struct {
                             included). */
     int configured_before_hz; /**< The configured width of @c kind the front end ran before the refused change: from
                                    before the change the request carried, or, when it replaced earlier changes the front
-                                   end ran none of and kept another width, from before the first of them; -1: none. */
+                                   end ran none of and kept another width, from before the first of them of that kind
+                                   (a width change of that kind made while the other kind ran counts, and one of the
+                                   other kind never does); -1: none. */
 } svc_monitor_refusal;
 
 /**
