@@ -10961,6 +10961,78 @@ test_nfm_target_width_edit_during_a_pending_retune(void) {
     return test_rc;
 }
 
+/* --- Issue #523: a received DCS code never crosses an nfm-conventional target switch --- */
+
+/* A DCS code heard under the nfm target's carrier, @p code as its value (023 octal = D023N). */
+static void
+seed_received_dcs_code(dsd_state* state, int code) {
+    state->analog_rx.carrier_open = 1;
+    state->analog_rx.tone_state = DSD_ANALOG_TONE_STATE_LOCKED;
+    state->analog_rx.tone_kind = DSD_ANALOG_TONE_KIND_DCS;
+    state->analog_rx.ctcss_tenths_hz = 0;
+    state->analog_rx.dcs_code = code;
+    state->analog_rx.dcs_inverted = 0;
+}
+
+static int
+expect_received_dcs_code_cleared(const dsd_state* state, const char* stage, uint32_t seeded_generation) {
+    const dsd_analog_rx_publication* pub = &state->analog_rx;
+    if (pub->tone_state == DSD_ANALOG_TONE_STATE_LOCKED || pub->tone_kind != DSD_ANALOG_TONE_KIND_NONE
+        || pub->dcs_code != 0 || pub->dcs_inverted != 0 || pub->carrier_open != 0
+        || pub->generation == seeded_generation) {
+        DSD_FPRINTF(stderr, "received DCS code survived %s: state=%d kind=%d code=%o inverted=%d generation=%u\n",
+                    stage, pub->tone_state, pub->tone_kind, (unsigned)pub->dcs_code, pub->dcs_inverted,
+                    (unsigned)pub->generation);
+        return 1;
+    }
+    return 0;
+}
+
+/* Analog targets are where a scan hears codes. The visit cap moves the scan on to the next nfm target under the
+ * carrier that carries a code, and the switch forgets it; an operator advance back does not bring the outgoing
+ * target's code back with its parked state. */
+static int
+test_nfm_target_switch_clears_received_dcs_code(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    char target_path[DSD_TEST_PATH_MAX];
+    static dsd_opts opts;
+    static dsd_state state;
+    if (nfm_targets_init("fire,nfm-conventional,154430000,,250,250,,--scan-max-visit-ms 1000\n"
+                         "ops,nfm-conventional,155475000,,250,250,\n",
+                         &opts, &state, dir, sizeof dir, target_path, sizeof target_path)
+        != 0) {
+        return 1;
+    }
+    int test_rc = 0;
+    for (int tick = 0; tick < 5; tick++) {
+        seed_received_dcs_code(&state, 023);
+        trunk_scan_test_set_now(0.10 + (0.20 * tick));
+        dsd_engine_trunk_scan_tick(&opts, &state);
+    }
+    test_rc |= expect_active_target(&state, "code under the carrier", 0U);
+    if (state.analog_rx.tone_kind != DSD_ANALOG_TONE_KIND_DCS || state.analog_rx.dcs_code != 023) {
+        DSD_FPRINTF(stderr, "a tick on the same nfm target dropped its code\n");
+        test_rc = 1;
+    }
+    seed_received_dcs_code(&state, 023);
+    uint32_t seeded = state.analog_rx.generation;
+    trunk_scan_test_set_now(1.05);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    test_rc |= expect_active_target(&state, "cap expired under a code", 1U);
+    test_rc |= expect_received_dcs_code_cleared(&state, "the switch to ops", seeded);
+
+    seed_received_dcs_code(&state, 047);
+    seeded = state.analog_rx.generation;
+    test_rc |=
+        expect_control_rc("advance", dsd_engine_trunk_scan_control(&opts, &state, DSD_TRUNK_SCAN_CONTROL_ADVANCE), 0);
+    test_rc |= expect_active_target(&state, "advance back to fire", 0U);
+    test_rc |= expect_received_dcs_code_cleared(&state, "the advance back to fire", seeded);
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    trunk_scan_test_clear_now();
+    cleanup_paths(dir, target_path, NULL);
+    return test_rc;
+}
+
 int
 main(void) {
     int rc = 0;
@@ -11117,6 +11189,8 @@ main(void) {
     rc |= run_with_default_tune_hook(test_nfm_target_configured_width_held_to_the_dsp_rate);
     rc |= run_with_default_tune_hook(test_nfm_target_status_counts_every_skipped_target);
     rc |= run_with_default_tune_hook(test_nfm_target_width_edit_during_a_pending_retune);
+    /* Issue #523 */
+    rc |= run_with_default_tune_hook(test_nfm_target_switch_clears_received_dcs_code);
     return rc;
 }
 

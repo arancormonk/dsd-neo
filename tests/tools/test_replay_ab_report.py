@@ -285,7 +285,7 @@ tone=NA
 lock=NA
 pct=0.00
 case "$*" in *--fake-boost*) snr=26.00 ;; esac
-case "$*" in *--fake-tone*) tone=D023N lock=312.50 pct=87.50 ;; esac
+case "$*" in *--fake-tone*) tone=D023N/D047I lock=312.50 pct=87.50 ;; esac
 echo "NOTICE: Total audio errors: 0"
 echo "ANALOG METRIC: rate_hz=48000 total_ms=1500.00 captured_ms=1500.00 audible_ms=1480.00" \\
   "first_audible_ms=20.00 rms_dbfs=-36.00 peak_dbfs=-31.00 clip=0 inband_db=30.50 tone_hz=1000.00" \\
@@ -392,14 +392,15 @@ class ReplayAbAnalogMetric(unittest.TestCase):
 
     def test_received_tone_fields_follow_the_host_contract(self):
         # tone= must not be confused with the host's tone_hz= (the expected test tone), and a detector's label and
-        # lock time land in their own columns and in the report.
+        # lock time land in their own columns and in the report. A DCS label is both spellings of the code's
+        # signal joined by a slash, one token that reaches the column and the report whole.
         toned = self.wrapper("host.tone", "--fake-tone")
         out = self.tmp / "out"
         result = self.replay_ab("--metric", "analog", "--reps", "2", "--out", str(out), str(self.host), str(toned))
         self.assertEqual(result.returncode, 0, result.stdout)
         lines = (out / "summary.tsv").read_text(encoding="utf-8").splitlines()
         rows = {(row["variant"], row["rep"]): row for row in (dict(zip(COLUMNS, line.split("\t"))) for line in lines[1:])}
-        self.assertEqual(rows[("host.tone", "1")]["tone"], "D023N")
+        self.assertEqual(rows[("host.tone", "1")]["tone"], "D023N/D047I")
         self.assertEqual(rows[("host.tone", "2")]["tone_lock_ms"], "312.50")
         self.assertEqual(rows[("host.main", "1")]["tone"], "NA")
         self.assertEqual(rows[("host.main", "2")]["tone_lock_ms"], "NA")
@@ -408,7 +409,7 @@ class ReplayAbAnalogMetric(unittest.TestCase):
 
         result = report(out / "summary.tsv", "--baseline", "host.main")
         self.assertEqual(result.returncode, 0, result.stdout)
-        self.assertRegex(metric_line(result.stdout, "tone", "host.tone"), r"D023N\s+2/2")
+        self.assertRegex(metric_line(result.stdout, "tone", "host.tone"), r"\sD023N/D047I\s+2/2$")
         self.assertRegex(metric_line(result.stdout, "tone", "host.main"), r"NA\s+0/2")
         self.assertRegex(metric_line(result.stdout, "tone_lock_ms", "host.main"), r"\s0/2\s+NA")
         self.assertIn("+87.50 +/- 0.00", metric_line(result.stdout, "tone_lock_pct", "host.tone"))

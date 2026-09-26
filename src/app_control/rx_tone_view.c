@@ -23,18 +23,57 @@ rx_tone_set_text(dsd_app_rx_tone* out, const char* text) {
     DSD_SNPRINTF(out->text, sizeof(out->text), "%s", text);
 }
 
-/* A locked tone of a kind this build can name; anything else still reads as detecting. */
+/* A locked CTCSS tone from the supported table, or 0. */
 static int
-rx_tone_fill_locked(dsd_app_rx_tone* out, const dsd_analog_rx_publication* pub) {
-    if (pub->tone_kind != DSD_ANALOG_TONE_KIND_CTCSS || dsd_ctcss_tone_index(pub->ctcss_tenths_hz) < 0) {
+rx_tone_fill_ctcss(dsd_app_rx_tone* out, const dsd_analog_rx_publication* pub) {
+    if (dsd_ctcss_tone_index(pub->ctcss_tenths_hz) < 0
+        || dsd_ctcss_format_label(pub->ctcss_tenths_hz, out->text, sizeof(out->text)) <= 0) {
         return 0;
     }
-    if (dsd_ctcss_format_label(pub->ctcss_tenths_hz, out->text, sizeof(out->text)) <= 0) {
+    out->ctcss_tenths_hz = pub->ctcss_tenths_hz;
+    return 1;
+}
+
+/* The label names both spellings of the code's signal. */
+_Static_assert((int)DSD_APP_RX_TONE_TEXT_SIZE >= (int)DSD_DCS_LABEL_SIZE, "a DCS label fits the view's text");
+
+/* A locked DCS code, as the detector names it: a supported code under the canonical name of
+   its alias class (runtime/analog_tones.h), shown with the other standard spelling of the same
+   signal, or 0. */
+static int
+rx_tone_fill_dcs(dsd_app_rx_tone* out, const dsd_analog_rx_publication* pub) {
+    const int inverted = pub->dcs_inverted ? 1 : 0;
+    int canon_code = -1;
+    int canon_inverted = -1;
+    int alias_code = -1;
+    int alias_inverted = -1;
+    if (dsd_dcs_canonical(pub->dcs_code, inverted, &canon_code, &canon_inverted) != 0 || canon_code != pub->dcs_code
+        || canon_inverted != inverted || dsd_dcs_alias(pub->dcs_code, inverted, &alias_code, &alias_inverted) != 0
+        || dsd_dcs_format_label(pub->dcs_code, inverted, out->text, sizeof(out->text)) <= 0) {
+        return 0;
+    }
+    out->dcs_code = pub->dcs_code;
+    out->dcs_inverted = (uint8_t)inverted;
+    out->dcs_alias_code = alias_code;
+    out->dcs_alias_inverted = alias_inverted ? 1U : 0U;
+    return 1;
+}
+
+/* A locked tone or code of a kind this build can name; anything else still reads as detecting. */
+static int
+rx_tone_fill_locked(dsd_app_rx_tone* out, const dsd_analog_rx_publication* pub) {
+    int named = 0;
+    if (pub->tone_kind == DSD_ANALOG_TONE_KIND_CTCSS) {
+        named = rx_tone_fill_ctcss(out, pub);
+    } else if (pub->tone_kind == DSD_ANALOG_TONE_KIND_DCS) {
+        named = rx_tone_fill_dcs(out, pub);
+    }
+    if (!named) {
+        out->text[0] = '\0';
         return 0;
     }
     out->status = DSD_APP_RX_TONE_LOCKED;
-    out->kind = (uint8_t)DSD_ANALOG_TONE_KIND_CTCSS;
-    out->ctcss_tenths_hz = pub->ctcss_tenths_hz;
+    out->kind = (uint8_t)pub->tone_kind;
     return 1;
 }
 

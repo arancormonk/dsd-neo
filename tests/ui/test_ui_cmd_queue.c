@@ -217,11 +217,22 @@ seed_received_tone(dsd_state* state) {
     state->analog_rx.ctcss_tenths_hz = 1000;
 }
 
+/* A DCS code the receiver locked before the command (issue #523): D023N. */
+static void
+seed_received_code(dsd_state* state) {
+    state->analog_rx.carrier_open = 1;
+    state->analog_rx.tone_state = DSD_ANALOG_TONE_STATE_LOCKED;
+    state->analog_rx.tone_kind = DSD_ANALOG_TONE_KIND_DCS;
+    state->analog_rx.dcs_code = 023;
+    state->analog_rx.dcs_inverted = 0;
+}
+
 static int
 expect_received_tone_cleared(const char* tag, const dsd_state* state, uint32_t seeded_generation) {
     const int cleared = state->analog_rx.tone_state != DSD_ANALOG_TONE_STATE_LOCKED
                         && state->analog_rx.tone_kind == DSD_ANALOG_TONE_KIND_NONE
-                        && state->analog_rx.ctcss_tenths_hz == 0 && state->analog_rx.carrier_open == 0
+                        && state->analog_rx.ctcss_tenths_hz == 0 && state->analog_rx.dcs_code == 0
+                        && state->analog_rx.dcs_inverted == 0 && state->analog_rx.carrier_open == 0
                         && state->analog_rx.generation != seeded_generation;
     return expect_true(tag, cleared);
 }
@@ -1825,25 +1836,36 @@ test_retune_commands_clear_received_tone(void) {
     int rc = 0;
     static dsd_opts opts;
     static dsd_state state;
-    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
-        init_test_context(&opts, &state);
-        opts.trunk_enable = 0;
-        opts.scanner_mode = 0;
-        seed_received_tone(&state);
-        const uint32_t seeded = state.analog_rx.generation;
-        reset_io_control_tune_stub(cases[i].tune_result);
-        rc |=
-            expect_int(cases[i].tag, dsd_app_command_set_u32(cases[i].cmd, 853125000U), DSD_APP_COMMAND_SUBMIT_QUEUED);
-        rc |= expect_int(cases[i].tag, dsd_app_drain_cmds(&opts, &state), 1);
-        rc |= expect_int(cases[i].tag, g_io_control_tune_calls, 1);
-        if (cases[i].clears) {
-            rc |= expect_received_tone_cleared(cases[i].tag, &state, seeded);
-        } else {
-            rc |= expect_true(cases[i].tag, state.analog_rx.tone_state == DSD_ANALOG_TONE_STATE_LOCKED
-                                                && state.analog_rx.ctcss_tenths_hz == 1000
-                                                && state.analog_rx.generation == seeded);
+    /* A CTCSS tone, then a DCS code (issue #523): the same boundary clears either. */
+    for (int code = 0; code < 2; code++) {
+        for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+            init_test_context(&opts, &state);
+            opts.trunk_enable = 0;
+            opts.scanner_mode = 0;
+            if (code) {
+                seed_received_code(&state);
+            } else {
+                seed_received_tone(&state);
+            }
+            const uint32_t seeded = state.analog_rx.generation;
+            /* Name the pass too: a failure says whether the tone or the code survived. */
+            char tag[96];
+            DSD_SNPRINTF(tag, sizeof(tag), "%s (%s)", cases[i].tag, code ? "DCS" : "CTCSS");
+            reset_io_control_tune_stub(cases[i].tune_result);
+            rc |= expect_int(tag, dsd_app_command_set_u32(cases[i].cmd, 853125000U), DSD_APP_COMMAND_SUBMIT_QUEUED);
+            rc |= expect_int(tag, dsd_app_drain_cmds(&opts, &state), 1);
+            rc |= expect_int(tag, g_io_control_tune_calls, 1);
+            if (cases[i].clears) {
+                rc |= expect_received_tone_cleared(tag, &state, seeded);
+            } else {
+                const int kept =
+                    code ? (state.analog_rx.tone_kind == DSD_ANALOG_TONE_KIND_DCS && state.analog_rx.dcs_code == 023)
+                         : state.analog_rx.ctcss_tenths_hz == 1000;
+                rc |= expect_true(tag, state.analog_rx.tone_state == DSD_ANALOG_TONE_STATE_LOCKED && kept
+                                           && state.analog_rx.generation == seeded);
+            }
+            freeState(&state);
         }
-        freeState(&state);
     }
     reset_io_control_tune_stub(RTL_STREAM_TUNE_OK);
     return rc;
@@ -1925,8 +1947,8 @@ test_tuner_release(void) {
 }
 #endif
 
-/* A decode-mode change is a boundary the received tone (issue #522) must not cross: it goes
-   through the acquisition reset, which forgets the tone. */
+/* A decode-mode change is a boundary the received tone or code (issues #522, #523) must not
+   cross: it goes through the acquisition reset, which forgets it. */
 static int
 test_decode_mode_change_clears_received_tone(void) {
     int rc = 0;
@@ -1940,6 +1962,17 @@ test_decode_mode_change_clears_received_tone(void) {
                      DSD_APP_COMMAND_SUBMIT_QUEUED);
     rc |= expect_int("tone mode change drained", dsd_app_drain_cmds(&opts, &state), 1);
     rc |= expect_received_tone_cleared("decode mode change clears the received tone", &state, seeded);
+    freeState(&state);
+
+    /* A received DCS code (issue #523) goes the same way. */
+    init_decode_mode_context(&opts, &state);
+    seed_received_code(&state);
+    const uint32_t seeded_code = state.analog_rx.generation;
+    rc |= expect_int("code mode change queued",
+                     dsd_app_command_set_i32(DSD_APP_CMD_DECODE_MODE_SET, (int32_t)DSDCFG_MODE_DMR),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("code mode change drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_received_tone_cleared("decode mode change clears the received code", &state, seeded_code);
     freeState(&state);
     return rc;
 }
@@ -5970,6 +6003,44 @@ test_decode_mode_set_am_switches_live(void) {
     return rc;
 }
 
+/*
+ * A live switch from the FM monitor to AM (issue #524) is a decode-mode change like any other: it forgets a received
+ * CTCSS tone or DCS code (issues #522, #523) through the acquisition reset, so the AM monitor, which detects neither,
+ * never shows the FM monitor's lock.
+ */
+static int
+test_decode_mode_set_am_clears_received_tone(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static void* fake_ctx[2];
+    int rc = 0;
+    for (int code = 0; code < 2; code++) {
+        char tag[64];
+        DSD_SNPRINTF(tag, sizeof(tag), "analog -> am clears the received %s", code ? "code" : "tone");
+        init_decode_mode_context(&opts, &state);
+        opts.audio_in_type = AUDIO_IN_RTL;
+        state.rtl_ctx = (RtlSdrContext*)fake_ctx;
+        rc |= submit_decode_mode(&opts, &state, DSDCFG_MODE_ANALOG, "am clear: analog start");
+        reset_rx_family_wrap();
+        g_fake_analog_family = 1;
+        if (code) {
+            seed_received_code(&state);
+        } else {
+            seed_received_tone(&state);
+        }
+        const uint32_t seeded = state.analog_rx.generation;
+        rc |= submit_decode_mode(&opts, &state, DSDCFG_MODE_AM, tag);
+        rc |= expect_int(tag, opts.analog_only == 1 && opts.analog_demod == DSD_ANALOG_DEMOD_AM, 1);
+        rc |= expect_int(tag, g_analog_req_kind, DSD_ANALOG_DEMOD_AM);
+        rc |= expect_received_tone_cleared(tag, &state, seeded);
+        g_fake_analog_family = 0;
+        state.rtl_ctx = NULL;
+        freeState(&state);
+    }
+    reset_rx_family_wrap();
+    return rc;
+}
+
 /* Post DSD_APP_CMD_AM_BANDWIDTH_SET and drain it. */
 static int
 submit_am_width(dsd_opts* opts, dsd_state* state, int32_t hz, const char* label) {
@@ -9540,6 +9611,7 @@ main(void) {
     rc |= test_config_apply_switches_rtl_receive_family();
     rc |= test_config_apply_refused_analog_profile_changes_nothing();
     rc |= test_decode_mode_set_am_switches_live();
+    rc |= test_decode_mode_set_am_clears_received_tone();
     rc |= test_am_bandwidth_set_applies_live();
     rc |= test_config_apply_am_within_the_analog_family();
     rc |= test_am_bandwidth_set_under_scan_rows();

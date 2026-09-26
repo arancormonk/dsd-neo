@@ -3,9 +3,9 @@ import QtQuick
 import QtTest
 import "../../../src/ui/qt/qml" as Ui
 
-// The received sub-audible tone row (#522) and the reserved Tone filter row beside it:
-// the received row shows only what was received, whatever the configured policy says,
-// and it clears when the session stops or the receiver retunes.
+// The received sub-audible tone or code row (#522, #523) and the reserved Tone filter
+// row beside it: the received row shows only what was received, whatever the configured
+// policy says, and it clears when the session stops or the receiver retunes.
 Item {
     id: root
     width: 411
@@ -27,15 +27,44 @@ Item {
             testContext.setMetric("rxToneCarrier", true);
             testContext.setMetric("rxToneText", text);
         }
+        // A received DCS code (rxToneKind 2 is DSD_ANALOG_TONE_KIND_DCS): the canonical
+        // normal spelling and the inverted one that sends the same signal.
+        function showCode(code, alias, text) {
+            testContext.setMetric("rxToneVisible", true);
+            testContext.setMetric("rxToneStatus", 3);
+            testContext.setMetric("rxToneKind", 2);
+            testContext.setMetric("rxToneTenthsHz", 0);
+            testContext.setMetric("rxToneDcsCode", code);
+            testContext.setMetric("rxToneDcsInverted", false);
+            testContext.setMetric("rxToneDcsAliasCode", alias);
+            testContext.setMetric("rxToneDcsAliasInverted", true);
+            testContext.setMetric("rxToneCarrier", true);
+            testContext.setMetric("rxToneText", text);
+        }
         function cleanup() {
             testContext.setMetric("rxToneVisible", false);
             testContext.setMetric("rxToneStatus", 0);
             testContext.setMetric("rxToneKind", 0);
             testContext.setMetric("rxToneTenthsHz", 0);
+            testContext.setMetric("rxToneDcsCode", 0);
+            testContext.setMetric("rxToneDcsInverted", false);
+            testContext.setMetric("rxToneDcsAliasCode", 0);
+            testContext.setMetric("rxToneDcsAliasInverted", false);
             testContext.setMetric("rxToneCarrier", false);
             testContext.setMetric("rxToneText", "");
             testContext.setMetric("rxToneConfiguredText", "off");
             testContext.setHostRunning(false);
+            Ui.Theme.resetFontScale();
+            root.width = 411;
+            root.height = 700;
+        }
+        // Whether a reading lies wholly inside the monitor's body, which clips what runs
+        // past its sides and does not scroll sideways.
+        function insideBody(reading) {
+            var body = item("monitorBody");
+            var left = reading.mapToItem(body, 0, 0).x;
+            var right = reading.mapToItem(body, reading.width, 0).x;
+            return left >= -0.5 && right <= body.width + 0.5;
         }
         function test_hidden_outside_the_fm_monitor() {
             verify(!item("monitorRxTone").visible);
@@ -62,6 +91,64 @@ Item {
             showLocked(1318, "CTCSS 131.8 Hz");
             tryCompare(item("monitorRxToneValue"), "text", "CTCSS 131.8 Hz");
             compare(item("monitorToneFilterValue").text, "allow 67.0/D023N");
+        }
+        function test_received_row_shows_the_locked_code() {
+            testContext.setHostRunning(true);
+            // Both spellings of the signal, D023N and D047I (047 octal = 39), canonical first.
+            showCode(19, 39, "DCS D023N / D047I");
+            var row = item("monitorRxTone");
+            tryCompare(row, "visible", true);
+            var value = item("monitorRxToneValue");
+            compare(value.text, "DCS D023N / D047I");
+            // The longer text still fits the phone-width monitor beside its label.
+            waitForItemPolished(row);
+            verify(insideBody(item("monitorRxToneLabel")));
+            verify(insideBody(value));
+            compare(value.lineCount, 1);
+            verify(Math.abs(value.y - item("monitorRxToneLabel").y) < 0.5);
+        }
+        // A narrow phone with the platform's larger text (the Theme caps its own scale at
+        // 1.6): the label and the value no longer fit on one line, so the value moves under
+        // the label whole, both spellings of a code on one line, and nothing is clipped.
+        function test_received_row_fits_a_compact_monitor_with_large_text_data() {
+            return [{tag: "tone at 1.5", scale: 1.5, code: 0, text: "CTCSS 254.1 Hz"},
+                    {tag: "tone at 1.6", scale: 1.6, code: 0, text: "CTCSS 254.1 Hz"},
+                    {tag: "code at 1.5", scale: 1.5, code: 19, text: "DCS D023N / D047I"},
+                    {tag: "code at 1.6", scale: 1.6, code: 19, text: "DCS D023N / D047I"}];
+        }
+        function test_received_row_fits_a_compact_monitor_with_large_text(data) {
+            root.width = 320;
+            root.height = 360;
+            Ui.Theme.fontScale = data.scale;
+            testContext.setHostRunning(true);
+            if (data.code > 0)
+                showCode(data.code, 39, data.text);
+            else
+                showLocked(2541, data.text);
+            var row = item("monitorRxTone");
+            tryCompare(row, "visible", true);
+            var label = item("monitorRxToneLabel");
+            var value = item("monitorRxToneValue");
+            tryCompare(value, "text", data.text);
+            // The row lays its children out when it is polished, before the next frame.
+            waitForItemPolished(row);
+            verify(insideBody(row));
+            verify(insideBody(label));
+            verify(insideBody(value));
+            verify(value.contentWidth <= value.width + 0.5);
+            compare(value.lineCount, 1);
+        }
+        function test_received_code_is_not_the_configured_value() {
+            testContext.setHostRunning(true);
+            showCode(19, 39, "DCS D023N / D047I");
+            // A configured policy naming the other signal of the same code number, in both
+            // of its spellings: the received row still says what was received.
+            testContext.setMetric("rxToneConfiguredText", "block D047N/D023I");
+            tryCompare(item("monitorToneFilterValue"), "text", "block D047N/D023I");
+            compare(item("monitorRxToneValue").text, "DCS D023N / D047I");
+            showCode(492, 78, "DCS D754N / D116I");
+            tryCompare(item("monitorRxToneValue"), "text", "DCS D754N / D116I");
+            compare(item("monitorToneFilterValue").text, "block D047N/D023I");
         }
         function test_detecting_none_and_no_carrier() {
             testContext.setHostRunning(true);
@@ -91,6 +178,37 @@ Item {
             tryCompare(item("monitorRxToneValue"), "text", "—");
             verify(item("monitorRxTone").visible);
             compare(item("monitorToneFilterValue").text, "allow 100.0");
+        }
+        function test_code_clears_after_retune_and_stop() {
+            testContext.setHostRunning(true);
+            testContext.setMetric("rxToneConfiguredText", "allow D023N");
+            showCode(19, 39, "DCS D023N / D047I");
+            tryCompare(item("monitorRxToneValue"), "text", "DCS D023N / D047I");
+            // The decoder's retune reset: nothing heard on the new channel yet.
+            testContext.setMetric("rxToneStatus", 1);
+            testContext.setMetric("rxToneKind", 0);
+            testContext.setMetric("rxToneDcsCode", 0);
+            testContext.setMetric("rxToneDcsAliasCode", 0);
+            testContext.setMetric("rxToneDcsAliasInverted", false);
+            testContext.setMetric("rxToneCarrier", false);
+            testContext.setMetric("rxToneText", "—");
+            tryCompare(item("monitorRxToneValue"), "text", "—");
+            verify(item("monitorRxTone").visible);
+            compare(item("monitorToneFilterValue").text, "allow D023N");
+            // Locked again, then the session stops: MetricsModel::clear().
+            showCode(19, 39, "DCS D023N / D047I");
+            tryCompare(item("monitorRxToneValue"), "text", "DCS D023N / D047I");
+            testContext.setMetric("rxToneVisible", false);
+            testContext.setMetric("rxToneStatus", 0);
+            testContext.setMetric("rxToneKind", 0);
+            testContext.setMetric("rxToneDcsCode", 0);
+            testContext.setMetric("rxToneDcsAliasCode", 0);
+            testContext.setMetric("rxToneDcsAliasInverted", false);
+            testContext.setMetric("rxToneCarrier", false);
+            testContext.setMetric("rxToneText", "");
+            testContext.setHostRunning(false);
+            tryCompare(item("monitorRxTone"), "visible", false);
+            compare(item("monitorRxToneValue").text, "");
         }
         function test_clears_after_stop() {
             testContext.setHostRunning(true);

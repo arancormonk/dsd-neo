@@ -5,7 +5,7 @@
 
 /**
  * @file
- * @brief Frontend-neutral text for the received sub-audible tone (issue #522).
+ * @brief Frontend-neutral text for the received sub-audible tone or code (issues #522, #523).
  *
  * The decoder publishes what the analog FM monitor hears below the voice band in
  * dsd_state::analog_rx. This view turns that into the one phrase every surface shows -- the
@@ -30,8 +30,8 @@ enum {
     DSD_APP_RX_TONE_HIDDEN = 0,     /**< Detection is not running, or cannot at this input rate: render nothing. */
     DSD_APP_RX_TONE_NO_CARRIER = 1, /**< Detection runs but there is no carrier: an em dash. */
     DSD_APP_RX_TONE_DETECTING = 2,  /**< Carrier present, no verdict yet: "detecting". */
-    DSD_APP_RX_TONE_LOCKED = 3,     /**< A supported tone is confirmed: its value. */
-    DSD_APP_RX_TONE_NONE = 4,       /**< Carrier present and no supported tone: "none". */
+    DSD_APP_RX_TONE_LOCKED = 3,     /**< A supported tone or code is confirmed: its value. */
+    DSD_APP_RX_TONE_NONE = 4,       /**< Carrier present and no supported tone or code: "none". */
 };
 
 /** @brief Room for any text this view writes, terminator included. */
@@ -40,7 +40,12 @@ enum { DSD_APP_RX_TONE_TEXT_SIZE = 32 };
 /**
  * @brief Display-ready received tone.
  *
- * @c text is what the received row shows. @c configured_text is the configured receive
+ * @c text is what the received row shows: "CTCSS 100.0 Hz" for a tone, "DCS D023N / D047I" for
+ * a code. A code is shown by both standard spellings of its signal, since a receiver cannot
+ * tell which one a transmitter was set to, the canonical member of its alias class first
+ * (three octal digits with leading zeros and N or I for the polarity each,
+ * runtime/analog_tones.h); @c dcs_code / @c dcs_inverted and @c dcs_alias_code /
+ * @c dcs_alias_inverted carry the same two. @c configured_text is the configured receive
  * policy, which reads "off" until tone filtering exists (#527); it is never derived from the
  * received tone. Both are UTF-8 and always terminated.
  */
@@ -50,8 +55,12 @@ typedef struct {
     uint8_t kind;                         /**< dsd_analog_tone_kind of a locked tone; 0 otherwise. */
     uint8_t carrier_open;                 /**< 1 while a carrier is open (held through the short hangover). */
     int ctcss_tenths_hz;                  /**< Locked CTCSS tone in tenths of a hertz; 0 otherwise. */
+    int dcs_code;                         /**< Locked DCS code as its value (023 octal = 19); 0 otherwise. */
+    int dcs_alias_code;                   /**< The signal's other standard spelling (047 for D023N); 0 otherwise. */
+    uint8_t dcs_inverted;                 /**< 1 = inverted polarity; never for a standard code (analog_tones.h). */
+    uint8_t dcs_alias_inverted;           /**< 1 = the other spelling is inverted: always, for a standard code. */
     uint32_t generation;                  /**< The publication's reset counter, to tell one reception from the next. */
-    char text[DSD_APP_RX_TONE_TEXT_SIZE]; /**< "CTCSS 100.0 Hz", "detecting", "none", "—" or "". */
+    char text[DSD_APP_RX_TONE_TEXT_SIZE]; /**< "CTCSS 100.0 Hz", "DCS D023N / D047I", "detecting", "none", "—", "". */
     char configured_text[DSD_APP_RX_TONE_TEXT_SIZE]; /**< The configured tone policy: "off" for now. */
 } dsd_app_rx_tone;
 

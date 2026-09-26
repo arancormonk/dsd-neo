@@ -27,14 +27,15 @@
  * The METRIC line ends with the received-tone fields tools/replay_ab.sh reads into its tone, tone_lock_ms and
  * tone_lock_pct columns. They come from the decoder's received-tone publication (dsd_state::analog_rx), read after
  * every block the monitor delivers: the tap that detects tones runs on the same block just before the block reaches
- * the audio hook, and a tone can only lock while the monitor's gate is open. The CTCSS detector (#522) fills them
- * for CTCSS; the DCS detector (#523) adds its label. This file owns the field names and the contract below, and
- * replay_ab.sh and the report own the columns; a detector that wants more adds its own field and column. The
- * contract, which replay_ab.sh relies on because it splits the line on spaces:
- *   tone=<label>        the received tone or code as the detector names it, with no whitespace: "151.4" (Hz, one
- *                       decimal) for CTCSS; for DCS the detector's one canonical label, such as "D023N". Every DCS
- *                       waveform has two spellings (D023N is also D047I), and the DCS detector (#523) defines which
- *                       one it prints; NA when none was confirmed.
+ * the audio hook, and a tone can only lock while the monitor's gate is open. The CTCSS detector (#522) and the DCS
+ * detector (#523) fill them. This file owns the field names and the contract below, and replay_ab.sh and the report
+ * own the columns; a detector that wants more adds its own field and column. The contract, which replay_ab.sh relies on
+ * because it splits the line on spaces:
+ *   tone=<label>        the received tone or code as the decoder names it, with no whitespace: "151.4" (Hz, one
+ *                       decimal) for CTCSS; for DCS both standard spellings of the code's signal, canonical first
+ *                       (dsd_dcs_canonical(), then dsd_dcs_alias()), joined by a slash, such as "D023N/D047I": the
+ *                       log's "DCS D023N / D047I" as one token. A receiver cannot tell the two spellings apart, so
+ *                       neither alone names what was received. NA when none was confirmed.
  *   tone_lock_ms=<ms>   stream time of the first confirmed lock, on the same clock as first_audible_ms (see above):
  *                       the end of the block after which the publication first read locked, with two decimals; NA
  *                       when nothing locked.
@@ -146,11 +147,22 @@ typedef struct {
     int no_rate;
 } analog_totals;
 
+/* Room for the tone= label (see the file comment): a CTCSS value ("151.4") or a DCS code's two spellings
+ * ("D023N/D047I"), the library's "DCS D023N / D047I" label less its prefix and spaces. Sized by both library label
+ * sizes, so a longer label format grows the field instead of cutting the tone= token short. */
+enum {
+    ANALOG_TONE_LABEL_SIZE =
+        (int)DSD_CTCSS_LABEL_SIZE > (int)DSD_DCS_LABEL_SIZE ? (int)DSD_CTCSS_LABEL_SIZE : (int)DSD_DCS_LABEL_SIZE
+};
+
+_Static_assert(sizeof("D023N/D047I") <= (size_t)ANALOG_TONE_LABEL_SIZE,
+               "a DCS code's two spellings fit the tone= label");
+
 /* The received tone as the decoder published it (see the file comment). */
 typedef struct {
-    char label[DSD_CTCSS_LABEL_SIZE]; /* last confirmed tone or code, "" = none */
-    double first_lock_ms;             /* stream time of the first lock, -1 if none */
-    double locked_ms;                 /* delivered audio in blocks after which the publication read locked */
+    char label[ANALOG_TONE_LABEL_SIZE]; /* last confirmed tone or code, "" = none */
+    double first_lock_ms;               /* stream time of the first lock, -1 if none */
+    double locked_ms;                   /* delivered audio in blocks after which the publication read locked */
 } analog_tone_track;
 
 static analog_limits g_limits;
@@ -541,6 +553,23 @@ analog_score_block(const double* x, size_t n, double block_start_ms) {
     g_totals.outband_energy += analog_band_energy(xw, n, rate, ANALOG_OUTBAND_LO_HZ, ANALOG_OUTBAND_HI_HZ);
 }
 
+/* A DCS code in the tone= field's spelling (see the file comment): the published, canonical spelling, a slash and the
+ * signal's other standard spelling, "D023N/D047I". A publication that names no supported signal leaves the last
+ * label as it was. */
+static void
+analog_format_dcs_label(int code, int inverted) {
+    char canon[DSD_DCS_LABEL_SIZE];
+    char alias[DSD_DCS_LABEL_SIZE];
+    int alias_code = -1;
+    int alias_inverted = -1;
+    if (dsd_dcs_format(code, inverted, canon, sizeof(canon)) <= 0
+        || dsd_dcs_alias(code, inverted, &alias_code, &alias_inverted) != 0
+        || dsd_dcs_format(alias_code, alias_inverted, alias, sizeof(alias)) <= 0) {
+        return;
+    }
+    DSD_SNPRINTF(g_tone.label, sizeof(g_tone.label), "%s/%s", canon, alias);
+}
+
 /* Reads the received-tone publication after one delivered block, which ended at block_end_ms. The tap updated it
  * from this same block just before the block came here. */
 static void
@@ -554,6 +583,8 @@ analog_note_tone(const dsd_state* state, double block_end_ms, double block_ms) {
     }
     if (state->analog_rx.tone_kind == DSD_ANALOG_TONE_KIND_CTCSS) {
         (void)dsd_ctcss_format(state->analog_rx.ctcss_tenths_hz, g_tone.label, sizeof(g_tone.label));
+    } else if (state->analog_rx.tone_kind == DSD_ANALOG_TONE_KIND_DCS) {
+        analog_format_dcs_label(state->analog_rx.dcs_code, state->analog_rx.dcs_inverted);
     }
 }
 
