@@ -74,8 +74,8 @@ static const dsdcfg_schema_entry_t s_schema[] = {
 
     /* [mode] section */
     {"mode", "decode", "Decode mode preset", "auto",
-     "auto|p25p1|p25p2|dmr|dmr_mono|nxdn48|nxdn96|x2tdma|ysf|dstar|edacs_pv|dpmr|m17|tdma|analog", DSDCFG_TYPE_ENUM, 0,
-     0},
+     "auto|p25p1|p25p2|dmr|dmr_mono|nxdn48|nxdn96|x2tdma|ysf|dstar|edacs_pv|dpmr|m17|tdma|analog|am", DSDCFG_TYPE_ENUM,
+     0, 0},
     {"mode", "dmr_mono", "Enable the DMR single-slot mono decoder without changing the decode preset", "false", NULL,
      DSDCFG_TYPE_BOOL, 0, 0},
     {"mode", "dmr_lrrp_ports", "Extra UDP ports decoded as DMR LRRP, comma-separated (at most 8)", "", NULL,
@@ -159,6 +159,10 @@ static const dsdcfg_schema_entry_t s_schema[] = {
      "NFM channel-filter width in Hz: the full RF passband, not the tuner or audio bandwidth. Leave it out for the "
      "default; an explicit value, 16000 included, always runs the channel filter and must fit the DSP rate",
      "16000", NULL, DSDCFG_TYPE_INT, 8000, 25000},
+    {"analog", "am_bandwidth_hz",
+     "AM channel-filter width in Hz: the full RF passband, not the tuner or audio bandwidth; decode = am needs an IQ "
+     "radio input. Leave it out for the default; it must fit the DSP rate",
+     "6000", NULL, DSDCFG_TYPE_INT, 5000, 20000},
 };
 
 /* Deprecated persisted spellings remain accepted for read compatibility, but are deliberately kept out of the

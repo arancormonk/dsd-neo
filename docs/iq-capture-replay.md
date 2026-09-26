@@ -121,20 +121,30 @@ non-`.bin` file input under `-r`/WAV replay, which is likewise unthrottled; only
 dsd-neo -fA --iq-replay tests/fixtures/iq/nfm_ctcss_real.iq.json --iq-replay-rate realtime
 ```
 
+`-fM` replays one through the native AM receiver instead, the envelope detector live AM uses (see
+[Native AM](cli.md#native-am--fm) in `docs/cli.md`; `--am-bandwidth-hz` sets its channel width here too):
+
+```bash
+dsd-neo -fM --iq-replay tests/fixtures/iq/am_airband_real.iq.json --iq-replay-rate realtime
+```
+
 - The monitor runs at the capture's `demod_rate_hz` (48 kHz for every committed fixture). The capture dictates the
   rate chain, so the RTL DSP bandwidth option has no effect on replay. A capture at another rate, such as the
   78,125 Hz an Airspy at 2.5 MS/s forces, is resampled to the 48 kHz output once, as live.
+- AM needs a capture whose sidecar has `post_downsample` 1 (every committed fixture has): one that decimates after the
+  demodulator would run the AM channel filter at a multiple of the demod rate, so the stream start refuses it with
+  `...; AM needs a capture with post_downsample 1`. FM replays such a capture as before.
 - The power squelch and the monitor's voice filters (`-v`) apply as they do live; `-o null` discards the audio.
 - Use `realtime` pacing to listen. `fast` replay is right for scoring, which is sample-deterministic either way as
   long as the front end stays on the monitor path.
-- Under `-fA` the modulation auto-switch stands down, so a carrier within a few hertz of 0 Hz (`am_airband_real`),
-  which votes for CQPSK, no longer moves the front end to the P25 CQPSK path, and the monitor delivers the whole
-  capture. No other symbol profile the sync hunt requests reaches the RTL front end in analog-only mode either.
-  `dsd-neo_test_analog_replay` warns if the front end ever delivers CQPSK symbols instead of monitor audio.
-  `docs/testing.md` has the details.
-- `tests/fixtures/iq` carries short analog captures (`nfm_*`, `am_airband_real`), and
-  `dsd-neo_test_analog_replay` scores the monitor's audio from any capture. `docs/testing.md` covers both, the
-  `tools/replay_ab.sh --metric analog` procedure, and the listen-test sign-off.
+- Under `-fA` and `-fM` the modulation auto-switch stands down, so a carrier within a few hertz of 0 Hz
+  (`am_airband_real`), which votes for CQPSK, no longer moves the front end to the P25 CQPSK path, and the monitor
+  delivers the whole capture. No other symbol profile the sync hunt requests reaches the RTL front end in analog-only
+  mode either. `dsd-neo_test_analog_replay` warns if the front end ever delivers CQPSK symbols instead of monitor
+  audio. `docs/testing.md` has the details.
+- `tests/fixtures/iq` carries short analog captures (`nfm_*`, and for AM `am_airband_real`, `am_tone_synth` and
+  `am_adjacent_synth`), and `dsd-neo_test_analog_replay` scores the monitor's audio from any capture.
+  `docs/testing.md` covers both, the `tools/replay_ab.sh --metric analog` procedure, and the listen-test sign-off.
 - Two-channel u8 or s16 PCM WAV recordings of I/Q (the SDR# style) are not replayable directly.
   `tools/build_iq_fixtures.py` shows the conversion the analog fixtures use: sample-exact WAV read, carrier centring,
   frequency-domain resampling to 48 kHz and a cu8 sidecar pair (`read_wav_iq`, `centre_carrier`,

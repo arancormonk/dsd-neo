@@ -217,6 +217,15 @@ test_template_contains_keys(void) {
         DSD_FPRINTF(stderr, "FAIL: template does not say an explicit nfm_bandwidth_hz differs from the default\n");
         rc = 1;
     }
+    /* [analog] (issue #524): the AM width's range and default, and am among the decode presets. */
+    if (!strstr(content, "[analog]\n") || !strstr(content, "# Range: 5000 to 20000\n# am_bandwidth_hz = 6000\n")) {
+        DSD_FPRINTF(stderr, "FAIL: template missing [analog] am_bandwidth_hz range hint or default\n");
+        rc = 1;
+    }
+    if (!strstr(content, "|tdma|analog|am")) {
+        DSD_FPRINTF(stderr, "FAIL: template does not list am among the decode presets\n");
+        rc = 1;
+    }
     if (strstr(content, "version =") != NULL) {
         DSD_FPRINTF(stderr, "FAIL: template must not emit the persisted version marker\n");
         rc = 1;

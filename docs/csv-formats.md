@@ -300,9 +300,9 @@ receiver on another channel, holds nothing. A `-Y` row holds for `-t` after the 
 target holds for its `activity_hold_ms` after the last carrier and rotates after its `dwell_ms` of silence. The
 per-visit cap and the hold, advance and avoid controls apply as for any row, and the voice gate never applies to an
 analog row, so a global `--scan-voice-only` does not block one. That includes the rows of an untyped list scanned
-under `-fA`, which hold on their carrier under `-t` as well. Scan start warns once about an analog row whose squelch is
-off or at -100 dB or below: noise then keeps its carrier open, re-arming the hold with every block, so only the visit
-cap or a manual advance or avoid moves on.
+under `-fA` or `-fM` (AM), which hold on their carrier under `-t` as well. Scan start warns once about an analog row
+whose squelch is off or at -100 dB or below: noise then keeps its carrier open, re-arming the hold with every block, so
+only the visit cap or a manual advance or avoid moves on.
 
 A list may mix analog and digital rows: each row switches the receiver between the analog monitor and the digital
 decoder at its own width when it is tuned, without reopening the device, and opens the audio output the row plays

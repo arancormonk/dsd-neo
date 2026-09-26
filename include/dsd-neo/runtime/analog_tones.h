@@ -69,13 +69,27 @@ int dsd_ctcss_format(int tenths_hz, char* buf, size_t buf_size);
 int dsd_ctcss_format_label(int tenths_hz, char* buf, size_t buf_size);
 
 /**
+ * @brief Whether the decoder's analog receive tap runs: the analog monitor of either kind, FM or AM, on audio it can
+ * hear.
+ *
+ * Analog-only decoding with input monitoring, on a PCM input (Pulse, stdin, WAV, UDP, TCP) or on an RTL-family stream
+ * whose output is monitor audio (asked of the RTL stream-metrics hook, whose default answers monitor audio).
+ * Symbol-file and null inputs carry no audio to hear. The -8 source monitor during digital decoding and EDACS analog
+ * voice are out: neither is analog-only.
+ *
+ * The tap keeps the monitor's carrier, which holds an analog scan row whether or not audio plays (issue #526), and the
+ * boundaries (retunes, profile changes, resets) across which the monitor output drops a block; it runs the tone
+ * detectors only where dsd_analog_tone_detection_active() says so.
+ *
+ * @return 1 when the tap runs, 0 otherwise (and for NULL).
+ */
+int dsd_analog_monitor_tap_active(const dsd_opts* opts);
+
+/**
  * @brief Whether received-tone detection runs: the analog FM monitor, on audio it can hear.
  *
- * Analog-only decoding with input monitoring, on a PCM input (Pulse, stdin, WAV, UDP, TCP) or
- * on an RTL-family stream whose output is monitor audio (asked of the RTL stream-metrics hook,
- * whose default answers monitor audio). Symbol-file and null inputs carry no audio to hear.
- * The -8 source monitor during digital decoding and EDACS analog voice are out: neither is
- * analog-only.
+ * dsd_analog_monitor_tap_active() with the FM analog kind (the Analog preset, not AM: CTCSS and DCS are FM signalling).
+ * On the AM monitor the tap keeps only the carrier and its boundaries (issue #524).
  *
  * The decoder's tap and every frontend's received-tone row ask this one question, so a row is
  * never on screen for a session in which nothing is listening -- for instance while an RTL

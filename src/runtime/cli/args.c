@@ -503,6 +503,33 @@ cli_warn_analog_width_without_radio(const dsd_opts* opts, const char* option_nam
              option_name);
 }
 
+/* AM needs an IQ radio input (issue #524). -fM on a PCM input is an error. [mode] decode = am from a loaded config (the
+ * only other way a parse ends on AM) falls back to the Analog monitor for the session instead, and autosave is turned
+ * off for it so the saved decode = am is not replaced by the fallback (dsd_decode_mode_keep_saved_am(), which a runtime
+ * config apply of such a config calls too). That turns off saving every other change the session makes too, so it is
+ * said where the operator looks, not only in the log: a toast the frontends show once they are up. (Keeping autosave
+ * and writing decode = am back would need the session to remember the preset it fell back from, a state field this
+ * change does not add.) */
+static int
+cli_check_am_input(dsd_opts* opts, dsd_state* state, int cli_chose_am, int* out_exit_rc) {
+    /* The input is not open yet: its spec (or --iq-replay) says whether it will deliver I/Q. */
+    if (dsd_infer_decode_mode_preset_exact(opts) != DSDCFG_MODE_AM || dsd_decode_mode_input_spec_is_iq(opts)) {
+        return 0;
+    }
+    if (cli_chose_am) {
+        LOG_ERROR("-fM: %s\n", DSD_DECODE_MODE_AM_NEEDS_IQ_TEXT);
+        cli_set_exit_rc(out_exit_rc, 1);
+        return -1;
+    }
+    LOG_WARN("WARNING: [mode] decode = am: %s. Using the Analog monitor for this session.\n",
+             DSD_DECODE_MODE_AM_NEEDS_IQ_TEXT);
+    (void)dsd_apply_decode_mode_preset(DSDCFG_MODE_ANALOG, DSD_DECODE_PRESET_PROFILE_CONFIG, opts, state);
+    if (dsd_decode_mode_keep_saved_am(state)) {
+        LOG_INFO("NOTICE: %s.\n", DSD_DECODE_MODE_KEEP_SAVED_AM_NOTICE);
+    }
+    return 0;
+}
+
 static int
 cli_set_iqreplay_audio_dev(dsd_opts* opts, const char* path) {
     if (!opts || !path) {
@@ -1062,7 +1089,16 @@ cli_parse_airspy_option(int argc, char** argv, int i, dsd_opts* opts) {
                                                &opts->analog_nfm_bandwidth_hz, out_exit_rc)) {                         \
                 return DSD_PARSE_ERROR;                                                                                \
             }                                                                                                          \
-            nfm_bandwidth_cli_seen = 1;                                                                                \
+            analog_width_cli_seen |= 1 << DSD_ANALOG_DEMOD_FM;                                                         \
+            continue;                                                                                                  \
+        }                                                                                                              \
+        if (strcmp(argv[i], "--am-bandwidth-hz") == 0 || strncmp(argv[i], "--am-bandwidth-hz=", 18) == 0) {            \
+            const char* value = argv[i][17] == '=' ? argv[i] + 18 : (i + 1 < argc ? DSD_PARSE_ARGS_NEXT_ARG() : NULL); \
+            if (!cli_parse_analog_width_option("--am-bandwidth-hz", DSD_ANALOG_DEMOD_AM, value,                        \
+                                               &opts->analog_am_bandwidth_hz, out_exit_rc)) {                          \
+                return DSD_PARSE_ERROR;                                                                                \
+            }                                                                                                          \
+            analog_width_cli_seen |= 1 << DSD_ANALOG_DEMOD_AM;                                                         \
             continue;                                                                                                  \
         }                                                                                                              \
         if (strcmp(argv[i], "--auto-ppm") == 0) {                                                                      \
@@ -1893,12 +1929,16 @@ cli_finish_airspy_input(dsd_opts* opts, int parse_rc, int* out_exit_rc) {
     return parse_rc;
 }
 
-/* What runs once every option has been read, whatever order they came in. */
+/* What runs once every option has been read, whatever order they came in. @p analog_width_cli_seen has bit
+   1 << dsd_analog_demod set for each analog width option given. */
 static int
-cli_finish_parse(dsd_opts* opts, int parse_rc, int nfm_bandwidth_cli_seen, int* out_exit_rc) {
+cli_finish_parse(dsd_opts* opts, int parse_rc, int analog_width_cli_seen, int* out_exit_rc) {
     parse_rc = cli_finish_airspy_input(opts, parse_rc, out_exit_rc);
-    if (parse_rc == DSD_PARSE_CONTINUE && nfm_bandwidth_cli_seen) {
+    if (parse_rc == DSD_PARSE_CONTINUE && (analog_width_cli_seen & (1 << DSD_ANALOG_DEMOD_FM))) {
         cli_warn_analog_width_without_radio(opts, "--nfm-bandwidth-hz");
+    }
+    if (parse_rc == DSD_PARSE_CONTINUE && (analog_width_cli_seen & (1 << DSD_ANALOG_DEMOD_AM))) {
+        cli_warn_analog_width_without_radio(opts, "--am-bandwidth-hz");
     }
     return parse_rc;
 }
@@ -1955,7 +1995,7 @@ dsd_parse_args(int argc, char** argv, dsd_opts* opts, dsd_state* state, int* out
     int trunk_scan_cli_seen = 0;
     int chan_csv_cli_seen = 0;
     int p25_bandplan_cli_seen = 0;
-    int nfm_bandwidth_cli_seen = 0;
+    int analog_width_cli_seen = 0; /* bit 1 << dsd_analog_demod per analog width option given */
     int config_one_shot_cli_seen = cli_has_config_one_shot_arg(argc, argv);
     DSD_PARSE_ARGS_PRESCAN_BLOCK();
     DSD_PARSE_ARGS_IQ_PRE_BLOCK();
@@ -1998,7 +2038,7 @@ dsd_parse_args(int argc, char** argv, dsd_opts* opts, dsd_state* state, int* out
             return DSD_PARSE_ERROR;
         }
     }
-    parse_rc = cli_finish_parse(opts, parse_rc, nfm_bandwidth_cli_seen, out_exit_rc);
+    parse_rc = cli_finish_parse(opts, parse_rc, analog_width_cli_seen, out_exit_rc);
     if (out_argc) {
         *out_argc = new_argc;
     }
@@ -2447,6 +2487,8 @@ dsd_parse_args(int argc, char** argv, dsd_opts* opts, dsd_state* state, int* out
                 || f_selector == 'U') {                                                                                \
                 opts->analog_only = 0;                                                                                 \
                 opts->monitor_input_audio = 0;                                                                         \
+                /* ... and the AM detector -fM chose: the M17 encoder shares the analog front end. */                  \
+                opts->analog_demod = DSD_ANALOG_DEMOD_FM;                                                              \
             }                                                                                                          \
             const char decode_preset = optarg[0] == 'r' ? 's' : optarg[0];                                             \
             dsdneoUserDecodeMode core_mode = DSDCFG_MODE_UNSET;                                                        \
@@ -2459,6 +2501,7 @@ dsd_parse_args(int argc, char** argv, dsd_opts* opts, dsd_state* state, int* out
                     case 'a': LOG_INFO("NOTICE: Decoding AUTO: all digital modes with multi-rate SPS hunting\n");      \
                         break;                                                                                         \
                     case 'A': LOG_INFO("NOTICE: Only Monitoring Passive Analog Signal\n"); break;                      \
+                    case 'M': LOG_INFO("NOTICE: AM receiver (IQ radio inputs)\n"); break;                              \
                     case 'd': LOG_INFO("NOTICE: Decoding only DSTAR frames.\n"); break;                                \
                     case 'x': LOG_INFO("NOTICE: Decoding only X2-TDMA frames.\n"); break;                              \
                     case '1': LOG_INFO("NOTICE: Decoding only P25 Phase 1 frames.\n"); break;                          \
@@ -3012,6 +3055,10 @@ dsd_parse_short_opts(int argc, char** argv, dsd_opts* opts, dsd_state* state, in
                 dsd_state_rescale_symbol_timing(state, 48000, timing_rate_hz);
             }
         }
+    }
+    if (cli_check_am_input(opts, state, cli_decode_timing_seen && cli_decode_timing_mode == DSDCFG_MODE_AM, out_exit_rc)
+        != 0) {
+        return DSD_PARSE_ERROR;
     }
     dsd_warn_ineffective_short_opts(opts, state);
     // Set after getopt completes so -r file ordering is independent of later options.

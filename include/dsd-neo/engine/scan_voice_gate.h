@@ -50,10 +50,10 @@ int dsd_scan_voice_probe(const dsd_opts* opts, const dsd_state* state, dsd_scan_
  * at every input rate, and dropped at every reset the tap makes -- a retune, a stream generation or
  * receive-profile change, a stream pause -- and while a retune is unresolved, so a block that straddles a
  * retune never counts for the new channel (dsd_analog_rx_carrier_open_now()). So it holds only
- * while the analog FM monitor runs (dsd_analog_tone_detection_active()), never on a publication past its
- * stale_after_ms, never while a digital carrier is flagged (dsd_state::carrier) and never while a trunking
- * state machine owns the channel. Whether audio is played has no part in it: -o null or a muted UI still
- * holds the row. Read-only and null-safe.
+ * while the analog monitor runs, FM or AM (dsd_analog_monitor_tap_active(), issue #524), never on a
+ * publication past its stale_after_ms, never while a digital carrier is flagged (dsd_state::carrier) and
+ * never while a trunking state machine owns the channel. Whether audio is played has no part in it: -o null
+ * or a muted UI still holds the row. Read-only and null-safe.
  */
 int dsd_scan_analog_carrier_open(const dsd_opts* opts, const dsd_state* state);
 

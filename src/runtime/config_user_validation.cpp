@@ -159,12 +159,18 @@ validate_standard_entry_value(const dsdcfg_schema_entry_t* entry, const char* va
 static int
 validate_analog_width_entry(const dsdcfg_schema_entry_t* entry, const char* val, dsdcfg_diagnostics_t* diags,
                             int line_num, const char* diag_section, const char* diag_key) {
-    if (strcmp(entry->section, "analog") != 0 || strcmp(entry->key, "nfm_bandwidth_hz") != 0) {
+    if (strcmp(entry->section, "analog") != 0) {
+        return 0;
+    }
+    const int kind = (strcmp(entry->key, "nfm_bandwidth_hz") == 0)  ? DSD_ANALOG_DEMOD_FM
+                     : (strcmp(entry->key, "am_bandwidth_hz") == 0) ? DSD_ANALOG_DEMOD_AM
+                                                                    : -1;
+    if (kind < 0) {
         return 0;
     }
     char err[DSD_ANALOG_ERROR_TEXT_MAX];
     int width_hz = 0;
-    if (dsd_analog_width_parse(DSD_ANALOG_DEMOD_FM, val, &width_hz, err, sizeof err) != 0) {
+    if (dsd_analog_width_parse(kind, val, &width_hz, err, sizeof err) != 0) {
         dsdcfg_diags_add(diags, DSDCFG_DIAG_ERROR, line_num, diag_section, diag_key, err);
     }
     return 1;
@@ -415,13 +421,18 @@ validate_configured_rtl_bw_khz(int bw) {
     return dsd_analog_rtl_dsp_bw_is_selectable(bw) ? bw : 48;
 }
 
+/* Whether startup builds an RTL-SDR or rtl_tcp input with rtl_bw_khz (it takes rtl_freq, and a host for rtl_tcp). */
+static int
+validate_config_builds_rtl_input(const dsdneoUserConfig* cfg) {
+    return cfg->has_input && cfg->rtl_freq[0] != '\0'
+           && (cfg->input_source == DSDCFG_INPUT_RTL
+               || (cfg->input_source == DSDCFG_INPUT_RTLTCP && cfg->rtltcp_host[0] != '\0'));
+}
+
 static int
 validate_analog_width_rate_applies(const dsdneoUserConfig* cfg) {
-    const int builds_rtl_input = cfg->has_input && cfg->rtl_freq[0] != '\0'
-                                 && (cfg->input_source == DSDCFG_INPUT_RTL
-                                     || (cfg->input_source == DSDCFG_INPUT_RTLTCP && cfg->rtltcp_host[0] != '\0'));
     return cfg->analog_nfm_bandwidth_hz > 0 && cfg->has_mode && cfg->decode_mode == DSDCFG_MODE_ANALOG
-           && builds_rtl_input;
+           && validate_config_builds_rtl_input(cfg);
 }
 
 static void
@@ -439,6 +450,35 @@ validate_composed_analog_width(const dsdneoUserConfig* cfg, const char* section,
     }
 }
 
+/* Issue #524: the AM width a config's decode = am runs (the 6000 Hz default included, which is held to the rate like an
+   explicit width), on an input whose DSP rate is the configured RTL DSP bandwidth (RTL-SDR and rtl_tcp), must fit that
+   rate, as the startup check does (dsd_engine_setup_check_analog_width()). Devices that can force another rate
+   (SoapySDR, Airspy) and I/Q replay are checked against the rate they deliver when the stream starts, and a PCM input
+   runs no channel filter (the session falls back to Analog there). rtl_bw_khz is that rate only where startup builds
+   the input with it, as for NFM. */
+static int
+validate_am_width_rate_applies(const dsdneoUserConfig* cfg) {
+    return cfg->has_mode && cfg->decode_mode == DSDCFG_MODE_AM && validate_config_builds_rtl_input(cfg);
+}
+
+static void
+validate_composed_am_width(const dsdneoUserConfig* cfg, const char* section, const char* key,
+                           dsdcfg_diagnostics_t* diags) {
+    if (!cfg || !diags || !validate_am_width_rate_applies(cfg)) {
+        return;
+    }
+    const int configured_hz =
+        (cfg->has_analog && dsd_analog_width_in_range(DSD_ANALOG_DEMOD_AM, cfg->analog_am_bandwidth_hz))
+            ? cfg->analog_am_bandwidth_hz
+            : 0;
+    const int width_hz = dsd_analog_width_effective_hz(DSD_ANALOG_DEMOD_AM, configured_hz);
+    const int rtl_bw_khz = validate_configured_rtl_bw_khz(cfg->rtl_bw_khz);
+    char err[DSD_ANALOG_ERROR_TEXT_MAX];
+    if (dsd_analog_width_check(DSD_ANALOG_DEMOD_AM, width_hz, rtl_bw_khz * 1000, err, sizeof err) != 0) {
+        dsdcfg_diags_add(diags, DSDCFG_DIAG_ERROR, 0, section ? section : "analog", key ? key : "am_bandwidth_hz", err);
+    }
+}
+
 static void
 validate_composed_config_base(const dsdneoUserConfig* cfg, dsdcfg_diagnostics_t* diags) {
     validate_composed_trunk_scan_requirements(cfg, "trunk_scan", "targets_csv", diags);
@@ -447,6 +487,7 @@ validate_composed_config_base(const dsdneoUserConfig* cfg, dsdcfg_diagnostics_t*
     validate_composed_lrrp_ports(cfg, "mode", "dmr_lrrp_ports", diags);
     validate_composed_scan_max_visit_ms(cfg, "trunking", "scan_max_visit_ms", diags);
     validate_composed_analog_width(cfg, "analog", "nfm_bandwidth_hz", diags);
+    validate_composed_am_width(cfg, "analog", "am_bandwidth_hz", diags);
 }
 
 static void
@@ -460,6 +501,7 @@ validate_composed_profile_config(const char* profile_name, const dsdneoUserConfi
     validate_composed_lrrp_ports(cfg, section, "mode.dmr_lrrp_ports", diags);
     validate_composed_scan_max_visit_ms(cfg, section, "trunking.scan_max_visit_ms", diags);
     validate_composed_analog_width(cfg, section, "analog.nfm_bandwidth_hz", diags);
+    validate_composed_am_width(cfg, section, "analog.am_bandwidth_hz", diags);
 }
 
 static void

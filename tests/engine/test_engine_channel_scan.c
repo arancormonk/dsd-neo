@@ -119,9 +119,12 @@ restore_frontend(int cqpsk, int rate, int levels, int filter, int sps) {
     return 0;
 }
 
-/* What the options said at the tune (issue #526): the row's family and width reach the front end through them. */
+/* What the options said at the tune (issue #526): the row's family and width reach the front end through them, and on
+ * the analog family the kind (issue #524). */
 static int tuned_analog_only = -1;
 static int tuned_nfm_width_hz = -1;
+static int tuned_analog_kind = -1;
+static int tuned_am_width_hz = -1;
 
 dsd_trunk_tune_result
 dsd_engine_scan_tune_to_freq(dsd_opts* opts, dsd_state* state, long freq, int sps, uint64_t* out) {
@@ -129,6 +132,8 @@ dsd_engine_scan_tune_to_freq(dsd_opts* opts, dsd_state* state, long freq, int sp
     assert(opts->frame_nxdn48 == expected_nxdn);
     tuned_analog_only = opts->analog_only;
     tuned_nfm_width_hz = opts->analog_nfm_bandwidth_hz;
+    tuned_analog_kind = opts->analog_demod;
+    tuned_am_width_hz = opts->analog_am_bandwidth_hz;
     assert(sps == (change_rate_on_tune ? (int)reported_rate / 4800 : (expected_nxdn ? 20 : 10)));
     if (change_rate_on_tune) {
         assert(tunes < 100);
@@ -652,6 +657,26 @@ report_analog_family(void) {
     return fake_analog_family;
 }
 
+/* The analog kind whose monitor profile the front end has published (dsd_analog_demod); -1 publishes none. */
+static int fake_published_kind = -1;
+
+static int
+report_analog_profile(int* out_kind, int* out_width_hz, int* out_lpf_on) {
+    if (fake_published_kind < 0) {
+        return 0;
+    }
+    if (out_kind) {
+        *out_kind = fake_published_kind;
+    }
+    if (out_width_hz) {
+        *out_width_hz = 0;
+    }
+    if (out_lpf_on) {
+        *out_lpf_on = 1;
+    }
+    return 1;
+}
+
 static unsigned int
 report_output_rate_for_family(int family, int cqpsk_enable, int symbol_rate_hz) {
     rate_for_family_calls++;
@@ -817,9 +842,9 @@ test_leave_retimes_the_digital_landing(void) {
 /*
  * The decoder's part-collected analog monitor block holds samples of the front end's output family. A leave that
  * switches the front end between the analog and digital families drops it, so the first block the other family
- * completes does not start with them; a leave that keeps the family keeps it, and off RTL there is no front end family
- * to switch. A leave that switches the family also forgets the received tone (issue #522), which described the old
- * family's reception.
+ * completes does not start with them, and so does one that switches the analog monitor between FM and AM (issue #524);
+ * a leave that keeps the family and kind keeps it, and off RTL there is no front end family to switch. A leave that
+ * switches the family also forgets the received tone (issue #522), which described the old family's reception.
  */
 static void
 test_leave_family_switch_drops_partial_analog_block(void) {
@@ -832,6 +857,7 @@ test_leave_family_switch_drops_partial_analog_block(void) {
     assert(dsd_apply_decode_mode_preset(DSDCFG_MODE_ANALOG, DSD_DECODE_PRESET_PROFILE_CLI, opts, state) == 0);
     const dsd_rtl_stream_metrics_hooks hooks = {.apply_demod_profile = record_digital_restore,
                                                 .apply_analog_profile = record_analog_restore,
+                                                .analog_profile = report_analog_profile,
                                                 .analog_family_active = report_analog_family,
                                                 .output_rate_for_family = report_output_rate_for_family};
     dsd_rtl_stream_metrics_hooks_set(&hooks);
@@ -879,6 +905,41 @@ test_leave_family_switch_drops_partial_analog_block(void) {
     dsd_engine_channel_scan_leave(opts, state);
     assert(analog_restore_calls == 1 && analog_restore_family == DSD_RX_FAMILY_DIGITAL);
     assert(analog_block_resets == 0);
+
+    /* -fM (issue #524) left from an nfm row, whose FM monitor the front end runs: the family stays analog but the kind
+       changes, so the block of FM audio is dropped rather than played as AM. */
+    assert(dsd_apply_decode_mode_preset(DSDCFG_MODE_AM, DSD_DECODE_PRESET_PROFILE_CLI, opts, state) == 0);
+    reset_frontend_records();
+    analog_block_resets = 0;
+    fake_analog_family = 1;
+    fake_published_kind = DSD_ANALOG_DEMOD_FM;
+    assert(dsd_scan_mode_enter(opts, state, DSD_SCAN_MODE_NFM) == 0);
+    assert(opts->analog_demod == DSD_ANALOG_DEMOD_FM);
+    dsd_engine_channel_scan_leave(opts, state);
+    assert(opts->analog_demod == DSD_ANALOG_DEMOD_AM);
+    assert(analog_restore_calls == 1 && analog_restore_family == DSD_RX_FAMILY_ANALOG);
+    assert(analog_restore_kind == DSD_ANALOG_DEMOD_AM);
+    assert(analog_block_resets == 1);
+
+    /* ...and from a blank row, whose AM monitor it already runs: nothing to drop. */
+    reset_frontend_records();
+    analog_block_resets = 0;
+    fake_published_kind = DSD_ANALOG_DEMOD_AM;
+    assert(dsd_scan_mode_enter(opts, state, DSD_SCAN_MODE_INHERIT) == 0);
+    dsd_engine_channel_scan_leave(opts, state);
+    assert(analog_restore_calls == 1 && analog_restore_kind == DSD_ANALOG_DEMOD_AM);
+    assert(analog_block_resets == 0);
+
+    /* -fA left from an nfm row: the same kind, so the block stays. */
+    assert(dsd_apply_decode_mode_preset(DSDCFG_MODE_ANALOG, DSD_DECODE_PRESET_PROFILE_CLI, opts, state) == 0);
+    reset_frontend_records();
+    analog_block_resets = 0;
+    fake_published_kind = DSD_ANALOG_DEMOD_FM;
+    assert(dsd_scan_mode_enter(opts, state, DSD_SCAN_MODE_NFM) == 0);
+    dsd_engine_channel_scan_leave(opts, state);
+    assert(analog_restore_calls == 1 && analog_restore_kind == DSD_ANALOG_DEMOD_FM);
+    assert(analog_block_resets == 0);
+    fake_published_kind = -1;
 
     /* Off RTL. */
     opts->audio_in_type = AUDIO_IN_WAV;
@@ -1078,6 +1139,76 @@ test_nfm_row_restages_after_a_configured_width_edit(void) {
 
     dsd_engine_channel_scan_leave(opts, state);
     assert(!opts->analog_only && opts->frame_dmr && opts->analog_nfm_bandwidth_hz == 11250);
+    dsd_state_trunk_lcn_free(state);
+    dsd_state_ext_free_all(state);
+    free(state);
+    free(opts);
+    tunes = reset_count = 0;
+}
+
+/* Issue #524: a staged tune carries the configured width of the analog kind its row runs, and only that one: an nfm
+ * row's NFM width, on an AM session too, and a blank row's width of the configured kind, AM there. An edit to the other
+ * kind's width while that tune is outstanding changes nothing it carries, so the row commits as staged, with no second
+ * tune to the same channel; an edit to the width it carries restages it at the new width. */
+static void
+test_row_restages_only_for_the_width_its_kind_runs(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
+    assert(opts && state);
+    opts->scanner_mode = 1;
+    opts->audio_in_type = AUDIO_IN_WAV;
+    opts->wav_sample_rate = 48000;
+    assert(dsd_apply_decode_mode_preset(DSDCFG_MODE_ANALOG, DSD_DECODE_PRESET_PROFILE_CLI, opts, state) == 0);
+    opts->analog_demod = DSD_ANALOG_DEMOD_AM;
+    opts->analog_am_bandwidth_hz = 10000;
+    opts->analog_nfm_bandwidth_hz = 20000;
+    state->samplesPerSymbol = 10;
+    state->lcn_freq_count = 2;
+    for (int row = 0; row < 2; row++) {
+        *dsd_state_trunk_lcn_slot(state, row) = 150000000;
+    }
+    assert(dsd_channel_mode_set(state, 0, DSD_SCAN_MODE_NFM) == 0);
+    assert(dsd_channel_mode_set(state, 1, DSD_SCAN_MODE_INHERIT) == 0);
+    expected_nxdn = 0;
+    tune_result = DSD_TRUNK_TUNE_RESULT_PENDING;
+
+    /* The nfm row's tune carries the NFM width: an AM width edit leaves it as staged. */
+    assert(dsd_engine_channel_scan_step(opts, state) == 0);
+    assert(tuned_analog_only == 1 && tuned_analog_kind == DSD_ANALOG_DEMOD_FM && tuned_nfm_width_hz == 20000);
+    assert(dsd_scan_mode_set_configured_analog_width(opts, state, DSD_ANALOG_DEMOD_AM, 8000) == 1);
+    int before = tunes;
+    dsd_trunk_tuning_request_publish(request, DSD_TRUNK_TUNE_RESULT_OK);
+    assert(dsd_engine_channel_scan_pending(opts, state) == 0);
+    assert(tunes == before && state->lcn_freq_roll == 1 && opts->analog_demod == DSD_ANALOG_DEMOD_FM);
+
+    /* The blank row's tune carries the AM width: an NFM width edit leaves it as staged too. */
+    assert(dsd_engine_channel_scan_step(opts, state) == 0);
+    assert(tuned_analog_only == 1 && tuned_analog_kind == DSD_ANALOG_DEMOD_AM && tuned_am_width_hz == 8000);
+    assert(dsd_scan_mode_set_configured_analog_width(opts, state, DSD_ANALOG_DEMOD_FM, 16000) == 1);
+    before = tunes;
+    dsd_trunk_tuning_request_publish(request, DSD_TRUNK_TUNE_RESULT_OK);
+    assert(dsd_engine_channel_scan_pending(opts, state) == 0);
+    assert(tunes == before && state->lcn_freq_roll == 2 && opts->analog_demod == DSD_ANALOG_DEMOD_AM);
+    assert(opts->analog_am_bandwidth_hz == 8000);
+
+    /* An AM width edit while the blank row's tune is outstanding restages it at the new width. */
+    state->lcn_freq_roll = 1;
+    assert(dsd_engine_channel_scan_step(opts, state) == 0);
+    assert(tuned_analog_kind == DSD_ANALOG_DEMOD_AM && tuned_am_width_hz == 8000);
+    assert(dsd_scan_mode_set_configured_analog_width(opts, state, DSD_ANALOG_DEMOD_AM, 6000) == 1);
+    before = tunes;
+    dsd_trunk_tuning_request_publish(request, DSD_TRUNK_TUNE_RESULT_OK);
+    assert(dsd_engine_channel_scan_pending(opts, state) == 1);
+    assert(tunes == before && state->lcn_freq_roll == 1);
+    tune_result = DSD_TRUNK_TUNE_RESULT_OK;
+    assert(dsd_engine_channel_scan_pending(opts, state) == 0);
+    assert(tunes == before + 1 && tuned_analog_kind == DSD_ANALOG_DEMOD_AM && tuned_am_width_hz == 6000);
+    assert(state->lcn_freq_roll == 2 && opts->analog_demod == DSD_ANALOG_DEMOD_AM
+           && opts->analog_am_bandwidth_hz == 6000);
+
+    dsd_engine_channel_scan_leave(opts, state);
+    assert(opts->analog_demod == DSD_ANALOG_DEMOD_AM && opts->analog_am_bandwidth_hz == 6000);
+    assert(opts->analog_nfm_bandwidth_hz == 16000);
     dsd_state_trunk_lcn_free(state);
     dsd_state_ext_free_all(state);
     free(state);
@@ -1534,6 +1665,7 @@ main(void) {
     test_rx_tone_row_commit_and_step_clear();
     test_nfm_rows_switch_family_width_and_sink();
     test_nfm_row_restages_after_a_configured_width_edit();
+    test_row_restages_only_for_the_width_its_kind_runs();
     test_row_restages_after_a_live_family_request();
     test_row_commits_when_nothing_its_tune_carries_changed();
     test_nfm_row_warnings_once_per_row();

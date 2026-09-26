@@ -38,6 +38,7 @@
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/core/talkgroup_policy.h>
+#include <dsd-neo/runtime/analog_channel.h>
 #include <dsd-neo/runtime/scan_mode.h>
 
 #include <dsd-neo/core/opts_fwd.h>
@@ -796,14 +797,21 @@ MetricsModel::fillAnalogChannel(View& next, const dsd_opts* opts_snapshot, const
                                 const dsd_frontend_metrics& metrics) {
     dsd_app_analog_width_view view;
     (void)dsd_app_analog_width_view_get(opts_snapshot, snapshot, &metrics, &view);
-    /* The view leaves the width, its bound and the flag at 0 outside the analog preset, with no analog scan row on
-     * air. */
+    /* The view leaves the width and the flag at 0 outside the analog preset, with no analog scan row on air, and the
+     * bound at 0 off a radio. */
     next.analog_bandwidth_configured_hz = view.configured_hz;
+    next.nfm_bandwidth_configured_hz =
+        dsd_scan_mode_configured_analog_width(opts_snapshot, snapshot, DSD_ANALOG_DEMOD_FM);
+    next.am_bandwidth_configured_hz =
+        dsd_scan_mode_configured_analog_width(opts_snapshot, snapshot, DSD_ANALOG_DEMOD_AM);
     next.analog_bandwidth_hz = view.width_hz;
     next.analog_bandwidth_max_hz = view.max_hz;
     next.analog_bandwidth_dsp_limited = view.dsp_limited != 0U;
     next.analog_bandwidth_row_active = view.row_analog != 0U;
     next.analog_bandwidth_row_override = view.row_override != 0U;
+    next.analog_bandwidth_am = view.kind == DSD_ANALOG_DEMOD_AM;
+    next.nfm_bandwidth_offered = dsd_app_analog_width_offered(opts_snapshot, snapshot, &view, DSD_ANALOG_DEMOD_FM) != 0;
+    next.am_bandwidth_offered = dsd_app_analog_width_offered(opts_snapshot, snapshot, &view, DSD_ANALOG_DEMOD_AM) != 0;
     char reading[DSD_APP_ANALOG_WIDTH_TEXT_MAX];
     (void)dsd_app_analog_width_view_format(&view, reading, sizeof reading);
     next.analog_bandwidth_reading = QString::fromUtf8(reading);

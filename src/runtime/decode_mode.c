@@ -9,34 +9,36 @@
 #include <dsd-neo/runtime/analog_channel.h>
 #include <dsd-neo/runtime/decode_mode.h>
 #include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
-#include <stddef.h>
+#include <time.h>
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
 #include "dsd-neo/runtime/config.h"
+
+/* The -f selectors that are decode presets. The others (ProVoice/EDACS, the M17 encoder and the like) are handled by
+   the CLI itself; 'r' (single-slot DMR) reaches here as 's'. A table, so a new preset adds a row. */
+static const struct {
+    char selector;
+    dsdneoUserDecodeMode mode;
+} k_cli_presets[] = {
+    {'a', DSDCFG_MODE_AUTO},   {'A', DSDCFG_MODE_ANALOG}, {'M', DSDCFG_MODE_AM},     {'d', DSDCFG_MODE_DSTAR},
+    {'x', DSDCFG_MODE_X2TDMA}, {'t', DSDCFG_MODE_TDMA},   {'1', DSDCFG_MODE_P25P1},  {'2', DSDCFG_MODE_P25P2},
+    {'s', DSDCFG_MODE_DMR},    {'i', DSDCFG_MODE_NXDN48}, {'n', DSDCFG_MODE_NXDN96}, {'y', DSDCFG_MODE_YSF},
+    {'m', DSDCFG_MODE_DPMR},   {'z', DSDCFG_MODE_M17},
+};
 
 int
 dsd_decode_mode_from_cli_preset(char preset, dsdneoUserDecodeMode* out_mode) {
     if (!out_mode) {
         return -1;
     }
-
-    switch (preset) {
-        case 'a': *out_mode = DSDCFG_MODE_AUTO; return 0;
-        case 'A': *out_mode = DSDCFG_MODE_ANALOG; return 0;
-        case 'd': *out_mode = DSDCFG_MODE_DSTAR; return 0;
-        case 'x': *out_mode = DSDCFG_MODE_X2TDMA; return 0;
-        case 't': *out_mode = DSDCFG_MODE_TDMA; return 0;
-        case '1': *out_mode = DSDCFG_MODE_P25P1; return 0;
-        case '2': *out_mode = DSDCFG_MODE_P25P2; return 0;
-        case 's': *out_mode = DSDCFG_MODE_DMR; return 0;
-        case 'i': *out_mode = DSDCFG_MODE_NXDN48; return 0;
-        case 'n': *out_mode = DSDCFG_MODE_NXDN96; return 0;
-        case 'y': *out_mode = DSDCFG_MODE_YSF; return 0;
-        case 'm': *out_mode = DSDCFG_MODE_DPMR; return 0;
-        case 'z': *out_mode = DSDCFG_MODE_M17; return 0;
-        default: return -1;
+    for (size_t i = 0; i < sizeof k_cli_presets / sizeof k_cli_presets[0]; i++) {
+        if (k_cli_presets[i].selector == preset) {
+            *out_mode = k_cli_presets[i].mode;
+            return 0;
+        }
     }
+    return -1;
 }
 
 dsd_decode_mode_profile
@@ -578,6 +580,16 @@ decode_mode_apply_analog(dsd_opts* o, dsd_state* s) {
     DSD_SNPRINTF(o->output_name, sizeof o->output_name, "%s", "Analog Monitor");
 }
 
+/* AM (issue #524): the analog monitor with the AM envelope detector, which only an IQ radio input can run. The CLI,
+   config, wizard and command paths refuse it on PCM input, or fall back to Analog, before they get here
+   (dsd_decode_mode_runs_on_input(), and dsd_decode_mode_input_spec_is_iq() before the input opens). */
+static void
+decode_mode_apply_am(dsd_opts* o, dsd_state* s) {
+    decode_mode_apply_analog(o, s);
+    o->analog_demod = DSD_ANALOG_DEMOD_AM;
+    DSD_SNPRINTF(o->output_name, sizeof o->output_name, "%s", "AM Monitor");
+}
+
 static int
 decode_mode_apply_profiled(dsdneoUserDecodeMode mode, dsdDecodePresetProfile profile, dsd_opts* opts,
                            dsd_state* state) {
@@ -608,6 +620,7 @@ decode_mode_dispatch(dsdneoUserDecodeMode mode, dsdDecodePresetProfile profile, 
         case DSDCFG_MODE_M17: decode_mode_apply_m17(opts, state); return 0;
         case DSDCFG_MODE_TDMA: decode_mode_apply_tdma(opts, state); return 0;
         case DSDCFG_MODE_ANALOG: decode_mode_apply_analog(opts, state); return 0;
+        case DSDCFG_MODE_AM: decode_mode_apply_am(opts, state); return 0;
         default: return -1;
     }
 }
@@ -640,7 +653,7 @@ dsd_apply_decode_mode_preset(dsdneoUserDecodeMode mode, dsdDecodePresetProfile p
        unconditionally would switch a monitor the operator turned on by hand off
        again on the next unrelated settings change. analog_only is what marks the
        analog preset as the one that set it. */
-    if (mode != DSDCFG_MODE_ANALOG) {
+    if (mode != DSDCFG_MODE_ANALOG && mode != DSDCFG_MODE_AM) {
         if (opts->analog_only) {
             opts->monitor_input_audio = 0;
         }
@@ -672,7 +685,7 @@ dsd_infer_decode_mode_preset_exact(const dsd_opts* opts) {
     }
 
     if (opts->analog_only && opts->monitor_input_audio) {
-        return DSDCFG_MODE_ANALOG;
+        return opts->analog_demod == DSD_ANALOG_DEMOD_AM ? DSDCFG_MODE_AM : DSDCFG_MODE_ANALOG;
     }
 
     unsigned mask = 0;
@@ -751,6 +764,7 @@ dsd_decode_mode_display_name(dsdneoUserDecodeMode mode) {
         {DSDCFG_MODE_DPMR, "dPMR"},
         {DSDCFG_MODE_M17, "M17"},
         {DSDCFG_MODE_ANALOG, "Analog"},
+        {DSDCFG_MODE_AM, "AM"},
     };
 
     for (size_t i = 0; i < sizeof names / sizeof names[0]; i++) {
@@ -759,4 +773,42 @@ dsd_decode_mode_display_name(dsdneoUserDecodeMode mode) {
         }
     }
     return "Unknown";
+}
+
+int
+dsd_decode_mode_input_is_iq(const dsd_opts* opts) {
+    return dsd_opts_input_is_radio(opts);
+}
+
+int
+dsd_decode_mode_input_spec_is_iq(const dsd_opts* opts) {
+    if (!opts) {
+        return 0;
+    }
+    const char* dev = opts->audio_in_dev;
+    return (opts->audio_in_type == AUDIO_IN_RTL || dsd_opts_audio_in_dev_is_rtl_spec(dev)
+            || dsd_opts_audio_in_dev_is_rtltcp_spec(dev) || dsd_opts_audio_in_dev_is_soapy_spec(dev)
+            || dsd_opts_audio_in_dev_is_airspy_spec(dev) || dsd_opts_audio_in_dev_is_iqreplay_spec(dev))
+               ? 1
+               : 0;
+}
+
+int
+dsd_decode_mode_runs_on_input(dsdneoUserDecodeMode mode, const dsd_opts* opts) {
+    return (mode != DSDCFG_MODE_AM || dsd_decode_mode_input_is_iq(opts)) ? 1 : 0;
+}
+
+/* How long the toast stays: a start sets it before any frontend is up to show it. */
+#define DSD_DECODE_MODE_KEEP_SAVED_AM_TOAST_S 30
+
+int
+dsd_decode_mode_keep_saved_am(dsd_state* state) {
+    if (!state || !state->config_autosave_enabled) {
+        return 0;
+    }
+    state->config_autosave_enabled = 0;
+    DSD_SNPRINTF(state->ui_msg, sizeof state->ui_msg, "%s",
+                 "Decoding Analog: AM needs an IQ radio input. Autosave is off this session to keep decode = am");
+    state->ui_msg_expire = time(NULL) + DSD_DECODE_MODE_KEEP_SAVED_AM_TOAST_S;
+    return 1;
 }

@@ -16,15 +16,19 @@
 #include <dsd-neo/io/iq_types.h>
 #include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/platform/posix_compat.h>
+#include <dsd-neo/runtime/analog_channel.h>
 #include <dsd-neo/runtime/bootstrap.h>
 #include <dsd-neo/runtime/call_alert.h>
 #include <dsd-neo/runtime/cli.h>
+#include <dsd-neo/runtime/config.h>
+#include <dsd-neo/runtime/decode_mode.h>
 #include <dsd-neo/runtime/rdio_export.h>
 #include <inttypes.h>
 #include <sndfile.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 #include "dsd-neo/core/frontend_types.h"
 #include "dsd-neo/core/opts_fwd.h"
@@ -5802,6 +5806,214 @@ test_f_manual_selectors_leave_analog_monitor(void) {
     return test_rc;
 }
 
+/* AM (issue #524): parse @p args (NULL-terminated, program name first) into freshly initialised options, with the
+ * options first put on the AM preset when @p config_am says a loaded config chose it. */
+typedef struct {
+    dsd_opts* opts;
+    dsd_state* state;
+    int rc;
+    int exit_rc;
+    char err[4096];
+} am_cli_run;
+
+static int
+am_cli_parse(const char* const* args, int config_am, am_cli_run* run) {
+    DSD_MEMSET(run, 0, sizeof(*run));
+    run->opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
+    run->state = (dsd_state*)calloc(1, sizeof(dsd_state));
+    if (!run->opts || !run->state) {
+        free(run->opts);
+        free(run->state);
+        return -1;
+    }
+    initOpts(run->opts);
+    initState(run->state);
+    if (config_am) {
+        (void)dsd_apply_decode_mode_preset(DSDCFG_MODE_AM, DSD_DECODE_PRESET_PROFILE_CONFIG, run->opts, run->state);
+        run->state->config_autosave_enabled = 1;
+    }
+    static char storage[8][96];
+    char* argv[9] = {NULL};
+    int argc = 0;
+    for (; argc < 8 && args[argc] != NULL; argc++) {
+        DSD_SNPRINTF(storage[argc], sizeof storage[argc], "%s", args[argc]);
+        argv[argc] = storage[argc];
+    }
+    int argc_effective = 0;
+    run->exit_rc = -1;
+    run->rc = parse_args_capture_stderr(argc, argv, run->opts, run->state, &argc_effective, &run->exit_rc, run->err,
+                                        sizeof run->err);
+    return 0;
+}
+
+static void
+am_cli_free(am_cli_run* run) {
+    freeState(run->state);
+    free(run->opts);
+    free(run->state);
+}
+
+/* -fM is the AM preset on every IQ radio input: the analog monitor with the AM detector. */
+static int
+test_f_am_preset_on_iq_inputs(void) {
+    static const char* const inputs[] = {"rtl:0:851.375M", "rtltcp:127.0.0.1:1234", "soapy:driver=rtlsdr", "rtl"};
+    int test_rc = 0;
+    for (size_t i = 0; i < sizeof inputs / sizeof inputs[0]; i++) {
+        const char* const args[] = {"dsd-neo", "-fM", "-i", inputs[i], NULL};
+        am_cli_run run;
+        if (am_cli_parse(args, 0, &run) != 0) {
+            return 1;
+        }
+        if (run.rc != DSD_PARSE_CONTINUE || run.opts->analog_only != 1 || run.opts->monitor_input_audio != 1
+            || run.opts->analog_demod != DSD_ANALOG_DEMOD_AM
+            || dsd_infer_decode_mode_preset(run.opts) != DSDCFG_MODE_AM) {
+            DSD_FPRINTF(stderr, "-fM -i %s: rc=%d analog_only=%d kind=%d\n%s\n", inputs[i], run.rc,
+                        run.opts->analog_only, run.opts->analog_demod, run.err);
+            test_rc = 1;
+        }
+        am_cli_free(&run);
+    }
+    return test_rc;
+}
+
+/* PCM inputs arrive already demodulated: -fM on one stops with the reason and the -fA alternative. */
+static int
+test_f_am_refused_on_pcm_input(void) {
+    static const char* const inputs[] = {NULL, "pulse", "tcp:127.0.0.1:7355", "udp:127.0.0.1:7355", "capture.wav", "-"};
+    int test_rc = 0;
+    for (size_t i = 0; i < sizeof inputs / sizeof inputs[0]; i++) {
+        const char* const with_input[] = {"dsd-neo", "-fM", "-i", inputs[i], NULL};
+        const char* const default_input[] = {"dsd-neo", "-fM", NULL};
+        am_cli_run run;
+        if (am_cli_parse(inputs[i] ? with_input : default_input, 0, &run) != 0) {
+            return 1;
+        }
+        if (run.rc != DSD_PARSE_ERROR || run.exit_rc != 1
+            || !strstr(run.err, "AM demodulation needs an IQ radio input; monitor externally demodulated AM audio "
+                                "with -fA")) {
+            DSD_FPRINTF(stderr, "-fM on %s: rc=%d exit_rc=%d\n%s\n", inputs[i] ? inputs[i] : "(default input)", run.rc,
+                        run.exit_rc, run.err);
+            test_rc = 1;
+        }
+        am_cli_free(&run);
+    }
+    return test_rc;
+}
+
+/* The selectors the -f case handles itself leave AM for FM as they leave the analog monitor: the M17 encoder shares
+ * the analog front end and must not run the AM detector. */
+static int
+test_f_manual_selectors_leave_am(void) {
+    static const char* const selectors[] = {"-fp", "-fZ"};
+    int test_rc = 0;
+    for (size_t i = 0; i < sizeof selectors / sizeof selectors[0]; i++) {
+        const char* const args[] = {"dsd-neo", "-fM", selectors[i], "-i", "rtl", NULL};
+        am_cli_run run;
+        if (am_cli_parse(args, 0, &run) != 0) {
+            return 1;
+        }
+        if (run.rc != DSD_PARSE_CONTINUE || run.opts->analog_only != 0
+            || run.opts->analog_demod != DSD_ANALOG_DEMOD_FM) {
+            DSD_FPRINTF(stderr, "-fM %s: rc=%d analog_only=%d kind=%d\n", selectors[i], run.rc, run.opts->analog_only,
+                        run.opts->analog_demod);
+            test_rc = 1;
+        }
+        am_cli_free(&run);
+    }
+    return test_rc;
+}
+
+/* --am-bandwidth-hz takes whole Hz from 5000 to 20000 in both spellings and refuses anything else, never clamping. */
+static int
+test_am_bandwidth_option(void) {
+    static const struct {
+        const char* a;
+        const char* b;
+        int want_rc;
+        int want_hz;
+        const char* want_text;
+    } cases[] = {
+        {"--am-bandwidth-hz", "8000", DSD_PARSE_CONTINUE, 8000, NULL},
+        {"--am-bandwidth-hz=20000", NULL, DSD_PARSE_CONTINUE, 20000, NULL},
+        {"--am-bandwidth-hz", "5000", DSD_PARSE_CONTINUE, 5000, NULL},
+        {"--am-bandwidth-hz", "25000", DSD_PARSE_ERROR, 0,
+         "--am-bandwidth-hz: AM bandwidth 25000 Hz is outside the supported range of 5000 to 20000 Hz"},
+        {"--am-bandwidth-hz=4999", NULL, DSD_PARSE_ERROR, 0,
+         "AM bandwidth 4999 Hz is outside the supported range of 5000 to 20000 Hz"},
+        {"--am-bandwidth-hz", "6k", DSD_PARSE_ERROR, 0,
+         "--am-bandwidth-hz: AM bandwidth must be a whole number of Hz from 5000 to 20000"},
+        {"--am-bandwidth-hz", NULL, DSD_PARSE_ERROR, 0, "--am-bandwidth-hz requires a width in Hz (5000 to 20000)"},
+    };
+
+    int test_rc = 0;
+    for (size_t i = 0; i < sizeof cases / sizeof cases[0]; i++) {
+        const char* const two[] = {"dsd-neo", "-fM", "-i", "rtl", cases[i].a, cases[i].b, NULL};
+        am_cli_run run;
+        if (am_cli_parse(two, 0, &run) != 0) {
+            return 1;
+        }
+        const int width_ok =
+            cases[i].want_rc != DSD_PARSE_CONTINUE || run.opts->analog_am_bandwidth_hz == cases[i].want_hz;
+        const int text_ok = !cases[i].want_text || strstr(run.err, cases[i].want_text) != NULL;
+        if (run.rc != cases[i].want_rc || !width_ok || !text_ok
+            || (cases[i].want_rc == DSD_PARSE_ERROR && run.exit_rc != 1)) {
+            DSD_FPRINTF(stderr, "%s %s: rc=%d width=%d exit_rc=%d\n%s\n", cases[i].a, cases[i].b ? cases[i].b : "",
+                        run.rc, run.opts->analog_am_bandwidth_hz, run.exit_rc, run.err);
+            test_rc = 1;
+        }
+        am_cli_free(&run);
+    }
+    /* On a PCM input the width parses but has nothing to act on: said once, not an error. */
+    const char* const pcm[] = {"dsd-neo", "-fA", "--am-bandwidth-hz", "8000", "-i", "pulse", NULL};
+    am_cli_run run;
+    if (am_cli_parse(pcm, 0, &run) != 0) {
+        return 1;
+    }
+    if (run.rc != DSD_PARSE_CONTINUE || run.opts->analog_am_bandwidth_hz != 8000
+        || !strstr(run.err, "--am-bandwidth-hz has no effect on PCM input")) {
+        DSD_FPRINTF(stderr, "--am-bandwidth-hz on PCM input: rc=%d\n%s\n", run.rc, run.err);
+        test_rc = 1;
+    }
+    am_cli_free(&run);
+    return test_rc;
+}
+
+/* [mode] decode = am from a loaded config on a PCM input: the same reason, logged, and the session monitors with the
+ * Analog preset instead. Autosave is off for the session, so the saved decode = am stays as it was, and a toast says
+ * so. On an IQ input the config's AM stands. */
+static int
+test_config_am_on_pcm_input_falls_back(void) {
+    int test_rc = 0;
+    const char* const pcm[] = {"dsd-neo", "-i", "pulse", NULL};
+    am_cli_run run;
+    if (am_cli_parse(pcm, 1, &run) != 0) {
+        return 1;
+    }
+    /* Autosave off stops every other change the session makes from being saved, so the frontends are told too. */
+    if (run.rc != DSD_PARSE_CONTINUE || dsd_infer_decode_mode_preset(run.opts) != DSDCFG_MODE_ANALOG
+        || run.opts->analog_demod != DSD_ANALOG_DEMOD_FM || run.state->config_autosave_enabled != 0
+        || !strstr(run.err, "AM demodulation needs an IQ radio input")
+        || !strstr(run.state->ui_msg, "Autosave is off this session to keep decode = am")
+        || run.state->ui_msg_expire <= time(NULL)) {
+        DSD_FPRINTF(stderr, "config AM on PCM: rc=%d mode=%d autosave=%d\n%s\n", run.rc,
+                    (int)dsd_infer_decode_mode_preset(run.opts), run.state->config_autosave_enabled, run.err);
+        test_rc = 1;
+    }
+    am_cli_free(&run);
+    const char* const iq[] = {"dsd-neo", "-i", "rtl:0:118.1M", NULL};
+    if (am_cli_parse(iq, 1, &run) != 0) {
+        return 1;
+    }
+    if (run.rc != DSD_PARSE_CONTINUE || dsd_infer_decode_mode_preset(run.opts) != DSDCFG_MODE_AM
+        || run.state->config_autosave_enabled != 1 || strstr(run.err, "AM demodulation needs")) {
+        DSD_FPRINTF(stderr, "config AM on RTL: rc=%d mode=%d\n%s\n", run.rc,
+                    (int)dsd_infer_decode_mode_preset(run.opts), run.err);
+        test_rc = 1;
+    }
+    am_cli_free(&run);
+    return test_rc;
+}
+
 static int
 test_f_fr_restores_single_slot_mono_preset(void) {
     static const struct {
@@ -8661,6 +8873,11 @@ main(void) {
     rc |= test_f_dpmr_and_m17_presets_match_documented_letters();
     rc |= test_f_edacs_presets_match_reference_modes();
     rc |= test_f_manual_selectors_leave_analog_monitor();
+    rc |= test_f_am_preset_on_iq_inputs();
+    rc |= test_f_am_refused_on_pcm_input();
+    rc |= test_f_manual_selectors_leave_am();
+    rc |= test_am_bandwidth_option();
+    rc |= test_config_am_on_pcm_input_falls_back();
     rc |= test_f_fr_restores_single_slot_mono_preset();
     rc |= test_f_dmr_preset_selects_gfsk();
     rc |= test_mg_before_f_dmr_keeps_gfsk_lock();

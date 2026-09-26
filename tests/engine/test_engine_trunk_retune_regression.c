@@ -9,6 +9,8 @@
  * - non-P25 trunking must not apply P25-only CC symbol/modulation overrides
  * - RTL P25 voice/CC retunes must queue demod profile changes until the
  *   controller reaches the hardware retune boundary
+ * - a -Y row that runs the analog family queues the configured analog
+ *   profile for its retune, never a symbol profile
  */
 
 #include <assert.h>
@@ -75,6 +77,10 @@ static int g_rtl_pending_tuner_gain_is_auto = 0;
 static int g_rtl_pending_tuner_autogain_is_set = 0;
 static int g_rtl_pending_tuner_autogain_on = 0;
 static uint32_t g_rtl_pending_target_freq_hz = 0;
+static int g_rtl_analog_prepare_calls = 0;
+static int g_rtl_analog_prepare_rc = 0;
+static rtl_stream_retune_analog_profile g_rtl_analog_prepared;
+static uint32_t g_rtl_analog_prepared_target_hz = 0U;
 static size_t g_trunk_scan_target_count = 0;
 static int g_trunk_scan_active_gfsk_symbol_rate = 0;
 static int g_trunk_scan_saved_autogain_is_set = 0;
@@ -397,6 +403,20 @@ rtl_stream_prepare_retune_profile_for_target_with_gain(uint32_t target_freq_hz, 
     g_rtl_pending_active = 1;
 }
 
+/* Records the analog profile attached to a target's retune; the receive family is the stream's, which this regression
+   does not model, so nothing else changes. */
+int
+rtl_stream_prepare_retune_analog_profile_for_target(uint32_t target_freq_hz,
+                                                    const rtl_stream_retune_analog_profile* analog) {
+    g_rtl_analog_prepare_calls++;
+    if (!analog || g_rtl_analog_prepare_rc != 0) {
+        return -1;
+    }
+    g_rtl_analog_prepared = *analog;
+    g_rtl_analog_prepared_target_hz = target_freq_hz;
+    return 0;
+}
+
 void
 rtl_stream_apply_pending_retune_profile_for_target(uint32_t target_freq_hz) {
     apply_pending_retune_profile(target_freq_hz);
@@ -438,16 +458,8 @@ rtl_stream_set_ted_sps_no_override(int sps) {
     g_rtl_ted_sps = sps;
 }
 
-/* The scanner's receive-family side (issue #526): these fixtures tune digital rows on a digital front end, which
- * attaches no family and never reads the analog profile back. */
-int
-rtl_stream_prepare_retune_analog_profile_for_target(uint32_t target_freq_hz,
-                                                    const rtl_stream_retune_analog_profile* analog) {
-    (void)target_freq_hz;
-    (void)analog;
-    return 0;
-}
-
+/* The scanner's receive-family side (issue #526): these fixtures tune on a digital front end, which never reads the
+ * analog profile back; an analog row's retune attaches its family through the recording stub above. */
 int
 rtl_stream_get_analog_profile(int* out_kind, int* out_width_hz, int* out_lpf_on) {
     if (out_kind) {
@@ -617,6 +629,95 @@ test_backend_tune_updates_center_freq_cache(void) {
     free(opts);
 }
 
+#ifdef USE_RADIO
+/* A -Y row tuned with the RTL front end set up for @p freq_hz from the AM monitor's WIDE channel, with nothing queued
+   for its retune unless @p stale_symbol_profile queues a P25 C4FM symbol profile for the same target first. Returns the
+   tune's result; @p tune_calls receives how many times the backend was asked to tune. */
+static dsd_trunk_tune_result
+tune_scan_row(dsd_opts* opts, dsd_state* state, long int freq_hz, int stale_symbol_profile, int* tune_calls) {
+    g_rtl_tune_result = RTL_STREAM_TUNE_OK;
+    g_rtl_cqpsk_enable = 0;
+    g_rtl_symbol_rate_hz = 4800;
+    g_rtl_symbol_levels = 4;
+    g_rtl_channel_profile = RTL_STREAM_CHANNEL_PROFILE_WIDE;
+    rtl_stream_clear_pending_retune_profile();
+    if (stale_symbol_profile) {
+        rtl_stream_prepare_retune_profile_for_target_with_gain((uint32_t)freq_hz, 0, 4800, 4,
+                                                               RTL_STREAM_CHANNEL_PROFILE_P25_C4FM, 10, 0, NULL);
+    }
+    g_rtl_analog_prepare_calls = 0;
+    DSD_MEMSET(&g_rtl_analog_prepared, 0, sizeof(g_rtl_analog_prepared));
+    g_rtl_analog_prepared_target_hz = 0U;
+    const int calls_before = g_rtl_tune_calls;
+    const dsd_trunk_tune_result result = dsd_engine_scan_tune_to_freq(opts, state, freq_hz, 10, NULL);
+    *tune_calls = g_rtl_tune_calls - calls_before;
+    return result;
+}
+
+/*
+ * A -Y row whose settings run the analog family (a blank row on an -fM or -fA session keeps the configured mode) has
+ * no symbol clock (issue #524). Its retune queues the configured analog profile for the target, the kind and width
+ * with 0 for the default, and no symbol profile: one would put a digital channel filter on the monitor, and on AM read
+ * the carrier with the FM discriminator. A symbol profile already queued for the target does not ride along. A
+ * refused analog profile fails the tune before the backend moves (the scan skips the row, issue #526), dropping what
+ * was queued for it. A typed digital row on the same session queues its symbol profile as before.
+ */
+static void
+test_analog_scan_row_queues_analog_profile(void) {
+    dsd_opts* opts = calloc(1, sizeof(*opts));
+    dsd_state* state = calloc(1, sizeof(*state));
+    assert(opts && state);
+    opts->audio_in_type = AUDIO_IN_RTL;
+    opts->scanner_mode = 1;
+    opts->analog_only = 1;
+    opts->monitor_input_audio = 1;
+    opts->analog_demod = DSD_ANALOG_DEMOD_AM;
+    opts->analog_am_bandwidth_hz = 10000;
+    state->rtl_ctx = (RtlSdrContext*)state;
+    int tuned = 0;
+
+    assert(tune_scan_row(opts, state, 118100000, 0, &tuned) == DSD_TRUNK_TUNE_RESULT_OK && tuned == 1);
+    assert(g_rtl_analog_prepare_calls == 1);
+    assert(g_rtl_analog_prepared_target_hz == 118100000U);
+    assert(g_rtl_analog_prepared.family == DSD_RX_FAMILY_ANALOG);
+    assert(g_rtl_analog_prepared.kind == DSD_ANALOG_DEMOD_AM);
+    assert(g_rtl_analog_prepared.width_hz == 10000);
+    assert(g_rtl_channel_profile == RTL_STREAM_CHANNEL_PROFILE_WIDE);
+    assert(g_rtl_symbol_rate_hz == 4800 && g_rtl_cqpsk_enable == 0);
+
+    assert(tune_scan_row(opts, state, 118100000, 1, &tuned) == DSD_TRUNK_TUNE_RESULT_OK && tuned == 1);
+    assert(g_rtl_analog_prepare_calls == 1);
+    assert(g_rtl_channel_profile == RTL_STREAM_CHANNEL_PROFILE_WIDE);
+
+    g_rtl_analog_prepare_rc = -1;
+    assert(tune_scan_row(opts, state, 118100000, 1, &tuned) == DSD_TRUNK_TUNE_RESULT_FAILED && tuned == 0);
+    assert(g_rtl_analog_prepare_calls == 1);
+    assert(g_rtl_pending_active == 0);
+    assert(g_rtl_channel_profile == RTL_STREAM_CHANNEL_PROFILE_WIDE);
+    g_rtl_analog_prepare_rc = 0;
+
+    /* -fA at the unset NFM default. */
+    opts->analog_demod = DSD_ANALOG_DEMOD_FM;
+    assert(tune_scan_row(opts, state, 146520000, 0, &tuned) == DSD_TRUNK_TUNE_RESULT_OK && tuned == 1);
+    assert(g_rtl_analog_prepare_calls == 1);
+    assert(g_rtl_analog_prepared.kind == DSD_ANALOG_DEMOD_FM);
+    assert(g_rtl_analog_prepared.width_hz == 0);
+    assert(g_rtl_channel_profile == RTL_STREAM_CHANNEL_PROFILE_WIDE);
+
+    /* A typed DMR row: the row's settings are digital. */
+    opts->analog_only = 0;
+    opts->monitor_input_audio = 0;
+    opts->frame_dmr = 1;
+    assert(tune_scan_row(opts, state, 146520000, 0, &tuned) == DSD_TRUNK_TUNE_RESULT_OK && tuned == 1);
+    assert(g_rtl_analog_prepare_calls == 0);
+    assert(g_rtl_channel_profile != RTL_STREAM_CHANNEL_PROFILE_WIDE);
+
+    rtl_stream_clear_pending_retune_profile();
+    free(state);
+    free(opts);
+}
+#endif
+
 int
 main(void) {
     dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
@@ -629,6 +730,9 @@ main(void) {
     }
 
     test_backend_tune_updates_center_freq_cache();
+#ifdef USE_RADIO
+    test_analog_scan_row_queues_analog_profile();
+#endif
 
     /* DMR trunking active via protocol-agnostic flag only. */
     opts->trunk_enable = 1;

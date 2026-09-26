@@ -187,6 +187,7 @@
     X(lr_off)                                                                                                          \
     X(rtl_restart)                                                                                                     \
     X(rtl_set_bw)                                                                                                      \
+    X(rtl_set_am_bw)                                                                                                   \
     X(rtl_set_dev)                                                                                                     \
     X(rtl_set_freq)                                                                                                    \
     X(rtl_set_gain)                                                                                                    \
@@ -281,6 +282,7 @@
     X(lbl_rtl_auto_ppm)                                                                                                \
     X(lbl_rtl_bias)                                                                                                    \
     X(lbl_rtl_bw)                                                                                                      \
+    X(lbl_rtl_am_bw)                                                                                                   \
     X(lbl_rtl_freq)                                                                                                    \
     X(lbl_rtl_gain)                                                                                                    \
     X(lbl_rtl_nfm_bw)                                                                                                  \
@@ -336,6 +338,7 @@
     X(is_airspy_input)                                                                                                 \
     X(is_non_airspy_input)                                                                                             \
     X(is_nfm_width_editable)                                                                                           \
+    X(is_am_width_editable)                                                                                            \
     X(const_view_active)                                                                                               \
     X(eye_view_active)                                                                                                 \
     X(io_rtl_active)                                                                                                   \

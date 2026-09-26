@@ -149,6 +149,14 @@ class CommandBridge : public QObject {
     Q_INVOKABLE bool setNfmBandwidthHz(int hz) const;
 
     /**
+     * @brief Set the AM channel-filter width in Hz (5000..20000), or 0 for the 6 kHz default (issue #524).
+     *
+     * The engine refuses a width the front end cannot filter at its DSP rate, with a message, and keeps the one it
+     * had; a view reads the width back rather than trusting the request.
+     */
+    Q_INVOKABLE bool setAmBandwidthHz(int hz) const;
+
+    /**
      * @brief Choose the demodulator: 0 for C4FM, 1 for QPSK, 2 for GFSK.
      *
      * A setter, not the hotkey's cycle: a control showing them as choices has to

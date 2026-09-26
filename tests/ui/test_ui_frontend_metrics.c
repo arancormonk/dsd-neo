@@ -14,6 +14,7 @@
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_fwd.h>
+#include <dsd-neo/runtime/analog_channel.h>
 #include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
 
 static const dsd_opts* g_latest_opts;
@@ -465,12 +466,13 @@ test_analog_channel_bandwidth(void) {
     dsd_rtl_stream_metrics_hooks_set(&hooks);
 
     g_analog_active = 1;
-    g_analog_kind = 0;
+    g_analog_kind = DSD_ANALOG_DEMOD_FM;
     g_analog_width_hz = 12500;
     g_analog_lpf_on = 1;
     assert(dsd_app_frontend_get_metrics(&metrics) == 0);
     assert(metrics.channel_bandwidth_hz == 12500);
     assert(metrics.channel_bandwidth_dsp_limited == 0);
+    assert(metrics.channel_analog_kind == DSD_ANALOG_DEMOD_FM);
 
     g_analog_width_hz = 12000;
     g_analog_lpf_on = 0;
@@ -478,11 +480,20 @@ test_analog_channel_bandwidth(void) {
     assert(metrics.channel_bandwidth_hz == 12000);
     assert(metrics.channel_bandwidth_dsp_limited == 1);
 
+    /* The AM monitor (issue #524) reports its width with the AM kind. */
+    g_analog_kind = DSD_ANALOG_DEMOD_AM;
+    g_analog_width_hz = 6000;
+    g_analog_lpf_on = 1;
+    assert(dsd_app_frontend_get_metrics(&metrics) == 0);
+    assert(metrics.channel_bandwidth_hz == 6000);
+    assert(metrics.channel_analog_kind == DSD_ANALOG_DEMOD_AM);
+
     /* Monitor output without the analog family (the M17 encoder): the profile rule. */
     g_analog_active = 0;
     assert(dsd_app_frontend_get_metrics(&metrics) == 0);
     assert(metrics.channel_bandwidth_hz == 12500); /* the stub's 6250 Hz edge, doubled */
     assert(metrics.channel_bandwidth_dsp_limited == 0);
+    assert(metrics.channel_analog_kind == -1);
 
     /* Digital output ignores a stale analog mirror. */
     g_analog_active = 1;
@@ -493,15 +504,18 @@ test_analog_channel_bandwidth(void) {
     assert(dsd_app_frontend_get_metrics(&metrics) == 0);
     assert(metrics.channel_bandwidth_hz == 12500);
     assert(metrics.channel_bandwidth_dsp_limited == 0);
+    assert(metrics.channel_analog_kind == -1);
 
     /* Off radio nothing is reported, analog or not. */
     hooks.output_kind = hook_output_kind_monitor;
     dsd_rtl_stream_metrics_hooks_set(&hooks);
     opts.audio_in_type = AUDIO_IN_PULSE;
     metrics.channel_bandwidth_dsp_limited = 1;
+    metrics.channel_analog_kind = DSD_ANALOG_DEMOD_AM;
     assert(dsd_app_frontend_get_metrics_for_snapshot(&opts, &state, &metrics, 0) == 0);
     assert(metrics.channel_bandwidth_hz == 0);
     assert(metrics.channel_bandwidth_dsp_limited == 0);
+    assert(metrics.channel_analog_kind == -1);
 
     g_analog_active = 0;
     dsd_rtl_stream_metrics_hooks_set(NULL);

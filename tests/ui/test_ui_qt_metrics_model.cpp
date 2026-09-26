@@ -36,6 +36,7 @@
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/core/talkgroup_policy.h>
+#include <dsd-neo/runtime/analog_channel.h>
 #include <dsd-neo/runtime/scan_mode.h>
 #include <dsd-neo/runtime/scan_options.h>
 
@@ -53,6 +54,8 @@ static int g_stub_channel_bandwidth_hz = 0;
 static int g_stub_channel_bandwidth_dsp_limited = 0;
 /* Whether the stubbed front end says a stream runs, and its demod rate (issue #525). */
 static int g_stub_stream_active = 0;
+/* The demodulator kind of the published analog width (issue #524): FM unless a case publishes an AM width. */
+static int g_stub_channel_analog_kind = DSD_ANALOG_DEMOD_FM;
 static int g_stub_demod_rate_hz = 0;
 
 /* The scan-timing view a case feeds the model. Zeroed between cases: reason NONE
@@ -86,6 +89,7 @@ dsd_app_frontend_get_metrics_for_snapshot(const dsd_opts* opts, const dsd_state*
     out->channel_bandwidth_hz = g_stub_channel_bandwidth_hz;
     out->channel_bandwidth_dsp_limited = g_stub_channel_bandwidth_dsp_limited;
     out->stream_active = g_stub_stream_active;
+    out->channel_analog_kind = g_stub_channel_analog_kind;
     out->demod_rate_hz = g_stub_demod_rate_hz;
     return 0;
 }
@@ -1299,14 +1303,20 @@ main(int argc, char** argv) {
         g_stub_stream_active = 1;
         g_stub_demod_rate_hz = 24000;
         model.refresh(&opts, &state);
+        /* Issue #524: the rate still bounds the widths the controls offer outside the preset: a width set for the next
+         * switch is held to it there. */
         expect("digital: no analog width", model.analogBandwidthHz() == 0 && !model.analogBandwidthDspLimited()
-                                               && model.analogBandwidthMaxHz() == 0);
+                                               && model.analogBandwidthMaxHz() == 20400);
+        expect("digital: neither width offered by default",
+               !model.nfmBandwidthOffered() && !model.amBandwidthOffered());
         opts.analog_only = 1;
         opts.analog_demod = DSD_ANALOG_DEMOD_FM;
         model.refresh(&opts, &state);
         expect("analog before a published width reads the default", model.analogBandwidthHz() == 16000);
         expect("the default is configured as 0", model.analogBandwidthConfiguredHz() == 0);
         expect("the widest width the 24 kHz rate filters", model.analogBandwidthMaxHz() == 20400);
+        expect("analog: the NFM width offered, the AM default fits the rate",
+               model.nfmBandwidthOffered() && !model.amBandwidthOffered());
         expect("the reading says it is the default",
                model.analogBandwidthReading() == QStringLiteral("16 kHz (default)"));
 
@@ -1433,6 +1443,111 @@ main(int argc, char** argv) {
         g_stub_stream_active = 0;
         g_stub_demod_rate_hz = 0;
         opts.audio_in_type = AUDIO_IN_RTL;
+    }
+
+    /* Issue #524: under the AM preset the view reads the AM width: the configured one, 6 kHz by default and never
+     * DSP-limited (a rate that cannot filter it is refused), and the running monitor's own width once the front end
+     * publishes an AM one. An FM width still published (a switch to AM not landed yet) is another channel's. The
+     * configured AM width is what the stepper edits, and stays published off a radio. */
+    {
+        opts.audio_in_type = AUDIO_IN_RTL;
+        g_stub_stream_active = 1;
+        g_stub_demod_rate_hz = 16000;
+        opts.analog_only = 1;
+        opts.monitor_input_audio = 1;
+        opts.analog_demod = DSD_ANALOG_DEMOD_AM;
+        model.refresh(&opts, &state);
+        expect("am: the default width", model.analogBandwidthHz() == 6000 && !model.analogBandwidthDspLimited());
+        expect("am: the default is configured as 0", model.analogBandwidthConfiguredHz() == 0);
+        expect("am: the 16 kHz rate bounds the steps at 13.2 kHz", model.analogBandwidthMaxHz() == 13200);
+        expect("am: the reading says it is the default",
+               model.analogBandwidthReading() == QStringLiteral("6 kHz (default)"));
+
+        opts.analog_am_bandwidth_hz = 10000;
+        g_stub_channel_bandwidth_hz = 16000;
+        g_stub_channel_analog_kind = DSD_ANALOG_DEMOD_FM;
+        model.refresh(&opts, &state);
+        expect("am: an FM width is not the AM channel", model.analogBandwidthHz() == 10000);
+        expect("am: the configured AM width", model.analogBandwidthConfiguredHz() == 10000);
+        g_stub_channel_bandwidth_hz = 9000;
+        g_stub_channel_analog_kind = DSD_ANALOG_DEMOD_AM;
+        model.refresh(&opts, &state);
+        expect("am: the AM monitor's width", model.analogBandwidthHz() == 9000);
+        expect("am: the reading is the AM monitor's width", model.analogBandwidthReading() == QStringLiteral("9 kHz"));
+        expect("am: the width is AM's", model.analogBandwidthAm());
+
+        /* Issue #526: an nfm row with its own width over the AM session runs FM. The readings describe the row's NFM
+         * width, the configured widths are the configured view's rather than the row's in dsd_opts, and the AM
+         * preset's own width stays offered; the leave brings AM back. */
+        opts.analog_nfm_bandwidth_hz = 11250;
+        dsd_scan_option_values am_session_row{};
+        am_session_row.present = DSD_SCAN_OPT_BANDWIDTH;
+        am_session_row.channel_bw_hz = 12500;
+        expect("am: nfm row", dsd_scan_mode_enter(&opts, &state, DSD_SCAN_MODE_NFM) == 0);
+        expect("am: nfm row options", dsd_scan_mode_options(&opts, &state, &am_session_row) == 0);
+        g_stub_channel_bandwidth_hz = 12500;
+        g_stub_channel_analog_kind = DSD_ANALOG_DEMOD_FM;
+        model.refresh(&opts, &state);
+        expect("am nfm row: the row's NFM width", !model.analogBandwidthAm() && model.analogBandwidthHz() == 12500);
+        expect("am nfm row: the configured NFM width",
+               model.nfmBandwidthConfiguredHz() == 11250 && model.analogBandwidthConfiguredHz() == 11250);
+        expect("am nfm row: the configured AM width", model.amBandwidthConfiguredHz() == 10000);
+        expect("am nfm row: both widths offered", model.amBandwidthOffered() && model.nfmBandwidthOffered());
+        dsd_scan_mode_leave(&opts, &state);
+        opts.analog_nfm_bandwidth_hz = 0;
+        g_stub_channel_bandwidth_hz = 9000;
+        g_stub_channel_analog_kind = DSD_ANALOG_DEMOD_AM;
+        model.refresh(&opts, &state);
+        expect("am after the nfm row: AM again", model.analogBandwidthAm() && model.analogBandwidthHz() == 9000);
+
+        opts.audio_in_type = AUDIO_IN_PULSE;
+        model.refresh(&opts, &state);
+        expect("am: no width in force off a radio",
+               model.analogBandwidthHz() == 0 && model.analogBandwidthMaxHz() == 0);
+        expect("am: the configured AM width stays off a radio", model.analogBandwidthConfiguredHz() == 10000);
+
+        /* Each kind's configured width is published whichever preset runs, for the control of the kind the preset
+         * does not run: an explicit NFM width under AM, an explicit AM width under a digital mode. */
+        opts.audio_in_type = AUDIO_IN_RTL;
+        opts.analog_nfm_bandwidth_hz = 25000;
+        model.refresh(&opts, &state);
+        expect("am: the configured NFM width under AM", model.nfmBandwidthConfiguredHz() == 25000);
+        expect("am: the configured AM width under AM", model.amBandwidthConfiguredHz() == 10000);
+        opts.analog_only = 0;
+        opts.monitor_input_audio = 0;
+        opts.analog_demod = DSD_ANALOG_DEMOD_FM;
+        model.refresh(&opts, &state);
+        expect("digital: the configured AM width", model.amBandwidthConfiguredHz() == 10000);
+        expect("digital: the configured NFM width", model.nfmBandwidthConfiguredHz() == 25000);
+        expect("digital: the section's width is the NFM one", model.analogBandwidthConfiguredHz() == 25000);
+        expect("digital: both explicit widths offered", model.nfmBandwidthOffered() && model.amBandwidthOffered());
+        opts.analog_nfm_bandwidth_hz = 0;
+
+        /* The unset AM default is offered where the running stream's rate cannot filter it but filters a narrower AM
+         * width (a replay or device at 7.5 kHz filters up to 5.55 kHz): a switch to AM is refused there with word to
+         * narrow the width, which has to be possible before it. */
+        opts.analog_am_bandwidth_hz = 0;
+        g_stub_demod_rate_hz = 7500;
+        model.refresh(&opts, &state);
+        expect("digital at 7.5 kHz: the AM default is offered", model.amBandwidthOffered());
+        expect("digital at 7.5 kHz: the rate bounds the steps", model.analogBandwidthMaxHz() == 5550);
+        expect("digital at 7.5 kHz: the NFM default is not", !model.nfmBandwidthOffered());
+        opts.audio_in_type = AUDIO_IN_PULSE;
+        model.refresh(&opts, &state);
+        expect("pcm: nothing offered", !model.amBandwidthOffered() && model.analogBandwidthMaxHz() == 0);
+        opts.audio_in_type = AUDIO_IN_RTL;
+        g_stub_demod_rate_hz = 16000;
+
+        opts.analog_only = 0;
+        opts.monitor_input_audio = 0;
+        opts.analog_demod = DSD_ANALOG_DEMOD_FM;
+        opts.analog_am_bandwidth_hz = 0;
+        opts.audio_in_type = AUDIO_IN_RTL;
+        g_stub_channel_bandwidth_hz = 0;
+        g_stub_channel_analog_kind = DSD_ANALOG_DEMOD_FM;
+        g_stub_stream_active = 0;
+        g_stub_demod_rate_hz = 0;
+        model.refresh(&opts, &state);
     }
 
     /* A call with no name of its own on a named scan channel: the hero must show

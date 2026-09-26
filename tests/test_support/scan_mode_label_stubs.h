@@ -12,5 +12,7 @@ void dsd_test_scan_labels_set(int available, dsd_scan_mode mode);
 void dsd_test_scan_labels_configured(const dsd_scan_settings* settings);
 /* The row options dsd_scan_mode_row_options() hands the snapshot (NULL: none installed). */
 void dsd_test_scan_labels_row_options(const dsd_scan_option_values* values);
+/* The input type the published options snapshot carries (AUDIO_IN_*; 0, Pulse, until set). */
+void dsd_test_scan_labels_input_type(int audio_in_type);
 
 #endif

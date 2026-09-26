@@ -27,6 +27,7 @@
 #include <dsd-neo/dsp/analog_rx.h>
 #include <dsd-neo/engine/channel_scan.h>
 #include <dsd-neo/engine/scan_voice_gate.h>
+#include <dsd-neo/runtime/analog_channel.h>
 
 #include <math.h>
 #include <stdint.h>
@@ -1389,6 +1390,18 @@ test_analog_carrier_probe(void) {
     fix.state->analog_rx.stale_after_ms = 0U;
     fix.opts->analog_only = 0;
     CHECK("digital row", dsd_scan_analog_carrier_open(fix.opts, fix.state) == 0);
+    /* The AM monitor (issue #524) on an RTL stream: no tone detection runs there, yet its carrier holds the row as the
+       FM monitor's does, with no audio played as well. */
+    analog_row(&fix, 1);
+    fix.opts->audio_in_type = AUDIO_IN_RTL;
+    fix.opts->analog_demod = DSD_ANALOG_DEMOD_AM;
+    fix.opts->audio_out = 0;
+    CHECK("AM carrier open", dsd_scan_analog_carrier_open(fix.opts, fix.state) == 1);
+    fix.state->analog_rx.carrier_open = 0;
+    CHECK("AM carrier closed", dsd_scan_analog_carrier_open(fix.opts, fix.state) == 0);
+    fix.state->analog_rx.carrier_open = 1;
+    fix.opts->monitor_input_audio = 0;
+    CHECK("AM without the monitor", dsd_scan_analog_carrier_open(fix.opts, fix.state) == 0);
     fixture_free(&fix);
 }
 
@@ -1438,6 +1451,15 @@ test_y_timing_carrier_on_analog_rows(void) {
     dsd_engine_scan_y_timing_tick(fix.opts, fix.state, 100.5, 1000.5);
     CHECK("hangtime after the carrier", fix.state->scan_timing.reason == (uint8_t)DSD_SCAN_STAY_HANGTIME);
     check_timing_window("tail start", "tail deadline", "tail span", &fix.state->scan_timing, 100.0, 102.0, 2000U);
+    /* The AM monitor's carrier (issue #524) reads "Carrier" as well. */
+    fix.opts->audio_in_type = AUDIO_IN_RTL;
+    fix.opts->analog_demod = DSD_ANALOG_DEMOD_AM;
+    fix.state->analog_rx.carrier_open = 1;
+    dsd_engine_scan_y_timing_tick(fix.opts, fix.state, 100.5, 1000.5);
+    CHECK("AM carrier reason", fix.state->scan_timing.reason == (uint8_t)DSD_SCAN_STAY_CARRIER);
+    fix.state->analog_rx.carrier_open = 0;
+    dsd_engine_scan_y_timing_tick(fix.opts, fix.state, 100.5, 1000.5);
+    CHECK("hangtime after the AM carrier", fix.state->scan_timing.reason == (uint8_t)DSD_SCAN_STAY_HANGTIME);
     /* An operator hold still wins. */
     fix.state->analog_rx.carrier_open = 1;
     fix.state->lcn_scan_hold = 1;

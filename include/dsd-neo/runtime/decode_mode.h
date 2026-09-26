@@ -41,7 +41,7 @@ typedef enum DSD_ATTR_PACKED {
 /**
  * @brief Map a core `-f` CLI preset character to a user decode mode enum.
  *
- * Supports the shared subset used by config/CLI (`a,A,d,x,t,1,2,s,i,n,y,m`).
+ * Supports the shared subset used by config/CLI (`a,A,M,d,x,t,1,2,s,i,n,y,m,z`; `M` is AM, issue #524).
  *
  * @param preset Single-character CLI `-f` selector.
  * @param out_mode Output mode enum.
@@ -158,6 +158,65 @@ dsdneoUserDecodeMode dsd_infer_decode_mode_preset_exact(const dsd_opts* opts);
  *         DSDCFG_MODE_UNSET; "Unknown" for any value outside the enum.
  */
 const char* dsd_decode_mode_display_name(dsdneoUserDecodeMode mode);
+
+/** @brief Why AM is refused on an input that delivers already demodulated audio (issue #524). */
+#define DSD_DECODE_MODE_AM_NEEDS_IQ_TEXT                                                                               \
+    "AM demodulation needs an IQ radio input; monitor externally demodulated AM audio with -fA"
+
+/**
+ * @brief Whether the open input delivers I/Q the radio front end demodulates.
+ *
+ * Once the engine has opened an input, or a live switch has changed it, the input type alone says what runs:
+ * AUDIO_IN_RTL (RTL-SDR, rtl_tcp, SoapySDR, Airspy or an I/Q replay; dsd_opts_input_is_radio()). The spec string and
+ * the startup `--iq-replay` request are not read: a live switch to TCP audio keeps the old device string, and a replay
+ * session switched to Pulse keeps the request. PCM inputs (Pulse, WAV and other files, stdin, symbol files, TCP and UDP
+ * audio) arrive demodulated.
+ *
+ * @param opts Decoder options; NULL reads as no I/Q.
+ * @return 1 for an I/Q radio input, else 0.
+ */
+int dsd_decode_mode_input_is_iq(const dsd_opts* opts);
+
+/**
+ * @brief Whether the input @p opts name will deliver I/Q, before the engine opens it.
+ *
+ * For the CLI, a loaded config and the setup wizard: an input type already set to AUDIO_IN_RTL (`--iq-replay` sets
+ * it while the options are parsed), or an input spec naming an I/Q source (`rtl`, `rtltcp`, `soapy`, `airspy`,
+ * `iqreplay`). Everything else opens as PCM.
+ *
+ * @param opts Decoder options; NULL reads as no I/Q.
+ * @return 1 for an I/Q radio input, else 0.
+ */
+int dsd_decode_mode_input_spec_is_iq(const dsd_opts* opts);
+
+/**
+ * @brief Whether @p mode can run on the open input @p opts name (dsd_decode_mode_input_is_iq()).
+ *
+ * AM needs an I/Q radio input; every other preset runs on any input (the Analog preset monitors PCM audio as it
+ * arrives, whatever demodulated it). Before the engine opens the input, ask dsd_decode_mode_input_spec_is_iq().
+ *
+ * @return 1 when it can, 0 when the caller must refuse it (or fall back to Analog) with
+ *         DSD_DECODE_MODE_AM_NEEDS_IQ_TEXT.
+ */
+int dsd_decode_mode_runs_on_input(dsdneoUserDecodeMode mode, const dsd_opts* opts);
+
+/** @brief The log notice for dsd_decode_mode_keep_saved_am() turning autosave off, which its callers log. */
+#define DSD_DECODE_MODE_KEEP_SAVED_AM_NOTICE "Autosave disabled for this session so the saved decode = am is kept"
+
+/**
+ * @brief Turn autosave off for a session whose loaded config's `[mode] decode = am` fell back to Analog on PCM input.
+ *
+ * The fallback holds for that session only and the saved setting stays as it is (issue #524), but autosave writes the
+ * session's configuration back when it ends, which would replace `decode = am` with the Analog fallback. A start with
+ * such a config and a runtime config apply of one both call this. Stopping autosave also stops every other change the
+ * session makes from being saved, so it says so in a toast the frontends show, and the caller logs
+ * DSD_DECODE_MODE_KEEP_SAVED_AM_NOTICE (this translation unit links no logger). Nothing happens when autosave is
+ * already off (a profile load, or no config file).
+ *
+ * @param state Decoder state; NULL does nothing.
+ * @return 1 when it turned autosave off, else 0.
+ */
+int dsd_decode_mode_keep_saved_am(dsd_state* state);
 
 #ifdef __cplusplus
 }

@@ -334,6 +334,18 @@ test_radio_tuning_labels(void) {
         expect_str("nfm bandwidth under a width row", lbl_rtl_nfm_bw(&ctx, b, sizeof(b)), "NFM bandwidth... [20 kHz]");
     dsd_test_scan_labels_configured(NULL);
     opts.analog_nfm_bandwidth_hz = 0;
+    /* Issue #524: the AM width row spells its setting as the NFM row does. */
+    rc |= expect_str("am bandwidth default", lbl_rtl_am_bw(&ctx, b, sizeof(b)), "AM bandwidth... [default]");
+    opts.analog_am_bandwidth_hz = 12500;
+    rc |= expect_str("am bandwidth explicit", lbl_rtl_am_bw(&ctx, b, sizeof(b)), "AM bandwidth... [12.5 kHz]");
+    /* Under a live scan scope the AM row names the configured width, as the NFM row does, whatever dsd_opts holds. */
+    configured.analog_nfm_bandwidth_hz = 0;
+    configured.analog_am_bandwidth_hz = 8000;
+    dsd_test_scan_labels_configured(&configured);
+    rc |= expect_str("am bandwidth under a scan row", lbl_rtl_am_bw(&ctx, b, sizeof(b)), "AM bandwidth... [8 kHz]");
+    dsd_test_scan_labels_configured(NULL);
+    opts.analog_am_bandwidth_hz = 0;
+    rc |= expect_str("am bandwidth null ctx", lbl_rtl_am_bw(NULL, b, sizeof(b)), "AM bandwidth... [default]");
     rc |= expect_str("rtl volume", lbl_rtl_vol(&ctx, b, sizeof(b)), "Volume multiplier... [2]");
     rc |= expect_str("rtl frequency null ctx", lbl_rtl_freq(NULL, b, sizeof(b)), "Frequency... [0.000000 MHz]");
 

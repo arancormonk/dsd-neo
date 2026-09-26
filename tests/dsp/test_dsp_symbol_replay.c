@@ -645,14 +645,16 @@ fake_rtl_stream_generation(void) {
     return g_fake_rtl_generation;
 }
 
-/* The analog receive profile the fake stream publishes: NFM at this width, with the channel filter on or not. */
+/* The analog receive profile the fake stream publishes: this kind (NFM unless a case says otherwise) at this width,
+   with the channel filter on or not. */
+static int g_fake_rtl_analog_kind = DSD_ANALOG_DEMOD_FM;
 static int g_fake_rtl_analog_width_hz = 12500;
 static int g_fake_rtl_analog_lpf_on = 1;
 
 static int
 fake_rtl_analog_profile(int* out_kind, int* out_width_hz, int* out_lpf_on) {
     if (out_kind) {
-        *out_kind = DSD_ANALOG_DEMOD_FM;
+        *out_kind = g_fake_rtl_analog_kind;
     }
     if (out_width_hz) {
         *out_width_hz = g_fake_rtl_analog_width_hz;
@@ -764,6 +766,76 @@ test_rx_tone_tap_reads_raw_block_before_voice_filters(void) {
     opts.analog_only = 0;
     feed_tone_blocks(&opts, &state, 2);
     assert(state.analog_rx.tone_state == DSD_ANALOG_TONE_STATE_INACTIVE);
+    dsd_state_ext_free_all(&state);
+}
+
+/* No tone published: the tap never listened for one (the AM monitor), or forgot what it heard. */
+static int
+rx_tone_publishes_no_tone(const dsd_state* state) {
+    return state->analog_rx.tone_state == DSD_ANALOG_TONE_STATE_INACTIVE
+           && state->analog_rx.tone_kind == DSD_ANALOG_TONE_KIND_NONE && state->analog_rx.ctcss_tenths_hz == 0
+           && state->analog_rx.dcs_code == 0 && state->analog_rx.dcs_inverted == 0;
+}
+
+/* Nothing of a reception published, the carrier included. */
+static int
+rx_tone_publishes_nothing(const dsd_state* state) {
+    return rx_tone_publishes_no_tone(state) && state->analog_rx.carrier_open == 0;
+}
+
+/* Put the monitor on @p kind, as the -fM or -fA preset and the front end's published profile do together. */
+static void
+set_monitor_kind(dsd_opts* opts, int kind) {
+    opts->analog_demod = kind;
+    g_fake_rtl_analog_kind = kind;
+}
+
+/* CTCSS and DCS are FM signalling, so received-tone detection runs on the FM monitor only (issue #524). The same
+   CTCSS-bearing monitor blocks that lock on the FM monitor publish no tone on the AM monitor, only its carrier, and
+   reach the voice filters unchanged either way (feed_tone_blocks()). A live switch to AM forgets the FM lock at the
+   next block, and a switch back finds the tone again from scratch. */
+static void
+test_rx_tone_tap_is_fm_only(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    install_fake_rtl_hooks(1);
+    init_analog_monitor_fixture(&opts, &state);
+    opts.audio_in_type = AUDIO_IN_RTL;
+
+    set_monitor_kind(&opts, DSD_ANALOG_DEMOD_AM);
+    assert(dsd_analog_monitor_tap_active(&opts) && !dsd_analog_tone_detection_active(&opts));
+    feed_tone_blocks(&opts, &state, 30);
+    assert(rx_tone_publishes_no_tone(&state) && state.analog_rx.carrier_open == 1);
+
+    set_monitor_kind(&opts, DSD_ANALOG_DEMOD_FM);
+    feed_tone_blocks(&opts, &state, 30);
+    assert(rx_tone_locked_on_100(&state));
+    assert(state.analog_rx.carrier_open == 1);
+
+    /* The block that sees the switch (a new published profile) starts a new reception; the next ones keep the AM
+       carrier and still no tone. */
+    set_monitor_kind(&opts, DSD_ANALOG_DEMOD_AM);
+    feed_tone_blocks(&opts, &state, 1);
+    assert(rx_tone_publishes_nothing(&state));
+    feed_tone_blocks(&opts, &state, 30);
+    assert(rx_tone_publishes_no_tone(&state) && state.analog_rx.carrier_open == 1);
+
+    set_monitor_kind(&opts, DSD_ANALOG_DEMOD_FM);
+    feed_tone_blocks(&opts, &state, 30);
+    assert(rx_tone_locked_on_100(&state));
+
+    /* A switch the decoder makes before the front end publishes it (the profile still FM) forgets the lock at the
+       next read too, and one back to FM finds the tone from scratch rather than keep the lock from before AM. */
+    opts.analog_demod = DSD_ANALOG_DEMOD_AM;
+    feed_tone_blocks(&opts, &state, 1);
+    assert(rx_tone_publishes_no_tone(&state));
+    opts.analog_demod = DSD_ANALOG_DEMOD_FM;
+    feed_tone_blocks(&opts, &state, 1);
+    assert(!rx_tone_locked_on_100(&state));
+    feed_tone_blocks(&opts, &state, 30);
+    assert(rx_tone_locked_on_100(&state));
+
+    install_fake_rtl_hooks(0);
     dsd_state_ext_free_all(&state);
 }
 
@@ -2443,6 +2515,90 @@ test_monitor_drops_the_block_detection_starts_in(void) {
     dsd_state_ext_free_all(&state);
 }
 
+/* The AM monitor (issue #524) runs no tone detection, but the tap still keeps its carrier and its boundaries, as on the
+ * FM monitor (issue #526): the -Y hold stamps on that carrier with audio_out = 0 (-o null, a muted UI) and stops once
+ * the squelch has stayed closed past the hangover, nothing about a tone is logged, and the monitor drops the block a
+ * retune lands in. So it does the block an nfm row's retune straddles when the blank row of the -fM session it lands on
+ * puts the decoder on AM part-way through that block: the FM row's audio is not played as the AM row's. */
+static void
+test_am_monitor_keeps_its_carrier_and_boundaries(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    install_fake_rtl_hooks(1);
+    init_analog_monitor_fixture(&opts, &state);
+    opts.audio_in_type = AUDIO_IN_RTL;
+    set_monitor_kind(&opts, DSD_ANALOG_DEMOD_AM);
+    opts.audio_out = 0;
+    opts.audio_out_type = 8;
+    dsd_udp_audio_hooks monitor = {0};
+    monitor.blast_analog = count_monitor_block;
+    dsd_udp_audio_hooks_set(monitor);
+    dsd_trunk_tuning_requests_reset();
+    g_monitor_blocks = 0;
+    g_rx_tone_lines = 0;
+    g_unusable_rate_warnings = 0;
+
+    clear_carrier_stamps(&state);
+    feed_tone_blocks(&opts, &state, 2);
+    assert(state.analog_rx.carrier_open == 1 && dsd_analog_rx_carrier_open_now(&opts, &state) == 1);
+    assert(rx_tone_publishes_no_tone(&state));
+    assert(state.last_cc_sync_time != 0 && state.last_cc_sync_time_m > 0.0);
+    assert(state.last_vc_sync_time != 0 && state.last_vc_sync_time_m > 0.0);
+    assert(g_monitor_blocks == 0);
+
+    /* The squelch closes (on RTL input the receiver power reads below it): the carrier holds through the 200 ms
+       hangover, then stamps stop. */
+    opts.rtl_squelch_level = 2.0;
+    feed_tone_blocks(&opts, &state, 9);
+    assert(state.analog_rx.carrier_open == 1);
+    feed_tone_blocks(&opts, &state, 6);
+    assert(state.analog_rx.carrier_open == 0 && dsd_analog_rx_carrier_open_now(&opts, &state) == 0);
+    clear_carrier_stamps(&state);
+    feed_tone_blocks(&opts, &state, 2);
+    assert(state.last_cc_sync_time == 0 && state.last_vc_sync_time == 0);
+    opts.rtl_squelch_level = 0.0;
+
+    /* Played: a retune nobody announced (a new stream generation) drops the block it lands in, and the carrier it
+       knew of is the old channel's until the tap reads the new one. */
+    opts.audio_out = 1;
+    feed_tone_blocks(&opts, &state, 2);
+    assert(g_monitor_blocks == 2);
+    g_fake_rtl_generation++;
+    assert(dsd_analog_rx_carrier_open_now(&opts, &state) == 0);
+    assert(dsd_analog_rx_block_straddles_boundary(&opts, &state) == 1);
+    feed_tone_blocks(&opts, &state, 1);
+    assert(g_monitor_blocks == 2);
+    feed_tone_blocks(&opts, &state, 1);
+    assert(g_monitor_blocks == 3 && dsd_analog_rx_carrier_open_now(&opts, &state) == 1);
+    assert(g_rx_tone_lines == 0 && g_unusable_rate_warnings == 0);
+
+    /* An nfm row's FM monitor on air... */
+    set_monitor_kind(&opts, DSD_ANALOG_DEMOD_FM);
+    feed_tone_blocks(&opts, &state, 2);
+    const int played = g_monitor_blocks;
+    /* ...retunes to a blank row, whose commit puts the decoder on AM part-way through a block. */
+    float block[960];
+    fill_tone_block(block, 960U, 100.0, 3000.0);
+    for (unsigned int i = 0; i < 500U; i++) {
+        dsd_symbol_test_push_unsynced_analog_sample(&opts, &state, block[i]);
+    }
+    dsd_trunk_tuning_generation_advance();
+    set_monitor_kind(&opts, DSD_ANALOG_DEMOD_AM);
+    for (unsigned int i = 500U; i < 960U; i++) {
+        dsd_symbol_test_push_unsynced_analog_sample(&opts, &state, block[i]);
+    }
+    assert(g_monitor_blocks == played);
+    feed_tone_blocks(&opts, &state, 1);
+    assert(g_monitor_blocks == played + 1);
+    assert(rx_tone_publishes_no_tone(&state) && dsd_analog_rx_carrier_open_now(&opts, &state) == 1);
+
+    set_monitor_kind(&opts, DSD_ANALOG_DEMOD_FM);
+    dsd_trunk_tuning_requests_reset();
+    dsd_udp_audio_hooks_set((dsd_udp_audio_hooks){0});
+    install_fake_rtl_hooks(0);
+    dsd_state_ext_free_all(&state);
+}
+
 int
 main(void) {
     exitflag = 0;
@@ -2465,6 +2621,8 @@ main(void) {
     test_carrier_stamp_at_an_unusable_tap_rate();
     test_monitor_muted_across_a_retune();
     test_monitor_drops_the_block_detection_starts_in();
+    test_rx_tone_tap_is_fm_only();
+    test_am_monitor_keeps_its_carrier_and_boundaries();
     test_rx_tone_clears_on_unannounced_retune();
     test_rx_tone_clears_on_applied_analog_profile_change();
     test_rx_tone_reset_sets_the_pending_block_aside();

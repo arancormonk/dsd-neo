@@ -45,6 +45,7 @@ ModalSheet {
     property real pendingPpm: NaN
     property real pendingSquelch: NaN
     property real pendingAnalogWidth: NaN
+    property real pendingOtherWidth: NaN
 
     // What each control steps from and displays.
     readonly property bool airspyActive: metrics.airspy !== undefined && metrics.airspy.gain_mode !== undefined
@@ -74,18 +75,27 @@ ModalSheet {
     // "0" next to a signal that vanished reads as a mistake otherwise.
     readonly property bool autoGain: gainDb <= 0
 
-    // Issue #525: the NFM channel width, shown under the analog preset. The
+    // Issue #525: the analog channel width, shown under the analog presets. The
     // stepper edits the configured width (0 is the default), and the reading is
     // the width in force as the engine spells it for every frontend: what the
     // front end reports while the monitor runs, with "DSP-limited" when the DSP
-    // rate rather than the filter bounds it.
+    // rate rather than the filter bounds it. Under the AM preset (issue #524)
+    // it is the AM width, stepped over the AM widths; otherwise, and while an
+    // nfm scan row runs over the AM preset, the NFM width.
     readonly property int analogMode: commands.decodeModeForFlag("-fA")
-    readonly property bool analogPreset: analogMode >= 0 && metrics.decodeMode === analogMode
+    readonly property int amMode: commands.decodeModeForFlag("-fM")
+    readonly property bool amPreset: amMode >= 0 && metrics.decodeMode === amMode
+    readonly property bool analogPreset: (analogMode >= 0 && metrics.decodeMode === analogMode) || amPreset
     // Issue #526: an nfm scan row on air runs the NFM width whatever the
     // configured preset, a digital one included, so its width is in force and
     // shown there too, as the terminal shows it.
     readonly property bool analogRowActive: metrics.analogBandwidthRowActive === true
     readonly property bool analogWidthInForce: analogPreset || analogRowActive
+    // The kind the section edits and reads: the configured preset's, or while
+    // an analog scan row is on air the kind that row runs (an nfm row runs FM
+    // on an AM session too), which is the width the readings describe.
+    readonly property bool sectionAm: analogRowActive ? metrics.analogBandwidthAm === true : amPreset
+    readonly property var analogWidths: sectionAm ? Util.AM_WIDTHS_HZ : Util.NFM_WIDTHS_HZ
     // The width is the radio front end's filter; PCM audio arrives demodulated.
     readonly property bool analogWidthEditable: metrics.radioInput === true
     // A row can carry its own width (--nfm-bandwidth-hz). While it is on air the
@@ -103,24 +113,26 @@ ModalSheet {
         || (analogWidthEditable && (metrics.analogBandwidthConfiguredHz > 0 || !isNaN(pendingAnalogWidth)))
     // An explicit width steps from itself. The default steps from the width in
     // force, which below a 20 kHz DSP rate is the width the rate leaves rather
-    // than 16 kHz, so the first step from there is one the rate can take. Under
-    // a row's own width the width in force is the row's, not the default's, so
-    // the default steps from 16 kHz, within what the DSP rate filters.
+    // than 16 kHz for NFM, so the first step from there is one the rate can take.
+    // Under a row's own width the width in force is the row's, not the default's,
+    // so the default steps from 16 kHz, within what the DSP rate filters.
     readonly property int analogWidthStepFrom: {
         if (analogWidthConfigured > 0)
             return analogWidthConfigured;
         if (analogRowOverride)
             return Util.NFM_DEFAULT_WIDTH_HZ;
-        return metrics.analogBandwidthHz > 0 ? metrics.analogBandwidthHz : Util.NFM_DEFAULT_WIDTH_HZ;
+        if (metrics.analogBandwidthHz > 0)
+            return metrics.analogBandwidthHz;
+        return sectionAm ? Util.AM_DEFAULT_WIDTH_HZ : Util.NFM_DEFAULT_WIDTH_HZ;
     }
     // The widest width the DSP rate filters (the running stream's, or with none
     // the rate an RTL-SDR input's DSP bandwidth sets; 0 = not known): the steps
     // skip what the engine would refuse.
     readonly property int analogWidthMax: metrics.analogBandwidthMaxHz > 0 ? metrics.analogBandwidthMaxHz : 0
     readonly property bool analogWidthCanNarrow: analogWidthEditable
-        && Util.nextNfmWidth(analogWidthStepFrom, -1, analogWidthMax) > 0
+        && Util.nextWidthIn(analogWidths, analogWidthStepFrom, -1, analogWidthMax) > 0
     readonly property bool analogWidthCanWiden: analogWidthEditable
-        && Util.nextNfmWidth(analogWidthStepFrom, 1, analogWidthMax) > 0
+        && Util.nextWidthIn(analogWidths, analogWidthStepFrom, 1, analogWidthMax) > 0
     // A request stands in for the reading until the engine answers, spelled as
     // the setting it is ("12.5 kHz", or "default" for 0).
     // Outside the preset, with no nfm row on air, no width is in force, so the
@@ -140,6 +152,40 @@ ModalSheet {
     readonly property string analogWidthDefaultText: qsTr("default %1").arg(Util.widthKhzText(
         analogWidthConfigured > 0 ? analogWidthConfigured : Util.NFM_DEFAULT_WIDTH_HZ))
 
+    // The width of the analog kind the section above does not edit: AM, or NFM
+    // under the AM preset (AM again while an nfm row runs over the AM
+    // preset). Offered on a radio while an explicit one is set, as
+    // the terminal offers its row: a switch between NFM and AM is held to it too,
+    // and where the device or the capture forces a DSP rate that cannot filter
+    // it, the refusal says to narrow it, which has to be possible before the
+    // switch. So is AM's default where the engine reports the DSP rate cannot
+    // filter it (amBandwidthOffered): a switch to AM is refused there with word
+    // to narrow the width. It is a setting only; no width of that kind is in
+    // force.
+    readonly property bool otherKindAm: !sectionAm
+    readonly property var otherWidths: otherKindAm ? Util.AM_WIDTHS_HZ : Util.NFM_WIDTHS_HZ
+    readonly property int otherWidthSetting: (otherKindAm
+        ? metrics.amBandwidthConfiguredHz : metrics.nfmBandwidthConfiguredHz) || 0
+    readonly property int otherWidthConfigured: isNaN(pendingOtherWidth) ? otherWidthSetting : pendingOtherWidth
+    readonly property bool otherWidthOffered: analogWidthEditable
+        && (otherWidthSetting > 0 || !isNaN(pendingOtherWidth)
+            || (otherKindAm ? metrics.amBandwidthOffered : metrics.nfmBandwidthOffered) === true)
+    readonly property int otherWidthStepFrom: {
+        if (otherWidthConfigured > 0)
+            return otherWidthConfigured;
+        return otherKindAm ? Util.AM_DEFAULT_WIDTH_HZ : Util.NFM_DEFAULT_WIDTH_HZ;
+    }
+    readonly property bool otherWidthCanNarrow: analogWidthEditable
+        && Util.nextWidthIn(otherWidths, otherWidthStepFrom, -1, analogWidthMax) > 0
+    readonly property bool otherWidthCanWiden: analogWidthEditable
+        && Util.nextWidthIn(otherWidths, otherWidthStepFrom, 1, analogWidthMax) > 0
+
+    // An outstanding width request belongs to the kind it was sent for, and the
+    // two sections swap kinds when the preset moves between NFM and AM, or an
+    // nfm row comes on air over the AM preset or leaves: a request left standing
+    // would read as the other kind's width, and step from it.
+    onSectionAmChanged: forgetWidthRequests()
+
     function open() {
         // Whatever was outstanding belongs to the last time this was open, and on
         // Android the service may have been driven from elsewhere since.
@@ -157,39 +203,81 @@ ModalSheet {
         pendingGain = NaN;
         pendingPpm = NaN;
         pendingSquelch = NaN;
-        pendingAnalogWidth = NaN;
         gainTtl.stop();
         ppmTtl.stop();
         squelchTtl.stop();
+        forgetWidthRequests();
+    }
+
+    /** Drop the outstanding channel width requests of both analog sections. */
+    function forgetWidthRequests() {
+        pendingAnalogWidth = NaN;
+        pendingOtherWidth = NaN;
         analogWidthTtl.stop();
+        otherWidthTtl.stop();
+    }
+
+    // The width command of the kind the section edits (sectionAm).
+    function sendAnalogWidth(hz) {
+        if (sectionAm)
+            commands.setAmBandwidthHz(hz);
+        else
+            commands.setNfmBandwidthHz(hz);
     }
 
     /**
-     * Step the NFM channel width through the common channel plans. The engine
+     * Step the channel width through the common channel plans. The engine
      * refuses a width the DSP rate cannot filter, with a message, and keeps the
      * one it had; the pending value then expires back to the reading.
      */
     function stepAnalogWidth(direction) {
         if (!(direction > 0 ? analogWidthCanWiden : analogWidthCanNarrow))
             return;
-        var next = Util.nextNfmWidth(analogWidthStepFrom, direction, analogWidthMax);
+        var next = Util.nextWidthIn(analogWidths, analogWidthStepFrom, direction, analogWidthMax);
         pendingAnalogWidth = next;
         analogWidthTtl.restart();
-        commands.setNfmBandwidthHz(next);
+        sendAnalogWidth(next);
     }
 
     /**
-     * Return the NFM channel width to the unset default (0). Not a step to
-     * 16 kHz: the default keeps its own rule (the channel filter runs only at
-     * DSP rates of 20 kHz or more) and a save leaves it out of the config, so a
-     * later default reaches it.
+     * Return the channel width to the unset default (0). Not a step to the
+     * default's width: a save leaves the default out of the config, so a later
+     * default reaches it, and the NFM default keeps its own rule (the channel
+     * filter runs only at DSP rates of 20 kHz or more).
      */
     function resetAnalogWidth() {
         if (!analogWidthEditable || analogWidthConfigured <= 0)
             return;
         pendingAnalogWidth = 0;
         analogWidthTtl.restart();
-        commands.setNfmBandwidthHz(0);
+        sendAnalogWidth(0);
+    }
+
+    // The width command of the other kind (otherKindAm).
+    function sendOtherWidth(hz) {
+        if (otherKindAm)
+            commands.setAmBandwidthHz(hz);
+        else
+            commands.setNfmBandwidthHz(hz);
+    }
+
+    /** Step the other kind's width, as stepAnalogWidth() steps the section's. */
+    function stepOtherWidth(direction) {
+        if (!(direction > 0 ? otherWidthCanWiden : otherWidthCanNarrow))
+            return;
+        var next = Util.nextWidthIn(otherWidths, otherWidthStepFrom, direction, analogWidthMax);
+        pendingOtherWidth = next;
+        otherWidthTtl.restart();
+        sendOtherWidth(next);
+    }
+
+    /** Return the other kind's width to its unset default (0). */
+    function resetOtherWidth() {
+        if (!analogWidthEditable || otherWidthConfigured <= 0)
+            return;
+        pendingOtherWidth = 0;
+        otherWidthTtl.restart();
+        sendOtherWidth(0);
     }
 
     /**
@@ -282,6 +370,13 @@ ModalSheet {
 
         interval: sheet.requestTtlMs
         onTriggered: sheet.pendingAnalogWidth = NaN
+    }
+
+    Timer {
+        id: otherWidthTtl
+
+        interval: sheet.requestTtlMs
+        onTriggered: sheet.pendingOtherWidth = NaN
     }
 
     MicroLabel {
@@ -505,6 +600,9 @@ ModalSheet {
 
                 objectName: "radioDecode_" + modelData.short
                 text: modelData.short
+                // AM needs the radio's I/Q (issue #524): on audio that arrives
+                // demodulated the engine would refuse it, so it is not offered.
+                enabled: modelData.iqOnly !== true || metrics.radioInput === true
                 selected: mode >= 0 && mode === metrics.decodeMode
                 onClicked: {
                     if (mode >= 0)
@@ -514,16 +612,32 @@ ModalSheet {
         }
     }
 
+    // Why the AM chip is greyed out, rather than leaving a dead control. The
+    // sheet opens only on a radio input, but stays open across a live switch to
+    // audio that arrives demodulated, where the chip goes grey under the reader.
+    Text {
+        objectName: "radioDecodeIqNote"
+        visible: metrics.radioInput !== true
+        width: parent.width
+        wrapMode: Text.WordWrap
+        text: qsTr("AM needs a radio (I/Q) input; this audio arrives already demodulated.")
+        color: Theme.textSecondary
+        font.family: Theme.sans
+        font.pixelSize: Theme.fontSize(12)
+    }
+
     // ---- Analog ----
-    // The NFM channel filter's width: the full RF passband the monitor keeps,
-    // not the tuner or the audio bandwidth. It has to fit the DSP rate.
+    // The analog channel filter's width (NFM, or AM under the AM preset): the
+    // full RF passband the monitor keeps, not the tuner or the audio bandwidth.
+    // It has to fit the DSP rate.
     Column {
         objectName: "radioAnalogSection"
         visible: sheet.analogWidthOffered
         width: parent.width
         spacing: 8
         Text {
-            text: qsTr("NFM channel width")
+            objectName: "radioAnalogSectionTitle"
+            text: sheet.sectionAm ? qsTr("AM channel width") : qsTr("NFM channel width")
             color: Theme.textSecondary
             font.pixelSize: Theme.fontSize(14)
         }
@@ -622,6 +736,70 @@ ModalSheet {
             width: parent.width
             wrapMode: Text.WordWrap
             text: qsTr("The channel width filters a radio input; this audio arrives already demodulated.")
+            color: Theme.textSecondary
+            font.pixelSize: Theme.fontSize(12)
+        }
+    }
+
+    // The explicit width of the other analog kind (AM, or NFM under the AM
+    // preset): a setting for the next switch to it, with no reading in force.
+    Column {
+        objectName: "radioAnalogOtherSection"
+        visible: sheet.otherWidthOffered
+        width: parent.width
+        spacing: 8
+        Text {
+            objectName: "radioAnalogOtherSectionTitle"
+            text: sheet.otherKindAm ? qsTr("AM channel width") : qsTr("NFM channel width")
+            color: Theme.textSecondary
+            font.pixelSize: Theme.fontSize(14)
+        }
+        Row {
+            objectName: "radioAnalogOtherBandwidth"
+            width: parent.width
+            spacing: 10
+            Text {
+                objectName: "radioAnalogOtherBandwidthValue"
+                width: parent.width - 116
+                anchors.verticalCenter: parent.verticalCenter
+                text: sheet.otherWidthConfigured > 0 ? Util.widthKhzText(sheet.otherWidthConfigured) : qsTr("default")
+                color: Theme.textPrimary
+                font.family: Theme.mono
+                font.pixelSize: Theme.fontSize(14)
+            }
+            OutlineButton {
+                objectName: "radioAnalogOtherBandwidthDown"
+                width: 48
+                text: "−"
+                accessibleName: sheet.otherKindAm ? qsTr("Narrower AM Channel") : qsTr("Narrower NFM Channel")
+                enabled: sheet.otherWidthCanNarrow
+                onClicked: sheet.stepOtherWidth(-1)
+            }
+            OutlineButton {
+                objectName: "radioAnalogOtherBandwidthUp"
+                width: 48
+                text: "+"
+                accessibleName: sheet.otherKindAm ? qsTr("Wider AM Channel") : qsTr("Wider NFM Channel")
+                enabled: sheet.otherWidthCanWiden
+                onClicked: sheet.stepOtherWidth(1)
+            }
+        }
+        OutlineButton {
+            objectName: "radioAnalogOtherBandwidthDefault"
+            visible: sheet.otherWidthConfigured > 0
+            width: parent.width
+            text: qsTr("Use the default width")
+            accessibleName: sheet.otherKindAm ? qsTr("Default AM Channel Width") : qsTr("Default NFM Channel Width")
+            enabled: sheet.analogWidthEditable
+            onClicked: sheet.resetOtherWidth()
+        }
+        Text {
+            objectName: "radioAnalogOtherBandwidthIdleNote"
+            width: parent.width
+            wrapMode: Text.WordWrap
+            text: sheet.otherKindAm
+                ? qsTr("Used when AM is chosen, which needs a width the DSP rate can filter.")
+                : qsTr("Used when NFM is chosen, which needs a width the DSP rate can filter.")
             color: Theme.textSecondary
             font.pixelSize: Theme.fontSize(12)
         }

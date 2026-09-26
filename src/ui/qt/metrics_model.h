@@ -105,10 +105,16 @@ class MetricsModel : public QObject {
     Q_PROPERTY(bool analogBandwidthDspLimited READ analogBandwidthDspLimited NOTIFY tunerChanged)
     Q_PROPERTY(int analogBandwidthMaxHz READ analogBandwidthMaxHz NOTIFY tunerChanged)
     Q_PROPERTY(int analogBandwidthConfiguredHz READ analogBandwidthConfiguredHz NOTIFY controlChanged)
+    Q_PROPERTY(int nfmBandwidthConfiguredHz READ nfmBandwidthConfiguredHz NOTIFY controlChanged)
+    Q_PROPERTY(int amBandwidthConfiguredHz READ amBandwidthConfiguredHz NOTIFY controlChanged)
+    Q_PROPERTY(bool nfmBandwidthOffered READ nfmBandwidthOffered NOTIFY tunerChanged)
+    Q_PROPERTY(bool amBandwidthOffered READ amBandwidthOffered NOTIFY tunerChanged)
     Q_PROPERTY(QString analogBandwidthReading READ analogBandwidthReading NOTIFY tunerChanged)
     /* Issue #526: an analog scan row on air, and whether it sets its own width over the configured one. */
     Q_PROPERTY(bool analogBandwidthRowActive READ analogBandwidthRowActive NOTIFY tunerChanged)
     Q_PROPERTY(bool analogBandwidthRowOverride READ analogBandwidthRowOverride NOTIFY tunerChanged)
+    /* Issue #524: whether the width analogBandwidth* describe is AM's (the preset's kind, or a scan row's on air). */
+    Q_PROPERTY(bool analogBandwidthAm READ analogBandwidthAm NOTIFY tunerChanged)
     Q_PROPERTY(int slot1CallState READ slot1CallState NOTIFY slot1Changed)
     Q_PROPERTY(int slot2CallState READ slot2CallState NOTIFY slot2Changed)
     Q_PROPERTY(QString slot1CallName READ slot1CallName NOTIFY slot1Changed)
@@ -428,8 +434,8 @@ class MetricsModel : public QObject {
     /**
      * @brief The widest analog channel width the DSP rate filters, in Hz; 0 when unknown.
      *
-     * Published under the analog preset on a radio input, from the demod rate a running stream reports
-     * (dsd_analog_width_max_for_rate()), so the width control offers only steps the engine would take. With no
+     * Published on a radio input under any preset, from the demod rate a running stream reports
+     * (dsd_analog_width_max_for_rate()), so the width controls offer only steps the engine would take. With no
      * stream it is the rate an RTL-SDR or rtl_tcp input's DSP bandwidth gives the next start, which the engine holds
      * a width to; 0 on an input whose device or capture sets the rate.
      */
@@ -446,6 +452,47 @@ class MetricsModel : public QObject {
     int
     analogBandwidthConfiguredHz() const {
         return m_view.analog_bandwidth_configured_hz;
+    }
+
+    /**
+     * @brief The configured NFM channel width in Hz, 0 for the default, whichever preset runs
+     * (dsd_app_analog_width_setting_hz()).
+     *
+     * With amBandwidthConfiguredHz(), what lets the Radio sheet offer the width of the analog kind the configured
+     * preset does not run while an explicit one is set: a switch to that kind is held to it, and where the device or
+     * the capture forces a DSP rate that cannot filter it, the refusal says to narrow it before the switch.
+     */
+    int
+    nfmBandwidthConfiguredHz() const {
+        return m_view.nfm_bandwidth_configured_hz;
+    }
+
+    /** @brief The configured AM channel width in Hz, 0 for the default, whichever preset runs (issue #524). */
+    int
+    amBandwidthConfiguredHz() const {
+        return m_view.am_bandwidth_configured_hz;
+    }
+
+    /**
+     * @brief Whether the Radio sheet offers the NFM channel width for editing (dsd_app_analog_width_offered()).
+     *
+     * On a radio input: under the NFM preset, or under another preset while an explicit NFM width is set.
+     */
+    bool
+    nfmBandwidthOffered() const {
+        return m_view.nfm_bandwidth_offered;
+    }
+
+    /**
+     * @brief Whether the Radio sheet offers the AM channel width for editing (dsd_app_analog_width_offered()).
+     *
+     * On a radio input: under the AM preset; under another preset while an explicit AM width is set, or while the DSP
+     * rate cannot filter the 6 kHz AM default but filters a narrower AM width, where a switch to AM is refused with
+     * word to narrow the width (issue #524).
+     */
+    bool
+    amBandwidthOffered() const {
+        return m_view.am_bandwidth_offered;
     }
 
     /**
@@ -476,6 +523,16 @@ class MetricsModel : public QObject {
     bool
     analogBandwidthRowOverride() const {
         return m_view.analog_bandwidth_row_override;
+    }
+
+    /**
+     * @brief Whether the width analogBandwidthHz(), analogBandwidthConfiguredHz() and analogBandwidthReading() describe
+     * is the AM demodulator's (issue #524): the configured preset's kind, or while an analog scan row is on air the kind
+     * that row runs (an nfm row runs FM on an AM session too).
+     */
+    bool
+    analogBandwidthAm() const {
+        return m_view.analog_bandwidth_am;
     }
 
     /**
@@ -1361,6 +1418,8 @@ class MetricsModel : public QObject {
         int channel_bandwidth_hz = 0;
         int analog_bandwidth_hz = 0;
         int analog_bandwidth_configured_hz = 0;
+        int nfm_bandwidth_configured_hz = 0;
+        int am_bandwidth_configured_hz = 0;
         int analog_bandwidth_max_hz = 0;
         QString analog_bandwidth_reading;
         int decode_mode = 0;
@@ -1370,6 +1429,11 @@ class MetricsModel : public QObject {
         quint64 key_epoch = 0;
         bool automatic_keys = false;
         bool direct_keys = false;
+        /* Issue #526: an analog scan row on air and its own width; issue #524: the kind the width readings describe.
+           Kept with the key flags, which leave room for them, rather than in the flag block below. */
+        bool analog_bandwidth_row_active = false;
+        bool analog_bandwidth_row_override = false;
+        bool analog_bandwidth_am = false;
         QVariantList decryption_slots;
         int modulation = 0;
         int tuner_gain_db = 0;
@@ -1382,8 +1446,8 @@ class MetricsModel : public QObject {
         bool radio_input = false;
         bool stream_active = false;
         bool analog_bandwidth_dsp_limited = false;
-        bool analog_bandwidth_row_active = false;
-        bool analog_bandwidth_row_override = false;
+        bool nfm_bandwidth_offered = false;
+        bool am_bandwidth_offered = false;
         bool synced_here = false;
         bool trunkable_sync = false;
         bool squelch_off = false;
@@ -1448,7 +1512,10 @@ class MetricsModel : public QObject {
                    && analog_bandwidth_max_hz == other.analog_bandwidth_max_hz
                    && analog_bandwidth_reading == other.analog_bandwidth_reading
                    && analog_bandwidth_row_active == other.analog_bandwidth_row_active
-                   && analog_bandwidth_row_override == other.analog_bandwidth_row_override;
+                   && analog_bandwidth_row_override == other.analog_bandwidth_row_override
+                   && analog_bandwidth_am == other.analog_bandwidth_am
+                   && nfm_bandwidth_offered == other.nfm_bandwidth_offered
+                   && am_bandwidth_offered == other.am_bandwidth_offered;
         }
 
         /* The scan controls (#380) ride controlChanged with the rest; split out only so
@@ -1495,7 +1562,9 @@ class MetricsModel : public QObject {
             return modulation == other.modulation && tuner_gain_db == other.tuner_gain_db
                    && squelch_db == other.squelch_db && squelch_off == other.squelch_off && ppm == other.ppm
                    && airspy == other.airspy && squelchOverrideEquals(other)
-                   && analog_bandwidth_configured_hz == other.analog_bandwidth_configured_hz;
+                   && analog_bandwidth_configured_hz == other.analog_bandwidth_configured_hz
+                   && nfm_bandwidth_configured_hz == other.nfm_bandwidth_configured_hz
+                   && am_bandwidth_configured_hz == other.am_bandwidth_configured_hz;
         }
 
         /* The configured/effective pair is whole-dB configuration, not a measurement, so a

@@ -113,6 +113,95 @@ elseif(DSD_NEO_CLI_SMOKE_MODE STREQUAL "nfm-width-fits-low-rate")
     set(_want_stderr_regex "")
     set(_want_output_regex "Failed to open radio stream")
     set(_forbid_output_regex "does not fit|cannot be filtered")
+elseif(DSD_NEO_CLI_SMOKE_MODE STREQUAL "am-width-rate-refused")
+    # Issue #524: an AM width the rtl_tcp input's 16 kHz DSP bandwidth cannot
+    # filter is refused before the device opens, with the validator's
+    # actionable text, and startup fails. No server is needed: nothing listens
+    # on port 1, and a run that went on to open the stream would print the
+    # stream failure instead of the refusal.
+    set(_args
+        --frontend
+        none
+        -fM
+        -i
+        rtltcp:127.0.0.1:1:118.1M:0:0:16
+        --am-bandwidth-hz
+        20000
+        -o
+        null
+    )
+    set(_want_rc 1)
+    set(_want_stdout_regex "")
+    set(_want_stderr_regex "")
+    set(_want_output_regex
+        "AM bandwidth 20 kHz does not fit the 16 kHz DSP rate [(]the largest width it fits is 13[.]2 kHz[)]; set the RTL DSP bandwidth to 24 or 48 kHz"
+    )
+    set(_forbid_output_regex "radio stream")
+elseif(DSD_NEO_CLI_SMOKE_MODE STREQUAL "am-width-rate-refused-rtl")
+    # The same refusal for an RTL-SDR spec, whose DSP bandwidth the spec's
+    # sixth field sets. It happens before the input looks for a device, so it
+    # needs no dongle and no RTL-SDR support in the build: a run that went on
+    # would enumerate devices (or report none, or report the input unsupported)
+    # before any refusal, and on a host with a dongle would open the stream.
+    set(_args
+        --frontend
+        none
+        -fM
+        -i
+        rtl:0:118.1M:22:0:16
+        --am-bandwidth-hz
+        20000
+        -o
+        null
+    )
+    set(_want_rc 1)
+    set(_want_stdout_regex "")
+    set(_want_stderr_regex "")
+    set(_want_output_regex
+        "AM bandwidth 20 kHz does not fit the 16 kHz DSP rate [(]the largest width it fits is 13[.]2 kHz[)]; set the RTL DSP bandwidth to 24 or 48 kHz"
+    )
+    set(_forbid_output_regex
+        "radio stream|RTL Input:|device[(]s[)]|No supported devices|RTL-SDR input"
+    )
+elseif(DSD_NEO_CLI_SMOKE_MODE STREQUAL "am-default-rate-refused")
+    # The unset AM default (6 kHz) is held to the rate like an explicit width:
+    # a 6 kHz DSP bandwidth fits at most 4.2 kHz, so -fM alone is refused.
+    set(_args
+        --frontend
+        none
+        -fM
+        -i
+        rtltcp:127.0.0.1:1:118.1M:0:0:6
+        -o
+        null
+    )
+    set(_want_rc 1)
+    set(_want_stdout_regex "")
+    set(_want_stderr_regex "")
+    set(_want_output_regex
+        "AM bandwidth 6 kHz does not fit the 6 kHz DSP rate [(]the largest width it fits is 4[.]2 kHz[)]; set the RTL DSP bandwidth to 8, 12, 16, 24 or 48 kHz"
+    )
+    set(_forbid_output_regex "radio stream")
+elseif(DSD_NEO_CLI_SMOKE_MODE STREQUAL "am-width-fits-low-rate")
+    # An AM width the 16 kHz DSP rate filters (10 kHz of its 13.2 kHz maximum)
+    # passes the pre-open check: startup goes on to open the rtl_tcp stream
+    # and fails there only because nothing listens on port 1.
+    set(_args
+        --frontend
+        none
+        -fM
+        -i
+        rtltcp:127.0.0.1:1:118.1M:0:0:16
+        --am-bandwidth-hz
+        10000
+        -o
+        null
+    )
+    set(_want_rc 1)
+    set(_want_stdout_regex "")
+    set(_want_stderr_regex "")
+    set(_want_output_regex "Failed to open radio stream")
+    set(_forbid_output_regex "does not fit|cannot be filtered")
 else()
     message(
         FATAL_ERROR

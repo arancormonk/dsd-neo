@@ -263,6 +263,7 @@ static const decode_mode_name_map_t k_decode_mode_names[] = {
     {DSDCFG_MODE_NXDN96, "nxdn96"}, {DSDCFG_MODE_X2TDMA, "x2tdma"},     {DSDCFG_MODE_YSF, "ysf"},
     {DSDCFG_MODE_DSTAR, "dstar"},   {DSDCFG_MODE_EDACS_PV, "edacs_pv"}, {DSDCFG_MODE_DPMR, "dpmr"},
     {DSDCFG_MODE_M17, "m17"},       {DSDCFG_MODE_TDMA, "tdma"},         {DSDCFG_MODE_ANALOG, "analog"},
+    {DSDCFG_MODE_AM, "am"},
 };
 
 /* Read-only compatibility spellings are translated directly to the current decode-mode enum. Canonical config
@@ -1146,6 +1147,9 @@ render_analog_section(FILE* out, const dsdneoUserConfig* cfg) {
     if (cfg->analog_nfm_bandwidth_hz > 0) {
         DSD_FPRINTF(out, "nfm_bandwidth_hz = %d\n", cfg->analog_nfm_bandwidth_hz);
     }
+    if (cfg->analog_am_bandwidth_hz > 0) {
+        DSD_FPRINTF(out, "am_bandwidth_hz = %d\n", cfg->analog_am_bandwidth_hz);
+    }
     DSD_FPRINTF(out, "\n");
 }
 
@@ -1653,6 +1657,8 @@ apply_analog_config(const dsdneoUserConfig* cfg, dsd_opts* opts) {
     }
     const int nfm = cfg->analog_nfm_bandwidth_hz;
     opts->analog_nfm_bandwidth_hz = dsd_analog_width_in_range(DSD_ANALOG_DEMOD_FM, nfm) ? nfm : 0;
+    const int am = cfg->analog_am_bandwidth_hz;
+    opts->analog_am_bandwidth_hz = dsd_analog_width_in_range(DSD_ANALOG_DEMOD_AM, am) ? am : 0;
 }
 
 static void
@@ -1965,12 +1971,14 @@ snapshot_dsp_config(dsdneoUserConfig* cfg) {
     cfg->iq_dc_block = (dsd_parse_int_strict(dcb, 10, INT_MIN, INT_MAX, &parsed) == 0 && parsed != 0) ? 1 : 0;
 }
 
-/* The configured width, 0 when the default is in force. A scan row's own --nfm-bandwidth-hz (issue #526) runs over
-   it in dsd_opts while the row is on air, so it comes from the configured view, as the decode mode does. The section
-   is always part of a snapshot, as every other section is, so a saved default is a setting that loads back. */
+/* The configured widths, 0 when the default is in force. A scan row's own --nfm-bandwidth-hz (issue #526) runs over
+   the NFM width in dsd_opts while the row is on air, so each comes from the configured view, as the decode mode does.
+   The section is always part of a snapshot, as every other section is, so a saved default is a setting that loads
+   back. */
 static void
 snapshot_analog_config(const dsd_opts* opts, const dsd_state* state, dsdneoUserConfig* cfg) {
     cfg->analog_nfm_bandwidth_hz = dsd_scan_mode_configured_analog_width(opts, state, DSD_ANALOG_DEMOD_FM);
+    cfg->analog_am_bandwidth_hz = dsd_scan_mode_configured_analog_width(opts, state, DSD_ANALOG_DEMOD_AM);
     cfg->has_analog = 1;
 }
 

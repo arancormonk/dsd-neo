@@ -204,7 +204,9 @@ tap_response_db(const float* taps, int len, double rate_hz, double f_hz) {
  * these bounds pin the skirt that design has. */
 static int
 test_width_response(void) {
-    const int widths[] = {8000, 12500, 16000, 25000};
+    /* NFM widths, then the AM ones (issue #524): the same design at the AM range's edges, its default and a middle
+       width. */
+    const int widths[] = {8000, 12500, 16000, 25000, 5000, 6000, 10000, 20000};
     const double rate = 48000.0;
     for (int w : widths) {
         static float taps[DSD_CHANNEL_LPF_MAX_TAPS];

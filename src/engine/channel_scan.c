@@ -44,6 +44,9 @@ typedef struct {
     int retry;
     int needs_commit;
     dsd_scan_mode mode;
+    /* The analog kind (dsd_analog_demod) the staged tune's settings run: an nfm row's FM, or on a blank row the
+     * configured kind (issue #524). It says which configured width that tune carries. */
+    int row_kind;
     dsd_scan_settings configured;
     dsd_scan_key_change keys;
     uint64_t key_epoch;
@@ -116,9 +119,11 @@ channel_scan_row_runs_configured_width(const dsd_state* state, const channel_sca
     return !(profile && (profile->values.present & DSD_SCAN_OPT_BANDWIDTH));
 }
 
-/* Whether a configured setting the staged tune was prepared from changed while it was outstanding. The configured
- * channel widths count only where the tune carries one (channel_scan_row_runs_configured_width()), although
- * dsd_scan_settings_equal() compares them whenever the configured family is analog. */
+/* Whether a configured setting the staged tune was prepared from changed while it was outstanding. A configured channel
+ * width counts only where the tune carries it (channel_scan_row_runs_configured_width()), and only the width of the
+ * analog kind the row runs (issue #524): an nfm row's NFM width, a blank row's width of the configured kind. That is
+ * not always the one dsd_scan_settings_equal() compares, the configured kind's whenever the configured family is analog
+ * (an nfm row on an AM session carries the NFM width). */
 static int
 channel_scan_configured_changed(const dsd_state* state, const dsd_scan_settings* latest, const channel_scan* scan) {
     dsd_scan_settings others = *latest;
@@ -127,9 +132,13 @@ channel_scan_configured_changed(const dsd_state* state, const dsd_scan_settings*
     if (!dsd_scan_settings_equal(&others, &scan->configured, 1)) {
         return 1;
     }
-    return channel_scan_row_runs_configured_width(state, scan)
-           && (latest->analog_nfm_bandwidth_hz != scan->configured.analog_nfm_bandwidth_hz
-               || latest->analog_am_bandwidth_hz != scan->configured.analog_am_bandwidth_hz);
+    if (!channel_scan_row_runs_configured_width(state, scan)) {
+        return 0;
+    }
+    if (scan->row_kind == DSD_ANALOG_DEMOD_AM) {
+        return latest->analog_am_bandwidth_hz != scan->configured.analog_am_bandwidth_hz;
+    }
+    return latest->analog_nfm_bandwidth_hz != scan->configured.analog_nfm_bandwidth_hz;
 }
 
 /* Whether the tune staged for the row no longer describes what it should land: a configured setting or the keyring it
@@ -615,6 +624,7 @@ channel_scan_start_row(dsd_opts* opts, dsd_state* state, int row) {
     if (dsd_scan_mode_prepare(opts, state, scan->mode, row_profile ? &row_profile->values : NULL, &next) != 0) {
         return -1;
     }
+    scan->row_kind = next.analog_demod;
     dsd_scan_mode_configured(opts, state, &scan->configured);
     if (dsd_scan_groups_begin(state)
         || dsd_scan_key_change_prepare(state, dsd_state_trunk_lcn_keys_get(state, (size_t)row), &scan->keys)) {
@@ -697,8 +707,9 @@ dsd_engine_channel_scan_step_manual(dsd_opts* opts, dsd_state* state) {
  * are timed for the rate the digital family lands on instead, as svc_publish_symbol_profile() times a mode change
  * outside a row.
  *
- * A leave that switches the front end's family also drops the analog monitor block the decoder has part-collected
- * from the old family's output, as a decode-mode change between the families does. */
+ * A leave that switches the front end's family, or its analog kind (an nfm row's FM monitor on an -fM session, issue
+ * #524), also drops the analog monitor block the decoder has part-collected from the old family's or kind's output, as
+ * a decode-mode change between them does. */
 static void
 channel_scan_restore_frontend(const dsd_opts* opts, dsd_state* state) {
     if (opts->audio_in_type != AUDIO_IN_RTL) {
@@ -706,7 +717,9 @@ channel_scan_restore_frontend(const dsd_opts* opts, dsd_state* state) {
     }
     const int analog_family_active = dsd_rtl_stream_metrics_hook_analog_family_active();
     if (dsd_opts_is_analog_family(opts)) {
-        if (!analog_family_active) {
+        int running_kind = opts->analog_demod;
+        const int monitor_published = dsd_rtl_stream_metrics_hook_analog_profile(&running_kind, NULL, NULL) == 1;
+        if (!analog_family_active || (monitor_published && running_kind != opts->analog_demod)) {
             dsd_symbol_analog_block_reset(state);
         }
         (void)dsd_rtl_stream_metrics_hook_apply_analog_profile(DSD_RX_FAMILY_ANALOG, opts->analog_demod,

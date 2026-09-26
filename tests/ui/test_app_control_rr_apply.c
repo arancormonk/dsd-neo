@@ -18,7 +18,9 @@
 #include <dsd-neo/core/talkgroup_policy.h>
 #include <dsd-neo/io/rtl_stream_c.h>
 #include <dsd-neo/platform/file_compat.h>
+#include <dsd-neo/runtime/analog_channel.h>
 #include <dsd-neo/runtime/config.h>
+#include <dsd-neo/runtime/decode_mode.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
@@ -447,6 +449,48 @@ test_apply_refusals(void) {
     return rc;
 }
 
+/*
+ * Issue #524: the import's decode-mode bound runs through AM, the last preset. AM on a radio input applies; the value
+ * past it is refused, as is AM on a PCM input, whose audio arrives already demodulated (dsd_decode_mode_runs_on_input(),
+ * as DECODE_MODE_SET refuses it). A refusal changes nothing.
+ */
+static int
+test_apply_am_bounds(void) {
+    int rc = 0;
+    static dsd_opts opts;
+    static dsd_state state;
+    dsd_app_rr_apply_payload p;
+
+    init_test_context(&opts, &state);
+    opts.audio_in_type = AUDIO_IN_RTL; /* a radio input, no stream running */
+    DSD_MEMSET(&p, 0, sizeof p);
+    p.decode_mode = (int32_t)DSDCFG_MODE_AM + 1;
+    state.ui_msg[0] = '\0';
+    rc |= expect_int("past am queued", dsd_app_command_set_rr_apply(&p), DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("past am drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_str("past am refused", state.ui_msg, "Failed: RR import -> decode mode");
+    rc |= expect_int("past am leaves the mode", opts.analog_only, 0);
+
+    p.decode_mode = (int32_t)DSDCFG_MODE_AM;
+    state.ui_msg[0] = '\0';
+    rc |= expect_int("am on radio queued", dsd_app_command_set_rr_apply(&p), DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("am on radio drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("am on radio applied", dsd_infer_decode_mode_preset(&opts), (int)DSDCFG_MODE_AM);
+    rc |= expect_int("am on radio runs the AM detector", opts.analog_demod, DSD_ANALOG_DEMOD_AM);
+    freeState(&state);
+
+    init_test_context(&opts, &state);
+    opts.audio_in_type = AUDIO_IN_PULSE;
+    state.ui_msg[0] = '\0';
+    rc |= expect_int("am on pcm queued", dsd_app_command_set_rr_apply(&p), DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("am on pcm drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_str("am on pcm refused", state.ui_msg, "Failed: RR import -> decode mode");
+    rc |= expect_int("am on pcm leaves the mode", opts.analog_only, 0);
+    rc |= expect_int("am on pcm leaves the kind", opts.analog_demod, DSD_ANALOG_DEMOD_FM);
+    freeState(&state);
+    return rc;
+}
+
 static int
 test_rr_account_set(void) {
     int rc = 0;
@@ -511,6 +555,7 @@ main(void) {
     rc |= test_apply_edacs_variants();
     rc |= test_apply_simulcast_forces_qpsk();
     rc |= test_apply_refusals();
+    rc |= test_apply_am_bounds();
     rc |= test_rr_account_set();
 #ifdef DSD_NEO_TEST_IO_CONTROL_WRAP
     rc |= test_apply_requests_the_tune();

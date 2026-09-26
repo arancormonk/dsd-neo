@@ -627,6 +627,13 @@ class CommandRecorder : public QObject {
     }
 
     Q_INVOKABLE bool
+    setAmBandwidthHz(int hz) {
+        m_last_am_bandwidth_hz = hz;
+        m_am_bandwidth_calls++;
+        return true;
+    }
+
+    Q_INVOKABLE bool
     setModulation(int modulation) {
         m_last_modulation = modulation;
         return true;
@@ -683,6 +690,8 @@ class CommandRecorder : public QObject {
         m_last_modulation = -1;
         m_last_decode_mode = -1;
         m_last_ppm = 9999;
+        m_last_am_bandwidth_hz = -1;
+        m_am_bandwidth_calls = 0;
         m_lockout_accepted = true;
         m_lockout_requests.clear();
         m_avoid_clear_requests.clear();
@@ -764,6 +773,16 @@ class CommandRecorder : public QObject {
     int
     lastPpm() const {
         return m_last_ppm;
+    }
+
+    int
+    lastAmBandwidthHz() const {
+        return m_last_am_bandwidth_hz;
+    }
+
+    int
+    amBandwidthCalls() const {
+        return m_am_bandwidth_calls;
     }
 
     int
@@ -892,6 +911,8 @@ class CommandRecorder : public QObject {
     int m_last_modulation = -1;
     int m_last_decode_mode = -1;
     int m_last_ppm = 9999;
+    int m_last_am_bandwidth_hz = -1;
+    int m_am_bandwidth_calls = 0;
     QVariantList m_talkgroupEdit;
     int m_talkgroup_listen_calls = 0;
     double m_last_talkgroup_id_start = 0.0;
@@ -1694,6 +1715,17 @@ class Setup : public QObject {
         return (m_commands != nullptr) ? m_commands->lastPpm() : 9999;
     }
 
+    /** @brief The last AM channel width the Radio sheet asked for (issue #524), and how many times it asked. */
+    Q_INVOKABLE int
+    lastAmBandwidthHz() const {
+        return (m_commands != nullptr) ? m_commands->lastAmBandwidthHz() : -1;
+    }
+
+    Q_INVOKABLE int
+    amBandwidthCalls() const {
+        return (m_commands != nullptr) ? m_commands->amBandwidthCalls() : -1;
+    }
+
     Q_INVOKABLE QFont
     applicationFont() const {
         return QGuiApplication::font();
@@ -2001,11 +2033,20 @@ class Setup : public QObject {
         metrics[QStringLiteral("analogBandwidthHz")] = 0;
         metrics[QStringLiteral("analogBandwidthDspLimited")] = false;
         metrics[QStringLiteral("analogBandwidthConfiguredHz")] = 0;
+        // #524: the configured NFM and AM widths whichever preset runs (0 = default), for the
+        // width of the analog kind the configured preset does not run.
+        metrics[QStringLiteral("nfmBandwidthConfiguredHz")] = 0;
+        metrics[QStringLiteral("amBandwidthConfiguredHz")] = 0;
+        // #524: whether the engine offers each kind's width for editing (dsd_app_analog_width_offered()).
+        metrics[QStringLiteral("nfmBandwidthOffered")] = false;
+        metrics[QStringLiteral("amBandwidthOffered")] = false;
         metrics[QStringLiteral("analogBandwidthMaxHz")] = 0;
         metrics[QStringLiteral("analogBandwidthReading")] = QString();
         // #526: an nfm scan row on air (its width is in force on any session), and whether it sets its own.
         metrics[QStringLiteral("analogBandwidthRowActive")] = false;
         metrics[QStringLiteral("analogBandwidthRowOverride")] = false;
+        // #524: whether the width the analogBandwidth* keys describe is AM's (the preset's kind, or a row's on air).
+        metrics[QStringLiteral("analogBandwidthAm")] = false;
         metrics[QStringLiteral("ppm")] = 0;
         m_metrics = metrics;
         m_engine = engine;

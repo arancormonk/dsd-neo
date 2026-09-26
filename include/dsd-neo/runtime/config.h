@@ -534,7 +534,8 @@ typedef enum DSD_ATTR_PACKED {
     DSDCFG_MODE_M17,
     DSDCFG_MODE_TDMA,
     DSDCFG_MODE_ANALOG,
-    DSDCFG_MODE_DMR_MONO
+    DSDCFG_MODE_DMR_MONO,
+    DSDCFG_MODE_AM /* 16: the analog monitor with the AM envelope detector (IQ radio inputs only; issue #524) */
 } dsdneoUserDecodeMode;
 
 typedef enum DSD_ATTR_PACKED {
@@ -673,6 +674,7 @@ typedef struct dsdneoUserConfig {
        and keeps the default. */
     int has_analog;
     int analog_nfm_bandwidth_hz;
+    int analog_am_bandwidth_hz;
 } dsdneoUserConfig;
 
 /**

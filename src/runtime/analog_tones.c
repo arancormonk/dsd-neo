@@ -6,6 +6,7 @@
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/safe_api.h>
+#include <dsd-neo/runtime/analog_channel.h>
 #include <dsd-neo/runtime/analog_tones.h>
 #include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
 #include <stddef.h>
@@ -102,9 +103,15 @@ analog_tone_input_carries_audio(const dsd_opts* opts) {
 }
 
 int
-dsd_analog_tone_detection_active(const dsd_opts* opts) {
+dsd_analog_monitor_tap_active(const dsd_opts* opts) {
     if (opts == NULL || opts->analog_only != 1 || opts->monitor_input_audio != 1) {
         return 0;
     }
     return analog_tone_input_carries_audio(opts);
+}
+
+int
+dsd_analog_tone_detection_active(const dsd_opts* opts) {
+    /* CTCSS and DCS are FM signalling: the AM monitor (issue #524) has none to detect. */
+    return dsd_analog_monitor_tap_active(opts) && opts->analog_demod == DSD_ANALOG_DEMOD_FM;
 }

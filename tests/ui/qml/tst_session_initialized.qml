@@ -174,6 +174,22 @@ Item {
                     fields: {
                         encForceKey: 3
                     }
+                },
+                {
+                    tag: "am-needs-radio",
+                    fields: {
+                        sourceType: "tcp",
+                        decodeFlag: "-fM"
+                    },
+                    sentence: "“First” decodes AM, which needs a radio source: network and file audio arrives already demodulated. Edit the source to correct it."
+                },
+                {
+                    tag: "am-bandwidth",
+                    fields: {
+                        decodeFlag: "-fM",
+                        bandwidthKhz: 6
+                    },
+                    sentence: "“First” decodes AM, whose 6 kHz channel needs a DSP bandwidth of 8 kHz or more. Set the source's bandwidth, or the default bandwidth in Settings, to 8, 12, 16, 24 or 48 kHz."
                 }
             ];
         }
@@ -185,6 +201,19 @@ Item {
             compare(decoderHost.running, false);
             compare(savedSystems.getByUid(uid).lastHeard, 0);
             compare(prefs.lastStartedUid, "");
+        }
+        // Issue #524: an AM system whose own bandwidth is unset runs at the app-wide
+        // default, which a change in Settings can move below what AM filters.
+        function test_am_bandwidth_from_the_app_default() {
+            var saved = prefs.bandwidthKhz;
+            prefs.bandwidthKhz = 6;
+            savedSystems.update(0, {
+                decodeFlag: "-fM"
+            });
+            app.startSystem(0);
+            prefs.bandwidthKhz = saved;
+            compare(app.startError, "“First” decodes AM, whose 6 kHz channel needs a DSP bandwidth of 8 kHz or more. Set the source's bandwidth, or the default bandwidth in Settings, to 8, 12, 16, 24 or 48 kHz.");
+            compare(decoderHost.running, false);
         }
         function test_only_initialized_session_updates_recency() {
             var uid = savedSystems.get(1).uid;
