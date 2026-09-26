@@ -926,8 +926,10 @@ dsd_engine_scan_tune_to_freq(dsd_opts* opts, dsd_state* state, long int freq, in
     dsd_engine_rtl_profile_snapshot_capture(opts, state, &rtl_snapshot);
     if (dsd_engine_prepare_scan_profile(opts, state, freq, ted_sps) != 0) {
         /* The row's analog width does not fit the DSP rate: the row cannot be received, so it is not tuned,
-         * and no backend moved. */
-        dsd_engine_rtl_profile_snapshot_restore(state, &rtl_snapshot);
+         * and no backend moved. The retune profile queued for it is all that changed, so only that is dropped:
+         * requesting the profile the front end already runs again would re-apply it at every rotation past the
+         * row. */
+        rtl_stream_clear_pending_retune_profile();
         dsd_trunk_tuning_request_complete(tune_request_id, DSD_TRUNK_TUNE_RESULT_FAILED);
         return DSD_TRUNK_TUNE_RESULT_FAILED;
     }

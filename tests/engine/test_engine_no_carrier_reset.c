@@ -648,15 +648,32 @@ test_typed_scan_nfm_rows_switch_family(int configured_analog) {
                                                    && opts->analog_nfm_bandwidth_hz == 20000);
     rc |= expect_true("digital row family", g_rtl_analog_family == configured_analog && g_rtl_symbol_rate_hz == 4800);
 
-    /* A width the front end refuses: the row is skipped without a tune. */
+    /* A width the front end refuses: the row is skipped without a tune. Only the retune profile queued for it is
+       dropped: the profile the front end runs is not requested again, which on the digital family would re-apply the
+       DMR row's symbol profile at every rotation past the refused row. */
     g_refuse_analog_profile = 1;
     const int tunes_before = g_rtl_tune_calls;
+    const int demod_requests_before = g_request_demod_calls;
     state->lcn_freq_roll = 1;
     state->last_cc_sync_time -= 11;
     noCarrier(opts, state);
     rc |= expect_true("refused nfm row is not tuned", g_rtl_tune_calls == tunes_before && state->lcn_freq_roll == 2
                                                           && opts->frame_dmr && !opts->analog_only);
+    rc |= expect_true("refused nfm row requests no demod profile",
+                      g_request_demod_calls == demod_requests_before && !g_pending_active);
     g_refuse_analog_profile = 0;
+
+    /* A width the published DSP rate cannot fit is refused before the stream is asked, the same way: the nfm row
+       without a width of its own runs the configured 20 kHz, which a 16 kHz rate cannot filter. */
+    g_rtl_request_rate_hz = 16000;
+    state->lcn_freq_roll = 2;
+    state->last_cc_sync_time -= 11;
+    noCarrier(opts, state);
+    rc |= expect_true("rate-refused nfm row is not tuned",
+                      g_rtl_tune_calls == tunes_before && state->lcn_freq_roll == 3 && opts->frame_dmr);
+    rc |= expect_true("rate-refused nfm row requests no demod profile",
+                      g_request_demod_calls == demod_requests_before && !g_pending_active);
+    g_rtl_request_rate_hz = 0;
 
     dsd_engine_channel_scan_leave(opts, state);
     rc |= expect_true("leave restores the configured session",

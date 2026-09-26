@@ -242,9 +242,10 @@ Tests: `tests/engine/test_engine_trunk_scan.c` (`ENGINE_TRUNK_SCAN`) and
   The receive family a row runs on is queued with its tune in `trunk_tuning.c` (`dsd_engine_prepare_scan_profile()`,
   issue #526): an analog row attaches the analog family, demodulator and width to the retune profile
   (`rtl_stream_prepare_retune_analog_profile_for_target()`) with no symbol profile, and a width the front end refuses
-  fails the tune before any backend moves; a digital row attaches the digital family ahead of its symbol profile only
-  while the front end runs the analog family and the configured mode is digital (a typed digital row on an `-fA`
-  session keeps the monitor output). A failed hop off the analog monitor re-requests no symbol profile over it. A live
+  fails the tune before any backend moves, dropping only the retune profile queued for it; a digital row attaches the
+  digital family ahead of its symbol profile only while the front end runs the analog family and the configured mode is
+  digital (a typed digital row on an `-fA` session keeps the monitor output). A failed hop off the analog monitor
+  re-requests no symbol profile over it. A live
   receive-family request accepted while a `-Y` row's retune is outstanding supersedes the family, and the symbol
   profile, that retune carries; it acts for the row still in scope (a width edit or a config apply republishing the
   outgoing row's receive profile), so the commit restages the row rather than run it on the outgoing row's family
