@@ -748,8 +748,9 @@ installs from `src/engine/trunk_tuning.c` in `src/engine/trunk_tuning_hooks_inst
   row under the hangtime rule follows the tap's carrier (`dsd_analog_rx_carrier_open_now()`, which reports none once the
   tap's own generation check sees a retune or profile change since its last read) while the analog FM monitor runs,
   whether or not the block plays (the `-8` monitor under digital decoding keeps stamping only what it plays), and the
-  gate writes nothing while a retune is in flight (`dsd_trunk_tuning_pending_request()`) or, on the analog monitor, from
-  a block that began before a retune, profile change or reset the tap noticed
+  gate writes nothing while a retune is unresolved (`dsd_trunk_tuning_pending_request()`: in flight, or failed after
+  the scanner moved on, until a later retune lands or the scan's end retires it, as for digital frames) or, on the
+  analog monitor, from a block that began before a retune, profile change or reset the tap noticed
   (`dsd_analog_rx_block_straddles_boundary()`, 0 while detection is not running, so the `-8` monitor under digital
   decoding plays every block as before). It is active only while `dsd_analog_tone_detection_active()` (runtime, above)
   says so: the analog FM monitor on PCM input or on RTL with an AUDIO_MONITOR output kind. The rate comes from the RTL

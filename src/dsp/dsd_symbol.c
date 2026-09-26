@@ -1159,8 +1159,11 @@ symbol_apply_unsynced_filters(dsd_opts* opts, dsd_state* state, unsigned int ana
 }
 
 /* The monitor gate: the squelch open over the block, the monitor on, no digital carrier flagged and audio out on.
- * Nothing plays while a retune is in flight -- the front end still delivers the channel being left -- or, on the analog
- * monitor, from a block that began before a retune or reset the received-tone tap noticed (issue #526). */
+ * Nothing plays while a retune is unresolved (dsd_trunk_tuning_pending_request()): in flight, when the front end still
+ * delivers the channel being left, or failed after the scanner had moved on, when it delivers a channel other than the
+ * one the scanner shows, until a later retune lands or the scan ends -- the same gate that holds back digital frames.
+ * Nor, on the analog monitor, from a block that began before a retune or reset the received-tone tap noticed
+ * (issue #526). */
 static inline int
 symbol_unsynced_audio_allowed(const dsd_opts* opts, const dsd_state* state) {
     if (!(opts->rtl_pwr > opts->rtl_squelch_level) || opts->monitor_input_audio != 1 || state->carrier != 0

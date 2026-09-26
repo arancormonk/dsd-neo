@@ -305,7 +305,8 @@ advance or avoid moves on.
 
 A list may mix analog and digital rows: each row switches the receiver between the analog monitor and the digital
 decoder at its own width when it is tuned, without reopening the device, and opens the audio output the row plays
-through. The monitor stays silent while a retune is in flight.
+through. The monitor stays silent while a retune is in flight, and after one that failed once the scanner had moved on,
+until a later retune lands or the scan ends, since the receiver may then still be on another row's channel.
 
 Omitted settings inherit the outer CLI/configuration, including forcing. Use `--no-force-key` on a normal mixed
 clear/BP channel when forcing is configured globally. `-b 1` with normal signalling processes clear and BP calls;

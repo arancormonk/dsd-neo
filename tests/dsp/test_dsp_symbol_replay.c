@@ -2273,8 +2273,9 @@ test_carrier_stamp_at_an_unusable_tap_rate(void) {
 }
 
 /* The monitor writes nothing while a retune is in flight (the front end still delivers the channel
- * being left) nor from a block that began before a retune or a reset the tap noticed -- one block
- * at most -- and plays the new channel from the next block on. */
+ * being left), nor after one that failed once the scanner had moved on, nor from a block that began
+ * before a retune or a reset the tap noticed -- one block at most -- and plays the new channel from
+ * the next block on. */
 static void
 test_monitor_muted_across_a_retune(void) {
     static dsd_opts opts;
@@ -2346,6 +2347,22 @@ test_monitor_muted_across_a_retune(void) {
     }
     assert(g_monitor_blocks == 8);
     opts.analog_only = 1;
+
+    /* A retune that failed after the scanner had moved on (its tune timed out, the scanner went on to the row, and the
+       front end then reported the failure) leaves the receiver on a channel other than the one the scanner shows:
+       nothing plays until the scan's end retires the failure or a later retune lands, as no digital frame does. */
+    feed_tone_blocks(&opts, &state, 1);
+    const int played = g_monitor_blocks;
+    const uint64_t failed = dsd_trunk_tuning_request_begin();
+    dsd_trunk_tuning_request_mark_ready(failed);
+    dsd_trunk_tuning_request_publish(failed, DSD_TRUNK_TUNE_RESULT_FAILED);
+    assert(dsd_trunk_tuning_pending_request() == failed);
+    feed_tone_blocks(&opts, &state, 2);
+    assert(g_monitor_blocks == played);
+    dsd_trunk_tuning_retire_failed_requests();
+    assert(dsd_trunk_tuning_pending_request() == 0U);
+    feed_tone_blocks(&opts, &state, 1);
+    assert(g_monitor_blocks == played + 1);
     dsd_trunk_tuning_requests_reset();
     dsd_udp_audio_hooks_set((dsd_udp_audio_hooks){0});
     install_fake_rtl_hooks(0);
