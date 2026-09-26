@@ -828,11 +828,12 @@ detection it only reports: it never mutes or gates audio, it needs no setting, a
   corner; the detector allows for a corner up to about 10 Hz. A DC-coupled input keeps the bounds above, also when the
   producer hands on a frequency offset as a DC level (`rtl_fm` without `-E dc`, for one), up to the offsets under
   Timing. Through a 10 Hz coupling every start at 10 dB is still confirmed within 520 ms (over 800,000 starts at 44.1
-  and 48 kHz the slowest took 477 ms), but at 3 dB it costs bits: 95 starts in 100 are confirmed within 475-535 ms and
-  999 in 1,000 within 837-930 ms, with the slowest past the 1,500 ms ceiling (1,702 ms). A 15 Hz corner is slower still
-  (at 10 dB, 5 starts in 100,000 past 520 ms), so prefer a DC-coupled input or one with a low corner. The audio's
-  polarity matters: an inverted audio path (some receivers' discriminator outputs, some sound cards) turns every code
-  into the other signal of the same number, so a D023N transmitter reads as `DCS D047N / D023I`.
+  and 48 kHz the slowest took 477 ms), but at 3 dB it costs bits, and an AC-coupled input is outside the 3 dB bounds
+  above, a known limitation: 95 starts in 100 are confirmed within 475-535 ms and 999 in 1,000 within 837-930 ms, with
+  the slowest past the 1,500 ms ceiling (1,702 ms). A 15 Hz corner is slower still (at 10 dB, 5 starts in 100,000 past
+  520 ms), so prefer a DC-coupled input or one with a low corner. The audio's polarity matters: an inverted audio path
+  (some receivers' discriminator outputs, some sound cards) turns every code into the other signal of the same number,
+  so a D023N transmitter reads as `DCS D047N / D023I`.
 
 ## Mode Tweaks & Advanced
 
