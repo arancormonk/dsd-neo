@@ -317,7 +317,7 @@ channel_scan_check_rows(const dsd_opts* opts, dsd_state* state, channel_scan* sc
         channel_scan_warn_rows_squelch(opts, state);
     }
     const int dsp_rate_hz = dsd_engine_scan_dsp_rate_hz(opts, state);
-    const int nfm_hz = dsd_engine_scan_configured_nfm_width_hz(opts, state);
+    const int nfm_hz = dsd_scan_mode_configured_analog_width(opts, state, DSD_ANALOG_DEMOD_FM);
     if (opts->audio_in_type == AUDIO_IN_RTL && dsp_rate_hz <= 0) {
         return;
     }
@@ -370,30 +370,6 @@ dsd_engine_scan_warn_analog_squelch(const dsd_opts* opts, const dsd_state* state
     return 1;
 }
 
-/* What sets the DSP rate of this radio input (dsd_analog_rate_source), as the stream start classifies it: an I/Q
- * replay's capture, a SoapySDR or Airspy device, or else the RTL DSP bandwidth. It picks the fix a refusal names. */
-static int
-scan_input_rate_source(const dsd_opts* opts) {
-    const char* dev = opts->audio_in_dev;
-    if (opts->iq_replay_active || dsd_opts_audio_in_dev_is_iqreplay_spec(dev)) {
-        return DSD_ANALOG_RATE_CAPTURE;
-    }
-    if (dsd_opts_audio_in_dev_is_soapy_spec(dev) || dsd_opts_audio_in_dev_is_airspy_spec(dev)) {
-        return DSD_ANALOG_RATE_DEVICE;
-    }
-    return DSD_ANALOG_RATE_RTL_BW;
-}
-
-int
-dsd_engine_scan_configured_nfm_width_hz(const dsd_opts* opts, const dsd_state* state) {
-    if (!opts) {
-        return 0;
-    }
-    const dsd_scan_settings* configured = dsd_scan_mode_configured_view(state);
-    const int width_hz = configured ? configured->analog_nfm_bandwidth_hz : opts->analog_nfm_bandwidth_hz;
-    return width_hz > 0 ? width_hz : 0;
-}
-
 int
 dsd_engine_scan_width_refused(const dsd_opts* opts, int kind, int width_hz, int dsp_rate_hz, char* why,
                               size_t why_size) {
@@ -413,7 +389,8 @@ dsd_engine_scan_width_refused(const dsd_opts* opts, int kind, int width_hz, int 
     }
     /* Worded with the fix this input allows, as the stream start's refusal is (issue #525). */
     return dsp_rate_hz > 0
-           && dsd_analog_width_check_at(kind, width_hz, dsp_rate_hz, scan_input_rate_source(opts), why, why_size) != 0;
+           && dsd_analog_width_check_at(kind, width_hz, dsp_rate_hz, dsd_opts_analog_rate_source(opts), why, why_size)
+                  != 0;
 }
 
 /* The status-line reason a refused width is skipped for (dsd_engine_scan_width_refused()): short, as the log line
@@ -456,7 +433,7 @@ dsd_engine_scan_note_skipped_rows(dsd_state* state, int skipped, const char* lab
 static int
 scan_warn_configured_nfm_width(const dsd_opts* opts, const dsd_state* state, int dsp_rate_hz, const char* label,
                                char* brief, size_t brief_size) {
-    const int width_hz = dsd_engine_scan_configured_nfm_width_hz(opts, state);
+    const int width_hz = dsd_scan_mode_configured_analog_width(opts, state, DSD_ANALOG_DEMOD_FM);
     if (width_hz <= 0 || dsp_rate_hz <= 0 || opts->audio_in_type != AUDIO_IN_RTL) {
         return DSD_ENGINE_SCAN_WIDTH_OK;
     }
@@ -514,7 +491,7 @@ dsd_engine_channel_scan_refused_rows(const dsd_opts* opts, const dsd_state* stat
     if (!opts || !state || opts->audio_in_type != AUDIO_IN_RTL) {
         return 0;
     }
-    const int configured_hz = dsd_engine_scan_configured_nfm_width_hz(opts, state);
+    const int configured_hz = dsd_scan_mode_configured_analog_width(opts, state, DSD_ANALOG_DEMOD_FM);
     int refused = 0;
     for (int row = 0; row < state->lcn_freq_count; row++) {
         if (*dsd_state_trunk_lcn_slot_const(state, row) == 0

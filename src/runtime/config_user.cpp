@@ -1970,9 +1970,7 @@ snapshot_dsp_config(dsdneoUserConfig* cfg) {
    is always part of a snapshot, as every other section is, so a saved default is a setting that loads back. */
 static void
 snapshot_analog_config(const dsd_opts* opts, const dsd_state* state, dsdneoUserConfig* cfg) {
-    const dsd_scan_settings* configured = dsd_scan_mode_configured_view(state);
-    const int width_hz = configured ? configured->analog_nfm_bandwidth_hz : opts->analog_nfm_bandwidth_hz;
-    cfg->analog_nfm_bandwidth_hz = width_hz > 0 ? width_hz : 0;
+    cfg->analog_nfm_bandwidth_hz = dsd_scan_mode_configured_analog_width(opts, state, DSD_ANALOG_DEMOD_FM);
     cfg->has_analog = 1;
 }
 

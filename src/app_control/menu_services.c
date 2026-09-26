@@ -917,21 +917,6 @@ svc_rtl_stream_running(const dsd_opts* opts, const dsd_state* state) {
     return opts->audio_in_type == AUDIO_IN_RTL && state && state->rtl_ctx;
 }
 
-/* What sets the DSP rate of a running stream on this input (dsd_analog_rate_source), as the stream start classifies it
-   (rtl_demod_finalize_analog_channel()): an I/Q replay's capture, a SoapySDR or Airspy device, or else the RTL DSP
-   bandwidth. */
-static int
-svc_input_rate_source(const dsd_opts* opts) {
-    const char* dev = opts->audio_in_dev;
-    if (opts->iq_replay_active || dsd_opts_audio_in_dev_is_iqreplay_spec(dev)) {
-        return DSD_ANALOG_RATE_CAPTURE;
-    }
-    if (dsd_opts_audio_in_dev_is_soapy_spec(dev) || dsd_opts_audio_in_dev_is_airspy_spec(dev)) {
-        return DSD_ANALOG_RATE_DEVICE;
-    }
-    return DSD_ANALOG_RATE_RTL_BW;
-}
-
 #endif
 
 int
@@ -979,7 +964,8 @@ svc_describe_nfm_refusal(const dsd_opts* opts, int width_hz, char* why, size_t w
     const int rate_hz = rtl_rate_hz > 0 ? rtl_rate_hz : rtl_stream_get_demod_rate_hz();
     if (rate_hz > 0 && !dsd_analog_width_realizable(width_hz, rate_hz)) {
         svc_analog_rate_refusal(DSD_ANALOG_DEMOD_FM, width_hz, rate_hz,
-                                rtl_rate_hz > 0 ? DSD_ANALOG_RATE_RTL_BW : svc_input_rate_source(opts), why, why_size);
+                                rtl_rate_hz > 0 ? DSD_ANALOG_RATE_RTL_BW : dsd_opts_analog_rate_source(opts), why,
+                                why_size);
         return;
     }
 #endif
@@ -998,7 +984,8 @@ svc_row_sets_nfm_width(const dsd_state* state) {
    row on an analog session returns to the monitor when it ends), while an nfm scan row that sets no width of its own
    runs it on any session, and while the scan has such a row or target to visit (issue #526), which runs it when it
    comes on air: an edit made while another row is on air is held to the rate as well, rather than accepted and the
-   row skipped at every visit. The M17 encoder's monitor path never uses it. */
+   row skipped at every visit. The row on air is read from the scope itself, not from the scanner's map or list, which
+   a re-import can change under it. The M17 encoder's monitor path never uses it. */
 static int
 svc_nfm_width_in_use(const dsd_opts* opts, const dsd_state* state) {
     const dsd_scan_settings* configured = dsd_scan_mode_configured_view(state);
@@ -1105,8 +1092,7 @@ svc_set_nfm_bandwidth(dsd_opts* opts, const dsd_state* state, int width_hz, char
     if (svc_nfm_width_in_use(opts, state) && svc_check_nfm_bandwidth(opts, state, width_hz, why, why_size) != 0) {
         return -1;
     }
-    const dsd_scan_settings* configured = dsd_scan_mode_configured_view(state);
-    const int previous_hz = configured ? configured->analog_nfm_bandwidth_hz : opts->analog_nfm_bandwidth_hz;
+    const int previous_hz = dsd_scan_mode_configured_analog_width(opts, state, DSD_ANALOG_DEMOD_FM);
     /* The configured width, without suspending a scan row (issue #526): a row that sets its own width keeps it in force
        until it leaves, and nothing reaches the front end until then. */
     if (dsd_scan_mode_set_configured_nfm_bandwidth(opts, state, width_hz) == 1

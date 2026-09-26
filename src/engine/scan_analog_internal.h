@@ -56,7 +56,7 @@ int dsd_engine_scan_width_refused(const dsd_opts* opts, int kind, int width_hz, 
 /** Warn, in the same form, about the width an analog row runs, which is then skipped at every visit: its own
  * --nfm-bandwidth-hz on an input with no demodulator to apply it, or one the front end refuses
  * (dsd_engine_scan_width_refused(): DSD_NEO_CHANNEL_LPF=0, or @p dsp_rate_hz cannot filter it); or, for a row that
- * sets none, the configured NFM width it runs (dsd_engine_scan_configured_nfm_width_hz()) where the front end refuses
+ * sets none, the configured NFM width it runs (dsd_scan_mode_configured_analog_width()) where the front end refuses
  * that. Said when a scan starts, again whenever the DSP rate changes, and for the rows without a width of their own
  * whenever the configured NFM width does; @p dsp_rate_hz 0 skips the rate check. @p row may be NULL (no options).
  * Returns DSD_ENGINE_SCAN_WIDTH_OK, _NO_EFFECT or _SKIPPED; for _SKIPPED, @p brief (when given) receives a short
@@ -68,10 +68,5 @@ int dsd_engine_scan_warn_analog_width(const dsd_opts* opts, const dsd_state* sta
  * Qt and Android), as the input-level advisories are: @p label and @p brief name the first of @p skipped rows; the
  * WARNING lines name each of them in the log. Nothing when @p skipped is 0. */
 void dsd_engine_scan_note_skipped_rows(dsd_state* state, int skipped, const char* label, const char* brief);
-
-/** The explicit NFM width an analog row without one of its own runs: the configured width, from the scan scope's
- * configured view while one is live and dsd_opts otherwise; 0 for the unset default, which no DSP rate refuses, and
- * when @p opts is NULL. */
-int dsd_engine_scan_configured_nfm_width_hz(const dsd_opts* opts, const dsd_state* state);
 
 #endif /* DSD_NEO_SRC_ENGINE_SCAN_ANALOG_INTERNAL_H_ */

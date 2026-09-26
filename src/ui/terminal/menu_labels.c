@@ -19,6 +19,7 @@
 #include <dsd-neo/core/talkgroup_policy.h>
 #include <dsd-neo/io/tcp_input.h>
 #include <dsd-neo/platform/file_compat.h>
+#include <dsd-neo/runtime/analog_channel.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/decode_mode.h>
 #include <dsd-neo/runtime/radioreference.h>
@@ -1380,11 +1381,8 @@ lbl_rtl_bw(const void* v, char* b, size_t n) {
 const char*
 lbl_rtl_nfm_bw(const void* v, char* b, size_t n) {
     const UiCtx* c = (const UiCtx*)v;
-    const dsd_scan_settings* configured = c ? menu_configured_scan_settings() : NULL;
-    int configured_hz = (c && c->opts) ? c->opts->analog_nfm_bandwidth_hz : 0;
-    if (configured) {
-        configured_hz = configured->analog_nfm_bandwidth_hz;
-    }
+    const int configured_hz =
+        c ? dsd_scan_mode_configured_analog_width(c->opts, dsd_app_get_latest_snapshot(), DSD_ANALOG_DEMOD_FM) : 0;
     char width[DSD_APP_ANALOG_WIDTH_TEXT_MAX];
     (void)dsd_app_analog_width_setting_format(configured_hz, width, sizeof width);
     DSD_SNPRINTF(b, n, "NFM bandwidth... [%s]", width);

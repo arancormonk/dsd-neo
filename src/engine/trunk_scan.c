@@ -2679,7 +2679,7 @@ trunk_scan_warn_analog_width(const dsd_opts* opts, const dsd_state* state, const
 static void
 trunk_scan_recheck_analog_targets(const dsd_opts* opts, dsd_state* state, dsd_trunk_scan_coord* coord) {
     const int rate_hz = trunk_scan_analog_check_rate(opts, state);
-    const int nfm_hz = dsd_engine_scan_configured_nfm_width_hz(opts, state);
+    const int nfm_hz = dsd_scan_mode_configured_analog_width(opts, state, DSD_ANALOG_DEMOD_FM);
     if (rate_hz == TRUNK_SCAN_ANALOG_CHECK_DEFERRED
         || (rate_hz == coord->analog_checked_rate_hz && nfm_hz == coord->analog_checked_nfm_hz)) {
         return;
@@ -4010,7 +4010,7 @@ dsd_engine_trunk_scan_init(dsd_opts* opts, dsd_state* state, char* err, size_t e
         return -1;
     }
     coord->analog_checked_rate_hz = analog_checked_rate_hz;
-    coord->analog_checked_nfm_hz = dsd_engine_scan_configured_nfm_width_hz(opts, state);
+    coord->analog_checked_nfm_hz = dsd_scan_mode_configured_analog_width(opts, state, DSD_ANALOG_DEMOD_FM);
 
     if (dsd_scan_mode_begin(opts, state) != 0
         || trunk_scan_build_target_runtime(coord, opts, state, &list, err, err_sz) != 0) {

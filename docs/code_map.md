@@ -189,7 +189,9 @@ Tests: `tests/engine/test_engine_trunk_scan.c` (`ENGINE_TRUNK_SCAN`) and
   pushed to the RTL demodulator from the scope's entry points only, once per row change. `dsd_scan_mode_enter()`
   never pushes, so every caller must follow it with `dsd_scan_mode_options()` (NULL for a row without options);
   `dsd_scan_mode_set_configured_squelch()` and `dsd_scan_mode_set_configured_nfm_bandwidth()` edit the configured
-  default without suspending (see Scoped scan options).
+  default without suspending (see Scoped scan options), and `dsd_scan_mode_configured_analog_width()` is the one reader
+  of a configured channel width (the configured view while a scope is live, `dsd_opts` otherwise), which the scanners,
+  app-control's width services and view, the config save and the terminal menu share.
 - Engine `channel_scan.c` (extension slot 7) stages typed `-Y` entries for automatic, manual, and avoid stepping through
   tracked tuning. It commits mode/keys only after success and retains generation protection across pending requests.
   Configuration edits retry pending tunes on a later service pass; live output-rate changes do not trigger another tune.
@@ -199,8 +201,8 @@ Tests: `tests/engine/test_engine_trunk_scan.c` (`ENGINE_TRUNK_SCAN`) and
   `dsd_engine_reset_no_carrier_state()` shares decoder cleanup without recursively stepping or changing tuner ownership.
   `trunk_scan.c` selects the same classes from target types while retaining target snapshots and modulation/gain ownership.
   Each row commit (and trunk-scan target switch) opens the sink the row plays through, `dsd_engine_scan_ensure_output()`
-  (analog or digital, idempotent; it, the two warnings below, the width rule `dsd_engine_scan_width_refused()`,
-  `dsd_engine_scan_note_skipped_rows()` and `dsd_engine_scan_configured_nfm_width_hz()` are private to the engine,
+  (analog or digital, idempotent; it, the two warnings below, the width rule `dsd_engine_scan_width_refused()` and
+  `dsd_engine_scan_note_skipped_rows()` are private to the engine,
   `src/engine/scan_analog_internal.h`), and scan start logs what an analog row owes the operator on two schedules. An
   open squelch, which lets noise hold the row until the visit cap or the operator moves on,
   `dsd_engine_scan_warn_analog_squelch()`, is said once per map (-Y) or list (trunk scan). A width on audio input, or
@@ -216,7 +218,7 @@ Tests: `tests/engine/test_engine_trunk_scan.c` (`ENGINE_TRUNK_SCAN`) and
   finds rows skipped at every visit also puts the first of them on the status line every frontend shows
   (`dsd_engine_scan_note_skipped_rows()`: `ui_msg`, as the input-level advisories are), so Android, which has no log
   view, learns why a row is never on air. A row without a width of its own is held with the
-  configured NFM width it runs (`dsd_engine_scan_configured_nfm_width_hz()`), and a changed configured width names those
+  configured NFM width it runs (`dsd_scan_mode_configured_analog_width()`), and a changed configured width names those
   rows again. While the scan has such a row or target (`dsd_engine_scan_runs_configured_nfm_width()`, public in
   `trunk_scan.h`), app-control holds the configured width to the rate on any session, as under -fA: the width command, a
   config apply, `RTL_SET_BW` and Input > Switch source refuse a width or bandwidth that cannot run it, whichever row is

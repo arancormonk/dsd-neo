@@ -493,8 +493,8 @@ dsd_synctype_to_string(int synctype) { // NOLINT(misc-use-internal-linkage)
 }
 
 static dsd_scan_mode g_scan_mode_active = DSD_SCAN_MODE_INHERIT;
-/* Issue #521: the scan scope as the shared squelch view sees it. The two stubs below replace
- * the runtime definitions at link time, like the other link stubs here, so they keep external
+/* Issue #521: the scan scope as the shared squelch view sees it. The stubs below replace the
+ * runtime definitions at link time, like the other link stubs here, so they keep external
  * linkage; the pointers they hand back stay file-local. */
 static const dsd_scan_option_values* g_scan_row_options;
 static const dsd_scan_settings* g_scan_configured;
@@ -509,6 +509,22 @@ const dsd_scan_settings*
 dsd_scan_mode_configured_view(const dsd_state* state) { // NOLINT(misc-use-internal-linkage)
     (void)state;
     return g_scan_configured;
+}
+
+/* Issue #526: the configured width the analog width view reads, as scan_mode.c reads it: the stubbed configured view
+ * while one is set, dsd_opts otherwise. */
+int
+// NOLINTNEXTLINE(misc-use-internal-linkage)
+dsd_scan_mode_configured_analog_width(const dsd_opts* opts, const dsd_state* state, int kind) {
+    const dsd_scan_settings* configured = dsd_scan_mode_configured_view(state);
+    int width_hz = 0;
+    if (configured) {
+        width_hz =
+            kind == DSD_ANALOG_DEMOD_AM ? configured->analog_am_bandwidth_hz : configured->analog_nfm_bandwidth_hz;
+    } else if (opts) {
+        width_hz = kind == DSD_ANALOG_DEMOD_AM ? opts->analog_am_bandwidth_hz : opts->analog_nfm_bandwidth_hz;
+    }
+    return width_hz > 0 ? width_hz : 0;
 }
 
 dsd_scan_mode

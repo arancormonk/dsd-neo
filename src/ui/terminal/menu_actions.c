@@ -1496,8 +1496,8 @@ rtl_set_nfm_bw(void* v) {
     UiCtx* c = (UiCtx*)v;
     /* The command edits the configured width: an nfm scan row that sets its own (issue #526) keeps it, so offer the
        configured width rather than the row's. */
-    const dsd_scan_settings* configured = dsd_scan_mode_configured_view(dsd_app_get_latest_snapshot());
-    const int configured_hz = configured ? configured->analog_nfm_bandwidth_hz : c->opts->analog_nfm_bandwidth_hz;
+    const int configured_hz =
+        dsd_scan_mode_configured_analog_width(c->opts, dsd_app_get_latest_snapshot(), DSD_ANALOG_DEMOD_FM);
     ui_prompt_open_int_async("NFM bandwidth Hz (8000..25000; 0 = default 16000)", configured_hz, cb_rtl_nfm_bw, c);
 }
 

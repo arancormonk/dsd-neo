@@ -211,6 +211,12 @@ int dsd_scan_mode_set_configured_squelch(dsd_opts* opts, const dsd_state* state,
  * -1 without opts. The width is not validated. Same thread and snapshot rules as dsd_scan_mode_set_configured_squelch().
  */
 int dsd_scan_mode_set_configured_nfm_bandwidth(dsd_opts* opts, const dsd_state* state, int width_hz);
+/** The configured channel width (Hz, 0 = the default) of analog demodulator @p kind (dsd_analog_demod; anything but
+ * AM reads as NFM): what the width controls edit and a save writes, and what a row without a width of its own runs. It
+ * comes from the scan scope's configured view while a scope is live, since a row's own width (issue #526) runs over
+ * dsd_opts, and from dsd_opts otherwise; 0 when neither is given. Works on the live state (decoder thread) and on a
+ * frontend snapshot pair alike. */
+int dsd_scan_mode_configured_analog_width(const dsd_opts* opts, const dsd_state* state, int kind);
 /** Deep-copy scalar scope metadata for frontend snapshots. No live extension pointer is shared. */
 void dsd_scan_mode_copy_snapshot(dsd_state* dst, const dsd_state* src);
 /** Current class profile; combined P25 and inherited settings follow the active hunt index. */

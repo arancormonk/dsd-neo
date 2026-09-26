@@ -932,6 +932,19 @@ dsd_scan_mode_set_configured_nfm_bandwidth(dsd_opts* opts, const dsd_state* stat
     return 1;
 }
 
+int
+dsd_scan_mode_configured_analog_width(const dsd_opts* opts, const dsd_state* state, int kind) {
+    const dsd_scan_settings* configured = dsd_scan_mode_configured_view(state);
+    int width_hz = 0;
+    if (configured) {
+        width_hz =
+            kind == DSD_ANALOG_DEMOD_AM ? configured->analog_am_bandwidth_hz : configured->analog_nfm_bandwidth_hz;
+    } else if (opts) {
+        width_hz = kind == DSD_ANALOG_DEMOD_AM ? opts->analog_am_bandwidth_hz : opts->analog_nfm_bandwidth_hz;
+    }
+    return width_hz > 0 ? width_hz : 0;
+}
+
 void
 dsd_scan_mode_copy_snapshot(dsd_state* dst, const dsd_state* src) {
     if (!dst || dst == src) {
