@@ -562,6 +562,8 @@ void tetra_acelp_process_tch(const uint8_t *type2_bits, int type2_len,
     static int warned_open_failed = 0;
     static int warned_no_sink = 0;
     static int warned_control_channel = 0;
+    static double last_live_audio_time = 0.0;
+    static dsd_audio_stream *last_live_audio_stream = NULL;
 
     if (!type2_bits || !opts) {
         fprintf(stderr, "[TETRA] cannot process TCH without bits and decoder options\n");
@@ -647,6 +649,22 @@ void tetra_acelp_process_tch(const uint8_t *type2_bits, int type2_len,
                 opts ? opts->static_wav_file : 0);
             warned_no_sink = 1;
         }
+    }
+
+    /* ACELP arrives in 60 ms radio bursts, while PortAudio consumes 20 ms
+     * chunks. Prime the live ring after an idle gap so a small scheduling
+     * delay does not turn the first speech burst into an underrun. Recorded
+     * PCM remains untouched. */
+    if (opts->audio_out_type == 0 && opts->audio_out_stream &&
+        opts->slot1_on == 1 && opts->pulse_digi_rate_out == 8000) {
+        const double now = dsd_time_now_monotonic_s();
+        if (last_live_audio_stream != opts->audio_out_stream ||
+            last_live_audio_time <= 0.0 || now - last_live_audio_time > 0.25) {
+            const int16_t prefill[640] = {0}; /* 80 ms at 8 kHz */
+            dsd_audio_write(opts->audio_out_stream, prefill, 640);
+        }
+        last_live_audio_stream = opts->audio_out_stream;
+        last_live_audio_time = now;
     }
 
     for (int f = 0; f < 2; f++) {
