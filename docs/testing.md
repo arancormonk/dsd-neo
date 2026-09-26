@@ -602,13 +602,15 @@ bits from every supported word, lock nothing at every rate and SNR. `DSP_SYMBOL_
 through the real tap and checks the `Received tone: DCS` line, and the resets that clear a tone are shown to clear a
 code as well: a trunk-tuning or RTL stream generation move and an announced reset in `DSP_SYMBOL_REPLAY`,
 `RTL_SET_FREQ`, `MANUAL_TUNE` and a decode-mode change in `APP_COMMAND_QUEUE` (each named for the tone and the code
-pass), and a `-Y` row commit in `ENGINE_CHANNEL_SCAN`. That a reset clears the detector itself, not only the
-publication, is shown twice: in `DSP_SYMBOL_REPLAY` the same code running on through a generation move is neither shown
-nor logged for 300 ms after it, less than the 342 ms a lock read from scratch needs, and after the announced reset the
-inverted word locks as D047N with D023N never shown again; `DSP_ANALOG_DCS` runs the core's own reset (the carrier
-hangover running out, and `dsd_analog_rx_core_reset()` under a running code) and checks the detector is unlocked at once
-and the old code never shows again. A reset that kept a held lock fails both. `APP_CONTROL_RX_TONE_VIEW`,
-`UI_NCURSES_PRINTER_HELPERS`, `UI_QT_METRICS_MODEL` and `UI_QT_QML_CALL_LISTS` pin the `DCS D023N / D047I` text (both
+pass), a `-Y` row commit in `ENGINE_CHANNEL_SCAN`, and an `nfm-conventional` target switch in `ENGINE_TRUNK_SCAN` (the
+visit cap moving on under the carrier that carries a code, then an operator advance back). That a reset clears the
+detector itself, not only the publication, is shown twice: in `DSP_SYMBOL_REPLAY` the same code running on through a
+generation move is neither shown nor logged for 300 ms after it, less than the 342 ms a lock read from scratch needs,
+and after the announced reset the inverted word locks as D047N with D023N never shown again; `DSP_ANALOG_DCS` runs the
+core's own reset (the carrier hangover running out, and `dsd_analog_rx_core_reset()` under a running code) and checks
+the detector is unlocked at once and the old code never shows again. A reset that kept a held lock fails both.
+`APP_CONTROL_RX_TONE_VIEW`, `UI_NCURSES_PRINTER_HELPERS`, `UI_QT_METRICS_MODEL` and `UI_QT_QML_CALL_LISTS` pin the
+`DCS D023N / D047I` text (both
 spellings of the signal, canonical first, with the second one's code and polarity beside the first's), the names the
 view refuses (an unsupported code, a rotation alias, a non-canonical polarity), and the received code kept apart from a
 configured policy value. `RUNTIME_ANALOG_TONES` pins that every standard signal has exactly two standard spellings, the
