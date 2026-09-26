@@ -6118,15 +6118,45 @@ ui_note_config_width_changes(const dsd_opts* opts, const dsd_state* state, const
     }
 }
 
+/* The analog widths a command starts from (apply_cmd_scoped()). */
+typedef struct {
+    ui_analog_widths in_force;   /* taken before a suspend puts the configured ones in dsd_opts */
+    int config_apply;            /* 1: a config apply, whose configured-width changes are noted */
+    ui_analog_widths configured; /* the configured widths before a config apply */
+} ui_cmd_widths_before;
+
+static ui_cmd_widths_before
+ui_cmd_widths_before_of(const dsd_opts* opts, const dsd_state* state, const struct dsd_app_command* c) {
+    ui_cmd_widths_before before = {{0, 0}, 0, {0, 0}};
+    if (!opts) {
+        return before;
+    }
+    before.in_force.nfm_hz = opts->analog_nfm_bandwidth_hz;
+    before.in_force.am_hz = opts->analog_am_bandwidth_hz;
+    before.config_apply = c && c->id == DSD_APP_CMD_CONFIG_APPLY && state;
+    if (before.config_apply) {
+        before.configured = ui_configured_analog_widths(opts, state);
+    }
+    return before;
+}
+
+/* The row's constraint back after a command that suspended it (@p scoped) (apply_cmd_resume_scope()), then, for a
+   config apply, the configured widths it changed noted once every request it made is made
+   (ui_note_config_width_changes()). Returns -1 when the resume failed. */
+static int
+apply_cmd_resume_and_note_widths(dsd_opts* opts, dsd_state* state, int scoped, const ui_cmd_widths_before* before) {
+    const int resume_failed = scoped && apply_cmd_resume_scope(opts, state, &before->in_force) != 0;
+    if (before->config_apply) {
+        ui_note_config_width_changes(opts, state, &before->configured);
+    }
+    return resume_failed ? -1 : 0;
+}
+
 static int
 apply_cmd_scoped(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c, int guarded) {
     const int mode_update = command_updates_scan_mode(c);
     const int was_scanner = opts && opts->scanner_mode == 1;
-    /* The widths in force, taken before a suspend puts the configured ones in dsd_opts. */
-    const ui_analog_widths widths_before = {opts ? opts->analog_nfm_bandwidth_hz : 0,
-                                            opts ? opts->analog_am_bandwidth_hz : 0};
-    const int config_apply = c && c->id == DSD_APP_CMD_CONFIG_APPLY && opts && state;
-    const ui_analog_widths configured_before = config_apply ? ui_configured_analog_widths(opts, state) : widths_before;
+    const ui_cmd_widths_before widths_before = ui_cmd_widths_before_of(opts, state, c);
     const int scoped = mode_update && opts && state && dsd_scan_mode_suspend(opts, state);
     const int group_update = c
                              && (c->id == DSD_APP_CMD_IMPORT_GROUP_LIST || c->id == DSD_APP_CMD_IMPORT_GROUP_LIST_CLEAR
@@ -6139,11 +6169,7 @@ apply_cmd_scoped(dsd_opts* opts, dsd_state* state, const struct dsd_app_command*
     if (was_scanner) {
         apply_cmd_leave_scanner_scope(opts, state, guarded);
     }
-    const int resume_failed = scoped && apply_cmd_resume_scope(opts, state, &widths_before) != 0;
-    if (config_apply) {
-        ui_note_config_width_changes(opts, state, &configured_before);
-    }
-    if (resume_failed) {
+    if (apply_cmd_resume_and_note_widths(opts, state, scoped, &widths_before) != 0) {
         return UI_CMD_APPLY_FAILED;
     }
     apply_cmd_fall_back_from_am_on_pcm(opts, state, c);
