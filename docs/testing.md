@@ -641,6 +641,10 @@ per start with the onset anywhere in a word; `<dsd-neo/dsp/analog_rx.h>` sets it
   and 415 ms (500,000, 500,000, 2,000,000 and 2,500,000 starts), p99.9 at most 690 ms, the slowest 781, 910, 992 and
   1,224 ms. 23 starts took longer than a second, all at 78.125 kHz and 21 of them with 750 us, where the demodulator's
   DC block sags the most and the de-emphasis smears a code's isolated bits. None read a tone first.
+- The acquisition rule, 100,000 starts per rate (8, 44.1, 48 and 78.125 kHz) and de-emphasis at 3 and 10 dB, against the
+  same detector asking for both windows exactly: at 3 dB p95 377-416 ms against 436-666 ms (past the 450 ms target in
+  7 rows of 8), at most 0.1% of starts past 700 ms against 0.3-3.5%, and none past the 1,500 ms ceiling against 8 (the
+  slowest 1,662 ms); at 10 dB the slowest 422 ms against 553 ms, 2 of 800,000 past 520 ms.
 - A DC step at the code's onset, from a carrier off frequency, of 1, 2 and 4 times the code's deviation up or down,
   50,000 starts per rate (8, 44.1, 48 and 78.125 kHz) and condition, 75 us (and 750 us for the 4x step through the
   demodulator's DC block and a DC-coupled input): through the demodulator's DC block, a DC-coupled PCM input and a 1 Hz

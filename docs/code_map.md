@@ -884,8 +884,8 @@ installs from `src/engine/trunk_tuning.c` in `src/engine/trunk_tuning_hooks_inst
     the mean is the DC offset under the code, which a carrier off frequency steps in with the carrier and which the
     re-poled stream's 0.5 Hz pole takes about 0.3 s per 1/e to remove, holding the droop slicers on one polarity while
     it is larger than the code. A lock is one slicer reading a supported code's word twice in a row, exactly in one
-    23-bit window and within one bit in the other (both exact would need 46 clean bits in a row, which at 3 dB several
-    starts in a hundred do not deliver within 700 ms), named by `dsd_dcs_match()`. It holds while some slicer reads the
+    23-bit window and within one bit in the other (both exact would need 46 clean bits in a row, which put the 3 dB p95
+    at 436-666 ms, past the 450 ms target), named by `dsd_dcs_match()`. It holds while some slicer reads the
     expected rotation within one bit (the balance slicer exactly: with a bit of slack, the noise after a stop held a
     stopped code about twice as often), following a one-bit slip either way, or reads the locked class exactly at
     another rotation, which it then follows (the same code starting over elsewhere in its word: a radio re-keying inside

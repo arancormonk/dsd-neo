@@ -44,12 +44,14 @@
  *   5. Acquire: a slicer that reads a supported code's word twice in a row -- its newest 23
  *      decisions and the 23 before them are one rotation of that word, in either polarity,
  *      exactly in one window and within one bit in the other -- locks the code's class under its
- *      canonical name (dsd_dcs_match()). Asking for both windows exactly would lock at 3 dB only
- *      when 46 bits in a row come through clean, which several starts in a hundred do not manage
- *      within 700 ms; one bit of slack in either window makes that rare. Noise reads that way
- *      about once in 6 x 10^8 bits per droop slicer, some 50 days at 134.4 bit/s, and about 2.3
- *      times as often through the balance slicer, whose windows are balanced like a code's (once
- *      in 2.7 x 10^8 bits, some 23 days); with all five, at most once in 10^8 bits, some 8 days.
+ *      canonical name (dsd_dcs_match()). Asking for both windows exactly would lock only once
+ *      46 bits in a row come through clean: over 100,000 starts at each rate and de-emphasis the
+ *      3 dB p95 rose from 377-416 ms to 436-666 ms, past the 450 ms target in 7 rows of 8, 8
+ *      starts passed the 1,500 ms ceiling, and at 10 dB 2 of 800,000 passed the 520 ms bound (the
+ *      slowest 553 ms, against 422 ms with the slack). Noise reads that way about once in
+ *      6 x 10^8 bits per droop slicer, some 50 days at 134.4 bit/s, and about 2.3 times as often
+ *      through the balance slicer, whose windows are balanced like a code's (once in
+ *      2.7 x 10^8 bits, some 23 days); with all five, at most once in 10^8 bits, some 8 days.
  *   6. Hold: every bit the expected window rotates by one; the lock holds while some slicer reads
  *      it within one bit, the balance slicer exactly (a slip of one bit either way is followed;
  *      noise the balance slicer reads within a bit of the expected word held a stopped code past
