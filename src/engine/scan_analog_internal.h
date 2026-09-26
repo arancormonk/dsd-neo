@@ -13,6 +13,7 @@
 
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/state_fwd.h>
+#include <dsd-neo/runtime/analog_channel.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/scan_options.h>
 #include <stddef.h>
@@ -64,9 +65,28 @@ int dsd_engine_scan_width_refused(const dsd_opts* opts, int kind, int width_hz, 
 int dsd_engine_scan_warn_analog_width(const dsd_opts* opts, const dsd_state* state, const dsd_scan_option_values* row,
                                       int dsp_rate_hz, const char* label, char* brief, size_t brief_size);
 
+/** Whether the width an analog row runs -- its own --nfm-bandwidth-hz, else the configured NFM width -- is one the
+ * front end refuses at @p dsp_rate_hz (dsd_engine_scan_width_refused()), which skips the row at every visit. Quiet:
+ * dsd_engine_scan_warn_analog_width() is what names it in the log. For a skipped row, @p brief (when given) receives the
+ * status-line reason. @p row may be NULL (no options). */
+int dsd_engine_scan_analog_width_skipped(const dsd_opts* opts, const dsd_state* state,
+                                         const dsd_scan_option_values* row, int dsp_rate_hz, char* brief,
+                                         size_t brief_size);
+
+/** The rows (or trunk-scan targets) a width check found skipped at every visit: how many, and the first one's label and
+ * status-line reason. Zero-initialize it, add each skipped row in order, then put it on the status line. */
+typedef struct {
+    int count;
+    char label[96];
+    char brief[DSD_ANALOG_ERROR_TEXT_MAX];
+} dsd_engine_scan_skipped;
+
+/** Count one more skipped row, keeping @p label and @p brief when it is the first. */
+void dsd_engine_scan_skipped_add(dsd_engine_scan_skipped* skipped, const char* label, const char* brief);
+
 /** Put the rows a width check found skipped at every visit on the status line every frontend shows (the terminal,
- * Qt and Android), as the input-level advisories are: @p label and @p brief name the first of @p skipped rows; the
- * WARNING lines name each of them in the log. Nothing when @p skipped is 0. */
-void dsd_engine_scan_note_skipped_rows(dsd_state* state, int skipped, const char* label, const char* brief);
+ * Qt and Android), as the input-level advisories are: the first one's label and reason, and how many more; the WARNING
+ * lines name each of them in the log. Nothing when none was skipped. */
+void dsd_engine_scan_note_skipped_rows(dsd_state* state, const dsd_engine_scan_skipped* skipped);
 
 #endif /* DSD_NEO_SRC_ENGINE_SCAN_ANALOG_INTERNAL_H_ */

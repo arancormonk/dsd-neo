@@ -1315,21 +1315,65 @@ test_nfm_row_warnings_for_the_configured_width(void) {
     assert(strcmp(state->ui_msg, "Skipped at every visit: Scan channel 1 (150.000000 MHz) and 2 more: NFM 20 kHz does "
                                  "not fit the 16 kHz DSP rate")
            == 0);
-    /* A configured width the rate fits names nothing; one it does not names the two rows again, not row 1. */
+    /* A configured width the rate fits names nothing; one it does not names the two rows again, not row 1. The status
+       line still counts row 1, whose own width still does not fit, so it stays a full count of the rows skipped. */
     assert(dsd_scan_mode_configured_view(state) != NULL);
+    state->ui_msg[0] = '\0';
     (void)dsd_scan_mode_set_configured_nfm_bandwidth(opts, state, 12500);
     nfm_warning_rows_visit(opts, state, 8);
     assert(g_analog_warnings == 4);
+    assert(strcmp(state->ui_msg, "Skipped at every visit: Scan channel 1 (150.000000 MHz): NFM 20 kHz does not fit the "
+                                 "16 kHz DSP rate")
+           == 0);
+    state->ui_msg[0] = '\0';
     (void)dsd_scan_mode_set_configured_nfm_bandwidth(opts, state, 20000);
     nfm_warning_rows_visit(opts, state, 8);
     assert(g_analog_warnings == 6);
     assert(strstr(g_analog_warning_rows[4], "Scan channel 2 (150.000000 MHz): it sets no NFM width of its own, and the "
                                             "configured NFM bandwidth 20 kHz does not fit"));
     assert(strstr(g_analog_warning_rows[5], "Scan channel 4 "));
+    assert(strcmp(state->ui_msg, "Skipped at every visit: Scan channel 1 (150.000000 MHz) and 2 more: NFM 20 kHz does "
+                                 "not fit the 16 kHz DSP rate")
+           == 0);
     /* The unset default runs at any rate (DSP-limited where it cannot filter), so it names nothing. */
     (void)dsd_scan_mode_set_configured_nfm_bandwidth(opts, state, 0);
     nfm_warning_rows_visit(opts, state, 8);
     assert(g_analog_warnings == 6);
+    dsd_engine_channel_scan_leave(opts, state);
+    g_scan_dsp_rate_hz = 0;
+    dsd_state_trunk_lcn_free(state);
+    dsd_state_ext_free_all(state);
+    free(state);
+    free(opts);
+    tunes = reset_count = 0;
+}
+
+/* A placeholder row (frequency 0) is never tuned, so the scan start names nothing about it, neither its squelch nor
+ * its width, and the status line does not count it, as a channel-map import's count leaves it out
+ * (dsd_engine_channel_scan_refused_rows()). */
+static void
+test_nfm_placeholder_rows_owe_nothing(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
+    assert(opts && state);
+    nfm_warning_rows_setup(opts, state, AUDIO_IN_RTL, -110.0);
+    opts->analog_nfm_bandwidth_hz = 16000;
+    *dsd_state_trunk_lcn_slot(state, 3) = 0;
+    g_scan_dsp_rate_hz = 16000;
+    nfm_warning_rows_visit(opts, state, 8);
+    /* Row 2's open squelch, row 1's own 20 kHz and row 2's configured 16 kHz; row 4 inherits both the open squelch and
+       the configured width, but is neither named nor counted. */
+    assert(g_analog_warnings == 3);
+    for (int i = 0; i < g_analog_warnings; i++) {
+        assert(!strstr(g_analog_warning_rows[i], "Scan channel 4 "));
+    }
+    assert(strcmp(state->ui_msg, "Skipped at every visit: Scan channel 1 (150.000000 MHz) and 1 more: NFM 20 kHz does "
+                                 "not fit the 16 kHz DSP rate")
+           == 0);
+    char brief[DSD_ANALOG_ERROR_TEXT_MAX];
+    int first_row = -1;
+    assert(dsd_engine_channel_scan_refused_rows(opts, state, 16000, &first_row, brief, sizeof brief) == 2);
+    assert(first_row == 0 && strcmp(brief, "NFM 20 kHz does not fit the 16 kHz DSP rate") == 0);
     dsd_engine_channel_scan_leave(opts, state);
     g_scan_dsp_rate_hz = 0;
     dsd_state_trunk_lcn_free(state);
@@ -1393,6 +1437,7 @@ main(void) {
     test_nfm_row_warnings_once_per_row();
     test_nfm_row_warnings_follow_the_dsp_rate();
     test_nfm_row_warnings_for_the_configured_width();
+    test_nfm_placeholder_rows_owe_nothing();
     test_nfm_row_warnings_under_the_channel_lpf_override();
     dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
     dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));

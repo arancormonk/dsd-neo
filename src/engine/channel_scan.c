@@ -255,10 +255,14 @@ channel_scan_row_label(const dsd_state* state, int row, char* label, size_t labe
 
 /* What the rows owe the operator about their squelch, said once per row when a scan (or a newly imported map)
  * starts: a digital row's squelch that cannot gate digital acquisition on this input (issue #521), and an analog
- * row's squelch that lets noise hold it (issue #526). Neither depends on the DSP rate. */
+ * row's squelch that lets noise hold it (issue #526). Neither depends on the DSP rate. A placeholder row (frequency 0)
+ * is never tuned, so it owes nothing. */
 static void
 channel_scan_warn_rows_squelch(const dsd_opts* opts, const dsd_state* state) {
     for (int row = 0; row < state->lcn_freq_count; row++) {
+        if (*dsd_state_trunk_lcn_slot_const(state, row) == 0) {
+            continue;
+        }
         const dsd_scan_row_profile* profile = dsd_channel_profile_get(state, (size_t)row);
         const dsd_scan_option_values* values = profile ? &profile->values : NULL;
         /* An analog row's squelch gates exactly what it is for on any input: its monitor and carrier. */
@@ -272,35 +276,34 @@ channel_scan_warn_rows_squelch(const dsd_opts* opts, const dsd_state* state) {
     }
 }
 
-/* The widths the analog rows run, held to @p dsp_rate_hz: every row's, or only those of the rows that run the
- * configured NFM width (@p inherited_only, after that width alone changed). The rows skipped at every visit also reach
- * the status line, since a frontend without the log (Android) would otherwise never learn why a row is not visited. */
+/* The widths the analog rows run, held to @p dsp_rate_hz: every row's, or, after the configured NFM width alone
+ * changed (@p inherited_only), those of the rows that run it; a row with a width of its own was named at this rate
+ * already, so it is counted without being named again. Every row skipped at every visit reaches the status line, since
+ * a frontend without the log (Android) would otherwise never learn why a row is not visited. A placeholder row
+ * (frequency 0) is never tuned and is left out, as dsd_engine_channel_scan_refused_rows() leaves it out. */
 static void
 channel_scan_warn_rows_width(const dsd_opts* opts, dsd_state* state, int dsp_rate_hz, int inherited_only) {
-    int skipped = 0;
-    char first_label[64] = "";
-    char first_brief[DSD_ANALOG_ERROR_TEXT_MAX] = "";
+    dsd_engine_scan_skipped skipped = {0};
     for (int row = 0; row < state->lcn_freq_count; row++) {
-        if (!dsd_scan_mode_is_analog(dsd_channel_mode_get(state, (size_t)row))) {
+        if (*dsd_state_trunk_lcn_slot_const(state, row) == 0
+            || !dsd_scan_mode_is_analog(dsd_channel_mode_get(state, (size_t)row))) {
             continue;
         }
         const dsd_scan_row_profile* profile = dsd_channel_profile_get(state, (size_t)row);
         const dsd_scan_option_values* values = profile ? &profile->values : NULL;
-        if (inherited_only && values && (values->present & DSD_SCAN_OPT_BANDWIDTH)) {
-            continue;
-        }
         char label[64];
         char brief[DSD_ANALOG_ERROR_TEXT_MAX];
         channel_scan_row_label(state, row, label, sizeof label);
-        if (dsd_engine_scan_warn_analog_width(opts, state, values, dsp_rate_hz, label, brief, sizeof brief)
-            == DSD_ENGINE_SCAN_WIDTH_SKIPPED) {
-            if (skipped++ == 0) {
-                DSD_SNPRINTF(first_label, sizeof first_label, "%s", label);
-                DSD_SNPRINTF(first_brief, sizeof first_brief, "%s", brief);
-            }
+        const int named = inherited_only && values && (values->present & DSD_SCAN_OPT_BANDWIDTH);
+        const int row_skipped =
+            named ? dsd_engine_scan_analog_width_skipped(opts, state, values, dsp_rate_hz, brief, sizeof brief)
+                  : dsd_engine_scan_warn_analog_width(opts, state, values, dsp_rate_hz, label, brief, sizeof brief)
+                        == DSD_ENGINE_SCAN_WIDTH_SKIPPED;
+        if (row_skipped) {
+            dsd_engine_scan_skipped_add(&skipped, label, brief);
         }
     }
-    dsd_engine_scan_note_skipped_rows(state, skipped, first_label, first_brief);
+    dsd_engine_scan_note_skipped_rows(state, &skipped);
 }
 
 /* Once per map the rows' squelch, and the analog row widths once the DSP rate they must fit is known: an RTL stream
@@ -413,15 +416,27 @@ scan_width_refusal_brief(int kind, int width_hz, int dsp_rate_hz, char* brief, s
 }
 
 void
-dsd_engine_scan_note_skipped_rows(dsd_state* state, int skipped, const char* label, const char* brief) {
-    if (!state || skipped <= 0 || !label || !brief) {
+dsd_engine_scan_skipped_add(dsd_engine_scan_skipped* skipped, const char* label, const char* brief) {
+    if (!skipped) {
         return;
     }
-    if (skipped == 1) {
-        DSD_SNPRINTF(state->ui_msg, sizeof state->ui_msg, "Skipped at every visit: %s: %s", label, brief);
+    if (skipped->count++ == 0) {
+        DSD_SNPRINTF(skipped->label, sizeof skipped->label, "%s", label ? label : "");
+        DSD_SNPRINTF(skipped->brief, sizeof skipped->brief, "%s", brief ? brief : "");
+    }
+}
+
+void
+dsd_engine_scan_note_skipped_rows(dsd_state* state, const dsd_engine_scan_skipped* skipped) {
+    if (!state || !skipped || skipped->count <= 0) {
+        return;
+    }
+    if (skipped->count == 1) {
+        DSD_SNPRINTF(state->ui_msg, sizeof state->ui_msg, "Skipped at every visit: %s: %s", skipped->label,
+                     skipped->brief);
     } else {
-        DSD_SNPRINTF(state->ui_msg, sizeof state->ui_msg, "Skipped at every visit: %s and %d more: %s", label,
-                     skipped - 1, brief);
+        DSD_SNPRINTF(state->ui_msg, sizeof state->ui_msg, "Skipped at every visit: %s and %d more: %s", skipped->label,
+                     skipped->count - 1, skipped->brief);
     }
     state->ui_msg_expire = time(NULL) + 5;
 }
@@ -480,6 +495,25 @@ dsd_engine_scan_warn_analog_width(const dsd_opts* opts, const dsd_state* state, 
 }
 
 int
+dsd_engine_scan_analog_width_skipped(const dsd_opts* opts, const dsd_state* state, const dsd_scan_option_values* row,
+                                     int dsp_rate_hz, char* brief, size_t brief_size) {
+    if (brief && brief_size > 0U) {
+        brief[0] = '\0';
+    }
+    if (!opts) {
+        return 0;
+    }
+    const int width_hz = (row && (row->present & DSD_SCAN_OPT_BANDWIDTH))
+                             ? row->channel_bw_hz
+                             : dsd_scan_mode_configured_analog_width(opts, state, DSD_ANALOG_DEMOD_FM);
+    if (!dsd_engine_scan_width_refused(opts, DSD_ANALOG_DEMOD_FM, width_hz, dsp_rate_hz, NULL, 0U)) {
+        return 0;
+    }
+    scan_width_refusal_brief(DSD_ANALOG_DEMOD_FM, width_hz, dsp_rate_hz, brief, brief_size);
+    return 1;
+}
+
+int
 dsd_engine_channel_scan_refused_rows(const dsd_opts* opts, const dsd_state* state, int dsp_rate_hz, int* first_row,
                                      char* brief, size_t brief_size) {
     if (first_row) {
@@ -491,7 +525,6 @@ dsd_engine_channel_scan_refused_rows(const dsd_opts* opts, const dsd_state* stat
     if (!opts || !state || opts->audio_in_type != AUDIO_IN_RTL) {
         return 0;
     }
-    const int configured_hz = dsd_scan_mode_configured_analog_width(opts, state, DSD_ANALOG_DEMOD_FM);
     int refused = 0;
     for (int row = 0; row < state->lcn_freq_count; row++) {
         if (*dsd_state_trunk_lcn_slot_const(state, row) == 0
@@ -499,17 +532,13 @@ dsd_engine_channel_scan_refused_rows(const dsd_opts* opts, const dsd_state* stat
             continue;
         }
         const dsd_scan_row_profile* profile = dsd_channel_profile_get(state, (size_t)row);
-        const int width_hz = (profile && (profile->values.present & DSD_SCAN_OPT_BANDWIDTH))
-                                 ? profile->values.channel_bw_hz
-                                 : configured_hz;
-        if (!dsd_engine_scan_width_refused(opts, DSD_ANALOG_DEMOD_FM, width_hz, dsp_rate_hz, NULL, 0U)) {
+        /* The first refused row's reason only. */
+        if (!dsd_engine_scan_analog_width_skipped(opts, state, profile ? &profile->values : NULL, dsp_rate_hz,
+                                                  refused == 0 ? brief : NULL, refused == 0 ? brief_size : 0U)) {
             continue;
         }
-        if (refused++ == 0) {
-            if (first_row) {
-                *first_row = row;
-            }
-            scan_width_refusal_brief(DSD_ANALOG_DEMOD_FM, width_hz, dsp_rate_hz, brief, brief_size);
+        if (refused++ == 0 && first_row) {
+            *first_row = row;
         }
     }
     return refused;

@@ -10790,6 +10790,78 @@ test_nfm_target_configured_width_held_to_the_dsp_rate(void) {
     return 0;
 }
 
+/* The status line counts every target skipped at every visit. After the configured NFM width alone changes, only the
+ * targets that run it are named again in the log; a target whose own width the rate cannot filter was named when the
+ * scan started and is not named again, but it is still counted beside them. */
+static int
+test_nfm_target_status_counts_every_skipped_target(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    char target_path[DSD_TEST_PATH_MAX];
+    static dsd_opts opts;
+    static dsd_state state;
+    if (make_temp_dir(dir, sizeof dir) != 0
+        || write_targets_file_with_header(dir, k_squelch_targets_header,
+                                          "own,nfm-conventional,154430000,,250,250,,"
+                                          "--nfm-bandwidth-hz 20000 --squelch-db -50\n"
+                                          "plain,nfm-conventional,154445000,,250,250,,--squelch-db -50\n"
+                                          "dmr,dmr-conventional,461000000,,250,250,,\n",
+                                          target_path, sizeof target_path)
+               != 0) {
+        return 1;
+    }
+    reset_scan_opts_state(&opts, &state);
+    DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", target_path);
+    opts.analog_nfm_bandwidth_hz = 12500;
+    dsd_test_capture_stderr cap;
+    char buf[16384] = {0};
+    char err[256] = {0};
+    if (dsd_test_capture_stderr_begin(&cap, "trunkscanskipcount") != 0) {
+        cleanup_paths(dir, target_path, NULL);
+        return 1;
+    }
+    g_scan_tune_refuses_unfit_width = 1;
+    g_scan_tune_width_refusals = 0;
+    g_scan_dsp_rate_hz = 16000;
+    trunk_scan_test_set_now(0.0);
+    int rc = dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err);
+    char at_start[sizeof state.ui_msg];
+    DSD_SNPRINTF(at_start, sizeof at_start, "%s", state.ui_msg);
+    state.ui_msg[0] = '\0';
+    (void)dsd_scan_mode_set_configured_nfm_bandwidth(&opts, &state, 20000);
+    for (int i = 0; i < 4; i++) {
+        trunk_scan_test_set_now(0.26 * (double)(i + 1));
+        dsd_engine_trunk_scan_tick(&opts, &state);
+    }
+    char after_edit[sizeof state.ui_msg];
+    DSD_SNPRINTF(after_edit, sizeof after_edit, "%s", state.ui_msg);
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    (void)dsd_test_capture_stderr_end(&cap);
+    (void)dsd_test_capture_stderr_read(&cap, buf, sizeof buf);
+    g_scan_tune_refuses_unfit_width = 0;
+    g_scan_dsp_rate_hz = 0;
+    trunk_scan_test_clear_now();
+    cleanup_paths(dir, target_path, NULL);
+    const int own_named = count_text(buf, "Trunk scan target 'own': NFM bandwidth 20 kHz does not fit the 16 kHz DSP "
+                                          "rate");
+    const int plain_named = count_text(buf, "Trunk scan target 'plain': it sets no NFM width of its own, and the "
+                                            "configured NFM bandwidth 20 kHz does not fit the 16 kHz DSP rate");
+    const int start_ok =
+        strcmp(at_start, "Skipped at every visit: Trunk scan target 'own': NFM 20 kHz does not fit the 16 kHz DSP rate")
+        == 0;
+    const int edit_ok =
+        strcmp(after_edit, "Skipped at every visit: Trunk scan target 'own' and 1 more: NFM 20 kHz does "
+                           "not fit the 16 kHz DSP rate")
+        == 0;
+    if (rc != 0 || own_named != 1 || plain_named != 1 || !start_ok || !edit_ok) {
+        DSD_FPRINTF(stderr,
+                    "skipped target count (rc=%d %s): own named %d, plain named %d, at start '%s', after the edit "
+                    "'%s'\n%s\n",
+                    rc, err, own_named, plain_named, at_start, after_edit, buf);
+        return 1;
+    }
+    return 0;
+}
+
 /* What the front end was last asked for live (issue #526): the analog profile's family, demodulator and width. */
 static int g_live_analog_profile_calls;
 static int g_live_analog_profile_width_hz;
@@ -11034,6 +11106,7 @@ main(void) {
     rc |= run_with_default_tune_hook(test_nfm_target_refused_width_skipped_quietly);
     rc |= run_with_default_tune_hook(test_nfm_target_width_skipped_under_channel_lpf_override);
     rc |= run_with_default_tune_hook(test_nfm_target_configured_width_held_to_the_dsp_rate);
+    rc |= run_with_default_tune_hook(test_nfm_target_status_counts_every_skipped_target);
     rc |= run_with_default_tune_hook(test_nfm_target_width_edit_during_a_pending_retune);
     return rc;
 }
