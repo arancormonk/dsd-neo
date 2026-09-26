@@ -558,7 +558,9 @@ end checks a width again where the change lands, between DSP blocks: should a re
 meantime and the width no longer fit, the width is put back to the one the front end kept, with the same message,
 rather than staying configured while the filter runs another. A switch to Analog the front end refuses that way stays
 on the digital family, so the decoder goes back to the mode it had, with the message (`Failed: Analog -> ...`); a
-switch to AM, or between AM and Analog, is put back the same way (`Failed: AM -> ...`). AM refusals read the same
+switch to AM, or between AM and Analog, is put back the same way (`Failed: AM -> ...`). Switches made one after
+another before the front end took the first (AM, then Analog) go back to the mode the front end still runs, the one
+before the first. AM refusals read the same
 way with AM's values (`AM 20 kHz does not fit the 16 kHz DSP rate (max 13.2 kHz); use a 24 or 48 kHz DSP bandwidth`),
 and a DSP bandwidth that filters no AM width at all says to keep a wider one (`DSP BW 6 kHz cannot filter AM 6 kHz
 (max 4.2 kHz); no AM width fits it; keep a wider DSP bandwidth`), since narrowing cannot help and AM has no unset

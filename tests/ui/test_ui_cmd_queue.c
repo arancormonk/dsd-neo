@@ -7999,6 +7999,118 @@ test_refused_switch_between_fm_and_am_puts_the_mode_back(void) {
     return rc;
 }
 
+/* A DMR session with explicit NFM and AM widths the front end refuses once a retune has moved its rate, switched to AM
+   and on to Analog before the front end took the AM switch: the request queue is last-writer-wins, so the Analog
+   request replaced the AM one, which never ran. The Analog switch is a second DECODE_MODE_SET in a later drain, or
+   (@p one_drain) a config's [mode] queued with the AM one and applied in the same drain (two DECODE_MODE_SETs queued
+   together coalesce into the last). */
+static void
+switch_dmr_to_am_then_analog(dsd_opts* opts, dsd_state* state, RtlSdrContext* fake_ctx, int one_drain) {
+    init_dmr_session_with_nfm_width(opts, state, fake_ctx, 16000);
+    opts->analog_am_bandwidth_hz = 15000;
+    (void)dsd_app_command_set_i32(DSD_APP_CMD_DECODE_MODE_SET, (int32_t)DSDCFG_MODE_AM);
+    if (one_drain) {
+        dsdneoUserConfig cfg;
+        DSD_MEMSET(&cfg, 0, sizeof cfg);
+        cfg.has_mode = 1;
+        cfg.decode_mode = DSDCFG_MODE_ANALOG;
+        (void)dsd_app_command_submit(DSD_APP_CMD_CONFIG_APPLY, &cfg, sizeof(cfg));
+    } else {
+        (void)dsd_app_drain_cmds(opts, state);
+        (void)dsd_app_command_set_i32(DSD_APP_CMD_DECODE_MODE_SET, (int32_t)DSDCFG_MODE_ANALOG);
+    }
+    (void)dsd_app_drain_cmds(opts, state);
+}
+
+/* The front end's last receive request asked for the digital family, which it runs, with the symbol profile after it. */
+static int
+expect_digital_family_requested_last(const char* label) {
+    int rc = expect_int(label, g_analog_req_family, DSD_RX_FAMILY_DIGITAL);
+    rc |= expect_int(label, g_demod_req_calls > 0 && g_demod_req_order > g_analog_req_order, 1);
+    return rc;
+}
+
+/*
+ * Issue #524: switches onto the monitor and between its kinds made back to back, before the front end has taken the
+ * first. It never ran the first (its requests are last-writer-wins), so a refusal of the last one puts the decoder back
+ * on the mode the front end still runs, the one before the first switch, and republishes it, rather than on the mode
+ * in between: that one's own request would be refused too once the rate has moved, leaving the decoder on AM against a
+ * digital front end. The same holds when the last is refused at once, and whether the two switches came in one drain
+ * or two. A switch the front end took before the next one began stays the one a refusal puts back.
+ */
+static int
+test_refused_switch_after_a_pending_switch_puts_the_running_mode_back(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static void* fake_ctx[2];
+    static const char k_refusal[] = "Failed: Analog -> NFM 16 kHz does not fit the 16 kHz DSP rate (max 13.2 kHz); use "
+                                    "a 24 or 48 kHz DSP bandwidth";
+    int rc = 0;
+
+    /* DMR -> AM -> Analog in two drains, the last refused where it landed: the front end stayed digital. */
+    switch_dmr_to_am_then_analog(&opts, &state, (RtlSdrContext*)fake_ctx, 0);
+    rc |= expect_int("pending chain: on Analog while pending",
+                     opts.analog_only == 1 && opts.analog_demod == DSD_ANALOG_DEMOD_FM, 1);
+    demod_thread_refuses_analog_keeping(0, 0);
+    state.ui_msg[0] = '\0';
+    (void)dsd_app_drain_cmds(&opts, &state);
+    rc |= expect_back_on_dmr("pending chain landing: back on DMR", &opts, &state);
+    rc |= expect_digital_family_requested_last("pending chain landing: the digital family republished");
+
+    /* ... in one drain, Analog by a config's [mode]. */
+    freeState(&state);
+    switch_dmr_to_am_then_analog(&opts, &state, (RtlSdrContext*)fake_ctx, 1);
+    rc |= expect_int("one-drain chain: on Analog while pending",
+                     opts.analog_only == 1 && opts.analog_demod == DSD_ANALOG_DEMOD_FM, 1);
+    rc |= expect_int("one-drain chain: both switches requested", g_analog_req_calls, 2);
+    demod_thread_refuses_analog_keeping(0, 0);
+    state.ui_msg[0] = '\0';
+    (void)dsd_app_drain_cmds(&opts, &state);
+    rc |= expect_back_on_dmr("one-drain chain landing: back on DMR", &opts, &state);
+    rc |= expect_digital_family_requested_last("one-drain chain landing: the digital family republished");
+
+    /* ... the last refused by its request. */
+    freeState(&state);
+    init_dmr_session_with_nfm_width(&opts, &state, (RtlSdrContext*)fake_ctx, 16000);
+    opts.analog_am_bandwidth_hz = 15000;
+    (void)dsd_app_command_set_i32(DSD_APP_CMD_DECODE_MODE_SET, (int32_t)DSDCFG_MODE_AM);
+    (void)dsd_app_drain_cmds(&opts, &state);
+    g_analog_req_result = -1;
+    state.ui_msg[0] = '\0';
+    (void)dsd_app_command_set_i32(DSD_APP_CMD_DECODE_MODE_SET, (int32_t)DSDCFG_MODE_ANALOG);
+    (void)dsd_app_drain_cmds(&opts, &state);
+    rc |= expect_back_on_dmr("pending chain request refused: back on DMR", &opts, &state);
+    rc |= expect_digital_family_requested_last("pending chain request refused: the digital family republished");
+    g_analog_req_result = 0;
+
+    /* The AM switch taken before the Analog one: a refusal of Analog, the front end keeping AM, goes back to AM. */
+    freeState(&state);
+    init_dmr_session_with_nfm_width(&opts, &state, (RtlSdrContext*)fake_ctx, 16000);
+    opts.analog_am_bandwidth_hz = 15000;
+    (void)dsd_app_command_set_i32(DSD_APP_CMD_DECODE_MODE_SET, (int32_t)DSDCFG_MODE_AM);
+    (void)dsd_app_drain_cmds(&opts, &state);
+    demod_thread_lands(0);
+    g_fake_analog_family = 1;
+    (void)dsd_app_drain_cmds(&opts, &state);
+    (void)dsd_app_command_set_i32(DSD_APP_CMD_DECODE_MODE_SET, (int32_t)DSDCFG_MODE_ANALOG);
+    (void)dsd_app_drain_cmds(&opts, &state);
+    demod_thread_refuses_analog_keeping_kind(1, DSD_ANALOG_DEMOD_AM, 15000);
+    state.ui_msg[0] = '\0';
+    (void)dsd_app_drain_cmds(&opts, &state);
+    rc |= expect_int("taken chain: back on AM",
+                     opts.analog_only == 1 && opts.analog_demod == DSD_ANALOG_DEMOD_AM
+                         && dsd_infer_decode_mode_preset(&opts) == DSDCFG_MODE_AM,
+                     1);
+    rc |= expect_toast("taken chain: says why", &state, k_refusal);
+
+    g_fake_analog_family = 0;
+    opts.analog_nfm_bandwidth_hz = 0;
+    opts.analog_am_bandwidth_hz = 0;
+    state.rtl_ctx = NULL;
+    freeState(&state);
+    return rc;
+}
+
 /*
  * Issue #524: a switch between FM and AM on the running monitor drops the analog monitor block the decoder has
  * part-collected, as a family change does: it holds the old kind's audio (the FM discriminator reading an AM carrier,
@@ -8922,6 +9034,7 @@ main(void) {
     rc |= test_refused_switch_onto_analog_retimes_the_mode();
     rc |= test_nfm_width_changes_held_to_channel_lpf_off();
     rc |= test_refused_switch_between_fm_and_am_puts_the_mode_back();
+    rc |= test_refused_switch_after_a_pending_switch_puts_the_running_mode_back();
     rc |= test_fm_am_switch_discards_partial_analog_block();
     rc |= test_am_width_refused_where_it_lands();
     rc |= test_am_held_to_channel_lpf_off();

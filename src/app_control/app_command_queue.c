@@ -3703,7 +3703,10 @@ decode_mode_set_early_verdict(const dsd_opts* opts, dsd_state* state, const stru
  * configured settings are still the ones the switch left; the row-scoped options (squelch, forcing, the voice gate) and
  * the channel widths (a width command made after the switch) stay as they are, since the switch did not set them.
  * Staged before such a command changes anything, armed once it has switched a running RTL session, and dropped once
- * the front end takes the switch (or a request after it).
+ * the front end takes the switch (or a request after it). A switch made straight over one still armed (from the
+ * settings that one left, before any drain found it taken) keeps that one's settings from before: the front end's
+ * requests are last-writer-wins, so it never ran the settings in between, and going back to them would ask it for a
+ * profile of their own that the moved rate can refuse as well.
  */
 static dsd_scan_settings g_analog_entry_staged;
 
@@ -3720,14 +3723,19 @@ ui_stage_analog_entry(const dsd_opts* opts, const dsd_state* state) {
 }
 
 /* The configured options now run the analog family where they did not (@p was_analog_family), or another analog kind
-   than @p was_kind: note the switch while a running RTL front end has it to make. */
+   than @p was_kind: note the switch while a running RTL front end has it to make. One that supersedes a switch still
+   armed keeps that switch's settings from before it (g_analog_entry). */
 static void
 ui_arm_analog_entry(const dsd_opts* opts, const dsd_state* state, int was_analog_family, int was_kind) {
     if ((was_analog_family && was_kind == opts->analog_demod) || !dsd_opts_is_analog_family(opts)
         || opts->audio_in_type != AUDIO_IN_RTL || !state->rtl_ctx) {
         return;
     }
-    g_analog_entry.before = g_analog_entry_staged;
+    const int supersedes =
+        g_analog_entry.armed && dsd_scan_settings_equal(&g_analog_entry_staged, &g_analog_entry.after, 0);
+    if (!supersedes) {
+        g_analog_entry.before = g_analog_entry_staged;
+    }
     dsd_scan_settings_capture(opts, state, &g_analog_entry.after);
     g_analog_entry.kind = opts->analog_demod;
     g_analog_entry.armed = 1;

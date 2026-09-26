@@ -608,7 +608,9 @@ installs from `src/engine/trunk_tuning.c` in `src/engine/trunk_tuning_hooks_inst
   rate in between gets it refused there, logged, with the front end kept on the digital family. The decoder then goes
   back to the configured settings it had before the switch (`ui_revert_analog_entry()`, from a snapshot
   `ui_arm_analog_entry()` takes when the switch commits, keeping the row-scoped options in force and only while the
-  configured settings are still the ones the switch left; under a scan row through the scope's suspend and resume):
+  configured settings are still the ones the switch left; under a scan row through the scope's suspend and resume; a
+  switch made over one still armed, such as AM then Analog before the front end took AM, keeps the first one's
+  snapshot, since the last-writer-wins requests never ran the settings in between):
   at once for a refusal by the request, which fails the command (`svc_publish_symbol_profile()` returns -1), and at
   the next command drain for one where it landed (`svc_take_monitor_request_outcome()` reports the front end kept the
   digital family, `ui_settle_receive_requests()`).
