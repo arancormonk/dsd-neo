@@ -1054,7 +1054,9 @@ Notes:
     requests still queued from before it was attached (`rtl_stream_retire_requests_before_family()`, by the request
     number it records): a width or mode command drained just before the scan advanced would otherwise be taken at the
     demod thread's next block boundary and put the front end back on the family or width the row just left. They
-    settle as replaced; a symbol profile queued after the attach is the row's own and still applies. An
+    settle as replaced; a symbol profile queued after the attach is the row's own and still applies. The retire checks
+    for a superseding family request again under the request lock (`g_profile_req_m`), which orders the decoder's
+    requests against it: one made while the retune lands supersedes the family as one made before does. An
     analog width is checked again against the demod rate it lands on, both a live request when the demod thread
     consumes it and a retune profile when the retune lands (a retune can move the rate after the request was checked
     against the published one); a width that rate cannot realize is refused (logged once per kind, width and rate) and

@@ -655,12 +655,17 @@ int rtl_stream_test_retune_analog_profile_at_rate(uint32_t target_hz, int rate_h
                                                   int with_cqpsk_symbol_profile,
                                                   rtl_stream_test_retune_analog_result* out);
 
-/* A live request queued for the demod thread before a scan row's retune profile is queued, and still unconsumed when
- * the retune lands (rtl_stream_test_retune_step::queued_live_request). */
+/* A live request queued for the demod thread around a scan row's retune, and still unconsumed when the retune lands
+ * (rtl_stream_test_retune_step::queued_live_request): queued before the row's retune profile is, or made on the
+ * decoder's thread while the retune lands, once the controller has found the profile's family not superseded
+ * (rtl_stream_retune_family_superseded()) and before it retires the requests older than that family. */
 enum {
     RTL_STREAM_TEST_QUEUED_NONE = 0,
     RTL_STREAM_TEST_QUEUED_NFM_WIDTH = 1,    /* an NFM width command: the analog family at queued_live_width_hz */
     RTL_STREAM_TEST_QUEUED_SYMBOL_AFTER = 2, /* the same, then a C4FM symbol profile queued once the profile is */
+    RTL_STREAM_TEST_QUEUED_NFM_WIDTH_AT_LANDING = 3, /* an NFM width command at queued_live_width_hz, while it lands */
+    RTL_STREAM_TEST_QUEUED_DIGITAL_AT_LANDING = 4,   /* a scan leave to a digital session while it lands: the digital
+                                                        family, then its C4FM symbol profile */
 };
 
 /* One scan row's retune (issue #526): the receive family its profile attaches, and the live family request a scanner

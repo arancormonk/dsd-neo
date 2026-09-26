@@ -9046,29 +9046,47 @@ rtl_stream_retune_analog_profile_fits(const RtlRetuneProfile* profile) {
                                                      "The retune keeps the current receive profile.");
 }
 
+#if defined(DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS)
+/* Called by rtl_stream_apply_retune_family() once it found the profile's family not superseded, before it retires the
+ * requests older than that family: a request the decoder makes on its own thread can land there. */
+static void (*g_test_retune_family_checked_hook)(void*) = NULL;
+static void* g_test_retune_family_checked_ctx = NULL;
+#endif
+
 /* Drop the live requests still queued that are older than @p profile's family (issue #526): made before the family was
  * attached, such as a width or mode command the decoder drained just before a scan row's retune. The retune lands the
  * family the scanner wants now, and the demod thread would otherwise take the older request at its next block boundary
- * and put the front end back on the family or width the row just left. A request made after the attach stays: a family
- * request would have superseded the profile (rtl_stream_retune_family_superseded()), so it is a symbol profile for the
- * row on air. Returns the number the dropped requests settle through once the family has landed (0: none): as replaced
- * by a later request, never refused (rtl_stream_receive_request_outcome()). Called with the demod thread idle. */
-static uint32_t
-rtl_stream_retire_requests_before_family(const RtlRetuneProfile* profile) {
+ * and put the front end back on the family or width the row just left. A request made after the attach stays.
+ *
+ * Returns 0, and leaves the queue alone, when a live family request made after the attach superseded the profile after
+ * all: the decoder makes its requests on its own thread, so one can land after the caller's own check
+ * (rtl_stream_retune_family_superseded()), and only this lock orders it against the retire. A request counts itself
+ * (g_live_family_requests) before it takes the lock to queue, so under the lock an unchanged count means no family
+ * request made since the attach is queued: a request newer than the attach is a symbol profile for the row on air.
+ * Otherwise returns 1 with @p out_retired_through the number the dropped requests settle through once the family has
+ * landed (0: none): as replaced by a later request, never refused (rtl_stream_receive_request_outcome()). Called with
+ * the demod thread idle. */
+static int
+rtl_stream_retire_requests_before_family(const RtlRetuneProfile* profile, uint32_t* out_retired_through) {
+    *out_retired_through = 0U;
     std::lock_guard<std::mutex> lock(g_profile_req_m);
+    if (rtl_stream_retune_family_superseded(profile)) {
+        return 0;
+    }
     if (!g_profile_req_pending.load(std::memory_order_acquire)) {
-        return 0U;
+        return 1;
     }
     const uint32_t newest = g_rx_req_seq.load(std::memory_order_relaxed);
     if (newest == profile->family_request_seq) {
         g_profile_req_pending.store(0, std::memory_order_relaxed);
         g_profile_req_has_demod = 0;
         g_profile_req_analog_family = -1;
-        return newest;
+        *out_retired_through = newest;
+        return 1;
     }
     /* A symbol profile followed the attach and keeps the queue; only the older family request goes, settled with it. */
     g_profile_req_analog_family = -1;
-    return 0U;
+    return 1;
 }
 
 /* Settle every request through @p seq (0: none), unless a later settlement already did. */
@@ -9093,7 +9111,8 @@ enum {
  * superseded by a live family request made after it was queued, which put the front end on the family (and the symbol
  * profile) wanted now, or asks for an analog channel the demod rate cannot run (refused, and the front end keeps its
  * receive profile). A family that lands retires the live requests queued before it
- * (rtl_stream_retire_requests_before_family()). */
+ * (rtl_stream_retire_requests_before_family()), which checks for a superseding request again under the request lock:
+ * one made while the profile lands supersedes it as one made before does. */
 static int
 rtl_stream_apply_retune_family(const RtlRetuneProfile* profile) {
     if (profile->analog_family < 0) {
@@ -9108,7 +9127,17 @@ rtl_stream_apply_retune_family(const RtlRetuneProfile* profile) {
     const int levels_valid = (profile->levels == 2 || profile->levels == 4) ? 1 : 0;
     const int next_symbol_rate_hz = (profile->symbol_rate_hz > 0 && levels_valid) ? profile->symbol_rate_hz : 0;
     const int gate_armed = rtl_stream_enter_demod_family_switch_gate();
-    const uint32_t retired_through = rtl_stream_retire_requests_before_family(profile);
+#if defined(DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS)
+    if (g_test_retune_family_checked_hook) {
+        g_test_retune_family_checked_hook(g_test_retune_family_checked_ctx);
+    }
+#endif
+    uint32_t retired_through = 0U;
+    if (!rtl_stream_retire_requests_before_family(profile, &retired_through)) {
+        /* Superseded while it landed: the later request applies at the demod thread's next block boundary. */
+        rtl_stream_leave_demod_family_switch_gate(gate_armed);
+        return RTL_RETUNE_FAMILY_DONE;
+    }
     rtl_stream_apply_analog_profile_params(profile->analog_family, profile->analog_kind, profile->analog_width_hz,
                                            profile->cqpsk_enable, next_symbol_rate_hz);
     rtl_stream_settle_requests_through(retired_through);
@@ -12623,6 +12652,30 @@ family_test_queue_with_pipeline(int family, int width_hz, int symbol_profile) {
     g_stream = NULL;
 }
 
+namespace {
+/* A live request made while a retune lands (RTL_STREAM_TEST_QUEUED_*_AT_LANDING), and the number it was given. */
+struct FamilyTestLandingRequest {
+    int kind;
+    int width_hz;
+    uint32_t seq;
+};
+} // namespace
+
+/* g_test_retune_family_checked_hook for a FamilyTestLandingRequest: the request, made once. */
+static void
+family_test_request_at_landing(void* ctx) {
+    FamilyTestLandingRequest* request = static_cast<FamilyTestLandingRequest*>(ctx);
+    if (request->kind == RTL_STREAM_TEST_QUEUED_DIGITAL_AT_LANDING) {
+        family_test_queue_with_pipeline(DSD_RX_FAMILY_DIGITAL, 0, 1);
+    } else if (request->kind == RTL_STREAM_TEST_QUEUED_NFM_WIDTH_AT_LANDING) {
+        family_test_queue_with_pipeline(DSD_RX_FAMILY_ANALOG, request->width_hz, 0);
+    } else {
+        return;
+    }
+    request->kind = RTL_STREAM_TEST_QUEUED_NONE;
+    request->seq = rtl_stream_receive_request_seq();
+}
+
 /* One step of rtl_stream_test_retune_profile_sequence(): queue, take and land @p step's profile on @p target_hz. */
 static void
 family_test_land_retune_step(const dsd_opts* opts, uint32_t target_hz, const rtl_stream_test_retune_step* step,
@@ -12631,7 +12684,8 @@ family_test_land_retune_step(const dsd_opts* opts, uint32_t target_hz, const rtl
     rtl_stream_clear_pending_retune_profile();
     family_test_live_family_request(step->live_family_before);
     uint32_t queued_seq = 0U;
-    if (step->queued_live_request != RTL_STREAM_TEST_QUEUED_NONE) {
+    if (step->queued_live_request == RTL_STREAM_TEST_QUEUED_NFM_WIDTH
+        || step->queued_live_request == RTL_STREAM_TEST_QUEUED_SYMBOL_AFTER) {
         family_test_queue_with_pipeline(DSD_RX_FAMILY_ANALOG, step->queued_live_width_hz, 0);
         queued_seq = rtl_stream_receive_request_seq();
     }
@@ -12647,10 +12701,18 @@ family_test_land_retune_step(const dsd_opts* opts, uint32_t target_hz, const rtl
     RtlRetuneProfile profile{};
     out->taken = rtl_stream_take_pending_retune_profile(&profile, 7U, target_hz);
     family_test_live_family_request(step->live_family_after_take);
+    FamilyTestLandingRequest landing_request = {step->queued_live_request, step->queued_live_width_hz, 0U};
+    g_test_retune_family_checked_hook = family_test_request_at_landing;
+    g_test_retune_family_checked_ctx = &landing_request;
     const uint32_t previous_hz = controller.last_applied_freq_hz.load(std::memory_order_acquire);
     controller_finalize_rate_chain(&controller, opts, target_hz, /*mark_reconfigure=*/1,
                                    DemodRetuneResetReason::FrequencyRetune, previous_hz, demod.rate_out,
                                    out->taken ? &profile : NULL);
+    g_test_retune_family_checked_hook = NULL;
+    g_test_retune_family_checked_ctx = NULL;
+    if (landing_request.seq != 0U) {
+        queued_seq = landing_request.seq;
+    }
     out->applied_family = demod.analog_family;
     out->applied_width_hz = demod.channel_lpf_width_hz;
     out->applied_output_kind = demod.output_kind;

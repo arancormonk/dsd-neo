@@ -772,6 +772,40 @@ test_retune_family_retires_older_queued_requests(void) {
     return failed;
 }
 
+/* A live request the decoder makes while a row's retune lands (issue #526), after the controller found the retune's
+ * family not superseded and before it retired the requests older than that family, is newer than the family all the
+ * same: a scan leave back to a digital session, or a width command. The retune lands no family then, as it would for a
+ * request made before it landed, and the demod thread's next block boundary applies the request. */
+static int
+test_retune_family_superseded_while_it_lands(void) {
+    const rtl_stream_test_retune_step steps[] = {
+        {DSD_RX_FAMILY_ANALOG, DSD_ANALOG_DEMOD_FM, 12500, 0, -1, -1, RTL_STREAM_TEST_QUEUED_NONE, 0},
+        {DSD_RX_FAMILY_ANALOG, DSD_ANALOG_DEMOD_FM, 11250, 0, -1, -1, RTL_STREAM_TEST_QUEUED_DIGITAL_AT_LANDING, 0},
+        {DSD_RX_FAMILY_ANALOG, DSD_ANALOG_DEMOD_FM, 12500, 0, -1, -1, RTL_STREAM_TEST_QUEUED_NFM_WIDTH_AT_LANDING,
+         16000},
+    };
+    rtl_stream_test_retune_landing r[3];
+    DSD_MEMSET(r, 0, sizeof r);
+    int failed = expect_int_eq("landing request hook", rtl_stream_test_retune_profile_sequence(steps, 3U, r), 0);
+    failed |= expect_landing("nfm row", &r[0], 1, 12500, DSD_DEMOD_OUTPUT_AUDIO_MONITOR);
+
+    failed |= expect_int_eq("leave while landing: the row's width not applied", r[1].applied_width_hz, 12500);
+    failed |= expect_int_eq("leave while landing: digital at the boundary", r[1].boundary_family, 0);
+    failed |= expect_int_eq("leave while landing: on the session's C4FM profile", r[1].boundary_output_kind,
+                            DSD_DEMOD_OUTPUT_FSK_DISCRIMINATOR);
+    failed |= expect_int_eq("leave while landing: the request settled", r[1].queued_request_outcome,
+                            RTL_STREAM_RX_REQUEST_SETTLED);
+
+    failed |= expect_int_eq("width while landing: the row's family not applied", r[2].applied_family, 0);
+    failed |= expect_int_eq("width while landing: analog at the boundary", r[2].boundary_family, 1);
+    failed |= expect_int_eq("width while landing: at the command's width", r[2].boundary_width_hz, 16000);
+    failed |=
+        expect_int_eq("width while landing: on the monitor", r[2].boundary_output_kind, DSD_DEMOD_OUTPUT_AUDIO_MONITOR);
+    failed |= expect_int_eq("width while landing: the request settled", r[2].queued_request_outcome,
+                            RTL_STREAM_RX_REQUEST_SETTLED);
+    return failed;
+}
+
 /* The live family requests the stream accepts are counted, running stream or not, and a refused one is not (issue
  * #526): the -Y scanner compares the count across a row's outstanding retune, whose family a request counted meanwhile
  * has superseded. */
@@ -1615,6 +1649,7 @@ main(void) {
     failed |= test_retune_profiles_land_each_rows_family_and_width();
     failed |= test_retune_family_superseded_by_a_later_live_request();
     failed |= test_retune_family_retires_older_queued_requests();
+    failed |= test_retune_family_superseded_while_it_lands();
     failed |= test_live_family_request_count();
 
     return failed ? 1 : 0;
