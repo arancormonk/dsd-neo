@@ -1395,7 +1395,6 @@ class MetricsModel : public QObject {
         QString scan_mode;
         QString ui_message;
         QString squelch_readout;
-        QString analog_bandwidth_reading;
         /* Slot views and lead ranking share the canonical slot count. */
         SlotCall slot_call[DSD_CALL_STATE_SLOT_COUNT];
         int lead_slot = -1;
@@ -1403,14 +1402,15 @@ class MetricsModel : public QObject {
         int analog_bandwidth_hz = 0;
         int analog_bandwidth_configured_hz = 0;
         int analog_bandwidth_max_hz = 0;
+        QString analog_bandwidth_reading;
         int decode_mode = 0;
         int configured_force = 0;
         int effective_force = 0;
         QString key_profile_ref;
-        QVariantList decryption_slots;
         quint64 key_epoch = 0;
         bool automatic_keys = false;
         bool direct_keys = false;
+        QVariantList decryption_slots;
         int modulation = 0;
         int tuner_gain_db = 0;
         int ppm = 0;
