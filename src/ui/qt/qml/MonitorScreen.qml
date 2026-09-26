@@ -905,20 +905,30 @@ Item {
                 }
             }
 
-            // The sub-audible tone the analog FM monitor hears (#522): "CTCSS 100.0 Hz"
-            // once locked, "detecting" while a carrier is being evaluated, "none" when
-            // it carries no supported tone, an em dash with no carrier. Shown only while
-            // the FM monitor runs, which app-control decides for this row and the
-            // terminal alike. Cyan once locked (rxToneStatus 3 is
+            // The sub-audible tone or code the analog FM monitor hears (#522, #523):
+            // "CTCSS 100.0 Hz" or "DCS D023N / D047I" (both spellings of the code's
+            // signal) once locked, "detecting" while a carrier is being evaluated, "none"
+            // when it carries no supported tone or code, an em dash with no carrier.
+            // Shown only while the FM monitor runs, which app-control decides for this
+            // row and the terminal alike. Cyan once locked (rxToneStatus 3 is
             // DSD_APP_RX_TONE_LOCKED), like the other signal readings.
-            Row {
+            //
+            // Flow, not Row: on a narrow phone with larger text the label and a code's
+            // two spellings do not fit on one line, and an unconstrained Row ran the
+            // second spelling off the clipped body with no way to reach it. The value
+            // then moves under the label whole; it wraps between its words only if
+            // even it alone is wider than the body.
+            Flow {
                 // Named so UI_QT_QML_CALL_LISTS can reach it with findChild().
                 objectName: "monitorRxTone"
 
+                width: parent.width
                 spacing: 5
                 visible: metrics.rxToneVisible
 
                 Text {
+                    objectName: "monitorRxToneLabel"
+
                     text: qsTr("RECEIVED TONE")
                     font.family: Theme.mono
                     font.pixelSize: Theme.fontSize(11)
@@ -928,8 +938,10 @@ Item {
                 Text {
                     objectName: "monitorRxToneValue"
 
+                    width: Math.min(implicitWidth, parent.width)
                     text: metrics.rxToneText
                     textFormat: Text.PlainText
+                    wrapMode: Text.Wrap
                     font.family: Theme.mono
                     font.pixelSize: Theme.fontSize(11)
                     color: metrics.rxToneStatus === 3 ? Theme.cyan : Theme.textSubdued

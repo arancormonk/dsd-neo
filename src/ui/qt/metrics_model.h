@@ -176,13 +176,18 @@ class MetricsModel : public QObject {
     Q_PROPERTY(int scanVisitMs READ scanVisitMs NOTIFY scanTimingChanged)
     Q_PROPERTY(bool scanVisitLive READ scanVisitLive NOTIFY scanTimingChanged)
     Q_PROPERTY(int scanVisitRemainingDs READ scanVisitRemainingDs NOTIFY scanTimingChanged)
-    /* #522: the sub-audible tone the analog FM monitor hears, from the shared app-control
-       view, and the configured tone policy beside it -- never derived from each other. */
+    /* #522/#523: the sub-audible tone or code the analog FM monitor hears, from the shared
+       app-control view, and the configured tone policy beside it -- never derived from each
+       other. */
     Q_PROPERTY(bool rxToneVisible READ rxToneVisible NOTIFY rxToneChanged)
     Q_PROPERTY(int rxToneStatus READ rxToneStatus NOTIFY rxToneChanged)
     Q_PROPERTY(QString rxToneText READ rxToneText NOTIFY rxToneChanged)
     Q_PROPERTY(int rxToneKind READ rxToneKind NOTIFY rxToneChanged)
     Q_PROPERTY(int rxToneTenthsHz READ rxToneTenthsHz NOTIFY rxToneChanged)
+    Q_PROPERTY(int rxToneDcsCode READ rxToneDcsCode NOTIFY rxToneChanged)
+    Q_PROPERTY(bool rxToneDcsInverted READ rxToneDcsInverted NOTIFY rxToneChanged)
+    Q_PROPERTY(int rxToneDcsAliasCode READ rxToneDcsAliasCode NOTIFY rxToneChanged)
+    Q_PROPERTY(bool rxToneDcsAliasInverted READ rxToneDcsAliasInverted NOTIFY rxToneChanged)
     Q_PROPERTY(bool rxToneCarrier READ rxToneCarrier NOTIFY rxToneChanged)
     /* Its own signal: configuration, not something received, so a received-tone change never
        announces it and a policy change (#527) never announces the received tone. */
@@ -1034,7 +1039,7 @@ class MetricsModel : public QObject {
         return m_view.rx_tone_status;
     }
 
-    /** @brief "CTCSS 100.0 Hz", "detecting", "none" or an em dash; empty when hidden. */
+    /** @brief "CTCSS 100.0 Hz", "DCS D023N / D047I", "detecting", "none" or an em dash; empty when hidden. */
     const QString&
     rxToneText() const {
         return m_view.rx_tone_text;
@@ -1050,6 +1055,41 @@ class MetricsModel : public QObject {
     int
     rxToneTenthsHz() const {
         return m_view.rx_tone_tenths_hz;
+    }
+
+    /** @brief The locked DCS code as its value (023 octal = 19), 0 otherwise: the first spelling shown. */
+    int
+    rxToneDcsCode() const {
+        return m_view.rx_tone_dcs_code;
+    }
+
+    /**
+     * @brief The locked DCS code is named in inverted polarity.
+     *
+     * Always false for the standard codes: every standard code's inverted signal is another
+     * standard code's normal one, and that normal name is shown first. Kept because a code is
+     * named with its polarity everywhere else (the publication, the formatters).
+     */
+    bool
+    rxToneDcsInverted() const {
+        return m_view.rx_tone_dcs_inverted;
+    }
+
+    /**
+     * @brief The other standard spelling of the locked code's signal, shown second (047 for
+     * D023N), 0 otherwise.
+     *
+     * A receiver cannot tell which of the two a transmitter was set to, so both are shown.
+     */
+    int
+    rxToneDcsAliasCode() const {
+        return m_view.rx_tone_dcs_alias_code;
+    }
+
+    /** @brief The second spelling is in inverted polarity: always true for a standard code. */
+    bool
+    rxToneDcsAliasInverted() const {
+        return m_view.rx_tone_dcs_alias_inverted;
     }
 
     /** @brief A carrier is open (held through the decoder's short hangover). */
@@ -1416,12 +1456,16 @@ class MetricsModel : public QObject {
         bool scan_timing_visible = false;
         bool scan_timer_live = false;
         bool scan_visit_live = false;
-        /* #522: the received tone and, separately, the configured policy. */
+        /* #522/#523: the received tone or code and, separately, the configured policy. */
         QString rx_tone_text;
         QString rx_tone_configured_text;
         int rx_tone_status = 0;
         int rx_tone_kind = 0;
         int rx_tone_tenths_hz = 0;
+        int rx_tone_dcs_code = 0;
+        int rx_tone_dcs_alias_code = 0;
+        bool rx_tone_dcs_inverted = false;
+        bool rx_tone_dcs_alias_inverted = false;
         bool rx_tone_visible = false;
         bool rx_tone_carrier = false;
 
@@ -1479,7 +1523,11 @@ class MetricsModel : public QObject {
         rxToneEquals(const View& other) const {
             return rx_tone_visible == other.rx_tone_visible && rx_tone_status == other.rx_tone_status
                    && rx_tone_text == other.rx_tone_text && rx_tone_kind == other.rx_tone_kind
-                   && rx_tone_tenths_hz == other.rx_tone_tenths_hz && rx_tone_carrier == other.rx_tone_carrier;
+                   && rx_tone_tenths_hz == other.rx_tone_tenths_hz && rx_tone_dcs_code == other.rx_tone_dcs_code
+                   && rx_tone_dcs_inverted == other.rx_tone_dcs_inverted
+                   && rx_tone_dcs_alias_code == other.rx_tone_dcs_alias_code
+                   && rx_tone_dcs_alias_inverted == other.rx_tone_dcs_alias_inverted
+                   && rx_tone_carrier == other.rx_tone_carrier;
         }
 
         bool

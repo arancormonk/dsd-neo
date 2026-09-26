@@ -285,6 +285,37 @@ ANALOG_CTCSS_SYNTH = [
     ("nfm_ctcss_synth_drop", 5221001, 2.5, 100.0, 1.2),
     ("nfm_notone_synth", 5220000, 2.0, None, None),
 ]
+# Synthetic analog NFM carrying DCS, for received-code detection (issue #523).
+#
+# The same voice-band audio and receiver noise as the CTCSS fixtures, with a DCS word in place of
+# the tone: the code's 23-bit Golay word (dcs_word(), the layout runtime/analog_tones.h documents)
+# repeated at 134.4 bit/s, bit 0 first, as NRZ at 600 Hz deviation, a one as positive deviation
+# in normal polarity and the complement in inverted polarity, low-passed below 300 Hz the way a
+# transmitter keeps its signalling out of the voice band. The words are correct by construction:
+# RUNTIME_ANALOG_TONES and DSP_ANALOG_DCS_GOLAY_XCHECK pin the encoder against published words.
+# There is no public off-air DCS recording to excerpt; a real accept fixture waits for one
+# (LOCAL_SOURCES).
+#
+# name, seed, duration_s, code (octal value; None = no code), inverted, stop_s (None = never),
+# wrong bits per word (at seeded positions, the same in every repetition)
+ANALOG_DCS_SYNTH = [
+    # D023N, the most common code.
+    ("nfm_dcs_synth_023n", 5230023, 2.0, 0o023, False, None, 0),
+    # The same code in inverted polarity: the signal of D047N, which reads "DCS D047N / D023I".
+    ("nfm_dcs_synth_023i", 5231023, 2.0, 0o023, True, None, 0),
+    # Malformed: D023N's word sent two bits wrong, the same two in every repetition. That is two
+    # bits from D023N and, the code's words being at least 7 bits apart, at least 5 from every
+    # other code's, so it is no code at all. It must read "none".
+    ("nfm_dcs_synth_noisy", 5232023, 2.0, 0o023, False, None, 2),
+    # The code stops at 1.2 s with no turn-off tone while the carrier and the voice carry on.
+    ("nfm_dcs_synth_drop", 5233023, 2.0, 0o023, False, 1.2, 0),
+]
+DCS_BAUD = 134.4
+DCS_WORD_BITS = 23
+# Golay (23,12) generator x^11 + x^10 + x^6 + x^5 + x^4 + x^2 + 1, bit i the coefficient of x^i.
+DCS_GOLAY_GENERATOR = 0xC75
+ANALOG_SYNTH_DCS_DEVIATION_HZ = 600.0
+ANALOG_SYNTH_DCS_BAND_HZ = (250.0, 350.0)  # raised-cosine roll-off of the NRZ's low-pass
 ANALOG_SYNTH_TONE_DEVIATION_HZ = 600.0
 ANALOG_SYNTH_VOICE_PEAK_DEVIATION_HZ = 4000.0
 ANALOG_SYNTH_VOICE_BAND_HZ = (300.0, 3000.0)
@@ -719,11 +750,71 @@ def analog_ctcss_signal(seed, duration_s, tone_hz, tone_stop_s):
     return samples + noise
 
 
+def dcs_word(code, inverted):
+    """The 23-bit DCS word of a 9-bit code: code, then 100, then the Golay check bits; bit 0 first.
+
+    The word d(x) + x^12 p(x) is a multiple of the generator g(x), and since g(x) divides
+    x^23 + 1, the check bits are p(x) = x^11 d(x) mod g(x).
+    """
+    data = code | 0x800
+    rem = data << 11
+    for bit in range(DCS_WORD_BITS - 1, 10, -1):
+        if (rem >> bit) & 1:
+            rem ^= DCS_GOLAY_GENERATOR << (bit - 11)
+    word = data | (rem << 12)
+    return (~word & ((1 << DCS_WORD_BITS) - 1)) if inverted else word
+
+
+def dcs_bits(rng, word, count_bits, wrong_bits):
+    """count_bits bits of the repeated word, with wrong_bits of it flipped at seeded positions."""
+    for pos in rng.choice(DCS_WORD_BITS, size=wrong_bits, replace=False):
+        word ^= 1 << int(pos)
+    return np.array([(word >> (k % DCS_WORD_BITS)) & 1 for k in range(count_bits)], dtype=np.int8)
+
+
+def low_pass_fft(signal, band_hz):
+    """Low-pass a whole signal in the frequency domain with a raised-cosine edge over band_hz."""
+    spectrum = np.fft.rfft(signal)
+    freqs = np.fft.rfftfreq(len(signal), 1.0 / SAMPLE_RATE_HZ)
+    low, high = band_hz
+    mask = np.ones_like(freqs)
+    edge = (freqs > low) & (freqs < high)
+    mask[edge] = 0.5 * (1.0 + np.cos(math.pi * (freqs[edge] - low) / (high - low)))
+    mask[freqs >= high] = 0.0
+    return np.fft.irfft(spectrum * mask, len(signal))
+
+
+def analog_dcs_signal(seed, duration_s, code, inverted, stop_s, wrong_bits):
+    """Complex baseband NFM: voice-band audio plus an optional DCS word, with receiver noise."""
+    rng = np.random.default_rng(seed)
+    count = int(round(duration_s * SAMPLE_RATE_HZ))
+    deviation_hz = ANALOG_SYNTH_VOICE_PEAK_DEVIATION_HZ * analog_voice_band(rng, count)
+    if code is not None:
+        # The transmitter's word clock starts anywhere in a word.
+        offset_bits = rng.uniform(0.0, float(DCS_WORD_BITS))
+        positions = offset_bits + np.arange(count) * (DCS_BAUD / SAMPLE_RATE_HZ)
+        bits = dcs_bits(rng, dcs_word(code, inverted), int(positions[-1]) + 1, wrong_bits)
+        nrz = np.where(bits[positions.astype(np.int64)] == 1, 1.0, -1.0)
+        dcs = ANALOG_SYNTH_DCS_DEVIATION_HZ * low_pass_fft(nrz, ANALOG_SYNTH_DCS_BAND_HZ)
+        if stop_s is not None:
+            dcs[int(round(stop_s * SAMPLE_RATE_HZ)) :] = 0.0
+        deviation_hz = deviation_hz + dcs
+    centered = deviation_hz - np.mean(deviation_hz)
+    samples = remodulate(deviation_hz, np.percentile(np.abs(centered), 99.5) / (SAMPLE_RATE_HZ / 2.0))
+    noise = rng.normal(0.0, ANALOG_SYNTH_NOISE_SIGMA, count) + 1j * rng.normal(0.0, ANALOG_SYNTH_NOISE_SIGMA, count)
+    return samples + noise
+
+
 def build_analog_synth(out_dir):
-    """Write the synthetic NFM fixtures for received-tone detection (#522)."""
+    """Write the synthetic NFM fixtures for received-tone detection (#522) and received DCS (#523)."""
     total = 0
     for name, seed, duration_s, tone_hz, tone_stop_s in ANALOG_CTCSS_SYNTH:
         written = write_fixture(out_dir, name, analog_ctcss_signal(seed, duration_s, tone_hz, tone_stop_s))
+        total += written
+        print(f"{name:28s} synth   {written // 1024:6d} KiB")
+    for name, seed, duration_s, code, inverted, stop_s, errors in ANALOG_DCS_SYNTH:
+        signal = analog_dcs_signal(seed, duration_s, code, inverted, stop_s, errors)
+        written = write_fixture(out_dir, name, signal)
         total += written
         print(f"{name:28s} synth   {written // 1024:6d} KiB")
     return total
@@ -811,6 +902,7 @@ def derived_fixture_names():
         + [DPMR_SYNTH_NAME]
         + [entry[0] for entry in NFM_SYNTH]
         + [entry[0] for entry in ANALOG_CTCSS_SYNTH]
+        + [entry[0] for entry in ANALOG_DCS_SYNTH]
     )
 
 

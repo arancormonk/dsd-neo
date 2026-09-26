@@ -10,11 +10,13 @@
  */
 
 #include <assert.h>
+#include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
 
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/opts_fwd.h>
+#include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/io/rtl_stream_c.h>
 #include <dsd-neo/runtime/analog_tones.h>
 #include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
@@ -153,10 +155,400 @@ test_detection_active(void) {
     free(opts);
 }
 
+/* ------------------------------------------------------------------------------------------
+ * DCS (issue #523)
+ * ---------------------------------------------------------------------------------------- */
+
+/* The standard 104-code set, as published (octal), ascending. */
+static const int k_expected_dcs[] = {
+    0023, 0025, 0026, 0031, 0032, 0036, 0043, 0047, 0051, 0053, 0054, 0065, 0071, 0072, 0073, 0074, 0114, 0115,
+    0116, 0122, 0125, 0131, 0132, 0134, 0143, 0145, 0152, 0155, 0156, 0162, 0165, 0172, 0174, 0205, 0212, 0223,
+    0225, 0226, 0243, 0244, 0245, 0246, 0251, 0252, 0255, 0261, 0263, 0265, 0266, 0271, 0274, 0306, 0311, 0315,
+    0325, 0331, 0332, 0343, 0346, 0351, 0356, 0364, 0365, 0371, 0411, 0412, 0413, 0423, 0431, 0432, 0445, 0446,
+    0452, 0454, 0455, 0462, 0464, 0465, 0466, 0503, 0506, 0516, 0523, 0526, 0532, 0546, 0565, 0606, 0612, 0624,
+    0627, 0631, 0632, 0654, 0662, 0664, 0703, 0712, 0723, 0731, 0732, 0734, 0743, 0754,
+};
+_Static_assert((int)(sizeof(k_expected_dcs) / sizeof(k_expected_dcs[0])) == DSD_DCS_CODE_COUNT,
+               "the expected DCS table lists every standard code");
+
+/*
+ * The alias golden table: every supported code sent in inverted polarity is the signal of
+ * exactly one supported normal code, and reads as that code (normal first, then the lowest
+ * code). {code, the normal code its inverted signal reads as}. Every normal code reads as
+ * itself.
+ */
+static const int k_inverted_alias[][2] = {
+    {0023, 0047}, {0025, 0244}, {0026, 0464}, {0031, 0627}, {0032, 0051}, {0036, 0172}, {0043, 0445}, {0047, 0023},
+    {0051, 0032}, {0053, 0452}, {0054, 0413}, {0065, 0271}, {0071, 0306}, {0072, 0245}, {0073, 0506}, {0074, 0174},
+    {0114, 0712}, {0115, 0152}, {0116, 0754}, {0122, 0225}, {0125, 0365}, {0131, 0364}, {0132, 0546}, {0134, 0223},
+    {0143, 0412}, {0145, 0274}, {0152, 0115}, {0155, 0731}, {0156, 0265}, {0162, 0503}, {0165, 0251}, {0172, 0036},
+    {0174, 0074}, {0205, 0263}, {0212, 0356}, {0223, 0134}, {0225, 0122}, {0226, 0411}, {0243, 0351}, {0244, 0025},
+    {0245, 0072}, {0246, 0523}, {0251, 0165}, {0252, 0462}, {0255, 0446}, {0261, 0732}, {0263, 0205}, {0265, 0156},
+    {0266, 0454}, {0271, 0065}, {0274, 0145}, {0306, 0071}, {0311, 0664}, {0315, 0423}, {0325, 0526}, {0331, 0465},
+    {0332, 0455}, {0343, 0532}, {0346, 0612}, {0351, 0243}, {0356, 0212}, {0364, 0131}, {0365, 0125}, {0371, 0734},
+    {0411, 0226}, {0412, 0143}, {0413, 0054}, {0423, 0315}, {0431, 0723}, {0432, 0516}, {0445, 0043}, {0446, 0255},
+    {0452, 0053}, {0454, 0266}, {0455, 0332}, {0462, 0252}, {0464, 0026}, {0465, 0331}, {0466, 0662}, {0503, 0162},
+    {0506, 0073}, {0516, 0432}, {0523, 0246}, {0526, 0325}, {0532, 0343}, {0546, 0132}, {0565, 0703}, {0606, 0631},
+    {0612, 0346}, {0624, 0632}, {0627, 0031}, {0631, 0606}, {0632, 0624}, {0654, 0743}, {0662, 0466}, {0664, 0311},
+    {0703, 0565}, {0712, 0114}, {0723, 0431}, {0731, 0155}, {0732, 0261}, {0734, 0371}, {0743, 0654}, {0754, 0116},
+};
+_Static_assert((int)(sizeof(k_inverted_alias) / sizeof(k_inverted_alias[0])) == DSD_DCS_CODE_COUNT,
+               "the alias table covers every standard code");
+
+#define DCS_MASK ((1U << DSD_DCS_WORD_BITS) - 1U)
+
+/* A word written most significant bit first, the way the references print it; separators
+   ('-', '/', ' ') are skipped. */
+static uint32_t
+bits_msb_first(const char* text) {
+    uint32_t word = 0U;
+    int count = 0;
+    for (const char* p = text; *p != '\0'; p++) {
+        if (*p == '0' || *p == '1') {
+            word = (word << 1) | (uint32_t)(*p - '0');
+            count++;
+        }
+    }
+    assert(count == DSD_DCS_WORD_BITS);
+    return word;
+}
+
+/* 23 bits of a run printed in the order they were received, from its first-th bit: the earliest
+   in bit 0. Separators are skipped. */
+static uint32_t
+bits_in_arrival_order(const char* text, int first) {
+    uint32_t window = 0U;
+    int seen = 0;
+    int taken = 0;
+    for (const char* p = text; *p != '\0' && taken < DSD_DCS_WORD_BITS; p++) {
+        if (*p != '0' && *p != '1') {
+            continue;
+        }
+        if (seen++ >= first) {
+            window |= (uint32_t)(*p - '0') << taken++;
+        }
+    }
+    assert(taken == DSD_DCS_WORD_BITS);
+    return window;
+}
+
+static uint32_t
+rotate_right(uint32_t word, int k) {
+    k %= DSD_DCS_WORD_BITS;
+    if (k == 0) {
+        return word & DCS_MASK;
+    }
+    return ((word >> k) | (word << (DSD_DCS_WORD_BITS - k))) & DCS_MASK;
+}
+
+static void
+test_dcs_table(void) {
+    assert(dsd_dcs_code_count() == DSD_DCS_CODE_COUNT);
+    for (int i = 0; i < DSD_DCS_CODE_COUNT; i++) {
+        assert(dsd_dcs_code(i) == k_expected_dcs[i]);
+        assert(dsd_dcs_code_index(k_expected_dcs[i]) == i);
+    }
+    assert(dsd_dcs_code(-1) == -1);
+    assert(dsd_dcs_code(DSD_DCS_CODE_COUNT) == -1);
+    /* Not in the standard set: 000, 017, 050, 645 (offered by some radios), and non-codes. */
+    assert(dsd_dcs_code_index(0) == -1);
+    assert(dsd_dcs_code_index(0017) == -1);
+    assert(dsd_dcs_code_index(0050) == -1);
+    assert(dsd_dcs_code_index(0645) == -1);
+    assert(dsd_dcs_code_index(-19) == -1);
+    assert(dsd_dcs_code_index(01000) == -1);
+}
+
+/*
+ * Reference words, as published, pin the layout and the bit order:
+ *
+ * - onfreq "DPL / DCS Information" (mirrored at kb8zqz.org/onfreq_mirror/syntorx/dcs.html)
+ *   prints words most significant bit first as "11 check bits - 100 - code": 023 as
+ *   11101100011-100-000/010/011, the inverted 023 word as 00010011100-011-111/101/100, 047
+ *   (the inverted 023 word rotated to its third 100 signature match) as
+ *   00011111101-100-000/100/111, 020 (a word of another rotation class) as
+ *   11110001001100000010000 and 000 as 11000111010-100-000/000/000, and states the word "is
+ *   actually sent in the reverse order": 023 as 110/010/000-001-11000110111.
+ * - "Manually Decoding a DCS Tone" (ambientmemory.com, 2017) lists bits received off the air,
+ *   in arrival order, that decode to 023:
+ *   10000001110001101111100100000011100011011111001.
+ * - Batlabs "DPL Code Word Specifics" gives the data bits of 525 as xxxxxxxxxxx100101010101.
+ */
+static void
+test_dcs_reference_words(void) {
+    assert(dsd_dcs_word(0023, 0) == bits_msb_first("11101100011-100-000/010/011"));
+    assert(dsd_dcs_word(0023, 0) == 0x763813U);
+    assert(dsd_dcs_word(0023, 1) == bits_msb_first("00010011100-011-111/101/100"));
+    assert(dsd_dcs_word(0047, 0) == bits_msb_first("00011111101-100-000/100/111"));
+    assert(dsd_dcs_word(0047, 0) == 0x0FD827U);
+    assert(dsd_dcs_word(0020, 0) == bits_msb_first("11110001001100000010000"));
+    assert(dsd_dcs_word(0020, 0) == 0x789810U);
+    assert(dsd_dcs_word(0, 0) == bits_msb_first("11000111010-100-000/000/000"));
+    assert((dsd_dcs_word(0525, 0) & 0xFFFU) == (bits_msb_first("00000000000100101010101") & 0xFFFU));
+
+    /* Sent in the reverse of the printed order: bit 0 first. */
+    assert(bits_in_arrival_order("110/010/000-001-11000110111", 0) == dsd_dcs_word(0023, 0));
+
+    /* The off-air bits: every 23 consecutive of them are one rotation of 023's word. */
+    const char* off_air = "10000001110001101111100100000011100011011111001";
+    for (int first = 0; first + DSD_DCS_WORD_BITS <= 47; first++) {
+        const uint32_t window = bits_in_arrival_order(off_air, first);
+        int found = 0;
+        for (int k = 0; k < DSD_DCS_WORD_BITS; k++) {
+            found |= rotate_right(dsd_dcs_word(0023, 0), k) == window;
+        }
+        assert(found);
+        int code = -1;
+        int inverted = -1;
+        assert(dsd_dcs_match(window, &code, &inverted) == 1);
+        assert(code == 0023 && inverted == 0);
+    }
+}
+
+/* Every word of every 9-bit code: "code, then 100", then check bits that make it a multiple of
+   the generator, and never 0. */
+static void
+test_dcs_words(void) {
+    for (int code = 0; code <= DSD_DCS_CODE_MAX; code++) {
+        const uint32_t word = dsd_dcs_word(code, 0);
+        assert(word != 0U && (word & ~DCS_MASK) == 0U);
+        assert((word & 0x1FFU) == (uint32_t)code);
+        assert(((word >> 9) & 7U) == 4U);
+        assert(dsd_dcs_word(code, 1) == (~word & DCS_MASK));
+        /* Divide by g(x) = 0xC75 (x^11 + x^10 + x^6 + x^5 + x^4 + x^2 + 1): no remainder. */
+        uint32_t rem = word;
+        for (int bit = DSD_DCS_WORD_BITS - 1; bit >= 11; bit--) {
+            if ((rem >> bit) & 1U) {
+                rem ^= 0xC75U << (bit - 11);
+            }
+        }
+        assert(rem == 0U);
+    }
+    assert(dsd_dcs_word(-1, 0) == 0U);
+    assert(dsd_dcs_word(DSD_DCS_CODE_MAX + 1, 0) == 0U);
+}
+
+/* Every supported code's word is balanced: 11 or 12 ones of 23, in either polarity, so its level
+   averages to within 1/23 of zero over any 23 bits, and the DCS detector's balance slicer can
+   slice a word against its own mean. It is a property of the standard set, not of the code: the
+   Golay (23,12) words weigh 0, 7, 8, 11, 12, 15, 16 or 23, and 000's word weighs 7. */
+static void
+test_dcs_words_are_balanced(void) {
+    for (int i = 0; i < DSD_DCS_CODE_COUNT; i++) {
+        for (int inverted = 0; inverted < 2; inverted++) {
+            const uint32_t word = dsd_dcs_word(dsd_dcs_code(i), inverted);
+            int ones = 0;
+            for (int bit = 0; bit < DSD_DCS_WORD_BITS; bit++) {
+                ones += (int)((word >> bit) & 1U);
+            }
+            assert(ones == 11 || ones == 12);
+        }
+    }
+    uint32_t unsupported = dsd_dcs_word(0, 0);
+    int ones = 0;
+    while (unsupported != 0U) {
+        unsupported &= unsupported - 1U;
+        ones++;
+    }
+    assert(ones == 7);
+}
+
+/* The alias rule, pinned code by code, and every rotation of every supported word in either
+   polarity names its class the same way. */
+static void
+test_dcs_aliases(void) {
+    for (int i = 0; i < DSD_DCS_CODE_COUNT; i++) {
+        const int code = k_inverted_alias[i][0];
+        const int alias = k_inverted_alias[i][1];
+        assert(code == k_expected_dcs[i]);
+        int got_code = -1;
+        int got_inverted = -1;
+        assert(dsd_dcs_canonical(code, 0, &got_code, &got_inverted) == 0);
+        assert(got_code == code && got_inverted == 0);
+        assert(dsd_dcs_canonical(code, 1, &got_code, &got_inverted) == 0);
+        assert(got_code == alias && got_inverted == 0);
+        /* The pairing is symmetric: the alias's inverted signal is this code's normal one. */
+        assert(dsd_dcs_canonical(alias, 1, &got_code, &got_inverted) == 0);
+        assert(got_code == code && got_inverted == 0);
+        for (int inverted = 0; inverted < 2; inverted++) {
+            const uint32_t word = dsd_dcs_word(code, inverted);
+            for (int k = 0; k < DSD_DCS_WORD_BITS; k++) {
+                got_code = -1;
+                got_inverted = -1;
+                assert(dsd_dcs_match(rotate_right(word, k), &got_code, &got_inverted) == 1);
+                assert(got_code == (inverted ? alias : code) && got_inverted == 0);
+            }
+        }
+    }
+    /* onfreq's group for 023: the rotations of its word also carry 340 and 766, and those of
+       the inverted word 047, 375 and 707, none of which (but 047) is in the standard set. */
+    int got_code = -1;
+    int got_inverted = -1;
+    assert(dsd_dcs_canonical(0340, 0, &got_code, &got_inverted) == 0 && got_code == 0023 && got_inverted == 0);
+    assert(dsd_dcs_canonical(0766, 0, &got_code, &got_inverted) == 0 && got_code == 0023 && got_inverted == 0);
+    assert(dsd_dcs_canonical(0375, 1, &got_code, &got_inverted) == 0 && got_code == 0023 && got_inverted == 0);
+    assert(dsd_dcs_canonical(0707, 1, &got_code, &got_inverted) == 0 && got_code == 0023 && got_inverted == 0);
+    /* 000's signal carries no supported code. */
+    assert(dsd_dcs_canonical(0, 0, &got_code, &got_inverted) == -1);
+    assert(dsd_dcs_canonical(-1, 0, &got_code, &got_inverted) == -1);
+    assert(dsd_dcs_canonical(DSD_DCS_CODE_MAX + 1, 0, NULL, NULL) == -1);
+}
+
+/*
+ * The two spellings of every signal. Of the standard codes, exactly two send each signal, one
+ * in each polarity: the canonical normal code and one inverted code (D023N and D047I, D047N and
+ * D023I). A receiver cannot tell which of the two a transmitter was set to, so a received code
+ * is shown as both, "DCS D023N / D047I", and dsd_dcs_alias() names the inverted one from either.
+ * Pinned against the golden alias table, over every standard code in both polarities.
+ */
+static void
+test_dcs_two_spellings(void) {
+    for (int i = 0; i < DSD_DCS_CODE_COUNT; i++) {
+        const int code = k_inverted_alias[i][0];
+        const int partner = k_inverted_alias[i][1];
+        /* Every standard spelling of code's normal signal: code itself, and partner inverted. */
+        int spellings = 0;
+        for (int j = 0; j < DSD_DCS_CODE_COUNT; j++) {
+            for (int inverted = 0; inverted < 2; inverted++) {
+                int canon_code = -1;
+                int canon_inverted = -1;
+                assert(dsd_dcs_canonical(dsd_dcs_code(j), inverted, &canon_code, &canon_inverted) == 0);
+                if (canon_code == code && canon_inverted == 0) {
+                    spellings++;
+                    assert((dsd_dcs_code(j) == code && inverted == 0) || (dsd_dcs_code(j) == partner && inverted == 1));
+                }
+            }
+        }
+        assert(spellings == 2);
+
+        /* The same second spelling from either one, and the label names both, canonical first. */
+        int alias_code = -1;
+        int alias_inverted = -1;
+        assert(dsd_dcs_alias(code, 0, &alias_code, &alias_inverted) == 0);
+        assert(alias_code == partner && alias_inverted == 1);
+        alias_code = -1;
+        alias_inverted = -1;
+        assert(dsd_dcs_alias(partner, 1, &alias_code, &alias_inverted) == 0);
+        assert(alias_code == partner && alias_inverted == 1);
+        char expected[DSD_DCS_LABEL_SIZE];
+        DSD_SNPRINTF(expected, sizeof(expected), "DCS D%03oN / D%03oI", (unsigned int)code, (unsigned int)partner);
+        char label[DSD_DCS_LABEL_SIZE];
+        assert(dsd_dcs_format_label(code, 0, label, sizeof(label)) == 17);
+        assert(strcmp(label, expected) == 0);
+        assert(dsd_dcs_format_label(partner, 1, label, sizeof(label)) == 17);
+        assert(strcmp(label, expected) == 0);
+    }
+
+    /* A rotation outside the standard set spells a standard signal too. */
+    int alias_code = -1;
+    int alias_inverted = -1;
+    assert(dsd_dcs_alias(0340, 0, &alias_code, &alias_inverted) == 0);
+    assert(alias_code == 0047 && alias_inverted == 1);
+    assert(dsd_dcs_alias(0023, 0, NULL, NULL) == 0);
+    /* No standard code sends 000's signal, and a value past nine bits is no code: the outputs
+       are left alone. */
+    alias_code = 1234;
+    alias_inverted = 5678;
+    assert(dsd_dcs_alias(0, 0, &alias_code, &alias_inverted) == -1);
+    assert(dsd_dcs_alias(-1, 0, &alias_code, &alias_inverted) == -1);
+    assert(dsd_dcs_alias(DSD_DCS_CODE_MAX + 1, 1, &alias_code, &alias_inverted) == -1);
+    assert(alias_code == 1234 && alias_inverted == 5678);
+}
+
+/* Windows that are not a supported code's signal name nothing and leave the outputs alone. */
+static void
+test_dcs_match_rejects(void) {
+    int code = 1234;
+    int inverted = 5678;
+    assert(dsd_dcs_match(0U, &code, &inverted) == 0);
+    assert(dsd_dcs_match(DCS_MASK, &code, &inverted) == 0);
+    assert(dsd_dcs_match(0x555555U & DCS_MASK, &code, &inverted) == 0);
+    assert(dsd_dcs_match(dsd_dcs_word(0, 0), &code, &inverted) == 0);
+    /* One bit off a real word is not a match: matching is exact. */
+    assert(dsd_dcs_match(dsd_dcs_word(0023, 0) ^ 0x10U, &code, &inverted) == 0);
+    assert(code == 1234 && inverted == 5678);
+    /* Bits above the window are ignored, and NULL outputs are allowed. */
+    assert(dsd_dcs_match(dsd_dcs_word(0023, 0) | 0xFF800000U, NULL, NULL) == 1);
+    /* Of all 2^23 windows exactly 104 x 23 are a supported signal: one class per standard code. */
+    int matches = 0;
+    for (uint32_t w = 0U; w <= DCS_MASK; w += 1U) {
+        matches += dsd_dcs_match(w, NULL, NULL);
+    }
+    assert(matches == DSD_DCS_CODE_COUNT * DSD_DCS_WORD_BITS);
+}
+
+static void
+test_dcs_format(void) {
+    char buf[DSD_DCS_LABEL_SIZE];
+    assert(dsd_dcs_format(0023, 0, buf, sizeof(buf)) == 5);
+    assert(strcmp(buf, "D023N") == 0);
+    assert(dsd_dcs_format(0023, 1, buf, sizeof(buf)) == 5);
+    assert(strcmp(buf, "D023I") == 0);
+    assert(dsd_dcs_format(0754, 0, buf, sizeof(buf)) == 5);
+    assert(strcmp(buf, "D754N") == 0);
+    /* Leading zeros always, and any 9-bit code can be named. */
+    assert(dsd_dcs_format(0, 0, buf, sizeof(buf)) == 5);
+    assert(strcmp(buf, "D000N") == 0);
+    assert(dsd_dcs_format(07, 1, buf, sizeof(buf)) == 5);
+    assert(strcmp(buf, "D007I") == 0);
+    assert(dsd_dcs_format(0777, 0, buf, sizeof(buf)) == 5);
+    assert(strcmp(buf, "D777N") == 0);
+
+    /* The received label names the signal by both of its standard spellings, the canonical
+       normal one first, whichever of them it is given: a receiver cannot tell which one the
+       transmitter was set to. */
+    assert(dsd_dcs_format_label(0023, 0, buf, sizeof(buf)) == 17);
+    assert(strcmp(buf, "DCS D023N / D047I") == 0);
+    assert(dsd_dcs_format_label(0047, 1, buf, sizeof(buf)) == 17);
+    assert(strcmp(buf, "DCS D023N / D047I") == 0);
+    assert(dsd_dcs_format_label(0023, 1, buf, sizeof(buf)) == 17);
+    assert(strcmp(buf, "DCS D047N / D023I") == 0);
+    assert(dsd_dcs_format_label(0047, 0, buf, sizeof(buf)) == 17);
+    assert(strcmp(buf, "DCS D047N / D023I") == 0);
+    assert(dsd_dcs_format_label(0754, 0, buf, sizeof(buf)) == 17);
+    assert(strcmp(buf, "DCS D754N / D116I") == 0);
+    /* A code outside the standard set whose word is a rotation of a standard word names that
+       signal; one whose signal no standard code sends names nothing. */
+    assert(dsd_dcs_format_label(0340, 0, buf, sizeof(buf)) == 17);
+    assert(strcmp(buf, "DCS D023N / D047I") == 0);
+    buf[0] = 'x';
+    assert(dsd_dcs_format_label(0, 0, buf, sizeof(buf)) == -1);
+    assert(buf[0] == '\0');
+    buf[0] = 'x';
+    assert(dsd_dcs_format_label(01000, 0, buf, sizeof(buf)) == -1);
+    assert(buf[0] == '\0');
+
+    buf[0] = 'x';
+    assert(dsd_dcs_format(-1, 0, buf, sizeof(buf)) == -1);
+    assert(buf[0] == '\0');
+    buf[0] = 'x';
+    assert(dsd_dcs_format(01000, 0, buf, sizeof(buf)) == -1);
+    assert(buf[0] == '\0');
+    char tiny[5];
+    assert(dsd_dcs_format(0023, 0, tiny, sizeof(tiny)) == -1);
+    assert(tiny[0] == '\0');
+    char label_tiny[17];
+    assert(dsd_dcs_format_label(0023, 0, label_tiny, sizeof(label_tiny)) == -1);
+    assert(label_tiny[0] == '\0');
+    char label_exact[18];
+    assert(dsd_dcs_format_label(0023, 0, label_exact, sizeof(label_exact)) == 17);
+    assert(strcmp(label_exact, "DCS D023N / D047I") == 0);
+    assert(dsd_dcs_format(0023, 0, NULL, 8) == -1);
+    assert(dsd_dcs_format_label(0023, 0, buf, 0) == -1);
+}
+
 int
 main(void) {
     test_table();
     test_format();
     test_detection_active();
+    test_dcs_table();
+    test_dcs_reference_words();
+    test_dcs_words();
+    test_dcs_words_are_balanced();
+    test_dcs_aliases();
+    test_dcs_two_spellings();
+    test_dcs_match_rejects();
+    test_dcs_format();
     return 0;
 }

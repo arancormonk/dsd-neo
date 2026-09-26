@@ -11,6 +11,26 @@
  * hertz so every consumer compares integers. 150.0 Hz is deliberately not in the table: it is
  * 1.4 Hz from 151.4 Hz, and a detector that snapped it would report the wrong tone.
  *
+ * DCS (issue #523): the standard 104-code set (023 ... 754), each code a 9-bit value written as
+ * three octal digits and held as that value (023 octal = 19). A code's 23-bit word is the Golay
+ * (23,12) code word of the 12 data bits "code, then 100": in the dsd_dcs_word() layout bits 0-8
+ * are the code (least significant first), bits 9-11 are 0, 0, 1 and bits 12-22 the 11 check
+ * bits, and bit 0 is the first bit sent. As a polynomial with bit i the coefficient of x^i the
+ * word is a multiple of g(x) = x^11 + x^10 + x^6 + x^5 + x^4 + x^2 + 1. The transmitter repeats
+ * the word at 134.4 bit/s, a one as positive deviation in normal (N) polarity and as negative
+ * deviation in inverted (I) polarity, which sends the word's complement. Every supported code's
+ * word carries 11 or 12 ones, so its level averages to within 1/23 of zero over any 23 bits,
+ * in either polarity (the DCS detector's balance slicer relies on it).
+ *
+ * A receiver cannot tell where a word starts, so every rotation of a word is the same signal,
+ * and every complement is a code word too: each supported code shares its waveform with other
+ * codes, in the standard set always with exactly one other code of the opposite polarity (D023N
+ * is D047I). dsd_dcs_canonical() names such a class by one member, normal polarity first, then
+ * the lowest code, so every inverted code is named by its normal alias (D023I by D047N), and
+ * dsd_dcs_alias() by the other standard spelling. Nothing in the signal says which of the two
+ * a transmitter was set to, so a received code is shown as both, canonical first:
+ * "DCS D047N / D023I" (dsd_dcs_format_label()).
+ *
  * The tables live in runtime rather than DSP because the frontends format these values and the
  * receive policy (#527) parses them, and neither may depend on the DSP module.
  */
@@ -20,6 +40,7 @@
 
 #include <dsd-neo/core/opts_fwd.h>
 #include <stddef.h>
+#include <stdint.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -67,6 +88,110 @@ int dsd_ctcss_format(int tenths_hz, char* buf, size_t buf_size);
  * @return Characters written (terminator excluded), or -1 as for dsd_ctcss_format().
  */
 int dsd_ctcss_format_label(int tenths_hz, char* buf, size_t buf_size);
+
+/** @brief Number of supported DCS codes (the standard 104-code set). */
+enum { DSD_DCS_CODE_COUNT = 104 };
+
+/** @brief Bits in a DCS word. */
+enum { DSD_DCS_WORD_BITS = 23 };
+
+/** @brief Highest DCS code value: nine bits, octal 777. */
+enum { DSD_DCS_CODE_MAX = 0777 };
+
+/** @brief Room for any text dsd_dcs_format_label() writes, terminator included ("DCS D023N / D047I"). */
+enum { DSD_DCS_LABEL_SIZE = 24 };
+
+/** @brief Number of supported DCS codes; always DSD_DCS_CODE_COUNT. */
+int dsd_dcs_code_count(void);
+
+/**
+ * @brief The supported DCS code at @p index, as its value (023 octal = 19).
+ *
+ * The table is ascending, so index 0 is 023 and the last index is 754.
+ *
+ * @return The code, or -1 when @p index is out of range.
+ */
+int dsd_dcs_code(int index);
+
+/**
+ * @brief Table index of the supported DCS code @p code.
+ *
+ * @return The index, or -1 when @p code is not in the standard set.
+ */
+int dsd_dcs_code_index(int code);
+
+/**
+ * @brief The 23-bit word a transmitter repeats for @p code in the given polarity.
+ *
+ * Any 9-bit code (0 to DSD_DCS_CODE_MAX) has a word, supported or not. Bit 0 is sent first;
+ * see the file comment for the layout. @p inverted nonzero gives the complement.
+ *
+ * @return The word, or 0 when @p code is out of range (no word is 0).
+ */
+uint32_t dsd_dcs_word(int code, int inverted);
+
+/**
+ * @brief Name the DCS signal in 23 consecutive received bits.
+ *
+ * @p window holds the bits in the order they arrived, the earliest in bit 0 (bits above 22 are
+ * ignored). When some rotation of it, in either polarity, is the word of a supported code, the
+ * signal is that code's class, and the class's canonical member (dsd_dcs_canonical()) is
+ * written to @p code and @p inverted (either may be NULL).
+ *
+ * @return 1 when the window is a supported code's signal, 0 otherwise (outputs untouched).
+ */
+int dsd_dcs_match(uint32_t window, int* code, int* inverted);
+
+/**
+ * @brief The name a receiver gives the signal of @p code in the given polarity.
+ *
+ * Every rotation of a word, and of its complement, is one signal. Of the supported codes that
+ * send it, the canonical member is the normal-polarity one if there is one, then the lowest
+ * code: D023I is the signal of D047N and is named D047N, and every supported normal code names
+ * its own signal. Accepts any 9-bit code; an unsupported one is named only when its signal is a
+ * supported code's.
+ *
+ * @return 0 with the member written to @p canon_code and @p canon_inverted (either may be
+ *         NULL), or -1 when @p code is out of range or its signal is no supported code's.
+ */
+int dsd_dcs_canonical(int code, int inverted, int* canon_code, int* canon_inverted);
+
+/**
+ * @brief The other standard spelling of the signal of @p code in the given polarity.
+ *
+ * Of the standard codes, exactly two send each supported signal, one in each polarity: the
+ * canonical normal member (dsd_dcs_canonical()) and one inverted member. D023N and D047I are one
+ * signal, D047N and D023I another. This names the inverted member, whichever spelling @p code is
+ * (D023N and D047I both give D047I). Accepts any 9-bit code whose signal is a supported code's.
+ *
+ * @return 0 with the member written to @p alias_code and @p alias_inverted (either may be NULL),
+ *         or -1 when @p code is out of range or its signal is no supported code's (outputs
+ *         untouched).
+ */
+int dsd_dcs_alias(int code, int inverted, int* alias_code, int* alias_inverted);
+
+/**
+ * @brief Write a DCS code as "D023N" or "D023I": three octal digits with leading zeros.
+ *
+ * Accepts any 9-bit code, supported or not.
+ *
+ * @return Characters written (terminator excluded), or -1 for a NULL/too-small buffer or a code
+ *         outside 0..DSD_DCS_CODE_MAX. The buffer holds an empty string on failure.
+ */
+int dsd_dcs_format(int code, int inverted, char* buf, size_t buf_size);
+
+/**
+ * @brief Write the display and log label for a received DCS code: "DCS D023N / D047I".
+ *
+ * Names the signal of @p code in the given polarity by both of its standard spellings, the
+ * canonical one first (dsd_dcs_canonical(), then dsd_dcs_alias()), whichever of them @p code
+ * is: D023N and D047I both write "DCS D023N / D047I", D023I "DCS D047N / D023I".
+ *
+ * @return Characters written (terminator excluded), or -1 for a NULL/too-small buffer, a code
+ *         outside 0..DSD_DCS_CODE_MAX, or one whose signal is no supported code's. The buffer
+ *         holds an empty string on failure.
+ */
+int dsd_dcs_format_label(int code, int inverted, char* buf, size_t buf_size);
 
 /**
  * @brief Whether received-tone detection runs: the analog FM monitor, on audio it can hear.

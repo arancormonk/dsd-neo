@@ -3571,7 +3571,10 @@ target_include_directories(
 target_link_libraries(dsd-neo_test_runtime_freq_parse PRIVATE dsd-neo_runtime)
 add_test(NAME RUNTIME_FREQ_PARSE COMMAND dsd-neo_test_runtime_freq_parse)
 
-# The CTCSS table and its text (issue #522), shared by the detector, the views and the policy.
+# The CTCSS and DCS tables and their text (issues #522, #523), shared by the detectors, the
+# views and the policy: the tone table, the DCS codes, their Golay words against the published
+# reference words, the alias rule and its golden table, the two standard spellings of every
+# code's signal, and the formatters.
 add_executable(
     dsd-neo_test_runtime_analog_tones
     runtime/test_runtime_analog_tones.c
@@ -7658,6 +7661,41 @@ dsd_neo_link_dsp_test(dsd-neo_test_dsp_analog_ctcss ${DSD_NEO_TEST_MATH_LIB})
 add_test(NAME DSP_ANALOG_CTCSS COMMAND dsd-neo_test_dsp_analog_ctcss)
 set_tests_properties(DSP_ANALOG_CTCSS PROPERTIES TIMEOUT 300)
 
+# DCS detection (issue #523) through the pure analog receive core, in sample time: every
+# supported code in both polarities through the receiver's DC block and de-emphasis at two
+# SNRs, the alias rule, hold under bit errors, loss on a stop and on the turn-off tone, and
+# random bits, other code words and every CTCSS tone never locking.
+add_executable(dsd-neo_test_dsp_analog_dcs dsp/test_dsp_analog_dcs.c)
+target_include_directories(
+    dsd-neo_test_dsp_analog_dcs
+    PRIVATE
+        ${PROJECT_SOURCE_DIR}/include
+        ${PROJECT_SOURCE_DIR}/src/dsp
+        ${PROJECT_SOURCE_DIR}/tests/dsp
+)
+dsd_neo_link_dsp_test(dsd-neo_test_dsp_analog_dcs ${DSD_NEO_TEST_MATH_LIB})
+add_test(NAME DSP_ANALOG_DCS COMMAND dsd-neo_test_dsp_analog_dcs)
+set_tests_properties(DSP_ANALOG_DCS PROPERTIES TIMEOUT 300)
+
+# The DCS words runtime generates, checked against Golay24.hpp through the explicit layout
+# mapping between the two, with the cited reference words pinned on both sides (issue #523).
+add_executable(
+    dsd-neo_test_dsp_analog_dcs_golay_xcheck
+    dsp/test_dsp_analog_dcs_golay.cpp
+)
+target_include_directories(
+    dsd-neo_test_dsp_analog_dcs_golay_xcheck
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+target_link_libraries(
+    dsd-neo_test_dsp_analog_dcs_golay_xcheck
+    PRIVATE dsd-neo_runtime
+)
+add_test(
+    NAME DSP_ANALOG_DCS_GOLAY_XCHECK
+    COMMAND dsd-neo_test_dsp_analog_dcs_golay_xcheck
+)
+
 add_executable(dsd-neo_test_dsp_fsk_modem dsp/test_fsk_modem.c)
 target_include_directories(
     dsd-neo_test_dsp_fsk_modem
@@ -11119,21 +11157,22 @@ if(DSD_HAS_RADIO)
     # Received-tone detection on the analog FM monitor (issue #522): synthetic NFM with voice
     # and a CTCSS tone, replayed under -fA with -o null, so detection is shown to run with no
     # audio output and no tone policy at all. Each asserts the "Received tone:" log line and
-    # that no other tone was ever reported. CMake regexes have no negative lookahead, so
-    # "any other tone" is spelled out as every value that is not the expected one.
+    # that no other tone, and no DCS code (issue #523), was ever reported. CMake regexes have
+    # no negative lookahead, so "any other tone" is spelled out as every value that is not the
+    # expected one.
     dsd_neo_add_iq_decode_test(
         DECODE_IQ_ANALOG_CTCSS_1000
         nfm_ctcss_synth_1000
         -fA
         "Received tone: CTCSS 100\\.0 Hz"
-        "Received tone: (none|CTCSS ([0-9]|[0-9][0-9]|[02-9][0-9][0-9]|1[1-9][0-9]|10[1-9])\\.[0-9] Hz|CTCSS 100\\.[1-9] Hz)"
+        "Received tone: (none|DCS|CTCSS ([0-9]|[0-9][0-9]|[02-9][0-9][0-9]|1[1-9][0-9]|10[1-9])\\.[0-9] Hz|CTCSS 100\\.[1-9] Hz)"
     )
     dsd_neo_add_iq_decode_test(
         DECODE_IQ_ANALOG_CTCSS_670
         nfm_ctcss_synth_670
         -fA
         "Received tone: CTCSS 67\\.0 Hz"
-        "Received tone: (none|CTCSS ([0-9]|[0-57-9][0-9]|6[0-689]|[0-9][0-9][0-9])\\.[0-9] Hz|CTCSS 67\\.[1-9] Hz)"
+        "Received tone: (none|DCS|CTCSS ([0-9]|[0-57-9][0-9]|6[0-689]|[0-9][0-9][0-9])\\.[0-9] Hz|CTCSS 67\\.[1-9] Hz)"
     )
     # The tone stops at 1.2 s while the carrier and voice carry on: 100.0, then none.
     dsd_neo_add_iq_decode_test(
@@ -11141,15 +11180,64 @@ if(DSD_HAS_RADIO)
         nfm_ctcss_synth_drop
         -fA
         "Received tone: CTCSS 100\\.0 Hz.*Received tone: none"
-        "Received tone: CTCSS ([0-9]|[0-9][0-9]|[02-9][0-9][0-9]|1[1-9][0-9]|10[1-9])\\.[0-9] Hz|Received tone: CTCSS 100\\.[1-9] Hz"
+        "Received tone: CTCSS ([0-9]|[0-9][0-9]|[02-9][0-9][0-9]|1[1-9][0-9]|10[1-9])\\.[0-9] Hz|Received tone: CTCSS 100\\.[1-9] Hz|Received tone: DCS"
     )
-    # Voice with no tone: positively "none", and never a tone.
+    # Voice with no tone: positively "none", and never a tone or a code.
     dsd_neo_add_iq_decode_test(
         DECODE_IQ_ANALOG_CTCSS_NOTONE
         nfm_notone_synth
         -fA
         "Received tone: none"
-        "Received tone: CTCSS"
+        "Received tone: (CTCSS|DCS)"
+    )
+    # Received DCS on the analog FM monitor (issue #523): synthetic NFM with voice and a DCS
+    # word at 600 Hz deviation, correct by construction (tools/build_iq_fixtures.py), replayed
+    # the same way. Each asserts the signal the log names by both of its standard spellings,
+    # canonical first -- D023N is also D047I, and the inverted word is the signal of D047N,
+    # also D023I, so it must read "D047N / D023I", never "D023N / D047I" -- and that nothing
+    # else was reported: any label led by another spelling. "Any other code" is spelled out
+    # digit by digit, as for the tones above.
+    dsd_neo_add_iq_decode_test(
+        DECODE_IQ_ANALOG_DCS_023N
+        nfm_dcs_synth_023n
+        -fA
+        "Received tone: DCS D023N / D047I"
+        "Received tone: (none|CTCSS|DCS D([1-7][0-7][0-7]|0[013-7][0-7]|02[0-24-7])[NI]|DCS D023I)"
+    )
+    dsd_neo_add_iq_decode_test(
+        DECODE_IQ_ANALOG_DCS_023I
+        nfm_dcs_synth_023i
+        -fA
+        "Received tone: DCS D047N / D023I"
+        "Received tone: (none|CTCSS|DCS D([1-7][0-7][0-7]|0[0-35-7][0-7]|04[0-6])[NI]|DCS D047I)"
+    )
+    # Malformed: D023N's word two bits wrong in every repetition, no code at all. It must be
+    # rejected: positively "none", and never a code or a tone.
+    dsd_neo_add_iq_decode_test(
+        DECODE_IQ_ANALOG_DCS_NOISY
+        nfm_dcs_synth_noisy
+        -fA
+        "Received tone: none"
+        "Received tone: (CTCSS|DCS)"
+    )
+    # The code stops at 1.2 s with no turn-off tone while the carrier and voice carry on:
+    # D023N (also D047I), then none.
+    dsd_neo_add_iq_decode_test(
+        DECODE_IQ_ANALOG_DCS_DROP
+        nfm_dcs_synth_drop
+        -fA
+        "Received tone: DCS D023N / D047I.*Received tone: none"
+        "Received tone: (CTCSS|DCS D([1-7][0-7][0-7]|0[013-7][0-7]|02[0-24-7])[NI]|DCS D023I)"
+    )
+    # Voice with no code through the narrowest NFM channel: positively "none", and never a
+    # code. DECODE_IQ_ANALOG_CTCSS_NOTONE covers the same voice at the default width, which
+    # fails on a code too, so this case replays it through another channel filter.
+    dsd_neo_add_iq_decode_test(
+        DECODE_IQ_ANALOG_DCS_NOCODE
+        nfm_notone_synth
+        "-fA --nfm-bandwidth-hz 8000"
+        "Received tone: none"
+        "Received tone: DCS"
     )
     # Analog monitor cases like the audio checks further down, so -L analog runs them too.
     set_tests_properties(
@@ -11157,6 +11245,11 @@ if(DSD_HAS_RADIO)
         DECODE_IQ_ANALOG_CTCSS_670
         DECODE_IQ_ANALOG_CTCSS_DROP
         DECODE_IQ_ANALOG_CTCSS_NOTONE
+        DECODE_IQ_ANALOG_DCS_023N
+        DECODE_IQ_ANALOG_DCS_023I
+        DECODE_IQ_ANALOG_DCS_NOISY
+        DECODE_IQ_ANALOG_DCS_DROP
+        DECODE_IQ_ANALOG_DCS_NOCODE
         PROPERTIES LABELS "iq-decode;analog"
     )
     # Issue #525: the tone detector listens behind the NFM channel filter, so the width
@@ -11167,14 +11260,14 @@ if(DSD_HAS_RADIO)
         nfm_ctcss_synth_1000
         "-fA --nfm-bandwidth-hz 8000"
         "Received tone: CTCSS 100\\.0 Hz"
-        "Received tone: (none|CTCSS ([0-9]|[0-9][0-9]|[02-9][0-9][0-9]|1[1-9][0-9]|10[1-9])\\.[0-9] Hz|CTCSS 100\\.[1-9] Hz)"
+        "Received tone: (none|DCS|CTCSS ([0-9]|[0-9][0-9]|[02-9][0-9][0-9]|1[1-9][0-9]|10[1-9])\\.[0-9] Hz|CTCSS 100\\.[1-9] Hz)"
     )
     dsd_neo_add_iq_decode_test(
         DECODE_IQ_ANALOG_CTCSS_1000_NFM_25K
         nfm_ctcss_synth_1000
         "-fA --nfm-bandwidth-hz 25000"
         "Received tone: CTCSS 100\\.0 Hz"
-        "Received tone: (none|CTCSS ([0-9]|[0-9][0-9]|[02-9][0-9][0-9]|1[1-9][0-9]|10[1-9])\\.[0-9] Hz|CTCSS 100\\.[1-9] Hz)"
+        "Received tone: (none|DCS|CTCSS ([0-9]|[0-9][0-9]|[02-9][0-9][0-9]|1[1-9][0-9]|10[1-9])\\.[0-9] Hz|CTCSS 100\\.[1-9] Hz)"
     )
     set_tests_properties(
         DECODE_IQ_ANALOG_CTCSS_1000_NFM_8K
@@ -11516,40 +11609,62 @@ if(DSD_HAS_RADIO)
     # Received CTCSS on the off-air excerpts (issue #522), against the oracle labels in
     # docs/testing.md that the maintainer confirmed. nfm_ctcss_real carries 151.4 Hz: it
     # must lock within the 400 ms bound (300 ms measured) and never report another tone,
-    # least of all the neighbour's 173.8 Hz 12.5 kHz away. "none" is allowed: the excerpt
-    # carries a reverse burst and a short tone gap at 3.7-4.0 s, after which the tone locks
-    # again. The host's tone= field comes from the decoder's publication, not from the log.
+    # least of all the neighbour's 173.8 Hz 12.5 kHz away, nor any DCS code (issue #523).
+    # "none" is allowed: the excerpt carries a reverse burst and a short tone gap at
+    # 3.7-4.0 s, after which the tone locks again. The host's tone= field comes from the
+    # decoder's publication, not from the log.
     dsd_neo_add_analog_replay_test(
         DECODE_IQ_ANALOG_REAL_CTCSS_1514
         nfm_ctcss_real
         "-fA --analog-max-tone-lock-ms 400"
         "Received tone: CTCSS 151[.]4 Hz.*ANALOG METRIC: .* tone=151[.]4 tone_lock_ms=[0-9]+[.][0-9][0-9] tone_lock_pct=[0-9]+[.][0-9][0-9]"
-        "Received tone: CTCSS (([0-9]|[0-9][0-9]|[02-9][0-9][0-9]|1[0-46-9][0-9]|15[02-9])[.][0-9]|151[.][0-35-9]) Hz|${_analog_off_path}"
+        "Received tone: CTCSS (([0-9]|[0-9][0-9]|[02-9][0-9][0-9]|1[0-46-9][0-9]|15[02-9])[.][0-9]|151[.][0-35-9]) Hz|Received tone: DCS|${_analog_off_path}"
     )
-    # No false lock: speech and carrier with no CTCSS (the squelch excerpts carry 150 bit/s
-    # data below 300 Hz, which is neither CTCSS nor DCS), and AM airband voice through the
-    # FM monitor. Each must reach the "none" verdict, which shows detection ran, and never
-    # report a tone.
+    # Received DCS through the host (issue #523): the synthetic DCS fixtures carry the code
+    # from their start, and the host's tone= field reads the publication's code as both of
+    # its standard spellings, canonical first, joined by a slash with no space:
+    # D023N/D047I for the normal word, D047N/D023I for the inverted D023 word. Each locks
+    # within the 10 dB lock bound (360 ms measured, 83% of the run locked) and reports no
+    # other code, no tone and no "none".
+    dsd_neo_add_analog_replay_test(
+        DECODE_IQ_ANALOG_DCS_023N_HOST
+        nfm_dcs_synth_023n
+        "-fA --analog-max-tone-lock-ms 520"
+        "Received tone: DCS D023N / D047I.*ANALOG METRIC: .* tone=D023N/D047I tone_lock_ms=[0-9]+[.][0-9][0-9] tone_lock_pct=[0-9]+[.][0-9][0-9]"
+        "Received tone: (none|CTCSS|DCS D([1-7][0-7][0-7]|0[013-7][0-7]|02[0-24-7])[NI]|DCS D023I)|${_analog_off_path}"
+    )
+    dsd_neo_add_analog_replay_test(
+        DECODE_IQ_ANALOG_DCS_023I_HOST
+        nfm_dcs_synth_023i
+        "-fA --analog-max-tone-lock-ms 520"
+        "Received tone: DCS D047N / D023I.*ANALOG METRIC: .* tone=D047N/D023I tone_lock_ms=[0-9]+[.][0-9][0-9] tone_lock_pct=[0-9]+[.][0-9][0-9]"
+        "Received tone: (none|CTCSS|DCS D([1-7][0-7][0-7]|0[0-35-7][0-7]|04[0-6])[NI]|DCS D047I)|tone=D023|${_analog_off_path}"
+    )
+    # No false lock: speech and carrier with no CTCSS or DCS (the squelch excerpts carry
+    # 150 bit/s data below 300 Hz, which is neither CTCSS nor DCS: the DCS detector's bit
+    # clock and slicers read it, and must never find a code in it), and AM airband voice
+    # through the FM monitor. Each must reach the "none" verdict, which shows detection ran,
+    # and never report a tone or a code (issues #522, #523).
     dsd_neo_add_analog_replay_test(
         DECODE_IQ_ANALOG_REAL_CTCSS_NOFALSE_SQUELCH_A
         nfm_squelch_real_a
         -fA
         "Received tone: none.*ANALOG METRIC: .* tone=NA tone_lock_ms=NA tone_lock_pct=0[.]00"
-        "Received tone: CTCSS|${_analog_off_path}"
+        "Received tone: (CTCSS|DCS)|${_analog_off_path}"
     )
     dsd_neo_add_analog_replay_test(
         DECODE_IQ_ANALOG_REAL_CTCSS_NOFALSE_SQUELCH_B
         nfm_squelch_real_b
         -fA
         "Received tone: none.*ANALOG METRIC: .* tone=NA tone_lock_ms=NA tone_lock_pct=0[.]00"
-        "Received tone: CTCSS|${_analog_off_path}"
+        "Received tone: (CTCSS|DCS)|${_analog_off_path}"
     )
     dsd_neo_add_analog_replay_test(
         DECODE_IQ_ANALOG_REAL_CTCSS_NOFALSE_AM
         am_airband_real
         -fA
         "Received tone: none.*ANALOG METRIC: .* tone=NA tone_lock_ms=NA tone_lock_pct=0[.]00"
-        "Received tone: CTCSS|${_analog_off_path}"
+        "Received tone: (CTCSS|DCS)|${_analog_off_path}"
     )
 
     # Negative controls: bounds that must NOT hold, run through

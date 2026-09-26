@@ -178,9 +178,20 @@ seed_received_tone(dsd_state* state) {
     state->analog_rx.ctcss_tenths_hz = 1000;
 }
 
+/* A DCS code the previous row left on the publication (issue #523): D023N. */
+static void
+seed_received_code(dsd_state* state) {
+    state->analog_rx.carrier_open = 1;
+    state->analog_rx.tone_state = DSD_ANALOG_TONE_STATE_LOCKED;
+    state->analog_rx.tone_kind = DSD_ANALOG_TONE_KIND_DCS;
+    state->analog_rx.dcs_code = 023;
+    state->analog_rx.dcs_inverted = 0;
+}
+
 static int
 received_tone_cleared(const dsd_state* state) {
     return state->analog_rx.tone_state != DSD_ANALOG_TONE_STATE_LOCKED && state->analog_rx.ctcss_tenths_hz == 0
+           && state->analog_rx.dcs_code == 0 && state->analog_rx.dcs_inverted == 0
            && state->analog_rx.tone_kind == DSD_ANALOG_TONE_KIND_NONE && state->analog_rx.carrier_open == 0;
 }
 
@@ -898,7 +909,7 @@ test_leave_family_switch_drops_partial_analog_block(void) {
     free(opts);
 }
 
-/* ---- Received tone (issue #522) ----------------------------------------------------------- */
+/* ---- Received tone or code (issues #522, #523) ------------------------------------------- */
 
 /* A row the scanner commits to starts with no received tone, whether its tune resolved later
    (a pending request the sync service commits) or at once (a step whose tune completed): the
@@ -938,6 +949,22 @@ test_rx_tone_row_commit_and_step_clear(void) {
     generation = state->analog_rx.generation;
     assert(dsd_engine_channel_scan_step(opts, state) == 1);
     assert(state->lcn_freq_roll == 2);
+    assert(received_tone_cleared(state) && state->analog_rx.generation != generation);
+
+    /* A received DCS code (issue #523) is no more the next row's than a tone is: the retune
+       to the next row clears it, pending or completed. */
+    tune_result = DSD_TRUNK_TUNE_RESULT_PENDING;
+    assert(dsd_engine_channel_scan_step(opts, state) == 0);
+    seed_received_code(state);
+    generation = state->analog_rx.generation;
+    dsd_trunk_tuning_request_publish(request, DSD_TRUNK_TUNE_RESULT_OK);
+    state->synctype = DSD_SYNC_P25P1_POS;
+    assert(!dsd_engine_channel_scan_service_sync(opts, state));
+    assert(received_tone_cleared(state) && state->analog_rx.generation != generation);
+    tune_result = DSD_TRUNK_TUNE_RESULT_OK;
+    seed_received_code(state);
+    generation = state->analog_rx.generation;
+    assert(dsd_engine_channel_scan_step(opts, state) == 1);
     assert(received_tone_cleared(state) && state->analog_rx.generation != generation);
 
     dsd_state_trunk_lcn_free(state);

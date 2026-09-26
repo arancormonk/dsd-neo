@@ -146,11 +146,11 @@ printf '\n' >> "$summary"
 
 # Value of key=value on the last (or, with which=first, the first) line of the log
 # that starts with prefix, or NA. The line is split on spaces, so no value may
-# contain one. tone= (a label such as 151.4 or D023N), tone_lock_ms= (stream
-# time of the first lock) and tone_lock_pct= (share of the delivered audio the
-# tone was locked for) follow the contract in tests/engine/analog_replay.c's file
-# comment; a host that predates a field reads NA, like every analog column of a
-# digital run.
+# contain one. tone= (a label such as 151.4 or D023N/D047I), tone_lock_ms=
+# (stream time of the first lock) and tone_lock_pct= (share of the delivered
+# audio the tone was locked for) follow the contract in
+# tests/engine/analog_replay.c's file comment; a host that predates a field
+# reads NA, like every analog column of a digital run.
 line_value() {
   local log=$1 prefix=$2 key=$3 which=${4:-last} value pick=(tail -n 1)
   [ "$which" = first ] && pick=(head -n 1)

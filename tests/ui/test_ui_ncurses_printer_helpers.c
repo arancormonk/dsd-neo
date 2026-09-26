@@ -1477,6 +1477,15 @@ seed_rx_tone(dsd_state* state, int carrier, int tone_state, int tenths) {
     }
 }
 
+/* A received DCS code, as the detector publishes it (issue #523). */
+static void
+seed_rx_code(dsd_state* state, int code, int inverted) {
+    seed_rx_tone(state, 1, DSD_ANALOG_TONE_STATE_LOCKED, 0);
+    state->analog_rx.tone_kind = DSD_ANALOG_TONE_KIND_DCS;
+    state->analog_rx.dcs_code = code;
+    state->analog_rx.dcs_inverted = inverted;
+}
+
 static void
 assert_rx_tone_line(const dsd_opts* opts, const dsd_state* state, const char* expected) {
     char line[64];
@@ -1486,9 +1495,9 @@ assert_rx_tone_line(const dsd_opts* opts, const dsd_state* state, const char* ex
 }
 
 /*
- * The received tone (issue #522) on its own Call Info line, which compact view keeps: the
- * formatter's exact bytes for every state the shared view names, and the row's place and
- * colours in the section.
+ * The received tone or code (issues #522, #523) on its own Call Info line, which compact view
+ * keeps: the formatter's exact bytes for every state the shared view names, and the row's place
+ * and colours in the section.
  */
 static void
 test_call_info_rx_tone_line_rendering(void) {
@@ -1514,11 +1523,24 @@ test_call_info_rx_tone_line_rendering(void) {
     seed_rx_tone(state, 0, DSD_ANALOG_TONE_STATE_INACTIVE, 0);
     assert_rx_tone_line(&opts, state, "| Rx tone: \xE2\x80\x94");
 
+    /* A received DCS code: both standard spellings of its signal, canonical first, each three
+       octal digits with leading zeros and the polarity letter. The policy gate the publication
+       carries is configuration's business and never changes the received line. */
+    seed_rx_code(state, 0023, 0);
+    assert_rx_tone_line(&opts, state, "| Rx tone: DCS D023N / D047I");
+    state->analog_rx.gate = DSD_ANALOG_TONE_GATE_REJECTED;
+    assert_rx_tone_line(&opts, state, "| Rx tone: DCS D023N / D047I");
+    seed_rx_code(state, 0754, 0);
+    assert_rx_tone_line(&opts, state, "| Rx tone: DCS D754N / D116I");
+    seed_rx_tone(state, 0, DSD_ANALOG_TONE_STATE_INACTIVE, 0);
+
     /* Without UTF-8 the em dash is a hyphen; everything else the line says is ASCII already. */
     g_unicode_stub = 0;
     assert_rx_tone_line(&opts, state, "| Rx tone: -");
     seed_rx_tone(state, 1, DSD_ANALOG_TONE_STATE_LOCKED, 1000);
     assert_rx_tone_line(&opts, state, "| Rx tone: CTCSS 100.0 Hz");
+    seed_rx_code(state, 0047, 0);
+    assert_rx_tone_line(&opts, state, "| Rx tone: DCS D047N / D023I");
     g_unicode_stub = 1;
 
     /* A paused live stream's publication, past its deadline on the caller's clock, is no
@@ -1539,6 +1561,13 @@ test_call_info_rx_tone_line_rendering(void) {
     ui_render_call_info_rx_tone_line(&opts, state);
     assert_capture_equals("| Rx tone: CTCSS 131.8 Hz\n");
     assert(strcmp(g_color_trace, "+4+4") == 0);
+    seed_rx_code(state, 0245, 0);
+    reset_printw_capture();
+    reset_color_trace();
+    ui_render_call_info_rx_tone_line(&opts, state);
+    assert_capture_equals("| Rx tone: DCS D245N / D072I\n");
+    assert(strcmp(g_color_trace, "+4+4") == 0);
+    seed_rx_tone(state, 1, DSD_ANALOG_TONE_STATE_LOCKED, 1318);
 
     /* A Call Info row, so compact view shows it too, and it sits under the channel line. */
     opts.scanner_mode = 1;

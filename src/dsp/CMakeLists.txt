@@ -30,6 +30,7 @@ target_sources(
         symbol_timing_debug.c
         analog_rx.c
         analog_ctcss.c
+        analog_dcs.c
 )
 
 set(_dsd_neo_dsp_target_arch "${CMAKE_SYSTEM_PROCESSOR}")

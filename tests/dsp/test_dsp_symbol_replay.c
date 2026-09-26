@@ -1234,6 +1234,8 @@ static int g_unusable_rate_warnings = 0;
 static int g_rx_tone_lines = 0;
 static int g_rx_tone_100_lines = 0;
 static int g_rx_tone_none_lines = 0;
+static int g_rx_tone_d023n_lines = 0;
+static int g_rx_tone_d047n_lines = 0;
 
 static void
 count_rx_tone_log_lines(dsd_neo_log_level_t level, const char* text, void* ctx) {
@@ -1248,6 +1250,8 @@ count_rx_tone_log_lines(dsd_neo_log_level_t level, const char* text, void* ctx) 
         g_rx_tone_lines++;
         g_rx_tone_100_lines += strcmp(text, "Received tone: CTCSS 100.0 Hz\n") == 0 ? 1 : 0;
         g_rx_tone_none_lines += strcmp(text, "Received tone: none\n") == 0 ? 1 : 0;
+        g_rx_tone_d023n_lines += strcmp(text, "Received tone: DCS D023N / D047I\n") == 0 ? 1 : 0;
+        g_rx_tone_d047n_lines += strcmp(text, "Received tone: DCS D047N / D023I\n") == 0 ? 1 : 0;
     }
 }
 
@@ -1478,6 +1482,132 @@ test_rx_tone_logs_on_change_only(void) {
     feed_blocks_at(&opts, &state, 100, 150.0);
     assert(state.analog_rx.tone_state == DSD_ANALOG_TONE_STATE_NONE && state.analog_rx.carrier_open == 1);
     assert(g_rx_tone_none_lines == 1 && g_rx_tone_100_lines == 3 && g_rx_tone_lines == 4);
+    dsd_state_ext_free_all(&state);
+}
+
+/* DCS signalling, as a transmitter sends it: one word repeated at 134.4 bit/s, bit 0 first, a
+   one as positive deviation (the inverted polarity sends the complement). */
+static double g_dcs_bit_phase = 0.0;
+
+static void
+feed_dcs_blocks(dsd_opts* opts, dsd_state* state, int blocks, uint32_t word) {
+    float block[960];
+    for (int b = 0; b < blocks; b++) {
+        for (unsigned int i = 0; i < 960U; i++) {
+            const int bit = (int)g_dcs_bit_phase;
+            block[i] = ((word >> bit) & 1U) ? 3000.0f : -3000.0f;
+            g_dcs_bit_phase += 134.4 / 48000.0;
+            if (g_dcs_bit_phase >= 23.0) {
+                g_dcs_bit_phase -= 23.0;
+            }
+        }
+        assert(dsd_symbol_test_finalize_unsynced_analog_block(opts, state, block, 960U) == 960U);
+    }
+}
+
+static int
+rx_code_locked(const dsd_state* state, int code) {
+    return state->analog_rx.tone_state == DSD_ANALOG_TONE_STATE_LOCKED
+           && state->analog_rx.tone_kind == DSD_ANALOG_TONE_KIND_DCS && state->analog_rx.dcs_code == code
+           && state->analog_rx.dcs_inverted == 0 && state->analog_rx.ctcss_tenths_hz == 0;
+}
+
+static int
+rx_code_cleared(const dsd_state* state) {
+    return state->analog_rx.tone_state != DSD_ANALOG_TONE_STATE_LOCKED
+           && state->analog_rx.tone_kind == DSD_ANALOG_TONE_KIND_NONE && state->analog_rx.dcs_code == 0
+           && state->analog_rx.dcs_inverted == 0;
+}
+
+/*
+ * After a boundary the detector reads the code from scratch: twice in a row, 46 bits (342 ms),
+ * before it can lock. Feeds 15 blocks of 20 ms of @p word, fewer than that, and checks after
+ * each that nothing is locked and nothing was logged, as a detector that kept its lock across
+ * the boundary would at once.
+ */
+static void
+feed_dcs_blocks_before_a_fresh_lock(dsd_opts* opts, dsd_state* state, uint32_t word) {
+    const int lines = g_rx_tone_lines;
+    for (int b = 0; b < 15; b++) {
+        feed_dcs_blocks(opts, state, 1, word);
+        assert(rx_code_cleared(state));
+        assert(g_rx_tone_lines == lines);
+    }
+}
+
+/*
+ * DCS through the real tap (issue #523): D023N locks, is published as code 023 in normal
+ * polarity and logged once as "Received tone: DCS D023N / D047I", both spellings of its signal;
+ * the inverted word is published as its normal alias, D047N, and logged as "DCS D047N / D023I".
+ * Every boundary that clears a tone clears a code the same way: a retune the RTL stream or the
+ * tuning hooks report, and an announced reset. The detector keeps nothing of the lock: the same
+ * code running on through the boundary is not shown, nor logged, until it has been read twice
+ * from scratch, then logged once more for the new reception; after the announced reset the
+ * inverted word locks as D047N and D023N never shows again.
+ */
+static void
+test_rx_tone_dcs_through_the_tap(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    const uint32_t d023n = dsd_dcs_word(0023, 0);
+    install_fake_rtl_hooks(0);
+    init_analog_monitor_fixture(&opts, &state);
+    g_rx_tone_lines = 0;
+    g_rx_tone_d023n_lines = 0;
+    g_rx_tone_d047n_lines = 0;
+    g_dcs_bit_phase = 0.0;
+
+    /* 1.2 s to lock, then 2 s more: one line. */
+    feed_dcs_blocks(&opts, &state, 60, d023n);
+    assert(rx_code_locked(&state, 0023));
+    assert(state.analog_rx.gate == DSD_ANALOG_TONE_GATE_OFF);
+    feed_dcs_blocks(&opts, &state, 100, d023n);
+    assert(rx_code_locked(&state, 0023));
+    assert(g_rx_tone_d023n_lines == 1 && g_rx_tone_lines == 1);
+
+    /* PCM under rigctl: the trunk-tuning generation moves, and the code is gone at once. */
+    uint32_t generation = state.analog_rx.generation;
+    dsd_trunk_tuning_generation_advance();
+    feed_dcs_blocks(&opts, &state, 1, d023n);
+    assert(rx_code_cleared(&state) && state.analog_rx.generation != generation);
+    feed_dcs_blocks_before_a_fresh_lock(&opts, &state, d023n);
+    feed_dcs_blocks(&opts, &state, 60, d023n);
+    assert(rx_code_locked(&state, 0023));
+    assert(g_rx_tone_d023n_lines == 2 && g_rx_tone_lines == 2);
+
+    /* RTL: a manual or UDP-driven retune is a new stream generation. */
+    install_fake_rtl_hooks(1);
+    opts.audio_in_type = AUDIO_IN_RTL;
+    feed_dcs_blocks(&opts, &state, 60, d023n);
+    assert(rx_code_locked(&state, 0023));
+    generation = state.analog_rx.generation;
+    const int lines_before_retune = g_rx_tone_d023n_lines;
+    g_fake_rtl_generation++;
+    feed_dcs_blocks(&opts, &state, 1, d023n);
+    assert(rx_code_cleared(&state) && state.analog_rx.generation != generation);
+    feed_dcs_blocks_before_a_fresh_lock(&opts, &state, d023n);
+    feed_dcs_blocks(&opts, &state, 60, d023n);
+    assert(rx_code_locked(&state, 0023));
+    assert(g_rx_tone_d023n_lines == lines_before_retune + 1);
+    install_fake_rtl_hooks(0);
+    opts.audio_in_type = AUDIO_IN_WAV;
+
+    /* An announced reset (scan row, target, mode change, stop). */
+    generation = state.analog_rx.generation;
+    dsd_analog_rx_reset(&state);
+    assert(state.analog_rx.tone_state == DSD_ANALOG_TONE_STATE_INACTIVE);
+    assert(rx_code_cleared(&state) && state.analog_rx.carrier_open == 0);
+    assert(state.analog_rx.generation != generation);
+
+    /* The inverted word is D047N's signal, and D023N is never shown or logged again. */
+    const int d023n_lines = g_rx_tone_d023n_lines;
+    feed_dcs_blocks_before_a_fresh_lock(&opts, &state, dsd_dcs_word(0023, 1));
+    for (int b = 0; b < 60; b++) {
+        feed_dcs_blocks(&opts, &state, 1, dsd_dcs_word(0023, 1));
+        assert(!rx_code_locked(&state, 0023));
+    }
+    assert(rx_code_locked(&state, 0047));
+    assert(g_rx_tone_d047n_lines == 1 && g_rx_tone_d023n_lines == d023n_lines);
     dsd_state_ext_free_all(&state);
 }
 
@@ -2476,6 +2606,7 @@ main(void) {
     test_rx_tone_rate_drop_mid_stream_keeps_pace();
     test_rx_tone_rate_change_drops_the_unread_samples();
     test_rx_tone_logs_on_change_only();
+    test_rx_tone_dcs_through_the_tap();
     test_rx_tone_paused_stream_starts_a_new_reception();
     test_rx_tone_pause_mid_block_inherits_nothing();
     test_rx_tone_pcm_squelch_follows_each_read();
