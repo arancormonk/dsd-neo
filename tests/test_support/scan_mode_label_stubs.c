@@ -119,6 +119,7 @@ dsd_scan_mode_name(dsd_scan_mode mode) {
     switch (mode) {
         case DSD_SCAN_MODE_P25: return "p25";
         case DSD_SCAN_MODE_NFM: return "nfm";
+        case DSD_SCAN_MODE_AM: return "am";
         default: return "";
     }
 }

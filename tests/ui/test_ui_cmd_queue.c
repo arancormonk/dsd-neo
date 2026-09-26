@@ -9116,6 +9116,216 @@ test_config_apply_holds_a_scan_row_width_to_a_reopen(void) {
 }
 
 /*
+ * Issue #526: an am scan row or target without a width of its own runs the configured AM width whenever it comes on
+ * air, the AM default (6 kHz) included, which always runs its channel filter. So a config apply that leaves the session
+ * on a preset that runs no AM -- a digital one, or -fA beside its own NFM width -- still holds its [analog]
+ * am_bandwidth_hz to the rate, as the AM width command does: a width the front end cannot filter leaves the whole
+ * config unapplied, rather than the am row skipped at every visit. A fitting width applies, and a scanner that is not
+ * running holds nothing.
+ */
+static int
+config_am_width_case(int analog_session) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static void* fake_ctx[2];
+    int rc = 0;
+    const char* tag = analog_session ? "-fA am rows" : "digital am rows";
+    char label[11][64];
+    static const char* const steps[11] = {
+        "unfit width refused",   "unfit width held as AM",   "unfit width toast",
+        "session kept",          "default refused",          "default held as AM",
+        "fitting width applied", "fitting width held",       "fitting width kept the session",
+        "scanner off applies",   "scanner off holds nothing"};
+    for (int i = 0; i < 11; i++) {
+        DSD_SNPRINTF(label[i], sizeof label[i], "%s: %s", tag, steps[i]);
+    }
+    if (analog_session) {
+        init_nfm_session(&opts, &state, (RtlSdrContext*)fake_ctx);
+    } else {
+        init_dmr_session_with_nfm_width(&opts, &state, (RtlSdrContext*)fake_ctx, 0);
+    }
+    opts.analog_nfm_bandwidth_hz = 0;
+    opts.analog_am_bandwidth_hz = 8000;
+    load_dmr_and_am_rows(&state, 0);
+    opts.scanner_mode = 1;
+    const int analog_only = opts.analog_only;
+
+    reset_rx_family_wrap();
+    g_analog_check_result = -1;
+    rc |= submit_config_widths(&opts, &state, 0, 16000, tag);
+    rc |= expect_int(label[0], opts.analog_am_bandwidth_hz, 8000);
+    rc |= expect_int(
+        label[1],
+        g_analog_check_calls >= 1 && g_analog_check_kind == DSD_ANALOG_DEMOD_AM && g_analog_check_width_hz == 16000, 1);
+    /* The fake front end refuses at a rate that would fit, so the refusal is worded as the front end's own. */
+    rc |= expect_int(
+        label[2], strncmp(state.ui_msg, "Config not applied: ", 20) == 0 && strstr(state.ui_msg, "AM 16 kHz") != NULL,
+        1);
+    rc |= expect_int(label[3], opts.analog_only == analog_only && opts.analog_nfm_bandwidth_hz == 0, 1);
+
+    /* The unset AM default is held as its 6 kHz. */
+    reset_rx_family_wrap();
+    g_analog_check_result = -1;
+    rc |= submit_config_widths(&opts, &state, 0, 0, tag);
+    rc |= expect_int(label[4], opts.analog_am_bandwidth_hz, 8000);
+    rc |= expect_int(label[5], g_analog_check_kind == DSD_ANALOG_DEMOD_AM && g_analog_check_width_hz == 0, 1);
+
+    reset_rx_family_wrap();
+    rc |= submit_config_widths(&opts, &state, 0, 10000, tag);
+    rc |= expect_int(label[6], opts.analog_am_bandwidth_hz, 10000);
+    rc |= expect_int(label[7], g_analog_check_kind == DSD_ANALOG_DEMOD_AM && g_analog_check_width_hz == 10000, 1);
+    rc |= expect_int(label[8], opts.analog_only, analog_only);
+
+    /* Without the scanner the am row runs nothing, so nothing holds the AM width on a digital session. */
+    opts.scanner_mode = 0;
+    reset_rx_family_wrap();
+    g_analog_check_result = -1;
+    rc |= submit_config_widths(&opts, &state, 0, 20000, tag);
+    rc |= expect_int(label[9], opts.analog_am_bandwidth_hz, 20000);
+    rc |= expect_int(label[10], g_analog_check_calls, 0);
+
+    if (rc) {
+        DSD_FPRINTF(stderr, "%s: config AM width hold failed (toast '%s')\n", tag, state.ui_msg);
+    }
+    g_analog_check_result = 0;
+    dsd_channel_modes_clear(&state);
+    (void)dsd_channel_profile_set(&state, 1, NULL);
+    state.lcn_freq_count = 0;
+    opts.analog_nfm_bandwidth_hz = 0;
+    opts.analog_am_bandwidth_hz = 0;
+    state.rtl_ctx = NULL;
+    freeState(&state);
+    return rc;
+}
+
+static int
+test_config_apply_holds_the_configured_am_width_under_am_rows(void) {
+    return config_am_width_case(0) | config_am_width_case(1);
+}
+
+/*
+ * Issue #526: the reopen a config's [input] makes runs the am scan row on air again once the scope resumes, so the row's
+ * own --am-bandwidth-hz is held to the rate the reopened RTL-SDR runs at, as an AM width, as an nfm row's own width is:
+ * a DSP bandwidth that cannot filter it leaves the whole config unapplied, naming AM. One that can reopens.
+ */
+static int
+test_config_apply_holds_an_am_row_width_to_a_reopen(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static void* fake_ctx[2];
+    int rc = 0;
+    init_dmr_session_with_nfm_width(&opts, &state, (RtlSdrContext*)fake_ctx, 0);
+    DSD_SNPRINTF(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", "rtl:0:118.3M:0:0:24");
+    opts.rtl_dsp_bw_khz = 24;
+    dsd_scan_option_values row = {0};
+    row.present = DSD_SCAN_OPT_BANDWIDTH;
+    row.channel_bw_hz = 20000;
+    row.channel_bw_kind = DSD_ANALOG_DEMOD_AM;
+    rc |= expect_int("am row reopen: am row", dsd_scan_mode_enter(&opts, &state, DSD_SCAN_MODE_AM), 0);
+    rc |= expect_int("am row reopen: its width", dsd_scan_mode_options(&opts, &state, &row), 0);
+    rc |= expect_int("am row reopen: in force",
+                     opts.analog_demod == DSD_ANALOG_DEMOD_AM && opts.analog_am_bandwidth_hz == 20000, 1);
+
+    char dev_before[sizeof opts.audio_in_dev];
+    DSD_SNPRINTF(dev_before, sizeof dev_before, "%s", opts.audio_in_dev);
+    reset_rx_family_wrap();
+    rc |= submit_config_rtl_bw(&opts, &state, 16, -1, "am row reopen: 24->16");
+    rc |= expect_int("am row reopen 24->16: rate kept", opts.rtl_dsp_bw_khz, 24);
+    rc |= expect_str("am row reopen 24->16: input unchanged", opts.audio_in_dev, dev_before);
+    rc |= expect_int("am row reopen 24->16: stream kept", state.rtl_ctx == (RtlSdrContext*)fake_ctx, 1);
+    rc |=
+        expect_int("am row reopen 24->16: refusal names AM",
+                   strncmp(state.ui_msg, "Config not applied: AM 20 kHz does not fit the 16 kHz DSP rate", 62) == 0, 1);
+    rc |= expect_int("am row reopen 24->16: the row keeps its width",
+                     dsd_scan_mode_active(&state) == DSD_SCAN_MODE_AM && opts.analog_am_bandwidth_hz == 20000, 1);
+    const dsd_scan_settings* configured = dsd_scan_mode_configured_view(&state);
+    rc |= expect_int("am row reopen 24->16: the configured session kept",
+                     configured && configured->analog_only == 0 && configured->analog_am_bandwidth_hz == 0, 1);
+
+    state.rtl_ctx = NULL;
+    rc |= submit_config_rtl_bw(&opts, &state, 48, -1, "am row reopen: 24->48");
+    rc |= expect_int("am row reopen 24->48: rate applied", opts.rtl_dsp_bw_khz, 48);
+    rc |= expect_int("am row reopen 24->48: not refused", strstr(state.ui_msg, "Config not applied") == NULL, 1);
+
+    dsd_scan_mode_leave(&opts, &state);
+    opts.analog_am_bandwidth_hz = 0;
+    state.rtl_ctx = NULL;
+    if (rc) {
+        DSD_FPRINTF(stderr, "am row reopen failed (toast '%s')\n", state.ui_msg);
+    }
+    freeState(&state);
+    return rc;
+}
+
+#ifdef DSD_NEO_TEST_RTL_WRAP
+/*
+ * Issue #526: Input > Switch source > RTL-SDR opens the device at the RTL DSP bandwidth, and a scan with am rows or
+ * targets without a width of their own runs the configured AM width there whenever one comes on air. So the configured
+ * AM width is held to that rate beside the preset's own width -- on a digital session and on -fA alike -- and a switch
+ * whose rate cannot filter it is refused before the running input is torn down. The AM default (6 kHz) fits a 12 kHz
+ * DSP bandwidth; a scanner that is not running holds nothing.
+ */
+static int
+rtl_enable_input_am_case(int analog_session) {
+    static dsd_opts opts;
+    static dsd_state state;
+    const char* tag = analog_session ? "-fA input switch" : "digital input switch";
+    init_decode_mode_context(&opts, &state);
+    state.rtl_ctx = NULL;
+    opts.analog_only = analog_session;
+    opts.analog_demod = DSD_ANALOG_DEMOD_FM;
+    opts.analog_nfm_bandwidth_hz = 0;
+    opts.analog_am_bandwidth_hz = 10000;
+    opts.audio_in_type = AUDIO_IN_PULSE;
+    DSD_SNPRINTF(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", "pulse");
+    opts.rtl_dsp_bw_khz = 12;
+    load_dmr_and_am_rows(&state, 0);
+    opts.scanner_mode = 1;
+
+    g_config_rtl_creates = 0;
+    int rc = expect_true(tag, post_empty(DSD_APP_CMD_RTL_ENABLE_INPUT) > 0);
+    state.ui_msg[0] = '\0';
+    rc |= expect_int(tag, dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int(tag, opts.audio_in_type, AUDIO_IN_PULSE);
+    rc |= expect_int(tag, g_config_rtl_creates, 0);
+    rc |= expect_int(tag, strncmp(state.ui_msg, "Refused: AM 10 kHz does not fit the 12 kHz DSP rate", 51) == 0, 1);
+
+    /* The AM default fits the same bandwidth. */
+    opts.analog_am_bandwidth_hz = 0;
+    (void)post_empty(DSD_APP_CMD_RTL_ENABLE_INPUT);
+    (void)dsd_app_drain_cmds(&opts, &state);
+    rc |= expect_int(tag, g_config_rtl_creates, 1);
+
+    /* Without the scanner the am row runs nothing. */
+    opts.audio_in_type = AUDIO_IN_PULSE;
+    DSD_SNPRINTF(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", "pulse");
+    opts.analog_am_bandwidth_hz = 10000;
+    opts.scanner_mode = 0;
+    g_config_rtl_creates = 0;
+    (void)post_empty(DSD_APP_CMD_RTL_ENABLE_INPUT);
+    (void)dsd_app_drain_cmds(&opts, &state);
+    rc |= expect_int(tag, g_config_rtl_creates, 1);
+
+    if (rc) {
+        DSD_FPRINTF(stderr, "%s: AM width hold failed (toast '%s')\n", tag, state.ui_msg);
+    }
+    dsd_channel_modes_clear(&state);
+    (void)dsd_channel_profile_set(&state, 1, NULL);
+    state.lcn_freq_count = 0;
+    opts.analog_only = 0;
+    opts.analog_am_bandwidth_hz = 0;
+    state.rtl_ctx = NULL;
+    freeState(&state);
+    return rc;
+}
+
+static int
+test_rtl_enable_input_holds_the_configured_am_width(void) {
+    return rtl_enable_input_am_case(0) | rtl_enable_input_am_case(1);
+}
+#endif
+
+/*
  * A config saved at the default NFM width carries [analog] with no width under it, and loading it into a session that
  * has an explicit width puts the default back (and hands it to the running monitor), rather than keeping the explicit
  * width and writing it into that file on the next save.
@@ -9765,6 +9975,11 @@ main(void) {
     rc |= test_scan_list_holds_the_configured_nfm_width_on_am();
     rc |= test_am_width_under_am_scan_rows();
     rc |= test_config_apply_holds_a_scan_row_width_to_a_reopen();
+    rc |= test_config_apply_holds_the_configured_am_width_under_am_rows();
+    rc |= test_config_apply_holds_an_am_row_width_to_a_reopen();
+#ifdef DSD_NEO_TEST_RTL_WRAP
+    rc |= test_rtl_enable_input_holds_the_configured_am_width();
+#endif
     rc |= test_nfm_width_waits_for_an_unsettled_cqpsk_toggle();
     rc |= test_nfm_width_refused_after_the_check();
     rc |= test_nfm_width_follows_a_queued_scan_leave();
