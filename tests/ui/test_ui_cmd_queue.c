@@ -6186,6 +6186,24 @@ test_nfm_width_edit_keeps_live_acquisition(void) {
     return rc;
 }
 
+/* A -Y channel map of a DMR row and an nfm row (row 1), the nfm row with its own width when @p row_width_hz > 0. */
+static void
+load_dmr_and_nfm_rows(dsd_state* state, int row_width_hz) {
+    state->lcn_freq_count = 2;
+    state->trunk_lcn_freq[0] = 851012500L;
+    state->trunk_lcn_freq[1] = 154430000L;
+    (void)dsd_channel_mode_set(state, 0, DSD_SCAN_MODE_DMR);
+    (void)dsd_channel_mode_set(state, 1, DSD_SCAN_MODE_NFM);
+    dsd_scan_row_profile* profile = NULL;
+    if (row_width_hz > 0 && dsd_scan_profile_ensure(&profile) == 0) {
+        profile->values.present = DSD_SCAN_OPT_BANDWIDTH;
+        profile->values.channel_bw_hz = row_width_hz;
+    }
+    if (dsd_channel_profile_set(state, 1, profile) != 0) {
+        dsd_scan_profile_free(profile);
+    }
+}
+
 /*
  * Issue #526: an nfm scan row's own --nfm-bandwidth-hz runs over the configured width while the row is on air. The width
  * command still edits the configured width, without suspending the row: the row keeps its width, the front end is asked
@@ -6239,10 +6257,13 @@ test_nfm_bandwidth_set_under_a_width_row(void) {
     dsd_scan_mode_leave(&opts, &state);
     rc |= expect_int("width row: leave keeps the edit", opts.analog_nfm_bandwidth_hz, 11250);
 
-    /* A digital session: the nfm row without a width is the one receiver the configured width runs on. */
+    /* A digital session: the -Y map's nfm row without a width, on air here, is the one receiver the configured width
+       runs on. Only a scanner puts an nfm row on air, from the map it visits. */
     (void)dsd_app_command_set_i32(DSD_APP_CMD_DECODE_MODE_SET, (int32_t)DSDCFG_MODE_DMR);
     (void)dsd_app_drain_cmds(&opts, &state);
     rc |= expect_int("width row digital: session", opts.analog_only, 0);
+    load_dmr_and_nfm_rows(&state, 0);
+    opts.scanner_mode = 1;
     rc |= expect_int("width row digital: nfm row", dsd_scan_mode_enter(&opts, &state, DSD_SCAN_MODE_NFM), 0);
     rc |= expect_int("width row digital: no width", dsd_scan_mode_options(&opts, &state, NULL), 0);
     reset_rx_family_wrap();
@@ -6258,6 +6279,10 @@ test_nfm_bandwidth_set_under_a_width_row(void) {
     rc |= expect_int("width row digital: leave keeps the edit",
                      opts.analog_only == 0 && opts.analog_nfm_bandwidth_hz == 12500, 1);
 
+    opts.scanner_mode = 0;
+    dsd_channel_modes_clear(&state);
+    (void)dsd_channel_profile_set(&state, 1, NULL);
+    state.lcn_freq_count = 0;
     opts.analog_nfm_bandwidth_hz = 0;
     state.rtl_ctx = NULL;
     freeState(&state);
@@ -7238,24 +7263,6 @@ test_nfm_width_changes_held_to_channel_lpf_off(void) {
     state.rtl_ctx = NULL;
     freeState(&state);
     return rc;
-}
-
-/* A -Y channel map of a DMR row and an nfm row (row 1), the nfm row with its own width when @p row_width_hz > 0. */
-static void
-load_dmr_and_nfm_rows(dsd_state* state, int row_width_hz) {
-    state->lcn_freq_count = 2;
-    state->trunk_lcn_freq[0] = 851012500L;
-    state->trunk_lcn_freq[1] = 154430000L;
-    (void)dsd_channel_mode_set(state, 0, DSD_SCAN_MODE_DMR);
-    (void)dsd_channel_mode_set(state, 1, DSD_SCAN_MODE_NFM);
-    dsd_scan_row_profile* profile = NULL;
-    if (row_width_hz > 0 && dsd_scan_profile_ensure(&profile) == 0) {
-        profile->values.present = DSD_SCAN_OPT_BANDWIDTH;
-        profile->values.channel_bw_hz = row_width_hz;
-    }
-    if (dsd_channel_profile_set(state, 1, profile) != 0) {
-        dsd_scan_profile_free(profile);
-    }
 }
 
 /*

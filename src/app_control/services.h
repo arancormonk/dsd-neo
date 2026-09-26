@@ -300,8 +300,8 @@ void svc_describe_nfm_refusal(const dsd_opts* opts, int width_hz, char* why, siz
  * @brief Set the configured NFM channel width (DSD_APP_CMD_NFM_BANDWIDTH_SET), live when the analog monitor runs.
  *
  * Refuses, and changes nothing, a width outside 0 or 8000..25000 Hz, and, while the configured NFM preset uses the
- * width (the scan scope's configured view, so a typed digital scan row on an analog session still holds it), an nfm
- * scan row without a width of its own runs it, or the scan has such a row or target to visit
+ * width (the scan scope's configured view, so a typed digital scan row on an analog session still holds it), or the
+ * scan has an nfm row or target without a width of its own, on air or waiting to be visited
  * (dsd_engine_scan_runs_configured_nfm_width()), one the front end would refuse (svc_check_nfm_bandwidth()). The command
  * edits the configured width through dsd_scan_mode_set_configured_nfm_bandwidth() rather than suspending a row's scope,
  * so it never disturbs the acquisition a row has made; an nfm row's own width (--nfm-bandwidth-hz, issue #526) stays in

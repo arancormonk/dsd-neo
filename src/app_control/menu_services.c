@@ -981,21 +981,18 @@ svc_row_sets_nfm_width(const dsd_state* state) {
 }
 
 /* The NFM width is in use while the configured -fA preset runs FM (the scan scope's configured view: a typed digital
-   row on an analog session returns to the monitor when it ends), while an nfm scan row that sets no width of its own
-   runs it on any session, and while the scan has such a row or target to visit (issue #526), which runs it when it
-   comes on air: an edit made while another row is on air is held to the rate as well, rather than accepted and the
-   row skipped at every visit. The row on air is read from the scope itself, not from the scanner's map or list, which
-   a re-import can change under it. The M17 encoder's monitor path never uses it. */
+   row on an analog session returns to the monitor when it ends), and on any session while the scan has an nfm row or
+   target that sets no width of its own (issue #526), which runs it whenever it is on air: an edit made while another
+   row is on air is held to the rate as well, rather than accepted and the row skipped at every visit. Only a scanner
+   puts such a row on air, from the map or list it visits, and it leaves the row before that map or list changes, so
+   the scanner's answer covers the row on air too (dsd_engine_scan_runs_configured_nfm_width()). The M17 encoder's
+   monitor path never uses it. */
 static int
 svc_nfm_width_in_use(const dsd_opts* opts, const dsd_state* state) {
     const dsd_scan_settings* configured = dsd_scan_mode_configured_view(state);
     const int analog_only = configured ? configured->analog_only : opts->analog_only;
     const int kind = configured ? configured->analog_demod : opts->analog_demod;
     if (analog_only == 1 && opts->m17encoder != 1 && kind == DSD_ANALOG_DEMOD_FM) {
-        return 1;
-    }
-    if (dsd_scan_mode_is_analog(dsd_scan_mode_active(state)) && dsd_opts_is_analog_family(opts)
-        && opts->analog_demod == DSD_ANALOG_DEMOD_FM && !svc_row_sets_nfm_width(state)) {
         return 1;
     }
     return dsd_engine_scan_runs_configured_nfm_width(opts, state);
