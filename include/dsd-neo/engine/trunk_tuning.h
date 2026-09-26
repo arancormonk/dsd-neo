@@ -46,6 +46,12 @@ int dsd_engine_scan_dsp_rate_hz(const dsd_opts* opts, const dsd_state* state);
  * or 0 on any other input. A scanner row's retune queued before this number moved no longer lands the receive family,
  * or the symbol profile, that dsd_engine_scan_tune_to_freq() attached to it (issue #526). */
 uint32_t dsd_engine_scan_family_requests(const dsd_opts* opts);
+/** @brief Whether dsd_engine_scan_tune_to_freq(), called with the options now in force and @p ted_sps, attaches a
+ * receive family to the row's retune: an analog row's always does, and a digital row's with a symbol clock
+ * (@p ted_sps > 0) while the front end runs the analog family and the configured mode is digital. Only such a retune is
+ * superseded by a live family request made before it lands (dsd_engine_scan_family_requests()); one without a family
+ * lands its symbol profile whatever the requests (issue #526). 0 on any input but an RTL-family one. */
+int dsd_engine_scan_retune_attaches_family(const dsd_opts* opts, const dsd_state* state, int ted_sps);
 /**
  * @brief Release the call state a tuned voice channel owns, without tuning.
  *

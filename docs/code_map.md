@@ -162,8 +162,9 @@ Tests: `tests/engine/test_engine_trunk_scan.c` (`ENGINE_TRUNK_SCAN`) and
   captured, restored, compared by `dsd_scan_settings_equal()` for the analog family (so a width change restages a parked
   analog row, while a digital row, which runs its own channel profile, is not disturbed by a configured width edit) and
   restored again before a row's options install; a row width (`DSD_SCAN_OPT_BANDWIDTH`) lands there through its applier.
-  `channel_scan.c` also restages an outstanding analog row's tune when the configured widths change
-  (`channel_scan_configured_changed()`), since an analog row tunes with them whatever the configured family.
+  `channel_scan.c` restages an outstanding row's tune when a configured width that tune carries changes
+  (`channel_scan_configured_changed()`): an analog row's without a width of its own, whatever the configured family,
+  and an untyped row's on the analog family. A typed digital row, or an nfm row with its own width, commits as staged.
   `dsd_scan_mode_prepare()` takes the row's option values (NULL = none) so the prepared settings a scanner tunes with
   already carry the row width; its callers are `channel_scan.c` and the `scan_mode_replay` / `analog_replay` hosts.
   A row's symbol timing is computed for the output rate its tune lands on, `dsd_scan_mode_symbol_timing_rate_hz()`:
@@ -250,7 +251,9 @@ Tests: `tests/engine/test_engine_trunk_scan.c` (`ENGINE_TRUNK_SCAN`) and
   profile, that retune carries; it acts for the row still in scope (a width edit or a config apply republishing the
   outgoing row's receive profile), so the commit restages the row rather than run it on the outgoing row's family
   (`channel_scan_staged_stale()`, comparing `dsd_engine_scan_family_requests()`, the stream's
-  `rtl_stream_live_family_request_count()`, with the count when the tune was queued).
+  `rtl_stream_live_family_request_count()`, with the count when the tune was queued). Only a retune that carries a
+  family is superseded (`dsd_engine_scan_retune_attaches_family()`); one without lands its symbol profile whatever the
+  requests, and its row commits as staged.
   Leaving the scan (`dsd_engine_channel_scan_leave()`) restores the configured RTL receive family through the metrics
   hooks: under `-fA` the configured analog profile (`apply_analog_profile`, analog family, demodulator kind and
   channel width with 0 meaning the default), otherwise the digital family first and then the restored symbol profile

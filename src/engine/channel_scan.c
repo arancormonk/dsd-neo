@@ -48,8 +48,10 @@ typedef struct {
     dsd_scan_key_change keys;
     uint64_t key_epoch;
     /* The live receive-family requests the front end had accepted when the staged tune was queued
-     * (dsd_engine_scan_family_requests(); issue #526). */
+     * (dsd_engine_scan_family_requests(); issue #526), and whether that tune attached a receive family, which is all a
+     * later request supersedes (dsd_engine_scan_retune_attaches_family()). */
     uint32_t family_requests;
+    int family_attached;
     /* The map generation whose rows were last checked against the input (issues #521, #526), and the DSP rate its
      * analog row widths were last held to, with the configured NFM width a row without its own runs (issue #526). */
     uint64_t rows_checked_map;
@@ -99,15 +101,33 @@ channel_scan_end_calls(dsd_opts* opts, dsd_state* state) {
     opts->trunk_is_tuned = 0;
 }
 
-/* Whether a configured setting the staged tune was prepared from changed while it was outstanding. The configured
- * channel widths count for an analog row, which tunes with them whatever the configured family, although
- * dsd_scan_settings_equal() compares them for the analog family only (issue #526). */
+/* Whether the tune staged for the row carries a configured channel width (issue #526): an untyped row's does on the
+ * analog family the configured options select, and an analog row's unless it sets a width of its own, whatever the
+ * configured family. A typed digital row filters with its own channel profile. */
 static int
-channel_scan_configured_changed(const dsd_scan_settings* latest, const channel_scan* scan) {
-    if (!dsd_scan_settings_equal(latest, &scan->configured, 1)) {
+channel_scan_row_runs_configured_width(const dsd_state* state, const channel_scan* scan) {
+    if (scan->mode == DSD_SCAN_MODE_INHERIT) {
+        return scan->configured.analog_only == 1;
+    }
+    if (!dsd_scan_mode_is_analog(scan->mode)) {
+        return 0;
+    }
+    const dsd_scan_row_profile* profile = dsd_channel_profile_get(state, (size_t)scan->row);
+    return !(profile && (profile->values.present & DSD_SCAN_OPT_BANDWIDTH));
+}
+
+/* Whether a configured setting the staged tune was prepared from changed while it was outstanding. The configured
+ * channel widths count only where the tune carries one (channel_scan_row_runs_configured_width()), although
+ * dsd_scan_settings_equal() compares them whenever the configured family is analog. */
+static int
+channel_scan_configured_changed(const dsd_state* state, const dsd_scan_settings* latest, const channel_scan* scan) {
+    dsd_scan_settings others = *latest;
+    others.analog_nfm_bandwidth_hz = scan->configured.analog_nfm_bandwidth_hz;
+    others.analog_am_bandwidth_hz = scan->configured.analog_am_bandwidth_hz;
+    if (!dsd_scan_settings_equal(&others, &scan->configured, 1)) {
         return 1;
     }
-    return dsd_scan_mode_is_analog(scan->mode)
+    return channel_scan_row_runs_configured_width(state, scan)
            && (latest->analog_nfm_bandwidth_hz != scan->configured.analog_nfm_bandwidth_hz
                || latest->analog_am_bandwidth_hz != scan->configured.analog_am_bandwidth_hz);
 }
@@ -117,13 +137,14 @@ channel_scan_configured_changed(const dsd_scan_settings* latest, const channel_s
  * retune carries. That request acts for the row still in scope (a width edit or a config apply republishing the
  * outgoing nfm row's analog monitor), yet the front end takes it as the newer word on the family and lands the staged
  * retune with neither its family nor its symbol profile (rtl_stream_prepare_retune_analog_profile_for_target()): a
- * digital row would otherwise commit on the analog monitor, or an nfm row on the digital family (issue #526). */
+ * digital row would otherwise commit on the analog monitor, or an nfm row on the digital family (issue #526). A retune
+ * that carries no family lands its symbol profile whatever the requests, so it is not restaged for them. */
 static int
 channel_scan_staged_stale(const dsd_opts* opts, const dsd_state* state, const channel_scan* scan) {
     dsd_scan_settings latest;
     dsd_scan_mode_configured(opts, state, &latest);
-    return channel_scan_configured_changed(&latest, scan) || scan->key_epoch != state->enc_lockout_key_epoch
-           || scan->family_requests != dsd_engine_scan_family_requests(opts);
+    return channel_scan_configured_changed(state, &latest, scan) || scan->key_epoch != state->enc_lockout_key_epoch
+           || (scan->family_attached && scan->family_requests != dsd_engine_scan_family_requests(opts));
 }
 
 static int
@@ -588,6 +609,7 @@ channel_scan_start_row(dsd_opts* opts, dsd_state* state, int row) {
     scan->retry = 0;
     dsd_scan_settings_restore(&next, opts, state);
     scan->family_requests = dsd_engine_scan_family_requests(opts);
+    scan->family_attached = dsd_engine_scan_retune_attaches_family(opts, state, state->samplesPerSymbol);
     const dsd_trunk_tune_result result =
         dsd_engine_scan_tune_to_freq(opts, state, freq, state->samplesPerSymbol, &scan->request);
     dsd_scan_settings_restore(&before, opts, state);

@@ -77,6 +77,20 @@ dsd_engine_scan_family_requests(const dsd_opts* opts) {
     return g_family_requests;
 }
 
+/* Whether the staged retune attaches a receive family (trunk_tuning.c), which is all a live request supersedes: an
+ * analog row's always does, and a digital row's while the front end still runs the analog family an analog row left it
+ * on, which a case says with g_frontend_analog. */
+static int g_frontend_analog;
+
+int
+dsd_engine_scan_retune_attaches_family(const dsd_opts* opts, const dsd_state* state, int ted_sps) {
+    (void)state;
+    if (!opts || opts->audio_in_type != AUDIO_IN_RTL) {
+        return 0;
+    }
+    return dsd_opts_is_analog_family(opts) || (ted_sps > 0 && g_frontend_analog);
+}
+
 static dsd_trunk_tune_result tune_result;
 static uint64_t request;
 static int tunes;
@@ -1101,9 +1115,10 @@ test_row_restages_after_a_live_family_request(void) {
     tune_result = DSD_TRUNK_TUNE_RESULT_OK;
     assert(dsd_engine_channel_scan_step(opts, state) == 1);
     assert(state->lcn_freq_roll == 1 && opts->analog_only == 1 && dsd_scan_mode_active(state) == DSD_SCAN_MODE_NFM);
+    g_frontend_analog = 1;
 
     /* The DMR row's tune is outstanding when the width command changes the configured NFM width the nfm row on air
-     * runs, and republishes that row's monitor at it. */
+     * runs, and republishes that row's monitor at it. The retune carries the digital family off the monitor. */
     tune_result = DSD_TRUNK_TUNE_RESULT_PENDING;
     assert(dsd_engine_channel_scan_step(opts, state) == 0);
     assert(tuned_analog_only == 0);
@@ -1117,6 +1132,7 @@ test_row_restages_after_a_live_family_request(void) {
     assert(dsd_engine_channel_scan_pending(opts, state) == 0);
     assert(tunes == before + 1 && tuned_analog_only == 0);
     assert(state->lcn_freq_roll == 2 && opts->frame_dmr && !opts->analog_only);
+    g_frontend_analog = 0;
 
     /* The nfm row's tune is outstanding when a config apply republishes the DMR row's symbol profile, which asks for
      * the digital family. */
@@ -1132,6 +1148,7 @@ test_row_restages_after_a_live_family_request(void) {
     assert(dsd_engine_channel_scan_pending(opts, state) == 0);
     assert(tunes == before + 1 && tuned_analog_only == 1);
     assert(state->lcn_freq_roll == 1 && opts->analog_only == 1 && dsd_scan_mode_active(state) == DSD_SCAN_MODE_NFM);
+    g_frontend_analog = 1;
 
     /* A request made before the DMR row's tune was queued: the row commits as staged. */
     g_family_requests++;
@@ -1144,7 +1161,91 @@ test_row_restages_after_a_live_family_request(void) {
 
     tune_result = DSD_TRUNK_TUNE_RESULT_OK;
     g_family_requests = 0U;
+    g_frontend_analog = 0;
     dsd_engine_channel_scan_leave(opts, state);
+    dsd_rtl_stream_metrics_hooks_set(NULL);
+    dsd_state_trunk_lcn_free(state);
+    dsd_state_ext_free_all(state);
+    free(state);
+    free(opts);
+    tunes = reset_count = 0;
+}
+
+/* The commit restages a row only for a change its staged tune carries. A live family request made while a digital row's
+ * tune is outstanding on the digital family (a config apply republishing the DMR row on air) supersedes nothing, since
+ * that retune attaches no family and lands its symbol profile whatever the requests. A configured NFM width edit made
+ * while an nfm row that sets its own width is being tuned, or while a typed digital row is on an analog session, leaves
+ * the width that tune carries as it was. Each commits as staged, with no second tune to the same channel. */
+static void
+test_row_commits_when_nothing_its_tune_carries_changed(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
+    assert(opts && state);
+    opts->scanner_mode = 1;
+    opts->audio_in_type = AUDIO_IN_RTL;
+    assert(dsd_apply_decode_mode_preset(DSDCFG_MODE_DMR, DSD_DECODE_PRESET_PROFILE_CLI, opts, state) == 0);
+    opts->analog_nfm_bandwidth_hz = 20000;
+    state->samplesPerSymbol = 10;
+    state->lcn_freq_count = 3;
+    for (int row = 0; row < 3; row++) {
+        *dsd_state_trunk_lcn_slot(state, row) = 150000000;
+    }
+    assert(dsd_channel_mode_set(state, 0, DSD_SCAN_MODE_DMR) == 0);
+    assert(dsd_channel_mode_set(state, 1, DSD_SCAN_MODE_DMR) == 0);
+    assert(dsd_channel_mode_set(state, 2, DSD_SCAN_MODE_NFM) == 0);
+    dsd_scan_row_profile* profile = (dsd_scan_row_profile*)calloc(1, sizeof(*profile));
+    assert(profile);
+    profile->values.present = DSD_SCAN_OPT_BANDWIDTH;
+    profile->values.channel_bw_hz = 12500;
+    assert(dsd_channel_profile_set(state, 2, profile) == 0);
+    const dsd_rtl_stream_metrics_hooks hooks = {.output_rate_hz = output_rate};
+    dsd_rtl_stream_metrics_hooks_set(&hooks);
+    expected_nxdn = 0;
+    g_family_requests = 0U;
+    g_frontend_analog = 0;
+
+    tune_result = DSD_TRUNK_TUNE_RESULT_OK;
+    assert(dsd_engine_channel_scan_step(opts, state) == 1);
+    assert(state->lcn_freq_roll == 1 && opts->frame_dmr && !opts->analog_only);
+
+    /* The second DMR row's tune is outstanding when a config apply republishes the first on the digital family. */
+    tune_result = DSD_TRUNK_TUNE_RESULT_PENDING;
+    assert(dsd_engine_channel_scan_step(opts, state) == 0);
+    g_family_requests++;
+    int before = tunes;
+    dsd_trunk_tuning_request_publish(request, DSD_TRUNK_TUNE_RESULT_OK);
+    assert(dsd_engine_channel_scan_pending(opts, state) == 0);
+    assert(tunes == before && state->lcn_freq_roll == 2 && opts->frame_dmr);
+
+    /* The nfm row's own 12.5 kHz tune is outstanding when the configured width is edited. */
+    assert(dsd_engine_channel_scan_step(opts, state) == 0);
+    assert(tuned_analog_only == 1 && tuned_nfm_width_hz == 12500);
+    assert(dsd_scan_mode_set_configured_nfm_bandwidth(opts, state, 16000) == 1);
+    before = tunes;
+    dsd_trunk_tuning_request_publish(request, DSD_TRUNK_TUNE_RESULT_OK);
+    assert(dsd_engine_channel_scan_pending(opts, state) == 0);
+    assert(tunes == before && state->lcn_freq_roll == 3 && opts->analog_only == 1);
+    assert(opts->analog_nfm_bandwidth_hz == 12500);
+    dsd_engine_channel_scan_leave(opts, state);
+    assert(!opts->analog_only && opts->analog_nfm_bandwidth_hz == 16000);
+
+    /* An analog session: a typed DMR row keeps the monitor family, so its tune carries no width either. */
+    assert(dsd_apply_decode_mode_preset(DSDCFG_MODE_ANALOG, DSD_DECODE_PRESET_PROFILE_CLI, opts, state) == 0);
+    g_frontend_analog = 1;
+    state->lcn_freq_roll = 0;
+    assert(dsd_engine_channel_scan_step(opts, state) == 0);
+    assert(tuned_analog_only == 0);
+    assert(dsd_scan_mode_set_configured_nfm_bandwidth(opts, state, 11250) == 1);
+    before = tunes;
+    dsd_trunk_tuning_request_publish(request, DSD_TRUNK_TUNE_RESULT_OK);
+    assert(dsd_engine_channel_scan_pending(opts, state) == 0);
+    assert(tunes == before && state->lcn_freq_roll == 1 && opts->frame_dmr && !opts->analog_only);
+
+    tune_result = DSD_TRUNK_TUNE_RESULT_OK;
+    g_family_requests = 0U;
+    g_frontend_analog = 0;
+    dsd_engine_channel_scan_leave(opts, state);
+    assert(opts->analog_only == 1 && opts->analog_nfm_bandwidth_hz == 11250);
     dsd_rtl_stream_metrics_hooks_set(NULL);
     dsd_state_trunk_lcn_free(state);
     dsd_state_ext_free_all(state);
@@ -1434,6 +1535,7 @@ main(void) {
     test_nfm_rows_switch_family_width_and_sink();
     test_nfm_row_restages_after_a_configured_width_edit();
     test_row_restages_after_a_live_family_request();
+    test_row_commits_when_nothing_its_tune_carries_changed();
     test_nfm_row_warnings_once_per_row();
     test_nfm_row_warnings_follow_the_dsp_rate();
     test_nfm_row_warnings_for_the_configured_width();

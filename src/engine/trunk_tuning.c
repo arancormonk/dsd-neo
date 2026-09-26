@@ -889,6 +889,23 @@ dsd_engine_scan_family_requests(const dsd_opts* opts) {
     return 0U;
 }
 
+int
+dsd_engine_scan_retune_attaches_family(const dsd_opts* opts, const dsd_state* state, int ted_sps) {
+#ifdef USE_RADIO
+    if (!opts || !state || opts->audio_in_type != AUDIO_IN_RTL) {
+        return 0;
+    }
+    /* As dsd_engine_prepare_scan_profile() queues them: the analog profile, or a symbol profile with the digital
+       family (dsd_engine_prepare_digital_family()). */
+    return dsd_opts_is_analog_family(opts) || (ted_sps > 0 && dsd_engine_retune_leaves_analog_family(opts, state));
+#else
+    (void)opts;
+    (void)state;
+    (void)ted_sps;
+    return 0;
+#endif
+}
+
 static void
 dsd_engine_scan_tune_failed(const dsd_opts* opts, uint64_t request_id, dsd_trunk_tune_result result) {
     if (dsd_engine_conventional_scan_active(opts) && opts->use_rigctl == 1 && opts->audio_in_type == AUDIO_IN_RTL) {

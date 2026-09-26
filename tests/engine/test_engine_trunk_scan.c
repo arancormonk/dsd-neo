@@ -101,6 +101,15 @@ dsd_engine_scan_family_requests(const dsd_opts* opts) {
     return 0U;
 }
 
+/* And whether a -Y retune attaches a receive family (trunk_tuning.c): the request count above never moves here. */
+int
+dsd_engine_scan_retune_attaches_family(const dsd_opts* opts, const dsd_state* state, int ted_sps) {
+    (void)opts;
+    (void)state;
+    (void)ted_sps;
+    return 0;
+}
+
 static int g_dmr_tick_calls = 0;
 static int g_dmr_tick_release_tuned = 0;
 static int g_csv_import_result = 0;
