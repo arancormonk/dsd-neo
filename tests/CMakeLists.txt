@@ -3619,6 +3619,7 @@ add_executable(
     dsd-neo_test_runtime_bootstrap_interactive
     runtime/test_runtime_bootstrap_interactive.c
     ${PROJECT_SOURCE_DIR}/src/runtime/bootstrap/interactive.c
+    ${PROJECT_SOURCE_DIR}/src/runtime/analog_channel.c
 )
 target_include_directories(
     dsd-neo_test_runtime_bootstrap_interactive

@@ -9,6 +9,7 @@
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/string_utils.h>
 #include <dsd-neo/platform/file_compat.h>
+#include <dsd-neo/runtime/analog_channel.h>
 #include <dsd-neo/runtime/cli.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/decode_mode.h>
@@ -131,6 +132,14 @@ interactive_choose_input_source(void) {
     return prompt_int("Selection", 1, 1, 6);
 }
 
+/* The DSP bandwidth an RTL-SDR or rtl_tcp spec's bandwidth field runs at, read as startup reads it (an unsupported
+   value runs at 48 kHz). The wizard keeps it in the options with the spec it writes, so its AM entry can hold the AM
+   channel to it (interactive_am_refused()). */
+static int
+interactive_dsp_bw_khz(int bw) {
+    return dsd_analog_rtl_dsp_bw_is_selectable(bw) ? bw : DSD_ANALOG_RTL_DSP_BW_MAX_KHZ;
+}
+
 static void
 interactive_configure_rtl_input(dsd_opts* opts, int* src) {
 #ifdef USE_RTLSDR
@@ -149,6 +158,7 @@ interactive_configure_rtl_input(dsd_opts* opts, int* src) {
     int vol = prompt_int("Monitor gain multiplier (1..3)", 1, 1, 3);
     DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "rtl:%d:%s:%d:%d:%d:%d:%d", dev, freq, gain, ppm, bw,
                  sql, vol);
+    opts->rtl_dsp_bw_khz = interactive_dsp_bw_khz(bw);
 #else
     (void)opts;
     LOG_WARN("WARNING: RTL-SDR support not enabled in this build.\n");
@@ -174,6 +184,7 @@ interactive_configure_rtltcp_input(dsd_opts* opts) {
     int vol = prompt_int("Monitor gain multiplier (1..3)", 1, 1, 3);
     DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "rtltcp:%s:%d:%s:%d:%d:%d:%d:%d", host, port, freq,
                  gain, ppm, bw, sql, vol);
+    opts->rtl_dsp_bw_khz = interactive_dsp_bw_khz(bw);
 }
 
 static void
@@ -250,12 +261,30 @@ interactive_prompt_decode_mode(void) {
     return prompt_int("Selection", 1, 1, INTERACTIVE_MODE_AM);
 }
 
-/* AM on a source without I/Q is refused with the reason and asked again (end of input answers with the default). */
+/* Why AM cannot run on the source the wizard configured, written to @p err; 0 when it can. Beyond the I/Q, its channel
+   (the configured AM width, or the 6 kHz default) has to fit the DSP bandwidth that source runs at, which startup holds
+   it to before the device opens (dsd_engine_setup_check_analog_width()): the bandwidth the wizard just read for an
+   RTL-SDR or rtl_tcp spec, or the one the options hold for an rtl_tcp source given no centre frequency. At a 4 or
+   6 kHz DSP bandwidth no AM width fits, so the wizard says so here rather than finishing a setup that stops at start. */
+static int
+interactive_am_refused(const dsd_opts* opts, char* err, size_t err_size) {
+    if (!dsd_decode_mode_input_spec_is_iq(opts)) {
+        DSD_SNPRINTF(err, err_size, "%s", DSD_DECODE_MODE_AM_NEEDS_IQ_TEXT);
+        return 1;
+    }
+    const int width_hz = dsd_analog_width_effective_hz(DSD_ANALOG_DEMOD_AM, opts->analog_am_bandwidth_hz);
+    const int rate_hz = interactive_dsp_bw_khz(opts->rtl_dsp_bw_khz) * 1000;
+    return dsd_analog_width_check(DSD_ANALOG_DEMOD_AM, width_hz, rate_hz, err, err_size) != 0;
+}
+
+/* AM the configured source cannot run is refused with the reason and asked again (end of input answers with the
+   default). */
 static int
 interactive_choose_decode_mode(const dsd_opts* opts) {
+    char err[DSD_ANALOG_ERROR_TEXT_MAX];
     int mode = interactive_prompt_decode_mode();
-    while (mode == INTERACTIVE_MODE_AM && !dsd_decode_mode_input_spec_is_iq(opts)) {
-        DSD_FPRINTF(stderr, "%s.\n", DSD_DECODE_MODE_AM_NEEDS_IQ_TEXT);
+    while (mode == INTERACTIVE_MODE_AM && interactive_am_refused(opts, err, sizeof err)) {
+        DSD_FPRINTF(stderr, "%s.\n", err);
         mode = interactive_prompt_decode_mode();
     }
     return mode;
