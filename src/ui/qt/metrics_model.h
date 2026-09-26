@@ -1429,6 +1429,11 @@ class MetricsModel : public QObject {
         quint64 key_epoch = 0;
         bool automatic_keys = false;
         bool direct_keys = false;
+        /* Issue #526: an analog scan row on air and its own width; issue #524: the kind the width readings describe.
+           Kept with the key flags, which leave room for them, rather than in the flag block below. */
+        bool analog_bandwidth_row_active = false;
+        bool analog_bandwidth_row_override = false;
+        bool analog_bandwidth_am = false;
         QVariantList decryption_slots;
         int modulation = 0;
         int tuner_gain_db = 0;
@@ -1441,9 +1446,6 @@ class MetricsModel : public QObject {
         bool radio_input = false;
         bool stream_active = false;
         bool analog_bandwidth_dsp_limited = false;
-        bool analog_bandwidth_row_active = false;
-        bool analog_bandwidth_row_override = false;
-        bool analog_bandwidth_am = false;
         bool nfm_bandwidth_offered = false;
         bool am_bandwidth_offered = false;
         bool synced_here = false;
