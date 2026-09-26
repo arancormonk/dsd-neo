@@ -421,42 +421,47 @@ Rdio API uploads do not follow HTTP redirects. Configure `rdio_api_url` as the f
 **[dsp] section:**
 | Key | Type | Description | Default |
 |-----|------|-------------|---------|
-| `iq_balance` | BOOL | Enable RTL IQ balance (image suppression) | `false` |
-| `iq_dc_block` | BOOL | Enable RTL I/Q DC blocker | `false` |
+| `iq_balance` | BOOL | Enable RTL IQ balance (image suppression; kept off while AM runs: it would cancel a carrier at 0 Hz) | `false` |
+| `iq_dc_block` | BOOL | Enable RTL I/Q DC blocker (kept off while AM runs: it would remove a carrier at 0 Hz) | `false` |
 
 **[analog] section:**
 | Key | Type | Description | Default |
 |-----|------|-------------|---------|
 | `nfm_bandwidth_hz` | INT (8000-25000) | NFM channel-filter width in whole Hz: the full RF passband the analog monitor (`decode = "analog"`) keeps, not the tuner, DSP or audio bandwidth. Same as `--nfm-bandwidth-hz` | (unset: `16000`) |
+| `am_bandwidth_hz` | INT (5000-20000) | AM channel-filter width in whole Hz, likewise, for native AM (`decode = "am"`). Same as `--am-bandwidth-hz` | (unset: `6000`) |
 
 The `[analog]` keys are written only when set explicitly: a save leaves `nfm_bandwidth_hz` out while the default is in
 force, so within the section the key left out and the default are the same thing, and a later default reaches the
 config. An explicit `16000` is saved, because it differs from the default in one way: an explicit width always runs the
 channel filter, while the unset default keeps the historical rule and runs it only at DSP rates of 20 kHz or more. The
 generated template's `# nfm_bandwidth_hz = 16000` shows the width the default resolves to; uncommenting it makes the
-width explicit. A section that is present sets every key it owns, so a save always writes the `[analog]` header, even
-with no key under it: loading a config saved at the default puts the default back over an explicit width the session
-had, from the Config menu's load and a profile switch alike. An `[analog]` section whose width the loader refused leaves
-the default too. A hand-written config with no `[analog]` section leaves the width as it was. A save during a scan
-writes the configured width, never the one an `nfm` channel-map row or `nfm-conventional` target sets for itself with
-`--nfm-bandwidth-hz` (see [csv-formats.md](csv-formats.md#analog-rows)).
+width explicit. `am_bandwidth_hz` is saved the same way, an explicit `6000` included, though AM always runs its channel
+filter, so its unset default is held to the DSP rate like an explicit width. A section that is present sets every key it
+owns, so a save always writes the `[analog]` header, even with no key under it: loading a config saved at the default
+puts the default back over an explicit width the session had, from the Config menu's load and a profile switch alike. An
+`[analog]` section whose width the loader refused leaves the default too. A hand-written config with no `[analog]`
+section leaves both widths as they were. A save during a scan writes the configured widths, never the one an `nfm`
+channel-map row or `nfm-conventional` target sets for itself with `--nfm-bandwidth-hz` (see
+[csv-formats.md](csv-formats.md#analog-rows)).
 
-A value outside 8000-25000, or anything but whole Hz (`12.5k`, `12500Hz`), is refused, never clamped: startup logs a
+A value outside its range, or anything but whole Hz (`12.5k`, `12500Hz`), is refused, never clamped: startup logs a
 warning and keeps the default, and `--validate-config` reports an error with the same text the CLI prints. With
-`[input] source = "rtl"` or `"rtltcp"` (with `rtl_freq`, which is what builds the input with `rtl_bw_khz`) and
-`[mode] decode = "analog"`, `--validate-config` also reports an error when the width does not fit the DSP rate
-`rtl_bw_khz` gives (for example `25000` needs `rtl_bw_khz = 48`; see the DSP-rate table in `docs/cli.md`, Analog
-reception).
+`[input] source = "rtl"` or `"rtltcp"` (with `rtl_freq`, which is what builds the input with `rtl_bw_khz`),
+`--validate-config` also reports an error when the width the decode preset runs does not fit the DSP rate `rtl_bw_khz`
+gives: an explicit `nfm_bandwidth_hz` under `[mode] decode = "analog"` (for example `25000` needs `rtl_bw_khz = 48`),
+and `am_bandwidth_hz`, the 6000 default included, under `decode = "am"` (`AM bandwidth 20 kHz does not fit the 16 kHz
+DSP rate ...`); see the DSP-rate table in `docs/cli.md`, Analog reception. A SoapySDR or Airspy device, which can force
+another rate, is checked when its stream starts.
 
 When `[analog]` changes apply (the full table, with the terminal and Qt controls, is in `docs/cli.md`, Analog
 reception, "When changes apply"):
 
 | Change | When it applies |
 | --- | --- |
-| `nfm_bandwidth_hz` at startup | When the stream opens. An RTL-SDR or rtl_tcp input whose DSP bandwidth cannot filter the width stops startup before the device opens; other radio inputs are held to the rate they deliver when the stream starts. |
-| `nfm_bandwidth_hz` in a config loaded into a running session | Live, on the next DSP block of the analog monitor; no reopen. A width the DSP rate it will run at cannot filter, or any explicit width while `DSD_NEO_CHANNEL_LPF=0`, leaves the whole config unapplied, with a message naming the width, the rate and the fix. A width the front end refuses where it lands (a retune moved its rate after the check) is put back, with the same message. While an `nfm` scan row that sets its own `--nfm-bandwidth-hz` is on air, the loaded width becomes the configured default and takes effect when the row leaves (or with the next row that has no width of its own). On a digital session the width is held to the DSP rate the same way while the scan has an `nfm` row or `nfm-conventional` target without a width of its own, which runs it when it comes on air. |
-| `[input] rtl_bw_khz` in a config loaded into a running session | Reopens the device at that DSP bandwidth, as given, when the `[input]` builds an RTL-SDR or rtl_tcp input other than the running one (another bandwidth, frequency or device, or an RTL spec over a running SoapySDR or Airspy input). A bandwidth the explicit NFM width in use cannot run at leaves the whole config unapplied: the config's or the session's on an analog session, the configured one on a digital session while the scan has an `nfm` row or target without a width of its own, and the own width of an `nfm` scan row on air. The width is checked at the bandwidth the reopen runs at, not the running one. An `[input]` that builds the input already running reopens nothing and changes no rate. An `[input]` that reopens a SoapySDR or Airspy device (an `airspy` source over a running Airspy reopens it for a new sample rate, serial, `rtl_bw_khz` or volume) is held to neither rate: the reopened stream's start checks the width at the rate that device delivers. |
-| `[mode] decode = "analog"` in a config loaded into a digital session | Live receive-family switch. With an explicit NFM width the DSP rate cannot filter, the whole config is left unapplied. A `[mode]` section without a `decode` key keeps the session's mode, and an analog session's width is held as above. |
+| `nfm_bandwidth_hz`, `am_bandwidth_hz` at startup | When the stream opens. An RTL-SDR or rtl_tcp input whose DSP bandwidth cannot filter the width in use stops startup before the device opens; other radio inputs are held to the rate they deliver when the stream starts. |
+| `nfm_bandwidth_hz`, `am_bandwidth_hz` in a config loaded into a running session | Live, on the next DSP block of the analog monitor of that kind; no reopen. A width the DSP rate it will run at cannot filter, or any explicit width (or AM at all) while `DSD_NEO_CHANNEL_LPF=0`, leaves the whole config unapplied, with a message naming the width, the rate and the fix. A width the front end refuses where it lands (a retune moved its rate after the check) is put back, with the same message. While an `nfm` scan row that sets its own `--nfm-bandwidth-hz` is on air, the loaded NFM width becomes the configured default and takes effect when the row leaves (or with the next row that has no width of its own). On a digital session the NFM width is held to the DSP rate the same way while the scan has an `nfm` row or `nfm-conventional` target without a width of its own, which runs it when it comes on air. The width of the kind not in use is stored for the next switch to it. |
+| `[input] rtl_bw_khz` in a config loaded into a running session | Reopens the device at that DSP bandwidth, as given, when the `[input]` builds an RTL-SDR or rtl_tcp input other than the running one (another bandwidth, frequency or device, or an RTL spec over a running SoapySDR or Airspy input). A bandwidth the explicit NFM width, or the AM width (its default included), in use cannot run at leaves the whole config unapplied: the config's or the session's on an analog session, the configured NFM width on a digital session while the scan has an `nfm` row or target without a width of its own, and the own width of an `nfm` scan row on air. The width is checked at the bandwidth the reopen runs at, not the running one. An `[input]` that builds the input already running reopens nothing and changes no rate. An `[input]` that reopens a SoapySDR or Airspy device (an `airspy` source over a running Airspy reopens it for a new sample rate, serial, `rtl_bw_khz` or volume) is held to neither rate: the reopened stream's start checks the width at the rate that device delivers. |
+| `[mode] decode = "analog"` or `"am"` in a config loaded into a running session | Live receive-family switch, or a switch between FM and AM on the monitor. With an explicit NFM width, or an AM width (its default included), the DSP rate cannot filter, the whole config is left unapplied. A `[mode]` section without a `decode` key keeps the session's mode, and an analog session's width is held as above. `decode = "am"` on a PCM input applies, and the session runs the Analog monitor instead, saying why (see `[mode]` below). |
 
 Note: The defaults shown match the generated template (`--dump-config-template`).
 Missing keys generally mean “leave the engine default unchanged”; some input
@@ -470,7 +475,8 @@ Notes on Input Sources).
 The config system validates files and reports issues with line numbers:
 
 - **Error**: Invalid enum value, type mismatch, parse failure, an `[analog]` width outside its range or one the
-  configured RTL DSP bandwidth cannot filter (for an `rtl`/`rtltcp` input with `rtl_freq` under `decode = "analog"`)
+  configured RTL DSP bandwidth cannot filter (for an `rtl`/`rtltcp` input with `rtl_freq` under `decode = "analog"` or
+  `"am"`)
 - **Warning**: Unknown key or section, integer out of range
 
 ```bash
@@ -583,7 +589,20 @@ Output format:
 The `decode` key in `[mode]` configures the frame types and modulation.
 Supported values: `auto`, `p25p1`, `p25p2`, `dmr`, `dmr_mono`, `nxdn48`,
 `nxdn96`, `x2tdma`, `ysf`, `dstar`, `edacs_pv`, `dpmr`, `m17`, `tdma`,
-`analog`. `dmr_mono` selects the same single-slot decoder as CLI `-fr`.
+`analog`, `am`. `dmr_mono` selects the same single-slot decoder as CLI `-fr`.
+`am` is native AM (CLI `-fM`), which needs an I/Q radio input: RTL-SDR,
+rtl_tcp, SoapySDR, Airspy or an I/Q replay. On a PCM input the session logs
+`AM demodulation needs an IQ radio input; monitor externally demodulated AM
+audio with -fA`, runs the Analog monitor instead, and turns autosave off so
+the saved `decode = "am"` is kept; a toast says so in the terminal and the
+Qt/Android app, since no other change the session makes is saved either. A
+runtime config apply with `am` on a PCM session (terminal Config > Load)
+applies the rest of the config and runs the Analog monitor with the same
+reason and autosave off, as a start does, so the loaded file keeps its
+`decode = "am"`. An explicit save still writes what the session runs
+(`analog`). A live switch of a running AM session's input to a PCM one falls
+back to the Analog monitor too, with autosave left on: it saves the new input
+with the mode the session runs there.
 Persisted compatibility values `p25p1_only`, `p25p2_only`, `edacs`,
 `provoice`, and `analog_monitor` are translated to their canonical modes when
 read. Generated configurations always use the canonical values above.
@@ -616,8 +635,8 @@ Autosave records the decoder set only when a preset reproduces it exactly: an
 while a session whose decoder set matches no preset saves no `decode` key at
 all and reloads with the initialization defaults left alone. Independent keys
 such as `dmr_mono` are still saved either way.
-Passive analog monitoring and already-framed M17 UDP input are outside this
-frame-sync hunt.
+Passive analog monitoring, native AM and already-framed M17 UDP input are
+outside this frame-sync hunt.
 
 The optional `demod` key selects a demodulator path (`auto`, `c4fm`, `gfsk`,
 `qpsk`). When set, it locks demodulator selection similarly to the `-m*`
@@ -766,7 +785,9 @@ When using `source = "file"` with a non-48 kHz sample rate:
 ## Interactive Bootstrap
 
 The interactive bootstrap wizard (`--interactive-setup`) guides you
-through selecting input, mode, trunking, and UI options.
+through selecting input, mode, trunking, and UI options. Its AM receiver entry
+(15) needs an RTL-SDR or rtl_tcp source; on any other source it is refused with
+the reason and the mode question is asked again.
 
 ### Auto-Saving
 
@@ -879,8 +900,8 @@ The following can be changed without restarting:
 
 - PulseAudio input/output device
 - RTL-SDR, RTL-TCP, and Soapy tuning parameters (frequency, gain, PPM, etc.)
-- The NFM channel width (`[analog] nfm_bandwidth_hz`), applied to a running analog monitor without a reopen (see
-  "When `[analog]` changes apply" above)
+- The NFM and AM channel widths (`[analog] nfm_bandwidth_hz`, `am_bandwidth_hz`), applied to a running analog monitor
+  of that kind without a reopen (see "When `[analog]` changes apply" above)
 - TCP/UDP connection parameters
 - File input path
 

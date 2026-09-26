@@ -307,6 +307,28 @@ Item {
     }
 
     /**
+     * A source change away from the radio drops a chip only a radio can run
+     * (AM, issue #524) back to Auto, rather than saving a system the engine
+     * would refuse to start. Its chip is greyed out for the new source.
+     */
+    function dropRadioOnlyDecodeFlag() {
+        if (!radioSource && Util.decodeFlagNeedsRadio(decodeFlag))
+            pickDecodeFlag("");
+    }
+
+    /**
+     * Why AM cannot run at the bandwidth this radio would start with (issue
+     * #524), or empty: the engine refuses an AM channel the DSP bandwidth
+     * cannot filter, so the wizard says so before saving the system. An empty
+     * bandwidth field follows the app-wide default.
+     */
+    function amBandwidthError() {
+        if (!radioSource || !Util.decodeFlagNeedsRadio(decodeFlag))
+            return "";
+        return sessionArgs.amBandwidthError(sourceType, bwText.length > 0 ? intOr(bwText, -1) : -1);
+    }
+
+    /**
      * Re-derive the unanswered trunking switch from the chip and the frequency.
      *
      * Called on every chip pick and on every frequency edit, not just the pick:
@@ -356,8 +378,12 @@ Item {
                 return fileText.length > 0;
             return true;
         }
+        // A system edited or imported onto a non-radio source may still carry
+        // AM, which only a radio can run: not until another chip is picked.
+        // Nor on a radio whose bandwidth cannot filter the AM channel.
         if (step === 1)
-            return hangtimeValid() && encryptionValid && (!radioSource || sessionArgs.freqValid(freqText));
+            return hangtimeValid() && encryptionValid && (!radioSource || sessionArgs.freqValid(freqText))
+                && (radioSource || !Util.decodeFlagNeedsRadio(decodeFlag)) && amBandwidthError().length === 0;
         return hangtimeValid() && encryptionValid && nameText.trim().length > 0;
     }
 
@@ -686,13 +712,16 @@ Item {
                         DecodeChip {
                             required property var modelData
 
+                            objectName: "wizardSource_" + modelData.key
                             text: modelData.label
                             selected: wizard.sourceType === modelData.key
                             onClicked: {
                                 var prev = wizard.sourceType;
                                 wizard.sourceType = modelData.key;
-                                if (prev !== modelData.key)
+                                if (prev !== modelData.key) {
                                     wizard.applySourceDefaults(prev);
+                                    wizard.dropRadioOnlyDecodeFlag();
+                                }
                             }
                         }
                     }
@@ -913,10 +942,25 @@ Item {
 
                             objectName: "wizardDecode_" + modelData.label
                             text: modelData.label
+                            // AM needs the radio's I/Q (issue #524): network and file audio arrives demodulated.
+                            enabled: modelData.iqOnly !== true || wizard.radioSource
                             selected: wizard.decodeFlag === modelData.flag
                             onClicked: wizard.pickDecodeFlag(modelData.flag)
                         }
                     }
+                }
+
+                // Why the AM chip is greyed out on a network or file source,
+                // rather than leaving a dead control (issue #524).
+                Text {
+                    objectName: "wizardDecodeIqNote"
+                    visible: !wizard.radioSource
+                    width: parent.width
+                    text: qsTr("AM needs a radio source: network and file audio arrives already demodulated.")
+                    font.family: Theme.sans
+                    font.pixelSize: Theme.fontSize(12)
+                    color: Theme.textSecondary
+                    wrapMode: Text.Wrap
                 }
 
                 Text {
@@ -926,6 +970,19 @@ Item {
                     font.family: Theme.sans
                     font.pixelSize: Theme.fontSize(13)
                     color: Theme.textSubdued
+                    wrapMode: Text.Wrap
+                }
+
+                // AM on a radio whose bandwidth (Advanced, or the app default)
+                // cannot filter its channel: the step waits for a wider one.
+                Text {
+                    objectName: "wizardDecodeAmBandwidthNote"
+                    visible: text.length > 0
+                    width: parent.width
+                    text: wizard.amBandwidthError()
+                    font.family: Theme.sans
+                    font.pixelSize: Theme.fontSize(13)
+                    color: Theme.magenta
                     wrapMode: Text.Wrap
                 }
 

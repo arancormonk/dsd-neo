@@ -1323,24 +1323,40 @@ is_non_airspy_input(const void* v) {
     return !is_airspy_input(v);
 }
 
-/* The NFM width row, on a radio input, where the width is the channel filter: while the configured analog preset runs
-   FM, and under any other preset while an explicit NFM width is configured. The configured preset, as the status
-   line's "Analog:" field reads it (app_control's analog width view): a typed digital scan row on an analog session does
-   not end it, and the width set under the row is the one its leave returns to. Outside the preset a switch to Analog
-   is held to the explicit width, and where a SoapySDR or Airspy device or an I/Q replay forces a DSP rate that cannot
-   filter it, the refusal says to narrow the width: this row is where that happens. */
-bool
-is_nfm_width_editable(const void* v) {
+/* A channel width row of analog @p kind, on a radio input, where the width is the channel filter: while the configured
+   analog preset runs that kind, and under any other preset -- a digital one, or the other analog kind -- while an
+   explicit width of the kind is configured, or AM's default is one the DSP rate cannot filter
+   (dsd_app_analog_width_offered(), from the running stream's rate). The configured preset, as the status line's
+   "Analog:" field reads it (app_control's analog width view): a typed digital scan row on an analog session does not
+   end it, and the width set under the row is the one its leave returns to. Outside the preset a switch to it is held
+   to the width, and where a SoapySDR or Airspy device or an I/Q replay forces a DSP rate that cannot filter it, the
+   refusal says to narrow the width: this row is where that happens, a switch between NFM and AM included. */
+static bool
+is_analog_width_editable(const void* v, int kind) {
     const UiCtx* c = (const UiCtx*)v;
     if (!c || !c->opts) {
         return false;
     }
+    dsd_frontend_metrics metrics;
+    const dsd_frontend_metrics* running = dsd_app_frontend_get_metrics(&metrics) == 0 ? &metrics : NULL;
+    const dsd_state* snapshot = dsd_app_get_latest_snapshot();
     dsd_app_analog_width_view view;
-    if (dsd_app_analog_width_view_get(c->opts, dsd_app_get_latest_snapshot(), NULL, &view) != 0 || !view.radio_input) {
+    if (dsd_app_analog_width_view_get(c->opts, snapshot, running, &view) != 0) {
         return false;
     }
-    /* An nfm scan row on air (issue #526) runs the width on any session; the configured width is the one edited. */
-    return (view.shown || view.row_analog) ? view.kind == DSD_ANALOG_DEMOD_FM : view.configured_hz > 0;
+    return dsd_app_analog_width_offered(c->opts, snapshot, &view, kind) != 0;
+}
+
+/* The NFM width row (issue #525). */
+bool
+is_nfm_width_editable(const void* v) {
+    return is_analog_width_editable(v, DSD_ANALOG_DEMOD_FM);
+}
+
+/* The AM width row (issue #524). */
+bool
+is_am_width_editable(const void* v) {
+    return is_analog_width_editable(v, DSD_ANALOG_DEMOD_AM);
 }
 
 // NcMenuItem action callbacks require a mutable context signature.
@@ -1491,6 +1507,15 @@ cb_rtl_nfm_bw(void* u, int ok, int hz) {
     }
 }
 
+/* Any value goes to the command as typed, as for the NFM width. */
+static void
+cb_rtl_am_bw(void* u, int ok, int hz) {
+    UNUSED(u);
+    if (ok) {
+        (void)dsd_app_command_set_i32(DSD_APP_CMD_AM_BANDWIDTH_SET, (int32_t)hz);
+    }
+}
+
 void
 rtl_set_nfm_bw(void* v) {
     UiCtx* c = (UiCtx*)v;
@@ -1499,6 +1524,15 @@ rtl_set_nfm_bw(void* v) {
     const int configured_hz =
         dsd_scan_mode_configured_analog_width(c->opts, dsd_app_get_latest_snapshot(), DSD_ANALOG_DEMOD_FM);
     ui_prompt_open_int_async("NFM bandwidth Hz (8000..25000; 0 = default 16000)", configured_hz, cb_rtl_nfm_bw, c);
+}
+
+void
+rtl_set_am_bw(void* v) {
+    UiCtx* c = (UiCtx*)v;
+    /* The command edits the configured width, as the NFM row's does. */
+    const int configured_hz =
+        dsd_scan_mode_configured_analog_width(c->opts, dsd_app_get_latest_snapshot(), DSD_ANALOG_DEMOD_AM);
+    ui_prompt_open_int_async("AM bandwidth Hz (5000..20000; 0 = default 6000)", configured_hz, cb_rtl_am_bw, c);
 }
 
 void
@@ -1677,15 +1711,35 @@ act_lockout_slot2(void* v) {
    roughly by how often they are asked for. The names come from the runtime so
    the picker and the label that reads the mode back cannot disagree. */
 static const dsdneoUserDecodeMode k_decode_mode_choices[] = {
-    DSDCFG_MODE_AUTO,     DSDCFG_MODE_TDMA,     DSDCFG_MODE_P25P1,  DSDCFG_MODE_P25P2,  DSDCFG_MODE_DMR,
-    DSDCFG_MODE_DMR_MONO, DSDCFG_MODE_NXDN48,   DSDCFG_MODE_NXDN96, DSDCFG_MODE_X2TDMA, DSDCFG_MODE_YSF,
-    DSDCFG_MODE_DSTAR,    DSDCFG_MODE_EDACS_PV, DSDCFG_MODE_DPMR,   DSDCFG_MODE_M17,    DSDCFG_MODE_ANALOG,
+    DSDCFG_MODE_AUTO,
+    DSDCFG_MODE_TDMA,
+    DSDCFG_MODE_P25P1,
+    DSDCFG_MODE_P25P2,
+    DSDCFG_MODE_DMR,
+    DSDCFG_MODE_DMR_MONO,
+    DSDCFG_MODE_NXDN48,
+    DSDCFG_MODE_NXDN96,
+    DSDCFG_MODE_X2TDMA,
+    DSDCFG_MODE_YSF,
+    DSDCFG_MODE_DSTAR,
+    DSDCFG_MODE_EDACS_PV,
+    DSDCFG_MODE_DPMR,
+    DSDCFG_MODE_M17,
+    DSDCFG_MODE_ANALOG,
+    /* AM needs an I/Q radio input: see g_decode_mode_am_offered. */
+    DSDCFG_MODE_AM,
 };
 #define DECODE_MODE_CHOICE_COUNT (sizeof k_decode_mode_choices / sizeof k_decode_mode_choices[0])
 /* Filled once: every entry is a pointer into the runtime's own static name table,
-   so there is nothing to refresh between opens. */
+   so there is nothing to refresh between opens but the AM row's. */
 static const char* g_decode_mode_labels[DECODE_MODE_CHOICE_COUNT];
 static int g_decode_mode_labels_ready;
+/* Issue #524: whether the picker last opened on an input that runs AM, an I/Q radio input (the input type alone, as
+   dsd_decode_mode_input_is_iq() reads an open input). On any other input the AM row stays, so no row moves, but it
+   is shown disabled with the reason, and choosing it repeats the reason instead of sending a command the decoder
+   would refuse. With no options snapshot yet the command decides. */
+static int g_decode_mode_am_offered = 1;
+static const char k_decode_mode_am_disabled_label[] = "AM (needs an I/Q radio input)";
 
 static int
 decode_mode_choice_index(dsdneoUserDecodeMode mode) {
@@ -1701,6 +1755,10 @@ static void
 chooser_done_decode_mode(void* u, int sel) {
     UNUSED(u);
     if (sel < 0 || sel >= (int)DECODE_MODE_CHOICE_COUNT) {
+        return;
+    }
+    if (k_decode_mode_choices[sel] == DSDCFG_MODE_AM && !g_decode_mode_am_offered) {
+        ui_statusf("%s", DSD_DECODE_MODE_AM_NEEDS_IQ_TEXT);
         return;
     }
     /* The command toasts "Decoding <mode>" itself once it has applied. */
@@ -1725,6 +1783,9 @@ act_decode_mode(void* v) {
     const dsd_state* snapshot = c ? dsd_app_get_latest_snapshot() : NULL;
     const dsdneoUserDecodeMode now =
         opts_snapshot ? dsd_scan_mode_configured_preset(opts_snapshot, snapshot) : DSDCFG_MODE_AUTO;
+    g_decode_mode_am_offered = !opts_snapshot || dsd_opts_input_is_radio(opts_snapshot);
+    g_decode_mode_labels[decode_mode_choice_index(DSDCFG_MODE_AM)] =
+        g_decode_mode_am_offered ? dsd_decode_mode_display_name(DSDCFG_MODE_AM) : k_decode_mode_am_disabled_label;
     ui_chooser_start_at("Decoder mode", g_decode_mode_labels, (int)DECODE_MODE_CHOICE_COUNT,
                         decode_mode_choice_index(now), chooser_done_decode_mode, NULL);
 }

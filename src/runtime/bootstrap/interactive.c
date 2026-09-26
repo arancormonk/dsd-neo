@@ -9,6 +9,7 @@
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/string_utils.h>
 #include <dsd-neo/platform/file_compat.h>
+#include <dsd-neo/runtime/analog_channel.h>
 #include <dsd-neo/runtime/cli.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/decode_mode.h>
@@ -131,6 +132,14 @@ interactive_choose_input_source(void) {
     return prompt_int("Selection", 1, 1, 6);
 }
 
+/* The DSP bandwidth an RTL-SDR or rtl_tcp spec's bandwidth field runs at, read as startup reads it (an unsupported
+   value runs at 48 kHz). The wizard keeps it in the options with the spec it writes, so its AM entry can hold the AM
+   channel to it (interactive_am_refused()). */
+static int
+interactive_dsp_bw_khz(int bw) {
+    return dsd_analog_rtl_dsp_bw_is_selectable(bw) ? bw : DSD_ANALOG_RTL_DSP_BW_MAX_KHZ;
+}
+
 static void
 interactive_configure_rtl_input(dsd_opts* opts, int* src) {
 #ifdef USE_RTLSDR
@@ -149,6 +158,7 @@ interactive_configure_rtl_input(dsd_opts* opts, int* src) {
     int vol = prompt_int("Monitor gain multiplier (1..3)", 1, 1, 3);
     DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "rtl:%d:%s:%d:%d:%d:%d:%d", dev, freq, gain, ppm, bw,
                  sql, vol);
+    opts->rtl_dsp_bw_khz = interactive_dsp_bw_khz(bw);
 #else
     (void)opts;
     LOG_WARN("WARNING: RTL-SDR support not enabled in this build.\n");
@@ -174,6 +184,7 @@ interactive_configure_rtltcp_input(dsd_opts* opts) {
     int vol = prompt_int("Monitor gain multiplier (1..3)", 1, 1, 3);
     DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "rtltcp:%s:%d:%s:%d:%d:%d:%d:%d", host, port, freq,
                  gain, ppm, bw, sql, vol);
+    opts->rtl_dsp_bw_khz = interactive_dsp_bw_khz(bw);
 }
 
 static void
@@ -223,8 +234,14 @@ interactive_configure_input_source(dsd_opts* opts, dsd_state* state, int* src) {
     }
 }
 
+/* The wizard's AM entry. Whether the configured source delivers I/Q is the shared pre-open rule
+   (dsd_decode_mode_input_spec_is_iq()) applied to the input it has just configured: of its sources only RTL-SDR and
+   rtl_tcp do (an RTL-SDR choice on a build without RTL-SDR support falls back to PulseAudio); PulseAudio, files and
+   network audio arrive demodulated. */
+#define INTERACTIVE_MODE_AM 15
+
 static int
-interactive_choose_decode_mode(void) {
+interactive_prompt_decode_mode(void) {
     DSD_FPRINTF(stderr, "\nWhat do you want to decode?\n");
     DSD_FPRINTF(stderr, "  1) Auto (all digital modes) [default]\n");
     DSD_FPRINTF(stderr, "  2) P25 Phase 1 only\n");
@@ -240,28 +257,55 @@ interactive_choose_decode_mode(void) {
     DSD_FPRINTF(stderr, " 12) M17\n");
     DSD_FPRINTF(stderr, " 13) P25 + DMR (TDMA)\n");
     DSD_FPRINTF(stderr, " 14) Analog monitor (passive)\n");
-    return prompt_int("Selection", 1, 1, 14);
+    DSD_FPRINTF(stderr, " 15) AM receiver (IQ inputs)\n");
+    return prompt_int("Selection", 1, 1, INTERACTIVE_MODE_AM);
 }
+
+/* Why AM cannot run on the source the wizard configured, written to @p err; 0 when it can. Beyond the I/Q, its channel
+   (the configured AM width, or the 6 kHz default) has to fit the DSP bandwidth that source runs at, which startup holds
+   it to before the device opens (dsd_engine_setup_check_analog_width()): the bandwidth the wizard just read for an
+   RTL-SDR or rtl_tcp spec, or the one the options hold for an rtl_tcp source given no centre frequency. At a 4 or
+   6 kHz DSP bandwidth no AM width fits, so the wizard says so here rather than finishing a setup that stops at start. */
+static int
+interactive_am_refused(const dsd_opts* opts, char* err, size_t err_size) {
+    if (!dsd_decode_mode_input_spec_is_iq(opts)) {
+        DSD_SNPRINTF(err, err_size, "%s", DSD_DECODE_MODE_AM_NEEDS_IQ_TEXT);
+        return 1;
+    }
+    const int width_hz = dsd_analog_width_effective_hz(DSD_ANALOG_DEMOD_AM, opts->analog_am_bandwidth_hz);
+    const int rate_hz = interactive_dsp_bw_khz(opts->rtl_dsp_bw_khz) * 1000;
+    return dsd_analog_width_check(DSD_ANALOG_DEMOD_AM, width_hz, rate_hz, err, err_size) != 0;
+}
+
+/* AM the configured source cannot run is refused with the reason and asked again (end of input answers with the
+   default). */
+static int
+interactive_choose_decode_mode(const dsd_opts* opts) {
+    char err[DSD_ANALOG_ERROR_TEXT_MAX];
+    int mode = interactive_prompt_decode_mode();
+    while (mode == INTERACTIVE_MODE_AM && interactive_am_refused(opts, err, sizeof err)) {
+        DSD_FPRINTF(stderr, "%s.\n", err);
+        mode = interactive_prompt_decode_mode();
+    }
+    return mode;
+}
+
+/* The wizard's menu numbers, in menu order (0 is not an entry). A table, so a new entry adds a row. */
+static const dsdneoUserDecodeMode k_interactive_menu_modes[] = {
+    DSDCFG_MODE_UNSET, DSDCFG_MODE_AUTO,   DSDCFG_MODE_P25P1,    DSDCFG_MODE_P25P2,
+    DSDCFG_MODE_DMR,   DSDCFG_MODE_NXDN48, DSDCFG_MODE_NXDN96,   DSDCFG_MODE_X2TDMA,
+    DSDCFG_MODE_YSF,   DSDCFG_MODE_DSTAR,  DSDCFG_MODE_EDACS_PV, DSDCFG_MODE_DPMR,
+    DSDCFG_MODE_M17,   DSDCFG_MODE_TDMA,   DSDCFG_MODE_ANALOG,   DSDCFG_MODE_AM,
+};
+_Static_assert(sizeof k_interactive_menu_modes / sizeof k_interactive_menu_modes[0] == INTERACTIVE_MODE_AM + 1,
+               "every wizard entry maps to a decode mode");
 
 static dsdneoUserDecodeMode
 interactive_mode_to_decode_mode(int mode) {
-    switch (mode) {
-        case 1: return DSDCFG_MODE_AUTO;
-        case 2: return DSDCFG_MODE_P25P1;
-        case 3: return DSDCFG_MODE_P25P2;
-        case 4: return DSDCFG_MODE_DMR;
-        case 5: return DSDCFG_MODE_NXDN48;
-        case 6: return DSDCFG_MODE_NXDN96;
-        case 7: return DSDCFG_MODE_X2TDMA;
-        case 8: return DSDCFG_MODE_YSF;
-        case 9: return DSDCFG_MODE_DSTAR;
-        case 10: return DSDCFG_MODE_EDACS_PV;
-        case 11: return DSDCFG_MODE_DPMR;
-        case 12: return DSDCFG_MODE_M17;
-        case 13: return DSDCFG_MODE_TDMA;
-        case 14: return DSDCFG_MODE_ANALOG;
-        default: return DSDCFG_MODE_UNSET;
+    if (mode < 1 || mode > INTERACTIVE_MODE_AM) {
+        return DSDCFG_MODE_UNSET;
     }
+    return k_interactive_menu_modes[mode];
 }
 
 static int
@@ -400,7 +444,7 @@ dsd_bootstrap_interactive(dsd_opts* opts, dsd_state* state) {
         dsd_bootstrap_choose_audio_output(opts);
     }
 
-    int mode = interactive_choose_decode_mode();
+    int mode = interactive_choose_decode_mode(opts);
     dsdneoUserDecodeMode decode_mode = interactive_mode_to_decode_mode(mode);
     if (decode_mode != DSDCFG_MODE_UNSET) {
         (void)dsd_apply_decode_mode_preset(decode_mode, DSD_DECODE_PRESET_PROFILE_INTERACTIVE, opts, state);

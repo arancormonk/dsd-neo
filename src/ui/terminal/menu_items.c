@@ -39,6 +39,13 @@
 // ============================================================================
 #ifdef USE_RADIO
 static const NcMenuItem RTL_TUNING_ADV_ITEMS[] = {
+    /* The auto-PPM switch leads its settings, which keeps the RTL-SDR menu within fifteen rows beside the NFM and AM
+       channel width rows. */
+    {.id = "rtl.auto_ppm",
+     .is_enabled = is_non_airspy_input,
+     .label_fn = lbl_rtl_auto_ppm,
+     .help = "Track the PPM correction from a carrier automatically.",
+     .on_select = rtl_toggle_auto_ppm},
     {.id = "rtl.adv.ap_snr",
      .label_fn = lbl_auto_ppm_snr,
      .help = "Minimum SNR before carrier-assisted PPM tracking may adjust the correction.",
@@ -182,6 +189,12 @@ static const NcMenuItem RTL_MENU_ITEMS[] = {
      .help = "NFM channel-filter width in Hz (8000..25000; 0 = default 16000), applied live. It must fit the DSP "
              "bandwidth.",
      .on_select = rtl_set_nfm_bw},
+    {.id = "rtl.am_bw",
+     .is_enabled = is_am_width_editable,
+     .label_fn = lbl_rtl_am_bw,
+     .help = "AM channel-filter width in Hz (5000..20000; 0 = default 6000), applied live. It must fit the DSP "
+             "bandwidth.",
+     .on_select = rtl_set_am_bw},
     {.id = "rtl.sql",
      .label = "Squelch (dB)...",
      .help = "Post-filter squelch threshold in dB; more negative opens more; 0 switches squelch off.",
@@ -193,11 +206,6 @@ static const NcMenuItem RTL_MENU_ITEMS[] = {
      .help = "Monitor audio sample scaler (0..3). The hotkey cycles it while the RTL front end is the input.",
      .hotkey = "v",
      .on_select = rtl_set_vol},
-    {.id = "rtl.auto_ppm",
-     .is_enabled = is_non_airspy_input,
-     .label_fn = lbl_rtl_auto_ppm,
-     .help = "Track the PPM correction from a carrier automatically.",
-     .on_select = rtl_toggle_auto_ppm},
     {.id = "rtl.tuner_autogain",
      .is_enabled = is_non_airspy_input,
      .label_fn = lbl_rtl_tuner_autogain,

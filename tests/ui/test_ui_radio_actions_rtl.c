@@ -122,10 +122,11 @@ rtl_stream_receive_request_outcome(uint32_t seq) {
 }
 
 int
-rtl_stream_receive_request_refusal(uint32_t seq, int* out_analog_family, int* out_width_hz) {
+rtl_stream_receive_request_refusal(uint32_t seq, int* out_analog_family, int* out_width_hz, int* out_kind) {
     (void)seq;
     (void)out_analog_family;
     (void)out_width_hz;
+    (void)out_kind;
     return 0;
 }
 

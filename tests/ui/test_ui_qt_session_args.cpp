@@ -28,6 +28,7 @@
 #include <stdio.h>
 #include "decoder_host.h"
 
+#include <dsd-neo/runtime/analog_channel.h>
 #include "dsd-neo/core/safe_api.h"
 #include "saved_systems_model.h"
 #include "session_args.h"
@@ -212,6 +213,132 @@ test_nfm_system(void) {
            remote.count(QStringLiteral("-fA")) == 1 && !remote.contains(QStringLiteral("-T")));
     expect("NFM over rtl_tcp reaches the remote tuner",
            input_spec(remote) == QStringLiteral("rtltcp:10.0.2.2:1234:851.375M:30:0:48:0:2"));
+}
+
+/*
+ * Issue #524: the AM chip (-fM) demodulates from the radio's I/Q. A system on a radio source reaches the session with
+ * it; one on a network or file source, which the wizard no longer saves but an older save may hold, fails with its own
+ * reason instead of reaching the engine, which would refuse -fM on audio that arrives demodulated.
+ */
+void
+test_am_system(void) {
+    QVariantMap sys = usb_system();
+    sys.insert(QStringLiteral("decodeFlag"), QStringLiteral("-fM"));
+    SessionArgsError error = SessionArgsError::None;
+    const QStringList args = session_args_build(sys, SessionArgPrefs(), &error);
+    expect("an AM system builds on a USB dongle", error == SessionArgsError::None);
+    expect("the AM chip reaches the session as -fM", args.count(QStringLiteral("-fM")) == 1);
+    expect("an AM system follows no calls", !args.contains(QStringLiteral("-T")));
+
+    for (const char* source : {"tcp", "udp", "file"}) {
+        QVariantMap pcm = sys;
+        pcm.insert(QStringLiteral("sourceType"), QString::fromLatin1(source));
+        pcm.insert(QStringLiteral("host"), QStringLiteral("127.0.0.1"));
+        pcm.insert(QStringLiteral("port"), 7355);
+        pcm.insert(QStringLiteral("path"), QStringLiteral("/tmp/capture.wav"));
+        error = SessionArgsError::None;
+        expect("an AM system on a network or file source is refused",
+               session_args_build(pcm, SessionArgPrefs(), &error).isEmpty() && error == SessionArgsError::AmNeedsRadio);
+    }
+    expect("the refusal says why",
+           session_args_error_text(SessionArgsError::AmNeedsRadio).contains(QStringLiteral("AM needs a radio source")));
+
+    /* Among other tokens, as an import could save it; and a flag that merely contains the letters is not AM. */
+    QVariantMap composite = sys;
+    composite.insert(QStringLiteral("sourceType"), QStringLiteral("tcp"));
+    composite.insert(QStringLiteral("host"), QStringLiteral("127.0.0.1"));
+    composite.insert(QStringLiteral("port"), 7355);
+    composite.insert(QStringLiteral("decodeFlag"), QStringLiteral("-fM -Y"));
+    expect("a composite AM flag is refused off a radio",
+           session_args_build(composite, SessionArgPrefs(), &error).isEmpty()
+               && error == SessionArgsError::AmNeedsRadio);
+    composite.insert(QStringLiteral("decodeFlag"), QStringLiteral("-fA"));
+    error = SessionArgsError::None;
+    expect("NFM still builds on TCP audio",
+           !session_args_build(composite, SessionArgPrefs(), &error).isEmpty() && error == SessionArgsError::None);
+}
+
+/*
+ * Issue #524: the engine holds the AM channel (the 6 kHz default) to the DSP bandwidth a USB or rtl_tcp spec carries
+ * and refuses to start at 4 or 6 kHz, where no AM width fits. A system with that pair fails here with its own reason,
+ * whether the bandwidth is its own or the app-wide default, and the wizard's gate says the same. A bandwidth the engine
+ * does not run is its 48 kHz default, Airspy is held where its device sets the rate, and a digital mode is not held.
+ */
+void
+test_am_bandwidth(void) {
+    char fits[64];
+    expect("the refusal lists the bandwidths the AM default fits",
+           dsd_analog_width_fitting_rtl_bandwidths(DSD_ANALOG_AM_WIDTH_DEFAULT_HZ, fits, sizeof fits) == 0
+               && session_args_error_text(SessionArgsError::AmBandwidth)
+                      .contains(QStringLiteral("Set the bandwidth to %1 kHz").arg(QString::fromLatin1(fits))));
+
+    for (const char* source : {"usb", "rtltcp"}) {
+        QVariantMap sys = usb_system();
+        sys.insert(QStringLiteral("sourceType"), QString::fromLatin1(source));
+        sys.insert(QStringLiteral("host"), QStringLiteral("10.0.2.2"));
+        sys.insert(QStringLiteral("port"), 1234);
+        sys.insert(QStringLiteral("decodeFlag"), QStringLiteral("-fM"));
+        for (const int khz : {4, 6}) {
+            sys.insert(QStringLiteral("bandwidthKhz"), khz);
+            SessionArgsError error = SessionArgsError::None;
+            expect("AM at a 4 or 6 kHz DSP bandwidth is refused",
+                   session_args_build(sys, SessionArgPrefs(), &error).isEmpty()
+                       && error == SessionArgsError::AmBandwidth);
+            expect("the gate refuses it too",
+                   !dsd_qt::session_args_am_fits_bandwidth(QString::fromLatin1(source), khz));
+        }
+        for (const int khz : {8, 12, 16, 24, 48, 5, 10}) {
+            sys.insert(QStringLiteral("bandwidthKhz"), khz);
+            SessionArgsError error = SessionArgsError::None;
+            const QStringList args = session_args_build(sys, SessionArgPrefs(), &error);
+            expect("AM builds at 8 kHz and up, and at a bandwidth the engine runs at 48 kHz",
+                   !args.isEmpty() && error == SessionArgsError::None);
+        }
+
+        /* No override: the app-wide default is the bandwidth the spec carries. */
+        sys.remove(QStringLiteral("bandwidthKhz"));
+        SessionArgPrefs narrow;
+        narrow.bandwidthKhz = 6;
+        SessionArgsError error = SessionArgsError::None;
+        expect("AM under a 6 kHz app default is refused",
+               session_args_build(sys, narrow, &error).isEmpty() && error == SessionArgsError::AmBandwidth);
+        sys.insert(QStringLiteral("bandwidthKhz"), 12);
+        error = SessionArgsError::None;
+        expect("the system's own bandwidth wins over the app default",
+               !session_args_build(sys, narrow, &error).isEmpty() && error == SessionArgsError::None);
+
+        sys.insert(QStringLiteral("bandwidthKhz"), 6);
+        sys.insert(QStringLiteral("decodeFlag"), QStringLiteral("-fs"));
+        error = SessionArgsError::None;
+        expect("a digital mode at 6 kHz is not held to the AM channel",
+               !session_args_build(sys, SessionArgPrefs(), &error).isEmpty() && error == SessionArgsError::None);
+    }
+
+    QVariantMap airspy = usb_system();
+    airspy.insert(QStringLiteral("sourceType"), QStringLiteral("airspy"));
+    airspy.insert(QStringLiteral("decodeFlag"), QStringLiteral("-fM"));
+    airspy.insert(QStringLiteral("bandwidthKhz"), 6);
+    SessionArgsError error = SessionArgsError::None;
+    expect("Airspy is held at stream start, not here",
+           !session_args_build(airspy, SessionArgPrefs(), &error).isEmpty() && error == SessionArgsError::None);
+    expect("a non-radio source is the I/Q refusal's, not this one",
+           dsd_qt::session_args_am_fits_bandwidth(QStringLiteral("tcp"), 6));
+
+    const dsd_qt::SessionArgsBuilder builder(nullptr);
+    expect("the wizard gate names the fix", builder.amBandwidthError(QStringLiteral("usb"), 6)
+                                                == session_args_error_text(SessionArgsError::AmBandwidth));
+    expect("the wizard gate passes 8 kHz", builder.amBandwidthError(QStringLiteral("usb"), 8).isEmpty());
+    expect("an empty bandwidth field follows the 48 kHz default",
+           builder.amBandwidthError(QStringLiteral("rtltcp"), -1).isEmpty());
+    const QVariantMap result = builder.build(QVariantMap{{QStringLiteral("sourceType"), QStringLiteral("usb")},
+                                                         {QStringLiteral("freqMhz"), QStringLiteral("118.1")},
+                                                         {QStringLiteral("decodeFlag"), QStringLiteral("-fM")},
+                                                         {QStringLiteral("bandwidthKhz"), 4}});
+    expect("the start refusal carries its category and text",
+           !result.value(QStringLiteral("ok")).toBool()
+               && result.value(QStringLiteral("error")).toString() == QStringLiteral("am-bandwidth")
+               && result.value(QStringLiteral("errorText")).toString()
+                      == session_args_error_text(SessionArgsError::AmBandwidth));
 }
 
 void
@@ -557,6 +684,24 @@ test_extra_short_options(void) {
     }
 }
 
+/* Every error value the builder can report has a sentence for the rejection UI (the Qt start error shows it), and
+ * None has none: a value without its text would show an empty or generic start error. */
+void
+test_every_error_has_text() {
+    const auto last = static_cast<int>(dsd_qt::SessionArgsErrorLast);
+    expect("None has no text", dsd_qt::session_args_error_text(SessionArgsError::None).isEmpty());
+    for (int value = static_cast<int>(SessionArgsError::None) + 1; value <= last; value++) {
+        if (dsd_qt::session_args_error_text(static_cast<SessionArgsError>(value)).trimmed().isEmpty()) {
+            DSD_FPRINTF(stderr, "FAIL: SessionArgsError %d has no error text\n", value);
+            g_failures++;
+        }
+    }
+    expect("the last error value is AM on a radio whose bandwidth cannot filter it",
+           dsd_qt::SessionArgsErrorLast == SessionArgsError::AmBandwidth);
+    expect("a value past the last one has no text",
+           dsd_qt::session_args_error_text(static_cast<SessionArgsError>(last + 1)).isEmpty());
+}
+
 } // namespace
 
 int
@@ -582,6 +727,9 @@ main(int argc, char** argv) {
     test_tg_lockout_preference();
     test_defaults_and_overrides();
     test_nfm_system();
+    test_am_system();
+    test_am_bandwidth();
+    test_every_error_has_text();
     test_airspy_bandwidth();
     test_csv_args();
     test_ppm_shapes();

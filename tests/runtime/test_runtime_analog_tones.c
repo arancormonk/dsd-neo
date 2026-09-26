@@ -16,6 +16,7 @@
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/io/rtl_stream_c.h>
+#include <dsd-neo/runtime/analog_channel.h>
 #include <dsd-neo/runtime/analog_tones.h>
 #include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
 
@@ -106,12 +107,21 @@ fake_output_kind(void) {
     return g_fake_output_kind;
 }
 
-/* Detection runs for the analog FM monitor on audio it can hear, and nowhere else: the one
-   rule the decoder's tap and every frontend's row share. */
+/* The receive tap runs, and detection with it on FM (issue #524), exactly as @p tap says. */
+static void
+expect_tap(const dsd_opts* opts, int tap) {
+    assert(dsd_analog_monitor_tap_active(opts) == tap);
+    assert(dsd_analog_tone_detection_active(opts) == (tap && opts->analog_demod == DSD_ANALOG_DEMOD_FM));
+}
+
+/* The tap runs for the analog monitor on audio it can hear, and nowhere else, and detection
+   for the analog FM monitor: the rules the decoder's tap, the scanners' carrier and every
+   frontend's row share. */
 static void
 test_detection_active(void) {
     dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
     assert(opts != NULL);
+    assert(dsd_analog_monitor_tap_active(NULL) == 0);
     assert(dsd_analog_tone_detection_active(NULL) == 0);
     opts->analog_only = 1;
     opts->monitor_input_audio = 1;
@@ -120,12 +130,13 @@ test_detection_active(void) {
     for (size_t i = 0; i < sizeof(pcm) / sizeof(pcm[0]); i++) {
         opts->audio_in_type = pcm[i];
         assert(dsd_analog_tone_detection_active(opts) == 1);
+        expect_tap(opts, 1);
     }
     /* Symbol captures and no input carry no audio to hear. */
     static const int no_audio[] = {AUDIO_IN_SYMBOL_BIN, AUDIO_IN_SYMBOL_FLT, AUDIO_IN_NULL};
     for (size_t i = 0; i < sizeof(no_audio) / sizeof(no_audio[0]); i++) {
         opts->audio_in_type = no_audio[i];
-        assert(dsd_analog_tone_detection_active(opts) == 0);
+        expect_tap(opts, 0);
     }
 
     /* RTL: only while the stream outputs monitor audio (output kind 0), which is also what the
@@ -133,22 +144,45 @@ test_detection_active(void) {
     opts->audio_in_type = AUDIO_IN_RTL;
     dsd_rtl_stream_metrics_hooks_set(NULL);
     assert(dsd_analog_tone_detection_active(opts) == 1);
+    expect_tap(opts, 1);
     const dsd_rtl_stream_metrics_hooks hooks = {.output_kind = fake_output_kind};
     dsd_rtl_stream_metrics_hooks_set(&hooks);
     g_fake_output_kind = RTL_STREAM_OUTPUT_AUDIO_MONITOR;
-    assert(dsd_analog_tone_detection_active(opts) == 1);
+    expect_tap(opts, 1);
     g_fake_output_kind = RTL_STREAM_OUTPUT_FSK_DISCRIMINATOR; /* a digital family */
-    assert(dsd_analog_tone_detection_active(opts) == 0);
+    expect_tap(opts, 0);
     g_fake_output_kind = RTL_STREAM_OUTPUT_SYMBOL_CQPSK;
-    assert(dsd_analog_tone_detection_active(opts) == 0);
+    expect_tap(opts, 0);
     g_fake_output_kind = RTL_STREAM_OUTPUT_AUDIO_MONITOR;
 
-    /* Not the analog FM monitor: digital decoding, or analog without the input monitored. */
-    opts->analog_only = 0;
+    /* The AM monitor (issue #524): CTCSS and DCS are FM signalling, so detection is off there, on RTL and PCM alike,
+       while the tap still runs for the carrier the scanners hold a row on (issue #526), on monitor audio only. */
+    opts->analog_demod = DSD_ANALOG_DEMOD_AM;
     assert(dsd_analog_tone_detection_active(opts) == 0);
+    expect_tap(opts, 1);
+    g_fake_output_kind = RTL_STREAM_OUTPUT_SYMBOL_CQPSK;
+    expect_tap(opts, 0);
+    g_fake_output_kind = RTL_STREAM_OUTPUT_AUDIO_MONITOR;
+    opts->audio_in_type = AUDIO_IN_PULSE;
+    assert(dsd_analog_tone_detection_active(opts) == 0);
+    expect_tap(opts, 1);
+    opts->audio_in_type = AUDIO_IN_NULL;
+    expect_tap(opts, 0);
+    opts->audio_in_type = AUDIO_IN_RTL;
+    opts->analog_only = 0;
+    expect_tap(opts, 0);
+    opts->analog_only = 1;
+    opts->analog_demod = DSD_ANALOG_DEMOD_FM;
+    assert(dsd_analog_tone_detection_active(opts) == 1);
+
+    /* Not the analog monitor: digital decoding, or analog without the input monitored. */
+    opts->analog_only = 0;
+    expect_tap(opts, 0);
     opts->analog_only = 1;
     opts->monitor_input_audio = 0;
-    assert(dsd_analog_tone_detection_active(opts) == 0);
+    expect_tap(opts, 0);
+    opts->analog_demod = DSD_ANALOG_DEMOD_AM;
+    expect_tap(opts, 0);
     dsd_rtl_stream_metrics_hooks_set(NULL);
     free(opts);
 }

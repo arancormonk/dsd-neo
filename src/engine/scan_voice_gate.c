@@ -35,7 +35,7 @@ scan_voice_gate_enabled(const dsd_opts* opts) {
 
 int
 dsd_scan_analog_carrier_open(const dsd_opts* opts, const dsd_state* state) {
-    if (!opts || !state || opts->trunk_enable == 1 || state->carrier != 0 || !dsd_analog_tone_detection_active(opts)) {
+    if (!opts || !state || opts->trunk_enable == 1 || state->carrier != 0 || !dsd_analog_monitor_tap_active(opts)) {
         return 0;
     }
     /* The tap's carrier, and only for the channel the receiver is on now: a read from before a retune says

@@ -17,6 +17,7 @@
 #include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/runtime/analog_channel.h>
 #include <dsd-neo/runtime/config.h>
+#include <dsd-neo/runtime/log.h>
 #include <dsd-neo/runtime/mem.h>
 #include <dsd-neo/runtime/ring.h>
 #include <stdint.h>
@@ -1345,6 +1346,8 @@ expect_rx_request_outcomes(void) {
     rc |= expect_int_eq("rx refusal reported", r.refusal_reported, 1);
     rc |= expect_int_eq("rx refusal: the analog family kept", r.kept_analog_family, 1);
     rc |= expect_int_eq("rx refusal: the width the stream kept, not the one refused", r.kept_width_hz, 12500);
+    rc |= expect_int_eq("rx refusal: the kind the stream kept, not the one refused (AM, asked for NFM)", r.kept_kind,
+                        DSD_ANALOG_DEMOD_AM);
     rc |= expect_int_eq("rx settled request: no refusal", r.settled_refusal_reported, 0);
     rc |= expect_int_eq("rx refused switch: the digital family kept", r.entry_kept_analog_family, 0);
     rc |= expect_int_eq("rx request dropped by an open: settled", r.open_outcome, RTL_STREAM_RX_REQUEST_SETTLED);
@@ -1539,28 +1542,267 @@ expect_analog_open_ignores_cqpsk(void) {
     return rc;
 }
 
-/* Native AM is not available yet; asking for it must not silently run FM. */
+static void
+set_iq_dc_block_env(const char* value) {
+    if (value) {
+        (void)dsd_setenv("DSD_NEO_IQ_DC_BLOCK", value, 1);
+    } else {
+        (void)dsd_unsetenv("DSD_NEO_IQ_DC_BLOCK");
+    }
+    dsd_neo_config_init();
+}
+
+/* I/Q balance as DSD_NEO_IQ_BALANCE configures it for the next start (NULL: unset). */
+static void
+set_iq_balance_env(const char* value) {
+    if (value) {
+        (void)dsd_setenv("DSD_NEO_IQ_BALANCE", value, 1);
+    } else {
+        (void)dsd_unsetenv("DSD_NEO_IQ_BALANCE");
+    }
+}
+
+/* The notes the log tap has seen that a configured I/Q DC blocker, or I/Q balance, is bypassed for AM. */
+static std::atomic<int> g_iq_dc_bypass_notes{0};
+static std::atomic<int> g_iq_balance_bypass_notes{0};
+
+static void
+count_iq_dc_bypass_notes(dsd_neo_log_level_t level, const char* text, void* ctx) {
+    (void)level;
+    (void)ctx;
+    if (text && std::strstr(text, "The I/Q DC blocker stays off while AM is demodulated")) {
+        g_iq_dc_bypass_notes.fetch_add(1, std::memory_order_relaxed);
+    }
+    if (text && std::strstr(text, "I/Q balance stays off while AM is demodulated")) {
+        g_iq_balance_bypass_notes.fetch_add(1, std::memory_order_relaxed);
+    }
+}
+
+/* A digital start switched live onto AM (rtl_demod_enter_analog_family(), the decoder picker's AM on a DMR session)
+ * notes the bypass of a configured I/Q DC blocker and I/Q balance, as an AM start and a live FM -> AM switch do: the
+ * family is off until the analog channel goes in, so the notes have to wait for it. Each note is logged once per
+ * process, so main() runs this before any other AM start. */
 static int
-expect_analog_am_refused(void) {
+expect_family_entry_notes_am_iq_dc_bypass(void) {
+    dsd_neo_log_set_tap(count_iq_dc_bypass_notes, NULL);
+    set_iq_dc_block_env("1");
+    set_iq_balance_env("1");
+    demod_state* demod = alloc_zeroed_demod();
+    if (!demod) {
+        set_iq_dc_block_env(NULL);
+        set_iq_balance_env(NULL);
+        return 1;
+    }
+    static dsd_opts dmr;
+    DSD_MEMSET(&dmr, 0, sizeof dmr);
+    dmr.frame_dmr = 1;
+    char err[256];
+    int rc = expect_int_eq("digital start with the I/Q DC blocker",
+                           configure_and_finalize(demod, &dmr, 48000, err, sizeof err), 0);
+    rc |= expect_int_eq("digital start notes nothing",
+                        g_iq_dc_bypass_notes.load(std::memory_order_relaxed)
+                            + g_iq_balance_bypass_notes.load(std::memory_order_relaxed),
+                        0);
+    output_state output;
+    DSD_MEMSET(&output, 0, sizeof(output));
+    output.rate = 48000;
+    rtl_demod_enter_analog_family(demod, &output, DSD_ANALOG_DEMOD_AM, 0, 48000);
+    rc |= expect_int_eq("digital -> AM runs the AM detector", dsd_demod_am_active(demod), 1);
+    rc |= expect_int_eq("digital -> AM bypasses the I/Q DC blocker", dsd_demod_iq_dc_block_active(demod), 0);
+    rc |= expect_int_eq("digital -> AM notes the bypass", g_iq_dc_bypass_notes.load(std::memory_order_relaxed), 1);
+    rc |= expect_int_eq("digital -> AM bypasses I/Q balance", dsd_demod_iq_balance_active(demod), 0);
+    rc |= expect_int_eq("digital -> AM notes the I/Q balance bypass",
+                        g_iq_balance_bypass_notes.load(std::memory_order_relaxed), 1);
+    rtl_demod_cleanup(demod);
+    dsd_neo_aligned_free(demod);
+    set_iq_dc_block_env(NULL);
+    set_iq_balance_env(NULL);
+    return rc;
+}
+
+/* One AM start (issue #524): the detector, no de-emphasis at any rate, and the channel filter on at the width asked for
+ * (the AM default counts as asked for, so it never falls back to the legacy enable rule). */
+static int
+expect_am_open(const char* label, int rtl_dsp_bw_hz, int width_hz, int want_width_hz) {
     int rc = 0;
     demod_state* demod = alloc_zeroed_demod();
     if (!demod) {
-        DSD_FPRINTF(stderr, "AM refusal: allocation failed\n");
+        DSD_FPRINTF(stderr, "%s: allocation failed\n", label);
         return 1;
     }
     static dsd_opts opts;
     make_analog_opts(&opts);
     opts.analog_demod = DSD_ANALOG_DEMOD_AM;
+    opts.analog_am_bandwidth_hz = width_hz;
     char err[DSD_ANALOG_ERROR_TEXT_MAX] = {0};
-    rc |= expect_int_eq("AM start refused", configure_and_finalize(demod, &opts, 48000, err, sizeof err), -1);
-    if (!std::strstr(err, "AM")) {
-        DSD_FPRINTF(stderr, "AM refusal message: %s\n", err);
+    char what[128];
+    DSD_SNPRINTF(what, sizeof what, "%s start", label);
+    rc |= expect_int_eq(what, configure_and_finalize(demod, &opts, rtl_dsp_bw_hz, err, sizeof err), 0);
+    if (err[0] != '\0') {
+        DSD_FPRINTF(stderr, "%s: unexpected message %s\n", label, err);
         rc = 1;
     }
-    rc |= expect_int_eq("AM check refused",
-                        rtl_demod_check_analog_channel(DSD_ANALOG_DEMOD_AM, 6000, 48000, err, sizeof err), -1);
+    rc |= expect_int_eq("AM open runs the AM detector", dsd_demod_am_active(demod), 1);
+    rc |= expect_int_eq("AM open kind", demod->analog_demod, DSD_ANALOG_DEMOD_AM);
+    rc |= expect_int_eq("AM open output kind", demod->output_kind, DSD_DEMOD_OUTPUT_AUDIO_MONITOR);
+    rc |= expect_int_eq("AM open de-emphasis off", demod->deemph, 0);
+    rc |= expect_int_eq("AM open de-emphasis time constant", demod->deemph_tau_us, 0);
+    rc |= expect_int_eq("AM open forces the channel filter on", demod->channel_lpf_enable, 1);
+    rc |= expect_int_eq("AM open width", demod->channel_lpf_width_hz, want_width_hz);
+    rc |= expect_int_eq("AM open width kept for rate changes", demod->analog_width_request_hz, want_width_hz);
+    rc |= expect_int_eq("AM open carrier estimate starts cold", demod->am_carrier > 0.0f ? 1 : 0, 0);
+    rtl_demod_cleanup(demod);
+    dsd_neo_aligned_free(demod);
+    return rc;
+}
+
+/*
+ * Native AM on the radio front end (issue #524). A start installs the AM detector with de-emphasis off and the channel
+ * filter forced on at the AM width, including below the 20 kHz rate where the NFM default would leave it off. The I/Q
+ * DC blocker stays configured but does not run: it would remove a carrier at 0 Hz. The rate check at start is the
+ * authoritative one: a width the DSP rate cannot filter fails the start with the validator's actionable text.
+ */
+static int
+expect_analog_am_open(void) {
+    int rc = 0;
+    set_channel_lpf_env(NULL);
+    rc |= expect_am_open("AM default @48k", 48000, 0, DSD_ANALOG_AM_WIDTH_DEFAULT_HZ);
+    rc |= expect_am_open("AM default @12k", 12000, 0, DSD_ANALOG_AM_WIDTH_DEFAULT_HZ);
+    rc |= expect_am_open("AM default @8k", 8000, 0, DSD_ANALOG_AM_WIDTH_DEFAULT_HZ);
+    rc |= expect_am_open("AM 20 kHz @48k", 48000, 20000, 20000);
+    rc |= expect_am_open("AM 5 kHz @16k", 16000, 5000, 5000);
+
+    char err[DSD_ANALOG_ERROR_TEXT_MAX] = {0};
+    rc |= expect_int_eq("AM check at 48k",
+                        rtl_demod_check_analog_channel(DSD_ANALOG_DEMOD_AM, 6000, 48000, err, sizeof err), 0);
+    rc |= expect_int_eq("unset AM default checked at 48k",
+                        rtl_demod_check_analog_channel(DSD_ANALOG_DEMOD_AM, 0, 48000, err, sizeof err), 0);
     rc |= expect_int_eq("unset FM default never refused",
                         rtl_demod_check_analog_channel(DSD_ANALOG_DEMOD_FM, 0, 8000, err, sizeof err), 0);
+
+    /* 20 kHz at a 16 kHz DSP rate: refused at start, never clamped, with the fix named. */
+    demod_state* demod = alloc_zeroed_demod();
+    if (!demod) {
+        DSD_FPRINTF(stderr, "AM rate refusal: allocation failed\n");
+        return 1;
+    }
+    static dsd_opts opts;
+    make_analog_opts(&opts);
+    opts.analog_demod = DSD_ANALOG_DEMOD_AM;
+    opts.analog_am_bandwidth_hz = 20000;
+    rc |=
+        expect_int_eq("AM 20 kHz @16k start refused", configure_and_finalize(demod, &opts, 16000, err, sizeof err), -1);
+    if (!std::strstr(err, "AM bandwidth 20 kHz does not fit the 16 kHz DSP rate") || !std::strstr(err, "13.2 kHz")
+        || !std::strstr(err, "set the RTL DSP bandwidth to 24 or 48 kHz")) {
+        DSD_FPRINTF(stderr, "AM rate refusal message: %s\n", err);
+        rc = 1;
+    }
+    rtl_demod_cleanup(demod);
+    dsd_neo_aligned_free(demod);
+    /* The unset AM default at a 6 kHz rate (every AM width is refused there). */
+    demod = alloc_zeroed_demod();
+    if (!demod) {
+        return 1;
+    }
+    opts.analog_am_bandwidth_hz = 0;
+    rc |=
+        expect_int_eq("AM default @6k start refused", configure_and_finalize(demod, &opts, 6000, err, sizeof err), -1);
+    rtl_demod_cleanup(demod);
+    dsd_neo_aligned_free(demod);
+
+    /* The configured I/Q DC blocker and I/Q balance are kept (they come back for FM) but bypassed while AM runs. */
+    set_iq_dc_block_env("1");
+    set_iq_balance_env("1");
+    demod = alloc_zeroed_demod();
+    if (!demod) {
+        set_iq_dc_block_env(NULL);
+        set_iq_balance_env(NULL);
+        return 1;
+    }
+    rc |= expect_int_eq("AM start with the I/Q DC blocker and I/Q balance",
+                        configure_and_finalize(demod, &opts, 48000, err, sizeof err), 0);
+    rc |= expect_int_eq("AM keeps the configured I/Q DC blocker", demod->iq_dc_block_enable, 1);
+    rc |= expect_int_eq("AM bypasses the I/Q DC blocker", dsd_demod_iq_dc_block_active(demod), 0);
+    rc |= expect_int_eq("AM notes the bypass",
+                        rtl_demod_note_am_iq_dc_bypass(demod->iq_dc_block_enable, dsd_demod_am_active(demod)), 1);
+    rc |= expect_int_eq("AM keeps the configured I/Q balance", demod->iqbal_enable, 1);
+    rc |= expect_int_eq("AM bypasses I/Q balance", dsd_demod_iq_balance_active(demod), 0);
+    rc |= expect_int_eq("AM notes the I/Q balance bypass",
+                        rtl_demod_note_am_iq_balance_bypass(demod->iqbal_enable, dsd_demod_am_active(demod)), 1);
+    (void)rtl_demod_set_analog_kind(demod, DSD_ANALOG_DEMOD_FM);
+    rc |= expect_int_eq("FM runs the configured I/Q DC blocker", dsd_demod_iq_dc_block_active(demod), 1);
+    rc |= expect_int_eq("FM has no bypass to note",
+                        rtl_demod_note_am_iq_dc_bypass(demod->iq_dc_block_enable, dsd_demod_am_active(demod)), 0);
+    rc |= expect_int_eq("FM runs the configured I/Q balance", dsd_demod_iq_balance_active(demod), 1);
+    rc |= expect_int_eq("FM has no I/Q balance bypass to note",
+                        rtl_demod_note_am_iq_balance_bypass(demod->iqbal_enable, dsd_demod_am_active(demod)), 0);
+    rtl_demod_cleanup(demod);
+    dsd_neo_aligned_free(demod);
+    set_iq_dc_block_env(NULL);
+    set_iq_balance_env(NULL);
+    return rc;
+}
+
+/* The monitor audio reset every retune and family switch runs also puts the AM carrier estimate back to cold, so the
+ * next channel warm-starts from its own level instead of being divided by the last one's carrier. */
+static int
+expect_audio_monitor_reset_clears_am_carrier(void) {
+    demod_state* demod = alloc_zeroed_demod();
+    if (!demod) {
+        return 1;
+    }
+    demod->am_carrier = 0.75f;
+    rtl_demod_reset_audio_monitor_state(demod);
+    const int rc = expect_int_eq("monitor reset leaves an AM carrier estimate", demod->am_carrier > 0.0f ? 1 : 0, 0);
+    rtl_demod_cleanup(demod);
+    dsd_neo_aligned_free(demod);
+    return rc;
+}
+
+/* A live FM <-> AM switch swaps the detector and the de-emphasis and starts the monitor audio over, the carrier
+ * estimate and the frozen I/Q DC and I/Q balance estimates included; asking for the kind already running changes
+ * nothing. */
+static int
+expect_analog_kind_switch(void) {
+    int rc = 0;
+    set_channel_lpf_env(NULL);
+    demod_state* demod = alloc_zeroed_demod();
+    if (!demod) {
+        return 1;
+    }
+    static dsd_opts opts;
+    make_analog_opts(&opts);
+    char err[DSD_ANALOG_ERROR_TEXT_MAX] = {0};
+    rc |=
+        expect_int_eq("FM start for the kind switch", configure_and_finalize(demod, &opts, 48000, err, sizeof err), 0);
+    rtl_demod_apply_audio_filters_from_config(demod);
+    rc |= expect_int_eq("FM start de-emphasis", demod->deemph_tau_us, 75);
+    demod->deemph_avg = 0.5f;
+    demod->dc_avg = 0.25f;
+    demod->iq_dc_avg_r = 0.125f;
+    demod->iq_dc_avg_i = -0.125f;
+    demod->iqbal_alpha_ema_r = 0.0625f;
+    demod->iqbal_alpha_ema_i = -0.0625f;
+    demod->fm_demod_history_valid = 1;
+    rc |= expect_int_eq("FM -> AM switches", rtl_demod_set_analog_kind(demod, DSD_ANALOG_DEMOD_AM), 1);
+    rc |= expect_int_eq("FM -> AM runs the AM detector", dsd_demod_am_active(demod), 1);
+    rc |= expect_int_eq("FM -> AM de-emphasis off", demod->deemph, 0);
+    rc |= expect_int_eq("FM -> AM de-emphasis time constant", demod->deemph_tau_us, 0);
+    rc |= expect_int_eq("FM -> AM clears the de-emphasis state", demod->deemph_avg > 0.0f ? 1 : 0, 0);
+    rc |= expect_int_eq("FM -> AM clears the DC state", demod->dc_avg > 0.0f ? 1 : 0, 0);
+    rc |= expect_int_eq("FM -> AM clears the I/Q DC estimate",
+                        (std::fabs(demod->iq_dc_avg_r) + std::fabs(demod->iq_dc_avg_i)) > 0.0f ? 1 : 0, 0);
+    rc |= expect_int_eq("FM -> AM clears the I/Q balance estimate",
+                        (std::fabs(demod->iqbal_alpha_ema_r) + std::fabs(demod->iqbal_alpha_ema_i)) > 0.0f ? 1 : 0, 0);
+    rc |= expect_int_eq("FM -> AM drops the discriminator history", demod->fm_demod_history_valid, 0);
+    demod->am_carrier = 0.5f;
+    rc |= expect_int_eq("AM -> AM changes nothing", rtl_demod_set_analog_kind(demod, DSD_ANALOG_DEMOD_AM), 0);
+    rc |= expect_int_eq("AM -> AM keeps the carrier estimate", demod->am_carrier > 0.4f ? 1 : 0, 1);
+    rc |= expect_int_eq("AM -> FM switches", rtl_demod_set_analog_kind(demod, DSD_ANALOG_DEMOD_FM), 1);
+    rc |= expect_int_eq("AM -> FM runs the FM discriminator", demod->mode_demod == &dsd_fm_demod ? 1 : 0, 1);
+    rc |= expect_int_eq("AM -> FM restores the de-emphasis", demod->deemph, 1);
+    rc |= expect_int_eq("AM -> FM restores the de-emphasis time constant", demod->deemph_tau_us, 75);
+    rc |= expect_int_eq("AM -> FM clears the carrier estimate", demod->am_carrier > 0.0f ? 1 : 0, 0);
     rtl_demod_cleanup(demod);
     dsd_neo_aligned_free(demod);
     return rc;
@@ -1568,8 +1810,7 @@ expect_analog_am_refused(void) {
 
 /*
  * Only the unset NFM default keeps the historical enable rule and the legacy WIDE fallback. The unset AM default is a
- * requested width like any explicit one: it forces the channel filter on at the AM default and is validated. Pinned
- * below the stream's AM refusal so the rule holds when that refusal goes.
+ * requested width like any explicit one: it forces the channel filter on at the AM default and is validated.
  */
 static int
 expect_unset_default_rule_keyed_on_nfm(void) {
@@ -1597,9 +1838,26 @@ expect_unset_default_rule_keyed_on_nfm(void) {
     rc |= expect_int_eq("12 kHz AM default width", demod->channel_lpf_width_hz, DSD_ANALOG_AM_WIDTH_DEFAULT_HZ);
     rc |= expect_int_eq("AM default kept for rate changes", demod->analog_width_request_hz,
                         DSD_ANALOG_AM_WIDTH_DEFAULT_HZ);
+    /* The setting the request came from is kept apart from it: the unset AM default and an explicit 6000 Hz make the
+     * same request, and a refusing stream reports the setting, so the explicit one is not put back as the default. A
+     * rate change resolves the channel again from the setting, so the default stays unset across it. */
+    rc |= expect_int_eq("AM default setting stays unset", demod->analog_width_setting_hz, 0);
+    demod->rate_out = 24000;
+    rc |= expect_int_eq("AM default refreshed for a new rate",
+                        rtl_demod_refresh_analog_channel_for_rate(demod, err, sizeof err), 0);
+    rc |= expect_int_eq("AM default setting stays unset across a rate change", demod->analog_width_setting_hz, 0);
+    rc |= expect_int_eq("AM default request across a rate change", demod->analog_width_request_hz,
+                        DSD_ANALOG_AM_WIDTH_DEFAULT_HZ);
+    (void)rtl_demod_apply_analog_channel(demod, DSD_ANALOG_DEMOD_AM, DSD_ANALOG_AM_WIDTH_DEFAULT_HZ);
+    rc |= expect_int_eq("explicit AM 6 kHz setting", demod->analog_width_setting_hz, DSD_ANALOG_AM_WIDTH_DEFAULT_HZ);
+    rc |= expect_int_eq("explicit AM 6 kHz request", demod->analog_width_request_hz, DSD_ANALOG_AM_WIDTH_DEFAULT_HZ);
+    (void)rtl_demod_refresh_analog_channel_for_rate(demod, err, sizeof err);
+    rc |= expect_int_eq("explicit AM 6 kHz stays explicit across a rate change", demod->analog_width_setting_hz,
+                        DSD_ANALOG_AM_WIDTH_DEFAULT_HZ);
     (void)rtl_demod_apply_analog_channel(demod, DSD_ANALOG_DEMOD_FM, 0);
     rc |= expect_int_eq("back to the NFM default restores the legacy rule", demod->channel_lpf_enable, 0);
     rc |= expect_int_eq("NFM default request stays unset", demod->analog_width_request_hz, 0);
+    rc |= expect_int_eq("NFM default setting stays unset", demod->analog_width_setting_hz, 0);
     rtl_demod_cleanup(demod);
     dsd_neo_aligned_free(demod);
 
@@ -1684,6 +1942,12 @@ expect_post_decimation_rule(void) {
     }
     rc |= expect_int_eq("unset AM default is a requested width",
                         rtl_demod_check_analog_post_decimation(DSD_ANALOG_DEMOD_AM, 0, 16000, 2, err, sizeof err), -1);
+    /* No AM width runs there, the default included, so the fix is the capture, not dropping a width. */
+    if (!std::strstr(err, "AM bandwidth 6 kHz cannot be applied to this I/Q replay: post_downsample 2")
+        || !std::strstr(err, "; AM needs a capture with post_downsample 1") || std::strstr(err, "drop the explicit")) {
+        DSD_FPRINTF(stderr, "AM post-decimation message: %s\n", err);
+        rc = 1;
+    }
 
     /* The stream-start finalize applies the same rule against the stream's own chain. */
     set_channel_lpf_env(NULL);
@@ -1766,7 +2030,8 @@ expect_rate_refresh_leaves_cqpsk_profile(void) {
 
 int
 main(void) {
-    int rc = 0;
+    /* First: the note it checks is logged once per process. */
+    int rc = expect_family_entry_notes_am_iq_dc_bypass();
     /*
      * Walk protocol families through the same demod configuration helper.
      * The assertions check symbol rate, output kind, and channel filter profile
@@ -1944,7 +2209,9 @@ main(void) {
     rc |= expect_analog_env_off_conflict();
     rc |= expect_m17_encoder_unchanged();
     rc |= expect_analog_open_ignores_cqpsk();
-    rc |= expect_analog_am_refused();
+    rc |= expect_analog_am_open();
+    rc |= expect_audio_monitor_reset_clears_am_carrier();
+    rc |= expect_analog_kind_switch();
     rc |= expect_unset_default_rule_keyed_on_nfm();
     rc |= expect_negative_width_refused();
     rc |= expect_post_decimation_rule();

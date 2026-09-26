@@ -565,14 +565,18 @@ static int g_analog_check_calls;
 static int g_demod_rate_hz;
 static int g_nfm_publish_calls;
 static int g_nfm_publish_width_hz;
+/* The analog kind of the last width published, and what the running front end's check was asked (issue #524). */
+static int g_width_publish_kind;
+static int g_analog_check_kind;
+static int g_analog_check_width_hz;
 /* What the publish answers: -1 is a front end that refused the request after all (a retune moved its rate). */
 static int g_nfm_publish_result;
 
 int
 rtl_stream_check_analog_profile(int family, int kind, int width_hz) {
     (void)family;
-    (void)kind;
-    (void)width_hz;
+    g_analog_check_kind = kind;
+    g_analog_check_width_hz = width_hz;
     g_analog_check_calls++;
     return g_analog_check_result;
 }
@@ -597,11 +601,13 @@ dsd_channel_lpf_legacy_wide_width_hz(int rate_hz) {
 }
 
 int
-svc_publish_nfm_bandwidth(const dsd_opts* opts, const dsd_state* state, int configured_before_hz) {
+svc_publish_analog_bandwidth(const dsd_opts* opts, const dsd_state* state, int kind, int configured_before_hz) {
     (void)state;
     (void)configured_before_hz;
     g_nfm_publish_calls++;
-    g_nfm_publish_width_hz = opts ? opts->analog_nfm_bandwidth_hz : -1;
+    g_width_publish_kind = kind;
+    g_nfm_publish_width_hz =
+        opts ? (kind == DSD_ANALOG_DEMOD_AM ? opts->analog_am_bandwidth_hz : opts->analog_nfm_bandwidth_hz) : -1;
     return g_nfm_publish_result;
 }
 
@@ -939,10 +945,50 @@ test_rtl_service_option_contracts(void) {
     opts.audio_in_type = 0;
     rc |= expect_int("rtl gain clamps high", svc_rtl_set_gain(&opts, &state, 99), 0);
     rc |= expect_int("rtl gain stored", opts.rtl_gain_value, 49);
-    rc |= expect_int("rtl bandwidth invalid defaults", svc_rtl_set_bandwidth(&opts, &state, 7, NULL, 0U), 0);
+    char why[160];
+    rc |= expect_int("rtl bandwidth invalid defaults", svc_rtl_set_bandwidth(&opts, &state, 7, why, sizeof why), 0);
     rc |= expect_int("rtl bandwidth default stored", opts.rtl_dsp_bw_khz, 48);
-    rc |= expect_int("rtl bandwidth valid stored", svc_rtl_set_bandwidth(&opts, &state, 12, NULL, 0U), 0);
+    rc |= expect_int("rtl bandwidth valid stored", svc_rtl_set_bandwidth(&opts, &state, 12, why, sizeof why), 0);
     rc |= expect_int("rtl bandwidth exact stored", opts.rtl_dsp_bw_khz, 12);
+
+    /* Issue #524: under AM an RTL-SDR or rtl_tcp input's DSP bandwidth is the rate the AM width has to fit, the 6 kHz
+     * default included (8 kHz is the narrowest bandwidth that fits it). A bandwidth that cannot is refused before
+     * anything changes, instead of a restart whose stream start refuses it and leaves no input. */
+    opts.analog_only = 1;
+    opts.monitor_input_audio = 1;
+    opts.analog_demod = DSD_ANALOG_DEMOD_AM;
+    opts.rtl_needs_restart = 0;
+    DSD_SNPRINTF(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", "rtl:0:118.1M:22:0:12");
+    rc |= expect_int("am default refuses a 6 kHz bandwidth", svc_rtl_set_bandwidth(&opts, &state, 6, why, sizeof why),
+                     -1);
+    rc |= expect_int("refused bandwidth not stored", opts.rtl_dsp_bw_khz, 12);
+    rc |= expect_int("refused bandwidth marks no restart", opts.rtl_needs_restart, 0);
+    rc |= expect_int("refusal names the bandwidth, the width and the fix",
+                     strcmp(why, "DSP BW 6 kHz cannot filter AM 6 kHz (max 4.2 kHz); no AM width fits it; keep a "
+                                 "wider DSP bandwidth")
+                         == 0,
+                     1);
+    rc |= expect_int("am default fits an 8 kHz bandwidth", svc_rtl_set_bandwidth(&opts, &state, 8, why, sizeof why), 0);
+    rc |= expect_int("fitting bandwidth stored", opts.rtl_dsp_bw_khz, 8);
+    opts.analog_am_bandwidth_hz = 10000;
+    rc |= expect_int("explicit am width refuses a bandwidth that cannot filter it",
+                     svc_rtl_set_bandwidth(&opts, &state, 12, why, sizeof why), -1);
+    rc |= expect_int("an explicit width that narrowing fixes says so",
+                     strcmp(why, "DSP BW 12 kHz cannot filter AM 10 kHz (max 9.6 kHz); narrow the AM width first") == 0,
+                     1);
+    rc |= expect_int("explicit am width fits 16 kHz", svc_rtl_set_bandwidth(&opts, &state, 16, why, sizeof why), 0);
+    /* A SoapySDR or Airspy device may force another rate: its stream start holds the width to that. */
+    DSD_SNPRINTF(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", "airspy");
+    rc |= expect_int("airspy bandwidth is left to the device rate",
+                     svc_rtl_set_bandwidth(&opts, &state, 4, why, sizeof why), 0);
+    /* FM (the unset NFM default, which no rate refuses) and digital modes hold no bandwidth. */
+    DSD_SNPRINTF(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", "rtl");
+    opts.analog_demod = DSD_ANALOG_DEMOD_FM;
+    rc |= expect_int("fm default takes any bandwidth", svc_rtl_set_bandwidth(&opts, &state, 4, why, sizeof why), 0);
+    opts.analog_only = 0;
+    opts.monitor_input_audio = 0;
+    opts.analog_am_bandwidth_hz = 0;
+    opts.rtl_dsp_bw_khz = 12;
 
     rc |= expect_int("rtl squelch stores converted threshold", svc_rtl_set_sql_db(&opts, &state, -12.5), 0);
     rc |= expect_double("rtl squelch level stored", opts.rtl_squelch_level, pow(10.0, -1.25));
@@ -1677,45 +1723,64 @@ test_nfm_bandwidth_services(void) {
     DSD_MEMSET(&opts, 0, sizeof opts);
     DSD_MEMSET(&state, 0, sizeof state);
     DSD_SNPRINTF(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", "rtl:0:851.375M:0:0:16");
+    opts.audio_in_type = AUDIO_IN_RTL;
     opts.rtl_dsp_bw_khz = 16;
     opts.analog_only = 1;
     char why[128];
 
     /* No stream: the RTL DSP bandwidth is the rate. 12.5 kHz fits 16 kHz, 16 kHz does not. */
-    rc |= expect_int("nfm svc 12500 fits 16 kHz", svc_set_nfm_bandwidth(&opts, &state, 12500, why, sizeof why), 0);
+    rc |= expect_int("nfm svc 12500 fits 16 kHz",
+                     svc_set_analog_bandwidth(&opts, &state, DSD_ANALOG_DEMOD_FM, 12500, why, sizeof why), 0);
     rc |= expect_int("nfm svc 12500 stored", opts.analog_nfm_bandwidth_hz, 12500);
-    rc |=
-        expect_int("nfm svc 16000 refused at 16 kHz", svc_set_nfm_bandwidth(&opts, &state, 16000, why, sizeof why), -1);
+    rc |= expect_int("nfm svc 16000 refused at 16 kHz",
+                     svc_set_analog_bandwidth(&opts, &state, DSD_ANALOG_DEMOD_FM, 16000, why, sizeof why), -1);
     rc |= expect_int("nfm svc 16000 not stored", opts.analog_nfm_bandwidth_hz, 12500);
     rc |= expect_int(
         "nfm svc 16000 reason",
         strcmp(why, "NFM 16 kHz does not fit the 16 kHz DSP rate (max 13.2 kHz); use a 24 or 48 kHz DSP bandwidth")
             == 0,
         1);
-    rc |= expect_int("nfm svc out of range", svc_check_nfm_bandwidth(&opts, &state, 7999, why, sizeof why), -1);
+    rc |= expect_int("nfm svc out of range",
+                     svc_check_analog_bandwidth(&opts, &state, DSD_ANALOG_DEMOD_FM, 7999, why, sizeof why), -1);
     rc |= expect_int("nfm svc range reason", strcmp(why, "NFM bandwidth 7.999 kHz is outside 8 kHz to 25 kHz") == 0, 1);
-    rc |= expect_int("nfm svc default never refused", svc_check_nfm_bandwidth(&opts, &state, 0, why, sizeof why), 0);
+    rc |= expect_int("nfm svc default never refused",
+                     svc_check_analog_bandwidth(&opts, &state, DSD_ANALOG_DEMOD_FM, 0, why, sizeof why), 0);
+
+    /* PCM input, here TCP audio a live switch put the RTL-SDR session on, keeping its device string: no channel filter
+       runs there, so no DSP rate holds the width, which is stored for a switch back to a radio input. */
+    opts.audio_in_type = AUDIO_IN_TCP;
+    rc |= expect_int("nfm svc pcm 16000 not held to the old rate",
+                     svc_set_analog_bandwidth(&opts, &state, DSD_ANALOG_DEMOD_FM, 16000, why, sizeof why), 0);
+    rc |= expect_int("nfm svc pcm 16000 stored", opts.analog_nfm_bandwidth_hz, 16000);
+    rc |= expect_int("nfm svc pcm range still checked",
+                     svc_check_analog_bandwidth(&opts, &state, DSD_ANALOG_DEMOD_FM, 7999, why, sizeof why), -1);
+    opts.analog_nfm_bandwidth_hz = 12500;
+    opts.audio_in_type = AUDIO_IN_RTL;
 
     /* A reopen at another DSP bandwidth is checked against that bandwidth alone. */
     rc |= expect_int("nfm svc 25 kHz at a 48 kHz reopen",
-                     svc_check_nfm_bandwidth_for_rtl_bw(25000, 48, why, sizeof why), 0);
+                     svc_check_analog_bandwidth_for_rtl_bw(DSD_ANALOG_DEMOD_FM, 25000, 48, why, sizeof why), 0);
     rc |= expect_int("nfm svc 25 kHz at a 24 kHz reopen",
-                     svc_check_nfm_bandwidth_for_rtl_bw(25000, 24, why, sizeof why), -1);
+                     svc_check_analog_bandwidth_for_rtl_bw(DSD_ANALOG_DEMOD_FM, 25000, 24, why, sizeof why), -1);
     rc |= expect_int(
         "nfm svc 24 kHz reopen reason",
         strcmp(why, "NFM 25 kHz does not fit the 24 kHz DSP rate (max 20.4 kHz); use a 48 kHz DSP bandwidth") == 0, 1);
-    rc |= expect_int("nfm svc default at any reopen", svc_check_nfm_bandwidth_for_rtl_bw(0, 4, why, sizeof why), 0);
-    rc |= expect_int("nfm svc reopen range", svc_check_nfm_bandwidth_for_rtl_bw(30000, 48, why, sizeof why), -1);
+    rc |= expect_int("nfm svc default at any reopen",
+                     svc_check_analog_bandwidth_for_rtl_bw(DSD_ANALOG_DEMOD_FM, 0, 4, why, sizeof why), 0);
+    rc |= expect_int("nfm svc reopen range",
+                     svc_check_analog_bandwidth_for_rtl_bw(DSD_ANALOG_DEMOD_FM, 30000, 48, why, sizeof why), -1);
 
     /* A running stream answers for itself, and an accepted width is published to it once stored. */
     opts.audio_in_type = AUDIO_IN_RTL;
     state.rtl_ctx = (RtlSdrContext*)fake_ctx;
     g_analog_check_calls = g_nfm_publish_calls = 0;
-    rc |= expect_int("nfm svc live 8000", svc_set_nfm_bandwidth(&opts, &state, 8000, why, sizeof why), 0);
+    rc |= expect_int("nfm svc live 8000",
+                     svc_set_analog_bandwidth(&opts, &state, DSD_ANALOG_DEMOD_FM, 8000, why, sizeof why), 0);
     rc |= expect_int("nfm svc live asks the front end", g_analog_check_calls, 1);
     rc |= expect_int("nfm svc live publish", g_nfm_publish_calls == 1 && g_nfm_publish_width_hz == 8000, 1);
     g_analog_check_result = -1;
-    rc |= expect_int("nfm svc live refusal", svc_set_nfm_bandwidth(&opts, &state, 12500, why, sizeof why), -1);
+    rc |= expect_int("nfm svc live refusal",
+                     svc_set_analog_bandwidth(&opts, &state, DSD_ANALOG_DEMOD_FM, 12500, why, sizeof why), -1);
     rc |= expect_int("nfm svc live refusal keeps the width", opts.analog_nfm_bandwidth_hz, 8000);
     rc |= expect_int("nfm svc live refusal publishes nothing", g_nfm_publish_calls, 1);
     /* The front end refused a width its RTL DSP bandwidth (16 kHz) can filter: something else refused it. */
@@ -1745,29 +1810,32 @@ test_nfm_bandwidth_services(void) {
     for (size_t i = 0; i < sizeof forced_rate_devs / sizeof forced_rate_devs[0]; i++) {
         DSD_SNPRINTF(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", forced_rate_devs[i].dev);
         g_demod_rate_hz = 24000;
-        rc |=
-            expect_int("nfm svc forced rate refusal", svc_set_nfm_bandwidth(&opts, &state, 25000, why, sizeof why), -1);
+        rc |= expect_int("nfm svc forced rate refusal",
+                         svc_set_analog_bandwidth(&opts, &state, DSD_ANALOG_DEMOD_FM, 25000, why, sizeof why), -1);
         rc |= expect_str("nfm svc forced rate reason", why, forced_rate_devs[i].at_24k);
         g_demod_rate_hz = 8000;
-        rc |= expect_int("nfm svc no width fits", svc_set_nfm_bandwidth(&opts, &state, 8000, why, sizeof why), -1);
+        rc |= expect_int("nfm svc no width fits",
+                         svc_set_analog_bandwidth(&opts, &state, DSD_ANALOG_DEMOD_FM, 8000, why, sizeof why), -1);
         rc |= expect_str("nfm svc no width fits reason", why, forced_rate_devs[i].at_8k);
         /* At a rate that filters it, the refusal is not the rate's. */
         g_demod_rate_hz = 78125;
         rc |= expect_int("nfm svc forced rate other refusal",
-                         svc_set_nfm_bandwidth(&opts, &state, 25000, why, sizeof why), -1);
+                         svc_set_analog_bandwidth(&opts, &state, DSD_ANALOG_DEMOD_FM, 25000, why, sizeof why), -1);
         rc |= expect_int("nfm svc forced rate other reason",
                          strcmp(why, "the RTL front end refused NFM 25 kHz (see log)") == 0, 1);
     }
     g_demod_rate_hz = 0;
     DSD_SNPRINTF(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", "rtl:0:851.375M:0:0:16");
     g_analog_check_result = 0;
-    rc |= expect_int("nfm svc live 12500", svc_set_nfm_bandwidth(&opts, &state, 12500, why, sizeof why), 0);
+    rc |= expect_int("nfm svc live 12500",
+                     svc_set_analog_bandwidth(&opts, &state, DSD_ANALOG_DEMOD_FM, 12500, why, sizeof why), 0);
     rc |= expect_int("nfm svc live 12500 published", g_nfm_publish_calls == 2 && g_nfm_publish_width_hz == 12500, 1);
 
     /* The front end took the check but refused the request itself (a retune moved its rate in between): refused
        here too, with the previous width put back, never reported as applied. */
     g_nfm_publish_result = -1;
-    rc |= expect_int("nfm svc request refused", svc_set_nfm_bandwidth(&opts, &state, 16000, why, sizeof why), -1);
+    rc |= expect_int("nfm svc request refused",
+                     svc_set_analog_bandwidth(&opts, &state, DSD_ANALOG_DEMOD_FM, 16000, why, sizeof why), -1);
     rc |= expect_int("nfm svc request refused keeps the width", opts.analog_nfm_bandwidth_hz, 12500);
     rc |= expect_str("nfm svc request refused reason", why,
                      "NFM 16 kHz does not fit the 16 kHz DSP rate (max 13.2 kHz); use a 24 or 48 kHz DSP bandwidth");
@@ -1808,6 +1876,85 @@ test_nfm_bandwidth_services(void) {
     return rc;
 }
 
+/*
+ * Issue #524: the AM width goes through the same services as the NFM one. AM always runs its channel filter, so its
+ * unset default (6 kHz) is held to the rate like an explicit width, where the unset NFM default is never refused: with
+ * no stream an RTL-SDR input's DSP bandwidth is that rate, and a reopen at another bandwidth is held to that one. An
+ * accepted width is stored as AM's and published for the AM kind; a running stream is asked about the AM profile.
+ */
+static int
+test_am_bandwidth_services(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static void* fake_ctx[2];
+    int rc = 0;
+    DSD_MEMSET(&opts, 0, sizeof opts);
+    DSD_MEMSET(&state, 0, sizeof state);
+    DSD_SNPRINTF(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", "rtl:0:118.1M:22:0:6");
+    opts.audio_in_type = AUDIO_IN_RTL;
+    opts.rtl_dsp_bw_khz = 6;
+    opts.analog_only = 1;
+    opts.analog_demod = DSD_ANALOG_DEMOD_AM;
+    char why[128];
+
+    rc |= expect_int("am svc default refused at 6 kHz",
+                     svc_check_analog_bandwidth(&opts, &state, DSD_ANALOG_DEMOD_AM, 0, why, sizeof why), -1);
+    rc |= expect_str("am svc default reason", why,
+                     "AM 6 kHz does not fit the 6 kHz DSP rate (max 4.2 kHz); use a 8, 12, 16, 24 or 48 kHz DSP "
+                     "bandwidth");
+    rc |= expect_int("nfm default still passes at 6 kHz",
+                     svc_check_analog_bandwidth(&opts, &state, DSD_ANALOG_DEMOD_FM, 0, why, sizeof why), 0);
+    rc |= expect_int("am svc 5 kHz refused at 6 kHz",
+                     svc_set_analog_bandwidth(&opts, &state, DSD_ANALOG_DEMOD_AM, 5000, why, sizeof why), -1);
+    rc |= expect_int("am svc refused width not stored", opts.analog_am_bandwidth_hz, 0);
+    rc |= expect_int("am svc range",
+                     svc_check_analog_bandwidth(&opts, &state, DSD_ANALOG_DEMOD_AM, 25000, why, sizeof why), -1);
+    rc |= expect_str("am svc range reason", why, "AM bandwidth 25 kHz is outside 5 kHz to 20 kHz");
+
+    DSD_SNPRINTF(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", "rtl:0:118.1M:22:0:16");
+    opts.rtl_dsp_bw_khz = 16;
+    g_nfm_publish_calls = 0;
+    rc |= expect_int("am svc 10 kHz at 16 kHz",
+                     svc_set_analog_bandwidth(&opts, &state, DSD_ANALOG_DEMOD_AM, 10000, why, sizeof why), 0);
+    rc |= expect_int("am svc stored as AM's", opts.analog_am_bandwidth_hz == 10000 && opts.analog_nfm_bandwidth_hz == 0,
+                     1);
+    rc |= expect_int(
+        "am svc published for AM",
+        g_nfm_publish_calls == 1 && g_width_publish_kind == DSD_ANALOG_DEMOD_AM && g_nfm_publish_width_hz == 10000, 1);
+    rc |= expect_int("am svc 20 kHz refused at 16 kHz",
+                     svc_set_analog_bandwidth(&opts, &state, DSD_ANALOG_DEMOD_AM, 20000, why, sizeof why), -1);
+    rc |= expect_str("am svc 20 kHz reason", why,
+                     "AM 20 kHz does not fit the 16 kHz DSP rate (max 13.2 kHz); use a 24 or 48 kHz DSP bandwidth");
+
+    /* A running stream answers for the AM profile itself. */
+    opts.audio_in_type = AUDIO_IN_RTL;
+    state.rtl_ctx = (RtlSdrContext*)fake_ctx;
+    g_analog_check_calls = 0;
+    rc |= expect_int("am svc live default",
+                     svc_set_analog_bandwidth(&opts, &state, DSD_ANALOG_DEMOD_AM, 0, why, sizeof why), 0);
+    rc |= expect_int(
+        "am svc live asks about AM at its default",
+        g_analog_check_calls == 1 && g_analog_check_kind == DSD_ANALOG_DEMOD_AM && g_analog_check_width_hz == 0, 1);
+    opts.audio_in_type = 0;
+    state.rtl_ctx = NULL;
+
+    /* Under Analog (FM) the AM width is only configuration: stored, and held to no rate. */
+    opts.analog_demod = DSD_ANALOG_DEMOD_FM;
+    rc |= expect_int("am svc under nfm stored unchecked",
+                     svc_set_analog_bandwidth(&opts, &state, DSD_ANALOG_DEMOD_AM, 20000, why, sizeof why), 0);
+    rc |= expect_int("am svc under nfm width", opts.analog_am_bandwidth_hz, 20000);
+
+    /* A reopen at another DSP bandwidth holds the AM default too. */
+    rc |= expect_int("am svc default at a 6 kHz reopen",
+                     svc_check_analog_bandwidth_for_rtl_bw(DSD_ANALOG_DEMOD_AM, 0, 6, why, sizeof why), -1);
+    rc |= expect_int("am svc default at an 8 kHz reopen",
+                     svc_check_analog_bandwidth_for_rtl_bw(DSD_ANALOG_DEMOD_AM, 0, 8, why, sizeof why), 0);
+
+    opts.analog_only = 0;
+    opts.analog_am_bandwidth_hz = 0;
+    return rc;
+}
+
 int
 main(void) {
     int rc = 0;
@@ -1822,6 +1969,7 @@ main(void) {
     rc |= test_rtl_service_option_contracts();
     rc |= test_nfm_bandwidth_services();
     rc |= test_rtl_bandwidth_holds_the_analog_width_in_force();
+    rc |= test_am_bandwidth_services();
 #endif
     rc |= test_file_network_and_import_failure_contracts();
     rc |= test_udp_output_analog_socket_failure();

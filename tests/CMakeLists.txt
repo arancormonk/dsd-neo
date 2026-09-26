@@ -3619,6 +3619,7 @@ add_executable(
     dsd-neo_test_runtime_bootstrap_interactive
     runtime/test_runtime_bootstrap_interactive.c
     ${PROJECT_SOURCE_DIR}/src/runtime/bootstrap/interactive.c
+    ${PROJECT_SOURCE_DIR}/src/runtime/analog_channel.c
 )
 target_include_directories(
     dsd-neo_test_runtime_bootstrap_interactive
@@ -5976,6 +5977,52 @@ if(DSD_HAS_RADIO)
     )
 endif()
 
+# Issue #524: an AM width (the 6 kHz default included) the input's DSP bandwidth
+# cannot filter is refused before the device opens, with the validator's
+# actionable text, and startup fails. rtl_tcp and RTL-SDR specs carry their DSP
+# bandwidth, so no device or server is needed. RunCliSmoke.cmake checks the
+# non-zero exit code together with the text (and that the stream was never
+# opened), which PASS_REGULAR_EXPRESSION alone cannot.
+if(DSD_HAS_RADIO)
+    add_test(
+        NAME RUNTIME_ANALOG_AM_WIDTH_RATE_REFUSED
+        COMMAND
+            ${CMAKE_COMMAND} -D DSD_NEO_CLI=$<TARGET_FILE:dsd-neo> -D
+            DSD_NEO_CLI_SMOKE_MODE=am-width-rate-refused -P
+            ${CMAKE_CURRENT_SOURCE_DIR}/cmake/RunCliSmoke.cmake
+    )
+    add_test(
+        NAME RUNTIME_ANALOG_AM_WIDTH_RATE_REFUSED_RTL
+        COMMAND
+            ${CMAKE_COMMAND} -D DSD_NEO_CLI=$<TARGET_FILE:dsd-neo> -D
+            DSD_NEO_CLI_SMOKE_MODE=am-width-rate-refused-rtl -P
+            ${CMAKE_CURRENT_SOURCE_DIR}/cmake/RunCliSmoke.cmake
+    )
+    add_test(
+        NAME RUNTIME_ANALOG_AM_DEFAULT_RATE_REFUSED
+        COMMAND
+            ${CMAKE_COMMAND} -D DSD_NEO_CLI=$<TARGET_FILE:dsd-neo> -D
+            DSD_NEO_CLI_SMOKE_MODE=am-default-rate-refused -P
+            ${CMAKE_CURRENT_SOURCE_DIR}/cmake/RunCliSmoke.cmake
+    )
+    # The negative control: a width the 16 kHz DSP rate filters gets as far as
+    # opening the stream (which fails: nothing listens on port 1).
+    add_test(
+        NAME RUNTIME_ANALOG_AM_WIDTH_FITS_LOW_RATE
+        COMMAND
+            ${CMAKE_COMMAND} -D DSD_NEO_CLI=$<TARGET_FILE:dsd-neo> -D
+            DSD_NEO_CLI_SMOKE_MODE=am-width-fits-low-rate -P
+            ${CMAKE_CURRENT_SOURCE_DIR}/cmake/RunCliSmoke.cmake
+    )
+    set_tests_properties(
+        RUNTIME_ANALOG_AM_WIDTH_RATE_REFUSED
+        RUNTIME_ANALOG_AM_WIDTH_RATE_REFUSED_RTL
+        RUNTIME_ANALOG_AM_DEFAULT_RATE_REFUSED
+        RUNTIME_ANALOG_AM_WIDTH_FITS_LOW_RATE
+        PROPERTIES ENVIRONMENT "DSD_NEO_NO_BOOTSTRAP=1" TIMEOUT 30
+    )
+endif()
+
 # P25 helper tests
 add_executable(dsd-neo_test_p25_12_list protocol/p25/test_p25_12_list.c)
 target_include_directories(
@@ -7801,6 +7848,16 @@ target_include_directories(
 )
 dsd_neo_link_dsp_test(dsd-neo_test_dsp_fm_demod_ref)
 add_test(NAME DSP_FM_DEMOD_REF COMMAND dsd-neo_test_dsp_fm_demod_ref)
+
+# The carrier-normalised AM envelope detector (issue #524), alone and through the
+# monitor pipeline with the 6 kHz AM channel filter.
+add_executable(dsd-neo_test_dsp_am_demod dsp/test_dsp_am_demod.cpp)
+target_include_directories(
+    dsd-neo_test_dsp_am_demod
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+dsd_neo_link_dsp_test(dsd-neo_test_dsp_am_demod ${DSD_NEO_TEST_MATH_LIB})
+add_test(NAME DSP_AM_DEMOD COMMAND dsd-neo_test_dsp_am_demod)
 
 add_executable(dsd-neo_test_dsp_demod_misc dsp/test_dsp_demod_misc.cpp)
 target_include_directories(
@@ -11552,6 +11609,53 @@ if(DSD_HAS_RADIO)
         "Received tone: CTCSS|${_analog_off_path}"
     )
 
+    # Native AM (issue #524). am_tone_synth is a 1 kHz tone at 50% depth on a 0 Hz
+    # carrier with noise 30 dB down across the band: through -fM it measures 24.4 dB
+    # tone SNR, 35.4 dB in-band ratio and -45.2 dBFS RMS (the detector's 0.25 x depth,
+    # unscaled in replay), audible from the first block, unclipped; the probe on the
+    # tone agrees with the fit. The FM monitor finds no tone on it (see the negative
+    # control below), so the level comes from the AM detector.
+    dsd_neo_add_analog_replay_test(
+        DECODE_IQ_ANALOG_AM_TONE
+        am_tone_synth
+        "-fM --analog-expect-tone-hz 1000 --analog-min-snr-db 18 --analog-min-captured-ms 1400 --analog-min-audible-ms 1400 --analog-max-first-audible-ms 100 --analog-min-inband-db 28 --analog-min-rms-dbfs -50 --analog-max-rms-dbfs -40 --analog-max-clip 0 --analog-probe-min-dbc 1000:-1 --analog-probe-max-dbc 1000:1"
+        ""
+        "${_analog_off_path}"
+    )
+    # The same tone with an unmodulated carrier 8.333 kHz up at -6 dB (the next
+    # 8.33 kHz airband channel). The default 6 kHz channel filter rejects it: its beat
+    # with the wanted carrier probes at -72.2 dBc. A 20 kHz channel passes it (+13.0
+    # dBc), which shows the AM width reaches the filter; each case holds its own bound.
+    dsd_neo_add_analog_replay_test(
+        DECODE_IQ_ANALOG_AM_ADJ_6K
+        am_adjacent_synth
+        "-fM --analog-expect-tone-hz 1000 --analog-min-snr-db 18 --analog-min-captured-ms 1400 --analog-probe-max-dbc 8333:-40"
+        ""
+        "${_analog_off_path}"
+    )
+    dsd_neo_add_analog_replay_test(
+        DECODE_IQ_ANALOG_AM_ADJ_20K
+        am_adjacent_synth
+        "-fM --am-bandwidth-hz 20000 --analog-expect-tone-hz 1000 --analog-min-captured-ms 1400 --analog-probe-min-dbc 8333:0"
+        ""
+        "${_analog_off_path}"
+    )
+    # AM airband voice (the excerpt DECODE_IQ_ANALOG_NO_MOD_AUTO_SWITCH plays through
+    # the FM monitor) through the AM detector: the whole excerpt delivered, 1120 ms
+    # audible, -53.7 dBFS RMS, unclipped, and speech-shaped (14.6 dB in-band ratio,
+    # where the FM monitor reads -2.4 dB on it). The excerpt carries no sub-audible
+    # tone, so the "Received tone:" forbid only guards against a false report; the
+    # FM-only detection gate is proven by DSP_SYMBOL_REPLAY, which feeds the same
+    # CTCSS-bearing monitor audio through the tap on FM (locks) and AM (publishes
+    # nothing), and by RUNTIME_ANALOG_TONES.
+    dsd_neo_add_analog_replay_test(
+        DECODE_IQ_ANALOG_AM_REAL
+        am_airband_real
+        "-fM --analog-min-captured-ms 7800 --analog-min-audible-ms 800 --analog-min-inband-db 10 --analog-min-rms-dbfs -60 --analog-max-rms-dbfs -48 --analog-max-clip 0"
+        ""
+        "Received tone:|${_analog_off_path}"
+    )
+
     # Negative controls: bounds that must NOT hold, run through
     # analog_replay_fail_check.cmake, which requires the host's exit code (1 for a
     # missed bound), the named ANALOG AUDIO FAIL line and no ANALOG AUDIO OK. Without
@@ -11649,6 +11753,15 @@ if(DSD_HAS_RADIO)
         nfm_notone_synth
         "-fA --analog-max-tone-lock-ms 400"
         "ANALOG AUDIO FAIL: tone lock ms not measured"
+    )
+    # DECODE_IQ_ANALOG_AM_TONE's tone bound through the FM monitor: the discriminator
+    # finds no 1 kHz tone on an AM carrier (-39.7 dB measured), so that case's level
+    # is the AM detector's doing.
+    dsd_neo_add_analog_replay_fail_test(
+        DECODE_IQ_ANALOG_NEG_AM_TONE_THROUGH_FM
+        am_tone_synth
+        "-fA --analog-expect-tone-hz 1000 --analog-min-snr-db 18"
+        "ANALOG AUDIO FAIL: tone SNR dB -?[0-9]+[.][0-9]+ [(]limit 18[.]00[)]"
     )
     # A malformed bound stops the host before the replay (exit 2), rather than being
     # dropped or handed to the CLI parser.

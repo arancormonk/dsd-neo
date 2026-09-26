@@ -12,6 +12,7 @@
  */
 
 #include <atomic>
+#include <climits>
 #include <dsd-neo/dsp/costas.h>
 #include <dsd-neo/dsp/demod_pipeline.h>
 #include <dsd-neo/dsp/demod_state.h>
@@ -757,6 +758,121 @@ dsd_fm_demod(struct demod_state* fm) {
     fm->result_len = pairs;
 }
 
+/* AM envelope detector (issue #524): output = kAmOutputGain x clamp(|z| / C - 1, +/-kAmEnvelopeClamp). The gain puts
+   100% modulation at 0.25, where live FM sits at about 6 kHz deviation, so the downstream voice filters and AGC see the
+   level they see for FM. Below kAmCarrierFloor there is no carrier to normalise by. */
+static const float kAmOutputGain = 0.25f;
+static const float kAmEnvelopeClamp = 2.0f;
+static const float kAmCarrierFloor = 1e-9f;
+
+/* The rate the AM detector runs at: the demod rate. An I/Q replay that decimates after the demodulator
+   (post_downsample above 1) would run it faster, but no AM front end runs there: the stream start and every runtime
+   request refuse AM on such a capture (rtl_demod_check_analog_post_decimation()). */
+static int
+am_detector_rate_hz(const struct demod_state* d) {
+    return d->rate_out > 0 ? d->rate_out : 48000;
+}
+
+/* One-pole coefficient for the DSD_AM_CARRIER_TAU_MS carrier estimate at the rate the detector runs. */
+static float
+am_carrier_alpha(const struct demod_state* d) {
+    const double tau_s = (double)DSD_AM_CARRIER_TAU_MS / 1000.0;
+    return (float)(1.0 - exp(-1.0 / ((double)am_detector_rate_hz(d) * tau_s)));
+}
+
+/* Count a squelched block into the closed run, saturating. */
+static void
+am_note_squelched_block(struct demod_state* d, int pairs) {
+    const int room = INT_MAX - d->am_squelched_samples;
+    d->am_squelched_samples = pairs < room ? d->am_squelched_samples + pairs : INT_MAX;
+}
+
+/* Whether the squelch has been closed long enough (DSD_AM_CARRIER_HOLD_MS) for the audio it lets through now to be
+   another transmission, whose carrier the estimate must start over on. */
+static int
+am_squelch_ended_transmission(const struct demod_state* d) {
+    const int hold_ms = DSD_AM_CARRIER_HOLD_MS;
+    const long long hold_samples = (long long)am_detector_rate_hz(d) * hold_ms / 1000;
+    return (long long)d->am_squelched_samples > hold_samples ? 1 : 0;
+}
+
+static float
+am_block_mean_magnitude(const float* iq, int pairs) {
+    double sum = 0.0;
+    for (int n = 0; n < pairs; n++) {
+        const double i = (double)iq[(size_t)(n << 1) + 0];
+        const double q = (double)iq[(size_t)(n << 1) + 1];
+        sum += sqrt(i * i + q * q);
+    }
+    return pairs > 0 ? (float)(sum / (double)pairs) : 0.0f;
+}
+
+/**
+ * @brief AM envelope detector on interleaved low-passed I/Q (issue #524).
+ *
+ * @param fm Demodulator state (uses lowpassed as input, writes to result, updates am_carrier).
+ */
+void
+dsd_am_demod(struct demod_state* fm) {
+    const int pairs = fm->lp_len >> 1;
+    if (pairs <= 0) {
+        fm->result_len = 0;
+        return;
+    }
+    float* out = assume_aligned_ptr(fm->result, DSD_NEO_ALIGN);
+    fm->result_len = pairs;
+    if (fm->channel_squelched) {
+        /* The squelch zeroed the block. A zero envelope would read as -0.25 under the held carrier estimate; the block
+           is silence instead, and the estimate stays for the audio the squelch lets through next, unless the squelch
+           stays closed past the hold. */
+        for (int n = 0; n < pairs; n++) {
+            out[n] = 0.0f;
+        }
+        am_note_squelched_block(fm, pairs);
+        return;
+    }
+    const float* iq = assume_aligned_ptr(fm->lowpassed, DSD_NEO_ALIGN);
+    float carrier = fm->am_carrier;
+    if (am_squelch_ended_transmission(fm)) {
+        /* The squelch was closed long enough to end the transmission: whatever opened it is measured afresh, not
+           divided by the last station's carrier. */
+        carrier = 0.0f;
+    }
+    fm->am_squelched_samples = 0;
+    if (!(carrier >= kAmCarrierFloor)) {
+        /* Reset (or no carrier yet): start from this block's own level rather than fading in from nothing. */
+        carrier = am_block_mean_magnitude(iq, pairs);
+    }
+    const float alpha = am_carrier_alpha(fm);
+    for (int n = 0; n < pairs; n++) {
+        const float i = iq[(size_t)(n << 1) + 0];
+        const float q = iq[(size_t)(n << 1) + 1];
+        const float a = sqrtf(i * i + q * q);
+        if (carrier >= kAmCarrierFloor) {
+            out[n] = kAmOutputGain * clamp_float((a / carrier) - 1.0f, -kAmEnvelopeClamp, kAmEnvelopeClamp);
+        } else {
+            out[n] = 0.0f;
+        }
+        carrier += alpha * (a - carrier);
+    }
+    fm->am_carrier = carrier;
+}
+
+int
+dsd_demod_am_active(const struct demod_state* d) {
+    return (d && d->mode_demod == &dsd_am_demod && dsd_demod_analog_monitor_active(d)) ? 1 : 0;
+}
+
+int
+dsd_demod_iq_dc_block_active(const struct demod_state* d) {
+    return (d && d->iq_dc_block_enable && !dsd_demod_am_active(d)) ? 1 : 0;
+}
+
+int
+dsd_demod_iq_balance_active(const struct demod_state* d) {
+    return (d && d->iqbal_enable && !d->cqpsk_enable && !dsd_demod_am_active(d)) ? 1 : 0;
+}
+
 /**
  * @brief Pass-through demodulator: copies low-passed samples to output unchanged.
  *
@@ -1036,10 +1152,11 @@ mean_power(const float* samples, int len, int step) {
     return (float)(energy / (double)(len > 0 ? len : 1));
 }
 
-/* Optional complex DC blocker prior to FM discrimination (per-sample leaky integrator) */
+/* Optional complex DC blocker prior to FM discrimination (per-sample leaky integrator). Never under the AM detector,
+   whose carrier sits at 0 Hz (dsd_demod_iq_dc_block_active()); its estimate then holds where it was. */
 static inline void
 iq_dc_block(struct demod_state* d) {
-    if (!d || !d->iq_dc_block_enable || !d->lowpassed || d->lp_len < 2) {
+    if (!dsd_demod_iq_dc_block_active(d) || !d->lowpassed || d->lp_len < 2) {
         return;
     }
     int k = d->iq_dc_shift;
@@ -1221,9 +1338,12 @@ full_demod_run_non_cqpsk_chain(struct demod_state* d) {
     }
 }
 
+/* Optional I/Q image suppression before the discriminator. Never under the AM detector (dsd_demod_iq_balance_active()):
+   its estimate reads a carrier at 0 Hz, whose I/Q is a fixed phasor, as a full image and subtracts the wanted signal
+   with it; the estimate then holds where it was. */
 static void
 full_demod_apply_iq_balance(struct demod_state* d) {
-    if (!d->iqbal_enable || d->cqpsk_enable || d->channel_squelched || !d->lowpassed || d->lp_len < 2) {
+    if (!dsd_demod_iq_balance_active(d) || d->channel_squelched || !d->lowpassed || d->lp_len < 2) {
         return;
     }
     double s2r = 0.0, s2i = 0.0, p2 = 0.0;
@@ -1344,6 +1464,12 @@ full_demod_run_output_demod(struct demod_state* d) {
     if (d->cqpsk_enable) {
         qpsk_differential_demod(d);
         full_demod_debug_cqpsk_symbols(d);
+    } else if (d->mode_demod == &dsd_am_demod && !dsd_demod_am_active(d)) {
+        /* A typed digital scan row's profile on an AM session: its signal is FM, so the discriminator reads it as under
+           -fA, and the AM detector's carrier estimate is left for the monitor's return (a family switch, which resets
+           it). The audio chain after it is the AM session's, not -fA's: AM runs no de-emphasis, so the row's
+           discriminator output is not de-emphasized, as on a digital open, where -fA's FM monitor de-emphasizes it. */
+        dsd_fm_demod(d);
     } else {
         d->mode_demod(d);
     }

@@ -261,6 +261,46 @@ test_audio_monitor_retune_reset(void) {
     return failed;
 }
 
+/*
+ * A retune while AM runs (issue #524) resets what a retune resets for FM and also puts the AM detector's carrier
+ * estimate back to cold, so the new channel warm-starts from its own level; the detector stays AM with no de-emphasis,
+ * the AM width stays in force at the rate the device settled on, and a width that rate cannot realize is refused as
+ * an NFM one is.
+ */
+static int
+test_am_monitor_retune(void) {
+    int failed = 0;
+    rtl_stream_test_audio_reset_result r;
+    DSD_MEMSET(&r, 0, sizeof r);
+    failed |= expect_int_eq("AM retune hook",
+                            rtl_stream_test_audio_monitor_retune_kind(DSD_ANALOG_DEMOD_AM, 48000, 24000, 0, &r), 0);
+    failed |= expect_int_eq("AM retune accepted", r.retune_refused, 0);
+    failed |= expect_double_near("AM carrier estimate cold after the retune", r.am_carrier, 0.0, kResetTolerance);
+    failed |= expect_double_near("AM retune deemph state reset", r.deemph_avg, 0.0, kResetTolerance);
+    failed |= expect_double_near("AM retune dc state reset", r.dc_avg, 0.0, kResetTolerance);
+    failed |= expect_double_near("AM retune squelch envelope reopened", r.squelch_env, 1.0, kResetTolerance);
+    failed |= expect_int_eq("AM retune channel history cleared", r.channel_hist_cleared, 1);
+    failed |= expect_int_eq("AM retune half-band history cleared", r.hb_hist_cleared, 1);
+    failed |= expect_int_eq("AM retune keeps the AM detector", r.demod_is_am, 1);
+    failed |= expect_int_eq("AM retune keeps the AM kind", r.analog_kind, DSD_ANALOG_DEMOD_AM);
+    failed |= expect_int_eq("AM retune keeps de-emphasis off", r.deemph_after, 0);
+    failed |= expect_int_eq("AM retune keeps the AM default width", r.channel_lpf_width_after,
+                            DSD_ANALOG_AM_WIDTH_DEFAULT_HZ);
+    failed |=
+        expect_int_eq("AM retune publishes the AM width", r.published_width_after, DSD_ANALOG_AM_WIDTH_DEFAULT_HZ);
+    failed |= expect_int_eq("AM retune keeps the channel filter", r.published_lpf_on_after, 1);
+
+    /* 20 kHz runs at 48 kHz but not at 16 kHz (13.2 kHz at most): the retune is refused and the centre kept. */
+    DSD_MEMSET(&r, 0, sizeof r);
+    failed |= expect_int_eq("AM 20 kHz retune hook",
+                            rtl_stream_test_audio_monitor_retune_kind(DSD_ANALOG_DEMOD_AM, 48000, 16000, 20000, &r), 0);
+    failed |= expect_int_eq("AM 20 kHz retune onto 16 kHz refused", r.retune_refused, 1);
+    failed |= expect_int_eq("AM 20 kHz retune keeps the centre", (int)r.center_after, (int)r.center_before);
+    failed |= expect_int_eq("AM 20 kHz retune keeps its width", r.channel_lpf_width_after, 20000);
+    failed |= expect_int_eq("AM 20 kHz retune stays AM", r.demod_is_am, 1);
+    return failed;
+}
+
 /* Last error the stream logged, for the refusal text of a width a new rate cannot realize. */
 static char g_last_error[512];
 
@@ -581,11 +621,25 @@ test_retune_profile_carries_analog_fields(void) {
     failed |= expect_int_eq("explicit width enabled the filter", r.applied_lpf_enable, 1);
     failed |= expect_int_eq("profile for another target left alone", r.other_target_left_alone, 1);
 
+    /* An AM row's retune profile (issue #524) lands on the AM detector at the AM default width. */
+    DSD_MEMSET(&r, 0, sizeof r);
+    failed |= expect_int_eq(
+        "AM analog retune hook",
+        rtl_stream_test_retune_analog_profile(853012500U, DSD_RX_FAMILY_ANALOG, DSD_ANALOG_DEMOD_AM, 0, 0, &r), 0);
+    failed |= expect_int_eq("AM retune profile queued", r.queued_rc, 0);
+    failed |= expect_int_eq("AM retune profile taken", r.taken, 1);
+    failed |= expect_int_eq("AM retune profile carries the kind", r.profile_kind, DSD_ANALOG_DEMOD_AM);
+    failed |= expect_int_eq("AM retune applied the kind", r.applied_kind, DSD_ANALOG_DEMOD_AM);
+    failed |=
+        expect_int_eq("AM retune applied the AM default width", r.applied_width_hz, DSD_ANALOG_AM_WIDTH_DEFAULT_HZ);
+    failed |= expect_int_eq("AM retune leaves the FM discriminator", r.applied_demod_is_fm, 0);
+
+    /* A width outside the AM range is refused before it is queued. */
     DSD_MEMSET(&r, 0, sizeof r);
     failed |= expect_int_eq(
         "refused analog retune hook",
-        rtl_stream_test_retune_analog_profile(853012500U, DSD_RX_FAMILY_ANALOG, DSD_ANALOG_DEMOD_AM, 0, 0, &r), 0);
-    failed |= expect_int_eq("AM retune profile refused", r.queued_rc, -1);
+        rtl_stream_test_retune_analog_profile(853012500U, DSD_RX_FAMILY_ANALOG, DSD_ANALOG_DEMOD_AM, 25000, 0, &r), 0);
+    failed |= expect_int_eq("out-of-range AM retune profile refused", r.queued_rc, -1);
     failed |= expect_int_eq("refused profile not queued", r.taken, 0);
 
     /* A symbol profile queued for the same target first (the documented combined shape) must not pull the analog
@@ -1639,6 +1693,7 @@ main(void) {
                             -1);
 
     failed |= test_audio_monitor_retune_reset();
+    failed |= test_am_monitor_retune();
     failed |= test_audio_monitor_retune_resolves_channel();
     failed |= test_audio_monitor_retune_profile_decides();
     failed |= test_audio_monitor_rate_not_restored_stops();

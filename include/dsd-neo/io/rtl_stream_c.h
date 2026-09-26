@@ -294,11 +294,11 @@ int rtl_stream_request_demod_profile(int cqpsk_enable, int symbol_rate_hz, int l
  * family only when its configured mode is digital, not for a typed digital scan row on an analog session.
  *
  * @param family   dsd_rx_family: DSD_RX_FAMILY_ANALOG or DSD_RX_FAMILY_DIGITAL.
- * @param kind     dsd_analog_demod for the analog family (AM is refused until the front end can demodulate it).
+ * @param kind     dsd_analog_demod for the analog family: FM (the discriminator) or AM (the envelope detector).
  * @param width_hz Explicit analog channel width in Hz, or 0 for the kind's default (ignored for digital).
- * @return 0 when queued or applied; -1 when refused (unknown family/kind, AM, a width outside the kind's range, a
- *         width the running stream's published rate cannot realize, or an explicit width while
- *         DSD_NEO_CHANNEL_LPF=0). A refusal is
+ * @return 0 when queued or applied; -1 when refused (unknown family/kind, a width outside the kind's range, a
+ *         width the running stream's published rate cannot realize (the unset AM default is held to it like an
+ *         explicit width), or, while DSD_NEO_CHANNEL_LPF=0, an explicit width or AM). A refusal is
  *         logged as an error with the validator's text (for a width the rate cannot realize: the width, the DSP rate,
  *         the largest width that rate fits and the DSP bandwidths that would fit), once per kind, width and rate until
  *         an analog request is accepted.
@@ -348,11 +348,14 @@ int rtl_stream_receive_request_outcome(uint32_t seq);
  * @param out_analog_family 1 when the stream stayed on the analog family (a width or kind change on the monitor, or a
  *                          return to the monitor from a symbol profile applied under it), 0 when it stayed on the
  *                          digital family (a switch onto the analog family). May be NULL.
- * @param out_width_hz      The analog width that family runs (0 = the kind's default; meaningful on the analog family
- *                          only). May be NULL.
+ * @param out_width_hz      The configured analog width that family runs, as the request that set it carried it (0 =
+ *                          the kind's default, AM's included, so an explicit 6000 Hz AM width reads 6000 and the unset
+ *                          default 0; meaningful on the analog family only). May be NULL.
+ * @param out_kind          The dsd_analog_demod that family runs (meaningful on the analog family only): the kind
+ *                          before a refused switch between FM and AM. May be NULL.
  * @return 1 when @p seq reads RTL_STREAM_RX_REQUEST_REFUSED, filling the outputs; 0 otherwise, leaving them untouched.
  */
-int rtl_stream_receive_request_refusal(uint32_t seq, int* out_analog_family, int* out_width_hz);
+int rtl_stream_receive_request_refusal(uint32_t seq, int* out_analog_family, int* out_width_hz, int* out_kind);
 
 /**
  * @brief The CQPSK state the RTL front end runs once the receive requests queued so far have applied.

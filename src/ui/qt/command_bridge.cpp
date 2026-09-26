@@ -289,6 +289,11 @@ CommandBridge::setNfmBandwidthHz(int hz) const {
 }
 
 bool
+CommandBridge::setAmBandwidthHz(int hz) const {
+    return accepted(dsd_app_command_set_i32(DSD_APP_CMD_AM_BANDWIDTH_SET, static_cast<int32_t>(hz)));
+}
+
+bool
 CommandBridge::setAirspy(const QString& key, const QString& value) const {
     const QByteArray k = (QStringLiteral("airspy_") + key).toUtf8();
     const QByteArray v = value.toUtf8();

@@ -5,15 +5,17 @@
 
 /**
  * @file
- * @brief Frontend-neutral analog channel width readout: the width in force under the configured analog preset,
- * whether the DSP rate bounds it, and the configured width the controls edit (issue #525).
+ * @brief Frontend-neutral analog channel width readout: the width in force under the configured analog preset (NFM,
+ * issue #525, or AM, issue #524), whether the DSP rate bounds it, and the configured width the controls edit.
  *
  * The analog preset is the configured one (dsd_scan_mode_configured_view()): a typed digital scan row on an analog
  * session does not end it, and the row's leave returns to the configured width. The M17 encoder rides the monitor
  * output without being the analog receiver, so it has no width. While a running stream's options in force run the
- * analog family on the monitor output, the width in force is the one the front end reports, flagged when the DSP rate
- * rather than the channel filter bounds it; otherwise (no stream, a typed digital row filtering with its own profile)
- * it is the configured width, the kind's default when none is set. An unset NFM default reads as what the monitor
+ * analog family on the monitor output with the configured kind, the width in force is the one the front end reports,
+ * flagged when the DSP rate rather than the channel filter bounds it; otherwise (no stream, a typed digital row
+ * filtering with its own profile, an FM <-> AM switch that has not landed yet) it is the configured width, the kind's
+ * default when none is set. The unset AM default is its 6 kHz filter, which no DSP rate limits: a rate that cannot
+ * filter it is refused rather than run without it. An unset NFM default reads as what the monitor
  * runs at the DSP rate it returns to: where no channel filter runs there, the rate itself, and where the filter runs
  * but the rate cannot realize the default, the passband of the legacy WIDE plan that runs instead
  * (dsd_channel_lpf_legacy_wide_width_hz()), both DSP-limited. Whether the filter runs is the running stream's own
@@ -60,7 +62,8 @@ typedef struct {
     int width_hz;         /**< The width in force; 0 when neither shown nor under an analog row, or on PCM input. */
     int configured_hz;    /**< The configured width, 0 for the default: what the controls edit and a save writes. */
     int max_hz;           /**< The widest width the DSP rate filters (the running stream's demod rate, else the
-                               rate the RTL DSP bandwidth sets); 0 when not known. */
+                               rate the RTL DSP bandwidth sets), under any preset on a radio input; 0 when not
+                               known. */
     int row_hz;           /**< The scan row's own width while row_override is set, else 0. */
     uint8_t shown;        /**< 1 under the configured analog preset (never for the M17 encoder's monitor). */
     uint8_t radio_input;  /**< 1 on a radio input, where the width is a channel filter; 0 on PCM input. */
@@ -83,6 +86,31 @@ typedef struct {
  */
 int dsd_app_analog_width_view_get(const dsd_opts* opts, const dsd_state* state, const dsd_frontend_metrics* metrics,
                                   dsd_app_analog_width_view* out);
+
+/**
+ * @brief The channel width of analog @p kind (dsd_analog_demod) in @p opts, in Hz; 0 for its default.
+ *
+ * Whichever preset runs: the NFM width for DSD_ANALOG_DEMOD_FM, the AM width for DSD_ANALOG_DEMOD_AM. Outside a scan
+ * scope, and while one is suspended, it is the setting the width commands edit and a save writes; under a live scan row
+ * dsd_opts holds the options in force, a row's own width (issue #526) included, and the configured width is
+ * dsd_scan_mode_configured_analog_width()'s. 0 when @p opts is NULL.
+ */
+int dsd_app_analog_width_setting_hz(const dsd_opts* opts, int kind);
+
+/**
+ * @brief Whether the controls offer the configured channel width of analog @p kind (dsd_analog_demod) for editing.
+ *
+ * On a radio input only, where the width is a channel filter (@p view from dsd_app_analog_width_view_get() for the same
+ * @p opts and @p state): the width of the configured preset's kind, whatever an analog scan row on air runs meanwhile,
+ * and the kind that row runs (issue #526); the other kind's (under a digital preset, both) while an explicit configured
+ * width of it is set (dsd_scan_mode_configured_analog_width()), since a switch to that kind is held to it; and AM's
+ * unset default where the DSP rate (@c max_hz) cannot filter its 6 kHz channel but filters a narrower AM width, since a
+ * switch to AM is refused there with word to narrow the width. The unset NFM default is never refused for its rate.
+ * The terminal's width rows and the Qt/Android Radio sheet offer their controls by this. @p state may be NULL (no scan
+ * scope). Returns 1 or 0 (0 for a NULL @p opts or @p view, or an invalid kind).
+ */
+int dsd_app_analog_width_offered(const dsd_opts* opts, const dsd_state* state, const dsd_app_analog_width_view* view,
+                                 int kind);
 
 /**
  * @brief Render the width in force: "12.5 kHz", "16 kHz (default)" when the configured width is the default,

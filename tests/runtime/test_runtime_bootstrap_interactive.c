@@ -85,6 +85,18 @@ dsd_apply_decode_mode_preset(dsdneoUserDecodeMode mode, dsdDecodePresetProfile p
     return 0;
 }
 
+/* The shared pre-open rule (RUNTIME_DECODE_MODE tests it) stands in here for the input specs the wizard writes: it
+   records the input it was asked about, so a case can tell the wizard asked about the source it configured. */
+static char g_iq_asked_dev[sizeof(((dsd_opts*)0)->audio_in_dev)];
+static int g_iq_asked_calls;
+
+int
+dsd_decode_mode_input_spec_is_iq(const dsd_opts* opts) {
+    ++g_iq_asked_calls;
+    DSD_SNPRINTF(g_iq_asked_dev, sizeof g_iq_asked_dev, "%s", opts ? opts->audio_in_dev : "");
+    return opts && (strncmp(opts->audio_in_dev, "rtl:", 4) == 0 || strncmp(opts->audio_in_dev, "rtltcp:", 7) == 0);
+}
+
 void
 dsd_bootstrap_choose_audio_input(dsd_opts* opts) {
     ++g_audio_input_calls;
@@ -285,6 +297,118 @@ test_rtltcp_trunking_imports_group_allow_list_and_null_output(void) {
     return rc;
 }
 
+/* AM (issue #524) is offered for the I/Q sources: on PulseAudio it is refused with the reason and asked again, here
+ * answered with DMR; on an RTL-SDR source it is taken. */
+static int
+test_am_entry_needs_an_iq_source(void) {
+    int rc = 0;
+    static dsd_opts opts;
+    static dsd_state state;
+
+    reset_harness();
+    DSD_MEMSET(&opts, 0, sizeof opts);
+    DSD_MEMSET(&state, 0, sizeof state);
+    g_iq_asked_calls = 0;
+    rc |= with_stdin_text("\n15\n4\n\n", dsd_bootstrap_interactive, &opts, &state);
+    rc |= expect_int("pulse-am-refused-then-dmr", g_last_decode_mode, DSDCFG_MODE_DMR);
+    rc |= expect_int("pulse-am-asked-the-shared-rule", g_iq_asked_calls, 1);
+    rc |= expect_str("pulse-am-asked-about-the-chosen-input", g_iq_asked_dev, "pulse:stub-input");
+
+    reset_harness();
+    DSD_MEMSET(&opts, 0, sizeof opts);
+    DSD_MEMSET(&state, 0, sizeof state);
+    const char* rtl = "2\n"
+                      "118.1M\n"
+                      "0\n"
+                      "22\n"
+                      "0\n"
+                      "48\n"
+                      "0\n"
+                      "1\n"
+                      "15\n"
+                      "n\n"
+                      "n\n"
+                      "n\n";
+    rc |= with_stdin_text(rtl, dsd_bootstrap_interactive, &opts, &state);
+    rc |= expect_str("rtl-am-audio-in", opts.audio_in_dev, "rtl:0:118.1M:22:0:48:0:1");
+    rc |= expect_int("rtl-am-decode-mode", g_last_decode_mode, DSDCFG_MODE_AM);
+    rc |= expect_int("rtl-am-decode-profile", g_last_decode_profile, DSD_DECODE_PRESET_PROFILE_INTERACTIVE);
+
+    /* The wizard asks the rule the CLI applies (dsd_decode_mode_input_spec_is_iq()) about the input it configured:
+     * an rtl_tcp source with no centre frequency given takes AM; a TCP audio source does not. */
+    reset_harness();
+    DSD_MEMSET(&opts, 0, sizeof opts);
+    DSD_MEMSET(&state, 0, sizeof state);
+    rc |= with_stdin_text("3\n\n\n\n15\nn\nn\nn\n", dsd_bootstrap_interactive, &opts, &state);
+    rc |= expect_str("rtltcp-am-audio-in", opts.audio_in_dev, "rtltcp:127.0.0.1:1234");
+    rc |= expect_str("rtltcp-am-asked-about-the-configured-input", g_iq_asked_dev, "rtltcp:127.0.0.1:1234");
+    rc |= expect_int("rtltcp-am-decode-mode", g_last_decode_mode, DSDCFG_MODE_AM);
+
+    reset_harness();
+    DSD_MEMSET(&opts, 0, sizeof opts);
+    DSD_MEMSET(&state, 0, sizeof state);
+    rc |= with_stdin_text("5\n\n\n15\n4\nn\nn\nn\n", dsd_bootstrap_interactive, &opts, &state);
+    rc |= expect_str("tcp-am-audio-in", opts.audio_in_dev, "tcp:127.0.0.1:7355");
+    rc |= expect_int("tcp-am-refused-then-dmr", g_last_decode_mode, DSDCFG_MODE_DMR);
+    return rc;
+}
+
+/* AM's channel has to fit the DSP bandwidth the source runs at (issue #524), which startup holds it to before the device
+ * opens. At 4 or 6 kHz no AM width fits, so the pick is refused and asked again, here answered with Analog; at 8 kHz
+ * the 6 kHz default fits. A configured AM width is held the same way, and a bandwidth startup does not run (5) runs at
+ * 48 kHz, where AM fits. The bandwidth the wizard read stays in the options with the spec it wrote. */
+typedef struct {
+    const char* tag;
+    const char* script;
+    int am_width_hz;
+    int want_bw_khz;
+    dsdneoUserDecodeMode want_mode;
+} am_bandwidth_case;
+
+static int
+test_am_entry_needs_a_dsp_bandwidth_that_fits(void) {
+    static const am_bandwidth_case cases[] = {
+        {"rtl-6k-default-refused", "2\n118.1M\n0\n22\n0\n6\n0\n1\n15\n14\nn\nn\nn\n", 0, 6, DSDCFG_MODE_ANALOG},
+        {"rtl-8k-default-taken", "2\n118.1M\n0\n22\n0\n8\n0\n1\n15\nn\nn\nn\n", 0, 8, DSDCFG_MODE_AM},
+        {"rtltcp-4k-default-refused", "3\n\n\n118.1M\n22\n0\n4\n0\n1\n15\n14\nn\nn\nn\n", 0, 4, DSDCFG_MODE_ANALOG},
+        {"rtl-12k-10k-width-refused", "2\n118.1M\n0\n22\n0\n12\n0\n1\n15\n14\nn\nn\nn\n", 10000, 12,
+         DSDCFG_MODE_ANALOG},
+        {"rtl-16k-10k-width-taken", "2\n118.1M\n0\n22\n0\n16\n0\n1\n15\nn\nn\nn\n", 10000, 16, DSDCFG_MODE_AM},
+        {"rtl-unsupported-5k-runs-at-48k", "2\n118.1M\n0\n22\n0\n5\n0\n1\n15\nn\nn\nn\n", 0, 48, DSDCFG_MODE_AM},
+    };
+    int rc = 0;
+    static dsd_opts opts;
+    static dsd_state state;
+    char tag[96];
+
+    for (size_t i = 0; i < sizeof cases / sizeof cases[0]; i++) {
+        reset_harness();
+        DSD_MEMSET(&opts, 0, sizeof opts);
+        DSD_MEMSET(&state, 0, sizeof state);
+        opts.rtl_dsp_bw_khz = 48;
+        opts.analog_am_bandwidth_hz = cases[i].am_width_hz;
+        g_iq_asked_calls = 0;
+        rc |= with_stdin_text(cases[i].script, dsd_bootstrap_interactive, &opts, &state);
+        DSD_SNPRINTF(tag, sizeof tag, "%s-decode-mode", cases[i].tag);
+        rc |= expect_int(tag, g_last_decode_mode, cases[i].want_mode);
+        DSD_SNPRINTF(tag, sizeof tag, "%s-dsp-bw", cases[i].tag);
+        rc |= expect_int(tag, opts.rtl_dsp_bw_khz, cases[i].want_bw_khz);
+        DSD_SNPRINTF(tag, sizeof tag, "%s-asked-about-the-input", cases[i].tag);
+        rc |= expect_int(tag, g_iq_asked_calls, 1);
+    }
+
+    /* An rtl_tcp source given no centre frequency keeps the DSP bandwidth the options hold, and AM is held to it. */
+    reset_harness();
+    DSD_MEMSET(&opts, 0, sizeof opts);
+    DSD_MEMSET(&state, 0, sizeof state);
+    opts.rtl_dsp_bw_khz = 6;
+    rc |= with_stdin_text("3\n\n\n\n15\n14\nn\nn\nn\n", dsd_bootstrap_interactive, &opts, &state);
+    rc |= expect_str("rtltcp-no-freq-audio-in", opts.audio_in_dev, "rtltcp:127.0.0.1:1234");
+    rc |= expect_int("rtltcp-no-freq-6k-refused", g_last_decode_mode, DSDCFG_MODE_ANALOG);
+    rc |= expect_int("rtltcp-no-freq-keeps-dsp-bw", opts.rtl_dsp_bw_khz, 6);
+    return rc;
+}
+
 static int
 test_tcp_trunking_enables_default_rigctl_and_skips_missing_csv(void) {
     int rc = 0;
@@ -416,6 +540,7 @@ test_rtl_input_formats_clamped_radio_options(void) {
 
     rc |= with_stdin_text(input, dsd_bootstrap_interactive, &opts, &state);
     rc |= expect_str("rtl-clamped-audio-in", opts.audio_in_dev, "rtl:255:851.375M:0:200:4:-1000:3");
+    rc |= expect_int("rtl-clamped-dsp-bw", opts.rtl_dsp_bw_khz, 4);
     rc |= expect_int("rtl-decode-mode", g_last_decode_mode, DSDCFG_MODE_ANALOG);
     rc |= expect_str("rtl-output-left-empty", opts.audio_out_dev, "");
     rc |= expect_int("rtl-ncurses-disabled", opts.frontend_kind, DSD_FRONTEND_NONE);
@@ -540,6 +665,8 @@ main(void) {
     rc |= test_pulse_defaults_apply_decode_and_ncurses();
     rc |= test_rtltcp_trunking_imports_group_allow_list_and_null_output();
     rc |= test_tcp_trunking_enables_default_rigctl_and_skips_missing_csv();
+    rc |= test_am_entry_needs_an_iq_source();
+    rc |= test_am_entry_needs_a_dsp_bandwidth_that_fits();
     rc |= test_udp_eof_uses_socket_defaults_and_default_pulse_output();
     rc |= test_file_input_applies_clamped_low_sample_rate();
     rc |= test_empty_file_path_falls_back_to_pulse_devices();

@@ -47,6 +47,66 @@ void low_pass_real(struct demod_state* s);
  */
 void dsd_fm_demod(struct demod_state* fm);
 
+/* AM envelope detector design (issue #524). The carrier estimate is a one-pole average of |z| with this time constant
+   in milliseconds, recomputed for the rate the detector runs at. */
+#define DSD_AM_CARRIER_TAU_MS  50
+
+/* A channel squelch that stays closed longer than this, in milliseconds, ends the transmission the carrier estimate
+   was tracking: the next unsquelched block warm-starts it, as after a reset, since what opens the squelch next is
+   usually another station at another level. A shorter closure (a fade) keeps the estimate. Twice the carrier time
+   constant, so a dip the estimate would not have forgotten anyway is not treated as a new station. */
+#define DSD_AM_CARRIER_HOLD_MS (2 * DSD_AM_CARRIER_TAU_MS)
+
+/**
+ * AM envelope detector on interleaved low-passed I/Q (issue #524).
+ *
+ * Output is 0.25 x clamp(|z| / C - 1, -2, 2), where C is the carrier estimate held in `am_carrier`: a one-pole average
+ * of |z| with a DSD_AM_CARRIER_TAU_MS time constant. Dividing by the carrier makes the level the modulation depth,
+ * whatever the RF level or input scaling (100% modulation peaks at 0.25, as live FM does at about 6 kHz deviation), so
+ * the RTL output scale is not applied to it. The envelope has no phase, so a carrier offset inside the channel changes
+ * nothing. A block the channel squelch zeroed (`channel_squelched`) is silence and leaves C where it was; once the
+ * squelch has been closed for longer than DSD_AM_CARRIER_HOLD_MS (`am_squelched_samples`), the next unsquelched block
+ * starts C over. C at 0 (a reset) is warm-started from the block's mean magnitude; with no carrier at all the output
+ * is silence.
+ *
+ * @param fm Demodulator state (uses lowpassed as input, writes to result, updates am_carrier and am_squelched_samples).
+ */
+void dsd_am_demod(struct demod_state* fm);
+
+/**
+ * Whether the AM envelope detector demodulates the monitor audio: the analog family's AM kind installed it and the
+ * monitor runs on its own channel (dsd_demod_analog_monitor_active()). A typed digital scan row's profile on an AM
+ * session is FM-demodulated instead, as under the FM monitor, so it reads 0 there; the AM session's de-emphasis (none)
+ * still applies to it, where the FM monitor's de-emphasizes it.
+ *
+ * @param d Demodulator state; NULL reads as not AM.
+ * @return 1 when the AM detector produces the monitor audio, else 0.
+ */
+int dsd_demod_am_active(const struct demod_state* d);
+
+/**
+ * Whether the complex I/Q DC blocker runs on the next block.
+ *
+ * It runs when enabled (`iq_dc_block_enable`), except under the AM detector: AM keeps its carrier at 0 Hz after
+ * tuning (centred I/Q, offset tuning), where the blocker would remove it. The setting itself is kept.
+ *
+ * @param d Demodulator state; NULL reads as not running.
+ * @return 1 when the blocker runs, else 0.
+ */
+int dsd_demod_iq_dc_block_active(const struct demod_state* d);
+
+/**
+ * Whether the I/Q balance (image suppression) correction runs on the next block.
+ *
+ * It runs when enabled (`iqbal_enable`) and CQPSK is off, except under the AM detector: its image estimate reads an AM
+ * carrier at 0 Hz after tuning, whose I/Q is a fixed phasor, as a full image and would subtract the wanted carrier and
+ * sidebands with it. The setting itself is kept.
+ *
+ * @param d Demodulator state; NULL reads as not running.
+ * @return 1 when the correction runs, else 0.
+ */
+int dsd_demod_iq_balance_active(const struct demod_state* d);
+
 /**
  * Pass-through demodulator: copies low-passed samples to output unchanged.
  *

@@ -330,6 +330,41 @@ scan_settings_fields_equal(const dsd_scan_settings* a, const dsd_scan_settings* 
     return 1;
 }
 
+/* Whether @p settings filter with the configured channel width of analog kind @p kind: only the analog family does, and
+ * only with the width of the analog kind it runs (dsd_scan_settings::analog_demod). A digital row runs its own channel
+ * profile, and the other kind's width filters nothing until a switch to that kind, so either width edited where it is
+ * not in force (the width command, a config apply) is no acquisition change there (issue #524). */
+static int
+scan_settings_width_in_force(const dsd_scan_settings* settings, int kind) {
+    return settings->analog_only == 1
+           && (settings->analog_demod == DSD_ANALOG_DEMOD_AM) == (kind == DSD_ANALOG_DEMOD_AM);
+}
+
+/* The channel width in force equal in @p a and @p b, whose analog_demod the caller has already found equal. */
+static int
+scan_settings_width_in_force_equal(const dsd_scan_settings* a, const dsd_scan_settings* b) {
+    if (scan_settings_width_in_force(a, DSD_ANALOG_DEMOD_AM)) {
+        return a->analog_am_bandwidth_hz == b->analog_am_bandwidth_hz;
+    }
+    if (scan_settings_width_in_force(a, DSD_ANALOG_DEMOD_FM)) {
+        return a->analog_nfm_bandwidth_hz == b->analog_nfm_bandwidth_hz;
+    }
+    return 1;
+}
+
+/* The configured channel widths @p src does not run (scan_settings_width_in_force()) into @p dst: configuration a
+ * command may have edited, which the row keeps as edited rather than put back, since dsd_scan_settings_equal() never
+ * compared them. */
+static void
+scan_settings_copy_idle_widths(dsd_scan_settings* dst, const dsd_scan_settings* src) {
+    if (!scan_settings_width_in_force(src, DSD_ANALOG_DEMOD_FM)) {
+        dst->analog_nfm_bandwidth_hz = src->analog_nfm_bandwidth_hz;
+    }
+    if (!scan_settings_width_in_force(src, DSD_ANALOG_DEMOD_AM)) {
+        dst->analog_am_bandwidth_hz = src->analog_am_bandwidth_hz;
+    }
+}
+
 int
 dsd_scan_settings_equal(const dsd_scan_settings* a, const dsd_scan_settings* b, int include_timing) {
     /* Explicit membership, independent of struct order and padding. */
@@ -366,12 +401,6 @@ dsd_scan_settings_equal(const dsd_scan_settings* a, const dsd_scan_settings* b, 
         offsetof(dsd_scan_settings, monitor_input_audio),
         offsetof(dsd_scan_settings, analog_demod),
     };
-    /* The channel widths filter only the analog family: a digital row runs its own channel profile, so a configured
-     * width edited under it (the width command, a config apply) is no acquisition change there. */
-    static const size_t analog[] = {
-        offsetof(dsd_scan_settings, analog_nfm_bandwidth_hz),
-        offsetof(dsd_scan_settings, analog_am_bandwidth_hz),
-    };
     static const size_t timing[] = {
         offsetof(dsd_scan_settings, state_rf_mod),       offsetof(dsd_scan_settings, state_samplesPerSymbol),
         offsetof(dsd_scan_settings, state_symbolCenter), offsetof(dsd_scan_settings, state_dmr_stereo),
@@ -381,7 +410,7 @@ dsd_scan_settings_equal(const dsd_scan_settings* a, const dsd_scan_settings* b, 
         return 0;
     }
     return scan_settings_fields_equal(a, b, options, sizeof(options) / sizeof(options[0]))
-           && (a->analog_only != 1 || scan_settings_fields_equal(a, b, analog, sizeof(analog) / sizeof(analog[0])))
+           && scan_settings_width_in_force_equal(a, b)
            && strncmp(a->output_name, b->output_name, sizeof(a->output_name)) == 0
            && (!include_timing || scan_settings_fields_equal(a, b, timing, sizeof(timing) / sizeof(timing[0])));
 }
@@ -816,11 +845,13 @@ dsd_scan_mode_resume(dsd_opts* opts, dsd_state* state) {
     }
     dsd_scan_settings effective;
     dsd_scan_settings_capture(opts, state, &effective);
-    /* Monitoring is audio routing, and the row-scoped options are policy (forcing, CRC,
-     * mutes, voice gate, group file). Fold both into the restored effective values
-     * without treating them as an acquisition change or replacing live timing. */
+    /* Monitoring is audio routing, the row-scoped options are policy (forcing, CRC,
+     * mutes, voice gate, group file), and a channel width the row does not filter with is
+     * configuration. Fold them into the restored effective values without treating them as
+     * an acquisition change or replacing live timing. */
     scope->effective.monitor_input_audio = opts->monitor_input_audio;
     scan_settings_copy_row_opts(&scope->effective, &effective);
+    scan_settings_copy_idle_widths(&scope->effective, &effective);
     const int unchanged = dsd_scan_settings_equal(&scope->effective, &effective, 0);
     if (unchanged) {
         dsd_scan_settings_restore(&scope->effective, opts, state);
@@ -916,20 +947,35 @@ dsd_scan_mode_set_configured_squelch(dsd_opts* opts, const dsd_state* state, dou
 }
 
 int
-dsd_scan_mode_set_configured_nfm_bandwidth(dsd_opts* opts, const dsd_state* state, int width_hz) {
+dsd_scan_mode_set_configured_analog_width(dsd_opts* opts, const dsd_state* state, int kind, int width_hz) {
     if (!opts) {
         return -1;
     }
+    const int am = kind == DSD_ANALOG_DEMOD_AM;
     scan_scope* scope = state ? scan_scope_get(state) : NULL;
     /* Suspended or absent, dsd_opts holds the configured values and resume recaptures them. */
     if (scope && !scope->suspended) {
-        scope->configured.analog_nfm_bandwidth_hz = width_hz;
-        if (scope->options.present & DSD_SCAN_OPT_BANDWIDTH) {
+        if (am) {
+            scope->configured.analog_am_bandwidth_hz = width_hz;
+        } else {
+            scope->configured.analog_nfm_bandwidth_hz = width_hz;
+        }
+        /* Only an nfm row parses a width (scan_option_apply_bandwidth()), so a row width shadows the NFM one. */
+        if (!am && (scope->options.present & DSD_SCAN_OPT_BANDWIDTH)) {
             return 0;
         }
     }
-    opts->analog_nfm_bandwidth_hz = width_hz;
+    if (am) {
+        opts->analog_am_bandwidth_hz = width_hz;
+    } else {
+        opts->analog_nfm_bandwidth_hz = width_hz;
+    }
     return 1;
+}
+
+int
+dsd_scan_mode_set_configured_nfm_bandwidth(dsd_opts* opts, const dsd_state* state, int width_hz) {
+    return dsd_scan_mode_set_configured_analog_width(opts, state, DSD_ANALOG_DEMOD_FM, width_hz);
 }
 
 int

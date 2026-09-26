@@ -71,22 +71,32 @@ analog_width_view_take_default_rate(int rate_hz, int lpf_default, dsd_app_analog
     out->dsp_limited = 1U;
 }
 
-/* With no stream running, the rate the next start runs at, where the RTL DSP bandwidth sets it, bounds the widths the
-   controls offer, and an unset NFM default reads as what that start publishes. */
+/* The DSP rate the widths are held to: the running stream's demod rate, or with none the rate the next start runs at,
+   where the RTL DSP bandwidth sets it; 0 when not known. */
+static int
+analog_width_view_rate_hz(const dsd_opts* opts, const dsd_frontend_metrics* metrics) {
+    if (metrics && metrics->stream_active) {
+        return metrics->demod_rate_hz;
+    }
+    return dsd_app_analog_rtl_bw_rate_hz(opts->audio_in_dev, opts->audio_in_type, opts->rtl_dsp_bw_khz);
+}
+
+/* With no stream running, an unset NFM default reads as what the next start publishes at the rate the RTL DSP
+   bandwidth sets. */
 static void
 analog_width_view_take_rtl_rate(const dsd_opts* opts, dsd_app_analog_width_view* out) {
     const int rate_hz = dsd_app_analog_rtl_bw_rate_hz(opts->audio_in_dev, opts->audio_in_type, opts->rtl_dsp_bw_khz);
     if (rate_hz <= 0) {
         return;
     }
-    out->max_hz = dsd_analog_width_max_for_rate(rate_hz);
     analog_width_view_take_default_rate(rate_hz, DSD_FRONTEND_CHANNEL_LPF_DEFAULT_UNKNOWN, out);
 }
 
-/* The front end's width is the channel in force only while it runs the monitor for the analog family the options in
-   force select. Its mirror outlives a stopped stream, and under a typed digital row (or CQPSK toggled on under -fA)
-   it describes that profile's channel; the width in force is then the one the monitor returns to at the running demod
-   rate (analog_width_view_take_default_rate() for the unset default, with the stream's own filter decision). */
+/* The front end's width is the channel in force only while it runs the monitor for the analog family and kind the
+   options in force select. Its mirror outlives a stopped stream, under a typed digital row (or CQPSK toggled on under
+   -fA) it describes that profile's channel, and across an FM <-> AM switch that has not landed yet it is the other
+   kind's (channel_analog_kind); the width in force is then the one the monitor returns to at the running demod rate
+   (analog_width_view_take_default_rate() for the unset default, with the stream's own filter decision). */
 static void
 analog_width_view_take_front_end(const dsd_opts* opts, const dsd_frontend_metrics* metrics,
                                  dsd_app_analog_width_view* out) {
@@ -94,9 +104,8 @@ analog_width_view_take_front_end(const dsd_opts* opts, const dsd_frontend_metric
         analog_width_view_take_rtl_rate(opts, out);
         return;
     }
-    out->max_hz = metrics->demod_rate_hz > 0 ? dsd_analog_width_max_for_rate(metrics->demod_rate_hz) : 0;
     if (dsd_opts_is_analog_family(opts) && metrics->output_kind == DSD_FRONTEND_RTL_OUTPUT_AUDIO_MONITOR
-        && metrics->channel_bandwidth_hz > 0) {
+        && metrics->channel_bandwidth_hz > 0 && metrics->channel_analog_kind == out->kind) {
         out->width_hz = metrics->channel_bandwidth_hz;
         out->dsp_limited = metrics->channel_bandwidth_dsp_limited ? 1U : 0U;
         return;
@@ -138,12 +147,51 @@ dsd_app_analog_width_view_get(const dsd_opts* opts, const dsd_state* state, cons
     analog_width_view_take_row(opts, state, out);
     out->configured_hz = dsd_scan_mode_configured_analog_width(opts, state, out->kind);
     out->radio_input = dsd_opts_input_is_radio(opts) ? 1U : 0U;
-    if ((!out->shown && !out->row_analog) || !out->radio_input) {
+    if (!out->radio_input) {
+        return 0;
+    }
+    /* The bound on the widths offered holds under any preset: a width set outside its kind is held to it at the
+       switch. */
+    const int rate_hz = analog_width_view_rate_hz(opts, metrics);
+    out->max_hz = rate_hz > 0 ? dsd_analog_width_max_for_rate(rate_hz) : 0;
+    if (!out->shown && !out->row_analog) {
         return 0;
     }
     out->width_hz = out->row_override ? out->row_hz : dsd_analog_width_effective_hz(out->kind, out->configured_hz);
     analog_width_view_take_front_end(opts, metrics, out);
     return 0;
+}
+
+int
+dsd_app_analog_width_setting_hz(const dsd_opts* opts, int kind) {
+    if (!opts) {
+        return 0;
+    }
+    return (kind == DSD_ANALOG_DEMOD_AM) ? opts->analog_am_bandwidth_hz : opts->analog_nfm_bandwidth_hz;
+}
+
+int
+dsd_app_analog_width_offered(const dsd_opts* opts, const dsd_state* state, const dsd_app_analog_width_view* view,
+                             int kind) {
+    if (!opts || !view || !view->radio_input || !dsd_analog_demod_is_valid(kind)) {
+        return 0;
+    }
+    /* The configured preset's kind stays editable while an analog scan row on air runs another (an nfm row on an AM
+       session, issue #526), and the row's kind is offered on any session. */
+    const dsd_scan_settings* configured = dsd_scan_mode_configured_view(state);
+    const int preset_kind = configured ? configured->analog_demod : opts->analog_demod;
+    if ((view->shown && preset_kind == kind) || (view->row_analog && view->kind == kind)
+        || dsd_scan_mode_configured_analog_width(opts, state, kind) > 0) {
+        return 1;
+    }
+    /* The unset AM default is its 6 kHz filter, held to the rate as an explicit width is (the unset NFM default runs
+       at any rate). Where the rate cannot filter it but filters a narrower AM width, a switch to AM is refused with
+       word to narrow the width, which has to be possible before the switch. */
+    const int default_hz = dsd_analog_width_default_hz(kind);
+    return (kind == DSD_ANALOG_DEMOD_AM && view->max_hz > 0 && default_hz > view->max_hz
+            && dsd_analog_width_min_hz(kind) <= view->max_hz)
+               ? 1
+               : 0;
 }
 
 int

@@ -489,7 +489,8 @@ struct dsd_analog_rx_publication {
     /** 1 while a carrier is open, held through the 200 ms hangover. On stdin, UDP and TCP input
      * and on a live radio stream the tap cannot clear it while no samples arrive, so a reader of
      * carrier_open or tone_state must also honour stale_after_ms, as dsd_app_rx_tone_view()
-     * does. */
+     * does. Kept on the AM monitor too, where no detection runs and tone_state stays INACTIVE
+     * (issue #524). */
     int carrier_open;
     int tone_kind;       /**< dsd_analog_tone_kind; NONE unless tone_state is LOCKED */
     int tone_state;      /**< dsd_analog_tone_state */

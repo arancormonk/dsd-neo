@@ -197,13 +197,13 @@ void svc_set_scan_voice_hold_ms(dsd_opts* opts, int ms);
  * served by the trunk tuning hook, which stages a profile with the retune, and
  * a second request from here would fight it.
  *
- * Options in force that run the -fA preset get the analog profile instead, with
- * the configured kind and width, which is what moves a digital front end onto
- * the monitor. An explicit width can be refused there only when a retune moved
- * the demod rate after the caller checked it: at once, which the -1 returned
- * says, or where it lands, which svc_take_monitor_request_outcome() reports.
- * Either way the front end keeps its receive profile, and the caller puts the
- * decoder back to match.
+ * Options in force that run an analog preset (-fA, -fM) get the analog profile
+ * instead, with the configured kind and width, which is what moves a digital
+ * front end onto the monitor. An explicit width, or the AM default, can be
+ * refused there only when a retune moved the demod rate after the caller checked
+ * it: at once, which the -1 returned says, or where it lands, which
+ * svc_take_monitor_request_outcome() reports. Either way the front end keeps its
+ * receive profile, and the caller puts the decoder back to match.
  *
  * @return -1 when the front end refused the analog profile requested here at the
  *         rate it publishes now; 0 otherwise.
@@ -211,10 +211,11 @@ void svc_set_scan_voice_hold_ms(dsd_opts* opts, int ms);
 int svc_publish_symbol_profile(const dsd_opts* opts, dsd_state* state, dsd_decode_mode_profile profile);
 
 /**
- * @brief svc_publish_symbol_profile() for a caller whose change also moved the NFM width the options in force run: a
- * scoped command resuming a scan row that takes the configured width (issue #526), with @p configured_before_hz the
- * configured width from before the change (-1: none). The analog monitor request keeps it, as svc_publish_nfm_bandwidth()
- * does, so a refusal where the request lands puts the configured width back (svc_restore_nfm_width()).
+ * @brief svc_publish_symbol_profile() for a caller whose change also moved the analog width the options in force run:
+ * a scoped command resuming a scan row that takes the configured width (issue #526), with @p configured_before_hz the
+ * configured width of the analog kind in force from before the change (-1: none). The analog monitor request keeps it,
+ * as svc_publish_analog_bandwidth() does, so a refusal where the request lands puts the configured width back
+ * (svc_restore_analog_width()).
  *
  * @return As svc_publish_symbol_profile().
  */
@@ -225,8 +226,9 @@ int svc_publish_symbol_profile_changing_width(const dsd_opts* opts, dsd_state* s
  * @brief Ask a running RTL front end, before a decode-mode change commits, whether it takes the receive profile
  * @p mode will publish.
  *
- * Only a mode that moves the front end onto the analog family can be refused (an analog width the running demod rate
- * cannot realize, for one): rtl_stream_check_analog_profile() holds it to the running stream's rate and logs a
+ * Only a mode that moves the front end onto the analog family or to another analog kind (Analog, AM) can be refused (an
+ * analog width the running demod rate cannot realize, for one): rtl_stream_check_analog_profile() holds the profile the
+ * preset selects, with its configured width, to the running stream's rate and logs a
  * refusal with the validator's text. A caller that gets -1 leaves the decoder's mode as it was, so the decoder and the
  * front end agree about the family. The request svc_publish_symbol_profile() makes once the caller has committed is
  * held to the same rules again, at the rate the stream runs when it is made and when it lands: only a retune that
@@ -252,52 +254,60 @@ int svc_check_mode_receive_profile(const dsd_opts* opts, const dsd_state* state,
 void svc_note_digital_decode_modes(const dsd_opts* opts, const dsd_state* state);
 
 /**
- * @brief Check an NFM channel width against the receive front end it would run on, before anything changes.
+ * @brief Check a channel width of analog @p kind (dsd_analog_demod) against the receive front end it would run on,
+ * before anything changes.
  *
- * @p width_hz is the full RF channel-filter width in Hz, or 0 for the default (runtime/analog_channel.h). A width
- * outside 8000..25000 Hz is refused, and so is an explicit width on a radio input while DSD_NEO_CHANNEL_LPF=0 turns the
- * channel filter off (dsd_analog_channel_lpf_off_check()), at any rate. On PCM input no channel filter runs, so the
- * width is only stored there (a switch to a radio input holds it). An explicit width is also held to the DSP rate it
- * would run at: with a running RTL-family stream, the front end's own check at its published demod rate
- * (rtl_stream_check_analog_profile(), which also logs a refusal with the validator's text); without one, the rate an
- * RTL-SDR or rtl_tcp input's DSP bandwidth (rtl_dsp_bw_khz) gives. Other inputs are checked by their next stream start,
- * against the rate the device delivers. The unset default is never refused. Callers decide whether the width is in
- * use; this only says whether the front end would take it. A rate refusal's reason names the width, the rate, the
- * widest width that rate filters and the fix (svc_describe_nfm_refusal()). The validator's full text is logged (by the
- * front end, with a stream running).
+ * @p width_hz is the full RF channel-filter width in Hz, or 0 for the kind's default (runtime/analog_channel.h). A
+ * width outside the kind's range (NFM 8000..25000 Hz, AM 5000..20000 Hz) is refused, and so, on a radio input while
+ * DSD_NEO_CHANNEL_LPF=0 turns the channel filter off (dsd_analog_channel_lpf_off_check()), is an explicit width or the
+ * AM default, at any rate. On PCM input no channel filter runs, so the width is only stored there (a switch to a radio
+ * input holds it), whatever device string a live switch from an RTL-SDR left behind. On a radio input an explicit
+ * width, and the AM default (AM always runs its channel filter, issue #524), is also held to the DSP rate it would run
+ * at: with a running RTL-family stream, the front end's own check at its published demod
+ * rate (rtl_stream_check_analog_profile(), which also logs a refusal with the validator's text); without one, the rate
+ * an RTL-SDR or rtl_tcp input's DSP bandwidth (rtl_dsp_bw_khz) gives. Other inputs are checked by their next stream
+ * start, against the rate the device delivers. The unset NFM default is never refused. Callers decide whether the width
+ * is in use; this only says whether the front end would take it. A rate refusal's reason names the width, the rate,
+ * the widest width that rate filters and the fix (svc_describe_analog_refusal()). The validator's full text is logged
+ * (by the front end, with a stream running).
  *
  * @param why      Receives a short reason on refusal, for a toast (may be NULL).
  * @param why_size Size of @p why.
  * @return 0 when the width may be applied, -1 otherwise.
  */
-int svc_check_nfm_bandwidth(const dsd_opts* opts, const dsd_state* state, int width_hz, char* why, size_t why_size);
+int svc_check_analog_bandwidth(const dsd_opts* opts, const dsd_state* state, int kind, int width_hz, char* why,
+                               size_t why_size);
 
 /**
- * @brief Check an NFM channel width against an RTL-SDR or rtl_tcp input reopened at DSP bandwidth @p rtl_bw_khz.
+ * @brief Check a channel width of analog @p kind against an RTL-SDR or rtl_tcp input reopened at DSP bandwidth
+ * @p rtl_bw_khz.
  *
  * For a change that reopens the device at another DSP bandwidth (a config apply whose [input] sets rtl_bw_khz), where
  * the running stream's rate says nothing about the rate the width will run at. The range is checked as
- * svc_check_nfm_bandwidth() checks it; an explicit width must then fit the rate @p rtl_bw_khz gives, and a refusal is
- * reported and logged the same way. A value above every selectable DSP bandwidth that no width fits (a loaded config
- * keeps any integer) is refused as the setting it is, with the DSP bandwidths that would fit, rather than as a rate.
- * The unset default (0) and @p rtl_bw_khz <= 0 are never refused for a rate.
+ * svc_check_analog_bandwidth() checks it; an explicit width, or the AM default, must then fit the rate @p rtl_bw_khz
+ * gives, and a refusal is reported and logged the same way. A value above every selectable DSP bandwidth that no width
+ * fits (a loaded config keeps any integer) is refused as the setting it is, with the DSP bandwidths that would fit,
+ * rather than as a rate. The unset NFM default (0) and @p rtl_bw_khz <= 0 are never refused for a rate.
  *
  * @return 0 when the width may be applied, -1 otherwise (reason in @p why, may be NULL).
  */
-int svc_check_nfm_bandwidth_for_rtl_bw(int width_hz, int rtl_bw_khz, char* why, size_t why_size);
+int svc_check_analog_bandwidth_for_rtl_bw(int kind, int width_hz, int rtl_bw_khz, char* why, size_t why_size);
 
 /**
- * @brief Check an NFM channel width for a SoapySDR or Airspy device a change reopens, whose rate is not known yet.
+ * @brief Check a channel width of analog @p kind for a SoapySDR or Airspy device a change reopens, whose rate is not
+ * known yet.
  *
- * The rules that hold at every rate: the range, and DSD_NEO_CHANNEL_LPF=0 against an explicit width. The reopened
- * stream's start checks the width against the rate the device delivers. The unset default (0) is never refused.
+ * The rules that hold at every rate: the range, and DSD_NEO_CHANNEL_LPF=0 against an explicit width or the AM default.
+ * The reopened stream's start checks the width against the rate the device delivers. The unset NFM default (0) is
+ * never refused.
  *
  * @return 0 when the width may be applied, -1 otherwise (reason in @p why, may be NULL).
  */
-int svc_check_nfm_bandwidth_at_device_rate(int width_hz, char* why, size_t why_size);
+int svc_check_analog_bandwidth_at_device_rate(int kind, int width_hz, char* why, size_t why_size);
 
 /**
- * @brief A short reason the front end refused NFM width @p width_hz, for a toast.
+ * @brief A short reason the front end refused a channel width of analog @p kind (@p width_hz: 0 for the kind's
+ * default), for a toast.
  *
  * Where the input's DSP rate cannot filter the width, it names the width, the rate, the widest width it filters and the
  * fix for what sets that rate (dsd_analog_width_rate_fix()): the DSP bandwidths that fit on an RTL-SDR or rtl_tcp input
@@ -305,59 +315,91 @@ int svc_check_nfm_bandwidth_at_device_rate(int width_hz, char* why, size_t why_s
  * stream; narrowing the width on an I/Q replay (the rate named is then the one the stream publishes). A refusal that
  * rate does not explain points at the log.
  */
-void svc_describe_nfm_refusal(const dsd_opts* opts, int width_hz, char* why, size_t why_size);
+void svc_describe_analog_refusal(const dsd_opts* opts, int kind, int width_hz, char* why, size_t why_size);
 
 /**
- * @brief Set the configured NFM channel width (DSD_APP_CMD_NFM_BANDWIDTH_SET), live when the analog monitor runs.
+ * @brief Set the configured channel width of analog @p kind (DSD_APP_CMD_NFM_BANDWIDTH_SET for NFM,
+ * DSD_APP_CMD_AM_BANDWIDTH_SET for AM), live when that kind's monitor runs.
  *
- * Refuses, and changes nothing, a width outside 0 or 8000..25000 Hz, and, while the configured NFM preset uses the
- * width (the scan scope's configured view, so a typed digital scan row on an analog session still holds it), or the
- * scan has an nfm row or target without a width of its own, on air or waiting to be visited
- * (dsd_engine_scan_runs_configured_nfm_width()), one the front end would refuse (svc_check_nfm_bandwidth()). The command
- * edits the configured width through dsd_scan_mode_set_configured_nfm_bandwidth() rather than suspending a row's scope,
- * so it never disturbs the acquisition a row has made; an nfm row's own width (--nfm-bandwidth-hz, issue #526) stays in
- * force until the row leaves, and the edit reaches the front end with the next row that takes the configured width or
- * the leave. A width in force is handed to a running RTL front end (svc_publish_nfm_bandwidth()): on the analog monitor
- * a width-only change redesigns the channel filter from empty histories at the next block. A request the front end
- * refuses there after all (a retune moved the rate since the check) is refused here too, with the previous width put
- * back; one refused where it lands is put back by the next command drain (svc_take_monitor_request_outcome()). Anywhere
- * else (a digital session, a typed digital scan row on an analog session, CQPSK toggled on under -fA, a stopped stream)
- * the stored width applies the next time the analog profile is requested or the stream opens. Decoder thread only.
+ * Refuses, and changes nothing, a width outside 0 or the kind's range, and, while the width is in use -- the configured
+ * analog preset runs that kind (the scan scope's configured view, so a typed digital scan row on an analog session
+ * still holds it), or, for the NFM width, the scan has an nfm row or target without a width of its own, on air or
+ * waiting to be visited (dsd_engine_scan_runs_configured_nfm_width()) -- one the front end would refuse
+ * (svc_check_analog_bandwidth()). The command edits the configured width rather than suspending a row's scope, so it
+ * never disturbs the acquisition a row has made (svc_store_analog_width_setting()), and a row's leave keeps the edit:
+ * an nfm row's own width (--nfm-bandwidth-hz, issue #526) stays in force until the row leaves, and an NFM edit reaches
+ * the front end with the next row that takes the configured width or the leave. A width in force is handed to
+ * a running RTL front end (svc_publish_analog_bandwidth()): on the analog monitor a width-only change redesigns the
+ * channel filter from empty histories at the next block. A request the front end refuses there after all (a retune
+ * moved the rate since the check) is refused here too, with the previous width put back; one refused where it lands is
+ * put back by the command drain, before its next command (svc_take_monitor_request_outcome()). Anywhere else (another
+ * preset, a typed digital scan row on an analog session, CQPSK toggled on under -fA, a stopped stream) the stored width
+ * applies the next time that kind's analog profile is requested or the stream opens. Decoder thread only.
  *
  * @return 0 when stored, -1 when refused (reason in @p why).
  */
-int svc_set_nfm_bandwidth(dsd_opts* opts, const dsd_state* state, int width_hz, char* why, size_t why_size);
+int svc_set_analog_bandwidth(dsd_opts* opts, const dsd_state* state, int kind, int width_hz, char* why,
+                             size_t why_size);
 
 /**
- * @brief Put the NFM width back after the front end refused the width in force, keeping @p kept_hz.
+ * @brief Put the width of analog @p kind back after the front end refused the width in force, keeping @p kept_hz.
  *
- * On the -fA monitor outside a scan the configured width is the one the front end runs, so it takes @p kept_hz
- * (dsd_scan_mode_set_configured_nfm_bandwidth()). Under a scan row (issue #526) the front end can run a row's own width
- * instead, the one on air or one a retune still in flight has not moved it off, which never becomes the configured
- * width: that goes back to @p configured_before_hz, what it was before the refused change (-1: the refused request
- * changed none, and it stays), which a row without a width of its own runs as well; while the row on air sets its own
- * width, the width in force takes @p kept_hz. Decoder thread only.
+ * On the analog monitor outside a scan the configured width is the one the front end runs, so it takes @p kept_hz.
+ * Under a scan row (issue #526) the front end can run a row's own NFM width instead, the one on air or one a retune
+ * still in flight has not moved it off, which never becomes the configured width: that goes back to
+ * @p configured_before_hz, what it was before the refused change (-1: the refused request changed none, and it stays),
+ * which a row without a width of its own runs as well; while the row on air sets its own width, the width in force
+ * takes @p kept_hz. Decoder thread only.
  */
-void svc_restore_nfm_width(dsd_opts* opts, const dsd_state* state, int kept_hz, int configured_before_hz);
+void svc_restore_analog_width(dsd_opts* opts, const dsd_state* state, int kind, int kept_hz, int configured_before_hz);
 
 /**
- * @brief Hand the configured NFM width to a running RTL front end, as a live analog profile request.
+ * @brief Store @p width_hz (0 for the default) as the configured width of analog @p kind, and nothing else.
  *
- * Does nothing unless the options in force run the -fA NFM preset with a stream running. A switch onto the analog
- * family, a CQPSK toggle back to it or a scan row's leave that the demod thread has not taken yet has its queued width
- * replaced. Under a scan row's suspended scope (dsd_scan_mode_updating()) it waits: the scoped command dispatcher calls
- * it again once the row's constraint is back, so a typed digital row keeps its own profile. CQPSK toggled on under -fA
- * keeps the front end off the monitor, whether the demod thread has taken that toggle yet or not
- * (rtl_stream_requested_cqpsk(), which answers for every request queued); svc_toggle_rtl_cqpsk() turning it off
- * requests the analog profile with the configured width. For callers that changed the width (the width command, a
- * config apply), with @p configured_before_hz the configured width from before their change, which the record keeps for a
- * refusal where the request lands (svc_restore_nfm_width()). Decoder thread only: it keeps the record
- * svc_take_monitor_request_outcome() reads.
+ * The one writer of the two width settings, for callers that have already decided the width: svc_set_analog_bandwidth()
+ * and putting back a width the front end refused. It edits the configured width of either kind without suspending a
+ * scan row's scope (dsd_scan_mode_set_configured_analog_width(), issue #526), so a row's leave keeps the edit; an nfm
+ * row's own width stays in force over an NFM edit until the row leaves, and no row sets an AM width.
+ * dsd_scan_mode_configured_analog_width() reads the configured widths, dsd_app_analog_width_setting_hz() the ones in
+ * force. Decoder thread only.
+ *
+ * @return 1 when the width is now in force in dsd_opts, 0 when a row's own width shadows it or without @p opts.
+ */
+int svc_store_analog_width_setting(dsd_opts* opts, const dsd_state* state, int kind, int width_hz);
+
+/**
+ * @brief Hand the configured width of analog @p kind to a running RTL front end, as a live analog profile request.
+ *
+ * Does nothing unless the options in force run an analog preset of @p kind with a stream running. A switch onto the
+ * analog family or onto the kind, a CQPSK toggle back to it or a scan row's leave that the demod thread has not taken
+ * yet has its queued width replaced. Under a scan row's suspended scope (dsd_scan_mode_updating()) it waits: the scoped
+ * command dispatcher calls it again once the row's constraint is back, so a typed digital row keeps its own profile.
+ * CQPSK toggled on under an analog preset keeps the front end off the monitor, whether the demod thread has taken that
+ * toggle yet or not (rtl_stream_requested_cqpsk(), which answers for every request queued); svc_toggle_rtl_cqpsk()
+ * turning it off requests the analog profile with the configured width. For callers that changed the width (the width
+ * commands, a config apply), with @p configured_before_hz the configured width of @p kind from before their change,
+ * which the record keeps for a refusal where the request lands (svc_restore_analog_width()). Decoder thread only: it
+ * keeps the record svc_take_monitor_request_outcome() reads.
  *
  * @return 0 when requested or when there is nothing to request; -1 when the front end refused the request (at the rate
  *         it publishes now, logged with the validator's text), which leaves its receive profile as it was.
  */
-int svc_publish_nfm_bandwidth(const dsd_opts* opts, const dsd_state* state, int configured_before_hz);
+int svc_publish_analog_bandwidth(const dsd_opts* opts, const dsd_state* state, int kind, int configured_before_hz);
+
+/**
+ * @brief Note a change of the configured width of analog @p kind from @p configured_before_hz, made after the requests
+ * of the command that made it, without asking the front end for anything.
+ *
+ * For a config apply, whose [analog] can change a width it asks the front end for nothing about (the kind not in force,
+ * the kind a switch in the same config leaves, or one a scan row's own width shadows) or whose request does not carry
+ * the width from before it (a switch onto the kind): while the last request made has not reached the front end (the
+ * apply's own, the scope's resume included, or an earlier one), @p configured_before_hz is that kind's width from
+ * before the first change the front end ran none of, unless an earlier change of that kind set one, as
+ * svc_publish_analog_bandwidth() notes a width command's change of a kind not in force. A refusal where a later request
+ * of that kind lands then puts that width back under a scan row (svc_restore_analog_width()). Does nothing without a
+ * running RTL front end. Decoder thread only.
+ */
+void svc_note_analog_width_change(const dsd_opts* opts, const dsd_state* state, int kind, int configured_before_hz);
 
 /** @brief What became of the last analog monitor request (svc_take_monitor_request_outcome()). */
 typedef enum {
@@ -369,24 +411,29 @@ typedef enum {
 /** @brief A refused analog monitor request and what the front end kept (svc_take_monitor_request_outcome()). */
 typedef struct {
     int kind;          /**< dsd_analog_demod the request asked for. */
-    int width_hz;      /**< The configured NFM width it carried (0 = default). */
+    int width_hz;      /**< The configured width of that kind it carried (0 = default). */
     int kept_analog;   /**< 1: the front end stayed on the analog family; 0: on the digital family it was asked to
-                            leave, so a switch onto Analog did not happen. */
-    int kept_width_hz; /**< The analog width (0 = default) the analog family kept. */
-    int configured_before_hz; /**< The configured NFM width the front end ran before the refused change: from before
-                                   the change the request carried, or, when it replaced earlier changes the front end
-                                   ran none of and kept another width, from before the first of them; -1: none. */
+                            leave, so a switch onto the analog monitor did not happen. */
+    int kept_kind;     /**< The dsd_analog_demod the analog family kept: another kind than @c kind when a switch
+                            between FM and AM did not happen. */
+    int kept_width_hz; /**< The configured analog width the analog family kept (0 = the kind's default, AM's
+                            included). */
+    int configured_before_hz; /**< The configured width of @c kind the front end ran before the refused change: from
+                                   before the change the request carried, or, when it replaced earlier changes the front
+                                   end ran none of and kept another width, from before the first of them of that kind
+                                   (a width change of that kind made while the other kind ran counts, and one of the
+                                   other kind never does); -1: none. */
 } svc_monitor_refusal;
 
 /**
  * @brief Collect what became of the last analog monitor request queued from app-control: a width change
- * (svc_publish_nfm_bandwidth()), the analog profile svc_publish_symbol_profile() requests for a switch onto the monitor
- * or a republish, or a CQPSK toggle back to the monitor (svc_toggle_rtl_cqpsk()).
+ * (svc_publish_analog_bandwidth()), the analog profile svc_publish_symbol_profile() requests for a switch onto the
+ * monitor, between FM and AM, or a republish, or a CQPSK toggle back to the monitor (svc_toggle_rtl_cqpsk()).
  *
  * Reports each request once. SVC_MONITOR_REQUEST_REFUSED fills @p out (may be NULL) with what the request carried and
  * what the front end kept, as the stream recorded it when it refused (rtl_stream_receive_request_refusal()): the caller
  * puts the configured width back to the one the monitor kept, or the decoder back on the mode it had before a switch
- * onto the monitor the front end did not make. Decoder thread only.
+ * onto the monitor, or between FM and AM, the front end did not make. Decoder thread only.
  *
  * @return svc_monitor_request_outcome.
  */
@@ -405,8 +452,12 @@ int svc_airspy_settings_reopen(const dsd_airspy_config* previous, const dsd_airs
  *
  * Flips the CQPSK state the front end was last asked for (rtl_stream_requested_cqpsk(): the state the requests the
  * demod thread has not taken yet leave it on, whoever queued them, otherwise the state it publishes) and queues it for
- * the demod thread, leaving the symbol profile and timing alone. Turning CQPSK off under -fA returns to the analog
- * monitor through the analog profile with the configured channel width. Decoder thread only.
+ * the demod thread, leaving the symbol profile and timing alone. Turning CQPSK off under an analog preset returns to
+ * the analog monitor through the analog profile alone, with the configured kind and channel width, which turns CQPSK
+ * off as it enters the monitor: no CQPSK-off profile is queued that the demod thread could take on its own. When the
+ * front end refuses that profile (its rate cannot filter the width, the AM default included), CQPSK stays on, whether
+ * the refusal comes at once or where the request lands, rather than leaving the monitor output on the FSK profile.
+ * Decoder thread only.
  */
 void svc_toggle_rtl_cqpsk(const dsd_opts* opts);
 
@@ -425,18 +476,18 @@ void svc_toggle_inv_m17(dsd_opts* opts);
 /** @brief Switch active input to RTL-SDR and restart the stream. */
 int svc_rtl_enable_input(dsd_opts* opts, dsd_state* state);
 /**
- * @brief Check the configured explicit analog width against the RTL-SDR input DSD_APP_CMD_RTL_ENABLE_INPUT would open.
+ * @brief Check the configured analog width against the RTL-SDR input DSD_APP_CMD_RTL_ENABLE_INPUT would open.
  *
  * Asked before the switch rewrites the input and tears down the running stream. The configured analog preset's
- * explicit width (as RTL_SET_BW holds it, a typed digital scan row included) must fit the rate the RTL DSP bandwidth
- * (rtl_dsp_bw_khz) gives the device the switch opens: an RTL-SDR from an Airspy spec, "pulse" or any other device
- * string, rtl_tcp from an rtl_tcp spec. The switch is unscoped, so the stream it opens starts on the settings in
- * force: while an nfm scan row runs the analog family (issue #526), the explicit width in force there, the row's own
- * --nfm-bandwidth-hz or, on a digital session, the configured NFM width the row runs, must fit that rate as well. On a
- * digital session the configured NFM width is held while the scan has an nfm row or target without a width of its own
- * to visit (dsd_engine_scan_runs_configured_nfm_width()), whichever row is on air. A
- * SoapySDR or I/Q replay input is reopened at a rate its device or capture sets, which its start checks. The unset
- * default is never refused. An explicit width is refused, whatever the rate, while DSD_NEO_CHANNEL_LPF=0 turns the
+ * explicit width, or the AM default (as RTL_SET_BW holds them, a typed digital scan row included), must fit the rate the
+ * RTL DSP bandwidth (rtl_dsp_bw_khz) gives the device the switch opens: an RTL-SDR from an Airspy spec, "pulse" or any
+ * other device string, rtl_tcp from an rtl_tcp spec. The switch is unscoped, so the stream it opens starts on the
+ * settings in force: while an nfm scan row runs the analog family (issue #526), the explicit width in force there, the
+ * row's own --nfm-bandwidth-hz or, on a digital session, the configured NFM width the row runs, must fit that rate as
+ * well. On a digital session the configured NFM width is held while the scan has an nfm row or target without a width
+ * of its own to visit (dsd_engine_scan_runs_configured_nfm_width()), whichever row is on air. A SoapySDR or I/Q replay
+ * input is reopened at a rate its device or capture sets, which its start checks. The unset NFM default is never
+ * refused. An explicit width, or the AM default, is refused, whatever the rate, while DSD_NEO_CHANNEL_LPF=0 turns the
  * channel filter off. A rate refusal's reason names the width, the rate, the widest width it filters and the DSP
  * bandwidths that would fit; the validator's text is logged.
  *
@@ -472,18 +523,18 @@ int svc_rtl_set_gain(dsd_opts* opts, dsd_state* state, int value);
 /**
  * @brief Set RTL DSP baseband bandwidth (kHz: 4,6,8,12,16,24,48), restarting if needed.
  *
- * An unsupported value becomes 48. A bandwidth an explicit analog channel width in use cannot run at, on an RTL-SDR
- * or rtl_tcp input, whose DSP rate this sets, is refused and nothing changes: the width is never clamped to fit. The
- * widths held to it are the configured analog preset's (a typed digital scan row on an analog session included), on
- * any other session the configured NFM width while the scan has an nfm row or target without a width of its own to
- * visit (issue #526, dsd_engine_scan_runs_configured_nfm_width()), and, since the reopened stream starts on the
- * settings in force, the width in force while an nfm scan row runs the analog family: the row's own
- * --nfm-bandwidth-hz, or on a digital session the configured NFM width the row runs. @p why receives a short reason
- * naming both values, the widest width the bandwidth filters and the fix on that refusal (may be NULL): narrow the
- * width first, or, for a scan row's own width, which the width controls do not edit, keep a wider DSP bandwidth ("DSP
- * BW 12 kHz cannot filter the scan row's NFM 12.5 kHz (max 9.6 kHz); keep a wider DSP bandwidth"). The validator's full
- * text is logged. The reopen is also refused while DSD_NEO_CHANNEL_LPF=0 turns off the channel filter that explicit
- * width needs, which its start would refuse at any rate.
+ * An unsupported value becomes 48. A bandwidth an analog channel width in use cannot run at, on an RTL-SDR or rtl_tcp
+ * input, whose DSP rate this sets, is refused and nothing changes: the width is never clamped to fit. The widths held
+ * to it are the configured analog preset's explicit width, or the AM default, which AM always filters at (a typed
+ * digital scan row on an analog session included), on any other session the configured NFM width while the scan has
+ * an nfm row or target without a width of its own to visit (issue #526, dsd_engine_scan_runs_configured_nfm_width()),
+ * and, since the reopened stream starts on the settings in force, the width in force while an nfm scan row runs the
+ * analog family: the row's own --nfm-bandwidth-hz, or on a digital session the configured NFM width the row runs.
+ * @p why receives a short reason naming both values, the widest width the bandwidth filters and the fix on that
+ * refusal (may be NULL): narrow the width first, or, for a scan row's own width, which the width controls do not edit,
+ * keep a wider DSP bandwidth ("DSP BW 12 kHz cannot filter the scan row's NFM 12.5 kHz (max 9.6 kHz); keep a wider DSP
+ * bandwidth"). The validator's full text is logged. The reopen is also refused while DSD_NEO_CHANNEL_LPF=0 turns off
+ * the channel filter that width needs, which its start would refuse at any rate.
  */
 int svc_rtl_set_bandwidth(dsd_opts* opts, dsd_state* state, int khz, char* why, size_t why_size);
 /**

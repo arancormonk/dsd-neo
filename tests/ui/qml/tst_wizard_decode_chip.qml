@@ -45,7 +45,7 @@ Item {
         // and labels do not.
         readonly property var everyLabel: [
             "Auto — P25/DMR/YSF", "P25", "P25 Simulcast", "DMR", "NXDN48",
-            "NXDN96", "D-STAR", "YSF", "M17", "NFM — analog FM",
+            "NXDN96", "D-STAR", "YSF", "M17", "NFM — analog FM", "AM",
             "P25 LSM", "DMR Scan", "P25 Scan", "P25 LSM Scan",
             "NXDN48 Scan", "NXDN96 Scan", "EDACS", "EDACS EA"]
 
@@ -163,6 +163,107 @@ Item {
             compare(tc.wizard.decodeFlag, "-fA")
             compare(tc.selectedLabels(), ["NFM — analog FM"])
             compare(tc.wizard.trunking, false, "picking NFM suggested call-following")
+        }
+
+        // Issue #524: the AM chip (-fM) comes with the shared catalog. It is
+        // offered for radio sources only (network and file audio arrives already
+        // demodulated), with a note saying why it is greyed out elsewhere,
+        // selects on its own flag, and names a system type that is not trunked,
+        // so picking it on the 800 MHz prefill suggests no call-following.
+        function test_10_the_am_chip_needs_a_radio_source_and_never_suggests_trunking() {
+            var chip = tc.chipFor("AM")
+            var note = findChild(tc.wizard, "wizardDecodeIqNote")
+            verify(chip !== null, "the wizard offers no AM chip")
+            verify(note !== null, "the wizard has no note for a greyed-out AM chip")
+            compare(chip.modelData.flag, "-fM")
+            verify(tc.wizard.radioSource, "the wizard opens on a radio source")
+            verify(chip.enabled, "the AM chip is disabled on a radio source")
+            tc.wizard.step = 1
+            verify(!note.visible, "the I/Q note shows on a radio source")
+            compare(tc.wizard.trunking, true, "the 800 MHz prefill suggests trunking before the pick")
+            tc.wizard.pickDecodeFlag("-fM")
+            compare(tc.wizard.decodeFlag, "-fM")
+            compare(tc.selectedLabels(), ["AM"])
+            compare(tc.wizard.trunking, false, "picking AM suggested call-following")
+            tc.wizard.sourceType = "tcp"
+            verify(!chip.enabled, "the AM chip is offered for TCP audio")
+            verify(note.visible, "a greyed-out AM chip says nothing about why")
+            verify(note.text.indexOf("AM needs a radio source") === 0, "the note does not name the reason")
+            tc.wizard.sourceType = "file"
+            verify(note.visible, "a file source leaves the AM chip unexplained")
+            tc.wizard.sourceType = "usb"
+            verify(chip.enabled)
+            verify(!note.visible)
+            tc.wizard.step = 0
+        }
+
+        // Issue #524: the engine refuses an AM channel the radio's DSP bandwidth
+        // cannot filter, and at 4 or 6 kHz none fits. Step 1 waits for a wider
+        // bandwidth, with the reason and the fix under the chips; 8 kHz takes
+        // the 6 kHz default, an empty field follows the 48 kHz app default, a
+        // digital pick is not held, and neither is Airspy, whose device sets
+        // the rate the engine checks at start.
+        function test_12_am_waits_for_a_bandwidth_that_fits() {
+            var note = findChild(tc.wizard, "wizardDecodeAmBandwidthNote")
+            verify(note !== null, "the wizard has no AM bandwidth note")
+            tc.wizard.step = 1
+            tc.wizard.freqText = "118.1"
+            tc.wizard.pickDecodeFlag("-fM")
+            verify(tc.wizard.stepValid(), "AM at the app default bandwidth is refused")
+            verify(!note.visible)
+
+            for (var i = 0; i < 2; i++) {
+                tc.wizard.sourceType = i === 0 ? "usb" : "rtltcp"
+                tc.wizard.bwText = "6"
+                verify(!tc.wizard.stepValid(), "AM at a 6 kHz bandwidth passes step 1")
+                verify(note.visible, "the refusal is not shown")
+                verify(note.text.indexOf("Set the bandwidth to 8, 12, 16, 24 or 48 kHz") > 0, "the note names no fix")
+                tc.wizard.bwText = "4"
+                verify(!tc.wizard.stepValid(), "AM at a 4 kHz bandwidth passes step 1")
+                tc.wizard.bwText = "8"
+                verify(tc.wizard.stepValid(), "AM at 8 kHz is refused")
+                verify(!note.visible)
+            }
+
+            tc.wizard.bwText = "6"
+            tc.wizard.pickDecodeFlag("-fs")
+            verify(tc.wizard.stepValid(), "a digital mode at 6 kHz is held to the AM channel")
+            verify(!note.visible)
+            tc.wizard.pickDecodeFlag("-fM")
+            tc.wizard.sourceType = "airspy"
+            verify(tc.wizard.stepValid(), "Airspy is held here rather than where its device sets the rate")
+            tc.wizard.sourceType = "usb"
+            tc.wizard.bwText = ""
+            verify(tc.wizard.stepValid(), "an empty bandwidth does not follow the 48 kHz app default")
+            tc.wizard.step = 0
+        }
+
+        // Issue #524: the AM chip greyed out is not enough. Picking a network or
+        // file source after AM drops the flag back to Auto, so the wizard cannot
+        // save a system the engine refuses to start; staying on a radio source
+        // keeps it. A system that reaches step 1 with AM on such a source (an
+        // edit, set here directly) cannot continue until another chip is picked.
+        function test_11_leaving_the_radio_drops_the_am_flag() {
+            tc.wizard.pickDecodeFlag("-fM")
+            findChild(tc.wizard, "wizardSource_rtltcp").clicked()
+            compare(tc.wizard.sourceType, "rtltcp")
+            compare(tc.wizard.decodeFlag, "-fM", "a radio source kept AM")
+            findChild(tc.wizard, "wizardSource_tcp").clicked()
+            compare(tc.wizard.sourceType, "tcp")
+            compare(tc.wizard.decodeFlag, "", "TCP audio kept the AM flag")
+            compare(tc.selectedLabels(), ["Auto — P25/DMR/YSF"])
+
+            findChild(tc.wizard, "wizardSource_usb").clicked()
+            tc.wizard.pickDecodeFlag("-fM")
+            findChild(tc.wizard, "wizardSource_file").clicked()
+            compare(tc.wizard.decodeFlag, "", "a file source kept the AM flag")
+
+            tc.wizard.decodeFlag = "-fM"
+            tc.wizard.step = 1
+            verify(!tc.wizard.stepValid(), "AM on a file source passes step 1")
+            tc.wizard.pickDecodeFlag("-fs")
+            verify(tc.wizard.stepValid(), "another chip clears the refusal")
+            tc.wizard.step = 0
         }
 
         // A flag nobody has a name for must not invent a chip; the row falls

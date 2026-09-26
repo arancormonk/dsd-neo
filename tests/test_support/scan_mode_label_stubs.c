@@ -52,6 +52,11 @@ dsd_test_scan_labels_configured(const dsd_scan_settings* settings) {
 }
 
 void
+dsd_test_scan_labels_input_type(int audio_in_type) {
+    snapshot_opts.audio_in_type = audio_in_type;
+}
+
+void
 dsd_test_scan_labels_set(int available, dsd_scan_mode mode) {
     snapshots_available = available;
     active_mode = mode;

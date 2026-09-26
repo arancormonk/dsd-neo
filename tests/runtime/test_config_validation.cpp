@@ -475,6 +475,99 @@ has_trunk_scan_p25_bandplan_conflict_diag(const dsdcfg_diagnostics_t* diags, con
     return 0;
 }
 
+/* Validate @p ini and report whether an error names [@p section] @p key with @p text; @p out_rc gets the verdict. */
+static int
+validate_ini_has_error(const char* ini, const char* section, const char* key, const char* text, int* out_rc) {
+    char path[DSD_TEST_PATH_MAX];
+    if (write_temp_config(ini, path, sizeof path) != 0) {
+        return -1;
+    }
+    dsdcfg_diagnostics_t diags;
+    DSD_MEMSET(&diags, 0, sizeof(diags));
+    *out_rc = dsd_user_config_validate(path, &diags);
+    int found = 0;
+    for (int i = 0; i < diags.count; i++) {
+        if (diags.items[i].level == DSDCFG_DIAG_ERROR && strcmp(diags.items[i].section, section) == 0
+            && strcmp(diags.items[i].key, key) == 0 && (!text || strstr(diags.items[i].message, text))) {
+            found = 1;
+        }
+    }
+    const int errors = diags.error_count;
+    dsdcfg_diags_free(&diags);
+    (void)remove(path);
+    return found ? 1 : (errors > 0 ? 2 : 0);
+}
+
+/*
+ * Issue #524: [mode] decode = am and [analog] am_bandwidth_hz. An in-range whole-Hz width validates; one outside
+ * 5000..20000 or not whole Hz is an error carrying the parser's text (the loader refuses it rather than clamping),
+ * not the schema walk's out-of-range warning.
+ */
+static int
+test_analog_am_bandwidth_validation(void) {
+    int result = 0;
+    int rc = 0;
+    if (validate_ini_has_error("[mode]\ndecode = am\n[analog]\nam_bandwidth_hz = 8000\n", "analog", "am_bandwidth_hz",
+                               NULL, &rc)
+            != 0
+        || rc != 0) {
+        DSD_FPRINTF(stderr, "FAIL: decode = am with am_bandwidth_hz = 8000 should validate (rc=%d)\n", rc);
+        result = 1;
+    }
+
+    static const struct {
+        const char* ini;
+        const char* text;
+    } bad[] = {
+        {"[analog]\nam_bandwidth_hz = 25000\n",
+         "AM bandwidth 25000 Hz is outside the supported range of 5000 to 20000"},
+        {"[analog]\nam_bandwidth_hz = 4999\n", "AM bandwidth 4999 Hz is outside the supported range"},
+        {"[analog]\nam_bandwidth_hz = 6k\n", "AM bandwidth must be a whole number of Hz from 5000 to 20000"},
+    };
+
+    for (size_t i = 0; i < sizeof bad / sizeof bad[0]; i++) {
+        if (validate_ini_has_error(bad[i].ini, "analog", "am_bandwidth_hz", bad[i].text, &rc) != 1 || rc == 0) {
+            DSD_FPRINTF(stderr, "FAIL: %s should be an error naming \"%s\" (rc=%d)\n", bad[i].ini, bad[i].text, rc);
+            result = 1;
+        }
+    }
+
+    /* The AM width a decode = am config runs, the 6 kHz default included, is held to the DSP rate the RTL-SDR or
+     * rtl_tcp input it builds runs at (rtl_bw_khz), as the startup check holds it: the same actionable text. */
+    static const struct {
+        const char* ini;
+        const char* text; /* NULL: validates */
+    } rate[] = {
+        {"[input]\nsource = rtl\nrtl_freq = 118.1M\nrtl_bw_khz = 16\n[mode]\ndecode = am\n[analog]\n"
+         "am_bandwidth_hz = 20000\n",
+         "AM bandwidth 20 kHz does not fit the 16 kHz DSP rate (the largest width it fits is 13.2 kHz); set the RTL "
+         "DSP "
+         "bandwidth to 24 or 48 kHz"},
+        {"[input]\nsource = rtltcp\nrtltcp_host = 127.0.0.1\nrtl_freq = 118.1M\nrtl_bw_khz = 6\n[mode]\ndecode = am\n",
+         "AM bandwidth 6 kHz does not fit the 6 kHz DSP rate (the largest width it fits is 4.2 kHz)"},
+        {"[input]\nsource = rtl\nrtl_freq = 118.1M\nrtl_bw_khz = 24\n[mode]\ndecode = am\n[analog]\n"
+         "am_bandwidth_hz = 20000\n",
+         NULL},
+        {"[input]\nsource = rtl\nrtl_freq = 118.1M\nrtl_bw_khz = 8\n[mode]\ndecode = am\n", NULL},
+        /* Not the AM preset, a device that may force its own rate, and an rtl source startup does not build (no
+         * rtl_freq): nothing to hold the width to here. */
+        {"[input]\nsource = rtl\nrtl_freq = 118.1M\nrtl_bw_khz = 6\n[mode]\ndecode = analog\n", NULL},
+        {"[input]\nsource = soapy\nrtl_bw_khz = 6\n[mode]\ndecode = am\n", NULL},
+        {"[input]\nsource = rtl\nrtl_bw_khz = 6\n[mode]\ndecode = am\n", NULL},
+    };
+
+    for (size_t i = 0; i < sizeof rate / sizeof rate[0]; i++) {
+        const int found = validate_ini_has_error(rate[i].ini, "analog", "am_bandwidth_hz", rate[i].text, &rc);
+        const int ok = rate[i].text ? (found == 1 && rc != 0) : (found == 0 && rc == 0);
+        if (!ok) {
+            DSD_FPRINTF(stderr, "FAIL: %s: want %s (found=%d rc=%d)\n", rate[i].ini,
+                        rate[i].text ? rate[i].text : "no error", found, rc);
+            result = 1;
+        }
+    }
+    return result;
+}
+
 static int
 test_trunk_scan_enabled_requires_targets_csv(void) {
     static const char* ini = "[trunk_scan]\n"
@@ -1920,6 +2013,7 @@ main(void) {
     rc |= test_profile_int_out_of_range();
     rc |= test_profile_invalid_bool();
     rc |= test_profile_valid_values();
+    rc |= test_analog_am_bandwidth_validation();
 
     if (rc == 0) {
         printf("All config_validation tests passed\n");

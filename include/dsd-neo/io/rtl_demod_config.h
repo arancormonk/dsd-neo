@@ -94,12 +94,12 @@ int rtl_demod_analog_requested_width_hz(int kind, int explicit_width_hz);
 /**
  * Check the analog channel a stream would run at @p rate_hz.
  *
- * Refuses a negative @p explicit_width_hz (only 0 selects the default), AM (the radio front end has no AM
- * demodulator yet), a requested width while DSD_NEO_CHANNEL_LPF=0 turns the channel filter off, and a requested width
- * the rate cannot realize (dsd_analog_width_check()). The unset NFM default (@p explicit_width_hz 0 with FM) never
- * fails: it keeps the historical filter behaviour. The unset AM default is checked like an explicit width (see
- * rtl_demod_analog_requested_width_hz()). @p rate_hz <= 0 means no DSP rate is known yet (no stream running): then only
- * the kind, environment and range rules apply, and the next stream open checks the width against the rate it delivers.
+ * Refuses a negative @p explicit_width_hz (only 0 selects the default), a requested width while DSD_NEO_CHANNEL_LPF=0
+ * turns the channel filter off, and a requested width the rate cannot realize (dsd_analog_width_check()). The unset
+ * NFM default (@p explicit_width_hz 0 with FM) never fails: it keeps the historical filter behaviour. The unset AM
+ * default is checked like an explicit width (see rtl_demod_analog_requested_width_hz()). @p rate_hz <= 0 means no DSP
+ * rate is known yet (no stream running): then only the kind, environment and range rules apply, and the next stream
+ * open checks the width against the rate it delivers.
  *
  * @return 0 when the stream may run it, -1 with an actionable message in @p err otherwise.
  */
@@ -167,7 +167,10 @@ int rtl_demod_apply_audio_filters_from_config(struct demod_state* demod);
 /** Recompute the de-emphasis and audio-LPF coefficients for @p demod->rate_out. */
 void rtl_demod_refresh_audio_coefficients(struct demod_state* demod);
 
-/** Return the monitor audio state (de-emphasis, DC, audio LPF, squelch envelope, discriminator) to fresh-open values. */
+/**
+ * Return the monitor audio state (de-emphasis, DC, audio LPF, squelch envelope, FM discriminator history and the AM
+ * carrier estimate) to fresh-open values.
+ */
 void rtl_demod_reset_audio_monitor_state(struct demod_state* demod);
 
 /** Clear the half-band and channel-LPF histories. */
@@ -177,11 +180,35 @@ void rtl_demod_clear_filter_histories(struct demod_state* demod);
 void rtl_demod_reset_resampler_state(struct demod_state* demod);
 
 /**
- * Switch the analog demodulator kind (demodulator and de-emphasis) and reset the monitor audio state.
+ * Switch the analog demodulator kind and reset the monitor audio state.
+ *
+ * FM runs the discriminator with the configured de-emphasis; AM runs the envelope detector (dsd_am_demod()) with no
+ * de-emphasis and without the I/Q DC blocker or I/Q balance (dsd_demod_iq_dc_block_active(),
+ * dsd_demod_iq_balance_active()). Both estimates start over, since AM leaves them where FM last had them.
  *
  * @return 1 when the kind changed, 0 when already on it, -1 for an invalid kind.
  */
 int rtl_demod_set_analog_kind(struct demod_state* demod, int kind);
+
+/**
+ * Note that a configured I/Q DC blocker is bypassed because the AM detector runs (dsd_demod_iq_dc_block_active()).
+ * The first time both hold, per process, this logs a note saying so; the setting itself is kept for FM.
+ *
+ * @param iq_dc_block_enabled Non-zero when the I/Q DC blocker is configured on.
+ * @param am_active           Non-zero when the AM detector runs (dsd_demod_am_active(), or the published AM kind).
+ * @return 1 when the blocker is configured and bypassed for AM, else 0.
+ */
+int rtl_demod_note_am_iq_dc_bypass(int iq_dc_block_enabled, int am_active);
+
+/**
+ * Note that configured I/Q balance is bypassed because the AM detector runs (dsd_demod_iq_balance_active()), as
+ * rtl_demod_note_am_iq_dc_bypass() notes the I/Q DC blocker: once per process, the setting itself kept for FM.
+ *
+ * @param iq_balance_enabled Non-zero when I/Q balance is configured on.
+ * @param am_active          Non-zero when the AM detector runs (dsd_demod_am_active(), or the published AM kind).
+ * @return 1 when I/Q balance is configured and bypassed for AM, else 0.
+ */
+int rtl_demod_note_am_iq_balance_bypass(int iq_balance_enabled, int am_active);
 
 /**
  * Move a running front end to the analog family with the defaults a fresh analog open would choose (monitor output,

@@ -13,6 +13,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstddef>
 
 #include <QChar>
 #include <QLatin1String>
@@ -22,6 +23,8 @@
 #include <QRegularExpression>
 #include <QVariant>
 #include <Qt>
+
+#include <dsd-neo/runtime/analog_channel.h>
 
 #include "app_prefs.h"
 
@@ -406,6 +409,18 @@ session_args_freq_valid(const QString& freqMhz) {
     return ok && std::isfinite(mhz) && mhz > 0.0;
 }
 
+bool
+session_args_am_fits_bandwidth(const QString& sourceType, int bandwidthKhz) {
+    if (sourceType != QLatin1String("usb") && sourceType != QLatin1String("rtltcp")) {
+        return true;
+    }
+    /* The engine reads the spec's bandwidth field this way: a value it does not run is the 48 kHz default. */
+    const int khz = dsd_analog_rtl_dsp_bw_is_selectable(bandwidthKhz) ? bandwidthKhz : DSD_ANALOG_RTL_DSP_BW_MAX_KHZ;
+    return dsd_analog_width_check(DSD_ANALOG_DEMOD_AM, dsd_analog_width_default_hz(DSD_ANALOG_DEMOD_AM), khz * 1000,
+                                  nullptr, 0U)
+           == 0;
+}
+
 QString
 session_args_key_hex_normalize(const QString& value) {
     QString normalized = value;
@@ -458,30 +473,64 @@ session_args_key_valid(const QString& type, const QString& value) {
     return hex_key_width_valid(type, hex);
 }
 
+namespace {
+
+struct SessionArgsErrorText {
+    SessionArgsError error;
+    const char* text;
+};
+
+/* One row per SessionArgsError value, in the enum's order (None has no text), so a value is its row's index. */
+constexpr SessionArgsErrorText k_error_texts[] = {
+    {SessionArgsError::None, ""},
+    {SessionArgsError::Frequency, "Enter a positive frequency in MHz."},
+    {SessionArgsError::Ppm, "Enter a whole number for PPM."},
+    {SessionArgsError::Hangtime, "Enter hang time in seconds from 0 to 30."},
+    {SessionArgsError::KeyType, "Choose one encryption key type."},
+    {SessionArgsError::KeyBasic, "Enter a basic key from 0 to 255."},
+    {SessionArgsError::KeyHex, "Enter 10, 32, or 64 hexadecimal digits."},
+    {SessionArgsError::KeyRc4, "Enter 1 to 16 hexadecimal digits."},
+    {SessionArgsError::KeyScrambler, "Enter a scrambler key from 0 to 32767."},
+    {SessionArgsError::KeyM17Scrambler, "Enter a nonzero M17 seed with 2, 4, or 6 hex digits."},
+    {SessionArgsError::KeyM17Aes,
+     "Enter an M17 AES key with 32, 48, or 64 hex digits; an all-zero key is unavailable to the decoder."},
+    {SessionArgsError::KeyConflict, "Choose either a direct key or a key CSV file."},
+    {SessionArgsError::ForceKey, "Choose force key mode 0, 1, or 2."},
+    {SessionArgsError::UnsafeOption, "Extra options contain a prohibited option or grouped short options. "
+                                     "Remove prohibited options and write each short option separately."},
+    {SessionArgsError::AmNeedsRadio, "AM needs a radio source (USB, Airspy or rtl_tcp): network and file audio "
+                                     "arrives already demodulated. Choose a radio source, or another decode mode."},
+    {SessionArgsError::AmBandwidth, "AM needs a bandwidth of 8 kHz or more: its 6 kHz channel does not fit a "
+                                    "narrower one. Set the bandwidth to 8, 12, 16, 24 or 48 kHz, or choose another "
+                                    "decode mode."},
+};
+
+constexpr std::size_t k_error_text_count = sizeof k_error_texts / sizeof k_error_texts[0];
+
+constexpr bool
+error_texts_in_enum_order() {
+    for (std::size_t i = 0; i < k_error_text_count; i++) {
+        if (static_cast<std::size_t>(k_error_texts[i].error) != i) {
+            return false;
+        }
+    }
+    return true;
+}
+
+/* A value added to SessionArgsError needs its row: the last value (SessionArgsErrorLast) closes the table. */
+static_assert(k_error_text_count == static_cast<std::size_t>(SessionArgsErrorLast) + 1U,
+              "every SessionArgsError value needs a row in k_error_texts");
+static_assert(error_texts_in_enum_order(), "k_error_texts rows must follow the SessionArgsError order");
+
+} // namespace
+
 QString
 session_args_error_text(SessionArgsError error) {
-    switch (error) {
-        case SessionArgsError::None: return {};
-        case SessionArgsError::KeyM17Scrambler:
-            return QStringLiteral("Enter a nonzero M17 seed with 2, 4, or 6 hex digits.");
-        case SessionArgsError::KeyM17Aes:
-            return QStringLiteral(
-                "Enter an M17 AES key with 32, 48, or 64 hex digits; an all-zero key is unavailable to the decoder.");
-        case SessionArgsError::Frequency: return QStringLiteral("Enter a positive frequency in MHz.");
-        case SessionArgsError::Ppm: return QStringLiteral("Enter a whole number for PPM.");
-        case SessionArgsError::Hangtime: return QStringLiteral("Enter hang time in seconds from 0 to 30.");
-        case SessionArgsError::KeyType: return QStringLiteral("Choose one encryption key type.");
-        case SessionArgsError::KeyBasic: return QStringLiteral("Enter a basic key from 0 to 255.");
-        case SessionArgsError::KeyHex: return QStringLiteral("Enter 10, 32, or 64 hexadecimal digits.");
-        case SessionArgsError::KeyRc4: return QStringLiteral("Enter 1 to 16 hexadecimal digits.");
-        case SessionArgsError::KeyScrambler: return QStringLiteral("Enter a scrambler key from 0 to 32767.");
-        case SessionArgsError::KeyConflict: return QStringLiteral("Choose either a direct key or a key CSV file.");
-        case SessionArgsError::ForceKey: return QStringLiteral("Choose force key mode 0, 1, or 2.");
-        case SessionArgsError::UnsafeOption:
-            return QStringLiteral("Extra options contain a prohibited option or grouped short options. "
-                                  "Remove prohibited options and write each short option separately.");
+    const auto index = static_cast<std::size_t>(error);
+    if (error == SessionArgsError::None || index >= k_error_text_count) {
+        return QString();
     }
-    return {};
+    return QString::fromUtf8(k_error_texts[index].text);
 }
 
 bool
@@ -537,9 +586,41 @@ append_profile_args(QStringList& args, const QVariantMap& system) {
     }
 }
 
+/* Whether a saved decode flag selects the AM preset (-fM, issue #524), alone or among other tokens. */
+static bool
+decode_flag_names_am(const QString& decodeFlag) {
+    static const QRegularExpression whitespace(QStringLiteral("\\s+"));
+    return decodeFlag.split(whitespace, Qt::SkipEmptyParts).contains(QStringLiteral("-fM"));
+}
+
 static bool
 is_radio_source(const QString& source) {
     return source == QLatin1String("usb") || source == QLatin1String("airspy") || source == QLatin1String("rtltcp");
+}
+
+/* The DSP bandwidth, in kHz, a system's radio spec carries: its own override, or the app-wide default. */
+static int
+session_args_bandwidth_khz(const QVariantMap& system, const SessionArgPrefs& prefs) {
+    const int bwOverride = system.value(QStringLiteral("bandwidthKhz"), -1).toInt();
+    return bwOverride > 0 ? bwOverride : prefs.bandwidthKhz;
+}
+
+/* What the source allows. A radio source needs a frequency it can tune. Issue #524: -fM demodulates AM from the radio's
+   I/Q, and the engine refuses it on audio that arrives already demodulated; the wizard keeps the pair from being saved,
+   and a system saved before that fails here with a reason rather than at engine startup. The same holds for an AM
+   channel the radio's DSP bandwidth cannot filter (session_args_am_fits_bandwidth()). */
+static SessionArgsError
+session_args_source_error(const QVariantMap& system, const QString& sourceType, int bandwidthKhz,
+                          const QString& freqMhz) {
+    const bool am = decode_flag_names_am(system.value(QStringLiteral("decodeFlag")).toString());
+    if (!is_radio_source(sourceType)) {
+        return am ? SessionArgsError::AmNeedsRadio : SessionArgsError::None;
+    }
+    if (!session_args_freq_valid(freqMhz)) {
+        return SessionArgsError::Frequency;
+    }
+    return am && !session_args_am_fits_bandwidth(sourceType, bandwidthKhz) ? SessionArgsError::AmBandwidth
+                                                                           : SessionArgsError::None;
 }
 
 QStringList
@@ -564,8 +645,10 @@ session_args_build(const QVariantMap& system, const SessionArgPrefs& prefs, Sess
     const QString sourceType = system.value(QStringLiteral("sourceType")).toString();
     const bool radioSource = is_radio_source(sourceType);
     const QString freqMhz = system.value(QStringLiteral("freqMhz")).toString().trimmed();
-    if (radioSource && !session_args_freq_valid(freqMhz)) {
-        return fail(SessionArgsError::Frequency);
+    const int bw = session_args_bandwidth_khz(system, prefs);
+    const SessionArgsError sourceError = session_args_source_error(system, sourceType, bw, freqMhz);
+    if (sourceError != SessionArgsError::None) {
+        return fail(sourceError);
     }
 
     // PPM is the one override persisted as a raw string, and it is spliced
@@ -599,8 +682,6 @@ session_args_build(const QVariantMap& system, const SessionArgPrefs& prefs, Sess
 
     const int gainOverride = system.value(QStringLiteral("gainDb"), -1).toInt();
     const int gain = gainOverride >= 0 ? gainOverride : prefs.gainDb;
-    const int bwOverride = system.value(QStringLiteral("bandwidthKhz"), -1).toInt();
-    const int bw = bwOverride > 0 ? bwOverride : prefs.bandwidthKhz;
     const bool bias = bias_tee_effective(system.value(QStringLiteral("biasTee")), prefs.biasTee);
     const QString tail = QStringLiteral(":%1M:%2:%3:%4:0:2").arg(freqMhz).arg(gain).arg(ppm).arg(bw);
 
@@ -677,6 +758,8 @@ validationResult(SessionArgsError error) {
                                            : error == SessionArgsError::Ppm          ? QStringLiteral("ppm")
                                            : error == SessionArgsError::Hangtime     ? QStringLiteral("hangtime")
                                            : error == SessionArgsError::UnsafeOption ? QStringLiteral("unsafe-option")
+                                           : error == SessionArgsError::AmNeedsRadio ? QStringLiteral("am-needs-radio")
+                                           : error == SessionArgsError::AmBandwidth  ? QStringLiteral("am-bandwidth")
                                            : error == SessionArgsError::None         ? QString()
                                                                                      : QStringLiteral("encryption"));
     result.insert(QStringLiteral("errorText"), session_args_error_text(error));
@@ -707,6 +790,16 @@ bool
 // cppcheck-suppress functionStatic // Q_INVOKABLE: QML calls this on the sessionArgs context object.
 SessionArgsBuilder::freqValid(const QString& freqMhz) const {
     return session_args_freq_valid(freqMhz);
+}
+
+QString
+SessionArgsBuilder::amBandwidthError(const QString& sourceType, int bandwidthKhz) const {
+    int khz = bandwidthKhz;
+    if (khz <= 0) {
+        khz = m_prefs != nullptr ? m_prefs->bandwidthKhz() : SessionArgPrefs().bandwidthKhz;
+    }
+    return session_args_am_fits_bandwidth(sourceType, khz) ? QString()
+                                                           : session_args_error_text(SessionArgsError::AmBandwidth);
 }
 
 // cppcheck-suppress functionStatic // Q_INVOKABLE: QML validation uses the shared startup rules.
