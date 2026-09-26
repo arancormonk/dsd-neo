@@ -26,7 +26,10 @@
  * and every complement is a code word too: each supported code shares its waveform with other
  * codes, in the standard set always with exactly one other code of the opposite polarity (D023N
  * is D047I). dsd_dcs_canonical() names such a class by one member, normal polarity first, then
- * the lowest code, so every inverted code is named by its normal alias (D023I reads as D047N).
+ * the lowest code, so every inverted code is named by its normal alias (D023I by D047N), and
+ * dsd_dcs_alias() by the other standard spelling. Nothing in the signal says which of the two
+ * a transmitter was set to, so a received code is shown as both, canonical first:
+ * "DCS D047N / D023I" (dsd_dcs_format_label()).
  *
  * The tables live in runtime rather than DSP because the frontends format these values and the
  * receive policy (#527) parses them, and neither may depend on the DSP module.
@@ -95,8 +98,8 @@ enum { DSD_DCS_WORD_BITS = 23 };
 /** @brief Highest DCS code value: nine bits, octal 777. */
 enum { DSD_DCS_CODE_MAX = 0777 };
 
-/** @brief Longest text dsd_dcs_format_label() writes, terminator included ("DCS D023N"). */
-enum { DSD_DCS_LABEL_SIZE = 16 };
+/** @brief Room for any text dsd_dcs_format_label() writes, terminator included ("DCS D023N / D047I"). */
+enum { DSD_DCS_LABEL_SIZE = 24 };
 
 /** @brief Number of supported DCS codes; always DSD_DCS_CODE_COUNT. */
 int dsd_dcs_code_count(void);
@@ -144,7 +147,7 @@ int dsd_dcs_match(uint32_t window, int* code, int* inverted);
  *
  * Every rotation of a word, and of its complement, is one signal. Of the supported codes that
  * send it, the canonical member is the normal-polarity one if there is one, then the lowest
- * code: D023I is the signal of D047N and reads as D047N, and every supported normal code names
+ * code: D023I is the signal of D047N and is named D047N, and every supported normal code names
  * its own signal. Accepts any 9-bit code; an unsupported one is named only when its signal is a
  * supported code's.
  *
@@ -152,6 +155,20 @@ int dsd_dcs_match(uint32_t window, int* code, int* inverted);
  *         NULL), or -1 when @p code is out of range or its signal is no supported code's.
  */
 int dsd_dcs_canonical(int code, int inverted, int* canon_code, int* canon_inverted);
+
+/**
+ * @brief The other standard spelling of the signal of @p code in the given polarity.
+ *
+ * Of the standard codes, exactly two send each supported signal, one in each polarity: the
+ * canonical normal member (dsd_dcs_canonical()) and one inverted member. D023N and D047I are one
+ * signal, D047N and D023I another. This names the inverted member, whichever spelling @p code is
+ * (D023N and D047I both give D047I). Accepts any 9-bit code whose signal is a supported code's.
+ *
+ * @return 0 with the member written to @p alias_code and @p alias_inverted (either may be NULL),
+ *         or -1 when @p code is out of range or its signal is no supported code's (outputs
+ *         untouched).
+ */
+int dsd_dcs_alias(int code, int inverted, int* alias_code, int* alias_inverted);
 
 /**
  * @brief Write a DCS code as "D023N" or "D023I": three octal digits with leading zeros.
@@ -164,9 +181,15 @@ int dsd_dcs_canonical(int code, int inverted, int* canon_code, int* canon_invert
 int dsd_dcs_format(int code, int inverted, char* buf, size_t buf_size);
 
 /**
- * @brief Write the display and log label for a received DCS code, "DCS D023N".
+ * @brief Write the display and log label for a received DCS code: "DCS D023N / D047I".
  *
- * @return Characters written (terminator excluded), or -1 as for dsd_dcs_format().
+ * Names the signal of @p code in the given polarity by both of its standard spellings, the
+ * canonical one first (dsd_dcs_canonical(), then dsd_dcs_alias()), whichever of them @p code
+ * is: D023N and D047I both write "DCS D023N / D047I", D023I "DCS D047N / D023I".
+ *
+ * @return Characters written (terminator excluded), or -1 for a NULL/too-small buffer, a code
+ *         outside 0..DSD_DCS_CODE_MAX, or one whose signal is no supported code's. The buffer
+ *         holds an empty string on failure.
  */
 int dsd_dcs_format_label(int code, int inverted, char* buf, size_t buf_size);
 

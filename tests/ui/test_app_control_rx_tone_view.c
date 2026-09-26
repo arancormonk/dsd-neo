@@ -5,9 +5,9 @@
 
 /*
  * The received-tone text every frontend shows (issues #522, #523): one phrase per detection
- * state, a CTCSS tone or a DCS code under its canonical name, hidden whenever detection is not
- * running or cannot run at the input rate, and the configured policy carried as separate text
- * that the received tone never feeds.
+ * state, a CTCSS tone, or a DCS code under both standard spellings of its signal, the canonical
+ * one first, hidden whenever detection is not running or cannot run at the input rate, and the
+ * configured policy carried as separate text that the received tone never feeds.
  */
 
 #include <assert.h>
@@ -118,16 +118,24 @@ test_states_and_formats(void) {
     assert_view(&opts, state, DSD_APP_RX_TONE_DETECTING, "detecting");
     assert(dsd_app_rx_tone_view(&opts, state, 0.0, &view) == 1);
     assert(view.kind == 0U && view.dcs_code == 0 && view.dcs_inverted == 0U);
-    /* A received DCS code: three octal digits with leading zeros and its polarity. */
+    assert(view.dcs_alias_code == 0 && view.dcs_alias_inverted == 0U);
+    /* A received DCS code: both standard spellings of its signal, three octal digits with
+       leading zeros and the polarity each, the published (canonical, normal) one first. A radio
+       set to D023N and one set to D047I send the same signal, so neither is named alone. */
     publish_dcs(state, 0023, 0);
-    assert_view(&opts, state, DSD_APP_RX_TONE_LOCKED, "DCS D023N");
+    assert_view(&opts, state, DSD_APP_RX_TONE_LOCKED, "DCS D023N / D047I");
     assert(dsd_app_rx_tone_view(&opts, state, 0.0, &view) == 1);
     assert(view.kind == (uint8_t)DSD_ANALOG_TONE_KIND_DCS);
     assert(view.dcs_code == 0023 && view.dcs_inverted == 0U && view.ctcss_tenths_hz == 0);
+    assert(view.dcs_alias_code == 0047 && view.dcs_alias_inverted == 1U);
+    /* The signal of D023I, which the detector publishes as D047N. */
     publish_dcs(state, 0047, 0);
-    assert_view(&opts, state, DSD_APP_RX_TONE_LOCKED, "DCS D047N");
+    assert_view(&opts, state, DSD_APP_RX_TONE_LOCKED, "DCS D047N / D023I");
+    assert(dsd_app_rx_tone_view(&opts, state, 0.0, &view) == 1);
+    assert(view.dcs_code == 0047 && view.dcs_inverted == 0U);
+    assert(view.dcs_alias_code == 0023 && view.dcs_alias_inverted == 1U);
     publish_dcs(state, 0754, 0);
-    assert_view(&opts, state, DSD_APP_RX_TONE_LOCKED, "DCS D754N");
+    assert_view(&opts, state, DSD_APP_RX_TONE_LOCKED, "DCS D754N / D116I");
     /* A state from a newer decoder renders as nothing heard. */
     publish(state, 1, 99, 0, 0);
     assert_view(&opts, state, DSD_APP_RX_TONE_NO_CARRIER, EM_DASH);
@@ -198,7 +206,7 @@ test_received_is_not_configured(void) {
     for (int gate = DSD_ANALOG_TONE_GATE_OFF; gate <= DSD_ANALOG_TONE_GATE_REJECTED; gate++) {
         state->analog_rx.gate = gate;
         assert(dsd_app_rx_tone_view(&opts, state, 0.0, &view) == 1);
-        assert(strcmp(view.text, "DCS D245N") == 0 && view.dcs_code == 0245);
+        assert(strcmp(view.text, "DCS D245N / D072I") == 0 && view.dcs_code == 0245 && view.dcs_alias_code == 0072);
         assert(strcmp(view.configured_text, "off") == 0);
     }
     free(state);
@@ -234,10 +242,11 @@ test_paused_stream_reads_no_carrier(void) {
     publish_dcs(state, 0023, 0);
     state->analog_rx.stale_after_ms = 5000U;
     assert(dsd_app_rx_tone_view(&opts, state, 4.999, &view) == 1);
-    assert(view.status == DSD_APP_RX_TONE_LOCKED && strcmp(view.text, "DCS D023N") == 0);
+    assert(view.status == DSD_APP_RX_TONE_LOCKED && strcmp(view.text, "DCS D023N / D047I") == 0);
     assert(dsd_app_rx_tone_view(&opts, state, 5.001, &view) == 1);
     assert(view.status == DSD_APP_RX_TONE_NO_CARRIER && strcmp(view.text, EM_DASH) == 0);
     assert(view.kind == 0U && view.dcs_code == 0 && view.dcs_inverted == 0U);
+    assert(view.dcs_alias_code == 0 && view.dcs_alias_inverted == 0U);
 
     /* "detecting" and "none" describe a carrier too, and go stale the same way. */
     publish(state, 1, DSD_ANALOG_TONE_STATE_NONE, 0, 0);

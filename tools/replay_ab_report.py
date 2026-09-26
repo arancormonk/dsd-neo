@@ -221,16 +221,17 @@ def print_analog_labels(columns: dict[str, dict[int, dict[str, object]]], builds
         by_rep = columns.get(name)
         if not by_rep:
             continue
-        print(f"\n{'label':<22} {'build':<24} {'value':>9} {'agree':>7}")
+        # 11 columns hold the longest label, a DCS code's two spellings ("D023N/D047I").
+        print(f"\n{'label':<22} {'build':<24} {'value':>11} {'agree':>7}")
         for build in builds:
             seen = [by_rep[r][build] for r in reps if r in by_rep and build in by_rep[r]]
             if not seen:
-                print(f"{name:<22} {build:<24} {'NA':>9} {'0/' + str(len(reps)):>7}")
+                print(f"{name:<22} {build:<24} {'NA':>11} {'0/' + str(len(reps)):>7}")
                 continue
             # Most common label; a tie goes to the one seen in the earliest repeat.
             value = Counter(seen).most_common()[0][1]
             label = next(v for v in seen if seen.count(v) == value)
-            print(f"{name:<22} {build:<24} {label:>9} {f'{value}/{len(reps)}':>7}")
+            print(f"{name:<22} {build:<24} {label:>11} {f'{value}/{len(reps)}':>7}")
 
 
 def report_analog(rows: list[dict[str, str]], baseline_arg: str | None) -> int:

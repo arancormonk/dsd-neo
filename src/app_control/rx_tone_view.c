@@ -34,20 +34,28 @@ rx_tone_fill_ctcss(dsd_app_rx_tone* out, const dsd_analog_rx_publication* pub) {
     return 1;
 }
 
+/* The label names both spellings of the code's signal. */
+_Static_assert((int)DSD_APP_RX_TONE_TEXT_SIZE >= (int)DSD_DCS_LABEL_SIZE, "a DCS label fits the view's text");
+
 /* A locked DCS code, as the detector names it: a supported code under the canonical name of
-   its alias class (runtime/analog_tones.h), or 0. */
+   its alias class (runtime/analog_tones.h), shown with the other standard spelling of the same
+   signal, or 0. */
 static int
 rx_tone_fill_dcs(dsd_app_rx_tone* out, const dsd_analog_rx_publication* pub) {
     const int inverted = pub->dcs_inverted ? 1 : 0;
     int canon_code = -1;
     int canon_inverted = -1;
+    int alias_code = -1;
+    int alias_inverted = -1;
     if (dsd_dcs_canonical(pub->dcs_code, inverted, &canon_code, &canon_inverted) != 0 || canon_code != pub->dcs_code
-        || canon_inverted != inverted
+        || canon_inverted != inverted || dsd_dcs_alias(pub->dcs_code, inverted, &alias_code, &alias_inverted) != 0
         || dsd_dcs_format_label(pub->dcs_code, inverted, out->text, sizeof(out->text)) <= 0) {
         return 0;
     }
     out->dcs_code = pub->dcs_code;
     out->dcs_inverted = (uint8_t)inverted;
+    out->dcs_alias_code = alias_code;
+    out->dcs_alias_inverted = alias_inverted ? 1U : 0U;
     return 1;
 }
 

@@ -473,15 +473,17 @@ Tests: `tests/engine/test_engine_trunk_scan.c` (`ENGINE_TRUNK_SCAN`) and
     `analog_demod` FM (issue #524: CTCSS and DCS are FM signalling), the one answer to "does received-tone detection
     run". The DSP tap and `app_control/rx_tone_view` both ask it, so a frontend row is shown exactly while the detectors
     listen. `RUNTIME_ANALOG_TONES` pins the table value by value, and both predicates case by case. DCS (issue #523):
-    the standard 104-code set, `dsd_dcs_word()` (any 9-bit code's 23-bit Golay word: code, the fixed 100, 11 check
-    bits; bit 0 sent first, a multiple of `0xC75`; inverted polarity is the complement), `dsd_dcs_match()` (names the
-    signal in 23 received bits when some rotation, in either polarity, is a supported code's word),
-    `dsd_dcs_canonical()` (the alias rule: normal polarity first, then the lowest code, so every inverted standard code
-    reads as its one normal alias, D023I as D047N) and the `D023N` / `DCS D023N` formatters, leading zeros always. The
-    DSP detector cannot link `dsd-neo_fec`, so runtime has its own encoder; `DSP_ANALOG_DCS_GOLAY_XCHECK` checks every
-    word against `Golay24.hpp` through the explicit layout mapping (reversed 23 bits; Golay24's encoding of the
-    reversed data rotated left by 11) and `RUNTIME_ANALOG_TONES` pins the published reference words and the golden
-    alias table for all 104 codes.
+    the standard 104-code set, `dsd_dcs_word()` (any 9-bit code's 23-bit Golay word: code, the fixed 100, 11 check bits;
+    bit 0 sent first, a multiple of `0xC75`; inverted polarity is the complement), `dsd_dcs_match()` (names the signal
+    in 23 received bits when some rotation, in either polarity, is a supported code's word), `dsd_dcs_canonical()` (the
+    alias rule: normal polarity first, then the lowest code, so every inverted standard code is named by its one normal
+    alias, D023I by D047N), `dsd_dcs_alias()` (the signal's other standard spelling, its one inverted code: D047I for
+    D023N) and the `D023N` / `DCS D023N / D047I` formatters, leading zeros always. A received code is labelled with both
+    spellings, canonical first, because a receiver cannot tell which one a transmitter was set to. The DSP detector
+    cannot link `dsd-neo_fec`, so runtime has its own encoder; `DSP_ANALOG_DCS_GOLAY_XCHECK` checks every word against
+    `Golay24.hpp` through the explicit layout mapping (reversed 23 bits; Golay24's encoding of the reversed data rotated
+    left by 11) and `RUNTIME_ANALOG_TONES` pins the published reference words, the golden alias table for all 104 codes
+    and the two spellings of every signal.
   - Decode presets (`include/dsd-neo/runtime/decode_mode.h`, `src/runtime/decode_mode.c`): the `-f` selector map is
     a table (`k_cli_presets`), and AM (`DSDCFG_MODE_AM` = 16, `-fM`, issue #524) is the last preset: the analog monitor
     with `analog_demod` AM, read back as AM by `dsd_infer_decode_mode_preset()`. AM needs an I/Q radio input, one rule
@@ -767,16 +769,17 @@ installs from `src/engine/trunk_tuning.c` in `src/engine/trunk_tuning_hooks_inst
   received-tone text (issues #522, #523): hidden unless `dsd_analog_tone_detection_active()` says the tap listens
   (decided from the options and the RTL output kind, not from INACTIVE in the publication, so a reset does not blink the
   row) and hidden while the publication reads UNAVAILABLE (an input rate the front end cannot use, where an em dash
-  would claim no carrier), then `CTCSS 100.0 Hz`, `DCS D023N`, `detecting`, `none` or an em dash (the terminal prints a
-  hyphen without UTF-8). Like the scan timing view it takes the caller's monotonic clock: a publication past its
-  `stale_after_ms` deadline (a stdin, UDP or TCP producer that stopped sending, or a live radio stream whose source
+  would claim no carrier), then `CTCSS 100.0 Hz`, `DCS D023N / D047I`, `detecting`, `none` or an em dash (the terminal
+  prints a hyphen without UTF-8). Like the scan timing view it takes the caller's monotonic clock: a publication past
+  its `stale_after_ms` deadline (a stdin, UDP or TCP producer that stopped sending, or a live radio stream whose source
   stopped, while the decoder waits for samples and cannot say so itself) reads as the em dash. A locked value this build
   cannot name (an unsupported frequency, a DCS code that is unsupported or not the canonical member of its alias class)
   reads `detecting`, never a value. It carries the locked code and polarity in `dcs_code` / `dcs_inverted` beside
-  `ctcss_tenths_hz`; the polarity reads normal for every standard code, whose inverted signal is another standard code's
-  normal one, and is kept because a code is named with its polarity everywhere. The same view carries `configured_text`,
-  the configured tone policy, which reads `off` until #527 and is never derived from the received tone. Tests:
-  `APP_CONTROL_RX_TONE_VIEW`, the terminal goldens, `UI_QT_METRICS_MODEL`.
+  `ctcss_tenths_hz`, and the same signal's other standard spelling in `dcs_alias_code` / `dcs_alias_inverted`: the text
+  names both, canonical first. The first polarity reads normal and the second inverted for every standard code, whose
+  inverted signal is another standard code's normal one; both are kept because a code is named with its polarity
+  everywhere. The same view carries `configured_text`, the configured tone policy, which reads `off` until #527 and is
+  never derived from the received tone. Tests: `APP_CONTROL_RX_TONE_VIEW`, the terminal goldens, `UI_QT_METRICS_MODEL`.
   `include/dsd-neo/app_control/analog_width_view.h` and `src/app_control/analog_width_view.c` (issue #525) decide the
   analog channel width in force under the configured analog preset (the scan scope's configured view, so a typed digital
   row does not hide it; never for the M17 encoder): the front end's reported width while a running stream's options in
@@ -1075,8 +1078,9 @@ installs from `src/engine/trunk_tuning.c` in `src/engine/trunk_tuning_hooks_inst
   (`docs/testing.md`). The host's own options are the `--analog-*` names it lists; other `--analog-*` arguments pass
   through to the CLI parser. After each delivered block it also reads the received-tone publication
   (`dsd_state::analog_rx`, which the tap updated from the same block) into its `tone`, `tone_lock_ms` and
-  `tone_lock_pct` fields (`tone=151.4` for CTCSS, `tone=D023N` for DCS), which the `DECODE_IQ_ANALOG_REAL_CTCSS_*`,
-  `DECODE_IQ_ANALOG_DCS_023N_HOST` and `DECODE_IQ_ANALOG_DCS_023I_HOST` cases and `tools/replay_ab.sh` read.
+  `tone_lock_pct` fields (`tone=151.4` for CTCSS, `tone=D023N/D047I` for DCS: both spellings in one token), which the
+  `DECODE_IQ_ANALOG_REAL_CTCSS_*`, `DECODE_IQ_ANALOG_DCS_023N_HOST` and `DECODE_IQ_ANALOG_DCS_023I_HOST` cases and
+  `tools/replay_ab.sh` read.
 - AM envelope detector (issue #524, `demod_pipeline.cpp`, declared in `<dsd-neo/dsp/demod_pipeline.h>`):
   `dsd_am_demod()` outputs 0.25 x clamp(|z| / C - 1, +/-2), C being `demod_state::am_carrier`, a one-pole average of
   |z| with a `DSD_AM_CARRIER_TAU_MS` (50 ms) time constant recomputed per block for the detector's rate (`rate_out`:
@@ -1530,7 +1534,7 @@ Qt Quick frontend (`src/ui/qt`):
   refresh on decoder redraws; session lifecycle clears live metrics and prevents stale snapshots from restoring them.
 - Received tone or code (issues #522, #523): `MetricsModel` publishes the `rxTone*` group (`rxToneVisible`,
   `rxToneStatus`, `rxToneText`, `rxToneKind`, `rxToneTenthsHz`, `rxToneDcsCode`, `rxToneDcsInverted`,
-  `rxToneCarrier`) with its own `rxToneChanged` signal, filled from
+  `rxToneDcsAliasCode`, `rxToneDcsAliasInverted`, `rxToneCarrier`) with its own `rxToneChanged` signal, filled from
   `app_control/rx_tone_view` in `fillRxToneView()` against the frame's one clock reading, and returned to unknown by
   `clear()` on stop. `rxToneConfiguredText` sits beside it with a signal of its own, `rxToneConfiguredTextChanged`,
   because it is configuration rather than session state: it reads the view's `off` from construction, keeps its value
