@@ -129,6 +129,53 @@ test_nfm_targets(const char* path) {
     assert(strstr(err, "row 2: --strict-crc: not supported for this mode/target"));
 }
 
+/* A list mixing am-conventional, nfm-conventional and digital targets validates through the same facade, and the preview
+ * reports each canonical type with its own width, spelled for its kind; the row diagnostics are the engine's. */
+static void
+test_am_targets(const char* path) {
+    write_targets(path, "tower,am-conventional,118300000,,1500,2000,,--am-bandwidth-hz 8333 --squelch-db -55\n"
+                        "fire,nfm-conventional,154430000,,1500,2000,,--nfm-bandwidth-hz 12500\n"
+                        "dmr,dmr-conventional,461000000,,1500,1200,,\n"
+                        "guard,am-conventional,121500000,,1500,2000,,\n");
+    int count = 0;
+    char err[256] = {0};
+    assert(dsd_app_trunk_scan_validate_targets_csv(path, &count, err, sizeof err) == 0);
+    assert(count == 4 && err[0] == '\0');
+    nfm_targets seen = {0};
+    const dsd_app_scan_csv_callbacks callbacks = {collect_nfm_target, NULL, &seen};
+    assert(dsd_app_scan_csv_inspect(path, NULL, 0, &callbacks, err, sizeof err) == 0);
+    assert(seen.count == 4);
+    assert(strcmp(seen.type[0], "am-conventional") == 0 && seen.bandwidth_hz[0] == 8333);
+    assert(strcmp(seen.modulation[0], "") == 0);
+    assert(strcmp(seen.type[1], "nfm-conventional") == 0 && seen.bandwidth_hz[1] == 12500);
+    assert(strcmp(seen.type[2], "dmr-conventional") == 0 && seen.bandwidth_hz[2] == -1);
+    assert(strcmp(seen.type[3], "am-conventional") == 0 && seen.bandwidth_hz[3] == -1);
+
+    const struct {
+        const char* row;
+        const char* reason;
+    } bad[] = {
+        {"a,am-trunk,118300000,,,,,\n", "row 2: analog targets are conventional only (use am-conventional)"},
+        {"a,am,118300000,,,,,\n", "row 2 has invalid target type 'am' (use am-conventional)"},
+        {"a,AM-conventional,118300000,,,,,\n", "row 2 has invalid target type 'AM-conventional'; expected"},
+        {"a,am-conventional,118300000,,,,,--nfm-bandwidth-hz 12500\n",
+         "row 2: --nfm-bandwidth-hz: not supported for this mode/target"},
+        {"a,am-conventional,118300000,,,,,--scan-voice-only\n",
+         "row 2: --scan-voice-only: not supported for this mode/target"},
+        {"a,dmr-conventional,461000000,,,,,--am-bandwidth-hz 8333\n", "row 2: --am-bandwidth-hz: needs mode am"},
+    };
+
+    for (size_t i = 0; i < sizeof bad / sizeof bad[0]; i++) {
+        write_targets(path, bad[i].row);
+        assert(dsd_app_trunk_scan_validate_targets_csv(path, &count, err, sizeof err) != 0);
+        if (!strstr(err, bad[i].reason)) {
+            DSD_FPRINTF(stderr, "want '%s', got '%s'\n", bad[i].reason, err);
+            assert(0);
+        }
+        assert(count == 0);
+    }
+}
+
 /* Every shipped trunk-scan example parses through the engine's own loader with no diagnostic, so
  * the documented option spellings cannot drift from the parser. */
 static void
@@ -174,6 +221,7 @@ main(void) {
     assert(count == 0 && err[0] != '\0');
     test_target_squelch(path);
     test_nfm_targets(path);
+    test_am_targets(path);
     test_trunk_scan_examples_validate();
     remove(path);
     puts("APP_CONTROL_TRUNK_SCAN_VALIDATE ok");

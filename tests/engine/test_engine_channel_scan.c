@@ -37,6 +37,7 @@
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
+#include "scan_analog_internal.h"
 
 void dsd_key_set_test_alloc_fail_after(long count);
 
@@ -125,6 +126,8 @@ static int tuned_analog_only = -1;
 static int tuned_nfm_width_hz = -1;
 static int tuned_analog_kind = -1;
 static int tuned_am_width_hz = -1;
+/* The row's own width a rigctl leg would hand its peer at the tune (dsd_engine_scan_tuning_row_options()); 0 for none. */
+static int tuned_row_width_hz = -1;
 
 dsd_trunk_tune_result
 dsd_engine_scan_tune_to_freq(dsd_opts* opts, dsd_state* state, long freq, int sps, uint64_t* out) {
@@ -134,6 +137,8 @@ dsd_engine_scan_tune_to_freq(dsd_opts* opts, dsd_state* state, long freq, int sp
     tuned_nfm_width_hz = opts->analog_nfm_bandwidth_hz;
     tuned_analog_kind = opts->analog_demod;
     tuned_am_width_hz = opts->analog_am_bandwidth_hz;
+    const dsd_scan_option_values* row = dsd_engine_scan_tuning_row_options(opts, state);
+    tuned_row_width_hz = row && (row->present & DSD_SCAN_OPT_BANDWIDTH) ? row->channel_bw_hz : 0;
     assert(sps == (change_rate_on_tune ? (int)reported_rate / 4800 : (expected_nxdn ? 20 : 10)));
     if (change_rate_on_tune) {
         assert(tunes < 100);
@@ -1678,6 +1683,154 @@ test_nfm_row_warnings_under_the_channel_lpf_override(void) {
     dsd_neo_config_init();
 }
 
+/* --- Issue #526: am rows --- */
+
+/* A map mixing am, nfm and digital rows moves between the demodulators and the families at every commit: digital ->
+ * AM -> NFM -> AM -> digital. Each analog row tunes with its own demodulator and its width in force -- its own, else
+ * the configured one of its kind -- the width a rigctl leg would take from the row being tuned is that row's own, the
+ * other kind's width and the configured view are never touched, each commit opens the sink its row plays through, and
+ * the digital row and the leave put the configured decoder and both configured widths back. */
+static void
+test_am_rows_switch_demodulator_width_and_sink(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
+    assert(opts && state);
+    opts->scanner_mode = 1;
+    opts->audio_in_type = AUDIO_IN_WAV;
+    opts->wav_sample_rate = 48000;
+    assert(dsd_apply_decode_mode_preset(DSDCFG_MODE_DMR, DSD_DECODE_PRESET_PROFILE_CLI, opts, state) == 0);
+    opts->analog_nfm_bandwidth_hz = 20000;
+    opts->analog_am_bandwidth_hz = 10000;
+    opts->rtl_squelch_level = dsd_squelch_level_from_sql(-60.0);
+    state->samplesPerSymbol = 10;
+    state->lcn_freq_count = 5;
+    for (int row = 0; row < 5; row++) {
+        *dsd_state_trunk_lcn_slot(state, row) = 150000000;
+    }
+    const dsd_scan_mode modes[] = {DSD_SCAN_MODE_DMR, DSD_SCAN_MODE_AM, DSD_SCAN_MODE_NFM, DSD_SCAN_MODE_AM,
+                                   DSD_SCAN_MODE_DMR};
+    for (int row = 0; row < 5; row++) {
+        assert(dsd_channel_mode_set(state, (size_t)row, modes[row]) == 0);
+    }
+    nfm_row_profile(state, 1, DSD_SCAN_OPT_BANDWIDTH, 8333, 0)->values.channel_bw_kind = DSD_ANALOG_DEMOD_AM;
+    (void)nfm_row_profile(state, 2, DSD_SCAN_OPT_BANDWIDTH, 12500, 0);
+    expected_nxdn = 0;
+    tune_result = DSD_TRUNK_TUNE_RESULT_OK;
+    g_ensure_analog_calls = g_ensure_digital_calls = 0;
+
+    assert(dsd_engine_channel_scan_step(opts, state) == 1);
+    assert(state->lcn_freq_roll == 1 && opts->frame_dmr && !opts->analog_only && tuned_analog_only == 0);
+    assert(tuned_row_width_hz == 0 && g_ensure_digital_calls == 1);
+
+    /* Digital -> AM with the row's own 8.333 kHz. */
+    assert(dsd_engine_channel_scan_step(opts, state) == 1);
+    assert(tuned_analog_only == 1 && tuned_analog_kind == DSD_ANALOG_DEMOD_AM && tuned_am_width_hz == 8333);
+    assert(tuned_nfm_width_hz == 20000 && tuned_row_width_hz == 8333);
+    assert(state->lcn_freq_roll == 2 && opts->analog_only == 1 && opts->monitor_input_audio == 1 && !opts->frame_dmr);
+    assert(opts->analog_demod == DSD_ANALOG_DEMOD_AM && opts->analog_am_bandwidth_hz == 8333);
+    assert(opts->analog_nfm_bandwidth_hz == 20000 && dsd_scan_mode_active(state) == DSD_SCAN_MODE_AM);
+    assert(dsd_scan_mode_configured_view(state)->analog_am_bandwidth_hz == 10000);
+    assert(dsd_scan_mode_configured_view(state)->analog_only == 0);
+    assert(g_ensure_analog_calls == 1);
+
+    /* AM -> NFM with its own 12.5 kHz: the FM discriminator, and the AM width back at the configured one. */
+    assert(dsd_engine_channel_scan_step(opts, state) == 1);
+    assert(tuned_analog_only == 1 && tuned_analog_kind == DSD_ANALOG_DEMOD_FM && tuned_nfm_width_hz == 12500);
+    assert(tuned_am_width_hz == 10000 && tuned_row_width_hz == 12500);
+    assert(opts->analog_demod == DSD_ANALOG_DEMOD_FM && opts->analog_nfm_bandwidth_hz == 12500);
+    assert(opts->analog_am_bandwidth_hz == 10000 && dsd_scan_mode_active(state) == DSD_SCAN_MODE_NFM);
+    assert(g_ensure_analog_calls == 2);
+
+    /* NFM -> AM without a width of its own: the configured AM width, and the NFM width back at the configured one. */
+    assert(dsd_engine_channel_scan_step(opts, state) == 1);
+    assert(tuned_analog_kind == DSD_ANALOG_DEMOD_AM && tuned_am_width_hz == 10000 && tuned_nfm_width_hz == 20000);
+    assert(tuned_row_width_hz == 0);
+    assert(opts->analog_demod == DSD_ANALOG_DEMOD_AM && opts->analog_am_bandwidth_hz == 10000);
+    assert(opts->analog_nfm_bandwidth_hz == 20000 && g_ensure_analog_calls == 3);
+
+    /* AM -> digital: the digital decoder, the FM demodulator field and both configured widths. */
+    assert(dsd_engine_channel_scan_step(opts, state) == 1);
+    assert(tuned_analog_only == 0 && tuned_am_width_hz == 10000 && tuned_nfm_width_hz == 20000);
+    assert(state->lcn_freq_roll == 5 && opts->frame_dmr && !opts->analog_only && !opts->monitor_input_audio);
+    assert(opts->analog_demod == DSD_ANALOG_DEMOD_FM && g_ensure_digital_calls == 2);
+
+    /* Leaving while an am row is on air puts the configured session back. */
+    state->lcn_freq_roll = 1;
+    assert(dsd_engine_channel_scan_step(opts, state) == 1);
+    assert(opts->analog_demod == DSD_ANALOG_DEMOD_AM && opts->analog_am_bandwidth_hz == 8333);
+    dsd_engine_channel_scan_leave(opts, state);
+    assert(!opts->analog_only && opts->frame_dmr && opts->analog_demod == DSD_ANALOG_DEMOD_FM);
+    assert(opts->analog_am_bandwidth_hz == 10000 && opts->analog_nfm_bandwidth_hz == 20000);
+    assert(dsd_engine_scan_tuning_row_options(opts, state) == NULL);
+    dsd_state_trunk_lcn_free(state);
+    dsd_state_ext_free_all(state);
+    free(state);
+    free(opts);
+    tunes = reset_count = 0;
+}
+
+/* The AM widths are held to the DSP rate as the NFM ones are: an am row's own width the rate cannot filter is named
+ * once with the AM validator's text, an am row without one is named with the configured AM width it runs, and a
+ * change of the configured AM width names again only the am rows that run it -- a change of the NFM width names none
+ * of them. The AM default always runs its channel filter, so a rate too low for it is named as well. */
+static void
+test_am_row_warnings_for_its_widths(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
+    assert(opts && state);
+    nfm_warning_rows_setup(opts, state, AUDIO_IN_RTL, -60.0);
+    /* Row 1 (am, its own 20 kHz, -50 dB) and row 4 (am, the configured width); row 2 keeps its nfm class. */
+    assert(dsd_channel_mode_set(state, 0, DSD_SCAN_MODE_AM) == 0);
+    assert(dsd_channel_mode_set(state, 3, DSD_SCAN_MODE_AM) == 0);
+    dsd_scan_row_profile* own = (dsd_scan_row_profile*)dsd_channel_profile_get(state, 0);
+    assert(own);
+    own->values.channel_bw_kind = DSD_ANALOG_DEMOD_AM;
+    opts->analog_am_bandwidth_hz = 16000;
+    g_scan_dsp_rate_hz = 16000;
+    nfm_warning_rows_visit(opts, state, 8);
+    /* Row 2's open squelch, row 1's own AM 20 kHz and row 4's configured AM 16 kHz; row 2 runs the unset NFM default. */
+    assert(g_analog_warnings == 3);
+    assert(strstr(g_analog_warning_rows[1], "Scan channel 1 (150.000000 MHz): AM bandwidth 20 kHz does not fit the "
+                                            "16 kHz DSP rate"));
+    assert(strstr(g_analog_warning_rows[2], "Scan channel 4 (150.000000 MHz): it sets no AM width of its own, and the "
+                                            "configured AM bandwidth 16 kHz does not fit the 16 kHz DSP rate"));
+    assert(strcmp(state->ui_msg, "Skipped at every visit: Scan channel 1 (150.000000 MHz) and 1 more: AM 20 kHz does "
+                                 "not fit the 16 kHz DSP rate")
+           == 0);
+    /* A configured NFM width the rate cannot filter names row 2, which runs it, and none of the am rows. */
+    (void)dsd_scan_mode_set_configured_nfm_bandwidth(opts, state, 20000);
+    nfm_warning_rows_visit(opts, state, 8);
+    assert(g_analog_warnings == 4);
+    assert(strstr(g_analog_warning_rows[3], "Scan channel 2 (150.000000 MHz): it sets no NFM width of its own"));
+    /* A configured AM width the rate fits names nothing; one it does not names row 4 again, not row 1. */
+    (void)dsd_scan_mode_set_configured_analog_width(opts, state, DSD_ANALOG_DEMOD_AM, 10000);
+    nfm_warning_rows_visit(opts, state, 8);
+    assert(g_analog_warnings == 4);
+    (void)dsd_scan_mode_set_configured_analog_width(opts, state, DSD_ANALOG_DEMOD_AM, 18000);
+    nfm_warning_rows_visit(opts, state, 8);
+    assert(g_analog_warnings == 5);
+    assert(strstr(g_analog_warning_rows[4], "Scan channel 4 (150.000000 MHz): it sets no AM width of its own, and the "
+                                            "configured AM bandwidth 18 kHz does not fit"));
+    int first_row = -1;
+    char brief[DSD_ANALOG_ERROR_TEXT_MAX];
+    assert(dsd_engine_channel_scan_refused_rows(opts, state, 16000, &first_row, brief, sizeof brief) == 3);
+    assert(first_row == 0 && strcmp(brief, "AM 20 kHz does not fit the 16 kHz DSP rate") == 0);
+    /* The unset AM default (6 kHz) runs its channel filter too, unlike the unset NFM default: a rate that cannot filter
+       it skips the am row without a width of its own. */
+    (void)dsd_scan_mode_set_configured_analog_width(opts, state, DSD_ANALOG_DEMOD_AM, 0);
+    (void)dsd_scan_mode_set_configured_nfm_bandwidth(opts, state, 0);
+    assert(dsd_engine_channel_scan_refused_rows(opts, state, 16000, &first_row, brief, sizeof brief) == 1);
+    assert(dsd_engine_channel_scan_refused_rows(opts, state, 6000, &first_row, brief, sizeof brief) == 2);
+    assert(first_row == 0 && strcmp(brief, "AM 20 kHz does not fit the 6 kHz DSP rate") == 0);
+    dsd_engine_channel_scan_leave(opts, state);
+    g_scan_dsp_rate_hz = 0;
+    dsd_state_trunk_lcn_free(state);
+    dsd_state_ext_free_all(state);
+    free(state);
+    free(opts);
+    tunes = reset_count = 0;
+}
+
 int
 main(void) {
     dsd_neo_log_set_tap(count_squelch_warnings, NULL);
@@ -1700,6 +1853,8 @@ main(void) {
     test_nfm_row_warnings_for_the_configured_width();
     test_nfm_placeholder_rows_owe_nothing();
     test_nfm_row_warnings_under_the_channel_lpf_override();
+    test_am_rows_switch_demodulator_width_and_sink();
+    test_am_row_warnings_for_its_widths();
     dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
     dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
     assert(opts && state);

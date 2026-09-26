@@ -20,6 +20,7 @@
 #include <dsd-neo/platform/platform.h>
 #include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/platform/sockets.h>
+#include <dsd-neo/runtime/analog_channel.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/log.h>
 #include <limits.h>
@@ -225,6 +226,23 @@ SetFreq(dsd_socket_t sockfd, long int freq) {
     return true;
 }
 
+/* What the peer on one socket last accepted (issue #526): the demodulator and the passband, keyed together so an FM and
+ * an AM request of the same width are two requests. */
+static dsd_socket_t s_modulation_sockfd = DSD_INVALID_SOCKET;
+static int s_modulation_kind = DSD_ANALOG_DEMOD_FM;
+static int s_modulation_bw = INT_MIN;
+
+/* Send "M <token> <bandwidth>" and read the reply into @p buf. Returns 1 when the peer accepted it, 0 when it refused,
+ * -1 when the I/O failed. */
+static int
+rigctl_set_mode(dsd_socket_t sockfd, const char* token, int bandwidth, char* buf) {
+    DSD_SNPRINTF(buf, BUFSIZE, "M %s %d\n", token, bandwidth);
+    if (!Send(sockfd, buf) || !Recv(sockfd, buf)) {
+        return -1;
+    }
+    return rigctl_response_ok(buf) ? 1 : 0;
+}
+
 /**
  * @brief Set modulation/bandwidth on the RIGCTL peer.
  *
@@ -237,33 +255,41 @@ SetFreq(dsd_socket_t sockfd, long int freq) {
  */
 bool
 SetModulation(dsd_socket_t sockfd, int bandwidth) {
-    static dsd_socket_t s_last_sockfd = DSD_INVALID_SOCKET;
-    static int s_last_bw = INT_MIN;
-    if (sockfd == s_last_sockfd && bandwidth == s_last_bw) {
+    return SetModulationKind(sockfd, DSD_ANALOG_DEMOD_FM, bandwidth);
+}
+
+bool
+SetModulationKind(dsd_socket_t sockfd, int kind, int bandwidth) {
+    const int am = kind == DSD_ANALOG_DEMOD_AM;
+    const int want_kind = am ? DSD_ANALOG_DEMOD_AM : DSD_ANALOG_DEMOD_FM;
+    const int same_peer = sockfd == s_modulation_sockfd;
+    if (same_peer && s_modulation_kind == want_kind && s_modulation_bw == bandwidth) {
         return true; // unchanged
     }
-    char buf[BUFSIZE];
-    /* Active rigctl peers disagree on the narrow-FM token: SDR++ expects NFM,
-     * while GQRX and other Hamlib-compatible peers commonly expect FM. */
-    DSD_SNPRINTF(buf, sizeof buf, "M NFM %d\n", bandwidth);
-    if (!Send(sockfd, buf) || !Recv(sockfd, buf)) {
-        return false;
+    /* FM at the peer's normal passband (0) only undoes a request this client made on the socket (an AM row's
+     * demodulator, or a row's own passband): a peer nothing was asked of keeps its own settings. */
+    if (!am && bandwidth == 0 && !same_peer) {
+        return true;
     }
-
-    /* Retry with the token used by the other active peer family. */
-    if (!rigctl_response_ok(buf)) {
-        DSD_SNPRINTF(buf, sizeof buf, "M FM %d\n", bandwidth);
-        if (!Send(sockfd, buf) || !Recv(sockfd, buf)) {
-            return false;
+    char buf[BUFSIZE + 1];
+    int rc;
+    if (am) {
+        rc = rigctl_set_mode(sockfd, "AM", bandwidth, buf);
+    } else {
+        /* Active rigctl peers disagree on the narrow-FM token: SDR++ expects NFM,
+         * while GQRX and other Hamlib-compatible peers commonly expect FM. */
+        rc = rigctl_set_mode(sockfd, "NFM", bandwidth, buf);
+        if (rc == 0) {
+            /* Retry with the token used by the other active peer family. */
+            rc = rigctl_set_mode(sockfd, "FM", bandwidth, buf);
         }
     }
-
-    if (!rigctl_response_ok(buf)) {
+    if (rc != 1) {
         return false;
     }
-
-    s_last_sockfd = sockfd;
-    s_last_bw = bandwidth;
+    s_modulation_sockfd = sockfd;
+    s_modulation_kind = want_kind;
+    s_modulation_bw = bandwidth;
     return true;
 }
 

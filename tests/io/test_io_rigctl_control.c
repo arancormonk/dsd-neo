@@ -16,6 +16,7 @@
 #include <dsd-neo/io/rtl_stream_c.h>
 #include <dsd-neo/io/rtl_stream_fwd.h>
 #include <dsd-neo/platform/sockets.h>
+#include <dsd-neo/runtime/analog_channel.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/log.h>
 #include <stdint.h>
@@ -308,6 +309,54 @@ test_setmodulation_fallback_and_cache(void) {
     return 0;
 }
 
+/* Issue #526: an AM scan row asks the peer for "M AM <width>". The cache is keyed on the demodulator and the passband
+ * together, so FM and AM at one width are two requests. FM at the peer's normal passband (0) is sent only to undo a
+ * request made on the socket -- an AM row's demodulator here -- and never to a peer nothing was asked of. A refusal
+ * fails the request and leaves the cache on what the peer last accepted, so the next call asks again. */
+static int
+test_setmodulation_kind_am_and_passband_restore(void) {
+    reset_stubs();
+    assert(SetModulationKind(120, DSD_ANALOG_DEMOD_FM, 0));
+    assert(g_command_count == 0);
+
+    push_response("RPRT 0\n");
+    assert(SetModulationKind(120, DSD_ANALOG_DEMOD_AM, 8333));
+    assert(g_command_count == 1 && strcmp(g_commands[0], "M AM 8333\n") == 0);
+    assert(SetModulationKind(120, DSD_ANALOG_DEMOD_AM, 8333));
+    assert(g_command_count == 1);
+
+    push_response("RPRT 0\n");
+    assert(SetModulationKind(120, DSD_ANALOG_DEMOD_FM, 8333));
+    assert(g_command_count == 2 && strcmp(g_commands[1], "M NFM 8333\n") == 0);
+
+    /* Off AM again at the peer's normal passband, through the FM-token fallback. */
+    push_response("RPRT 0\n");
+    assert(SetModulationKind(120, DSD_ANALOG_DEMOD_AM, 6000));
+    push_response("RPRT -11\n");
+    push_response("RPRT 0\n");
+    assert(SetModulationKind(120, DSD_ANALOG_DEMOD_FM, 0));
+    assert(g_command_count == 5 && strcmp(g_commands[2], "M AM 6000\n") == 0);
+    assert(strcmp(g_commands[3], "M NFM 0\n") == 0 && strcmp(g_commands[4], "M FM 0\n") == 0);
+    assert(SetModulationKind(120, DSD_ANALOG_DEMOD_FM, 0));
+    assert(g_command_count == 5);
+
+    /* A peer that refuses AM gets no FM-token retry, and the cache keeps its FM. */
+    push_response("RPRT -1\n");
+    assert(!SetModulationKind(120, DSD_ANALOG_DEMOD_AM, 8333));
+    assert(g_command_count == 6 && strcmp(g_commands[5], "M AM 8333\n") == 0);
+    assert(SetModulationKind(120, DSD_ANALOG_DEMOD_FM, 0));
+    assert(g_command_count == 6);
+    push_response("RPRT 0\n");
+    assert(SetModulationKind(120, DSD_ANALOG_DEMOD_AM, 8333));
+    assert(g_command_count == 7);
+
+    /* A dead link fails the request after the one send. */
+    reset_stubs();
+    assert(!SetModulationKind(121, DSD_ANALOG_DEMOD_AM, 8333));
+    assert(g_command_count == 1);
+    return 0;
+}
+
 static int
 test_get_current_freq_parses_first_line_and_errors(void) {
     reset_stubs();
@@ -447,6 +496,7 @@ main(void) {
     rc |= test_connect_success_uses_rigctl_timeout();
     rc |= test_setfreq_success_failure_and_cache();
     rc |= test_setmodulation_fallback_and_cache();
+    rc |= test_setmodulation_kind_am_and_passband_restore();
     rc |= test_get_current_freq_parses_first_line_and_errors();
     rc |= test_io_control_set_freq_validation_and_rigctl_dispatch();
     rc |= test_io_control_set_freq_rejects_missing_rtl_context();

@@ -417,20 +417,21 @@ dsd_engine_prepare_current_cc_rtl_chain(const dsd_opts* opts, const dsd_state* s
  * kind's default), bound to the target with the scan's gain profile and no symbol profile. Returns -1
  * when the front end refuses the width at the rate it runs.
  *
- * A width the published DSP rate cannot fit -- the row's own, or the configured NFM width a row without one runs --
- * was named when the scan started, or when that rate or the configured width last changed
- * (dsd_engine_scan_warn_analog_width() checks it against the same rate), together with the fact that the row is
- * skipped at every visit, so it is refused here without calling into the stream, whose refusal log a valid row's
- * request would re-arm and repeat at every rotation; the trunk-scan coordinator stays quiet about the failed visit for
- * the same reason. So is any explicit width while DSD_NEO_CHANNEL_LPF=0 turns the channel filter off, which the stream
- * refuses at every rate and the same warning names. Any other refusal is the stream's to log. */
+ * A width the published DSP rate cannot fit -- the row's own, or the configured width of its kind a row without one
+ * runs, the AM default included (dsd_engine_scan_held_width_hz()) -- was named when the scan started, or when that rate
+ * or the configured width last changed (dsd_engine_scan_warn_analog_width() checks it against the same rate), together
+ * with the fact that the row is skipped at every visit, so it is refused here without calling into the stream, whose
+ * refusal log a valid row's request would re-arm and repeat at every rotation; the trunk-scan coordinator stays quiet
+ * about the failed visit for the same reason. So is any held width while DSD_NEO_CHANNEL_LPF=0 turns the channel filter
+ * off, which the stream refuses at every rate and the same warning names. Any other refusal is the stream's to log. */
 static int
 dsd_engine_prepare_scan_analog_profile(const dsd_opts* opts, const dsd_state* state, long int freq) {
     const int width_hz = dsd_opts_analog_width_hz(opts);
+    const int held_hz = dsd_engine_scan_held_width_hz(opts->analog_demod, width_hz);
     const int rate_hz = dsd_engine_scan_dsp_rate_hz(opts, state);
-    if (width_hz > 0 && rate_hz > 0
+    if (held_hz > 0 && rate_hz > 0
         && (dsd_engine_scan_channel_lpf_forced_off()
-            || dsd_analog_width_check(opts->analog_demod, width_hz, rate_hz, NULL, 0U) != 0)) {
+            || dsd_analog_width_check(opts->analog_demod, held_hz, rate_hz, NULL, 0U) != 0)) {
         return -1;
     }
     dsd_engine_prepare_retune_profile_for_target(opts, state, (uint32_t)freq, -1, 0, 4, RTL_STREAM_CHANNEL_PROFILE_WIDE,
@@ -510,10 +511,41 @@ dsd_engine_update_vc_tune_state(dsd_opts* opts, dsd_state* state, long int freq)
     state->p25_last_vc_tune_time_m = state->last_vc_sync_time_m;
 }
 
+/* The demodulator and passband a rigctl peer runs for the settings in force (issue #526). The peer demodulates, so an
+ * AM row (the AM monitor) asks for AM at the AM width it runs, its own or the configured one (the 6 kHz default when
+ * none is set), and an nfm row that sets its own --nfm-bandwidth-hz (dsd_engine_scan_tuning_row_options()) asks for FM
+ * at that width. Either is the row's to have, so a peer that refuses it fails the tune, and the scanner moves on as for
+ * any row it cannot tune. Anything else asks for FM at -B and stays best-effort, as -B always has been; without -B that
+ * is the peer's normal passband (0), sent only to undo an AM row or a row passband this client set (SetModulationKind()),
+ * so the next row inherits the peer's settings again. */
 static int
-dsd_engine_tune_rigctl(const dsd_opts* opts, long int freq) {
-    if (opts->setmod_bw != 0 && !SetModulation(opts->rigctl_sockfd, opts->setmod_bw)) {
-        DSD_FPRINTF(stderr, "Rigctl modulation update failed for bandwidth %d.\n", opts->setmod_bw);
+dsd_engine_tune_rigctl_modulation(const dsd_opts* opts, const dsd_state* state) {
+    int kind = DSD_ANALOG_DEMOD_FM;
+    int bandwidth = opts->setmod_bw;
+    int required = 0;
+    if (dsd_opts_is_analog_family(opts) && opts->analog_demod == DSD_ANALOG_DEMOD_AM) {
+        kind = DSD_ANALOG_DEMOD_AM;
+        bandwidth = dsd_analog_width_effective_hz(DSD_ANALOG_DEMOD_AM, opts->analog_am_bandwidth_hz);
+        required = 1;
+    } else if (dsd_opts_is_analog_family(opts)) {
+        const dsd_scan_option_values* row = dsd_engine_scan_tuning_row_options(opts, state);
+        if (row && (row->present & DSD_SCAN_OPT_BANDWIDTH) && row->channel_bw_kind == DSD_ANALOG_DEMOD_FM) {
+            bandwidth = row->channel_bw_hz;
+            required = 1;
+        }
+    }
+    if (SetModulationKind(opts->rigctl_sockfd, kind, bandwidth)) {
+        return 1;
+    }
+    DSD_FPRINTF(stderr, "Rigctl %s modulation update failed for bandwidth %d.\n", dsd_analog_demod_label(kind),
+                bandwidth);
+    return required ? 0 : 1;
+}
+
+static int
+dsd_engine_tune_rigctl(const dsd_opts* opts, const dsd_state* state, long int freq) {
+    if (!dsd_engine_tune_rigctl_modulation(opts, state)) {
+        return 0;
     }
     if (!SetFreq(opts->rigctl_sockfd, freq)) {
         DSD_FPRINTF(stderr, "Rigctl frequency update failed for %ld Hz.\n", freq);
@@ -558,7 +590,7 @@ static dsd_trunk_tune_result
 dsd_engine_tune_with_backend(dsd_opts* opts, dsd_state* state, long int freq, uint64_t request_id) {
     const int conventional_scan = dsd_engine_conventional_scan_active(opts);
     if (opts->use_rigctl == 1) {
-        if (!dsd_engine_tune_rigctl(opts, freq)) {
+        if (!dsd_engine_tune_rigctl(opts, state, freq)) {
             return DSD_TRUNK_TUNE_RESULT_FAILED;
         }
         opts->rtlsdr_center_freq = (uint32_t)freq;

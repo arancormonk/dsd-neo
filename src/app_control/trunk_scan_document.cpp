@@ -320,6 +320,7 @@ targetTypeName(dsd_trunk_scan_target_type type) {
         case DSD_TRUNK_SCAN_TARGET_NXDN48_CONVENTIONAL: return "nxdn48-conventional";
         case DSD_TRUNK_SCAN_TARGET_P25_CONVENTIONAL: return "p25-conventional";
         case DSD_TRUNK_SCAN_TARGET_NFM_CONVENTIONAL: return "nfm-conventional";
+        case DSD_TRUNK_SCAN_TARGET_AM_CONVENTIONAL: return "am-conventional";
     }
     return "";
 }

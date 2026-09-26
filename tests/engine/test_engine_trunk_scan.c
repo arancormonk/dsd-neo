@@ -117,6 +117,9 @@ static int g_scan_tune_to_freq_ted_sps = 0;
 /* What the options said when the coordinator tuned (issue #526): the family and width the row asked for. */
 static int g_scan_tune_to_freq_analog_only = -1;
 static int g_scan_tune_to_freq_nfm_width_hz = -1;
+/* And the demodulator and AM width an am-conventional target tuned with. */
+static int g_scan_tune_to_freq_analog_demod = -1;
+static int g_scan_tune_to_freq_am_width_hz = -1;
 static int g_scan_tune_to_freq_failures_remaining = 0;
 /* Issue #526: refuse an analog width the published DSP rate cannot fit before any backend moves, as the real
    dsd_engine_scan_tune_to_freq() does, counting each refusal. */
@@ -360,6 +363,8 @@ dsd_engine_scan_tune_to_freq(dsd_opts* opts, dsd_state* state, long int freq, in
     }
     g_scan_tune_to_freq_analog_only = opts->analog_only;
     g_scan_tune_to_freq_nfm_width_hz = opts->analog_nfm_bandwidth_hz;
+    g_scan_tune_to_freq_analog_demod = opts->analog_demod;
+    g_scan_tune_to_freq_am_width_hz = opts->analog_am_bandwidth_hz;
     const dsdneoRuntimeConfig* env = dsd_neo_get_config();
     const int lpf_off = env && env->channel_lpf_is_set && env->channel_lpf_enable == 0;
     if (g_scan_tune_refuses_unfit_width && dsd_opts_is_analog_family(opts) && dsd_opts_analog_width_hz(opts) > 0
@@ -10019,7 +10024,8 @@ test_nfm_target_parse_and_row_diagnostics(void) {
         {"a,nfm,154430000,,,,,,,,,,\n", "row 2 has invalid target type 'nfm' (use nfm-conventional)"},
         {"a,NFM-conventional,154430000,,,,,,,,,,\n",
          "row 2 has invalid target type 'NFM-conventional'; expected p25-trunk, p25-conventional, dmr-trunk, "
-         "dmr-conventional, nxdn-trunk, nxdn-conventional, nxdn48-conventional, nxdn48-trunk or nfm-conventional"},
+         "dmr-conventional, nxdn-trunk, nxdn-conventional, nxdn48-conventional, nxdn48-trunk, nfm-conventional or "
+         "am-conventional"},
         {"a,nfm-conventional,154430000,,,,,auto,,,,,\n", "row 2: an analog target takes no modulation"},
         {"a,nfm-conventional,154430000,chan.csv,,,,,,,,,\n", "row 2 sets chan_csv for a conventional target"},
         {"a,nfm-conventional,154430000,,,,,,,,,,plan.csv\n", "row 2 sets p25_bandplan_csv for a conventional target"},
@@ -10201,30 +10207,37 @@ test_nfm_target_rollback_restores_the_analog_row(void) {
     return test_rc;
 }
 
-/* Carrier holds an nfm target: each tick with the squelch open refreshes the activity hold, the
- * publication reads "Carrier", the hold's tail runs out after the carrier drops and the idle dwell
- * then rotates. A global --scan-voice-only does not block it, and digital activity reports for
- * another family never claim it. */
+/* Carrier holds an analog target of @p type (nfm-conventional, am-conventional): each tick with the
+ * squelch open refreshes the activity hold, the publication reads "Carrier", the hold's tail runs out
+ * after the carrier drops and the idle dwell then rotates. A global --scan-voice-only does not block
+ * it, and digital activity reports for another family never claim it. */
 static int
-nfm_carrier_hold_case(int voice_only) {
+analog_carrier_hold_case(const char* type, int voice_only) {
     char dir[DSD_TEST_PATH_MAX];
     char target_path[DSD_TEST_PATH_MAX];
+    char body[160];
     static dsd_opts opts;
     static dsd_state state;
-    if (nfm_targets_init("fire,nfm-conventional,154430000,,250,250,\n"
-                         "dmr,dmr-conventional,461000000,,250,250,\n",
-                         &opts, &state, dir, sizeof dir, target_path, sizeof target_path)
-        != 0) {
+    DSD_SNPRINTF(body, sizeof body, "fire,%s,154430000,,250,250,\ndmr,dmr-conventional,461000000,,250,250,\n", type);
+    if (nfm_targets_init(body, &opts, &state, dir, sizeof dir, target_path, sizeof target_path) != 0) {
         return 1;
     }
     opts.scan_voice_only = voice_only;
     int test_rc = 0;
+    const int am = strcmp(type, "am-conventional") == 0;
+    if (dsd_scan_mode_active(&state) != (am ? DSD_SCAN_MODE_AM : DSD_SCAN_MODE_NFM)
+        || opts.analog_demod != (am ? DSD_ANALOG_DEMOD_AM : DSD_ANALOG_DEMOD_FM)) {
+        DSD_FPRINTF(stderr, "%s target runs class %d, demodulator %d\n", type, (int)dsd_scan_mode_active(&state),
+                    opts.analog_demod);
+        test_rc = 1;
+    }
     trunk_scan_test_set_now(0.10);
     state.analog_rx.carrier_open = 1;
     dsd_engine_trunk_scan_tick(&opts, &state);
     test_rc |= expect_scan_timing(&state, "carrier", DSD_SCAN_STAY_CARRIER, 0.35, 250U, 250U);
     if (state.scan_voice_gate_phase != (uint8_t)DSD_SCAN_VOICE_GATE_OFF) {
-        DSD_FPRINTF(stderr, "voice gate phase %u published on an nfm target\n", (unsigned)state.scan_voice_gate_phase);
+        DSD_FPRINTF(stderr, "voice gate phase %u published on an analog target\n",
+                    (unsigned)state.scan_voice_gate_phase);
         test_rc = 1;
     }
     for (int tick = 0; tick < 4; tick++) {
@@ -10257,14 +10270,19 @@ nfm_carrier_hold_case(int voice_only) {
     trunk_scan_test_clear_now();
     cleanup_paths(dir, target_path, NULL);
     if (test_rc) {
-        DSD_FPRINTF(stderr, "nfm carrier hold failed with --scan-voice-only %d\n", voice_only);
+        DSD_FPRINTF(stderr, "%s carrier hold failed with --scan-voice-only %d\n", type, voice_only);
     }
     return test_rc;
 }
 
 static int
-test_nfm_target_carrier_holds_and_idle_dwell_rotates(void) {
-    return nfm_carrier_hold_case(0) | nfm_carrier_hold_case(1);
+test_analog_target_carrier_holds_and_idle_dwell_rotates(void) {
+    int rc = 0;
+    for (int voice_only = 0; voice_only <= 1; voice_only++) {
+        rc |= analog_carrier_hold_case("nfm-conventional", voice_only);
+        rc |= analog_carrier_hold_case("am-conventional", voice_only);
+    }
+    return rc;
 }
 
 /* Digital verdict accounting is unchanged beside nfm targets: a DMR header still holds a DMR
@@ -10296,19 +10314,20 @@ test_nfm_targets_leave_digital_activity_accounting_intact(void) {
     return test_rc;
 }
 
-/* The per-visit cap outlasts a continuous carrier, and the operator controls act on an nfm target
- * while its carrier holds it: advance moves now, hold keeps it past the cap, avoid steps on. */
+/* The per-visit cap outlasts a continuous carrier, and the operator controls act on an analog target
+ * of @p type while its carrier holds it: advance moves now, hold keeps it past the cap, avoid steps on. */
 static int
-test_nfm_target_visit_cap_and_controls_under_carrier(void) {
+analog_visit_cap_case(const char* type) {
     char dir[DSD_TEST_PATH_MAX];
     char target_path[DSD_TEST_PATH_MAX];
+    char body[256];
     static dsd_opts opts;
     static dsd_state state;
-    if (nfm_targets_init("fire,nfm-conventional,154430000,,250,250,,--scan-max-visit-ms 1000\n"
-                         "dmr,dmr-conventional,461000000,,250,250,\n"
-                         "ops,nfm-conventional,155475000,,250,250,\n",
-                         &opts, &state, dir, sizeof dir, target_path, sizeof target_path)
-        != 0) {
+    DSD_SNPRINTF(body, sizeof body,
+                 "fire,%s,154430000,,250,250,,--scan-max-visit-ms 1000\ndmr,dmr-conventional,461000000,,250,250,\n"
+                 "ops,%s,155475000,,250,250,\n",
+                 type, type);
+    if (nfm_targets_init(body, &opts, &state, dir, sizeof dir, target_path, sizeof target_path) != 0) {
         return 1;
     }
     int test_rc = 0;
@@ -10323,7 +10342,7 @@ test_nfm_target_visit_cap_and_controls_under_carrier(void) {
     dsd_engine_trunk_scan_tick(&opts, &state);
     test_rc |= expect_active_target(&state, "cap expired under a carrier", 1U);
 
-    /* Advance during a carrier on the other nfm target moves at once. */
+    /* Advance during a carrier on the other analog target moves at once. */
     test_rc |=
         expect_control_rc("advance", dsd_engine_trunk_scan_control(&opts, &state, DSD_TRUNK_SCAN_CONTROL_ADVANCE), 0);
     test_rc |= expect_active_target(&state, "advance onto ops", 2U);
@@ -10350,12 +10369,21 @@ test_nfm_target_visit_cap_and_controls_under_carrier(void) {
     dsd_engine_trunk_scan_shutdown(&opts, &state);
     trunk_scan_test_clear_now();
     cleanup_paths(dir, target_path, NULL);
+    if (test_rc) {
+        DSD_FPRINTF(stderr, "%s visit cap and controls under a carrier failed\n", type);
+    }
     return test_rc;
 }
 
-/* What the nfm targets owe the operator when the scan starts: a width the running DSP rate cannot
- * filter, and a squelch that holds on noise. An nfm target's squelch is not the digital squelch the
- * #521 warning is about, even on audio input. */
+static int
+test_analog_target_visit_cap_and_controls_under_carrier(void) {
+    return analog_visit_cap_case("nfm-conventional") | analog_visit_cap_case("am-conventional");
+}
+
+/* What the analog targets owe the operator when the scan starts: a width the running DSP rate cannot
+ * filter, and a squelch that holds on noise. An analog target's squelch is not the digital squelch the
+ * #521 warning is about, even on audio input. On audio input the rigctl peer demodulates and takes a
+ * target's own width as its passband (an am target's with "M AM"), so the width is no warning there. */
 static int
 test_nfm_target_warnings_at_scan_start(void) {
     char dir[DSD_TEST_PATH_MAX];
@@ -10367,6 +10395,8 @@ test_nfm_target_warnings_at_scan_start(void) {
                                           "fire,nfm-conventional,154430000,,250,250,,"
                                           "--nfm-bandwidth-hz 20000 --squelch-db -50\n"
                                           "open,nfm-conventional,155475000,,250,250,,--squelch-db 0\n"
+                                          "tower,am-conventional,118300000,,250,250,,"
+                                          "--am-bandwidth-hz 20000 --squelch-db -50\n"
                                           "dmr,dmr-conventional,461000000,,250,250,,--squelch-db -60\n",
                                           target_path, sizeof target_path)
                != 0) {
@@ -10395,12 +10425,18 @@ test_nfm_target_warnings_at_scan_start(void) {
         dsd_engine_trunk_scan_shutdown(&opts, &state);
         (void)dsd_test_capture_stderr_end(&cap);
         (void)dsd_test_capture_stderr_read(&cap, buf, sizeof buf);
-        const char* width = rtl ? "Trunk scan target 'fire': NFM bandwidth 20 kHz does not fit the 16 kHz DSP rate"
-                                : "Trunk scan target 'fire': --nfm-bandwidth-hz 20000 has no effect on audio input";
-        if (rc != 0 || !strstr(buf, width)
+        const int nfm_width = strstr(buf, "Trunk scan target 'fire': NFM bandwidth 20 kHz does not fit the 16 kHz DSP "
+                                          "rate")
+                              != NULL;
+        const int am_width = strstr(buf, "Trunk scan target 'tower': AM bandwidth 20 kHz does not fit the 16 kHz DSP "
+                                         "rate")
+                             != NULL;
+        if (rc != 0 || nfm_width != rtl || am_width != rtl || strstr(buf, "has no effect")
             || !strstr(buf, "Trunk scan target 'open': the analog channel's squelch is off")
             || strstr(buf, "Trunk scan target 'fire': the analog")
+            || strstr(buf, "Trunk scan target 'tower': the analog")
             || strstr(buf, "Trunk scan target 'fire': --squelch-db")
+            || strstr(buf, "Trunk scan target 'tower': --squelch-db")
             || strstr(buf, "Trunk scan target 'open': --squelch-db")
             || (strstr(buf, "Trunk scan target 'dmr': --squelch-db") != NULL) == rtl) {
             DSD_FPRINTF(stderr, "nfm target warnings on %s input (rc=%d %s):\n%s\n", rtl ? "RTL" : "audio", rc, err,
@@ -11033,6 +11069,170 @@ test_nfm_target_switch_clears_received_dcs_code(void) {
     return test_rc;
 }
 
+/* --- Issue #526: am-conventional targets --- */
+
+/* The AM type parses with its own width (--am-bandwidth-hz, recorded as the AM demodulator's), squelch and visit cap;
+ * the other kind's width, the columns and switches an analog channel has no use for, and every spelling that is not
+ * the canonical one are refused with a row diagnostic. */
+static int
+test_am_target_parse_and_row_diagnostics(void) {
+    int test_rc = 0;
+    dsd_trunk_scan_target_list list;
+    char err[256] = {0};
+    if (load_nfm_targets("tower,am-conventional,118300000,,1500,2000,airband,,20,,,"
+                         "--am-bandwidth-hz 8333 --squelch-db -55 --scan-max-visit-ms 5000,\n"
+                         "guard,am-conventional,121500000,,,,,,,,,,\n",
+                         &list, err, sizeof err)
+        != 0) {
+        DSD_FPRINTF(stderr, "am-conventional target refused: %s\n", err);
+        return 1;
+    }
+    const dsd_trunk_scan_target* am = &list.targets[0];
+    if (list.count != 2 || am->type != DSD_TRUNK_SCAN_TARGET_AM_CONVENTIONAL || am->frequency_hz != 118300000U
+        || am->modulation != DSD_TRUNK_SCAN_MODULATION_UNSET || am->rtl_gain_db != 20 || am->activity_hold_ms != 2000
+        || am->row_options.present != (DSD_SCAN_OPT_BANDWIDTH | DSD_SCAN_OPT_SQUELCH | DSD_SCAN_OPT_MAX_VISIT)
+        || am->row_options.channel_bw_hz != 8333 || am->row_options.channel_bw_kind != DSD_ANALOG_DEMOD_AM
+        || am->row_options.squelch_db != -55 || list.targets[1].type != DSD_TRUNK_SCAN_TARGET_AM_CONVENTIONAL
+        || list.targets[1].row_options.present != 0U) {
+        DSD_FPRINTF(stderr, "am-conventional target parsed wrong: type=%d present=0x%x width=%d kind=%d\n",
+                    (int)am->type, (unsigned)am->row_options.present, am->row_options.channel_bw_hz,
+                    am->row_options.channel_bw_kind);
+        test_rc = 1;
+    }
+    dsd_trunk_scan_target_list_reset(&list);
+
+    const struct {
+        const char* row;
+        const char* diagnostic;
+    } refused[] = {
+        {"a,am-trunk,118300000,,,,,,,,,,\n", "row 2: analog targets are conventional only (use am-conventional)"},
+        {"a,am,118300000,,,,,,,,,,\n", "row 2 has invalid target type 'am' (use am-conventional)"},
+        {"a,AM-conventional,118300000,,,,,,,,,,\n", "row 2 has invalid target type 'AM-conventional'; expected"},
+        {"a,am-conventional,118300000,,,,,auto,,,,,\n", "row 2: an analog target takes no modulation"},
+        {"a,am-conventional,118300000,chan.csv,,,,,,,,,\n", "row 2 sets chan_csv for a conventional target"},
+        {"a,am-conventional,118300000,,,,,,,,12345,,\n", "row 2: key columns are not supported for an analog target"},
+        {"a,am-conventional,118300000,,,,,,,,,--nfm-bandwidth-hz 12500,\n",
+         "row 2: --nfm-bandwidth-hz: not supported for this mode/target"},
+        {"a,am-conventional,118300000,,,,,,,,,--am-bandwidth-hz 25000,\n",
+         "row 2: --am-bandwidth-hz: expects whole Hz from 5000 to 20000"},
+        {"a,am-conventional,118300000,,,,,,,,,--strict-crc,\n",
+         "row 2: --strict-crc: not supported for this mode/target"},
+        {"a,nfm-conventional,154430000,,,,,,,,,--am-bandwidth-hz 8333,\n",
+         "row 2: --am-bandwidth-hz: not supported for this mode/target"},
+        {"a,p25-conventional,851012500,,,,,,,,,--am-bandwidth-hz 8333,\n", "row 2: --am-bandwidth-hz: needs mode am"},
+    };
+
+    for (size_t i = 0; i < sizeof(refused) / sizeof(refused[0]); i++) {
+        DSD_MEMSET(err, 0, sizeof err);
+        const int rc = load_nfm_targets(refused[i].row, &list, err, sizeof err);
+        if (rc != -1 || !strstr(err, refused[i].diagnostic) || strstr(err, "12345")) {
+            DSD_FPRINTF(stderr, "am row '%s': rc=%d err='%s', want '%s'\n", refused[i].row, rc, err,
+                        refused[i].diagnostic);
+            test_rc = 1;
+            dsd_trunk_scan_target_list_reset(&list);
+        }
+    }
+    return test_rc;
+}
+
+static int
+expect_analog_front(const dsd_opts* opts, const char* stage, int analog, int demod, int am_hz, int nfm_hz) {
+    if (opts->analog_only != analog || (analog && opts->analog_demod != demod) || opts->analog_am_bandwidth_hz != am_hz
+        || opts->analog_nfm_bandwidth_hz != nfm_hz || g_scan_tune_to_freq_analog_only != analog
+        || (analog && g_scan_tune_to_freq_analog_demod != demod) || g_scan_tune_to_freq_am_width_hz != am_hz
+        || g_scan_tune_to_freq_nfm_width_hz != nfm_hz || (analog && g_scan_tune_to_freq_ted_sps != 0)) {
+        DSD_FPRINTF(
+            stderr, "%s: analog_only=%d demod=%d am=%d nfm=%d (tuned with %d/%d/%d/%d, ted_sps %d), want %d/%d/%d/%d\n",
+            stage, opts->analog_only, opts->analog_demod, opts->analog_am_bandwidth_hz, opts->analog_nfm_bandwidth_hz,
+            g_scan_tune_to_freq_analog_only, g_scan_tune_to_freq_analog_demod, g_scan_tune_to_freq_am_width_hz,
+            g_scan_tune_to_freq_nfm_width_hz, g_scan_tune_to_freq_ted_sps, analog, demod, am_hz, nfm_hz);
+        return 1;
+    }
+    return 0;
+}
+
+/* A list mixing AM, NFM and digital targets moves between the demodulators and families at every rotation: each
+ * analog target tunes with its own demodulator and width -- its own, else the configured one of its kind -- and no
+ * symbol clock, AM <-> NFM switches the demodulator without touching the other kind's width, a digital target gets
+ * its decoder and both configured widths back, and shutdown restores the digital session. The configured view never
+ * sees a target's width. */
+static int
+test_am_target_rotation_moves_between_demodulators(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    char target_path[DSD_TEST_PATH_MAX];
+    static dsd_opts opts;
+    static dsd_state state;
+    if (make_temp_dir(dir, sizeof dir) != 0
+        || write_targets_file_with_header(dir, k_squelch_targets_header,
+                                          "dmr,dmr-conventional,461000000,,250,250,\n"
+                                          "tower,am-conventional,118300000,,250,250,,--am-bandwidth-hz 8333\n"
+                                          "fire,nfm-conventional,154430000,,250,250,,--nfm-bandwidth-hz 12500\n"
+                                          "guard,am-conventional,121500000,,250,250,\n",
+                                          target_path, sizeof target_path)
+               != 0) {
+        return 1;
+    }
+    reset_scan_opts_state(&opts, &state);
+    opts.frame_dmr = 1;
+    opts.dmr_stereo = 1;
+    opts.analog_nfm_bandwidth_hz = 20000;
+    opts.analog_am_bandwidth_hz = 10000;
+    DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", target_path);
+    char err[256] = {0};
+    trunk_scan_test_set_now(0.0);
+    if (dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err) != 0) {
+        DSD_FPRINTF(stderr, "mixed am targets init failed: %s\n", err);
+        cleanup_paths(dir, target_path, NULL);
+        return 1;
+    }
+    int test_rc = expect_analog_front(&opts, "digital target", 0, DSD_ANALOG_DEMOD_FM, 10000, 20000);
+    trunk_scan_test_set_now(0.26);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    test_rc |= expect_active_target(&state, "digital -> am", 1U);
+    test_rc |= expect_analog_front(&opts, "am target with a width", 1, DSD_ANALOG_DEMOD_AM, 8333, 20000);
+    if (dsd_scan_mode_active(&state) != DSD_SCAN_MODE_AM || opts.frame_dmr != 0 || opts.trunk_enable != 0) {
+        DSD_FPRINTF(stderr, "am target did not run the AM monitor: mode=%d frame_dmr=%d\n",
+                    (int)dsd_scan_mode_active(&state), opts.frame_dmr);
+        test_rc = 1;
+    }
+    trunk_scan_test_set_now(0.52);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    test_rc |= expect_active_target(&state, "am -> nfm", 2U);
+    test_rc |= expect_analog_front(&opts, "nfm target after am", 1, DSD_ANALOG_DEMOD_FM, 10000, 12500);
+    trunk_scan_test_set_now(0.78);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    test_rc |= expect_active_target(&state, "nfm -> am", 3U);
+    test_rc |= expect_analog_front(&opts, "am target without a width", 1, DSD_ANALOG_DEMOD_AM, 10000, 20000);
+    trunk_scan_test_set_now(1.04);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    test_rc |= expect_active_target(&state, "am -> digital", 0U);
+    test_rc |= expect_analog_front(&opts, "digital target after am", 0, DSD_ANALOG_DEMOD_FM, 10000, 20000);
+    if (opts.frame_dmr != 1 || opts.analog_demod != DSD_ANALOG_DEMOD_FM) {
+        DSD_FPRINTF(stderr, "digital target after am kept frame_dmr=%d demod=%d\n", opts.frame_dmr, opts.analog_demod);
+        test_rc = 1;
+    }
+    const dsd_scan_settings* configured = dsd_scan_mode_configured_view(&state);
+    if (!configured || configured->analog_am_bandwidth_hz != 10000 || configured->analog_nfm_bandwidth_hz != 20000
+        || configured->analog_only != 0) {
+        DSD_FPRINTF(stderr, "a target's width or class reached the configured view\n");
+        test_rc = 1;
+    }
+    /* Shutdown while an am target is on air puts the digital session and both widths back. */
+    trunk_scan_test_set_now(1.30);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    test_rc |= expect_active_target(&state, "back to the am target", 1U);
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    if (opts.analog_only != 0 || opts.analog_demod != DSD_ANALOG_DEMOD_FM || opts.frame_dmr != 1
+        || opts.analog_am_bandwidth_hz != 10000 || opts.analog_nfm_bandwidth_hz != 20000) {
+        DSD_FPRINTF(stderr, "shutdown on an am target left analog_only=%d demod=%d am=%d nfm=%d\n", opts.analog_only,
+                    opts.analog_demod, opts.analog_am_bandwidth_hz, opts.analog_nfm_bandwidth_hz);
+        test_rc = 1;
+    }
+    trunk_scan_test_clear_now();
+    cleanup_paths(dir, target_path, NULL);
+    return test_rc;
+}
+
 int
 main(void) {
     int rc = 0;
@@ -11177,9 +11377,9 @@ main(void) {
     rc |= run_with_default_tune_hook(test_nfm_target_parse_and_row_diagnostics);
     rc |= run_with_default_tune_hook(test_nfm_target_rotation_restores_family_and_width);
     rc |= run_with_default_tune_hook(test_nfm_target_rollback_restores_the_analog_row);
-    rc |= run_with_default_tune_hook(test_nfm_target_carrier_holds_and_idle_dwell_rotates);
+    rc |= run_with_default_tune_hook(test_analog_target_carrier_holds_and_idle_dwell_rotates);
     rc |= run_with_default_tune_hook(test_nfm_targets_leave_digital_activity_accounting_intact);
-    rc |= run_with_default_tune_hook(test_nfm_target_visit_cap_and_controls_under_carrier);
+    rc |= run_with_default_tune_hook(test_analog_target_visit_cap_and_controls_under_carrier);
     rc |= run_with_default_tune_hook(test_nfm_target_refuses_live_decryption);
     rc |= run_with_default_tune_hook(test_nfm_target_warnings_at_scan_start);
     rc |= run_with_default_tune_hook(test_digital_target_after_nfm_timed_for_digital_family);
@@ -11189,6 +11389,8 @@ main(void) {
     rc |= run_with_default_tune_hook(test_nfm_target_configured_width_held_to_the_dsp_rate);
     rc |= run_with_default_tune_hook(test_nfm_target_status_counts_every_skipped_target);
     rc |= run_with_default_tune_hook(test_nfm_target_width_edit_during_a_pending_retune);
+    rc |= run_with_default_tune_hook(test_am_target_parse_and_row_diagnostics);
+    rc |= run_with_default_tune_hook(test_am_target_rotation_moves_between_demodulators);
     /* Issue #523 */
     rc |= run_with_default_tune_hook(test_nfm_target_switch_clears_received_dcs_code);
     return rc;

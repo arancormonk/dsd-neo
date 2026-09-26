@@ -11,6 +11,7 @@
  *   controller reaches the hardware retune boundary
  * - a -Y row that runs the analog family queues the configured analog
  *   profile for its retune, never a symbol profile
+ * - a rigctl scan tune asks the peer for the row's demodulator and passband
  */
 
 #include <assert.h>
@@ -25,6 +26,7 @@
 #include <dsd-neo/runtime/analog_channel.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/scan_mode.h>
+#include <dsd-neo/runtime/scan_options.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -49,6 +51,10 @@ static int g_setfreq_calls = 0;
 static long int g_last_setfreq_hz = 0;
 static bool g_setfreq_result = true;
 static bool g_setmod_result = true;
+static int g_setmod_calls = 0;
+static int g_setmod_kind = -1;
+static int g_setmod_bw = 0;
+static const dsd_scan_option_values* g_tuning_row_options = NULL;
 static int g_frame_sync_reset_calls = 0;
 static int g_sps_hunt_restart_calls = 0;
 static int g_p25p2_frame_reset_calls = 0;
@@ -277,11 +283,35 @@ SetFreq(dsd_socket_t sockfd, long int freq) {
     return g_setfreq_result;
 }
 
+/* Records the demodulator and passband each tune asks the rigctl peer for (issue #526). */
 bool
-SetModulation(dsd_socket_t sockfd, int bandwidth) {
+SetModulationKind(dsd_socket_t sockfd, int kind, int bandwidth) {
     (void)sockfd;
-    (void)bandwidth;
+    g_setmod_calls++;
+    g_setmod_kind = kind;
+    g_setmod_bw = bandwidth;
     return g_setmod_result;
+}
+
+/* The row options a rigctl tune reads a row's own passband from (issue #526): none unless a test installs some. */
+const dsd_scan_option_values*
+dsd_engine_scan_tuning_row_options(const dsd_opts* opts, const dsd_state* state) {
+    (void)opts;
+    (void)state;
+    return g_tuning_row_options;
+}
+
+int
+dsd_analog_width_effective_hz(int kind, int configured_hz) {
+    if (configured_hz > 0) {
+        return configured_hz;
+    }
+    return kind == DSD_ANALOG_DEMOD_AM ? DSD_ANALOG_AM_WIDTH_DEFAULT_HZ : DSD_ANALOG_NFM_WIDTH_DEFAULT_HZ;
+}
+
+const char*
+dsd_analog_demod_label(int kind) {
+    return kind == DSD_ANALOG_DEMOD_AM ? "AM" : "NFM";
 }
 
 uint32_t
@@ -718,6 +748,93 @@ test_analog_scan_row_queues_analog_profile(void) {
 }
 #endif
 
+/* A rigctl scan tune of @p freq_hz with the peer answering @p peer_accepts; the frequency is asked for only after the
+   modulation, so @p moved receives whether it was. */
+static dsd_trunk_tune_result
+tune_rigctl_row(dsd_opts* opts, dsd_state* state, long int freq_hz, bool peer_accepts, int* moved) {
+    g_setmod_result = peer_accepts;
+    g_setmod_calls = 0;
+    g_setmod_kind = -1;
+    g_setmod_bw = -1;
+    const int setfreq_before = g_setfreq_calls;
+    const dsd_trunk_tune_result result = dsd_engine_scan_tune_to_freq(opts, state, freq_hz, 0, NULL);
+    *moved = g_setfreq_calls - setfreq_before;
+    g_setmod_result = true;
+    return result;
+}
+
+/*
+ * Issue #526: a rigctl peer demodulates PCM-input scans, so each scan tune asks it for the demodulator and passband the
+ * row runs. An am row (the AM monitor) asks for AM at the AM width in force -- its own or the configured one, the 6 kHz
+ * default when none is set -- and an nfm row that sets its own --nfm-bandwidth-hz asks for FM at that width. Both are
+ * the row's to have: a peer that refuses fails the tune before the frequency moves, so the scanner takes its usual
+ * row-tune failure path. Any other row asks for FM at -B (0 without it: the peer's normal passband) and stays
+ * best-effort, as -B always was: a refusal still tunes.
+ */
+static void
+test_rigctl_scan_rows_set_the_peer_demodulator(void) {
+    dsd_opts* opts = calloc(1, sizeof(*opts));
+    dsd_state* state = calloc(1, sizeof(*state));
+    assert(opts && state);
+    opts->audio_in_type = AUDIO_IN_PULSE;
+    opts->use_rigctl = 1;
+    opts->rigctl_sockfd = 5;
+    opts->scanner_mode = 1;
+    opts->analog_only = 1;
+    opts->monitor_input_audio = 1;
+    opts->analog_demod = DSD_ANALOG_DEMOD_AM;
+    opts->analog_am_bandwidth_hz = 8333;
+    opts->analog_nfm_bandwidth_hz = 20000;
+    opts->setmod_bw = 0;
+    int moved = 0;
+
+    /* An am row: AM at the width it runs, else the AM default. */
+    assert(tune_rigctl_row(opts, state, 118300000, true, &moved) == DSD_TRUNK_TUNE_RESULT_OK && moved == 1);
+    assert(g_setmod_calls == 1 && g_setmod_kind == DSD_ANALOG_DEMOD_AM && g_setmod_bw == 8333);
+    assert(g_last_setfreq_hz == 118300000 && opts->rtlsdr_center_freq == 118300000U);
+    opts->analog_am_bandwidth_hz = 0;
+    assert(tune_rigctl_row(opts, state, 121500000, true, &moved) == DSD_TRUNK_TUNE_RESULT_OK && moved == 1);
+    assert(g_setmod_kind == DSD_ANALOG_DEMOD_AM && g_setmod_bw == DSD_ANALOG_AM_WIDTH_DEFAULT_HZ);
+    /* A peer that cannot demodulate AM fails the row's tune, and the frequency never moves. */
+    assert(tune_rigctl_row(opts, state, 119100000, false, &moved) == DSD_TRUNK_TUNE_RESULT_FAILED && moved == 0);
+    assert(g_setmod_kind == DSD_ANALOG_DEMOD_AM && opts->rtlsdr_center_freq == 121500000U);
+
+    /* An nfm row with its own width hands the peer that width as the FM passband, and fails the same way. */
+    dsd_scan_option_values row;
+    DSD_MEMSET(&row, 0, sizeof row);
+    row.present = DSD_SCAN_OPT_BANDWIDTH;
+    row.channel_bw_hz = 12500;
+    row.channel_bw_kind = DSD_ANALOG_DEMOD_FM;
+    g_tuning_row_options = &row;
+    opts->analog_demod = DSD_ANALOG_DEMOD_FM;
+    opts->analog_nfm_bandwidth_hz = 12500;
+    assert(tune_rigctl_row(opts, state, 154430000, true, &moved) == DSD_TRUNK_TUNE_RESULT_OK && moved == 1);
+    assert(g_setmod_kind == DSD_ANALOG_DEMOD_FM && g_setmod_bw == 12500);
+    assert(tune_rigctl_row(opts, state, 155475000, false, &moved) == DSD_TRUNK_TUNE_RESULT_FAILED && moved == 0);
+
+    /* An nfm row without one runs the peer's own passband -- the configured NFM width is a channel filter DSD-neo
+       applies to I/Q, not the peer's -- and a refusal does not keep it from tuning. */
+    g_tuning_row_options = NULL;
+    opts->analog_nfm_bandwidth_hz = 20000;
+    assert(tune_rigctl_row(opts, state, 155475000, false, &moved) == DSD_TRUNK_TUNE_RESULT_OK && moved == 1);
+    assert(g_setmod_kind == DSD_ANALOG_DEMOD_FM && g_setmod_bw == 0);
+
+    /* A digital row asks for FM at -B, best-effort. */
+    opts->analog_only = 0;
+    opts->monitor_input_audio = 0;
+    opts->frame_dmr = 1;
+    opts->setmod_bw = 7000;
+    assert(tune_rigctl_row(opts, state, 461000000, false, &moved) == DSD_TRUNK_TUNE_RESULT_OK && moved == 1);
+    assert(g_setmod_kind == DSD_ANALOG_DEMOD_FM && g_setmod_bw == 7000);
+    /* A row's width only means something on its own analog row. */
+    g_tuning_row_options = &row;
+    assert(tune_rigctl_row(opts, state, 461012500, true, &moved) == DSD_TRUNK_TUNE_RESULT_OK && moved == 1);
+    assert(g_setmod_kind == DSD_ANALOG_DEMOD_FM && g_setmod_bw == 7000);
+    g_tuning_row_options = NULL;
+    free(state);
+    free(opts);
+}
+
 int
 main(void) {
     dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
@@ -733,6 +850,7 @@ main(void) {
 #ifdef USE_RADIO
     test_analog_scan_row_queues_analog_profile();
 #endif
+    test_rigctl_scan_rows_set_the_peer_demodulator();
 
     /* DMR trunking active via protocol-agnostic flag only. */
     opts->trunk_enable = 1;
