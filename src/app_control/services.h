@@ -211,6 +211,17 @@ void svc_set_scan_voice_hold_ms(dsd_opts* opts, int ms);
 int svc_publish_symbol_profile(const dsd_opts* opts, dsd_state* state, dsd_decode_mode_profile profile);
 
 /**
+ * @brief svc_publish_symbol_profile() for a caller whose change also moved the NFM width the options in force run: a
+ * scoped command resuming a scan row that takes the configured width (issue #526), with @p configured_before_hz the
+ * configured width from before the change (-1: none). The analog monitor request keeps it, as svc_publish_nfm_bandwidth()
+ * does, so a refusal where the request lands puts the configured width back (svc_restore_nfm_width()).
+ *
+ * @return As svc_publish_symbol_profile().
+ */
+int svc_publish_symbol_profile_changing_width(const dsd_opts* opts, dsd_state* state, dsd_decode_mode_profile profile,
+                                              int configured_before_hz);
+
+/**
  * @brief Ask a running RTL front end, before a decode-mode change commits, whether it takes the receive profile
  * @p mode will publish.
  *
@@ -362,7 +373,9 @@ typedef struct {
     int kept_analog;   /**< 1: the front end stayed on the analog family; 0: on the digital family it was asked to
                             leave, so a switch onto Analog did not happen. */
     int kept_width_hz; /**< The analog width (0 = default) the analog family kept. */
-    int configured_before_hz; /**< The configured NFM width from before the change the request carried; -1: none. */
+    int configured_before_hz; /**< The configured NFM width the front end ran before the refused change: from before
+                                   the change the request carried, or, when it replaced earlier changes the front end
+                                   ran none of and kept another width, from before the first of them; -1: none. */
 } svc_monitor_refusal;
 
 /**

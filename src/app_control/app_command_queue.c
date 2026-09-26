@@ -3710,16 +3710,22 @@ ui_arm_analog_entry(const dsd_opts* opts, const dsd_state* state, int was_analog
 
 /* The row's constraint back over the configured options a scoped update edited. When that changes the decoder, the
    acquisition it made ends and the front end is told the effective profile: @p out_changed says whether it did, and
-   the result is that publish's (-1: the front end refused the analog profile at once). */
+   the result is that publish's (-1: the front end refused the analog profile at once). @p nfm_width_before is the NFM
+   width in force before the update (-1: the caller changes no width). Only a row that takes the configured width has
+   that width moved by the update, so the width before it was the configured one too, which the publish keeps for a
+   refusal where it lands (svc_publish_symbol_profile_changing_width()). */
 static int
-ui_resume_scope_and_publish(dsd_opts* opts, dsd_state* state, int* out_changed) {
+ui_resume_scope_and_publish(dsd_opts* opts, dsd_state* state, int* out_changed, int nfm_width_before) {
     *out_changed = dsd_scan_mode_resume(opts, state) ? 1 : 0;
     if (!*out_changed) {
         return 0;
     }
     reset_call_tracking(opts, state, 1);
     dsd_frame_sync_reset_acquisition(opts, state, opts->trunk_scan_enabled != 1);
-    return svc_publish_symbol_profile(opts, state, dsd_scan_mode_effective_profile(opts, state));
+    const int configured_before_hz =
+        (nfm_width_before >= 0 && opts->analog_nfm_bandwidth_hz != nfm_width_before) ? nfm_width_before : -1;
+    return svc_publish_symbol_profile_changing_width(opts, state, dsd_scan_mode_effective_profile(opts, state),
+                                                     configured_before_hz);
 }
 
 /* The configured channel widths of @p now over @p settings. */
@@ -3772,7 +3778,7 @@ ui_revert_analog_entry(dsd_opts* opts, dsd_state* state, int width_hz) {
     }
     int changed = 0;
     if (scoped) {
-        (void)ui_resume_scope_and_publish(opts, state, &changed);
+        (void)ui_resume_scope_and_publish(opts, state, &changed, -1);
     }
     if (reverted && !scoped) {
         (void)svc_publish_symbol_profile(opts, state, dsd_scan_mode_effective_profile(opts, state));
@@ -5806,14 +5812,15 @@ apply_cmd_leave_scanner_scope(dsd_opts* opts, dsd_state* state, int guarded) {
 
 /* The row's constraint back over the configured options a scoped command edited, and the front end told of what
    changed. A width the row runs on the analog family is an acquisition setting there (dsd_scan_settings_equal()), so a
-   configured width it runs reaches the front end with the profile the resume publishes; a digital row's front end
+   configured width it runs reaches the front end with the profile the resume publishes, which keeps the width from
+   before the command for a refusal where it lands (ui_settle_receive_requests()); a digital row's front end
    takes no width, and a row that sets its own (issue #526) keeps it over the edit. Returns -1 when that was a switch
    onto the analog monitor the front end refused at once, which puts the decoder back as it was and fails the
    command. */
 static int
 apply_cmd_resume_scope(dsd_opts* opts, dsd_state* state, int nfm_width_before) {
     int changed = 0;
-    if (ui_resume_scope_and_publish(opts, state, &changed) != 0) {
+    if (ui_resume_scope_and_publish(opts, state, &changed, nfm_width_before) != 0) {
         /* Refused at once (a retune moved the demod rate since the command held the width to it): the front end kept
            its receive profile, so the decoder goes back to it, the mode it had before a switch onto the monitor or
            else the width the monitor kept. */
@@ -5878,7 +5885,9 @@ apply_cmd(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
  * once: a front end still on the digital family never made the switch onto the monitor, and the decoder goes back to
  * the mode it had (ui_revert_analog_entry()); one on the analog family kept the width it ran, and the configured width
  * goes back to that one, as the stream recorded it (so of two requests queued back to back, the first taken and the
- * second refused, the first one's width stands).
+ * second refused, the first one's width stands). Under a scan row it goes back to the configured width the front end
+ * ran, never to a row's own width (svc_restore_nfm_width()): from before the refused change, or from before the first
+ * of two the demod thread took together, the first replaced by the second in its queue.
  */
 static void
 ui_settle_receive_requests(dsd_opts* opts, dsd_state* state) {

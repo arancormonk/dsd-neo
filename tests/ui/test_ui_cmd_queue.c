@@ -6529,6 +6529,73 @@ test_config_apply_width_under_scan_rows(void) {
     return rc;
 }
 
+/* An nfm row that takes the configured NFM width, which is @p width_hz, with the front end running that width. */
+static int
+enter_inheriting_nfm_row(dsd_opts* opts, dsd_state* state, int width_hz, const char* label) {
+    opts->analog_nfm_bandwidth_hz = width_hz;
+    int rc = expect_int(label, dsd_scan_mode_enter(opts, state, DSD_SCAN_MODE_NFM), 0);
+    rc |= expect_int(label, dsd_scan_mode_options(opts, state, NULL), 0);
+    reset_rx_family_wrap();
+    return rc;
+}
+
+/* After a refusal where the request landed: the configured width, the width the row runs, and the toast. */
+static int
+expect_refused_back_to(dsd_opts* opts, dsd_state* state, int width_hz, const char* label) {
+    state->ui_msg[0] = '\0';
+    (void)dsd_app_drain_cmds(opts, state);
+    int rc = expect_int(label, dsd_scan_mode_configured_view(state)->analog_nfm_bandwidth_hz, width_hz);
+    rc |= expect_int(label, opts->analog_nfm_bandwidth_hz, width_hz);
+    rc |= expect_int(label, strncmp(state->ui_msg, "Refused: ", 9) == 0, 1);
+    return rc;
+}
+
+/*
+ * Issue #526: under a scan row that takes the configured NFM width, a width change the front end refuses where it lands
+ * puts the configured width back to the one the front end runs, so the row runs what the receiver does. Two edits made
+ * before the demod thread took either: the second replaced the first in the stream's queue, so the front end ran
+ * neither, and the refusal of the second puts back the width from before both. Had the first landed, its width stands.
+ * A config apply's [analog] width, which reaches the front end once the row's constraint is back, is put back the same
+ * way.
+ */
+static int
+test_refused_width_under_a_row_returns_to_the_width_run(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static void* fake_ctx[2];
+    int rc = 0;
+    init_nfm_session(&opts, &state, (RtlSdrContext*)fake_ctx);
+
+    rc |= enter_inheriting_nfm_row(&opts, &state, 8000, "replaced edit: row");
+    rc |= submit_nfm_width(&opts, &state, 12500, "replaced edit: first");
+    rc |= submit_nfm_width(&opts, &state, 20000, "replaced edit: second");
+    rc |= expect_int("replaced edit: both requested", g_analog_req_calls == 2 && g_analog_req_width_hz == 20000, 1);
+    demod_thread_refuses_analog_keeping(1, 8000);
+    rc |= expect_refused_back_to(&opts, &state, 8000, "replaced edit: back to the width before both");
+    dsd_scan_mode_leave(&opts, &state);
+
+    rc |= enter_inheriting_nfm_row(&opts, &state, 8000, "landed edit: row");
+    rc |= submit_nfm_width(&opts, &state, 12500, "landed edit: first");
+    rc |= submit_nfm_width(&opts, &state, 20000, "landed edit: second");
+    demod_thread_refuses_analog_keeping(1, 12500); /* the first landed before the second was queued */
+    rc |= expect_refused_back_to(&opts, &state, 12500, "landed edit: the first one's width stands");
+    dsd_scan_mode_leave(&opts, &state);
+
+    rc |= enter_inheriting_nfm_row(&opts, &state, 8000, "config width: row");
+    rc |= submit_config_nfm_width(&opts, &state, DSDCFG_MODE_UNSET, 12500, "config width: apply");
+    rc |= expect_int("config width: requested once the row is back",
+                     g_analog_req_calls >= 1 && g_analog_req_width_hz == 12500, 1);
+    demod_thread_refuses_analog_keeping(1, 8000);
+    rc |= expect_refused_back_to(&opts, &state, 8000, "config width: back to the width before the apply");
+    dsd_scan_mode_leave(&opts, &state);
+    rc |= expect_int("config width: the leave keeps it", opts.analog_nfm_bandwidth_hz, 8000);
+
+    opts.analog_nfm_bandwidth_hz = 0;
+    state.rtl_ctx = NULL;
+    freeState(&state);
+    return rc;
+}
+
 /* A config whose [input] builds an RTL-SDR input at DSP bandwidth @p rtl_bw_khz, with an [analog] width when
    @p width_hz is not negative. */
 static int
@@ -7973,6 +8040,7 @@ main(void) {
     rc |= test_decode_mode_analog_under_a_row_holds_the_nfm_width();
     rc |= test_config_apply_holds_nfm_width_to_the_front_end();
     rc |= test_config_apply_width_under_scan_rows();
+    rc |= test_refused_width_under_a_row_returns_to_the_width_run();
     rc |= test_config_apply_holds_nfm_width_to_a_new_dsp_bandwidth();
     rc |= test_config_apply_holds_nfm_width_to_the_rate_the_reopen_runs_at();
     rc |= test_config_apply_leaves_a_soapy_or_airspy_reopen_to_its_start();

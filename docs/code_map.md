@@ -616,10 +616,14 @@ installs from `src/engine/trunk_tuning.c` in `src/engine/trunk_tuning_hooks_inst
   scan row, where that can be a row's own width (the row on air's, or one a retune in flight had not moved the front
   end off yet), the configured width goes back to its value from before the refused change, which each monitor request
   records (`svc_monitor_refusal::configured_before_hz`), and only a row with its own width takes the kept width in
-  force. An accepted width in force goes to a running front end whose options in force are -fA as a live
+  force. A request that replaced an earlier change still queued (or refused and not yet collected) also records the
+  width from before that one: the front end ran neither, so when it kept another width than the one from before the
+  refused change, the configured width goes back to the one from before the first. An accepted width in force goes to
+  a running front end whose options in force are -fA as a live
   analog profile request (`svc_publish_nfm_bandwidth()` in `symbol_profile.c`), which also replaces the width a queued
   switch onto analog carries; a typed digital row keeps its profile until its leave, and under a scan row's suspended
-  scope (a config apply) the request waits for `apply_cmd_scoped()` to publish it after the resume. CQPSK toggled on
+  scope (a config apply) the request waits for `apply_cmd_scoped()` to publish it after the resume, with the width in
+  force from before the command (`svc_publish_symbol_profile_changing_width()`). CQPSK toggled on
   under -fA holds it too, and the DSP op that turns CQPSK off (`svc_toggle_rtl_cqpsk()`) returns to the monitor through
   the analog profile with it. Whether CQPSK holds the front end is what was last queued, not only what the stream
   publishes, since a toggle, a switch or a scan row's leave (queued through the runtime hooks) drained with the width
