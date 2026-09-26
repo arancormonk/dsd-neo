@@ -164,7 +164,7 @@ Recv(dsd_socket_t sockfd, char* buf) {
 long int
 GetCurrentFreq(dsd_socket_t sockfd) {
     long int freq = 0;
-    char buf[BUFSIZE];
+    char buf[BUFSIZE + 1]; /* Recv() terminates a full BUFSIZE-byte reply */
     char* ptr;
     const char* token;
     char* saveptr = NULL;
@@ -214,7 +214,7 @@ SetFreq(dsd_socket_t sockfd, long int freq) {
     if (sockfd == s_last_sockfd && freq == s_last_freq) {
         return true; // no change; skip I/O
     }
-    char buf[BUFSIZE];
+    char buf[BUFSIZE + 1]; /* Recv() terminates a full BUFSIZE-byte reply */
 
     DSD_SNPRINTF(buf, sizeof buf, "F %ld\n", freq);
     if (!Send(sockfd, buf) || !Recv(sockfd, buf) || !rigctl_response_ok(buf)) {
@@ -283,6 +283,12 @@ SetModulationKind(dsd_socket_t sockfd, int kind, int bandwidth) {
             /* Retry with the token used by the other active peer family. */
             rc = rigctl_set_mode(sockfd, "FM", bandwidth, buf);
         }
+    }
+    if (rc == -1) {
+        /* The request may have reached the peer before the reply was lost, so what it runs is no longer known: no
+         * request matches the cache until one is answered, the FM undo at the peer's normal passband included. */
+        s_modulation_sockfd = sockfd;
+        s_modulation_bw = INT_MIN;
     }
     if (rc != 1) {
         return false;

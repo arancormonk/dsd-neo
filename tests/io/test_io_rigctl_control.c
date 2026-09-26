@@ -354,6 +354,47 @@ test_setmodulation_kind_am_and_passband_restore(void) {
     reset_stubs();
     assert(!SetModulationKind(121, DSD_ANALOG_DEMOD_AM, 8333));
     assert(g_command_count == 1);
+
+    /* A reply lost after the request went out leaves what the peer runs unknown: the peer may have taken the AM, so the
+       FM undo that would match the cache before it is sent all the same. */
+    reset_stubs();
+    push_response("RPRT 0\n");
+    assert(SetModulationKind(122, DSD_ANALOG_DEMOD_AM, 8333));
+    push_response("RPRT 0\n");
+    assert(SetModulationKind(122, DSD_ANALOG_DEMOD_FM, 0));
+    assert(g_command_count == 2 && strcmp(g_commands[1], "M NFM 0\n") == 0);
+    assert(!SetModulationKind(122, DSD_ANALOG_DEMOD_AM, 6000));
+    assert(g_command_count == 3 && strcmp(g_commands[2], "M AM 6000\n") == 0);
+    push_response("RPRT 0\n");
+    assert(SetModulationKind(122, DSD_ANALOG_DEMOD_FM, 0));
+    assert(g_command_count == 4 && strcmp(g_commands[3], "M NFM 0\n") == 0);
+    /* Once answered, the cache holds again. */
+    assert(SetModulationKind(122, DSD_ANALOG_DEMOD_FM, 0));
+    assert(g_command_count == 4);
+    return 0;
+}
+
+/* A reply that fills the whole receive buffer (1024 bytes) is terminated inside every caller's buffer: the frequency
+ * query, the frequency set and the modulation set each read one. */
+static int
+test_full_size_replies_stay_in_bounds(void) {
+    static char freq_reply[1100];
+    static char ok_reply[1100];
+    DSD_MEMSET(freq_reply, 'x', sizeof freq_reply - 1U);
+    DSD_MEMCPY(freq_reply, "851037500\n", 10U);
+    freq_reply[sizeof freq_reply - 1U] = '\0';
+    DSD_MEMSET(ok_reply, ' ', sizeof ok_reply - 1U);
+    DSD_MEMCPY(ok_reply, "RPRT 0\n", 7U);
+    ok_reply[sizeof ok_reply - 1U] = '\0';
+
+    reset_stubs();
+    push_response(freq_reply);
+    assert(GetCurrentFreq(123) == 851037500L);
+    push_response(ok_reply);
+    assert(SetFreq(123, 851050000L));
+    push_response(ok_reply);
+    assert(SetModulationKind(123, DSD_ANALOG_DEMOD_AM, 8333));
+    assert(g_command_count == 3);
     return 0;
 }
 
@@ -497,6 +538,7 @@ main(void) {
     rc |= test_setfreq_success_failure_and_cache();
     rc |= test_setmodulation_fallback_and_cache();
     rc |= test_setmodulation_kind_am_and_passband_restore();
+    rc |= test_full_size_replies_stay_in_bounds();
     rc |= test_get_current_freq_parses_first_line_and_errors();
     rc |= test_io_control_set_freq_validation_and_rigctl_dispatch();
     rc |= test_io_control_set_freq_rejects_missing_rtl_context();

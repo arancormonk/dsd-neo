@@ -784,5 +784,8 @@ dsd_engine_channel_scan_leave(dsd_opts* opts, dsd_state* state) {
     if (active) {
         dsd_frame_sync_reset_acquisition(opts, state, opts->trunk_scan_enabled != 1);
         channel_scan_restore_frontend(opts, state);
+        /* A rigctl peer that demodulated an am row, or ran a row's own passband, goes back to what the configured
+         * session asks for: no later tune outside a scan would undo it (issue #526). */
+        dsd_engine_scan_rigctl_restore(opts, state);
     }
 }

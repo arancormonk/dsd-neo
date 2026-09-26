@@ -16,6 +16,7 @@
 #include <dsd-neo/io/rigctl_client.h>
 #include <dsd-neo/io/rtl_stream_c.h>
 #include <dsd-neo/platform/platform.h>
+#include <dsd-neo/platform/sockets.h>
 #include <dsd-neo/protocol/dmr/dmr.h>
 #include <dsd-neo/protocol/dmr/dmr_block.h>
 #include <dsd-neo/protocol/p25/p25_sm_watchdog.h>
@@ -512,23 +513,26 @@ dsd_engine_update_vc_tune_state(dsd_opts* opts, dsd_state* state, long int freq)
     state->p25_last_vc_tune_time_m = state->last_vc_sync_time_m;
 }
 
-/* The demodulator and passband a rigctl peer runs for the settings in force (issue #526). The peer demodulates, so an
- * AM row (the AM monitor) asks for AM at the AM width it runs, its own or the configured one (the 6 kHz default when
- * none is set), and an nfm row that sets its own --nfm-bandwidth-hz (dsd_engine_scan_tuning_row_options()) asks for FM
- * at that width. Either is the row's to have, so a peer that refuses it fails the tune, and the scanner moves on as for
- * any row it cannot tune. Anything else asks for FM at -B and stays best-effort, as -B always has been; without -B that
- * is the peer's normal passband (0), sent only to undo an AM row or a row passband this client set (SetModulationKind()),
- * so the next row inherits the peer's settings again. */
+/* The demodulator and passband a rigctl peer runs for the settings in force (issue #526). On audio input (a PCM, UDP or
+ * TCP source) the peer demodulates what DSD-neo hears, so an AM row (the AM monitor) asks for AM at the AM width it
+ * runs, its own or the configured one (the 6 kHz default when none is set), and an nfm row that sets its own
+ * --nfm-bandwidth-hz (dsd_engine_scan_tuning_row_options()) asks for FM at that width. Either is the row's to have, so
+ * a peer that refuses it fails the tune, and the scanner moves on as for any row it cannot tune. Anything else asks for
+ * FM at -B and stays best-effort, as -B always has been; without -B that is the peer's normal passband (0), sent only
+ * to undo an AM row or a row passband this client set (SetModulationKind()), which returns the peer to FM at its normal
+ * passband. On an RTL-family input DSD-neo demodulates the I/Q itself and the peer only follows the frequency, so it
+ * is asked for FM at -B, best-effort, whatever the row runs. */
 static int
 dsd_engine_tune_rigctl_modulation(const dsd_opts* opts, const dsd_state* state) {
     int kind = DSD_ANALOG_DEMOD_FM;
     int bandwidth = opts->setmod_bw;
     int required = 0;
-    if (dsd_opts_is_analog_family(opts) && opts->analog_demod == DSD_ANALOG_DEMOD_AM) {
+    const int peer_demodulates = opts->audio_in_type != AUDIO_IN_RTL && dsd_opts_is_analog_family(opts);
+    if (peer_demodulates && opts->analog_demod == DSD_ANALOG_DEMOD_AM) {
         kind = DSD_ANALOG_DEMOD_AM;
         bandwidth = dsd_analog_width_effective_hz(DSD_ANALOG_DEMOD_AM, opts->analog_am_bandwidth_hz);
         required = 1;
-    } else if (dsd_opts_is_analog_family(opts)) {
+    } else if (peer_demodulates) {
         const dsd_scan_option_values* row = dsd_engine_scan_tuning_row_options(opts, state);
         if (row && (row->present & DSD_SCAN_OPT_BANDWIDTH) && row->channel_bw_kind == DSD_ANALOG_DEMOD_FM) {
             bandwidth = row->channel_bw_hz;
@@ -541,6 +545,14 @@ dsd_engine_tune_rigctl_modulation(const dsd_opts* opts, const dsd_state* state) 
     DSD_FPRINTF(stderr, "Rigctl %s modulation update failed for bandwidth %d.\n", dsd_analog_demod_label(kind),
                 bandwidth);
     return required ? 0 : 1;
+}
+
+void
+dsd_engine_scan_rigctl_restore(const dsd_opts* opts, const dsd_state* state) {
+    if (!opts || opts->use_rigctl != 1 || opts->rigctl_sockfd == DSD_INVALID_SOCKET) {
+        return;
+    }
+    (void)dsd_engine_tune_rigctl_modulation(opts, state);
 }
 
 static int

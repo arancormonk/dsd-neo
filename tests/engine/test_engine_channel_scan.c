@@ -92,6 +92,22 @@ dsd_engine_scan_retune_attaches_family(const dsd_opts* opts, const dsd_state* st
     return dsd_opts_is_analog_family(opts) || (ted_sps > 0 && g_frontend_analog);
 }
 
+/* The rigctl peer's restore once the scanner leaves its rows (trunk_tuning.c, issue #526): counted, with what the
+ * settings in force then ask the peer for -- the session family, the analog demodulator, and whether a row's options
+ * still read as the row being tuned. */
+static int g_rigctl_restores;
+static int g_rigctl_restore_analog_only = -1;
+static int g_rigctl_restore_demod = -1;
+static int g_rigctl_restore_row_options = -1;
+
+void
+dsd_engine_scan_rigctl_restore(const dsd_opts* opts, const dsd_state* state) {
+    g_rigctl_restores++;
+    g_rigctl_restore_analog_only = opts ? opts->analog_only : -1;
+    g_rigctl_restore_demod = opts ? opts->analog_demod : -1;
+    g_rigctl_restore_row_options = dsd_engine_scan_tuning_row_options(opts, state) != NULL;
+}
+
 static dsd_trunk_tune_result tune_result;
 static uint64_t request;
 static int tunes;
@@ -464,7 +480,7 @@ count_squelch_warnings(dsd_neo_log_level_t level, const char* text, void* ctx) {
     (void)ctx;
     if (level == LOG_LEVEL_WARN && text
         && (strstr(text, "analog channel's squelch") || strstr(text, "--nfm-bandwidth-hz")
-            || strstr(text, "skipped at every visit"))) {
+            || strstr(text, "--am-bandwidth-hz") || strstr(text, "skipped at every visit"))) {
         if (g_analog_warnings < 8) {
             DSD_SNPRINTF(g_analog_warning_rows[g_analog_warnings], sizeof g_analog_warning_rows[0], "%s", text);
         }
@@ -1754,14 +1770,21 @@ test_am_rows_switch_demodulator_width_and_sink(void) {
     assert(state->lcn_freq_roll == 5 && opts->frame_dmr && !opts->analog_only && !opts->monitor_input_audio);
     assert(opts->analog_demod == DSD_ANALOG_DEMOD_FM && g_ensure_digital_calls == 2);
 
-    /* Leaving while an am row is on air puts the configured session back. */
+    /* Leaving while an am row is on air puts the configured session back, and then asks a rigctl peer for what that
+       session runs (the peer may still demodulate the am row's AM): the digital session, no row options. */
     state->lcn_freq_roll = 1;
     assert(dsd_engine_channel_scan_step(opts, state) == 1);
     assert(opts->analog_demod == DSD_ANALOG_DEMOD_AM && opts->analog_am_bandwidth_hz == 8333);
+    g_rigctl_restores = 0;
     dsd_engine_channel_scan_leave(opts, state);
     assert(!opts->analog_only && opts->frame_dmr && opts->analog_demod == DSD_ANALOG_DEMOD_FM);
     assert(opts->analog_am_bandwidth_hz == 10000 && opts->analog_nfm_bandwidth_hz == 20000);
     assert(dsd_engine_scan_tuning_row_options(opts, state) == NULL);
+    assert(g_rigctl_restores == 1 && g_rigctl_restore_analog_only == 0);
+    assert(g_rigctl_restore_demod == DSD_ANALOG_DEMOD_FM && g_rigctl_restore_row_options == 0);
+    /* A leave with no scan to leave asks the peer for nothing. */
+    dsd_engine_channel_scan_leave(opts, state);
+    assert(g_rigctl_restores == 1);
     dsd_state_trunk_lcn_free(state);
     dsd_state_ext_free_all(state);
     free(state);
@@ -1831,6 +1854,48 @@ test_am_row_warnings_for_its_widths(void) {
     tunes = reset_count = 0;
 }
 
+/* On audio input a row's own width filters nothing: with no rigctl peer to take it as a passband it is named once, as
+ * the option of its kind (--nfm-bandwidth-hz, --am-bandwidth-hz), and with a rigctl peer, which demodulates and is
+ * asked for it (trunk_tuning.c), it is no warning. The squelch warnings are the same either way. */
+static void
+test_row_widths_on_audio_input(void) {
+    for (int rigctl = 0; rigctl <= 1; rigctl++) {
+        dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+        dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
+        assert(opts && state);
+        nfm_warning_rows_setup(opts, state, AUDIO_IN_WAV, -60.0);
+        opts->use_rigctl = rigctl;
+        /* Row 4: am with its own 8.333 kHz. */
+        assert(dsd_channel_mode_set(state, 3, DSD_SCAN_MODE_AM) == 0);
+        nfm_row_profile(state, 3, DSD_SCAN_OPT_BANDWIDTH, 8333, 0)->values.channel_bw_kind = DSD_ANALOG_DEMOD_AM;
+        nfm_warning_rows_visit(opts, state, 8);
+        int nfm_width = 0;
+        int am_width = 0;
+        int squelch = 0;
+        for (int i = 0; i < g_analog_warnings && i < 8; i++) {
+            nfm_width += strstr(g_analog_warning_rows[i], "Scan channel 1 (150.000000 MHz): --nfm-bandwidth-hz 20000 "
+                                                          "has no effect on audio input")
+                         != NULL;
+            am_width += strstr(g_analog_warning_rows[i], "Scan channel 4 (150.000000 MHz): --am-bandwidth-hz 8333 has "
+                                                         "no effect on audio input")
+                            != NULL
+                        && strstr(g_analog_warning_rows[i], "no rigctl peer to take it") != NULL;
+            squelch += strstr(g_analog_warning_rows[i], "Scan channel 2 (150.000000 MHz): the analog channel's squelch "
+                                                        "is off")
+                       != NULL;
+        }
+        assert(g_analog_warnings == (rigctl ? 1 : 3));
+        assert(nfm_width == !rigctl && am_width == !rigctl && squelch == 1);
+        assert(!rigctl || !strstr(g_analog_warning_rows[0], "bandwidth-hz"));
+        dsd_engine_channel_scan_leave(opts, state);
+        dsd_state_trunk_lcn_free(state);
+        dsd_state_ext_free_all(state);
+        free(state);
+        free(opts);
+        tunes = reset_count = 0;
+    }
+}
+
 int
 main(void) {
     dsd_neo_log_set_tap(count_squelch_warnings, NULL);
@@ -1855,6 +1920,7 @@ main(void) {
     test_nfm_row_warnings_under_the_channel_lpf_override();
     test_am_rows_switch_demodulator_width_and_sink();
     test_am_row_warnings_for_its_widths();
+    test_row_widths_on_audio_input();
     dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
     dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
     assert(opts && state);

@@ -32,10 +32,25 @@ extern "C" {
 }
 #include <QCoreApplication>
 #include <QFile>
+#include <QStringList>
 #include <QTemporaryDir>
+#include <atomic>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <dsd-neo/platform/platform.h>
+#if !DSD_PLATFORM_WIN_NATIVE
+#include <arpa/inet.h>
+#include <mutex>
+#include <netinet/in.h>
+#include <sys/socket.h>
+#include <thread>
+extern "C" {
+#include <dsd-neo/io/rigctl_client.h>
+#include <dsd-neo/platform/sockets.h>
+#include <dsd-neo/runtime/scan_mode.h>
+}
+#endif
 static int failures;
 static int tunes;
 
@@ -203,6 +218,226 @@ p25CandidateRotation(int configured) {
     delete opts;
 }
 
+#if !DSD_PLATFORM_WIN_NATIVE
+// A rigctl peer on a loopback socket (issue #526): it records each command line and accepts it, or refuses "M AM"
+// while refuseAm is set, as an FM-only rig does.
+class FakeRigctlPeer {
+  public:
+    std::atomic<bool> refuseAm{false};
+
+    bool
+    start() {
+        listener = dsd_socket_create(AF_INET, SOCK_STREAM, 0);
+        if (listener == DSD_INVALID_SOCKET) {
+            return false;
+        }
+        struct sockaddr_in addr{};
+        addr.sin_family = AF_INET;
+        addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+        socklen_t length = sizeof addr;
+        if (dsd_socket_bind(listener, reinterpret_cast<const struct sockaddr*>(&addr), sizeof addr) != 0
+            || dsd_socket_listen(listener, 1) != 0
+            || getsockname(listener, reinterpret_cast<struct sockaddr*>(&addr), &length) != 0) {
+            (void)dsd_socket_close(listener);
+            return false;
+        }
+        port = ntohs(addr.sin_port);
+        worker = std::thread([this] { serve(); });
+        return true;
+    }
+
+    void
+    stop() {
+        if (worker.joinable()) {
+            worker.join();
+        }
+    }
+
+    QStringList
+    commands() {
+        const std::lock_guard<std::mutex> lock(mutex);
+        return seen;
+    }
+
+    int port = 0;
+
+  private:
+    void
+    serve() {
+        const dsd_socket_t client = dsd_socket_accept(listener, nullptr, nullptr);
+        (void)dsd_socket_close(listener);
+        if (client == DSD_INVALID_SOCKET) {
+            return;
+        }
+        (void)dsd_socket_set_recv_timeout(client, 10000U);
+        QByteArray pending;
+        char chunk[256];
+        int n = 0;
+        while ((n = dsd_socket_recv(client, chunk, sizeof chunk, 0)) > 0) {
+            pending.append(chunk, n);
+            qsizetype end = 0;
+            while ((end = pending.indexOf('\n')) >= 0) {
+                const QString line = QString::fromUtf8(pending.left(end));
+                pending.remove(0, end + 1);
+                {
+                    const std::lock_guard<std::mutex> lock(mutex);
+                    seen << line;
+                }
+                const char* reply = refuseAm && line.startsWith(QStringLiteral("M AM")) ? "RPRT -11\n" : "RPRT 0\n";
+                (void)dsd_socket_send(client, reply, std::strlen(reply), 0);
+            }
+        }
+        (void)dsd_socket_close(client);
+    }
+
+    dsd_socket_t listener = DSD_INVALID_SOCKET;
+    std::thread worker;
+    std::mutex mutex;
+    QStringList seen;
+};
+
+// Issue #526: a generated list mixing a keyed DMR system, a saved AM system (-fM) that still carries keys and a
+// talkgroup file, and nfm and am frequency entries, plus a target with its own NFM passband, through the real parser
+// and coordinator with a rigctl peer that demodulates audio input. The analog targets install no keys and no
+// talkgroup policy (the baseline stays in force on them), run their own demodulator, and ask the peer for it:
+// "M AM 6000" for an am target, the target's own --nfm-bandwidth-hz for the nfm one that sets it (read through the
+// scan scope's options, dsd_engine_scan_tuning_row_options()), and "M NFM 0" to undo either. A peer that refuses AM
+// fails that target's tune, and the advance moves on past it. Shutdown puts the baseline back and returns the peer
+// to FM at its normal passband.
+static void
+mixedAnalogRotation() {
+    QTemporaryDir dir;
+    const QString groups = dir.path() + "/groups.csv";
+    QFile groupFile(groups);
+    check(groupFile.open(QIODevice::WriteOnly));
+    groupFile.write("id,mode,name\n123,B,Keyed\n");
+    groupFile.close();
+    const QVariantList systems{QVariantMap{{"uid", "keyed"},
+                                           {"decodeFlag", "-fs"},
+                                           {"trunking", true},
+                                           {"freqMhz", "461"},
+                                           {"groupCsvPath", groups},
+                                           {"encKeyType", "basic"},
+                                           {"encKeyValue", "7"},
+                                           {"encForceKey", 1}},
+                               QVariantMap{{"uid", "tower"},
+                                           {"decodeFlag", "-fM"},
+                                           {"trunking", false},
+                                           {"freqMhz", "118.3"},
+                                           {"groupCsvPath", groups},
+                                           {"encKeyType", "basic"},
+                                           {"encKeyValue", "9"},
+                                           {"encForceKey", 1}}};
+    const QVariantList entries{
+        QVariantMap{{"uid", "keyed"}, {"kind", "system"}, {"systemUid", "keyed"}},
+        QVariantMap{{"uid", "tower"}, {"kind", "system"}, {"systemUid", "tower"}},
+        QVariantMap{{"uid", "ops"}, {"kind", "freq"}, {"protocol", "nfm"}, {"freqMhz", "154.43"}},
+        QVariantMap{{"uid", "guard"}, {"kind", "freq"}, {"protocol", "am"}, {"freqMhz", "121.5"}}};
+    auto generated = dsd_qt::scan_list_targets({{"sourceType", "usb"}, {"entries", entries}}, systems);
+    check(generated.ok && generated.targetCount == 4);
+    check(generated.csv.contains("tower,am-conventional,118300000,")
+          && generated.csv.contains("ops,nfm-conventional,154430000,")
+          && generated.csv.contains("guard,am-conventional,121500000,"));
+    QFile file(dir.path() + "/mixed.csv");
+    check(file.open(QIODevice::WriteOnly));
+    check(file.write(generated.csv) == generated.csv.size());
+    file.write("fire,nfm-conventional,155475000,,,,,,,,,,--nfm-bandwidth-hz 12500\n");
+    file.close();
+
+    FakeRigctlPeer peer;
+    check(dsd_socket_init() == 0 && peer.start());
+    char host[] = "127.0.0.1";
+    auto* opts = static_cast<dsd_opts*>(std::calloc(1, sizeof(dsd_opts)));
+    auto* state = static_cast<dsd_state*>(std::calloc(1, sizeof(dsd_state)));
+    if (!opts || !state) {
+        std::free(opts);
+        std::free(state);
+        ++failures;
+        peer.stop();
+        return;
+    }
+    opts->trunk_scan_enabled = 1;
+    opts->trunk_scan_idle_dwell_ms = 250;
+    opts->trunk_scan_activity_hold_ms = 250;
+    opts->audio_in_type = AUDIO_IN_UDP;
+    opts->use_rigctl = 1;
+    opts->rigctl_sockfd = Connect(host, peer.port);
+    check(opts->rigctl_sockfd != DSD_INVALID_SOCKET);
+    state->K = 5;
+    dsd_tg_policy_entry baseline{};
+    check(dsd_tg_policy_make_exact_entry(123, "A", "Global", DSD_TG_POLICY_SOURCE_IMPORTED, &baseline) == 0);
+    check(dsd_tg_policy_append_exact(state, &baseline) == 0);
+    DSD_SNPRINTF(opts->trunk_scan_targets_csv, sizeof opts->trunk_scan_targets_csv, "%s",
+                 file.fileName().toUtf8().constData());
+    dsd_trunk_tuning_hooks hooks{};
+    hooks.tune_to_freq_request = tune;
+    hooks.tune_to_cc_request = tune;
+    dsd_trunk_tuning_hooks_set(hooks);
+    char error[256]{};
+    const bool initialized = dsd_engine_trunk_scan_init(opts, state, error, sizeof error) == 0;
+    check(initialized);
+    if (!initialized) {
+        std::fprintf(stderr, "mixed analog initialization: %s\n", error);
+    }
+    if (initialized) {
+        check(dsd_engine_trunk_scan_target_count(state) == 5);
+        policy(state, "Keyed", "B");
+        check(state->K == 7);
+
+        // keyed -> tower (am) -> ops (nfm) -> guard (am) -> fire (nfm with its own passband).
+        const struct {
+            dsd_scan_mode mode;
+            int demod;
+            const char* modulation;
+            const char* freq;
+        } analog[] = {{DSD_SCAN_MODE_AM, DSD_ANALOG_DEMOD_AM, "M AM 6000", "F 118300000"},
+                      {DSD_SCAN_MODE_NFM, DSD_ANALOG_DEMOD_FM, "M NFM 0", "F 154430000"},
+                      {DSD_SCAN_MODE_AM, DSD_ANALOG_DEMOD_AM, "M AM 6000", "F 121500000"},
+                      {DSD_SCAN_MODE_NFM, DSD_ANALOG_DEMOD_FM, "M NFM 12500", "F 155475000"}};
+
+        for (const auto& expected : analog) {
+            const qsizetype before = peer.commands().size();
+            check(dsd_engine_trunk_scan_control(opts, state, DSD_TRUNK_SCAN_CONTROL_ADVANCE) == 0);
+            const QStringList sent = peer.commands().mid(before);
+            check(sent == QStringList({QString::fromUtf8(expected.modulation), QString::fromUtf8(expected.freq)}));
+            check(dsd_scan_mode_active(state) == expected.mode && opts->analog_only == 1
+                  && opts->analog_demod == expected.demod);
+            policy(state, "Global", "A");
+            check(state->K == 5 && opts->frame_dmr == 0);
+        }
+        check(dsd_engine_trunk_scan_control(opts, state, DSD_TRUNK_SCAN_CONTROL_ADVANCE) == 0);
+        policy(state, "Keyed", "B");
+        check(state->K == 7 && opts->analog_only == 0);
+
+        // A peer that cannot demodulate AM: the am target's tune fails before the frequency moves, and the advance
+        // lands on the nfm target after it.
+        peer.refuseAm = true;
+        const qsizetype before = peer.commands().size();
+        check(dsd_engine_trunk_scan_control(opts, state, DSD_TRUNK_SCAN_CONTROL_ADVANCE) == 0);
+        const QStringList sent = peer.commands().mid(before);
+        check(sent.value(0) == "M AM 6000" && !sent.contains("F 118300000") && sent.contains("F 154430000"));
+        check(dsd_scan_mode_active(state) == DSD_SCAN_MODE_NFM && opts->analog_demod == DSD_ANALOG_DEMOD_FM);
+        peer.refuseAm = false;
+        check(dsd_engine_trunk_scan_control(opts, state, DSD_TRUNK_SCAN_CONTROL_ADVANCE) == 0);
+        check(dsd_scan_mode_active(state) == DSD_SCAN_MODE_AM && peer.commands().contains("F 121500000"));
+    }
+    // Shutdown on the am target: the baseline comes back, and the peer, still on AM, is returned to FM.
+    const qsizetype beforeShutdown = peer.commands().size();
+    dsd_engine_trunk_scan_shutdown(opts, state);
+    policy(state, "Global", "A");
+    check(state->K == 5 && opts->analog_only == 0);
+    check(peer.commands().mid(beforeShutdown) == QStringList({QStringLiteral("M NFM 0")}));
+    dsd_trunk_tuning_hooks_set({});
+    dsd_trunk_scan_hooks_set(nullptr);
+    (void)dsd_socket_close(opts->rigctl_sockfd);
+    peer.stop();
+    dsd_state_trunk_lcn_free(state);
+    dsd_state_ext_free_all(state);
+    std::free(state);
+    std::free(opts);
+}
+#endif
+
 int
 main(int argc, char** argv) {
     QCoreApplication app(argc, argv);
@@ -293,5 +528,8 @@ main(int argc, char** argv) {
     p25CandidateRotation(1);
     keyMuteRotation(false);
     keyMuteRotation(true);
+#if !DSD_PLATFORM_WIN_NATIVE
+    mixedAnalogRotation();
+#endif
     return failures ? 1 : 0;
 }

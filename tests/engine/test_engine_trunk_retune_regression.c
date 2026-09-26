@@ -836,6 +836,91 @@ test_rigctl_scan_rows_set_the_peer_demodulator(void) {
     free(opts);
 }
 
+/*
+ * Issue #526: once a scanner has left its rows, the rigctl peer goes back to what the restored settings ask for -- FM
+ * at -B, the peer's normal passband without it (SetModulationKind() sends that only to undo an AM row or a row
+ * passband) -- since no later tune outside a scan would undo an am row's AM. The restore is best-effort, and a session
+ * without rigctl asks nothing.
+ */
+static void
+test_rigctl_restore_after_a_scan(void) {
+    dsd_opts* opts = calloc(1, sizeof(*opts));
+    dsd_state* state = calloc(1, sizeof(*state));
+    assert(opts && state);
+    opts->audio_in_type = AUDIO_IN_PULSE;
+    opts->use_rigctl = 1;
+    opts->rigctl_sockfd = 5;
+    opts->frame_dmr = 1;
+    opts->setmod_bw = 0;
+    g_setmod_calls = 0;
+    g_setmod_result = false;
+    dsd_engine_scan_rigctl_restore(opts, state);
+    assert(g_setmod_calls == 1 && g_setmod_kind == DSD_ANALOG_DEMOD_FM && g_setmod_bw == 0);
+    opts->setmod_bw = 12500;
+    dsd_engine_scan_rigctl_restore(opts, state);
+    assert(g_setmod_calls == 2 && g_setmod_kind == DSD_ANALOG_DEMOD_FM && g_setmod_bw == 12500);
+    g_setmod_result = true;
+    opts->use_rigctl = 0;
+    dsd_engine_scan_rigctl_restore(opts, state);
+    opts->use_rigctl = 1;
+    opts->rigctl_sockfd = DSD_INVALID_SOCKET;
+    dsd_engine_scan_rigctl_restore(opts, state);
+    dsd_engine_scan_rigctl_restore(NULL, state);
+    assert(g_setmod_calls == 2);
+    free(state);
+    free(opts);
+}
+
+#ifdef USE_RADIO
+/*
+ * Issue #526: on an RTL-family input DSD-neo demodulates the I/Q itself, and a rigctl peer beside it only follows the
+ * frequency. An am row, or an nfm row with its own width, therefore asks the peer for FM at -B, best-effort, as every
+ * tune did before: a peer that refuses AM or a passband never fails a row DSD-neo can receive.
+ */
+static void
+test_rigctl_on_rtl_input_follows_the_frequency_only(void) {
+    dsd_opts* opts = calloc(1, sizeof(*opts));
+    dsd_state* state = calloc(1, sizeof(*state));
+    assert(opts && state);
+    opts->audio_in_type = AUDIO_IN_RTL;
+    opts->use_rigctl = 1;
+    opts->rigctl_sockfd = 5;
+    opts->scanner_mode = 1;
+    opts->analog_only = 1;
+    opts->monitor_input_audio = 1;
+    opts->analog_demod = DSD_ANALOG_DEMOD_AM;
+    opts->analog_am_bandwidth_hz = 8333;
+    opts->setmod_bw = 0;
+    state->rtl_ctx = (RtlSdrContext*)state;
+    int tuned = 0;
+
+    g_setmod_calls = 0;
+    g_setmod_result = false;
+    const int setfreq_before = g_setfreq_calls;
+    assert(tune_scan_row(opts, state, 118300000, 0, &tuned) == DSD_TRUNK_TUNE_RESULT_OK && tuned == 1);
+    assert(g_setmod_calls == 1 && g_setmod_kind == DSD_ANALOG_DEMOD_FM && g_setmod_bw == 0);
+    assert(g_setfreq_calls == setfreq_before + 1);
+    assert(g_rtl_analog_prepared.kind == DSD_ANALOG_DEMOD_AM && g_rtl_analog_prepared.width_hz == 8333);
+
+    dsd_scan_option_values row;
+    DSD_MEMSET(&row, 0, sizeof row);
+    row.present = DSD_SCAN_OPT_BANDWIDTH;
+    row.channel_bw_hz = 12500;
+    row.channel_bw_kind = DSD_ANALOG_DEMOD_FM;
+    g_tuning_row_options = &row;
+    opts->analog_demod = DSD_ANALOG_DEMOD_FM;
+    opts->analog_nfm_bandwidth_hz = 12500;
+    opts->setmod_bw = 7000;
+    assert(tune_scan_row(opts, state, 154430000, 0, &tuned) == DSD_TRUNK_TUNE_RESULT_OK && tuned == 1);
+    assert(g_setmod_kind == DSD_ANALOG_DEMOD_FM && g_setmod_bw == 7000);
+    g_tuning_row_options = NULL;
+    g_setmod_result = true;
+    rtl_stream_clear_pending_retune_profile();
+    free(state);
+    free(opts);
+}
+#endif
+
 int
 main(void) {
     dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
@@ -852,6 +937,10 @@ main(void) {
     test_analog_scan_row_queues_analog_profile();
 #endif
     test_rigctl_scan_rows_set_the_peer_demodulator();
+    test_rigctl_restore_after_a_scan();
+#ifdef USE_RADIO
+    test_rigctl_on_rtl_input_follows_the_frequency_only();
+#endif
 
     /* DMR trunking active via protocol-agnostic flag only. */
     opts->trunk_enable = 1;

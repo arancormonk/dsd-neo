@@ -110,6 +110,20 @@ dsd_engine_scan_retune_attaches_family(const dsd_opts* opts, const dsd_state* st
     return 0;
 }
 
+/* The rigctl peer's restore once the scan leaves its targets (trunk_tuning.c, issue #526): counted, with the analog
+ * demodulator and the session family the settings in force then ask the peer for. */
+static int g_rigctl_restores;
+static int g_rigctl_restore_analog_only = -1;
+static int g_rigctl_restore_demod = -1;
+
+void
+dsd_engine_scan_rigctl_restore(const dsd_opts* opts, const dsd_state* state) {
+    (void)state;
+    g_rigctl_restores++;
+    g_rigctl_restore_analog_only = opts ? opts->analog_only : -1;
+    g_rigctl_restore_demod = opts ? opts->analog_demod : -1;
+}
+
 static int g_dmr_tick_calls = 0;
 static int g_dmr_tick_release_tuned = 0;
 static int g_csv_import_result = 0;
@@ -10835,6 +10849,83 @@ test_nfm_target_configured_width_held_to_the_dsp_rate(void) {
     return 0;
 }
 
+/* An am-conventional target that sets no width of its own runs the configured AM width, held to the DSP rate as an
+ * nfm target's configured NFM width is: a rate that cannot filter it is named with that width when the scan starts,
+ * and again whenever the configured AM width changes -- never when only the NFM width does, which it does not run --
+ * and the retune refuses the target at every visit, with no "retune failed" line, until the configured width fits. */
+static int
+test_am_target_configured_width_held_to_the_dsp_rate(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    char target_path[DSD_TEST_PATH_MAX];
+    static dsd_opts opts;
+    static dsd_state state;
+    if (make_temp_dir(dir, sizeof dir) != 0
+        || write_targets_file_with_header(dir, k_squelch_targets_header,
+                                          "tower,am-conventional,118300000,,250,250,,--squelch-db -50\n"
+                                          "dmr,dmr-conventional,461000000,,250,250,,\n",
+                                          target_path, sizeof target_path)
+               != 0) {
+        return 1;
+    }
+    reset_scan_opts_state(&opts, &state);
+    DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", target_path);
+    opts.analog_am_bandwidth_hz = 16000;
+    dsd_test_capture_stderr cap;
+    char buf[16384] = {0};
+    char err[256] = {0};
+    if (dsd_test_capture_stderr_begin(&cap, "trunkscaninheritedam") != 0) {
+        cleanup_paths(dir, target_path, NULL);
+        return 1;
+    }
+    g_scan_tune_refuses_unfit_width = 1;
+    g_scan_tune_width_refusals = 0;
+    g_scan_dsp_rate_hz = 16000;
+    trunk_scan_test_set_now(0.0);
+    int rc = dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err);
+    int refused_at_16 = 0;
+    int refused_at_10 = 0;
+    /* The configured AM 16 kHz, then 20 kHz (neither fits the 16 kHz rate), an NFM width the rate cannot filter
+       either, then AM 10 kHz, which fits. */
+    for (int i = 0; i < 48; i++) {
+        if (i == 12) {
+            refused_at_16 = g_scan_tune_width_refusals;
+            (void)dsd_scan_mode_set_configured_analog_width(&opts, &state, DSD_ANALOG_DEMOD_AM, 20000);
+        } else if (i == 24) {
+            (void)dsd_scan_mode_set_configured_nfm_bandwidth(&opts, &state, 25000);
+        } else if (i == 36) {
+            (void)dsd_scan_mode_set_configured_analog_width(&opts, &state, DSD_ANALOG_DEMOD_AM, 10000);
+            refused_at_10 = g_scan_tune_width_refusals;
+        }
+        trunk_scan_test_set_now(0.26 * (double)(i + 1));
+        dsd_engine_trunk_scan_tick(&opts, &state);
+    }
+    const int refused_after = g_scan_tune_width_refusals - refused_at_10;
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    (void)dsd_test_capture_stderr_end(&cap);
+    (void)dsd_test_capture_stderr_read(&cap, buf, sizeof buf);
+    g_scan_tune_refuses_unfit_width = 0;
+    g_scan_dsp_rate_hz = 0;
+    trunk_scan_test_clear_now();
+    cleanup_paths(dir, target_path, NULL);
+    const int named_16 = count_text(buf, "Trunk scan target 'tower': it sets no AM width of its own, and the "
+                                         "configured AM bandwidth 16 kHz does not fit the 16 kHz DSP rate");
+    const int named_20 = count_text(buf, "Trunk scan target 'tower': it sets no AM width of its own, and the "
+                                         "configured AM bandwidth 20 kHz does not fit the 16 kHz DSP rate");
+    const int named_nfm = count_text(buf, "Trunk scan target 'tower': it sets no NFM width");
+    const int named_10 = count_text(buf, "configured AM bandwidth 10 kHz");
+    const int failed = count_text(buf, "Trunk scan target 'tower' retune failed");
+    if (rc != 0 || named_16 != 1 || named_20 != 1 || named_nfm != 0 || named_10 != 0 || refused_at_16 < 1
+        || refused_at_10 <= refused_at_16 || refused_after != 0 || failed != 0) {
+        DSD_FPRINTF(stderr,
+                    "inherited am width (rc=%d %s): named 16 kHz %d, 20 kHz %d, NFM %d, 10 kHz %d; refused %d/%d/%d "
+                    "after; retune-failed %d\n%s\n",
+                    rc, err, named_16, named_20, named_nfm, named_10, refused_at_16, refused_at_10, refused_after,
+                    failed, buf);
+        return 1;
+    }
+    return 0;
+}
+
 /* The status line counts every target skipped at every visit. After the configured NFM width alone changes, only the
  * targets that run it are named again in the log; a target whose own width the rate cannot filter was named when the
  * scan started and is not named again, but it is still counted beside them. */
@@ -11217,15 +11308,22 @@ test_am_target_rotation_moves_between_demodulators(void) {
         DSD_FPRINTF(stderr, "a target's width or class reached the configured view\n");
         test_rc = 1;
     }
-    /* Shutdown while an am target is on air puts the digital session and both widths back. */
+    /* Shutdown while an am target is on air puts the digital session and both widths back, and then asks a rigctl
+       peer (which may still demodulate the am target's AM) for what that digital session runs. */
     trunk_scan_test_set_now(1.30);
     dsd_engine_trunk_scan_tick(&opts, &state);
     test_rc |= expect_active_target(&state, "back to the am target", 1U);
+    g_rigctl_restores = 0;
     dsd_engine_trunk_scan_shutdown(&opts, &state);
     if (opts.analog_only != 0 || opts.analog_demod != DSD_ANALOG_DEMOD_FM || opts.frame_dmr != 1
         || opts.analog_am_bandwidth_hz != 10000 || opts.analog_nfm_bandwidth_hz != 20000) {
         DSD_FPRINTF(stderr, "shutdown on an am target left analog_only=%d demod=%d am=%d nfm=%d\n", opts.analog_only,
                     opts.analog_demod, opts.analog_am_bandwidth_hz, opts.analog_nfm_bandwidth_hz);
+        test_rc = 1;
+    }
+    if (g_rigctl_restores != 1 || g_rigctl_restore_analog_only != 0 || g_rigctl_restore_demod != DSD_ANALOG_DEMOD_FM) {
+        DSD_FPRINTF(stderr, "shutdown on an am target restored the rigctl peer %d times (analog_only=%d demod=%d)\n",
+                    g_rigctl_restores, g_rigctl_restore_analog_only, g_rigctl_restore_demod);
         test_rc = 1;
     }
     trunk_scan_test_clear_now();
@@ -11391,6 +11489,7 @@ main(void) {
     rc |= run_with_default_tune_hook(test_nfm_target_width_edit_during_a_pending_retune);
     rc |= run_with_default_tune_hook(test_am_target_parse_and_row_diagnostics);
     rc |= run_with_default_tune_hook(test_am_target_rotation_moves_between_demodulators);
+    rc |= run_with_default_tune_hook(test_am_target_configured_width_held_to_the_dsp_rate);
     /* Issue #523 */
     rc |= run_with_default_tune_hook(test_nfm_target_switch_clears_received_dcs_code);
     return rc;

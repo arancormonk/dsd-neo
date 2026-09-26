@@ -21,7 +21,7 @@
 /** What dsd_engine_scan_warn_analog_width() found about a row's width. */
 enum {
     DSD_ENGINE_SCAN_WIDTH_OK = 0,        /**< Nothing to say. */
-    DSD_ENGINE_SCAN_WIDTH_NO_EFFECT = 1, /**< Warned: audio input has no demodulator to apply the width. */
+    DSD_ENGINE_SCAN_WIDTH_NO_EFFECT = 1, /**< Warned: audio input with no rigctl peer to take the width. */
     DSD_ENGINE_SCAN_WIDTH_SKIPPED = 2,   /**< Warned: the front end refuses the width, so the row is skipped. */
 };
 
