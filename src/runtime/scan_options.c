@@ -17,10 +17,11 @@
 #define NXDN          (MODE_BIT(DSD_SCAN_MODE_NXDN48) | MODE_BIT(DSD_SCAN_MODE_NXDN96))
 #define DPMR          MODE_BIT(DSD_SCAN_MODE_DPMR)
 #define NFM           MODE_BIT(DSD_SCAN_MODE_NFM)
+#define AM            MODE_BIT(DSD_SCAN_MODE_AM)
 /* Blank rows and every digital class (INHERIT through M17). */
 #define DIGITAL_MODES 0x1FFU
 /* The analog classes (issue #526): no frames, keys, talkgroups or voice verdicts. */
-#define ANALOG_MODES  NFM
+#define ANALOG_MODES  (NFM | AM)
 /* Every class a row or target can declare. An option that is meaningful whatever the class
  * (squelch, the visit cap) uses this; DIGITAL_MODES keeps key, CRC, force, group, call-policy and
  * voice-gate switches off the analog classes. */
@@ -84,6 +85,8 @@ static int option_set_path(const scan_option_spec* spec, const char* argument, u
 #define OPTION_HZ(x)   OPTION_TEXT(x)
 #define NFM_BANDWIDTH_HINT                                                                                             \
     "expects whole Hz from " OPTION_HZ(DSD_ANALOG_NFM_WIDTH_MIN_HZ) " to " OPTION_HZ(DSD_ANALOG_NFM_WIDTH_MAX_HZ)
+#define AM_BANDWIDTH_HINT                                                                                              \
+    "expects whole Hz from " OPTION_HZ(DSD_ANALOG_AM_WIDTH_MIN_HZ) " to " OPTION_HZ(DSD_ANALOG_AM_WIDTH_MAX_HZ)
 
 static const scan_option_spec specifications[] = {
     {"-b", DSD_SCAN_OPT_BP, DMR, 1, 0, 0, 0, NULL, option_set_bp},
@@ -120,8 +123,9 @@ static const scan_option_spec specifications[] = {
      * control channels included (issue #521). Units and range are rtl_sql's. */
     {"--squelch-db", DSD_SCAN_OPT_SQUELCH, ANY_MODES, 1, 0, 0, 1, SQUELCH_HINT, option_set_squelch},
     /* The channel width of the analog demodulator the row runs (issue #526), spelled per kind and
-     * in whole Hz; a row carries one width. */
+     * in whole Hz; a row carries one width, and each spelling is its own class's only. */
     {"--nfm-bandwidth-hz", DSD_SCAN_OPT_BANDWIDTH, NFM, 1, 0, 0, 0, NFM_BANDWIDTH_HINT, option_set_bandwidth},
+    {"--am-bandwidth-hz", DSD_SCAN_OPT_BANDWIDTH, AM, 1, 0, 0, 0, AM_BANDWIDTH_HINT, option_set_bandwidth},
 };
 
 static int
@@ -392,17 +396,19 @@ option_set_squelch(const scan_option_spec* spec, const char* argument, unsigned 
     return 0;
 }
 
-/* The width's range is the kind's, and only the strict decimal spelling is taken. The rate it has
- * to fit is not known here: dsd_scan_option_width_check() holds it to one. */
+/* The width's range is the kind's -- the demodulator of the one class the spelling is legal on -- and
+ * only the strict decimal spelling is taken. The rate it has to fit is not known here:
+ * dsd_scan_option_width_check() holds it to one. */
 static int
 option_set_bandwidth(const scan_option_spec* spec, const char* argument, unsigned int mode, dsd_scan_options* parsed) {
     (void)spec;
-    (void)mode;
+    const int kind = dsd_scan_mode_analog_kind((dsd_scan_mode)mode);
     int width_hz = 0;
-    if (dsd_analog_width_parse(DSD_ANALOG_DEMOD_FM, argument, &width_hz, NULL, 0U) != 0) {
+    if (kind < 0 || dsd_analog_width_parse(kind, argument, &width_hz, NULL, 0U) != 0) {
         return -1;
     }
     parsed->values.channel_bw_hz = width_hz;
+    parsed->values.channel_bw_kind = kind;
     return 0;
 }
 
@@ -667,9 +673,10 @@ dsd_scan_option_width_check(unsigned int mode, const dsd_scan_option_values* val
     if (error && error_size) {
         error[0] = '\0';
     }
-    /* NFM is the one class a width parses for; any other class has none to hold. */
-    if (!values || !(values->present & DSD_SCAN_OPT_BANDWIDTH) || rate_hz <= 0 || mode != DSD_SCAN_MODE_NFM) {
+    /* Only the analog classes parse a width; any other class has none to hold. */
+    const int kind = mode <= DSD_SCAN_MODE_LAST ? dsd_scan_mode_analog_kind((dsd_scan_mode)mode) : -1;
+    if (!values || !(values->present & DSD_SCAN_OPT_BANDWIDTH) || rate_hz <= 0 || kind < 0) {
         return 0;
     }
-    return dsd_analog_width_check(DSD_ANALOG_DEMOD_FM, values->channel_bw_hz, rate_hz, error, error_size) == 0 ? 0 : -1;
+    return dsd_analog_width_check(kind, values->channel_bw_hz, rate_hz, error, error_size) == 0 ? 0 : -1;
 }

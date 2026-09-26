@@ -1,0 +1,8 @@
+channel,frequency_hz,name,mode,options
+1,118300000,Tower AM 8.33 kHz,am,--am-bandwidth-hz 8333 --squelch-db -55
+2,121500000,Guard AM default width,am,--squelch-db -60 --scan-max-visit-ms 30000
+3,154430000,Fire dispatch NFM 12.5 kHz,nfm,--nfm-bandwidth-hz 12500 --squelch-db -60
+4,155475000,Mutual aid NFM default width,nfm,--squelch-db -60
+5,461000000,DMR repeater,dmr,--scan-max-visit-ms 20000
+6,851012500,P25 conventional,p25,--squelch-db -55
+7,150000000,Inherit configured decoder,,
