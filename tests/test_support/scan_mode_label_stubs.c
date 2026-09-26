@@ -38,9 +38,10 @@ dsd_scan_mode_row_options(const dsd_state* state) {
     return state && have_row_options ? &row_options : NULL;
 }
 
+/* As scan_mode.c answers it: the nfm and am classes. */
 int
 dsd_scan_mode_is_analog(dsd_scan_mode mode) {
-    return mode == DSD_SCAN_MODE_NFM;
+    return mode == DSD_SCAN_MODE_NFM || mode == DSD_SCAN_MODE_AM;
 }
 
 void

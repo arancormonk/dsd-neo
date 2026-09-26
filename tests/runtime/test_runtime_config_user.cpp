@@ -3133,7 +3133,8 @@ test_am_row_snapshot_keeps_configured_mode_and_width(void) {
     }
     if (render_config_to_buffer(&snap, rendered, sizeof rendered) != 0) {
         rc |= 1;
-    } else if (strstr(rendered, "8333") != NULL || strstr(rendered, "decode = am") != NULL) {
+    } else if (strstr(rendered, "8333") != NULL || strstr(rendered, "decode = \"dmr\"\n") == NULL
+               || strstr(rendered, "decode = \"am\"") != NULL) {
         DSD_FPRINTF(stderr, "FAIL: save during an am row wrote the row's class or width:\n%s\n", rendered);
         rc |= 1;
     }
@@ -3145,10 +3146,17 @@ test_am_row_snapshot_keeps_configured_mode_and_width(void) {
         rc |= 1;
     }
     dsd_snapshot_opts_to_user_config(&opts, &state, &snap);
+    if (snap.decode_mode != DSDCFG_MODE_DMR || snap.analog_am_bandwidth_hz != 10000) {
+        DSD_FPRINTF(stderr,
+                    "FAIL: save after a shadowed AM width edit wrote decode mode %d am width %d, want DMR and "
+                    "10000\n",
+                    (int)snap.decode_mode, snap.analog_am_bandwidth_hz);
+        rc |= 1;
+    }
     if (render_config_to_buffer(&snap, rendered, sizeof rendered) != 0) {
         rc |= 1;
     } else if (strstr(rendered, "am_bandwidth_hz = 10000") == NULL || strstr(rendered, "8333") != NULL
-               || strstr(rendered, "decode = am") != NULL) {
+               || strstr(rendered, "decode = \"dmr\"\n") == NULL || strstr(rendered, "decode = \"am\"") != NULL) {
         DSD_FPRINTF(stderr, "FAIL: save after a shadowed AM width edit did not write the edited default:\n%s\n",
                     rendered);
         rc |= 1;
