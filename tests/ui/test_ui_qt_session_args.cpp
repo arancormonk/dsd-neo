@@ -324,7 +324,7 @@ test_am_bandwidth(void) {
     expect("a non-radio source is the I/Q refusal's, not this one",
            dsd_qt::session_args_am_fits_bandwidth(QStringLiteral("tcp"), 6));
 
-    dsd_qt::SessionArgsBuilder builder(nullptr);
+    const dsd_qt::SessionArgsBuilder builder(nullptr);
     expect("the wizard gate names the fix", builder.amBandwidthError(QStringLiteral("usb"), 6)
                                                 == session_args_error_text(SessionArgsError::AmBandwidth));
     expect("the wizard gate passes 8 kHz", builder.amBandwidthError(QStringLiteral("usb"), 8).isEmpty());
@@ -335,7 +335,7 @@ test_am_bandwidth(void) {
                                                          {QStringLiteral("decodeFlag"), QStringLiteral("-fM")},
                                                          {QStringLiteral("bandwidthKhz"), 4}});
     expect("the start refusal carries its category and text",
-           result.value(QStringLiteral("ok")).toBool() == false
+           !result.value(QStringLiteral("ok")).toBool()
                && result.value(QStringLiteral("error")).toString() == QStringLiteral("am-bandwidth")
                && result.value(QStringLiteral("errorText")).toString()
                       == session_args_error_text(SessionArgsError::AmBandwidth));
