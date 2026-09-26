@@ -11643,8 +11643,11 @@ if(DSD_HAS_RADIO)
     # AM airband voice (the excerpt DECODE_IQ_ANALOG_NO_MOD_AUTO_SWITCH plays through
     # the FM monitor) through the AM detector: the whole excerpt delivered, 1120 ms
     # audible, -53.7 dBFS RMS, unclipped, and speech-shaped (14.6 dB in-band ratio,
-    # where the FM monitor reads -2.4 dB on it). Received-tone detection is FM-only,
-    # so it never reports on AM.
+    # where the FM monitor reads -2.4 dB on it). The excerpt carries no sub-audible
+    # tone, so the "Received tone:" forbid only guards against a false report; the
+    # FM-only detection gate is proven by DSP_SYMBOL_REPLAY, which feeds the same
+    # CTCSS-bearing monitor audio through the tap on FM (locks) and AM (publishes
+    # nothing), and by RUNTIME_ANALOG_TONES.
     dsd_neo_add_analog_replay_test(
         DECODE_IQ_ANALOG_AM_REAL
         am_airband_real

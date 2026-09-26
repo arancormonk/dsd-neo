@@ -645,14 +645,16 @@ fake_rtl_stream_generation(void) {
     return g_fake_rtl_generation;
 }
 
-/* The analog receive profile the fake stream publishes: NFM at this width, with the channel filter on or not. */
+/* The analog receive profile the fake stream publishes: this kind (NFM unless a case says otherwise) at this width,
+   with the channel filter on or not. */
+static int g_fake_rtl_analog_kind = DSD_ANALOG_DEMOD_FM;
 static int g_fake_rtl_analog_width_hz = 12500;
 static int g_fake_rtl_analog_lpf_on = 1;
 
 static int
 fake_rtl_analog_profile(int* out_kind, int* out_width_hz, int* out_lpf_on) {
     if (out_kind) {
-        *out_kind = DSD_ANALOG_DEMOD_FM;
+        *out_kind = g_fake_rtl_analog_kind;
     }
     if (out_width_hz) {
         *out_width_hz = g_fake_rtl_analog_width_hz;
@@ -764,6 +766,56 @@ test_rx_tone_tap_reads_raw_block_before_voice_filters(void) {
     opts.analog_only = 0;
     feed_tone_blocks(&opts, &state, 2);
     assert(state.analog_rx.tone_state == DSD_ANALOG_TONE_STATE_INACTIVE);
+    dsd_state_ext_free_all(&state);
+}
+
+/* Nothing of a reception published: the tap never listened, or forgot what it heard. */
+static int
+rx_tone_publishes_nothing(const dsd_state* state) {
+    return state->analog_rx.tone_state == DSD_ANALOG_TONE_STATE_INACTIVE
+           && state->analog_rx.tone_kind == DSD_ANALOG_TONE_KIND_NONE && state->analog_rx.ctcss_tenths_hz == 0
+           && state->analog_rx.carrier_open == 0;
+}
+
+/* Put the monitor on @p kind, as the -fM or -fA preset and the front end's published profile do together. */
+static void
+set_monitor_kind(dsd_opts* opts, int kind) {
+    opts->analog_demod = kind;
+    g_fake_rtl_analog_kind = kind;
+}
+
+/* CTCSS and DCS are FM signalling, so received-tone detection runs on the FM monitor only (issue #524). The same
+   CTCSS-bearing monitor blocks that lock on the FM monitor publish nothing on the AM monitor, and reach the voice
+   filters unchanged either way (feed_tone_blocks()). A live switch to AM forgets the FM lock at the next block, and a
+   switch back finds the tone again from scratch. */
+static void
+test_rx_tone_tap_is_fm_only(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    install_fake_rtl_hooks(1);
+    init_analog_monitor_fixture(&opts, &state);
+    opts.audio_in_type = AUDIO_IN_RTL;
+
+    set_monitor_kind(&opts, DSD_ANALOG_DEMOD_AM);
+    feed_tone_blocks(&opts, &state, 30);
+    assert(rx_tone_publishes_nothing(&state));
+
+    set_monitor_kind(&opts, DSD_ANALOG_DEMOD_FM);
+    feed_tone_blocks(&opts, &state, 30);
+    assert(rx_tone_locked_on_100(&state));
+    assert(state.analog_rx.carrier_open == 1);
+
+    set_monitor_kind(&opts, DSD_ANALOG_DEMOD_AM);
+    feed_tone_blocks(&opts, &state, 1);
+    assert(rx_tone_publishes_nothing(&state));
+    feed_tone_blocks(&opts, &state, 30);
+    assert(rx_tone_publishes_nothing(&state));
+
+    set_monitor_kind(&opts, DSD_ANALOG_DEMOD_FM);
+    feed_tone_blocks(&opts, &state, 30);
+    assert(rx_tone_locked_on_100(&state));
+
+    install_fake_rtl_hooks(0);
     dsd_state_ext_free_all(&state);
 }
 
@@ -2465,6 +2517,7 @@ main(void) {
     test_carrier_stamp_at_an_unusable_tap_rate();
     test_monitor_muted_across_a_retune();
     test_monitor_drops_the_block_detection_starts_in();
+    test_rx_tone_tap_is_fm_only();
     test_rx_tone_clears_on_unannounced_retune();
     test_rx_tone_clears_on_applied_analog_profile_change();
     test_rx_tone_reset_sets_the_pending_block_aside();
