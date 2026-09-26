@@ -26,9 +26,10 @@
  * sets it (dsd_app_analog_rtl_bw_rate_hz()), which also bounds the widths the controls offer. On PCM input no channel
  * filter runs, so no width is in force.
  *
- * An analog scan row on air (an nfm row, issue #526) runs the analog family whatever the configured preset, so its
- * width is shown under a digital preset too. A row may set its own width (--nfm-bandwidth-hz): that is the width in
- * force until the row leaves, while the configured width stays what the controls edit and a save writes.
+ * An analog scan row on air (an nfm or am row, issue #526) runs the analog family whatever the configured preset, so its
+ * width is shown under a digital preset too. A row may set its own width (--nfm-bandwidth-hz, --am-bandwidth-hz): that
+ * is the width in force until the row leaves, while the configured width stays what the controls edit and a save
+ * writes.
  *
  * This view owns those decisions, the reading's text ("12.5 kHz", "16 kHz (default)", "12 kHz (DSP-limited)",
  * "12.5 kHz (row; default 16 kHz)"), the width command's notice (for the kind the command edits), and the one spelling
@@ -69,8 +70,8 @@ typedef struct {
     uint8_t radio_input;  /**< 1 on a radio input, where the width is a channel filter; 0 on PCM input. */
     uint8_t dsp_limited;  /**< 1 when the DSP rate, not the channel filter, bounds width_hz (the unset default only). */
     uint8_t row_analog;   /**< 1 while an analog scan row is on air, whatever the configured preset (issue #526). */
-    uint8_t row_override; /**< 1 while the row on air sets its own width (--nfm-bandwidth-hz), in force over the
-                               configured one until the row leaves. */
+    uint8_t row_override; /**< 1 while the row on air sets its own width of @c kind (--nfm-bandwidth-hz or
+                               --am-bandwidth-hz), in force over the configured one until the row leaves. */
 } dsd_app_analog_width_view;
 
 /**

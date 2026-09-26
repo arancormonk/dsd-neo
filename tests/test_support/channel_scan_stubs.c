@@ -24,6 +24,14 @@ dsd_engine_scan_runs_configured_nfm_width(const dsd_opts* opts, const dsd_state*
     return 0;
 }
 
+/* Nor one that waits to run the configured AM width. */
+int
+dsd_engine_scan_runs_configured_am_width(const dsd_opts* opts, const dsd_state* state) {
+    (void)opts;
+    (void)state;
+    return 0;
+}
+
 /* Nor a channel map whose row widths a front end refuses: the width rules run in the engine, which ENGINE_CHANNEL_SCAN
    and APP_COMMAND_QUEUE drive. */
 int

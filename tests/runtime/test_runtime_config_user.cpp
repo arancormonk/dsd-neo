@@ -3091,6 +3091,80 @@ test_am_session_row_snapshot_keeps_configured_am_width(void) {
 }
 
 /*
+ * Issue #526: an am row's class and its --am-bandwidth-hz are effective state, not user defaults. Config->Save taken
+ * while such a row is on air over a DMR session keeps decode = dmr and writes the configured am_bandwidth_hz (none
+ * here), never the row's; an AM width edit made while the row's own width shadows it (the width command's path) is the
+ * one saved, and the leave puts the configured decoder and the edited width back.
+ */
+static int
+test_am_row_snapshot_keeps_configured_mode_and_width(void) {
+    auto opts_storage = std::unique_ptr<dsd_opts>(new dsd_opts{});
+    auto state_storage = std::unique_ptr<dsd_state>(new dsd_state{});
+    dsd_opts& opts = *opts_storage;
+    dsd_state& state = *state_storage;
+    reset_opts_and_state(opts, state);
+    DSD_SNPRINTF(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", "rtl:0:118.3M:22:-2:24:-80:2");
+    opts.rtlsdr_center_freq = 118300000U;
+    opts.rtl_dsp_bw_khz = 24;
+    if (dsd_apply_decode_mode_preset(DSDCFG_MODE_DMR, DSD_DECODE_PRESET_PROFILE_CLI, &opts, &state) != 0
+        || dsd_scan_mode_enter(&opts, &state, DSD_SCAN_MODE_AM) != 0) {
+        DSD_FPRINTF(stderr, "FAIL: could not open an am scan scope\n");
+        return 1;
+    }
+    int rc = 0;
+    dsd_scan_option_values row;
+    DSD_MEMSET(&row, 0, sizeof row);
+    row.present = DSD_SCAN_OPT_BANDWIDTH;
+    row.channel_bw_hz = 8333;
+    row.channel_bw_kind = DSD_ANALOG_DEMOD_AM;
+    (void)dsd_scan_mode_options(&opts, &state, &row);
+    if (opts.analog_only != 1 || opts.analog_demod != DSD_ANALOG_DEMOD_AM || opts.analog_am_bandwidth_hz != 8333) {
+        DSD_FPRINTF(stderr, "FAIL: am row did not reach dsd_opts (analog_only=%d demod=%d width=%d)\n",
+                    opts.analog_only, opts.analog_demod, opts.analog_am_bandwidth_hz);
+        rc |= 1;
+    }
+    dsdneoUserConfig snap;
+    dsd_snapshot_opts_to_user_config(&opts, &state, &snap);
+    char rendered[16384];
+    if (snap.decode_mode != DSDCFG_MODE_DMR || snap.analog_am_bandwidth_hz != 0) {
+        DSD_FPRINTF(stderr, "FAIL: save during an am row wrote decode mode %d am width %d, want DMR and none\n",
+                    (int)snap.decode_mode, snap.analog_am_bandwidth_hz);
+        rc |= 1;
+    }
+    if (render_config_to_buffer(&snap, rendered, sizeof rendered) != 0) {
+        rc |= 1;
+    } else if (strstr(rendered, "8333") != NULL || strstr(rendered, "decode = am") != NULL) {
+        DSD_FPRINTF(stderr, "FAIL: save during an am row wrote the row's class or width:\n%s\n", rendered);
+        rc |= 1;
+    }
+    /* The width command's path under the row: the row's own width shadows the edit (0), which the baseline keeps. */
+    if (dsd_scan_mode_set_configured_analog_width(&opts, &state, DSD_ANALOG_DEMOD_AM, 10000) != 0
+        || opts.analog_am_bandwidth_hz != 8333) {
+        DSD_FPRINTF(stderr, "FAIL: the am row width did not shadow a configured AM width edit (width=%d)\n",
+                    opts.analog_am_bandwidth_hz);
+        rc |= 1;
+    }
+    dsd_snapshot_opts_to_user_config(&opts, &state, &snap);
+    if (render_config_to_buffer(&snap, rendered, sizeof rendered) != 0) {
+        rc |= 1;
+    } else if (strstr(rendered, "am_bandwidth_hz = 10000") == NULL || strstr(rendered, "8333") != NULL
+               || strstr(rendered, "decode = am") != NULL) {
+        DSD_FPRINTF(stderr, "FAIL: save after a shadowed AM width edit did not write the edited default:\n%s\n",
+                    rendered);
+        rc |= 1;
+    }
+    dsd_scan_mode_leave(&opts, &state);
+    if (opts.analog_only != 0 || opts.frame_dmr != 1 || opts.analog_demod != DSD_ANALOG_DEMOD_FM
+        || opts.analog_am_bandwidth_hz != 10000) {
+        DSD_FPRINTF(stderr, "FAIL: leaving the am row left analog_only=%d frame_dmr=%d demod=%d am width=%d\n",
+                    opts.analog_only, opts.frame_dmr, opts.analog_demod, opts.analog_am_bandwidth_hz);
+        rc |= 1;
+    }
+    dsd_state_ext_free_all(&state);
+    return rc;
+}
+
+/*
  * A parked row's own --scan-max-visit-ms is effective state, not a user default. The save path
  * has to read the configured baseline through dsd_scan_mode_configured_view(), or a
  * Config->Save taken while a row override is active would pin the row's value for every
@@ -3778,6 +3852,7 @@ main(void) {
     rc |= test_scan_max_visit_snapshot_uses_configured_not_row_override();
     rc |= test_squelch_snapshot_uses_configured_not_row_override();
     rc |= test_nfm_row_snapshot_keeps_configured_mode_and_width();
+    rc |= test_am_row_snapshot_keeps_configured_mode_and_width();
     rc |= test_am_session_row_snapshot_keeps_configured_am_width();
     rc |= test_src_csv_roundtrip();
     rc |= test_p25_bandplan_csv_roundtrip();

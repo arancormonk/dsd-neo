@@ -535,7 +535,7 @@ dsd_scan_mode_active(const dsd_state* state) { // NOLINT(misc-use-internal-linka
 
 int
 dsd_scan_mode_is_analog(dsd_scan_mode mode) { // NOLINT(misc-use-internal-linkage)
-    return mode == DSD_SCAN_MODE_NFM;
+    return mode == DSD_SCAN_MODE_NFM || mode == DSD_SCAN_MODE_AM;
 }
 
 uint8_t
@@ -1133,6 +1133,44 @@ test_am_channel_field_rendering(void) {
     reset_printw_capture();
     ui_render_rtl_input_source(&opts, &state);
     assert_capture_contains(" DSP-BW: 12 kHz; Analog: AM 6 kHz (default);");
+
+    /* Issue #526: an am row with its own width, on a digital session. The row's width is in force, and the line names
+       the configured AM width -- the 6 kHz default here -- that the row's leave returns to, as for an nfm row. */
+    static dsd_scan_settings configured;
+    DSD_MEMSET(&configured, 0, sizeof(configured));
+    configured.analog_nfm_bandwidth_hz = 12500;
+    g_scan_configured = &configured;
+    static dsd_scan_option_values row;
+    DSD_MEMSET(&row, 0, sizeof(row));
+    row.present = DSD_SCAN_OPT_BANDWIDTH;
+    row.channel_bw_hz = 8333;
+    row.channel_bw_kind = DSD_ANALOG_DEMOD_AM;
+    g_scan_row_options = &row;
+    g_scan_mode_active = DSD_SCAN_MODE_AM;
+    g_stream_active = 1;
+    opts.rtl_dsp_bw_khz = 48;
+    opts.analog_am_bandwidth_hz = 8333;
+    g_channel_bandwidth_hz = 8333;
+    g_channel_analog_kind = DSD_ANALOG_DEMOD_AM;
+    reset_printw_capture();
+    ui_render_rtl_input_source(&opts, &state);
+    assert_capture_contains(" Analog: AM 8.333 kHz (row; default 6 kHz);");
+    /* An NFM row width is not an AM one: it overrides nothing on the AM monitor. */
+    row.channel_bw_kind = DSD_ANALOG_DEMOD_FM;
+    reset_printw_capture();
+    ui_render_rtl_input_source(&opts, &state);
+    assert(strstr(g_printw_capture, "(row") == NULL);
+    /* ...and an am row without one shows the configured width it runs. */
+    g_scan_row_options = NULL;
+    opts.analog_am_bandwidth_hz = 0;
+    g_channel_bandwidth_hz = 6000;
+    reset_printw_capture();
+    ui_render_rtl_input_source(&opts, &state);
+    assert_capture_contains(" Analog: AM 6 kHz");
+    assert(strstr(g_printw_capture, "(row") == NULL);
+    g_scan_mode_active = DSD_SCAN_MODE_INHERIT;
+    g_scan_configured = NULL;
+    g_channel_analog_kind = DSD_ANALOG_DEMOD_FM;
 
     g_stream_active = 0;
     g_channel_bandwidth_hz = 0;
@@ -2006,6 +2044,11 @@ test_sync_tree_follows_scan_class(void) {
     g_scan_mode_active = DSD_SCAN_MODE_NFM;
     ncurses_last_synctype = DSD_SYNC_DMR_BS_DATA_POS;
     state->synctype = DSD_SYNC_NONE;
+    ui_update_sync_and_edacs_tree(state);
+    assert(ncurses_last_synctype == DSD_SYNC_NONE);
+    /* ...nor beside an am row. */
+    g_scan_mode_active = DSD_SCAN_MODE_AM;
+    ncurses_last_synctype = DSD_SYNC_DMR_BS_DATA_POS;
     ui_update_sync_and_edacs_tree(state);
     assert(ncurses_last_synctype == DSD_SYNC_NONE);
     g_scan_mode_active = DSD_SCAN_MODE_INHERIT;

@@ -114,7 +114,8 @@ analog_width_view_take_front_end(const dsd_opts* opts, const dsd_frontend_metric
 }
 
 /* An analog scan row on air (issue #526) runs the analog family whatever the configured preset, and may set its own
-   width, which is in force until the row leaves. Only an nfm row parses a width, so it is the NFM demodulator's. */
+   width, which is in force until the row leaves: an nfm row's is the NFM demodulator's, an am row's the AM one's
+   (dsd_scan_option_values::channel_bw_kind), and it overrides the width of that kind only. */
 static void
 analog_width_view_take_row(const dsd_opts* opts, const dsd_state* state, dsd_app_analog_width_view* out) {
     out->row_analog = dsd_scan_mode_is_analog(dsd_scan_mode_active(state)) ? 1U : 0U;
@@ -122,7 +123,8 @@ analog_width_view_take_row(const dsd_opts* opts, const dsd_state* state, dsd_app
         out->kind = opts->analog_demod; /* a live row's options are in force */
     }
     const dsd_scan_option_values* row = dsd_scan_mode_row_options(state);
-    if (row && (row->present & DSD_SCAN_OPT_BANDWIDTH) && row->channel_bw_hz > 0 && out->kind == DSD_ANALOG_DEMOD_FM) {
+    if (row && (row->present & DSD_SCAN_OPT_BANDWIDTH) && row->channel_bw_hz > 0
+        && (row->channel_bw_kind == DSD_ANALOG_DEMOD_AM) == (out->kind == DSD_ANALOG_DEMOD_AM)) {
         out->row_override = 1U;
         out->row_hz = row->channel_bw_hz;
     }

@@ -8877,6 +8877,132 @@ test_scan_list_holds_the_configured_nfm_width(void) {
     return rc;
 }
 
+/* A -Y map of a DMR row and an am row (issue #526), the am row with its own width when @p row_width_hz > 0. */
+static void
+load_dmr_and_am_rows(dsd_state* state, int row_width_hz) {
+    load_dmr_and_nfm_rows(state, 0);
+    state->trunk_lcn_freq[1] = 118300000L;
+    (void)dsd_channel_mode_set(state, 1, DSD_SCAN_MODE_AM);
+    dsd_scan_row_profile* profile = NULL;
+    if (row_width_hz > 0 && dsd_scan_profile_ensure(&profile) == 0) {
+        profile->values.present = DSD_SCAN_OPT_BANDWIDTH;
+        profile->values.channel_bw_hz = row_width_hz;
+        profile->values.channel_bw_kind = DSD_ANALOG_DEMOD_AM;
+    }
+    if (dsd_channel_profile_set(state, 1, profile) != 0) {
+        dsd_scan_profile_free(profile);
+    }
+}
+
+/*
+ * Issue #526: the AM width follows the configured-view rule on scan rows as the NFM width does. A digital session
+ * scanning a map with an am row that sets no width of its own runs the configured AM width whenever that row comes on
+ * air, so an AM width edit and a DSP bandwidth are held to it. An am row's own --am-bandwidth-hz shadows an AM width
+ * edit while it is on air: the row keeps its width, the baseline takes the edit, the front end is asked for nothing and
+ * the toast names the row. An NFM width edit under it is no edit of the width it runs. The leave keeps both edits.
+ */
+static int
+test_am_width_under_am_scan_rows(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static void* fake_ctx[2];
+    int rc = 0;
+    init_dmr_session_with_nfm_width(&opts, &state, (RtlSdrContext*)fake_ctx, 0);
+    opts.analog_am_bandwidth_hz = 8000;
+    load_dmr_and_am_rows(&state, 0);
+    opts.scanner_mode = 1;
+
+    g_analog_check_result = -1;
+    rc |= submit_am_width(&opts, &state, 16000, "am scan list: unfit width");
+    rc |= expect_int("am scan list: unfit width refused", opts.analog_am_bandwidth_hz, 8000);
+    rc |= expect_int(
+        "am scan list: held to the front end",
+        g_analog_check_calls == 1 && g_analog_check_kind == DSD_ANALOG_DEMOD_AM && g_analog_check_width_hz == 16000, 1);
+    reset_rx_family_wrap();
+    g_analog_check_result = 0;
+    rc |= submit_am_width(&opts, &state, 10000, "am scan list: fitting width");
+    rc |= expect_int("am scan list: fitting width stored", opts.analog_am_bandwidth_hz, 10000);
+    rc |= expect_int("am scan list: fitting width held", g_analog_check_width_hz, 10000);
+    rc |= expect_int("am scan list: digital session kept", opts.analog_only == 0 && opts.frame_dmr == 1, 1);
+
+    /* The DSP bandwidth is held to the configured AM width too (on the options alone: no restart). */
+    opts.audio_in_type = AUDIO_IN_NULL;
+    DSD_SNPRINTF(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", "rtl:0:851.375M");
+    (void)dsd_app_command_set_i32(DSD_APP_CMD_RTL_SET_BW, 12);
+    state.ui_msg[0] = '\0';
+    (void)dsd_app_drain_cmds(&opts, &state);
+    rc |= expect_int("am scan list: unfit DSP bandwidth refused", opts.rtl_dsp_bw_khz, 16);
+    rc |= expect_toast("am scan list: DSP bandwidth toast", &state,
+                       "Refused: DSP BW 12 kHz cannot filter AM 10 kHz (max 9.6 kHz); narrow the AM width first");
+    opts.audio_in_type = AUDIO_IN_RTL;
+    DSD_SNPRINTF(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", "rtl:0:851.375M:0:0:16");
+
+    /* The am row without a width of its own on air runs the configured AM width: an edit reaches it live. */
+    rc |= expect_int("am row: on air", dsd_scan_mode_enter(&opts, &state, DSD_SCAN_MODE_AM), 0);
+    rc |= expect_int("am row: no width", dsd_scan_mode_options(&opts, &state, NULL), 0);
+    rc |= expect_int("am row: configured width in force",
+                     opts.analog_demod == DSD_ANALOG_DEMOD_AM && opts.analog_am_bandwidth_hz == 10000, 1);
+    reset_rx_family_wrap();
+    g_fake_analog_family = 1;
+    rc |= submit_am_width(&opts, &state, 9000, "am row: edit in force");
+    rc |= expect_int("am row: edit in force stored", opts.analog_am_bandwidth_hz, 9000);
+    rc |= expect_int(
+        "am row: edit requested live",
+        g_analog_req_calls == 1 && g_analog_req_kind == DSD_ANALOG_DEMOD_AM && g_analog_req_width_hz == 9000, 1);
+    rc |= expect_toast("am row: edit in force toast", &state, "Applied: AM bandwidth -> 9 kHz");
+    dsd_scan_mode_leave(&opts, &state);
+    rc |= expect_int("am row: leave keeps the edit", opts.analog_only == 0 && opts.analog_am_bandwidth_hz == 9000, 1);
+    reset_rx_family_wrap();
+    g_fake_analog_family = 0;
+    rc |= submit_am_width(&opts, &state, 10000, "am row: back to 10 kHz");
+
+    /* The am row's own 8.333 kHz on air: an AM width edit is the configured default's, and the row overrides it. */
+    load_dmr_and_am_rows(&state, 8333);
+    dsd_scan_option_values row = {0};
+    row.present = DSD_SCAN_OPT_BANDWIDTH;
+    row.channel_bw_hz = 8333;
+    row.channel_bw_kind = DSD_ANALOG_DEMOD_AM;
+    rc |= expect_int("am width row: am row", dsd_scan_mode_enter(&opts, &state, DSD_SCAN_MODE_AM), 0);
+    rc |= expect_int("am width row: its width", dsd_scan_mode_options(&opts, &state, &row), 0);
+    rc |= expect_int("am width row: in force",
+                     opts.analog_demod == DSD_ANALOG_DEMOD_AM && opts.analog_am_bandwidth_hz == 8333, 1);
+    reset_rx_family_wrap();
+    g_fake_analog_family = 1;
+    rc |= submit_am_width(&opts, &state, 12000, "am width row: shadowed edit");
+    rc |= expect_int("am width row: row keeps its width", opts.analog_am_bandwidth_hz, 8333);
+    rc |= expect_int("am width row: baseline takes the edit",
+                     dsd_scan_mode_configured_view(&state)->analog_am_bandwidth_hz, 12000);
+    rc |= expect_int("am width row: front end not asked to change", g_analog_req_calls, 0);
+    rc |= expect_int("am width row: row not suspended",
+                     dsd_scan_mode_active(&state) == DSD_SCAN_MODE_AM && !dsd_scan_mode_updating(&state), 1);
+    rc |= expect_toast("am width row: toast names the row", &state,
+                       "Default AM bandwidth -> 12 kHz; this channel overrides it (8.333 kHz)");
+    /* An NFM edit under the am row is not shadowed: it is stored, and nothing runs it until an nfm row does. */
+    reset_rx_family_wrap();
+    g_fake_analog_family = 1;
+    rc |= submit_nfm_width(&opts, &state, 12500, "am width row: NFM edit");
+    rc |= expect_int("am width row: NFM edit stored", opts.analog_nfm_bandwidth_hz, 12500);
+    rc |= expect_int("am width row: NFM edit requests nothing", g_analog_req_calls, 0);
+    rc |= expect_int("am width row: NFM edit keeps the row", opts.analog_am_bandwidth_hz, 8333);
+    dsd_scan_mode_leave(&opts, &state);
+    rc |= expect_int("am width row: leave keeps the edits",
+                     opts.analog_only == 0 && opts.frame_dmr == 1 && opts.analog_am_bandwidth_hz == 12000
+                         && opts.analog_nfm_bandwidth_hz == 12500,
+                     1);
+
+    g_analog_check_result = 0;
+    g_fake_analog_family = 0;
+    opts.scanner_mode = 0;
+    dsd_channel_modes_clear(&state);
+    (void)dsd_channel_profile_set(&state, 1, NULL);
+    state.lcn_freq_count = 0;
+    opts.analog_nfm_bandwidth_hz = 0;
+    opts.analog_am_bandwidth_hz = 0;
+    state.rtl_ctx = NULL;
+    freeState(&state);
+    return rc;
+}
+
 /*
  * Issue #524 with #526: an AM session scanning a list with an nfm row that sets no width of its own runs the configured
  * NFM width whenever that row comes on air, as a digital session does. A config holding [analog] and a DSP bandwidth
@@ -9637,6 +9763,7 @@ main(void) {
     rc |= test_config_apply_restores_the_default_nfm_width();
     rc |= test_scan_list_holds_the_configured_nfm_width();
     rc |= test_scan_list_holds_the_configured_nfm_width_on_am();
+    rc |= test_am_width_under_am_scan_rows();
     rc |= test_config_apply_holds_a_scan_row_width_to_a_reopen();
     rc |= test_nfm_width_waits_for_an_unsettled_cqpsk_toggle();
     rc |= test_nfm_width_refused_after_the_check();
