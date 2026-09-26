@@ -11777,7 +11777,7 @@ if(DSD_HAS_RADIO)
     # Issue #526: -Y map rows declaring am on a digital (-fa) session. The host enters
     # the row the way the scanner commits it, so the replay's front end opens the AM
     # monitor at the row's width. Row 0 (--am-bandwidth-hz 8333) on am_tone_synth
-    # measures 21.7 dB tone SNR, 25.2 dB in-band ratio and -45.1 dBFS RMS, unclipped:
+    # measures 21.8 dB tone SNR, 25.2 dB in-band ratio and -45.2 dBFS RMS, unclipped:
     # the FM monitor finds no tone there, so the tone comes from the AM detector the row
     # selects (the wider channel lets in more of the fixture's noise than AM_TONE's
     # default 6 kHz, which reads 24.4/35.4 dB). Row 1 (--am-bandwidth-hz 20000) on

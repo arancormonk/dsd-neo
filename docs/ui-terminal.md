@@ -310,8 +310,12 @@ width (a replay or device forcing 7.5 kHz), it passes the value as typed, the en
 one the DSP rate cannot filter, keeping the width it had, and the label reads the setting back (`[8 kHz]`, or
 `[default]`). It edits the configured AM width, which a save writes and a scan row's leave keeps: under a `-Y` row with
 its own decode mode (a digital row, or an `nfm` row, which runs FM) the width applies when the scanner returns to a
-blank row, and the row stays offered while an `nfm` row runs over the AM session. **DSP bandwidth...** refuses a DSP
-bandwidth that cannot filter the AM width while AM is the configured mode (the 6 kHz default needs 8 kHz or more). The
+blank row, and the row stays offered while an `nfm` row runs over the AM session. An `am` scan row runs the AM monitor
+on any session, so the row is offered while one is on air: under an `am` row without a width of its own the edit
+applies live, and under one with its own `--am-bandwidth-hz` it is the configured default's, which the row overrides
+until it leaves (the message says the channel overrides it). **DSP bandwidth...** refuses a DSP bandwidth that cannot
+filter the AM width while AM is the configured mode, or on any session while the scan has an `am` row or target
+without a width of its own (the 6 kHz default needs 8 kHz or more). The
 status line shows the width in force next to the DSP bandwidth: `DSP-BW: 48 kHz; Analog: AM 6 kHz (default);`. To keep
 the RTL-SDR menu within fifteen rows beside the two width rows, the Auto-PPM switch leads the **Auto-PPM & rtl_tcp**
 submenu, above the settings it governs.
@@ -419,8 +423,9 @@ one, so a scan row running a digital protocol shows the width its leave returns 
 channel filter bounds the channel, which is what the unset default does below a 20 kHz DSP rate: no channel filter runs
 there, so the rate itself is the bound. With the stream stopped, the line reads what the next start runs at `DSP-BW:`,
 so a 12 kHz DSP bandwidth still shows `Analog: NFM 12 kHz (DSP-limited);`, and so does a scan row running a digital
-protocol at a 12 kHz rate. An `nfm` scan row shows the field on any session, and one that sets its own
-`--nfm-bandwidth-hz` reads `Analog: NFM 12.5 kHz (row; default 16 kHz);`, naming the configured NFM width it overrides.
+protocol at a 12 kHz rate. An `nfm` or `am` scan row shows the field on any session, and one that sets its own width
+reads `Analog: NFM 12.5 kHz (row; default 16 kHz);` (an `am` row's `--am-bandwidth-hz`: `Analog: AM 8.333 kHz (row;
+default 6 kHz);`), naming the configured width of its kind it overrides.
 `NFM bandwidth...` (offered on a radio input while `-fA` is the configured mode or an `nfm` scan row is on air, or while
 an explicit width is set under another mode, `-fM` included, so that a width a switch to `-fA` would be refused for can
 be narrowed first) shows the configured setting, `[12.5 kHz]` or `[default]`, takes any width from 8000 to 25000 Hz, or
@@ -430,9 +435,9 @@ fix (on a digital session too, while the scan has an `nfm` row or target without
 configured width), and a `DSP bandwidth...` value the explicit NFM width cannot run at is refused with one saying to
 narrow the width first. Input > Switch source > RTL-SDR refuses the switch, keeping the running input, when its DSP
 bandwidth cannot filter the explicit NFM width (see `docs/cli.md`, Analog reception). The Qt and Android Radio sheet
-shows the same reading, spelled the same way, on any session while an `nfm` row is on air; a row's own width reads first
-there, with a `row` badge and the configured default the stepper edits beside it (`12.5 kHz` over a `row` badge and
-`default 16 kHz`).
+shows the same reading, spelled the same way, on any session while an `nfm` or `am` row is on air; a row's own width
+reads first there, with a `row` badge and the configured default of its kind the stepper edits beside it (`12.5 kHz`
+over a `row` badge and `default 16 kHz`; `default 6 kHz` under an `am` row while the AM width is unset).
 
 The low-level threshold is controlled by `--input-level-warn-db`, `DSD_NEO_INPUT_WARN_DB`, or the `[input]`
 `input_warn_db` user-config key, and defaults to `-40 dBFS`. Changes made through the terminal menu persist through
@@ -628,14 +633,14 @@ last sync. NXDN's additional grace period is described below.
 | `Qualify` | synced under `--scan-voice-only`, no allowed voice yet | the qualify window |
 | `Idle dwell` | nothing holds the row | the idle dwell |
 | `Hangtime` | `-Y` without `--scan-voice-only`: waiting out `-t` since the last sync | next whole second after `-t` |
-| `Carrier` | an analog row's carrier is open (an `nfm` row or `nfm-conventional` target, or a row of an untyped list scanned under `-fA` or `-fM`): squelch open, whether or not audio plays | `-Y`: the hangtime window; trunk scan: the activity hold |
+| `Carrier` | an analog row's carrier is open (an `nfm` or `am` row, an `nfm-conventional` or `am-conventional` target, or a row of an untyped list scanned under `-fA` or `-fM`): squelch open, whether or not audio plays | `-Y`: the hangtime window; trunk scan: the activity hold |
 
 Which phrases you can see depends on the protocol: an NXDN trunked target has no state machine to report control
-acquisition, so it never reads `Acquiring control`. An analog row (an `nfm` row or target, or any row of an untyped list
-scanned under `-fA` or `-fM`) never reads `Voice`, `Voice tail` or `Qualify`, since the voice gate does not apply to it:
-it reads `Carrier` while its carrier holds it, then `Hangtime` (`-Y`) or `Activity hold` (trunk scan) for the tail.
-While a typed scan row is on air, the decoder picker's label names its class beside the configured mode,
-`Mode... [DMR; scan nfm]`.
+acquisition, so it never reads `Acquiring control`. An analog row (an `nfm` or `am` row or target, or any row of an
+untyped list scanned under `-fA` or `-fM`) never reads `Voice`, `Voice tail` or `Qualify`, since the voice gate does not
+apply to it: it reads `Carrier` while its carrier holds it, then `Hangtime` (`-Y`) or `Activity hold` (trunk scan) for
+the tail. While a typed scan row is on air, the decoder picker's label names its class beside the configured mode,
+`Mode... [DMR; scan nfm]` (`scan am` for an `am` row).
 
 The values that follow are the *effective* ones for the row on air, after CSV and option overrides:
 

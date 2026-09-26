@@ -223,8 +223,9 @@ Tests: `tests/engine/test_engine_trunk_scan.c` (`ENGINE_TRUNK_SCAN`) and
   skipped-row count `dsd_engine_scan_skipped` / `dsd_engine_scan_note_skipped_rows()` are private to the engine,
   `src/engine/scan_analog_internal.h`), and scan start logs what an analog row owes the operator on two schedules. An
   open squelch, which lets noise hold the row until the visit cap or the operator moves on,
-  `dsd_engine_scan_warn_analog_squelch()`, is said once per map (-Y) or list (trunk scan). A width on audio input, or
-  one the front end refuses, `dsd_engine_scan_warn_analog_width()`, is said once per map or list and DSP rate. The front
+  `dsd_engine_scan_warn_analog_squelch()`, is said once per map (-Y) or list (trunk scan). A row's own width on audio
+  input without a rigctl peer (with one, the peer takes it as its passband), or a width the front end refuses,
+  `dsd_engine_scan_warn_analog_width()`, is said once per map or list and DSP rate. The front
   end refuses a width the DSP rate (`dsd_engine_scan_dsp_rate_hz()`, the rate the RTL stream holds analog requests to,
   `rtl_stream_get_request_rate_hz()`) cannot filter, worded with the fix the input allows as the stream start's refusal
   is (`dsd_analog_width_check_at()`: an RTL DSP bandwidth, a wider DSP bandwidth or a narrower width on a SoapySDR or
@@ -1174,10 +1175,14 @@ Runtime controls (via `include/dsd-neo/io/rtl_stream_c.h`):
     peer for FM (`M NFM <bw>`, then `M FM <bw>`) or AM (`M AM <bw>`) at a passband, caching per socket on the
     demodulator and passband together; FM at 0 (the peer's normal passband) is sent only to undo a request made on
     the socket (issue #526). `SetModulation()` is its FM call. The engine's rigctl tune leg
-    (`dsd_engine_tune_rigctl_modulation()` in `trunk_tuning.c`) asks for an AM scan row's AM width and an nfm row's own
-    width, failing the row's tune when the peer refuses, and for `-B` otherwise; it reads a `-Y` row's own width from
-    the row being tuned (`dsd_engine_scan_tuning_row_options()`, `scan_analog_internal.h`), since the prepared
-    settings in force cannot tell it from the configured one.
+    (`dsd_engine_tune_rigctl_modulation()` in `trunk_tuning.c`) asks a peer that demodulates audio input for an AM
+    scan row's AM width and an nfm row's own width, failing the row's tune when the peer refuses, and for `-B`
+    otherwise, best-effort (on an RTL-family input, where DSD-neo demodulates, always `-B`); it reads a `-Y` row's own
+    width from the row being tuned (`dsd_engine_scan_tuning_row_options()`, `scan_analog_internal.h`), since the
+    prepared settings in force cannot tell it from the configured one. `dsd_engine_scan_rigctl_restore()`
+    (`trunk_tuning.h`) asks the peer for what the restored session runs once `dsd_engine_channel_scan_leave()` has left
+    a `-Y` map or a trunk-scan target list, so an am row's AM does not outlive the scan. After an I/O failure the
+    socket's cache matches no request, since what the peer runs is no longer known.
 
 Key public headers:
 
@@ -1513,8 +1518,8 @@ Build files: `src/protocol/CMakeLists.txt` and per‑protocol `src/protocol/<nam
     section, the width in force and the stepper on any preset (`analogWidthInForce`); a row's own width
     (`analogBandwidthRowOverride`) reads first with a `row` badge and the configured default beside it
     (`radioAnalogBandwidthRowNote`, as `radioSquelchRowNote` does for a row squelch), the value is read aloud as the
-    view's full reading, and the stepper steps the configured default (from 16 kHz when it is unset, never from the
-    row's width). The `NFM` decode chip (`-fA`) sits in `Util.DECODE_MODES`, so the setup wizard
+    view's full reading, and the stepper steps the configured default of the row's kind (from its unset default when it
+    is unset, 16 kHz for an nfm row and 6 kHz for an am row, `analogDefaultWidth`; never from the row's width). The `NFM` decode chip (`-fA`) sits in `Util.DECODE_MODES`, so the setup wizard
     offers it too (it suggests no trunking). Tests: `UI_MENU_TREE_AUDIT`, `UI_MENU_ACTIONS`, `UI_MENU_LABELS_RADIO`,
     `UI_NCURSES_PRINTER_HELPERS`, `UI_QT_METRICS_MODEL`, `UI_QT_SESSION_ARGS`, `UI_QT_QML_CALL_LISTS`
     (`tst_radio_analog.qml`, `tst_wizard_decode_chip.qml`).
@@ -1891,15 +1896,27 @@ the single `sessionInitialized` recency handler. `metrics_model` copies target
 identity from the tick's held snapshot; no extra snapshot reader is introduced.
 
 Frequency entries take the protocols `p25`, `dmr`, `nxdn48`, `nxdn`, and the analog `nfm` and `am` (issue #526),
-which map to `-fA`/`-fM` and on to `nfm-conventional`/`am-conventional`; saved analog systems map the same way and are
-refused when trunked. An analog target (`Target::analog`) carries no modulation, keys, key files or group file, a saved
-analog system's included, and `ScanEntryRow.qml` hides its modulation and decryption controls
-(`Util.decodeFlagIsAnalog()` for a saved system's flags).
+which map to `-fA`/`-fM` and on to `nfm-conventional`/`am-conventional`; saved analog systems map the same way (exactly
+`-fA` or `-fM`, `scan_list_entry_analog_kind()`) and are refused when trunked or given a channel map. An analog target
+(`Target::analog`) carries no modulation, keys, key files or group file, a saved analog system's included, and
+`ScanEntryRow.qml` hides its modulation and decryption controls (`Util.decodeFlagIsAnalog()`, the same exact-flag rule,
+for a saved system's flags). `scan_list_starter` resolves, checks and retains no decryption profile for an analog entry,
+so a choice the editor hides can never block the list. Its validation also holds the analog targets to the DSP rate an
+RTL-SDR or rtl_tcp list runs at (the list's bandwidth, else the app's): an analog target whose width that rate cannot
+filter (its own, or an `am` entry's 6 kHz default) is named in a warning beside the targets ready, as the engine names
+such a row when a map loads; a SoapySDR or Airspy list is left to the engine's scan-start check. The Qt/Android
+channel-map review (`ImportsScreen.qml`) and target preview (`ScanListScreen.qml`) show no keys or identifiers for an
+analog row and no modulation for an analog target, which the parser refuses there.
 
 `UI_QT_SCAN_LIST_TARGETS` covers preservation/rejection and option screening, the analog mappings included;
-`UI_QT_SCAN_LIST_ROUNDTRIP` exercises persistence and the real facade, with a mixed digital/NFM/AM manual list and a
-CSV-backed list whose analog options reach `--trunk-scan` unchanged.
+`UI_QT_SCAN_LIST_ROUNDTRIP` exercises persistence and the real facade, with a mixed digital/NFM/AM manual list, a
+CSV-backed list whose analog options reach `--trunk-scan` unchanged, analog entries whose hidden decryption is ignored,
+and the DSP-rate diagnostic.
 `ENGINE_TRUNK_SCAN_SCAN_LIST` sends a generated three-target CSV through the real
 coordinator, group-policy and key ownership code, replacing only tuning side
-effects. It verifies policy/keys on rotation and baseline restoration on shutdown.
+effects. It verifies policy/keys on rotation and baseline restoration on shutdown. A generated mixed list (a keyed DMR
+system, a keyed saved AM system, nfm and am entries, and a target with its own NFM passband) rotates through the real
+coordinator with a loopback rigctl peer on audio input: the analog targets install no keys or policy, each asks the peer
+for its demodulator and passband, a peer that refuses AM makes the advance move past the am target, and shutdown returns
+the peer to FM.
 The scan-list, Home and Monitor QML cases run in `UI_QT_QML_CALL_LISTS`.

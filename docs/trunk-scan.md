@@ -513,8 +513,11 @@ no symbol profile is applied over the monitor. Everything below applies to both 
   filter, the target's own or the configured one it runs, is named with the fix at scan start, in the log and on the
   status line (and again if that rate changes, or, for a target without its own width, if the configured width does),
   and that target's retune is then refused at every visit without a further warning. So is a target's own width while
-  `DSD_NEO_CHANNEL_LPF=0` turns off the channel filter it needs. The Qt/Android scan-list preview checks the width's
-  range only: the rate is known once the scan's stream runs. While the target is parked, an RTL DSP bandwidth that
+  `DSD_NEO_CHANNEL_LPF=0` turns off the channel filter it needs. The Qt/Android preview of an imported target file
+  checks the width's range only. The scan-list editor's own validation (Save, Play) holds an RTL-SDR or rtl_tcp list's
+  analog targets to the rate the list's bandwidth sets, an `am` entry's 6 kHz default included, and names those it
+  would skip in a warning; a SoapySDR or Airspy list's rate is known once the scan's stream runs. While the target is
+  parked, an RTL DSP bandwidth that
   cannot filter its width is refused, from the DSP bandwidth control, Input > Switch source and a loaded config alike.
   While the list has a target without a width of its own, the configured width of its kind is in use on any session,
   as under `-fA` or `-fM`: a width edit, a loaded config or a DSP bandwidth that would leave it unfiltered is refused,
@@ -525,8 +528,12 @@ no symbol profile is applied over the monitor. Everything below applies to both 
   own, else the configured one), and an `nfm-conventional` target with its own width sends `M NFM <width>` (`M FM
   <width>` to a peer that refuses the `NFM` token). A peer that refuses either fails that retune, as for any target
   it cannot tune. Every other target asks for `-B` as before, or, without `-B`, for the peer's normal passband (`M NFM
-  0`) where an earlier target changed it, so the next target inherits the peer's own settings again. Requests are
-  cached on the demodulator and passband together, so a peer already running both is not asked again.
+  0`) where an earlier target changed it, which returns the peer to FM at its normal passband. When the scan stops
+  (shutdown, or trunk scan turned off) the peer is asked once more for what the session runs, so it is not left on an
+  AM target's demodulator. Requests are cached on the demodulator and passband together, so a peer already running
+  both is not asked again; after a request whose reply was lost the next one is always sent. On an RTL-family input
+  DSD-neo demodulates the I/Q itself and the peer only follows the frequency: it is asked for `-B`, best-effort, as
+  before, whatever the target runs.
 - **Controls.** `--scan-max-visit-ms`, the `Y` hold, advance and avoid work exactly as for digital targets, including
   while a carrier holds the target. The voice gate never applies to an analog target, so a global `--scan-voice-only`
   does not block one, and voice-gate switches are rejected in its `options`.

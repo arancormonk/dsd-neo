@@ -4,3 +4,4 @@ Ichannel,frequency_hz,mode,options
 3,150000002,p25,--squelch-db -60
 4,150000003,,--squelch-db=0 --scan-max-visit-ms 5000
 5,150000004,nfm,--nfm-bandwidth-hz 12500 --squelch-db -50
+6,150000005,am,--am-bandwidth-hz 8333 --squelch-db -55

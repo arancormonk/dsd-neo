@@ -585,10 +585,11 @@ names the configured width of that kind the row overrides: `Analog: NFM 12.5 kHz
 8.333 kHz (row; default 6 kHz);`. An analog row shows the field on a digital session too. The
 terminal sets the width from Input > RTL-SDR > NFM bandwidth..., whose label shows the setting (`[12.5 kHz]`, or
 `[default]`), while `-fA` is the configured mode or an `nfm` scan row is on air on a radio input (a scan row running a
-digital protocol does not hide it), and the AM width from AM bandwidth... beside it while `-fM` is. The Qt and Android
-Radio sheet shows the same reading under the decode chips, and under any other chip while an `nfm` scan row is on air (a
-row's own width reads first, with a `row` badge naming the configured default the stepper edits), with a stepper over 8,
-11.25, 12.5, 16, 20 and 25 kHz (NFM) or 5, 6, 8, 10, 15 and 20 kHz (AM, under the AM chip) that skips the widths the DSP
+digital protocol does not hide it), and the AM width from AM bandwidth... beside it while `-fM` is or an `am` scan row
+is on air. The Qt and Android Radio sheet shows the same reading under the decode chips, and under any other chip while
+an `nfm` or `am` scan row is on air (a row's own width reads first, with a `row` badge naming the configured default of
+its kind the stepper edits, 16 kHz or 6 kHz while unset), with a stepper over 8, 11.25, 12.5, 16, 20 and 25 kHz (NFM)
+or 5, 6, 8, 10, 15 and 20 kHz (AM, under the AM chip or an `am` row) that skips the widths the DSP
 rate cannot filter (the running stream's, or with none running the rate an RTL-SDR or rtl_tcp input's DSP bandwidth
 sets), and *Use the default width* to return an explicit width to the unset default. On PCM input it reads *not used on
 PCM input* and the controls are disabled. Under another mode, the other analog kind's included, both keep the width
@@ -655,7 +656,9 @@ of the setup wizard): the analog monitor with an AM envelope detector in place o
   the tuned frequency, with the NFM width's filter response (see [Channel width](#channel-width) above), and it is
   neither the tuner bandwidth nor the DSP bandwidth nor the audio bandwidth. A value outside 5000..20000, or not whole
   Hz, is refused, never clamped: `--am-bandwidth-hz: AM bandwidth 25000 Hz is outside the supported range of 5000 to
-  20000 Hz`. On a PCM input the option parses but has no effect, and says so.
+  20000 Hz`. On a PCM input the option filters nothing, and says so; with a rigctl peer (`-U`) it is the AM passband
+  the peer is asked for on `am` scan rows and `am-conventional` targets that set no width of their own, and the start
+  says that instead.
 - The width has to fit the DSP rate as an NFM width does (the table above), and the unset default is held to it too,
   since AM always runs its channel filter; `DSD_NEO_CHANNEL_LPF=0` therefore refuses AM. An RTL-SDR or rtl_tcp input's
   rate is its DSP bandwidth, so a width it cannot filter is refused at startup before the device opens, and without a
@@ -667,7 +670,9 @@ of the setup wizard): the analog monitor with an AM envelope detector in place o
   against the rate the device or the capture delivers. While AM is the configured mode, the DSP bandwidth, a config's
   `[input]` and Input > Switch source > RTL-SDR are held to its width as they are to an explicit NFM width, and, while a
   `-Y` list or `--trunk-scan` has an `nfm` row or target without a width of its own, to the configured NFM width that
-  row runs as well.
+  row runs as well. On any other session (digital, or `-fA`) the same holds the configured AM width, the 6 kHz default
+  included, while the list has an `am` row or `am-conventional` target without a width of its own, and the width in
+  force while an `am` row with its own `--am-bandwidth-hz` is on air.
 - Level: the detector divides the envelope by its own carrier estimate (a 50 ms average of the carrier), so the audio
   level is the modulation depth whatever the signal strength: 100% modulation peaks where live FM does at about 6 kHz
   deviation. A squelched block is silence and leaves the carrier estimate where it was, so audio resumes at its level
@@ -1064,8 +1069,8 @@ is delayed.
     parking is untested on air.
   - Voice-only scan (`--scan-voice-only`): digital conventional targets hold only from decoded voice, with `dwell_ms` as
     the qualify window and `activity_hold_ms` as the hold; trunked targets are unchanged (control-only rotates after
-    dwell) and show no `Voice:` marker on the status line, and an `nfm-conventional` target keeps holding on its
-    carrier. A conventional target shows `VOICE` while its call is active and `TAIL` after the call ends while the hold
+    dwell) and show no `Voice:` marker on the status line, and an `nfm-conventional` or `am-conventional` target keeps
+    holding on its carrier. A conventional target shows `VOICE` while its call is active and `TAIL` after the call ends while the hold
     remains.
   - Cannot be combined with conventional `-Y` scan mode or IQ replay.
   - Single-tuner limitation: systems not currently parked can be missed while another target is being monitored.
@@ -1102,11 +1107,13 @@ is delayed.
     they do not readmit the supergroup's grants.
 - Hold talkgroup: `-I <dec>`
 - rigctl over TCP: `-U <port>` (SDR++ default 4532)
-- Set rigctl bandwidth (Hz): `-B <hertz>` (e.g., 7000–48000 by mode). Scan rows that need their own ask the peer for it
-  instead: an `am` row or `am-conventional` target sends `M AM <width>` with its AM width, and an `nfm` row or target
-  with its own `--nfm-bandwidth-hz` sends that width as the FM passband; a peer that refuses either skips the row.
-  Without `-B`, a later row asks for the peer's normal passband (`0`) only to undo such a request
-  ([csv-formats.md](csv-formats.md#analog-rows)).
+- Set rigctl bandwidth (Hz): `-B <hertz>` (e.g., 7000–48000 by mode). On audio input, where the peer demodulates, scan
+  rows that need their own ask the peer for it instead: an `am` row or `am-conventional` target sends `M AM <width>`
+  with its AM width, and an `nfm` row or target with its own `--nfm-bandwidth-hz` sends that width as the FM passband;
+  a peer that refuses either skips the row. Without `-B`, a later row asks for the peer's normal passband (`0`) only to
+  undo such a request, and leaving the scan does the same, returning the peer to FM at its normal passband
+  ([csv-formats.md](csv-formats.md#analog-rows)). On an RTL-family input the peer only follows the frequency and is
+  asked for `-B` alone.
 - Hang time after voice/sync loss (seconds): `-t <secs>`
   - This is not the idle dwell between `--trunk-scan` targets. DMR control/rest-channel acquisition has its own
     two-second window; use target `dwell_ms` to budget each visit. See [trunk-scan timing](trunk-scan.md).

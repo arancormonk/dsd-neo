@@ -308,8 +308,11 @@ On audio input (rigctl tuning a PCM, UDP or TCP source) the rigctl peer demodula
 row's demodulator and passband before the frequency: an `am` row sends `M AM <width>` with the AM width it runs (its
 own, else the configured one), and an `nfm` row with its own width sends `M NFM <width>` (`M FM <width>` to a peer that
 refuses the `NFM` token). A peer that refuses either skips the row, as any row it cannot tune. Every other row asks for
-`-B` as before, or, without `-B`, for the peer's normal passband (`0`) where an earlier row changed it, so the next row
-inherits the peer's own settings again. Audio input without a rigctl peer applies no width, and scan start says so.
+`-B` as before, or, without `-B`, for the peer's normal passband (`0`) where an earlier row changed it, which returns
+the peer to FM at its normal passband. Leaving `-Y` (the scanner toggled off, a map imported or cleared, shutdown) asks
+the peer once more for what the session runs, so it is not left on an am row's demodulator. Audio input without a
+rigctl peer applies no width, and scan start says so. On an RTL-family input DSD-neo demodulates the I/Q itself and a
+rigctl peer beside it only follows the frequency: it is asked for `-B`, best-effort, whatever the row runs.
 
 An analog row holds while its carrier is open: the squelch is open over the monitor audio (above the input's level
 floor, through a 200 ms hangover, at any input rate), whether or not audio is played, so `-o null` or a muted frontend
