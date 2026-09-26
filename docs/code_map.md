@@ -470,7 +470,9 @@ Tests: `tests/engine/test_engine_trunk_scan.c` (`ENGINE_TRUNK_SCAN`) and
     rtltcp, soapy, airspy or iqreplay one, or the RTL input type `--iq-replay` sets while the options are parsed) for
     the CLI (which stops on `-fM` with a PCM input, and falls a config's `decode = am` back to Analog with autosave off
     and a toast saying so, `dsd_decode_mode_keep_saved_am()`, which a runtime config apply of one shares) and the
-    setup wizard (which asks it about the input it just configured); once an input is
+    setup wizard (which asks it about the input it just configured, and also holds the AM width to the DSP bandwidth
+    it just read, as the engine's pre-open check does: `interactive_am_refused()` in
+    `src/runtime/bootstrap/interactive.c`); once an input is
     open, `dsd_decode_mode_input_is_iq()` and `dsd_decode_mode_runs_on_input()` go by the input type alone
     (`dsd_opts_input_is_radio()`), since a live switch to TCP audio keeps the old device string and a replay session
     switched to Pulse keeps its request. All of them say `DSD_DECODE_MODE_AM_NEEDS_IQ_TEXT`.
@@ -1406,7 +1408,12 @@ Qt Quick frontend (`src/ui/qt`):
   (`metrics.radioInput`, with a `radioDecodeIqNote` saying why) and the add-system wizard (`radioSource`) do not offer
   for audio that arrives demodulated. The wizard drops an `iqOnly` flag back to Auto when its source moves off the
   radio (`dropRadioOnlyDecodeFlag()`) and holds step 1 while one remains, and `session_args_build()` refuses `-fM` on
-  a network or file source (`SessionArgsError::AmNeedsRadio`), for a system saved before. The Radio sheet's analog
+  a network or file source (`SessionArgsError::AmNeedsRadio`), for a system saved before; the wizard's
+  `wizardDecodeIqNote` says why the chip is greyed out. On a USB or rtl_tcp radio the AM default has to fit the DSP
+  bandwidth the spec carries (the engine refuses 4 and 6 kHz before the device opens):
+  `session_args_am_fits_bandwidth()` is that rule, `session_args_build()` refuses the pair
+  (`SessionArgsError::AmBandwidth`), and the wizard holds step 1 with `wizardDecodeAmBandwidthNote` through the
+  `sessionArgs.amBandwidthError()` invokable. The Radio sheet's analog
   section is kind-aware: under the AM preset (`amPreset`) its title reads `AM channel width`, it steps over
   `Util.AM_WIDTHS_HZ` (5000/6000/8000/10000/15000/20000) with `Util.nextWidthIn()`, which takes the kind's list,
   through `CommandBridge::setAmBandwidthHz()`, and it reads the same `MetricsModel::analogBandwidth*` properties,

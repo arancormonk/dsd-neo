@@ -591,12 +591,16 @@ PCM input* and the controls are disabled. Under another mode, the other analog k
 control of a kind on a radio input while an explicit width of it is set, with the setting as its reading (on the Radio
 sheet, a second width control below the first under `-fA` or `-fM`): a switch to that mode is held to the width, so a
 width the device or the capture cannot filter can be narrowed before the switch. The setup wizard offers the NFM and AM
-chips too, and picking either suggests no trunking. Both controls always edit the configured width, which is also what a
-saved config writes: a scan row's own width is never saved. While a row that sets its own width is on air, an edit waits
-for the row to leave (or for a row without a width), and the message says so: `Default NFM bandwidth -> 20 kHz; this
-channel overrides it (12.5 kHz)`. On a digital session, while the scan has an `nfm` row or `nfm-conventional` target
-without a width of its own, which runs the configured width when it comes on air, an edit the DSP rate cannot filter is
-refused whichever row is on air, rather than accepted and that row skipped at every visit.
+chips too, and picking either suggests no trunking. Its AM chip is greyed out for a network or file source, with a note
+under the chips saying why, and on a USB or rtl_tcp radio whose bandwidth (the system's, or the app default) is 4 or 6
+kHz, where no AM width fits, the wizard waits at the tune step with the reason and the bandwidths that fit; a system
+saved with that pair earlier fails to start with the same reason. Both controls always edit the configured width, which
+is also what a saved config writes: a scan row's own width is never saved. While a row that sets its own width is on
+air, an edit waits for the row to leave (or for a row without a width), and the message says so:
+`Default NFM bandwidth -> 20 kHz; this channel overrides it (12.5 kHz)`. On a digital session, while the scan has an
+`nfm` row or `nfm-conventional` target without a width of its own, which runs the configured width when it comes on air,
+an edit the DSP rate cannot filter is refused whichever row is on air, rather than accepted and that row skipped at
+every visit.
 
 ### When changes apply
 
@@ -650,7 +654,9 @@ of the setup wizard): the analog monitor with an AM envelope detector in place o
   rate is its DSP bandwidth, so a width it cannot filter is refused at startup before the device opens, and without a
   dongle plugged in: `AM bandwidth 20 kHz does not fit the 16 kHz DSP rate (the largest width it fits is 13.2 kHz);
   set the RTL DSP bandwidth to 24 or 48 kHz`, and a non-zero exit (`-fM -i rtl:0:118.1M:22:0:16 --am-bandwidth-hz
-  20000`; `-fM` alone at a 6 kHz DSP bandwidth likewise). The other radio inputs are checked when the stream starts,
+  20000`; `-fM` alone at a 6 kHz DSP bandwidth likewise). The interactive setup's AM entry is held to the same rule:
+  after an RTL-SDR or rtl_tcp source at a 4 or 6 kHz DSP bandwidth (or one the configured AM width does not fit) it
+  prints that text and asks for the decode mode again. The other radio inputs are checked when the stream starts,
   against the rate the device or the capture delivers. While AM is the configured mode, the DSP bandwidth, a config's
   `[input]` and Input > Switch source > RTL-SDR are held to its width as they are to an explicit NFM width.
 - Level: the detector divides the envelope by its own carrier estimate (a 50 ms average of the carrier), so the audio
