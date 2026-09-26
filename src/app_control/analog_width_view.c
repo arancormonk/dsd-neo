@@ -167,7 +167,8 @@ dsd_app_analog_width_view_format(const dsd_app_analog_width_view* view, char* ou
         return 0;
     }
     if (view->row_override) {
-        /* The configured width the row's leave returns to, the kind's default width when none is set. */
+        /* The configured width of the row's demodulator, which the row's own overrides and the width controls edit;
+           the kind's default width when none is set. */
         char configured[DSD_ANALOG_WIDTH_TEXT_MAX];
         if (dsd_analog_width_format(dsd_analog_width_effective_hz(view->kind, view->configured_hz), configured,
                                     sizeof configured)

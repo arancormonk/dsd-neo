@@ -662,6 +662,56 @@ test_nfm_class_on_analog_session(void) {
     free(o);
 }
 
+/* An AM session (analog_demod AM, as the AM preset sets it, with its own AM width): an nfm row runs the FM demodulator at
+ * its own width or the configured NFM width, and leaves the AM width alone; a typed digital row and an untyped row in
+ * between switch AM -> NFM -> digital -> AM -> NFM, and the leave puts the AM session back with both widths. */
+static void
+test_nfm_class_on_am_session(void) {
+    dsd_opts* o = (dsd_opts*)calloc(1, sizeof(*o));
+    dsd_state* s = (dsd_state*)calloc(1, sizeof(*s));
+    assert(o && s);
+    nfm_fixture(o, s);
+    assert(dsd_apply_decode_mode_preset(DSDCFG_MODE_ANALOG, DSD_DECODE_PRESET_PROFILE_CLI, o, s) == 0);
+    o->analog_demod = DSD_ANALOG_DEMOD_AM;
+    o->analog_am_bandwidth_hz = 10000;
+    o->analog_nfm_bandwidth_hz = 11250;
+    dsd_scan_settings baseline;
+    dsd_scan_settings_capture(o, s, &baseline);
+    assert(dsd_opts_analog_width_hz(o) == 10000);
+
+    dsd_scan_option_values row = {0};
+    row.present = DSD_SCAN_OPT_BANDWIDTH;
+    row.channel_bw_hz = 12500;
+    assert(dsd_scan_mode_enter(o, s, DSD_SCAN_MODE_NFM) == 0);
+    assert(dsd_scan_mode_options(o, s, &row) == 0);
+    assert(o->analog_only == 1 && o->analog_demod == DSD_ANALOG_DEMOD_FM && dsd_opts_analog_width_hz(o) == 12500);
+    assert(o->analog_am_bandwidth_hz == 10000);
+    assert(dsd_scan_mode_configured_analog_width(o, s, DSD_ANALOG_DEMOD_AM) == 10000);
+    assert(dsd_scan_mode_configured_analog_width(o, s, DSD_ANALOG_DEMOD_FM) == 11250);
+
+    assert(dsd_scan_mode_enter(o, s, DSD_SCAN_MODE_P25) == 0);
+    assert(dsd_scan_mode_options(o, s, NULL) == 0);
+    assert(o->analog_only == 0 && o->frame_p25p1 == 1);
+
+    assert(dsd_scan_mode_enter(o, s, DSD_SCAN_MODE_INHERIT) == 0);
+    assert(dsd_scan_mode_options(o, s, NULL) == 0);
+    assert(o->analog_only == 1 && o->analog_demod == DSD_ANALOG_DEMOD_AM && dsd_opts_analog_width_hz(o) == 10000);
+
+    assert(dsd_scan_mode_enter(o, s, DSD_SCAN_MODE_NFM) == 0);
+    assert(dsd_scan_mode_options(o, s, NULL) == 0);
+    assert(o->analog_demod == DSD_ANALOG_DEMOD_FM && dsd_opts_analog_width_hz(o) == 11250);
+    assert(o->analog_am_bandwidth_hz == 10000);
+
+    dsd_scan_mode_leave(o, s);
+    dsd_scan_settings restored;
+    dsd_scan_settings_capture(o, s, &restored);
+    assert(settings_identical(&baseline, &restored));
+    assert(o->analog_demod == DSD_ANALOG_DEMOD_AM && dsd_opts_analog_width_hz(o) == 10000);
+    dsd_state_ext_free_all(s);
+    free(s);
+    free(o);
+}
+
 /* The NFM width command edits the configured width without suspending the scope, like the squelch
  * setter: a row that sets its own width keeps it (0) while the baseline takes the edit, which the
  * next row without a width and the leave put in force; anything else takes it at once (1). */
@@ -721,6 +771,7 @@ main(void) {
     test_nfm_class_enters_analog_monitor();
     test_nfm_row_width_scope();
     test_nfm_class_on_analog_session();
+    test_nfm_class_on_am_session();
     test_row_option_edits_are_not_acquisition_changes();
     test_max_visit_row_override_scope();
     test_squelch_row_override_scope();

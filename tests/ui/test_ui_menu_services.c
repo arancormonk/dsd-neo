@@ -1037,6 +1037,34 @@ test_rtl_bandwidth_holds_the_analog_width_in_force(void) {
         strcmp(why, "DSP BW 12 kHz cannot filter NFM 12.5 kHz (max 9.6 kHz); narrow the NFM width first") == 0, 1);
     dsd_scan_mode_leave(&opts, &state);
 
+    /* An AM session, as the AM preset leaves it: an nfm row runs FM at a width of its own meanwhile, and its leave
+       returns to the configured AM width. A reopen that could not filter that width would leave the session, once the
+       row leaves, asking the front end for a monitor it refuses, so the AM width is held to the rate too, both by the
+       bandwidth command and by a switch onto the RTL input. */
+    opts.analog_nfm_bandwidth_hz = 0;
+    opts.analog_only = 1;
+    opts.analog_demod = DSD_ANALOG_DEMOD_AM;
+    opts.analog_am_bandwidth_hz = 10000;
+    row.channel_bw_hz = 8000;
+    rc |= expect_int("am session nfm row entered", dsd_scan_mode_enter(&opts, &state, DSD_SCAN_MODE_NFM), 0);
+    rc |= expect_int("am session nfm row options", dsd_scan_mode_options(&opts, &state, &row), 0);
+    rc |= expect_int("am session row runs its own nfm width",
+                     opts.analog_demod == DSD_ANALOG_DEMOD_FM && dsd_opts_analog_width_hz(&opts) == 8000, 1);
+    rc |= expect_int("am width held", svc_rtl_set_bandwidth(&opts, &state, 12, why, sizeof why), -1);
+    rc |= expect_int("am width reason",
+                     strcmp(why, "DSP BW 12 kHz cannot filter AM 10 kHz (max 9.6 kHz); narrow the AM width first") == 0,
+                     1);
+    rc |= expect_int("am width keeps the DSP bandwidth", opts.rtl_dsp_bw_khz, 24);
+    opts.rtl_dsp_bw_khz = 12;
+    rc |= expect_int("am width held on a switch onto the rtl input",
+                     svc_check_rtl_input_analog_width(&opts, &state, why, sizeof why), -1);
+    opts.rtl_dsp_bw_khz = 24;
+    rc |= expect_int("am session fitting bandwidth applied", svc_rtl_set_bandwidth(&opts, &state, 16, why, sizeof why),
+                     0);
+    dsd_scan_mode_leave(&opts, &state);
+    rc |= expect_int("am session back after the row",
+                     opts.analog_demod == DSD_ANALOG_DEMOD_AM && dsd_opts_analog_width_hz(&opts) == 10000, 1);
+
     reset_rtl_restart_stubs();
     dsd_state_ext_free_all(&state);
     DSD_MEMSET(&opts, 0, sizeof(opts));

@@ -34,8 +34,8 @@
  * command's toast, the services that hold a DSP rate to the configured width, and the Qt/Android Radio sheet all take
  * them from here. A reading carries at most one note: "(default)" marks the unset default, which a save leaves out and
  * which keeps its own filter rule, apart from an explicit 16 kHz. A scan row that sets its own width replaces that note
- * with its own, "(row; default X)", naming the configured width the row's leave returns to, rather than adding a second
- * one.
+ * with its own, "(row; default X)", naming the configured width of the row's demodulator, which the row overrides and
+ * the width controls edit, rather than adding a second one.
  */
 
 #ifndef DSD_NEO_INCLUDE_DSD_NEO_APP_CONTROL_ANALOG_WIDTH_VIEW_H_

@@ -401,7 +401,7 @@ the channel, which is what the unset default does below a 20 kHz DSP rate: no ch
 itself is the bound. With the stream stopped, the line reads what the next start runs at `DSP-BW:`, so a 12 kHz DSP
 bandwidth still shows `Analog: NFM 12 kHz (DSP-limited);`, and so does a scan row running a digital protocol at a
 12 kHz rate. An `nfm` scan row shows the field on any session, and one that sets its own `--nfm-bandwidth-hz` reads
-`Analog: NFM 12.5 kHz (row; default 16 kHz);`, naming the configured width its leave returns to. `NFM bandwidth...`
+`Analog: NFM 12.5 kHz (row; default 16 kHz);`, naming the configured NFM width it overrides. `NFM bandwidth...`
 (offered on a radio input while `-fA` is the configured mode or an `nfm` scan row is on air, or while an explicit width
 is set under another mode, so that a width a switch to `-fA` would be refused for can be narrowed first) shows the
 configured setting, `[12.5 kHz]` or `[default]`, takes any width from 8000 to 25000 Hz, or `0` for the default, and

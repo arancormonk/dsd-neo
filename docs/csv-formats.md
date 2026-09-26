@@ -269,7 +269,7 @@ analog channel never carries, and are rejected with `not supported for this mode
 `--nfm-bandwidth-hz` is the full RF channel width the analog channel filter protects while the row is on air (the same
 contract as the receiver's NFM width); a row without it uses the configured NFM width (16 kHz by default). It is applied
 when the row is tuned and restored when the scanner moves on, and Config->Save never writes it (nor the row's analog
-class) as a default. The status line shows it with the configured width it returns to, `Analog: NFM 12.5 kHz (row;
+class) as a default. The status line shows it with the configured NFM width it overrides, `Analog: NFM 12.5 kHz (row;
 default 16 kHz)`, and the NFM width controls (the terminal row, the Radio sheet) keep editing the configured width:
 while the row is on air the edit waits for it to leave, and the message says the channel overrides it. A width the
 running DSP rate cannot filter (the channel filter needs `width / 2 + 600 Hz` within 0.45 of the DSP rate: at a 24 kHz

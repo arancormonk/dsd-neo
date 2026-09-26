@@ -564,7 +564,7 @@ bandwidth, and while a scan row runs a digital protocol the line shows what the 
 rate: where the stream runs no channel filter for the unset default, the default reads as that rate, DSP-limited. The
 stream decides that when it opens, from the DSP bandwidth it opens at (below 20 kHz, or as `DSD_NEO_CHANNEL_LPF`
 says), and keeps it when the device delivers another rate. While an `nfm` scan row with its own `--nfm-bandwidth-hz` is
-on air, the row's width is the one in force and the line names the configured width the row returns to:
+on air, the row's width is the one in force and the line names the configured NFM width the row overrides:
 `Analog: NFM 12.5 kHz (row; default 16 kHz);`. An `nfm` row shows the field on a digital session too. The terminal sets
 the width from Input > RTL-SDR > NFM bandwidth..., whose label shows the setting (`[12.5 kHz]`, or `[default]`), while
 `-fA` is the configured mode or an `nfm` scan row is on air on a radio input (a scan row running a digital protocol does

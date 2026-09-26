@@ -696,8 +696,10 @@ installs from `src/engine/trunk_tuning.c` in `src/engine/trunk_tuning_hooks_inst
   rate, a replay's capture rate), so the view does not re-derive it from the rate. The configured width comes from
   the scan scope's configured view while one is live. An analog scan row on air (issue #526) shows its width on any
   session (`row_analog`), and a row that sets its own width (`row_override`, `row_hz`) is the width in force, read as
-  `12.5 kHz (row; default 16 kHz)` with the configured width its leave returns to. They spell the reading (`12.5 kHz`,
-  `16 kHz (default)`, `12 kHz (DSP-limited)`, `not used on PCM input`), the width command's notice
+  `12.5 kHz (row; default 16 kHz)` with the configured width of its demodulator, which it overrides (on an AM session
+  its leave returns to the AM width instead). The services that hold a DSP rate to an analog session's width hold the
+  configured preset's own kind and width, not the row's. They spell the reading (`12.5 kHz`, `16 kHz (default)`,
+  `12 kHz (DSP-limited)`, `not used on PCM input`), the width command's notice
   (`dsd_app_analog_width_edit_notice()`, for the kind the command edits whatever kind the configured preset runs:
   `Applied: NFM bandwidth -> 12.5 kHz`, or `Default NFM bandwidth -> 16 kHz; this channel overrides it (12.5 kHz)`
   under a row width) and the configured setting (`12.5 kHz`, `default`). The terminal's `Analog:` status field, the

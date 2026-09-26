@@ -1107,25 +1107,25 @@ svc_set_nfm_bandwidth(dsd_opts* opts, const dsd_state* state, int width_hz, char
 
 #ifdef USE_RADIO
 
-/* The explicit analog width a DSP rate is held to, 0 for none: the configured analog preset's (app_control's analog
-   width view), so a typed digital scan row on an analog session, whose leave returns to the monitor, still holds it.
-   On any other session, the configured NFM width while the scan has an nfm row or target without a width of its own
-   (issue #526), which runs it when it comes on air. */
+/* The explicit analog width a DSP rate is held to, 0 for none: the configured analog preset's own kind and width
+   (app_control's analog width view shows the preset), so a scan row on an analog session, whose leave returns to the
+   monitor, still holds it: a typed digital row, or an nfm row (issue #526) on a session whose preset runs another
+   demodulator (AM), which runs FM at a width of its own meanwhile and is held to the rate apart. On any other session,
+   the configured NFM width while the scan has an nfm row or target without a width of its own, which runs it when it
+   comes on air. */
 static int
 svc_configured_analog_width(const dsd_opts* opts, const dsd_state* state, int* kind) {
     dsd_app_analog_width_view view;
     (void)dsd_app_analog_width_view_get(opts, state, NULL, &view);
-    *kind = view.kind;
     if (view.shown) {
-        return view.configured_hz;
+        const dsd_scan_settings* configured = dsd_scan_mode_configured_view(state);
+        *kind = configured ? configured->analog_demod : opts->analog_demod;
+        return dsd_scan_mode_configured_analog_width(opts, state, *kind);
     }
-    if (!dsd_engine_scan_runs_configured_nfm_width(opts, state)) {
-        return 0;
-    }
-    const dsd_scan_settings* configured = dsd_scan_mode_configured_view(state);
-    const int width_hz = configured ? configured->analog_nfm_bandwidth_hz : opts->analog_nfm_bandwidth_hz;
     *kind = DSD_ANALOG_DEMOD_FM;
-    return width_hz > 0 ? width_hz : 0;
+    return dsd_engine_scan_runs_configured_nfm_width(opts, state)
+               ? dsd_scan_mode_configured_analog_width(opts, state, DSD_ANALOG_DEMOD_FM)
+               : 0;
 }
 
 /* Whether an explicit analog width @p width_hz of @p kind (0: none) can open at @p rate_hz (0: no rate to hold it to). */
