@@ -48,6 +48,10 @@ void tetra_acelp_reorder(const uint8_t *in, uint8_t *out, int len);
  */
 int tetra_acelp_slot_gate_passes(int block_idx, const struct dsd_state *state);
 
+/* In trunk mode, speech belongs to the acquired traffic channel. NTS1 bursts
+ * heard while still on the control channel must not feed the vocoder. */
+int tetra_acelp_channel_gate_passes(const struct dsd_opts *opts);
+
 /*
  * Legacy no-op – kept for ABI/test compatibility.
  * Call tetra_acelp_process_tch() instead for actual audio output.

@@ -630,6 +630,37 @@ static int test_mac_resource_channel_allocation(void)
     return ok;
 }
 
+/* A call setup can arrive before its separate channel allocation. The later
+ * MAC-RESOURCE must tune even though it did not itself advance generation. */
+static int test_allocation_after_call_setup(void)
+{
+    uint8_t bits[44] = {0};
+    pack_bits(bits, 2u, 7, 6);    /* standalone allocation, no TM-SDU */
+    pack_bits(bits, 1u, 18, 1);   /* channel allocation present */
+    pack_bits(bits, 4u, 21, 4);   /* TN2 */
+    pack_bits(bits, 1u, 25, 2);   /* downlink */
+    pack_bits(bits, 50u, 29, 12); /* carrier */
+    pack_bits(bits, 1u, 42, 2);   /* monitoring pattern */
+
+    dsd_state *state = alloc_state();
+    dsd_opts *opts = alloc_opts();
+    if (!state || !opts) { free(state); free(opts); return 0; }
+    state->tetra_freq_band = 4;
+    state->tetra_freq_offset = 2;
+    state->trunk_cc_freq = 460000000L;
+    state->tetra_call_active = 1;
+    state->tetra_cmce_call_generation = 1;
+    opts->trunk_enable = 1;
+    tetra_sm_init();
+    tune_calls = 0;
+    tetra_mac_parse_schd(bits, (int)sizeof bits, 2, opts, state);
+    int ok = tune_calls == 1 && tuned_freq == 401243750L;
+    if (!ok)
+        fprintf(stderr, "FAIL(late allocation): active call was not tuned\n");
+    free(state); free(opts);
+    return ok;
+}
+
 /* Table 21.87 note 15 requires a receiver to discard an allocation carrying
  * the reserved further-augmentation flag. In particular, it must not replace
  * a previously accepted traffic-channel assignment. */
@@ -697,6 +728,7 @@ int main(void)
     failed += !test_nwrk_broadcast();
     failed += !test_bc_restore_noop();
     failed += !test_mac_resource_channel_allocation();
+    failed += !test_allocation_after_call_setup();
     failed += !test_mac_resource_rejects_further_augmentation();
 
     dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){0});

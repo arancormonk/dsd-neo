@@ -8,7 +8,14 @@
  */
 
 #include <dsd-neo/protocol/tetra/tetra_acelp.h>
+#include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
+
+int
+tetra_acelp_channel_gate_passes(const dsd_opts *opts)
+{
+    return !opts || !opts->trunk_enable || opts->trunk_is_tuned;
+}
 
 /*
  * tetra_acelp_slot_gate_passes()

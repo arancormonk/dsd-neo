@@ -134,6 +134,25 @@ test_grant_tunes(void)
     fprintf(stderr, "  PASS test_grant_tunes\n");
 }
 
+static void
+test_main_carrier_grant_keeps_receiver(void)
+{
+    dsd_opts *opts; dsd_state *state;
+    make_pair(&opts, &state);
+    reset_counters();
+    tetra_sm_init();
+    tetra_sm_on_cc_sync(opts, state);
+    tetra_sm_on_grant(opts, state, state->trunk_cc_freq, 1);
+    CHECK(g_tune_calls == 0, "main-carrier grant must not retune RTL");
+    CHECK(opts->trunk_is_tuned == 1, "main-carrier traffic must open voice gate");
+    CHECK(tetra_sm_get_state() == TETRA_SM_TUNED, "main-carrier grant must enter TUNED");
+    tetra_sm_on_release(opts, state);
+    CHECK(g_release_calls == 0, "main-carrier release must not retune RTL");
+    CHECK(opts->trunk_is_tuned == 0, "main-carrier release must close voice gate");
+    CHECK(tetra_sm_get_state() == TETRA_SM_ON_CC, "main-carrier release must return to CC");
+    free(opts); free(state);
+}
+
 /* -----------------------------------------------------------------------
  * Test 2: on_grant with trunk_enable=0 → no tuning
  * ----------------------------------------------------------------------- */
@@ -570,6 +589,7 @@ int main(void)
 
     fprintf(stderr, "=== TETRA SM tests ===\n");
     test_grant_tunes();
+    test_main_carrier_grant_keeps_receiver();
     test_grant_disabled();
     test_double_grant_same_freq();
     test_release_returns_to_cc();

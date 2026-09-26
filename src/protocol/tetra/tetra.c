@@ -246,8 +246,9 @@ static void tetra_decode_tch_fs(const uint16_t *soft_b1, const uint16_t *soft_b2
 
 /* SCH/F uses the same 432 descrambled bits as TCH/FS, then a different
  * interleaver (a=103) and rate-2/3 code. A matching CRC-16 means this NTS1
- * burst is signalling and must not be fed to the speech vocoder. */
-static int tetra_schf_crc_ok(const uint16_t *type4)
+ * burst is signalling: dispatch its MAC payload instead of discarding it. */
+static int tetra_decode_schf(const uint16_t *type4, int cc,
+                             dsd_opts *opts, dsd_state *state)
 {
     uint16_t deint[TETRA_SCHF_BITS];
     uint8_t decoded[TETRA_SCHF_TYPE2];
@@ -264,7 +265,10 @@ static int tetra_schf_crc_ok(const uint16_t *type4)
     free(depunc);
     if (dec_len < TETRA_SCHF_TYPE2)
         return 0;
-    return tetra_crc16_ccitt_bits(decoded, TETRA_SCHF_TYPE1 + 16) == TETRA_CRC_OK;
+    if (tetra_crc16_ccitt_bits(decoded, TETRA_SCHF_TYPE1 + 16) != TETRA_CRC_OK)
+        return 0;
+    tetra_mac_parse_schd(decoded, TETRA_SCHF_TYPE1, cc, opts, state);
+    return 1;
 }
 
 /* -------------------------------------------------------------------------
@@ -337,7 +341,7 @@ void processTetraFrame(dsd_opts* opts, dsd_state* state)
         memcpy(type4 + TETRA_NDB_BLOCK_BITS, b2_soft, sizeof(b2_soft));
         tetra_descramble_soft(type4, TETRA_SCHF_BITS, tetra_lfsr_seed_for(state, cc));
 
-        if (tetra_schf_crc_ok(type4)) {
+        if (tetra_decode_schf(type4, cc, opts, state)) {
             state->tetra_decode_ok++;
             snprintf(state->fsubtype, sizeof(state->fsubtype), " SCH/F         ");
             if (opts->payload || opts->errorbars)

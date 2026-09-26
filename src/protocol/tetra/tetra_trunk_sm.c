@@ -201,6 +201,19 @@ do_release(dsd_opts *opts, dsd_state *state)
     const tetra_sm_state_e next =
         opts && opts->trunk_enable && state && state->trunk_cc_freq > 0
             ? TETRA_SM_ON_CC : TETRA_SM_IDLE;
+    if (g_tetra_sm.vc_freq_hz == state->trunk_cc_freq &&
+        g_tetra_sm.vc_freq_hz > 0) {
+        /* The traffic slot was on the main carrier. Keep the receiver and
+         * demodulator synchronized while switching back to control traffic. */
+        opts->trunk_is_tuned = 0;
+        state->trunk_vc_freq[0] = state->trunk_vc_freq[1] = 0;
+        state->p25_vc_freq[0] = state->p25_vc_freq[1] = 0;
+        set_state(state, next);
+        g_tetra_sm.vc_freq_hz = 0;
+        g_tetra_sm.vc_slot = 0;
+        g_tetra_sm.t_tune_m = 0.0;
+        return 1;
+    }
     uint64_t request_id = 0U;
     const tetra_sm_tune_snapshot_t snapshot = capture_tune_snapshot(opts, state);
     dsd_trunk_tune_result result =
@@ -339,6 +352,20 @@ tetra_sm_on_grant(dsd_opts *opts, dsd_state *state,
     if (opts->verbose > 0)
         fprintf(stderr, "\n[TETRA SM] %s -> TUNED (grant VC=%ld Hz slot=%u)\n",
                 state_name(g_tetra_sm.state), vc_freq_hz, (unsigned)slot);
+
+    if (vc_freq_hz == state->trunk_cc_freq) {
+        /* A main-carrier traffic slot needs slot gating, not an RTL retune.
+         * Retuning the same frequency resets timing and can lose the call. */
+        opts->trunk_is_tuned = 1;
+        state->trunk_vc_freq[0] = state->trunk_vc_freq[1] = vc_freq_hz;
+        state->p25_vc_freq[0] = state->p25_vc_freq[1] = vc_freq_hz;
+        stamp_completed_vc_tune(state, now_m());
+        set_state(state, TETRA_SM_TUNED);
+        g_tetra_sm.vc_freq_hz = vc_freq_hz;
+        g_tetra_sm.vc_slot = slot;
+        g_tetra_sm.t_tune_m = now_m();
+        return;
+    }
 
     /* Tune to VC */
     const tetra_sm_state_e previous = g_tetra_sm.state;

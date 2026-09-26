@@ -561,9 +561,18 @@ void tetra_acelp_process_tch(const uint8_t *type2_bits, int type2_len,
     static int warned_missing_cmd = 0;
     static int warned_open_failed = 0;
     static int warned_no_sink = 0;
+    static int warned_control_channel = 0;
 
     if (!type2_bits || !opts) {
         fprintf(stderr, "[TETRA] cannot process TCH without bits and decoder options\n");
+        return;
+    }
+
+    if (!tetra_acelp_channel_gate_passes(opts)) {
+        if (!warned_control_channel) {
+            fprintf(stderr, "[TETRA] waiting for a traffic-channel grant; control-channel bursts are not speech\n");
+            warned_control_channel = 1;
+        }
         return;
     }
 

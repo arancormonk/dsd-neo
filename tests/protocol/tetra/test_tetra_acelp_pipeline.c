@@ -45,6 +45,17 @@ main(void)
     for (int i = 0; i < 292; ++i)
         type2[i] = (uint8_t)((i * 7 + 3) & 1);
 
+    opts->trunk_enable = 1;
+    tetra_acelp_process_tch(type2, 292, 0, opts, state);
+    if (state->tetra_vocoder_frames != 0) {
+        fprintf(stderr, "FAIL: control-channel burst reached vocoder\n");
+        sf_close(wav);
+        free(opts);
+        free(state);
+        remove(path);
+        return 1;
+    }
+    opts->trunk_is_tuned = 1;
     tetra_acelp_process_tch(type2, 292, 0, opts, state);
     tetra_vocoder_close();
     sf_write_sync(wav);
