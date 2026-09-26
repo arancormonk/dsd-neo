@@ -323,13 +323,13 @@ user guide states; the per-row pins are tighter and record what these seeds meas
   (150.0 Hz, and 68.2, 161.0 and 166.7 Hz between two table tones), nor do 100.85 and 100.9 Hz, just outside the snap
   gate of 100.0, at +10 and +20 dB; a locked tone that moves off the table is dropped within 450 ms (one window plus
   four failing hops) and nothing locks in its place; no DCS waveform locks a CTCSS tone, in the publication or in the
-  CTCSS detector's own state, where the DCS lock that outranks it would hide one -- every rotation class of the Golay
-  (23,12) code, forward and bit-reversed, which is every periodic DCS waveform in either polarity (what the DCS
-  detector makes of each is under [Received code (DCS)](#received-code-dcs-on-the-analog-monitor)), plus the words that
-  come nearest a table tone, which lock nothing at all at every rate, clean, at +10 dB and at 0 dB; and a minute each
-  of unfiltered speech, transmitter-filtered speech and noise never locks and reaches the `none` verdict, which the
-  speech runs hold for 87% of their carrier time (the rows
-  assert 80%; each pause that closes the carrier starts the verdict again). Two more minutes of speech, one filtered and
+  CTCSS detector's own state, where the DCS lock that outranks it would hide one -- every rotation class of the
+  Golay (23,12) code, forward and bit-reversed, which is every periodic DCS waveform in either polarity (what
+  the DCS detector makes of each is under [Received code (DCS)](#received-code-dcs-on-the-analog-monitor)),
+  plus the words that come nearest a table tone, which lock nothing at all at every rate, clean, at +10 dB
+  and at 0 dB; and a minute each of unfiltered speech, transmitter-filtered speech and noise never locks and
+  reaches the `none` verdict, which the speech runs hold for 87% of their carrier time (the rows assert 80%;
+  each pause that closes the carrier starts the verdict again). Two more minutes of speech, one filtered and
   one not, in which a high voice holds a pitch near 225.7 or 229.1 Hz for most of a late acquisition window and then
   moves on, never lock: the late windows qualify that pitch, and only the check that the newest 250 ms still carry it
   keeps it from locking. The speech model is source-filter speech
@@ -898,11 +898,11 @@ names with the new ones and refuses any name it does not build). A real DCS acce
 
 Every DCS waveform has two spellings, because inverting a DCS word gives another valid word: the oracle prints both
 (`D023N = D047I`, and `D023I = D047N` for the inverted waveform). The DCS detector (#523) publishes the normal-polarity
-spelling (`dsd_dcs_canonical()`) and shows and logs both, normal first (`DCS D023N / D047I`; the alias table is in the
-[CLI guide](cli.md#received-code-dcs-on-the-analog-monitor)), so an oracle label and the detector's name the same two
-spellings. The wiki's CTCSS page, which links the I/Q recording, carries audio samples at 151.4, 173.8 and 186.2 Hz
-without saying which tones the recording holds; the oracle finds the first two. A
-maintainer has confirmed the CTCSS labels in the table, "none" for both squelch captures included, and the received-tone
+spelling (`dsd_dcs_canonical()`) and shows and logs both, normal first (`DCS D023N / D047I`; the alias table is
+in the [CLI guide](cli.md#received-code-dcs-on-the-analog-monitor)), so an oracle label and the detector's name
+the same two spellings. The wiki's CTCSS page, which links the I/Q recording, carries audio samples at 151.4,
+173.8 and 186.2 Hz without saying which tones the recording holds; the oracle finds the first two. A maintainer
+has confirmed the CTCSS labels in the table, "none" for both squelch captures included, and the received-tone
 cases pin them: `DECODE_IQ_ANALOG_REAL_CTCSS_1514` the 151.4 Hz of `nfm_ctcss_real`, and the
 `DECODE_IQ_ANALOG_REAL_CTCSS_NOFALSE_*` cases the absence of any tone on both squelch captures (see
 [Received tone (CTCSS) on the analog monitor](#received-tone-ctcss-on-the-analog-monitor), which also says why the
