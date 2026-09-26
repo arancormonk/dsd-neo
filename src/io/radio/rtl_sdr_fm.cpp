@@ -12194,6 +12194,8 @@ rtl_stream_test_am_monitor_symbol_profiles(int rate_hz, rtl_stream_test_am_symbo
     analog.analog_family = DSD_RX_FAMILY_ANALOG;
     analog.analog_kind = DSD_ANALOG_DEMOD_AM;
     analog.target_freq_hz = kFamilyTestRetuneHz;
+    /* Attached after the live requests above, as the scanner attaches it: none supersedes it. */
+    analog.family_request_count = g_live_family_requests.load(std::memory_order_acquire);
     rc |= family_test_land_retune(&stream_opts, demod.rate_out, demod.rate_out, demod.rate_out, &analog);
     out->retune_analog_am = dsd_demod_am_active(&demod);
     out->retune_analog_monitor = dsd_demod_analog_monitor_active(&demod);
