@@ -197,6 +197,47 @@ Item {
             tc.wizard.step = 0
         }
 
+        // Issue #524: the engine refuses an AM channel the radio's DSP bandwidth
+        // cannot filter, and at 4 or 6 kHz none fits. Step 1 waits for a wider
+        // bandwidth, with the reason and the fix under the chips; 8 kHz takes
+        // the 6 kHz default, an empty field follows the 48 kHz app default, a
+        // digital pick is not held, and neither is Airspy, whose device sets
+        // the rate the engine checks at start.
+        function test_12_am_waits_for_a_bandwidth_that_fits() {
+            var note = findChild(tc.wizard, "wizardDecodeAmBandwidthNote")
+            verify(note !== null, "the wizard has no AM bandwidth note")
+            tc.wizard.step = 1
+            tc.wizard.freqText = "118.1"
+            tc.wizard.pickDecodeFlag("-fM")
+            verify(tc.wizard.stepValid(), "AM at the app default bandwidth is refused")
+            verify(!note.visible)
+
+            for (var i = 0; i < 2; i++) {
+                tc.wizard.sourceType = i === 0 ? "usb" : "rtltcp"
+                tc.wizard.bwText = "6"
+                verify(!tc.wizard.stepValid(), "AM at a 6 kHz bandwidth passes step 1")
+                verify(note.visible, "the refusal is not shown")
+                verify(note.text.indexOf("Set the bandwidth to 8, 12, 16, 24 or 48 kHz") > 0, "the note names no fix")
+                tc.wizard.bwText = "4"
+                verify(!tc.wizard.stepValid(), "AM at a 4 kHz bandwidth passes step 1")
+                tc.wizard.bwText = "8"
+                verify(tc.wizard.stepValid(), "AM at 8 kHz is refused")
+                verify(!note.visible)
+            }
+
+            tc.wizard.bwText = "6"
+            tc.wizard.pickDecodeFlag("-fs")
+            verify(tc.wizard.stepValid(), "a digital mode at 6 kHz is held to the AM channel")
+            verify(!note.visible)
+            tc.wizard.pickDecodeFlag("-fM")
+            tc.wizard.sourceType = "airspy"
+            verify(tc.wizard.stepValid(), "Airspy is held here rather than where its device sets the rate")
+            tc.wizard.sourceType = "usb"
+            tc.wizard.bwText = ""
+            verify(tc.wizard.stepValid(), "an empty bandwidth does not follow the 48 kHz app default")
+            tc.wizard.step = 0
+        }
+
         // Issue #524: the AM chip greyed out is not enough. Picking a network or
         // file source after AM drops the flag back to Auto, so the wizard cannot
         // save a system the engine refuses to start; staying on a radio source

@@ -67,12 +67,14 @@ enum class SessionArgsError {
     ForceKey,
     UnsafeOption,
     /* Issue #524: an AM system (-fM) on a source whose audio arrives already demodulated (network or file). */
-    AmNeedsRadio
+    AmNeedsRadio,
+    /* Issue #524: an AM system on a USB or rtl_tcp radio whose DSP bandwidth cannot filter the AM channel. */
+    AmBandwidth
 };
 
 /* The last SessionArgsError value. A value added after it takes its place here, and session_args_error_text() then
  * needs its text: a static_assert there holds the text table to this value. */
-constexpr SessionArgsError SessionArgsErrorLast = SessionArgsError::AmNeedsRadio;
+constexpr SessionArgsError SessionArgsErrorLast = SessionArgsError::AmBandwidth;
 
 /** ASCII whitespace removed, optional 0x stripped, uppercase hex. QString copies
  * cannot promise erasure; never expose returned key text in diagnostics. */
@@ -90,6 +92,16 @@ QString session_args_error_text(SessionArgsError error);
  */
 bool session_args_profile_compatible(const QVariantMap& system);
 bool session_args_freq_valid(const QString& freqMhz);
+
+/**
+ * @brief Whether a radio source of @p sourceType running at @p bandwidthKhz can filter the AM channel (issue #524).
+ *
+ * The session's AM channel is the 6 kHz default, and the engine holds it to the DSP bandwidth a USB or rtl_tcp spec
+ * carries before the device opens (a bandwidth it does not run is its 48 kHz default): at 4 or 6 kHz it refuses to
+ * start. Airspy is held where its device sets the rate, at stream start, and any other source runs no channel filter,
+ * so both always fit here. An explicit --am-bandwidth-hz among the extra options is the engine's to check.
+ */
+bool session_args_am_fits_bandwidth(const QString& sourceType, int bandwidthKhz);
 
 /**
  * @brief The CLI-shaped argv for @p system, or an empty list with @p error set.
@@ -125,6 +137,13 @@ class SessionArgsBuilder : public QObject {
 
     /** @brief Frequency validity for the wizard's step gating; see session_args_freq_valid(). */
     Q_INVOKABLE bool freqValid(const QString& freqMhz) const;
+
+    /**
+     * @brief Why AM cannot run on @p sourceType at @p bandwidthKhz (0 or less: the app-wide default), or empty.
+     *
+     * The wizard's step gating for an AM pick; see session_args_am_fits_bandwidth().
+     */
+    Q_INVOKABLE QString amBandwidthError(const QString& sourceType, int bandwidthKhz) const;
 
     /** Safe encryption-only validation; never builds or returns secret argv. */
     Q_INVOKABLE QString keyError(const QString& type, const QString& value, const QString& csvPath, int force) const;

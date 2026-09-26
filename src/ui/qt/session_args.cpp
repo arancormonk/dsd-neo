@@ -24,6 +24,8 @@
 #include <QVariant>
 #include <Qt>
 
+#include <dsd-neo/runtime/analog_channel.h>
+
 #include "app_prefs.h"
 
 namespace dsd_qt {
@@ -407,6 +409,18 @@ session_args_freq_valid(const QString& freqMhz) {
     return ok && std::isfinite(mhz) && mhz > 0.0;
 }
 
+bool
+session_args_am_fits_bandwidth(const QString& sourceType, int bandwidthKhz) {
+    if (sourceType != QLatin1String("usb") && sourceType != QLatin1String("rtltcp")) {
+        return true;
+    }
+    /* The engine reads the spec's bandwidth field this way: a value it does not run is the 48 kHz default. */
+    const int khz = dsd_analog_rtl_dsp_bw_is_selectable(bandwidthKhz) ? bandwidthKhz : DSD_ANALOG_RTL_DSP_BW_MAX_KHZ;
+    return dsd_analog_width_check(DSD_ANALOG_DEMOD_AM, dsd_analog_width_default_hz(DSD_ANALOG_DEMOD_AM), khz * 1000,
+                                  nullptr, 0U)
+           == 0;
+}
+
 QString
 session_args_key_hex_normalize(const QString& value) {
     QString normalized = value;
@@ -486,6 +500,9 @@ constexpr SessionArgsErrorText k_error_texts[] = {
                                      "Remove prohibited options and write each short option separately."},
     {SessionArgsError::AmNeedsRadio, "AM needs a radio source (USB, Airspy or rtl_tcp): network and file audio "
                                      "arrives already demodulated. Choose a radio source, or another decode mode."},
+    {SessionArgsError::AmBandwidth, "AM needs a bandwidth of 8 kHz or more: its 6 kHz channel does not fit a "
+                                    "narrower one. Set the bandwidth to 8, 12, 16, 24 or 48 kHz, or choose another "
+                                    "decode mode."},
 };
 
 constexpr std::size_t k_error_text_count = sizeof k_error_texts / sizeof k_error_texts[0];
@@ -581,17 +598,29 @@ is_radio_source(const QString& source) {
     return source == QLatin1String("usb") || source == QLatin1String("airspy") || source == QLatin1String("rtltcp");
 }
 
+/* The DSP bandwidth, in kHz, a system's radio spec carries: its own override, or the app-wide default. */
+static int
+session_args_bandwidth_khz(const QVariantMap& system, const SessionArgPrefs& prefs) {
+    const int bwOverride = system.value(QStringLiteral("bandwidthKhz"), -1).toInt();
+    return bwOverride > 0 ? bwOverride : prefs.bandwidthKhz;
+}
+
 /* What the source allows. A radio source needs a frequency it can tune. Issue #524: -fM demodulates AM from the radio's
    I/Q, and the engine refuses it on audio that arrives already demodulated; the wizard keeps the pair from being saved,
-   and a system saved before that fails here with a reason rather than at engine startup. */
+   and a system saved before that fails here with a reason rather than at engine startup. The same holds for an AM
+   channel the radio's DSP bandwidth cannot filter (session_args_am_fits_bandwidth()). */
 static SessionArgsError
-session_args_source_error(const QVariantMap& system, bool radioSource, const QString& freqMhz) {
-    if (!radioSource) {
-        return decode_flag_names_am(system.value(QStringLiteral("decodeFlag")).toString())
-                   ? SessionArgsError::AmNeedsRadio
-                   : SessionArgsError::None;
+session_args_source_error(const QVariantMap& system, const QString& sourceType, int bandwidthKhz,
+                          const QString& freqMhz) {
+    const bool am = decode_flag_names_am(system.value(QStringLiteral("decodeFlag")).toString());
+    if (!is_radio_source(sourceType)) {
+        return am ? SessionArgsError::AmNeedsRadio : SessionArgsError::None;
     }
-    return session_args_freq_valid(freqMhz) ? SessionArgsError::None : SessionArgsError::Frequency;
+    if (!session_args_freq_valid(freqMhz)) {
+        return SessionArgsError::Frequency;
+    }
+    return am && !session_args_am_fits_bandwidth(sourceType, bandwidthKhz) ? SessionArgsError::AmBandwidth
+                                                                           : SessionArgsError::None;
 }
 
 QStringList
@@ -616,7 +645,8 @@ session_args_build(const QVariantMap& system, const SessionArgPrefs& prefs, Sess
     const QString sourceType = system.value(QStringLiteral("sourceType")).toString();
     const bool radioSource = is_radio_source(sourceType);
     const QString freqMhz = system.value(QStringLiteral("freqMhz")).toString().trimmed();
-    const SessionArgsError sourceError = session_args_source_error(system, radioSource, freqMhz);
+    const int bw = session_args_bandwidth_khz(system, prefs);
+    const SessionArgsError sourceError = session_args_source_error(system, sourceType, bw, freqMhz);
     if (sourceError != SessionArgsError::None) {
         return fail(sourceError);
     }
@@ -652,8 +682,6 @@ session_args_build(const QVariantMap& system, const SessionArgPrefs& prefs, Sess
 
     const int gainOverride = system.value(QStringLiteral("gainDb"), -1).toInt();
     const int gain = gainOverride >= 0 ? gainOverride : prefs.gainDb;
-    const int bwOverride = system.value(QStringLiteral("bandwidthKhz"), -1).toInt();
-    const int bw = bwOverride > 0 ? bwOverride : prefs.bandwidthKhz;
     const bool bias = bias_tee_effective(system.value(QStringLiteral("biasTee")), prefs.biasTee);
     const QString tail = QStringLiteral(":%1M:%2:%3:%4:0:2").arg(freqMhz).arg(gain).arg(ppm).arg(bw);
 
@@ -731,6 +759,7 @@ validationResult(SessionArgsError error) {
                                            : error == SessionArgsError::Hangtime     ? QStringLiteral("hangtime")
                                            : error == SessionArgsError::UnsafeOption ? QStringLiteral("unsafe-option")
                                            : error == SessionArgsError::AmNeedsRadio ? QStringLiteral("am-needs-radio")
+                                           : error == SessionArgsError::AmBandwidth  ? QStringLiteral("am-bandwidth")
                                            : error == SessionArgsError::None         ? QString()
                                                                                      : QStringLiteral("encryption"));
     result.insert(QStringLiteral("errorText"), session_args_error_text(error));
@@ -761,6 +790,16 @@ bool
 // cppcheck-suppress functionStatic // Q_INVOKABLE: QML calls this on the sessionArgs context object.
 SessionArgsBuilder::freqValid(const QString& freqMhz) const {
     return session_args_freq_valid(freqMhz);
+}
+
+QString
+SessionArgsBuilder::amBandwidthError(const QString& sourceType, int bandwidthKhz) const {
+    int khz = bandwidthKhz;
+    if (khz <= 0) {
+        khz = m_prefs != nullptr ? m_prefs->bandwidthKhz() : SessionArgPrefs().bandwidthKhz;
+    }
+    return session_args_am_fits_bandwidth(sourceType, khz) ? QString()
+                                                           : session_args_error_text(SessionArgsError::AmBandwidth);
 }
 
 // cppcheck-suppress functionStatic // Q_INVOKABLE: QML validation uses the shared startup rules.

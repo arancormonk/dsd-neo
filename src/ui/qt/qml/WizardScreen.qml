@@ -317,6 +317,18 @@ Item {
     }
 
     /**
+     * Why AM cannot run at the bandwidth this radio would start with (issue
+     * #524), or empty: the engine refuses an AM channel the DSP bandwidth
+     * cannot filter, so the wizard says so before saving the system. An empty
+     * bandwidth field follows the app-wide default.
+     */
+    function amBandwidthError() {
+        if (!radioSource || !Util.decodeFlagNeedsRadio(decodeFlag))
+            return "";
+        return sessionArgs.amBandwidthError(sourceType, bwText.length > 0 ? intOr(bwText, -1) : -1);
+    }
+
+    /**
      * Re-derive the unanswered trunking switch from the chip and the frequency.
      *
      * Called on every chip pick and on every frequency edit, not just the pick:
@@ -368,9 +380,10 @@ Item {
         }
         // A system edited or imported onto a non-radio source may still carry
         // AM, which only a radio can run: not until another chip is picked.
+        // Nor on a radio whose bandwidth cannot filter the AM channel.
         if (step === 1)
             return hangtimeValid() && encryptionValid && (!radioSource || sessionArgs.freqValid(freqText))
-                && (radioSource || !Util.decodeFlagNeedsRadio(decodeFlag));
+                && (radioSource || !Util.decodeFlagNeedsRadio(decodeFlag)) && amBandwidthError().length === 0;
         return hangtimeValid() && encryptionValid && nameText.trim().length > 0;
     }
 
@@ -957,6 +970,19 @@ Item {
                     font.family: Theme.sans
                     font.pixelSize: Theme.fontSize(13)
                     color: Theme.textSubdued
+                    wrapMode: Text.Wrap
+                }
+
+                // AM on a radio whose bandwidth (Advanced, or the app default)
+                // cannot filter its channel: the step waits for a wider one.
+                Text {
+                    objectName: "wizardDecodeAmBandwidthNote"
+                    visible: text.length > 0
+                    width: parent.width
+                    text: wizard.amBandwidthError()
+                    font.family: Theme.sans
+                    font.pixelSize: Theme.fontSize(13)
+                    color: Theme.magenta
                     wrapMode: Text.Wrap
                 }
 
