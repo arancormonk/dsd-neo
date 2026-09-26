@@ -6095,6 +6095,29 @@ apply_cmd_fall_back_from_am_on_pcm(dsd_opts* opts, dsd_state* state, const struc
     ui_set_toast(state, 6, "Decoding Analog: %s", DSD_DECODE_MODE_AM_NEEDS_IQ_TEXT);
 }
 
+/* The configured width of each analog kind (dsd_scan_mode_configured_analog_width()). */
+static ui_analog_widths
+ui_configured_analog_widths(const dsd_opts* opts, const dsd_state* state) {
+    const ui_analog_widths widths = {dsd_scan_mode_configured_analog_width(opts, state, DSD_ANALOG_DEMOD_FM),
+                                     dsd_scan_mode_configured_analog_width(opts, state, DSD_ANALOG_DEMOD_AM)};
+    return widths;
+}
+
+/* A config apply that changed the configured width of an analog kind from @p configured_before, once it has made its
+   requests (the scope's resume included): the change counts for a refusal where a later request of that kind lands, as
+   a width command's change does, whether the apply asked the front end for that width or not (the kind not in force,
+   the kind a switch in the same config leaves, one a scan row's own width shadows) (svc_note_analog_width_change()). */
+static void
+ui_note_config_width_changes(const dsd_opts* opts, const dsd_state* state, const ui_analog_widths* configured_before) {
+    const ui_analog_widths now = ui_configured_analog_widths(opts, state);
+    for (int kind = DSD_ANALOG_DEMOD_FM; kind <= DSD_ANALOG_DEMOD_AM; kind++) {
+        const int before_hz = ui_analog_width_before(configured_before, kind);
+        if (ui_analog_width_before(&now, kind) != before_hz) {
+            svc_note_analog_width_change(opts, state, kind, before_hz);
+        }
+    }
+}
+
 static int
 apply_cmd_scoped(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c, int guarded) {
     const int mode_update = command_updates_scan_mode(c);
@@ -6102,6 +6125,8 @@ apply_cmd_scoped(dsd_opts* opts, dsd_state* state, const struct dsd_app_command*
     /* The widths in force, taken before a suspend puts the configured ones in dsd_opts. */
     const ui_analog_widths widths_before = {opts ? opts->analog_nfm_bandwidth_hz : 0,
                                             opts ? opts->analog_am_bandwidth_hz : 0};
+    const int config_apply = c && c->id == DSD_APP_CMD_CONFIG_APPLY && opts && state;
+    const ui_analog_widths configured_before = config_apply ? ui_configured_analog_widths(opts, state) : widths_before;
     const int scoped = mode_update && opts && state && dsd_scan_mode_suspend(opts, state);
     const int group_update = c
                              && (c->id == DSD_APP_CMD_IMPORT_GROUP_LIST || c->id == DSD_APP_CMD_IMPORT_GROUP_LIST_CLEAR
@@ -6114,7 +6139,11 @@ apply_cmd_scoped(dsd_opts* opts, dsd_state* state, const struct dsd_app_command*
     if (was_scanner) {
         apply_cmd_leave_scanner_scope(opts, state, guarded);
     }
-    if (scoped && apply_cmd_resume_scope(opts, state, &widths_before) != 0) {
+    const int resume_failed = scoped && apply_cmd_resume_scope(opts, state, &widths_before) != 0;
+    if (config_apply) {
+        ui_note_config_width_changes(opts, state, &configured_before);
+    }
+    if (resume_failed) {
         return UI_CMD_APPLY_FAILED;
     }
     apply_cmd_fall_back_from_am_on_pcm(opts, state, c);

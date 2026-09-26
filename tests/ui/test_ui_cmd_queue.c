@@ -8505,6 +8505,90 @@ test_refused_request_keeps_each_kind_s_width_baseline(void) {
     return rc;
 }
 
+/* A running RTL session on the analog monitor of @p kind with the configured NFM width @p nfm_hz, every request taken,
+   under a blank scan row. */
+static int
+init_blank_row_on_analog_kind(dsd_opts* opts, dsd_state* state, RtlSdrContext* fake_ctx, int kind, int nfm_hz,
+                              const char* label) {
+    init_decode_mode_context(opts, state);
+    reset_rx_family_wrap();
+    opts->audio_in_type = AUDIO_IN_RTL;
+    DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", "rtl:0:118.1M:0:0:48");
+    opts->rtl_dsp_bw_khz = 48;
+    state->rtl_ctx = fake_ctx;
+    opts->analog_nfm_bandwidth_hz = nfm_hz;
+    int rc = submit_decode_mode(opts, state, kind == DSD_ANALOG_DEMOD_AM ? DSDCFG_MODE_AM : DSDCFG_MODE_ANALOG, label);
+    demod_thread_lands(0);
+    g_fake_analog_family = 1;
+    (void)dsd_app_drain_cmds(opts, state);
+    rc |= expect_int(label, dsd_scan_mode_enter(opts, state, DSD_SCAN_MODE_INHERIT), 0);
+    rc |= expect_int(label, dsd_scan_mode_options(opts, state, NULL), 0);
+    return rc;
+}
+
+/*
+ * Issue #524: a config apply's change of an analog width it asks the front end for nothing about (the kind not in
+ * force, or the one a switch in the same config leaves) counts, as a width command's does, for a refusal where a later
+ * request of that kind lands: under a blank scan row the configured width of the kind the front end kept goes back to
+ * the one from before the config, which is the one it ran.
+ */
+static int
+test_refused_request_keeps_a_config_width_baseline(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static void* fake_ctx[2];
+    int rc = 0;
+
+    /* On AM with the configured NFM width at 25 kHz: Analog, a config that sets AM 20 kHz (stored only: Analog is the
+       mode), then AM again, before the demod thread takes anything; a retune gets it to refuse the last, and it keeps
+       AM's default, having run none of them. */
+    rc |= init_blank_row_on_analog_kind(&opts, &state, (RtlSdrContext*)fake_ctx, DSD_ANALOG_DEMOD_AM, 25000,
+                                        "config am width while on analog: AM row");
+    rc |= submit_decode_mode(&opts, &state, DSDCFG_MODE_ANALOG, "config am width while on analog: Analog");
+    rc |= submit_config_widths(&opts, &state, 25000, 20000, "config am width while on analog: AM 20 kHz");
+    rc |= expect_int("config am width while on analog: stored",
+                     dsd_scan_mode_configured_analog_width(&opts, &state, DSD_ANALOG_DEMOD_AM), 20000);
+    rc |= submit_decode_mode(&opts, &state, DSDCFG_MODE_AM, "config am width while on analog: AM again");
+    rc |= expect_int("config am width while on analog: AM 20 kHz asked for last",
+                     g_analog_req_kind == DSD_ANALOG_DEMOD_AM && g_analog_req_width_hz == 20000, 1);
+    demod_thread_refuses_analog_keeping_kind(1, DSD_ANALOG_DEMOD_AM, 0);
+    rc |= expect_am_width_back_to_the_default(&opts, &state, 25000,
+                                              "config am width while on analog: back to AM's default");
+    dsd_scan_mode_leave(&opts, &state);
+    freeState(&state);
+
+    /* On Analog at 12.5 kHz: a config that switches to AM and sets NFM 20 kHz, which the AM request it makes does not
+       carry, then Analog again before the demod thread takes that request; a retune gets it to refuse NFM 20 kHz, and
+       it keeps FM at 12.5 kHz, having run neither. */
+    rc |= init_blank_row_on_analog_kind(&opts, &state, (RtlSdrContext*)fake_ctx, DSD_ANALOG_DEMOD_FM, 12500,
+                                        "config switch leaving an nfm width: Analog row");
+    rc |= submit_config_nfm_width(&opts, &state, DSDCFG_MODE_AM, 20000, "config switch leaving an nfm width: config");
+    rc |= expect_int("config switch leaving an nfm width: AM asked for",
+                     opts.analog_demod == DSD_ANALOG_DEMOD_AM && g_analog_req_kind == DSD_ANALOG_DEMOD_AM, 1);
+    rc |= submit_decode_mode(&opts, &state, DSDCFG_MODE_ANALOG, "config switch leaving an nfm width: Analog again");
+    rc |= expect_int("config switch leaving an nfm width: NFM 20 kHz asked for last",
+                     g_analog_req_kind == DSD_ANALOG_DEMOD_FM && g_analog_req_width_hz == 20000, 1);
+    demod_thread_refuses_analog_keeping_kind(1, DSD_ANALOG_DEMOD_FM, 12500);
+    state.ui_msg[0] = '\0';
+    (void)dsd_app_drain_cmds(&opts, &state);
+    rc |= expect_int("config switch leaving an nfm width: configured NFM back",
+                     dsd_scan_mode_configured_analog_width(&opts, &state, DSD_ANALOG_DEMOD_FM), 12500);
+    rc |= expect_int("config switch leaving an nfm width: NFM in force back", opts.analog_nfm_bandwidth_hz, 12500);
+    rc |= expect_int("config switch leaving an nfm width: AM untouched",
+                     dsd_scan_mode_configured_analog_width(&opts, &state, DSD_ANALOG_DEMOD_AM), 0);
+    rc |= expect_int("config switch leaving an nfm width: still Analog",
+                     opts.analog_only == 1 && opts.analog_demod == DSD_ANALOG_DEMOD_FM, 1);
+    rc |= expect_int("config switch leaving an nfm width: toast", strncmp(state.ui_msg, "Refused: ", 9) == 0, 1);
+    dsd_scan_mode_leave(&opts, &state);
+
+    g_fake_analog_family = 0;
+    opts.analog_nfm_bandwidth_hz = 0;
+    opts.analog_am_bandwidth_hz = 0;
+    state.rtl_ctx = NULL;
+    freeState(&state);
+    return rc;
+}
+
 /*
  * Issue #524: a switch between FM and AM on the running monitor drops the analog monitor block the decoder has
  * part-collected, as a family change does: it holds the old kind's audio (the FM discriminator reading an AM carrier,
@@ -9495,6 +9579,7 @@ main(void) {
     rc |= test_refused_switch_after_a_taken_switch_puts_the_running_mode_back();
     rc |= test_refused_switch_after_a_width_change_holds_the_width();
     rc |= test_refused_request_keeps_each_kind_s_width_baseline();
+    rc |= test_refused_request_keeps_a_config_width_baseline();
     rc |= test_fm_am_switch_discards_partial_analog_block();
     rc |= test_am_width_refused_where_it_lands();
     rc |= test_am_held_to_channel_lpf_off();

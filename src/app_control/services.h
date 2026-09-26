@@ -386,6 +386,21 @@ int svc_store_analog_width_setting(dsd_opts* opts, const dsd_state* state, int k
  */
 int svc_publish_analog_bandwidth(const dsd_opts* opts, const dsd_state* state, int kind, int configured_before_hz);
 
+/**
+ * @brief Note a change of the configured width of analog @p kind from @p configured_before_hz, made after the requests
+ * of the command that made it, without asking the front end for anything.
+ *
+ * For a config apply, whose [analog] can change a width it asks the front end for nothing about (the kind not in force,
+ * the kind a switch in the same config leaves, or one a scan row's own width shadows) or whose request does not carry
+ * the width from before it (a switch onto the kind): while the last request made has not reached the front end (the
+ * apply's own, the scope's resume included, or an earlier one), @p configured_before_hz is that kind's width from
+ * before the first change the front end ran none of, unless an earlier change of that kind set one, as
+ * svc_publish_analog_bandwidth() notes a width command's change of a kind not in force. A refusal where a later request
+ * of that kind lands then puts that width back under a scan row (svc_restore_analog_width()). Does nothing without a
+ * running RTL front end. Decoder thread only.
+ */
+void svc_note_analog_width_change(const dsd_opts* opts, const dsd_state* state, int kind, int configured_before_hz);
+
 /** @brief What became of the last analog monitor request (svc_take_monitor_request_outcome()). */
 typedef enum {
     SVC_MONITOR_REQUEST_NONE = 0, /**< None outstanding, still pending, or its stream is gone. */

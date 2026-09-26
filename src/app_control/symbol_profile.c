@@ -75,8 +75,9 @@ symbol_profile_earlier_not_run(void) {
 }
 
 /* A change of the configured width of analog @p kind from @p configured_before_hz (-1: none) that asked the front end for
-   nothing (svc_publish_analog_bandwidth()): while the last request has not reached the front end, the width from
-   before it is that kind's baseline, unless an earlier change of that kind set one. */
+   nothing (svc_publish_analog_bandwidth()), or that a config apply made (svc_note_analog_width_change()): while the last
+   request has not reached the front end, the width from before it is that kind's baseline, unless an earlier change of
+   that kind set one. */
 static void
 symbol_profile_note_width_change(int kind, int configured_before_hz) {
     if (configured_before_hz < 0 || !dsd_analog_demod_is_valid(kind)
@@ -303,6 +304,20 @@ svc_publish_analog_bandwidth(const dsd_opts* opts, const dsd_state* state, int k
     (void)kind;
     (void)configured_before_hz;
     return 0;
+#endif
+}
+
+void
+svc_note_analog_width_change(const dsd_opts* opts, const dsd_state* state, int kind, int configured_before_hz) {
+#ifdef USE_RADIO
+    if (opts && state && symbol_profile_rtl_running(opts, state)) {
+        symbol_profile_note_width_change(kind, configured_before_hz);
+    }
+#else
+    (void)opts;
+    (void)state;
+    (void)kind;
+    (void)configured_before_hz;
 #endif
 }
 
