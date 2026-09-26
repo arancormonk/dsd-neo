@@ -1474,6 +1474,31 @@ main(int argc, char** argv) {
         model.refresh(&opts, &state);
         expect("am: the AM monitor's width", model.analogBandwidthHz() == 9000);
         expect("am: the reading is the AM monitor's width", model.analogBandwidthReading() == QStringLiteral("9 kHz"));
+        expect("am: the width is AM's", model.analogBandwidthAm());
+
+        /* Issue #526: an nfm row with its own width over the AM session runs FM. The readings describe the row's NFM
+         * width, the configured widths are the configured view's rather than the row's in dsd_opts, and the AM
+         * preset's own width stays offered; the leave brings AM back. */
+        opts.analog_nfm_bandwidth_hz = 11250;
+        dsd_scan_option_values am_session_row{};
+        am_session_row.present = DSD_SCAN_OPT_BANDWIDTH;
+        am_session_row.channel_bw_hz = 12500;
+        expect("am: nfm row", dsd_scan_mode_enter(&opts, &state, DSD_SCAN_MODE_NFM) == 0);
+        expect("am: nfm row options", dsd_scan_mode_options(&opts, &state, &am_session_row) == 0);
+        g_stub_channel_bandwidth_hz = 12500;
+        g_stub_channel_analog_kind = DSD_ANALOG_DEMOD_FM;
+        model.refresh(&opts, &state);
+        expect("am nfm row: the row's NFM width", !model.analogBandwidthAm() && model.analogBandwidthHz() == 12500);
+        expect("am nfm row: the configured NFM width",
+               model.nfmBandwidthConfiguredHz() == 11250 && model.analogBandwidthConfiguredHz() == 11250);
+        expect("am nfm row: the configured AM width", model.amBandwidthConfiguredHz() == 10000);
+        expect("am nfm row: both widths offered", model.amBandwidthOffered() && model.nfmBandwidthOffered());
+        dsd_scan_mode_leave(&opts, &state);
+        opts.analog_nfm_bandwidth_hz = 0;
+        g_stub_channel_bandwidth_hz = 9000;
+        g_stub_channel_analog_kind = DSD_ANALOG_DEMOD_AM;
+        model.refresh(&opts, &state);
+        expect("am after the nfm row: AM again", model.analogBandwidthAm() && model.analogBandwidthHz() == 9000);
 
         opts.audio_in_type = AUDIO_IN_PULSE;
         model.refresh(&opts, &state);

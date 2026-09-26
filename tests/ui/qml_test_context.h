@@ -2045,6 +2045,8 @@ class Setup : public QObject {
         // #526: an nfm scan row on air (its width is in force on any session), and whether it sets its own.
         metrics[QStringLiteral("analogBandwidthRowActive")] = false;
         metrics[QStringLiteral("analogBandwidthRowOverride")] = false;
+        // #524: whether the width the analogBandwidth* keys describe is AM's (the preset's kind, or a row's on air).
+        metrics[QStringLiteral("analogBandwidthAm")] = false;
         metrics[QStringLiteral("ppm")] = 0;
         m_metrics = metrics;
         m_engine = engine;

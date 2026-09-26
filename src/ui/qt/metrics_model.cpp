@@ -800,15 +800,18 @@ MetricsModel::fillAnalogChannel(View& next, const dsd_opts* opts_snapshot, const
     /* The view leaves the width and the flag at 0 outside the analog preset, with no analog scan row on air, and the
      * bound at 0 off a radio. */
     next.analog_bandwidth_configured_hz = view.configured_hz;
-    next.nfm_bandwidth_configured_hz = dsd_app_analog_width_setting_hz(opts_snapshot, DSD_ANALOG_DEMOD_FM);
-    next.am_bandwidth_configured_hz = dsd_app_analog_width_setting_hz(opts_snapshot, DSD_ANALOG_DEMOD_AM);
+    next.nfm_bandwidth_configured_hz =
+        dsd_scan_mode_configured_analog_width(opts_snapshot, snapshot, DSD_ANALOG_DEMOD_FM);
+    next.am_bandwidth_configured_hz =
+        dsd_scan_mode_configured_analog_width(opts_snapshot, snapshot, DSD_ANALOG_DEMOD_AM);
     next.analog_bandwidth_hz = view.width_hz;
     next.analog_bandwidth_max_hz = view.max_hz;
     next.analog_bandwidth_dsp_limited = view.dsp_limited != 0U;
     next.analog_bandwidth_row_active = view.row_analog != 0U;
     next.analog_bandwidth_row_override = view.row_override != 0U;
-    next.nfm_bandwidth_offered = dsd_app_analog_width_offered(opts_snapshot, &view, DSD_ANALOG_DEMOD_FM) != 0;
-    next.am_bandwidth_offered = dsd_app_analog_width_offered(opts_snapshot, &view, DSD_ANALOG_DEMOD_AM) != 0;
+    next.analog_bandwidth_am = view.kind == DSD_ANALOG_DEMOD_AM;
+    next.nfm_bandwidth_offered = dsd_app_analog_width_offered(opts_snapshot, snapshot, &view, DSD_ANALOG_DEMOD_FM) != 0;
+    next.am_bandwidth_offered = dsd_app_analog_width_offered(opts_snapshot, snapshot, &view, DSD_ANALOG_DEMOD_AM) != 0;
     char reading[DSD_APP_ANALOG_WIDTH_TEXT_MAX];
     (void)dsd_app_analog_width_view_format(&view, reading, sizeof reading);
     next.analog_bandwidth_reading = QString::fromUtf8(reading);

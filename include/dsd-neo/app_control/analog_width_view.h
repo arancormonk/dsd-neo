@@ -101,13 +101,16 @@ int dsd_app_analog_width_setting_hz(const dsd_opts* opts, int kind);
  * @brief Whether the controls offer the configured channel width of analog @p kind (dsd_analog_demod) for editing.
  *
  * On a radio input only, where the width is a channel filter (@p view from dsd_app_analog_width_view_get() for the same
- * @p opts): the width of the configured preset's kind; the other kind's (under a digital preset, both) while an
- * explicit width of it is set, since a switch to that kind is held to it; and AM's unset default where the DSP rate
- * (@c max_hz) cannot filter its 6 kHz channel but filters a narrower AM width, since a switch to AM is refused there
- * with word to narrow the width. The unset NFM default is never refused for its rate. The terminal's width rows and
- * the Qt/Android Radio sheet offer their controls by this. Returns 1 or 0 (0 for a NULL argument or an invalid kind).
+ * @p opts and @p state): the width of the configured preset's kind, whatever an analog scan row on air runs meanwhile,
+ * and the kind that row runs (issue #526); the other kind's (under a digital preset, both) while an explicit configured
+ * width of it is set (dsd_scan_mode_configured_analog_width()), since a switch to that kind is held to it; and AM's
+ * unset default where the DSP rate (@c max_hz) cannot filter its 6 kHz channel but filters a narrower AM width, since a
+ * switch to AM is refused there with word to narrow the width. The unset NFM default is never refused for its rate.
+ * The terminal's width rows and the Qt/Android Radio sheet offer their controls by this. @p state may be NULL (no scan
+ * scope). Returns 1 or 0 (0 for a NULL @p opts or @p view, or an invalid kind).
  */
-int dsd_app_analog_width_offered(const dsd_opts* opts, const dsd_app_analog_width_view* view, int kind);
+int dsd_app_analog_width_offered(const dsd_opts* opts, const dsd_state* state, const dsd_app_analog_width_view* view,
+                                 int kind);
 
 /**
  * @brief Render the width in force: "12.5 kHz", "16 kHz (default)" when the configured width is the default,

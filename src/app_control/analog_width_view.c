@@ -171,12 +171,17 @@ dsd_app_analog_width_setting_hz(const dsd_opts* opts, int kind) {
 }
 
 int
-dsd_app_analog_width_offered(const dsd_opts* opts, const dsd_app_analog_width_view* view, int kind) {
+dsd_app_analog_width_offered(const dsd_opts* opts, const dsd_state* state, const dsd_app_analog_width_view* view,
+                             int kind) {
     if (!opts || !view || !view->radio_input || !dsd_analog_demod_is_valid(kind)) {
         return 0;
     }
-    /* An nfm scan row on air (issue #526) runs its width on any session. */
-    if (((view->shown || view->row_analog) && view->kind == kind) || dsd_app_analog_width_setting_hz(opts, kind) > 0) {
+    /* The configured preset's kind stays editable while an analog scan row on air runs another (an nfm row on an AM
+       session, issue #526), and the row's kind is offered on any session. */
+    const dsd_scan_settings* configured = dsd_scan_mode_configured_view(state);
+    const int preset_kind = configured ? configured->analog_demod : opts->analog_demod;
+    if ((view->shown && preset_kind == kind) || (view->row_analog && view->kind == kind)
+        || dsd_scan_mode_configured_analog_width(opts, state, kind) > 0) {
         return 1;
     }
     /* The unset AM default is its 6 kHz filter, held to the rate as an explicit width is (the unset NFM default runs

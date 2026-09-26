@@ -1339,11 +1339,12 @@ is_analog_width_editable(const void* v, int kind) {
     }
     dsd_frontend_metrics metrics;
     const dsd_frontend_metrics* running = dsd_app_frontend_get_metrics(&metrics) == 0 ? &metrics : NULL;
+    const dsd_state* snapshot = dsd_app_get_latest_snapshot();
     dsd_app_analog_width_view view;
-    if (dsd_app_analog_width_view_get(c->opts, dsd_app_get_latest_snapshot(), running, &view) != 0) {
+    if (dsd_app_analog_width_view_get(c->opts, snapshot, running, &view) != 0) {
         return false;
     }
-    return dsd_app_analog_width_offered(c->opts, &view, kind) != 0;
+    return dsd_app_analog_width_offered(c->opts, snapshot, &view, kind) != 0;
 }
 
 /* The NFM width row (issue #525). */

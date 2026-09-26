@@ -80,17 +80,22 @@ ModalSheet {
     // the width in force as the engine spells it for every frontend: what the
     // front end reports while the monitor runs, with "DSP-limited" when the DSP
     // rate rather than the filter bounds it. Under the AM preset (issue #524)
-    // it is the AM width, stepped over the AM widths; otherwise the NFM width.
+    // it is the AM width, stepped over the AM widths; otherwise, and while an
+    // nfm scan row runs over the AM preset, the NFM width.
     readonly property int analogMode: commands.decodeModeForFlag("-fA")
     readonly property int amMode: commands.decodeModeForFlag("-fM")
     readonly property bool amPreset: amMode >= 0 && metrics.decodeMode === amMode
     readonly property bool analogPreset: (analogMode >= 0 && metrics.decodeMode === analogMode) || amPreset
-    readonly property var analogWidths: amPreset ? Util.AM_WIDTHS_HZ : Util.NFM_WIDTHS_HZ
     // Issue #526: an nfm scan row on air runs the NFM width whatever the
     // configured preset, a digital one included, so its width is in force and
     // shown there too, as the terminal shows it.
     readonly property bool analogRowActive: metrics.analogBandwidthRowActive === true
     readonly property bool analogWidthInForce: analogPreset || analogRowActive
+    // The kind the section edits and reads: the configured preset's, or while
+    // an analog scan row is on air the kind that row runs (an nfm row runs FM
+    // on an AM session too), which is the width the readings describe.
+    readonly property bool sectionAm: analogRowActive ? metrics.analogBandwidthAm === true : amPreset
+    readonly property var analogWidths: sectionAm ? Util.AM_WIDTHS_HZ : Util.NFM_WIDTHS_HZ
     // The width is the radio front end's filter; PCM audio arrives demodulated.
     readonly property bool analogWidthEditable: metrics.radioInput === true
     // A row can carry its own width (--nfm-bandwidth-hz). While it is on air the
@@ -118,7 +123,7 @@ ModalSheet {
             return Util.NFM_DEFAULT_WIDTH_HZ;
         if (metrics.analogBandwidthHz > 0)
             return metrics.analogBandwidthHz;
-        return amPreset ? Util.AM_DEFAULT_WIDTH_HZ : Util.NFM_DEFAULT_WIDTH_HZ;
+        return sectionAm ? Util.AM_DEFAULT_WIDTH_HZ : Util.NFM_DEFAULT_WIDTH_HZ;
     }
     // The widest width the DSP rate filters (the running stream's, or with none
     // the rate an RTL-SDR input's DSP bandwidth sets; 0 = not known): the steps
@@ -148,7 +153,8 @@ ModalSheet {
         analogWidthConfigured > 0 ? analogWidthConfigured : Util.NFM_DEFAULT_WIDTH_HZ))
 
     // The width of the analog kind the section above does not edit: AM, or NFM
-    // under the AM preset. Offered on a radio while an explicit one is set, as
+    // under the AM preset (AM again while an nfm row runs over the AM
+    // preset). Offered on a radio while an explicit one is set, as
     // the terminal offers its row: a switch between NFM and AM is held to it too,
     // and where the device or the capture forces a DSP rate that cannot filter
     // it, the refusal says to narrow it, which has to be possible before the
@@ -156,7 +162,7 @@ ModalSheet {
     // filter it (amBandwidthOffered): a switch to AM is refused there with word
     // to narrow the width. It is a setting only; no width of that kind is in
     // force.
-    readonly property bool otherKindAm: !amPreset
+    readonly property bool otherKindAm: !sectionAm
     readonly property var otherWidths: otherKindAm ? Util.AM_WIDTHS_HZ : Util.NFM_WIDTHS_HZ
     readonly property int otherWidthSetting: (otherKindAm
         ? metrics.amBandwidthConfiguredHz : metrics.nfmBandwidthConfiguredHz) || 0
@@ -175,9 +181,10 @@ ModalSheet {
         && Util.nextWidthIn(otherWidths, otherWidthStepFrom, 1, analogWidthMax) > 0
 
     // An outstanding width request belongs to the kind it was sent for, and the
-    // two sections swap kinds when the preset moves between NFM and AM: a request
-    // left standing would read as the other kind's width, and step from it.
-    onAmPresetChanged: forgetWidthRequests()
+    // two sections swap kinds when the preset moves between NFM and AM, or an
+    // nfm row comes on air over the AM preset or leaves: a request left standing
+    // would read as the other kind's width, and step from it.
+    onSectionAmChanged: forgetWidthRequests()
 
     function open() {
         // Whatever was outstanding belongs to the last time this was open, and on
@@ -210,10 +217,9 @@ ModalSheet {
         otherWidthTtl.stop();
     }
 
-    // The width command of the kind the section edits: AM under the AM preset,
-    // NFM otherwise.
+    // The width command of the kind the section edits (sectionAm).
     function sendAnalogWidth(hz) {
-        if (amPreset)
+        if (sectionAm)
             commands.setAmBandwidthHz(hz);
         else
             commands.setNfmBandwidthHz(hz);
@@ -631,7 +637,7 @@ ModalSheet {
         spacing: 8
         Text {
             objectName: "radioAnalogSectionTitle"
-            text: sheet.amPreset ? qsTr("AM channel width") : qsTr("NFM channel width")
+            text: sheet.sectionAm ? qsTr("AM channel width") : qsTr("NFM channel width")
             color: Theme.textSecondary
             font.pixelSize: Theme.fontSize(14)
         }

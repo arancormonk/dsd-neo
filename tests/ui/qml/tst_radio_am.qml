@@ -56,6 +56,9 @@ Item {
             testContext.setMetric("amBandwidthOffered", false);
             testContext.setMetric("analogBandwidthMaxHz", 0);
             testContext.setMetric("analogBandwidthReading", "");
+            testContext.setMetric("analogBandwidthRowActive", false);
+            testContext.setMetric("analogBandwidthRowOverride", false);
+            testContext.setMetric("analogBandwidthAm", false);
             if (sheet) {
                 sheet.forgetRequests();
                 sheet.visible = false;
@@ -268,6 +271,43 @@ Item {
             onAm(20000, 20000);
             tryCompare(findChild(sheet, "radioAnalogOtherSectionTitle"), "text", "NFM channel width");
             verify(!otherSection().visible, "the AM request showed as an explicit NFM width");
+        }
+
+        /* Issue #526: an nfm scan row with its own width on air over the AM preset runs FM. The readings describe the
+           row's NFM width (analogBandwidthAm false), so the section is the NFM one, stepping the configured NFM default
+           beneath the row, and the AM preset's own width moves to the second control, still offered, until the row
+           leaves. */
+        function test_nfm_row_on_air_over_the_am_preset() {
+            onAm(6000, 0);
+            testContext.setMetric("analogBandwidthAm", true);
+            compare(findChild(sheet, "radioAnalogSectionTitle").text, "AM channel width");
+            testContext.setMetric("analogBandwidthHz", 12500);
+            testContext.setMetric("analogBandwidthConfiguredHz", 0);
+            testContext.setMetric("analogBandwidthReading", "12.5 kHz (row; default 16 kHz)");
+            testContext.setMetric("amBandwidthOffered", true);
+            testContext.setMetric("analogBandwidthRowOverride", true);
+            testContext.setMetric("analogBandwidthAm", false);
+            testContext.setMetric("analogBandwidthRowActive", true);
+            tryCompare(findChild(sheet, "radioAnalogSectionTitle"), "text", "NFM channel width");
+            compare(valueText(), "12.5 kHz");
+            verify(findChild(sheet, "radioAnalogBandwidthRowNote").visible, "no row badge over the row's own width");
+            findChild(sheet, "radioAnalogBandwidthDown").clicked();
+            compare(testContext.lastNfmBandwidthHz(), 12500, "the NFM default did not step from 16 kHz");
+            compare(testContext.amBandwidthCalls(), 0, "the row's NFM step went to the AM command");
+            verify(otherSection().visible, "the AM preset's width had no control while the row was on air");
+            compare(findChild(sheet, "radioAnalogOtherSectionTitle").text, "AM channel width");
+            findChild(sheet, "radioAnalogOtherBandwidthUp").clicked();
+            compare(testContext.lastAmBandwidthHz(), 8000);
+
+            // The row leaves: the section is the AM preset's again.
+            sheet.forgetRequests();
+            testContext.setMetric("analogBandwidthRowActive", false);
+            testContext.setMetric("analogBandwidthRowOverride", false);
+            testContext.setMetric("analogBandwidthAm", true);
+            testContext.setMetric("amBandwidthOffered", false);
+            onAm(6000, 0);
+            tryCompare(findChild(sheet, "radioAnalogSectionTitle"), "text", "AM channel width");
+            verify(!otherSection().visible, "the NFM width kept a control with none set");
         }
 
         function test_am_width_disabled_off_a_radio() {

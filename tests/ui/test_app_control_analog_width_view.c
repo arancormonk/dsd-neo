@@ -395,48 +395,63 @@ main(void) {
     opts->analog_demod = DSD_ANALOG_DEMOD_FM;
     m = monitor_metrics(12500, 0, 48000);
     assert(dsd_app_analog_width_view_get(opts, state, &m, &view) == 0);
-    assert(dsd_app_analog_width_offered(opts, &view, DSD_ANALOG_DEMOD_FM) == 1);
-    assert(dsd_app_analog_width_offered(opts, &view, DSD_ANALOG_DEMOD_AM) == 0);
+    assert(dsd_app_analog_width_offered(opts, state, &view, DSD_ANALOG_DEMOD_FM) == 1);
+    assert(dsd_app_analog_width_offered(opts, state, &view, DSD_ANALOG_DEMOD_AM) == 0);
     /* An I/Q replay or a device forcing a 7.5 kHz demod rate filters up to 5.55 kHz: AM's default is refused there,
        an explicit 5 kHz is not. */
     m = monitor_metrics(12500, 0, 7500);
     assert(dsd_app_analog_width_view_get(opts, state, &m, &view) == 0);
     assert(view.max_hz == dsd_analog_width_max_for_rate(7500) && view.max_hz == 5550);
-    assert(dsd_app_analog_width_offered(opts, &view, DSD_ANALOG_DEMOD_AM) == 1);
+    assert(dsd_app_analog_width_offered(opts, state, &view, DSD_ANALOG_DEMOD_AM) == 1);
     opts->analog_only = 0;
     opts->frame_dmr = 1;
     m.output_kind = DSD_FRONTEND_RTL_OUTPUT_SYMBOL_CQPSK;
     assert(dsd_app_analog_width_view_get(opts, state, &m, &view) == 0);
     assert(!view.shown && view.width_hz == 0 && view.max_hz == 5550);
-    assert(dsd_app_analog_width_offered(opts, &view, DSD_ANALOG_DEMOD_AM) == 1);
-    assert(dsd_app_analog_width_offered(opts, &view, DSD_ANALOG_DEMOD_FM) == 0);
+    assert(dsd_app_analog_width_offered(opts, state, &view, DSD_ANALOG_DEMOD_AM) == 1);
+    assert(dsd_app_analog_width_offered(opts, state, &view, DSD_ANALOG_DEMOD_FM) == 0);
     /* A rate that filters no AM width at all: narrowing cannot help, and the refusal says to keep a wider rate. */
     m.demod_rate_hz = 6000;
     assert(dsd_app_analog_width_view_get(opts, state, &m, &view) == 0);
-    assert(dsd_app_analog_width_offered(opts, &view, DSD_ANALOG_DEMOD_AM) == 0);
+    assert(dsd_app_analog_width_offered(opts, state, &view, DSD_ANALOG_DEMOD_AM) == 0);
     /* No stream: an RTL-SDR input's DSP bandwidth sets the rate, whose widest width at 8 kHz is AM's 6 kHz default. */
     assert(dsd_app_analog_width_view_get(opts, state, NULL, &view) == 0);
-    assert(view.max_hz == 42000 && dsd_app_analog_width_offered(opts, &view, DSD_ANALOG_DEMOD_AM) == 0);
+    assert(view.max_hz == 42000 && dsd_app_analog_width_offered(opts, state, &view, DSD_ANALOG_DEMOD_AM) == 0);
     opts->rtl_dsp_bw_khz = 8;
     assert(dsd_app_analog_width_view_get(opts, state, NULL, &view) == 0);
-    assert(view.max_hz == 6000 && dsd_app_analog_width_offered(opts, &view, DSD_ANALOG_DEMOD_AM) == 0);
+    assert(view.max_hz == 6000 && dsd_app_analog_width_offered(opts, state, &view, DSD_ANALOG_DEMOD_AM) == 0);
     opts->rtl_dsp_bw_khz = 48;
     /* An explicit width of either kind is offered at any rate; on PCM input, and with no view, nothing is. */
     opts->analog_am_bandwidth_hz = 10000;
     opts->analog_nfm_bandwidth_hz = 12500;
     assert(dsd_app_analog_width_view_get(opts, state, NULL, &view) == 0);
-    assert(dsd_app_analog_width_offered(opts, &view, DSD_ANALOG_DEMOD_AM) == 1);
-    assert(dsd_app_analog_width_offered(opts, &view, DSD_ANALOG_DEMOD_FM) == 1);
+    assert(dsd_app_analog_width_offered(opts, state, &view, DSD_ANALOG_DEMOD_AM) == 1);
+    assert(dsd_app_analog_width_offered(opts, state, &view, DSD_ANALOG_DEMOD_FM) == 1);
     opts->audio_in_type = AUDIO_IN_PULSE;
     assert(dsd_app_analog_width_view_get(opts, state, NULL, &view) == 0);
-    assert(view.max_hz == 0 && dsd_app_analog_width_offered(opts, &view, DSD_ANALOG_DEMOD_AM) == 0);
+    assert(view.max_hz == 0 && dsd_app_analog_width_offered(opts, state, &view, DSD_ANALOG_DEMOD_AM) == 0);
     opts->audio_in_type = AUDIO_IN_RTL;
-    assert(dsd_app_analog_width_offered(opts, NULL, DSD_ANALOG_DEMOD_AM) == 0);
-    assert(dsd_app_analog_width_offered(NULL, &view, DSD_ANALOG_DEMOD_AM) == 0);
+    assert(dsd_app_analog_width_offered(opts, state, NULL, DSD_ANALOG_DEMOD_AM) == 0);
+    assert(dsd_app_analog_width_offered(NULL, state, &view, DSD_ANALOG_DEMOD_AM) == 0);
     opts->analog_am_bandwidth_hz = 0;
     opts->analog_nfm_bandwidth_hz = 0;
     opts->frame_dmr = 0;
     opts->analog_only = 1;
+    /* Issue #526: an nfm row with its own width on air over an AM session at the AM default. The view describes the
+       row's NFM width, but the AM preset's own width stays offered, as does the NFM width the row runs. */
+    opts->analog_demod = DSD_ANALOG_DEMOD_AM;
+    dsd_scan_option_values offered_row = {0};
+    offered_row.present = DSD_SCAN_OPT_BANDWIDTH;
+    offered_row.channel_bw_hz = 12500;
+    assert(dsd_scan_mode_enter(opts, state, DSD_SCAN_MODE_NFM) == 0);
+    assert(dsd_scan_mode_options(opts, state, &offered_row) == 0);
+    assert(dsd_app_analog_width_view_get(opts, state, NULL, &view) == 0);
+    assert(view.row_analog && view.kind == DSD_ANALOG_DEMOD_FM && view.shown);
+    assert(dsd_app_analog_width_offered(opts, state, &view, DSD_ANALOG_DEMOD_AM) == 1);
+    assert(dsd_app_analog_width_offered(opts, state, &view, DSD_ANALOG_DEMOD_FM) == 1);
+    dsd_scan_mode_leave(opts, state);
+    assert(opts->analog_demod == DSD_ANALOG_DEMOD_AM);
+    opts->analog_demod = DSD_ANALOG_DEMOD_FM;
 
     char out[8];
     assert(dsd_app_analog_width_view_get(NULL, state, NULL, &view) == -1 && !view.shown);

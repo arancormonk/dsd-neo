@@ -113,6 +113,8 @@ class MetricsModel : public QObject {
     /* Issue #526: an analog scan row on air, and whether it sets its own width over the configured one. */
     Q_PROPERTY(bool analogBandwidthRowActive READ analogBandwidthRowActive NOTIFY tunerChanged)
     Q_PROPERTY(bool analogBandwidthRowOverride READ analogBandwidthRowOverride NOTIFY tunerChanged)
+    /* Issue #524: whether the width analogBandwidth* describe is AM's (the preset's kind, or a scan row's on air). */
+    Q_PROPERTY(bool analogBandwidthAm READ analogBandwidthAm NOTIFY tunerChanged)
     Q_PROPERTY(int slot1CallState READ slot1CallState NOTIFY slot1Changed)
     Q_PROPERTY(int slot2CallState READ slot2CallState NOTIFY slot2Changed)
     Q_PROPERTY(QString slot1CallName READ slot1CallName NOTIFY slot1Changed)
@@ -521,6 +523,16 @@ class MetricsModel : public QObject {
     bool
     analogBandwidthRowOverride() const {
         return m_view.analog_bandwidth_row_override;
+    }
+
+    /**
+     * @brief Whether the width analogBandwidthHz(), analogBandwidthConfiguredHz() and analogBandwidthReading() describe
+     * is the AM demodulator's (issue #524): the configured preset's kind, or while an analog scan row is on air the kind
+     * that row runs (an nfm row runs FM on an AM session too).
+     */
+    bool
+    analogBandwidthAm() const {
+        return m_view.analog_bandwidth_am;
     }
 
     /**
@@ -1431,6 +1443,7 @@ class MetricsModel : public QObject {
         bool analog_bandwidth_dsp_limited = false;
         bool analog_bandwidth_row_active = false;
         bool analog_bandwidth_row_override = false;
+        bool analog_bandwidth_am = false;
         bool nfm_bandwidth_offered = false;
         bool am_bandwidth_offered = false;
         bool synced_here = false;
@@ -1498,6 +1511,7 @@ class MetricsModel : public QObject {
                    && analog_bandwidth_reading == other.analog_bandwidth_reading
                    && analog_bandwidth_row_active == other.analog_bandwidth_row_active
                    && analog_bandwidth_row_override == other.analog_bandwidth_row_override
+                   && analog_bandwidth_am == other.analog_bandwidth_am
                    && nfm_bandwidth_offered == other.nfm_bandwidth_offered
                    && am_bandwidth_offered == other.am_bandwidth_offered;
         }
