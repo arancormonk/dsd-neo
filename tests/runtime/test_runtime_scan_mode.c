@@ -971,10 +971,10 @@ test_am_class_enters_am_monitor(void) {
 }
 
 /* An am row's own width (--am-bandwidth-hz) is the AM width's, as an nfm row's is the NFM width's: prepare tunes with
- * it, the row runs it over the configured AM width, and the configured view -- what a save writes and the width controls
- * edit -- keeps the configured one. It shadows an edit of the configured AM width (0: the baseline takes it, the row
- * keeps its own until it leaves) but not one of the NFM width, which it does not run; a width change is an acquisition
- * change, and the leave puts the configured widths back, edits included. */
+ * it, the row runs it over the configured AM width, and the configured view -- what a save writes and the width
+ * controls edit -- keeps the configured one. It shadows an edit of the configured AM width (0: the baseline takes it,
+ * the row keeps its own until it leaves) but not one of the NFM width, which it does not run; a width change is an
+ * acquisition change, and the leave puts the configured widths back, edits included. */
 static void
 test_am_row_width_scope(void) {
     dsd_opts* o = (dsd_opts*)calloc(1, sizeof(*o));

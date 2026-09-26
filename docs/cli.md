@@ -592,7 +592,9 @@ its kind the stepper edits, 16 kHz or 6 kHz while unset), with a stepper over 8,
 or 5, 6, 8, 10, 15 and 20 kHz (AM, under the AM chip or an `am` row) that skips the widths the DSP
 rate cannot filter (the running stream's, or with none running the rate an RTL-SDR or rtl_tcp input's DSP bandwidth
 sets), and *Use the default width* to return an explicit width to the unset default. On PCM input it reads *not used on
-PCM input* and the controls are disabled. Under another mode, the other analog kind's included, both keep the width
+PCM input* and the controls are disabled. With a rigctl peer (`-U`) the configured AM width is still the passband the
+peer is asked for on `am` rows and `am-conventional` targets without their own width; only `--am-bandwidth-hz` or
+`[analog] am_bandwidth_hz` sets it there. Under another mode, the other analog kind's included, both keep the width
 control of a kind on a radio input while an explicit width of it is set, with the setting as its reading (on the Radio
 sheet, a second width control below the first under `-fA` or `-fM`): a switch to that mode is held to the width, so a
 width the device or the capture cannot filter can be narrowed before the switch. The AM control is also offered, reading
@@ -1022,26 +1024,24 @@ is delayed.
   use the global value. A failed legacy hop keeps the row and restarts the visit and qualification windows so decoding
   can resume before another attempt. Two caveats on legacy lists: a row whose frequency also appears on the next row
   "hops" to the same frequency, ending the call as an explicit hop rather than moving the receiver, and a low `-t`
-  already steps a quiet row about a second after
-  its last sync, so the cap only changes what happens on a row that keeps syncing.
-  Optional channel-map `mode` values select `p25`, `dmr`, `nxdn96`, `nxdn48`, `dpmr`, `dstar`, `ysf`, `m17`, `nfm`
-  (analog narrowband FM) or `am` (analog AM) for each row. See [the mixed-mode
-  example](../examples/conventional_scan_modes.csv)
-  and [the mixed analog example](../examples/conventional_scan_analog.csv). Declared rows work even when excluded by the
-  global preset; blank rows inherit it. An `nfm` row runs the analog FM monitor at its own `--nfm-bandwidth-hz` width
-  (the row's `options`) or the configured NFM width (16 kHz by default), and an `am` row the AM monitor at its own
-  `--am-bandwidth-hz` width or the configured AM width (6 kHz by default), switching the receiver between the FM
-  monitor, the AM monitor and the digital decoder at each row without reopening the device, and holds under
-  `-t` for as long as its carrier (squelch open) lasts, whether or not audio is played: `-o null` and a muted frontend
-  no longer let the scanner leave an active analog row. `--scan-voice-only` never applies to an analog row. Details and
-  the options an analog row accepts: [csv-formats.md](csv-formats.md#analog-rows). Modes take effect at the first
-  scheduled row entry, including manual `L` cycling. Existing dwell and voice-hold defaults remain unchanged.
-  The open audio sink retains its rate/channel count while logical DMR slot decoding may change. Global mode and
-  modulation commands update the saved configuration, and exiting scanning restores it.
-  Blank-mode rows retain that saved configuration while AUTO hunts. Loading a configuration that disables scanning
-  releases the row's decoder and keys. A manual frequency setting exits a typed scan and reports that in its status
-  message; legacy untyped scans retain their existing manual-tune behavior. Manual `L` skips zero-frequency placeholders,
-  while automatic scanning continues to park on them for the configured dwell.
+  already steps a quiet row about a second after its last sync, so the cap only changes what happens on a row that keeps
+  syncing. Optional channel-map `mode` values select `p25`, `dmr`, `nxdn96`, `nxdn48`, `dpmr`, `dstar`, `ysf`, `m17`,
+  `nfm` (analog narrowband FM) or `am` (analog AM) for each row. See [the mixed-mode
+  example](../examples/conventional_scan_modes.csv) and [the mixed analog
+  example](../examples/conventional_scan_analog.csv). Declared rows work even when excluded by the global preset; blank
+  rows inherit it. An `nfm` row runs the analog FM monitor at its own `--nfm-bandwidth-hz` width (the row's `options`)
+  or the configured NFM width (16 kHz by default), and an `am` row the AM monitor at its own `--am-bandwidth-hz` width
+  or the configured AM width (6 kHz by default), switching the receiver between the FM monitor, the AM monitor and the
+  digital decoder at each row without reopening the device, and holds under `-t` for as long as its carrier (squelch
+  open) lasts, whether or not audio is played: `-o null` and a muted frontend no longer let the scanner leave an active
+  analog row. `--scan-voice-only` never applies to an analog row. Details and the options an analog row accepts:
+  [csv-formats.md](csv-formats.md#analog-rows). Modes take effect at the first scheduled row entry, including manual `L`
+  cycling. Existing dwell and voice-hold defaults remain unchanged. The open audio sink retains its rate/channel count
+  while logical DMR slot decoding may change. Global mode and modulation commands update the saved configuration, and
+  exiting scanning restores it. Blank-mode rows retain that saved configuration while AUTO hunts. Loading a
+  configuration that disables scanning releases the row's decoder and keys. A manual frequency setting exits a typed
+  scan and reports that in its status message; legacy untyped scans retain their existing manual-tune behavior. Manual
+  `L` skips zero-frequency placeholders, while automatic scanning continues to park on them for the configured dwell.
 - Single-tuner trunk scan mode: `--trunk-scan <targets.csv>`
   - Rotates one tuner across CSV-defined P25 trunk, P25 conventional (`p25-conventional`), DMR trunk, DMR
     conventional, NXDN trunk (`nxdn-trunk` NXDN96, `nxdn48-trunk` NXDN48), NXDN96 conventional
@@ -1070,8 +1070,8 @@ is delayed.
   - Voice-only scan (`--scan-voice-only`): digital conventional targets hold only from decoded voice, with `dwell_ms` as
     the qualify window and `activity_hold_ms` as the hold; trunked targets are unchanged (control-only rotates after
     dwell) and show no `Voice:` marker on the status line, and an `nfm-conventional` or `am-conventional` target keeps
-    holding on its carrier. A conventional target shows `VOICE` while its call is active and `TAIL` after the call ends while the hold
-    remains.
+    holding on its carrier. A conventional target shows `VOICE` while its call is active and `TAIL` after the call ends
+    while the hold remains.
   - Cannot be combined with conventional `-Y` scan mode or IQ replay.
   - Single-tuner limitation: systems not currently parked can be missed while another target is being monitored.
 - Channel map CSV: `-C <file>` (e.g., `connect_plus_chan.csv`). The channel column takes decimal, `0x2A46` hex, or
@@ -1110,8 +1110,9 @@ is delayed.
 - Set rigctl bandwidth (Hz): `-B <hertz>` (e.g., 7000–48000 by mode). On audio input, where the peer demodulates, scan
   rows that need their own ask the peer for it instead: an `am` row or `am-conventional` target sends `M AM <width>`
   with its AM width, and an `nfm` row or target with its own `--nfm-bandwidth-hz` sends that width as the FM passband;
-  a peer that refuses either skips the row. Without `-B`, a later row asks for the peer's normal passband (`0`) only to
-  undo such a request, and leaving the scan does the same, returning the peer to FM at its normal passband
+  a peer that refuses either skips the row. Without `-B`, a later row undoes such a request with FM at the passband the
+  peer reported (`m`) before the first one, since SDR++ and GQRX keep their passband for `0`, and leaving the scan
+  returns the peer to FM at its own passband, with its own AM passband put back too
   ([csv-formats.md](csv-formats.md#analog-rows)). On an RTL-family input the peer only follows the frequency and is
   asked for `-B` alone.
 - Hang time after voice/sync loss (seconds): `-t <secs>`

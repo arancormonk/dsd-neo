@@ -202,12 +202,10 @@ Each target's `type` selects its decoder class regardless of the configured glob
 `p25-conventional` enable both phases and exclude DMR and X2-TDMA; DMR and NXDN targets enable only their declared class
 and rate; an `nfm-conventional` or `am-conventional` target runs the analog FM or AM monitor instead of a digital
 decoder ([Analog NFM and AM targets](#analog-nfm-and-am-targets)). Mixed lists, including both NXDN rates and analog
-targets, work without `-fa`. The
-target's `modulation` column keeps its existing precedence: an explicit value, including `auto`, overrides global
-modulation handling. An empty value preserves an explicit global modulation lock. Modes declared in a target's
-`chan_csv` do not override its type.
-NXDN48 targets do not require an outer `-fi`. Audio retains the startup output layout, with mono NXDN voice
-duplicated into both channels when the output is stereo.
+targets, work without `-fa`. The target's `modulation` column keeps its existing precedence: an explicit value,
+including `auto`, overrides global modulation handling. An empty value preserves an explicit global modulation lock.
+Modes declared in a target's `chan_csv` do not override its type. NXDN48 targets do not require an outer `-fi`. Audio
+retains the startup output layout, with mono NXDN voice duplicated into both channels when the output is stereo.
 A `p25-conventional` target disables trunking and parks on its fixed frequency without a P25 trunking state-machine
 context or band-plan seeding. Its hold follows conventional voice activity, not control-channel grants.
 
@@ -509,31 +507,32 @@ no symbol profile is applied over the monitor. Everything below applies to both 
   (whole Hz, `8000..25000`), and `--am-bandwidth-hz <Hz>` an `am-conventional` target's AM channel width (whole Hz,
   `5000..20000`, for example `8333` for 8.33 kHz airband spacing); without one the configured width of the target's
   kind (NFM 16 kHz, AM 6 kHz by default) applies. The AM default always runs its channel filter, so it is held to the
-  DSP rate like an explicit width. A width the running DSP rate cannot
-  filter, the target's own or the configured one it runs, is named with the fix at scan start, in the log and on the
-  status line (and again if that rate changes, or, for a target without its own width, if the configured width does),
-  and that target's retune is then refused at every visit without a further warning. So is a target's own width while
-  `DSD_NEO_CHANNEL_LPF=0` turns off the channel filter it needs. The Qt/Android preview of an imported target file
-  checks the width's range only. The scan-list editor's own validation (Save, Play) holds an RTL-SDR or rtl_tcp list's
-  analog targets to the rate the list's bandwidth sets, an `am` entry's 6 kHz default included, and names those it
-  would skip in a warning; a SoapySDR or Airspy list's rate is known once the scan's stream runs. While the target is
-  parked, an RTL DSP bandwidth that
-  cannot filter its width is refused, from the DSP bandwidth control, Input > Switch source and a loaded config alike.
-  While the list has a target without a width of its own, the configured width of its kind is in use on any session,
-  as under `-fA` or `-fM`: a width edit, a loaded config or a DSP bandwidth that would leave it unfiltered is refused,
-  whichever target is parked. A configured-width edit made while the target's retune is still in flight is applied once
-  the retune lands.
+  DSP rate like an explicit width. A width the running DSP rate cannot filter, the target's own or the configured one it
+  runs, is named with the fix at scan start, in the log and on the status line (and again if that rate changes, or, for
+  a target without its own width, if the configured width does), and that target's retune is then refused at every visit
+  without a further warning. So is a target's own width while `DSD_NEO_CHANNEL_LPF=0` turns off the channel filter it
+  needs. The Qt/Android preview of an imported target file checks the width's range only. The scan-list editor's own
+  validation (Save, Play) holds an RTL-SDR or rtl_tcp list's analog targets to the rate the list's bandwidth sets, an
+  `am` entry's 6 kHz default included, and names those it would skip in a warning; a SoapySDR or Airspy list's rate is
+  known once the scan's stream runs. While the target is parked, an RTL DSP bandwidth that cannot filter its width is
+  refused, from the DSP bandwidth control, Input > Switch source and a loaded config alike. While the list has a target
+  without a width of its own, the configured width of its kind is in use on any session, as under `-fA` or `-fM`: a
+  width edit, a loaded config or a DSP bandwidth that would leave it unfiltered is refused, whichever target is parked.
+  A configured-width edit made while the target's retune is still in flight is applied once the retune lands.
 - **rigctl.** With rigctl tuning an audio input, the peer demodulates. Each retune asks it for the target's demodulator
   and passband before the frequency: an `am-conventional` target sends `M AM <width>` with the AM width it runs (its
   own, else the configured one), and an `nfm-conventional` target with its own width sends `M NFM <width>` (`M FM
   <width>` to a peer that refuses the `NFM` token). A peer that refuses either fails that retune, as for any target
-  it cannot tune. Every other target asks for `-B` as before, or, without `-B`, for the peer's normal passband (`M NFM
-  0`) where an earlier target changed it, which returns the peer to FM at its normal passband. When the scan stops
-  (shutdown, or trunk scan turned off) the peer is asked once more for what the session runs, so it is not left on an
-  AM target's demodulator. Requests are cached on the demodulator and passband together, so a peer already running
-  both is not asked again; after a request whose reply was lost the next one is always sent. On an RTL-family input
-  DSD-neo demodulates the I/Q itself and the peer only follows the frequency: it is asked for `-B`, best-effort, as
-  before, whatever the target runs.
+  it cannot tune. SDR++ and GQRX take a passband of `0` as "leave it unchanged", and SDR++ keeps each passband it is
+  sent, so before a target first changes the peer's AM or FM passband DSD-neo asks the peer what it runs (`m`). Every
+  other target asks for `-B` as before, or, without `-B`, where an earlier target changed the peer, for FM at the
+  passband it read, which returns the peer to FM at its own passband. When the scan stops (shutdown, or trunk scan
+  turned off) the AM passband an AM target changed is put back, then the peer is asked once more for what the session
+  runs, so it is left on neither an AM target's demodulator nor a target's passband. A peer that cannot answer `m` is
+  sent passband `0` instead, best-effort. Requests are cached on the demodulator and passband together, so a peer
+  already running both is not asked again; after a request whose reply was lost the next one is always sent. On an
+  RTL-family input DSD-neo demodulates the I/Q itself and the peer only follows the frequency: it is asked for `-B`,
+  best-effort, as before, whatever the target runs.
 - **Controls.** `--scan-max-visit-ms`, the `Y` hold, advance and avoid work exactly as for digital targets, including
   while a carrier holds the target. The voice gate never applies to an analog target, so a global `--scan-voice-only`
   does not block one, and voice-gate switches are rejected in its `options`.
@@ -612,10 +611,9 @@ target's own, or the configured default. On an RTL-family input the threshold ga
 `p25-trunk`, `dmr-trunk` or `nxdn*-trunk` target that includes the control channel, so a threshold above the control
 channel's level makes the whole system look dead. With rigctl tuning a PCM, UDP or TCP audio source the value
 cannot gate digital acquisition: it only gates the analog input monitor (`-8`, with audio output on) and the carrier
-activity that monitor stamps, and scan start logs a warning naming each such digital target; an analog target's
-squelch gates exactly its monitor and carrier, so it draws none. Terminal, Qt
-and Android show the target's threshold with the configured default beside it; the squelch controls and Config->Save
-work on the configured default.
+activity that monitor stamps, and scan start logs a warning naming each such digital target; an analog target's squelch
+gates exactly its monitor and carrier, so it draws none. Terminal, Qt and Android show the target's threshold with the
+configured default beside it; the squelch controls and Config->Save work on the configured default.
 
 A row that names key material in `options` (`-b`, `-H`, `-1`, `-R`, `-K`, `-k`) may still fill the legacy key
 columns for the other families; the merge rejects a column that duplicates an option. Optional header names,

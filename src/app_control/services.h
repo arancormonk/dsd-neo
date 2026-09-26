@@ -108,15 +108,16 @@ int svc_udp_output_config(dsd_opts* opts, dsd_state* state, const char* host, in
 /** @brief Import a channel map CSV into runtime state. */
 int svc_import_channel_map(dsd_opts* opts, dsd_state* state, const char* path);
 /**
- * @brief Hold the loaded channel map's nfm rows to the DSP rate they would run at (issue #526), as an import reports.
+ * @brief Hold the loaded channel map's analog (nfm or am) rows to the DSP rate they would run at (issue #526), as an
+ * import reports: each row's own width of its kind, else the configured width of its kind (the AM default included).
  *
  * The rate is the running RTL stream's, else on an RTL-SDR or rtl_tcp input the one the configured RTL DSP bandwidth
  * sets (dsd_app_analog_rtl_bw_rate_hz()); a SoapySDR or Airspy device, or an I/Q replay, delivers a rate only once its
  * stream runs, and the scan start holds the rows to that one. DSD_NEO_CHANNEL_LPF=0 refuses every explicit width
- * whatever the rate (dsd_engine_channel_scan_refused_rows()). Returns how many rows the front end would refuse, which
- * the scanner skips at every visit; for any, @p why receives a short reason naming the first one, numbered as the scan
- * names its rows ("scan channel 3 is skipped at every visit: NFM 25 kHz does not fit the 16 kHz DSP rate"), which is
- * also logged.
+ * whatever the rate, the AM default included (dsd_engine_channel_scan_refused_rows()). Returns how many rows the front
+ * end would refuse, which the scanner skips at every visit; for any, @p why receives a short reason naming the first
+ * one, numbered as the scan names its rows ("scan channel 3 is skipped at every visit: NFM 25 kHz does not fit the
+ * 16 kHz DSP rate", or "AM 10 kHz" for an am row), which is also logged.
  */
 int svc_channel_map_refused_rows(const dsd_opts* opts, const dsd_state* state, char* why, size_t why_size);
 /** @brief Import a group list CSV into runtime state. */

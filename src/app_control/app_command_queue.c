@@ -5547,10 +5547,10 @@ cfg_check_held_analog_width(const dsd_opts* opts, dsd_state* state, const dsdneo
 /*
  * A session the config leaves on a preset that runs no FM -- a digital one, or AM (issue #524) -- still runs the
  * configured NFM width on the scan's nfm rows or targets without a width of their own (issue #526,
- * dsd_engine_scan_runs_configured_nfm_width()), and one it leaves on a preset that runs no AM the configured AM width on
- * the scan's am rows or targets without one (dsd_engine_scan_runs_configured_am_width(); the AM default is held as its
- * 6 kHz): each held to the rate as cfg_check_held_analog_width() holds a width. @p preset_kind is the analog kind the
- * config leaves the session on (cfg_analog_kind_after(), -1 for none), which holds its own width.
+ * dsd_engine_scan_runs_configured_nfm_width()), and one it leaves on a preset that runs no AM the configured AM width
+ * on the scan's am rows or targets without one (dsd_engine_scan_runs_configured_am_width(); the AM default is held as
+ * its 6 kHz): each held to the rate as cfg_check_held_analog_width() holds a width. @p preset_kind is the analog kind
+ * the config leaves the session on (cfg_analog_kind_after(), -1 for none), which holds its own width.
  */
 static int
 cfg_check_scan_widths(const dsd_opts* opts, dsd_state* state, const dsdneoUserConfig* cfg, int preset_kind) {
@@ -5941,8 +5941,8 @@ command_updates_scan_mode(const struct dsd_app_command* c) {
         /* DSD_APP_CMD_NFM_BANDWIDTH_SET and DSD_APP_CMD_AM_BANDWIDTH_SET are deliberately not here: like squelch, the
          * command edits the configured width (svc_set_analog_bandwidth(), through
          * dsd_scan_mode_set_configured_nfm_bandwidth() for NFM) instead of suspending and re-applying the row, which
-         * would read the live acquisition the row has made as a change and end a followed call. An nfm row's own width
-         * (--nfm-bandwidth-hz, issue #526) stays in force over the edit. */
+         * would read the live acquisition the row has made as a change and end a followed call. An analog row's own
+         * width of the edited kind (--nfm-bandwidth-hz or --am-bandwidth-hz, issue #526) stays in force over it. */
         DSD_APP_CMD_IMPORT_GROUP_LIST,
         DSD_APP_CMD_IMPORT_GROUP_LIST_CLEAR,
         DSD_APP_CMD_DECODE_MODE_SET,

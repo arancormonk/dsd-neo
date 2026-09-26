@@ -171,9 +171,9 @@ checkAnalogEntriesIgnoreHiddenDecryption() {
 }
 
 /* Issue #526: the editor's own DSP-rate row diagnostic. An RTL-SDR list at a DSP bandwidth that cannot filter the AM
- * default names the am entries it would skip at every visit, as a warning beside the targets ready (the rest of the list
- * still scans); a bandwidth that fits, an nfm entry at the unset NFM default and an Airspy list, whose device sets the
- * rate, say nothing. A CSV-backed list is held the same way, each analog target at its own width. */
+ * default names the am entries it would skip at every visit, as a warning beside the targets ready (the rest of the
+ * list still scans); a bandwidth that fits, an nfm entry at the unset NFM default and an Airspy list, whose device sets
+ * the rate, say nothing. A CSV-backed list is held the same way, each analog target at its own width. */
 static void
 checkAnalogRateDiagnostic(const QTemporaryDir& dir) {
     const QVariantList entries{

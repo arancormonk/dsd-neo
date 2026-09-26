@@ -129,8 +129,9 @@ test_nfm_targets(const char* path) {
     assert(strstr(err, "row 2: --strict-crc: not supported for this mode/target"));
 }
 
-/* A list mixing am-conventional, nfm-conventional and digital targets validates through the same facade, and the preview
- * reports each canonical type with its own width, spelled for its kind; the row diagnostics are the engine's. */
+/* A list mixing am-conventional, nfm-conventional and digital targets validates through the same facade, and the
+ * preview reports each canonical type with its own width, spelled for its kind; the engine gives the row diagnostics.
+ */
 static void
 test_am_targets(const char* path) {
     write_targets(path, "tower,am-conventional,118300000,,1500,2000,,--am-bandwidth-hz 8333 --squelch-db -55\n"

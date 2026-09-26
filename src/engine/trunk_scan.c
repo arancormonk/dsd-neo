@@ -2725,9 +2725,9 @@ trunk_scan_recheck_analog_targets(const dsd_opts* opts, dsd_state* state, dsd_tr
 
 /* Whether the retune refuses an analog target's width at the published DSP rate before any backend moves
  * (dsd_engine_scan_tune_to_freq()): the width in force once the target's options apply, its own or the configured width
- * of its kind it runs, which that rate cannot filter or DSD_NEO_CHANNEL_LPF=0 refuses (dsd_engine_scan_width_refused()).
- * trunk_scan_recheck_analog_targets(), which runs before every retune, has named such a target for that rate and
- * width already, with the fact that it is skipped at every visit, so the failed visit adds nothing. */
+ * of its kind it runs, where dsd_engine_scan_width_refused() refuses it (that rate cannot filter it, or
+ * DSD_NEO_CHANNEL_LPF=0). trunk_scan_recheck_analog_targets(), which runs before every retune, has named such a target
+ * for that rate and width already, and that it is skipped at every visit, so the failed visit adds nothing. */
 static int
 trunk_scan_analog_width_refused(const dsd_opts* opts, const dsd_state* state, const dsd_trunk_scan_target* target) {
     if (!trunk_scan_type_is_analog(target->type) || !dsd_opts_is_analog_family(opts)) {

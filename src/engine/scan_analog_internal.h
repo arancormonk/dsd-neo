@@ -50,10 +50,10 @@ dsd_engine_scan_held_width_hz(int kind, int width_hz) {
 void dsd_engine_scan_ensure_output(dsd_opts* opts);
 
 /** Warn, as one WARNING line beginning with @p label ("Scan channel 2 (154.430000 MHz)", "Trunk scan target 'fire'"),
- * about an analog (nfm or am) scan row or target whose squelch -- its own --squelch-db, else the configured one -- is off or
- * at -100 dB or below: noise then holds it on air until the visit cap or a manual advance or avoid moves on. Said once
- * when a scan (or a new map or target list) starts; it does not depend on the DSP rate. @p row may be NULL (no
- * options). Returns 1 when it warned, else 0. */
+ * about an analog (nfm or am) scan row or target whose squelch -- its own --squelch-db, else the configured one -- is
+ * off or at -100 dB or below: noise then holds it on air until the visit cap or a manual advance or avoid moves on.
+ * Said once when a scan (or a new map or target list) starts; it does not depend on the DSP rate. @p row may be NULL
+ * (no options). Returns 1 when it warned, else 0. */
 int dsd_engine_scan_warn_analog_squelch(const dsd_opts* opts, const dsd_state* state, const dsd_scan_option_values* row,
                                         const char* label);
 
@@ -68,14 +68,14 @@ int dsd_engine_scan_width_refused(const dsd_opts* opts, int kind, int width_hz, 
                                   size_t why_size);
 
 /** Warn, in the same form, about the width an analog row of demodulator @p kind (dsd_analog_demod: an nfm row's FM, an
- * am row's AM) runs, which is then skipped at every visit: its own --nfm-bandwidth-hz or --am-bandwidth-hz on audio input
- * with no rigctl peer to hand it to, or one the front end refuses (dsd_engine_scan_width_refused(): DSD_NEO_CHANNEL_LPF=0,
- * or @p dsp_rate_hz cannot filter it); or, for a row that sets none, the configured width of its kind it runs
- * (dsd_scan_mode_configured_analog_width()) where the front end refuses that. Said when a scan starts, again whenever the
- * DSP rate changes, and for the rows without a width of their own whenever the configured width of their kind does;
- * @p dsp_rate_hz 0 skips the rate check. @p row may be NULL (no options). Returns DSD_ENGINE_SCAN_WIDTH_OK, _NO_EFFECT
- * or _SKIPPED; for _SKIPPED, @p brief (when given) receives a short reason for the status line ("NFM 20 kHz does not
- * fit the 16 kHz DSP rate"). */
+ * am row's AM) runs, which is then skipped at every visit: its own --nfm-bandwidth-hz or --am-bandwidth-hz on audio
+ * input with no rigctl peer to hand it to, or one the front end refuses (dsd_engine_scan_width_refused():
+ * DSD_NEO_CHANNEL_LPF=0, or @p dsp_rate_hz cannot filter it); or, for a row that sets none, the configured width of its
+ * kind it runs (dsd_scan_mode_configured_analog_width()) where the front end refuses that. Said when a scan starts,
+ * again whenever the DSP rate changes, and for the rows without a width of their own whenever the configured width of
+ * their kind does; @p dsp_rate_hz 0 skips the rate check. @p row may be NULL (no options). Returns
+ * DSD_ENGINE_SCAN_WIDTH_OK, _NO_EFFECT or _SKIPPED; for _SKIPPED, @p brief (when given) receives a short reason for the
+ * status line ("NFM 20 kHz does not fit the 16 kHz DSP rate"). */
 int dsd_engine_scan_warn_analog_width(const dsd_opts* opts, const dsd_state* state, const dsd_scan_option_values* row,
                                       int kind, int dsp_rate_hz, const char* label, char* brief, size_t brief_size);
 

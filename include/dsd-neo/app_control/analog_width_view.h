@@ -26,9 +26,9 @@
  * sets it (dsd_app_analog_rtl_bw_rate_hz()), which also bounds the widths the controls offer. On PCM input no channel
  * filter runs, so no width is in force.
  *
- * An analog scan row on air (an nfm or am row, issue #526) runs the analog family whatever the configured preset, so its
- * width is shown under a digital preset too. A row may set its own width (--nfm-bandwidth-hz, --am-bandwidth-hz): that
- * is the width in force until the row leaves, while the configured width stays what the controls edit and a save
+ * An analog scan row on air (an nfm or am row, issue #526) runs the analog family whatever the configured preset, so
+ * its width is shown under a digital preset too. A row may set its own width (--nfm-bandwidth-hz, --am-bandwidth-hz):
+ * that is the width in force until the row leaves, while the configured width stays what the controls edit and a save
  * writes.
  *
  * This view owns those decisions, the reading's text ("12.5 kHz", "16 kHz (default)", "12 kHz (DSP-limited)",

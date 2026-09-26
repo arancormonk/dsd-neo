@@ -25,12 +25,14 @@ int dsd_engine_channel_scan_pending(dsd_opts* opts, dsd_state* state);
 int dsd_engine_channel_scan_service_sync(dsd_opts* opts, dsd_state* state);
 /** Cancel row ownership and restore configured settings. Late completions cannot adopt a row. */
 void dsd_engine_channel_scan_leave(dsd_opts* opts, dsd_state* state);
-/** Count the nfm rows of the loaded channel map whose width the RTL front end refuses at DSP rate @p dsp_rate_hz
- * (issue #526): the row's own --nfm-bandwidth-hz, else the configured NFM width it runs, which that rate cannot filter,
- * and any explicit width while DSD_NEO_CHANNEL_LPF=0 turns the channel filter off (with @p dsp_rate_hz 0, only that).
- * The scanner skips such a row at every visit. @p first_row (optional) receives the first one's index, and @p brief a
- * short reason for it ("NFM 20 kHz does not fit the 16 kHz DSP rate"). Read-only and silent: a scan start names each
- * row in the log. 0 on audio input, which applies no width. */
+/** Count the analog (nfm or am) rows of the loaded channel map whose width the RTL front end refuses at DSP rate
+ * @p dsp_rate_hz (issue #526): the row's own width of its kind (--nfm-bandwidth-hz, --am-bandwidth-hz), else the
+ * configured width of its kind it runs (the AM default, 6 kHz, included), which that rate cannot filter, and any held
+ * width -- an explicit one, or the AM default -- while DSD_NEO_CHANNEL_LPF=0 turns the channel filter off (with
+ * @p dsp_rate_hz 0, only that). A placeholder row (frequency 0) is never tuned and never counted. The scanner skips
+ * such a row at every visit. @p first_row (optional) receives the first one's index, and @p brief a short reason for it
+ * ("NFM 20 kHz does not fit the 16 kHz DSP rate", "AM 6 kHz does not fit the 7.5 kHz DSP rate"). Read-only and silent:
+ * a scan start names each row in the log. 0 on audio input, which applies no width. */
 int dsd_engine_channel_scan_refused_rows(const dsd_opts* opts, const dsd_state* state, int dsp_rate_hz, int* first_row,
                                          char* brief, size_t brief_size);
 #ifdef __cplusplus

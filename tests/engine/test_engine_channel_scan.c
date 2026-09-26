@@ -142,7 +142,7 @@ static int tuned_analog_only = -1;
 static int tuned_nfm_width_hz = -1;
 static int tuned_analog_kind = -1;
 static int tuned_am_width_hz = -1;
-/* The row's own width a rigctl leg would hand its peer at the tune (dsd_engine_scan_tuning_row_options()); 0 for none. */
+/* The row's own width a rigctl leg would hand its peer (dsd_engine_scan_tuning_row_options()); 0 for none. */
 static int tuned_row_width_hz = -1;
 
 dsd_trunk_tune_result
@@ -1811,7 +1811,7 @@ test_am_row_warnings_for_its_widths(void) {
     opts->analog_am_bandwidth_hz = 16000;
     g_scan_dsp_rate_hz = 16000;
     nfm_warning_rows_visit(opts, state, 8);
-    /* Row 2's open squelch, row 1's own AM 20 kHz and row 4's configured AM 16 kHz; row 2 runs the unset NFM default. */
+    /* Row 2's open squelch, row 1's own AM 20 kHz, row 4's configured AM 16 kHz; row 2 runs the unset NFM default. */
     assert(g_analog_warnings == 3);
     assert(strstr(g_analog_warning_rows[1], "Scan channel 1 (150.000000 MHz): AM bandwidth 20 kHz does not fit the "
                                             "16 kHz DSP rate"));

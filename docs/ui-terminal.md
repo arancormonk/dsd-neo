@@ -314,11 +314,10 @@ blank row, and the row stays offered while an `nfm` row runs over the AM session
 on any session, so the row is offered while one is on air: under an `am` row without a width of its own the edit
 applies live, and under one with its own `--am-bandwidth-hz` it is the configured default's, which the row overrides
 until it leaves (the message says the channel overrides it). **DSP bandwidth...** refuses a DSP bandwidth that cannot
-filter the AM width while AM is the configured mode, or on any session while the scan has an `am` row or target
-without a width of its own (the 6 kHz default needs 8 kHz or more). The
-status line shows the width in force next to the DSP bandwidth: `DSP-BW: 48 kHz; Analog: AM 6 kHz (default);`. To keep
-the RTL-SDR menu within fifteen rows beside the two width rows, the Auto-PPM switch leads the **Auto-PPM & rtl_tcp**
-submenu, above the settings it governs.
+filter the AM width while AM is the configured mode, or on any session while the scan has an `am` row or target without
+a width of its own (the 6 kHz default needs 8 kHz or more). The status line shows the width in force next to the DSP
+bandwidth: `DSP-BW: 48 kHz; Analog: AM 6 kHz (default);`. To keep the RTL-SDR menu within fifteen rows beside the two
+width rows, the Auto-PPM switch leads the **Auto-PPM & rtl_tcp** submenu, above the settings it governs.
 
 Group policy reload:
 
@@ -424,8 +423,8 @@ channel filter bounds the channel, which is what the unset default does below a 
 there, so the rate itself is the bound. With the stream stopped, the line reads what the next start runs at `DSP-BW:`,
 so a 12 kHz DSP bandwidth still shows `Analog: NFM 12 kHz (DSP-limited);`, and so does a scan row running a digital
 protocol at a 12 kHz rate. An `nfm` or `am` scan row shows the field on any session, and one that sets its own width
-reads `Analog: NFM 12.5 kHz (row; default 16 kHz);` (an `am` row's `--am-bandwidth-hz`: `Analog: AM 8.333 kHz (row;
-default 6 kHz);`), naming the configured width of its kind it overrides.
+reads `Analog: NFM 12.5 kHz (row; default 16 kHz);` (an `am` row's `--am-bandwidth-hz`:
+`Analog: AM 8.333 kHz (row; default 6 kHz);`), naming the configured width of its kind it overrides.
 `NFM bandwidth...` (offered on a radio input while `-fA` is the configured mode or an `nfm` scan row is on air, or while
 an explicit width is set under another mode, `-fM` included, so that a width a switch to `-fA` would be refused for can
 be narrowed first) shows the configured setting, `[12.5 kHz]` or `[default]`, takes any width from 8000 to 25000 Hz, or

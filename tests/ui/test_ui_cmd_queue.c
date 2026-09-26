@@ -9204,9 +9204,9 @@ test_config_apply_holds_the_configured_am_width_under_am_rows(void) {
 }
 
 /*
- * Issue #526: the reopen a config's [input] makes runs the am scan row on air again once the scope resumes, so the row's
- * own --am-bandwidth-hz is held to the rate the reopened RTL-SDR runs at, as an AM width, as an nfm row's own width is:
- * a DSP bandwidth that cannot filter it leaves the whole config unapplied, naming AM. One that can reopens.
+ * Issue #526: the reopen a config's [input] makes runs the am scan row on air again once the scope resumes, so the
+ * row's own --am-bandwidth-hz is held to the rate the reopened RTL-SDR runs at, as an AM width, as an nfm row's own
+ * width is: a DSP bandwidth that cannot filter it leaves the whole config unapplied, naming AM. One that can reopens.
  */
 static int
 test_config_apply_holds_an_am_row_width_to_a_reopen(void) {

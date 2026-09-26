@@ -1483,8 +1483,8 @@ svc_rtl_bw_width_fix(int kind, int max_hz, int row, char* fix, size_t fix_size) 
 /* Whether a stream reopened at an RTL DSP bandwidth of @p khz can filter analog width @p configured_hz of @p kind (0 =
    the kind's default: the AM default is held as its 6 kHz, since AM always runs its channel filter, and the unset NFM
    default is never refused). A refusal gives the toast text and logs the validator's full message. @p row says the
-   width is a scan row's own (--nfm-bandwidth-hz), which the width controls do not edit: the toast names the row, and
-   the only fix is the bandwidth. */
+   width is a scan row's own (--nfm-bandwidth-hz or --am-bandwidth-hz), which the width controls do not edit: the toast
+   names the row, and the only fix is the bandwidth. */
 static int
 svc_rtl_bandwidth_fits_width(const dsd_opts* opts, int kind, int configured_hz, int row, int khz, char* why,
                              size_t why_size) {
