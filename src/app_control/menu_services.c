@@ -970,14 +970,7 @@ svc_channel_map_refused_rows(const dsd_opts* opts, const dsd_state* state, char*
 
 int
 svc_store_analog_width_setting(dsd_opts* opts, const dsd_state* state, int kind, int width_hz) {
-    if (!opts) {
-        return 0;
-    }
-    if (kind == DSD_ANALOG_DEMOD_AM) {
-        opts->analog_am_bandwidth_hz = width_hz;
-        return 1;
-    }
-    return dsd_scan_mode_set_configured_nfm_bandwidth(opts, state, width_hz) == 1 ? 1 : 0;
+    return dsd_scan_mode_set_configured_analog_width(opts, state, kind, width_hz) == 1 ? 1 : 0;
 }
 
 void

@@ -3023,6 +3023,74 @@ test_nfm_row_snapshot_keeps_configured_mode_and_width(void) {
 }
 
 /*
+ * Issue #524: the AM width follows the same configured-view rule as the NFM width. Config->Save taken while an nfm row
+ * runs over an -fM session keeps decode = am and writes the configured am_bandwidth_hz from the configured view, never
+ * the options in force; an AM width edit made under the row (the width command's path) is saved and survives the leave.
+ */
+static int
+test_am_session_row_snapshot_keeps_configured_am_width(void) {
+    auto opts_storage = std::unique_ptr<dsd_opts>(new dsd_opts{});
+    auto state_storage = std::unique_ptr<dsd_state>(new dsd_state{});
+    dsd_opts& opts = *opts_storage;
+    dsd_state& state = *state_storage;
+    reset_opts_and_state(opts, state);
+    DSD_SNPRINTF(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", "rtl:0:118.1M:22:-2:24:-80:2");
+    opts.rtlsdr_center_freq = 118100000U;
+    opts.rtl_dsp_bw_khz = 24;
+    if (dsd_apply_decode_mode_preset(DSDCFG_MODE_AM, DSD_DECODE_PRESET_PROFILE_CLI, &opts, &state) != 0) {
+        DSD_FPRINTF(stderr, "FAIL: could not apply the AM preset\n");
+        return 1;
+    }
+    opts.analog_am_bandwidth_hz = 8000;
+    int rc = 0;
+    dsd_scan_option_values row;
+    DSD_MEMSET(&row, 0, sizeof row);
+    row.present = DSD_SCAN_OPT_BANDWIDTH;
+    row.channel_bw_hz = 12500;
+    if (dsd_scan_mode_enter(&opts, &state, DSD_SCAN_MODE_NFM) != 0 || dsd_scan_mode_options(&opts, &state, &row) != 0
+        || opts.analog_demod != DSD_ANALOG_DEMOD_FM || opts.analog_nfm_bandwidth_hz != 12500) {
+        DSD_FPRINTF(stderr, "FAIL: the nfm row did not run over the AM session (demod=%d width=%d)\n",
+                    opts.analog_demod, opts.analog_nfm_bandwidth_hz);
+        dsd_state_ext_free_all(&state);
+        return 1;
+    }
+    dsdneoUserConfig snap;
+    dsd_snapshot_opts_to_user_config(&opts, &state, &snap);
+    if (snap.decode_mode != DSDCFG_MODE_AM || !snap.has_analog || snap.analog_am_bandwidth_hz != 8000
+        || snap.analog_nfm_bandwidth_hz != 0) {
+        DSD_FPRINTF(stderr, "FAIL: save during an nfm row on AM wrote mode %d am %d nfm %d, want am/8000/0\n",
+                    (int)snap.decode_mode, snap.analog_am_bandwidth_hz, snap.analog_nfm_bandwidth_hz);
+        rc |= 1;
+    }
+    /* The AM width command's path under the row: no row width shadows it, and the configured view takes it. */
+    if (dsd_scan_mode_set_configured_analog_width(&opts, &state, DSD_ANALOG_DEMOD_AM, 10000) != 1) {
+        DSD_FPRINTF(stderr, "FAIL: an AM width edit under the nfm row was shadowed\n");
+        rc |= 1;
+    }
+    /* The save reads the configured view, whatever dsd_opts holds meanwhile. */
+    opts.analog_am_bandwidth_hz = 5000;
+    dsd_snapshot_opts_to_user_config(&opts, &state, &snap);
+    char rendered[16384];
+    if (render_config_to_buffer(&snap, rendered, sizeof rendered) != 0) {
+        rc |= 1;
+    } else if (strstr(rendered, "am_bandwidth_hz = 10000") == NULL || strstr(rendered, "12500") != NULL) {
+        DSD_FPRINTF(stderr, "FAIL: save after an AM width edit under the row did not write the configured width:\n%s\n",
+                    rendered);
+        rc |= 1;
+    }
+    dsd_scan_mode_leave(&opts, &state);
+    if (dsd_infer_decode_mode_preset(&opts) != DSDCFG_MODE_AM || opts.analog_am_bandwidth_hz != 10000
+        || opts.analog_nfm_bandwidth_hz != 0) {
+        DSD_FPRINTF(stderr, "FAIL: leaving the nfm row left mode %d am %d nfm %d, want AM/10000/0\n",
+                    (int)dsd_infer_decode_mode_preset(&opts), opts.analog_am_bandwidth_hz,
+                    opts.analog_nfm_bandwidth_hz);
+        rc |= 1;
+    }
+    dsd_state_ext_free_all(&state);
+    return rc;
+}
+
+/*
  * A parked row's own --scan-max-visit-ms is effective state, not a user default. The save path
  * has to read the configured baseline through dsd_scan_mode_configured_view(), or a
  * Config->Save taken while a row override is active would pin the row's value for every
@@ -3710,6 +3778,7 @@ main(void) {
     rc |= test_scan_max_visit_snapshot_uses_configured_not_row_override();
     rc |= test_squelch_snapshot_uses_configured_not_row_override();
     rc |= test_nfm_row_snapshot_keeps_configured_mode_and_width();
+    rc |= test_am_session_row_snapshot_keeps_configured_am_width();
     rc |= test_src_csv_roundtrip();
     rc |= test_p25_bandplan_csv_roundtrip();
     rc |= test_edacs_variant_roundtrip();

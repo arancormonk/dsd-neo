@@ -1528,8 +1528,10 @@ rtl_set_nfm_bw(void* v) {
 void
 rtl_set_am_bw(void* v) {
     UiCtx* c = (UiCtx*)v;
-    ui_prompt_open_int_async("AM bandwidth Hz (5000..20000; 0 = default 6000)", c->opts->analog_am_bandwidth_hz,
-                             cb_rtl_am_bw, c);
+    /* The command edits the configured width, as the NFM row's does. */
+    const int configured_hz =
+        dsd_scan_mode_configured_analog_width(c->opts, dsd_app_get_latest_snapshot(), DSD_ANALOG_DEMOD_AM);
+    ui_prompt_open_int_async("AM bandwidth Hz (5000..20000; 0 = default 6000)", configured_hz, cb_rtl_am_bw, c);
 }
 
 void

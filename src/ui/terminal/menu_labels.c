@@ -1389,14 +1389,16 @@ lbl_rtl_nfm_bw(const void* v, char* b, size_t n) {
     return b;
 }
 
-/* The configured AM channel width (issue #524), spelt as the NFM row spells its own: an explicit width as set, the
-   unset default as "default" (6 kHz; the status line's "Analog:" field shows the width the front end runs). */
+/* The configured AM channel width (issue #524), spelt and read as the NFM row reads its own: an explicit width as set,
+   the unset default as "default" (6 kHz; the status line's "Analog:" field shows the width the front end runs), from
+   the scan scope's configured view while one is live. */
 const char*
 lbl_rtl_am_bw(const void* v, char* b, size_t n) {
     const UiCtx* c = (const UiCtx*)v;
+    const int configured_hz =
+        c ? dsd_scan_mode_configured_analog_width(c->opts, dsd_app_get_latest_snapshot(), DSD_ANALOG_DEMOD_AM) : 0;
     char width[DSD_APP_ANALOG_WIDTH_TEXT_MAX];
-    (void)dsd_app_analog_width_setting_format((c && c->opts) ? c->opts->analog_am_bandwidth_hz : 0, width,
-                                              sizeof width);
+    (void)dsd_app_analog_width_setting_format(configured_hz, width, sizeof width);
     DSD_SNPRINTF(b, n, "AM bandwidth... [%s]", width);
     return b;
 }

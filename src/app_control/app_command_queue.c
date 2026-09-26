@@ -3827,7 +3827,7 @@ ui_hold_reverted_analog_width(dsd_opts* opts, const dsd_state* state, const svc_
     char why[128];
     if (width_hz != kept->kept_width_hz
         && svc_check_analog_bandwidth(opts, state, kept->kept_kind, width_hz, why, sizeof why) != 0) {
-        svc_store_analog_width_setting(opts, kept->kept_kind, kept->kept_width_hz);
+        (void)svc_store_analog_width_setting(opts, state, kept->kept_kind, kept->kept_width_hz);
     }
 }
 
@@ -5522,8 +5522,8 @@ cfg_check_scan_row_width(const dsd_opts* opts, dsd_state* state, const dsdneoUse
  * reopen (its start checks the rate it delivers), otherwise at the running front end's rate.
  */
 static int
-cfg_check_held_analog_width(const dsd_opts* opts, dsd_state* state, const dsdneoUserConfig* cfg, int kind,
-                            int width_hz, int onto_monitor) {
+cfg_check_held_analog_width(const dsd_opts* opts, dsd_state* state, const dsdneoUserConfig* cfg, int kind, int width_hz,
+                            int onto_monitor) {
     const cfg_reopen_kind reopen = cfg_radio_reopen(opts, cfg);
     if (reopen == CFG_REOPEN_AT_DEVICE_RATE) {
         /* No rate to hold it to before the device opens, but the rules every rate shares still apply. */

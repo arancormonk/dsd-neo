@@ -211,6 +211,12 @@ int dsd_scan_mode_set_configured_squelch(dsd_opts* opts, const dsd_state* state,
  * -1 without opts. The width is not validated. Same thread and snapshot rules as dsd_scan_mode_set_configured_squelch().
  */
 int dsd_scan_mode_set_configured_nfm_bandwidth(dsd_opts* opts, const dsd_state* state, int width_hz);
+/** dsd_scan_mode_set_configured_nfm_bandwidth() for the configured channel width of analog demodulator @p kind
+ * (dsd_analog_demod; anything but AM edits the NFM width), the AM width (dsd_opts::analog_am_bandwidth_hz, issue #524)
+ * included: under a live scope the configured baseline takes it, so a row's leave or the next row's options keep the
+ * edit rather than restore the width from before it. Only an nfm row sets a width of its own, the NFM one, so an AM
+ * edit is never shadowed and always reaches dsd_opts. Same returns and thread rules. */
+int dsd_scan_mode_set_configured_analog_width(dsd_opts* opts, const dsd_state* state, int kind, int width_hz);
 /** The configured channel width (Hz, 0 = the default) of analog demodulator @p kind (dsd_analog_demod; anything but
  * AM reads as NFM): what the width controls edit and a save writes, and what a row without a width of its own runs. It
  * comes from the scan scope's configured view while a scope is live, since a row's own width (issue #526) runs over

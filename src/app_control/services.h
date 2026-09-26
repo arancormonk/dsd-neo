@@ -326,9 +326,9 @@ void svc_describe_analog_refusal(const dsd_opts* opts, int kind, int width_hz, c
  * still holds it), or, for the NFM width, the scan has an nfm row or target without a width of its own, on air or
  * waiting to be visited (dsd_engine_scan_runs_configured_nfm_width()) -- one the front end would refuse
  * (svc_check_analog_bandwidth()). The command edits the configured width rather than suspending a row's scope, so it
- * never disturbs the acquisition a row has made: the NFM width through dsd_scan_mode_set_configured_nfm_bandwidth(),
- * where an nfm row's own width (--nfm-bandwidth-hz, issue #526) stays in force until the row leaves, and the edit
- * reaches the front end with the next row that takes the configured width or the leave. A width in force is handed to
+ * never disturbs the acquisition a row has made (svc_store_analog_width_setting()), and a row's leave keeps the edit:
+ * an nfm row's own width (--nfm-bandwidth-hz, issue #526) stays in force until the row leaves, and an NFM edit reaches
+ * the front end with the next row that takes the configured width or the leave. A width in force is handed to
  * a running RTL front end (svc_publish_analog_bandwidth()): on the analog monitor a width-only change redesigns the
  * channel filter from empty histories at the next block. A request the front end refuses there after all (a retune
  * moved the rate since the check) is refused here too, with the previous width put back; one refused where it lands is
@@ -357,10 +357,11 @@ void svc_restore_analog_width(dsd_opts* opts, const dsd_state* state, int kind, 
  * @brief Store @p width_hz (0 for the default) as the configured width of analog @p kind, and nothing else.
  *
  * The one writer of the two width settings, for callers that have already decided the width: svc_set_analog_bandwidth()
- * and putting back a width the front end refused. It edits the configured width without suspending a scan row's scope:
- * the NFM width through dsd_scan_mode_set_configured_nfm_bandwidth() (issue #526), where an nfm row's own width stays
- * in force until the row leaves, and the AM width, which no row sets, in dsd_opts. dsd_scan_mode_configured_analog_width()
- * reads the configured widths, dsd_app_analog_width_setting_hz() the ones in force. Decoder thread only.
+ * and putting back a width the front end refused. It edits the configured width of either kind without suspending a
+ * scan row's scope (dsd_scan_mode_set_configured_analog_width(), issue #526), so a row's leave keeps the edit; an nfm
+ * row's own width stays in force over an NFM edit until the row leaves, and no row sets an AM width.
+ * dsd_scan_mode_configured_analog_width() reads the configured widths, dsd_app_analog_width_setting_hz() the ones in
+ * force. Decoder thread only.
  *
  * @return 1 when the width is now in force in dsd_opts, 0 when a row's own width shadows it or without @p opts.
  */

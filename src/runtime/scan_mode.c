@@ -916,20 +916,35 @@ dsd_scan_mode_set_configured_squelch(dsd_opts* opts, const dsd_state* state, dou
 }
 
 int
-dsd_scan_mode_set_configured_nfm_bandwidth(dsd_opts* opts, const dsd_state* state, int width_hz) {
+dsd_scan_mode_set_configured_analog_width(dsd_opts* opts, const dsd_state* state, int kind, int width_hz) {
     if (!opts) {
         return -1;
     }
+    const int am = kind == DSD_ANALOG_DEMOD_AM;
     scan_scope* scope = state ? scan_scope_get(state) : NULL;
     /* Suspended or absent, dsd_opts holds the configured values and resume recaptures them. */
     if (scope && !scope->suspended) {
-        scope->configured.analog_nfm_bandwidth_hz = width_hz;
-        if (scope->options.present & DSD_SCAN_OPT_BANDWIDTH) {
+        if (am) {
+            scope->configured.analog_am_bandwidth_hz = width_hz;
+        } else {
+            scope->configured.analog_nfm_bandwidth_hz = width_hz;
+        }
+        /* Only an nfm row parses a width (scan_option_apply_bandwidth()), so a row width shadows the NFM one. */
+        if (!am && (scope->options.present & DSD_SCAN_OPT_BANDWIDTH)) {
             return 0;
         }
     }
-    opts->analog_nfm_bandwidth_hz = width_hz;
+    if (am) {
+        opts->analog_am_bandwidth_hz = width_hz;
+    } else {
+        opts->analog_nfm_bandwidth_hz = width_hz;
+    }
     return 1;
+}
+
+int
+dsd_scan_mode_set_configured_nfm_bandwidth(dsd_opts* opts, const dsd_state* state, int width_hz) {
+    return dsd_scan_mode_set_configured_analog_width(opts, state, DSD_ANALOG_DEMOD_FM, width_hz);
 }
 
 int

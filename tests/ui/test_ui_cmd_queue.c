@@ -6146,6 +6146,8 @@ test_am_bandwidth_set_under_scan_rows(void) {
     g_fake_analog_family = 1;
     rc |= submit_am_width(&opts, &state, 10000, "am row: 10 kHz under a typed row");
     rc |= expect_int("am row: typed row stores the width", opts.analog_am_bandwidth_hz, 10000);
+    rc |= expect_int("am row: typed row edits the configured width",
+                     dsd_scan_mode_configured_view(&state)->analog_am_bandwidth_hz, 10000);
     rc |= expect_int("am row: typed row requests nothing", g_analog_req_calls + g_demod_req_calls, 0);
     rc |= expect_int("am row: typed row keeps running DMR", opts.frame_dmr, 1);
     rc |= expect_int("am row: typed row toast", strstr(state.ui_msg, "Applied: AM bandwidth -> 10 kHz") != NULL, 1);
@@ -6173,8 +6175,39 @@ test_am_bandwidth_set_under_scan_rows(void) {
                      1);
     dsd_scan_mode_leave(&opts, &state);
 
+    /* An nfm row with its own width runs over the AM session (issue #526): the AM width edit is the configured
+       default's, which no row shadows, and waits for the leave, since the row runs FM; an NFM edit is shadowed by the
+       row's own width, and says so. The leave keeps both edits. */
+    g_analog_check_result = 0;
+    dsd_scan_option_values nfm_row = {0};
+    nfm_row.present = DSD_SCAN_OPT_BANDWIDTH;
+    nfm_row.channel_bw_hz = 12500;
+    rc |= expect_int("am row: nfm row", dsd_scan_mode_enter(&opts, &state, DSD_SCAN_MODE_NFM), 0);
+    rc |= expect_int("am row: nfm row options", dsd_scan_mode_options(&opts, &state, &nfm_row), 0);
+    rc |= expect_int("am row: nfm row runs FM at its width",
+                     opts.analog_demod == DSD_ANALOG_DEMOD_FM && opts.analog_nfm_bandwidth_hz == 12500, 1);
+    reset_rx_family_wrap();
+    g_fake_analog_family = 1;
+    rc |= submit_am_width(&opts, &state, 15000, "am row: 15 kHz under an nfm row");
+    rc |= expect_int("am row: nfm row edits the configured AM width",
+                     dsd_scan_mode_configured_view(&state)->analog_am_bandwidth_hz, 15000);
+    rc |= expect_int("am row: nfm row keeps its own width", opts.analog_nfm_bandwidth_hz, 12500);
+    rc |= expect_int("am row: nfm row requests nothing for AM", g_analog_req_calls, 0);
+    rc |= expect_toast("am row: nfm row AM toast", &state, "Applied: AM bandwidth -> 15 kHz");
+    reset_rx_family_wrap();
+    g_fake_analog_family = 1;
+    rc |= submit_nfm_width(&opts, &state, 20000, "am row: NFM edit under the nfm row");
+    rc |= expect_toast("am row: NFM edit is shadowed", &state,
+                       "Default NFM bandwidth -> 20 kHz; this channel overrides it (12.5 kHz)");
+    dsd_scan_mode_leave(&opts, &state);
+    rc |= expect_int("am row: leave back on AM with the edit",
+                     dsd_infer_decode_mode_preset(&opts) == DSDCFG_MODE_AM && opts.analog_am_bandwidth_hz == 15000
+                         && opts.analog_nfm_bandwidth_hz == 20000,
+                     1);
+
     g_analog_check_result = 0;
     g_fake_analog_family = 0;
+    opts.analog_nfm_bandwidth_hz = 0;
     opts.analog_am_bandwidth_hz = 0;
     state.rtl_ctx = NULL;
     freeState(&state);
@@ -6766,7 +6799,8 @@ test_refused_width_under_a_scan_row_keeps_the_configured_width(void) {
     rc |= expect_int("own width row: nfm row", dsd_scan_mode_enter(&opts, &state, DSD_SCAN_MODE_NFM), 0);
     rc |= expect_int("own width row: its width", dsd_scan_mode_options(&opts, &state, &row), 0);
     reset_rx_family_wrap();
-    rc |= expect_int("own width row: republished", svc_publish_analog_bandwidth(&opts, &state, DSD_ANALOG_DEMOD_FM, -1), 0);
+    rc |= expect_int("own width row: republished", svc_publish_analog_bandwidth(&opts, &state, DSD_ANALOG_DEMOD_FM, -1),
+                     0);
     demod_thread_refuses_analog_keeping(1, 9000);
     (void)dsd_app_drain_cmds(&opts, &state);
     rc |= expect_int("own width row: in force as kept", opts.analog_nfm_bandwidth_hz, 9000);
