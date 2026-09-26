@@ -489,13 +489,22 @@ cli_parse_analog_width_option(const char* option_name, int kind, const char* in,
 }
 
 /* The analog channel width is the radio front end's filter. PCM inputs (Pulse, files, UDP and TCP audio) arrive
- * already demodulated, so a width given for one of them parses but cannot act. */
+ * already demodulated, so a width given for one of them parses but cannot act as a filter. The AM width still reaches
+ * a rigctl peer (-U) there: an am scan row or am-conventional target without a width of its own asks the peer for AM
+ * at the configured AM width (issue #526), so that one is said as what it does. The configured NFM width never reaches
+ * the peer, which runs -B. */
 static void
-cli_warn_analog_width_without_radio(const dsd_opts* opts, const char* option_name) {
+cli_warn_analog_width_without_radio(const dsd_opts* opts, int kind, const char* option_name) {
     const char* dev = opts->audio_in_dev;
     if (opts->iq_replay_requested || dsd_opts_audio_in_dev_is_rtl_spec(dev) || dsd_opts_audio_in_dev_is_rtltcp_spec(dev)
         || dsd_opts_audio_in_dev_is_soapy_spec(dev) || dsd_opts_audio_in_dev_is_airspy_spec(dev)
         || dsd_opts_audio_in_dev_is_iqreplay_spec(dev)) {
+        return;
+    }
+    if (kind == DSD_ANALOG_DEMOD_AM && opts->use_rigctl == 1) {
+        LOG_INFO("NOTICE: %s filters nothing on PCM input; with rigctl (-U) it is the AM passband the peer is asked "
+                 "for on am scan rows and am-conventional targets that set no width of their own.\n",
+                 option_name);
         return;
     }
     LOG_WARN("WARNING: %s has no effect on PCM input; it sets the channel filter of a radio input (RTL-SDR, rtl_tcp, "
@@ -1935,10 +1944,10 @@ static int
 cli_finish_parse(dsd_opts* opts, int parse_rc, int analog_width_cli_seen, int* out_exit_rc) {
     parse_rc = cli_finish_airspy_input(opts, parse_rc, out_exit_rc);
     if (parse_rc == DSD_PARSE_CONTINUE && (analog_width_cli_seen & (1 << DSD_ANALOG_DEMOD_FM))) {
-        cli_warn_analog_width_without_radio(opts, "--nfm-bandwidth-hz");
+        cli_warn_analog_width_without_radio(opts, DSD_ANALOG_DEMOD_FM, "--nfm-bandwidth-hz");
     }
     if (parse_rc == DSD_PARSE_CONTINUE && (analog_width_cli_seen & (1 << DSD_ANALOG_DEMOD_AM))) {
-        cli_warn_analog_width_without_radio(opts, "--am-bandwidth-hz");
+        cli_warn_analog_width_without_radio(opts, DSD_ANALOG_DEMOD_AM, "--am-bandwidth-hz");
     }
     return parse_rc;
 }

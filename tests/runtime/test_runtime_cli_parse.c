@@ -5975,6 +5975,18 @@ test_am_bandwidth_option(void) {
         test_rc = 1;
     }
     am_cli_free(&run);
+    /* Issue #526: with a rigctl peer the AM width is the passband an am scan row without a width of its own asks the
+       peer for, so it is said as that, not as having no effect. */
+    const char* const rigctl[] = {"dsd-neo", "-fA", "--am-bandwidth-hz", "8000", "-i", "pulse", "-U", "4532", NULL};
+    if (am_cli_parse(rigctl, 0, &run) != 0) {
+        return 1;
+    }
+    if (run.rc != DSD_PARSE_CONTINUE || run.opts->analog_am_bandwidth_hz != 8000 || run.opts->use_rigctl != 1
+        || strstr(run.err, "has no effect") || !strstr(run.err, "it is the AM passband the peer is asked for")) {
+        DSD_FPRINTF(stderr, "--am-bandwidth-hz on PCM input with rigctl: rc=%d\n%s\n", run.rc, run.err);
+        test_rc = 1;
+    }
+    am_cli_free(&run);
     return test_rc;
 }
 
