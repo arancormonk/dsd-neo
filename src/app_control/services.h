@@ -438,9 +438,11 @@ int svc_airspy_settings_reopen(const dsd_airspy_config* previous, const dsd_airs
  * Flips the CQPSK state the front end was last asked for (rtl_stream_requested_cqpsk(): the state the requests the
  * demod thread has not taken yet leave it on, whoever queued them, otherwise the state it publishes) and queues it for
  * the demod thread, leaving the symbol profile and timing alone. Turning CQPSK off under an analog preset returns to
- * the analog monitor through the analog profile with the configured kind and channel width; when the front end refuses
- * that profile (its rate cannot filter the width, the AM default included), CQPSK stays on, whether the refusal comes
- * at once or where the request lands, rather than leaving the monitor output on the FSK profile. Decoder thread only.
+ * the analog monitor through the analog profile alone, with the configured kind and channel width, which turns CQPSK
+ * off as it enters the monitor: no CQPSK-off profile is queued that the demod thread could take on its own. When the
+ * front end refuses that profile (its rate cannot filter the width, the AM default included), CQPSK stays on, whether
+ * the refusal comes at once or where the request lands, rather than leaving the monitor output on the FSK profile.
+ * Decoder thread only.
  */
 void svc_toggle_rtl_cqpsk(const dsd_opts* opts);
 

@@ -674,15 +674,17 @@ installs from `src/engine/trunk_tuning.c` in `src/engine/trunk_tuning_hooks_inst
   profile until its leave, and under a scan row's suspended scope (a config apply) the request waits for
   `apply_cmd_scoped()` to publish it after the resume, with the width in force from before the command
   (`svc_publish_symbol_profile_changing_width()`). CQPSK toggled on under an analog preset holds it too, and the DSP op
-  that turns CQPSK off (`svc_toggle_rtl_cqpsk()`) returns to the monitor through the analog profile with it; one the
-  front end refuses (the AM default included) leaves CQPSK on rather than a CQPSK-off profile alone, which would put the
-  FSK channel profile on the monitor output with the FM discriminator. Whether CQPSK holds the front end is what was
-  last queued, not only what the stream publishes, since a toggle, a switch or a scan row's leave (queued through the
-  runtime hooks) drained with the width has not landed yet: the stream answers for every request queued, whoever queued
-  it (`rtl_stream_requested_cqpsk()`), falling back to the published state once every request has settled
-  (`rtl_stream_receive_request_outcome()`), never on the output generation, which the demod thread moves before it
-  publishes and a retune moves without taking a request. The toggle flips that requested state too. A width the front
-  end refuses after the check is never left configured: refused by its request (a retune moved the published rate), the
+  that turns CQPSK off (`svc_toggle_rtl_cqpsk()`) returns to the monitor through the analog profile alone, which turns
+  CQPSK off as it enters the monitor; one the front end refuses, at once or where it lands (the AM default included),
+  leaves CQPSK on. No CQPSK-off profile is queued with it: the demod thread could take that on its own at a block
+  boundary before the analog request, and a refusal would then leave the FSK channel profile on the monitor output with
+  the FM discriminator. Whether CQPSK holds the front end is what was last queued, not only what the stream publishes,
+  since a toggle, a switch or a scan row's leave (queued through the runtime hooks) drained with the width has not
+  landed yet: the stream answers for every request queued, whoever queued it (`rtl_stream_requested_cqpsk()`), falling
+  back to the published state once every request has settled (`rtl_stream_receive_request_outcome()`), never on the
+  output generation, which the demod thread moves before it publishes and a retune moves without taking a request. The
+  toggle flips that requested state too. A width the front end refuses after the check is never left configured:
+  refused by its request (a retune moved the published rate), the
   change is refused with the previous width put back; refused by the demod thread where it lands, the request reads
   `RTL_STREAM_RX_REQUEST_REFUSED`, and `dsd_app_drain_cmds()`, before its next command, puts back the width the front
   end kept, as the stream recorded it when it refused (`rtl_stream_receive_request_refusal()`, so an earlier width that
@@ -1134,9 +1136,10 @@ Notes:
     `full_demod()` reads with the discriminator while its channel is not the monitor's. Tests: `IO_RTL_DEMOD_CONFIG`,
     `IO_RTL_ANALOG_FAMILY_SWITCH` (digital <-> AM, an AM start to digital and back to AM on the same stream, live FM <->
     AM against fresh opens via `rtl_stream_test_analog_kind_switch()`, the CQPSK-off profiles via
-    `rtl_stream_test_am_monitor_symbol_profiles()`, and the live output scale through `demod_write_output_block()` via
-    `rtl_stream_test_monitor_output_scale()`: 1/pi for FM, none for AM or digital output), `IO_RTL_RETUNE_PREPARE`
-    (`rtl_stream_test_audio_monitor_retune_kind()`).
+    `rtl_stream_test_am_monitor_symbol_profiles()`, the DSP menu's return from CQPSK to the FM or AM monitor, taken and
+    refused where it lands, via `rtl_stream_test_monitor_return_from_cqpsk()`, and the live output scale through
+    `demod_write_output_block()` via `rtl_stream_test_monitor_output_scale()`: 1/pi for FM, none for AM or digital
+    output), `IO_RTL_RETUNE_PREPARE` (`rtl_stream_test_audio_monitor_retune_kind()`).
   - The monitor's legacy `low_pass_real()` stage (`rate_in` to `rate_out2`) passes audio through: a live open sets both
     to the DSP bandwidth, and IQ replay (`controller_apply_replay_settings()`) sets `rate_out2` to the `rate_in` it
     takes from the capture, so only the rational resampler converts `rate_out` to the output rate. Test:

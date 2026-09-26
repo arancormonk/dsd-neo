@@ -12207,6 +12207,80 @@ rtl_stream_test_am_monitor_symbol_profiles(int rate_hz, rtl_stream_test_am_symbo
     return rc == 0 ? 0 : -3;
 }
 
+/* The DSP menu's CQPSK toggle turned on under the analog family and taken at a block boundary. */
+static int
+family_test_cqpsk_on_taken(void) {
+    const int rc = rtl_stream_request_demod_profile(1, 0, 0, -1, -1, 0);
+    family_test_demod_thread_boundary();
+    return rc;
+}
+
+/* The return to the monitor refused where it lands, the monitor's rate moved to @p landed_rate_hz by a retune after
+ * the request was checked: what the stream kept. */
+static void
+family_test_monitor_return_refused(int kind, int width_hz, int landed_rate_hz,
+                                   rtl_stream_test_monitor_return_result* out) {
+    out->refused_request_rc = rtl_stream_request_analog_profile(DSD_RX_FAMILY_ANALOG, kind, width_hz);
+    const uint32_t seq = rtl_stream_receive_request_seq();
+    demod.rate_out = landed_rate_hz;
+    family_test_demod_thread_boundary();
+    out->refused_outcome = rtl_stream_receive_request_outcome(seq);
+    out->refused_kept_analog = -1;
+    out->refused_kept_kind = -1;
+    (void)rtl_stream_receive_request_refusal(seq, &out->refused_kept_analog, NULL, &out->refused_kept_kind);
+    out->refused_cqpsk = demod.cqpsk_enable;
+    out->refused_output_kind = demod.output_kind;
+    out->refused_channel_profile = demod.channel_lpf_profile;
+    out->refused_requested_cqpsk = rtl_stream_requested_cqpsk();
+}
+
+extern "C" int
+rtl_stream_test_monitor_return_from_cqpsk(int kind, int width_hz, int landed_rate_hz,
+                                          rtl_stream_test_monitor_return_result* out) {
+    if (!out || !dsd_analog_demod_is_valid(kind) || landed_rate_hz <= 0) {
+        return -1;
+    }
+    *out = {};
+    int initialized_output = 0;
+    if (fsk_reacquire_test_prepare_output_ring(0U, &initialized_output) != 0) {
+        fsk_reacquire_test_cleanup_output_ring(initialized_output);
+        return -2;
+    }
+    const FamilyTestSaved saved = family_test_save();
+    static dsd_opts stream_opts;
+    DSD_MEMSET(&stream_opts, 0, sizeof stream_opts);
+    stream_opts.analog_only = 1;
+    stream_opts.monitor_input_audio = 1;
+    stream_opts.analog_demod = kind;
+    g_cqpsk_toggle_test_stream.output = &output;
+    g_cqpsk_toggle_test_stream.opts = &stream_opts;
+    g_stream = NULL;
+    out->open_rc = family_test_seed_open(&stream_opts, 48000, 0);
+    g_stream = &g_cqpsk_toggle_test_stream; /* live: requests queue for the demod thread */
+
+    int rc = family_test_cqpsk_on_taken();
+    out->cqpsk_on = demod.cqpsk_enable;
+    out->cqpsk_output_kind = demod.output_kind;
+
+    out->request_rc = rtl_stream_request_analog_profile(DSD_RX_FAMILY_ANALOG, kind, width_hz);
+    family_test_demod_thread_boundary();
+    out->accepted_cqpsk = demod.cqpsk_enable;
+    out->accepted_monitor = dsd_demod_analog_monitor_active(&demod);
+    out->accepted_kind_active = dsd_demod_am_active(&demod) == (kind == DSD_ANALOG_DEMOD_AM ? 1 : 0) ? 1 : 0;
+    out->accepted_width_hz = demod.channel_lpf_width_hz;
+    out->accepted_requested_cqpsk = rtl_stream_requested_cqpsk();
+
+    rc |= family_test_cqpsk_on_taken();
+    family_test_monitor_return_refused(kind, width_hz, landed_rate_hz, out);
+
+    /* The refusal logged here says nothing to the next test, which may expect the same one logged. */
+    g_analog_request_refusal_logged.store(0, std::memory_order_relaxed);
+    family_test_restore(saved);
+    family_test_release_buffers();
+    fsk_reacquire_test_cleanup_output_ring(initialized_output);
+    return rc == 0 ? 0 : -3;
+}
+
 extern "C" int
 rtl_stream_test_audio_monitor_retune(int rate_before_hz, int rate_after_hz, int nfm_width_hz,
                                      rtl_stream_test_audio_reset_result* out) {

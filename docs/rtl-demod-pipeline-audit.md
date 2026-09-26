@@ -287,8 +287,9 @@ refuses rather than clamps, and the checks sit where the rate is known:
   edit until the row leaves; under a typed digital scan row it is
   stored and applied when the row's leave republishes the analog profile;
   with CQPSK toggled on under `-fA` it is stored, and turning CQPSK off
-  returns to the monitor through the analog profile with it (a return the
-  front end refuses, for an explicit width or the AM default, leaves CQPSK on
+  returns to the monitor through the analog profile alone, which turns CQPSK
+  off as it enters the monitor (a return the front end refuses, at once or
+  where it lands, for an explicit width or the AM default, leaves CQPSK on
   instead of the FSK profile on the monitor output). Whether CQPSK
   holds the front end off the monitor is read from the requests queued, not
   only from the published state, which lags them until the demod thread takes
@@ -610,7 +611,9 @@ discriminator output unchanged, at 48 kHz and through the 24 kHz resampler.
   scale (1/pi for FM monitor audio, none for AM), AM widths held to a running
   stream's rate, and the AM detector kept through every CQPSK-off profile (a
   toggle, a failed tune's restore, a typed digital row's profile, then the
-  analog profile a row running the analog family queues for its retune);
+  analog profile a row running the analog family queues for its retune), and
+  the DSP menu's return from CQPSK to the FM or AM monitor as the analog
+  request alone (taken, and refused where it lands, CQPSK kept on);
   `IO_RTL_RETUNE_PREPARE` retunes while AM runs;
   `ENGINE_TRUNK_RETUNE_REGRESSION` that such a `-Y` row queues the analog
   profile and no symbol profile. `APP_COMMAND_QUEUE` and `UI_MENU_SERVICES` hold

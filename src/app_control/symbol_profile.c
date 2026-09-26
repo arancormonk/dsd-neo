@@ -351,27 +351,19 @@ svc_toggle_rtl_cqpsk(const dsd_opts* opts) {
     /* Flips what the front end was last asked for, which a toggle drained right after another is not yet running. The
        family flip is queued for the demod thread; the symbol profile (rate<=0) and timing (ted_sps<0) stay. */
     const int cqpsk = rtl_stream_requested_cqpsk() ? 0 : 1;
-    /* Back onto the analog monitor: through the analog profile, which carries the configured kind and channel width,
-       rather than returning to the width the monitor had when CQPSK was switched on. A width set meanwhile waited for
-       this (svc_publish_analog_bandwidth()). Once accepted, the analog request replaces the demod profile queued
-       first, and entering the monitor turns CQPSK off. A CQPSK-off profile left on its own would put the FSK channel
-       profile on the monitor output with the FM discriminator, which no AM signal survives, so a request the front end
-       refuses (its rate cannot filter the width, the AM default included) leaves CQPSK on instead, as one refused where
-       it lands does (a retune moved the rate since): checked before anything is queued, and should the rate move
-       between that check and the request, the CQPSK-on profile goes back in place of the CQPSK-off one. Every refusal
-       is logged with the validator's text. */
-    const int to_monitor = !cqpsk && opts && dsd_opts_is_analog_family(opts);
-    if (to_monitor
-        && rtl_stream_check_analog_profile(DSD_RX_FAMILY_ANALOG, opts->analog_demod, dsd_opts_analog_width_hz(opts))
-               != 0) {
+    /* Back onto the analog monitor: through the analog profile alone, which carries the configured kind and channel
+       width, rather than returning to the width the monitor had when CQPSK was switched on. A width set meanwhile
+       waited for this (svc_publish_analog_bandwidth()). Entering the monitor turns CQPSK off, so no CQPSK-off profile
+       is queued with it: the demod thread could take one on its own at a block boundary before the analog request was
+       queued, and a refusal of that request would then leave the FSK channel profile on the monitor output with the FM
+       discriminator, which no AM signal survives. A request the front end refuses, at once (its rate cannot filter the
+       width, the AM default included) or where it lands (a retune moved the rate since), leaves CQPSK on, and the
+       refusal is logged with the validator's text. */
+    if (!cqpsk && opts && dsd_opts_is_analog_family(opts)) {
+        (void)symbol_profile_request_monitor(opts, -1);
         return;
     }
-    if (rtl_stream_request_demod_profile(cqpsk, 0, 0, -1, -1, 0) != 0) {
-        return;
-    }
-    if (to_monitor && symbol_profile_request_monitor(opts, -1) != 0) {
-        (void)rtl_stream_request_demod_profile(1, 0, 0, -1, -1, 0);
-    }
+    (void)rtl_stream_request_demod_profile(cqpsk, 0, 0, -1, -1, 0);
 #else
     (void)opts;
 #endif

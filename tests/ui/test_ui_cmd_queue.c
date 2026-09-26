@@ -6398,9 +6398,9 @@ test_nfm_bandwidth_set_applies_live_and_refuses(void) {
     rc |= expect_int("nfm under cqpsk not requested", g_analog_req_calls, 0);
     submit_cqpsk_toggle();
     rc |= expect_int("cqpsk off drained", dsd_app_drain_cmds(&opts, &state), 1);
-    rc |= expect_int("cqpsk off queues its demod profile", g_demod_req_calls, 1);
+    rc |= expect_int("cqpsk off queues no demod profile of its own", g_demod_req_calls, 0);
     rc |= expect_int("cqpsk off requests the analog profile", g_analog_req_calls, 1);
-    rc |= expect_int("cqpsk off: analog after the demod profile", g_analog_req_order > g_demod_req_order, 1);
+    rc |= expect_int("cqpsk off: CQPSK requested off", __wrap_rtl_stream_requested_cqpsk(), 0);
     rc |= expect_int("cqpsk off: the width set meanwhile", g_analog_req_width_hz, 20000);
     rc |= expect_int("cqpsk off: NFM",
                      g_analog_req_kind == DSD_ANALOG_DEMOD_FM && g_analog_req_family == DSD_RX_FAMILY_ANALOG, 1);
@@ -6527,18 +6527,23 @@ test_nfm_bandwidth_set_after_a_queued_cqpsk_toggle(void) {
     g_fake_cqpsk = 1;
     rc |= queue_cqpsk_toggle_then_width(20000, "cqpsk off + width queued");
     rc |= expect_int("cqpsk off + width drained", dsd_app_drain_cmds(&opts, &state), 2);
-    rc |= expect_int("cqpsk off + width: CQPSK requested off", g_demod_req_calls == 1 && g_demod_req_cqpsk == 0, 1);
+    rc |= expect_int("cqpsk off + width: no demod profile", g_demod_req_calls, 0);
+    rc |= expect_int("cqpsk off + width: CQPSK requested off", __wrap_rtl_stream_requested_cqpsk(), 0);
     rc |= expect_int("cqpsk off + width: toggle and width both requested", g_analog_req_calls, 2);
     rc |= expect_int("cqpsk off + width: the last request carries the new width", g_analog_req_width_hz, 20000);
-    rc |= expect_int("cqpsk off + width: after the demod profile", g_analog_req_order > g_demod_req_order, 1);
 
-    /* Two toggles in one drain flip twice: the second reads the first, queued but not taken. */
+    /* Two toggles in one drain flip twice: the second reads the first, queued but not taken, and goes back to the
+       monitor through the analog profile, which replaces the CQPSK-on profile in the stream's queue. */
     reset_rx_family_wrap();
     g_fake_cqpsk = 0;
     submit_cqpsk_toggle();
     submit_cqpsk_toggle();
     rc |= expect_int("two toggles drained", dsd_app_drain_cmds(&opts, &state), 2);
-    rc |= expect_int("two toggles: on, then off", g_demod_req_calls == 2 && g_demod_req_cqpsk == 0, 1);
+    rc |= expect_int("two toggles: on, then off",
+                     g_demod_req_calls == 1 && g_demod_req_cqpsk == 1 && g_analog_req_calls == 1
+                         && g_analog_req_order > g_demod_req_order,
+                     1);
+    rc |= expect_int("two toggles: CQPSK requested off", __wrap_rtl_stream_requested_cqpsk(), 0);
     rc |= expect_int("two toggles: back to the monitor with the width", g_analog_req_width_hz, 20000);
 
     /* CQPSK on, never taken, then the stream restarts (it opens on the -fA monitor): a width goes straight to it. */
@@ -6559,11 +6564,12 @@ test_nfm_bandwidth_set_after_a_queued_cqpsk_toggle(void) {
 }
 
 /*
- * CQPSK toggled on under AM from the DSP menu, then off again while the front end cannot filter the AM width (the
- * default included, which AM always filters): the CQPSK-off demod profile on its own would put the FSK channel profile
- * on the monitor output with the FM discriminator, AM audio lost. So nothing is queued and CQPSK stays on, as when the
- * return is refused where it lands. When the rate moves between the check and the request, the CQPSK-on profile goes
- * back in place of the CQPSK-off one.
+ * CQPSK toggled on under AM from the DSP menu, then off again: the return to the monitor is the analog request alone,
+ * which turns CQPSK off as it enters the monitor. A CQPSK-off demod profile queued with it could be taken on its own at
+ * a block boundary before the analog request was queued, putting the FSK channel profile on the monitor output with
+ * the FM discriminator, AM audio lost, where a refusal of the analog request would leave it. So none is queued, and a
+ * return the front end refuses, at once (its rate cannot filter the AM width, the default included) or where it lands
+ * (a retune moved the rate), leaves CQPSK on.
  */
 static int
 test_cqpsk_off_under_am_refused_keeps_cqpsk(void) {
@@ -6578,32 +6584,36 @@ test_cqpsk_off_under_am_refused_keeps_cqpsk(void) {
 
     reset_rx_family_wrap();
     g_fake_cqpsk = 1;
-    g_analog_check_result = -1;
+    g_analog_req_result = -1;
     submit_cqpsk_toggle();
-    rc |= expect_int("am cqpsk off refused: drained", dsd_app_drain_cmds(&opts, &state), 1);
-    rc |= expect_int("am cqpsk off refused: checked as AM",
-                     g_analog_check_calls == 1 && g_analog_check_kind == DSD_ANALOG_DEMOD_AM, 1);
-    rc |= expect_int("am cqpsk off refused: nothing queued", g_demod_req_calls + g_analog_req_calls, 0);
-    rc |= expect_int("am cqpsk off refused: CQPSK stays on", __wrap_rtl_stream_requested_cqpsk(), 1);
+    rc |= expect_int("am cqpsk off refused at once: drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("am cqpsk off refused at once: asked for AM",
+                     g_analog_req_calls == 1 && g_analog_req_kind == DSD_ANALOG_DEMOD_AM, 1);
+    rc |= expect_int("am cqpsk off refused at once: no demod profile", g_demod_req_calls, 0);
+    rc |= expect_int("am cqpsk off refused at once: CQPSK stays on", __wrap_rtl_stream_requested_cqpsk(), 1);
 
     reset_rx_family_wrap();
     g_fake_cqpsk = 1;
-    g_analog_req_result = -1;
     submit_cqpsk_toggle();
-    rc |= expect_int("am cqpsk off refused late: drained", dsd_app_drain_cmds(&opts, &state), 1);
-    rc |= expect_int("am cqpsk off refused late: CQPSK off, then on again",
-                     g_demod_req_calls == 2 && g_demod_req_cqpsk == 1 && g_analog_req_calls == 1, 1);
-    rc |= expect_int("am cqpsk off refused late: CQPSK stays on", __wrap_rtl_stream_requested_cqpsk(), 1);
+    rc |= expect_int("am cqpsk off refused landing: drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("am cqpsk off refused landing: the analog request alone",
+                     g_analog_req_calls == 1 && g_demod_req_calls == 0, 1);
+    demod_thread_refuses_analog_keeping_kind(1, DSD_ANALOG_DEMOD_AM, 0);
+    (void)dsd_app_drain_cmds(&opts, &state);
+    rc |= expect_int("am cqpsk off refused landing: CQPSK stays on", __wrap_rtl_stream_requested_cqpsk(), 1);
+    rc |= expect_int("am cqpsk off refused landing: still AM",
+                     opts.analog_only == 1 && opts.analog_demod == DSD_ANALOG_DEMOD_AM, 1);
 
-    /* Accepted, the return is the analog request with the AM kind, after the CQPSK-off profile. */
+    /* Accepted, the return is the analog request with the AM kind, and nothing else. */
     reset_rx_family_wrap();
     g_fake_cqpsk = 1;
     submit_cqpsk_toggle();
     rc |= expect_int("am cqpsk off: drained", dsd_app_drain_cmds(&opts, &state), 1);
     rc |= expect_int("am cqpsk off: back to the AM monitor",
-                     g_demod_req_calls == 1 && g_demod_req_cqpsk == 0 && g_analog_req_calls == 1
-                         && g_analog_req_kind == DSD_ANALOG_DEMOD_AM && g_analog_req_order > g_demod_req_order,
+                     g_demod_req_calls == 0 && g_analog_req_calls == 1 && g_analog_req_kind == DSD_ANALOG_DEMOD_AM
+                         && g_analog_req_family == DSD_RX_FAMILY_ANALOG,
                      1);
+    rc |= expect_int("am cqpsk off: CQPSK requested off", __wrap_rtl_stream_requested_cqpsk(), 0);
 
     reset_rx_family_wrap();
     g_fake_cqpsk = 0;

@@ -74,6 +74,9 @@
  * applies to FM monitor audio and not to AM's, which normalises its own level.
  * No symbol profile without CQPSK swaps the AM detector for the discriminator:
  * a CQPSK-off toggle, a failed tune's restore and a typed row's profile keep it.
+ * The DSP menu's return from CQPSK to the FM or AM monitor is the analog request
+ * alone, which turns CQPSK off as it enters the monitor, and which a refusal
+ * where it lands leaves on CQPSK.
  */
 
 #include <cmath>
@@ -626,6 +629,52 @@ test_am_monitor_keeps_detector_under_symbol_profiles(void) {
     rc |= expect_int("analog row retune runs the monitor", r.retune_analog_monitor, 1);
     rc |= expect_int("analog row retune filters at the AM default", r.retune_analog_width,
                      DSD_ANALOG_AM_WIDTH_DEFAULT_HZ);
+    return rc;
+}
+
+/* The DSP menu's CQPSK toggle back to the monitor under -fA or -fM (svc_toggle_rtl_cqpsk()) is the analog request
+ * alone: taken, it enters the monitor of the kind asked for at its width with CQPSK off; refused where it lands (a
+ * retune moved the rate below what the width needs), it leaves the front end on CQPSK, never on a CQPSK-off profile
+ * with the FSK channel filter and the FM discriminator on the monitor output. */
+static int
+test_monitor_return_from_cqpsk_is_the_analog_request_alone(void) {
+    int rc = 0;
+    const int kinds[2] = {DSD_ANALOG_DEMOD_FM, DSD_ANALOG_DEMOD_AM};
+    for (const int kind : kinds) {
+        const char* name = kind == DSD_ANALOG_DEMOD_AM ? "AM" : "NFM";
+        char label[128];
+        rtl_stream_test_monitor_return_result r;
+        DSD_MEMSET(&r, 0, sizeof r);
+        DSD_SNPRINTF(label, sizeof label, "%s monitor return run", name);
+        rc |= expect_int(label, rtl_stream_test_monitor_return_from_cqpsk(kind, 18000, 12000, &r), 0);
+        DSD_SNPRINTF(label, sizeof label, "%s monitor return: open", name);
+        rc |= expect_int(label, r.open_rc, 0);
+        DSD_SNPRINTF(label, sizeof label, "%s monitor return: CQPSK on first", name);
+        rc |= expect_int(label, r.cqpsk_on == 1 && r.cqpsk_output_kind == RTL_STREAM_OUTPUT_SYMBOL_CQPSK, 1);
+        DSD_SNPRINTF(label, sizeof label, "%s monitor return: accepted at 48 kHz", name);
+        rc |= expect_int(label, r.request_rc, 0);
+        DSD_SNPRINTF(label, sizeof label, "%s monitor return: turns CQPSK off", name);
+        rc |= expect_int(label, r.accepted_cqpsk == 0 && r.accepted_requested_cqpsk == 0, 1);
+        DSD_SNPRINTF(label, sizeof label, "%s monitor return: runs the monitor", name);
+        rc |= expect_int(label, r.accepted_monitor, 1);
+        DSD_SNPRINTF(label, sizeof label, "%s monitor return: with the detector of its kind", name);
+        rc |= expect_int(label, r.accepted_kind_active, 1);
+        DSD_SNPRINTF(label, sizeof label, "%s monitor return: at the width asked for", name);
+        rc |= expect_int(label, r.accepted_width_hz, 18000);
+        DSD_SNPRINTF(label, sizeof label, "%s monitor return at 12 kHz: queued", name);
+        rc |= expect_int(label, r.refused_request_rc, 0);
+        DSD_SNPRINTF(label, sizeof label, "%s monitor return at 12 kHz: refused where it lands", name);
+        rc |= expect_int(label, r.refused_outcome, RTL_STREAM_RX_REQUEST_REFUSED);
+        DSD_SNPRINTF(label, sizeof label, "%s monitor return at 12 kHz: kept the analog family and kind", name);
+        rc |= expect_int(label, r.refused_kept_analog == 1 && r.refused_kept_kind == kind, 1);
+        DSD_SNPRINTF(label, sizeof label, "%s monitor return at 12 kHz: CQPSK stays on", name);
+        rc |= expect_int(label,
+                         r.refused_cqpsk == 1 && r.refused_output_kind == RTL_STREAM_OUTPUT_SYMBOL_CQPSK
+                             && r.refused_requested_cqpsk == 1,
+                         1);
+        DSD_SNPRINTF(label, sizeof label, "%s monitor return at 12 kHz: keeps the CQPSK channel filter", name);
+        rc |= expect_int(label, r.refused_channel_profile, RTL_STREAM_CHANNEL_PROFILE_P25_CQPSK);
+    }
     return rc;
 }
 
@@ -1544,6 +1593,7 @@ main(void) {
     rc |= test_fm_am_kind_switch();
     rc |= test_monitor_output_scale();
     rc |= test_am_monitor_keeps_detector_under_symbol_profiles();
+    rc |= test_monitor_return_from_cqpsk_is_the_analog_request_alone();
     rc |= test_am_requests_against_running_stream();
     rc |= expect_int("AM accepted with no stream",
                      rtl_stream_request_analog_profile(DSD_RX_FAMILY_ANALOG, DSD_ANALOG_DEMOD_AM, 0), 0);

@@ -497,6 +497,33 @@ typedef struct rtl_stream_test_am_symbol_profile_result {
  * same row profile and then an analog row's analog profile landed by retunes. */
 int rtl_stream_test_am_monitor_symbol_profiles(int rate_hz, rtl_stream_test_am_symbol_profile_result* out);
 
+typedef struct rtl_stream_test_monitor_return_result {
+    int open_rc;
+    int cqpsk_on;                 /* demod_state::cqpsk_enable once the DSP menu's CQPSK-on toggle was taken */
+    int cqpsk_output_kind;        /* demod_state::output_kind, likewise */
+    int request_rc;               /* rtl_stream_request_analog_profile() for the return to the monitor, accepted */
+    int accepted_cqpsk;           /* demod_state::cqpsk_enable once the analog request alone was taken */
+    int accepted_monitor;         /* dsd_demod_analog_monitor_active(), likewise */
+    int accepted_kind_active;     /* dsd_demod_am_active() == (kind == AM): the detector of the kind asked for runs */
+    int accepted_width_hz;        /* demod_state::channel_lpf_width_hz, likewise */
+    int accepted_requested_cqpsk; /* rtl_stream_requested_cqpsk() once it settled */
+    int refused_request_rc;       /* the same return asked for again after CQPSK went back on: queued */
+    int refused_outcome;          /* rtl_stream_receive_request_outcome() once taken at the lower landed rate */
+    int refused_kept_analog;      /* rtl_stream_receive_request_refusal(): the analog family kept */
+    int refused_kept_kind;        /* ... and its kind */
+    int refused_cqpsk;            /* demod_state::cqpsk_enable after the refusal */
+    int refused_output_kind;      /* demod_state::output_kind, likewise */
+    int refused_channel_profile;  /* demod_state::channel_lpf_profile, likewise */
+    int refused_requested_cqpsk;  /* rtl_stream_requested_cqpsk(), likewise */
+} rtl_stream_test_monitor_return_result;
+
+/* An analog monitor of @p kind opened at 48 kHz, running live, with the DSP menu's CQPSK toggle turned on and taken;
+ * then the return to the monitor as svc_toggle_rtl_cqpsk() asks for it, the analog request with @p width_hz alone,
+ * taken at the same rate; then CQPSK on again and the same request, taken after a retune moved the demod rate to
+ * @p landed_rate_hz, which cannot filter the width. */
+int rtl_stream_test_monitor_return_from_cqpsk(int kind, int width_hz, int landed_rate_hz,
+                                              rtl_stream_test_monitor_return_result* out);
+
 typedef struct rtl_stream_test_width_change_result {
     int request_rc;
     int deferred_until_consume; /* 1 when the queued request left the channel width alone until consumed */
