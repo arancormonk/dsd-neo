@@ -54,6 +54,17 @@ Item {
             testContext.setMetric("rxToneText", "");
             testContext.setMetric("rxToneConfiguredText", "off");
             testContext.setHostRunning(false);
+            Ui.Theme.resetFontScale();
+            root.width = 411;
+            root.height = 700;
+        }
+        // Whether a reading lies wholly inside the monitor's body, which clips what runs
+        // past its sides and does not scroll sideways.
+        function insideBody(reading) {
+            var body = item("monitorBody");
+            var left = reading.mapToItem(body, 0, 0).x;
+            var right = reading.mapToItem(body, reading.width, 0).x;
+            return left >= -0.5 && right <= body.width + 0.5;
         }
         function test_hidden_outside_the_fm_monitor() {
             verify(!item("monitorRxTone").visible);
@@ -90,7 +101,42 @@ Item {
             var value = item("monitorRxToneValue");
             compare(value.text, "DCS D023N / D047I");
             // The longer text still fits the phone-width monitor beside its label.
-            verify(row.mapToItem(monitor, 0, 0).x + row.width <= monitor.width);
+            waitForItemPolished(row);
+            verify(insideBody(item("monitorRxToneLabel")));
+            verify(insideBody(value));
+            compare(value.lineCount, 1);
+            verify(Math.abs(value.y - item("monitorRxToneLabel").y) < 0.5);
+        }
+        // A narrow phone with the platform's larger text (the Theme caps its own scale at
+        // 1.6): the label and the value no longer fit on one line, so the value moves under
+        // the label whole, both spellings of a code on one line, and nothing is clipped.
+        function test_received_row_fits_a_compact_monitor_with_large_text_data() {
+            return [{tag: "tone at 1.5", scale: 1.5, code: 0, text: "CTCSS 254.1 Hz"},
+                    {tag: "tone at 1.6", scale: 1.6, code: 0, text: "CTCSS 254.1 Hz"},
+                    {tag: "code at 1.5", scale: 1.5, code: 19, text: "DCS D023N / D047I"},
+                    {tag: "code at 1.6", scale: 1.6, code: 19, text: "DCS D023N / D047I"}];
+        }
+        function test_received_row_fits_a_compact_monitor_with_large_text(data) {
+            root.width = 320;
+            root.height = 360;
+            Ui.Theme.fontScale = data.scale;
+            testContext.setHostRunning(true);
+            if (data.code > 0)
+                showCode(data.code, 39, data.text);
+            else
+                showLocked(2541, data.text);
+            var row = item("monitorRxTone");
+            tryCompare(row, "visible", true);
+            var label = item("monitorRxToneLabel");
+            var value = item("monitorRxToneValue");
+            tryCompare(value, "text", data.text);
+            // The row lays its children out when it is polished, before the next frame.
+            waitForItemPolished(row);
+            verify(insideBody(row));
+            verify(insideBody(label));
+            verify(insideBody(value));
+            verify(value.contentWidth <= value.width + 0.5);
+            compare(value.lineCount, 1);
         }
         function test_received_code_is_not_the_configured_value() {
             testContext.setHostRunning(true);
