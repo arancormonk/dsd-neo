@@ -4952,6 +4952,17 @@ if(NOT APPLE AND (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"))
         dsd-neo_test_engine_no_carrier_reset
         PRIVATE DSD_NEO_TEST_RTL_WRAP=1
     )
+    # The time() wrapper that injects the -Y wall clock requires a Unix time symbol.
+    if(NOT WIN32)
+        target_compile_definitions(
+            dsd-neo_test_engine_no_carrier_reset
+            PRIVATE DSD_NEO_TEST_TIME_WRAP=1
+        )
+        target_link_libraries(
+            dsd-neo_test_engine_no_carrier_reset
+            PRIVATE "-Wl,--wrap=time"
+        )
+    endif()
     target_link_libraries(
         dsd-neo_test_engine_no_carrier_reset
         PRIVATE

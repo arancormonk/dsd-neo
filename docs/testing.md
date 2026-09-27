@@ -844,10 +844,13 @@ output with the filter off byte-identical to a session without one, the AM and `
 policy passes leaves (no-tone bursts shorter than the window stamp nothing). What the scanners do with a check is
 engine-side. `ENGINE_NO_CARRIER_RESET` cannot run the monitor block (the DSP test seam is not linked into the engine
 test), so it feeds such bursts through the real tap and sets the `-Y` hangtime anchor itself, to where the monitor's
-stamp leaves it, and checks the step rule against it: the pass after the bursts steps, and a check, or traffic whose
-verdict turned ALLOWED part-way through a monitor block (at 22050 Hz, before the block's end stamps it), holds the row
-with `-t` run out. `ENGINE_TRUNK_SCAN` shows the bursts, on its injected clock, restart neither the activity hold nor
-the idle dwell, and a check that spans the end of an activity or operator hold arm the dwell as a quiet tick would.
+stamp leaves it, and checks the step rule against it on a wall clock it injects by wrapping `time()` at link time (not
+on Windows, which has no Unix `time` symbol to wrap): with a burst in every second of `-t`, the pass at `-t` after the
+row's landing holds and the pass a second later steps, and allowed traffic holds the row through `-t` after its last
+block and steps a second later. A check, or traffic whose verdict turned ALLOWED part-way through a monitor block (at
+22050 Hz, before the block's end stamps it), holds the row with `-t` run out. `ENGINE_TRUNK_SCAN` shows the bursts, on
+its injected clock, restart neither the activity hold nor the idle dwell, and a check that spans the end of an activity
+or operator hold arm the dwell as a quiet tick would.
 
 The cases above can only show that bounds hold. The `DECODE_IQ_ANALOG_NEG_*` negative controls show that a missed
 bound fails: they run the host through `tests/analog_replay_fail_check.cmake`, which requires its exit status (1 for
