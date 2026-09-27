@@ -11,7 +11,6 @@
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/engine/engine.h>
 #include <dsd-neo/platform/file_compat.h>
-#include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/runtime/analog_channel.h>
 #include <dsd-neo/runtime/analog_tones.h>
 #include <dsd-neo/runtime/exitflag.h>
