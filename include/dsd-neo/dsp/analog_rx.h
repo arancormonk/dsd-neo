@@ -199,6 +199,27 @@ enum {
 };
 
 /**
+ * @brief The CTCSS/DCS receive policy's acquisition window (issue #527), in sample time.
+ *
+ * With an allow or block list in force, a reception stays muted (PENDING) until the detectors confirm a tone or code,
+ * which is judged at once, or until DSD_ANALOG_TONE_WINDOW_MS have passed since its carrier opened without one: then
+ * an allow list rejects it and a block list lets it through ("no tone"). The window is at least the CTCSS lock
+ * ceiling plus 100 ms (two hops), so a tone within the CTCSS contract is never taken for no tone.
+ *
+ * A DCS code can lock later than that: the DCS lock ceiling is 1,500 ms. While the list holds a DCS code and the DCS
+ * detector holds a candidate -- some slicer read a supported code's word exactly within its last 64 bits, the first
+ * half of a lock (dsd_analog_rx_publication::dcs_acquiring) -- the window runs on to at most
+ * DSD_ANALOG_TONE_WINDOW_DCS_MS, the DCS lock ceiling plus 100 ms. A CTCSS-only list, and a reception on which no
+ * candidate stands, keep DSD_ANALOG_TONE_WINDOW_MS. The candidate is what tells a code that has not locked yet from
+ * no code. Over 20,000 seeded starts at 3 dB in-band through the slowest path (78.125 kHz, 750 us de-emphasis), the 3
+ * that locked after 800 ms held one until they locked (DSP_ANALOG_DCS replays two of them), and at 2 dB, outside the
+ * contract, 10 of the 12 of 8,000 did. Noise and speech with no code raised one at 800 ms on 1 to 3 receptions in 100
+ * (2.8% of 14,000 noise receptions at 48 and 78.125 kHz, 1.3% of unfiltered and 2.8% of transmitter-filtered speech),
+ * which the policy then decided on average 250 ms later.
+ */
+enum { DSD_ANALOG_TONE_WINDOW_MS = 800, DSD_ANALOG_TONE_WINDOW_DCS_MS = 1600 };
+
+/**
  * @brief Shortest gap in an input that may pause that counts as the carrier dropping.
  *
  * Inputs that may pause: stdin, UDP and TCP, and live RTL-family radio streams (not IQ

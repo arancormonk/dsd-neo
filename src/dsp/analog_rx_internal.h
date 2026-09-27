@@ -110,6 +110,9 @@ typedef struct {
     int ctcss_tenths_hz; /**< locked CTCSS tone, tenths of a hertz */
     int dcs_code;        /**< locked DCS code as its value (023 octal = 19), canonical */
     int dcs_inverted;    /**< 1 when the canonical member of the locked DCS class is inverted */
+    /** 1 while, not locked, the detector holds a candidate it has not confirmed yet (the DCS detector's
+        dsd_analog_dcs::candidate_age; issue #527); 0 from every other detector. */
+    int candidate;
 } dsd_analog_rx_report;
 
 /**
@@ -331,6 +334,12 @@ typedef struct {
     int since_frozen;     /**< bits read with the carrier open since the last read with it closed, up to a word */
     int64_t open_samples; /**< unfrozen samples since the last reset, for the no-code verdict */
     int64_t bits_decided; /**< bits read since the last reset (tests) */
+    /** Bits read with the carrier open since some slicer, while nothing was locked, last read a supported code's word
+        exactly: the first half of a lock, which a code that has not locked yet keeps reading. Held at
+        DSD_ANALOG_DCS_SPAN_BITS, the span a lock that stops holding is kept for, when there is no candidate (after a
+        reset, and once that many bits pass without one). The tone policy (issue #527) extends its window while there
+        is one; see DSD_ANALOG_TONE_WINDOW_DCS_MS. */
+    int candidate_age;
 } dsd_analog_dcs;
 
 extern const dsd_analog_rx_detector_ops dsd_analog_dcs_ops;
@@ -418,8 +427,9 @@ void dsd_analog_rx_core_track_carrier(dsd_analog_rx_core* core, const float* blo
  * @brief Where the core stands, in publication terms.
  *
  * Zeroes @p out, then fills carrier_open, tone_state (IDLE without carrier, else the merged
- * detector verdict), tone_kind, ctcss_tenths_hz or dcs_code and dcs_inverted, and generation.
- * gate stays OFF: detection never gates audio.
+ * detector verdict), tone_kind, ctcss_tenths_hz or dcs_code and dcs_inverted, dcs_acquiring (the
+ * DCS detector's candidate while nothing is locked), and generation. gate stays OFF: detection
+ * never gates audio; the tap's glue fills the tone policy's verdict (issue #527).
  */
 void dsd_analog_rx_core_publish(const dsd_analog_rx_core* core, dsd_analog_rx_publication* out);
 

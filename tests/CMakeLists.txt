@@ -7742,6 +7742,23 @@ dsd_neo_link_dsp_test(dsd-neo_test_dsp_analog_dcs ${DSD_NEO_TEST_MATH_LIB})
 add_test(NAME DSP_ANALOG_DCS COMMAND dsd-neo_test_dsp_analog_dcs)
 set_tests_properties(DSP_ANALOG_DCS PROPERTIES TIMEOUT 300)
 
+# The CTCSS/DCS receive policy (issue #527) in sample time with injected detections: disabled,
+# allow and block against a match, a nonmatch, no tone, acquisition, loss and reacquisition, a
+# late blocked value and a carrier drop; the bounded window and its DCS extension.
+add_executable(
+    dsd-neo_test_dsp_analog_tone_policy
+    dsp/test_dsp_analog_tone_policy.c
+)
+target_include_directories(
+    dsd-neo_test_dsp_analog_tone_policy
+    PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/dsp
+)
+dsd_neo_link_dsp_test(dsd-neo_test_dsp_analog_tone_policy)
+add_test(
+    NAME DSP_ANALOG_TONE_POLICY
+    COMMAND dsd-neo_test_dsp_analog_tone_policy
+)
+
 # The DCS words runtime generates, checked against Golay24.hpp through the explicit layout
 # mapping between the two, with the cited reference words pinned on both sides (issue #523).
 add_executable(

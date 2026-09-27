@@ -4,6 +4,7 @@
  */
 
 #include <dsd-neo/core/airspy_config.h>
+#include <dsd-neo/core/analog_tone.h>
 #include <dsd-neo/core/enc_lockout.h>
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/init.h>
@@ -281,8 +282,10 @@ init_opts_runtime_and_network_defaults(dsd_opts* opts) {
     opts->monitor_input_audio = 0; //enable with -8
     opts->analog_only = 0;         //only turned on with -fA
     opts->analog_demod = DSD_ANALOG_DEMOD_FM;
-    opts->analog_nfm_bandwidth_hz = 0; // 0 = default NFM channel width, not an explicit request
-    opts->analog_am_bandwidth_hz = 0;  // 0 = default AM channel width, not an explicit request
+    opts->analog_nfm_bandwidth_hz = 0;              // 0 = default NFM channel width, not an explicit request
+    opts->analog_am_bandwidth_hz = 0;               // 0 = default AM channel width, not an explicit request
+    opts->analog_tone_filter = DSD_TONE_FILTER_OFF; // no CTCSS/DCS receive policy (issue #527)
+    DSD_MEMSET(&opts->analog_tone_set, 0, sizeof(opts->analog_tone_set));
 
     opts->inverted_p2 = 0;
     opts->p2counter = 0;

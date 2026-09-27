@@ -422,6 +422,7 @@ typedef enum {
     DSD_SCAN_STAY_IDLE_DWELL = 8,     /**< nothing holds it; the idle dwell / qualify window runs */
     DSD_SCAN_STAY_HANGTIME = 9,       /**< -Y legacy rule: waiting out -t since the last sync */
     DSD_SCAN_STAY_CARRIER = 10,       /**< analog row: its carrier is open (issue #526) */
+    DSD_SCAN_STAY_TONE_PENDING = 11,  /**< analog row: carrier open, the tone policy still checking (issue #527) */
 } dsd_scan_stay_reason;
 
 /** Live scan timing for the frontends' Scan Timing row (issue #508). Plain inline
@@ -471,8 +472,11 @@ typedef enum {
     DSD_ANALOG_TONE_STATE_UNAVAILABLE = 5,
 } dsd_analog_tone_state;
 
-/** Receive-policy verdict on the received tone. Reserved for #527: detection never gates
- * audio, so this build always publishes OFF. */
+/** The configured tone policy's verdict on the reception (issue #527; src/dsp/analog_tone_policy.c).
+ * OFF: no policy is in force (none configured, or detection is not running: the AM monitor, a digital mode), and
+ * the ordinary carrier squelch alone decides. PENDING: a list policy is in force and nothing is decided yet --
+ * no carrier, or a carrier inside its acquisition window. ALLOWED / REJECTED: decided, and re-evaluated for as long
+ * as the transmission lasts. The monitor plays only OFF and ALLOWED, and a REJECTED carrier holds no scan row. */
 typedef enum {
     DSD_ANALOG_TONE_GATE_OFF = 0,
     DSD_ANALOG_TONE_GATE_PENDING = 1,
@@ -498,7 +502,13 @@ struct dsd_analog_rx_publication {
     int dcs_code;        /**< locked DCS code as its value (023 octal = 19); 0 = none */
     int dcs_inverted;    /**< 1 = the locked code is named in inverted polarity (the canonical member
                               of its alias class, runtime/analog_tones.h: never, for the standard set) */
-    int gate;            /**< dsd_analog_tone_gate; always OFF until #527 */
+    /** 1 while, with a carrier and nothing locked, the DCS detector holds a candidate code it has not confirmed:
+        some slicer read a supported code's word once (issue #527). The tone policy waits past its window for it. */
+    int dcs_acquiring;
+    int gate; /**< dsd_analog_tone_gate: the configured tone policy's verdict (issue #527) */
+    /** 1 when gate was decided because no tone or code was confirmed within the acquisition window (an allow list's
+        "no tone" rejection, a block list's "no tone" pass); 0 when a confirmed value decided it, or nothing is decided. */
+    int gate_no_tone;
     /** Bumped on every reset (retune, row or target change, input switch, mode change, stop,
      * input-rate change, carrier hangover, stream pause), so a reader can tell a new reception
      * from the one it last saw. */
