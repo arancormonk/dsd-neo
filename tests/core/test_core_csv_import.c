@@ -2621,6 +2621,12 @@ test_nfm_channel_map_tone_lists(void) {
          "row 2: --tone-block: use / between entries, not commas"},
         {"channel,frequency_hz,mode,options,name\n1,154430000,nfm,--tone-allow 100.0,67.0/D023N,Fire\n",
          "row 2: --tone-allow: use / between entries, not commas"},
+        /* The list's rest in a column checked before the options, the mode or an analog row's key column, is named as
+         * the split, not as that column's own error. */
+        {"channel,frequency_hz,options,mode\n1,154430000,--tone-allow 100.0,67.0,nfm\n",
+         "row 2: --tone-allow: use / between entries, not commas"},
+        {"channel,frequency_hz,mode,options,single_key_dec\n1,154430000,nfm,--tone-block D023N,d047i\n",
+         "row 2: --tone-block: use / between entries, not commas"},
         {"channel,frequency_hz,name,mode,options\n1,154430000,Fire,nfm,--tone-allow 67.0/150.0\n",
          "row 2: --tone-allow: entry 2 is not a standard CTCSS tone or DCS code"},
         {"channel,frequency_hz,name,mode,options\n1,154430000,Fire,nfm,--tone-allow 100.0/D023N/D047I\n",

@@ -951,7 +951,8 @@ chan_import_row_mode(char** fields, const char* base_path, int row_number, dsd_s
 /*
  * A tone list written with commas (issue #527): the splitter ends the options cell at the first one, so the entries
  * after it would be dropped without a word, past the header, or read as the next column's value. The row is refused
- * with the hint instead; neither the cell nor the field is echoed.
+ * with the hint instead, before that column's own check (the mode, a key column) can blame something else; neither the
+ * cell nor the field is echoed.
  */
 static int
 chan_import_options_split(char** fields, const chan_header_cols* cols, const char* after_options, const char* base_path,
@@ -994,8 +995,8 @@ chan_import_row(dsd_state* state, char* buffer, const chan_header_cols* cols, co
     char* after_options = NULL;
     const size_t field_count = chan_select_fields(buffer, cols, fields, &after_options);
     dsd_scan_mode mode = DSD_SCAN_MODE_INHERIT;
-    if (chan_import_row_mode(fields, base_path, row_number, &mode) != 0
-        || chan_import_options_split(fields, cols, after_options, base_path, row_number) != 0) {
+    if (chan_import_options_split(fields, cols, after_options, base_path, row_number) != 0
+        || chan_import_row_mode(fields, base_path, row_number, &mode) != 0) {
         return -1;
     }
     for (int i = 0; i < 2 && fields[i]; i++) {
