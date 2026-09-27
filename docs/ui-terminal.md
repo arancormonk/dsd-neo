@@ -633,7 +633,7 @@ last sync. NXDN's additional grace period is described below.
 | `Idle dwell` | nothing holds the row | the idle dwell |
 | `Hangtime` | `-Y` without `--scan-voice-only`: waiting out `-t` since the last sync | next whole second after `-t` |
 | `Carrier` | an analog row's carrier is open (an `nfm` or `am` row, an `nfm-conventional` or `am-conventional` target, or a row of an untyped list scanned under `-fA` or `-fM`): squelch open, whether or not audio plays | `-Y`: the hangtime window; trunk scan: the activity hold; none while the scan keeps traffic the tone filter rejected |
-| `Tone check` | an FM row's carrier (an `nfm` row or `nfm-conventional` target, or a row of an untyped list scanned under `-fA`) while the tone filter is still checking its tone or code, muted, for at most 800 ms (1,600 ms for a listed DCS code still being confirmed) | none: the check is not activity, and the `-Y` hangtime or the target's hold or idle dwell runs on beneath it unchanged |
+| `Tone check` | an FM row's carrier (an `nfm` row or `nfm-conventional` target, or a row of an untyped list scanned under `-fA`) while the tone filter is still checking its tone or code, muted, for at most 800 ms (1,600 ms while the list holds a DCS code and a received code is still being confirmed) | none: the check is not activity, and the `-Y` hangtime or the target's hold or idle dwell runs on beneath it unchanged |
 
 Which phrases you can see depends on the protocol: an NXDN trunked target has no state machine to report control
 acquisition, so it never reads `Acquiring control`. An analog row (an `nfm` or `am` row or target, or any row of an
@@ -726,11 +726,11 @@ The line is the setting, never the received value: the policy (`allow` or `block
 `…+N` for entries that do not fit; while a scan row's own policy runs, followed by the configured one it shadows, as in
 `block D023N (row; default allow 100.0 Hz)`, and `off (row; default …)` for a row that turns the filter off), and while
 a carrier is heard what it does with it: `passing`, `muted: checking tone` while the transmission is still being checked
-(at most 800 ms, or 1,600 ms for a listed DCS code still being confirmed), `muted: not allowed` for a tone or code the
-policy rejects (including one heard after a rejection for want of a tone), `muted: no tone` for an allow list's traffic
-with none. With no carrier the line shows the policy alone. A terminal without UTF-8 gets `-` for the dash and `...+N`
-for the overflow mark. It is absent while no policy is in force, and wherever tones are not detected. See
-[Tone filter](cli.md#tone-filter-ctcssdcs-receive-policy).
+(at most 800 ms, or 1,600 ms while the list holds a DCS code and a received code is still being confirmed),
+`muted: not allowed` for a tone or code the policy rejects (including one heard after a rejection for want of a tone),
+`muted: no tone` for an allow list's traffic with none. With no carrier the line shows the policy alone. A terminal
+without UTF-8 gets `-` for the dash and `...+N` for the overflow mark. It is absent while no policy is in force, and
+wherever tones are not detected. See [Tone filter](cli.md#tone-filter-ctcssdcs-receive-policy).
 
 ## Compact View
 
