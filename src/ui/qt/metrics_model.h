@@ -1163,9 +1163,9 @@ class MetricsModel : public QObject {
     /**
      * @brief The tone policy in force, kept apart from what is received.
      *
-     * "off", or the mode and its list ("allow 100.0 Hz/D023N"), with " (row)" while a scan row's
-     * own policy runs (#527). The monitor's Tone filter row binds to this, and nothing about the
-     * received tone ever changes it.
+     * "off", or the mode and its list ("allow 100.0 Hz/D023N"), with " (row; default X)", naming
+     * the configured policy X it shadows, while a scan row's own policy runs (#527). The monitor's
+     * Tone filter row binds to this, and nothing about the received tone ever changes it.
      */
     const QString&
     rxToneConfiguredText() const {

@@ -949,8 +949,9 @@ Item {
             }
 
             // The CTCSS/DCS receive policy in force (#527), beside the received tone
-            // but never fed by it: "allow 100.0 Hz/D023N", marked "(row)" while a scan
-            // row's own policy runs, and while a carrier is heard what the policy does
+            // but never fed by it: "allow 100.0 Hz/D023N", marked "(row; default X)",
+            // naming the configured policy X it shadows, while a scan row's own policy
+            // runs, and while a carrier is heard what the policy does
             // with it: "passing" in cyan (toneFilterGate 2 is
             // DSD_ANALOG_TONE_GATE_ALLOWED), "muted: checking tone", "muted: not
             // allowed" or "muted: no tone" in magenta. Shown while a policy is in force
