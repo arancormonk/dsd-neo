@@ -2117,6 +2117,265 @@ test_tone_filter_warns_when_a_channel_map_leaves_it_unheard(void) {
     return rc;
 }
 
+/* --- The live tone-filter editor: DSD_APP_CMD_TONE_FILTER_SET (510) --- */
+
+/* Queue one tone-filter edit through the frontends' setter and drain it, with the toast cleared first. */
+static int
+submit_tone_filter(dsd_opts* opts, dsd_state* state, int32_t mode, const char* list, const char* label) {
+    state->ui_msg[0] = '\0';
+    int rc = expect_int(label, dsd_app_command_set_tone_filter(mode, list), DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int(label, dsd_app_drain_cmds(opts, state), 1);
+    return rc;
+}
+
+/* The policy @p mode and @p set are @p want_mode and the list @p want_list, as the parser writes it back. */
+static int
+expect_tone_policy(const char* tag, int mode, const dsd_tone_set* set, int want_mode, const char* want_list) {
+    char list[DSD_TONE_LIST_TEXT_MAX + 1] = "";
+    (void)dsd_tone_set_format(set, list, sizeof list);
+    int rc = expect_int(tag, mode, want_mode);
+    rc |= expect_str(tag, list, want_list);
+    return rc;
+}
+
+static int
+expect_configured_tone_policy(const char* tag, const dsd_opts* opts, const dsd_state* state, int want_mode,
+                              const char* want_list) {
+    int mode = -1;
+    dsd_tone_set set;
+    DSD_MEMSET(&set, 0, sizeof set);
+    dsd_scan_mode_configured_tone_policy(opts, state, &mode, &set);
+    return expect_tone_policy(tag, mode, &set, want_mode, want_list);
+}
+
+/* The analog FM monitor, where the tone filter acts, playing to the null output. */
+static void
+init_tone_filter_context(dsd_opts* opts, dsd_state* state) {
+    init_decode_mode_context(opts, state);
+    opts->analog_only = 1;
+    opts->monitor_input_audio = 1;
+    opts->analog_demod = DSD_ANALOG_DEMOD_FM;
+    opts->audio_in_type = AUDIO_IN_WAV;
+    opts->wav_sample_rate = 48000;
+}
+
+/*
+ * The editor sets the whole configured policy, mode and list, validated by the list parser: allow and block take a
+ * list, off keeps the one it is given (or none), and the toast names what is now configured. A refused edit -- a comma
+ * list, a list policy without a list, no such mode, a malformed payload -- changes nothing and says why without
+ * repeating the text. Only the newest of two queued edits runs, and a list the payload cannot hold is refused at
+ * submission rather than cut short.
+ */
+static int
+test_tone_filter_set_edits_the_configured_policy(void) {
+    int rc = 0;
+    static dsd_opts opts;
+    static dsd_state state;
+    init_tone_filter_context(&opts, &state);
+    rc |= submit_tone_filter(&opts, &state, DSD_TONE_FILTER_ALLOW, "100/d023", "tone set: allow");
+    rc |= expect_tone_policy("tone set: allow in force", opts.analog_tone_filter, &opts.analog_tone_set,
+                             DSD_TONE_FILTER_ALLOW, "100.0/D023N");
+    rc |= expect_str("tone set: allow toast", state.ui_msg, "Applied: Tone filter -> allow 100.0 Hz/D023N");
+    rc |= submit_tone_filter(&opts, &state, DSD_TONE_FILTER_BLOCK, "D023I", "tone set: block");
+    rc |= expect_tone_policy("tone set: block in force", opts.analog_tone_filter, &opts.analog_tone_set,
+                             DSD_TONE_FILTER_BLOCK, "D023I");
+    rc |= expect_str("tone set: block toast", state.ui_msg, "Applied: Tone filter -> block D023I");
+    rc |= submit_tone_filter(&opts, &state, DSD_TONE_FILTER_OFF, "D023I", "tone set: off keeping the list");
+    rc |= expect_tone_policy("tone set: off keeps its list", opts.analog_tone_filter, &opts.analog_tone_set,
+                             DSD_TONE_FILTER_OFF, "D023I");
+    rc |= expect_str("tone set: off toast", state.ui_msg, "Applied: Tone filter -> off");
+    rc |= submit_tone_filter(&opts, &state, DSD_TONE_FILTER_OFF, "", "tone set: off without a list");
+    rc |= expect_tone_policy("tone set: off clears the list", opts.analog_tone_filter, &opts.analog_tone_set,
+                             DSD_TONE_FILTER_OFF, "");
+    rc |= submit_tone_filter(&opts, &state, DSD_TONE_FILTER_ALLOW, "67.0/100.0", "tone set: allow again");
+
+    static const struct {
+        int32_t mode;
+        const char* list;
+        const char* toast;
+    } refused[] = {
+        {DSD_TONE_FILTER_ALLOW, "100.0,67.0", "Refused: tone filter: use / between entries, not commas"},
+        {DSD_TONE_FILTER_BLOCK, "",
+         "Refused: tone filter: block needs a list of CTCSS tones or DCS codes, e.g. 67.0/100.0/D023N"},
+        {DSD_TONE_FILTER_BLOCK, "D023N/xyzzy",
+         "Refused: tone filter: entry 2 is not a standard CTCSS tone or DCS code"},
+        {DSD_TONE_FILTER_OFF, "100/100.0", "Refused: tone filter: entry 2 repeats entry 1 (100.0 Hz)"},
+        {7, "100.0", "Refused: tone filter: the mode is off, allow or block"},
+    };
+
+    for (size_t i = 0; i < sizeof refused / sizeof refused[0]; i++) {
+        rc |= submit_tone_filter(&opts, &state, refused[i].mode, refused[i].list, refused[i].toast);
+        rc |= expect_str(refused[i].toast, state.ui_msg, refused[i].toast);
+        rc |= expect_tone_policy(refused[i].toast, opts.analog_tone_filter, &opts.analog_tone_set,
+                                 DSD_TONE_FILTER_ALLOW, "67.0/100.0");
+    }
+
+    /* Malformed payloads are refused whole: a short one, and a list with no terminator in its field. */
+    int32_t bare_mode = DSD_TONE_FILTER_OFF;
+    rc |= expect_int("tone set: short payload queued",
+                     dsd_app_command_submit(DSD_APP_CMD_TONE_FILTER_SET, &bare_mode, sizeof bare_mode),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("tone set: short payload drained", dsd_app_drain_cmds(&opts, &state), 1);
+    dsd_app_tone_filter_payload unterminated;
+    DSD_MEMSET(&unterminated, '7', sizeof unterminated);
+    unterminated.mode = DSD_TONE_FILTER_OFF;
+    rc |= expect_int("tone set: unterminated payload queued",
+                     dsd_app_command_submit(DSD_APP_CMD_TONE_FILTER_SET, &unterminated, sizeof unterminated),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("tone set: unterminated payload drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_tone_policy("tone set: malformed payloads change nothing", opts.analog_tone_filter,
+                             &opts.analog_tone_set, DSD_TONE_FILTER_ALLOW, "67.0/100.0");
+
+    /* A list longer than the payload holds is refused at submission, never cut to a list nobody typed. */
+    char longest[DSD_APP_TONE_FILTER_LIST_SIZE + 1];
+    DSD_MEMSET(longest, '/', sizeof longest);
+    longest[sizeof longest - 1U] = '\0';
+    rc |= expect_int("tone set: overlong list refused", dsd_app_command_set_tone_filter(DSD_TONE_FILTER_ALLOW, longest),
+                     DSD_APP_COMMAND_SUBMIT_REJECTED);
+    rc |= expect_int("tone set: overlong list queued nothing", dsd_app_drain_cmds(&opts, &state), 0);
+
+    /* The newest of two queued edits wins. */
+    rc |= expect_int("tone set: first edit queued", dsd_app_command_set_tone_filter(DSD_TONE_FILTER_BLOCK, "D754N"),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("tone set: second edit coalesced", dsd_app_command_set_tone_filter(DSD_TONE_FILTER_ALLOW, "82.5"),
+                     DSD_APP_COMMAND_SUBMIT_COALESCED);
+    rc |= expect_int("tone set: one edit drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_tone_policy("tone set: the newest edit stands", opts.analog_tone_filter, &opts.analog_tone_set,
+                             DSD_TONE_FILTER_ALLOW, "82.5");
+    opts.analog_tone_filter = DSD_TONE_FILTER_OFF;
+    DSD_MEMSET(&opts.analog_tone_set, 0, sizeof opts.analog_tone_set);
+    freeState(&state);
+    return rc;
+}
+
+/*
+ * The configured-view rule: while an nfm row with its own tone policy is on air, an edit changes the configured policy,
+ * the row keeps its own, and the toast says the row overrides the edit. A save writes the configured policy, never the
+ * row's; the next row without a policy of its own, and the row's departure, run the edit. A refused edit under the row
+ * changes neither.
+ */
+static int
+test_tone_filter_set_under_a_tone_row(void) {
+    int rc = 0;
+    static dsd_opts opts;
+    static dsd_state state;
+    init_tone_filter_context(&opts, &state);
+    opts.analog_tone_filter = DSD_TONE_FILTER_ALLOW;
+    rc |= expect_int("tone row: configured list", dsd_tone_set_parse("100.0", &opts.analog_tone_set, NULL, 0), 0);
+    rc |= expect_int("tone row: scope", dsd_scan_mode_begin(&opts, &state), 0);
+    rc |= expect_int("tone row: nfm row", dsd_scan_mode_enter(&opts, &state, DSD_SCAN_MODE_NFM), 0);
+    dsd_scan_option_values row = {0};
+    row.present = DSD_SCAN_OPT_TONE;
+    row.tone_filter = DSD_TONE_FILTER_BLOCK;
+    rc |= expect_int("tone row: row list", dsd_tone_set_parse("67.0", &row.tone_set, NULL, 0), 0);
+    rc |= expect_int("tone row: row installed", dsd_scan_mode_options(&opts, &state, &row), 0);
+
+    rc |= submit_tone_filter(&opts, &state, DSD_TONE_FILTER_ALLOW, "D754N", "tone row: shadowed edit");
+    rc |= expect_tone_policy("tone row: the row keeps its own", opts.analog_tone_filter, &opts.analog_tone_set,
+                             DSD_TONE_FILTER_BLOCK, "67.0");
+    rc |= expect_configured_tone_policy("tone row: the edit is the configured policy", &opts, &state,
+                                        DSD_TONE_FILTER_ALLOW, "D754N");
+    rc |= expect_str("tone row: shadowed toast", state.ui_msg,
+                     "Default tone filter -> allow D754N; this channel overrides it (block 67.0 Hz)");
+    dsdneoUserConfig saved;
+    dsd_snapshot_opts_to_user_config(&opts, &state, &saved);
+    rc |= expect_tone_policy("tone row: a save writes the configured policy", saved.analog_tone_filter,
+                             &saved.analog_tone_set, DSD_TONE_FILTER_ALLOW, "D754N");
+
+    rc |= submit_tone_filter(&opts, &state, DSD_TONE_FILTER_BLOCK, "", "tone row: refused edit");
+    rc |= expect_str("tone row: refused toast", state.ui_msg,
+                     "Refused: tone filter: block needs a list of CTCSS tones or DCS codes, e.g. 67.0/100.0/D023N");
+    rc |= expect_tone_policy("tone row: a refusal leaves the row", opts.analog_tone_filter, &opts.analog_tone_set,
+                             DSD_TONE_FILTER_BLOCK, "67.0");
+    rc |= expect_configured_tone_policy("tone row: a refusal leaves the configured policy", &opts, &state,
+                                        DSD_TONE_FILTER_ALLOW, "D754N");
+
+    /* The next row without a policy of its own runs the edit; one with its own shadows the next edit again. */
+    rc |= expect_int("tone row: row without a policy", dsd_scan_mode_options(&opts, &state, NULL), 0);
+    rc |= expect_tone_policy("tone row: the edit runs", opts.analog_tone_filter, &opts.analog_tone_set,
+                             DSD_TONE_FILTER_ALLOW, "D754N");
+    rc |= submit_tone_filter(&opts, &state, DSD_TONE_FILTER_BLOCK, "D023N", "tone row: edit with no row policy");
+    rc |= expect_tone_policy("tone row: an unshadowed edit is in force", opts.analog_tone_filter, &opts.analog_tone_set,
+                             DSD_TONE_FILTER_BLOCK, "D023N");
+    rc |= expect_str("tone row: unshadowed toast", state.ui_msg, "Applied: Tone filter -> block D023N");
+    rc |= expect_int("tone row: row reinstalled", dsd_scan_mode_options(&opts, &state, &row), 0);
+    dsd_scan_mode_leave(&opts, &state);
+    rc |= expect_tone_policy("tone row: departure restores the configured policy", opts.analog_tone_filter,
+                             &opts.analog_tone_set, DSD_TONE_FILTER_BLOCK, "D023N");
+    opts.analog_tone_filter = DSD_TONE_FILTER_OFF;
+    DSD_MEMSET(&opts.analog_tone_set, 0, sizeof opts.analog_tone_set);
+    freeState(&state);
+    return rc;
+}
+
+/*
+ * A tone-filter edit is not a decoder change. Frame sync writes the detected Phase 2 polarity into dsd_opts while a P25
+ * row of a mixed list is on air; had the command suspended and re-applied the scope, that live value would read as an
+ * acquisition change and end the followed call. The edit reaches the configured policy and, the row setting none of its
+ * own, dsd_opts.
+ */
+static int
+test_tone_filter_edit_keeps_live_acquisition(void) {
+    int rc = 0;
+    static dsd_opts opts;
+    static dsd_state state;
+    init_decode_mode_context(&opts, &state);
+    rc |= expect_int("tone p25: scope", dsd_scan_mode_begin(&opts, &state), 0);
+    rc |= expect_int("tone p25: row entered", dsd_scan_mode_enter(&opts, &state, DSD_SCAN_MODE_P25), 0);
+    rc |= expect_int("tone p25: row options", dsd_scan_mode_options(&opts, &state, NULL), 0);
+    opts.inverted_p2 = 1;
+    opts.trunk_is_tuned = 1;
+    state.trunk_vc_freq[0] = 851012500;
+    rc |= submit_tone_filter(&opts, &state, DSD_TONE_FILTER_BLOCK, "D023N", "tone p25: edit");
+    rc |= expect_int("tone p25: keeps the detected polarity", opts.inverted_p2, 1);
+    rc |= expect_int("tone p25: keeps the followed call", opts.trunk_is_tuned, 1);
+    rc |= expect_true("tone p25: keeps the voice channel", state.trunk_vc_freq[0] == 851012500);
+    rc |= expect_int("tone p25: the row stays", dsd_scan_mode_active(&state), DSD_SCAN_MODE_P25);
+    rc |= expect_tone_policy("tone p25: the edit is in force", opts.analog_tone_filter, &opts.analog_tone_set,
+                             DSD_TONE_FILTER_BLOCK, "D023N");
+    rc |= expect_configured_tone_policy("tone p25: the edit is configured", &opts, &state, DSD_TONE_FILTER_BLOCK,
+                                        "D023N");
+    dsd_scan_mode_leave(&opts, &state);
+    opts.trunk_is_tuned = 0;
+    opts.analog_tone_filter = DSD_TONE_FILTER_OFF;
+    DSD_MEMSET(&opts.analog_tone_set, 0, sizeof opts.analog_tone_set);
+    freeState(&state);
+    return rc;
+}
+
+/* An edit that sets a list policy on a session where nothing runs detection (a digital mode) says once that it has no
+   effect, as a loaded config does; the same policy again, or respelled, says nothing new. */
+static int
+test_tone_filter_set_warns_when_unheard(void) {
+    int rc = 0;
+    static dsd_opts opts;
+    static dsd_state state;
+    init_decode_mode_context(&opts, &state);
+    rc |= expect_int("tone edit warn: DMR", dsd_app_command_set_i32(DSD_APP_CMD_DECODE_MODE_SET, DSDCFG_MODE_DMR),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("tone edit warn: DMR drained", dsd_app_drain_cmds(&opts, &state), 1);
+    dsd_app_tone_filter_payload payload;
+    DSD_MEMSET(&payload, 0, sizeof payload);
+    payload.mode = DSD_TONE_FILTER_ALLOW;
+    DSD_SNPRINTF(payload.list, sizeof payload.list, "%s", "D023N");
+    rc |= expect_int("tone edit warn: a list policy under DMR warns",
+                     tone_filter_warnings_from(&opts, &state, DSD_APP_CMD_TONE_FILTER_SET, &payload, sizeof payload, 0),
+                     1);
+    DSD_SNPRINTF(payload.list, sizeof payload.list, "%s", "D047I");
+    rc |= expect_int("tone edit warn: respelled stays quiet",
+                     tone_filter_warnings_from(&opts, &state, DSD_APP_CMD_TONE_FILTER_SET, &payload, sizeof payload, 0),
+                     0);
+    rc |= expect_tone_policy("tone edit warn: the edit stands", opts.analog_tone_filter, &opts.analog_tone_set,
+                             DSD_TONE_FILTER_ALLOW, "D047I");
+    payload.mode = DSD_TONE_FILTER_OFF;
+    rc |= expect_int("tone edit warn: off stays quiet",
+                     tone_filter_warnings_from(&opts, &state, DSD_APP_CMD_TONE_FILTER_SET, &payload, sizeof payload, 0),
+                     0);
+    DSD_MEMSET(&opts.analog_tone_set, 0, sizeof opts.analog_tone_set);
+    freeState(&state);
+    return rc;
+}
+
 /* A new audio input is a new receiver: the tone the old input carried goes when the input
    switches (issue #522), not when the detector next loses it -- which, between two inputs at
    the same rate, nothing else would tell it to. */
@@ -10187,6 +10446,10 @@ main(void) {
     rc |= test_decode_mode_change_clears_received_tone();
     rc |= test_tone_filter_warns_when_a_command_leaves_it_unheard();
     rc |= test_tone_filter_warns_when_a_channel_map_leaves_it_unheard();
+    rc |= test_tone_filter_set_edits_the_configured_policy();
+    rc |= test_tone_filter_set_under_a_tone_row();
+    rc |= test_tone_filter_edit_keeps_live_acquisition();
+    rc |= test_tone_filter_set_warns_when_unheard();
     rc |= test_input_switch_clears_received_tone();
     rc |= test_playback_switches_clear_received_tone();
     rc |= test_config_apply_input_change_clears_received_tone();

@@ -10,6 +10,7 @@
 #include <dsd-neo/app_control/commands.h>
 #include <dsd-neo/app_control/history.h>
 #include <dsd-neo/app_control/rr_import_apply.h>
+#include <dsd-neo/app_control/rx_tone_view.h>
 #include <dsd-neo/app_control/squelch_view.h>
 #include <dsd-neo/core/airspy_config.h>
 #include <dsd-neo/core/analog_tone.h>
@@ -294,6 +295,7 @@ static const int k_ui_cmd_coalescible_setter_ids[] = {
     DSD_APP_CMD_SCAN_VOICE_HOLD_MS_SET,
     DSD_APP_CMD_NFM_BANDWIDTH_SET,
     DSD_APP_CMD_AM_BANDWIDTH_SET,
+    DSD_APP_CMD_TONE_FILTER_SET,
 };
 
 static int
@@ -1670,11 +1672,43 @@ ui_cmd_handle_am_bandwidth_set(dsd_opts* opts, dsd_state* state, const struct ds
     return ui_cmd_handle_analog_bandwidth_set(opts, state, c, DSD_ANALOG_DEMOD_AM);
 }
 
+_Static_assert(sizeof(((dsd_app_tone_filter_payload*)0)->list) == (size_t)DSD_TONE_LIST_TEXT_MAX + 1U,
+               "the tone-filter payload holds exactly the longest list the parser reads");
+
+/* DSD_APP_CMD_TONE_FILTER_SET (issue #527, the live tone-filter editor): the configured CTCSS/DCS receive policy, mode
+   and list, checked by the list parser and refused with the reason (by entry number, never the text), changing nothing,
+   when it fails. Like the squelch and width setters it edits the configured policy without suspending a scan row
+   (dsd_scan_mode_set_configured_tone_policy()): a row's own tone options stay in force until it leaves, and the notice
+   says so. The monitor's tap judges by the new policy from its next read of audio. */
+static int
+ui_cmd_handle_tone_filter_set(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
+    if (!opts || !state || c->n != sizeof(dsd_app_tone_filter_payload)) {
+        return UI_CMD_APPLY_INVALID_PAYLOAD;
+    }
+    dsd_app_tone_filter_payload edit;
+    DSD_MEMCPY(&edit, c->data, sizeof edit);
+    if (!memchr(edit.list, '\0', sizeof edit.list)) {
+        return UI_CMD_APPLY_INVALID_PAYLOAD;
+    }
+    dsd_tone_set set;
+    char why[DSD_TONE_LIST_ERROR_SIZE];
+    if (dsd_tone_filter_check((int)edit.mode, edit.list, &set, why, sizeof why) != 0) {
+        ui_set_toast(state, 5, "Refused: tone filter: %s", why);
+        return UI_CMD_APPLY_FAILED;
+    }
+    (void)dsd_scan_mode_set_configured_tone_policy(opts, state, (int)edit.mode, &set);
+    char notice[DSD_APP_TONE_FILTER_NOTICE_SIZE];
+    (void)dsd_app_tone_filter_edit_notice(opts, state, notice, sizeof notice);
+    ui_set_toast(state, 3, "%s", notice);
+    return UI_CMD_APPLY_COMPLETED;
+}
+
 static int
 apply_cmd_io_and_import_runtime_a(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
     static const struct dsd_app_command_handler_entry k_handlers[] = {
         {DSD_APP_CMD_NFM_BANDWIDTH_SET, ui_cmd_handle_nfm_bandwidth_set},
         {DSD_APP_CMD_AM_BANDWIDTH_SET, ui_cmd_handle_am_bandwidth_set},
+        {DSD_APP_CMD_TONE_FILTER_SET, ui_cmd_handle_tone_filter_set},
         {DSD_APP_CMD_RIGCTL_SET_MOD_BW, ui_cmd_handle_rigctl_set_mod_bw},
         {DSD_APP_CMD_TG_HOLD_SET, ui_cmd_handle_tg_hold_set},
         {DSD_APP_CMD_HANGTIME_SET, ui_cmd_handle_hangtime_set},
@@ -3182,6 +3216,20 @@ int
 dsd_app_command_set_config_metadata(const dsd_app_config_metadata_payload* payload) {
     return payload ? dsd_app_command_submit(DSD_APP_CMD_CONFIG_METADATA_SET, payload, sizeof *payload)
                    : DSD_APP_COMMAND_SUBMIT_REJECTED;
+}
+
+int
+dsd_app_command_set_tone_filter(int32_t mode, const char* list) {
+    dsd_app_tone_filter_payload payload;
+    DSD_MEMSET(&payload, 0, sizeof payload);
+    payload.mode = mode;
+    const char* text = list ? list : "";
+    const size_t len = strlen(text);
+    if (len >= sizeof payload.list) {
+        return DSD_APP_COMMAND_SUBMIT_REJECTED;
+    }
+    DSD_MEMCPY(payload.list, text, len);
+    return dsd_app_command_submit(DSD_APP_CMD_TONE_FILTER_SET, &payload, sizeof payload);
 }
 
 int
@@ -5944,7 +5992,9 @@ command_updates_scan_mode(const struct dsd_app_command* c) {
          * command edits the configured width (svc_set_analog_bandwidth(), through
          * dsd_scan_mode_set_configured_nfm_bandwidth() for NFM) instead of suspending and re-applying the row, which
          * would read the live acquisition the row has made as a change and end a followed call. An analog row's own
-         * width of the edited kind (--nfm-bandwidth-hz or --am-bandwidth-hz, issue #526) stays in force over it. */
+         * width of the edited kind (--nfm-bandwidth-hz or --am-bandwidth-hz, issue #526) stays in force over it.
+         * DSD_APP_CMD_TONE_FILTER_SET (issue #527) is not here for the same reason: it edits the configured tone policy
+         * through dsd_scan_mode_set_configured_tone_policy(), and an nfm row's own tone options stay in force over it. */
         DSD_APP_CMD_IMPORT_GROUP_LIST,
         DSD_APP_CMD_IMPORT_GROUP_LIST_CLEAR,
         DSD_APP_CMD_DECODE_MODE_SET,
