@@ -65,8 +65,10 @@ Generated (do not edit/commit):
     is no activity: it holds the row only while it lasts, with no window, and leaves every clock where it was, so a
     check its carrier ends before a verdict adds no tail and short bursts the policy never passes cannot park a
     scanner. The -Y tick reports `DSD_SCAN_STAY_TONE_PENDING` ("Tone check") with no deadline while it is PENDING, and
-    `no_carrier_scanner_step_is_due()` (`engine.c`) holds a PENDING row at every pass, after the per-visit cap and
-    ahead of the hangtime rule, whose anchor the check never stamps.
+    `no_carrier_scanner_step_is_due()` (`engine.c`) holds a PENDING or ALLOWED carrier's row at every pass, after the
+    per-visit cap and ahead of the hangtime rule: the check never stamps its anchor, and the monitor stamps allowed
+    traffic only as a block ends while the tap publishes the verdict at each read, so a verdict turned ALLOWED part-way
+    through a block would otherwise meet an anchor from before the check. With no policy (OFF) the stamps alone hold.
     The engine acts on a rejection on its own ticks only, never from DSP:
     `no_carrier_scanner_step_is_due()` (`engine.c`) steps a REJECTED row at the next no-carrier pass, whatever `-t`
     says, when the list has another row to go to (`dsd_engine_channel_scan_has_other_row()` in `channel_scan.c`: a row
@@ -88,15 +90,16 @@ Generated (do not edit/commit):
     tick with the target muted in place and its idle dwell disarmed, since that rotation could only switch back to it.
     Its analog stay reason reads `TONE_PENDING` the same way, ahead of the activity hold and with no window, and
     `trunk_scan_service_hold()` holds the target for it without disarming the idle dwell (every other reason to stay
-    disarms it); `trunk_scan_refresh_analog_carrier_hold()` restarts the hold only on the probe, so only for traffic
-    the policy passes. While the verdict is REJECTED and no operator hold is on,
-    both the -Y tick and `trunk_scan_timing_select_reason()` publish `DSD_SCAN_STAY_CARRIER` with no window, since no
-    hangtime or dwell counts toward a step while rejected traffic is kept. Rejected traffic that ended between two
-    passes or ticks releases the same way: `dsd_scan_analog_tone_rejection_ended()` reads the tap's
+    disarms it), and arms a disarmed one at the check's first tick with no activity or operator hold on, as a quiet
+    tick would, so the dwell runs through a check as on a quiet channel; `trunk_scan_refresh_analog_carrier_hold()`
+    restarts the hold only on the probe, so only for traffic the policy passes. While the verdict is REJECTED and no
+    operator hold is on, both the -Y tick and `trunk_scan_timing_select_reason()` publish `DSD_SCAN_STAY_CARRIER` with
+    no window, since no hangtime or dwell counts toward a step while rejected traffic is kept. Rejected traffic that
+    ended between two passes or ticks releases the same way: `dsd_scan_analog_tone_rejection_ended()` reads the tap's
     `gate_rejected_ended` through `dsd_analog_rx_rejection_ended_now()` (held to the channel on air as the carrier is),
     or a REJECTED verdict an input that stopped delivering left published past its deadline, with no carrier heard; both
-    scanners then step or advance when there is somewhere to go, so no window still running from before it (-t since
-    the row landed or since traffic the policy passed, this traffic before a blocked or unlisted value was confirmed
+    scanners then step or advance when there is somewhere to go, so no window still running from before it (-t since the
+    row landed or since traffic the policy passed, this traffic before a blocked or unlisted value was confirmed
     included, or a trunk-scan hold) is waited out, and with nowhere to go leave the ordinary `-t`, hold and dwell rules
     to run.
   - Stepped slicer threshold refresh after each getFrameSync() return: `src/engine/slicer_thresholds.c` behind
@@ -1969,14 +1972,14 @@ External dependencies (resolved via CMake):
   `analog_tone_set` and the leading row block of `dsd_scan_settings`, outside `dsd_scan_settings_equal()` (policy, not
   acquisition). `dsd_scan_mode_configured_tone_policy()` reads the configured one for saves; the rx tone view marks a
   row's own `(row; default X)`. Scan coupling is the engine's (see Engine): PENDING holds a row while its carrier lasts
-  but is no activity (no tail, no hold or dwell restarted), REJECTED releases it at the scanner's next pass, and on an am row or target no verdict is in force
-  (`dsd_analog_tone_gate_in_force()`), so the carrier holds it as `Carrier`. The CSV splitters end the options cell at
-  an unquoted comma, so both importers (`chan_import_options_split()` in `dsd_import.c`, `scan_check_options_split()` in
-  `trunk_scan.c`) ask `dsd_scan_options_tone_list_split()` whether the cell ends with a tone list and the field after it
-  goes on with it (any text past the header; in a named column, a field that is one space-free run of `/`-separated
-  entries starting with a standard tone or code, alone or followed by a row option's switch, the rest of the cell, so a
-  name such as `100 Main St` stays the column's own) and refuse the row with `use / between entries, not commas` rather
-  than import it short or blame the column the rest landed in. The
+  but is no activity (no tail, no hold or dwell restarted), REJECTED releases it at the scanner's next pass, and on an
+  am row or target no verdict is in force (`dsd_analog_tone_gate_in_force()`), so the carrier holds it as `Carrier`. The
+  CSV splitters end the options cell at an unquoted comma, so both importers (`chan_import_options_split()` in
+  `dsd_import.c`, `scan_check_options_split()` in `trunk_scan.c`) ask `dsd_scan_options_tone_list_split()` whether the
+  cell ends with a tone list and the field after it goes on with it (any text past the header; in a named column, a
+  field that is one space-free run of `/`-separated entries starting with a standard tone or code, alone or followed by
+  a row option's switch, the rest of the cell, so a name such as `100 Main St` stays the column's own) and refuse the
+  row with `use / between entries, not commas` rather than import it short or blame the column the rest landed in. The
   import previews carry a row's own policy as `tone_filter` (its `dsd_tone_filter_mode`, -1 when the row runs the
   configured one) and `tone_list` (its list as displayed) in `dsd_csv_channel_profile` and `dsd_app_scan_csv_target`,
   both filled by `dsd_scan_option_tone_summary()`; they reach the Qt/Android channel-map review and target preview as
@@ -1985,9 +1988,9 @@ External dependencies (resolved via CMake):
   `RUNTIME_CONFIG_USER` (never saved), `RUNTIME_CONFIG_APPLY` (a loaded config under a row's own policy),
   `CORE_CSV_IMPORT` and `APP_CONTROL_TRUNK_SCAN_VALIDATE` (row diagnostics, am rows and targets, previews),
   `ENGINE_NO_CARRIER_RESET` (`-Y`, the legacy untyped list and a list with nowhere else to go, a row refused its width
-  included, an am row, rows sharing the frequency on air), `ENGINE_TRUNK_SCAN` (a target refused its width included,
-  an am target, a same-frequency target of another type),
-  `UI_QT_IMPORTED_FILES`, `UI_QT_SCAN_LIST_ROUNDTRIP` and `UI_QT_QML_CALL_LISTS` (previews).
+  included, an am row, rows sharing the frequency on air), `ENGINE_TRUNK_SCAN` (a target refused its width included, an
+  am target, a same-frequency target of another type), `UI_QT_IMPORTED_FILES`, `UI_QT_SCAN_LIST_ROUNDTRIP` and
+  `UI_QT_QML_CALL_LISTS` (previews).
 - Adding a row option: add the `DSD_SCAN_OPT_*` bit (reserved values only), a `dsd_scan_option_values` field and a
   `specifications[]` row with its setter in `runtime/scan_options.c` (use `ANY_MODES` only for options that mean the
   same on every class); add a `scan_option_appliers[]` row in `runtime/scan_mode.c`; if it lands in `dsd_opts`, add

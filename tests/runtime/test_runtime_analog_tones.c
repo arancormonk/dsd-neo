@@ -244,9 +244,9 @@ test_gate_in_force_fails_closed(void) {
     free(opts);
 }
 
-/* What each verdict lets through (issue #527): OFF and ALLOWED only. The monitor plays nothing else, and nothing else is
-   scan activity -- a carrier still being checked holds a row only while it lasts, leaving no -t or activity_hold_ms tail,
-   and a rejected one holds nothing. A value this build does not know passes nothing. */
+/* What each verdict lets through (issue #527): OFF and ALLOWED only. The monitor plays nothing else, and nothing else
+   is scan activity -- a carrier still being checked holds a row only while it lasts, leaving no -t or activity_hold_ms
+   tail, and a rejected one holds nothing. A value this build does not know passes nothing. */
 static void
 test_gate_passes(void) {
     assert(dsd_analog_tone_gate_passes(DSD_ANALOG_TONE_GATE_OFF) == 1);

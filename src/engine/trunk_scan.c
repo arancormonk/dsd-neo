@@ -2955,6 +2955,13 @@ trunk_scan_target_dwell_ms(const dsd_opts* opts, const dsd_trunk_scan_target_run
     return rt->target.dwell_ms;
 }
 
+/* Whether a conventional target's activity hold, measured from the last activity the policy allowed, still runs. */
+static int
+trunk_scan_activity_hold_running(const dsd_opts* opts, const dsd_trunk_scan_target_runtime* rt, double now_m) {
+    const double hold_s = (double)trunk_scan_target_hold_ms(opts, rt) / 1000.0;
+    return rt->last_allowed_activity_m > 0.0 && (now_m - rt->last_allowed_activity_m) < hold_s;
+}
+
 /*
  * The effective per-visit cap in ms (#507). Unlike the voice-gate windows above this is not
  * gated on scan_voice_only: the cap applies to every target type. A row that carries the option
@@ -3023,11 +3030,11 @@ trunk_scan_conventional_stay_reason(const dsd_opts* opts, const dsd_state* state
         && dsd_scan_analog_tone_gate(opts, state) == DSD_ANALOG_TONE_GATE_PENDING) {
         return DSD_SCAN_STAY_TONE_PENDING;
     }
-    const int hold_ms = trunk_scan_target_hold_ms(opts, rt);
-    const double hold_s = (double)hold_ms / 1000.0;
-    if (!(rt->last_allowed_activity_m > 0.0 && (now_m - rt->last_allowed_activity_m) < hold_s)) {
+    if (!trunk_scan_activity_hold_running(opts, rt, now_m)) {
         return DSD_SCAN_STAY_NONE;
     }
+    const int hold_ms = trunk_scan_target_hold_ms(opts, rt);
+    const double hold_s = (double)hold_ms / 1000.0;
     if (started_m) {
         *started_m = rt->last_allowed_activity_m;
     }
@@ -3070,16 +3077,21 @@ trunk_scan_active_stay_reason(const dsd_opts* opts, const dsd_state* state, cons
 
 /* Whether the target on air stays at this tick for a reason of its own. Every such reason but a tone check disarms the
  * idle dwell, so a fresh full dwell starts once it ends. A carrier the tone policy is still checking (issue #527) is no
- * activity and leaves the dwell running where it was: a check its carrier ends before a verdict adds no dwell, and
- * short bursts the policy never passes cannot park the rotation. Returns 1 when the tick is spent. */
+ * activity, and the dwell runs through it as it would with no carrier: left where it was when armed, and, when the
+ * activity hold or the operator's hold had disarmed it, armed at the check's first tick with neither on, as the first
+ * quiet tick would arm it. So a check its carrier ends before a verdict adds no dwell, and short bursts the policy
+ * never passes cannot park the rotation. Returns 1 when the tick is spent. */
 static int
 trunk_scan_service_hold(const dsd_opts* opts, const dsd_state* state, dsd_trunk_scan_coord* coord, double now_m) {
     const dsd_scan_stay_reason stay = trunk_scan_active_stay_reason(opts, state, coord, now_m, NULL, NULL, NULL);
     if (stay == DSD_SCAN_STAY_NONE) {
         return 0;
     }
+    dsd_trunk_scan_target_runtime* rt = &coord->targets[coord->active];
     if (stay != DSD_SCAN_STAY_TONE_PENDING) {
-        coord->targets[coord->active].idle_since_m = -1.0;
+        rt->idle_since_m = -1.0;
+    } else if (rt->idle_since_m < 0.0 && !coord->hold_active && !trunk_scan_activity_hold_running(opts, rt, now_m)) {
+        rt->idle_since_m = now_m;
     }
     return 1;
 }

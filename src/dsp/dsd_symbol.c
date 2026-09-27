@@ -1198,11 +1198,12 @@ symbol_write_unsynced_audio(const dsd_opts* opts, dsd_state* state, unsigned int
  * at every retune and while one is unresolved), whether or not the block is played: -o null and a muted UI hold the
  * row too (issue #526). Under the tone policy (issue #527) only traffic it passes is activity
  * (dsd_analog_tone_gate_passes()): a rejected carrier never holds the row, and one still being checked stamps nothing
- * either, so a check its carrier ends before a verdict leaves no hangtime tail behind it (the scanner holds the row
- * while the check runs by its verdict alone). The -8 source monitor under digital decoding keeps its old rule, the
- * carrier it plays, which is none while a retune is unresolved. Either way the channel a retune leaves, or one a
- * failed retune left the receiver on, never holds the row the scanner shows: its hangtime runs out and the scanner
- * tunes on. */
+ * either, so a check its carrier ends before a verdict leaves no hangtime tail behind it (the -Y scanner holds the row
+ * by the verdict alone while the check runs, and while allowed traffic is on air, since this stamp comes only as a
+ * block ends and a verdict can pass the traffic part-way through one). The -8 source monitor under digital decoding
+ * keeps its old rule, the carrier it plays, which is none while a retune is unresolved. Either way the channel a
+ * retune leaves, or one a failed retune left the receiver on, never holds the row the scanner shows: its hangtime runs
+ * out and the scanner tunes on. */
 static inline int
 symbol_unsynced_carrier_active(const dsd_opts* opts, const dsd_state* state) {
     if (opts->monitor_input_audio != 1 || state->carrier != 0) {

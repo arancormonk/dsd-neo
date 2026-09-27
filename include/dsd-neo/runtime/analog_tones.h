@@ -316,9 +316,9 @@ int dsd_analog_tone_detection_active(const dsd_opts* opts);
  * value this build does not know read as PENDING. It fails closed: a published OFF while dsd_opts holds a list policy
  * with a list (--tone-allow/--tone-block) is no verdict of that policy -- the tap has no session to judge with, having
  * failed to allocate one, or has not read since the policy came on -- and reads as PENDING until the tap's own verdict
- * replaces it. What the verdict lets through is dsd_analog_tone_gate_passes(). The verdict is only as fresh as the tap's
- * last read: a scanner pairs it with the carrier it holds a row on (dsd_scan_analog_carrier_open()). Read-only; OFF for
- * NULL.
+ * replaces it. What the verdict lets through is dsd_analog_tone_gate_passes(). The verdict is only as fresh as the
+ * tap's last read: a scanner pairs it with the carrier it holds a row on (dsd_scan_analog_carrier_open()). Read-only;
+ * OFF for NULL.
  */
 int dsd_analog_tone_gate_in_force(const dsd_opts* opts, const dsd_state* state);
 

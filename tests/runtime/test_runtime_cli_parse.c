@@ -7830,7 +7830,8 @@ test_bootstrap_inherited_trunk_scan_preserves_max_visit_override(void) {
 
 /* Issue #527: one tone-switch parse. @p args are the arguments after the program name (at most 8); the parse's rc,
  * exit code and stderr come back, and the caller frees @p opts / @p state with free_tone_parse(). A non-NULL
- * @p config_map is a channel map a loaded config names ([trunking] chan_csv), which the engine imports, not the parse. */
+ * @p config_map is a channel map a loaded config names ([trunking] chan_csv), which the engine imports, not the
+ * parse. */
 typedef struct {
     dsd_opts* opts;
     dsd_state* state;
@@ -7998,8 +7999,8 @@ test_tone_filter_warns_outside_the_fm_monitor(void) {
 /* A -Y scan runs the policy on its nfm rows as well as under the FM monitor, so the warning weighs the list imported
  * with the command line: an untyped list under the AM monitor, or a typed one with no nfm row under a digital mode,
  * cannot use it; an nfm row can, and so can the FM monitor on a row that runs it -- every row of an untyped list, a row
- * without a mode of its own on a typed one -- but not on a typed list whose rows all declare a digital mode or am, which
- * each run their own (an am row the AM monitor, which hears no tone). A -Y scan with no list to come stays on the
+ * without a mode of its own on a typed one -- but not on a typed list whose rows all declare a digital mode or am,
+ * which each run their own (an am row the AM monitor, which hears no tone). A -Y scan with no list to come stays on the
  * configured decode mode and is weighed by it, as on a session without a scan. A list the engine still imports (a
  * config file's, or a -C map the command line read no row from) and --trunk-scan targets are weighed when the engine
  * loads them, so parsing says nothing for them. */

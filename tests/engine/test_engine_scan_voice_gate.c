@@ -1414,9 +1414,9 @@ test_analog_carrier_probe(void) {
 }
 
 /* Issue #527: under a CTCSS/DCS receive policy the probe is only the traffic the policy passes. A carrier still being
- * checked is no activity, so it restarts no hold and leaves no tail behind it, though its PENDING verdict on the carrier
- * (dsd_scan_analog_tone_gate()) holds a row by itself while it lasts; a rejected one holds nothing. With no policy, or
- * with no carrier, nothing changes. */
+ * checked is no activity, so it restarts no hold and leaves no tail behind it, though its PENDING verdict on the
+ * carrier (dsd_scan_analog_tone_gate()) holds a row by itself while it lasts; a rejected one holds nothing. With no
+ * policy, or with no carrier, nothing changes. */
 static void
 test_analog_carrier_probe_follows_the_tone_verdict(void) {
     gate_fixture fix;

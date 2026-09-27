@@ -642,8 +642,9 @@ apply to it: it reads `Carrier` while its carrier holds it (`Tone check` while t
 then `Hangtime` (`-Y`) or `Activity hold` (trunk scan) for the tail. A check that ends before its verdict leaves no
 tail of its own: the row reads whatever ran beneath it, and short bursts the tone filter never passes cannot hold it.
 Traffic the tone filter rejects holds nothing: the row moves on at the scanner's next pass. When the scan has nowhere
-else to take it, the row keeps it, muted, for as long as its carrier lasts, and reads `Carrier` with no countdown. While a typed scan row is on air, the decoder
-picker's label names its class beside the configured mode, `Mode... [DMR; scan nfm]` (`scan am` for an `am` row).
+else to take it, the row keeps it, muted, for as long as its carrier lasts, and reads `Carrier` with no countdown.
+While a typed scan row is on air, the decoder picker's label names its class beside the configured mode,
+`Mode... [DMR; scan nfm]` (`scan am` for an `am` row).
 
 The values that follow are the *effective* ones for the row on air, after CSV and option overrides:
 

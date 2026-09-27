@@ -3181,9 +3181,9 @@ test_tone_policy_rejection_outlives_its_carrier(void) {
 }
 
 /* A carrier still being checked is no scan activity (issue #527): only blocks under OFF or ALLOWED stamp the -Y
-   hangtime and voice anchors. Short no-tone bursts under an allow list -- kerchunks, noise -- each end before the window
-   and before any verdict, and leave no stamp, no played block and no rejection behind them, so they cannot hold a
-   scanner on a muted row; each is a check of its own. A block list's no-tone traffic stamps from the block its window
+   hangtime and voice anchors. Short no-tone bursts under an allow list -- kerchunks, noise -- each end before the
+   window and before any verdict, and leave no stamp, no played block and no rejection behind them, so they cannot hold
+   a scanner on a muted row; each is a check of its own. A block list's no-tone traffic stamps from the block its window
    passes it, and an allowed tone lost under an allow list stamps nothing while it is checked again. */
 static void
 test_tone_policy_check_is_no_scan_activity(void) {

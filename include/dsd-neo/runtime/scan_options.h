@@ -115,8 +115,8 @@ int dsd_scan_options_visit_files(const char* text, void* context, dsd_scan_optio
 
 /** Whether a row's options cell lost the rest of a tone list to a comma (issue #527). The CSV splitters end a cell at
  * every unquoted comma, so `--tone-allow 100.0,67.0` reaches dsd_scan_options_parse() as `--tone-allow 100.0` and
- * leaves `67.0` in the field after the cell. @p options is the cell, @p next the raw field after it (NULL when the row has
- * none) and @p next_past_header whether that field lies past the header's columns, where nothing reads it.
+ * leaves `67.0` in the field after the cell. @p options is the cell, @p next the raw field after it (NULL when the row
+ * has none) and @p next_past_header whether that field lies past the header's columns, where nothing reads it.
  * A cell that ends with a --tone-allow/--tone-block list is refused when the field after it goes on with it: any
  * text past the header, or, in one of the file's own columns, a field that can only be the rest of a list -- one run
  * of '/'-separated entries with no space in it, starting with a standard CTCSS tone or DCS code ("67.0",

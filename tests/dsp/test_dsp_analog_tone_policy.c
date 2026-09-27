@@ -435,8 +435,8 @@ test_reconfigure(void) {
 }
 
 /* A code is one signal under either of its spellings, so a list that respells one is the same policy: a block list of
-   D023I reloaded as D047N keeps the pass it gave no-tone traffic, rather than muting the reception for a fresh check. The
-   list in force takes the new spelling. Another polarity is another signal, and so another policy. */
+   D023I reloaded as D047N keeps the pass it gave no-tone traffic, rather than muting the reception for a fresh check.
+   The list in force takes the new spelling. Another polarity is another signal, and so another policy. */
 static void
 test_reconfigure_same_signals(void) {
     dsd_analog_tone_policy policy;

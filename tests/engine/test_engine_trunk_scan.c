@@ -10519,8 +10519,8 @@ test_nfm_target_rejection_under_hold_and_alone(void) {
     return test_rc;
 }
 
-/* Rejected traffic that ended between two ticks (issue #527) -- its carrier's hangover ran out, or its input paused past
- * its deadline, before the coordinator looked -- holds the target no more than traffic still on air would: traffic
+/* Rejected traffic that ended between two ticks (issue #527) -- its carrier's hangover ran out, or its input paused
+ * past its deadline, before the coordinator looked -- holds the target no more than traffic still on air would: traffic
  * that was passing and turns out to carry an unlisted tone, then ends, is followed by an advance at the next tick,
  * though the hold it earned while it passed has most of 2 s to run. The operator's hold keeps the target; a single
  * target has nowhere to go, so its hold runs as after any carrier. */
@@ -10616,8 +10616,8 @@ publish_tone_check_ended(dsd_state* state) {
 }
 
 /* A carrier the tone policy is still checking is no activity (issue #527): it holds the nfm-conventional target while
- * it lasts, under "Tone check" with nothing counting down, but it restarts no activity_hold_ms and leaves the idle dwell
- * running where it was. Short no-tone bursts under an allow list -- kerchunks, noise -- therefore cannot park the
+ * it lasts, under "Tone check" with nothing counting down, but it restarts no activity_hold_ms and leaves the idle
+ * dwell running where it was. Short no-tone bursts under an allow list -- kerchunks, noise -- therefore cannot park the
  * rotation: once the dwell has run out since the target parked, the tick after a burst advances, however many bursts
  * came. A check that outlasts the dwell still holds the target, and traffic the policy allows restarts the hold as any
  * carrier does and leaves its ordinary tail, then a fresh dwell. */
@@ -10702,6 +10702,87 @@ test_nfm_target_tone_check_leaves_no_hold(void) {
     dsd_engine_trunk_scan_tick(&opts, &state);
     test_rc |= expect_active_target(&state, "a fresh dwell after the tail", 0U);
     test_rc |= expect_scan_timing(&state, "a fresh dwell", DSD_SCAN_STAY_IDLE_DWELL, 3.35, 1000U, 2000U);
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    DSD_MEMSET(&state.analog_rx, 0, sizeof(state.analog_rx));
+    trunk_scan_test_clear_now();
+    cleanup_paths(dir, target_path, NULL);
+    return test_rc;
+}
+
+/* A check that begins while the idle dwell is disarmed -- by the hold that earlier allowed traffic earned, or by the
+ * operator's hold, just released -- leaves it disarmed no longer than a quiet channel would (issue #527): the first
+ * tick of the check at which neither hold is on arms it, so a check its carrier ends before a verdict adds none of its
+ * own length to the visit. */
+static int
+test_nfm_target_tone_check_arms_a_disarmed_dwell(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    char target_path[DSD_TEST_PATH_MAX];
+    static dsd_opts opts;
+    static dsd_state state;
+    static const char targets[] = "fire,nfm-conventional,154430000,,1000,2000,,--tone-allow 100.0\n"
+                                  "dmr,dmr-conventional,461000000,,250,250,\n";
+    if (nfm_targets_init(targets, &opts, &state, dir, sizeof dir, target_path, sizeof target_path) != 0) {
+        return 1;
+    }
+    /* Allowed traffic at 0.30 earns a hold to 2.30, which disarms the dwell. */
+    int test_rc = 0;
+    publish_tone_gate(&state, DSD_ANALOG_TONE_GATE_ALLOWED);
+    trunk_scan_test_set_now(0.30);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    publish_tone_check_ended(&state);
+    trunk_scan_test_set_now(0.50);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    test_rc |=
+        expect_scan_timing(&state, "the allowed traffic's hold", DSD_SCAN_STAY_ACTIVITY_HOLD, 2.30, 1000U, 2000U);
+    /* A check from 2.20 to 3.00 spans the hold's end: its tick at 2.40, the first past the hold, arms the dwell. */
+    for (int tick = 0; tick < 5; tick++) {
+        publish_tone_gate(&state, DSD_ANALOG_TONE_GATE_PENDING);
+        trunk_scan_test_set_now(2.20 + (0.20 * tick));
+        dsd_engine_trunk_scan_tick(&opts, &state);
+        test_rc |= expect_active_target(&state, "a check across the hold's end", 0U);
+        test_rc |=
+            expect_scan_timing(&state, "a check across the hold's end", DSD_SCAN_STAY_TONE_PENDING, -1.0, 1000U, 2000U);
+    }
+    publish_tone_check_ended(&state);
+    trunk_scan_test_set_now(3.10);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    test_rc |= expect_active_target(&state, "the check dropped unjudged", 0U);
+    test_rc |=
+        expect_scan_timing(&state, "the dwell from the hold's end", DSD_SCAN_STAY_IDLE_DWELL, 3.40, 1000U, 2000U);
+    trunk_scan_test_set_now(3.45);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    test_rc |= expect_active_target(&state, "the dwell from the hold's end runs out", 1U);
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    cleanup_paths(dir, target_path, NULL);
+    DSD_MEMSET(&state.analog_rx, 0, sizeof(state.analog_rx));
+
+    /* The operator's hold keeps the dwell disarmed through a check; released at 0.35, the check's next tick arms it. */
+    if (nfm_targets_init(targets, &opts, &state, dir, sizeof dir, target_path, sizeof target_path) != 0) {
+        return 1;
+    }
+    test_rc |=
+        expect_control_rc("hold", dsd_engine_trunk_scan_control(&opts, &state, DSD_TRUNK_SCAN_CONTROL_HOLD_TOGGLE), 1);
+    for (int tick = 0; tick < 2; tick++) {
+        publish_tone_gate(&state, DSD_ANALOG_TONE_GATE_PENDING);
+        trunk_scan_test_set_now(0.10 + (0.20 * tick));
+        dsd_engine_trunk_scan_tick(&opts, &state);
+    }
+    trunk_scan_test_set_now(0.35);
+    test_rc |= expect_control_rc("release",
+                                 dsd_engine_trunk_scan_control(&opts, &state, DSD_TRUNK_SCAN_CONTROL_HOLD_TOGGLE), 0);
+    for (int tick = 0; tick < 5; tick++) {
+        publish_tone_gate(&state, DSD_ANALOG_TONE_GATE_PENDING);
+        trunk_scan_test_set_now(0.50 + (0.20 * tick));
+        dsd_engine_trunk_scan_tick(&opts, &state);
+    }
+    test_rc |= expect_active_target(&state, "a check after the release", 0U);
+    publish_tone_check_ended(&state);
+    trunk_scan_test_set_now(1.40);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    test_rc |= expect_scan_timing(&state, "the dwell from the release", DSD_SCAN_STAY_IDLE_DWELL, 1.50, 1000U, 2000U);
+    trunk_scan_test_set_now(1.55);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    test_rc |= expect_active_target(&state, "the dwell from the release runs out", 1U);
     dsd_engine_trunk_scan_shutdown(&opts, &state);
     DSD_MEMSET(&state.analog_rx, 0, sizeof(state.analog_rx));
     trunk_scan_test_clear_now();
@@ -12109,6 +12190,7 @@ main(void) {
     rc |= run_with_default_tune_hook(test_nfm_target_rejection_under_hold_and_alone);
     rc |= run_with_default_tune_hook(test_nfm_target_rejection_that_ended_advances);
     rc |= run_with_default_tune_hook(test_nfm_target_tone_check_leaves_no_hold);
+    rc |= run_with_default_tune_hook(test_nfm_target_tone_check_arms_a_disarmed_dwell);
     rc |= run_with_default_tune_hook(test_am_target_carrier_ignores_the_tone_filter);
     rc |= run_with_default_tune_hook(test_nfm_target_rejection_with_a_refused_alternate);
     rc |= run_with_default_tune_hook(test_nfm_target_rejection_moves_to_a_same_frequency_target);

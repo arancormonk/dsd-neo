@@ -1454,13 +1454,14 @@ no_carrier_scanner_step_is_due(const dsd_opts* opts, const dsd_state* state, tim
     if (dsd_engine_scan_visit_expired(opts, state, dsd_time_now_monotonic_s())) {
         return 1;
     }
+    const int tone_gate = dsd_scan_analog_tone_gate(opts, state);
     /* Analog traffic the tone policy rejected (issue #527) does not hold the row: it neither stamps the hangtime anchor
      * nor waits it out, but moves on at this pass. The caller still lets an operator hold keep the row, muted. A list
      * with nowhere else to go (no other row a step can land on: the others avoided, or skipped at every visit for the
      * width of their own demodulator, which the front end refuses, or as am rows nothing demodulates) keeps it muted
      * where it is, as a fixed frequency does: a step would land on the same row, end the reception and judge the same
      * traffic again, and so would the hangtime rule below. */
-    if (dsd_scan_analog_tone_gate(opts, state) == DSD_ANALOG_TONE_GATE_REJECTED) {
+    if (tone_gate == DSD_ANALOG_TONE_GATE_REJECTED) {
         return dsd_engine_channel_scan_has_other_row(opts, state);
     }
     /* Rejected traffic that ended before this pass came -- its carrier's hangover ran out, or its input paused, between
@@ -1470,14 +1471,16 @@ no_carrier_scanner_step_is_due(const dsd_opts* opts, const dsd_state* state, tim
     if (dsd_scan_analog_tone_rejection_ended(opts, state) && dsd_engine_channel_scan_has_other_row(opts, state)) {
         return 1;
     }
-    /* A carrier the tone policy is still checking holds the row until its verdict, whatever the hangtime anchor says:
-     * the check is no activity, so the monitor stamps no anchor for it (dsd_symbol.c), and the tap publishes the
-     * carrier and its pending verdict as the samples arrive, before a monitor block ends (960 samples are 384 ms at
-     * 2500 Hz). The check is bounded by the policy's window; then the traffic plays under the carrier's rule or is
-     * rejected above. A check whose carrier ends before a verdict leaves the anchor where it was, so it adds no -t
+    /* A carrier on air under a tone policy holds the row by its verdict, whatever the hangtime anchor says, while the
+     * policy is still checking it or once it has allowed it. The check is no activity, so the monitor stamps no anchor
+     * for it (dsd_symbol.c), and it stamps allowed traffic only as a block ends, while the tap publishes the carrier
+     * and its verdict at each read, part-way through a block (960 samples are 384 ms at 2500 Hz, and span two reads at
+     * 22050 Hz): a verdict just turned ALLOWED meets an anchor from before the check. The check is bounded by the
+     * policy's window. A check whose carrier ends before a verdict leaves the anchor where it was, so it adds no -t
      * tail, and short bursts the policy never passes cannot park the scanner: the rule below steps once -t has run out
-     * since the row landed or since the last traffic the policy passed. */
-    if (dsd_scan_analog_tone_gate(opts, state) == DSD_ANALOG_TONE_GATE_PENDING) {
+     * since the row landed or since the last block of traffic the policy passed. With no policy in force the verdict
+     * is OFF and the carrier holds through its stamps alone, as before the policy existed. */
+    if (tone_gate == DSD_ANALOG_TONE_GATE_PENDING || tone_gate == DSD_ANALOG_TONE_GATE_ALLOWED) {
         return 0;
     }
     if (dsd_scan_voice_gate_owns_step(opts, state)) {
