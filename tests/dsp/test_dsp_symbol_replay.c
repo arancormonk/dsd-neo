@@ -3087,10 +3087,9 @@ test_tone_policy_no_tone_rejection_names_a_later_tone(void) {
    verdict @p gate stands on the carrier until then and no end of a rejected reception is published meanwhile. */
 static void
 feed_until_carrier_closes(dsd_opts* opts, dsd_state* state, int gate) {
-    int blocks = 0;
-    while (state->analog_rx.carrier_open) {
+    for (int blocks = 0; state->analog_rx.carrier_open; blocks++) {
         assert(state->analog_rx.gate == gate && state->analog_rx.gate_rejected_ended == 0);
-        assert(blocks++ <= (DSD_ANALOG_CARRIER_HANGOVER_MS / 20) + 1);
+        assert(blocks <= (DSD_ANALOG_CARRIER_HANGOVER_MS / 20) + 1);
         feed_blocks_at(opts, state, 1, 0.0);
     }
 }
