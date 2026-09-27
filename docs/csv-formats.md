@@ -359,8 +359,9 @@ it apart from the tone or code received: the `Tone filter:` line (terminal) and 
 `allow 100.0 Hz/D023N (row; default off)` while the row's own policy is on air over a configured policy that is off,
 beside the `Rx tone:` line or `RECEIVED TONE` row that only ever shows what was received. Under a list policy each
 transmission starts muted while it is checked (800 ms, to 1,600 ms while a DCS code in the list is still being
-confirmed); the row holds as any carrier holds it, with the stay reason `Tone check` meanwhile, and like any carrier it
-is activity, so one that ends before a verdict leaves the ordinary `-t` or `activity_hold_ms` tail behind it. Traffic
+confirmed); the row holds until the verdict, with the stay reason `Tone check` meanwhile: a `-Y` pass keeps it then even
+when `-t` has run out since the last carrier, and the trunk-scan tick as for any carrier. Like any carrier it is
+activity, so one that ends before a verdict leaves the ordinary `-t` or `activity_hold_ms` tail behind it. Traffic
 the policy rejects is muted and holds nothing: a `-Y` row moves on at the next no-carrier pass and an `nfm-conventional`
 target at the next tick, without waiting out `-t` or its `activity_hold_ms`, and traffic that was passing and turns out
 to carry a blocked (or, under allow, an unlisted) tone or code is released the same way, as is traffic rejected and

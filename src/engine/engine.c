@@ -1469,6 +1469,13 @@ no_carrier_scanner_step_is_due(const dsd_opts* opts, const dsd_state* state, tim
     if (dsd_scan_analog_tone_rejection_ended(opts, state) && dsd_engine_channel_scan_has_other_row(opts, state)) {
         return 1;
     }
+    /* A carrier the tone policy is still checking holds the row until its verdict, whatever the hangtime anchor says:
+     * the tap publishes the carrier and its pending verdict as the samples arrive, but the anchor is stamped only when
+     * a monitor block ends, which on low-rate input (960 samples are 384 ms at 2500 Hz) can come after this pass. The
+     * check is bounded by the policy's window; then the traffic plays under the carrier's rule or is rejected above. */
+    if (dsd_scan_analog_tone_gate(opts, state) == DSD_ANALOG_TONE_GATE_PENDING) {
+        return 0;
+    }
     if (dsd_scan_voice_gate_owns_step(opts, state)) {
         return dsd_scan_voice_gate_should_step(opts, state, dsd_time_now_monotonic_s());
     }
