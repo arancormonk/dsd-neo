@@ -58,7 +58,8 @@ typedef struct {
     int dmr_mapping_count;
     int squelch_db_set;
     int squelch_db;
-    int bandwidth_hz; /* analog row's channel width in Hz (--nfm-bandwidth-hz); -1 inherits */
+    int bandwidth_hz; /* analog row's own channel width in Hz (an nfm row's --nfm-bandwidth-hz, an am row's
+                         --am-bandwidth-hz); -1 inherits */
 } dsd_csv_channel_profile;
 
 typedef void (*dsd_csv_channel_profile_cb)(const dsd_csv_channel_profile* row, void* context);

@@ -361,7 +361,7 @@ void svc_restore_analog_width(dsd_opts* opts, const dsd_state* state, int kind, 
  * The one writer of the two width settings, for callers that have already decided the width: svc_set_analog_bandwidth()
  * and putting back a width the front end refused. It edits the configured width of either kind without suspending a
  * scan row's scope (dsd_scan_mode_set_configured_analog_width(), issue #526), so a row's leave keeps the edit; an nfm
- * row's own width stays in force over an NFM edit until the row leaves, and no row sets an AM width.
+ * or am row's own width stays in force over an edit of its kind until the row leaves.
  * dsd_scan_mode_configured_analog_width() reads the configured widths, dsd_app_analog_width_setting_hz() the ones in
  * force. Decoder thread only.
  *

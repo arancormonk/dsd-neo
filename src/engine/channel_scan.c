@@ -44,8 +44,8 @@ typedef struct {
     int retry;
     int needs_commit;
     dsd_scan_mode mode;
-    /* The analog kind (dsd_analog_demod) the staged tune's settings run: an nfm row's FM, or on a blank row the
-     * configured kind (issue #524). It says which configured width that tune carries. */
+    /* The analog kind (dsd_analog_demod) the staged tune's settings run: an nfm row's FM, an am row's AM, or on a
+     * blank row the configured kind (issue #524). It says which configured width that tune carries. */
     int row_kind;
     dsd_scan_settings configured;
     dsd_scan_key_change keys;
@@ -136,9 +136,9 @@ channel_scan_row_runs_configured_width(const dsd_state* state, const channel_sca
 
 /* Whether a configured setting the staged tune was prepared from changed while it was outstanding. A configured channel
  * width counts only where the tune carries it (channel_scan_row_runs_configured_width()), and only the width of the
- * analog kind the row runs (issue #524): an nfm row's NFM width, a blank row's width of the configured kind. That is
- * not always the one dsd_scan_settings_equal() compares, the configured kind's whenever the configured family is analog
- * (an nfm row on an AM session carries the NFM width). */
+ * analog kind the row runs (issue #524): an nfm row's NFM width, an am row's AM width, a blank row's width of the
+ * configured kind. That is not always the one dsd_scan_settings_equal() compares, the configured kind's whenever the
+ * configured family is analog (an nfm row on an AM session carries the NFM width). */
 static int
 channel_scan_configured_changed(const dsd_state* state, const dsd_scan_settings* latest, const channel_scan* scan) {
     dsd_scan_settings others = *latest;
@@ -159,10 +159,10 @@ channel_scan_configured_changed(const dsd_state* state, const dsd_scan_settings*
 /* Whether the tune staged for the row no longer describes what it should land: a configured setting or the keyring it
  * was prepared from changed while it was outstanding, or a live receive-family request superseded the family its
  * retune carries. That request acts for the row still in scope (a width edit or a config apply republishing the
- * outgoing nfm row's analog monitor), yet the front end takes it as the newer word on the family and lands the staged
+ * outgoing analog row's monitor), yet the front end takes it as the newer word on the family and lands the staged
  * retune with neither its family nor its symbol profile (rtl_stream_prepare_retune_analog_profile_for_target()): a
- * digital row would otherwise commit on the analog monitor, or an nfm row on the digital family (issue #526). A retune
- * that carries no family lands its symbol profile whatever the requests, so it is not restaged for them. */
+ * digital row would otherwise commit on the analog monitor, or an nfm or am row on the digital family (issue #526). A
+ * retune that carries no family lands its symbol profile whatever the requests, so it is not restaged for them. */
 static int
 channel_scan_staged_stale(const dsd_opts* opts, const dsd_state* state, const channel_scan* scan) {
     dsd_scan_settings latest;

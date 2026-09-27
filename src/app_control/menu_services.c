@@ -1231,7 +1231,7 @@ svc_check_rtl_input_analog_width(const dsd_opts* opts, const dsd_state* state, c
         }
     }
     /* The switch is unscoped, so the stream it opens starts on the settings in force: while a scan row runs the analog
-       family with another width (an nfm row's own, issue #526), that width is held to the rate as well. */
+       family with another width (an nfm or am row's own, issue #526), that width is held to the rate as well. */
     const int in_force_hz = dsd_opts_analog_width_hz(opts);
     if (!dsd_opts_is_analog_family(opts) || (in_force_hz == configured_hz && opts->analog_demod == kind)) {
         return 0;

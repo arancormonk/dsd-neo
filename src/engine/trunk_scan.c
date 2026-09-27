@@ -2106,7 +2106,7 @@ trunk_scan_has_tuning_backend(const dsd_opts* opts, const dsd_state* state) {
 
 /* The P25 class runs the CQPSK symbol output when the target's decoder does (state->rf_mod, decided before this is
  * asked); the rate is the one the target's tune lands on, which differs from the live rate while the front end still
- * runs the analog family after an nfm-conventional target (dsd_scan_mode_symbol_timing_rate_hz()). */
+ * runs the analog family after an analog (nfm- or am-conventional) target (dsd_scan_mode_symbol_timing_rate_hz()). */
 static int
 trunk_scan_p25_cc_sps(const dsd_opts* opts, const dsd_state* state) {
     int sym_rate = (state && state->p25_cc_is_tdma == 1) ? 6000 : 4800;
