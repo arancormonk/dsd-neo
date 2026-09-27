@@ -33,12 +33,23 @@
  *
  * The tables live in runtime rather than DSP because the frontends format these values and the
  * receive policy (#527) parses them, and neither may depend on the DSP module.
+ *
+ * Tone lists (issue #527): the configured receive policy's list, written the same way on the CLI,
+ * in the INI and in a scan row's options: entries separated by '/', each a standard CTCSS tone
+ * ("100" or "100.0") or a standard DCS code ("D023", "D023N" or "D023I", any case; a bare code is
+ * N), for example 67.0/100.0/D023N. Commas are refused (the channel-map splitter would cut a
+ * list at them). A list holds a signal once: a tone written twice, or both spellings of one DCS
+ * signal (D023N and D047I), are refused. Diagnostics name entries by position and never repeat
+ * the text they were given. A list is kept as written (D023I stays D023I) and matched by the
+ * signal, so a listed D023I matches a received D047N.
  */
 
 #ifndef DSD_NEO_INCLUDE_DSD_NEO_RUNTIME_ANALOG_TONES_H_
 #define DSD_NEO_INCLUDE_DSD_NEO_RUNTIME_ANALOG_TONES_H_
 
+#include <dsd-neo/core/analog_tone.h>
 #include <dsd-neo/core/opts_fwd.h>
+#include <dsd-neo/core/state_fwd.h>
 #include <stddef.h>
 #include <stdint.h>
 
@@ -193,6 +204,71 @@ int dsd_dcs_format(int code, int inverted, char* buf, size_t buf_size);
  */
 int dsd_dcs_format_label(int code, int inverted, char* buf, size_t buf_size);
 
+/** @brief Longest tone-list text, terminator excluded: the INI line, a CLI argument and a row option all fit it. */
+enum { DSD_TONE_LIST_TEXT_MAX = 1023 };
+
+/** @brief Room for any diagnostic dsd_tone_set_parse() writes, terminator included. */
+enum { DSD_TONE_LIST_ERROR_SIZE = 96 };
+
+/**
+ * @brief Parse a '/'-separated tone list (see the file comment) into @p out.
+ *
+ * Empty text, a comma anywhere, an empty entry, an entry that is no standard CTCSS tone or DCS
+ * code, a tone or DCS signal listed twice and text longer than DSD_TONE_LIST_TEXT_MAX are
+ * refused. On failure @p out is untouched and @p err (when not NULL) says why by entry number,
+ * naming a duplicate by its canonical spelling, never by the text given.
+ *
+ * @return 0 on success, -1 on failure (and for NULL @p text or @p out).
+ */
+int dsd_tone_set_parse(const char* text, dsd_tone_set* out, char* err, size_t err_size);
+
+/**
+ * @brief Write @p set as the list dsd_tone_set_parse() reads back: tones ascending ("67.0"), then
+ * codes ascending, each as written ("D023N"), '/' between them. The empty set writes "".
+ *
+ * @return Characters written (terminator excluded), or -1 for a NULL set or buffer or a buffer
+ *         too small for the whole list (the buffer then holds an empty string).
+ */
+int dsd_tone_set_format(const dsd_tone_set* set, char* buf, size_t buf_size);
+
+/**
+ * @brief Write @p set for display: the order of dsd_tone_set_format(), tones with their unit
+ * ("100.0 Hz/D023N"). Entries that do not fit are summarised by a count ("67.0 Hz/…+12"), so
+ * the text always fits a buffer of at least 24 bytes.
+ *
+ * @return Characters written (terminator excluded), or -1 for a NULL set or buffer or a buffer
+ *         smaller than 24 bytes (the buffer then holds an empty string).
+ */
+int dsd_tone_set_format_display(const dsd_tone_set* set, char* buf, size_t buf_size);
+
+/** @brief Entries in @p set (0 for NULL). */
+int dsd_tone_set_count(const dsd_tone_set* set);
+
+/** @brief 1 when @p set holds at least one DCS code, 0 otherwise (and for NULL). */
+int dsd_tone_set_has_dcs(const dsd_tone_set* set);
+
+/** @brief 1 when @p a and @p b hold the same entries, each spelled the same (both NULL counts as equal). */
+int dsd_tone_set_equal(const dsd_tone_set* a, const dsd_tone_set* b);
+
+/** @brief 1 when @p set lists the CTCSS tone @p tenths_hz, 0 otherwise (and for NULL). */
+int dsd_tone_set_contains_ctcss(const dsd_tone_set* set, int tenths_hz);
+
+/**
+ * @brief 1 when @p set lists the DCS signal of @p code in the given polarity, under either of
+ * its standard spellings (a listed D023I matches D047N), 0 otherwise (and for NULL).
+ */
+int dsd_tone_set_contains_dcs(const dsd_tone_set* set, int code, int inverted);
+
+/** @brief "off", "allow" or "block" for a dsd_tone_filter_mode, NULL for anything else. */
+const char* dsd_tone_filter_mode_name(int mode);
+
+/**
+ * @brief Parse "off", "allow" or "block", ignoring ASCII case.
+ *
+ * @return 0 with the dsd_tone_filter_mode in @p mode, -1 for anything else (@p mode untouched).
+ */
+int dsd_tone_filter_mode_parse(const char* text, int* mode);
+
 /**
  * @brief Whether the decoder's analog receive tap runs: the analog monitor of either kind, FM or AM, on audio it can
  * hear.
@@ -223,6 +299,18 @@ int dsd_analog_monitor_tap_active(const dsd_opts* opts);
  * @return 1 when detection runs, 0 otherwise (and for NULL).
  */
 int dsd_analog_tone_detection_active(const dsd_opts* opts);
+
+/**
+ * @brief The CTCSS/DCS receive policy's verdict in force on the reception the tap last read (issue #527): a
+ * dsd_analog_tone_gate.
+ *
+ * OFF whenever received-tone detection does not run (dsd_analog_tone_detection_active(): the AM monitor, a digital
+ * mode, the -8 source monitor), whatever an earlier session published; otherwise dsd_state::analog_rx.gate, with a
+ * value this build does not know read as PENDING. The monitor output plays only OFF and ALLOWED, and a REJECTED carrier
+ * is no scan activity. The verdict is only as fresh as the tap's last read: a scanner pairs it with the carrier it
+ * holds a row on (dsd_scan_analog_carrier_open()). Read-only; OFF for NULL.
+ */
+int dsd_analog_tone_gate_in_force(const dsd_opts* opts, const dsd_state* state);
 
 #ifdef __cplusplus
 }

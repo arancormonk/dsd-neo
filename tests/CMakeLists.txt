@@ -754,6 +754,19 @@ dsd_neo_add_public_header_smoke_test(
   dsd-neo/core/frame.h
   C
 )
+# Issue #527: the tone-policy types, a type-only header both languages include.
+dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_core_analog_tone
+  HEADERS_PUBLIC_CORE_ANALOG_TONE
+  dsd-neo/core/analog_tone.h
+  C
+)
+dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_core_analog_tone_cxx
+  HEADERS_PUBLIC_CORE_ANALOG_TONE_CXX
+  dsd-neo/core/analog_tone.h
+  CXX
+)
 dsd_neo_add_public_header_smoke_test(
   dsd-neo_test_headers_public_core_file_io
   HEADERS_PUBLIC_CORE_FILE_IO
