@@ -346,8 +346,11 @@ comma lies past the header's last column, or is one of the file's own columns wh
 with `--tone-allow: use / between entries, not commas`, and the text after the comma is not repeated. A name with a
 space in it (`100 Main St`, `D023 Repeater`) is its column's own, but a one-word name that is itself a standard tone or
 code (`100`) reads as the list's rest. A code matches by its signal: `D023I` passes traffic received as
-`DCS D047N / D023I`. The row's policy applies when the row is tuned and the configured one is restored when the scanner
-moves on, and Config->Save never writes it. The Qt/Android channel-map review and target preview list it
+`DCS D047N / D023I`. The polarity is part of the signal, so on a source whose audio is inverted a `D023N` transmitter
+arrives as that same `DCS D047N / D023I` and a listed `D023N` does not match it: fix the audio's polarity or list the
+spelling the monitor shows (see [Received code (DCS)](cli.md#received-code-dcs-on-the-analog-monitor)). The row's policy
+applies when the row is tuned and the configured one is restored when the scanner moves on, and Config->Save never
+writes it. The Qt/Android channel-map review and target preview list it
 (`Tone filter: allow 100.0 Hz/D023N`, `Tone filter: off`), or `Tone filter: inherit` on an nfm row without one. An `am`
 row or `am-conventional` target has none: the AM monitor hears no CTCSS or DCS, so the options are refused there, and
 while it is on air the configured policy judges nothing and mutes nothing; its carrier holds it as `Carrier`. The policy

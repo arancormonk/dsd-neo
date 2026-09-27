@@ -954,7 +954,11 @@ setting, shown apart from what is received, and it is off by default: then the o
   (`use / between entries, not commas`), as are a tone or code outside the standard sets (150.0 Hz included), an empty
   entry, an empty list and a signal listed twice. A code is matched by its signal, so both spellings of it work: a
   listed `D023I` matches a received `DCS D047N / D023I`, and listing `D023N` and `D047I` together is refused as the same
-  signal twice. A refusal names the entry by its position and never repeats the text.
+  signal twice. The polarity is part of the signal: on a source whose audio is inverted (see
+  [Received code (DCS)](#received-code-dcs-on-the-analog-monitor)) every code arrives as the other polarity's signal,
+  so a `D023N` transmitter reads as `DCS D047N / D023I` and a listed `D023N` does not match it (allow mutes it as not
+  allowed, block lets it through). Fix the audio's polarity, or list the spelling the monitor shows (`D023I` for that
+  transmitter). A refusal names the entry by its position and never repeats the text.
 - The acquisition window: while a list policy is in force, each transmission starts muted. A confirmed tone or code is
   judged at once: allow passes a listed one and rejects any other, block rejects a listed one and passes any other.
   With nothing confirmed after 800 ms of the carrier (sample time, so a fast replay decides the same way), allow rejects
