@@ -231,6 +231,10 @@ test_nfm_target_tone_lists(const char* path) {
         {"id,type,frequency_hz,chan_csv,dwell_ms,activity_hold_ms,notes,options,p25_bandplan_csv\n",
          "fire,nfm-conventional,154430000,,1500,2000,,--tone-block 100.0,67.0/D023N\n",
          "row 2: --tone-block: use / between entries, not commas"},
+        /* The list's rest and the cell's next option, cut off by the same comma into the band-plan column. */
+        {"id,type,frequency_hz,chan_csv,dwell_ms,activity_hold_ms,notes,options,p25_bandplan_csv\n",
+         "fire,nfm-conventional,154430000,,1500,2000,,--tone-block 100.0,67.0 --squelch-db -60\n",
+         "row 2: --tone-block: use / between entries, not commas"},
         {NULL, "fire,nfm-conventional,154430000,,1500,2000,,\"--tone-allow 100.0,67.0\"\n",
          "row 2: --tone-allow: use / between entries, not commas"},
         {NULL, "fire,nfm-conventional,154430000,,1500,2000,,--tone-allow 67.0/150.0\n",

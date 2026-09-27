@@ -586,9 +586,9 @@ check_tone_options(void) {
 
 /* A tone list a CSV comma cut short (issue #527): the splitter hands the parser the cell up to the comma and leaves the
  * rest in the field after it. Refused when the cell ends with a --tone-allow/--tone-block list and that field goes on
- * with it: any text past the header, a standard tone or code in one of the file's columns. A cell whose list is not
- * last, a column's own value (an RTL gain, a name), an empty field and a row with no field after are left alone, and
- * the diagnostic names the switch only. */
+ * with it: any text past the header, a standard tone or code in one of the file's columns, alone or followed by the
+ * cell's next option. A cell whose list is not last, a column's own value (an RTL gain, a name), an empty field and a
+ * row with no field after are left alone, and the diagnostic names the switch only. */
 static void
 check_tone_list_split(void) {
     static const struct {
@@ -612,6 +612,15 @@ check_tone_list_split(void) {
         {"--tone-allow 100.0", "67 Fire", 0, NULL},
         {"--tone-block D023N", "D023 Repeater", 0, NULL},
         {"--tone-allow 100.0", "67.0/D023N Fire", 0, NULL},
+        {"--tone-allow 100.0", "67 --fire", 0, NULL},
+        {"--tone-allow 100.0", "100 -- Main St", 0, NULL},
+        {"--tone-allow 100.0", "Fire --squelch-db -60", 0, NULL},
+        /* A run of entries that the cell's next option follows is the list's rest and the cell's rest: the comma cut
+           both off, whatever the column. */
+        {"--tone-block 100.0", "67.0 --squelch-db -60", 0, "--tone-block: use / between entries, not commas"},
+        {"--tone-allow 100.0", "67.0/D023N\t--nfm-bandwidth-hz=12500", 0,
+         "--tone-allow: use / between entries, not commas"},
+        {"--tone-allow 100.0", "d047i  --no-tone-filter", 0, "--tone-allow: use / between entries, not commas"},
         /* One run of entries with no space in it can only be the list's rest, a nonstandard later entry included. */
         {"--tone-allow 100.0", "67.0/150.0", 0, "--tone-allow: use / between entries, not commas"},
         {"--tone-allow 100.0", "67.0 \r\n", 0, "--tone-allow: use / between entries, not commas"},

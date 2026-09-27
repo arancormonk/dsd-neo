@@ -120,8 +120,9 @@ int dsd_scan_options_visit_files(const char* text, void* context, dsd_scan_optio
  * A cell that ends with a --tone-allow/--tone-block list is refused when the field after it goes on with it: any
  * text past the header, or, in one of the file's own columns, a field that can only be the rest of a list -- one run
  * of '/'-separated entries with no space in it, starting with a standard CTCSS tone or DCS code ("67.0",
- * "67.0/D023N"). An RTL gain, and a name with a space in it ("100 Main St", "D023 Repeater"), are that column's own;
- * a one-word name that is itself a standard tone or code ("100") reads as the list's rest.
+ * "67.0/D023N"), alone or followed by a row option's switch, the rest of the cell the comma cut off too ("67.0
+ * --squelch-db -60"). An RTL gain, and any other name with a space in it ("100 Main St", "D023 Repeater"), are that
+ * column's own; a one-word name that is itself a standard tone or code ("100") reads as the list's rest.
  * Returns 1 with "--tone-allow: use / between entries, not commas" in @p error when refused, else 0. Never echoes the
  * cell or the field. */
 int dsd_scan_options_tone_list_split(const char* options, const char* next, int next_past_header, char* error,

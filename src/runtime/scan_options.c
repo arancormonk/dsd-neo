@@ -740,10 +740,26 @@ option_trailing_tone_list(const char* text) {
     return rc < 0 ? NULL : last;
 }
 
+/* Whether @p text, after the spaces it starts with, starts with a row option's switch, alone or with its argument after
+ * '=' ("--squelch-db -60", "--nfm-bandwidth-hz=12500"): what an options cell goes on with. */
+static int
+option_starts_switch(const char* text) {
+    const char* cursor = option_skip_space(text);
+    const size_t len = strcspn(cursor, "= \t\r\n\v\f");
+    char name[32];
+    if (len <= 2U || len >= sizeof(name) || strncmp(cursor, "--", 2) != 0) {
+        return 0;
+    }
+    DSD_MEMCPY(name, cursor, len);
+    name[len] = '\0';
+    return option_find(name) != NULL;
+}
+
 /* Whether @p text, a field of the file's own columns, can only be the rest of a tone list a comma cut off: one run of
  * '/'-separated entries with no space in it ("67.0", "100/D023N", "d047i/150.0"), the first a standard CTCSS tone or
- * DCS code. A column's own text is left alone: a value no list takes (an RTL gain) and anything with a space in it,
- * such as a name that starts with a number or a code ("100 Main St", "D023 Repeater"). */
+ * DCS code, alone or followed by a row option's switch, the rest of the options cell the same comma cut off
+ * ("67.0 --squelch-db -60"). A column's own text is left alone: a value no list takes (an RTL gain) and anything else
+ * with a space in it, such as a name that starts with a number or a code ("100 Main St", "D023 Repeater"). */
 static int
 option_is_tone_list_rest(const char* text) {
     size_t len = strlen(text);
@@ -751,8 +767,9 @@ option_is_tone_list_rest(const char* text) {
         len--;
     }
     const size_t first = strcspn(text, "/ \t\r\n\v\f");
+    const size_t run = strcspn(text, " \t\r\n\v\f");
     char entry[16];
-    if (first == 0U || first >= sizeof(entry) || strcspn(text, " \t\r\n\v\f") < len) {
+    if (first == 0U || first >= sizeof(entry) || (run < len && !option_starts_switch(text + run))) {
         return 0;
     }
     DSD_MEMCPY(entry, text, first);

@@ -342,8 +342,9 @@ row alone: a row without one runs the configured policy, `--no-tone-filter` turn
 written as on the command line, `/` between entries. A comma ends the `options` cell (the splitter has no quoting), so a
 list written with commas is refused rather than imported short: when the cell ends with the list and the field after the
 comma lies past the header's last column, or is one of the file's own columns whose whole field is a run of
-`/`-separated entries with no space, starting with a standard tone or code (`67.0`, `67.0/D023N`), the row is refused
-with `--tone-allow: use / between entries, not commas`, and the text after the comma is not repeated. A name with a
+`/`-separated entries with no space, starting with a standard tone or code (`67.0`, `67.0/D023N`), alone or followed by
+another row option the same comma cut off (`67.0 --squelch-db -60`), the row is refused with
+`--tone-allow: use / between entries, not commas`, and the text after the comma is not repeated. Any other name with a
 space in it (`100 Main St`, `D023 Repeater`) is its column's own, but a one-word name that is itself a standard tone or
 code (`100`) reads as the list's rest. A code matches by its signal: `D023I` passes traffic received as
 `DCS D047N / D023I`. The polarity is part of the signal, so on a source whose audio is inverted a `D023N` transmitter

@@ -2621,6 +2621,9 @@ test_nfm_channel_map_tone_lists(void) {
          "row 2: --tone-block: use / between entries, not commas"},
         {"channel,frequency_hz,mode,options,name\n1,154430000,nfm,--tone-allow 100.0,67.0/D023N,Fire\n",
          "row 2: --tone-allow: use / between entries, not commas"},
+        /* The rest of a split list followed by more of the cell's options: not a name that starts with a tone. */
+        {"channel,frequency_hz,mode,options,name\n1,154430000,nfm,--tone-block 100.0,67.0 --squelch-db -60,Fire\n",
+         "row 2: --tone-block: use / between entries, not commas"},
         /* The list's rest in a column checked before the options, the mode or an analog row's key column, is named as
          * the split, not as that column's own error. */
         {"channel,frequency_hz,options,mode\n1,154430000,--tone-allow 100.0,67.0,nfm\n",

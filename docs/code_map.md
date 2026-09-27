@@ -1952,8 +1952,9 @@ External dependencies (resolved via CMake):
   an unquoted comma, so both importers (`chan_import_options_split()` in `dsd_import.c`, `scan_check_options_split()` in
   `trunk_scan.c`) ask `dsd_scan_options_tone_list_split()` whether the cell ends with a tone list and the field after it
   goes on with it (any text past the header; in a named column, a field that is one space-free run of `/`-separated
-  entries starting with a standard tone or code, so a name such as `100 Main St` stays the column's own) and refuse the
-  row with `use / between entries, not commas` rather than import it short or blame the column the rest landed in. The
+  entries starting with a standard tone or code, alone or followed by a row option's switch, the rest of the cell, so a
+  name such as `100 Main St` stays the column's own) and refuse the row with `use / between entries, not commas` rather
+  than import it short or blame the column the rest landed in. The
   import previews carry a row's own policy as `tone_filter` (its `dsd_tone_filter_mode`, -1 when the row runs the
   configured one) and `tone_list` (its list as displayed) in `dsd_csv_channel_profile` and `dsd_app_scan_csv_target`,
   both filled by `dsd_scan_option_tone_summary()`; they reach the Qt/Android channel-map review and target preview as
