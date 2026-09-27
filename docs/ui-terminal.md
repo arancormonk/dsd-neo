@@ -633,13 +633,15 @@ last sync. NXDN's additional grace period is described below.
 | `Idle dwell` | nothing holds the row | the idle dwell |
 | `Hangtime` | `-Y` without `--scan-voice-only`: waiting out `-t` since the last sync | next whole second after `-t` |
 | `Carrier` | an analog row's carrier is open (an `nfm` or `am` row, an `nfm-conventional` or `am-conventional` target, or a row of an untyped list scanned under `-fA` or `-fM`): squelch open, whether or not audio plays | `-Y`: the hangtime window; trunk scan: the activity hold |
+| `Tone check` | an FM row's carrier (an `nfm` row or `nfm-conventional` target, or a row of an untyped list scanned under `-fA`) while the tone filter is still checking its tone or code, muted, for at most 800 ms (1,600 ms for a listed DCS code still being confirmed) | as for `Carrier` |
 
 Which phrases you can see depends on the protocol: an NXDN trunked target has no state machine to report control
 acquisition, so it never reads `Acquiring control`. An analog row (an `nfm` or `am` row or target, or any row of an
 untyped list scanned under `-fA` or `-fM`) never reads `Voice`, `Voice tail` or `Qualify`, since the voice gate does not
-apply to it: it reads `Carrier` while its carrier holds it, then `Hangtime` (`-Y`) or `Activity hold` (trunk scan) for
-the tail. While a typed scan row is on air, the decoder picker's label names its class beside the configured mode,
-`Mode... [DMR; scan nfm]` (`scan am` for an `am` row).
+apply to it: it reads `Carrier` while its carrier holds it (`Tone check` while the tone filter is checking an FM row),
+then `Hangtime` (`-Y`) or `Activity hold` (trunk scan) for the tail. Traffic the tone filter rejects holds nothing: the
+row moves on at the scanner's next pass. While a typed scan row is on air, the decoder picker's label names its class
+beside the configured mode, `Mode... [DMR; scan nfm]` (`scan am` for an `am` row).
 
 The values that follow are the *effective* ones for the row on air, after CSV and option overrides:
 
@@ -706,6 +708,25 @@ Supported tones and codes, timing, the DCS alias table and the requirements on e
 CLI guide: [CTCSS](cli.md#received-tone-ctcss-on-the-analog-monitor) and
 [DCS](cli.md#received-code-dcs-on-the-analog-monitor).
 
+### Tone filter
+
+While a CTCSS/DCS receive policy is in force on the analog FM monitor (`--tone-allow`, `--tone-block`, `[analog]
+tone_filter`, or an `nfm` scan row's own), Call Info adds a `Tone filter:` line under `Rx tone:`, compact view
+included:
+
+```
+| Rx tone: CTCSS 67.0 Hz
+| Tone filter: allow 100.0 Hz/D023N — muted: not allowed
+```
+
+The line is the setting, never the received value: the policy (`allow` or `block` and its list, tones with their unit,
+`…+N` for entries that do not fit, and `(row)` while a scan row's own policy runs; `off (row)` for a row that turns
+the filter off), and while a carrier is heard what it does with it: `passing`, `muted: checking tone` while the
+transmission is still being checked (at most 800 ms, or 1,600 ms for a listed DCS code still being confirmed),
+`muted: not allowed` for a tone or code the policy rejects, `muted: no tone` for an allow list's traffic with none. With
+no carrier the line shows the policy alone. It is absent while no policy is in force, and wherever tones are not
+detected. See [Tone filter](cli.md#tone-filter-ctcssdcs-receive-policy).
+
 ## Compact View
 
 Press `c` (or use Menu -> Display -> Compact view) to collapse the main screen to a scanner-style
@@ -714,8 +735,8 @@ layout. While active, the header shows a `Compact (c)` indicator and the frame r
 - the header banner and any transient status toast;
 - a condensed `Status` block: decoder mode, demod/symbol rate, tuner Busy/Free (when trunking), SNR meter,
   input level, output mute state, and slot on/off states;
-- the full Call Info section (the `Channel:`/`Target:` line while scanning, the `Rx tone:` line on the analog
-  monitor, per-slot TGT/SRC, active channels, tuned frequency, TG HOLD);
+- the full Call Info section (the `Channel:`/`Target:` line while scanning, the `Rx tone:` and `Tone filter:` lines on
+  the analog monitor, per-slot TGT/SRC, active channels, tuned frequency, TG HOLD);
 - the event history, which expands into the freed rows.
 
 Suppressed while compact: the Input Output section, visual aids (including any enabled visualizers — their

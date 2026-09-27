@@ -429,6 +429,8 @@ Rdio API uploads do not follow HTTP redirects. Configure `rdio_api_url` as the f
 |-----|------|-------------|---------|
 | `nfm_bandwidth_hz` | INT (8000-25000) | NFM channel-filter width in whole Hz: the full RF passband the analog monitor (`decode = "analog"`) keeps, not the tuner, DSP or audio bandwidth. Same as `--nfm-bandwidth-hz` | (unset: `16000`) |
 | `am_bandwidth_hz` | INT (5000-20000) | AM channel-filter width in whole Hz, likewise, for native AM (`decode = "am"`). Same as `--am-bandwidth-hz` | (unset: `6000`) |
+| `tone_filter` | ENUM (`off`, `allow`, `block`) | CTCSS/DCS receive policy on the analog FM monitor and `nfm` scan rows: `allow` hears only traffic carrying a `tone_list` tone or code, `block` mutes it. Same as `--tone-allow`/`--tone-block`/`--no-tone-filter` | `off` |
+| `tone_list` | STRING (`/`-separated, at most 1023 bytes) | The tones and codes `tone_filter` uses: standard CTCSS tones and DCS codes, e.g. `"67.0/100.0/D023N"` (a bare `D023` is `D023N`) | (empty) |
 
 The `[analog]` keys are written only when set explicitly: a save leaves `nfm_bandwidth_hz` out while the default is in
 force, so within the section the key left out and the default are the same thing, and a later default reaches the
@@ -454,6 +456,20 @@ and `am_bandwidth_hz`, the 6000 default included, under `decode = "am"` (`AM ban
 DSP rate ...`); see the DSP-rate table in `docs/cli.md`, Analog reception. A SoapySDR or Airspy device, which can force
 another rate, is checked when its stream starts.
 
+`tone_filter` and `tone_list` (issue #527) set the configured receive policy, a setting the frontends show apart from
+the tone or code the monitor receives (see "Tone filter" in `docs/cli.md`). `off` keeps the list, so switching between
+`allow`, `block` and `off` never loses it. A save writes `tone_filter` when it is not `off` and `tone_list` whenever the
+list is not empty, each list entry as it was written (an inverted code stays inverted; tones with one decimal); a key
+left out of a present `[analog]` section is `off` and an empty list. A save during a scan writes the configured policy,
+never the one an `nfm` channel-map row or `nfm-conventional` target sets for itself with `--tone-allow`, `--tone-block`
+or `--no-tone-filter` (see [csv-formats.md](csv-formats.md#analog-rows)). A list with a comma, an empty entry, a value
+that is not a standard CTCSS tone or DCS code, or one signal twice (`D023N/D047I` included) is refused by entry number:
+startup logs a warning and the filter stays off, and `--validate-config` reports an error. So does `tone_filter = allow`
+or `block` with no list. The filter applies only where the monitor detects tones (the analog FM monitor); set for AM or
+a digital mode without a scan, startup warns once that it has no effect. A config loaded into a running session
+applies the policy from the next read of the monitor's audio; while an `nfm` row with its own policy is on air, the
+loaded policy becomes the configured default and applies when the row leaves.
+
 When `[analog]` changes apply (the full table, with the terminal and Qt controls, is in `docs/cli.md`, Analog
 reception, "When changes apply"):
 
@@ -477,7 +493,7 @@ The config system validates files and reports issues with line numbers:
 
 - **Error**: Invalid enum value, type mismatch, parse failure, an `[analog]` width outside its range or one the
   configured RTL DSP bandwidth cannot filter (for an `rtl`/`rtltcp` input with `rtl_freq` under `decode = "analog"` or
-  `"am"`)
+  `"am"`), a refused `[analog] tone_list`, or `tone_filter = allow` or `block` without a list
 - **Warning**: Unknown key or section, integer out of range
 
 ```bash
@@ -903,6 +919,7 @@ The following can be changed without restarting:
 - RTL-SDR, RTL-TCP, and Soapy tuning parameters (frequency, gain, PPM, etc.)
 - The NFM and AM channel widths (`[analog] nfm_bandwidth_hz`, `am_bandwidth_hz`), applied to a running analog monitor
   of that kind without a reopen (see "When `[analog]` changes apply" above)
+- The tone filter (`[analog] tone_filter`, `tone_list`), from the monitor's next read of audio
 - TCP/UDP connection parameters
 - File input path
 

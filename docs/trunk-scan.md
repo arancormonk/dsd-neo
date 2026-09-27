@@ -315,8 +315,9 @@ During scanning:
 - A `| Scan Timing:` row directly under the Trunk Scan row says why the receiver is staying on that target — `Acquiring
   control`, `Following call`, `Retune pending`, `Retune retry`, `Manual hold`, `Idle dwell`, and the conventional
   `Voice` / `Voice tail` / `Activity hold` / `Qualify` — with a countdown on whichever window is running and the
-  target's effective dwell and hold beside it, and `Carrier` while an analog target's carrier holds it. The
-  phrase table is in [the terminal UI guide](ui-terminal.md); the Qt and Android panels show the same thing.
+  target's effective dwell and hold beside it, `Carrier` while an analog target's carrier holds it, and `Tone check`
+  while an `nfm-conventional` target's carrier is held muted for the tone filter's check. The phrase table is in
+  [the terminal UI guide](ui-terminal.md); the Qt and Android panels show the same thing.
 - Idle targets rotate after their dwell time. Call following or a conventional activity hold suspends that dwell;
   once the target becomes idle again, a fresh full dwell starts. Time spent following the call or holding activity
   does not use up the next idle dwell.
@@ -538,14 +539,24 @@ no symbol profile is applied over the monitor. Everything below applies to both 
   together, so a peer already running both is not asked again; after a request whose reply was lost the next one is
   always sent. On an RTL-family input DSD-neo demodulates the I/Q itself and the peer only follows the frequency: it is
   asked for `-B`, best-effort, as before, whatever the target runs, and whatever demodulator the peer is on.
+- **Tone filter.** `--tone-allow <list>`, `--tone-block <list>` or `--no-tone-filter` in the `options` column set the
+  target's own CTCSS/DCS receive policy; without one the configured policy (`--tone-allow`/`--tone-block`, `[analog]
+  tone_filter` and `tone_list`) applies (see "Tone filter" in `docs/cli.md`). The policy is a setting, shown apart from
+  the tone or code received. Under a list policy each transmission is muted while it is checked, and holds the target
+  meanwhile under `Tone check`, for at most 800 ms (to 1,600 ms while a listed DCS code is still being confirmed).
+  Traffic the policy rejects is muted and is no activity: it never restarts `activity_hold_ms`, and at the next tick
+  the coordinator advances, without waiting out the hold that earlier traffic earned, which is how traffic that was
+  passing and turns out to carry a blocked (or, under allow, an unlisted) tone or code releases the target. The `Y`
+  hold keeps the target, muted; a list with this one target mutes and stays. Leaving the target restores the
+  configured policy, and Config->Save never writes a target's own.
 - **Controls.** `--scan-max-visit-ms`, the `Y` hold, advance and avoid work exactly as for digital targets, including
   while a carrier holds the target. The voice gate never applies to an analog target, so a global `--scan-voice-only`
   does not block one, and voice-gate switches are rejected in its `options`.
 - **What it refuses.** An analog target takes no `modulation`, `chan_csv`, `p25_bandplan_csv` or key column, and its
-  `options` accept only `--scan-max-visit-ms`, `--squelch-db` and the width option of its own kind
-  ([details](csv-formats.md#analog-rows)). Live decryption changes are refused while it is parked. `nfm-trunk` and
-  `am-trunk` are refused with `analog targets are conventional only`, and `nfm`, `am` or the analog FM spellings
-  (`fm-conventional`, ...) with a hint naming the conventional type to use.
+  `options` accept only `--scan-max-visit-ms`, `--squelch-db`, the width option of its own kind and, on an
+  `nfm-conventional` target, the tone filter ([details](csv-formats.md#analog-rows)). Live decryption changes are
+  refused while it is parked. `nfm-trunk` and `am-trunk` are refused with `analog targets are conventional only`, and
+  `nfm`, `am` or the analog FM spellings (`fm-conventional`, ...) with a hint naming the conventional type to use.
 
 ## Limitations
 
