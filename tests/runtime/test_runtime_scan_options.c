@@ -517,6 +517,31 @@ check_tone_options(void) {
         assert(strstr(error, ": duplicate option") != NULL);
     }
 
+    /* An am row or am-conventional target runs the AM monitor, which hears no CTCSS or DCS: another analog class's
+       option, refused there as the NFM width is. */
+    static const struct {
+        const char* text;
+        const char* why;
+    } on_am[] = {
+        {"--tone-allow 100.0", "--tone-allow: not supported for this mode/target"},
+        {"--tone-block=D023N", "--tone-block: not supported for this mode/target"},
+        {"--no-tone-filter", "--no-tone-filter: not supported for this mode/target"},
+        {"--am-bandwidth-hz 8333 --tone-allow 100.0", "--tone-allow: not supported for this mode/target"},
+    };
+
+    for (int conventional = 0; conventional <= 1; conventional++) {
+        for (size_t i = 0; i < sizeof(on_am) / sizeof(on_am[0]); i++) {
+            DSD_MEMSET(&parsed, 0, sizeof(parsed));
+            assert(dsd_scan_options_parse(on_am[i].text, DSD_SCAN_MODE_AM, conventional, &parsed, error, sizeof(error))
+                   < 0);
+            if (strcmp(error, on_am[i].why) != 0) {
+                DSD_FPRINTF(stderr, "am row '%s': got '%s', want '%s'\n", on_am[i].text, error, on_am[i].why);
+                assert(0);
+            }
+            assert(parsed.values.present == 0);
+        }
+    }
+
     /* Digital and blank rows: the mode they need. */
     for (unsigned int mode = DSD_SCAN_MODE_INHERIT; mode <= DSD_SCAN_MODE_LAST; mode++) {
         if (dsd_scan_mode_is_analog((dsd_scan_mode)mode)) {

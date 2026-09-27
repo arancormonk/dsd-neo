@@ -1657,6 +1657,59 @@ test_rx_tone_rigctl_scan_step(void) {
     free_test_runtime(opts, state);
     return rc;
 }
+
+/* Issue #527 beside #526: an am row runs the AM monitor, which hears no CTCSS or DCS, so the configured tone policy
+ * (--tone-allow 100.0 here) judges nothing there. A verdict still published (a rejection an nfm row left behind) is not
+ * in force: the row's carrier holds it under "Carrier", never "Tone check", and nothing steps it; the configured policy
+ * stays as it was. */
+static int
+test_typed_scan_am_row_ignores_the_tone_filter(void) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    int rc = 0;
+    reset_rtl_profile_fakes();
+    dsd_trunk_tuning_requests_reset();
+    opts->audio_in_type = AUDIO_IN_RTL;
+    opts->scanner_mode = 1;
+    opts->trunk_hangtime = 30;
+    opts->analog_tone_filter = DSD_TONE_FILTER_ALLOW;
+    rc |= expect_true("am tone list", dsd_tone_set_parse("100.0", &opts->analog_tone_set, NULL, 0) == 0);
+    state->rtl_ctx = (RtlSdrContext*)state;
+    state->lcn_freq_count = 2;
+    state->trunk_lcn_freq[0] = 118300000L;
+    state->trunk_lcn_freq[1] = 461525000L;
+    rc |= expect_true("am tone row", dsd_channel_mode_set(state, 0, DSD_SCAN_MODE_AM) == 0);
+    rc |= expect_true("am tone dmr row", dsd_channel_mode_set(state, 1, DSD_SCAN_MODE_DMR) == 0);
+
+    state->last_cc_sync_time = time(NULL) - 40;
+    noCarrier(opts, state);
+    rc |= expect_true("am row on air", state->lcn_freq_roll == 1 && opts->analog_only == 1
+                                           && opts->analog_demod == DSD_ANALOG_DEMOD_AM
+                                           && opts->analog_tone_filter == DSD_TONE_FILTER_ALLOW);
+    for (int pass = 0; pass < 3; pass++) {
+        state->analog_rx.carrier_open = 1;
+        state->analog_rx.gate = DSD_ANALOG_TONE_GATE_REJECTED;
+        stamp_monitor_carrier(state);
+        rc |= expect_true("no verdict in force on the AM monitor",
+                          dsd_scan_analog_carrier_open(opts, state)
+                              && dsd_scan_analog_tone_gate(opts, state) == DSD_ANALOG_TONE_GATE_OFF);
+        noCarrier(opts, state);
+    }
+    rc |= expect_true("the carrier holds the am row", state->lcn_freq_roll == 1 && g_rtl_tune_freq == 118300000U);
+    dsd_engine_scan_y_timing_tick(opts, state, dsd_time_now_monotonic_s(), (double)time(NULL));
+    rc |= expect_true("am row reads Carrier", state->scan_timing.reason == (uint8_t)DSD_SCAN_STAY_CARRIER);
+
+    dsd_engine_channel_scan_leave(opts, state);
+    rc |= expect_true("configured policy kept", opts->analog_tone_filter == DSD_TONE_FILTER_ALLOW
+                                                    && dsd_tone_set_contains_ctcss(&opts->analog_tone_set, 1000));
+    state->rtl_ctx = NULL;
+    free_test_runtime(opts, state);
+    dsd_trunk_tuning_requests_reset();
+    return rc;
+}
 #endif
 
 #ifdef DSD_NEO_TEST_RTL_WRAP
@@ -3582,6 +3635,7 @@ main(void) {
     rc |= test_rx_tone_resets_on_legacy_scan_step();
     rc |= test_typed_scan_nfm_row_tone_rejection_steps();
     rc |= test_typed_scan_tone_rejection_with_a_refused_row();
+    rc |= test_typed_scan_am_row_ignores_the_tone_filter();
     rc |= test_typed_scan_tune_boundaries();
     rc |= test_typed_scan_nfm_rows_switch_family(0);
     rc |= test_typed_scan_nfm_rows_switch_family(1);

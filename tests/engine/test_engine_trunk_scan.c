@@ -10558,6 +10558,66 @@ test_nfm_target_rejection_with_a_refused_alternate(void) {
     return test_rc;
 }
 
+/* The AM monitor hears no CTCSS or DCS, so the configured tone policy judges nothing on an am-conventional target: a
+ * verdict still published there (a rejection an nfm target left behind) is not in force, the carrier holds the target
+ * as "Carrier", never "Tone check", and nothing advances it before its activity hold runs out. The target leaves the
+ * configured policy as it found it. */
+static int
+test_am_target_carrier_ignores_the_tone_filter(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    char target_path[DSD_TEST_PATH_MAX];
+    static dsd_opts opts;
+    static dsd_state state;
+    if (make_temp_dir(dir, sizeof dir) != 0
+        || write_targets_file_with_header(dir, k_squelch_targets_header,
+                                          "tower,am-conventional,118300000,,250,2000,\n"
+                                          "dmr,dmr-conventional,461000000,,250,250,\n",
+                                          target_path, sizeof target_path)
+               != 0) {
+        return 1;
+    }
+    reset_scan_opts_state(&opts, &state);
+    opts.frame_dmr = 1;
+    opts.dmr_stereo = 1;
+    opts.analog_tone_filter = DSD_TONE_FILTER_ALLOW;
+    (void)dsd_tone_set_parse("100.0", &opts.analog_tone_set, NULL, 0);
+    DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", target_path);
+    char err[256] = {0};
+    trunk_scan_test_set_now(0.0);
+    if (dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err) != 0) {
+        DSD_FPRINTF(stderr, "am tone target init failed: %s\n", err);
+        cleanup_paths(dir, target_path, NULL);
+        return 1;
+    }
+    int test_rc = 0;
+    if (opts.analog_only != 1 || opts.analog_demod != DSD_ANALOG_DEMOD_AM
+        || opts.analog_tone_filter != DSD_TONE_FILTER_ALLOW) {
+        DSD_FPRINTF(stderr, "am target on air: analog_only=%d demod=%d tone_filter=%d\n", opts.analog_only,
+                    opts.analog_demod, opts.analog_tone_filter);
+        test_rc = 1;
+    }
+    for (int tick = 0; tick < 4; tick++) {
+        publish_tone_gate(&state, DSD_ANALOG_TONE_GATE_REJECTED);
+        if (dsd_analog_tone_gate_in_force(&opts, &state) != DSD_ANALOG_TONE_GATE_OFF) {
+            DSD_FPRINTF(stderr, "a verdict is in force on the AM monitor\n");
+            test_rc = 1;
+        }
+        trunk_scan_test_set_now(0.10 + (0.20 * tick));
+        dsd_engine_trunk_scan_tick(&opts, &state);
+    }
+    test_rc |= expect_active_target(&state, "am carrier past the dwell", 0U);
+    test_rc |= expect_scan_timing(&state, "am carrier", DSD_SCAN_STAY_CARRIER, 2.70, 250U, 2000U);
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    if (opts.analog_tone_filter != DSD_TONE_FILTER_ALLOW || !dsd_tone_set_contains_ctcss(&opts.analog_tone_set, 1000)) {
+        DSD_FPRINTF(stderr, "the am target changed the configured tone policy: %d\n", opts.analog_tone_filter);
+        test_rc = 1;
+    }
+    opts.analog_tone_filter = DSD_TONE_FILTER_OFF;
+    trunk_scan_test_clear_now();
+    cleanup_paths(dir, target_path, NULL);
+    return test_rc;
+}
+
 /* The configured tone policy applies only on nfm-conventional targets, each target running its own type's mode: a list
  * with none says once, when the scan starts, that the policy has no effect -- whatever the configured decode mode, the
  * FM monitor included -- and a list with one says nothing. */
@@ -10571,6 +10631,11 @@ test_tone_filter_warns_without_nfm_targets(void) {
         {"dmr,dmr-conventional,461000000,,250,250,\np25,p25-conventional,851500000,,250,250,\n", 0, 1},
         {"dmr,dmr-conventional,461000000,,250,250,\n", 1, 1},
         {"dmr,dmr-conventional,461000000,,250,250,\nfire,nfm-conventional,154430000,,250,250,\n", 0, 0},
+        /* An am-conventional target runs the AM monitor, which hears no tone: it counts for nothing, whatever the
+           configured decode mode. */
+        {"tower,am-conventional,118300000,,250,250,\ndmr,dmr-conventional,461000000,,250,250,\n", 0, 1},
+        {"tower,am-conventional,118300000,,250,250,\n", 1, 1},
+        {"tower,am-conventional,118300000,,250,250,\nfire,nfm-conventional,154430000,,250,250,\n", 0, 0},
     };
 
     static const char* const expected =
@@ -11717,6 +11782,7 @@ main(void) {
     /* Issue #527 */
     rc |= run_with_default_tune_hook(test_nfm_target_tone_check_holds_and_rejection_advances);
     rc |= run_with_default_tune_hook(test_nfm_target_rejection_under_hold_and_alone);
+    rc |= run_with_default_tune_hook(test_am_target_carrier_ignores_the_tone_filter);
     rc |= run_with_default_tune_hook(test_nfm_target_rejection_with_a_refused_alternate);
     rc |= run_with_default_tune_hook(test_tone_filter_warns_without_nfm_targets);
     return rc;

@@ -2629,6 +2629,11 @@ test_nfm_channel_map_tone_lists(void) {
          "row 2: --tone-allow: needs mode nfm"},
         {"channel,frequency_hz,name,mode,options\n1,461000000,Blank,,--no-tone-filter\n",
          "row 2: --no-tone-filter: needs mode nfm"},
+        /* The AM monitor hears no CTCSS or DCS: an am row refuses the policy as it refuses the NFM width. */
+        {"channel,frequency_hz,name,mode,options\n1,118300000,Tower,am,--tone-allow 100.0\n",
+         "row 2: --tone-allow: not supported for this mode/target"},
+        {"channel,frequency_hz,name,mode,options\n1,118300000,Tower,am,--am-bandwidth-hz 8333 --no-tone-filter\n",
+         "row 2: --no-tone-filter: not supported for this mode/target"},
     };
 
     for (size_t i = 0; i < sizeof(refused) / sizeof(refused[0]); i++) {

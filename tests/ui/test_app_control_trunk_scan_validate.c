@@ -237,6 +237,11 @@ test_nfm_target_tone_lists(const char* path) {
          "row 2: --tone-allow: entry 2 is not a standard CTCSS tone or DCS code"},
         {NULL, "dmr,dmr-conventional,461000000,,1500,1200,,--tone-allow 100.0\n",
          "row 2: --tone-allow: needs mode nfm"},
+        /* The AM monitor hears no CTCSS or DCS: an am-conventional target refuses the policy. */
+        {NULL, "tower,am-conventional,118300000,,1500,2000,,--tone-block 100.0\n",
+         "row 2: --tone-block: not supported for this mode/target"},
+        {NULL, "tower,am-conventional,118300000,,1500,2000,,--no-tone-filter --squelch-db -55\n",
+         "row 2: --no-tone-filter: not supported for this mode/target"},
     };
 
     for (size_t i = 0; i < sizeof bad / sizeof bad[0]; i++) {
