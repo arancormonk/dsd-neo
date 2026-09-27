@@ -4,19 +4,24 @@
  */
 
 #include <dsd-neo/app_control/rx_tone_view.h>
+#include <dsd-neo/core/analog_tone.h>
+#include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/runtime/analog_tones.h>
+#include <dsd-neo/runtime/scan_mode.h>
+#include <dsd-neo/runtime/scan_options.h>
 #include <stdint.h>
 
 /* U+2014 EM DASH, the "nothing to report" mark the other monitor rows use. */
 #define RX_TONE_NO_CARRIER_TEXT "\xE2\x80\x94"
 
-/* The configured receive policy. Tone filtering is #527; until it exists the policy is off,
-   and this text comes from the configuration side, never from the received tone. */
+/* The receive policy (issue #527), from the configuration side (dsd_opts and the scan row's options), never from the
+   received tone. */
 #define RX_TONE_POLICY_OFF_TEXT "off"
+#define RX_TONE_POLICY_ROW_TEXT " (row)"
 
 static void
 rx_tone_set_text(dsd_app_rx_tone* out, const char* text) {
@@ -117,6 +122,44 @@ rx_tone_stale(const dsd_analog_rx_publication* pub, double now_m) {
     return (uint64_t)(now_m * 1000.0) > pub->stale_after_ms;
 }
 
+/* The tone policy in force (issue #527): dsd_opts holds a scan row's own while the row is on air, which the text marks.
+   A list policy without a list runs as off, so it reads as off. */
+static void
+rx_tone_fill_policy_text(dsd_app_rx_tone* out, const dsd_opts* opts, const dsd_state* state) {
+    const dsd_scan_option_values* row_options = dsd_scan_mode_row_options(state);
+    const int row = row_options && (row_options->present & DSD_SCAN_OPT_TONE) != 0U;
+    const char* mode = dsd_tone_filter_mode_name(opts->analog_tone_filter);
+    char list[DSD_APP_RX_TONE_POLICY_TEXT_SIZE - 16];
+    const char* suffix = row ? RX_TONE_POLICY_ROW_TEXT : "";
+    out->policy_row = row ? 1U : 0U;
+    if (!mode || opts->analog_tone_filter == DSD_TONE_FILTER_OFF
+        || dsd_tone_set_format_display(&opts->analog_tone_set, list, sizeof(list)) <= 0) {
+        DSD_SNPRINTF(out->configured_text, sizeof(out->configured_text), "%s%s", RX_TONE_POLICY_OFF_TEXT, suffix);
+        out->policy_visible = row ? 1U : 0U;
+        return;
+    }
+    DSD_SNPRINTF(out->configured_text, sizeof(out->configured_text), "%s %s%s", mode, list, suffix);
+    out->policy_visible = 1U;
+}
+
+/* What the policy does with the carrier on air: nothing to say without a carrier (or past a stale input's deadline). */
+static void
+rx_tone_fill_gate(dsd_app_rx_tone* out, const dsd_opts* opts, const dsd_state* state, int stale) {
+    const dsd_analog_rx_publication* pub = &state->analog_rx;
+    const int gate = dsd_analog_tone_gate_in_force(opts, state);
+    if (!out->policy_visible || stale || !pub->carrier_open || gate == DSD_ANALOG_TONE_GATE_OFF) {
+        return;
+    }
+    const char* text = "muted: checking tone";
+    if (gate == DSD_ANALOG_TONE_GATE_ALLOWED) {
+        text = "passing";
+    } else if (gate == DSD_ANALOG_TONE_GATE_REJECTED) {
+        text = pub->gate_no_tone ? "muted: no tone" : "muted: not allowed";
+    }
+    out->gate = (uint8_t)gate;
+    DSD_SNPRINTF(out->gate_text, sizeof(out->gate_text), "%s", text);
+}
+
 int
 dsd_app_rx_tone_view(const dsd_opts* opts, const dsd_state* state, double now_m, dsd_app_rx_tone* out) {
     if (out) {
@@ -126,6 +169,11 @@ dsd_app_rx_tone_view(const dsd_opts* opts, const dsd_state* state, double now_m,
     if (!opts || !state || !out) {
         return -1;
     }
+    rx_tone_fill_policy_text(out, opts, state);
+    if (!dsd_analog_tone_detection_active(opts)) {
+        out->policy_visible = 0U;
+    }
+    rx_tone_fill_gate(out, opts, state, rx_tone_stale(&state->analog_rx, now_m));
     /* The tap's own question (runtime/analog_tones.h), so the row is on screen exactly while
        detection listens. Not INACTIVE in the publication: right after a reset it reads that
        until the next block, and the row should not blink off and on across every retune. The

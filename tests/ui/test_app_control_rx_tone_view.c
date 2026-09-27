@@ -12,13 +12,18 @@
 
 #include <assert.h>
 #include <dsd-neo/app_control/rx_tone_view.h>
+#include <dsd-neo/core/analog_tone.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/io/rtl_stream_c.h>
+#include <dsd-neo/runtime/analog_tones.h>
 #include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
+#include <dsd-neo/runtime/scan_mode.h>
+#include <dsd-neo/runtime/scan_options.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
@@ -65,7 +70,7 @@ assert_view(const dsd_opts* opts, const dsd_state* state, int status, const char
     assert(view.status == (uint8_t)status);
     assert(view.visible == (status == DSD_APP_RX_TONE_HIDDEN ? 0U : 1U));
     assert(strcmp(view.text, text) == 0);
-    /* Whatever was received, the configured policy text is its own: off until #527. */
+    /* Whatever was received, the configured policy text is its own: off here, where no policy is set. */
     assert(strcmp(view.configured_text, "off") == 0);
 }
 
@@ -269,6 +274,135 @@ test_paused_stream_reads_no_carrier(void) {
     free(state);
 }
 
+/* --- Issue #527: the tone policy beside the received tone --- */
+
+static void
+set_policy(dsd_opts* opts, int mode, const char* list) {
+    opts->analog_tone_filter = mode;
+    assert(dsd_tone_set_parse(list, &opts->analog_tone_set, NULL, 0) == 0);
+}
+
+/* The Tone filter row: the policy in force and, while a carrier is heard, what it does with it. The received row goes
+   on saying only what was received. */
+static void
+test_tone_filter_policy_text(void) {
+    static dsd_opts opts;
+    dsd_state* state = make_state();
+    make_monitor_opts(&opts);
+    set_policy(&opts, DSD_TONE_FILTER_ALLOW, "D023N/100.0");
+    dsd_app_rx_tone view;
+
+    /* No carrier: the policy alone, no verdict. */
+    publish(state, 0, DSD_ANALOG_TONE_STATE_IDLE, 0, 0);
+    state->analog_rx.gate = DSD_ANALOG_TONE_GATE_PENDING;
+    assert(dsd_app_rx_tone_view(&opts, state, 0.0, &view) == 1);
+    assert(view.policy_visible == 1U && view.policy_row == 0U);
+    assert(strcmp(view.configured_text, "allow 100.0 Hz/D023N") == 0);
+    assert(view.gate == DSD_ANALOG_TONE_GATE_OFF && view.gate_text[0] == '\0');
+
+    static const struct {
+        int tone_state;
+        int tenths;
+        int gate;
+        int no_tone;
+        const char* received;
+        const char* verdict;
+    } cases[] = {
+        {DSD_ANALOG_TONE_STATE_ACQUIRING, 0, DSD_ANALOG_TONE_GATE_PENDING, 0, "detecting", "muted: checking tone"},
+        {DSD_ANALOG_TONE_STATE_LOCKED, 1000, DSD_ANALOG_TONE_GATE_ALLOWED, 0, "CTCSS 100.0 Hz", "passing"},
+        {DSD_ANALOG_TONE_STATE_LOCKED, 670, DSD_ANALOG_TONE_GATE_REJECTED, 0, "CTCSS 67.0 Hz", "muted: not allowed"},
+        {DSD_ANALOG_TONE_STATE_NONE, 0, DSD_ANALOG_TONE_GATE_REJECTED, 1, "none", "muted: no tone"},
+    };
+
+    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+        publish(state, 1, cases[i].tone_state, cases[i].tenths ? DSD_ANALOG_TONE_KIND_CTCSS : 0, cases[i].tenths);
+        state->analog_rx.gate = cases[i].gate;
+        state->analog_rx.gate_no_tone = cases[i].no_tone;
+        assert(dsd_app_rx_tone_view(&opts, state, 0.0, &view) == 1);
+        assert(strcmp(view.text, cases[i].received) == 0);
+        assert(strcmp(view.configured_text, "allow 100.0 Hz/D023N") == 0);
+        assert(view.gate == (uint8_t)cases[i].gate && strcmp(view.gate_text, cases[i].verdict) == 0);
+    }
+
+    /* A block list's pass on no tone reads as passing too. */
+    set_policy(&opts, DSD_TONE_FILTER_BLOCK, "67");
+    publish(state, 1, DSD_ANALOG_TONE_STATE_NONE, 0, 0);
+    state->analog_rx.gate = DSD_ANALOG_TONE_GATE_ALLOWED;
+    state->analog_rx.gate_no_tone = 1;
+    assert(dsd_app_rx_tone_view(&opts, state, 0.0, &view) == 1);
+    assert(strcmp(view.configured_text, "block 67.0 Hz") == 0 && strcmp(view.gate_text, "passing") == 0);
+
+    /* A stale input reads as no carrier: the verdict goes with it. */
+    opts.audio_in_type = AUDIO_IN_UDP;
+    state->analog_rx.stale_after_ms = 5000U;
+    assert(dsd_app_rx_tone_view(&opts, state, 6.0, &view) == 1);
+    assert(view.gate_text[0] == '\0' && view.policy_visible == 1U);
+    opts.audio_in_type = 0;
+
+    /* An input rate detection cannot use hides the received row, not the policy that is muting it. */
+    publish(state, 1, DSD_ANALOG_TONE_STATE_UNAVAILABLE, 0, 0);
+    state->analog_rx.gate = DSD_ANALOG_TONE_GATE_ALLOWED;
+    state->analog_rx.gate_no_tone = 1;
+    assert(dsd_app_rx_tone_view(&opts, state, 0.0, &view) == 0);
+    assert(view.policy_visible == 1U && strcmp(view.gate_text, "passing") == 0);
+
+    /* No detection (a digital mode), no policy row, whatever is configured. */
+    opts.analog_only = 0;
+    assert(dsd_app_rx_tone_view(&opts, state, 0.0, &view) == 0);
+    assert(view.policy_visible == 0U && view.gate_text[0] == '\0');
+    assert(strcmp(view.configured_text, "block 67.0 Hz") == 0);
+    opts.analog_only = 1;
+
+    /* Policy off: the row stays away, the text says off, and a published verdict is not shown. */
+    set_policy(&opts, DSD_TONE_FILTER_OFF, "67");
+    publish(state, 1, DSD_ANALOG_TONE_STATE_NONE, 0, 0);
+    state->analog_rx.gate = DSD_ANALOG_TONE_GATE_REJECTED;
+    assert(dsd_app_rx_tone_view(&opts, state, 0.0, &view) == 1);
+    assert(view.policy_visible == 0U && strcmp(view.configured_text, "off") == 0 && view.gate_text[0] == '\0');
+
+    /* A long list keeps to the text and says how much it left out. */
+    set_policy(&opts, DSD_TONE_FILTER_ALLOW,
+               "67/69.3/71.9/74.4/77/79.7/82.5/85.4/88.5/91.5/94.8/97.4/100/103.5/D023/D025/D026/D031/D032");
+    assert(dsd_app_rx_tone_view(&opts, state, 0.0, &view) == 1);
+    assert(strncmp(view.configured_text, "allow 67.0 Hz/69.3 Hz/", 22) == 0);
+    assert(strstr(view.configured_text, "\xE2\x80\xA6+") != NULL);
+    free(state);
+}
+
+/* A scan row's own policy is what runs while the row is on air; the text says so, and a row that turns the policy off
+   shows that too. */
+static void
+test_tone_filter_row_policy(void) {
+    static dsd_opts opts;
+    dsd_state* state = make_state();
+    make_monitor_opts(&opts);
+    opts.wav_sample_rate = 48000;
+    opts.audio_in_type = AUDIO_IN_WAV;
+    set_policy(&opts, DSD_TONE_FILTER_ALLOW, "100.0");
+    assert(dsd_scan_mode_begin(&opts, state) == 0);
+    assert(dsd_scan_mode_enter(&opts, state, DSD_SCAN_MODE_NFM) == 0);
+    dsd_scan_option_values row = {0};
+    row.present = DSD_SCAN_OPT_TONE;
+    row.tone_filter = DSD_TONE_FILTER_BLOCK;
+    assert(dsd_tone_set_parse("D023I", &row.tone_set, NULL, 0) == 0);
+    assert(dsd_scan_mode_options(&opts, state, &row) == 0);
+    dsd_app_rx_tone view;
+    publish(state, 0, DSD_ANALOG_TONE_STATE_IDLE, 0, 0);
+    assert(dsd_app_rx_tone_view(&opts, state, 0.0, &view) == 1);
+    assert(view.policy_visible == 1U && view.policy_row == 1U);
+    assert(strcmp(view.configured_text, "block D023I (row)") == 0);
+    row.tone_filter = DSD_TONE_FILTER_OFF;
+    DSD_MEMSET(&row.tone_set, 0, sizeof(row.tone_set));
+    assert(dsd_scan_mode_options(&opts, state, &row) == 0);
+    assert(dsd_app_rx_tone_view(&opts, state, 0.0, &view) == 1);
+    assert(view.policy_visible == 1U && strcmp(view.configured_text, "off (row)") == 0);
+    dsd_scan_mode_leave(&opts, state);
+    assert(dsd_app_rx_tone_view(&opts, state, 0.0, &view) == 1);
+    assert(view.policy_row == 0U && strcmp(view.configured_text, "allow 100.0 Hz") == 0);
+    dsd_state_ext_free_all(state);
+    free(state);
+}
+
 static void
 test_invalid_arguments(void) {
     static dsd_opts opts;
@@ -290,5 +424,7 @@ main(void) {
     test_received_is_not_configured();
     test_paused_stream_reads_no_carrier();
     test_invalid_arguments();
+    test_tone_filter_policy_text();
+    test_tone_filter_row_policy();
     return 0;
 }

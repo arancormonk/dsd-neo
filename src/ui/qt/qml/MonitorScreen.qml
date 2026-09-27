@@ -948,17 +948,26 @@ Item {
                 }
             }
 
-            // The configured tone policy, beside the received tone but never fed by
-            // it: its own reading, which says "off" until tone filtering exists (#527).
-            // Reserved and hidden until then.
-            Row {
+            // The CTCSS/DCS receive policy in force (#527), beside the received tone
+            // but never fed by it: "allow 100.0 Hz/D023N", marked "(row)" while a scan
+            // row's own policy runs, and while a carrier is heard what the policy does
+            // with it: "passing" in cyan (toneFilterGate 2 is
+            // DSD_ANALOG_TONE_GATE_ALLOWED), "muted: checking tone", "muted: not
+            // allowed" or "muted: no tone" in magenta. Shown while a policy is in force
+            // where detection runs, which app-control decides for this row and the
+            // terminal alike. A Flow for the received row's reason: a long list and its
+            // verdict move under the label on a narrow phone rather than run off it.
+            Flow {
                 // Named so UI_QT_QML_CALL_LISTS can reach it with findChild().
                 objectName: "monitorToneFilter"
 
+                width: parent.width
                 spacing: 5
-                visible: false
+                visible: metrics.toneFilterVisible
 
                 Text {
+                    objectName: "monitorToneFilterLabel"
+
                     text: qsTr("TONE FILTER")
                     font.family: Theme.mono
                     font.pixelSize: Theme.fontSize(11)
@@ -968,11 +977,26 @@ Item {
                 Text {
                     objectName: "monitorToneFilterValue"
 
+                    width: Math.min(implicitWidth, parent.width)
                     text: metrics.rxToneConfiguredText
                     textFormat: Text.PlainText
+                    wrapMode: Text.Wrap
                     font.family: Theme.mono
                     font.pixelSize: Theme.fontSize(11)
                     color: Theme.textSubdued
+                }
+
+                Text {
+                    objectName: "monitorToneFilterStatus"
+
+                    width: Math.min(implicitWidth, parent.width)
+                    visible: text.length > 0
+                    text: metrics.toneFilterStatusText
+                    textFormat: Text.PlainText
+                    wrapMode: Text.Wrap
+                    font.family: Theme.mono
+                    font.pixelSize: Theme.fontSize(11)
+                    color: metrics.toneFilterGate === 2 ? Theme.cyan : Theme.magenta
                 }
             }
 

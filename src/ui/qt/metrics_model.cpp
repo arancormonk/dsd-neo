@@ -18,6 +18,7 @@
 
 #include <QStringList>
 #include <algorithm>
+#include <cstring>
 #include <iterator>
 #include <tuple>
 
@@ -324,7 +325,7 @@ MetricsModel::View::operator==(const View& other) const {
     return site == other.site && qualityEquals(other) && tunerEquals(other) && slot_call[0] == other.slot_call[0]
            && slot_call[1] == other.slot_call[1] && lead_slot == other.lead_slot && controlEquals(other)
            && scanTimingEquals(other) && rxToneEquals(other) && rx_tone_configured_text == other.rx_tone_configured_text
-           && ui_message == other.ui_message;
+           && toneFilterEquals(other) && ui_message == other.ui_message;
 }
 
 void
@@ -342,6 +343,7 @@ MetricsModel::publish(const View& next) {
     const bool scanTimingMoved = !next.scanTimingEquals(m_view);
     const bool rxToneMoved = !next.rxToneEquals(m_view);
     const bool rxToneConfiguredMoved = next.rx_tone_configured_text != m_view.rx_tone_configured_text;
+    const bool toneFilterMoved = !next.toneFilterEquals(m_view);
     const bool messageMoved = next.ui_message != m_view.ui_message;
     m_view = next;
     if (siteMoved) {
@@ -368,14 +370,23 @@ MetricsModel::publish(const View& next) {
     if (scanTimingMoved) {
         Q_EMIT scanTimingChanged();
     }
-    if (rxToneMoved) {
-        Q_EMIT rxToneChanged();
-    }
-    if (rxToneConfiguredMoved) {
-        Q_EMIT rxToneConfiguredTextChanged();
-    }
+    emitRxToneSignals(rxToneMoved, rxToneConfiguredMoved, toneFilterMoved);
     if (messageMoved) {
         Q_EMIT uiMessageChanged();
+    }
+}
+
+/* The received tone, the policy and its verdict each have their own signal: none of them announces another (#527). */
+void
+MetricsModel::emitRxToneSignals(bool received, bool configured, bool verdict) {
+    if (received) {
+        Q_EMIT rxToneChanged();
+    }
+    if (configured) {
+        Q_EMIT rxToneConfiguredTextChanged();
+    }
+    if (verdict) {
+        Q_EMIT toneFilterChanged();
     }
 }
 
@@ -486,6 +497,7 @@ MetricsModel::fillRxToneView(View& next, const dsd_opts* opts_snapshot, const ds
     dsd_app_rx_tone view;
     const int shown = dsd_app_rx_tone_view(opts_snapshot, snapshot, now_m, &view);
     next.rx_tone_configured_text = QString::fromUtf8(view.configured_text);
+    fillToneFilterView(next, view.policy_visible != 0U, view.gate, std::strcmp(view.gate_text, "muted: no tone") == 0);
     if (shown != 1) {
         return;
     }
@@ -502,6 +514,24 @@ MetricsModel::fillRxToneView(View& next, const dsd_opts* opts_snapshot, const ds
         case DSD_APP_RX_TONE_DETECTING: next.rx_tone_text = tr("detecting"); break;
         case DSD_APP_RX_TONE_NONE: next.rx_tone_text = tr("none"); break;
         default: next.rx_tone_text = QString::fromUtf8(view.text); break;
+    }
+}
+
+/**
+ * @brief The tone policy's row (#527): whether it is on screen, and its verdict on the carrier on air in translated
+ * words. The policy text itself is the configured reading above; neither is ever derived from the received tone.
+ */
+void
+MetricsModel::fillToneFilterView(View& next, bool visible, int gate, bool no_tone) {
+    next.tone_filter_visible = visible;
+    next.tone_filter_gate = gate;
+    switch (gate) {
+        case DSD_ANALOG_TONE_GATE_PENDING: next.tone_filter_status_text = tr("muted: checking tone"); break;
+        case DSD_ANALOG_TONE_GATE_ALLOWED: next.tone_filter_status_text = tr("passing"); break;
+        case DSD_ANALOG_TONE_GATE_REJECTED:
+            next.tone_filter_status_text = no_tone ? tr("muted: no tone") : tr("muted: not allowed");
+            break;
+        default: next.tone_filter_status_text.clear(); break;
     }
 }
 

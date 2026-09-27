@@ -198,6 +198,11 @@ class MetricsModel : public QObject {
     /* Its own signal: configuration, not something received, so a received-tone change never
        announces it and a policy change (#527) never announces the received tone. */
     Q_PROPERTY(QString rxToneConfiguredText READ rxToneConfiguredText NOTIFY rxToneConfiguredTextChanged)
+    /* #527: whether the Tone filter row belongs on screen (a policy in force where detection runs), and what the
+       policy does with the carrier on air (dsd_analog_tone_gate and its words), from the same view. */
+    Q_PROPERTY(bool toneFilterVisible READ toneFilterVisible NOTIFY toneFilterChanged)
+    Q_PROPERTY(int toneFilterGate READ toneFilterGate NOTIFY toneFilterChanged)
+    Q_PROPERTY(QString toneFilterStatusText READ toneFilterStatusText NOTIFY toneFilterChanged)
     Q_PROPERTY(bool syncedHere READ syncedHere NOTIFY tunerChanged)
     Q_PROPERTY(QString syncLabel READ syncLabel NOTIFY tunerChanged)
     Q_PROPERTY(bool trunkableSync READ trunkableSync NOTIFY tunerChanged)
@@ -1156,14 +1161,33 @@ class MetricsModel : public QObject {
     }
 
     /**
-     * @brief The configured tone policy, kept apart from what is received.
+     * @brief The tone policy in force, kept apart from what is received.
      *
-     * Reads "off" until tone filtering exists (#527). The monitor's reserved Tone filter row
-     * binds to this, and nothing about the received tone ever changes it.
+     * "off", or the mode and its list ("allow 100.0 Hz/D023N"), with " (row)" while a scan row's
+     * own policy runs (#527). The monitor's Tone filter row binds to this, and nothing about the
+     * received tone ever changes it.
      */
     const QString&
     rxToneConfiguredText() const {
         return m_view.rx_tone_configured_text;
+    }
+
+    /** @brief Whether the Tone filter row belongs on screen: a policy in force where detection runs (#527). */
+    bool
+    toneFilterVisible() const {
+        return m_view.tone_filter_visible;
+    }
+
+    /** @brief The policy's verdict on the carrier on air (dsd_analog_tone_gate); OFF with no carrier or policy. */
+    int
+    toneFilterGate() const {
+        return m_view.tone_filter_gate;
+    }
+
+    /** @brief The verdict in words ("passing", "muted: checking tone", ...), empty with no carrier or policy. */
+    const QString&
+    toneFilterStatusText() const {
+        return m_view.tone_filter_status_text;
     }
 
     /**
@@ -1359,6 +1383,7 @@ class MetricsModel : public QObject {
     void scanTimingChanged();
     void rxToneChanged();
     void rxToneConfiguredTextChanged();
+    void toneFilterChanged();
     void uiMessageChanged();
 
   private:
@@ -1532,6 +1557,10 @@ class MetricsModel : public QObject {
         bool rx_tone_dcs_alias_inverted = false;
         bool rx_tone_visible = false;
         bool rx_tone_carrier = false;
+        /* #527: the Tone filter row's visibility and the policy's verdict on the carrier on air. */
+        QString tone_filter_status_text;
+        int tone_filter_gate = 0;
+        bool tone_filter_visible = false;
 
         /* Exact comparison is right for the two doubles: they are carried through
          * unmodified from the metrics boundary, so "unchanged" means the identical
@@ -1595,6 +1624,12 @@ class MetricsModel : public QObject {
                    && rx_tone_dcs_alias_code == other.rx_tone_dcs_alias_code
                    && rx_tone_dcs_alias_inverted == other.rx_tone_dcs_alias_inverted
                    && rx_tone_carrier == other.rx_tone_carrier;
+        }
+
+        bool
+        toneFilterEquals(const View& other) const {
+            return tone_filter_visible == other.tone_filter_visible && tone_filter_gate == other.tone_filter_gate
+                   && tone_filter_status_text == other.tone_filter_status_text;
         }
 
         bool
@@ -1673,6 +1708,11 @@ class MetricsModel : public QObject {
     void fillScanTimingView(View& next, const dsd_opts* opts_snapshot, const dsd_state* snapshot, double now_m) const;
     /** @brief The received sub-audible tone and the configured tone policy (#522). */
     void fillRxToneView(View& next, const dsd_opts* opts_snapshot, const dsd_state* snapshot, double now_m) const;
+    /** @brief The Tone filter row (#527): on screen or not, and the verdict @p gate in words (@p no_tone: a
+        rejection for want of a tone). */
+    static void fillToneFilterView(View& next, bool visible, int gate, bool no_tone);
+    /** @brief Announce the received tone, the tone policy and its verdict, each on its own signal (#522, #527). */
+    void emitRxToneSignals(bool received, bool configured, bool verdict);
 
   public:
 #ifdef DSD_NEO_TEST_HOOKS

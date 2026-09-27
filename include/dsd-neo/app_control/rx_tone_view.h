@@ -10,8 +10,9 @@
  * The decoder publishes what the analog FM monitor hears below the voice band in
  * dsd_state::analog_rx. This view turns that into the one phrase every surface shows -- the
  * terminal's Call Info line, the Qt/Android monitor row -- so they cannot drift on what "no
- * carrier" or "none" means. It also carries the configured tone policy as separate text, so a
- * surface never mistakes the policy it was given for the tone it received.
+ * carrier" or "none" means. It also carries the tone policy in force (issue #527) as separate
+ * text, with what it does to the carrier on air, so a surface never mistakes the policy it was
+ * given for the tone it received.
  */
 
 #ifndef DSD_NEO_INCLUDE_DSD_NEO_APP_CONTROL_RX_TONE_VIEW_H_
@@ -34,8 +35,11 @@ enum {
     DSD_APP_RX_TONE_NONE = 4,       /**< Carrier present and no supported tone or code: "none". */
 };
 
-/** @brief Room for any text this view writes, terminator included. */
+/** @brief Room for any received-tone or verdict text this view writes, terminator included. */
 enum { DSD_APP_RX_TONE_TEXT_SIZE = 32 };
+
+/** @brief Room for the tone policy text ("allow 67.0 Hz/.../…+12 (row)"), terminator included. */
+enum { DSD_APP_RX_TONE_POLICY_TEXT_SIZE = 96 };
 
 /**
  * @brief Display-ready received tone.
@@ -45,9 +49,12 @@ enum { DSD_APP_RX_TONE_TEXT_SIZE = 32 };
  * tell which one a transmitter was set to, the canonical member of its alias class first
  * (three octal digits with leading zeros and N or I for the polarity each,
  * runtime/analog_tones.h); @c dcs_code / @c dcs_inverted and @c dcs_alias_code /
- * @c dcs_alias_inverted carry the same two. @c configured_text is the configured receive
- * policy, which reads "off" until tone filtering exists (#527); it is never derived from the
- * received tone. Both are UTF-8 and always terminated.
+ * @c dcs_alias_inverted carry the same two. @c configured_text is the CTCSS/DCS receive policy
+ * in force (issue #527): "off", or the mode and its list ("allow 100.0 Hz/D023N"), with " (row)"
+ * when a scan row's own policy runs over the configured one; it is never derived from the
+ * received tone. @c gate_text says what the policy does with the carrier on air: "passing",
+ * "muted: checking tone", "muted: not allowed" or "muted: no tone", and "" with no carrier or no
+ * policy. All three are UTF-8 and always terminated.
  */
 typedef struct {
     uint8_t visible;                      /**< 1 = detection runs, so the row belongs on screen. */
@@ -61,19 +68,26 @@ typedef struct {
     uint8_t dcs_alias_inverted;           /**< 1 = the other spelling is inverted: always, for a standard code. */
     uint32_t generation;                  /**< The publication's reset counter, to tell one reception from the next. */
     char text[DSD_APP_RX_TONE_TEXT_SIZE]; /**< "CTCSS 100.0 Hz", "DCS D023N / D047I", "detecting", "none", "—", "". */
-    char configured_text[DSD_APP_RX_TONE_TEXT_SIZE]; /**< The configured tone policy: "off" for now. */
+    char configured_text[DSD_APP_RX_TONE_POLICY_TEXT_SIZE]; /**< The tone policy in force: "off", "allow 100.0 Hz". */
+    /** 1 = detection runs and a tone policy is in force, or a scan row set its own: the Tone filter row belongs on
+        screen. Independent of @c visible: at an input rate detection cannot use, the policy still mutes. */
+    uint8_t policy_visible;
+    uint8_t policy_row;                        /**< 1 = a scan row's own policy is in force ("(row)"). */
+    uint8_t gate;                              /**< dsd_analog_tone_gate on the carrier on air; OFF without one. */
+    char gate_text[DSD_APP_RX_TONE_TEXT_SIZE]; /**< "passing", "muted: checking tone", ..., or "". */
 } dsd_app_rx_tone;
 
 /**
  * @brief Fill @p out from the published received tone.
  *
- * Zeroes @p out first, then always fills @c configured_text. @p now_m is monotonic seconds,
+ * Zeroes @p out first, then always fills @c configured_text ("off" for invalid arguments), and the
+ * policy fields whenever the arguments are valid. @p now_m is monotonic seconds,
  * the clock dsd_time_now_monotonic_s() reads: a publication from an input that has gone quiet
  * past its stale_after_ms deadline (a stdin, UDP or TCP producer that stopped sending, a live
  * radio stream whose source stopped) reads as no carrier, because the decoder, waiting for the
- * next sample, cannot say so itself. Pass 0 to skip that check.
- * Returns 1 when the row should be shown (@c visible), 0 when it should be left out, and -1
- * for invalid arguments.
+ * next sample, cannot say so itself; the verdict goes with it. Pass 0 to skip that check.
+ * Returns 1 when the received row should be shown (@c visible), 0 when it should be left out, and
+ * -1 for invalid arguments.
  */
 int dsd_app_rx_tone_view(const dsd_opts* opts, const dsd_state* state, double now_m, dsd_app_rx_tone* out);
 

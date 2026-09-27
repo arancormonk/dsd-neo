@@ -53,6 +53,9 @@ Item {
             testContext.setMetric("rxToneCarrier", false);
             testContext.setMetric("rxToneText", "");
             testContext.setMetric("rxToneConfiguredText", "off");
+            testContext.setMetric("toneFilterVisible", false);
+            testContext.setMetric("toneFilterGate", 0);
+            testContext.setMetric("toneFilterStatusText", "");
             testContext.setHostRunning(false);
             Ui.Theme.resetFontScale();
             root.width = 411;
@@ -68,9 +71,50 @@ Item {
         }
         function test_hidden_outside_the_fm_monitor() {
             verify(!item("monitorRxTone").visible);
-            // Reserved until #527: the policy row never shows yet.
+            // No policy in force: the policy row stays away.
             verify(!item("monitorToneFilter").visible);
             compare(item("monitorToneFilterValue").text, "off");
+        }
+        // The policy row (#527): the policy in force and, while a carrier is heard, its
+        // verdict, beside the received tone and never changing it.
+        function test_tone_filter_row_shows_the_policy_and_its_verdict() {
+            testContext.setHostRunning(true);
+            showLocked(670, "CTCSS 67.0 Hz");
+            testContext.setMetric("rxToneConfiguredText", "allow 100.0 Hz/D023N");
+            testContext.setMetric("toneFilterVisible", true);
+            testContext.setMetric("toneFilterGate", 3);
+            testContext.setMetric("toneFilterStatusText", "muted: not allowed");
+            tryCompare(item("monitorToneFilter"), "visible", true);
+            compare(item("monitorToneFilterValue").text, "allow 100.0 Hz/D023N");
+            compare(item("monitorToneFilterStatus").text, "muted: not allowed");
+            verify(item("monitorToneFilterStatus").visible);
+            compare(item("monitorRxToneValue").text, "CTCSS 67.0 Hz");
+            testContext.setMetric("toneFilterGate", 2);
+            testContext.setMetric("toneFilterStatusText", "passing");
+            tryCompare(item("monitorToneFilterStatus"), "text", "passing");
+            // No carrier: the policy alone.
+            testContext.setMetric("toneFilterGate", 0);
+            testContext.setMetric("toneFilterStatusText", "");
+            tryCompare(item("monitorToneFilterStatus"), "visible", false);
+            verify(item("monitorToneFilter").visible);
+        }
+        // A long list and its verdict on a narrow phone with large text: nothing runs
+        // off the body.
+        function test_tone_filter_row_fits_a_compact_monitor() {
+            root.width = 320;
+            root.height = 360;
+            Ui.Theme.fontScale = 1.6;
+            testContext.setHostRunning(true);
+            testContext.setMetric("rxToneConfiguredText", "allow 67.0 Hz/71.9 Hz/74.4 Hz/77.0 Hz/\u2026+6 (row)");
+            testContext.setMetric("toneFilterVisible", true);
+            testContext.setMetric("toneFilterGate", 1);
+            testContext.setMetric("toneFilterStatusText", "muted: checking tone");
+            var row = item("monitorToneFilter");
+            tryCompare(row, "visible", true);
+            waitForItemPolished(row);
+            verify(insideBody(item("monitorToneFilterLabel")));
+            verify(insideBody(item("monitorToneFilterValue")));
+            verify(insideBody(item("monitorToneFilterStatus")));
         }
         function test_received_row_shows_the_locked_tone() {
             testContext.setHostRunning(true);
