@@ -611,7 +611,9 @@ test_scan_row_mode_query_reads_a_split_reply_whole(void) {
 }
 
 /* What the peer runs as far as this client knows, read without I/O: FM on a socket nothing was asked of, AM once it
- * accepts an AM request, still AM after an FM request it refuses or whose reply is lost, and FM once it accepts one. */
+ * accepts an AM request, still AM after an FM request it refuses, and FM once it accepts one. A lost reply to a request
+ * for the other demodulator leaves the peer on either, so it is not known until the peer accepts a request; a lost
+ * reply to one for the demodulator it runs leaves that one known. */
 static int
 test_cached_modulation_kind_follows_what_the_peer_accepted(void) {
     reset_stubs();
@@ -625,12 +627,132 @@ test_cached_modulation_kind_follows_what_the_peer_accepted(void) {
     assert(!SetModulationKind(160, DSD_ANALOG_DEMOD_FM, 0));
     assert(CachedModulationKind(160) == DSD_ANALOG_DEMOD_AM);
     assert(!SetModulationKind(160, DSD_ANALOG_DEMOD_FM, 0));
-    assert(CachedModulationKind(160) == DSD_ANALOG_DEMOD_AM);
+    assert(CachedModulationKind(160) == DSD_RIGCTL_KIND_UNKNOWN);
     push_response("RPRT 0\n");
     assert(SetModulationKind(160, DSD_ANALOG_DEMOD_FM, 0));
     assert(CachedModulationKind(160) == DSD_ANALOG_DEMOD_FM);
     static const char* const sent[] = {"M AM 6000\n", "M NFM 0\n", "M FM 0\n", "M NFM 0\n", "M NFM 0\n", NULL};
     assert(sent_since(0, sent));
+
+    /* The FM peer's reply to a passband is lost: still FM. Its reply to AM is lost: either, until one is accepted. */
+    assert(!SetModulationKind(160, DSD_ANALOG_DEMOD_FM, 12500));
+    assert(CachedModulationKind(160) == DSD_ANALOG_DEMOD_FM);
+    assert(!SetModulationKind(160, DSD_ANALOG_DEMOD_AM, 8333));
+    assert(CachedModulationKind(160) == DSD_RIGCTL_KIND_UNKNOWN);
+    push_response("RPRT 0\n");
+    assert(SetModulationKind(160, DSD_ANALOG_DEMOD_AM, 8333));
+    assert(CachedModulationKind(160) == DSD_ANALOG_DEMOD_AM);
+    /* ...and an am row's own request whose reply is lost after the switch it made to read the AM passband. */
+    reset_stubs();
+    push_response("FM\n12500\n");
+    push_response("RPRT 0\n");
+    push_response("AM\n10000\n");
+    assert(!SetScanRowModulation(162, DSD_ANALOG_DEMOD_AM, 6000));
+    assert(CachedModulationKind(162) == DSD_ANALOG_DEMOD_AM);
+    return 0;
+}
+
+/*
+ * Issue #526: a scan tune that fails after its modulation request changed what the peer runs puts back what
+ * CachedModulation() read before the request (RevertModulation()), so the row still on air is not heard through the
+ * failed row's demodulator or passband: an am row's AM accepted before its frequency is refused, or the switch to AM
+ * that read the peer's own AM passband before the am row's width was refused. Nothing is sent when nothing known
+ * changed, and a peer whose demodulator was not known has nothing to go back to.
+ */
+static int
+test_revert_modulation_puts_back_what_the_peer_ran(void) {
+    /* An nfm row's own 12.5 kHz on air, then an am row's AM accepted and its frequency refused: back to FM 12.5 kHz. */
+    reset_stubs();
+    push_response("FM\n16000\n");
+    push_response("RPRT 0\n");
+    assert(SetScanRowModulation(170, DSD_ANALOG_DEMOD_FM, 12500));
+    const dsd_rigctl_modulation on_air = CachedModulation(170);
+    assert(on_air.kind == DSD_ANALOG_DEMOD_FM && on_air.bandwidth == 12500);
+    push_response("FM\n12500\n");
+    push_response("RPRT 0\n");
+    push_response("AM\n10000\n");
+    push_response("RPRT 0\n");
+    assert(SetScanRowModulation(170, DSD_ANALOG_DEMOD_AM, 6000));
+    push_response("RPRT -1\n");
+    assert(!SetFreq(170, 118300000L));
+    push_response("RPRT 0\n");
+    assert(RevertModulation(170, on_air));
+    static const char* const freq_refused[] = {"m\n",         "M NFM 12500\n", "m\n",           "M AM 0\n", "m\n",
+                                               "M AM 6000\n", "F 118300000\n", "M NFM 12500\n", NULL};
+    assert(sent_since(0, freq_refused));
+    assert(CachedModulationKind(170) == DSD_ANALOG_DEMOD_FM);
+    /* Put back, nothing is sent again. */
+    assert(RevertModulation(170, on_air));
+    assert(g_command_count == 8);
+
+    /* A peer nothing was asked of switched to AM to read its AM passband, then refusing the am row's width: back to FM
+       at its own passband, read before the switch. */
+    reset_stubs();
+    const dsd_rigctl_modulation untouched = CachedModulation(171);
+    push_response("FM\n12500\n");
+    push_response("RPRT 0\n");
+    push_response("AM\n10000\n");
+    push_response("RPRT -1\n");
+    assert(!SetScanRowModulation(171, DSD_ANALOG_DEMOD_AM, 6000));
+    assert(CachedModulationKind(171) == DSD_ANALOG_DEMOD_AM);
+    push_response("RPRT 1\n");
+    push_response("RPRT 0\n");
+    assert(RevertModulation(171, untouched));
+    static const char* const width_refused[] = {"m\n",           "M AM 0\n",     "m\n", "M AM 6000\n",
+                                                "M NFM 12500\n", "M FM 12500\n", NULL};
+    assert(sent_since(0, width_refused));
+    assert(CachedModulationKind(171) == DSD_ANALOG_DEMOD_FM);
+
+    /* -B taken by a peer nothing was asked of before: its FM stays, and no passband was known to go back to. */
+    reset_stubs();
+    const dsd_rigctl_modulation fresh = CachedModulation(172);
+    push_response("RPRT 0\n");
+    assert(SetModulationKind(172, DSD_ANALOG_DEMOD_FM, 7000));
+    assert(RevertModulation(172, fresh));
+    assert(g_command_count == 1);
+
+    /* A peer that may run either demodulator: nothing to go back to. */
+    reset_stubs();
+    push_response("RPRT 0\n");
+    assert(SetModulationKind(173, DSD_ANALOG_DEMOD_FM, 7000));
+    assert(!SetModulationKind(173, DSD_ANALOG_DEMOD_AM, 6000));
+    const dsd_rigctl_modulation either = CachedModulation(173);
+    assert(either.kind == DSD_RIGCTL_KIND_UNKNOWN);
+    push_response("RPRT 0\n");
+    assert(SetModulationKind(173, DSD_ANALOG_DEMOD_AM, 6000));
+    assert(!RevertModulation(173, either));
+    assert(g_command_count == 3 && CachedModulationKind(173) == DSD_ANALOG_DEMOD_AM);
+
+    /* A revert whose reply is lost leaves the peer on either demodulator. */
+    reset_stubs();
+    push_response("RPRT 0\n");
+    assert(SetModulationKind(174, DSD_ANALOG_DEMOD_FM, 7000));
+    const dsd_rigctl_modulation fm = CachedModulation(174);
+    push_response("RPRT 0\n");
+    assert(SetModulationKind(174, DSD_ANALOG_DEMOD_AM, 6000));
+    assert(!RevertModulation(174, fm));
+    assert(g_command_count == 3 && strcmp(g_commands[2], "M NFM 7000\n") == 0);
+    assert(CachedModulationKind(174) == DSD_RIGCTL_KIND_UNKNOWN);
+    return 0;
+}
+
+/* Issue #526: Connect() also opens the TCP audio input's socket, and reconnects it while the rigctl socket stays open.
+ * A connection on another number leaves the rigctl socket's record alone: the peer an am row put on AM is still asked
+ * for FM, and taken for one on AM, rather than for a peer nothing was asked of. */
+static int
+test_connect_on_another_socket_keeps_the_rigctl_record(void) {
+    reset_stubs();
+    push_response("RPRT 0\n");
+    assert(SetModulationKind(136, DSD_ANALOG_DEMOD_AM, 6000));
+    char host[] = "127.0.0.1";
+    g_create_result = 137;
+    assert(Connect(host, 7355) == 137);
+    assert(CachedModulationKind(136) == DSD_ANALOG_DEMOD_AM);
+    push_response("RPRT 0\n");
+    assert(RestoreScanModulation(136, DSD_ANALOG_DEMOD_FM, 0));
+    static const char* const sent[] = {"M AM 6000\n", "M NFM 0\n", NULL};
+    assert(sent_since(0, sent));
+    assert(CachedModulationKind(136) == DSD_ANALOG_DEMOD_FM);
     return 0;
 }
 
@@ -802,6 +924,8 @@ main(void) {
     rc |= test_scan_restore_keeps_the_own_passband_an_undo_did_not_put_back();
     rc |= test_scan_row_mode_query_reads_a_split_reply_whole();
     rc |= test_cached_modulation_kind_follows_what_the_peer_accepted();
+    rc |= test_revert_modulation_puts_back_what_the_peer_ran();
+    rc |= test_connect_on_another_socket_keeps_the_rigctl_record();
     rc |= test_full_size_replies_stay_in_bounds();
     rc |= test_get_current_freq_parses_first_line_and_errors();
     rc |= test_io_control_set_freq_validation_and_rigctl_dispatch();

@@ -527,13 +527,16 @@ no symbol profile is applied over the monitor. Everything below applies to both 
   so before a target first changes the peer's AM or FM passband DSD-neo asks the peer what it runs (`m`). Every other
   target asks for `-B` as before, or, without `-B`, where an earlier target changed the peer, for FM at the passband it
   read, which returns the peer to FM at its own passband; that request is best-effort, except that a peer still on an AM
-  target's AM that refuses it fails the retune, since the target would be heard through AM. When the scan stops
+  target's AM that refuses it fails the retune, since the target would be heard through AM, as does one that may be on
+  AM because the reply to a request for AM was lost. A retune that fails after the peer took the new target's
+  demodulator or passband (its frequency refused, say) asks the peer for what it ran before, so the target still parked
+  is not heard through the other demodulator. When the scan stops
   (shutdown, or trunk scan turned off) the AM passband an AM target changed is put back, then the peer is asked once
   more for what the session runs, so it is left on neither an AM target's demodulator nor a target's passband. A peer
   that cannot answer `m` is sent passband `0` instead, best-effort. Requests are cached on the demodulator and passband
   together, so a peer already running both is not asked again; after a request whose reply was lost the next one is
   always sent. On an RTL-family input DSD-neo demodulates the I/Q itself and the peer only follows the frequency: it is
-  asked for `-B`, best-effort, as before, whatever the target runs.
+  asked for `-B`, best-effort, as before, whatever the target runs, and whatever demodulator the peer is on.
 - **Controls.** `--scan-max-visit-ms`, the `Y` hold, advance and avoid work exactly as for digital targets, including
   while a carrier holds the target. The voice gate never applies to an analog target, so a global `--scan-voice-only`
   does not block one, and voice-gate switches are rejected in its `options`.

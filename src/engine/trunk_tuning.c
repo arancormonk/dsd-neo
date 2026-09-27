@@ -520,10 +520,10 @@ dsd_engine_update_vc_tune_state(dsd_opts* opts, dsd_state* state, long int freq)
  * --nfm-bandwidth-hz (dsd_engine_scan_tuning_row_options()) asks for FM at that width. Either is the row's own request
  * (@p row_request set): a peer that refuses it fails the tune, and the scanner moves on as for any row it cannot tune.
  * Anything else asks for FM at -B and stays best-effort, as -B always has been, unless a refusal leaves the peer on an
- * am row's AM; without -B that is the peer's own passband (0), sent only to undo an AM row or a row passband this
- * client set, which returns the peer to FM at the passband it had before (SetModulationKind()). On an RTL-family input
- * DSD-neo demodulates the I/Q itself and the peer only follows the frequency, so it is asked for FM at -B, best-effort,
- * whatever the row runs. */
+ * am row's AM, or on a demodulator not known; without -B that is the peer's own passband (0), sent only to undo an AM
+ * row or a row passband this client set, which returns the peer to FM at the passband it had before
+ * (SetModulationKind()). On an RTL-family input DSD-neo demodulates the I/Q itself and the peer only follows the
+ * frequency, so it is asked for FM at -B, best-effort, whatever the row runs and whatever the peer runs. */
 static int
 dsd_engine_rigctl_modulation(const dsd_opts* opts, const dsd_state* state, int* bandwidth, int* row_request) {
     int kind = DSD_ANALOG_DEMOD_FM;
@@ -546,8 +546,10 @@ dsd_engine_rigctl_modulation(const dsd_opts* opts, const dsd_state* state, int* 
 
 /* A row's own request goes through SetScanRowModulation(), which first reads the peer's own passband so that the FM
  * undo and the scan's leave can send it back. A refused row request fails the tune. Any other request is best-effort,
- * as -B always was, unless the peer is still on another demodulator (the AM an am row put it on,
- * CachedModulationKind()): the row would then be received through it, so that tune fails too. */
+ * as -B always was, unless the peer demodulates audio input and is not known to run the demodulator asked for (still
+ * on the AM an am row put it on, or on either after a lost reply, CachedModulationKind()): the row would then be heard
+ * through the wrong one, so that tune fails too. On an RTL-family input DSD-neo demodulates the I/Q, and what the peer
+ * runs is never heard, so no refusal fails the tune there. */
 static int
 dsd_engine_tune_rigctl_modulation(const dsd_opts* opts, const dsd_state* state) {
     int bandwidth = 0;
@@ -560,7 +562,10 @@ dsd_engine_tune_rigctl_modulation(const dsd_opts* opts, const dsd_state* state) 
     }
     DSD_FPRINTF(stderr, "Rigctl %s modulation update failed for bandwidth %d.\n", dsd_analog_demod_label(kind),
                 bandwidth);
-    return !row_request && CachedModulationKind(opts->rigctl_sockfd) == kind;
+    if (row_request) {
+        return 0;
+    }
+    return opts->audio_in_type == AUDIO_IN_RTL || CachedModulationKind(opts->rigctl_sockfd) == kind;
 }
 
 void
@@ -577,16 +582,23 @@ dsd_engine_scan_rigctl_restore(const dsd_opts* opts, const dsd_state* state) {
     }
 }
 
+/* The rigctl leg of a tune: the modulation request, then the frequency. A tune that fails leaves the row on air where
+ * it was, so what the modulation request changed on the peer is put back (RevertModulation()): an am row's AM
+ * accepted before its frequency was refused, or the switch to AM that read the peer's own AM passband before the am
+ * row's width was refused, would otherwise have the row still on air heard through AM (issue #526). */
 static int
 dsd_engine_tune_rigctl(const dsd_opts* opts, const dsd_state* state, long int freq) {
-    if (!dsd_engine_tune_rigctl_modulation(opts, state)) {
-        return 0;
-    }
-    if (!SetFreq(opts->rigctl_sockfd, freq)) {
+    const dsd_rigctl_modulation before = CachedModulation(opts->rigctl_sockfd);
+    if (dsd_engine_tune_rigctl_modulation(opts, state)) {
+        if (SetFreq(opts->rigctl_sockfd, freq)) {
+            return 1;
+        }
         DSD_FPRINTF(stderr, "Rigctl frequency update failed for %ld Hz.\n", freq);
-        return 0;
     }
-    return 1;
+    if (!RevertModulation(opts->rigctl_sockfd, before)) {
+        DSD_FPRINTF(stderr, "Rigctl modulation could not be put back after the failed tune.\n");
+    }
+    return 0;
 }
 
 static int

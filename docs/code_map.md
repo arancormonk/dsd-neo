@@ -1174,19 +1174,24 @@ Runtime controls (via `include/dsd-neo/io/rtl_stream_c.h`):
     so the undo sends the peer's own passband explicitly: `SetScanRowModulation()`, a scan row's own request, first asks
     the peer what it runs (`m`, switching a peer on the other demodulator to this one at passband 0 to read that one's),
     and `RestoreScanModulation()` puts back each passband a row changed, the other demodulator's first, before the
-    session's request. A peer that cannot answer `m` gets passband 0, best-effort. `Connect()` starts a new socket's
-    record empty, and `SetModulation()` is the FM call. The engine's rigctl tune leg
-    (`dsd_engine_tune_rigctl_modulation()` in `trunk_tuning.c`) asks a peer that demodulates audio input for an AM
-    scan row's AM width and an nfm row's own width through `SetScanRowModulation()`, failing the row's tune when the
-    peer refuses, and for `-B` otherwise, best-effort (on an RTL-family input, where DSD-neo demodulates, always `-B`)
-    unless the peer refuses it while still on an am row's AM (`CachedModulationKind()`, no I/O), which fails the tune;
-    it reads a `-Y` row's own width from the row being tuned (`dsd_engine_scan_tuning_row_options()`,
+    session's request. A peer that cannot answer `m` gets passband 0, best-effort. `Connect()` starts the record empty
+    for a connection on the number of a closed socket and leaves it alone for one on another number (the TCP audio
+    input's reconnect while the rigctl socket stays open), and `SetModulation()` is the FM call. The engine's rigctl
+    tune leg (`dsd_engine_tune_rigctl_modulation()` in `trunk_tuning.c`) asks a peer that demodulates audio input for
+    an AM scan row's AM width and an nfm row's own width through `SetScanRowModulation()`, failing the row's tune when
+    the peer refuses, and for `-B` otherwise, best-effort unless the peer refuses it while on an am row's AM or on a
+    demodulator not known (`CachedModulationKind()`, no I/O), which fails the tune; on an RTL-family input, where
+    DSD-neo demodulates, it always asks for `-B` and no refusal fails the tune. A rigctl tune that fails after its
+    modulation request changed what the peer runs puts that back (`CachedModulation()` before the request,
+    `RevertModulation()` after), so the row still on air is not heard through the failed row's demodulator. The leg
+    reads a `-Y` row's own width from the row being tuned (`dsd_engine_scan_tuning_row_options()`,
     `scan_analog_internal.h`), since the prepared settings in force cannot tell it from the configured one.
     `dsd_engine_scan_rigctl_restore()` (`trunk_tuning.h`) calls `RestoreScanModulation()` with what the restored
     session runs once `dsd_engine_channel_scan_leave()` has left a `-Y` map or a trunk-scan target list, so neither an
     am row's AM nor a row's passband outlives the scan. After an I/O failure the socket's cache matches no request,
-    since what the peer runs is no longer known, and a demodulator whose undo the peer did not accept keeps the own
-    passband read for it, so the next undo still sends that rather than reading the row's back as the peer's own.
+    since what the peer runs is no longer known (a lost reply to a request for the other demodulator leaves which one it
+    runs not known either, `DSD_RIGCTL_KIND_UNKNOWN`), and a demodulator whose undo the peer did not accept keeps the
+    own passband read for it, so the next undo still sends that rather than reading the row's back as the peer's own.
 
 Key public headers:
 
