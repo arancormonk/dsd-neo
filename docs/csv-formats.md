@@ -313,7 +313,8 @@ before, or, without `-B`, where an earlier row changed the peer, for FM at the p
 to FM at its own passband; that request is best-effort, except that a peer still on an `am` row's AM that refuses it
 skips the row, since the row would be heard through AM, as does one that may be on AM because the reply to a request
 for AM was lost. A row's tune that fails after the peer took the row's demodulator or passband (its frequency refused,
-say) asks the peer for what it ran before, so the row still on air is not heard through the other demodulator. Leaving
+say) asks the peer for what it ran before, or for the passband it read where DSD-neo had set none, so the row still on
+air is not heard through the other demodulator or the failed row's passband. Leaving
 `-Y` (the scanner toggled off, a map imported or cleared, shutdown) puts back the AM passband an `am` row changed, then
 asks the peer once more for what the session runs, so it is left on neither an am row's demodulator nor a row's
 passband. A peer that cannot answer `m` is sent passband `0` instead, which only a peer that takes it as its normal

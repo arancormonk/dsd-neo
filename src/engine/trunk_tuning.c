@@ -585,7 +585,8 @@ dsd_engine_scan_rigctl_restore(const dsd_opts* opts, const dsd_state* state) {
 /* The rigctl leg of a tune: the modulation request, then the frequency. A tune that fails leaves the row on air where
  * it was, so what the modulation request changed on the peer is put back (RevertModulation()): an am row's AM
  * accepted before its frequency was refused, or the switch to AM that read the peer's own AM passband before the am
- * row's width was refused, would otherwise have the row still on air heard through AM (issue #526). */
+ * row's width was refused, would otherwise have the row still on air heard through AM, and an nfm row's own passband
+ * accepted before its frequency was refused, through that passband (issue #526). */
 static int
 dsd_engine_tune_rigctl(const dsd_opts* opts, const dsd_state* state, long int freq) {
     const dsd_rigctl_modulation before = CachedModulation(opts->rigctl_sockfd);

@@ -529,8 +529,9 @@ no symbol profile is applied over the monitor. Everything below applies to both 
   read, which returns the peer to FM at its own passband; that request is best-effort, except that a peer still on an AM
   target's AM that refuses it fails the retune, since the target would be heard through AM, as does one that may be on
   AM because the reply to a request for AM was lost. A retune that fails after the peer took the new target's
-  demodulator or passband (its frequency refused, say) asks the peer for what it ran before, so the target still parked
-  is not heard through the other demodulator. When the scan stops
+  demodulator or passband (its frequency refused, say) asks the peer for what it ran before, or for the passband it read
+  where DSD-neo had set none, so the target still parked is not heard through the other demodulator or the new target's
+  passband. When the scan stops
   (shutdown, or trunk scan turned off) the AM passband an AM target changed is put back, then the peer is asked once
   more for what the session runs, so it is left on neither an AM target's demodulator nor a target's passband. A peer
   that cannot answer `m` is sent passband `0` instead, best-effort. Requests are cached on the demodulator and passband

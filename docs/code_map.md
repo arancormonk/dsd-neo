@@ -1183,7 +1183,9 @@ Runtime controls (via `include/dsd-neo/io/rtl_stream_c.h`):
     demodulator not known (`CachedModulationKind()`, no I/O), which fails the tune; on an RTL-family input, where
     DSD-neo demodulates, it always asks for `-B` and no refusal fails the tune. A rigctl tune that fails after its
     modulation request changed what the peer runs puts that back (`CachedModulation()` before the request,
-    `RevertModulation()` after), so the row still on air is not heard through the failed row's demodulator. The leg
+    `RevertModulation()` after), so the row still on air is not heard through the failed row's demodulator or
+    passband; where no passband was known before the request (the first row on a fresh socket, or after a lost reply),
+    the peer's own passband that the row's request read is what goes back. The leg
     reads a `-Y` row's own width from the row being tuned (`dsd_engine_scan_tuning_row_options()`,
     `scan_analog_internal.h`), since the prepared settings in force cannot tell it from the configured one.
     `dsd_engine_scan_rigctl_restore()` (`trunk_tuning.h`) calls `RestoreScanModulation()` with what the restored

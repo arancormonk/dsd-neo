@@ -472,16 +472,25 @@ CachedModulation(dsd_socket_t sockfd) {
 bool
 RevertModulation(dsd_socket_t sockfd, dsd_rigctl_modulation before) {
     rigctl_peer* peer = rigctl_peer_on(sockfd);
-    if (peer->kind == before.kind && (peer->bw == before.bandwidth || before.bandwidth == INT_MIN)) {
+    if (peer->kind == before.kind && peer->bw == before.bandwidth) {
         return true; /* the tune changed nothing this client knew of */
     }
     if (before.kind != DSD_ANALOG_DEMOD_FM && before.kind != DSD_ANALOG_DEMOD_AM) {
         return false; /* no demodulator known to go back to */
     }
-    /* The peer's own passband (read before a row changed it, else 0) for 0 or one not known, which stays not known. */
-    const int send_bw = before.bandwidth > 0 ? before.bandwidth : peer->own_bw[before.kind];
+    /* The peer's own passband of that demodulator, read before a row changed it (0: not read). */
+    const int own_bw = peer->own_bw[before.kind];
+    if (before.bandwidth == INT_MIN && peer->kind == before.kind && (peer->bw == 0 || own_bw <= 0)) {
+        /* Its demodulator at a passband not known before the tune (a peer nothing was asked of, or a lost reply): the
+         * peer runs its own passband again, or none was read to go back to. */
+        return true;
+    }
+    /* @p before's passband, or for 0 or one not known the peer's own (else 0, Hamlib's normal passband). The peer's own
+     * as read is what the cache then holds (0); a 0 sent for one not known leaves it not known. */
+    const int send_bw = before.bandwidth > 0 ? before.bandwidth : own_bw;
+    const int cache_bw = (before.bandwidth == INT_MIN && own_bw > 0) ? 0 : before.bandwidth;
     char buf[BUFSIZE + 1];
-    return rigctl_request(peer, before.kind, send_bw, before.bandwidth, buf) == 1;
+    return rigctl_request(peer, before.kind, send_bw, cache_bw, buf) == 1;
 }
 
 bool

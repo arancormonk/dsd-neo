@@ -74,10 +74,13 @@ dsd_rigctl_modulation CachedModulation(dsd_socket_t sockfd);
  * changed what the peer runs (issue #526): the row still on air would otherwise be received through the demodulator or
  * passband of the row that could not be tuned.
  *
- * Nothing is sent when the peer runs @p before, or its demodulator where @p before knew no passband. Otherwise the
- * peer is asked for @p before's demodulator at @p before's passband, its own passband (as SetModulationKind() sends it)
- * for 0 or one not known. Returns true when nothing was to be sent or the peer accepted the request; false when it
- * refused, the I/O failed, or @p before knew no demodulator to go back to.
+ * Nothing is sent when the peer runs @p before. Where @p before knew no passband (a peer nothing was asked of, or a
+ * lost reply) and the peer still runs its demodulator, the passband to go back to is the peer's own, read before a row
+ * changed it (the first nfm row's own passband, say): nothing is sent when none was read or the peer runs its own
+ * passband again, and the cache holds it as the peer's own (0) once accepted. Otherwise the peer is asked for
+ * @p before's demodulator at @p before's passband, its own passband (as SetModulationKind() sends it) for 0 or one not
+ * known. Returns true when nothing was to be sent or the peer accepted the request; false when it refused, the I/O
+ * failed, or @p before knew no demodulator to go back to.
  */
 bool RevertModulation(dsd_socket_t sockfd, dsd_rigctl_modulation before);
 /**

@@ -19,6 +19,7 @@
 #include <dsd-neo/runtime/analog_channel.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/log.h>
+#include <limits.h>
 #include <stdint.h>
 #include <string.h>
 
@@ -710,6 +711,50 @@ test_revert_modulation_puts_back_what_the_peer_ran(void) {
     assert(SetModulationKind(172, DSD_ANALOG_DEMOD_FM, 7000));
     assert(RevertModulation(172, fresh));
     assert(g_command_count == 1);
+
+    /* The first nfm row's own 25 kHz taken by a peer nothing was asked of, then its frequency refused: back to the
+       peer's own FM 16 kHz, read before the row changed it, which the cache then holds as the peer's own. */
+    reset_stubs();
+    const dsd_rigctl_modulation first_row = CachedModulation(175);
+    push_response("FM\n16000\n");
+    push_response("RPRT 0\n");
+    assert(SetScanRowModulation(175, DSD_ANALOG_DEMOD_FM, 25000));
+    push_response("RPRT -1\n");
+    assert(!SetFreq(175, 154430000L));
+    push_response("RPRT 0\n");
+    assert(RevertModulation(175, first_row));
+    static const char* const first_row_refused[] = {"m\n", "M NFM 25000\n", "F 154430000\n", "M NFM 16000\n", NULL};
+    assert(sent_since(0, first_row_refused));
+    const dsd_rigctl_modulation reverted = CachedModulation(175);
+    assert(reverted.kind == DSD_ANALOG_DEMOD_FM && reverted.bandwidth == 0);
+    /* Put back, nothing is sent again, and the next digital row's FM at the peer's own passband is already in force. */
+    assert(RevertModulation(175, first_row));
+    assert(SetModulationKind(175, DSD_ANALOG_DEMOD_FM, 0));
+    assert(g_command_count == 4);
+
+    /* The same row after a lost reply left the passband on air not known: back to the peer's own, read by the row. */
+    reset_stubs();
+    assert(!SetModulationKind(176, DSD_ANALOG_DEMOD_FM, 12500));
+    const dsd_rigctl_modulation lost = CachedModulation(176);
+    assert(lost.kind == DSD_ANALOG_DEMOD_FM && lost.bandwidth == INT_MIN);
+    push_response("FM\n16000\n");
+    push_response("RPRT 0\n");
+    assert(SetScanRowModulation(176, DSD_ANALOG_DEMOD_FM, 25000));
+    push_response("RPRT 0\n");
+    assert(RevertModulation(176, lost));
+    static const char* const after_lost[] = {"M NFM 12500\n", "m\n", "M NFM 25000\n", "M NFM 16000\n", NULL};
+    assert(sent_since(0, after_lost));
+
+    /* ...but where the failed tune put the peer back on its own passband (a digital row's FM undo), nothing better is
+       known to go back to, so nothing is sent. */
+    reset_stubs();
+    assert(!SetModulationKind(177, DSD_ANALOG_DEMOD_FM, 12500));
+    const dsd_rigctl_modulation lost_undo = CachedModulation(177);
+    push_response("RPRT 0\n");
+    assert(SetModulationKind(177, DSD_ANALOG_DEMOD_FM, 0));
+    assert(RevertModulation(177, lost_undo));
+    static const char* const undo_kept[] = {"M NFM 12500\n", "M NFM 0\n", NULL};
+    assert(sent_since(0, undo_kept));
 
     /* A peer that may run either demodulator: nothing to go back to. */
     reset_stubs();
