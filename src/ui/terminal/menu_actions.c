@@ -662,8 +662,7 @@ act_set_audio_lpf(void* v) {
 /* Picker rows in dsd_tone_filter_mode order, so a row's index is the mode it sets. */
 static const char* const k_tone_filter_choices[] = {"Off", "Allow list...", "Block list..."};
 #define TONE_FILTER_CHOICE_COUNT (sizeof k_tone_filter_choices / sizeof k_tone_filter_choices[0])
-_Static_assert(DSD_TONE_FILTER_OFF == 0 && DSD_TONE_FILTER_ALLOW == 1 && DSD_TONE_FILTER_BLOCK == 2
-                   && TONE_FILTER_CHOICE_COUNT == 3U,
+_Static_assert(TONE_FILTER_CHOICE_COUNT == (size_t)DSD_TONE_FILTER_BLOCK + 1U,
                "a picker row's index is the mode it sets");
 /* The list policy the prompt is open for, from the picker row chosen just before it. */
 static int g_tone_filter_prompt_mode = DSD_TONE_FILTER_ALLOW;

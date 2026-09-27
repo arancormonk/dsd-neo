@@ -2602,7 +2602,8 @@ test_tone_policy_edit_roundtrip(void) {
         return 1;
     }
     if (dsd_scan_mode_set_configured_tone_policy(&opts, &state, DSD_TONE_FILTER_BLOCK, &edited) != 0
-        || opts.analog_tone_filter != DSD_TONE_FILTER_BLOCK || !dsd_tone_set_equal(&opts.analog_tone_set, &row_set)) {
+        || opts.analog_tone_filter != DSD_TONE_FILTER_BLOCK
+        || dsd_tone_set_equal(&opts.analog_tone_set, &row_set) == 0) {
         DSD_FPRINTF(stderr, "FAIL: the row's own policy should shadow the edit\n");
         rc |= 1;
     }
@@ -2614,18 +2615,18 @@ test_tone_policy_edit_roundtrip(void) {
     }
     rc |=
         expect_contains("edited policy under a row", rendered, "tone_filter = \"block\"\ntone_list = \"71.9/D023I\"\n");
-    if (strstr(rendered, "tone_list = \"67.0\"") || strstr(rendered, "tone_list = \"100.0\"")) {
+    if (strstr(rendered, "tone_list = \"67.0\"") != nullptr || strstr(rendered, "tone_list = \"100.0\"") != nullptr) {
         DSD_FPRINTF(stderr, "FAIL: the row's or the old policy was saved:\n%s\n", rendered);
         rc |= 1;
     }
     dsdneoUserConfig loaded;
     if (load_am_config_text(rendered, &loaded) != 0 || loaded.analog_tone_filter != DSD_TONE_FILTER_BLOCK
-        || !dsd_tone_set_equal(&loaded.analog_tone_set, &edited)) {
+        || dsd_tone_set_equal(&loaded.analog_tone_set, &edited) == 0) {
         DSD_FPRINTF(stderr, "FAIL: the edited policy did not load back\n");
         rc |= 1;
     }
     dsd_scan_mode_leave(&opts, &state);
-    if (opts.analog_tone_filter != DSD_TONE_FILTER_BLOCK || !dsd_tone_set_equal(&opts.analog_tone_set, &edited)) {
+    if (opts.analog_tone_filter != DSD_TONE_FILTER_BLOCK || dsd_tone_set_equal(&opts.analog_tone_set, &edited) == 0) {
         DSD_FPRINTF(stderr, "FAIL: the row's departure did not restore the edited policy\n");
         rc |= 1;
     }
@@ -2640,9 +2641,9 @@ test_tone_policy_edit_roundtrip(void) {
     if (render_config_to_buffer(&snap, rendered, sizeof rendered) != 0) {
         return 1;
     }
-    if (strstr(rendered, "tone_filter") || !strstr(rendered, "tone_list = \"71.9/D023I\"\n")
+    if (strstr(rendered, "tone_filter") != nullptr || strstr(rendered, "tone_list = \"71.9/D023I\"\n") == nullptr
         || load_am_config_text(rendered, &loaded) != 0 || loaded.analog_tone_filter != DSD_TONE_FILTER_OFF
-        || !dsd_tone_set_equal(&loaded.analog_tone_set, &edited)) {
+        || dsd_tone_set_equal(&loaded.analog_tone_set, &edited) == 0) {
         DSD_FPRINTF(stderr, "FAIL: an edited off did not save its list alone:\n%s\n", rendered);
         rc |= 1;
     }

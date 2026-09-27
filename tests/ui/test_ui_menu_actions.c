@@ -2187,7 +2187,7 @@ test_tone_filter_editor(void) {
     rc |= expect_int("tone allow prompts", g_prompt.calls == 1 && g_prompt.str_cb != NULL, 1);
     rc |= expect_str("tone allow prompt title", g_prompt.title, "Allow tones/codes (/ between, e.g. 67.0/D023N)");
     rc |= expect_str("tone allow prompt offers the configured list", g_prompt.prefill, "100.0/D023I");
-    rc |= expect_int("tone allow prompt holds a whole list", (int)g_prompt.cap, (int)DSD_APP_TONE_FILTER_LIST_SIZE);
+    rc |= expect_int("tone allow prompt holds a whole list", (int)g_prompt.cap, DSD_APP_TONE_FILTER_LIST_SIZE);
     rc |= expect_int("tone prompt opens without posting", g_cmd.calls, 0);
     g_prompt.str_cb(g_prompt.user, "67,100");
     dsd_app_tone_filter_payload posted = cmd_tone_filter();

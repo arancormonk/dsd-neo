@@ -250,7 +250,7 @@ dsd_app_rx_tone_view(const dsd_opts* opts, const dsd_state* state, double now_m,
 
 /* The live editor (issue #527): what it opens on, and what its edit did. */
 
-_Static_assert((int)DSD_APP_TONE_FILTER_LIST_SIZE == (int)DSD_TONE_LIST_TEXT_MAX + 1,
+_Static_assert(DSD_APP_TONE_FILTER_LIST_SIZE == DSD_TONE_LIST_TEXT_MAX + 1,
                "the editor's list holds exactly the longest list the parser reads");
 
 /* Room for the lists in an edit's notice when a row shadows it: the configured policy the edit made, then the row's own
@@ -261,10 +261,10 @@ enum {
     RX_TONE_NOTICE_ROW_LIST_SIZE = 24,
 };
 
-_Static_assert((int)DSD_APP_TONE_FILTER_NOTICE_SIZE
+_Static_assert(DSD_APP_TONE_FILTER_NOTICE_SIZE
                    >= (int)(sizeof("Applied: Tone filter -> block ") + RX_TONE_NOTICE_LIST_SIZE),
                "an edit's notice fits");
-_Static_assert((int)DSD_APP_TONE_FILTER_NOTICE_SIZE
+_Static_assert(DSD_APP_TONE_FILTER_NOTICE_SIZE
                    >= (int)(sizeof("Default tone filter -> block ") + RX_TONE_NOTICE_DEFAULT_LIST_SIZE
                             + sizeof("; this channel overrides it (block )") + RX_TONE_NOTICE_ROW_LIST_SIZE),
                "a shadowed edit's notice fits");
