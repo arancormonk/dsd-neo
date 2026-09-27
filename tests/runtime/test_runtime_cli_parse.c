@@ -7989,15 +7989,16 @@ test_tone_filter_warns_outside_the_fm_monitor(void) {
 /* A -Y scan runs the policy on its nfm rows as well as under the FM monitor, so the warning weighs the list imported
  * with the command line: an untyped list under the AM monitor, or a typed one with no nfm row under a digital mode,
  * cannot use it; an nfm row can, and so can the FM monitor on a row that runs it -- every row of an untyped list, a row
- * without a mode of its own on a typed one -- but not on a typed list whose rows all declare a digital mode, which
- * each run their own. A list the command line has not imported (a config file's) and --trunk-scan targets are weighed
- * when the engine loads them, so parsing says nothing for them. */
+ * without a mode of its own on a typed one -- but not on a typed list whose rows all declare a digital mode or am, which
+ * each run their own (an am row the AM monitor, which hears no tone). A list the command line has not imported (a
+ * config file's) and --trunk-scan targets are weighed when the engine loads them, so parsing says nothing for them. */
 static int
 test_tone_filter_warns_on_scan_lists(void) {
     char untyped[256];
     char digital[256];
     char with_nfm[256];
     char with_blank[256];
+    char with_am[256];
     if (test_create_temp_ini_with_contents("channel,frequency_hz\n1,154430000\n2,155475000\n", untyped, sizeof untyped)
             != 0
         || test_create_temp_ini_with_contents("channel,frequency_hz,mode\n1,461000000,dmr\n2,851012500,p25\n", digital,
@@ -8008,6 +8009,9 @@ test_tone_filter_warns_on_scan_lists(void) {
                != 0
         || test_create_temp_ini_with_contents("channel,frequency_hz,mode\n1,461000000,dmr\n2,154430000,\n", with_blank,
                                               sizeof with_blank)
+               != 0
+        || test_create_temp_ini_with_contents("channel,frequency_hz,mode\n1,461000000,dmr\n2,118300000,am\n", with_am,
+                                              sizeof with_am)
                != 0) {
         return 1;
     }
@@ -8025,6 +8029,8 @@ test_tone_filter_warns_on_scan_lists(void) {
         {{"--tone-allow", "100.0", "-fA", "-Y", "-C", with_blank}, 6, 0},
         {{"--tone-allow", "100.0", "-fs", "-Y", "-C", with_blank}, 6, 1},
         {{"--tone-allow", "100.0", "-fA", "-Y", "-C", with_nfm}, 6, 0},
+        {{"--tone-allow", "100.0", "-fA", "-Y", "-C", with_am}, 6, 1},
+        {{"--tone-allow", "100.0", "-fs", "-Y", "-C", with_am}, 6, 1},
         {{"--tone-allow", "100.0", "-fs", "-Y"}, 4, 0},
         {{"--no-tone-filter", "-fs", "-Y", "-C", digital}, 5, 0},
     };
@@ -8052,6 +8058,7 @@ test_tone_filter_warns_on_scan_lists(void) {
     (void)remove(digital);
     (void)remove(with_nfm);
     (void)remove(with_blank);
+    (void)remove(with_am);
     return test_rc;
 }
 

@@ -92,7 +92,8 @@ main(void) {
     assert(csvChanImport(o, s) == 0 && !dsd_channel_modes_present(s));
     /* Every row of a list without modes runs the configured decode mode, so it hears tones exactly when that is the FM
        monitor; a row that declares a digital mode runs its own, and an nfm row hears them whatever is configured
-       (issue #527). */
+       (issue #527). An am row runs the AM monitor, which hears no CTCSS or DCS, even under a configured FM monitor
+       (issue #526). */
     assert(dsd_channel_modes_hear_tones(s, 1) && !dsd_channel_modes_hear_tones(s, 0));
     assert(!dsd_channel_modes_include(s, DSD_SCAN_MODE_DMR));
     assert(dsd_channel_mode_set(s, 0, DSD_SCAN_MODE_DMR) == 0);
@@ -100,6 +101,9 @@ main(void) {
     assert(!dsd_channel_modes_hear_tones(s, 1) && dsd_channel_modes_include(s, DSD_SCAN_MODE_DMR));
     assert(dsd_channel_mode_set(s, 0, DSD_SCAN_MODE_NFM) == 0);
     assert(dsd_channel_modes_hear_tones(s, 0) && dsd_channel_modes_hear_tones(s, 1));
+    assert(dsd_channel_mode_set(s, 0, DSD_SCAN_MODE_AM) == 0);
+    assert(dsd_channel_modes_present(s) && dsd_channel_modes_include(s, DSD_SCAN_MODE_AM));
+    assert(!dsd_channel_modes_hear_tones(s, 1) && !dsd_channel_modes_hear_tones(s, 0));
     assert(dsd_channel_mode_set(s, 0, DSD_SCAN_MODE_DMR) == 0);
     assert(dsd_channel_mode_set(s, 0, DSD_SCAN_MODE_P25) == 0);
     assert(dsd_channel_modes_present(s));
