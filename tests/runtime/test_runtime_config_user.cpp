@@ -2502,7 +2502,7 @@ test_tone_policy_roundtrip(void) {
     if (render_config_to_buffer(&snap, rendered, sizeof rendered) != 0) {
         return 1;
     }
-    rc |= expect_contains("tone policy", rendered, "tone_filter = allow\ntone_list = \"100.0/D023N\"\n");
+    rc |= expect_contains("tone policy", rendered, "tone_filter = \"allow\"\ntone_list = \"100.0/D023N\"\n");
 
     /* A row's own policy, on air: the save still writes the configured one. */
     if (dsd_scan_mode_begin(&opts, &state) != 0 || dsd_scan_mode_enter(&opts, &state, DSD_SCAN_MODE_NFM) != 0) {
@@ -2521,8 +2521,8 @@ test_tone_policy_roundtrip(void) {
         return 1;
     }
     rc |= expect_contains("configured policy under a row", rendered,
-                          "tone_filter = allow\ntone_list = \"100.0/D023N\"\n");
-    if (strstr(rendered, "tone_filter = block") || strstr(rendered, "tone_list = \"67.0\"")) {
+                          "tone_filter = \"allow\"\ntone_list = \"100.0/D023N\"\n");
+    if (strstr(rendered, "tone_filter = \"block\"") || strstr(rendered, "tone_list = \"67.0\"")) {
         DSD_FPRINTF(stderr, "FAIL: a row's tone policy was saved:\n%s\n", rendered);
         rc |= 1;
     }

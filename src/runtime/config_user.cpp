@@ -1157,7 +1157,7 @@ render_analog_section(FILE* out, const dsdneoUserConfig* cfg) {
        out loads back as off and an empty list. */
     const char* tone_mode = dsd_tone_filter_mode_name(cfg->analog_tone_filter);
     if (tone_mode && cfg->analog_tone_filter != DSD_TONE_FILTER_OFF) {
-        DSD_FPRINTF(out, "tone_filter = %s\n", tone_mode);
+        DSD_FPRINTF(out, "tone_filter = \"%s\"\n", tone_mode);
     }
     char tone_list[DSD_TONE_LIST_TEXT_MAX + 1];
     if (dsd_tone_set_format(&cfg->analog_tone_set, tone_list, sizeof tone_list) > 0) {
