@@ -862,7 +862,7 @@ test_rigctl_scan_rows_set_the_peer_demodulator(void) {
     assert(g_setmod_kind == DSD_ANALOG_DEMOD_AM && opts->rtlsdr_center_freq == 121500000U);
 
     /* An nfm row with its own width hands the peer that width as the FM passband, and fails the same way. */
-    dsd_scan_option_values row;
+    static dsd_scan_option_values row;
     DSD_MEMSET(&row, 0, sizeof row);
     row.present = DSD_SCAN_OPT_BANDWIDTH;
     row.channel_bw_hz = 12500;
@@ -1095,7 +1095,7 @@ test_rigctl_on_rtl_input_follows_the_frequency_only(void) {
     }
     g_peer_kind = DSD_ANALOG_DEMOD_FM;
 
-    dsd_scan_option_values row;
+    static dsd_scan_option_values row;
     DSD_MEMSET(&row, 0, sizeof row);
     row.present = DSD_SCAN_OPT_BANDWIDTH;
     row.channel_bw_hz = 12500;
