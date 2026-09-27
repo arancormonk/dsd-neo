@@ -9,6 +9,7 @@
 #include <assert.h>
 #include <curses.h>
 #include <dsd-neo/app_control/history.h>
+#include <dsd-neo/core/analog_tone.h>
 #include <dsd-neo/core/channel_label.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/power.h>

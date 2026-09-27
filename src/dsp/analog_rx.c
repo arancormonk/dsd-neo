@@ -13,6 +13,7 @@
  * analog_rx_internal.h for the signal path.
  */
 
+#include <dsd-neo/core/analog_tone.h>
 #include <dsd-neo/core/input_level.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/power.h>

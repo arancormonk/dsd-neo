@@ -13,6 +13,7 @@
 #include <dsd-neo/core/analog_tone.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/dsp/analog_rx.h>
 #include <dsd-neo/runtime/analog_tones.h>
 #include <stdint.h>

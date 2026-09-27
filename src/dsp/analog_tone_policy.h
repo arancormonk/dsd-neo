@@ -32,7 +32,7 @@
 #define DSD_NEO_SRC_DSP_ANALOG_TONE_POLICY_H_
 
 #include <dsd-neo/core/analog_tone.h>
-#include <dsd-neo/core/state.h>
+#include <dsd-neo/core/state_fwd.h>
 #include <stdint.h>
 
 #ifdef __cplusplus

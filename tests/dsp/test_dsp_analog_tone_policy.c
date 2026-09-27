@@ -14,16 +14,25 @@
 #include <assert.h>
 #include <stdint.h>
 #include <stdio.h>
-#include <string.h>
 
 #include <dsd-neo/core/analog_tone.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/dsp/analog_rx.h>
 #include <dsd-neo/runtime/analog_tones.h>
 #include "analog_tone_policy.h"
 
 enum { RATE_HZ = 48000, READ_SAMPLES = 960 /* 20 ms, the tap's read */ };
+
+/* The maintainer's window: 800 ms, extended to at most 1,600 ms for a DCS candidate, each at least one detector's lock
+   ceiling plus 100 ms (two CTCSS hops). */
+_Static_assert(DSD_ANALOG_TONE_WINDOW_MS == 800, "the tone-check window is 800 ms");
+_Static_assert(DSD_ANALOG_TONE_WINDOW_DCS_MS == 1600, "the DCS extension ends at 1,600 ms");
+_Static_assert(DSD_ANALOG_TONE_WINDOW_MS >= DSD_ANALOG_CTCSS_LOCK_CEILING_MS + 100,
+               "the window covers the CTCSS lock ceiling plus 100 ms");
+_Static_assert(DSD_ANALOG_TONE_WINDOW_DCS_MS >= DSD_ANALOG_DCS_LOCK_CEILING_MS + 100,
+               "the DCS extension covers the DCS lock ceiling plus 100 ms");
 
 static dsd_analog_rx_publication
 rx_idle(void) {
@@ -93,16 +102,6 @@ hold_ms(dsd_analog_tone_policy* policy, dsd_analog_rx_publication rx, int ms, in
     for (int t = 0; t < ms; t += 20) {
         assert(dsd_analog_tone_policy_step(policy, &rx, READ_SAMPLES, RATE_HZ) == gate);
     }
-}
-
-static void
-test_window_constants(void) {
-    /* The maintainer's window: 800 ms, extended to at most 1,600 ms for a DCS candidate, each at least one detector's
-       lock ceiling plus 100 ms (two CTCSS hops). */
-    assert(DSD_ANALOG_TONE_WINDOW_MS == 800);
-    assert(DSD_ANALOG_TONE_WINDOW_DCS_MS == 1600);
-    assert(DSD_ANALOG_TONE_WINDOW_MS >= DSD_ANALOG_CTCSS_LOCK_CEILING_MS + 100);
-    assert(DSD_ANALOG_TONE_WINDOW_DCS_MS >= DSD_ANALOG_DCS_LOCK_CEILING_MS + 100);
 }
 
 static void
@@ -389,7 +388,6 @@ test_outputs(void) {
 
 int
 main(void) {
-    test_window_constants();
     test_disabled();
     test_allow_match();
     test_allow_nonmatch();

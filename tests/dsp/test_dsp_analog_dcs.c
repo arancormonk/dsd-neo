@@ -246,7 +246,8 @@ src_couple(dcs_src* src, double corner_hz) {
 /* The NRZ level of the word bit the transmitter is sending, then the clock moves on. */
 static double
 src_word_level(dcs_src* src, int64_t n) {
-    const int bit = (int)src->bit_phase;
+    /* bit_phase stays in [0, DSD_DCS_WORD_BITS); the unsigned modulo states that bound where the shift uses it. */
+    const unsigned int bit = (unsigned int)src->bit_phase % (unsigned int)DSD_DCS_WORD_BITS;
     uint32_t word = src->word;
     if (src->flip && n >= src->flip_from
         && (src->flip_every <= 1 || (src->words_sent % src->flip_every) == src->flip_every - 1)) {

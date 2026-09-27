@@ -13,7 +13,6 @@
 #include <dsd-neo/runtime/analog_channel.h>
 #include <dsd-neo/runtime/analog_tones.h>
 #include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
-#include <stddef.h>
 #include <stdint.h>
 #include <string.h>
 

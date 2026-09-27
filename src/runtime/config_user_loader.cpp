@@ -7,6 +7,7 @@
  * INI loading and profile overlay support for user configuration.
  */
 
+#include <dsd-neo/core/analog_tone.h>
 #include <dsd-neo/runtime/airspy_config.h>
 #include <dsd-neo/runtime/analog_channel.h>
 #include <dsd-neo/runtime/analog_tones.h>

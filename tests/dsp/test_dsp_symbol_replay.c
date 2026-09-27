@@ -7,6 +7,7 @@
  */
 
 #include <assert.h>
+#include <dsd-neo/core/analog_tone.h>
 #include <dsd-neo/core/audio.h>
 #include <dsd-neo/core/audio_filters.h>
 #include <dsd-neo/core/dibit.h>
@@ -2791,7 +2792,7 @@ test_am_monitor_keeps_its_carrier_and_boundaries(void) {
 
 /* What the UDP analog socket was handed: the blocks and their bytes. Both live sinks, the local stream and this socket,
    sit behind the same gate (symbol_unsynced_audio_allowed()), so what reaches the socket is what the stream plays. */
-static unsigned char g_played[64U * 960U * sizeof(short)];
+static unsigned char g_played[sizeof(short) * 64U * 960U];
 static size_t g_played_len;
 
 static void
