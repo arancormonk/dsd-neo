@@ -85,6 +85,50 @@ test_replay_migration(dsd_qt::SavedSystemsModel& systems) {
     check(systems.get(index).value("filePath").toString() == durable);
 }
 
+/* Issue #526: an analog (nfm or am) scan entry keeps the decryption choice the editor hides on it, but it uses no
+   profile, so a profile only analog entries still name counts no use and can be removed: a frequency entry on the am
+   protocol and a saved -fM system entry here. A digital entry naming it still holds it. */
+static void
+test_analog_scan_entries_hold_no_profile(dsd_qt::DecryptionProfilesModel& profiles, dsd_qt::SavedSystemsModel& systems,
+                                         dsd_qt::ScanListsModel& scans, const QVariantMap& key) {
+    check(profiles
+              .saveProfile({{"uid", "profile-analog"},
+                            {"label", "Hidden on analog"},
+                            {"protocol", "p25"},
+                            {"mode", "automatic"},
+                            {"keys", QVariantList{key}}})
+              .value("ok")
+              .toBool());
+    check(systems.add({{"name", "Tower"},
+                       {"sourceType", "rtltcp"},
+                       {"host", "127.0.0.1"},
+                       {"port", 1234},
+                       {"freqMhz", "118.3"},
+                       {"decodeFlag", "-fM"}}));
+    const QString towerUid = systems.get(systems.count() - 1).value("uid").toString();
+    const auto named = [](QVariantMap entry) {
+        entry.insert("decryptionMode", "profile");
+        entry.insert("decryptionProfileUid", "profile-analog");
+        return entry;
+    };
+    const QVariantList analog{named({{"kind", "freq"}, {"protocol", "am"}, {"freqMhz", "118.3"}}),
+                              named({{"kind", "freq"}, {"protocol", "nfm"}, {"freqMhz", "154.43"}}),
+                              named({{"kind", "system"}, {"systemUid", towerUid}})};
+    check(scans.add({{"name", "Mixed"}, {"entries", analog}}));
+    const int list = scans.count() - 1;
+    check(profiles.useCount("profile-analog") == 0);
+
+    QVariantList mixed = analog;
+    mixed << named({{"kind", "freq"}, {"protocol", "p25"}, {"freqMhz", "851.0125"}});
+    check(scans.update(list, {{"entries", mixed}}));
+    check(profiles.useCount("profile-analog") == 1);
+    check(!profiles.removeProfile("profile-analog").value("ok").toBool());
+
+    check(scans.update(list, {{"entries", analog}}));
+    check(profiles.removeProfile("profile-analog").value("ok").toBool());
+    check(scans.remove(list));
+}
+
 int
 main(int argc, char** argv) {
     QCoreApplication app(argc, argv);
@@ -172,5 +216,6 @@ main(int argc, char** argv) {
     check(!dsd_qt::session_args_profile_compatible({{"decryptionProtocol", "m17"}, {"decodeFlag", "-fs"}}));
     check(dsd_qt::session_args_profile_compatible({{"decryptionProtocol", "dmr"}, {"decodeFlag", "-fs"}}));
     test_replay_migration(systems);
+    test_analog_scan_entries_hold_no_profile(profiles, systems, scans, entry);
     return 0;
 }

@@ -2863,6 +2863,7 @@ if(DSD_ENABLE_QT_UI)
         ui/test_ui_qt_decryption_profiles.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/decryption_profiles_model.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/saved_systems_model.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/scan_list_targets.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/scan_lists_model.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/session_args.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/decoder_host.cpp
