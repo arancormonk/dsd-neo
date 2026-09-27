@@ -310,12 +310,15 @@ passband of `0` as "leave it unchanged", and SDR++ keeps each passband it is sen
 first changes the peer's AM or FM passband DSD-neo asks the peer what it runs (`m`; a peer on the other demodulator is
 first switched to this one at passband `0`, which keeps its own, and asked again). Every other row asks for `-B` as
 before, or, without `-B`, where an earlier row changed the peer, for FM at the passband it read, which returns the peer
-to FM at its own passband. Leaving `-Y` (the scanner toggled off, a map imported or cleared, shutdown) puts back the AM
-passband an `am` row changed, then asks the peer once more for what the session runs, so it is left on neither an am
-row's demodulator nor a row's passband. A peer that cannot answer `m` is sent passband `0` instead, which only a peer
-that takes it as its normal passband (Hamlib's meaning) returns to it. Audio input without a rigctl peer applies no
-width, and scan start says so. On an RTL-family input DSD-neo demodulates the I/Q itself and a rigctl peer beside it
-only follows the frequency: it is asked for `-B`, best-effort, whatever the row runs.
+to FM at its own passband; that request is best-effort, except that a peer still on an `am` row's AM that refuses it
+skips the row, since the row would be heard through AM. Leaving `-Y` (the scanner toggled off, a map imported or
+cleared, shutdown) puts back the AM passband an `am` row changed, then asks the peer once more for what the session
+runs, so it is left on neither an am row's demodulator nor a row's passband. A peer that cannot answer `m` is sent
+passband `0` instead, which only a peer that takes it as its normal passband (Hamlib's meaning) returns to it. Audio
+input without a rigctl peer applies no width, and scan start says so; nothing demodulates an `am` row's AM there, so
+scan start names each `am` row as skipped at every visit, whatever its width. On an RTL-family input DSD-neo demodulates
+the I/Q itself and a rigctl peer beside it only follows the frequency: it is asked for `-B`, best-effort, whatever the
+row runs.
 
 An analog row holds while its carrier is open: the squelch is open over the monitor audio (above the input's level
 floor, through a 200 ms hangover, at any input rate), whether or not audio is played, so `-o null` or a muted frontend

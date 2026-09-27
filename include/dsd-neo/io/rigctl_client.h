@@ -36,6 +36,15 @@ bool SetModulation(dsd_socket_t sockfd, int bandwidth);
  */
 bool SetModulationKind(dsd_socket_t sockfd, int kind, int bandwidth);
 /**
+ * @brief The demodulator (dsd_analog_demod) the rigctl peer on @p sockfd runs as far as this client knows (issue #526),
+ * without I/O: the last one the peer accepted from SetModulationKind() or a scan call, which a refused request or a
+ * lost reply leaves in force. DSD_ANALOG_DEMOD_FM on a socket nothing was asked of.
+ *
+ * A scan tune that asks for FM best-effort (-B, or the peer's own passband) reads it after a refusal: a peer still on
+ * the AM an am row put it on would give the row being tuned the wrong demodulator, so that tune fails instead.
+ */
+int CachedModulationKind(dsd_socket_t sockfd);
+/**
  * @brief A scan row's own request (issue #526): an am row's AM at its width, or an nfm row's own passband, @p bandwidth
  * Hz (> 0), which the scan puts back once it leaves (RestoreScanModulation()).
  *

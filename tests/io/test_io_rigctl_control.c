@@ -566,6 +566,74 @@ test_scan_restore_keeps_the_own_passband_an_undo_did_not_put_back(void) {
     return 0;
 }
 
+/*
+ * A peer's answer to "m" can arrive over several reads, its refusal included ("RPRT" and then " -11\n"). The whole
+ * first line is read before it is taken for a refusal or a mode, so no part of it is left to be read as the reply to
+ * the row's request, and every later reply stays with its own command.
+ */
+static int
+test_scan_row_mode_query_reads_a_split_reply_whole(void) {
+    /* A refusal split after "RPRT": the row's AM is still accepted, and the frequency after it too. */
+    reset_stubs();
+    push_response("RPRT");
+    push_response(" -11\n");
+    push_response("RPRT 0\n");
+    assert(SetScanRowModulation(150, DSD_ANALOG_DEMOD_AM, 6000));
+    push_response("RPRT 0\n");
+    assert(SetFreq(150, 118300000L));
+    static const char* const refused[] = {"m\n", "M AM 6000\n", "F 118300000\n", NULL};
+    assert(sent_since(0, refused));
+    /* ...its undo falls back to the peer's normal passband, as for any peer that cannot say what it runs. */
+    push_response("RPRT 0\n");
+    assert(SetModulationKind(150, DSD_ANALOG_DEMOD_FM, 0));
+    assert(g_command_count == 4 && strcmp(g_commands[3], "M NFM 0\n") == 0);
+
+    /* A refusal split inside its first word is a refusal as well. */
+    reset_stubs();
+    push_response("RP");
+    push_response("RT -11\n");
+    push_response("RPRT 0\n");
+    assert(SetScanRowModulation(151, DSD_ANALOG_DEMOD_AM, 8333));
+    static const char* const split_word[] = {"m\n", "M AM 8333\n", NULL};
+    assert(sent_since(0, split_word));
+
+    /* A mode split inside its first line is read whole: the peer's own FM 12.5 kHz is what the undo sends. */
+    reset_stubs();
+    push_response("F");
+    push_response("M\n12500\n");
+    push_response("RPRT 0\n");
+    assert(SetScanRowModulation(152, DSD_ANALOG_DEMOD_FM, 25000));
+    push_response("RPRT 0\n");
+    assert(SetModulationKind(152, DSD_ANALOG_DEMOD_FM, 0));
+    static const char* const split_mode[] = {"m\n", "M NFM 25000\n", "M NFM 12500\n", NULL};
+    assert(sent_since(0, split_mode));
+    return 0;
+}
+
+/* What the peer runs as far as this client knows, read without I/O: FM on a socket nothing was asked of, AM once it
+ * accepts an AM request, still AM after an FM request it refuses or whose reply is lost, and FM once it accepts one. */
+static int
+test_cached_modulation_kind_follows_what_the_peer_accepted(void) {
+    reset_stubs();
+    assert(CachedModulationKind(160) == DSD_ANALOG_DEMOD_FM);
+    push_response("RPRT 0\n");
+    assert(SetModulationKind(160, DSD_ANALOG_DEMOD_AM, 6000));
+    assert(CachedModulationKind(160) == DSD_ANALOG_DEMOD_AM);
+    assert(CachedModulationKind(161) == DSD_ANALOG_DEMOD_FM);
+    push_response("RPRT -1\n");
+    push_response("RPRT -1\n");
+    assert(!SetModulationKind(160, DSD_ANALOG_DEMOD_FM, 0));
+    assert(CachedModulationKind(160) == DSD_ANALOG_DEMOD_AM);
+    assert(!SetModulationKind(160, DSD_ANALOG_DEMOD_FM, 0));
+    assert(CachedModulationKind(160) == DSD_ANALOG_DEMOD_AM);
+    push_response("RPRT 0\n");
+    assert(SetModulationKind(160, DSD_ANALOG_DEMOD_FM, 0));
+    assert(CachedModulationKind(160) == DSD_ANALOG_DEMOD_FM);
+    static const char* const sent[] = {"M AM 6000\n", "M NFM 0\n", "M FM 0\n", "M NFM 0\n", "M NFM 0\n", NULL};
+    assert(sent_since(0, sent));
+    return 0;
+}
+
 /* A reply that fills the whole receive buffer (1024 bytes) is terminated inside every caller's buffer: the frequency
  * query, the frequency set and the modulation set each read one. */
 static int
@@ -732,6 +800,8 @@ main(void) {
     rc |= test_setmodulation_kind_am_and_passband_restore();
     rc |= test_scan_row_modulation_reads_and_restores_the_own_passband();
     rc |= test_scan_restore_keeps_the_own_passband_an_undo_did_not_put_back();
+    rc |= test_scan_row_mode_query_reads_a_split_reply_whole();
+    rc |= test_cached_modulation_kind_follows_what_the_peer_accepted();
     rc |= test_full_size_replies_stay_in_bounds();
     rc |= test_get_current_freq_parses_first_line_and_errors();
     rc |= test_io_control_set_freq_validation_and_rigctl_dispatch();

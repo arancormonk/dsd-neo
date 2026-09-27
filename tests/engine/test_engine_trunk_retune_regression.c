@@ -60,6 +60,8 @@ static int g_setmod_bw = 0;
 enum { SETMOD_SESSION = 0, SETMOD_ROW = 1, SETMOD_RESTORE = 2 };
 
 static int g_setmod_call = -1;
+/* The demodulator the fake peer last accepted (CachedModulationKind()). */
+static int g_peer_kind = DSD_ANALOG_DEMOD_FM;
 static const dsd_scan_option_values* g_tuning_row_options = NULL;
 static int g_frame_sync_reset_calls = 0;
 static int g_sps_hunt_restart_calls = 0;
@@ -296,6 +298,9 @@ record_setmod(int call, int kind, int bandwidth) {
     g_setmod_call = call;
     g_setmod_kind = kind;
     g_setmod_bw = bandwidth;
+    if (g_setmod_result) {
+        g_peer_kind = kind;
+    }
     return g_setmod_result;
 }
 
@@ -315,6 +320,12 @@ bool
 RestoreScanModulation(dsd_socket_t sockfd, int kind, int bandwidth) {
     (void)sockfd;
     return record_setmod(SETMOD_RESTORE, kind, bandwidth);
+}
+
+int
+CachedModulationKind(dsd_socket_t sockfd) {
+    (void)sockfd;
+    return g_peer_kind;
 }
 
 /* The row options a rigctl tune reads a row's own passband from (issue #526): none unless a test installs some. */
@@ -863,6 +874,56 @@ test_rigctl_scan_rows_set_the_peer_demodulator(void) {
 }
 
 /*
+ * Issue #526: a row that sets nothing of its own asks the peer for FM at -B best-effort, unless the peer is still on
+ * the AM an am row put it on (CachedModulationKind()). A peer that then refuses FM would give the next row AM audio,
+ * so that tune fails before the frequency moves, as a row's own refused request does, and the scanner takes its usual
+ * row-tune failure path. Once the peer is back on FM, a refused passband tunes again.
+ */
+static void
+test_rigctl_refused_return_from_am_fails_the_tune(void) {
+    dsd_opts* opts = calloc(1, sizeof(*opts));
+    dsd_state* state = calloc(1, sizeof(*state));
+    assert(opts && state);
+    opts->audio_in_type = AUDIO_IN_PULSE;
+    opts->use_rigctl = 1;
+    opts->rigctl_sockfd = 5;
+    opts->scanner_mode = 1;
+    opts->analog_only = 1;
+    opts->monitor_input_audio = 1;
+    opts->analog_demod = DSD_ANALOG_DEMOD_AM;
+    opts->setmod_bw = 0;
+    g_peer_kind = DSD_ANALOG_DEMOD_FM;
+    int moved = 0;
+
+    assert(tune_rigctl_row(opts, state, 118300000, true, &moved) == DSD_TRUNK_TUNE_RESULT_OK && moved == 1);
+    assert(g_peer_kind == DSD_ANALOG_DEMOD_AM);
+
+    /* A digital row after it: the peer refuses FM, so the row is not tuned. */
+    opts->analog_only = 0;
+    opts->monitor_input_audio = 0;
+    opts->frame_dmr = 1;
+    opts->analog_demod = DSD_ANALOG_DEMOD_FM;
+    assert(tune_rigctl_row(opts, state, 461000000, false, &moved) == DSD_TRUNK_TUNE_RESULT_FAILED && moved == 0);
+    assert(g_setmod_kind == DSD_ANALOG_DEMOD_FM && g_setmod_bw == 0 && g_setmod_call == SETMOD_SESSION);
+    assert(opts->rtlsdr_center_freq == 118300000U);
+    /* ...nor an nfm row without a width of its own, and -B changes nothing. */
+    opts->analog_only = 1;
+    opts->monitor_input_audio = 1;
+    opts->frame_dmr = 0;
+    opts->setmod_bw = 12500;
+    assert(tune_rigctl_row(opts, state, 155475000, false, &moved) == DSD_TRUNK_TUNE_RESULT_FAILED && moved == 0);
+    assert(g_setmod_kind == DSD_ANALOG_DEMOD_FM && g_setmod_bw == 12500 && g_setmod_call == SETMOD_SESSION);
+
+    /* Back on FM, a refused passband stays best-effort. */
+    assert(tune_rigctl_row(opts, state, 155475000, true, &moved) == DSD_TRUNK_TUNE_RESULT_OK && moved == 1);
+    assert(g_peer_kind == DSD_ANALOG_DEMOD_FM);
+    assert(tune_rigctl_row(opts, state, 155500000, false, &moved) == DSD_TRUNK_TUNE_RESULT_OK && moved == 1);
+    assert(opts->rtlsdr_center_freq == 155500000U);
+    free(state);
+    free(opts);
+}
+
+/*
  * Issue #526: once a scanner has left its rows, the rigctl peer goes back to what the restored settings ask for -- FM
  * at -B, the peer's own passband without it -- through RestoreScanModulation(), which first sends back each passband a
  * row changed, since no later tune outside a scan would undo an am row's AM. The restore is best-effort, and a session
@@ -966,6 +1027,7 @@ main(void) {
     test_analog_scan_row_queues_analog_profile();
 #endif
     test_rigctl_scan_rows_set_the_peer_demodulator();
+    test_rigctl_refused_return_from_am_fails_the_tune();
     test_rigctl_restore_after_a_scan();
 #ifdef USE_RADIO
     test_rigctl_on_rtl_input_follows_the_frequency_only();

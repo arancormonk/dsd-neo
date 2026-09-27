@@ -337,10 +337,11 @@ static const long k_rigctl_passband_max_hz = 100000000L;
 /* Ask the peer which demodulator and passband it runs ("m", answered "<MODE>\n<passband>\n" by SDR++, GQRX and
  * Hamlib). Returns 1 with @p kind (dsd_analog_demod, or -1 for a mode that is neither narrow FM nor AM) and
  * @p passband_hz (0 when the peer names none, or none a receiver passband can be), 0 when the peer answered something
- * else, -1 when the I/O failed. */
+ * else, -1 when the I/O failed. The whole first line is read before it is told apart: a refusal ("RPRT -11") can
+ * arrive over several reads, and a part of it left unread would be taken for the reply to the next command. */
 static int
 rigctl_get_mode(dsd_socket_t sockfd, char* buf, int* kind, int* passband_hz) {
-    if (!Send(sockfd, "m\n") || !Recv(sockfd, buf)) {
+    if (!Send(sockfd, "m\n") || !Recv(sockfd, buf) || !rigctl_recv_lines(sockfd, buf, strlen(buf), 1)) {
         return -1;
     }
     if (strncmp(buf, "RPRT", 4) == 0) {
@@ -434,6 +435,12 @@ SetModulationKind(dsd_socket_t sockfd, int kind, int bandwidth) {
     }
     char buf[BUFSIZE + 1];
     return rigctl_request(peer, want_kind, send_bw, bandwidth, buf) == 1;
+}
+
+int
+CachedModulationKind(dsd_socket_t sockfd) {
+    /* A socket the record does not describe is a peer nothing was asked of (rigctl_peer_on()). */
+    return s_peer.sockfd == sockfd ? s_peer.kind : DSD_ANALOG_DEMOD_FM;
 }
 
 bool

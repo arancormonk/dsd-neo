@@ -519,10 +519,11 @@ dsd_engine_update_vc_tune_state(dsd_opts* opts, dsd_state* state, long int freq)
  * width it runs, its own or the configured one (the 6 kHz default when none is set), and an nfm row that sets its own
  * --nfm-bandwidth-hz (dsd_engine_scan_tuning_row_options()) asks for FM at that width. Either is the row's own request
  * (@p row_request set): a peer that refuses it fails the tune, and the scanner moves on as for any row it cannot tune.
- * Anything else asks for FM at -B and stays best-effort, as -B always has been; without -B that is the peer's own
- * passband (0), sent only to undo an AM row or a row passband this client set, which returns the peer to FM at the
- * passband it had before (SetModulationKind()). On an RTL-family input DSD-neo demodulates the I/Q itself and the peer
- * only follows the frequency, so it is asked for FM at -B, best-effort, whatever the row runs. */
+ * Anything else asks for FM at -B and stays best-effort, as -B always has been, unless a refusal leaves the peer on an
+ * am row's AM; without -B that is the peer's own passband (0), sent only to undo an AM row or a row passband this
+ * client set, which returns the peer to FM at the passband it had before (SetModulationKind()). On an RTL-family input
+ * DSD-neo demodulates the I/Q itself and the peer only follows the frequency, so it is asked for FM at -B, best-effort,
+ * whatever the row runs. */
 static int
 dsd_engine_rigctl_modulation(const dsd_opts* opts, const dsd_state* state, int* bandwidth, int* row_request) {
     int kind = DSD_ANALOG_DEMOD_FM;
@@ -544,7 +545,9 @@ dsd_engine_rigctl_modulation(const dsd_opts* opts, const dsd_state* state, int* 
 }
 
 /* A row's own request goes through SetScanRowModulation(), which first reads the peer's own passband so that the FM
- * undo and the scan's leave can send it back. */
+ * undo and the scan's leave can send it back. A refused row request fails the tune. Any other request is best-effort,
+ * as -B always was, unless the peer is still on another demodulator (the AM an am row put it on,
+ * CachedModulationKind()): the row would then be received through it, so that tune fails too. */
 static int
 dsd_engine_tune_rigctl_modulation(const dsd_opts* opts, const dsd_state* state) {
     int bandwidth = 0;
@@ -557,7 +560,7 @@ dsd_engine_tune_rigctl_modulation(const dsd_opts* opts, const dsd_state* state) 
     }
     DSD_FPRINTF(stderr, "Rigctl %s modulation update failed for bandwidth %d.\n", dsd_analog_demod_label(kind),
                 bandwidth);
-    return row_request ? 0 : 1;
+    return !row_request && CachedModulationKind(opts->rigctl_sockfd) == kind;
 }
 
 void

@@ -1855,8 +1855,10 @@ test_am_row_warnings_for_its_widths(void) {
 }
 
 /* On audio input a row's own width filters nothing: with no rigctl peer to take it as a passband it is named once, as
- * the option of its kind (--nfm-bandwidth-hz, --am-bandwidth-hz), and with a rigctl peer, which demodulates and is
- * asked for it (trunk_tuning.c), it is no warning. The squelch warnings are the same either way. */
+ * the option of its kind (--nfm-bandwidth-hz), and with a rigctl peer, which demodulates and is asked for it
+ * (trunk_tuning.c), it is no warning. An am row there has nothing to demodulate it as AM without a rigctl peer, so it is
+ * named once, with or without a width of its own, as skipped at every visit, and reaches the status line (issue #526);
+ * with a rigctl peer, which is asked for AM, it is no warning either. The squelch warnings are the same either way. */
 static void
 test_row_widths_on_audio_input(void) {
     for (int rigctl = 0; rigctl <= 1; rigctl++) {
@@ -1865,28 +1867,47 @@ test_row_widths_on_audio_input(void) {
         assert(opts && state);
         nfm_warning_rows_setup(opts, state, AUDIO_IN_WAV, -60.0);
         opts->use_rigctl = rigctl;
-        /* Row 4: am with its own 8.333 kHz. */
+        /* Row 3: am with no options (the configured squelch); row 4: am with its own 8.333 kHz. */
+        assert(dsd_channel_mode_set(state, 2, DSD_SCAN_MODE_AM) == 0);
+        dsd_scan_row_profile* bare = (dsd_scan_row_profile*)dsd_channel_profile_get(state, 2);
+        assert(bare);
+        bare->values.present = 0U;
         assert(dsd_channel_mode_set(state, 3, DSD_SCAN_MODE_AM) == 0);
         nfm_row_profile(state, 3, DSD_SCAN_OPT_BANDWIDTH, 8333, 0)->values.channel_bw_kind = DSD_ANALOG_DEMOD_AM;
         nfm_warning_rows_visit(opts, state, 8);
         int nfm_width = 0;
         int am_width = 0;
+        int am_unreceivable = 0;
         int squelch = 0;
         for (int i = 0; i < g_analog_warnings && i < 8; i++) {
             nfm_width += strstr(g_analog_warning_rows[i], "Scan channel 1 (150.000000 MHz): --nfm-bandwidth-hz 20000 "
                                                           "has no effect on audio input")
                          != NULL;
-            am_width += strstr(g_analog_warning_rows[i], "Scan channel 4 (150.000000 MHz): --am-bandwidth-hz 8333 has "
-                                                         "no effect on audio input")
-                            != NULL
-                        && strstr(g_analog_warning_rows[i], "no rigctl peer to take it") != NULL;
+            am_width += strstr(g_analog_warning_rows[i], "--am-bandwidth-hz") != NULL;
+            for (int row = 3; row <= 4; row++) {
+                char head[192];
+                DSD_SNPRINTF(
+                    head, sizeof head,
+                    "Scan channel %d (150.000000 MHz): AM rows need an input DSD-neo demodulates (rtl, rtltcp, "
+                    "soapy, airspy) or a rigctl peer",
+                    row);
+                am_unreceivable += strstr(g_analog_warning_rows[i], head) != NULL
+                                   && strstr(g_analog_warning_rows[i], "skipped at every visit") != NULL;
+            }
             squelch += strstr(g_analog_warning_rows[i], "Scan channel 2 (150.000000 MHz): the analog channel's squelch "
                                                         "is off")
                        != NULL;
         }
-        assert(g_analog_warnings == (rigctl ? 1 : 3));
-        assert(nfm_width == !rigctl && am_width == !rigctl && squelch == 1);
+        assert(g_analog_warnings == (rigctl ? 1 : 4));
+        assert(nfm_width == !rigctl && am_width == 0 && am_unreceivable == (rigctl ? 0 : 2) && squelch == 1);
         assert(!rigctl || !strstr(g_analog_warning_rows[0], "bandwidth-hz"));
+        if (rigctl) {
+            assert(state->ui_msg[0] == '\0');
+        } else {
+            assert(strcmp(state->ui_msg, "Skipped at every visit: Scan channel 3 (150.000000 MHz) and 1 more: AM needs "
+                                         "an I/Q input or a rigctl peer")
+                   == 0);
+        }
         dsd_engine_channel_scan_leave(opts, state);
         dsd_state_trunk_lcn_free(state);
         dsd_state_ext_free_all(state);

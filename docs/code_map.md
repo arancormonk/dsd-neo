@@ -222,7 +222,8 @@ Tests: `tests/engine/test_engine_trunk_scan.c` (`ENGINE_TRUNK_SCAN`) and
   open squelch, which lets noise hold the row until the visit cap or the operator moves on,
   `dsd_engine_scan_warn_analog_squelch()`, is said once per map (-Y) or list (trunk scan). A row's own width on audio
   input without a rigctl peer (with one, the peer takes it as its passband), or a width the front end refuses,
-  `dsd_engine_scan_warn_analog_width()`, is said once per map or list and DSP rate. The front
+  `dsd_engine_scan_warn_analog_width()`, is said once per map or list and DSP rate, and so is an `am` row on audio input
+  without a rigctl peer, which nothing demodulates as AM and which is skipped at every visit. The front
   end refuses a width the DSP rate (`dsd_engine_scan_dsp_rate_hz()`, the rate the RTL stream holds analog requests to,
   `rtl_stream_get_request_rate_hz()`) cannot filter, worded with the fix the input allows as the stream start's refusal
   is (`dsd_analog_width_check_at()`: an RTL DSP bandwidth, a wider DSP bandwidth or a narrower width on a SoapySDR or
@@ -1177,7 +1178,8 @@ Runtime controls (via `include/dsd-neo/io/rtl_stream_c.h`):
     record empty, and `SetModulation()` is the FM call. The engine's rigctl tune leg
     (`dsd_engine_tune_rigctl_modulation()` in `trunk_tuning.c`) asks a peer that demodulates audio input for an AM
     scan row's AM width and an nfm row's own width through `SetScanRowModulation()`, failing the row's tune when the
-    peer refuses, and for `-B` otherwise, best-effort (on an RTL-family input, where DSD-neo demodulates, always `-B`);
+    peer refuses, and for `-B` otherwise, best-effort (on an RTL-family input, where DSD-neo demodulates, always `-B`)
+    unless the peer refuses it while still on an am row's AM (`CachedModulationKind()`, no I/O), which fails the tune;
     it reads a `-Y` row's own width from the row being tuned (`dsd_engine_scan_tuning_row_options()`,
     `scan_analog_internal.h`), since the prepared settings in force cannot tell it from the configured one.
     `dsd_engine_scan_rigctl_restore()` (`trunk_tuning.h`) calls `RestoreScanModulation()` with what the restored

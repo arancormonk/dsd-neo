@@ -519,6 +519,20 @@ scan_warn_configured_width(const dsd_opts* opts, const dsd_state* state, int kin
     return DSD_ENGINE_SCAN_WIDTH_SKIPPED;
 }
 
+/* Whether an analog row of demodulator @p kind is one nothing receives as AM (issue #526): an am row on audio input with
+ * no rigctl peer. Audio input arrives demodulated by whatever produced it, and only a rigctl peer can be asked for AM
+ * (trunk_tuning.c); such an input tunes no row at all (dsd_engine_scan_tune_to_freq()), so the row is never on air. */
+static int
+scan_am_row_unreceivable(const dsd_opts* opts, int kind, char* brief, size_t brief_size) {
+    if (kind != DSD_ANALOG_DEMOD_AM || opts->audio_in_type == AUDIO_IN_RTL || opts->use_rigctl == 1) {
+        return 0;
+    }
+    if (brief && brief_size > 0U) {
+        DSD_SNPRINTF(brief, brief_size, "%s", "AM needs an I/Q input or a rigctl peer");
+    }
+    return 1;
+}
+
 int
 dsd_engine_scan_warn_analog_width(const dsd_opts* opts, const dsd_state* state, const dsd_scan_option_values* row,
                                   int kind, int dsp_rate_hz, const char* label, char* brief, size_t brief_size) {
@@ -527,6 +541,12 @@ dsd_engine_scan_warn_analog_width(const dsd_opts* opts, const dsd_state* state, 
     }
     if (!opts || !label || !dsd_analog_demod_is_valid(kind)) {
         return DSD_ENGINE_SCAN_WIDTH_OK;
+    }
+    if (scan_am_row_unreceivable(opts, kind, brief, brief_size)) {
+        LOG_WARN("WARNING: %s: AM rows need an input DSD-neo demodulates (rtl, rtltcp, soapy, airspy) or a rigctl peer "
+                 "(-U) that demodulates AM; this audio input has neither, so it is skipped at every visit.\n",
+                 label);
+        return DSD_ENGINE_SCAN_WIDTH_SKIPPED;
     }
     if (!row || !(row->present & DSD_SCAN_OPT_BANDWIDTH)) {
         return scan_warn_configured_width(opts, state, kind, dsp_rate_hz, label, brief, brief_size);
@@ -560,6 +580,9 @@ dsd_engine_scan_analog_width_skipped(const dsd_opts* opts, const dsd_state* stat
     }
     if (!opts || !dsd_analog_demod_is_valid(kind)) {
         return 0;
+    }
+    if (scan_am_row_unreceivable(opts, kind, brief, brief_size)) {
+        return 1;
     }
     const int width_hz = (row && (row->present & DSD_SCAN_OPT_BANDWIDTH))
                              ? row->channel_bw_hz
