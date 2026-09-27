@@ -2569,6 +2569,11 @@ test_nfm_channel_map_tone_lists(void) {
         "4,155535000,Trailing,nfm,--tone-allow 100.0,\n",
         "channel,frequency_hz,mode,options,name\n1,154430000,nfm,--tone-allow 100.0,Fire\n",
         "channel,frequency_hz,mode,options,notes\n1,154430000,nfm,--tone-block 100.0,County, north side\n",
+        /* A name after a list that starts with a tone or code but has a space in it is the name's own. */
+        "channel,frequency_hz,mode,options,name\n"
+        "1,154430000,nfm,--tone-allow 100.0,100 Main St\n"
+        "2,155475000,nfm,--tone-allow 67.0,67 Fire\n"
+        "3,155520000,nfm,--tone-block D023N,D023 Repeater\n",
     };
     for (size_t i = 0; i < sizeof(accepted) / sizeof(accepted[0]); i++) {
         if (import_channel_map_text(path, accepted[i], log, sizeof log) != 0 || strstr(log, " row ")) {

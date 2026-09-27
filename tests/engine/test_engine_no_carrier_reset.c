@@ -1519,6 +1519,81 @@ test_typed_scan_nfm_row_tone_rejection_steps(void) {
     dsd_trunk_tuning_requests_reset();
     return rc;
 }
+
+/* Issue #527: a row skipped at every visit for a width the DSP rate cannot filter is nowhere to go either. Rejected
+ * traffic on the one row the scanner can tune stays muted where it is, pass after pass, instead of stepping onto the
+ * refused row, failing there, and landing back on the same row to end the reception and judge it again. The row on
+ * air is where the receiver landed: a start that failed on the refused row just before the traffic came does not make
+ * the list look as if it had somewhere else to go. */
+static int
+test_typed_scan_tone_rejection_with_a_refused_row(void) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    int rc = 0;
+    reset_rtl_profile_fakes();
+    dsd_trunk_tuning_requests_reset();
+    opts->audio_in_type = AUDIO_IN_RTL;
+    opts->scanner_mode = 1;
+    opts->trunk_hangtime = 1;
+    state->rtl_ctx = (RtlSdrContext*)state;
+    g_rtl_request_rate_hz = 16000;
+    state->lcn_freq_count = 2;
+    state->trunk_lcn_freq[0] = 154645000L;
+    state->trunk_lcn_freq[1] = 155645000L;
+    for (int row = 0; row < 2; row++) {
+        rc |= expect_true("refused-row mode", dsd_channel_mode_set(state, (size_t)row, DSD_SCAN_MODE_NFM) == 0);
+        dsd_scan_row_profile* profile = NULL;
+        rc |= expect_true("refused-row profile", dsd_scan_profile_ensure(&profile) == 0 && profile);
+        if (!profile) {
+            continue;
+        }
+        if (row == 0) {
+            profile->values.present = DSD_SCAN_OPT_TONE;
+            profile->values.tone_filter = DSD_TONE_FILTER_ALLOW;
+            rc |= expect_true("refused-row list", dsd_tone_set_parse("100.0", &profile->values.tone_set, NULL, 0) == 0);
+        } else {
+            profile->values.present = DSD_SCAN_OPT_BANDWIDTH;
+            profile->values.channel_bw_hz = 20000; /* does not fit the 16 kHz DSP rate */
+        }
+        rc |= expect_true("refused-row profile set", dsd_channel_profile_set(state, (size_t)row, profile) == 0);
+    }
+
+    state->last_cc_sync_time = time(NULL) - 11;
+    noCarrier(opts, state);
+    rc |= expect_true("refused-row: the tunable row on air", state->lcn_freq_roll == 1 && g_rtl_tune_freq == 154645000U
+                                                                 && opts->analog_tone_filter == DSD_TONE_FILTER_ALLOW);
+    /* The idle row's hangtime runs out: the step tries the refused row, which fails before any backend moves. */
+    state->last_cc_sync_time = time(NULL) - 11;
+    noCarrier(opts, state);
+    rc |=
+        expect_true("refused-row: the refused row failed", state->lcn_freq_roll == 2 && g_rtl_tune_freq == 154645000U);
+
+    /* Traffic comes on the row on air, and the policy rejects it: it stays, muted, pass after pass, -t long run out. */
+    state->analog_rx.carrier_open = 1;
+    state->analog_rx.gate = DSD_ANALOG_TONE_GATE_REJECTED;
+    const uint32_t generation = state->analog_rx.generation;
+    const int tunes_before = g_rtl_tune_calls;
+    for (int pass = 0; pass < 4; pass++) {
+        noCarrier(opts, state);
+    }
+    rc |= expect_true("refused-row: rejected traffic stays",
+                      g_rtl_tune_calls == tunes_before && g_rtl_tune_freq == 154645000U && state->lcn_freq_roll == 2);
+    rc |= expect_true("refused-row: the reception is kept", state->analog_rx.gate == DSD_ANALOG_TONE_GATE_REJECTED
+                                                                && state->analog_rx.generation == generation);
+    if (state->analog_rx.generation != generation || g_rtl_tune_calls != tunes_before) {
+        DSD_FPRINTF(stderr, "  generation %u -> %u, tunes %d -> %d, roll %d\n", generation, state->analog_rx.generation,
+                    tunes_before, g_rtl_tune_calls, state->lcn_freq_roll);
+    }
+
+    dsd_engine_channel_scan_leave(opts, state);
+    state->rtl_ctx = NULL;
+    free_test_runtime(opts, state);
+    dsd_trunk_tuning_requests_reset();
+    return rc;
+}
 #endif
 
 #ifdef DSD_NEO_TEST_RTL_WRAP
@@ -3506,6 +3581,7 @@ main(void) {
 #if defined(USE_RADIO) && defined(DSD_NEO_TEST_RTL_WRAP)
     rc |= test_rx_tone_resets_on_legacy_scan_step();
     rc |= test_typed_scan_nfm_row_tone_rejection_steps();
+    rc |= test_typed_scan_tone_rejection_with_a_refused_row();
     rc |= test_typed_scan_tune_boundaries();
     rc |= test_typed_scan_nfm_rows_switch_family(0);
     rc |= test_typed_scan_nfm_rows_switch_family(1);

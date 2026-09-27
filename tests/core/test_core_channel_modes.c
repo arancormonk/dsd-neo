@@ -90,8 +90,17 @@ main(void) {
     clear(s);
     write_csv(o->chan_in_file, "chan,freq,notes\n1,150000000,dmr\n");
     assert(csvChanImport(o, s) == 0 && !dsd_channel_modes_present(s));
+    /* Every row of a list without modes runs the configured decode mode, so it hears tones exactly when that is the FM
+       monitor; a row that declares a digital mode runs its own, and an nfm row hears them whatever is configured
+       (issue #527). */
+    assert(dsd_channel_modes_hear_tones(s, 1) && !dsd_channel_modes_hear_tones(s, 0));
+    assert(!dsd_channel_modes_include(s, DSD_SCAN_MODE_DMR));
     assert(dsd_channel_mode_set(s, 0, DSD_SCAN_MODE_DMR) == 0);
     assert(dsd_channel_modes_present(s));
+    assert(!dsd_channel_modes_hear_tones(s, 1) && dsd_channel_modes_include(s, DSD_SCAN_MODE_DMR));
+    assert(dsd_channel_mode_set(s, 0, DSD_SCAN_MODE_NFM) == 0);
+    assert(dsd_channel_modes_hear_tones(s, 0) && dsd_channel_modes_hear_tones(s, 1));
+    assert(dsd_channel_mode_set(s, 0, DSD_SCAN_MODE_DMR) == 0);
     assert(dsd_channel_mode_set(s, 0, DSD_SCAN_MODE_P25) == 0);
     assert(dsd_channel_modes_present(s));
     assert(dsd_channel_mode_set(s, 0, DSD_SCAN_MODE_INHERIT) == 0);

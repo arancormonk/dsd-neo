@@ -335,9 +335,8 @@ import_global_channel_map_if_needed(dsd_opts* opts, dsd_state* state) {
         dsd_scan_row_keys_warn_if_unused(state, opts->scanner_mode);
         /* A config file's -Y list: the command line checked its own when it imported it (issue #527). */
         if (opts->scanner_mode == 1) {
-            (void)dsd_scan_mode_warn_tone_filter_unused(opts, state,
-                                                        dsd_scan_mode_configured_fm_monitor(opts, state)
-                                                            || dsd_channel_modes_include(state, DSD_SCAN_MODE_NFM));
+            const int fm_monitor = dsd_scan_mode_configured_fm_monitor(opts, state);
+            (void)dsd_scan_mode_warn_tone_filter_unused(opts, state, dsd_channel_modes_hear_tones(state, fm_monitor));
         }
     }
     return 0;
@@ -1443,24 +1442,6 @@ no_carrier_step_retune(const dsd_opts* opts, dsd_state* state, long int freq, in
     return 0;
 }
 
-/* Whether the -Y list has somewhere to go from the row on air: another row with a frequency of its own that the
- * operator has not avoided. A step lands on the row after the one it last tuned (lcn_freq_roll), so the row on air is
- * the one before it; before the first step every usable row counts. */
-static int
-no_carrier_scan_has_another_row(const dsd_state* state) {
-    const int count = state->lcn_freq_count;
-    const int current = (state->lcn_freq_roll > 0 && state->lcn_freq_roll <= count) ? state->lcn_freq_roll - 1 : -1;
-    const long current_freq = current >= 0 ? *dsd_state_trunk_lcn_slot_const(state, current) : 0L;
-    for (int row = 0; row < count; row++) {
-        const long freq = *dsd_state_trunk_lcn_slot_const(state, row);
-        if (row != current && freq != 0L && freq != current_freq
-            && !dsd_state_trunk_lcn_avoid_get(state, (size_t)row)) {
-            return 1;
-        }
-    }
-    return 0;
-}
-
 // Returns non-zero when the scanner actually moved to another frequency, so the caller can end any
 // call still open as an explicit release rather than a sync loss.
 static int
@@ -1474,10 +1455,11 @@ no_carrier_scanner_step_is_due(const dsd_opts* opts, const dsd_state* state, tim
     }
     /* Analog traffic the tone policy rejected (issue #527) does not hold the row: it neither stamps the hangtime anchor
      * nor waits it out, but moves on at this pass. The caller still lets an operator hold keep the row, muted. A list
-     * with nowhere else to go (one usable row) keeps it muted where it is, as a fixed frequency does: a step would land
-     * on the same row, end the reception and judge the same traffic again, and so would the hangtime rule below. */
+     * with nowhere else to go (no other row a step can land on: the others avoided, or skipped at every visit for a
+     * width the front end refuses) keeps it muted where it is, as a fixed frequency does: a step would land on the
+     * same row, end the reception and judge the same traffic again, and so would the hangtime rule below. */
     if (dsd_scan_analog_tone_gate(opts, state) == DSD_ANALOG_TONE_GATE_REJECTED) {
-        return no_carrier_scan_has_another_row(state);
+        return dsd_engine_channel_scan_has_other_row(opts, state);
     }
     if (dsd_scan_voice_gate_owns_step(opts, state)) {
         return dsd_scan_voice_gate_should_step(opts, state, dsd_time_now_monotonic_s());

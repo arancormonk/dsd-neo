@@ -422,7 +422,7 @@ dsd_analog_rx_core_publish(const dsd_analog_rx_core* core, dsd_analog_rx_publica
     out->ctcss_tenths_hz = report.ctcss_tenths_hz;
     out->dcs_code = report.dcs_code;
     out->dcs_inverted = report.dcs_inverted;
-    out->dcs_acquiring = report.candidate;
+    out->dcs_candidate = report.candidate;
 }
 
 /* ------------------------------------------------------------------------------------------
@@ -710,7 +710,7 @@ analog_rx_publish(const dsd_opts* opts, dsd_state* state, analog_rx_session* ses
         state->analog_rx.ctcss_tenths_hz = 0;
         state->analog_rx.dcs_code = 0;
         state->analog_rx.dcs_inverted = 0;
-        state->analog_rx.dcs_acquiring = 0;
+        state->analog_rx.dcs_candidate = 0;
         analog_rx_policy_publish(opts, state, session, samples, rate_hz);
         return;
     }

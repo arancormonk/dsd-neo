@@ -196,9 +196,8 @@ test_received_is_not_configured(void) {
     make_monitor_opts(&opts);
     dsd_app_rx_tone view;
 
-    /* The policy gate field is reserved and always OFF; no value of it, or of the received
-       tone, changes the configured text, and the configured text never changes the received
-       one. */
+    /* With no policy in force, no gate value and no received tone changes the configured
+       text, and the configured text never changes the received one. */
     publish(state, 1, DSD_ANALOG_TONE_STATE_LOCKED, DSD_ANALOG_TONE_KIND_CTCSS, 1318);
     for (int gate = DSD_ANALOG_TONE_GATE_OFF; gate <= DSD_ANALOG_TONE_GATE_REJECTED; gate++) {
         state->analog_rx.gate = gate;
@@ -378,8 +377,8 @@ test_tone_filter_policy_text(void) {
     free(state);
 }
 
-/* A scan row's own policy is what runs while the row is on air; the text says so, and a row that turns the policy off
-   shows that too. */
+/* A scan row's own policy is what runs while the row is on air; the text says so and names the configured default it
+   shadows, as every row override reads ("(row; default X)"), and a row that turns the policy off shows that too. */
 static void
 test_tone_filter_row_policy(void) {
     static dsd_opts opts;
@@ -399,15 +398,35 @@ test_tone_filter_row_policy(void) {
     publish(state, 0, DSD_ANALOG_TONE_STATE_IDLE, 0, 0);
     assert(dsd_app_rx_tone_view(&opts, state, 0.0, &view) == 1);
     assert(view.policy_visible == 1U && view.policy_row == 1U);
-    assert(strcmp(view.configured_text, "block D023I (row)") == 0);
+    assert(strcmp(view.configured_text, "block D023I (row; default allow 100.0 Hz)") == 0);
     row.tone_filter = DSD_TONE_FILTER_OFF;
     DSD_MEMSET(&row.tone_set, 0, sizeof(row.tone_set));
     assert(dsd_scan_mode_options(&opts, state, &row) == 0);
     assert(dsd_app_rx_tone_view(&opts, state, 0.0, &view) == 1);
-    assert(view.policy_visible == 1U && strcmp(view.configured_text, "off (row)") == 0);
+    assert(view.policy_visible == 1U && strcmp(view.configured_text, "off (row; default allow 100.0 Hz)") == 0);
     dsd_scan_mode_leave(&opts, state);
     assert(dsd_app_rx_tone_view(&opts, state, 0.0, &view) == 1);
     assert(view.policy_row == 0U && strcmp(view.configured_text, "allow 100.0 Hz") == 0);
+
+    /* Long lists on both sides are each summarised, and the whole still fits: the default keeps its closing mark. */
+    static const char k_long[] = "67/69.3/71.9/74.4/77/79.7/82.5/85.4/88.5/91.5/94.8/97.4/100/103.5/D023/D025/D026";
+    set_policy(&opts, DSD_TONE_FILTER_BLOCK, k_long);
+    assert(dsd_scan_mode_begin(&opts, state) == 0);
+    assert(dsd_scan_mode_enter(&opts, state, DSD_SCAN_MODE_NFM) == 0);
+    row.tone_filter = DSD_TONE_FILTER_ALLOW;
+    assert(dsd_tone_set_parse(k_long, &row.tone_set, NULL, 0) == 0);
+    assert(dsd_scan_mode_options(&opts, state, &row) == 0);
+    assert(dsd_app_rx_tone_view(&opts, state, 0.0, &view) == 1);
+    const char* shadowed = strstr(view.configured_text, " (row; default block 67.0 Hz/");
+    assert(strncmp(view.configured_text, "allow 67.0 Hz/69.3 Hz/", 22) == 0 && shadowed != NULL);
+    const char* first_mark = strstr(view.configured_text, "\xE2\x80\xA6+");
+    assert(first_mark != NULL && first_mark < shadowed && strstr(shadowed, "\xE2\x80\xA6+") != NULL);
+    const size_t length = strlen(view.configured_text);
+    assert(length < sizeof(view.configured_text) - 1U && view.configured_text[length - 1U] == ')');
+    dsd_scan_mode_leave(&opts, state);
+    assert(dsd_app_rx_tone_view(&opts, state, 0.0, &view) == 1);
+    assert(view.policy_row == 0U && strncmp(view.configured_text, "block 67.0 Hz/69.3 Hz/", 22) == 0);
+    assert(strstr(view.configured_text, "(row") == NULL);
     dsd_state_ext_free_all(state);
     free(state);
 }

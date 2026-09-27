@@ -427,7 +427,7 @@ void dsd_analog_rx_core_track_carrier(dsd_analog_rx_core* core, const float* blo
  * @brief Where the core stands, in publication terms.
  *
  * Zeroes @p out, then fills carrier_open, tone_state (IDLE without carrier, else the merged
- * detector verdict), tone_kind, ctcss_tenths_hz or dcs_code and dcs_inverted, dcs_acquiring (the
+ * detector verdict), tone_kind, ctcss_tenths_hz or dcs_code and dcs_inverted, dcs_candidate (the
  * DCS detector's candidate while nothing is locked), and generation. gate stays OFF: detection
  * never gates audio; the tap's glue fills the tone policy's verdict (issue #527).
  */

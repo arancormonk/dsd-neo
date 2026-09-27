@@ -720,13 +720,14 @@ included:
 ```
 
 The line is the setting, never the received value: the policy (`allow` or `block` and its list, tones with their unit,
-`…+N` for entries that do not fit, and `(row)` while a scan row's own policy runs; `off (row)` for a row that turns
-the filter off), and while a carrier is heard what it does with it: `passing`, `muted: checking tone` while the
-transmission is still being checked (at most 800 ms, or 1,600 ms for a listed DCS code still being confirmed),
-`muted: not allowed` for a tone or code the policy rejects (including one heard after a rejection for want of a
-tone), `muted: no tone` for an allow list's traffic with none. With no carrier the line shows the policy alone. A
-terminal without UTF-8 gets `-` for the dash and `...+N` for the overflow mark. It is absent while no policy is in
-force, and wherever tones are not detected. See [Tone filter](cli.md#tone-filter-ctcssdcs-receive-policy).
+`…+N` for entries that do not fit; while a scan row's own policy runs, followed by the configured one it shadows, as in
+`block D023N (row; default allow 100.0 Hz)`, and `off (row; default …)` for a row that turns the filter off), and while
+a carrier is heard what it does with it: `passing`, `muted: checking tone` while the transmission is still being checked
+(at most 800 ms, or 1,600 ms for a listed DCS code still being confirmed), `muted: not allowed` for a tone or code the
+policy rejects (including one heard after a rejection for want of a tone), `muted: no tone` for an allow list's traffic
+with none. With no carrier the line shows the policy alone. A terminal without UTF-8 gets `-` for the dash and `...+N`
+for the overflow mark. It is absent while no policy is in force, and wherever tones are not detected. See
+[Tone filter](cli.md#tone-filter-ctcssdcs-receive-policy).
 
 ## Compact View
 

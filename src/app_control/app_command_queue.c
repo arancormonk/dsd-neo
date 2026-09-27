@@ -12,6 +12,7 @@
 #include <dsd-neo/app_control/rr_import_apply.h>
 #include <dsd-neo/app_control/squelch_view.h>
 #include <dsd-neo/core/airspy_config.h>
+#include <dsd-neo/core/analog_tone.h>
 #include <dsd-neo/core/audio.h>
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/channel_mode.h>
@@ -58,6 +59,7 @@
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #include <dsd-neo/runtime/airspy_config.h>
 #include <dsd-neo/runtime/analog_channel.h>
+#include <dsd-neo/runtime/analog_tones.h>
 #include <dsd-neo/runtime/call_alert.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/decode_mode.h>
@@ -6163,11 +6165,49 @@ apply_cmd_resume_and_note_widths(dsd_opts* opts, dsd_state* state, int scoped, c
     return resume_failed ? -1 : 0;
 }
 
+/* The configured CTCSS/DCS receive policy, and whether nothing in the session runs detection for it (issue #527). */
+typedef struct {
+    int mode;
+    dsd_tone_set set;
+    int unused; /* a list policy (allow or block) that nothing in the session can apply */
+} ui_tone_filter_reach;
+
+static ui_tone_filter_reach
+ui_tone_filter_reach_of(const dsd_opts* opts, const dsd_state* state) {
+    ui_tone_filter_reach reach;
+    DSD_MEMSET(&reach, 0, sizeof reach);
+    if (!opts || !state) {
+        return reach;
+    }
+    dsd_scan_mode_configured_tone_policy(opts, state, &reach.mode, &reach.set);
+    reach.unused = (reach.mode == DSD_TONE_FILTER_ALLOW || reach.mode == DSD_TONE_FILTER_BLOCK)
+                   && !dsd_engine_scan_hears_tones(opts, state);
+    return reach;
+}
+
+/*
+ * A tone filter set while AM or a digital mode is active warns once (issue #527). The command line and a scan's start
+ * say so for the session they begin; a command says so when it is what left the configured list policy where nothing
+ * runs detection (dsd_engine_scan_hears_tones()): a loaded config that sets a policy there, or a decode-mode change, a
+ * channel map or a scanner toggle that takes the FM monitor away from the policy in force. A command after which the
+ * same policy is still unheard says nothing again.
+ */
+static void
+ui_warn_tone_filter_unreached(const dsd_opts* opts, const dsd_state* state, const ui_tone_filter_reach* before) {
+    const ui_tone_filter_reach after = ui_tone_filter_reach_of(opts, state);
+    if (!after.unused
+        || (before->unused && before->mode == after.mode && dsd_tone_set_equal(&before->set, &after.set))) {
+        return;
+    }
+    (void)dsd_scan_mode_warn_tone_filter_unused(opts, state, 0);
+}
+
 static int
 apply_cmd_scoped(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c, int guarded) {
     const int mode_update = command_updates_scan_mode(c);
     const int was_scanner = opts && opts->scanner_mode == 1;
     const ui_cmd_widths_before widths_before = ui_cmd_widths_before_of(opts, state, c);
+    const ui_tone_filter_reach tone_before = ui_tone_filter_reach_of(opts, state);
     const int scoped = mode_update && opts && state && dsd_scan_mode_suspend(opts, state);
     const int group_update = c
                              && (c->id == DSD_APP_CMD_IMPORT_GROUP_LIST || c->id == DSD_APP_CMD_IMPORT_GROUP_LIST_CLEAR
@@ -6184,6 +6224,7 @@ apply_cmd_scoped(dsd_opts* opts, dsd_state* state, const struct dsd_app_command*
         return UI_CMD_APPLY_FAILED;
     }
     apply_cmd_fall_back_from_am_on_pcm(opts, state, c);
+    ui_warn_tone_filter_unreached(opts, state, &tone_before);
     return result;
 }
 

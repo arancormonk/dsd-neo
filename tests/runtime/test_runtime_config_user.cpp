@@ -2467,8 +2467,8 @@ test_am_mode_and_bandwidth_roundtrip(void) {
 }
 
 /*
- * Issue #527: [analog] tone_filter and tone_list ride INI -> cfg -> opts -> snapshot -> render. The mode is written when
- * it is on, the list whenever there is one (off keeps it), and both load back. A refused list, or a list policy with
+ * Issue #527: [analog] tone_filter and tone_list ride INI -> cfg -> opts -> snapshot -> render. The mode is written
+ * when it is on, the list whenever there is one (off keeps it), and both load back. A refused list, or a list policy with
  * no list, applies as off. A scan row's own policy runs over dsd_opts while the row is on air and is never what a save
  * writes: the configured one is.
  */

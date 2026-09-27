@@ -3,6 +3,7 @@
  * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
+#include <dsd-neo/core/analog_tone.h>
 #include <dsd-neo/core/init.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/power.h>
@@ -10,6 +11,9 @@
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/engine/engine.h>
 #include <dsd-neo/platform/file_compat.h>
+#include <dsd-neo/platform/posix_compat.h>
+#include <dsd-neo/runtime/analog_channel.h>
+#include <dsd-neo/runtime/analog_tones.h>
 #include <dsd-neo/runtime/exitflag.h>
 #include <dsd-neo/runtime/input_failure.h>
 #include <math.h>
@@ -661,6 +665,83 @@ test_missing_source_labels_do_not_stop_decode(void) {
     return rc;
 }
 
+/* Occurrences of @p needle in @p text. */
+static int
+count_text(const char* text, const char* needle) {
+    int count = 0;
+    for (const char* at = strstr(text, needle); at; at = strstr(at + 1, needle)) {
+        count++;
+    }
+    return count;
+}
+
+/*
+ * Issue #527: a -Y channel map that reaches the engine through a config file, which the command line never imported,
+ * is weighed against the tone policy when the engine imports it: said exactly once when no row runs the FM monitor
+ * (no nfm row, and under -fA no row without a mode of its own, since a typed row runs its own mode), and not at all
+ * when one does.
+ */
+static int
+test_config_channel_map_weighs_the_tone_filter(void) {
+    static const struct {
+        const char* body;
+        int analog_only;
+        int warnings;
+    } cases[] = {
+        {"channel,frequency_hz,mode\n1,461000000,dmr\n2,851012500,p25\n", 0, 1},
+        {"channel,frequency_hz,mode\n1,461000000,dmr\n2,851012500,p25\n", 1, 1},
+        {"channel,frequency_hz,mode\n1,461000000,dmr\n2,154430000,nfm\n", 0, 0},
+        {"channel,frequency_hz,mode\n1,461000000,dmr\n2,154430000,\n", 1, 0},
+        {"channel,frequency_hz\n1,154430000\n2,155475000\n", 1, 0},
+    };
+
+    static const char* const expected =
+        "the tone filter (--tone-allow/--tone-block, [analog] tone_filter) has no effect";
+    int test_rc = 0;
+    for (size_t i = 0; i < sizeof cases / sizeof cases[0]; i++) {
+        dsd_opts* opts = NULL;
+        dsd_state* state = NULL;
+        if (init_test_runtime(&opts, &state) != 0) {
+            return 1;
+        }
+        const int fd = dsd_test_mkstemp(opts->chan_in_file, sizeof opts->chan_in_file, "tone-chan-map-");
+        if (fd >= 0) {
+            dsd_close(fd);
+        }
+        FILE* fp = fd >= 0 ? dsd_fopen_private(opts->chan_in_file, "w") : NULL;
+        if (!fp || fputs(cases[i].body, fp) < 0 || fclose(fp) != 0) {
+            DSD_FPRINTF(stderr, "tone map case %zu: could not write the map\n", i);
+            free_test_runtime(opts, state);
+            return 1;
+        }
+        opts->scanner_mode = 1;
+        opts->analog_only = cases[i].analog_only;
+        opts->analog_demod = DSD_ANALOG_DEMOD_FM;
+        opts->analog_tone_filter = DSD_TONE_FILTER_ALLOW;
+        test_rc |= expect_true("tone map list", dsd_tone_set_parse("100.0", &opts->analog_tone_set, NULL, 0) == 0);
+        dsd_test_capture_stderr cap;
+        char log[8192] = {0};
+        if (dsd_test_capture_stderr_begin(&cap, "tone-chan-map-log") != 0) {
+            (void)remove(opts->chan_in_file);
+            free_test_runtime(opts, state);
+            return 1;
+        }
+        const int rc = dsd_engine_run_with_lifecycle(opts, state, NULL);
+        const int imported = state->lcn_freq_count;
+        (void)dsd_test_capture_stderr_end(&cap);
+        (void)dsd_test_capture_stderr_read(&cap, log, sizeof log);
+        const int warnings = count_text(log, expected);
+        if (rc != 0 || imported != 2 || warnings != cases[i].warnings) {
+            DSD_FPRINTF(stderr, "tone map case %zu: rc=%d rows=%d warnings=%d want %d log:\n%s\n", i, rc, imported,
+                        warnings, cases[i].warnings, log);
+            test_rc = 1;
+        }
+        (void)remove(opts->chan_in_file);
+        free_test_runtime(opts, state);
+    }
+    return test_rc;
+}
+
 int
 main(void) {
     int rc = 0;
@@ -684,6 +765,7 @@ main(void) {
     rc |= test_iq_replay_guard_and_requested_setup();
     rc |= test_lifecycle_hooks_start_after_setup_and_stop_before_cleanup();
     rc |= test_receiver_failure_is_not_successful_completion();
+    rc |= test_config_channel_map_weighs_the_tone_filter();
 
     if (rc == 0) {
         printf("ENGINE_RUN_SETUP: OK\n");

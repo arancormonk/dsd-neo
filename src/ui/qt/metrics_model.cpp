@@ -304,8 +304,8 @@ MetricsModel::fillSiteView(View& next, const dsd_state* snapshot) const {
 }
 
 MetricsModel::MetricsModel(QObject* parent) : QObject(parent) {
-    /* The configured tone policy is configuration, so it reads as configured -- "off" until
-       #527 -- before the first frame too; the app-control view owns that text. */
+    /* The tone policy is configuration, so it reads as configured ("off" before the first
+       frame) too; the app-control view owns that text. */
     dsd_app_rx_tone policy;
     (void)dsd_app_rx_tone_view(nullptr, nullptr, 0.0, &policy);
     m_view.rx_tone_configured_text = QString::fromUtf8(policy.configured_text);

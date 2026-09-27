@@ -528,6 +528,30 @@ dsd_scan_mode_configured_analog_width(const dsd_opts* opts, const dsd_state* sta
     return width_hz > 0 ? width_hz : 0;
 }
 
+/* Issue #527: the configured tone policy the rx tone view names beside a row's own, as scan_mode.c reads it: the
+ * stubbed configured view while one is set, dsd_opts otherwise. */
+void
+// NOLINTNEXTLINE(misc-use-internal-linkage)
+dsd_scan_mode_configured_tone_policy(const dsd_opts* opts, const dsd_state* state, int* mode, dsd_tone_set* set) {
+    const dsd_scan_settings* configured = dsd_scan_mode_configured_view(state);
+    int configured_mode = DSD_TONE_FILTER_OFF;
+    dsd_tone_set configured_set;
+    DSD_MEMSET(&configured_set, 0, sizeof(configured_set));
+    if (configured) {
+        configured_mode = configured->analog_tone_filter;
+        configured_set = configured->analog_tone_set;
+    } else if (opts) {
+        configured_mode = opts->analog_tone_filter;
+        configured_set = opts->analog_tone_set;
+    }
+    if (mode) {
+        *mode = configured_mode;
+    }
+    if (set) {
+        *set = configured_set;
+    }
+}
+
 dsd_scan_mode
 dsd_scan_mode_active(const dsd_state* state) { // NOLINT(misc-use-internal-linkage)
     (void)state;

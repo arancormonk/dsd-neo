@@ -1512,12 +1512,12 @@ test_unusable_rate_is_inert(void) {
 /* --- Issue #527: the candidate the tone policy waits for --- */
 
 /* One reception from its start (carrier and code together, as a transmitter keys up) through @p watch_ms: the sample
-   time the code locked (-1: never), and whether the published candidate (dsd_analog_rx_publication::dcs_acquiring)
+   time the code locked (-1: never), and whether the published candidate (dsd_analog_rx_publication::dcs_candidate)
    stood at every block from @p from_ms until that lock. @p code < 0 sends no code. */
 typedef struct {
     double lock_ms;
     int held_until_lock;
-    int acquiring_at_from;
+    int candidate_at_from;
 } candidate_run;
 
 static candidate_run
@@ -1542,13 +1542,13 @@ run_candidate(double fs, int code, int inverted, double snr_db, double deemph_us
         const double now_ms = samples_to_ms(fs, n + block);
         if (pub.tone_state == DSD_ANALOG_TONE_STATE_LOCKED && run.lock_ms < 0.0) {
             run.lock_ms = now_ms;
-            assert(pub.dcs_acquiring == 0);
+            assert(pub.dcs_candidate == 0);
         }
-        if (now_ms >= from_ms && run.lock_ms < 0.0 && !pub.dcs_acquiring) {
+        if (now_ms >= from_ms && run.lock_ms < 0.0 && !pub.dcs_candidate) {
             run.held_until_lock = 0;
         }
         if (now_ms >= from_ms && now_ms < from_ms + 1.0) {
-            run.acquiring_at_from = pub.dcs_acquiring;
+            run.candidate_at_from = pub.dcs_candidate;
         }
     }
     return run;
@@ -1556,11 +1556,11 @@ run_candidate(double fs, int code, int inverted, double snr_db, double deemph_us
 
 /*
  * A code in noise at the 3 dB edge of the DCS contract can take longer than the tone policy's 800 ms window to lock
- * (DSD_ANALOG_TONE_WINDOW_MS; the lock ceiling is 1,500 ms). The window runs on while the DCS detector holds a candidate,
- * so the candidate must stand from 800 ms until the lock: these are the two starts of 12,000 at 78.125 kHz with 750 us,
- * the slowest configuration, that locked after 800 ms, and each holds it. Noise with no code raises a candidate at
- * 800 ms on a few receptions in a hundred, each of which the policy then decides that much later: the rate is held
- * to at most 5% here (2.8% over 14,000 receptions at 48 and 78.125 kHz).
+ * (DSD_ANALOG_TONE_WINDOW_MS; the lock ceiling is 1,500 ms). The window runs on while the DCS detector holds a
+ * candidate, so the candidate must stand from 800 ms until the lock: these are the two starts of 12,000 at 78.125 kHz
+ * with 750 us, the slowest configuration, that locked after 800 ms, and each holds it. Noise with no code raises a
+ * candidate at 800 ms on a few receptions in a hundred, each of which the policy then decides that much later: the rate
+ * is held to at most 5% here (2.8% over 14,000 receptions at 48 and 78.125 kHz).
  */
 static void
 test_candidate_holds_until_a_slow_lock(void) {
@@ -1576,7 +1576,7 @@ test_candidate_holds_until_a_slow_lock(void) {
         DSD_FPRINTF(stderr, "DCS candidate: D%03o%c at 3 dB, 78.125 kHz, 750 us locked after %.0f ms\n",
                     (unsigned int)k_slow[k].code, k_slow[k].inverted ? 'I' : 'N', run.lock_ms);
         assert(run.lock_ms > (double)DSD_ANALOG_TONE_WINDOW_MS && run.lock_ms < (double)DSD_ANALOG_TONE_WINDOW_DCS_MS);
-        assert(run.held_until_lock && run.acquiring_at_from);
+        assert(run.held_until_lock && run.candidate_at_from);
     }
     int raised = 0;
     const int receptions = 400;
@@ -1584,7 +1584,7 @@ test_candidate_holds_until_a_slow_lock(void) {
         const candidate_run run = run_candidate(8000.0, -1, 0, 3.0, 750.0, 9500000ULL + (uint64_t)k,
                                                 (double)DSD_ANALOG_TONE_WINDOW_MS, 820.0);
         assert(run.lock_ms < 0.0);
-        raised += run.acquiring_at_from;
+        raised += run.candidate_at_from;
     }
     DSD_FPRINTF(stderr, "DCS candidate: raised at 800 ms on %d of %d receptions of noise\n", raised, receptions);
     assert(raised * 20 <= receptions);

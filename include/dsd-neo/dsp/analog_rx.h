@@ -208,7 +208,7 @@ enum {
  *
  * A DCS code can lock later than that: the DCS lock ceiling is 1,500 ms. While the list holds a DCS code and the DCS
  * detector holds a candidate -- some slicer read a supported code's word exactly within its last 64 bits, the first
- * half of a lock (dsd_analog_rx_publication::dcs_acquiring) -- the window runs on to at most
+ * half of a lock (dsd_analog_rx_publication::dcs_candidate) -- the window runs on to at most
  * DSD_ANALOG_TONE_WINDOW_DCS_MS, the DCS lock ceiling plus 100 ms. A CTCSS-only list, and a reception on which no
  * candidate stands, keep DSD_ANALOG_TONE_WINDOW_MS. The candidate is what tells a code that has not locked yet from
  * no code. Over 20,000 seeded starts at 3 dB in-band through the slowest path (78.125 kHz, 750 us de-emphasis), the 3

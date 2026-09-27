@@ -974,21 +974,27 @@ setting, shown apart from what is received, and it is off by default: then the o
   own policy coming on air): it is muted for a fresh check.
 - What is muted: the live monitor output and the UDP analog monitor (`-o udp`), together. The `-6` raw WAV is a capture
   ahead of every gate, squelch and tone filter included, and keeps everything.
-- Scanning: a transmission still being checked holds a `-Y` row or `--trunk-scan` target, for its window at most, with
-  the stay reason `Tone check`; rejected traffic holds nothing: `-Y` moves on at its next no-carrier pass (within
+- Scanning: a transmission still being checked holds a `-Y` row or `--trunk-scan` target as any carrier does, with
+  the stay reason `Tone check` while the check runs (800 ms, or to 1,600 ms as above). It counts as activity
+  meanwhile, so one that ends before a verdict leaves the ordinary tail behind it: `-t` for `-Y`, the target's
+  `activity_hold_ms` for trunk scan. Rejected traffic holds nothing: `-Y` moves on at its next no-carrier pass (within
   about 375 ms), and trunk scan at its next tick, without waiting out the hangtime or the activity hold. An operator
   hold keeps the row, muted. A fixed-frequency session mutes rejected traffic and stays, and so does a scan with
-  nowhere else to go: a `-Y` list with one usable row (its other rows avoided, or none) and a `--trunk-scan` list of
-  one target.
+  nowhere else to go: a `-Y` list or `--trunk-scan` list with no other row or target to step to (the others avoided,
+  or skipped at every visit for a width the DSP rate cannot filter, or none), or, for trunk scan, whose others are all
+  cooling down from a failed retune.
 - Where it applies: the analog FM monitor only (`-fA`, and `nfm` scan rows), on radio and PCM inputs alike, wherever
-  the received tone is detected. Set where nothing runs it, it has no effect, and the session says so once: at startup
-  for the AM monitor (`-fM`) or a digital mode, without a scan or with a `-Y` list that has no `nfm` row (checked when
-  the list is imported, from the command line or a config file), and when the scan starts for a `--trunk-scan` list
-  with no `nfm-conventional` target, whatever the decode mode. A later decode-mode change or config load says nothing; the `Tone filter` row leaves the
-  screen while no detection runs.
+  the received tone is detected. Set where nothing runs it, it has no effect, and the session says so once. At
+  startup: for the AM monitor (`-fM`) or a digital mode without a scan, and for a `-Y` list none of whose rows runs
+  the FM monitor (no `nfm` row, and under `-fA` no row without a mode of its own either, since a typed row runs its
+  own mode), checked when the list is imported from the command line or a config file. When the scan starts: for a
+  `--trunk-scan` list with no `nfm-conventional` target, whatever the decode mode. During the session: when a loaded
+  config sets a policy nothing runs, or a decode-mode change, channel map or scanner toggle takes the FM monitor away
+  from the policy in force. The `Tone filter` row leaves the screen while no detection runs.
 - What is shown: the terminal's Call Info section adds a `Tone filter:` line under `Rx tone:`, and the Qt/Android
-  monitor a `TONE FILTER` row under `RECEIVED TONE`, while a policy is in force: the policy (`allow 100.0 Hz/D023N`,
-  with `(row)` while a scan row's own policy runs) and, while a carrier is heard, what it does: `passing`,
+  monitor a `TONE FILTER` row under `RECEIVED TONE`, while a policy is in force: the policy (`allow 100.0 Hz/D023N`;
+  while a scan row's own policy runs, followed by the configured one it shadows,
+  `block D023N (row; default allow 100.0 Hz)`) and, while a carrier is heard, what it does: `passing`,
   `muted: checking tone`, `muted: not allowed` or `muted: no tone`. The received row goes on showing only what was
   received. The log prints `Tone filter: allowed (CTCSS 100.0 Hz)`, `Tone filter: rejected (no tone)` and the like when
   the verdict or the value that decided it changes, and `Tone filter: pending (tone lost)` when an allowed tone is lost

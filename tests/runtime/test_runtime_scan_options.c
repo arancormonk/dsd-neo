@@ -582,6 +582,14 @@ check_tone_list_split(void) {
         {"--tone-allow 100.0", "30", 0, NULL},
         {"--tone-allow 100.0", "Fire", 0, NULL},
         {"--tone-allow 100.0", "150.0", 0, NULL},
+        /* A name that starts with a tone or code but has a space in it is the column's own. */
+        {"--tone-allow 100.0", "100 Main St", 0, NULL},
+        {"--tone-allow 100.0", "67 Fire", 0, NULL},
+        {"--tone-block D023N", "D023 Repeater", 0, NULL},
+        {"--tone-allow 100.0", "67.0/D023N Fire", 0, NULL},
+        /* One run of entries with no space in it can only be the list's rest, a nonstandard later entry included. */
+        {"--tone-allow 100.0", "67.0/150.0", 0, "--tone-allow: use / between entries, not commas"},
+        {"--tone-allow 100.0", "67.0 \r\n", 0, "--tone-allow: use / between entries, not commas"},
         {"--tone-allow 100.0 --squelch-db -60", "67.0", 1, NULL},
         {"--no-tone-filter", "67.0", 1, NULL},
         {"--squelch-db -60", "67.0", 1, NULL},

@@ -503,11 +503,13 @@ struct dsd_analog_rx_publication {
     int dcs_inverted;    /**< 1 = the locked code is named in inverted polarity (the canonical member
                               of its alias class, runtime/analog_tones.h: never, for the standard set) */
     /** 1 while, with a carrier and nothing locked, the DCS detector holds a candidate code it has not confirmed:
-        some slicer read a supported code's word once (issue #527). The tone policy waits past its window for it. */
-    int dcs_acquiring;
+        some slicer read a supported code's word once (issue #527). The tone policy waits past its window for it. Not
+        tone_state's ACQUIRING, which turns NONE 500 ms into a carrier with nothing locked. */
+    int dcs_candidate;
     int gate; /**< dsd_analog_tone_gate: the configured tone policy's verdict (issue #527) */
     /** 1 when gate was decided because no tone or code was confirmed within the acquisition window (an allow list's
-        "no tone" rejection, a block list's "no tone" pass); 0 when a confirmed value decided it, or nothing is decided. */
+        "no tone" rejection, a block list's "no tone" pass); 0 when a confirmed value decided it, or nothing is
+        decided. */
     int gate_no_tone;
     /** Bumped on every reset (retune, row or target change, input switch, mode change, stop,
      * input-rate change, carrier hangover, stream pause), so a reader can tell a new reception

@@ -10509,6 +10509,55 @@ test_nfm_target_rejection_under_hold_and_alone(void) {
     return test_rc;
 }
 
+/* A second target skipped at every visit for a width the DSP rate cannot filter is nowhere to go either: rejected
+ * traffic keeps the target it is on, muted, tick after tick, rather than advancing onto the refused target, failing
+ * there and switching back, which would end the reception and judge the same traffic again at every retry. Once the
+ * other target can be received, the rejection moves on to it. */
+static int
+test_nfm_target_rejection_with_a_refused_alternate(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    char target_path[DSD_TEST_PATH_MAX];
+    static dsd_opts opts;
+    static dsd_state state;
+    g_scan_tune_refuses_unfit_width = 1;
+    g_scan_tune_width_refusals = 0;
+    g_scan_dsp_rate_hz = 16000;
+    if (nfm_targets_init("fire,nfm-conventional,154430000,,250,2000,,--nfm-bandwidth-hz 12500 --tone-allow 100.0\n"
+                         "wide,nfm-conventional,155430000,,250,2000,,--nfm-bandwidth-hz 20000\n",
+                         &opts, &state, dir, sizeof dir, target_path, sizeof target_path)
+        != 0) {
+        g_scan_tune_refuses_unfit_width = 0;
+        g_scan_dsp_rate_hz = 0;
+        return 1;
+    }
+    int test_rc = expect_active_target(&state, "the receivable target parked", 0U);
+    const uint32_t generation = state.analog_rx.generation;
+    const int refusals = g_scan_tune_width_refusals;
+    for (int tick = 0; tick < 8; tick++) {
+        publish_tone_gate(&state, DSD_ANALOG_TONE_GATE_REJECTED);
+        trunk_scan_test_set_now(0.10 + (0.50 * tick));
+        dsd_engine_trunk_scan_tick(&opts, &state);
+    }
+    test_rc |= expect_active_target(&state, "rejected with a refused alternate", 0U);
+    if (state.analog_rx.generation != generation || g_scan_tune_width_refusals != refusals) {
+        DSD_FPRINTF(stderr, "rejected traffic was switched away and back: generation %u -> %u, refusals %d -> %d\n",
+                    generation, state.analog_rx.generation, refusals, g_scan_tune_width_refusals);
+        test_rc = 1;
+    }
+    /* A DSP rate that fits the other target's width makes it somewhere to go. */
+    g_scan_dsp_rate_hz = 48000;
+    publish_tone_gate(&state, DSD_ANALOG_TONE_GATE_REJECTED);
+    trunk_scan_test_set_now(4.50);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    test_rc |= expect_active_target(&state, "rejected once the alternate fits", 1U);
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    g_scan_tune_refuses_unfit_width = 0;
+    g_scan_dsp_rate_hz = 0;
+    trunk_scan_test_clear_now();
+    cleanup_paths(dir, target_path, NULL);
+    return test_rc;
+}
+
 /* The configured tone policy applies only on nfm-conventional targets, each target running its own type's mode: a list
  * with none says once, when the scan starts, that the policy has no effect -- whatever the configured decode mode, the
  * FM monitor included -- and a list with one says nothing. */
@@ -11668,6 +11717,7 @@ main(void) {
     /* Issue #527 */
     rc |= run_with_default_tune_hook(test_nfm_target_tone_check_holds_and_rejection_advances);
     rc |= run_with_default_tune_hook(test_nfm_target_rejection_under_hold_and_alone);
+    rc |= run_with_default_tune_hook(test_nfm_target_rejection_with_a_refused_alternate);
     rc |= run_with_default_tune_hook(test_tone_filter_warns_without_nfm_targets);
     return rc;
 }

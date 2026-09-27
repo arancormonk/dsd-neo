@@ -64,6 +64,11 @@ typedef struct {
     int widths_checked_nfm_hz;
     int widths_checked_am_hz;
     int widths_checked;
+    /* The row whose frequency the receiver last landed on, and the map it belongs to (issue #527): a failed start moves
+     * lcn_freq_roll past a row the receiver never reached, so only a completed tune says where the receiver is. */
+    int tuned;
+    int tuned_row;
+    uint64_t tuned_map;
 } channel_scan;
 
 static void
@@ -179,6 +184,9 @@ channel_scan_commit(dsd_opts* opts, dsd_state* state, channel_scan* scan) {
     /* Hardware has moved. Even if a later retry rolls back, frames cannot use
      * the outgoing profile until a row is successfully committed. */
     scan->needs_commit = 1;
+    scan->tuned = 1;
+    scan->tuned_row = scan->row;
+    scan->tuned_map = scan->map_sequence;
     if (channel_scan_staged_stale(opts, state, scan)) {
         /* Stage the new effective profile in a fresh request before any frame
          * can use it. */
@@ -617,6 +625,51 @@ channel_scan_count_refused_rows(const dsd_opts* opts, const dsd_state* state, in
         }
     }
     return refused;
+}
+
+/* The row the receiver is on: the one whose tune last landed on this map (typed lists); else, for an untyped list or
+ * before the first landing, the one before lcn_freq_roll, since a step lands on the row after the one it last tuned;
+ * -1 before the first step. */
+static int
+channel_scan_on_air_row(const dsd_state* state) {
+    const channel_scan* scan = channel_scan_get(state);
+    if (scan && scan->tuned && scan->tuned_map == state->trunk_chan_map_seq
+        && scan->tuned_row < state->lcn_freq_count) {
+        return scan->tuned_row;
+    }
+    const int roll = state->lcn_freq_roll;
+    return (roll > 0 && roll <= state->lcn_freq_count) ? roll - 1 : -1;
+}
+
+/* Whether a step can land on @p row: it has a frequency, the operator has not avoided it, and it is not an analog row
+ * whose width the front end refuses at @p dsp_rate_hz, which is skipped at every visit before any backend moves. */
+static int
+channel_scan_row_reachable(const dsd_opts* opts, const dsd_state* state, int row, int dsp_rate_hz) {
+    if (*dsd_state_trunk_lcn_slot_const(state, row) == 0 || dsd_state_trunk_lcn_avoid_get(state, (size_t)row)) {
+        return 0;
+    }
+    if (!channel_scan_row_visited_analog(state, row)) {
+        return 1;
+    }
+    const dsd_scan_row_profile* profile = dsd_channel_profile_get(state, (size_t)row);
+    return !dsd_engine_scan_analog_width_skipped(opts, state, profile ? &profile->values : NULL, dsp_rate_hz, NULL, 0U);
+}
+
+int
+dsd_engine_channel_scan_has_other_row(const dsd_opts* opts, const dsd_state* state) {
+    if (!opts || !state) {
+        return 0;
+    }
+    const int current = channel_scan_on_air_row(state);
+    const long current_freq = current >= 0 ? *dsd_state_trunk_lcn_slot_const(state, current) : 0L;
+    const int dsp_rate_hz = dsd_engine_scan_dsp_rate_hz(opts, state);
+    for (int row = 0; row < state->lcn_freq_count; row++) {
+        if (row != current && *dsd_state_trunk_lcn_slot_const(state, row) != current_freq
+            && channel_scan_row_reachable(opts, state, row, dsp_rate_hz)) {
+            return 1;
+        }
+    }
+    return 0;
 }
 
 int

@@ -3537,21 +3537,48 @@ trunk_scan_service_visit_limit(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_
     return 1;
 }
 
+/* Whether the rotation has somewhere to take traffic the tone policy rejected (issue #527): another target the advance
+ * would try -- not avoided, not cooling down from a failed retune, as trunk_scan_visit_alternate_is_eligible() asks --
+ * and not an analog one whose width the front end refuses at the published DSP rate, which the retune skips before any
+ * backend moves (trunk_scan_analog_width_refused()). An advance with none of those would only switch back to the target
+ * on air, ending the reception and judging the same traffic again. */
+static int
+trunk_scan_rejection_has_alternate(const dsd_opts* opts, const dsd_state* state, const dsd_trunk_scan_coord* coord,
+                                   double now_m) {
+    const int rate_hz = dsd_engine_scan_dsp_rate_hz(opts, state);
+    for (size_t i = 0; i < coord->count; i++) {
+        const dsd_trunk_scan_target_runtime* alternate = &coord->targets[i];
+        if (i == coord->active || alternate->avoided || alternate->retry_until_m > now_m) {
+            continue;
+        }
+        if (rate_hz > 0 && trunk_scan_type_is_analog(alternate->target.type)
+            && dsd_engine_scan_analog_width_skipped(opts, state, &alternate->target.row_options, rate_hz, NULL, 0U)) {
+            continue;
+        }
+        return 1;
+    }
+    return 0;
+}
+
 /* Traffic the tone policy rejected on an analog target (issue #527) holds nothing: its carrier stamped no activity,
  * and the hold that earlier traffic left is released, so the rotation moves on at this tick. The operator's hold keeps
- * the target, muted, and a single target has nowhere to go (a fixed-frequency session mutes only). Returns 1 when the
- * tick is spent. The decision is the DSP tap's verdict, which it logs ("Tone filter: rejected"); only this engine tick,
- * under the tick guard, acts on it. */
+ * the target, muted. With nowhere else to go (a single target, as a fixed-frequency session, or every other one
+ * avoided, cooling down or refused its width: trunk_scan_rejection_has_alternate()) the target keeps the traffic,
+ * muted, and the idle dwell does not run meanwhile, since its rotation could only come back to this target. Returns 1
+ * when the tick is spent. The decision is the DSP tap's verdict, which it logs ("Tone filter: rejected"); only this
+ * engine tick, under the tick guard, acts on it. */
 static int
 trunk_scan_service_tone_rejection(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_coord* coord,
-                                  dsd_trunk_scan_target_runtime* rt) {
-    if (!trunk_scan_type_is_analog(rt->target.type) || coord->hold_active || coord->count < 2
+                                  dsd_trunk_scan_target_runtime* rt, double now_m) {
+    if (!trunk_scan_type_is_analog(rt->target.type) || coord->hold_active
         || dsd_scan_analog_tone_gate(opts, state) != DSD_ANALOG_TONE_GATE_REJECTED) {
         return 0;
     }
     rt->last_allowed_activity_m = 0.0;
     rt->idle_since_m = -1.0;
-    trunk_scan_advance(opts, state, coord);
+    if (trunk_scan_rejection_has_alternate(opts, state, coord, now_m)) {
+        trunk_scan_advance(opts, state, coord);
+    }
     return 1;
 }
 
@@ -3561,7 +3588,7 @@ static int
 trunk_scan_service_release(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_coord* coord,
                            dsd_trunk_scan_target_runtime* rt, double now_m) {
     return trunk_scan_service_visit_limit(opts, state, coord, rt, now_m)
-           || trunk_scan_service_tone_rejection(opts, state, coord, rt);
+           || trunk_scan_service_tone_rejection(opts, state, coord, rt, now_m);
 }
 
 static void
@@ -4226,6 +4253,36 @@ dsd_engine_scan_runs_configured_nfm_width(const dsd_opts* opts, const dsd_state*
 int
 dsd_engine_scan_runs_configured_am_width(const dsd_opts* opts, const dsd_state* state) {
     return scan_runs_configured_width(opts, state, DSD_ANALOG_DEMOD_AM);
+}
+
+/* Whether a target runs the FM monitor, where received-tone detection, and so the tone policy, runs (issue #527). */
+static int
+trunk_scan_targets_hear_tones(const dsd_trunk_scan_coord* coord) {
+    for (size_t i = 0; i < coord->count; i++) {
+        if (trunk_scan_target_mode(coord->targets[i].target.type) == DSD_SCAN_MODE_NFM) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+int
+dsd_engine_scan_hears_tones(const dsd_opts* opts, const dsd_state* state) {
+    if (!opts || !state) {
+        return 0;
+    }
+    const dsd_trunk_scan_coord* coord = trunk_scan_get_const(state);
+    if (coord) {
+        return trunk_scan_targets_hear_tones(coord);
+    }
+    if (opts->trunk_scan_enabled == 1) {
+        return 1;
+    }
+    const int fm_monitor = dsd_scan_mode_configured_fm_monitor(opts, state);
+    if (opts->scanner_mode == 1 && state->lcn_freq_count > 0) {
+        return dsd_channel_modes_hear_tones(state, fm_monitor);
+    }
+    return fm_monitor;
 }
 
 int

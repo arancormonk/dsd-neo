@@ -491,6 +491,23 @@ dsd_channel_modes_include(const dsd_state* state, dsd_scan_mode mode) {
     return 0;
 }
 
+int
+dsd_channel_modes_hear_tones(const dsd_state* state, int configured_fm_monitor) {
+    if (!state) {
+        return 0;
+    }
+    for (int row = 0; row < state->lcn_freq_count; row++) {
+        if (*dsd_state_trunk_lcn_slot_const(state, row) == 0) {
+            continue;
+        }
+        const dsd_scan_mode mode = dsd_channel_mode_get(state, (size_t)row);
+        if (mode == DSD_SCAN_MODE_NFM || (configured_fm_monitor && mode == DSD_SCAN_MODE_INHERIT)) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
 static int
 channel_profile_has_options(const dsd_scan_row_profile* profile) {
     return profile != NULL && profile->values.present != 0;

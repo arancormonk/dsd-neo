@@ -38,8 +38,9 @@ enum {
 /** @brief Room for any received-tone or verdict text this view writes, terminator included. */
 enum { DSD_APP_RX_TONE_TEXT_SIZE = 32 };
 
-/** @brief Room for the tone policy text ("allow 67.0 Hz/.../…+12 (row)"), terminator included. */
-enum { DSD_APP_RX_TONE_POLICY_TEXT_SIZE = 96 };
+/** @brief Room for the tone policy text ("allow 67.0 Hz/.../…+12 (row; default block 100.0 Hz)"), terminator
+ * included. */
+enum { DSD_APP_RX_TONE_POLICY_TEXT_SIZE = 128 };
 
 /**
  * @brief Display-ready received tone.
@@ -50,8 +51,9 @@ enum { DSD_APP_RX_TONE_POLICY_TEXT_SIZE = 96 };
  * (three octal digits with leading zeros and N or I for the polarity each,
  * runtime/analog_tones.h); @c dcs_code / @c dcs_inverted and @c dcs_alias_code /
  * @c dcs_alias_inverted carry the same two. @c configured_text is the CTCSS/DCS receive policy
- * in force (issue #527): "off", or the mode and its list ("allow 100.0 Hz/D023N"), with " (row)"
- * when a scan row's own policy runs over the configured one; it is never derived from the
+ * in force (issue #527): "off", or the mode and its list ("allow 100.0 Hz/D023N"), and while a
+ * scan row's own policy runs over the configured one, " (row; default X)" naming the
+ * configured policy X it shadows, as every row override reads; it is never derived from the
  * received tone. @c gate_text says what the policy does with the carrier on air: "passing",
  * "muted: checking tone", "muted: not allowed" or "muted: no tone", and "" with no carrier or no
  * policy. All three are UTF-8 and always terminated.
@@ -72,7 +74,7 @@ typedef struct {
     /** 1 = detection runs and a tone policy is in force, or a scan row set its own: the Tone filter row belongs on
         screen. Independent of @c visible: at an input rate detection cannot use, the policy still mutes. */
     uint8_t policy_visible;
-    uint8_t policy_row; /**< 1 = a scan row's own policy is in force ("(row)"). */
+    uint8_t policy_row; /**< 1 = a scan row's own policy is in force ("(row; default X)"). */
     uint8_t gate;       /**< dsd_analog_tone_gate on the carrier on air; OFF without one. */
     /** 1 = @c gate was decided for want of a tone or code within the check window (REJECTED: "muted: no tone"; an
         ALLOWED block-list pass on no tone); 0 when a confirmed value decided it, or nothing is decided. */

@@ -532,17 +532,19 @@ cli_parse_tone_filter_option(const char* option_name, int mode, const char* list
 
 /* The tone policy judges only what received-tone detection hears: the analog FM monitor, and an nfm row of a scan,
  * whose own policy or the configured one applies while it is on air. Configured for a session that has neither (the
- * AM monitor or a digital mode, without a scan or on a -Y list with no nfm row), it can do nothing, which is said once
- * (issue #527). A -Y list the command line has not imported yet (a config file's) is checked when the engine imports
- * it, and --trunk-scan targets when that scan starts. */
+ * AM monitor or a digital mode without a scan, or a -Y list none of whose rows runs the FM monitor), it can do nothing,
+ * which is said once (issue #527). On a -Y list only the rows count: a typed row runs its own mode, so under -fA a
+ * list whose rows all declare a digital mode hears no tone either (dsd_channel_modes_hear_tones()). A -Y list
+ * the command line has not imported yet (a config file's) is checked when the engine imports it, and --trunk-scan
+ * targets when that scan starts. */
 static void
 cli_warn_tone_filter_without_fm_monitor(const dsd_opts* opts, const dsd_state* state) {
     if (opts->trunk_scan_enabled == 1 || (opts->scanner_mode == 1 && state->lcn_freq_count <= 0)) {
         return;
     }
-    const int nfm_rows = opts->scanner_mode == 1 && dsd_channel_modes_include(state, DSD_SCAN_MODE_NFM);
-    (void)dsd_scan_mode_warn_tone_filter_unused(opts, state,
-                                                dsd_scan_mode_configured_fm_monitor(opts, state) || nfm_rows);
+    const int fm_monitor = dsd_scan_mode_configured_fm_monitor(opts, state);
+    const int hears_tones = opts->scanner_mode == 1 ? dsd_channel_modes_hear_tones(state, fm_monitor) : fm_monitor;
+    (void)dsd_scan_mode_warn_tone_filter_unused(opts, state, hears_tones);
 }
 
 /* The analog channel width is the radio front end's filter. PCM inputs (Pulse, files, UDP and TCP audio) arrive

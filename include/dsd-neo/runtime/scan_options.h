@@ -114,12 +114,14 @@ typedef int (*dsd_scan_option_file_cb)(void* context, const char* option, const 
 int dsd_scan_options_visit_files(const char* text, void* context, dsd_scan_option_file_cb callback);
 
 /** Whether a row's options cell lost the rest of a tone list to a comma (issue #527). The CSV splitters end a cell at
- * every unquoted comma, so `--tone-allow 100.0,67.0` reaches dsd_scan_options_parse() as `--tone-allow 100.0` and leaves
- * `67.0` in the field after the cell. @p options is the cell, @p next the raw field after it (NULL when the row has
+ * every unquoted comma, so `--tone-allow 100.0,67.0` reaches dsd_scan_options_parse() as `--tone-allow 100.0` and
+ * leaves `67.0` in the field after the cell. @p options is the cell, @p next the raw field after it (NULL when the row has
  * none) and @p next_past_header whether that field lies past the header's columns, where nothing reads it.
  * A cell that ends with a --tone-allow/--tone-block list is refused when the field after it goes on with it: any
- * text past the header, or, in one of the file's own columns, text that starts with a standard CTCSS tone or DCS
- * code (so an RTL gain or a name there is that column's own).
+ * text past the header, or, in one of the file's own columns, a field that can only be the rest of a list -- one run
+ * of '/'-separated entries with no space in it, starting with a standard CTCSS tone or DCS code ("67.0",
+ * "67.0/D023N"). An RTL gain, and a name with a space in it ("100 Main St", "D023 Repeater"), are that column's own;
+ * a one-word name that is itself a standard tone or code ("100") reads as the list's rest.
  * Returns 1 with "--tone-allow: use / between entries, not commas" in @p error when refused, else 0. Never echoes the
  * cell or the field. */
 int dsd_scan_options_tone_list_split(const char* options, const char* next, int next_past_header, char* error,

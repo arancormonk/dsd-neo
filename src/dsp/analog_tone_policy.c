@@ -18,9 +18,9 @@
 #include <dsd-neo/runtime/analog_tones.h>
 #include <stdint.h>
 
-/* The maintainer's window (#518): 800 ms, extended to at most 1,600 ms while a DCS code is still being acquired. Each
-   covers its detector's lock ceiling with two CTCSS hops to spare, so a value within the detectors' contracts is never
-   taken for no tone. */
+/* The tone-check window (#518): 800 ms, extended to at most 1,600 ms while the list holds a DCS code and the DCS
+   detector holds a candidate code (dsd_analog_rx_publication::dcs_candidate). Each covers its detector's lock ceiling
+   with two CTCSS hops to spare, so a value within the detectors' contracts is never taken for no tone. */
 _Static_assert(DSD_ANALOG_TONE_WINDOW_MS == 800, "the tone-check window is 800 ms");
 _Static_assert(DSD_ANALOG_TONE_WINDOW_MS >= DSD_ANALOG_CTCSS_LOCK_CEILING_MS + 100,
                "the window covers the CTCSS lock ceiling plus 100 ms");
@@ -155,7 +155,7 @@ policy_window_ended(const dsd_analog_tone_policy* policy, const dsd_analog_rx_pu
     if (policy->window_us < (int64_t)DSD_ANALOG_TONE_WINDOW_MS * 1000) {
         return 0;
     }
-    const int dcs_extends = rx->dcs_acquiring && dsd_tone_set_has_dcs(&policy->set);
+    const int dcs_extends = rx->dcs_candidate && dsd_tone_set_has_dcs(&policy->set);
     return !dcs_extends || policy->window_us >= (int64_t)DSD_ANALOG_TONE_WINDOW_DCS_MS * 1000;
 }
 

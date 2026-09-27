@@ -1072,8 +1072,9 @@ dsd_scan_mode_warn_tone_filter_unused(const dsd_opts* opts, const dsd_state* sta
     if (!opts || hears_tones || (mode != DSD_TONE_FILTER_ALLOW && mode != DSD_TONE_FILTER_BLOCK)) {
         return 0;
     }
-    LOG_WARN("WARNING: the tone filter (--tone-allow/--tone-block, [analog] tone_filter) has no effect in this decode "
-             "mode; it applies only to the analog FM monitor (-fA) and to nfm scan rows.\n");
+    LOG_WARN("WARNING: the tone filter (--tone-allow/--tone-block, [analog] tone_filter) has no effect in this "
+             "session: nothing in it runs the analog FM monitor (-fA), an nfm scan row or an nfm-conventional "
+             "target.\n");
     return 1;
 }
 

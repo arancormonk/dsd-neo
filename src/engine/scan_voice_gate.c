@@ -65,7 +65,8 @@ dsd_scan_analog_carrier_open(const dsd_opts* opts, const dsd_state* state) {
            && dsd_analog_tone_gate_in_force(opts, state) != DSD_ANALOG_TONE_GATE_REJECTED;
 }
 
-/* The stay reason an analog row's carrier gives: the tone check while the policy is still deciding, else the carrier. */
+/* The stay reason an analog row's carrier gives: the tone check while the policy is still deciding, else the
+   carrier. */
 static uint8_t
 scan_analog_carrier_reason(const dsd_opts* opts, const dsd_state* state) {
     return (uint8_t)(dsd_scan_analog_tone_gate(opts, state) == DSD_ANALOG_TONE_GATE_PENDING ? DSD_SCAN_STAY_TONE_PENDING

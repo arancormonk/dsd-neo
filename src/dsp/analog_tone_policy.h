@@ -18,7 +18,7 @@
  *   PENDING   a confirmed value: allow list, listed -> ALLOWED, else REJECTED; block list, listed -> REJECTED,
  *             else ALLOWED. Nothing confirmed when the window ends: allow -> REJECTED, block -> ALLOWED ("no tone").
  *             The window runs on to at most DSD_ANALOG_TONE_WINDOW_DCS_MS while the list holds a DCS code and the DCS
- *             detector holds a candidate code (dsd_analog_rx_publication::dcs_acquiring).
+ *             detector holds a candidate code (dsd_analog_rx_publication::dcs_candidate).
  *   ALLOWED   allow list: a confirmed value it does not list -> REJECTED; the value lost (after the detector's own
  *             hysteresis) -> PENDING with a fresh window. Block list: a confirmed listed value -> REJECTED; a loss
  *             keeps ALLOWED.

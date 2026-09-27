@@ -13,6 +13,7 @@
 #include <dsd-neo/runtime/analog_tones.h>
 #include <dsd-neo/runtime/scan_mode.h>
 #include <dsd-neo/runtime/scan_options.h>
+#include <stddef.h>
 #include <stdint.h>
 
 /* U+2014 EM DASH, the "nothing to report" mark the other monitor rows use. */
@@ -21,7 +22,22 @@
 /* The receive policy (issue #527), from the configuration side (dsd_opts and the scan row's options), never from the
    received tone. */
 #define RX_TONE_POLICY_OFF_TEXT "off"
-#define RX_TONE_POLICY_ROW_TEXT " (row)"
+
+/* Room for the list in force: alone, or beside a row's own the configured default it shadows, both fitting the view's
+   text with the mode names and " (row; default " around them. The default gets the smaller share, since it is the one
+   not in force. */
+enum {
+    RX_TONE_POLICY_LIST_SIZE = 80,
+    RX_TONE_POLICY_ROW_LIST_SIZE = 56,
+    RX_TONE_POLICY_DEFAULT_LIST_SIZE = 32,
+};
+
+_Static_assert((int)DSD_APP_RX_TONE_POLICY_TEXT_SIZE >= (int)(sizeof("block ") + RX_TONE_POLICY_LIST_SIZE),
+               "the policy in force fits the view's text");
+_Static_assert((int)DSD_APP_RX_TONE_POLICY_TEXT_SIZE
+                   >= (int)(sizeof("block ") + RX_TONE_POLICY_ROW_LIST_SIZE + sizeof(" (row; default block )")
+                            + RX_TONE_POLICY_DEFAULT_LIST_SIZE),
+               "a row's policy and the default it shadows fit the view's text");
 
 static void
 rx_tone_set_text(dsd_app_rx_tone* out, const char* text) {
@@ -122,24 +138,49 @@ rx_tone_stale(const dsd_analog_rx_publication* pub, double now_m) {
     return (uint64_t)(now_m * 1000.0) > pub->stale_after_ms;
 }
 
-/* The tone policy in force (issue #527): dsd_opts holds a scan row's own while the row is on air, which the text marks.
-   A list policy without a list runs as off, so it reads as off. */
+/* One policy as the row names it: "off", or its mode and display list ("allow 100.0 Hz/D023N"), the list held to
+   @p list_size bytes ("…+N" for what does not fit). A list policy without a list runs as off, so it reads as off.
+   Returns 1 for a list policy, 0 for off. */
+static int
+rx_tone_format_policy(int mode, const dsd_tone_set* set, char* out, size_t out_size, size_t list_size) {
+    const char* name = dsd_tone_filter_mode_name(mode);
+    char list[RX_TONE_POLICY_LIST_SIZE];
+    if (list_size > sizeof(list)) {
+        list_size = sizeof(list);
+    }
+    if (!name || mode == DSD_TONE_FILTER_OFF || dsd_tone_set_format_display(set, list, list_size) <= 0) {
+        DSD_SNPRINTF(out, out_size, "%s", RX_TONE_POLICY_OFF_TEXT);
+        return 0;
+    }
+    DSD_SNPRINTF(out, out_size, "%s %s", name, list);
+    return 1;
+}
+
+/* The tone policy in force (issue #527): dsd_opts holds a scan row's own while the row is on air. As every row override
+   reads (squelch, channel width), the text then names the configured default it shadows: "block D023I (row; default
+   allow 100.0 Hz)". */
 static void
 rx_tone_fill_policy_text(dsd_app_rx_tone* out, const dsd_opts* opts, const dsd_state* state) {
     const dsd_scan_option_values* row_options = dsd_scan_mode_row_options(state);
     const int row = row_options && (row_options->present & DSD_SCAN_OPT_TONE) != 0U;
-    const char* mode = dsd_tone_filter_mode_name(opts->analog_tone_filter);
-    char list[DSD_APP_RX_TONE_POLICY_TEXT_SIZE - 16];
-    const char* suffix = row ? RX_TONE_POLICY_ROW_TEXT : "";
+    char effective[DSD_APP_RX_TONE_POLICY_TEXT_SIZE];
+    const int in_force =
+        rx_tone_format_policy(opts->analog_tone_filter, &opts->analog_tone_set, effective, sizeof(effective),
+                              row ? RX_TONE_POLICY_ROW_LIST_SIZE : RX_TONE_POLICY_LIST_SIZE);
     out->policy_row = row ? 1U : 0U;
-    if (!mode || opts->analog_tone_filter == DSD_TONE_FILTER_OFF
-        || dsd_tone_set_format_display(&opts->analog_tone_set, list, sizeof(list)) <= 0) {
-        DSD_SNPRINTF(out->configured_text, sizeof(out->configured_text), "%s%s", RX_TONE_POLICY_OFF_TEXT, suffix);
-        out->policy_visible = row ? 1U : 0U;
+    out->policy_visible = (in_force || row) ? 1U : 0U;
+    if (!row) {
+        DSD_SNPRINTF(out->configured_text, sizeof(out->configured_text), "%s", effective);
         return;
     }
-    DSD_SNPRINTF(out->configured_text, sizeof(out->configured_text), "%s %s%s", mode, list, suffix);
-    out->policy_visible = 1U;
+    int default_mode = DSD_TONE_FILTER_OFF;
+    dsd_tone_set default_set;
+    DSD_MEMSET(&default_set, 0, sizeof(default_set));
+    dsd_scan_mode_configured_tone_policy(opts, state, &default_mode, &default_set);
+    char configured[DSD_APP_RX_TONE_POLICY_TEXT_SIZE];
+    (void)rx_tone_format_policy(default_mode, &default_set, configured, sizeof(configured),
+                                RX_TONE_POLICY_DEFAULT_LIST_SIZE);
+    DSD_SNPRINTF(out->configured_text, sizeof(out->configured_text), "%s (row; default %s)", effective, configured);
 }
 
 /* What the policy does with the carrier on air: nothing to say without a carrier (or past a stale input's deadline). */

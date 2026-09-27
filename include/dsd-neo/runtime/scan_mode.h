@@ -250,8 +250,8 @@ int dsd_scan_mode_configured_fm_monitor(const dsd_opts* opts, const dsd_state* s
  * list policy (allow or block) and @p hears_tones is 0, the caller having found nothing in the session that runs
  * received-tone detection -- neither the configured decode mode (dsd_scan_mode_configured_fm_monitor()) nor, for a
  * scan, an nfm row or nfm-conventional target, on which the row's own policy or the configured one applies while it
- * is on air. Reads the configured policy (dsd_scan_mode_configured_tone_policy()), never a row's. Returns 1 when it
- * warned, 0 otherwise. */
+ * is on air (dsd_channel_modes_hear_tones() for a -Y list). Reads the configured policy
+ * (dsd_scan_mode_configured_tone_policy()), never a row's. Returns 1 when it warned, 0 otherwise. */
 int dsd_scan_mode_warn_tone_filter_unused(const dsd_opts* opts, const dsd_state* state, int hears_tones);
 /** Deep-copy scalar scope metadata for frontend snapshots. No live extension pointer is shared. */
 void dsd_scan_mode_copy_snapshot(dsd_state* dst, const dsd_state* src);

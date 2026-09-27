@@ -6,9 +6,9 @@
 /*
  * The CTCSS/DCS receive policy (issue #527) in sample time, with the detectors' verdicts injected as the tap would
  * publish them: disabled, allow and block, each against a matching value, a nonmatching one, no tone, a value outside
- * the standard sets, acquisition, loss and reacquisition, a late blocked value, and a carrier drop or retune. The window is bounded: nothing is ever
- * rejected before a value is confirmed or the window ends, and the window's end is pinned to the read that crosses it
- * at several rates and read sizes.
+ * the standard sets, acquisition, loss and reacquisition, a late blocked value, and a carrier drop or retune. The
+ * window is bounded: nothing is ever rejected before a value is confirmed or the window ends, and the window's end is
+ * pinned to the read that crosses it at several rates and read sizes.
  */
 
 #include <assert.h>
@@ -366,41 +366,41 @@ test_window_in_sample_time(void) {
    and a reception with no candidate keep 800 ms, and a code confirmed in the extension is judged as ever. */
 static void
 test_dcs_extension(void) {
-    dsd_analog_rx_publication acquiring = rx_carrier(DSD_ANALOG_TONE_STATE_NONE);
-    acquiring.dcs_acquiring = 1;
+    dsd_analog_rx_publication candidate = rx_carrier(DSD_ANALOG_TONE_STATE_NONE);
+    candidate.dcs_candidate = 1;
 
     dsd_analog_tone_policy policy;
     policy_with(&policy, DSD_TONE_FILTER_ALLOW, "100.0/D023N");
-    hold_ms(&policy, acquiring, 1600, DSD_ANALOG_TONE_GATE_PENDING);
-    assert(feed_ms(&policy, acquiring, 20) == DSD_ANALOG_TONE_GATE_REJECTED);
+    hold_ms(&policy, candidate, 1600, DSD_ANALOG_TONE_GATE_PENDING);
+    assert(feed_ms(&policy, candidate, 20) == DSD_ANALOG_TONE_GATE_REJECTED);
     assert(policy.no_tone == 1);
 
     /* The candidate goes: decided on that read. */
     policy_with(&policy, DSD_TONE_FILTER_ALLOW, "D023N");
-    hold_ms(&policy, acquiring, 1000, DSD_ANALOG_TONE_GATE_PENDING);
+    hold_ms(&policy, candidate, 1000, DSD_ANALOG_TONE_GATE_PENDING);
     assert(feed_ms(&policy, rx_carrier(DSD_ANALOG_TONE_STATE_NONE), 20) == DSD_ANALOG_TONE_GATE_REJECTED);
 
     /* The code locks late, inside the extension: allowed, never rejected first. */
     policy_with(&policy, DSD_TONE_FILTER_ALLOW, "D023N");
-    hold_ms(&policy, acquiring, 1400, DSD_ANALOG_TONE_GATE_PENDING);
+    hold_ms(&policy, candidate, 1400, DSD_ANALOG_TONE_GATE_PENDING);
     assert(feed_ms(&policy, rx_dcs(0023, 0), 20) == DSD_ANALOG_TONE_GATE_ALLOWED);
 
     /* A CTCSS-only list keeps 800 ms, candidate or not. */
     policy_with(&policy, DSD_TONE_FILTER_ALLOW, "100.0");
-    hold_ms(&policy, acquiring, 800, DSD_ANALOG_TONE_GATE_PENDING);
-    assert(feed_ms(&policy, acquiring, 20) == DSD_ANALOG_TONE_GATE_REJECTED);
+    hold_ms(&policy, candidate, 800, DSD_ANALOG_TONE_GATE_PENDING);
+    assert(feed_ms(&policy, candidate, 20) == DSD_ANALOG_TONE_GATE_REJECTED);
 
     /* A block list with a code waits as well before passing no-tone traffic. */
     policy_with(&policy, DSD_TONE_FILTER_BLOCK, "D023N");
-    hold_ms(&policy, acquiring, 1600, DSD_ANALOG_TONE_GATE_PENDING);
-    assert(feed_ms(&policy, acquiring, 20) == DSD_ANALOG_TONE_GATE_ALLOWED);
+    hold_ms(&policy, candidate, 1600, DSD_ANALOG_TONE_GATE_PENDING);
+    assert(feed_ms(&policy, candidate, 20) == DSD_ANALOG_TONE_GATE_ALLOWED);
 
     /* The extension applies to the fresh window after a loss too. */
     policy_with(&policy, DSD_TONE_FILTER_ALLOW, "D023N");
     assert(feed_ms(&policy, rx_dcs(0023, 0), 200) == DSD_ANALOG_TONE_GATE_ALLOWED);
-    assert(feed_ms(&policy, acquiring, 20) == DSD_ANALOG_TONE_GATE_PENDING);
-    hold_ms(&policy, acquiring, 1580, DSD_ANALOG_TONE_GATE_PENDING);
-    assert(feed_ms(&policy, acquiring, 20) == DSD_ANALOG_TONE_GATE_REJECTED);
+    assert(feed_ms(&policy, candidate, 20) == DSD_ANALOG_TONE_GATE_PENDING);
+    hold_ms(&policy, candidate, 1580, DSD_ANALOG_TONE_GATE_PENDING);
+    assert(feed_ms(&policy, candidate, 20) == DSD_ANALOG_TONE_GATE_REJECTED);
 }
 
 /* Matching goes by the DCS signal: a listed D023I passes a received D047N, the name the detector gives that signal. */

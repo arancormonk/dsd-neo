@@ -740,18 +740,23 @@ option_trailing_tone_list(const char* text) {
     return rc < 0 ? NULL : last;
 }
 
-/* Whether @p text starts with a standard CTCSS tone or DCS code ("67.0", "100", "D023", "d047i"), up to the first '/'
- * or space: what a comma cut off a tone list leaves at the start of the next column. A value no list takes (an RTL
- * gain, a name) is that column's own. */
+/* Whether @p text, a field of the file's own columns, can only be the rest of a tone list a comma cut off: one run of
+ * '/'-separated entries with no space in it ("67.0", "100/D023N", "d047i/150.0"), the first a standard CTCSS tone or
+ * DCS code. A column's own text is left alone: a value no list takes (an RTL gain) and anything with a space in it,
+ * such as a name that starts with a number or a code ("100 Main St", "D023 Repeater"). */
 static int
-option_starts_with_tone_entry(const char* text) {
-    const size_t len = strcspn(text, "/ \t\r\n\v\f");
+option_is_tone_list_rest(const char* text) {
+    size_t len = strlen(text);
+    while (len > 0U && option_space((unsigned char)text[len - 1U])) {
+        len--;
+    }
+    const size_t first = strcspn(text, "/ \t\r\n\v\f");
     char entry[16];
-    if (len == 0U || len >= sizeof(entry)) {
+    if (first == 0U || first >= sizeof(entry) || strcspn(text, " \t\r\n\v\f") < len) {
         return 0;
     }
-    DSD_MEMCPY(entry, text, len);
-    entry[len] = '\0';
+    DSD_MEMCPY(entry, text, first);
+    entry[first] = '\0';
     dsd_tone_set unused;
     return dsd_tone_set_parse(entry, &unused, NULL, 0) == 0;
 }
@@ -763,7 +768,7 @@ dsd_scan_options_tone_list_split(const char* options, const char* next, int next
         return 0;
     }
     const char* rest = option_skip_space(next);
-    if (rest[0] == '\0' || (!next_past_header && !option_starts_with_tone_entry(rest))) {
+    if (rest[0] == '\0' || (!next_past_header && !option_is_tone_list_rest(rest))) {
         return 0;
     }
     const scan_option_spec* spec = option_trailing_tone_list(options);

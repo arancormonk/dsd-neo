@@ -105,7 +105,9 @@ Item {
             root.height = 360;
             Ui.Theme.fontScale = 1.6;
             testContext.setHostRunning(true);
-            testContext.setMetric("rxToneConfiguredText", "allow 67.0 Hz/71.9 Hz/74.4 Hz/77.0 Hz/\u2026+6 (row)");
+            testContext.setMetric("rxToneConfiguredText",
+                                  "allow 67.0 Hz/71.9 Hz/74.4 Hz/77.0 Hz/\u2026+6"
+                                  + " (row; default block 100.0 Hz/\u2026+3)");
             testContext.setMetric("toneFilterVisible", true);
             testContext.setMetric("toneFilterGate", 1);
             testContext.setMetric("toneFilterStatusText", "muted: checking tone");
