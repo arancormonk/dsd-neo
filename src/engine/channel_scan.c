@@ -642,7 +642,8 @@ channel_scan_on_air_row(const dsd_state* state) {
 }
 
 /* Whether a step can land on @p row: it has a frequency, the operator has not avoided it, and it is not an analog row
- * whose width the front end refuses at @p dsp_rate_hz, which is skipped at every visit before any backend moves. */
+ * skipped at every visit before any backend moves: one whose width, of the kind its demodulator runs, the front end
+ * refuses at @p dsp_rate_hz, or an am row nothing demodulates (dsd_engine_scan_analog_width_skipped()). */
 static int
 channel_scan_row_reachable(const dsd_opts* opts, const dsd_state* state, int row, int dsp_rate_hz) {
     if (*dsd_state_trunk_lcn_slot_const(state, row) == 0 || dsd_state_trunk_lcn_avoid_get(state, (size_t)row)) {
@@ -652,7 +653,9 @@ channel_scan_row_reachable(const dsd_opts* opts, const dsd_state* state, int row
         return 1;
     }
     const dsd_scan_row_profile* profile = dsd_channel_profile_get(state, (size_t)row);
-    return !dsd_engine_scan_analog_width_skipped(opts, state, profile ? &profile->values : NULL, dsp_rate_hz, NULL, 0U);
+    const int kind = dsd_scan_mode_analog_kind(dsd_channel_mode_get(state, (size_t)row));
+    return !dsd_engine_scan_analog_width_skipped(opts, state, profile ? &profile->values : NULL, kind, dsp_rate_hz,
+                                                 NULL, 0U);
 }
 
 int

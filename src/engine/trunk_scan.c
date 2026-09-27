@@ -3537,22 +3537,31 @@ trunk_scan_service_visit_limit(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_
     return 1;
 }
 
+/* Whether the retune skips @p target before any backend moves (trunk_scan_analog_width_refused()): an analog target
+ * whose width, of the kind its type's demodulator runs, the front end refuses at the published @p rate_hz. */
+static int
+trunk_scan_target_width_skipped(const dsd_opts* opts, const dsd_state* state, const dsd_trunk_scan_target* target,
+                                int rate_hz) {
+    if (rate_hz <= 0 || !trunk_scan_type_is_analog(target->type)) {
+        return 0;
+    }
+    const int kind = dsd_scan_mode_analog_kind(trunk_scan_target_mode(target->type));
+    return dsd_engine_scan_analog_width_skipped(opts, state, &target->row_options, kind, rate_hz, NULL, 0U);
+}
+
 /* Whether the rotation has somewhere to take traffic the tone policy rejected (issue #527): another target the advance
  * would try -- not avoided, not cooling down from a failed retune, as trunk_scan_visit_alternate_is_eligible() asks --
- * and not an analog one whose width the front end refuses at the published DSP rate, which the retune skips before any
- * backend moves (trunk_scan_analog_width_refused()). An advance with none of those would only switch back to the target
- * on air, ending the reception and judging the same traffic again. */
+ * and not an analog one whose width the front end refuses at the published DSP rate
+ * (trunk_scan_target_width_skipped()). An advance with none of those would only switch back to the target on air,
+ * ending the reception and judging the same traffic again. */
 static int
 trunk_scan_rejection_has_alternate(const dsd_opts* opts, const dsd_state* state, const dsd_trunk_scan_coord* coord,
                                    double now_m) {
     const int rate_hz = dsd_engine_scan_dsp_rate_hz(opts, state);
     for (size_t i = 0; i < coord->count; i++) {
         const dsd_trunk_scan_target_runtime* alternate = &coord->targets[i];
-        if (i == coord->active || alternate->avoided || alternate->retry_until_m > now_m) {
-            continue;
-        }
-        if (rate_hz > 0 && trunk_scan_type_is_analog(alternate->target.type)
-            && dsd_engine_scan_analog_width_skipped(opts, state, &alternate->target.row_options, rate_hz, NULL, 0U)) {
+        if (i == coord->active || alternate->avoided || alternate->retry_until_m > now_m
+            || trunk_scan_target_width_skipped(opts, state, &alternate->target, rate_hz)) {
             continue;
         }
         return 1;
