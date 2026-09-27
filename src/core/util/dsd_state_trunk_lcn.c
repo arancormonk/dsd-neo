@@ -478,6 +478,41 @@ dsd_channel_modes_present(const dsd_state* state) {
     return modes && (modes->declared_count != 0 || modes->profile_count != 0);
 }
 
+int
+dsd_channel_mode_hears_tones(const dsd_state* state, size_t row, int configured_fm_monitor) {
+    if (!state) {
+        return 0;
+    }
+    const dsd_scan_mode mode = dsd_channel_mode_get(state, row);
+    return mode == DSD_SCAN_MODE_NFM || (configured_fm_monitor && mode == DSD_SCAN_MODE_INHERIT);
+}
+
+int
+dsd_channel_modes_hear_tones(const dsd_state* state, int configured_fm_monitor) {
+    if (!state) {
+        return 0;
+    }
+    for (int row = 0; row < state->lcn_freq_count; row++) {
+        if (*dsd_state_trunk_lcn_slot_const(state, row) != 0
+            && dsd_channel_mode_hears_tones(state, (size_t)row, configured_fm_monitor)) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+int
+dsd_channel_modes_conventional_hear_tones(const dsd_opts* opts, const dsd_state* state) {
+    if (!opts || !state) {
+        return 0;
+    }
+    const int fm_monitor = dsd_scan_mode_configured_fm_monitor(opts, state);
+    if (opts->scanner_mode == 1 && state->lcn_freq_count > 0) {
+        return dsd_channel_modes_hear_tones(state, fm_monitor);
+    }
+    return fm_monitor;
+}
+
 static int
 channel_profile_has_options(const dsd_scan_row_profile* profile) {
     return profile != NULL && profile->values.present != 0;

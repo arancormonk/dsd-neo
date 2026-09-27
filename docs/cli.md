@@ -11,7 +11,7 @@ Friendly, practical overview of the `dsd-neo` command line. This covers what you
 - IQ capture/replay: `--iq-capture <path>`, `--iq-capture-format cu8|cf32`, `--iq-capture-max-mb <n>`, `--iq-replay <path>`, `--iq-replay-rate fast|realtime`, `--iq-loop`, `--iq-info <path>`
 - Levels/Audio: `-g 0|1..50`, `-n 0..100`, `-nm`, `-8`, `-V 0|1|2|3`, `-z 0|1|2`, `-y`, `-v 0xF`
 - Modes: `-fa | -fs | -fr | -f1 | -f2 | -fd | -fx | -fy | -fz | -fU | -fi | -fn | -fp | -fh | -fH | -fe | -fE | -fm | -fA | -fM`
-- Analog: `-fA` (NFM monitor), `--nfm-bandwidth-hz <Hz>` (8000..25000, default 16000); `-fM` (native AM, radio/I/Q inputs only), `--am-bandwidth-hz <Hz>` (5000..20000, default 6000); see [Analog reception](#analog-reception--fa--fm)
+- Analog: `-fA` (NFM monitor), `--nfm-bandwidth-hz <Hz>` (8000..25000, default 16000); `-fM` (native AM, radio/I/Q inputs only), `--am-bandwidth-hz <Hz>` (5000..20000, default 6000); `--tone-allow <list>` / `--tone-block <list>` / `--no-tone-filter` (CTCSS/DCS receive policy on the FM monitor, e.g. `67.0/100.0/D023N`); see [Analog reception](#analog-reception--fa--fm) and [Tone filter](#tone-filter-ctcssdcs-receive-policy)
 - Inversions/filtering: `-xx`, `-xr`, `-xd`, `-xz`, `-l`, `-q`
 - Trunking/scan: `-T`, `-Y`, `--trunk-scan targets.csv` (P25/DMR/NXDN96/NXDN48 trunk and conventional targets and analog NFM and AM conventional targets; each type selects its decoder class), `-C chan.csv`, `-G group.csv`, `--src-csv src.csv`, `--p25-bandplan plan.csv`, `--p25-bandplan-export plan.csv`, `-W`, `-E`, `-p`, `-e`, `-I 1234`, `-U 4532`, `-B 12000`, `-t 1`, `--enc-lockout|--enc-follow`, `--tg-lockout-session|--tg-lockout-persist`, `--scan-voice-only`, `--scan-voice-qualify-ms <ms>`, `--scan-voice-hold-ms <ms>`, `--scan-max-visit-ms <ms>`
 - RTL‑SDR strings: `-i rtl:dev:freq:gain:ppm:bw:sql:vol[:bias=on|off]` or `-i rtltcp:host:port:freq:gain:ppm:bw:sql:vol[:bias=on|off]`
@@ -622,6 +622,8 @@ whichever row is on air, rather than accepted and that row skipped at every visi
 | Input > Switch source > RTL-SDR | Reopens the input as an RTL-SDR or rtl_tcp device at the DSP bandwidth. An explicit NFM width, or the AM width in use, that bandwidth cannot filter, the configured one (under `-fA` or `-fM`, or while the scan has an analog row or target of its kind without a width of its own) or that of an analog scan row on air, is refused, naming both and the DSP bandwidths that fit, and the running input stays. A SoapySDR input reopens at the rate its device sets, which its start checks. |
 | A retune (scanner, trunking, manual tune) | The channel filter, de-emphasis, audio filter and squelch start from empty state on the new channel; a retune that lands on another DSP rate resolves the channel for that rate. |
 | `--nfm-bandwidth-hz`, `--am-bandwidth-hz`, `[analog] nfm_bandwidth_hz`, `am_bandwidth_hz` at startup | When the stream opens. |
+| Tone filter (`--tone-allow`, `--tone-block`, `--no-tone-filter`, `[analog] tone_filter` and `tone_list`) at startup | From the monitor's first read of audio. |
+| Tone filter in a config loaded into a running session | From the next read of the monitor's audio: a policy that differs from the one in force starts the transmission on air over, muted for a fresh check; a list that only respells a code (`D047N` for `D023I`, one signal) is the same policy and changes nothing. A present `[analog]` section sets both keys, so one without them turns the filter off. While an `nfm` scan row with its own policy is on air, the loaded policy becomes the configured default and applies when the row leaves. There is no terminal or Qt control that edits it. |
 
 ### De-emphasis and squelch
 
@@ -706,7 +708,8 @@ of the setup wizard): the analog monitor with an AM envelope detector in place o
 
 While the passive analog monitor runs (`-fA`, which enables input monitoring), DSD-neo listens below the voice band
 for a CTCSS (PL) tone and reports what it hears. Detection only reports: it never mutes or gates audio, it needs no
-tone setting, and it runs with `-o null` too.
+tone setting, and it runs with `-o null` too. Muting by tone is the separate
+[tone filter](#tone-filter-ctcssdcs-receive-policy).
 
 - Supported tones: the standard 50-tone EIA/TIA table, 67.0-254.1 Hz (67.0, 69.3, 71.9 ... 250.3, 254.1). A tone is
   confirmed only from estimates within 0.5 Hz of a table value, and a confirmed tone is held only while it stays within
@@ -821,7 +824,8 @@ tone setting, and it runs with `-o null` too.
 ### Received code (DCS) on the analog monitor
 
 Beside the CTCSS tone, the analog FM monitor listens for a DCS code (Digital-Coded Squelch: DPL, DCG, CDCSS). Like tone
-detection it only reports: it never mutes or gates audio, it needs no setting, and it runs with `-o null` too.
+detection it only reports: it never mutes or gates audio, it needs no setting, and it runs with `-o null` too. Muting by
+code is the [tone filter](#tone-filter-ctcssdcs-receive-policy).
 
 - Supported codes: the standard 104-code set, 023, 025, 026, 031, 032, 036, 043, 047, 051, 053, 054, 065, 071, 072,
   073, 074, 114, 115, 116, 122, 125, 131, 132, 134, 143, 145, 152, 155, 156, 162, 165, 172, 174, 205, 212, 223, 225,
@@ -934,6 +938,87 @@ detection it only reports: it never mutes or gates audio, it needs no setting, a
   520 ms), so prefer a DC-coupled input or one with a low corner. The audio's polarity matters: an inverted audio path
   (some receivers' discriminator outputs, some sound cards) turns every code into the other signal of the same number,
   so a D023N transmitter reads as `DCS D047N / D023I`.
+
+### Tone filter (CTCSS/DCS receive policy)
+
+The tone filter decides, from the tone or code the monitor receives (above), which analog FM traffic is heard. It is a
+setting, shown apart from what is received, and it is off by default: then the ordinary carrier squelch alone decides.
+
+- `--tone-allow <list>` hears only traffic carrying a listed tone or code; `--tone-block <list>` mutes traffic carrying
+  one and hears the rest; `--no-tone-filter` turns the filter off. One of the three per command line. The INI keys are
+  `[analog] tone_filter = off|allow|block` and `tone_list` (see `docs/config-system.md`); a `-Y` channel-map row or
+  `--trunk-scan` target of mode `nfm` takes the same three options for itself, and an `am` one refuses them (see
+  [scoped row options](csv-formats.md#scoped-row-options)).
+- `<list>` is standard CTCSS tones and DCS codes separated by `/`, such as `67.0/100.0/D023N`: a tone as `100` or
+  `100.0`, a code as `D` and three octal digits with `N` or `I` (any case; a bare `D023` is `D023N`). Commas are refused
+  (`use / between entries, not commas`), as are a tone or code outside the standard sets (150.0 Hz included), an empty
+  entry, an empty list and a signal listed twice. A code is matched by its signal, so both spellings of it work: a
+  listed `D023I` matches a received `DCS D047N / D023I`, and listing `D023N` and `D047I` together is refused as the same
+  signal twice. The polarity is part of the signal: on a source whose audio is inverted (see
+  [Received code (DCS)](#received-code-dcs-on-the-analog-monitor)) every code arrives as the other polarity's signal,
+  so a `D023N` transmitter reads as `DCS D047N / D023I` and a listed `D023N` does not match it (allow mutes it as not
+  allowed, block lets it through). Fix the audio's polarity, or list the spelling the monitor shows (`D023I` for that
+  transmitter). A refusal names the entry by its position and never repeats the text.
+- The acquisition window: while a list policy is in force, each transmission starts muted. A confirmed tone or code is
+  judged at once: allow passes a listed one and rejects any other, block rejects a listed one and passes any other.
+  With nothing confirmed after 800 ms of the carrier (sample time, so a fast replay decides the same way), allow rejects
+  the transmission (no tone) and block lets it through. The window is longer than the CTCSS lock ceiling (700 ms) by two
+  detector hops; it runs on, to at most 1,600 ms, while the list holds a DCS code and the DCS detector has read a
+  supported code's word once and is waiting for the second reading that confirms it, since a code at 3 dB can take up
+  to the DCS lock ceiling (1,500 ms) to confirm. A CTCSS-only list, and a carrier with no such candidate, keep 800 ms:
+  noise and speech with no code raise one at 800 ms on 1 to 3 receptions in 100, which then wait on average another
+  250 ms.
+- After the verdict the detectors keep listening for the whole transmission. Allow: the allowed tone lost (after the
+  detector's own hold-over) mutes again and starts a fresh window, and an unlisted tone or code confirmed rejects it,
+  while another listed one keeps it passing. Block: a blocked tone or code confirmed later rejects traffic that was
+  passing, and losing a tone keeps a pass. A rejection holds until the carrier has been gone for the 200 ms hangover,
+  except that a tone or code the list passes, confirmed later, lets the traffic through; another the list does not pass
+  keeps it rejected and becomes its reason, so a rejection for want of a tone that later hears an unlisted tone reads
+  `muted: not allowed` and logs that tone. The next transmission starts over, and so does the one on air when the policy
+  itself changes (a loaded config, a scan row's own policy coming on air): it is muted for a fresh check.
+- What is muted: the live monitor output and the UDP analog monitor (`-o udp`), together. The `-6` raw WAV is a capture
+  ahead of every gate, squelch and tone filter included, and keeps everything.
+- Scanning: a transmission still being checked holds a `-Y` row or `--trunk-scan` target while its carrier lasts, with
+  the stay reason `Tone check` and no countdown while the check runs (800 ms, or to 1,600 ms as above); a `-Y` pass
+  keeps the row then even when `-t` has run out. Only traffic the policy passes counts as activity, though. The check
+  restarts neither the `-t` hangtime nor the target's `activity_hold_ms`, and a trunk-scan target's idle dwell keeps
+  running through it, so a transmission that ends before its verdict leaves no tail, and repeated short bursts that are
+  never passed (kerchunks, noise) cannot park the scanner on a muted row: it moves on once `-t` has run out since the
+  row was tuned or last passed traffic, or once the target's dwell has. Traffic the policy allows is activity like any
+  carrier and leaves the ordinary tail. Rejected traffic holds nothing: `-Y` moves on at its next no-carrier pass
+  (within about 375 ms), and trunk scan at its next tick, without waiting out the hangtime or the activity hold, and so
+  does traffic rejected and ended before that pass or tick came: the rejection outlives its carrier for the scanner
+  until the next carrier opens or the receiver moves. An operator hold keeps the row, muted. A fixed-frequency session
+  mutes rejected traffic and stays, and so does a scan with nowhere else to go: a `-Y` list or `--trunk-scan` list with
+  no other row or target to step to (the others avoided, or skipped at every visit for a width the DSP rate cannot
+  filter, or none), or, for trunk scan, whose others are all cooling down from a failed retune. A `-Y` row on the
+  frequency on air counts as somewhere to go only when it would judge the traffic otherwise: a row of another class (a
+  mixed-mode repeater's `dmr` row, an `am` row, or a row inheriting a decode mode other than `-fA`), or an `nfm` row
+  whose policy, its own or the configured one, passes the tone or code the traffic carries (or, after a `no tone`
+  rejection, passes no tone). One that would reject it too, such as a second row with the same policy or every row of a
+  list without modes, is nowhere to go. A trunk-scan target on that frequency is always of another type, since a target
+  list holds one target per type and frequency. While a scan keeps rejected traffic this way, its Scan Timing row reads
+  `Carrier` with no countdown; once that traffic ends, the ordinary tail runs.
+- Where it applies: the analog FM monitor only (`-fA`, and `nfm` scan rows), on radio and PCM inputs alike, never the AM
+  monitor (`-fM`, and `am` scan rows and `am-conventional` targets, which carry the configured policy past them
+  untouched and hold on their carrier), wherever the received tone is detected. Set where nothing runs it, it has no
+  effect, and the session says so once. At startup: for the AM monitor (`-fM`) or a digital mode without a scan list (a
+  `-Y` scan with no channel map included, which stays on that mode until one is imported), and for a `-Y` list none of
+  whose rows runs the FM monitor (no `nfm` row, and under `-fA` no row without a mode of its own either, since a typed
+  row, an `am` one included, runs its own mode), checked when the list is imported from the command line or a config
+  file. When the scan starts: for a `--trunk-scan` list with no `nfm-conventional` target, whatever the decode mode.
+  During the session: when a loaded config sets a policy nothing runs, or a decode-mode change, channel map or scanner
+  toggle takes the FM monitor away from the policy in force. The `Tone filter` row leaves the screen while no detection
+  runs.
+- What is shown: the terminal's Call Info section adds a `Tone filter:` line under `Rx tone:`, and the Qt/Android
+  monitor a `TONE FILTER` row under `RECEIVED TONE`, while a policy is in force: the policy (`allow 100.0 Hz/D023N`;
+  while a scan row's own policy runs, followed by the configured one it shadows,
+  `block D023N (row; default allow 100.0 Hz)`) and, while a carrier is heard, what it does: `passing`,
+  `muted: checking tone`, `muted: not allowed` or `muted: no tone`. The received row goes on showing only what was
+  received. The log prints `Tone filter: allowed (CTCSS 100.0 Hz)`, `Tone filter: rejected (no tone)` and the like when
+  the verdict or the value that decided it changes, and `Tone filter: pending (tone lost)` when an allowed tone is lost
+  (not when a changed policy starts a fresh check). A terminal without UTF-8 shows a long list's overflow mark as
+  `...+3`.
 
 ## Mode Tweaks & Advanced
 

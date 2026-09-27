@@ -11,6 +11,7 @@
 #include <dsd-neo/app_control/frontend_runtime.h>
 #include <dsd-neo/app_control/rx_tone_view.h>
 #include <dsd-neo/core/airspy_config.h>
+#include <dsd-neo/core/analog_tone.h>
 #include <dsd-neo/core/audio.h>
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/channel_mode.h>
@@ -42,6 +43,7 @@
 #include <dsd-neo/protocol/p25/p25_sm_watchdog.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #include <dsd-neo/runtime/analog_channel.h>
+#include <dsd-neo/runtime/analog_tones.h>
 #include <dsd-neo/runtime/decode_mode.h>
 #include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
 #include <dsd-neo/runtime/scan_mode.h>
@@ -1974,6 +1976,144 @@ test_decode_mode_change_clears_received_tone(void) {
     rc |= expect_int("code mode change drained", dsd_app_drain_cmds(&opts, &state), 1);
     rc |= expect_received_tone_cleared("decode mode change clears the received code", &state, seeded_code);
     freeState(&state);
+    return rc;
+}
+
+/* Issue #527: how many times one drained command said the configured tone filter has no effect. */
+static int
+tone_filter_warnings_from(dsd_opts* opts, dsd_state* state, int id, const void* payload, size_t size, int value) {
+    static const char* const expected =
+        "the tone filter (--tone-allow/--tone-block, [analog] tone_filter) has no effect";
+    dsd_test_capture_stderr cap;
+    char log[8192] = {0};
+    if (dsd_test_capture_stderr_begin(&cap, "tone-live-warn") != 0) {
+        return -1;
+    }
+    const int queued = payload ? dsd_app_command_submit(id, payload, size) : dsd_app_command_set_i32(id, value);
+    const int drained = dsd_app_drain_cmds(opts, state);
+    (void)dsd_test_capture_stderr_end(&cap);
+    (void)dsd_test_capture_stderr_read(&cap, log, sizeof log);
+    if (queued != DSD_APP_COMMAND_SUBMIT_QUEUED || drained != 1) {
+        return -1;
+    }
+    int count = 0;
+    for (const char* at = strstr(log, expected); at; at = strstr(at + 1, expected)) {
+        count++;
+    }
+    return count;
+}
+
+/*
+ * Issue #527: a tone filter set while AM or a digital mode is active warns once, in a running session too. A
+ * decode-mode change that takes the FM monitor away from the policy in force says so once, and another digital mode
+ * after it does not say it again; a loaded config that sets another policy nothing runs says so, and loading it again,
+ * or with its code respelled, does not; going back to the FM monitor says nothing.
+ */
+static int
+test_tone_filter_warns_when_a_command_leaves_it_unheard(void) {
+    int rc = 0;
+    static dsd_opts opts;
+    static dsd_state state;
+    init_decode_mode_context(&opts, &state);
+    rc |= expect_int("tone live: -fA", dsd_app_command_set_i32(DSD_APP_CMD_DECODE_MODE_SET, DSDCFG_MODE_ANALOG),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("tone live: -fA drained", dsd_app_drain_cmds(&opts, &state), 1);
+    opts.analog_tone_filter = DSD_TONE_FILTER_ALLOW;
+    rc |= expect_int("tone live: list", dsd_tone_set_parse("100.0", &opts.analog_tone_set, NULL, 0), 0);
+
+    rc |=
+        expect_int("tone live: to DMR warns",
+                   tone_filter_warnings_from(&opts, &state, DSD_APP_CMD_DECODE_MODE_SET, NULL, 0, DSDCFG_MODE_DMR), 1);
+    rc |= expect_int("tone live: DMR to P25 stays quiet",
+                     tone_filter_warnings_from(&opts, &state, DSD_APP_CMD_DECODE_MODE_SET, NULL, 0, DSDCFG_MODE_P25P1),
+                     0);
+
+    dsdneoUserConfig cfg;
+    DSD_MEMSET(&cfg, 0, sizeof cfg);
+    cfg.has_analog = 1;
+    cfg.analog_tone_filter = DSD_TONE_FILTER_BLOCK;
+    rc |= expect_int("tone live: config list", dsd_tone_set_parse("D023N", &cfg.analog_tone_set, NULL, 0), 0);
+    rc |= expect_int("tone live: a config's policy under P25 warns",
+                     tone_filter_warnings_from(&opts, &state, DSD_APP_CMD_CONFIG_APPLY, &cfg, sizeof cfg, 0), 1);
+    rc |= expect_int("tone live: the config loaded again stays quiet",
+                     tone_filter_warnings_from(&opts, &state, DSD_APP_CMD_CONFIG_APPLY, &cfg, sizeof cfg, 0), 0);
+    /* D047I is D023N's other spelling: the same policy, still unheard, is not news. */
+    rc |= expect_int("tone live: config list respelled", dsd_tone_set_parse("D047I", &cfg.analog_tone_set, NULL, 0), 0);
+    rc |= expect_int("tone live: the config respelled stays quiet",
+                     tone_filter_warnings_from(&opts, &state, DSD_APP_CMD_CONFIG_APPLY, &cfg, sizeof cfg, 0), 0);
+    rc |= expect_int("tone live: the policy stands", opts.analog_tone_filter, DSD_TONE_FILTER_BLOCK);
+    rc |= expect_int("tone live: back to -fA stays quiet",
+                     tone_filter_warnings_from(&opts, &state, DSD_APP_CMD_DECODE_MODE_SET, NULL, 0, DSDCFG_MODE_ANALOG),
+                     0);
+
+    /* No policy, nothing to say. */
+    opts.analog_tone_filter = DSD_TONE_FILTER_OFF;
+    rc |=
+        expect_int("tone live: no policy stays quiet",
+                   tone_filter_warnings_from(&opts, &state, DSD_APP_CMD_DECODE_MODE_SET, NULL, 0, DSDCFG_MODE_DMR), 0);
+    DSD_MEMSET(&opts.analog_tone_set, 0, sizeof opts.analog_tone_set);
+    freeState(&state);
+    return rc;
+}
+
+/*
+ * Issue #527: a -Y scan with no channel map stays on the configured decode mode, which is what hears tones until a map
+ * comes, as the command line weighs it at start. A map imported at runtime whose rows leave nothing hearing them says
+ * so once under the FM monitor, which heard them before it; under a digital mode, where the start already said it,
+ * it stays quiet. A map with an nfm row hears them, and one without after it says so again.
+ */
+static int
+test_tone_filter_warns_when_a_channel_map_leaves_it_unheard(void) {
+    int rc = 0;
+    static dsd_opts opts;
+    static dsd_state state;
+    dsd_test_temp_cwd cwd;
+    if (dsd_test_temp_cwd_enter(&cwd, "dsdneo_ui_cmd_queue_tone_map") != 0) {
+        DSD_FPRINTF(stderr, "temp working directory setup failed: %s\n", strerror(errno));
+        return 1;
+    }
+    static const char digital[] = "channel,frequency_hz,mode\n1,461000000,dmr\n2,851012500,p25\n";
+    static const char with_nfm[] = "channel,frequency_hz,mode\n1,461000000,dmr\n2,154430000,nfm\n";
+    rc |= write_file_bytes("tone_digital.csv", digital, strlen(digital));
+    rc |= write_file_bytes("tone_nfm.csv", with_nfm, strlen(with_nfm));
+    static const char digital_path[] = "tone_digital.csv";
+    static const char nfm_path[] = "tone_nfm.csv";
+    for (int analog = 1; analog >= 0; analog--) {
+        init_decode_mode_context(&opts, &state);
+        const int mode = analog ? DSDCFG_MODE_ANALOG : DSDCFG_MODE_DMR;
+        rc |= expect_int("tone map: mode", dsd_app_command_set_i32(DSD_APP_CMD_DECODE_MODE_SET, mode),
+                         DSD_APP_COMMAND_SUBMIT_QUEUED);
+        rc |= expect_int("tone map: mode drained", dsd_app_drain_cmds(&opts, &state), 1);
+        opts.scanner_mode = 1;
+        opts.analog_tone_filter = DSD_TONE_FILTER_ALLOW;
+        rc |= expect_int("tone map: list", dsd_tone_set_parse("100.0", &opts.analog_tone_set, NULL, 0), 0);
+
+        rc |= expect_int(analog ? "tone map: -fA, digital map warns" : "tone map: DMR, digital map stays quiet",
+                         tone_filter_warnings_from(&opts, &state, DSD_APP_CMD_IMPORT_CHANNEL_MAP, digital_path,
+                                                   sizeof digital_path, 0),
+                         analog ? 1 : 0);
+        rc |= expect_int("tone map: rows imported", state.lcn_freq_count, 2);
+        rc |= expect_int("tone map: digital map again stays quiet",
+                         tone_filter_warnings_from(&opts, &state, DSD_APP_CMD_IMPORT_CHANNEL_MAP, digital_path,
+                                                   sizeof digital_path, 0),
+                         0);
+        rc |= expect_int(
+            "tone map: nfm row stays quiet",
+            tone_filter_warnings_from(&opts, &state, DSD_APP_CMD_IMPORT_CHANNEL_MAP, nfm_path, sizeof nfm_path, 0), 0);
+        rc |= expect_int("tone map: digital map after the nfm row warns",
+                         tone_filter_warnings_from(&opts, &state, DSD_APP_CMD_IMPORT_CHANNEL_MAP, digital_path,
+                                                   sizeof digital_path, 0),
+                         1);
+        opts.scanner_mode = 0;
+        opts.analog_tone_filter = DSD_TONE_FILTER_OFF;
+        DSD_MEMSET(&opts.analog_tone_set, 0, sizeof opts.analog_tone_set);
+        freeState(&state);
+    }
+    (void)remove(digital_path);
+    (void)remove(nfm_path);
+    if (dsd_test_temp_cwd_leave(&cwd) != 0) {
+        rc = 1;
+    }
     return rc;
 }
 
@@ -10045,6 +10185,8 @@ main(void) {
     rc |= test_compact_visualizer_toast();
     rc |= test_modulation_and_decode_mode_setters();
     rc |= test_decode_mode_change_clears_received_tone();
+    rc |= test_tone_filter_warns_when_a_command_leaves_it_unheard();
+    rc |= test_tone_filter_warns_when_a_channel_map_leaves_it_unheard();
     rc |= test_input_switch_clears_received_tone();
     rc |= test_playback_switches_clear_received_tone();
     rc |= test_config_apply_input_change_clears_received_tone();

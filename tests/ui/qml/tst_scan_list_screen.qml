@@ -186,6 +186,37 @@ Item {
             }
         }
 
+        // Issue #527: an nfm-conventional target's own tone policy shows in the preview with its
+        // list, one without it says it runs the configured policy, and an am or digital target,
+        // which cannot set one, says nothing about it.
+        function test_imported_target_preview_shows_tone_filter() {
+            var source = testContext.writeFixtureCsv("tone-targets.csv",
+                "id,type,frequency_hz,chan_csv,dwell_ms,activity_hold_ms,notes,options\n"
+                + "allow,nfm-conventional,154430000,,,,,--tone-allow 100.0/D023N\n"
+                + "block,nfm-conventional,155475000,,,,,--tone-block 67.0\n"
+                + "off,nfm-conventional,155520000,,,,,--no-tone-filter\n"
+                + "inh,nfm-conventional,155535000,,,,,\n"
+                + "tower,am-conventional,118300000,,,,,\n"
+                + "dig,dmr-conventional,461000000,,,,,\n");
+            var result = importedFiles.importFile(source, "ToneTargets.csv", "trunkTargets");
+            verify(result.ok, result.detail || "Import failed");
+            try {
+                screen.selectTargets(result.path);
+                compare(screen.targetRows.length, 6);
+                var preview = visualChild(screen, "scanTargetPreview");
+                verify(preview !== null);
+                tryVerify(function() { return preview.count === 6 && preview.itemAtIndex(5) !== null; });
+                var want = ["Tone filter: allow 100.0 Hz/D023N", "Tone filter: block 67.0 Hz", "Tone filter: off",
+                            "Tone filter: inherit"];
+                for (var i = 0; i < 4; ++i)
+                    verify(preview.itemAtIndex(i).text.indexOf(want[i]) >= 0, preview.itemAtIndex(i).text);
+                verify(preview.itemAtIndex(4).text.indexOf("Tone filter") < 0, preview.itemAtIndex(4).text);
+                verify(preview.itemAtIndex(5).text.indexOf("Tone filter") < 0, preview.itemAtIndex(5).text);
+            } finally {
+                importedFiles.remove(importedFiles.rowForPath(result.path));
+            }
+        }
+
         function test_reselect_manual_targets_keeps_entries() {
             screen.addFrequency("First unsaved target", "dmr", "461");
             screen.addFrequency("Second unsaved target", "nxdn", "462");

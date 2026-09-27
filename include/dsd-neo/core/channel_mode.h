@@ -4,6 +4,7 @@
 /** @file @brief Positional channel-map mode metadata, owned by core extension slot 5. */
 #ifndef DSD_NEO_CORE_CHANNEL_MODE_H
 #define DSD_NEO_CORE_CHANNEL_MODE_H
+#include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/runtime/scan_mode.h>
 #include <stddef.h>
@@ -22,6 +23,22 @@ void dsd_channel_modes_move(dsd_state* dst, dsd_state* src);
 /** Nonzero if at least one row declares a mode or carries scoped row options (scan_profile.h),
  * i.e. the typed scanner must run the list. */
 int dsd_channel_modes_present(const dsd_state* state);
+/** Nonzero if scan-list slot @p row runs received-tone detection while it is on air, so the tone policy can act on it
+ * (issue #527): an nfm row, on which the row's own policy or the configured one applies, or, when
+ * @p configured_fm_monitor says the configured decode mode is the analog FM monitor
+ * (dsd_scan_mode_configured_fm_monitor()), a row that runs that mode -- one declaring no mode (INHERIT), as every row
+ * of a list without a mode column does. A typed row of any other mode runs its own mode, never the configured one.
+ * Asks nothing of the row's frequency. */
+int dsd_channel_mode_hears_tones(const dsd_state* state, size_t row, int configured_fm_monitor);
+/** Nonzero if a row the scanner tunes (one with a frequency) runs received-tone detection
+ * (dsd_channel_mode_hears_tones()). */
+int dsd_channel_modes_hear_tones(const dsd_state* state, int configured_fm_monitor);
+/** Nonzero if a session that is not a trunk scan runs received-tone detection, where the tone policy applies (issue
+ * #527): a -Y scan with a list by its rows (dsd_channel_modes_hear_tones()), anything else -- a -Y scan whose list has
+ * no rows, or none yet, included, which stays on the configured decode mode -- by that mode
+ * (dsd_scan_mode_configured_fm_monitor()). The one rule the command line, the engine's channel-map import and
+ * dsd_engine_scan_hears_tones() weigh the "no effect" warning by. 0 for NULL @p opts or @p state. */
+int dsd_channel_modes_conventional_hear_tones(const dsd_opts* opts, const dsd_state* state);
 #ifdef __cplusplus
 }
 #endif

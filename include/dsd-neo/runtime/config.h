@@ -15,6 +15,7 @@
 #define DSD_NEO_RUNTIME_CONFIG_H
 
 #include <dsd-neo/core/airspy_config.h>
+#include <dsd-neo/core/analog_tone.h>
 #include <dsd-neo/platform/platform.h>
 
 /* Include schema types first (before extern "C" for C++ compat) */
@@ -675,6 +676,13 @@ typedef struct dsdneoUserConfig {
     int has_analog;
     int analog_nfm_bandwidth_hz;
     int analog_am_bandwidth_hz;
+    /* The CTCSS/DCS receive policy (issue #527): tone_filter (dsd_tone_filter_mode, off when left out) and tone_list
+       (the list, empty when left out; off keeps it). A refused list is left empty with analog_tone_list_refused set,
+       and a refused tone_filter keeps the mode already loaded; either way the loader warns, and a list policy without
+       a usable list is applied as off. */
+    int analog_tone_filter;
+    dsd_tone_set analog_tone_set;
+    int analog_tone_list_refused;
 } dsdneoUserConfig;
 
 /**

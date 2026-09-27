@@ -8,11 +8,13 @@
  */
 
 #include <dsd-neo/core/airspy_config.h>
+#include <dsd-neo/core/analog_tone.h>
 #include <dsd-neo/core/lrrp_ports.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/runtime/airspy_config.h>
 #include <dsd-neo/runtime/analog_channel.h>
+#include <dsd-neo/runtime/analog_tones.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/config_schema.h>
 #include <dsd-neo/runtime/path_policy.h>
@@ -176,13 +178,31 @@ validate_analog_width_entry(const dsdcfg_schema_entry_t* entry, const char* val,
     return 1;
 }
 
+/* A tone list is refused by entry number, never echoed, as the CLI and a scan row refuse it (issue #527); the loader
+   then keeps the tone filter off, so the refusal is an error. An empty list is valid on its own: whether a policy needs
+   one is the composed check's question. */
+static int
+validate_analog_tone_list_entry(const dsdcfg_schema_entry_t* entry, const char* val, dsdcfg_diagnostics_t* diags,
+                                int line_num, const char* diag_section, const char* diag_key) {
+    if (strcmp(entry->section, "analog") != 0 || strcmp(entry->key, "tone_list") != 0) {
+        return 0;
+    }
+    char err[DSD_TONE_LIST_ERROR_SIZE];
+    dsd_tone_set set;
+    if (val[0] != '\0' && dsd_tone_set_parse(val, &set, err, sizeof err) != 0) {
+        dsdcfg_diags_add(diags, DSDCFG_DIAG_ERROR, line_num, diag_section, diag_key, err);
+    }
+    return 1;
+}
+
 static void
 validate_entry_value(const dsdcfg_schema_entry_t* entry, const char* val, dsdcfg_diagnostics_t* diags, int line_num,
                      const char* diag_section, const char* diag_key) {
     if (!entry || !val || !diags) {
         return;
     }
-    if (validate_analog_width_entry(entry, val, diags, line_num, diag_section, diag_key)) {
+    if (validate_analog_width_entry(entry, val, diags, line_num, diag_section, diag_key)
+        || validate_analog_tone_list_entry(entry, val, diags, line_num, diag_section, diag_key)) {
         return;
     }
     if (strcmp(entry->section, "input") == 0 && strncmp(entry->key, "airspy_", 7) == 0) {
@@ -479,6 +499,21 @@ validate_composed_am_width(const dsdneoUserConfig* cfg, const char* section, con
     }
 }
 
+/* A list policy with nothing to list is refused (issue #527): the loader would apply it as off, which the operator did
+   not ask for. A list refused on its own line has said so already. */
+static void
+validate_composed_tone_policy(const dsdneoUserConfig* cfg, const char* section, const char* key,
+                              dsdcfg_diagnostics_t* diags) {
+    if (!cfg || !diags || !cfg->has_analog || cfg->analog_tone_filter == DSD_TONE_FILTER_OFF
+        || cfg->analog_tone_list_refused || dsd_tone_set_count(&cfg->analog_tone_set) > 0) {
+        return;
+    }
+    char msg[128];
+    DSD_SNPRINTF(msg, sizeof msg, "tone_filter = %s needs a tone_list of CTCSS tones or DCS codes (e.g. 100.0/D023N)",
+                 dsd_tone_filter_mode_name(cfg->analog_tone_filter));
+    dsdcfg_diags_add(diags, DSDCFG_DIAG_ERROR, 0, section ? section : "analog", key ? key : "tone_filter", msg);
+}
+
 static void
 validate_composed_config_base(const dsdneoUserConfig* cfg, dsdcfg_diagnostics_t* diags) {
     validate_composed_trunk_scan_requirements(cfg, "trunk_scan", "targets_csv", diags);
@@ -488,6 +523,7 @@ validate_composed_config_base(const dsdneoUserConfig* cfg, dsdcfg_diagnostics_t*
     validate_composed_scan_max_visit_ms(cfg, "trunking", "scan_max_visit_ms", diags);
     validate_composed_analog_width(cfg, "analog", "nfm_bandwidth_hz", diags);
     validate_composed_am_width(cfg, "analog", "am_bandwidth_hz", diags);
+    validate_composed_tone_policy(cfg, "analog", "tone_filter", diags);
 }
 
 static void
@@ -502,6 +538,7 @@ validate_composed_profile_config(const char* profile_name, const dsdneoUserConfi
     validate_composed_scan_max_visit_ms(cfg, section, "trunking.scan_max_visit_ms", diags);
     validate_composed_analog_width(cfg, section, "analog.nfm_bandwidth_hz", diags);
     validate_composed_am_width(cfg, section, "analog.am_bandwidth_hz", diags);
+    validate_composed_tone_policy(cfg, section, "analog.tone_filter", diags);
 }
 
 static void

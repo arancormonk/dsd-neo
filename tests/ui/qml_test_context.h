@@ -1992,7 +1992,7 @@ class Setup : public QObject {
         metrics[QStringLiteral("scanVisitLive")] = false;
         metrics[QStringLiteral("scanVisitRemainingDs")] = 0;
         // The received sub-audible tone (#522): no analog FM monitor at rest, so the row is
-        // down. The configured policy is its own reading and says "off" until #527.
+        // down. The configured policy is its own reading and says "off" with no policy set.
         metrics[QStringLiteral("rxToneVisible")] = false;
         metrics[QStringLiteral("rxToneStatus")] = 0;
         metrics[QStringLiteral("rxToneText")] = QString();
@@ -2004,6 +2004,10 @@ class Setup : public QObject {
         metrics[QStringLiteral("rxToneDcsAliasInverted")] = false;
         metrics[QStringLiteral("rxToneCarrier")] = false;
         metrics[QStringLiteral("rxToneConfiguredText")] = QStringLiteral("off");
+        // The Tone filter row (#527): hidden with no policy in force, and no verdict.
+        metrics[QStringLiteral("toneFilterVisible")] = false;
+        metrics[QStringLiteral("toneFilterGate")] = 0;
+        metrics[QStringLiteral("toneFilterStatusText")] = QString();
         // Whether an automatic controller owns the tuner, which one, and where it
         // points. The two named owners word a message; tunerControlled is the gate.
         metrics[QStringLiteral("tunerControlled")] = false;

@@ -72,6 +72,7 @@
 #include <dsd-neo/runtime/input_spec.h>
 #include <dsd-neo/runtime/log.h>
 #include <dsd-neo/runtime/rdio_export.h>
+#include <dsd-neo/runtime/scan_mode.h>
 #include <dsd-neo/runtime/shutdown.h>
 #include <dsd-neo/runtime/trunk_cc_candidates.h>
 #include <dsd-neo/runtime/trunk_scan_hooks.h>
@@ -332,6 +333,12 @@ import_global_channel_map_if_needed(dsd_opts* opts, dsd_state* state) {
         }
         LOG_INFO("NOTICE: Imported channel map from %s\n", opts->chan_in_file);
         dsd_scan_row_keys_warn_if_unused(state, opts->scanner_mode);
+        /* A config file's -Y list, or one the command line read no row from: the command line checked a list it
+           imported rows from (issue #527). */
+        if (opts->scanner_mode == 1) {
+            (void)dsd_scan_mode_warn_tone_filter_unused(opts, state,
+                                                        dsd_channel_modes_conventional_hear_tones(opts, state));
+        }
     }
     return 0;
 }
@@ -1446,6 +1453,35 @@ no_carrier_scanner_step_is_due(const dsd_opts* opts, const dsd_state* state, tim
      * is a no-op and the rules below decide alone. */
     if (dsd_engine_scan_visit_expired(opts, state, dsd_time_now_monotonic_s())) {
         return 1;
+    }
+    const int tone_gate = dsd_scan_analog_tone_gate(opts, state);
+    /* Analog traffic the tone policy rejected (issue #527) does not hold the row: it neither stamps the hangtime anchor
+     * nor waits it out, but moves on at this pass. The caller still lets an operator hold keep the row, muted. A list
+     * with nowhere else to go (no other row a step can land on: the others avoided, or skipped at every visit for the
+     * width of their own demodulator, which the front end refuses, or as am rows nothing demodulates) keeps it muted
+     * where it is, as a fixed frequency does: a step would land on the same row, end the reception and judge the same
+     * traffic again, and so would the hangtime rule below. */
+    if (tone_gate == DSD_ANALOG_TONE_GATE_REJECTED) {
+        return dsd_engine_channel_scan_has_other_row(opts, state);
+    }
+    /* Rejected traffic that ended before this pass came -- its carrier's hangover ran out, or its input paused, between
+     * two passes -- holds nothing either: -t since the row landed, or since traffic the policy passed (this traffic
+     * before a blocked or unlisted value was confirmed included), is not waited out. With nowhere else to go the rules
+     * below decide, as after any carrier. */
+    if (dsd_scan_analog_tone_rejection_ended(opts, state) && dsd_engine_channel_scan_has_other_row(opts, state)) {
+        return 1;
+    }
+    /* A carrier on air under a tone policy holds the row by its verdict, whatever the hangtime anchor says, while the
+     * policy is still checking it or once it has allowed it. The check is no activity, so the monitor stamps no anchor
+     * for it (dsd_symbol.c), and it stamps allowed traffic only as a block ends, while the tap publishes the carrier
+     * and its verdict at each read, part-way through a block (960 samples are 384 ms at 2500 Hz, and span two reads at
+     * 22050 Hz): a verdict just turned ALLOWED meets an anchor from before the check. The check is bounded by the
+     * policy's window. A check whose carrier ends before a verdict leaves the anchor where it was, so it adds no -t
+     * tail, and short bursts the policy never passes cannot park the scanner: the rule below steps once -t has run out
+     * since the row landed or since the last block of traffic the policy passed. With no policy in force the verdict
+     * is OFF and the carrier holds through its stamps alone, as before the policy existed. */
+    if (tone_gate == DSD_ANALOG_TONE_GATE_PENDING || tone_gate == DSD_ANALOG_TONE_GATE_ALLOWED) {
+        return 0;
     }
     if (dsd_scan_voice_gate_owns_step(opts, state)) {
         return dsd_scan_voice_gate_should_step(opts, state, dsd_time_now_monotonic_s());

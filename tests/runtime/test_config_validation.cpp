@@ -499,6 +499,58 @@ validate_ini_has_error(const char* ini, const char* section, const char* key, co
 }
 
 /*
+ * Issue #527: [analog] tone_filter and tone_list. A list is refused by entry number, never echoed; allow or block needs
+ * a list, while off keeps one; the mode is one of off, allow and block. Each refusal is an ERROR, since the loader
+ * keeps the policy off rather than guess.
+ */
+static int
+test_analog_tone_policy_validation(void) {
+    int result = 0;
+    int rc = 0;
+    static const char* const clean[] = {
+        "[analog]\ntone_filter = allow\ntone_list = 100.0/D023N\n",
+        "[analog]\ntone_filter = \"block\"\ntone_list = \"67/d047i\"\n",
+        "[analog]\ntone_filter = off\ntone_list = 100.0\n",
+        "[analog]\ntone_list = 100.0\n",
+        "[analog]\ntone_filter = off\n",
+        "[profile.fire]\nanalog.tone_filter = allow\nanalog.tone_list = 156.7\n",
+    };
+    for (size_t i = 0; i < sizeof clean / sizeof clean[0]; i++) {
+        if (validate_ini_has_error(clean[i], "", "", NULL, &rc) != 0 || rc != 0) {
+            DSD_FPRINTF(stderr, "FAIL: %s should validate (rc=%d)\n", clean[i], rc);
+            result = 1;
+        }
+    }
+
+    static const struct {
+        const char* ini;
+        const char* section;
+        const char* key;
+        const char* text;
+    } bad[] = {
+        {"[analog]\ntone_list = 100.0,67.0\n", "analog", "tone_list", "use / between entries, not commas"},
+        {"[analog]\ntone_list = 67.0/SECRET\n", "analog", "tone_list",
+         "entry 2 is not a standard CTCSS tone or DCS code"},
+        {"[analog]\ntone_list = D023N/D047I\n", "analog", "tone_list", "entry 2 is the same DCS signal as entry 1"},
+        {"[analog]\ntone_filter = allow\n", "analog", "tone_filter", "tone_filter = allow needs a tone_list"},
+        {"[analog]\ntone_filter = block\ntone_list = \n", "analog", "tone_filter",
+         "tone_filter = block needs a tone_list"},
+        {"[analog]\ntone_filter = deny\ntone_list = 100.0\n", "analog", "tone_filter", NULL},
+        {"[profile.fire]\nanalog.tone_filter = allow\n", "profile.fire", "analog.tone_filter",
+         "tone_filter = allow needs a tone_list"},
+    };
+
+    for (size_t i = 0; i < sizeof bad / sizeof bad[0]; i++) {
+        if (validate_ini_has_error(bad[i].ini, bad[i].section, bad[i].key, bad[i].text, &rc) != 1 || rc == 0) {
+            DSD_FPRINTF(stderr, "FAIL: %s should be an error on %s.%s naming \"%s\" (rc=%d)\n", bad[i].ini,
+                        bad[i].section, bad[i].key, bad[i].text ? bad[i].text : "", rc);
+            result = 1;
+        }
+    }
+    return result;
+}
+
+/*
  * Issue #524: [mode] decode = am and [analog] am_bandwidth_hz. An in-range whole-Hz width validates; one outside
  * 5000..20000 or not whole Hz is an error carrying the parser's text (the loader refuses it rather than clamping),
  * not the schema walk's out-of-range warning.
@@ -2014,6 +2066,7 @@ main(void) {
     rc |= test_profile_invalid_bool();
     rc |= test_profile_valid_values();
     rc |= test_analog_am_bandwidth_validation();
+    rc |= test_analog_tone_policy_validation();
 
     if (rc == 0) {
         printf("All config_validation tests passed\n");

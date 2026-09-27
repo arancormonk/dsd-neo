@@ -523,6 +523,7 @@ typedef struct {
     int single_key_dec_idx;
     int p25_bandplan_idx;
     int options_idx;
+    size_t header_fields; /* columns the header names */
     unsigned int row;
     char* err;
     size_t err_sz;
@@ -1020,6 +1021,26 @@ scan_parse_target_secrets(dsd_trunk_scan_target* target, char** fields, size_t c
                                          scan_optional_field(fields, count, parse->single_key_dec_idx));
 }
 
+/* A tone list written with commas (issue #527): an unquoted options cell ends at the first one, so the entries after
+ * it would be read as the next column's value, or dropped past the header. The row is refused with the hint instead,
+ * before that column's own check can blame something else; neither the cell nor the field is echoed. The field is read
+ * raw: unquoting it here would unquote it twice for the column that reads it later. */
+static int
+scan_check_options_split(const dsd_trunk_scan_row_parse* parse, char** fields, size_t count, const char* options_s) {
+    if (options_s[0] == '\0' || parse->options_idx < 0) {
+        return 0;
+    }
+    const size_t next = (size_t)parse->options_idx + 1U;
+    char error[96] = "";
+    if (next >= count
+        || !dsd_scan_options_tone_list_split(options_s, fields[next], next >= parse->header_fields, error,
+                                             sizeof(error))) {
+        return 0;
+    }
+    scan_set_error(parse->err, parse->err_sz, "row %u: %s", parse->row, error);
+    return -1;
+}
+
 static int
 scan_parse_target_row(char* line, dsd_trunk_scan_target_list* parsed, const dsd_trunk_scan_row_parse* parse) {
     char* fields[DSD_TRUNK_SCAN_MAX_CSV_FIELDS] = {0};
@@ -1043,6 +1064,7 @@ scan_parse_target_row(char* line, dsd_trunk_scan_target_list* parsed, const dsd_
     const char* dwell_s = "";
     const char* hold_s = "";
     if (scan_parse_target_base_fields(fields, parsed, parse, &target, &chan_csv, &dwell_s, &hold_s) != 0
+        || scan_check_options_split(parse, fields, field_count, options_s) != 0
         || scan_parse_target_overrides(&target, parse, modulation_s, rtl_gain_s) != 0) {
         return -1;
     }
@@ -1152,6 +1174,7 @@ scan_read_target_csv_header(FILE* fp, char* line, size_t line_sz, dsd_trunk_scan
     parse->single_key_dec_idx = -1;
     parse->p25_bandplan_idx = -1;
     parse->options_idx = -1;
+    parse->header_fields = field_count;
     for (size_t i = DSD_TRUNK_SCAN_REQUIRED_CSV_FIELDS; i < field_count; i++) {
         if (scan_match_optional_header(parse, scan_unquote(fields[i]), i) != 0) {
             return -1;
@@ -2932,6 +2955,13 @@ trunk_scan_target_dwell_ms(const dsd_opts* opts, const dsd_trunk_scan_target_run
     return rt->target.dwell_ms;
 }
 
+/* Whether a conventional target's activity hold, measured from the last activity the policy allowed, still runs. */
+static int
+trunk_scan_activity_hold_running(const dsd_opts* opts, const dsd_trunk_scan_target_runtime* rt, double now_m) {
+    const double hold_s = (double)trunk_scan_target_hold_ms(opts, rt) / 1000.0;
+    return rt->last_allowed_activity_m > 0.0 && (now_m - rt->last_allowed_activity_m) < hold_s;
+}
+
 /*
  * The effective per-visit cap in ms (#507). Unlike the voice-gate windows above this is not
  * gated on scan_voice_only: the cap applies to every target type. A row that carries the option
@@ -2989,16 +3019,22 @@ trunk_scan_trunked_stay_reason(const dsd_opts* opts, const dsd_trunk_scan_target
 }
 
 /* The one window the coordinator owns outright: a conventional row holds for its effective
- * activity hold, measured from the last activity the policy allowed. */
+ * activity hold, measured from the last activity the policy allowed. A carrier the tone policy is
+ * still checking holds an analog row while it lasts, whatever that hold says, with no window: the
+ * check is no activity, and the policy's window bounds it (issue #527). */
 static dsd_scan_stay_reason
 trunk_scan_conventional_stay_reason(const dsd_opts* opts, const dsd_state* state,
                                     const dsd_trunk_scan_target_runtime* rt, double now_m, double* started_m,
                                     double* deadline_m, uint32_t* span_ms) {
-    const int hold_ms = trunk_scan_target_hold_ms(opts, rt);
-    const double hold_s = (double)hold_ms / 1000.0;
-    if (!(rt->last_allowed_activity_m > 0.0 && (now_m - rt->last_allowed_activity_m) < hold_s)) {
+    if (trunk_scan_type_is_analog(rt->target.type)
+        && dsd_scan_analog_tone_gate(opts, state) == DSD_ANALOG_TONE_GATE_PENDING) {
+        return DSD_SCAN_STAY_TONE_PENDING;
+    }
+    if (!trunk_scan_activity_hold_running(opts, rt, now_m)) {
         return DSD_SCAN_STAY_NONE;
     }
+    const int hold_ms = trunk_scan_target_hold_ms(opts, rt);
+    const double hold_s = (double)hold_ms / 1000.0;
     if (started_m) {
         *started_m = rt->last_allowed_activity_m;
     }
@@ -3039,10 +3075,25 @@ trunk_scan_active_stay_reason(const dsd_opts* opts, const dsd_state* state, cons
     return trunk_scan_conventional_stay_reason(opts, state, rt, now_m, started_m, deadline_m, span_ms);
 }
 
+/* Whether the target on air stays at this tick for a reason of its own. Every such reason but a tone check disarms the
+ * idle dwell, so a fresh full dwell starts once it ends. A carrier the tone policy is still checking (issue #527) is no
+ * activity, and the dwell runs through it as it would with no carrier: left where it was when armed, and, when the
+ * activity hold or the operator's hold had disarmed it, armed at the check's first tick with neither on, as the first
+ * quiet tick would arm it. So a check its carrier ends before a verdict adds no dwell, and short bursts the policy
+ * never passes cannot park the rotation. Returns 1 when the tick is spent. */
 static int
-trunk_scan_active_is_held(const dsd_opts* opts, const dsd_state* state, const dsd_trunk_scan_coord* coord,
-                          double now_m) {
-    return trunk_scan_active_stay_reason(opts, state, coord, now_m, NULL, NULL, NULL) != DSD_SCAN_STAY_NONE;
+trunk_scan_service_hold(const dsd_opts* opts, const dsd_state* state, dsd_trunk_scan_coord* coord, double now_m) {
+    const dsd_scan_stay_reason stay = trunk_scan_active_stay_reason(opts, state, coord, now_m, NULL, NULL, NULL);
+    if (stay == DSD_SCAN_STAY_NONE) {
+        return 0;
+    }
+    dsd_trunk_scan_target_runtime* rt = &coord->targets[coord->active];
+    if (stay != DSD_SCAN_STAY_TONE_PENDING) {
+        rt->idle_since_m = -1.0;
+    } else if (rt->idle_since_m < 0.0 && !coord->hold_active && !trunk_scan_activity_hold_running(opts, rt, now_m)) {
+        rt->idle_since_m = now_m;
+    }
+    return 1;
 }
 
 static void
@@ -3100,8 +3151,10 @@ trunk_scan_warn_targets(const dsd_opts* opts, dsd_state* state, const dsd_trunk_
     }
     const int check_rate_hz = trunk_scan_analog_check_rate(opts, state);
     dsd_engine_scan_skipped skipped = {0};
+    int nfm_targets = 0;
     for (size_t i = 0; i < list->count; i++) {
         const dsd_trunk_scan_target* target = &list->targets[i];
+        nfm_targets |= trunk_scan_target_mode(target->type) == DSD_SCAN_MODE_NFM;
         if (!trunk_scan_type_is_analog(target->type)) {
             if (opts->audio_in_type != AUDIO_IN_RTL && (target->row_options.present & DSD_SCAN_OPT_SQUELCH)) {
                 LOG_WARN("WARNING: Trunk scan target '%s': --squelch-db %d cannot gate digital acquisition without a "
@@ -3119,6 +3172,9 @@ trunk_scan_warn_targets(const dsd_opts* opts, dsd_state* state, const dsd_trunk_
         }
     }
     dsd_engine_scan_note_skipped_rows(state, &skipped);
+    /* Only an nfm-conventional target runs the FM monitor that detects tones; every target runs its own type's mode,
+       never the configured one (issue #527). */
+    (void)dsd_scan_mode_warn_tone_filter_unused(opts, state, nfm_targets);
     return check_rate_hz;
 }
 
@@ -3265,7 +3321,9 @@ trunk_scan_refresh_voice_media_hold(const dsd_opts* opts, dsd_state* state, dsd_
 
 /* An analog target's activity is its carrier (issue #526): every tick that finds the squelch open
  * restarts the activity hold, whatever the voice gate says, since an analog channel never produces
- * the decoded voice media that gate waits for. The gate's phase is not this row's to publish. */
+ * the decoded voice media that gate waits for. Under the tone policy only traffic it passes does
+ * (issue #527): a carrier it rejected or is still checking restarts nothing. The gate's phase is not
+ * this row's to publish. */
 static void
 trunk_scan_refresh_analog_carrier_hold(const dsd_opts* opts, dsd_state* state, dsd_trunk_scan_target_runtime* rt,
                                        double now_m) {
@@ -3320,6 +3378,15 @@ trunk_scan_timing_select_reason(const dsd_opts* opts, const dsd_state* state, co
     if (coord->hold_active) {
         /* The operator hold disarms the dwell rather than expiring it: nothing counts down. */
         report->reason = (uint8_t)DSD_SCAN_STAY_MANUAL_HOLD;
+        return;
+    }
+    if (trunk_scan_type_is_analog(rt->target.type)
+        && dsd_scan_analog_tone_gate(opts, state) == DSD_ANALOG_TONE_GATE_REJECTED) {
+        /* Traffic the tone policy rejected (issue #527) holds the target only while the rotation has nowhere else to
+           take it, muted, for as long as its carrier lasts, with the idle dwell disarmed; with somewhere to go the next
+           tick advances. Either way no window runs: an "Idle dwell" with no timer would name a rotation that is not
+           counting. */
+        report->reason = (uint8_t)DSD_SCAN_STAY_CARRIER;
         return;
     }
     report->reason = (uint8_t)DSD_SCAN_STAY_IDLE_DWELL;
@@ -3504,6 +3571,84 @@ trunk_scan_service_visit_limit(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_
     return 1;
 }
 
+/* Whether the retune skips @p target before any backend moves (trunk_scan_analog_width_refused()): an analog target
+ * whose width, of the kind its type's demodulator runs, the front end refuses at the published @p rate_hz. */
+static int
+trunk_scan_target_width_skipped(const dsd_opts* opts, const dsd_state* state, const dsd_trunk_scan_target* target,
+                                int rate_hz) {
+    if (rate_hz <= 0 || !trunk_scan_type_is_analog(target->type)) {
+        return 0;
+    }
+    const int kind = dsd_scan_mode_analog_kind(trunk_scan_target_mode(target->type));
+    return dsd_engine_scan_analog_width_skipped(opts, state, &target->row_options, kind, rate_hz, NULL, 0U);
+}
+
+/* Whether the rotation has somewhere to take traffic the tone policy rejected (issue #527): another target the advance
+ * would try -- not avoided, not cooling down from a failed retune, as trunk_scan_visit_alternate_is_eligible() asks --
+ * and not an analog one whose width the front end refuses at the published DSP rate
+ * (trunk_scan_target_width_skipped()). An advance with none of those would only switch back to the target on air,
+ * ending the reception and judging the same traffic again. Unlike a -Y list (dsd_engine_channel_scan_has_other_row()),
+ * a target on the frequency on air always counts: the list refuses a second target of one type on one frequency
+ * (scan_has_duplicate_type_freq()), and nfm-conventional is the one type that runs a tone check, so such a target
+ * runs none and takes the traffic as its own type does. */
+static int
+trunk_scan_rejection_has_alternate(const dsd_opts* opts, const dsd_state* state, const dsd_trunk_scan_coord* coord,
+                                   double now_m) {
+    const int rate_hz = dsd_engine_scan_dsp_rate_hz(opts, state);
+    for (size_t i = 0; i < coord->count; i++) {
+        const dsd_trunk_scan_target_runtime* alternate = &coord->targets[i];
+        if (i == coord->active || alternate->avoided || alternate->retry_until_m > now_m
+            || trunk_scan_target_width_skipped(opts, state, &alternate->target, rate_hz)) {
+            continue;
+        }
+        return 1;
+    }
+    return 0;
+}
+
+/* Traffic the tone policy rejected on an analog target (issue #527) holds nothing: its carrier stamped no activity,
+ * and the hold that earlier traffic left is released, so the rotation moves on at this tick. So does traffic that was
+ * rejected and has ended since the last tick (dsd_scan_analog_tone_rejection_ended()): the hold it or earlier traffic
+ * earned while the policy passed it is released the same way. The operator's hold keeps the target, muted. With
+ * nowhere else to go (a single target, as a fixed-frequency session, or every other one avoided, cooling down or
+ * refused its width: trunk_scan_rejection_has_alternate()) the target keeps traffic still on air, muted, and the idle
+ * dwell does not run meanwhile, since its rotation could only come back to this target; the Scan Timing row reads
+ * "Carrier", with no timer (trunk_scan_timing_select_reason()). Traffic that has ended then leaves the hold and the
+ * dwell to run as after any carrier. Returns 1 when the tick is spent. The decision is the DSP tap's verdict, which it
+ * logs ("Tone filter: rejected"); only this engine tick, under the tick guard, acts on it. */
+static int
+trunk_scan_service_tone_rejection(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_coord* coord,
+                                  dsd_trunk_scan_target_runtime* rt, double now_m) {
+    if (!trunk_scan_type_is_analog(rt->target.type) || coord->hold_active) {
+        return 0;
+    }
+    const int on_air = dsd_scan_analog_tone_gate(opts, state) == DSD_ANALOG_TONE_GATE_REJECTED;
+    if (!on_air && !dsd_scan_analog_tone_rejection_ended(opts, state)) {
+        return 0;
+    }
+    const int alternate = trunk_scan_rejection_has_alternate(opts, state, coord, now_m);
+    if (!on_air && !alternate) {
+        /* Rejected traffic that ended between two ticks, with nowhere else to go: the hold and the dwell run as after
+           any carrier. */
+        return 0;
+    }
+    rt->last_allowed_activity_m = 0.0;
+    rt->idle_since_m = -1.0;
+    if (alternate) {
+        trunk_scan_advance(opts, state, coord);
+    }
+    return 1;
+}
+
+/* What may release the target on air before its holds are weighed: the per-visit cap, then a tone-policy rejection.
+ * Returns 1 when the tick is spent. */
+static int
+trunk_scan_service_release(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_coord* coord,
+                           dsd_trunk_scan_target_runtime* rt, double now_m) {
+    return trunk_scan_service_visit_limit(opts, state, coord, rt, now_m)
+           || trunk_scan_service_tone_rejection(opts, state, coord, rt, now_m);
+}
+
 static void
 trunk_scan_tick_targets_locked(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_coord* coord, double now_m) {
     dsd_trunk_scan_target_runtime* rt = &coord->targets[coord->active];
@@ -3532,11 +3677,8 @@ trunk_scan_tick_targets_locked(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_
         trunk_scan_share_peer_idens(coord, state, rt);
     }
     trunk_scan_refresh_activity(opts, state, rt, now_m);
-    if (trunk_scan_service_visit_limit(opts, state, coord, rt, now_m)) {
-        return;
-    }
-    if (trunk_scan_active_is_held(opts, state, coord, now_m)) {
-        rt->idle_since_m = -1.0;
+    if (trunk_scan_service_release(opts, state, coord, rt, now_m)
+        || trunk_scan_service_hold(opts, state, coord, now_m)) {
         return;
     }
     /* The operator hold only suspends the idle dwell: the state machine above keeps
@@ -4166,6 +4308,32 @@ dsd_engine_scan_runs_configured_nfm_width(const dsd_opts* opts, const dsd_state*
 int
 dsd_engine_scan_runs_configured_am_width(const dsd_opts* opts, const dsd_state* state) {
     return scan_runs_configured_width(opts, state, DSD_ANALOG_DEMOD_AM);
+}
+
+/* Whether a target runs the FM monitor, where received-tone detection, and so the tone policy, runs (issue #527). */
+static int
+trunk_scan_targets_hear_tones(const dsd_trunk_scan_coord* coord) {
+    for (size_t i = 0; i < coord->count; i++) {
+        if (trunk_scan_target_mode(coord->targets[i].target.type) == DSD_SCAN_MODE_NFM) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+int
+dsd_engine_scan_hears_tones(const dsd_opts* opts, const dsd_state* state) {
+    if (!opts || !state) {
+        return 0;
+    }
+    const dsd_trunk_scan_coord* coord = trunk_scan_get_const(state);
+    if (coord) {
+        return trunk_scan_targets_hear_tones(coord);
+    }
+    if (opts->trunk_scan_enabled == 1) {
+        return 1;
+    }
+    return dsd_channel_modes_conventional_hear_tones(opts, state);
 }
 
 int

@@ -3,6 +3,7 @@
  * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
+#include <dsd-neo/core/analog_tone.h>
 #include <dsd-neo/core/audio.h>
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/file_io.h>
@@ -17,6 +18,7 @@
 #include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/runtime/analog_channel.h>
+#include <dsd-neo/runtime/analog_tones.h>
 #include <dsd-neo/runtime/bootstrap.h>
 #include <dsd-neo/runtime/call_alert.h>
 #include <dsd-neo/runtime/cli.h>
@@ -7826,6 +7828,260 @@ test_bootstrap_inherited_trunk_scan_preserves_max_visit_override(void) {
     return test_rc;
 }
 
+/* Issue #527: one tone-switch parse. @p args are the arguments after the program name (at most 8); the parse's rc,
+ * exit code and stderr come back, and the caller frees @p opts / @p state with free_tone_parse(). A non-NULL
+ * @p config_map is a channel map a loaded config names ([trunking] chan_csv), which the engine imports, not the
+ * parse. */
+typedef struct {
+    dsd_opts* opts;
+    dsd_state* state;
+    int rc;
+    int exit_rc;
+    char output[4096];
+} tone_parse;
+
+static int
+run_tone_parse_with_config_map(tone_parse* out, const char* const* args, int count, const char* config_map) {
+    DSD_MEMSET(out, 0, sizeof(*out));
+    out->opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
+    out->state = (dsd_state*)calloc(1, sizeof(dsd_state));
+    if (!out->opts || !out->state || count > 8) {
+        return -1;
+    }
+    initOpts(out->opts);
+    initState(out->state);
+    if (config_map) {
+        DSD_SNPRINTF(out->opts->chan_in_file, sizeof out->opts->chan_in_file, "%s", config_map);
+    }
+    char storage[9][256];
+    char* argv[10] = {0};
+    DSD_SNPRINTF(storage[0], sizeof storage[0], "%s", "dsd-neo");
+    argv[0] = storage[0];
+    for (int i = 0; i < count; i++) {
+        DSD_SNPRINTF(storage[i + 1], sizeof storage[i + 1], "%s", args[i]);
+        argv[i + 1] = storage[i + 1];
+    }
+    int argc_effective = 0;
+    out->rc = parse_args_capture_stderr(count + 1, argv, out->opts, out->state, &argc_effective, &out->exit_rc,
+                                        out->output, sizeof out->output);
+    return 0;
+}
+
+static int
+run_tone_parse(tone_parse* out, const char* const* args, int count) {
+    return run_tone_parse_with_config_map(out, args, count, NULL);
+}
+
+static void
+free_tone_parse(tone_parse* p) {
+    if (p->state) {
+        freeState(p->state);
+    }
+    free(p->opts);
+    free(p->state);
+}
+
+/* Issue #527: --tone-allow and --tone-block take a '/'-separated list in both long-option spellings, --no-tone-filter
+ * none; a list is stored as written (a bare code as N), and the switches share one setting, so a second one is an
+ * error, as on a scan row. */
+static int
+test_tone_filter_options_parse(void) {
+    static const struct {
+        const char* args[4];
+        int count;
+        int mode;
+        const char* list;
+    } cases[] = {
+        {{"--tone-allow", "D023/100/67.0", "-fA"}, 3, DSD_TONE_FILTER_ALLOW, "67.0/100.0/D023N"},
+        {{"--tone-block=d023i", "-fA"}, 2, DSD_TONE_FILTER_BLOCK, "D023I"},
+        {{"-fA", "--tone-allow=254.1"}, 2, DSD_TONE_FILTER_ALLOW, "254.1"},
+        {{"--no-tone-filter", "-fA"}, 2, DSD_TONE_FILTER_OFF, ""},
+    };
+
+    int test_rc = 0;
+    for (size_t i = 0; i < sizeof cases / sizeof cases[0]; i++) {
+        tone_parse p;
+        if (run_tone_parse(&p, cases[i].args, cases[i].count) != 0) {
+            free_tone_parse(&p);
+            return 1;
+        }
+        char list[DSD_TONE_LIST_TEXT_MAX + 1] = "";
+        (void)dsd_tone_set_format(&p.opts->analog_tone_set, list, sizeof list);
+        if (p.rc != DSD_PARSE_CONTINUE || p.exit_rc != 0 || p.opts->analog_tone_filter != cases[i].mode
+            || strcmp(list, cases[i].list) != 0 || p.opts->analog_only != 1 || strstr(p.output, "tone filter")) {
+            DSD_FPRINTF(stderr, "tone case %zu: rc=%d exit_rc=%d mode=%d list=\"%s\" stderr=\"%s\"\n", i, p.rc,
+                        p.exit_rc, p.opts->analog_tone_filter, list, p.output);
+            test_rc = 1;
+        }
+        free_tone_parse(&p);
+    }
+    return test_rc;
+}
+
+/* A refused list is an error naming the switch and the entry by number, never the text given; the policy stays off. */
+static int
+test_tone_filter_options_refused(void) {
+    static const struct {
+        const char* args[3];
+        int count;
+        const char* why;
+    } cases[] = {
+        {{"--tone-allow", "100.0,67.0"}, 2, "--tone-allow: use / between entries, not commas"},
+        {{"--tone-block", "67.0/150.0"}, 2, "--tone-block: entry 2 is not a standard CTCSS tone or DCS code"},
+        {{"--tone-allow=D023N/D047I"}, 1, "--tone-allow: entry 2 is the same DCS signal as entry 1 (D023N)"},
+        {{"--tone-allow="}, 1, "--tone-allow: the list is empty"},
+        {{"--tone-block"}, 1, "--tone-block requires a '/'-separated list"},
+        {{"--tone-allow", "100.0", "--tone-block=67.0"}, 3, "may be given only once"},
+        {{"--no-tone-filter", "--no-tone-filter"},
+         2,
+         "--no-tone-filter: --tone-allow, --tone-block and --no-tone-filter"},
+    };
+
+    int test_rc = 0;
+    for (size_t i = 0; i < sizeof cases / sizeof cases[0]; i++) {
+        tone_parse p;
+        if (run_tone_parse(&p, cases[i].args, cases[i].count) != 0) {
+            free_tone_parse(&p);
+            return 1;
+        }
+        if (p.rc != DSD_PARSE_ERROR || p.exit_rc != 1 || !strstr(p.output, cases[i].why) || strstr(p.output, "150.0")
+            || strstr(p.output, "D047I")) {
+            DSD_FPRINTF(stderr, "tone refusal %zu: rc=%d exit_rc=%d stderr=\"%s\", want \"%s\"\n", i, p.rc, p.exit_rc,
+                        p.output, cases[i].why);
+            test_rc = 1;
+        }
+        if (i < 5 && p.opts->analog_tone_filter != DSD_TONE_FILTER_OFF) {
+            DSD_FPRINTF(stderr, "tone refusal %zu left the policy on\n", i);
+            test_rc = 1;
+        }
+        free_tone_parse(&p);
+    }
+    return test_rc;
+}
+
+/* The policy judges only the analog FM monitor and nfm scan rows: set for a session with neither (a digital mode, the
+ * AM monitor), it parses and says once that it has no effect. */
+static int
+test_tone_filter_warns_outside_the_fm_monitor(void) {
+    static const struct {
+        const char* args[5];
+        int count;
+        int warn;
+    } cases[] = {
+        {{"--tone-allow", "100.0"}, 2, 1},
+        {{"--tone-block", "D023N", "-fs"}, 3, 1},
+        {{"--tone-allow", "100.0", "-fM", "-i", "rtl"}, 5, 1},
+        {{"--tone-allow", "100.0", "-fA"}, 3, 0},
+        {{"--no-tone-filter"}, 1, 0},
+    };
+
+    static const char* const expected =
+        "the tone filter (--tone-allow/--tone-block, [analog] tone_filter) has no effect";
+    int test_rc = 0;
+    for (size_t i = 0; i < sizeof cases / sizeof cases[0]; i++) {
+        tone_parse p;
+        if (run_tone_parse(&p, cases[i].args, cases[i].count) != 0) {
+            free_tone_parse(&p);
+            return 1;
+        }
+        const char* first = strstr(p.output, expected);
+        const int warned = first != NULL ? 1 : 0;
+        if (p.rc != DSD_PARSE_CONTINUE || warned != cases[i].warn || (first && strstr(first + 1, expected))) {
+            DSD_FPRINTF(stderr, "tone warning %zu: rc=%d warned=%d want %d stderr=\"%s\"\n", i, p.rc, warned,
+                        cases[i].warn, p.output);
+            test_rc = 1;
+        }
+        free_tone_parse(&p);
+    }
+    return test_rc;
+}
+
+/* A -Y scan runs the policy on its nfm rows as well as under the FM monitor, so the warning weighs the list imported
+ * with the command line: an untyped list under the AM monitor, or a typed one with no nfm row under a digital mode,
+ * cannot use it; an nfm row can, and so can the FM monitor on a row that runs it -- every row of an untyped list, a row
+ * without a mode of its own on a typed one -- but not on a typed list whose rows all declare a digital mode or am,
+ * which each run their own (an am row the AM monitor, which hears no tone). A -Y scan with no list to come stays on the
+ * configured decode mode and is weighed by it, as on a session without a scan. A list the engine still imports (a
+ * config file's, or a -C map the command line read no row from) and --trunk-scan targets are weighed when the engine
+ * loads them, so parsing says nothing for them. */
+static int
+test_tone_filter_warns_on_scan_lists(void) {
+    char untyped[256];
+    char digital[256];
+    char with_nfm[256];
+    char with_blank[256];
+    char with_am[256];
+    char header_only[256];
+    if (test_create_temp_ini_with_contents("channel,frequency_hz\n1,154430000\n2,155475000\n", untyped, sizeof untyped)
+            != 0
+        || test_create_temp_ini_with_contents("channel,frequency_hz,mode\n1,461000000,dmr\n2,851012500,p25\n", digital,
+                                              sizeof digital)
+               != 0
+        || test_create_temp_ini_with_contents("channel,frequency_hz,mode\n1,461000000,dmr\n2,154430000,nfm\n", with_nfm,
+                                              sizeof with_nfm)
+               != 0
+        || test_create_temp_ini_with_contents("channel,frequency_hz,mode\n1,461000000,dmr\n2,154430000,\n", with_blank,
+                                              sizeof with_blank)
+               != 0
+        || test_create_temp_ini_with_contents("channel,frequency_hz,mode\n1,461000000,dmr\n2,118300000,am\n", with_am,
+                                              sizeof with_am)
+               != 0
+        || test_create_temp_ini_with_contents("channel,frequency_hz,mode\n", header_only, sizeof header_only) != 0) {
+        return 1;
+    }
+
+    const struct {
+        const char* args[8];
+        int count;
+        int warn;
+        const char* config_map;
+    } cases[] = {
+        {{"--tone-allow", "100.0", "-fM", "-i", "rtl", "-Y", "-C", untyped}, 8, 1, NULL},
+        {{"--tone-allow", "100.0", "-fs", "-Y", "-C", digital}, 6, 1, NULL},
+        {{"--tone-block", "D023N", "-fs", "-Y", "-C", with_nfm}, 6, 0, NULL},
+        {{"--tone-allow", "100.0", "-fA", "-Y", "-C", untyped}, 6, 0, NULL},
+        {{"--tone-allow", "100.0", "-fA", "-Y", "-C", digital}, 6, 1, NULL},
+        {{"--tone-allow", "100.0", "-fA", "-Y", "-C", with_blank}, 6, 0, NULL},
+        {{"--tone-allow", "100.0", "-fs", "-Y", "-C", with_blank}, 6, 1, NULL},
+        {{"--tone-allow", "100.0", "-fA", "-Y", "-C", with_nfm}, 6, 0, NULL},
+        {{"--tone-allow", "100.0", "-fA", "-Y", "-C", with_am}, 6, 1, NULL},
+        {{"--tone-allow", "100.0", "-fs", "-Y", "-C", with_am}, 6, 1, NULL},
+        {{"--tone-allow", "100.0", "-fs", "-Y"}, 4, 1, NULL},
+        {{"--tone-allow", "100.0", "-fM", "-i", "rtl", "-Y"}, 6, 1, NULL},
+        {{"--tone-allow", "100.0", "-fA", "-Y"}, 4, 0, NULL},
+        {{"--tone-allow", "100.0", "-fs", "-Y"}, 4, 0, digital},
+        {{"--tone-allow", "100.0", "-fs", "-Y", "-C", header_only}, 6, 0, NULL},
+        {{"--no-tone-filter", "-fs", "-Y", "-C", digital}, 5, 0, NULL},
+    };
+
+    static const char* const expected =
+        "the tone filter (--tone-allow/--tone-block, [analog] tone_filter) has no effect";
+    int test_rc = 0;
+    for (size_t i = 0; i < sizeof cases / sizeof cases[0]; i++) {
+        tone_parse p;
+        if (run_tone_parse_with_config_map(&p, cases[i].args, cases[i].count, cases[i].config_map) != 0) {
+            free_tone_parse(&p);
+            test_rc = 1;
+            break;
+        }
+        const char* first = strstr(p.output, expected);
+        const int warned = first != NULL ? 1 : 0;
+        if (p.rc != DSD_PARSE_CONTINUE || warned != cases[i].warn || (first && strstr(first + 1, expected))) {
+            DSD_FPRINTF(stderr, "scan tone warning %zu: rc=%d warned=%d want %d stderr=\"%s\"\n", i, p.rc, warned,
+                        cases[i].warn, p.output);
+            test_rc = 1;
+        }
+        free_tone_parse(&p);
+    }
+    (void)remove(untyped);
+    (void)remove(digital);
+    (void)remove(with_nfm);
+    (void)remove(with_blank);
+    (void)remove(with_am);
+    (void)remove(header_only);
+    return test_rc;
+}
+
 /* Issue #525: --nfm-bandwidth-hz takes whole Hz in both long-option spellings and lands in the
  * configured NFM width. The value token must be consumed before getopt runs, or it would read
  * as a positional input and the -fA after it would not be seen. */
@@ -8812,6 +9068,10 @@ main(void) {
     rc |= test_bootstrap_inherited_trunk_scan_preserves_max_visit_override();
     rc |= test_nfm_bandwidth_long_option_parses();
     rc |= test_nfm_bandwidth_rejects_invalid_values();
+    rc |= test_tone_filter_options_parse();
+    rc |= test_tone_filter_options_refused();
+    rc |= test_tone_filter_warns_outside_the_fm_monitor();
+    rc |= test_tone_filter_warns_on_scan_lists();
     rc |= test_nfm_bandwidth_warns_on_pcm_input();
 #ifdef USE_RADIO
     rc |= test_nfm_bandwidth_quiet_on_iq_replay();

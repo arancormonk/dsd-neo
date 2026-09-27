@@ -14,6 +14,7 @@
 #include <cmath>
 #include <ctype.h>
 #include <dsd-neo/core/airspy_config.h>
+#include <dsd-neo/core/analog_tone.h>
 #include <dsd-neo/core/frontend_types.h>
 #include <dsd-neo/core/lrrp_ports.h>
 #include <dsd-neo/core/opts.h>
@@ -24,10 +25,12 @@
 #include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/runtime/airspy_config.h>
 #include <dsd-neo/runtime/analog_channel.h>
+#include <dsd-neo/runtime/analog_tones.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/config_schema.h>
 #include <dsd-neo/runtime/decode_mode.h>
 #include <dsd-neo/runtime/freq_parse.h>
+#include <dsd-neo/runtime/log.h>
 #include <dsd-neo/runtime/path_policy.h>
 #include <dsd-neo/runtime/rdio_export.h>
 #include <dsd-neo/runtime/scan_mode.h>
@@ -1150,6 +1153,16 @@ render_analog_section(FILE* out, const dsdneoUserConfig* cfg) {
     if (cfg->analog_am_bandwidth_hz > 0) {
         DSD_FPRINTF(out, "am_bandwidth_hz = %d\n", cfg->analog_am_bandwidth_hz);
     }
+    /* The tone policy (issue #527): the mode when it is on, the list whenever there is one (off keeps it); a key left
+       out loads back as off and an empty list. */
+    const char* tone_mode = dsd_tone_filter_mode_name(cfg->analog_tone_filter);
+    if (tone_mode && cfg->analog_tone_filter != DSD_TONE_FILTER_OFF) {
+        DSD_FPRINTF(out, "tone_filter = \"%s\"\n", tone_mode);
+    }
+    char tone_list[DSD_TONE_LIST_TEXT_MAX + 1];
+    if (dsd_tone_set_format(&cfg->analog_tone_set, tone_list, sizeof tone_list) > 0) {
+        DSD_FPRINTF(out, "tone_list = \"%s\"\n", tone_list);
+    }
     DSD_FPRINTF(out, "\n");
 }
 
@@ -1659,6 +1672,18 @@ apply_analog_config(const dsdneoUserConfig* cfg, dsd_opts* opts) {
     opts->analog_nfm_bandwidth_hz = dsd_analog_width_in_range(DSD_ANALOG_DEMOD_FM, nfm) ? nfm : 0;
     const int am = cfg->analog_am_bandwidth_hz;
     opts->analog_am_bandwidth_hz = dsd_analog_width_in_range(DSD_ANALOG_DEMOD_AM, am) ? am : 0;
+    /* A list policy with no usable list (refused, or none given) runs as off, as --validate-config warns it would. */
+    opts->analog_tone_set = cfg->analog_tone_set;
+    opts->analog_tone_filter = cfg->analog_tone_filter;
+    if (dsd_tone_filter_mode_name(opts->analog_tone_filter) == NULL) {
+        opts->analog_tone_filter = DSD_TONE_FILTER_OFF;
+    }
+    if (opts->analog_tone_filter != DSD_TONE_FILTER_OFF
+        && (cfg->analog_tone_list_refused || dsd_tone_set_count(&opts->analog_tone_set) == 0)) {
+        LOG_WARN("Config: tone_filter = %s has no usable tone_list; the tone filter stays off\n",
+                 dsd_tone_filter_mode_name(opts->analog_tone_filter));
+        opts->analog_tone_filter = DSD_TONE_FILTER_OFF;
+    }
 }
 
 static void
@@ -1980,6 +2005,9 @@ static void
 snapshot_analog_config(const dsd_opts* opts, const dsd_state* state, dsdneoUserConfig* cfg) {
     cfg->analog_nfm_bandwidth_hz = dsd_scan_mode_configured_analog_width(opts, state, DSD_ANALOG_DEMOD_FM);
     cfg->analog_am_bandwidth_hz = dsd_scan_mode_configured_analog_width(opts, state, DSD_ANALOG_DEMOD_AM);
+    /* So does the tone policy (issue #527): an nfm row's own runs over dsd_opts while the row is on air. */
+    dsd_scan_mode_configured_tone_policy(opts, state, &cfg->analog_tone_filter, &cfg->analog_tone_set);
+    cfg->analog_tone_list_refused = 0;
     cfg->has_analog = 1;
 }
 

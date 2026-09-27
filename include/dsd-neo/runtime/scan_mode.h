@@ -4,6 +4,7 @@
 /** @file @brief Scoped scanner decoder classes, independent of global CLI preset IDs. */
 #ifndef DSD_NEO_RUNTIME_SCAN_MODE_H
 #define DSD_NEO_RUNTIME_SCAN_MODE_H
+#include <dsd-neo/core/analog_tone.h>
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/runtime/config.h>
@@ -51,6 +52,10 @@ typedef struct {
     /** dsd_opts::rtl_squelch_level (mean power; 0 = off). First so the struct has no padding.
      * A double: compare it with a tolerance, never ==. */
     double rtl_squelch_level;
+    /** dsd_opts::analog_tone_set and analog_tone_filter, the CTCSS/DCS receive policy (issue #527): an nfm row's own
+     * policy (DSD_SCAN_OPT_TONE) lands here. Row policy, so second (8-byte aligned) and out of the comparison. */
+    dsd_tone_set analog_tone_set;
+    int analog_tone_filter;
     int force_key;
     int aggressive_framesync;
     int dmr_crc_relaxed_default;
@@ -230,6 +235,24 @@ int dsd_scan_mode_set_configured_analog_width(dsd_opts* opts, const dsd_state* s
  * dsd_opts, and from dsd_opts otherwise; 0 when neither is given. Works on the live state (decoder thread) and on a
  * frontend snapshot pair alike. */
 int dsd_scan_mode_configured_analog_width(const dsd_opts* opts, const dsd_state* state, int kind);
+/** The configured CTCSS/DCS receive policy (issue #527): what a save writes and the frontends call the configured
+ * policy. It comes from the scan scope's configured view while a scope is live, since an nfm row's own policy runs
+ * over dsd_opts while the row is on air, and from dsd_opts otherwise. Writes the dsd_tone_filter_mode to @p mode and
+ * the list to @p set (either may be NULL); OFF and an empty list without opts. Works on the live state (decoder
+ * thread) and on a frontend snapshot pair alike. */
+void dsd_scan_mode_configured_tone_policy(const dsd_opts* opts, const dsd_state* state, int* mode, dsd_tone_set* set);
+/** Whether the configured decode mode is the analog FM monitor (-fA, the FM analog kind): the one decode mode in which
+ * received-tone detection, and so the tone policy, runs (issue #527). The configured one while a scope is live, since a
+ * scan row's own mode runs over dsd_opts meanwhile, else dsd_opts'. Unlike dsd_analog_tone_detection_active() it does
+ * not ask whether the input carries audio. 0 for NULL opts. */
+int dsd_scan_mode_configured_fm_monitor(const dsd_opts* opts, const dsd_state* state);
+/** Say once that the configured CTCSS/DCS receive policy can do nothing in this session (issue #527): when it is a
+ * list policy (allow or block) and @p hears_tones is 0, the caller having found nothing in the session that runs
+ * received-tone detection -- neither the configured decode mode (dsd_scan_mode_configured_fm_monitor()) nor, for a
+ * scan, an nfm row or nfm-conventional target, on which the row's own policy or the configured one applies while it
+ * is on air (dsd_channel_modes_hear_tones() for a -Y list). Reads the configured policy
+ * (dsd_scan_mode_configured_tone_policy()), never a row's. Returns 1 when it warned, 0 otherwise. */
+int dsd_scan_mode_warn_tone_filter_unused(const dsd_opts* opts, const dsd_state* state, int hears_tones);
 /** Deep-copy scalar scope metadata for frontend snapshots. No live extension pointer is shared. */
 void dsd_scan_mode_copy_snapshot(dsd_state* dst, const dsd_state* src);
 /** Current class profile; combined P25 and inherited settings follow the active hunt index. */

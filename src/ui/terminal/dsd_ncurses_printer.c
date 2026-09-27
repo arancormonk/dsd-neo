@@ -3463,6 +3463,52 @@ ui_render_call_info_rx_tone_line(const dsd_opts* opts, const dsd_state* state) {
     printw("\n");
 }
 
+/* The CTCSS/DCS receive policy in force (issue #527) without its newline, beside the received tone but its own line:
+   the policy the configuration or a scan row set, and while a carrier is heard what it does with it, "allow 100.0
+   Hz/D023N — passing". The shared app-control view's text, as the Qt/Android row shows it. Pure, for the goldens.
+   Returns the length written, or 0 when no policy is shown (none in force, or no detection running). */
+static int
+ui_format_tone_filter_line(const dsd_opts* opts, const dsd_state* state, double now_m, char* buf, size_t buf_sz) {
+    if (!buf || buf_sz == 0U) {
+        return 0;
+    }
+    buf[0] = '\0';
+    dsd_app_rx_tone view;
+    if (dsd_app_rx_tone_view(opts, state, now_m, &view) < 0 || !view.policy_visible) {
+        return 0;
+    }
+    /* The list's overflow mark ("…+12") and the separator are the only non-ASCII this line holds; a terminal without
+       UTF-8 gets "..." and a hyphen instead of mojibake. The mark and "..." are both three bytes. */
+    const char* dash = dsd_unicode_or_ascii("\xE2\x80\x94", "-");
+    const int ascii = strcmp(dash, "-") == 0;
+    if (ascii) {
+        for (char* mark = strstr(view.configured_text, "\xE2\x80\xA6"); mark; mark = strstr(mark, "\xE2\x80\xA6")) {
+            DSD_MEMCPY(mark, "...", 3U);
+        }
+    }
+    const int written = view.gate_text[0] ? DSD_SNPRINTF(buf, buf_sz, "| Tone filter: %s %s %s", view.configured_text,
+                                                         dash, view.gate_text)
+                                          : DSD_SNPRINTF(buf, buf_sz, "| Tone filter: %s", view.configured_text);
+    if (written < 0) {
+        buf[0] = '\0';
+        return 0;
+    }
+    return ((size_t)written < buf_sz) ? written : (int)(buf_sz - 1U);
+}
+
+static void
+ui_render_call_info_tone_filter_line(const dsd_opts* opts, const dsd_state* state) {
+    char line[192];
+    if (ui_format_tone_filter_line(opts, state, dsd_time_now_monotonic_s(), line, sizeof(line)) <= 0) {
+        return;
+    }
+    printw("| ");
+    attron(COLOR_PAIR(4));
+    printw("%s", line + 2);
+    ui_restore_call_info_color(state);
+    printw("\n");
+}
+
 static void
 ui_render_call_info_and_history(const dsd_opts* opts, dsd_state* state) {
     ui_print_header("Call Info");
@@ -3470,6 +3516,8 @@ ui_render_call_info_and_history(const dsd_opts* opts, dsd_state* state) {
     ui_render_call_info_channel_line(opts, state);
 
     ui_render_call_info_rx_tone_line(opts, state);
+
+    ui_render_call_info_tone_filter_line(opts, state);
 
     ui_render_call_info_dstar(state);
 

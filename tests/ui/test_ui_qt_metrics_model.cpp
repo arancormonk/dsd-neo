@@ -26,6 +26,7 @@
 #include <dsd-neo/app_control/frontend.h>
 #include <dsd-neo/app_control/rx_tone_view.h>
 #include <dsd-neo/app_control/scan_timing_view.h>
+#include <dsd-neo/core/analog_tone.h>
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/dsd_time.h>
 #include <dsd-neo/core/init.h>
@@ -37,6 +38,7 @@
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/core/talkgroup_policy.h>
 #include <dsd-neo/runtime/analog_channel.h>
+#include <dsd-neo/runtime/analog_tones.h>
 #include <dsd-neo/runtime/scan_mode.h>
 #include <dsd-neo/runtime/scan_options.h>
 
@@ -959,6 +961,71 @@ test_rx_tone() {
     freeState(&state);
 }
 
+/*
+ * The Tone filter row (#527) through the real app-control view: shown while a policy is in force where detection runs,
+ * the policy text on its configuration signal and the verdict on its own, neither moving the received tone, and the
+ * verdict gone on stop while the policy stays.
+ */
+static void
+test_tone_filter() {
+    static dsd_opts opts;
+    static dsd_state state;
+    initOpts(&opts);
+    initState(&state);
+    dsd_qt::MetricsModel model;
+    int received = 0;
+    int configured = 0;
+    int verdicts = 0;
+    QObject::connect(&model, &dsd_qt::MetricsModel::rxToneChanged, [&]() { ++received; });
+    QObject::connect(&model, &dsd_qt::MetricsModel::rxToneConfiguredTextChanged, [&]() { ++configured; });
+    QObject::connect(&model, &dsd_qt::MetricsModel::toneFilterChanged, [&]() { ++verdicts; });
+    opts.analog_only = 1;
+    opts.monitor_input_audio = 1;
+    opts.analog_tone_filter = DSD_TONE_FILTER_ALLOW;
+    expect("the list parses", dsd_tone_set_parse("100.0/D023N", &opts.analog_tone_set, nullptr, 0) == 0);
+    state.analog_rx.carrier_open = 1;
+    state.analog_rx.tone_state = DSD_ANALOG_TONE_STATE_ACQUIRING;
+    state.analog_rx.gate = DSD_ANALOG_TONE_GATE_PENDING;
+    model.refresh(&opts, &state);
+    expect("the policy row shows the policy and its check",
+           model.toneFilterVisible() && model.rxToneConfiguredText() == QStringLiteral("allow 100.0 Hz/D023N")
+               && model.toneFilterGate() == DSD_ANALOG_TONE_GATE_PENDING
+               && model.toneFilterStatusText() == QStringLiteral("muted: checking tone"));
+    expect("the policy and its verdict each notify", configured == 1 && verdicts == 1);
+
+    const int received_before = received;
+    const int configured_before = configured;
+    state.analog_rx.tone_state = DSD_ANALOG_TONE_STATE_LOCKED;
+    state.analog_rx.tone_kind = DSD_ANALOG_TONE_KIND_CTCSS;
+    state.analog_rx.ctcss_tenths_hz = 670;
+    state.analog_rx.gate = DSD_ANALOG_TONE_GATE_REJECTED;
+    model.refresh(&opts, &state);
+    expect("a rejected tone", model.toneFilterStatusText() == QStringLiteral("muted: not allowed")
+                                  && model.rxToneText() == QStringLiteral("CTCSS 67.0 Hz"));
+    expect("the verdict never announces the policy", configured == configured_before && received > received_before);
+    state.analog_rx.tone_state = DSD_ANALOG_TONE_STATE_NONE;
+    state.analog_rx.tone_kind = 0;
+    state.analog_rx.ctcss_tenths_hz = 0;
+    state.analog_rx.gate_no_tone = 1;
+    model.refresh(&opts, &state);
+    expect("rejected for want of a tone", model.toneFilterStatusText() == QStringLiteral("muted: no tone"));
+    state.analog_rx.gate = DSD_ANALOG_TONE_GATE_ALLOWED;
+    state.analog_rx.gate_no_tone = 0;
+    model.refresh(&opts, &state);
+    expect("passing", model.toneFilterStatusText() == QStringLiteral("passing"));
+
+    /* Stop: the verdict goes, the policy is configuration and stays. */
+    model.clear();
+    expect("stop clears the verdict",
+           !model.toneFilterVisible() && model.toneFilterStatusText().isEmpty() && model.toneFilterGate() == 0);
+    expect("stop keeps the policy", model.rxToneConfiguredText() == QStringLiteral("allow 100.0 Hz/D023N"));
+    /* A digital mode: no detection, no row, whatever is configured. */
+    opts.analog_only = 0;
+    model.refresh(&opts, &state);
+    expect("no detection, no policy row", !model.toneFilterVisible() && model.toneFilterStatusText().isEmpty());
+    freeState(&state);
+}
+
 int
 main(int argc, char** argv) {
     QCoreApplication app(argc, argv);
@@ -967,6 +1034,7 @@ main(int argc, char** argv) {
     test_call_skip_metrics();
     test_scan_timing();
     test_rx_tone();
+    test_tone_filter();
     test_direct_key_presence();
     test_decryption_metadata();
     test_site();

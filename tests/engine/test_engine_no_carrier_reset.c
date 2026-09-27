@@ -3,6 +3,7 @@
  * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
+#include <dsd-neo/core/analog_tone.h>
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/channel_mode.h>
 #include <dsd-neo/core/dsd_time.h>
@@ -29,6 +30,7 @@
 #include <dsd-neo/protocol/p25/p25_sm_watchdog.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #include <dsd-neo/runtime/analog_channel.h>
+#include <dsd-neo/runtime/analog_tones.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/decode_mode.h>
 #include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
@@ -177,6 +179,12 @@ reset_rtl_profile_fakes(void) {
 static int g_rigctl_setfreq_ok = 0;
 static int g_rigctl_setfreq_calls = 0;
 static long int g_rigctl_setfreq_freq = 0;
+
+#ifdef DSD_NEO_TEST_TIME_WRAP
+// The wall clock time() reads, which the -Y hangtime rule compares (engine.c no_carrier_run()): 0 leaves the real one,
+// any other value is the second a case injects.
+static time_t g_test_wall = 0;
+#endif
 
 // GNU ld --wrap entry points must keep the reserved __wrap_* symbol names.
 // NOLINTBEGIN(bugprone-reserved-identifier, cert-dcl37-c, cert-dcl51-cpp, misc-use-internal-linkage)
@@ -401,6 +409,22 @@ __wrap_SetFreq(dsd_socket_t sockfd, long int freq) {
     g_rigctl_setfreq_freq = freq;
     return g_rigctl_setfreq_ok ? true : false;
 }
+
+#ifdef DSD_NEO_TEST_TIME_WRAP
+time_t __real_time(time_t* result);
+time_t __wrap_time(time_t* result);
+
+time_t
+__wrap_time(time_t* result) {
+    if (!g_test_wall) {
+        return __real_time(result);
+    }
+    if (result) {
+        *result = g_test_wall;
+    }
+    return g_test_wall;
+}
+#endif
 
 // NOLINTEND(bugprone-reserved-identifier, cert-dcl37-c, cert-dcl51-cpp, misc-use-internal-linkage)
 #endif
@@ -1452,6 +1476,444 @@ test_typed_scan_analog_rows_hold_on_carrier(void) {
     return typed_scan_analog_row_holds_on_carrier(DSD_SCAN_MODE_NFM)
            | typed_scan_analog_row_holds_on_carrier(DSD_SCAN_MODE_AM);
 }
+
+/* Issue #527: a typed nfm row with its own tone policy (--tone-allow 100.0) on a digital-configured -Y list. The row's
+ * policy goes on air with the row; a carrier it is still checking holds the row, as does one it lets through; an
+ * operator hold keeps the row, muted, when the traffic turns out to carry another tone; and once released, rejected
+ * traffic steps the row at the next pass though -t has long to run. Departure puts the configured policy (off) back. */
+static int
+test_typed_scan_nfm_row_tone_rejection_steps(void) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    int rc = 0;
+    reset_rtl_profile_fakes();
+    dsd_trunk_tuning_requests_reset();
+    opts->audio_in_type = AUDIO_IN_RTL;
+    opts->scanner_mode = 1;
+    opts->trunk_hangtime = 30;
+    state->rtl_ctx = (RtlSdrContext*)state;
+    state->lcn_freq_count = 2;
+    state->trunk_lcn_freq[0] = 154645000L;
+    state->trunk_lcn_freq[1] = 461525000L;
+    rc |= expect_true("tone nfm row", dsd_channel_mode_set(state, 0, DSD_SCAN_MODE_NFM) == 0);
+    rc |= expect_true("tone dmr row", dsd_channel_mode_set(state, 1, DSD_SCAN_MODE_DMR) == 0);
+    dsd_scan_row_profile* profile = NULL;
+    rc |= expect_true("tone row profile", dsd_scan_profile_ensure(&profile) == 0 && profile);
+    if (profile) {
+        profile->values.present = DSD_SCAN_OPT_TONE;
+        profile->values.tone_filter = DSD_TONE_FILTER_ALLOW;
+        rc |= expect_true("tone row list", dsd_tone_set_parse("100.0", &profile->values.tone_set, NULL, 0) == 0);
+        rc |= expect_true("tone row profile set", dsd_channel_profile_set(state, 0, profile) == 0);
+    }
+
+    state->last_cc_sync_time = time(NULL) - 40;
+    noCarrier(opts, state);
+    rc |= expect_true("tone row on air", state->lcn_freq_roll == 1 && opts->analog_only == 1
+                                             && opts->analog_tone_filter == DSD_TONE_FILTER_ALLOW);
+    state->analog_rx.carrier_open = 1;
+    state->analog_rx.gate = DSD_ANALOG_TONE_GATE_PENDING;
+    noCarrier(opts, state);
+    rc |= expect_true("tone check holds the row", state->lcn_freq_roll == 1);
+    /* The check stamps no carrier activity: with -t long run out since the row landed, it still holds the row. */
+    state->last_cc_sync_time = time(NULL) - 40;
+    noCarrier(opts, state);
+    rc |= expect_true("tone check holds the row past -t", state->lcn_freq_roll == 1 && g_rtl_tune_freq == 154645000U);
+    state->analog_rx.gate = DSD_ANALOG_TONE_GATE_ALLOWED;
+    stamp_monitor_carrier(state);
+    noCarrier(opts, state);
+    rc |= expect_true("allowed traffic holds the row", state->lcn_freq_roll == 1 && g_rtl_tune_freq == 154645000U);
+    /* The allowed traffic turns out to carry another tone, under the operator's hold: muted, and the row stays. */
+    state->lcn_scan_hold = 1;
+    state->analog_rx.gate = DSD_ANALOG_TONE_GATE_REJECTED;
+    noCarrier(opts, state);
+    noCarrier(opts, state);
+    rc |= expect_true("a hold keeps the rejected row", state->lcn_freq_roll == 1 && g_rtl_tune_freq == 154645000U
+                                                           && opts->analog_tone_filter == DSD_TONE_FILTER_ALLOW);
+    state->lcn_scan_hold = 0;
+    noCarrier(opts, state);
+    rc |= expect_true("rejection steps the row", state->lcn_freq_roll == 2 && g_rtl_tune_freq == 461525000U);
+    rc |= expect_true("departure restores the policy",
+                      opts->analog_tone_filter == DSD_TONE_FILTER_OFF && opts->analog_only == 0);
+
+    dsd_engine_channel_scan_leave(opts, state);
+    state->rtl_ctx = NULL;
+    free_test_runtime(opts, state);
+    dsd_trunk_tuning_requests_reset();
+    return rc;
+}
+
+/* Issue #527: a row skipped at every visit for a width the DSP rate cannot filter is nowhere to go either. Rejected
+ * traffic on the one row the scanner can tune stays muted where it is, pass after pass, instead of stepping onto the
+ * refused row, failing there, and landing back on the same row to end the reception and judge it again. The row on
+ * air is where the receiver landed: a start that failed on the refused row just before the traffic came does not make
+ * the list look as if it had somewhere else to go. */
+static int
+test_typed_scan_tone_rejection_with_a_refused_row(void) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    int rc = 0;
+    reset_rtl_profile_fakes();
+    dsd_trunk_tuning_requests_reset();
+    opts->audio_in_type = AUDIO_IN_RTL;
+    opts->scanner_mode = 1;
+    opts->trunk_hangtime = 1;
+    state->rtl_ctx = (RtlSdrContext*)state;
+    g_rtl_request_rate_hz = 16000;
+    state->lcn_freq_count = 2;
+    state->trunk_lcn_freq[0] = 154645000L;
+    state->trunk_lcn_freq[1] = 155645000L;
+    for (int row = 0; row < 2; row++) {
+        rc |= expect_true("refused-row mode", dsd_channel_mode_set(state, (size_t)row, DSD_SCAN_MODE_NFM) == 0);
+        dsd_scan_row_profile* profile = NULL;
+        rc |= expect_true("refused-row profile", dsd_scan_profile_ensure(&profile) == 0 && profile);
+        if (!profile) {
+            continue;
+        }
+        if (row == 0) {
+            profile->values.present = DSD_SCAN_OPT_TONE;
+            profile->values.tone_filter = DSD_TONE_FILTER_ALLOW;
+            rc |= expect_true("refused-row list", dsd_tone_set_parse("100.0", &profile->values.tone_set, NULL, 0) == 0);
+        } else {
+            profile->values.present = DSD_SCAN_OPT_BANDWIDTH;
+            profile->values.channel_bw_hz = 20000; /* does not fit the 16 kHz DSP rate */
+        }
+        rc |= expect_true("refused-row profile set", dsd_channel_profile_set(state, (size_t)row, profile) == 0);
+    }
+
+    state->last_cc_sync_time = time(NULL) - 11;
+    noCarrier(opts, state);
+    rc |= expect_true("refused-row: the tunable row on air", state->lcn_freq_roll == 1 && g_rtl_tune_freq == 154645000U
+                                                                 && opts->analog_tone_filter == DSD_TONE_FILTER_ALLOW);
+    /* The idle row's hangtime runs out: the step tries the refused row, which fails before any backend moves. */
+    state->last_cc_sync_time = time(NULL) - 11;
+    noCarrier(opts, state);
+    rc |=
+        expect_true("refused-row: the refused row failed", state->lcn_freq_roll == 2 && g_rtl_tune_freq == 154645000U);
+
+    /* Traffic comes on the row on air, and the policy rejects it: it stays, muted, pass after pass, -t long run out. */
+    state->analog_rx.carrier_open = 1;
+    state->analog_rx.gate = DSD_ANALOG_TONE_GATE_REJECTED;
+    const uint32_t generation = state->analog_rx.generation;
+    const int tunes_before = g_rtl_tune_calls;
+    for (int pass = 0; pass < 4; pass++) {
+        noCarrier(opts, state);
+    }
+    rc |= expect_true("refused-row: rejected traffic stays",
+                      g_rtl_tune_calls == tunes_before && g_rtl_tune_freq == 154645000U && state->lcn_freq_roll == 2);
+    rc |= expect_true("refused-row: the reception is kept", state->analog_rx.gate == DSD_ANALOG_TONE_GATE_REJECTED
+                                                                && state->analog_rx.generation == generation);
+    if (state->analog_rx.generation != generation || g_rtl_tune_calls != tunes_before) {
+        DSD_FPRINTF(stderr, "  generation %u -> %u, tunes %d -> %d, roll %d\n", generation, state->analog_rx.generation,
+                    tunes_before, g_rtl_tune_calls, state->lcn_freq_roll);
+    }
+
+    dsd_engine_channel_scan_leave(opts, state);
+    state->rtl_ctx = NULL;
+    free_test_runtime(opts, state);
+    dsd_trunk_tuning_requests_reset();
+    return rc;
+}
+
+/* Issue #527 beside #526: an am row is weighed as a place for rejected traffic to go by the AM width it runs, never the
+ * NFM one. The configured --am-bandwidth-hz is 20000 and the configured NFM width unset. @p own_am_hz 0: the am row
+ * sets no width, so it runs the configured 20 kHz, which the 16 kHz DSP rate cannot filter, where an nfm row would run
+ * the unset NFM default, which is never refused; rejected traffic on the nfm row stays there, muted, until a 48 kHz
+ * rate fits the am row, and then steps to it. @p own_am_hz 5000: the am row's own AM width, which the 16 kHz rate
+ * filters and which is below the NFM range; rejected traffic steps to it at the first pass. */
+static int
+typed_scan_tone_rejection_weighs_an_am_row(int own_am_hz) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    int rc = 0;
+    reset_rtl_profile_fakes();
+    dsd_trunk_tuning_requests_reset();
+    opts->audio_in_type = AUDIO_IN_RTL;
+    opts->scanner_mode = 1;
+    opts->trunk_hangtime = 30;
+    opts->analog_nfm_bandwidth_hz = 0;
+    opts->analog_am_bandwidth_hz = 20000;
+    state->rtl_ctx = (RtlSdrContext*)state;
+    g_rtl_request_rate_hz = 16000;
+    g_rtl_watch_freq = 118300000U;
+    state->lcn_freq_count = 2;
+    state->trunk_lcn_freq[0] = 154645000L;
+    state->trunk_lcn_freq[1] = 118300000L;
+    rc |= expect_true("am-alternate nfm row", dsd_channel_mode_set(state, 0, DSD_SCAN_MODE_NFM) == 0);
+    rc |= expect_true("am-alternate am row", dsd_channel_mode_set(state, 1, DSD_SCAN_MODE_AM) == 0);
+    dsd_scan_row_profile* profile = NULL;
+    rc |= expect_true("am-alternate tone profile", dsd_scan_profile_ensure(&profile) == 0 && profile);
+    if (profile) {
+        profile->values.present = DSD_SCAN_OPT_TONE;
+        profile->values.tone_filter = DSD_TONE_FILTER_ALLOW;
+        rc |= expect_true("am-alternate list", dsd_tone_set_parse("100.0", &profile->values.tone_set, NULL, 0) == 0);
+        rc |= expect_true("am-alternate tone profile set", dsd_channel_profile_set(state, 0, profile) == 0);
+    }
+    if (own_am_hz > 0) {
+        profile = NULL;
+        rc |= expect_true("am-alternate width profile", dsd_scan_profile_ensure(&profile) == 0 && profile);
+        if (profile) {
+            profile->values.present = DSD_SCAN_OPT_BANDWIDTH;
+            profile->values.channel_bw_hz = own_am_hz;
+            profile->values.channel_bw_kind = DSD_ANALOG_DEMOD_AM;
+            rc |= expect_true("am-alternate width profile set", dsd_channel_profile_set(state, 1, profile) == 0);
+        }
+    }
+
+    state->last_cc_sync_time = time(NULL) - 40;
+    noCarrier(opts, state);
+    rc |= expect_true("am-alternate: the nfm row on air", state->lcn_freq_roll == 1 && g_rtl_tune_freq == 154645000U
+                                                              && opts->analog_tone_filter == DSD_TONE_FILTER_ALLOW);
+
+    state->analog_rx.carrier_open = 1;
+    state->analog_rx.gate = DSD_ANALOG_TONE_GATE_REJECTED;
+    const uint32_t generation = state->analog_rx.generation;
+    const int tunes_before = g_rtl_tune_calls;
+    if (own_am_hz == 0) {
+        for (int pass = 0; pass < 4; pass++) {
+            noCarrier(opts, state);
+        }
+        rc |= expect_true("am-alternate: rejected traffic stays beside a refused am row",
+                          g_rtl_tune_calls == tunes_before && g_rtl_watch_tunes == 0 && state->lcn_freq_roll == 1
+                              && state->analog_rx.generation == generation);
+        /* A DSP rate that fits the configured AM width makes the am row somewhere to go. */
+        g_rtl_request_rate_hz = 48000;
+    }
+    noCarrier(opts, state);
+    rc |= expect_true("am-alternate: rejected traffic steps to the am row",
+                      state->lcn_freq_roll == 2 && g_rtl_watch_tunes == 1 && g_rtl_tune_freq == 118300000U);
+    if (rc) {
+        DSD_FPRINTF(stderr, "  am row width %d at %d Hz: generation %u -> %u, tunes %d -> %d, am tunes %d, roll %d\n",
+                    own_am_hz, g_rtl_request_rate_hz, generation, state->analog_rx.generation, tunes_before,
+                    g_rtl_tune_calls, g_rtl_watch_tunes, state->lcn_freq_roll);
+    }
+
+    dsd_engine_channel_scan_leave(opts, state);
+    state->rtl_ctx = NULL;
+    free_test_runtime(opts, state);
+    dsd_trunk_tuning_requests_reset();
+    return rc;
+}
+
+static int
+test_typed_scan_tone_rejection_weighs_an_am_row(void) {
+    return typed_scan_tone_rejection_weighs_an_am_row(0) | typed_scan_tone_rejection_weighs_an_am_row(5000);
+}
+
+/* Row @p row of a typed -Y list declaring @p mode, with its own tone policy on @p list unless @p tone_filter is -1. */
+static int
+set_tone_scan_row(dsd_state* state, int row, dsd_scan_mode mode, int tone_filter, const char* list) {
+    int rc = expect_true("tone scan row mode", dsd_channel_mode_set(state, (size_t)row, mode) == 0);
+    if (tone_filter < 0) {
+        return rc;
+    }
+    dsd_scan_row_profile* profile = NULL;
+    rc |= expect_true("tone scan row profile", dsd_scan_profile_ensure(&profile) == 0 && profile);
+    if (!profile) {
+        return 1;
+    }
+    profile->values.present = DSD_SCAN_OPT_TONE;
+    profile->values.tone_filter = tone_filter;
+    rc |= expect_true("tone scan row list", dsd_tone_set_parse(list, &profile->values.tone_set, NULL, 0) == 0);
+    rc |= expect_true("tone scan row profile set", dsd_channel_profile_set(state, (size_t)row, profile) == 0);
+    return rc;
+}
+
+/* What the tap publishes for traffic the tone policy rejected: the CTCSS tone the detectors hold locked (@p tenths),
+ * or, for 0, no tone found within the window. */
+static void
+seed_tone_rejection(dsd_state* state, int tenths) {
+    state->analog_rx.carrier_open = 1;
+    state->analog_rx.gate = DSD_ANALOG_TONE_GATE_REJECTED;
+    state->analog_rx.tone_state = tenths > 0 ? DSD_ANALOG_TONE_STATE_LOCKED : DSD_ANALOG_TONE_STATE_NONE;
+    state->analog_rx.tone_kind = tenths > 0 ? DSD_ANALOG_TONE_KIND_CTCSS : DSD_ANALOG_TONE_KIND_NONE;
+    state->analog_rx.ctcss_tenths_hz = tenths;
+    state->analog_rx.gate_no_tone = tenths > 0 ? 0 : 1;
+}
+
+/* One case of test_typed_scan_tone_rejection_weighs_same_frequency_rows(): row 0 an nfm row with --tone-allow 100.0,
+ * row 1 on the same frequency declaring @p mode with its own @p tone_filter and @p list (-1: none), traffic rejected on
+ * row 0 as seed_tone_rejection() publishes it for @p tenths. With @p want_step the next pass lands on row 1; otherwise
+ * row 0 keeps the traffic, muted, pass after pass, the reception never ended, under "Carrier" with no timer. */
+static int
+typed_scan_same_frequency_case(const char* stage, dsd_scan_mode mode, int tone_filter, const char* list, int tenths,
+                               int want_step) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    int rc = 0;
+    reset_rtl_profile_fakes();
+    dsd_trunk_tuning_requests_reset();
+    opts->audio_in_type = AUDIO_IN_RTL;
+    opts->scanner_mode = 1;
+    opts->trunk_hangtime = 30;
+    state->rtl_ctx = (RtlSdrContext*)state;
+    state->lcn_freq_count = 2;
+    state->trunk_lcn_freq[0] = 154430000L;
+    state->trunk_lcn_freq[1] = 154430000L;
+    rc |= set_tone_scan_row(state, 0, DSD_SCAN_MODE_NFM, DSD_TONE_FILTER_ALLOW, "100.0");
+    rc |= set_tone_scan_row(state, 1, mode, tone_filter, list);
+
+    state->last_cc_sync_time = time(NULL) - 40;
+    noCarrier(opts, state);
+    rc |= expect_true("same-frequency: the allow-100.0 row on air",
+                      state->lcn_freq_roll == 1 && opts->analog_only == 1
+                          && opts->analog_tone_filter == DSD_TONE_FILTER_ALLOW
+                          && dsd_tone_set_contains_ctcss(&opts->analog_tone_set, 1000));
+    seed_tone_rejection(state, tenths);
+    const uint32_t generation = state->analog_rx.generation;
+    for (int pass = 0; pass < (want_step ? 1 : 4); pass++) {
+        noCarrier(opts, state);
+    }
+    if (want_step) {
+        rc |= expect_true("same-frequency: rejected traffic steps to the second row", state->lcn_freq_roll == 2);
+    } else {
+        rc |= expect_true("same-frequency: rejected traffic stays",
+                          state->lcn_freq_roll == 1 && state->analog_rx.generation == generation
+                              && state->analog_rx.gate == DSD_ANALOG_TONE_GATE_REJECTED);
+        dsd_engine_scan_y_timing_tick(opts, state, dsd_time_now_monotonic_s(), (double)time(NULL));
+        rc |= expect_true("same-frequency: Carrier with no timer",
+                          state->scan_timing.reason == (uint8_t)DSD_SCAN_STAY_CARRIER
+                              && state->scan_timing.deadline_m < 0.0);
+    }
+    if (rc) {
+        DSD_FPRINTF(stderr, "  %s: roll %d, generation %u -> %u, reason %u, deadline %.3f\n", stage,
+                    state->lcn_freq_roll, generation, state->analog_rx.generation, (unsigned)state->scan_timing.reason,
+                    state->scan_timing.deadline_m);
+    }
+
+    dsd_engine_channel_scan_leave(opts, state);
+    state->rtl_ctx = NULL;
+    free_test_runtime(opts, state);
+    dsd_trunk_tuning_requests_reset();
+    return rc;
+}
+
+/* Issue #527: a typed -Y list may list one frequency on several rows, each with its own class and options. A row on the
+ * frequency on air is somewhere to take rejected traffic when a step to it would judge that traffic otherwise: a row of
+ * another class (a mixed-mode repeater's dmr row, an am row, a row inheriting the digital decode mode), which runs no
+ * tone check, or an nfm row whose policy -- its own, or the configured one (off here) -- passes what the verdict rests
+ * on: the tone locked, or no tone at all. Fire and EMS sharing a repeater, each with its own allow list: EMS traffic
+ * rejected on the fire row moves to the EMS row. A row that would reject the traffic too -- the same policy, or another
+ * that rejects this tone as well -- is nowhere to go, since a step would land there, end the reception, reject the
+ * same traffic and step back, for as long as it lasted. */
+static int
+test_typed_scan_tone_rejection_weighs_same_frequency_rows(void) {
+    int rc = 0;
+    rc |= typed_scan_same_frequency_case("a dmr row", DSD_SCAN_MODE_DMR, -1, NULL, 0, 1);
+    rc |= typed_scan_same_frequency_case("an am row", DSD_SCAN_MODE_AM, -1, NULL, 0, 1);
+    rc |= typed_scan_same_frequency_case("a row inheriting the digital mode", DSD_SCAN_MODE_INHERIT, -1, NULL, 0, 1);
+    rc |= typed_scan_same_frequency_case("an nfm row allowing the tone", DSD_SCAN_MODE_NFM, DSD_TONE_FILTER_ALLOW,
+                                         "131.8", 1318, 1);
+    rc |= typed_scan_same_frequency_case("an nfm row rejecting the tone too", DSD_SCAN_MODE_NFM, DSD_TONE_FILTER_ALLOW,
+                                         "131.8", 1035, 0);
+    rc |= typed_scan_same_frequency_case("an nfm row with the same policy", DSD_SCAN_MODE_NFM, DSD_TONE_FILTER_ALLOW,
+                                         "100.0", 0, 0);
+    rc |= typed_scan_same_frequency_case("an nfm row blocking only other tones", DSD_SCAN_MODE_NFM,
+                                         DSD_TONE_FILTER_BLOCK, "67.0", 0, 1);
+    rc |= typed_scan_same_frequency_case("an nfm row blocking the tone", DSD_SCAN_MODE_NFM, DSD_TONE_FILTER_BLOCK,
+                                         "103.5", 1035, 0);
+    rc |= typed_scan_same_frequency_case("an nfm row running the configured policy", DSD_SCAN_MODE_NFM, -1, NULL, 0, 1);
+    return rc;
+}
+
+/* Issue #527: a code is one DCS signal under either of its spellings, so a same-frequency row whose own list only
+ * respells the policy in force (D047N for D023I) runs that policy and would reject the same traffic: it is nowhere to
+ * go, even once the value the rejection rested on is lost (no locked code, no "no tone" verdict to weigh). A list of
+ * the code's other polarity is another policy, which may pass the traffic, so that row is somewhere to go. */
+static int
+test_typed_scan_respelled_policy_rejects_alike(void) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    int rc = 0;
+    opts->scanner_mode = 1;
+    opts->analog_only = 1;
+    opts->analog_tone_filter = DSD_TONE_FILTER_BLOCK;
+    rc |= expect_true("respelled: the policy in force",
+                      dsd_tone_set_parse("100.0/D023I", &opts->analog_tone_set, NULL, 0) == 0);
+    state->lcn_freq_count = 2;
+    state->lcn_freq_roll = 1; /* row 0 is on air */
+    state->trunk_lcn_freq[0] = 154430000L;
+    state->trunk_lcn_freq[1] = 154430000L;
+    rc |= set_tone_scan_row(state, 0, DSD_SCAN_MODE_NFM, DSD_TONE_FILTER_BLOCK, "100.0/D023I");
+    rc |= set_tone_scan_row(state, 1, DSD_SCAN_MODE_NFM, DSD_TONE_FILTER_BLOCK, "D047N/100");
+    state->analog_rx.carrier_open = 1;
+    state->analog_rx.gate = DSD_ANALOG_TONE_GATE_REJECTED;
+    state->analog_rx.tone_state = DSD_ANALOG_TONE_STATE_ACQUIRING;
+    rc |= expect_true("respelled: the same policy is nowhere to go",
+                      dsd_engine_channel_scan_has_other_row(opts, state) == 0);
+    rc |= set_tone_scan_row(state, 1, DSD_SCAN_MODE_NFM, DSD_TONE_FILTER_BLOCK, "D047I/100");
+    rc |= expect_true("respelled: another polarity is somewhere to go",
+                      dsd_engine_channel_scan_has_other_row(opts, state) == 1);
+    free_test_runtime(opts, state);
+    return rc;
+}
+
+/* Issue #527 beside #526: an am row runs the AM monitor, which hears no CTCSS or DCS, so the configured tone policy
+ * (--tone-allow 100.0 here) judges nothing there. A verdict still published (a rejection an nfm row left behind) is not
+ * in force: the row's carrier holds it under "Carrier", never "Tone check", and nothing steps it; the configured policy
+ * stays as it was. */
+static int
+test_typed_scan_am_row_ignores_the_tone_filter(void) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    int rc = 0;
+    reset_rtl_profile_fakes();
+    dsd_trunk_tuning_requests_reset();
+    opts->audio_in_type = AUDIO_IN_RTL;
+    opts->scanner_mode = 1;
+    opts->trunk_hangtime = 30;
+    opts->analog_tone_filter = DSD_TONE_FILTER_ALLOW;
+    rc |= expect_true("am tone list", dsd_tone_set_parse("100.0", &opts->analog_tone_set, NULL, 0) == 0);
+    state->rtl_ctx = (RtlSdrContext*)state;
+    state->lcn_freq_count = 2;
+    state->trunk_lcn_freq[0] = 118300000L;
+    state->trunk_lcn_freq[1] = 461525000L;
+    rc |= expect_true("am tone row", dsd_channel_mode_set(state, 0, DSD_SCAN_MODE_AM) == 0);
+    rc |= expect_true("am tone dmr row", dsd_channel_mode_set(state, 1, DSD_SCAN_MODE_DMR) == 0);
+
+    state->last_cc_sync_time = time(NULL) - 40;
+    noCarrier(opts, state);
+    rc |= expect_true("am row on air", state->lcn_freq_roll == 1 && opts->analog_only == 1
+                                           && opts->analog_demod == DSD_ANALOG_DEMOD_AM
+                                           && opts->analog_tone_filter == DSD_TONE_FILTER_ALLOW);
+    for (int pass = 0; pass < 3; pass++) {
+        state->analog_rx.carrier_open = 1;
+        state->analog_rx.gate = DSD_ANALOG_TONE_GATE_REJECTED;
+        stamp_monitor_carrier(state);
+        rc |= expect_true("no verdict in force on the AM monitor",
+                          dsd_scan_analog_carrier_open(opts, state)
+                              && dsd_scan_analog_tone_gate(opts, state) == DSD_ANALOG_TONE_GATE_OFF);
+        noCarrier(opts, state);
+    }
+    rc |= expect_true("the carrier holds the am row", state->lcn_freq_roll == 1 && g_rtl_tune_freq == 118300000U);
+    dsd_engine_scan_y_timing_tick(opts, state, dsd_time_now_monotonic_s(), (double)time(NULL));
+    rc |= expect_true("am row reads Carrier", state->scan_timing.reason == (uint8_t)DSD_SCAN_STAY_CARRIER);
+
+    dsd_engine_channel_scan_leave(opts, state);
+    rc |= expect_true("configured policy kept", opts->analog_tone_filter == DSD_TONE_FILTER_ALLOW
+                                                    && dsd_tone_set_contains_ctcss(&opts->analog_tone_set, 1000));
+    state->rtl_ctx = NULL;
+    free_test_runtime(opts, state);
+    dsd_trunk_tuning_requests_reset();
+    return rc;
+}
 #endif
 
 #ifdef DSD_NEO_TEST_RTL_WRAP
@@ -1517,6 +1979,163 @@ test_rx_tone_rigctl_scan_step(void) {
 }
 #endif
 
+#ifdef DSD_NEO_TEST_RTL_WRAP
+/* What the tap publishes for an analog carrier under a tone policy (issue #527): the carrier and the verdict. */
+static void
+seed_tone_gate(dsd_state* state, int gate) {
+    state->analog_rx.carrier_open = 1;
+    state->analog_rx.gate = gate;
+}
+
+/*
+ * The legacy untyped -Y (a -fA channel map with no mode column), the analog scanning people run today, stepped by
+ * rigctl on PCM input, the path radio-off builds have (issue #527). A carrier the tone policy is still checking holds
+ * the row while it lasts, under "Tone check", and stamps nothing; traffic it rejected moves on at the next noCarrier
+ * pass, though the hangtime has long to run; the operator's hold keeps the row, muted, until it is released; and with
+ * no detection running (the -8 monitor under digital decoding) no verdict is in force to step on.
+ */
+static int
+test_tone_rejection_steps_the_legacy_scan(void) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    int rc = 0;
+    opts->scanner_mode = 1;
+    opts->audio_in_type = AUDIO_IN_WAV;
+    opts->use_rigctl = 1;
+    opts->rigctl_sockfd = DSD_INVALID_SOCKET;
+    opts->setmod_bw = 0;
+    opts->analog_only = 1;
+    opts->monitor_input_audio = 1;
+    opts->analog_demod = DSD_ANALOG_DEMOD_FM;
+    opts->trunk_hangtime = 30;
+    // Frequencies no other case uses: engine.c caches the last rigctl tune across cases.
+    state->trunk_lcn_freq[0] = 955012500;
+    state->trunk_lcn_freq[1] = 956012500;
+    state->lcn_freq_count = 2;
+    state->lcn_freq_roll = 0;
+    g_rigctl_setfreq_ok = 1;
+
+    seed_tone_gate(state, DSD_ANALOG_TONE_GATE_PENDING);
+    state->last_cc_sync_time = time(NULL);
+    noCarrier(opts, state);
+    rc |= expect_true("tone-check-holds", state->lcn_freq_roll == 0);
+    dsd_engine_scan_y_timing_tick(opts, state, dsd_time_now_monotonic_s(), (double)time(NULL));
+    rc |= expect_true("tone-check-reason", state->scan_timing.reason == (uint8_t)DSD_SCAN_STAY_TONE_PENDING);
+    /* The check holds the row by its verdict alone, since it stamps no hangtime anchor: a pass with -t long run out
+       keeps the row too. */
+    state->last_cc_sync_time = time(NULL) - 40;
+    g_rigctl_setfreq_calls = 0;
+    noCarrier(opts, state);
+    rc |= expect_true("tone-check-holds-past-t", g_rigctl_setfreq_calls == 0 && state->lcn_freq_roll == 0);
+    seed_tone_gate(state, DSD_ANALOG_TONE_GATE_ALLOWED);
+    dsd_engine_scan_y_timing_tick(opts, state, dsd_time_now_monotonic_s(), (double)time(NULL));
+    rc |= expect_true("allowed-carrier-reason", state->scan_timing.reason == (uint8_t)DSD_SCAN_STAY_CARRIER);
+
+    seed_tone_gate(state, DSD_ANALOG_TONE_GATE_REJECTED);
+    g_rigctl_setfreq_calls = 0;
+    noCarrier(opts, state);
+    rc |= expect_true("rejected-steps",
+                      g_rigctl_setfreq_calls > 0 && g_rigctl_setfreq_freq == 955012500 && state->lcn_freq_roll == 1);
+    /* The step ended the reception: nothing is left for the next row to step on. */
+    rc |= expect_true("step-clears-verdict", state->analog_rx.gate == DSD_ANALOG_TONE_GATE_OFF);
+
+    seed_tone_gate(state, DSD_ANALOG_TONE_GATE_REJECTED);
+    state->last_cc_sync_time = time(NULL);
+    state->lcn_scan_hold = 1;
+    g_rigctl_setfreq_calls = 0;
+    noCarrier(opts, state);
+    rc |= expect_true("hold-keeps-rejected-row", g_rigctl_setfreq_calls == 0 && state->lcn_freq_roll == 1);
+    state->lcn_scan_hold = 0;
+    noCarrier(opts, state);
+    rc |= expect_true("release-steps", g_rigctl_setfreq_calls > 0 && state->lcn_freq_roll == 2);
+
+    /* No detection, no verdict in force: a published REJECTED from an earlier session steps nothing. */
+    opts->analog_only = 0;
+    seed_tone_gate(state, DSD_ANALOG_TONE_GATE_REJECTED);
+    state->last_cc_sync_time = time(NULL);
+    g_rigctl_setfreq_calls = 0;
+    noCarrier(opts, state);
+    rc |= expect_true("no-detection-no-step", g_rigctl_setfreq_calls == 0);
+    g_rigctl_setfreq_ok = 0;
+    free_test_runtime(opts, state);
+    return rc;
+}
+#endif
+
+#ifdef DSD_NEO_TEST_RTL_WRAP
+/*
+ * A -Y list with nowhere else to go keeps rejected traffic muted where it is, as a fixed frequency does (issue #527):
+ * a one-row list, or one whose other rows are avoided, neither steps at the next pass nor once -t has run out, so the
+ * reception is not ended and judged again every second. A second usable row moves it on as usual.
+ */
+static int
+test_tone_rejection_stays_on_a_single_row(void) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    int rc = 0;
+    opts->scanner_mode = 1;
+    opts->audio_in_type = AUDIO_IN_WAV;
+    opts->use_rigctl = 1;
+    opts->rigctl_sockfd = DSD_INVALID_SOCKET;
+    opts->setmod_bw = 0;
+    opts->analog_only = 1;
+    opts->monitor_input_audio = 1;
+    opts->analog_demod = DSD_ANALOG_DEMOD_FM;
+    opts->trunk_hangtime = 1;
+    // Frequencies no other case uses: engine.c caches the last rigctl tune across cases.
+    state->trunk_lcn_freq[0] = 957012500;
+    state->trunk_lcn_freq[1] = 958012500;
+    state->lcn_freq_count = 1;
+    state->lcn_freq_roll = 1; /* row 0 is on air */
+    g_rigctl_setfreq_ok = 1;
+
+    seed_tone_gate(state, DSD_ANALOG_TONE_GATE_REJECTED);
+    const uint32_t generation = state->analog_rx.generation;
+    state->last_cc_sync_time = time(NULL) - 40;
+    g_rigctl_setfreq_calls = 0;
+    noCarrier(opts, state);
+    noCarrier(opts, state);
+    rc |= expect_true("single-row-stays", g_rigctl_setfreq_calls == 0 && state->lcn_freq_roll == 1);
+    rc |= expect_true("single-row-keeps-reception", state->analog_rx.gate == DSD_ANALOG_TONE_GATE_REJECTED
+                                                        && state->analog_rx.generation == generation);
+    /* It stays for as long as the carrier lasts: "Carrier", with no timer, rather than a hangtime countdown that the
+       carrier no longer restarts and that never steps. */
+    dsd_engine_scan_y_timing_tick(opts, state, dsd_time_now_monotonic_s(), (double)time(NULL));
+    rc |= expect_true("single-row-reads-carrier", state->scan_timing.reason == (uint8_t)DSD_SCAN_STAY_CARRIER
+                                                      && state->scan_timing.deadline_m < 0.0);
+
+    /* A second row on the same frequency runs the same mode and policy, as every row of a list without modes does: a
+       step would land there and reject the same traffic again, so it is nowhere to go either. */
+    state->lcn_freq_count = 2;
+    state->trunk_lcn_freq[1] = 957012500;
+    noCarrier(opts, state);
+    rc |= expect_true("same-frequency-row-stays", g_rigctl_setfreq_calls == 0 && state->lcn_freq_roll == 1
+                                                      && state->analog_rx.gate == DSD_ANALOG_TONE_GATE_REJECTED
+                                                      && state->analog_rx.generation == generation);
+    state->trunk_lcn_freq[1] = 958012500;
+
+    /* A second row the operator avoided is nowhere to go either. */
+    state->lcn_freq_count = 2;
+    rc |= expect_true("single-row-avoid", dsd_state_trunk_lcn_avoid_set(state, 1U, 1) == 0);
+    noCarrier(opts, state);
+    rc |= expect_true("avoided-row-stays", g_rigctl_setfreq_calls == 0 && state->lcn_freq_roll == 1
+                                               && state->analog_rx.gate == DSD_ANALOG_TONE_GATE_REJECTED);
+    (void)dsd_state_trunk_lcn_avoid_clear(state);
+    noCarrier(opts, state);
+    rc |= expect_true("second-row-steps",
+                      g_rigctl_setfreq_calls > 0 && g_rigctl_setfreq_freq == 958012500 && state->lcn_freq_roll == 2);
+    g_rigctl_setfreq_ok = 0;
+    free_test_runtime(opts, state);
+    return rc;
+}
+#endif
+
 /*
  * The received tone (issue #522) has to survive noCarrier(): in analog mode it runs on every
  * no-sync pass, about every 375 ms, and a reset there would keep any tone from ever locking.
@@ -1573,6 +2192,369 @@ test_rx_tone_survives_no_carrier(void) {
     free_test_runtime(opts, state);
     return rc;
 }
+
+#ifdef DSD_NEO_TEST_RTL_WRAP
+/* Feed 20 ms blocks of silence until the tap's carrier hangover has run out. */
+static void
+feed_rx_silence_until_closed(dsd_opts* opts, dsd_state* state) {
+    const float silence[960] = {0};
+    for (int b = 0; state->analog_rx.carrier_open && b < 20; b++) {
+        dsd_analog_rx_tap(opts, state, silence, 960U);
+    }
+}
+
+/* A -Y session on the legacy untyped list, rigctl on PCM input, with an allow list the 100.0 Hz tone feed_rx_tone()
+   sends is not on: row 0 (@p row0_hz) on air, and @p rows rows in all. */
+static void
+setup_tone_rejection_ended(dsd_opts* opts, dsd_state* state, long row0_hz, int rows) {
+    opts->scanner_mode = 1;
+    opts->trunk_enable = 0;
+    opts->audio_in_type = AUDIO_IN_WAV;
+    opts->wav_sample_rate = 48000;
+    opts->use_rigctl = 1;
+    opts->rigctl_sockfd = DSD_INVALID_SOCKET;
+    opts->setmod_bw = 0;
+    opts->analog_only = 1;
+    opts->monitor_input_audio = 1;
+    opts->analog_demod = DSD_ANALOG_DEMOD_FM;
+    opts->rtl_pwr = 1.0;
+    opts->rtl_squelch_level = 0.0;
+    opts->trunk_hangtime = 30;
+    opts->analog_tone_filter = DSD_TONE_FILTER_ALLOW;
+    (void)dsd_tone_set_parse("67.0", &opts->analog_tone_set, NULL, 0);
+    state->trunk_lcn_freq[0] = row0_hz;
+    state->trunk_lcn_freq[1] = row0_hz + 1000000L;
+    state->lcn_freq_count = rows;
+    state->lcn_freq_roll = 1; /* row 0 is on air */
+}
+
+/* Rejected traffic that ended, as the tap leaves it: the policy rejected the tone once it locked, and the carrier's
+   hangover ran out before the next pass. The hangtime anchor is fresh, as the row's landing or earlier traffic the
+   policy passed leaves it; the check itself stamps none. */
+static int
+seed_tone_rejection_ended(dsd_opts* opts, dsd_state* state) {
+    feed_rx_tone(opts, state, 30);
+    int rc = expect_true("ended: rejected on air", state->analog_rx.gate == DSD_ANALOG_TONE_GATE_REJECTED);
+    state->last_cc_sync_time = time(NULL);
+    state->last_cc_sync_time_m = dsd_time_now_monotonic_s();
+    feed_rx_silence_until_closed(opts, state);
+    rc |= expect_true("ended: carrier gone, rejection kept for the scanner",
+                      state->analog_rx.carrier_open == 0 && state->analog_rx.gate == DSD_ANALOG_TONE_GATE_PENDING
+                          && state->analog_rx.gate_rejected_ended == 1
+                          && dsd_scan_analog_tone_rejection_ended(opts, state) == 1);
+    return rc;
+}
+
+/*
+ * Rejected traffic that ends between two noCarrier passes (issue #527), about 375 ms apart, holds the row no more than
+ * traffic still on air would: the next pass moves on though the hangtime has 30 s to run, and an operator hold keeps
+ * the row until it is released. A carrier that opens before that pass is a new transmission,
+ * checked afresh, which holds the row. With nowhere else to go the hangtime decides, as after any carrier.
+ */
+static int
+test_tone_rejection_that_ended_steps_the_legacy_scan(void) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    int rc = 0;
+    // Frequencies no other case uses: engine.c caches the last rigctl tune across cases.
+    setup_tone_rejection_ended(opts, state, 961012500L, 2);
+    g_rigctl_setfreq_ok = 1;
+    rc |= seed_tone_rejection_ended(opts, state);
+    g_rigctl_setfreq_calls = 0;
+    noCarrier(opts, state);
+    rc |= expect_true("ended: the next pass steps",
+                      g_rigctl_setfreq_calls > 0 && g_rigctl_setfreq_freq == 962012500 && state->lcn_freq_roll == 2);
+    rc |= expect_true("ended: the step forgets it", state->analog_rx.gate_rejected_ended == 0
+                                                        && dsd_scan_analog_tone_rejection_ended(opts, state) == 0);
+    free_test_runtime(opts, state);
+
+    /* A new carrier before the pass: checked again, it holds the row. */
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    setup_tone_rejection_ended(opts, state, 963012500L, 2);
+    rc |= seed_tone_rejection_ended(opts, state);
+    feed_rx_tone(opts, state, 1);
+    rc |= expect_true("ended: a new carrier is checked", state->analog_rx.gate == DSD_ANALOG_TONE_GATE_PENDING
+                                                             && state->analog_rx.gate_rejected_ended == 0);
+    g_rigctl_setfreq_calls = 0;
+    noCarrier(opts, state);
+    rc |= expect_true("ended: the new carrier holds", g_rigctl_setfreq_calls == 0 && state->lcn_freq_roll == 1);
+    free_test_runtime(opts, state);
+
+    /* The operator's hold keeps the row; the release lets the next pass move on. */
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    setup_tone_rejection_ended(opts, state, 965012500L, 2);
+    rc |= seed_tone_rejection_ended(opts, state);
+    state->lcn_scan_hold = 1;
+    g_rigctl_setfreq_calls = 0;
+    noCarrier(opts, state);
+    rc |= expect_true("ended: the hold keeps the row", g_rigctl_setfreq_calls == 0 && state->lcn_freq_roll == 1);
+    state->lcn_scan_hold = 0;
+    noCarrier(opts, state);
+    rc |= expect_true("ended: the release steps", g_rigctl_setfreq_calls > 0 && state->lcn_freq_roll == 2);
+    free_test_runtime(opts, state);
+
+    /* A single row has nowhere else to go: the hangtime runs as after any carrier. */
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    setup_tone_rejection_ended(opts, state, 967012500L, 1);
+    rc |= seed_tone_rejection_ended(opts, state);
+    g_rigctl_setfreq_calls = 0;
+    noCarrier(opts, state);
+    rc |= expect_true("ended: a single row waits out the hangtime",
+                      g_rigctl_setfreq_calls == 0 && state->lcn_freq_roll == 1);
+    g_rigctl_setfreq_ok = 0;
+    free_test_runtime(opts, state);
+    return rc;
+}
+
+/* Offer the tap @p count samples of the listed 67.0 Hz tone at 2500 Hz one at a time, as the symbol path does while a
+   monitor block fills, without finishing the block. */
+static void
+feed_low_rate_tone_partial(dsd_opts* opts, dsd_state* state, int count) {
+    for (int i = 0; i < count; i++) {
+        state->analog_out_f[i] = (float)(3000.0 * cos(2.0 * M_PI * 67.0 * (double)i / 2500.0));
+        state->analog_sample_counter = i + 1;
+        dsd_analog_rx_tap_partial(opts, state, state->analog_out_f, (unsigned int)(i + 1));
+    }
+}
+
+/*
+ * A carrier the tone policy is still checking holds the legacy -Y row until its verdict (issue #527), whatever the
+ * hangtime anchor says: the check is no carrier activity and stamps nothing, and the tap publishes the carrier and its
+ * pending verdict as the samples arrive, here 128 ms into a 960-sample monitor block that lasts 384 ms at 2500 Hz. A
+ * pass while it runs, -t having run out since the last carrier, keeps the traffic on air instead of leaving it; the
+ * per-visit cap still ends such a visit.
+ */
+static int
+test_tone_check_holds_the_legacy_scan_while_the_verdict_is_pending(void) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    int rc = 0;
+    // Frequencies no other case uses: engine.c caches the last rigctl tune across cases.
+    setup_tone_rejection_ended(opts, state, 969012500L, 2);
+    opts->wav_sample_rate = 2500;
+    opts->trunk_hangtime = 1;
+    g_rigctl_setfreq_ok = 1;
+    state->last_cc_sync_time = time(NULL) - 2;
+    state->last_cc_sync_time_m = dsd_time_now_monotonic_s() - 2.0;
+    feed_low_rate_tone_partial(opts, state, 320);
+    rc |= expect_true("low rate: carrier heard 128 ms in, still checked, no activity",
+                      dsd_scan_analog_tone_gate(opts, state) == DSD_ANALOG_TONE_GATE_PENDING
+                          && !dsd_scan_analog_carrier_open(opts, state));
+    g_rigctl_setfreq_calls = 0;
+    noCarrier(opts, state);
+    rc |= expect_true("low rate: the tone check holds the row past -t",
+                      g_rigctl_setfreq_calls == 0 && state->lcn_freq_roll == 1
+                          && dsd_scan_analog_tone_gate(opts, state) == DSD_ANALOG_TONE_GATE_PENDING);
+    dsd_engine_scan_y_timing_tick(opts, state, dsd_time_now_monotonic_s(), (double)time(NULL));
+    rc |= expect_true("low rate: Tone check, nothing counting down",
+                      state->scan_timing.reason == (uint8_t)DSD_SCAN_STAY_TONE_PENDING
+                          && state->scan_timing.deadline_m < 0.0);
+
+    /* The per-visit cap outranks the check, as it does every other reason to stay: a visit 5 s old against 1 s. */
+    opts->scan_max_visit_ms = 1000;
+    dsd_scan_voice_gate_note_retune(state, dsd_time_now_monotonic_s() - 5.0);
+    state->scan_visit_roll_seen = state->lcn_freq_roll;
+    noCarrier(opts, state);
+    rc |= expect_true("low rate: the visit cap ends a tone check",
+                      g_rigctl_setfreq_calls > 0 && g_rigctl_setfreq_freq == 970012500 && state->lcn_freq_roll == 2);
+    g_rigctl_setfreq_ok = 0;
+    free_test_runtime(opts, state);
+    return rc;
+}
+
+/* Offer the tap the listed 100.0 Hz tone at 22050 Hz one sample at a time, as the symbol path fills its 960-sample
+   monitor blocks (dsd_symbol.c symbol_process_unsynced_analog()): a partial read as each sample arrives and, as each
+   block ends, the read of the rest and a fresh block, where the monitor stamps the -Y hangtime anchor for traffic the
+   policy passes. Stops at the first sample after which the verdict is ALLOWED and returns its offset in the block being
+   filled: 0 when that sample ended a block, whose end stamps the traffic, or when no verdict came within 1 s. */
+static unsigned int
+feed_tone_until_allowed_mid_block(dsd_opts* opts, dsd_state* state) {
+    const unsigned int block = 960U;
+    unsigned int filled = 0U;
+    for (int n = 0; n < 22050; n++) {
+        state->analog_out_f[filled++] = (float)(3000.0 * cos(2.0 * M_PI * 100.0 * (double)n / 22050.0));
+        state->analog_sample_counter = (int)filled;
+        dsd_analog_rx_tap_partial(opts, state, state->analog_out_f, filled);
+        if (filled == block) {
+            dsd_analog_rx_tap(opts, state, state->analog_out_f, block);
+            if (state->analog_rx.gate == DSD_ANALOG_TONE_GATE_ALLOWED) {
+                return 0U;
+            }
+            dsd_analog_rx_block_restart(state);
+            state->analog_sample_counter = 0;
+            filled = 0U;
+        } else if (state->analog_rx.gate == DSD_ANALOG_TONE_GATE_ALLOWED) {
+            return filled;
+        }
+    }
+    return 0U;
+}
+
+/*
+ * Traffic the tone policy has allowed holds the legacy -Y row while its carrier lasts (issue #527), whatever the
+ * hangtime anchor says, as a check does. A check stamps no anchor, and the monitor stamps allowed traffic only as a
+ * block ends, while the tap publishes its verdict at each 20 ms read: at 22050 Hz a 960-sample block spans two reads
+ * and a remainder, so the verdict can turn ALLOWED part-way through a block with the anchor still where it was before
+ * the check. A pass in that gap, -t having run out while the check held the row, keeps the traffic just allowed on air
+ * instead of stepping off it. This case never ends that block; the stamp its end leaves is DSP_SYMBOL_REPLAY's.
+ */
+static int
+test_allowed_traffic_holds_the_legacy_scan_before_its_block_ends(void) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    int rc = 0;
+    // Frequencies no other case uses: engine.c caches the last rigctl tune across cases.
+    setup_tone_rejection_ended(opts, state, 975012500L, 2);
+    rc |= expect_true("mid-block: allow 100.0", dsd_tone_set_parse("100.0", &opts->analog_tone_set, NULL, 0) == 0);
+    opts->wav_sample_rate = 22050;
+    opts->trunk_hangtime = 2;
+    g_rigctl_setfreq_ok = 1;
+    /* The row landed 3 s ago, and the check stamped nothing since: -t has run out. */
+    state->last_cc_sync_time = time(NULL) - 3;
+    state->last_cc_sync_time_m = dsd_time_now_monotonic_s() - 3.0;
+    const unsigned int offset = feed_tone_until_allowed_mid_block(opts, state);
+    rc |= expect_true("mid-block: allowed part-way through a block",
+                      offset > 0U && offset < 960U
+                          && dsd_scan_analog_tone_gate(opts, state) == DSD_ANALOG_TONE_GATE_ALLOWED
+                          && dsd_scan_analog_carrier_open(opts, state));
+    g_rigctl_setfreq_calls = 0;
+    noCarrier(opts, state);
+    rc |= expect_true("mid-block: the allowed traffic holds the row past -t",
+                      g_rigctl_setfreq_calls == 0 && state->lcn_freq_roll == 1);
+    dsd_engine_scan_y_timing_tick(opts, state, dsd_time_now_monotonic_s(), (double)time(NULL));
+    rc |= expect_true("mid-block: Carrier", state->scan_timing.reason == (uint8_t)DSD_SCAN_STAY_CARRIER);
+    g_rigctl_setfreq_ok = 0;
+    free_test_runtime(opts, state);
+    return rc;
+}
+
+#ifdef DSD_NEO_TEST_TIME_WRAP
+/* Feed @p blocks 20 ms blocks at 48 kHz of a tone at @p hz, or of silence (a closed squelch) for 0, through the tap.
+   Nothing here stamps the -Y hangtime anchor: the monitor's stamp at each block's end is proven through the real
+   monitor block by DSP_SYMBOL_REPLAY (only traffic the policy passes stamps), and the case below sets the anchor to
+   what that stamp leaves. */
+static void
+feed_tap_blocks(dsd_opts* opts, dsd_state* state, int blocks, double hz) {
+    static double phase = 0.0;
+    float block[960];
+    for (int b = 0; b < blocks; b++) {
+        for (int i = 0; i < 960; i++) {
+            block[i] = hz > 0.0 ? (float)(3000.0 * cos(phase)) : 0.0f;
+            phase = fmod(phase + (2.0 * M_PI * hz / 48000.0), 2.0 * M_PI);
+        }
+        dsd_analog_rx_tap(opts, state, block, 960U);
+    }
+}
+
+/* Run a -Y pass with the injected wall clock at @p wall; whether it stepped off the row on air. */
+static int
+legacy_scan_pass_steps_at(dsd_opts* opts, dsd_state* state, time_t wall) {
+    g_test_wall = wall;
+    g_rigctl_setfreq_calls = 0;
+    noCarrier(opts, state);
+    return g_rigctl_setfreq_calls > 0;
+}
+
+/*
+ * The -Y step rule against the hangtime anchor the monitor leaves (issue #527), which this case sets itself, on a wall
+ * clock it injects (time() is what the rule compares whole seconds of). A carrier the tone policy is still checking is
+ * no activity, so the monitor stamps no anchor for it (DSP_SYMBOL_REPLAY): it holds the legacy -Y row while it lasts,
+ * under "Tone check" with nothing counting down, and short no-tone bursts under an allow list -- kerchunks, noise --
+ * each end before a verdict and leave the anchor where the row's landing put it. With a burst in every second of -t,
+ * the pass at -t after the landing still holds and the pass a second later moves on: however many came, they cannot
+ * park the scanner on a muted row. Traffic the policy allows is stamped as any carrier is, and leaves the ordinary -t
+ * tail from its last block: the pass at -t after it holds, counting down the last second, and the next one steps.
+ */
+static int
+test_tone_check_leaves_no_hangtime_tail(void) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    int rc = 0;
+    // Frequencies no other case uses: engine.c caches the last rigctl tune across cases.
+    setup_tone_rejection_ended(opts, state, 971012500L, 2);
+    rc |= expect_true("no tail: allow 100.0", dsd_tone_set_parse("100.0", &opts->analog_tone_set, NULL, 0) == 0);
+    opts->trunk_hangtime = 2;
+    g_rigctl_setfreq_ok = 1;
+    const time_t landed = time(NULL);
+    state->last_cc_sync_time = landed;
+    for (int burst = 0; burst <= 2; burst++) {
+        const time_t now = landed + burst;
+        g_test_wall = now;
+        feed_tap_blocks(opts, state, 15, 1000.0);
+        rc |= expect_true("no tail: a burst is checked",
+                          dsd_scan_analog_tone_gate(opts, state) == DSD_ANALOG_TONE_GATE_PENDING);
+        rc |= expect_true("no tail: the check holds the row",
+                          !legacy_scan_pass_steps_at(opts, state, now) && state->lcn_freq_roll == 1);
+        dsd_engine_scan_y_timing_tick(opts, state, dsd_time_now_monotonic_s(), (double)now);
+        rc |= expect_true("no tail: Tone check, nothing counting down",
+                          state->scan_timing.reason == (uint8_t)DSD_SCAN_STAY_TONE_PENDING
+                              && state->scan_timing.deadline_m < 0.0);
+        feed_tap_blocks(opts, state, 20, 0.0);
+        rc |= expect_true("no tail: the burst ends unjudged",
+                          state->analog_rx.carrier_open == 0 && state->analog_rx.gate_rejected_ended == 0);
+        rc |= expect_true("no tail: -t since the landing still runs, the anchor where it was",
+                          !legacy_scan_pass_steps_at(opts, state, now) && state->lcn_freq_roll == 1
+                              && state->last_cc_sync_time == landed);
+    }
+    rc |= expect_true("no tail: the pass once -t since the landing has run out steps",
+                      legacy_scan_pass_steps_at(opts, state, landed + 3) && g_rigctl_setfreq_freq == 972012500
+                          && state->lcn_freq_roll == 2);
+    g_test_wall = 0;
+    free_test_runtime(opts, state);
+
+    /* The listed tone: checked, then allowed and stamped by its last block; once it ends, the row waits out -t. */
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    setup_tone_rejection_ended(opts, state, 973012500L, 2);
+    rc |= expect_true("tail: allow 100.0", dsd_tone_set_parse("100.0", &opts->analog_tone_set, NULL, 0) == 0);
+    opts->trunk_hangtime = 2;
+    g_rigctl_setfreq_ok = 1;
+    const time_t heard = time(NULL);
+    g_test_wall = heard;
+    /* The row landed 10 s ago: -t has run out, and the check stamps nothing. */
+    state->last_cc_sync_time = heard - 10;
+    feed_tap_blocks(opts, state, 30, 100.0);
+    rc |= expect_true("tail: allowed", dsd_scan_analog_tone_gate(opts, state) == DSD_ANALOG_TONE_GATE_ALLOWED);
+    /* Where the monitor's stamp leaves the anchor: the last block the policy passed. */
+    state->last_cc_sync_time = heard;
+    feed_tap_blocks(opts, state, 20, 0.0);
+    rc |= expect_true("tail: ended", state->analog_rx.carrier_open == 0 && state->analog_rx.gate_rejected_ended == 0);
+    rc |= expect_true("tail: the row waits out -t",
+                      !legacy_scan_pass_steps_at(opts, state, heard + 2) && state->lcn_freq_roll == 1);
+    const double now_m = dsd_time_now_monotonic_s();
+    dsd_engine_scan_y_timing_tick(opts, state, now_m, (double)(heard + 2));
+    rc |= expect_true("tail: Hangtime, its last second counting down",
+                      state->scan_timing.reason == (uint8_t)DSD_SCAN_STAY_HANGTIME
+                          && fabs(state->scan_timing.deadline_m - (now_m + 1.0)) < 1e-6);
+    rc |= expect_true("tail: the pass once -t has run out steps", legacy_scan_pass_steps_at(opts, state, heard + 3)
+                                                                      && g_rigctl_setfreq_freq == 974012500
+                                                                      && state->lcn_freq_roll == 2);
+    g_test_wall = 0;
+    g_rigctl_setfreq_ok = 0;
+    free_test_runtime(opts, state);
+    return rc;
+}
+#endif
+#endif
 
 #if defined(USE_RADIO) && defined(DSD_NEO_TEST_RTL_WRAP)
 /* The legacy untyped -Y step never runs the acquisition reset the typed rows do, so it
@@ -3297,9 +4279,23 @@ main(void) {
     rc |= test_rx_tone_survives_no_carrier();
 #ifdef DSD_NEO_TEST_RTL_WRAP
     rc |= test_rx_tone_rigctl_scan_step();
+    rc |= test_tone_rejection_steps_the_legacy_scan();
+    rc |= test_tone_rejection_stays_on_a_single_row();
+    rc |= test_tone_rejection_that_ended_steps_the_legacy_scan();
+    rc |= test_tone_check_holds_the_legacy_scan_while_the_verdict_is_pending();
+    rc |= test_allowed_traffic_holds_the_legacy_scan_before_its_block_ends();
+#ifdef DSD_NEO_TEST_TIME_WRAP
+    rc |= test_tone_check_leaves_no_hangtime_tail();
+#endif
 #endif
 #if defined(USE_RADIO) && defined(DSD_NEO_TEST_RTL_WRAP)
     rc |= test_rx_tone_resets_on_legacy_scan_step();
+    rc |= test_typed_scan_nfm_row_tone_rejection_steps();
+    rc |= test_typed_scan_tone_rejection_with_a_refused_row();
+    rc |= test_typed_scan_tone_rejection_weighs_an_am_row();
+    rc |= test_typed_scan_tone_rejection_weighs_same_frequency_rows();
+    rc |= test_typed_scan_respelled_policy_rejects_alike();
+    rc |= test_typed_scan_am_row_ignores_the_tone_filter();
     rc |= test_typed_scan_tune_boundaries();
     rc |= test_typed_scan_nfm_rows_switch_family(0);
     rc |= test_typed_scan_nfm_rows_switch_family(1);

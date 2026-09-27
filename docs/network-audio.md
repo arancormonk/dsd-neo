@@ -62,6 +62,10 @@ base port is `23456`) whenever something writes analog or source audio:
 Under `-fM` the stream carries the AM detector's audio, at the same level live FM has at about 6 kHz deviation for 100%
 modulation; a switch between AM and Analog keeps the socket, since both write it.
 
+The CTCSS/DCS tone filter (`--tone-allow`, `--tone-block`, `[analog] tone_filter`; see "Tone filter" in
+`docs/cli.md`) mutes this stream and the local analog output together: nothing is sent while a transmission is being
+checked or after the filter rejected it. The `-6` raw WAV is not gated by it.
+
 Changing the UDP output target during a session moves an open port + 2 socket to the new host and port: it is closed,
 since it still sends to the old target, and reopened for the new one at once, so source monitoring turned back on
 later still has it. With no port + 2 socket open, the change opens one only when the current mode writes analog or

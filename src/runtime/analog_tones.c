@@ -3,14 +3,18 @@
  * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
+#include <dsd-neo/core/analog_tone.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/safe_api.h>
+#include <dsd-neo/core/state.h>
+#include <dsd-neo/core/state_fwd.h>
+#include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/runtime/analog_channel.h>
 #include <dsd-neo/runtime/analog_tones.h>
 #include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
-#include <stddef.h>
 #include <stdint.h>
+#include <string.h>
 
 /*
  * The standard 50-tone EIA/TIA CTCSS table in tenths of a hertz, ascending. 150.0 Hz is the
@@ -310,6 +314,418 @@ dsd_dcs_format_label(int code, int inverted, char* buf, size_t buf_size) {
     return dcs_format_result(written, buf, buf_size);
 }
 
+/* ------------------------------------------------------------------------------------------
+ * Tone lists (issue #527)
+ * ---------------------------------------------------------------------------------------- */
+
+/* DCS bit (2 * index + polarity) of the set's words, as core/analog_tone.h lays them out. */
+enum { TONE_SET_WORD_BITS = 64, TONE_SET_DCS_BITS = 2 * DSD_DCS_CODE_COUNT };
+
+_Static_assert((int)DSD_CTCSS_TONE_COUNT <= (int)TONE_SET_WORD_BITS, "every standard tone has a bit");
+_Static_assert(TONE_SET_DCS_BITS <= (int)(sizeof(((dsd_tone_set*)0)->dcs) * 8U), "every code spelling has a bit");
+
+/* U+2026 HORIZONTAL ELLIPSIS, before the count of entries a display text leaves out. */
+#define TONE_SET_MORE_MARK "\xE2\x80\xA6"
+
+static int
+tone_set_dcs_bit(const dsd_tone_set* set, int bit) {
+    return (int)((set->dcs[bit / TONE_SET_WORD_BITS] >> (bit % TONE_SET_WORD_BITS)) & 1U);
+}
+
+static void
+tone_set_dcs_put(dsd_tone_set* set, int bit) {
+    set->dcs[bit / TONE_SET_WORD_BITS] |= (uint64_t)1 << (bit % TONE_SET_WORD_BITS);
+}
+
+static int
+tone_set_ctcss_bit(const dsd_tone_set* set, int index) {
+    return (int)((set->ctcss >> index) & 1U);
+}
+
+/* One parsed entry: a CTCSS table index, or a DCS table index and polarity. */
+typedef struct {
+    int is_dcs;
+    int index;
+    int inverted;
+} tone_entry;
+
+static int
+tone_digit(char c) {
+    return c >= '0' && c <= '9';
+}
+
+/* "100" or "100.0": one to three digits, then optionally '.' and exactly one digit. Tenths of a hertz, or -1. */
+static int
+tone_entry_ctcss_tenths(const char* text, size_t len) {
+    size_t i = 0;
+    int whole = 0;
+    while (i < len && i < 3U && tone_digit(text[i])) {
+        whole = (whole * 10) + (text[i] - '0');
+        i++;
+    }
+    if (i == 0U) {
+        return -1;
+    }
+    if (i == len) {
+        return whole * 10;
+    }
+    if (text[i] != '.' || i + 2U != len || !tone_digit(text[i + 1U])) {
+        return -1;
+    }
+    return (whole * 10) + (text[i + 1U] - '0');
+}
+
+/* "D023", "D023N" or "D023I", any case: the code's value and polarity, or -1. */
+static int
+tone_entry_dcs_code(const char* text, size_t len, int* inverted) {
+    if ((len != 4U && len != 5U) || (text[0] != 'D' && text[0] != 'd')) {
+        return -1;
+    }
+    int code = 0;
+    for (size_t i = 1U; i < 4U; i++) {
+        if (text[i] < '0' || text[i] > '7') {
+            return -1;
+        }
+        code = (code * 8) + (text[i] - '0');
+    }
+    *inverted = 0;
+    if (len == 5U) {
+        const char polarity = text[4];
+        if (polarity == 'I' || polarity == 'i') {
+            *inverted = 1;
+        } else if (polarity != 'N' && polarity != 'n') {
+            return -1;
+        }
+    }
+    return code;
+}
+
+/* The standard tone or code an entry of @p len bytes names; 0, or -1 when it names none. */
+static int
+tone_entry_read(const char* text, size_t len, tone_entry* out) {
+    const int tenths = tone_entry_ctcss_tenths(text, len);
+    if (tenths >= 0) {
+        out->is_dcs = 0;
+        out->index = dsd_ctcss_tone_index(tenths);
+        out->inverted = 0;
+        return out->index >= 0 ? 0 : -1;
+    }
+    int inverted = 0;
+    const int code = tone_entry_dcs_code(text, len, &inverted);
+    out->is_dcs = 1;
+    out->index = code >= 0 ? dsd_dcs_code_index(code) : -1;
+    out->inverted = inverted;
+    return out->index >= 0 ? 0 : -1;
+}
+
+/* What the parser has seen so far: the set, and for each tone and each DCS signal (by its canonical code's table index)
+   the entry number that listed it, 0 for none. */
+typedef struct {
+    dsd_tone_set set;
+    int ctcss_entry[DSD_CTCSS_TONE_COUNT];
+    int dcs_entry[DSD_DCS_CODE_COUNT];
+} tone_list_parse;
+
+static int
+tone_list_error(char* err, size_t err_size, const char* text) {
+    if (err && err_size > 0U) {
+        DSD_SNPRINTF(err, err_size, "%s", text);
+    }
+    return -1;
+}
+
+/* Record a CTCSS entry, or say which earlier entry it repeats. */
+static int
+tone_list_add_ctcss(tone_list_parse* parse, const tone_entry* entry, int number, char* err, size_t err_size) {
+    const int earlier = parse->ctcss_entry[entry->index];
+    if (earlier != 0) {
+        char tone[16];
+        (void)dsd_ctcss_format(dsd_ctcss_tone_tenths(entry->index), tone, sizeof(tone));
+        char why[DSD_TONE_LIST_ERROR_SIZE];
+        DSD_SNPRINTF(why, sizeof(why), "entry %d repeats entry %d (%s Hz)", number, earlier, tone);
+        return tone_list_error(err, err_size, why);
+    }
+    parse->ctcss_entry[entry->index] = number;
+    parse->set.ctcss |= (uint64_t)1 << entry->index;
+    return 0;
+}
+
+/* Record a DCS entry, or say which earlier entry sends the same signal, named by its canonical spelling. */
+static int
+tone_list_add_dcs(tone_list_parse* parse, const tone_entry* entry, int number, char* err, size_t err_size) {
+    int canon_code = -1;
+    int canon_inverted = 0;
+    if (dsd_dcs_canonical(dsd_dcs_code(entry->index), entry->inverted, &canon_code, &canon_inverted) != 0) {
+        return tone_list_error(err, err_size, "internal error: a standard code has no signal");
+    }
+    const int signal = dsd_dcs_code_index(canon_code);
+    const int bit = (2 * entry->index) + entry->inverted;
+    const int earlier = signal >= 0 ? parse->dcs_entry[signal] : 0;
+    if (earlier != 0) {
+        char name[16];
+        (void)dsd_dcs_format(canon_code, canon_inverted, name, sizeof(name));
+        char why[DSD_TONE_LIST_ERROR_SIZE];
+        if (tone_set_dcs_bit(&parse->set, bit)) {
+            DSD_SNPRINTF(why, sizeof(why), "entry %d repeats entry %d (%s)", number, earlier, name);
+        } else {
+            DSD_SNPRINTF(why, sizeof(why), "entry %d is the same DCS signal as entry %d (%s)", number, earlier, name);
+        }
+        return tone_list_error(err, err_size, why);
+    }
+    if (signal >= 0) {
+        parse->dcs_entry[signal] = number;
+    }
+    tone_set_dcs_put(&parse->set, bit);
+    return 0;
+}
+
+/* Read the entry of @p len bytes at @p text, the @p number-th. */
+static int
+tone_list_add(tone_list_parse* parse, const char* text, size_t len, int number, char* err, size_t err_size) {
+    char why[DSD_TONE_LIST_ERROR_SIZE];
+    if (len == 0U) {
+        DSD_SNPRINTF(why, sizeof(why), "entry %d is empty", number);
+        return tone_list_error(err, err_size, why);
+    }
+    tone_entry entry;
+    if (tone_entry_read(text, len, &entry) != 0) {
+        DSD_SNPRINTF(why, sizeof(why), "entry %d is not a standard CTCSS tone or DCS code", number);
+        return tone_list_error(err, err_size, why);
+    }
+    return entry.is_dcs ? tone_list_add_dcs(parse, &entry, number, err, err_size)
+                        : tone_list_add_ctcss(parse, &entry, number, err, err_size);
+}
+
+int
+dsd_tone_set_parse(const char* text, dsd_tone_set* out, char* err, size_t err_size) {
+    if (!text || !out) {
+        return tone_list_error(err, err_size, "no list");
+    }
+    const size_t len = strlen(text);
+    if (len == 0U) {
+        return tone_list_error(err, err_size, "the list is empty");
+    }
+    if (len > (size_t)DSD_TONE_LIST_TEXT_MAX) {
+        return tone_list_error(err, err_size, "the list is longer than 1023 characters");
+    }
+    if (strchr(text, ',') != NULL) {
+        return tone_list_error(err, err_size, "use / between entries, not commas");
+    }
+    tone_list_parse parse;
+    DSD_MEMSET(&parse, 0, sizeof(parse));
+    int number = 1;
+    for (const char* entry = text;; number++) {
+        const char* slash = strchr(entry, '/');
+        const size_t entry_len = slash ? (size_t)(slash - entry) : strlen(entry);
+        if (tone_list_add(&parse, entry, entry_len, number, err, err_size) != 0) {
+            return -1;
+        }
+        if (!slash) {
+            break;
+        }
+        entry = slash + 1;
+    }
+    *out = parse.set;
+    return 0;
+}
+
+/* The @p ordinal-th entry of @p set in list order (tones ascending, then codes ascending, N before I), written as
+   dsd_tone_set_format() writes it, with " Hz" after a tone when @p unit is set. Returns its length, or -1 when the set
+   has no such entry or @p buf is too small. */
+static int
+tone_set_entry_text(const dsd_tone_set* set, int ordinal, int unit, char* buf, size_t buf_size) {
+    int seen = 0;
+    for (int i = 0; i < DSD_CTCSS_TONE_COUNT; i++) {
+        if (tone_set_ctcss_bit(set, i) && seen++ == ordinal) {
+            return ctcss_format_with("", unit ? " Hz" : "", dsd_ctcss_tone_tenths(i), buf, buf_size);
+        }
+    }
+    for (int bit = 0; bit < TONE_SET_DCS_BITS; bit++) {
+        if (tone_set_dcs_bit(set, bit) && seen++ == ordinal) {
+            return dsd_dcs_format(dsd_dcs_code(bit / 2), bit % 2, buf, buf_size);
+        }
+    }
+    return -1;
+}
+
+int
+dsd_tone_set_count(const dsd_tone_set* set) {
+    if (!set) {
+        return 0;
+    }
+    int count = 0;
+    for (int i = 0; i < DSD_CTCSS_TONE_COUNT; i++) {
+        count += tone_set_ctcss_bit(set, i);
+    }
+    for (int bit = 0; bit < TONE_SET_DCS_BITS; bit++) {
+        count += tone_set_dcs_bit(set, bit);
+    }
+    return count;
+}
+
+int
+dsd_tone_set_format(const dsd_tone_set* set, char* buf, size_t buf_size) {
+    if (!set || !buf || buf_size == 0U) {
+        return -1;
+    }
+    buf[0] = '\0';
+    const int count = dsd_tone_set_count(set);
+    size_t used = 0U;
+    for (int k = 0; k < count; k++) {
+        char entry[16];
+        const int n = tone_set_entry_text(set, k, 0, entry, sizeof(entry));
+        const int written = DSD_SNPRINTF(buf + used, buf_size - used, "%s%s", k ? "/" : "", entry);
+        if (n < 0 || written < 0 || (size_t)written >= buf_size - used) {
+            buf[0] = '\0';
+            return -1;
+        }
+        used += (size_t)written;
+    }
+    return (int)used;
+}
+
+/* Room a display text needs to end with "/…+left" (the separator only after an entry). */
+static size_t
+tone_set_more_len(int left, int after_entry) {
+    char more[24];
+    const int n = DSD_SNPRINTF(more, sizeof(more), "%s" TONE_SET_MORE_MARK "+%d", after_entry ? "/" : "", left);
+    return n > 0 ? (size_t)n : 0U;
+}
+
+int
+dsd_tone_set_format_display(const dsd_tone_set* set, char* buf, size_t buf_size) {
+    if (!buf || buf_size == 0U) {
+        return -1;
+    }
+    buf[0] = '\0';
+    if (!set || buf_size < 24U) {
+        return -1;
+    }
+    const int count = dsd_tone_set_count(set);
+    size_t used = 0U;
+    for (int k = 0; k < count; k++) {
+        char entry[24];
+        const int n = tone_set_entry_text(set, k, 1, entry, sizeof(entry));
+        const size_t with_entry = used + (k ? 1U : 0U) + (size_t)(n > 0 ? n : 0);
+        const size_t tail = (k + 1 < count) ? tone_set_more_len(count - k - 1, 1) : 0U;
+        if (n <= 0 || with_entry + tail >= buf_size) {
+            (void)DSD_SNPRINTF(buf + used, buf_size - used, "%s" TONE_SET_MORE_MARK "+%d", k ? "/" : "", count - k);
+            return (int)strlen(buf);
+        }
+        (void)DSD_SNPRINTF(buf + used, buf_size - used, "%s%s", k ? "/" : "", entry);
+        used = with_entry;
+    }
+    return (int)used;
+}
+
+int
+dsd_tone_set_has_dcs(const dsd_tone_set* set) {
+    if (!set) {
+        return 0;
+    }
+    for (size_t w = 0; w < sizeof(set->dcs) / sizeof(set->dcs[0]); w++) {
+        if (set->dcs[w] != 0U) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+int
+dsd_tone_set_equal(const dsd_tone_set* a, const dsd_tone_set* b) {
+    if (!a || !b) {
+        return a == b;
+    }
+    if (a->ctcss != b->ctcss) {
+        return 0;
+    }
+    for (size_t w = 0; w < sizeof(a->dcs) / sizeof(a->dcs[0]); w++) {
+        if (a->dcs[w] != b->dcs[w]) {
+            return 0;
+        }
+    }
+    return 1;
+}
+
+/* @p set with each DCS entry written as the canonical spelling of its signal (dsd_dcs_canonical()). */
+static void
+tone_set_by_signal(const dsd_tone_set* set, dsd_tone_set* out) {
+    DSD_MEMSET(out, 0, sizeof(*out));
+    out->ctcss = set->ctcss;
+    for (int bit = 0; bit < TONE_SET_DCS_BITS; bit++) {
+        if (!tone_set_dcs_bit(set, bit)) {
+            continue;
+        }
+        int canon_code = -1;
+        int canon_inverted = 0;
+        const int index = dsd_dcs_canonical(dsd_dcs_code(bit / 2), bit % 2, &canon_code, &canon_inverted) == 0
+                              ? dsd_dcs_code_index(canon_code)
+                              : -1;
+        tone_set_dcs_put(out, index >= 0 ? (2 * index) + canon_inverted : bit);
+    }
+}
+
+int
+dsd_tone_set_same_signals(const dsd_tone_set* a, const dsd_tone_set* b) {
+    if (!a || !b) {
+        return a == b;
+    }
+    dsd_tone_set a_signals;
+    dsd_tone_set b_signals;
+    tone_set_by_signal(a, &a_signals);
+    tone_set_by_signal(b, &b_signals);
+    return dsd_tone_set_equal(&a_signals, &b_signals);
+}
+
+int
+dsd_tone_set_contains_ctcss(const dsd_tone_set* set, int tenths_hz) {
+    const int index = dsd_ctcss_tone_index(tenths_hz);
+    return set && index >= 0 && tone_set_ctcss_bit(set, index);
+}
+
+int
+dsd_tone_set_contains_dcs(const dsd_tone_set* set, int code, int inverted) {
+    int want_code = -1;
+    int want_inverted = 0;
+    if (!set || dsd_dcs_canonical(code, inverted ? 1 : 0, &want_code, &want_inverted) != 0) {
+        return 0;
+    }
+    for (int bit = 0; bit < TONE_SET_DCS_BITS; bit++) {
+        int listed_code = -1;
+        int listed_inverted = 0;
+        if (tone_set_dcs_bit(set, bit)
+            && dsd_dcs_canonical(dsd_dcs_code(bit / 2), bit % 2, &listed_code, &listed_inverted) == 0
+            && listed_code == want_code && listed_inverted == want_inverted) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static const char* const k_tone_filter_mode_names[] = {"off", "allow", "block"};
+
+const char*
+dsd_tone_filter_mode_name(int mode) {
+    if (mode < DSD_TONE_FILTER_OFF || mode > DSD_TONE_FILTER_BLOCK) {
+        return NULL;
+    }
+    return k_tone_filter_mode_names[mode];
+}
+
+int
+dsd_tone_filter_mode_parse(const char* text, int* mode) {
+    if (!text || !mode) {
+        return -1;
+    }
+    for (int m = DSD_TONE_FILTER_OFF; m <= DSD_TONE_FILTER_BLOCK; m++) {
+        if (dsd_strcasecmp(text, k_tone_filter_mode_names[m]) == 0) {
+            *mode = m;
+            return 0;
+        }
+    }
+    return -1;
+}
+
 /* RTL stream output kind that carries monitor audio: RTL_STREAM_OUTPUT_AUDIO_MONITOR in the IO
    header runtime may not include. */
 enum { ANALOG_TONES_RTL_OUTPUT_AUDIO_MONITOR = 0 };
@@ -339,4 +755,29 @@ int
 dsd_analog_tone_detection_active(const dsd_opts* opts) {
     /* CTCSS and DCS are FM signalling: the AM monitor (issue #524) has none to detect. */
     return dsd_analog_monitor_tap_active(opts) && opts->analog_demod == DSD_ANALOG_DEMOD_FM;
+}
+
+int
+dsd_analog_tone_gate_in_force(const dsd_opts* opts, const dsd_state* state) {
+    /* A verdict describes the reception only while detection runs: anywhere else no policy is in force. */
+    if (opts == NULL || state == NULL || !dsd_analog_tone_detection_active(opts)) {
+        return DSD_ANALOG_TONE_GATE_OFF;
+    }
+    const int gate = state->analog_rx.gate;
+    if (gate == DSD_ANALOG_TONE_GATE_OFF) {
+        /* The tap never publishes OFF under a list policy it runs, so OFF here means no verdict of this policy: the tap
+           has no session to judge with (one it could not allocate), or has not read since the policy came on. The
+           policy fails closed, as PENDING, until the tap's own verdict replaces it. */
+        const int list_policy =
+            (opts->analog_tone_filter == DSD_TONE_FILTER_ALLOW || opts->analog_tone_filter == DSD_TONE_FILTER_BLOCK)
+            && dsd_tone_set_count(&opts->analog_tone_set) > 0;
+        return list_policy ? DSD_ANALOG_TONE_GATE_PENDING : DSD_ANALOG_TONE_GATE_OFF;
+    }
+    return (gate > DSD_ANALOG_TONE_GATE_OFF && gate <= DSD_ANALOG_TONE_GATE_REJECTED) ? gate
+                                                                                      : DSD_ANALOG_TONE_GATE_PENDING;
+}
+
+int
+dsd_analog_tone_gate_passes(int gate) {
+    return gate == DSD_ANALOG_TONE_GATE_OFF || gate == DSD_ANALOG_TONE_GATE_ALLOWED;
 }

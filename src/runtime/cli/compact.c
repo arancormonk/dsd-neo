@@ -80,6 +80,7 @@ static const char* const k_skip_exact_no_arg[] = {
     "--dmr-debug-unsynced",
     "--show-keys",
     "--scan-voice-only",
+    "--no-tone-filter",
 };
 
 static const char* const k_skip_exact_next_any[] = {
@@ -137,6 +138,8 @@ static const char* const k_skip_exact_next_any[] = {
     "--scan-max-visit-ms",
     "--nfm-bandwidth-hz",
     "--am-bandwidth-hz",
+    "--tone-allow",
+    "--tone-block",
     "--calc-lcn",
     "--calc-step",
     "--calc-cc-freq",
@@ -197,6 +200,8 @@ static const char* const k_skip_prefix[] = {
     "--scan-max-visit-ms=",
     "--nfm-bandwidth-hz=",
     "--am-bandwidth-hz=",
+    "--tone-allow=",
+    "--tone-block=",
     "--frontend=",
 };
 

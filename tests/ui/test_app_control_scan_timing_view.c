@@ -185,9 +185,9 @@ test_call_follow_row_shows_hangtime(void) {
 static void
 test_hangtime_is_only_shown_while_following_a_call(void) {
     static const uint8_t others[] = {
-        DSD_SCAN_STAY_RETUNE_PENDING, DSD_SCAN_STAY_RETUNE_RETRY,  DSD_SCAN_STAY_CC_ACQUIRE,
-        DSD_SCAN_STAY_VOICE,          DSD_SCAN_STAY_ACTIVITY_HOLD, DSD_SCAN_STAY_MANUAL_HOLD,
-        DSD_SCAN_STAY_IDLE_DWELL,     DSD_SCAN_STAY_HANGTIME,      DSD_SCAN_STAY_CARRIER,
+        DSD_SCAN_STAY_RETUNE_PENDING, DSD_SCAN_STAY_RETUNE_RETRY, DSD_SCAN_STAY_CC_ACQUIRE, DSD_SCAN_STAY_VOICE,
+        DSD_SCAN_STAY_ACTIVITY_HOLD,  DSD_SCAN_STAY_MANUAL_HOLD,  DSD_SCAN_STAY_IDLE_DWELL, DSD_SCAN_STAY_HANGTIME,
+        DSD_SCAN_STAY_CARRIER,        DSD_SCAN_STAY_TONE_PENDING,
     };
     static dsd_opts opts;
     dsd_state* state = make_state();
@@ -286,6 +286,35 @@ test_carrier_row_suspends_the_dwell(void) {
     publish(state, DSD_SCAN_STAY_CARRIER, 1U, 101.9, 2000U, 0U, 0U);
     assert(dsd_app_scan_timing_view(&opts, state, 100.0, &view) == 1);
     assert(view.show_dwell == 0U && view.show_hold == 0U && view.remaining_ms == 1900U);
+    /* Issue #527: traffic the tone policy rejected, kept for want of anywhere else to go, is a carrier with no window:
+       nothing counts down, and the dwell it keeps from running reads as suspended. */
+    publish(state, DSD_SCAN_STAY_CARRIER, 1U, -1.0, 0U, 3000U, 2000U);
+    assert(dsd_app_scan_timing_view(&opts, state, 100.0, &view) == 1);
+    assert_phrase(&view, "Carrier");
+    assert(view.timer_live == 0U && view.remaining_ms == 0U && view.span_ms == 0U);
+    assert(view.show_dwell == 1U && view.dwell_state == DSD_APP_SCAN_DWELL_SUSPENDED);
+
+    free(state);
+}
+
+/* Issue #527: a carrier the tone policy is still checking holds the row while it lasts, for the policy's bounded
+   window, under its own phrase. It is no activity: the decoder publishes no window for it, and whatever ran before it
+   (the -Y hangtime, a trunk-scan hold or idle dwell) runs on beneath it unchanged, so no budget reads as suspended. */
+static void
+test_tone_check_row_has_no_window(void) {
+    static dsd_opts opts;
+    dsd_state* state = make_state();
+    dsd_app_scan_timing view;
+
+    make_opts(&opts);
+    publish(state, DSD_SCAN_STAY_TONE_PENDING, 1U, -1.0, 0U, 3000U, 2000U);
+    assert(dsd_app_scan_timing_view(&opts, state, 100.0, &view) == 1);
+    assert(view.reason == DSD_SCAN_STAY_TONE_PENDING);
+    assert_phrase(&view, "Tone check");
+    assert(view.timer_live == 0U && view.remaining_ms == 0U && view.span_ms == 0U);
+    assert(view.show_dwell == 0U && view.dwell_state == DSD_APP_SCAN_DWELL_NONE);
+    assert(view.show_hold == 0U && view.show_hang == 0U);
+    assert(view.dwell_ms == 3000U && view.hold_ms == 2000U);
 
     free(state);
 }
@@ -460,7 +489,8 @@ test_every_reason_has_a_phrase(void) {
     dsd_app_scan_timing view;
 
     make_opts(&opts);
-    for (uint8_t reason = (uint8_t)DSD_SCAN_STAY_RETUNE_PENDING; reason <= (uint8_t)DSD_SCAN_STAY_CARRIER; reason++) {
+    for (uint8_t reason = (uint8_t)DSD_SCAN_STAY_RETUNE_PENDING; reason <= (uint8_t)DSD_SCAN_STAY_TONE_PENDING;
+         reason++) {
         publish(state, reason, 1U, -1.0, 0U, 3000U, 1200U);
         assert(dsd_app_scan_timing_view(&opts, state, 100.0, &view) == 1);
         assert(view.reason == reason);
@@ -469,7 +499,7 @@ test_every_reason_has_a_phrase(void) {
     }
 
     /* A reason from a newer decoder than this build knows is not rendered at all. */
-    publish(state, (uint8_t)(DSD_SCAN_STAY_CARRIER + 1), 1U, -1.0, 0U, 3000U, 1200U);
+    publish(state, (uint8_t)(DSD_SCAN_STAY_TONE_PENDING + 1), 1U, -1.0, 0U, 3000U, 1200U);
     assert(dsd_app_scan_timing_view(&opts, state, 100.0, &view) == 0);
     assert(view.active == 0U);
 
@@ -603,7 +633,8 @@ test_visit_cap_applies_to_every_reason(void) {
 
     make_opts(&opts);
     opts.trunk_hangtime = 2.0f;
-    for (uint8_t reason = (uint8_t)DSD_SCAN_STAY_RETUNE_PENDING; reason <= (uint8_t)DSD_SCAN_STAY_CARRIER; reason++) {
+    for (uint8_t reason = (uint8_t)DSD_SCAN_STAY_RETUNE_PENDING; reason <= (uint8_t)DSD_SCAN_STAY_TONE_PENDING;
+         reason++) {
         publish(state, reason, 1U, -1.0, 0U, 3000U, 1200U);
         seed_visit(state, 45000U, 130.0);
         assert(dsd_app_scan_timing_view(&opts, state, 100.0, &view) == 1);
@@ -660,6 +691,7 @@ main(void) {
     test_voice_row();
     test_activity_hold_row_names_the_tail();
     test_carrier_row_suspends_the_dwell();
+    test_tone_check_row_has_no_window();
     test_manual_hold_row_pauses_the_dwell();
     test_idle_dwell_row_and_qualify_variant();
     test_hangtime_row();

@@ -58,7 +58,50 @@ Generated (do not edit/commit):
     (`dsd_analog_monitor_tap_active()`, issue #524), never on a stale publication, a flagged digital carrier or a
     trunking-owned channel, and independent of audio output. The -Y voice gate never owns
     an analog row (`scan_voice_gate_enabled()` is false under the analog family), and the -Y timing tick reports
-    `DSD_SCAN_STAY_CARRIER` for the hangtime window while that probe is open
+    `DSD_SCAN_STAY_CARRIER` for the hangtime window while that probe is open. Under the CTCSS/DCS receive policy (issue
+    #527) the probe is only traffic the policy passes (`dsd_analog_tone_gate_passes()` in `runtime/analog_tones.c`:
+    OFF or ALLOWED, the one rule the monitor sink and its -Y hangtime stamp in `dsd_symbol.c` follow too), and
+    `dsd_scan_analog_tone_gate()` reads the policy's verdict on the carrier heard (OFF without one). A PENDING carrier
+    is no activity: it holds the row only while it lasts, with no window, and leaves every clock where it was, so a
+    check its carrier ends before a verdict adds no tail and short bursts the policy never passes cannot park a
+    scanner. The -Y tick reports `DSD_SCAN_STAY_TONE_PENDING` ("Tone check") with no deadline while it is PENDING, and
+    `no_carrier_scanner_step_is_due()` (`engine.c`) holds a PENDING or ALLOWED carrier's row at every pass, after the
+    per-visit cap and ahead of the hangtime rule: the check never stamps its anchor, and the monitor stamps allowed
+    traffic only as a block ends while the tap publishes the verdict at each read, so a verdict turned ALLOWED part-way
+    through a block would otherwise meet an anchor from before the check. With no policy (OFF) the stamps alone hold.
+    The engine acts on a rejection on its own ticks only, never from DSP:
+    `no_carrier_scanner_step_is_due()` (`engine.c`) steps a REJECTED row at the next no-carrier pass, whatever `-t`
+    says, when the list has another row to go to (`dsd_engine_channel_scan_has_other_row()` in `channel_scan.c`: a row
+    other than the one on air that would judge the traffic otherwise -- on another frequency, or on that frequency one
+    of another class or whose tone policy, its own or the configured one, passes what the verdict rests on (the locked
+    tone or code, or no tone after a "no tone" rejection; `channel_scan_row_rejects_alike()` with
+    `dsd_channel_mode_hears_tones()`) -- not avoided, and not an analog row skipped at every visit
+    (`dsd_engine_scan_analog_width_skipped()`: the width of the demodulator its class runs, AM or NFM, its own or the
+    configured one of that kind, refused at the DSP rate, or an am row on audio input with no rigctl peer); the row on
+    air is the typed scanner's last landed tune, which a failed start does not move, else the one before
+    `lcn_freq_roll`), and otherwise holds it muted, the `-t` rule included, as a fixed frequency does, so the same
+    traffic is not ended and judged again every second; `no_carrier_step_scanner_mode_if_needed()` still lets
+    `lcn_scan_hold` keep it (muted); the trunk-scan tick advances a REJECTED analog target
+    (`trunk_scan_service_tone_rejection()`, under `p25_sm_tick_guard`) unless the operator holds it, and only when
+    another target is there to take it (`trunk_scan_rejection_has_alternate()`: not avoided, not cooling down, and not
+    an analog target whose width, of the demodulator its type runs, AM or NFM, the front end refuses at the published
+    DSP rate, `trunk_scan_target_width_skipped()`; a target on the frequency on air counts, since the list's
+    `scan_has_duplicate_type_freq()` makes it one of another type, which runs no tone check); with none it spends the
+    tick with the target muted in place and its idle dwell disarmed, since that rotation could only switch back to it.
+    Its analog stay reason reads `TONE_PENDING` the same way, ahead of the activity hold and with no window, and
+    `trunk_scan_service_hold()` holds the target for it without disarming the idle dwell (every other reason to stay
+    disarms it), and arms a disarmed one at the check's first tick with no activity or operator hold on, as a quiet
+    tick would, so the dwell runs through a check as on a quiet channel; `trunk_scan_refresh_analog_carrier_hold()`
+    restarts the hold only on the probe, so only for traffic the policy passes. While the verdict is REJECTED and no
+    operator hold is on, both the -Y tick and `trunk_scan_timing_select_reason()` publish `DSD_SCAN_STAY_CARRIER` with
+    no window, since no hangtime or dwell counts toward a step while rejected traffic is kept. Rejected traffic that
+    ended between two passes or ticks releases the same way: `dsd_scan_analog_tone_rejection_ended()` reads the tap's
+    `gate_rejected_ended` through `dsd_analog_rx_rejection_ended_now()` (held to the channel on air as the carrier is),
+    or a REJECTED verdict an input that stopped delivering left published past its deadline, with no carrier heard; both
+    scanners then step or advance when there is somewhere to go, so no window still running from before it (-t since the
+    row landed or since traffic the policy passed, this traffic before a blocked or unlisted value was confirmed
+    included, or a trunk-scan hold) is waited out, and with nowhere to go leave the ordinary `-t`, hold and dwell rules
+    to run.
   - Stepped slicer threshold refresh after each getFrameSync() return: `src/engine/slicer_thresholds.c` behind
     `include/dsd-neo/engine/slicer_thresholds.h` (test: `ENGINE_SLICER_THRESHOLDS`)
   - Installs runtime hook tables used by DSP/frame-sync code
@@ -351,7 +394,11 @@ Tests: `tests/engine/test_engine_trunk_scan.c` (`ENGINE_TRUNK_SCAN`) and
 - API note: `dsd_state::analog_rx` (`dsd_analog_rx_publication` in `<dsd-neo/core/state.h>`, issues #522 and #523) is
   the received-tone publication every frontend reads: int-only (`carrier_open`, `tone_kind`, `tone_state`,
   `ctcss_tenths_hz`, `dcs_code` (the code as its value, 023 octal = 19) and `dcs_inverted` for a DCS lock,
-  always the canonical member of the code's alias class, `gate` reserved for #527 and always OFF, a `generation`
+  always the canonical member of the code's alias class, `dcs_candidate` (1 while, with nothing locked, the DCS detector
+  holds a candidate code it has read once and not yet confirmed: the tone policy waits past its window for it), `gate`
+  and `gate_no_tone`, the CTCSS/DCS receive policy's verdict (issue #527: OFF with no policy in force, PENDING while it
+  checks, ALLOWED, REJECTED; `gate_no_tone` when no confirmed value decided it), `gate_rejected_ended` (1 once a
+  rejected reception has ended with its carrier, until the next carrier or any other reset), a `generation`
   bumped by every reset, input switch and input-rate change, and `stale_after_ms`, the monotonic deadline
   past which the publication of an input that may pause (stdin, UDP, TCP, a live RTL-family radio stream) no longer
   describes the channel, 0 on inputs that never pause: files, Pulse and IQ replay).
@@ -362,6 +409,12 @@ Tests: `tests/engine/test_engine_trunk_scan.c` (`ENGINE_TRUNK_SCAN`) and
   and receive policy ask instead. UNAVAILABLE means detection is on but the input rate is one the front end cannot
   use; `carrier_open` is still kept there (issue #526), and on the AM monitor, where no detection runs and `tone_state`
   stays INACTIVE (issue #524).
+- API note: `<dsd-neo/core/analog_tone.h>` (issue #527) holds the receive policy's types only: `dsd_tone_filter_mode`
+  (off, allow, block) and `dsd_tone_set`, a bounded bitmask (one bit per standard CTCSS tone; one per standard DCS code
+  and polarity, as written) that copies by value into `dsd_opts::analog_tone_filter` / `analog_tone_set`, the scan
+  scopes and frontend snapshots. Parsing, formatting and matching are runtime's (`runtime/analog_tones.h`). Any analog
+  audio writer (the monitor sink in `dsd_symbol.c` today; a future analog `-w`/`-P` writer too) must consult the
+  verdict through `dsd_analog_tone_gate_in_force()` and write only OFF and ALLOWED; the `-6` raw WAV stays ungated.
 - API note: source ID aliases live in the opaque store declared by `<dsd-neo/core/source_alias.h>` and
   implemented in `src/core/util/source_alias.c`, attached to state extension slot 8
   (`DSD_STATE_EXT_CORE_SOURCE_ALIAS`). `dsd_source_alias_store_create()`/`dsd_source_alias_store_append()` build
@@ -466,9 +519,29 @@ Tests: `tests/engine/test_engine_trunk_scan.c` (`ENGINE_TRUNK_SCAN`) and
     default over an explicit width. The saved width comes from `dsd_scan_mode_configured_view()`, since an nfm scan
     row's own `--nfm-bandwidth-hz` (issue #526) runs over `dsd_opts` while the row is on air.
     `[analog]` is the home of the analog keys, in the order `nfm_bandwidth_hz`, `am_bandwidth_hz`, `tone_filter`,
-    `tone_list`. `dsd_user_config_radio_input_spec()` returns the radio input spec (`rtl`, `rtltcp`, `soapy` or
+    `tone_list`. The tone policy (issue #527) parses `tone_filter` with `dsd_tone_filter_mode_parse()` and `tone_list`
+    with `dsd_tone_set_parse()`: the loader warns and keeps a refused mode, leaves a refused list empty
+    (`analog_tone_list_refused`) and applies a list policy without a usable list as off; `--validate-config` reports
+    both and a list policy without a list as errors. A save writes the configured policy from
+    `dsd_scan_mode_configured_tone_policy()`, never an nfm row's own. The CLI switches `--tone-allow`, `--tone-block`
+    and `--no-tone-filter` (one of them per command line) parse the same way. `dsd_scan_mode_warn_tone_filter_unused()`
+    (`scan_mode.c`) says once that a configured list policy has no effect when the caller found nothing that runs
+    detection. Outside a trunk scan that is `dsd_channel_modes_conventional_hear_tones()` (core, beside the row modes),
+    the one rule the start, the engine's import and `dsd_engine_scan_hears_tones()` share: a `-Y` list with rows by
+    `dsd_channel_modes_hear_tones()` (an `nfm` row, or under `-fA` a row that declares no mode, since a typed row runs
+    its own), anything else, a `-Y` scan without rows included, by `dsd_scan_mode_configured_fm_monitor()`. It is asked
+    by `cli_finish_parse()`, except for a `-Y` list the engine still imports (a config file's `chan_csv`, or a `-C` map
+    it read no row from), which the engine's import asks instead. `trunk_scan_warn_targets()` warns for a `--trunk-scan`
+    list with no `nfm-conventional` target, whatever the decode mode; and, during the session, `apply_cmd_scoped()`
+    (`app_command_queue.c`) after a command that left a list policy where `dsd_engine_scan_hears_tones()` finds nothing,
+    when the command set that policy or took the monitor away from it (a loaded config, a decode-mode change, a channel
+    map, a scanner toggle), never again for the same policy still unheard.
+    `dsd_user_config_radio_input_spec()` returns the radio input spec (`rtl`, `rtltcp`, `soapy` or
     `airspy`) an `[input]` builds without applying it, so a live config apply can tell whether it reopens the device and
-    what then sets the rate. Tests: `RUNTIME_CLI_PARSE`, `CONFIG_VALIDATION`, `CONFIG_TEMPLATE`, `RUNTIME_CONFIG_USER`.
+    what then sets the rate. Tests: `RUNTIME_CLI_PARSE`, `CONFIG_VALIDATION`, `CONFIG_TEMPLATE`, `RUNTIME_CONFIG_USER`,
+    and for the tone filter's "no effect" line `ENGINE_RUN_SETUP` (a config file's `-Y` list, one without rows
+    included), `APP_COMMAND_QUEUE` (a running session, a channel map imported into a `-Y` scan included) and
+    `ENGINE_TRUNK_SCAN`.
   - The RTL metrics hook table (`include/dsd-neo/runtime/rtl_stream_metrics_hooks.h`) also carries the receive-family
     request (`apply_analog_profile`), the published analog profile (`analog_profile`), whether the analog family runs
     (`analog_family_active`) and the output rate a family switch lands on (`output_rate_for_family`); the engine
@@ -483,7 +556,21 @@ Tests: `tests/engine/test_engine_trunk_scan.c` (`ENGINE_TRUNK_SCAN`) and
     row on and the boundaries the monitor output drops a block across. `dsd_analog_tone_detection_active()` is that with
     `analog_demod` FM (issue #524: CTCSS and DCS are FM signalling), the one answer to "does received-tone detection
     run". The DSP tap and `app_control/rx_tone_view` both ask it, so a frontend row is shown exactly while the detectors
-    listen. `RUNTIME_ANALOG_TONES` pins the table value by value, and both predicates case by case. DCS (issue #523):
+    listen. `dsd_analog_tone_gate_in_force()` is the receive policy's verdict on that reception (issue #527): OFF
+    wherever detection does not run, else `dsd_state::analog_rx.gate`, failing closed: a published OFF while `dsd_opts`
+    holds a list policy with a list is no verdict of it (the tap has no session, or has not read since the policy came
+    on) and reads PENDING; the monitor sink and the scanners ask it. `dsd_analog_tone_gate_passes()` is what a verdict
+    lets through, OFF and ALLOWED: the one rule for what the monitor plays and what is scan activity (a PENDING carrier
+    holds a row only while it lasts, leaving no tail). Tone
+    lists (issue #527): `dsd_tone_set_parse()` reads the '/'-separated list the CLI, the INI and scan rows share (a tone
+    as `100` or `100.0`, a code as `D023`, `D023N` or `D023I`), refusing commas with a hint, empty entries, nonstandard
+    values and a signal listed twice by entry number, never echoing the text; `dsd_tone_set_format()` writes it back as
+    written and `dsd_tone_set_format_display()` with units and a `…+N` count for what does not fit;
+    `dsd_tone_set_contains_ctcss()` / `_dcs()` match a code by its signal (`dsd_dcs_canonical()` on both sides), so a
+    listed D023I matches a received D047N. `dsd_tone_set_same_signals()` compares two lists by what they pass, a code
+    under either spelling, for every question of whether two policies are the same (the tone policy's reconfigure, the
+    `-Y` same-frequency row check, the unheard-policy warning); `dsd_tone_set_equal()` compares them as written.
+    `RUNTIME_ANALOG_TONES` pins the table value by value, and both predicates case by case. DCS (issue #523):
     the standard 104-code set, `dsd_dcs_word()` (any 9-bit code's 23-bit Golay word: code, the fixed 100, 11 check bits;
     bit 0 sent first, a multiple of `0xC75`; inverted polarity is the complement), `dsd_dcs_match()` (names the signal
     in 23 received bits when some rotation, in either polarity, is a supported code's word), `dsd_dcs_canonical()` (the
@@ -792,8 +879,17 @@ installs from `src/engine/trunk_tuning.c` in `src/engine/trunk_tuning_hooks_inst
   `ctcss_tenths_hz`, and the same signal's other standard spelling in `dcs_alias_code` / `dcs_alias_inverted`: the text
   names both, canonical first. The first polarity reads normal and the second inverted for every standard code, whose
   inverted signal is another standard code's normal one; both are kept because a code is named with its polarity
-  everywhere. The same view carries `configured_text`, the configured tone policy, which reads `off` until #527 and is
-  never derived from the received tone. Tests: `APP_CONTROL_RX_TONE_VIEW`, the terminal goldens, `UI_QT_METRICS_MODEL`.
+  everywhere. The same view carries `configured_text`, the CTCSS/DCS receive policy in force (issue #527): `off`, or its
+  mode and display list (`allow 100.0 Hz/D023N`, `dsd_tone_set_format_display()`), and while a scan row's own policy
+  runs (`dsd_scan_mode_row_options()`) ` (row; default X)` naming the configured policy it shadows
+  (`dsd_scan_mode_configured_tone_policy()`, its list summarised shorter), as the squelch and width views read; never
+  derived from the received tone; `policy_visible` (detection runs and a policy is in force or a row set its own,
+  independent of the received row, since the policy still mutes at a rate detection cannot use); and `gate` /
+  `gate_text`, what the policy does with the carrier on air (`passing`, `muted: checking tone`, `muted: not allowed`,
+  `muted: no tone`; empty without a carrier or past a stale input's deadline), with `gate_no_tone` saying a decided
+  verdict was reached for want of a tone, so a frontend that words the verdict itself (Qt's translated words) reads why
+  from the field, never from the English text. The terminal swaps the display list's `…` for `...` where it prints the
+  separator's hyphen (no UTF-8). Tests: `APP_CONTROL_RX_TONE_VIEW`, the terminal goldens, `UI_QT_METRICS_MODEL`.
   `include/dsd-neo/app_control/analog_width_view.h` and `src/app_control/analog_width_view.c` (issue #525) decide the
   analog channel width in force under the configured analog preset (the scan scope's configured view, so a typed digital
   row does not hide it; never for the M17 encoder): the front end's reported width while a running stream's options in
@@ -1004,7 +1100,38 @@ installs from `src/engine/trunk_tuning.c` in `src/engine/trunk_tuning_hooks_inst
     the detector inert and reporting NONE. NONE after 500 ms of carrier without a lock, like CTCSS. Samples inside the
     hangover keep the clock and the windows moving but change no verdict on what they read; only the span, which is
     carrier time, runs out on them. A signal one bit from a supported word can read as that code, the way a DCS decoder
-    tolerates a bit error; `DSP_ANALOG_DCS` pins that nothing further away does.
+    tolerates a bit error; `DSP_ANALOG_DCS` pins that nothing further away does. While nothing is locked it also keeps a
+    candidate (issue #527): some slicer read a supported code's word exactly (the first half of a lock) within the last
+    `DSD_ANALOG_DCS_SPAN_BITS` bits read with the carrier open (`candidate_age`), reported through the plug-in report's
+    `candidate` and published as `dsd_analog_rx_publication::dcs_candidate`. `DSP_ANALOG_DCS` pins that the two starts
+    of 12,000 at 3 dB (78.125 kHz, 750 us) that lock after 800 ms hold it until they lock, and that noise raises it at
+    800 ms on at most 5% of receptions.
+  - `src/dsp/analog_tone_policy.c` behind the module-private `src/dsp/analog_tone_policy.h` is the CTCSS/DCS receive
+    policy (issue #527), pure (no `dsd_state`, no clock): it takes each read's publication and its sample count and
+    rate, and keeps its window in exact sample time. OFF with no list policy; else a reception starts PENDING at its
+    first read with a carrier, a confirmed value is judged at once (allow: listed passes; block: listed is rejected),
+    and `DSD_ANALOG_TONE_WINDOW_MS` (800, in `dsp/analog_rx.h`) without one decides "no tone" (allow rejects, block
+    passes), extended to at most `DSD_ANALOG_TONE_WINDOW_DCS_MS` (1,600) while the list holds a code and
+    `dcs_candidate` stands. `_Static_assert`s hold both windows to the CTCSS and DCS lock ceilings plus 100 ms. After a
+    verdict it goes on judging: an allow list's allowed value lost goes PENDING with a fresh window, a confirmed
+    nonpassing value rejects, a block list keeps a pass on loss, and a rejection holds until the reception ends except
+    for a newly confirmed passing value; another confirmed nonpassing value becomes the rejection's reason (a "no tone"
+    rejection that hears an unlisted tone names it). A locked value outside the standard sets is not confirmed: it is
+    judged as no tone at the window's end. The tap's glue (`analog_rx.c`) configures it from `dsd_opts` on every read
+    (the FM monitor only; a different policy starts the reception over, and its check is not logged as a tone lost; a
+    list that only respells a code is the same policy, `dsd_tone_set_same_signals()`),
+    resets it with every reset the publication's generation records (hangover, retune, row change, pause), publishes
+    `gate`, `gate_no_tone` and `gate_rejected_ended` (a reception its carrier's hangover, or an input pause, ended under
+    REJECTED, from that reset, the core's `carrier_end_reset`, until the next carrier, a policy change or any other
+    reset: the scanners' release outlives the carrier), and logs `Tone filter: allowed|rejected (<value>|no tone)` and
+    `Tone filter: pending (tone lost)` on a change. `dsd_symbol.c`
+    applies it at its one monitor sink: `symbol_unsynced_audio_allowed()` plays only OFF and ALLOWED, muting the local
+    stream and the UDP analog socket together, and `symbol_unsynced_carrier_active()` stamps carrier activity only
+    for those too (`dsd_analog_tone_gate_passes()`), none for PENDING or REJECTED; the `-6` raw WAV, written before, is
+    not gated. DSP never advances a scanner. Tests:
+    `DSP_ANALOG_TONE_POLICY` (the state machine in sample time with injected detections), `DSP_SYMBOL_REPLAY` (the sink,
+    the stamp, the raw WAV, policy off byte for byte), the `DECODE_IQ_ANALOG_POLICY_*` and
+    `DECODE_IQ_ANALOG_REAL_CTCSS_POLICY` replays.
   - Invariant: resets never happen in `noCarrier()` / `dsd_engine_reset_no_carrier_state()` (they run every ~375 ms in
     analog mode and would stop any tone locking). They happen in `dsd_frame_sync_reset_acquisition()` (row commit and
     leave, trunk-scan target switch, decode-mode change, scope resume, RR apply), on an RTL stream-generation or
@@ -1579,10 +1706,13 @@ Qt Quick frontend (`src/ui/qt`):
   `clear()` on stop. `rxToneConfiguredText` sits beside it with a signal of its own, `rxToneConfiguredTextChanged`,
   because it is configuration rather than session state: it reads the view's `off` from construction, keeps its value
   across a stop, and no received-tone change announces it. `qml/MonitorScreen.qml` shows it as the `RECEIVED TONE` row
-  (`monitorRxTone`) and reserves a hidden `TONE FILTER` row (`monitorToneFilter`) bound only to `rxToneConfiguredText`,
-  so the configured policy (#527) can never be mistaken for, or feed, the received tone. The terminal shows the same
-  view as the Call Info `Rx tone:` line (`ui_format_rx_tone_line()`, compact view included). The Android notification is
-  unchanged.
+  (`monitorRxTone`) and the policy as the `TONE FILTER` row (`monitorToneFilter`), bound to `rxToneConfiguredText` and
+  the `toneFilter*` group (issue #527: `toneFilterVisible`, `toneFilterGate`, `toneFilterStatusText`, translated
+  verdict words, with their own `toneFilterChanged` signal, cleared on stop while the policy text stays), so the policy
+  can never be mistaken for, or feed, the received tone. The terminal shows the same view as the Call Info `Rx tone:`
+  line (`ui_format_rx_tone_line()`) and `Tone filter:` line under it (`ui_format_tone_filter_line()`), compact view
+  included. The Android notification is unchanged. There is no live editor: the policy comes from the CLI, the INI
+  (config apply) and scan rows.
 - `dsd_app_lead_slot()` in `app_control/call_view.c` selects the earliest exact start among identified active
   calls for the Monitor hero, its quality row and the Android notification. Later calls on the other slot do not
   displace it. Exact ties prefer the lower slot; when no call is active, the lowest ended slot wins. An earlier
@@ -1765,13 +1895,17 @@ External dependencies (resolved via CMake):
   leaves the receiver and snapshot untouched. Conventional retries keep the frame gate closed until a row commits,
   including when a later tune is deferred or rejected; the scanner can still advance to a working row. Separately,
   trunk-scan failures re-arm dwell or retry timers so memory pressure cannot cause a retry on every tick.
-- `dsd_channel_modes_present()` is true for declared modes and for option-bearing profiles alike, so option-only
-  channel maps run the typed scanner. `dsd_scan_settings_equal()` compares acquisition settings only; the row-scoped
-  options (forcing, CRC, mutes, voice gate, group file) are folded through `dsd_scan_mode_resume()` without
-  resetting acquisition. Conventional trunk-scan targets take their voice-gate hold/qualify from the row profile.
-  `DSD_SCAN_OPT_MAX_VISIT` is the one **scan-timing** row option accepted on trunked types as well, and its
-  `scan_max_visit_ms` travels in the same row-option block, outside `dsd_scan_settings_equal()`, so a row cap never
-  restages a tune.
+- `dsd_channel_modes_present()` is true for declared modes and for option-bearing profiles alike, so option-only channel
+  maps run the typed scanner. `dsd_channel_mode_hears_tones()` says whether a row runs received-tone detection while it
+  is on air: an `nfm` row, or, when the configured decode mode is the FM monitor, one that declares no mode and so runs
+  it (issue #527); `dsd_channel_modes_hear_tones()` whether any row the scanner tunes (one with a frequency) does, and
+  `dsd_channel_modes_conventional_hear_tones()` whether a session outside a trunk scan does: a `-Y` list with rows by
+  its rows, anything else (a `-Y` scan without rows included) by the configured decode mode.
+  `dsd_scan_settings_equal()` compares acquisition settings only; the row-scoped options (forcing, CRC, mutes, voice
+  gate, group file) are folded through `dsd_scan_mode_resume()` without resetting acquisition. Conventional trunk-scan
+  targets take their voice-gate hold/qualify from the row profile. `DSD_SCAN_OPT_MAX_VISIT` is the one **scan-timing**
+  row option accepted on trunked types as well, and its `scan_max_visit_ms` travels in the same row-option block,
+  outside `dsd_scan_settings_equal()`, so a row cap never restages a tune.
 - Long DMR base-station decode loops consult the runtime frame hook `scan_visit_should_yield` at burst boundaries.
   It maintains the owning scanner's visit clock and reports expiry without tuning. The decoder finishes its cleanup
   and releases the SM guard before the engine advances, so cleanup cannot overwrite the next target's state.
@@ -1830,6 +1964,33 @@ External dependencies (resolved via CMake):
   review and target preview as `bandwidthHz` (invalid when the row inherits), which read `NFM bandwidth: 12.5 kHz` or
   `AM bandwidth: 8.333 kHz` by the row's mode or target type, or `inherit` on an analog row without one
   (`Util.analogBandwidthSummary()`).
+- `DSD_SCAN_OPT_TONE` (issue #527) is one bit for three spellings, `--tone-allow <list>`, `--tone-block <list>` and the
+  explicit row disable `--no-tone-filter`, so combining them is a duplicate; `NFM` only (`needs mode nfm` on digital and
+  blank rows; an am row or `am-conventional` target, whose AM monitor hears no tone, refuses it as
+  `not supported for this mode/target`). The setter parses with `dsd_tone_set_parse()`, and `option_invalid()` asks it
+  again for the entry-numbered reason. The values (`tone_filter`, `tone_set`) land in `dsd_opts::analog_tone_filter` /
+  `analog_tone_set` and the leading row block of `dsd_scan_settings`, outside `dsd_scan_settings_equal()` (policy, not
+  acquisition). `dsd_scan_mode_configured_tone_policy()` reads the configured one for saves; the rx tone view marks a
+  row's own `(row; default X)`. Scan coupling is the engine's (see Engine): PENDING holds a row while its carrier lasts
+  but is no activity (no tail, no hold or dwell restarted), REJECTED releases it at the scanner's next pass, and on an
+  am row or target no verdict is in force (`dsd_analog_tone_gate_in_force()`), so the carrier holds it as `Carrier`. The
+  CSV splitters end the options cell at an unquoted comma, so both importers (`chan_import_options_split()` in
+  `dsd_import.c`, `scan_check_options_split()` in `trunk_scan.c`) ask `dsd_scan_options_tone_list_split()` whether the
+  cell ends with a tone list and the field after it goes on with it (any text past the header; in a named column, a
+  field that is one space-free run of `/`-separated entries starting with a standard tone or code, alone or followed by
+  a row option's switch, the rest of the cell, so a name such as `100 Main St` stays the column's own) and refuse the
+  row with `use / between entries, not commas` rather than import it short or blame the column the rest landed in. The
+  import previews carry a row's own policy as `tone_filter` (its `dsd_tone_filter_mode`, -1 when the row runs the
+  configured one) and `tone_list` (its list as displayed) in `dsd_csv_channel_profile` and `dsd_app_scan_csv_target`,
+  both filled by `dsd_scan_option_tone_summary()`; they reach the Qt/Android channel-map review and target preview as
+  `toneFilter` (invalid when the row inherits) and `toneList`, which read `Tone filter: allow 100.0 Hz/D023N`, `off`, or
+  `inherit` on an nfm row without one (`Util.toneFilterSummary()`). Tests: `RUNTIME_SCAN_OPTIONS`, `RUNTIME_SCAN_MODE`,
+  `RUNTIME_CONFIG_USER` (never saved), `RUNTIME_CONFIG_APPLY` (a loaded config under a row's own policy),
+  `CORE_CSV_IMPORT` and `APP_CONTROL_TRUNK_SCAN_VALIDATE` (row diagnostics, am rows and targets, previews),
+  `ENGINE_NO_CARRIER_RESET` (`-Y`, the legacy untyped list and a list with nowhere else to go, a row refused its width
+  included, an am row, rows sharing the frequency on air), `ENGINE_TRUNK_SCAN` (a target refused its width included, an
+  am target, a same-frequency target of another type), `UI_QT_IMPORTED_FILES`, `UI_QT_SCAN_LIST_ROUNDTRIP` and
+  `UI_QT_QML_CALL_LISTS` (previews).
 - Adding a row option: add the `DSD_SCAN_OPT_*` bit (reserved values only), a `dsd_scan_option_values` field and a
   `specifications[]` row with its setter in `runtime/scan_options.c` (use `ANY_MODES` only for options that mean the
   same on every class); add a `scan_option_appliers[]` row in `runtime/scan_mode.c`; if it lands in `dsd_opts`, add

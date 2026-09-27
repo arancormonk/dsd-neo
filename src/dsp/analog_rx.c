@@ -13,6 +13,7 @@
  * analog_rx_internal.h for the signal path.
  */
 
+#include <dsd-neo/core/analog_tone.h>
 #include <dsd-neo/core/input_level.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/power.h>
@@ -31,6 +32,7 @@
 #include <stdint.h>
 #include <stdlib.h>
 #include "analog_rx_internal.h"
+#include "analog_tone_policy.h"
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/state_fwd.h"
 
@@ -309,6 +311,7 @@ core_update_carrier(dsd_analog_rx_core* core, int carrier_now, int count) {
     const int64_t hangover = ((int64_t)core->fe.in_rate_hz * DSD_ANALOG_CARRIER_HANGOVER_MS) / 1000;
     if (core->closed_samples >= hangover) {
         dsd_analog_rx_core_reset(core);
+        core->carrier_end_reset = core->resets;
         return 0;
     }
     return 1;
@@ -363,7 +366,8 @@ dsd_analog_rx_core_track_carrier(dsd_analog_rx_core* core, const float* block, i
 
 /* One verdict from every detector's: the first locked detector in table order names the code
    or tone (a code outranks a tone, see k_detectors); otherwise the carrier is still being
-   evaluated while any detector is, and carries no tone once every detector has said so. */
+   evaluated while any detector is, and carries no tone once every detector has said so. A
+   candidate (only the DCS detector reports one) counts only while nothing is locked. */
 static void
 core_merge_reports(const dsd_analog_rx_core* core, dsd_analog_rx_report* out) {
     DSD_MEMSET(out, 0, sizeof(*out));
@@ -374,10 +378,14 @@ core_merge_reports(const dsd_analog_rx_core* core, dsd_analog_rx_report* out) {
         k_detectors[i].ops->report(core_detector_const(core, i), &report);
         if (report.state == DSD_ANALOG_TONE_STATE_LOCKED) {
             *out = report;
+            out->candidate = 0;
             return;
         }
         if (report.state == DSD_ANALOG_TONE_STATE_ACQUIRING) {
             out->state = DSD_ANALOG_TONE_STATE_ACQUIRING;
+        }
+        if (report.candidate) {
+            out->candidate = 1;
         }
     }
 }
@@ -415,6 +423,7 @@ dsd_analog_rx_core_publish(const dsd_analog_rx_core* core, dsd_analog_rx_publica
     out->ctcss_tenths_hz = report.ctcss_tenths_hz;
     out->dcs_code = report.dcs_code;
     out->dcs_inverted = report.dcs_inverted;
+    out->dcs_candidate = report.candidate;
 }
 
 /* ------------------------------------------------------------------------------------------
@@ -474,6 +483,14 @@ typedef struct {
     /** 1 while the tap runs the detectors (the FM monitor, dsd_analog_tone_detection_active()); 0 while it keeps only
         the carrier and the boundaries (the AM monitor, issue #524), when it publishes no tone. */
     int detecting;
+    /** The configured tone policy's verdict on the reception (issue #527), run after every read the detectors take. */
+    dsd_analog_tone_policy policy;
+    /** The publication generation the policy's reception belongs to: a reset ends it. */
+    uint32_t policy_generation;
+    /** The verdict the "Tone filter:" log line last reported this reception; gate OFF for none. */
+    dsd_analog_tone_policy policy_logged;
+    /** Published as dsd_analog_rx_publication::gate_rejected_ended: the last reception ended rejected. */
+    int rejected_ended;
 } analog_rx_session;
 
 #ifdef DSD_NEO_TEST_HOOKS
@@ -564,6 +581,9 @@ analog_rx_session_create(const dsd_opts* opts, dsd_state* state) {
     session->log_generation = session->core.resets;
     session->read_rate_hz = analog_rx_rate_hz(opts);
     session->detecting = dsd_analog_tone_detection_active(opts);
+    dsd_analog_tone_policy_init(&session->policy);
+    dsd_analog_tone_policy_init(&session->policy_logged);
+    session->policy_generation = session->core.resets;
     analog_rx_note_generations(opts, session);
     if (dsd_state_ext_set(state, DSD_STATE_EXT_DSP_ANALOG_RX, session, free) != 0) {
         free(session);
@@ -615,8 +635,84 @@ analog_rx_log_change(analog_rx_session* session, const dsd_analog_rx_publication
     }
 }
 
+/* A verdict the policy has reached: ALLOWED or REJECTED. */
+static int
+analog_rx_policy_decided(int gate) {
+    return gate == DSD_ANALOG_TONE_GATE_ALLOWED || gate == DSD_ANALOG_TONE_GATE_REJECTED;
+}
+
+/* The same verdict on the same value. */
+static int
+analog_rx_policy_same_verdict(const dsd_analog_tone_policy* a, const dsd_analog_tone_policy* b) {
+    return a->gate == b->gate && a->no_tone == b->no_tone && a->value_kind == b->value_kind
+           && a->value_ctcss == b->value_ctcss && a->value_dcs_code == b->value_dcs_code
+           && a->value_dcs_inverted == b->value_dcs_inverted;
+}
+
+/* The "Tone filter:" line for the verdict the session's policy holds (issue #527): once per change of verdict or of the
+   value that decided it, each reception and each policy afresh. A reception's opening check is not logged, only a check
+   that follows a verdict of the same policy (an allowed tone that was lost). */
 static void
-analog_rx_publish(dsd_state* state, analog_rx_session* session) {
+analog_rx_policy_log(analog_rx_session* session) {
+    const dsd_analog_tone_policy* now = &session->policy;
+    dsd_analog_tone_policy* logged = &session->policy_logged;
+    const int withdrawn = now->gate == DSD_ANALOG_TONE_GATE_PENDING && analog_rx_policy_decided(logged->gate);
+    if ((!analog_rx_policy_decided(now->gate) && !withdrawn) || analog_rx_policy_same_verdict(now, logged)) {
+        return;
+    }
+    *logged = *now;
+    if (withdrawn) {
+        LOG_INFO("Tone filter: pending (tone lost)\n");
+        return;
+    }
+    char label[ANALOG_RX_LABEL_SIZE] = "no tone";
+    if (now->value_kind == DSD_ANALOG_TONE_KIND_DCS) {
+        (void)dsd_dcs_format_label(now->value_dcs_code, now->value_dcs_inverted, label, sizeof(label));
+    } else if (now->value_kind == DSD_ANALOG_TONE_KIND_CTCSS) {
+        (void)dsd_ctcss_format_label(now->value_ctcss, label, sizeof(label));
+    }
+    LOG_INFO("Tone filter: %s (%s)\n", now->gate == DSD_ANALOG_TONE_GATE_ALLOWED ? "allowed" : "rejected", label);
+}
+
+/* Run the configured tone policy (issue #527) over what the tap just published: @p samples of input at @p rate_hz,
+   0 for a read the tap passed over. A reset (the generation moved) ends the reception the policy was judging. The AM
+   monitor carries no tones, so no policy runs there. */
+static void
+analog_rx_policy_publish(const dsd_opts* opts, dsd_state* state, analog_rx_session* session, unsigned int samples,
+                         int rate_hz) {
+    const int changed =
+        session->detecting
+            ? dsd_analog_tone_policy_configure(&session->policy, opts->analog_tone_filter, &opts->analog_tone_set)
+            : dsd_analog_tone_policy_configure(&session->policy, DSD_TONE_FILTER_OFF, NULL);
+    const uint32_t generation = state->analog_rx.generation;
+    if (session->policy_generation != generation) {
+        /* A rejected reception its carrier ended -- the one reset since the policy last ran was the hangover's, or a
+           pause's -- stays rejected for the scanners until the next carrier; any other reset forgets it. */
+        session->rejected_ended = generation == session->policy_generation + 1U
+                                  && generation == session->core.carrier_end_reset
+                                  && session->policy.gate == DSD_ANALOG_TONE_GATE_REJECTED;
+        session->policy_generation = generation;
+        dsd_analog_tone_policy_reset(&session->policy);
+        dsd_analog_tone_policy_init(&session->policy_logged);
+    } else if (changed) {
+        /* Another policy judges the reception afresh (a config load, a scan row's own coming on air): what the old one
+           decided is no verdict of this one, so its check is not reported as a tone lost. */
+        dsd_analog_tone_policy_init(&session->policy_logged);
+    }
+    if (changed || state->analog_rx.carrier_open) {
+        session->rejected_ended = 0;
+    }
+    state->analog_rx.gate = dsd_analog_tone_policy_step(&session->policy, &state->analog_rx, samples, rate_hz);
+    state->analog_rx.gate_no_tone = session->policy.no_tone;
+    state->analog_rx.gate_rejected_ended = session->rejected_ended;
+    analog_rx_policy_log(session);
+}
+
+/* Publish where the core stands after a read of @p samples at @p rate_hz (0 for a read the tap passed over), and the
+   tone policy's verdict on it. */
+static void
+analog_rx_publish(const dsd_opts* opts, dsd_state* state, analog_rx_session* session, unsigned int samples,
+                  int rate_hz) {
     dsd_analog_rx_core_publish(&session->core, &state->analog_rx);
     state->analog_rx.stale_after_ms = session->stale_after_ms;
     if (!session->detecting) {
@@ -627,9 +723,12 @@ analog_rx_publish(dsd_state* state, analog_rx_session* session) {
         state->analog_rx.ctcss_tenths_hz = 0;
         state->analog_rx.dcs_code = 0;
         state->analog_rx.dcs_inverted = 0;
+        state->analog_rx.dcs_candidate = 0;
+        analog_rx_policy_publish(opts, state, session, samples, rate_hz);
         return;
     }
     analog_rx_log_change(session, &state->analog_rx);
+    analog_rx_policy_publish(opts, state, session, samples, rate_hz);
 }
 
 /*
@@ -781,11 +880,11 @@ analog_rx_session_start(const dsd_opts* opts, dsd_state* state) {
 /* Publish a read the backlog skip passed over. The core is still designed for the read's rate,
    so the publication says at once whether detection can use it: IDLE meanwhile, or UNAVAILABLE. */
 static void
-analog_rx_publish_skipped(dsd_state* state, analog_rx_session* session, int rate_hz) {
+analog_rx_publish_skipped(const dsd_opts* opts, dsd_state* state, analog_rx_session* session, int rate_hz) {
     if (session->core.fe.in_rate_hz != rate_hz) {
         core_configure(&session->core, rate_hz);
     }
-    analog_rx_publish(state, session);
+    analog_rx_publish(opts, state, session, 0U, rate_hz);
 }
 
 /* A retune nobody told the tap about shows up as a generation change: the RTL stream's for
@@ -857,6 +956,13 @@ analog_rx_forget(dsd_state* state) {
     /* Nothing has been processed since the reset, whatever the front end's design says; at an
        unusable rate the next read publishes UNAVAILABLE again. */
     state->analog_rx.tone_state = DSD_ANALOG_TONE_STATE_INACTIVE;
+    /* The reception the tone policy judged is over too (issue #527): a list policy is back to checking, with no
+       carrier yet, so nothing plays before the next read has judged the new channel. */
+    session->policy_generation = state->analog_rx.generation;
+    dsd_analog_tone_policy_reset(&session->policy);
+    dsd_analog_tone_policy_init(&session->policy_logged);
+    session->rejected_ended = 0;
+    state->analog_rx.gate = session->detecting ? session->policy.gate : DSD_ANALOG_TONE_GATE_OFF;
 }
 
 void
@@ -919,6 +1025,10 @@ analog_rx_boundary_dropped(const dsd_opts* opts, dsd_state* state, analog_rx_ses
         core_configure(&session->core, rate_hz);
     } else {
         dsd_analog_rx_core_reset(&session->core);
+        if (!moved) {
+            /* A pause alone is the carrier dropping (DSD_ANALOG_STREAM_PAUSE_MIN_MS): the reception ended there. */
+            session->core.carrier_end_reset = session->core.resets;
+        }
     }
     if (moved) {
         /* A retune starts the stream afresh: no deadline until it delivers again, and what the
@@ -929,7 +1039,7 @@ analog_rx_boundary_dropped(const dsd_opts* opts, dsd_state* state, analog_rx_ses
         analog_rx_arm_backlog_skip(session);
         analog_rx_backlog_span_start(session, analog_rx_now_ms());
     }
-    analog_rx_publish(state, session);
+    analog_rx_publish(opts, state, session, 0U, rate_hz);
     return 1;
 }
 
@@ -953,9 +1063,12 @@ analog_rx_read(const dsd_opts* opts, dsd_state* state, const float* samples, uns
        monitor every frontend's row, so the row is on screen exactly while the detectors listen. */
     if (!dsd_analog_monitor_tap_active(opts)) {
         /* Forget only: these samples go on to the voice filters and the monitor output as
-           they are. */
-        if (state->analog_rx.tone_state != DSD_ANALOG_TONE_STATE_INACTIVE || state->analog_rx.carrier_open) {
+           they are, and no tone policy judges them. */
+        if (state->analog_rx.tone_state != DSD_ANALOG_TONE_STATE_INACTIVE || state->analog_rx.carrier_open
+            || state->analog_rx.gate != DSD_ANALOG_TONE_GATE_OFF || state->analog_rx.gate_rejected_ended) {
             analog_rx_forget(state);
+            state->analog_rx.gate = DSD_ANALOG_TONE_GATE_OFF;
+            state->analog_rx.gate_no_tone = 0;
         }
         return;
     }
@@ -973,7 +1086,7 @@ analog_rx_read(const dsd_opts* opts, dsd_state* state, const float* samples, uns
         }
     }
     if (analog_rx_backlog_skipped(opts, session, count, rate_hz)) {
-        analog_rx_publish_skipped(state, session, rate_hz);
+        analog_rx_publish_skipped(opts, state, session, rate_hz);
         return;
     }
     const int squelch_open = analog_rx_squelch_open(opts, samples, count);
@@ -986,7 +1099,7 @@ analog_rx_read(const dsd_opts* opts, dsd_state* state, const float* samples, uns
            reset does not, so a scan step or retune at an unchanged unusable rate stays quiet. */
         session->unusable_rate_logged = 0;
     }
-    analog_rx_publish(state, session);
+    analog_rx_publish(opts, state, session, count, rate_hz);
 }
 
 /* Where the tap's next read starts in a block now holding @p filled samples: after what it has
@@ -1078,6 +1191,16 @@ dsd_analog_rx_carrier_open_now(const dsd_opts* opts, const dsd_state* state) {
     /* Nor while a retune is unresolved: in flight, the front end still delivers the channel being left; failed after
        the scanner moved on, it delivers a channel other than the one the scanner shows. */
     if (dsd_trunk_tuning_pending_request() != 0U) {
+        return 0;
+    }
+    const analog_rx_session* session = analog_rx_session_get(state);
+    return session ? analog_rx_generations_current(opts, session) : 1;
+}
+
+int
+dsd_analog_rx_rejection_ended_now(const dsd_opts* opts, const dsd_state* state) {
+    if (!opts || !state || !state->analog_rx.gate_rejected_ended || !dsd_analog_tone_detection_active(opts)
+        || dsd_trunk_tuning_pending_request() != 0U) {
         return 0;
     }
     const analog_rx_session* session = analog_rx_session_get(state);

@@ -246,7 +246,8 @@ src_couple(dcs_src* src, double corner_hz) {
 /* The NRZ level of the word bit the transmitter is sending, then the clock moves on. */
 static double
 src_word_level(dcs_src* src, int64_t n) {
-    const int bit = (int)src->bit_phase;
+    /* bit_phase stays in [0, DSD_DCS_WORD_BITS); the unsigned modulo states that bound where the shift uses it. */
+    const unsigned int bit = (unsigned int)src->bit_phase % (unsigned int)DSD_DCS_WORD_BITS;
     uint32_t word = src->word;
     if (src->flip && n >= src->flip_from
         && (src->flip_every <= 1 || (src->words_sent % src->flip_every) == src->flip_every - 1)) {
@@ -1508,8 +1509,90 @@ test_unusable_rate_is_inert(void) {
     assert(det.rate_hz > 4798.0 && det.box_len == 36);
 }
 
+/* --- Issue #527: the candidate the tone policy waits for --- */
+
+/* One reception from its start (carrier and code together, as a transmitter keys up) through @p watch_ms: the sample
+   time the code locked (-1: never), and whether the published candidate (dsd_analog_rx_publication::dcs_candidate)
+   stood at every block from @p from_ms until that lock. @p code < 0 sends no code. */
+typedef struct {
+    double lock_ms;
+    int held_until_lock;
+    int candidate_at_from;
+} candidate_run;
+
+static candidate_run
+run_candidate(double fs, int code, int inverted, double snr_db, double deemph_us, uint64_t seed, double from_ms,
+              double watch_ms) {
+    dsd_analog_rx_core_init(&g_core);
+    dcs_src src;
+    src_init(&src, fs, seed, code, inverted, snr_db, deemph_us);
+    src.on = 0;
+    candidate_run run = {-1.0, 1, 0};
+    const int block = (int)(fs / 1000.0);
+    float buf[128];
+    assert(block > 0 && block <= (int)(sizeof(buf) / sizeof(buf[0])));
+    const int64_t total = ms_to_samples(fs, watch_ms);
+    for (int64_t n = 0; n < total; n += block) {
+        for (int i = 0; i < block; i++) {
+            buf[i] = src_next(&src, n + i);
+        }
+        assert(dsd_analog_rx_core_process(&g_core, buf, block, (int)fs, 1) == 1);
+        dsd_analog_rx_publication pub;
+        dsd_analog_rx_core_publish(&g_core, &pub);
+        const double now_ms = samples_to_ms(fs, n + block);
+        if (pub.tone_state == DSD_ANALOG_TONE_STATE_LOCKED && run.lock_ms < 0.0) {
+            run.lock_ms = now_ms;
+            assert(pub.dcs_candidate == 0);
+        }
+        if (now_ms >= from_ms && run.lock_ms < 0.0 && !pub.dcs_candidate) {
+            run.held_until_lock = 0;
+        }
+        if (now_ms >= from_ms && now_ms < from_ms + 1.0) {
+            run.candidate_at_from = pub.dcs_candidate;
+        }
+    }
+    return run;
+}
+
+/*
+ * A code in noise at the 3 dB edge of the DCS contract can take longer than the tone policy's 800 ms window to lock
+ * (DSD_ANALOG_TONE_WINDOW_MS; the lock ceiling is 1,500 ms). The window runs on while the DCS detector holds a
+ * candidate, so the candidate must stand from 800 ms until the lock: these are the two starts of 12,000 at 78.125 kHz
+ * with 750 us, the slowest configuration, that locked after 800 ms, and each holds it. Noise with no code raises a
+ * candidate at 800 ms on a few receptions in a hundred, each of which the policy then decides that much later: the rate
+ * is held to at most 5% here (2.8% over 14,000 receptions at 48 and 78.125 kHz).
+ */
+static void
+test_candidate_holds_until_a_slow_lock(void) {
+    static const struct {
+        uint64_t seed;
+        int code;
+        int inverted;
+    } k_slow[] = {{9266252ULL, 0122, 1}, {9308073ULL, 0071, 0}};
+
+    for (size_t k = 0; k < sizeof(k_slow) / sizeof(k_slow[0]); k++) {
+        const candidate_run run = run_candidate(78125.0, k_slow[k].code, k_slow[k].inverted, 3.0, 750.0, k_slow[k].seed,
+                                                (double)DSD_ANALOG_TONE_WINDOW_MS, 1700.0);
+        DSD_FPRINTF(stderr, "DCS candidate: D%03o%c at 3 dB, 78.125 kHz, 750 us locked after %.0f ms\n",
+                    (unsigned int)k_slow[k].code, k_slow[k].inverted ? 'I' : 'N', run.lock_ms);
+        assert(run.lock_ms > (double)DSD_ANALOG_TONE_WINDOW_MS && run.lock_ms < (double)DSD_ANALOG_TONE_WINDOW_DCS_MS);
+        assert(run.held_until_lock && run.candidate_at_from);
+    }
+    int raised = 0;
+    const int receptions = 400;
+    for (int k = 0; k < receptions; k++) {
+        const candidate_run run = run_candidate(8000.0, -1, 0, 3.0, 750.0, 9500000ULL + (uint64_t)k,
+                                                (double)DSD_ANALOG_TONE_WINDOW_MS, 820.0);
+        assert(run.lock_ms < 0.0);
+        raised += run.candidate_at_from;
+    }
+    DSD_FPRINTF(stderr, "DCS candidate: raised at 800 ms on %d of %d receptions of noise\n", raised, receptions);
+    assert(raised * 20 <= receptions);
+}
+
 int
 main(void) {
+    test_candidate_holds_until_a_slow_lock();
     test_unusable_rate_is_inert();
     test_aliases_through_the_detector();
     test_no_code_verdict_then_late_code();

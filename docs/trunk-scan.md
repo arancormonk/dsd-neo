@@ -315,11 +315,13 @@ During scanning:
 - A `| Scan Timing:` row directly under the Trunk Scan row says why the receiver is staying on that target — `Acquiring
   control`, `Following call`, `Retune pending`, `Retune retry`, `Manual hold`, `Idle dwell`, and the conventional
   `Voice` / `Voice tail` / `Activity hold` / `Qualify` — with a countdown on whichever window is running and the
-  target's effective dwell and hold beside it, and `Carrier` while an analog target's carrier holds it. The
-  phrase table is in [the terminal UI guide](ui-terminal.md); the Qt and Android panels show the same thing.
+  target's effective dwell and hold beside it, `Carrier` while an analog target's carrier holds it, and `Tone check`,
+  with no countdown, while an `nfm-conventional` target's carrier is held muted for the tone filter's check. The phrase
+  table is in [the terminal UI guide](ui-terminal.md); the Qt and Android panels show the same thing.
 - Idle targets rotate after their dwell time. Call following or a conventional activity hold suspends that dwell;
   once the target becomes idle again, a fresh full dwell starts. Time spent following the call or holding activity
-  does not use up the next idle dwell.
+  does not use up the next idle dwell. The tone filter's check is the exception: it holds the target while its carrier
+  lasts but is not activity, so the dwell keeps running through it.
 - With `--scan-max-visit-ms` (or `[trunking] scan_max_visit_ms`) set, a visit also ends when it reaches the cap,
   whatever the target is doing: a trunked call being followed, a conventional hold, a control-channel hunt. The clock
   starts at the instant the target parks and starts again from zero on every re-park, so activity, grants and the
@@ -496,8 +498,9 @@ no symbol profile is applied over the monitor. Everything below applies to both 
 - **Activity is carrier.** The target holds while its squelch is open over the monitor audio (above the input's level
   floor, through a 200 ms hangover, at any input rate), whether or not audio is played, so `-o null` or a muted
   frontend still hold it. A retune that has not landed, or one that failed, holds nothing.
-  Each coordinator tick with the carrier open restarts `activity_hold_ms`; once the carrier drops, the hold runs
-  out and `dwell_ms` of silence rotates to the next target. The Scan Timing row reads `Carrier` while the carrier is
+  Each coordinator tick with the carrier open restarts `activity_hold_ms` (under a tone filter, only while it passes
+  the traffic; see below); once the carrier drops, the hold runs out and `dwell_ms` of silence rotates to the next
+  target. The Scan Timing row reads `Carrier` while the carrier is
   open and `Activity hold` for the tail. No decoded frame, header or voice verdict is involved, and digital activity
   reports never claim an analog target.
 - **Squelch matters.** Set a threshold with the target's `--squelch-db`, `[input] rtl_sql` or the `sql` field of
@@ -538,14 +541,45 @@ no symbol profile is applied over the monitor. Everything below applies to both 
   together, so a peer already running both is not asked again; after a request whose reply was lost the next one is
   always sent. On an RTL-family input DSD-neo demodulates the I/Q itself and the peer only follows the frequency: it is
   asked for `-B`, best-effort, as before, whatever the target runs, and whatever demodulator the peer is on.
+- **Tone filter.** `--tone-allow <list>`, `--tone-block <list>` or `--no-tone-filter` in the `options` column set an
+  `nfm-conventional` target's own CTCSS/DCS receive policy; without one the configured policy
+  (`--tone-allow`/`--tone-block`, `[analog] tone_filter` and `tone_list`) applies (see "Tone filter" in `docs/cli.md`).
+  The list takes `/` between entries: an unquoted comma ends the `options` cell, and a row whose list runs on past one
+  (into a field past the header, or into a column whose whole field is then a run of `/`-separated entries with no
+  space, starting with a standard tone or code, alone or followed by another row option such as `--squelch-db -60`) is
+  refused with `use / between entries, not commas`, as is a quoted cell with a comma. The Qt/Android preview of an
+  imported target file names it (`Tone filter: allow 100.0 Hz/D023N`, `Tone filter: off`), or `Tone filter: inherit` on
+  an `nfm-conventional` target without one. The policy is a setting, shown apart from the tone or code received. Under a
+  list policy each transmission is muted while it is checked (800 ms, to 1,600 ms while the list holds a DCS code and a
+  received code is still being confirmed), and holds the target while its carrier lasts, under `Tone check` with no
+  countdown meanwhile. The check is not activity: it restarts no `activity_hold_ms` and the target's idle dwell keeps
+  running through it, so a transmission that ends before its verdict leaves no hold behind it, and repeated short bursts
+  the policy never passes (kerchunks, noise) cannot park the rotation; once the dwell has run out, the tick after a
+  burst advances. Traffic the policy allows is activity like any carrier and leaves the ordinary hold, then a fresh
+  dwell. Traffic the policy rejects is muted and is no activity: it never restarts `activity_hold_ms`, and at the next
+  tick the coordinator advances, without waiting out the hold that earlier traffic earned, which is how traffic that was
+  passing and turns out to carry a blocked (or, under allow, an unlisted) tone or code releases the target. So does
+  traffic rejected and ended before the next tick came: the rejection outlives its carrier for the coordinator until the
+  next carrier opens or the target changes, so the hold the traffic earned while it passed is not waited out either. The
+  `Y` hold keeps the target, muted. With nowhere else to go (a list with this one target, or whose other targets are
+  avoided, cooling down from a failed retune, or skipped at every visit for a width the DSP rate cannot filter) the
+  target mutes the traffic and stays, without rotating on its idle dwell meanwhile, and the Scan Timing row reads
+  `Carrier` with no countdown; once that traffic ends, the hold and the dwell run as after any carrier. A target on the
+  same frequency counts as somewhere to go: a list holds one target per type and frequency, so it is of another type,
+  which runs no tone check (a mixed-mode repeater's `dmr-conventional` target takes the DMR traffic an
+  `nfm-conventional` target's allow list rejects). Leaving the target restores the configured policy, and Config->Save
+  never writes a target's own. An `am-conventional` target has no policy: the AM monitor hears no CTCSS or DCS, so its
+  `options` refuse the switches, and while it is parked the configured policy judges and mutes nothing and its carrier
+  holds it under `Carrier`. A configured list policy with no `nfm-conventional` target in the list has no effect, since
+  every target runs its own type's mode, and scan start says so once.
 - **Controls.** `--scan-max-visit-ms`, the `Y` hold, advance and avoid work exactly as for digital targets, including
   while a carrier holds the target. The voice gate never applies to an analog target, so a global `--scan-voice-only`
   does not block one, and voice-gate switches are rejected in its `options`.
 - **What it refuses.** An analog target takes no `modulation`, `chan_csv`, `p25_bandplan_csv` or key column, and its
-  `options` accept only `--scan-max-visit-ms`, `--squelch-db` and the width option of its own kind
-  ([details](csv-formats.md#analog-rows)). Live decryption changes are refused while it is parked. `nfm-trunk` and
-  `am-trunk` are refused with `analog targets are conventional only`, and `nfm`, `am` or the analog FM spellings
-  (`fm-conventional`, ...) with a hint naming the conventional type to use.
+  `options` accept only `--scan-max-visit-ms`, `--squelch-db`, the width option of its own kind and, on an
+  `nfm-conventional` target, the tone filter ([details](csv-formats.md#analog-rows)). Live decryption changes are
+  refused while it is parked. `nfm-trunk` and `am-trunk` are refused with `analog targets are conventional only`, and
+  `nfm`, `am` or the analog FM spellings (`fm-conventional`, ...) with a hint naming the conventional type to use.
 
 ## Limitations
 
@@ -707,7 +741,10 @@ Saved analog systems (`-fA` NFM, `-fM` AM) become `nfm-conventional` and
 `am-conventional` targets; a saved analog system marked trunked is refused, since
 analog targets are conventional only. An analog entry holds on carrier: the editor
 hides its modulation and decryption choices, and the generated target carries no
-modulation, keys, key files or group file, including a saved analog system's.
+modulation, keys, key files or group file, including a saved analog system's. It
+sets no tone filter either, so an NFM entry runs the configured one (`--tone-allow`,
+`--tone-block`, `[analog] tone_filter`); a target CSV sets one per
+`nfm-conventional` target in its `options` column.
 RadioReference P25 imports (`-ft -^` and `-mq -^`) retain both their modulation
 and their per-target preference for learned control-channel candidates. That
 preference is restored to the configured default when leaving the target.

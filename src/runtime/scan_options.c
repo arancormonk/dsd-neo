@@ -1,9 +1,11 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 /* Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com> */
 
+#include <dsd-neo/core/analog_tone.h>
 #include <dsd-neo/core/parse.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/runtime/analog_channel.h>
+#include <dsd-neo/runtime/analog_tones.h>
 #include <dsd-neo/runtime/scan_mode.h>
 #include <dsd-neo/runtime/scan_options.h>
 #include <errno.h>
@@ -77,6 +79,8 @@ static int option_set_squelch(const scan_option_spec* spec, const char* argument
                               dsd_scan_options* parsed);
 static int option_set_bandwidth(const scan_option_spec* spec, const char* argument, unsigned int mode,
                                 dsd_scan_options* parsed);
+static int option_set_tone(const scan_option_spec* spec, const char* argument, unsigned int mode,
+                           dsd_scan_options* parsed);
 static int option_set_path(const scan_option_spec* spec, const char* argument, unsigned int mode,
                            dsd_scan_options* parsed);
 
@@ -126,6 +130,11 @@ static const scan_option_spec specifications[] = {
      * in whole Hz; a row carries one width, and each spelling is its own class's only. */
     {"--nfm-bandwidth-hz", DSD_SCAN_OPT_BANDWIDTH, NFM, 1, 0, 0, 0, NFM_BANDWIDTH_HINT, option_set_bandwidth},
     {"--am-bandwidth-hz", DSD_SCAN_OPT_BANDWIDTH, AM, 1, 0, 0, 0, AM_BANDWIDTH_HINT, option_set_bandwidth},
+    /* The CTCSS/DCS receive policy (issue #527): one option in three spellings, so a row names one of them once, and
+     * only on nfm rows and targets, the analog FM monitor that hears tones. The value is the policy. */
+    {"--tone-allow", DSD_SCAN_OPT_TONE, NFM, 1, 0, DSD_TONE_FILTER_ALLOW, 0, NULL, option_set_tone},
+    {"--tone-block", DSD_SCAN_OPT_TONE, NFM, 1, 0, DSD_TONE_FILTER_BLOCK, 0, NULL, option_set_tone},
+    {"--no-tone-filter", DSD_SCAN_OPT_TONE, NFM, 0, 0, DSD_TONE_FILTER_OFF, 0, NULL, option_set_tone},
 };
 
 static int
@@ -412,6 +421,21 @@ option_set_bandwidth(const scan_option_spec* spec, const char* argument, unsigne
     return 0;
 }
 
+/* A tone list for --tone-allow/--tone-block, none for --no-tone-filter, whose empty list turns the policy off. Why a
+ * list was refused is option_invalid()'s to say. */
+static int
+option_set_tone(const scan_option_spec* spec, const char* argument, unsigned int mode, dsd_scan_options* parsed) {
+    (void)mode;
+    dsd_tone_set set;
+    DSD_MEMSET(&set, 0, sizeof(set));
+    if (spec->argument && dsd_tone_set_parse(argument, &set, NULL, 0) != 0) {
+        return -1;
+    }
+    parsed->values.tone_filter = spec->value;
+    parsed->values.tone_set = set;
+    return 0;
+}
+
 static int
 option_set_path(const scan_option_spec* spec, const char* argument, unsigned int mode, dsd_scan_options* parsed) {
     (void)mode;
@@ -459,6 +483,20 @@ option_force_alias(const scan_option_spec* first, const scan_option_spec* next, 
                || (strcmp(first->name, "--dmr-force-algid") == 0 && strcmp(next->name, "-0") == 0));
 }
 
+/* The diagnostic for a value a setter refused: a tone list says which entry and why, never repeating the text; every
+ * other switch has its fixed hint. */
+static int
+option_invalid(const scan_option_spec* spec, const char* argument, char* error, size_t error_size) {
+    if (spec->field == DSD_SCAN_OPT_TONE) {
+        char why[DSD_TONE_LIST_ERROR_SIZE];
+        dsd_tone_set unused;
+        if (dsd_tone_set_parse(argument, &unused, why, sizeof(why)) != 0) {
+            return option_error(error, error_size, spec->name, why);
+        }
+    }
+    return option_error(error, error_size, spec->name, spec->hint ? spec->hint : "invalid value");
+}
+
 static int
 option_apply(const scan_option_spec* spec, const char* argument, unsigned int mode, dsd_scan_options* parsed,
              scan_force_options* forces, char* error, size_t error_size) {
@@ -467,7 +505,7 @@ option_apply(const scan_option_spec* spec, const char* argument, unsigned int mo
         return option_error(error, error_size, spec->name, "duplicate option");
     }
     if (spec->set(spec, argument, mode, parsed)) {
-        return option_error(error, error_size, spec->name, spec->hint ? spec->hint : "invalid value");
+        return option_invalid(spec, argument, error, error_size);
     }
     if ((parsed->values.present & DSD_SCAN_OPT_FORCE) && spec->field == DSD_SCAN_OPT_FORCE
         && old_force != parsed->values.force) {
@@ -667,6 +705,97 @@ dsd_scan_options_parse(const char* text, unsigned int mode, int conventional, ds
     return rc;
 }
 
+/* The tone switch whose list is the last argument of @p text (--tone-allow or --tone-block, its list separate or after
+ * '='), or NULL: none, another switch or argument after it, or text the tokenizer refuses (its parse says why). */
+static const scan_option_spec*
+option_trailing_tone_list(const char* text) {
+    const scan_option_spec* last = NULL;
+    const scan_option_spec* awaiting = NULL;
+    const char* cursor = text;
+    char token[1024];
+    int rc;
+    while ((rc = option_token(&cursor, token, sizeof(token))) == 1) {
+        if (awaiting) {
+            /* This token is the list of the switch before it. */
+            last = awaiting;
+            awaiting = NULL;
+            continue;
+        }
+        last = NULL;
+        char* equals = strncmp(token, "--", 2) == 0 ? strchr(token, '=') : NULL;
+        if (equals) {
+            *equals = '\0';
+        }
+        const scan_option_spec* spec = option_find(token);
+        if (spec && spec->field == DSD_SCAN_OPT_TONE && spec->argument) {
+            if (equals) {
+                last = spec;
+            } else {
+                awaiting = spec;
+            }
+        }
+    }
+    /* A cell may carry direct keys: nothing of it outlives the scan. */
+    DSD_SECURE_ZERO(token, sizeof(token));
+    return rc < 0 ? NULL : last;
+}
+
+/* Whether @p text, after the spaces it starts with, starts with a row option's switch, alone or with its argument after
+ * '=' ("--squelch-db -60", "--nfm-bandwidth-hz=12500"): what an options cell goes on with. */
+static int
+option_starts_switch(const char* text) {
+    const char* cursor = option_skip_space(text);
+    const size_t len = strcspn(cursor, "= \t\r\n\v\f");
+    char name[32];
+    if (len <= 2U || len >= sizeof(name) || strncmp(cursor, "--", 2) != 0) {
+        return 0;
+    }
+    DSD_MEMCPY(name, cursor, len);
+    name[len] = '\0';
+    return option_find(name) != NULL;
+}
+
+/* Whether @p text, a field of the file's own columns, can only be the rest of a tone list a comma cut off: one run of
+ * '/'-separated entries with no space in it ("67.0", "100/D023N", "d047i/150.0"), the first a standard CTCSS tone or
+ * DCS code, alone or followed by a row option's switch, the rest of the options cell the same comma cut off
+ * ("67.0 --squelch-db -60"). A column's own text is left alone: a value no list takes (an RTL gain) and anything else
+ * with a space in it, such as a name that starts with a number or a code ("100 Main St", "D023 Repeater"). */
+static int
+option_is_tone_list_rest(const char* text) {
+    size_t len = strlen(text);
+    while (len > 0U && option_space((unsigned char)text[len - 1U])) {
+        len--;
+    }
+    const size_t first = strcspn(text, "/ \t\r\n\v\f");
+    const size_t run = strcspn(text, " \t\r\n\v\f");
+    char entry[16];
+    if (first == 0U || first >= sizeof(entry) || (run < len && !option_starts_switch(text + run))) {
+        return 0;
+    }
+    DSD_MEMCPY(entry, text, first);
+    entry[first] = '\0';
+    dsd_tone_set unused;
+    return dsd_tone_set_parse(entry, &unused, NULL, 0) == 0;
+}
+
+int
+dsd_scan_options_tone_list_split(const char* options, const char* next, int next_past_header, char* error,
+                                 size_t error_size) {
+    if (!options || !next) {
+        return 0;
+    }
+    const char* rest = option_skip_space(next);
+    if (rest[0] == '\0' || (!next_past_header && !option_is_tone_list_rest(rest))) {
+        return 0;
+    }
+    const scan_option_spec* spec = option_trailing_tone_list(options);
+    if (!spec) {
+        return 0;
+    }
+    (void)option_error(error, error_size, spec->name, "use / between entries, not commas");
+    return 1;
+}
+
 int
 dsd_scan_option_width_check(unsigned int mode, const dsd_scan_option_values* values, int rate_hz, char* error,
                             size_t error_size) {
@@ -679,4 +808,18 @@ dsd_scan_option_width_check(unsigned int mode, const dsd_scan_option_values* val
         return 0;
     }
     return dsd_analog_width_check(kind, values->channel_bw_hz, rate_hz, error, error_size) == 0 ? 0 : -1;
+}
+
+int
+dsd_scan_option_tone_summary(const dsd_scan_option_values* values, char* list, size_t list_size) {
+    if (list && list_size) {
+        list[0] = '\0';
+    }
+    if (!values || !(values->present & DSD_SCAN_OPT_TONE)) {
+        return -1;
+    }
+    if (values->tone_filter != DSD_TONE_FILTER_OFF) {
+        (void)dsd_tone_set_format_display(&values->tone_set, list, list_size);
+    }
+    return values->tone_filter;
 }

@@ -15,6 +15,7 @@
 #define DSD_NEO_INCLUDE_DSD_NEO_CORE_OPTS_H_H
 
 #include <dsd-neo/core/airspy_config.h>
+#include <dsd-neo/core/analog_tone.h>
 #include <dsd-neo/core/frontend_types.h>
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/platform/platform.h>
@@ -200,6 +201,11 @@ struct dsd_opts {
        the unset NFM default keeps the historical enable rule. */
     int analog_nfm_bandwidth_hz;
     int analog_am_bandwidth_hz;
+    /* The CTCSS/DCS receive policy (issue #527): dsd_tone_filter_mode (0 off, 1 allow, 2 block) and its list, both in
+       <dsd-neo/core/analog_tone.h>. Off keeps the list. Only the analog FM monitor applies it; a scan row's own policy
+       runs over these while the row is on air, so a save reads them from the configured view. */
+    int analog_tone_filter;
+    dsd_tone_set analog_tone_set;
     int pulse_raw_rate_in;
     int pulse_raw_rate_out;
     int pulse_digi_rate_in;

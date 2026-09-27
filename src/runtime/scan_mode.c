@@ -2,6 +2,7 @@
 /* Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com> */
 
 #include <ctype.h>
+#include <dsd-neo/core/analog_tone.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/power.h>
@@ -13,6 +14,7 @@
 #include <dsd-neo/runtime/analog_channel.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/decode_mode.h>
+#include <dsd-neo/runtime/log.h>
 #include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
 #include <dsd-neo/runtime/scan_mode.h>
 #include <dsd-neo/runtime/scan_options.h>
@@ -178,6 +180,8 @@ dsd_scan_settings_capture(const dsd_opts* opts, const dsd_state* state, dsd_scan
     }
     DSD_MEMSET(out, 0, sizeof(*out));
     out->rtl_squelch_level = opts->rtl_squelch_level;
+    out->analog_tone_set = opts->analog_tone_set;
+    out->analog_tone_filter = opts->analog_tone_filter;
     out->force_key = state->M;
     out->aggressive_framesync = opts->aggressive_framesync;
     out->dmr_crc_relaxed_default = opts->dmr_crc_relaxed_default;
@@ -241,6 +245,8 @@ _Static_assert(sizeof(((dsd_scan_settings*)0)->group_in_file) == sizeof(((dsd_op
 static void
 scan_settings_restore_row_opts(const dsd_scan_settings* saved, dsd_opts* opts) {
     opts->rtl_squelch_level = saved->rtl_squelch_level;
+    opts->analog_tone_set = saved->analog_tone_set;
+    opts->analog_tone_filter = saved->analog_tone_filter;
     opts->aggressive_framesync = saved->aggressive_framesync;
     opts->dmr_crc_relaxed_default = saved->dmr_crc_relaxed_default;
     opts->scan_voice_only = saved->scan_voice_only;
@@ -261,6 +267,8 @@ scan_settings_restore_row_opts(const dsd_scan_settings* saved, dsd_opts* opts) {
 static void
 scan_settings_copy_row_opts(dsd_scan_settings* dst, const dsd_scan_settings* src) {
     dst->rtl_squelch_level = src->rtl_squelch_level;
+    dst->analog_tone_set = src->analog_tone_set;
+    dst->analog_tone_filter = src->analog_tone_filter;
     dst->force_key = src->force_key;
     dst->aggressive_framesync = src->aggressive_framesync;
     dst->dmr_crc_relaxed_default = src->dmr_crc_relaxed_default;
@@ -639,6 +647,14 @@ scan_option_apply_bandwidth(dsd_opts* opts, dsd_state* state, const dsd_scan_opt
     }
 }
 
+static void
+scan_option_apply_tone(dsd_opts* opts, dsd_state* state, const dsd_scan_option_values* values) {
+    (void)state;
+    /* Only an nfm row parses a policy; --no-tone-filter turns it off for the row. */
+    opts->analog_tone_filter = values->tone_filter;
+    opts->analog_tone_set = values->tone_set;
+}
+
 /* One applier per row option that lands in dsd_opts/dsd_state. A new row option adds a row
  * here, never a branch: the lookup stays flat however many options the grammar grows. */
 static const struct {
@@ -659,6 +675,7 @@ static const struct {
     {DSD_SCAN_OPT_GROUP, scan_option_apply_group},
     {DSD_SCAN_OPT_SQUELCH, scan_option_apply_squelch},
     {DSD_SCAN_OPT_BANDWIDTH, scan_option_apply_bandwidth},
+    {DSD_SCAN_OPT_TONE, scan_option_apply_tone},
 };
 
 static void
@@ -1014,6 +1031,51 @@ dsd_scan_mode_configured_analog_width(const dsd_opts* opts, const dsd_state* sta
         width_hz = kind == DSD_ANALOG_DEMOD_AM ? opts->analog_am_bandwidth_hz : opts->analog_nfm_bandwidth_hz;
     }
     return width_hz > 0 ? width_hz : 0;
+}
+
+void
+dsd_scan_mode_configured_tone_policy(const dsd_opts* opts, const dsd_state* state, int* mode, dsd_tone_set* set) {
+    const dsd_scan_settings* configured = dsd_scan_mode_configured_view(state);
+    int configured_mode = DSD_TONE_FILTER_OFF;
+    dsd_tone_set configured_set;
+    DSD_MEMSET(&configured_set, 0, sizeof(configured_set));
+    if (configured) {
+        configured_mode = configured->analog_tone_filter;
+        configured_set = configured->analog_tone_set;
+    } else if (opts) {
+        configured_mode = opts->analog_tone_filter;
+        configured_set = opts->analog_tone_set;
+    }
+    if (mode) {
+        *mode = configured_mode;
+    }
+    if (set) {
+        *set = configured_set;
+    }
+}
+
+int
+dsd_scan_mode_configured_fm_monitor(const dsd_opts* opts, const dsd_state* state) {
+    if (!opts) {
+        return 0;
+    }
+    const dsd_scan_settings* configured = dsd_scan_mode_configured_view(state);
+    const int analog_only = configured ? configured->analog_only : opts->analog_only;
+    const int demod = configured ? configured->analog_demod : opts->analog_demod;
+    return analog_only == 1 && demod == DSD_ANALOG_DEMOD_FM;
+}
+
+int
+dsd_scan_mode_warn_tone_filter_unused(const dsd_opts* opts, const dsd_state* state, int hears_tones) {
+    int mode = DSD_TONE_FILTER_OFF;
+    dsd_scan_mode_configured_tone_policy(opts, state, &mode, NULL);
+    if (!opts || hears_tones || (mode != DSD_TONE_FILTER_ALLOW && mode != DSD_TONE_FILTER_BLOCK)) {
+        return 0;
+    }
+    LOG_WARN("WARNING: the tone filter (--tone-allow/--tone-block, [analog] tone_filter) has no effect in this "
+             "session: nothing in it runs the analog FM monitor (-fA), an nfm scan row or an nfm-conventional "
+             "target.\n");
+    return 1;
 }
 
 void

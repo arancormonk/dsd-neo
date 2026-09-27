@@ -3,6 +3,7 @@
  * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
+#include <dsd-neo/core/analog_tone.h>
 #include <dsd-neo/core/audio.h>
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/csv_import.h>
@@ -40,6 +41,7 @@
 #include <dsd-neo/protocol/p25/p25_sm_watchdog.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #include <dsd-neo/runtime/analog_channel.h>
+#include <dsd-neo/runtime/analog_tones.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
 #include <dsd-neo/runtime/scan_mode.h>
@@ -65,6 +67,12 @@ static const char k_header[] = "id,type,frequency_hz,chan_csv,dwell_ms,activity_
 int
 dsd_analog_rx_carrier_open_now(const dsd_opts* opts, const dsd_state* state) {
     return (opts && state && state->analog_rx.carrier_open) ? 1 : 0;
+}
+
+/* Issue #527, the same way: the published end of a rejected reception stands as it is while detection runs. */
+int
+dsd_analog_rx_rejection_ended_now(const dsd_opts* opts, const dsd_state* state) {
+    return (opts && state && state->analog_rx.gate_rejected_ended && dsd_analog_tone_detection_active(opts)) ? 1 : 0;
 }
 
 /* --- Issue #526: scanner sinks and DSP rate, from engine/trunk_tuning.c and core/audio, which this fixture does not
@@ -10394,6 +10402,691 @@ test_analog_target_visit_cap_and_controls_under_carrier(void) {
     return analog_visit_cap_case("nfm-conventional") | analog_visit_cap_case("am-conventional");
 }
 
+/* --- Issue #527: the tone policy's verdict on nfm-conventional targets --- */
+
+/* What the tap would publish for the carrier on air under a tone policy: the gate alone, since the coordinator reads
+ * nothing else of it. */
+static void
+publish_tone_gate(dsd_state* state, int gate) {
+    state->analog_rx.carrier_open = 1;
+    state->analog_rx.gate = gate;
+}
+
+/* A carrier the policy is still checking holds the target, muted, under "Tone check" with nothing counting down, past
+ * the idle dwell; a verdict that lets it through holds it as a carrier; a rejection releases it at the next tick,
+ * whatever hold the traffic before it had earned -- rejected traffic never refreshes the activity hold. */
+static int
+test_nfm_target_tone_check_holds_and_rejection_advances(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    char target_path[DSD_TEST_PATH_MAX];
+    static dsd_opts opts;
+    static dsd_state state;
+    if (nfm_targets_init("fire,nfm-conventional,154430000,,250,2000,,--tone-allow 100.0\n"
+                         "dmr,dmr-conventional,461000000,,250,250,\n",
+                         &opts, &state, dir, sizeof dir, target_path, sizeof target_path)
+        != 0) {
+        return 1;
+    }
+    int test_rc = 0;
+    if (opts.analog_tone_filter != DSD_TONE_FILTER_ALLOW) {
+        DSD_FPRINTF(stderr, "the nfm target's tone policy did not go on air: %d\n", opts.analog_tone_filter);
+        test_rc = 1;
+    }
+    for (int tick = 0; tick < 4; tick++) {
+        publish_tone_gate(&state, DSD_ANALOG_TONE_GATE_PENDING);
+        trunk_scan_test_set_now(0.10 + (0.20 * tick));
+        dsd_engine_trunk_scan_tick(&opts, &state);
+    }
+    test_rc |= expect_active_target(&state, "tone check past the dwell", 0U);
+    test_rc |= expect_scan_timing(&state, "tone check", DSD_SCAN_STAY_TONE_PENDING, -1.0, 250U, 2000U);
+    /* Allowed: the carrier holds it, and its hold runs 2 s from the last tick that heard it. */
+    publish_tone_gate(&state, DSD_ANALOG_TONE_GATE_ALLOWED);
+    trunk_scan_test_set_now(0.80);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    test_rc |= expect_scan_timing(&state, "allowed", DSD_SCAN_STAY_CARRIER, 2.80, 250U, 2000U);
+    /* A blocked or unlisted value confirmed later closes the gate: the target is released at once, not 2 s on. */
+    publish_tone_gate(&state, DSD_ANALOG_TONE_GATE_REJECTED);
+    trunk_scan_test_set_now(0.85);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    test_rc |= expect_active_target(&state, "rejection advances", 1U);
+    /* The DMR target on air runs the configured policy (off), not the nfm target's. */
+    if (opts.analog_tone_filter != DSD_TONE_FILTER_OFF) {
+        DSD_FPRINTF(stderr, "the next target inherited the nfm target's tone policy: %d\n", opts.analog_tone_filter);
+        test_rc = 1;
+    }
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    if (opts.analog_tone_filter != DSD_TONE_FILTER_OFF) {
+        DSD_FPRINTF(stderr, "shutdown left the nfm target's tone policy on: %d\n", opts.analog_tone_filter);
+        test_rc = 1;
+    }
+    trunk_scan_test_clear_now();
+    cleanup_paths(dir, target_path, NULL);
+    return test_rc;
+}
+
+/* The operator's hold keeps a target whose traffic was rejected, muted; the release lets the next tick move on, with
+ * no activity hold left over from the rejected traffic. A single target has nowhere to go, so a rejection there only
+ * mutes: the fixed-frequency case. */
+static int
+test_nfm_target_rejection_under_hold_and_alone(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    char target_path[DSD_TEST_PATH_MAX];
+    static dsd_opts opts;
+    static dsd_state state;
+    if (nfm_targets_init("fire,nfm-conventional,154430000,,250,2000,\n"
+                         "dmr,dmr-conventional,461000000,,250,250,\n",
+                         &opts, &state, dir, sizeof dir, target_path, sizeof target_path)
+        != 0) {
+        return 1;
+    }
+    int test_rc = 0;
+    test_rc |=
+        expect_control_rc("hold", dsd_engine_trunk_scan_control(&opts, &state, DSD_TRUNK_SCAN_CONTROL_HOLD_TOGGLE), 1);
+    for (int tick = 0; tick < 8; tick++) {
+        publish_tone_gate(&state, DSD_ANALOG_TONE_GATE_REJECTED);
+        trunk_scan_test_set_now(0.10 + (0.25 * tick));
+        dsd_engine_trunk_scan_tick(&opts, &state);
+    }
+    test_rc |= expect_active_target(&state, "held while rejected", 0U);
+    test_rc |= expect_scan_timing(&state, "held while rejected", DSD_SCAN_STAY_MANUAL_HOLD, -1.0, 250U, 2000U);
+    test_rc |= expect_control_rc("release",
+                                 dsd_engine_trunk_scan_control(&opts, &state, DSD_TRUNK_SCAN_CONTROL_HOLD_TOGGLE), 0);
+    publish_tone_gate(&state, DSD_ANALOG_TONE_GATE_REJECTED);
+    trunk_scan_test_set_now(2.10);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    test_rc |= expect_active_target(&state, "released after a rejection", 1U);
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    cleanup_paths(dir, target_path, NULL);
+
+    if (nfm_targets_init("fire,nfm-conventional,154430000,,250,2000,\n", &opts, &state, dir, sizeof dir, target_path,
+                         sizeof target_path)
+        != 0) {
+        return 1;
+    }
+    for (int tick = 0; tick < 8; tick++) {
+        publish_tone_gate(&state, DSD_ANALOG_TONE_GATE_REJECTED);
+        trunk_scan_test_set_now(0.10 + (0.25 * tick));
+        dsd_engine_trunk_scan_tick(&opts, &state);
+    }
+    test_rc |= expect_active_target(&state, "a single target stays", 0U);
+    /* It stays for as long as the carrier lasts, with no dwell or hold running: "Carrier", with no timer, rather than
+       an "Idle dwell" that never counts. */
+    test_rc |=
+        expect_scan_timing(&state, "a single target keeps rejected traffic", DSD_SCAN_STAY_CARRIER, -1.0, 250U, 2000U);
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    trunk_scan_test_clear_now();
+    cleanup_paths(dir, target_path, NULL);
+    return test_rc;
+}
+
+/* Rejected traffic that ended between two ticks (issue #527) -- its carrier's hangover ran out, or its input paused
+ * past its deadline, before the coordinator looked -- holds the target no more than traffic still on air would: traffic
+ * that was passing and turns out to carry an unlisted tone, then ends, is followed by an advance at the next tick,
+ * though the hold it earned while it passed has most of 2 s to run. The operator's hold keeps the target; a single
+ * target has nowhere to go, so its hold runs as after any carrier. */
+static int
+test_nfm_target_rejection_that_ended_advances(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    char target_path[DSD_TEST_PATH_MAX];
+    static dsd_opts opts;
+    static dsd_state state;
+    static const char two_targets[] = "fire,nfm-conventional,154430000,,250,2000,,--tone-allow 100.0\n"
+                                      "dmr,dmr-conventional,461000000,,250,250,\n";
+    int test_rc = 0;
+    for (int paused = 0; paused < 2; paused++) {
+        if (nfm_targets_init(two_targets, &opts, &state, dir, sizeof dir, target_path, sizeof target_path) != 0) {
+            return 1;
+        }
+        for (int tick = 0; tick < 4; tick++) {
+            publish_tone_gate(&state, DSD_ANALOG_TONE_GATE_ALLOWED);
+            trunk_scan_test_set_now(0.10 + (0.20 * tick));
+            dsd_engine_trunk_scan_tick(&opts, &state);
+        }
+        test_rc |= expect_active_target(&state, "allowed traffic holds", 0U);
+        if (paused) {
+            /* The input stopped delivering under the rejection: the publication still says so, past its deadline. */
+            publish_tone_gate(&state, DSD_ANALOG_TONE_GATE_REJECTED);
+            state.analog_rx.stale_after_ms = 1U;
+        } else {
+            /* The hangover ran out under the rejection: checking again, with no carrier, the rejection kept. */
+            publish_tone_gate(&state, DSD_ANALOG_TONE_GATE_PENDING);
+            state.analog_rx.carrier_open = 0;
+            state.analog_rx.gate_rejected_ended = 1;
+        }
+        trunk_scan_test_set_now(0.85);
+        dsd_engine_trunk_scan_tick(&opts, &state);
+        test_rc |=
+            expect_active_target(&state, paused ? "a paused rejection advances" : "an ended rejection advances", 1U);
+        dsd_engine_trunk_scan_shutdown(&opts, &state);
+        cleanup_paths(dir, target_path, NULL);
+        DSD_MEMSET(&state.analog_rx, 0, sizeof(state.analog_rx));
+    }
+
+    /* The operator's hold keeps the target through it; the release moves on. */
+    if (nfm_targets_init(two_targets, &opts, &state, dir, sizeof dir, target_path, sizeof target_path) != 0) {
+        return 1;
+    }
+    test_rc |=
+        expect_control_rc("hold", dsd_engine_trunk_scan_control(&opts, &state, DSD_TRUNK_SCAN_CONTROL_HOLD_TOGGLE), 1);
+    publish_tone_gate(&state, DSD_ANALOG_TONE_GATE_PENDING);
+    state.analog_rx.carrier_open = 0;
+    state.analog_rx.gate_rejected_ended = 1;
+    trunk_scan_test_set_now(0.85);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    test_rc |= expect_active_target(&state, "held after an ended rejection", 0U);
+    test_rc |= expect_control_rc("release",
+                                 dsd_engine_trunk_scan_control(&opts, &state, DSD_TRUNK_SCAN_CONTROL_HOLD_TOGGLE), 0);
+    trunk_scan_test_set_now(0.90);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    test_rc |= expect_active_target(&state, "released after an ended rejection", 1U);
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    cleanup_paths(dir, target_path, NULL);
+    DSD_MEMSET(&state.analog_rx, 0, sizeof(state.analog_rx));
+
+    /* A single target: the hold its allowed traffic earned runs out as after any carrier, then the idle dwell. */
+    if (nfm_targets_init("fire,nfm-conventional,154430000,,250,2000,,--tone-allow 100.0\n", &opts, &state, dir,
+                         sizeof dir, target_path, sizeof target_path)
+        != 0) {
+        return 1;
+    }
+    publish_tone_gate(&state, DSD_ANALOG_TONE_GATE_ALLOWED);
+    trunk_scan_test_set_now(0.10);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    publish_tone_gate(&state, DSD_ANALOG_TONE_GATE_PENDING);
+    state.analog_rx.carrier_open = 0;
+    state.analog_rx.gate_rejected_ended = 1;
+    trunk_scan_test_set_now(0.85);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    test_rc |=
+        expect_scan_timing(&state, "a single target's hold runs", DSD_SCAN_STAY_ACTIVITY_HOLD, 2.10, 250U, 2000U);
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    DSD_MEMSET(&state.analog_rx, 0, sizeof(state.analog_rx));
+    trunk_scan_test_clear_now();
+    cleanup_paths(dir, target_path, NULL);
+    return test_rc;
+}
+
+/* The tap's publication once a carrier still being checked has dropped: its hangover ran out before any verdict, so the
+ * policy is checking again with no carrier, and nothing was rejected. */
+static void
+publish_tone_check_ended(dsd_state* state) {
+    publish_tone_gate(state, DSD_ANALOG_TONE_GATE_PENDING);
+    state->analog_rx.carrier_open = 0;
+    state->analog_rx.gate_rejected_ended = 0;
+}
+
+/* A carrier the tone policy is still checking is no activity (issue #527): it holds the nfm-conventional target while
+ * it lasts, under "Tone check" with nothing counting down, but it restarts no activity_hold_ms and leaves the idle
+ * dwell running where it was. Short no-tone bursts under an allow list -- kerchunks, noise -- therefore cannot park the
+ * rotation: once the dwell has run out since the target parked, the tick after a burst advances, however many bursts
+ * came. A check that outlasts the dwell still holds the target, and traffic the policy allows restarts the hold as any
+ * carrier does and leaves its ordinary tail, then a fresh dwell. */
+static int
+test_nfm_target_tone_check_leaves_no_hold(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    char target_path[DSD_TEST_PATH_MAX];
+    static dsd_opts opts;
+    static dsd_state state;
+    static const char targets[] = "fire,nfm-conventional,154430000,,1000,2000,,--tone-allow 100.0\n"
+                                  "dmr,dmr-conventional,461000000,,250,250,\n";
+    if (nfm_targets_init(targets, &opts, &state, dir, sizeof dir, target_path, sizeof target_path) != 0) {
+        return 1;
+    }
+    /* Two bursts inside the 1 s dwell the park armed at 0.0, each held while it lasts, neither restarting anything. */
+    int test_rc = 0;
+    static const double bursts[2][2] = {{0.10, 0.30}, {0.60, 0.80}};
+    for (int burst = 0; burst < 2; burst++) {
+        for (int tick = 0; tick < 2; tick++) {
+            publish_tone_gate(&state, DSD_ANALOG_TONE_GATE_PENDING);
+            trunk_scan_test_set_now(bursts[burst][tick]);
+            dsd_engine_trunk_scan_tick(&opts, &state);
+            test_rc |= expect_active_target(&state, "a burst is held while it lasts", 0U);
+            test_rc |= expect_scan_timing(&state, "a burst", DSD_SCAN_STAY_TONE_PENDING, -1.0, 1000U, 2000U);
+        }
+        if (burst == 0) {
+            publish_tone_check_ended(&state);
+            trunk_scan_test_set_now(0.40);
+            dsd_engine_trunk_scan_tick(&opts, &state);
+            test_rc |= expect_active_target(&state, "between the bursts", 0U);
+            test_rc |= expect_scan_timing(&state, "between the bursts", DSD_SCAN_STAY_IDLE_DWELL, 1.00, 1000U, 2000U);
+        }
+    }
+    publish_tone_check_ended(&state);
+    trunk_scan_test_set_now(1.05);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    test_rc |= expect_active_target(&state, "the tick after the bursts advances", 1U);
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    cleanup_paths(dir, target_path, NULL);
+    DSD_MEMSET(&state.analog_rx, 0, sizeof(state.analog_rx));
+
+    /* A check still on air holds the target past its dwell; once it drops unjudged, the spent dwell advances it. */
+    if (nfm_targets_init(targets, &opts, &state, dir, sizeof dir, target_path, sizeof target_path) != 0) {
+        return 1;
+    }
+    for (int tick = 0; tick < 8; tick++) {
+        publish_tone_gate(&state, DSD_ANALOG_TONE_GATE_PENDING);
+        trunk_scan_test_set_now(0.10 + (0.20 * tick));
+        dsd_engine_trunk_scan_tick(&opts, &state);
+    }
+    test_rc |= expect_active_target(&state, "a check on air holds past the dwell", 0U);
+    test_rc |= expect_scan_timing(&state, "a check past the dwell", DSD_SCAN_STAY_TONE_PENDING, -1.0, 1000U, 2000U);
+    publish_tone_check_ended(&state);
+    trunk_scan_test_set_now(1.60);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    test_rc |= expect_active_target(&state, "the check dropped after the dwell", 1U);
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    cleanup_paths(dir, target_path, NULL);
+    DSD_MEMSET(&state.analog_rx, 0, sizeof(state.analog_rx));
+
+    /* Checked, then allowed: the hold runs 2 s from the last tick that heard it, then a fresh full dwell. */
+    if (nfm_targets_init(targets, &opts, &state, dir, sizeof dir, target_path, sizeof target_path) != 0) {
+        return 1;
+    }
+    publish_tone_gate(&state, DSD_ANALOG_TONE_GATE_PENDING);
+    trunk_scan_test_set_now(0.10);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    publish_tone_gate(&state, DSD_ANALOG_TONE_GATE_ALLOWED);
+    trunk_scan_test_set_now(0.30);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    test_rc |= expect_scan_timing(&state, "allowed", DSD_SCAN_STAY_CARRIER, 2.30, 1000U, 2000U);
+    publish_tone_gate(&state, DSD_ANALOG_TONE_GATE_PENDING);
+    state.analog_rx.carrier_open = 0;
+    trunk_scan_test_set_now(0.50);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    test_rc |=
+        expect_scan_timing(&state, "the allowed traffic's tail", DSD_SCAN_STAY_ACTIVITY_HOLD, 2.30, 1000U, 2000U);
+    trunk_scan_test_set_now(2.25);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    test_rc |= expect_active_target(&state, "the tail holds", 0U);
+    trunk_scan_test_set_now(2.35);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    test_rc |= expect_active_target(&state, "a fresh dwell after the tail", 0U);
+    test_rc |= expect_scan_timing(&state, "a fresh dwell", DSD_SCAN_STAY_IDLE_DWELL, 3.35, 1000U, 2000U);
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    DSD_MEMSET(&state.analog_rx, 0, sizeof(state.analog_rx));
+    trunk_scan_test_clear_now();
+    cleanup_paths(dir, target_path, NULL);
+    return test_rc;
+}
+
+/* A check that begins while the idle dwell is disarmed -- by the hold that earlier allowed traffic earned, or by the
+ * operator's hold, just released -- leaves it disarmed no longer than a quiet channel would (issue #527): the first
+ * tick of the check at which neither hold is on arms it, so a check its carrier ends before a verdict adds none of its
+ * own length to the visit. */
+static int
+test_nfm_target_tone_check_arms_a_disarmed_dwell(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    char target_path[DSD_TEST_PATH_MAX];
+    static dsd_opts opts;
+    static dsd_state state;
+    static const char targets[] = "fire,nfm-conventional,154430000,,1000,2000,,--tone-allow 100.0\n"
+                                  "dmr,dmr-conventional,461000000,,250,250,\n";
+    if (nfm_targets_init(targets, &opts, &state, dir, sizeof dir, target_path, sizeof target_path) != 0) {
+        return 1;
+    }
+    /* Allowed traffic at 0.30 earns a hold to 2.30, which disarms the dwell. */
+    int test_rc = 0;
+    publish_tone_gate(&state, DSD_ANALOG_TONE_GATE_ALLOWED);
+    trunk_scan_test_set_now(0.30);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    publish_tone_check_ended(&state);
+    trunk_scan_test_set_now(0.50);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    test_rc |=
+        expect_scan_timing(&state, "the allowed traffic's hold", DSD_SCAN_STAY_ACTIVITY_HOLD, 2.30, 1000U, 2000U);
+    /* A check from 2.20 to 3.00 spans the hold's end: its tick at 2.40, the first past the hold, arms the dwell. */
+    for (int tick = 0; tick < 5; tick++) {
+        publish_tone_gate(&state, DSD_ANALOG_TONE_GATE_PENDING);
+        trunk_scan_test_set_now(2.20 + (0.20 * tick));
+        dsd_engine_trunk_scan_tick(&opts, &state);
+        test_rc |= expect_active_target(&state, "a check across the hold's end", 0U);
+        test_rc |=
+            expect_scan_timing(&state, "a check across the hold's end", DSD_SCAN_STAY_TONE_PENDING, -1.0, 1000U, 2000U);
+    }
+    publish_tone_check_ended(&state);
+    trunk_scan_test_set_now(3.10);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    test_rc |= expect_active_target(&state, "the check dropped unjudged", 0U);
+    test_rc |=
+        expect_scan_timing(&state, "the dwell from the hold's end", DSD_SCAN_STAY_IDLE_DWELL, 3.40, 1000U, 2000U);
+    trunk_scan_test_set_now(3.45);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    test_rc |= expect_active_target(&state, "the dwell from the hold's end runs out", 1U);
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    cleanup_paths(dir, target_path, NULL);
+    DSD_MEMSET(&state.analog_rx, 0, sizeof(state.analog_rx));
+
+    /* The operator's hold keeps the dwell disarmed through a check; released at 0.35, the check's next tick arms it. */
+    if (nfm_targets_init(targets, &opts, &state, dir, sizeof dir, target_path, sizeof target_path) != 0) {
+        return 1;
+    }
+    test_rc |=
+        expect_control_rc("hold", dsd_engine_trunk_scan_control(&opts, &state, DSD_TRUNK_SCAN_CONTROL_HOLD_TOGGLE), 1);
+    for (int tick = 0; tick < 2; tick++) {
+        publish_tone_gate(&state, DSD_ANALOG_TONE_GATE_PENDING);
+        trunk_scan_test_set_now(0.10 + (0.20 * tick));
+        dsd_engine_trunk_scan_tick(&opts, &state);
+    }
+    trunk_scan_test_set_now(0.35);
+    test_rc |= expect_control_rc("release",
+                                 dsd_engine_trunk_scan_control(&opts, &state, DSD_TRUNK_SCAN_CONTROL_HOLD_TOGGLE), 0);
+    for (int tick = 0; tick < 5; tick++) {
+        publish_tone_gate(&state, DSD_ANALOG_TONE_GATE_PENDING);
+        trunk_scan_test_set_now(0.50 + (0.20 * tick));
+        dsd_engine_trunk_scan_tick(&opts, &state);
+    }
+    test_rc |= expect_active_target(&state, "a check after the release", 0U);
+    publish_tone_check_ended(&state);
+    trunk_scan_test_set_now(1.40);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    test_rc |= expect_scan_timing(&state, "the dwell from the release", DSD_SCAN_STAY_IDLE_DWELL, 1.50, 1000U, 2000U);
+    trunk_scan_test_set_now(1.55);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    test_rc |= expect_active_target(&state, "the dwell from the release runs out", 1U);
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    DSD_MEMSET(&state.analog_rx, 0, sizeof(state.analog_rx));
+    trunk_scan_test_clear_now();
+    cleanup_paths(dir, target_path, NULL);
+    return test_rc;
+}
+
+/* A second target skipped at every visit for a width the DSP rate cannot filter is nowhere to go either: rejected
+ * traffic keeps the target it is on, muted, tick after tick, rather than advancing onto the refused target, failing
+ * there and switching back, which would end the reception and judge the same traffic again at every retry. Once the
+ * other target can be received, the rejection moves on to it. */
+static int
+test_nfm_target_rejection_with_a_refused_alternate(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    char target_path[DSD_TEST_PATH_MAX];
+    static dsd_opts opts;
+    static dsd_state state;
+    g_scan_tune_refuses_unfit_width = 1;
+    g_scan_tune_width_refusals = 0;
+    g_scan_dsp_rate_hz = 16000;
+    if (nfm_targets_init("fire,nfm-conventional,154430000,,250,2000,,--nfm-bandwidth-hz 12500 --tone-allow 100.0\n"
+                         "wide,nfm-conventional,155430000,,250,2000,,--nfm-bandwidth-hz 20000\n",
+                         &opts, &state, dir, sizeof dir, target_path, sizeof target_path)
+        != 0) {
+        g_scan_tune_refuses_unfit_width = 0;
+        g_scan_dsp_rate_hz = 0;
+        return 1;
+    }
+    int test_rc = expect_active_target(&state, "the receivable target parked", 0U);
+    const uint32_t generation = state.analog_rx.generation;
+    const int refusals = g_scan_tune_width_refusals;
+    for (int tick = 0; tick < 8; tick++) {
+        publish_tone_gate(&state, DSD_ANALOG_TONE_GATE_REJECTED);
+        trunk_scan_test_set_now(0.10 + (0.50 * tick));
+        dsd_engine_trunk_scan_tick(&opts, &state);
+    }
+    test_rc |= expect_active_target(&state, "rejected with a refused alternate", 0U);
+    if (state.analog_rx.generation != generation || g_scan_tune_width_refusals != refusals) {
+        DSD_FPRINTF(stderr, "rejected traffic was switched away and back: generation %u -> %u, refusals %d -> %d\n",
+                    generation, state.analog_rx.generation, refusals, g_scan_tune_width_refusals);
+        test_rc = 1;
+    }
+    /* A DSP rate that fits the other target's width makes it somewhere to go. */
+    g_scan_dsp_rate_hz = 48000;
+    publish_tone_gate(&state, DSD_ANALOG_TONE_GATE_REJECTED);
+    trunk_scan_test_set_now(4.50);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    test_rc |= expect_active_target(&state, "rejected once the alternate fits", 1U);
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    g_scan_tune_refuses_unfit_width = 0;
+    g_scan_dsp_rate_hz = 0;
+    trunk_scan_test_clear_now();
+    cleanup_paths(dir, target_path, NULL);
+    return test_rc;
+}
+
+/* A target on the frequency on air takes rejected traffic like any other (issue #527): the list refuses a second
+ * target of one type on one frequency, and nfm-conventional is the one type that runs a tone check, so such a target
+ * judges no tone. On a mixed-mode repeater listed as an nfm-conventional and a dmr-conventional target, DMR traffic the
+ * nfm target's allow list rejects for want of a tone moves to the DMR target at the next tick. The refusal this rests
+ * on is pinned here too: two nfm-conventional targets never share a frequency, whatever their policies, so the -Y
+ * rule for same-frequency rows that would reject the traffic alike (ENGINE_NO_CARRIER_RESET) has no trunk-scan case. */
+static int
+test_nfm_target_rejection_moves_to_a_same_frequency_target(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    char target_path[DSD_TEST_PATH_MAX];
+    static dsd_opts opts;
+    static dsd_state state;
+    int test_rc =
+        expect_parser_rejects_with_header("two nfm-conventional targets on one frequency", k_squelch_targets_header,
+                                          "fire,nfm-conventional,154430000,,250,2000,,--tone-allow 100.0\n"
+                                          "ems,nfm-conventional,154430000,,250,2000,,--tone-allow 131.8\n");
+    if (nfm_targets_init("fire,nfm-conventional,154430000,,250,2000,,--tone-allow 100.0\n"
+                         "dmr,dmr-conventional,154430000,,250,250,\n",
+                         &opts, &state, dir, sizeof dir, target_path, sizeof target_path)
+        != 0) {
+        return 1;
+    }
+    test_rc |= expect_active_target(&state, "the mixed-mode repeater's nfm target", 0U);
+    publish_tone_gate(&state, DSD_ANALOG_TONE_GATE_REJECTED);
+    state.analog_rx.tone_state = DSD_ANALOG_TONE_STATE_NONE;
+    state.analog_rx.gate_no_tone = 1;
+    trunk_scan_test_set_now(0.10);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    test_rc |= expect_active_target(&state, "no-tone traffic moved to the same-frequency dmr target", 1U);
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    trunk_scan_test_clear_now();
+    cleanup_paths(dir, target_path, NULL);
+    return test_rc;
+}
+
+/* An am-conventional alternate is weighed by the AM width it runs, never the NFM one (issue #527 beside #526). The
+ * configured --am-bandwidth-hz is 20000 and the configured NFM width unset. @p own_am_hz 0: the tower sets no width of
+ * its own, so it runs the configured 20 kHz, which the 16 kHz DSP rate cannot filter, where an nfm target would run the
+ * unset NFM default, which is never refused; rejected traffic keeps the nfm target, muted, until a 48 kHz rate fits the
+ * tower, and then advances to it. @p own_am_hz 5000: the tower's own --am-bandwidth-hz, which the 16 kHz rate filters
+ * and which is below the NFM range; rejected traffic advances to it at the first tick. */
+static int
+nfm_target_rejection_weighs_an_am_alternate(int own_am_hz) {
+    char dir[DSD_TEST_PATH_MAX];
+    char target_path[DSD_TEST_PATH_MAX];
+    char tower_options[48] = "";
+    char body[256];
+    static dsd_opts opts;
+    static dsd_state state;
+    if (own_am_hz > 0) {
+        DSD_SNPRINTF(tower_options, sizeof tower_options, "--am-bandwidth-hz %d", own_am_hz);
+    }
+    DSD_SNPRINTF(body, sizeof body,
+                 "fire,nfm-conventional,154430000,,250,2000,,--tone-allow 100.0\n"
+                 "tower,am-conventional,118300000,,250,2000,,%s\n",
+                 tower_options);
+    if (make_temp_dir(dir, sizeof dir) != 0
+        || write_targets_file_with_header(dir, k_squelch_targets_header, body, target_path, sizeof target_path) != 0) {
+        return 1;
+    }
+    reset_scan_opts_state(&opts, &state);
+    opts.frame_dmr = 1;
+    opts.dmr_stereo = 1;
+    opts.analog_nfm_bandwidth_hz = 0;
+    opts.analog_am_bandwidth_hz = 20000;
+    DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", target_path);
+    g_scan_tune_refuses_unfit_width = 1;
+    g_scan_tune_width_refusals = 0;
+    g_scan_tune_to_freq_failures_remaining = 0;
+    g_scan_dsp_rate_hz = 16000;
+    char err[256] = {0};
+    trunk_scan_test_set_now(0.0);
+    int test_rc = 0;
+    if (dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err) != 0) {
+        DSD_FPRINTF(stderr, "am alternate init failed: %s\n", err);
+        test_rc = 1;
+    } else {
+        test_rc |= expect_active_target(&state, "the nfm target parked beside an am alternate", 0U);
+        const uint32_t generation = state.analog_rx.generation;
+        const int refusals = g_scan_tune_width_refusals;
+        double now = 0.10;
+        if (own_am_hz == 0) {
+            for (int tick = 0; tick < 8; tick++) {
+                publish_tone_gate(&state, DSD_ANALOG_TONE_GATE_REJECTED);
+                trunk_scan_test_set_now(now);
+                dsd_engine_trunk_scan_tick(&opts, &state);
+                now += 0.50;
+            }
+            test_rc |= expect_active_target(&state, "rejected beside a refused am alternate", 0U);
+            if (state.analog_rx.generation != generation || g_scan_tune_width_refusals != refusals) {
+                DSD_FPRINTF(stderr,
+                            "rejected traffic was switched to the am alternate and back: generation %u -> %u, "
+                            "refusals %d -> %d\n",
+                            generation, state.analog_rx.generation, refusals, g_scan_tune_width_refusals);
+                test_rc = 1;
+            }
+            /* A DSP rate that fits the configured AM width makes the tower somewhere to go. */
+            g_scan_dsp_rate_hz = 48000;
+        }
+        publish_tone_gate(&state, DSD_ANALOG_TONE_GATE_REJECTED);
+        trunk_scan_test_set_now(now);
+        dsd_engine_trunk_scan_tick(&opts, &state);
+        test_rc |= expect_active_target(&state, "rejected traffic advances to the am alternate", 1U);
+        if (opts.analog_demod != DSD_ANALOG_DEMOD_AM || g_scan_tune_width_refusals != refusals) {
+            DSD_FPRINTF(stderr, "the am alternate on air: demod=%d refusals %d -> %d\n", opts.analog_demod, refusals,
+                        g_scan_tune_width_refusals);
+            test_rc = 1;
+        }
+        dsd_engine_trunk_scan_shutdown(&opts, &state);
+    }
+    g_scan_tune_refuses_unfit_width = 0;
+    g_scan_dsp_rate_hz = 0;
+    trunk_scan_test_clear_now();
+    cleanup_paths(dir, target_path, NULL);
+    if (test_rc) {
+        DSD_FPRINTF(stderr, "am alternate with its own AM width %d failed\n", own_am_hz);
+    }
+    return test_rc;
+}
+
+static int
+test_nfm_target_rejection_weighs_an_am_alternate(void) {
+    return nfm_target_rejection_weighs_an_am_alternate(0) | nfm_target_rejection_weighs_an_am_alternate(5000);
+}
+
+/* The AM monitor hears no CTCSS or DCS, so the configured tone policy judges nothing on an am-conventional target: a
+ * verdict still published there (a rejection an nfm target left behind) is not in force, the carrier holds the target
+ * as "Carrier", never "Tone check", and nothing advances it before its activity hold runs out. The target leaves the
+ * configured policy as it found it. */
+static int
+test_am_target_carrier_ignores_the_tone_filter(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    char target_path[DSD_TEST_PATH_MAX];
+    static dsd_opts opts;
+    static dsd_state state;
+    if (make_temp_dir(dir, sizeof dir) != 0
+        || write_targets_file_with_header(dir, k_squelch_targets_header,
+                                          "tower,am-conventional,118300000,,250,2000,\n"
+                                          "dmr,dmr-conventional,461000000,,250,250,\n",
+                                          target_path, sizeof target_path)
+               != 0) {
+        return 1;
+    }
+    reset_scan_opts_state(&opts, &state);
+    opts.frame_dmr = 1;
+    opts.dmr_stereo = 1;
+    opts.analog_tone_filter = DSD_TONE_FILTER_ALLOW;
+    (void)dsd_tone_set_parse("100.0", &opts.analog_tone_set, NULL, 0);
+    DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", target_path);
+    char err[256] = {0};
+    trunk_scan_test_set_now(0.0);
+    if (dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err) != 0) {
+        DSD_FPRINTF(stderr, "am tone target init failed: %s\n", err);
+        cleanup_paths(dir, target_path, NULL);
+        return 1;
+    }
+    int test_rc = 0;
+    if (opts.analog_only != 1 || opts.analog_demod != DSD_ANALOG_DEMOD_AM
+        || opts.analog_tone_filter != DSD_TONE_FILTER_ALLOW) {
+        DSD_FPRINTF(stderr, "am target on air: analog_only=%d demod=%d tone_filter=%d\n", opts.analog_only,
+                    opts.analog_demod, opts.analog_tone_filter);
+        test_rc = 1;
+    }
+    for (int tick = 0; tick < 4; tick++) {
+        publish_tone_gate(&state, DSD_ANALOG_TONE_GATE_REJECTED);
+        if (dsd_analog_tone_gate_in_force(&opts, &state) != DSD_ANALOG_TONE_GATE_OFF) {
+            DSD_FPRINTF(stderr, "a verdict is in force on the AM monitor\n");
+            test_rc = 1;
+        }
+        trunk_scan_test_set_now(0.10 + (0.20 * tick));
+        dsd_engine_trunk_scan_tick(&opts, &state);
+    }
+    test_rc |= expect_active_target(&state, "am carrier past the dwell", 0U);
+    test_rc |= expect_scan_timing(&state, "am carrier", DSD_SCAN_STAY_CARRIER, 2.70, 250U, 2000U);
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    if (opts.analog_tone_filter != DSD_TONE_FILTER_ALLOW || !dsd_tone_set_contains_ctcss(&opts.analog_tone_set, 1000)) {
+        DSD_FPRINTF(stderr, "the am target changed the configured tone policy: %d\n", opts.analog_tone_filter);
+        test_rc = 1;
+    }
+    opts.analog_tone_filter = DSD_TONE_FILTER_OFF;
+    trunk_scan_test_clear_now();
+    cleanup_paths(dir, target_path, NULL);
+    return test_rc;
+}
+
+/* The configured tone policy applies only on nfm-conventional targets, each target running its own type's mode: a list
+ * with none says once, when the scan starts, that the policy has no effect -- whatever the configured decode mode, the
+ * FM monitor included -- and a list with one says nothing. */
+static int
+test_tone_filter_warns_without_nfm_targets(void) {
+    static const struct {
+        const char* body;
+        int analog_only;
+        int warn;
+    } cases[] = {
+        {"dmr,dmr-conventional,461000000,,250,250,\np25,p25-conventional,851500000,,250,250,\n", 0, 1},
+        {"dmr,dmr-conventional,461000000,,250,250,\n", 1, 1},
+        {"dmr,dmr-conventional,461000000,,250,250,\nfire,nfm-conventional,154430000,,250,250,\n", 0, 0},
+        /* An am-conventional target runs the AM monitor, which hears no tone: it counts for nothing, whatever the
+           configured decode mode. */
+        {"tower,am-conventional,118300000,,250,250,\ndmr,dmr-conventional,461000000,,250,250,\n", 0, 1},
+        {"tower,am-conventional,118300000,,250,250,\n", 1, 1},
+        {"tower,am-conventional,118300000,,250,250,\nfire,nfm-conventional,154430000,,250,250,\n", 0, 0},
+    };
+
+    static const char* const expected =
+        "the tone filter (--tone-allow/--tone-block, [analog] tone_filter) has no effect";
+    int test_rc = 0;
+    for (size_t i = 0; i < sizeof cases / sizeof cases[0]; i++) {
+        char dir[DSD_TEST_PATH_MAX];
+        char target_path[DSD_TEST_PATH_MAX];
+        static dsd_opts opts;
+        static dsd_state state;
+        if (make_temp_dir(dir, sizeof dir) != 0
+            || write_targets_file_with_header(dir, k_squelch_targets_header, cases[i].body, target_path,
+                                              sizeof target_path)
+                   != 0) {
+            return 1;
+        }
+        reset_scan_opts_state(&opts, &state);
+        opts.analog_only = cases[i].analog_only;
+        opts.analog_tone_filter = DSD_TONE_FILTER_ALLOW;
+        (void)dsd_tone_set_parse("100.0", &opts.analog_tone_set, NULL, 0);
+        DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", target_path);
+        dsd_test_capture_stderr cap;
+        char buf[4096] = {0};
+        char err[256] = {0};
+        if (dsd_test_capture_stderr_begin(&cap, "trunkscantone") != 0) {
+            cleanup_paths(dir, target_path, NULL);
+            return 1;
+        }
+        trunk_scan_test_set_now(0.0);
+        const int rc = dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err);
+        dsd_engine_trunk_scan_shutdown(&opts, &state);
+        (void)dsd_test_capture_stderr_end(&cap);
+        (void)dsd_test_capture_stderr_read(&cap, buf, sizeof buf);
+        const char* first = strstr(buf, expected);
+        if (rc != 0 || (first != NULL) != cases[i].warn || (first && strstr(first + 1, expected))) {
+            DSD_FPRINTF(stderr, "tone warning case %zu: rc=%d err=%s log:\n%s\n", i, rc, err, buf);
+            test_rc = 1;
+        }
+        opts.analog_tone_filter = DSD_TONE_FILTER_OFF;
+        trunk_scan_test_clear_now();
+        cleanup_paths(dir, target_path, NULL);
+    }
+    return test_rc;
+}
+
 /* What the analog targets owe the operator when the scan starts: a width the running DSP rate cannot
  * filter, and a squelch that holds on noise. An analog target's squelch is not the digital squelch the
  * #521 warning is about, even on audio input. On audio input the rigctl peer demodulates and takes a
@@ -11492,6 +12185,17 @@ main(void) {
     rc |= run_with_default_tune_hook(test_am_target_configured_width_held_to_the_dsp_rate);
     /* Issue #523 */
     rc |= run_with_default_tune_hook(test_nfm_target_switch_clears_received_dcs_code);
+    /* Issue #527 */
+    rc |= run_with_default_tune_hook(test_nfm_target_tone_check_holds_and_rejection_advances);
+    rc |= run_with_default_tune_hook(test_nfm_target_rejection_under_hold_and_alone);
+    rc |= run_with_default_tune_hook(test_nfm_target_rejection_that_ended_advances);
+    rc |= run_with_default_tune_hook(test_nfm_target_tone_check_leaves_no_hold);
+    rc |= run_with_default_tune_hook(test_nfm_target_tone_check_arms_a_disarmed_dwell);
+    rc |= run_with_default_tune_hook(test_am_target_carrier_ignores_the_tone_filter);
+    rc |= run_with_default_tune_hook(test_nfm_target_rejection_with_a_refused_alternate);
+    rc |= run_with_default_tune_hook(test_nfm_target_rejection_moves_to_a_same_frequency_target);
+    rc |= run_with_default_tune_hook(test_nfm_target_rejection_weighs_an_am_alternate);
+    rc |= run_with_default_tune_hook(test_tone_filter_warns_without_nfm_targets);
     return rc;
 }
 

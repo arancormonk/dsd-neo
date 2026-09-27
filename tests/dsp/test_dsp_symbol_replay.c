@@ -7,6 +7,7 @@
  */
 
 #include <assert.h>
+#include <dsd-neo/core/analog_tone.h>
 #include <dsd-neo/core/audio.h>
 #include <dsd-neo/core/audio_filters.h>
 #include <dsd-neo/core/dibit.h>
@@ -1308,6 +1309,13 @@ static int g_rx_tone_100_lines = 0;
 static int g_rx_tone_none_lines = 0;
 static int g_rx_tone_d023n_lines = 0;
 static int g_rx_tone_d047n_lines = 0;
+/* And the tone policy's verdict lines (issue #527). */
+static int g_tone_filter_lines = 0;
+static int g_tone_filter_allowed_100_lines = 0;
+static int g_tone_filter_rejected_no_tone_lines = 0;
+static int g_tone_filter_rejected_100_lines = 0;
+static int g_tone_filter_allowed_no_tone_lines = 0;
+static int g_tone_filter_pending_lost_lines = 0;
 
 static void
 count_rx_tone_log_lines(dsd_neo_log_level_t level, const char* text, void* ctx) {
@@ -1324,6 +1332,14 @@ count_rx_tone_log_lines(dsd_neo_log_level_t level, const char* text, void* ctx) 
         g_rx_tone_none_lines += strcmp(text, "Received tone: none\n") == 0 ? 1 : 0;
         g_rx_tone_d023n_lines += strcmp(text, "Received tone: DCS D023N / D047I\n") == 0 ? 1 : 0;
         g_rx_tone_d047n_lines += strcmp(text, "Received tone: DCS D047N / D023I\n") == 0 ? 1 : 0;
+    }
+    if (level == LOG_LEVEL_INFO && strncmp(text, "Tone filter: ", strlen("Tone filter: ")) == 0) {
+        g_tone_filter_lines++;
+        g_tone_filter_allowed_100_lines += strcmp(text, "Tone filter: allowed (CTCSS 100.0 Hz)\n") == 0 ? 1 : 0;
+        g_tone_filter_rejected_no_tone_lines += strcmp(text, "Tone filter: rejected (no tone)\n") == 0 ? 1 : 0;
+        g_tone_filter_rejected_100_lines += strcmp(text, "Tone filter: rejected (CTCSS 100.0 Hz)\n") == 0 ? 1 : 0;
+        g_tone_filter_allowed_no_tone_lines += strcmp(text, "Tone filter: allowed (no tone)\n") == 0 ? 1 : 0;
+        g_tone_filter_pending_lost_lines += strcmp(text, "Tone filter: pending (tone lost)\n") == 0 ? 1 : 0;
     }
 }
 
@@ -2776,6 +2792,452 @@ test_am_monitor_keeps_its_carrier_and_boundaries(void) {
     dsd_state_ext_free_all(&state);
 }
 
+/* --- Issue #527: the CTCSS/DCS receive policy at the monitor's one sink --- */
+
+/* What the UDP analog socket was handed: the blocks and their bytes. Both live sinks, the local stream and this socket,
+   sit behind the same gate (symbol_unsynced_audio_allowed()), so what reaches the socket is what the stream plays. */
+static unsigned char g_played[sizeof(short) * 64U * 960U];
+static size_t g_played_len;
+
+static void
+capture_monitor_block(const dsd_opts* opts, dsd_state* state, size_t nsam, const void* data) {
+    (void)opts;
+    (void)state;
+    g_monitor_blocks++;
+    if (data && g_played_len + nsam <= sizeof(g_played)) {
+        DSD_MEMCPY(g_played + g_played_len, data, nsam);
+        g_played_len += nsam;
+    }
+}
+
+static void
+start_monitor_capture(dsd_opts* opts) {
+    opts->audio_out = 1;
+    opts->audio_out_type = 8;
+    dsd_udp_audio_hooks monitor = {0};
+    monitor.blast_analog = capture_monitor_block;
+    dsd_udp_audio_hooks_set(monitor);
+    g_monitor_blocks = 0;
+    g_played_len = 0;
+}
+
+static void
+set_tone_policy(dsd_opts* opts, int mode, const char* list) {
+    opts->analog_tone_filter = mode;
+    assert(dsd_tone_set_parse(list, &opts->analog_tone_set, NULL, 0) == 0);
+}
+
+/* Feed @p blocks 20 ms blocks of a @p hz tone through the unsynced finalize step. */
+static void
+feed_hz_blocks(dsd_opts* opts, dsd_state* state, int blocks, double hz) {
+    float block[960];
+    for (int b = 0; b < blocks; b++) {
+        fill_tone_block(block, 960U, hz, 3000.0);
+        assert(dsd_symbol_test_finalize_unsynced_analog_block(opts, state, block, 960U) == 960U);
+    }
+}
+
+/* An allow list naming the tone on air: muted while it is checked, then played, and within the CTCSS lock target of
+   400 ms. The carrier is scan activity from the first block played, never while it is checked, and the verdict is
+   logged once. */
+static void
+test_tone_policy_allow_match_unmutes_after_the_lock(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    install_fake_rtl_hooks(0);
+    init_analog_monitor_fixture(&opts, &state);
+    set_tone_policy(&opts, DSD_TONE_FILTER_ALLOW, "100.0/D023N");
+    start_monitor_capture(&opts);
+    g_tone_filter_lines = 0;
+    g_tone_filter_allowed_100_lines = 0;
+    int muted = 0;
+    for (int b = 0; b < 40; b++) {
+        clear_carrier_stamps(&state);
+        const int played = g_monitor_blocks;
+        feed_tone_blocks(&opts, &state, 1);
+        if (g_monitor_blocks == played) {
+            assert(state.analog_rx.gate == DSD_ANALOG_TONE_GATE_PENDING);
+            /* Still being checked: no scan activity (issue #527), so a check its carrier ends leaves no tail. */
+            assert(state.last_cc_sync_time == 0 && state.last_vc_sync_time == 0);
+            assert(muted == b); /* muted only before the first block played */
+            muted++;
+        } else {
+            assert(state.analog_rx.gate == DSD_ANALOG_TONE_GATE_ALLOWED);
+            /* Allowed: scan activity, as any carrier the monitor passes. */
+            assert(state.last_cc_sync_time != 0 && state.last_vc_sync_time != 0);
+        }
+    }
+    assert(muted >= 1 && muted * 20 <= DSD_ANALOG_CTCSS_LOCK_P95_MS);
+    assert(rx_tone_locked_on_100(&state) && state.analog_rx.gate_no_tone == 0);
+    assert(g_tone_filter_lines == 1 && g_tone_filter_allowed_100_lines == 1);
+    dsd_udp_audio_hooks_set((dsd_udp_audio_hooks){0});
+    dsd_state_ext_free_all(&state);
+}
+
+/* An allow list that does not name the tone on air: never played, rejected once the tone is confirmed, and from then on
+   no scan activity. The -6 raw WAV keeps every block: it is a capture ahead of every gate. */
+static void
+test_tone_policy_reject_mutes_every_sink_but_the_raw_wav(void) {
+    char raw_path[DSD_TEST_PATH_MAX];
+    static dsd_opts opts;
+    static dsd_state state;
+    install_fake_rtl_hooks(0);
+    init_analog_monitor_fixture(&opts, &state);
+    opts.wav_out_raw = open_raw_wav_out(raw_path, sizeof(raw_path), 48000);
+    assert(opts.wav_out_raw != NULL);
+    set_tone_policy(&opts, DSD_TONE_FILTER_ALLOW, "67.0");
+    start_monitor_capture(&opts);
+    feed_tone_blocks(&opts, &state, 30);
+    assert(rx_tone_locked_on_100(&state) && state.analog_rx.gate == DSD_ANALOG_TONE_GATE_REJECTED);
+    assert(g_monitor_blocks == 0);
+    clear_carrier_stamps(&state);
+    feed_tone_blocks(&opts, &state, 5);
+    assert(state.last_cc_sync_time == 0 && state.last_vc_sync_time == 0 && g_monitor_blocks == 0);
+    /* A block list naming it rejects it the same way. */
+    set_tone_policy(&opts, DSD_TONE_FILTER_BLOCK, "100.0");
+    feed_tone_blocks(&opts, &state, 25);
+    assert(state.analog_rx.gate == DSD_ANALOG_TONE_GATE_REJECTED && g_monitor_blocks == 0);
+    sf_close(opts.wav_out_raw);
+    opts.wav_out_raw = NULL;
+    SF_INFO info;
+    DSD_MEMSET(&info, 0, sizeof(info));
+    SNDFILE* wav = sf_open(raw_path, SFM_READ, &info);
+    assert(wav != NULL);
+    assert(info.frames == (sf_count_t)(60 * 960));
+    sf_close(wav);
+    (void)remove(raw_path);
+    dsd_udp_audio_hooks_set((dsd_udp_audio_hooks){0});
+    dsd_state_ext_free_all(&state);
+}
+
+/* No tone on air (a steady voice-band tone): an allow list keeps it muted through the window and rejects it as the
+   window ends, never before; a block list lets it play from then on. */
+static void
+test_tone_policy_no_tone_decides_at_the_window(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    const int window_blocks = DSD_ANALOG_TONE_WINDOW_MS / 20;
+    for (int mode = DSD_TONE_FILTER_ALLOW; mode <= DSD_TONE_FILTER_BLOCK; mode++) {
+        install_fake_rtl_hooks(0);
+        init_analog_monitor_fixture(&opts, &state);
+        set_tone_policy(&opts, mode, "100.0");
+        start_monitor_capture(&opts);
+        g_tone_filter_rejected_no_tone_lines = 0;
+        /* The block that opens the window, then the window: checked, muted. */
+        feed_hz_blocks(&opts, &state, window_blocks, 1000.0);
+        assert(state.analog_rx.carrier_open == 1 && state.analog_rx.gate == DSD_ANALOG_TONE_GATE_PENDING);
+        assert(g_monitor_blocks == 0);
+        feed_hz_blocks(&opts, &state, 2, 1000.0);
+        assert(state.analog_rx.gate_no_tone == 1);
+        if (mode == DSD_TONE_FILTER_ALLOW) {
+            assert(state.analog_rx.gate == DSD_ANALOG_TONE_GATE_REJECTED && g_monitor_blocks == 0);
+            assert(g_tone_filter_rejected_no_tone_lines == 1);
+        } else {
+            assert(state.analog_rx.gate == DSD_ANALOG_TONE_GATE_ALLOWED && g_monitor_blocks >= 1);
+        }
+        dsd_udp_audio_hooks_set((dsd_udp_audio_hooks){0});
+        dsd_state_ext_free_all(&state);
+    }
+}
+
+/* Policy off is the monitor as it was: every block plays, byte for byte what a session with no list plays, a list
+   left in place by `off` included; and a retune ends a reception, so its verdict never carries to the next channel. */
+static void
+test_tone_policy_off_is_byte_identical(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static unsigned char without[sizeof(g_played)];
+    install_fake_rtl_hooks(0);
+    init_analog_monitor_fixture(&opts, &state);
+    start_monitor_capture(&opts);
+    g_tone_phase = 0.0;
+    feed_tone_blocks(&opts, &state, 20);
+    assert(g_monitor_blocks == 20 && state.analog_rx.gate == DSD_ANALOG_TONE_GATE_OFF);
+    const size_t without_len = g_played_len;
+    DSD_MEMCPY(without, g_played, without_len);
+    dsd_state_ext_free_all(&state);
+
+    init_analog_monitor_fixture(&opts, &state);
+    set_tone_policy(&opts, DSD_TONE_FILTER_OFF, "67.0/D023N");
+    start_monitor_capture(&opts);
+    g_tone_phase = 0.0;
+    feed_tone_blocks(&opts, &state, 20);
+    assert(g_monitor_blocks == 20 && state.analog_rx.gate == DSD_ANALOG_TONE_GATE_OFF);
+    assert(g_played_len == without_len && memcmp(g_played, without, without_len) == 0);
+
+    /* Allowed, then a retune: the new channel is checked again before a block of it plays. */
+    set_tone_policy(&opts, DSD_TONE_FILTER_ALLOW, "100.0");
+    feed_tone_blocks(&opts, &state, 30);
+    assert(state.analog_rx.gate == DSD_ANALOG_TONE_GATE_ALLOWED);
+    dsd_analog_rx_reset(&state);
+    assert(state.analog_rx.gate == DSD_ANALOG_TONE_GATE_PENDING);
+    const int played = g_monitor_blocks;
+    feed_tone_blocks(&opts, &state, 3);
+    assert(g_monitor_blocks == played && state.analog_rx.gate == DSD_ANALOG_TONE_GATE_PENDING);
+    dsd_udp_audio_hooks_set((dsd_udp_audio_hooks){0});
+    dsd_state_ext_free_all(&state);
+}
+
+/* The AM monitor and the -8 source monitor run no policy: a list in force there gates nothing. */
+static void
+test_tone_policy_only_on_the_fm_monitor(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    install_fake_rtl_hooks(0);
+    init_analog_monitor_fixture(&opts, &state);
+    set_tone_policy(&opts, DSD_TONE_FILTER_ALLOW, "67.0");
+    start_monitor_capture(&opts);
+    opts.analog_only = 0; /* the -8 monitor under digital decoding */
+    feed_tone_blocks(&opts, &state, 10);
+    assert(g_monitor_blocks == 10 && dsd_analog_tone_gate_in_force(&opts, &state) == DSD_ANALOG_TONE_GATE_OFF);
+    dsd_udp_audio_hooks_set((dsd_udp_audio_hooks){0});
+    dsd_state_ext_free_all(&state);
+
+    /* The AM monitor (issue #524): the tap keeps its carrier, which holds a scan row, but detects no tone, so the list
+       judges nothing -- past the window every block still plays, and no verdict is published or logged. */
+    install_fake_rtl_hooks(1);
+    init_analog_monitor_fixture(&opts, &state);
+    opts.audio_in_type = AUDIO_IN_RTL;
+    set_monitor_kind(&opts, DSD_ANALOG_DEMOD_AM);
+    set_tone_policy(&opts, DSD_TONE_FILTER_ALLOW, "67.0");
+    start_monitor_capture(&opts);
+    feed_tone_blocks(&opts, &state, 2);
+    g_monitor_blocks = 0;
+    g_tone_filter_lines = 0;
+    const int blocks = (DSD_ANALOG_TONE_WINDOW_DCS_MS / 20) + 10;
+    for (int b = 0; b < blocks; b++) {
+        clear_carrier_stamps(&state);
+        feed_tone_blocks(&opts, &state, 1);
+        assert(state.analog_rx.carrier_open == 1 && state.last_cc_sync_time != 0);
+        assert(state.analog_rx.gate == DSD_ANALOG_TONE_GATE_OFF && state.analog_rx.gate_no_tone == 0);
+    }
+    assert(g_monitor_blocks == blocks && g_tone_filter_lines == 0);
+    assert(dsd_analog_tone_gate_in_force(&opts, &state) == DSD_ANALOG_TONE_GATE_OFF);
+    dsd_udp_audio_hooks_set((dsd_udp_audio_hooks){0});
+    dsd_state_ext_free_all(&state);
+    install_fake_rtl_hooks(0);
+}
+
+/* A policy changed mid-reception (a config load, a scan row's own coming on air) judges it afresh, muted for a check
+   of its own, and says nothing of a tone lost, since none was; an allowed tone that is lost still says so. */
+static void
+test_tone_policy_change_is_no_tone_lost(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    const int window_blocks = DSD_ANALOG_TONE_WINDOW_MS / 20;
+    install_fake_rtl_hooks(0);
+    init_analog_monitor_fixture(&opts, &state);
+    set_tone_policy(&opts, DSD_TONE_FILTER_BLOCK, "67.0");
+    start_monitor_capture(&opts);
+    g_tone_filter_lines = 0;
+    g_tone_filter_allowed_no_tone_lines = 0;
+    g_tone_filter_pending_lost_lines = 0;
+    feed_hz_blocks(&opts, &state, window_blocks + 2, 1000.0);
+    assert(state.analog_rx.gate == DSD_ANALOG_TONE_GATE_ALLOWED && state.analog_rx.gate_no_tone == 1);
+    assert(g_tone_filter_allowed_no_tone_lines == 1);
+
+    set_tone_policy(&opts, DSD_TONE_FILTER_BLOCK, "67.0/71.9");
+    const int played = g_monitor_blocks;
+    feed_hz_blocks(&opts, &state, window_blocks - 1, 1000.0);
+    assert(state.analog_rx.gate == DSD_ANALOG_TONE_GATE_PENDING && g_monitor_blocks == played);
+    feed_hz_blocks(&opts, &state, 2, 1000.0);
+    assert(state.analog_rx.gate == DSD_ANALOG_TONE_GATE_ALLOWED && g_monitor_blocks > played);
+    assert(g_tone_filter_allowed_no_tone_lines == 2 && g_tone_filter_pending_lost_lines == 0);
+    assert(g_tone_filter_lines == 2);
+
+    /* Allowed on a listed tone, then the tone goes while the carrier stays: that check is a tone lost. */
+    set_tone_policy(&opts, DSD_TONE_FILTER_ALLOW, "100.0");
+    feed_tone_blocks(&opts, &state, 30);
+    assert(state.analog_rx.gate == DSD_ANALOG_TONE_GATE_ALLOWED && g_tone_filter_pending_lost_lines == 0);
+    int lost_after = -1;
+    for (int b = 0; b < DSD_ANALOG_CTCSS_LOSS_CEILING_MS / 20 + 5 && lost_after < 0; b++) {
+        feed_hz_blocks(&opts, &state, 1, 1000.0);
+        if (state.analog_rx.gate == DSD_ANALOG_TONE_GATE_PENDING) {
+            lost_after = b;
+        }
+    }
+    assert(lost_after >= 0 && g_tone_filter_pending_lost_lines == 1);
+    dsd_udp_audio_hooks_set((dsd_udp_audio_hooks){0});
+    dsd_state_ext_free_all(&state);
+}
+
+/* A reception rejected for want of a tone that then carries a tone the list does not pass stays muted, and the
+   rejection names that tone from then on: in the log, and in the published reason the frontends word. */
+static void
+test_tone_policy_no_tone_rejection_names_a_later_tone(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    const int window_blocks = DSD_ANALOG_TONE_WINDOW_MS / 20;
+    install_fake_rtl_hooks(0);
+    init_analog_monitor_fixture(&opts, &state);
+    set_tone_policy(&opts, DSD_TONE_FILTER_ALLOW, "67.0");
+    start_monitor_capture(&opts);
+    g_tone_filter_lines = 0;
+    g_tone_filter_rejected_no_tone_lines = 0;
+    g_tone_filter_rejected_100_lines = 0;
+    feed_hz_blocks(&opts, &state, window_blocks + 2, 1000.0);
+    assert(state.analog_rx.gate == DSD_ANALOG_TONE_GATE_REJECTED && state.analog_rx.gate_no_tone == 1);
+    assert(g_tone_filter_rejected_no_tone_lines == 1);
+    feed_tone_blocks(&opts, &state, 30);
+    assert(rx_tone_locked_on_100(&state));
+    assert(state.analog_rx.gate == DSD_ANALOG_TONE_GATE_REJECTED && state.analog_rx.gate_no_tone == 0);
+    assert(g_tone_filter_rejected_100_lines == 1 && g_tone_filter_lines == 2 && g_monitor_blocks == 0);
+    dsd_udp_audio_hooks_set((dsd_udp_audio_hooks){0});
+    dsd_state_ext_free_all(&state);
+}
+
+/* Feed 20 ms blocks of digital silence until the tap's carrier closes (its 200 ms hangover run out), asserting the
+   verdict @p gate stands on the carrier until then and no end of a rejected reception is published meanwhile. */
+static void
+feed_until_carrier_closes(dsd_opts* opts, dsd_state* state, int gate) {
+    for (int blocks = 0; state->analog_rx.carrier_open; blocks++) {
+        assert(state->analog_rx.gate == gate && state->analog_rx.gate_rejected_ended == 0);
+        assert(blocks <= (DSD_ANALOG_CARRIER_HANGOVER_MS / 20) + 1);
+        feed_blocks_at(opts, state, 1, 0.0);
+    }
+}
+
+/* Traffic the policy rejected outlives its carrier for the scanners (issue #527): once the hangover has run out under
+   a rejection the verdict is back to checking, with no carrier, but gate_rejected_ended says the reception ended
+   rejected until the next carrier opens a reception of its own, so a scanner whose pass comes after it ended still
+   moves on. A reception that ended passing leaves nothing, and a retune, a policy change or a paused input's next
+   carrier forget it. */
+static void
+test_tone_policy_rejection_outlives_its_carrier(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    install_fake_rtl_hooks(0);
+    init_analog_monitor_fixture(&opts, &state);
+    set_tone_policy(&opts, DSD_TONE_FILTER_ALLOW, "67.0");
+    start_monitor_capture(&opts);
+    feed_tone_blocks(&opts, &state, 30);
+    assert(state.analog_rx.gate == DSD_ANALOG_TONE_GATE_REJECTED);
+    feed_until_carrier_closes(&opts, &state, DSD_ANALOG_TONE_GATE_REJECTED);
+    assert(state.analog_rx.gate == DSD_ANALOG_TONE_GATE_PENDING && state.analog_rx.gate_rejected_ended == 1);
+    assert(dsd_analog_rx_rejection_ended_now(&opts, &state) == 1);
+    /* It lasts through the quiet, and nothing plays ... */
+    feed_blocks_at(&opts, &state, 50, 0.0);
+    assert(state.analog_rx.gate_rejected_ended == 1 && g_monitor_blocks == 0);
+    /* ... until the next carrier opens a reception of its own, checked afresh. */
+    feed_tone_blocks(&opts, &state, 1);
+    assert(state.analog_rx.carrier_open == 1 && state.analog_rx.gate == DSD_ANALOG_TONE_GATE_PENDING);
+    assert(state.analog_rx.gate_rejected_ended == 0 && dsd_analog_rx_rejection_ended_now(&opts, &state) == 0);
+
+    /* That one passes, and ends passing: nothing is left behind. */
+    set_tone_policy(&opts, DSD_TONE_FILTER_ALLOW, "100.0");
+    feed_tone_blocks(&opts, &state, 30);
+    assert(state.analog_rx.gate == DSD_ANALOG_TONE_GATE_ALLOWED);
+    feed_until_carrier_closes(&opts, &state, DSD_ANALOG_TONE_GATE_ALLOWED);
+    assert(state.analog_rx.gate_rejected_ended == 0);
+
+    /* A retune forgets a rejected reception that ended, as it forgets the carrier. */
+    set_tone_policy(&opts, DSD_TONE_FILTER_ALLOW, "67.0");
+    feed_tone_blocks(&opts, &state, 30);
+    feed_until_carrier_closes(&opts, &state, DSD_ANALOG_TONE_GATE_REJECTED);
+    assert(state.analog_rx.gate_rejected_ended == 1);
+    dsd_analog_rx_reset(&state);
+    assert(state.analog_rx.gate_rejected_ended == 0 && dsd_analog_rx_rejection_ended_now(&opts, &state) == 0);
+    feed_blocks_at(&opts, &state, 3, 0.0);
+    assert(state.analog_rx.gate_rejected_ended == 0);
+
+    /* So does a policy change: the new policy judged nothing. */
+    feed_tone_blocks(&opts, &state, 30);
+    feed_until_carrier_closes(&opts, &state, DSD_ANALOG_TONE_GATE_REJECTED);
+    assert(state.analog_rx.gate_rejected_ended == 1);
+    set_tone_policy(&opts, DSD_TONE_FILTER_ALLOW, "67.0/71.9");
+    feed_blocks_at(&opts, &state, 1, 0.0);
+    assert(state.analog_rx.gate_rejected_ended == 0);
+
+    /* Off the FM monitor detection stops, and with it the policy: nothing is in force to have rejected anything. */
+    set_tone_policy(&opts, DSD_TONE_FILTER_ALLOW, "67.0");
+    feed_tone_blocks(&opts, &state, 30);
+    feed_until_carrier_closes(&opts, &state, DSD_ANALOG_TONE_GATE_REJECTED);
+    opts.analog_only = 0;
+    assert(dsd_analog_rx_rejection_ended_now(&opts, &state) == 0);
+    opts.analog_only = 1;
+    dsd_udp_audio_hooks_set((dsd_udp_audio_hooks){0});
+    dsd_state_ext_free_all(&state);
+
+    /* An input that pauses ends its reception as the hangover does: the read after the pause, which the tap drops,
+       says a rejected reception ended; the carrier that follows opens a new one. */
+    install_fake_rtl_hooks(0);
+    init_analog_monitor_fixture(&opts, &state);
+    opts.audio_in_type = AUDIO_IN_UDP;
+    set_tone_policy(&opts, DSD_TONE_FILTER_ALLOW, "67.0");
+    dsd_analog_rx_test_set_clock(fake_now_ms);
+    g_fake_now_ms = 200000U;
+    for (int b = 0; b < 30; b++) {
+        feed_stream_block(&opts, &state, 100.0);
+    }
+    assert(state.analog_rx.gate == DSD_ANALOG_TONE_GATE_REJECTED && state.analog_rx.gate_rejected_ended == 0);
+    g_fake_now_ms += 1000U;
+    feed_stream_block(&opts, &state, 100.0);
+    assert(state.analog_rx.carrier_open == 0 && state.analog_rx.gate_rejected_ended == 1);
+    feed_stream_block(&opts, &state, 100.0);
+    assert(state.analog_rx.carrier_open == 1 && state.analog_rx.gate == DSD_ANALOG_TONE_GATE_PENDING);
+    assert(state.analog_rx.gate_rejected_ended == 0);
+    dsd_analog_rx_test_set_clock(NULL);
+    dsd_state_ext_free_all(&state);
+}
+
+/* A carrier still being checked is no scan activity (issue #527): only blocks under OFF or ALLOWED stamp the -Y
+   hangtime and voice anchors. Short no-tone bursts under an allow list -- kerchunks, noise -- each end before the
+   window and before any verdict, and leave no stamp, no played block and no rejection behind them, so they cannot hold
+   a scanner on a muted row; each is a check of its own. A block list's no-tone traffic stamps from the block its window
+   passes it, and an allowed tone lost under an allow list stamps nothing while it is checked again. */
+static void
+test_tone_policy_check_is_no_scan_activity(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    const int window_blocks = DSD_ANALOG_TONE_WINDOW_MS / 20;
+    install_fake_rtl_hooks(0);
+    init_analog_monitor_fixture(&opts, &state);
+    set_tone_policy(&opts, DSD_TONE_FILTER_ALLOW, "100.0");
+    start_monitor_capture(&opts);
+    clear_carrier_stamps(&state);
+    for (int burst = 0; burst < 3; burst++) {
+        feed_hz_blocks(&opts, &state, window_blocks / 2, 1000.0);
+        assert(state.analog_rx.carrier_open == 1 && state.analog_rx.gate == DSD_ANALOG_TONE_GATE_PENDING);
+        feed_until_carrier_closes(&opts, &state, DSD_ANALOG_TONE_GATE_PENDING);
+        assert(state.analog_rx.gate == DSD_ANALOG_TONE_GATE_PENDING && state.analog_rx.gate_rejected_ended == 0);
+        assert(state.last_cc_sync_time == 0 && state.last_vc_sync_time == 0 && g_monitor_blocks == 0);
+    }
+
+    /* A block list: checked, no stamp; passed for want of a tone once the window ends, stamped from that block. */
+    set_tone_policy(&opts, DSD_TONE_FILTER_BLOCK, "100.0");
+    int stamped_from = -1;
+    for (int b = 0; b < window_blocks + 2; b++) {
+        clear_carrier_stamps(&state);
+        feed_hz_blocks(&opts, &state, 1, 1000.0);
+        const int passed = state.analog_rx.gate == DSD_ANALOG_TONE_GATE_ALLOWED;
+        assert(passed || state.analog_rx.gate == DSD_ANALOG_TONE_GATE_PENDING);
+        assert((state.last_cc_sync_time != 0) == passed && (state.last_vc_sync_time != 0) == passed);
+        if (passed && stamped_from < 0) {
+            stamped_from = b;
+        }
+    }
+    assert(stamped_from >= window_blocks && state.analog_rx.gate_no_tone == 1 && g_monitor_blocks > 0);
+    feed_until_carrier_closes(&opts, &state, DSD_ANALOG_TONE_GATE_ALLOWED);
+
+    /* An allow list: the allowed tone stamps; once it is lost the traffic is checked again, and stamps nothing. */
+    set_tone_policy(&opts, DSD_TONE_FILTER_ALLOW, "100.0");
+    feed_tone_blocks(&opts, &state, 30);
+    assert(state.analog_rx.gate == DSD_ANALOG_TONE_GATE_ALLOWED && state.last_cc_sync_time != 0);
+    for (int b = 0; b < DSD_ANALOG_CTCSS_LOSS_CEILING_MS / 20 + 5; b++) {
+        feed_hz_blocks(&opts, &state, 1, 1000.0);
+        if (state.analog_rx.gate == DSD_ANALOG_TONE_GATE_PENDING) {
+            break;
+        }
+    }
+    assert(state.analog_rx.gate == DSD_ANALOG_TONE_GATE_PENDING);
+    clear_carrier_stamps(&state);
+    feed_hz_blocks(&opts, &state, 5, 1000.0);
+    assert(state.analog_rx.gate == DSD_ANALOG_TONE_GATE_PENDING);
+    assert(state.last_cc_sync_time == 0 && state.last_vc_sync_time == 0);
+    dsd_udp_audio_hooks_set((dsd_udp_audio_hooks){0});
+    dsd_state_ext_free_all(&state);
+}
+
 int
 main(void) {
     exitflag = 0;
@@ -2822,6 +3284,15 @@ main(void) {
     test_rx_tone_retune_skips_the_input_backlog();
     test_rx_tone_backlog_skip_is_bounded();
     test_rx_tone_backlog_skip_ignores_playback_time();
+    test_tone_policy_allow_match_unmutes_after_the_lock();
+    test_tone_policy_reject_mutes_every_sink_but_the_raw_wav();
+    test_tone_policy_no_tone_decides_at_the_window();
+    test_tone_policy_off_is_byte_identical();
+    test_tone_policy_only_on_the_fm_monitor();
+    test_tone_policy_change_is_no_tone_lost();
+    test_tone_policy_no_tone_rejection_names_a_later_tone();
+    test_tone_policy_rejection_outlives_its_carrier();
+    test_tone_policy_check_is_no_scan_activity();
     return 0;
 }
 

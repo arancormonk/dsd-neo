@@ -197,6 +197,16 @@ int dsd_engine_scan_runs_configured_nfm_width(const dsd_opts* opts, const dsd_st
  * (its 6 kHz default when none is set, which a DSP rate holds too) whenever it is on air, on any session (issue #526).
  */
 int dsd_engine_scan_runs_configured_am_width(const dsd_opts* opts, const dsd_state* state);
+/**
+ * @brief Whether anything in the session runs received-tone detection, so the configured tone policy can act (#527).
+ *
+ * Under the trunk-scan coordinator, an nfm-conventional target: every target runs its own type's mode, never the
+ * configured one. Otherwise dsd_channel_modes_conventional_hear_tones(): on the conventional -Y scanner with a channel
+ * map, a row that runs the FM monitor (dsd_channel_modes_hear_tones()); without rows, the configured decode mode is the
+ * analog FM monitor (dsd_scan_mode_configured_fm_monitor()). A --trunk-scan session whose coordinator has not started
+ * counts as hearing them: its targets are judged when the scan starts. Read-only; 0 when @p opts or @p state is NULL.
+ */
+int dsd_engine_scan_hears_tones(const dsd_opts* opts, const dsd_state* state);
 int dsd_engine_trunk_scan_saved_tuner_autogain(const dsd_state* state, int* out_on);
 int dsd_engine_trunk_scan_active_p25_cqpsk_request(const dsd_state* state, int* out_enable);
 /**

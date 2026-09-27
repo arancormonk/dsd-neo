@@ -5,3 +5,7 @@ Ichannel,frequency_hz,mode,options
 4,150000003,,--squelch-db=0 --scan-max-visit-ms 5000
 5,150000004,nfm,--nfm-bandwidth-hz 12500 --squelch-db -50
 6,150000005,am,--am-bandwidth-hz 8333 --squelch-db -55
+7,150000006,nfm,--tone-allow 100.0/D023N --squelch-db -50
+8,150000007,nfm,--tone-block=67/d047i
+9,150000008,nfm,--no-tone-filter --nfm-bandwidth-hz 12500
+10,150000009,nfm,--tone-allow 100.0,67.0

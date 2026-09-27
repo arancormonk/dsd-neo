@@ -75,12 +75,20 @@
  * like the CTCSS detector. Samples inside the carrier hangover keep the bit clock and the
  * windows moving but change no verdict on what they read; only the 64-bit span, which is
  * carrier time, can run out on them.
+ *
+ * Candidate (issue #527): while nothing is locked, a slicer whose newest 23 bits are exactly a
+ * supported code's word -- the first half of a lock -- makes the detector report a candidate for
+ * the next 64 bits read with the carrier open. A code that has not locked yet keeps reading its
+ * single words, so the tone policy extends its window while one stands (see
+ * DSD_ANALOG_TONE_WINDOW_DCS_MS); noise reads one now and then, which only delays a no-tone
+ * verdict. The candidate changes no verdict of this detector.
  */
 
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/runtime/analog_tones.h>
 #include <math.h>
+#include <stddef.h>
 #include <stdint.h>
 #include "analog_rx_internal.h"
 
@@ -210,6 +218,7 @@ dcs_reset(void* ctx) {
     det->since_frozen = 0;
     det->open_samples = 0;
     det->bits_decided = 0;
+    det->candidate_age = DSD_ANALOG_DCS_SPAN_BITS;
 }
 
 static void
@@ -543,6 +552,28 @@ dcs_judge(dsd_analog_dcs* det, int turnoff) {
     }
 }
 
+/* After a bit read with the carrier open: whether some slicer, with nothing locked, reads a supported code's word
+   exactly -- the first half of a lock -- and how long ago one last did (dsd_analog_dcs::candidate_age). The tone policy
+   (issue #527) waits for such a code past its window; a lock needs the word twice in a row, which a code in noise can
+   take longer to read than its single words. */
+static void
+dcs_note_candidate(dsd_analog_dcs* det) {
+    if (det->state == DSD_ANALOG_TONE_STATE_LOCKED) {
+        det->candidate_age = DSD_ANALOG_DCS_SPAN_BITS;
+        return;
+    }
+    for (int j = 0; j < DSD_ANALOG_DCS_SLICERS; j++) {
+        const dsd_analog_dcs_slicer* s = &det->slicer[j];
+        if (s->count >= DCS_WORD_BITS && dsd_dcs_match(dcs_window(s), NULL, NULL)) {
+            det->candidate_age = 0;
+            return;
+        }
+    }
+    if (det->candidate_age < DSD_ANALOG_DCS_SPAN_BITS) {
+        det->candidate_age++;
+    }
+}
+
 /* Read the bit that ends at next_bit: slice it, time the next one, and judge. */
 static void
 dcs_read_bit(dsd_analog_dcs* det) {
@@ -571,6 +602,7 @@ dcs_read_bit(dsd_analog_dcs* det) {
     dcs_steer(det);
     if (open) {
         dcs_judge(det, det->turnoff_run >= DSD_ANALOG_DCS_TURNOFF_RUN);
+        dcs_note_candidate(det);
     } else if (det->state == DSD_ANALOG_TONE_STATE_LOCKED && det->since_held >= DSD_ANALOG_DCS_SPAN_BITS) {
         /* The span is carrier time, not a reading: it runs out inside a dropout as well. */
         dcs_unlock(det);
@@ -643,6 +675,7 @@ dcs_report(const void* ctx, dsd_analog_rx_report* out) {
         return;
     }
     out->state = det->state;
+    out->candidate = det->state != DSD_ANALOG_TONE_STATE_LOCKED && det->candidate_age < DSD_ANALOG_DCS_SPAN_BITS;
     if (det->state == DSD_ANALOG_TONE_STATE_LOCKED && det->code >= 0) {
         out->kind = DSD_ANALOG_TONE_KIND_DCS;
         out->dcs_code = det->code;

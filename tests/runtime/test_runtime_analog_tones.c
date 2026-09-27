@@ -11,12 +11,16 @@
 
 #include <assert.h>
 #include <stdint.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
+#include <dsd-neo/core/analog_tone.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/safe_api.h>
+#include <dsd-neo/core/state.h>
+#include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/io/rtl_stream_c.h>
 #include <dsd-neo/runtime/analog_channel.h>
 #include <dsd-neo/runtime/analog_tones.h>
@@ -187,6 +191,69 @@ test_detection_active(void) {
     expect_tap(opts, 0);
     dsd_rtl_stream_metrics_hooks_set(NULL);
     free(opts);
+}
+
+/* The verdict in force (issue #527) fails closed: a published OFF while a list policy is configured is no verdict of
+   that policy -- the tap had no session to judge with (one it could not allocate) or has not read since the policy came
+   on -- and mutes as PENDING until the tap's own verdict replaces it. Without a list policy, or without detection,
+   nothing is in force. */
+static void
+test_gate_in_force_fails_closed(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
+    assert(opts != NULL && state != NULL);
+    assert(dsd_analog_tone_gate_in_force(NULL, state) == DSD_ANALOG_TONE_GATE_OFF);
+    assert(dsd_analog_tone_gate_in_force(opts, NULL) == DSD_ANALOG_TONE_GATE_OFF);
+    opts->analog_only = 1;
+    opts->monitor_input_audio = 1;
+    opts->audio_in_type = AUDIO_IN_PULSE;
+    opts->analog_demod = DSD_ANALOG_DEMOD_FM;
+    assert(dsd_analog_tone_detection_active(opts) == 1);
+
+    state->analog_rx.gate = DSD_ANALOG_TONE_GATE_OFF;
+    assert(dsd_analog_tone_gate_in_force(opts, state) == DSD_ANALOG_TONE_GATE_OFF);
+    assert(dsd_tone_set_parse("100.0", &opts->analog_tone_set, NULL, 0) == 0);
+    assert(dsd_analog_tone_gate_in_force(opts, state) == DSD_ANALOG_TONE_GATE_OFF); /* off keeps its list */
+    opts->analog_tone_filter = DSD_TONE_FILTER_ALLOW;
+    assert(dsd_analog_tone_gate_in_force(opts, state) == DSD_ANALOG_TONE_GATE_PENDING);
+    opts->analog_tone_filter = DSD_TONE_FILTER_BLOCK;
+    assert(dsd_analog_tone_gate_in_force(opts, state) == DSD_ANALOG_TONE_GATE_PENDING);
+    /* The tap's own verdicts stand, and a value this build does not know still mutes. */
+    static const int verdicts[] = {DSD_ANALOG_TONE_GATE_PENDING, DSD_ANALOG_TONE_GATE_ALLOWED,
+                                   DSD_ANALOG_TONE_GATE_REJECTED};
+    for (size_t i = 0; i < sizeof(verdicts) / sizeof(verdicts[0]); i++) {
+        state->analog_rx.gate = verdicts[i];
+        assert(dsd_analog_tone_gate_in_force(opts, state) == verdicts[i]);
+    }
+    state->analog_rx.gate = 7;
+    assert(dsd_analog_tone_gate_in_force(opts, state) == DSD_ANALOG_TONE_GATE_PENDING);
+
+    /* A list policy with no list judges nothing, as the tap configures it. */
+    state->analog_rx.gate = DSD_ANALOG_TONE_GATE_OFF;
+    DSD_MEMSET(&opts->analog_tone_set, 0, sizeof(opts->analog_tone_set));
+    assert(dsd_analog_tone_gate_in_force(opts, state) == DSD_ANALOG_TONE_GATE_OFF);
+
+    /* No detection, no policy in force: the AM monitor, whatever is published or configured. */
+    assert(dsd_tone_set_parse("100.0", &opts->analog_tone_set, NULL, 0) == 0);
+    opts->analog_tone_filter = DSD_TONE_FILTER_ALLOW;
+    opts->analog_demod = DSD_ANALOG_DEMOD_AM;
+    assert(dsd_analog_tone_gate_in_force(opts, state) == DSD_ANALOG_TONE_GATE_OFF);
+    state->analog_rx.gate = DSD_ANALOG_TONE_GATE_REJECTED;
+    assert(dsd_analog_tone_gate_in_force(opts, state) == DSD_ANALOG_TONE_GATE_OFF);
+    free(state);
+    free(opts);
+}
+
+/* What each verdict lets through (issue #527): OFF and ALLOWED only. The monitor plays nothing else, and nothing else
+   is scan activity -- a carrier still being checked holds a row only while it lasts, leaving no -t or activity_hold_ms
+   tail, and a rejected one holds nothing. A value this build does not know passes nothing. */
+static void
+test_gate_passes(void) {
+    assert(dsd_analog_tone_gate_passes(DSD_ANALOG_TONE_GATE_OFF) == 1);
+    assert(dsd_analog_tone_gate_passes(DSD_ANALOG_TONE_GATE_PENDING) == 0);
+    assert(dsd_analog_tone_gate_passes(DSD_ANALOG_TONE_GATE_ALLOWED) == 1);
+    assert(dsd_analog_tone_gate_passes(DSD_ANALOG_TONE_GATE_REJECTED) == 0);
+    assert(dsd_analog_tone_gate_passes(7) == 0 && dsd_analog_tone_gate_passes(-1) == 0);
 }
 
 /* ------------------------------------------------------------------------------------------
@@ -571,11 +638,265 @@ test_dcs_format(void) {
     assert(dsd_dcs_format_label(0023, 0, buf, 0) == -1);
 }
 
+/* ------------------------------------------------------------------------------------------
+ * Tone lists (issue #527)
+ * ---------------------------------------------------------------------------------------- */
+
+/* Parse @p text, which must succeed, and check it formats back as @p canonical. */
+static dsd_tone_set
+parse_ok(const char* text, const char* canonical) {
+    dsd_tone_set set;
+    DSD_MEMSET(&set, 0xA5, sizeof(set));
+    char err[DSD_TONE_LIST_ERROR_SIZE] = "untouched";
+    assert(dsd_tone_set_parse(text, &set, err, sizeof(err)) == 0);
+    char buf[DSD_TONE_LIST_TEXT_MAX + 1];
+    assert(dsd_tone_set_format(&set, buf, sizeof(buf)) == (int)strlen(canonical));
+    assert(strcmp(buf, canonical) == 0);
+    /* What is written reads back as the same set. */
+    dsd_tone_set again;
+    assert(dsd_tone_set_parse(buf, &again, NULL, 0) == 0);
+    assert(dsd_tone_set_equal(&set, &again));
+    return set;
+}
+
+/* Parse @p text, which must fail with exactly @p why, leaving the output alone. */
+static void
+parse_fails(const char* text, const char* why) {
+    dsd_tone_set set;
+    DSD_MEMSET(&set, 0x5A, sizeof(set));
+    dsd_tone_set before = set;
+    char err[DSD_TONE_LIST_ERROR_SIZE] = "";
+    assert(dsd_tone_set_parse(text, &set, err, sizeof(err)) == -1);
+    assert(memcmp(&set, &before, sizeof(set)) == 0);
+    if (strcmp(err, why) != 0) {
+        DSD_FPRINTF(stderr, "tone list refusal: got \"%s\", want \"%s\"\n", err, why);
+    }
+    assert(strcmp(err, why) == 0);
+}
+
+static void
+test_tone_list_parse(void) {
+    /* '100' and '100.0' are the same tone, written back with its decimal; entries come back sorted,
+       tones first. */
+    dsd_tone_set set = parse_ok("100", "100.0");
+    assert(dsd_tone_set_count(&set) == 1 && dsd_tone_set_contains_ctcss(&set, 1000));
+    assert(!dsd_tone_set_contains_ctcss(&set, 1035) && !dsd_tone_set_has_dcs(&set));
+    set = parse_ok("100.0", "100.0");
+    set = parse_ok("D023N/254.1/67/d023i", "67.0/254.1/D023N/D023I");
+    assert(dsd_tone_set_count(&set) == 4 && dsd_tone_set_has_dcs(&set));
+    /* A bare code is N, and any case is taken. */
+    set = parse_ok("D023", "D023N");
+    set = parse_ok("d754n", "D754N");
+    set = parse_ok("D047i", "D047I");
+    /* Every standard tone and code in one list. */
+    char all[DSD_TONE_LIST_TEXT_MAX + 1] = "";
+    size_t used = 0;
+    for (int i = 0; i < DSD_CTCSS_TONE_COUNT; i++) {
+        char entry[16];
+        assert(dsd_ctcss_format(dsd_ctcss_tone_tenths(i), entry, sizeof(entry)) > 0);
+        used += (size_t)DSD_SNPRINTF(all + used, sizeof(all) - used, "%s%s", used ? "/" : "", entry);
+    }
+    for (int i = 0; i < DSD_DCS_CODE_COUNT; i++) {
+        char entry[16];
+        assert(dsd_dcs_format(dsd_dcs_code(i), 0, entry, sizeof(entry)) > 0);
+        used += (size_t)DSD_SNPRINTF(all + used, sizeof(all) - used, "/%s", entry);
+    }
+    assert(used < sizeof(all) - 1U);
+    set = parse_ok(all, all);
+    assert(dsd_tone_set_count(&set) == DSD_CTCSS_TONE_COUNT + DSD_DCS_CODE_COUNT);
+}
+
+static void
+test_tone_list_refusals(void) {
+    parse_fails("", "the list is empty");
+    parse_fails("100.0,D023N", "use / between entries, not commas");
+    parse_fails("100.0/,", "use / between entries, not commas");
+    parse_fails("100.0//D023N", "entry 2 is empty");
+    parse_fails("/100.0", "entry 1 is empty");
+    parse_fails("100.0/", "entry 2 is empty");
+    /* 150.0 is not in the standard table, nor is 68.2; 100.00 and 1000 are not tone spellings. */
+    parse_fails("67.0/150.0", "entry 2 is not a standard CTCSS tone or DCS code");
+    parse_fails("68.2", "entry 1 is not a standard CTCSS tone or DCS code");
+    parse_fails("100.00", "entry 1 is not a standard CTCSS tone or DCS code");
+    parse_fails("1000", "entry 1 is not a standard CTCSS tone or DCS code");
+    parse_fails("100.", "entry 1 is not a standard CTCSS tone or DCS code");
+    parse_fails(".5", "entry 1 is not a standard CTCSS tone or DCS code");
+    parse_fails(" 100.0", "entry 1 is not a standard CTCSS tone or DCS code");
+    parse_fails("+100.0", "entry 1 is not a standard CTCSS tone or DCS code");
+    /* D024 is no standard code, D08 no octal code, and a code takes one polarity letter. */
+    parse_fails("100.0/D024N", "entry 2 is not a standard CTCSS tone or DCS code");
+    parse_fails("D089", "entry 1 is not a standard CTCSS tone or DCS code");
+    parse_fails("D23", "entry 1 is not a standard CTCSS tone or DCS code");
+    parse_fails("D023NN", "entry 1 is not a standard CTCSS tone or DCS code");
+    parse_fails("D023X", "entry 1 is not a standard CTCSS tone or DCS code");
+    parse_fails("CTCSS", "entry 1 is not a standard CTCSS tone or DCS code");
+    /* Duplicates, alias spellings included, name the entry they repeat and the canonical spelling. */
+    parse_fails("100/100.0", "entry 2 repeats entry 1 (100.0 Hz)");
+    parse_fails("D023N/67.0/D023", "entry 3 repeats entry 1 (D023N)");
+    parse_fails("D023N/D047I", "entry 2 is the same DCS signal as entry 1 (D023N)");
+    parse_fails("D023I/D047N", "entry 2 is the same DCS signal as entry 1 (D047N)");
+    /* Longer than an INI line can hold. */
+    char longest[DSD_TONE_LIST_TEXT_MAX + 2];
+    DSD_MEMSET(longest, '/', sizeof(longest));
+    longest[sizeof(longest) - 1] = '\0';
+    parse_fails(longest, "the list is longer than 1023 characters");
+
+    /* No output or no text is refused; a NULL or zero-sized error buffer is allowed. */
+    dsd_tone_set set;
+    assert(dsd_tone_set_parse(NULL, &set, NULL, 0) == -1);
+    assert(dsd_tone_set_parse("100.0", NULL, NULL, 0) == -1);
+    char err[4] = "abc";
+    assert(dsd_tone_set_parse("68.2", &set, err, 0) == -1);
+    assert(strcmp(err, "abc") == 0);
+}
+
+/* Matching goes by the DCS signal: a listed D023I matches a received D047N, and the reverse. */
+static void
+test_tone_list_match_by_signal(void) {
+    dsd_tone_set set;
+    assert(dsd_tone_set_parse("D023I/100.0", &set, NULL, 0) == 0);
+    assert(dsd_tone_set_contains_dcs(&set, 0023, 1));
+    assert(dsd_tone_set_contains_dcs(&set, 0047, 0));
+    assert(!dsd_tone_set_contains_dcs(&set, 0023, 0));
+    assert(!dsd_tone_set_contains_dcs(&set, 0047, 1));
+    assert(dsd_tone_set_contains_ctcss(&set, 1000));
+    assert(dsd_tone_set_parse("D047N", &set, NULL, 0) == 0);
+    assert(dsd_tone_set_contains_dcs(&set, 0023, 1) && dsd_tone_set_contains_dcs(&set, 0047, 0));
+    /* Every standard code in either polarity matches exactly the two spellings of its signal. */
+    for (int i = 0; i < DSD_DCS_CODE_COUNT; i++) {
+        const int code = dsd_dcs_code(i);
+        for (int inverted = 0; inverted < 2; inverted++) {
+            char entry[8];
+            assert(dsd_dcs_format(code, inverted, entry, sizeof(entry)) > 0);
+            assert(dsd_tone_set_parse(entry, &set, NULL, 0) == 0);
+            int alias_code = -1;
+            int alias_inverted = -1;
+            int canon_code = -1;
+            int canon_inverted = -1;
+            assert(dsd_dcs_alias(code, inverted, &alias_code, &alias_inverted) == 0);
+            assert(dsd_dcs_canonical(code, inverted, &canon_code, &canon_inverted) == 0);
+            assert(dsd_tone_set_contains_dcs(&set, canon_code, canon_inverted));
+            assert(dsd_tone_set_contains_dcs(&set, alias_code, alias_inverted));
+            assert(!dsd_tone_set_contains_dcs(&set, code, inverted ? 0 : 1));
+        }
+    }
+    assert(!dsd_tone_set_contains_dcs(NULL, 0023, 0));
+    assert(!dsd_tone_set_contains_ctcss(NULL, 1000));
+    assert(dsd_tone_set_count(NULL) == 0 && !dsd_tone_set_has_dcs(NULL));
+}
+
+/* Two lists pass and block the same traffic when they hold the same tones and the same DCS signals, however each code
+ * is spelled (issue #527): a policy reloaded in the other spelling of its codes is the same policy. Exact equality
+ * still tells the spellings apart. */
+static void
+test_tone_list_same_signals(void) {
+    dsd_tone_set a;
+    dsd_tone_set b;
+    assert(dsd_tone_set_parse("100.0/D023I", &a, NULL, 0) == 0);
+    assert(dsd_tone_set_parse("D047N/100", &b, NULL, 0) == 0);
+    assert(!dsd_tone_set_equal(&a, &b));
+    assert(dsd_tone_set_same_signals(&a, &b) && dsd_tone_set_same_signals(&b, &a));
+    assert(dsd_tone_set_same_signals(&a, &a));
+    /* Another polarity is another signal; so is another tone, and a list with one entry more. */
+    assert(dsd_tone_set_parse("100.0/D023N", &b, NULL, 0) == 0);
+    assert(!dsd_tone_set_same_signals(&a, &b));
+    assert(dsd_tone_set_parse("103.5/D047N", &b, NULL, 0) == 0);
+    assert(!dsd_tone_set_same_signals(&a, &b));
+    assert(dsd_tone_set_parse("100.0/D047N/D754I", &b, NULL, 0) == 0);
+    assert(!dsd_tone_set_same_signals(&a, &b) && !dsd_tone_set_same_signals(&b, &a));
+    /* Every standard code in either polarity is the same signal as its other spelling, and not as its own other
+       polarity. */
+    for (int i = 0; i < DSD_DCS_CODE_COUNT; i++) {
+        const int code = dsd_dcs_code(i);
+        for (int inverted = 0; inverted < 2; inverted++) {
+            char entry[8];
+            char alias[8];
+            char flipped[8];
+            int alias_code = -1;
+            int alias_inverted = -1;
+            assert(dsd_dcs_format(code, inverted, entry, sizeof(entry)) > 0);
+            assert(dsd_dcs_alias(code, inverted, &alias_code, &alias_inverted) == 0);
+            assert(dsd_dcs_format(alias_code, alias_inverted, alias, sizeof(alias)) > 0);
+            assert(dsd_dcs_format(code, inverted ? 0 : 1, flipped, sizeof(flipped)) > 0);
+            assert(dsd_tone_set_parse(entry, &a, NULL, 0) == 0);
+            assert(dsd_tone_set_parse(alias, &b, NULL, 0) == 0);
+            assert(dsd_tone_set_same_signals(&a, &b));
+            assert(dsd_tone_set_parse(flipped, &b, NULL, 0) == 0);
+            assert(!dsd_tone_set_same_signals(&a, &b));
+        }
+    }
+    const dsd_tone_set empty = {0};
+    assert(dsd_tone_set_same_signals(NULL, NULL));
+    assert(!dsd_tone_set_same_signals(&a, NULL) && !dsd_tone_set_same_signals(NULL, &a));
+    assert(dsd_tone_set_same_signals(&empty, &empty) && !dsd_tone_set_same_signals(&a, &empty));
+}
+
+static void
+test_tone_list_format(void) {
+    dsd_tone_set set;
+    assert(dsd_tone_set_parse("D023N/100", &set, NULL, 0) == 0);
+    char buf[64];
+    assert(dsd_tone_set_format_display(&set, buf, sizeof(buf)) == 14);
+    assert(strcmp(buf, "100.0 Hz/D023N") == 0);
+    /* An exact fit, and one byte short of it. */
+    char exact[12];
+    assert(dsd_tone_set_format(&set, exact, sizeof(exact)) == 11);
+    assert(strcmp(exact, "100.0/D023N") == 0);
+    char short_buf[11];
+    assert(dsd_tone_set_format(&set, short_buf, sizeof(short_buf)) == -1);
+    assert(short_buf[0] == '\0');
+    /* The empty set is "", in either form. */
+    const dsd_tone_set empty = {0};
+    assert(dsd_tone_set_format(&empty, buf, sizeof(buf)) == 0 && buf[0] == '\0');
+    assert(dsd_tone_set_format_display(&empty, buf, sizeof(buf)) == 0 && buf[0] == '\0');
+    /* Display text that does not fit counts what it left out. */
+    assert(dsd_tone_set_parse("67/71.9/74.4/77/79.7/D023/D754I", &set, NULL, 0) == 0);
+    assert(dsd_tone_set_format_display(&set, buf, 32) == 29);
+    assert(strcmp(buf, "67.0 Hz/71.9 Hz/74.4 Hz/\xE2\x80\xA6+4") == 0);
+    char small[24];
+    assert(dsd_tone_set_format_display(&set, small, sizeof(small)) == 21);
+    assert(strcmp(small, "67.0 Hz/71.9 Hz/\xE2\x80\xA6+5") == 0);
+    assert(dsd_tone_set_format_display(&set, small, 23) == -1 && small[0] == '\0');
+    /* Everything fits: no count. */
+    assert(dsd_tone_set_format_display(&set, buf, sizeof(buf)) == 51);
+    assert(strcmp(buf, "67.0 Hz/71.9 Hz/74.4 Hz/77.0 Hz/79.7 Hz/D023N/D754I") == 0);
+    assert(dsd_tone_set_format(NULL, buf, sizeof(buf)) == -1);
+    assert(dsd_tone_set_format_display(&set, NULL, 32) == -1);
+
+    assert(dsd_tone_set_equal(NULL, NULL) && !dsd_tone_set_equal(&set, NULL));
+    assert(dsd_tone_set_equal(&empty, &empty) && !dsd_tone_set_equal(&set, &empty));
+}
+
+static void
+test_tone_filter_mode(void) {
+    int mode = -1;
+    assert(dsd_tone_filter_mode_parse("off", &mode) == 0 && mode == DSD_TONE_FILTER_OFF);
+    assert(dsd_tone_filter_mode_parse("Allow", &mode) == 0 && mode == DSD_TONE_FILTER_ALLOW);
+    assert(dsd_tone_filter_mode_parse("BLOCK", &mode) == 0 && mode == DSD_TONE_FILTER_BLOCK);
+    mode = 77;
+    assert(dsd_tone_filter_mode_parse("deny", &mode) == -1 && mode == 77);
+    assert(dsd_tone_filter_mode_parse("", &mode) == -1 && mode == 77);
+    assert(dsd_tone_filter_mode_parse(NULL, &mode) == -1 && mode == 77);
+    assert(dsd_tone_filter_mode_parse("off", NULL) == -1);
+    assert(strcmp(dsd_tone_filter_mode_name(DSD_TONE_FILTER_OFF), "off") == 0);
+    assert(strcmp(dsd_tone_filter_mode_name(DSD_TONE_FILTER_ALLOW), "allow") == 0);
+    assert(strcmp(dsd_tone_filter_mode_name(DSD_TONE_FILTER_BLOCK), "block") == 0);
+    assert(dsd_tone_filter_mode_name(3) == NULL && dsd_tone_filter_mode_name(-1) == NULL);
+}
+
 int
 main(void) {
+    test_tone_list_parse();
+    test_tone_list_refusals();
+    test_tone_list_match_by_signal();
+    test_tone_list_same_signals();
+    test_tone_list_format();
+    test_tone_filter_mode();
     test_table();
     test_format();
     test_detection_active();
+    test_gate_in_force_fails_closed();
+    test_gate_passes();
     test_dcs_table();
     test_dcs_reference_words();
     test_dcs_words();

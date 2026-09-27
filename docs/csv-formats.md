@@ -237,6 +237,7 @@ Options are parsed once when the list is loaded. They are a restricted argument 
 | `--squelch-db <dB>` | This row's or target's squelch threshold, in whole dB from `-100` to `0`, the same units as `[input] rtl_sql` and the `sql` field of `-i rtl:`; `0` switches the squelch off for this row alone. All modes, and every trunk-target type. |
 | `--nfm-bandwidth-hz <Hz>` | This analog row's or target's NFM channel width, whole Hz from `8000` to `25000` (for example `12500`). `nfm` rows and `nfm-conventional` targets only; a digital or blank row is told it `needs mode nfm`, and an `am` row refuses it as `not supported for this mode/target`. |
 | `--am-bandwidth-hz <Hz>` | This analog row's or target's AM channel width, whole Hz from `5000` to `20000` (for example `8333` for 8.33 kHz airband spacing). `am` rows and `am-conventional` targets only; a digital or blank row is told it `needs mode am`, and an `nfm` row refuses it as `not supported for this mode/target`. A row carries one width. |
+| `--tone-allow <list>`, `--tone-block <list>`, `--no-tone-filter` | This analog row's or target's CTCSS/DCS receive policy (see [Analog rows](#analog-rows)): hear only traffic carrying a listed tone or code, mute it, or no filter on this row whatever is configured. `<list>` is standard CTCSS tones and DCS codes separated by `/`, such as `67.0/100.0/D023N`. One option in three spellings, so a row names one of them once. `nfm` rows and `nfm-conventional` targets only; a digital or blank row is told it `needs mode nfm`, and an `am` row refuses it as `not supported for this mode/target`. |
 
 Protocol-specific options require a declared `mode`; trunk targets use their `type`. A channel map whose rows carry
 `options` but no `mode` still runs through the typed scanner (blank rows inherit the configured decoder), since the
@@ -265,13 +266,14 @@ a squelch edit made while a row overrides it says so.
 
 ### Analog rows
 
-`nfm` and `am` channel-map rows and `nfm-conventional` and `am-conventional` trunk-scan targets accept only the
-options that mean something for an analog channel: `--scan-max-visit-ms`, `--squelch-db` and the width option of their
-own kind, `--nfm-bandwidth-hz` on NFM and `--am-bandwidth-hz` on AM. Key switches (`-b`, `-H`, `-1`, `-R`,
-`-k`, `-K`, `--dmr-tg-key-csv`, `--dmr-tg-key-clear`, `--no-decryption-keys`, `--key-profile-ref`), forcing (`-4`,
-`-0`, `--dmr-force-algid`, `--no-force-key`), CRC policy (`-F`, `--strict-crc`), `-^`, `-G`, data- and
-encrypted-call policy (`-e`, `--no-data-calls`, `--enc-*`) and the voice-gate switches describe digital frames an
-analog channel never carries, and are rejected with `not supported for this mode/target`.
+`nfm` and `am` channel-map rows and `nfm-conventional` and `am-conventional` trunk-scan targets accept only the options
+that mean something for an analog channel: `--scan-max-visit-ms`, `--squelch-db` and the width option of their own kind,
+`--nfm-bandwidth-hz` on NFM and `--am-bandwidth-hz` on AM, and on NFM the tone policy (`--tone-allow`, `--tone-block`,
+`--no-tone-filter`). Key switches (`-b`, `-H`, `-1`, `-R`, `-k`, `-K`, `--dmr-tg-key-csv`, `--dmr-tg-key-clear`,
+`--no-decryption-keys`, `--key-profile-ref`), forcing (`-4`, `-0`, `--dmr-force-algid`, `--no-force-key`), CRC policy
+(`-F`, `--strict-crc`), `-^`, `-G`, data- and encrypted-call policy (`-e`, `--no-data-calls`, `--enc-*`) and the
+voice-gate switches describe digital frames an analog channel never carries, and are rejected with
+`not supported for this mode/target`.
 
 `--nfm-bandwidth-hz` and `--am-bandwidth-hz` are the full RF channel width the analog channel filter protects while
 the row is on air (the same contracts as the receiver's NFM and AM widths); a row without one uses the configured width
@@ -333,6 +335,51 @@ applies to an analog row, so a global `--scan-voice-only` does not block one. Th
 list scanned under `-fA` or `-fM` (AM), which hold on their carrier under `-t` as well. Scan start warns once about an
 analog row whose squelch is off or at -100 dB or below: noise then keeps its carrier open, re-arming the hold with every
 block, so only the visit cap or a manual advance or avoid moves on.
+
+On an `nfm` row or `nfm-conventional` target the tone policy (issue #527) is the configured receive policy
+(`--tone-allow`, `--tone-block`, `[analog] tone_filter` and `tone_list`; see "Tone filter" in `docs/cli.md`) for this
+row alone: a row without one runs the configured policy, `--no-tone-filter` turns it off on this row, and the list is
+written as on the command line, `/` between entries. A comma ends the `options` cell (the splitter has no quoting), so a
+list written with commas is refused rather than imported short: when the cell ends with the list and the field after the
+comma lies past the header's last column, or is one of the file's own columns whose whole field is a run of
+`/`-separated entries with no space, starting with a standard tone or code (`67.0`, `67.0/D023N`), alone or followed by
+another row option the same comma cut off (`67.0 --squelch-db -60`), the row is refused with
+`--tone-allow: use / between entries, not commas`, and the text after the comma is not repeated. Any other name with a
+space in it (`100 Main St`, `D023 Repeater`) is its column's own, but a one-word name that is itself a standard tone or
+code (`100`) reads as the list's rest. A code matches by its signal: `D023I` passes traffic received as
+`DCS D047N / D023I`. The polarity is part of the signal, so on a source whose audio is inverted a `D023N` transmitter
+arrives as that same `DCS D047N / D023I` and a listed `D023N` does not match it: fix the audio's polarity or list the
+spelling the monitor shows (see [Received code (DCS)](cli.md#received-code-dcs-on-the-analog-monitor)). The row's policy
+applies when the row is tuned and the configured one is restored when the scanner moves on, and Config->Save never
+writes it. The Qt/Android channel-map review and target preview list it (`Tone filter: allow 100.0 Hz/D023N`,
+`Tone filter: off`), or `Tone filter: inherit` on an nfm row without one. An `am` row or `am-conventional` target has
+none: the AM monitor hears no CTCSS or DCS, so the options are refused there, and while it is on air the configured
+policy judges nothing and mutes nothing; its carrier holds it as `Carrier`. The policy is a setting, and frontends show
+it apart from the tone or code received: the `Tone filter:` line (terminal) and `TONE FILTER` row (Qt/Android) read
+`allow 100.0 Hz/D023N (row; default off)` while the row's own policy is on air over a configured policy that is off,
+beside the `Rx tone:` line or `RECEIVED TONE` row that only ever shows what was received. Under a list policy each
+transmission starts muted while it is checked (800 ms, to 1,600 ms while the list holds a DCS code and a received code
+is still being confirmed); the row holds while its carrier lasts, with the stay reason `Tone check` and no countdown
+meanwhile: a `-Y` pass keeps it then even when `-t` has run out, and so does the trunk-scan tick. The check is not
+activity: it restarts no `-t` or `activity_hold_ms` and leaves a target's idle dwell running, so one that ends before a
+verdict leaves no tail, and repeated short bursts the policy never passes (kerchunks, noise) cannot park the scanner on
+a muted row. Traffic the policy allows is activity like any carrier and leaves the ordinary tail. Traffic the policy
+rejects is muted and holds nothing: a `-Y` row moves on at the next no-carrier pass and an `nfm-conventional` target at
+the next tick, without waiting out `-t` or its `activity_hold_ms`, and traffic that was passing and turns out to carry a
+blocked (or, under allow, an unlisted) tone or code is released the same way, as is traffic rejected and ended before
+that pass or tick came (the rejection outlives its carrier for the scanner until the next carrier opens or the row
+changes). An operator hold keeps the row, muted. A `-Y` row on the same frequency is somewhere to take rejected traffic
+only when it would judge it otherwise: a row of another class (a `dmr` row for a mixed-mode repeater's DMR traffic), or
+an `nfm` row whose own or configured policy passes the traffic's tone or code (a repeater listed once per user group,
+each row with its own `--tone-allow`). A row that would reject it too is not, and with nowhere else to go the row keeps
+the traffic, muted, under `Carrier` with no countdown, until it ends and the ordinary tail runs. Example:
+
+```csv
+channel,frequency_hz,name,mode,options
+1,154430000,County fire,nfm,--squelch-db -60 --tone-allow 156.7/D023N
+2,155475000,Public works,nfm,--tone-block 100.0
+3,155520000,Shared repeater,nfm,--no-tone-filter
+```
 
 A list may mix analog and digital rows: each row switches the receiver between the FM monitor, the AM monitor and the
 digital decoder at its own width when it is tuned, without reopening the device, and opens the audio output the row

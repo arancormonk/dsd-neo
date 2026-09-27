@@ -9,6 +9,7 @@
 #include <assert.h>
 #include <curses.h>
 #include <dsd-neo/app_control/history.h>
+#include <dsd-neo/core/analog_tone.h>
 #include <dsd-neo/core/channel_label.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/power.h>
@@ -527,6 +528,30 @@ dsd_scan_mode_configured_analog_width(const dsd_opts* opts, const dsd_state* sta
     return width_hz > 0 ? width_hz : 0;
 }
 
+/* Issue #527: the configured tone policy the rx tone view names beside a row's own, as scan_mode.c reads it: the
+ * stubbed configured view while one is set, dsd_opts otherwise. */
+void
+// NOLINTNEXTLINE(misc-use-internal-linkage)
+dsd_scan_mode_configured_tone_policy(const dsd_opts* opts, const dsd_state* state, int* mode, dsd_tone_set* set) {
+    const dsd_scan_settings* configured = dsd_scan_mode_configured_view(state);
+    int configured_mode = DSD_TONE_FILTER_OFF;
+    dsd_tone_set configured_set;
+    DSD_MEMSET(&configured_set, 0, sizeof(configured_set));
+    if (configured) {
+        configured_mode = configured->analog_tone_filter;
+        configured_set = configured->analog_tone_set;
+    } else if (opts) {
+        configured_mode = opts->analog_tone_filter;
+        configured_set = opts->analog_tone_set;
+    }
+    if (mode) {
+        *mode = configured_mode;
+    }
+    if (set) {
+        *set = configured_set;
+    }
+}
+
 dsd_scan_mode
 dsd_scan_mode_active(const dsd_state* state) { // NOLINT(misc-use-internal-linkage)
     (void)state;
@@ -673,6 +698,7 @@ dsd_channel_lpf_legacy_wide_width_hz(int rate_hz) {
 #include "dsd-neo/core/secret_redaction.h"
 #include "dsd-neo/core/state_fwd.h"
 #include "dsd-neo/runtime/analog_channel.h"
+#include "dsd-neo/runtime/analog_tones.h"
 
 static int g_requested_ppm;
 /* The channel the front end reports (issue #525): its width, whether the DSP rate limits it, its output, and whether
@@ -1662,6 +1688,63 @@ test_call_info_rx_tone_line_rendering(void) {
     ui_render_call_info_rx_tone_line(&opts, state);
     assert_capture_equals("| Rx tone: DCS D245N / D072I\n");
     assert(strcmp(g_color_trace, "+4+4") == 0);
+    seed_rx_tone(state, 1, DSD_ANALOG_TONE_STATE_LOCKED, 1318);
+
+    /* Issue #527: the tone policy on a line of its own under the received tone, only while a policy is in force, with
+       what it does to the carrier on air; the received line never changes for it. */
+    char policy[192];
+    assert(ui_format_tone_filter_line(&opts, state, 0.0, policy, sizeof(policy)) == 0);
+    opts.analog_tone_filter = DSD_TONE_FILTER_ALLOW;
+    assert(dsd_tone_set_parse("100.0/D023N", &opts.analog_tone_set, NULL, 0) == 0);
+    state->analog_rx.gate = DSD_ANALOG_TONE_GATE_ALLOWED;
+    assert(ui_format_tone_filter_line(&opts, state, 0.0, policy, sizeof(policy)) > 0);
+    assert(strcmp(policy, "| Tone filter: allow 100.0 Hz/D023N \xE2\x80\x94 passing") == 0);
+    assert_rx_tone_line(&opts, state, "| Rx tone: CTCSS 131.8 Hz");
+    state->analog_rx.gate = DSD_ANALOG_TONE_GATE_REJECTED;
+    assert(ui_format_tone_filter_line(&opts, state, 0.0, policy, sizeof(policy)) > 0);
+    assert(strcmp(policy, "| Tone filter: allow 100.0 Hz/D023N \xE2\x80\x94 muted: not allowed") == 0);
+    seed_rx_tone(state, 1, DSD_ANALOG_TONE_STATE_ACQUIRING, 0);
+    state->analog_rx.gate = DSD_ANALOG_TONE_GATE_PENDING;
+    g_unicode_stub = 0;
+    assert(ui_format_tone_filter_line(&opts, state, 0.0, policy, sizeof(policy)) > 0);
+    assert(strcmp(policy, "| Tone filter: allow 100.0 Hz/D023N - muted: checking tone") == 0);
+    g_unicode_stub = 1;
+    seed_rx_tone(state, 1, DSD_ANALOG_TONE_STATE_NONE, 0);
+    state->analog_rx.gate = DSD_ANALOG_TONE_GATE_REJECTED;
+    state->analog_rx.gate_no_tone = 1;
+    reset_printw_capture();
+    reset_color_trace();
+    ui_render_call_info_tone_filter_line(&opts, state);
+    assert_capture_equals("| Tone filter: allow 100.0 Hz/D023N \xE2\x80\x94 muted: no tone\n");
+    assert(strcmp(g_color_trace, "+4+4") == 0);
+    seed_rx_tone(state, 0, DSD_ANALOG_TONE_STATE_IDLE, 0);
+    state->analog_rx.gate = DSD_ANALOG_TONE_GATE_PENDING;
+    assert(ui_format_tone_filter_line(&opts, state, 0.0, policy, sizeof(policy)) > 0);
+    assert(strcmp(policy, "| Tone filter: allow 100.0 Hz/D023N") == 0);
+    /* A list too long for the line ends in a count after an overflow mark, which a terminal without UTF-8 gets as
+       "..." like the separator's hyphen: nothing but ASCII reaches it. */
+    assert(dsd_tone_set_parse("67/69.3/71.9/74.4/77/79.7/82.5/85.4/88.5/91.5/94.8/97.4", &opts.analog_tone_set, NULL, 0)
+           == 0);
+    seed_rx_tone(state, 1, DSD_ANALOG_TONE_STATE_ACQUIRING, 0);
+    state->analog_rx.gate = DSD_ANALOG_TONE_GATE_PENDING;
+    assert(ui_format_tone_filter_line(&opts, state, 0.0, policy, sizeof(policy)) > 0);
+    assert(strcmp(policy,
+                  "| Tone filter: allow 67.0 Hz/69.3 Hz/71.9 Hz/74.4 Hz/77.0 Hz/79.7 Hz/82.5 Hz/85.4 Hz/88.5 Hz/"
+                  "\xE2\x80\xA6+3 \xE2\x80\x94 muted: checking tone")
+           == 0);
+    g_unicode_stub = 0;
+    assert(ui_format_tone_filter_line(&opts, state, 0.0, policy, sizeof(policy)) > 0);
+    assert(strcmp(policy,
+                  "| Tone filter: allow 67.0 Hz/69.3 Hz/71.9 Hz/74.4 Hz/77.0 Hz/79.7 Hz/82.5 Hz/85.4 Hz/88.5 Hz/"
+                  "...+3 - muted: checking tone")
+           == 0);
+    reset_printw_capture();
+    ui_render_call_info_tone_filter_line(&opts, state);
+    assert_capture_equals(
+        "| Tone filter: allow 67.0 Hz/69.3 Hz/71.9 Hz/74.4 Hz/77.0 Hz/79.7 Hz/82.5 Hz/85.4 Hz/88.5 Hz/"
+        "...+3 - muted: checking tone\n");
+    g_unicode_stub = 1;
+    opts.analog_tone_filter = DSD_TONE_FILTER_OFF;
     seed_rx_tone(state, 1, DSD_ANALOG_TONE_STATE_LOCKED, 1318);
 
     /* A Call Info row, so compact view shows it too, and it sits under the channel line. */
@@ -2797,6 +2880,10 @@ test_scan_timing_row_phrases(void) {
     opts.trunk_scan_enabled = 1;
     seed_scan_timing(&state, DSD_SCAN_STAY_CARRIER, 1U, 101.2, 1200U, 3000U, 1200U);
     assert_scan_timing_row(&opts, &state, "| Scan Timing: Carrier 1.2s/1.2s  dwell 3.0s (suspended)");
+    /* Issue #527: the same carrier while the tone policy is still checking it: no activity, so no window of its own,
+       and no budget reads as suspended beneath it. */
+    seed_scan_timing(&state, DSD_SCAN_STAY_TONE_PENDING, 1U, -1.0, 0U, 3000U, 1200U);
+    assert_scan_timing_row(&opts, &state, "| Scan Timing: Tone check");
 }
 
 /* The decoder decides when the receiver moves. A poll that lands after the deadline is a

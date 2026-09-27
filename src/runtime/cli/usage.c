@@ -242,6 +242,14 @@ dsd_cli_usage_section_decode(void) {
     printf("      --nfm-bandwidth-hz <Hz>  NFM channel-filter width, the full RF passband in whole Hz (8000..25000;\n");
     printf("                               default 16000). Not the tuner or audio bandwidth; it must fit the DSP\n");
     printf("                               rate (e.g. 25000 needs a 48 kHz DSP bandwidth). No effect on PCM input.\n");
+    printf(
+        "      --tone-allow <list>      Hear only analog FM traffic carrying a listed CTCSS tone or DCS code; mute\n");
+    printf("                               the rest, and traffic with none after the tone check (800 ms, to 1.6 s\n");
+    printf("                               for a DCS code). <list> is '/'-separated standard tones and codes, e.g.\n");
+    printf("                               67.0/100.0/D023N (a bare D023 is D023N). The received tone is shown\n");
+    printf("                               apart; a scanner moves on from rejected traffic.\n");
+    printf("      --tone-block <list>      Mute analog FM traffic carrying a listed tone or code; hear the rest.\n");
+    printf("      --no-tone-filter         No tone filter (the default): ordinary carrier squelch.\n");
     printf("  -fM           Native AM receiver (IQ inputs: RTL-SDR, rtl_tcp, SoapySDR, Airspy, --iq-replay)\n");
     printf("      --am-bandwidth-hz <Hz>   AM channel-filter width, the full RF passband in whole Hz (5000..20000;\n");
     printf("                               default 6000). Not the tuner or audio bandwidth; it must fit the DSP\n");

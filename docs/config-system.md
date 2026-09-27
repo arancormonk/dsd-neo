@@ -429,6 +429,8 @@ Rdio API uploads do not follow HTTP redirects. Configure `rdio_api_url` as the f
 |-----|------|-------------|---------|
 | `nfm_bandwidth_hz` | INT (8000-25000) | NFM channel-filter width in whole Hz: the full RF passband the analog monitor (`decode = "analog"`) keeps, not the tuner, DSP or audio bandwidth. Same as `--nfm-bandwidth-hz` | (unset: `16000`) |
 | `am_bandwidth_hz` | INT (5000-20000) | AM channel-filter width in whole Hz, likewise, for native AM (`decode = "am"`). Same as `--am-bandwidth-hz` | (unset: `6000`) |
+| `tone_filter` | ENUM (`off`, `allow`, `block`) | CTCSS/DCS receive policy on the analog FM monitor and `nfm` scan rows: `allow` hears only traffic carrying a `tone_list` tone or code, `block` mutes it. Same as `--tone-allow`/`--tone-block`/`--no-tone-filter` | `off` |
+| `tone_list` | STRING (`/`-separated, at most 1023 bytes) | The tones and codes `tone_filter` uses: standard CTCSS tones and DCS codes, e.g. `"67.0/100.0/D023N"` (a bare `D023` is `D023N`) | (empty) |
 
 The `[analog]` keys are written only when set explicitly: a save leaves `nfm_bandwidth_hz` out while the default is in
 force, so within the section the key left out and the default are the same thing, and a later default reaches the
@@ -454,6 +456,21 @@ and `am_bandwidth_hz`, the 6000 default included, under `decode = "am"` (`AM ban
 DSP rate ...`); see the DSP-rate table in `docs/cli.md`, Analog reception. A SoapySDR or Airspy device, which can force
 another rate, is checked when its stream starts.
 
+`tone_filter` and `tone_list` (issue #527) set the configured receive policy, a setting the frontends show apart from
+the tone or code the monitor receives (see "Tone filter" in `docs/cli.md`). `off` keeps the list, so switching between
+`allow`, `block` and `off` never loses it. A save writes `tone_filter` when it is not `off` and `tone_list` whenever the
+list is not empty, each list entry as it was written (an inverted code stays inverted; tones with one decimal); a key
+left out of a present `[analog]` section is `off` and an empty list. A save during a scan writes the configured policy,
+never the one an `nfm` channel-map row or `nfm-conventional` target sets for itself with `--tone-allow`, `--tone-block`
+or `--no-tone-filter` (see [csv-formats.md](csv-formats.md#analog-rows)). A list with a comma, an empty entry, a value
+that is not a standard CTCSS tone or DCS code, or one signal twice (`D023N/D047I` included) is refused by entry number:
+startup logs a warning and the filter stays off, and `--validate-config` reports an error. So does `tone_filter = allow`
+or `block` with no list. The filter applies only where the monitor detects tones (the analog FM monitor and `nfm` scan
+rows); set for AM or a digital mode without a scan list (a `-Y` scan with no channel map included), or with a scan list
+that has no `nfm` row or `nfm-conventional` target, the session warns once that it has no effect. A config loaded into a
+running session applies the policy from the next read of the monitor's audio; while an `nfm` row with its own policy is
+on air, the loaded policy becomes the configured default and applies when the row leaves.
+
 When `[analog]` changes apply (the full table, with the terminal and Qt controls, is in `docs/cli.md`, Analog
 reception, "When changes apply"):
 
@@ -462,6 +479,7 @@ reception, "When changes apply"):
 | `nfm_bandwidth_hz`, `am_bandwidth_hz` at startup | When the stream opens. An RTL-SDR or rtl_tcp input whose DSP bandwidth cannot filter the width in use stops startup before the device opens; other radio inputs are held to the rate they deliver when the stream starts. |
 | `nfm_bandwidth_hz`, `am_bandwidth_hz` in a config loaded into a running session | Live, on the next DSP block of the analog monitor of that kind; no reopen. A width the DSP rate it will run at cannot filter, or any explicit width (or AM at all) while `DSD_NEO_CHANNEL_LPF=0`, leaves the whole config unapplied, with a message naming the width, the rate and the fix. A width the front end refuses where it lands (a retune moved its rate after the check) is put back, with the same message. While an analog scan row that sets its own width of the loaded kind is on air (an `nfm` row's `--nfm-bandwidth-hz`, an `am` row's `--am-bandwidth-hz`), the loaded width becomes the configured default and takes effect when the row leaves (or with the next row of that kind that has no width of its own). On a session whose preset does not run that kind (a digital one, or the other analog kind) the width is held to the DSP rate the same way while the scan has an analog row or target of that kind without a width of its own, which runs it when it comes on air: the NFM width for an `nfm` row or `nfm-conventional` target, the AM width, its 6 kHz default included, for an `am` row or `am-conventional` target. The width of the kind not in use is stored for the next switch to it. |
 | `[input] rtl_bw_khz` in a config loaded into a running session | Reopens the device at that DSP bandwidth, as given, when the `[input]` builds an RTL-SDR or rtl_tcp input other than the running one (another bandwidth, frequency or device, or an RTL spec over a running SoapySDR or Airspy input). A bandwidth the explicit NFM width, or the AM width (its default included), in use cannot run at leaves the whole config unapplied: the config's or the session's on an analog session, the configured width of a kind the preset does not run while the scan has an analog row or target of that kind without a width of its own (the NFM width for `nfm`, the AM width, its default included, for `am`), and the own width of an `nfm` or `am` scan row on air. The width is checked at the bandwidth the reopen runs at, not the running one. An `[input]` that builds the input already running reopens nothing and changes no rate. An `[input]` that reopens a SoapySDR or Airspy device (an `airspy` source over a running Airspy reopens it for a new sample rate, serial, `rtl_bw_khz` or volume) is held to neither rate: the reopened stream's start checks the width at the rate that device delivers. |
+| `tone_filter`, `tone_list` in a config loaded into a running session | From the next read of the monitor's audio: a policy that differs from the one in force starts the transmission on air over, muted for a fresh check. A present `[analog]` section without either key turns the filter off. While an `nfm` scan row with its own policy is on air, the loaded policy becomes the configured default (what a save writes) and applies when the row leaves. |
 | `[mode] decode = "analog"` or `"am"` in a config loaded into a running session | Live receive-family switch, or a switch between FM and AM on the monitor. With an explicit NFM width, or an AM width (its default included), the DSP rate cannot filter, the whole config is left unapplied. A `[mode]` section without a `decode` key keeps the session's mode, and an analog session's width is held as above. `decode = "am"` on a PCM input applies, and the session runs the Analog monitor instead, saying why (see `[mode]` below). |
 
 Note: The defaults shown match the generated template (`--dump-config-template`).
@@ -477,7 +495,7 @@ The config system validates files and reports issues with line numbers:
 
 - **Error**: Invalid enum value, type mismatch, parse failure, an `[analog]` width outside its range or one the
   configured RTL DSP bandwidth cannot filter (for an `rtl`/`rtltcp` input with `rtl_freq` under `decode = "analog"` or
-  `"am"`)
+  `"am"`), a refused `[analog] tone_list`, or `tone_filter = allow` or `block` without a list
 - **Warning**: Unknown key or section, integer out of range
 
 ```bash
@@ -903,6 +921,7 @@ The following can be changed without restarting:
 - RTL-SDR, RTL-TCP, and Soapy tuning parameters (frequency, gain, PPM, etc.)
 - The NFM and AM channel widths (`[analog] nfm_bandwidth_hz`, `am_bandwidth_hz`), applied to a running analog monitor
   of that kind without a reopen (see "When `[analog]` changes apply" above)
+- The tone filter (`[analog] tone_filter`, `tone_list`), from the monitor's next read of audio
 - TCP/UDP connection parameters
 - File input path
 

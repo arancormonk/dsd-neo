@@ -15,11 +15,14 @@ extern "C" {
  * profiles) are not opened or checked for readability. Parsed key storage is erased before returning. */
 int dsd_app_trunk_scan_validate_targets_csv(const char* path, int* target_count, char* err, size_t err_sz);
 
-/** Nonsecret configured target. Unset dwell/hold/gain/bandwidth are -1; empty modulation
+/** Nonsecret configured target. Unset dwell/hold/gain/bandwidth/tone_filter are -1; empty modulation
  * inherits. squelch_db (whole dB, 0 = off) is meaningful only with squelch_db_set, since
  * -1 dB is a real threshold. bandwidth_hz is an analog target's own channel width in Hz
  * (an nfm-conventional target's --nfm-bandwidth-hz, an am-conventional target's
- * --am-bandwidth-hz). Strings belong to this fixed-size record, never to decoder state. */
+ * --am-bandwidth-hz). tone_filter is an nfm-conventional target's own CTCSS/DCS tone policy
+ * (dsd_tone_filter_mode: OFF for --no-tone-filter, ALLOW, BLOCK) and tone_list its list as
+ * displayed (dsd_tone_set_format_display(): "100.0 Hz/D023N", the entries past the room
+ * counted; "" without one). Strings belong to this fixed-size record, never to decoder state. */
 typedef struct {
     char id[64];
     char type[24];
@@ -32,6 +35,8 @@ typedef struct {
     int squelch_db_set;
     int squelch_db;
     int bandwidth_hz;
+    int tone_filter;
+    char tone_list[96];
 } dsd_app_scan_csv_target;
 
 typedef enum {

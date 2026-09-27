@@ -4,19 +4,40 @@
  */
 
 #include <dsd-neo/app_control/rx_tone_view.h>
+#include <dsd-neo/core/analog_tone.h>
+#include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/runtime/analog_tones.h>
+#include <dsd-neo/runtime/scan_mode.h>
+#include <dsd-neo/runtime/scan_options.h>
+#include <stddef.h>
 #include <stdint.h>
 
 /* U+2014 EM DASH, the "nothing to report" mark the other monitor rows use. */
 #define RX_TONE_NO_CARRIER_TEXT "\xE2\x80\x94"
 
-/* The configured receive policy. Tone filtering is #527; until it exists the policy is off,
-   and this text comes from the configuration side, never from the received tone. */
+/* The receive policy (issue #527), from the configuration side (dsd_opts and the scan row's options), never from the
+   received tone. */
 #define RX_TONE_POLICY_OFF_TEXT "off"
+
+/* Room for the list in force: alone, or beside a row's own the configured default it shadows, both fitting the view's
+   text with the mode names and " (row; default " around them. The default gets the smaller share, since it is the one
+   not in force. */
+enum {
+    RX_TONE_POLICY_LIST_SIZE = 80,
+    RX_TONE_POLICY_ROW_LIST_SIZE = 56,
+    RX_TONE_POLICY_DEFAULT_LIST_SIZE = 32,
+};
+
+_Static_assert((int)DSD_APP_RX_TONE_POLICY_TEXT_SIZE >= (int)(sizeof("block ") + RX_TONE_POLICY_LIST_SIZE),
+               "the policy in force fits the view's text");
+_Static_assert((int)DSD_APP_RX_TONE_POLICY_TEXT_SIZE
+                   >= (int)(sizeof("block ") + RX_TONE_POLICY_ROW_LIST_SIZE + sizeof(" (row; default block )")
+                            + RX_TONE_POLICY_DEFAULT_LIST_SIZE),
+               "a row's policy and the default it shadows fit the view's text");
 
 static void
 rx_tone_set_text(dsd_app_rx_tone* out, const char* text) {
@@ -117,6 +138,70 @@ rx_tone_stale(const dsd_analog_rx_publication* pub, double now_m) {
     return (uint64_t)(now_m * 1000.0) > pub->stale_after_ms;
 }
 
+/* One policy as the row names it: "off", or its mode and display list ("allow 100.0 Hz/D023N"), the list held to
+   @p list_size bytes ("…+N" for what does not fit). A list policy without a list runs as off, so it reads as off.
+   Returns 1 for a list policy, 0 for off. */
+static int
+rx_tone_format_policy(int mode, const dsd_tone_set* set, char* out, size_t out_size, size_t list_size) {
+    const char* name = dsd_tone_filter_mode_name(mode);
+    char list[RX_TONE_POLICY_LIST_SIZE];
+    if (list_size > sizeof(list)) {
+        list_size = sizeof(list);
+    }
+    if (!name || mode == DSD_TONE_FILTER_OFF || dsd_tone_set_format_display(set, list, list_size) <= 0) {
+        DSD_SNPRINTF(out, out_size, "%s", RX_TONE_POLICY_OFF_TEXT);
+        return 0;
+    }
+    DSD_SNPRINTF(out, out_size, "%s %s", name, list);
+    return 1;
+}
+
+/* The tone policy in force (issue #527): dsd_opts holds a scan row's own while the row is on air. As every row override
+   reads (squelch, channel width), the text then names the configured default it shadows: "block D023I (row; default
+   allow 100.0 Hz)". */
+static void
+rx_tone_fill_policy_text(dsd_app_rx_tone* out, const dsd_opts* opts, const dsd_state* state) {
+    const dsd_scan_option_values* row_options = dsd_scan_mode_row_options(state);
+    const int row = row_options && (row_options->present & DSD_SCAN_OPT_TONE) != 0U;
+    char effective[DSD_APP_RX_TONE_POLICY_TEXT_SIZE];
+    const int in_force =
+        rx_tone_format_policy(opts->analog_tone_filter, &opts->analog_tone_set, effective, sizeof(effective),
+                              row ? RX_TONE_POLICY_ROW_LIST_SIZE : RX_TONE_POLICY_LIST_SIZE);
+    out->policy_row = row ? 1U : 0U;
+    out->policy_visible = (in_force || row) ? 1U : 0U;
+    if (!row) {
+        DSD_SNPRINTF(out->configured_text, sizeof(out->configured_text), "%s", effective);
+        return;
+    }
+    int default_mode = DSD_TONE_FILTER_OFF;
+    dsd_tone_set default_set;
+    DSD_MEMSET(&default_set, 0, sizeof(default_set));
+    dsd_scan_mode_configured_tone_policy(opts, state, &default_mode, &default_set);
+    char configured[DSD_APP_RX_TONE_POLICY_TEXT_SIZE];
+    (void)rx_tone_format_policy(default_mode, &default_set, configured, sizeof(configured),
+                                RX_TONE_POLICY_DEFAULT_LIST_SIZE);
+    DSD_SNPRINTF(out->configured_text, sizeof(out->configured_text), "%s (row; default %s)", effective, configured);
+}
+
+/* What the policy does with the carrier on air: nothing to say without a carrier (or past a stale input's deadline). */
+static void
+rx_tone_fill_gate(dsd_app_rx_tone* out, const dsd_opts* opts, const dsd_state* state, int stale) {
+    const dsd_analog_rx_publication* pub = &state->analog_rx;
+    const int gate = dsd_analog_tone_gate_in_force(opts, state);
+    if (!out->policy_visible || stale || !pub->carrier_open || gate == DSD_ANALOG_TONE_GATE_OFF) {
+        return;
+    }
+    const char* text = "muted: checking tone";
+    if (gate == DSD_ANALOG_TONE_GATE_ALLOWED) {
+        text = "passing";
+    } else if (gate == DSD_ANALOG_TONE_GATE_REJECTED) {
+        text = pub->gate_no_tone ? "muted: no tone" : "muted: not allowed";
+    }
+    out->gate = (uint8_t)gate;
+    out->gate_no_tone = (gate != DSD_ANALOG_TONE_GATE_PENDING && pub->gate_no_tone) ? 1U : 0U;
+    DSD_SNPRINTF(out->gate_text, sizeof(out->gate_text), "%s", text);
+}
+
 int
 dsd_app_rx_tone_view(const dsd_opts* opts, const dsd_state* state, double now_m, dsd_app_rx_tone* out) {
     if (out) {
@@ -126,6 +211,11 @@ dsd_app_rx_tone_view(const dsd_opts* opts, const dsd_state* state, double now_m,
     if (!opts || !state || !out) {
         return -1;
     }
+    rx_tone_fill_policy_text(out, opts, state);
+    if (!dsd_analog_tone_detection_active(opts)) {
+        out->policy_visible = 0U;
+    }
+    rx_tone_fill_gate(out, opts, state, rx_tone_stale(&state->analog_rx, now_m));
     /* The tap's own question (runtime/analog_tones.h), so the row is on screen exactly while
        detection listens. Not INACTIVE in the publication: right after a reset it reads that
        until the next block, and the row should not blink off and on across every retune. The

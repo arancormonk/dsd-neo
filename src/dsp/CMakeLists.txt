@@ -31,6 +31,7 @@ target_sources(
         analog_rx.c
         analog_ctcss.c
         analog_dcs.c
+        analog_tone_policy.c
 )
 
 set(_dsd_neo_dsp_target_arch "${CMAKE_SYSTEM_PROCESSOR}")

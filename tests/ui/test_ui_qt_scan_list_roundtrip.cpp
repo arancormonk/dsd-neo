@@ -16,6 +16,7 @@
 #include <QVariantMap>
 #include <cstdio>
 #include <dsd-neo/app_control/trunk_scan_validate.h>
+#include <dsd-neo/core/analog_tone.h>
 #include <functional>
 #include <initializer_list>
 #include <qsystemdetection.h>
@@ -44,6 +45,8 @@ struct InspectedTargets {
     QStringList types;
     QList<int> widths;
     QList<int> squelchDb;
+    QList<int> toneFilters;
+    QStringList toneLists;
 };
 
 } // namespace
@@ -54,6 +57,8 @@ collectTarget(const dsd_app_scan_csv_target* target, void* context) {
     seen->types << QString::fromUtf8(target->type);
     seen->widths << target->bandwidth_hz;
     seen->squelchDb << (target->squelch_db_set ? target->squelch_db : 1);
+    seen->toneFilters << target->tone_filter;
+    seen->toneLists << QString::fromUtf8(target->tone_list);
 }
 
 /* The targets the engine's own parser reads from @p path, as the target preview reads them. */
@@ -68,8 +73,9 @@ inspectTargets(const QString& path) {
 
 /* Issue #526: a manual list mixing a digital, an nfm and an am frequency entry with a saved AM system round-trips: the
  * entries keep their protocols through the saved lists, and the list builds into a target CSV the engine's own parser
- * accepts with the canonical analog types. A CSV-backed list mixing analog and digital targets reaches --trunk-scan as
- * the file itself, its options -- each width spelled for its kind, the squelch -- intact. */
+ * accepts with the canonical analog types, and no tone policy of their own (the editor sets none, so the configured one
+ * applies). A CSV-backed list mixing analog and digital targets reaches --trunk-scan as the file itself, its options --
+ * each width spelled for its kind, the squelch, an nfm target's tone policy (issue #527) -- intact. */
 static void
 checkMixedAnalogRoundTrip(const QTemporaryDir& dir) {
     SavedSystemsModel systems;
@@ -105,12 +111,13 @@ checkMixedAnalogRoundTrip(const QTemporaryDir& dir) {
           && count == 4);
     const auto generated = inspectTargets(path);
     check(generated.types == QStringList{"p25-conventional", "nfm-conventional", "am-conventional", "am-conventional"});
+    check(generated.toneFilters == QList<int>{-1, -1, -1, -1});
     check(model.remove(model.rowForUid(uid)));
 
     const QString targetPath = dir.filePath("analog-targets.csv");
     const QByteArray body = "id,type,frequency_hz,chan_csv,dwell_ms,activity_hold_ms,notes,options\n"
                             "tower,am-conventional,118300000,,1500,2000,,--am-bandwidth-hz 8333 --squelch-db -55\n"
-                            "fire,nfm-conventional,154430000,,,,,--nfm-bandwidth-hz 12500\n"
+                            "fire,nfm-conventional,154430000,,,,,--nfm-bandwidth-hz 12500 --tone-allow 100.0/D023N\n"
                             "site,p25-conventional,851500000,,,,,--squelch-db -60\n";
     QFile targets(targetPath);
     check(targets.open(QIODevice::WriteOnly) && targets.write(body) == body.size());
@@ -128,6 +135,8 @@ checkMixedAnalogRoundTrip(const QTemporaryDir& dir) {
     const auto preview = inspectTargets(targetPath);
     check(preview.types == QStringList{"am-conventional", "nfm-conventional", "p25-conventional"});
     check(preview.widths == QList<int>{8333, 12500, -1} && preview.squelchDb == QList<int>{-55, 1, -60});
+    check(preview.toneFilters == QList<int>{-1, DSD_TONE_FILTER_ALLOW, -1}
+          && preview.toneLists == QStringList{"", "100.0 Hz/D023N", ""});
     check(model.remove(model.count() - 1));
 }
 

@@ -821,9 +821,36 @@ two cases with their own limits, not a comparison between runs. Measured on the 
 | `DECODE_IQ_ANALOG_AM_ADJ_6K` | `am_adjacent_synth` under `-fM` (6 kHz default) | tone SNR 24.2 dB; 8333 Hz probe -72.2 dBc | SNR ≥ 18, captured ≥ 1400 ms, 8333 Hz ≤ -40 dBc |
 | `DECODE_IQ_ANALOG_AM_ADJ_20K` | `am_adjacent_synth` under `-fM --am-bandwidth-hz 20000` | 8333 Hz probe +13.0 dBc (tone SNR -13.1 dB: the beat dominates) | captured ≥ 1400 ms, 8333 Hz ≥ 0 dBc |
 | `DECODE_IQ_ANALOG_AM_REAL` | `am_airband_real` under `-fM` | captured 8000 ms, audible 1120 ms, in-band 14.6 dB (-2.4 under `-fA`), RMS -53.7 dBFS, no clipping | captured ≥ 7800, audible ≥ 800, in-band ≥ 10, RMS -60 to -48 dBFS, clip 0; no `Received tone:` logged |
+| `DECODE_IQ_ANALOG_POLICY_ALLOW_MATCH` | `nfm_ctcss_synth_1000`, `--tone-allow 100.0` | first audible 280 ms (the tone locks at 300 ms, within the read that crosses it), audible 1720 of 2000 ms; `Tone filter: allowed (CTCSS 100.0 Hz)` | first audible 100 to 400 ms, audible ≥ 1600, total ≥ 1900; no `rejected` or `pending` line |
+| `DECODE_IQ_ANALOG_POLICY_ALLOW_NOTONE` | `nfm_notone_synth`, `--tone-allow 100.0` | audible 0 of 2000 ms; `Tone filter: rejected (no tone)` | audible 0, total 1900 to 2100 ms; no `allowed` line |
+| `DECODE_IQ_ANALOG_POLICY_BLOCK_NOTONE` | `nfm_notone_synth`, `--tone-block 100.0` | first audible 800 ms (the window's end), audible 1200 ms; `Tone filter: allowed (no tone)` | first audible 780 to 860 ms, audible ≥ 1100, total ≥ 1900; no `rejected` line |
+| `DECODE_IQ_ANALOG_POLICY_BLOCK_DCS` | `nfm_dcs_synth_023n`, `--tone-block D023N` | audible 0 of 2000 ms; `Tone filter: rejected (DCS D023N / D047I)` | audible 0, total 1900 to 2100 ms; no `allowed` line |
+| `DECODE_IQ_ANALOG_POLICY_ALLOW_DCS_ALIAS` | `nfm_dcs_synth_023i`, `--tone-allow D023I` | first audible 340 ms, audible 1660 ms; `Tone filter: allowed (DCS D047N / D023I)`: the listed spelling matches the signal the detector names D047N | first audible ≤ 600 ms, audible ≥ 1300, total ≥ 1900; no `rejected` line |
+| `DECODE_IQ_ANALOG_REAL_CTCSS_POLICY` | `nfm_ctcss_real`, `--tone-allow 151.4` | first audible 280 ms, audible 5320 of 6000 ms: muted again over the reverse burst and tone gap at 3.7-4.0 s (`Tone filter: pending (tone lost)`) until the tone locks again | first audible 100 to 400 ms, audible ≥ 4500, total ≥ 5800; no `rejected` line |
 
 Every `-fA` case in the table also fails if the host warns that the front end delivered CQPSK symbols instead of
 monitor audio (see the `am_airband_real` note above).
+
+The tone filter cases (`DECODE_IQ_ANALOG_POLICY_*` and `DECODE_IQ_ANALOG_REAL_CTCSS_POLICY`, issue #527) read the
+filter's mute through the first-audible and audible-time metrics, and every never-audible case pairs its 0 ms bound with
+stream time, so a replay that delivered nothing could not pass. Two unit tests sit under them. `DSP_ANALOG_TONE_POLICY`
+drives the verdict state machine (`src/dsp/analog_tone_policy.c`) with no audio and no clock: each read is a
+publication built as the tap would publish it (carrier, detector state, locked tone or code, the DCS candidate) plus the
+samples and rate it covered, so the 800 ms window, its DCS extension and every transition are pinned in sample time,
+the window's end to the read that crosses it at several rates and read sizes. `DSP_SYMBOL_REPLAY` covers the sink the
+verdict gates: both live outputs muted together while a check runs or after a rejection, the `-6` raw WAV ungated, the
+output with the filter off byte-identical to a session without one, the AM and `-8` monitors judging nothing, the
+`Tone filter:` log lines, a changed policy's fresh check included, and the -Y hangtime stamp, which only traffic the
+policy passes leaves (no-tone bursts shorter than the window stamp nothing). What the scanners do with a check is
+engine-side. `ENGINE_NO_CARRIER_RESET` cannot run the monitor block (the DSP test seam is not linked into the engine
+test), so it feeds such bursts through the real tap and sets the `-Y` hangtime anchor itself, to where the monitor's
+stamp leaves it, and checks the step rule against it on a wall clock it injects by wrapping `time()` at link time (not
+on Windows, which has no Unix `time` symbol to wrap): with a burst in every second of `-t`, the pass at `-t` after the
+row's landing holds and the pass a second later steps, and allowed traffic holds the row through `-t` after its last
+block and steps a second later. A check, or traffic whose verdict turned ALLOWED part-way through a monitor block (at
+22050 Hz, before the block's end stamps it), holds the row with `-t` run out. `ENGINE_TRUNK_SCAN` shows the bursts, on
+its injected clock, restart neither the activity hold nor the idle dwell, and a check that spans the end of an activity
+or operator hold arm the dwell as a quiet tick would.
 
 The cases above can only show that bounds hold. The `DECODE_IQ_ANALOG_NEG_*` negative controls show that a missed
 bound fails: they run the host through `tests/analog_replay_fail_check.cmake`, which requires its exit status (1 for
