@@ -14,6 +14,7 @@
 #include <dsd-neo/runtime/analog_channel.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/decode_mode.h>
+#include <dsd-neo/runtime/log.h>
 #include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
 #include <dsd-neo/runtime/scan_mode.h>
 #include <dsd-neo/runtime/scan_options.h>
@@ -1051,6 +1052,29 @@ dsd_scan_mode_configured_tone_policy(const dsd_opts* opts, const dsd_state* stat
     if (set) {
         *set = configured_set;
     }
+}
+
+int
+dsd_scan_mode_configured_fm_monitor(const dsd_opts* opts, const dsd_state* state) {
+    if (!opts) {
+        return 0;
+    }
+    const dsd_scan_settings* configured = dsd_scan_mode_configured_view(state);
+    const int analog_only = configured ? configured->analog_only : opts->analog_only;
+    const int demod = configured ? configured->analog_demod : opts->analog_demod;
+    return analog_only == 1 && demod == DSD_ANALOG_DEMOD_FM;
+}
+
+int
+dsd_scan_mode_warn_tone_filter_unused(const dsd_opts* opts, const dsd_state* state, int hears_tones) {
+    int mode = DSD_TONE_FILTER_OFF;
+    dsd_scan_mode_configured_tone_policy(opts, state, &mode, NULL);
+    if (!opts || hears_tones || (mode != DSD_TONE_FILTER_ALLOW && mode != DSD_TONE_FILTER_BLOCK)) {
+        return 0;
+    }
+    LOG_WARN("WARNING: the tone filter (--tone-allow/--tone-block, [analog] tone_filter) has no effect in this decode "
+             "mode; it applies only to the analog FM monitor (-fA) and to nfm scan rows.\n");
+    return 1;
 }
 
 void

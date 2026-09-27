@@ -19,6 +19,7 @@
 
 #include <dsd-neo/app_control/commands.h>
 #include <dsd-neo/app_control/frontend_runtime.h>
+#include <dsd-neo/core/analog_tone.h>
 #include <dsd-neo/core/audio.h>
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/frontend_types.h>
@@ -36,6 +37,7 @@
 #include <dsd-neo/io/rtl_stream_c.h>
 #endif
 #include <dsd-neo/platform/platform.h>
+#include <dsd-neo/runtime/analog_tones.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/exitflag.h>
 #include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
@@ -718,6 +720,73 @@ test_config_reapply_under_row_squelch_keeps_the_row(void) {
     return rc;
 }
 #endif
+
+/* Issue #527: the tone policy in a config applied to a running session. While an nfm row's own policy is on air, the
+ * loaded policy becomes the configured default: the row's stays in force, a save writes the loaded one, and leaving the
+ * row puts it on air. With no row, a present [analog] section that sets no tone key turns the policy off, list and
+ * all, as a saved config with the policy off does. */
+static int
+tone_policy_is(const char* label, int mode, const dsd_tone_set* set, int want_mode, const char* want_list) {
+    char list[DSD_TONE_LIST_TEXT_MAX + 1] = "";
+    (void)dsd_tone_set_format(set, list, sizeof list);
+    if (mode != want_mode || strcmp(list, want_list) != 0) {
+        DSD_FPRINTF(stderr, "FAIL: %s (got %d \"%s\" want %d \"%s\")\n", label, mode, list, want_mode, want_list);
+        return 1;
+    }
+    return 0;
+}
+
+static int
+test_config_apply_under_row_tone_policy_keeps_the_row(void) {
+    test_runtime runtime;
+    if (alloc_test_runtime(&runtime) != 0) {
+        return 1;
+    }
+    dsd_opts* opts = runtime.opts;
+    dsd_state* state = runtime.state;
+    int rc = expect_true("row tone scope", dsd_scan_mode_enter(opts, state, DSD_SCAN_MODE_NFM) == 0);
+    dsd_scan_option_values row;
+    DSD_MEMSET(&row, 0, sizeof row);
+    row.present = DSD_SCAN_OPT_TONE;
+    row.tone_filter = DSD_TONE_FILTER_BLOCK;
+    rc |= expect_true("row tone list", dsd_tone_set_parse("67.0", &row.tone_set, NULL, 0) == 0);
+    rc |= expect_true("row tone installed", dsd_scan_mode_options(opts, state, &row) == 0);
+    rc |= tone_policy_is("row tone on air", opts->analog_tone_filter, &opts->analog_tone_set, DSD_TONE_FILTER_BLOCK,
+                         "67.0");
+
+    dsdneoUserConfig cfg;
+    DSD_MEMSET(&cfg, 0, sizeof cfg);
+    cfg.has_analog = 1;
+    cfg.analog_tone_filter = DSD_TONE_FILTER_ALLOW;
+    rc |= expect_true("config tone list", dsd_tone_set_parse("100.0/D023N", &cfg.analog_tone_set, NULL, 0) == 0);
+    dsd_app_command_submit(DSD_APP_CMD_CONFIG_APPLY, &cfg, sizeof cfg);
+    (void)dsd_app_drain_cmds(opts, state);
+
+    int configured_mode = -1;
+    dsd_tone_set configured_set;
+    DSD_MEMSET(&configured_set, 0, sizeof configured_set);
+    dsd_scan_mode_configured_tone_policy(opts, state, &configured_mode, &configured_set);
+    rc |= tone_policy_is("config under a row edits the default", configured_mode, &configured_set,
+                         DSD_TONE_FILTER_ALLOW, "100.0/D023N");
+    rc |= tone_policy_is("config under a row keeps the row in force", opts->analog_tone_filter, &opts->analog_tone_set,
+                         DSD_TONE_FILTER_BLOCK, "67.0");
+    dsdneoUserConfig saved;
+    dsd_snapshot_opts_to_user_config(opts, state, &saved);
+    rc |= tone_policy_is("save under a row writes the default", saved.analog_tone_filter, &saved.analog_tone_set,
+                         DSD_TONE_FILTER_ALLOW, "100.0/D023N");
+    dsd_scan_mode_leave(opts, state);
+    rc |= tone_policy_is("leaving the row puts the default on air", opts->analog_tone_filter, &opts->analog_tone_set,
+                         DSD_TONE_FILTER_ALLOW, "100.0/D023N");
+
+    DSD_MEMSET(&cfg, 0, sizeof cfg);
+    cfg.has_analog = 1;
+    dsd_app_command_submit(DSD_APP_CMD_CONFIG_APPLY, &cfg, sizeof cfg);
+    (void)dsd_app_drain_cmds(opts, state);
+    rc |= tone_policy_is("an [analog] section without tone keys turns the policy off", opts->analog_tone_filter,
+                         &opts->analog_tone_set, DSD_TONE_FILTER_OFF, "");
+    free_test_runtime(&runtime);
+    return rc;
+}
 
 static int
 test_ui_command_queue_applies_fifo(void) {
@@ -2998,6 +3067,7 @@ main(void) {
     rc |= test_basic_pulse_config_apply();
     rc |= test_input_warn_db_apply_clamps_to_window();
     rc |= test_output_config_without_frontend_preserves_active_frontend();
+    rc |= test_config_apply_under_row_tone_policy_keeps_the_row();
     rc |= test_ui_command_queue_applies_fifo();
     rc |= test_ui_command_queue_overflow_drops_oldest();
     rc |= test_ui_command_queue_truncates_oversized_payload_string();

@@ -1697,6 +1697,29 @@ test_call_info_rx_tone_line_rendering(void) {
     state->analog_rx.gate = DSD_ANALOG_TONE_GATE_PENDING;
     assert(ui_format_tone_filter_line(&opts, state, 0.0, policy, sizeof(policy)) > 0);
     assert(strcmp(policy, "| Tone filter: allow 100.0 Hz/D023N") == 0);
+    /* A list too long for the line ends in a count after an overflow mark, which a terminal without UTF-8 gets as
+       "..." like the separator's hyphen: nothing but ASCII reaches it. */
+    assert(dsd_tone_set_parse("67/69.3/71.9/74.4/77/79.7/82.5/85.4/88.5/91.5/94.8/97.4", &opts.analog_tone_set, NULL, 0)
+           == 0);
+    seed_rx_tone(state, 1, DSD_ANALOG_TONE_STATE_ACQUIRING, 0);
+    state->analog_rx.gate = DSD_ANALOG_TONE_GATE_PENDING;
+    assert(ui_format_tone_filter_line(&opts, state, 0.0, policy, sizeof(policy)) > 0);
+    assert(strcmp(policy,
+                  "| Tone filter: allow 67.0 Hz/69.3 Hz/71.9 Hz/74.4 Hz/77.0 Hz/79.7 Hz/82.5 Hz/85.4 Hz/88.5 Hz/"
+                  "\xE2\x80\xA6+3 \xE2\x80\x94 muted: checking tone")
+           == 0);
+    g_unicode_stub = 0;
+    assert(ui_format_tone_filter_line(&opts, state, 0.0, policy, sizeof(policy)) > 0);
+    assert(strcmp(policy,
+                  "| Tone filter: allow 67.0 Hz/69.3 Hz/71.9 Hz/74.4 Hz/77.0 Hz/79.7 Hz/82.5 Hz/85.4 Hz/88.5 Hz/"
+                  "...+3 - muted: checking tone")
+           == 0);
+    reset_printw_capture();
+    ui_render_call_info_tone_filter_line(&opts, state);
+    assert_capture_equals(
+        "| Tone filter: allow 67.0 Hz/69.3 Hz/71.9 Hz/74.4 Hz/77.0 Hz/79.7 Hz/82.5 Hz/85.4 Hz/88.5 Hz/"
+        "...+3 - muted: checking tone\n");
+    g_unicode_stub = 1;
     opts.analog_tone_filter = DSD_TONE_FILTER_OFF;
     seed_rx_tone(state, 1, DSD_ANALOG_TONE_STATE_LOCKED, 1318);
 

@@ -22,6 +22,8 @@ void dsd_channel_modes_move(dsd_state* dst, dsd_state* src);
 /** Nonzero if at least one row declares a mode or carries scoped row options (scan_profile.h),
  * i.e. the typed scanner must run the list. */
 int dsd_channel_modes_present(const dsd_state* state);
+/** Nonzero if a row the scanner tunes (one with a frequency) declares @p mode, a declared class other than INHERIT. */
+int dsd_channel_modes_include(const dsd_state* state, dsd_scan_mode mode);
 #ifdef __cplusplus
 }
 #endif

@@ -478,6 +478,19 @@ dsd_channel_modes_present(const dsd_state* state) {
     return modes && (modes->declared_count != 0 || modes->profile_count != 0);
 }
 
+int
+dsd_channel_modes_include(const dsd_state* state, dsd_scan_mode mode) {
+    if (!state || mode == DSD_SCAN_MODE_INHERIT || !dsd_channel_modes_present(state)) {
+        return 0;
+    }
+    for (int row = 0; row < state->lcn_freq_count; row++) {
+        if (*dsd_state_trunk_lcn_slot_const(state, row) != 0 && dsd_channel_mode_get(state, (size_t)row) == mode) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
 static int
 channel_profile_has_options(const dsd_scan_row_profile* profile) {
     return profile != NULL && profile->values.present != 0;

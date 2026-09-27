@@ -5,8 +5,8 @@
 
 /*
  * The CTCSS/DCS receive policy (issue #527) in sample time, with the detectors' verdicts injected as the tap would
- * publish them: disabled, allow and block, each against a matching value, a nonmatching one, no tone, acquisition,
- * loss and reacquisition, a late blocked value, and a carrier drop or retune. The window is bounded: nothing is ever
+ * publish them: disabled, allow and block, each against a matching value, a nonmatching one, no tone, a value outside
+ * the standard sets, acquisition, loss and reacquisition, a late blocked value, and a carrier drop or retune. The window is bounded: nothing is ever
  * rejected before a value is confirmed or the window ends, and the window's end is pinned to the read that crosses it
  * at several rates and read sizes.
  */
@@ -263,6 +263,77 @@ test_carrier_drop_and_retune(void) {
     assert(feed_ms(&policy, rx_carrier(DSD_ANALOG_TONE_STATE_ACQUIRING), 20) == DSD_ANALOG_TONE_GATE_REJECTED);
 }
 
+/* Block list: a reception ends as it does under allow. A rejection goes with the carrier, and the next carrier, with no
+   tone, is checked for a whole window of its own before it passes: it is no continuation of the blocked traffic. */
+static void
+test_block_carrier_drop_and_retune(void) {
+    dsd_analog_tone_policy policy;
+    policy_with(&policy, DSD_TONE_FILTER_BLOCK, "67.0/D023N");
+    assert(feed_ms(&policy, rx_ctcss(670), 100) == DSD_ANALOG_TONE_GATE_REJECTED);
+    /* A retune: the tap reset. */
+    dsd_analog_tone_policy_reset(&policy);
+    assert(policy.gate == DSD_ANALOG_TONE_GATE_PENDING && policy.window_open == 0 && policy.no_tone == 0);
+    assert(policy.value_kind == DSD_ANALOG_TONE_KIND_NONE);
+    assert(feed_ms(&policy, rx_idle(), 300) == DSD_ANALOG_TONE_GATE_PENDING);
+    hold_ms(&policy, rx_carrier(DSD_ANALOG_TONE_STATE_NONE), 800, DSD_ANALOG_TONE_GATE_PENDING);
+    assert(feed_ms(&policy, rx_carrier(DSD_ANALOG_TONE_STATE_NONE), 20) == DSD_ANALOG_TONE_GATE_ALLOWED);
+    assert(policy.no_tone == 1);
+    /* The blocked code again, then the carrier drops (a publication with no carrier): the next carrier starts over. */
+    assert(feed_ms(&policy, rx_dcs(0023, 0), 20) == DSD_ANALOG_TONE_GATE_REJECTED);
+    assert(feed_ms(&policy, rx_idle(), 20) == DSD_ANALOG_TONE_GATE_PENDING);
+    assert(policy.window_open == 0 && policy.value_kind == DSD_ANALOG_TONE_KIND_NONE);
+    hold_ms(&policy, rx_carrier(DSD_ANALOG_TONE_STATE_ACQUIRING), 800, DSD_ANALOG_TONE_GATE_PENDING);
+    assert(feed_ms(&policy, rx_carrier(DSD_ANALOG_TONE_STATE_ACQUIRING), 20) == DSD_ANALOG_TONE_GATE_ALLOWED);
+    /* A value the list passes, on a new carrier, passes at once. */
+    dsd_analog_tone_policy_reset(&policy);
+    assert(feed_ms(&policy, rx_ctcss(1000), 20) == DSD_ANALOG_TONE_GATE_ALLOWED && policy.no_tone == 0);
+}
+
+/* A value the detectors publish as locked but that is no standard tone or code is not confirmed: it is judged as no
+   tone, at the window's end, under both lists, and never rejected or passed as a value before then. */
+static void
+test_unknown_value_is_no_tone(void) {
+    dsd_analog_rx_publication unknown_tone = rx_ctcss(1500); /* 150.0 Hz: outside the standard set */
+    dsd_analog_rx_publication unknown_code = rx_dcs(0023, 0);
+    unknown_code.dcs_code = 0777; /* no standard code */
+    const dsd_analog_rx_publication unknown[] = {unknown_tone, unknown_code};
+    for (size_t k = 0; k < sizeof(unknown) / sizeof(unknown[0]); k++) {
+        dsd_analog_tone_policy policy;
+        policy_with(&policy, DSD_TONE_FILTER_ALLOW, "100.0/D023N");
+        hold_ms(&policy, unknown[k], 800, DSD_ANALOG_TONE_GATE_PENDING);
+        assert(feed_ms(&policy, unknown[k], 20) == DSD_ANALOG_TONE_GATE_REJECTED);
+        assert(policy.no_tone == 1 && policy.value_kind == DSD_ANALOG_TONE_KIND_NONE);
+
+        policy_with(&policy, DSD_TONE_FILTER_BLOCK, "100.0/D023N");
+        hold_ms(&policy, unknown[k], 800, DSD_ANALOG_TONE_GATE_PENDING);
+        assert(feed_ms(&policy, unknown[k], 20) == DSD_ANALOG_TONE_GATE_ALLOWED);
+        assert(policy.no_tone == 1 && policy.value_kind == DSD_ANALOG_TONE_KIND_NONE);
+        /* Nor does it close a pass it did not open. */
+        hold_ms(&policy, unknown[k], 1000, DSD_ANALOG_TONE_GATE_ALLOWED);
+    }
+}
+
+/* A rejection keeps its reason current: one for want of a tone that later hears a tone the list does not pass names
+   that tone, and another unlisted value after it names that one, while the verdict stays; a listed one still passes. */
+static void
+test_rejected_reason_follows_the_value(void) {
+    dsd_analog_tone_policy policy;
+    policy_with(&policy, DSD_TONE_FILTER_ALLOW, "100.0");
+    assert(feed_ms(&policy, rx_carrier(DSD_ANALOG_TONE_STATE_NONE), 820) == DSD_ANALOG_TONE_GATE_REJECTED);
+    assert(policy.no_tone == 1 && policy.value_kind == DSD_ANALOG_TONE_KIND_NONE);
+    assert(feed_ms(&policy, rx_ctcss(670), 20) == DSD_ANALOG_TONE_GATE_REJECTED);
+    assert(policy.no_tone == 0 && policy.value_kind == DSD_ANALOG_TONE_KIND_CTCSS && policy.value_ctcss == 670);
+    hold_ms(&policy, rx_ctcss(670), 500, DSD_ANALOG_TONE_GATE_REJECTED);
+    const dsd_analog_rx_publication other = rx_dcs(0754, 0);
+    assert(feed_ms(&policy, other, 20) == DSD_ANALOG_TONE_GATE_REJECTED);
+    assert(policy.value_kind == DSD_ANALOG_TONE_KIND_DCS && policy.value_dcs_code == other.dcs_code
+           && policy.value_dcs_inverted == other.dcs_inverted);
+    /* Losing it names nothing new: the reason stays the last value heard. */
+    hold_ms(&policy, rx_carrier(DSD_ANALOG_TONE_STATE_NONE), 500, DSD_ANALOG_TONE_GATE_REJECTED);
+    assert(policy.value_kind == DSD_ANALOG_TONE_KIND_DCS && policy.no_tone == 0);
+    assert(feed_ms(&policy, rx_ctcss(1000), 20) == DSD_ANALOG_TONE_GATE_ALLOWED);
+}
+
 /* The window's end falls on the read that crosses it, in sample time, at any rate and read size: the tap reads 20 ms of
    input at the input's rate, which at 44.1 kHz is 882 samples, and at 2500 Hz 50. */
 static void
@@ -396,6 +467,9 @@ main(void) {
     test_allow_loss_and_reacquire();
     test_block_late_blocked_value();
     test_carrier_drop_and_retune();
+    test_block_carrier_drop_and_retune();
+    test_unknown_value_is_no_tone();
+    test_rejected_reason_follows_the_value();
     test_window_in_sample_time();
     test_dcs_extension();
     test_dcs_match_by_signal();

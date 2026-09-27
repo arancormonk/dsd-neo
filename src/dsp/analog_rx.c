@@ -647,8 +647,8 @@ analog_rx_policy_same_verdict(const dsd_analog_tone_policy* a, const dsd_analog_
 }
 
 /* The "Tone filter:" line for the verdict the session's policy holds (issue #527): once per change of verdict or of the
-   value that decided it, each reception afresh. A reception's opening check is not logged, only a check that follows a
-   verdict (an allowed tone that was lost). */
+   value that decided it, each reception and each policy afresh. A reception's opening check is not logged, only a check
+   that follows a verdict of the same policy (an allowed tone that was lost). */
 static void
 analog_rx_policy_log(analog_rx_session* session) {
     const dsd_analog_tone_policy* now = &session->policy;
@@ -677,14 +677,17 @@ analog_rx_policy_log(analog_rx_session* session) {
 static void
 analog_rx_policy_publish(const dsd_opts* opts, dsd_state* state, analog_rx_session* session, unsigned int samples,
                          int rate_hz) {
-    if (session->detecting) {
-        (void)dsd_analog_tone_policy_configure(&session->policy, opts->analog_tone_filter, &opts->analog_tone_set);
-    } else {
-        (void)dsd_analog_tone_policy_configure(&session->policy, DSD_TONE_FILTER_OFF, NULL);
-    }
+    const int changed =
+        session->detecting
+            ? dsd_analog_tone_policy_configure(&session->policy, opts->analog_tone_filter, &opts->analog_tone_set)
+            : dsd_analog_tone_policy_configure(&session->policy, DSD_TONE_FILTER_OFF, NULL);
     if (session->policy_generation != state->analog_rx.generation) {
         session->policy_generation = state->analog_rx.generation;
         dsd_analog_tone_policy_reset(&session->policy);
+        dsd_analog_tone_policy_init(&session->policy_logged);
+    } else if (changed) {
+        /* Another policy judges the reception afresh (a config load, a scan row's own coming on air): what the old one
+           decided is no verdict of this one, so its check is not reported as a tone lost. */
         dsd_analog_tone_policy_init(&session->policy_logged);
     }
     state->analog_rx.gate = dsd_analog_tone_policy_step(&session->policy, &state->analog_rx, samples, rate_hz);

@@ -23,6 +23,8 @@
  *             hysteresis) -> PENDING with a fresh window. Block list: a confirmed listed value -> REJECTED; a loss
  *             keeps ALLOWED.
  *   REJECTED  kept for the rest of the reception, except that a newly confirmed value the list passes -> ALLOWED.
+ *             Another confirmed value it does not pass keeps REJECTED but becomes its reason (a "no tone" rejection
+ *             that later hears an unlisted tone names that tone).
  *
  * A reception ends when the tap's carrier hangover runs out or the tap resets (a retune, a row change, a stream
  * pause): the caller then resets the policy, and the next carrier opens a new window.

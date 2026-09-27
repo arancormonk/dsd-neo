@@ -18,7 +18,6 @@
 
 #include <QStringList>
 #include <algorithm>
-#include <cstring>
 #include <iterator>
 #include <tuple>
 
@@ -497,7 +496,7 @@ MetricsModel::fillRxToneView(View& next, const dsd_opts* opts_snapshot, const ds
     dsd_app_rx_tone view;
     const int shown = dsd_app_rx_tone_view(opts_snapshot, snapshot, now_m, &view);
     next.rx_tone_configured_text = QString::fromUtf8(view.configured_text);
-    fillToneFilterView(next, view.policy_visible != 0U, view.gate, std::strcmp(view.gate_text, "muted: no tone") == 0);
+    fillToneFilterView(next, view.policy_visible != 0U, view.gate, view.gate_no_tone != 0U);
     if (shown != 1) {
         return;
     }

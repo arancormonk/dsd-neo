@@ -5,6 +5,7 @@
 
 #include <ctype.h>
 #include <dsd-neo/core/analog_tone.h>
+#include <dsd-neo/core/channel_mode.h>
 #include <dsd-neo/core/csv_import.h>
 #include <dsd-neo/core/file_io.h>
 #include <dsd-neo/core/frontend_types.h>
@@ -40,6 +41,7 @@
 #include <dsd-neo/runtime/log.h>
 #include <dsd-neo/runtime/path_policy.h>
 #include <dsd-neo/runtime/rdio_export.h>
+#include <dsd-neo/runtime/scan_mode.h>
 #include <errno.h>
 #include <inttypes.h>
 #include <stdio.h>
@@ -530,16 +532,17 @@ cli_parse_tone_filter_option(const char* option_name, int mode, const char* list
 
 /* The tone policy judges only what received-tone detection hears: the analog FM monitor, and an nfm row of a scan,
  * whose own policy or the configured one applies while it is on air. Configured for a session that has neither (the
- * AM monitor, a digital mode without a scan), it can do nothing, which is said once (issue #527). */
+ * AM monitor or a digital mode, without a scan or on a -Y list with no nfm row), it can do nothing, which is said once
+ * (issue #527). A -Y list the command line has not imported yet (a config file's) is checked when the engine imports
+ * it, and --trunk-scan targets when that scan starts. */
 static void
-cli_warn_tone_filter_without_fm_monitor(const dsd_opts* opts) {
-    if (opts->analog_tone_filter == DSD_TONE_FILTER_OFF
-        || (opts->analog_only == 1 && opts->analog_demod == DSD_ANALOG_DEMOD_FM) || opts->scanner_mode == 1
-        || opts->trunk_scan_enabled == 1) {
+cli_warn_tone_filter_without_fm_monitor(const dsd_opts* opts, const dsd_state* state) {
+    if (opts->trunk_scan_enabled == 1 || (opts->scanner_mode == 1 && state->lcn_freq_count <= 0)) {
         return;
     }
-    LOG_WARN("WARNING: the tone filter (--tone-allow/--tone-block, [analog] tone_filter) has no effect in this decode "
-             "mode; it applies only to the analog FM monitor (-fA) and to nfm scan rows.\n");
+    const int nfm_rows = opts->scanner_mode == 1 && dsd_channel_modes_include(state, DSD_SCAN_MODE_NFM);
+    (void)dsd_scan_mode_warn_tone_filter_unused(opts, state,
+                                                dsd_scan_mode_configured_fm_monitor(opts, state) || nfm_rows);
 }
 
 /* The analog channel width is the radio front end's filter. PCM inputs (Pulse, files, UDP and TCP audio) arrive
@@ -2018,7 +2021,7 @@ cli_finish_airspy_input(dsd_opts* opts, int parse_rc, int* out_exit_rc) {
 /* What runs once every option has been read, whatever order they came in. @p analog_cli_seen has bit
    1 << dsd_analog_demod set for each analog width option given (and CLI_TONE_FILTER_SEEN for a tone switch). */
 static int
-cli_finish_parse(dsd_opts* opts, int parse_rc, int analog_cli_seen, int* out_exit_rc) {
+cli_finish_parse(dsd_opts* opts, const dsd_state* state, int parse_rc, int analog_cli_seen, int* out_exit_rc) {
     parse_rc = cli_finish_airspy_input(opts, parse_rc, out_exit_rc);
     if (parse_rc == DSD_PARSE_CONTINUE && (analog_cli_seen & (1 << DSD_ANALOG_DEMOD_FM))) {
         cli_warn_analog_width_without_radio(opts, DSD_ANALOG_DEMOD_FM, "--nfm-bandwidth-hz");
@@ -2027,7 +2030,7 @@ cli_finish_parse(dsd_opts* opts, int parse_rc, int analog_cli_seen, int* out_exi
         cli_warn_analog_width_without_radio(opts, DSD_ANALOG_DEMOD_AM, "--am-bandwidth-hz");
     }
     if (parse_rc == DSD_PARSE_CONTINUE) {
-        cli_warn_tone_filter_without_fm_monitor(opts);
+        cli_warn_tone_filter_without_fm_monitor(opts, state);
     }
     return parse_rc;
 }
@@ -2127,7 +2130,7 @@ dsd_parse_args(int argc, char** argv, dsd_opts* opts, dsd_state* state, int* out
             return DSD_PARSE_ERROR;
         }
     }
-    parse_rc = cli_finish_parse(opts, parse_rc, analog_cli_seen, out_exit_rc);
+    parse_rc = cli_finish_parse(opts, state, parse_rc, analog_cli_seen, out_exit_rc);
     if (out_argc) {
         *out_argc = new_argc;
     }

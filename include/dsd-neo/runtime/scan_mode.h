@@ -241,6 +241,18 @@ int dsd_scan_mode_configured_analog_width(const dsd_opts* opts, const dsd_state*
  * the list to @p set (either may be NULL); OFF and an empty list without opts. Works on the live state (decoder
  * thread) and on a frontend snapshot pair alike. */
 void dsd_scan_mode_configured_tone_policy(const dsd_opts* opts, const dsd_state* state, int* mode, dsd_tone_set* set);
+/** Whether the configured decode mode is the analog FM monitor (-fA, the FM analog kind): the one decode mode in which
+ * received-tone detection, and so the tone policy, runs (issue #527). The configured one while a scope is live, since a
+ * scan row's own mode runs over dsd_opts meanwhile, else dsd_opts'. Unlike dsd_analog_tone_detection_active() it does
+ * not ask whether the input carries audio. 0 for NULL opts. */
+int dsd_scan_mode_configured_fm_monitor(const dsd_opts* opts, const dsd_state* state);
+/** Say once that the configured CTCSS/DCS receive policy can do nothing in this session (issue #527): when it is a
+ * list policy (allow or block) and @p hears_tones is 0, the caller having found nothing in the session that runs
+ * received-tone detection -- neither the configured decode mode (dsd_scan_mode_configured_fm_monitor()) nor, for a
+ * scan, an nfm row or nfm-conventional target, on which the row's own policy or the configured one applies while it
+ * is on air. Reads the configured policy (dsd_scan_mode_configured_tone_policy()), never a row's. Returns 1 when it
+ * warned, 0 otherwise. */
+int dsd_scan_mode_warn_tone_filter_unused(const dsd_opts* opts, const dsd_state* state, int hears_tones);
 /** Deep-copy scalar scope metadata for frontend snapshots. No live extension pointer is shared. */
 void dsd_scan_mode_copy_snapshot(dsd_state* dst, const dsd_state* src);
 /** Current class profile; combined P25 and inherited settings follow the active hunt index. */

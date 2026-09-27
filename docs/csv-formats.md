@@ -338,8 +338,11 @@ block, so only the visit cap or a manual advance or avoid moves on.
 
 The tone policy (issue #527) is the configured receive policy (`--tone-allow`, `--tone-block`, `[analog] tone_filter`
 and `tone_list`; see "Tone filter" in `docs/cli.md`) for this row alone: a row without one runs the configured policy,
-`--no-tone-filter` turns it off on this row, and the list is written as on the command line, `/` between entries
-(a comma would be read as the next column, so it is refused with `use / between entries, not commas`). A code matches
+`--no-tone-filter` turns it off on this row, and the list is written as on the command line, `/` between entries.
+A comma ends the `options` cell (the splitter has no quoting), so a list written with commas is refused rather than
+imported short: when the cell ends with the list and the field after the comma lies past the header's last column, or
+starts with a standard tone or code, the row is refused with `--tone-allow: use / between entries, not commas`, and the
+text after the comma is not repeated. A code matches
 by its signal: `D023I` passes traffic received as `DCS D047N / D023I`. The row's policy applies when the row is tuned
 and the configured one is restored when the scanner moves on, and Config->Save never writes it. The policy is a
 setting, and frontends show it apart from the tone or code received: the `Tone filter:` line (terminal) and

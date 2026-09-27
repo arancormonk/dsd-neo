@@ -705,6 +705,75 @@ dsd_scan_options_parse(const char* text, unsigned int mode, int conventional, ds
     return rc;
 }
 
+/* The tone switch whose list is the last argument of @p text (--tone-allow or --tone-block, its list separate or after
+ * '='), or NULL: none, another switch or argument after it, or text the tokenizer refuses (its parse says why). */
+static const scan_option_spec*
+option_trailing_tone_list(const char* text) {
+    const scan_option_spec* last = NULL;
+    const scan_option_spec* awaiting = NULL;
+    const char* cursor = text;
+    char token[1024];
+    int rc;
+    while ((rc = option_token(&cursor, token, sizeof(token))) == 1) {
+        if (awaiting) {
+            /* This token is the list of the switch before it. */
+            last = awaiting;
+            awaiting = NULL;
+            continue;
+        }
+        last = NULL;
+        char* equals = strncmp(token, "--", 2) == 0 ? strchr(token, '=') : NULL;
+        if (equals) {
+            *equals = '\0';
+        }
+        const scan_option_spec* spec = option_find(token);
+        if (spec && spec->field == DSD_SCAN_OPT_TONE && spec->argument) {
+            if (equals) {
+                last = spec;
+            } else {
+                awaiting = spec;
+            }
+        }
+    }
+    /* A cell may carry direct keys: nothing of it outlives the scan. */
+    DSD_SECURE_ZERO(token, sizeof(token));
+    return rc < 0 ? NULL : last;
+}
+
+/* Whether @p text starts with a standard CTCSS tone or DCS code ("67.0", "100", "D023", "d047i"), up to the first '/'
+ * or space: what a comma cut off a tone list leaves at the start of the next column. A value no list takes (an RTL
+ * gain, a name) is that column's own. */
+static int
+option_starts_with_tone_entry(const char* text) {
+    const size_t len = strcspn(text, "/ \t\r\n\v\f");
+    char entry[16];
+    if (len == 0U || len >= sizeof(entry)) {
+        return 0;
+    }
+    DSD_MEMCPY(entry, text, len);
+    entry[len] = '\0';
+    dsd_tone_set unused;
+    return dsd_tone_set_parse(entry, &unused, NULL, 0) == 0;
+}
+
+int
+dsd_scan_options_tone_list_split(const char* options, const char* next, int next_past_header, char* error,
+                                 size_t error_size) {
+    if (!options || !next) {
+        return 0;
+    }
+    const char* rest = option_skip_space(next);
+    if (rest[0] == '\0' || (!next_past_header && !option_starts_with_tone_entry(rest))) {
+        return 0;
+    }
+    const scan_option_spec* spec = option_trailing_tone_list(options);
+    if (!spec) {
+        return 0;
+    }
+    (void)option_error(error, error_size, spec->name, "use / between entries, not commas");
+    return 1;
+}
+
 int
 dsd_scan_option_width_check(unsigned int mode, const dsd_scan_option_values* values, int rate_hz, char* error,
                             size_t error_size) {

@@ -41,6 +41,7 @@
 #include <dsd-neo/protocol/p25/p25_sm_watchdog.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #include <dsd-neo/runtime/analog_channel.h>
+#include <dsd-neo/runtime/analog_tones.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
 #include <dsd-neo/runtime/scan_mode.h>
@@ -10442,6 +10443,11 @@ test_nfm_target_tone_check_holds_and_rejection_advances(void) {
     trunk_scan_test_set_now(0.85);
     dsd_engine_trunk_scan_tick(&opts, &state);
     test_rc |= expect_active_target(&state, "rejection advances", 1U);
+    /* The DMR target on air runs the configured policy (off), not the nfm target's. */
+    if (opts.analog_tone_filter != DSD_TONE_FILTER_OFF) {
+        DSD_FPRINTF(stderr, "the next target inherited the nfm target's tone policy: %d\n", opts.analog_tone_filter);
+        test_rc = 1;
+    }
     dsd_engine_trunk_scan_shutdown(&opts, &state);
     if (opts.analog_tone_filter != DSD_TONE_FILTER_OFF) {
         DSD_FPRINTF(stderr, "shutdown left the nfm target's tone policy on: %d\n", opts.analog_tone_filter);
@@ -10500,6 +10506,64 @@ test_nfm_target_rejection_under_hold_and_alone(void) {
     dsd_engine_trunk_scan_shutdown(&opts, &state);
     trunk_scan_test_clear_now();
     cleanup_paths(dir, target_path, NULL);
+    return test_rc;
+}
+
+/* The configured tone policy applies only on nfm-conventional targets, each target running its own type's mode: a list
+ * with none says once, when the scan starts, that the policy has no effect -- whatever the configured decode mode, the
+ * FM monitor included -- and a list with one says nothing. */
+static int
+test_tone_filter_warns_without_nfm_targets(void) {
+    static const struct {
+        const char* body;
+        int analog_only;
+        int warn;
+    } cases[] = {
+        {"dmr,dmr-conventional,461000000,,250,250,\np25,p25-conventional,851500000,,250,250,\n", 0, 1},
+        {"dmr,dmr-conventional,461000000,,250,250,\n", 1, 1},
+        {"dmr,dmr-conventional,461000000,,250,250,\nfire,nfm-conventional,154430000,,250,250,\n", 0, 0},
+    };
+
+    static const char* const expected =
+        "the tone filter (--tone-allow/--tone-block, [analog] tone_filter) has no effect";
+    int test_rc = 0;
+    for (size_t i = 0; i < sizeof cases / sizeof cases[0]; i++) {
+        char dir[DSD_TEST_PATH_MAX];
+        char target_path[DSD_TEST_PATH_MAX];
+        static dsd_opts opts;
+        static dsd_state state;
+        if (make_temp_dir(dir, sizeof dir) != 0
+            || write_targets_file_with_header(dir, k_squelch_targets_header, cases[i].body, target_path,
+                                              sizeof target_path)
+                   != 0) {
+            return 1;
+        }
+        reset_scan_opts_state(&opts, &state);
+        opts.analog_only = cases[i].analog_only;
+        opts.analog_tone_filter = DSD_TONE_FILTER_ALLOW;
+        (void)dsd_tone_set_parse("100.0", &opts.analog_tone_set, NULL, 0);
+        DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", target_path);
+        dsd_test_capture_stderr cap;
+        char buf[4096] = {0};
+        char err[256] = {0};
+        if (dsd_test_capture_stderr_begin(&cap, "trunkscantone") != 0) {
+            cleanup_paths(dir, target_path, NULL);
+            return 1;
+        }
+        trunk_scan_test_set_now(0.0);
+        const int rc = dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err);
+        dsd_engine_trunk_scan_shutdown(&opts, &state);
+        (void)dsd_test_capture_stderr_end(&cap);
+        (void)dsd_test_capture_stderr_read(&cap, buf, sizeof buf);
+        const char* first = strstr(buf, expected);
+        if (rc != 0 || (first != NULL) != cases[i].warn || (first && strstr(first + 1, expected))) {
+            DSD_FPRINTF(stderr, "tone warning case %zu: rc=%d err=%s log:\n%s\n", i, rc, err, buf);
+            test_rc = 1;
+        }
+        opts.analog_tone_filter = DSD_TONE_FILTER_OFF;
+        trunk_scan_test_clear_now();
+        cleanup_paths(dir, target_path, NULL);
+    }
     return test_rc;
 }
 
@@ -11604,6 +11668,7 @@ main(void) {
     /* Issue #527 */
     rc |= run_with_default_tune_hook(test_nfm_target_tone_check_holds_and_rejection_advances);
     rc |= run_with_default_tune_hook(test_nfm_target_rejection_under_hold_and_alone);
+    rc |= run_with_default_tune_hook(test_tone_filter_warns_without_nfm_targets);
     return rc;
 }
 

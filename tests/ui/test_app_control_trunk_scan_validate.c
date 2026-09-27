@@ -177,6 +177,68 @@ test_am_targets(const char* path) {
     }
 }
 
+/* --- Issue #527: tone lists on nfm-conventional targets --- */
+
+static void
+write_targets_with_header(const char* path, const char* header, const char* body) {
+    FILE* fp = dsd_fopen_private(path, "w");
+    assert(fp);
+    fputs(header, fp);
+    fputs(body, fp);
+    fclose(fp);
+}
+
+/* A target's tone list validates through the facade a frontend previews with; a list the parser refuses is refused by
+ * entry number without echoing it; and an unquoted list written with commas, which the splitter cuts at the first, is
+ * refused with the hint -- not imported short when the rest falls past the header, nor blamed on the column the rest
+ * lands in. A quoted cell reaches the parser whole, which refuses the comma itself; an RTL gain after the cell is its
+ * own column's. */
+static void
+test_nfm_target_tone_lists(const char* path) {
+    int count = 0;
+    char err[256] = {0};
+    write_targets(path, "fire,nfm-conventional,154430000,,1500,2000,,--tone-allow 100.0/D023N --squelch-db -60\n"
+                        "works,nfm-conventional,155475000,,1500,2000,,--tone-block=67/d047i\n"
+                        "shared,nfm-conventional,155520000,,1500,2000,,--no-tone-filter\n");
+    assert(dsd_app_trunk_scan_validate_targets_csv(path, &count, err, sizeof err) == 0);
+    assert(count == 3 && err[0] == '\0');
+    write_targets_with_header(path, "id,type,frequency_hz,chan_csv,dwell_ms,activity_hold_ms,notes,options,rtl_gain\n",
+                              "fire,nfm-conventional,154430000,,1500,2000,,--tone-allow 100.0,30\n");
+    assert(dsd_app_trunk_scan_validate_targets_csv(path, &count, err, sizeof err) == 0 && count == 1);
+
+    const struct {
+        const char* header;
+        const char* row;
+        const char* reason;
+    } bad[] = {
+        {NULL, "fire,nfm-conventional,154430000,,1500,2000,,--tone-allow 100.0,67.0\n",
+         "row 2: --tone-allow: use / between entries, not commas"},
+        {"id,type,frequency_hz,chan_csv,dwell_ms,activity_hold_ms,notes,options,p25_bandplan_csv\n",
+         "fire,nfm-conventional,154430000,,1500,2000,,--tone-block 100.0,67.0/D023N\n",
+         "row 2: --tone-block: use / between entries, not commas"},
+        {NULL, "fire,nfm-conventional,154430000,,1500,2000,,\"--tone-allow 100.0,67.0\"\n",
+         "row 2: --tone-allow: use / between entries, not commas"},
+        {NULL, "fire,nfm-conventional,154430000,,1500,2000,,--tone-allow 67.0/150.0\n",
+         "row 2: --tone-allow: entry 2 is not a standard CTCSS tone or DCS code"},
+        {NULL, "dmr,dmr-conventional,461000000,,1500,1200,,--tone-allow 100.0\n",
+         "row 2: --tone-allow: needs mode nfm"},
+    };
+
+    for (size_t i = 0; i < sizeof bad / sizeof bad[0]; i++) {
+        if (bad[i].header) {
+            write_targets_with_header(path, bad[i].header, bad[i].row);
+        } else {
+            write_targets(path, bad[i].row);
+        }
+        assert(dsd_app_trunk_scan_validate_targets_csv(path, &count, err, sizeof err) != 0);
+        if (!strstr(err, bad[i].reason) || strstr(err, "150.0") || strstr(err, "p25_bandplan")) {
+            DSD_FPRINTF(stderr, "want '%s', got '%s'\n", bad[i].reason, err);
+            assert(0);
+        }
+        assert(count == 0);
+    }
+}
+
 /* Every shipped trunk-scan example parses through the engine's own loader with no diagnostic, so
  * the documented option spellings cannot drift from the parser. */
 static void
@@ -223,6 +285,7 @@ main(void) {
     test_target_squelch(path);
     test_nfm_targets(path);
     test_am_targets(path);
+    test_nfm_target_tone_lists(path);
     test_trunk_scan_examples_validate();
     remove(path);
     puts("APP_CONTROL_TRUNK_SCAN_VALIDATE ok");

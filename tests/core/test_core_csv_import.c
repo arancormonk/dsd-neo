@@ -2547,6 +2547,79 @@ test_am_channel_map_rows(void) {
     return rc;
 }
 
+/* --- Issue #527: tone lists on nfm channel-map rows --- */
+
+/* A row's tone list is written with '/'. Rows with one import, a column after the options cell included; a list the
+ * parser refuses is refused by entry number, never echoed; and one written with commas -- which the splitter cuts at
+ * the first, dropping the rest past the header or handing it to the next column -- is refused with the hint rather
+ * than imported short, without echoing what the comma cut off. */
+static int
+test_nfm_channel_map_tone_lists(void) {
+    char path[DSD_TEST_PATH_MAX];
+    const int fd = dsd_test_mkstemp(path, sizeof path, "nfm-tone-map-");
+    assert(fd >= 0);
+    dsd_close(fd);
+    char log[4096];
+    int rc = 0;
+    const char* accepted[] = {
+        "channel,frequency_hz,name,mode,options\n"
+        "1,154430000,Fire,nfm,--tone-allow 100.0/D023N --squelch-db -60\n"
+        "2,155475000,Works,nfm,--tone-block=67/d047i\n"
+        "3,155520000,Shared,nfm,--no-tone-filter\n"
+        "4,155535000,Trailing,nfm,--tone-allow 100.0,\n",
+        "channel,frequency_hz,mode,options,name\n1,154430000,nfm,--tone-allow 100.0,Fire\n",
+        "channel,frequency_hz,mode,options,notes\n1,154430000,nfm,--tone-block 100.0,County, north side\n",
+    };
+    for (size_t i = 0; i < sizeof(accepted) / sizeof(accepted[0]); i++) {
+        if (import_channel_map_text(path, accepted[i], log, sizeof log) != 0 || strstr(log, " row ")) {
+            DSD_FPRINTF(stderr, "tone map %zu: %s\n", i, log);
+            rc = 1;
+        }
+    }
+
+    const struct {
+        const char* body;
+        const char* diagnostic;
+    } refused[] = {
+        {"channel,frequency_hz,name,mode,options\n1,154430000,Fire,nfm,--tone-allow 100.0,67.0\n",
+         "row 2: --tone-allow: use / between entries, not commas"},
+        {"channel,frequency_hz,name,mode,options\n1,154430000,Fire,nfm,--tone-block=100.0,SECRET\n",
+         "row 2: --tone-block: use / between entries, not commas"},
+        {"channel,frequency_hz,mode,options,name\n1,154430000,nfm,--tone-allow 100.0,67.0/D023N,Fire\n",
+         "row 2: --tone-allow: use / between entries, not commas"},
+        {"channel,frequency_hz,name,mode,options\n1,154430000,Fire,nfm,--tone-allow 67.0/150.0\n",
+         "row 2: --tone-allow: entry 2 is not a standard CTCSS tone or DCS code"},
+        {"channel,frequency_hz,name,mode,options\n1,154430000,Fire,nfm,--tone-allow 100.0/D023N/D047I\n",
+         "row 2: --tone-allow: entry 3 is the same DCS signal as entry 2 (D023N)"},
+        {"channel,frequency_hz,name,mode,options\n1,461000000,DMR,dmr,--tone-allow 100.0\n",
+         "row 2: --tone-allow: needs mode nfm"},
+        {"channel,frequency_hz,name,mode,options\n1,461000000,Blank,,--no-tone-filter\n",
+         "row 2: --no-tone-filter: needs mode nfm"},
+    };
+
+    for (size_t i = 0; i < sizeof(refused) / sizeof(refused[0]); i++) {
+        rc |= expect_import_refused(path, refused[i].body, refused[i].diagnostic);
+        (void)import_channel_map_text(path, refused[i].body, log, sizeof log);
+        if (strstr(log, "SECRET") || strstr(log, "150.0") || strstr(log, "D047I")) {
+            DSD_FPRINTF(stderr, "tone refusal %zu echoed the row: %s\n", i, log);
+            rc = 1;
+        }
+    }
+    /* The dry run a frontend previews through refuses the same row. */
+    FILE* fp = dsd_fopen_private(path, "w");
+    assert(fp);
+    assert(fputs(refused[0].body, fp) >= 0);
+    assert(fclose(fp) == 0);
+    dsd_csv_validation stats = {0};
+    dsd_test_capture_stderr cap;
+    if (dsd_test_capture_stderr_begin(&cap, "chan_tone_validate") == 0) {
+        rc |= dsd_csv_validate_chan_file(path, &stats) == 0 ? 1 : 0;
+        (void)dsd_test_capture_stderr_end(&cap);
+    }
+    assert(remove(path) == 0);
+    return rc;
+}
+
 int
 main(void) {
     test_csv_physical_lines();
@@ -2557,6 +2630,9 @@ main(void) {
         return 1;
     }
     if (test_am_channel_map_rows() != 0) {
+        return 1;
+    }
+    if (test_nfm_channel_map_tone_lists() != 0) {
         return 1;
     }
     test_mapping_and_channel_nul_rows_are_atomic();

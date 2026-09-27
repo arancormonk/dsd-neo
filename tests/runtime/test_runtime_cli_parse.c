@@ -7843,13 +7843,13 @@ run_tone_parse(tone_parse* out, const char* const* args, int count) {
     DSD_MEMSET(out, 0, sizeof(*out));
     out->opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
     out->state = (dsd_state*)calloc(1, sizeof(dsd_state));
-    if (!out->opts || !out->state || count > 7) {
+    if (!out->opts || !out->state || count > 8) {
         return -1;
     }
     initOpts(out->opts);
     initState(out->state);
-    char storage[8][64];
-    char* argv[9] = {0};
+    char storage[9][256];
+    char* argv[10] = {0};
     DSD_SNPRINTF(storage[0], sizeof storage[0], "%s", "dsd-neo");
     argv[0] = storage[0];
     for (int i = 0; i < count; i++) {
@@ -7983,6 +7983,64 @@ test_tone_filter_warns_outside_the_fm_monitor(void) {
         }
         free_tone_parse(&p);
     }
+    return test_rc;
+}
+
+/* A -Y scan runs the policy on its nfm rows as well as under the FM monitor, so the warning weighs the list imported with
+ * the command line: an untyped list under the AM monitor, or a typed one with no nfm row under a digital mode, cannot
+ * use it; an nfm row or the FM monitor can. A list the command line has not imported (a config file's) and --trunk-scan
+ * targets are weighed when the engine loads them, so parsing says nothing for them. */
+static int
+test_tone_filter_warns_on_scan_lists(void) {
+    char untyped[256];
+    char digital[256];
+    char with_nfm[256];
+    if (test_create_temp_ini_with_contents("channel,frequency_hz\n1,154430000\n2,155475000\n", untyped, sizeof untyped)
+            != 0
+        || test_create_temp_ini_with_contents("channel,frequency_hz,mode\n1,461000000,dmr\n2,851012500,p25\n", digital,
+                                              sizeof digital)
+               != 0
+        || test_create_temp_ini_with_contents("channel,frequency_hz,mode\n1,461000000,dmr\n2,154430000,nfm\n", with_nfm,
+                                              sizeof with_nfm)
+               != 0) {
+        return 1;
+    }
+
+    const struct {
+        const char* args[8];
+        int count;
+        int warn;
+    } cases[] = {
+        {{"--tone-allow", "100.0", "-fM", "-i", "rtl", "-Y", "-C", untyped}, 8, 1},
+        {{"--tone-allow", "100.0", "-fs", "-Y", "-C", digital}, 6, 1},
+        {{"--tone-block", "D023N", "-fs", "-Y", "-C", with_nfm}, 6, 0},
+        {{"--tone-allow", "100.0", "-fA", "-Y", "-C", untyped}, 6, 0},
+        {{"--tone-allow", "100.0", "-fs", "-Y"}, 4, 0},
+        {{"--no-tone-filter", "-fs", "-Y", "-C", digital}, 5, 0},
+    };
+
+    static const char* const expected =
+        "the tone filter (--tone-allow/--tone-block, [analog] tone_filter) has no effect";
+    int test_rc = 0;
+    for (size_t i = 0; i < sizeof cases / sizeof cases[0]; i++) {
+        tone_parse p;
+        if (run_tone_parse(&p, cases[i].args, cases[i].count) != 0) {
+            free_tone_parse(&p);
+            test_rc = 1;
+            break;
+        }
+        const char* first = strstr(p.output, expected);
+        const int warned = first != NULL ? 1 : 0;
+        if (p.rc != DSD_PARSE_CONTINUE || warned != cases[i].warn || (first && strstr(first + 1, expected))) {
+            DSD_FPRINTF(stderr, "scan tone warning %zu: rc=%d warned=%d want %d stderr=\"%s\"\n", i, p.rc, warned,
+                        cases[i].warn, p.output);
+            test_rc = 1;
+        }
+        free_tone_parse(&p);
+    }
+    (void)remove(untyped);
+    (void)remove(digital);
+    (void)remove(with_nfm);
     return test_rc;
 }
 
@@ -8975,6 +9033,7 @@ main(void) {
     rc |= test_tone_filter_options_parse();
     rc |= test_tone_filter_options_refused();
     rc |= test_tone_filter_warns_outside_the_fm_monitor();
+    rc |= test_tone_filter_warns_on_scan_lists();
     rc |= test_nfm_bandwidth_warns_on_pcm_input();
 #ifdef USE_RADIO
     rc |= test_nfm_bandwidth_quiet_on_iq_replay();

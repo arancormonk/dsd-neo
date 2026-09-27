@@ -523,6 +523,7 @@ typedef struct {
     int single_key_dec_idx;
     int p25_bandplan_idx;
     int options_idx;
+    size_t header_fields; /* columns the header names */
     unsigned int row;
     char* err;
     size_t err_sz;
@@ -1020,6 +1021,26 @@ scan_parse_target_secrets(dsd_trunk_scan_target* target, char** fields, size_t c
                                          scan_optional_field(fields, count, parse->single_key_dec_idx));
 }
 
+/* A tone list written with commas (issue #527): an unquoted options cell ends at the first one, so the entries after
+ * it would be read as the next column's value, or dropped past the header. The row is refused with the hint instead,
+ * before that column's own check can blame something else; neither the cell nor the field is echoed. The field is read
+ * raw: unquoting it here would unquote it twice for the column that reads it later. */
+static int
+scan_check_options_split(const dsd_trunk_scan_row_parse* parse, char** fields, size_t count, const char* options_s) {
+    if (options_s[0] == '\0' || parse->options_idx < 0) {
+        return 0;
+    }
+    const size_t next = (size_t)parse->options_idx + 1U;
+    char error[96] = "";
+    if (next >= count
+        || !dsd_scan_options_tone_list_split(options_s, fields[next], next >= parse->header_fields, error,
+                                             sizeof(error))) {
+        return 0;
+    }
+    scan_set_error(parse->err, parse->err_sz, "row %u: %s", parse->row, error);
+    return -1;
+}
+
 static int
 scan_parse_target_row(char* line, dsd_trunk_scan_target_list* parsed, const dsd_trunk_scan_row_parse* parse) {
     char* fields[DSD_TRUNK_SCAN_MAX_CSV_FIELDS] = {0};
@@ -1043,6 +1064,7 @@ scan_parse_target_row(char* line, dsd_trunk_scan_target_list* parsed, const dsd_
     const char* dwell_s = "";
     const char* hold_s = "";
     if (scan_parse_target_base_fields(fields, parsed, parse, &target, &chan_csv, &dwell_s, &hold_s) != 0
+        || scan_check_options_split(parse, fields, field_count, options_s) != 0
         || scan_parse_target_overrides(&target, parse, modulation_s, rtl_gain_s) != 0) {
         return -1;
     }
@@ -1152,6 +1174,7 @@ scan_read_target_csv_header(FILE* fp, char* line, size_t line_sz, dsd_trunk_scan
     parse->single_key_dec_idx = -1;
     parse->p25_bandplan_idx = -1;
     parse->options_idx = -1;
+    parse->header_fields = field_count;
     for (size_t i = DSD_TRUNK_SCAN_REQUIRED_CSV_FIELDS; i < field_count; i++) {
         if (scan_match_optional_header(parse, scan_unquote(fields[i]), i) != 0) {
             return -1;
@@ -3105,8 +3128,10 @@ trunk_scan_warn_targets(const dsd_opts* opts, dsd_state* state, const dsd_trunk_
     }
     const int check_rate_hz = trunk_scan_analog_check_rate(opts, state);
     dsd_engine_scan_skipped skipped = {0};
+    int nfm_targets = 0;
     for (size_t i = 0; i < list->count; i++) {
         const dsd_trunk_scan_target* target = &list->targets[i];
+        nfm_targets |= trunk_scan_target_mode(target->type) == DSD_SCAN_MODE_NFM;
         if (!trunk_scan_type_is_analog(target->type)) {
             if (opts->audio_in_type != AUDIO_IN_RTL && (target->row_options.present & DSD_SCAN_OPT_SQUELCH)) {
                 LOG_WARN("WARNING: Trunk scan target '%s': --squelch-db %d cannot gate digital acquisition without a "
@@ -3124,6 +3149,9 @@ trunk_scan_warn_targets(const dsd_opts* opts, dsd_state* state, const dsd_trunk_
         }
     }
     dsd_engine_scan_note_skipped_rows(state, &skipped);
+    /* Only an nfm-conventional target runs the FM monitor that detects tones; every target runs its own type's mode,
+       never the configured one (issue #527). */
+    (void)dsd_scan_mode_warn_tone_filter_unused(opts, state, nfm_targets);
     return check_rate_hz;
 }
 

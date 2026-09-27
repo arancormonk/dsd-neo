@@ -559,9 +559,55 @@ check_tone_options(void) {
     DSD_SECURE_ZERO(&parsed, sizeof(parsed));
 }
 
+/* A tone list a CSV comma cut short (issue #527): the splitter hands the parser the cell up to the comma and leaves the
+ * rest in the field after it. Refused when the cell ends with a --tone-allow/--tone-block list and that field goes on
+ * with it: any text past the header, a standard tone or code in one of the file's columns. A cell whose list is not
+ * last, a column's own value (an RTL gain, a name), an empty field and a row with no field after are left alone, and
+ * the diagnostic names the switch only. */
+static void
+check_tone_list_split(void) {
+    static const struct {
+        const char* options;
+        const char* next;
+        int past_header;
+        const char* why;
+    } cases[] = {
+        {"--tone-allow 100.0", "67.0", 1, "--tone-allow: use / between entries, not commas"},
+        {"--squelch-db -60 --tone-block=100.0", "SECRET", 1, "--tone-block: use / between entries, not commas"},
+        {"--tone-allow 100.0", " 67.0/D023N", 0, "--tone-allow: use / between entries, not commas"},
+        {"--tone-block \"100.0\"", "d047i", 0, "--tone-block: use / between entries, not commas"},
+        {"--tone-allow 100.0", "", 1, NULL},
+        {"--tone-allow 100.0", "  \r\n", 1, NULL},
+        {"--tone-allow 100.0", NULL, 1, NULL},
+        {"--tone-allow 100.0", "30", 0, NULL},
+        {"--tone-allow 100.0", "Fire", 0, NULL},
+        {"--tone-allow 100.0", "150.0", 0, NULL},
+        {"--tone-allow 100.0 --squelch-db -60", "67.0", 1, NULL},
+        {"--no-tone-filter", "67.0", 1, NULL},
+        {"--squelch-db -60", "67.0", 1, NULL},
+        {"--tone-allow", "67.0", 1, NULL},
+        {"--tone-allow 'unterminated", "67.0", 1, NULL},
+        {"", "67.0", 1, NULL},
+    };
+
+    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+        char error[96] = "";
+        const int refused = dsd_scan_options_tone_list_split(cases[i].options, cases[i].next, cases[i].past_header,
+                                                             error, sizeof(error));
+        if (refused != (cases[i].why != NULL) || (cases[i].why && strcmp(error, cases[i].why) != 0)) {
+            DSD_FPRINTF(stderr, "split case %zu: refused=%d error='%s'\n", i, refused, error);
+            assert(0);
+        }
+        assert(strstr(error, "SECRET") == NULL);
+    }
+    assert(dsd_scan_options_tone_list_split(NULL, "67.0", 1, NULL, 0) == 0);
+    assert(dsd_scan_options_tone_list_split("--tone-allow 100.0", "67.0", 1, NULL, 0) == 1);
+}
+
 int
 main(void) {
     check_tone_options();
+    check_tone_list_split();
     check_file_spans();
     check_squelch_option();
     check_nfm_row_accepts_analog_options();

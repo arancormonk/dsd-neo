@@ -322,7 +322,15 @@ test_tone_filter_policy_text(void) {
         assert(strcmp(view.text, cases[i].received) == 0);
         assert(strcmp(view.configured_text, "allow 100.0 Hz/D023N") == 0);
         assert(view.gate == (uint8_t)cases[i].gate && strcmp(view.gate_text, cases[i].verdict) == 0);
+        /* Frontends that word the verdict themselves (Qt) read why from the field, never from the English text. */
+        assert(view.gate_no_tone == (uint8_t)cases[i].no_tone);
     }
+    /* A check still running has decided nothing, for want of a tone or otherwise. */
+    publish(state, 1, DSD_ANALOG_TONE_STATE_ACQUIRING, 0, 0);
+    state->analog_rx.gate = DSD_ANALOG_TONE_GATE_PENDING;
+    state->analog_rx.gate_no_tone = 1;
+    assert(dsd_app_rx_tone_view(&opts, state, 0.0, &view) == 1);
+    assert(view.gate_no_tone == 0U && strcmp(view.gate_text, "muted: checking tone") == 0);
 
     /* A block list's pass on no tone reads as passing too. */
     set_policy(&opts, DSD_TONE_FILTER_BLOCK, "67");
@@ -331,6 +339,7 @@ test_tone_filter_policy_text(void) {
     state->analog_rx.gate_no_tone = 1;
     assert(dsd_app_rx_tone_view(&opts, state, 0.0, &view) == 1);
     assert(strcmp(view.configured_text, "block 67.0 Hz") == 0 && strcmp(view.gate_text, "passing") == 0);
+    assert(view.gate_no_tone == 1U);
 
     /* A stale input reads as no carrier: the verdict goes with it. */
     opts.audio_in_type = AUDIO_IN_UDP;

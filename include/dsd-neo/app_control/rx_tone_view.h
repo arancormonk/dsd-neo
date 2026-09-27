@@ -72,8 +72,11 @@ typedef struct {
     /** 1 = detection runs and a tone policy is in force, or a scan row set its own: the Tone filter row belongs on
         screen. Independent of @c visible: at an input rate detection cannot use, the policy still mutes. */
     uint8_t policy_visible;
-    uint8_t policy_row;                        /**< 1 = a scan row's own policy is in force ("(row)"). */
-    uint8_t gate;                              /**< dsd_analog_tone_gate on the carrier on air; OFF without one. */
+    uint8_t policy_row; /**< 1 = a scan row's own policy is in force ("(row)"). */
+    uint8_t gate;       /**< dsd_analog_tone_gate on the carrier on air; OFF without one. */
+    /** 1 = @c gate was decided for want of a tone or code within the check window (REJECTED: "muted: no tone"; an
+        ALLOWED block-list pass on no tone); 0 when a confirmed value decided it, or nothing is decided. */
+    uint8_t gate_no_tone;
     char gate_text[DSD_APP_RX_TONE_TEXT_SIZE]; /**< "passing", "muted: checking tone", ..., or "". */
 } dsd_app_rx_tone;
 

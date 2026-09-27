@@ -541,14 +541,18 @@ no symbol profile is applied over the monitor. Everything below applies to both 
   asked for `-B`, best-effort, as before, whatever the target runs, and whatever demodulator the peer is on.
 - **Tone filter.** `--tone-allow <list>`, `--tone-block <list>` or `--no-tone-filter` in the `options` column set the
   target's own CTCSS/DCS receive policy; without one the configured policy (`--tone-allow`/`--tone-block`, `[analog]
-  tone_filter` and `tone_list`) applies (see "Tone filter" in `docs/cli.md`). The policy is a setting, shown apart from
-  the tone or code received. Under a list policy each transmission is muted while it is checked, and holds the target
+  tone_filter` and `tone_list`) applies (see "Tone filter" in `docs/cli.md`). The list takes `/` between entries: an
+  unquoted comma ends the `options` cell, and a row whose list runs on past one (into a field past the header, or a
+  column that then starts with a tone or code) is refused with `use / between entries, not commas`, as is a quoted
+  cell with a comma. The policy is a setting, shown apart from the tone or code received. Under a list policy each transmission is muted while it is checked, and holds the target
   meanwhile under `Tone check`, for at most 800 ms (to 1,600 ms while a listed DCS code is still being confirmed).
   Traffic the policy rejects is muted and is no activity: it never restarts `activity_hold_ms`, and at the next tick
   the coordinator advances, without waiting out the hold that earlier traffic earned, which is how traffic that was
   passing and turns out to carry a blocked (or, under allow, an unlisted) tone or code releases the target. The `Y`
   hold keeps the target, muted; a list with this one target mutes and stays. Leaving the target restores the
-  configured policy, and Config->Save never writes a target's own.
+  configured policy, and Config->Save never writes a target's own. A configured list policy with no
+  `nfm-conventional` target in the list has no effect, since every target runs its own type's mode, and scan start says
+  so once.
 - **Controls.** `--scan-max-visit-ms`, the `Y` hold, advance and avoid work exactly as for digital targets, including
   while a carrier holds the target. The voice gate never applies to an analog target, so a global `--scan-voice-only`
   does not block one, and voice-gate switches are rejected in its `options`.

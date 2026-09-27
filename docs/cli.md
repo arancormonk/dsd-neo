@@ -622,6 +622,8 @@ whichever row is on air, rather than accepted and that row skipped at every visi
 | Input > Switch source > RTL-SDR | Reopens the input as an RTL-SDR or rtl_tcp device at the DSP bandwidth. An explicit NFM width, or the AM width in use, that bandwidth cannot filter, the configured one (under `-fA` or `-fM`, or while the scan has an analog row or target of its kind without a width of its own) or that of an analog scan row on air, is refused, naming both and the DSP bandwidths that fit, and the running input stays. A SoapySDR input reopens at the rate its device sets, which its start checks. |
 | A retune (scanner, trunking, manual tune) | The channel filter, de-emphasis, audio filter and squelch start from empty state on the new channel; a retune that lands on another DSP rate resolves the channel for that rate. |
 | `--nfm-bandwidth-hz`, `--am-bandwidth-hz`, `[analog] nfm_bandwidth_hz`, `am_bandwidth_hz` at startup | When the stream opens. |
+| Tone filter (`--tone-allow`, `--tone-block`, `--no-tone-filter`, `[analog] tone_filter` and `tone_list`) at startup | From the monitor's first read of audio. |
+| Tone filter in a config loaded into a running session | From the next read of the monitor's audio: a policy that differs from the one in force starts the transmission on air over, muted for a fresh check. A present `[analog]` section sets both keys, so one without them turns the filter off. While an `nfm` scan row with its own policy is on air, the loaded policy becomes the configured default and applies when the row leaves. There is no terminal or Qt control that edits it. |
 
 ### De-emphasis and squelch
 
@@ -966,22 +968,32 @@ setting, shown apart from what is received, and it is off by default: then the o
   detector's own hold-over) mutes again and starts a fresh window, and another tone or code confirmed rejects it. Block:
   a blocked tone or code confirmed later rejects traffic that was passing, and losing a tone keeps a pass. A rejection
   holds until the carrier has been gone for the 200 ms hangover, except that a tone or code the list passes, confirmed
-  later, lets the traffic through. The next transmission starts over.
+  later, lets the traffic through; another the list does not pass keeps it rejected and becomes its reason, so a
+  rejection for want of a tone that later hears an unlisted tone reads `muted: not allowed` and logs that tone. The next
+  transmission starts over, and so does the one on air when the policy itself changes (a loaded config, a scan row's
+  own policy coming on air): it is muted for a fresh check.
 - What is muted: the live monitor output and the UDP analog monitor (`-o udp`), together. The `-6` raw WAV is a capture
   ahead of every gate, squelch and tone filter included, and keeps everything.
 - Scanning: a transmission still being checked holds a `-Y` row or `--trunk-scan` target, for its window at most, with
   the stay reason `Tone check`; rejected traffic holds nothing: `-Y` moves on at its next no-carrier pass (within
   about 375 ms), and trunk scan at its next tick, without waiting out the hangtime or the activity hold. An operator
-  hold keeps the row, muted. A fixed-frequency session mutes rejected traffic and stays.
+  hold keeps the row, muted. A fixed-frequency session mutes rejected traffic and stays, and so does a scan with
+  nowhere else to go: a `-Y` list with one usable row (its other rows avoided, or none) and a `--trunk-scan` list of
+  one target.
 - Where it applies: the analog FM monitor only (`-fA`, and `nfm` scan rows), on radio and PCM inputs alike, wherever
-  the received tone is detected. Set for the AM monitor (`-fM`) or a digital mode without a scan, it has no effect, and
-  startup says so once.
+  the received tone is detected. Set where nothing runs it, it has no effect, and the session says so once: at startup
+  for the AM monitor (`-fM`) or a digital mode, without a scan or with a `-Y` list that has no `nfm` row (checked when
+  the list is imported, from the command line or a config file), and when the scan starts for a `--trunk-scan` list
+  with no `nfm-conventional` target, whatever the decode mode. A later decode-mode change or config load says nothing; the `Tone filter` row leaves the
+  screen while no detection runs.
 - What is shown: the terminal's Call Info section adds a `Tone filter:` line under `Rx tone:`, and the Qt/Android
   monitor a `TONE FILTER` row under `RECEIVED TONE`, while a policy is in force: the policy (`allow 100.0 Hz/D023N`,
   with `(row)` while a scan row's own policy runs) and, while a carrier is heard, what it does: `passing`,
   `muted: checking tone`, `muted: not allowed` or `muted: no tone`. The received row goes on showing only what was
   received. The log prints `Tone filter: allowed (CTCSS 100.0 Hz)`, `Tone filter: rejected (no tone)` and the like when
-  the verdict changes, and `Tone filter: pending (tone lost)` when an allowed tone is lost.
+  the verdict or the value that decided it changes, and `Tone filter: pending (tone lost)` when an allowed tone is lost
+  (not when a changed policy starts a fresh check). A terminal without UTF-8 shows a long list's overflow mark as
+  `...+3`.
 
 ## Mode Tweaks & Advanced
 

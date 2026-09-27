@@ -1314,6 +1314,8 @@ static int g_tone_filter_lines = 0;
 static int g_tone_filter_allowed_100_lines = 0;
 static int g_tone_filter_rejected_no_tone_lines = 0;
 static int g_tone_filter_rejected_100_lines = 0;
+static int g_tone_filter_allowed_no_tone_lines = 0;
+static int g_tone_filter_pending_lost_lines = 0;
 
 static void
 count_rx_tone_log_lines(dsd_neo_log_level_t level, const char* text, void* ctx) {
@@ -1336,6 +1338,8 @@ count_rx_tone_log_lines(dsd_neo_log_level_t level, const char* text, void* ctx) 
         g_tone_filter_allowed_100_lines += strcmp(text, "Tone filter: allowed (CTCSS 100.0 Hz)\n") == 0 ? 1 : 0;
         g_tone_filter_rejected_no_tone_lines += strcmp(text, "Tone filter: rejected (no tone)\n") == 0 ? 1 : 0;
         g_tone_filter_rejected_100_lines += strcmp(text, "Tone filter: rejected (CTCSS 100.0 Hz)\n") == 0 ? 1 : 0;
+        g_tone_filter_allowed_no_tone_lines += strcmp(text, "Tone filter: allowed (no tone)\n") == 0 ? 1 : 0;
+        g_tone_filter_pending_lost_lines += strcmp(text, "Tone filter: pending (tone lost)\n") == 0 ? 1 : 0;
     }
 }
 
@@ -2985,6 +2989,98 @@ test_tone_policy_only_on_the_fm_monitor(void) {
     assert(g_monitor_blocks == 10 && dsd_analog_tone_gate_in_force(&opts, &state) == DSD_ANALOG_TONE_GATE_OFF);
     dsd_udp_audio_hooks_set((dsd_udp_audio_hooks){0});
     dsd_state_ext_free_all(&state);
+
+    /* The AM monitor (issue #524): the tap keeps its carrier, which holds a scan row, but detects no tone, so the list
+       judges nothing -- past the window every block still plays, and no verdict is published or logged. */
+    install_fake_rtl_hooks(1);
+    init_analog_monitor_fixture(&opts, &state);
+    opts.audio_in_type = AUDIO_IN_RTL;
+    set_monitor_kind(&opts, DSD_ANALOG_DEMOD_AM);
+    set_tone_policy(&opts, DSD_TONE_FILTER_ALLOW, "67.0");
+    start_monitor_capture(&opts);
+    feed_tone_blocks(&opts, &state, 2);
+    g_monitor_blocks = 0;
+    g_tone_filter_lines = 0;
+    const int blocks = (DSD_ANALOG_TONE_WINDOW_DCS_MS / 20) + 10;
+    for (int b = 0; b < blocks; b++) {
+        clear_carrier_stamps(&state);
+        feed_tone_blocks(&opts, &state, 1);
+        assert(state.analog_rx.carrier_open == 1 && state.last_cc_sync_time != 0);
+        assert(state.analog_rx.gate == DSD_ANALOG_TONE_GATE_OFF && state.analog_rx.gate_no_tone == 0);
+    }
+    assert(g_monitor_blocks == blocks && g_tone_filter_lines == 0);
+    assert(dsd_analog_tone_gate_in_force(&opts, &state) == DSD_ANALOG_TONE_GATE_OFF);
+    dsd_udp_audio_hooks_set((dsd_udp_audio_hooks){0});
+    dsd_state_ext_free_all(&state);
+    install_fake_rtl_hooks(0);
+}
+
+/* A policy changed mid-reception (a config load, a scan row's own coming on air) judges it afresh, muted for a check
+   of its own, and says nothing of a tone lost, since none was; an allowed tone that is lost still says so. */
+static void
+test_tone_policy_change_is_no_tone_lost(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    const int window_blocks = DSD_ANALOG_TONE_WINDOW_MS / 20;
+    install_fake_rtl_hooks(0);
+    init_analog_monitor_fixture(&opts, &state);
+    set_tone_policy(&opts, DSD_TONE_FILTER_BLOCK, "67.0");
+    start_monitor_capture(&opts);
+    g_tone_filter_lines = 0;
+    g_tone_filter_allowed_no_tone_lines = 0;
+    g_tone_filter_pending_lost_lines = 0;
+    feed_hz_blocks(&opts, &state, window_blocks + 2, 1000.0);
+    assert(state.analog_rx.gate == DSD_ANALOG_TONE_GATE_ALLOWED && state.analog_rx.gate_no_tone == 1);
+    assert(g_tone_filter_allowed_no_tone_lines == 1);
+
+    set_tone_policy(&opts, DSD_TONE_FILTER_BLOCK, "67.0/71.9");
+    const int played = g_monitor_blocks;
+    feed_hz_blocks(&opts, &state, window_blocks - 1, 1000.0);
+    assert(state.analog_rx.gate == DSD_ANALOG_TONE_GATE_PENDING && g_monitor_blocks == played);
+    feed_hz_blocks(&opts, &state, 2, 1000.0);
+    assert(state.analog_rx.gate == DSD_ANALOG_TONE_GATE_ALLOWED && g_monitor_blocks > played);
+    assert(g_tone_filter_allowed_no_tone_lines == 2 && g_tone_filter_pending_lost_lines == 0);
+    assert(g_tone_filter_lines == 2);
+
+    /* Allowed on a listed tone, then the tone goes while the carrier stays: that check is a tone lost. */
+    set_tone_policy(&opts, DSD_TONE_FILTER_ALLOW, "100.0");
+    feed_tone_blocks(&opts, &state, 30);
+    assert(state.analog_rx.gate == DSD_ANALOG_TONE_GATE_ALLOWED && g_tone_filter_pending_lost_lines == 0);
+    int lost_after = -1;
+    for (int b = 0; b < DSD_ANALOG_CTCSS_LOSS_CEILING_MS / 20 + 5 && lost_after < 0; b++) {
+        feed_hz_blocks(&opts, &state, 1, 1000.0);
+        if (state.analog_rx.gate == DSD_ANALOG_TONE_GATE_PENDING) {
+            lost_after = b;
+        }
+    }
+    assert(lost_after >= 0 && g_tone_filter_pending_lost_lines == 1);
+    dsd_udp_audio_hooks_set((dsd_udp_audio_hooks){0});
+    dsd_state_ext_free_all(&state);
+}
+
+/* A reception rejected for want of a tone that then carries a tone the list does not pass stays muted, and the
+   rejection names that tone from then on: in the log, and in the published reason the frontends word. */
+static void
+test_tone_policy_no_tone_rejection_names_a_later_tone(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    const int window_blocks = DSD_ANALOG_TONE_WINDOW_MS / 20;
+    install_fake_rtl_hooks(0);
+    init_analog_monitor_fixture(&opts, &state);
+    set_tone_policy(&opts, DSD_TONE_FILTER_ALLOW, "67.0");
+    start_monitor_capture(&opts);
+    g_tone_filter_lines = 0;
+    g_tone_filter_rejected_no_tone_lines = 0;
+    g_tone_filter_rejected_100_lines = 0;
+    feed_hz_blocks(&opts, &state, window_blocks + 2, 1000.0);
+    assert(state.analog_rx.gate == DSD_ANALOG_TONE_GATE_REJECTED && state.analog_rx.gate_no_tone == 1);
+    assert(g_tone_filter_rejected_no_tone_lines == 1);
+    feed_tone_blocks(&opts, &state, 30);
+    assert(rx_tone_locked_on_100(&state));
+    assert(state.analog_rx.gate == DSD_ANALOG_TONE_GATE_REJECTED && state.analog_rx.gate_no_tone == 0);
+    assert(g_tone_filter_rejected_100_lines == 1 && g_tone_filter_lines == 2 && g_monitor_blocks == 0);
+    dsd_udp_audio_hooks_set((dsd_udp_audio_hooks){0});
+    dsd_state_ext_free_all(&state);
 }
 
 int
@@ -3038,6 +3134,8 @@ main(void) {
     test_tone_policy_no_tone_decides_at_the_window();
     test_tone_policy_off_is_byte_identical();
     test_tone_policy_only_on_the_fm_monitor();
+    test_tone_policy_change_is_no_tone_lost();
+    test_tone_policy_no_tone_rejection_names_a_later_tone();
     return 0;
 }
 

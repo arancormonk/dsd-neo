@@ -190,10 +190,24 @@ policy_step_allowed(dsd_analog_tone_policy* policy, const dsd_analog_rx_publicat
     /* A block list's pass does not hang on a value: losing one keeps it. */
 }
 
+/* Whether @p rx confirms another value than the one the verdict names: any value, after a "no tone" verdict. */
+static int
+policy_value_changed(const dsd_analog_tone_policy* policy, const dsd_analog_rx_publication* rx) {
+    if (rx->tone_kind != policy->value_kind) {
+        return 1;
+    }
+    if (rx->tone_kind == DSD_ANALOG_TONE_KIND_CTCSS) {
+        return rx->ctcss_tenths_hz != policy->value_ctcss;
+    }
+    return rx->dcs_code != policy->value_dcs_code || rx->dcs_inverted != policy->value_dcs_inverted;
+}
+
 static void
 policy_step_rejected(dsd_analog_tone_policy* policy, const dsd_analog_rx_publication* rx) {
-    /* Kept for the reception, unless a value the list passes is confirmed after all. */
-    if (policy_confirmed(rx) && policy_passes(policy, rx)) {
+    /* Kept for the reception, unless a value the list passes is confirmed after all. Another value the list does not
+       pass keeps it too, but becomes its reason: a "no tone" rejection that later hears an unlisted tone is then
+       "not allowed", naming the tone the received row shows. */
+    if (policy_confirmed(rx) && (policy_passes(policy, rx) || policy_value_changed(policy, rx))) {
         policy_judge_value(policy, rx);
     }
 }

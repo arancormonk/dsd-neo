@@ -157,6 +157,7 @@ rx_tone_fill_gate(dsd_app_rx_tone* out, const dsd_opts* opts, const dsd_state* s
         text = pub->gate_no_tone ? "muted: no tone" : "muted: not allowed";
     }
     out->gate = (uint8_t)gate;
+    out->gate_no_tone = (gate != DSD_ANALOG_TONE_GATE_PENDING && pub->gate_no_tone) ? 1U : 0U;
     DSD_SNPRINTF(out->gate_text, sizeof(out->gate_text), "%s", text);
 }
 
