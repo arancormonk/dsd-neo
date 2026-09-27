@@ -12,6 +12,7 @@
 #include <dsd-neo/app_control/analog_width_view.h>
 #include <dsd-neo/app_control/frontend.h>
 #include <dsd-neo/app_control/history.h>
+#include <dsd-neo/app_control/rx_tone_view.h>
 #include <dsd-neo/app_control/snapshot.h>
 #include <dsd-neo/core/enc_lockout.h>
 #include <dsd-neo/core/opts.h>
@@ -938,6 +939,26 @@ lbl_audio_lpf(const void* v, char* b, size_t n) {
     } else {
         DSD_SNPRINTF(b, n, "Audio low-pass... [Off]");
     }
+    return b;
+}
+
+/* The CTCSS/DCS receive policy (issue #527), read as the Call Info line and the Qt monitor read it (the shared
+   received-tone view): "off", or the mode and its list, and while a scan row's own policy is on air that policy with the
+   configured one it shadows, "(row; default X)". The row's editor edits the configured one. The view marks what a long
+   list leaves out with a UTF-8 ellipsis; menu labels are ASCII, so it becomes "...", the same three bytes. */
+const char*
+lbl_tone_filter(const void* v, char* b, size_t n) {
+    const UiCtx* c = (const UiCtx*)v;
+    const dsd_opts* opts = dsd_app_get_latest_opts_snapshot();
+    if (!opts) {
+        opts = c ? c->opts : NULL;
+    }
+    dsd_app_rx_tone view;
+    (void)dsd_app_rx_tone_view(opts, dsd_app_get_latest_snapshot(), 0.0, &view);
+    for (char* mark = strstr(view.configured_text, "\xE2\x80\xA6"); mark; mark = strstr(mark, "\xE2\x80\xA6")) {
+        DSD_MEMCPY(mark, "...", 3U);
+    }
+    DSD_SNPRINTF(b, n, "Tone filter... [%s]", view.configured_text);
     return b;
 }
 

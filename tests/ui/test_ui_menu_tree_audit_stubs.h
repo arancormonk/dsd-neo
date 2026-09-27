@@ -137,6 +137,7 @@
     X(act_toggle_ui_p25_iden)                                                                                          \
     X(act_toggle_ui_p25_metrics)                                                                                       \
     X(act_toggle_ui_p25_neighbors)                                                                                     \
+    X(act_tone_filter)                                                                                                 \
     X(act_trunk_toggle)                                                                                                \
     X(act_tune_data)                                                                                                   \
     X(act_tune_group)                                                                                                  \
@@ -312,6 +313,7 @@
     X(lbl_tg_session_avoid_clear)                                                                                      \
     X(lbl_tg_hold)                                                                                                     \
     X(lbl_toggle_payload)                                                                                              \
+    X(lbl_tone_filter)                                                                                                 \
     X(lbl_trunk)                                                                                                       \
     X(lbl_tune_data)                                                                                                   \
     X(lbl_tune_group)                                                                                                  \

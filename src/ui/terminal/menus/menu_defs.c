@@ -47,7 +47,7 @@ ui_menu_get_main_items(const NcMenuItem** out_items, size_t* out_n, UiCtx* ctx) 
                                 .submenu_len = ENC_MENU_ITEMS_LEN};
         items[4] = (NcMenuItem){.id = "main.audio",
                                 .label = "Audio",
-                                .help = "Output sink, mute, gains, monitor, tone shaping, call alerts.",
+                                .help = "Output sink, mute, gains, monitor, tone shaping, tone filter, call alerts.",
                                 .submenu = AUDIO_MENU_ITEMS,
                                 .submenu_len = AUDIO_MENU_ITEMS_LEN};
         items[5] = (NcMenuItem){.id = "main.recording",

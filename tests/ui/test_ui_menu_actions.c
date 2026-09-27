@@ -11,6 +11,7 @@
 #include <dsd-neo/app_control/commands.h>
 #include <dsd-neo/app_control/frontend.h>
 #include <dsd-neo/app_control/snapshot.h>
+#include <dsd-neo/core/analog_tone.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/power.h>
 #include <dsd-neo/core/safe_api.h>
@@ -20,6 +21,7 @@
 #include <dsd-neo/platform/platform.h>
 #include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/runtime/analog_channel.h>
+#include <dsd-neo/runtime/analog_tones.h>
 #include <dsd-neo/runtime/call_alert.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/decode_mode.h>
@@ -33,6 +35,7 @@
 #include "command_dispatch.h"
 
 #include <dsd-neo/runtime/scan_mode.h>
+#include <dsd-neo/runtime/scan_options.h>
 #include "../test_support/scan_mode_label_stubs.h"
 #include "csv_picker.h"
 #include "dsd-neo/core/opts_fwd.h"
@@ -314,6 +317,15 @@ dsd_app_command_dsp_op(const dsd_app_dsp_payload* payload) {
 int
 dsd_app_command_apply_config(const dsdneoUserConfig* config) {
     return capture_command(DSD_APP_CMD_CONFIG_APPLY, config, config ? sizeof *config : 0U);
+}
+
+int
+dsd_app_command_set_tone_filter(int32_t mode, const char* list) {
+    dsd_app_tone_filter_payload payload;
+    DSD_MEMSET(&payload, 0, sizeof payload);
+    payload.mode = mode;
+    DSD_SNPRINTF(payload.list, sizeof payload.list, "%s", list ? list : "");
+    return capture_command(DSD_APP_CMD_TONE_FILTER_SET, &payload, sizeof payload);
 }
 
 int
@@ -2122,6 +2134,123 @@ test_nfm_bandwidth_row_follows_the_configured_preset(void) {
     return rc;
 }
 
+/* The tone-filter edit captured last: its mode and list. */
+static dsd_app_tone_filter_payload
+cmd_tone_filter(void) {
+    dsd_app_tone_filter_payload payload;
+    DSD_MEMSET(&payload, 0, sizeof payload);
+    assert(g_cmd.n == sizeof payload);
+    DSD_MEMCPY(&payload, g_cmd.data, sizeof payload);
+    return payload;
+}
+
+static dsd_tone_set
+tone_list(const char* text) {
+    dsd_tone_set set;
+    DSD_MEMSET(&set, 0, sizeof set);
+    assert(dsd_tone_set_parse(text, &set, NULL, 0) == 0);
+    return set;
+}
+
+/*
+ * The live tone-filter editor (Audio > Tone filter...): a picker opened on the configured mode; Off posts the
+ * configured list with it, so turning the filter off keeps the list, and Allow or Block prompt for the list, prefilled
+ * with the configured one, and post it as typed -- DSD_APP_CMD_TONE_FILTER_SET validates and refuses. Under a scan row
+ * with its own policy the picker and the prompt offer the configured policy, the one the command edits, never the
+ * row's. Cancelling either posts nothing.
+ */
+static int
+test_tone_filter_editor(void) {
+    int rc = 0;
+    static dsd_opts opts;
+    static dsd_state state;
+    DSD_MEMSET(&opts, 0, sizeof opts);
+    DSD_MEMSET(&state, 0, sizeof state);
+    static UiCtx ctx;
+    ctx = make_ctx(&opts, &state);
+    const dsd_tone_set configured_list = tone_list("D023I/100");
+    dsd_test_scan_labels_tone_policy(DSD_TONE_FILTER_BLOCK, &configured_list);
+
+    reset_capture();
+    act_tone_filter(&ctx);
+    rc |= expect_str("tone picker title", g_chooser.title, "Tone filter");
+    rc |= expect_int("tone picker rows", g_chooser.n, 3);
+    rc |= expect_str("tone picker off", g_chooser.labels[0], "Off");
+    rc |= expect_str("tone picker allow", g_chooser.labels[1], "Allow list...");
+    rc |= expect_str("tone picker block", g_chooser.labels[2], "Block list...");
+    rc |= expect_int("tone picker opens on the configured mode", g_chooser.initial_sel, DSD_TONE_FILTER_BLOCK);
+    rc |= expect_int("tone picker opens without posting", g_cmd.calls, 0);
+
+    /* Allow: a prompt with the configured list, posted as typed. */
+    g_chooser.on_done(g_chooser.user, DSD_TONE_FILTER_ALLOW);
+    rc |= expect_int("tone allow prompts", g_prompt.calls == 1 && g_prompt.str_cb != NULL, 1);
+    rc |= expect_str("tone allow prompt title", g_prompt.title, "Allow tones/codes (/ between, e.g. 67.0/D023N)");
+    rc |= expect_str("tone allow prompt offers the configured list", g_prompt.prefill, "100.0/D023I");
+    rc |= expect_int("tone allow prompt holds a whole list", (int)g_prompt.cap, (int)DSD_APP_TONE_FILTER_LIST_SIZE);
+    rc |= expect_int("tone prompt opens without posting", g_cmd.calls, 0);
+    g_prompt.str_cb(g_prompt.user, "67,100");
+    dsd_app_tone_filter_payload posted = cmd_tone_filter();
+    rc |= expect_int("tone allow command", g_cmd.id, DSD_APP_CMD_TONE_FILTER_SET);
+    rc |= expect_int("tone allow mode", posted.mode, DSD_TONE_FILTER_ALLOW);
+    rc |= expect_str("tone allow list as typed", posted.list, "67,100");
+
+    /* Block: the same, cancelled. */
+    reset_capture();
+    act_tone_filter(&ctx);
+    g_chooser.on_done(g_chooser.user, DSD_TONE_FILTER_BLOCK);
+    rc |= expect_str("tone block prompt title", g_prompt.title, "Block tones/codes (/ between, e.g. 67.0/D023N)");
+    g_prompt.str_cb(g_prompt.user, NULL);
+    rc |= expect_int("tone block cancel posts nothing", g_cmd.calls, 0);
+    /* An empty list goes to the command, which refuses it with the reason. */
+    act_tone_filter(&ctx);
+    g_chooser.on_done(g_chooser.user, DSD_TONE_FILTER_BLOCK);
+    g_prompt.str_cb(g_prompt.user, "");
+    posted = cmd_tone_filter();
+    rc |= expect_int("tone block empty posted", posted.mode == DSD_TONE_FILTER_BLOCK && posted.list[0] == '\0', 1);
+
+    /* Off keeps the configured list, with no prompt. */
+    reset_capture();
+    act_tone_filter(&ctx);
+    g_chooser.on_done(g_chooser.user, DSD_TONE_FILTER_OFF);
+    rc |= expect_int("tone off does not prompt", g_prompt.calls, 0);
+    posted = cmd_tone_filter();
+    rc |= expect_int("tone off mode", posted.mode, DSD_TONE_FILTER_OFF);
+    rc |= expect_str("tone off keeps the configured list", posted.list, "100.0/D023I");
+
+    /* Cancelled or out of range: nothing. */
+    reset_capture();
+    act_tone_filter(&ctx);
+    g_chooser.on_done(g_chooser.user, -1);
+    g_chooser.on_done(g_chooser.user, 3);
+    rc |= expect_int("tone picker cancel posts nothing", g_cmd.calls + g_prompt.calls, 0);
+
+    /* Under an nfm row with its own policy, dsd_opts holds the row's: the editor offers the configured one. */
+    dsd_scan_settings configured = {0};
+    configured.analog_tone_filter = DSD_TONE_FILTER_ALLOW;
+    configured.analog_tone_set = tone_list("82.5");
+    dsd_test_scan_labels_configured(&configured);
+    dsd_scan_option_values row = {0};
+    row.present = DSD_SCAN_OPT_TONE;
+    row.tone_filter = DSD_TONE_FILTER_BLOCK;
+    row.tone_set = configured_list;
+    dsd_test_scan_labels_row_options(&row);
+    reset_capture();
+    act_tone_filter(&ctx);
+    rc |= expect_int("tone picker under a row opens on the configured mode", g_chooser.initial_sel,
+                     DSD_TONE_FILTER_ALLOW);
+    g_chooser.on_done(g_chooser.user, DSD_TONE_FILTER_BLOCK);
+    rc |= expect_str("tone prompt under a row offers the configured list", g_prompt.prefill, "82.5");
+    reset_capture();
+    act_tone_filter(&ctx);
+    g_chooser.on_done(g_chooser.user, DSD_TONE_FILTER_OFF);
+    posted = cmd_tone_filter();
+    rc |= expect_str("tone off under a row keeps the configured list", posted.list, "82.5");
+    dsd_test_scan_labels_row_options(NULL);
+    dsd_test_scan_labels_configured(NULL);
+    dsd_test_scan_labels_tone_policy(DSD_TONE_FILTER_OFF, NULL);
+    return rc;
+}
+
 /*
  * The NFM bandwidth row prompts for Hz, seeded with the configured width (0 for the default), and hands the command
  * whatever was typed: DSD_APP_CMD_NFM_BANDWIDTH_SET refuses what it cannot apply with the reason, rather than the
@@ -2188,6 +2317,7 @@ main(void) {
     rc |= test_scan_voice_gate_actions();
     rc |= test_nfm_bandwidth_row_follows_the_configured_preset();
     rc |= test_nfm_bandwidth_prompt_submits_as_typed();
+    rc |= test_tone_filter_editor();
     rc |= test_p25_bandplan_actions();
     rc |= test_config_profile_and_env_actions();
     rc |= test_io_actions_and_choosers();

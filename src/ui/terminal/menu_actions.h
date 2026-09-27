@@ -87,6 +87,7 @@ void act_toggle_ftz_daz(void* v);
 void act_set_input_warn(void* v);
 void act_deemph_cycle(void* v);
 void act_set_audio_lpf(void* v);
+void act_tone_filter(void* v);
 void act_window_freeze_toggle(void* v);
 void act_auto_ppm_freeze(void* v);
 void act_tcp_waitall(void* v);

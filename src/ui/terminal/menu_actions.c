@@ -12,7 +12,9 @@
 #include <dsd-neo/app_control/analog_width_view.h>
 #include <dsd-neo/app_control/commands.h>
 #include <dsd-neo/app_control/frontend.h>
+#include <dsd-neo/app_control/rx_tone_view.h>
 #include <dsd-neo/app_control/snapshot.h>
+#include <dsd-neo/core/analog_tone.h>
 #include <dsd-neo/core/constants.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/opts_fwd.h>
@@ -653,6 +655,67 @@ act_set_audio_lpf(void* v) {
     const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
     int def = (cfg && cfg->audio_lpf_is_set && !cfg->audio_lpf_disable) ? cfg->audio_lpf_cutoff_hz : 0;
     ui_prompt_open_int_async("Audio LPF cutoff Hz (0=off)", def, cb_audio_lpf, v);
+}
+
+// ---- Tone filter (issue #527): the live editor of the configured CTCSS/DCS receive policy ----
+
+/* Picker rows in dsd_tone_filter_mode order, so a row's index is the mode it sets. */
+static const char* const k_tone_filter_choices[] = {"Off", "Allow list...", "Block list..."};
+#define TONE_FILTER_CHOICE_COUNT (sizeof k_tone_filter_choices / sizeof k_tone_filter_choices[0])
+_Static_assert(DSD_TONE_FILTER_OFF == 0 && DSD_TONE_FILTER_ALLOW == 1 && DSD_TONE_FILTER_BLOCK == 2
+                   && TONE_FILTER_CHOICE_COUNT == 3U,
+               "a picker row's index is the mode it sets");
+/* The list policy the prompt is open for, from the picker row chosen just before it. */
+static int g_tone_filter_prompt_mode = DSD_TONE_FILTER_ALLOW;
+
+/* The configured policy the editor opens on (dsd_app_tone_filter_setting_get()): from the snapshot pair, so a scan
+   row's own policy, which runs over dsd_opts while the row is on air, is never offered as the one to edit. Before the
+   first snapshot, the menu's options' own. */
+static void
+tone_filter_configured(const UiCtx* c, dsd_app_tone_filter_setting* out) {
+    const dsd_opts* opts = dsd_app_get_latest_opts_snapshot();
+    const dsd_state* state = dsd_app_get_latest_snapshot();
+    if (!opts) {
+        opts = c ? c->opts : NULL;
+        state = NULL;
+    }
+    (void)dsd_app_tone_filter_setting_get(opts, state, out);
+}
+
+/* The list as typed goes to the command, which checks it and refuses what it cannot apply with the reason. */
+static void
+cb_tone_filter_list(void* u, const char* text) {
+    UNUSED(u);
+    if (text) {
+        (void)dsd_app_command_set_tone_filter(g_tone_filter_prompt_mode, text);
+    }
+}
+
+static void
+chooser_done_tone_filter(void* u, int sel) {
+    if (sel < 0 || sel >= (int)TONE_FILTER_CHOICE_COUNT) {
+        return;
+    }
+    dsd_app_tone_filter_setting setting;
+    tone_filter_configured((const UiCtx*)u, &setting);
+    if (sel == DSD_TONE_FILTER_OFF) {
+        /* Off keeps the configured list, as --no-tone-filter and tone_filter = off keep theirs. */
+        (void)dsd_app_command_set_tone_filter(DSD_TONE_FILTER_OFF, setting.list);
+        return;
+    }
+    g_tone_filter_prompt_mode = sel;
+    ui_prompt_open_string_async(sel == DSD_TONE_FILTER_ALLOW ? "Allow tones/codes (/ between, e.g. 67.0/D023N)"
+                                                             : "Block tones/codes (/ between, e.g. 67.0/D023N)",
+                                setting.list, sizeof setting.list, cb_tone_filter_list, u);
+}
+
+void
+act_tone_filter(void* v) {
+    dsd_app_tone_filter_setting setting;
+    tone_filter_configured((const UiCtx*)v, &setting);
+    const int at = (setting.mode >= 0 && setting.mode < (int)TONE_FILTER_CHOICE_COUNT) ? setting.mode : 0;
+    ui_chooser_start_at("Tone filter", k_tone_filter_choices, (int)TONE_FILTER_CHOICE_COUNT, at,
+                        chooser_done_tone_filter, v);
 }
 
 void
