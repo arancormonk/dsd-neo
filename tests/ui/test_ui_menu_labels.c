@@ -222,6 +222,9 @@ test_decoder_labels(void) {
     /* Issue #526: an nfm row reads as its class, beside the configured digital mode it will return to. */
     dsd_test_scan_labels_set(1, DSD_SCAN_MODE_NFM);
     rc |= expect_str("decode mode on an nfm row", lbl_decode_mode(&ctx, b, sizeof(b)), "Mode... [DMR; scan nfm]");
+    /* ...and an am row as its own class, not as NFM. */
+    dsd_test_scan_labels_set(1, DSD_SCAN_MODE_AM);
+    rc |= expect_str("decode mode on an am row", lbl_decode_mode(&ctx, b, sizeof(b)), "Mode... [DMR; scan am]");
     dsd_test_scan_labels_set(0, DSD_SCAN_MODE_INHERIT);
     opts.monitor_input_audio = 1;
     opts.use_cosine_filter = 1;

@@ -38,9 +38,10 @@ dsd_scan_mode_row_options(const dsd_state* state) {
     return state && have_row_options ? &row_options : NULL;
 }
 
+/* As scan_mode.c answers it: the nfm and am classes. */
 int
 dsd_scan_mode_is_analog(dsd_scan_mode mode) {
-    return mode == DSD_SCAN_MODE_NFM;
+    return mode == DSD_SCAN_MODE_NFM || mode == DSD_SCAN_MODE_AM;
 }
 
 void
@@ -119,6 +120,7 @@ dsd_scan_mode_name(dsd_scan_mode mode) {
     switch (mode) {
         case DSD_SCAN_MODE_P25: return "p25";
         case DSD_SCAN_MODE_NFM: return "nfm";
+        case DSD_SCAN_MODE_AM: return "am";
         default: return "";
     }
 }

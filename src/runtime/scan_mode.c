@@ -43,10 +43,11 @@ typedef struct {
     scan_squelch_pending squelch_pending;
 } scan_scope;
 
-static const char* const mode_names[] = {"", "p25", "dmr", "nxdn96", "nxdn48", "dpmr", "dstar", "ysf", "m17", "nfm"};
+static const char* const mode_names[] = {"",      "p25", "dmr", "nxdn96", "nxdn48", "dpmr",
+                                         "dstar", "ysf", "m17", "nfm",    "am"};
 static const dsdneoUserDecodeMode mode_presets[] = {
-    DSDCFG_MODE_AUTO, DSDCFG_MODE_TDMA,  DSDCFG_MODE_DMR, DSDCFG_MODE_NXDN96, DSDCFG_MODE_NXDN48,
-    DSDCFG_MODE_DPMR, DSDCFG_MODE_DSTAR, DSDCFG_MODE_YSF, DSDCFG_MODE_M17,    DSDCFG_MODE_ANALOG};
+    DSDCFG_MODE_AUTO,  DSDCFG_MODE_TDMA, DSDCFG_MODE_DMR, DSDCFG_MODE_NXDN96, DSDCFG_MODE_NXDN48, DSDCFG_MODE_DPMR,
+    DSDCFG_MODE_DSTAR, DSDCFG_MODE_YSF,  DSDCFG_MODE_M17, DSDCFG_MODE_ANALOG, DSDCFG_MODE_AM};
 
 _Static_assert(sizeof(mode_names) / sizeof(mode_names[0]) == (size_t)DSD_SCAN_MODE_LAST + 1U,
                "every scan class needs a name");
@@ -60,7 +61,25 @@ dsd_scan_mode_name(dsd_scan_mode mode) {
 
 int
 dsd_scan_mode_is_analog(dsd_scan_mode mode) {
-    return mode == DSD_SCAN_MODE_NFM;
+    return dsd_scan_mode_analog_kind(mode) >= 0;
+}
+
+int
+dsd_scan_mode_analog_kind(dsd_scan_mode mode) {
+    switch (mode) {
+        case DSD_SCAN_MODE_NFM: return DSD_ANALOG_DEMOD_FM;
+        case DSD_SCAN_MODE_AM: return DSD_ANALOG_DEMOD_AM;
+        case DSD_SCAN_MODE_INHERIT:
+        case DSD_SCAN_MODE_P25:
+        case DSD_SCAN_MODE_DMR:
+        case DSD_SCAN_MODE_NXDN96:
+        case DSD_SCAN_MODE_NXDN48:
+        case DSD_SCAN_MODE_DPMR:
+        case DSD_SCAN_MODE_DSTAR:
+        case DSD_SCAN_MODE_YSF:
+        case DSD_SCAN_MODE_M17: return -1;
+    }
+    return -1;
 }
 
 /* Trim @p text into [*begin, *begin + *len). */
@@ -611,8 +630,13 @@ scan_option_apply_squelch(dsd_opts* opts, dsd_state* state, const dsd_scan_optio
 static void
 scan_option_apply_bandwidth(dsd_opts* opts, dsd_state* state, const dsd_scan_option_values* values) {
     (void)state;
-    /* Only an NFM row parses a width (--nfm-bandwidth-hz), so it is the NFM demodulator's. */
-    opts->analog_nfm_bandwidth_hz = values->channel_bw_hz;
+    /* The width of the demodulator the row's own spelling names: an am row's --am-bandwidth-hz, an nfm row's
+     * --nfm-bandwidth-hz. */
+    if (values->channel_bw_kind == DSD_ANALOG_DEMOD_AM) {
+        opts->analog_am_bandwidth_hz = values->channel_bw_hz;
+    } else {
+        opts->analog_nfm_bandwidth_hz = values->channel_bw_hz;
+    }
 }
 
 /* One applier per row option that lands in dsd_opts/dsd_state. A new row option adds a row
@@ -960,8 +984,9 @@ dsd_scan_mode_set_configured_analog_width(dsd_opts* opts, const dsd_state* state
         } else {
             scope->configured.analog_nfm_bandwidth_hz = width_hz;
         }
-        /* Only an nfm row parses a width (scan_option_apply_bandwidth()), so a row width shadows the NFM one. */
-        if (!am && (scope->options.present & DSD_SCAN_OPT_BANDWIDTH)) {
+        /* A row width shadows the configured width of its own kind only (scan_option_apply_bandwidth()). */
+        if ((scope->options.present & DSD_SCAN_OPT_BANDWIDTH)
+            && (scope->options.channel_bw_kind == DSD_ANALOG_DEMOD_AM) == am) {
             return 0;
         }
     }

@@ -310,6 +310,36 @@ Item {
             verify(!otherSection().visible, "the NFM width kept a control with none set");
         }
 
+        /* Issue #526: an am scan row with its own --am-bandwidth-hz on air on a digital session. The readings describe
+           the row's AM width (analogBandwidthAm true), so the section is the AM one: the row's width reads first, the
+           badge names the unset AM default the row shadows (6 kHz, as the engine's reading does), and the stepper
+           steps that AM default over the AM widths, from 6 kHz, never from NFM's 16 kHz or the row's own width. */
+        function test_am_row_with_its_own_width_on_a_digital_session() {
+            verify(metrics.decodeMode !== commands.decodeModeForFlag("-fM"));
+            testContext.setMetric("analogBandwidthHz", 8333);
+            testContext.setMetric("analogBandwidthConfiguredHz", 0);
+            testContext.setMetric("amBandwidthConfiguredHz", 0);
+            testContext.setMetric("analogBandwidthMaxHz", 42000);
+            testContext.setMetric("analogBandwidthReading", "8.333 kHz (row; default 6 kHz)");
+            testContext.setMetric("analogBandwidthRowOverride", true);
+            testContext.setMetric("analogBandwidthAm", true);
+            testContext.setMetric("analogBandwidthRowActive", true);
+            tryVerify(function () { return findChild(sheet, "radioAnalogSection").visible });
+            compare(findChild(sheet, "radioAnalogSectionTitle").text, "AM channel width");
+            compare(valueText(), "8.333 kHz");
+            verify(findChild(sheet, "radioAnalogBandwidthRowNote").visible, "no row badge over the row's own width");
+            compare(findChild(sheet, "radioAnalogBandwidthRowDefault").text, "default 6 kHz");
+            compare(findChild(sheet, "radioAnalogBandwidthValue").Accessible.name, "8.333 kHz (row; default 6 kHz)");
+            findChild(sheet, "radioAnalogBandwidthDown").clicked();
+            compare(testContext.lastAmBandwidthHz(), 5000, "the AM default did not step down from 6 kHz");
+            compare(testContext.nfmBandwidthCalls(), 0, "the am row's step went to the NFM command");
+            compare(findChild(sheet, "radioAnalogBandwidthRowDefault").text, "default 5 kHz");
+            compare(valueText(), "8.333 kHz", "the row lost the reading to the default being edited");
+            sheet.forgetRequests();
+            findChild(sheet, "radioAnalogBandwidthUp").clicked();
+            compare(testContext.lastAmBandwidthHz(), 8000, "the AM default did not step up from 6 kHz");
+        }
+
         function test_am_width_disabled_off_a_radio() {
             onAm(6000, 0);
             testContext.setMetric("radioInput", false);

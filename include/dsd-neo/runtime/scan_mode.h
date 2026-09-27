@@ -26,12 +26,14 @@ typedef enum {
     DSD_SCAN_MODE_YSF,
     DSD_SCAN_MODE_M17,
     /** Analog narrowband FM monitor (issue #526): the -fA receive path, one channel width per row. */
-    DSD_SCAN_MODE_NFM
+    DSD_SCAN_MODE_NFM,
+    /** Analog AM monitor (issue #526): the -fM receive path (AM envelope detector), one channel width per row. */
+    DSD_SCAN_MODE_AM
 } dsd_scan_mode;
 
 /** The last scan class: the bound every range check uses instead of a literal class. Appending a
  * class moves it, so stored values and MODE_BIT() option masks keep their meaning. */
-#define DSD_SCAN_MODE_LAST DSD_SCAN_MODE_NFM
+#define DSD_SCAN_MODE_LAST DSD_SCAN_MODE_AM
 
 /** Target modulation precedence shared by scope reapplication and trunk entry. */
 typedef enum {
@@ -109,13 +111,16 @@ typedef struct {
 /** Parse a trimmed, case-insensitive class; empty means inherit. Returns -1 on invalid input. */
 int dsd_scan_mode_parse(const char* text, dsd_scan_mode* mode);
 const char* dsd_scan_mode_name(dsd_scan_mode mode);
-/** Nonzero for an analog class (NFM): no frames, keys, talkgroups or symbol clock, and activity is carrier. */
+/** Nonzero for an analog class (NFM, AM): no frames, keys, talkgroups or symbol clock, and activity is carrier. */
 int dsd_scan_mode_is_analog(dsd_scan_mode mode);
+/** The analog demodulator (dsd_analog_demod) an analog class runs: DSD_ANALOG_DEMOD_FM for NFM, DSD_ANALOG_DEMOD_AM for
+ * AM; -1 for any other class. It names the channel width a row of the class runs, and the one its own width sets. */
+int dsd_scan_mode_analog_kind(dsd_scan_mode mode);
 /** The class to suggest for a spelling that is no class but names one (the analog FM aliases "fm", "analog",
  * "wfm", "nbfm" and "fm-conventional" suggest "nfm"), trimmed and case-insensitive; NULL for anything else. No
  * alias is ever accepted: a diagnostic offers the returned name instead. */
 const char* dsd_scan_mode_alias_hint(const char* text);
-/** Write every class name, "p25, dmr, ..., nfm", into @p out for a diagnostic. Returns 0, or -1 when @p out is
+/** Write every class name, "p25, dmr, ..., nfm, am", into @p out for a diagnostic. Returns 0, or -1 when @p out is
  * NULL or too small (it then holds an empty string). */
 int dsd_scan_mode_names_list(char* out, size_t out_size);
 dsd_decode_mode_profile dsd_scan_mode_profile(dsd_scan_mode mode);
@@ -162,8 +167,9 @@ int dsd_scan_mode_enter(dsd_opts* opts, dsd_state* state, dsd_scan_mode mode);
  * pushes unconditionally for the same reason. prepare never pushes.
  *
  * The analog channel width (DSD_SCAN_OPT_BANDWIDTH, issue #526) is an acquisition setting, not policy:
- * options restores the configured widths and applies the row's, but nothing retunes here, so the tune
- * that lands the row must already carry it (prepare with the row's values). */
+ * options restores the configured widths and applies the row's to the width of the demodulator it names
+ * (dsd_scan_option_values::channel_bw_kind: an nfm row's NFM width, an am row's AM width), but nothing
+ * retunes here, so the tune that lands the row must already carry it (prepare with the row's values). */
 int dsd_scan_mode_options(dsd_opts* opts, dsd_state* state, const dsd_scan_option_values* values);
 /** Restore the exact configured baseline and release the scope. */
 void dsd_scan_mode_leave(dsd_opts* opts, dsd_state* state);
@@ -214,8 +220,9 @@ int dsd_scan_mode_set_configured_nfm_bandwidth(dsd_opts* opts, const dsd_state* 
 /** dsd_scan_mode_set_configured_nfm_bandwidth() for the configured channel width of analog demodulator @p kind
  * (dsd_analog_demod; anything but AM edits the NFM width), the AM width (dsd_opts::analog_am_bandwidth_hz, issue #524)
  * included: under a live scope the configured baseline takes it, so a row's leave or the next row's options keep the
- * edit rather than restore the width from before it. Only an nfm row sets a width of its own, the NFM one, so an AM
- * edit is never shadowed and always reaches dsd_opts. Same returns and thread rules. */
+ * edit rather than restore the width from before it. A row's own width shadows the edit only when it is a width of
+ * @p kind (an nfm row's the NFM one, an am row's the AM one, issue #526): an AM edit under an nfm row, or an NFM edit
+ * under an am row, reaches dsd_opts at once. Same returns and thread rules. */
 int dsd_scan_mode_set_configured_analog_width(dsd_opts* opts, const dsd_state* state, int kind, int width_hz);
 /** The configured channel width (Hz, 0 = the default) of analog demodulator @p kind (dsd_analog_demod; anything but
  * AM reads as NFM): what the width controls edit and a save writes, and what a row without a width of its own runs. It

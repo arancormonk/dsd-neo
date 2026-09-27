@@ -533,10 +533,12 @@ Item {
             model: channelReview.rows
             delegate: Text {
                 required property var modelData
+                // An nfm or am row (issue #526) has no keys or identifiers: the parser refuses them there.
+                readonly property bool analog: modelData.mode === "nfm" || modelData.mode === "am"
                 width: ListView.view.width
                 topPadding: 10
                 bottomPadding: 10
-                text: (modelData.name || qsTr("Row %1").arg(modelData.index + 1)) + " · " + modelData.frequency + " MHz · " + (modelData.mode || qsTr("Inherited protocol")) + "\n" + [qsTr("Keys: inherit session defaults"), qsTr("Keys: direct override"), qsTr("Keys: automatic collection"), qsTr("Keys: explicitly empty")][modelData.keySource] + "\n" + (modelData.force < 0 ? qsTr("Identifiers: inherit") : modelData.force === 0 ? qsTr("Identifiers: normal signaling") : qsTr("Identifier override: %1").arg(modelData.force.toString(16).toUpperCase())) + (modelData.mode === "dmr" || modelData.mappings >= 0 ? "\n" + (modelData.mappings < 0 ? qsTr("DMR mappings: inherit") : qsTr("DMR mappings: %1").arg(modelData.mappings)) : "") + "\n" + Util.squelchSummary(modelData.squelchDb) + (modelData.mode === "nfm" || modelData.bandwidthHz !== undefined ? "\n" + Util.nfmBandwidthSummary(modelData.bandwidthHz) : "")
+                text: (modelData.name || qsTr("Row %1").arg(modelData.index + 1)) + " · " + modelData.frequency + " MHz · " + (modelData.mode || qsTr("Inherited protocol")) + (analog ? "" : "\n" + [qsTr("Keys: inherit session defaults"), qsTr("Keys: direct override"), qsTr("Keys: automatic collection"), qsTr("Keys: explicitly empty")][modelData.keySource] + "\n" + (modelData.force < 0 ? qsTr("Identifiers: inherit") : modelData.force === 0 ? qsTr("Identifiers: normal signaling") : qsTr("Identifier override: %1").arg(modelData.force.toString(16).toUpperCase()))) + (modelData.mode === "dmr" || modelData.mappings >= 0 ? "\n" + (modelData.mappings < 0 ? qsTr("DMR mappings: inherit") : qsTr("DMR mappings: %1").arg(modelData.mappings)) : "") + "\n" + Util.squelchSummary(modelData.squelchDb) + (analog || modelData.bandwidthHz !== undefined ? "\n" + Util.analogBandwidthSummary(modelData.mode === "am", modelData.bandwidthHz) : "")
                 textFormat: Text.PlainText
                 wrapMode: Text.WrapAnywhere
                 color: Theme.textPrimary

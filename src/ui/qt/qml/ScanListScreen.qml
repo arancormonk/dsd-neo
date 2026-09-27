@@ -26,8 +26,8 @@ Rectangle {
     property string portText: ""
     property var timingText: ({})
     property var entryInputText: ({})
-    readonly property var protocolIds: ["p25", "dmr", "nxdn48", "nxdn"]
-    readonly property var protocolLabels: [qsTr("P25"), qsTr("DMR"), qsTr("NXDN48"), qsTr("NXDN96")]
+    readonly property var protocolIds: ["p25", "dmr", "nxdn48", "nxdn", "nfm", "am"]
+    readonly property var protocolLabels: [qsTr("P25"), qsTr("DMR"), qsTr("NXDN48"), qsTr("NXDN96"), qsTr("NFM (analog)"), qsTr("AM (analog)")]
 
     // Match the wizard's ASCII checks and explicit fallback values. Locale-aware
     // validators accept digits/grouping that JavaScript's Number cannot parse.
@@ -679,13 +679,16 @@ Rectangle {
 
                     delegate: Text {
                         required property var modelData
+                        // An nfm- or am-conventional target (issue #526) takes no modulation: the parser
+                        // refuses one there.
+                        readonly property bool analog: modelData.type === "nfm-conventional" || modelData.type === "am-conventional"
 
                         width: ListView.view.width
                         padding: 6
                         textFormat: Text.PlainText
                         wrapMode: Text.Wrap
                         color: Theme.textPrimary
-                        text: modelData.id + " · " + modelData.type + " · " + modelData.frequency + " MHz\n" + qsTr("Dwell: %1 · Hold: %2 · Modulation: %3 · Gain: %4").arg(modelData.dwellMs < 0 ? qsTr("inherit") : modelData.dwellMs + " ms").arg(modelData.holdMs < 0 ? qsTr("inherit") : modelData.holdMs + " ms").arg(modelData.modulation || qsTr("inherit")).arg(modelData.gainDb < 0 ? qsTr("inherit") : modelData.gainDb === 0 ? qsTr("auto") : modelData.gainDb + " dB") + " · " + Util.squelchSummary(modelData.squelchDb) + (modelData.type === "nfm-conventional" || modelData.bandwidthHz !== undefined ? " · " + Util.nfmBandwidthSummary(modelData.bandwidthHz) : "")
+                        text: modelData.id + " · " + modelData.type + " · " + modelData.frequency + " MHz\n" + qsTr("Dwell: %1 · Hold: %2").arg(modelData.dwellMs < 0 ? qsTr("inherit") : modelData.dwellMs + " ms").arg(modelData.holdMs < 0 ? qsTr("inherit") : modelData.holdMs + " ms") + (analog ? "" : " · " + qsTr("Modulation: %1").arg(modelData.modulation || qsTr("inherit"))) + " · " + qsTr("Gain: %1").arg(modelData.gainDb < 0 ? qsTr("inherit") : modelData.gainDb === 0 ? qsTr("auto") : modelData.gainDb + " dB") + " · " + Util.squelchSummary(modelData.squelchDb) + (analog || modelData.bandwidthHz !== undefined ? " · " + Util.analogBandwidthSummary(modelData.type === "am-conventional", modelData.bandwidthHz) : "")
                     }
                 }
             }

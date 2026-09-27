@@ -12,6 +12,7 @@
 #include "decryption_profiles_model.h"
 #include "json_store.h"
 #include "saved_systems_model.h"
+#include "scan_list_targets.h"
 #include "scan_lists_model.h"
 #include "session_args.h"
 
@@ -47,6 +48,17 @@ validId(const QString& id) {
 QVariantMap
 failure(const QString& text) {
     return {{"ok", false}, {"error", text}};
+}
+
+/* Whether a scan entry is analog (issue #526): a frequency entry's nfm or am protocol, or a saved system whose decode
+   flags are -fA or -fM (scan_list_entry_analog_kind()). An analog entry carries no decryption: the editor hides the
+   choice and the starter resolves none, so a profile it still names is not one it uses. */
+bool
+scanEntryAnalog(const QVariantMap& entry, const SavedSystemsModel* systems) {
+    const QString flag = entry.value("kind").toString() == QStringLiteral("system") && systems
+                             ? systems->getByUid(entry.value("systemUid").toString()).value("decodeFlag").toString()
+                             : QString();
+    return scan_list_entry_analog_kind(entry, flag) >= 0;
 }
 
 bool
@@ -248,9 +260,10 @@ DecryptionProfilesModel::useCount(const QString& uid) const {
     if (m_scans) {
         for (int i = 0; i < m_scans->count(); ++i) {
             const auto scanEntries = m_scans->get(i).value("entries").toList();
-            uses +=
-                static_cast<int>(std::count_if(scanEntries.cbegin(), scanEntries.cend(), [&uid](const QVariant& entry) {
-                    return entry.toMap().value("decryptionProfileUid").toString() == uid;
+            uses += static_cast<int>(
+                std::count_if(scanEntries.cbegin(), scanEntries.cend(), [this, &uid](const QVariant& value) {
+                    const auto entry = value.toMap();
+                    return entry.value("decryptionProfileUid").toString() == uid && !scanEntryAnalog(entry, m_systems);
                 }));
         }
     }

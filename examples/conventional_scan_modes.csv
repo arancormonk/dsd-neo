@@ -9,3 +9,4 @@ channel,frequency_hz,name,mode
 8,446100000,dPMR example,dpmr
 9,150000000,Inherit configured decoder,
 10,154430000,Analog NFM example,nfm
+11,118300000,Analog AM example,am

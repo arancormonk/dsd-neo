@@ -82,6 +82,13 @@ dsd_engine_scan_retune_attaches_family(const dsd_opts* opts, const dsd_state* st
     return 0;
 }
 
+/* And the rigctl peer's restore at leave (trunk_tuning.c): no rigctl peer here. */
+void
+dsd_engine_scan_rigctl_restore(const dsd_opts* opts, const dsd_state* state) {
+    (void)opts;
+    (void)state;
+}
+
 static void
 record_push(double mean_power) {
     g_pushes++;

@@ -86,9 +86,9 @@ ModalSheet {
     readonly property int amMode: commands.decodeModeForFlag("-fM")
     readonly property bool amPreset: amMode >= 0 && metrics.decodeMode === amMode
     readonly property bool analogPreset: (analogMode >= 0 && metrics.decodeMode === analogMode) || amPreset
-    // Issue #526: an nfm scan row on air runs the NFM width whatever the
-    // configured preset, a digital one included, so its width is in force and
-    // shown there too, as the terminal shows it.
+    // Issue #526: an nfm or am scan row on air runs the width of its kind
+    // whatever the configured preset, a digital one included, so its width is in
+    // force and shown there too, as the terminal shows it.
     readonly property bool analogRowActive: metrics.analogBandwidthRowActive === true
     readonly property bool analogWidthInForce: analogPreset || analogRowActive
     // The kind the section edits and reads: the configured preset's, or while
@@ -96,12 +96,16 @@ ModalSheet {
     // on an AM session too), which is the width the readings describe.
     readonly property bool sectionAm: analogRowActive ? metrics.analogBandwidthAm === true : amPreset
     readonly property var analogWidths: sectionAm ? Util.AM_WIDTHS_HZ : Util.NFM_WIDTHS_HZ
+    // The unset default of the kind the section edits.
+    readonly property int analogDefaultWidth: sectionAm ? Util.AM_DEFAULT_WIDTH_HZ : Util.NFM_DEFAULT_WIDTH_HZ
     // The width is the radio front end's filter; PCM audio arrives demodulated.
     readonly property bool analogWidthEditable: metrics.radioInput === true
-    // A row can carry its own width (--nfm-bandwidth-hz). While it is on air the
-    // readout is the row's, and the stepper edits the configured default beneath
-    // it, as the squelch does: an edit made to the row would be gone the moment
-    // the scanner moved on. On PCM input the width filters nothing, row or not.
+    // A row can carry its own width (--nfm-bandwidth-hz on an nfm row,
+    // --am-bandwidth-hz on an am row). While it is on air the readout is the
+    // row's, and the stepper edits the configured default of the row's kind
+    // beneath it, as the squelch does: an edit made to the row would be gone the
+    // moment the scanner moved on. On PCM input the width filters nothing, row
+    // or not.
     readonly property bool analogRowOverride: metrics.analogBandwidthRowOverride === true && analogWidthEditable
     readonly property int analogWidthConfigured: isNaN(pendingAnalogWidth)
         ? metrics.analogBandwidthConfiguredHz : pendingAnalogWidth
@@ -115,15 +119,16 @@ ModalSheet {
     // force, which below a 20 kHz DSP rate is the width the rate leaves rather
     // than 16 kHz for NFM, so the first step from there is one the rate can take.
     // Under a row's own width the width in force is the row's, not the default's,
-    // so the default steps from 16 kHz, within what the DSP rate filters.
+    // so the default steps from the unset default of the row's kind (16 kHz for
+    // an nfm row, 6 kHz for an am row), within what the DSP rate filters.
     readonly property int analogWidthStepFrom: {
         if (analogWidthConfigured > 0)
             return analogWidthConfigured;
         if (analogRowOverride)
-            return Util.NFM_DEFAULT_WIDTH_HZ;
+            return analogDefaultWidth;
         if (metrics.analogBandwidthHz > 0)
             return metrics.analogBandwidthHz;
-        return sectionAm ? Util.AM_DEFAULT_WIDTH_HZ : Util.NFM_DEFAULT_WIDTH_HZ;
+        return analogDefaultWidth;
     }
     // The widest width the DSP rate filters (the running stream's, or with none
     // the rate an RTL-SDR input's DSP bandwidth sets; 0 = not known): the steps
@@ -135,7 +140,7 @@ ModalSheet {
         && Util.nextWidthIn(analogWidths, analogWidthStepFrom, 1, analogWidthMax) > 0
     // A request stands in for the reading until the engine answers, spelled as
     // the setting it is ("12.5 kHz", or "default" for 0).
-    // Outside the preset, with no nfm row on air, no width is in force, so the
+    // Outside the preset, with no analog row on air, no width is in force, so the
     // setting stands in. A row's own width comes first, and the default being
     // edited is named below it (analogWidthDefaultText).
     readonly property string analogWidthReading: {
@@ -148,9 +153,10 @@ ModalSheet {
         return metrics.analogBandwidthReading;
     }
     // The configured width a row's own width shadows, and the row's leave
-    // returns to, as the engine names it: 16 kHz for the unset default.
+    // returns to, as the engine names it: the unset default of the row's kind
+    // (16 kHz for NFM, 6 kHz for AM).
     readonly property string analogWidthDefaultText: qsTr("default %1").arg(Util.widthKhzText(
-        analogWidthConfigured > 0 ? analogWidthConfigured : Util.NFM_DEFAULT_WIDTH_HZ))
+        analogWidthConfigured > 0 ? analogWidthConfigured : analogDefaultWidth))
 
     // The width of the analog kind the section above does not edit: AM, or NFM
     // under the AM preset (AM again while an nfm row runs over the AM
@@ -719,7 +725,7 @@ ModalSheet {
             enabled: sheet.analogWidthEditable
             onClicked: sheet.resetAnalogWidth()
         }
-        // Outside the preset, with no nfm row on air: what the setting is for.
+        // Outside the preset, with no analog row on air: what the setting is for.
         Text {
             objectName: "radioAnalogBandwidthIdleNote"
             visible: !sheet.analogWidthInForce && sheet.analogWidthEditable

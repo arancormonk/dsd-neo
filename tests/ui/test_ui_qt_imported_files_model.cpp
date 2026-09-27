@@ -727,8 +727,9 @@ test_metadata_failure_keeps_file() {
 
 } // namespace
 
-/* Issue #526: the channel-map review carries an nfm row's own channel width in Hz, and nothing for a row that inherits
-   the configured width or a digital row. */
+/* Issue #526: the channel-map review carries an analog row's own channel width in Hz -- an nfm row's
+   --nfm-bandwidth-hz, an am row's --am-bandwidth-hz -- and nothing for a row that inherits the configured width or a
+   digital row. */
 static void
 test_channel_review_bandwidth() {
     QTemporaryDir source;
@@ -736,7 +737,8 @@ test_channel_review_bandwidth() {
     dsd_qt::ImportedFilesModel model(&host);
     QFile file(source.filePath("nfm.csv"));
     const QByteArray bytes = "channel,frequency_hz,mode,options\n1,154430000,nfm,--nfm-bandwidth-hz 12500\n"
-                             "2,155100000,nfm,\n3,461000000,dmr,\n";
+                             "2,155100000,nfm,\n3,461000000,dmr,\n4,118300000,am,--am-bandwidth-hz 8333\n"
+                             "5,121500000,AM,\n";
     expect("write nfm map", file.open(QIODevice::WriteOnly) && file.write(bytes) == bytes.size());
     file.close();
     const auto result = model.importFile(source.filePath("nfm.csv"), "Nfm.csv", "chan");
@@ -747,12 +749,16 @@ test_channel_review_bandwidth() {
     }
     const auto review = model.channelProfiles(row);
     const auto rows = review.value("rows").toList();
-    expect("nfm map review", review.value("ok").toBool() && rows.size() == 3);
-    if (rows.size() == 3) {
+    expect("nfm map review", review.value("ok").toBool() && rows.size() == 5);
+    if (rows.size() == 5) {
         expect("reports the row's own width", rows[0].toMap().value("bandwidthHz").toInt() == 12500);
         expect("an inheriting nfm row carries none", !rows[1].toMap().value("bandwidthHz").isValid());
         expect("a digital row carries none", !rows[2].toMap().value("bandwidthHz").isValid());
         expect("the nfm row names its mode", rows[0].toMap().value("mode") == "nfm");
+        expect("reports the am row's own width",
+               rows[3].toMap().value("bandwidthHz").toInt() == 8333 && rows[3].toMap().value("mode") == "am");
+        expect("an inheriting am row carries none, in the canonical spelling",
+               !rows[4].toMap().value("bandwidthHz").isValid() && rows[4].toMap().value("mode") == "am");
     }
     model.remove(row);
 }
@@ -1439,20 +1445,26 @@ test_example_targets() {
     dsd_qt::ImportedFilesModel model(&host);
     const auto result = model.importFile(QStringLiteral(DSD_NEO_TEST_EXAMPLES_DIR "/trunk_scan_targets.csv"),
                                          "Examples.csv", "trunkTargets");
-    expect("shipped example imports all targets", result.value("ok").toBool() && result.value("accepted").toInt() == 9);
+    expect("shipped example imports all targets",
+           result.value("ok").toBool() && result.value("accepted").toInt() == 10);
     if (!result.value("ok").toBool()) {
         return;
     }
     const QString path = result.value("path").toString();
     const auto rows = model.targetPreview(path).value("rows").toList();
-    /* Issue #526: the analog nfm-conventional target previews with its canonical type and its own channel width; a
-       digital target carries no width. */
-    expect("shipped row order retained", rows.size() == 9 && rows[0].toMap().value("id") == "county-p25"
-                                             && rows[7].toMap().value("id") == "field-nxdn48"
-                                             && rows[8].toMap().value("id") == "fire-nfm"
-                                             && rows[8].toMap().value("type") == "nfm-conventional");
-    if (rows.size() == 9) {
+    /* Issue #526: the analog nfm-conventional and am-conventional targets preview with their canonical types and their
+       own channel widths and squelch, which the import's copy keeps; a digital target carries no width. */
+    expect("shipped row order retained",
+           rows.size() == 10 && rows[0].toMap().value("id") == "county-p25"
+               && rows[7].toMap().value("id") == "field-nxdn48" && rows[8].toMap().value("id") == "fire-nfm"
+               && rows[8].toMap().value("type") == "nfm-conventional" && rows[9].toMap().value("id") == "tower-am"
+               && rows[9].toMap().value("type") == "am-conventional");
+    if (rows.size() == 10) {
         expect("previews the nfm target's own width", rows[8].toMap().value("bandwidthHz").toInt() == 12500);
+        expect("previews the am target's own width and squelch",
+               rows[9].toMap().value("bandwidthHz").toInt() == 8333
+                   && rows[9].toMap().value("squelchDb").toInt() == -55);
+        expect("an analog target previews no modulation", rows[9].toMap().value("modulation").toString().isEmpty());
         expect("a digital target previews no width", !rows[0].toMap().value("bandwidthHz").isValid());
     }
     auto* opts = static_cast<dsd_opts*>(std::calloc(1, sizeof(dsd_opts)));
@@ -1476,7 +1488,7 @@ test_example_targets() {
     const bool initialized = dsd_engine_trunk_scan_init(opts, state, error, sizeof error) == 0;
     expect("imported example initializes", initialized);
     if (initialized) {
-        expect("engine owns all nine imported targets", dsd_engine_trunk_scan_target_count(state) == 9);
+        expect("engine owns all ten imported targets", dsd_engine_trunk_scan_target_count(state) == 10);
         expect("first target visit limit applies", opts->scan_max_visit_ms == 20000);
         expect("advance imported target",
                dsd_engine_trunk_scan_control(opts, state, DSD_TRUNK_SCAN_CONTROL_ADVANCE) == 0);

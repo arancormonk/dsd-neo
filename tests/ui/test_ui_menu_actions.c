@@ -2105,6 +2105,12 @@ test_nfm_bandwidth_row_follows_the_configured_preset(void) {
     /* Issue #526: unless that row is an nfm scan row, which runs the width on a digital session. */
     dsd_test_scan_labels_set(1, DSD_SCAN_MODE_NFM);
     rc |= expect_int("nfm row: shown under an nfm scan row on a digital session", is_nfm_width_editable(&ctx), 1);
+    /* An am scan row there runs AM: the AM width row is offered and the NFM one is not (no NFM width is set). */
+    opts.analog_demod = DSD_ANALOG_DEMOD_AM;
+    dsd_test_scan_labels_set(1, DSD_SCAN_MODE_AM);
+    rc |= expect_int("am row: shown under an am scan row on a digital session", is_am_width_editable(&ctx), 1);
+    rc |= expect_int("nfm row: hidden under an am scan row on a digital session", is_nfm_width_editable(&ctx), 0);
+    opts.analog_demod = DSD_ANALOG_DEMOD_FM;
     dsd_test_scan_labels_set(1, DSD_SCAN_MODE_INHERIT);
     dsd_test_scan_labels_configured(NULL);
 

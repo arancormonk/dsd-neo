@@ -3,12 +3,14 @@
 #include <QCoreApplication>
 #include <QList>
 #include <QMap>
+#include <QPair>
 #include <QString>
 #include <QStringList>
 #include <QVariant>
 #include <QVariantList>
 #include <QVariantMap>
 #include <cstdio>
+#include <dsd-neo/runtime/analog_channel.h>
 #include <initializer_list>
 #include <utility>
 #include "scan_list_targets.h"
@@ -47,6 +49,90 @@ main(int argc, char** argv) {
             check(build().ok && build().csv.contains((types[i] + (trunk ? "-trunk" : "-conventional")).toUtf8()));
         }
     }
+    // Issue #526: a saved analog system maps to its conventional target, never a trunked one, and so does a frequency
+    // entry's analog protocol. An analog entry carries no modulation, keys, talkgroups or key-map files: the editor
+    // hides them, and a saved analog system's have nothing to act on, so none reaches the CSV or has to exist.
+    for (const auto& analog : {qMakePair(QStringLiteral("-fA"), QByteArray("nfm-conventional")),
+                               qMakePair(QStringLiteral("-fM"), QByteArray("am-conventional"))}) {
+        sys["decodeFlag"] = analog.first;
+        sys["trunking"] = false;
+        check(build().ok && build().csv.contains(analog.second + ",851500000,"));
+        sys["trunking"] = true;
+        check(!build().ok && build().error.contains("Example: Analog entries are conventional only"));
+        sys["trunking"] = false;
+        sys["encKeyType"] = "basic";
+        sys["encKeyValue"] = "7";
+        sys["encForceKey"] = 1;
+        sys["groupCsvPath"] = "/imports/groups.csv";
+        sys["keyCsvPath"] = "/imports/keys.csv";
+        sys["dmrTgKeyCsvPath"] = "/imports/tg.csv";
+        sys["decryptionClearKeys"] = true;
+        entry["modulation"] = "gfsk";
+        entry["gainDb"] = 20;
+        list["entries"] = QVariantList{entry};
+        const auto analogTargets = build();
+        check(analogTargets.ok && analogTargets.paths.isEmpty());
+        check(analogTargets.csv.endsWith(analog.second + ",851500000,,,,,,,,,20,\n"));
+        check(!analogTargets.csv.contains("-b") && !analogTargets.csv.contains("-G")
+              && !analogTargets.csv.contains("gfsk") && !analogTargets.csv.contains("keys.csv")
+              && !analogTargets.csv.contains("-4"));
+        // ...nor has to fit a CSV cell: a retained path with a comma, quote or line break that no analog entry passes
+        // does not refuse the list.
+        sys["keyCsvPath"] = "/imports/old,keys.csv";
+        sys["groupCsvPath"] = "/imports/\"groups\".csv";
+        sys["keysHexCsvPath"] = "/imports/hex\nkeys.csv";
+        const auto unusedPaths = build();
+        check(unusedPaths.ok && unusedPaths.paths.isEmpty());
+        check(!unusedPaths.csv.contains("/imports/old") && !unusedPaths.csv.contains("/imports/\"groups")
+              && !unusedPaths.csv.contains("/imports/hex"));
+        sys.remove("keysHexCsvPath");
+        for (const auto& field : {"encKeyType", "encKeyValue", "encForceKey", "groupCsvPath", "keyCsvPath",
+                                  "dmrTgKeyCsvPath", "decryptionClearKeys"}) {
+            sys.remove(field);
+        }
+        entry.remove("modulation");
+        entry.remove("gainDb");
+        list["entries"] = QVariantList{entry};
+    }
+    // Only the exact analog flags: the digital-only -fa (auto) and a lowercase -fm stay refused.
+    for (const auto& flag : QStringList{"-fa", "-fm", "-fA -fM"}) {
+        sys["decodeFlag"] = flag;
+        check(!build().ok);
+    }
+    // A saved analog system with a channel map is told to remove it: no trunked type would take it either.
+    sys["decodeFlag"] = "-fM";
+    sys["trunking"] = false;
+    sys["chanCsvPath"] = "/imports/chan.csv";
+    check(!build().ok && build().error.contains("Example: Analog entries take no channel map; remove it"));
+    check(!build().error.contains("trunked"));
+    sys.remove("chanCsvPath");
+    // The analog kind the starter and the editor share: the protocol of a frequency entry, the exact flag of a
+    // saved system's.
+    const QVariantMap systemEntry{{"kind", "system"}};
+    check(scan_list_entry_analog_kind({{"kind", "freq"}, {"protocol", "nfm"}}, "-fs") == DSD_ANALOG_DEMOD_FM);
+    check(scan_list_entry_analog_kind({{"kind", "freq"}, {"protocol", "am"}}, QString()) == DSD_ANALOG_DEMOD_AM);
+    check(scan_list_entry_analog_kind({{"kind", "freq"}, {"protocol", "p25"}}, "-fA") == -1);
+    check(scan_list_entry_analog_kind(systemEntry, " -fA ") == DSD_ANALOG_DEMOD_FM);
+    check(scan_list_entry_analog_kind(systemEntry, "-fM") == DSD_ANALOG_DEMOD_AM);
+    check(scan_list_entry_analog_kind(systemEntry, "-fA -fM") == -1);
+    check(scan_list_entry_analog_kind(systemEntry, "-fs") == -1);
+    // Frequency entries: nfm and am map to their conventional types beside digital ones.
+    QVariantList mixed;
+    const QStringList protocols{"p25", "nfm", "am", "dmr"};
+    for (int i = 0; i < protocols.size(); ++i) {
+        mixed << QVariantMap{
+            {"uid", QStringLiteral("f%1").arg(i)},           {"kind", "freq"},       {"protocol", protocols[i]},
+            {"freqMhz", QString::number(118.3 + i, 'f', 1)}, {"modulation", "c4fm"}, {"enabled", true}};
+    }
+    list["entries"] = mixed;
+    const auto mixedTargets = build();
+    check(mixedTargets.ok && mixedTargets.targetCount == 4);
+    check(mixedTargets.csv.contains("f0,p25-conventional,118300000,,,,,,,,c4fm,,")
+          && mixedTargets.csv.contains("f1,nfm-conventional,119300000,,,,,,,,,,")
+          && mixedTargets.csv.contains("f2,am-conventional,120300000,,,,,,,,,,")
+          && mixedTargets.csv.contains("f3,dmr-conventional,121300000,,,,,,,,c4fm,,"));
+    list["entries"] = QVariantList{entry};
+    sys["trunking"] = true;
     sys["decodeFlag"] = "-mq";
     check(build().csv.contains("cqpsk"));
     for (const auto& flag : QStringList{"-mq -^", "-^ -mq", "  -mq   -^  ", "-ft -^", "-^ -ft"}) {

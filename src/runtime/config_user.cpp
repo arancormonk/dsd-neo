@@ -1971,8 +1971,9 @@ snapshot_dsp_config(dsdneoUserConfig* cfg) {
     cfg->iq_dc_block = (dsd_parse_int_strict(dcb, 10, INT_MIN, INT_MAX, &parsed) == 0 && parsed != 0) ? 1 : 0;
 }
 
-/* The configured widths, 0 when the default is in force. A scan row's own --nfm-bandwidth-hz (issue #526) runs over
-   the NFM width in dsd_opts while the row is on air, so each comes from the configured view, as the decode mode does.
+/* The configured widths, 0 when the default is in force. A scan row's own width (issue #526), an nfm row's
+   --nfm-bandwidth-hz or an am row's --am-bandwidth-hz, runs over the width of its kind in dsd_opts while the row is on
+   air, so each comes from the configured view, as the decode mode does.
    The section is always part of a snapshot, as every other section is, so a saved default is a setting that loads
    back. */
 static void

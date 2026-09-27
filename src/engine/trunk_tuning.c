@@ -16,6 +16,7 @@
 #include <dsd-neo/io/rigctl_client.h>
 #include <dsd-neo/io/rtl_stream_c.h>
 #include <dsd-neo/platform/platform.h>
+#include <dsd-neo/platform/sockets.h>
 #include <dsd-neo/protocol/dmr/dmr.h>
 #include <dsd-neo/protocol/dmr/dmr_block.h>
 #include <dsd-neo/protocol/p25/p25_sm_watchdog.h>
@@ -24,6 +25,8 @@
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/decode_mode.h>
 #include <dsd-neo/runtime/scan_mode.h>
+#include <dsd-neo/runtime/scan_options.h>
+#include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <time.h>
@@ -417,20 +420,21 @@ dsd_engine_prepare_current_cc_rtl_chain(const dsd_opts* opts, const dsd_state* s
  * kind's default), bound to the target with the scan's gain profile and no symbol profile. Returns -1
  * when the front end refuses the width at the rate it runs.
  *
- * A width the published DSP rate cannot fit -- the row's own, or the configured NFM width a row without one runs --
- * was named when the scan started, or when that rate or the configured width last changed
- * (dsd_engine_scan_warn_analog_width() checks it against the same rate), together with the fact that the row is
- * skipped at every visit, so it is refused here without calling into the stream, whose refusal log a valid row's
- * request would re-arm and repeat at every rotation; the trunk-scan coordinator stays quiet about the failed visit for
- * the same reason. So is any explicit width while DSD_NEO_CHANNEL_LPF=0 turns the channel filter off, which the stream
- * refuses at every rate and the same warning names. Any other refusal is the stream's to log. */
+ * A width the published DSP rate cannot fit -- the row's own, or the configured width of its kind a row without one
+ * runs, the AM default included (dsd_engine_scan_held_width_hz()) -- was named when the scan started, or when that rate
+ * or the configured width last changed (dsd_engine_scan_warn_analog_width() checks it against the same rate), together
+ * with the fact that the row is skipped at every visit, so it is refused here without calling into the stream, whose
+ * refusal log a valid row's request would re-arm and repeat at every rotation; the trunk-scan coordinator stays quiet
+ * about the failed visit for the same reason. So is any held width while DSD_NEO_CHANNEL_LPF=0 turns the channel filter
+ * off, which the stream refuses at every rate and the same warning names. Any other refusal is the stream's to log. */
 static int
 dsd_engine_prepare_scan_analog_profile(const dsd_opts* opts, const dsd_state* state, long int freq) {
     const int width_hz = dsd_opts_analog_width_hz(opts);
+    const int held_hz = dsd_engine_scan_held_width_hz(opts->analog_demod, width_hz);
     const int rate_hz = dsd_engine_scan_dsp_rate_hz(opts, state);
-    if (width_hz > 0 && rate_hz > 0
+    if (held_hz > 0 && rate_hz > 0
         && (dsd_engine_scan_channel_lpf_forced_off()
-            || dsd_analog_width_check(opts->analog_demod, width_hz, rate_hz, NULL, 0U) != 0)) {
+            || dsd_analog_width_check(opts->analog_demod, held_hz, rate_hz, NULL, 0U) != 0)) {
         return -1;
     }
     dsd_engine_prepare_retune_profile_for_target(opts, state, (uint32_t)freq, -1, 0, 4, RTL_STREAM_CHANNEL_PROFILE_WIDE,
@@ -510,16 +514,92 @@ dsd_engine_update_vc_tune_state(dsd_opts* opts, dsd_state* state, long int freq)
     state->p25_last_vc_tune_time_m = state->last_vc_sync_time_m;
 }
 
+/* The demodulator and passband a rigctl peer is asked for under the settings in force (issue #526). On audio input (a
+ * PCM, UDP or TCP source) the peer demodulates what DSD-neo hears, so an AM row (the AM monitor) asks for AM at the AM
+ * width it runs, its own or the configured one (the 6 kHz default when none is set), and an nfm row that sets its own
+ * --nfm-bandwidth-hz (dsd_engine_scan_tuning_row_options()) asks for FM at that width. Either is the row's own request
+ * (@p row_request set): a peer that refuses it fails the tune, and the scanner moves on as for any row it cannot tune.
+ * Anything else asks for FM at -B and stays best-effort, as -B always has been, unless a refusal leaves the peer on an
+ * am row's AM, or on a demodulator not known; without -B that is the peer's own passband (0), sent only to undo an AM
+ * row or a row passband this client set, which returns the peer to FM at the passband it had before
+ * (SetModulationKind()). On an RTL-family input DSD-neo demodulates the I/Q itself and the peer only follows the
+ * frequency, so it is asked for FM at -B, best-effort, whatever the row runs and whatever the peer runs. */
 static int
-dsd_engine_tune_rigctl(const dsd_opts* opts, long int freq) {
-    if (opts->setmod_bw != 0 && !SetModulation(opts->rigctl_sockfd, opts->setmod_bw)) {
-        DSD_FPRINTF(stderr, "Rigctl modulation update failed for bandwidth %d.\n", opts->setmod_bw);
+dsd_engine_rigctl_modulation(const dsd_opts* opts, const dsd_state* state, int* bandwidth, int* row_request) {
+    int kind = DSD_ANALOG_DEMOD_FM;
+    *bandwidth = opts->setmod_bw;
+    *row_request = 0;
+    const int peer_demodulates = opts->audio_in_type != AUDIO_IN_RTL && dsd_opts_is_analog_family(opts);
+    if (peer_demodulates && opts->analog_demod == DSD_ANALOG_DEMOD_AM) {
+        kind = DSD_ANALOG_DEMOD_AM;
+        *bandwidth = dsd_analog_width_effective_hz(DSD_ANALOG_DEMOD_AM, opts->analog_am_bandwidth_hz);
+        *row_request = 1;
+    } else if (peer_demodulates) {
+        const dsd_scan_option_values* row = dsd_engine_scan_tuning_row_options(opts, state);
+        if (row && (row->present & DSD_SCAN_OPT_BANDWIDTH) && row->channel_bw_kind == DSD_ANALOG_DEMOD_FM) {
+            *bandwidth = row->channel_bw_hz;
+            *row_request = 1;
+        }
     }
-    if (!SetFreq(opts->rigctl_sockfd, freq)) {
-        DSD_FPRINTF(stderr, "Rigctl frequency update failed for %ld Hz.\n", freq);
+    return kind;
+}
+
+/* A row's own request goes through SetScanRowModulation(), which first reads the peer's own passband so that the FM
+ * undo and the scan's leave can send it back. A refused row request fails the tune. Any other request is best-effort,
+ * as -B always was, unless the peer demodulates audio input and is not known to run the demodulator asked for (still
+ * on the AM an am row put it on, or on either after a lost reply, CachedModulationKind()): the row would then be heard
+ * through the wrong one, so that tune fails too. On an RTL-family input DSD-neo demodulates the I/Q, and what the peer
+ * runs is never heard, so no refusal fails the tune there. */
+static int
+dsd_engine_tune_rigctl_modulation(const dsd_opts* opts, const dsd_state* state) {
+    int bandwidth = 0;
+    int row_request = 0;
+    const int kind = dsd_engine_rigctl_modulation(opts, state, &bandwidth, &row_request);
+    const bool ok = row_request ? SetScanRowModulation(opts->rigctl_sockfd, kind, bandwidth)
+                                : SetModulationKind(opts->rigctl_sockfd, kind, bandwidth);
+    if (ok) {
+        return 1;
+    }
+    DSD_FPRINTF(stderr, "Rigctl %s modulation update failed for bandwidth %d.\n", dsd_analog_demod_label(kind),
+                bandwidth);
+    if (row_request) {
         return 0;
     }
-    return 1;
+    return opts->audio_in_type == AUDIO_IN_RTL || CachedModulationKind(opts->rigctl_sockfd) == kind;
+}
+
+void
+dsd_engine_scan_rigctl_restore(const dsd_opts* opts, const dsd_state* state) {
+    if (!opts || opts->use_rigctl != 1 || opts->rigctl_sockfd == DSD_INVALID_SOCKET) {
+        return;
+    }
+    int bandwidth = 0;
+    int row_request = 0;
+    const int kind = dsd_engine_rigctl_modulation(opts, state, &bandwidth, &row_request);
+    if (!RestoreScanModulation(opts->rigctl_sockfd, kind, bandwidth)) {
+        DSD_FPRINTF(stderr, "Rigctl %s modulation restore failed for bandwidth %d.\n", dsd_analog_demod_label(kind),
+                    bandwidth);
+    }
+}
+
+/* The rigctl leg of a tune: the modulation request, then the frequency. A tune that fails leaves the row on air where
+ * it was, so what the modulation request changed on the peer is put back (RevertModulation()): an am row's AM
+ * accepted before its frequency was refused, or the switch to AM that read the peer's own AM passband before the am
+ * row's width was refused, would otherwise have the row still on air heard through AM, and an nfm row's own passband
+ * accepted before its frequency was refused, through that passband (issue #526). */
+static int
+dsd_engine_tune_rigctl(const dsd_opts* opts, const dsd_state* state, long int freq) {
+    const dsd_rigctl_modulation before = CachedModulation(opts->rigctl_sockfd);
+    if (dsd_engine_tune_rigctl_modulation(opts, state)) {
+        if (SetFreq(opts->rigctl_sockfd, freq)) {
+            return 1;
+        }
+        DSD_FPRINTF(stderr, "Rigctl frequency update failed for %ld Hz.\n", freq);
+    }
+    if (!RevertModulation(opts->rigctl_sockfd, before)) {
+        DSD_FPRINTF(stderr, "Rigctl modulation could not be put back after the failed tune.\n");
+    }
+    return 0;
 }
 
 static int
@@ -558,7 +638,7 @@ static dsd_trunk_tune_result
 dsd_engine_tune_with_backend(dsd_opts* opts, dsd_state* state, long int freq, uint64_t request_id) {
     const int conventional_scan = dsd_engine_conventional_scan_active(opts);
     if (opts->use_rigctl == 1) {
-        if (!dsd_engine_tune_rigctl(opts, freq)) {
+        if (!dsd_engine_tune_rigctl(opts, state, freq)) {
             return DSD_TRUNK_TUNE_RESULT_FAILED;
         }
         opts->rtlsdr_center_freq = (uint32_t)freq;

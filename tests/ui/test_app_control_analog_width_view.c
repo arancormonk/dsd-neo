@@ -5,8 +5,9 @@
 
 /* The shared analog channel width readout (issue #525): the width in force under the configured analog preset, the
  * front end's while a running stream runs the monitor for it, the configured one otherwise; the DSP-limited flag; and
- * the one spelling of the reading and of a configured width that every frontend shows. Issue #526: an nfm scan row's
- * own width is in force over the configured one, which the reading names as the row's default. */
+ * the one spelling of the reading and of a configured width that every frontend shows. Issue #526: an analog (nfm or
+ * am) scan row's own width is in force over the configured width of its kind, which the reading names as the row's
+ * default. */
 
 #include <assert.h>
 #include <dsd-neo/app_control/analog_width_view.h>
@@ -452,6 +453,54 @@ main(void) {
     dsd_scan_mode_leave(opts, state);
     assert(opts->analog_demod == DSD_ANALOG_DEMOD_AM);
     opts->analog_demod = DSD_ANALOG_DEMOD_FM;
+
+    /* ...and an am row on air on a DMR session over an RTL input, with no explicit width of either kind configured. The
+       view describes the row's AM: its own --am-bandwidth-hz overrides the configured AM default, which the reading
+       names; without one the row runs that default. Only the AM width is offered, as the terminal's AM bandwidth row
+       and the Radio sheet's AM stepper are while an am row is on air; the NFM width is not. */
+    opts->analog_only = 0;
+    opts->frame_dmr = 1;
+    dsd_scan_option_values am_row = {0};
+    am_row.present = DSD_SCAN_OPT_BANDWIDTH;
+    am_row.channel_bw_hz = 8333;
+    am_row.channel_bw_kind = DSD_ANALOG_DEMOD_AM;
+    assert(dsd_scan_mode_enter(opts, state, DSD_SCAN_MODE_AM) == 0);
+    assert(dsd_scan_mode_options(opts, state, &am_row) == 0);
+    assert(opts->analog_only == 1 && opts->analog_demod == DSD_ANALOG_DEMOD_AM);
+    assert(dsd_app_analog_width_view_get(opts, state, NULL, &view) == 0);
+    assert(!view.shown && view.row_analog && view.kind == DSD_ANALOG_DEMOD_AM);
+    assert(view.row_override && view.row_hz == 8333 && view.width_hz == 8333 && view.configured_hz == 0);
+    expect_reading(&view, "8.333 kHz (row; default 6 kHz)");
+    assert(dsd_app_analog_width_offered(opts, state, &view, DSD_ANALOG_DEMOD_AM) == 1);
+    assert(dsd_app_analog_width_offered(opts, state, &view, DSD_ANALOG_DEMOD_FM) == 0);
+    /* A width of the other kind is not the am row's own (row options never carry one; the view ignores it anyway). */
+    am_row.channel_bw_kind = DSD_ANALOG_DEMOD_FM;
+    assert(dsd_scan_mode_options(opts, state, &am_row) == 0);
+    assert(dsd_app_analog_width_view_get(opts, state, NULL, &view) == 0);
+    assert(view.row_analog && view.kind == DSD_ANALOG_DEMOD_AM && !view.row_override);
+    /* No width of its own: the row runs the configured AM default, and the offer is the same. */
+    assert(dsd_scan_mode_options(opts, state, NULL) == 0);
+    assert(dsd_app_analog_width_view_get(opts, state, NULL, &view) == 0);
+    assert(view.row_analog && view.kind == DSD_ANALOG_DEMOD_AM && !view.row_override);
+    assert(view.width_hz == DSD_ANALOG_AM_WIDTH_DEFAULT_HZ && view.configured_hz == 0);
+    expect_reading(&view, "6 kHz (default)");
+    assert(dsd_app_analog_width_offered(opts, state, &view, DSD_ANALOG_DEMOD_AM) == 1);
+    assert(dsd_app_analog_width_offered(opts, state, &view, DSD_ANALOG_DEMOD_FM) == 0);
+    /* On PCM input the am row reads as not filtered, and nothing is offered. */
+    opts->audio_in_type = AUDIO_IN_PULSE;
+    assert(dsd_app_analog_width_view_get(opts, state, NULL, &view) == 0);
+    expect_reading(&view, "not used on PCM input");
+    assert(dsd_app_analog_width_offered(opts, state, &view, DSD_ANALOG_DEMOD_AM) == 0);
+    opts->audio_in_type = AUDIO_IN_RTL;
+    /* Once the row leaves, the DMR session offers neither. */
+    dsd_scan_mode_leave(opts, state);
+    assert(opts->analog_only == 0 && opts->frame_dmr == 1);
+    assert(dsd_app_analog_width_view_get(opts, state, NULL, &view) == 0);
+    assert(!view.shown && !view.row_analog && !view.row_override);
+    assert(dsd_app_analog_width_offered(opts, state, &view, DSD_ANALOG_DEMOD_AM) == 0);
+    assert(dsd_app_analog_width_offered(opts, state, &view, DSD_ANALOG_DEMOD_FM) == 0);
+    opts->frame_dmr = 0;
+    opts->analog_only = 1;
 
     char out[8];
     assert(dsd_app_analog_width_view_get(NULL, state, NULL, &view) == -1 && !view.shown);

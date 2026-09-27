@@ -2863,6 +2863,7 @@ if(DSD_ENABLE_QT_UI)
         ui/test_ui_qt_decryption_profiles.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/decryption_profiles_model.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/saved_systems_model.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/scan_list_targets.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/scan_lists_model.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/session_args.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/decoder_host.cpp
@@ -5167,7 +5168,7 @@ add_executable(
 )
 target_include_directories(
     dsd-neo_test_engine_trunk_retune_regression
-    PRIVATE ${PROJECT_SOURCE_DIR}/include
+    PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/engine
 )
 target_link_libraries(
     dsd-neo_test_engine_trunk_retune_regression
@@ -5190,6 +5191,10 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/src/core/util/dsd_state_trunk_lcn.c
     ${PROJECT_SOURCE_DIR}/src/core/util/key_set.c
     ${PROJECT_SOURCE_DIR}/src/core/util/enc_lockout.c
+)
+target_include_directories(
+    dsd-neo_test_engine_channel_scan
+    PRIVATE ${PROJECT_SOURCE_DIR}/src/engine
 )
 target_link_libraries(
     dsd-neo_test_engine_channel_scan
@@ -11769,6 +11774,35 @@ if(DSD_HAS_RADIO)
         "-fM --analog-min-captured-ms 7800 --analog-min-audible-ms 800 --analog-min-inband-db 10 --analog-min-rms-dbfs -60 --analog-max-rms-dbfs -48 --analog-max-clip 0"
         ""
         "Received tone:|${_analog_off_path}"
+    )
+    # Issue #526: -Y map rows declaring am on a digital (-fa) session. The host enters
+    # the row the way the scanner commits it, so the replay's front end opens the AM
+    # monitor at the row's width. Row 0 (--am-bandwidth-hz 8333) on am_tone_synth
+    # measures 21.8 dB tone SNR, 25.2 dB in-band ratio and -45.2 dBFS RMS, unclipped:
+    # the FM monitor finds no tone there, so the tone comes from the AM detector the row
+    # selects (the wider channel lets in more of the fixture's noise than AM_TONE's
+    # default 6 kHz, which reads 24.4/35.4 dB). Row 1 (--am-bandwidth-hz 20000) on
+    # am_adjacent_synth lets the carrier 8.333 kHz up through at +13.0 dBc, which the
+    # default 6 kHz channel rejects at -72.2 dBc and row 0's 8.333 kHz at -71.7 dBc, so
+    # the bound fails if the row width does not apply.
+    set(_scan_am_csv "${CMAKE_CURRENT_BINARY_DIR}/scan_mode_am_rows.csv")
+    file(
+        WRITE "${_scan_am_csv}"
+        "channel,frequency_hz,mode,options\n1,118300000,am,--am-bandwidth-hz 8333\n2,118300000,am,--am-bandwidth-hz 20000\n"
+    )
+    dsd_neo_add_analog_replay_test(
+        DECODE_IQ_SCAN_AM_TONE
+        am_tone_synth
+        "-fa -C ${_scan_am_csv} --analog-scan-row 0 --analog-expect-tone-hz 1000 --analog-min-snr-db 18 --analog-min-captured-ms 1400 --analog-min-audible-ms 1400 --analog-min-inband-db 22 --analog-min-rms-dbfs -50 --analog-max-rms-dbfs -40 --analog-max-clip 0"
+        "Scan row applied: 0 am; width 8.333 kHz \\(row\\).*ANALOG AUDIO OK"
+        "${_analog_off_path}"
+    )
+    dsd_neo_add_analog_replay_test(
+        DECODE_IQ_SCAN_AM_WIDTH
+        am_adjacent_synth
+        "-fa -C ${_scan_am_csv} --analog-scan-row 1 --analog-expect-tone-hz 1000 --analog-min-captured-ms 1400 --analog-probe-min-dbc 8333:0"
+        "Scan row applied: 1 am; width 20 kHz \\(row\\).*ANALOG AUDIO OK"
+        "${_analog_off_path}"
     )
 
     # Negative controls: bounds that must NOT hold, run through

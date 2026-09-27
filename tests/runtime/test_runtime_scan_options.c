@@ -3,6 +3,7 @@
 
 #include <assert.h>
 #include <dsd-neo/core/safe_api.h>
+#include <dsd-neo/runtime/analog_channel.h>
 #include <dsd-neo/runtime/scan_mode.h>
 #include <dsd-neo/runtime/scan_options.h>
 #include <stdio.h>
@@ -223,10 +224,10 @@ check_nfm_row_accepts_analog_options(void) {
 }
 
 /* Keys, forcing, CRC policy, talkgroup groups, data/encrypted-call policy and the voice gate
- * describe digital frames an analog channel never carries: each is refused on an NFM row with
- * the same diagnostic a wrong-mode digital switch gets, and the value is never echoed. */
+ * describe digital frames an analog channel never carries: each is refused on an nfm and an am row
+ * with the same diagnostic a wrong-mode digital switch gets, and the value is never echoed. */
 static void
-check_nfm_row_rejects_digital_options(void) {
+check_analog_rows_reject_digital_options(void) {
     static const char* const refused[] = {"-b 1",
                                           "-H 0123456789",
                                           "-1 0123456789",
@@ -253,23 +254,26 @@ check_nfm_row_rejects_digital_options(void) {
                                           "--no-scan-voice-only",
                                           "--scan-voice-qualify-ms 1000",
                                           "--scan-voice-hold-ms 1000"};
+    static const dsd_scan_mode analog[] = {DSD_SCAN_MODE_NFM, DSD_SCAN_MODE_AM};
     dsd_scan_options parsed = {0};
     char error[192] = {0};
-    for (size_t i = 0; i < sizeof(refused) / sizeof(refused[0]); i++) {
-        for (int conventional = 0; conventional <= 1; conventional++) {
-            DSD_MEMSET(&parsed, 0, sizeof(parsed));
-            DSD_MEMSET(error, 0, sizeof(error));
-            assert(dsd_scan_options_parse(refused[i], DSD_SCAN_MODE_NFM, conventional, &parsed, error, sizeof(error))
-                   < 0);
-            assert(parsed.values.present == 0);
-            char want[64];
-            const size_t name_len = strcspn(refused[i], " =");
-            DSD_SNPRINTF(want, sizeof(want), "%.*s: not supported for this mode/target", (int)name_len, refused[i]);
-            if (strcmp(error, want) != 0) {
-                DSD_FPRINTF(stderr, "'%s' on nfm: got '%s', want '%s'\n", refused[i], error, want);
-                assert(0);
+    for (size_t m = 0; m < sizeof(analog) / sizeof(analog[0]); m++) {
+        for (size_t i = 0; i < sizeof(refused) / sizeof(refused[0]); i++) {
+            for (int conventional = 0; conventional <= 1; conventional++) {
+                DSD_MEMSET(&parsed, 0, sizeof(parsed));
+                DSD_MEMSET(error, 0, sizeof(error));
+                assert(dsd_scan_options_parse(refused[i], analog[m], conventional, &parsed, error, sizeof(error)) < 0);
+                assert(parsed.values.present == 0);
+                char want[64];
+                const size_t name_len = strcspn(refused[i], " =");
+                DSD_SNPRINTF(want, sizeof(want), "%.*s: not supported for this mode/target", (int)name_len, refused[i]);
+                if (strcmp(error, want) != 0) {
+                    DSD_FPRINTF(stderr, "'%s' on %s: got '%s', want '%s'\n", refused[i], dsd_scan_mode_name(analog[m]),
+                                error, want);
+                    assert(0);
+                }
+                assert(strstr(error, "SENSITIVE") == NULL);
             }
-            assert(strstr(error, "SENSITIVE") == NULL);
         }
     }
     DSD_SECURE_ZERO(&parsed, sizeof(parsed));
@@ -353,14 +357,133 @@ check_nfm_bandwidth_rate(void) {
     assert(dsd_scan_option_width_check(DSD_SCAN_MODE_NFM, NULL, 16000, error, sizeof(error)) == 0);
 }
 
+/* --- Issue #526: AM rows --- */
+
+/* An am row takes the analog options: the visit cap, the squelch and its own channel width, spelled for its kind
+ * (--am-bandwidth-hz, whole Hz in the AM range), on -Y rows and am-conventional targets alike. The width records the
+ * demodulator it is for, so an am row's width lands on the AM width and an nfm row's on the NFM one. */
+static void
+check_am_row_accepts_analog_options(void) {
+    dsd_scan_options parsed = {0};
+    char error[192] = {0};
+    for (int conventional = 0; conventional <= 1; conventional++) {
+        DSD_MEMSET(&parsed, 0, sizeof(parsed));
+        assert(dsd_scan_options_parse("--scan-max-visit-ms 5000 --squelch-db -60 --am-bandwidth-hz 8333",
+                                      DSD_SCAN_MODE_AM, conventional, &parsed, error, sizeof(error))
+               == 0);
+        assert(parsed.values.present == (DSD_SCAN_OPT_MAX_VISIT | DSD_SCAN_OPT_SQUELCH | DSD_SCAN_OPT_BANDWIDTH));
+        assert(parsed.values.max_visit_ms == 5000 && parsed.values.squelch_db == -60);
+        assert(parsed.values.channel_bw_hz == 8333 && parsed.values.channel_bw_kind == DSD_ANALOG_DEMOD_AM);
+    }
+
+    const struct {
+        const char* text;
+        int hz;
+    } widths[] = {
+        {"--am-bandwidth-hz=5000", 5000}, {"--am-bandwidth-hz 20000", 20000}, {"--am-bandwidth-hz '6000'", 6000}};
+
+    for (size_t i = 0; i < sizeof(widths) / sizeof(widths[0]); i++) {
+        DSD_MEMSET(&parsed, 0, sizeof(parsed));
+        assert(dsd_scan_options_parse(widths[i].text, DSD_SCAN_MODE_AM, 1, &parsed, error, sizeof(error)) == 0);
+        assert(parsed.values.present == DSD_SCAN_OPT_BANDWIDTH && parsed.values.channel_bw_hz == widths[i].hz);
+        assert(parsed.values.channel_bw_kind == DSD_ANALOG_DEMOD_AM);
+    }
+    DSD_MEMSET(&parsed, 0, sizeof(parsed));
+    parsed.values.channel_bw_kind = DSD_ANALOG_DEMOD_AM;
+    assert(dsd_scan_options_parse("--nfm-bandwidth-hz 12500", DSD_SCAN_MODE_NFM, 1, &parsed, error, sizeof(error))
+           == 0);
+    assert(parsed.values.channel_bw_hz == 12500 && parsed.values.channel_bw_kind == DSD_ANALOG_DEMOD_FM);
+    size_t visited = 0;
+    assert(dsd_scan_options_visit_files("--am-bandwidth-hz 8333 --squelch-db -60", &visited, count_file_spans) == 0);
+    assert(visited == 0);
+    DSD_SECURE_ZERO(&parsed, sizeof(parsed));
+}
+
+/* Each analog kind's width is refused on the other kind's row, as any switch outside a row's class is; a digital or
+ * blank row that names the AM width is told which mode it needs; and the value must be whole Hz in the AM range,
+ * given once. */
+static void
+check_am_bandwidth_option_contract(void) {
+    dsd_scan_options parsed = {0};
+    char error[192] = {0};
+    for (int conventional = 0; conventional <= 1; conventional++) {
+        assert(dsd_scan_options_parse("--nfm-bandwidth-hz 12500", DSD_SCAN_MODE_AM, conventional, &parsed, error,
+                                      sizeof(error))
+               < 0);
+        assert(strcmp(error, "--nfm-bandwidth-hz: not supported for this mode/target") == 0);
+        assert(dsd_scan_options_parse("--am-bandwidth-hz 8000", DSD_SCAN_MODE_NFM, conventional, &parsed, error,
+                                      sizeof(error))
+               < 0);
+        assert(strcmp(error, "--am-bandwidth-hz: not supported for this mode/target") == 0);
+    }
+    for (unsigned int mode = DSD_SCAN_MODE_INHERIT; mode <= DSD_SCAN_MODE_LAST; mode++) {
+        if (dsd_scan_mode_is_analog((dsd_scan_mode)mode)) {
+            continue;
+        }
+        for (int conventional = 0; conventional <= 1; conventional++) {
+            DSD_MEMSET(&parsed, 0, sizeof(parsed));
+            assert(dsd_scan_options_parse("--am-bandwidth-hz 8000", mode, conventional, &parsed, error, sizeof(error))
+                   < 0);
+            assert(strcmp(error, "--am-bandwidth-hz: needs mode am") == 0);
+            assert(parsed.values.present == 0);
+        }
+    }
+    static const char* const invalid[] = {"--am-bandwidth-hz 4999",   "--am-bandwidth-hz 20001",
+                                          "--am-bandwidth-hz=0",      "--am-bandwidth-hz 8.33k",
+                                          "--am-bandwidth-hz 8333Hz", "--am-bandwidth-hz +8333",
+                                          "--am-bandwidth-hz 0x208d", "--am-bandwidth-hz ' 8333'",
+                                          "--am-bandwidth-hz 1e4",    "--am-bandwidth-hz SENSITIVE"};
+    for (size_t i = 0; i < sizeof(invalid) / sizeof(invalid[0]); i++) {
+        DSD_MEMSET(&parsed, 0, sizeof(parsed));
+        assert(dsd_scan_options_parse(invalid[i], DSD_SCAN_MODE_AM, 1, &parsed, error, sizeof(error)) < 0);
+        if (strcmp(error, "--am-bandwidth-hz: expects whole Hz from 5000 to 20000") != 0) {
+            DSD_FPRINTF(stderr, "'%s': got '%s'\n", invalid[i], error);
+            assert(0);
+        }
+        assert(parsed.values.present == 0);
+    }
+    const char* missing[] = {"--am-bandwidth-hz", "--am-bandwidth-hz -8000", "--am-bandwidth-hz --squelch-db -60"};
+    for (size_t i = 0; i < sizeof(missing) / sizeof(missing[0]); i++) {
+        assert(dsd_scan_options_parse(missing[i], DSD_SCAN_MODE_AM, 1, &parsed, error, sizeof(error)) < 0);
+        assert(strcmp(error, "--am-bandwidth-hz: requires a valid argument") == 0);
+    }
+    assert(dsd_scan_options_parse("--am-bandwidth-hz 8000 --am-bandwidth-hz=8000", DSD_SCAN_MODE_AM, 1, &parsed, error,
+                                  sizeof(error))
+           < 0);
+    assert(strcmp(error, "--am-bandwidth-hz: duplicate option") == 0);
+    DSD_SECURE_ZERO(&parsed, sizeof(parsed));
+}
+
+/* An am row's width is held to the DSP rate by the AM demodulator's rule, as an nfm row's is by the NFM one. */
+static void
+check_am_bandwidth_rate(void) {
+    dsd_scan_option_values row = {0};
+    row.present = DSD_SCAN_OPT_BANDWIDTH;
+    row.channel_bw_hz = 20000;
+    row.channel_bw_kind = DSD_ANALOG_DEMOD_AM;
+    char error[256] = {0};
+    assert(dsd_scan_option_width_check(DSD_SCAN_MODE_AM, &row, 24000, error, sizeof(error)) == 0);
+    assert(error[0] == '\0');
+    assert(dsd_scan_option_width_check(DSD_SCAN_MODE_AM, &row, 16000, error, sizeof(error)) < 0);
+    assert(strstr(error, "AM") && strstr(error, "20 kHz") && strstr(error, "16 kHz"));
+    row.channel_bw_hz = 12000;
+    assert(dsd_scan_option_width_check(DSD_SCAN_MODE_AM, &row, 16000, error, sizeof(error)) == 0);
+    /* A digital class has no width to hold. */
+    row.channel_bw_hz = 20000;
+    assert(dsd_scan_option_width_check(DSD_SCAN_MODE_DMR, &row, 16000, error, sizeof(error)) == 0);
+}
+
 int
 main(void) {
     check_file_spans();
     check_squelch_option();
     check_nfm_row_accepts_analog_options();
-    check_nfm_row_rejects_digital_options();
+    check_analog_rows_reject_digital_options();
     check_nfm_bandwidth_option_contract();
     check_nfm_bandwidth_rate();
+    check_am_row_accepts_analog_options();
+    check_am_bandwidth_option_contract();
+    check_am_bandwidth_rate();
     dsd_scan_options parsed = {0};
     char error[192] = {0};
     assert(dsd_scan_options_parse("--dmr-tg-key-csv mapping.csv", DSD_SCAN_MODE_DMR, 1, &parsed, error, sizeof(error))

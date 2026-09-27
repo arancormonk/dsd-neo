@@ -59,6 +59,8 @@ typedef enum {
     DSD_TRUNK_SCAN_TARGET_P25_CONVENTIONAL = 7,
     /** One analog NFM channel (issue #526): carrier activity, no frames, keys or symbol clock. */
     DSD_TRUNK_SCAN_TARGET_NFM_CONVENTIONAL = 8,
+    /** One analog AM channel (issue #526): the AM monitor (-fM), otherwise as an nfm-conventional target. */
+    DSD_TRUNK_SCAN_TARGET_AM_CONVENTIONAL = 9,
 } dsd_trunk_scan_target_type;
 
 typedef enum {
@@ -189,6 +191,12 @@ size_t dsd_engine_trunk_scan_target_count(const dsd_state* state);
  * edit made while another row was on air. Read-only; 0 when @p opts or @p state is NULL.
  */
 int dsd_engine_scan_runs_configured_nfm_width(const dsd_opts* opts, const dsd_state* state);
+/**
+ * @brief dsd_engine_scan_runs_configured_nfm_width() for the configured AM width: whether the scan running now visits
+ * an am row or am-conventional target that sets no --am-bandwidth-hz of its own, and so runs the configured AM width
+ * (its 6 kHz default when none is set, which a DSP rate holds too) whenever it is on air, on any session (issue #526).
+ */
+int dsd_engine_scan_runs_configured_am_width(const dsd_opts* opts, const dsd_state* state);
 int dsd_engine_trunk_scan_saved_tuner_autogain(const dsd_state* state, int* out_on);
 int dsd_engine_trunk_scan_active_p25_cqpsk_request(const dsd_state* state, int* out_enable);
 /**

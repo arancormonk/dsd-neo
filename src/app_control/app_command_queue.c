@@ -5491,10 +5491,10 @@ cfg_check_analog_width(const dsd_opts* opts, dsd_state* state, int kind, int reo
 
 /*
  * A config apply is scoped: while it runs, dsd_opts holds the configured options, but the stream a reopen starts runs
- * the scan row on air again once the scope resumes. An nfm row's own width (--nfm-bandwidth-hz, issue #526) is
- * therefore held to the rate a reopened device runs at, as RTL_SET_BW and Input > Switch source hold it: a reopen that
- * cannot filter it leaves the whole config unapplied, rather than the row refused where it lands. A config that reopens
- * nothing moves no rate.
+ * the scan row on air again once the scope resumes. An nfm or am row's own width (--nfm-bandwidth-hz or
+ * --am-bandwidth-hz, issue #526) is therefore held to the rate a reopened device runs at, as RTL_SET_BW and Input >
+ * Switch source hold it: a reopen that cannot filter it leaves the whole config unapplied, rather than the row refused
+ * where it lands. A config that reopens nothing moves no rate.
  */
 static int
 cfg_check_scan_row_width(const dsd_opts* opts, dsd_state* state, const dsdneoUserConfig* cfg) {
@@ -5502,14 +5502,15 @@ cfg_check_scan_row_width(const dsd_opts* opts, dsd_state* state, const dsdneoUse
     if (!row || !(row->present & DSD_SCAN_OPT_BANDWIDTH) || row->channel_bw_hz <= 0) {
         return UI_CMD_APPLY_COMPLETED;
     }
+    const int kind = row->channel_bw_kind == DSD_ANALOG_DEMOD_AM ? DSD_ANALOG_DEMOD_AM : DSD_ANALOG_DEMOD_FM;
     const cfg_reopen_kind reopen = cfg_radio_reopen(opts, cfg);
     char why[128];
     int rc = 0;
     if (reopen == CFG_REOPEN_AT_RTL_BW) {
-        rc = svc_check_analog_bandwidth_for_rtl_bw(DSD_ANALOG_DEMOD_FM, row->channel_bw_hz,
-                                                   cfg_reopen_rtl_bw_khz(opts, cfg), why, sizeof why);
+        rc = svc_check_analog_bandwidth_for_rtl_bw(kind, row->channel_bw_hz, cfg_reopen_rtl_bw_khz(opts, cfg), why,
+                                                   sizeof why);
     } else if (reopen == CFG_REOPEN_AT_DEVICE_RATE) {
-        rc = svc_check_analog_bandwidth_at_device_rate(DSD_ANALOG_DEMOD_FM, row->channel_bw_hz, why, sizeof why);
+        rc = svc_check_analog_bandwidth_at_device_rate(kind, row->channel_bw_hz, why, sizeof why);
     }
     if (rc == 0) {
         return UI_CMD_APPLY_COMPLETED;
@@ -5546,23 +5547,35 @@ cfg_check_held_analog_width(const dsd_opts* opts, dsd_state* state, const dsdneo
 /*
  * A session the config leaves on a preset that runs no FM -- a digital one, or AM (issue #524) -- still runs the
  * configured NFM width on the scan's nfm rows or targets without a width of their own (issue #526,
- * dsd_engine_scan_runs_configured_nfm_width()), held to the rate as cfg_check_held_analog_width() holds a width.
+ * dsd_engine_scan_runs_configured_nfm_width()), and one it leaves on a preset that runs no AM the configured AM width
+ * on the scan's am rows or targets without one (dsd_engine_scan_runs_configured_am_width(); the AM default is held as
+ * its 6 kHz): each held to the rate as cfg_check_held_analog_width() holds a width. @p preset_kind is the analog kind
+ * the config leaves the session on (cfg_analog_kind_after(), -1 for none), which holds its own width.
  */
 static int
-cfg_check_scan_nfm_width(const dsd_opts* opts, dsd_state* state, const dsdneoUserConfig* cfg) {
-    const int nfm_hz = cfg_analog_width_after(opts, cfg, DSD_ANALOG_DEMOD_FM);
-    return (nfm_hz > 0 && dsd_engine_scan_runs_configured_nfm_width(opts, state))
-               ? cfg_check_held_analog_width(opts, state, cfg, DSD_ANALOG_DEMOD_FM, nfm_hz, 0)
-               : UI_CMD_APPLY_COMPLETED;
+cfg_check_scan_widths(const dsd_opts* opts, dsd_state* state, const dsdneoUserConfig* cfg, int preset_kind) {
+    for (int kind = DSD_ANALOG_DEMOD_FM; kind <= DSD_ANALOG_DEMOD_AM; kind++) {
+        const int width_hz = cfg_analog_width_after(opts, cfg, kind);
+        const int runs = kind == DSD_ANALOG_DEMOD_AM ? dsd_engine_scan_runs_configured_am_width(opts, state)
+                                                     : dsd_engine_scan_runs_configured_nfm_width(opts, state);
+        if (kind == preset_kind || !runs || (width_hz <= 0 && kind != DSD_ANALOG_DEMOD_AM)) {
+            continue;
+        }
+        const int rc = cfg_check_held_analog_width(opts, state, cfg, kind, width_hz, 0);
+        if (rc != UI_CMD_APPLY_COMPLETED) {
+            return rc;
+        }
+    }
+    return UI_CMD_APPLY_COMPLETED;
 }
 
 /*
  * Asked before anything changes, as DSD_APP_CMD_DECODE_MODE_SET asks. A config that leaves the analog monitor on an
  * explicit width, or on AM (whose default the rate holds too, since AM always runs its channel filter), is held to the
  * rate that width will run at (cfg_check_held_analog_width()), under a scan row too, as the width commands and
- * RTL_SET_BW hold it. So is one that leaves the session digital or on AM while the scan has an nfm row or target that
- * runs the configured NFM width (issue #526, cfg_check_scan_nfm_width()), and an nfm row's own width on air
- * (cfg_check_scan_row_width()). A config that
+ * RTL_SET_BW hold it. So is one that leaves the session on another kind or none while the scan has an nfm or am row or
+ * target that runs the configured width of its kind (issue #526, cfg_check_scan_widths()), and an nfm or am row's own
+ * width on air (cfg_check_scan_row_width()). A config that
  * reopens a SoapySDR or Airspy device instead runs the width at the rate that device delivers, which neither the
  * running stream's rate nor rtl_bw_khz says: the reopened stream's start checks it there
  * (rtl_demod_finalize_analog_channel()), as it does for Input > Switch source > RTL-SDR over a SoapySDR input. With the
@@ -5580,11 +5593,9 @@ cfg_check_receive_family(const dsd_opts* opts, dsd_state* state, const dsdneoUse
         return row_rc;
     }
     const int kind = cfg_analog_kind_after(opts, cfg);
-    if (kind != DSD_ANALOG_DEMOD_FM) {
-        const int nfm_rc = cfg_check_scan_nfm_width(opts, state, cfg);
-        if (kind < 0 || nfm_rc != UI_CMD_APPLY_COMPLETED) {
-            return nfm_rc;
-        }
+    const int scan_rc = cfg_check_scan_widths(opts, state, cfg, kind);
+    if (kind < 0 || scan_rc != UI_CMD_APPLY_COMPLETED) {
+        return scan_rc;
     }
     const int width_hz = cfg_analog_width_after(opts, cfg, kind);
     if (width_hz > 0 || kind == DSD_ANALOG_DEMOD_AM) {
@@ -5930,8 +5941,8 @@ command_updates_scan_mode(const struct dsd_app_command* c) {
         /* DSD_APP_CMD_NFM_BANDWIDTH_SET and DSD_APP_CMD_AM_BANDWIDTH_SET are deliberately not here: like squelch, the
          * command edits the configured width (svc_set_analog_bandwidth(), through
          * dsd_scan_mode_set_configured_nfm_bandwidth() for NFM) instead of suspending and re-applying the row, which
-         * would read the live acquisition the row has made as a change and end a followed call. An nfm row's own width
-         * (--nfm-bandwidth-hz, issue #526) stays in force over the edit. */
+         * would read the live acquisition the row has made as a change and end a followed call. An analog row's own
+         * width of the edited kind (--nfm-bandwidth-hz or --am-bandwidth-hz, issue #526) stays in force over it. */
         DSD_APP_CMD_IMPORT_GROUP_LIST,
         DSD_APP_CMD_IMPORT_GROUP_LIST_CLEAR,
         DSD_APP_CMD_DECODE_MODE_SET,

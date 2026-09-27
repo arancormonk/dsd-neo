@@ -2308,6 +2308,7 @@ static int
 test_channel_map_examples_import_cleanly(void) {
     static const char* const examples[] = {"capacity_plus_chan.csv",
                                            "connect_plus_chan.csv",
+                                           "conventional_scan_analog.csv",
                                            "conventional_scan_keyed.csv",
                                            "conventional_scan_modes.csv",
                                            "conventional_scan_named.csv",
@@ -2450,8 +2451,9 @@ test_nfm_channel_map_rows(void) {
         {"1,154430000,fm,\n", "row 2: invalid mode 'fm' (use nfm)"},
         {"1,154430000,Analog,\n", "row 2: invalid mode 'Analog' (use nfm)"},
         {"1,154430000,wfm,\n", "row 2: invalid mode 'wfm' (use nfm)"},
-        {"1,154430000,typo,\n", "row 2: invalid mode; expected p25, dmr, nxdn96, nxdn48, dpmr, dstar, ysf, m17, nfm or "
-                                "an empty cell"},
+        {"1,154430000,typo,\n",
+         "row 2: invalid mode; expected p25, dmr, nxdn96, nxdn48, dpmr, dstar, ysf, m17, nfm, am "
+         "or an empty cell"},
     };
 
     for (size_t i = 0; i < sizeof(refused) / sizeof(refused[0]); i++) {
@@ -2474,6 +2476,77 @@ test_nfm_channel_map_rows(void) {
     return rc;
 }
 
+/* --- Issue #526: am channel-map rows --- */
+
+/* A map mixing am, nfm and digital rows imports with each row's class and its own width, spelled for its kind, which
+ * the preview reports; an am row refuses the settings an analog channel cannot use, and the other kind's width, with a
+ * row diagnostic, and a digital or blank row that names the AM width is told the mode it needs. */
+static int
+test_am_channel_map_rows(void) {
+    char path[DSD_TEST_PATH_MAX];
+    const int fd = dsd_test_mkstemp(path, sizeof path, "am-map-");
+    assert(fd >= 0);
+    dsd_close(fd);
+    char log[4096];
+    int rc = 0;
+    const char* mixed = "channel,frequency_hz,name,mode,options\n"
+                        "1,118300000,Tower, Am ,--am-bandwidth-hz 8333 --squelch-db -55 --scan-max-visit-ms 30000\n"
+                        "2,154430000,Fire,nfm,--nfm-bandwidth-hz 12500 --squelch-db -60\n"
+                        "3,461000000,DMR,dmr,\n"
+                        "4,121500000,Guard,am,\n"
+                        "5,150000000,Blank,,\n";
+    if (import_channel_map_text(path, mixed, log, sizeof log) != 0 || strstr(log, " row ")) {
+        DSD_FPRINTF(stderr, "mixed am map: %s\n", log);
+        rc = 1;
+    }
+    nfm_profiles seen = {0};
+    assert(dsd_csv_inspect_channel_profiles(path, &seen, collect_nfm_profile) == 0);
+    assert(seen.count == 5);
+    assert(strcmp(seen.mode[0], "am") == 0 && seen.bandwidth_hz[0] == 8333 && seen.squelch_db_set[0]);
+    assert(strcmp(seen.mode[1], "nfm") == 0 && seen.bandwidth_hz[1] == 12500);
+    assert(strcmp(seen.mode[2], "dmr") == 0 && seen.bandwidth_hz[2] == -1);
+    assert(strcmp(seen.mode[3], "am") == 0 && seen.bandwidth_hz[3] == -1 && seen.key_source[3] == 0);
+    assert(strcmp(seen.mode[4], "") == 0);
+
+    const char* header = "channel,frequency_hz,mode,options\n";
+
+    const struct {
+        const char* row;
+        const char* diagnostic;
+    } refused[] = {
+        {"1,118300000,am,-G groups.csv\n", "row 2: -G: not supported for this mode/target"},
+        {"1,118300000,am,--strict-crc\n", "row 2: --strict-crc: not supported for this mode/target"},
+        {"1,118300000,am,-e\n", "row 2: -e: not supported for this mode/target"},
+        {"1,118300000,am,--no-force-key\n", "row 2: --no-force-key: not supported for this mode/target"},
+        {"1,118300000,am,-b 1\n", "row 2: -b: not supported for this mode/target"},
+        {"1,118300000,am,--nfm-bandwidth-hz 12500\n", "row 2: --nfm-bandwidth-hz: not supported for this mode/target"},
+        {"1,154430000,nfm,--am-bandwidth-hz 8333\n", "row 2: --am-bandwidth-hz: not supported for this mode/target"},
+        {"1,118300000,am,--am-bandwidth-hz 25000\n", "row 2: --am-bandwidth-hz: expects whole Hz from 5000 to 20000"},
+        {"1,118300000,am,--am-bandwidth-hz 8333 --am-bandwidth-hz 8333\n",
+         "row 2: --am-bandwidth-hz: duplicate option"},
+        {"1,461000000,dmr,--am-bandwidth-hz 8333\n", "row 2: --am-bandwidth-hz: needs mode am"},
+        {"1,461000000,,--am-bandwidth-hz 8333\n", "row 2: --am-bandwidth-hz: needs mode am"},
+        {"1,118300000,am-conventional,\n", "row 2: invalid mode; expected p25, dmr, nxdn96, nxdn48, dpmr, dstar, ysf, "
+                                           "m17, nfm, am or an empty cell"},
+    };
+
+    for (size_t i = 0; i < sizeof(refused) / sizeof(refused[0]); i++) {
+        char body[256];
+        DSD_SNPRINTF(body, sizeof body, "%s%s", header, refused[i].row);
+        rc |= expect_import_refused(path, body, refused[i].diagnostic);
+    }
+    const char* keyed[] = {
+        "channel,frequency_hz,mode,single_key_dec\n1,118300000,am,SECRET123\n",
+        "channel,frequency_hz,mode,single_key_hex,options\n1,118300000,am,SECRETAB,--squelch-db -60\n"};
+    for (size_t i = 0; i < sizeof(keyed) / sizeof(keyed[0]); i++) {
+        rc |= expect_import_refused(path, keyed[i], "row 2: key columns are not supported for mode am");
+        (void)import_channel_map_text(path, keyed[i], log, sizeof log);
+        assert(strstr(log, "SECRET") == NULL);
+    }
+    assert(remove(path) == 0);
+    return rc;
+}
+
 int
 main(void) {
     test_csv_physical_lines();
@@ -2481,6 +2554,9 @@ main(void) {
         return 1;
     }
     if (test_nfm_channel_map_rows() != 0) {
+        return 1;
+    }
+    if (test_am_channel_map_rows() != 0) {
         return 1;
     }
     test_mapping_and_channel_nul_rows_are_atomic();

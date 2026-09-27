@@ -123,6 +123,10 @@ static int g_request_demod_calls = 0;
 /* The DSP rate the fake stream publishes for analog requests (0: none), and the widest analog width it was asked for. */
 static int g_rtl_request_rate_hz = 0;
 static int g_analog_attach_max_width_hz = 0;
+/* How often the stream was asked for the AM monitor, and how often it tuned g_rtl_watch_freq (0: none watched). */
+static int g_analog_attach_am_calls = 0;
+static uint32_t g_rtl_watch_freq = 0;
+static int g_rtl_watch_tunes = 0;
 /* 1: the output rate follows the family, the analog monitor at 48 kHz and the digital family at 24 kHz (bw=24). */
 static int g_rtl_family_rates = 0;
 
@@ -157,6 +161,9 @@ reset_rtl_profile_fakes(void) {
     g_request_demod_calls = 0;
     g_rtl_request_rate_hz = 0;
     g_analog_attach_max_width_hz = 0;
+    g_analog_attach_am_calls = 0;
+    g_rtl_watch_freq = 0;
+    g_rtl_watch_tunes = 0;
     g_rtl_family_rates = 0;
     g_check_p25_tick_guard = 0;
     g_p25_tick_guard_held_during_tune = 0;
@@ -250,6 +257,9 @@ __wrap_rtl_stream_prepare_retune_analog_profile_for_target(uint32_t target_freq_
     g_analog_attach_calls++;
     if (analog && analog->family == DSD_RX_FAMILY_ANALOG && analog->width_hz > g_analog_attach_max_width_hz) {
         g_analog_attach_max_width_hz = analog->width_hz;
+    }
+    if (analog && analog->family == DSD_RX_FAMILY_ANALOG && analog->kind == DSD_ANALOG_DEMOD_AM) {
+        g_analog_attach_am_calls++;
     }
     if (!analog || (analog->family == DSD_RX_FAMILY_ANALOG && g_refuse_analog_profile)) {
         return -1;
@@ -362,6 +372,9 @@ __wrap_rtl_stream_tune(RtlSdrContext* ctx, uint32_t center_freq_hz) {
     }
     g_rtl_tune_calls++;
     g_rtl_tune_freq = center_freq_hz;
+    if (g_rtl_watch_freq != 0U && center_freq_hz == g_rtl_watch_freq) {
+        g_rtl_watch_tunes++;
+    }
     if (g_rtl_tune_result == RTL_STREAM_TUNE_OK) {
         apply_pending_profile(center_freq_hz);
     }
@@ -1285,6 +1298,65 @@ test_typed_scan_width_skipped_under_channel_lpf_override(void) {
     return rc;
 }
 
+/* An am row that sets no width of its own runs the AM default, 6 kHz, which always runs its channel filter (issue
+ * #524), so a DSP rate too narrow for it (@p lpf_off 0: 6 kHz here, which filters at most 4.2 kHz) or
+ * DSD_NEO_CHANNEL_LPF=0 (@p lpf_off 1) refuses it as it refuses an explicit width. The configured AM width is unset.
+ * Such a row is skipped at every visit without asking the stream for the AM monitor, as a refused explicit width is,
+ * while the nfm row beside it on the unset NFM default, which is never refused, runs. */
+static int
+typed_scan_am_default_width_skipped_without_the_stream(int lpf_off) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    if (lpf_off) {
+        (void)dsd_setenv("DSD_NEO_CHANNEL_LPF", "0", 1);
+        dsd_neo_config_init();
+    }
+    int rc = 0;
+    reset_rtl_profile_fakes();
+    dsd_trunk_tuning_requests_reset();
+    opts->audio_in_type = AUDIO_IN_RTL;
+    opts->scanner_mode = 1;
+    opts->trunk_hangtime = 1;
+    opts->analog_am_bandwidth_hz = 0;
+    state->rtl_ctx = (RtlSdrContext*)state;
+    g_rtl_request_rate_hz = lpf_off ? 48000 : 6000;
+    g_rtl_watch_freq = 118300000U;
+    state->lcn_freq_count = 2;
+    state->trunk_lcn_freq[0] = 154530000L;
+    state->trunk_lcn_freq[1] = 118300000L;
+    rc |= expect_true("am default nfm row mode", dsd_channel_mode_set(state, 0, DSD_SCAN_MODE_NFM) == 0);
+    rc |= expect_true("am default am row mode", dsd_channel_mode_set(state, 1, DSD_SCAN_MODE_AM) == 0);
+    for (int visit = 0; visit < 6; visit++) {
+        state->last_cc_sync_time = time(NULL) - 11;
+        noCarrier(opts, state);
+    }
+    rc |=
+        expect_true("am default never reaches the stream", g_analog_attach_calls > 0 && g_analog_attach_am_calls == 0);
+    rc |= expect_true("am default row never tuned", g_rtl_watch_tunes == 0 && g_rtl_tune_freq == 154530000U);
+    if (rc) {
+        DSD_FPRINTF(stderr, "  %s: AM monitor asked %d times, am row tuned %d times\n",
+                    lpf_off ? "DSD_NEO_CHANNEL_LPF=0" : "6 kHz DSP rate", g_analog_attach_am_calls, g_rtl_watch_tunes);
+    }
+    dsd_engine_channel_scan_leave(opts, state);
+    state->rtl_ctx = NULL;
+    if (lpf_off) {
+        (void)dsd_unsetenv("DSD_NEO_CHANNEL_LPF");
+        dsd_neo_config_init();
+    }
+    free_test_runtime(opts, state);
+    dsd_trunk_tuning_requests_reset();
+    return rc;
+}
+
+static int
+test_typed_scan_am_default_width_skipped_without_the_stream(void) {
+    return typed_scan_am_default_width_skipped_without_the_stream(0)
+           | typed_scan_am_default_width_skipped_without_the_stream(1);
+}
+
 /* What the analog monitor does for each block while its carrier is open: stamp carrier activity, the -Y hangtime
  * anchor. */
 static void
@@ -1294,11 +1366,12 @@ stamp_monitor_carrier(dsd_state* state) {
 }
 
 /* The monitor stamps carrier activity whatever audio_out says (DSP_SYMBOL_REPLAY proves the stamp with audio_out = 0);
- * here the -Y rotation keeps an nfm row on air while those stamps keep arriving, a visit already past -t included,
- * and a global --scan-voice-only does not take the row over. Once they stop, the row steps -t later; and a row
- * --scan-max-visit-ms ends a visit whose carrier never drops. */
+ * here the -Y rotation keeps an analog row of class @p mode (nfm, or am: the AM monitor stamps its carrier the same
+ * way, issue #526) on air while those stamps keep arriving, a visit already past -t included, and a global
+ * --scan-voice-only does not take the row over. Once they stop, the row steps -t later; and a row --scan-max-visit-ms
+ * ends a visit whose carrier never drops. */
 static int
-test_typed_scan_nfm_row_holds_on_carrier(void) {
+typed_scan_analog_row_holds_on_carrier(dsd_scan_mode mode) {
     dsd_opts* opts = NULL;
     dsd_state* state = NULL;
     if (init_test_runtime(&opts, &state) != 0) {
@@ -1316,7 +1389,7 @@ test_typed_scan_nfm_row_holds_on_carrier(void) {
     state->lcn_freq_count = 2;
     state->trunk_lcn_freq[0] = 154630000L;
     state->trunk_lcn_freq[1] = 461500000L;
-    rc |= expect_true("hold nfm row", dsd_channel_mode_set(state, 0, DSD_SCAN_MODE_NFM) == 0);
+    rc |= expect_true("hold analog row", dsd_channel_mode_set(state, 0, mode) == 0);
     rc |= expect_true("hold dmr row", dsd_channel_mode_set(state, 1, DSD_SCAN_MODE_DMR) == 0);
     dsd_scan_row_profile* profile = NULL;
     rc |= expect_true("hold row profile", dsd_scan_profile_ensure(&profile) == 0 && profile);
@@ -1328,9 +1401,10 @@ test_typed_scan_nfm_row_holds_on_carrier(void) {
 
     state->last_cc_sync_time = time(NULL) - 11;
     noCarrier(opts, state);
-    rc |= expect_true("hold nfm row on air",
-                      state->lcn_freq_roll == 1 && opts->analog_only == 1 && opts->scan_max_visit_ms == 1000);
-    rc |= expect_true("voice gate never owns the nfm row", !dsd_scan_voice_gate_owns_step(opts, state));
+    rc |= expect_true("hold analog row on air", state->lcn_freq_roll == 1 && opts->analog_only == 1
+                                                    && opts->scan_max_visit_ms == 1000
+                                                    && opts->analog_demod == dsd_scan_mode_analog_kind(mode));
+    rc |= expect_true("voice gate never owns the analog row", !dsd_scan_voice_gate_owns_step(opts, state));
 
     /* Carrier keeps arriving on a visit already 5 s old, past -t: the row stays. The cap is out of the way here. */
     opts->scan_max_visit_ms = 0;
@@ -1341,32 +1415,42 @@ test_typed_scan_nfm_row_holds_on_carrier(void) {
         dsd_engine_scan_visit_tick(opts, state, dsd_time_now_monotonic_s());
         noCarrier(opts, state);
     }
-    rc |=
-        expect_true("carrier holds the nfm row past -t", state->lcn_freq_roll == 1 && g_rtl_tune_calls == tunes_before);
+    rc |= expect_true("carrier holds the analog row past -t",
+                      state->lcn_freq_roll == 1 && g_rtl_tune_calls == tunes_before);
 
     /* The carrier stops: -t after the last stamp the rotation moves on. */
     state->last_cc_sync_time = time(NULL) - 2;
     dsd_engine_scan_visit_tick(opts, state, dsd_time_now_monotonic_s());
     noCarrier(opts, state);
-    rc |= expect_true("nfm row steps -t after the carrier", state->lcn_freq_roll == 2 && g_rtl_tune_freq == 461500000U);
+    rc |= expect_true("analog row steps -t after the carrier",
+                      state->lcn_freq_roll == 2 && g_rtl_tune_freq == 461500000U);
 
-    /* Back on the nfm row with its --scan-max-visit-ms 1000 in force: a carrier that never drops still ends a visit
+    /* Back on the analog row with its --scan-max-visit-ms 1000 in force: a carrier that never drops still ends a visit
        that has lasted past the cap. The voice gate is off, so the DMR row between does not wait out its window. */
     opts->scan_voice_only = 0;
     state->last_cc_sync_time = time(NULL) - 11;
     noCarrier(opts, state);
-    rc |= expect_true("nfm row again", state->lcn_freq_roll == 1 && opts->scan_max_visit_ms == 1000);
+    rc |= expect_true("analog row again", state->lcn_freq_roll == 1 && opts->scan_max_visit_ms == 1000);
     stamp_monitor_carrier(state);
     seed_visit_anchor(state, dsd_time_now_monotonic_s() - 5.0);
     noCarrier(opts, state);
-    rc |= expect_true("visit cap ends a carrier-held nfm row",
+    rc |= expect_true("visit cap ends a carrier-held analog row",
                       state->lcn_freq_roll == 2 && g_rtl_tune_freq == 461500000U);
 
     dsd_engine_channel_scan_leave(opts, state);
     state->rtl_ctx = NULL;
     free_test_runtime(opts, state);
     dsd_trunk_tuning_requests_reset();
+    if (rc) {
+        DSD_FPRINTF(stderr, "%s row carrier hold failed\n", dsd_scan_mode_name(mode));
+    }
     return rc;
+}
+
+static int
+test_typed_scan_analog_rows_hold_on_carrier(void) {
+    return typed_scan_analog_row_holds_on_carrier(DSD_SCAN_MODE_NFM)
+           | typed_scan_analog_row_holds_on_carrier(DSD_SCAN_MODE_AM);
 }
 #endif
 
@@ -3226,7 +3310,8 @@ main(void) {
     rc |= test_scoped_mode_change_on_nfm_row_times_the_baseline_for_digital();
     rc |= test_typed_scan_refused_width_skipped_without_the_stream();
     rc |= test_typed_scan_width_skipped_under_channel_lpf_override();
-    rc |= test_typed_scan_nfm_row_holds_on_carrier();
+    rc |= test_typed_scan_am_default_width_skipped_without_the_stream();
+    rc |= test_typed_scan_analog_rows_hold_on_carrier();
     rc |= test_trunk_cache_with_mode_metadata();
     rc |= test_dmr_explicit_return_destination();
 #endif

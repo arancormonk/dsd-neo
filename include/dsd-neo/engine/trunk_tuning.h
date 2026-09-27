@@ -52,6 +52,12 @@ uint32_t dsd_engine_scan_family_requests(const dsd_opts* opts);
  * superseded by a live family request made before it lands (dsd_engine_scan_family_requests()); one without a family
  * lands its symbol profile whatever the requests (issue #526). 0 on any input but an RTL-family one. */
 int dsd_engine_scan_retune_attaches_family(const dsd_opts* opts, const dsd_state* state, int ted_sps);
+/** @brief Once a scanner has left its rows, put a rigctl peer back (issue #526): a scan tune asks a peer that
+ * demodulates audio input for an am row's AM, or an nfm row's own passband, and nothing else undoes that once the
+ * scanner stops tuning. RestoreScanModulation() sends back each passband a row changed, as read from the peer before
+ * the change, then asks for what the restored settings run: FM at -B, which without -B is the peer's own FM passband,
+ * sent only when this client changed the peer. Best-effort; a no-op without rigctl. */
+void dsd_engine_scan_rigctl_restore(const dsd_opts* opts, const dsd_state* state);
 /**
  * @brief Release the call state a tuned voice channel owns, without tuning.
  *

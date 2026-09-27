@@ -36,5 +36,10 @@ struct ScanListTargets {
 
 ScanListTargets scan_list_targets(const QVariantMap& list, const QVariantList& systems);
 QString scan_list_settings_error(const QVariantMap& list);
+/** Issue #526: the analog demodulator (dsd_analog_demod) a scan entry runs -- a frequency entry's nfm or am protocol,
+ * a saved system whose decode flags are exactly -fA or -fM, the only analog flags a scan list maps -- or -1 for a
+ * digital entry. @p systemDecodeFlag is the saved system's decodeFlag for a system entry, ignored otherwise. An analog
+ * entry carries no keys, talkgroups, decryption profile or modulation. */
+int scan_list_entry_analog_kind(const QVariantMap& entry, const QString& systemDecodeFlag);
 } // namespace dsd_qt
 #endif

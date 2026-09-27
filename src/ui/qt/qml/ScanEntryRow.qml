@@ -14,8 +14,12 @@ UiPanel {
     property var overlayParent: parent
     property bool canMoveUp: true
     property bool canMoveDown: true
-    readonly property var protocolIds: ["p25", "dmr", "nxdn48", "nxdn"]
+    readonly property var protocolIds: ["p25", "dmr", "nxdn48", "nxdn", "nfm", "am"]
     readonly property var modulationIds: ["", "c4fm", "cqpsk", "gfsk"]
+    // An nfm or am entry (issue #526) holds on carrier: it has no digital modulation, keys or
+    // talkgroups, so the modulation and decryption choices are hidden and never written for it.
+    readonly property bool analog: entry.kind === "freq" ? (entry.protocol === "nfm" || entry.protocol === "am")
+        : entry.kind === "system" && Util.decodeFlagIsAnalog(savedSystems.getByUid(entry.systemUid).decodeFlag)
     readonly property bool inputError: dwellField.error.length > 0 || holdField.error.length > 0
         || gainField.error.length > 0 || (entry.kind === "freq" && frequencyField.error.length > 0)
 
@@ -90,7 +94,7 @@ UiPanel {
             width: parent.width
             visible: row.entry.kind === "freq"
             Accessible.name: qsTr("Entry protocol")
-            model: [qsTr("P25"), qsTr("DMR"), qsTr("NXDN48"), qsTr("NXDN96")]
+            model: [qsTr("P25"), qsTr("DMR"), qsTr("NXDN48"), qsTr("NXDN96"), qsTr("NFM (analog)"), qsTr("AM (analog)")]
             currentIndex: Math.max(0, row.protocolIds.indexOf(row.entry.protocol || "p25"))
             onActivated: row.changed("protocol", row.protocolIds[currentIndex])
         }
@@ -112,11 +116,13 @@ UiPanel {
         }
 
         MicroLabel {
+            visible: !row.analog
             text: qsTr("Decryption profile")
         }
         PlexComboBox {
             objectName: "scanEntryDecryptionScope"
             width: parent.width
+            visible: !row.analog
             Accessible.name: qsTr("Scan entry decryption scope")
             model: [row.entry.kind === "system" ? qsTr("Inherit saved-system profile") : qsTr("Inherit session defaults"), qsTr("Use a profile"), qsTr("No keys")]
             currentIndex: Math.max(0, ["inherit", "profile", "none"].indexOf(row.entry.decryptionMode || "inherit"))
@@ -125,7 +131,7 @@ UiPanel {
         DecryptionProfileSelector {
             objectName: "scanEntryDecryptionProfile"
             width: parent.width
-            visible: row.entry.decryptionMode === "profile" && available
+            visible: !row.analog && row.entry.decryptionMode === "profile" && available
             overlayParent: row.overlayParent
             profileUid: row.entry.decryptionProfileUid || ""
             protocol: row.entry.kind === "system" ? Util.decryptionProtocol(savedSystems.getByUid(row.entry.systemUid).decodeFlag) : String(row.entry.protocol || "mixed").indexOf("nxdn") === 0 ? "nxdn" : row.entry.protocol || "mixed"
@@ -178,11 +184,13 @@ UiPanel {
             }
         }
         MicroLabel {
+            visible: !row.analog
             text: qsTr("Modulation")
         }
         PlexComboBox {
             objectName: "scanEntryModulation"
             width: parent.width
+            visible: !row.analog
             Accessible.name: qsTr("Entry modulation")
             model: [qsTr("Inherit"), qsTr("C4FM"), qsTr("QPSK (simulcast)"), qsTr("GFSK")]
             currentIndex: Math.max(0, row.modulationIds.indexOf(row.entry.modulation || ""))

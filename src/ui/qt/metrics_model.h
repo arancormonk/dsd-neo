@@ -512,7 +512,7 @@ class MetricsModel : public QObject {
     }
 
     /**
-     * @brief Whether an analog (nfm) scan row is on air (issue #526): it runs the analog family, and so a width,
+     * @brief Whether an analog (nfm or am) scan row is on air (issue #526): it runs the analog family, and so a width,
      * whatever the configured preset, digital sessions included.
      */
     bool
@@ -521,9 +521,9 @@ class MetricsModel : public QObject {
     }
 
     /**
-     * @brief Whether the scan row on air sets its own width (--nfm-bandwidth-hz, issue #526): analogBandwidthHz() is
-     * then the row's, in force until it leaves, while analogBandwidthConfiguredHz() stays what the width control
-     * edits.
+     * @brief Whether the scan row on air sets its own width (an nfm row's --nfm-bandwidth-hz, an am row's
+     * --am-bandwidth-hz, issue #526): analogBandwidthHz() is then the row's, in force until it leaves, while
+     * analogBandwidthConfiguredHz() stays what the width control edits.
      */
     bool
     analogBandwidthRowOverride() const {
@@ -1661,7 +1661,8 @@ class MetricsModel : public QObject {
     void fillDecoderView(View& next, const dsd_opts* opts_snapshot, const dsd_state* snapshot, double now_m);
     /** @brief The configured/effective squelch pair and the row badge (#521). */
     static void fillSquelchOverride(View& next, const dsd_opts* opts_snapshot, const dsd_state* snapshot);
-    /** @brief The analog channel width in force and the configured one (#525), and the nfm scan row on air (#526). */
+    /** @brief The analog channel width in force and the configured one (#525), and the analog (nfm or am) scan row on
+     * air (#526). */
     static void fillAnalogChannel(View& next, const dsd_opts* opts_snapshot, const dsd_state* snapshot,
                                   const dsd_frontend_metrics& metrics);
     /** @brief Listening settings, talkgroup Hold, and lockout state from the held snapshot. */
