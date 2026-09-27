@@ -726,6 +726,30 @@ dsd_tone_filter_mode_parse(const char* text, int* mode) {
     return -1;
 }
 
+int
+dsd_tone_filter_check(int mode, const char* list, dsd_tone_set* out, char* err, size_t err_size) {
+    const char* name = dsd_tone_filter_mode_name(mode);
+    if (!out) {
+        return tone_list_error(err, err_size, "no policy");
+    }
+    if (!name) {
+        return tone_list_error(err, err_size, "the mode is off, allow or block");
+    }
+    dsd_tone_set set;
+    DSD_MEMSET(&set, 0, sizeof(set));
+    if (!list || list[0] == '\0') {
+        if (mode != DSD_TONE_FILTER_OFF) {
+            char why[DSD_TONE_LIST_ERROR_SIZE];
+            DSD_SNPRINTF(why, sizeof(why), "%s needs a list of CTCSS tones or DCS codes, e.g. 67.0/100.0/D023N", name);
+            return tone_list_error(err, err_size, why);
+        }
+    } else if (dsd_tone_set_parse(list, &set, err, err_size) != 0) {
+        return -1;
+    }
+    *out = set;
+    return 0;
+}
+
 /* RTL stream output kind that carries monitor audio: RTL_STREAM_OUTPUT_AUDIO_MONITOR in the IO
    header runtime may not include. */
 enum { ANALOG_TONES_RTL_OUTPUT_AUDIO_MONITOR = 0 };

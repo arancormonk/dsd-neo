@@ -884,6 +884,72 @@ test_tone_filter_mode(void) {
     assert(dsd_tone_filter_mode_name(3) == NULL && dsd_tone_filter_mode_name(-1) == NULL);
 }
 
+/* Check @p mode with @p list, which must pass, and that the set holds exactly @p canonical ("" for none). */
+static void
+filter_check_ok(int mode, const char* list, const char* canonical) {
+    dsd_tone_set set;
+    DSD_MEMSET(&set, 0xA5, sizeof(set));
+    char err[DSD_TONE_LIST_ERROR_SIZE] = "untouched";
+    assert(dsd_tone_filter_check(mode, list, &set, err, sizeof(err)) == 0);
+    assert(strcmp(err, "untouched") == 0);
+    char buf[DSD_TONE_LIST_TEXT_MAX + 1] = "unset";
+    (void)dsd_tone_set_format(&set, buf, sizeof(buf));
+    if (strcmp(buf, canonical) != 0) {
+        DSD_FPRINTF(stderr, "tone filter check: got \"%s\", want \"%s\"\n", buf, canonical);
+    }
+    assert(strcmp(buf, canonical) == 0);
+}
+
+/* Check @p mode with @p list, which must fail with exactly @p why, leaving the output alone and never repeating the
+   text it was given. */
+static void
+filter_check_fails(int mode, const char* list, const char* why) {
+    dsd_tone_set set;
+    DSD_MEMSET(&set, 0x5A, sizeof(set));
+    const dsd_tone_set before = set;
+    char err[DSD_TONE_LIST_ERROR_SIZE] = "";
+    assert(dsd_tone_filter_check(mode, list, &set, err, sizeof(err)) == -1);
+    assert(memcmp(&set, &before, sizeof(set)) == 0);
+    if (strcmp(err, why) != 0) {
+        DSD_FPRINTF(stderr, "tone filter refusal: got \"%s\", want \"%s\"\n", err, why);
+    }
+    assert(strcmp(err, why) == 0);
+}
+
+/* The live editor's question (DSD_APP_CMD_TONE_FILTER_SET): a whole policy, the mode with its list. */
+static void
+test_tone_filter_check(void) {
+    filter_check_ok(DSD_TONE_FILTER_ALLOW, "100/d023", "100.0/D023N");
+    filter_check_ok(DSD_TONE_FILTER_BLOCK, "D023I", "D023I");
+    /* Off takes a list and keeps it, or none. */
+    filter_check_ok(DSD_TONE_FILTER_OFF, "67.0/D754N", "67.0/D754N");
+    filter_check_ok(DSD_TONE_FILTER_OFF, "", "");
+    filter_check_ok(DSD_TONE_FILTER_OFF, NULL, "");
+
+    /* A list policy needs its list. */
+    filter_check_fails(DSD_TONE_FILTER_ALLOW, "",
+                       "allow needs a list of CTCSS tones or DCS codes, e.g. 67.0/100.0/D023N");
+    filter_check_fails(DSD_TONE_FILTER_BLOCK, NULL,
+                       "block needs a list of CTCSS tones or DCS codes, e.g. 67.0/100.0/D023N");
+    /* The parser's refusals, for off as well: an edit never stores a list it cannot read back. */
+    filter_check_fails(DSD_TONE_FILTER_ALLOW, "100.0,67.0", "use / between entries, not commas");
+    filter_check_fails(DSD_TONE_FILTER_OFF, "100.0/150.0", "entry 2 is not a standard CTCSS tone or DCS code");
+    filter_check_fails(DSD_TONE_FILTER_BLOCK, "D023N/D047I", "entry 2 is the same DCS signal as entry 1 (D023N)");
+    /* Diagnostics name the entry, never its text. */
+    filter_check_fails(DSD_TONE_FILTER_ALLOW, "100.0/xyzzy", "entry 2 is not a standard CTCSS tone or DCS code");
+    /* No such mode. */
+    filter_check_fails(3, "100.0", "the mode is off, allow or block");
+    filter_check_fails(-1, "", "the mode is off, allow or block");
+
+    /* No output is refused; a NULL or zero-sized error buffer is allowed. */
+    assert(dsd_tone_filter_check(DSD_TONE_FILTER_OFF, "", NULL, NULL, 0) == -1);
+    dsd_tone_set set;
+    char err[4] = "abc";
+    assert(dsd_tone_filter_check(DSD_TONE_FILTER_ALLOW, "", &set, err, 0) == -1);
+    assert(strcmp(err, "abc") == 0);
+    assert(dsd_tone_filter_check(DSD_TONE_FILTER_ALLOW, "68.2", &set, NULL, 0) == -1);
+}
+
 int
 main(void) {
     test_tone_list_parse();
@@ -892,6 +958,7 @@ main(void) {
     test_tone_list_same_signals();
     test_tone_list_format();
     test_tone_filter_mode();
+    test_tone_filter_check();
     test_table();
     test_format();
     test_detection_active();
