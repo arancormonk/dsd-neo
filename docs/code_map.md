@@ -857,8 +857,13 @@ installs from `src/engine/trunk_tuning.c` in `src/engine/trunk_tuning_hooks_inst
 - Tone filter (issue #527, the live editor): `DSD_APP_CMD_TONE_FILTER_SET` (510) carries the whole configured CTCSS/DCS
   policy, `dsd_app_tone_filter_payload` (the `dsd_tone_filter_mode` and its list as typed, NUL-terminated in
   `DSD_APP_TONE_FILTER_LIST_SIZE` bytes), submitted with `dsd_app_command_set_tone_filter()`, which refuses a list the
-  payload cannot hold rather than cut it; a coalescible setter. `ui_cmd_handle_tone_filter_set()` refuses a malformed
-  payload, and a policy `dsd_tone_filter_check()` refuses with a toast naming why (`Refused: tone filter: ...`, entries
+  payload cannot hold rather than cut it. `dsd_app_command_set_tone_filter_mode()` sends the mode alone (`keep_list`,
+  the terminal's Off): the handler takes the configured list on the decoder thread when the edit runs, so an edit or a
+  loaded config queued before it is what it keeps, never a frontend's older snapshot of the list; with none configured
+  it is judged as an edit without a list. Not a coalescible setter: tone edits are deliberate text entries, and each is
+  judged on its own, so a refused edit (a typo) never discards a valid one queued before it.
+  `ui_cmd_handle_tone_filter_set()` refuses a malformed payload (no terminator, `keep_list` other than 0 or 1, or with a
+  list), and a policy `dsd_tone_filter_check()` refuses with a toast naming why (`Refused: tone filter: ...`, entries
   by number, never the text), changing nothing; it stores an accepted one through
   `dsd_scan_mode_set_configured_tone_policy()` and toasts `dsd_app_tone_filter_edit_notice()`. Off keeps the list it is
   given. The command is not scoped (`command_updates_scan_mode()`), for the reason the width commands are not: it edits
@@ -866,8 +871,9 @@ installs from `src/engine/trunk_tuning.c` in `src/engine/trunk_tuning_hooks_inst
   save writes the configured policy (`snapshot_analog_config()`), and `apply_cmd_scoped()`'s unheard-policy warning
   covers it as it covers a loaded config. The DSP tap reconfigures its policy from `dsd_opts` at every read, so the
   edit takes effect at the monitor's next read of audio. Tests: `APP_COMMAND_QUEUE` (allow, block, off with and without
-  a list, refusals, malformed and overlong payloads, coalescing, a shadowed edit under an nfm row and its save, a P25
-  row's live acquisition kept, the warning), `UI_QT_CONTROLLER` (through the Qt bridge).
+  a list, refusals, malformed and overlong payloads, queued edits judged apart, the mode alone keeping the list a queued
+  edit or config set, a shadowed edit under an nfm row and its save, a P25 row's live acquisition kept, the warning),
+  `UI_QT_CONTROLLER` (through the Qt bridge).
 - Shared display decisions, so no frontend has to restate one: `include/dsd-neo/app_control/call_view.h` and
   `src/app_control/call_view.c` fold the canonical call state into a per-slot line, and
   `include/dsd-neo/app_control/scan_timing_view.h` and `src/app_control/scan_timing_view.c` fold
@@ -913,7 +919,9 @@ installs from `src/engine/trunk_tuning.c` in `src/engine/trunk_tuning_hooks_inst
   the parser reads it back, spelled as written, and `row_override` while a row's own policy shadows an edit), and
   `dsd_app_tone_filter_edit_notice()`, the edit's toast (`Applied: Tone filter -> allow 100.0 Hz/D023N`, or
   `Default tone filter -> ...; this channel overrides it (...)` under such a row, both lists summarised to fit
-  `DSD_APP_TONE_FILTER_NOTICE_SIZE`). Tests: `APP_CONTROL_RX_TONE_VIEW`, the terminal goldens, `UI_QT_METRICS_MODEL`.
+  `DSD_APP_TONE_FILTER_NOTICE_SIZE`). Given options and no state (a terminal menu before the first snapshot), the view
+  still fills `configured_text` from the options, as `dsd_app_tone_filter_setting_get()` reads them, and returns -1.
+  Tests: `APP_CONTROL_RX_TONE_VIEW`, the terminal goldens, `UI_QT_METRICS_MODEL`.
   `include/dsd-neo/app_control/analog_width_view.h` and `src/app_control/analog_width_view.c` (issue #525) decide the
   analog channel width in force under the configured analog preset (the scan scope's configured view, so a typed digital
   row does not hide it; never for the M17 encoder): the front end's reported width while a running stream's options in
@@ -1697,11 +1705,14 @@ Build files: `src/protocol/CMakeLists.txt` and per‑protocol `src/protocol/<nam
     Tests: `UI_MENU_ACTIONS`, `UI_MENU_LABELS_RADIO`, `UI_MENU_TREE_AUDIT`, `UI_NCURSES_PRINTER_HELPERS`.
   - Tone filter (issue #527): the Audio menu's `audio.tone_filter` row (`Tone filter... [allow 100.0 Hz/D023N]`,
     `lbl_tone_filter()`), beside the other analog monitor rows and always shown, reads the rx tone view's policy text
-    (`(row; default X)` under a row's own policy; the overflow mark as ASCII `...`). `act_tone_filter()` opens a picker
-    (`Off`, `Allow list...`, `Block list...`) on the configured mode; allow and block prompt for the list filled in with
-    the configured one, off keeps it, all from `dsd_app_tone_filter_setting_get()` on the snapshot pair (never a row's
-    own policy), and the list goes to `dsd_app_command_set_tone_filter()` as typed for the command to check. Tests:
-    `UI_MENU_ACTIONS`, `UI_MENU_LABELS`, `UI_MENU_TREE_AUDIT`.
+    (`(row; default X)` under a row's own policy; the overflow mark as ASCII `...`; lowercase, as Call Info and other
+    shared-view values such as `[default]` read). `act_tone_filter()` opens a picker (`Off`, `Allow list...`,
+    `Block list...`, `Off and clear list`) on the configured mode; allow and block prompt for the list filled in with
+    the configured one, from `dsd_app_tone_filter_setting_get()` on the snapshot pair (never a row's own policy), and
+    the list goes to `dsd_app_command_set_tone_filter()` as typed for the command to check. Off sends the mode alone
+    (`dsd_app_command_set_tone_filter_mode()`), so the decoder keeps the list it holds; `Off and clear list` sends off
+    with no list. The label and the picker read the same pair: before the first snapshot, the menu's own options with
+    no state. Tests: `UI_MENU_ACTIONS`, `UI_MENU_LABELS`, `UI_MENU_TREE_AUDIT`.
 
 Qt Quick frontend (`src/ui/qt`):
 
@@ -1749,8 +1760,11 @@ Qt Quick frontend (`src/ui/qt`):
   `toneFilterConfiguredList`, on their own `toneFilterSettingChanged` signal and kept across a stop as configuration;
   never a row's own), a note while `toneFilterRowOverride` says a row's own policy shadows the edit, and the field's
   inline error from `CommandBridge::toneFilterError()` (the decoder's own `dsd_tone_filter_check()` message), which
-  disables Apply; Apply sends `CommandBridge::setToneFilter()`. Tests: `UI_QT_METRICS_MODEL`, `UI_QT_CONTROLLER`,
-  `UI_QT_QML_CALL_LISTS` (`tst_tone_filter_sheet.qml`, `tst_monitor_rx_tone.qml`).
+  disables Apply; Apply sends `CommandBridge::setToneFilter()`. The row, and so the editor, follows detection on the
+  channel on air (`dsd_analog_tone_detection_active()`): the snapshot pair carries neither the channel map's row modes
+  nor the trunk-scan targets, so on a scan that mixes `nfm` rows or `nfm-conventional` targets with other modes it is
+  reachable while one of those is on air; the terminal row is always shown. Tests: `UI_QT_METRICS_MODEL`,
+  `UI_QT_CONTROLLER`, `UI_QT_QML_CALL_LISTS` (`tst_tone_filter_sheet.qml`, `tst_monitor_rx_tone.qml`).
 - `dsd_app_lead_slot()` in `app_control/call_view.c` selects the earliest exact start among identified active
   calls for the Monitor hero, its quality row and the Android notification. Later calls on the other slot do not
   displace it. Exact ties prefer the lower slot; when no call is active, the lowest ended slot wins. An earlier
@@ -2011,7 +2025,8 @@ External dependencies (resolved via CMake):
   acquisition). `dsd_scan_mode_configured_tone_policy()` reads the configured one for saves; the rx tone view marks a
   row's own `(row; default X)`. The live editor's command edits the configured policy through
   `dsd_scan_mode_set_configured_tone_policy()`, which leaves a row's own in force and, like the squelch and width
-  setters, never suspends the scope, so a tone edit under a P25 row keeps its detected polarity and followed call. Scan coupling is the engine's (see Engine): PENDING holds a row while its carrier lasts
+  setters, never suspends the scope, so a tone edit under a P25 row keeps its detected polarity and followed call.
+  Scan coupling is the engine's (see Engine): PENDING holds a row while its carrier lasts
   but is no activity (no tail, no hold or dwell restarted), REJECTED releases it at the scanner's next pass, and on an
   am row or target no verdict is in force (`dsd_analog_tone_gate_in_force()`), so the carrier holds it as `Carrier`. The
   CSV splitters end the options cell at an unquoted comma, so both importers (`chan_import_options_split()` in
