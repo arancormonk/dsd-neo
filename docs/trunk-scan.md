@@ -730,7 +730,10 @@ Saved analog systems (`-fA` NFM, `-fM` AM) become `nfm-conventional` and
 `am-conventional` targets; a saved analog system marked trunked is refused, since
 analog targets are conventional only. An analog entry holds on carrier: the editor
 hides its modulation and decryption choices, and the generated target carries no
-modulation, keys, key files or group file, including a saved analog system's.
+modulation, keys, key files or group file, including a saved analog system's. It
+sets no tone filter either, so an NFM entry runs the configured one (`--tone-allow`,
+`--tone-block`, `[analog] tone_filter`); a target CSV sets one per
+`nfm-conventional` target in its `options` column.
 RadioReference P25 imports (`-ft -^` and `-mq -^`) retain both their modulation
 and their per-target preference for learned control-channel candidates. That
 preference is restored to the configured default when leaving the target.
