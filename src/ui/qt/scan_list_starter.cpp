@@ -85,12 +85,39 @@ collectCsvAnalogTarget(const dsd_app_scan_csv_target* target, void* context) {
 }
 
 /*
+ * The width of analog demodulator @p kind the session is configured with (issue #526): the last --nfm-bandwidth-hz or
+ * --am-bandwidth-hz among the app's Extra arguments, in the separate or the = form, as the engine reads them; 0 without
+ * one (the kind's default). A value the engine would not parse is its to refuse, and counts as none here.
+ */
+int
+configuredAnalogWidthHz(const QString& extraArgs, int kind) {
+    static const QRegularExpression wholeHz(QStringLiteral("^[0-9]{1,9}$"));
+    const QString option =
+        kind == DSD_ANALOG_DEMOD_AM ? QStringLiteral("--am-bandwidth-hz") : QStringLiteral("--nfm-bandwidth-hz");
+    const QStringList tokens = extraArgs.split(QRegularExpression(QStringLiteral("\\s+")), Qt::SkipEmptyParts);
+    int widthHz = 0;
+    for (qsizetype i = 0; i < tokens.size(); ++i) {
+        QString value;
+        if (tokens.at(i) == option) {
+            value = i + 1 < tokens.size() ? tokens.at(i + 1) : QString();
+        } else if (tokens.at(i).startsWith(option + QLatin1Char('='))) {
+            value = tokens.at(i).mid(option.size() + 1);
+        } else {
+            continue;
+        }
+        widthHz = wholeHz.match(value).hasMatch() ? value.toInt() : 0;
+    }
+    return widthHz;
+}
+
+/*
  * Issue #526: the editor's own DSP-rate row diagnostic. An RTL-SDR or rtl_tcp list runs every target at the rate its
  * DSP bandwidth sets -- the list's own, else the app's, read as the engine reads the spec's bandwidth field -- so an
- * analog target whose width that rate cannot filter is skipped at every visit: its own width, or the AM default an am
- * target without one runs, which always runs its channel filter. The unset NFM default runs at any rate. A SoapySDR or
- * Airspy device sets its own rate, which the engine checks once the scan starts. Said beside the targets ready, as the
- * engine names such a row when a map loads, not as a refusal: the rest of the list still scans.
+ * analog target whose width that rate cannot filter is skipped at every visit: its own width, else the configured width
+ * of its kind the session runs (configuredAnalogWidthHz()), else the AM default an am target runs, which always runs
+ * its channel filter. The unset NFM default runs at any rate. A SoapySDR or Airspy device sets its own rate, which the
+ * engine checks once the scan starts. Said beside the targets ready, as the engine names such a row when a map loads,
+ * not as a refusal: the rest of the list still scans.
  */
 QString
 analogRateWarning(const QVariantMap& list, const SessionArgPrefs& prefs, const QList<AnalogTarget>& targets) {
@@ -101,12 +128,15 @@ analogRateWarning(const QVariantMap& list, const SessionArgPrefs& prefs, const Q
     const int listKhz = list.value("bandwidthKhz", -1).toInt();
     const int khz = listKhz > 0 ? listKhz : prefs.bandwidthKhz;
     const int rateHz = (dsd_analog_rtl_dsp_bw_is_selectable(khz) ? khz : DSD_ANALOG_RTL_DSP_BW_MAX_KHZ) * 1000;
+    const int nfmHz = configuredAnalogWidthHz(prefs.extraArgs, DSD_ANALOG_DEMOD_FM);
+    const int amHz = configuredAnalogWidthHz(prefs.extraArgs, DSD_ANALOG_DEMOD_AM);
     int skipped = 0;
     QString first;
     for (const auto& target : targets) {
-        const int heldHz = target.widthHz > 0                   ? target.widthHz
-                           : target.kind == DSD_ANALOG_DEMOD_AM ? dsd_analog_width_default_hz(DSD_ANALOG_DEMOD_AM)
-                                                                : 0;
+        const int inheritedHz = target.kind == DSD_ANALOG_DEMOD_AM
+                                    ? (amHz > 0 ? amHz : dsd_analog_width_default_hz(DSD_ANALOG_DEMOD_AM))
+                                    : nfmHz;
+        const int heldHz = target.widthHz > 0 ? target.widthHz : inheritedHz;
         char why[DSD_ANALOG_ERROR_TEXT_MAX] = {};
         if (heldHz <= 0 || dsd_analog_width_check(target.kind, heldHz, rateHz, why, sizeof why) == 0) {
             continue;

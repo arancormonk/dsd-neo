@@ -22,6 +22,7 @@
 #include <qtenvironmentvariables.h>
 #include <utility>
 #include "../test_support/qt_test_paths.h"
+#include "app_prefs.h"
 #include "json_store.h"
 #include "saved_systems_model.h"
 #include "scan_list_starter.h"
@@ -195,6 +196,26 @@ checkAnalogRateDiagnostic(const QTemporaryDir& dir) {
           && !warning.contains("more") && !warning.contains("NFM"));
     list["bandwidthKhz"] = 12;
     check(starter.validate(list).value("warnings").toStringList().isEmpty());
+    // An entry without a width of its own runs the width of its kind the app's Extra arguments configure, in either
+    // spelling, the last one winning as on the command line.
+    AppPrefs prefs;
+    prefs.setExtraArgs(QStringLiteral("--am-bandwidth-hz 20000"));
+    ScanListStarter configured(&prefs, nullptr);
+    const auto wideAm = configured.validate(list);
+    const QString wideAmWarning = wideAm.value("warnings").toStringList().join("\n");
+    check(wideAm.value("ok").toBool());
+    check(wideAmWarning.contains("Guard: AM bandwidth 20 kHz does not fit the 12 kHz DSP rate")
+          && !wideAmWarning.contains("more"));
+    prefs.setExtraArgs(QStringLiteral("--am-bandwidth-hz=20000 --nfm-bandwidth-hz 25000"));
+    const QString bothWarning = configured.validate(list).value("warnings").toStringList().join("\n");
+    check(bothWarning.contains("154.43 MHz: NFM bandwidth 25 kHz does not fit the 12 kHz DSP rate")
+          && bothWarning.contains("(and 1 more)"));
+    if (!bothWarning.contains("(and 1 more)")) {
+        std::fprintf(stderr, "configured-width rate diagnostic: '%s'\n", qPrintable(bothWarning));
+    }
+    prefs.setExtraArgs(QStringLiteral("--am-bandwidth-hz 20000 --am-bandwidth-hz=6000"));
+    check(configured.validate(list).value("warnings").toStringList().isEmpty());
+    prefs.setExtraArgs(QString());
     list["bandwidthKhz"] = 6;
     list["sourceType"] = "airspy";
     check(starter.validate(list).value("warnings").toStringList().isEmpty());

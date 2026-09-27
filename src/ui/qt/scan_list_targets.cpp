@@ -130,14 +130,18 @@ collectPaths(const QVariantMap& sys, const Target& target, ScanListTargets& out)
     if (!band.isEmpty() && target.type != "p25-trunk") {
         return QStringLiteral("A P25 band plan requires a P25 trunked type.");
     }
+    /* An analog entry has neither map (both refused above) and passes no key, talkgroup or key-map file
+       (appendTarget()), so none of its saved paths reaches the list: none has to exist or fit a CSV cell. */
+    if (target.analog) {
+        return {};
+    }
     for (const auto& field : {"chanCsvPath", "groupCsvPath", "keyCsvPath", "p25BandplanCsvPath", "keysHexCsvPath",
                               "keysDecCsvPath", "dmrTgKeyCsvPath"}) {
         const QString path = sys.value(field).toString();
         if (!safePath(path)) {
             return QStringLiteral("CSV paths cannot contain comma, quote, CR or LF.");
         }
-        /* An analog entry passes no key, talkgroup or key-map file (appendTarget()), so none has to exist. */
-        if (!path.isEmpty() && !target.analog) {
+        if (!path.isEmpty()) {
             out.paths << path;
         }
     }

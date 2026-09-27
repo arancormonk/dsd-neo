@@ -76,6 +76,16 @@ main(int argc, char** argv) {
         check(!analogTargets.csv.contains("-b") && !analogTargets.csv.contains("-G")
               && !analogTargets.csv.contains("gfsk") && !analogTargets.csv.contains("keys.csv")
               && !analogTargets.csv.contains("-4"));
+        // ...nor has to fit a CSV cell: a retained path with a comma, quote or line break that no analog entry passes
+        // does not refuse the list.
+        sys["keyCsvPath"] = "/imports/old,keys.csv";
+        sys["groupCsvPath"] = "/imports/\"groups\".csv";
+        sys["keysHexCsvPath"] = "/imports/hex\nkeys.csv";
+        const auto unusedPaths = build();
+        check(unusedPaths.ok && unusedPaths.paths.isEmpty());
+        check(!unusedPaths.csv.contains("/imports/old") && !unusedPaths.csv.contains("/imports/\"groups")
+              && !unusedPaths.csv.contains("/imports/hex"));
+        sys.remove("keysHexCsvPath");
         for (const auto& field : {"encKeyType", "encKeyValue", "encForceKey", "groupCsvPath", "keyCsvPath",
                                   "dmrTgKeyCsvPath", "decryptionClearKeys"}) {
             sys.remove(field);

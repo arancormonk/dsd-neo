@@ -1897,18 +1897,19 @@ checks imported paths, atomically writes the private CSV, validates through
 the single `sessionInitialized` recency handler. `metrics_model` copies target
 identity from the tick's held snapshot; no extra snapshot reader is introduced.
 
-Frequency entries take the protocols `p25`, `dmr`, `nxdn48`, `nxdn`, and the analog `nfm` and `am` (issue #526),
-which map to `-fA`/`-fM` and on to `nfm-conventional`/`am-conventional`; saved analog systems map the same way (exactly
-`-fA` or `-fM`, `scan_list_entry_analog_kind()`) and are refused when trunked or given a channel map. An analog target
-(`Target::analog`) carries no modulation, keys, key files or group file, a saved analog system's included, and
-`ScanEntryRow.qml` hides its modulation and decryption controls (`Util.decodeFlagIsAnalog()`, the same exact-flag rule,
-for a saved system's flags). `scan_list_starter` resolves, checks and retains no decryption profile for an analog entry,
-so a choice the editor hides can never block the list. Its validation also holds the analog targets to the DSP rate an
-RTL-SDR or rtl_tcp list runs at (the list's bandwidth, else the app's): an analog target whose width that rate cannot
-filter (its own, or an `am` entry's 6 kHz default) is named in a warning beside the targets ready, as the engine names
-such a row when a map loads; a SoapySDR or Airspy list is left to the engine's scan-start check. The Qt/Android
-channel-map review (`ImportsScreen.qml`) and target preview (`ScanListScreen.qml`) show no keys or identifiers for an
-analog row and no modulation for an analog target, which the parser refuses there.
+Frequency entries take the protocols `p25`, `dmr`, `nxdn48`, `nxdn`, and the analog `nfm` and `am` (issue #526), which
+map to `-fA`/`-fM` and on to `nfm-conventional`/`am-conventional`; saved analog systems map the same way (exactly `-fA`
+or `-fM`, `scan_list_entry_analog_kind()`) and are refused when trunked or given a channel map. An analog target
+(`Target::analog`) carries no modulation, keys, key files or group file, a saved analog system's included (so none of
+those retained paths is checked or has to exist), and `ScanEntryRow.qml` hides its modulation and decryption controls
+(`Util.decodeFlagIsAnalog()`, the same exact-flag rule, for a saved system's flags). `scan_list_starter` resolves,
+checks and retains no decryption profile for an analog entry, so a choice the editor hides can never block the list. Its
+validation also holds the analog targets to the DSP rate an RTL-SDR or rtl_tcp list runs at (the list's bandwidth, else
+the app's): an analog target whose width that rate cannot filter (its own, else the configured width of its kind the
+app's Extra arguments set, `configuredAnalogWidthHz()`, else an `am` entry's 6 kHz default) is named in a warning beside
+the targets ready, as the engine names such a row when a map loads; a SoapySDR or Airspy list is left to the engine's
+scan-start check. The Qt/Android channel-map review (`ImportsScreen.qml`) and target preview (`ScanListScreen.qml`) show
+no keys or identifiers for an analog row and no modulation for an analog target, which the parser refuses there.
 
 `UI_QT_SCAN_LIST_TARGETS` covers preservation/rejection and option screening, the analog mappings included;
 `UI_QT_SCAN_LIST_ROUNDTRIP` exercises persistence and the real facade, with a mixed digital/NFM/AM manual list, a
