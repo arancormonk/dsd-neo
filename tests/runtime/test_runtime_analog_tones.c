@@ -244,6 +244,18 @@ test_gate_in_force_fails_closed(void) {
     free(opts);
 }
 
+/* What each verdict lets through (issue #527): OFF and ALLOWED only. The monitor plays nothing else, and nothing else is
+   scan activity -- a carrier still being checked holds a row only while it lasts, leaving no -t or activity_hold_ms tail,
+   and a rejected one holds nothing. A value this build does not know passes nothing. */
+static void
+test_gate_passes(void) {
+    assert(dsd_analog_tone_gate_passes(DSD_ANALOG_TONE_GATE_OFF) == 1);
+    assert(dsd_analog_tone_gate_passes(DSD_ANALOG_TONE_GATE_PENDING) == 0);
+    assert(dsd_analog_tone_gate_passes(DSD_ANALOG_TONE_GATE_ALLOWED) == 1);
+    assert(dsd_analog_tone_gate_passes(DSD_ANALOG_TONE_GATE_REJECTED) == 0);
+    assert(dsd_analog_tone_gate_passes(7) == 0 && dsd_analog_tone_gate_passes(-1) == 0);
+}
+
 /* ------------------------------------------------------------------------------------------
  * DCS (issue #523)
  * ---------------------------------------------------------------------------------------- */
@@ -884,6 +896,7 @@ main(void) {
     test_format();
     test_detection_active();
     test_gate_in_force_fails_closed();
+    test_gate_passes();
     test_dcs_table();
     test_dcs_reference_words();
     test_dcs_words();

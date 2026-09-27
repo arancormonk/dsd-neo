@@ -978,11 +978,14 @@ setting, shown apart from what is received, and it is off by default: then the o
   itself changes (a loaded config, a scan row's own policy coming on air): it is muted for a fresh check.
 - What is muted: the live monitor output and the UDP analog monitor (`-o udp`), together. The `-6` raw WAV is a capture
   ahead of every gate, squelch and tone filter included, and keeps everything.
-- Scanning: a transmission still being checked holds a `-Y` row or `--trunk-scan` target until the verdict, with the
-  stay reason `Tone check` while the check runs (800 ms, or to 1,600 ms as above); a `-Y` pass keeps the row then even
-  when `-t` has run out since the last carrier. It counts as activity meanwhile, as any carrier does, so
-  one that ends before a verdict leaves the ordinary tail behind it: `-t` for `-Y`, the target's `activity_hold_ms` for
-  trunk scan. Rejected traffic holds nothing: `-Y` moves on at its next no-carrier pass (within about 375 ms), and trunk
+- Scanning: a transmission still being checked holds a `-Y` row or `--trunk-scan` target while its carrier lasts, with
+  the stay reason `Tone check` and no countdown while the check runs (800 ms, or to 1,600 ms as above); a `-Y` pass
+  keeps the row then even when `-t` has run out. Only traffic the policy passes counts as activity, though. The check
+  restarts neither the `-t` hangtime nor the target's `activity_hold_ms`, and a trunk-scan target's idle dwell keeps
+  running through it, so a transmission that ends before its verdict leaves no tail, and repeated short bursts that are
+  never passed (kerchunks, noise) cannot park the scanner on a muted row: it moves on once `-t` has run out since the
+  row was tuned or last passed traffic, or once the target's dwell has. Traffic the policy allows is activity like any
+  carrier and leaves the ordinary tail. Rejected traffic holds nothing: `-Y` moves on at its next no-carrier pass (within about 375 ms), and trunk
   scan at its next tick, without waiting out the hangtime or the activity hold, and so does traffic rejected and ended
   before that pass or tick came: the rejection outlives its carrier for the scanner until the next carrier opens or the
   receiver moves. An operator hold keeps the row, muted. A fixed-frequency session mutes rejected traffic and stays, and

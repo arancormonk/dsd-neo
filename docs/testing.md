@@ -839,8 +839,11 @@ publication built as the tap would publish it (carrier, detector state, locked t
 samples and rate it covered, so the 800 ms window, its DCS extension and every transition are pinned in sample time,
 the window's end to the read that crosses it at several rates and read sizes. `DSP_SYMBOL_REPLAY` covers the sink the
 verdict gates: both live outputs muted together while a check runs or after a rejection, the `-6` raw WAV ungated, the
-output with the filter off byte-identical to a session without one, the AM and `-8` monitors judging nothing, and the
-`Tone filter:` log lines, a changed policy's fresh check included.
+output with the filter off byte-identical to a session without one, the AM and `-8` monitors judging nothing, the
+`Tone filter:` log lines, a changed policy's fresh check included, and the -Y hangtime stamp, which only traffic the
+policy passes leaves (no-tone bursts shorter than the window stamp nothing). What the scanners do with a check is
+engine-side: `ENGINE_NO_CARRIER_RESET` feeds such bursts through the real tap and shows the `-Y` pass after them step,
+and `ENGINE_TRUNK_SCAN` shows them, on its injected clock, restart neither the activity hold nor the idle dwell.
 
 The cases above can only show that bounds hold. The `DECODE_IQ_ANALOG_NEG_*` negative controls show that a missed
 bound fails: they run the host through `tests/analog_replay_fail_check.cmake`, which requires its exit status (1 for

@@ -297,22 +297,24 @@ test_carrier_row_suspends_the_dwell(void) {
     free(state);
 }
 
-/* Issue #527: a carrier the tone policy is still checking holds the row as a carrier does, for the policy's bounded
-   window, under its own phrase. */
+/* Issue #527: a carrier the tone policy is still checking holds the row while it lasts, for the policy's bounded
+   window, under its own phrase. It is no activity: the decoder publishes no window for it, and whatever ran before it
+   (the -Y hangtime, a trunk-scan hold or idle dwell) runs on beneath it unchanged, so no budget reads as suspended. */
 static void
-test_tone_check_row_suspends_the_dwell(void) {
+test_tone_check_row_has_no_window(void) {
     static dsd_opts opts;
     dsd_state* state = make_state();
     dsd_app_scan_timing view;
 
     make_opts(&opts);
-    publish(state, DSD_SCAN_STAY_TONE_PENDING, 1U, 101.2, 2000U, 3000U, 2000U);
+    publish(state, DSD_SCAN_STAY_TONE_PENDING, 1U, -1.0, 0U, 3000U, 2000U);
     assert(dsd_app_scan_timing_view(&opts, state, 100.0, &view) == 1);
     assert(view.reason == DSD_SCAN_STAY_TONE_PENDING);
     assert_phrase(&view, "Tone check");
-    assert(view.timer_live == 1U && view.remaining_ms == 1200U);
-    assert(view.show_dwell == 1U && view.dwell_state == DSD_APP_SCAN_DWELL_SUSPENDED);
+    assert(view.timer_live == 0U && view.remaining_ms == 0U && view.span_ms == 0U);
+    assert(view.show_dwell == 0U && view.dwell_state == DSD_APP_SCAN_DWELL_NONE);
     assert(view.show_hold == 0U && view.show_hang == 0U);
+    assert(view.dwell_ms == 3000U && view.hold_ms == 2000U);
 
     free(state);
 }
@@ -689,7 +691,7 @@ main(void) {
     test_voice_row();
     test_activity_hold_row_names_the_tail();
     test_carrier_row_suspends_the_dwell();
-    test_tone_check_row_suspends_the_dwell();
+    test_tone_check_row_has_no_window();
     test_manual_hold_row_pauses_the_dwell();
     test_idle_dwell_row_and_qualify_variant();
     test_hangtime_row();

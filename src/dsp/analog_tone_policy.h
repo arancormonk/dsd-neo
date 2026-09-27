@@ -83,12 +83,6 @@ void dsd_analog_tone_policy_reset(dsd_analog_tone_policy* policy);
 int dsd_analog_tone_policy_step(dsd_analog_tone_policy* policy, const dsd_analog_rx_publication* rx,
                                 unsigned int samples, int rate_hz);
 
-/** @brief Whether @p gate lets the monitor play: OFF and ALLOWED do. */
-int dsd_analog_tone_gate_audible(int gate);
-
-/** @brief Whether a carrier under @p gate is scan activity: everything but REJECTED is. */
-int dsd_analog_tone_gate_holds(int gate);
-
 #ifdef __cplusplus
 }
 #endif

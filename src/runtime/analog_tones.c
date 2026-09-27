@@ -776,3 +776,8 @@ dsd_analog_tone_gate_in_force(const dsd_opts* opts, const dsd_state* state) {
     return (gate > DSD_ANALOG_TONE_GATE_OFF && gate <= DSD_ANALOG_TONE_GATE_REJECTED) ? gate
                                                                                       : DSD_ANALOG_TONE_GATE_PENDING;
 }
+
+int
+dsd_analog_tone_gate_passes(int gate) {
+    return gate == DSD_ANALOG_TONE_GATE_OFF || gate == DSD_ANALOG_TONE_GATE_ALLOWED;
+}

@@ -1493,10 +1493,9 @@ test_typed_scan_nfm_row_tone_rejection_steps(void) {
                                              && opts->analog_tone_filter == DSD_TONE_FILTER_ALLOW);
     state->analog_rx.carrier_open = 1;
     state->analog_rx.gate = DSD_ANALOG_TONE_GATE_PENDING;
-    stamp_monitor_carrier(state);
     noCarrier(opts, state);
     rc |= expect_true("tone check holds the row", state->lcn_freq_roll == 1);
-    /* Before any monitor block has stamped the carrier, with -t long run out: the check still holds the row. */
+    /* The check stamps no carrier activity: with -t long run out since the row landed, it still holds the row. */
     state->last_cc_sync_time = time(NULL) - 40;
     noCarrier(opts, state);
     rc |= expect_true("tone check holds the row past -t", state->lcn_freq_roll == 1 && g_rtl_tune_freq == 154645000U);
@@ -2207,8 +2206,9 @@ setup_tone_rejection_ended(dsd_opts* opts, dsd_state* state, long row0_hz, int r
     state->lcn_freq_roll = 1; /* row 0 is on air */
 }
 
-/* Rejected traffic that ended, as the tap leaves it: the check stamped the hangtime anchor, the policy rejected the
-   tone once it locked, and the carrier's hangover ran out before the next pass. */
+/* Rejected traffic that ended, as the tap leaves it: the policy rejected the tone once it locked, and the carrier's
+   hangover ran out before the next pass. The hangtime anchor is fresh, as the row's landing or earlier traffic the
+   policy passed leaves it; the check itself stamps none. */
 static int
 seed_tone_rejection_ended(dsd_opts* opts, dsd_state* state) {
     feed_rx_tone(opts, state, 30);
@@ -2225,8 +2225,8 @@ seed_tone_rejection_ended(dsd_opts* opts, dsd_state* state) {
 
 /*
  * Rejected traffic that ends between two noCarrier passes (issue #527), about 375 ms apart, holds the row no more than
- * traffic still on air would: the next pass moves on though the hangtime its check stamped has 30 s to run, and an
- * operator hold keeps the row until it is released. A carrier that opens before that pass is a new transmission,
+ * traffic still on air would: the next pass moves on though the hangtime has 30 s to run, and an operator hold keeps
+ * the row until it is released. A carrier that opens before that pass is a new transmission,
  * checked afresh, which holds the row. With nowhere else to go the hangtime decides, as after any carrier.
  */
 static int
@@ -2278,7 +2278,7 @@ test_tone_rejection_that_ended_steps_the_legacy_scan(void) {
     rc |= expect_true("ended: the release steps", g_rigctl_setfreq_calls > 0 && state->lcn_freq_roll == 2);
     free_test_runtime(opts, state);
 
-    /* A single row has nowhere else to go: the hangtime the check stamped runs as after any carrier. */
+    /* A single row has nowhere else to go: the hangtime runs as after any carrier. */
     if (init_test_runtime(&opts, &state) != 0) {
         return 1;
     }
@@ -2306,10 +2306,10 @@ feed_low_rate_tone_partial(dsd_opts* opts, dsd_state* state, int count) {
 
 /*
  * A carrier the tone policy is still checking holds the legacy -Y row until its verdict (issue #527), whatever the
- * hangtime anchor says. On low-rate PCM input a 960-sample monitor block lasts 384 ms at 2500 Hz, and the tap publishes
- * the carrier and its pending verdict sample by sample, long before the block ends and stamps the anchor. A pass in
- * between, -t having run out since the last carrier, keeps the listed tone's traffic on air instead of leaving it;
- * the per-visit cap still ends such a visit.
+ * hangtime anchor says: the check is no carrier activity and stamps nothing, and on low-rate PCM input a 960-sample
+ * monitor block lasts 384 ms at 2500 Hz, while the tap publishes the carrier and its pending verdict sample by sample,
+ * long before the block ends. A pass in between, -t having run out since the last carrier, keeps the listed tone's
+ * traffic on air instead of leaving it; the per-visit cap still ends such a visit.
  */
 static int
 test_tone_check_holds_the_legacy_scan_before_a_block_stamps(void) {
@@ -2327,16 +2327,18 @@ test_tone_check_holds_the_legacy_scan_before_a_block_stamps(void) {
     state->last_cc_sync_time = time(NULL) - 2;
     state->last_cc_sync_time_m = dsd_time_now_monotonic_s() - 2.0;
     feed_low_rate_tone_partial(opts, state, 320);
-    rc |= expect_true("low rate: carrier heard 128 ms in, still checked",
-                      dsd_scan_analog_carrier_open(opts, state)
-                          && dsd_scan_analog_tone_gate(opts, state) == DSD_ANALOG_TONE_GATE_PENDING);
+    rc |= expect_true("low rate: carrier heard 128 ms in, still checked, no activity",
+                      dsd_scan_analog_tone_gate(opts, state) == DSD_ANALOG_TONE_GATE_PENDING
+                          && !dsd_scan_analog_carrier_open(opts, state));
     g_rigctl_setfreq_calls = 0;
     noCarrier(opts, state);
     rc |= expect_true("low rate: the tone check holds the row past -t",
                       g_rigctl_setfreq_calls == 0 && state->lcn_freq_roll == 1
                           && dsd_scan_analog_tone_gate(opts, state) == DSD_ANALOG_TONE_GATE_PENDING);
     dsd_engine_scan_y_timing_tick(opts, state, dsd_time_now_monotonic_s(), (double)time(NULL));
-    rc |= expect_true("low rate: Tone check", state->scan_timing.reason == (uint8_t)DSD_SCAN_STAY_TONE_PENDING);
+    rc |= expect_true("low rate: Tone check, nothing counting down",
+                      state->scan_timing.reason == (uint8_t)DSD_SCAN_STAY_TONE_PENDING
+                          && state->scan_timing.deadline_m < 0.0);
 
     /* The per-visit cap outranks the check, as it does every other reason to stay: a visit 5 s old against 1 s. */
     opts->scan_max_visit_ms = 1000;
@@ -2345,6 +2347,105 @@ test_tone_check_holds_the_legacy_scan_before_a_block_stamps(void) {
     noCarrier(opts, state);
     rc |= expect_true("low rate: the visit cap ends a tone check",
                       g_rigctl_setfreq_calls > 0 && g_rigctl_setfreq_freq == 970012500 && state->lcn_freq_roll == 2);
+    g_rigctl_setfreq_ok = 0;
+    free_test_runtime(opts, state);
+    return rc;
+}
+
+/* What the analog monitor does at the end of each block it reads (dsd_symbol.c symbol_unsynced_carrier_active(), which
+   DSP_SYMBOL_REPLAY runs block by block): stamp the -Y hangtime anchor while the tap's carrier is open and the tone
+   policy passes the traffic (issue #527). */
+static void
+monitor_block_stamp(const dsd_opts* opts, dsd_state* state) {
+    if (dsd_analog_rx_carrier_open_now(opts, state)
+        && dsd_analog_tone_gate_passes(dsd_analog_tone_gate_in_force(opts, state))) {
+        state->last_cc_sync_time = time(NULL);
+        state->last_cc_sync_time_m = dsd_time_now_monotonic_s();
+    }
+}
+
+/* Feed @p blocks 20 ms blocks at 48 kHz of a tone at @p hz, or of silence (a closed squelch) for 0, through the tap,
+   each stamped as the monitor stamps it. */
+static void
+feed_monitor_blocks(dsd_opts* opts, dsd_state* state, int blocks, double hz) {
+    static double phase = 0.0;
+    float block[960];
+    for (int b = 0; b < blocks; b++) {
+        for (int i = 0; i < 960; i++) {
+            block[i] = hz > 0.0 ? (float)(3000.0 * cos(phase)) : 0.0f;
+            phase = fmod(phase + (2.0 * M_PI * hz / 48000.0), 2.0 * M_PI);
+        }
+        dsd_analog_rx_tap(opts, state, block, 960U);
+        monitor_block_stamp(opts, state);
+    }
+}
+
+/*
+ * A carrier the tone policy is still checking is no activity (issue #527). It holds the legacy -Y row while it lasts,
+ * under "Tone check" with nothing counting down, but it stamps nothing: short no-tone bursts under an allow list --
+ * kerchunks, noise -- each end before a verdict and leave the hangtime anchor where the row's landing put it, so once
+ * -t has run out the pass after them moves on, however many came; they cannot park the scanner on a muted row. Traffic
+ * the policy allows stamps as any carrier does and leaves the ordinary -t tail.
+ */
+static int
+test_tone_check_leaves_no_hangtime_tail(void) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    int rc = 0;
+    // Frequencies no other case uses: engine.c caches the last rigctl tune across cases.
+    setup_tone_rejection_ended(opts, state, 971012500L, 2);
+    rc |= expect_true("no tail: allow 100.0", dsd_tone_set_parse("100.0", &opts->analog_tone_set, NULL, 0) == 0);
+    opts->trunk_hangtime = 2;
+    g_rigctl_setfreq_ok = 1;
+    /* The row landed 10 s ago: -t has run out since. */
+    const time_t landed = time(NULL) - 10;
+    state->last_cc_sync_time = landed;
+    for (int burst = 0; burst < 3; burst++) {
+        feed_monitor_blocks(opts, state, 15, 1000.0);
+        rc |= expect_true("no tail: a burst is checked",
+                          dsd_scan_analog_tone_gate(opts, state) == DSD_ANALOG_TONE_GATE_PENDING);
+        g_rigctl_setfreq_calls = 0;
+        noCarrier(opts, state);
+        rc |= expect_true("no tail: the check holds the row", g_rigctl_setfreq_calls == 0 && state->lcn_freq_roll == 1);
+        dsd_engine_scan_y_timing_tick(opts, state, dsd_time_now_monotonic_s(), (double)time(NULL));
+        rc |= expect_true("no tail: Tone check, nothing counting down",
+                          state->scan_timing.reason == (uint8_t)DSD_SCAN_STAY_TONE_PENDING
+                              && state->scan_timing.deadline_m < 0.0);
+        feed_monitor_blocks(opts, state, 20, 0.0);
+        rc |= expect_true("no tail: the burst ends unjudged, the anchor untouched",
+                          state->analog_rx.carrier_open == 0 && state->analog_rx.gate_rejected_ended == 0
+                              && state->last_cc_sync_time == landed);
+    }
+    g_rigctl_setfreq_calls = 0;
+    noCarrier(opts, state);
+    rc |= expect_true("no tail: the pass after the bursts steps",
+                      g_rigctl_setfreq_calls > 0 && g_rigctl_setfreq_freq == 972012500 && state->lcn_freq_roll == 2);
+    free_test_runtime(opts, state);
+
+    /* The listed tone: checked, then allowed and stamped; once it ends, the row waits out -t from its last block. */
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    setup_tone_rejection_ended(opts, state, 973012500L, 2);
+    rc |= expect_true("tail: allow 100.0", dsd_tone_set_parse("100.0", &opts->analog_tone_set, NULL, 0) == 0);
+    opts->trunk_hangtime = 2;
+    state->last_cc_sync_time = time(NULL) - 10;
+    feed_monitor_blocks(opts, state, 30, 100.0);
+    rc |=
+        expect_true("tail: allowed and stamped", dsd_scan_analog_tone_gate(opts, state) == DSD_ANALOG_TONE_GATE_ALLOWED
+                                                     && state->last_cc_sync_time >= time(NULL) - 1);
+    feed_monitor_blocks(opts, state, 20, 0.0);
+    rc |= expect_true("tail: ended", state->analog_rx.carrier_open == 0 && state->analog_rx.gate_rejected_ended == 0);
+    g_rigctl_setfreq_calls = 0;
+    noCarrier(opts, state);
+    rc |= expect_true("tail: the row waits out -t", g_rigctl_setfreq_calls == 0 && state->lcn_freq_roll == 1);
+    dsd_engine_scan_y_timing_tick(opts, state, dsd_time_now_monotonic_s(), (double)time(NULL));
+    rc |=
+        expect_true("tail: Hangtime counting down", state->scan_timing.reason == (uint8_t)DSD_SCAN_STAY_HANGTIME
+                                                        && state->scan_timing.deadline_m > dsd_time_now_monotonic_s());
     g_rigctl_setfreq_ok = 0;
     free_test_runtime(opts, state);
     return rc;
@@ -4078,6 +4179,7 @@ main(void) {
     rc |= test_tone_rejection_stays_on_a_single_row();
     rc |= test_tone_rejection_that_ended_steps_the_legacy_scan();
     rc |= test_tone_check_holds_the_legacy_scan_before_a_block_stamps();
+    rc |= test_tone_check_leaves_no_hangtime_tail();
 #endif
 #if defined(USE_RADIO) && defined(DSD_NEO_TEST_RTL_WRAP)
     rc |= test_rx_tone_resets_on_legacy_scan_step();

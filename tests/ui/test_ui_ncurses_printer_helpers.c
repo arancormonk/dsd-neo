@@ -2880,9 +2880,10 @@ test_scan_timing_row_phrases(void) {
     opts.trunk_scan_enabled = 1;
     seed_scan_timing(&state, DSD_SCAN_STAY_CARRIER, 1U, 101.2, 1200U, 3000U, 1200U);
     assert_scan_timing_row(&opts, &state, "| Scan Timing: Carrier 1.2s/1.2s  dwell 3.0s (suspended)");
-    /* Issue #527: the same carrier while the tone policy is still checking it. */
-    seed_scan_timing(&state, DSD_SCAN_STAY_TONE_PENDING, 1U, 101.2, 1200U, 3000U, 1200U);
-    assert_scan_timing_row(&opts, &state, "| Scan Timing: Tone check 1.2s/1.2s  dwell 3.0s (suspended)");
+    /* Issue #527: the same carrier while the tone policy is still checking it: no activity, so no window of its own,
+       and no budget reads as suspended beneath it. */
+    seed_scan_timing(&state, DSD_SCAN_STAY_TONE_PENDING, 1U, -1.0, 0U, 3000U, 1200U);
+    assert_scan_timing_row(&opts, &state, "| Scan Timing: Tone check");
 }
 
 /* The decoder decides when the receiver moves. A poll that lands after the deadline is a

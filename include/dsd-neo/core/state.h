@@ -476,7 +476,8 @@ typedef enum {
  * OFF: no policy is in force (none configured, or detection is not running: the AM monitor, a digital mode), and
  * the ordinary carrier squelch alone decides. PENDING: a list policy is in force and nothing is decided yet --
  * no carrier, or a carrier inside its acquisition window. ALLOWED / REJECTED: decided, and re-evaluated for as long
- * as the transmission lasts. The monitor plays only OFF and ALLOWED, and a REJECTED carrier holds no scan row. */
+ * as the transmission lasts. The monitor plays only OFF and ALLOWED, and only they are scan activity: a PENDING
+ * carrier holds a scan row only while it lasts, leaving no tail, and a REJECTED one holds none. */
 typedef enum {
     DSD_ANALOG_TONE_GATE_OFF = 0,
     DSD_ANALOG_TONE_GATE_PENDING = 1,
@@ -515,7 +516,8 @@ struct dsd_analog_rx_publication {
         with gate REJECTED -- until the next carrier opens, the policy changes or the tap resets for any other reason
         (a retune, a row or target change, an input switch, a mode change). gate is back to PENDING by then; this keeps
         the rejection for the scanners (issue #527), so that traffic rejected between two of their passes does not hold
-        the row on the activity it stamped while it was being checked. */
+        the row on a window still running from before it (-t since the row landed or since traffic the policy passed, a
+        trunk-scan activity hold). */
     int gate_rejected_ended;
     /** Bumped on every reset (retune, row or target change, input switch, mode change, stop,
      * input-rate change, carrier hangover, stream pause), so a reader can tell a new reception

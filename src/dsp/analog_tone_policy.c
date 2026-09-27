@@ -242,13 +242,3 @@ dsd_analog_tone_policy_step(dsd_analog_tone_policy* policy, const dsd_analog_rx_
     }
     return policy->gate;
 }
-
-int
-dsd_analog_tone_gate_audible(int gate) {
-    return gate == DSD_ANALOG_TONE_GATE_OFF || gate == DSD_ANALOG_TONE_GATE_ALLOWED;
-}
-
-int
-dsd_analog_tone_gate_holds(int gate) {
-    return gate != DSD_ANALOG_TONE_GATE_REJECTED;
-}

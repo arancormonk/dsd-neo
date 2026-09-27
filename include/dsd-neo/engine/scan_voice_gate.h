@@ -53,30 +53,35 @@ int dsd_scan_voice_probe(const dsd_opts* opts, const dsd_state* state, dsd_scan_
  * while the analog monitor runs, FM or AM (dsd_analog_monitor_tap_active(), issue #524), never on a
  * publication past its stale_after_ms, never while a digital carrier is flagged (dsd_state::carrier) and
  * never while a trunking state machine owns the channel. Whether audio is played has no part in it: -o null
- * or a muted UI still holds the row. Traffic the CTCSS/DCS receive policy rejected holds nothing (issue #527);
- * traffic it is still checking holds the row until its verdict (dsd_scan_analog_tone_gate()). Read-only and
- * null-safe.
+ * or a muted UI still holds the row. Under the CTCSS/DCS receive policy (issue #527) it is only the traffic the policy
+ * passes (dsd_analog_tone_gate_passes(): no policy in force, or ALLOWED), the one rule the monitor's -Y hangtime stamp
+ * follows too: traffic it rejected holds nothing, and traffic it is still checking is no activity either -- it holds the
+ * row while it lasts through its verdict (dsd_scan_analog_tone_gate()), but restarts no hold and leaves no tail.
+ * Read-only and null-safe.
  */
 int dsd_scan_analog_carrier_open(const dsd_opts* opts, const dsd_state* state);
 
 /**
  * The CTCSS/DCS receive policy's verdict (dsd_analog_tone_gate, issue #527) on the analog carrier on air: OFF when
- * there is no such carrier by the rules of dsd_scan_analog_carrier_open() (or no policy is in force), else the verdict
- * the tap published for it (dsd_analog_tone_gate_in_force()). PENDING holds a row until the verdict, with the stay
- * reason DSD_SCAN_STAY_TONE_PENDING: the -Y step holds it at every pass, whatever -t says, since the monitor stamps the
- * hangtime anchor only when a block ends, and the trunk-scan tick restarts the activity hold as for any carrier. The
- * policy's window bounds it. REJECTED holds nothing and, on the scanner's next pass, advances it unless the operator
- * holds the row or there is nowhere else to go. Read-only and null-safe.
+ * there is no such carrier by the rules of dsd_scan_analog_carrier_open() before the verdict is weighed (or no policy
+ * is in force), else the verdict the tap published for it (dsd_analog_tone_gate_in_force()). PENDING holds a row while
+ * its carrier lasts, with the stay reason DSD_SCAN_STAY_TONE_PENDING and no window: the -Y step holds it at every
+ * pass, whatever -t says, and the trunk-scan tick holds it without disarming the idle dwell. It is no activity: the
+ * monitor stamps no hangtime anchor for it and the tick restarts no activity hold, so a check its carrier ends before a
+ * verdict leaves the -t, hold and dwell clocks where they were, and short bursts the policy never passed cannot park a
+ * scanner. The policy's window bounds each check. REJECTED holds nothing and, on the scanner's next pass, advances it
+ * unless the operator holds the row or there is nowhere else to go. Read-only and null-safe.
  */
 int dsd_scan_analog_tone_gate(const dsd_opts* opts, const dsd_state* state);
 
 /**
  * Non-zero when traffic the CTCSS/DCS receive policy rejected (issue #527) has ended on the channel on air with no
- * carrier heard since, by the rules of dsd_scan_analog_carrier_open(): its carrier's hangover ran out, or its input
- * paused (dsd_analog_rx_rejection_ended_now()), or an input that stopped delivering left a rejection published past
- * its deadline. A scanner whose pass or tick comes after such traffic ended releases the row as it would have while the
- * carrier lasted, when there is somewhere else to go, so that the activity the traffic stamped while it was being
- * checked does not hold the row. Read-only and null-safe.
+ * carrier heard since, by the rules of dsd_scan_analog_carrier_open() before the verdict is weighed: its carrier's
+ * hangover ran out, or its input paused (dsd_analog_rx_rejection_ended_now()), or an input that stopped delivering left
+ * a rejection published past its deadline. A scanner whose pass or tick comes after such traffic ended releases the row as it would have while the
+ * carrier lasted, when there is somewhere else to go, rather than waiting out a window still running from before it:
+ * -t since the row landed or since traffic the policy passed (earlier traffic, or this traffic before a blocked or
+ * unlisted value was confirmed), or a trunk-scan activity hold. Read-only and null-safe.
  */
 int dsd_scan_analog_tone_rejection_ended(const dsd_opts* opts, const dsd_state* state);
 

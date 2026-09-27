@@ -1464,15 +1464,19 @@ no_carrier_scanner_step_is_due(const dsd_opts* opts, const dsd_state* state, tim
         return dsd_engine_channel_scan_has_other_row(opts, state);
     }
     /* Rejected traffic that ended before this pass came -- its carrier's hangover ran out, or its input paused, between
-     * two passes -- holds nothing either: the activity it stamped while it was being checked is not waited out. With
-     * nowhere else to go the rules below decide, as after any carrier. */
+     * two passes -- holds nothing either: -t since the row landed, or since traffic the policy passed (this traffic
+     * before a blocked or unlisted value was confirmed included), is not waited out. With nowhere else to go the rules
+     * below decide, as after any carrier. */
     if (dsd_scan_analog_tone_rejection_ended(opts, state) && dsd_engine_channel_scan_has_other_row(opts, state)) {
         return 1;
     }
     /* A carrier the tone policy is still checking holds the row until its verdict, whatever the hangtime anchor says:
-     * the tap publishes the carrier and its pending verdict as the samples arrive, but the anchor is stamped only when
-     * a monitor block ends, which on low-rate input (960 samples are 384 ms at 2500 Hz) can come after this pass. The
-     * check is bounded by the policy's window; then the traffic plays under the carrier's rule or is rejected above. */
+     * the check is no activity, so the monitor stamps no anchor for it (dsd_symbol.c), and the tap publishes the
+     * carrier and its pending verdict as the samples arrive, before a monitor block ends (960 samples are 384 ms at
+     * 2500 Hz). The check is bounded by the policy's window; then the traffic plays under the carrier's rule or is
+     * rejected above. A check whose carrier ends before a verdict leaves the anchor where it was, so it adds no -t
+     * tail, and short bursts the policy never passes cannot park the scanner: the rule below steps once -t has run out
+     * since the row landed or since the last traffic the policy passed. */
     if (dsd_scan_analog_tone_gate(opts, state) == DSD_ANALOG_TONE_GATE_PENDING) {
         return 0;
     }

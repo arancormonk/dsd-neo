@@ -51,7 +51,6 @@
 #include <stdio.h>
 #include <string.h>
 #include <time.h>
-#include "analog_tone_policy.h"
 #include "dsd-neo/core/dibit.h"
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
@@ -1174,7 +1173,7 @@ symbol_unsynced_audio_allowed(const dsd_opts* opts, const dsd_state* state) {
         return 0;
     }
     return dsd_trunk_tuning_pending_request() == 0U && !dsd_analog_rx_block_straddles_boundary(opts, state)
-           && dsd_analog_tone_gate_audible(dsd_analog_tone_gate_in_force(opts, state));
+           && dsd_analog_tone_gate_passes(dsd_analog_tone_gate_in_force(opts, state));
 }
 
 /* The monitor sink: the local raw stream or the UDP analog socket. */
@@ -1197,10 +1196,13 @@ symbol_write_unsynced_audio(const dsd_opts* opts, dsd_state* state, unsigned int
 /* Whether the block is carrier activity for the scanner's hold. The analog monitor's carrier, FM or AM (issue #524),
  * is the receive tap's (squelch open above its level floor, through its 200 ms hangover, at every input rate, dropped
  * at every retune and while one is unresolved), whether or not the block is played: -o null and a muted UI hold the
- * row too (issue #526). A carrier the tone policy rejected is no activity (issue #527), so it never holds the row;
- * one still being checked is. The -8 source monitor under digital decoding keeps its old rule, the carrier it plays,
- * which is none while a retune is unresolved. Either way the channel a retune leaves, or one a failed retune left the
- * receiver on, never holds the row the scanner shows: its hangtime runs out and the scanner tunes on. */
+ * row too (issue #526). Under the tone policy (issue #527) only traffic it passes is activity
+ * (dsd_analog_tone_gate_passes()): a rejected carrier never holds the row, and one still being checked stamps nothing
+ * either, so a check its carrier ends before a verdict leaves no hangtime tail behind it (the scanner holds the row
+ * while the check runs by its verdict alone). The -8 source monitor under digital decoding keeps its old rule, the
+ * carrier it plays, which is none while a retune is unresolved. Either way the channel a retune leaves, or one a
+ * failed retune left the receiver on, never holds the row the scanner shows: its hangtime runs out and the scanner
+ * tunes on. */
 static inline int
 symbol_unsynced_carrier_active(const dsd_opts* opts, const dsd_state* state) {
     if (opts->monitor_input_audio != 1 || state->carrier != 0) {
@@ -1208,7 +1210,7 @@ symbol_unsynced_carrier_active(const dsd_opts* opts, const dsd_state* state) {
     }
     if (dsd_analog_monitor_tap_active(opts)) {
         return dsd_analog_rx_carrier_open_now(opts, state)
-               && dsd_analog_tone_gate_holds(dsd_analog_tone_gate_in_force(opts, state));
+               && dsd_analog_tone_gate_passes(dsd_analog_tone_gate_in_force(opts, state));
     }
     return opts->audio_out == 1 && opts->rtl_pwr > opts->rtl_squelch_level && dsd_trunk_tuning_pending_request() == 0U;
 }

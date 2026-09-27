@@ -2838,7 +2838,8 @@ feed_hz_blocks(dsd_opts* opts, dsd_state* state, int blocks, double hz) {
 }
 
 /* An allow list naming the tone on air: muted while it is checked, then played, and within the CTCSS lock target of
-   400 ms. The carrier holds a scan row all the while, and the verdict is logged once. */
+   400 ms. The carrier is scan activity from the first block played, never while it is checked, and the verdict is
+   logged once. */
 static void
 test_tone_policy_allow_match_unmutes_after_the_lock(void) {
     static dsd_opts opts;
@@ -2854,14 +2855,16 @@ test_tone_policy_allow_match_unmutes_after_the_lock(void) {
         clear_carrier_stamps(&state);
         const int played = g_monitor_blocks;
         feed_tone_blocks(&opts, &state, 1);
-        /* Checking or allowed, the carrier is scan activity. */
-        assert(state.last_cc_sync_time != 0);
         if (g_monitor_blocks == played) {
             assert(state.analog_rx.gate == DSD_ANALOG_TONE_GATE_PENDING);
+            /* Still being checked: no scan activity (issue #527), so a check its carrier ends leaves no tail. */
+            assert(state.last_cc_sync_time == 0 && state.last_vc_sync_time == 0);
             assert(muted == b); /* muted only before the first block played */
             muted++;
         } else {
             assert(state.analog_rx.gate == DSD_ANALOG_TONE_GATE_ALLOWED);
+            /* Allowed: scan activity, as any carrier the monitor passes. */
+            assert(state.last_cc_sync_time != 0 && state.last_vc_sync_time != 0);
         }
     }
     assert(muted >= 1 && muted * 20 <= DSD_ANALOG_CTCSS_LOCK_P95_MS);
@@ -3177,6 +3180,64 @@ test_tone_policy_rejection_outlives_its_carrier(void) {
     dsd_state_ext_free_all(&state);
 }
 
+/* A carrier still being checked is no scan activity (issue #527): only blocks under OFF or ALLOWED stamp the -Y
+   hangtime and voice anchors. Short no-tone bursts under an allow list -- kerchunks, noise -- each end before the window
+   and before any verdict, and leave no stamp, no played block and no rejection behind them, so they cannot hold a
+   scanner on a muted row; each is a check of its own. A block list's no-tone traffic stamps from the block its window
+   passes it, and an allowed tone lost under an allow list stamps nothing while it is checked again. */
+static void
+test_tone_policy_check_is_no_scan_activity(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    const int window_blocks = DSD_ANALOG_TONE_WINDOW_MS / 20;
+    install_fake_rtl_hooks(0);
+    init_analog_monitor_fixture(&opts, &state);
+    set_tone_policy(&opts, DSD_TONE_FILTER_ALLOW, "100.0");
+    start_monitor_capture(&opts);
+    clear_carrier_stamps(&state);
+    for (int burst = 0; burst < 3; burst++) {
+        feed_hz_blocks(&opts, &state, window_blocks / 2, 1000.0);
+        assert(state.analog_rx.carrier_open == 1 && state.analog_rx.gate == DSD_ANALOG_TONE_GATE_PENDING);
+        feed_until_carrier_closes(&opts, &state, DSD_ANALOG_TONE_GATE_PENDING);
+        assert(state.analog_rx.gate == DSD_ANALOG_TONE_GATE_PENDING && state.analog_rx.gate_rejected_ended == 0);
+        assert(state.last_cc_sync_time == 0 && state.last_vc_sync_time == 0 && g_monitor_blocks == 0);
+    }
+
+    /* A block list: checked, no stamp; passed for want of a tone once the window ends, stamped from that block. */
+    set_tone_policy(&opts, DSD_TONE_FILTER_BLOCK, "100.0");
+    int stamped_from = -1;
+    for (int b = 0; b < window_blocks + 2; b++) {
+        clear_carrier_stamps(&state);
+        feed_hz_blocks(&opts, &state, 1, 1000.0);
+        const int passed = state.analog_rx.gate == DSD_ANALOG_TONE_GATE_ALLOWED;
+        assert(passed || state.analog_rx.gate == DSD_ANALOG_TONE_GATE_PENDING);
+        assert((state.last_cc_sync_time != 0) == passed && (state.last_vc_sync_time != 0) == passed);
+        if (passed && stamped_from < 0) {
+            stamped_from = b;
+        }
+    }
+    assert(stamped_from >= window_blocks && state.analog_rx.gate_no_tone == 1 && g_monitor_blocks > 0);
+    feed_until_carrier_closes(&opts, &state, DSD_ANALOG_TONE_GATE_ALLOWED);
+
+    /* An allow list: the allowed tone stamps; once it is lost the traffic is checked again, and stamps nothing. */
+    set_tone_policy(&opts, DSD_TONE_FILTER_ALLOW, "100.0");
+    feed_tone_blocks(&opts, &state, 30);
+    assert(state.analog_rx.gate == DSD_ANALOG_TONE_GATE_ALLOWED && state.last_cc_sync_time != 0);
+    for (int b = 0; b < DSD_ANALOG_CTCSS_LOSS_CEILING_MS / 20 + 5; b++) {
+        feed_hz_blocks(&opts, &state, 1, 1000.0);
+        if (state.analog_rx.gate == DSD_ANALOG_TONE_GATE_PENDING) {
+            break;
+        }
+    }
+    assert(state.analog_rx.gate == DSD_ANALOG_TONE_GATE_PENDING);
+    clear_carrier_stamps(&state);
+    feed_hz_blocks(&opts, &state, 5, 1000.0);
+    assert(state.analog_rx.gate == DSD_ANALOG_TONE_GATE_PENDING);
+    assert(state.last_cc_sync_time == 0 && state.last_vc_sync_time == 0);
+    dsd_udp_audio_hooks_set((dsd_udp_audio_hooks){0});
+    dsd_state_ext_free_all(&state);
+}
+
 int
 main(void) {
     exitflag = 0;
@@ -3231,6 +3292,7 @@ main(void) {
     test_tone_policy_change_is_no_tone_lost();
     test_tone_policy_no_tone_rejection_names_a_later_tone();
     test_tone_policy_rejection_outlives_its_carrier();
+    test_tone_policy_check_is_no_scan_activity();
     return 0;
 }
 

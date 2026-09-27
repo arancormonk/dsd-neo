@@ -22,7 +22,8 @@
 typedef struct {
     const char* phrase;  /**< Static English label; a phase variant may override it. */
     uint8_t dwell_state; /**< DSD_APP_SCAN_DWELL_* to report while the dwell is shown. */
-    uint8_t show_dwell;  /**< 0 where the dwell is the live window, so the span already says it. */
+    uint8_t show_dwell;  /**< 0 where the dwell is the live window, so the span already says it, or runs on unchanged
+                              beneath the stay (a tone check). */
     uint8_t show_hold;   /**< 0 where the hold is the live window, or the row is trunked. */
     uint8_t show_hang;   /**< 1 only where protocol hangtime is what ends the stay. */
 } dsd_scan_timing_row;
@@ -43,9 +44,11 @@ static const dsd_scan_timing_row k_scan_timing_rows[] = {
     /* An analog row's carrier holds it the way voice holds a digital one: the dwell is disarmed and
        the live window is the hold (or -Y hangtime) running from the last carrier. */
     [DSD_SCAN_STAY_CARRIER] = {"Carrier", DSD_APP_SCAN_DWELL_SUSPENDED, 1U, 0U, 0U},
-    /* The same carrier while the tone policy is still checking it (issue #527): muted, and held only for the
-       policy's bounded window, after which the row plays (Carrier) or moves on. */
-    [DSD_SCAN_STAY_TONE_PENDING] = {"Tone check", DSD_APP_SCAN_DWELL_SUSPENDED, 1U, 0U, 0U},
+    /* The same carrier while the tone policy is still checking it (issue #527): muted, and held only while it
+       lasts, for no longer than the policy's bounded window, after which the row plays (Carrier) or moves on. The
+       check is no activity: it has no window of its own, and whatever ran before it -- the -Y hangtime, a trunk-scan
+       hold or idle dwell -- runs on beneath it unchanged, so no budget is shown as suspended. */
+    [DSD_SCAN_STAY_TONE_PENDING] = {"Tone check", DSD_APP_SCAN_DWELL_NONE, 0U, 0U, 0U},
 };
 
 /* A reason the decoder can publish but this table cannot render would reach the surfaces

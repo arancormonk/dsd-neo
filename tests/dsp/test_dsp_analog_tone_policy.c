@@ -455,18 +455,10 @@ test_reconfigure_same_signals(void) {
     assert(policy.gate == DSD_ANALOG_TONE_GATE_PENDING && policy.window_open == 0);
 }
 
-/* What each verdict does: the monitor plays only OFF and ALLOWED; every verdict but REJECTED holds a scan row. */
+/* No rate or no samples moves no time, and a NULL policy or read decides nothing new. What each verdict lets through is
+   dsd_analog_tone_gate_passes() (RUNTIME_ANALOG_TONES), which the monitor sink and both scanners share. */
 static void
-test_outputs(void) {
-    assert(dsd_analog_tone_gate_audible(DSD_ANALOG_TONE_GATE_OFF));
-    assert(!dsd_analog_tone_gate_audible(DSD_ANALOG_TONE_GATE_PENDING));
-    assert(dsd_analog_tone_gate_audible(DSD_ANALOG_TONE_GATE_ALLOWED));
-    assert(!dsd_analog_tone_gate_audible(DSD_ANALOG_TONE_GATE_REJECTED));
-    assert(dsd_analog_tone_gate_holds(DSD_ANALOG_TONE_GATE_OFF));
-    assert(dsd_analog_tone_gate_holds(DSD_ANALOG_TONE_GATE_PENDING));
-    assert(dsd_analog_tone_gate_holds(DSD_ANALOG_TONE_GATE_ALLOWED));
-    assert(!dsd_analog_tone_gate_holds(DSD_ANALOG_TONE_GATE_REJECTED));
-    /* No rate or no samples moves no time. */
+test_no_rate_moves_no_time(void) {
     dsd_analog_tone_policy policy;
     policy_with(&policy, DSD_TONE_FILTER_ALLOW, "100.0");
     const dsd_analog_rx_publication rx = rx_carrier(DSD_ANALOG_TONE_STATE_NONE);
@@ -496,7 +488,7 @@ main(void) {
     test_dcs_match_by_signal();
     test_reconfigure();
     test_reconfigure_same_signals();
-    test_outputs();
+    test_no_rate_moves_no_time();
     printf("DSP_ANALOG_TONE_POLICY: ok\n");
     return 0;
 }

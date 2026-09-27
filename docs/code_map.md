@@ -59,10 +59,14 @@ Generated (do not edit/commit):
     trunking-owned channel, and independent of audio output. The -Y voice gate never owns
     an analog row (`scan_voice_gate_enabled()` is false under the analog family), and the -Y timing tick reports
     `DSD_SCAN_STAY_CARRIER` for the hangtime window while that probe is open. Under the CTCSS/DCS receive policy (issue
-    #527) the probe excludes a carrier the policy rejected, and `dsd_scan_analog_tone_gate()` reads the policy's verdict
-    on the carrier the probe would hold (OFF without one); the -Y tick reports `DSD_SCAN_STAY_TONE_PENDING` ("Tone
-    check") while it is PENDING, and `no_carrier_scanner_step_is_due()` (`engine.c`) holds a PENDING row at every pass,
-    after the per-visit cap and ahead of the hangtime rule, whose anchor the monitor stamps only when a block ends.
+    #527) the probe is only traffic the policy passes (`dsd_analog_tone_gate_passes()` in `runtime/analog_tones.c`:
+    OFF or ALLOWED, the one rule the monitor sink and its -Y hangtime stamp in `dsd_symbol.c` follow too), and
+    `dsd_scan_analog_tone_gate()` reads the policy's verdict on the carrier heard (OFF without one). A PENDING carrier
+    is no activity: it holds the row only while it lasts, with no window, and leaves every clock where it was, so a
+    check its carrier ends before a verdict adds no tail and short bursts the policy never passes cannot park a
+    scanner. The -Y tick reports `DSD_SCAN_STAY_TONE_PENDING` ("Tone check") with no deadline while it is PENDING, and
+    `no_carrier_scanner_step_is_due()` (`engine.c`) holds a PENDING row at every pass, after the per-visit cap and
+    ahead of the hangtime rule, whose anchor the check never stamps.
     The engine acts on a rejection on its own ticks only, never from DSP:
     `no_carrier_scanner_step_is_due()` (`engine.c`) steps a REJECTED row at the next no-carrier pass, whatever `-t`
     says, when the list has another row to go to (`dsd_engine_channel_scan_has_other_row()` in `channel_scan.c`: a row
@@ -82,14 +86,19 @@ Generated (do not edit/commit):
     DSP rate, `trunk_scan_target_width_skipped()`; a target on the frequency on air counts, since the list's
     `scan_has_duplicate_type_freq()` makes it one of another type, which runs no tone check); with none it spends the
     tick with the target muted in place and its idle dwell disarmed, since that rotation could only switch back to it.
-    Its analog stay reason reads `TONE_PENDING` the same way. While the verdict is REJECTED and no operator hold is on,
+    Its analog stay reason reads `TONE_PENDING` the same way, ahead of the activity hold and with no window, and
+    `trunk_scan_service_hold()` holds the target for it without disarming the idle dwell (every other reason to stay
+    disarms it); `trunk_scan_refresh_analog_carrier_hold()` restarts the hold only on the probe, so only for traffic
+    the policy passes. While the verdict is REJECTED and no operator hold is on,
     both the -Y tick and `trunk_scan_timing_select_reason()` publish `DSD_SCAN_STAY_CARRIER` with no window, since no
     hangtime or dwell counts toward a step while rejected traffic is kept. Rejected traffic that ended between two
     passes or ticks releases the same way: `dsd_scan_analog_tone_rejection_ended()` reads the tap's
     `gate_rejected_ended` through `dsd_analog_rx_rejection_ended_now()` (held to the channel on air as the carrier is),
     or a REJECTED verdict an input that stopped delivering left published past its deadline, with no carrier heard; both
-    scanners then step or advance when there is somewhere to go, so the activity the traffic stamped while it was
-    checked is not waited out, and with nowhere to go leave the ordinary `-t`, hold and dwell rules to run.
+    scanners then step or advance when there is somewhere to go, so no window still running from before it (-t since
+    the row landed or since traffic the policy passed, this traffic before a blocked or unlisted value was confirmed
+    included, or a trunk-scan hold) is waited out, and with nowhere to go leave the ordinary `-t`, hold and dwell rules
+    to run.
   - Stepped slicer threshold refresh after each getFrameSync() return: `src/engine/slicer_thresholds.c` behind
     `include/dsd-neo/engine/slicer_thresholds.h` (test: `ENGINE_SLICER_THRESHOLDS`)
   - Installs runtime hook tables used by DSP/frame-sync code
@@ -547,7 +556,9 @@ Tests: `tests/engine/test_engine_trunk_scan.c` (`ENGINE_TRUNK_SCAN`) and
     listen. `dsd_analog_tone_gate_in_force()` is the receive policy's verdict on that reception (issue #527): OFF
     wherever detection does not run, else `dsd_state::analog_rx.gate`, failing closed: a published OFF while `dsd_opts`
     holds a list policy with a list is no verdict of it (the tap has no session, or has not read since the policy came
-    on) and reads PENDING; the monitor sink and the scanners ask it. Tone
+    on) and reads PENDING; the monitor sink and the scanners ask it. `dsd_analog_tone_gate_passes()` is what a verdict
+    lets through, OFF and ALLOWED: the one rule for what the monitor plays and what is scan activity (a PENDING carrier
+    holds a row only while it lasts, leaving no tail). Tone
     lists (issue #527): `dsd_tone_set_parse()` reads the '/'-separated list the CLI, the INI and scan rows share (a tone
     as `100` or `100.0`, a code as `D023`, `D023N` or `D023I`), refusing commas with a hint, empty entries, nonstandard
     values and a signal listed twice by entry number, never echoing the text; `dsd_tone_set_format()` writes it back as
@@ -1112,8 +1123,9 @@ installs from `src/engine/trunk_tuning.c` in `src/engine/trunk_tuning_hooks_inst
     reset: the scanners' release outlives the carrier), and logs `Tone filter: allowed|rejected (<value>|no tone)` and
     `Tone filter: pending (tone lost)` on a change. `dsd_symbol.c`
     applies it at its one monitor sink: `symbol_unsynced_audio_allowed()` plays only OFF and ALLOWED, muting the local
-    stream and the UDP analog socket together, and `symbol_unsynced_carrier_active()` stamps no carrier activity for
-    REJECTED; the `-6` raw WAV, written before, is not gated. DSP never advances a scanner. Tests:
+    stream and the UDP analog socket together, and `symbol_unsynced_carrier_active()` stamps carrier activity only
+    for those too (`dsd_analog_tone_gate_passes()`), none for PENDING or REJECTED; the `-6` raw WAV, written before, is
+    not gated. DSP never advances a scanner. Tests:
     `DSP_ANALOG_TONE_POLICY` (the state machine in sample time with injected detections), `DSP_SYMBOL_REPLAY` (the sink,
     the stamp, the raw WAV, policy off byte for byte), the `DECODE_IQ_ANALOG_POLICY_*` and
     `DECODE_IQ_ANALOG_REAL_CTCSS_POLICY` replays.
@@ -1956,8 +1968,8 @@ External dependencies (resolved via CMake):
   again for the entry-numbered reason. The values (`tone_filter`, `tone_set`) land in `dsd_opts::analog_tone_filter` /
   `analog_tone_set` and the leading row block of `dsd_scan_settings`, outside `dsd_scan_settings_equal()` (policy, not
   acquisition). `dsd_scan_mode_configured_tone_policy()` reads the configured one for saves; the rx tone view marks a
-  row's own `(row; default X)`. Scan coupling is the engine's (see Engine): PENDING holds a row as its carrier does,
-  REJECTED releases it at the scanner's next pass, and on an am row or target no verdict is in force
+  row's own `(row; default X)`. Scan coupling is the engine's (see Engine): PENDING holds a row while its carrier lasts
+  but is no activity (no tail, no hold or dwell restarted), REJECTED releases it at the scanner's next pass, and on an am row or target no verdict is in force
   (`dsd_analog_tone_gate_in_force()`), so the carrier holds it as `Carrier`. The CSV splitters end the options cell at
   an unquoted comma, so both importers (`chan_import_options_split()` in `dsd_import.c`, `scan_check_options_split()` in
   `trunk_scan.c`) ask `dsd_scan_options_tone_list_split()` whether the cell ends with a tone list and the field after it

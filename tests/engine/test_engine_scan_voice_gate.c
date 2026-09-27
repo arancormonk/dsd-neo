@@ -19,6 +19,7 @@
  * talkgroup hold on the call being followed suspends it outright.
  */
 
+#include <dsd-neo/core/analog_tone.h>
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
@@ -1412,6 +1413,57 @@ test_analog_carrier_probe(void) {
     fixture_free(&fix);
 }
 
+/* Issue #527: under a CTCSS/DCS receive policy the probe is only the traffic the policy passes. A carrier still being
+ * checked is no activity, so it restarts no hold and leaves no tail behind it, though its PENDING verdict on the carrier
+ * (dsd_scan_analog_tone_gate()) holds a row by itself while it lasts; a rejected one holds nothing. With no policy, or
+ * with no carrier, nothing changes. */
+static void
+test_analog_carrier_probe_follows_the_tone_verdict(void) {
+    gate_fixture fix;
+    if (fixture_init(&fix) != 0) {
+        DSD_FPRINTF(stderr, "FAIL: %s: fixture\n", __func__);
+        g_failures++;
+        return;
+    }
+    analog_row(&fix, 1);
+    fix.opts->analog_demod = DSD_ANALOG_DEMOD_FM;
+    fix.opts->analog_tone_filter = DSD_TONE_FILTER_ALLOW;
+    CHECK("tone list", dsd_tone_set_parse("100.0", &fix.opts->analog_tone_set, NULL, 0) == 0);
+
+    static const struct {
+        int gate;
+        int activity;
+    } verdicts[] = {
+        {DSD_ANALOG_TONE_GATE_PENDING, 0},
+        {DSD_ANALOG_TONE_GATE_ALLOWED, 1},
+        {DSD_ANALOG_TONE_GATE_REJECTED, 0},
+    };
+
+    for (size_t i = 0; i < sizeof(verdicts) / sizeof(verdicts[0]); i++) {
+        fix.state->analog_rx.gate = verdicts[i].gate;
+        CHECK("only traffic the policy passes is activity",
+              dsd_scan_analog_carrier_open(fix.opts, fix.state) == verdicts[i].activity);
+        CHECK("the verdict on the carrier", dsd_scan_analog_tone_gate(fix.opts, fix.state) == verdicts[i].gate);
+    }
+    /* Published OFF under the list policy is no verdict of it yet, which fails closed as a check. */
+    fix.state->analog_rx.gate = DSD_ANALOG_TONE_GATE_OFF;
+    CHECK("no verdict yet is no activity",
+          dsd_scan_analog_carrier_open(fix.opts, fix.state) == 0
+              && dsd_scan_analog_tone_gate(fix.opts, fix.state) == DSD_ANALOG_TONE_GATE_PENDING);
+    /* No carrier: nothing is being checked on air, and nothing holds. */
+    fix.state->analog_rx.gate = DSD_ANALOG_TONE_GATE_PENDING;
+    fix.state->analog_rx.carrier_open = 0;
+    CHECK("no carrier, no check", dsd_scan_analog_carrier_open(fix.opts, fix.state) == 0
+                                      && dsd_scan_analog_tone_gate(fix.opts, fix.state) == DSD_ANALOG_TONE_GATE_OFF);
+    /* No policy: the carrier is activity, as it was before one existed. */
+    fix.state->analog_rx.carrier_open = 1;
+    fix.state->analog_rx.gate = DSD_ANALOG_TONE_GATE_OFF;
+    fix.opts->analog_tone_filter = DSD_TONE_FILTER_OFF;
+    CHECK("no policy", dsd_scan_analog_carrier_open(fix.opts, fix.state) == 1
+                           && dsd_scan_analog_tone_gate(fix.opts, fix.state) == DSD_ANALOG_TONE_GATE_OFF);
+    fixture_free(&fix);
+}
+
 /* The voice gate never owns an analog row: a global --scan-voice-only publishes no gate phase
  * there, a sync the row cannot produce is ignored, and the hangtime rule decides the step. */
 static void
@@ -1514,6 +1566,7 @@ main(void) {
     test_visit_cap_publishes_the_visit_deadline();
     test_visit_cap_publication_pauses_under_hold();
     test_analog_carrier_probe();
+    test_analog_carrier_probe_follows_the_tone_verdict();
     test_voice_gate_exempts_analog_rows();
     test_y_timing_carrier_on_analog_rows();
     if (g_failures != 0) {

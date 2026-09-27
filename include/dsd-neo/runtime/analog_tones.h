@@ -316,11 +316,23 @@ int dsd_analog_tone_detection_active(const dsd_opts* opts);
  * value this build does not know read as PENDING. It fails closed: a published OFF while dsd_opts holds a list policy
  * with a list (--tone-allow/--tone-block) is no verdict of that policy -- the tap has no session to judge with, having
  * failed to allocate one, or has not read since the policy came on -- and reads as PENDING until the tap's own verdict
- * replaces it. The monitor output plays only OFF and ALLOWED, and a REJECTED carrier
- * is no scan activity. The verdict is only as fresh as the tap's last read: a scanner pairs it with the carrier it
- * holds a row on (dsd_scan_analog_carrier_open()). Read-only; OFF for NULL.
+ * replaces it. What the verdict lets through is dsd_analog_tone_gate_passes(). The verdict is only as fresh as the tap's
+ * last read: a scanner pairs it with the carrier it holds a row on (dsd_scan_analog_carrier_open()). Read-only; OFF for
+ * NULL.
  */
 int dsd_analog_tone_gate_in_force(const dsd_opts* opts, const dsd_state* state);
+
+/**
+ * @brief Whether the CTCSS/DCS receive policy's verdict @p gate (a dsd_analog_tone_gate, issue #527) lets the reception
+ * through: OFF (no policy in force) and ALLOWED do; PENDING, REJECTED and a value this build does not know do not.
+ *
+ * The one rule the monitor sink and both scanners share: the monitor plays only such traffic (the local stream and the
+ * UDP analog socket together), and only such traffic is scan activity, which stamps the -Y hangtime anchor and restarts
+ * a trunk-scan target's activity hold. A carrier still being checked holds a row only while it lasts (the scanners read
+ * PENDING through dsd_scan_analog_tone_gate()), leaving no -t or activity_hold_ms tail behind it, and a rejected one
+ * holds nothing. Pure.
+ */
+int dsd_analog_tone_gate_passes(int gate);
 
 #ifdef __cplusplus
 }

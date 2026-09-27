@@ -74,17 +74,10 @@ dsd_scan_analog_tone_rejection_ended(const dsd_opts* opts, const dsd_state* stat
 
 int
 dsd_scan_analog_carrier_open(const dsd_opts* opts, const dsd_state* state) {
-    /* Traffic the tone policy rejected holds nothing (issue #527); traffic it is still checking does. */
+    /* Only traffic the tone policy passes is activity (issue #527): a rejected carrier holds nothing, and one still
+       being checked holds the row only through its verdict (dsd_scan_analog_tone_gate()), leaving no tail. */
     return scan_analog_carrier_heard(opts, state)
-           && dsd_analog_tone_gate_in_force(opts, state) != DSD_ANALOG_TONE_GATE_REJECTED;
-}
-
-/* The stay reason an analog row's carrier gives: the tone check while the policy is still deciding, else the
-   carrier. */
-static uint8_t
-scan_analog_carrier_reason(const dsd_opts* opts, const dsd_state* state) {
-    return (uint8_t)(dsd_scan_analog_tone_gate(opts, state) == DSD_ANALOG_TONE_GATE_PENDING ? DSD_SCAN_STAY_TONE_PENDING
-                                                                                            : DSD_SCAN_STAY_CARRIER);
+           && dsd_analog_tone_gate_passes(dsd_analog_tone_gate_in_force(opts, state));
 }
 
 static int
@@ -518,10 +511,8 @@ scan_y_timing_span_ms(double seconds) {
 static void
 scan_y_timing_fill_hangtime(const dsd_opts* opts, const dsd_state* state, double now_m, double now_wall_s,
                             dsd_scan_timing_publication* out) {
-    /* An analog row's carrier keeps restarting the same window (issue #526): say what holds it, the tone check
-       included (issue #527). */
-    out->reason = dsd_scan_analog_carrier_open(opts, state) ? scan_analog_carrier_reason(opts, state)
-                                                            : (uint8_t)DSD_SCAN_STAY_HANGTIME;
+    /* An analog row's carrier keeps restarting the same window (issue #526): say what holds it. */
+    out->reason = (uint8_t)(dsd_scan_analog_carrier_open(opts, state) ? DSD_SCAN_STAY_CARRIER : DSD_SCAN_STAY_HANGTIME);
     out->dwell_ms = 0U;
     out->hold_ms = 0U;
     if (state->last_cc_sync_time == 0 || !(opts->trunk_hangtime >= 0.0f)) {
@@ -561,6 +552,12 @@ dsd_engine_scan_y_timing_tick(const dsd_opts* opts, dsd_state* state, double now
            runs (engine.c no_carrier_scanner_step_is_due()), and the hangtime window the carrier no longer restarts
            would count down to a step that never comes. */
         report.reason = (uint8_t)DSD_SCAN_STAY_CARRIER;
+    } else if (dsd_scan_analog_tone_gate(opts, state) == DSD_ANALOG_TONE_GATE_PENDING) {
+        /* A carrier the tone policy is still checking (issue #527) holds the row until its verdict, whatever -t says
+           (engine.c no_carrier_scanner_step_is_due()), for no longer than the policy's window. It is no activity and
+           restarts no window: the hangtime runs on beneath it from the last carrier the policy passed, or the row's
+           landing, so nothing counts down to a step the check itself decides. */
+        report.reason = (uint8_t)DSD_SCAN_STAY_TONE_PENDING;
     } else if (dsd_scan_voice_gate_owns_step(opts, state)) {
         scan_y_timing_fill_gate(state, &report);
     } else {

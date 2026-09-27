@@ -3012,11 +3012,17 @@ trunk_scan_trunked_stay_reason(const dsd_opts* opts, const dsd_trunk_scan_target
 }
 
 /* The one window the coordinator owns outright: a conventional row holds for its effective
- * activity hold, measured from the last activity the policy allowed. */
+ * activity hold, measured from the last activity the policy allowed. A carrier the tone policy is
+ * still checking holds an analog row while it lasts, whatever that hold says, with no window: the
+ * check is no activity, and the policy's window bounds it (issue #527). */
 static dsd_scan_stay_reason
 trunk_scan_conventional_stay_reason(const dsd_opts* opts, const dsd_state* state,
                                     const dsd_trunk_scan_target_runtime* rt, double now_m, double* started_m,
                                     double* deadline_m, uint32_t* span_ms) {
+    if (trunk_scan_type_is_analog(rt->target.type)
+        && dsd_scan_analog_tone_gate(opts, state) == DSD_ANALOG_TONE_GATE_PENDING) {
+        return DSD_SCAN_STAY_TONE_PENDING;
+    }
     const int hold_ms = trunk_scan_target_hold_ms(opts, rt);
     const double hold_s = (double)hold_ms / 1000.0;
     if (!(rt->last_allowed_activity_m > 0.0 && (now_m - rt->last_allowed_activity_m) < hold_s)) {
@@ -3032,13 +3038,8 @@ trunk_scan_conventional_stay_reason(const dsd_opts* opts, const dsd_state* state
         *span_ms = hold_ms > 0 ? (uint32_t)hold_ms : 0U;
     }
     if (trunk_scan_type_is_analog(rt->target.type)) {
-        /* The carrier is what holds an analog row; once it drops the hold's tail runs out. A carrier the tone policy
-           is still checking holds it too, for its bounded window (issue #527). */
-        if (!dsd_scan_analog_carrier_open(opts, state)) {
-            return DSD_SCAN_STAY_ACTIVITY_HOLD;
-        }
-        return dsd_scan_analog_tone_gate(opts, state) == DSD_ANALOG_TONE_GATE_PENDING ? DSD_SCAN_STAY_TONE_PENDING
-                                                                                      : DSD_SCAN_STAY_CARRIER;
+        /* The carrier is what holds an analog row; once it drops the hold's tail runs out. */
+        return dsd_scan_analog_carrier_open(opts, state) ? DSD_SCAN_STAY_CARRIER : DSD_SCAN_STAY_ACTIVITY_HOLD;
     }
     return (state->scan_voice_gate_phase == (uint8_t)DSD_SCAN_VOICE_GATE_VOICE) ? DSD_SCAN_STAY_VOICE
                                                                                 : DSD_SCAN_STAY_ACTIVITY_HOLD;
@@ -3067,10 +3068,20 @@ trunk_scan_active_stay_reason(const dsd_opts* opts, const dsd_state* state, cons
     return trunk_scan_conventional_stay_reason(opts, state, rt, now_m, started_m, deadline_m, span_ms);
 }
 
+/* Whether the target on air stays at this tick for a reason of its own. Every such reason but a tone check disarms the
+ * idle dwell, so a fresh full dwell starts once it ends. A carrier the tone policy is still checking (issue #527) is no
+ * activity and leaves the dwell running where it was: a check its carrier ends before a verdict adds no dwell, and
+ * short bursts the policy never passes cannot park the rotation. Returns 1 when the tick is spent. */
 static int
-trunk_scan_active_is_held(const dsd_opts* opts, const dsd_state* state, const dsd_trunk_scan_coord* coord,
-                          double now_m) {
-    return trunk_scan_active_stay_reason(opts, state, coord, now_m, NULL, NULL, NULL) != DSD_SCAN_STAY_NONE;
+trunk_scan_service_hold(const dsd_opts* opts, const dsd_state* state, dsd_trunk_scan_coord* coord, double now_m) {
+    const dsd_scan_stay_reason stay = trunk_scan_active_stay_reason(opts, state, coord, now_m, NULL, NULL, NULL);
+    if (stay == DSD_SCAN_STAY_NONE) {
+        return 0;
+    }
+    if (stay != DSD_SCAN_STAY_TONE_PENDING) {
+        coord->targets[coord->active].idle_since_m = -1.0;
+    }
+    return 1;
 }
 
 static void
@@ -3298,7 +3309,9 @@ trunk_scan_refresh_voice_media_hold(const dsd_opts* opts, dsd_state* state, dsd_
 
 /* An analog target's activity is its carrier (issue #526): every tick that finds the squelch open
  * restarts the activity hold, whatever the voice gate says, since an analog channel never produces
- * the decoded voice media that gate waits for. The gate's phase is not this row's to publish. */
+ * the decoded voice media that gate waits for. Under the tone policy only traffic it passes does
+ * (issue #527): a carrier it rejected or is still checking restarts nothing. The gate's phase is not
+ * this row's to publish. */
 static void
 trunk_scan_refresh_analog_carrier_hold(const dsd_opts* opts, dsd_state* state, dsd_trunk_scan_target_runtime* rt,
                                        double now_m) {
@@ -3583,14 +3596,14 @@ trunk_scan_rejection_has_alternate(const dsd_opts* opts, const dsd_state* state,
 
 /* Traffic the tone policy rejected on an analog target (issue #527) holds nothing: its carrier stamped no activity,
  * and the hold that earlier traffic left is released, so the rotation moves on at this tick. So does traffic that was
- * rejected and has ended since the last tick (dsd_scan_analog_tone_rejection_ended()): the hold it earned while it was
- * being checked is released the same way. The operator's hold keeps the target, muted. With nowhere else to go (a
- * single target, as a fixed-frequency session, or every other one avoided, cooling down or refused its width:
- * trunk_scan_rejection_has_alternate()) the target keeps traffic still on air, muted, and the idle dwell does not run
- * meanwhile, since its rotation could only come back to this target; the Scan Timing row reads "Carrier", with no
- * timer (trunk_scan_timing_select_reason()). Traffic that has ended then leaves the hold and the dwell to run as after
- * any carrier. Returns 1 when the tick is spent. The decision is the DSP tap's verdict, which it logs ("Tone filter:
- * rejected"); only this engine tick, under the tick guard, acts on it. */
+ * rejected and has ended since the last tick (dsd_scan_analog_tone_rejection_ended()): the hold it or earlier traffic
+ * earned while the policy passed it is released the same way. The operator's hold keeps the target, muted. With
+ * nowhere else to go (a single target, as a fixed-frequency session, or every other one avoided, cooling down or
+ * refused its width: trunk_scan_rejection_has_alternate()) the target keeps traffic still on air, muted, and the idle
+ * dwell does not run meanwhile, since its rotation could only come back to this target; the Scan Timing row reads
+ * "Carrier", with no timer (trunk_scan_timing_select_reason()). Traffic that has ended then leaves the hold and the
+ * dwell to run as after any carrier. Returns 1 when the tick is spent. The decision is the DSP tap's verdict, which it
+ * logs ("Tone filter: rejected"); only this engine tick, under the tick guard, acts on it. */
 static int
 trunk_scan_service_tone_rejection(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_coord* coord,
                                   dsd_trunk_scan_target_runtime* rt, double now_m) {
@@ -3652,11 +3665,8 @@ trunk_scan_tick_targets_locked(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_
         trunk_scan_share_peer_idens(coord, state, rt);
     }
     trunk_scan_refresh_activity(opts, state, rt, now_m);
-    if (trunk_scan_service_release(opts, state, coord, rt, now_m)) {
-        return;
-    }
-    if (trunk_scan_active_is_held(opts, state, coord, now_m)) {
-        rt->idle_since_m = -1.0;
+    if (trunk_scan_service_release(opts, state, coord, rt, now_m)
+        || trunk_scan_service_hold(opts, state, coord, now_m)) {
         return;
     }
     /* The operator hold only suspends the idle dwell: the state machine above keeps

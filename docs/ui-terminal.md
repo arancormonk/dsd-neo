@@ -633,15 +633,16 @@ last sync. NXDN's additional grace period is described below.
 | `Idle dwell` | nothing holds the row | the idle dwell |
 | `Hangtime` | `-Y` without `--scan-voice-only`: waiting out `-t` since the last sync | next whole second after `-t` |
 | `Carrier` | an analog row's carrier is open (an `nfm` or `am` row, an `nfm-conventional` or `am-conventional` target, or a row of an untyped list scanned under `-fA` or `-fM`): squelch open, whether or not audio plays | `-Y`: the hangtime window; trunk scan: the activity hold; none while the scan keeps traffic the tone filter rejected |
-| `Tone check` | an FM row's carrier (an `nfm` row or `nfm-conventional` target, or a row of an untyped list scanned under `-fA`) while the tone filter is still checking its tone or code, muted, for at most 800 ms (1,600 ms for a listed DCS code still being confirmed) | as for `Carrier` |
+| `Tone check` | an FM row's carrier (an `nfm` row or `nfm-conventional` target, or a row of an untyped list scanned under `-fA`) while the tone filter is still checking its tone or code, muted, for at most 800 ms (1,600 ms for a listed DCS code still being confirmed) | none: the check is not activity, and the `-Y` hangtime or the target's hold or idle dwell runs on beneath it unchanged |
 
 Which phrases you can see depends on the protocol: an NXDN trunked target has no state machine to report control
 acquisition, so it never reads `Acquiring control`. An analog row (an `nfm` or `am` row or target, or any row of an
 untyped list scanned under `-fA` or `-fM`) never reads `Voice`, `Voice tail` or `Qualify`, since the voice gate does not
 apply to it: it reads `Carrier` while its carrier holds it (`Tone check` while the tone filter is checking an FM row),
-then `Hangtime` (`-Y`) or `Activity hold` (trunk scan) for the tail. Traffic the tone filter rejects holds nothing: the
-row moves on at the scanner's next pass. When the scan has nowhere else to take it, the row keeps it, muted, for as
-long as its carrier lasts, and reads `Carrier` with no countdown. While a typed scan row is on air, the decoder
+then `Hangtime` (`-Y`) or `Activity hold` (trunk scan) for the tail. A check that ends before its verdict leaves no
+tail of its own: the row reads whatever ran beneath it, and short bursts the tone filter never passes cannot hold it.
+Traffic the tone filter rejects holds nothing: the row moves on at the scanner's next pass. When the scan has nowhere
+else to take it, the row keeps it, muted, for as long as its carrier lasts, and reads `Carrier` with no countdown. While a typed scan row is on air, the decoder
 picker's label names its class beside the configured mode, `Mode... [DMR; scan nfm]` (`scan am` for an `am` row).
 
 The values that follow are the *effective* ones for the row on air, after CSV and option overrides:
