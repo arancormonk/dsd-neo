@@ -1595,6 +1595,94 @@ test_typed_scan_tone_rejection_with_a_refused_row(void) {
     return rc;
 }
 
+/* Issue #527 beside #526: an am row is weighed as a place for rejected traffic to go by the AM width it runs, never the
+ * NFM one. The configured --am-bandwidth-hz is 20000 and the configured NFM width unset. @p own_am_hz 0: the am row sets
+ * no width, so it runs the configured 20 kHz, which the 16 kHz DSP rate cannot filter, where an nfm row would run the
+ * unset NFM default, which is never refused; rejected traffic on the nfm row stays there, muted, until a 48 kHz rate
+ * fits the am row, and then steps to it. @p own_am_hz 5000: the am row's own AM width, which the 16 kHz rate filters
+ * and which is below the NFM range; rejected traffic steps to it at the first pass. */
+static int
+typed_scan_tone_rejection_weighs_an_am_row(int own_am_hz) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    int rc = 0;
+    reset_rtl_profile_fakes();
+    dsd_trunk_tuning_requests_reset();
+    opts->audio_in_type = AUDIO_IN_RTL;
+    opts->scanner_mode = 1;
+    opts->trunk_hangtime = 30;
+    opts->analog_nfm_bandwidth_hz = 0;
+    opts->analog_am_bandwidth_hz = 20000;
+    state->rtl_ctx = (RtlSdrContext*)state;
+    g_rtl_request_rate_hz = 16000;
+    g_rtl_watch_freq = 118300000U;
+    state->lcn_freq_count = 2;
+    state->trunk_lcn_freq[0] = 154645000L;
+    state->trunk_lcn_freq[1] = 118300000L;
+    rc |= expect_true("am-alternate nfm row", dsd_channel_mode_set(state, 0, DSD_SCAN_MODE_NFM) == 0);
+    rc |= expect_true("am-alternate am row", dsd_channel_mode_set(state, 1, DSD_SCAN_MODE_AM) == 0);
+    dsd_scan_row_profile* profile = NULL;
+    rc |= expect_true("am-alternate tone profile", dsd_scan_profile_ensure(&profile) == 0 && profile);
+    if (profile) {
+        profile->values.present = DSD_SCAN_OPT_TONE;
+        profile->values.tone_filter = DSD_TONE_FILTER_ALLOW;
+        rc |= expect_true("am-alternate list", dsd_tone_set_parse("100.0", &profile->values.tone_set, NULL, 0) == 0);
+        rc |= expect_true("am-alternate tone profile set", dsd_channel_profile_set(state, 0, profile) == 0);
+    }
+    if (own_am_hz > 0) {
+        profile = NULL;
+        rc |= expect_true("am-alternate width profile", dsd_scan_profile_ensure(&profile) == 0 && profile);
+        if (profile) {
+            profile->values.present = DSD_SCAN_OPT_BANDWIDTH;
+            profile->values.channel_bw_hz = own_am_hz;
+            profile->values.channel_bw_kind = DSD_ANALOG_DEMOD_AM;
+            rc |= expect_true("am-alternate width profile set", dsd_channel_profile_set(state, 1, profile) == 0);
+        }
+    }
+
+    state->last_cc_sync_time = time(NULL) - 40;
+    noCarrier(opts, state);
+    rc |= expect_true("am-alternate: the nfm row on air", state->lcn_freq_roll == 1 && g_rtl_tune_freq == 154645000U
+                                                              && opts->analog_tone_filter == DSD_TONE_FILTER_ALLOW);
+
+    state->analog_rx.carrier_open = 1;
+    state->analog_rx.gate = DSD_ANALOG_TONE_GATE_REJECTED;
+    const uint32_t generation = state->analog_rx.generation;
+    const int tunes_before = g_rtl_tune_calls;
+    if (own_am_hz == 0) {
+        for (int pass = 0; pass < 4; pass++) {
+            noCarrier(opts, state);
+        }
+        rc |= expect_true("am-alternate: rejected traffic stays beside a refused am row",
+                          g_rtl_tune_calls == tunes_before && g_rtl_watch_tunes == 0 && state->lcn_freq_roll == 1
+                              && state->analog_rx.generation == generation);
+        /* A DSP rate that fits the configured AM width makes the am row somewhere to go. */
+        g_rtl_request_rate_hz = 48000;
+    }
+    noCarrier(opts, state);
+    rc |= expect_true("am-alternate: rejected traffic steps to the am row",
+                      state->lcn_freq_roll == 2 && g_rtl_watch_tunes == 1 && g_rtl_tune_freq == 118300000U);
+    if (rc) {
+        DSD_FPRINTF(stderr, "  am row width %d at %d Hz: generation %u -> %u, tunes %d -> %d, am tunes %d, roll %d\n",
+                    own_am_hz, g_rtl_request_rate_hz, generation, state->analog_rx.generation, tunes_before,
+                    g_rtl_tune_calls, g_rtl_watch_tunes, state->lcn_freq_roll);
+    }
+
+    dsd_engine_channel_scan_leave(opts, state);
+    state->rtl_ctx = NULL;
+    free_test_runtime(opts, state);
+    dsd_trunk_tuning_requests_reset();
+    return rc;
+}
+
+static int
+test_typed_scan_tone_rejection_weighs_an_am_row(void) {
+    return typed_scan_tone_rejection_weighs_an_am_row(0) | typed_scan_tone_rejection_weighs_an_am_row(5000);
+}
+
 /* Issue #527 beside #526: an am row runs the AM monitor, which hears no CTCSS or DCS, so the configured tone policy
  * (--tone-allow 100.0 here) judges nothing there. A verdict still published (a rejection an nfm row left behind) is not
  * in force: the row's carrier holds it under "Carrier", never "Tone check", and nothing steps it; the configured policy
@@ -3635,6 +3723,7 @@ main(void) {
     rc |= test_rx_tone_resets_on_legacy_scan_step();
     rc |= test_typed_scan_nfm_row_tone_rejection_steps();
     rc |= test_typed_scan_tone_rejection_with_a_refused_row();
+    rc |= test_typed_scan_tone_rejection_weighs_an_am_row();
     rc |= test_typed_scan_am_row_ignores_the_tone_filter();
     rc |= test_typed_scan_tune_boundaries();
     rc |= test_typed_scan_nfm_rows_switch_family(0);

@@ -10558,6 +10558,96 @@ test_nfm_target_rejection_with_a_refused_alternate(void) {
     return test_rc;
 }
 
+/* An am-conventional alternate is weighed by the AM width it runs, never the NFM one (issue #527 beside #526). The
+ * configured --am-bandwidth-hz is 20000 and the configured NFM width unset. @p own_am_hz 0: the tower sets no width of
+ * its own, so it runs the configured 20 kHz, which the 16 kHz DSP rate cannot filter, where an nfm target would run the
+ * unset NFM default, which is never refused; rejected traffic keeps the nfm target, muted, until a 48 kHz rate fits the
+ * tower, and then advances to it. @p own_am_hz 5000: the tower's own --am-bandwidth-hz, which the 16 kHz rate filters
+ * and which is below the NFM range; rejected traffic advances to it at the first tick. */
+static int
+nfm_target_rejection_weighs_an_am_alternate(int own_am_hz) {
+    char dir[DSD_TEST_PATH_MAX];
+    char target_path[DSD_TEST_PATH_MAX];
+    char tower_options[48] = "";
+    char body[256];
+    static dsd_opts opts;
+    static dsd_state state;
+    if (own_am_hz > 0) {
+        DSD_SNPRINTF(tower_options, sizeof tower_options, "--am-bandwidth-hz %d", own_am_hz);
+    }
+    DSD_SNPRINTF(body, sizeof body,
+                 "fire,nfm-conventional,154430000,,250,2000,,--tone-allow 100.0\n"
+                 "tower,am-conventional,118300000,,250,2000,,%s\n",
+                 tower_options);
+    if (make_temp_dir(dir, sizeof dir) != 0
+        || write_targets_file_with_header(dir, k_squelch_targets_header, body, target_path, sizeof target_path) != 0) {
+        return 1;
+    }
+    reset_scan_opts_state(&opts, &state);
+    opts.frame_dmr = 1;
+    opts.dmr_stereo = 1;
+    opts.analog_nfm_bandwidth_hz = 0;
+    opts.analog_am_bandwidth_hz = 20000;
+    DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", target_path);
+    g_scan_tune_refuses_unfit_width = 1;
+    g_scan_tune_width_refusals = 0;
+    g_scan_tune_to_freq_failures_remaining = 0;
+    g_scan_dsp_rate_hz = 16000;
+    char err[256] = {0};
+    trunk_scan_test_set_now(0.0);
+    int test_rc = 0;
+    if (dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err) != 0) {
+        DSD_FPRINTF(stderr, "am alternate init failed: %s\n", err);
+        test_rc = 1;
+    } else {
+        test_rc |= expect_active_target(&state, "the nfm target parked beside an am alternate", 0U);
+        const uint32_t generation = state.analog_rx.generation;
+        const int refusals = g_scan_tune_width_refusals;
+        double now = 0.10;
+        if (own_am_hz == 0) {
+            for (int tick = 0; tick < 8; tick++) {
+                publish_tone_gate(&state, DSD_ANALOG_TONE_GATE_REJECTED);
+                trunk_scan_test_set_now(now);
+                dsd_engine_trunk_scan_tick(&opts, &state);
+                now += 0.50;
+            }
+            test_rc |= expect_active_target(&state, "rejected beside a refused am alternate", 0U);
+            if (state.analog_rx.generation != generation || g_scan_tune_width_refusals != refusals) {
+                DSD_FPRINTF(stderr,
+                            "rejected traffic was switched to the am alternate and back: generation %u -> %u, "
+                            "refusals %d -> %d\n",
+                            generation, state.analog_rx.generation, refusals, g_scan_tune_width_refusals);
+                test_rc = 1;
+            }
+            /* A DSP rate that fits the configured AM width makes the tower somewhere to go. */
+            g_scan_dsp_rate_hz = 48000;
+        }
+        publish_tone_gate(&state, DSD_ANALOG_TONE_GATE_REJECTED);
+        trunk_scan_test_set_now(now);
+        dsd_engine_trunk_scan_tick(&opts, &state);
+        test_rc |= expect_active_target(&state, "rejected traffic advances to the am alternate", 1U);
+        if (opts.analog_demod != DSD_ANALOG_DEMOD_AM || g_scan_tune_width_refusals != refusals) {
+            DSD_FPRINTF(stderr, "the am alternate on air: demod=%d refusals %d -> %d\n", opts.analog_demod, refusals,
+                        g_scan_tune_width_refusals);
+            test_rc = 1;
+        }
+        dsd_engine_trunk_scan_shutdown(&opts, &state);
+    }
+    g_scan_tune_refuses_unfit_width = 0;
+    g_scan_dsp_rate_hz = 0;
+    trunk_scan_test_clear_now();
+    cleanup_paths(dir, target_path, NULL);
+    if (test_rc) {
+        DSD_FPRINTF(stderr, "am alternate with its own AM width %d failed\n", own_am_hz);
+    }
+    return test_rc;
+}
+
+static int
+test_nfm_target_rejection_weighs_an_am_alternate(void) {
+    return nfm_target_rejection_weighs_an_am_alternate(0) | nfm_target_rejection_weighs_an_am_alternate(5000);
+}
+
 /* The AM monitor hears no CTCSS or DCS, so the configured tone policy judges nothing on an am-conventional target: a
  * verdict still published there (a rejection an nfm target left behind) is not in force, the carrier holds the target
  * as "Carrier", never "Tone check", and nothing advances it before its activity hold runs out. The target leaves the
@@ -11784,6 +11874,7 @@ main(void) {
     rc |= run_with_default_tune_hook(test_nfm_target_rejection_under_hold_and_alone);
     rc |= run_with_default_tune_hook(test_am_target_carrier_ignores_the_tone_filter);
     rc |= run_with_default_tune_hook(test_nfm_target_rejection_with_a_refused_alternate);
+    rc |= run_with_default_tune_hook(test_nfm_target_rejection_weighs_an_am_alternate);
     rc |= run_with_default_tune_hook(test_tone_filter_warns_without_nfm_targets);
     return rc;
 }
