@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 /* Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com> */
 
+#include <dsd-neo/core/analog_tone.h>
 #include <dsd-neo/core/audio.h>
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/channel_mode.h>
@@ -25,6 +26,7 @@
 #include <dsd-neo/engine/scan_voice_gate.h>
 #include <dsd-neo/engine/trunk_tuning.h>
 #include <dsd-neo/runtime/analog_channel.h>
+#include <dsd-neo/runtime/analog_tones.h>
 #include <dsd-neo/runtime/decode_mode.h>
 #include <dsd-neo/runtime/log.h>
 #include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
@@ -658,6 +660,78 @@ channel_scan_row_reachable(const dsd_opts* opts, const dsd_state* state, int row
                                                  NULL, 0U);
 }
 
+/* A tone policy as it judges (dsd_analog_tone_policy_configure()): a list policy with a list, else none (OFF and an
+ * empty list). */
+static void
+scan_tone_policy_as_judged(int* mode, dsd_tone_set* set) {
+    if ((*mode != DSD_TONE_FILTER_ALLOW && *mode != DSD_TONE_FILTER_BLOCK) || dsd_tone_set_count(set) == 0) {
+        *mode = DSD_TONE_FILTER_OFF;
+        DSD_MEMSET(set, 0, sizeof(*set));
+    }
+}
+
+/* Whether list policy @p mode with @p set rejects the value the detectors hold locked in @p rx. */
+static int
+scan_tone_policy_rejects_locked(int mode, const dsd_tone_set* set, const dsd_analog_rx_publication* rx) {
+    int listed = 0;
+    if (rx->tone_kind == DSD_ANALOG_TONE_KIND_CTCSS) {
+        listed = dsd_tone_set_contains_ctcss(set, rx->ctcss_tenths_hz);
+    } else if (rx->tone_kind == DSD_ANALOG_TONE_KIND_DCS) {
+        listed = dsd_tone_set_contains_dcs(set, rx->dcs_code, rx->dcs_inverted);
+    }
+    return (mode == DSD_TONE_FILTER_ALLOW) ? !listed : listed;
+}
+
+/* Whether a row that runs received-tone detection and is tuned to the frequency on air would reject the traffic the
+ * CTCSS/DCS receive policy in force rejected (issue #527), so that a step to it would only end the reception and judge
+ * the same traffic again. Its policy is @p row's own (DSD_SCAN_OPT_TONE), else the configured one
+ * (dsd_scan_mode_configured_tone_policy()), each as it judges. It rejects the traffic when it is the policy in force
+ * (dsd_opts), which already did; otherwise when it is a list policy that rejects what the verdict rests on: the value
+ * the detectors hold locked (an allow list that does not list it, a block list that does), or, after a "no tone"
+ * verdict, no tone (an allow list). With neither in hand (the rejected value has since been lost) only the policy in
+ * force is known to reject it. A row with no policy passes everything. @p row may be NULL (no options). */
+static int
+channel_scan_tone_rejects_alike(const dsd_opts* opts, const dsd_state* state, const dsd_scan_option_values* row) {
+    int mode = DSD_TONE_FILTER_OFF;
+    dsd_tone_set set;
+    DSD_MEMSET(&set, 0, sizeof(set));
+    if (row && (row->present & DSD_SCAN_OPT_TONE)) {
+        mode = row->tone_filter;
+        set = row->tone_set;
+    } else {
+        dsd_scan_mode_configured_tone_policy(opts, state, &mode, &set);
+    }
+    scan_tone_policy_as_judged(&mode, &set);
+    int in_force_mode = opts->analog_tone_filter;
+    dsd_tone_set in_force_set = opts->analog_tone_set;
+    scan_tone_policy_as_judged(&in_force_mode, &in_force_set);
+    if (mode == in_force_mode && dsd_tone_set_equal(&set, &in_force_set)) {
+        return 1;
+    }
+    if (mode == DSD_TONE_FILTER_OFF) {
+        return 0;
+    }
+    const dsd_analog_rx_publication* rx = &state->analog_rx;
+    if (rx->tone_state == DSD_ANALOG_TONE_STATE_LOCKED) {
+        return scan_tone_policy_rejects_locked(mode, &set, rx);
+    }
+    return rx->gate_no_tone && mode == DSD_TONE_FILTER_ALLOW;
+}
+
+/* Whether a step to @p row, tuned to the frequency on air, would only judge the traffic the tone policy rejected again
+ * and reject it (issue #527): the row runs received-tone detection (dsd_channel_mode_hears_tones()), and its tone
+ * policy rejects that traffic too (channel_scan_tone_rejects_alike()). A row of another class -- a digital or am
+ * row, or one inheriting a decode mode other than the FM monitor -- or one whose policy passes the traffic is
+ * somewhere to go. */
+static int
+channel_scan_row_rejects_alike(const dsd_opts* opts, const dsd_state* state, int row) {
+    if (!dsd_channel_mode_hears_tones(state, (size_t)row, dsd_scan_mode_configured_fm_monitor(opts, state))) {
+        return 0;
+    }
+    const dsd_scan_row_profile* profile = dsd_channel_profile_get(state, (size_t)row);
+    return channel_scan_tone_rejects_alike(opts, state, profile ? &profile->values : NULL);
+}
+
 int
 dsd_engine_channel_scan_has_other_row(const dsd_opts* opts, const dsd_state* state) {
     if (!opts || !state) {
@@ -667,8 +741,11 @@ dsd_engine_channel_scan_has_other_row(const dsd_opts* opts, const dsd_state* sta
     const long current_freq = current >= 0 ? *dsd_state_trunk_lcn_slot_const(state, current) : 0L;
     const int dsp_rate_hz = dsd_engine_scan_dsp_rate_hz(opts, state);
     for (int row = 0; row < state->lcn_freq_count; row++) {
-        if (row != current && *dsd_state_trunk_lcn_slot_const(state, row) != current_freq
-            && channel_scan_row_reachable(opts, state, row, dsp_rate_hz)) {
+        if (row == current || !channel_scan_row_reachable(opts, state, row, dsp_rate_hz)) {
+            continue;
+        }
+        if (*dsd_state_trunk_lcn_slot_const(state, row) != current_freq
+            || !channel_scan_row_rejects_alike(opts, state, row)) {
             return 1;
         }
     }

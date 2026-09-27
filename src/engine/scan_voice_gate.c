@@ -541,6 +541,12 @@ dsd_engine_scan_y_timing_tick(const dsd_opts* opts, dsd_state* state, double now
          * returns early, so publishing a deadline would count down to a hop that the
          * release, not the clock, actually causes. */
         report.reason = (uint8_t)DSD_SCAN_STAY_MANUAL_HOLD;
+    } else if (dsd_scan_analog_tone_gate(opts, state) == DSD_ANALOG_TONE_GATE_REJECTED) {
+        /* Traffic the tone policy rejected (issue #527) holds the row only while the list has nowhere else to go,
+           muted, for as long as its carrier lasts; with somewhere to go the next pass steps. Either way no window
+           runs (engine.c no_carrier_scanner_step_is_due()), and the hangtime window the carrier no longer restarts
+           would count down to a step that never comes. */
+        report.reason = (uint8_t)DSD_SCAN_STAY_CARRIER;
     } else if (dsd_scan_voice_gate_owns_step(opts, state)) {
         scan_y_timing_fill_gate(state, &report);
     } else {

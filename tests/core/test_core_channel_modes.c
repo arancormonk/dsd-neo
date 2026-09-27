@@ -95,15 +95,21 @@ main(void) {
        (issue #527). An am row runs the AM monitor, which hears no CTCSS or DCS, even under a configured FM monitor
        (issue #526). */
     assert(dsd_channel_modes_hear_tones(s, 1) && !dsd_channel_modes_hear_tones(s, 0));
-    assert(!dsd_channel_modes_include(s, DSD_SCAN_MODE_DMR));
+    assert(dsd_channel_mode_hears_tones(s, 0, 1) && !dsd_channel_mode_hears_tones(s, 0, 0));
     assert(dsd_channel_mode_set(s, 0, DSD_SCAN_MODE_DMR) == 0);
-    assert(dsd_channel_modes_present(s));
-    assert(!dsd_channel_modes_hear_tones(s, 1) && dsd_channel_modes_include(s, DSD_SCAN_MODE_DMR));
+    assert(dsd_channel_modes_present(s) && dsd_channel_mode_get(s, 0) == DSD_SCAN_MODE_DMR);
+    assert(!dsd_channel_modes_hear_tones(s, 1) && !dsd_channel_mode_hears_tones(s, 0, 1));
     assert(dsd_channel_mode_set(s, 0, DSD_SCAN_MODE_NFM) == 0);
     assert(dsd_channel_modes_hear_tones(s, 0) && dsd_channel_modes_hear_tones(s, 1));
+    assert(dsd_channel_mode_hears_tones(s, 0, 0) && dsd_channel_mode_hears_tones(s, 0, 1));
     assert(dsd_channel_mode_set(s, 0, DSD_SCAN_MODE_AM) == 0);
-    assert(dsd_channel_modes_present(s) && dsd_channel_modes_include(s, DSD_SCAN_MODE_AM));
+    assert(dsd_channel_modes_present(s) && dsd_channel_mode_get(s, 0) == DSD_SCAN_MODE_AM);
     assert(!dsd_channel_modes_hear_tones(s, 1) && !dsd_channel_modes_hear_tones(s, 0));
+    assert(!dsd_channel_mode_hears_tones(s, 0, 1) && !dsd_channel_mode_hears_tones(s, 0, 0));
+    /* A slot past the map declares nothing, so it runs the configured decode mode; the per-row rule asks nothing of the
+       frequency, which only the list-wide one weighs. */
+    assert(dsd_channel_mode_hears_tones(s, 4096U, 1) && !dsd_channel_mode_hears_tones(s, 4096U, 0));
+    assert(!dsd_channel_mode_hears_tones(NULL, 0, 1));
     assert(dsd_channel_mode_set(s, 0, DSD_SCAN_MODE_DMR) == 0);
     assert(dsd_channel_mode_set(s, 0, DSD_SCAN_MODE_P25) == 0);
     assert(dsd_channel_modes_present(s));

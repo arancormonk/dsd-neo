@@ -64,7 +64,10 @@ Generated (do not edit/commit):
     check") while it is PENDING. The engine acts on a rejection on its own ticks only, never from DSP:
     `no_carrier_scanner_step_is_due()` (`engine.c`) steps a REJECTED row at the next no-carrier pass, whatever `-t`
     says, when the list has another row to go to (`dsd_engine_channel_scan_has_other_row()` in `channel_scan.c`: a row
-    on another frequency than the one on air, not avoided, and not an analog row skipped at every visit
+    other than the one on air that would judge the traffic otherwise -- on another frequency, or on that frequency one
+    of another class or whose tone policy, its own or the configured one, passes what the verdict rests on (the locked
+    tone or code, or no tone after a "no tone" rejection; `channel_scan_row_rejects_alike()` with
+    `dsd_channel_mode_hears_tones()`) -- not avoided, and not an analog row skipped at every visit
     (`dsd_engine_scan_analog_width_skipped()`: the width of the demodulator its class runs, AM or NFM, its own or the
     configured one of that kind, refused at the DSP rate, or an am row on audio input with no rigctl peer); the row on
     air is the typed scanner's last landed tune, which a failed start does not move, else the one before
@@ -74,9 +77,12 @@ Generated (do not edit/commit):
     (`trunk_scan_service_tone_rejection()`, under `p25_sm_tick_guard`) unless the operator holds it, and only when
     another target is there to take it (`trunk_scan_rejection_has_alternate()`: not avoided, not cooling down, and not
     an analog target whose width, of the demodulator its type runs, AM or NFM, the front end refuses at the published
-    DSP rate, `trunk_scan_target_width_skipped()`); with none it spends the tick with the target muted in place and its
-    idle dwell disarmed, since that rotation could only switch back to it. Its analog stay reason reads `TONE_PENDING`
-    the same way.
+    DSP rate, `trunk_scan_target_width_skipped()`; a target on the frequency on air counts, since the list's
+    `scan_has_duplicate_type_freq()` makes it one of another type, which runs no tone check); with none it spends the
+    tick with the target muted in place and its idle dwell disarmed, since that rotation could only switch back to it.
+    Its analog stay reason reads `TONE_PENDING` the same way. While the verdict is REJECTED and no operator hold is on,
+    both the -Y tick and `trunk_scan_timing_select_reason()` publish `DSD_SCAN_STAY_CARRIER` with no window, since
+    no hangtime or dwell counts toward a step while rejected traffic is kept.
   - Stepped slicer threshold refresh after each getFrameSync() return: `src/engine/slicer_thresholds.c` behind
     `include/dsd-neo/engine/slicer_thresholds.h` (test: `ENGINE_SLICER_THRESHOLDS`)
   - Installs runtime hook tables used by DSP/frame-sync code
@@ -1859,9 +1865,9 @@ External dependencies (resolved via CMake):
   including when a later tune is deferred or rejected; the scanner can still advance to a working row. Separately,
   trunk-scan failures re-arm dwell or retry timers so memory pressure cannot cause a retry on every tick.
 - `dsd_channel_modes_present()` is true for declared modes and for option-bearing profiles alike, so option-only channel
-  maps run the typed scanner. `dsd_channel_modes_include()` says whether a row the scanner tunes (one with a frequency)
-  declares a given class, and `dsd_channel_modes_hear_tones()` whether one runs received-tone detection: an `nfm` row,
-  or, when the configured decode mode is the FM monitor, one that declares no mode and so runs it (issue #527).
+  maps run the typed scanner. `dsd_channel_mode_hears_tones()` says whether a row runs received-tone detection while it
+  is on air: an `nfm` row, or, when the configured decode mode is the FM monitor, one that declares no mode and so runs
+  it (issue #527); `dsd_channel_modes_hear_tones()` whether any row the scanner tunes (one with a frequency) does.
   `dsd_scan_settings_equal()` compares acquisition settings only; the row-scoped options (forcing, CRC, mutes, voice
   gate, group file) are folded through `dsd_scan_mode_resume()` without resetting acquisition. Conventional trunk-scan
   targets take their voice-gate hold/qualify from the row profile. `DSD_SCAN_OPT_MAX_VISIT` is the one **scan-timing**
@@ -1948,7 +1954,8 @@ External dependencies (resolved via CMake):
   `RUNTIME_CONFIG_USER` (never saved), `RUNTIME_CONFIG_APPLY` (a loaded config under a row's own policy),
   `CORE_CSV_IMPORT` and `APP_CONTROL_TRUNK_SCAN_VALIDATE` (row diagnostics, am rows and targets, previews),
   `ENGINE_NO_CARRIER_RESET` (`-Y`, the legacy untyped list and a list with nowhere else to go, a row refused its width
-  included, an am row), `ENGINE_TRUNK_SCAN` (a target refused its width included, an am target),
+  included, an am row, rows sharing the frequency on air), `ENGINE_TRUNK_SCAN` (a target refused its width included,
+  an am target, a same-frequency target of another type),
   `UI_QT_IMPORTED_FILES`, `UI_QT_SCAN_LIST_ROUNDTRIP` and `UI_QT_QML_CALL_LISTS` (previews).
 - Adding a row option: add the `DSD_SCAN_OPT_*` bit (reserved values only), a `dsd_scan_option_values` field and a
   `specifications[]` row with its setter in `runtime/scan_options.c` (use `ANY_MODES` only for options that mean the

@@ -286,6 +286,13 @@ test_carrier_row_suspends_the_dwell(void) {
     publish(state, DSD_SCAN_STAY_CARRIER, 1U, 101.9, 2000U, 0U, 0U);
     assert(dsd_app_scan_timing_view(&opts, state, 100.0, &view) == 1);
     assert(view.show_dwell == 0U && view.show_hold == 0U && view.remaining_ms == 1900U);
+    /* Issue #527: traffic the tone policy rejected, kept for want of anywhere else to go, is a carrier with no window:
+       nothing counts down, and the dwell it keeps from running reads as suspended. */
+    publish(state, DSD_SCAN_STAY_CARRIER, 1U, -1.0, 0U, 3000U, 2000U);
+    assert(dsd_app_scan_timing_view(&opts, state, 100.0, &view) == 1);
+    assert_phrase(&view, "Carrier");
+    assert(view.timer_live == 0U && view.remaining_ms == 0U && view.span_ms == 0U);
+    assert(view.show_dwell == 1U && view.dwell_state == DSD_APP_SCAN_DWELL_SUSPENDED);
 
     free(state);
 }

@@ -555,12 +555,15 @@ no symbol profile is applied over the monitor. Everything below applies to both 
   earned, which is how traffic that was passing and turns out to carry a blocked (or, under allow, an unlisted) tone or
   code releases the target. The `Y` hold keeps the target, muted. With nowhere else to go (a list with this one target,
   or whose other targets are avoided, cooling down from a failed retune, or skipped at every visit for a width the DSP
-  rate cannot filter) the target mutes the traffic and stays, without rotating on its idle dwell meanwhile. Leaving the
-  target restores the configured policy, and Config->Save never writes a target's own. An `am-conventional` target has
-  no policy: the AM monitor hears no CTCSS or DCS, so its `options` refuse the switches, and while it is parked the
-  configured policy judges and mutes nothing and its carrier holds it under `Carrier`. A configured list policy with no
-  `nfm-conventional` target in the list has no effect, since every target runs its own type's mode, and scan start says
-  so once.
+  rate cannot filter) the target mutes the traffic and stays, without rotating on its idle dwell meanwhile, and the
+  Scan Timing row reads `Carrier` with no countdown. A target on the same frequency counts as somewhere to go: a list
+  holds one target per type and frequency, so it is of another type, which runs no tone check (a mixed-mode
+  repeater's `dmr-conventional` target takes the DMR traffic an `nfm-conventional` target's allow list rejects).
+  Leaving the target restores the configured policy, and Config->Save never writes a target's own. An `am-conventional`
+  target has no policy: the AM monitor hears no CTCSS or DCS, so its `options` refuse the switches, and while it is
+  parked the configured policy judges and mutes nothing and its carrier holds it under `Carrier`. A configured list
+  policy with no `nfm-conventional` target in the list has no effect, since every target runs its own type's mode, and
+  scan start says so once.
 - **Controls.** `--scan-max-visit-ms`, the `Y` hold, advance and avoid work exactly as for digital targets, including
   while a carrier holds the target. The voice gate never applies to an analog target, so a global `--scan-voice-only`
   does not block one, and voice-gate switches are rejected in its `options`.

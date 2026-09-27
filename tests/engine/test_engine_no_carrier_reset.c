@@ -1683,6 +1683,125 @@ test_typed_scan_tone_rejection_weighs_an_am_row(void) {
     return typed_scan_tone_rejection_weighs_an_am_row(0) | typed_scan_tone_rejection_weighs_an_am_row(5000);
 }
 
+/* Row @p row of a typed -Y list declaring @p mode, with, unless @p tone_filter is -1, its own tone policy on @p list. */
+static int
+set_tone_scan_row(dsd_state* state, int row, dsd_scan_mode mode, int tone_filter, const char* list) {
+    int rc = expect_true("tone scan row mode", dsd_channel_mode_set(state, (size_t)row, mode) == 0);
+    if (tone_filter < 0) {
+        return rc;
+    }
+    dsd_scan_row_profile* profile = NULL;
+    rc |= expect_true("tone scan row profile", dsd_scan_profile_ensure(&profile) == 0 && profile);
+    if (!profile) {
+        return 1;
+    }
+    profile->values.present = DSD_SCAN_OPT_TONE;
+    profile->values.tone_filter = tone_filter;
+    rc |= expect_true("tone scan row list", dsd_tone_set_parse(list, &profile->values.tone_set, NULL, 0) == 0);
+    rc |= expect_true("tone scan row profile set", dsd_channel_profile_set(state, (size_t)row, profile) == 0);
+    return rc;
+}
+
+/* What the tap publishes for traffic the tone policy rejected: the CTCSS tone the detectors hold locked (@p tenths), or,
+ * for 0, no tone found within the window. */
+static void
+seed_tone_rejection(dsd_state* state, int tenths) {
+    state->analog_rx.carrier_open = 1;
+    state->analog_rx.gate = DSD_ANALOG_TONE_GATE_REJECTED;
+    state->analog_rx.tone_state = tenths > 0 ? DSD_ANALOG_TONE_STATE_LOCKED : DSD_ANALOG_TONE_STATE_NONE;
+    state->analog_rx.tone_kind = tenths > 0 ? DSD_ANALOG_TONE_KIND_CTCSS : DSD_ANALOG_TONE_KIND_NONE;
+    state->analog_rx.ctcss_tenths_hz = tenths;
+    state->analog_rx.gate_no_tone = tenths > 0 ? 0 : 1;
+}
+
+/* One case of test_typed_scan_tone_rejection_weighs_same_frequency_rows(): row 0 an nfm row with --tone-allow 100.0,
+ * row 1 on the same frequency declaring @p mode with its own @p tone_filter and @p list (-1: none), traffic rejected on
+ * row 0 as seed_tone_rejection() publishes it for @p tenths. With @p want_step the next pass lands on row 1; otherwise
+ * row 0 keeps the traffic, muted, pass after pass, the reception never ended, under "Carrier" with no timer. */
+static int
+typed_scan_same_frequency_case(const char* stage, dsd_scan_mode mode, int tone_filter, const char* list, int tenths,
+                               int want_step) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    int rc = 0;
+    reset_rtl_profile_fakes();
+    dsd_trunk_tuning_requests_reset();
+    opts->audio_in_type = AUDIO_IN_RTL;
+    opts->scanner_mode = 1;
+    opts->trunk_hangtime = 30;
+    state->rtl_ctx = (RtlSdrContext*)state;
+    state->lcn_freq_count = 2;
+    state->trunk_lcn_freq[0] = 154430000L;
+    state->trunk_lcn_freq[1] = 154430000L;
+    rc |= set_tone_scan_row(state, 0, DSD_SCAN_MODE_NFM, DSD_TONE_FILTER_ALLOW, "100.0");
+    rc |= set_tone_scan_row(state, 1, mode, tone_filter, list);
+
+    state->last_cc_sync_time = time(NULL) - 40;
+    noCarrier(opts, state);
+    rc |= expect_true("same-frequency: the allow-100.0 row on air",
+                      state->lcn_freq_roll == 1 && opts->analog_only == 1
+                          && opts->analog_tone_filter == DSD_TONE_FILTER_ALLOW
+                          && dsd_tone_set_contains_ctcss(&opts->analog_tone_set, 1000));
+    seed_tone_rejection(state, tenths);
+    const uint32_t generation = state->analog_rx.generation;
+    for (int pass = 0; pass < (want_step ? 1 : 4); pass++) {
+        noCarrier(opts, state);
+    }
+    if (want_step) {
+        rc |= expect_true("same-frequency: rejected traffic steps to the second row", state->lcn_freq_roll == 2);
+    } else {
+        rc |= expect_true("same-frequency: rejected traffic stays",
+                          state->lcn_freq_roll == 1 && state->analog_rx.generation == generation
+                              && state->analog_rx.gate == DSD_ANALOG_TONE_GATE_REJECTED);
+        dsd_engine_scan_y_timing_tick(opts, state, dsd_time_now_monotonic_s(), (double)time(NULL));
+        rc |= expect_true("same-frequency: Carrier with no timer",
+                          state->scan_timing.reason == (uint8_t)DSD_SCAN_STAY_CARRIER
+                              && state->scan_timing.deadline_m < 0.0);
+    }
+    if (rc) {
+        DSD_FPRINTF(stderr, "  %s: roll %d, generation %u -> %u, reason %u, deadline %.3f\n", stage,
+                    state->lcn_freq_roll, generation, state->analog_rx.generation, (unsigned)state->scan_timing.reason,
+                    state->scan_timing.deadline_m);
+    }
+
+    dsd_engine_channel_scan_leave(opts, state);
+    state->rtl_ctx = NULL;
+    free_test_runtime(opts, state);
+    dsd_trunk_tuning_requests_reset();
+    return rc;
+}
+
+/* Issue #527: a typed -Y list may list one frequency on several rows, each with its own class and options. A row on the
+ * frequency on air is somewhere to take rejected traffic when a step to it would judge that traffic otherwise: a row of
+ * another class (a mixed-mode repeater's dmr row, an am row, a row inheriting the digital decode mode), which runs no
+ * tone check, or an nfm row whose policy -- its own, or the configured one (off here) -- passes what the verdict rests
+ * on: the tone locked, or no tone at all. Fire and EMS sharing a repeater, each with its own allow list: EMS traffic
+ * rejected on the fire row moves to the EMS row. A row that would reject the traffic too -- the same policy, or another
+ * that rejects this tone as well -- is nowhere to go, since a step would land there, end the reception, reject the
+ * same traffic and step back, for as long as it lasted. */
+static int
+test_typed_scan_tone_rejection_weighs_same_frequency_rows(void) {
+    int rc = 0;
+    rc |= typed_scan_same_frequency_case("a dmr row", DSD_SCAN_MODE_DMR, -1, NULL, 0, 1);
+    rc |= typed_scan_same_frequency_case("an am row", DSD_SCAN_MODE_AM, -1, NULL, 0, 1);
+    rc |= typed_scan_same_frequency_case("a row inheriting the digital mode", DSD_SCAN_MODE_INHERIT, -1, NULL, 0, 1);
+    rc |= typed_scan_same_frequency_case("an nfm row allowing the tone", DSD_SCAN_MODE_NFM, DSD_TONE_FILTER_ALLOW,
+                                         "131.8", 1318, 1);
+    rc |= typed_scan_same_frequency_case("an nfm row rejecting the tone too", DSD_SCAN_MODE_NFM, DSD_TONE_FILTER_ALLOW,
+                                         "131.8", 1035, 0);
+    rc |= typed_scan_same_frequency_case("an nfm row with the same policy", DSD_SCAN_MODE_NFM, DSD_TONE_FILTER_ALLOW,
+                                         "100.0", 0, 0);
+    rc |= typed_scan_same_frequency_case("an nfm row blocking only other tones", DSD_SCAN_MODE_NFM,
+                                         DSD_TONE_FILTER_BLOCK, "67.0", 0, 1);
+    rc |= typed_scan_same_frequency_case("an nfm row blocking the tone", DSD_SCAN_MODE_NFM, DSD_TONE_FILTER_BLOCK,
+                                         "103.5", 1035, 0);
+    rc |= typed_scan_same_frequency_case("an nfm row running the configured policy", DSD_SCAN_MODE_NFM, -1, NULL, 0, 1);
+    return rc;
+}
+
 /* Issue #527 beside #526: an am row runs the AM monitor, which hears no CTCSS or DCS, so the configured tone policy
  * (--tone-allow 100.0 here) judges nothing there. A verdict still published (a rejection an nfm row left behind) is not
  * in force: the row's carrier holds it under "Carrier", never "Tone check", and nothing steps it; the configured policy
@@ -1919,6 +2038,21 @@ test_tone_rejection_stays_on_a_single_row(void) {
     rc |= expect_true("single-row-stays", g_rigctl_setfreq_calls == 0 && state->lcn_freq_roll == 1);
     rc |= expect_true("single-row-keeps-reception", state->analog_rx.gate == DSD_ANALOG_TONE_GATE_REJECTED
                                                         && state->analog_rx.generation == generation);
+    /* It stays for as long as the carrier lasts: "Carrier", with no timer, rather than a hangtime countdown that the
+       carrier no longer restarts and that never steps. */
+    dsd_engine_scan_y_timing_tick(opts, state, dsd_time_now_monotonic_s(), (double)time(NULL));
+    rc |= expect_true("single-row-reads-carrier", state->scan_timing.reason == (uint8_t)DSD_SCAN_STAY_CARRIER
+                                                      && state->scan_timing.deadline_m < 0.0);
+
+    /* A second row on the same frequency runs the same mode and policy, as every row of a list without modes does: a
+       step would land there and reject the same traffic again, so it is nowhere to go either. */
+    state->lcn_freq_count = 2;
+    state->trunk_lcn_freq[1] = 957012500;
+    noCarrier(opts, state);
+    rc |= expect_true("same-frequency-row-stays", g_rigctl_setfreq_calls == 0 && state->lcn_freq_roll == 1
+                                                      && state->analog_rx.gate == DSD_ANALOG_TONE_GATE_REJECTED
+                                                      && state->analog_rx.generation == generation);
+    state->trunk_lcn_freq[1] = 958012500;
 
     /* A second row the operator avoided is nowhere to go either. */
     state->lcn_freq_count = 2;
@@ -3724,6 +3858,7 @@ main(void) {
     rc |= test_typed_scan_nfm_row_tone_rejection_steps();
     rc |= test_typed_scan_tone_rejection_with_a_refused_row();
     rc |= test_typed_scan_tone_rejection_weighs_an_am_row();
+    rc |= test_typed_scan_tone_rejection_weighs_same_frequency_rows();
     rc |= test_typed_scan_am_row_ignores_the_tone_filter();
     rc |= test_typed_scan_tune_boundaries();
     rc |= test_typed_scan_nfm_rows_switch_family(0);

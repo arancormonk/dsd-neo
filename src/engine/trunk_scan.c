@@ -3355,6 +3355,15 @@ trunk_scan_timing_select_reason(const dsd_opts* opts, const dsd_state* state, co
         report->reason = (uint8_t)DSD_SCAN_STAY_MANUAL_HOLD;
         return;
     }
+    if (trunk_scan_type_is_analog(rt->target.type)
+        && dsd_scan_analog_tone_gate(opts, state) == DSD_ANALOG_TONE_GATE_REJECTED) {
+        /* Traffic the tone policy rejected (issue #527) holds the target only while the rotation has nowhere else to
+           take it, muted, for as long as its carrier lasts, with the idle dwell disarmed; with somewhere to go the next
+           tick advances. Either way no window runs: an "Idle dwell" with no timer would name a rotation that is not
+           counting. */
+        report->reason = (uint8_t)DSD_SCAN_STAY_CARRIER;
+        return;
+    }
     report->reason = (uint8_t)DSD_SCAN_STAY_IDLE_DWELL;
     if (rt->idle_since_m >= 0.0) {
         report->started_m = rt->idle_since_m;
@@ -3553,7 +3562,10 @@ trunk_scan_target_width_skipped(const dsd_opts* opts, const dsd_state* state, co
  * would try -- not avoided, not cooling down from a failed retune, as trunk_scan_visit_alternate_is_eligible() asks --
  * and not an analog one whose width the front end refuses at the published DSP rate
  * (trunk_scan_target_width_skipped()). An advance with none of those would only switch back to the target on air,
- * ending the reception and judging the same traffic again. */
+ * ending the reception and judging the same traffic again. Unlike a -Y list (dsd_engine_channel_scan_has_other_row()),
+ * a target on the frequency on air always counts: the list refuses a second target of one type on one frequency
+ * (scan_has_duplicate_type_freq()), and nfm-conventional is the one type that runs a tone check, so such a target
+ * runs none and takes the traffic as its own type does. */
 static int
 trunk_scan_rejection_has_alternate(const dsd_opts* opts, const dsd_state* state, const dsd_trunk_scan_coord* coord,
                                    double now_m) {
@@ -3573,7 +3585,8 @@ trunk_scan_rejection_has_alternate(const dsd_opts* opts, const dsd_state* state,
  * and the hold that earlier traffic left is released, so the rotation moves on at this tick. The operator's hold keeps
  * the target, muted. With nowhere else to go (a single target, as a fixed-frequency session, or every other one
  * avoided, cooling down or refused its width: trunk_scan_rejection_has_alternate()) the target keeps the traffic,
- * muted, and the idle dwell does not run meanwhile, since its rotation could only come back to this target. Returns 1
+ * muted, and the idle dwell does not run meanwhile, since its rotation could only come back to this target; the Scan
+ * Timing row reads "Carrier", with no timer (trunk_scan_timing_select_reason()). Returns 1
  * when the tick is spent. The decision is the DSP tap's verdict, which it logs ("Tone filter: rejected"); only this
  * engine tick, under the tick guard, acts on it. */
 static int

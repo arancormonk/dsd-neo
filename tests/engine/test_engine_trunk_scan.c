@@ -10503,6 +10503,10 @@ test_nfm_target_rejection_under_hold_and_alone(void) {
         dsd_engine_trunk_scan_tick(&opts, &state);
     }
     test_rc |= expect_active_target(&state, "a single target stays", 0U);
+    /* It stays for as long as the carrier lasts, with no dwell or hold running: "Carrier", with no timer, rather than
+       an "Idle dwell" that never counts. */
+    test_rc |=
+        expect_scan_timing(&state, "a single target keeps rejected traffic", DSD_SCAN_STAY_CARRIER, -1.0, 250U, 2000U);
     dsd_engine_trunk_scan_shutdown(&opts, &state);
     trunk_scan_test_clear_now();
     cleanup_paths(dir, target_path, NULL);
@@ -10553,6 +10557,41 @@ test_nfm_target_rejection_with_a_refused_alternate(void) {
     dsd_engine_trunk_scan_shutdown(&opts, &state);
     g_scan_tune_refuses_unfit_width = 0;
     g_scan_dsp_rate_hz = 0;
+    trunk_scan_test_clear_now();
+    cleanup_paths(dir, target_path, NULL);
+    return test_rc;
+}
+
+/* A target on the frequency on air takes rejected traffic like any other (issue #527): the list refuses a second
+ * target of one type on one frequency, and nfm-conventional is the one type that runs a tone check, so such a target
+ * judges no tone. On a mixed-mode repeater listed as an nfm-conventional and a dmr-conventional target, DMR traffic the
+ * nfm target's allow list rejects for want of a tone moves to the DMR target at the next tick. The refusal this rests
+ * on is pinned here too: two nfm-conventional targets never share a frequency, whatever their policies, so the -Y
+ * rule for same-frequency rows that would reject the traffic alike (ENGINE_NO_CARRIER_RESET) has no trunk-scan case. */
+static int
+test_nfm_target_rejection_moves_to_a_same_frequency_target(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    char target_path[DSD_TEST_PATH_MAX];
+    static dsd_opts opts;
+    static dsd_state state;
+    int test_rc =
+        expect_parser_rejects_with_header("two nfm-conventional targets on one frequency", k_squelch_targets_header,
+                                          "fire,nfm-conventional,154430000,,250,2000,,--tone-allow 100.0\n"
+                                          "ems,nfm-conventional,154430000,,250,2000,,--tone-allow 131.8\n");
+    if (nfm_targets_init("fire,nfm-conventional,154430000,,250,2000,,--tone-allow 100.0\n"
+                         "dmr,dmr-conventional,154430000,,250,250,\n",
+                         &opts, &state, dir, sizeof dir, target_path, sizeof target_path)
+        != 0) {
+        return 1;
+    }
+    test_rc |= expect_active_target(&state, "the mixed-mode repeater's nfm target", 0U);
+    publish_tone_gate(&state, DSD_ANALOG_TONE_GATE_REJECTED);
+    state.analog_rx.tone_state = DSD_ANALOG_TONE_STATE_NONE;
+    state.analog_rx.gate_no_tone = 1;
+    trunk_scan_test_set_now(0.10);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    test_rc |= expect_active_target(&state, "no-tone traffic moved to the same-frequency dmr target", 1U);
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
     trunk_scan_test_clear_now();
     cleanup_paths(dir, target_path, NULL);
     return test_rc;
@@ -11874,6 +11913,7 @@ main(void) {
     rc |= run_with_default_tune_hook(test_nfm_target_rejection_under_hold_and_alone);
     rc |= run_with_default_tune_hook(test_am_target_carrier_ignores_the_tone_filter);
     rc |= run_with_default_tune_hook(test_nfm_target_rejection_with_a_refused_alternate);
+    rc |= run_with_default_tune_hook(test_nfm_target_rejection_moves_to_a_same_frequency_target);
     rc |= run_with_default_tune_hook(test_nfm_target_rejection_weighs_an_am_alternate);
     rc |= run_with_default_tune_hook(test_tone_filter_warns_without_nfm_targets);
     return rc;

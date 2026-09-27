@@ -982,7 +982,13 @@ setting, shown apart from what is received, and it is off by default: then the o
   hold keeps the row, muted. A fixed-frequency session mutes rejected traffic and stays, and so does a scan with
   nowhere else to go: a `-Y` list or `--trunk-scan` list with no other row or target to step to (the others avoided,
   or skipped at every visit for a width the DSP rate cannot filter, or none), or, for trunk scan, whose others are all
-  cooling down from a failed retune.
+  cooling down from a failed retune. A `-Y` row on the frequency on air counts as somewhere to go only when it would
+  judge the traffic otherwise: a row of another class (a mixed-mode repeater's `dmr` row, an `am` row, or a row
+  inheriting a decode mode other than `-fA`), or an `nfm` row whose policy, its own or the configured one, passes the
+  tone or code the traffic carries (or, after a `no tone` rejection, passes no tone). One that would reject it too,
+  such as a second row with the same policy or every row of a list without modes, is nowhere to go. A trunk-scan
+  target on that frequency is always of another type, since a target list holds one target per type and frequency.
+  While a scan keeps rejected traffic this way, its Scan Timing row reads `Carrier` with no countdown.
 - Where it applies: the analog FM monitor only (`-fA`, and `nfm` scan rows), on radio and PCM inputs alike, never the AM
   monitor (`-fM`, and `am` scan rows and `am-conventional` targets, which carry the configured policy past them
   untouched and hold on their carrier), wherever the received tone is detected. Set where nothing runs it, it has no

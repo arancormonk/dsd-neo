@@ -22,13 +22,15 @@ void dsd_channel_modes_move(dsd_state* dst, dsd_state* src);
 /** Nonzero if at least one row declares a mode or carries scoped row options (scan_profile.h),
  * i.e. the typed scanner must run the list. */
 int dsd_channel_modes_present(const dsd_state* state);
-/** Nonzero if a row the scanner tunes (one with a frequency) declares @p mode, a declared class other than INHERIT. */
-int dsd_channel_modes_include(const dsd_state* state, dsd_scan_mode mode);
-/** Nonzero if a row the scanner tunes (one with a frequency) runs received-tone detection, so the tone policy can act
- * on it (issue #527): an nfm row, on which the row's own policy or the configured one applies while it is on air, or,
- * when @p configured_fm_monitor says the configured decode mode is the analog FM monitor
+/** Nonzero if scan-list slot @p row runs received-tone detection while it is on air, so the tone policy can act on it
+ * (issue #527): an nfm row, on which the row's own policy or the configured one applies, or, when
+ * @p configured_fm_monitor says the configured decode mode is the analog FM monitor
  * (dsd_scan_mode_configured_fm_monitor()), a row that runs that mode -- one declaring no mode (INHERIT), as every row
- * of a list without a mode column does. A typed row of any other mode runs its own mode, never the configured one. */
+ * of a list without a mode column does. A typed row of any other mode runs its own mode, never the configured one.
+ * Asks nothing of the row's frequency. */
+int dsd_channel_mode_hears_tones(const dsd_state* state, size_t row, int configured_fm_monitor);
+/** Nonzero if a row the scanner tunes (one with a frequency) runs received-tone detection
+ * (dsd_channel_mode_hears_tones()). */
 int dsd_channel_modes_hear_tones(const dsd_state* state, int configured_fm_monitor);
 #ifdef __cplusplus
 }

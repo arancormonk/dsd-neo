@@ -36,12 +36,16 @@ void dsd_engine_channel_scan_leave(dsd_opts* opts, dsd_state* state);
 int dsd_engine_channel_scan_refused_rows(const dsd_opts* opts, const dsd_state* state, int dsp_rate_hz, int* first_row,
                                          char* brief, size_t brief_size);
 /** Whether the -Y list has somewhere to take traffic the tone policy rejected (issue #527): a row other than the one on
- * air, on another frequency, that a step can land on -- one with a frequency, not avoided, and not an analog row whose
- * width the front end refuses (skipped at every visit, like the rows dsd_engine_channel_scan_refused_rows() counts).
- * The row on air is the one whose tune last landed on this map, which a failed start does not change; for a list
- * without modes, the one before lcn_freq_roll. Without such a row a step would only land on the row on air again, end
- * the reception and judge the same traffic once more, so the scanner keeps it, muted. Works on both the typed and
- * the untyped (legacy) -Y list. 0 for NULL arguments. */
+ * air that a step can land on -- one with a frequency, not avoided, and not an analog row whose width the front end
+ * refuses (skipped at every visit, like the rows dsd_engine_channel_scan_refused_rows() counts) -- and that would not
+ * judge the same traffic the same way: one on another frequency, or on the frequency on air, one of another class (a
+ * digital or am row, or one inheriting a decode mode other than the FM monitor) or whose tone policy passes the
+ * traffic. A row on the frequency on air that runs the FM monitor under a policy that rejects the traffic too (the
+ * same policy, as every row of a list without modes runs) is nowhere to go. The row on air is the one whose tune last
+ * landed on this map, which a failed start does not change; for a list without modes, the one before lcn_freq_roll.
+ * Without such a row a step would only land on the row on air, or on a row that rejects the traffic alike, end the
+ * reception and judge the same traffic once more, so the scanner keeps it, muted. Works on both the typed and the
+ * untyped (legacy) -Y list. 0 for NULL arguments. */
 int dsd_engine_channel_scan_has_other_row(const dsd_opts* opts, const dsd_state* state);
 #ifdef __cplusplus
 }
