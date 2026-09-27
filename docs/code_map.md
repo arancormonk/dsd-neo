@@ -1183,7 +1183,8 @@ Runtime controls (via `include/dsd-neo/io/rtl_stream_c.h`):
     `dsd_engine_scan_rigctl_restore()` (`trunk_tuning.h`) calls `RestoreScanModulation()` with what the restored
     session runs once `dsd_engine_channel_scan_leave()` has left a `-Y` map or a trunk-scan target list, so neither an
     am row's AM nor a row's passband outlives the scan. After an I/O failure the socket's cache matches no request,
-    since what the peer runs is no longer known.
+    since what the peer runs is no longer known, and a demodulator whose undo the peer did not accept keeps the own
+    passband read for it, so the next undo still sends that rather than reading the row's back as the peer's own.
 
 Key public headers:
 

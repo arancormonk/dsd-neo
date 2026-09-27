@@ -501,6 +501,71 @@ test_scan_row_modulation_reads_and_restores_the_own_passband(void) {
     return 0;
 }
 
+/*
+ * An undo the peer did not accept -- its reply lost here (an empty read), so the request may never have landed -- keeps
+ * what was read of that demodulator's own passband: the peer may still run the row's passband, which a fresh read
+ * would take for its own, and every later undo would then return the peer to the row's. The next undo sends the
+ * passband read before the row changed it, and the next scan's row request asks for no read.
+ */
+static int
+test_scan_restore_keeps_the_own_passband_an_undo_did_not_put_back(void) {
+    /* The session's FM undo is lost: an nfm row's own 25 kHz on a peer at FM 12.5 kHz. */
+    reset_stubs();
+    push_response("FM\n12500\n");
+    push_response("RPRT 1\n");
+    push_response("RPRT 0\n");
+    assert(SetScanRowModulation(140, DSD_ANALOG_DEMOD_FM, 25000));
+    push_response("");
+    assert(!RestoreScanModulation(140, DSD_ANALOG_DEMOD_FM, 0));
+    static const char* const lost_fm[] = {"m\n", "M NFM 25000\n", "M FM 25000\n", "M NFM 12500\n", NULL};
+    assert(sent_since(0, lost_fm));
+    /* The next scan's first row without a width of its own sends the peer's own 12.5 kHz, not 0 ("unchanged"). */
+    push_response("RPRT 1\n");
+    push_response("RPRT 0\n");
+    assert(SetModulationKind(140, DSD_ANALOG_DEMOD_FM, 0));
+    static const char* const undo_fm[] = {"M NFM 12500\n", "M FM 12500\n", NULL};
+    assert(sent_since(4, undo_fm));
+    /* A widened row reads nothing (the peer would report the row's 25 kHz), and its restore returns the peer to
+       12.5 kHz. */
+    push_response("RPRT 1\n");
+    push_response("RPRT 0\n");
+    assert(SetScanRowModulation(140, DSD_ANALOG_DEMOD_FM, 25000));
+    push_response("RPRT 1\n");
+    push_response("RPRT 0\n");
+    assert(RestoreScanModulation(140, DSD_ANALOG_DEMOD_FM, 0));
+    static const char* const again_fm[] = {"M NFM 25000\n", "M FM 25000\n", "M NFM 12500\n", "M FM 12500\n", NULL};
+    assert(sent_since(6, again_fm));
+    /* That restore was answered, so the scan after it reads the own passband again. */
+    push_response("FM\n12500\n");
+    push_response("RPRT 1\n");
+    push_response("RPRT 0\n");
+    assert(SetScanRowModulation(140, DSD_ANALOG_DEMOD_FM, 20000));
+    assert(g_command_count == 13 && strcmp(g_commands[10], "m\n") == 0);
+
+    /* The other demodulator's undo is lost: an am row's 6 kHz on a peer at AM 10 kHz. The session's FM request is
+       answered, so only the AM passband stays to be put back, by the next restore; the am row of the scan between
+       reads nothing (the peer would report its 6 kHz). */
+    reset_stubs();
+    push_response("AM\n10000\n");
+    push_response("RPRT 0\n");
+    assert(SetScanRowModulation(141, DSD_ANALOG_DEMOD_AM, 6000));
+    push_response("");
+    push_response("RPRT 0\n");
+    assert(RestoreScanModulation(141, DSD_ANALOG_DEMOD_FM, 0));
+    static const char* const lost_am[] = {"m\n", "M AM 6000\n", "M AM 10000\n", "M NFM 0\n", NULL};
+    assert(sent_since(0, lost_am));
+    push_response("RPRT 0\n");
+    assert(SetScanRowModulation(141, DSD_ANALOG_DEMOD_AM, 6000));
+    push_response("RPRT 0\n");
+    push_response("RPRT 0\n");
+    assert(RestoreScanModulation(141, DSD_ANALOG_DEMOD_FM, 0));
+    static const char* const again_am[] = {"M AM 6000\n", "M AM 10000\n", "M NFM 0\n", NULL};
+    assert(sent_since(4, again_am));
+    assert(RestoreScanModulation(141, DSD_ANALOG_DEMOD_FM, 0));
+    assert(g_command_count == 7);
+    return 0;
+}
+
 /* A reply that fills the whole receive buffer (1024 bytes) is terminated inside every caller's buffer: the frequency
  * query, the frequency set and the modulation set each read one. */
 static int
@@ -666,6 +731,7 @@ main(void) {
     rc |= test_setmodulation_fallback_and_cache();
     rc |= test_setmodulation_kind_am_and_passband_restore();
     rc |= test_scan_row_modulation_reads_and_restores_the_own_passband();
+    rc |= test_scan_restore_keeps_the_own_passband_an_undo_did_not_put_back();
     rc |= test_full_size_replies_stay_in_bounds();
     rc |= test_get_current_freq_parses_first_line_and_errors();
     rc |= test_io_control_set_freq_validation_and_rigctl_dispatch();

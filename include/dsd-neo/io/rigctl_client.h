@@ -53,8 +53,9 @@ bool SetScanRowModulation(dsd_socket_t sockfd, int kind, int bandwidth);
  * The passband of the demodulator the session does not run goes back first (a peer that keeps a passband per
  * demodulator, as SDR++ does, would otherwise keep an am row's width for AM), so the session's request comes last and
  * leaves the peer on its demodulator; FM without -B then puts back the peer's own FM passband. A passband whose read
- * failed cannot be put back. The next scan reads the peer's own passbands again. Returns what the session's request
- * returns.
+ * failed cannot be put back. The next scan reads the peer's own passbands again, except those of a demodulator whose
+ * undo the peer did not accept (refused, or its reply lost): that one may still run a row's passband, so what was read
+ * of it stays for the next undo or restore to send. Returns what the session's request returns.
  */
 bool RestoreScanModulation(dsd_socket_t sockfd, int kind, int bandwidth);
 

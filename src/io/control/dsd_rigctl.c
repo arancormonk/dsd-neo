@@ -457,19 +457,25 @@ RestoreScanModulation(dsd_socket_t sockfd, int kind, int bandwidth) {
     rigctl_peer* peer = rigctl_peer_on(sockfd);
     const int want_kind = rigctl_kind(kind);
     char buf[BUFSIZE + 1];
+    int restored[2] = {1, 1};
     /* The other demodulator's passband first, so that the request for what the session runs comes last and leaves the
      * peer on it; that request puts back its own passband where it asks for FM without -B. */
     for (int other = DSD_ANALOG_DEMOD_FM; other <= DSD_ANALOG_DEMOD_AM; other++) {
         if (other != want_kind && peer->row_changed[other] && peer->own_bw[other] > 0) {
-            (void)rigctl_request(peer, other, peer->own_bw[other], 0, buf);
+            restored[other] = rigctl_request(peer, other, peer->own_bw[other], 0, buf) == 1;
         }
     }
     const bool ok = SetModulationKind(sockfd, want_kind, bandwidth);
-    /* The next scan reads the peer's own passbands again: the operator may change them between scans. */
+    restored[want_kind] = ok ? 1 : 0;
+    /* The next scan reads the peer's own passbands again: the operator may change them between scans. A demodulator
+     * whose undo the peer did not accept (refused, or its reply lost) may still run a row's passband, which a read
+     * would take for the peer's own, so what was read of it stays for a later undo to send. */
     for (int k = DSD_ANALOG_DEMOD_FM; k <= DSD_ANALOG_DEMOD_AM; k++) {
-        peer->own_read[k] = 0;
-        peer->own_bw[k] = 0;
-        peer->row_changed[k] = 0;
+        if (restored[k]) {
+            peer->own_read[k] = 0;
+            peer->own_bw[k] = 0;
+            peer->row_changed[k] = 0;
+        }
     }
     return ok;
 }
