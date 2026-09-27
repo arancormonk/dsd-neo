@@ -376,8 +376,8 @@ MetricsModel::publish(const View& next) {
     }
 }
 
-/* The received tone, the policy, its verdict and the editor's setting each have their own signal: none of them announces
-   another (#527). */
+/* The received tone, the policy, its verdict and the editor's setting each have their own signal: none of them
+   announces another (#527). */
 void
 MetricsModel::emitRxToneSignals(bool received, bool configured, bool verdict, bool setting) {
     if (received) {
@@ -403,7 +403,8 @@ MetricsModel::clear() {
     m_sync_type_here = DSD_SYNC_NONE;
     m_sync_seen_m = 0.0;
     View cleared;
-    /* The configured tone policy is not session state: stopping leaves it as configured, for the text and the editor. */
+    /* The configured tone policy is not session state: stopping leaves it as configured, for the text and the
+       editor. */
     cleared.rx_tone_configured_text = m_view.rx_tone_configured_text;
     cleared.tone_filter_configured_mode = m_view.tone_filter_configured_mode;
     cleared.tone_filter_configured_list = m_view.tone_filter_configured_list;

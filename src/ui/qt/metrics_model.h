@@ -1204,7 +1204,8 @@ class MetricsModel : public QObject {
         return m_view.tone_filter_editable;
     }
 
-    /** @brief Whether the scan row on air sets its own tone policy, which an edit of the configured one leaves in force. */
+    /** @brief Whether the scan row on air sets its own tone policy, which an edit of the configured one leaves in
+        force. */
     bool
     toneFilterRowOverride() const {
         return m_view.tone_filter_row_override;
@@ -1757,7 +1758,8 @@ class MetricsModel : public QObject {
     /** @brief The Tone filter row (#527): on screen or not, and the verdict @p gate in words (@p no_tone: a
         rejection for want of a tone). */
     static void fillToneFilterView(View& next, bool visible, int gate, bool no_tone);
-    /** @brief The live tone-filter editor (#527): the configured policy it opens on and whether a row shadows an edit. */
+    /** @brief The live tone-filter editor (#527): the configured policy it opens on and whether a row shadows an
+        edit. */
     static void fillToneFilterSetting(View& next, const dsd_opts* opts_snapshot, const dsd_state* snapshot);
     /** @brief Announce the received tone, the tone policy, its verdict and the editor's setting, each on its own signal
         (#522, #527). */

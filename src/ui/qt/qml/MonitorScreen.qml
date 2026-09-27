@@ -1004,12 +1004,12 @@ Item {
                 }
 
                 // The live editor (#527): it edits the configured policy, which a scan
-                // row with its own keeps in force while on air.
+                // row with its own keeps in force while on air. Its own size, a full
+                // touch target that grows with the text: the Flow moves it under the
+                // row's text when it does not fit beside it.
                 OutlineButton {
                     objectName: "monitorToneFilterEdit"
 
-                    width: 72
-                    implicitHeight: 28
                     text: qsTr("Edit")
                     accessibleName: qsTr("Edit tone filter")
                     enabled: decoderHost.running

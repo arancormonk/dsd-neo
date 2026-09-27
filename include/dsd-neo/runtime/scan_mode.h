@@ -246,9 +246,9 @@ void dsd_scan_mode_configured_tone_policy(const dsd_opts* opts, const dsd_state*
  * so no acquisition a row has made (a detected Phase 2 polarity, a followed call) is compared or reset. The policy is
  * not validated here. Without a scope, or while one is suspended, dsd_opts holds the configured values and takes it.
  * Under a live scope the configured baseline takes it, and dsd_opts does too unless the installed row options set their
- * own policy (DSD_SCAN_OPT_TONE, an nfm row's --tone-allow, --tone-block or --no-tone-filter), which stays in force until
- * the row leaves; the next row without one, and the leave, run the edit. Returns 1 when the policy is now in force in
- * dsd_opts, 0 when a row's own policy shadows it, -1 without opts or @p set. Same thread and snapshot rules as
+ * own policy (DSD_SCAN_OPT_TONE, an nfm row's --tone-allow, --tone-block or --no-tone-filter), which stays in force
+ * until the row leaves; the next row without one, and the leave, run the edit. Returns 1 when the policy is now in
+ * force in dsd_opts, 0 when a row's own policy shadows it, -1 without opts or @p set. Same thread and snapshot rules as
  * dsd_scan_mode_set_configured_squelch(). */
 int dsd_scan_mode_set_configured_tone_policy(dsd_opts* opts, const dsd_state* state, int mode, const dsd_tone_set* set);
 /** Whether the configured decode mode is the analog FM monitor (-fA, the FM analog kind): the one decode mode in which

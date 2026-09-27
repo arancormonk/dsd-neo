@@ -566,7 +566,9 @@ Tests: `tests/engine/test_engine_trunk_scan.c` (`ENGINE_TRUNK_SCAN`) and
     lists (issue #527): `dsd_tone_set_parse()` reads the '/'-separated list the CLI, the INI and scan rows share (a tone
     as `100` or `100.0`, a code as `D023`, `D023N` or `D023I`), refusing commas with a hint, empty entries, nonstandard
     values and a signal listed twice by entry number, never echoing the text; `dsd_tone_set_format()` writes it back as
-    written and `dsd_tone_set_format_display()` with units and a `…+N` count for what does not fit;
+    written and `dsd_tone_set_format_display()` with units and a `…+N` count for what does not fit
+    (`dsd_tone_display_to_ascii()` respells that mark `...` in place, the same three bytes, for ASCII surfaces: the
+    terminal's menu label, a toast, a terminal without UTF-8);
     `dsd_tone_set_contains_ctcss()` / `_dcs()` match a code by its signal (`dsd_dcs_canonical()` on both sides), so a
     listed D023I matches a received D047N. `dsd_tone_set_same_signals()` compares two lists by what they pass, a code
     under either spelling, for every question of whether two policies are the same (the tone policy's reconfigure, the
@@ -912,14 +914,16 @@ installs from `src/engine/trunk_tuning.c` in `src/engine/trunk_tuning_hooks_inst
   `gate_text`, what the policy does with the carrier on air (`passing`, `muted: checking tone`, `muted: not allowed`,
   `muted: no tone`; empty without a carrier or past a stale input's deadline), with `gate_no_tone` saying a decided
   verdict was reached for want of a tone, so a frontend that words the verdict itself (Qt's translated words) reads why
-  from the field, never from the English text. The terminal swaps the display list's `…` for `...` where it prints the
-  separator's hyphen (no UTF-8). `policy_editable` says detection runs, so the policy acts on what the monitor plays
+  from the field, never from the English text. The terminal swaps the display list's `…` for `...`
+  (`dsd_tone_display_to_ascii()`) where it prints the separator's hyphen (no UTF-8), and always in its menu label.
+  `policy_editable` says detection runs, so the policy acts on what the monitor plays
   and its live editor belongs on screen, off included (the Qt Tone filter row's reach). For the live editor (issue
   #527) the same header has `dsd_app_tone_filter_setting_get()`, the configured policy an editor opens on (mode, list as
   the parser reads it back, spelled as written, and `row_override` while a row's own policy shadows an edit), and
   `dsd_app_tone_filter_edit_notice()`, the edit's toast (`Applied: Tone filter -> allow 100.0 Hz/D023N`, or
   `Default tone filter -> ...; this channel overrides it (...)` under such a row, both lists summarised to fit
-  `DSD_APP_TONE_FILTER_NOTICE_SIZE`). Given options and no state (a terminal menu before the first snapshot), the view
+  `DSD_APP_TONE_FILTER_NOTICE_SIZE`, and ASCII throughout, the mark `...+N`, since the terminal's status line prints a
+  toast as is). Given options and no state (a terminal menu before the first snapshot), the view
   still fills `configured_text` from the options, as `dsd_app_tone_filter_setting_get()` reads them, and returns -1.
   Tests: `APP_CONTROL_RX_TONE_VIEW`, the terminal goldens, `UI_QT_METRICS_MODEL`.
   `include/dsd-neo/app_control/analog_width_view.h` and `src/app_control/analog_width_view.c` (issue #525) decide the

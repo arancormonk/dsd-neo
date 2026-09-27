@@ -60,12 +60,23 @@ Item {
             return left >= -0.5 && right <= body.width + 0.5;
         }
 
+        // The Edit button is a full touch target whose label is never cut short.
+        function editIsWhole() {
+            var edit = item("monitorToneFilterEdit");
+            verify(edit.height >= Ui.Theme.minimumTouchSize - 0.5,
+                   "Edit is " + edit.height + " px tall");
+            verify(edit.width >= edit.implicitWidth - 0.5 && edit.height >= edit.implicitHeight - 0.5,
+                   "Edit is " + edit.width + "x" + edit.height + ", its label needs "
+                   + edit.implicitWidth + "x" + edit.implicitHeight);
+        }
+
         function test_row_is_reachable_with_no_policy() {
             showEditable();
             tryCompare(item("monitorToneFilter"), "visible", true);
             compare(item("monitorToneFilterValue").text, "off");
             verify(item("monitorToneFilterEdit").enabled);
             verify(!item("monitorToneFilterStatus").visible);
+            editIsWhole();
         }
         function test_row_stays_away_where_nothing_detects() {
             testContext.setHostRunning(true);
@@ -163,7 +174,7 @@ Item {
             compare(item("toneFilterList").text, "100.0");
         }
         // A long policy, its verdict and the edit button on a narrow phone with large text:
-        // nothing runs off the body.
+        // nothing runs off the body, and the button stays whole.
         function test_row_fits_a_compact_monitor() {
             root.width = 320;
             root.height = 360;
@@ -180,6 +191,7 @@ Item {
             waitForItemPolished(row);
             verify(insideBody(item("monitorToneFilterValue")));
             verify(insideBody(item("monitorToneFilterEdit")));
+            editIsWhole();
             testContext.setMetric("toneFilterGate", 0);
             testContext.setMetric("toneFilterStatusText", "");
         }

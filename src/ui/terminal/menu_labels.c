@@ -21,6 +21,7 @@
 #include <dsd-neo/io/tcp_input.h>
 #include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/runtime/analog_channel.h>
+#include <dsd-neo/runtime/analog_tones.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/decode_mode.h>
 #include <dsd-neo/runtime/radioreference.h>
@@ -943,13 +944,13 @@ lbl_audio_lpf(const void* v, char* b, size_t n) {
 }
 
 /* The CTCSS/DCS receive policy (issue #527), read as the Call Info line and the Qt monitor read it (the shared
-   received-tone view): "off", or the mode and its list, and while a scan row's own policy is on air that policy with the
-   configured one it shadows, "(row; default X)". The row's editor edits the configured one. It reads the snapshot pair
-   its picker (act_tone_filter()) opens on, and before the first snapshot the menu's own options with no state, which
-   the view reads as the policy they hold. The value keeps the view's lowercase spelling, as Call Info prints it and as
-   other rows show a shared view's value ("[default]", "[auto]"); On/Off capitals are the toggles' grammar. The view
-   marks what a long list leaves out with a UTF-8 ellipsis; menu labels are ASCII, so it becomes "...", the same three
-   bytes. */
+   received-tone view): "off", or the mode and its list, and while a scan row's own policy is on air that policy with
+   the configured one it shadows, "(row; default X)". The row's editor edits the configured one. It reads the snapshot
+   pair its picker (act_tone_filter()) opens on, and before the first snapshot the menu's own options with no state,
+   which the view reads as the policy they hold. The value keeps the view's lowercase spelling, as Call Info prints it
+   and as other rows show a shared view's value ("[default]", "[auto]"); On/Off capitals are the toggles' grammar. The
+   view marks what a long list leaves out with a UTF-8 ellipsis; menu labels are ASCII, so it becomes "..."
+   (dsd_tone_display_to_ascii()). */
 const char*
 lbl_tone_filter(const void* v, char* b, size_t n) {
     const UiCtx* c = (const UiCtx*)v;
@@ -961,9 +962,7 @@ lbl_tone_filter(const void* v, char* b, size_t n) {
     }
     dsd_app_rx_tone view;
     (void)dsd_app_rx_tone_view(opts, state, 0.0, &view);
-    for (char* mark = strstr(view.configured_text, "\xE2\x80\xA6"); mark; mark = strstr(mark, "\xE2\x80\xA6")) {
-        DSD_MEMCPY(mark, "...", 3U);
-    }
+    dsd_tone_display_to_ascii(view.configured_text);
     DSD_SNPRINTF(b, n, "Tone filter... [%s]", view.configured_text);
     return b;
 }

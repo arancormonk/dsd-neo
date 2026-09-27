@@ -863,6 +863,18 @@ test_tone_list_format(void) {
     assert(dsd_tone_set_format(NULL, buf, sizeof(buf)) == -1);
     assert(dsd_tone_set_format_display(&set, NULL, 32) == -1);
 
+    /* The overflow mark in ASCII, for surfaces that print ASCII: "...", in place, every mark, nothing else touched. */
+    assert(dsd_tone_set_format_display(&set, buf, 32) == 29);
+    dsd_tone_display_to_ascii(buf);
+    assert(strcmp(buf, "67.0 Hz/71.9 Hz/74.4 Hz/...+4") == 0);
+    char twice[] = "block 67.0 Hz/\xE2\x80\xA6+3 (row; default allow D023N/\xE2\x80\xA6+9)";
+    dsd_tone_display_to_ascii(twice);
+    assert(strcmp(twice, "block 67.0 Hz/...+3 (row; default allow D023N/...+9)") == 0);
+    char plain[] = "allow 100.0 Hz/D023N";
+    dsd_tone_display_to_ascii(plain);
+    assert(strcmp(plain, "allow 100.0 Hz/D023N") == 0);
+    dsd_tone_display_to_ascii(NULL);
+
     assert(dsd_tone_set_equal(NULL, NULL) && !dsd_tone_set_equal(&set, NULL));
     assert(dsd_tone_set_equal(&empty, &empty) && !dsd_tone_set_equal(&set, &empty));
 }
@@ -938,8 +950,8 @@ test_tone_filter_check(void) {
     /* Diagnostics name the entry, never its text. */
     filter_check_fails(DSD_TONE_FILTER_ALLOW, "100.0/xyzzy", "entry 2 is not a standard CTCSS tone or DCS code");
     /* No such mode. */
-    filter_check_fails(3, "100.0", "the mode is off, allow or block");
-    filter_check_fails(-1, "", "the mode is off, allow or block");
+    filter_check_fails(3, "100.0", "the mode must be off, allow or block");
+    filter_check_fails(-1, "", "the mode must be off, allow or block");
 
     /* No output is refused; a NULL or zero-sized error buffer is allowed. */
     assert(dsd_tone_filter_check(DSD_TONE_FILTER_OFF, "", NULL, NULL, 0) == -1);

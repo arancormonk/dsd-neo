@@ -505,6 +505,19 @@ test_tone_filter_setting(void) {
     free(state);
 }
 
+/* @p text is all ASCII, with exactly @p marks "...+N" summaries of a long list. */
+static void
+assert_ascii_with_marks(const char* text, int marks) {
+    for (const char* p = text; *p; p++) {
+        assert((unsigned char)*p < 0x80U);
+    }
+    int found = 0;
+    for (const char* p = strstr(text, "...+"); p; p = strstr(p + 4, "...+")) {
+        found++;
+    }
+    assert(found == marks);
+}
+
 /* The toast after a tone-filter edit: what the configured policy now is, and while a scan row's own policy is on air,
    that the row overrides it, naming the row's -- as the squelch and width edits say it. */
 static void
@@ -557,7 +570,13 @@ test_tone_filter_edit_notice(void) {
     const size_t length = strlen(notice);
     assert(length < sizeof(notice) - 1U && notice[length - 1U] == ')');
     assert(strstr(notice, "; this channel overrides it (allow 67.0 Hz/") != NULL);
+    /* A toast is ASCII, which the terminal's status line prints as is: each summary's mark is "...". */
+    assert_ascii_with_marks(notice, 2);
     dsd_scan_mode_leave(&opts, state);
+    /* Without a row, the one list summarised the same way. */
+    assert(dsd_app_tone_filter_edit_notice(&opts, state, notice, sizeof(notice)) == 0);
+    assert(strncmp(notice, "Applied: Tone filter -> block 67.0 Hz/", 38) == 0);
+    assert_ascii_with_marks(notice, 1);
 
     /* Invalid arguments. */
     assert(dsd_app_tone_filter_edit_notice(NULL, state, notice, sizeof(notice)) == -1 && notice[0] == '\0');

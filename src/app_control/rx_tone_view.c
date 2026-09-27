@@ -309,9 +309,12 @@ dsd_app_tone_filter_edit_notice(const dsd_opts* opts, const dsd_state* state, ch
     DSD_MEMSET(&set, 0, sizeof(set));
     dsd_scan_mode_configured_tone_policy(opts, state, &mode, &set);
     const dsd_scan_option_values* row = rx_tone_row_policy(state);
+    /* A toast is ASCII, the lists' overflow mark included: the terminal's status line prints it byte for byte,
+       whatever the terminal's encoding. */
     char configured[DSD_APP_RX_TONE_POLICY_TEXT_SIZE];
     (void)rx_tone_format_policy(mode, &set, configured, sizeof(configured),
                                 row ? RX_TONE_NOTICE_DEFAULT_LIST_SIZE : RX_TONE_NOTICE_LIST_SIZE);
+    dsd_tone_display_to_ascii(configured);
     if (!row) {
         DSD_SNPRINTF(out, out_size, "Applied: Tone filter -> %s", configured);
         return 0;
@@ -319,6 +322,7 @@ dsd_app_tone_filter_edit_notice(const dsd_opts* opts, const dsd_state* state, ch
     char shadowing[DSD_APP_RX_TONE_POLICY_TEXT_SIZE];
     (void)rx_tone_format_policy(row->tone_filter, &row->tone_set, shadowing, sizeof(shadowing),
                                 RX_TONE_NOTICE_ROW_LIST_SIZE);
+    dsd_tone_display_to_ascii(shadowing);
     DSD_SNPRINTF(out, out_size, "Default tone filter -> %s; this channel overrides it (%s)", configured, shadowing);
     return 0;
 }

@@ -2200,7 +2200,7 @@ test_tone_filter_set_edits_the_configured_policy(void) {
         {DSD_TONE_FILTER_BLOCK, "D023N/xyzzy",
          "Refused: tone filter: entry 2 is not a standard CTCSS tone or DCS code"},
         {DSD_TONE_FILTER_OFF, "100/100.0", "Refused: tone filter: entry 2 repeats entry 1 (100.0 Hz)"},
-        {7, "100.0", "Refused: tone filter: the mode is off, allow or block"},
+        {7, "100.0", "Refused: tone filter: the mode must be off, allow or block"},
     };
 
     for (size_t i = 0; i < sizeof refused / sizeof refused[0]; i++) {
@@ -2389,7 +2389,7 @@ test_tone_filter_mode_keeps_the_decoder_list(void) {
                              DSD_TONE_FILTER_OFF, "");
     rc |= submit_tone_filter_mode(&opts, &state, 7, "tone keep: no such mode");
     rc |= expect_str("tone keep: no such mode refused", state.ui_msg,
-                     "Refused: tone filter: the mode is off, allow or block");
+                     "Refused: tone filter: the mode must be off, allow or block");
 
     /* Malformed: keep_list with a list, and a keep_list that is neither 0 nor 1. */
     rc |= submit_tone_filter(&opts, &state, DSD_TONE_FILTER_ALLOW, "100.0", "tone keep: allow again");

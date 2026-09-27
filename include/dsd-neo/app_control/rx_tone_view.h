@@ -90,16 +90,16 @@ typedef struct {
 /**
  * @brief Fill @p out from the published received tone.
  *
- * Zeroes @p out first, then always fills @c configured_text ("off" without @p opts or @p out), and the
+ * Zeroes @p out first, then always fills @c configured_text ("off" without @p opts), and the
  * policy fields whenever the arguments are valid. A NULL @p state still gets @c configured_text, read
  * from @p opts alone (no scan row), and returns -1 with nothing else filled: a terminal menu row
- * before the first snapshot reads the policy its own options hold, as its editor opens on it. @p now_m is monotonic seconds,
- * the clock dsd_time_now_monotonic_s() reads: a publication from an input that has gone quiet
- * past its stale_after_ms deadline (a stdin, UDP or TCP producer that stopped sending, a live
- * radio stream whose source stopped) reads as no carrier, because the decoder, waiting for the
- * next sample, cannot say so itself; the verdict goes with it. Pass 0 to skip that check.
- * Returns 1 when the received row should be shown (@c visible), 0 when it should be left out, and
- * -1 for invalid arguments.
+ * before the first snapshot reads the policy its own options hold, as its editor opens on it.
+ * @p now_m is monotonic seconds, the clock dsd_time_now_monotonic_s() reads: a publication from an
+ * input that has gone quiet past its stale_after_ms deadline (a stdin, UDP or TCP producer that
+ * stopped sending, a live radio stream whose source stopped) reads as no carrier, because the
+ * decoder, waiting for the next sample, cannot say so itself; the verdict goes with it. Pass 0 to
+ * skip that check. Returns 1 when the received row should be shown (@c visible), 0 when it should
+ * be left out, and -1 for invalid arguments.
  */
 int dsd_app_rx_tone_view(const dsd_opts* opts, const dsd_state* state, double now_m, dsd_app_rx_tone* out);
 
@@ -134,9 +134,10 @@ int dsd_app_tone_filter_setting_get(const dsd_opts* opts, const dsd_state* state
  * @brief Write the notice after an edit of the configured tone policy: "Applied: Tone filter -> allow 100.0 Hz/D023N",
  * or while a scan row's own policy is on air "Default tone filter -> allow 100.0 Hz; this channel overrides it
  * (block 67.0 Hz)", as the squelch and width edits say it. Long lists are summarised so the whole notice fits
- * DSD_APP_TONE_FILTER_NOTICE_SIZE. Reads the configured policy and the installed row options, so it is right on the
- * decoder thread right after the edit. Returns 0, or -1 for NULL @p opts or @p out or a zero @p out_size (@p out then
- * holds "" when it can).
+ * DSD_APP_TONE_FILTER_NOTICE_SIZE, and the notice is ASCII, their overflow mark written "...+N" (it is a toast, which
+ * the terminal's status line prints as is). Reads the configured policy and the installed row options, so it is right
+ * on the decoder thread right after the edit. Returns 0, or -1 for NULL @p opts or @p out or a zero @p out_size (@p out
+ * then holds "" when it can).
  */
 int dsd_app_tone_filter_edit_notice(const dsd_opts* opts, const dsd_state* state, char* out, size_t out_size);
 

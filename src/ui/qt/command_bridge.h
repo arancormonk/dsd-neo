@@ -161,8 +161,8 @@ class CommandBridge : public QObject {
      * '/'-separated list of tones and codes as typed ("67.0/100.0/D023N"; empty for none, which only off takes).
      *
      * The decoder checks the list with the same parser as toneFilterError() and refuses what it cannot apply, with a
-     * message, keeping the policy it had. The edit sets the configured policy: a scan row with its own tone options keeps
-     * them while on air. A list longer than the command carries is refused here, without submitting anything.
+     * message, keeping the policy it had. The edit sets the configured policy: a scan row with its own tone options
+     * keeps them while on air. A list longer than the command carries is refused here, without submitting anything.
      */
     Q_INVOKABLE bool setToneFilter(int mode, const QString& list) const;
 

@@ -209,10 +209,10 @@ enum dsd_app_command_id {
     // default. Refused with a toast, changing nothing, when out of range or when a running AM front end cannot
     // filter it at its DSP rate; applied live while AM is on air, otherwise kept for the next switch to AM.
     DSD_APP_CMD_AM_BANDWIDTH_SET = 509, // payload: int32_t Hz (0 = default)
-    // Configured CTCSS/DCS receive policy (issue #527, the live tone-filter editor): the mode and its '/'-separated list,
-    // checked by the list parser (dsd_tone_filter_check()), or the mode alone with the configured list kept. Refused
-    // with a toast, changing nothing, when invalid. It edits the configured policy: while a scan row with its own tone
-    // options is on air the row keeps its own, and the toast says the row overrides the edit. Applied from the
+    // Configured CTCSS/DCS receive policy (issue #527, the live tone-filter editor): the mode and its '/'-separated
+    // list, checked by the list parser (dsd_tone_filter_check()), or the mode alone with the configured list kept.
+    // Refused with a toast, changing nothing, when invalid. It edits the configured policy: while a scan row with its
+    // own tone options is on air the row keeps its own, and the toast says the row overrides the edit. Applied from the
     // monitor's next read of audio. Not coalescible: each queued edit is judged, and applied or refused, on its own.
     DSD_APP_CMD_TONE_FILTER_SET = 510, // payload: dsd_app_tone_filter_payload
 

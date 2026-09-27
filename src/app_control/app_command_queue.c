@@ -1671,8 +1671,17 @@ ui_cmd_handle_am_bandwidth_set(dsd_opts* opts, dsd_state* state, const struct ds
     return ui_cmd_handle_analog_bandwidth_set(opts, state, c, DSD_ANALOG_DEMOD_AM);
 }
 
+/* The prefix of a refused tone-filter edit's toast, before the parser's reason. */
+#define UI_TONE_FILTER_REFUSED "Refused: tone filter: "
+
 _Static_assert(sizeof(((dsd_app_tone_filter_payload*)0)->list) == (size_t)DSD_TONE_LIST_TEXT_MAX + 1U,
                "the tone-filter payload holds exactly the longest list the parser reads");
+/* The tone-filter toasts land in dsd_state::ui_msg whole: an edit's notice, and a refusal with the longest reason. */
+_Static_assert(sizeof(((dsd_state*)0)->ui_msg) >= (size_t)DSD_APP_TONE_FILTER_NOTICE_SIZE,
+               "a tone-filter edit's notice fits the toast");
+_Static_assert(sizeof(((dsd_state*)0)->ui_msg)
+                   >= sizeof(UI_TONE_FILTER_REFUSED) - 1U + (size_t)DSD_TONE_LIST_ERROR_SIZE,
+               "a tone-filter refusal fits the toast");
 
 /* The policy a tone-filter edit sets, checked as dsd_tone_filter_check() checks it. An edit that keeps the list
    (keep_list, the terminal's Off) takes the configured list as it stands now, on the decoder thread, so an edit or a
@@ -1713,7 +1722,7 @@ ui_cmd_handle_tone_filter_set(dsd_opts* opts, dsd_state* state, const struct dsd
     dsd_tone_set set;
     char why[DSD_TONE_LIST_ERROR_SIZE];
     if (ui_tone_filter_edit_policy(opts, state, &edit, &set, why, sizeof why) != 0) {
-        ui_set_toast(state, 5, "Refused: tone filter: %s", why);
+        ui_set_toast(state, 5, UI_TONE_FILTER_REFUSED "%s", why);
         return UI_CMD_APPLY_FAILED;
     }
     (void)dsd_scan_mode_set_configured_tone_policy(opts, state, (int)edit.mode, &set);
@@ -6022,8 +6031,9 @@ command_updates_scan_mode(const struct dsd_app_command* c) {
          * dsd_scan_mode_set_configured_nfm_bandwidth() for NFM) instead of suspending and re-applying the row, which
          * would read the live acquisition the row has made as a change and end a followed call. An analog row's own
          * width of the edited kind (--nfm-bandwidth-hz or --am-bandwidth-hz, issue #526) stays in force over it.
-         * DSD_APP_CMD_TONE_FILTER_SET (issue #527) is not here for the same reason: it edits the configured tone policy
-         * through dsd_scan_mode_set_configured_tone_policy(), and an nfm row's own tone options stay in force over it. */
+         * DSD_APP_CMD_TONE_FILTER_SET (issue #527) is not here for the same reason: it edits the configured tone
+         * policy through dsd_scan_mode_set_configured_tone_policy(), and an nfm row's own tone options stay in force
+         * over it. */
         DSD_APP_CMD_IMPORT_GROUP_LIST,
         DSD_APP_CMD_IMPORT_GROUP_LIST_CLEAR,
         DSD_APP_CMD_DECODE_MODE_SET,
