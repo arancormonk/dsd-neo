@@ -511,6 +511,12 @@ struct dsd_analog_rx_publication {
         "no tone" rejection, a block list's "no tone" pass); 0 when a confirmed value decided it, or nothing is
         decided. */
     int gate_no_tone;
+    /** 1 once a reception the policy rejected has ended -- its carrier's 200 ms hangover ran out, or its input paused,
+        with gate REJECTED -- until the next carrier opens, the policy changes or the tap resets for any other reason
+        (a retune, a row or target change, an input switch, a mode change). gate is back to PENDING by then; this keeps
+        the rejection for the scanners (issue #527), so that traffic rejected between two of their passes does not hold
+        the row on the activity it stamped while it was being checked. */
+    int gate_rejected_ended;
     /** Bumped on every reset (retune, row or target change, input switch, mode change, stop,
      * input-rate change, carrier hangover, stream pause), so a reader can tell a new reception
      * from the one it last saw. */

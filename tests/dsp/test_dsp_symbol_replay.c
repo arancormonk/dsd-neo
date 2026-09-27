@@ -3083,6 +3083,101 @@ test_tone_policy_no_tone_rejection_names_a_later_tone(void) {
     dsd_state_ext_free_all(&state);
 }
 
+/* Feed 20 ms blocks of digital silence until the tap's carrier closes (its 200 ms hangover run out), asserting the
+   verdict @p gate stands on the carrier until then and no end of a rejected reception is published meanwhile. */
+static void
+feed_until_carrier_closes(dsd_opts* opts, dsd_state* state, int gate) {
+    int blocks = 0;
+    while (state->analog_rx.carrier_open) {
+        assert(state->analog_rx.gate == gate && state->analog_rx.gate_rejected_ended == 0);
+        assert(blocks++ <= (DSD_ANALOG_CARRIER_HANGOVER_MS / 20) + 1);
+        feed_blocks_at(opts, state, 1, 0.0);
+    }
+}
+
+/* Traffic the policy rejected outlives its carrier for the scanners (issue #527): once the hangover has run out under
+   a rejection the verdict is back to checking, with no carrier, but gate_rejected_ended says the reception ended
+   rejected until the next carrier opens a reception of its own, so a scanner whose pass comes after it ended still
+   moves on. A reception that ended passing leaves nothing, and a retune, a policy change or a paused input's next
+   carrier forget it. */
+static void
+test_tone_policy_rejection_outlives_its_carrier(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    install_fake_rtl_hooks(0);
+    init_analog_monitor_fixture(&opts, &state);
+    set_tone_policy(&opts, DSD_TONE_FILTER_ALLOW, "67.0");
+    start_monitor_capture(&opts);
+    feed_tone_blocks(&opts, &state, 30);
+    assert(state.analog_rx.gate == DSD_ANALOG_TONE_GATE_REJECTED);
+    feed_until_carrier_closes(&opts, &state, DSD_ANALOG_TONE_GATE_REJECTED);
+    assert(state.analog_rx.gate == DSD_ANALOG_TONE_GATE_PENDING && state.analog_rx.gate_rejected_ended == 1);
+    assert(dsd_analog_rx_rejection_ended_now(&opts, &state) == 1);
+    /* It lasts through the quiet, and nothing plays ... */
+    feed_blocks_at(&opts, &state, 50, 0.0);
+    assert(state.analog_rx.gate_rejected_ended == 1 && g_monitor_blocks == 0);
+    /* ... until the next carrier opens a reception of its own, checked afresh. */
+    feed_tone_blocks(&opts, &state, 1);
+    assert(state.analog_rx.carrier_open == 1 && state.analog_rx.gate == DSD_ANALOG_TONE_GATE_PENDING);
+    assert(state.analog_rx.gate_rejected_ended == 0 && dsd_analog_rx_rejection_ended_now(&opts, &state) == 0);
+
+    /* That one passes, and ends passing: nothing is left behind. */
+    set_tone_policy(&opts, DSD_TONE_FILTER_ALLOW, "100.0");
+    feed_tone_blocks(&opts, &state, 30);
+    assert(state.analog_rx.gate == DSD_ANALOG_TONE_GATE_ALLOWED);
+    feed_until_carrier_closes(&opts, &state, DSD_ANALOG_TONE_GATE_ALLOWED);
+    assert(state.analog_rx.gate_rejected_ended == 0);
+
+    /* A retune forgets a rejected reception that ended, as it forgets the carrier. */
+    set_tone_policy(&opts, DSD_TONE_FILTER_ALLOW, "67.0");
+    feed_tone_blocks(&opts, &state, 30);
+    feed_until_carrier_closes(&opts, &state, DSD_ANALOG_TONE_GATE_REJECTED);
+    assert(state.analog_rx.gate_rejected_ended == 1);
+    dsd_analog_rx_reset(&state);
+    assert(state.analog_rx.gate_rejected_ended == 0 && dsd_analog_rx_rejection_ended_now(&opts, &state) == 0);
+    feed_blocks_at(&opts, &state, 3, 0.0);
+    assert(state.analog_rx.gate_rejected_ended == 0);
+
+    /* So does a policy change: the new policy judged nothing. */
+    feed_tone_blocks(&opts, &state, 30);
+    feed_until_carrier_closes(&opts, &state, DSD_ANALOG_TONE_GATE_REJECTED);
+    assert(state.analog_rx.gate_rejected_ended == 1);
+    set_tone_policy(&opts, DSD_TONE_FILTER_ALLOW, "67.0/71.9");
+    feed_blocks_at(&opts, &state, 1, 0.0);
+    assert(state.analog_rx.gate_rejected_ended == 0);
+
+    /* Off the FM monitor detection stops, and with it the policy: nothing is in force to have rejected anything. */
+    set_tone_policy(&opts, DSD_TONE_FILTER_ALLOW, "67.0");
+    feed_tone_blocks(&opts, &state, 30);
+    feed_until_carrier_closes(&opts, &state, DSD_ANALOG_TONE_GATE_REJECTED);
+    opts.analog_only = 0;
+    assert(dsd_analog_rx_rejection_ended_now(&opts, &state) == 0);
+    opts.analog_only = 1;
+    dsd_udp_audio_hooks_set((dsd_udp_audio_hooks){0});
+    dsd_state_ext_free_all(&state);
+
+    /* An input that pauses ends its reception as the hangover does: the read after the pause, which the tap drops,
+       says a rejected reception ended; the carrier that follows opens a new one. */
+    install_fake_rtl_hooks(0);
+    init_analog_monitor_fixture(&opts, &state);
+    opts.audio_in_type = AUDIO_IN_UDP;
+    set_tone_policy(&opts, DSD_TONE_FILTER_ALLOW, "67.0");
+    dsd_analog_rx_test_set_clock(fake_now_ms);
+    g_fake_now_ms = 200000U;
+    for (int b = 0; b < 30; b++) {
+        feed_stream_block(&opts, &state, 100.0);
+    }
+    assert(state.analog_rx.gate == DSD_ANALOG_TONE_GATE_REJECTED && state.analog_rx.gate_rejected_ended == 0);
+    g_fake_now_ms += 1000U;
+    feed_stream_block(&opts, &state, 100.0);
+    assert(state.analog_rx.carrier_open == 0 && state.analog_rx.gate_rejected_ended == 1);
+    feed_stream_block(&opts, &state, 100.0);
+    assert(state.analog_rx.carrier_open == 1 && state.analog_rx.gate == DSD_ANALOG_TONE_GATE_PENDING);
+    assert(state.analog_rx.gate_rejected_ended == 0);
+    dsd_analog_rx_test_set_clock(NULL);
+    dsd_state_ext_free_all(&state);
+}
+
 int
 main(void) {
     exitflag = 0;
@@ -3136,6 +3231,7 @@ main(void) {
     test_tone_policy_only_on_the_fm_monitor();
     test_tone_policy_change_is_no_tone_lost();
     test_tone_policy_no_tone_rejection_names_a_later_tone();
+    test_tone_policy_rejection_outlives_its_carrier();
     return 0;
 }
 

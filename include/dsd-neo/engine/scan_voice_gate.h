@@ -68,6 +68,16 @@ int dsd_scan_analog_carrier_open(const dsd_opts* opts, const dsd_state* state);
 int dsd_scan_analog_tone_gate(const dsd_opts* opts, const dsd_state* state);
 
 /**
+ * Non-zero when traffic the CTCSS/DCS receive policy rejected (issue #527) has ended on the channel on air with no
+ * carrier heard since, by the rules of dsd_scan_analog_carrier_open(): its carrier's hangover ran out, or its input
+ * paused (dsd_analog_rx_rejection_ended_now()), or an input that stopped delivering left a rejection published past
+ * its deadline. A scanner whose pass or tick comes after such traffic ended releases the row as it would have while the
+ * carrier lasted, when there is somewhere else to go, so that the activity the traffic stamped while it was being
+ * checked does not hold the row. Read-only and null-safe.
+ */
+int dsd_scan_analog_tone_rejection_ended(const dsd_opts* opts, const dsd_state* state);
+
+/**
  * Non-zero when the operator's talkgroup hold is on a call that is being followed right now:
  * some slot carries an active, non-data call whose target -- after policy remapping -- is the
  * held talkgroup, or, on a private call, whose source is.

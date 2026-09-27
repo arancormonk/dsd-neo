@@ -351,24 +351,25 @@ code (`100`) reads as the list's rest. A code matches by its signal: `D023I` pas
 arrives as that same `DCS D047N / D023I` and a listed `D023N` does not match it: fix the audio's polarity or list the
 spelling the monitor shows (see [Received code (DCS)](cli.md#received-code-dcs-on-the-analog-monitor)). The row's policy
 applies when the row is tuned and the configured one is restored when the scanner moves on, and Config->Save never
-writes it. The Qt/Android channel-map review and target preview list it
-(`Tone filter: allow 100.0 Hz/D023N`, `Tone filter: off`), or `Tone filter: inherit` on an nfm row without one. An `am`
-row or `am-conventional` target has none: the AM monitor hears no CTCSS or DCS, so the options are refused there, and
-while it is on air the configured policy judges nothing and mutes nothing; its carrier holds it as `Carrier`. The policy
-is a setting, and frontends show it apart from the tone or code received: the `Tone filter:` line (terminal) and
-`TONE FILTER` row (Qt/Android) read `allow 100.0 Hz/D023N (row; default off)` while the row's own policy is on air over
-a configured policy that is off, beside the `Rx tone:` line or `RECEIVED TONE` row that only ever shows what was
-received. Under a list policy each transmission starts muted while it is checked (800 ms, to 1,600 ms while a DCS code
-in the list is still being confirmed); the row holds as any carrier holds it, with the stay reason `Tone check`
-meanwhile, and like any carrier it is activity, so one that ends before a verdict leaves the ordinary `-t` or
-`activity_hold_ms` tail behind it. Traffic the policy rejects is muted and holds nothing: a `-Y` row moves on at the
-next no-carrier pass and an `nfm-conventional` target at the next tick, without waiting out `-t` or its
-`activity_hold_ms`, and traffic that was passing and turns out to carry a blocked (or, under allow, an unlisted) tone or
-code is released the same way. An operator hold keeps the row, muted. A `-Y` row on the same frequency is somewhere
-to take rejected traffic only when it would judge it otherwise: a row of another class (a `dmr` row for a mixed-mode
-repeater's DMR traffic), or an `nfm` row whose own or configured policy passes the traffic's tone or code (a repeater
-listed once per user group, each row with its own `--tone-allow`). A row that would reject it too is not, and with
-nowhere else to go the row keeps the traffic, muted, under `Carrier` with no countdown. Example:
+writes it. The Qt/Android channel-map review and target preview list it (`Tone filter: allow 100.0 Hz/D023N`,
+`Tone filter: off`), or `Tone filter: inherit` on an nfm row without one. An `am` row or `am-conventional` target has
+none: the AM monitor hears no CTCSS or DCS, so the options are refused there, and while it is on air the configured
+policy judges nothing and mutes nothing; its carrier holds it as `Carrier`. The policy is a setting, and frontends show
+it apart from the tone or code received: the `Tone filter:` line (terminal) and `TONE FILTER` row (Qt/Android) read
+`allow 100.0 Hz/D023N (row; default off)` while the row's own policy is on air over a configured policy that is off,
+beside the `Rx tone:` line or `RECEIVED TONE` row that only ever shows what was received. Under a list policy each
+transmission starts muted while it is checked (800 ms, to 1,600 ms while a DCS code in the list is still being
+confirmed); the row holds as any carrier holds it, with the stay reason `Tone check` meanwhile, and like any carrier it
+is activity, so one that ends before a verdict leaves the ordinary `-t` or `activity_hold_ms` tail behind it. Traffic
+the policy rejects is muted and holds nothing: a `-Y` row moves on at the next no-carrier pass and an `nfm-conventional`
+target at the next tick, without waiting out `-t` or its `activity_hold_ms`, and traffic that was passing and turns out
+to carry a blocked (or, under allow, an unlisted) tone or code is released the same way, as is traffic rejected and
+ended before that pass or tick came (the rejection outlives its carrier for the scanner until the next carrier opens or
+the row changes). An operator hold keeps the row, muted. A `-Y` row on the same frequency is somewhere to take rejected
+traffic only when it would judge it otherwise: a row of another class (a `dmr` row for a mixed-mode repeater's DMR
+traffic), or an `nfm` row whose own or configured policy passes the traffic's tone or code (a repeater listed once per
+user group, each row with its own `--tone-allow`). A row that would reject it too is not, and with nowhere else to go
+the row keeps the traffic, muted, under `Carrier` with no countdown, until it ends and the ordinary tail runs. Example:
 
 ```csv
 channel,frequency_hz,name,mode,options

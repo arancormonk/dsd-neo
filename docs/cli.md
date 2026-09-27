@@ -978,21 +978,23 @@ setting, shown apart from what is received, and it is off by default: then the o
   itself changes (a loaded config, a scan row's own policy coming on air): it is muted for a fresh check.
 - What is muted: the live monitor output and the UDP analog monitor (`-o udp`), together. The `-6` raw WAV is a capture
   ahead of every gate, squelch and tone filter included, and keeps everything.
-- Scanning: a transmission still being checked holds a `-Y` row or `--trunk-scan` target as any carrier does, with
-  the stay reason `Tone check` while the check runs (800 ms, or to 1,600 ms as above). It counts as activity
-  meanwhile, so one that ends before a verdict leaves the ordinary tail behind it: `-t` for `-Y`, the target's
-  `activity_hold_ms` for trunk scan. Rejected traffic holds nothing: `-Y` moves on at its next no-carrier pass (within
-  about 375 ms), and trunk scan at its next tick, without waiting out the hangtime or the activity hold. An operator
-  hold keeps the row, muted. A fixed-frequency session mutes rejected traffic and stays, and so does a scan with
-  nowhere else to go: a `-Y` list or `--trunk-scan` list with no other row or target to step to (the others avoided,
-  or skipped at every visit for a width the DSP rate cannot filter, or none), or, for trunk scan, whose others are all
-  cooling down from a failed retune. A `-Y` row on the frequency on air counts as somewhere to go only when it would
-  judge the traffic otherwise: a row of another class (a mixed-mode repeater's `dmr` row, an `am` row, or a row
-  inheriting a decode mode other than `-fA`), or an `nfm` row whose policy, its own or the configured one, passes the
-  tone or code the traffic carries (or, after a `no tone` rejection, passes no tone). One that would reject it too,
-  such as a second row with the same policy or every row of a list without modes, is nowhere to go. A trunk-scan
-  target on that frequency is always of another type, since a target list holds one target per type and frequency.
-  While a scan keeps rejected traffic this way, its Scan Timing row reads `Carrier` with no countdown.
+- Scanning: a transmission still being checked holds a `-Y` row or `--trunk-scan` target as any carrier does, with the
+  stay reason `Tone check` while the check runs (800 ms, or to 1,600 ms as above). It counts as activity meanwhile, so
+  one that ends before a verdict leaves the ordinary tail behind it: `-t` for `-Y`, the target's `activity_hold_ms` for
+  trunk scan. Rejected traffic holds nothing: `-Y` moves on at its next no-carrier pass (within about 375 ms), and trunk
+  scan at its next tick, without waiting out the hangtime or the activity hold, and so does traffic rejected and ended
+  before that pass or tick came: the rejection outlives its carrier for the scanner until the next carrier opens or the
+  receiver moves. An operator hold keeps the row, muted. A fixed-frequency session mutes rejected traffic and stays, and
+  so does a scan with nowhere else to go: a `-Y` list or `--trunk-scan` list with no other row or target to step to (the
+  others avoided, or skipped at every visit for a width the DSP rate cannot filter, or none), or, for trunk scan, whose
+  others are all cooling down from a failed retune. A `-Y` row on the frequency on air counts as somewhere to go only
+  when it would judge the traffic otherwise: a row of another class (a mixed-mode repeater's `dmr` row, an `am` row, or
+  a row inheriting a decode mode other than `-fA`), or an `nfm` row whose policy, its own or the configured one, passes
+  the tone or code the traffic carries (or, after a `no tone` rejection, passes no tone). One that would reject it too,
+  such as a second row with the same policy or every row of a list without modes, is nowhere to go. A trunk-scan target
+  on that frequency is always of another type, since a target list holds one target per type and frequency. While a scan
+  keeps rejected traffic this way, its Scan Timing row reads `Carrier` with no countdown; once that traffic ends, the
+  ordinary tail runs.
 - Where it applies: the analog FM monitor only (`-fA`, and `nfm` scan rows), on radio and PCM inputs alike, never the AM
   monitor (`-fM`, and `am` scan rows and `am-conventional` targets, which carry the configured policy past them
   untouched and hold on their carrier), wherever the received tone is detected. Set where nothing runs it, it has no

@@ -1463,6 +1463,12 @@ no_carrier_scanner_step_is_due(const dsd_opts* opts, const dsd_state* state, tim
     if (dsd_scan_analog_tone_gate(opts, state) == DSD_ANALOG_TONE_GATE_REJECTED) {
         return dsd_engine_channel_scan_has_other_row(opts, state);
     }
+    /* Rejected traffic that ended before this pass came -- its carrier's hangover ran out, or its input paused, between
+     * two passes -- holds nothing either: the activity it stamped while it was being checked is not waited out. With
+     * nowhere else to go the rules below decide, as after any carrier. */
+    if (dsd_scan_analog_tone_rejection_ended(opts, state) && dsd_engine_channel_scan_has_other_row(opts, state)) {
+        return 1;
+    }
     if (dsd_scan_voice_gate_owns_step(opts, state)) {
         return dsd_scan_voice_gate_should_step(opts, state, dsd_time_now_monotonic_s());
     }

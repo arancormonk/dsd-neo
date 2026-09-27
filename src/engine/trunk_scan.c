@@ -3582,23 +3582,34 @@ trunk_scan_rejection_has_alternate(const dsd_opts* opts, const dsd_state* state,
 }
 
 /* Traffic the tone policy rejected on an analog target (issue #527) holds nothing: its carrier stamped no activity,
- * and the hold that earlier traffic left is released, so the rotation moves on at this tick. The operator's hold keeps
- * the target, muted. With nowhere else to go (a single target, as a fixed-frequency session, or every other one
- * avoided, cooling down or refused its width: trunk_scan_rejection_has_alternate()) the target keeps the traffic,
- * muted, and the idle dwell does not run meanwhile, since its rotation could only come back to this target; the Scan
- * Timing row reads "Carrier", with no timer (trunk_scan_timing_select_reason()). Returns 1
- * when the tick is spent. The decision is the DSP tap's verdict, which it logs ("Tone filter: rejected"); only this
- * engine tick, under the tick guard, acts on it. */
+ * and the hold that earlier traffic left is released, so the rotation moves on at this tick. So does traffic that was
+ * rejected and has ended since the last tick (dsd_scan_analog_tone_rejection_ended()): the hold it earned while it was
+ * being checked is released the same way. The operator's hold keeps the target, muted. With nowhere else to go (a
+ * single target, as a fixed-frequency session, or every other one avoided, cooling down or refused its width:
+ * trunk_scan_rejection_has_alternate()) the target keeps traffic still on air, muted, and the idle dwell does not run
+ * meanwhile, since its rotation could only come back to this target; the Scan Timing row reads "Carrier", with no
+ * timer (trunk_scan_timing_select_reason()). Traffic that has ended then leaves the hold and the dwell to run as after
+ * any carrier. Returns 1 when the tick is spent. The decision is the DSP tap's verdict, which it logs ("Tone filter:
+ * rejected"); only this engine tick, under the tick guard, acts on it. */
 static int
 trunk_scan_service_tone_rejection(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_coord* coord,
                                   dsd_trunk_scan_target_runtime* rt, double now_m) {
-    if (!trunk_scan_type_is_analog(rt->target.type) || coord->hold_active
-        || dsd_scan_analog_tone_gate(opts, state) != DSD_ANALOG_TONE_GATE_REJECTED) {
+    if (!trunk_scan_type_is_analog(rt->target.type) || coord->hold_active) {
+        return 0;
+    }
+    const int on_air = dsd_scan_analog_tone_gate(opts, state) == DSD_ANALOG_TONE_GATE_REJECTED;
+    if (!on_air && !dsd_scan_analog_tone_rejection_ended(opts, state)) {
+        return 0;
+    }
+    const int alternate = trunk_scan_rejection_has_alternate(opts, state, coord, now_m);
+    if (!on_air && !alternate) {
+        /* Rejected traffic that ended between two ticks, with nowhere else to go: the hold and the dwell run as after
+           any carrier. */
         return 0;
     }
     rt->last_allowed_activity_m = 0.0;
     rt->idle_since_m = -1.0;
-    if (trunk_scan_rejection_has_alternate(opts, state, coord, now_m)) {
+    if (alternate) {
         trunk_scan_advance(opts, state, coord);
     }
     return 1;

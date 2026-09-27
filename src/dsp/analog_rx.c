@@ -311,6 +311,7 @@ core_update_carrier(dsd_analog_rx_core* core, int carrier_now, int count) {
     const int64_t hangover = ((int64_t)core->fe.in_rate_hz * DSD_ANALOG_CARRIER_HANGOVER_MS) / 1000;
     if (core->closed_samples >= hangover) {
         dsd_analog_rx_core_reset(core);
+        core->carrier_end_reset = core->resets;
         return 0;
     }
     return 1;
@@ -488,6 +489,8 @@ typedef struct {
     uint32_t policy_generation;
     /** The verdict the "Tone filter:" log line last reported this reception; gate OFF for none. */
     dsd_analog_tone_policy policy_logged;
+    /** Published as dsd_analog_rx_publication::gate_rejected_ended: the last reception ended rejected. */
+    int rejected_ended;
 } analog_rx_session;
 
 #ifdef DSD_NEO_TEST_HOOKS
@@ -681,8 +684,14 @@ analog_rx_policy_publish(const dsd_opts* opts, dsd_state* state, analog_rx_sessi
         session->detecting
             ? dsd_analog_tone_policy_configure(&session->policy, opts->analog_tone_filter, &opts->analog_tone_set)
             : dsd_analog_tone_policy_configure(&session->policy, DSD_TONE_FILTER_OFF, NULL);
-    if (session->policy_generation != state->analog_rx.generation) {
-        session->policy_generation = state->analog_rx.generation;
+    const uint32_t generation = state->analog_rx.generation;
+    if (session->policy_generation != generation) {
+        /* A rejected reception its carrier ended -- the one reset since the policy last ran was the hangover's, or a
+           pause's -- stays rejected for the scanners until the next carrier; any other reset forgets it. */
+        session->rejected_ended = generation == session->policy_generation + 1U
+                                  && generation == session->core.carrier_end_reset
+                                  && session->policy.gate == DSD_ANALOG_TONE_GATE_REJECTED;
+        session->policy_generation = generation;
         dsd_analog_tone_policy_reset(&session->policy);
         dsd_analog_tone_policy_init(&session->policy_logged);
     } else if (changed) {
@@ -690,8 +699,12 @@ analog_rx_policy_publish(const dsd_opts* opts, dsd_state* state, analog_rx_sessi
            decided is no verdict of this one, so its check is not reported as a tone lost. */
         dsd_analog_tone_policy_init(&session->policy_logged);
     }
+    if (changed || state->analog_rx.carrier_open) {
+        session->rejected_ended = 0;
+    }
     state->analog_rx.gate = dsd_analog_tone_policy_step(&session->policy, &state->analog_rx, samples, rate_hz);
     state->analog_rx.gate_no_tone = session->policy.no_tone;
+    state->analog_rx.gate_rejected_ended = session->rejected_ended;
     analog_rx_policy_log(session);
 }
 
@@ -948,6 +961,7 @@ analog_rx_forget(dsd_state* state) {
     session->policy_generation = state->analog_rx.generation;
     dsd_analog_tone_policy_reset(&session->policy);
     dsd_analog_tone_policy_init(&session->policy_logged);
+    session->rejected_ended = 0;
     state->analog_rx.gate = session->detecting ? session->policy.gate : DSD_ANALOG_TONE_GATE_OFF;
 }
 
@@ -1011,6 +1025,10 @@ analog_rx_boundary_dropped(const dsd_opts* opts, dsd_state* state, analog_rx_ses
         core_configure(&session->core, rate_hz);
     } else {
         dsd_analog_rx_core_reset(&session->core);
+        if (!moved) {
+            /* A pause alone is the carrier dropping (DSD_ANALOG_STREAM_PAUSE_MIN_MS): the reception ended there. */
+            session->core.carrier_end_reset = session->core.resets;
+        }
     }
     if (moved) {
         /* A retune starts the stream afresh: no deadline until it delivers again, and what the
@@ -1047,7 +1065,7 @@ analog_rx_read(const dsd_opts* opts, dsd_state* state, const float* samples, uns
         /* Forget only: these samples go on to the voice filters and the monitor output as
            they are, and no tone policy judges them. */
         if (state->analog_rx.tone_state != DSD_ANALOG_TONE_STATE_INACTIVE || state->analog_rx.carrier_open
-            || state->analog_rx.gate != DSD_ANALOG_TONE_GATE_OFF) {
+            || state->analog_rx.gate != DSD_ANALOG_TONE_GATE_OFF || state->analog_rx.gate_rejected_ended) {
             analog_rx_forget(state);
             state->analog_rx.gate = DSD_ANALOG_TONE_GATE_OFF;
             state->analog_rx.gate_no_tone = 0;
@@ -1173,6 +1191,16 @@ dsd_analog_rx_carrier_open_now(const dsd_opts* opts, const dsd_state* state) {
     /* Nor while a retune is unresolved: in flight, the front end still delivers the channel being left; failed after
        the scanner moved on, it delivers a channel other than the one the scanner shows. */
     if (dsd_trunk_tuning_pending_request() != 0U) {
+        return 0;
+    }
+    const analog_rx_session* session = analog_rx_session_get(state);
+    return session ? analog_rx_generations_current(opts, session) : 1;
+}
+
+int
+dsd_analog_rx_rejection_ended_now(const dsd_opts* opts, const dsd_state* state) {
+    if (!opts || !state || !state->analog_rx.gate_rejected_ended || !dsd_analog_tone_detection_active(opts)
+        || dsd_trunk_tuning_pending_request() != 0U) {
         return 0;
     }
     const analog_rx_session* session = analog_rx_session_get(state);

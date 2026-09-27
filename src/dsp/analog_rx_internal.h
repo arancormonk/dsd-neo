@@ -385,6 +385,9 @@ typedef struct {
     int carrier_open;       /**< 1 from the first open block until the hangover expires */
     int64_t closed_samples; /**< input samples since the carrier last read open */
     uint32_t resets;        /**< bumped by every reset, published as the generation */
+    /** The resets value the last end of a reception by its carrier left: the carrier's hangover running out here, or
+        an input pause the tap's glue counts as the carrier dropping (issue #527); 0 before any. */
+    uint32_t carrier_end_reset;
     float scratch[DSD_ANALOG_RX_SCRATCH];
     float scratch_wide[DSD_ANALOG_RX_SCRATCH];
     float scratch_full[DSD_ANALOG_RX_SCRATCH];

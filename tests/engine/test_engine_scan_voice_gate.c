@@ -28,6 +28,7 @@
 #include <dsd-neo/engine/channel_scan.h>
 #include <dsd-neo/engine/scan_voice_gate.h>
 #include <dsd-neo/runtime/analog_channel.h>
+#include <dsd-neo/runtime/analog_tones.h>
 
 #include <math.h>
 #include <stdint.h>
@@ -109,6 +110,12 @@ static int g_scan_waiting = 0;
 int
 dsd_analog_rx_carrier_open_now(const dsd_opts* opts, const dsd_state* state) {
     return (opts && state && state->analog_rx.carrier_open) ? 1 : 0;
+}
+
+/* Issue #527, the same way: the published end of a rejected reception stands as it is while detection runs. */
+int
+dsd_analog_rx_rejection_ended_now(const dsd_opts* opts, const dsd_state* state) {
+    return (opts && state && state->analog_rx.gate_rejected_ended && dsd_analog_tone_detection_active(opts)) ? 1 : 0;
 }
 
 int

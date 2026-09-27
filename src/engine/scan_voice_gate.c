@@ -59,6 +59,20 @@ dsd_scan_analog_tone_gate(const dsd_opts* opts, const dsd_state* state) {
 }
 
 int
+dsd_scan_analog_tone_rejection_ended(const dsd_opts* opts, const dsd_state* state) {
+    if (!opts || !state || opts->trunk_enable == 1 || state->carrier != 0 || !dsd_analog_monitor_tap_active(opts)
+        || scan_analog_carrier_heard(opts, state)) {
+        return 0;
+    }
+    if (dsd_analog_rx_carrier_open_now(opts, state)) {
+        /* Published open but no longer heard: an input that stopped delivering, past its deadline. A rejection it left
+           published ended with it. */
+        return dsd_analog_tone_gate_in_force(opts, state) == DSD_ANALOG_TONE_GATE_REJECTED;
+    }
+    return dsd_analog_rx_rejection_ended_now(opts, state);
+}
+
+int
 dsd_scan_analog_carrier_open(const dsd_opts* opts, const dsd_state* state) {
     /* Traffic the tone policy rejected holds nothing (issue #527); traffic it is still checking does. */
     return scan_analog_carrier_heard(opts, state)

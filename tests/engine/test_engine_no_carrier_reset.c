@@ -2162,6 +2162,128 @@ test_rx_tone_survives_no_carrier(void) {
     return rc;
 }
 
+#ifdef DSD_NEO_TEST_RTL_WRAP
+/* Feed 20 ms blocks of silence until the tap's carrier hangover has run out. */
+static void
+feed_rx_silence_until_closed(dsd_opts* opts, dsd_state* state) {
+    const float silence[960] = {0};
+    for (int b = 0; state->analog_rx.carrier_open && b < 20; b++) {
+        dsd_analog_rx_tap(opts, state, silence, 960U);
+    }
+}
+
+/* A -Y session on the legacy untyped list, rigctl on PCM input, with an allow list the 100.0 Hz tone feed_rx_tone()
+   sends is not on: row 0 (@p row0_hz) on air, and @p rows rows in all. */
+static void
+setup_tone_rejection_ended(dsd_opts* opts, dsd_state* state, long row0_hz, int rows) {
+    opts->scanner_mode = 1;
+    opts->trunk_enable = 0;
+    opts->audio_in_type = AUDIO_IN_WAV;
+    opts->wav_sample_rate = 48000;
+    opts->use_rigctl = 1;
+    opts->rigctl_sockfd = DSD_INVALID_SOCKET;
+    opts->setmod_bw = 0;
+    opts->analog_only = 1;
+    opts->monitor_input_audio = 1;
+    opts->analog_demod = DSD_ANALOG_DEMOD_FM;
+    opts->rtl_pwr = 1.0;
+    opts->rtl_squelch_level = 0.0;
+    opts->trunk_hangtime = 30;
+    opts->analog_tone_filter = DSD_TONE_FILTER_ALLOW;
+    (void)dsd_tone_set_parse("67.0", &opts->analog_tone_set, NULL, 0);
+    state->trunk_lcn_freq[0] = row0_hz;
+    state->trunk_lcn_freq[1] = row0_hz + 1000000L;
+    state->lcn_freq_count = rows;
+    state->lcn_freq_roll = 1; /* row 0 is on air */
+}
+
+/* Rejected traffic that ended, as the tap leaves it: the check stamped the hangtime anchor, the policy rejected the
+   tone once it locked, and the carrier's hangover ran out before the next pass. */
+static int
+seed_tone_rejection_ended(dsd_opts* opts, dsd_state* state) {
+    feed_rx_tone(opts, state, 30);
+    int rc = expect_true("ended: rejected on air", state->analog_rx.gate == DSD_ANALOG_TONE_GATE_REJECTED);
+    state->last_cc_sync_time = time(NULL);
+    state->last_cc_sync_time_m = dsd_time_now_monotonic_s();
+    feed_rx_silence_until_closed(opts, state);
+    rc |= expect_true("ended: carrier gone, rejection kept for the scanner",
+                      state->analog_rx.carrier_open == 0 && state->analog_rx.gate == DSD_ANALOG_TONE_GATE_PENDING
+                          && state->analog_rx.gate_rejected_ended == 1
+                          && dsd_scan_analog_tone_rejection_ended(opts, state) == 1);
+    return rc;
+}
+
+/*
+ * Rejected traffic that ends between two noCarrier passes (issue #527), about 375 ms apart, holds the row no more than
+ * traffic still on air would: the next pass moves on though the hangtime its check stamped has 30 s to run, and an
+ * operator hold keeps the row until it is released. A carrier that opens before that pass is a new transmission,
+ * checked afresh, which holds the row. With nowhere else to go the hangtime decides, as after any carrier.
+ */
+static int
+test_tone_rejection_that_ended_steps_the_legacy_scan(void) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    int rc = 0;
+    // Frequencies no other case uses: engine.c caches the last rigctl tune across cases.
+    setup_tone_rejection_ended(opts, state, 961012500L, 2);
+    g_rigctl_setfreq_ok = 1;
+    rc |= seed_tone_rejection_ended(opts, state);
+    g_rigctl_setfreq_calls = 0;
+    noCarrier(opts, state);
+    rc |= expect_true("ended: the next pass steps",
+                      g_rigctl_setfreq_calls > 0 && g_rigctl_setfreq_freq == 962012500 && state->lcn_freq_roll == 2);
+    rc |= expect_true("ended: the step forgets it", state->analog_rx.gate_rejected_ended == 0
+                                                        && dsd_scan_analog_tone_rejection_ended(opts, state) == 0);
+    free_test_runtime(opts, state);
+
+    /* A new carrier before the pass: checked again, it holds the row. */
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    setup_tone_rejection_ended(opts, state, 963012500L, 2);
+    rc |= seed_tone_rejection_ended(opts, state);
+    feed_rx_tone(opts, state, 1);
+    rc |= expect_true("ended: a new carrier is checked", state->analog_rx.gate == DSD_ANALOG_TONE_GATE_PENDING
+                                                             && state->analog_rx.gate_rejected_ended == 0);
+    g_rigctl_setfreq_calls = 0;
+    noCarrier(opts, state);
+    rc |= expect_true("ended: the new carrier holds", g_rigctl_setfreq_calls == 0 && state->lcn_freq_roll == 1);
+    free_test_runtime(opts, state);
+
+    /* The operator's hold keeps the row; the release lets the next pass move on. */
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    setup_tone_rejection_ended(opts, state, 965012500L, 2);
+    rc |= seed_tone_rejection_ended(opts, state);
+    state->lcn_scan_hold = 1;
+    g_rigctl_setfreq_calls = 0;
+    noCarrier(opts, state);
+    rc |= expect_true("ended: the hold keeps the row", g_rigctl_setfreq_calls == 0 && state->lcn_freq_roll == 1);
+    state->lcn_scan_hold = 0;
+    noCarrier(opts, state);
+    rc |= expect_true("ended: the release steps", g_rigctl_setfreq_calls > 0 && state->lcn_freq_roll == 2);
+    free_test_runtime(opts, state);
+
+    /* A single row has nowhere else to go: the hangtime the check stamped runs as after any carrier. */
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    setup_tone_rejection_ended(opts, state, 967012500L, 1);
+    rc |= seed_tone_rejection_ended(opts, state);
+    g_rigctl_setfreq_calls = 0;
+    noCarrier(opts, state);
+    rc |= expect_true("ended: a single row waits out the hangtime",
+                      g_rigctl_setfreq_calls == 0 && state->lcn_freq_roll == 1);
+    g_rigctl_setfreq_ok = 0;
+    free_test_runtime(opts, state);
+    return rc;
+}
+#endif
+
 #if defined(USE_RADIO) && defined(DSD_NEO_TEST_RTL_WRAP)
 /* The legacy untyped -Y step never runs the acquisition reset the typed rows do, so it
    clears the received tone itself: a new channel must not inherit the old one's. */
@@ -3887,6 +4009,7 @@ main(void) {
     rc |= test_rx_tone_rigctl_scan_step();
     rc |= test_tone_rejection_steps_the_legacy_scan();
     rc |= test_tone_rejection_stays_on_a_single_row();
+    rc |= test_tone_rejection_that_ended_steps_the_legacy_scan();
 #endif
 #if defined(USE_RADIO) && defined(DSD_NEO_TEST_RTL_WRAP)
     rc |= test_rx_tone_resets_on_legacy_scan_step();

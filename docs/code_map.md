@@ -81,8 +81,13 @@ Generated (do not edit/commit):
     `scan_has_duplicate_type_freq()` makes it one of another type, which runs no tone check); with none it spends the
     tick with the target muted in place and its idle dwell disarmed, since that rotation could only switch back to it.
     Its analog stay reason reads `TONE_PENDING` the same way. While the verdict is REJECTED and no operator hold is on,
-    both the -Y tick and `trunk_scan_timing_select_reason()` publish `DSD_SCAN_STAY_CARRIER` with no window, since
-    no hangtime or dwell counts toward a step while rejected traffic is kept.
+    both the -Y tick and `trunk_scan_timing_select_reason()` publish `DSD_SCAN_STAY_CARRIER` with no window, since no
+    hangtime or dwell counts toward a step while rejected traffic is kept. Rejected traffic that ended between two
+    passes or ticks releases the same way: `dsd_scan_analog_tone_rejection_ended()` reads the tap's
+    `gate_rejected_ended` through `dsd_analog_rx_rejection_ended_now()` (held to the channel on air as the carrier is),
+    or a REJECTED verdict an input that stopped delivering left published past its deadline, with no carrier heard; both
+    scanners then step or advance when there is somewhere to go, so the activity the traffic stamped while it was
+    checked is not waited out, and with nowhere to go leave the ordinary `-t`, hold and dwell rules to run.
   - Stepped slicer threshold refresh after each getFrameSync() return: `src/engine/slicer_thresholds.c` behind
     `include/dsd-neo/engine/slicer_thresholds.h` (test: `ENGINE_SLICER_THRESHOLDS`)
   - Installs runtime hook tables used by DSP/frame-sync code
@@ -378,7 +383,8 @@ Tests: `tests/engine/test_engine_trunk_scan.c` (`ENGINE_TRUNK_SCAN`) and
   always the canonical member of the code's alias class, `dcs_candidate` (1 while, with nothing locked, the DCS detector
   holds a candidate code it has read once and not yet confirmed: the tone policy waits past its window for it), `gate`
   and `gate_no_tone`, the CTCSS/DCS receive policy's verdict (issue #527: OFF with no policy in force, PENDING while it
-  checks, ALLOWED, REJECTED; `gate_no_tone` when no confirmed value decided it), a `generation`
+  checks, ALLOWED, REJECTED; `gate_no_tone` when no confirmed value decided it), `gate_rejected_ended` (1 once a
+  rejected reception has ended with its carrier, until the next carrier or any other reset), a `generation`
   bumped by every reset, input switch and input-rate change, and `stale_after_ms`, the monotonic deadline
   past which the publication of an input that may pause (stdin, UDP, TCP, a live RTL-family radio stream) no longer
   describes the channel, 0 on inputs that never pause: files, Pulse and IQ replay).
@@ -1099,7 +1105,9 @@ installs from `src/engine/trunk_tuning.c` in `src/engine/trunk_tuning_hooks_inst
     (the FM monitor only; a different policy starts the reception over, and its check is not logged as a tone lost; a
     list that only respells a code is the same policy, `dsd_tone_set_same_signals()`),
     resets it with every reset the publication's generation records (hangover, retune, row change, pause), publishes
-    `gate` and `gate_no_tone`, and logs `Tone filter: allowed|rejected (<value>|no tone)` and
+    `gate`, `gate_no_tone` and `gate_rejected_ended` (a reception its carrier's hangover, or an input pause, ended under
+    REJECTED, from that reset, the core's `carrier_end_reset`, until the next carrier, a policy change or any other
+    reset: the scanners' release outlives the carrier), and logs `Tone filter: allowed|rejected (<value>|no tone)` and
     `Tone filter: pending (tone lost)` on a change. `dsd_symbol.c`
     applies it at its one monitor sink: `symbol_unsynced_audio_allowed()` plays only OFF and ALLOWED, muting the local
     stream and the UDP analog socket together, and `symbol_unsynced_carrier_active()` stamps no carrier activity for

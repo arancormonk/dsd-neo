@@ -545,25 +545,28 @@ no symbol profile is applied over the monitor. Everything below applies to both 
   The list takes `/` between entries: an unquoted comma ends the `options` cell, and a row whose list runs on past one
   (into a field past the header, or into a column whose whole field is then a run of `/`-separated entries with no
   space, starting with a standard tone or code, alone or followed by another row option such as `--squelch-db -60`) is
-  refused with `use / between entries, not commas`, as is a quoted cell with a comma. The Qt/Android preview of an imported target file names it (`Tone filter: allow 100.0 Hz/D023N`,
-  `Tone filter: off`), or `Tone filter: inherit` on an `nfm-conventional` target without one. The policy is a setting,
-  shown apart from the tone or code received. Under a list policy each transmission is muted while it is checked (800
-  ms, to 1,600 ms while a listed DCS code is still being confirmed), and holds the target as any carrier does, under
-  `Tone check` meanwhile; like any carrier it is activity, so one that ends before a verdict leaves the target's
-  `activity_hold_ms` behind it. Traffic the policy rejects is muted and is no activity: it never restarts
-  `activity_hold_ms`, and at the next tick the coordinator advances, without waiting out the hold that earlier traffic
-  earned, which is how traffic that was passing and turns out to carry a blocked (or, under allow, an unlisted) tone or
-  code releases the target. The `Y` hold keeps the target, muted. With nowhere else to go (a list with this one target,
-  or whose other targets are avoided, cooling down from a failed retune, or skipped at every visit for a width the DSP
-  rate cannot filter) the target mutes the traffic and stays, without rotating on its idle dwell meanwhile, and the
-  Scan Timing row reads `Carrier` with no countdown. A target on the same frequency counts as somewhere to go: a list
-  holds one target per type and frequency, so it is of another type, which runs no tone check (a mixed-mode
-  repeater's `dmr-conventional` target takes the DMR traffic an `nfm-conventional` target's allow list rejects).
-  Leaving the target restores the configured policy, and Config->Save never writes a target's own. An `am-conventional`
-  target has no policy: the AM monitor hears no CTCSS or DCS, so its `options` refuse the switches, and while it is
-  parked the configured policy judges and mutes nothing and its carrier holds it under `Carrier`. A configured list
-  policy with no `nfm-conventional` target in the list has no effect, since every target runs its own type's mode, and
-  scan start says so once.
+  refused with `use / between entries, not commas`, as is a quoted cell with a comma. The Qt/Android preview of an
+  imported target file names it (`Tone filter: allow 100.0 Hz/D023N`, `Tone filter: off`), or `Tone filter: inherit` on
+  an `nfm-conventional` target without one. The policy is a setting, shown apart from the tone or code received. Under a
+  list policy each transmission is muted while it is checked (800 ms, to 1,600 ms while a listed DCS code is still being
+  confirmed), and holds the target as any carrier does, under `Tone check` meanwhile; like any carrier it is activity,
+  so one that ends before a verdict leaves the target's `activity_hold_ms` behind it. Traffic the policy rejects is
+  muted and is no activity: it never restarts `activity_hold_ms`, and at the next tick the coordinator advances, without
+  waiting out the hold that earlier traffic earned, which is how traffic that was passing and turns out to carry a
+  blocked (or, under allow, an unlisted) tone or code releases the target. So does traffic rejected and ended before the
+  next tick came: the rejection outlives its carrier for the coordinator until the next carrier opens or the target
+  changes, so the hold the traffic earned while it was being checked is not waited out either. The `Y` hold keeps the
+  target, muted. With nowhere else to go (a list with this one target, or whose other targets are avoided, cooling down
+  from a failed retune, or skipped at every visit for a width the DSP rate cannot filter) the target mutes the traffic
+  and stays, without rotating on its idle dwell meanwhile, and the Scan Timing row reads `Carrier` with no countdown;
+  once that traffic ends, the hold and the dwell run as after any carrier. A target on the same frequency counts as
+  somewhere to go: a list holds one target per type and frequency, so it is of another type, which runs no tone check (a
+  mixed-mode repeater's `dmr-conventional` target takes the DMR traffic an `nfm-conventional` target's allow list
+  rejects). Leaving the target restores the configured policy, and Config->Save never writes a target's own. An
+  `am-conventional` target has no policy: the AM monitor hears no CTCSS or DCS, so its `options` refuse the switches,
+  and while it is parked the configured policy judges and mutes nothing and its carrier holds it under `Carrier`. A
+  configured list policy with no `nfm-conventional` target in the list has no effect, since every target runs its own
+  type's mode, and scan start says so once.
 - **Controls.** `--scan-max-visit-ms`, the `Y` hold, advance and avoid work exactly as for digital targets, including
   while a carrier holds the target. The voice gate never applies to an analog target, so a global `--scan-voice-only`
   does not block one, and voice-gate switches are rejected in its `options`.
