@@ -734,6 +734,15 @@ dsd_analog_tone_gate_in_force(const dsd_opts* opts, const dsd_state* state) {
         return DSD_ANALOG_TONE_GATE_OFF;
     }
     const int gate = state->analog_rx.gate;
-    return (gate >= DSD_ANALOG_TONE_GATE_OFF && gate <= DSD_ANALOG_TONE_GATE_REJECTED) ? gate
-                                                                                       : DSD_ANALOG_TONE_GATE_PENDING;
+    if (gate == DSD_ANALOG_TONE_GATE_OFF) {
+        /* The tap never publishes OFF under a list policy it runs, so OFF here means no verdict of this policy: the tap
+           has no session to judge with (one it could not allocate), or has not read since the policy came on. The
+           policy fails closed, as PENDING, until the tap's own verdict replaces it. */
+        const int list_policy =
+            (opts->analog_tone_filter == DSD_TONE_FILTER_ALLOW || opts->analog_tone_filter == DSD_TONE_FILTER_BLOCK)
+            && dsd_tone_set_count(&opts->analog_tone_set) > 0;
+        return list_policy ? DSD_ANALOG_TONE_GATE_PENDING : DSD_ANALOG_TONE_GATE_OFF;
+    }
+    return (gate > DSD_ANALOG_TONE_GATE_OFF && gate <= DSD_ANALOG_TONE_GATE_REJECTED) ? gate
+                                                                                      : DSD_ANALOG_TONE_GATE_PENDING;
 }

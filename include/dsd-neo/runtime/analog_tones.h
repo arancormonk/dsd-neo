@@ -306,7 +306,10 @@ int dsd_analog_tone_detection_active(const dsd_opts* opts);
  *
  * OFF whenever received-tone detection does not run (dsd_analog_tone_detection_active(): the AM monitor, a digital
  * mode, the -8 source monitor), whatever an earlier session published; otherwise dsd_state::analog_rx.gate, with a
- * value this build does not know read as PENDING. The monitor output plays only OFF and ALLOWED, and a REJECTED carrier
+ * value this build does not know read as PENDING. It fails closed: a published OFF while dsd_opts holds a list policy
+ * with a list (--tone-allow/--tone-block) is no verdict of that policy -- the tap has no session to judge with, having
+ * failed to allocate one, or has not read since the policy came on -- and reads as PENDING until the tap's own verdict
+ * replaces it. The monitor output plays only OFF and ALLOWED, and a REJECTED carrier
  * is no scan activity. The verdict is only as fresh as the tap's last read: a scanner pairs it with the carrier it
  * holds a row on (dsd_scan_analog_carrier_open()). Read-only; OFF for NULL.
  */

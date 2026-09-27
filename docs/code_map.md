@@ -528,7 +528,9 @@ Tests: `tests/engine/test_engine_trunk_scan.c` (`ENGINE_TRUNK_SCAN`) and
     `analog_demod` FM (issue #524: CTCSS and DCS are FM signalling), the one answer to "does received-tone detection
     run". The DSP tap and `app_control/rx_tone_view` both ask it, so a frontend row is shown exactly while the detectors
     listen. `dsd_analog_tone_gate_in_force()` is the receive policy's verdict on that reception (issue #527): OFF
-    wherever detection does not run, else `dsd_state::analog_rx.gate`; the monitor sink and the scanners ask it. Tone
+    wherever detection does not run, else `dsd_state::analog_rx.gate`, failing closed: a published OFF while `dsd_opts`
+    holds a list policy with a list is no verdict of it (the tap has no session, or has not read since the policy came
+    on) and reads PENDING; the monitor sink and the scanners ask it. Tone
     lists (issue #527): `dsd_tone_set_parse()` reads the '/'-separated list the CLI, the INI and scan rows share (a tone
     as `100` or `100.0`, a code as `D023`, `D023N` or `D023I`), refusing commas with a hint, empty entries, nonstandard
     values and a signal listed twice by entry number, never echoing the text; `dsd_tone_set_format()` writes it back as

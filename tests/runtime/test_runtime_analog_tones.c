@@ -19,6 +19,8 @@
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/safe_api.h>
+#include <dsd-neo/core/state.h>
+#include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/io/rtl_stream_c.h>
 #include <dsd-neo/runtime/analog_channel.h>
 #include <dsd-neo/runtime/analog_tones.h>
@@ -188,6 +190,57 @@ test_detection_active(void) {
     opts->analog_demod = DSD_ANALOG_DEMOD_AM;
     expect_tap(opts, 0);
     dsd_rtl_stream_metrics_hooks_set(NULL);
+    free(opts);
+}
+
+/* The verdict in force (issue #527) fails closed: a published OFF while a list policy is configured is no verdict of
+   that policy -- the tap had no session to judge with (one it could not allocate) or has not read since the policy came
+   on -- and mutes as PENDING until the tap's own verdict replaces it. Without a list policy, or without detection,
+   nothing is in force. */
+static void
+test_gate_in_force_fails_closed(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
+    assert(opts != NULL && state != NULL);
+    assert(dsd_analog_tone_gate_in_force(NULL, state) == DSD_ANALOG_TONE_GATE_OFF);
+    assert(dsd_analog_tone_gate_in_force(opts, NULL) == DSD_ANALOG_TONE_GATE_OFF);
+    opts->analog_only = 1;
+    opts->monitor_input_audio = 1;
+    opts->audio_in_type = AUDIO_IN_PULSE;
+    opts->analog_demod = DSD_ANALOG_DEMOD_FM;
+    assert(dsd_analog_tone_detection_active(opts) == 1);
+
+    state->analog_rx.gate = DSD_ANALOG_TONE_GATE_OFF;
+    assert(dsd_analog_tone_gate_in_force(opts, state) == DSD_ANALOG_TONE_GATE_OFF);
+    assert(dsd_tone_set_parse("100.0", &opts->analog_tone_set, NULL, 0) == 0);
+    assert(dsd_analog_tone_gate_in_force(opts, state) == DSD_ANALOG_TONE_GATE_OFF); /* off keeps its list */
+    opts->analog_tone_filter = DSD_TONE_FILTER_ALLOW;
+    assert(dsd_analog_tone_gate_in_force(opts, state) == DSD_ANALOG_TONE_GATE_PENDING);
+    opts->analog_tone_filter = DSD_TONE_FILTER_BLOCK;
+    assert(dsd_analog_tone_gate_in_force(opts, state) == DSD_ANALOG_TONE_GATE_PENDING);
+    /* The tap's own verdicts stand, and a value this build does not know still mutes. */
+    static const int verdicts[] = {DSD_ANALOG_TONE_GATE_PENDING, DSD_ANALOG_TONE_GATE_ALLOWED,
+                                   DSD_ANALOG_TONE_GATE_REJECTED};
+    for (size_t i = 0; i < sizeof(verdicts) / sizeof(verdicts[0]); i++) {
+        state->analog_rx.gate = verdicts[i];
+        assert(dsd_analog_tone_gate_in_force(opts, state) == verdicts[i]);
+    }
+    state->analog_rx.gate = 7;
+    assert(dsd_analog_tone_gate_in_force(opts, state) == DSD_ANALOG_TONE_GATE_PENDING);
+
+    /* A list policy with no list judges nothing, as the tap configures it. */
+    state->analog_rx.gate = DSD_ANALOG_TONE_GATE_OFF;
+    DSD_MEMSET(&opts->analog_tone_set, 0, sizeof(opts->analog_tone_set));
+    assert(dsd_analog_tone_gate_in_force(opts, state) == DSD_ANALOG_TONE_GATE_OFF);
+
+    /* No detection, no policy in force: the AM monitor, whatever is published or configured. */
+    assert(dsd_tone_set_parse("100.0", &opts->analog_tone_set, NULL, 0) == 0);
+    opts->analog_tone_filter = DSD_TONE_FILTER_ALLOW;
+    opts->analog_demod = DSD_ANALOG_DEMOD_AM;
+    assert(dsd_analog_tone_gate_in_force(opts, state) == DSD_ANALOG_TONE_GATE_OFF);
+    state->analog_rx.gate = DSD_ANALOG_TONE_GATE_REJECTED;
+    assert(dsd_analog_tone_gate_in_force(opts, state) == DSD_ANALOG_TONE_GATE_OFF);
+    free(state);
     free(opts);
 }
 
@@ -783,6 +836,7 @@ main(void) {
     test_table();
     test_format();
     test_detection_active();
+    test_gate_in_force_fails_closed();
     test_dcs_table();
     test_dcs_reference_words();
     test_dcs_words();
