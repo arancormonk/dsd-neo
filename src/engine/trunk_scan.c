@@ -4300,11 +4300,7 @@ dsd_engine_scan_hears_tones(const dsd_opts* opts, const dsd_state* state) {
     if (opts->trunk_scan_enabled == 1) {
         return 1;
     }
-    const int fm_monitor = dsd_scan_mode_configured_fm_monitor(opts, state);
-    if (opts->scanner_mode == 1 && state->lcn_freq_count > 0) {
-        return dsd_channel_modes_hear_tones(state, fm_monitor);
-    }
-    return fm_monitor;
+    return dsd_channel_modes_conventional_hear_tones(opts, state);
 }
 
 int

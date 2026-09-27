@@ -466,10 +466,10 @@ or `--no-tone-filter` (see [csv-formats.md](csv-formats.md#analog-rows)). A list
 that is not a standard CTCSS tone or DCS code, or one signal twice (`D023N/D047I` included) is refused by entry number:
 startup logs a warning and the filter stays off, and `--validate-config` reports an error. So does `tone_filter = allow`
 or `block` with no list. The filter applies only where the monitor detects tones (the analog FM monitor and `nfm` scan
-rows); set for AM or a digital mode without a scan, or with a scan list that has no `nfm` row or `nfm-conventional`
-target, the session warns once that it has no effect. A config loaded into a running session applies the policy from
-the next read of the monitor's audio; while an `nfm` row with its own policy is on air, the loaded policy becomes the
-configured default and applies when the row leaves.
+rows); set for AM or a digital mode without a scan list (a `-Y` scan with no channel map included), or with a scan list
+that has no `nfm` row or `nfm-conventional` target, the session warns once that it has no effect. A config loaded into a
+running session applies the policy from the next read of the monitor's audio; while an `nfm` row with its own policy is
+on air, the loaded policy becomes the configured default and applies when the row leaves.
 
 When `[analog]` changes apply (the full table, with the terminal and Qt controls, is in `docs/cli.md`, Analog
 reception, "When changes apply"):

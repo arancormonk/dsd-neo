@@ -506,19 +506,22 @@ Tests: `tests/engine/test_engine_trunk_scan.c` (`ENGINE_TRUNK_SCAN`) and
     `dsd_scan_mode_configured_tone_policy()`, never an nfm row's own. The CLI switches `--tone-allow`, `--tone-block`
     and `--no-tone-filter` (one of them per command line) parse the same way. `dsd_scan_mode_warn_tone_filter_unused()`
     (`scan_mode.c`) says once that a configured list policy has no effect when the caller found nothing that runs
-    detection: `cli_finish_parse()` for a session without a scan (`dsd_scan_mode_configured_fm_monitor()`), or with a
-    `-Y` list the command line imported (`dsd_channel_modes_hear_tones()`: an `nfm` row, or under `-fA` a row
-    that declares no mode, since a typed row runs its own); the engine's import of a config file's `-Y` list the same
-    way; `trunk_scan_warn_targets()` for a `--trunk-scan` list with no `nfm-conventional` target, whatever the decode
-    mode; and, during the session, `apply_cmd_scoped()` (`app_command_queue.c`) after a command that left a list policy
-    where `dsd_engine_scan_hears_tones()` finds nothing, when the command set that policy or took the monitor away
-    from it (a loaded config, a decode-mode change, a channel map, a scanner toggle), never again for the same policy
-    still unheard.
+    detection. Outside a trunk scan that is `dsd_channel_modes_conventional_hear_tones()` (core, beside the row modes),
+    the one rule the start, the engine's import and `dsd_engine_scan_hears_tones()` share: a `-Y` list with rows by
+    `dsd_channel_modes_hear_tones()` (an `nfm` row, or under `-fA` a row that declares no mode, since a typed row runs
+    its own), anything else, a `-Y` scan without rows included, by `dsd_scan_mode_configured_fm_monitor()`. It is asked
+    by `cli_finish_parse()`, except for a `-Y` list the engine still imports (a config file's `chan_csv`, or a `-C` map
+    it read no row from), which the engine's import asks instead. `trunk_scan_warn_targets()` warns for a `--trunk-scan`
+    list with no `nfm-conventional` target, whatever the decode mode; and, during the session, `apply_cmd_scoped()`
+    (`app_command_queue.c`) after a command that left a list policy where `dsd_engine_scan_hears_tones()` finds nothing,
+    when the command set that policy or took the monitor away from it (a loaded config, a decode-mode change, a channel
+    map, a scanner toggle), never again for the same policy still unheard.
     `dsd_user_config_radio_input_spec()` returns the radio input spec (`rtl`, `rtltcp`, `soapy` or
     `airspy`) an `[input]` builds without applying it, so a live config apply can tell whether it reopens the device and
     what then sets the rate. Tests: `RUNTIME_CLI_PARSE`, `CONFIG_VALIDATION`, `CONFIG_TEMPLATE`, `RUNTIME_CONFIG_USER`,
-    and for the tone filter's "no effect" line `ENGINE_RUN_SETUP` (a config file's `-Y` list), `APP_COMMAND_QUEUE` (a
-    running session) and `ENGINE_TRUNK_SCAN`.
+    and for the tone filter's "no effect" line `ENGINE_RUN_SETUP` (a config file's `-Y` list, one without rows
+    included), `APP_COMMAND_QUEUE` (a running session, a channel map imported into a `-Y` scan included) and
+    `ENGINE_TRUNK_SCAN`.
   - The RTL metrics hook table (`include/dsd-neo/runtime/rtl_stream_metrics_hooks.h`) also carries the receive-family
     request (`apply_analog_profile`), the published analog profile (`analog_profile`), whether the analog family runs
     (`analog_family_active`) and the output rate a family switch lands on (`output_rate_for_family`); the engine
@@ -1867,7 +1870,9 @@ External dependencies (resolved via CMake):
 - `dsd_channel_modes_present()` is true for declared modes and for option-bearing profiles alike, so option-only channel
   maps run the typed scanner. `dsd_channel_mode_hears_tones()` says whether a row runs received-tone detection while it
   is on air: an `nfm` row, or, when the configured decode mode is the FM monitor, one that declares no mode and so runs
-  it (issue #527); `dsd_channel_modes_hear_tones()` whether any row the scanner tunes (one with a frequency) does.
+  it (issue #527); `dsd_channel_modes_hear_tones()` whether any row the scanner tunes (one with a frequency) does, and
+  `dsd_channel_modes_conventional_hear_tones()` whether a session outside a trunk scan does: a `-Y` list with rows by
+  its rows, anything else (a `-Y` scan without rows included) by the configured decode mode.
   `dsd_scan_settings_equal()` compares acquisition settings only; the row-scoped options (forcing, CRC, mutes, voice
   gate, group file) are folded through `dsd_scan_mode_resume()` without resetting acquisition. Conventional trunk-scan
   targets take their voice-gate hold/qualify from the row profile. `DSD_SCAN_OPT_MAX_VISIT` is the one **scan-timing**

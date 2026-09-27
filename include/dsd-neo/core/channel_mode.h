@@ -4,6 +4,7 @@
 /** @file @brief Positional channel-map mode metadata, owned by core extension slot 5. */
 #ifndef DSD_NEO_CORE_CHANNEL_MODE_H
 #define DSD_NEO_CORE_CHANNEL_MODE_H
+#include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/runtime/scan_mode.h>
 #include <stddef.h>
@@ -32,6 +33,12 @@ int dsd_channel_mode_hears_tones(const dsd_state* state, size_t row, int configu
 /** Nonzero if a row the scanner tunes (one with a frequency) runs received-tone detection
  * (dsd_channel_mode_hears_tones()). */
 int dsd_channel_modes_hear_tones(const dsd_state* state, int configured_fm_monitor);
+/** Nonzero if a session that is not a trunk scan runs received-tone detection, where the tone policy applies (issue
+ * #527): a -Y scan with a list by its rows (dsd_channel_modes_hear_tones()), anything else -- a -Y scan whose list has
+ * no rows, or none yet, included, which stays on the configured decode mode -- by that mode
+ * (dsd_scan_mode_configured_fm_monitor()). The one rule the command line, the engine's channel-map import and
+ * dsd_engine_scan_hears_tones() weigh the "no effect" warning by. 0 for NULL @p opts or @p state. */
+int dsd_channel_modes_conventional_hear_tones(const dsd_opts* opts, const dsd_state* state);
 #ifdef __cplusplus
 }
 #endif

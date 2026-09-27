@@ -501,6 +501,18 @@ dsd_channel_modes_hear_tones(const dsd_state* state, int configured_fm_monitor) 
     return 0;
 }
 
+int
+dsd_channel_modes_conventional_hear_tones(const dsd_opts* opts, const dsd_state* state) {
+    if (!opts || !state) {
+        return 0;
+    }
+    const int fm_monitor = dsd_scan_mode_configured_fm_monitor(opts, state);
+    if (opts->scanner_mode == 1 && state->lcn_freq_count > 0) {
+        return dsd_channel_modes_hear_tones(state, fm_monitor);
+    }
+    return fm_monitor;
+}
+
 static int
 channel_profile_has_options(const dsd_scan_row_profile* profile) {
     return profile != NULL && profile->values.present != 0;

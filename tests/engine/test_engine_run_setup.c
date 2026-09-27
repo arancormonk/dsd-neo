@@ -678,21 +678,25 @@ count_text(const char* text, const char* needle) {
  * Issue #527: a -Y channel map that reaches the engine through a config file, which the command line never imported,
  * is weighed against the tone policy when the engine imports it: said exactly once when no row runs the FM monitor
  * (no nfm row, and under -fA no row without a mode of its own, since a typed row runs its own mode: an am row the AM
- * monitor, which hears no tone), and not at all when one does.
+ * monitor, which hears no tone), and not at all when one does. A map with no rows leaves the scan on the configured
+ * decode mode, which is weighed instead: the FM monitor hears tones, a digital mode does not.
  */
 static int
 test_config_channel_map_weighs_the_tone_filter(void) {
     static const struct {
         const char* body;
         int analog_only;
+        int rows;
         int warnings;
     } cases[] = {
-        {"channel,frequency_hz,mode\n1,461000000,dmr\n2,851012500,p25\n", 0, 1},
-        {"channel,frequency_hz,mode\n1,461000000,dmr\n2,851012500,p25\n", 1, 1},
-        {"channel,frequency_hz,mode\n1,461000000,dmr\n2,154430000,nfm\n", 0, 0},
-        {"channel,frequency_hz,mode\n1,461000000,dmr\n2,154430000,\n", 1, 0},
-        {"channel,frequency_hz\n1,154430000\n2,155475000\n", 1, 0},
-        {"channel,frequency_hz,mode\n1,461000000,dmr\n2,118300000,am\n", 1, 1},
+        {"channel,frequency_hz,mode\n1,461000000,dmr\n2,851012500,p25\n", 0, 2, 1},
+        {"channel,frequency_hz,mode\n1,461000000,dmr\n2,851012500,p25\n", 1, 2, 1},
+        {"channel,frequency_hz,mode\n1,461000000,dmr\n2,154430000,nfm\n", 0, 2, 0},
+        {"channel,frequency_hz,mode\n1,461000000,dmr\n2,154430000,\n", 1, 2, 0},
+        {"channel,frequency_hz\n1,154430000\n2,155475000\n", 1, 2, 0},
+        {"channel,frequency_hz,mode\n1,461000000,dmr\n2,118300000,am\n", 1, 2, 1},
+        {"channel,frequency_hz,mode\n", 1, 0, 0},
+        {"channel,frequency_hz,mode\n", 0, 0, 1},
     };
 
     static const char* const expected =
@@ -731,7 +735,7 @@ test_config_channel_map_weighs_the_tone_filter(void) {
         (void)dsd_test_capture_stderr_end(&cap);
         (void)dsd_test_capture_stderr_read(&cap, log, sizeof log);
         const int warnings = count_text(log, expected);
-        if (rc != 0 || imported != 2 || warnings != cases[i].warnings) {
+        if (rc != 0 || imported != cases[i].rows || warnings != cases[i].warnings) {
             DSD_FPRINTF(stderr, "tone map case %zu: rc=%d rows=%d warnings=%d want %d log:\n%s\n", i, rc, imported,
                         warnings, cases[i].warnings, log);
             test_rc = 1;

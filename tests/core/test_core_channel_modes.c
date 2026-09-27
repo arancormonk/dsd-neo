@@ -12,6 +12,7 @@
 #include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/protocol/nxdn/nxdn_lfsr.h>
+#include <dsd-neo/runtime/analog_channel.h>
 #include <dsd-neo/runtime/scan_mode.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -110,6 +111,23 @@ main(void) {
        frequency, which only the list-wide one weighs. */
     assert(dsd_channel_mode_hears_tones(s, 4096U, 1) && !dsd_channel_mode_hears_tones(s, 4096U, 0));
     assert(!dsd_channel_mode_hears_tones(NULL, 0, 1));
+    /* A session outside a trunk scan: a -Y list with rows is weighed by them (the am row runs the AM monitor), while
+       without -Y, or on a -Y scan with no rows, the configured decode mode is what hears tones or not (issue #527). */
+    o->analog_only = 1;
+    o->analog_demod = DSD_ANALOG_DEMOD_FM;
+    o->scanner_mode = 1;
+    assert(!dsd_channel_modes_conventional_hear_tones(o, s));
+    o->scanner_mode = 0;
+    assert(dsd_channel_modes_conventional_hear_tones(o, s));
+    o->scanner_mode = 1;
+    const int rows = s->lcn_freq_count;
+    s->lcn_freq_count = 0;
+    assert(dsd_channel_modes_conventional_hear_tones(o, s));
+    o->analog_only = 0;
+    assert(!dsd_channel_modes_conventional_hear_tones(o, s));
+    s->lcn_freq_count = rows;
+    o->scanner_mode = 0;
+    assert(!dsd_channel_modes_conventional_hear_tones(NULL, s) && !dsd_channel_modes_conventional_hear_tones(o, NULL));
     assert(dsd_channel_mode_set(s, 0, DSD_SCAN_MODE_DMR) == 0);
     assert(dsd_channel_mode_set(s, 0, DSD_SCAN_MODE_P25) == 0);
     assert(dsd_channel_modes_present(s));

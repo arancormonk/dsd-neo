@@ -992,13 +992,14 @@ setting, shown apart from what is received, and it is off by default: then the o
 - Where it applies: the analog FM monitor only (`-fA`, and `nfm` scan rows), on radio and PCM inputs alike, never the AM
   monitor (`-fM`, and `am` scan rows and `am-conventional` targets, which carry the configured policy past them
   untouched and hold on their carrier), wherever the received tone is detected. Set where nothing runs it, it has no
-  effect, and the session says so once. At startup: for the AM monitor (`-fM`) or a digital mode without a scan, and for
-  a `-Y` list none of whose rows runs the FM monitor (no `nfm` row, and under `-fA` no row without a mode of its own
-  either, since a typed row, an `am` one included, runs its own mode), checked when the list is imported from the
-  command line or a config file. When the scan starts: for a `--trunk-scan` list with no `nfm-conventional` target,
-  whatever the decode mode. During the session: when a loaded config sets a policy nothing runs, or a decode-mode
-  change, channel map or scanner toggle takes the FM monitor away from the policy in force. The `Tone filter` row leaves
-  the screen while no detection runs.
+  effect, and the session says so once. At startup: for the AM monitor (`-fM`) or a digital mode without a scan list (a
+  `-Y` scan with no channel map included, which stays on that mode until one is imported), and for a `-Y` list none of
+  whose rows runs the FM monitor (no `nfm` row, and under `-fA` no row without a mode of its own either, since a typed
+  row, an `am` one included, runs its own mode), checked when the list is imported from the command line or a config
+  file. When the scan starts: for a `--trunk-scan` list with no `nfm-conventional` target, whatever the decode mode.
+  During the session: when a loaded config sets a policy nothing runs, or a decode-mode change, channel map or scanner
+  toggle takes the FM monitor away from the policy in force. The `Tone filter` row leaves the screen while no detection
+  runs.
 - What is shown: the terminal's Call Info section adds a `Tone filter:` line under `Rx tone:`, and the Qt/Android
   monitor a `TONE FILTER` row under `RECEIVED TONE`, while a policy is in force: the policy (`allow 100.0 Hz/D023N`;
   while a scan row's own policy runs, followed by the configured one it shadows,

@@ -7829,7 +7829,8 @@ test_bootstrap_inherited_trunk_scan_preserves_max_visit_override(void) {
 }
 
 /* Issue #527: one tone-switch parse. @p args are the arguments after the program name (at most 8); the parse's rc,
- * exit code and stderr come back, and the caller frees @p opts / @p state with free_tone_parse(). */
+ * exit code and stderr come back, and the caller frees @p opts / @p state with free_tone_parse(). A non-NULL
+ * @p config_map is a channel map a loaded config names ([trunking] chan_csv), which the engine imports, not the parse. */
 typedef struct {
     dsd_opts* opts;
     dsd_state* state;
@@ -7839,7 +7840,7 @@ typedef struct {
 } tone_parse;
 
 static int
-run_tone_parse(tone_parse* out, const char* const* args, int count) {
+run_tone_parse_with_config_map(tone_parse* out, const char* const* args, int count, const char* config_map) {
     DSD_MEMSET(out, 0, sizeof(*out));
     out->opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
     out->state = (dsd_state*)calloc(1, sizeof(dsd_state));
@@ -7848,6 +7849,9 @@ run_tone_parse(tone_parse* out, const char* const* args, int count) {
     }
     initOpts(out->opts);
     initState(out->state);
+    if (config_map) {
+        DSD_SNPRINTF(out->opts->chan_in_file, sizeof out->opts->chan_in_file, "%s", config_map);
+    }
     char storage[9][256];
     char* argv[10] = {0};
     DSD_SNPRINTF(storage[0], sizeof storage[0], "%s", "dsd-neo");
@@ -7860,6 +7864,11 @@ run_tone_parse(tone_parse* out, const char* const* args, int count) {
     out->rc = parse_args_capture_stderr(count + 1, argv, out->opts, out->state, &argc_effective, &out->exit_rc,
                                         out->output, sizeof out->output);
     return 0;
+}
+
+static int
+run_tone_parse(tone_parse* out, const char* const* args, int count) {
+    return run_tone_parse_with_config_map(out, args, count, NULL);
 }
 
 static void
@@ -7990,8 +7999,10 @@ test_tone_filter_warns_outside_the_fm_monitor(void) {
  * with the command line: an untyped list under the AM monitor, or a typed one with no nfm row under a digital mode,
  * cannot use it; an nfm row can, and so can the FM monitor on a row that runs it -- every row of an untyped list, a row
  * without a mode of its own on a typed one -- but not on a typed list whose rows all declare a digital mode or am, which
- * each run their own (an am row the AM monitor, which hears no tone). A list the command line has not imported (a
- * config file's) and --trunk-scan targets are weighed when the engine loads them, so parsing says nothing for them. */
+ * each run their own (an am row the AM monitor, which hears no tone). A -Y scan with no list to come stays on the
+ * configured decode mode and is weighed by it, as on a session without a scan. A list the engine still imports (a
+ * config file's, or a -C map the command line read no row from) and --trunk-scan targets are weighed when the engine
+ * loads them, so parsing says nothing for them. */
 static int
 test_tone_filter_warns_on_scan_lists(void) {
     char untyped[256];
@@ -7999,6 +8010,7 @@ test_tone_filter_warns_on_scan_lists(void) {
     char with_nfm[256];
     char with_blank[256];
     char with_am[256];
+    char header_only[256];
     if (test_create_temp_ini_with_contents("channel,frequency_hz\n1,154430000\n2,155475000\n", untyped, sizeof untyped)
             != 0
         || test_create_temp_ini_with_contents("channel,frequency_hz,mode\n1,461000000,dmr\n2,851012500,p25\n", digital,
@@ -8012,7 +8024,8 @@ test_tone_filter_warns_on_scan_lists(void) {
                != 0
         || test_create_temp_ini_with_contents("channel,frequency_hz,mode\n1,461000000,dmr\n2,118300000,am\n", with_am,
                                               sizeof with_am)
-               != 0) {
+               != 0
+        || test_create_temp_ini_with_contents("channel,frequency_hz,mode\n", header_only, sizeof header_only) != 0) {
         return 1;
     }
 
@@ -8020,19 +8033,24 @@ test_tone_filter_warns_on_scan_lists(void) {
         const char* args[8];
         int count;
         int warn;
+        const char* config_map;
     } cases[] = {
-        {{"--tone-allow", "100.0", "-fM", "-i", "rtl", "-Y", "-C", untyped}, 8, 1},
-        {{"--tone-allow", "100.0", "-fs", "-Y", "-C", digital}, 6, 1},
-        {{"--tone-block", "D023N", "-fs", "-Y", "-C", with_nfm}, 6, 0},
-        {{"--tone-allow", "100.0", "-fA", "-Y", "-C", untyped}, 6, 0},
-        {{"--tone-allow", "100.0", "-fA", "-Y", "-C", digital}, 6, 1},
-        {{"--tone-allow", "100.0", "-fA", "-Y", "-C", with_blank}, 6, 0},
-        {{"--tone-allow", "100.0", "-fs", "-Y", "-C", with_blank}, 6, 1},
-        {{"--tone-allow", "100.0", "-fA", "-Y", "-C", with_nfm}, 6, 0},
-        {{"--tone-allow", "100.0", "-fA", "-Y", "-C", with_am}, 6, 1},
-        {{"--tone-allow", "100.0", "-fs", "-Y", "-C", with_am}, 6, 1},
-        {{"--tone-allow", "100.0", "-fs", "-Y"}, 4, 0},
-        {{"--no-tone-filter", "-fs", "-Y", "-C", digital}, 5, 0},
+        {{"--tone-allow", "100.0", "-fM", "-i", "rtl", "-Y", "-C", untyped}, 8, 1, NULL},
+        {{"--tone-allow", "100.0", "-fs", "-Y", "-C", digital}, 6, 1, NULL},
+        {{"--tone-block", "D023N", "-fs", "-Y", "-C", with_nfm}, 6, 0, NULL},
+        {{"--tone-allow", "100.0", "-fA", "-Y", "-C", untyped}, 6, 0, NULL},
+        {{"--tone-allow", "100.0", "-fA", "-Y", "-C", digital}, 6, 1, NULL},
+        {{"--tone-allow", "100.0", "-fA", "-Y", "-C", with_blank}, 6, 0, NULL},
+        {{"--tone-allow", "100.0", "-fs", "-Y", "-C", with_blank}, 6, 1, NULL},
+        {{"--tone-allow", "100.0", "-fA", "-Y", "-C", with_nfm}, 6, 0, NULL},
+        {{"--tone-allow", "100.0", "-fA", "-Y", "-C", with_am}, 6, 1, NULL},
+        {{"--tone-allow", "100.0", "-fs", "-Y", "-C", with_am}, 6, 1, NULL},
+        {{"--tone-allow", "100.0", "-fs", "-Y"}, 4, 1, NULL},
+        {{"--tone-allow", "100.0", "-fM", "-i", "rtl", "-Y"}, 6, 1, NULL},
+        {{"--tone-allow", "100.0", "-fA", "-Y"}, 4, 0, NULL},
+        {{"--tone-allow", "100.0", "-fs", "-Y"}, 4, 0, digital},
+        {{"--tone-allow", "100.0", "-fs", "-Y", "-C", header_only}, 6, 0, NULL},
+        {{"--no-tone-filter", "-fs", "-Y", "-C", digital}, 5, 0, NULL},
     };
 
     static const char* const expected =
@@ -8040,7 +8058,7 @@ test_tone_filter_warns_on_scan_lists(void) {
     int test_rc = 0;
     for (size_t i = 0; i < sizeof cases / sizeof cases[0]; i++) {
         tone_parse p;
-        if (run_tone_parse(&p, cases[i].args, cases[i].count) != 0) {
+        if (run_tone_parse_with_config_map(&p, cases[i].args, cases[i].count, cases[i].config_map) != 0) {
             free_tone_parse(&p);
             test_rc = 1;
             break;
@@ -8059,6 +8077,7 @@ test_tone_filter_warns_on_scan_lists(void) {
     (void)remove(with_nfm);
     (void)remove(with_blank);
     (void)remove(with_am);
+    (void)remove(header_only);
     return test_rc;
 }
 

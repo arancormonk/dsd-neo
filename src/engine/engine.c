@@ -333,10 +333,11 @@ import_global_channel_map_if_needed(dsd_opts* opts, dsd_state* state) {
         }
         LOG_INFO("NOTICE: Imported channel map from %s\n", opts->chan_in_file);
         dsd_scan_row_keys_warn_if_unused(state, opts->scanner_mode);
-        /* A config file's -Y list: the command line checked its own when it imported it (issue #527). */
+        /* A config file's -Y list, or one the command line read no row from: the command line checked a list it
+           imported rows from (issue #527). */
         if (opts->scanner_mode == 1) {
-            const int fm_monitor = dsd_scan_mode_configured_fm_monitor(opts, state);
-            (void)dsd_scan_mode_warn_tone_filter_unused(opts, state, dsd_channel_modes_hear_tones(state, fm_monitor));
+            (void)dsd_scan_mode_warn_tone_filter_unused(opts, state,
+                                                        dsd_channel_modes_conventional_hear_tones(opts, state));
         }
     }
     return 0;
