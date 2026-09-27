@@ -30,11 +30,13 @@
 #pragma GCC diagnostic pop
 #endif
 #include <dsd-neo/app_control/history.h>
+#include <dsd-neo/core/analog_tone.h>
 #include <dsd-neo/core/safe_api.h>
 #include <stdint.h>
 
 #include <atomic>
 #include <cstring>
+#include <dsd-neo/runtime/analog_tones.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include "decode_mode_flag.h"
 #include "decryption_profile_provider.h"
@@ -291,6 +293,30 @@ CommandBridge::setNfmBandwidthHz(int hz) const {
 bool
 CommandBridge::setAmBandwidthHz(int hz) const {
     return accepted(dsd_app_command_set_i32(DSD_APP_CMD_AM_BANDWIDTH_SET, static_cast<int32_t>(hz)));
+}
+
+bool
+CommandBridge::setToneFilter(int mode, const QString& list) const {
+    const QByteArray utf8 = list.toUtf8();
+    /* A list with a NUL in it would reach the decoder cut short; the setter refuses one too long to carry. */
+    if (utf8.contains('\0')) {
+        return false;
+    }
+    return accepted(dsd_app_command_set_tone_filter(static_cast<int32_t>(mode), utf8.constData()));
+}
+
+QString
+CommandBridge::toneFilterError(int mode, const QString& list) const {
+    const QByteArray utf8 = list.toUtf8();
+    if (utf8.contains('\0')) {
+        return tr("the list holds a NUL character");
+    }
+    dsd_tone_set set;
+    char why[DSD_TONE_LIST_ERROR_SIZE] = "";
+    if (dsd_tone_filter_check(mode, utf8.constData(), &set, why, sizeof why) == 0) {
+        return {};
+    }
+    return QString::fromUtf8(why);
 }
 
 bool

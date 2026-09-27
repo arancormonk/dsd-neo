@@ -203,6 +203,14 @@ class MetricsModel : public QObject {
     Q_PROPERTY(bool toneFilterVisible READ toneFilterVisible NOTIFY toneFilterChanged)
     Q_PROPERTY(int toneFilterGate READ toneFilterGate NOTIFY toneFilterChanged)
     Q_PROPERTY(QString toneFilterStatusText READ toneFilterStatusText NOTIFY toneFilterChanged)
+    /* The live tone-filter editor (#527): reachable wherever detection runs, a policy in force or none, and whether a
+       scan row's own policy on air shadows an edit; both session state, on the row's signal. */
+    Q_PROPERTY(bool toneFilterEditable READ toneFilterEditable NOTIFY toneFilterChanged)
+    Q_PROPERTY(bool toneFilterRowOverride READ toneFilterRowOverride NOTIFY toneFilterChanged)
+    /* What the editor opens on: the configured policy's mode (dsd_tone_filter_mode) and list as the parser reads it
+       back, never a row's. Configuration, so its own signal, and kept across a stop like rxToneConfiguredText. */
+    Q_PROPERTY(int toneFilterConfiguredMode READ toneFilterConfiguredMode NOTIFY toneFilterSettingChanged)
+    Q_PROPERTY(QString toneFilterConfiguredList READ toneFilterConfiguredList NOTIFY toneFilterSettingChanged)
     Q_PROPERTY(bool syncedHere READ syncedHere NOTIFY tunerChanged)
     Q_PROPERTY(QString syncLabel READ syncLabel NOTIFY tunerChanged)
     Q_PROPERTY(bool trunkableSync READ trunkableSync NOTIFY tunerChanged)
@@ -1190,6 +1198,30 @@ class MetricsModel : public QObject {
         return m_view.tone_filter_status_text;
     }
 
+    /** @brief Whether the Tone filter row and its live editor belong on screen: detection runs, policy or none. */
+    bool
+    toneFilterEditable() const {
+        return m_view.tone_filter_editable;
+    }
+
+    /** @brief Whether the scan row on air sets its own tone policy, which an edit of the configured one leaves in force. */
+    bool
+    toneFilterRowOverride() const {
+        return m_view.tone_filter_row_override;
+    }
+
+    /** @brief The configured tone policy's mode (0 off, 1 allow, 2 block): what the editor opens on. */
+    int
+    toneFilterConfiguredMode() const {
+        return m_view.tone_filter_configured_mode;
+    }
+
+    /** @brief The configured tone list as the parser reads it back ("100.0/D023I"), kept with off; empty for none. */
+    const QString&
+    toneFilterConfiguredList() const {
+        return m_view.tone_filter_configured_list;
+    }
+
     /**
      * @brief The engine's transient command acknowledgement, empty when none.
      *
@@ -1384,6 +1416,7 @@ class MetricsModel : public QObject {
     void rxToneChanged();
     void rxToneConfiguredTextChanged();
     void toneFilterChanged();
+    void toneFilterSettingChanged();
     void uiMessageChanged();
 
   private:
@@ -1561,6 +1594,11 @@ class MetricsModel : public QObject {
         QString tone_filter_status_text;
         int tone_filter_gate = 0;
         bool tone_filter_visible = false;
+        /* #527: the live editor -- reachable, shadowed by a row -- and the configured policy it opens on. */
+        bool tone_filter_editable = false;
+        bool tone_filter_row_override = false;
+        int tone_filter_configured_mode = 0;
+        QString tone_filter_configured_list;
 
         /* Exact comparison is right for the two doubles: they are carried through
          * unmodified from the metrics boundary, so "unchanged" means the identical
@@ -1629,7 +1667,15 @@ class MetricsModel : public QObject {
         bool
         toneFilterEquals(const View& other) const {
             return tone_filter_visible == other.tone_filter_visible && tone_filter_gate == other.tone_filter_gate
-                   && tone_filter_status_text == other.tone_filter_status_text;
+                   && tone_filter_status_text == other.tone_filter_status_text
+                   && tone_filter_editable == other.tone_filter_editable
+                   && tone_filter_row_override == other.tone_filter_row_override;
+        }
+
+        bool
+        toneFilterSettingEquals(const View& other) const {
+            return tone_filter_configured_mode == other.tone_filter_configured_mode
+                   && tone_filter_configured_list == other.tone_filter_configured_list;
         }
 
         bool
@@ -1711,8 +1757,11 @@ class MetricsModel : public QObject {
     /** @brief The Tone filter row (#527): on screen or not, and the verdict @p gate in words (@p no_tone: a
         rejection for want of a tone). */
     static void fillToneFilterView(View& next, bool visible, int gate, bool no_tone);
-    /** @brief Announce the received tone, the tone policy and its verdict, each on its own signal (#522, #527). */
-    void emitRxToneSignals(bool received, bool configured, bool verdict);
+    /** @brief The live tone-filter editor (#527): the configured policy it opens on and whether a row shadows an edit. */
+    static void fillToneFilterSetting(View& next, const dsd_opts* opts_snapshot, const dsd_state* snapshot);
+    /** @brief Announce the received tone, the tone policy, its verdict and the editor's setting, each on its own signal
+        (#522, #527). */
+    void emitRxToneSignals(bool received, bool configured, bool verdict, bool setting);
 
   public:
 #ifdef DSD_NEO_TEST_HOOKS

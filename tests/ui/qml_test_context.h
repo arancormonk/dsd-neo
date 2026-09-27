@@ -35,6 +35,7 @@
 #define DSD_NEO_TESTS_UI_QML_TEST_CONTEXT_H_
 
 #include <QAbstractListModel>
+#include <QByteArray>
 #include <QCoreApplication>
 #include <QDateTime>
 #include <QDir>
@@ -55,11 +56,13 @@
 #include <QVariantMap>
 #include <QXmlStreamReader>
 #include <QtQuickTest>
+#include <dsd-neo/core/analog_tone.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/talkgroup_policy.h>
+#include <dsd-neo/runtime/analog_tones.h>
 #include <memory>
 #include "../test_support/qt_test_paths.h"
 #include "decryption_profiles_model.h"
@@ -639,6 +642,26 @@ class CommandRecorder : public QObject {
         return true;
     }
 
+    /* The live tone-filter editor (#527): what it sends, and the production validator's answer for its inline check,
+     * so a case sees the message the decoder would refuse with. */
+    Q_INVOKABLE bool
+    setToneFilter(int mode, const QString& list) {
+        m_last_tone_filter_mode = mode;
+        m_last_tone_filter_list = list;
+        m_tone_filter_calls++;
+        return true;
+    }
+
+    Q_INVOKABLE QString
+    // cppcheck-suppress functionStatic // Qt meta-object entry point must remain an instance method.
+    toneFilterError(int mode, const QString& list) const {
+        const QByteArray utf8 = list.toUtf8();
+        dsd_tone_set set;
+        char err[DSD_TONE_LIST_ERROR_SIZE] = "";
+        return dsd_tone_filter_check(mode, utf8.constData(), &set, err, sizeof err) == 0 ? QString()
+                                                                                         : QString::fromUtf8(err);
+    }
+
     Q_INVOKABLE bool
     setDecodeMode(int mode) {
         m_last_decode_mode = mode;
@@ -692,6 +715,9 @@ class CommandRecorder : public QObject {
         m_last_ppm = 9999;
         m_last_am_bandwidth_hz = -1;
         m_am_bandwidth_calls = 0;
+        m_last_tone_filter_mode = -1;
+        m_last_tone_filter_list.clear();
+        m_tone_filter_calls = 0;
         m_lockout_accepted = true;
         m_lockout_requests.clear();
         m_avoid_clear_requests.clear();
@@ -783,6 +809,21 @@ class CommandRecorder : public QObject {
     int
     amBandwidthCalls() const {
         return m_am_bandwidth_calls;
+    }
+
+    int
+    lastToneFilterMode() const {
+        return m_last_tone_filter_mode;
+    }
+
+    QString
+    lastToneFilterList() const {
+        return m_last_tone_filter_list;
+    }
+
+    int
+    toneFilterCalls() const {
+        return m_tone_filter_calls;
     }
 
     int
@@ -913,6 +954,9 @@ class CommandRecorder : public QObject {
     int m_last_ppm = 9999;
     int m_last_am_bandwidth_hz = -1;
     int m_am_bandwidth_calls = 0;
+    int m_last_tone_filter_mode = -1;
+    QString m_last_tone_filter_list;
+    int m_tone_filter_calls = 0;
     QVariantList m_talkgroupEdit;
     int m_talkgroup_listen_calls = 0;
     double m_last_talkgroup_id_start = 0.0;
@@ -1726,6 +1770,22 @@ class Setup : public QObject {
         return (m_commands != nullptr) ? m_commands->amBandwidthCalls() : -1;
     }
 
+    /** @brief The last tone-filter edit the editor sent (#527), and how many it sent. */
+    Q_INVOKABLE int
+    lastToneFilterMode() const {
+        return (m_commands != nullptr) ? m_commands->lastToneFilterMode() : -1;
+    }
+
+    Q_INVOKABLE QString
+    lastToneFilterList() const {
+        return (m_commands != nullptr) ? m_commands->lastToneFilterList() : QString();
+    }
+
+    Q_INVOKABLE int
+    toneFilterCalls() const {
+        return (m_commands != nullptr) ? m_commands->toneFilterCalls() : -1;
+    }
+
     Q_INVOKABLE QFont
     applicationFont() const {
         return QGuiApplication::font();
@@ -2008,6 +2068,11 @@ class Setup : public QObject {
         metrics[QStringLiteral("toneFilterVisible")] = false;
         metrics[QStringLiteral("toneFilterGate")] = 0;
         metrics[QStringLiteral("toneFilterStatusText")] = QString();
+        // Its live editor: unreachable with no detection running, opening on no policy, and no scan row shadowing it.
+        metrics[QStringLiteral("toneFilterEditable")] = false;
+        metrics[QStringLiteral("toneFilterRowOverride")] = false;
+        metrics[QStringLiteral("toneFilterConfiguredMode")] = 0;
+        metrics[QStringLiteral("toneFilterConfiguredList")] = QString();
         // Whether an automatic controller owns the tuner, which one, and where it
         // points. The two named owners word a message; tunerControlled is the gate.
         metrics[QStringLiteral("tunerControlled")] = false;
