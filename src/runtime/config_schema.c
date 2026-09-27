@@ -163,6 +163,14 @@ static const dsdcfg_schema_entry_t s_schema[] = {
      "AM channel-filter width in Hz: the full RF passband, not the tuner or audio bandwidth; decode = am needs an IQ "
      "radio input. Leave it out for the default; it must fit the DSP rate",
      "6000", NULL, DSDCFG_TYPE_INT, 5000, 20000},
+    {"analog", "tone_filter",
+     "CTCSS/DCS receive policy on the analog FM monitor and nfm scan rows: allow hears only traffic carrying a "
+     "tone_list tone or code, block mutes it; off (the default) keeps tone_list. The received tone is shown apart",
+     "off", "off|allow|block", DSDCFG_TYPE_ENUM, 0, 0},
+    {"analog", "tone_list",
+     "Tones and codes for tone_filter: '/'-separated standard CTCSS tones and DCS codes, e.g. 67.0/100.0/D023N "
+     "(a bare D023 is D023N; commas are refused)",
+     "", NULL, DSDCFG_TYPE_STRING, 0, 0},
 };
 
 /* Deprecated persisted spellings remain accepted for read compatibility, but are deliberately kept out of the

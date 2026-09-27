@@ -9,6 +9,7 @@
 
 #include <dsd-neo/runtime/airspy_config.h>
 #include <dsd-neo/runtime/analog_channel.h>
+#include <dsd-neo/runtime/analog_tones.h>
 #if defined(_WIN32)
 #include <algorithm>
 #endif
@@ -680,10 +681,40 @@ apply_dsp_section_key(dsdneoUserConfig* cfg, const char* key_lc, const char* val
     }
 }
 
+/* The tone policy's keys (issue #527). A refused tone_filter keeps the mode already loaded; a refused tone_list is left
+   empty and marked, so the policy it would have fed is applied as off rather than guessed. The message names the entry
+   by number, never the text. --validate-config reports each as an error. */
+static void
+apply_analog_tone_key(dsdneoUserConfig* cfg, const char* key_lc, const char* val) {
+    if (strcmp(key_lc, "tone_filter") == 0) {
+        int mode = DSD_TONE_FILTER_OFF;
+        if (dsd_tone_filter_mode_parse(val, &mode) != 0) {
+            LOG_WARN("Config: invalid tone_filter (expected off, allow or block); keeping the previous/default\n");
+            return;
+        }
+        cfg->analog_tone_filter = mode;
+        return;
+    }
+    DSD_MEMSET(&cfg->analog_tone_set, 0, sizeof(cfg->analog_tone_set));
+    cfg->analog_tone_list_refused = 0;
+    if (val[0] == '\0') {
+        return;
+    }
+    char err[DSD_TONE_LIST_ERROR_SIZE];
+    if (dsd_tone_set_parse(val, &cfg->analog_tone_set, err, sizeof err) != 0) {
+        LOG_WARN("Config: invalid tone_list: %s; the tone filter stays off\n", err);
+        cfg->analog_tone_list_refused = 1;
+    }
+}
+
 /* An analog width is refused, never clamped: a value the strict parser rejects is reported and the width already
    loaded (the default, for a base file) stays. --validate-config reports the same text as an error. */
 static void
 apply_analog_section_key(dsdneoUserConfig* cfg, const char* key_lc, const char* val) {
+    if (strcmp(key_lc, "tone_filter") == 0 || strcmp(key_lc, "tone_list") == 0) {
+        apply_analog_tone_key(cfg, key_lc, val);
+        return;
+    }
     const int kind = (strcmp(key_lc, "nfm_bandwidth_hz") == 0)  ? DSD_ANALOG_DEMOD_FM
                      : (strcmp(key_lc, "am_bandwidth_hz") == 0) ? DSD_ANALOG_DEMOD_AM
                                                                 : -1;

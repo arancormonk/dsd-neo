@@ -4,6 +4,7 @@
  */
 
 #include <ctype.h>
+#include <dsd-neo/core/analog_tone.h>
 #include <dsd-neo/core/csv_import.h>
 #include <dsd-neo/core/file_io.h>
 #include <dsd-neo/core/frontend_types.h>
@@ -30,6 +31,7 @@
 #include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/runtime/airspy_config.h>
 #include <dsd-neo/runtime/analog_channel.h>
+#include <dsd-neo/runtime/analog_tones.h>
 #include <dsd-neo/runtime/call_alert.h>
 #include <dsd-neo/runtime/cli.h>
 #include <dsd-neo/runtime/colors.h>
@@ -486,6 +488,58 @@ cli_parse_analog_width_option(const char* option_name, int kind, const char* in,
         return 0;
     }
     return 1;
+}
+
+/* The bit of dsd_parse_args()' analog_cli_seen set once a tone switch was given; the bits below it are the analog width
+   options, 1 << dsd_analog_demod. */
+enum { CLI_TONE_FILTER_SEEN = 1 << 8 };
+
+/* A tone-policy switch (issue #527): --tone-allow and --tone-block take a '/'-separated tone list, --no-tone-filter
+ * turns the policy off and keeps the list. One of the three per command line, as on a scan row, where the three share
+ * one option. A refused list is named by entry number, never echoed. */
+static int
+cli_parse_tone_filter_option(const char* option_name, int mode, const char* list, dsd_opts* opts, int* analog_cli_seen,
+                             int* out_exit_rc) {
+    if (*analog_cli_seen & CLI_TONE_FILTER_SEEN) {
+        LOG_ERROR("%s: --tone-allow, --tone-block and --no-tone-filter may be given only once\n", option_name);
+        cli_set_exit_rc(out_exit_rc, 1);
+        return 0;
+    }
+    *analog_cli_seen |= CLI_TONE_FILTER_SEEN;
+    if (mode == DSD_TONE_FILTER_OFF) {
+        opts->analog_tone_filter = DSD_TONE_FILTER_OFF;
+        return 1;
+    }
+    char err[DSD_TONE_LIST_ERROR_SIZE];
+    dsd_tone_set set;
+    if (!list) {
+        LOG_ERROR("%s requires a '/'-separated list of CTCSS tones and DCS codes (e.g. 67.0/100.0/D023N)\n",
+                  option_name);
+        cli_set_exit_rc(out_exit_rc, 1);
+        return 0;
+    }
+    if (dsd_tone_set_parse(list, &set, err, sizeof err) != 0) {
+        LOG_ERROR("%s: %s\n", option_name, err);
+        cli_set_exit_rc(out_exit_rc, 1);
+        return 0;
+    }
+    opts->analog_tone_filter = mode;
+    opts->analog_tone_set = set;
+    return 1;
+}
+
+/* The tone policy judges only what received-tone detection hears: the analog FM monitor, and an nfm row of a scan,
+ * whose own policy or the configured one applies while it is on air. Configured for a session that has neither (the
+ * AM monitor, a digital mode without a scan), it can do nothing, which is said once (issue #527). */
+static void
+cli_warn_tone_filter_without_fm_monitor(const dsd_opts* opts) {
+    if (opts->analog_tone_filter == DSD_TONE_FILTER_OFF
+        || (opts->analog_only == 1 && opts->analog_demod == DSD_ANALOG_DEMOD_FM) || opts->scanner_mode == 1
+        || opts->trunk_scan_enabled == 1) {
+        return;
+    }
+    LOG_WARN("WARNING: the tone filter (--tone-allow/--tone-block, [analog] tone_filter) has no effect in this decode "
+             "mode; it applies only to the analog FM monitor (-fA) and to nfm scan rows.\n");
 }
 
 /* The analog channel width is the radio front end's filter. PCM inputs (Pulse, files, UDP and TCP audio) arrive
@@ -1098,7 +1152,7 @@ cli_parse_airspy_option(int argc, char** argv, int i, dsd_opts* opts) {
                                                &opts->analog_nfm_bandwidth_hz, out_exit_rc)) {                         \
                 return DSD_PARSE_ERROR;                                                                                \
             }                                                                                                          \
-            analog_width_cli_seen |= 1 << DSD_ANALOG_DEMOD_FM;                                                         \
+            analog_cli_seen |= 1 << DSD_ANALOG_DEMOD_FM;                                                               \
             continue;                                                                                                  \
         }                                                                                                              \
         if (strcmp(argv[i], "--am-bandwidth-hz") == 0 || strncmp(argv[i], "--am-bandwidth-hz=", 18) == 0) {            \
@@ -1107,7 +1161,30 @@ cli_parse_airspy_option(int argc, char** argv, int i, dsd_opts* opts) {
                                                &opts->analog_am_bandwidth_hz, out_exit_rc)) {                          \
                 return DSD_PARSE_ERROR;                                                                                \
             }                                                                                                          \
-            analog_width_cli_seen |= 1 << DSD_ANALOG_DEMOD_AM;                                                         \
+            analog_cli_seen |= 1 << DSD_ANALOG_DEMOD_AM;                                                               \
+            continue;                                                                                                  \
+        }                                                                                                              \
+        if (strcmp(argv[i], "--tone-allow") == 0 || strncmp(argv[i], "--tone-allow=", 13) == 0) {                      \
+            const char* value = argv[i][12] == '=' ? argv[i] + 13 : (i + 1 < argc ? DSD_PARSE_ARGS_NEXT_ARG() : NULL); \
+            if (!cli_parse_tone_filter_option("--tone-allow", DSD_TONE_FILTER_ALLOW, value, opts, &analog_cli_seen,    \
+                                              out_exit_rc)) {                                                          \
+                return DSD_PARSE_ERROR;                                                                                \
+            }                                                                                                          \
+            continue;                                                                                                  \
+        }                                                                                                              \
+        if (strcmp(argv[i], "--tone-block") == 0 || strncmp(argv[i], "--tone-block=", 13) == 0) {                      \
+            const char* value = argv[i][12] == '=' ? argv[i] + 13 : (i + 1 < argc ? DSD_PARSE_ARGS_NEXT_ARG() : NULL); \
+            if (!cli_parse_tone_filter_option("--tone-block", DSD_TONE_FILTER_BLOCK, value, opts, &analog_cli_seen,    \
+                                              out_exit_rc)) {                                                          \
+                return DSD_PARSE_ERROR;                                                                                \
+            }                                                                                                          \
+            continue;                                                                                                  \
+        }                                                                                                              \
+        if (strcmp(argv[i], "--no-tone-filter") == 0) {                                                                \
+            if (!cli_parse_tone_filter_option("--no-tone-filter", DSD_TONE_FILTER_OFF, NULL, opts, &analog_cli_seen,   \
+                                              out_exit_rc)) {                                                          \
+                return DSD_PARSE_ERROR;                                                                                \
+            }                                                                                                          \
             continue;                                                                                                  \
         }                                                                                                              \
         if (strcmp(argv[i], "--auto-ppm") == 0) {                                                                      \
@@ -1938,16 +2015,19 @@ cli_finish_airspy_input(dsd_opts* opts, int parse_rc, int* out_exit_rc) {
     return parse_rc;
 }
 
-/* What runs once every option has been read, whatever order they came in. @p analog_width_cli_seen has bit
-   1 << dsd_analog_demod set for each analog width option given. */
+/* What runs once every option has been read, whatever order they came in. @p analog_cli_seen has bit
+   1 << dsd_analog_demod set for each analog width option given (and CLI_TONE_FILTER_SEEN for a tone switch). */
 static int
-cli_finish_parse(dsd_opts* opts, int parse_rc, int analog_width_cli_seen, int* out_exit_rc) {
+cli_finish_parse(dsd_opts* opts, int parse_rc, int analog_cli_seen, int* out_exit_rc) {
     parse_rc = cli_finish_airspy_input(opts, parse_rc, out_exit_rc);
-    if (parse_rc == DSD_PARSE_CONTINUE && (analog_width_cli_seen & (1 << DSD_ANALOG_DEMOD_FM))) {
+    if (parse_rc == DSD_PARSE_CONTINUE && (analog_cli_seen & (1 << DSD_ANALOG_DEMOD_FM))) {
         cli_warn_analog_width_without_radio(opts, DSD_ANALOG_DEMOD_FM, "--nfm-bandwidth-hz");
     }
-    if (parse_rc == DSD_PARSE_CONTINUE && (analog_width_cli_seen & (1 << DSD_ANALOG_DEMOD_AM))) {
+    if (parse_rc == DSD_PARSE_CONTINUE && (analog_cli_seen & (1 << DSD_ANALOG_DEMOD_AM))) {
         cli_warn_analog_width_without_radio(opts, DSD_ANALOG_DEMOD_AM, "--am-bandwidth-hz");
+    }
+    if (parse_rc == DSD_PARSE_CONTINUE) {
+        cli_warn_tone_filter_without_fm_monitor(opts);
     }
     return parse_rc;
 }
@@ -2004,7 +2084,7 @@ dsd_parse_args(int argc, char** argv, dsd_opts* opts, dsd_state* state, int* out
     int trunk_scan_cli_seen = 0;
     int chan_csv_cli_seen = 0;
     int p25_bandplan_cli_seen = 0;
-    int analog_width_cli_seen = 0; /* bit 1 << dsd_analog_demod per analog width option given */
+    int analog_cli_seen = 0; /* bit 1 << dsd_analog_demod per analog width option given, CLI_TONE_FILTER_SEEN too */
     int config_one_shot_cli_seen = cli_has_config_one_shot_arg(argc, argv);
     DSD_PARSE_ARGS_PRESCAN_BLOCK();
     DSD_PARSE_ARGS_IQ_PRE_BLOCK();
@@ -2047,7 +2127,7 @@ dsd_parse_args(int argc, char** argv, dsd_opts* opts, dsd_state* state, int* out
             return DSD_PARSE_ERROR;
         }
     }
-    parse_rc = cli_finish_parse(opts, parse_rc, analog_width_cli_seen, out_exit_rc);
+    parse_rc = cli_finish_parse(opts, parse_rc, analog_cli_seen, out_exit_rc);
     if (out_argc) {
         *out_argc = new_argc;
     }

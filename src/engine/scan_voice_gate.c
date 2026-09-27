@@ -33,8 +33,9 @@ scan_voice_gate_enabled(const dsd_opts* opts) {
     return opts && opts->scan_voice_only == 1 && !dsd_opts_is_analog_family(opts);
 }
 
-int
-dsd_scan_analog_carrier_open(const dsd_opts* opts, const dsd_state* state) {
+/* The analog carrier on air, before the tone policy has its say: dsd_scan_analog_carrier_open() without the verdict. */
+static int
+scan_analog_carrier_heard(const dsd_opts* opts, const dsd_state* state) {
     if (!opts || !state || opts->trunk_enable == 1 || state->carrier != 0 || !dsd_analog_monitor_tap_active(opts)) {
         return 0;
     }
@@ -47,6 +48,28 @@ dsd_scan_analog_carrier_open(const dsd_opts* opts, const dsd_state* state) {
        the hangover (rx_tone_view.c reads it the same way). */
     const uint64_t stale_after_ms = state->analog_rx.stale_after_ms;
     return stale_after_ms == 0U || dsd_time_monotonic_ms() <= stale_after_ms;
+}
+
+int
+dsd_scan_analog_tone_gate(const dsd_opts* opts, const dsd_state* state) {
+    if (!scan_analog_carrier_heard(opts, state)) {
+        return DSD_ANALOG_TONE_GATE_OFF;
+    }
+    return dsd_analog_tone_gate_in_force(opts, state);
+}
+
+int
+dsd_scan_analog_carrier_open(const dsd_opts* opts, const dsd_state* state) {
+    /* Traffic the tone policy rejected holds nothing (issue #527); traffic it is still checking does. */
+    return scan_analog_carrier_heard(opts, state)
+           && dsd_analog_tone_gate_in_force(opts, state) != DSD_ANALOG_TONE_GATE_REJECTED;
+}
+
+/* The stay reason an analog row's carrier gives: the tone check while the policy is still deciding, else the carrier. */
+static uint8_t
+scan_analog_carrier_reason(const dsd_opts* opts, const dsd_state* state) {
+    return (uint8_t)(dsd_scan_analog_tone_gate(opts, state) == DSD_ANALOG_TONE_GATE_PENDING ? DSD_SCAN_STAY_TONE_PENDING
+                                                                                            : DSD_SCAN_STAY_CARRIER);
 }
 
 static int
@@ -480,8 +503,10 @@ scan_y_timing_span_ms(double seconds) {
 static void
 scan_y_timing_fill_hangtime(const dsd_opts* opts, const dsd_state* state, double now_m, double now_wall_s,
                             dsd_scan_timing_publication* out) {
-    /* An analog row's carrier keeps restarting the same window (issue #526): say what holds it. */
-    out->reason = (uint8_t)(dsd_scan_analog_carrier_open(opts, state) ? DSD_SCAN_STAY_CARRIER : DSD_SCAN_STAY_HANGTIME);
+    /* An analog row's carrier keeps restarting the same window (issue #526): say what holds it, the tone check
+       included (issue #527). */
+    out->reason = dsd_scan_analog_carrier_open(opts, state) ? scan_analog_carrier_reason(opts, state)
+                                                            : (uint8_t)DSD_SCAN_STAY_HANGTIME;
     out->dwell_ms = 0U;
     out->hold_ms = 0U;
     if (state->last_cc_sync_time == 0 || !(opts->trunk_hangtime >= 0.0f)) {

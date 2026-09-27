@@ -4,6 +4,7 @@
 /** @file @brief Import-time scanner options. This is a restricted argument grammar, never a command. */
 #ifndef DSD_NEO_RUNTIME_SCAN_OPTIONS_H
 #define DSD_NEO_RUNTIME_SCAN_OPTIONS_H
+#include <dsd-neo/core/analog_tone.h>
 #include <stddef.h>
 #include <stdint.h>
 #ifdef __cplusplus
@@ -41,6 +42,9 @@ enum {
     DSD_SCAN_OPT_SQUELCH = 1U << 21,
     /** The analog row sets its own channel width (--nfm-bandwidth-hz on nfm, --am-bandwidth-hz on am; issue #526). */
     DSD_SCAN_OPT_BANDWIDTH = 1U << 22,
+    /** The nfm row sets its own CTCSS/DCS receive policy (--tone-allow, --tone-block or --no-tone-filter: one
+     * option in three spellings, issue #527). */
+    DSD_SCAN_OPT_TONE = 1U << 23,
     DSD_SCAN_OPT_DIRECT = DSD_SCAN_OPT_BP | DSD_SCAN_OPT_HYTERA | DSD_SCAN_OPT_SCALAR | DSD_SCAN_OPT_SCRAMBLER,
     DSD_SCAN_OPT_FILES = DSD_SCAN_OPT_HEX_FILE | DSD_SCAN_OPT_DEC_FILE
 };
@@ -69,6 +73,10 @@ typedef struct {
     /** The analog demodulator (dsd_analog_demod) channel_bw_hz is a width of: DSD_ANALOG_DEMOD_FM for
      * --nfm-bandwidth-hz, DSD_ANALOG_DEMOD_AM for --am-bandwidth-hz. Meaningful with DSD_SCAN_OPT_BANDWIDTH only. */
     int channel_bw_kind;
+    /** The row's tone policy (dsd_tone_filter_mode; OFF for --no-tone-filter, the explicit row disable). */
+    int tone_filter;
+    /** Its list: every entry a standard tone or code, held once (core/analog_tone.h); empty with --no-tone-filter. */
+    dsd_tone_set tone_set;
     int mute_dmr;
     int tune_data_calls;
     int tune_enc_calls;

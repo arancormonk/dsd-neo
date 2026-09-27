@@ -3009,8 +3009,13 @@ trunk_scan_conventional_stay_reason(const dsd_opts* opts, const dsd_state* state
         *span_ms = hold_ms > 0 ? (uint32_t)hold_ms : 0U;
     }
     if (trunk_scan_type_is_analog(rt->target.type)) {
-        /* The carrier is what holds an analog row; once it drops the hold's tail runs out. */
-        return dsd_scan_analog_carrier_open(opts, state) ? DSD_SCAN_STAY_CARRIER : DSD_SCAN_STAY_ACTIVITY_HOLD;
+        /* The carrier is what holds an analog row; once it drops the hold's tail runs out. A carrier the tone policy
+           is still checking holds it too, for its bounded window (issue #527). */
+        if (!dsd_scan_analog_carrier_open(opts, state)) {
+            return DSD_SCAN_STAY_ACTIVITY_HOLD;
+        }
+        return dsd_scan_analog_tone_gate(opts, state) == DSD_ANALOG_TONE_GATE_PENDING ? DSD_SCAN_STAY_TONE_PENDING
+                                                                                      : DSD_SCAN_STAY_CARRIER;
     }
     return (state->scan_voice_gate_phase == (uint8_t)DSD_SCAN_VOICE_GATE_VOICE) ? DSD_SCAN_STAY_VOICE
                                                                                 : DSD_SCAN_STAY_ACTIVITY_HOLD;
@@ -3504,6 +3509,33 @@ trunk_scan_service_visit_limit(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_
     return 1;
 }
 
+/* Traffic the tone policy rejected on an analog target (issue #527) holds nothing: its carrier stamped no activity,
+ * and the hold that earlier traffic left is released, so the rotation moves on at this tick. The operator's hold keeps
+ * the target, muted, and a single target has nowhere to go (a fixed-frequency session mutes only). Returns 1 when the
+ * tick is spent. The decision is the DSP tap's verdict, which it logs ("Tone filter: rejected"); only this engine tick,
+ * under the tick guard, acts on it. */
+static int
+trunk_scan_service_tone_rejection(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_coord* coord,
+                                  dsd_trunk_scan_target_runtime* rt) {
+    if (!trunk_scan_type_is_analog(rt->target.type) || coord->hold_active || coord->count < 2
+        || dsd_scan_analog_tone_gate(opts, state) != DSD_ANALOG_TONE_GATE_REJECTED) {
+        return 0;
+    }
+    rt->last_allowed_activity_m = 0.0;
+    rt->idle_since_m = -1.0;
+    trunk_scan_advance(opts, state, coord);
+    return 1;
+}
+
+/* What may release the target on air before its holds are weighed: the per-visit cap, then a tone-policy rejection.
+ * Returns 1 when the tick is spent. */
+static int
+trunk_scan_service_release(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_coord* coord,
+                           dsd_trunk_scan_target_runtime* rt, double now_m) {
+    return trunk_scan_service_visit_limit(opts, state, coord, rt, now_m)
+           || trunk_scan_service_tone_rejection(opts, state, coord, rt);
+}
+
 static void
 trunk_scan_tick_targets_locked(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_coord* coord, double now_m) {
     dsd_trunk_scan_target_runtime* rt = &coord->targets[coord->active];
@@ -3532,7 +3564,7 @@ trunk_scan_tick_targets_locked(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_
         trunk_scan_share_peer_idens(coord, state, rt);
     }
     trunk_scan_refresh_activity(opts, state, rt, now_m);
-    if (trunk_scan_service_visit_limit(opts, state, coord, rt, now_m)) {
+    if (trunk_scan_service_release(opts, state, coord, rt, now_m)) {
         return;
     }
     if (trunk_scan_active_is_held(opts, state, coord, now_m)) {

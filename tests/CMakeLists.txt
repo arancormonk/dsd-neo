@@ -11732,6 +11732,61 @@ if(DSD_HAS_RADIO)
         "Received tone: DCS D047N / D023I.*ANALOG METRIC: .* tone=D047N/D023I tone_lock_ms=[0-9]+[.][0-9][0-9] tone_lock_pct=[0-9]+[.][0-9][0-9]"
         "Received tone: (none|CTCSS|DCS D([1-7][0-7][0-7]|0[0-35-7][0-7]|04[0-6])[NI]|DCS D047I)|tone=D023|${_analog_off_path}"
     )
+    # The CTCSS/DCS receive policy (issue #527) at the monitor's sink, through the host's
+    # first-audible and audible-time metrics. An allow list naming the tone on air mutes
+    # while it is checked and plays once it locks: 280 ms of mute measured, bounded to
+    # 100..400 ms (the CTCSS lock target). An allow list and no tone never plays, and says
+    # why once the 800 ms window ends; a block list lets the same traffic through at the
+    # window's end (800 ms measured), never before it. A listed code is muted from the
+    # start, and a list entry matches by the signal: D023I passes the inverted D023 word,
+    # which the detector names D047N. Every muted case pairs its never-audible bound with
+    # stream time, so a replay that delivered nothing could not pass.
+    dsd_neo_add_analog_replay_test(
+        DECODE_IQ_ANALOG_POLICY_ALLOW_MATCH
+        nfm_ctcss_synth_1000
+        "-fA --tone-allow 100.0 --analog-min-first-audible-ms 100 --analog-max-first-audible-ms 400 --analog-min-audible-ms 1600 --analog-min-total-ms 1900"
+        "Tone filter: allowed [(]CTCSS 100[.]0 Hz[)].*ANALOG AUDIO OK"
+        "Tone filter: (rejected|pending)|${_analog_off_path}"
+    )
+    dsd_neo_add_analog_replay_test(
+        DECODE_IQ_ANALOG_POLICY_ALLOW_NOTONE
+        nfm_notone_synth
+        "-fA --tone-allow 100.0 --analog-max-audible-ms 0 --analog-min-total-ms 1900 --analog-max-total-ms 2100"
+        "Tone filter: rejected [(]no tone[)].*ANALOG AUDIO OK"
+        "Tone filter: allowed|${_analog_off_path}"
+    )
+    dsd_neo_add_analog_replay_test(
+        DECODE_IQ_ANALOG_POLICY_BLOCK_NOTONE
+        nfm_notone_synth
+        "-fA --tone-block 100.0 --analog-min-first-audible-ms 780 --analog-max-first-audible-ms 860 --analog-min-audible-ms 1100 --analog-min-total-ms 1900"
+        "Tone filter: allowed [(]no tone[)].*ANALOG AUDIO OK"
+        "Tone filter: rejected|${_analog_off_path}"
+    )
+    dsd_neo_add_analog_replay_test(
+        DECODE_IQ_ANALOG_POLICY_BLOCK_DCS
+        nfm_dcs_synth_023n
+        "-fA --tone-block D023N --analog-max-audible-ms 0 --analog-min-total-ms 1900 --analog-max-total-ms 2100"
+        "Tone filter: rejected [(]DCS D023N / D047I[)].*ANALOG AUDIO OK"
+        "Tone filter: allowed|${_analog_off_path}"
+    )
+    dsd_neo_add_analog_replay_test(
+        DECODE_IQ_ANALOG_POLICY_ALLOW_DCS_ALIAS
+        nfm_dcs_synth_023i
+        "-fA --tone-allow D023I --analog-max-first-audible-ms 600 --analog-min-audible-ms 1300 --analog-min-total-ms 1900"
+        "Tone filter: allowed [(]DCS D047N / D023I[)].*ANALOG AUDIO OK"
+        "Tone filter: rejected|${_analog_off_path}"
+    )
+    # The off-air excerpt with its oracle tone allowed: audible after the lock (280 ms of
+    # mute measured), and for most of the excerpt (5320 of 6000 ms). The excerpt's reverse
+    # burst and tone gap at 3.7-4.0 s mute it until the tone locks again, which is the allow
+    # list's rule for a lost tone ("pending"), never a rejection.
+    dsd_neo_add_analog_replay_test(
+        DECODE_IQ_ANALOG_REAL_CTCSS_POLICY
+        nfm_ctcss_real
+        "-fA --tone-allow 151.4 --analog-min-first-audible-ms 100 --analog-max-first-audible-ms 400 --analog-min-audible-ms 4500 --analog-min-total-ms 5800"
+        "Tone filter: allowed [(]CTCSS 151[.]4 Hz[)].*ANALOG AUDIO OK"
+        "Tone filter: rejected|${_analog_off_path}"
+    )
     # No false lock: speech and carrier with no CTCSS or DCS (the squelch excerpts carry
     # 150 bit/s data below 300 Hz, which is neither CTCSS nor DCS: the DCS detector's bit
     # clock and slicers read it, and must never find a code in it), and AM airband voice

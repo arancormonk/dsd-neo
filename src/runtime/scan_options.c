@@ -1,9 +1,11 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 /* Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com> */
 
+#include <dsd-neo/core/analog_tone.h>
 #include <dsd-neo/core/parse.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/runtime/analog_channel.h>
+#include <dsd-neo/runtime/analog_tones.h>
 #include <dsd-neo/runtime/scan_mode.h>
 #include <dsd-neo/runtime/scan_options.h>
 #include <errno.h>
@@ -77,6 +79,8 @@ static int option_set_squelch(const scan_option_spec* spec, const char* argument
                               dsd_scan_options* parsed);
 static int option_set_bandwidth(const scan_option_spec* spec, const char* argument, unsigned int mode,
                                 dsd_scan_options* parsed);
+static int option_set_tone(const scan_option_spec* spec, const char* argument, unsigned int mode,
+                           dsd_scan_options* parsed);
 static int option_set_path(const scan_option_spec* spec, const char* argument, unsigned int mode,
                            dsd_scan_options* parsed);
 
@@ -126,6 +130,11 @@ static const scan_option_spec specifications[] = {
      * in whole Hz; a row carries one width, and each spelling is its own class's only. */
     {"--nfm-bandwidth-hz", DSD_SCAN_OPT_BANDWIDTH, NFM, 1, 0, 0, 0, NFM_BANDWIDTH_HINT, option_set_bandwidth},
     {"--am-bandwidth-hz", DSD_SCAN_OPT_BANDWIDTH, AM, 1, 0, 0, 0, AM_BANDWIDTH_HINT, option_set_bandwidth},
+    /* The CTCSS/DCS receive policy (issue #527): one option in three spellings, so a row names one of them once, and
+     * only on nfm rows and targets, the analog FM monitor that hears tones. The value is the policy. */
+    {"--tone-allow", DSD_SCAN_OPT_TONE, NFM, 1, 0, DSD_TONE_FILTER_ALLOW, 0, NULL, option_set_tone},
+    {"--tone-block", DSD_SCAN_OPT_TONE, NFM, 1, 0, DSD_TONE_FILTER_BLOCK, 0, NULL, option_set_tone},
+    {"--no-tone-filter", DSD_SCAN_OPT_TONE, NFM, 0, 0, DSD_TONE_FILTER_OFF, 0, NULL, option_set_tone},
 };
 
 static int
@@ -412,6 +421,21 @@ option_set_bandwidth(const scan_option_spec* spec, const char* argument, unsigne
     return 0;
 }
 
+/* A tone list for --tone-allow/--tone-block, none for --no-tone-filter, whose empty list turns the policy off. Why a
+ * list was refused is option_invalid()'s to say. */
+static int
+option_set_tone(const scan_option_spec* spec, const char* argument, unsigned int mode, dsd_scan_options* parsed) {
+    (void)mode;
+    dsd_tone_set set;
+    DSD_MEMSET(&set, 0, sizeof(set));
+    if (spec->argument && dsd_tone_set_parse(argument, &set, NULL, 0) != 0) {
+        return -1;
+    }
+    parsed->values.tone_filter = spec->value;
+    parsed->values.tone_set = set;
+    return 0;
+}
+
 static int
 option_set_path(const scan_option_spec* spec, const char* argument, unsigned int mode, dsd_scan_options* parsed) {
     (void)mode;
@@ -459,6 +483,20 @@ option_force_alias(const scan_option_spec* first, const scan_option_spec* next, 
                || (strcmp(first->name, "--dmr-force-algid") == 0 && strcmp(next->name, "-0") == 0));
 }
 
+/* The diagnostic for a value a setter refused: a tone list says which entry and why, never repeating the text; every
+ * other switch has its fixed hint. */
+static int
+option_invalid(const scan_option_spec* spec, const char* argument, char* error, size_t error_size) {
+    if (spec->field == DSD_SCAN_OPT_TONE) {
+        char why[DSD_TONE_LIST_ERROR_SIZE];
+        dsd_tone_set unused;
+        if (dsd_tone_set_parse(argument, &unused, why, sizeof(why)) != 0) {
+            return option_error(error, error_size, spec->name, why);
+        }
+    }
+    return option_error(error, error_size, spec->name, spec->hint ? spec->hint : "invalid value");
+}
+
 static int
 option_apply(const scan_option_spec* spec, const char* argument, unsigned int mode, dsd_scan_options* parsed,
              scan_force_options* forces, char* error, size_t error_size) {
@@ -467,7 +505,7 @@ option_apply(const scan_option_spec* spec, const char* argument, unsigned int mo
         return option_error(error, error_size, spec->name, "duplicate option");
     }
     if (spec->set(spec, argument, mode, parsed)) {
-        return option_error(error, error_size, spec->name, spec->hint ? spec->hint : "invalid value");
+        return option_invalid(spec, argument, error, error_size);
     }
     if ((parsed->values.present & DSD_SCAN_OPT_FORCE) && spec->field == DSD_SCAN_OPT_FORCE
         && old_force != parsed->values.force) {

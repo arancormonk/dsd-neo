@@ -2,8 +2,10 @@
 /* Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com> */
 
 #include <assert.h>
+#include <dsd-neo/core/analog_tone.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/runtime/analog_channel.h>
+#include <dsd-neo/runtime/analog_tones.h>
 #include <dsd-neo/runtime/scan_mode.h>
 #include <dsd-neo/runtime/scan_options.h>
 #include <stdio.h>
@@ -473,8 +475,93 @@ check_am_bandwidth_rate(void) {
     assert(dsd_scan_option_width_check(DSD_SCAN_MODE_DMR, &row, 16000, error, sizeof(error)) == 0);
 }
 
+/* --- Issue #527: the tone policy on nfm rows --- */
+
+/* --tone-allow and --tone-block take a '/'-separated list and --no-tone-filter none; all three are one option, so a
+ * row names one of them once. They are legal on nfm rows and targets only: a digital or blank row is told which mode
+ * they need. A refused list is named by entry number, never echoed. */
+static void
+check_tone_options(void) {
+    dsd_scan_options parsed = {0};
+    char error[192] = {0};
+    char list[DSD_TONE_LIST_TEXT_MAX + 1];
+    for (int conventional = 0; conventional <= 1; conventional++) {
+        DSD_MEMSET(&parsed, 0, sizeof(parsed));
+        assert(dsd_scan_options_parse("--squelch-db -60 --tone-allow 100/D023", DSD_SCAN_MODE_NFM, conventional,
+                                      &parsed, error, sizeof(error))
+               == 0);
+        assert(parsed.values.present == (DSD_SCAN_OPT_SQUELCH | DSD_SCAN_OPT_TONE));
+        assert(parsed.values.tone_filter == DSD_TONE_FILTER_ALLOW);
+        assert(dsd_tone_set_format(&parsed.values.tone_set, list, sizeof(list)) > 0);
+        assert(strcmp(list, "100.0/D023N") == 0);
+    }
+    DSD_MEMSET(&parsed, 0, sizeof(parsed));
+    assert(dsd_scan_options_parse("--tone-block=67.0/D047I", DSD_SCAN_MODE_NFM, 1, &parsed, error, sizeof(error)) == 0);
+    assert(parsed.values.present == DSD_SCAN_OPT_TONE && parsed.values.tone_filter == DSD_TONE_FILTER_BLOCK);
+    assert(dsd_tone_set_contains_dcs(&parsed.values.tone_set, 0023, 0));
+    /* The explicit row disable: a row that turns a configured policy off. */
+    DSD_MEMSET(&parsed, 0, sizeof(parsed));
+    assert(dsd_scan_options_parse("--no-tone-filter", DSD_SCAN_MODE_NFM, 0, &parsed, error, sizeof(error)) == 0);
+    assert(parsed.values.present == DSD_SCAN_OPT_TONE && parsed.values.tone_filter == DSD_TONE_FILTER_OFF);
+    assert(dsd_tone_set_count(&parsed.values.tone_set) == 0);
+    /* The list is a plain value, never a file operand. */
+    size_t visited = 0;
+    assert(dsd_scan_options_visit_files("--tone-allow 100.0/D023N --squelch-db -60", &visited, count_file_spans) == 0);
+    assert(visited == 0);
+
+    /* One option, whichever spelling comes second. */
+    static const char* const twice[] = {"--tone-allow 100.0 --tone-block 67.0", "--tone-allow 100.0 --no-tone-filter",
+                                        "--no-tone-filter --tone-allow=100.0", "--tone-block 67.0 --tone-block 71.9"};
+    for (size_t i = 0; i < sizeof(twice) / sizeof(twice[0]); i++) {
+        assert(dsd_scan_options_parse(twice[i], DSD_SCAN_MODE_NFM, 1, &parsed, error, sizeof(error)) < 0);
+        assert(strstr(error, ": duplicate option") != NULL);
+    }
+
+    /* Digital and blank rows: the mode they need. */
+    for (unsigned int mode = DSD_SCAN_MODE_INHERIT; mode <= DSD_SCAN_MODE_LAST; mode++) {
+        if (dsd_scan_mode_is_analog((dsd_scan_mode)mode)) {
+            continue;
+        }
+        static const char* const names[] = {"--tone-allow 100.0", "--tone-block D023N", "--no-tone-filter"};
+        for (size_t i = 0; i < sizeof(names) / sizeof(names[0]); i++) {
+            DSD_MEMSET(&parsed, 0, sizeof(parsed));
+            assert(dsd_scan_options_parse(names[i], mode, 1, &parsed, error, sizeof(error)) < 0);
+            char want[64];
+            DSD_SNPRINTF(want, sizeof(want), "%.*s: needs mode nfm", (int)strcspn(names[i], " "), names[i]);
+            assert(strcmp(error, want) == 0);
+            assert(parsed.values.present == 0);
+        }
+    }
+
+    /* Refused lists: index-based, the text never echoed. */
+    static const struct {
+        const char* text;
+        const char* why;
+    } refused[] = {
+        {"--tone-allow 100.0,67.0", "--tone-allow: use / between entries, not commas"},
+        {"--tone-allow 67.0/SECRET", "--tone-allow: entry 2 is not a standard CTCSS tone or DCS code"},
+        {"--tone-block D023N/D047I", "--tone-block: entry 2 is the same DCS signal as entry 1 (D023N)"},
+        {"--tone-block=", "--tone-block: the list is empty"},
+        {"--tone-allow", "--tone-allow: requires a valid argument"},
+        {"--tone-allow --squelch-db -60", "--tone-allow: requires a valid argument"},
+        {"--no-tone-filter=100.0", "--no-tone-filter: takes no argument"},
+    };
+
+    for (size_t i = 0; i < sizeof(refused) / sizeof(refused[0]); i++) {
+        DSD_MEMSET(&parsed, 0, sizeof(parsed));
+        assert(dsd_scan_options_parse(refused[i].text, DSD_SCAN_MODE_NFM, 1, &parsed, error, sizeof(error)) < 0);
+        if (strcmp(error, refused[i].why) != 0) {
+            DSD_FPRINTF(stderr, "'%s': got '%s', want '%s'\n", refused[i].text, error, refused[i].why);
+            assert(0);
+        }
+        assert(strstr(error, "SECRET") == NULL && parsed.values.present == 0);
+    }
+    DSD_SECURE_ZERO(&parsed, sizeof(parsed));
+}
+
 int
 main(void) {
+    check_tone_options();
     check_file_spans();
     check_squelch_option();
     check_nfm_row_accepts_analog_options();

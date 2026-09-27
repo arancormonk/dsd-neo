@@ -222,6 +222,16 @@ test_template_contains_keys(void) {
         DSD_FPRINTF(stderr, "FAIL: template missing [analog] am_bandwidth_hz range hint or default\n");
         rc = 1;
     }
+    /* [analog] (issue #527): the tone policy, off by default, and its list, empty by default. */
+    if (!strstr(content, "# Allowed: off|allow|block\n# tone_filter = \"off\"\n")
+        || !strstr(content, "# tone_list = \n")) {
+        DSD_FPRINTF(stderr, "FAIL: template missing [analog] tone_filter or tone_list\n");
+        rc = 1;
+    }
+    if (!strstr(content, "'/'-separated") || !strstr(content, "67.0/100.0/D023N")) {
+        DSD_FPRINTF(stderr, "FAIL: template does not describe the tone_list format\n");
+        rc = 1;
+    }
     if (!strstr(content, "|tdma|analog|am")) {
         DSD_FPRINTF(stderr, "FAIL: template does not list am among the decode presets\n");
         rc = 1;

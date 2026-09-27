@@ -2,6 +2,7 @@
 /* Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com> */
 
 #include <assert.h>
+#include <dsd-neo/core/analog_tone.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/power.h>
@@ -11,6 +12,7 @@
 #include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/dsp/frame_sync.h>
 #include <dsd-neo/runtime/analog_channel.h>
+#include <dsd-neo/runtime/analog_tones.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/decode_mode.h>
 #include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
@@ -206,6 +208,103 @@ test_max_visit_row_override_scope(void) {
     assert(o->scan_max_visit_ms == 9000);
     dsd_scan_mode_leave(o, s);
     assert(o->scan_max_visit_ms == 60000);
+    dsd_state_ext_free_all(s);
+    free(s);
+    free(o);
+}
+
+/* --- Issue #527: per-row tone policy --- */
+
+static dsd_tone_set
+tone_list(const char* text) {
+    dsd_tone_set set;
+    assert(dsd_tone_set_parse(text, &set, NULL, 0) == 0);
+    return set;
+}
+
+static int
+tone_policy_is(const dsd_opts* o, int mode, const char* list) {
+    const dsd_tone_set want = tone_list(list);
+    return o->analog_tone_filter == mode && dsd_tone_set_equal(&o->analog_tone_set, &want);
+}
+
+/* A row's tone policy is policy carried beside the acquisition settings, like the squelch: an omitted value inherits
+ * the configured one, the explicit --no-tone-filter turns it off for the row, it never restages a tune, an operator
+ * edit made while the row is on air lands in the configured view, and leaving restores the configured policy. */
+static void
+test_tone_row_override_scope(void) {
+    dsd_opts* o = (dsd_opts*)calloc(1, sizeof(*o));
+    dsd_state* s = (dsd_state*)calloc(1, sizeof(*s));
+    assert(o && s);
+    o->wav_sample_rate = 48000;
+    o->audio_in_type = AUDIO_IN_WAV;
+    o->analog_tone_filter = DSD_TONE_FILTER_BLOCK;
+    o->analog_tone_set = tone_list("67.0");
+    assert(dsd_scan_mode_begin(o, s) == 0);
+    assert(dsd_scan_mode_enter(o, s, DSD_SCAN_MODE_NFM) == 0);
+    assert(dsd_scan_mode_options(o, s, NULL) == 0);
+    assert(tone_policy_is(o, DSD_TONE_FILTER_BLOCK, "67.0"));
+
+    dsd_scan_option_values row = {0};
+    row.present = DSD_SCAN_OPT_TONE;
+    row.tone_filter = DSD_TONE_FILTER_ALLOW;
+    row.tone_set = tone_list("100.0/D023N");
+    dsd_scan_settings before;
+    dsd_scan_settings_capture(o, s, &before);
+    assert(dsd_scan_mode_options(o, s, &row) == 0);
+    assert(tone_policy_is(o, DSD_TONE_FILTER_ALLOW, "100.0/D023N"));
+    const dsd_scan_settings* configured = dsd_scan_mode_configured_view(s);
+    assert(configured && configured->analog_tone_filter == DSD_TONE_FILTER_BLOCK);
+    int mode = -1;
+    dsd_tone_set set;
+    dsd_scan_mode_configured_tone_policy(o, s, &mode, &set);
+    const dsd_tone_set configured_set = tone_list("67.0");
+    assert(mode == DSD_TONE_FILTER_BLOCK && dsd_tone_set_equal(&set, &configured_set));
+    /* Policy, not acquisition. */
+    dsd_scan_settings after;
+    dsd_scan_settings_capture(o, s, &after);
+    assert(dsd_scan_settings_equal(&before, &after, 1));
+    assert(after.analog_tone_filter == DSD_TONE_FILTER_ALLOW);
+
+    /* The explicit row disable, then a row without the option: off, then the configured policy again. */
+    row.tone_filter = DSD_TONE_FILTER_OFF;
+    DSD_MEMSET(&row.tone_set, 0, sizeof(row.tone_set));
+    assert(dsd_scan_mode_options(o, s, &row) == 0);
+    assert(o->analog_tone_filter == DSD_TONE_FILTER_OFF);
+    row.present = 0;
+    assert(dsd_scan_mode_options(o, s, &row) == 0);
+    assert(tone_policy_is(o, DSD_TONE_FILTER_BLOCK, "67.0"));
+
+    /* An operator edit while a row's own policy is on air lands in the configured view, and the row keeps its own. */
+    row.present = DSD_SCAN_OPT_TONE;
+    row.tone_filter = DSD_TONE_FILTER_ALLOW;
+    row.tone_set = tone_list("100.0");
+    assert(dsd_scan_mode_options(o, s, &row) == 0);
+    assert(dsd_scan_mode_suspend(o, s));
+    assert(tone_policy_is(o, DSD_TONE_FILTER_BLOCK, "67.0"));
+    o->analog_tone_filter = DSD_TONE_FILTER_ALLOW;
+    o->analog_tone_set = tone_list("71.9");
+    assert(dsd_scan_mode_resume(o, s) == 0);
+    assert(tone_policy_is(o, DSD_TONE_FILTER_ALLOW, "100.0"));
+    dsd_scan_mode_configured_tone_policy(o, s, &mode, &set);
+    const dsd_tone_set edited = tone_list("71.9");
+    assert(mode == DSD_TONE_FILTER_ALLOW && dsd_tone_set_equal(&set, &edited));
+    /* A frontend snapshot sees the same configured policy. */
+    dsd_state* copy = (dsd_state*)calloc(1, sizeof(*copy));
+    assert(copy);
+    dsd_scan_mode_copy_snapshot(copy, s);
+    dsd_scan_mode_configured_tone_policy(o, copy, &mode, &set);
+    assert(mode == DSD_TONE_FILTER_ALLOW && dsd_tone_set_equal(&set, &edited));
+    assert(dsd_scan_mode_option_fields(copy) & DSD_SCAN_OPT_TONE);
+    dsd_state_ext_free_all(copy);
+    free(copy);
+
+    /* Departure restores the configured policy, the edit included. */
+    dsd_scan_mode_leave(o, s);
+    assert(tone_policy_is(o, DSD_TONE_FILTER_ALLOW, "71.9"));
+    /* Without a scope the configured policy is dsd_opts' own. */
+    dsd_scan_mode_configured_tone_policy(o, s, &mode, &set);
+    assert(mode == DSD_TONE_FILTER_ALLOW && dsd_tone_set_equal(&set, &edited));
     dsd_state_ext_free_all(s);
     free(s);
     free(o);
@@ -1067,6 +1166,7 @@ main(void) {
     test_row_option_edits_are_not_acquisition_changes();
     test_max_visit_row_override_scope();
     test_squelch_row_override_scope();
+    test_tone_row_override_scope();
     test_configured_squelch_edit();
     dsd_opts* o = (dsd_opts*)calloc(1, sizeof(*o));
     dsd_state* s = (dsd_state*)calloc(1, sizeof(*s));

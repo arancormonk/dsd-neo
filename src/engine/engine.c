@@ -1447,6 +1447,11 @@ no_carrier_scanner_step_is_due(const dsd_opts* opts, const dsd_state* state, tim
     if (dsd_engine_scan_visit_expired(opts, state, dsd_time_now_monotonic_s())) {
         return 1;
     }
+    /* Analog traffic the tone policy rejected (issue #527) does not hold the row: it neither stamps the hangtime anchor
+     * nor waits it out, but moves on at this pass. The caller still lets an operator hold keep the row, muted. */
+    if (dsd_scan_analog_tone_gate(opts, state) == DSD_ANALOG_TONE_GATE_REJECTED) {
+        return 1;
+    }
     if (dsd_scan_voice_gate_owns_step(opts, state)) {
         return dsd_scan_voice_gate_should_step(opts, state, dsd_time_now_monotonic_s());
     }

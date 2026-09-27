@@ -10,11 +10,13 @@
  * without touching CLI or environment precedence.
  */
 
+#include <dsd-neo/core/analog_tone.h>
 #include <dsd-neo/core/frontend_types.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/power.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/runtime/analog_channel.h>
+#include <dsd-neo/runtime/analog_tones.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/decode_mode.h>
 #include <dsd-neo/runtime/rdio_export.h>
@@ -2342,6 +2344,8 @@ test_persistence_gap_schema_rows(void) {
         {"trunking", "scan_max_visit_ms"},
         {"analog", "nfm_bandwidth_hz"},
         {"analog", "am_bandwidth_hz"},
+        {"analog", "tone_filter"},
+        {"analog", "tone_list"},
     };
 
     for (size_t i = 0; i < sizeof expected / sizeof expected[0]; i++) {
@@ -2456,6 +2460,109 @@ test_am_mode_and_bandwidth_roundtrip(void) {
     if (opts.analog_am_bandwidth_hz != 15000 || opts.analog_demod != DSD_ANALOG_DEMOD_AM) {
         DSD_FPRINTF(stderr, "FAIL: a config without [analog] changed the AM width to %d\n",
                     opts.analog_am_bandwidth_hz);
+        rc |= 1;
+    }
+    dsd_state_ext_free_all(&state);
+    return rc;
+}
+
+/*
+ * Issue #527: [analog] tone_filter and tone_list ride INI -> cfg -> opts -> snapshot -> render. The mode is written when
+ * it is on, the list whenever there is one (off keeps it), and both load back. A refused list, or a list policy with
+ * no list, applies as off. A scan row's own policy runs over dsd_opts while the row is on air and is never what a save
+ * writes: the configured one is.
+ */
+static int
+test_tone_policy_roundtrip(void) {
+    int rc = 0;
+    dsdneoUserConfig cfg;
+    if (load_am_config_text("[analog]\ntone_filter = allow\ntone_list = \"d023/100\"\n", &cfg) != 0) {
+        return 1;
+    }
+    char list[DSD_TONE_LIST_TEXT_MAX + 1] = "";
+    (void)dsd_tone_set_format(&cfg.analog_tone_set, list, sizeof list);
+    if (!cfg.has_analog || cfg.analog_tone_filter != DSD_TONE_FILTER_ALLOW || strcmp(list, "100.0/D023N") != 0) {
+        DSD_FPRINTF(stderr, "FAIL: tone policy did not load: mode=%d list=%s\n", cfg.analog_tone_filter, list);
+        rc |= 1;
+    }
+    auto opts_storage = std::unique_ptr<dsd_opts>(new dsd_opts{});
+    auto state_storage = std::unique_ptr<dsd_state>(new dsd_state{});
+    dsd_opts& opts = *opts_storage;
+    dsd_state& state = *state_storage;
+    reset_opts_and_state(opts, state);
+    dsd_apply_user_config_to_opts(&cfg, &opts, &state);
+    if (opts.analog_tone_filter != DSD_TONE_FILTER_ALLOW
+        || !dsd_tone_set_equal(&opts.analog_tone_set, &cfg.analog_tone_set)) {
+        DSD_FPRINTF(stderr, "FAIL: tone policy did not reach dsd_opts\n");
+        rc |= 1;
+    }
+    dsdneoUserConfig snap;
+    dsd_snapshot_opts_to_user_config(&opts, &state, &snap);
+    char rendered[8192];
+    if (render_config_to_buffer(&snap, rendered, sizeof rendered) != 0) {
+        return 1;
+    }
+    rc |= expect_contains("tone policy", rendered, "tone_filter = allow\ntone_list = \"100.0/D023N\"\n");
+
+    /* A row's own policy, on air: the save still writes the configured one. */
+    if (dsd_scan_mode_begin(&opts, &state) != 0 || dsd_scan_mode_enter(&opts, &state, DSD_SCAN_MODE_NFM) != 0) {
+        return 1;
+    }
+    dsd_scan_option_values row = {};
+    row.present = DSD_SCAN_OPT_TONE;
+    row.tone_filter = DSD_TONE_FILTER_BLOCK;
+    if (dsd_tone_set_parse("67.0", &row.tone_set, NULL, 0) != 0 || dsd_scan_mode_options(&opts, &state, &row) != 0
+        || opts.analog_tone_filter != DSD_TONE_FILTER_BLOCK) {
+        DSD_FPRINTF(stderr, "FAIL: the row policy did not go on air\n");
+        rc |= 1;
+    }
+    dsd_snapshot_opts_to_user_config(&opts, &state, &snap);
+    if (render_config_to_buffer(&snap, rendered, sizeof rendered) != 0) {
+        return 1;
+    }
+    rc |= expect_contains("configured policy under a row", rendered,
+                          "tone_filter = allow\ntone_list = \"100.0/D023N\"\n");
+    if (strstr(rendered, "tone_filter = block") || strstr(rendered, "tone_list = \"67.0\"")) {
+        DSD_FPRINTF(stderr, "FAIL: a row's tone policy was saved:\n%s\n", rendered);
+        rc |= 1;
+    }
+    dsd_scan_mode_leave(&opts, &state);
+
+    /* Off keeps the list; a saved off with a list loads back as off with the list. */
+    opts.analog_tone_filter = DSD_TONE_FILTER_OFF;
+    dsd_snapshot_opts_to_user_config(&opts, &state, &snap);
+    if (render_config_to_buffer(&snap, rendered, sizeof rendered) != 0) {
+        return 1;
+    }
+    if (strstr(rendered, "tone_filter") || !strstr(rendered, "[analog]\ntone_list = \"100.0/D023N\"\n")) {
+        DSD_FPRINTF(stderr, "FAIL: off should save the list alone:\n%s\n", rendered);
+        rc |= 1;
+    }
+    if (load_am_config_text(rendered, &cfg) != 0 || cfg.analog_tone_filter != DSD_TONE_FILTER_OFF
+        || dsd_tone_set_count(&cfg.analog_tone_set) != 2) {
+        DSD_FPRINTF(stderr, "FAIL: a saved off with a list did not load back\n");
+        rc |= 1;
+    }
+
+    /* A refused list, and a list policy without a list, apply as off. */
+    static const char* const off[] = {"[analog]\ntone_filter = allow\ntone_list = 100.0,67.0\n",
+                                      "[analog]\ntone_filter = block\n",
+                                      "[analog]\ntone_filter = allow\ntone_list = 150.0\n"};
+    for (const char* ini : off) {
+        opts.analog_tone_filter = DSD_TONE_FILTER_BLOCK;
+        if (load_am_config_text(ini, &cfg) != 0) {
+            return 1;
+        }
+        dsd_apply_user_config_to_opts(&cfg, &opts, &state);
+        if (opts.analog_tone_filter != DSD_TONE_FILTER_OFF) {
+            DSD_FPRINTF(stderr, "FAIL: %s did not apply as off\n", ini);
+            rc |= 1;
+        }
+    }
+    /* A refused mode keeps the one already loaded. */
+    if (load_am_config_text("[analog]\ntone_filter = block\ntone_filter = deny\n", &cfg) != 0
+        || cfg.analog_tone_filter != DSD_TONE_FILTER_BLOCK) {
+        DSD_FPRINTF(stderr, "FAIL: a refused tone_filter replaced the one loaded\n");
         rc |= 1;
     }
     dsd_state_ext_free_all(&state);
@@ -3856,6 +3963,7 @@ main(void) {
     rc |= test_analog_nfm_bandwidth_roundtrip();
     rc |= test_radio_input_spec();
     rc |= test_am_mode_and_bandwidth_roundtrip();
+    rc |= test_tone_policy_roundtrip();
     rc |= test_tg_lockout_persistence_roundtrip();
     rc |= test_scan_max_visit_snapshot_uses_configured_not_row_override();
     rc |= test_squelch_snapshot_uses_configured_not_row_override();

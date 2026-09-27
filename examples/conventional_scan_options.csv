@@ -6,3 +6,4 @@ channel,frequency_hz,name,mode,options
 5,456425000,NXDN scrambler example,nxdn48,-R 1 --no-force-key
 6,462637500,Squelch off example,dmr,--squelch-db 0
 7,154430000,Analog NFM 12.5 kHz example,nfm,--nfm-bandwidth-hz 12500 --squelch-db -60 --scan-max-visit-ms 30000
+8,155475000,Analog NFM tone filter example,nfm,--squelch-db -55 --tone-allow 156.7/D023N

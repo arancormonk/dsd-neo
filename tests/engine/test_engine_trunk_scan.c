@@ -10394,6 +10394,114 @@ test_analog_target_visit_cap_and_controls_under_carrier(void) {
     return analog_visit_cap_case("nfm-conventional") | analog_visit_cap_case("am-conventional");
 }
 
+/* --- Issue #527: the tone policy's verdict on nfm-conventional targets --- */
+
+/* What the tap would publish for the carrier on air under a tone policy: the gate alone, since the coordinator reads
+ * nothing else of it. */
+static void
+publish_tone_gate(dsd_state* state, int gate) {
+    state->analog_rx.carrier_open = 1;
+    state->analog_rx.gate = gate;
+}
+
+/* A carrier the policy is still checking holds the target, muted, under "Tone check", past the idle dwell; a verdict
+ * that lets it through holds it as a carrier; a rejection releases it at the next tick, whatever hold the traffic
+ * before it had earned -- rejected traffic never refreshes the activity hold. */
+static int
+test_nfm_target_tone_check_holds_and_rejection_advances(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    char target_path[DSD_TEST_PATH_MAX];
+    static dsd_opts opts;
+    static dsd_state state;
+    if (nfm_targets_init("fire,nfm-conventional,154430000,,250,2000,,--tone-allow 100.0\n"
+                         "dmr,dmr-conventional,461000000,,250,250,\n",
+                         &opts, &state, dir, sizeof dir, target_path, sizeof target_path)
+        != 0) {
+        return 1;
+    }
+    int test_rc = 0;
+    if (opts.analog_tone_filter != DSD_TONE_FILTER_ALLOW) {
+        DSD_FPRINTF(stderr, "the nfm target's tone policy did not go on air: %d\n", opts.analog_tone_filter);
+        test_rc = 1;
+    }
+    for (int tick = 0; tick < 4; tick++) {
+        publish_tone_gate(&state, DSD_ANALOG_TONE_GATE_PENDING);
+        trunk_scan_test_set_now(0.10 + (0.20 * tick));
+        dsd_engine_trunk_scan_tick(&opts, &state);
+    }
+    test_rc |= expect_active_target(&state, "tone check past the dwell", 0U);
+    test_rc |= expect_scan_timing(&state, "tone check", DSD_SCAN_STAY_TONE_PENDING, 2.70, 250U, 2000U);
+    /* Allowed: the carrier holds it, and its hold runs 2 s from the last tick that heard it. */
+    publish_tone_gate(&state, DSD_ANALOG_TONE_GATE_ALLOWED);
+    trunk_scan_test_set_now(0.80);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    test_rc |= expect_scan_timing(&state, "allowed", DSD_SCAN_STAY_CARRIER, 2.80, 250U, 2000U);
+    /* A blocked or unlisted value confirmed later closes the gate: the target is released at once, not 2 s on. */
+    publish_tone_gate(&state, DSD_ANALOG_TONE_GATE_REJECTED);
+    trunk_scan_test_set_now(0.85);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    test_rc |= expect_active_target(&state, "rejection advances", 1U);
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    if (opts.analog_tone_filter != DSD_TONE_FILTER_OFF) {
+        DSD_FPRINTF(stderr, "shutdown left the nfm target's tone policy on: %d\n", opts.analog_tone_filter);
+        test_rc = 1;
+    }
+    trunk_scan_test_clear_now();
+    cleanup_paths(dir, target_path, NULL);
+    return test_rc;
+}
+
+/* The operator's hold keeps a target whose traffic was rejected, muted; the release lets the next tick move on, with
+ * no activity hold left over from the rejected traffic. A single target has nowhere to go, so a rejection there only
+ * mutes: the fixed-frequency case. */
+static int
+test_nfm_target_rejection_under_hold_and_alone(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    char target_path[DSD_TEST_PATH_MAX];
+    static dsd_opts opts;
+    static dsd_state state;
+    if (nfm_targets_init("fire,nfm-conventional,154430000,,250,2000,\n"
+                         "dmr,dmr-conventional,461000000,,250,250,\n",
+                         &opts, &state, dir, sizeof dir, target_path, sizeof target_path)
+        != 0) {
+        return 1;
+    }
+    int test_rc = 0;
+    test_rc |=
+        expect_control_rc("hold", dsd_engine_trunk_scan_control(&opts, &state, DSD_TRUNK_SCAN_CONTROL_HOLD_TOGGLE), 1);
+    for (int tick = 0; tick < 8; tick++) {
+        publish_tone_gate(&state, DSD_ANALOG_TONE_GATE_REJECTED);
+        trunk_scan_test_set_now(0.10 + (0.25 * tick));
+        dsd_engine_trunk_scan_tick(&opts, &state);
+    }
+    test_rc |= expect_active_target(&state, "held while rejected", 0U);
+    test_rc |= expect_scan_timing(&state, "held while rejected", DSD_SCAN_STAY_MANUAL_HOLD, -1.0, 250U, 2000U);
+    test_rc |= expect_control_rc("release",
+                                 dsd_engine_trunk_scan_control(&opts, &state, DSD_TRUNK_SCAN_CONTROL_HOLD_TOGGLE), 0);
+    publish_tone_gate(&state, DSD_ANALOG_TONE_GATE_REJECTED);
+    trunk_scan_test_set_now(2.10);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    test_rc |= expect_active_target(&state, "released after a rejection", 1U);
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    cleanup_paths(dir, target_path, NULL);
+
+    if (nfm_targets_init("fire,nfm-conventional,154430000,,250,2000,\n", &opts, &state, dir, sizeof dir, target_path,
+                         sizeof target_path)
+        != 0) {
+        return 1;
+    }
+    for (int tick = 0; tick < 8; tick++) {
+        publish_tone_gate(&state, DSD_ANALOG_TONE_GATE_REJECTED);
+        trunk_scan_test_set_now(0.10 + (0.25 * tick));
+        dsd_engine_trunk_scan_tick(&opts, &state);
+    }
+    test_rc |= expect_active_target(&state, "a single target stays", 0U);
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    trunk_scan_test_clear_now();
+    cleanup_paths(dir, target_path, NULL);
+    return test_rc;
+}
+
 /* What the analog targets owe the operator when the scan starts: a width the running DSP rate cannot
  * filter, and a squelch that holds on noise. An analog target's squelch is not the digital squelch the
  * #521 warning is about, even on audio input. On audio input the rigctl peer demodulates and takes a
@@ -11492,6 +11600,9 @@ main(void) {
     rc |= run_with_default_tune_hook(test_am_target_configured_width_held_to_the_dsp_rate);
     /* Issue #523 */
     rc |= run_with_default_tune_hook(test_nfm_target_switch_clears_received_dcs_code);
+    /* Issue #527 */
+    rc |= run_with_default_tune_hook(test_nfm_target_tone_check_holds_and_rejection_advances);
+    rc |= run_with_default_tune_hook(test_nfm_target_rejection_under_hold_and_alone);
     return rc;
 }
 
