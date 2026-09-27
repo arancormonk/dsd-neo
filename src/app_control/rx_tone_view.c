@@ -214,10 +214,17 @@ dsd_app_rx_tone_view(const dsd_opts* opts, const dsd_state* state, double now_m,
         DSD_MEMSET(out, 0, sizeof(*out));
         DSD_SNPRINTF(out->configured_text, sizeof(out->configured_text), "%s", RX_TONE_POLICY_OFF_TEXT);
     }
-    if (!opts || !state || !out) {
+    if (!opts || !out) {
         return -1;
     }
     rx_tone_fill_policy_text(out, opts, state);
+    if (!state) {
+        /* No state, so no scan row and nothing received: the policy text alone, dsd_opts' own, the configured policy
+           as a frontend's own options hold it before the first snapshot (dsd_app_tone_filter_setting_get() reads it
+           the same way). Nothing belongs on screen. */
+        out->policy_visible = 0U;
+        return -1;
+    }
     /* Where detection runs a policy acts on what the monitor plays, so its editor belongs on screen, no policy set
        included; elsewhere nothing is shown, whatever is configured. */
     out->policy_editable = dsd_analog_tone_detection_active(opts) ? 1U : 0U;

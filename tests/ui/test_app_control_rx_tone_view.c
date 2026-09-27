@@ -577,7 +577,15 @@ test_invalid_arguments(void) {
     assert(view.visible == 0U && view.text[0] == '\0');
     assert(strcmp(view.configured_text, "off") == 0);
     assert(dsd_app_rx_tone_view(&opts, NULL, 0.0, &view) == -1);
+    assert(strcmp(view.configured_text, "off") == 0 && view.policy_visible == 0U);
     assert(dsd_app_rx_tone_view(&opts, state, 0.0, NULL) == -1);
+    /* No state: still the policy dsd_opts holds (a terminal menu row before the first snapshot), nothing else. */
+    opts.analog_tone_filter = DSD_TONE_FILTER_ALLOW;
+    assert(dsd_tone_set_parse("100.0/D023N", &opts.analog_tone_set, NULL, 0) == 0);
+    assert(dsd_app_rx_tone_view(&opts, NULL, 0.0, &view) == -1);
+    assert(strcmp(view.configured_text, "allow 100.0 Hz/D023N") == 0);
+    assert(view.visible == 0U && view.policy_visible == 0U && view.policy_editable == 0U && view.policy_row == 0U);
+    assert(view.gate_text[0] == '\0' && view.text[0] == '\0');
     free(state);
 }
 

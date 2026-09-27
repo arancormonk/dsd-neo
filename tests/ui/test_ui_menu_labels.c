@@ -646,7 +646,7 @@ test_input_and_audio_labels(void) {
  * Audio > Tone filter... reads the policy the configuration sets, from the shared app-control view the Call Info line
  * and the Qt monitor read: "off", or the mode and its list, and while a scan row's own policy is on air that policy
  * with the configured one it shadows, "(row; default X)". A long list's overflow mark is ASCII here, as every menu
- * label is.
+ * label is. Before the first snapshot it reads the menu's own options, the policy its picker opens on, not "off".
  */
 static int
 test_tone_filter_label(void) {
@@ -693,6 +693,17 @@ test_tone_filter_label(void) {
                          && strstr(label, "\xE2\x80\xA6") == NULL && label[strlen(label) - 1U] == ']',
                      1);
     dsd_test_scan_labels_tone_policy(DSD_TONE_FILTER_OFF, NULL);
+
+    /* No snapshot yet: the menu's own options, with no state. */
+    opts.analog_tone_filter = DSD_TONE_FILTER_ALLOW;
+    (void)dsd_tone_set_parse("D023N/100", &opts.analog_tone_set, NULL, 0);
+    dsd_test_scan_labels_set(0, DSD_SCAN_MODE_INHERIT);
+    rc |= expect_str("tone filter before snapshots", lbl_tone_filter(&ctx, b, sizeof(b)),
+                     "Tone filter... [allow 100.0 Hz/D023N]");
+    rc |= expect_str("tone filter without a context", lbl_tone_filter(NULL, b, sizeof(b)), "Tone filter... [off]");
+    dsd_test_scan_labels_set(1, DSD_SCAN_MODE_INHERIT);
+    opts.analog_tone_filter = DSD_TONE_FILTER_OFF;
+    DSD_MEMSET(&opts.analog_tone_set, 0, sizeof(opts.analog_tone_set));
     return rc;
 }
 

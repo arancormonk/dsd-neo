@@ -90,8 +90,10 @@ typedef struct {
 /**
  * @brief Fill @p out from the published received tone.
  *
- * Zeroes @p out first, then always fills @c configured_text ("off" for invalid arguments), and the
- * policy fields whenever the arguments are valid. @p now_m is monotonic seconds,
+ * Zeroes @p out first, then always fills @c configured_text ("off" without @p opts or @p out), and the
+ * policy fields whenever the arguments are valid. A NULL @p state still gets @c configured_text, read
+ * from @p opts alone (no scan row), and returns -1 with nothing else filled: a terminal menu row
+ * before the first snapshot reads the policy its own options hold, as its editor opens on it. @p now_m is monotonic seconds,
  * the clock dsd_time_now_monotonic_s() reads: a publication from an input that has gone quiet
  * past its stale_after_ms deadline (a stdin, UDP or TCP producer that stopped sending, a live
  * radio stream whose source stopped) reads as no carrier, because the decoder, waiting for the
