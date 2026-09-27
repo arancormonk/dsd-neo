@@ -38,6 +38,7 @@
 
 #include <cstdlib>
 #include <dsd-neo/app_control/trunk_scan_validate.h>
+#include <dsd-neo/core/analog_tone.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/safe_api.h>
@@ -763,6 +764,45 @@ test_channel_review_bandwidth() {
     model.remove(row);
 }
 
+/* Issue #527: the channel-map review carries an nfm row's own tone policy (its dsd_tone_filter_mode and its list as
+   displayed), and nothing for a row that runs the configured policy -- an am row, which cannot set one, included. */
+static void
+test_channel_review_tone_filter() {
+    QTemporaryDir source;
+    TestHost host;
+    dsd_qt::ImportedFilesModel model(&host);
+    QFile file(source.filePath("tone.csv"));
+    const QByteArray bytes = "channel,frequency_hz,mode,options\n1,154430000,nfm,--tone-allow 100.0/D023N\n"
+                             "2,155475000,nfm,--tone-block=67\n3,155520000,nfm,--no-tone-filter\n"
+                             "4,155535000,nfm,\n5,118300000,am,\n6,461000000,dmr,\n";
+    expect("write tone map", file.open(QIODevice::WriteOnly) && file.write(bytes) == bytes.size());
+    file.close();
+    const auto result = model.importFile(source.filePath("tone.csv"), "Tone.csv", "chan");
+    expect("tone map imports", result.value("ok").toBool());
+    const int row = model.rowForPath(result.value("path").toString());
+    if (row < 0) {
+        return;
+    }
+    const auto review = model.channelProfiles(row);
+    const auto rows = review.value("rows").toList();
+    expect("tone map review", review.value("ok").toBool() && rows.size() == 6);
+    if (rows.size() == 6) {
+        expect("reports the row's allow list", rows[0].toMap().value("toneFilter").toInt() == DSD_TONE_FILTER_ALLOW
+                                                   && rows[0].toMap().value("toneList") == "100.0 Hz/D023N");
+        expect("reports the row's block list", rows[1].toMap().value("toneFilter").toInt() == DSD_TONE_FILTER_BLOCK
+                                                   && rows[1].toMap().value("toneList") == "67.0 Hz");
+        expect("reports the row's own off", rows[2].toMap().value("toneFilter").isValid()
+                                                && rows[2].toMap().value("toneFilter").toInt() == DSD_TONE_FILTER_OFF
+                                                && rows[2].toMap().value("toneList").toString().isEmpty());
+        for (int i = 3; i < 6; ++i) {
+            expect("a row without its own policy carries none",
+                   !rows[i].toMap().value("toneFilter").isValid()
+                       && rows[i].toMap().value("toneList").toString().isEmpty());
+        }
+    }
+    model.remove(row);
+}
+
 static void
 test_channel_bundle() {
     QTemporaryDir source;
@@ -1466,6 +1506,13 @@ test_example_targets() {
                    && rows[9].toMap().value("squelchDb").toInt() == -55);
         expect("an analog target previews no modulation", rows[9].toMap().value("modulation").toString().isEmpty());
         expect("a digital target previews no width", !rows[0].toMap().value("bandwidthHz").isValid());
+        /* Issue #527: the nfm target's own tone policy previews as its mode and displayed list; the am and digital
+           targets run the configured one. */
+        expect("previews the nfm target's own tone policy",
+               rows[8].toMap().value("toneFilter").toInt() == DSD_TONE_FILTER_ALLOW
+                   && rows[8].toMap().value("toneList") == "156.7 Hz/D023N");
+        expect("the am and digital targets carry no tone policy",
+               !rows[9].toMap().value("toneFilter").isValid() && !rows[0].toMap().value("toneFilter").isValid());
     }
     auto* opts = static_cast<dsd_opts*>(std::calloc(1, sizeof(dsd_opts)));
     auto* state = static_cast<dsd_state*>(std::calloc(1, sizeof(dsd_state)));
@@ -1537,6 +1584,7 @@ main(int argc, char** argv) {
     test_metadata_failure_keeps_file();
     test_channel_bundle();
     test_channel_review_bandwidth();
+    test_channel_review_tone_filter();
     test_target_bundle();
     test_library_companions();
     test_library_candidate_ranking();

@@ -347,6 +347,7 @@ describe(const dsd_trunk_scan_target& t) {
     result.squelch_db_set = (t.row_options.present & DSD_SCAN_OPT_SQUELCH) ? 1 : 0;
     result.squelch_db = result.squelch_db_set ? t.row_options.squelch_db : 0;
     result.bandwidth_hz = (t.row_options.present & DSD_SCAN_OPT_BANDWIDTH) ? t.row_options.channel_bw_hz : -1;
+    result.tone_filter = dsd_scan_option_tone_summary(&t.row_options, result.tone_list, sizeof result.tone_list);
     return result;
 }
 

@@ -792,3 +792,17 @@ dsd_scan_option_width_check(unsigned int mode, const dsd_scan_option_values* val
     }
     return dsd_analog_width_check(kind, values->channel_bw_hz, rate_hz, error, error_size) == 0 ? 0 : -1;
 }
+
+int
+dsd_scan_option_tone_summary(const dsd_scan_option_values* values, char* list, size_t list_size) {
+    if (list && list_size) {
+        list[0] = '\0';
+    }
+    if (!values || !(values->present & DSD_SCAN_OPT_TONE)) {
+        return -1;
+    }
+    if (values->tone_filter != DSD_TONE_FILTER_OFF) {
+        (void)dsd_tone_set_format_display(&values->tone_set, list, list_size);
+    }
+    return values->tone_filter;
+}

@@ -60,6 +60,12 @@ typedef struct {
     int squelch_db;
     int bandwidth_hz; /* analog row's own channel width in Hz (an nfm row's --nfm-bandwidth-hz, an am row's
                          --am-bandwidth-hz); -1 inherits */
+    /* An nfm row's own CTCSS/DCS tone policy (dsd_tone_filter_mode: OFF for --no-tone-filter, ALLOW, BLOCK); -1 when
+       it runs the configured one. */
+    int tone_filter;
+    /* Its list as displayed (dsd_tone_set_format_display(): "100.0 Hz/D023N", the entries past the room counted); ""
+       without one. */
+    char tone_list[96];
 } dsd_csv_channel_profile;
 
 typedef void (*dsd_csv_channel_profile_cb)(const dsd_csv_channel_profile* row, void* context);

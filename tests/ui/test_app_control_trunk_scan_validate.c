@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include <assert.h>
 #include <dsd-neo/app_control/trunk_scan_validate.h>
+#include <dsd-neo/core/analog_tone.h>
 #include <stdio.h>
 #include <string.h>
 #include "../test_support/test_support.h"
@@ -87,6 +88,8 @@ typedef struct {
     char type[4][24];
     char modulation[4][8];
     int bandwidth_hz[4];
+    int tone_filter[4];
+    char tone_list[4][96];
 } nfm_targets;
 
 static void
@@ -96,6 +99,8 @@ collect_nfm_target(const dsd_app_scan_csv_target* target, void* context) {
         DSD_SNPRINTF(seen->type[seen->count], sizeof seen->type[seen->count], "%s", target->type);
         DSD_SNPRINTF(seen->modulation[seen->count], sizeof seen->modulation[seen->count], "%s", target->modulation);
         seen->bandwidth_hz[seen->count] = target->bandwidth_hz;
+        seen->tone_filter[seen->count] = target->tone_filter;
+        DSD_SNPRINTF(seen->tone_list[seen->count], sizeof seen->tone_list[seen->count], "%s", target->tone_list);
     }
     seen->count++;
 }
@@ -199,9 +204,19 @@ test_nfm_target_tone_lists(const char* path) {
     char err[256] = {0};
     write_targets(path, "fire,nfm-conventional,154430000,,1500,2000,,--tone-allow 100.0/D023N --squelch-db -60\n"
                         "works,nfm-conventional,155475000,,1500,2000,,--tone-block=67/d047i\n"
-                        "shared,nfm-conventional,155520000,,1500,2000,,--no-tone-filter\n");
+                        "shared,nfm-conventional,155520000,,1500,2000,,--no-tone-filter\n"
+                        "tower,am-conventional,118300000,,1500,2000,,--am-bandwidth-hz 8333\n");
     assert(dsd_app_trunk_scan_validate_targets_csv(path, &count, err, sizeof err) == 0);
-    assert(count == 3 && err[0] == '\0');
+    assert(count == 4 && err[0] == '\0');
+    /* The target preview names each nfm target's own policy with its list as displayed, and nothing for a target that
+     * runs the configured policy, an am target's included. */
+    nfm_targets seen = {0};
+    const dsd_app_scan_csv_callbacks callbacks = {collect_nfm_target, NULL, &seen};
+    assert(dsd_app_scan_csv_inspect(path, NULL, 0, &callbacks, err, sizeof err) == 0 && seen.count == 4);
+    assert(seen.tone_filter[0] == DSD_TONE_FILTER_ALLOW && strcmp(seen.tone_list[0], "100.0 Hz/D023N") == 0);
+    assert(seen.tone_filter[1] == DSD_TONE_FILTER_BLOCK && strcmp(seen.tone_list[1], "67.0 Hz/D047I") == 0);
+    assert(seen.tone_filter[2] == DSD_TONE_FILTER_OFF && seen.tone_list[2][0] == '\0');
+    assert(seen.tone_filter[3] == -1 && seen.tone_list[3][0] == '\0');
     write_targets_with_header(path, "id,type,frequency_hz,chan_csv,dwell_ms,activity_hold_ms,notes,options,rtl_gain\n",
                               "fire,nfm-conventional,154430000,,1500,2000,,--tone-allow 100.0,30\n");
     assert(dsd_app_trunk_scan_validate_targets_csv(path, &count, err, sizeof err) == 0 && count == 1);

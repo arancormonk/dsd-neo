@@ -4,6 +4,7 @@
  */
 
 #include <assert.h>
+#include <dsd-neo/core/analog_tone.h>
 #include <dsd-neo/core/csv_import.h>
 #include <dsd-neo/core/csv_validate.h>
 #include <dsd-neo/core/key_set.h>
@@ -2357,6 +2358,8 @@ typedef struct {
     int bandwidth_hz[6];
     int squelch_db_set[6];
     int key_source[6];
+    int tone_filter[6];
+    char tone_list[6][96];
 } nfm_profiles;
 
 static void
@@ -2367,6 +2370,8 @@ collect_nfm_profile(const dsd_csv_channel_profile* row, void* context) {
         seen->bandwidth_hz[seen->count] = row->bandwidth_hz;
         seen->squelch_db_set[seen->count] = row->squelch_db_set;
         seen->key_source[seen->count] = row->key_source;
+        seen->tone_filter[seen->count] = row->tone_filter;
+        DSD_SNPRINTF(seen->tone_list[seen->count], sizeof seen->tone_list[seen->count], "%s", row->tone_list);
     }
     seen->count++;
 }
@@ -2578,6 +2583,30 @@ test_nfm_channel_map_tone_lists(void) {
     for (size_t i = 0; i < sizeof(accepted) / sizeof(accepted[0]); i++) {
         if (import_channel_map_text(path, accepted[i], log, sizeof log) != 0 || strstr(log, " row ")) {
             DSD_FPRINTF(stderr, "tone map %zu: %s\n", i, log);
+            rc = 1;
+        }
+    }
+    /* The channel-map review a frontend shows before an import names each nfm row's own policy with its list as
+     * displayed, and nothing for a row that runs the configured policy, an am row's included. */
+    const char* reviewed = "channel,frequency_hz,name,mode,options\n"
+                           "1,154430000,Fire,nfm,--tone-allow 100.0/D023N --squelch-db -60\n"
+                           "2,155475000,Works,nfm,--tone-block=67/d047i\n"
+                           "3,155520000,Shared,nfm,--no-tone-filter\n"
+                           "4,155535000,Plain,nfm,--squelch-db -60\n"
+                           "5,118300000,Tower,am,--am-bandwidth-hz 8333\n"
+                           "6,461000000,DMR,dmr,\n";
+    if (import_channel_map_text(path, reviewed, log, sizeof log) != 0 || strstr(log, " row ")) {
+        DSD_FPRINTF(stderr, "reviewed tone map: %s\n", log);
+        rc = 1;
+    }
+    nfm_profiles seen = {0};
+    assert(dsd_csv_inspect_channel_profiles(path, &seen, collect_nfm_profile) == 0 && seen.count == 6);
+    static const int want_filter[] = {DSD_TONE_FILTER_ALLOW, DSD_TONE_FILTER_BLOCK, DSD_TONE_FILTER_OFF, -1, -1, -1};
+    static const char* const want_list[] = {"100.0 Hz/D023N", "67.0 Hz/D047I", "", "", "", ""};
+    for (size_t i = 0; i < 6; i++) {
+        if (seen.tone_filter[i] != want_filter[i] || strcmp(seen.tone_list[i], want_list[i]) != 0) {
+            DSD_FPRINTF(stderr, "tone review row %zu: %d '%s', want %d '%s'\n", i, seen.tone_filter[i],
+                        seen.tone_list[i], want_filter[i], want_list[i]);
             rc = 1;
         }
     }

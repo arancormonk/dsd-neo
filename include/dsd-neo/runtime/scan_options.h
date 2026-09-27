@@ -133,6 +133,13 @@ int dsd_scan_options_tone_list_split(const char* options, const char* next, int 
  * the rate, the widest width that rate fits and the fix. The width's range was checked when it parsed. */
 int dsd_scan_option_width_check(unsigned int mode, const dsd_scan_option_values* values, int rate_hz, char* error,
                                 size_t error_size);
+
+/** A row's own tone policy (DSD_SCAN_OPT_TONE, issue #527) as the import previews show it: returns its
+ * dsd_tone_filter_mode (OFF for --no-tone-filter) and writes its list as displayed
+ * (dsd_tone_set_format_display(): "100.0 Hz/D023N", the entries past the room counted) to @p list, "" for OFF.
+ * Returns -1 with "" when the row runs the configured policy (@p values NULL or without the option). @p list must
+ * hold at least 24 bytes. */
+int dsd_scan_option_tone_summary(const dsd_scan_option_values* values, char* list, size_t list_size);
 #ifdef __cplusplus
 }
 #endif

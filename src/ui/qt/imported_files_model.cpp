@@ -667,6 +667,10 @@ appendChannelProfile(const dsd_csv_channel_profile* row, void* context) {
                              /* #526: an analog (nfm or am) row's own channel width in Hz; invalid when it inherits
                                 the configured width of its kind. */
                              {"bandwidthHz", row->bandwidth_hz >= 0 ? QVariant(row->bandwidth_hz) : QVariant()},
+                             /* #527: an nfm row's own tone policy (dsd_tone_filter_mode) and its displayed list;
+                                invalid when it runs the configured policy. */
+                             {"toneFilter", row->tone_filter >= 0 ? QVariant(row->tone_filter) : QVariant()},
+                             {"toneList", QString::fromUtf8(row->tone_list)},
                              {"profileRef", QString::fromUtf8(row->profile_ref)}});
 }
 
@@ -728,6 +732,10 @@ appendTargetPreview(const dsd_app_scan_csv_target* target, void* context) {
                     /* #526: an analog (nfm- or am-conventional) target's own channel width in Hz; invalid when
                        it inherits the configured width of its kind. */
                     {"bandwidthHz", target->bandwidth_hz >= 0 ? QVariant(target->bandwidth_hz) : QVariant()},
+                    /* #527: an nfm-conventional target's own tone policy (dsd_tone_filter_mode) and its displayed
+                       list; invalid when it runs the configured policy. */
+                    {"toneFilter", target->tone_filter >= 0 ? QVariant(target->tone_filter) : QVariant()},
+                    {"toneList", QString::fromUtf8(target->tone_list)},
                     {"modulation", QString::fromUtf8(target->modulation)}});
 }
 } // namespace

@@ -148,6 +148,45 @@ Item {
             }
         }
 
+        // Issue #527: the channel-map review reports an nfm row's own tone policy with its list, an
+        // nfm row without one says it runs the configured policy, and an am or digital row, which
+        // cannot set one, says nothing about it.
+        function test_channel_review_shows_row_tone_filter() {
+            var map = testContext.writeFixtureCsv("tone-map.csv",
+                "channel,frequency,mode,options\n"
+                + "1,154430000,nfm,--tone-allow 100.0/D023N\n"
+                + "2,155475000,nfm,--tone-block 67.0\n"
+                + "3,155520000,nfm,--no-tone-filter\n"
+                + "4,155535000,nfm,\n"
+                + "5,118300000,am,\n"
+                + "6,853012500,dmr,\n");
+            var result = importedFiles.importFile(map, "tone-map.csv", "chan");
+            verify(result.ok, result.detail || "the channel map did not import");
+            var row = importedFiles.rowForPath(result.path);
+            try {
+                var profiles = importedFiles.channelProfiles(row);
+                verify(profiles.ok);
+                var sheet = findChild(tc.screen, "channelReviewSheet");
+                verify(sheet !== null, "the channel review is missing");
+                sheet.rows = profiles.rows;
+                sheet.valid = profiles.ok;
+                sheet.visible = true;
+                var rows = findChild(tc.screen, "channelReviewRows");
+                verify(rows !== null);
+                tryVerify(function() { return rows.count === 6 && rows.itemAtIndex(5) !== null; });
+                var want = ["Tone filter: allow 100.0 Hz/D023N", "Tone filter: block 67.0 Hz", "Tone filter: off",
+                            "Tone filter: inherit"];
+                for (var i = 0; i < 4; ++i)
+                    verify(rows.itemAtIndex(i).text.indexOf(want[i]) >= 0, rows.itemAtIndex(i).text);
+                verify(rows.itemAtIndex(4).text.indexOf("Tone filter") < 0, rows.itemAtIndex(4).text);
+                verify(rows.itemAtIndex(5).text.indexOf("Tone filter") < 0, rows.itemAtIndex(5).text);
+                sheet.visible = false;
+            } finally {
+                importedFiles.remove(importedFiles.rowForPath(result.path));
+                tryCompare(tc.list, "count", 2);
+            }
+        }
+
         function test_cancel_import_cleanup_data() {
             return [{tag: "primary"}, {tag: "sheet"}];
         }

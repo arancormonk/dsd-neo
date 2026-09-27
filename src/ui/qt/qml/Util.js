@@ -496,6 +496,20 @@ function analogBandwidthSummary(am, hz) {
     return am ? qsTr("AM bandwidth: %1").arg(widthKhzText(hz)) : qsTr("NFM bandwidth: %1").arg(widthKhzText(hz))
 }
 
+// An nfm row's or target's own CTCSS/DCS tone policy (--tone-allow, --tone-block,
+// --no-tone-filter), for the channel-map review and the target preview (issue #527): @a mode is
+// its dsd_tone_filter_mode (0 off, 1 allow, 2 block) and @a list its displayed list. Absent runs
+// the configured policy.
+function toneFilterSummary(mode, list) {
+    if (mode === undefined || mode === null)
+        return qsTr("Tone filter: inherit")
+    if (mode === 1)
+        return qsTr("Tone filter: allow %1").arg(list)
+    if (mode === 2)
+        return qsTr("Tone filter: block %1").arg(list)
+    return qsTr("Tone filter: off")
+}
+
 // Whether a saved system's decode flags run an analog monitor (-fA NFM, -fM AM), whose scan
 // entries have no digital modulation, keys or talkgroups (issue #526). Exactly one of those
 // flags, as the scan-list generator maps them (scan_list_entry_analog_kind()): any other

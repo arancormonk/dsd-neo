@@ -612,9 +612,33 @@ check_tone_list_split(void) {
     assert(dsd_scan_options_tone_list_split("--tone-allow 100.0", "67.0", 1, NULL, 0) == 1);
 }
 
+/* What the import previews show of a row's own policy: its mode and its list as displayed, or -1 for a row that runs
+ * the configured one. --no-tone-filter shows no list. */
+static void
+check_tone_summary(void) {
+    char list[96];
+    assert(dsd_scan_option_tone_summary(NULL, list, sizeof(list)) == -1 && list[0] == '\0');
+    dsd_scan_options parsed = {0};
+    char error[192] = {0};
+    assert(dsd_scan_options_parse("--squelch-db -60", DSD_SCAN_MODE_NFM, 1, &parsed, error, sizeof(error)) == 0);
+    DSD_SNPRINTF(list, sizeof(list), "%s", "stale");
+    assert(dsd_scan_option_tone_summary(&parsed.values, list, sizeof(list)) == -1 && list[0] == '\0');
+    assert(dsd_scan_options_parse("--tone-allow 100/D023", DSD_SCAN_MODE_NFM, 1, &parsed, error, sizeof(error)) == 0);
+    assert(dsd_scan_option_tone_summary(&parsed.values, list, sizeof(list)) == DSD_TONE_FILTER_ALLOW);
+    assert(strcmp(list, "100.0 Hz/D023N") == 0);
+    assert(dsd_scan_options_parse("--tone-block=67.0", DSD_SCAN_MODE_NFM, 0, &parsed, error, sizeof(error)) == 0);
+    assert(dsd_scan_option_tone_summary(&parsed.values, list, sizeof(list)) == DSD_TONE_FILTER_BLOCK);
+    assert(strcmp(list, "67.0 Hz") == 0);
+    assert(dsd_scan_options_parse("--no-tone-filter", DSD_SCAN_MODE_NFM, 1, &parsed, error, sizeof(error)) == 0);
+    DSD_SNPRINTF(list, sizeof(list), "%s", "stale");
+    assert(dsd_scan_option_tone_summary(&parsed.values, list, sizeof(list)) == DSD_TONE_FILTER_OFF && list[0] == '\0');
+    DSD_SECURE_ZERO(&parsed, sizeof(parsed));
+}
+
 int
 main(void) {
     check_tone_options();
+    check_tone_summary();
     check_tone_list_split();
     check_file_spans();
     check_squelch_option();
