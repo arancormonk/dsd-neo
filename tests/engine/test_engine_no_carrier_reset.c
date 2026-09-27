@@ -123,6 +123,10 @@ static int g_request_demod_calls = 0;
 /* The DSP rate the fake stream publishes for analog requests (0: none), and the widest analog width it was asked for. */
 static int g_rtl_request_rate_hz = 0;
 static int g_analog_attach_max_width_hz = 0;
+/* How often the stream was asked for the AM monitor, and how often it tuned g_rtl_watch_freq (0: none watched). */
+static int g_analog_attach_am_calls = 0;
+static uint32_t g_rtl_watch_freq = 0;
+static int g_rtl_watch_tunes = 0;
 /* 1: the output rate follows the family, the analog monitor at 48 kHz and the digital family at 24 kHz (bw=24). */
 static int g_rtl_family_rates = 0;
 
@@ -157,6 +161,9 @@ reset_rtl_profile_fakes(void) {
     g_request_demod_calls = 0;
     g_rtl_request_rate_hz = 0;
     g_analog_attach_max_width_hz = 0;
+    g_analog_attach_am_calls = 0;
+    g_rtl_watch_freq = 0;
+    g_rtl_watch_tunes = 0;
     g_rtl_family_rates = 0;
     g_check_p25_tick_guard = 0;
     g_p25_tick_guard_held_during_tune = 0;
@@ -250,6 +257,9 @@ __wrap_rtl_stream_prepare_retune_analog_profile_for_target(uint32_t target_freq_
     g_analog_attach_calls++;
     if (analog && analog->family == DSD_RX_FAMILY_ANALOG && analog->width_hz > g_analog_attach_max_width_hz) {
         g_analog_attach_max_width_hz = analog->width_hz;
+    }
+    if (analog && analog->family == DSD_RX_FAMILY_ANALOG && analog->kind == DSD_ANALOG_DEMOD_AM) {
+        g_analog_attach_am_calls++;
     }
     if (!analog || (analog->family == DSD_RX_FAMILY_ANALOG && g_refuse_analog_profile)) {
         return -1;
@@ -362,6 +372,9 @@ __wrap_rtl_stream_tune(RtlSdrContext* ctx, uint32_t center_freq_hz) {
     }
     g_rtl_tune_calls++;
     g_rtl_tune_freq = center_freq_hz;
+    if (g_rtl_watch_freq != 0U && center_freq_hz == g_rtl_watch_freq) {
+        g_rtl_watch_tunes++;
+    }
     if (g_rtl_tune_result == RTL_STREAM_TUNE_OK) {
         apply_pending_profile(center_freq_hz);
     }
@@ -1283,6 +1296,65 @@ test_typed_scan_width_skipped_under_channel_lpf_override(void) {
     free_test_runtime(opts, state);
     dsd_trunk_tuning_requests_reset();
     return rc;
+}
+
+/* An am row that sets no width of its own runs the AM default, 6 kHz, which always runs its channel filter (issue
+ * #524), so a DSP rate too narrow for it (@p lpf_off 0: 6 kHz here, which filters at most 4.2 kHz) or
+ * DSD_NEO_CHANNEL_LPF=0 (@p lpf_off 1) refuses it as it refuses an explicit width. The configured AM width is unset.
+ * Such a row is skipped at every visit without asking the stream for the AM monitor, as a refused explicit width is,
+ * while the nfm row beside it on the unset NFM default, which is never refused, runs. */
+static int
+typed_scan_am_default_width_skipped_without_the_stream(int lpf_off) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    if (lpf_off) {
+        (void)dsd_setenv("DSD_NEO_CHANNEL_LPF", "0", 1);
+        dsd_neo_config_init();
+    }
+    int rc = 0;
+    reset_rtl_profile_fakes();
+    dsd_trunk_tuning_requests_reset();
+    opts->audio_in_type = AUDIO_IN_RTL;
+    opts->scanner_mode = 1;
+    opts->trunk_hangtime = 1;
+    opts->analog_am_bandwidth_hz = 0;
+    state->rtl_ctx = (RtlSdrContext*)state;
+    g_rtl_request_rate_hz = lpf_off ? 48000 : 6000;
+    g_rtl_watch_freq = 118300000U;
+    state->lcn_freq_count = 2;
+    state->trunk_lcn_freq[0] = 154530000L;
+    state->trunk_lcn_freq[1] = 118300000L;
+    rc |= expect_true("am default nfm row mode", dsd_channel_mode_set(state, 0, DSD_SCAN_MODE_NFM) == 0);
+    rc |= expect_true("am default am row mode", dsd_channel_mode_set(state, 1, DSD_SCAN_MODE_AM) == 0);
+    for (int visit = 0; visit < 6; visit++) {
+        state->last_cc_sync_time = time(NULL) - 11;
+        noCarrier(opts, state);
+    }
+    rc |=
+        expect_true("am default never reaches the stream", g_analog_attach_calls > 0 && g_analog_attach_am_calls == 0);
+    rc |= expect_true("am default row never tuned", g_rtl_watch_tunes == 0 && g_rtl_tune_freq == 154530000U);
+    if (rc) {
+        DSD_FPRINTF(stderr, "  %s: AM monitor asked %d times, am row tuned %d times\n",
+                    lpf_off ? "DSD_NEO_CHANNEL_LPF=0" : "6 kHz DSP rate", g_analog_attach_am_calls, g_rtl_watch_tunes);
+    }
+    dsd_engine_channel_scan_leave(opts, state);
+    state->rtl_ctx = NULL;
+    if (lpf_off) {
+        (void)dsd_unsetenv("DSD_NEO_CHANNEL_LPF");
+        dsd_neo_config_init();
+    }
+    free_test_runtime(opts, state);
+    dsd_trunk_tuning_requests_reset();
+    return rc;
+}
+
+static int
+test_typed_scan_am_default_width_skipped_without_the_stream(void) {
+    return typed_scan_am_default_width_skipped_without_the_stream(0)
+           | typed_scan_am_default_width_skipped_without_the_stream(1);
 }
 
 /* What the analog monitor does for each block while its carrier is open: stamp carrier activity, the -Y hangtime
@@ -3238,6 +3310,7 @@ main(void) {
     rc |= test_scoped_mode_change_on_nfm_row_times_the_baseline_for_digital();
     rc |= test_typed_scan_refused_width_skipped_without_the_stream();
     rc |= test_typed_scan_width_skipped_under_channel_lpf_override();
+    rc |= test_typed_scan_am_default_width_skipped_without_the_stream();
     rc |= test_typed_scan_analog_rows_hold_on_carrier();
     rc |= test_trunk_cache_with_mode_metadata();
     rc |= test_dmr_explicit_return_destination();
