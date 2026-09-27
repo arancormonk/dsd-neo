@@ -1455,9 +1455,10 @@ no_carrier_scanner_step_is_due(const dsd_opts* opts, const dsd_state* state, tim
     }
     /* Analog traffic the tone policy rejected (issue #527) does not hold the row: it neither stamps the hangtime anchor
      * nor waits it out, but moves on at this pass. The caller still lets an operator hold keep the row, muted. A list
-     * with nowhere else to go (no other row a step can land on: the others avoided, or skipped at every visit for a
-     * width the front end refuses) keeps it muted where it is, as a fixed frequency does: a step would land on the
-     * same row, end the reception and judge the same traffic again, and so would the hangtime rule below. */
+     * with nowhere else to go (no other row a step can land on: the others avoided, or skipped at every visit for the
+     * width of their own demodulator, which the front end refuses, or as am rows nothing demodulates) keeps it muted
+     * where it is, as a fixed frequency does: a step would land on the same row, end the reception and judge the same
+     * traffic again, and so would the hangtime rule below. */
     if (dsd_scan_analog_tone_gate(opts, state) == DSD_ANALOG_TONE_GATE_REJECTED) {
         return dsd_engine_channel_scan_has_other_row(opts, state);
     }

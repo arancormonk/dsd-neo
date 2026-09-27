@@ -64,15 +64,19 @@ Generated (do not edit/commit):
     check") while it is PENDING. The engine acts on a rejection on its own ticks only, never from DSP:
     `no_carrier_scanner_step_is_due()` (`engine.c`) steps a REJECTED row at the next no-carrier pass, whatever `-t`
     says, when the list has another row to go to (`dsd_engine_channel_scan_has_other_row()` in `channel_scan.c`: a row
-    on another frequency than the one on air, not avoided and not an analog row whose width the front end refuses; the
-    row on air is the typed scanner's last landed tune, which a failed start does not move, else the one before
+    on another frequency than the one on air, not avoided, and not an analog row skipped at every visit
+    (`dsd_engine_scan_analog_width_skipped()`: the width of the demodulator its class runs, AM or NFM, its own or the
+    configured one of that kind, refused at the DSP rate, or an am row on audio input with no rigctl peer); the row on
+    air is the typed scanner's last landed tune, which a failed start does not move, else the one before
     `lcn_freq_roll`), and otherwise holds it muted, the `-t` rule included, as a fixed frequency does, so the same
     traffic is not ended and judged again every second; `no_carrier_step_scanner_mode_if_needed()` still lets
     `lcn_scan_hold` keep it (muted); the trunk-scan tick advances a REJECTED analog target
     (`trunk_scan_service_tone_rejection()`, under `p25_sm_tick_guard`) unless the operator holds it, and only when
-    another target is there to take it (`trunk_scan_rejection_has_alternate()`: not avoided, not cooling down, width
-    not refused); with none it spends the tick with the target muted in place and its idle dwell disarmed, since that
-    rotation could only switch back to it. Its analog stay reason reads `TONE_PENDING` the same way
+    another target is there to take it (`trunk_scan_rejection_has_alternate()`: not avoided, not cooling down, and not
+    an analog target whose width, of the demodulator its type runs, AM or NFM, the front end refuses at the published
+    DSP rate, `trunk_scan_target_width_skipped()`); with none it spends the tick with the target muted in place and its
+    idle dwell disarmed, since that rotation could only switch back to it. Its analog stay reason reads `TONE_PENDING`
+    the same way.
   - Stepped slicer threshold refresh after each getFrameSync() return: `src/engine/slicer_thresholds.c` behind
     `include/dsd-neo/engine/slicer_thresholds.h` (test: `ENGINE_SLICER_THRESHOLDS`)
   - Installs runtime hook tables used by DSP/frame-sync code
