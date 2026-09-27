@@ -210,9 +210,10 @@ enum dsd_app_command_id {
     // filter it at its DSP rate; applied live while AM is on air, otherwise kept for the next switch to AM.
     DSD_APP_CMD_AM_BANDWIDTH_SET = 509, // payload: int32_t Hz (0 = default)
     // Configured CTCSS/DCS receive policy (issue #527, the live tone-filter editor): the mode and its '/'-separated list,
-    // checked by the list parser (dsd_tone_filter_check()). Refused with a toast, changing nothing, when invalid. It
-    // edits the configured policy: while a scan row with its own tone options is on air the row keeps its own, and the
-    // toast says the row overrides the edit. Applied from the monitor's next read of audio.
+    // checked by the list parser (dsd_tone_filter_check()), or the mode alone with the configured list kept. Refused
+    // with a toast, changing nothing, when invalid. It edits the configured policy: while a scan row with its own tone
+    // options is on air the row keeps its own, and the toast says the row overrides the edit. Applied from the
+    // monitor's next read of audio. Not coalescible: each queued edit is judged, and applied or refused, on its own.
     DSD_APP_CMD_TONE_FILTER_SET = 510, // payload: dsd_app_tone_filter_payload
 
     // Pulse audio device selection
@@ -505,9 +506,12 @@ typedef struct {
 } dsd_app_config_metadata_payload;
 
 /** DSD_APP_CMD_TONE_FILTER_SET: the whole configured tone policy. Allow and block need a list; off keeps the one it is
- * given (or none). The list is the text dsd_tone_set_parse() reads, as typed; the command validates it. */
+ * given (or none). The list is the text dsd_tone_set_parse() reads, as typed; the command validates it. With
+ * @c keep_list the edit is the mode alone: @c list must be "", and the list is the configured one as the decoder holds
+ * it when the edit runs, after every command queued before it (an edit, a loaded config), never a frontend's copy. */
 typedef struct {
     int32_t mode;                             /* dsd_tone_filter_mode: 0 off, 1 allow, 2 block */
+    int32_t keep_list;                        /* 1 = keep the configured list; 0 = @c list is the list */
     char list[DSD_APP_TONE_FILTER_LIST_SIZE]; /* NUL-terminated; "" for none */
 } dsd_app_tone_filter_payload;
 
@@ -556,6 +560,10 @@ int dsd_app_command_set_config_metadata(const dsd_app_config_metadata_payload* p
 /** Submit DSD_APP_CMD_TONE_FILTER_SET with @p mode and @p list (NULL for none) as typed. A list longer than the payload
  * holds is rejected here (DSD_APP_COMMAND_SUBMIT_REJECTED), never cut to a list nobody typed. */
 int dsd_app_command_set_tone_filter(int32_t mode, const char* list);
+/** Submit DSD_APP_CMD_TONE_FILTER_SET that sets @p mode and keeps the configured list (@c keep_list), read on the
+ * decoder thread when the edit runs: the terminal's Off, which keeps the list the way --no-tone-filter keeps its own.
+ * Allow and block are refused there when no list is configured. */
+int dsd_app_command_set_tone_filter_mode(int32_t mode);
 int dsd_app_command_set_rr_apply(const dsd_app_rr_apply_payload* payload);
 int dsd_app_command_set_rr_account(const dsd_app_rr_account_payload* payload);
 

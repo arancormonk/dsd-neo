@@ -659,17 +659,21 @@ act_set_audio_lpf(void* v) {
 
 // ---- Tone filter (issue #527): the live editor of the configured CTCSS/DCS receive policy ----
 
-/* Picker rows in dsd_tone_filter_mode order, so a row's index is the mode it sets. */
-static const char* const k_tone_filter_choices[] = {"Off", "Allow list...", "Block list..."};
+/* Picker rows: the three modes in dsd_tone_filter_mode order, so a mode's row index is the mode it sets, then off with
+   the configured list removed, the one row that clears it (Off keeps it). */
+static const char* const k_tone_filter_choices[] = {"Off", "Allow list...", "Block list...", "Off and clear list"};
 #define TONE_FILTER_CHOICE_COUNT (sizeof k_tone_filter_choices / sizeof k_tone_filter_choices[0])
-_Static_assert(TONE_FILTER_CHOICE_COUNT == (size_t)DSD_TONE_FILTER_BLOCK + 1U,
-               "a picker row's index is the mode it sets");
+
+enum { TONE_FILTER_CHOICE_CLEAR = DSD_TONE_FILTER_BLOCK + 1 };
+
+_Static_assert(TONE_FILTER_CHOICE_COUNT == (size_t)TONE_FILTER_CHOICE_CLEAR + 1U,
+               "a mode's picker row index is the mode it sets, and the clearing row follows them");
 /* The list policy the prompt is open for, from the picker row chosen just before it. */
 static int g_tone_filter_prompt_mode = DSD_TONE_FILTER_ALLOW;
 
 /* The configured policy the editor opens on (dsd_app_tone_filter_setting_get()): from the snapshot pair, so a scan
    row's own policy, which runs over dsd_opts while the row is on air, is never offered as the one to edit. Before the
-   first snapshot, the menu's options' own. */
+   first snapshot, the menu's options' own with no state: the pair its row's label (lbl_tone_filter()) reads. */
 static void
 tone_filter_configured(const UiCtx* c, dsd_app_tone_filter_setting* out) {
     const dsd_opts* opts = dsd_app_get_latest_opts_snapshot();
@@ -695,13 +699,18 @@ chooser_done_tone_filter(void* u, int sel) {
     if (sel < 0 || sel >= (int)TONE_FILTER_CHOICE_COUNT) {
         return;
     }
-    dsd_app_tone_filter_setting setting;
-    tone_filter_configured((const UiCtx*)u, &setting);
     if (sel == DSD_TONE_FILTER_OFF) {
-        /* Off keeps the configured list, as --no-tone-filter and tone_filter = off keep theirs. */
-        (void)dsd_app_command_set_tone_filter(DSD_TONE_FILTER_OFF, setting.list);
+        /* Off keeps the configured list, as --no-tone-filter and tone_filter = off keep theirs: the list the decoder
+           holds when the edit runs, after anything queued before it, not this menu's snapshot of it. */
+        (void)dsd_app_command_set_tone_filter_mode(DSD_TONE_FILTER_OFF);
         return;
     }
+    if (sel == TONE_FILTER_CHOICE_CLEAR) {
+        (void)dsd_app_command_set_tone_filter(DSD_TONE_FILTER_OFF, "");
+        return;
+    }
+    dsd_app_tone_filter_setting setting;
+    tone_filter_configured((const UiCtx*)u, &setting);
     g_tone_filter_prompt_mode = sel;
     ui_prompt_open_string_async(sel == DSD_TONE_FILTER_ALLOW ? "Allow tones/codes (/ between, e.g. 67.0/D023N)"
                                                              : "Block tones/codes (/ between, e.g. 67.0/D023N)",
@@ -712,7 +721,7 @@ void
 act_tone_filter(void* v) {
     dsd_app_tone_filter_setting setting;
     tone_filter_configured((const UiCtx*)v, &setting);
-    const int at = (setting.mode >= 0 && setting.mode < (int)TONE_FILTER_CHOICE_COUNT) ? setting.mode : 0;
+    const int at = (setting.mode >= 0 && setting.mode < TONE_FILTER_CHOICE_CLEAR) ? setting.mode : 0;
     ui_chooser_start_at("Tone filter", k_tone_filter_choices, (int)TONE_FILTER_CHOICE_COUNT, at,
                         chooser_done_tone_filter, v);
 }

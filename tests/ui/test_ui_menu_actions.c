@@ -330,6 +330,15 @@ dsd_app_command_set_tone_filter(int32_t mode, const char* list) {
 }
 
 int
+dsd_app_command_set_tone_filter_mode(int32_t mode) {
+    dsd_app_tone_filter_payload payload;
+    DSD_MEMSET(&payload, 0, sizeof payload);
+    payload.mode = mode;
+    payload.keep_list = 1;
+    return capture_command(DSD_APP_CMD_TONE_FILTER_SET, &payload, sizeof payload);
+}
+
+int
 dsd_app_command_set_config_metadata(const dsd_app_config_metadata_payload* payload) {
     DSD_MEMSET(&g_config_metadata, 0, sizeof g_config_metadata);
     if (payload) {
@@ -2154,11 +2163,12 @@ tone_list(const char* text) {
 }
 
 /*
- * The live tone-filter editor (Audio > Tone filter...): a picker opened on the configured mode; Off posts the
- * configured list with it, so turning the filter off keeps the list, and Allow or Block prompt for the list, prefilled
- * with the configured one, and post it as typed -- DSD_APP_CMD_TONE_FILTER_SET validates and refuses. Under a scan row
- * with its own policy the picker and the prompt offer the configured policy, the one the command edits, never the
- * row's. Cancelling either posts nothing.
+ * The live tone-filter editor (Audio > Tone filter...): a picker opened on the configured mode; Off posts the mode
+ * alone (keep_list), so the decoder keeps the list it holds when the edit runs, and Off and clear list posts off with
+ * no list, the one way to remove it; Allow or Block prompt for the list, prefilled with the configured one, and post it
+ * as typed -- DSD_APP_CMD_TONE_FILTER_SET validates and refuses. Under a scan row with its own policy the picker and
+ * the prompt offer the configured policy, the one the command edits, never the row's, and before the first snapshot
+ * the menu's own options' policy, as the row's label reads it. Cancelling either posts nothing.
  */
 static int
 test_tone_filter_editor(void) {
@@ -2175,10 +2185,11 @@ test_tone_filter_editor(void) {
     reset_capture();
     act_tone_filter(&ctx);
     rc |= expect_str("tone picker title", g_chooser.title, "Tone filter");
-    rc |= expect_int("tone picker rows", g_chooser.n, 3);
+    rc |= expect_int("tone picker rows", g_chooser.n, 4);
     rc |= expect_str("tone picker off", g_chooser.labels[0], "Off");
     rc |= expect_str("tone picker allow", g_chooser.labels[1], "Allow list...");
     rc |= expect_str("tone picker block", g_chooser.labels[2], "Block list...");
+    rc |= expect_str("tone picker clear", g_chooser.labels[3], "Off and clear list");
     rc |= expect_int("tone picker opens on the configured mode", g_chooser.initial_sel, DSD_TONE_FILTER_BLOCK);
     rc |= expect_int("tone picker opens without posting", g_cmd.calls, 0);
 
@@ -2209,21 +2220,47 @@ test_tone_filter_editor(void) {
     posted = cmd_tone_filter();
     rc |= expect_int("tone block empty posted", posted.mode == DSD_TONE_FILTER_BLOCK && posted.list[0] == '\0', 1);
 
-    /* Off keeps the configured list, with no prompt. */
+    /* Off keeps the list, with no prompt: the mode alone, for the decoder to keep the list it holds. */
     reset_capture();
     act_tone_filter(&ctx);
     g_chooser.on_done(g_chooser.user, DSD_TONE_FILTER_OFF);
     rc |= expect_int("tone off does not prompt", g_prompt.calls, 0);
     posted = cmd_tone_filter();
     rc |= expect_int("tone off mode", posted.mode, DSD_TONE_FILTER_OFF);
-    rc |= expect_str("tone off keeps the configured list", posted.list, "100.0/D023I");
+    rc |= expect_int("tone off keeps the decoder's list", posted.keep_list, 1);
+    rc |= expect_str("tone off sends no list of its own", posted.list, "");
+
+    /* Off and clear list: off with no list, with no prompt. */
+    reset_capture();
+    act_tone_filter(&ctx);
+    g_chooser.on_done(g_chooser.user, 3);
+    rc |= expect_int("tone clear does not prompt", g_prompt.calls, 0);
+    posted = cmd_tone_filter();
+    rc |= expect_int("tone clear posts off without a list",
+                     posted.mode == DSD_TONE_FILTER_OFF && posted.keep_list == 0 && posted.list[0] == '\0', 1);
 
     /* Cancelled or out of range: nothing. */
     reset_capture();
     act_tone_filter(&ctx);
     g_chooser.on_done(g_chooser.user, -1);
-    g_chooser.on_done(g_chooser.user, 3);
+    g_chooser.on_done(g_chooser.user, 4);
     rc |= expect_int("tone picker cancel posts nothing", g_cmd.calls + g_prompt.calls, 0);
+
+    /* Before the first snapshot: the menu's own options' policy, the one its label reads. */
+    static dsd_opts own;
+    DSD_MEMSET(&own, 0, sizeof own);
+    own.analog_tone_filter = DSD_TONE_FILTER_ALLOW;
+    own.analog_tone_set = tone_list("71.9");
+    static UiCtx own_ctx;
+    own_ctx = make_ctx(&own, &state);
+    dsd_test_scan_labels_set(0, DSD_SCAN_MODE_INHERIT);
+    reset_capture();
+    act_tone_filter(&own_ctx);
+    rc |= expect_int("tone picker before a snapshot opens on the menu's policy", g_chooser.initial_sel,
+                     DSD_TONE_FILTER_ALLOW);
+    g_chooser.on_done(g_chooser.user, DSD_TONE_FILTER_BLOCK);
+    rc |= expect_str("tone prompt before a snapshot offers the menu's list", g_prompt.prefill, "71.9");
+    dsd_test_scan_labels_set(1, DSD_SCAN_MODE_INHERIT);
 
     /* Under an nfm row with its own policy, dsd_opts holds the row's: the editor offers the configured one. */
     dsd_scan_settings configured = {0};
@@ -2241,11 +2278,6 @@ test_tone_filter_editor(void) {
                      DSD_TONE_FILTER_ALLOW);
     g_chooser.on_done(g_chooser.user, DSD_TONE_FILTER_BLOCK);
     rc |= expect_str("tone prompt under a row offers the configured list", g_prompt.prefill, "82.5");
-    reset_capture();
-    act_tone_filter(&ctx);
-    g_chooser.on_done(g_chooser.user, DSD_TONE_FILTER_OFF);
-    posted = cmd_tone_filter();
-    rc |= expect_str("tone off under a row keeps the configured list", posted.list, "82.5");
     dsd_test_scan_labels_row_options(NULL);
     dsd_test_scan_labels_configured(NULL);
     dsd_test_scan_labels_tone_policy(DSD_TONE_FILTER_OFF, NULL);

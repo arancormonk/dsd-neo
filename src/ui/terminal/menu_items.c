@@ -825,8 +825,8 @@ const NcMenuItem AUDIO_MENU_ITEMS[] = {
     {.id = "audio.tone_filter",
      .label_fn = lbl_tone_filter,
      .help = "CTCSS/DCS filter on the analog FM monitor: off, allow only or block the listed tones and codes, "
-             "separated by / (e.g. 67.0/100.0/D023N). Edits the configured default, applied live; a scan row with its "
-             "own tone filter keeps it while on air.",
+             "separated by / (e.g. 67.0/100.0/D023N). Off keeps the list; Off and clear list removes it. Edits the "
+             "configured default, applied live; a scan row with its own tone filter keeps it while on air.",
      .on_select = act_tone_filter},
     {.id = "audio.sep", .kind = NC_ITEM_SEPARATOR},
     {.id = "audio.alert",

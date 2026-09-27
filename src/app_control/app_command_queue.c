@@ -295,7 +295,6 @@ static const int k_ui_cmd_coalescible_setter_ids[] = {
     DSD_APP_CMD_SCAN_VOICE_HOLD_MS_SET,
     DSD_APP_CMD_NFM_BANDWIDTH_SET,
     DSD_APP_CMD_AM_BANDWIDTH_SET,
-    DSD_APP_CMD_TONE_FILTER_SET,
 };
 
 static int
@@ -1675,6 +1674,26 @@ ui_cmd_handle_am_bandwidth_set(dsd_opts* opts, dsd_state* state, const struct ds
 _Static_assert(sizeof(((dsd_app_tone_filter_payload*)0)->list) == (size_t)DSD_TONE_LIST_TEXT_MAX + 1U,
                "the tone-filter payload holds exactly the longest list the parser reads");
 
+/* The policy a tone-filter edit sets, checked as dsd_tone_filter_check() checks it. An edit that keeps the list
+   (keep_list, the terminal's Off) takes the configured list as it stands now, on the decoder thread, so an edit or a
+   loaded config queued before it is what it keeps; with no list configured it is judged as an edit without one, which
+   only off takes. Returns 0 with the policy's list in @p out, -1 with the reason in @p why. */
+static int
+ui_tone_filter_edit_policy(const dsd_opts* opts, const dsd_state* state, const dsd_app_tone_filter_payload* edit,
+                           dsd_tone_set* out, char* why, size_t why_size) {
+    if (!edit->keep_list) {
+        return dsd_tone_filter_check((int)edit->mode, edit->list, out, why, why_size);
+    }
+    dsd_tone_set kept;
+    DSD_MEMSET(&kept, 0, sizeof kept);
+    dsd_scan_mode_configured_tone_policy(opts, state, NULL, &kept);
+    if (dsd_tone_set_count(&kept) > 0 && dsd_tone_filter_mode_name((int)edit->mode) != NULL) {
+        *out = kept;
+        return 0;
+    }
+    return dsd_tone_filter_check((int)edit->mode, "", out, why, why_size);
+}
+
 /* DSD_APP_CMD_TONE_FILTER_SET (issue #527, the live tone-filter editor): the configured CTCSS/DCS receive policy, mode
    and list, checked by the list parser and refused with the reason (by entry number, never the text), changing nothing,
    when it fails. Like the squelch and width setters it edits the configured policy without suspending a scan row
@@ -1687,12 +1706,13 @@ ui_cmd_handle_tone_filter_set(dsd_opts* opts, dsd_state* state, const struct dsd
     }
     dsd_app_tone_filter_payload edit;
     DSD_MEMCPY(&edit, c->data, sizeof edit);
-    if (!memchr(edit.list, '\0', sizeof edit.list)) {
+    if (!memchr(edit.list, '\0', sizeof edit.list) || (edit.keep_list != 0 && edit.keep_list != 1)
+        || (edit.keep_list && edit.list[0] != '\0')) {
         return UI_CMD_APPLY_INVALID_PAYLOAD;
     }
     dsd_tone_set set;
     char why[DSD_TONE_LIST_ERROR_SIZE];
-    if (dsd_tone_filter_check((int)edit.mode, edit.list, &set, why, sizeof why) != 0) {
+    if (ui_tone_filter_edit_policy(opts, state, &edit, &set, why, sizeof why) != 0) {
         ui_set_toast(state, 5, "Refused: tone filter: %s", why);
         return UI_CMD_APPLY_FAILED;
     }
@@ -3229,6 +3249,15 @@ dsd_app_command_set_tone_filter(int32_t mode, const char* list) {
         return DSD_APP_COMMAND_SUBMIT_REJECTED;
     }
     DSD_MEMCPY(payload.list, text, len);
+    return dsd_app_command_submit(DSD_APP_CMD_TONE_FILTER_SET, &payload, sizeof payload);
+}
+
+int
+dsd_app_command_set_tone_filter_mode(int32_t mode) {
+    dsd_app_tone_filter_payload payload;
+    DSD_MEMSET(&payload, 0, sizeof payload);
+    payload.mode = mode;
+    payload.keep_list = 1;
     return dsd_app_command_submit(DSD_APP_CMD_TONE_FILTER_SET, &payload, sizeof payload);
 }
 
