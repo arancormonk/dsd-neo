@@ -1921,23 +1921,29 @@ External dependencies (resolved via CMake):
   (`Util.analogBandwidthSummary()`).
 - `DSD_SCAN_OPT_TONE` (issue #527) is one bit for three spellings, `--tone-allow <list>`, `--tone-block <list>` and the
   explicit row disable `--no-tone-filter`, so combining them is a duplicate; `NFM` only (`needs mode nfm` on digital and
-  blank rows). The setter parses with `dsd_tone_set_parse()`, and `option_invalid()` asks it again for the
-  entry-numbered reason. The values (`tone_filter`, `tone_set`) land in `dsd_opts::analog_tone_filter` /
+  blank rows; an am row or `am-conventional` target, whose AM monitor hears no tone, refuses it as
+  `not supported for this mode/target`). The setter parses with `dsd_tone_set_parse()`, and `option_invalid()` asks it
+  again for the entry-numbered reason. The values (`tone_filter`, `tone_set`) land in `dsd_opts::analog_tone_filter` /
   `analog_tone_set` and the leading row block of `dsd_scan_settings`, outside `dsd_scan_settings_equal()` (policy, not
   acquisition). `dsd_scan_mode_configured_tone_policy()` reads the configured one for saves; the rx tone view marks a
   row's own `(row; default X)`. Scan coupling is the engine's (see Engine): PENDING holds a row as its carrier does,
-  REJECTED releases it at the scanner's next pass. The CSV splitters end the options cell at an unquoted comma, so both
-  importers (`chan_import_options_split()` in `dsd_import.c`, `scan_check_options_split()` in `trunk_scan.c`) ask
-  `dsd_scan_options_tone_list_split()` whether the cell ends with a tone list and the field after it goes on with it
-  (any text past the header; in a named column, a field that is one space-free run of `/`-separated entries starting
-  with a standard tone or code, so a name such as `100 Main St` stays the column's own) and refuse the row with
-  `use / between entries, not commas` rather than import it short or blame the column the rest landed in. Import
-  previews (`dsd_csv_channel_profile`, `dsd_app_scan_csv_target`) do not show the policy yet; they are added with the AM
-  scan-list work for issue #526. Tests: `RUNTIME_SCAN_OPTIONS`, `RUNTIME_SCAN_MODE`, `RUNTIME_CONFIG_USER` (never
-  saved), `RUNTIME_CONFIG_APPLY` (a loaded config under a row's own policy), `CORE_CSV_IMPORT` and
-  `APP_CONTROL_TRUNK_SCAN_VALIDATE` (row diagnostics), `ENGINE_NO_CARRIER_RESET` (`-Y`, the legacy untyped list and a
-  list with nowhere else to go, a row refused its width included), `ENGINE_TRUNK_SCAN` (a target refused its width
-  included).
+  REJECTED releases it at the scanner's next pass, and on an am row or target no verdict is in force
+  (`dsd_analog_tone_gate_in_force()`), so the carrier holds it as `Carrier`. The CSV splitters end the options cell at
+  an unquoted comma, so both importers (`chan_import_options_split()` in `dsd_import.c`, `scan_check_options_split()` in
+  `trunk_scan.c`) ask `dsd_scan_options_tone_list_split()` whether the cell ends with a tone list and the field after it
+  goes on with it (any text past the header; in a named column, a field that is one space-free run of `/`-separated
+  entries starting with a standard tone or code, so a name such as `100 Main St` stays the column's own) and refuse the
+  row with `use / between entries, not commas` rather than import it short or blame the column the rest landed in. The
+  import previews carry a row's own policy as `tone_filter` (its `dsd_tone_filter_mode`, -1 when the row runs the
+  configured one) and `tone_list` (its list as displayed) in `dsd_csv_channel_profile` and `dsd_app_scan_csv_target`,
+  both filled by `dsd_scan_option_tone_summary()`; they reach the Qt/Android channel-map review and target preview as
+  `toneFilter` (invalid when the row inherits) and `toneList`, which read `Tone filter: allow 100.0 Hz/D023N`, `off`, or
+  `inherit` on an nfm row without one (`Util.toneFilterSummary()`). Tests: `RUNTIME_SCAN_OPTIONS`, `RUNTIME_SCAN_MODE`,
+  `RUNTIME_CONFIG_USER` (never saved), `RUNTIME_CONFIG_APPLY` (a loaded config under a row's own policy),
+  `CORE_CSV_IMPORT` and `APP_CONTROL_TRUNK_SCAN_VALIDATE` (row diagnostics, am rows and targets, previews),
+  `ENGINE_NO_CARRIER_RESET` (`-Y`, the legacy untyped list and a list with nowhere else to go, a row refused its width
+  included, an am row), `ENGINE_TRUNK_SCAN` (a target refused its width included, an am target),
+  `UI_QT_IMPORTED_FILES`, `UI_QT_SCAN_LIST_ROUNDTRIP` and `UI_QT_QML_CALL_LISTS` (previews).
 - Adding a row option: add the `DSD_SCAN_OPT_*` bit (reserved values only), a `dsd_scan_option_values` field and a
   `specifications[]` row with its setter in `runtime/scan_options.c` (use `ANY_MODES` only for options that mean the
   same on every class); add a `scan_option_appliers[]` row in `runtime/scan_mode.c`; if it lands in `dsd_opts`, add

@@ -539,24 +539,28 @@ no symbol profile is applied over the monitor. Everything below applies to both 
   together, so a peer already running both is not asked again; after a request whose reply was lost the next one is
   always sent. On an RTL-family input DSD-neo demodulates the I/Q itself and the peer only follows the frequency: it is
   asked for `-B`, best-effort, as before, whatever the target runs, and whatever demodulator the peer is on.
-- **Tone filter.** `--tone-allow <list>`, `--tone-block <list>` or `--no-tone-filter` in the `options` column set the
-  target's own CTCSS/DCS receive policy; without one the configured policy (`--tone-allow`/`--tone-block`, `[analog]
-  tone_filter` and `tone_list`) applies (see "Tone filter" in `docs/cli.md`). The list takes `/` between entries: an
-  unquoted comma ends the `options` cell, and a row whose list runs on past one (into a field past the header, or into
-  a column whose whole field is then a run of `/`-separated entries with no space, starting with a standard tone or
-  code) is refused with `use / between entries, not commas`, as is a quoted cell with a comma. The policy is a
-  setting, shown apart from the tone or code received. Under a list policy each transmission is muted while it is
-  checked (800 ms, to 1,600 ms while a listed DCS code is still being confirmed), and holds the target as any carrier
-  does, under `Tone check` meanwhile; like any carrier it is activity, so one that ends before a verdict leaves the
-  target's `activity_hold_ms` behind it. Traffic the policy rejects is muted and is no activity: it never restarts
+- **Tone filter.** `--tone-allow <list>`, `--tone-block <list>` or `--no-tone-filter` in the `options` column set an
+  `nfm-conventional` target's own CTCSS/DCS receive policy; without one the configured policy
+  (`--tone-allow`/`--tone-block`, `[analog] tone_filter` and `tone_list`) applies (see "Tone filter" in `docs/cli.md`).
+  The list takes `/` between entries: an unquoted comma ends the `options` cell, and a row whose list runs on past one
+  (into a field past the header, or into a column whose whole field is then a run of `/`-separated entries with no
+  space, starting with a standard tone or code) is refused with `use / between entries, not commas`, as is a quoted cell
+  with a comma. The Qt/Android preview of an imported target file names it (`Tone filter: allow 100.0 Hz/D023N`,
+  `Tone filter: off`), or `Tone filter: inherit` on an `nfm-conventional` target without one. The policy is a setting,
+  shown apart from the tone or code received. Under a list policy each transmission is muted while it is checked (800
+  ms, to 1,600 ms while a listed DCS code is still being confirmed), and holds the target as any carrier does, under
+  `Tone check` meanwhile; like any carrier it is activity, so one that ends before a verdict leaves the target's
+  `activity_hold_ms` behind it. Traffic the policy rejects is muted and is no activity: it never restarts
   `activity_hold_ms`, and at the next tick the coordinator advances, without waiting out the hold that earlier traffic
   earned, which is how traffic that was passing and turns out to carry a blocked (or, under allow, an unlisted) tone or
-  code releases the target. The `Y` hold keeps the target, muted. With nowhere else to go (a list with this one
-  target, or whose other targets are avoided, cooling down from a failed retune, or skipped at every visit for a width
-  the DSP rate cannot filter) the target mutes the traffic and stays, without rotating on its idle dwell meanwhile.
-  Leaving the target restores the configured policy, and Config->Save never writes a target's own. A configured list
-  policy with no `nfm-conventional` target in the list has no effect, since every target runs its own type's mode, and
-  scan start says so once.
+  code releases the target. The `Y` hold keeps the target, muted. With nowhere else to go (a list with this one target,
+  or whose other targets are avoided, cooling down from a failed retune, or skipped at every visit for a width the DSP
+  rate cannot filter) the target mutes the traffic and stays, without rotating on its idle dwell meanwhile. Leaving the
+  target restores the configured policy, and Config->Save never writes a target's own. An `am-conventional` target has
+  no policy: the AM monitor hears no CTCSS or DCS, so its `options` refuse the switches, and while it is parked the
+  configured policy judges and mutes nothing and its carrier holds it under `Carrier`. A configured list policy with no
+  `nfm-conventional` target in the list has no effect, since every target runs its own type's mode, and scan start says
+  so once.
 - **Controls.** `--scan-max-visit-ms`, the `Y` hold, advance and avoid work exactly as for digital targets, including
   while a carrier holds the target. The voice gate never applies to an analog target, so a global `--scan-voice-only`
   does not block one, and voice-gate switches are rejected in its `options`.

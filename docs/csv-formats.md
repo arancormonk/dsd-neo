@@ -336,27 +336,31 @@ list scanned under `-fA` or `-fM` (AM), which hold on their carrier under `-t` a
 analog row whose squelch is off or at -100 dB or below: noise then keeps its carrier open, re-arming the hold with every
 block, so only the visit cap or a manual advance or avoid moves on.
 
-The tone policy (issue #527) is the configured receive policy (`--tone-allow`, `--tone-block`, `[analog] tone_filter`
-and `tone_list`; see "Tone filter" in `docs/cli.md`) for this row alone: a row without one runs the configured policy,
-`--no-tone-filter` turns it off on this row, and the list is written as on the command line, `/` between entries. A
-comma ends the `options` cell (the splitter has no quoting), so a list written with commas is refused rather than
-imported short: when the cell ends with the list and the field after the comma lies past the header's last column, or is
-one of the file's own columns whose whole field is a run of `/`-separated entries with no space, starting with a
-standard tone or code (`67.0`, `67.0/D023N`), the row is refused with `--tone-allow: use / between entries, not commas`,
-and the text after the comma is not repeated. A name with a space in it (`100 Main St`, `D023 Repeater`) is its column's
-own, but a one-word name that is itself a standard tone or code (`100`) reads as the list's rest. A code matches by its
-signal: `D023I` passes traffic received as `DCS D047N / D023I`. The row's policy applies when the row is tuned and the
-configured one is restored when the scanner moves on, and Config->Save never writes it. The policy is a setting, and
-frontends show it apart from the tone or code received: the `Tone filter:` line (terminal) and `TONE FILTER` row
-(Qt/Android) read `allow 100.0 Hz/D023N (row; default off)` while the row's own policy is on air over a configured
-policy that is off, beside the `Rx tone:` line or `RECEIVED TONE` row that only ever shows what was received. Under a
-list policy each transmission starts muted while it is checked (800 ms, to 1,600 ms while a DCS code in the list is
-still being confirmed); the row holds as any carrier holds it, with the stay reason `Tone check` meanwhile, and like any
-carrier it is activity, so one that ends before a verdict leaves the ordinary `-t` or `activity_hold_ms` tail behind it.
-Traffic the policy rejects is muted and holds nothing: a `-Y` row moves on at the next no-carrier pass and an
-`nfm-conventional` target at the next tick, without waiting out `-t` or its `activity_hold_ms`, and traffic that was
-passing and turns out to carry a blocked (or, under allow, another) tone or code is released the same way. An operator
-hold keeps the row, muted. Example:
+On an `nfm` row or `nfm-conventional` target the tone policy (issue #527) is the configured receive policy
+(`--tone-allow`, `--tone-block`, `[analog] tone_filter` and `tone_list`; see "Tone filter" in `docs/cli.md`) for this
+row alone: a row without one runs the configured policy, `--no-tone-filter` turns it off on this row, and the list is
+written as on the command line, `/` between entries. A comma ends the `options` cell (the splitter has no quoting), so a
+list written with commas is refused rather than imported short: when the cell ends with the list and the field after the
+comma lies past the header's last column, or is one of the file's own columns whose whole field is a run of
+`/`-separated entries with no space, starting with a standard tone or code (`67.0`, `67.0/D023N`), the row is refused
+with `--tone-allow: use / between entries, not commas`, and the text after the comma is not repeated. A name with a
+space in it (`100 Main St`, `D023 Repeater`) is its column's own, but a one-word name that is itself a standard tone or
+code (`100`) reads as the list's rest. A code matches by its signal: `D023I` passes traffic received as
+`DCS D047N / D023I`. The row's policy applies when the row is tuned and the configured one is restored when the scanner
+moves on, and Config->Save never writes it. The Qt/Android channel-map review and target preview list it
+(`Tone filter: allow 100.0 Hz/D023N`, `Tone filter: off`), or `Tone filter: inherit` on an nfm row without one. An `am`
+row or `am-conventional` target has none: the AM monitor hears no CTCSS or DCS, so the options are refused there, and
+while it is on air the configured policy judges nothing and mutes nothing; its carrier holds it as `Carrier`. The policy
+is a setting, and frontends show it apart from the tone or code received: the `Tone filter:` line (terminal) and
+`TONE FILTER` row (Qt/Android) read `allow 100.0 Hz/D023N (row; default off)` while the row's own policy is on air over
+a configured policy that is off, beside the `Rx tone:` line or `RECEIVED TONE` row that only ever shows what was
+received. Under a list policy each transmission starts muted while it is checked (800 ms, to 1,600 ms while a DCS code
+in the list is still being confirmed); the row holds as any carrier holds it, with the stay reason `Tone check`
+meanwhile, and like any carrier it is activity, so one that ends before a verdict leaves the ordinary `-t` or
+`activity_hold_ms` tail behind it. Traffic the policy rejects is muted and holds nothing: a `-Y` row moves on at the
+next no-carrier pass and an `nfm-conventional` target at the next tick, without waiting out `-t` or its
+`activity_hold_ms`, and traffic that was passing and turns out to carry a blocked (or, under allow, another) tone or
+code is released the same way. An operator hold keeps the row, muted. Example:
 
 ```csv
 channel,frequency_hz,name,mode,options
