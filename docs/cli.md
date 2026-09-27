@@ -969,13 +969,13 @@ setting, shown apart from what is received, and it is off by default: then the o
   noise and speech with no code raise one at 800 ms on 1 to 3 receptions in 100, which then wait on average another
   250 ms.
 - After the verdict the detectors keep listening for the whole transmission. Allow: the allowed tone lost (after the
-  detector's own hold-over) mutes again and starts a fresh window, and another tone or code confirmed rejects it. Block:
-  a blocked tone or code confirmed later rejects traffic that was passing, and losing a tone keeps a pass. A rejection
-  holds until the carrier has been gone for the 200 ms hangover, except that a tone or code the list passes, confirmed
-  later, lets the traffic through; another the list does not pass keeps it rejected and becomes its reason, so a
-  rejection for want of a tone that later hears an unlisted tone reads `muted: not allowed` and logs that tone. The next
-  transmission starts over, and so does the one on air when the policy itself changes (a loaded config, a scan row's
-  own policy coming on air): it is muted for a fresh check.
+  detector's own hold-over) mutes again and starts a fresh window, and an unlisted tone or code confirmed rejects it,
+  while another listed one keeps it passing. Block: a blocked tone or code confirmed later rejects traffic that was
+  passing, and losing a tone keeps a pass. A rejection holds until the carrier has been gone for the 200 ms hangover,
+  except that a tone or code the list passes, confirmed later, lets the traffic through; another the list does not pass
+  keeps it rejected and becomes its reason, so a rejection for want of a tone that later hears an unlisted tone reads
+  `muted: not allowed` and logs that tone. The next transmission starts over, and so does the one on air when the policy
+  itself changes (a loaded config, a scan row's own policy coming on air): it is muted for a fresh check.
 - What is muted: the live monitor output and the UDP analog monitor (`-o udp`), together. The `-6` raw WAV is a capture
   ahead of every gate, squelch and tone filter included, and keeps everything.
 - Scanning: a transmission still being checked holds a `-Y` row or `--trunk-scan` target as any carrier does, with

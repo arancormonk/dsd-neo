@@ -362,7 +362,7 @@ in the list is still being confirmed); the row holds as any carrier holds it, wi
 meanwhile, and like any carrier it is activity, so one that ends before a verdict leaves the ordinary `-t` or
 `activity_hold_ms` tail behind it. Traffic the policy rejects is muted and holds nothing: a `-Y` row moves on at the
 next no-carrier pass and an `nfm-conventional` target at the next tick, without waiting out `-t` or its
-`activity_hold_ms`, and traffic that was passing and turns out to carry a blocked (or, under allow, another) tone or
+`activity_hold_ms`, and traffic that was passing and turns out to carry a blocked (or, under allow, an unlisted) tone or
 code is released the same way. An operator hold keeps the row, muted. A `-Y` row on the same frequency is somewhere
 to take rejected traffic only when it would judge it otherwise: a row of another class (a `dmr` row for a mixed-mode
 repeater's DMR traffic), or an `nfm` row whose own or configured policy passes the traffic's tone or code (a repeater
