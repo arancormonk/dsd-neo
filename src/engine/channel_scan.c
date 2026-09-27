@@ -686,10 +686,11 @@ scan_tone_policy_rejects_locked(int mode, const dsd_tone_set* set, const dsd_ana
  * CTCSS/DCS receive policy in force rejected (issue #527), so that a step to it would only end the reception and judge
  * the same traffic again. Its policy is @p row's own (DSD_SCAN_OPT_TONE), else the configured one
  * (dsd_scan_mode_configured_tone_policy()), each as it judges. It rejects the traffic when it is the policy in force
- * (dsd_opts), which already did; otherwise when it is a list policy that rejects what the verdict rests on: the value
- * the detectors hold locked (an allow list that does not list it, a block list that does), or, after a "no tone"
- * verdict, no tone (an allow list). With neither in hand (the rejected value has since been lost) only the policy in
- * force is known to reject it. A row with no policy passes everything. @p row may be NULL (no options). */
+ * (dsd_opts), which already did, its codes perhaps respelled (dsd_tone_set_same_signals()); otherwise when it is a list
+ * policy that rejects what the verdict rests on: the value the detectors hold locked (an allow list that does not list
+ * it, a block list that does), or, after a "no tone" verdict, no tone (an allow list). With neither in hand (the
+ * rejected value has since been lost) only the policy in force is known to reject it. A row with no policy passes
+ * everything. @p row may be NULL (no options). */
 static int
 channel_scan_tone_rejects_alike(const dsd_opts* opts, const dsd_state* state, const dsd_scan_option_values* row) {
     int mode = DSD_TONE_FILTER_OFF;
@@ -705,7 +706,7 @@ channel_scan_tone_rejects_alike(const dsd_opts* opts, const dsd_state* state, co
     int in_force_mode = opts->analog_tone_filter;
     dsd_tone_set in_force_set = opts->analog_tone_set;
     scan_tone_policy_as_judged(&in_force_mode, &in_force_set);
-    if (mode == in_force_mode && dsd_tone_set_equal(&set, &in_force_set)) {
+    if (mode == in_force_mode && dsd_tone_set_same_signals(&set, &in_force_set)) {
         return 1;
     }
     if (mode == DSD_TONE_FILTER_OFF) {

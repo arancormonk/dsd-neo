@@ -6196,7 +6196,7 @@ static void
 ui_warn_tone_filter_unreached(const dsd_opts* opts, const dsd_state* state, const ui_tone_filter_reach* before) {
     const ui_tone_filter_reach after = ui_tone_filter_reach_of(opts, state);
     if (!after.unused
-        || (before->unused && before->mode == after.mode && dsd_tone_set_equal(&before->set, &after.set))) {
+        || (before->unused && before->mode == after.mode && dsd_tone_set_same_signals(&before->set, &after.set))) {
         return;
     }
     (void)dsd_scan_mode_warn_tone_filter_unused(opts, state, 0);

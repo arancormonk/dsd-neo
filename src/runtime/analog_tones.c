@@ -647,6 +647,36 @@ dsd_tone_set_equal(const dsd_tone_set* a, const dsd_tone_set* b) {
     return 1;
 }
 
+/* @p set with each DCS entry written as the canonical spelling of its signal (dsd_dcs_canonical()). */
+static void
+tone_set_by_signal(const dsd_tone_set* set, dsd_tone_set* out) {
+    DSD_MEMSET(out, 0, sizeof(*out));
+    out->ctcss = set->ctcss;
+    for (int bit = 0; bit < TONE_SET_DCS_BITS; bit++) {
+        if (!tone_set_dcs_bit(set, bit)) {
+            continue;
+        }
+        int canon_code = -1;
+        int canon_inverted = 0;
+        const int index = dsd_dcs_canonical(dsd_dcs_code(bit / 2), bit % 2, &canon_code, &canon_inverted) == 0
+                              ? dsd_dcs_code_index(canon_code)
+                              : -1;
+        tone_set_dcs_put(out, index >= 0 ? (2 * index) + canon_inverted : bit);
+    }
+}
+
+int
+dsd_tone_set_same_signals(const dsd_tone_set* a, const dsd_tone_set* b) {
+    if (!a || !b) {
+        return a == b;
+    }
+    dsd_tone_set a_signals;
+    dsd_tone_set b_signals;
+    tone_set_by_signal(a, &a_signals);
+    tone_set_by_signal(b, &b_signals);
+    return dsd_tone_set_equal(&a_signals, &b_signals);
+}
+
 int
 dsd_tone_set_contains_ctcss(const dsd_tone_set* set, int tenths_hz) {
     const int index = dsd_ctcss_tone_index(tenths_hz);

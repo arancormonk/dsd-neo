@@ -434,6 +434,27 @@ test_reconfigure(void) {
     assert(feed_ms(&policy, rx_ctcss(1000), 20) == DSD_ANALOG_TONE_GATE_OFF);
 }
 
+/* A code is one signal under either of its spellings, so a list that respells one is the same policy: a block list of
+   D023I reloaded as D047N keeps the pass it gave no-tone traffic, rather than muting the reception for a fresh check. The
+   list in force takes the new spelling. Another polarity is another signal, and so another policy. */
+static void
+test_reconfigure_same_signals(void) {
+    dsd_analog_tone_policy policy;
+    policy_with(&policy, DSD_TONE_FILTER_BLOCK, "100.0/D023I");
+    assert(feed_ms(&policy, rx_carrier(DSD_ANALOG_TONE_STATE_NONE), 1000) == DSD_ANALOG_TONE_GATE_ALLOWED);
+    assert(policy.no_tone == 1);
+    const dsd_tone_set respelled = tone_list("D047N/100");
+    assert(dsd_analog_tone_policy_configure(&policy, DSD_TONE_FILTER_BLOCK, &respelled) == 0);
+    assert(policy.gate == DSD_ANALOG_TONE_GATE_ALLOWED && policy.no_tone == 1 && policy.window_open == 1);
+    assert(dsd_tone_set_equal(&policy.set, &respelled));
+    assert(feed_ms(&policy, rx_carrier(DSD_ANALOG_TONE_STATE_NONE), 100) == DSD_ANALOG_TONE_GATE_ALLOWED);
+    /* The respelled list still blocks the signal. */
+    assert(feed_ms(&policy, rx_dcs(0023, 1), 20) == DSD_ANALOG_TONE_GATE_REJECTED);
+    const dsd_tone_set other_polarity = tone_list("D047I/100");
+    assert(dsd_analog_tone_policy_configure(&policy, DSD_TONE_FILTER_BLOCK, &other_polarity) == 1);
+    assert(policy.gate == DSD_ANALOG_TONE_GATE_PENDING && policy.window_open == 0);
+}
+
 /* What each verdict does: the monitor plays only OFF and ALLOWED; every verdict but REJECTED holds a scan row. */
 static void
 test_outputs(void) {
@@ -474,6 +495,7 @@ main(void) {
     test_dcs_extension();
     test_dcs_match_by_signal();
     test_reconfigure();
+    test_reconfigure_same_signals();
     test_outputs();
     printf("DSP_ANALOG_TONE_POLICY: ok\n");
     return 0;

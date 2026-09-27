@@ -2006,8 +2006,8 @@ tone_filter_warnings_from(dsd_opts* opts, dsd_state* state, int id, const void* 
 /*
  * Issue #527: a tone filter set while AM or a digital mode is active warns once, in a running session too. A
  * decode-mode change that takes the FM monitor away from the policy in force says so once, and another digital mode
- * after it does not say it again; a loaded config that sets another policy nothing runs says so, and loading it again
- * does not; going back to the FM monitor says nothing.
+ * after it does not say it again; a loaded config that sets another policy nothing runs says so, and loading it again,
+ * or with its code respelled, does not; going back to the FM monitor says nothing.
  */
 static int
 test_tone_filter_warns_when_a_command_leaves_it_unheard(void) {
@@ -2036,6 +2036,10 @@ test_tone_filter_warns_when_a_command_leaves_it_unheard(void) {
     rc |= expect_int("tone live: a config's policy under P25 warns",
                      tone_filter_warnings_from(&opts, &state, DSD_APP_CMD_CONFIG_APPLY, &cfg, sizeof cfg, 0), 1);
     rc |= expect_int("tone live: the config loaded again stays quiet",
+                     tone_filter_warnings_from(&opts, &state, DSD_APP_CMD_CONFIG_APPLY, &cfg, sizeof cfg, 0), 0);
+    /* D047I is D023N's other spelling: the same policy, still unheard, is not news. */
+    rc |= expect_int("tone live: config list respelled", dsd_tone_set_parse("D047I", &cfg.analog_tone_set, NULL, 0), 0);
+    rc |= expect_int("tone live: the config respelled stays quiet",
                      tone_filter_warnings_from(&opts, &state, DSD_APP_CMD_CONFIG_APPLY, &cfg, sizeof cfg, 0), 0);
     rc |= expect_int("tone live: the policy stands", opts.analog_tone_filter, DSD_TONE_FILTER_BLOCK);
     rc |= expect_int("tone live: back to -fA stays quiet",

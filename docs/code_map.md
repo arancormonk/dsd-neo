@@ -545,8 +545,10 @@ Tests: `tests/engine/test_engine_trunk_scan.c` (`ENGINE_TRUNK_SCAN`) and
     values and a signal listed twice by entry number, never echoing the text; `dsd_tone_set_format()` writes it back as
     written and `dsd_tone_set_format_display()` with units and a `…+N` count for what does not fit;
     `dsd_tone_set_contains_ctcss()` / `_dcs()` match a code by its signal (`dsd_dcs_canonical()` on both sides), so a
-    listed D023I matches a received D047N. `RUNTIME_ANALOG_TONES` pins the table value by value, and both predicates
-    case by case. DCS (issue #523):
+    listed D023I matches a received D047N. `dsd_tone_set_same_signals()` compares two lists by what they pass, a code
+    under either spelling, for every question of whether two policies are the same (the tone policy's reconfigure, the
+    `-Y` same-frequency row check, the unheard-policy warning); `dsd_tone_set_equal()` compares them as written.
+    `RUNTIME_ANALOG_TONES` pins the table value by value, and both predicates case by case. DCS (issue #523):
     the standard 104-code set, `dsd_dcs_word()` (any 9-bit code's 23-bit Golay word: code, the fixed 100, 11 check bits;
     bit 0 sent first, a multiple of `0xC75`; inverted polarity is the complement), `dsd_dcs_match()` (names the signal
     in 23 received bits when some rotation, in either polarity, is a supported code's word), `dsd_dcs_canonical()` (the
@@ -1094,7 +1096,8 @@ installs from `src/engine/trunk_tuning.c` in `src/engine/trunk_tuning_hooks_inst
     for a newly confirmed passing value; another confirmed nonpassing value becomes the rejection's reason (a "no tone"
     rejection that hears an unlisted tone names it). A locked value outside the standard sets is not confirmed: it is
     judged as no tone at the window's end. The tap's glue (`analog_rx.c`) configures it from `dsd_opts` on every read
-    (the FM monitor only; a different policy starts the reception over, and its check is not logged as a tone lost),
+    (the FM monitor only; a different policy starts the reception over, and its check is not logged as a tone lost; a
+    list that only respells a code is the same policy, `dsd_tone_set_same_signals()`),
     resets it with every reset the publication's generation records (hangover, retune, row change, pause), publishes
     `gate` and `gate_no_tone`, and logs `Tone filter: allowed|rejected (<value>|no tone)` and
     `Tone filter: pending (tone lost)` on a change. `dsd_symbol.c`

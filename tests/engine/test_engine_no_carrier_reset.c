@@ -1802,6 +1802,41 @@ test_typed_scan_tone_rejection_weighs_same_frequency_rows(void) {
     return rc;
 }
 
+/* Issue #527: a code is one DCS signal under either of its spellings, so a same-frequency row whose own list only
+ * respells the policy in force (D047N for D023I) runs that policy and would reject the same traffic: it is nowhere to go,
+ * even once the value the rejection rested on is lost (no locked code, no "no tone" verdict to weigh). A list of the
+ * code's other polarity is another policy, which may pass the traffic, so that row is somewhere to go. */
+static int
+test_typed_scan_respelled_policy_rejects_alike(void) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    int rc = 0;
+    opts->scanner_mode = 1;
+    opts->analog_only = 1;
+    opts->analog_tone_filter = DSD_TONE_FILTER_BLOCK;
+    rc |= expect_true("respelled: the policy in force",
+                      dsd_tone_set_parse("100.0/D023I", &opts->analog_tone_set, NULL, 0) == 0);
+    state->lcn_freq_count = 2;
+    state->lcn_freq_roll = 1; /* row 0 is on air */
+    state->trunk_lcn_freq[0] = 154430000L;
+    state->trunk_lcn_freq[1] = 154430000L;
+    rc |= set_tone_scan_row(state, 0, DSD_SCAN_MODE_NFM, DSD_TONE_FILTER_BLOCK, "100.0/D023I");
+    rc |= set_tone_scan_row(state, 1, DSD_SCAN_MODE_NFM, DSD_TONE_FILTER_BLOCK, "D047N/100");
+    state->analog_rx.carrier_open = 1;
+    state->analog_rx.gate = DSD_ANALOG_TONE_GATE_REJECTED;
+    state->analog_rx.tone_state = DSD_ANALOG_TONE_STATE_ACQUIRING;
+    rc |= expect_true("respelled: the same policy is nowhere to go",
+                      dsd_engine_channel_scan_has_other_row(opts, state) == 0);
+    rc |= set_tone_scan_row(state, 1, DSD_SCAN_MODE_NFM, DSD_TONE_FILTER_BLOCK, "D047I/100");
+    rc |= expect_true("respelled: another polarity is somewhere to go",
+                      dsd_engine_channel_scan_has_other_row(opts, state) == 1);
+    free_test_runtime(opts, state);
+    return rc;
+}
+
 /* Issue #527 beside #526: an am row runs the AM monitor, which hears no CTCSS or DCS, so the configured tone policy
  * (--tone-allow 100.0 here) judges nothing there. A verdict still published (a rejection an nfm row left behind) is not
  * in force: the row's carrier holds it under "Carrier", never "Tone check", and nothing steps it; the configured policy
@@ -3859,6 +3894,7 @@ main(void) {
     rc |= test_typed_scan_tone_rejection_with_a_refused_row();
     rc |= test_typed_scan_tone_rejection_weighs_an_am_row();
     rc |= test_typed_scan_tone_rejection_weighs_same_frequency_rows();
+    rc |= test_typed_scan_respelled_policy_rejects_alike();
     rc |= test_typed_scan_am_row_ignores_the_tone_filter();
     rc |= test_typed_scan_tune_boundaries();
     rc |= test_typed_scan_nfm_rows_switch_family(0);

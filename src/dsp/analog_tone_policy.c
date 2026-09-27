@@ -84,7 +84,9 @@ dsd_analog_tone_policy_configure(dsd_analog_tone_policy* policy, int mode, const
     if (mode != DSD_TONE_FILTER_OFF) {
         next = *set;
     }
-    if (mode == policy->mode && dsd_tone_set_equal(&next, &policy->set)) {
+    if (mode == policy->mode && dsd_tone_set_same_signals(&next, &policy->set)) {
+        /* The same policy, its codes perhaps respelled (D023I for D047N): the verdict stands. */
+        policy->set = next;
         return 0;
     }
     policy->mode = mode;

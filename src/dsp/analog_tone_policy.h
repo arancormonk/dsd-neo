@@ -65,7 +65,8 @@ void dsd_analog_tone_policy_init(dsd_analog_tone_policy* policy);
  * NULL @p set, is OFF) and its list.
  *
  * A different policy starts the reception's evaluation over (a list policy: PENDING with a fresh window at the next
- * read with a carrier); the same one changes nothing.
+ * read with a carrier); the same one changes nothing, a list that only respells a code included
+ * (dsd_tone_set_same_signals()), which the policy then holds as given.
  *
  * @return 1 when the policy changed, 0 otherwise.
  */

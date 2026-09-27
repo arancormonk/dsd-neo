@@ -250,6 +250,13 @@ int dsd_tone_set_has_dcs(const dsd_tone_set* set);
 /** @brief 1 when @p a and @p b hold the same entries, each spelled the same (both NULL counts as equal). */
 int dsd_tone_set_equal(const dsd_tone_set* a, const dsd_tone_set* b);
 
+/**
+ * @brief 1 when @p a and @p b pass and block the same traffic: the same CTCSS tones and the same DCS signals, a code
+ * under either of its standard spellings (D023I and D047N are one signal), so a policy whose list is respelled is the
+ * same policy (both NULL counts as the same).
+ */
+int dsd_tone_set_same_signals(const dsd_tone_set* a, const dsd_tone_set* b);
+
 /** @brief 1 when @p set lists the CTCSS tone @p tenths_hz, 0 otherwise (and for NULL). */
 int dsd_tone_set_contains_ctcss(const dsd_tone_set* set, int tenths_hz);
 

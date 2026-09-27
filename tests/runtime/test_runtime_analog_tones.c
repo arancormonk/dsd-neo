@@ -773,6 +773,52 @@ test_tone_list_match_by_signal(void) {
     assert(dsd_tone_set_count(NULL) == 0 && !dsd_tone_set_has_dcs(NULL));
 }
 
+/* Two lists pass and block the same traffic when they hold the same tones and the same DCS signals, however each code
+ * is spelled (issue #527): a policy reloaded in the other spelling of its codes is the same policy. Exact equality
+ * still tells the spellings apart. */
+static void
+test_tone_list_same_signals(void) {
+    dsd_tone_set a;
+    dsd_tone_set b;
+    assert(dsd_tone_set_parse("100.0/D023I", &a, NULL, 0) == 0);
+    assert(dsd_tone_set_parse("D047N/100", &b, NULL, 0) == 0);
+    assert(!dsd_tone_set_equal(&a, &b));
+    assert(dsd_tone_set_same_signals(&a, &b) && dsd_tone_set_same_signals(&b, &a));
+    assert(dsd_tone_set_same_signals(&a, &a));
+    /* Another polarity is another signal; so is another tone, and a list with one entry more. */
+    assert(dsd_tone_set_parse("100.0/D023N", &b, NULL, 0) == 0);
+    assert(!dsd_tone_set_same_signals(&a, &b));
+    assert(dsd_tone_set_parse("103.5/D047N", &b, NULL, 0) == 0);
+    assert(!dsd_tone_set_same_signals(&a, &b));
+    assert(dsd_tone_set_parse("100.0/D047N/D754I", &b, NULL, 0) == 0);
+    assert(!dsd_tone_set_same_signals(&a, &b) && !dsd_tone_set_same_signals(&b, &a));
+    /* Every standard code in either polarity is the same signal as its other spelling, and not as its own other
+       polarity. */
+    for (int i = 0; i < DSD_DCS_CODE_COUNT; i++) {
+        const int code = dsd_dcs_code(i);
+        for (int inverted = 0; inverted < 2; inverted++) {
+            char entry[8];
+            char alias[8];
+            char flipped[8];
+            int alias_code = -1;
+            int alias_inverted = -1;
+            assert(dsd_dcs_format(code, inverted, entry, sizeof(entry)) > 0);
+            assert(dsd_dcs_alias(code, inverted, &alias_code, &alias_inverted) == 0);
+            assert(dsd_dcs_format(alias_code, alias_inverted, alias, sizeof(alias)) > 0);
+            assert(dsd_dcs_format(code, inverted ? 0 : 1, flipped, sizeof(flipped)) > 0);
+            assert(dsd_tone_set_parse(entry, &a, NULL, 0) == 0);
+            assert(dsd_tone_set_parse(alias, &b, NULL, 0) == 0);
+            assert(dsd_tone_set_same_signals(&a, &b));
+            assert(dsd_tone_set_parse(flipped, &b, NULL, 0) == 0);
+            assert(!dsd_tone_set_same_signals(&a, &b));
+        }
+    }
+    const dsd_tone_set empty = {0};
+    assert(dsd_tone_set_same_signals(NULL, NULL));
+    assert(!dsd_tone_set_same_signals(&a, NULL) && !dsd_tone_set_same_signals(NULL, &a));
+    assert(dsd_tone_set_same_signals(&empty, &empty) && !dsd_tone_set_same_signals(&a, &empty));
+}
+
 static void
 test_tone_list_format(void) {
     dsd_tone_set set;
@@ -831,6 +877,7 @@ main(void) {
     test_tone_list_parse();
     test_tone_list_refusals();
     test_tone_list_match_by_signal();
+    test_tone_list_same_signals();
     test_tone_list_format();
     test_tone_filter_mode();
     test_table();
