@@ -1628,6 +1628,17 @@ Private per-protocol modules worth knowing about:
   behind its own exact sync word before the carrier drops. `processDSTAR()` and `processProVoice()` return the answer,
   the dispatch handlers map it to `dsd_frame_verdict`, and the engine clears it with the carrier through the exported
   `dstar_confirm_reset()`/`provoice_confirm_reset()`.
+- `src/protocol/provoice/provoice_frame.{c,h}` — the ProVoice frame-pair deinterleaver. It fills each IMBE 7100x4400
+  frame with `dsd_vocoder_soft_bit` cells, a hard bit and the confidence in it, and `provoice.c` hands them to
+  `processMbeFrameSoft()` (issue #588). The confidence is `dsd_two_level_symbol_reliability()`
+  (`<dsd-neo/core/dibit.h>`) of the symbol `getDibitAndSoftSymbol()` returned: its distance from `center` over half
+  the spacing of `min` and `max`, which for ProVoice are the class means the sync warm start set and stay fixed
+  through the frame (the threshold tracker runs only for `rf_mod` 1 and P25 Phase 1). The shared two-level slicer
+  stores no soft metric, so `getDibitSoft()` does not apply to ProVoice, EDACS or D-STAR symbols. Cells the
+  interleave schedule never reaches are bit 0 at reliability 0, which the decoder never reads.
+  `mbe_process_provoice()` hands the decode's `mbe_process_result` to `mbe_processImbe4400Dataf()` unchanged: its
+  `MBE_PROCESS_FLAG_PROVOICE` is what gives a muted frame ProVoice comfort noise rather than the P25 level, and
+  `CORE_MBE_TRANSFORM_CONTEXT` pins the live path to mbelib's own ProVoice frame API through repeats into muting.
 - `src/protocol/dpmr/dpmr_confirm.{c,h}` — the same shape for dPMR, gating both audio and the hunt (issue #407). The
   check is the CCH CRC-7, which was there all along: it covers the 41 payload bits behind all six Hamming(12,8)
   blocks, so a passing half means the half decoded. What it replaced was `dpmr_ids_are_strong()`, which accepted a

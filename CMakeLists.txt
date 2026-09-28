@@ -636,6 +636,7 @@ check_c_source_compiles(
 int main(void) {
     const mbe_soft_bit imbe_soft[8][23] = {{{0}}};
     const mbe_soft_bit ambe_soft[4][24] = {{{0}}};
+    const mbe_soft_bit imbe7100_soft[7][24] = {{{0}}};
     const char imbe_fr[8][23] = {{0}};
     const char imbe7100_fr[7][24] = {{0}};
     const char ambe_fr[4][24] = {{0}};
@@ -651,11 +652,12 @@ int main(void) {
     mbe_initProcessResult(&result);
     result.c0_errors = 0;
     result.total_errors = 0;
-    result.flags = MBE_PROCESS_FLAG_SOFT_INPUT;
+    result.flags = MBE_PROCESS_FLAG_SOFT_INPUT | MBE_PROCESS_FLAG_PROVOICE;
     (void)mbe_decodeImbe7200x4400Frame(imbe_fr, imbe_d, &result);
     (void)mbe_decodeImbe7100x4400Frame(imbe7100_fr, imbe_d, &result);
     (void)mbe_decodeAmbe3600x2450Frame(ambe_fr, ambe_d, &result);
     (void)mbe_decodeImbe7200x4400SoftFrame(imbe_soft, imbe_d, &result);
+    (void)mbe_decodeImbe7100x4400SoftFrame(imbe7100_soft, imbe_d, &result);
     (void)mbe_decodeAmbe3600x2450SoftFrame(ambe_soft, ambe_d, &result);
     (void)mbe_processImbe4400Dataf(audio, &result, imbe_d, &cur, &prev, &prev_enhanced);
     (void)mbe_processAmbe2450Dataf(audio, &result, ambe_d, &cur, &prev, &prev_enhanced);

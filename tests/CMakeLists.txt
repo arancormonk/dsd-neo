@@ -9552,6 +9552,26 @@ target_link_libraries(
 )
 add_test(NAME DIBIT_SYMBOL_BIN_SOFT COMMAND dsd-neo_test_dibit_symbol_bin_soft)
 
+# Two-level symbol reliability for the ProVoice soft IMBE decode (issue #588)
+add_executable(
+    dsd-neo_test_dibit_two_level_reliability
+    core/test_dibit_two_level_reliability.c
+    ${PROJECT_SOURCE_DIR}/src/core/frames/dsd_dibit.c
+    test_support/call_state_stubs.c
+)
+target_include_directories(
+    dsd-neo_test_dibit_two_level_reliability
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+target_link_libraries(
+    dsd-neo_test_dibit_two_level_reliability
+    PRIVATE dsd-neo_platform ${DSD_NEO_TEST_MATH_LIB}
+)
+add_test(
+    NAME DIBIT_TWO_LEVEL_RELIABILITY
+    COMMAND dsd-neo_test_dibit_two_level_reliability
+)
+
 add_executable(
     dsd-neo_test_dibit_rtl_fsk_reliability
     core/test_dibit_rtl_fsk_reliability.c

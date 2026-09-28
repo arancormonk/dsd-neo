@@ -162,9 +162,10 @@ C4FM/CQPSK, NXDN48/96, dPMR) it is used directly.
 `provoice` is the sigidwiki ProVoice clip, one 3.5 s transmission (issue #588). Unlike the other audio sources it was
 recorded from a receiver's de-emphasized audio rather than from its discriminator: its 9600 baud clock line is there,
 but the roll-off smears each transition across its neighbours and, as recorded, it gives no frame sync at all. The
-builder undoes a single-pole 225 us de-emphasis (`AUDIO_DEEMPHASIS_US`) before remodulating it; swept over 150-500 us,
-that value decoded the most frames at under one correction per voice frame. Under `-fp` and `-fh` the fixture
-decodes 40 ProVoice frames, 160 IMBE 7100x4400 voice frames at 0.93 corrections each. ProVoice carries no CRC, BCH or
+builder undoes a single-pole 225 us de-emphasis (`AUDIO_DEEMPHASIS_US`) before remodulating it; swept over 150-500 us
+with the hard-decision decoder of the time, that value decoded the most frames at under one correction per voice
+frame. Under `-fp` and `-fh` the fixture decodes 40 ProVoice frames, 160 IMBE 7100x4400 voice frames, 86 of them with
+nothing to correct. ProVoice carries no CRC, BCH or
 parity anywhere in its frame, so `DECODE_IQ_PROVOICE` and `DECODE_IQ_PROVOICE_EDACS` assert on what `-Z` prints: the
 64-bit header field after the LID, the same in 30 of the 40 frames (the rest are a bit or two off, since nothing
 protects it). `DECODE_IQ_PROVOICE_IMBE` asserts a voice frame that decoded with no correction. With ±45 counts of added
@@ -1164,6 +1165,12 @@ Reading it:
   Startup `NOTICE:` lines are left out: the ProVoice and EDACS presets print two
   that mention voice, and before issue #588 they were the whole count for a
   ProVoice run, so its errors were divided by 2 rather than by its frames.
+- **Soft-decision error counts are not a quality score on their own.** mbelib's
+  soft Golay reports how many data bits of the codeword it chose differ from the
+  hard decisions, so a soft decode that lands on the right codeword where the
+  hard one did not can report as many corrections, or more. For a change between
+  hard and soft decoding (issue #588), compare the builds' `-Z` IMBE payloads
+  against a reference decode as well.
 - **Paired per repeat.** Builds run round-robin with the order rotated each
   repeat, because a fixed order credits the better slot to whichever build holds
   it. The report compares within a repeat for the same reason.

@@ -161,7 +161,8 @@ FIXTURES = [
 # recording: its 9600 baud clock line is there, but as recorded it gives no frame sync at all.
 # The constant is not published, so it was measured (issue #588): swept over 150-500 us with the
 # remodulation deviation over 0.2-0.35, 225 us at 0.25 decoded 160 IMBE frames at 0.93 corrections
-# a frame, where 200 us decoded more frames with more corrections and 250-300 us fewer frames.
+# a frame under hard decisions, where 200 us decoded more frames with more corrections and 250-300 us
+# fewer frames.
 AUDIO_DEEMPHASIS_US = {
     "provoice": 225.0,
 }

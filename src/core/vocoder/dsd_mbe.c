@@ -88,6 +88,18 @@ copy_imbe7200_soft_frame(dsd_vocoder_soft_bit src[8][23], mbe_soft_bit dst[8][23
     }
 }
 
+/* Unlike the copies around it, ProVoice bits pass through unchanged: a cell that is not 0 or 1 then fails mbelib's
+ * validation exactly as it does on the hard decode, instead of being read as a 1. */
+static void
+copy_imbe7100_soft_frame(dsd_vocoder_soft_bit src[7][24], mbe_soft_bit dst[7][24]) {
+    for (int row = 0; row < 7; row++) {
+        for (int bit = 0; bit < 24; bit++) {
+            dst[row][bit].bit = src[row][bit].bit;
+            dst[row][bit].reliability = src[row][bit].reliability;
+        }
+    }
+}
+
 static void
 copy_ambe_soft_frame(dsd_vocoder_soft_bit src[4][24], mbe_soft_bit dst[4][24]) {
     if (!src || !dst) {
@@ -170,6 +182,22 @@ decode_imbe7200_frame(dsd_state* state, char imbe_fr[8][23], dsd_vocoder_soft_bi
     }
 
     int ret = mbe_decodeImbe7200x4400Frame((const char (*)[23])imbe_fr, imbe_d, result);
+    return store_decode_result(ret, &state->errs, &state->errs2, result) >= 0;
+}
+
+/* Soft when the caller brought reliabilities (the live ProVoice reader), hard otherwise. */
+static int
+decode_imbe7100_frame(dsd_state* state, char imbe7100_fr[7][24], dsd_vocoder_soft_bit imbe7100_soft_fr[7][24],
+                      char imbe_d[88], mbe_process_result* result) {
+    int ret;
+    if (imbe7100_soft_fr) {
+        mbe_soft_bit soft_fr[7][24];
+
+        copy_imbe7100_soft_frame(imbe7100_soft_fr, soft_fr);
+        ret = mbe_decodeImbe7100x4400SoftFrame((const mbe_soft_bit(*)[24])soft_fr, imbe_d, result);
+    } else {
+        ret = mbe_decodeImbe7100x4400Frame((const char (*)[24])imbe7100_fr, imbe_d, result);
+    }
     return store_decode_result(ret, &state->errs, &state->errs2, result) >= 0;
 }
 
@@ -332,9 +360,7 @@ typedef struct {
 } mbe_frame_ctx_t;
 
 static void
-mbe_prepare_frame_state(dsd_state* state, mbe_frame_ctx_t* frame_ctx, dsd_vocoder_soft_bit imbe7100_soft_fr[7][24],
-                        const dsd_call_snapshot* call) {
-    (void)imbe7100_soft_fr;
+mbe_prepare_frame_state(dsd_state* state, mbe_frame_ctx_t* frame_ctx, const dsd_call_snapshot* call) {
     frame_ctx->vertex_ks_applied_l = 0;
     frame_ctx->vertex_ks_applied_r = 0;
 
@@ -617,10 +643,13 @@ mbe_process_p25p1(dsd_opts* opts, dsd_state* state, char imbe_fr[8][23], dsd_voc
 }
 
 static void
-mbe_process_provoice(dsd_opts* opts, dsd_state* state, char imbe7100_fr[7][24], mbe_frame_ctx_t* frame_ctx) {
+mbe_process_provoice(dsd_opts* opts, dsd_state* state, char imbe7100_fr[7][24],
+                     dsd_vocoder_soft_bit imbe7100_soft_fr[7][24], mbe_frame_ctx_t* frame_ctx) {
+    /* The decode's result goes to the 4400 data API unchanged: its C0/C4 context, the soft-input flag, and
+     * MBE_PROCESS_FLAG_PROVOICE, without which a muted ProVoice frame would get the P25 noise level instead of
+     * ProVoice comfort noise. */
     mbe_process_result imbe_result;
-    int decode_ret = mbe_decodeImbe7100x4400Frame((const char (*)[24])imbe7100_fr, frame_ctx->imbe_d, &imbe_result);
-    if (store_decode_result(decode_ret, &state->errs, &state->errs2, &imbe_result) < 0) {
+    if (!decode_imbe7100_frame(state, imbe7100_fr, imbe7100_soft_fr, frame_ctx->imbe_d, &imbe_result)) {
         store_process_result(MBE_STATUS_INVALID_BITS, state->audio_out_temp_buf, &state->errs, &state->errs2,
                              state->err_str, sizeof(state->err_str), NULL);
         return;
@@ -1961,12 +1990,12 @@ processMbeFrameInternal(dsd_opts* opts, dsd_state* state, char imbe_fr[8][23], c
     dsd_call_snapshot call;
 
     const int have_call = mark_vocoder_call_media(opts, state, &call);
-    mbe_prepare_frame_state(state, &frame_ctx, imbe7100_soft_fr, have_call ? &call : NULL);
+    mbe_prepare_frame_state(state, &frame_ctx, have_call ? &call : NULL);
 
     if (DSD_SYNC_IS_P25P1(state->synctype)) {
         mbe_process_p25p1(opts, state, imbe_fr, imbe_soft_fr, &frame_ctx);
     } else if (DSD_SYNC_IS_PROVOICE(state->synctype)) {
-        mbe_process_provoice(opts, state, imbe7100_fr, &frame_ctx);
+        mbe_process_provoice(opts, state, imbe7100_fr, imbe7100_soft_fr, &frame_ctx);
     } else if ((state->synctype == DSD_SYNC_DSTAR_VOICE_POS) || (state->synctype == DSD_SYNC_DSTAR_VOICE_NEG)) {
         mbe_process_dstar(opts, state, ambe_fr, &frame_ctx);
     } else if (DSD_SYNC_IS_X2TDMA(state->synctype)) {
