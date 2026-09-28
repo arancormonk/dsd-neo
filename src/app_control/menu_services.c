@@ -1014,6 +1014,24 @@ svc_describe_analog_refusal(const dsd_opts* opts, int kind, int width_hz, char* 
     svc_why(why, why_size, "the RTL front end refused %s %s (see log)", label, width);
 }
 
+/* What the monitor runs after a refused return to it (@p runs_hz, svc_describe_monitor_return_refusal()), for the end
+   of its toast: the width it kept, the kind's default, or, when the default was refused too, @p default_refused (said
+   only when the refused width, @p width_hz, was not that default). */
+static void
+svc_monitor_return_runs(const char* label, int width_hz, int runs_hz, const char* default_refused, char* runs,
+                        size_t runs_size) {
+    runs[0] = '\0';
+    if (runs_hz > 0) {
+        char kept[DSD_ANALOG_WIDTH_TEXT_MAX];
+        (void)dsd_analog_width_format(runs_hz, kept, sizeof kept);
+        DSD_SNPRINTF(runs, runs_size, "; the monitor keeps %s %s", label, kept);
+    } else if (runs_hz == 0) {
+        DSD_SNPRINTF(runs, runs_size, "; the monitor is back on the %s default", label);
+    } else if (width_hz > 0) {
+        DSD_SNPRINTF(runs, runs_size, "; the %s default %s", label, default_refused);
+    }
+}
+
 void
 svc_describe_monitor_return_refusal(const dsd_opts* opts, int kind, int width_hz, int runs_hz, char* why,
                                     size_t why_size) {
@@ -1021,35 +1039,23 @@ svc_describe_monitor_return_refusal(const dsd_opts* opts, int kind, int width_hz
     const char* label = dsd_analog_demod_label(kind);
     char width[DSD_ANALOG_WIDTH_TEXT_MAX];
     (void)dsd_analog_width_format(held_hz > 0 ? held_hz : dsd_analog_width_default_hz(kind), width, sizeof width);
+    char runs[DSD_ANALOG_WIDTH_TEXT_MAX + 48];
+#ifdef USE_RADIO
     /* The rate the scan left the front end on, which a row's retune can have moved off the DSP bandwidth: the one the
        stream publishes, not the one rtl_dsp_bw_khz gives (svc_describe_analog_refusal()). */
-    int rate_hz = 0;
-#ifdef USE_RADIO
-    rate_hz = (opts && opts->audio_in_type == AUDIO_IN_RTL) ? rtl_stream_get_demod_rate_hz() : 0;
-#else
-    (void)opts;
-#endif
-    const int rate_explains = rate_hz > 0 && held_hz > 0 && !dsd_analog_width_realizable(held_hz, rate_hz);
-    /* What the monitor runs now; nothing more to say when the refused width was the default and it stays refused. */
-    char runs[DSD_ANALOG_WIDTH_TEXT_MAX + 48];
-    runs[0] = '\0';
-    if (runs_hz > 0) {
-        char kept[DSD_ANALOG_WIDTH_TEXT_MAX];
-        (void)dsd_analog_width_format(runs_hz, kept, sizeof kept);
-        DSD_SNPRINTF(runs, sizeof runs, "; the monitor keeps %s %s", label, kept);
-    } else if (runs_hz == 0) {
-        DSD_SNPRINTF(runs, sizeof runs, "; the monitor is back on the %s default", label);
-    } else if (width_hz > 0 && rate_explains) {
-        DSD_SNPRINTF(runs, sizeof runs, "; the %s default does not fit it either", label);
-    } else if (width_hz > 0) {
-        DSD_SNPRINTF(runs, sizeof runs, "; the %s default is refused too", label);
-    }
-    if (rate_explains) {
+    const int rate_hz = (opts && opts->audio_in_type == AUDIO_IN_RTL) ? rtl_stream_get_demod_rate_hz() : 0;
+    if (rate_hz > 0 && held_hz > 0 && !dsd_analog_width_realizable(held_hz, rate_hz)) {
         char rate[DSD_ANALOG_WIDTH_TEXT_MAX];
         (void)dsd_analog_width_format(rate_hz, rate, sizeof rate);
+        svc_monitor_return_runs(label, width_hz, runs_hz, "does not fit it either", runs, sizeof runs);
         svc_why(why, why_size, "%s %s does not fit the %s DSP rate%s", label, width, rate, runs);
         return;
     }
+#else
+    (void)opts;
+#endif
+    /* A refusal the rate does not explain (no rate published, or one the width fits) points at the log. */
+    svc_monitor_return_runs(label, width_hz, runs_hz, "is refused too", runs, sizeof runs);
     svc_why(why, why_size, "the RTL front end refused %s %s (see log)%s", label, width, runs);
 }
 

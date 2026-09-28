@@ -300,6 +300,7 @@ main() {
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/io/rtl_stream.h>
 #include <dsd-neo/io/rtl_stream_c.h>
+#include <dsd-neo/io/rtl_stream_fwd.h>
 #include <dsd-neo/platform/platform.h>
 #include <dsd-neo/platform/threading.h>
 #include <dsd-neo/platform/timing.h>
