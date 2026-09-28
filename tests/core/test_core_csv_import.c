@@ -496,8 +496,7 @@ write_text_file(const char* path, const char* text) {
         fclose(fp);
         return -1;
     }
-    fclose(fp);
-    return 0;
+    return fclose(fp) == 0 ? 0 : -1;
 }
 
 static int
@@ -2376,21 +2375,21 @@ collect_nfm_profile(const dsd_csv_channel_profile* row, void* context) {
     seen->count++;
 }
 
-/* Import @p body as a channel map; returns csvChanImport()'s result and the diagnostics it logged. */
+/* Import @p body as a channel map; returns csvChanImport()'s result and the diagnostics it logged, or -2 when the map
+ * could not be written or imported. A failure returns rather than asserts, so the caller still removes @p path. */
 static int
 import_channel_map_text(const char* path, const char* body, char* log, size_t log_size) {
-    FILE* fp = dsd_fopen_private(path, "w");
-    assert(fp);
-    assert(fputs(body, fp) >= 0);
-    assert(fclose(fp) == 0);
+    log[0] = '\0';
+    if (write_text_file(path, body) != 0) {
+        DSD_FPRINTF(stderr, "could not write channel map %s\n", path);
+        return -2;
+    }
     dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
     dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
-    assert(opts && state);
-    DSD_SNPRINTF(opts->chan_in_file, sizeof opts->chan_in_file, "%s", path);
     int imported = -2;
     dsd_test_capture_stderr cap;
-    log[0] = '\0';
-    if (dsd_test_capture_stderr_begin(&cap, "chan_nfm") == 0) {
+    if (opts && state && dsd_test_capture_stderr_begin(&cap, "chan_nfm") == 0) {
+        DSD_SNPRINTF(opts->chan_in_file, sizeof opts->chan_in_file, "%s", path);
         imported = csvChanImport(opts, state);
         (void)dsd_test_capture_stderr_end(&cap);
         (void)dsd_test_capture_stderr_read(&cap, log, log_size);
@@ -2600,7 +2599,10 @@ test_nfm_channel_map_tone_lists(void) {
         rc = 1;
     }
     nfm_profiles seen = {0};
-    assert(dsd_csv_inspect_channel_profiles(path, &seen, collect_nfm_profile) == 0 && seen.count == 6);
+    if (dsd_csv_inspect_channel_profiles(path, &seen, collect_nfm_profile) != 0 || seen.count != 6) {
+        DSD_FPRINTF(stderr, "tone review: inspected %zu rows, want 6\n", seen.count);
+        rc = 1;
+    }
     static const int want_filter[] = {DSD_TONE_FILTER_ALLOW, DSD_TONE_FILTER_BLOCK, DSD_TONE_FILTER_OFF, -1, -1, -1};
     static const char* const want_list[] = {"100.0 Hz/D023N", "67.0 Hz/D047I", "", "", "", ""};
     for (size_t i = 0; i < 6; i++) {
@@ -2654,13 +2656,14 @@ test_nfm_channel_map_tone_lists(void) {
         }
     }
     /* The dry run a frontend previews through refuses the same row. */
-    FILE* fp = dsd_fopen_private(path, "w");
-    assert(fp);
-    assert(fputs(refused[0].body, fp) >= 0);
-    assert(fclose(fp) == 0);
+    const int dry_run_written = write_text_file(path, refused[0].body) == 0;
+    if (!dry_run_written) {
+        DSD_FPRINTF(stderr, "tone dry run: could not write %s\n", path);
+        rc = 1;
+    }
     dsd_csv_validation stats = {0};
     dsd_test_capture_stderr cap;
-    if (dsd_test_capture_stderr_begin(&cap, "chan_tone_validate") == 0) {
+    if (dry_run_written && dsd_test_capture_stderr_begin(&cap, "chan_tone_validate") == 0) {
         rc |= dsd_csv_validate_chan_file(path, &stats) == 0 ? 1 : 0;
         (void)dsd_test_capture_stderr_end(&cap);
         (void)remove(cap.path);
