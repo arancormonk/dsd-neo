@@ -70,6 +70,8 @@ main(void) {
     rc |= expect_true("no cache file", fp == NULL);
     if (fp) {
         fclose(fp);
+        /* The test has already failed; remove the file so that the directory goes too. */
+        (void)remove(path);
     }
     if (dsd_test_rmdir(dir) != 0) {
         DSD_FPRINTF(stderr, "could not remove temp cache directory %s: %s\n", dir, strerror(errno));
