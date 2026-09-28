@@ -627,8 +627,9 @@ int svc_rtl_restart_locked(dsd_opts* opts, dsd_state* state);
  * @brief Start the input the options describe again after the start on the input that replaced it failed, or ran but
  * was undone, without acquiring; caller holds the P25 SM tick guard (issue #578).
  *
- * Every rollback restart goes through it: Input > Switch source and a config apply putting back the input that ran,
- * and an Airspy settings reopen putting back the settings it replaced (svc_airspy_apply_config()). The change already
+ * Every rollback restart goes through it: Input > Switch source, a DSP bandwidth change (RTL_SET_BW) and a config
+ * apply putting back the input that ran, and an Airspy settings reopen putting back the settings it replaced
+ * (svc_airspy_apply_config()). The change already
  * stopped the stream that ran, which closed its I/Q capture (--iq-capture) with what it had recorded, and a start opens
  * the capture file anew, writing over it. So a recovery start of a radio input never reopens the capture, which stays
  * off for the rest of the session (iq_capture_requested cleared), and the log says so, naming the file: kept, when the
@@ -700,8 +701,18 @@ int svc_rtl_set_gain(dsd_opts* opts, dsd_state* state, int value);
  * keep a wider DSP bandwidth ("DSP BW 12 kHz cannot filter the scan row's NFM 12.5 kHz (max 9.6 kHz); keep a wider DSP
  * bandwidth"). The validator's full text is logged. The reopen is also refused while DSD_NEO_CHANNEL_LPF=0 turns off
  * the channel filter that width needs, which its start would refuse at any rate.
+ *
+ * A bandwidth it takes reopens the running RTL-family input under one hold of the P25 SM tick guard. A reopen whose
+ * start fails is left with no stream and @p why empty, for the caller that knows the input that ran to put it back
+ * (DSD_APP_CMD_RTL_SET_BW does, issue #578): a SoapySDR or Airspy device delivers a rate the bandwidth sets, which no
+ * check before the reopen knows, and any device can fail to open.
+ *
+ * @return 0 when stored (and reopened); -1 with @p why set when refused before anything changed; otherwise the failed
+ *         restart's nonzero result, with @p why empty.
  */
 int svc_rtl_set_bandwidth(dsd_opts* opts, dsd_state* state, int khz, char* why, size_t why_size);
+/** svc_rtl_set_bandwidth() without acquiring; caller holds the P25 SM tick guard. */
+int svc_rtl_set_bandwidth_locked(dsd_opts* opts, dsd_state* state, int khz, char* why, size_t why_size);
 /**
  * @brief Set the RTL squelch threshold from a decibel value.
  *

@@ -1365,24 +1365,24 @@ ui_cmd_rtl_enable_input_refused(const dsd_opts* opts, dsd_state* state, const st
     return 1;
 }
 
-/* Input > Switch source whose start failed on the new input (issue #578): a width the rate the device delivered cannot
-   filter, or a device that did not open. The switch never leaves the session without the input it had: the reason is
-   taken while the options still describe the input that failed (svc_describe_start_failure(), into @p why), then the
-   input that ran before is put back, a PCM input as it was (the switch never closed it) and an RTL-family one started
-   again, without the I/Q capture that would write over its recording (svc_rtl_restart_recovery_locked(), which sets
-   @p out_capture_stopped). It is the input that ran, so nothing is reset as for a new one (ui_input_switched()).
-   Caller holds the P25 SM tick guard. Returns 1 when the start refused its width, 0 when it failed for another
-   reason. */
+/* Input > Switch source, or a DSP bandwidth change, whose start failed on the new input or settings (issue #578): a
+   width the rate the device delivered cannot filter, or a device that did not open. The command never leaves the
+   session without the input it had: the reason is taken while the options still describe the input that failed
+   (svc_describe_start_failure(), into @p why), then the input that ran before (@p before) is put back, a PCM input as
+   it was (a switch never closed it) and an RTL-family one started again, without the I/Q capture that would write over
+   its recording (svc_rtl_restart_recovery_locked(), which sets @p out_capture_stopped). It is the input that ran, so
+   nothing is reset as for a new one (ui_input_switched()). Caller holds the P25 SM tick guard. Returns 1 when the
+   start refused its width, 0 when it failed for another reason. */
 static int
-ui_rtl_enable_input_failed_locked(dsd_opts* opts, dsd_state* state, const ui_radio_input* before, char* why,
-                                  size_t why_size, int* out_capture_stopped) {
+ui_radio_start_failed_locked(dsd_opts* opts, dsd_state* state, const ui_radio_input* before, char* why, size_t why_size,
+                             int* out_capture_stopped) {
     *out_capture_stopped = 0;
     const int refused = svc_describe_start_failure(opts, why, why_size);
     if (before->running) {
         ui_restore_radio_input(opts, before);
         if (before->audio_in_type == AUDIO_IN_RTL
             && svc_rtl_restart_recovery_locked(opts, state, out_capture_stopped) != 0) {
-            LOG_ERROR("Input switch: the input it replaced did not restart either; no radio input is running.\n");
+            LOG_ERROR("The input the change replaced did not restart either; no radio input is running.\n");
         }
     }
     return refused;
@@ -1419,7 +1419,7 @@ ui_cmd_handle_rtl_enable_input(dsd_opts* opts, dsd_state* state, const struct ds
     const int rc = svc_rtl_enable_input_locked(opts, state);
     const int failed = rc != 0 && !ui_rc_is_not_supported(rc);
     if (failed) {
-        refused = ui_rtl_enable_input_failed_locked(opts, state, &before, why, sizeof why, &capture_stopped);
+        refused = ui_radio_start_failed_locked(opts, state, &before, why, sizeof why, &capture_stopped);
     }
     p25_sm_tick_guard_leave();
 
@@ -1720,25 +1720,43 @@ apply_cmd_io_and_import_rtl_b(dsd_opts* opts, dsd_state* state, const struct dsd
     return ui_cmd_apply_handler_table(k_handlers, sizeof k_handlers / sizeof k_handlers[0], opts, state, c);
 }
 
+/* RTL_SET_BW. The bandwidth is held to the widths in use first (svc_rtl_set_bandwidth_locked()), refused with nothing
+   changed; one it takes reopens the device, whose start can still fail (issue #578): a width the rate an Airspy or
+   SoapySDR device delivers at the new bandwidth cannot filter, which nothing before the reopen knows, or a device
+   that does not open. That start never leaves the session without the input it had: the bandwidth, and the input it
+   ran, go back and start again (ui_radio_start_failed_locked()), and the toast says why ("Refused: " for a width,
+   "Failed: " otherwise). The watchdog reads the input under the P25 SM tick guard, so the command holds it from the
+   copy of the input it would put back through the reopen and any rollback, as Input > Switch source does. */
 static int
 ui_cmd_handle_rtl_set_bw(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
     int32_t v = 0;
-    int result = UI_CMD_APPLY_COMPLETED;
-    if (state && ui_cmd_parse_i32_payload(c, &v)) {
-        char why[128];
-        int rc = svc_rtl_set_bandwidth(opts, state, v, why, sizeof why);
-        result = ui_cmd_apply_status_from_service_rc(rc);
-        if (rc == 0) {
-            ui_set_toast(state, 3, "Applied: RTL DSP BW -> %d kHz", (int)opts->rtl_dsp_bw_khz);
-        } else if (ui_rc_is_not_supported(rc)) {
-            ui_set_toast(state, 3, "Unsupported: bandwidth control not available on active backend");
-        } else if (why[0] != '\0') {
-            ui_set_toast(state, 5, "Refused: %s", why);
-        } else {
-            ui_set_toast(state, 4, "Failed: RTL DSP BW update");
-        }
+    if (!opts || !state || !ui_cmd_parse_i32_payload(c, &v)) {
+        return UI_CMD_APPLY_COMPLETED;
     }
-    return result;
+    char why[128];
+    int refused = 0;
+    int capture_stopped = 0;
+    p25_sm_tick_guard_enter();
+    ui_radio_input before;
+    ui_capture_radio_input(opts, state, &before);
+    const int rc = svc_rtl_set_bandwidth_locked(opts, state, v, why, sizeof why);
+    /* A bandwidth refused before anything changed says why; a start that failed has said nothing yet. */
+    const int start_failed = rc != 0 && !ui_rc_is_not_supported(rc) && why[0] == '\0';
+    if (start_failed) {
+        refused = ui_radio_start_failed_locked(opts, state, &before, why, sizeof why, &capture_stopped);
+    }
+    p25_sm_tick_guard_leave();
+
+    if (rc == 0) {
+        ui_set_toast(state, 3, "Applied: RTL DSP BW -> %d kHz", (int)opts->rtl_dsp_bw_khz);
+    } else if (ui_rc_is_not_supported(rc)) {
+        ui_set_toast(state, 3, "Unsupported: bandwidth control not available on active backend");
+    } else if (start_failed) {
+        ui_set_rollback_toast(state, refused ? "Refused: " : "Failed: ", why, capture_stopped);
+    } else {
+        ui_set_toast(state, 5, "Refused: %s", why);
+    }
+    return ui_cmd_apply_status_from_service_rc(rc);
 }
 
 static int

@@ -1766,7 +1766,7 @@ svc_rtl_bandwidth_fits_analog_width(const dsd_opts* opts, const dsd_state* state
 }
 
 int
-svc_rtl_set_bandwidth(dsd_opts* opts, dsd_state* state, int khz, char* why, size_t why_size) {
+svc_rtl_set_bandwidth_locked(dsd_opts* opts, dsd_state* state, int khz, char* why, size_t why_size) {
     svc_why(why, why_size, "%s", "");
     if (!opts || !state) {
         return -1;
@@ -1781,9 +1781,18 @@ svc_rtl_set_bandwidth(dsd_opts* opts, dsd_state* state, int khz, char* why, size
     /* Tuner bandwidth change requires reopen */
     opts->rtl_needs_restart = 1;
     if (opts->audio_in_type == AUDIO_IN_RTL) {
-        return svc_rtl_restart(opts, state);
+        return svc_rtl_restart_locked(opts, state);
     }
     return 0;
+}
+
+int
+svc_rtl_set_bandwidth(dsd_opts* opts, dsd_state* state, int khz, char* why, size_t why_size) {
+    /* The watchdog reads the input under this guard: the new bandwidth and the reopen it takes run inside one hold. */
+    p25_sm_tick_guard_enter();
+    const int rc = svc_rtl_set_bandwidth_locked(opts, state, khz, why, why_size);
+    p25_sm_tick_guard_leave();
+    return rc;
 }
 
 int

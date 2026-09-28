@@ -883,10 +883,16 @@ installs from `src/engine/trunk_tuning.c` in `src/engine/trunk_tuning_hooks_inst
   not reset as a new input (`ui_input_switched()`). The P25 SM watchdog reads the input, and may retune it, under
   its tick guard, so the switch holds that guard from the copy of the input it would put back (a copy taken before
   it could miss a retune the watchdog completed meanwhile, which the rollback would undo) through its rewrite of the
-  input, the start and any rollback (`svc_rtl_enable_input_locked()`, `ui_rtl_enable_input_failed_locked()`), as a
+  input, the start and any rollback (`svc_rtl_enable_input_locked()`, `ui_radio_start_failed_locked()`), as a
   config apply's reopen does; an Airspy settings reopen (`svc_airspy_apply_config()`) holds it across the reopen and
-  the restart of the settings it replaced the same way. Every one of these rollback restarts, and the config apply's
-  below, goes through `svc_rtl_restart_recovery_locked()`: the failed change already stopped the stream that ran,
+  the restart of the settings it replaced the same way. `RTL_SET_BW` does too (issue #578): its pre-check holds the
+  width only to an RTL-SDR or rtl_tcp input's DSP bandwidth, and a SoapySDR or Airspy device delivers a rate the new
+  bandwidth sets that no check knows, so the handler copies the input under the guard, stores and reopens through
+  `svc_rtl_set_bandwidth_locked()` (which leaves a failed start with no stream and an empty reason), and a start that
+  fails puts the bandwidth and input that ran back through `ui_radio_start_failed_locked()`, toasting `Refused: <why>`
+  or `Failed: <why>`. These are the commands with a rollback: Input > Switch source, RTL_SET_BW, AIRSPY_SET and a
+  config apply's reopen; a gain, device index or explicit stream restart that fails still leaves no stream. Every one
+  of these rollback restarts, and the config apply's below, goes through `svc_rtl_restart_recovery_locked()`: the failed change already stopped the stream that ran,
   which closed its I/Q capture with what it had recorded, and a start reopens the capture file for writing, so the
   restart runs with `iq_capture_requested` cleared and leaves the capture off for the session. Its log names the file
   as kept only when the start the change made never opened the capture (`rtl_stream_start_opened_capture()`: a width

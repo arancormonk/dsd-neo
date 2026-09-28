@@ -5184,6 +5184,8 @@ static char g_config_rtl_create_dev[64];
 static int g_config_rtl_create_analog_only = -1;
 static int g_config_rtl_create_kind = -1;
 static int g_config_rtl_create_width_hz = -1;
+/* The DSP bandwidth the last create was handed. */
+static int g_config_rtl_create_bw_khz = -1;
 /* Starts made, and how many of the next ones fail. A start that fails on options that run the analog family records
    a refusal of their width at g_config_rtl_refuse_rate_hz when that is above 0, as the stream's analog channel check
    does at the rate the device delivered (rtl_stream_start_analog_refusal()); otherwise it fails for a device reason and
@@ -5213,6 +5215,7 @@ reset_config_rtl_wrap(void) {
     g_config_rtl_open_ok = 0;
     g_config_rtl_create_dev[0] = '\0';
     g_config_rtl_create_analog_only = g_config_rtl_create_kind = g_config_rtl_create_width_hz = -1;
+    g_config_rtl_create_bw_khz = -1;
     g_config_rtl_starts = g_config_rtl_fail_starts = g_config_rtl_refuse_rate_hz = 0;
     g_config_rtl_refused = g_config_rtl_refused_kind = g_config_rtl_refused_width_hz = g_config_rtl_refused_rate_hz = 0;
 }
@@ -5234,6 +5237,7 @@ __wrap_rtl_stream_create(dsd_opts* opts, RtlSdrContext** out_ctx) {
     g_config_rtl_create_analog_only = opts ? dsd_opts_is_analog_family(opts) : -1;
     g_config_rtl_create_kind = opts ? opts->analog_demod : -1;
     g_config_rtl_create_width_hz = opts ? dsd_opts_analog_width_hz(opts) : -1;
+    g_config_rtl_create_bw_khz = opts ? opts->rtl_dsp_bw_khz : -1;
     g_config_rtl_create_capture = opts ? opts->iq_capture_requested : -1;
     g_config_rtl_captures += g_config_rtl_create_capture == 1;
     g_config_rtl_opened_capture = 0;
@@ -5325,7 +5329,8 @@ expect_capture_stopped(const char* label, const dsd_opts* opts, int written_over
 }
 
 /* Issue #578: the input the P25 SM watchdog reads while it holds its tick guard (the device, the input type, the
-   rtl_tcp flag and the tuning), and whether a command wrote any of it without holding that guard. Armed on a command's
+   rtl_tcp flag, the tuning and the DSP bandwidth a restart opens it at), and whether a command wrote any of it without
+   holding that guard. Armed on a command's
    options (g_guard_probe_opts), every entry of the guard compares the input with what it was when the guard was last
    left, or when the probe was armed: a difference is a write made outside the guard, which the watchdog could have
    read half done. Disarming compares the input the command left with the last leave the same way. */
@@ -5334,6 +5339,7 @@ typedef struct {
     char dev[sizeof(((dsd_opts*)0)->audio_in_dev)];
     int rtltcp_enabled;
     uint32_t freq;
+    int bw_khz;
 } guard_probe_input;
 
 static const dsd_opts* g_guard_probe_opts;
@@ -5353,6 +5359,7 @@ guard_probe_take(const dsd_opts* opts, guard_probe_input* out) {
     DSD_MEMCPY(out->dev, opts->audio_in_dev, sizeof out->dev);
     out->rtltcp_enabled = opts->rtltcp_enabled;
     out->freq = opts->rtlsdr_center_freq;
+    out->bw_khz = opts->rtl_dsp_bw_khz;
 }
 
 /* Count a write made since the guard was last left. */
@@ -5362,7 +5369,7 @@ guard_probe_check(const dsd_opts* opts) {
     guard_probe_take(opts, &now);
     const guard_probe_input* left = &g_guard_probe_left;
     if (now.type != left->type || strncmp(now.dev, left->dev, sizeof now.dev) != 0
-        || now.rtltcp_enabled != left->rtltcp_enabled || now.freq != left->freq) {
+        || now.rtltcp_enabled != left->rtltcp_enabled || now.freq != left->freq || now.bw_khz != left->bw_khz) {
         ++g_guard_probe_unguarded;
     }
 }
@@ -11467,6 +11474,89 @@ test_input_switch_rollback_keeps_the_iq_capture(void) {
     return rc;
 }
 
+/* Submit a DSP bandwidth (DSD_APP_CMD_RTL_SET_BW) of @p khz and drain it, as the decoder does. */
+static int
+submit_dsp_bandwidth(dsd_opts* opts, dsd_state* state, int khz, const char* label) {
+    int rc = expect_int(label, dsd_app_command_set_i32(DSD_APP_CMD_RTL_SET_BW, khz), DSD_APP_COMMAND_SUBMIT_QUEUED);
+    state->ui_msg[0] = '\0';
+    rc |= expect_int(label, dsd_app_drain_cmds(opts, state), 1);
+    return rc;
+}
+
+/*
+ * Issue #578: a DSP bandwidth change (RTL_SET_BW) reopens the device, and a start that fails anyway puts the bandwidth
+ * that ran back and starts the input again, as a failed input switch does, rather than leave the session with no
+ * radio input. An Airspy delivers a rate the bandwidth sets, which nothing before the reopen can know: NFM 25 kHz runs
+ * at 48 kHz, but the 19,531 Hz of a 12 kHz bandwidth cannot filter it, so that start refuses it and the message says
+ * why. An RTL-SDR whose device does not open at the new bandwidth says that instead, and with --iq-capture the restart
+ * runs without the capture. The change and its rollback run inside one hold of the watchdog guard. A bandwidth whose
+ * start works applies as before.
+ */
+static int
+test_dsp_bandwidth_change_that_fails_keeps_the_running_input(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static void* fake_ctx[2];
+    int rc = 0;
+    init_decode_mode_context(&opts, &state);
+    opts.analog_only = 1;
+    opts.analog_demod = DSD_ANALOG_DEMOD_FM;
+    opts.analog_nfm_bandwidth_hz = 25000;
+    opts.audio_in_type = AUDIO_IN_RTL;
+    DSD_SNPRINTF(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", "airspy");
+    opts.rtl_dsp_bw_khz = 48;
+    state.rtl_ctx = (RtlSdrContext*)fake_ctx;
+    reset_config_rtl_wrap();
+    g_config_rtl_open_ok = 1;
+    g_config_rtl_fail_starts = 1;
+    g_config_rtl_refuse_rate_hz = 19531;
+    guard_probe_arm(&opts);
+    rc |= submit_dsp_bandwidth(&opts, &state, 12, "airspy bw 12");
+    guard_probe_disarm();
+    rc |= expect_int("airspy bw 12: failed", dsd_app_command_test_last_failed(), 1);
+    rc |= expect_int("airspy bw 12: tried, then restarted", g_config_rtl_creates == 2 && state.rtl_ctx != NULL, 1);
+    rc |= expect_int("airspy bw 12: restarted at 48 kHz", g_config_rtl_create_bw_khz, 48);
+    rc |= expect_int("airspy bw 12: the bandwidth that ran back", opts.rtl_dsp_bw_khz, 48);
+    rc |= expect_str("airspy bw 12: still the Airspy", opts.audio_in_dev, "airspy");
+    rc |= expect_toast("airspy bw 12 toast", &state, "Refused: NFM 25 kHz does not fit the 19.531 kHz DSP rate");
+    rc |= expect_int("airspy bw 12: one hold", g_guard_probe_holds, 1);
+    rc |= expect_int("airspy bw 12: no write outside the guard", g_guard_probe_unguarded, 0);
+
+    /* A DMR session on an RTL-SDR at 48 kHz recording I/Q, whose device does not open at 24 kHz. */
+    opts.analog_only = 0;
+    opts.analog_nfm_bandwidth_hz = 0;
+    opts.frame_dmr = 1;
+    DSD_SNPRINTF(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", "rtl:0:851.375M:0:0:48");
+    opts.iq_capture_requested = 1;
+    DSD_SNPRINTF(opts.iq_capture_path, sizeof opts.iq_capture_path, "%s", "cap.iq");
+    reset_config_rtl_wrap();
+    g_config_rtl_open_ok = 1;
+    g_config_rtl_fail_starts = 1;
+    g_capture_log[0] = '\0';
+    rc |= submit_dsp_bandwidth(&opts, &state, 24, "rtl bw 24");
+    rc |= expect_int("rtl bw 24: failed", dsd_app_command_test_last_failed(), 1);
+    rc |= expect_capture_stopped("rtl bw 24: recording kept", &opts, 0);
+    rc |= expect_int("rtl bw 24: the bandwidth that ran back", opts.rtl_dsp_bw_khz, 48);
+    rc |= expect_int("rtl bw 24: restarted at 48 kHz", g_config_rtl_create_bw_khz == 48 && state.rtl_ctx != NULL, 1);
+    rc |= expect_str("rtl bw 24 toast", state.ui_msg,
+                     "Failed: the RTL-SDR input did not start (see log); I/Q capture stopped");
+
+    /* One that starts applies. */
+    reset_config_rtl_wrap();
+    g_config_rtl_open_ok = 1;
+    rc |= submit_dsp_bandwidth(&opts, &state, 24, "rtl bw 24 starts");
+    rc |= expect_int("rtl bw 24 starts: applied", dsd_app_command_test_last_failed(), 0);
+    rc |= expect_int("rtl bw 24 starts: at 24 kHz", opts.rtl_dsp_bw_khz == 24 && g_config_rtl_create_bw_khz == 24, 1);
+    rc |= expect_str("rtl bw 24 starts toast", state.ui_msg, "Applied: RTL DSP BW -> 24 kHz");
+
+    reset_config_rtl_wrap();
+    opts.iq_capture_path[0] = '\0';
+    opts.frame_dmr = 0;
+    state.rtl_ctx = NULL;
+    freeState(&state);
+    return rc;
+}
+
 /* Submit an Airspy setting (DSD_APP_CMD_AIRSPY_SET) and drain it, as the decoder does. */
 static int
 submit_airspy_setting(dsd_opts* opts, dsd_state* state, const char* key, const char* value, const char* label) {
@@ -11872,6 +11962,7 @@ main(void) {
     rc |= test_input_switch_holds_the_watchdog_guard();
     rc |= test_input_switch_rollback_keeps_the_iq_capture();
     rc |= test_airspy_setting_rollback_reports_the_iq_capture_stop();
+    rc |= test_dsp_bandwidth_change_that_fails_keeps_the_running_input();
 #endif
     rc |= test_am_refused_on_pcm_input();
     rc |= test_am_bandwidth_set_validates();

@@ -1016,6 +1016,32 @@ test_locked_restarts(void) {
         expect_int("Airspy locked reopen refuses invalid settings", svc_airspy_reopen_locked(&opts, &state, &next), -1);
     rc |= expect_int("invalid settings left the running stream", state.rtl_ctx != NULL && g_rtl_start_calls == 2, 1);
     state.rtl_ctx = NULL;
+
+    /* Issue #578: a DSP bandwidth is stored and reopened inside one hold (the caller's, for the locked form), and a
+       start that fails is left with no stream and no reason, for the caller that knows the input that ran to roll
+       back. */
+    for (int locked = 0; locked <= 1; ++locked) {
+        reset_rtl_restart_stubs();
+        DSD_MEMSET(&opts, 0, sizeof(opts));
+        DSD_MEMSET(&state, 0, sizeof(state));
+        opts.audio_in_type = AUDIO_IN_RTL;
+        DSD_SNPRINTF(opts.audio_in_dev, sizeof(opts.audio_in_dev), "%s", "rtl:0:851.375M:0:0:48");
+        opts.rtl_dsp_bw_khz = 48;
+        g_p25_tick_guard_depth = locked;
+        g_rtl_create_result = 0;
+        char why[64];
+        const int result = locked ? svc_rtl_set_bandwidth_locked(&opts, &state, 24, why, sizeof why)
+                                  : svc_rtl_set_bandwidth(&opts, &state, 24, why, sizeof why);
+        rc |= expect_int("bandwidth reopen reports the start failure", result, -1);
+        rc |= expect_str("bandwidth reopen that fails gives no reason", why, "");
+        rc |= expect_int("bandwidth reopen left as it failed",
+                         opts.rtl_dsp_bw_khz == 24 && state.rtl_ctx == NULL && g_rtl_start_calls == 1, 1);
+        rc |= expect_int("bandwidth reopen enter count", g_p25_tick_guard_enter_calls, locked ? 0 : 1);
+        rc |= expect_int("bandwidth reopen leave count", g_p25_tick_guard_leave_calls, locked ? 0 : 1);
+        rc |= expect_int("bandwidth reopen preserves caller depth", g_p25_tick_guard_depth, locked);
+        rc |= expect_int("bandwidth reopen does not nest", g_p25_tick_guard_errors, 0);
+        rc |= expect_int("bandwidth reopen lifecycle guarded", g_rtl_lifecycle_outside_guard, 0);
+    }
     reset_rtl_restart_stubs();
     return rc;
 }
