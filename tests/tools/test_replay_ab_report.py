@@ -434,7 +434,8 @@ class ReplayAbAnalogMetric(unittest.TestCase):
 
 FAKE_DIGITAL_HOST = """#!/usr/bin/env bash
 # Stands in for dsd-neo in a digital replay: the startup notices a ProVoice or EDACS preset prints, then either
-# three ProVoice frames (--fake-provoice) or two frames of a protocol that labels voice as "Voice".
+# four ProVoice frames (--fake-provoice), one of them conventional ProVoice as a PVCONVENTIONAL build prints it, or
+# two frames of a protocol that labels voice as "Voice".
 echo "NOTICE: Decoding only ProVoice frames."
 echo "NOTICE: EDACS Analog Voice Channels are Experimental."
 case "$*" in
@@ -442,7 +443,7 @@ case "$*" in
     echo "12:00:00 Sync: -PV     VOICE"
     echo " IMBE 965140CC8A0BFFB4BB7FC2 err = [0] [0]  7100"
     echo "12:00:00 Sync: +PV     VOICE"
-    echo "12:00:00 Sync: -PV_C   "
+    echo "12:00:00 Sync: -PV_C  TX: 172 RX: 5 ALL CALL  VOICE"
     echo "12:00:00 Sync: -PV     VOICE"
     echo "NOTICE: Total audio errors: 12"
     ;;
@@ -481,9 +482,10 @@ class ReplayAbDigitalMetric(unittest.TestCase):
         return {row["variant"]: row for row in (dict(zip(COLUMNS, line.split("\t"))) for line in lines[1:])}
 
     def test_provoice_voice_frames_are_counted_and_startup_notices_are_not(self):
-        # ProVoice prints " VOICE" after its sync; the two startup notices that mention "Voice" are not frames.
+        # ProVoice prints " VOICE" after its sync, trunked or conventional; the two startup notices that mention
+        # "Voice" are not frames.
         rows = self.rows("--fake-provoice")
-        self.assertEqual(rows["host.variant"]["voice"], "3")
+        self.assertEqual(rows["host.variant"]["voice"], "4")
         self.assertEqual(rows["host.variant"]["errs"], "12")
         self.assertEqual(rows["host.variant"]["sync"], "4")
 
