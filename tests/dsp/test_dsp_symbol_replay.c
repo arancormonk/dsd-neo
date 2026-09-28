@@ -2553,16 +2553,26 @@ test_rx_tone_backlog_skip_hears_a_stalled_live_input(void) {
  * A backlog read on a busy machine: the decoder is descheduled for @p preempt_ms in the input read of every block while
  * the input still holds the old channel, so each read takes that long though nothing made it wait. Time inside the
  * read alone would count it as waiting; the span still took less than half its input's length to arrive, so the input
- * has not run dry. 100.0 Hz locks, the receiver moves, and none of the half second of the old channel is heard; the
- * new channel, read as it arrives, is heard from its second read and never shows 100.0 Hz.
+ * has not run dry. With @p playback the monitor output also holds the decoder for each block's 20 ms, as synchronous
+ * playback does once its buffer is full: the span then takes longer than its input's length, and only leaving the
+ * time spent playing out keeps it short of half. 100.0 Hz locks, the receiver moves, and none of the half second of
+ * the old channel is heard; the new channel, read as it arrives, is heard from its second read and never shows
+ * 100.0 Hz.
  */
 static void
-run_preempted_backlog(int audio_in_type, uint64_t preempt_ms) {
+run_preempted_backlog(int audio_in_type, uint64_t preempt_ms, int playback) {
     static dsd_opts opts;
     static dsd_state state;
     install_fake_rtl_hooks(0);
     init_analog_monitor_fixture(&opts, &state);
     opts.audio_in_type = audio_in_type;
+    if (playback) {
+        opts.audio_out = 1;
+        opts.audio_out_type = 8;
+        dsd_udp_audio_hooks hooks = {0};
+        hooks.blast_analog = blocking_playback;
+        dsd_udp_audio_hooks_set(hooks);
+    }
     dsd_analog_rx_test_set_clock(fake_now_ms);
     g_fake_now_ms = 1700000U;
     g_tone_phase = 0.0;
@@ -2589,19 +2599,24 @@ run_preempted_backlog(int audio_in_type, uint64_t preempt_ms) {
     }
     assert(state.analog_rx.tone_state == DSD_ANALOG_TONE_STATE_LOCKED && state.analog_rx.ctcss_tenths_hz == 1318);
 
+    if (playback) {
+        dsd_udp_audio_hooks_set((dsd_udp_audio_hooks){0});
+    }
     dsd_analog_rx_test_set_clock(NULL);
     dsd_state_ext_free_all(&state);
 }
 
 /* Every live PCM input, descheduled 3 ms in each backlog read (past the eighth of a read) and 9 ms (just short of
-   half of one). */
+   half of one); and stdin, whose monitor playback is synchronous, with each block's playing time on top. */
 static void
 test_rx_tone_backlog_skip_survives_preempted_reads(void) {
     static const int inputs[] = {AUDIO_IN_UDP, AUDIO_IN_TCP, AUDIO_IN_PULSE, AUDIO_IN_STDIN};
     for (size_t i = 0; i < sizeof(inputs) / sizeof(inputs[0]); i++) {
-        run_preempted_backlog(inputs[i], 3U);
-        run_preempted_backlog(inputs[i], 9U);
+        run_preempted_backlog(inputs[i], 3U, 0);
+        run_preempted_backlog(inputs[i], 9U, 0);
     }
+    run_preempted_backlog(AUDIO_IN_STDIN, 3U, 1);
+    run_preempted_backlog(AUDIO_IN_STDIN, 9U, 1);
 }
 
 /* A UDP producer sending in real time at 48 kHz: sample n arrives at g_udp_base_ms + n / 48 ms. A read returns at once
