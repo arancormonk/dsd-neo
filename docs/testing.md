@@ -1050,6 +1050,37 @@ Clear the `DSD_REQUIRE_*` flags alongside the `DSD_ENABLE_*` ones. Against a
 cached build tree, configure otherwise stops with
 `DSD_REQUIRE_RTLSDR=ON requires DSD_ENABLE_RTLSDR=ON.`
 
+### Temporary files and directories
+
+A test must remove every temporary file and directory it creates, on its
+failure paths as well as when it passes. `dsd_test_mkstemp()`,
+`dsd_test_mkdtemp()` and `dsd_test_capture_stderr_begin()` in
+`tests/test_support/test_support.h` create them under `dsd_test_tmpdir()`:
+`DSD_NEO_TEST_TMPDIR`, else `TMPDIR` (`TEMP` or `TMP` on Windows), else the
+working directory. Remove each file with `remove()`, including any the code
+under test wrote there, such as a P25 control-channel cache file or an I/Q
+capture's sidecar, then remove the directory with `dsd_test_rmdir()`.
+`dsd_test_remove_temp_dir()` does both from a list of file names. Check the
+result of the directory removal and fail the test if it fails. The removal
+succeeds only on an empty directory, so the check also catches a file the test
+forgot to list or a new file the code under test starts writing.
+`dsd_test_capture_stderr_read()` deletes the capture file it reads. A test that
+does not read its capture removes `cap.path` itself after
+`dsd_test_capture_stderr_end()`.
+
+To check the whole suite, run it against an empty directory, which must still
+be empty afterwards:
+
+```sh
+T=$(mktemp -d)
+DSD_NEO_TEST_TMPDIR=$T TMPDIR=$T ctest --preset dev-debug --output-on-failure
+ls -A "$T"   # prints nothing
+rmdir "$T"
+```
+
+Repeat this in a `-DDSD_ENABLE_QT_UI=ON` build with `-R '^UI_QT'` and
+`QT_QPA_PLATFORM=offscreen` when a change touches the Qt tests.
+
 ## Continuous Integration
 
 GitHub Actions runs tests and quality checks on pull requests, primary-branch
