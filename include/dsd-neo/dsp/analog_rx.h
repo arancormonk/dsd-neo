@@ -350,9 +350,11 @@ int dsd_analog_rx_block_straddles_boundary(const dsd_opts* opts, const dsd_state
  * outside the read, such as a raw WAV sync to disk, can carry a backlog read past the first test
  * but not the second, since what the input holds comes back from the read at once; time the
  * decoder spends in a read while the backlog is still queued can pass the second but not, on its
- * own, the first. With nothing queued the skip costs two reads. The publication reads IDLE
- * meanwhile. Files and RTL-family streams are not skipped: a file queues no other channel, and a
- * stream clears its own output at a retune.
+ * own, the first. With nothing queued the skip costs two reads, unless something outside the read
+ * holds the decoder for more than about 17 ms of every 20 ms: the input then waits for less than
+ * an eighth of each read, and is heard only after DSD_ANALOG_RX_BACKLOG_MAX_MS. The publication
+ * reads IDLE meanwhile. Files and RTL-family streams are not skipped: a file queues no other
+ * channel, and a stream clears its own output at a retune.
  *
  * Before the tap has run there is no detector state to hold either boundary. The tap then
  * starts at the sample it starts on (dsd_analog_rx_tap_partial()), and when a reset
