@@ -16,6 +16,8 @@ Two source kinds feed the same output format:
            frequency and integrated back into a complex baseband signal. The
            result exercises the same demodulation chain, but carries none of the
            original RF impairments (noise, fading, adjacent-channel energy).
+           Where the recording is a receiver's de-emphasized audio rather than
+           the discriminator's own output, AUDIO_DEEMPHASIS_US undoes that first.
 
 The analog excerpts (ANALOG_EXCERPTS) are a third, raw kind: two-channel u8 or s16
 PCM WAV files holding off-air I/Q. They are read sample-exact with the wave module
@@ -66,6 +68,7 @@ SOURCES = {
     "dstar": "https://www.sigidwiki.com/images/2/2e/DStar_Sound.mp3",
     "ysf": "https://www.sigidwiki.com/images/2/26/Yaesu_sys_fusion.wav",
     "edacs": "https://www.sigidwiki.com/images/a/a8/EDACS96_Sound.mp3",
+    "provoice": "https://www.sigidwiki.com/images/e/e9/Provoice.mp3",
     "m17": "https://raw.githubusercontent.com/lwvmobile/m17-fme/main/samples/m17_clear_voice_wav.wav",
     # Off-air analog I/Q for the analog receive checks (issue #518): AM airband voice
     # (u8, 64 kHz), two NFM voice channels 12.5 kHz apart with CTCSS (s16, 156.25 kHz),
@@ -104,6 +107,7 @@ SHA256SUMS = {
     "dstar": "b419679d20bd31ab9738be2b3e300b98ec762ec05d2a93683df86ae3a9946001",
     "ysf": "607b9f9789cecc9ab1c7c204f869d10879a0d69b7b4ae60a132694e88d5476e0",
     "edacs": "c043bdbf7f8dfec2063cf8c98f87b6b6fc6f97a0a516cff2d971e2c46fdfd99f",
+    "provoice": "cf66b798a0f6449f7720a14db3e864a0269dfa1de494080f1d6ff1c6b78b86e2",
     "m17": "e841be537491fd6a71264bf8d4c5b54667c80a0be278d6332bb49156d7f1b4f7",
     "dmr_t3_ras_cc": "4950da56e384b939675744a70ac12ca38fe6d6e35a74870717ab56ffc8e3e23c",
     "am_iq_zip": "85cfb629f9555a3f3f2afcfc2c86d061d9f0eb2d9b024cb587083dee7d0a3f54",
@@ -139,12 +143,28 @@ FIXTURES = [
     ("dstar", "dstar", "audio", 0, 4, 0.35),
     ("ysf", "ysf", "audio", 0, 6, 0.35),
     ("edacs", "edacs", "audio", 0, 2, 0.35),
+    # ProVoice voice (issue #588): the whole 3.5 s clip, a single transmission. Its receiver's
+    # de-emphasis is undone first (AUDIO_DEEMPHASIS_US), and it is remodulated at a lower
+    # deviation than the default, chosen in the same sweep.
+    ("provoice", "provoice", "audio", 0, 3.5, 0.25),
     # The upstream sample is mostly impaired test transmissions; the clean voice
     # stream occupies only the final seconds, so cut the fixture from there. The
     # deviation stays near M17's real +/-2.4 kHz so the synthetic FM signal fits
     # the 12.5 kHz channel filter profile (0.15 * 24 kHz Nyquist = 3.6 kHz peak).
     ("m17", "m17", "audio", 19, 4.3, 0.15),
 ]
+
+# Audio sources recorded after a receiver's de-emphasis, and the single-pole time constant
+# (microseconds) undone before remodulating them (undo_deemphasis). A discriminator's output is
+# flat; a receiver's speaker path rolls it off above 1/(2 pi tau), which leaves speech intact but
+# smears a data signal's transitions across its neighbours. The sigidwiki ProVoice clip is such a
+# recording: its 9600 baud clock line is there, but as recorded it gives no frame sync at all.
+# The constant is not published, so it was measured (issue #588): swept over 150-500 us with the
+# remodulation deviation over 0.2-0.35, 225 us at 0.25 decoded 160 IMBE frames at 0.93 corrections
+# a frame, where 200 us decoded more frames with more corrections and 250-300 us fewer frames.
+AUDIO_DEEMPHASIS_US = {
+    "provoice": 225.0,
+}
 
 # Off-air analog excerpts (issue #518), read raw from the two-channel WAV members above.
 #
@@ -574,6 +594,18 @@ def build_am_synth(out_dir):
     return total
 
 
+def undo_deemphasis(audio, tau_us):
+    """Invert a single-pole de-emphasis y[n] = (1 - a) x[n] + a y[n - 1], a = exp(-1 / (fs tau)).
+
+    The inverse is a one-tap FIR with a large high-frequency gain, so it runs before
+    remodulate() normalizes the level. The first sample is taken as settled (its predecessor
+    equal to itself) rather than preceded by silence, which would add a spike.
+    """
+    a = math.exp(-1.0 / (SAMPLE_RATE_HZ * tau_us * 1e-6))
+    previous = np.concatenate((audio[:1], audio[:-1]))
+    return (audio - a * previous) / (1.0 - a)
+
+
 def remodulate(audio, deviation):
     """Integrate discriminator audio back into complex baseband (inverse FM demod)."""
     audio = audio - np.mean(audio)
@@ -922,6 +954,8 @@ def build_upstream(args):
             samples = load_iq(path, start_s, duration_s)
         else:
             audio = ffmpeg_read(path, 1, start_s, duration_s)
+            if source_key in AUDIO_DEEMPHASIS_US:
+                audio = undo_deemphasis(audio, AUDIO_DEEMPHASIS_US[source_key])
             samples = remodulate(audio, deviation or DEFAULT_DEVIATION)
         written = write_fixture(args.out, name, samples)
         total += written

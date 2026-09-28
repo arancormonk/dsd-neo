@@ -432,5 +432,67 @@ class ReplayAbAnalogMetric(unittest.TestCase):
         self.assertIn("--metric", result.stdout)
 
 
+FAKE_DIGITAL_HOST = """#!/usr/bin/env bash
+# Stands in for dsd-neo in a digital replay: the startup notices a ProVoice or EDACS preset prints, then either
+# three ProVoice frames (--fake-provoice) or two frames of a protocol that labels voice as "Voice".
+echo "NOTICE: Decoding only ProVoice frames."
+echo "NOTICE: EDACS Analog Voice Channels are Experimental."
+case "$*" in
+  *--fake-provoice*)
+    echo "12:00:00 Sync: -PV     VOICE"
+    echo " IMBE 965140CC8A0BFFB4BB7FC2 err = [0] [0]  7100"
+    echo "12:00:00 Sync: +PV     VOICE"
+    echo "12:00:00 Sync: -PV_C   "
+    echo "12:00:00 Sync: -PV     VOICE"
+    echo "NOTICE: Total audio errors: 12"
+    ;;
+  *)
+    echo "12:00:00 Sync: +NXDN48 RTCH Voice"
+    echo "12:00:00 Sync: +NXDN48 RTCH Voice"
+    echo "NOTICE: Total audio errors: 4"
+    ;;
+esac
+exit 0
+"""
+
+
+class ReplayAbDigitalMetric(unittest.TestCase):
+    """The digital columns replay_ab.sh reads from a real run's log, driven through the real script. Needs bash and
+    coreutils timeout, so tests/CMakeLists.txt registers it beside ReplayAbAnalogMetric (issue #588)."""
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp(prefix="replay-ab-digital-"))
+        self.capture = self.tmp / "capture.iq.json"
+        self.capture.write_text("{}\n", encoding="utf-8")
+        self.host = self.tmp / "host.main"
+        write_script(self.host, FAKE_DIGITAL_HOST)
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def rows(self, flags):
+        wrapper = self.tmp / "host.variant"
+        write_script(wrapper, f'#!/usr/bin/env bash\nexec "{self.host}" {flags} "$@"\n')
+        out = self.tmp / "out"
+        result = run([BASH, str(REPLAY_AB), "--capture", str(self.capture), "--mode", "-fp", "--rate", "fast",
+                      "--reps", "1", "--out", str(out), str(self.host), str(wrapper)], cwd=str(ROOT))
+        self.assertEqual(result.returncode, 0, result.stdout)
+        lines = (out / "summary.tsv").read_text(encoding="utf-8").splitlines()
+        return {row["variant"]: row for row in (dict(zip(COLUMNS, line.split("\t"))) for line in lines[1:])}
+
+    def test_provoice_voice_frames_are_counted_and_startup_notices_are_not(self):
+        # ProVoice prints " VOICE" after its sync; the two startup notices that mention "Voice" are not frames.
+        rows = self.rows("--fake-provoice")
+        self.assertEqual(rows["host.variant"]["voice"], "3")
+        self.assertEqual(rows["host.variant"]["errs"], "12")
+        self.assertEqual(rows["host.variant"]["sync"], "4")
+
+    def test_voice_lines_of_other_protocols_are_still_counted(self):
+        rows = self.rows("")
+        self.assertEqual(rows["host.main"]["voice"], "2")
+        self.assertEqual(rows["host.variant"]["voice"], "2")
+        self.assertEqual(rows["host.main"]["errs"], "4")
+
+
 if __name__ == "__main__":
     unittest.main()

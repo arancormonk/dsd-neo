@@ -176,7 +176,9 @@ for r in $(seq 1 "$reps"); do
     rc=$?
     set -e
     errs=$(grep -oE 'Total audio errors: [0-9]+' "$log" | tail -1 | grep -oE '[0-9]+$' || true)
-    voice=$(grep -c 'Voice' "$log" || true)
+    # Voice frames: lines that label one "Voice", or a ProVoice frame's " VOICE" after its sync. Startup
+    # notices that mention voice (the EDACS/ProVoice presets print two) are not frames.
+    voice=$(grep -v '^NOTICE:' "$log" | grep -cE 'Voice|Sync: [+-]PV +VOICE' || true)
     sync=$(grep -cE 'Sync: ' "$log" || true)
     analog=()
     for key in "${analog_keys[@]}"; do
