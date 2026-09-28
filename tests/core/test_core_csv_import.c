@@ -2663,6 +2663,7 @@ test_nfm_channel_map_tone_lists(void) {
     if (dsd_test_capture_stderr_begin(&cap, "chan_tone_validate") == 0) {
         rc |= dsd_csv_validate_chan_file(path, &stats) == 0 ? 1 : 0;
         (void)dsd_test_capture_stderr_end(&cap);
+        (void)remove(cap.path);
     }
     assert(remove(path) == 0);
     return rc;
