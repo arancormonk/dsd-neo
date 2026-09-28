@@ -5823,9 +5823,12 @@ ui_restore_refused_analog_width(dsd_opts* opts, dsd_state* state, int kind, int 
  * width change (svc_restore_analog_width()). Off it (a typed digital row's channel profile, which never touches the
  * width setting, another kind's monitor, or the digital family), the kind's default is requested and stored as the
  * configured width: the NFM default is never refused, and a default the rate refuses as well (AM's) changes nothing.
- * The toast says why either way. Only while the options are still the ones the leave put back (the analog family, that
- * kind, that width) and no scan runs: a channel-map adopt or a RadioReference import that keeps the scanner on gets
- * its front end from the next row's tune, and is deliberately left to it. Returns 1 when it acted.
+ * That request carries the leave on (svc_publish_symbol_profile_after_scan_leave()), so a default refused where it
+ * lands (a retune in flight moved the rate again) comes back here as a refused default: nothing more is asked of the
+ * front end, and the configured width goes back to the one from before the fallback. The toast says why either way,
+ * naming the width the leave asked for. Only while the options are still the ones the leave put back (the analog
+ * family, that kind, that width) and no scan runs: a channel-map adopt or a RadioReference import that keeps the
+ * scanner on gets its front end from the next row's tune, and is deliberately left to it. Returns 1 when it acted.
  */
 static int
 ui_settle_refused_scan_leave(dsd_opts* opts, dsd_state* state, const svc_monitor_refusal* refusal) {
@@ -5835,6 +5838,11 @@ ui_settle_refused_scan_leave(dsd_opts* opts, dsd_state* state, const svc_monitor
         || dsd_scan_mode_updating(state) || (opts->scanner_mode == 1 && state->lcn_freq_count > 0)) {
         return 0;
     }
+    /* A refused default (the NFM default never is) was the fallback of a width refused before it, or a change to the
+       default made after the leave: the width from before it is the one to put back and to name. */
+    const int default_refused = refusal->width_hz == 0;
+    const int asked_hz =
+        (default_refused && refusal->configured_before_hz > 0) ? refusal->configured_before_hz : refusal->width_hz;
     int runs_hz = 0;
     if (refusal->kept_analog && refusal->kept_monitor && refusal->kept_kind == kind) {
         if (refusal->kept_width_hz == refusal->width_hz) {
@@ -5842,21 +5850,24 @@ ui_settle_refused_scan_leave(dsd_opts* opts, dsd_state* state, const svc_monitor
         }
         runs_hz = refusal->kept_width_hz;
         svc_restore_analog_width(opts, state, kind, runs_hz, refusal->configured_before_hz);
-    } else if (svc_check_analog_bandwidth(opts, state, kind, 0, NULL, 0U) != 0) {
+    } else if (default_refused || svc_check_analog_bandwidth(opts, state, kind, 0, NULL, 0U) != 0) {
+        if (default_refused && refusal->configured_before_hz >= 0) {
+            (void)svc_store_analog_width_setting(opts, state, kind, refusal->configured_before_hz);
+        }
         runs_hz = -1;
     } else {
         /* Straight to the monitor request, as ui_revert_analog_entry() republishes: svc_publish_analog_bandwidth()
            would wait for a CQPSK a kept P25 row requested, which is what the default has to replace. */
         (void)svc_store_analog_width_setting(opts, state, kind, 0);
-        if (svc_publish_symbol_profile_changing_width(opts, state, dsd_scan_mode_effective_profile(opts, state),
-                                                      refusal->width_hz)
+        if (svc_publish_symbol_profile_after_scan_leave(opts, state, dsd_scan_mode_effective_profile(opts, state),
+                                                        refusal->width_hz)
             != 0) {
             (void)svc_store_analog_width_setting(opts, state, kind, refusal->width_hz);
             runs_hz = -1;
         }
     }
     char why[128];
-    svc_describe_monitor_return_refusal(opts, kind, refusal->width_hz, runs_hz, why, sizeof why);
+    svc_describe_monitor_return_refusal(opts, kind, asked_hz, runs_hz, why, sizeof why);
     ui_set_toast(state, 5, "Refused: %s", why);
     return 1;
 }

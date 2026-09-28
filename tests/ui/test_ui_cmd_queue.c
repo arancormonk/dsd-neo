@@ -9022,6 +9022,34 @@ test_refused_scan_leave_is_reported_and_reconciled(void) {
                        "Refused: AM 10 kHz does not fit the 7.5 kHz DSP rate; the AM default does not fit it either");
     finish_scan_row_on_analog(&opts, &state);
 
+    /* -fM with AM 10 kHz leaving an nfm row, whose FM monitor the front end keeps: its 7.5 kHz rate refuses the
+       leave's AM 10 kHz at once, and the AM default is asked for and taken. A retune in flight then lands it on a rate
+       that refuses the default as well, keeping FM: the default request carried the leave on, so the configured AM
+       width goes back to the 10 kHz from before it, and the toast says the default is refused too. */
+    rc |= init_scan_row_on_analog(&opts, &state, (RtlSdrContext*)fake_ctx, DSD_ANALOG_DEMOD_AM, 10000,
+                                  DSD_SCAN_MODE_NFM, NULL, "am default refused on landing");
+    g_fake_demod_rate_hz = 7500;
+    g_fake_analog_req_max_hz = 5000;
+    g_fake_monitor_kind = DSD_ANALOG_DEMOD_FM;
+    g_fake_monitor_width_hz = 16000;
+    g_fake_monitor_lpf_on = 1;
+    rc |= submit_scanner_stop(&opts, &state, "am default refused on landing: stopped");
+    rc |= expect_int("am default refused on landing: the default configured", opts.analog_am_bandwidth_hz, 0);
+    rc |=
+        expect_last_monitor_request("am default refused on landing: the default asked for", 2, DSD_ANALOG_DEMOD_AM, 0);
+    rc |= expect_toast("am default refused on landing: first toast", &state,
+                       "Refused: AM 10 kHz does not fit the 7.5 kHz DSP rate; the monitor is back on the AM default");
+    demod_thread_refuses_leave_keeping(1, 1, DSD_ANALOG_DEMOD_FM, 16000);
+    state.ui_msg[0] = '\0';
+    (void)dsd_app_drain_cmds(&opts, &state);
+    rc |= expect_int("am default refused on landing: the AM width back", opts.analog_am_bandwidth_hz, 10000);
+    rc |= expect_int("am default refused on landing: still AM",
+                     opts.analog_only == 1 && opts.analog_demod == DSD_ANALOG_DEMOD_AM, 1);
+    rc |= expect_last_monitor_request("am default refused on landing: nothing more asked", 2, DSD_ANALOG_DEMOD_AM, 0);
+    rc |= expect_toast("am default refused on landing toast", &state,
+                       "Refused: AM 10 kHz does not fit the 7.5 kHz DSP rate; the AM default does not fit it either");
+    finish_scan_row_on_analog(&opts, &state);
+
     /* A width set while the leave is still queued replaces its request and carries the leave on: refused where it
        lands off the monitor, the NFM default is what the decoder goes back to. */
     rc |= init_scan_row_on_analog(&opts, &state, (RtlSdrContext*)fake_ctx, DSD_ANALOG_DEMOD_FM, 16000,

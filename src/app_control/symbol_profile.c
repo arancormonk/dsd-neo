@@ -54,8 +54,9 @@ symbol_profile_configured_digital(const dsd_opts* opts, const dsd_state* state) 
  * one kind is never the baseline of the other.
  *
  * A scan leave's return to the monitor is recorded with scan_leave set (issue #578), and so is a request that replaces
- * it before it reached the front end (a width change made while it was still queued): a refusal then reconciles the
- * decoder with what the front end kept after a scan, rather than only put a width back. A leave the front end refused
+ * it before it reached the front end (a width change made while it was still queued), and the kind's default a refused
+ * leave falls back on (svc_publish_symbol_profile_after_scan_leave()), with the width from before that fallback: a
+ * refusal then reconciles the decoder with what the front end kept after a scan, rather than only put a width back. A leave the front end refused
  * at once queued nothing (refused_at_once): seq is then the last request queued before it, and what the front end kept
  * is what it publishes once that one has settled.
  */
@@ -121,13 +122,14 @@ symbol_profile_note_width_change(int kind, int configured_before_hz) {
 /* The analog monitor with the configured kind and channel width. Entering it turns CQPSK off. @p configured_before_hz
    is the configured width of that kind from before the change the request carries (-1: it carries none). A request
    that replaces a scan leave's return to the monitor before it reached the front end carries that return on (a width
-   set right after the scanner stopped): its refusal is reconciled as the leave's would have been. Returns the request's
-   result: -1 when the front end refused it at the rate it publishes now, which leaves the record as it was. */
+   set right after the scanner stopped), and so does one made for a refused leave (@p scan_leave: the kind's default it
+   falls back on): its refusal is reconciled as the leave's would have been. Returns the request's result: -1 when the
+   front end refused it at the rate it publishes now, which leaves the record as it was. */
 static int
-symbol_profile_request_monitor(const dsd_opts* opts, int configured_before_hz) {
+symbol_profile_request_monitor(const dsd_opts* opts, int configured_before_hz, int scan_leave) {
     /* Read before this request is queued: one the stream settled by then was taken there, and its width ran. */
     const int earlier_not_run = symbol_profile_earlier_not_run();
-    const int carries_leave = earlier_not_run && g_monitor_request.scan_leave;
+    const int carries_leave = scan_leave || (earlier_not_run && g_monitor_request.scan_leave);
     if (rtl_stream_request_analog_profile(DSD_RX_FAMILY_ANALOG, opts->analog_demod, dsd_opts_analog_width_hz(opts))
         != 0) {
         return -1;
@@ -209,12 +211,14 @@ svc_check_mode_receive_profile(const dsd_opts* opts, const dsd_state* state, dsd
 }
 
 /* svc_publish_symbol_profile(), with @p configured_before_hz the configured width of the analog kind in force from
-   before a change the caller made to the width it publishes (-1: none), which the analog monitor request records. */
+   before a change the caller made to the width it publishes (-1: none), which the analog monitor request records, and
+   @p scan_leave set for the default a refused scan leave falls back on, which that request carries the leave on for. */
 static int
 symbol_profile_publish(const dsd_opts* opts, dsd_state* state, dsd_decode_mode_profile profile,
-                       int configured_before_hz) {
+                       int configured_before_hz, int scan_leave) {
 #ifndef USE_RADIO
     (void)configured_before_hz;
+    (void)scan_leave;
 #endif
     if (!opts || !state) {
         return 0;
@@ -253,7 +257,7 @@ symbol_profile_publish(const dsd_opts* opts, dsd_state* state, dsd_decode_mode_p
        itself back to match (the width it kept, or the mode it had before a
        switch onto the monitor or between FM and AM). */
     if (dsd_opts_is_analog_family(opts)) {
-        return symbol_profile_request_monitor(opts, configured_before_hz);
+        return symbol_profile_request_monitor(opts, configured_before_hz, scan_leave);
     }
     /* The M17 encoder rides the analog front end without being the analog family. */
     if (opts->analog_only) {
@@ -286,13 +290,19 @@ symbol_profile_publish(const dsd_opts* opts, dsd_state* state, dsd_decode_mode_p
 
 int
 svc_publish_symbol_profile(const dsd_opts* opts, dsd_state* state, dsd_decode_mode_profile profile) {
-    return symbol_profile_publish(opts, state, profile, -1);
+    return symbol_profile_publish(opts, state, profile, -1, 0);
 }
 
 int
 svc_publish_symbol_profile_changing_width(const dsd_opts* opts, dsd_state* state, dsd_decode_mode_profile profile,
                                           int configured_before_hz) {
-    return symbol_profile_publish(opts, state, profile, configured_before_hz);
+    return symbol_profile_publish(opts, state, profile, configured_before_hz, 0);
+}
+
+int
+svc_publish_symbol_profile_after_scan_leave(const dsd_opts* opts, dsd_state* state, dsd_decode_mode_profile profile,
+                                            int configured_before_hz) {
+    return symbol_profile_publish(opts, state, profile, configured_before_hz, 1);
 }
 
 int
@@ -321,7 +331,7 @@ svc_publish_analog_bandwidth(const dsd_opts* opts, const dsd_state* state, int k
         symbol_profile_note_width_change(kind, configured_before_hz);
         return 0;
     }
-    return symbol_profile_request_monitor(opts, configured_before_hz);
+    return symbol_profile_request_monitor(opts, configured_before_hz, 0);
 #else
     (void)opts;
     (void)state;
@@ -453,7 +463,7 @@ svc_toggle_rtl_cqpsk(const dsd_opts* opts) {
        width, the AM default included) or where it lands (a retune moved the rate since), leaves CQPSK on, and the
        refusal is logged with the validator's text. */
     if (!cqpsk && opts && dsd_opts_is_analog_family(opts)) {
-        (void)symbol_profile_request_monitor(opts, -1);
+        (void)symbol_profile_request_monitor(opts, -1, 0);
         return;
     }
     (void)rtl_stream_request_demod_profile(cqpsk, 0, 0, -1, -1, 0);

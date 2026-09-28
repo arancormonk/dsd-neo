@@ -224,6 +224,20 @@ int svc_publish_symbol_profile_changing_width(const dsd_opts* opts, dsd_state* s
                                               int configured_before_hz);
 
 /**
+ * @brief svc_publish_symbol_profile_changing_width() for the kind's default a refused scan leave falls back on (issue
+ * #578), with @p configured_before_hz the configured width from before that fallback.
+ *
+ * The analog monitor request it makes carries the leave on, as one that replaces a leave's request still queued does
+ * (svc_publish_analog_bandwidth()): a refusal of the default where it lands (a retune in flight moved the rate again)
+ * is collected with svc_monitor_refusal::scan_leave set, so the drain reconciles it as a refused leave, putting the
+ * configured width from before the fallback back, rather than as an analog entry nothing armed.
+ *
+ * @return As svc_publish_symbol_profile().
+ */
+int svc_publish_symbol_profile_after_scan_leave(const dsd_opts* opts, dsd_state* state, dsd_decode_mode_profile profile,
+                                                int configured_before_hz);
+
+/**
  * @brief Ask a running RTL front end, before a decode-mode change commits, whether it takes the receive profile
  * @p mode will publish.
  *
@@ -473,8 +487,9 @@ typedef struct {
     int kept_monitor; /**< 1: the analog family kept its monitor output, which runs @c kept_width_hz; 0: the digital
                            family, or the analog family under a symbol profile applied on its own (a typed digital scan
                            row's channel profile, CQPSK), where @c kept_width_hz is a setting, not a width that runs. */
-    int scan_leave; /**< 1: a scan leave's return to the monitor (svc_leave_channel_scan()), or a request that replaced
-                           one before it reached the front end. */
+    int scan_leave;   /**< 1: a scan leave's return to the monitor (svc_leave_channel_scan()), a request that replaced
+                           one before it reached the front end, or the default a refused leave fell back on
+                           (svc_publish_symbol_profile_after_scan_leave()). */
 } svc_monitor_refusal;
 
 /**

@@ -833,9 +833,12 @@ installs from `src/engine/trunk_tuning.c` in `src/engine/trunk_tuning_hooks_inst
   (`ui_settle_refused_scan_leave()`): a front end still on the monitor of the leave's kind gives the configured width
   the width that monitor runs (`svc_restore_analog_width()`); one off it (a typed row's profile, the other kind's
   monitor, the digital family) is asked for the kind's default, which is stored as the configured width, straight
-  through `svc_publish_symbol_profile_changing_width()` (`svc_publish_analog_bandwidth()` would wait for the CQPSK a
-  kept P25 row requested). The NFM default is never refused; an AM default the rate refuses as well changes nothing. The
-  toast (`svc_describe_monitor_return_refusal()`) names the width, the rate the stream publishes (not the one
+  through `svc_publish_symbol_profile_after_scan_leave()` (`svc_publish_analog_bandwidth()` would wait for the CQPSK a
+  kept P25 row requested). The NFM default is never refused; an AM default the rate refuses as well changes nothing.
+  That default request carries the leave on, with the width from before it, so an AM default refused where it lands (a
+  retune in flight moved the rate again) is reconciled as a refused leave too: the configured width goes back to the
+  one from before the fallback and the toast says the default does not fit either, rather than an unarmed analog
+  entry reverting nothing. The toast (`svc_describe_monitor_return_refusal()`) names the width, the rate the stream publishes (not the one
   `rtl_dsp_bw_khz` gives, which a row's retune has left) and what the monitor runs: `Refused: NFM 16 kHz does not fit
   the 16 kHz DSP rate; the monitor is back on the NFM default`. It is settled only while the options are still the ones
   the leave put back (the analog family, that kind, that width) and no scan runs: a channel-map adopt or RadioReference
