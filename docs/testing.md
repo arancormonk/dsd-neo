@@ -1052,22 +1052,23 @@ cached build tree, configure otherwise stops with
 
 ### Temporary files and directories
 
-A test must remove every temporary file and directory it creates, on its
-failure paths as well as when it passes. `dsd_test_mkstemp()`,
-`dsd_test_mkdtemp()` and `dsd_test_capture_stderr_begin()` in
-`tests/test_support/test_support.h` create them under `dsd_test_tmpdir()`:
-`DSD_NEO_TEST_TMPDIR`, else `TMPDIR` (`TEMP` or `TMP` on Windows), else the
-working directory. Remove each file with `remove()`, including any the code
-under test wrote there, such as a P25 control-channel cache file or an I/Q
-capture's sidecar, then remove the directory with `dsd_test_rmdir()`.
-`dsd_test_remove_temp_dir()` does both from a list of file names. Never remove a
-directory with `remove()`: the native Windows CRT does not remove directories,
-so it would stay behind there. Check the result of the directory removal and
-fail the test if it fails. The removal succeeds only on an empty directory, so
-the check also catches a file the test forgot to list or a new file the code
-under test starts writing. `dsd_test_capture_stderr_read()` deletes the capture
-file it reads. A test that does not read its capture removes `cap.path` itself
-after `dsd_test_capture_stderr_end()`.
+A test must remove every temporary file and directory it creates, on its failure
+paths as well as when it passes. `dsd_test_mkstemp()`, `dsd_test_mkdtemp()` and
+`dsd_test_capture_stderr_begin()` in `tests/test_support/test_support.h` create
+them under `dsd_test_tmpdir()`: `DSD_NEO_TEST_TMPDIR`, else `TMPDIR` (`TEMP` or
+`TMP` on Windows), else the working directory. Create them with these helpers,
+not at a fixed path such as `/tmp`, which the check below does not look at.
+Remove each file with `remove()`, including any the code under test wrote there,
+such as a P25 control-channel cache file or an I/Q capture's sidecar, then
+remove the directory with `dsd_test_rmdir()`. `dsd_test_remove_temp_dir()` does
+both from a list of file names. Never remove a directory with `remove()`: the
+native Windows CRT does not remove directories, so it would stay behind there.
+Check the result of the directory removal and fail the test if it fails. The
+removal succeeds only on an empty directory, so the check also catches a file
+the test forgot to list or a new file the code under test starts writing.
+`dsd_test_capture_stderr_read()` deletes the capture file it reads. A test that
+does not read its capture removes `cap.path` itself after
+`dsd_test_capture_stderr_end()`.
 
 A failed `assert()` aborts the test before its cleanup runs. Once a temporary
 file or directory exists, check with a counted failure instead: print what
@@ -1076,16 +1077,19 @@ fails while the test sets up its file counts the same way.
 
 To check the whole suite, run it against an empty directory, which must still
 be empty afterwards. That does not catch a file a test creates by a relative
-path, which lands in its working directory (`build/dev-debug/tests` under
-ctest), so compare that directory's listing before and after the run too:
+path, which lands in its working directory: `build/dev-debug/tests` for most
+tests, the source tree for the `TOOLS_*` scripts. So compare both before and
+after the run too:
 
 ```sh
 T=$(mktemp -d)
-find build/dev-debug/tests | sort > "$T.before"
+find build/dev-debug/tests | sort > "$T.build"
+git status --porcelain --ignored > "$T.src"
 DSD_NEO_TEST_TMPDIR=$T TMPDIR=$T ctest --preset dev-debug --output-on-failure
 ls -A "$T"   # prints nothing
-find build/dev-debug/tests | sort | diff "$T.before" -   # prints nothing
-rmdir "$T"; rm "$T.before"
+find build/dev-debug/tests | sort | diff "$T.build" -   # prints nothing
+git status --porcelain --ignored | diff "$T.src" -   # prints nothing
+rmdir "$T"; rm "$T.build" "$T.src"
 ```
 
 Repeat this in a `-DDSD_ENABLE_QT_UI=ON` build with `-R '^UI_QT'` and
