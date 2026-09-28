@@ -218,6 +218,8 @@ validate_generated(const char* text, int is_group, dsd_csv_validation* out) {
     if (fp == NULL) {
         DSD_FPRINTF(stderr, "FAIL: cannot write %s\n", path);
         g_failures++;
+        /* The open can fail after creating the file (dsd_fopen_private() closes the descriptor when fdopen() fails). */
+        (void)remove(path);
         (void)dsd_test_rmdir(dir);
         return -1;
     }

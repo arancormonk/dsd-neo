@@ -351,6 +351,7 @@ test_channel_import_rejects_final_symlink(void) {
 
     FILE* fp = dsd_fopen_private(target, "w");
     if (!fp) {
+        (void)remove(target);
         free(opts);
         free_test_state(state);
         return 1;
