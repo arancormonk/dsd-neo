@@ -1167,10 +1167,10 @@ test_event_log_writes_optional_metadata_lines(void) {
     static Event_History_I event_history[2];
     reset_fixture(&opts, &state, event_history);
 
-    char path[] = "/tmp/dsd-neo-events-XXXXXX";
-    int fd = mkstemp(path);
+    char path[DSD_TEST_PATH_MAX];
+    int fd = dsd_test_mkstemp(path, sizeof path, "dsd-neo-events");
     if (fd < 0) {
-        DSD_FPRINTF(stderr, "mkstemp failed for event log test\n");
+        DSD_FPRINTF(stderr, "dsd_test_mkstemp failed for event log test\n");
         return 1;
     }
     close(fd);
@@ -1221,10 +1221,10 @@ test_event_log_unstamped_row_keeps_bare_detail_lines(void) {
     static Event_History_I event_history[2];
     reset_fixture(&opts, &state, event_history);
 
-    char path[] = "/tmp/dsd-neo-events-XXXXXX";
-    int fd = mkstemp(path);
+    char path[DSD_TEST_PATH_MAX];
+    int fd = dsd_test_mkstemp(path, sizeof path, "dsd-neo-events");
     if (fd < 0) {
-        DSD_FPRINTF(stderr, "mkstemp failed for unstamped event log test\n");
+        DSD_FPRINTF(stderr, "dsd_test_mkstemp failed for unstamped event log test\n");
         return 1;
     }
     close(fd);
@@ -3950,10 +3950,10 @@ test_merge_logs_continuation_only_when_render_changes(void) {
     static Event_History_I event_history[2];
     reset_fixture(&opts, &state, event_history);
 
-    char path[] = "/tmp/dsd-neo-reacquire-events-XXXXXX";
-    int fd = mkstemp(path);
+    char path[DSD_TEST_PATH_MAX];
+    int fd = dsd_test_mkstemp(path, sizeof path, "dsd-neo-reacquire-events");
     if (fd < 0) {
-        DSD_FPRINTF(stderr, "mkstemp failed for reacquisition event log test\n");
+        DSD_FPRINTF(stderr, "dsd_test_mkstemp failed for reacquisition event log test\n");
         return 1;
     }
     close(fd);
@@ -4022,10 +4022,10 @@ test_merge_continuation_annotates_from_the_row(void) {
     static Event_History_I event_history[2];
     reset_fixture(&opts, &state, event_history);
 
-    char path[] = "/tmp/dsd-neo-continuation-slot-XXXXXX";
-    int fd = mkstemp(path);
+    char path[DSD_TEST_PATH_MAX];
+    int fd = dsd_test_mkstemp(path, sizeof path, "dsd-neo-continuation-slot");
     if (fd < 0) {
-        DSD_FPRINTF(stderr, "mkstemp failed for continuation slot test\n");
+        DSD_FPRINTF(stderr, "dsd_test_mkstemp failed for continuation slot test\n");
         return 1;
     }
     close(fd);
@@ -4086,10 +4086,10 @@ test_merge_logs_metadata_the_segment_added(void) {
     // Two-slot system, so commits carry a "Slot N;" annotation.
     state.lastsynctype = DSD_SYNC_DMR_BS_VOICE_POS;
 
-    char path[] = "/tmp/dsd-neo-reacquire-meta-XXXXXX";
-    int fd = mkstemp(path);
+    char path[DSD_TEST_PATH_MAX];
+    int fd = dsd_test_mkstemp(path, sizeof path, "dsd-neo-reacquire-meta");
     if (fd < 0) {
-        DSD_FPRINTF(stderr, "mkstemp failed for reacquisition metadata log test\n");
+        DSD_FPRINTF(stderr, "dsd_test_mkstemp failed for reacquisition metadata log test\n");
         return 1;
     }
     close(fd);
@@ -4340,10 +4340,10 @@ test_x2tdma_voice_commits_a_row(void) {
     reset_fixture(&opts, &state, event_history);
     state.lastsynctype = DSD_SYNC_X2TDMA_VOICE_POS;
 
-    char path[] = "/tmp/dsd-neo-x2tdma-events-XXXXXX";
-    int fd = mkstemp(path);
+    char path[DSD_TEST_PATH_MAX];
+    int fd = dsd_test_mkstemp(path, sizeof path, "dsd-neo-x2tdma-events");
     if (fd < 0) {
-        DSD_FPRINTF(stderr, "mkstemp failed for x2tdma event log test\n");
+        DSD_FPRINTF(stderr, "dsd_test_mkstemp failed for x2tdma event log test\n");
         return 1;
     }
     close(fd);
