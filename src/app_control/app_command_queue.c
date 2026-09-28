@@ -5839,6 +5839,46 @@ ui_restore_refused_analog_width(dsd_opts* opts, dsd_state* state, int kind, int 
     ui_set_toast(state, 5, "Refused: %s", why);
 }
 
+/* Whether the options are still the ones a refused scan leave put back (@p refusal): the analog family, the kind and
+   configured width it asked for, and no scan running or updating. A channel-map adopt or a RadioReference import that
+   keeps the scanner on gets its front end from the next row's tune. */
+static int
+ui_scan_leave_options_stand(const dsd_opts* opts, const dsd_state* state, const svc_monitor_refusal* refusal) {
+    return dsd_opts_is_analog_family(opts) && opts->analog_demod == refusal->kind
+           && dsd_app_analog_width_setting_hz(opts, refusal->kind) == refusal->width_hz
+           && !dsd_scan_mode_configured_view(state) && !dsd_scan_mode_updating(state)
+           && !(opts->scanner_mode == 1 && state->lcn_freq_count > 0);
+}
+
+/* A refused scan leave's front end off the monitor of the kind it asked for (@p refusal): the kind's default is asked
+   for and stored as the configured width, with the request carrying the leave on, and 0 returned. When the default was
+   what the front end refused (@p refusal's own width: the fallback of an earlier refusal, landing on a rate a retune
+   moved again, or a change to the default made after the leave), or the rate refuses it now, nothing is asked, the
+   configured width from before the default goes back where there is one, and -1 is returned. */
+static int
+ui_scan_leave_fall_back_to_default(dsd_opts* opts, dsd_state* state, const svc_monitor_refusal* refusal) {
+    const int kind = refusal->kind;
+    if (refusal->width_hz == 0) {
+        if (refusal->configured_before_hz >= 0) {
+            (void)svc_store_analog_width_setting(opts, state, kind, refusal->configured_before_hz);
+        }
+        return -1;
+    }
+    if (svc_check_analog_bandwidth(opts, state, kind, 0, NULL, 0U) != 0) {
+        return -1;
+    }
+    /* Straight to the monitor request, as ui_revert_analog_entry() republishes: svc_publish_analog_bandwidth() would
+       wait for a CQPSK a kept P25 row requested, which is what the default has to replace. */
+    (void)svc_store_analog_width_setting(opts, state, kind, 0);
+    if (svc_publish_symbol_profile_after_scan_leave(opts, state, dsd_scan_mode_effective_profile(opts, state),
+                                                    refusal->width_hz)
+        != 0) {
+        (void)svc_store_analog_width_setting(opts, state, kind, refusal->width_hz);
+        return -1;
+    }
+    return 0;
+}
+
 /*
  * A scan leave's return to the analog monitor the front end refused (issue #578), at once or where it landed
  * (@p refusal): a row's retune had moved the demod rate off the one the configured width was held to. The front end
@@ -5857,16 +5897,13 @@ ui_restore_refused_analog_width(dsd_opts* opts, dsd_state* state, int kind, int 
 static int
 ui_settle_refused_scan_leave(dsd_opts* opts, dsd_state* state, const svc_monitor_refusal* refusal) {
     const int kind = refusal->kind;
-    if (!dsd_opts_is_analog_family(opts) || opts->analog_demod != kind
-        || dsd_app_analog_width_setting_hz(opts, kind) != refusal->width_hz || dsd_scan_mode_configured_view(state)
-        || dsd_scan_mode_updating(state) || (opts->scanner_mode == 1 && state->lcn_freq_count > 0)) {
+    if (!ui_scan_leave_options_stand(opts, state, refusal)) {
         return 0;
     }
     /* A refused default (the NFM default never is) was the fallback of a width refused before it, or a change to the
-       default made after the leave: the width from before it is the one to put back and to name. */
-    const int default_refused = refusal->width_hz == 0;
-    const int asked_hz =
-        (default_refused && refusal->configured_before_hz > 0) ? refusal->configured_before_hz : refusal->width_hz;
+       default made after the leave: the width from before it is the one to name. */
+    const int asked_hz = (refusal->width_hz == 0 && refusal->configured_before_hz > 0) ? refusal->configured_before_hz
+                                                                                       : refusal->width_hz;
     int runs_hz = 0;
     if (refusal->kept_analog && refusal->kept_monitor && refusal->kept_kind == kind) {
         if (refusal->kept_width_hz == refusal->width_hz) {
@@ -5874,21 +5911,8 @@ ui_settle_refused_scan_leave(dsd_opts* opts, dsd_state* state, const svc_monitor
         }
         runs_hz = refusal->kept_width_hz;
         svc_restore_analog_width(opts, state, kind, runs_hz, refusal->configured_before_hz);
-    } else if (default_refused || svc_check_analog_bandwidth(opts, state, kind, 0, NULL, 0U) != 0) {
-        if (default_refused && refusal->configured_before_hz >= 0) {
-            (void)svc_store_analog_width_setting(opts, state, kind, refusal->configured_before_hz);
-        }
-        runs_hz = -1;
     } else {
-        /* Straight to the monitor request, as ui_revert_analog_entry() republishes: svc_publish_analog_bandwidth()
-           would wait for a CQPSK a kept P25 row requested, which is what the default has to replace. */
-        (void)svc_store_analog_width_setting(opts, state, kind, 0);
-        if (svc_publish_symbol_profile_after_scan_leave(opts, state, dsd_scan_mode_effective_profile(opts, state),
-                                                        refusal->width_hz)
-            != 0) {
-            (void)svc_store_analog_width_setting(opts, state, kind, refusal->width_hz);
-            runs_hz = -1;
-        }
+        runs_hz = ui_scan_leave_fall_back_to_default(opts, state, refusal);
     }
     char why[128];
     svc_describe_monitor_return_refusal(opts, kind, asked_hz, runs_hz, why, sizeof why);
