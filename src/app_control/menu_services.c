@@ -1336,6 +1336,28 @@ svc_radio_input_label(const dsd_opts* opts) {
     return "RTL-SDR";
 }
 
+/* Why the input @p opts describes refused analog @p kind at @p width_hz (0 = the kind's default) at @p rate_hz, the DSP
+   rate it delivers (0: none known), which its stream logged in full: the width's range, the environment rule, or the
+   width against that rate with the fix for what sets it; a width the rate fits, refused for a reason the log gives (a
+   replay that decimates after the demodulator), points at the log. */
+static void
+svc_describe_input_width_refusal(const dsd_opts* opts, int kind, int width_hz, int rate_hz, char* why,
+                                 size_t why_size) {
+    if (!svc_analog_width_in_range(kind, width_hz, why, why_size)
+        || !svc_analog_width_env_rule(kind, width_hz, 0, why, why_size)) {
+        return;
+    }
+    const int held_hz = svc_analog_held_width_hz(kind, width_hz);
+    if (held_hz > 0 && rate_hz > 0 && !dsd_analog_width_realizable(held_hz, rate_hz)) {
+        svc_analog_rate_refusal(kind, held_hz, rate_hz, dsd_opts_analog_rate_source(opts), why, why_size);
+        return;
+    }
+    char width[DSD_ANALOG_WIDTH_TEXT_MAX];
+    (void)dsd_analog_width_format(held_hz > 0 ? held_hz : dsd_analog_width_default_hz(kind), width, sizeof width);
+    svc_why(why, why_size, "the %s input refused %s %s (see log)", svc_radio_input_label(opts),
+            dsd_analog_demod_label(kind), width);
+}
+
 int
 svc_describe_start_failure(const dsd_opts* opts, char* why, size_t why_size) {
     svc_why(why, why_size, "%s", "");
@@ -1349,21 +1371,24 @@ svc_describe_start_failure(const dsd_opts* opts, char* why, size_t why_size) {
         svc_why(why, why_size, "the %s input did not start (see log)", svc_radio_input_label(opts));
         return 0;
     }
-    if (!svc_analog_width_in_range(kind, width_hz, why, why_size)
-        || !svc_analog_width_env_rule(kind, width_hz, 0, why, why_size)) {
-        return 1;
-    }
-    const int held_hz = svc_analog_held_width_hz(kind, width_hz);
-    if (held_hz > 0 && rate_hz > 0 && !dsd_analog_width_realizable(held_hz, rate_hz)) {
-        svc_analog_rate_refusal(kind, held_hz, rate_hz, dsd_opts_analog_rate_source(opts), why, why_size);
-        return 1;
-    }
-    /* A width the rate fits, refused for a reason the log gives (a replay that decimates after the demodulator). */
-    char width[DSD_ANALOG_WIDTH_TEXT_MAX];
-    (void)dsd_analog_width_format(held_hz > 0 ? held_hz : dsd_analog_width_default_hz(kind), width, sizeof width);
-    svc_why(why, why_size, "the %s input refused %s %s (see log)", svc_radio_input_label(opts),
-            dsd_analog_demod_label(kind), width);
+    svc_describe_input_width_refusal(opts, kind, width_hz, rate_hz, why, why_size);
     return 1;
+}
+
+int
+svc_check_started_stream_analog(const dsd_opts* opts, int kind, int width_hz, char* why, size_t why_size) {
+    svc_why(why, why_size, "%s", "");
+    if (!opts || !dsd_analog_demod_is_valid(kind)) {
+        return -1;
+    }
+    /* The stream logs a refusal with the validator's text itself. */
+    if (rtl_stream_check_analog_profile(DSD_RX_FAMILY_ANALOG, kind, width_hz) == 0) {
+        return 0;
+    }
+    /* The rate the new stream published when it started: the demod thread's metrics rate can still be the stream's
+       before it until its first block. */
+    svc_describe_input_width_refusal(opts, kind, width_hz, rtl_stream_get_request_rate_hz(), why, why_size);
+    return -1;
 }
 
 int

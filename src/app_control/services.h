@@ -590,6 +590,20 @@ int svc_check_airspy_input_analog_width(const dsd_opts* opts, const dsd_state* s
  * @return 1 when the start refused its analog width, 0 when it failed for another reason.
  */
 int svc_describe_start_failure(const dsd_opts* opts, char* why, size_t why_size);
+/**
+ * @brief Whether the stream that just started, on the input @p opts describes, takes the analog monitor of @p kind at
+ * @p width_hz (0 = the kind's default) at the rate it delivers (issue #578).
+ *
+ * For a start that opened on other settings than the ones the stream is about to be asked for: a config apply's reopen
+ * runs inside a scan row's suspended scope, so its start held the configured settings to the delivered rate, not the
+ * row's analog monitor, which the resume asks for next (a SoapySDR or Airspy device sets a rate nothing could check up
+ * front). Asks the stream (rtl_stream_check_analog_profile(), which logs a refusal) at the rate it published when it
+ * started. A refusal's reason, for a toast, is worded as svc_describe_start_failure() words a start's own: the width
+ * against that rate with the fix for what sets it, or the environment rule.
+ *
+ * @return 0 when the stream takes it; -1 when it refuses it (reason in @p why, may be NULL).
+ */
+int svc_check_started_stream_analog(const dsd_opts* opts, int kind, int width_hz, char* why, size_t why_size);
 /** @brief Restart the RTL stream if active, tearing down any existing context. */
 int svc_rtl_restart(dsd_opts* opts, dsd_state* state);
 /** Restart without acquiring; caller holds the P25 SM tick guard. */

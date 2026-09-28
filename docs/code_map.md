@@ -241,9 +241,11 @@ Tests: `tests/engine/test_engine_trunk_scan.c` (`ENGINE_TRUNK_SCAN`) and
   custom sets). `dsd_scan_mode_apply_modulation()` owns target flags/locks for both entry and scope updates. Inherited
   profiles use the restored SPS hunt index, so AUTO's saved timing and the frontend's rate/levels agree after leaving a
   row. `dsd_scan_mode_row_options()` borrows the installed nonsecret row options (valid while suspended and on held
-  snapshots). Row options are applied through a per-field table (`scan_option_appliers[]`), and the row squelch is
-  pushed to the RTL demodulator from the scope's entry points only, once per row change. `dsd_scan_mode_enter()` never
-  pushes, so every caller must follow it with `dsd_scan_mode_options()` (NULL for a row without options);
+  snapshots), and `dsd_scan_mode_row()` gives the row's class while suspended too, which `dsd_scan_mode_active()`
+  reports as INHERIT then (a config apply asks it for the analog monitor the resume puts back, issue #578). Row
+  options are applied through a per-field table (`scan_option_appliers[]`), and the row squelch is pushed to the RTL
+  demodulator from the scope's entry points only, once per row change. `dsd_scan_mode_enter()` never pushes, so every
+  caller must follow it with `dsd_scan_mode_options()` (NULL for a row without options);
   `dsd_scan_mode_set_configured_squelch()`, `dsd_scan_mode_set_configured_analog_width()` (either kind's width, AM
   included; `dsd_scan_mode_set_configured_nfm_bandwidth()` is its NFM call) and
   `dsd_scan_mode_set_configured_tone_policy()` (the CTCSS/DCS policy, issue #527) edit the configured default without
@@ -909,15 +911,23 @@ installs from `src/engine/trunk_tuning.c` in `src/engine/trunk_tuning_hooks_inst
   on the configured settings rather than the row's; the row then compares unchanged when the scope resumes, so
   `apply_cmd_scoped()` notes any stream started meanwhile (`svc_rtl_start_count()`, which `svc_rtl_restart_locked()`
   counts) and `ui_resume_scope_and_publish()` publishes the row's effective profile to it anyway, without ending the
-  decoder's acquisition (issue #578; this also covers a reopen that starts, issue #583's first item). The rest of
-  the config (output, trunking, logging, alerts, recording and DSP, an imported group list, the environment defaults
-  it set) stays applied. The configured PPM never outlives a rollback: an RTL-SDR or rtl_tcp reopen
+  decoder's acquisition (issue #578; this also covers a reopen that starts, issue #583's first item). For the same
+  reason a reopen that starts under a scan row held only the configured settings to the rate the new device delivers,
+  so before the scope resumes the new stream is asked for the analog monitor the row puts back
+  (`ui_scan_row_resumed_monitor()`: the kind of the row's class, read with `dsd_scan_mode_row()` while suspended, and
+  the row's own width or the configured one; `svc_check_started_stream_analog()` at the rate the stream published when
+  it started). A SoapySDR or Airspy device sets a rate no check could know up front, so one that refuses it (an nfm
+  row's own 25 kHz at an Airspy's 19,531 Hz) fails the reopen as a failed start does, rolled back with `Config not
+  applied: <why>`, rather than leave the decoder on the row's monitor over a front end on the configured settings. The
+  rest of the config (output, trunking, logging, alerts, recording and DSP, an imported group list, the environment
+  defaults it set) stays applied. The configured PPM never outlives a rollback: an RTL-SDR or rtl_tcp reopen
   opens with the request made before it, which the rollback puts back with the input, and the Airspy path requests it
   only once the reopened Airspy runs. With no stream running before the apply the config's input is still opened (the
   hot restart, or an Airspy source over a stopped Airspy through `svc_airspy_reopen_locked()` rather than the Airspy
   path's own rollback, which would start the settings it replaced); a start that fails has nothing to put back, so the
   config stays applied, the toast is `Config applied; no input running: <why>` and the apply fails, as a failed Switch
-  source does. Tests: `APP_COMMAND_QUEUE`, `UI_MENU_SERVICES`, `UI_MENU_AIRSPY_CONFIG_REFUSED_WIDTH`,
+  source does, and a start whose stream refuses the scan row keeps the input it opened, with `Config applied; the scan
+  row cannot run: <why>`, and fails the apply. Tests: `APP_COMMAND_QUEUE`, `UI_MENU_SERVICES`, `UI_MENU_AIRSPY_CONFIG_REFUSED_WIDTH`,
   `ENGINE_CHANNEL_SCAN` (the leave's result), `IO_RTL_DEMOD_CONFIG` (request numbering and outcomes, the kept kind and
   monitor output).
 - AM (issue #524): `DSD_APP_CMD_DECODE_MODE_SET` takes `DSDCFG_MODE_AM` (the preset ids end there, as do the

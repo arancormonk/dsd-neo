@@ -6029,6 +6029,9 @@ static int g_fake_take_next_analog_at_once;
 static int g_fake_take_before_next_analog;
 /* What rtl_stream_get_demod_rate_hz() reports: the demod rate the stream publishes. */
 static int g_fake_demod_rate_hz;
+/* What rtl_stream_get_request_rate_hz() reports: the rate a stream publishes from its start on, which a request is held
+   to before the demod thread has run a block. */
+static int g_fake_request_rate_hz;
 /* What rtl_stream_output_rate() reports: the rate the decoder reads and times symbols for. 0, as the real one answers
    for the tests' fake context, has the decoder time for the input's own rate. */
 static uint32_t g_fake_output_rate_hz;
@@ -6056,6 +6059,7 @@ int __wrap_rtl_stream_receive_request_refusal(uint32_t seq, int* out_analog_fami
 int __wrap_rtl_stream_get_analog_profile(int* out_kind, int* out_width_hz, int* out_lpf_on);
 int __wrap_rtl_stream_requested_cqpsk(void);
 int __wrap_rtl_stream_get_demod_rate_hz(void);
+int __wrap_rtl_stream_get_request_rate_hz(void);
 uint32_t __wrap_rtl_stream_output_rate(const RtlSdrContext* ctx);
 
 uint32_t
@@ -6119,6 +6123,11 @@ __wrap_rtl_stream_requested_cqpsk(void) {
 int
 __wrap_rtl_stream_get_demod_rate_hz(void) {
     return g_fake_demod_rate_hz;
+}
+
+int
+__wrap_rtl_stream_get_request_rate_hz(void) {
+    return g_fake_request_rate_hz;
 }
 
 uint32_t
@@ -6254,6 +6263,7 @@ reset_rx_family_wrap(void) {
     g_analog_check_result = 0;
     g_analog_req_result = 0;
     g_fake_analog_req_max_hz = 0;
+    g_fake_request_rate_hz = 0;
     g_fake_monitor_kind = -1;
     g_fake_monitor_width_hz = g_fake_monitor_lpf_on = 0;
     g_fake_rx_kept_monitor = 0;
@@ -10513,6 +10523,92 @@ test_config_reopen_under_a_scan_row_republishes_the_row(void) {
 }
 
 /*
+ * Issue #578: a config reopen that starts under a scan row's suspended scope opens the new stream on the configured
+ * settings, so that start never held the row's own width to the rate the new device delivers, which a config that
+ * reopens an Airspy or SoapySDR device cannot know up front. A DMR-configured scanner on an nfm row with its own 25 kHz
+ * width loads a config that reopens the input as an Airspy at a 12 kHz DSP bandwidth, whose 19,531 Hz cannot filter
+ * 25 kHz: the resume would ask the new stream for a row it refuses, leaving the decoder on the row's NFM over a digital
+ * front end. The apply fails as a failed start does: the RTL-SDR that ran is back, with the toast naming the width and
+ * the new rate, and the row's monitor is asked of it once the row is back. A rate that fits the row keeps the reopen.
+ * With no stream running before, there is nothing to put back: the config stays applied on the new stream, and the
+ * toast says the row cannot run there.
+ */
+static int
+test_config_reopen_whose_scan_row_the_new_stream_refuses(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static void* fake_ctx[2];
+    int rc = 0;
+    init_dmr_session_with_nfm_width(&opts, &state, (RtlSdrContext*)fake_ctx, 0);
+    dsd_scan_option_values row = {0};
+    row.present = DSD_SCAN_OPT_BANDWIDTH;
+    row.channel_bw_hz = 25000;
+    rc |= expect_int("reopen row refused: nfm row", dsd_scan_mode_enter(&opts, &state, DSD_SCAN_MODE_NFM), 0);
+    rc |= expect_int("reopen row refused: its width", dsd_scan_mode_options(&opts, &state, &row), 0);
+    g_fake_analog_family = 1; /* the front end runs the row's monitor */
+
+    reset_rx_family_wrap();
+    g_config_rtl_open_ok = 1;
+    g_analog_check_result = -1; /* the new stream cannot filter the row's 25 kHz */
+    g_fake_request_rate_hz = 19531;
+    rc |= submit_config_device_source(&opts, &state, DSDCFG_INPUT_AIRSPY, 12, 0, "reopen row refused");
+    rc |= expect_int("reopen row refused: failed", dsd_app_command_test_last_failed(), 1);
+    rc |= expect_int(
+        "reopen row refused: the row held to the new stream",
+        g_analog_check_calls >= 1 && g_analog_check_kind == DSD_ANALOG_DEMOD_FM && g_analog_check_width_hz == 25000, 1);
+    rc |= expect_int("reopen row refused: the Airspy started, then the RTL-SDR again",
+                     g_config_rtl_creates == 2 && state.rtl_ctx != NULL, 1);
+    rc |= expect_str("reopen row refused: RTL-SDR back", opts.audio_in_dev, "rtl:0:851.375M:0:0:16");
+    rc |= expect_int("reopen row refused: DSP bandwidth back", opts.rtl_dsp_bw_khz, 16);
+    rc |= expect_toast("reopen row refused toast", &state,
+                       "Config not applied: NFM 25 kHz does not fit the 19.531 kHz DSP rate");
+    rc |= expect_int("reopen row refused: the row back in force",
+                     dsd_scan_mode_active(&state) == DSD_SCAN_MODE_NFM && !dsd_scan_mode_updating(&state)
+                         && opts.analog_only == 1 && opts.analog_nfm_bandwidth_hz == 25000,
+                     1);
+    rc |= expect_last_monitor_request("reopen row refused: the row's monitor asked of the RTL-SDR", 1,
+                                      DSD_ANALOG_DEMOD_FM, 25000);
+    const dsd_scan_settings* configured = dsd_scan_mode_configured_view(&state);
+    rc |= expect_int("reopen row refused: the configured DMR kept",
+                     configured && configured->analog_only == 0 && configured->frame_dmr == 1, 1);
+
+    /* A rate that filters the row's width keeps the reopened Airspy. */
+    reset_rx_family_wrap();
+    g_config_rtl_open_ok = 1;
+    g_fake_request_rate_hz = 39062;
+    rc |= submit_config_device_source(&opts, &state, DSDCFG_INPUT_AIRSPY, 24, 0, "reopen row fits");
+    rc |= expect_int("reopen row fits: applied", dsd_app_command_test_last_failed(), 0);
+    rc |= expect_int("reopen row fits: one start", g_config_rtl_creates, 1);
+    rc |= expect_str("reopen row fits: on the Airspy", opts.audio_in_dev, "airspy");
+    rc |= expect_last_monitor_request("reopen row fits: the row's monitor asked of the Airspy", 1, DSD_ANALOG_DEMOD_FM,
+                                      25000);
+
+    /* No stream before: nothing to put back. */
+    DSD_SNPRINTF(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", "rtl:0:851.375M:0:0:16");
+    opts.rtl_dsp_bw_khz = 16;
+    state.rtl_ctx = NULL;
+    reset_rx_family_wrap();
+    g_config_rtl_open_ok = 1;
+    g_analog_check_result = -1;
+    g_fake_request_rate_hz = 19531;
+    rc |= submit_config_device_source(&opts, &state, DSDCFG_INPUT_AIRSPY, 12, 0, "reopen row refused, no stream");
+    rc |= expect_int("reopen row refused, no stream: failed", dsd_app_command_test_last_failed(), 1);
+    rc |= expect_int("reopen row refused, no stream: the Airspy runs",
+                     g_config_rtl_creates == 1 && state.rtl_ctx != NULL, 1);
+    rc |= expect_str("reopen row refused, no stream: on the Airspy", opts.audio_in_dev, "airspy");
+    rc |= expect_toast("reopen row refused, no stream toast", &state,
+                       "Config applied; the scan row cannot run: NFM 25 kHz does not fit the 19.531 kHz DSP rate");
+
+    dsd_scan_mode_leave(&opts, &state);
+    reset_rx_family_wrap();
+    g_fake_analog_family = 0;
+    opts.analog_nfm_bandwidth_hz = 0;
+    state.rtl_ctx = NULL;
+    freeState(&state);
+    return rc;
+}
+
+/*
  * Issue #526: an am scan row or target without a width of its own runs the configured AM width whenever it comes on
  * air, the AM default (6 kHz) included, which always runs its channel filter. So a config apply that leaves the session
  * on a preset that runs no AM -- a digital one, or -fA beside its own NFM width -- still holds its [analog]
@@ -11615,6 +11711,7 @@ main(void) {
     rc |= test_am_width_under_am_scan_rows();
     rc |= test_config_apply_holds_a_scan_row_width_to_a_reopen();
     rc |= test_config_reopen_under_a_scan_row_republishes_the_row();
+    rc |= test_config_reopen_whose_scan_row_the_new_stream_refuses();
     rc |= test_config_apply_holds_the_configured_am_width_under_am_rows();
     rc |= test_config_apply_holds_an_am_row_width_to_a_reopen();
 #ifdef DSD_NEO_TEST_RTL_WRAP

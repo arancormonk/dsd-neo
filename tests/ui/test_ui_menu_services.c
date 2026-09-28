@@ -1073,6 +1073,26 @@ test_describe_start_failure(void) {
         rc |= expect_int(k_inputs[i].dev, svc_describe_start_failure(&opts, why, sizeof why), 0);
         rc |= expect_str(k_inputs[i].dev, why, k_inputs[i].why);
     }
+
+    /* A stream that started, asked for an analog monitor it did not start on (the scan row a config's reopen resumes):
+       held to the rate it published, and a refusal worded as a start's own. */
+    DSD_SNPRINTF(opts.audio_in_dev, sizeof(opts.audio_in_dev), "%s", "airspy");
+    g_analog_check_calls = 0;
+    g_analog_check_result = -1;
+    g_demod_rate_hz = 19531;
+    rc |= expect_int("started stream refuses the monitor",
+                     svc_check_started_stream_analog(&opts, DSD_ANALOG_DEMOD_FM, 25000, why, sizeof why), -1);
+    rc |= expect_int(
+        "started stream asked for the monitor",
+        g_analog_check_calls == 1 && g_analog_check_kind == DSD_ANALOG_DEMOD_FM && g_analog_check_width_hz == 25000, 1);
+    rc |= expect_str("started stream refusal names the rate it runs", why,
+                     "NFM 25 kHz does not fit the 19.531 kHz DSP rate (max 16.377 kHz); raise the DSP bandwidth or "
+                     "narrow the NFM width");
+    g_analog_check_result = 0;
+    rc |= expect_int("started stream takes the monitor",
+                     svc_check_started_stream_analog(&opts, DSD_ANALOG_DEMOD_FM, 12500, why, sizeof why), 0);
+    rc |= expect_str("started stream that takes it gives no reason", why, "");
+    g_demod_rate_hz = 0;
     return rc;
 }
 

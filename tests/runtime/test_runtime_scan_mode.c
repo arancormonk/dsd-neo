@@ -81,6 +81,8 @@ test_row_option_edits_are_not_acquisition_changes(void) {
     dsd_scan_settings_capture(o, s, &before);
 
     assert(dsd_scan_mode_suspend(o, s));
+    /* The row's class stays readable while an update has the scope suspended: the one the resume reapplies. */
+    assert(dsd_scan_mode_active(s) == DSD_SCAN_MODE_INHERIT && dsd_scan_mode_row(s) == DSD_SCAN_MODE_DMR);
     o->dmr_mute_encL = o->dmr_mute_encR = 0;
     o->aggressive_framesync = 0;
     o->dmr_crc_relaxed_default = 1;
@@ -133,6 +135,7 @@ test_row_option_edits_are_not_acquisition_changes(void) {
     assert(dsd_scan_mode_resume(o, s) == 1);
     dsd_scan_mode_leave(o, s);
     assert(o->scan_voice_hold_ms == 5000 && o->dmr_mute_encL == 0 && s->M == 1);
+    assert(dsd_scan_mode_row(s) == DSD_SCAN_MODE_INHERIT);
     dsd_state_ext_free_all(s);
     free(s);
     free(o);

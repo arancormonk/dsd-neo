@@ -1264,29 +1264,74 @@ ui_cfg_capture_rollback(const dsd_opts* opts, const dsd_state* state, ui_cfg_rol
     ui_cfg_capture_mode_extras(opts, state, &out->mode);
 }
 
+/* The analog monitor the scan row on air runs once its suspended scope resumes (issue #578): the kind an nfm or am row
+   runs, or the configured one a row that declares no mode inherits on an analog session, with the width of that kind
+   in force then, the row's own (--nfm-bandwidth-hz, --am-bandwidth-hz) or else the configured one, which @p opts holds
+   while the scope is suspended. Returns 0, with no kind or width, when no row's scope is suspended or the row runs no
+   monitor (a digital row, or one on a digital session: the resume asks the front end for a symbol profile, which takes
+   no width). */
+static int
+ui_scan_row_resumed_monitor(const dsd_opts* opts, const dsd_state* state, int* kind, int* width_hz) {
+    if (!dsd_scan_mode_updating(state)) {
+        return 0;
+    }
+    const dsd_scan_mode mode = dsd_scan_mode_row(state);
+    if (dsd_scan_mode_is_analog(mode)) {
+        *kind = dsd_scan_mode_analog_kind(mode);
+    } else if (mode == DSD_SCAN_MODE_INHERIT && dsd_opts_is_analog_family(opts)) {
+        *kind = opts->analog_demod;
+    } else {
+        return 0;
+    }
+    const int am = *kind == DSD_ANALOG_DEMOD_AM;
+    const dsd_scan_option_values* row = dsd_scan_mode_row_options(state);
+    if (row && (row->present & DSD_SCAN_OPT_BANDWIDTH) != 0U && (row->channel_bw_kind == DSD_ANALOG_DEMOD_AM) == am) {
+        *width_hz = row->channel_bw_hz;
+    } else {
+        *width_hz = am ? opts->analog_am_bandwidth_hz : opts->analog_nfm_bandwidth_hz;
+    }
+    return 1;
+}
+
 /*
  * The end of a config apply's reopen of the running input (@p rc: what the reopened stream's start returned), issue
  * #578. A config apply never loses the input the session ran. When the start failed, refusing the analog width at the
  * rate the device delivered or failing for the device, the reason is taken while the options still describe the input
- * that failed (svc_describe_start_failure()); then the receive settings and the input @p before holds go back, with
- * the input's device settings and tuning, the input that ran is started again without the I/Q capture that would
- * write over its recording (svc_rtl_restart_recovery_locked()), and the toast says why. Returns -1
- * then, and the caller fails the apply. The rest of the config stays applied (its output, trunking, logging, alerts,
- * recording and DSP sections, the group list it imported, the environment defaults it set). With no stream running
- * before the apply there is no input to put back: the config stays applied with no input running, the toast says why
- * the one it opened did not start ("Config applied; no input running: ..."), and -1 is returned all the same, failing
- * the apply as a failed start fails Input > Switch source. Caller holds the P25 SM tick guard.
+ * that failed (svc_describe_start_failure()). A start that worked under a scan row's suspended scope opened on the
+ * configured settings, so the analog monitor the row puts back when the scope resumes was never held to the rate the
+ * new stream delivers (a SoapySDR or Airspy device sets one no check could know up front): the stream is asked for it
+ * now (svc_check_started_stream_analog()), and a stream that refuses it fails the reopen the same way, rather than
+ * leave the decoder on the row's analog monitor over a front end that stays on the configured settings. Either way the
+ * receive settings and the input @p before holds then go back, with the input's device settings and tuning, the
+ * input that ran is started again without the I/Q capture (svc_rtl_restart_recovery_locked()), and the toast says why
+ * ("Config not applied: ..."). Returns -1 then, and the caller fails the apply. The rest of the config stays applied
+ * (its output, trunking, logging, alerts, recording and DSP sections, the group list it imported, the environment
+ * defaults it set). With no stream running before the apply there is no input to put back: the config stays applied,
+ * and the toast says why the input it opened did not start ("Config applied; no input running: ..."), returning -1 all
+ * the same, failing the apply as a failed start fails Input > Switch source, or, when that input runs but refuses the
+ * scan row, says so ("Config applied; the scan row cannot run: ...") and returns 1, which fails the apply with the new
+ * input kept. Returns 0 when the reopened input runs everything asked of it. Caller holds the P25 SM tick guard.
  */
 static int
 ui_cfg_settle_reopen(dsd_opts* opts, dsd_state* state, int rc, const ui_cfg_rollback* before) {
-    if (rc == 0) {
-        return 0;
-    }
     char why[128];
-    (void)svc_describe_start_failure(opts, why, sizeof why);
-    if (!before->input.running) {
-        ui_set_toast(state, 5, "Config applied; no input running: %s", why);
-        return -1;
+    if (rc == 0) {
+        int kind = DSD_ANALOG_DEMOD_FM;
+        int width_hz = 0;
+        if (!ui_scan_row_resumed_monitor(opts, state, &kind, &width_hz)
+            || svc_check_started_stream_analog(opts, kind, width_hz, why, sizeof why) == 0) {
+            return 0;
+        }
+        if (!before->input.running) {
+            ui_set_toast(state, 5, "Config applied; the scan row cannot run: %s", why);
+            return 1;
+        }
+    } else {
+        (void)svc_describe_start_failure(opts, why, sizeof why);
+        if (!before->input.running) {
+            ui_set_toast(state, 5, "Config applied; no input running: %s", why);
+            return -1;
+        }
     }
     ui_restore_receive_settings(opts, state, &before->receive);
     ui_cfg_restore_mode_extras(opts, state, &before->mode);
@@ -2857,8 +2902,9 @@ apply_cfg_rtl_common(dsd_opts* opts, const dsdneoUserConfig* cfg) {
 
 /* A config's RTL-family [input] that builds a spec other than the RTL-family input's (@p before, the input the apply
    found) reopens the device with the config's tuning, or opens it when no stream ran. Returns what
-   ui_cfg_settle_reopen() makes of the stream's start: -1 when it failed (the running input put back, or none to put
-   back), 0 otherwise. */
+   ui_cfg_settle_reopen() makes of the stream's start: -1 when it failed, or ran but refused the scan row on air (the
+   running input put back, or none to put back), 1 when the input it opened with none running before refused that row,
+   0 otherwise. */
 static int
 apply_cfg_rtl_hot_restart(dsd_opts* opts, dsd_state* state, const dsdneoUserConfig* cfg,
                           const ui_cfg_rollback* before) {
@@ -3179,8 +3225,9 @@ cfg_is_live_airspy(const dsdneoUserConfig* cfg, const char* old_device, int old_
  * (apply_cfg_rtl_hot_restart(), with or without a stream running).
  * The configured PPM never outlives a rollback: an RTL-SDR or rtl_tcp reopen opens with the request made before it
  * (the spec carries the PPM, the options it opens with do not), which the rollback puts back with the input, and the
- * Airspy path asks for it only once its input runs. Returns nonzero when a start failed (the input put back, or none
- * to put back) or the live Airspy path failed, which fails the apply.
+ * Airspy path asks for it only once its input runs. Returns nonzero when a start failed or its stream refused the scan
+ * row on air (ui_cfg_settle_reopen(): -1 with the input put back, or none to put back; 1 with the input it opened kept,
+ * none having run before), or the live Airspy path failed, which fails the apply.
  */
 static int
 apply_cfg_radio_input(dsd_opts* opts, dsd_state* state, const dsdneoUserConfig* cfg, const ui_cfg_rollback* before) {
@@ -3199,7 +3246,7 @@ apply_cfg_radio_input(dsd_opts* opts, dsd_state* state, const dsdneoUserConfig* 
         || svc_airspy_settings_reopen(&in->airspy, &cfg->airspy, tuning.bandwidth, opts->rtl_dsp_bw_khz, tuning.volume,
                                       opts->rtl_volume_multiplier)) {
         rc = ui_cfg_settle_reopen(opts, state, svc_airspy_reopen_locked(opts, state, &cfg->airspy), before);
-        if (rc != 0) {
+        if (rc < 0) {
             return rc;
         }
     } else {

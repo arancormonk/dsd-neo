@@ -5715,6 +5715,7 @@ if(
             "LINKER:--wrap=rtl_stream_get_analog_profile"
             "LINKER:--wrap=rtl_stream_requested_cqpsk"
             "LINKER:--wrap=rtl_stream_get_demod_rate_hz"
+            "LINKER:--wrap=rtl_stream_get_request_rate_hz"
             "LINKER:--wrap=rtl_stream_output_rate"
             "LINKER:--wrap=p25_sm_tick_guard_enter"
             "LINKER:--wrap=p25_sm_tick_guard_leave"
