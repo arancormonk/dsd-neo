@@ -876,11 +876,12 @@ installs from `src/engine/trunk_tuning.c` in `src/engine/trunk_tuning_hooks_inst
   volume, resample policy, Airspy and SoapySDR settings) and put back, a PCM input as it was (the switch never closed
   it, and a background RTL stream it left running is not restarted) and an RTL-family input that ran restarted; it is
   not reset as a new input (`ui_input_switched()`). The P25 SM watchdog reads the input, and may retune it, under
-  its tick guard, so the switch holds that guard from its rewrite of the input through the start and any rollback
-  (`svc_rtl_enable_input_locked()`, `ui_rtl_enable_input_failed_locked()`), as a config apply's reopen does; an
-  Airspy settings reopen (`svc_airspy_apply_config()`) holds it across the reopen and the restart of the settings it
-  replaced the same way. Every one of these rollback restarts, and the config apply's below, goes through
-  `svc_rtl_restart_recovery_locked()`: the failed change already stopped the stream that ran, which closed its I/Q
+  its tick guard, so the switch holds that guard from the copy of the input it would put back (a copy taken before
+  it could miss a retune the watchdog completed meanwhile, which the rollback would undo) through its rewrite of the
+  input, the start and any rollback (`svc_rtl_enable_input_locked()`, `ui_rtl_enable_input_failed_locked()`), as a
+  config apply's reopen does; an Airspy settings reopen (`svc_airspy_apply_config()`) holds it across the reopen and
+  the restart of the settings it replaced the same way. Every one of these rollback restarts, and the config apply's
+  below, goes through `svc_rtl_restart_recovery_locked()`: the failed change already stopped the stream that ran, which closed its I/Q
   capture with what it had recorded, and a start reopens the capture file for writing, so the restart runs with
   `iq_capture_requested` cleared, leaves the capture off for the session and logs the file it keeps; the toast notes
   `; I/Q capture stopped` when it fits (`ui_set_rollback_toast()`). The toast is `Refused: <why>` for a width refusal and

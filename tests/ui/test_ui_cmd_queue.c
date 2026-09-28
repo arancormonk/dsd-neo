@@ -5320,6 +5320,11 @@ static const dsd_opts* g_guard_probe_opts;
 static guard_probe_input g_guard_probe_left;
 static int g_guard_probe_unguarded;
 static int g_guard_probe_holds;
+/* A watchdog retune that completed just before the command took the guard (0: none): the next entry after it is armed
+   moves the options' frequency here, as dsd_engine_tune_rtl() writes it while the watchdog holds the guard, which it
+   left just before. A command that read the frequency outside the guard read the one from before the retune. */
+static dsd_opts* g_guard_probe_retune_opts;
+static uint32_t g_guard_probe_retune_hz;
 
 static void
 guard_probe_take(const dsd_opts* opts, guard_probe_input* out) {
@@ -5355,6 +5360,16 @@ guard_probe_disarm(void) {
         guard_probe_check(g_guard_probe_opts);
     }
     g_guard_probe_opts = NULL;
+    g_guard_probe_retune_opts = NULL;
+    g_guard_probe_retune_hz = 0U;
+}
+
+/* Arm the probe on @p opts with a watchdog retune to @p freq_hz completing just before the command's first hold. */
+static void
+guard_probe_arm_with_retune(dsd_opts* opts, uint32_t freq_hz) {
+    guard_probe_arm(opts);
+    g_guard_probe_retune_opts = opts;
+    g_guard_probe_retune_hz = freq_hz;
 }
 
 void __real_p25_sm_tick_guard_enter(void);
@@ -5368,6 +5383,11 @@ __wrap_p25_sm_tick_guard_enter(void) {
     if (g_guard_probe_opts) {
         ++g_guard_probe_holds;
         guard_probe_check(g_guard_probe_opts);
+    }
+    if (g_guard_probe_retune_opts && g_guard_probe_retune_hz != 0U) {
+        /* The watchdog's write, under its own hold: no write of the command's. */
+        g_guard_probe_retune_opts->rtlsdr_center_freq = g_guard_probe_retune_hz;
+        g_guard_probe_retune_hz = 0U;
     }
 }
 
@@ -11175,7 +11195,9 @@ test_input_switch_holds_the_watchdog_guard(void) {
     opts.rtl_dsp_bw_khz = 48;
     opts.rtlsdr_center_freq = 851375000U;
 
-    /* A running rtl_tcp input switched to an Airspy whose start refuses the width: put back and started again. */
+    /* A running rtl_tcp input switched to an Airspy whose start refuses the width: put back and started again. A P25
+       watchdog retune that completed just before the switch took the guard stands: the input put back is the one the
+       switch found under the guard, not a copy read before it. */
     opts.audio_in_type = AUDIO_IN_RTL;
     DSD_SNPRINTF(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", "rtltcp:127.0.0.1:1234");
     opts.rtltcp_enabled = 1;
@@ -11184,11 +11206,13 @@ test_input_switch_holds_the_watchdog_guard(void) {
     g_config_rtl_open_ok = 1;
     g_config_rtl_fail_starts = 1;
     g_config_rtl_refuse_rate_hz = 19531;
-    guard_probe_arm(&opts);
+    guard_probe_arm_with_retune(&opts, 851387500U);
     rc |= switch_input_from(&opts, &state, DSD_APP_CMD_AIRSPY_ENABLE_INPUT, "guarded rtl_tcp to airspy drained");
     guard_probe_disarm();
     rc |= expect_int("guarded rtl_tcp to airspy: tried, then restarted", g_config_rtl_creates, 2);
     rc |= expect_str("guarded rtl_tcp to airspy: rtl_tcp put back", opts.audio_in_dev, "rtltcp:127.0.0.1:1234");
+    rc |=
+        expect_int("guarded rtl_tcp to airspy: the watchdog's retune stands", (int)opts.rtlsdr_center_freq, 851387500);
     rc |= expect_int("guarded rtl_tcp to airspy: one hold", g_guard_probe_holds, 1);
     rc |= expect_int("guarded rtl_tcp to airspy: no write outside the guard", g_guard_probe_unguarded, 0);
 

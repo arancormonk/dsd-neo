@@ -1344,9 +1344,11 @@ ui_rtl_enable_input_failed_locked(dsd_opts* opts, dsd_state* state, const ui_rad
 }
 
 /* Input > Switch source > RTL-SDR or Airspy. The watchdog reads the input, and may retune it, while it holds the P25 SM
-   tick guard, so the switch holds that guard from its rewrite of the input to the end of its start and, when the start
-   fails, on through putting back the input that ran and starting it again (issue #578): nothing the watchdog reads is
-   written outside it, as a config apply's reopen holds it throughout. */
+   tick guard, so the switch holds that guard from the copy of the input it would put back, through its rewrite of the
+   input and its start, and, when the start fails, on through putting back the input that ran and starting it again
+   (issue #578): nothing the watchdog reads is read or written outside it, as a config apply's reopen holds it
+   throughout. A copy taken before the guard could miss a retune the watchdog completed in between, which putting it
+   back would undo while the trunking state follows the retune. */
 static int
 ui_cmd_handle_rtl_enable_input(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
     if (ui_cmd_rtl_enable_input_refused(opts, state, c)) {
@@ -1355,13 +1357,13 @@ ui_cmd_handle_rtl_enable_input(dsd_opts* opts, dsd_state* state, const struct ds
     if (!opts || !state) {
         return UI_CMD_APPLY_COMPLETED;
     }
-    ui_radio_input before;
-    ui_capture_radio_input(opts, state, &before);
     char why[128];
     why[0] = '\0';
     int refused = 0;
     int capture_stopped = 0;
     p25_sm_tick_guard_enter();
+    ui_radio_input before;
+    ui_capture_radio_input(opts, state, &before);
     if (c->id == DSD_APP_CMD_AIRSPY_ENABLE_INPUT) {
         DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "airspy%s%s",
                      opts->airspy.serial[0] ? ":serial=" : "", opts->airspy.serial);
