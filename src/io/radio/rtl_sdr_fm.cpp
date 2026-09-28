@@ -6066,6 +6066,11 @@ stream_open_fill_capture_writer_config(const dsd_opts* opts, RadioSourceKind sou
     return 0;
 }
 
+/* Whether the last stream start opened the I/Q capture writer (rtl_stream_start_opened_capture()). Written by the
+ * start and read by the decoder thread that made it once it returned, so relaxed order suffices; every create and open
+ * clears it (dsd_rtl_stream_forget_start_refusal()). */
+static std::atomic<int> g_start_opened_capture{0};
+
 static int
 stream_open_capture_writer(const dsd_opts* opts, RadioSourceKind source_kind) {
     if (!opts || !opts->iq_capture_requested || !rtl_device_handle) {
@@ -6084,6 +6089,10 @@ stream_open_capture_writer(const dsd_opts* opts, RadioSourceKind source_kind) {
         return -1;
     }
 
+    /* From here the capture file is written anew: the writer opens it for writing, and one that fails to open, or a
+       start that fails after it opened, removes what it wrote. Whatever a stream before this one recorded there is no
+       longer kept. */
+    g_start_opened_capture.store(1, std::memory_order_relaxed);
     dsd_iq_capture_writer* writer = NULL;
     int rc = dsd_iq_capture_open(&cfg, &writer, err_buf, sizeof(err_buf));
     if (rc != DSD_IQ_OK || !writer) {
@@ -6649,6 +6658,12 @@ static std::atomic<int> g_start_analog_refused_rate_hz{0};
 extern "C" void
 dsd_rtl_stream_forget_start_refusal(void) {
     g_start_analog_refused.store(0, std::memory_order_relaxed);
+    g_start_opened_capture.store(0, std::memory_order_relaxed);
+}
+
+extern "C" int
+rtl_stream_start_opened_capture(void) {
+    return g_start_opened_capture.load(std::memory_order_relaxed);
 }
 
 extern "C" int

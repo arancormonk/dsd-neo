@@ -886,10 +886,13 @@ installs from `src/engine/trunk_tuning.c` in `src/engine/trunk_tuning_hooks_inst
   input, the start and any rollback (`svc_rtl_enable_input_locked()`, `ui_rtl_enable_input_failed_locked()`), as a
   config apply's reopen does; an Airspy settings reopen (`svc_airspy_apply_config()`) holds it across the reopen and
   the restart of the settings it replaced the same way. Every one of these rollback restarts, and the config apply's
-  below, goes through `svc_rtl_restart_recovery_locked()`: the failed change already stopped the stream that ran, which closed its I/Q
-  capture with what it had recorded, and a start reopens the capture file for writing, so the restart runs with
-  `iq_capture_requested` cleared, leaves the capture off for the session and logs the file it keeps; the toast notes
-  `; I/Q capture stopped` when it fits (`ui_set_rollback_toast()`). The toast is `Refused: <why>` for a width refusal and
+  below, goes through `svc_rtl_restart_recovery_locked()`: the failed change already stopped the stream that ran,
+  which closed its I/Q capture with what it had recorded, and a start reopens the capture file for writing, so the
+  restart runs with `iq_capture_requested` cleared and leaves the capture off for the session. Its log names the file
+  as kept only when the start the change made never opened the capture (`rtl_stream_start_opened_capture()`: a width
+  its analog check refused, a device that did not open); a start that opened it before failing (its workers, an
+  Airspy that did not stream) or that ran and was undone had already written the file anew, and the log says that
+  instead. The toast notes `; I/Q capture stopped` when it fits (`ui_set_rollback_toast()`). The toast is `Refused: <why>` for a width refusal and
   `Failed: <why>` otherwise, from `svc_describe_start_failure()`, which reads the refusal the start recorded
   (`rtl_stream_start_analog_refusal()`) while the options still describe the input that failed: the environment rule,
   or the width against the rate the device delivered with the fix for what sets it, or else the input that did not
@@ -1484,7 +1487,10 @@ Notes:
     start with the validator's text; the unset AM default is held to the same rules. The refusal is also recorded, with
     the kind, the configured width and the rate it was held to (`rtl_stream_start_analog_refusal()`, relaxed atomics
     that every `rtl_stream_create()` and stream open clear), since the caller of a failed start has no stream left to
-    name the rate the device delivered (issue #578; test: `IO_RTL_STREAM_START_FAILURE`). The unset NFM default never
+    name the rate the device delivered (issue #578; test: `IO_RTL_STREAM_START_FAILURE`). So is whether the start
+    opened the I/Q capture writer (`rtl_stream_start_opened_capture()`, set just before `dsd_iq_capture_open()`),
+    which writes the file anew before the workers and the device's streaming start and can still fail: a rollback
+    that restarts the input that ran cannot claim it kept that recording. The unset NFM default never
     fails: it keeps the `rate_in >= 20000` / `DSD_NEO_CHANNEL_LPF` enable rule and falls back to the legacy WIDE design
     where the rate cannot fit 16 kHz, published as DSP-limited at the width that plan passes.
   - AM (issue #524): an AM open (`rtl_demod_init_for_mode()`) and every switch to the AM kind

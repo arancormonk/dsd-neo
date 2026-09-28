@@ -5700,6 +5700,7 @@ if(
             "LINKER:--wrap=rtl_stream_create"
             "LINKER:--wrap=rtl_stream_start"
             "LINKER:--wrap=rtl_stream_start_analog_refusal"
+            "LINKER:--wrap=rtl_stream_start_opened_capture"
             "LINKER:--wrap=rtl_stream_stop"
             "LINKER:--wrap=rtl_stream_destroy"
             "LINKER:--wrap=rtl_stream_set_channel_squelch"
@@ -12612,6 +12613,7 @@ if(DSD_HAS_AIRSPY)
         PRIVATE
             dsd-neo_io_radio_private_test_support
             dsd-neo_core
+            dsd-neo_test_support
             dsd-neo_warnings
     )
     if(DSD_HAS_RTLSDR)

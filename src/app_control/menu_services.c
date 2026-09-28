@@ -1462,15 +1462,23 @@ svc_rtl_restart_recovery_locked(dsd_opts* opts, dsd_state* state, int* out_captu
         return -1;
     }
     /* The stream the failed change stopped closed the capture with what it recorded; a start would reopen the file and
-       write over it. */
+       write over it. The start the change made may have done so already: it opens the capture once its device runs,
+       before its workers and the device's streaming, which can still fail (rtl_stream_start_opened_capture()). */
     if (opts->iq_capture_requested && opts->audio_in_type == AUDIO_IN_RTL) {
         opts->iq_capture_requested = 0;
         if (out_capture_stopped) {
             *out_capture_stopped = 1;
         }
-        LOG_WARN("I/Q capture stopped: restarting the input that ran would reopen %s and write over what it recorded, "
-                 "which is kept. The capture stays off for the rest of this session.\n",
-                 opts->iq_capture_path);
+        if (rtl_stream_start_opened_capture()) {
+            LOG_WARN("I/Q capture stopped: the start the change made had already reopened %s, writing over what the "
+                     "input that ran recorded. That input restarts without the capture, which stays off for the rest "
+                     "of this session.\n",
+                     opts->iq_capture_path);
+        } else {
+            LOG_WARN("I/Q capture stopped: restarting the input that ran would reopen %s and write over what it "
+                     "recorded, which is kept. The capture stays off for the rest of this session.\n",
+                     opts->iq_capture_path);
+        }
     }
     return svc_rtl_restart_locked(opts, state);
 }

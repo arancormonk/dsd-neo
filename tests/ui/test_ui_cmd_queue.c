@@ -5198,12 +5198,18 @@ static int g_config_rtl_refused_rate_hz;
 /* Issue #578: whether the last create was handed an I/Q capture request (--iq-capture), and how many creates were. */
 static int g_config_rtl_create_capture = -1;
 static int g_config_rtl_captures;
+/* Whether a start that fails does so after it opened the capture writer, which writes the file anew (worker creation,
+   an Airspy SDK that does not start: 1), or before (a device that does not open, a width refused: 0); and what
+   rtl_stream_start_opened_capture() reports for the last start, which every create forgets. */
+static int g_config_rtl_fail_after_capture;
+static int g_config_rtl_opened_capture;
 
 static void
 reset_config_rtl_wrap(void) {
     g_config_rtl_creates = 0;
     g_config_rtl_create_capture = -1;
     g_config_rtl_captures = 0;
+    g_config_rtl_fail_after_capture = g_config_rtl_opened_capture = 0;
     g_config_rtl_open_ok = 0;
     g_config_rtl_create_dev[0] = '\0';
     g_config_rtl_create_analog_only = g_config_rtl_create_kind = g_config_rtl_create_width_hz = -1;
@@ -5216,6 +5222,7 @@ reset_config_rtl_wrap(void) {
 int __wrap_rtl_stream_create(dsd_opts* opts, RtlSdrContext** out_ctx);
 int __wrap_rtl_stream_start(RtlSdrContext* ctx);
 int __wrap_rtl_stream_start_analog_refusal(int* out_kind, int* out_width_hz, int* out_rate_hz);
+int __wrap_rtl_stream_start_opened_capture(void);
 int __wrap_rtl_stream_stop(RtlSdrContext* ctx);
 int __wrap_rtl_stream_destroy(RtlSdrContext* ctx);
 
@@ -5229,6 +5236,7 @@ __wrap_rtl_stream_create(dsd_opts* opts, RtlSdrContext** out_ctx) {
     g_config_rtl_create_width_hz = opts ? dsd_opts_analog_width_hz(opts) : -1;
     g_config_rtl_create_capture = opts ? opts->iq_capture_requested : -1;
     g_config_rtl_captures += g_config_rtl_create_capture == 1;
+    g_config_rtl_opened_capture = 0;
     *out_ctx = g_config_rtl_open_ok ? (RtlSdrContext*)g_config_rtl_ctx : NULL;
     ++g_config_rtl_creates;
     return g_config_rtl_open_ok ? 0 : -1;
@@ -5239,7 +5247,9 @@ __wrap_rtl_stream_start(RtlSdrContext* ctx) {
     (void)ctx;
     ++g_config_rtl_starts;
     g_config_rtl_refused = 0;
+    const int capturing = g_config_rtl_create_capture == 1;
     if (g_config_rtl_fail_starts <= 0) {
+        g_config_rtl_opened_capture = capturing;
         return 0;
     }
     --g_config_rtl_fail_starts;
@@ -5248,8 +5258,15 @@ __wrap_rtl_stream_start(RtlSdrContext* ctx) {
         g_config_rtl_refused_kind = g_config_rtl_create_kind;
         g_config_rtl_refused_width_hz = g_config_rtl_create_width_hz;
         g_config_rtl_refused_rate_hz = g_config_rtl_refuse_rate_hz;
+    } else {
+        g_config_rtl_opened_capture = capturing && g_config_rtl_fail_after_capture;
     }
     return -1;
+}
+
+int
+__wrap_rtl_stream_start_opened_capture(void) {
+    return g_config_rtl_opened_capture;
 }
 
 int
@@ -5294,13 +5311,16 @@ record_capture_log(dsd_neo_log_level_t level, const char* text, void* ctx) {
 }
 
 /* The stream the rollback started runs the input that ran, without the I/Q capture: the start that failed was handed
-   the capture, the recovery start was not, the capture stays off for the session, and the log names the file kept. */
+   the capture, the recovery start was not, the capture stays off for the session, and the log names the file, as kept
+   when the start that failed never opened it, or as written over when it had (@p written_over). */
 static int
-expect_capture_kept(const char* label, const dsd_opts* opts) {
+expect_capture_stopped(const char* label, const dsd_opts* opts, int written_over) {
     int rc = expect_int(label, g_config_rtl_creates == 2 && g_config_rtl_captures == 1, 1);
     rc |= expect_int(label, g_config_rtl_create_capture, 0);
     rc |= expect_int(label, opts->iq_capture_requested, 0);
     rc |= expect_int(label, strstr(g_capture_log, "I/Q capture stopped") != NULL && strstr(g_capture_log, "cap.iq"), 1);
+    rc |= expect_int(label, strstr(g_capture_log, "which is kept") != NULL, written_over ? 0 : 1);
+    rc |= expect_int(label, strstr(g_capture_log, "had already reopened cap.iq") != NULL, written_over ? 1 : 0);
     return rc;
 }
 
@@ -8670,7 +8690,7 @@ test_config_rollback_keeps_the_iq_capture(void) {
     DSD_SNPRINTF(cfg.rtltcp_host, sizeof cfg.rtltcp_host, "%s", "192.0.2.7");
     cfg.rtltcp_port = 1234;
     rc |= submit_config(&opts, &state, &cfg, "capture cfg rtl_tcp host fails");
-    rc |= expect_capture_kept("capture cfg rtl_tcp host fails: recording kept", &opts);
+    rc |= expect_capture_stopped("capture cfg rtl_tcp host fails: recording kept", &opts, 0);
     rc |= expect_str("capture cfg rtl_tcp host fails: host put back", opts.audio_in_dev, "rtltcp:127.0.0.1:1234");
     rc |= expect_str("capture cfg rtl_tcp host fails toast", state.ui_msg,
                      "Config not applied: the rtl_tcp input did not start (see log); I/Q capture stopped");
@@ -11404,10 +11424,26 @@ test_input_switch_rollback_keeps_the_iq_capture(void) {
     g_config_rtl_fail_starts = 1;
     g_capture_log[0] = '\0';
     rc |= switch_input_from(&opts, &state, DSD_APP_CMD_RTL_ENABLE_INPUT, "capture airspy to rtl drained");
-    rc |= expect_capture_kept("capture airspy to rtl: recording kept", &opts);
+    rc |= expect_capture_stopped("capture airspy to rtl: recording kept", &opts, 0);
     rc |= expect_str("capture airspy to rtl: Airspy back", opts.audio_in_dev, "airspy");
     rc |= expect_str("capture airspy to rtl toast", state.ui_msg,
                      "Failed: the RTL-SDR input did not start (see log); I/Q capture stopped");
+
+    /* A start that fails after it opened the capture (an Airspy SDK that does not start) has already written the file
+       anew: the log says so, rather than claim the recording is kept, and the capture stops all the same. */
+    opts.iq_capture_requested = 1;
+    DSD_SNPRINTF(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", "rtl:0:851.375M:0:0:48");
+    state.rtl_ctx = (RtlSdrContext*)fake_ctx;
+    reset_config_rtl_wrap();
+    g_config_rtl_open_ok = 1;
+    g_config_rtl_fail_starts = 1;
+    g_config_rtl_fail_after_capture = 1;
+    g_capture_log[0] = '\0';
+    rc |= switch_input_from(&opts, &state, DSD_APP_CMD_AIRSPY_ENABLE_INPUT, "capture rtl to airspy drained");
+    rc |= expect_capture_stopped("capture rtl to airspy: recording written over", &opts, 1);
+    rc |= expect_str("capture rtl to airspy: RTL-SDR back", opts.audio_in_dev, "rtl:0:851.375M:0:0:48");
+    rc |= expect_str("capture rtl to airspy toast", state.ui_msg,
+                     "Failed: the Airspy input did not start (see log); I/Q capture stopped");
 
     /* A switch that works opens the capture on the new input. */
     opts.audio_in_type = AUDIO_IN_PULSE;

@@ -519,6 +519,13 @@ static int g_start_refused_kind;
 static int g_start_refused_width_hz;
 static int g_start_refused_rate_hz;
 
+/* Whether the last start opened the I/Q capture writer (issue #578): the wording of a recovery restart's log follows
+   it, which APP_COMMAND_QUEUE checks. */
+int
+rtl_stream_start_opened_capture(void) {
+    return 0;
+}
+
 int
 rtl_stream_start_analog_refusal(int* out_kind, int* out_width_hz, int* out_rate_hz) {
     if (!g_start_refused) {

@@ -45,7 +45,8 @@ struct RtlSdrContext {
  */
 extern "C" int
 rtl_stream_create(dsd_opts* opts, RtlSdrContext** out_ctx) {
-    /* A create that fails is no start refused for its width (rtl_stream_start_analog_refusal()). */
+    /* A create that fails is no start refused for its width (rtl_stream_start_analog_refusal()), nor one that opened
+       the capture (rtl_stream_start_opened_capture()). */
     dsd_rtl_stream_forget_start_refusal();
     if (!out_ctx || !opts) {
         return -1;

@@ -107,6 +107,21 @@ int rtl_stream_start(RtlSdrContext* ctx);
  */
 int rtl_stream_start_analog_refusal(int* out_kind, int* out_width_hz, int* out_rate_hz);
 /**
+ * @brief Whether the last stream start opened the I/Q capture (--iq-capture), writing the capture file anew.
+ *
+ * A start with the capture requested opens its writer once the device runs, before it starts its workers and the
+ * device's streaming: the writer opens the data file for writing, which ends what a stream before it recorded there,
+ * and a writer that fails to open, or a start that fails after it opened, removes what it wrote (the metadata sidecar,
+ * and the data file when the writer itself failed). So a start that failed after this point (a worker that did not
+ * start, an Airspy SDK that did not stream) has already written over an earlier recording, and one that failed before
+ * it (its analog channel check, a device that did not open) left that recording as the stream before it closed it.
+ * Every stream create and every start forgets the last record. For the decoder thread that made the start, after it
+ * returned.
+ *
+ * @return 1 when the last start went on to open the capture writer, 0 otherwise.
+ */
+int rtl_stream_start_opened_capture(void);
+/**
  * @brief Stop the stream and cleanup resources associated with the run.
  * Safe to call multiple times; subsequent calls are no-ops.
  * @param ctx Stream context created by rtl_stream_create().

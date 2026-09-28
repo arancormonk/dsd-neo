@@ -624,14 +624,17 @@ int svc_rtl_restart(dsd_opts* opts, dsd_state* state);
 /** Restart without acquiring; caller holds the P25 SM tick guard. */
 int svc_rtl_restart_locked(dsd_opts* opts, dsd_state* state);
 /**
- * @brief Start the input the options describe again after the start on the input that replaced it failed, without
- * acquiring; caller holds the P25 SM tick guard (issue #578).
+ * @brief Start the input the options describe again after the start on the input that replaced it failed, or ran but
+ * was undone, without acquiring; caller holds the P25 SM tick guard (issue #578).
  *
  * Every rollback restart goes through it: Input > Switch source and a config apply putting back the input that ran,
  * and an Airspy settings reopen putting back the settings it replaced (svc_airspy_apply_config()). The change already
  * stopped the stream that ran, which closed its I/Q capture (--iq-capture) with what it had recorded, and a start opens
- * the capture file anew, writing over it. So a recovery start of a radio input runs without the capture, which stays
- * off for the rest of the session (iq_capture_requested cleared), and the log says so, naming the file kept.
+ * the capture file anew, writing over it. So a recovery start of a radio input never reopens the capture, which stays
+ * off for the rest of the session (iq_capture_requested cleared), and the log says so, naming the file: kept, when the
+ * start the change made failed before it opened the capture (its analog check, a device that did not open), or
+ * written over by that start, when it had opened it (rtl_stream_start_opened_capture(): its workers or the device's
+ * streaming failed after that, or it ran and the change was undone).
  *
  * @param out_capture_stopped Set to 1 when the capture was turned off here, else 0 (may be NULL).
  * @return 0 when the input started again; nonzero otherwise, as svc_rtl_restart_locked().
