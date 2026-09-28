@@ -8456,6 +8456,81 @@ test_config_reopen_that_fails_keeps_the_running_input(void) {
 }
 
 /*
+ * Issue #578: a config rollback puts back everything the config's [mode], [demod] and [analog] set that the decoder
+ * reads, not only the settings a scan row snapshots. An EDACS-EA session with ESK, two extra LRRP ports and no tone
+ * filter loads a config for standard EDACS, other LRRP ports and a tone filter, whose rtl_tcp host does not start: the
+ * session keeps its EDACS variant, its LRRP ports and its tone policy with the input that ran.
+ */
+static int
+test_config_rollback_restores_mode_owned_settings(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static void* fake_ctx[2];
+    int rc = 0;
+    init_decode_mode_context(&opts, &state);
+    rc |= expect_int(
+        "edacs session",
+        dsd_apply_decode_mode_preset(DSDCFG_MODE_EDACS_PV, DSD_DECODE_PRESET_PROFILE_CONFIG, &opts, &state), 0);
+    state.ea_mode = 1;
+    state.esk_mask = 0xA0;
+    opts.lrrp_extra_ports[0] = 4001;
+    opts.lrrp_extra_ports[1] = 4002;
+    opts.lrrp_extra_port_count = 2;
+    opts.analog_tone_filter = DSD_TONE_FILTER_OFF;
+    DSD_MEMSET(&opts.analog_tone_set, 0, sizeof opts.analog_tone_set);
+    opts.audio_in_type = AUDIO_IN_RTL;
+    DSD_SNPRINTF(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", "rtltcp:127.0.0.1:1234");
+    opts.rtltcp_enabled = 1;
+    DSD_SNPRINTF(opts.rtltcp_hostname, sizeof opts.rtltcp_hostname, "%s", "127.0.0.1");
+    opts.rtltcp_portno = 1234;
+    opts.rtl_dsp_bw_khz = 48;
+    state.rtl_ctx = (RtlSdrContext*)fake_ctx;
+    reset_rx_family_wrap();
+    g_config_rtl_open_ok = 1;
+    g_config_rtl_fail_starts = 1;
+
+    dsdneoUserConfig cfg;
+    DSD_MEMSET(&cfg, 0, sizeof cfg);
+    cfg.has_input = 1;
+    cfg.input_source = DSDCFG_INPUT_RTLTCP;
+    DSD_SNPRINTF(cfg.rtltcp_host, sizeof cfg.rtltcp_host, "%s", "192.0.2.7");
+    cfg.rtltcp_port = 1234;
+    cfg.has_mode = 1;
+    cfg.decode_mode = DSDCFG_MODE_EDACS_PV;
+    cfg.has_edacs_variant = 1;
+    cfg.edacs_ea = 0;
+    cfg.edacs_esk = 0;
+    DSD_SNPRINTF(cfg.dmr_lrrp_ports, sizeof cfg.dmr_lrrp_ports, "%s", "4005");
+    cfg.has_analog = 1;
+    cfg.analog_tone_filter = DSD_TONE_FILTER_ALLOW;
+    rc |= expect_int("mode-owned: tone list", dsd_tone_set_parse("100.0", &cfg.analog_tone_set, NULL, 0), 0);
+    rc |= submit_config(&opts, &state, &cfg, "mode-owned rollback");
+    rc |= expect_int("mode-owned rollback: failed", dsd_app_command_test_last_failed(), 1);
+    rc |= expect_str("mode-owned rollback toast", state.ui_msg,
+                     "Config not applied: the rtl_tcp input did not start (see log)");
+    rc |= expect_restarted_on("mode-owned rollback: back on the running host", &opts, &state, "rtltcp:127.0.0.1:1234");
+    rc |= expect_int("mode-owned rollback: EDACS-EA kept", state.ea_mode, 1);
+    rc |= expect_int("mode-owned rollback: ESK kept", state.esk_mask, 0xA0);
+    rc |= expect_int(
+        "mode-owned rollback: LRRP ports kept",
+        opts.lrrp_extra_port_count == 2 && opts.lrrp_extra_ports[0] == 4001 && opts.lrrp_extra_ports[1] == 4002, 1);
+    rc |=
+        expect_int("mode-owned rollback: tone filter kept off",
+                   opts.analog_tone_filter == DSD_TONE_FILTER_OFF && dsd_tone_set_count(&opts.analog_tone_set) == 0, 1);
+    rc |= expect_int("mode-owned rollback: still EDACS",
+                     dsd_infer_decode_mode_preset(&opts) == DSDCFG_MODE_EDACS_PV && opts.frame_provoice == 1, 1);
+
+    reset_config_rtl_wrap();
+    opts.rtltcp_enabled = 0;
+    opts.lrrp_extra_port_count = 0;
+    state.ea_mode = 0;
+    state.esk_mask = 0;
+    state.rtl_ctx = NULL;
+    freeState(&state);
+    return rc;
+}
+
+/*
  * Issue #578: every stream start opens the I/Q capture (--iq-capture) anew, writing over the file. A config whose
  * reopen fails has already stopped the stream that ran, which closed the capture with what it had recorded, so the
  * restart that puts that input back runs without the capture: it stays off for the rest of the session, the log says
@@ -11429,6 +11504,7 @@ main(void) {
     rc |= test_config_apply_leaves_a_soapy_or_airspy_reopen_to_its_start();
     rc |= test_config_reopen_that_fails_keeps_the_running_input();
     rc |= test_config_rollback_keeps_the_iq_capture();
+    rc |= test_config_rollback_restores_mode_owned_settings();
     rc |= test_config_apply_restores_the_default_nfm_width();
     rc |= test_scan_list_holds_the_configured_nfm_width();
     rc |= test_scan_list_holds_the_configured_nfm_width_on_am();

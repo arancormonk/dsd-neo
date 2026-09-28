@@ -1204,10 +1204,11 @@ ui_restore_radio_input(dsd_opts* opts, const ui_radio_input* in) {
     opts->soapy_bandwidth_hz = in->soapy_bandwidth_hz;
 }
 
-/* Put back the configured receive settings @p before holds, the ones a config's [mode], [demod] and [analog] widths
-   set: the decoders, modulation, inversion and slot policy, the analog monitor and its kind, both configured analog
-   widths, the output name and the symbol timing. The row-scoped options stay as they are now. The analog entry cannot
-   do this for a config apply: it arms only on a running stream (ui_arm_analog_entry()) and keeps the widths in force
+/* Put back the configured receive settings @p before holds, the ones a config's [mode], [demod] and [analog] set: the
+   decoders, modulation, inversion and slot policy, the analog monitor and its kind, both configured analog widths,
+   the output name and the symbol timing, and [analog]'s tone policy. The other row-scoped options that lead the
+   snapshot stay as they are now: the sections that set them stay applied. The analog entry cannot do this for a
+   config apply: it arms only on a running stream (ui_arm_analog_entry()) and keeps the widths in force
    (ui_revert_analog_entry()). */
 static void
 ui_restore_receive_settings(dsd_opts* opts, dsd_state* state, const dsd_scan_settings* before) {
@@ -1215,14 +1216,44 @@ ui_restore_receive_settings(dsd_opts* opts, dsd_state* state, const dsd_scan_set
     dsd_scan_settings_capture(opts, state, &now);
     dsd_scan_settings back = *before;
     ui_restore_settings_keeping_row_policy(opts, state, &back, &now);
+    opts->analog_tone_set = before->analog_tone_set;
+    opts->analog_tone_filter = before->analog_tone_filter;
+}
+
+/* What a config's [mode] sets that the decoder reads and the configured receive settings (dsd_scan_settings) do not
+   hold (issue #578): the EDACS variant (edacs_ea and edacs_esk, which its EDACS/ProVoice preset clears) and the extra
+   LRRP ports dmr_lrrp_ports lists. */
+typedef struct {
+    int ea_mode;
+    unsigned short esk_mask;
+    int lrrp_extra_port_count;
+    uint16_t lrrp_extra_ports[DSD_LRRP_EXTRA_PORT_MAX];
+} ui_cfg_mode_extras;
+
+static void
+ui_cfg_capture_mode_extras(const dsd_opts* opts, const dsd_state* state, ui_cfg_mode_extras* out) {
+    out->ea_mode = state->ea_mode;
+    out->esk_mask = state->esk_mask;
+    out->lrrp_extra_port_count = opts->lrrp_extra_port_count;
+    DSD_MEMCPY(out->lrrp_extra_ports, opts->lrrp_extra_ports, sizeof out->lrrp_extra_ports);
+}
+
+static void
+ui_cfg_restore_mode_extras(dsd_opts* opts, dsd_state* state, const ui_cfg_mode_extras* in) {
+    state->ea_mode = in->ea_mode;
+    state->esk_mask = in->esk_mask;
+    opts->lrrp_extra_port_count = in->lrrp_extra_port_count;
+    DSD_MEMCPY(opts->lrrp_extra_ports, in->lrrp_extra_ports, sizeof opts->lrrp_extra_ports);
 }
 
 /* What a config apply that reopens the running input puts back when the reopened stream does not start (issue #578):
-   the input a start reads, and the configured receive settings. Taken once the config has passed its checks, before
-   it is applied: under a scan row, while the scope is suspended, so the receive settings are the configured ones. */
+   the input a start reads, the configured receive settings, and the rest of what [mode] sets that the decoder reads.
+   Taken once the config has passed its checks, before it is applied: under a scan row, while the scope is suspended,
+   so the receive settings are the configured ones. */
 typedef struct {
     ui_radio_input input;
     dsd_scan_settings receive;
+    ui_cfg_mode_extras mode;
 } ui_cfg_rollback;
 
 static void
@@ -1230,6 +1261,7 @@ ui_cfg_capture_rollback(const dsd_opts* opts, const dsd_state* state, ui_cfg_rol
     DSD_MEMSET(out, 0, sizeof *out);
     ui_capture_radio_input(opts, state, &out->input);
     dsd_scan_settings_capture(opts, state, &out->receive);
+    ui_cfg_capture_mode_extras(opts, state, &out->mode);
 }
 
 /*
@@ -1240,7 +1272,7 @@ ui_cfg_capture_rollback(const dsd_opts* opts, const dsd_state* state, ui_cfg_rol
  * the input's device settings and tuning, the input that ran is started again without the I/Q capture that would
  * write over its recording (svc_rtl_restart_recovery_locked()), and the toast says why. Returns -1
  * then, and the caller fails the apply. The rest of the config stays applied (its output, trunking, logging, alerts,
- * recording and DSP sections, the tone policy, the group list it imported, the environment defaults it set). With no
+ * recording and DSP sections, the group list it imported, the environment defaults it set). With no
  * stream running before the apply there is no input to lose: the config waits for the next start, as it always has,
  * and 0 is returned. Caller holds the P25 SM tick guard.
  */
@@ -1252,6 +1284,7 @@ ui_cfg_settle_reopen(dsd_opts* opts, dsd_state* state, int rc, const ui_cfg_roll
     char why[128];
     (void)svc_describe_start_failure(opts, why, sizeof why);
     ui_restore_receive_settings(opts, state, &before->receive);
+    ui_cfg_restore_mode_extras(opts, state, &before->mode);
     ui_restore_radio_input(opts, &before->input);
     int capture_stopped = 0;
     if (svc_rtl_restart_recovery_locked(opts, state, &capture_stopped) != 0) {

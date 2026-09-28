@@ -896,9 +896,12 @@ installs from `src/engine/trunk_tuning.c` in `src/engine/trunk_tuning_hooks_inst
   the running RTL-family input fails to start (the live Airspy reopen, `svc_airspy_reopen_locked()`, or the hot restart
   for a new spec, `apply_cfg_rtl_hot_restart()`, both from `apply_cfg_radio_input()`) never loses that input either
   (`ui_cfg_settle_reopen()`, issue #578): it takes the reason from `svc_describe_start_failure()`, puts back what the
-  apply found once its checks passed (`ui_cfg_rollback`: the `ui_radio_input` above, and the configured receive
-  settings, meaning `[mode]`, `[demod]` and both `[analog]` widths, restored over the row-scoped options in force by
-  `ui_restore_receive_settings()`), restarts that input, toasts `Config not applied: <why>` and fails the apply. What
+  apply found once its checks passed (`ui_cfg_rollback`: the `ui_radio_input` above; the configured receive settings,
+  meaning `[mode]`, `[demod]` and both `[analog]` widths, restored over the row-scoped options in force by
+  `ui_restore_receive_settings()`, which puts back `[analog]`'s tone policy from among those options as well; and what
+  `[mode]` sets outside that snapshot that the decoder reads, `ui_cfg_mode_extras`: `ea_mode` and `esk_mask`, which
+  `edacs_ea`/`edacs_esk` and the EDACS/ProVoice preset set, and the extra LRRP ports; the audio layout a preset carries
+  is the session's anyway), restarts that input, toasts `Config not applied: <why>` and fails the apply. What
   runs after it (the other hot restarts, the output reconfigure, `apply_cfg_receive_family_change()`) sees the receive
   side the session ran, so no analog entry is armed and no profile is published for the refused settings. Under a scan
   row the apply, and so its reopen or rollback restart, runs inside the suspended scope, so the stream it starts opens
@@ -906,8 +909,8 @@ installs from `src/engine/trunk_tuning.c` in `src/engine/trunk_tuning_hooks_inst
   `apply_cmd_scoped()` notes any stream started meanwhile (`svc_rtl_start_count()`, which `svc_rtl_restart_locked()`
   counts) and `ui_resume_scope_and_publish()` publishes the row's effective profile to it anyway, without ending the
   decoder's acquisition (issue #578; this also covers a reopen that starts, issue #583's first item). The rest of
-  the config (output, trunking, logging, alerts, recording and DSP, the tone policy, an imported group list, the
-  environment defaults it set) stays applied. The configured PPM never outlives a rollback: an RTL-SDR or rtl_tcp reopen
+  the config (output, trunking, logging, alerts, recording and DSP, an imported group list, the environment defaults
+  it set) stays applied. The configured PPM never outlives a rollback: an RTL-SDR or rtl_tcp reopen
   opens with the request made before it, which the rollback puts back with the input, and the Airspy path requests it
   only once the reopened Airspy runs. With no stream running before the apply, nothing is put back, and the config waits
   for the next start. Tests: `APP_COMMAND_QUEUE`, `UI_MENU_SERVICES`, `UI_MENU_AIRSPY_CONFIG_REFUSED_WIDTH`,
