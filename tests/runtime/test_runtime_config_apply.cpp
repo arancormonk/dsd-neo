@@ -2185,6 +2185,32 @@ test_ui_file_open_commands_report_service_results(void) {
     return rc;
 }
 
+typedef struct {
+    const char* dir;
+    int found;
+} dir_sweep;
+
+static int
+sweep_file_cb(const char* name, void* user) {
+    dir_sweep* sweep = (dir_sweep*)user;
+    char path[DSD_TEST_PATH_MAX];
+    sweep->found++;
+    if (dsd_test_path_join(path, sizeof path, sweep->dir, name) == 0) {
+        (void)remove(path);
+    }
+    return 0;
+}
+
+/* Removes every file left in @p dir and returns how many there were, or -1 when it cannot be read. */
+static int
+remove_files_left_in(const char* dir) {
+    dir_sweep sweep = {dir, 0};
+    if (dsd_dir_list(dir, sweep_file_cb, &sweep) != 0) {
+        return -1;
+    }
+    return sweep.found;
+}
+
 static int
 test_ui_file_capture_commands_manage_handles(void) {
     char wav_dir[DSD_TEST_PATH_MAX] = {0};
@@ -2281,9 +2307,27 @@ test_ui_file_capture_commands_manage_handles(void) {
                             state->event_history_s[0].Event_History_Items[1].category, DSD_EVENT_CATEGORY_SYSTEM);
     }
 
+    /* WAV stop and the toggle-off remove their temp pairs, so the directory should be empty by now. When they fail,
+     * close what they left open and remove what they left behind, failing the test for it, so the directory still
+     * goes. */
+    if (opts->wav_out_f != NULL) {
+        sf_close(opts->wav_out_f);
+        opts->wav_out_f = NULL;
+    }
+    if (opts->wav_out_fR != NULL) {
+        sf_close(opts->wav_out_fR);
+        opts->wav_out_fR = NULL;
+    }
     free_test_runtime(&runtime);
     (void)remove(sym_path);
-    /* WAV stop removes the temp pair, so the directory is empty by now. */
+    const int left_in_wav_dir = remove_files_left_in(wav_dir);
+    if (left_in_wav_dir < 0) {
+        DSD_FPRINTF(stderr, "FAIL: could not list WAV temp directory %s: %s\n", wav_dir, strerror(errno));
+        rc |= 1;
+    } else if (left_in_wav_dir > 0) {
+        DSD_FPRINTF(stderr, "FAIL: WAV stop left %d file(s) in %s\n", left_in_wav_dir, wav_dir);
+        rc |= 1;
+    }
     if (dsd_test_rmdir(wav_dir) != 0) {
         DSD_FPRINTF(stderr, "FAIL: could not remove WAV temp directory %s: %s\n", wav_dir, strerror(errno));
         rc |= 1;
