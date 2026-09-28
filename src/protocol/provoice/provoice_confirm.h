@@ -8,10 +8,10 @@
  * @brief Whether a ProVoice transmission has proved itself well enough to hold a hunt profile.
  *
  * ProVoice has nothing checkable in it. processProVoice() spends 736 dibits per call and the
- * frame carries no CRC, no BCH and no parity anywhere: the 64-bit opening field, the 16-bit
- * LID and the 64-bit secondary are read into locals and printed under -p, and the two IMBE
- * pairs behind them yield only mbelib correction counts, which map every input to some
- * codeword and so never fail. Its one early return fires when the dibit callback fails, never
+ * frame carries no CRC, no BCH and no parity outside the vocoder's own codes: the 64-bit opening
+ * field, the 16-bit LID and the 64-bit secondary are read into locals and printed under -Z, and
+ * the two IMBE pairs behind them are protected by Golay and Hamming codes that are perfect, so
+ * their decoders map every input to some codeword and never fail. Its one early return fires when the dibit callback fails, never
  * on bad data. On the 9600/2 hunt profile it shares with EDACS -- which does report its BCH
  * verdict -- a false ProVoice match therefore bought 736 symbols of dwell that EDACS's own
  * gate would have refused (issues #391, #421).
@@ -26,10 +26,12 @@
  * about 77 ms in, and a single dropped sync mid-call does not break the streak because one
  * missed frame is far short of a whole matchless pass.
  *
- * The LID would be the obvious content to key on -- it should repeat within a transmission --
- * but there is no committed ProVoice fixture to measure against and EDACS ESK masking of
- * these fields is unverified. Keying a verdict on it risks the failure #391 names explicitly:
- * live traffic that decodes but never reports it, rotating the hunt away.
+ * The LID would be the obvious content to key on, if it repeated within a transmission. In the
+ * committed provoice fixture, one transmission of 40 frames, the field read as the LID takes 16
+ * values, and nothing protects the 64 bits after it, which differ by a bit or two in 10 frames;
+ * EDACS ESK masking of these fields is unverified too. Keying a verdict on them risks the
+ * failure #391 names explicitly: live traffic that decodes but never reports it, rotating the
+ * hunt away.
  *
  * Sibling of src/protocol/dstar/dstar_confirm.{c,h}, src/protocol/nxdn/nxdn_confirm.{c,h},
  * src/protocol/m17/m17_confirm.{c,h} and src/protocol/dmr/dmr_confidence.{c,h}, which do the

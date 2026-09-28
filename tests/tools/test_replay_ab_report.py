@@ -432,5 +432,89 @@ class ReplayAbAnalogMetric(unittest.TestCase):
         self.assertIn("--metric", result.stdout)
 
 
+FAKE_DIGITAL_HOST = """#!/usr/bin/env bash
+# Stands in for dsd-neo in a digital replay: the startup notices a ProVoice or EDACS preset prints, then either
+# four ProVoice frames (--fake-provoice), one of them conventional ProVoice as a PVCONVENTIONAL build prints it,
+# three D-STAR superframes (--fake-dstar), one behind a header decoded from noise, whose callsigns print as raw
+# bytes that are not UTF-8, with some of their -Z AMBE lines, or two frames of a protocol that labels voice as "Voice".
+echo "NOTICE: Decoding only ProVoice frames."
+echo "NOTICE: EDACS Analog Voice Channels are Experimental."
+case "$*" in
+  *--fake-provoice*)
+    echo "12:00:00 Sync: -PV     VOICE"
+    echo " IMBE 965140CC8A0BFFB4BB7FC2 err = [0] [0]  7100"
+    echo "12:00:00 Sync: +PV     VOICE"
+    echo "12:00:00 Sync: -PV_C  TX: 172 RX: 5 ALL CALL  VOICE"
+    echo "12:00:00 Sync: -PV     VOICE"
+    echo "NOTICE: Total audio errors: 12"
+    ;;
+  *--fake-dstar*)
+    printf '12:00:00 Sync: +DSTAR HEADER  RPT 2: \\xf1\\x9e~\\xa4 RPT 1: \\xc3( DST: CQCQCQ   SRC: \\xff\\xfe\\n'
+    echo " AMBE F709018E901180 err = [0] [0] "
+    echo " AMBE F7880B21882080 err = [1] [2] "
+    echo "12:00:00 Sync: -DSTAR VOICE  "
+    echo " AMBE F757D8434C3A80 err = [0] [0] "
+    echo "12:00:00 Sync: +DSTAR VOICE  "
+    echo "NOTICE: Total audio errors: 9"
+    ;;
+  *)
+    echo "12:00:00 Sync: +NXDN48 RTCH Voice"
+    echo "12:00:00 Sync: +NXDN48 RTCH Voice"
+    echo "NOTICE: Total audio errors: 4"
+    ;;
+esac
+exit 0
+"""
+
+
+class ReplayAbDigitalMetric(unittest.TestCase):
+    """The digital columns replay_ab.sh reads from a real run's log, driven through the real script. Needs bash and
+    coreutils timeout, so tests/CMakeLists.txt registers it beside ReplayAbAnalogMetric (issue #588)."""
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp(prefix="replay-ab-digital-"))
+        self.capture = self.tmp / "capture.iq.json"
+        self.capture.write_text("{}\n", encoding="utf-8")
+        self.host = self.tmp / "host.main"
+        write_script(self.host, FAKE_DIGITAL_HOST)
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def rows(self, flags, env=None):
+        wrapper = self.tmp / "host.variant"
+        write_script(wrapper, f'#!/usr/bin/env bash\nexec "{self.host}" {flags} "$@"\n')
+        out = self.tmp / "out"
+        result = run([BASH, str(REPLAY_AB), "--capture", str(self.capture), "--mode", "-fp", "--rate", "fast",
+                      "--reps", "1", "--out", str(out), str(self.host), str(wrapper)], cwd=str(ROOT), env=env)
+        self.assertEqual(result.returncode, 0, result.stdout)
+        lines = (out / "summary.tsv").read_text(encoding="utf-8").splitlines()
+        return {row["variant"]: row for row in (dict(zip(COLUMNS, line.split("\t"))) for line in lines[1:])}
+
+    def test_provoice_voice_frames_are_counted_and_startup_notices_are_not(self):
+        # ProVoice prints " VOICE" after its sync, trunked or conventional; the two startup notices that mention
+        # "Voice" are not frames.
+        rows = self.rows("--fake-provoice")
+        self.assertEqual(rows["host.variant"]["voice"], "4")
+        self.assertEqual(rows["host.variant"]["errs"], "12")
+        self.assertEqual(rows["host.variant"]["sync"], "4")
+
+    def test_dstar_superframes_are_counted_and_ambe_lines_are_not(self):
+        # D-STAR prints nothing labelled "Voice": each sync line, voice or header, opens a superframe of 21 AMBE
+        # voice frames (issue #599). The -Z AMBE lines are not counted, since DMR and NXDN print them too. The
+        # header's raw callsign bytes make a UTF-8 grep treat the log as binary, and without -a it stops printing
+        # lines at the first of them, so the frames after it would go uncounted.
+        rows = self.rows("--fake-dstar", env={**os.environ, "LC_ALL": "C.UTF-8"})
+        self.assertEqual(rows["host.variant"]["voice"], "3")
+        self.assertEqual(rows["host.variant"]["errs"], "9")
+        self.assertEqual(rows["host.variant"]["sync"], "3")
+
+    def test_voice_lines_of_other_protocols_are_still_counted(self):
+        rows = self.rows("")
+        self.assertEqual(rows["host.main"]["voice"], "2")
+        self.assertEqual(rows["host.variant"]["voice"], "2")
+        self.assertEqual(rows["host.main"]["errs"], "4")
+
+
 if __name__ == "__main__":
     unittest.main()
