@@ -856,7 +856,15 @@ test_stereo_wav_container_rejected_by_mono_input_open(void) {
     expect_rc |= expect_true("stereo reject frees info output", info == NULL);
     expect_rc |= expect_int_eq("stereo reject keeps default sample rate", active_sample_rate, 24000);
     expect_rc |= expect_int_eq("stereo reject keeps opened-as-container false", opened_as_container, 0);
-    (void)remove(path);
+    /* Close a file a regression opens anyway, so that it can still be removed: the native Windows CRT cannot remove
+     * an open file. */
+    if (rc == 0) {
+        if (file != NULL) {
+            sf_close(file);
+        }
+        free(info);
+    }
+    expect_rc |= expect_int_eq("stereo reject temp file removed", remove(path), 0);
     return expect_rc;
 }
 

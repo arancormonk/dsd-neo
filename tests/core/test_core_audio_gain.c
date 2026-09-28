@@ -1216,6 +1216,10 @@ test_open_audio_in_device_rejects_symbol_directory(void) {
     rc |= expect_true("symbol directory does not open symbol file", opts.symbolfile == NULL);
     rc |= expect_int_eq("symbol directory clears throttle", state.use_throttle, 0);
     rc |= expect_true("symbol directory clears deadline", state.symbol_replay_next_deadline_ns == 0);
+    if (opts.symbolfile) {
+        fclose(opts.symbolfile);
+        opts.symbolfile = NULL;
+    }
     if (dsd_test_rmdir(path) != 0) {
         DSD_FPRINTF(stderr, "FAIL: could not remove temp directory %s: %s\n", path, strerror(errno));
         rc |= 1;

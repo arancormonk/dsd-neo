@@ -158,6 +158,14 @@ mk_temp_subdir(const char* subdir, const char* const* files) {
     return 0;
 }
 
+/* A replay open a test expects to be refused hands back no source. Close one a regression opens anyway, so that the
+ * data file it holds can still be removed: the native Windows CRT cannot remove an open file. */
+static void
+close_refused_source(dsd_iq_replay_source** src) {
+    dsd_iq_replay_close(*src);
+    *src = NULL;
+}
+
 static const char*
 path_last_sep(const char* path) {
     const char* slash = path ? strrchr(path, '/') : NULL;
@@ -1079,6 +1087,7 @@ test_event_timeline_validation(void) {
     prc = dsd_iq_replay_open(retuned_v1, &cfg, &src, err, sizeof(err));
     rc |= expect_int("retuned v1 replay open rejected", prc, DSD_IQ_ERR_RETUNE_REJECT);
     rc |= expect_true("retuned v1 rejected source null", src == NULL);
+    close_refused_source(&src);
     dsd_iq_replay_config_clear(&cfg);
 
     // Replay open rejects retune-bearing captures even when metadata reads cleanly.
@@ -1099,6 +1108,7 @@ test_event_timeline_validation(void) {
     prc = dsd_iq_replay_open(retuned_mute_only, &cfg, &src, err, sizeof(err));
     rc |= expect_int("retuned mute-only replay open rejected", prc, DSD_IQ_ERR_RETUNE_REJECT);
     rc |= expect_true("retuned mute-only rejected source null", src == NULL);
+    close_refused_source(&src);
     dsd_iq_replay_config_clear(&cfg);
 
     char retuned_retune_only[512];
@@ -1120,6 +1130,7 @@ test_event_timeline_validation(void) {
     prc = dsd_iq_replay_open(retuned_retune_only, &cfg, &src, err, sizeof(err));
     rc |= expect_int("retuned retune-only replay open rejected", prc, DSD_IQ_ERR_RETUNE_REJECT);
     rc |= expect_true("retuned retune-only rejected source null", src == NULL);
+    close_refused_source(&src);
     dsd_iq_replay_config_clear(&cfg);
 
     char retune_flag_false[512];
@@ -1137,6 +1148,7 @@ test_event_timeline_validation(void) {
     prc = dsd_iq_replay_open(retune_flag_false, &cfg, &src, err, sizeof(err));
     rc |= expect_int("retune with false summary replay open rejected", prc, DSD_IQ_ERR_RETUNE_REJECT);
     rc |= expect_true("retune with false summary source null", src == NULL);
+    close_refused_source(&src);
     dsd_iq_replay_config_clear(&cfg);
 
     char retuned_count_mismatch[512];
@@ -1159,6 +1171,7 @@ test_event_timeline_validation(void) {
     prc = dsd_iq_replay_open(retuned_count_mismatch, &cfg, &src, err, sizeof(err));
     rc |= expect_int("retuned count mismatch replay open rejected", prc, DSD_IQ_ERR_RETUNE_REJECT);
     rc |= expect_true("retuned count mismatch source null", src == NULL);
+    close_refused_source(&src);
     dsd_iq_replay_config_clear(&cfg);
     return rc;
 }
@@ -1331,12 +1344,16 @@ test_relative_data_resolution_info_and_open_validation(void) {
     prc = dsd_iq_replay_open(bad_meta, &cfg, &src, err, sizeof(err));
     rc |= expect_int("open rejects zero effective bytes", prc, DSD_IQ_ERR_ALIGNMENT);
     rc |= expect_true("source not created on failure", src == NULL);
+    close_refused_source(&src);
+    dsd_iq_replay_config_clear(&cfg);
 
     char retune_meta[512];
     path_join(retune_meta, sizeof(retune_meta), subdir, "retune.iq.json");
     write_valid_metadata(retune_meta, "capture.iq", "cu8", "none", "post_mute_pre_widen", 1536000, 32, 1, 48000, 1, 10);
     prc = dsd_iq_replay_open(retune_meta, &cfg, &src, err, sizeof(err));
     rc |= expect_int("open rejects contains_retunes", prc, DSD_IQ_ERR_RETUNE_REJECT);
+    close_refused_source(&src);
+    dsd_iq_replay_config_clear(&cfg);
 
     return rc;
 }
