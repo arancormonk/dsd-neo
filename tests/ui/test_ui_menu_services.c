@@ -933,8 +933,10 @@ test_locked_restarts(void) {
         rc |= expect_int("Airspy reopen reports start failure", result, -1);
         rc |= expect_int("Airspy candidate and rollback both restart", g_rtl_start_calls, 2);
         rc |= expect_int("Airspy candidate and rollback both destroyed", g_rtl_destroy_calls, 2);
-        rc |= expect_int("Airspy restart enter count", g_p25_tick_guard_enter_calls, locked ? 0 : 2);
-        rc |= expect_int("Airspy restart leave count", g_p25_tick_guard_leave_calls, locked ? 0 : 2);
+        /* Issue #578: the reopen and the restart of the settings it replaced run inside one hold, so the watchdog
+           never reads the Airspy selection or the tuning half put back. */
+        rc |= expect_int("Airspy restart enter count", g_p25_tick_guard_enter_calls, locked ? 0 : 1);
+        rc |= expect_int("Airspy restart leave count", g_p25_tick_guard_leave_calls, locked ? 0 : 1);
         rc |= expect_int("Airspy restart preserves caller depth", g_p25_tick_guard_depth, locked);
         rc |= expect_int("Airspy restart does not nest", g_p25_tick_guard_errors, 0);
         rc |= expect_int("Airspy lifecycle guarded", g_rtl_lifecycle_outside_guard, 0);
@@ -1080,11 +1082,19 @@ test_rtl_service_option_contracts(void) {
     DSD_MEMSET(&opts, 0, sizeof(opts));
     DSD_MEMSET(&state, 0, sizeof(state));
 
-    rc |= expect_int("rtl enable null opts", svc_rtl_enable_input(NULL, &state), -1);
-    rc |= expect_int("rtl enable null state", svc_rtl_enable_input(&opts, NULL), -1);
-    rc |= expect_int("rtl enable restart failure", svc_rtl_enable_input(&opts, &state), -1);
+    /* Issue #578: the switch holds the P25 SM tick guard across its rewrite, its start and any rollback, so the
+       service restarts under the caller's hold. */
+    reset_rtl_restart_stubs();
+    g_p25_tick_guard_depth = 1;
+    rc |= expect_int("rtl enable null opts", svc_rtl_enable_input_locked(NULL, &state), -1);
+    rc |= expect_int("rtl enable null state", svc_rtl_enable_input_locked(&opts, NULL), -1);
+    rc |= expect_int("rtl enable restart failure", svc_rtl_enable_input_locked(&opts, &state), -1);
     rc |= expect_int("rtl enable selects rtl input before restart", opts.audio_in_type, AUDIO_IN_RTL);
     rc |= expect_int("rtl enable leaves stream stopped after create failure", opts.rtl_started, 0);
+    rc |= expect_int(
+        "rtl enable restarts under the caller's hold",
+        g_p25_tick_guard_enter_calls == 0 && g_p25_tick_guard_depth == 1 && g_rtl_lifecycle_outside_guard == 0, 1);
+    reset_rtl_restart_stubs();
 
     DSD_MEMSET(&opts, 0, sizeof(opts));
     DSD_SNPRINTF(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", "soapy:driver=rtlsdr");

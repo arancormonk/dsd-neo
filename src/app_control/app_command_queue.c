@@ -1269,58 +1269,69 @@ ui_cmd_rtl_enable_input_refused(const dsd_opts* opts, dsd_state* state, const st
 
 /* Input > Switch source whose start failed on the new input (issue #578): a width the rate the device delivered cannot
    filter, or a device that did not open. The switch never leaves the session without the input it had: the reason is
-   taken while the options still describe the input that failed (svc_describe_start_failure()), then the input that
-   ran before is put back, a PCM input as it was (the switch never closed it) and an RTL-family one started again. It
-   is the input that ran, so nothing is reset as for a new one (ui_input_switched()). */
-static void
-ui_rtl_enable_input_failed(dsd_opts* opts, dsd_state* state, const ui_radio_input* before) {
-    char why[128];
-    const int refused = svc_describe_start_failure(opts, why, sizeof why);
+   taken while the options still describe the input that failed (svc_describe_start_failure(), into @p why), then the
+   input that ran before is put back, a PCM input as it was (the switch never closed it) and an RTL-family one started
+   again. It is the input that ran, so nothing is reset as for a new one (ui_input_switched()). Caller holds the P25 SM
+   tick guard. Returns 1 when the start refused its width, 0 when it failed for another reason. */
+static int
+ui_rtl_enable_input_failed_locked(dsd_opts* opts, dsd_state* state, const ui_radio_input* before, char* why,
+                                  size_t why_size) {
+    const int refused = svc_describe_start_failure(opts, why, why_size);
     if (before->running) {
         ui_restore_radio_input(opts, before);
-        if (before->audio_in_type == AUDIO_IN_RTL && svc_rtl_restart(opts, state) != 0) {
+        if (before->audio_in_type == AUDIO_IN_RTL && svc_rtl_restart_locked(opts, state) != 0) {
             LOG_ERROR("Input switch: the input it replaced did not restart either; no radio input is running.\n");
         }
     }
-    if (refused) {
-        ui_set_toast(state, 5, "Refused: %s", why);
-    } else {
-        ui_set_toast(state, 5, "Failed: %s", why);
-    }
+    return refused;
 }
 
+/* Input > Switch source > RTL-SDR or Airspy. The watchdog reads the input, and may retune it, while it holds the P25 SM
+   tick guard, so the switch holds that guard from its rewrite of the input to the end of its start and, when the start
+   fails, on through putting back the input that ran and starting it again (issue #578): nothing the watchdog reads is
+   written outside it, as a config apply's reopen holds it throughout. */
 static int
 ui_cmd_handle_rtl_enable_input(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
     if (ui_cmd_rtl_enable_input_refused(opts, state, c)) {
         return UI_CMD_APPLY_FAILED;
     }
+    if (!opts || !state) {
+        return UI_CMD_APPLY_COMPLETED;
+    }
     ui_radio_input before;
     ui_capture_radio_input(opts, state, &before);
-    if (opts && c->id == DSD_APP_CMD_AIRSPY_ENABLE_INPUT) {
+    char why[128];
+    why[0] = '\0';
+    int refused = 0;
+    p25_sm_tick_guard_enter();
+    if (c->id == DSD_APP_CMD_AIRSPY_ENABLE_INPUT) {
         DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "airspy%s%s",
                      opts->airspy.serial[0] ? ":serial=" : "", opts->airspy.serial);
         opts->rtltcp_enabled = 0;
-    } else if (opts && dsd_opts_audio_in_dev_is_airspy_spec(opts->audio_in_dev)) {
+    } else if (dsd_opts_audio_in_dev_is_airspy_spec(opts->audio_in_dev)) {
         DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", "rtl");
     }
+    const int rc = svc_rtl_enable_input_locked(opts, state);
+    const int failed = rc != 0 && !ui_rc_is_not_supported(rc);
+    if (failed) {
+        refused = ui_rtl_enable_input_failed_locked(opts, state, &before, why, sizeof why);
+    }
+    p25_sm_tick_guard_leave();
 
-    (void)c;
-    int result = UI_CMD_APPLY_COMPLETED;
-    if (state) {
-        int rc = svc_rtl_enable_input(opts, state);
-        result = ui_cmd_apply_status_from_service_rc(rc);
-        if (rc == 0) {
-            if (ui_input_switched(opts, state) == 0) {
-                ui_set_toast(state, 3, "Applied: %s input enabled",
-                             c->id == DSD_APP_CMD_AIRSPY_ENABLE_INPUT ? "Airspy" : "RTL");
-            } else {
-                result = UI_CMD_APPLY_FAILED;
-            }
-        } else if (ui_rc_is_not_supported(rc)) {
-            ui_set_toast(state, 3, "Unsupported: active radio backend cannot enable RTL input");
+    int result = ui_cmd_apply_status_from_service_rc(rc);
+    if (rc == 0) {
+        if (ui_input_switched(opts, state) == 0) {
+            ui_set_toast(state, 3, "Applied: %s input enabled",
+                         c->id == DSD_APP_CMD_AIRSPY_ENABLE_INPUT ? "Airspy" : "RTL");
         } else {
-            ui_rtl_enable_input_failed(opts, state, &before);
+            result = UI_CMD_APPLY_FAILED;
         }
+    } else if (!failed) {
+        ui_set_toast(state, 3, "Unsupported: active radio backend cannot enable RTL input");
+    } else if (refused) {
+        ui_set_toast(state, 5, "Refused: %s", why);
+    } else {
+        ui_set_toast(state, 5, "Failed: %s", why);
     }
     return result;
 }

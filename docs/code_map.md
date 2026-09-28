@@ -871,11 +871,15 @@ installs from `src/engine/trunk_tuning.c` in `src/engine/trunk_tuning_hooks_inst
   change that commits to a radio stream start with an explicit width, or with AM, refuses it first while
   `DSD_NEO_CHANNEL_LPF=0` (`svc_analog_width_env_allows()`), since the start would refuse it at any rate. A switch whose
   start fails anyway (a width the rate the device delivered cannot filter, a device that does not open) never leaves
-  the session without the input it had (`ui_rtl_enable_input_failed()`): the input a start reads is captured before
+  the session without the input it had: the input a start reads is captured before
   the rewrite (`ui_radio_input`: device string and type, rtl_tcp endpoint, device index, tuning, gain, ppm, squelch,
   volume, resample policy, Airspy and SoapySDR settings) and put back, a PCM input as it was (the switch never closed
   it, and a background RTL stream it left running is not restarted) and an RTL-family input that ran restarted; it is
-  not reset as a new input (`ui_input_switched()`). The toast is `Refused: <why>` for a width refusal and
+  not reset as a new input (`ui_input_switched()`). The P25 SM watchdog reads the input, and may retune it, under
+  its tick guard, so the switch holds that guard from its rewrite of the input through the start and any rollback
+  (`svc_rtl_enable_input_locked()`, `ui_rtl_enable_input_failed_locked()`), as a config apply's reopen does; an
+  Airspy settings reopen (`svc_airspy_apply_config()`) holds it across the reopen and the restart of the settings it
+  replaced the same way. The toast is `Refused: <why>` for a width refusal and
   `Failed: <why>` otherwise, from `svc_describe_start_failure()`, which reads the refusal the start recorded
   (`rtl_stream_start_analog_refusal()`) while the options still describe the input that failed: the environment rule,
   or the width against the rate the device delivered with the fix for what sets it, or else the input that did not

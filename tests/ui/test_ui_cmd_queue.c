@@ -5274,6 +5274,81 @@ __wrap_rtl_stream_destroy(RtlSdrContext* ctx) {
     return 0;
 }
 
+/* Issue #578: the input the P25 SM watchdog reads while it holds its tick guard (the device, the input type, the
+   rtl_tcp flag and the tuning), and whether a command wrote any of it without holding that guard. Armed on a command's
+   options (g_guard_probe_opts), every entry of the guard compares the input with what it was when the guard was last
+   left, or when the probe was armed: a difference is a write made outside the guard, which the watchdog could have
+   read half done. Disarming compares the input the command left with the last leave the same way. */
+typedef struct {
+    dsd_audio_in_type type;
+    char dev[sizeof(((dsd_opts*)0)->audio_in_dev)];
+    int rtltcp_enabled;
+    uint32_t freq;
+} guard_probe_input;
+
+static const dsd_opts* g_guard_probe_opts;
+static guard_probe_input g_guard_probe_left;
+static int g_guard_probe_unguarded;
+static int g_guard_probe_holds;
+
+static void
+guard_probe_take(const dsd_opts* opts, guard_probe_input* out) {
+    DSD_MEMSET(out, 0, sizeof *out);
+    out->type = opts->audio_in_type;
+    DSD_MEMCPY(out->dev, opts->audio_in_dev, sizeof out->dev);
+    out->rtltcp_enabled = opts->rtltcp_enabled;
+    out->freq = opts->rtlsdr_center_freq;
+}
+
+/* Count a write made since the guard was last left. */
+static void
+guard_probe_check(const dsd_opts* opts) {
+    guard_probe_input now;
+    guard_probe_take(opts, &now);
+    const guard_probe_input* left = &g_guard_probe_left;
+    if (now.type != left->type || strncmp(now.dev, left->dev, sizeof now.dev) != 0
+        || now.rtltcp_enabled != left->rtltcp_enabled || now.freq != left->freq) {
+        ++g_guard_probe_unguarded;
+    }
+}
+
+static void
+guard_probe_arm(const dsd_opts* opts) {
+    guard_probe_take(opts, &g_guard_probe_left);
+    g_guard_probe_unguarded = g_guard_probe_holds = 0;
+    g_guard_probe_opts = opts;
+}
+
+static void
+guard_probe_disarm(void) {
+    if (g_guard_probe_opts) {
+        guard_probe_check(g_guard_probe_opts);
+    }
+    g_guard_probe_opts = NULL;
+}
+
+void __real_p25_sm_tick_guard_enter(void);
+void __real_p25_sm_tick_guard_leave(void);
+void __wrap_p25_sm_tick_guard_enter(void);
+void __wrap_p25_sm_tick_guard_leave(void);
+
+void
+__wrap_p25_sm_tick_guard_enter(void) {
+    __real_p25_sm_tick_guard_enter();
+    if (g_guard_probe_opts) {
+        ++g_guard_probe_holds;
+        guard_probe_check(g_guard_probe_opts);
+    }
+}
+
+void
+__wrap_p25_sm_tick_guard_leave(void) {
+    if (g_guard_probe_opts) {
+        guard_probe_take(g_guard_probe_opts, &g_guard_probe_left);
+    }
+    __real_p25_sm_tick_guard_leave();
+}
+
 // NOLINTEND(bugprone-reserved-identifier,cert-dcl37-c,cert-dcl51-cpp,misc-use-internal-linkage)
 
 static int
@@ -10799,6 +10874,77 @@ test_input_switch_that_fails_keeps_the_running_input(void) {
     return rc;
 }
 
+/*
+ * Issue #578: the P25 SM watchdog reads the input, and may retune it, while it holds its tick guard. Input > Switch
+ * source holds that guard from its rewrite of the input to the end of its start, and, when the start fails, on through
+ * putting back the input that ran and starting it again: the watchdog never sees the input half rewritten or half put
+ * back, whether the switch works or not.
+ */
+static int
+test_input_switch_holds_the_watchdog_guard(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static void* fake_ctx[2];
+    int rc = 0;
+    init_decode_mode_context(&opts, &state);
+    opts.analog_only = 1;
+    opts.analog_demod = DSD_ANALOG_DEMOD_FM;
+    opts.analog_nfm_bandwidth_hz = 25000;
+    opts.rtl_dsp_bw_khz = 48;
+    opts.rtlsdr_center_freq = 851375000U;
+
+    /* A running rtl_tcp input switched to an Airspy whose start refuses the width: put back and started again. */
+    opts.audio_in_type = AUDIO_IN_RTL;
+    DSD_SNPRINTF(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", "rtltcp:127.0.0.1:1234");
+    opts.rtltcp_enabled = 1;
+    state.rtl_ctx = (RtlSdrContext*)fake_ctx;
+    reset_config_rtl_wrap();
+    g_config_rtl_open_ok = 1;
+    g_config_rtl_fail_starts = 1;
+    g_config_rtl_refuse_rate_hz = 19531;
+    guard_probe_arm(&opts);
+    rc |= switch_input_from(&opts, &state, DSD_APP_CMD_AIRSPY_ENABLE_INPUT, "guarded rtl_tcp to airspy drained");
+    guard_probe_disarm();
+    rc |= expect_int("guarded rtl_tcp to airspy: tried, then restarted", g_config_rtl_creates, 2);
+    rc |= expect_str("guarded rtl_tcp to airspy: rtl_tcp put back", opts.audio_in_dev, "rtltcp:127.0.0.1:1234");
+    rc |= expect_int("guarded rtl_tcp to airspy: one hold", g_guard_probe_holds, 1);
+    rc |= expect_int("guarded rtl_tcp to airspy: no write outside the guard", g_guard_probe_unguarded, 0);
+
+    /* A running Airspy switched to an RTL-SDR that does not open. */
+    opts.analog_nfm_bandwidth_hz = 12500;
+    DSD_SNPRINTF(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", "airspy");
+    opts.rtltcp_enabled = 0;
+    state.rtl_ctx = (RtlSdrContext*)fake_ctx;
+    reset_config_rtl_wrap();
+    g_config_rtl_open_ok = 1;
+    g_config_rtl_fail_starts = 1;
+    guard_probe_arm(&opts);
+    rc |= switch_input_from(&opts, &state, DSD_APP_CMD_RTL_ENABLE_INPUT, "guarded airspy to rtl drained");
+    guard_probe_disarm();
+    rc |= expect_str("guarded airspy to rtl: Airspy put back", opts.audio_in_dev, "airspy");
+    rc |= expect_int("guarded airspy to rtl: one hold", g_guard_probe_holds, 1);
+    rc |= expect_int("guarded airspy to rtl: no write outside the guard", g_guard_probe_unguarded, 0);
+
+    /* A switch that works rewrites the input under the guard as well. */
+    opts.audio_in_type = AUDIO_IN_PULSE;
+    DSD_SNPRINTF(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", "pulse");
+    state.rtl_ctx = NULL;
+    reset_config_rtl_wrap();
+    g_config_rtl_open_ok = 1;
+    guard_probe_arm(&opts);
+    rc |= switch_input_from(&opts, &state, DSD_APP_CMD_AIRSPY_ENABLE_INPUT, "guarded pcm to airspy drained");
+    guard_probe_disarm();
+    rc |= expect_str("guarded pcm to airspy: on the Airspy", opts.audio_in_dev, "airspy");
+    rc |= expect_int("guarded pcm to airspy: no write outside the guard", g_guard_probe_unguarded, 0);
+
+    reset_config_rtl_wrap();
+    opts.analog_only = 0;
+    opts.analog_nfm_bandwidth_hz = 0;
+    state.rtl_ctx = NULL;
+    freeState(&state);
+    return rc;
+}
+
 #endif
 
 #ifdef DSD_NEO_TEST_IO_CONTROL_WRAP
@@ -11133,6 +11279,7 @@ main(void) {
 #if defined(USE_RADIO) && defined(DSD_NEO_TEST_RTL_WRAP)
     rc |= test_rtl_enable_input_holds_the_nfm_width();
     rc |= test_input_switch_that_fails_keeps_the_running_input();
+    rc |= test_input_switch_holds_the_watchdog_guard();
 #endif
     rc |= test_am_refused_on_pcm_input();
     rc |= test_am_bandwidth_set_validates();

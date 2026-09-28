@@ -522,8 +522,17 @@ void svc_toggle_inv_m17(dsd_opts* opts);
 
 #ifdef USE_RADIO
 // RTL-SDR configuration and lifecycle helpers
-/** @brief Switch active input to RTL-SDR and restart the stream. */
-int svc_rtl_enable_input(dsd_opts* opts, dsd_state* state);
+/**
+ * @brief Switch the active input to the RTL-family device the options name and restart the stream, without acquiring;
+ * caller holds the P25 SM tick guard.
+ *
+ * The caller holds the guard from before it rewrites the device string until it has settled the start (issue #578):
+ * the watchdog reads the input, and may retune it, under that guard, so the rewrite, the start and, when the start
+ * fails, putting back the input that ran and starting it again all happen inside one hold.
+ *
+ * @return 0 when the stream started; nonzero otherwise, as svc_rtl_restart_locked().
+ */
+int svc_rtl_enable_input_locked(dsd_opts* opts, dsd_state* state);
 /**
  * @brief Check the configured analog width against the RTL-SDR input DSD_APP_CMD_RTL_ENABLE_INPUT would open.
  *
@@ -559,14 +568,14 @@ int svc_check_airspy_input_analog_width(const dsd_opts* opts, const dsd_state* s
 /**
  * @brief A short reason the last stream start failed, for a toast (issue #578).
  *
- * Call it right after a failed start (svc_rtl_restart(), svc_rtl_enable_input()), while @p opts still describes the
- * input that failed. When the start refused its analog width (rtl_stream_start_analog_refusal()), the reason is the
- * one a check before the change gives: DSD_NEO_CHANNEL_LPF=0 turning off the filter the width needs, or the width, the
- * DSP rate the device delivered, the widest width that rate filters and the fix for what sets it (a DSP bandwidth that
- * fits on an RTL-SDR or rtl_tcp input, a wider DSP bandwidth or a narrower width on a SoapySDR or Airspy device, a
- * narrower width on an I/Q replay); a width the rate fits, refused for another reason, points at the log. Otherwise it
- * names the input that did not start (Airspy, SoapySDR, rtl_tcp, I/Q replay or RTL-SDR, as the stream classifies the
- * device string) and points at the log. The start already logged its own text, so this logs nothing.
+ * Call it right after a failed start (svc_rtl_restart(), svc_rtl_enable_input_locked()), while @p opts still
+ * describes the input that failed. When the start refused its analog width (rtl_stream_start_analog_refusal()), the
+ * reason is the one a check before the change gives: DSD_NEO_CHANNEL_LPF=0 turning off the filter the width needs, or
+ * the width, the DSP rate the device delivered, the widest width that rate filters and the fix for what sets it (a DSP
+ * bandwidth that fits on an RTL-SDR or rtl_tcp input, a wider DSP bandwidth or a narrower width on a SoapySDR or Airspy
+ * device, a narrower width on an I/Q replay); a width the rate fits, refused for another reason, points at the log.
+ * Otherwise it names the input that did not start (Airspy, SoapySDR, rtl_tcp, I/Q replay or RTL-SDR, as the stream
+ * classifies the device string) and points at the log. The start already logged its own text, so this logs nothing.
  *
  * @return 1 when the start refused its analog width, 0 when it failed for another reason.
  */
@@ -596,7 +605,9 @@ typedef struct {
 } svc_airspy_tuning;
 
 /** Apply native settings and shared tuning together; restore prior tuning on failure.
- * opts holds the requested tuning and the previous native settings on entry. */
+ * opts holds the requested tuning and the previous native settings on entry. A reopen, and the restart of the previous
+ * settings after one that fails, run inside one hold of the P25 SM tick guard, which the watchdog reads the input
+ * under. */
 int svc_airspy_apply_config(dsd_opts* opts, dsd_state* state, const dsd_airspy_config* config,
                             const svc_airspy_tuning* previous_tuning);
 /** Apply and roll back without acquiring; caller holds the P25 SM tick guard. */

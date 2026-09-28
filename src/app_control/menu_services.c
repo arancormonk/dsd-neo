@@ -1353,13 +1353,13 @@ svc_describe_start_failure(const dsd_opts* opts, char* why, size_t why_size) {
 }
 
 int
-svc_rtl_enable_input(dsd_opts* opts, dsd_state* state) {
+svc_rtl_enable_input_locked(dsd_opts* opts, dsd_state* state) {
     if (!opts || !state) {
         return -1;
     }
     opts->audio_in_type = AUDIO_IN_RTL;
     /* Ensure an RTL stream is ready immediately when switching inputs. */
-    return svc_rtl_restart(opts, state);
+    return svc_rtl_restart_locked(opts, state);
 }
 
 int
@@ -1429,15 +1429,24 @@ svc_airspy_select(dsd_opts* opts, const dsd_airspy_config* config) {
                  config->serial);
 }
 
+/* Reopen the Airspy with @p config, and on a failed start put back @p previous and @p previous_tuning and start that
+   again. The watchdog reads the input under the P25 SM tick guard, so the whole of it runs inside one hold (issue
+   #578): the caller's (@p guard_held), or one taken here. */
 static int
 svc_airspy_reopen_impl(dsd_opts* opts, dsd_state* state, const dsd_airspy_config* config,
                        const dsd_airspy_config* previous, const svc_airspy_tuning* previous_tuning, int guard_held) {
+    if (!guard_held) {
+        p25_sm_tick_guard_enter();
+    }
     svc_airspy_select(opts, config);
-    int rc = guard_held ? svc_rtl_restart_locked(opts, state) : svc_rtl_restart(opts, state);
+    const int rc = svc_rtl_restart_locked(opts, state);
     if (rc != 0) {
         svc_airspy_select(opts, previous);
         svc_airspy_restore_tuning(opts, previous_tuning);
-        (void)(guard_held ? svc_rtl_restart_locked(opts, state) : svc_rtl_restart(opts, state));
+        (void)svc_rtl_restart_locked(opts, state);
+    }
+    if (!guard_held) {
+        p25_sm_tick_guard_leave();
     }
     return rc;
 }
