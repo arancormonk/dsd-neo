@@ -393,6 +393,8 @@ create_temp_raw_pcm_wav_suffix(const char* prefix, const short* samples, size_t 
     FILE* fp = dsd_fopen_private(out_path, "wb");
     if (!fp) {
         DSD_FPRINTF(stderr, "FAIL: fopen write failed for %s\n", out_path);
+        /* The open can fail after creating the file (dsd_fopen_private() closes the descriptor when fdopen() fails). */
+        (void)remove(out_path);
         return 1;
     }
 
@@ -2317,6 +2319,12 @@ test_ui_file_capture_commands_manage_handles(void) {
     if (opts->wav_out_fR != NULL) {
         sf_close(opts->wav_out_fR);
         opts->wav_out_fR = NULL;
+    }
+    /* Likewise the symbol capture handle a failed stop left open (already a failed check above): native Windows does
+     * not remove an open file, so it must be closed before sym_path is removed. */
+    if (opts->symbol_out_f != NULL) {
+        fclose(opts->symbol_out_f);
+        opts->symbol_out_f = NULL;
     }
     free_test_runtime(&runtime);
     (void)remove(sym_path);
