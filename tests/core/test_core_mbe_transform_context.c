@@ -3059,6 +3059,8 @@ run_provoice_frame(char hard_fr[7][24], dsd_vocoder_soft_bit soft_fr[7][24], pro
     static mbe_parms prev_enhanced2;
     uint8_t record[24] = {0};
 
+    /* Cleared before the early return below, so a caller never compares an unfilled run. */
+    DSD_MEMSET(run, 0, sizeof(*run));
     FILE* out = tmpfile();
     if (!out) {
         return 1;
