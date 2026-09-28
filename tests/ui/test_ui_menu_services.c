@@ -447,6 +447,9 @@ static int g_rtl_create_calls = 0;
 static int g_rtl_start_calls = 0;
 static int g_rtl_create_result = -1;
 static int g_rtl_start_result = -1;
+/* Issue #578: whether the last create was handed an I/Q capture request, and how many creates were. */
+static int g_rtl_create_capture = -1;
+static int g_rtl_create_captures = 0;
 static int g_rtltcp_autotune_result = 0;
 
 void
@@ -492,9 +495,10 @@ rtl_stream_destroy(RtlSdrContext* ctx) {
 
 int
 rtl_stream_create(dsd_opts* opts, RtlSdrContext** out_ctx) {
-    (void)opts;
     note_rtl_lifecycle_call();
     g_rtl_create_calls++;
+    g_rtl_create_capture = opts ? opts->iq_capture_requested : -1;
+    g_rtl_create_captures += g_rtl_create_capture == 1;
     if (out_ctx) {
         *out_ctx = g_rtl_create_result == 0 ? (RtlSdrContext*)out_ctx : NULL;
     }
@@ -856,6 +860,8 @@ reset_rtl_restart_stubs(void) {
     g_rtl_start_calls = 0;
     g_rtl_create_result = -1;
     g_rtl_start_result = -1;
+    g_rtl_create_capture = -1;
+    g_rtl_create_captures = 0;
 }
 
 static int
@@ -925,6 +931,7 @@ test_locked_restarts(void) {
         g_rtl_create_result = 0;
         dsd_airspy_config_defaults(&opts.airspy);
         DSD_SNPRINTF(opts.audio_in_dev, sizeof(opts.audio_in_dev), "airspy");
+        opts.iq_capture_requested = 1;
         dsd_airspy_config next = opts.airspy;
         next.sample_rate = 2500000;
         const svc_airspy_tuning tuning = {851000000, 12, 0.0, 2};
@@ -942,7 +949,37 @@ test_locked_restarts(void) {
         rc |= expect_int("Airspy lifecycle guarded", g_rtl_lifecycle_outside_guard, 0);
         rc |= expect_int("Airspy restores previous rate", (int)opts.airspy.sample_rate, 0);
         rc |= expect_int("Airspy restores previous frequency", (int)opts.rtlsdr_center_freq, 851000000);
+        /* Issue #578: the reopen records, the restart of the settings it replaced does not write over that. */
+        rc |= expect_int("Airspy rollback keeps the I/Q capture",
+                         g_rtl_create_captures == 1 && g_rtl_create_capture == 0, 1);
+        rc |= expect_int("Airspy rollback leaves the capture off", opts.iq_capture_requested, 0);
     }
+
+    /* The recovery restart itself: under the caller's hold, without the capture on a radio input, and with it left
+       alone on any other (nothing starts there). */
+    reset_rtl_restart_stubs();
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    opts.audio_in_type = AUDIO_IN_RTL;
+    opts.iq_capture_requested = 1;
+    g_p25_tick_guard_depth = 1;
+    g_rtl_create_result = 0;
+    g_rtl_start_result = 0;
+    int stopped = -1;
+    rc |= expect_int("recovery restart starts", svc_rtl_restart_recovery_locked(&opts, &state, &stopped), 0);
+    rc |= expect_int("recovery restart stops the capture", stopped == 1 && opts.iq_capture_requested == 0, 1);
+    rc |= expect_int("recovery restart opens without it", g_rtl_create_capture, 0);
+    rc |= expect_int("recovery restart under the caller's hold",
+                     g_p25_tick_guard_enter_calls == 0 && g_rtl_lifecycle_outside_guard == 0, 1);
+    rc |= expect_int("recovery restart with the capture off", svc_rtl_restart_recovery_locked(&opts, &state, &stopped),
+                     0);
+    rc |= expect_int("recovery restart: nothing to stop", stopped, 0);
+    opts.audio_in_type = AUDIO_IN_PULSE;
+    opts.iq_capture_requested = 1;
+    (void)svc_rtl_restart_recovery_locked(&opts, &state, NULL);
+    rc |= expect_int("recovery restart of PCM leaves the capture", opts.iq_capture_requested, 1);
+    rc |= expect_int("recovery restart null options", svc_rtl_restart_recovery_locked(NULL, &state, &stopped), -1);
+    rc |= expect_int("recovery restart null options: nothing stopped", stopped, 0);
+    state.rtl_ctx = NULL;
 
     /* Issue #578: svc_airspy_reopen_locked() selects the Airspy and restarts once, under the caller's hold, and leaves
        a failed start as it is for the caller to roll back. */

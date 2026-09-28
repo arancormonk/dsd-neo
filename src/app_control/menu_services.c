@@ -52,6 +52,9 @@
 #include "dsd-neo/platform/sockets.h"
 #include "services.h"
 
+/* Radio streams svc_rtl_restart_locked() started (svc_rtl_start_count()). Decoder thread only, as every restart is. */
+static unsigned int g_svc_rtl_starts;
+
 #ifdef USE_RADIO
 
 static int
@@ -63,6 +66,11 @@ svc_radio_source_is_soapy(const dsd_opts* opts) {
     return (strcmp(dev, "soapy") == 0) || (strncmp(dev, "soapy:", 6) == 0);
 }
 #endif
+
+unsigned int
+svc_rtl_start_count(void) {
+    return g_svc_rtl_starts;
+}
 
 int
 svc_toggle_all_mutes(dsd_opts* opts) {
@@ -1407,10 +1415,33 @@ svc_rtl_restart_locked(dsd_opts* opts, dsd_state* state) {
         }
         opts->rtl_started = 1;
         opts->rtl_needs_restart = 0;
+        ++g_svc_rtl_starts;
     }
 
 done:
     return result;
+}
+
+int
+svc_rtl_restart_recovery_locked(dsd_opts* opts, dsd_state* state, int* out_capture_stopped) {
+    if (out_capture_stopped) {
+        *out_capture_stopped = 0;
+    }
+    if (!opts || !state) {
+        return -1;
+    }
+    /* The stream the failed change stopped closed the capture with what it recorded; a start would reopen the file and
+       write over it. */
+    if (opts->iq_capture_requested && opts->audio_in_type == AUDIO_IN_RTL) {
+        opts->iq_capture_requested = 0;
+        if (out_capture_stopped) {
+            *out_capture_stopped = 1;
+        }
+        LOG_WARN("I/Q capture stopped: restarting the input that ran would reopen %s and write over what it recorded, "
+                 "which is kept. The capture stays off for the rest of this session.\n",
+                 opts->iq_capture_path);
+    }
+    return svc_rtl_restart_locked(opts, state);
 }
 
 static void
@@ -1430,8 +1461,9 @@ svc_airspy_select(dsd_opts* opts, const dsd_airspy_config* config) {
 }
 
 /* Reopen the Airspy with @p config, and on a failed start put back @p previous and @p previous_tuning and start that
-   again. The watchdog reads the input under the P25 SM tick guard, so the whole of it runs inside one hold (issue
-   #578): the caller's (@p guard_held), or one taken here. */
+   again, without the I/Q capture that would write over the recording (svc_rtl_restart_recovery_locked()). The watchdog
+   reads the input under the P25 SM tick guard, so the whole of it runs inside one hold (issue #578): the caller's
+   (@p guard_held), or one taken here. */
 static int
 svc_airspy_reopen_impl(dsd_opts* opts, dsd_state* state, const dsd_airspy_config* config,
                        const dsd_airspy_config* previous, const svc_airspy_tuning* previous_tuning, int guard_held) {
@@ -1443,7 +1475,7 @@ svc_airspy_reopen_impl(dsd_opts* opts, dsd_state* state, const dsd_airspy_config
     if (rc != 0) {
         svc_airspy_select(opts, previous);
         svc_airspy_restore_tuning(opts, previous_tuning);
-        (void)svc_rtl_restart_locked(opts, state);
+        (void)svc_rtl_restart_recovery_locked(opts, state, NULL);
     }
     if (!guard_held) {
         p25_sm_tick_guard_leave();

@@ -437,6 +437,16 @@ void svc_note_analog_width_change(const dsd_opts* opts, const dsd_state* state, 
  */
 int svc_leave_channel_scan(dsd_opts* opts, dsd_state* state);
 
+/**
+ * @brief How many radio streams app-control has started (svc_rtl_restart_locked()), from 0; always 0 without radio
+ * support.
+ *
+ * A scoped command compares it across its run to tell whether it started a stream while a scan row's scope was
+ * suspended (issue #578): that stream opened on the configured settings, not the row's. Decoder thread only, as every
+ * restart is.
+ */
+unsigned int svc_rtl_start_count(void);
+
 /** @brief What became of the last analog monitor request (svc_take_monitor_request_outcome()). */
 typedef enum {
     SVC_MONITOR_REQUEST_NONE = 0, /**< None outstanding, still pending, or its stream is gone. */
@@ -584,6 +594,20 @@ int svc_describe_start_failure(const dsd_opts* opts, char* why, size_t why_size)
 int svc_rtl_restart(dsd_opts* opts, dsd_state* state);
 /** Restart without acquiring; caller holds the P25 SM tick guard. */
 int svc_rtl_restart_locked(dsd_opts* opts, dsd_state* state);
+/**
+ * @brief Start the input the options describe again after the start on the input that replaced it failed, without
+ * acquiring; caller holds the P25 SM tick guard (issue #578).
+ *
+ * Every rollback restart goes through it: Input > Switch source and a config apply putting back the input that ran,
+ * and an Airspy settings reopen putting back the settings it replaced (svc_airspy_apply_config()). The change already
+ * stopped the stream that ran, which closed its I/Q capture (--iq-capture) with what it had recorded, and a start opens
+ * the capture file anew, writing over it. So a recovery start of a radio input runs without the capture, which stays
+ * off for the rest of the session (iq_capture_requested cleared), and the log says so, naming the file kept.
+ *
+ * @param out_capture_stopped Set to 1 when the capture was turned off here, else 0 (may be NULL).
+ * @return 0 when the input started again; nonzero otherwise, as svc_rtl_restart_locked().
+ */
+int svc_rtl_restart_recovery_locked(dsd_opts* opts, dsd_state* state, int* out_capture_stopped);
 /**
  * @brief Select the Airspy with @p config and reopen it, without acquiring; caller holds the P25 SM tick guard.
  *

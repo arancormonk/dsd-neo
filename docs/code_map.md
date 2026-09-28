@@ -879,7 +879,11 @@ installs from `src/engine/trunk_tuning.c` in `src/engine/trunk_tuning_hooks_inst
   its tick guard, so the switch holds that guard from its rewrite of the input through the start and any rollback
   (`svc_rtl_enable_input_locked()`, `ui_rtl_enable_input_failed_locked()`), as a config apply's reopen does; an
   Airspy settings reopen (`svc_airspy_apply_config()`) holds it across the reopen and the restart of the settings it
-  replaced the same way. The toast is `Refused: <why>` for a width refusal and
+  replaced the same way. Every one of these rollback restarts, and the config apply's below, goes through
+  `svc_rtl_restart_recovery_locked()`: the failed change already stopped the stream that ran, which closed its I/Q
+  capture with what it had recorded, and a start reopens the capture file for writing, so the restart runs with
+  `iq_capture_requested` cleared, leaves the capture off for the session and logs the file it keeps; the toast notes
+  `; I/Q capture stopped` when it fits (`ui_set_rollback_toast()`). The toast is `Refused: <why>` for a width refusal and
   `Failed: <why>` otherwise, from `svc_describe_start_failure()`, which reads the refusal the start recorded
   (`rtl_stream_start_analog_refusal()`) while the options still describe the input that failed: the environment rule,
   or the width against the rate the device delivered with the fix for what sets it, or else the input that did not
@@ -896,8 +900,12 @@ installs from `src/engine/trunk_tuning.c` in `src/engine/trunk_tuning_hooks_inst
   settings, meaning `[mode]`, `[demod]` and both `[analog]` widths, restored over the row-scoped options in force by
   `ui_restore_receive_settings()`), restarts that input, toasts `Config not applied: <why>` and fails the apply. What
   runs after it (the other hot restarts, the output reconfigure, `apply_cfg_receive_family_change()`) sees the receive
-  side the session ran, so no analog entry is armed and no profile is published for the refused settings; under a scan
-  row the rollback runs inside the suspended scope and the resume puts the row back, as after any reopen. The rest of
+  side the session ran, so no analog entry is armed and no profile is published for the refused settings. Under a scan
+  row the apply, and so its reopen or rollback restart, runs inside the suspended scope, so the stream it starts opens
+  on the configured settings rather than the row's; the row then compares unchanged when the scope resumes, so
+  `apply_cmd_scoped()` notes any stream started meanwhile (`svc_rtl_start_count()`, which `svc_rtl_restart_locked()`
+  counts) and `ui_resume_scope_and_publish()` publishes the row's effective profile to it anyway, without ending the
+  decoder's acquisition (issue #578; this also covers a reopen that starts, issue #583's first item). The rest of
   the config (output, trunking, logging, alerts, recording and DSP, the tone policy, an imported group list, the
   environment defaults it set) stays applied. The configured PPM never outlives a rollback: an RTL-SDR or rtl_tcp reopen
   opens with the request made before it, which the rollback puts back with the input, and the Airspy path requests it

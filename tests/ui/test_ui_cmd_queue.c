@@ -45,6 +45,7 @@
 #include <dsd-neo/runtime/analog_channel.h>
 #include <dsd-neo/runtime/analog_tones.h>
 #include <dsd-neo/runtime/decode_mode.h>
+#include <dsd-neo/runtime/log.h>
 #include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
 #include <dsd-neo/runtime/scan_mode.h>
 #include <dsd-neo/runtime/scan_options.h>
@@ -5194,10 +5195,15 @@ static int g_config_rtl_refused;
 static int g_config_rtl_refused_kind;
 static int g_config_rtl_refused_width_hz;
 static int g_config_rtl_refused_rate_hz;
+/* Issue #578: whether the last create was handed an I/Q capture request (--iq-capture), and how many creates were. */
+static int g_config_rtl_create_capture = -1;
+static int g_config_rtl_captures;
 
 static void
 reset_config_rtl_wrap(void) {
     g_config_rtl_creates = 0;
+    g_config_rtl_create_capture = -1;
+    g_config_rtl_captures = 0;
     g_config_rtl_open_ok = 0;
     g_config_rtl_create_dev[0] = '\0';
     g_config_rtl_create_analog_only = g_config_rtl_create_kind = g_config_rtl_create_width_hz = -1;
@@ -5221,6 +5227,8 @@ __wrap_rtl_stream_create(dsd_opts* opts, RtlSdrContext** out_ctx) {
     g_config_rtl_create_analog_only = opts ? dsd_opts_is_analog_family(opts) : -1;
     g_config_rtl_create_kind = opts ? opts->analog_demod : -1;
     g_config_rtl_create_width_hz = opts ? dsd_opts_analog_width_hz(opts) : -1;
+    g_config_rtl_create_capture = opts ? opts->iq_capture_requested : -1;
+    g_config_rtl_captures += g_config_rtl_create_capture == 1;
     *out_ctx = g_config_rtl_open_ok ? (RtlSdrContext*)g_config_rtl_ctx : NULL;
     ++g_config_rtl_creates;
     return g_config_rtl_open_ok ? 0 : -1;
@@ -5272,6 +5280,28 @@ int
 __wrap_rtl_stream_destroy(RtlSdrContext* ctx) {
     (void)ctx;
     return 0;
+}
+
+/* Issue #578: the last log line about the I/Q capture (installed once, from main()). */
+static char g_capture_log[512];
+
+static void
+record_capture_log(dsd_neo_log_level_t level, const char* text, void* ctx) {
+    (void)ctx;
+    if (level == LOG_LEVEL_WARN && text && strstr(text, "I/Q capture")) {
+        DSD_SNPRINTF(g_capture_log, sizeof g_capture_log, "%s", text);
+    }
+}
+
+/* The stream the rollback started runs the input that ran, without the I/Q capture: the start that failed was handed
+   the capture, the recovery start was not, the capture stays off for the session, and the log names the file kept. */
+static int
+expect_capture_kept(const char* label, const dsd_opts* opts) {
+    int rc = expect_int(label, g_config_rtl_creates == 2 && g_config_rtl_captures == 1, 1);
+    rc |= expect_int(label, g_config_rtl_create_capture, 0);
+    rc |= expect_int(label, opts->iq_capture_requested, 0);
+    rc |= expect_int(label, strstr(g_capture_log, "I/Q capture stopped") != NULL && strstr(g_capture_log, "cap.iq"), 1);
+    return rc;
 }
 
 /* Issue #578: the input the P25 SM watchdog reads while it holds its tick guard (the device, the input type, the
@@ -8426,6 +8456,52 @@ test_config_reopen_that_fails_keeps_the_running_input(void) {
 }
 
 /*
+ * Issue #578: every stream start opens the I/Q capture (--iq-capture) anew, writing over the file. A config whose
+ * reopen fails has already stopped the stream that ran, which closed the capture with what it had recorded, so the
+ * restart that puts that input back runs without the capture: it stays off for the rest of the session, the log says
+ * so, and the message does when it fits.
+ */
+static int
+test_config_rollback_keeps_the_iq_capture(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static void* fake_ctx[2];
+    int rc = 0;
+    init_nfm_session(&opts, &state, (RtlSdrContext*)fake_ctx);
+    opts.analog_nfm_bandwidth_hz = 12500;
+    DSD_SNPRINTF(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", "rtltcp:127.0.0.1:1234");
+    opts.rtltcp_enabled = 1;
+    DSD_SNPRINTF(opts.rtltcp_hostname, sizeof opts.rtltcp_hostname, "%s", "127.0.0.1");
+    opts.rtltcp_portno = 1234;
+    opts.iq_capture_requested = 1;
+    DSD_SNPRINTF(opts.iq_capture_path, sizeof opts.iq_capture_path, "%s", "cap.iq");
+    reset_rx_family_wrap();
+    g_config_rtl_open_ok = 1;
+    g_config_rtl_fail_starts = 1;
+    g_capture_log[0] = '\0';
+    dsdneoUserConfig cfg;
+    DSD_MEMSET(&cfg, 0, sizeof cfg);
+    cfg.has_input = 1;
+    cfg.input_source = DSDCFG_INPUT_RTLTCP;
+    DSD_SNPRINTF(cfg.rtltcp_host, sizeof cfg.rtltcp_host, "%s", "192.0.2.7");
+    cfg.rtltcp_port = 1234;
+    rc |= submit_config(&opts, &state, &cfg, "capture cfg rtl_tcp host fails");
+    rc |= expect_capture_kept("capture cfg rtl_tcp host fails: recording kept", &opts);
+    rc |= expect_str("capture cfg rtl_tcp host fails: host put back", opts.audio_in_dev, "rtltcp:127.0.0.1:1234");
+    rc |= expect_str("capture cfg rtl_tcp host fails toast", state.ui_msg,
+                     "Config not applied: the rtl_tcp input did not start (see log); I/Q capture stopped");
+
+    reset_config_rtl_wrap();
+    opts.rtltcp_enabled = 0;
+    opts.iq_capture_requested = 0;
+    opts.iq_capture_path[0] = '\0';
+    opts.analog_nfm_bandwidth_hz = 0;
+    state.rtl_ctx = NULL;
+    freeState(&state);
+    return rc;
+}
+
+/*
  * A CQPSK toggle the stream has not settled stands until it has: the demod thread may have cleared the output for it
  * (moving the output generation) without publishing CQPSK on yet, or a retune may have come between, and the stream
  * still publishes CQPSK off. A width set then must wait for the monitor rather than queue an analog request that would
@@ -10211,6 +10287,58 @@ test_config_apply_holds_a_scan_row_width_to_a_reopen(void) {
 }
 
 /*
+ * Issue #578: a config apply runs inside a scan row's suspended scope, so a stream it starts, reopened for its [input]
+ * or started again on the input a failed reopen replaced, opens on the configured settings, not the row's. The row
+ * compares unchanged once the scope resumes, so the resume asks the front end for the row's profile anyway: an nfm row
+ * on a DMR-configured scanner gets its analog monitor back, whether the reopen failed and put the running input back
+ * or started (the successful reopen is issue #583's item 1).
+ */
+static int
+test_config_reopen_under_a_scan_row_republishes_the_row(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static void* fake_ctx[2];
+    int rc = 0;
+    init_dmr_session_with_nfm_width(&opts, &state, (RtlSdrContext*)fake_ctx, 0);
+    dsd_scan_option_values row = {0};
+    row.present = DSD_SCAN_OPT_BANDWIDTH;
+    row.channel_bw_hz = 12500;
+    rc |= expect_int("row republish: nfm row", dsd_scan_mode_enter(&opts, &state, DSD_SCAN_MODE_NFM), 0);
+    rc |= expect_int("row republish: its width", dsd_scan_mode_options(&opts, &state, &row), 0);
+    g_fake_analog_family = 1; /* the front end runs the row's monitor */
+
+    static const char* const labels[] = {"row republish: reopen fails", "row republish: reopen starts"};
+    for (int starts = 0; starts <= 1; ++starts) {
+        const char* label = labels[starts];
+        reset_rx_family_wrap();
+        g_config_rtl_open_ok = 1;
+        g_config_rtl_fail_starts = starts ? 0 : 1;
+        rc |= submit_config_device_source(&opts, &state, DSDCFG_INPUT_SOAPY, 0, 0, label);
+        rc |= expect_int(label, dsd_app_command_test_last_failed(), starts ? 0 : 1);
+        /* The stream started, the reopened SoapySDR device or the RTL-SDR put back, runs the configured DMR. */
+        rc |= expect_int(label, g_config_rtl_creates == (starts ? 1 : 2) && state.rtl_ctx != NULL, 1);
+        rc |= expect_int(label, g_config_rtl_create_analog_only, 0);
+        rc |= expect_str(label, opts.audio_in_dev, starts ? "soapy:driver=airspy" : "rtl:0:851.375M:0:0:16");
+        /* The row is back in force, and the front end is asked for its monitor. */
+        rc |=
+            expect_int(label, dsd_scan_mode_active(&state) == DSD_SCAN_MODE_NFM && !dsd_scan_mode_updating(&state), 1);
+        rc |= expect_int(label, opts.analog_only == 1 && opts.analog_nfm_bandwidth_hz == 12500, 1);
+        rc |= expect_int(label,
+                         g_analog_req_calls == 1 && g_analog_req_family == DSD_RX_FAMILY_ANALOG
+                             && g_analog_req_kind == DSD_ANALOG_DEMOD_FM && g_analog_req_width_hz == 12500,
+                         1);
+    }
+
+    dsd_scan_mode_leave(&opts, &state);
+    reset_config_rtl_wrap();
+    g_fake_analog_family = 0;
+    opts.analog_nfm_bandwidth_hz = 0;
+    state.rtl_ctx = NULL;
+    freeState(&state);
+    return rc;
+}
+
+/*
  * Issue #526: an am scan row or target without a width of its own runs the configured AM width whenever it comes on
  * air, the AM default (6 kHz) included, which always runs its channel filter. So a config apply that leaves the session
  * on a preset that runs no AM -- a digital one, or -fA beside its own NFM width -- still holds its [analog]
@@ -10945,6 +11073,62 @@ test_input_switch_holds_the_watchdog_guard(void) {
     return rc;
 }
 
+/*
+ * Issue #578: every stream start opens the I/Q capture (--iq-capture) anew, writing over the file. A switch whose start
+ * fails has already stopped the stream that ran, which closed the capture with what it had recorded, so the restart
+ * that puts that input back runs without the capture: it stays off for the rest of the session, the log says so, and
+ * the message does when it fits. A switch that works opens the capture on the new input as before.
+ */
+static int
+test_input_switch_rollback_keeps_the_iq_capture(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static void* fake_ctx[2];
+    int rc = 0;
+    init_decode_mode_context(&opts, &state);
+    opts.analog_only = 1;
+    opts.analog_demod = DSD_ANALOG_DEMOD_FM;
+    opts.analog_nfm_bandwidth_hz = 12500;
+    opts.rtl_dsp_bw_khz = 48;
+    opts.iq_capture_requested = 1;
+    DSD_SNPRINTF(opts.iq_capture_path, sizeof opts.iq_capture_path, "%s", "cap.iq");
+
+    /* A running Airspy recording I/Q, switched to an RTL-SDR that does not open. */
+    opts.audio_in_type = AUDIO_IN_RTL;
+    DSD_SNPRINTF(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", "airspy");
+    state.rtl_ctx = (RtlSdrContext*)fake_ctx;
+    reset_config_rtl_wrap();
+    g_config_rtl_open_ok = 1;
+    g_config_rtl_fail_starts = 1;
+    g_capture_log[0] = '\0';
+    rc |= switch_input_from(&opts, &state, DSD_APP_CMD_RTL_ENABLE_INPUT, "capture airspy to rtl drained");
+    rc |= expect_capture_kept("capture airspy to rtl: recording kept", &opts);
+    rc |= expect_str("capture airspy to rtl: Airspy back", opts.audio_in_dev, "airspy");
+    rc |= expect_str("capture airspy to rtl toast", state.ui_msg,
+                     "Failed: the RTL-SDR input did not start (see log); I/Q capture stopped");
+
+    /* A switch that works opens the capture on the new input. */
+    opts.audio_in_type = AUDIO_IN_PULSE;
+    DSD_SNPRINTF(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", "pulse");
+    opts.iq_capture_requested = 1;
+    state.rtl_ctx = NULL;
+    reset_config_rtl_wrap();
+    g_config_rtl_open_ok = 1;
+    rc |= switch_input_from(&opts, &state, DSD_APP_CMD_AIRSPY_ENABLE_INPUT, "capture pcm to airspy drained");
+    rc |= expect_int("capture pcm to airspy: the Airspy records", g_config_rtl_create_capture, 1);
+    rc |= expect_int("capture pcm to airspy: capture still on", opts.iq_capture_requested, 1);
+    rc |= expect_str("capture pcm to airspy toast", state.ui_msg, "Applied: Airspy input enabled");
+
+    reset_config_rtl_wrap();
+    opts.iq_capture_requested = 0;
+    opts.iq_capture_path[0] = '\0';
+    opts.analog_only = 0;
+    opts.analog_nfm_bandwidth_hz = 0;
+    state.rtl_ctx = NULL;
+    freeState(&state);
+    return rc;
+}
+
 #endif
 
 #ifdef DSD_NEO_TEST_IO_CONTROL_WRAP
@@ -11200,6 +11384,7 @@ main(void) {
     rc |= test_config_keeps_trunk_scan_lifecycle();
     rc |= test_nfm_bandwidth_set_on_pcm_input();
 #if defined(USE_RADIO) && defined(DSD_NEO_TEST_RTL_WRAP)
+    dsd_neo_log_set_tap(record_capture_log, NULL);
     rc |= test_config_rtl_restart_under_policy_guard();
     rc |= test_rtl_bandwidth_held_to_am_width();
     rc |= test_squelch_commands_edit_the_configured_default();
@@ -11243,11 +11428,13 @@ main(void) {
     rc |= test_config_apply_holds_nfm_width_to_the_rate_the_reopen_runs_at();
     rc |= test_config_apply_leaves_a_soapy_or_airspy_reopen_to_its_start();
     rc |= test_config_reopen_that_fails_keeps_the_running_input();
+    rc |= test_config_rollback_keeps_the_iq_capture();
     rc |= test_config_apply_restores_the_default_nfm_width();
     rc |= test_scan_list_holds_the_configured_nfm_width();
     rc |= test_scan_list_holds_the_configured_nfm_width_on_am();
     rc |= test_am_width_under_am_scan_rows();
     rc |= test_config_apply_holds_a_scan_row_width_to_a_reopen();
+    rc |= test_config_reopen_under_a_scan_row_republishes_the_row();
     rc |= test_config_apply_holds_the_configured_am_width_under_am_rows();
     rc |= test_config_apply_holds_an_am_row_width_to_a_reopen();
 #ifdef DSD_NEO_TEST_RTL_WRAP
@@ -11280,6 +11467,7 @@ main(void) {
     rc |= test_rtl_enable_input_holds_the_nfm_width();
     rc |= test_input_switch_that_fails_keeps_the_running_input();
     rc |= test_input_switch_holds_the_watchdog_guard();
+    rc |= test_input_switch_rollback_keeps_the_iq_capture();
 #endif
     rc |= test_am_refused_on_pcm_input();
     rc |= test_am_bandwidth_set_validates();

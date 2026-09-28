@@ -1098,6 +1098,19 @@ ui_restore_settings_keeping_row_policy(dsd_opts* opts, dsd_state* state, dsd_sca
 }
 
 #ifdef USE_RADIO
+/* A rollback's toast: @p prefix and the reason @p why, and, when the restart of the input that ran turned the I/Q
+   capture off to keep the recording (svc_rtl_restart_recovery_locked(), @p capture_stopped), a note of it if the whole
+   fits the toast; the log says it either way. */
+static void
+ui_set_rollback_toast(dsd_state* state, const char* prefix, const char* why, int capture_stopped) {
+    static const char k_capture_stopped[] = "; I/Q capture stopped";
+    if (capture_stopped && strlen(prefix) + strlen(why) + sizeof k_capture_stopped <= sizeof state->ui_msg) {
+        ui_set_toast(state, 5, "%s%s%s", prefix, why, k_capture_stopped);
+    } else {
+        ui_set_toast(state, 5, "%s%s", prefix, why);
+    }
+}
+
 /* The receive input a stream start reads, as a change that rewrites it finds it (issue #578): the device string and
    input type, the rtl_tcp endpoint, the RTL device index, the tuning and front-end settings a start copies, the Airspy
    and SoapySDR settings, and the digital resample policy. These are what Input > Switch source, a config's [input] and
@@ -1224,7 +1237,8 @@ ui_cfg_capture_rollback(const dsd_opts* opts, const dsd_state* state, ui_cfg_rol
  * #578. A config apply never loses the input the session ran. When the start failed, refusing the analog width at the
  * rate the device delivered or failing for the device, the reason is taken while the options still describe the input
  * that failed (svc_describe_start_failure()); then the receive settings and the input @p before holds go back, with
- * the input's device settings and tuning, the input that ran is started again, and the toast says why. Returns -1
+ * the input's device settings and tuning, the input that ran is started again without the I/Q capture that would
+ * write over its recording (svc_rtl_restart_recovery_locked()), and the toast says why. Returns -1
  * then, and the caller fails the apply. The rest of the config stays applied (its output, trunking, logging, alerts,
  * recording and DSP sections, the tone policy, the group list it imported, the environment defaults it set). With no
  * stream running before the apply there is no input to lose: the config waits for the next start, as it always has,
@@ -1239,10 +1253,11 @@ ui_cfg_settle_reopen(dsd_opts* opts, dsd_state* state, int rc, const ui_cfg_roll
     (void)svc_describe_start_failure(opts, why, sizeof why);
     ui_restore_receive_settings(opts, state, &before->receive);
     ui_restore_radio_input(opts, &before->input);
-    if (svc_rtl_restart_locked(opts, state) != 0) {
+    int capture_stopped = 0;
+    if (svc_rtl_restart_recovery_locked(opts, state, &capture_stopped) != 0) {
         LOG_ERROR("Config: the input it replaced did not restart either; no radio input is running.\n");
     }
-    ui_set_toast(state, 5, "Config not applied: %s", why);
+    ui_set_rollback_toast(state, "Config not applied: ", why, capture_stopped);
     return -1;
 }
 
@@ -1271,15 +1286,19 @@ ui_cmd_rtl_enable_input_refused(const dsd_opts* opts, dsd_state* state, const st
    filter, or a device that did not open. The switch never leaves the session without the input it had: the reason is
    taken while the options still describe the input that failed (svc_describe_start_failure(), into @p why), then the
    input that ran before is put back, a PCM input as it was (the switch never closed it) and an RTL-family one started
-   again. It is the input that ran, so nothing is reset as for a new one (ui_input_switched()). Caller holds the P25 SM
-   tick guard. Returns 1 when the start refused its width, 0 when it failed for another reason. */
+   again, without the I/Q capture that would write over its recording (svc_rtl_restart_recovery_locked(), which sets
+   @p out_capture_stopped). It is the input that ran, so nothing is reset as for a new one (ui_input_switched()).
+   Caller holds the P25 SM tick guard. Returns 1 when the start refused its width, 0 when it failed for another
+   reason. */
 static int
 ui_rtl_enable_input_failed_locked(dsd_opts* opts, dsd_state* state, const ui_radio_input* before, char* why,
-                                  size_t why_size) {
+                                  size_t why_size, int* out_capture_stopped) {
+    *out_capture_stopped = 0;
     const int refused = svc_describe_start_failure(opts, why, why_size);
     if (before->running) {
         ui_restore_radio_input(opts, before);
-        if (before->audio_in_type == AUDIO_IN_RTL && svc_rtl_restart_locked(opts, state) != 0) {
+        if (before->audio_in_type == AUDIO_IN_RTL
+            && svc_rtl_restart_recovery_locked(opts, state, out_capture_stopped) != 0) {
             LOG_ERROR("Input switch: the input it replaced did not restart either; no radio input is running.\n");
         }
     }
@@ -1303,6 +1322,7 @@ ui_cmd_handle_rtl_enable_input(dsd_opts* opts, dsd_state* state, const struct ds
     char why[128];
     why[0] = '\0';
     int refused = 0;
+    int capture_stopped = 0;
     p25_sm_tick_guard_enter();
     if (c->id == DSD_APP_CMD_AIRSPY_ENABLE_INPUT) {
         DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "airspy%s%s",
@@ -1314,7 +1334,7 @@ ui_cmd_handle_rtl_enable_input(dsd_opts* opts, dsd_state* state, const struct ds
     const int rc = svc_rtl_enable_input_locked(opts, state);
     const int failed = rc != 0 && !ui_rc_is_not_supported(rc);
     if (failed) {
-        refused = ui_rtl_enable_input_failed_locked(opts, state, &before, why, sizeof why);
+        refused = ui_rtl_enable_input_failed_locked(opts, state, &before, why, sizeof why, &capture_stopped);
     }
     p25_sm_tick_guard_leave();
 
@@ -1328,10 +1348,8 @@ ui_cmd_handle_rtl_enable_input(dsd_opts* opts, dsd_state* state, const struct ds
         }
     } else if (!failed) {
         ui_set_toast(state, 3, "Unsupported: active radio backend cannot enable RTL input");
-    } else if (refused) {
-        ui_set_toast(state, 5, "Refused: %s", why);
     } else {
-        ui_set_toast(state, 5, "Failed: %s", why);
+        ui_set_rollback_toast(state, refused ? "Refused: " : "Failed: ", why, capture_stopped);
     }
     return result;
 }
@@ -4111,12 +4129,19 @@ ui_analog_width_before(const ui_analog_widths* before, int kind) {
    the result is that publish's (-1: the front end refused the analog profile at once). @p before holds the widths in
    force before the update (NULL: the caller changes no width). Only a row that takes the configured width has that
    width moved by the update, so the width before it was the configured one too, which the publish keeps for a refusal
-   where it lands (svc_publish_symbol_profile_changing_width()). */
+   where it lands (svc_publish_symbol_profile_changing_width()). @p restarted says the update started a stream while
+   the scope was suspended (a config apply's reopen, or the restart of the input a failed one replaced): that stream
+   opened on the configured settings, not the row's, so the row's profile is published to it even when the row
+   compares unchanged and the decoder keeps its acquisition (issue #578). */
 static int
-ui_resume_scope_and_publish(dsd_opts* opts, dsd_state* state, int* out_changed, const ui_analog_widths* before) {
+ui_resume_scope_and_publish(dsd_opts* opts, dsd_state* state, int* out_changed, const ui_analog_widths* before,
+                            int restarted) {
+    const int resuming = dsd_scan_mode_updating(state);
     *out_changed = dsd_scan_mode_resume(opts, state) ? 1 : 0;
     if (!*out_changed) {
-        return 0;
+        return (restarted && resuming)
+                   ? svc_publish_symbol_profile(opts, state, dsd_scan_mode_effective_profile(opts, state))
+                   : 0;
     }
     reset_call_tracking(opts, state, 1);
     dsd_frame_sync_reset_acquisition(opts, state, opts->trunk_scan_enabled != 1);
@@ -4214,7 +4239,7 @@ ui_revert_analog_entry(dsd_opts* opts, dsd_state* state, int width_hz, const svc
     }
     int changed = 0;
     if (scoped) {
-        (void)ui_resume_scope_and_publish(opts, state, &changed, NULL);
+        (void)ui_resume_scope_and_publish(opts, state, &changed, NULL, 0);
     }
     if (reverted && !scoped) {
         (void)svc_publish_symbol_profile(opts, state, dsd_scan_mode_effective_profile(opts, state));
@@ -6414,11 +6439,12 @@ apply_cmd_leave_scanner_scope(dsd_opts* opts, dsd_state* state, int guarded) {
    before the command for a refusal where it lands (ui_settle_receive_requests()); a digital row's front end
    takes no width, and a row that sets its own (issue #526) keeps it over the edit. Returns -1 when that was a switch
    onto the analog monitor, or between FM and AM, the front end refused at once, which puts the decoder back as it was
-   and fails the command. */
+   and fails the command. A stream the command started meanwhile (@p restarted) gets the row's profile either way
+   (ui_resume_scope_and_publish()). */
 static int
-apply_cmd_resume_scope(dsd_opts* opts, dsd_state* state, const ui_analog_widths* before) {
+apply_cmd_resume_scope(dsd_opts* opts, dsd_state* state, const ui_analog_widths* before, int restarted) {
     int changed = 0;
-    if (ui_resume_scope_and_publish(opts, state, &changed, before) != 0) {
+    if (ui_resume_scope_and_publish(opts, state, &changed, before, restarted) != 0) {
         /* Refused at once (a retune moved the demod rate since the command held the width to it): the front end kept
            its receive profile, so the decoder goes back to it, the mode it had before a switch onto the monitor or
            between FM and AM, or else the width the monitor kept. */
@@ -6474,7 +6500,7 @@ apply_cmd_fall_back_from_am_on_pcm(dsd_opts* opts, dsd_state* state, const struc
     const int rc = decode_mode_apply_value(opts, state, DSDCFG_MODE_ANALOG);
     if (scoped) {
         int changed = 0;
-        (void)ui_resume_scope_and_publish(opts, state, &changed, NULL);
+        (void)ui_resume_scope_and_publish(opts, state, &changed, NULL, 0);
     }
     if (rc != UI_CMD_APPLY_COMPLETED) {
         return;
@@ -6532,12 +6558,13 @@ ui_cmd_widths_before_of(const dsd_opts* opts, const dsd_state* state, const stru
     return before;
 }
 
-/* The row's constraint back after a command that suspended it (@p scoped) (apply_cmd_resume_scope()), then, for a
-   config apply, the configured widths it changed noted once every request it made is made
-   (ui_note_config_width_changes()). Returns -1 when the resume failed. */
+/* The row's constraint back after a command that suspended it (@p scoped) and maybe started a stream meanwhile
+   (@p restarted) (apply_cmd_resume_scope()), then, for a config apply, the configured widths it changed noted once
+   every request it made is made (ui_note_config_width_changes()). Returns -1 when the resume failed. */
 static int
-apply_cmd_resume_and_note_widths(dsd_opts* opts, dsd_state* state, int scoped, const ui_cmd_widths_before* before) {
-    const int resume_failed = scoped && apply_cmd_resume_scope(opts, state, &before->in_force) != 0;
+apply_cmd_resume_and_note_widths(dsd_opts* opts, dsd_state* state, int scoped, int restarted,
+                                 const ui_cmd_widths_before* before) {
+    const int resume_failed = scoped && apply_cmd_resume_scope(opts, state, &before->in_force, restarted) != 0;
     if (before->config_apply) {
         ui_note_config_width_changes(opts, state, &before->configured);
     }
@@ -6592,14 +6619,17 @@ apply_cmd_scoped(dsd_opts* opts, dsd_state* state, const struct dsd_app_command*
                              && (c->id == DSD_APP_CMD_IMPORT_GROUP_LIST || c->id == DSD_APP_CMD_IMPORT_GROUP_LIST_CLEAR
                                  || c->id == DSD_APP_CMD_CONFIG_APPLY);
     const int groups_suspended = group_update && dsd_scan_groups_suspend(state);
+    /* A stream the command starts while the scope is suspended opens on the configured settings (issue #578). */
+    const unsigned int starts_before = svc_rtl_start_count();
     const int result = apply_cmd_unscoped(opts, state, c);
+    const int restarted = svc_rtl_start_count() != starts_before;
     if (groups_suspended) {
         dsd_scan_groups_resume(state);
     }
     if (was_scanner) {
         apply_cmd_leave_scanner_scope(opts, state, guarded);
     }
-    if (apply_cmd_resume_and_note_widths(opts, state, scoped, &widths_before) != 0) {
+    if (apply_cmd_resume_and_note_widths(opts, state, scoped, restarted, &widths_before) != 0) {
         return UI_CMD_APPLY_FAILED;
     }
     apply_cmd_fall_back_from_am_on_pcm(opts, state, c);
