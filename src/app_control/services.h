@@ -319,6 +319,21 @@ int svc_check_analog_bandwidth_at_device_rate(int kind, int width_hz, char* why,
 void svc_describe_analog_refusal(const dsd_opts* opts, int kind, int width_hz, char* why, size_t why_size);
 
 /**
+ * @brief A short reason the front end refused a scan leave's return to the analog monitor (issue #578), and what the
+ * monitor runs instead, for a toast.
+ *
+ * The leave asks for the configured width of analog @p kind (@p width_hz: 0 for the kind's default) at the rate the
+ * scan left the front end on, which a row's retune can have moved off the DSP bandwidth: the rate named is the one the
+ * stream publishes (rtl_stream_get_demod_rate_hz()), as in "NFM 16 kHz does not fit the 16 kHz DSP rate". What follows
+ * says what the decoder settled on: @p runs_hz > 0, "the monitor keeps NFM 12.5 kHz" (the width the monitor kept); 0,
+ * "the monitor is back on the NFM default"; -1, "the AM default does not fit it either" (nothing was changed; nothing
+ * more is said when the refused width was that default). A refusal that rate does not explain (no rate published, or
+ * one the width fits) points at the log. Fits a toast with its "Refused: " prefix.
+ */
+void svc_describe_monitor_return_refusal(const dsd_opts* opts, int kind, int width_hz, int runs_hz, char* why,
+                                         size_t why_size);
+
+/**
  * @brief Set the configured channel width of analog @p kind (DSD_APP_CMD_NFM_BANDWIDTH_SET for NFM,
  * DSD_APP_CMD_AM_BANDWIDTH_SET for AM), live when that kind's monitor runs.
  *
@@ -374,14 +389,15 @@ int svc_store_analog_width_setting(dsd_opts* opts, const dsd_state* state, int k
  *
  * Does nothing unless the options in force run an analog preset of @p kind with a stream running. A switch onto the
  * analog family or onto the kind, a CQPSK toggle back to it or a scan row's leave that the demod thread has not taken
- * yet has its queued width replaced. Under a scan row's suspended scope (dsd_scan_mode_updating()) it waits: the scoped
- * command dispatcher calls it again once the row's constraint is back, so a typed digital row keeps its own profile.
- * CQPSK toggled on under an analog preset keeps the front end off the monitor, whether the demod thread has taken that
- * toggle yet or not (rtl_stream_requested_cqpsk(), which answers for every request queued); svc_toggle_rtl_cqpsk()
- * turning it off requests the analog profile with the configured width. For callers that changed the width (the width
- * commands, a config apply), with @p configured_before_hz the configured width of @p kind from before their change,
- * which the record keeps for a refusal where the request lands (svc_restore_analog_width()). Decoder thread only: it
- * keeps the record svc_take_monitor_request_outcome() reads.
+ * yet has its queued width replaced; a request that replaces a leave's this way carries the leave on, so a refusal
+ * where it lands is reconciled as the leave's would be (svc_leave_channel_scan()). Under a scan row's suspended scope
+ * (dsd_scan_mode_updating()) it waits: the scoped command dispatcher calls it again once the row's constraint is back,
+ * so a typed digital row keeps its own profile. CQPSK toggled on under an analog preset keeps the front end off the
+ * monitor, whether the demod thread has taken that toggle yet or not (rtl_stream_requested_cqpsk(), which answers for
+ * every request queued); svc_toggle_rtl_cqpsk() turning it off requests the analog profile with the configured width.
+ * For callers that changed the width (the width commands, a config apply), with @p configured_before_hz the configured
+ * width of @p kind from before their change, which the record keeps for a refusal where the request lands
+ * (svc_restore_analog_width()). Decoder thread only: it keeps the record svc_take_monitor_request_outcome() reads.
  *
  * @return 0 when requested or when there is nothing to request; -1 when the front end refused the request (at the rate
  *         it publishes now, logged with the validator's text), which leaves its receive profile as it was.
@@ -403,11 +419,30 @@ int svc_publish_analog_bandwidth(const dsd_opts* opts, const dsd_state* state, i
  */
 void svc_note_analog_width_change(const dsd_opts* opts, const dsd_state* state, int kind, int configured_before_hz);
 
+/**
+ * @brief Leave the conventional channel scan (dsd_engine_channel_scan_leave()) from a command, and keep what became of
+ * its return to the analog monitor for the command drain (issue #578).
+ *
+ * Every interactive leave calls this rather than the engine: a scanner stop, a tuner release, trunking taking the
+ * tuner, a manual tune off a typed list, a channel-map adopt or clear, a RadioReference import and the leave after a
+ * command that stopped the scanner. Under an analog preset with an RTL stream running, a leave that asked the front end
+ * back onto the configured analog profile is recorded like the analog monitor requests this module makes
+ * (svc_take_monitor_request_outcome()), whether the request was queued (and may yet be refused where it lands) or
+ * refused at once, which queues nothing. The front end keeps its receive profile either way, and a typed digital row's
+ * channel profile never touched the width setting, so the drain reconciles the decoder with what it kept. A leave that
+ * asked the monitor for nothing (a digital session, no scan active) leaves the record of the last request alone.
+ * Decoder thread only.
+ *
+ * @return As dsd_engine_channel_scan_leave(): 1 queued, -1 refused at once, 0 nothing asked of the monitor.
+ */
+int svc_leave_channel_scan(dsd_opts* opts, dsd_state* state);
+
 /** @brief What became of the last analog monitor request (svc_take_monitor_request_outcome()). */
 typedef enum {
     SVC_MONITOR_REQUEST_NONE = 0, /**< None outstanding, still pending, or its stream is gone. */
     SVC_MONITOR_REQUEST_TAKEN,    /**< Taken by the demod thread, or replaced by a later request. */
-    SVC_MONITOR_REQUEST_REFUSED,  /**< Refused where it landed: a retune moved the demod rate after it was checked. */
+    SVC_MONITOR_REQUEST_REFUSED,  /**< Refused where it landed (a retune moved the demod rate after it was checked), or
+                                       a scan leave's return to the monitor refused at once. */
 } svc_monitor_request_outcome;
 
 /** @brief A refused analog monitor request and what the front end kept (svc_take_monitor_request_outcome()). */
@@ -425,17 +460,29 @@ typedef struct {
                                    end ran none of and kept another width, from before the first of them of that kind
                                    (a width change of that kind made while the other kind ran counts, and one of the
                                    other kind never does); -1: none. */
+    int kept_monitor; /**< 1: the analog family kept its monitor output, which runs @c kept_width_hz; 0: the digital
+                           family, or the analog family under a symbol profile applied on its own (a typed digital scan
+                           row's channel profile, CQPSK), where @c kept_width_hz is a setting, not a width that runs. */
+    int scan_leave; /**< 1: a scan leave's return to the monitor (svc_leave_channel_scan()), or a request that replaced
+                           one before it reached the front end. */
 } svc_monitor_refusal;
 
 /**
  * @brief Collect what became of the last analog monitor request queued from app-control: a width change
  * (svc_publish_analog_bandwidth()), the analog profile svc_publish_symbol_profile() requests for a switch onto the
- * monitor, between FM and AM, or a republish, or a CQPSK toggle back to the monitor (svc_toggle_rtl_cqpsk()).
+ * monitor, between FM and AM, or a republish, a CQPSK toggle back to the monitor (svc_toggle_rtl_cqpsk()), or a scan
+ * leave's return to the monitor (svc_leave_channel_scan()).
  *
  * Reports each request once. SVC_MONITOR_REQUEST_REFUSED fills @p out (may be NULL) with what the request carried and
  * what the front end kept, as the stream recorded it when it refused (rtl_stream_receive_request_refusal()): the caller
  * puts the configured width back to the one the monitor kept, or the decoder back on the mode it had before a switch
- * onto the monitor, or between FM and AM, the front end did not make. Decoder thread only.
+ * onto the monitor, or between FM and AM, the front end did not make, or reconciles a refused scan leave. A leave
+ * refused at once queued nothing, so once the requests queued before it have settled, what the front end publishes
+ * says what it kept (rtl_stream_get_analog_profile(), rtl_stream_analog_family_active()): the monitor's kind and the
+ * width its channel filter runs (one the DSP rate limits reads as the kind's default), or the analog or digital family
+ * off the monitor. It reads TAKEN when a request queued since, from anywhere, has decided what the front end runs, or
+ * when the front end publishes the monitor the leave asked for (a stream reopened on the configured options).
+ * Decoder thread only.
  *
  * @return svc_monitor_request_outcome.
  */

@@ -24,6 +24,7 @@
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/talkgroup_policy.h>
 #include <dsd-neo/dsp/demod_pipeline.h>
+#include <dsd-neo/engine/channel_scan.h>
 #include <dsd-neo/engine/p25_bandplan_export.h>
 #include <dsd-neo/io/control.h>
 #include <dsd-neo/io/rigctl_client.h>
@@ -632,6 +633,13 @@ svc_publish_analog_bandwidth(const dsd_opts* opts, const dsd_state* state, int k
     g_nfm_publish_width_hz =
         opts ? (kind == DSD_ANALOG_DEMOD_AM ? opts->analog_am_bandwidth_hz : opts->analog_nfm_bandwidth_hz) : -1;
     return g_nfm_publish_result;
+}
+
+/* A channel-map adopt or clear leaves the scan through app-control's record of the leave (symbol_profile.c, not linked
+   here, which APP_COMMAND_QUEUE drives): the engine's leave, as the stubs run it. */
+int
+svc_leave_channel_scan(dsd_opts* opts, dsd_state* state) {
+    return dsd_engine_channel_scan_leave(opts, state);
 }
 
 static int
@@ -2105,6 +2113,54 @@ test_am_bandwidth_services(void) {
     return rc;
 }
 
+#ifdef USE_RADIO
+/*
+ * Issue #578: the reason a scan leave's return to the monitor was refused names the width and the rate the stream
+ * publishes, which a row's retune can have moved off the one the DSP bandwidth gives, then what the monitor runs: the
+ * width it kept, the kind's default, or, when the rate refuses that default too, word of it (nothing more when the
+ * default was what the leave asked for). Without a rate that explains it, the log does.
+ */
+static int
+test_describe_monitor_return_refusal(void) {
+    static dsd_opts opts;
+    char why[128];
+    int rc = 0;
+    DSD_MEMSET(&opts, 0, sizeof opts);
+    opts.audio_in_type = AUDIO_IN_RTL;
+    opts.rtl_dsp_bw_khz = 48;
+    DSD_SNPRINTF(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", "rtl:0:851.375M:0:0:48");
+    g_demod_rate_hz = 16000;
+    svc_describe_monitor_return_refusal(&opts, DSD_ANALOG_DEMOD_FM, 16000, 12500, why, sizeof why);
+    rc |= expect_str("monitor return: kept width", why,
+                     "NFM 16 kHz does not fit the 16 kHz DSP rate; the monitor keeps NFM 12.5 kHz");
+    svc_describe_monitor_return_refusal(&opts, DSD_ANALOG_DEMOD_FM, 16000, 0, why, sizeof why);
+    rc |= expect_str("monitor return: default", why,
+                     "NFM 16 kHz does not fit the 16 kHz DSP rate; the monitor is back on the NFM default");
+    g_demod_rate_hz = 7500;
+    svc_describe_monitor_return_refusal(&opts, DSD_ANALOG_DEMOD_AM, 10000, -1, why, sizeof why);
+    rc |= expect_str("monitor return: AM default refused too", why,
+                     "AM 10 kHz does not fit the 7.5 kHz DSP rate; the AM default does not fit it either");
+    svc_describe_monitor_return_refusal(&opts, DSD_ANALOG_DEMOD_AM, 0, -1, why, sizeof why);
+    rc |= expect_str("monitor return: the AM default refused", why, "AM 6 kHz does not fit the 7.5 kHz DSP rate");
+    g_demod_rate_hz = 0;
+    svc_describe_monitor_return_refusal(&opts, DSD_ANALOG_DEMOD_FM, 16000, 0, why, sizeof why);
+    rc |= expect_str("monitor return: no rate", why,
+                     "the RTL front end refused NFM 16 kHz (see log); the monitor is back on the NFM default");
+    g_demod_rate_hz = 48000;
+    svc_describe_monitor_return_refusal(&opts, DSD_ANALOG_DEMOD_AM, 10000, -1, why, sizeof why);
+    rc |= expect_str("monitor return: a rate that fits", why,
+                     "the RTL front end refused AM 10 kHz (see log); the AM default is refused too");
+    /* Off an RTL input the published rate is no rate that input runs at. */
+    opts.audio_in_type = AUDIO_IN_PULSE;
+    g_demod_rate_hz = 16000;
+    svc_describe_monitor_return_refusal(&opts, DSD_ANALOG_DEMOD_FM, 16000, 0, why, sizeof why);
+    rc |= expect_str("monitor return: off RTL", why,
+                     "the RTL front end refused NFM 16 kHz (see log); the monitor is back on the NFM default");
+    g_demod_rate_hz = 0;
+    return rc;
+}
+#endif
+
 int
 main(void) {
     int rc = 0;
@@ -2117,6 +2173,7 @@ main(void) {
     rc |= test_rtl_restart_quiesces_p25_retunes();
     rc |= test_locked_restarts();
     rc |= test_describe_start_failure();
+    rc |= test_describe_monitor_return_refusal();
     rc |= test_airspy_input_analog_width();
     rc |= test_rtl_service_option_contracts();
     rc |= test_nfm_bandwidth_services();

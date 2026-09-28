@@ -879,7 +879,9 @@ dsd_engine_channel_scan_step_manual(dsd_opts* opts, dsd_state* state) {
 
 /* Put the RTL front end back on the configured receive family. Under -fA that is the configured analog profile
  * (demodulator and channel width, 0 meaning the default); otherwise the digital family and the symbol profile the
- * restored decoder runs on, in that order, so the demod thread switches family before it applies the profile.
+ * restored decoder runs on, in that order, so the demod thread switches family before it applies the profile. Returns
+ * what became of the analog profile request: 1 queued, -1 refused at once (dsd_engine_channel_scan_leave()); 0 when
+ * none was made (not RTL input, or the digital family).
  *
  * A front end still on the analog family (the -fA session whose configured mode was changed to a digital one while a
  * row ran) switches to digital only here, after the configured timing was saved for the analog family's output rate:
@@ -890,10 +892,10 @@ dsd_engine_channel_scan_step_manual(dsd_opts* opts, dsd_state* state) {
  * A leave that switches the front end's family, or its analog kind (an nfm row's FM monitor on an -fM session, issue
  * #524), also drops the analog monitor block the decoder has part-collected from the old family's or kind's output, as
  * a decode-mode change between them does. */
-static void
+static int
 channel_scan_restore_frontend(const dsd_opts* opts, dsd_state* state) {
     if (opts->audio_in_type != AUDIO_IN_RTL) {
-        return;
+        return 0;
     }
     const int analog_family_active = dsd_rtl_stream_metrics_hook_analog_family_active();
     if (dsd_opts_is_analog_family(opts)) {
@@ -902,9 +904,9 @@ channel_scan_restore_frontend(const dsd_opts* opts, dsd_state* state) {
         if (!analog_family_active || (monitor_published && running_kind != opts->analog_demod)) {
             dsd_symbol_analog_block_reset(state);
         }
-        (void)dsd_rtl_stream_metrics_hook_apply_analog_profile(DSD_RX_FAMILY_ANALOG, opts->analog_demod,
-                                                               dsd_opts_analog_width_hz(opts));
-        return;
+        const int rc = dsd_rtl_stream_metrics_hook_apply_analog_profile(DSD_RX_FAMILY_ANALOG, opts->analog_demod,
+                                                                        dsd_opts_analog_width_hz(opts));
+        return rc == 0 ? 1 : -1;
     }
     const dsd_decode_mode_profile profile = dsd_scan_mode_effective_profile(opts, state);
     if (analog_family_active) {
@@ -922,12 +924,13 @@ channel_scan_restore_frontend(const dsd_opts* opts, dsd_state* state) {
     (void)dsd_rtl_stream_metrics_hook_apply_analog_profile(DSD_RX_FAMILY_DIGITAL, DSD_ANALOG_DEMOD_FM, 0);
     (void)dsd_rtl_stream_metrics_hook_apply_demod_profile(state->rf_mod == 1, profile.symbol_rate_hz, profile.levels,
                                                           filter, state->samplesPerSymbol);
+    return 0;
 }
 
-void
+int
 dsd_engine_channel_scan_leave(dsd_opts* opts, dsd_state* state) {
     if (!opts || !state) {
-        return;
+        return 0;
     }
     const int active = channel_scan_get(state) != NULL || dsd_scan_mode_configured_view(state) != NULL
                        || dsd_scan_mode_updating(state);
@@ -938,11 +941,14 @@ dsd_engine_channel_scan_leave(dsd_opts* opts, dsd_state* state) {
     dsd_scan_groups_leave(state);
     dsd_scan_maps_leave(state);
     dsd_scan_mode_leave(opts, state);
+    int monitor_request = 0;
     if (active) {
         dsd_frame_sync_reset_acquisition(opts, state, opts->trunk_scan_enabled != 1);
-        channel_scan_restore_frontend(opts, state);
+        monitor_request = channel_scan_restore_frontend(opts, state);
         /* A rigctl peer that demodulated an am row, or ran a row's own passband, goes back to what the configured
-         * session asks for: no later tune outside a scan would undo it (issue #526). */
+         * session asks for: no later tune outside a scan would undo it (issue #526). It queues no receive request, so
+         * the analog profile request stays the leave's last. */
         dsd_engine_scan_rigctl_restore(opts, state);
     }
+    return monitor_request;
 }

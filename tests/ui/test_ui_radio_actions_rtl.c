@@ -122,11 +122,22 @@ rtl_stream_receive_request_outcome(uint32_t seq) {
 }
 
 int
-rtl_stream_receive_request_refusal(uint32_t seq, int* out_analog_family, int* out_width_hz, int* out_kind) {
+rtl_stream_receive_request_refusal(uint32_t seq, int* out_analog_family, int* out_width_hz, int* out_kind,
+                                   int* out_monitor) {
     (void)seq;
     (void)out_analog_family;
     (void)out_width_hz;
     (void)out_kind;
+    (void)out_monitor;
+    return 0;
+}
+
+/* Nor does it publish the analog monitor, which a scan leave refused at once would be read from. */
+int
+rtl_stream_get_analog_profile(int* out_kind, int* out_width_hz, int* out_lpf_on) {
+    (void)out_kind;
+    (void)out_width_hz;
+    (void)out_lpf_on;
     return 0;
 }
 

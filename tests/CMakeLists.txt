@@ -1811,6 +1811,8 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/src/app_control/actions/actions_radio.c
     ${PROJECT_SOURCE_DIR}/src/app_control/symbol_profile.c
     ${PROJECT_SOURCE_DIR}/src/runtime/decode_mode.c
+    # symbol_profile.c records a scan leave (svc_leave_channel_scan()) around the engine's.
+    test_support/channel_scan_stubs.c
 )
 target_compile_definitions(
     dsd-neo_test_app_control_actions_rtl
@@ -5710,6 +5712,7 @@ if(
             "LINKER:--wrap=rtl_stream_receive_request_seq"
             "LINKER:--wrap=rtl_stream_receive_request_outcome"
             "LINKER:--wrap=rtl_stream_receive_request_refusal"
+            "LINKER:--wrap=rtl_stream_get_analog_profile"
             "LINKER:--wrap=rtl_stream_requested_cqpsk"
             "LINKER:--wrap=rtl_stream_get_demod_rate_hz"
             "LINKER:--wrap=rtl_stream_output_rate"

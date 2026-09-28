@@ -1418,7 +1418,7 @@ ui_cmd_leave_typed_scan_after_tune(dsd_opts* opts, dsd_state* state, int result)
         return 0;
     }
     p25_sm_tick_guard_enter();
-    dsd_engine_channel_scan_leave(opts, state);
+    (void)svc_leave_channel_scan(opts, state);
     dsd_scan_keys_leave(state);
     opts->scanner_mode = 0;
     state->lcn_freq_roll = 0;
@@ -3951,7 +3951,7 @@ apply_tuner_release(dsd_opts* opts, dsd_state* state) {
     opts->scanner_mode = 0;
     // Leaving -Y hands the foreground keyring back to the globals.
     if (opts->trunk_scan_enabled != 1) {
-        dsd_engine_channel_scan_leave(opts, state);
+        (void)svc_leave_channel_scan(opts, state);
         dsd_scan_keys_leave(state);
     }
     reset_call_tracking(opts, state, 1);
@@ -4500,7 +4500,7 @@ rr_apply_tuner_owner(dsd_opts* opts, dsd_state* state, const dsd_app_rr_apply_pa
         opts->scanner_mode = 0;
     }
     if (!p->scanner) {
-        dsd_engine_channel_scan_leave(opts, state);
+        (void)svc_leave_channel_scan(opts, state);
         dsd_scan_keys_leave(state);
     }
 }
@@ -4602,7 +4602,7 @@ apply_rr_import(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* 
         return pre;
     }
     const dsdneoUserDecodeMode mode = (dsdneoUserDecodeMode)p.decode_mode;
-    dsd_engine_channel_scan_leave(opts, state);
+    (void)svc_leave_channel_scan(opts, state);
     if (decode_mode_apply_value(opts, state, mode) != UI_CMD_APPLY_COMPLETED) {
         ui_set_toast(state, 4, "Failed: RR import -> decode mode");
         return UI_CMD_APPLY_FAILED;
@@ -5690,6 +5690,52 @@ ui_restore_refused_analog_width(dsd_opts* opts, dsd_state* state, int kind, int 
     ui_set_toast(state, 5, "Refused: %s", why);
 }
 
+/*
+ * A scan leave's return to the analog monitor the front end refused (issue #578), at once or where it landed
+ * (@p refusal): a row's retune had moved the demod rate off the one the configured width was held to. The front end
+ * kept its receive profile, and the decoder follows what it kept, "kept width, else default". Still on the monitor
+ * output of the kind the leave asked for, the configured width takes the width that monitor runs, as after any refused
+ * width change (svc_restore_analog_width()). Off it (a typed digital row's channel profile, which never touches the
+ * width setting, another kind's monitor, or the digital family), the kind's default is requested and stored as the
+ * configured width: the NFM default is never refused, and a default the rate refuses as well (AM's) changes nothing.
+ * The toast says why either way. Only while the options are still the ones the leave put back (the analog family, that
+ * kind, that width) and no scan runs: a channel-map adopt or a RadioReference import that keeps the scanner on gets
+ * its front end from the next row's tune, and is deliberately left to it. Returns 1 when it acted.
+ */
+static int
+ui_settle_refused_scan_leave(dsd_opts* opts, dsd_state* state, const svc_monitor_refusal* refusal) {
+    const int kind = refusal->kind;
+    if (!dsd_opts_is_analog_family(opts) || opts->analog_demod != kind
+        || dsd_app_analog_width_setting_hz(opts, kind) != refusal->width_hz || dsd_scan_mode_configured_view(state)
+        || dsd_scan_mode_updating(state) || (opts->scanner_mode == 1 && state->lcn_freq_count > 0)) {
+        return 0;
+    }
+    int runs_hz = 0;
+    if (refusal->kept_analog && refusal->kept_monitor && refusal->kept_kind == kind) {
+        if (refusal->kept_width_hz == refusal->width_hz) {
+            return 0; /* the monitor runs the configured width: nothing to reconcile */
+        }
+        runs_hz = refusal->kept_width_hz;
+        svc_restore_analog_width(opts, state, kind, runs_hz, refusal->configured_before_hz);
+    } else if (svc_check_analog_bandwidth(opts, state, kind, 0, NULL, 0U) != 0) {
+        runs_hz = -1;
+    } else {
+        /* Straight to the monitor request, as ui_revert_analog_entry() republishes: svc_publish_analog_bandwidth()
+           would wait for a CQPSK a kept P25 row requested, which is what the default has to replace. */
+        (void)svc_store_analog_width_setting(opts, state, kind, 0);
+        if (svc_publish_symbol_profile_changing_width(opts, state, dsd_scan_mode_effective_profile(opts, state),
+                                                      refusal->width_hz)
+            != 0) {
+            (void)svc_store_analog_width_setting(opts, state, kind, refusal->width_hz);
+            runs_hz = -1;
+        }
+    }
+    char why[128];
+    svc_describe_monitor_return_refusal(opts, kind, refusal->width_hz, runs_hz, why, sizeof why);
+    ui_set_toast(state, 5, "Refused: %s", why);
+    return 1;
+}
+
 /* Hand a changed width of the analog kind in force to the running front end. One it refuses now (a retune moved the
    rate since the width was checked) is put back to @p previous_hz. Returns -1 then. */
 static int
@@ -6344,7 +6390,7 @@ apply_cmd_leave_scanner_scope(dsd_opts* opts, dsd_state* state, int guarded) {
         p25_sm_tick_guard_enter();
     }
     /* A suspended scope leaves the newly applied configuration in place. */
-    dsd_engine_channel_scan_leave(opts, state);
+    (void)svc_leave_channel_scan(opts, state);
     dsd_scan_keys_leave(state);
     if (!guarded) {
         p25_sm_tick_guard_leave();
@@ -6579,6 +6625,11 @@ apply_cmd(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
  * than turning into the default it filters the same as). Under a scan row it goes back to the configured width the
  * front end ran, never to a row's own width (svc_restore_analog_width()): from before the refused change, or from
  * before the first of two the demod thread took together, the first replaced by the second in its queue.
+ *
+ * A scan leave's return to the monitor, refused at once or where it landed, or a request that carried it on
+ * (svc_leave_channel_scan()), is reconciled as ui_settle_refused_scan_leave() says (issue #578), since a typed row may
+ * have left the front end off the monitor with the width setting untouched. A switch onto the monitor or between FM
+ * and AM armed before the leave still goes back first (ui_revert_analog_entry()).
  */
 static void
 ui_settle_receive_requests(dsd_opts* opts, dsd_state* state) {
@@ -6597,6 +6648,12 @@ ui_settle_receive_requests(dsd_opts* opts, dsd_state* state) {
     int changed = 0;
     if (!refusal.kept_analog || refusal.kept_kind != refusal.kind) {
         changed = ui_revert_analog_entry(opts, state, refusal.width_hz, &refusal);
+        if (!changed && refusal.scan_leave) {
+            changed = ui_settle_refused_scan_leave(opts, state, &refusal);
+        }
+    } else if (refusal.scan_leave) {
+        g_analog_entry.armed = 0;
+        changed = ui_settle_refused_scan_leave(opts, state, &refusal);
     } else {
         g_analog_entry.armed = 0;
         const int kept_hz = refusal.kept_width_hz;

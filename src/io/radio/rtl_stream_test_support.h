@@ -89,10 +89,21 @@ typedef struct rtl_stream_test_rx_request_result {
     int kept_width_hz;                 /* the analog width it says the stream kept */
     int kept_kind;                     /* the analog kind it says the stream kept (AM: the kind it ran when an NFM
                                           request was refused) */
+    int kept_monitor;                  /* whether it says the stream kept the monitor output (CQPSK on there: 0) */
     int settled_refusal_reported;      /* rtl_stream_receive_request_refusal() for a settled request */
     int entry_kept_analog_family;      /* the family kept when a switch onto the monitor was refused */
+    int entry_kept_monitor;            /* ... and the monitor output it did not keep */
     uint32_t refused_seq;              /* the number of that refused switch */
     int refused_outcome_after_open;    /* its outcome once a stream open has run */
+    /* A return to the monitor at 16 kHz, checked at 48 kHz and refused where it landed at 16 kHz (issue #578), by a
+       stream on the NFM monitor at 12.5 kHz, and by one on the analog family under a typed digital row's channel
+       profile with a 16 kHz setting: what rtl_stream_receive_request_refusal() says each kept. */
+    int monitor_return_kept_analog;
+    int monitor_return_kept_monitor;
+    int monitor_return_kept_width_hz;
+    int typed_row_return_kept_analog;
+    int typed_row_return_kept_monitor;
+    int typed_row_return_kept_width_hz;
 } rtl_stream_test_rx_request_result;
 
 int rtl_stream_test_rx_request_outcomes(rtl_stream_test_rx_request_result* out);

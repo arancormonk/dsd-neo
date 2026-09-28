@@ -386,7 +386,7 @@ chan_map_adopt(dsd_opts* opts, dsd_state* dst, dsd_state* src) {
         LOG_ERROR("channel map adopt out of memory\n");
         return -1;
     }
-    dsd_engine_channel_scan_leave(opts, dst);
+    (void)svc_leave_channel_scan(opts, dst);
     dsd_scan_keys_leave(dst);
     DSD_MEMCPY(dst->trunk_chan_map, src->trunk_chan_map, sizeof dst->trunk_chan_map);
     DSD_MEMCPY(dst->trunk_chan_map_used, src->trunk_chan_map_used, sizeof dst->trunk_chan_map_used);
@@ -526,7 +526,7 @@ svc_clear_channel_map(dsd_opts* opts, dsd_state* state) {
     DSD_MEMSET(state->trunk_lcn_freq, 0, sizeof state->trunk_lcn_freq);
     // Releases the per-row name, avoid and key stores along with the scan-list heap tail.
     // Clearing the map leaves -Y: hand the foreground keyring back to the globals first.
-    dsd_engine_channel_scan_leave(opts, state);
+    (void)svc_leave_channel_scan(opts, state);
     dsd_scan_keys_leave(state);
     dsd_state_trunk_lcn_free(state);
     state->lcn_freq_count = 0;
@@ -1004,6 +1004,45 @@ svc_describe_analog_refusal(const dsd_opts* opts, int kind, int width_hz, char* 
     }
 #endif
     svc_why(why, why_size, "the RTL front end refused %s %s (see log)", label, width);
+}
+
+void
+svc_describe_monitor_return_refusal(const dsd_opts* opts, int kind, int width_hz, int runs_hz, char* why,
+                                    size_t why_size) {
+    const int held_hz = svc_analog_held_width_hz(kind, width_hz);
+    const char* label = dsd_analog_demod_label(kind);
+    char width[DSD_ANALOG_WIDTH_TEXT_MAX];
+    (void)dsd_analog_width_format(held_hz > 0 ? held_hz : dsd_analog_width_default_hz(kind), width, sizeof width);
+    /* The rate the scan left the front end on, which a row's retune can have moved off the DSP bandwidth: the one the
+       stream publishes, not the one rtl_dsp_bw_khz gives (svc_describe_analog_refusal()). */
+    int rate_hz = 0;
+#ifdef USE_RADIO
+    rate_hz = (opts && opts->audio_in_type == AUDIO_IN_RTL) ? rtl_stream_get_demod_rate_hz() : 0;
+#else
+    (void)opts;
+#endif
+    const int rate_explains = rate_hz > 0 && held_hz > 0 && !dsd_analog_width_realizable(held_hz, rate_hz);
+    /* What the monitor runs now; nothing more to say when the refused width was the default and it stays refused. */
+    char runs[DSD_ANALOG_WIDTH_TEXT_MAX + 48];
+    runs[0] = '\0';
+    if (runs_hz > 0) {
+        char kept[DSD_ANALOG_WIDTH_TEXT_MAX];
+        (void)dsd_analog_width_format(runs_hz, kept, sizeof kept);
+        DSD_SNPRINTF(runs, sizeof runs, "; the monitor keeps %s %s", label, kept);
+    } else if (runs_hz == 0) {
+        DSD_SNPRINTF(runs, sizeof runs, "; the monitor is back on the %s default", label);
+    } else if (width_hz > 0 && rate_explains) {
+        DSD_SNPRINTF(runs, sizeof runs, "; the %s default does not fit it either", label);
+    } else if (width_hz > 0) {
+        DSD_SNPRINTF(runs, sizeof runs, "; the %s default is refused too", label);
+    }
+    if (rate_explains) {
+        char rate[DSD_ANALOG_WIDTH_TEXT_MAX];
+        (void)dsd_analog_width_format(rate_hz, rate, sizeof rate);
+        svc_why(why, why_size, "%s %s does not fit the %s DSP rate%s", label, width, rate, runs);
+        return;
+    }
+    svc_why(why, why_size, "the RTL front end refused %s %s (see log)%s", label, width, runs);
 }
 
 /* Whether the scan row on air sets its own width of analog @p kind (--nfm-bandwidth-hz on an nfm row, --am-bandwidth-hz

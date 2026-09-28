@@ -15,6 +15,7 @@
 
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/engine/channel_scan.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/decode_mode.h>
 #include <dsd-neo/runtime/scan_mode.h>
@@ -39,17 +40,24 @@ symbol_profile_configured_digital(const dsd_opts* opts, const dsd_state* state) 
 
 /*
  * The last analog monitor request queued here (decoder thread only): a width change, a switch onto the analog family or
- * between FM and AM, the analog profile a republish or a CQPSK toggle back to the monitor asks for. Its number, the kind
- * and the configured width of that kind it carried, and the configured width of that kind from before the change that
- * made it (-1: it changed none), until svc_take_monitor_request_outcome() collects what became of it. Every request in
- * this file goes through the stream's queue, which is last-writer-wins, so only the last one says what the front end
- * is headed for. A request made while the one before it had not reached the front end (still queued, which the new one
- * replaces, or refused and not yet collected) also keeps the configured width from before that earlier change
- * (first_configured_before_hz): the front end ran neither, so a refusal of the new one may leave it on the width from
- * before both (issue #526). That width is kept for each analog kind apart (issue #524), from the first change of that
- * kind, whether a request of its own carried it or it asked the front end for nothing (a width of the kind not in force,
+ * between FM and AM, the analog profile a republish or a CQPSK toggle back to the monitor asks for, or a scan leave's
+ * return to the monitor (svc_leave_channel_scan()). Its number, the kind and the configured width of that kind it
+ * carried, and the configured width of that kind from before the change that made it (-1: it changed none), until
+ * svc_take_monitor_request_outcome() collects what became of it. Every request in this file goes through the stream's
+ * queue, which is last-writer-wins, so only the last one says what the front end is headed for. A request made while
+ * the one before it had not reached the front end (still queued, which the new one replaces, or refused and not yet
+ * collected) also keeps the configured width from before that earlier change (first_configured_before_hz): the front
+ * end ran neither, so a refusal of the new one may leave it on the width from before both (issue #526). That width is
+ * kept for each analog kind apart (issue #524), from the first change of that kind, whether a request of its own
+ * carried it or it asked the front end for nothing (a width of the kind not in force,
  * symbol_profile_note_width_change()): a refusal puts back only a width of the kind the front end kept, and a width of
  * one kind is never the baseline of the other.
+ *
+ * A scan leave's return to the monitor is recorded with scan_leave set (issue #578), and so is a request that replaces
+ * it before it reached the front end (a width change made while it was still queued): a refusal then reconciles the
+ * decoder with what the front end kept after a scan, rather than only put a width back. A leave the front end refused
+ * at once queued nothing (refused_at_once): seq is then the last request queued before it, and what the front end kept
+ * is what it publishes once that one has settled.
  */
 static struct {
     int pending;
@@ -58,7 +66,9 @@ static struct {
     int width_hz;
     int configured_before_hz;
     int first_configured_before_hz[2]; /* by dsd_analog_demod; -1: none */
-} g_monitor_request = {0, 0U, 0, 0, 0, {-1, -1}};
+    int scan_leave;
+    int refused_at_once;
+} g_monitor_request = {0, 0U, 0, 0, 0, {-1, -1}, 0, 0};
 
 /* A running RTL-family stream the decoder's requests reach. */
 static int
@@ -66,12 +76,33 @@ symbol_profile_rtl_running(const dsd_opts* opts, const dsd_state* state) {
     return opts->audio_in_type == AUDIO_IN_RTL && state->rtl_ctx;
 }
 
-/* Whether the last request queued here has not reached the front end: still queued, or refused and not yet collected
-   (svc_take_monitor_request_outcome()). One the stream settled was taken there, and its width ran. */
+/* Whether the last request queued here has not reached the front end: still queued, or refused (where it landed, or at
+   once by a scan leave) and not yet collected (svc_take_monitor_request_outcome()). One the stream settled was taken
+   there, and its width ran. */
 static int
 symbol_profile_earlier_not_run(void) {
     return g_monitor_request.pending
-           && rtl_stream_receive_request_outcome(g_monitor_request.seq) != RTL_STREAM_RX_REQUEST_SETTLED;
+           && (g_monitor_request.refused_at_once
+               || rtl_stream_receive_request_outcome(g_monitor_request.seq) != RTL_STREAM_RX_REQUEST_SETTLED);
+}
+
+/* A new record for the request just made (@p seq), replacing the last one. @p earlier_not_run, read before it was made,
+   says whether the last one had not reached the front end: the baselines it kept then stand for this one too. */
+static void
+symbol_profile_record_request(const dsd_opts* opts, uint32_t seq, int configured_before_hz, int earlier_not_run) {
+    if (!earlier_not_run) {
+        g_monitor_request.first_configured_before_hz[DSD_ANALOG_DEMOD_FM] = -1;
+        g_monitor_request.first_configured_before_hz[DSD_ANALOG_DEMOD_AM] = -1;
+    }
+    if (dsd_analog_demod_is_valid(opts->analog_demod)
+        && g_monitor_request.first_configured_before_hz[opts->analog_demod] < 0) {
+        g_monitor_request.first_configured_before_hz[opts->analog_demod] = configured_before_hz;
+    }
+    g_monitor_request.pending = 1;
+    g_monitor_request.seq = seq;
+    g_monitor_request.kind = opts->analog_demod;
+    g_monitor_request.width_hz = dsd_opts_analog_width_hz(opts);
+    g_monitor_request.configured_before_hz = configured_before_hz;
 }
 
 /* A change of the configured width of analog @p kind from @p configured_before_hz (-1: none) that asked the front end for
@@ -88,29 +119,22 @@ symbol_profile_note_width_change(int kind, int configured_before_hz) {
 }
 
 /* The analog monitor with the configured kind and channel width. Entering it turns CQPSK off. @p configured_before_hz
-   is the configured width of that kind from before the change the request carries (-1: it carries none). Returns the
-   request's result: -1 when the front end refused it at the rate it publishes now. */
+   is the configured width of that kind from before the change the request carries (-1: it carries none). A request
+   that replaces a scan leave's return to the monitor before it reached the front end carries that return on (a width
+   set right after the scanner stopped): its refusal is reconciled as the leave's would have been. Returns the request's
+   result: -1 when the front end refused it at the rate it publishes now, which leaves the record as it was. */
 static int
 symbol_profile_request_monitor(const dsd_opts* opts, int configured_before_hz) {
     /* Read before this request is queued: one the stream settled by then was taken there, and its width ran. */
     const int earlier_not_run = symbol_profile_earlier_not_run();
+    const int carries_leave = earlier_not_run && g_monitor_request.scan_leave;
     if (rtl_stream_request_analog_profile(DSD_RX_FAMILY_ANALOG, opts->analog_demod, dsd_opts_analog_width_hz(opts))
         != 0) {
         return -1;
     }
-    if (!earlier_not_run) {
-        g_monitor_request.first_configured_before_hz[DSD_ANALOG_DEMOD_FM] = -1;
-        g_monitor_request.first_configured_before_hz[DSD_ANALOG_DEMOD_AM] = -1;
-    }
-    if (dsd_analog_demod_is_valid(opts->analog_demod)
-        && g_monitor_request.first_configured_before_hz[opts->analog_demod] < 0) {
-        g_monitor_request.first_configured_before_hz[opts->analog_demod] = configured_before_hz;
-    }
-    g_monitor_request.pending = 1;
-    g_monitor_request.seq = rtl_stream_receive_request_seq();
-    g_monitor_request.kind = opts->analog_demod;
-    g_monitor_request.width_hz = dsd_opts_analog_width_hz(opts);
-    g_monitor_request.configured_before_hz = configured_before_hz;
+    symbol_profile_record_request(opts, rtl_stream_receive_request_seq(), configured_before_hz, earlier_not_run);
+    g_monitor_request.scan_leave = carries_leave;
+    g_monitor_request.refused_at_once = 0;
     return 0;
 }
 
@@ -322,6 +346,52 @@ svc_note_analog_width_change(const dsd_opts* opts, const dsd_state* state, int k
 }
 
 int
+svc_leave_channel_scan(dsd_opts* opts, dsd_state* state) {
+#ifdef USE_RADIO
+    const int running = opts && state && symbol_profile_rtl_running(opts, state);
+    /* Read before the leave queues its request, as symbol_profile_request_monitor() reads it before its own: the demod
+       thread can take an earlier request and the leave's together, and that earlier one ran no more than this does. */
+    const int earlier_not_run = running && symbol_profile_earlier_not_run();
+    const int result = dsd_engine_channel_scan_leave(opts, state);
+    /* A leave that asked the monitor for nothing (a digital session, or a second leave with no scan left) keeps the
+       record of the last request that did. */
+    if (!running || result == 0 || !dsd_opts_is_analog_family(opts)) {
+        return result;
+    }
+    /* Queued, the request is the last one the leave made; refused at once, it queued nothing, and the number names the
+       request before it, whose effect is what the front end kept. */
+    symbol_profile_record_request(opts, rtl_stream_receive_request_seq(), -1, earlier_not_run);
+    g_monitor_request.scan_leave = 1;
+    g_monitor_request.refused_at_once = result < 0 ? 1 : 0;
+    return result;
+#else
+    return dsd_engine_channel_scan_leave(opts, state);
+#endif
+}
+
+#ifdef USE_RADIO
+/* What the front end kept when a scan leave's return to the monitor was refused at once, which queued nothing: what it
+   publishes, once the requests queued before it have settled, filled into @p kept. The monitor output publishes its
+   kind and effective width, not the width setting, so a width the channel filter sets reads as that explicit width
+   (the kind's default design included) and one the DSP rate limits as the kind's default. Off the monitor (a typed
+   digital row's channel profile, CQPSK under the analog family) the front end publishes no kind, and the request's
+   stands for it. Returns 0 when the front end runs what the leave asked for after all (a stream reopened on the
+   configured options since): nothing was refused. */
+static int
+symbol_profile_published_kept(svc_monitor_refusal* kept) {
+    int kind = g_monitor_request.kind;
+    int width_hz = 0;
+    int lpf_on = 0;
+    kept->kept_monitor = rtl_stream_get_analog_profile(&kind, &width_hz, &lpf_on) == 1 ? 1 : 0;
+    kept->kept_analog = (kept->kept_monitor || rtl_stream_analog_family_active()) ? 1 : 0;
+    kept->kept_kind = kept->kept_monitor ? kind : g_monitor_request.kind;
+    kept->kept_width_hz = (kept->kept_monitor && lpf_on) ? width_hz : 0;
+    return !(kept->kept_monitor && kept->kept_kind == g_monitor_request.kind
+             && kept->kept_width_hz == g_monitor_request.width_hz);
+}
+#endif
+
+int
 svc_take_monitor_request_outcome(const dsd_opts* opts, const dsd_state* state, svc_monitor_refusal* out) {
 #ifdef USE_RADIO
     if (!g_monitor_request.pending) {
@@ -336,20 +406,28 @@ svc_take_monitor_request_outcome(const dsd_opts* opts, const dsd_state* state, s
         return SVC_MONITOR_REQUEST_NONE;
     }
     g_monitor_request.pending = 0;
-    int kept_analog = 1;
-    int kept_width_hz = 0;
-    int kept_kind = g_monitor_request.kind;
-    if (outcome != RTL_STREAM_RX_REQUEST_REFUSED
-        || !rtl_stream_receive_request_refusal(g_monitor_request.seq, &kept_analog, &kept_width_hz, &kept_kind)) {
+    svc_monitor_refusal refusal = {0};
+    refusal.kind = g_monitor_request.kind;
+    refusal.width_hz = g_monitor_request.width_hz;
+    refusal.kept_analog = 1;
+    refusal.kept_kind = g_monitor_request.kind;
+    refusal.scan_leave = g_monitor_request.scan_leave;
+    if (g_monitor_request.refused_at_once) {
+        /* A request queued after the refused leave, from anywhere, has decided what the front end runs since. */
+        if (rtl_stream_receive_request_seq() != g_monitor_request.seq || !symbol_profile_published_kept(&refusal)) {
+            return SVC_MONITOR_REQUEST_TAKEN;
+        }
+    } else if (outcome != RTL_STREAM_RX_REQUEST_REFUSED
+               || !rtl_stream_receive_request_refusal(g_monitor_request.seq, &refusal.kept_analog,
+                                                      &refusal.kept_width_hz, &refusal.kept_kind,
+                                                      &refusal.kept_monitor)) {
         return SVC_MONITOR_REQUEST_TAKEN;
     }
+    refusal.kept_analog = refusal.kept_analog ? 1 : 0;
+    refusal.kept_monitor = refusal.kept_monitor ? 1 : 0;
+    refusal.configured_before_hz = symbol_profile_configured_width_run(refusal.kept_width_hz);
     if (out) {
-        out->kind = g_monitor_request.kind;
-        out->width_hz = g_monitor_request.width_hz;
-        out->kept_analog = kept_analog ? 1 : 0;
-        out->kept_kind = kept_kind;
-        out->kept_width_hz = kept_width_hz;
-        out->configured_before_hz = symbol_profile_configured_width_run(kept_width_hz);
+        *out = refusal;
     }
     return SVC_MONITOR_REQUEST_REFUSED;
 #else

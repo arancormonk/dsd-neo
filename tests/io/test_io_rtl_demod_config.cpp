@@ -1348,8 +1348,20 @@ expect_rx_request_outcomes(void) {
     rc |= expect_int_eq("rx refusal: the width the stream kept, not the one refused", r.kept_width_hz, 12500);
     rc |= expect_int_eq("rx refusal: the kind the stream kept, not the one refused (AM, asked for NFM)", r.kept_kind,
                         DSD_ANALOG_DEMOD_AM);
+    rc |= expect_int_eq("rx refusal: off the monitor output (CQPSK on)", r.kept_monitor, 0);
     rc |= expect_int_eq("rx settled request: no refusal", r.settled_refusal_reported, 0);
     rc |= expect_int_eq("rx refused switch: the digital family kept", r.entry_kept_analog_family, 0);
+    rc |= expect_int_eq("rx refused switch: no monitor output kept", r.entry_kept_monitor, 0);
+    /* Issue #578: a return to the monitor refused where it landed says whether the front end kept the monitor output,
+       whose width the decoder can take, or a typed row's channel profile, where the width is only the setting. */
+    rc |= expect_int_eq("rx monitor return refused on the monitor: analog kept", r.monitor_return_kept_analog, 1);
+    rc |= expect_int_eq("rx monitor return refused on the monitor: monitor kept", r.monitor_return_kept_monitor, 1);
+    rc |= expect_int_eq("rx monitor return refused on the monitor: its width", r.monitor_return_kept_width_hz, 12500);
+    rc |= expect_int_eq("rx monitor return refused under a typed row: analog kept", r.typed_row_return_kept_analog, 1);
+    rc |= expect_int_eq("rx monitor return refused under a typed row: off the monitor", r.typed_row_return_kept_monitor,
+                        0);
+    rc |= expect_int_eq("rx monitor return refused under a typed row: the setting", r.typed_row_return_kept_width_hz,
+                        16000);
     rc |= expect_int_eq("rx request dropped by an open: settled", r.open_outcome, RTL_STREAM_RX_REQUEST_SETTLED);
     rc |= expect_int_eq("rx refusal forgotten by the next open", r.refused_outcome_after_open,
                         RTL_STREAM_RX_REQUEST_SETTLED);

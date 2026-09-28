@@ -373,9 +373,15 @@ int rtl_stream_receive_request_outcome(uint32_t seq);
  *                          default 0; meaningful on the analog family only). May be NULL.
  * @param out_kind          The dsd_analog_demod that family runs (meaningful on the analog family only): the kind
  *                          before a refused switch between FM and AM. May be NULL.
+ * @param out_monitor       1 when the stream kept the analog monitor output (dsd_demod_analog_monitor_active(): the
+ *                          analog family on its own channel, with no CQPSK), which then runs @p out_width_hz; 0 on the
+ *                          digital family, or on the analog family under a symbol profile applied on its own (a typed
+ *                          digital scan row's channel profile, CQPSK toggled on), where @p out_width_hz is the setting
+ *                          the monitor would return to, not a width that runs. May be NULL.
  * @return 1 when @p seq reads RTL_STREAM_RX_REQUEST_REFUSED, filling the outputs; 0 otherwise, leaving them untouched.
  */
-int rtl_stream_receive_request_refusal(uint32_t seq, int* out_analog_family, int* out_width_hz, int* out_kind);
+int rtl_stream_receive_request_refusal(uint32_t seq, int* out_analog_family, int* out_width_hz, int* out_kind,
+                                       int* out_monitor);
 
 /**
  * @brief The CQPSK state the RTL front end runs once the receive requests queued so far have applied.

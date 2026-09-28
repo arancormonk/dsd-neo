@@ -321,7 +321,12 @@ Tests: `tests/engine/test_engine_trunk_scan.c` (`ENGINE_TRUNK_SCAN`) and
   the digital family lands on (`output_rate_for_family`). A leave that switches the front end's family either way, or
   its analog kind (an nfm row's FM monitor left for an `-fM` session's AM one, told by the published analog profile),
   also drops the analog monitor block the decoder has part-collected (`dsd_symbol_analog_block_reset()`). The M17
-  encoder is not the analog family. Test: `ENGINE_CHANNEL_SCAN`. A row's retune (`dsd_engine_scan_tune_to_freq()` in
+  encoder is not the analog family. The leave returns what became of its analog profile request, the last receive
+  request it makes: 1 queued, -1 refused at once (the published rate, which a row's retune can have moved, cannot filter
+  the configured width), 0 when it asked the monitor for nothing (no active scan, not RTL, a digital configured family).
+  The engine's own leaves (the decoder's teardown, a trunk scan's shutdown or failed start) ignore it; every interactive
+  leave goes through app-control's `svc_leave_channel_scan()`, which records it for the command drain (issue #578,
+  below). Test: `ENGINE_CHANNEL_SCAN`. A row's retune (`dsd_engine_scan_tune_to_freq()` in
   `trunk_tuning.c`) carries the RTL profile of the settings the row runs: a row that runs the analog family (an nfm row,
   or a row without a decode mode on an `-fA` or `-fM` session, which keeps it) queues its analog profile, kind and
   width, for its target (`dsd_engine_prepare_scan_analog_profile()`,
@@ -812,7 +817,32 @@ installs from `src/engine/trunk_tuning.c` in `src/engine/trunk_tuning_hooks_inst
   0 for the default, so an unset AM default goes back as the default and an explicit 6000 Hz stays explicit), and
   toasts why
   (`svc_take_monitor_request_outcome()`, which follows the last analog monitor request `symbol_profile.c` queued, and
-  `ui_settle_receive_requests()`). A switch to Analog or AM (`DECODE_MODE_SET`, a config's `[mode]`) holds an explicit
+  `ui_settle_receive_requests()`). A scan leave's return to the monitor is followed the same way (issue #578): every
+  interactive leave (a scanner stop, a tuner release, trunking taking the tuner, a manual tune off a typed list, a
+  channel-map adopt or clear, a RadioReference import, the leave after a command that stopped the scanner) calls
+  `svc_leave_channel_scan()`, which reads whether the last request had reached the front end before the engine's leave
+  queues its own (so the `first_configured_before_hz` chain holds) and records a leave that asked for the monitor. A
+  leave the front end refuses at once queues nothing: the record keeps the number of the request before it, and once
+  that one has settled what the stream publishes says what the front end kept (the monitor's kind and the width its
+  channel filter runs, one the DSP rate limits reading as the default; off the monitor, the analog or digital family); a
+  request queued since, from anywhere, has decided the front end instead. One refused where it lands says it from the
+  stream's record, which notes whether the front end kept the monitor output. A typed digital row's channel profile
+  never touches the width setting, so the drain reconciles "kept width, else default"
+  (`ui_settle_refused_scan_leave()`): a front end still on the monitor of the leave's kind gives the configured width
+  the width that monitor runs (`svc_restore_analog_width()`); one off it (a typed row's profile, the other kind's
+  monitor, the digital family) is asked for the kind's default, which is stored as the configured width, straight
+  through `svc_publish_symbol_profile_changing_width()` (`svc_publish_analog_bandwidth()` would wait for the CQPSK a
+  kept P25 row requested). The NFM default is never refused; an AM default the rate refuses as well changes nothing. The
+  toast (`svc_describe_monitor_return_refusal()`) names the width, the rate the stream publishes (not the one
+  `rtl_dsp_bw_khz` gives, which a row's retune has left) and what the monitor runs: `Refused: NFM 16 kHz does not fit
+  the 16 kHz DSP rate; the monitor is back on the NFM default`. It is settled only while the options are still the ones
+  the leave put back (the analog family, that kind, that width) and no scan runs: a channel-map adopt or RadioReference
+  import that keeps the scanner on gets its front end from the next row's tune, and is deliberately left to it. A width
+  change made while the leave was still queued replaces its request and carries the leave on; a switch onto the monitor
+  armed before it still reverts first (`ui_revert_analog_entry()`); a DSP-menu CQPSK-off refusal is no leave and keeps
+  CQPSK on. A typed row's retune still in flight when a leave was accepted can land its symbol profile over the monitor,
+  as any retune without a family does (Per-channel decoder modes, above); that is no refusal, and nothing here
+  reconciles it. A switch to Analog or AM (`DECODE_MODE_SET`, a config's `[mode]`) holds an explicit
   width, or the AM width, to the rate first, under a scan row as well (`ui_check_mode_receive_profile()`); a `[mode]`
   without a decode key keeps the session's family and kind. A switch between FM and AM on the monitor is armed like a
   switch onto it (`ui_arm_analog_entry()`), and the stream records the kind it kept with a refusal, so one the front end
@@ -869,7 +899,8 @@ installs from `src/engine/trunk_tuning.c` in `src/engine/trunk_tuning_hooks_inst
   opens with the request made before it, which the rollback puts back with the input, and the Airspy path requests it
   only once the reopened Airspy runs. With no stream running before the apply, nothing is put back, and the config waits
   for the next start. Tests: `APP_COMMAND_QUEUE`, `UI_MENU_SERVICES`, `UI_MENU_AIRSPY_CONFIG_REFUSED_WIDTH`,
-  `IO_RTL_DEMOD_CONFIG` (request numbering and outcomes, the kept kind).
+  `ENGINE_CHANNEL_SCAN` (the leave's result), `IO_RTL_DEMOD_CONFIG` (request numbering and outcomes, the kept kind and
+  monitor output).
 - AM (issue #524): `DSD_APP_CMD_DECODE_MODE_SET` takes `DSDCFG_MODE_AM` (the preset ids end there, as do the
   RadioReference import's) and refuses it on a PCM input (`dsd_decode_mode_runs_on_input()`); on a running RTL session
   it holds the AM width to the rate (above) and switches live across AM, Analog and the digital modes. A switch between
@@ -1510,8 +1541,10 @@ Notes:
     settled it: pending until it takes it and has published what it applied (the consume publishes the demod snapshot
     before it settles), settled with a later request that replaced it, and settled by a stream open (which drops the
     queue) or a request with no pipeline to take the queue; an analog request refused where it landed reads refused,
-    with the family and analog width the stream kept recorded before the settlement
-    (`rtl_stream_receive_request_refusal()`), until the next stream open forgets it. Each numbered request also notes
+    with the family, analog width setting and kind the stream kept, and whether it kept the monitor output
+    (`dsd_demod_analog_monitor_active()`: a typed digital row's channel profile or CQPSK under the analog family keeps
+    the setting without running it), recorded before the settlement (`rtl_stream_receive_request_refusal()`), until the
+    next stream open forgets it. Each numbered request also notes
     the CQPSK state it leaves the stream on (an analog family request turns it off, a demod profile sets or leaves it),
     which `rtl_stream_requested_cqpsk()` answers with while any request is unsettled.
     That, not the output generation (which the clear for a request moves before the publish, and a retune moves without

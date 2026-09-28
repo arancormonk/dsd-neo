@@ -5876,10 +5876,20 @@ static uint32_t g_fake_rx_settled;
 static uint32_t g_fake_rx_analog_seq;
 static uint32_t g_fake_rx_refused;
 /* What the stream kept when it refused (rtl_stream_receive_request_refusal()): its family, the analog width and the
-   analog kind. */
+   analog kind, and whether it kept the analog monitor output (0: the digital family, or a symbol profile applied under
+   the analog family, a typed row's or CQPSK). */
 static int g_fake_rx_kept_analog;
 static int g_fake_rx_kept_width_hz;
 static int g_fake_rx_kept_kind;
+static int g_fake_rx_kept_monitor;
+/* The widest analog width rtl_stream_request_analog_profile() queues (0: any): a front end a retune has moved to a rate
+   that cannot filter a wider one refuses it at once. The kind's default (width 0) never trips it. */
+static int g_fake_analog_req_max_hz;
+/* The analog monitor the stream publishes (rtl_stream_get_analog_profile()): its kind (-1: none, as off the monitor),
+   its effective width, and whether the channel filter sets that width. */
+static int g_fake_monitor_kind = -1;
+static int g_fake_monitor_width_hz;
+static int g_fake_monitor_lpf_on;
 /* The CQPSK state the requests queued since the last landing leave the stream on (rtl_stream_requested_cqpsk()). */
 static int g_fake_cqpsk_after;
 /* What rtl_stream_request_analog_profile() answers (0 queues it): -1 is a front end that refuses the request at the
@@ -5916,7 +5926,9 @@ unsigned int __wrap_rtl_stream_output_rate_for_family(int family, int cqpsk_enab
 void __wrap_rtl_stream_set_digital_decode_modes(const dsd_opts* opts);
 uint32_t __wrap_rtl_stream_receive_request_seq(void);
 int __wrap_rtl_stream_receive_request_outcome(uint32_t seq);
-int __wrap_rtl_stream_receive_request_refusal(uint32_t seq, int* out_analog_family, int* out_width_hz, int* out_kind);
+int __wrap_rtl_stream_receive_request_refusal(uint32_t seq, int* out_analog_family, int* out_width_hz, int* out_kind,
+                                              int* out_monitor);
+int __wrap_rtl_stream_get_analog_profile(int* out_kind, int* out_width_hz, int* out_lpf_on);
 int __wrap_rtl_stream_requested_cqpsk(void);
 int __wrap_rtl_stream_get_demod_rate_hz(void);
 uint32_t __wrap_rtl_stream_output_rate(const RtlSdrContext* ctx);
@@ -5935,9 +5947,13 @@ __wrap_rtl_stream_receive_request_outcome(uint32_t seq) {
 }
 
 int
-__wrap_rtl_stream_receive_request_refusal(uint32_t seq, int* out_analog_family, int* out_width_hz, int* out_kind) {
+__wrap_rtl_stream_receive_request_refusal(uint32_t seq, int* out_analog_family, int* out_width_hz, int* out_kind,
+                                          int* out_monitor) {
     if (__wrap_rtl_stream_receive_request_outcome(seq) != RTL_STREAM_RX_REQUEST_REFUSED) {
         return 0;
+    }
+    if (out_monitor) {
+        *out_monitor = g_fake_rx_kept_monitor;
     }
     if (out_analog_family) {
         *out_analog_family = g_fake_rx_kept_analog;
@@ -5947,6 +5963,23 @@ __wrap_rtl_stream_receive_request_refusal(uint32_t seq, int* out_analog_family, 
     }
     if (out_kind) {
         *out_kind = g_fake_rx_kept_kind;
+    }
+    return 1;
+}
+
+int
+__wrap_rtl_stream_get_analog_profile(int* out_kind, int* out_width_hz, int* out_lpf_on) {
+    if (g_fake_monitor_kind < 0) {
+        return 0;
+    }
+    if (out_kind) {
+        *out_kind = g_fake_monitor_kind;
+    }
+    if (out_width_hz) {
+        *out_width_hz = g_fake_monitor_width_hz;
+    }
+    if (out_lpf_on) {
+        *out_lpf_on = g_fake_monitor_lpf_on;
     }
     return 1;
 }
@@ -5986,6 +6019,9 @@ __wrap_rtl_stream_request_analog_profile(int family, int kind, int width_hz) {
     g_analog_req_order = ++g_rx_sequence;
     if (g_analog_req_result != 0) {
         return g_analog_req_result;
+    }
+    if (family == DSD_RX_FAMILY_ANALOG && g_fake_analog_req_max_hz > 0 && width_hz > g_fake_analog_req_max_hz) {
+        return -1;
     }
     if (g_fake_take_before_next_analog) {
         g_fake_take_before_next_analog = 0;
@@ -6050,14 +6086,25 @@ demod_thread_lands(int cqpsk) {
 
 /* The demod thread has taken everything queued so far, and refused the last analog request where it landed (a retune
    moved the demod rate after it was checked): the front end keeps the receive profile, and the CQPSK state, it had,
-   which the stream records as the family it stayed on (@p analog_family) and the analog width it runs. */
+   which the stream records as the family it stayed on (@p analog_family) and the analog width it runs, on the monitor
+   output unless CQPSK holds it off. */
 static void
 demod_thread_refuses_analog_keeping_kind(int analog_family, int kind, int width_hz) {
     g_fake_rx_kept_analog = analog_family;
     g_fake_rx_kept_kind = kind;
     g_fake_rx_kept_width_hz = width_hz;
+    g_fake_rx_kept_monitor = (analog_family && !g_fake_cqpsk) ? 1 : 0;
     g_fake_rx_refused = g_fake_rx_analog_seq;
     g_fake_rx_settled = g_fake_rx_seq;
+}
+
+/* ... a scan leave's return to the monitor, which the front end refused keeping the family @p analog_family, the
+   monitor output or not (@p monitor: 0 under a typed digital row's channel profile, whose width setting the row never
+   touched), the kind @p kind and the width setting @p width_hz. */
+static void
+demod_thread_refuses_leave_keeping(int analog_family, int monitor, int kind, int width_hz) {
+    demod_thread_refuses_analog_keeping_kind(analog_family, kind, width_hz);
+    g_fake_rx_kept_monitor = monitor;
 }
 
 /* ... on the FM monitor, or on the digital family. */
@@ -6081,6 +6128,10 @@ reset_rx_family_wrap(void) {
     demod_thread_lands(g_fake_cqpsk);
     g_analog_check_result = 0;
     g_analog_req_result = 0;
+    g_fake_analog_req_max_hz = 0;
+    g_fake_monitor_kind = -1;
+    g_fake_monitor_width_hz = g_fake_monitor_lpf_on = 0;
+    g_fake_rx_kept_monitor = 0;
     g_fake_take_next_analog_at_once = g_fake_take_before_next_analog = 0;
     g_analog_check_calls = g_analog_check_family = g_analog_check_kind = g_analog_check_width_hz = 0;
     g_rx_sequence = 0;
@@ -8479,6 +8530,178 @@ test_nfm_width_follows_a_queued_scan_leave(void) {
     opts.analog_nfm_bandwidth_hz = 0;
     state.rtl_ctx = NULL;
     freeState(&state);
+    return rc;
+}
+
+/* The runtime hooks a scan leave asks the front end through, reaching the fake stream's wraps. */
+static const dsd_rtl_stream_metrics_hooks g_scan_leave_hooks = {
+    .apply_analog_profile = rtl_stream_request_analog_profile,
+    .analog_profile = rtl_stream_get_analog_profile,
+    .analog_family_active = rtl_stream_analog_family_active};
+
+/* An RTL-SDR session at a 48 kHz DSP bandwidth on the analog monitor of @p kind with the configured width @p width_hz
+   of that kind, scanning a row of @p row_mode (@p row: its options, NULL for none) on the analog family, after a retune
+   landed the front end on a 16 kHz rate: every request taken, the scan leave's hooks installed. */
+static int
+init_scan_row_on_analog(dsd_opts* opts, dsd_state* state, RtlSdrContext* fake_ctx, int kind, int width_hz,
+                        dsd_scan_mode row_mode, const dsd_scan_option_values* row, const char* label) {
+    init_decode_mode_context(opts, state);
+    reset_rx_family_wrap();
+    opts->audio_in_type = AUDIO_IN_RTL;
+    DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", "rtl:0:851.375M:0:0:48");
+    opts->rtl_dsp_bw_khz = 48;
+    state->rtl_ctx = fake_ctx;
+    int rc = submit_decode_mode(opts, state, kind == DSD_ANALOG_DEMOD_AM ? DSDCFG_MODE_AM : DSDCFG_MODE_ANALOG, label);
+    if (kind == DSD_ANALOG_DEMOD_AM) {
+        opts->analog_am_bandwidth_hz = width_hz;
+    } else {
+        opts->analog_nfm_bandwidth_hz = width_hz;
+    }
+    demod_thread_lands(0);
+    (void)dsd_app_drain_cmds(opts, state);
+    dsd_rtl_stream_metrics_hooks_set(&g_scan_leave_hooks);
+    opts->scanner_mode = 1;
+    rc |= expect_int(label, dsd_scan_mode_enter(opts, state, row_mode), 0);
+    rc |= expect_int(label, dsd_scan_mode_options(opts, state, row), 0);
+    reset_rx_family_wrap();
+    g_fake_analog_family = 1;
+    g_fake_demod_rate_hz = 16000;
+    return rc;
+}
+
+/* Stop the scanner (DSD_APP_CMD_SCANNER_TOGGLE) and drain, as the decoder does. */
+static int
+submit_scanner_stop(dsd_opts* opts, dsd_state* state, const char* label) {
+    int rc = expect_int(label, dsd_app_command_action(DSD_APP_CMD_SCANNER_TOGGLE), DSD_APP_COMMAND_SUBMIT_QUEUED);
+    state->ui_msg[0] = '\0';
+    rc |= expect_int(label, dsd_app_drain_cmds(opts, state), 1);
+    rc |= expect_int(label, opts->scanner_mode, 0);
+    return rc;
+}
+
+/* The last request the front end was asked for is the analog monitor of @p kind at @p width_hz, after @p calls in all
+   (a request refused at once counted). */
+static int
+expect_last_monitor_request(const char* label, int calls, int kind, int width_hz) {
+    return expect_int(label,
+                      g_analog_req_calls == calls && g_analog_req_family == DSD_RX_FAMILY_ANALOG
+                          && g_analog_req_kind == kind && g_analog_req_width_hz == width_hz,
+                      1);
+}
+
+/* The front end takes what is still queued; nothing is left for the next case. */
+static void
+finish_scan_row_on_analog(dsd_opts* opts, dsd_state* state) {
+    demod_thread_lands(0);
+    (void)dsd_app_drain_cmds(opts, state);
+    dsd_rtl_stream_metrics_hooks_set(NULL);
+    reset_rx_family_wrap();
+    g_fake_analog_family = 0;
+    g_fake_demod_rate_hz = 0;
+    opts->analog_nfm_bandwidth_hz = 0;
+    opts->analog_am_bandwidth_hz = 0;
+    state->rtl_ctx = NULL;
+    freeState(state);
+}
+
+/*
+ * Issue #578: a scan stop whose return to the analog monitor the front end refuses. An -fA session on an RTL-SDR at a
+ * 48 kHz DSP bandwidth with NFM 16 kHz scans a typed NXDN48 row, whose 6.25 kHz channel profile holds the front end
+ * off the monitor, so a retune lands it on a 16 kHz rate that cannot filter 16 kHz. Stopping the scanner asks the
+ * front end back onto NFM 16 kHz, which it refuses, at once or where the request lands, keeping the row's profile;
+ * the row never touched the width setting, so the stream's record alone would read like a no-op. The decoder follows
+ * what the front end kept and says why: off the monitor, the kind's default, which is asked for and configured (the
+ * NFM default is never refused); still on the monitor of that kind (an nfm row with its own width), the width that
+ * monitor runs. An AM default the rate refuses as well changes nothing but the toast. A width set while the leave was
+ * still queued carries the leave on.
+ */
+static int
+test_refused_scan_leave_is_reported_and_reconciled(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static void* fake_ctx[2];
+    int rc = 0;
+
+    /* Refused at once: the rate the front end publishes cannot filter 16 kHz. */
+    rc |= init_scan_row_on_analog(&opts, &state, (RtlSdrContext*)fake_ctx, DSD_ANALOG_DEMOD_FM, 16000,
+                                  DSD_SCAN_MODE_NXDN48, NULL, "leave at once");
+    g_fake_analog_req_max_hz = 13200;
+    rc |= submit_scanner_stop(&opts, &state, "leave at once: stopped");
+    rc |= expect_int("leave at once: back on the NFM default", opts.analog_nfm_bandwidth_hz, 0);
+    rc |=
+        expect_int("leave at once: still Analog", opts.analog_only == 1 && opts.analog_demod == DSD_ANALOG_DEMOD_FM, 1);
+    rc |= expect_last_monitor_request("leave at once: the default asked for", 2, DSD_ANALOG_DEMOD_FM, 0);
+    rc |= expect_toast("leave at once toast", &state,
+                       "Refused: NFM 16 kHz does not fit the 16 kHz DSP rate; the monitor is back on the NFM default");
+    state.ui_msg[0] = '\0';
+    (void)dsd_app_drain_cmds(&opts, &state);
+    rc |= expect_int("leave at once: reported once", state.ui_msg[0] == '\0', 1);
+    finish_scan_row_on_analog(&opts, &state);
+
+    /* Refused where it lands: a retune in flight moves the rate after the request was queued. */
+    rc |= init_scan_row_on_analog(&opts, &state, (RtlSdrContext*)fake_ctx, DSD_ANALOG_DEMOD_FM, 16000,
+                                  DSD_SCAN_MODE_NXDN48, NULL, "leave on landing");
+    rc |= submit_scanner_stop(&opts, &state, "leave on landing: stopped");
+    rc |= expect_last_monitor_request("leave on landing: the leave queued", 1, DSD_ANALOG_DEMOD_FM, 16000);
+    rc |= expect_int("leave on landing: width kept while pending", opts.analog_nfm_bandwidth_hz, 16000);
+    rc |= expect_int("leave on landing: nothing refused yet", strstr(state.ui_msg, "Refused") == NULL, 1);
+    demod_thread_refuses_leave_keeping(1, 0, DSD_ANALOG_DEMOD_FM, 16000);
+    state.ui_msg[0] = '\0';
+    rc |= expect_int("leave on landing: settled on an empty drain", dsd_app_drain_cmds(&opts, &state), 0);
+    rc |= expect_int("leave on landing: back on the NFM default", opts.analog_nfm_bandwidth_hz, 0);
+    rc |= expect_last_monitor_request("leave on landing: the default asked for", 2, DSD_ANALOG_DEMOD_FM, 0);
+    rc |= expect_toast("leave on landing toast", &state,
+                       "Refused: NFM 16 kHz does not fit the 16 kHz DSP rate; the monitor is back on the NFM default");
+    finish_scan_row_on_analog(&opts, &state);
+
+    /* An nfm row with its own 12.5 kHz keeps the monitor at 12.5 kHz: the configured width takes it, and nothing more
+       is asked of the front end. */
+    dsd_scan_option_values row = {0};
+    row.present = DSD_SCAN_OPT_BANDWIDTH;
+    row.channel_bw_hz = 12500;
+    rc |= init_scan_row_on_analog(&opts, &state, (RtlSdrContext*)fake_ctx, DSD_ANALOG_DEMOD_FM, 16000,
+                                  DSD_SCAN_MODE_NFM, &row, "leave on the monitor");
+    g_fake_monitor_kind = DSD_ANALOG_DEMOD_FM;
+    g_fake_monitor_width_hz = 12500;
+    g_fake_monitor_lpf_on = 1;
+    g_fake_analog_req_max_hz = 13200;
+    rc |= submit_scanner_stop(&opts, &state, "leave on the monitor: stopped");
+    rc |= expect_int("leave on the monitor: the width it kept", opts.analog_nfm_bandwidth_hz, 12500);
+    rc |= expect_last_monitor_request("leave on the monitor: only the leave's request", 1, DSD_ANALOG_DEMOD_FM, 16000);
+    rc |= expect_toast("leave on the monitor toast", &state,
+                       "Refused: NFM 16 kHz does not fit the 16 kHz DSP rate; the monitor keeps NFM 12.5 kHz");
+    finish_scan_row_on_analog(&opts, &state);
+
+    /* -fM with AM 10 kHz at a 7.5 kHz rate, which cannot filter the AM default either: the toast says so, and the
+       width and the front end stay as they are. */
+    rc |= init_scan_row_on_analog(&opts, &state, (RtlSdrContext*)fake_ctx, DSD_ANALOG_DEMOD_AM, 10000,
+                                  DSD_SCAN_MODE_NXDN48, NULL, "am leave");
+    g_fake_demod_rate_hz = 7500;
+    g_fake_analog_req_max_hz = 5000;
+    g_analog_check_result = -1;
+    rc |= submit_scanner_stop(&opts, &state, "am leave: stopped");
+    rc |= expect_int("am leave: width unchanged", opts.analog_am_bandwidth_hz, 10000);
+    rc |= expect_int("am leave: still AM", opts.analog_only == 1 && opts.analog_demod == DSD_ANALOG_DEMOD_AM, 1);
+    rc |= expect_last_monitor_request("am leave: no default asked for", 1, DSD_ANALOG_DEMOD_AM, 10000);
+    rc |= expect_toast("am leave toast", &state,
+                       "Refused: AM 10 kHz does not fit the 7.5 kHz DSP rate; the AM default does not fit it either");
+    finish_scan_row_on_analog(&opts, &state);
+
+    /* A width set while the leave is still queued replaces its request and carries the leave on: refused where it
+       lands off the monitor, the NFM default is what the decoder goes back to. */
+    rc |= init_scan_row_on_analog(&opts, &state, (RtlSdrContext*)fake_ctx, DSD_ANALOG_DEMOD_FM, 16000,
+                                  DSD_SCAN_MODE_NXDN48, NULL, "width after a leave");
+    rc |= submit_scanner_stop(&opts, &state, "width after a leave: stopped");
+    rc |= submit_nfm_width(&opts, &state, 20000, "width after a leave: 20 kHz");
+    rc |= expect_last_monitor_request("width after a leave: requested", 2, DSD_ANALOG_DEMOD_FM, 20000);
+    demod_thread_refuses_leave_keeping(1, 0, DSD_ANALOG_DEMOD_FM, 16000);
+    state.ui_msg[0] = '\0';
+    (void)dsd_app_drain_cmds(&opts, &state);
+    rc |= expect_int("width after a leave: back on the NFM default", opts.analog_nfm_bandwidth_hz, 0);
+    rc |= expect_last_monitor_request("width after a leave: the default asked for", 3, DSD_ANALOG_DEMOD_FM, 0);
+    rc |= expect_toast("width after a leave toast", &state,
+                       "Refused: NFM 20 kHz does not fit the 16 kHz DSP rate; the monitor is back on the NFM default");
+    finish_scan_row_on_analog(&opts, &state);
     return rc;
 }
 
@@ -10887,6 +11110,7 @@ main(void) {
     rc |= test_nfm_width_waits_for_an_unsettled_cqpsk_toggle();
     rc |= test_nfm_width_refused_after_the_check();
     rc |= test_nfm_width_follows_a_queued_scan_leave();
+    rc |= test_refused_scan_leave_is_reported_and_reconciled();
     rc |= test_refused_switch_onto_analog_puts_the_mode_back();
     rc |= test_refused_switch_onto_analog_with_a_width_set_after_it();
     rc |= test_refused_switch_onto_analog_under_a_row();
