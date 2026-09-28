@@ -310,6 +310,8 @@ emit_test_data_notice(dsd_opts* opts, dsd_state* state, uint64_t source_id, uint
     return dsd_event_emit_data_notice(opts, state, slot, &observation, notice);
 }
 
+// Once a test's temp file exists, its checks count failures with these helpers rather than assert(), so the test
+// still removes the file when a check fails.
 static int
 expect_int(const char* label, int got, int want) {
     if (got != want) {
@@ -2451,9 +2453,10 @@ test_scanner_mode_row_carries_channel_label(void) {
     state.p2_sysid = 0x006U;
     state.p2_rfssid = 10U;
     state.p2_siteid = 10U;
-    assert(observe_test_call(&state, 0U, DSD_SYNC_P25P2_POS, DSD_CALL_KIND_GROUP_VOICE, 50061U, 5790062U, 0U, 0U,
-                             DSD_CALL_BOUNDARY_BEGIN)
-           == 1);
+    rc |= expect_int("scanner call begins",
+                     observe_test_call(&state, 0U, DSD_SYNC_P25P2_POS, DSD_CALL_KIND_GROUP_VOICE, 50061U, 5790062U, 0U,
+                                       0U, DSD_CALL_BOUNDARY_BEGIN),
+                     1);
     dsd_event_sync_slot(&opts, &state, 0U);
 
     const Event_History* item = &state.event_history_s[0].Event_History_Items[0];
@@ -2462,7 +2465,7 @@ test_scanner_mode_row_carries_channel_label(void) {
                         "2026-04-30 00:00:00 [Fire Dispatch] TEST TGT: 00050061; SRC: 05790062; NAC: 293; "
                         "NET_STS: 45564:006:10.10; Group; ");
 
-    assert(end_test_call(&state, 0U, DSD_CALL_END_EXPLICIT) == 1);
+    rc |= expect_int("scanner call ends", end_test_call(&state, 0U, DSD_CALL_END_EXPLICIT), 1);
     dsd_event_sync_slot(&opts, &state, 0U);
 
     char log[4096];
@@ -3961,26 +3964,29 @@ test_merge_logs_continuation_only_when_render_changes(void) {
     DSD_SNPRINTF(opts.event_out_file, sizeof opts.event_out_file, "%s", path);
 
     // Segment 1 knows the talkgroup only; segment 2 decodes the source, so the render changes.
-    assert(observe_test_call(&state, 0U, DSD_SYNC_DMR_BS_VOICE_POS, DSD_CALL_KIND_GROUP_VOICE, 100U, 0U, 0U, 0U,
-                             DSD_CALL_BOUNDARY_BEGIN)
-           == 1);
+    int rc = expect_int("segment 1 begins",
+                        observe_test_call(&state, 0U, DSD_SYNC_DMR_BS_VOICE_POS, DSD_CALL_KIND_GROUP_VOICE, 100U, 0U,
+                                          0U, 0U, DSD_CALL_BOUNDARY_BEGIN),
+                        1);
     dsd_event_sync_slot(&opts, &state, 0U);
-    assert(end_test_call(&state, 0U, DSD_CALL_END_SYNC_LOSS) == 1);
+    rc |= expect_int("segment 1 ends", end_test_call(&state, 0U, DSD_CALL_END_SYNC_LOSS), 1);
     dsd_event_sync_slot(&opts, &state, 0U);
 
-    assert(observe_test_call(&state, 0U, DSD_SYNC_DMR_BS_VOICE_POS, DSD_CALL_KIND_GROUP_VOICE, 100U, 201U, 0U, 0U,
-                             DSD_CALL_BOUNDARY_CONTINUE)
-           == 1);
+    rc |= expect_int("segment 2 continues",
+                     observe_test_call(&state, 0U, DSD_SYNC_DMR_BS_VOICE_POS, DSD_CALL_KIND_GROUP_VOICE, 100U, 201U, 0U,
+                                       0U, DSD_CALL_BOUNDARY_CONTINUE),
+                     1);
     dsd_event_sync_slot(&opts, &state, 0U);
-    assert(end_test_call(&state, 0U, DSD_CALL_END_SYNC_LOSS) == 1);
+    rc |= expect_int("segment 2 ends", end_test_call(&state, 0U, DSD_CALL_END_SYNC_LOSS), 1);
     dsd_event_sync_slot(&opts, &state, 0U);
 
     // Segment 3 adds nothing the row does not already say.
-    assert(observe_test_call(&state, 0U, DSD_SYNC_DMR_BS_VOICE_POS, DSD_CALL_KIND_GROUP_VOICE, 100U, 201U, 0U, 0U,
-                             DSD_CALL_BOUNDARY_CONTINUE)
-           == 1);
+    rc |= expect_int("segment 3 continues",
+                     observe_test_call(&state, 0U, DSD_SYNC_DMR_BS_VOICE_POS, DSD_CALL_KIND_GROUP_VOICE, 100U, 201U, 0U,
+                                       0U, DSD_CALL_BOUNDARY_CONTINUE),
+                     1);
     dsd_event_sync_slot(&opts, &state, 0U);
-    assert(end_test_call(&state, 0U, DSD_CALL_END_SYNC_LOSS) == 1);
+    rc |= expect_int("segment 3 ends", end_test_call(&state, 0U, DSD_CALL_END_SYNC_LOSS), 1);
     dsd_event_sync_slot(&opts, &state, 0U);
 
     FILE* f = fopen(path, "rb");
@@ -4001,7 +4007,7 @@ test_merge_logs_continuation_only_when_render_changes(void) {
         reacquired_lines++;
     }
 
-    int rc = expect_int("merged transmission commits one row", committed_history_rows(&event_history[0]), 1);
+    rc |= expect_int("merged transmission commits one row", committed_history_rows(&event_history[0]), 1);
     rc |= expect_has_substr("first segment logged its own line", buf, "SRC: 00000000;");
     rc |= expect_has_substr("continuation reports the learned source", buf, " Reacquired: ");
     rc |= expect_has_substr("continuation marker follows the row's stamp", buf, "\n2026-04-30 00:00:00 Reacquired: ");
@@ -4034,20 +4040,22 @@ test_merge_continuation_annotates_from_the_row(void) {
 
     // Slot 1 of a DMR-BS call: the first commit is annotated "Slot 2;".
     state.lastsynctype = DSD_SYNC_DMR_BS_VOICE_POS;
-    assert(observe_test_call(&state, 1U, DSD_SYNC_DMR_BS_VOICE_POS, DSD_CALL_KIND_GROUP_VOICE, 100U, 0U, 0U, 0U,
-                             DSD_CALL_BOUNDARY_BEGIN)
-           == 1);
+    int rc = expect_int("slot 2 segment begins",
+                        observe_test_call(&state, 1U, DSD_SYNC_DMR_BS_VOICE_POS, DSD_CALL_KIND_GROUP_VOICE, 100U, 0U,
+                                          0U, 0U, DSD_CALL_BOUNDARY_BEGIN),
+                        1);
     dsd_event_sync_slot(&opts, &state, 1U);
-    assert(end_test_call(&state, 1U, DSD_CALL_END_SYNC_LOSS) == 1);
+    rc |= expect_int("slot 2 segment ends", end_test_call(&state, 1U, DSD_CALL_END_SYNC_LOSS), 1);
     dsd_event_sync_slot(&opts, &state, 1U);
 
     // The decoder loses the system entirely across the gap, as noCarrier() leaves it.
     state.lastsynctype = DSD_SYNC_NONE;
-    assert(observe_test_call(&state, 1U, DSD_SYNC_DMR_BS_VOICE_POS, DSD_CALL_KIND_GROUP_VOICE, 100U, 201U, 0U, 0U,
-                             DSD_CALL_BOUNDARY_CONTINUE)
-           == 1);
+    rc |= expect_int("reacquired slot 2 segment continues",
+                     observe_test_call(&state, 1U, DSD_SYNC_DMR_BS_VOICE_POS, DSD_CALL_KIND_GROUP_VOICE, 100U, 201U, 0U,
+                                       0U, DSD_CALL_BOUNDARY_CONTINUE),
+                     1);
     dsd_event_sync_slot(&opts, &state, 1U);
-    assert(end_test_call(&state, 1U, DSD_CALL_END_SYNC_LOSS) == 1);
+    rc |= expect_int("reacquired slot 2 segment ends", end_test_call(&state, 1U, DSD_CALL_END_SYNC_LOSS), 1);
     dsd_event_sync_slot(&opts, &state, 1U);
 
     FILE* f = fopen(path, "rb");
@@ -4063,7 +4071,7 @@ test_merge_continuation_annotates_from_the_row(void) {
     buf[n] = '\0';
 
     const char* continuation = strstr(buf, " Reacquired: ");
-    int rc = expect_int("the reacquired segment merged into one row", committed_history_rows(&event_history[1]), 1);
+    rc |= expect_int("the reacquired segment merged into one row", committed_history_rows(&event_history[1]), 1);
     if (continuation == NULL) {
         DSD_FPRINTF(stderr, "expected a continuation line in the event log\n");
         rc |= 1;
@@ -4096,24 +4104,29 @@ test_merge_logs_metadata_the_segment_added(void) {
     (void)remove(path);
     DSD_SNPRINTF(opts.event_out_file, sizeof opts.event_out_file, "%s", path);
 
-    assert(observe_test_call(&state, 0U, DSD_SYNC_DMR_BS_VOICE_POS, DSD_CALL_KIND_GROUP_VOICE, 100U, 200U, 0U, 0U,
-                             DSD_CALL_BOUNDARY_BEGIN)
-           == 1);
+    int rc = expect_int("first segment begins",
+                        observe_test_call(&state, 0U, DSD_SYNC_DMR_BS_VOICE_POS, DSD_CALL_KIND_GROUP_VOICE, 100U, 200U,
+                                          0U, 0U, DSD_CALL_BOUNDARY_BEGIN),
+                        1);
     dsd_event_sync_slot(&opts, &state, 0U);
-    assert(end_test_call(&state, 0U, DSD_CALL_END_SYNC_LOSS) == 1);
+    rc |= expect_int("first segment ends", end_test_call(&state, 0U, DSD_CALL_END_SYNC_LOSS), 1);
     dsd_event_sync_slot(&opts, &state, 0U);
 
     // The reacquired segment adds an alias and a GPS fix but no new identity, so the rendered
     // row is unchanged and only the metadata lines have anything to report.
-    assert(observe_test_call(&state, 0U, DSD_SYNC_DMR_BS_VOICE_POS, DSD_CALL_KIND_GROUP_VOICE, 100U, 200U, 0U, 0U,
-                             DSD_CALL_BOUNDARY_CONTINUE)
-           == 1);
+    rc |= expect_int("reacquired segment continues",
+                     observe_test_call(&state, 0U, DSD_SYNC_DMR_BS_VOICE_POS, DSD_CALL_KIND_GROUP_VOICE, 100U, 200U, 0U,
+                                       0U, DSD_CALL_BOUNDARY_CONTINUE),
+                     1);
     dsd_call_snapshot reacquired;
-    assert(dsd_call_state_get(&state, 0U, &reacquired) > 0);
+    DSD_MEMSET(&reacquired, 0, sizeof reacquired);
+    rc |= expect_int("reacquired segment has a call snapshot", dsd_call_state_get(&state, 0U, &reacquired) > 0, 1);
     dsd_event_sync_slot(&opts, &state, 0U);
-    assert(dsd_event_enrich_alias(&state, 0U, reacquired.epoch, "UNIT 12 FIRE") == 1);
-    assert(dsd_event_enrich_gps(&state, 0U, reacquired.epoch, "lat 3.0 lon 4.0") == 1);
-    assert(end_test_call(&state, 0U, DSD_CALL_END_SYNC_LOSS) == 1);
+    rc |= expect_int("reacquired segment takes the alias",
+                     dsd_event_enrich_alias(&state, 0U, reacquired.epoch, "UNIT 12 FIRE"), 1);
+    rc |= expect_int("reacquired segment takes the gps fix",
+                     dsd_event_enrich_gps(&state, 0U, reacquired.epoch, "lat 3.0 lon 4.0"), 1);
+    rc |= expect_int("reacquired segment ends", end_test_call(&state, 0U, DSD_CALL_END_SYNC_LOSS), 1);
     dsd_event_sync_slot(&opts, &state, 0U);
 
     FILE* f = fopen(path, "rb");
@@ -4128,7 +4141,7 @@ test_merge_logs_metadata_the_segment_added(void) {
     (void)remove(path);
     buf[n] = '\0';
 
-    int rc = expect_int("metadata-only merge commits one row", committed_history_rows(&event_history[0]), 1);
+    rc |= expect_int("metadata-only merge commits one row", committed_history_rows(&event_history[0]), 1);
     rc |= expect_has_substr("merged alias reaches the log", buf, "\n2026-04-30 00:00:00 Talker Alias: UNIT 12 FIRE \n");
     rc |= expect_has_substr("merged gps reaches the log", buf, "\n2026-04-30 00:00:00 GPS: lat 3.0 lon 4.0 \n");
     rc |= expect_every_line_stamped("detail-only continuation carries the row's stamp", buf, "2026-04-30 00:00:00 ");
@@ -4351,11 +4364,12 @@ test_x2tdma_voice_commits_a_row(void) {
     DSD_SNPRINTF(opts.event_out_file, sizeof opts.event_out_file, "%s", path);
 
     // Slot 1 and identity-less, exactly as x2tdma_voice.c publishes it.
-    assert(observe_test_call(&state, 1U, DSD_SYNC_X2TDMA_VOICE_POS, DSD_CALL_KIND_VOICE, 0U, 0U, 0U, 0U,
-                             DSD_CALL_BOUNDARY_CONTINUE)
-           == 1);
+    int rc = expect_int("x2tdma voice is observed",
+                        observe_test_call(&state, 1U, DSD_SYNC_X2TDMA_VOICE_POS, DSD_CALL_KIND_VOICE, 0U, 0U, 0U, 0U,
+                                          DSD_CALL_BOUNDARY_CONTINUE),
+                        1);
     dsd_event_sync_slot(&opts, &state, 1U);
-    assert(end_test_call(&state, 1U, DSD_CALL_END_EXPLICIT) == 1);
+    rc |= expect_int("x2tdma voice ends", end_test_call(&state, 1U, DSD_CALL_END_EXPLICIT), 1);
     dsd_event_sync_slot(&opts, &state, 1U);
 
     FILE* f = fopen(path, "rb");
@@ -4371,7 +4385,7 @@ test_x2tdma_voice_commits_a_row(void) {
     buf[n] = '\0';
 
     const Event_History* committed = &event_history[1].Event_History_Items[1];
-    int rc = expect_int("x2tdma voice commits a row", committed_history_rows(&event_history[1]), 1);
+    rc |= expect_int("x2tdma voice commits a row", committed_history_rows(&event_history[1]), 1);
     // The protocol name itself comes from dsd_synctype_to_string(), stubbed here for every
     // protocol; what matters is that the builder rendered at all rather than leaving the row blank.
     rc |= expect_int("x2tdma row is not blank", committed->event_string[0] != '\0', 1);
@@ -4875,7 +4889,18 @@ test_history_reset_drops_pending_end_alert(void) {
     return rc;
 }
 
-static void
+/* Writes @p text to the temp file @p path; returns 0, or -1 when a write failed. */
+static int
+write_alias_file(const char* path, const char* text) {
+    FILE* fp = dsd_fopen_private(path, "w");
+    if (!fp) {
+        return -1;
+    }
+    int ok = fputs(text, fp) >= 0;
+    return fclose(fp) == 0 && ok ? 0 : -1;
+}
+
+static int
 test_source_alias_collision(int protocol) {
     dsd_opts* opts = calloc(1, sizeof(*opts));
     dsd_state* state = calloc(1, sizeof(*state));
@@ -4885,21 +4910,29 @@ test_source_alias_collision(int protocol) {
     char group_path[DSD_TEST_PATH_MAX], source_path[DSD_TEST_PATH_MAX];
     int fd = dsd_test_mkstemp(group_path, sizeof(group_path), "alias-collision-group");
     assert(fd >= 0);
-    assert(dsd_close(fd) == 0);
+    int failed = expect_int("group alias file closes", dsd_close(fd), 0);
     fd = dsd_test_mkstemp(source_path, sizeof(source_path), "alias-collision-source");
-    assert(fd >= 0);
-    assert(dsd_close(fd) == 0);
-    FILE* fp = dsd_fopen_private(group_path, "w");
-    assert(fp);
-    assert(fputs("id,mode,name\n1201,A,Talkgroup 1201\n", fp) >= 0);
-    assert(fclose(fp) == 0);
-    fp = dsd_fopen_private(source_path, "w");
-    assert(fp);
-    assert(fputs("id,name\n1201,Radio 1201\n1202,Unit X\n", fp) >= 0);
-    assert(fclose(fp) == 0);
-    assert(csvGroupImportPath(group_path, state) == 0);
-    assert(csvSrcImportPath(source_path, state) == 0);
-    assert(remove(group_path) == 0 && remove(source_path) == 0);
+    if (fd < 0) {
+        DSD_FPRINTF(stderr, "dsd_test_mkstemp failed for alias collision source file\n");
+        failed = 1;
+    } else {
+        failed |= expect_int("source alias file closes", dsd_close(fd), 0);
+        failed |= expect_int("group alias file written",
+                             write_alias_file(group_path, "id,mode,name\n1201,A,Talkgroup 1201\n"), 0);
+        failed |= expect_int("source alias file written",
+                             write_alias_file(source_path, "id,name\n1201,Radio 1201\n1202,Unit X\n"), 0);
+        failed |= expect_int("group aliases import", csvGroupImportPath(group_path, state), 0);
+        failed |= expect_int("source aliases import", csvSrcImportPath(source_path, state), 0);
+        failed |= expect_int("source alias file removed", remove(source_path), 0);
+    }
+    failed |= expect_int("group alias file removed", remove(group_path), 0);
+    if (failed) {
+        dsd_state_ext_free_all(state);
+        free(history);
+        free(state);
+        free(opts);
+        return 1;
+    }
     state->lastsynctype = protocol;
     assert(observe_test_call(state, 0U, protocol, DSD_CALL_KIND_GROUP_VOICE, 1201, 1201, 0, 0, DSD_CALL_BOUNDARY_BEGIN)
            == 1);
@@ -4922,6 +4955,7 @@ test_source_alias_collision(int protocol) {
     free(history);
     free(state);
     free(opts);
+    return 0;
 }
 
 static int
@@ -4933,7 +4967,7 @@ test_crc_invalid_data_notice_isolation(void) {
     char path[DSD_TEST_PATH_MAX];
     int fd = dsd_test_mkstemp(path, sizeof path, "crc-events");
     assert(fd >= 0);
-    assert(dsd_close(fd) == 0);
+    int rc = expect_int("crc event log closes", dsd_close(fd), 0);
     DSD_SNPRINTF(opts.event_out_file, sizeof opts.event_out_file, "%s", path);
     dsd_event_stage_text(&state, 0, "decoded text");
     dsd_event_stage_gps(&state, 0, "decoded position");
@@ -4942,19 +4976,17 @@ test_crc_invalid_data_notice_isolation(void) {
     notice[sizeof notice - 1U] = '\0';
     dsd_call_observation data = dsd_call_observation_data(DSD_SYNC_DMR_BS_DATA_POS, 0U, 100U, 200U);
     state.event_crc_invalid[0] = 1U;
-    assert(dsd_event_emit_data_notice(&opts, &state, 0U, &data, notice) == 0);
-    int rc = expect_has_substr("long failed notice retains prefix",
-                               event_history[0].Event_History_Items[1].event_string, " [CRC ERR] ");
+    rc |= expect_int("failed data notice emits", dsd_event_emit_data_notice(&opts, &state, 0U, &data, notice), 0);
+    rc |= expect_has_substr("long failed notice retains prefix", event_history[0].Event_History_Items[1].event_string,
+                            " [CRC ERR] ");
     rc |= expect_int("failed data warns", event_history[0].Event_History_Items[1].severity, DSD_EVENT_SEVERITY_WARNING);
-    assert(dsd_event_emit_data_notice_with_gps(&opts, &state, 0U, &data, "GPS packet", "explicit position") == 0);
+    rc |=
+        expect_int("failed GPS notice emits",
+                   dsd_event_emit_data_notice_with_gps(&opts, &state, 0U, &data, "GPS packet", "explicit position"), 0);
     rc |= expect_has_substr("GPS variant marks history", event_history[0].Event_History_Items[1].event_string,
                             "[CRC ERR]");
-    FILE* f = fopen(path, "rb");
-    assert(f != NULL);
-    char buf[8192];
-    size_t n = fread(buf, 1U, sizeof buf - 1U, f);
-    fclose(f);
-    buf[n] = '\0';
+    char buf[8192] = {0};
+    rc |= expect_int("crc event log reads", read_event_log(path, buf, sizeof buf), 0);
     rc |= expect_has_substr("failed text detail marked", buf, "[CRC ERR] Text: decoded text");
     rc |= expect_has_substr("failed GPS detail marked", buf, "[CRC ERR] GPS: decoded position");
     rc |= expect_has_substr("explicit GPS detail marked", buf, "[CRC ERR] GPS: explicit position");
@@ -4968,12 +5000,12 @@ test_crc_invalid_data_notice_isolation(void) {
         line = end + 1;
     }
     data.slot = 1U;
-    assert(dsd_event_emit_data_notice(&opts, &state, 1U, &data, "other slot") == 0);
+    rc |= expect_int("other slot notice emits", dsd_event_emit_data_notice(&opts, &state, 1U, &data, "other slot"), 0);
     rc |= expect_int("other slot not tainted",
                      strstr(event_history[1].Event_History_Items[1].event_string, "[CRC ERR]") != NULL, 0);
     state.event_crc_invalid[0] = 0U;
     data.slot = 0U;
-    assert(dsd_event_emit_data_notice(&opts, &state, 0U, &data, "clean next") == 0);
+    rc |= expect_int("clean notice emits", dsd_event_emit_data_notice(&opts, &state, 0U, &data, "clean next"), 0);
     rc |= expect_int("next notice not tainted",
                      strstr(event_history[0].Event_History_Items[1].event_string, "[CRC ERR]") != NULL, 0);
     rc |= expect_int("next notice informational", event_history[0].Event_History_Items[1].severity,
@@ -5111,10 +5143,10 @@ test_crc_invalid_enrichment_marks_voice(void) {
 
 int
 main(void) {
-    test_source_alias_collision(DSD_SYNC_NXDN_POS);
-    test_source_alias_collision(DSD_SYNC_P25P1_POS);
-    test_source_alias_collision(DSD_SYNC_DMR_BS_VOICE_POS);
     int rc = 0;
+    rc |= test_source_alias_collision(DSD_SYNC_NXDN_POS);
+    rc |= test_source_alias_collision(DSD_SYNC_P25P1_POS);
+    rc |= test_source_alias_collision(DSD_SYNC_DMR_BS_VOICE_POS);
     rc |= test_crc_invalid_data_notice_isolation();
     rc |= test_crc_invalid_voice_delayed_and_reacquired();
     rc |= test_crc_invalid_enrichment_marks_voice();
