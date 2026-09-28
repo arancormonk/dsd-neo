@@ -822,9 +822,11 @@ installs from `src/engine/trunk_tuning.c` in `src/engine/trunk_tuning_hooks_inst
   applying anything: `svc_check_analog_bandwidth_for_rtl_bw()` at the `rtl_bw_khz` a hot restart stores, as given, when
   the `[input]` builds an RTL-SDR or rtl_tcp spec other than the running RTL-family input's (`cfg_radio_reopen()`),
   otherwise the check above; one that reopens a SoapySDR or Airspy device (an Airspy `[input]` over a running Airspy
-  reopens it for a new sample rate, serial, DSP bandwidth or volume, `svc_airspy_settings_reopen()`) is held only to the
-  rules every rate shares (`svc_check_analog_bandwidth_at_device_rate()`) and left to that stream's start, which checks
-  the width at the rate the device delivers. Since the stream a reopen starts runs the scan row on air again once the
+  reopens it for a new sample rate, serial or DSP bandwidth, `svc_airspy_settings_reopen()`) is held only to the rules
+  every rate shares (`svc_check_analog_bandwidth_at_device_rate()`) and left to that stream's start, which checks the
+  width at the rate the device delivers. An Airspy reopened for its monitor volume alone, which the stream copies only
+  when it opens, delivers the rate it runs now, so the running front end holds the width as when nothing reopens
+  (`CFG_REOPEN_AT_RUNNING_RATE`, issue #578). Since the stream a reopen starts runs the scan row on air again once the
   scope resumes, an analog row's own width is held to the reopened rate the same way (`cfg_check_scan_row_width()`, for
   the row's kind), and on a session the config leaves on another kind or none the configured width of a kind is held
   while the scan has an analog row or target of that kind without a width of its own (`cfg_check_scan_widths()`). An
@@ -852,8 +854,22 @@ installs from `src/engine/trunk_tuning.c` in `src/engine/trunk_tuning_hooks_inst
   `rtl`/`rtltcp` spec, or any device string on an RTL input that names no SoapySDR, Airspy or replay device (Input >
   Switch source > RTL-SDR leaves `pulse` there), runs at `rtl_dsp_bw_khz`, saturated rather than overflowed for a loaded
   config's out-of-range `rtl_bw_khz`. `svc_check_analog_bandwidth()` holds a width to no rate on a PCM input, which runs
-  no channel filter, whatever device string a live switch from an RTL-SDR left there. Tests: `APP_COMMAND_QUEUE`,
-  `UI_MENU_SERVICES`, `IO_RTL_DEMOD_CONFIG` (request numbering and outcomes, the kept kind).
+  no channel filter, whatever device string a live switch from an RTL-SDR left there. A config apply whose reopen of
+  the running RTL-family input fails to start (the live Airspy reopen, `svc_airspy_reopen_locked()`, or the hot restart
+  for a new spec, `apply_cfg_rtl_hot_restart()`, both from `apply_cfg_radio_input()`) never loses that input either
+  (`ui_cfg_settle_reopen()`, issue #578): it takes the reason from `svc_describe_start_failure()`, puts back what the
+  apply found once its checks passed (`ui_cfg_rollback`: the `ui_radio_input` above, and the configured receive
+  settings, meaning `[mode]`, `[demod]` and both `[analog]` widths, restored over the row-scoped options in force by
+  `ui_restore_receive_settings()`), restarts that input, toasts `Config not applied: <why>` and fails the apply. What
+  runs after it (the other hot restarts, the output reconfigure, `apply_cfg_receive_family_change()`) sees the receive
+  side the session ran, so no analog entry is armed and no profile is published for the refused settings; under a scan
+  row the rollback runs inside the suspended scope and the resume puts the row back, as after any reopen. The rest of
+  the config (output, trunking, logging, alerts, recording and DSP, the tone policy, an imported group list, the
+  environment defaults it set) stays applied. The configured PPM never outlives a rollback: an RTL-SDR or rtl_tcp reopen
+  opens with the request made before it, which the rollback puts back with the input, and the Airspy path requests it
+  only once the reopened Airspy runs. With no stream running before the apply, nothing is put back, and the config waits
+  for the next start. Tests: `APP_COMMAND_QUEUE`, `UI_MENU_SERVICES`, `UI_MENU_AIRSPY_CONFIG_REFUSED_WIDTH`,
+  `IO_RTL_DEMOD_CONFIG` (request numbering and outcomes, the kept kind).
 - AM (issue #524): `DSD_APP_CMD_DECODE_MODE_SET` takes `DSDCFG_MODE_AM` (the preset ids end there, as do the
   RadioReference import's) and refuses it on a PCM input (`dsd_decode_mode_runs_on_input()`); on a running RTL session
   it holds the AM width to the rate (above) and switches live across AM, Analog and the digital modes. A switch between

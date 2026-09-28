@@ -12650,6 +12650,7 @@ if(
         PRIVATE
             "LINKER:--wrap=rtl_stream_create"
             "LINKER:--wrap=rtl_stream_start"
+            "LINKER:--wrap=rtl_stream_start_analog_refusal"
             "LINKER:--wrap=rtl_stream_stop"
             "LINKER:--wrap=rtl_stream_destroy"
             "LINKER:--wrap=rtl_stream_output_rate"
@@ -12668,12 +12669,17 @@ if(
         COMMAND dsd-neo_test_ui_airspy_config_apply M10
     )
     add_test(
+        NAME UI_MENU_AIRSPY_CONFIG_REFUSED_WIDTH
+        COMMAND dsd-neo_test_ui_airspy_config_apply M11
+    )
+    add_test(
         NAME RUNTIME_AIRSPY_CLI_OVERRIDE
         COMMAND dsd-neo_test_ui_airspy_config_apply M2
     )
     set_tests_properties(
         UI_MENU_AIRSPY_CONFIG_FAILURE
         UI_MENU_AIRSPY_CONFIG_TUNING
+        UI_MENU_AIRSPY_CONFIG_REFUSED_WIDTH
         RUNTIME_AIRSPY_CLI_OVERRIDE
         PROPERTIES TIMEOUT 120
     )

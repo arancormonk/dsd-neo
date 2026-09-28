@@ -23,6 +23,8 @@ int dsd_app_command_test_policy_guard_waits(void);
 /* Boolean probes only: tests must never export command payloads as diagnostics. */
 int dsd_app_command_test_storage_cleared(void);
 int dsd_app_command_test_tail_padding_cleared(void);
+/* 1 when the last command the drain applied failed (a refusal, or a change it could not make), 0 otherwise. */
+int dsd_app_command_test_last_failed(void);
 #endif
 
 #ifdef __cplusplus
