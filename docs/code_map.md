@@ -1633,8 +1633,10 @@ Private per-protocol modules worth knowing about:
   `processMbeFrameSoft()` (issue #588). The confidence is `dsd_two_level_symbol_reliability()`
   (`<dsd-neo/core/dibit.h>`) of the symbol `getDibitAndSoftSymbol()` returned: its distance from `center` over half
   the spacing of `min` and `max`, which for ProVoice are the class means the sync warm start set and stay fixed
-  through the frame (the threshold tracker runs only for `rf_mod` 1 and P25 Phase 1). The shared two-level slicer
-  stores no soft metric, so `getDibitSoft()` does not apply to ProVoice, EDACS or D-STAR symbols. Cells the
+  through the frame (the threshold tracker runs only for `rf_mod` 1 and P25 Phase 1). A legacy symbol capture stores
+  only the decided bit and replays it as an ideal four-level amplitude, so its symbols get 255, a hard decision's
+  weight; the soft capture format replays the measured symbol. The shared two-level slicer stores no soft metric, so
+  `getDibitSoft()` does not apply to ProVoice, EDACS or D-STAR symbols. Cells the
   interleave schedule never reaches are bit 0 at reliability 0, which the decoder never reads.
   `mbe_process_provoice()` hands the decode's `mbe_process_result` to `mbe_processImbe4400Dataf()` unchanged: its
   `MBE_PROCESS_FLAG_PROVOICE` is what gives a muted frame ProVoice comfort noise rather than the P25 level, and

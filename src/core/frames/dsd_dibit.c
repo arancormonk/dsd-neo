@@ -1243,9 +1243,16 @@ soft_symbol_to_viterbi_cost(float symbol, const dsd_state* state, int bit_positi
 }
 
 uint8_t
-dsd_two_level_symbol_reliability(float symbol, const dsd_state* state) {
-    if (state == NULL || !isfinite(symbol)) {
+dsd_two_level_symbol_reliability(const dsd_opts* opts, const dsd_state* state, float symbol) {
+    if (opts == NULL || state == NULL || !isfinite(symbol)) {
         return 0U;
+    }
+
+    /* A legacy symbol capture keeps only the decided bit, which replay turns back into an ideal four-level
+     * amplitude (dsd_symbol_level_from_dibit()). Those amplitudes are not confidences, so the bit keeps a hard
+     * decision's weight. The soft capture format records the measured symbol and is used as it is. */
+    if (opts->audio_in_type == AUDIO_IN_SYMBOL_BIN && state->symbol_replay_format != DSD_SYMBOL_REPLAY_FORMAT_SOFT) {
+        return 255U;
     }
 
     /* The two-level form of soft_metric_for_bit()'s scale: full confidence at an ideal level. For

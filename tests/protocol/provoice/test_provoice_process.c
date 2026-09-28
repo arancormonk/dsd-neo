@@ -77,7 +77,8 @@ getDibitAndSoftSymbol(dsd_opts* opts, dsd_state* state, float* out_soft_symbol) 
 }
 
 uint8_t
-dsd_two_level_symbol_reliability(float symbol, const dsd_state* state) {
+dsd_two_level_symbol_reliability(const dsd_opts* opts, const dsd_state* state, float symbol) {
+    assert(opts != NULL);
     assert(state != NULL);
     return (uint8_t)(int)symbol;
 }

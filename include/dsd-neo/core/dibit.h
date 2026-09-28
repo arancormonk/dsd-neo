@@ -54,10 +54,10 @@ uint16_t gmsk_soft_symbol_to_viterbi_cost(float symbol, const dsd_state* state);
  *
  * The distance from state->center over half the spacing of state->min and state->max, which the sync warm start
  * leaves on the two class means: 255 at a mean and beyond, 0 on the threshold. Polarity does not enter. Thresholds
- * with no usable spacing return 255, the weight a hard decision carries; a non-finite symbol or a NULL state
- * returns 0.
+ * with no usable spacing, and symbols replayed from a legacy symbol capture (which stores only the decided bit),
+ * return 255, the weight a hard decision carries; a non-finite symbol or a NULL opts or state returns 0.
  */
-uint8_t dsd_two_level_symbol_reliability(float symbol, const dsd_state* state);
+uint8_t dsd_two_level_symbol_reliability(const dsd_opts* opts, const dsd_state* state, float symbol);
 int digitize(const dsd_opts* opts, dsd_state* state, float symbol);
 void skipDibit(dsd_opts* opts, dsd_state* state, int count);
 

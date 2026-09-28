@@ -32,7 +32,7 @@ provoice_next_bit(provoice_reader* reader, uint8_t* out_reliability) {
     int bit = getDibitAndSoftSymbol(reader->opts, reader->state, &symbol);
     reader->raw_bits[reader->bit_count++] = (uint8_t)bit;
     if (out_reliability != NULL) {
-        *out_reliability = dsd_two_level_symbol_reliability(symbol, reader->state);
+        *out_reliability = dsd_two_level_symbol_reliability(reader->opts, reader->state, symbol);
     }
     return bit;
 }

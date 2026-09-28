@@ -10,6 +10,7 @@
  */
 
 #include <dsd-neo/core/dibit.h>
+#include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/runtime/config.h>
 #include <math.h>
@@ -70,8 +71,8 @@ dsd_neo_get_config(void) {
 #endif
 
 static int
-expect_reliability(const char* label, const dsd_state* state, float symbol, int expected) {
-    int got = dsd_two_level_symbol_reliability(symbol, state);
+expect_reliability(const char* label, const dsd_opts* opts, const dsd_state* state, float symbol, int expected) {
+    int got = dsd_two_level_symbol_reliability(opts, state, symbol);
     if (got != expected) {
         DSD_FPRINTF(stderr, "FAIL: %s: symbol %.4f -> %d, expected %d\n", label, (double)symbol, got, expected);
         return 1;
@@ -88,9 +89,12 @@ set_thresholds(dsd_state* state, float min, float center, float max) {
 
 int
 main(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
     dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
-    if (state == NULL) {
-        DSD_FPRINTF(stderr, "FAIL: state allocation\n");
+    if (opts == NULL || state == NULL) {
+        DSD_FPRINTF(stderr, "FAIL: allocation\n");
+        free(opts);
+        free(state);
         return 1;
     }
     int rc = 0;
@@ -98,40 +102,62 @@ main(void) {
     /* After a ProVoice sync the warm start puts min and max on the two class means and center
      * between them; the reliability is the distance from center over half the spacing. */
     set_thresholds(state, -1.0f, 0.0f, 1.0f);
-    rc |= expect_reliability("upper class mean", state, 1.0f, 255);
-    rc |= expect_reliability("lower class mean", state, -1.0f, 255);
-    rc |= expect_reliability("on the threshold", state, 0.0f, 0);
-    rc |= expect_reliability("halfway above", state, 0.5f, 128);
-    rc |= expect_reliability("halfway below", state, -0.5f, 128);
-    rc |= expect_reliability("quarter below", state, -0.25f, 64);
-    rc |= expect_reliability("past the upper mean saturates", state, 2.5f, 255);
-    rc |= expect_reliability("past the lower mean saturates", state, -4.0f, 255);
+    rc |= expect_reliability("upper class mean", opts, state, 1.0f, 255);
+    rc |= expect_reliability("lower class mean", opts, state, -1.0f, 255);
+    rc |= expect_reliability("on the threshold", opts, state, 0.0f, 0);
+    rc |= expect_reliability("halfway above", opts, state, 0.5f, 128);
+    rc |= expect_reliability("halfway below", opts, state, -0.5f, 128);
+    rc |= expect_reliability("quarter below", opts, state, -0.25f, 64);
+    rc |= expect_reliability("past the upper mean saturates", opts, state, 2.5f, 255);
+    rc |= expect_reliability("past the lower mean saturates", opts, state, -4.0f, 255);
 
     /* Off-centre and scaled thresholds: only the distance from center relative to the spacing counts. */
     set_thresholds(state, 10000.0f, 12000.0f, 14000.0f);
-    rc |= expect_reliability("scaled upper mean", state, 14000.0f, 255);
-    rc |= expect_reliability("scaled threshold", state, 12000.0f, 0);
-    rc |= expect_reliability("scaled halfway above", state, 13000.0f, 128);
-    rc |= expect_reliability("scaled halfway below", state, 11000.0f, 128);
+    rc |= expect_reliability("scaled upper mean", opts, state, 14000.0f, 255);
+    rc |= expect_reliability("scaled threshold", opts, state, 12000.0f, 0);
+    rc |= expect_reliability("scaled halfway above", opts, state, 13000.0f, 128);
+    rc |= expect_reliability("scaled halfway below", opts, state, 11000.0f, 128);
 
     /* Thresholds with no usable spacing say nothing about confidence: give the hard path's. */
     set_thresholds(state, 0.0f, 0.0f, 0.0f);
-    rc |= expect_reliability("collapsed thresholds", state, 0.3f, 255);
+    rc |= expect_reliability("collapsed thresholds", opts, state, 0.3f, 255);
     set_thresholds(state, 1.0f, 0.0f, -1.0f);
-    rc |= expect_reliability("inverted thresholds", state, 0.3f, 255);
+    rc |= expect_reliability("inverted thresholds", opts, state, 0.3f, 255);
     set_thresholds(state, -1.0f, 2.0f, 1.0f);
-    rc |= expect_reliability("center outside the means", state, 0.3f, 255);
+    rc |= expect_reliability("center outside the means", opts, state, 0.3f, 255);
 
     /* A symbol that is not a number carries no evidence at all. */
     set_thresholds(state, -1.0f, 0.0f, 1.0f);
-    rc |= expect_reliability("NaN symbol", state, NAN, 0);
-    rc |= expect_reliability("infinite symbol", state, INFINITY, 0);
-    rc |= expect_reliability("negative infinite symbol", state, -INFINITY, 0);
-    if (dsd_two_level_symbol_reliability(1.0f, NULL) != 0) {
+    rc |= expect_reliability("NaN symbol", opts, state, NAN, 0);
+    rc |= expect_reliability("infinite symbol", opts, state, INFINITY, 0);
+    rc |= expect_reliability("negative infinite symbol", opts, state, -INFINITY, 0);
+    if (dsd_two_level_symbol_reliability(opts, NULL, 1.0f) != 0) {
         DSD_FPRINTF(stderr, "FAIL: NULL state\n");
         rc = 1;
     }
+    if (dsd_two_level_symbol_reliability(NULL, state, 1.0f) != 0) {
+        DSD_FPRINTF(stderr, "FAIL: NULL opts\n");
+        rc = 1;
+    }
 
+    /* A legacy symbol capture keeps only the decided bit, and replay turns it back into an ideal four-level
+     * amplitude: +1 and +3 against thresholds the sync warm-started from those amplitudes. They are not
+     * confidences, so every bit gets the hard decision's weight rather than 85 for one value and 255 for the
+     * other, which biased the soft decode into miscorrections the hard one did not make. */
+    set_thresholds(state, -3.0f, 0.0f, 3.0f);
+    opts->audio_in_type = AUDIO_IN_SYMBOL_BIN;
+    state->symbol_replay_format = DSD_SYMBOL_REPLAY_FORMAT_LEGACY;
+    rc |= expect_reliability("legacy capture, inner amplitude", opts, state, 1.0f, 255);
+    rc |= expect_reliability("legacy capture, outer amplitude", opts, state, 3.0f, 255);
+
+    /* The soft capture format replays the symbol that was measured, and so does a float symbol file. */
+    state->symbol_replay_format = DSD_SYMBOL_REPLAY_FORMAT_SOFT;
+    rc |= expect_reliability("soft capture", opts, state, 1.0f, 85);
+    opts->audio_in_type = AUDIO_IN_SYMBOL_FLT;
+    state->symbol_replay_format = DSD_SYMBOL_REPLAY_FORMAT_UNKNOWN;
+    rc |= expect_reliability("float symbol file", opts, state, 1.0f, 85);
+
+    free(opts);
     free(state);
     if (rc == 0) {
         printf("DIBIT_TWO_LEVEL_RELIABILITY: OK\n");
