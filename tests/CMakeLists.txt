@@ -4525,7 +4525,10 @@ target_include_directories(
     dsd-neo_test_core_audio_gain
     PRIVATE ${PROJECT_SOURCE_DIR}/include
 )
-target_link_libraries(dsd-neo_test_core_audio_gain PRIVATE dsd-neo_core)
+target_link_libraries(
+    dsd-neo_test_core_audio_gain
+    PRIVATE dsd-neo_core dsd-neo_test_support
+)
 if(NOT APPLE AND NOT WIN32 AND (CMAKE_C_COMPILER_ID MATCHES "GNU|Clang"))
     target_compile_definitions(
         dsd-neo_test_core_audio_gain
@@ -9950,7 +9953,10 @@ target_include_directories(
     dsd-neo_test_io_tcp_input
     PRIVATE ${PROJECT_SOURCE_DIR}/include
 )
-target_link_libraries(dsd-neo_test_io_tcp_input PRIVATE dsd-neo_io_audio)
+target_link_libraries(
+    dsd-neo_test_io_tcp_input
+    PRIVATE dsd-neo_io_audio dsd-neo_test_support
+)
 add_test(NAME IO_TCP_INPUT COMMAND dsd-neo_test_io_tcp_input)
 
 add_executable(

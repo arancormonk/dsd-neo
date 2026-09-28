@@ -13,9 +13,9 @@
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/platform/sockets.h"
+#include "test_support.h"
 
 #if !DSD_PLATFORM_WIN_NATIVE
-#include <stdlib.h>
 #include <unistd.h>
 #endif
 
@@ -35,8 +35,8 @@ write_all(int fd, const uint8_t* bytes, size_t len) {
 
 static int
 create_pcm_fixture(void) {
-    char path[] = "/tmp/dsd-neo-tcp-input-XXXXXX";
-    int fd = mkstemp(path);
+    char path[DSD_TEST_PATH_MAX];
+    int fd = dsd_test_mkstemp(path, sizeof path, "dsd-neo-tcp-input");
     if (fd < 0) {
         return -1;
     }

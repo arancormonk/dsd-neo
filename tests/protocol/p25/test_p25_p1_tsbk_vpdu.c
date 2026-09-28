@@ -151,15 +151,11 @@ test_extended_function_command_abbreviated(void) {
     p25_test_process_mac_vpdu_ex(0, mac, 10, 0, 0);
     dsd_test_capture_stderr_end(&cap);
 
-    FILE* f = fopen(cap.path, "r");
-    if (!f) {
+    char buf[1024];
+    if (dsd_test_capture_stderr_read(&cap, buf, sizeof(buf)) != 0) {
         DSD_FPRINTF(stderr, "open capture failed: %s\n", strerror(errno));
         return rc | 101;
     }
-    char buf[1024];
-    size_t n = fread(buf, 1, sizeof(buf) - 1, f);
-    fclose(f);
-    buf[n] = '\0';
 
     rc |= expect_str_has("extfn output title", buf, "Extended Function Command - Abbreviated");
     rc |= expect_str_has("extfn output class operand", buf, "Class: 00 Operand: FF");

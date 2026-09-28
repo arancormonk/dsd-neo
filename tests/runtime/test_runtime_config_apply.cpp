@@ -393,6 +393,8 @@ create_temp_raw_pcm_wav_suffix(const char* prefix, const short* samples, size_t 
     FILE* fp = dsd_fopen_private(out_path, "wb");
     if (!fp) {
         DSD_FPRINTF(stderr, "FAIL: fopen write failed for %s\n", out_path);
+        /* The open can fail after creating the file (dsd_fopen_private() closes the descriptor when fdopen() fails). */
+        (void)remove(out_path);
         return 1;
     }
 
@@ -2185,19 +2187,49 @@ test_ui_file_open_commands_report_service_results(void) {
     return rc;
 }
 
+typedef struct {
+    const char* dir;
+    int found;
+} dir_sweep;
+
+static int
+sweep_file_cb(const char* name, void* user) {
+    dir_sweep* sweep = (dir_sweep*)user;
+    char path[DSD_TEST_PATH_MAX];
+    sweep->found++;
+    if (dsd_test_path_join(path, sizeof path, sweep->dir, name) == 0) {
+        (void)remove(path);
+    }
+    return 0;
+}
+
+/* Removes every file left in @p dir and returns how many there were, or -1 when it cannot be read. */
+static int
+remove_files_left_in(const char* dir) {
+    dir_sweep sweep = {dir, 0};
+    if (dsd_dir_list(dir, sweep_file_cb, &sweep) != 0) {
+        return -1;
+    }
+    return sweep.found;
+}
+
 static int
 test_ui_file_capture_commands_manage_handles(void) {
     char wav_dir[DSD_TEST_PATH_MAX] = {0};
     char sym_path[DSD_TEST_PATH_MAX] = {0};
-    if (!dsd_test_mkdtemp(wav_dir, sizeof wav_dir, "dsdneo_queue_wav_dir")
-        || create_removed_temp_path("dsdneo_queue_sym_stop", sym_path, sizeof sym_path) != 0) {
+    if (!dsd_test_mkdtemp(wav_dir, sizeof wav_dir, "dsdneo_queue_wav_dir")) {
         DSD_FPRINTF(stderr, "FAIL: temp capture path setup failed\n");
+        return 1;
+    }
+    if (create_removed_temp_path("dsdneo_queue_sym_stop", sym_path, sizeof sym_path) != 0) {
+        DSD_FPRINTF(stderr, "FAIL: temp capture path setup failed\n");
+        (void)dsd_test_rmdir(wav_dir);
         return 1;
     }
 
     test_runtime runtime;
     if (alloc_test_runtime(&runtime) != 0) {
-        (void)remove(wav_dir);
+        (void)dsd_test_rmdir(wav_dir);
         return 1;
     }
     dsd_opts* opts = runtime.opts;
@@ -2277,9 +2309,37 @@ test_ui_file_capture_commands_manage_handles(void) {
                             state->event_history_s[0].Event_History_Items[1].category, DSD_EVENT_CATEGORY_SYSTEM);
     }
 
+    /* WAV stop and the toggle-off remove their temp pairs, so the directory should be empty by now. When they fail,
+     * close what they left open and remove what they left behind, failing the test for it, so the directory still
+     * goes. */
+    if (opts->wav_out_f != NULL) {
+        sf_close(opts->wav_out_f);
+        opts->wav_out_f = NULL;
+    }
+    if (opts->wav_out_fR != NULL) {
+        sf_close(opts->wav_out_fR);
+        opts->wav_out_fR = NULL;
+    }
+    /* Likewise the symbol capture handle a failed stop left open (already a failed check above): native Windows does
+     * not remove an open file, so it must be closed before sym_path is removed. */
+    if (opts->symbol_out_f != NULL) {
+        fclose(opts->symbol_out_f);
+        opts->symbol_out_f = NULL;
+    }
     free_test_runtime(&runtime);
     (void)remove(sym_path);
-    (void)remove(wav_dir);
+    const int left_in_wav_dir = remove_files_left_in(wav_dir);
+    if (left_in_wav_dir < 0) {
+        DSD_FPRINTF(stderr, "FAIL: could not list WAV temp directory %s: %s\n", wav_dir, strerror(errno));
+        rc |= 1;
+    } else if (left_in_wav_dir > 0) {
+        DSD_FPRINTF(stderr, "FAIL: WAV stop left %d file(s) in %s\n", left_in_wav_dir, wav_dir);
+        rc |= 1;
+    }
+    if (dsd_test_rmdir(wav_dir) != 0) {
+        DSD_FPRINTF(stderr, "FAIL: could not remove WAV temp directory %s: %s\n", wav_dir, strerror(errno));
+        rc |= 1;
+    }
     return rc;
 }
 

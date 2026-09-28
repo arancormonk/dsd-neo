@@ -33,6 +33,7 @@
  *   the monitor when Analog is picked again).
  */
 
+#include <cerrno>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
@@ -44,6 +45,7 @@
 #include <dsd-neo/runtime/analog_channel.h>
 #include <dsd-neo/runtime/log.h>
 #include <memory>
+#include <string>
 #include <vector>
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
@@ -108,6 +110,27 @@ fill_capture_cfg(dsd_iq_capture_config* cfg, const char* data_path, const char* 
     DSD_SNPRINTF(cfg->source_args, sizeof(cfg->source_args), "%s", "dev=0");
 }
 
+/* The files the capture writer puts in a fixture directory. */
+static const char* const kFixtureFiles[] = {"fixture.iq", "fixture.iq.json", nullptr};
+
+/* Every fixture directory made so far, recorded as soon as it exists so that main() removes it whichever way the test
+ * that made it returned. */
+static std::vector<std::string> g_fixture_dirs;
+
+/* Remove every fixture directory with the files in it. One that is not empty afterwards fails the test. */
+static int
+remove_fixture_dirs(void) {
+    int rc = 0;
+    for (const std::string& dir : g_fixture_dirs) {
+        if (dsd_test_remove_temp_dir(dir.c_str(), kFixtureFiles) != 0) {
+            DSD_FPRINTF(stderr, "FAIL: could not remove fixture directory %s: %s\n", dir.c_str(), std::strerror(errno));
+            rc = 1;
+        }
+    }
+    g_fixture_dirs.clear();
+    return rc;
+}
+
 /* @p centred records the carrier on 0 Hz, as the committed analog fixtures do: no fs/4 shift or rotation for the
  * replay to undo. */
 static int
@@ -118,6 +141,7 @@ make_replay_fixture_with(const ReplayRate& rate, const char* tag, const std::vec
         DSD_FPRINTF(stderr, "FAIL: could not create temporary fixture directory\n");
         return 1;
     }
+    g_fixture_dirs.emplace_back(temp_dir);
     char data_path[DSD_TEST_PATH_MAX];
     char metadata_path[DSD_TEST_PATH_MAX];
     if (dsd_test_path_join(data_path, sizeof(data_path), temp_dir, "fixture.iq") != 0
@@ -471,6 +495,7 @@ main(void) {
 
     rc |= test_forced_rate_monitor_audio_is_resampled_once();
     rc |= test_fa_start_switches_to_digital_through_the_stream();
+    rc |= remove_fixture_dirs();
 
     if (rc == 0) {
         std::printf("IO_RTL_ANALOG_OPEN: OK\n");

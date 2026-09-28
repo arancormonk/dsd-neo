@@ -13,7 +13,6 @@
 #include <dsd-neo/core/talkgroup_policy.h>
 #include <dsd-neo/platform/audio.h>
 #include <dsd-neo/platform/file_compat.h>
-#include <dsd-neo/platform/posix_compat.h>
 #include <errno.h>
 #include <math.h>
 #include <sndfile.h>
@@ -27,6 +26,7 @@
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
+#include "test_support.h"
 
 enum { DSD_AUDIO_TEST_PATH_MAX = 512 };
 
@@ -136,13 +136,9 @@ expect_float_close(const char* label, float got, float want, float tol) {
 
 static int
 create_temp_wav_path(const char* prefix, char* out_path, size_t out_path_sz) {
-    if (DSD_SNPRINTF(out_path, out_path_sz, "/tmp/%s_XXXXXX", prefix) >= (int)out_path_sz) {
-        DSD_FPRINTF(stderr, "FAIL: temp path too long for %s\n", prefix);
-        return 1;
-    }
-    int fd = dsd_mkstemp(out_path);
+    int fd = dsd_test_mkstemp(out_path, out_path_sz, prefix);
     if (fd < 0) {
-        DSD_FPRINTF(stderr, "FAIL: dsd_mkstemp failed for %s\n", prefix);
+        DSD_FPRINTF(stderr, "FAIL: dsd_test_mkstemp failed for %s: %s\n", prefix, strerror(errno));
         return 1;
     }
     (void)dsd_close(fd);
@@ -152,14 +148,9 @@ create_temp_wav_path(const char* prefix, char* out_path, size_t out_path_sz) {
 
 static int
 create_temp_file_fd(const char* prefix, char* out_path, size_t out_path_sz) {
-    if (DSD_SNPRINTF(out_path, out_path_sz, "/tmp/%s_XXXXXX", prefix) >= (int)out_path_sz) {
-        DSD_FPRINTF(stderr, "FAIL: temp file path too long for %s\n", prefix);
-        return -1;
-    }
-
-    int fd = dsd_mkstemp(out_path);
+    int fd = dsd_test_mkstemp(out_path, out_path_sz, prefix);
     if (fd < 0) {
-        DSD_FPRINTF(stderr, "FAIL: dsd_mkstemp failed for %s\n", prefix);
+        DSD_FPRINTF(stderr, "FAIL: dsd_test_mkstemp failed for %s: %s\n", prefix, strerror(errno));
     }
     return fd;
 }
@@ -190,22 +181,18 @@ create_temp_file_with_suffix(const char* prefix, const char* suffix, char* out_p
 static int
 create_temp_dir_with_suffix(const char* prefix, const char* suffix, char* out_path, size_t out_path_sz) {
     char base_path[DSD_AUDIO_TEST_PATH_MAX] = {0};
-    if (DSD_SNPRINTF(base_path, sizeof base_path, "/tmp/%s_XXXXXX", prefix) >= (int)sizeof base_path) {
-        DSD_FPRINTF(stderr, "FAIL: temp dir path too long for %s\n", prefix);
-        return 1;
-    }
-    if (dsd_mkdtemp(base_path) == NULL) {
-        DSD_FPRINTF(stderr, "FAIL: dsd_mkdtemp failed for %s\n", prefix);
+    if (dsd_test_mkdtemp(base_path, sizeof base_path, prefix) == NULL) {
+        DSD_FPRINTF(stderr, "FAIL: dsd_test_mkdtemp failed for %s: %s\n", prefix, strerror(errno));
         return 1;
     }
     if (DSD_SNPRINTF(out_path, out_path_sz, "%s%s", base_path, suffix) >= (int)out_path_sz) {
         DSD_FPRINTF(stderr, "FAIL: suffixed temp dir path too long for %s\n", prefix);
-        (void)remove(base_path);
+        (void)dsd_test_rmdir(base_path);
         return 1;
     }
     if (rename(base_path, out_path) != 0) {
         DSD_FPRINTF(stderr, "FAIL: rename temp dir to %s failed: %s\n", out_path, strerror(errno));
-        (void)remove(base_path);
+        (void)dsd_test_rmdir(base_path);
         return 1;
     }
     return 0;
@@ -1229,7 +1216,14 @@ test_open_audio_in_device_rejects_symbol_directory(void) {
     rc |= expect_true("symbol directory does not open symbol file", opts.symbolfile == NULL);
     rc |= expect_int_eq("symbol directory clears throttle", state.use_throttle, 0);
     rc |= expect_true("symbol directory clears deadline", state.symbol_replay_next_deadline_ns == 0);
-    (void)remove(path);
+    if (opts.symbolfile) {
+        fclose(opts.symbolfile);
+        opts.symbolfile = NULL;
+    }
+    if (dsd_test_rmdir(path) != 0) {
+        DSD_FPRINTF(stderr, "FAIL: could not remove temp directory %s: %s\n", path, strerror(errno));
+        rc |= 1;
+    }
     return rc;
 }
 

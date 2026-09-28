@@ -46,6 +46,17 @@
 #define DSD_TEST_RMDIR rmdir
 #endif
 
+/* Removes an empty temp directory with DSD_TEST_RMDIR, since remove() does not remove a directory on native Windows.
+ * Returns 1 and says why when the directory stays, so a test that leaves a file in it fails. */
+static int
+remove_test_dir(const char* dir) {
+    if (DSD_TEST_RMDIR(dir) != 0) {
+        DSD_FPRINTF(stderr, "could not remove temp directory %s: %s\n", dir, strerror(errno));
+        return 1;
+    }
+    return 0;
+}
+
 static int
 write_temp_config(const char* contents, char* out_path, size_t out_sz) {
     char tmpl[DSD_TEST_PATH_MAX];
@@ -737,8 +748,8 @@ test_render_input_variants_and_save_atomic(void) {
     }
 
     (void)remove(save_path);
-    (void)remove(save_subdir);
-    (void)remove(save_dir);
+    rc |= remove_test_dir(save_subdir);
+    rc |= remove_test_dir(save_dir);
     return rc;
 }
 
@@ -3773,6 +3784,7 @@ test_imports_dir_follows_config_dir(void) {
 #endif
     if (dsd_test_setenv(cfg_env, scratch, 1) != 0) {
         DSD_FPRINTF(stderr, "dsd_test_setenv(%s) failed\n", cfg_env);
+        (void)DSD_TEST_RMDIR(scratch);
         return 1;
     }
 
@@ -3799,9 +3811,9 @@ test_imports_dir_follows_config_dir(void) {
     rc |= dsd_user_imports_dir_create() == 0 ? 0 : 1;
     rc |= strcmp(dsd_user_imports_dir(), expected) == 0 ? 0 : 1;
 
-    (void)DSD_TEST_RMDIR(expected);
-    (void)DSD_TEST_RMDIR(cfg_root);
-    (void)DSD_TEST_RMDIR(scratch);
+    rc |= remove_test_dir(expected);
+    rc |= remove_test_dir(cfg_root);
+    rc |= remove_test_dir(scratch);
     return rc;
 }
 

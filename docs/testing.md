@@ -1050,6 +1050,58 @@ Clear the `DSD_REQUIRE_*` flags alongside the `DSD_ENABLE_*` ones. Against a
 cached build tree, configure otherwise stops with
 `DSD_REQUIRE_RTLSDR=ON requires DSD_ENABLE_RTLSDR=ON.`
 
+### Temporary files and directories
+
+A test must remove every temporary file and directory it creates, on its failure
+paths as well as when it passes. `dsd_test_mkstemp()`, `dsd_test_mkdtemp()` and
+`dsd_test_capture_stderr_begin()` in `tests/test_support/test_support.h` create
+them under `dsd_test_tmpdir()`: `DSD_NEO_TEST_TMPDIR`, else `TMPDIR` (`TEMP` or
+`TMP` on Windows), else the working directory. Create them with these helpers,
+not at a fixed path such as `/tmp`, which the check below does not look at. The
+temp directory's own path can contain a dot, so when the code under test reads
+meaning from a path's text, such as an extension, open the file by a bare name
+from a `dsd_test_temp_cwd_enter()` directory instead. Remove each file with
+`remove()`, including any the code under test wrote there, such as a P25
+control-channel cache file or an I/Q capture's sidecar, then remove the
+directory with `dsd_test_rmdir()`. `dsd_test_remove_temp_dir()` does both from a
+list of file names. Never remove a directory with `remove()`: the native Windows
+CRT does not remove directories, so it would stay behind there. Check the result
+of the directory removal and fail the test if it fails. The removal succeeds
+only on an empty directory, so the check also catches a file the test forgot to
+list or a new file the code under test starts writing.
+`dsd_test_capture_stderr_read()` deletes the capture file it reads. A test that
+does not read its capture removes `cap.path` itself after
+`dsd_test_capture_stderr_end()`.
+
+A failed `assert()` aborts the test before its cleanup runs. Once a temporary
+file or directory exists, check with a counted failure instead: print what
+failed, remove the file or directory, then return the failure. A write that
+fails while the test sets up its file counts the same way. An open that fails
+can still have created the file, so remove it on that path too. Close every
+handle on a file before removing it, including one the code under test hands
+back from an open the test expects it to refuse: the native Windows CRT cannot
+remove an open file.
+
+To check the whole suite, run it against an empty directory, which must still
+be empty afterwards. That does not catch a file a test creates by a relative
+path, which lands in its working directory: `build/dev-debug/tests` for most
+tests, the source tree for the `TOOLS_*` scripts. So compare both before and
+after the run too:
+
+```sh
+T=$(mktemp -d)
+find build/dev-debug/tests | sort > "$T.build"
+git status --porcelain --ignored > "$T.src"
+DSD_NEO_TEST_TMPDIR=$T TMPDIR=$T ctest --preset dev-debug --output-on-failure
+ls -A "$T"   # prints nothing
+find build/dev-debug/tests | sort | diff "$T.build" -   # prints nothing
+git status --porcelain --ignored | diff "$T.src" -   # prints nothing
+rmdir "$T"; rm "$T.build" "$T.src"
+```
+
+Repeat this in a `-DDSD_ENABLE_QT_UI=ON` build with `-R '^UI_QT'` and
+`QT_QPA_PLATFORM=offscreen` when a change touches the Qt tests.
+
 ## Continuous Integration
 
 GitHub Actions runs tests and quality checks on pull requests, primary-branch

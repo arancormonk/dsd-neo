@@ -60,19 +60,12 @@ write_cache_fixture(const char* path) {
     return 1;
 }
 
-int
-main(void) {
+/* The cache file check_cache_loading() writes in the cache directory. */
+static const char* const kCacheFiles[] = {"p25_cc_ABCDE_123_R007_S011.txt", NULL};
+
+static int
+check_cache_loading(const char* cache_root) {
     int rc = 0;
-    char dir[DSD_TEST_PATH_MAX];
-    if (!dsd_test_mkdtemp(dir, sizeof(dir), "dsdneo_cc_path")) {
-        DSD_FPRINTF(stderr, "dsd_test_mkdtemp failed: %s\n", strerror(errno));
-        return 100;
-    }
-    char cache_root[DSD_TEST_PATH_MAX];
-    if (dsd_test_path_join(cache_root, sizeof cache_root, dir, "cache") != 0) {
-        DSD_FPRINTF(stderr, "failed to build cache root path: %s\n", strerror(errno));
-        return 100;
-    }
     setenv("DSD_NEO_CACHE_DIR", cache_root, 1);
     dsd_neo_config_init();
 
@@ -141,6 +134,30 @@ main(void) {
     rc |= expect_eq_int("add current-site candidate", p25_cc_add_candidate(&st, 852555555L, 1), 1);
     rc |= expect_eq_int("add generic candidate", dsd_trunk_cc_candidates_add(&st, 852666666L, 1, 0), 1);
 
+    return rc;
+}
+
+int
+main(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    if (!dsd_test_mkdtemp(dir, sizeof(dir), "dsdneo_cc_path")) {
+        DSD_FPRINTF(stderr, "dsd_test_mkdtemp failed: %s\n", strerror(errno));
+        return 100;
+    }
+    int rc = 100;
+    char cache_root[DSD_TEST_PATH_MAX];
+    if (dsd_test_path_join(cache_root, sizeof cache_root, dir, "cache") != 0) {
+        DSD_FPRINTF(stderr, "failed to build cache root path: %s\n", strerror(errno));
+    } else {
+        rc = check_cache_loading(cache_root);
+        /* This fails when the test stopped before making the cache directory; anything left in the cache directory
+         * keeps the temp directory from going, which is checked below. */
+        (void)dsd_test_remove_temp_dir(cache_root, kCacheFiles);
+    }
+    if (dsd_test_rmdir(dir) != 0) {
+        DSD_FPRINTF(stderr, "could not remove temp directory %s: %s\n", dir, strerror(errno));
+        rc |= 1;
+    }
     return rc;
 }
 

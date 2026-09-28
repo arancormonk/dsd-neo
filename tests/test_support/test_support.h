@@ -184,6 +184,30 @@ dsd_test_rmdir(const char* path) {
 }
 
 /**
+ * @brief Remove the files a test left in a temp directory, then the directory itself.
+ *
+ * @p files is a NULL-terminated list of names inside @p dir; one that does not exist is skipped. Remove a
+ * subdirectory with its own call first. The directory goes only once it is empty, so a file the list misses, including
+ * one the code under test wrote there, makes this fail: check the result.
+ *
+ * @return 0 once @p dir is removed, -1 otherwise.
+ */
+static inline int
+dsd_test_remove_temp_dir(const char* dir, const char* const* files) {
+    if (!dir || dir[0] == '\0' || !files) {
+        errno = EINVAL;
+        return -1;
+    }
+    for (size_t i = 0; files[i] != NULL; i++) {
+        char path[DSD_TEST_PATH_MAX];
+        if (dsd_test_path_join(path, sizeof(path), dir, files[i]) == 0) {
+            (void)remove(path);
+        }
+    }
+    return dsd_test_rmdir(dir);
+}
+
+/**
  * @brief A fresh temp directory used as the working directory for part of a test.
  *
  * Code that writes relative to the working directory (the DSP output service creates ./DSP) would
@@ -311,6 +335,8 @@ dsd_test_capture_stderr_begin(dsd_test_capture_stderr* cap, const char* prefix) 
     if (dsd_dup2(fd, DSD_STDERR_FILENO) < 0) {
         dsd_close(fd);
         dsd_close(saved);
+        (void)remove(cap->path);
+        cap->path[0] = '\0';
         return -1;
     }
     dsd_close(fd);
@@ -323,7 +349,7 @@ dsd_test_capture_stderr_begin(dsd_test_capture_stderr* cap, const char* prefix) 
  * @brief Read what a finished capture collected into @p buf and delete the capture file.
  *
  * Call after dsd_test_capture_stderr_end(). @p buf is always NUL-terminated; output longer than
- * @p buf_size - 1 is truncated.
+ * @p buf_size - 1 is truncated. The capture file is deleted even when it cannot be read.
  *
  * @return 0 on success, -1 otherwise.
  */
@@ -337,6 +363,9 @@ dsd_test_capture_stderr_read(const dsd_test_capture_stderr* cap, char* buf, size
 
     FILE* f = fopen(cap->path, "rb");
     if (!f) {
+        int saved_errno = errno;
+        (void)remove(cap->path);
+        errno = saved_errno;
         return -1;
     }
     size_t n = fread(buf, 1U, buf_size - 1U, f);

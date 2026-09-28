@@ -83,14 +83,19 @@ return_cc(dsd_opts* opts, dsd_state* state, uint64_t request_id) {
     return DSD_TRUNK_TUNE_RESULT_OK;
 }
 
-static void
-setup(dsd_opts* opts, dsd_state* state) {
+/* Returns 0, or -1 when the decode-mode preset does not apply. The state is initialized either way, so the caller
+ * frees it. */
+static int
+try_setup(dsd_opts* opts, dsd_state* state) {
     initOpts(opts);
     initState(state);
     dsd_app_frontend_runtime_start(opts, state);
     state->cli_argc_effective = 0;
     state->cli_argv = NULL;
-    assert(dsd_apply_decode_mode_preset(DSDCFG_MODE_TDMA, DSD_DECODE_PRESET_PROFILE_CLI, opts, state) == 0);
+    if (dsd_apply_decode_mode_preset(DSDCFG_MODE_TDMA, DSD_DECODE_PRESET_PROFILE_CLI, opts, state) != 0) {
+        DSD_FPRINTF(stderr, "setup: the TDMA decode-mode preset did not apply\n");
+        return -1;
+    }
     opts->verbose = 0;
     opts->audio_in_type = AUDIO_IN_RTL;
     opts->rtlsdr_center_freq = CC_A;
@@ -126,16 +131,36 @@ setup(dsd_opts* opts, dsd_state* state) {
     dsd_trunk_tuning_requests_reset();
     const dsd_trunk_tuning_hooks hooks = {vc_tune, cc_tune, return_cc};
     dsd_trunk_tuning_hooks_set(hooks);
+    return 0;
+}
+
+static void
+setup(dsd_opts* opts, dsd_state* state) {
+    assert(try_setup(opts, state) == 0);
+}
+
+/* Select @p hz as the control channel the way a frontend does. Returns 0, or -1 when the command is not queued or
+ * not drained. */
+static int
+try_select_cc(dsd_opts* opts, dsd_state* state, uint32_t hz) {
+#ifdef USE_RADIO
+    if (dsd_app_command_set_u32(DSD_APP_CMD_RTL_SET_FREQ, hz) != DSD_APP_COMMAND_SUBMIT_QUEUED) {
+        DSD_FPRINTF(stderr, "select_cc: the RTL frequency command for %u Hz was not queued\n", (unsigned)hz);
+        return -1;
+    }
+    if (dsd_app_drain_cmds(opts, state) != 1) {
+        DSD_FPRINTF(stderr, "select_cc: the RTL frequency command for %u Hz was not drained\n", (unsigned)hz);
+        return -1;
+    }
+#else
+    (void)p25_sm_select_control_channel(p25_sm_get_ctx(), opts, state, (long)hz);
+#endif
+    return 0;
 }
 
 static void
 select_cc(dsd_opts* opts, dsd_state* state, uint32_t hz) {
-#ifdef USE_RADIO
-    assert(dsd_app_command_set_u32(DSD_APP_CMD_RTL_SET_FREQ, hz) == DSD_APP_COMMAND_SUBMIT_QUEUED);
-    assert(dsd_app_drain_cmds(opts, state) == 1);
-#else
-    (void)p25_sm_select_control_channel(p25_sm_get_ctx(), opts, state, (long)hz);
-#endif
+    assert(try_select_cc(opts, state, hz) == 0);
 }
 
 static void
@@ -363,41 +388,83 @@ test_overrides(dsd_opts* opts, dsd_state* state) {
     freeState(state);
 }
 
+/* Reports a failed cache check. The cache checks are counted rather than asserted so that test_cache() removes its
+ * cache files and their directory before a failure ends the test. */
+static int
+cache_check(int ok, const char* what) {
+    if (!ok) {
+        DSD_FPRINTF(stderr, "FAIL: manual CC cache: %s\n", what);
+        return 1;
+    }
+    return 0;
+}
+
+/* Write a P25 CC cache file naming @p freq at @p path, the file @p name in @p dir. @p path is empty on a failure to
+ * build it. Returns 0 on success. */
+static int
+write_cc_cache_file(char* path, size_t path_size, const char* dir, const char* name, long freq) {
+    if (dsd_test_path_join(path, path_size, dir, name) != 0) {
+        path[0] = '\0';
+        return cache_check(0, "build a cache file path");
+    }
+    FILE* fp = dsd_fopen_private(path, "w");
+    if (!fp) {
+        return cache_check(0, "open a cache file");
+    }
+    DSD_FPRINTF(fp, "cc %ld\n", freq);
+    return cache_check(fclose(fp) == 0, "write a cache file");
+}
+
+/* With the cache in @p dir, a manual selection loads no disk candidates until its site is known, and then only that
+ * site's. Returns the number of failed checks. */
+static int
+check_cache_loads_selected_site(dsd_opts* opts, dsd_state* state, const char* dir) {
+    if (cache_check(dsd_test_setenv("DSD_NEO_CACHE_DIR", dir, 1) == 0, "set DSD_NEO_CACHE_DIR")
+        || cache_check(dsd_test_setenv("DSD_NEO_CC_CACHE", "1", 1) == 0, "set DSD_NEO_CC_CACHE")) {
+        return 1;
+    }
+    dsd_neo_config_init();
+    if (cache_check(try_setup(opts, state) == 0, "set up the P25 trunk state")
+        || cache_check(try_select_cc(opts, state, CC_B) == 0, "select the manual control channel")) {
+        freeState(state);
+        return 1;
+    }
+    const long no_neighbor = 0;
+    p25_cc_record_neighbor_frequencies(opts, state, &no_neighbor, 1);
+    int failed = cache_check(state->p25_cc_cache_loaded == 0, "no load before the site is known");
+    noCarrier(opts, state);
+    p25_cc_record_neighbor_frequencies(opts, state, &no_neighbor, 1);
+    failed += cache_check(state->p25_cc_cache_loaded == 0, "no load after the carrier is lost");
+    const dsd_trunk_cc_candidates* none = dsd_trunk_cc_candidates_peek(state);
+    failed += cache_check(none && none->count == 0, "no candidates from the system-wide file");
+    state->p2_rfssid = 2;
+    state->p2_siteid = 3;
+    p25_cc_record_neighbor_frequencies(opts, state, &no_neighbor, 1);
+    const dsd_trunk_cc_candidates* cc = dsd_trunk_cc_candidates_peek(state);
+    failed += cache_check(state->p25_cc_cache_loaded && cc && cc->count == 1 && cc->candidates[0] == CC_B + 25000,
+                          "the selected site's file loads its candidate");
+    freeState(state);
+    return failed;
+}
+
 static void
 test_cache(dsd_opts* opts, dsd_state* state) {
     char dir[DSD_TEST_PATH_MAX];
     char legacy[DSD_TEST_PATH_MAX];
     char site[DSD_TEST_PATH_MAX];
     assert(dsd_test_mkdtemp(dir, sizeof(dir), "dsdneo_manual_cc"));
-    assert(dsd_test_path_join(legacy, sizeof(legacy), dir, "p25_cc_BEE00_37D.txt") == 0);
-    assert(dsd_test_path_join(site, sizeof(site), dir, "p25_cc_BEE00_37D_R002_S003.txt") == 0);
-    FILE* fp = dsd_fopen_private(legacy, "w");
-    assert(fp);
-    DSD_FPRINTF(fp, "cc %ld\n", CC_A);
-    assert(fclose(fp) == 0);
-    fp = dsd_fopen_private(site, "w");
-    assert(fp);
-    DSD_FPRINTF(fp, "cc %ld\n", CC_B + 25000);
-    assert(fclose(fp) == 0);
-    assert(dsd_test_setenv("DSD_NEO_CACHE_DIR", dir, 1) == 0);
-    assert(dsd_test_setenv("DSD_NEO_CC_CACHE", "1", 1) == 0);
-    dsd_neo_config_init();
-    setup(opts, state);
-    select_cc(opts, state, CC_B);
-    const long no_neighbor = 0;
-    p25_cc_record_neighbor_frequencies(opts, state, &no_neighbor, 1);
-    assert(state->p25_cc_cache_loaded == 0);
-    noCarrier(opts, state);
-    p25_cc_record_neighbor_frequencies(opts, state, &no_neighbor, 1);
-    assert(state->p25_cc_cache_loaded == 0);
-    assert(dsd_trunk_cc_candidates_peek(state)->count == 0);
-    state->p2_rfssid = 2;
-    state->p2_siteid = 3;
-    p25_cc_record_neighbor_frequencies(opts, state, &no_neighbor, 1);
-    const dsd_trunk_cc_candidates* cc = dsd_trunk_cc_candidates_peek(state);
-    assert(state->p25_cc_cache_loaded && cc && cc->count == 1 && cc->candidates[0] == CC_B + 25000);
-    freeState(state);
-    assert(remove(legacy) == 0 && remove(site) == 0);
+    int failed = write_cc_cache_file(legacy, sizeof(legacy), dir, "p25_cc_BEE00_37D.txt", CC_A);
+    failed += write_cc_cache_file(site, sizeof(site), dir, "p25_cc_BEE00_37D_R002_S003.txt", CC_B + 25000);
+    if (failed == 0) {
+        failed = check_cache_loads_selected_site(opts, state, dir);
+    }
+    /* Loading leaves both files in place. */
+    const int legacy_removed = remove(legacy) == 0;
+    const int site_removed = remove(site) == 0;
+    const int dir_removed = dsd_test_rmdir(dir) == 0;
+    assert(failed == 0);
+    assert(legacy_removed && site_removed);
+    assert(dir_removed);
 }
 
 static void

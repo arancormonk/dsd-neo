@@ -28,6 +28,7 @@
 #include <dsd-neo/protocol/nxdn/nxdn_lfsr.h>
 #include <dsd-neo/runtime/radioreference.h>
 #include <dsd-neo/runtime/radioreference_generate.h>
+#include <errno.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -209,6 +210,7 @@ validate_generated(const char* text, int is_group, dsd_csv_validation* out) {
     char path[DSD_TEST_PATH_MAX];
     if (dsd_test_path_join(path, sizeof(path), dir, is_group ? "group.csv" : "chan.csv") != 0) {
         g_failures++;
+        (void)dsd_test_rmdir(dir);
         return -1;
     }
 
@@ -216,6 +218,9 @@ validate_generated(const char* text, int is_group, dsd_csv_validation* out) {
     if (fp == NULL) {
         DSD_FPRINTF(stderr, "FAIL: cannot write %s\n", path);
         g_failures++;
+        /* The open can fail after creating the file (dsd_fopen_private() closes the descriptor when fdopen() fails). */
+        (void)remove(path);
+        (void)dsd_test_rmdir(dir);
         return -1;
     }
     DSD_FPRINTF(fp, "%s", text);
@@ -223,9 +228,10 @@ validate_generated(const char* text, int is_group, dsd_csv_validation* out) {
 
     const int rc = is_group ? dsd_csv_validate_group_file(path, out) : dsd_csv_validate_chan_file(path, out);
     (void)remove(path);
-    /* remove() unlinks a directory on POSIX and simply fails on Windows, where
-     * the worst case is a leftover empty temp dir. */
-    (void)remove(dir);
+    if (dsd_test_rmdir(dir) != 0) {
+        DSD_FPRINTF(stderr, "FAIL: cannot remove temp dir %s: %s\n", dir, strerror(errno));
+        g_failures++;
+    }
     if (rc != 0) {
         DSD_FPRINTF(stderr, "FAIL: validator rejected the generated file\n");
         g_failures++;

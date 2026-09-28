@@ -3,13 +3,17 @@
  * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
+#include <cerrno>
 #include <cstdint>
 #include <cstdio>
+#include <cstring>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/io/iq_capture.h>
 #include <dsd-neo/io/rtl_stream_c.h>
 #include <dsd-neo/platform/timing.h>
 #include <memory>
+#include <string>
+#include <vector>
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/io/iq_types.h"
@@ -59,6 +63,27 @@ fill_capture_cfg(dsd_iq_capture_config* cfg, const char* data_path, const char* 
     DSD_SNPRINTF(cfg->source_args, sizeof(cfg->source_args), "%s", "dev=0");
 }
 
+/* The files the capture writer puts in a fixture directory. */
+static const char* const kFixtureFiles[] = {"fixture.iq", "fixture.iq.json", nullptr};
+
+/* Every fixture directory made so far, recorded as soon as it exists so that main() removes it whichever way the test
+ * that made it returned. */
+static std::vector<std::string> g_fixture_dirs;
+
+/* Remove every fixture directory with the files in it. One that is not empty afterwards fails the test. */
+static int
+remove_fixture_dirs(void) {
+    int rc = 0;
+    for (const std::string& dir : g_fixture_dirs) {
+        if (dsd_test_remove_temp_dir(dir.c_str(), kFixtureFiles) != 0) {
+            DSD_FPRINTF(stderr, "FAIL: could not remove fixture directory %s: %s\n", dir.c_str(), std::strerror(errno));
+            rc = 1;
+        }
+    }
+    g_fixture_dirs.clear();
+    return rc;
+}
+
 static int
 make_replay_fixture(char* out_metadata_path, size_t out_metadata_path_size) {
     if (!out_metadata_path || out_metadata_path_size == 0U) {
@@ -70,6 +95,7 @@ make_replay_fixture(char* out_metadata_path, size_t out_metadata_path_size) {
         DSD_FPRINTF(stderr, "FAIL: could not create temporary fixture directory\n");
         return 1;
     }
+    g_fixture_dirs.emplace_back(temp_dir);
 
     char data_path[DSD_TEST_PATH_MAX];
     char metadata_path[DSD_TEST_PATH_MAX];
@@ -170,5 +196,7 @@ test_replay_retune_rejected_quickly(void) {
 
 int
 main(void) {
-    return test_replay_retune_rejected_quickly() ? 1 : 0;
+    int rc = test_replay_retune_rejected_quickly();
+    rc |= remove_fixture_dirs();
+    return rc ? 1 : 0;
 }

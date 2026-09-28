@@ -17,8 +17,10 @@
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
+#include <errno.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <string.h>
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
@@ -198,6 +200,10 @@ main(int argc, char** argv) {
     rc |= expect_eq("idle eviction keeps context CC return count", p25_sm_get_ctx()->cc_return_count, 1);
 
     dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){0});
+    if (dsd_test_rmdir(dir) != 0) {
+        DSD_FPRINTF(stderr, "could not remove temp cache directory %s: %s\n", dir, strerror(errno));
+        rc |= 1;
+    }
     return rc;
 }
 
