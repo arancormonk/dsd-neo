@@ -454,17 +454,20 @@ connection drops when it reconnects inside the read, whose 300 ms backoff is sho
 Pulse, stdin, UDP and TCP input after a reset or a trunk-tuning generation move, the half second of the old channel's
 100 Hz tone the input had queued -- read with no time passing on the injected clock, as a decoder drains a backlog,
 which heard locked 100.0 Hz again on the new channel -- whether the new channel then arrives in 20 ms reads or in 100 ms
-bursts, also when the reset came in a digital mode before detection started, on stdin input whose monitor playback
-holds the decoder for each block's 20 ms, and with a raw WAV whose per-block sync to disk holds it 12 or 15 ms (issue
-#576; a test hook stands in for the sync, so no test waits on the disk) -- neither is time spent waiting in the input
-read, the only time the skip counts -- and its own 131.8 Hz tone locks within the p95 target plus one read, while a WAV
-file is heard at once after a reset, a UDP stream with nothing queued from the third read after a reset or a generation
-move, also when a 15 or 17 ms sync leaves the decoder only 5 or 3 ms of each 20 ms read to wait (an 18 ms sync, 2 ms,
-is below the eighth of a read that shows the input ran dry, and is heard after 2 s), and stdin fed faster than real
-time again after 2 s; driven through `getSymbol()` on UDP input, where the symbol path brackets the live read and a
-fake producer delivers each sample at its real-time arrival on the injected clock, keeps the same skip across a 400 ms
-hold with a 12 ms sync per block, both after a reset and after a generation move: the old tone never returns, nothing
-is heard until a read has had to wait for the producer, well short of the 2 s cap, and 131.8 Hz then locks within the
+bursts, also when the reset came in a digital mode before detection started, on stdin input whose monitor playback holds
+the decoder for each block's 20 ms, and with a raw WAV whose per-block sync to disk holds it 12 or 15 ms (issue #576; a
+test hook stands in for the sync, so no test waits on the disk), which makes each 20 ms of the backlog take more than 10
+ms to read but is no time spent waiting inside the input read, and while the decoder is descheduled 3 or 9 ms inside
+each backlog read, which is time in the read but leaves the span short of half its length -- and its own 131.8 Hz tone
+locks within the p95 target plus one read, while a WAV file is heard at once after a reset, a UDP stream with nothing
+queued from the third read after a reset or a generation move, a new channel arriving live after the backlog on a
+decoder a 15 or 17 ms sync holds, which leaves it only 5 or 3 ms of each 20 ms read to wait, from its second read (an 18
+ms sync, 2 ms, is below the eighth of a read that shows the input ran dry, and is heard only 2 s after the retune), and
+stdin fed faster than real time again after 2 s; driven through `getSymbol()` on UDP input, where the symbol path
+brackets the live read and a fake producer delivers each sample at its real-time arrival on the injected clock, keeps
+the same skip across a 400 ms hold with a 12 ms sync per block, both after a reset and after a generation move: the old
+tone never returns, nothing is heard until a read has had to wait for the producer, well short of the 2 s cap, and 131.8
+Hz then locks within the
 p95 target plus one read; restarts the tap at the first sample of the next block when the symbol path drops a
 part-collected block (`dsd_symbol_analog_block_reset()` on a receive-family change, or a family switch landing on an
 RTL front end), where read on from its place in the dropped block it missed the new block's opening samples; and --

@@ -1202,12 +1202,16 @@ static inline void
 symbol_write_unsynced_audio(const dsd_opts* opts, dsd_state* state, unsigned int analog_block) {
     symbol_convert_analog_block_to_i16(state, analog_block);
     size_t bytes = (size_t)analog_block * sizeof(short);
+    /* Synchronous playback can hold the decoder for the block's playing time; that is not
+       time spent waiting for input, which received-tone detection measures (issue #522). */
+    dsd_analog_rx_playback_begin(state);
     if (opts->audio_out_type == 0 && opts->audio_raw_out) {
         dsd_audio_write(opts->audio_raw_out, state->analog_out, analog_block);
     }
     if (opts->audio_out_type == 8) {
         dsd_udp_audio_hook_blast_analog(opts, state, bytes, state->analog_out);
     }
+    dsd_analog_rx_playback_end(state);
 }
 
 /* Whether the block is carrier activity for the scanner's hold. The analog monitor's carrier, FM or AM (issue #524),
