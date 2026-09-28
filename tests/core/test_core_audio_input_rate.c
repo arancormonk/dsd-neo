@@ -7,6 +7,7 @@
 #include <dsd-neo/core/audio_filters.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
+#include <errno.h>
 #include <math.h>
 #include <sndfile.h>
 #include <stdio.h>
@@ -97,6 +98,27 @@ free_opts(dsd_opts* opts) {
     free(opts);
 }
 
+/* Writes @p samples to @p path as headerless PCM. Returns 1, having removed the file, when that fails. */
+static int
+write_raw_pcm_file(const char* path, const short* samples, size_t sample_count) {
+    FILE* fp = dsd_fopen_private(path, "wb");
+    if (!fp) {
+        DSD_FPRINTF(stderr, "FAIL: fopen write failed for %s\n", path);
+        (void)remove(path);
+        return 1;
+    }
+
+    size_t nwritten = fwrite(samples, sizeof(samples[0]), sample_count, fp);
+    fclose(fp);
+    if (nwritten != sample_count) {
+        DSD_FPRINTF(stderr, "FAIL: fwrite failed for %s\n", path);
+        (void)remove(path);
+        return 1;
+    }
+
+    return 0;
+}
+
 static int
 create_temp_raw_pcm_wav_suffix(const char* prefix, const short* samples, size_t sample_count, char* out_path,
                                size_t out_path_sz) {
@@ -119,54 +141,7 @@ create_temp_raw_pcm_wav_suffix(const char* prefix, const short* samples, size_t 
         return 1;
     }
 
-    FILE* fp = dsd_fopen_private(out_path, "wb");
-    if (!fp) {
-        DSD_FPRINTF(stderr, "FAIL: fopen write failed for %s\n", out_path);
-        return 1;
-    }
-
-    size_t nwritten = fwrite(samples, sizeof(samples[0]), sample_count, fp);
-    fclose(fp);
-    if (nwritten != sample_count) {
-        DSD_FPRINTF(stderr, "FAIL: fwrite failed for %s\n", out_path);
-        (void)remove(out_path);
-        return 1;
-    }
-
-    return 0;
-}
-
-static int
-create_temp_raw_pcm_no_suffix(const char* prefix, const short* samples, size_t sample_count, char* out_path,
-                              size_t out_path_sz) {
-    if (!prefix || !samples || sample_count == 0 || !out_path || out_path_sz == 0) {
-        DSD_FPRINTF(stderr, "FAIL: invalid raw temp file request\n");
-        return 1;
-    }
-
-    int fd = dsd_test_mkstemp(out_path, out_path_sz, prefix);
-    if (fd < 0) {
-        DSD_FPRINTF(stderr, "FAIL: dsd_test_mkstemp failed for %s\n", prefix);
-        return 1;
-    }
-    (void)dsd_close(fd);
-
-    FILE* fp = dsd_fopen_private(out_path, "wb");
-    if (!fp) {
-        DSD_FPRINTF(stderr, "FAIL: fopen write failed for %s\n", out_path);
-        (void)remove(out_path);
-        return 1;
-    }
-
-    size_t nwritten = fwrite(samples, sizeof(samples[0]), sample_count, fp);
-    fclose(fp);
-    if (nwritten != sample_count) {
-        DSD_FPRINTF(stderr, "FAIL: fwrite failed for %s\n", out_path);
-        (void)remove(out_path);
-        return 1;
-    }
-
-    return 0;
+    return write_raw_pcm_file(out_path, samples, sample_count);
 }
 
 static int
@@ -551,13 +526,20 @@ test_current_input_timing_rate_prefers_active_backend(void) {
     return rc;
 }
 
+/* openAudioInDevice() takes whatever follows the last '.' anywhere in the path as the extension, and the temp
+ * directory's path can hold a dot ("./" when no temp directory is set). So the file is opened by a bare, dot-free
+ * name from inside a temp working directory, which keeps the input on the extensionless branch. */
 static int
 test_open_audio_in_device_extensionless_raw_uses_headless_rate(void) {
     const short samples[] = {101, -202, 303, -404};
-    char path[DSD_TEST_PATH_MAX] = {0};
-    if (create_temp_raw_pcm_no_suffix("dsdneo_headless_raw", samples, sizeof samples / sizeof samples[0], path,
-                                      sizeof path)
-        != 0) {
+    const char* path = "dsdneo_headless_raw";
+    dsd_test_temp_cwd cwd;
+    if (dsd_test_temp_cwd_enter(&cwd, "dsdneo_headless_raw") != 0) {
+        DSD_FPRINTF(stderr, "FAIL: temp working directory setup failed: %s\n", strerror(errno));
+        return 1;
+    }
+    if (write_raw_pcm_file(path, samples, sizeof samples / sizeof samples[0]) != 0) {
+        (void)dsd_test_temp_cwd_leave(&cwd);
         return 1;
     }
 
@@ -565,6 +547,7 @@ test_open_audio_in_device_extensionless_raw_uses_headless_rate(void) {
     if (!opts) {
         DSD_FPRINTF(stderr, "FAIL: alloc opts\n");
         (void)remove(path);
+        (void)dsd_test_temp_cwd_leave(&cwd);
         return 1;
     }
     dsd_state* state = alloc_state();
@@ -572,6 +555,7 @@ test_open_audio_in_device_extensionless_raw_uses_headless_rate(void) {
         DSD_FPRINTF(stderr, "FAIL: alloc state\n");
         free_opts(opts);
         (void)remove(path);
+        (void)dsd_test_temp_cwd_leave(&cwd);
         return 1;
     }
 
@@ -604,7 +588,12 @@ test_open_audio_in_device_extensionless_raw_uses_headless_rate(void) {
     closeAudioInDevice(opts);
     free(state);
     free_opts(opts);
-    (void)remove(path);
+    rc |= expect_int_eq("extensionless raw file removed", remove(path), 0);
+    if (dsd_test_temp_cwd_leave(&cwd) != 0) {
+        DSD_FPRINTF(stderr, "FAIL: could not leave or remove temp working directory %s: %s\n", cwd.dir,
+                    strerror(errno));
+        rc |= 1;
+    }
     return rc;
 }
 
