@@ -342,14 +342,17 @@ int dsd_analog_rx_block_straddles_boundary(const dsd_opts* opts, const dsd_state
  * Nor may the audio a live input still holds: on Pulse, stdin, UDP and TCP input the old
  * channel keeps arriving while a rigctl retune holds the decoder, and the decoder reads that
  * backlog afterwards. So on those inputs the tap skips what it reads after the boundary until a
- * read shows the input ran dry -- DSD_ANALOG_RX_TAP_READ_MS or more of input that took at least
- * half as long to arrive, not counting the time the decoder spent playing monitor audio
- * (dsd_analog_rx_playback_begin()), and for at least an eighth of which the decoder waited inside
- * the input read (dsd_analog_rx_input_wait_begin()), neither of which a backlog read at the
- * decoder's pace does, whatever else holds the decoder between reads (a raw WAV sync to disk) --
- * and that read too, or until it has skipped DSD_ANALOG_RX_BACKLOG_MAX_MS. With nothing queued
- * that costs two reads. The publication reads IDLE meanwhile. Files and RTL-family streams are
- * not skipped: a file queues no other channel, and a stream clears its own output at a retune.
+ * read shows the input ran dry, and that read too, or until it has skipped
+ * DSD_ANALOG_RX_BACKLOG_MAX_MS. A read shows it with DSD_ANALOG_RX_TAP_READ_MS or more of input
+ * that passes two tests: it took at least half as long to arrive, not counting the time the
+ * decoder spent playing monitor audio (dsd_analog_rx_playback_begin()), and the decoder waited
+ * inside the input read (dsd_analog_rx_input_wait_begin()) for at least an eighth of it. A stall
+ * outside the read, such as a raw WAV sync to disk, can carry a backlog read past the first test
+ * but not the second, since what the input holds comes back from the read at once; time the
+ * decoder spends in a read while the backlog is still queued can pass the second but not, on its
+ * own, the first. With nothing queued the skip costs two reads. The publication reads IDLE
+ * meanwhile. Files and RTL-family streams are not skipped: a file queues no other channel, and a
+ * stream clears its own output at a retune.
  *
  * Before the tap has run there is no detector state to hold either boundary. The tap then
  * starts at the sample it starts on (dsd_analog_rx_tap_partial()), and when a reset

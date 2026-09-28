@@ -1215,16 +1215,16 @@ installs from `src/engine/trunk_tuning.c` in `src/engine/trunk_tuning_hooks_inst
     decoder for each block's playing time once its buffer is full, and it then reads a backlog at real-time pace.
     Second, the decoder waited inside the input read for at least an eighth of the span: `symbol_take_sample()` brackets
     the live input read with `dsd_analog_rx_input_wait_begin()` / `_end()`, and a read of what the input already holds
-    comes back at once. The second test keeps other decoder stalls from passing the first (issue #576): the raw WAV's
-    per-block sync to disk, command handling, scheduling delays. The first keeps time the decoder spends inside a read
-    with the backlog still queued (descheduled, or its own work) from passing the second. On a live input the stalls
-    leave less to wait for, since the audio that arrived meanwhile is already queued, and the eighth keeps a live input
-    heard after two reads until the decoder is held for about 17 ms of every 20 ms read. The first read after the
-    boundary only starts the span. Files and RTL-family streams are not skipped (the RTL stream clears its own output at
-    a retune), and the skip only reads: the monitor output plays the backlog as before. The tap's own resets act on the
-    read in hand instead: a generation move, a pause or a change of input rate since the previous read drops it (after a
-    rate change, samples taken at the old rate are another signal at the new one: 1920 Hz at 48 kHz read as 2500 Hz
-    input is a 100 Hz tone), and the hangover expires on it.
+    comes back at once. A backlog read with other decoder stalls in between (issue #576: the raw WAV's per-block sync to
+    disk, command handling, scheduling delays) can pass the first test but not the second. Time the decoder spends
+    inside a read with the backlog still queued (descheduled, or its own work) can pass the second but not, on its own,
+    the first. On a live input the stalls leave less to wait for, since the audio that arrived meanwhile is already
+    queued, and the eighth keeps a live input heard after two reads until the decoder is held for about 17 ms of every
+    20 ms read. The first read after the boundary only starts the span. Files and RTL-family streams are not skipped
+    (the RTL stream clears its own output at a retune), and the skip only reads: the monitor output plays the backlog as
+    before. The tap's own resets act on the read in hand instead: a generation move, a pause or a change of input rate
+    since the previous read drops it (after a rate change, samples taken at the old rate are another signal at the new
+    one: 1920 Hz at 48 kHz read as 2500 Hz input is a 100 Hz tone), and the hangover expires on it.
 - `dsd_filters.c` owns the per-protocol matched filters, selected by kind rather than by calling one of four
   wrappers, because the symbol grid has to know when the stream it samples changes identity. It reads the raw
   discriminator until a sync names a protocol and the filter's output afterwards, and that output describes the
