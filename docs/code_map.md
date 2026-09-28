@@ -981,8 +981,8 @@ installs from `src/engine/trunk_tuning.c` in `src/engine/trunk_tuning_hooks_inst
   over is filled by `dsd_symbol.c` and owned by decoder-state setup/teardown in `src/core/util/dsd_init.c`.
 - Received-tone detection (issues #522 CTCSS, #523 DCS), public entry points in `include/dsd-neo/dsp/analog_rx.h`:
   `dsd_analog_rx_tap()`, `dsd_analog_rx_tap_partial()`, `dsd_analog_rx_block_restart()`, `dsd_analog_rx_reset()`,
-  `dsd_analog_rx_carrier_open_now()`, `dsd_analog_rx_block_straddles_boundary()` and the monitor playback
-  bracket `dsd_analog_rx_playback_begin()` / `dsd_analog_rx_playback_end()`. The same header holds the CTCSS timing
+  `dsd_analog_rx_carrier_open_now()`, `dsd_analog_rx_block_straddles_boundary()` and the live input read
+  bracket `dsd_analog_rx_input_wait_begin()` / `dsd_analog_rx_input_wait_end()`. The same header holds the CTCSS timing
   contract in sample time: p95 targets `DSD_ANALOG_CTCSS_LOCK_P95_MS` (400) and `DSD_ANALOG_CTCSS_LOSS_P95_MS` (350) and
   per-event ceilings `DSD_ANALOG_CTCSS_LOCK_CEILING_MS` (700) and `DSD_ANALOG_CTCSS_LOSS_CEILING_MS` (800).
   `DSP_ANALOG_CTCSS` asserts them on every timing row, and a tone policy's acquisition window must exceed the lock
@@ -1206,17 +1206,20 @@ installs from `src/engine/trunk_tuning.c` in `src/engine/trunk_tuning_hooks_inst
     decoder, so every `dsd_analog_rx_reset()` and every generation move the tap sees also arms a backlog skip, and so
     does detection that starts with no session after a reset (the publication's generation is no longer 0: a retune in a
     digital mode, then the switch to the analog monitor). The tap skips its reads until one shows the input ran dry (a
-    span of `DSD_ANALOG_RX_TAP_READ_MS` or more of input that took at least half as long to arrive on the monotonic
-    clock, where a backlog drains at the decoder's own speed), that read included, or until
+    span of `DSD_ANALOG_RX_TAP_READ_MS` or more of input for which the decoder waited inside the input read for at
+    least an eighth of it; a backlog comes back from the read at once), that read included, or until
     `DSD_ANALOG_RX_BACKLOG_MAX_MS` (2 s) of input, after which stdin fed from a file faster than real time is heard
-    again. Time the symbol path spends playing monitor audio (`dsd_analog_rx_playback_begin()` / `_end()` around the
-    output write) is not waiting: synchronous playback of stdin input holds the decoder for each block's playing time
-    once its buffer is full, and it then reads a backlog at real-time pace. The first read after the boundary only
-    starts that clock. Files and RTL-family streams are not skipped (the RTL stream clears its own output at a retune),
-    and the skip only reads: the monitor output plays the backlog as before. The tap's own resets act on the read in
-    hand instead: a generation move, a pause or a change of input rate since the previous read drops it (after a rate
-    change, samples taken at the old rate are another signal at the new one: 1920 Hz at 48 kHz read as 2500 Hz input is
-    a 100 Hz tone), and the hangover expires on it.
+    again. Only the time inside the read counts: `symbol_take_sample()` brackets the live input read with
+    `dsd_analog_rx_input_wait_begin()` / `_end()`. Decoder time anywhere else is not waiting (issue #576): monitor
+    playback, which on stdin input holds the decoder for each block's playing time once its buffer is full, the raw
+    WAV's per-block sync to disk, command handling and scheduling delays. A backlog read with such stalls in between
+    is still a backlog. On a live input they leave less to wait for, since the audio that arrived meanwhile is already
+    queued, and the eighth keeps a live input heard after two reads until the decoder is held for about 17 ms of every
+    20 ms read. The first read after the boundary only starts the span. Files and RTL-family streams are not skipped
+    (the RTL stream clears its own output at a retune), and the skip only reads: the monitor output plays the backlog as
+    before. The tap's own resets act on the read in hand instead: a generation move, a pause or a change of input rate
+    since the previous read drops it (after a rate change, samples taken at the old rate are another signal at the new
+    one: 1920 Hz at 48 kHz read as 2500 Hz input is a 100 Hz tone), and the hangover expires on it.
 - `dsd_filters.c` owns the per-protocol matched filters, selected by kind rather than by calling one of four
   wrappers, because the symbol grid has to know when the stream it samples changes identity. It reads the raw
   discriminator until a sync names a protocol and the filter's output afterwards, and that output describes the

@@ -472,12 +472,11 @@ typedef struct {
     /** 1 from a boundary until a read shows the input ran dry (analog_rx_backlog_skipped()). */
     int backlog_armed;
     int backlog_span_open;           /**< 1 once a read since the boundary started a measured span */
-    uint64_t backlog_span_start_ms;  /**< monotonic ms at which the span being measured started */
     uint64_t backlog_span_us;        /**< input read in that span, in sample time */
-    uint64_t backlog_span_played_ms; /**< of that span, the time the decoder spent playing monitor audio */
+    uint64_t backlog_span_waited_ns; /**< of that span, the time the decoder spent inside the input read */
     uint64_t backlog_skipped_us;     /**< input skipped since the boundary, in sample time */
-    int playback_open;               /**< 1 between dsd_analog_rx_playback_begin() and _end() */
-    uint64_t playback_started_ms;    /**< monotonic ms at dsd_analog_rx_playback_begin() */
+    int input_wait_open;             /**< 1 between dsd_analog_rx_input_wait_begin() and _end() */
+    uint64_t input_wait_started_ns;  /**< monotonic ns at dsd_analog_rx_input_wait_begin() */
     /** 1 when the monitor block being assembled began before a retune, profile change or reset (issue #526). */
     int block_straddled;
     /** 1 while the tap runs the detectors (the FM monitor, dsd_analog_tone_detection_active()); 0 while it keeps only
@@ -497,7 +496,7 @@ typedef struct {
 static uint64_t (*g_analog_rx_test_clock)(void) = NULL;
 
 /* Test-hook entry point (declared in analog_rx_internal.h): replace the clock the stream-pause
-   check reads; NULL restores the monotonic clock. */
+   check and the backlog skip read; NULL restores the monotonic clock. */
 void
 dsd_analog_rx_test_set_clock(uint64_t (*now_ms)(void)) {
     g_analog_rx_test_clock = now_ms;
@@ -512,6 +511,17 @@ analog_rx_now_ms(void) {
     }
 #endif
     return dsd_time_monotonic_ms();
+}
+
+/* The same clock in ns, for the input waits the backlog skip adds up: each is a single sample read, far below a ms. */
+static uint64_t
+analog_rx_now_ns(void) {
+#ifdef DSD_NEO_TEST_HOOKS
+    if (g_analog_rx_test_clock) {
+        return g_analog_rx_test_clock() * 1000000U;
+    }
+#endif
+    return dsd_time_monotonic_ns();
 }
 
 static analog_rx_session*
@@ -797,33 +807,45 @@ static void
 analog_rx_arm_backlog_skip(analog_rx_session* session) {
     session->backlog_armed = 1;
     session->backlog_span_open = 0;
-    session->backlog_span_start_ms = 0U;
     session->backlog_span_us = 0U;
-    session->backlog_span_played_ms = 0U;
+    session->backlog_span_waited_ns = 0U;
     session->backlog_skipped_us = 0U;
+    /* A read under way at the boundary -- a TCP reconnect, or the switch to Pulse at the end of a WAV file, resets
+       inside it -- waited before the boundary. */
+    session->input_wait_open = 0;
 }
 
-/* Start measuring a new span of the backlog skip at @p now_ms. */
+/* Start measuring a new span of the backlog skip. */
 static void
-analog_rx_backlog_span_start(analog_rx_session* session, uint64_t now_ms) {
+analog_rx_backlog_span_start(analog_rx_session* session) {
     session->backlog_span_open = 1;
-    session->backlog_span_start_ms = now_ms;
     session->backlog_span_us = 0U;
-    session->backlog_span_played_ms = 0U;
+    session->backlog_span_waited_ns = 0U;
 }
+
+/* The input ran dry over a span in which the decoder waited inside the input read for at least 1/N of the span's
+   input (analog_rx_backlog_skipped()). */
+enum { ANALOG_RX_BACKLOG_DRY_WAIT_DIVISOR = 8 };
 
 /*
  * After a boundary, on an input that queues, every read is skipped until one shows the input ran
- * dry. The decoder drains a backlog far faster than real time, so the test is a span of at least
- * DSD_ANALOG_RX_TAP_READ_MS of input that took at least half as long to arrive: the decoder had
- * to wait for it. Time the decoder spent playing monitor audio does not count: synchronous
- * playback holds it for each block's playing time once the output buffer is full, and it then
- * reads a backlog at real-time pace without ever waiting for the input. The first read after the
- * boundary only starts the clock, since it may have waited in the input for any length of time
- * (after a generation move that is the read the move is seen on, dropped already), and the read
- * that ends the waiting span is skipped too, since it can still open with the backlog's last
- * samples; the next read holds only audio that arrived after the boundary. An input that never
- * runs dry (stdin fed from a file) is heard again after DSD_ANALOG_RX_BACKLOG_MAX_MS of it.
+ * dry. What the input already holds comes back from its read at once, so the test is a span of at
+ * least DSD_ANALOG_RX_TAP_READ_MS of input for which the decoder waited inside the input read
+ * (dsd_analog_rx_input_wait_begin()) for at least 1/ANALOG_RX_BACKLOG_DRY_WAIT_DIVISOR of it: a
+ * backlog drains with no waiting at all. Only time inside the read counts. The decoder also spends
+ * time elsewhere between two reads -- playing monitor audio, syncing the raw WAV to disk (issue
+ * #576), running commands, or not being scheduled -- and none of it is time the input made it
+ * wait: a backlog read with such stalls in between is still a backlog. Synchronous playback, which
+ * holds the decoder for each block's playing time once the output buffer is full, is one of them:
+ * a backlog then goes by at real-time pace without the decoder ever waiting for it. On a live
+ * input the same stalls leave less to wait for, since what arrived meanwhile is queued by the next
+ * read: with s ms of them per 20 ms read the decoder waits about 20 - s ms, so the small share
+ * keeps a live input heard after two reads up to about 17 ms of stalls per read. The first read
+ * after the boundary only starts the span, since it may have waited in the input for any length
+ * of time (after a generation move that is the read the move is seen on, dropped already), and
+ * the read that ends the waiting span is skipped too, since it can still open with the backlog's
+ * last samples; the next read holds only audio that arrived after the boundary. An input that
+ * never runs dry (stdin fed from a file) is heard again after DSD_ANALOG_RX_BACKLOG_MAX_MS of it.
  * Returns 1 when this read is skipped.
  */
 static int
@@ -835,22 +857,18 @@ analog_rx_backlog_skipped(const dsd_opts* opts, analog_rx_session* session, unsi
         session->backlog_armed = 0;
         return 0;
     }
-    const uint64_t now = analog_rx_now_ms();
     const uint64_t read_us = ((uint64_t)count * 1000000U) / (uint64_t)rate_hz;
     session->backlog_skipped_us += read_us;
     if (!session->backlog_span_open) {
-        analog_rx_backlog_span_start(session, now);
+        analog_rx_backlog_span_start(session);
     } else {
         session->backlog_span_us += read_us;
         if (session->backlog_span_us >= (uint64_t)DSD_ANALOG_RX_TAP_READ_MS * 1000U) {
-            const uint64_t elapsed_ms =
-                now > session->backlog_span_start_ms ? now - session->backlog_span_start_ms : 0U;
-            const uint64_t waited_ms =
-                elapsed_ms > session->backlog_span_played_ms ? elapsed_ms - session->backlog_span_played_ms : 0U;
-            if (2U * waited_ms * 1000U >= session->backlog_span_us) {
+            if ((uint64_t)ANALOG_RX_BACKLOG_DRY_WAIT_DIVISOR * session->backlog_span_waited_ns
+                >= session->backlog_span_us * 1000U) {
                 session->backlog_armed = 0;
             }
-            analog_rx_backlog_span_start(session, now);
+            analog_rx_backlog_span_start(session);
         }
     }
     if (session->backlog_skipped_us >= (uint64_t)DSD_ANALOG_RX_BACKLOG_MAX_MS * 1000U) {
@@ -1037,7 +1055,7 @@ analog_rx_boundary_dropped(const dsd_opts* opts, dsd_state* state, analog_rx_ses
         session->block_straddled = 1;
         session->stale_after_ms = 0;
         analog_rx_arm_backlog_skip(session);
-        analog_rx_backlog_span_start(session, analog_rx_now_ms());
+        analog_rx_backlog_span_start(session);
     }
     analog_rx_publish(opts, state, session, 0U, rate_hz);
     return 1;
@@ -1223,24 +1241,25 @@ dsd_analog_rx_block_straddles_boundary(const dsd_opts* opts, const dsd_state* st
 }
 
 void
-dsd_analog_rx_playback_begin(const dsd_state* state) {
+dsd_analog_rx_input_wait_begin(const dsd_state* state) {
     analog_rx_session* session = state ? analog_rx_session_get(state) : NULL;
-    if (!session || !session->backlog_armed) {
+    /* The clock is read only while a backlog skip measures a span: twice per input sample, for a few reads. */
+    if (!session || !session->backlog_armed || !session->backlog_span_open) {
         return;
     }
-    session->playback_open = 1;
-    session->playback_started_ms = analog_rx_now_ms();
+    session->input_wait_open = 1;
+    session->input_wait_started_ns = analog_rx_now_ns();
 }
 
 void
-dsd_analog_rx_playback_end(const dsd_state* state) {
+dsd_analog_rx_input_wait_end(const dsd_state* state) {
     analog_rx_session* session = state ? analog_rx_session_get(state) : NULL;
-    if (!session || !session->playback_open) {
+    if (!session || !session->input_wait_open) {
         return;
     }
-    session->playback_open = 0;
-    const uint64_t now = analog_rx_now_ms();
-    if (session->backlog_armed && session->backlog_span_open && now > session->playback_started_ms) {
-        session->backlog_span_played_ms += now - session->playback_started_ms;
+    session->input_wait_open = 0;
+    const uint64_t now = analog_rx_now_ns();
+    if (session->backlog_armed && session->backlog_span_open && now > session->input_wait_started_ns) {
+        session->backlog_span_waited_ns += now - session->input_wait_started_ns;
     }
 }

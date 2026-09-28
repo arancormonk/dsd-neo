@@ -25,6 +25,9 @@ unsigned int dsd_symbol_test_finalize_unsynced_analog_block(dsd_opts* opts, dsd_
    while there is no sync: the sample joins the block being assembled, which is finalized when
    full. */
 void dsd_symbol_test_push_unsynced_analog_sample(dsd_opts* opts, dsd_state* state, float sample);
+/* Call @p sync in place of the unsynced raw WAV's sync to disk after each block: a slow disk's fsync,
+   without the disk. NULL restores sf_write_sync(). */
+void dsd_symbol_test_set_raw_wav_sync(void (*sync)(void));
 #ifdef USE_RADIO
 int dsd_symbol_test_rtl_cache_and_center_contract(int out_values[10]);
 int dsd_symbol_test_auto_center_step_direction(int e_ema, int deadband, int* run_dir, int* run_len, int* dir_out);
