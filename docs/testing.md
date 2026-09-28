@@ -1057,15 +1057,18 @@ paths as well as when it passes. `dsd_test_mkstemp()`, `dsd_test_mkdtemp()` and
 `dsd_test_capture_stderr_begin()` in `tests/test_support/test_support.h` create
 them under `dsd_test_tmpdir()`: `DSD_NEO_TEST_TMPDIR`, else `TMPDIR` (`TEMP` or
 `TMP` on Windows), else the working directory. Create them with these helpers,
-not at a fixed path such as `/tmp`, which the check below does not look at.
-Remove each file with `remove()`, including any the code under test wrote there,
-such as a P25 control-channel cache file or an I/Q capture's sidecar, then
-remove the directory with `dsd_test_rmdir()`. `dsd_test_remove_temp_dir()` does
-both from a list of file names. Never remove a directory with `remove()`: the
-native Windows CRT does not remove directories, so it would stay behind there.
-Check the result of the directory removal and fail the test if it fails. The
-removal succeeds only on an empty directory, so the check also catches a file
-the test forgot to list or a new file the code under test starts writing.
+not at a fixed path such as `/tmp`, which the check below does not look at. The
+temp directory's own path can contain a dot, so when the code under test reads
+meaning from a path's text, such as an extension, open the file by a bare name
+from a `dsd_test_temp_cwd_enter()` directory instead. Remove each file with
+`remove()`, including any the code under test wrote there, such as a P25
+control-channel cache file or an I/Q capture's sidecar, then remove the
+directory with `dsd_test_rmdir()`. `dsd_test_remove_temp_dir()` does both from a
+list of file names. Never remove a directory with `remove()`: the native Windows
+CRT does not remove directories, so it would stay behind there. Check the result
+of the directory removal and fail the test if it fails. The removal succeeds
+only on an empty directory, so the check also catches a file the test forgot to
+list or a new file the code under test starts writing.
 `dsd_test_capture_stderr_read()` deletes the capture file it reads. A test that
 does not read its capture removes `cap.path` itself after
 `dsd_test_capture_stderr_end()`.
@@ -1073,7 +1076,8 @@ does not read its capture removes `cap.path` itself after
 A failed `assert()` aborts the test before its cleanup runs. Once a temporary
 file or directory exists, check with a counted failure instead: print what
 failed, remove the file or directory, then return the failure. A write that
-fails while the test sets up its file counts the same way.
+fails while the test sets up its file counts the same way. An open that fails
+can still have created the file, so remove it on that path too.
 
 To check the whole suite, run it against an empty directory, which must still
 be empty afterwards. That does not catch a file a test creates by a relative
