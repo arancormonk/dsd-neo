@@ -779,11 +779,14 @@ tone setting, and it runs with `-o null` too. Muting by tone is the separate
   also skips the audio the input had already queued, which the old channel went on filling while a rigctl retune held
   the decoder, also when the boundary came in a digital mode and detection starts with the switch to the analog
   monitor: detection hears nothing until a read shows the input ran dry (20 ms or more of it that took at least half as
-  long to arrive, which a queue the decoder drains at its own speed never does, not counting time spent playing the
-  monitor audio, which on stdin input holds the decoder at real-time pace), and not that read either.
-  With nothing queued that costs the new channel two 20 ms reads, and no more than 2 s of input is ever skipped, so
-  stdin fed from a file faster than real time is heard again after that. Files and RTL-family streams are not skipped:
-  a file holds no other channel, and an RTL-family stream clears its own output at a retune.
+  long to arrive, not counting time spent playing the monitor audio, which on stdin input holds the decoder at
+  real-time pace, and for at least an eighth of which DSD-neo waited on the input; a queue it drains never makes it
+  wait, however long other work such as syncing a `-6` raw WAV to a slow disk holds it), and not that read either.
+  With nothing queued that costs the new channel two 20 ms reads, unless other work holds DSD-neo for more than about
+  17 ms of every 20 ms (then it waits on the input for less than an eighth of each read, and the new channel is heard
+  after the 2 s limit). No more than 2 s of input is ever skipped, so stdin fed from a file faster than real time is
+  heard again after that. Files and RTL-family streams are not skipped: a file holds no other channel, and an
+  RTL-family stream clears its own output at a retune.
 - Where it runs: analog-only decoding with input monitoring, on PCM inputs (TCP, UDP, Pulse, WAV, stdin) or on an
   RTL-family stream that outputs monitor audio. It does not run for the AM monitor (`-fM`), for the `-8` source monitor
   during digital decoding, for EDACS analog voice, or on symbol-file input, and the `Rx tone:` line and `RECEIVED TONE`

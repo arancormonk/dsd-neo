@@ -342,12 +342,19 @@ int dsd_analog_rx_block_straddles_boundary(const dsd_opts* opts, const dsd_state
  * Nor may the audio a live input still holds: on Pulse, stdin, UDP and TCP input the old
  * channel keeps arriving while a rigctl retune holds the decoder, and the decoder reads that
  * backlog afterwards. So on those inputs the tap skips what it reads after the boundary until a
- * read shows the input ran dry -- DSD_ANALOG_RX_TAP_READ_MS or more of input that took at least
- * half as long to arrive, not counting the time the decoder spent playing monitor audio
- * (dsd_analog_rx_playback_begin()), which a backlog read at the decoder's pace never does -- and
- * that read too, or until it has skipped DSD_ANALOG_RX_BACKLOG_MAX_MS. With nothing queued that
- * costs two reads. The publication reads IDLE meanwhile. Files and RTL-family streams are not
- * skipped: a file queues no other channel, and a stream clears its own output at a retune.
+ * read shows the input ran dry, and that read too, or until it has skipped
+ * DSD_ANALOG_RX_BACKLOG_MAX_MS. A read shows it with DSD_ANALOG_RX_TAP_READ_MS or more of input
+ * that passes two tests: it took at least half as long to arrive, not counting the time the
+ * decoder spent playing monitor audio (dsd_analog_rx_playback_begin()), and the decoder waited
+ * inside the input read (dsd_analog_rx_input_wait_begin()) for at least an eighth of it. A stall
+ * outside the read, such as a raw WAV sync to disk, can carry a backlog read past the first test
+ * but not the second, since what the input holds comes back from the read at once; time the
+ * decoder spends in a read while the backlog is still queued can pass the second but not, on its
+ * own, the first. With nothing queued the skip costs two reads, unless something outside the read
+ * holds the decoder for more than about 17 ms of every 20 ms: the input then waits for less than
+ * an eighth of each read, and is heard only after DSD_ANALOG_RX_BACKLOG_MAX_MS. The publication
+ * reads IDLE meanwhile. Files and RTL-family streams are not skipped: a file queues no other
+ * channel, and a stream clears its own output at a retune.
  *
  * Before the tap has run there is no detector state to hold either boundary. The tap then
  * starts at the sample it starts on (dsd_analog_rx_tap_partial()), and when a reset
@@ -368,13 +375,29 @@ void dsd_analog_rx_reset(dsd_state* state);
  * decoder for the block's playing time once its buffer is full, and the decoder then reads an
  * input's backlog at real-time pace, as it reads audio arriving live; the backlog skip after a
  * boundary (dsd_analog_rx_reset()) counts the time between the two calls as playing, not as
- * waiting for input. Both only note the time in the detector's own state, which the state
- * holds by pointer, so neither changes @p state itself.
+ * the time the input took to arrive. Both only note the time in the detector's own state, which
+ * the state holds by pointer, so neither changes @p state itself.
  */
 void dsd_analog_rx_playback_begin(const dsd_state* state);
 
 /** @brief Mark the end of the monitor playback dsd_analog_rx_playback_begin() started. */
 void dsd_analog_rx_playback_end(const dsd_state* state);
+
+/**
+ * @brief Mark the start of a read from the live input.
+ *
+ * The symbol path calls it before it reads the next input sample and dsd_analog_rx_input_wait_end()
+ * after. After a boundary, the backlog skip on an input that queues (dsd_analog_rx_reset()) counts
+ * only the time between the two calls as waiting for the input (issue #576): what the input already
+ * holds comes back at once, and time the decoder spends anywhere else -- playing monitor audio,
+ * syncing the raw WAV to disk, running commands, not being scheduled -- is not time the input made
+ * it wait. Both only note the time in the detector's own state, which the state holds by pointer,
+ * so neither changes @p state itself. Outside a backlog skip neither reads the clock.
+ */
+void dsd_analog_rx_input_wait_begin(const dsd_state* state);
+
+/** @brief Mark the end of the input read dsd_analog_rx_input_wait_begin() started. */
+void dsd_analog_rx_input_wait_end(const dsd_state* state);
 
 #ifdef __cplusplus
 }

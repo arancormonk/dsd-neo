@@ -1130,13 +1130,34 @@ symbol_update_unsynced_input_power(dsd_opts* opts, dsd_state* state, unsigned in
     }
 }
 
+#ifdef DSD_NEO_TEST_HOOKS
+static void (*g_symbol_test_raw_wav_sync)(void) = NULL;
+
+void
+dsd_symbol_test_set_raw_wav_sync(void (*sync)(void)) {
+    g_symbol_test_raw_wav_sync = sync;
+}
+#endif
+
+/* Sync the unsynced raw WAV to disk after a block. */
+static inline void
+symbol_sync_unsynced_raw_wav(SNDFILE* wav) {
+#ifdef DSD_NEO_TEST_HOOKS
+    if (g_symbol_test_raw_wav_sync) {
+        g_symbol_test_raw_wav_sync();
+        return;
+    }
+#endif
+    sf_write_sync(wav);
+}
+
 static inline void
 symbol_write_unsynced_raw_wav(dsd_opts* opts, dsd_state* state, unsigned int analog_block) {
     if (opts->wav_out_raw != NULL && opts->frame_nxdn48 == 0 && opts->frame_nxdn96 == 0 && opts->frame_dpmr == 0
         && opts->frame_m17 == 0) {
         symbol_convert_analog_block_to_i16(state, analog_block);
         symbol_write_wav_short_block(opts->wav_out_raw, state->analog_out, analog_block, "symbol raw WAV");
-        sf_write_sync(opts->wav_out_raw);
+        symbol_sync_unsynced_raw_wav(opts->wav_out_raw);
     }
 }
 
@@ -1781,6 +1802,32 @@ symbol_read_sample_udp(dsd_opts* opts, dsd_state* state, float* sample_out) {
     return 1;
 }
 
+/* The next sample from the input itself. */
+static int
+symbol_read_live_sample(dsd_opts* opts, dsd_state* state, symbol_work_ctx* work) {
+    if (opts->audio_in_type == AUDIO_IN_PULSE) {
+        return symbol_read_sample_pulse(opts, &work->sample);
+    }
+    if (opts->audio_in_type == AUDIO_IN_STDIN) {
+        return symbol_read_sample_stdin(opts, state, &work->sample);
+    }
+    if (opts->audio_in_type == AUDIO_IN_WAV) {
+        return symbol_read_sample_wav(opts, state, &work->sample);
+    }
+#ifdef USE_RADIO
+    if (opts->audio_in_type == AUDIO_IN_RTL) {
+        return symbol_read_sample_rtl(opts, state, &work->sample, work);
+    }
+#endif
+    if (opts->audio_in_type == AUDIO_IN_TCP) {
+        return symbol_read_sample_tcp(opts, state, &work->sample);
+    }
+    if (opts->audio_in_type == AUDIO_IN_UDP) {
+        return symbol_read_sample_udp(opts, state, &work->sample);
+    }
+    return 1;
+}
+
 static int
 symbol_take_sample(dsd_opts* opts, dsd_state* state, symbol_work_ctx* work) {
     if (symbol_stop_after_shutdown(&work->sample)) {
@@ -1803,27 +1850,12 @@ symbol_take_sample(dsd_opts* opts, dsd_state* state, symbol_work_ctx* work) {
     if (dsd_pcm_input_take_staged_tail_sample(opts, &work->sample, 0)) {
         return 1;
     }
-    if (opts->audio_in_type == AUDIO_IN_PULSE) {
-        return symbol_read_sample_pulse(opts, &work->sample);
-    }
-    if (opts->audio_in_type == AUDIO_IN_STDIN) {
-        return symbol_read_sample_stdin(opts, state, &work->sample);
-    }
-    if (opts->audio_in_type == AUDIO_IN_WAV) {
-        return symbol_read_sample_wav(opts, state, &work->sample);
-    }
-#ifdef USE_RADIO
-    if (opts->audio_in_type == AUDIO_IN_RTL) {
-        return symbol_read_sample_rtl(opts, state, &work->sample, work);
-    }
-#endif
-    if (opts->audio_in_type == AUDIO_IN_TCP) {
-        return symbol_read_sample_tcp(opts, state, &work->sample);
-    }
-    if (opts->audio_in_type == AUDIO_IN_UDP) {
-        return symbol_read_sample_udp(opts, state, &work->sample);
-    }
-    return 1;
+    /* A queued input's backlog comes back from the read at once; only a read that has to wait for the input shows it
+       ran dry to the received-tone backlog skip after a boundary (issue #576). */
+    dsd_analog_rx_input_wait_begin(state);
+    const int taken = symbol_read_live_sample(opts, state, work);
+    dsd_analog_rx_input_wait_end(state);
+    return taken;
 }
 
 #ifdef USE_RADIO
