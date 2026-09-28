@@ -623,7 +623,8 @@ whichever row is on air, rather than accepted and that row skipped at every visi
 | A retune (scanner, trunking, manual tune) | The channel filter, de-emphasis, audio filter and squelch start from empty state on the new channel; a retune that lands on another DSP rate resolves the channel for that rate. |
 | `--nfm-bandwidth-hz`, `--am-bandwidth-hz`, `[analog] nfm_bandwidth_hz`, `am_bandwidth_hz` at startup | When the stream opens. |
 | Tone filter (`--tone-allow`, `--tone-block`, `--no-tone-filter`, `[analog] tone_filter` and `tone_list`) at startup | From the monitor's first read of audio. |
-| Tone filter in a config loaded into a running session | From the next read of the monitor's audio: a policy that differs from the one in force starts the transmission on air over, muted for a fresh check; a list that only respells a code (`D047N` for `D023I`, one signal) is the same policy and changes nothing. A present `[analog]` section sets both keys, so one without them turns the filter off. While an `nfm` scan row with its own policy is on air, the loaded policy becomes the configured default and applies when the row leaves. There is no terminal or Qt control that edits it. |
+| Tone filter in a config loaded into a running session | From the next read of the monitor's audio: a policy that differs from the one in force starts the transmission on air over, muted for a fresh check; a list that only respells a code (`D047N` for `D023I`, one signal) is the same policy and changes nothing. A present `[analog]` section sets both keys, so one without them turns the filter off. While an `nfm` scan row with its own policy is on air, the loaded policy becomes the configured default and applies when the row leaves. |
+| Tone filter from the terminal (Audio > Tone filter...) or the Qt/Android editor (the monitor's `TONE FILTER` row, Edit) | From the next read of the monitor's audio, as for a loaded config: a policy that differs from the one in force starts the transmission on air over, muted for a fresh check. A list the parser refuses, or allow or block without a list, is refused with the reason and changes nothing. The edit sets the configured policy: while an `nfm` scan row with its own policy is on air the row keeps it, the message says so, and the edit applies from the next row without one or when the row leaves. |
 
 ### De-emphasis and squelch
 
@@ -1008,10 +1009,32 @@ setting, shown apart from what is received, and it is off by default: then the o
   row, an `am` one included, runs its own mode), checked when the list is imported from the command line or a config
   file. When the scan starts: for a `--trunk-scan` list with no `nfm-conventional` target, whatever the decode mode.
   During the session: when a loaded config sets a policy nothing runs, or a decode-mode change, channel map or scanner
-  toggle takes the FM monitor away from the policy in force. The `Tone filter` row leaves the screen while no detection
-  runs.
-- What is shown: the terminal's Call Info section adds a `Tone filter:` line under `Rx tone:`, and the Qt/Android
-  monitor a `TONE FILTER` row under `RECEIVED TONE`, while a policy is in force: the policy (`allow 100.0 Hz/D023N`;
+  toggle takes the FM monitor away from the policy in force. The Call Info `Tone filter:` line and the Qt/Android
+  `TONE FILTER` row leave the screen while no detection runs; the terminal's Audio > `Tone filter...` row stays.
+- Live editing: the terminal's Audio > `Tone filter...` row and the Qt/Android monitor's `TONE FILTER` row (its Edit
+  button) set the policy during a session, mode and list together. The terminal row reads the policy as the Call Info
+  line does and opens a picker (Off, Allow list..., Block list..., Off and clear list) on the configured mode; allow and
+  block then prompt for the list, filled in with the configured one, off keeps the configured list as it stands when the
+  edit runs (so an edit or a loaded config made just before it is what it keeps; never a scan row's own), and Off and
+  clear list removes it. The Qt/Android editor has an Off/Allow/Block selector and a list field, filled in with the
+  configured policy, that shows why a list would be refused as it is typed (the same parser's message) and sends only
+  one that would apply; off sends the list in the field, so clearing the field and choosing Off removes it. On the
+  monitor the row, and so the editor, is there while detection runs on the channel on air, reading `off` with no policy:
+  on a scan whose list mixes `nfm` rows or `nfm-conventional` targets with other modes, it comes and goes as those rows
+  come on air, and the terminal row, always shown, edits the same policy in between. Both send the list as typed; a list
+  the parser refuses, or allow or block without a list, is refused with the reason
+  (`Refused: tone filter: use / between entries, not commas`) and changes nothing, and each edit is judged on its own,
+  so a refused one never cancels an earlier edit still waiting to apply. An edit takes effect from the monitor's next
+  read of audio (a changed policy starts the transmission on air over, muted for a fresh check), and a list policy set
+  where nothing runs detection says once that it has no effect. The editors always edit the configured policy, the one a
+  save writes (Config > Save or autosave, `[analog] tone_filter` and `tone_list`); a scan row's own policy is never
+  saved. While an `nfm` row or `nfm-conventional` target with its own policy is on air, it stays in force, the edit
+  applies from the next row without one or when the row leaves, and the message says so:
+  `Default tone filter -> allow 100.0 Hz; this channel overrides it (block 67.0 Hz)`; the Qt/Android editor says so too,
+  and both open on the configured policy, never the row's.
+- What is shown: the terminal's Call Info section adds a `Tone filter:` line under `Rx tone:` while a policy is in
+  force, and the Qt/Android monitor a `TONE FILTER` row under `RECEIVED TONE` wherever detection runs, reading `off`
+  with no policy (its Edit button opens the live editor). Each shows the policy (`allow 100.0 Hz/D023N`;
   while a scan row's own policy runs, followed by the configured one it shadows,
   `block D023N (row; default allow 100.0 Hz)`) and, while a carrier is heard, what it does: `passing`,
   `muted: checking tone`, `muted: not allowed` or `muted: no tone`. The received row goes on showing only what was

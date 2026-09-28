@@ -1026,6 +1026,76 @@ test_tone_filter() {
     freeState(&state);
 }
 
+/*
+ * What the live tone-filter editor opens on, through the real app-control view: the row is reachable wherever detection
+ * runs, a policy or none (toneFilterEditable); the configured mode and list, spelled as written, on their own signal
+ * and kept across a stop as configuration; and whether a scan row's own policy shadows an edit. Never the row's policy.
+ */
+static void
+test_tone_filter_editor_setting() {
+    static dsd_opts opts;
+    static dsd_state state;
+    initOpts(&opts);
+    initState(&state);
+    dsd_qt::MetricsModel model;
+    int settings = 0;
+    int verdicts = 0;
+    QObject::connect(&model, &dsd_qt::MetricsModel::toneFilterSettingChanged, [&]() { ++settings; });
+    QObject::connect(&model, &dsd_qt::MetricsModel::toneFilterChanged, [&]() { ++verdicts; });
+    expect("the editor opens on off before the first frame",
+           model.toneFilterConfiguredMode() == DSD_TONE_FILTER_OFF && model.toneFilterConfiguredList().isEmpty()
+               && !model.toneFilterEditable() && !model.toneFilterRowOverride());
+    opts.analog_only = 1;
+    opts.monitor_input_audio = 1;
+    opts.audio_in_type = AUDIO_IN_WAV;
+    opts.wav_sample_rate = 48000;
+    model.refresh(&opts, &state);
+    expect("no policy, but the editor is reachable where detection runs",
+           model.toneFilterEditable() && !model.toneFilterVisible()
+               && model.toneFilterConfiguredMode() == DSD_TONE_FILTER_OFF);
+    expect("reachability is session state", verdicts == 1 && settings == 0);
+
+    opts.analog_tone_filter = DSD_TONE_FILTER_BLOCK;
+    expect("the list parses", dsd_tone_set_parse("D023I/100", &opts.analog_tone_set, nullptr, 0) == 0);
+    model.refresh(&opts, &state);
+    expect("the configured policy as written",
+           model.toneFilterConfiguredMode() == DSD_TONE_FILTER_BLOCK
+               && model.toneFilterConfiguredList() == QStringLiteral("100.0/D023I"));
+    expect("the setting announces itself once", settings == 1);
+    model.refresh(&opts, &state);
+    expect("an unchanged setting stays quiet", settings == 1);
+
+    /* An nfm row's own policy on air: the editor still opens on the configured one, and knows the row shadows it. */
+    expect("scope",
+           dsd_scan_mode_begin(&opts, &state) == 0 && dsd_scan_mode_enter(&opts, &state, DSD_SCAN_MODE_NFM) == 0);
+    dsd_scan_option_values row = {};
+    row.present = DSD_SCAN_OPT_TONE;
+    row.tone_filter = DSD_TONE_FILTER_ALLOW;
+    expect("row list", dsd_tone_set_parse("67.0", &row.tone_set, nullptr, 0) == 0);
+    expect("row installed", dsd_scan_mode_options(&opts, &state, &row) == 0);
+    model.refresh(&opts, &state);
+    expect("under a row: the configured policy, shadowed",
+           model.toneFilterConfiguredMode() == DSD_TONE_FILTER_BLOCK
+               && model.toneFilterConfiguredList() == QStringLiteral("100.0/D023I") && model.toneFilterRowOverride());
+    dsd_scan_mode_leave(&opts, &state);
+    model.refresh(&opts, &state);
+    expect("the row gone, nothing shadows", !model.toneFilterRowOverride());
+
+    /* Stop: the configured policy stays for the next session's editor; reachability goes. */
+    const int settings_before = settings;
+    model.clear();
+    expect("stop keeps the configured policy", model.toneFilterConfiguredMode() == DSD_TONE_FILTER_BLOCK
+                                                   && model.toneFilterConfiguredList() == QStringLiteral("100.0/D023I")
+                                                   && settings == settings_before);
+    expect("stop takes the editor away", !model.toneFilterEditable() && !model.toneFilterRowOverride());
+    /* A digital mode: nothing to edit on screen, the setting still read. */
+    opts.analog_only = 0;
+    model.refresh(&opts, &state);
+    expect("no detection, no editor",
+           !model.toneFilterEditable() && model.toneFilterConfiguredList() == QStringLiteral("100.0/D023I"));
+    freeState(&state);
+}
+
 int
 main(int argc, char** argv) {
     QCoreApplication app(argc, argv);
@@ -1035,6 +1105,7 @@ main(int argc, char** argv) {
     test_scan_timing();
     test_rx_tone();
     test_tone_filter();
+    test_tone_filter_editor_setting();
     test_direct_key_presence();
     test_decryption_metadata();
     test_site();

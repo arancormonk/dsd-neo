@@ -34,7 +34,7 @@ extern const size_t TRUNK_MENU_ITEMS_LEN;
 extern const NcMenuItem ENC_MENU_ITEMS[];
 extern const size_t ENC_MENU_ITEMS_LEN;
 
-// ---- Audio: output sink, mute, gains, tone shaping, call alerts ----
+// ---- Audio: output sink, mute, gains, monitor, tone shaping, tone filter, call alerts ----
 extern const NcMenuItem AUDIO_MENU_ITEMS[];
 extern const size_t AUDIO_MENU_ITEMS_LEN;
 

@@ -431,6 +431,161 @@ test_tone_filter_row_policy(void) {
     free(state);
 }
 
+/* The Tone filter row is where the live editor opens (Qt), so it may be on screen with no policy: whenever detection
+   runs, since a policy then acts on what the monitor plays. */
+static void
+test_tone_filter_editable(void) {
+    static dsd_opts opts;
+    dsd_state* state = make_state();
+    make_monitor_opts(&opts);
+    dsd_app_rx_tone view;
+    publish(state, 0, DSD_ANALOG_TONE_STATE_IDLE, 0, 0);
+    assert(dsd_app_rx_tone_view(&opts, state, 0.0, &view) == 1);
+    assert(view.policy_editable == 1U && view.policy_visible == 0U && strcmp(view.configured_text, "off") == 0);
+    /* At a rate detection cannot use the received row goes, the editor stays. */
+    publish(state, 1, DSD_ANALOG_TONE_STATE_UNAVAILABLE, 0, 0);
+    assert(dsd_app_rx_tone_view(&opts, state, 0.0, &view) == 0);
+    assert(view.policy_editable == 1U);
+    /* The AM monitor and a digital mode run no detection: nothing to edit there. */
+    opts.analog_demod = 1;
+    assert(dsd_app_rx_tone_view(&opts, state, 0.0, &view) == 0);
+    assert(view.policy_editable == 0U);
+    opts.analog_demod = 0;
+    opts.analog_only = 0;
+    set_policy(&opts, DSD_TONE_FILTER_ALLOW, "100.0");
+    assert(dsd_app_rx_tone_view(&opts, state, 0.0, &view) == 0);
+    assert(view.policy_editable == 0U && view.policy_visible == 0U);
+    assert(dsd_app_rx_tone_view(NULL, state, 0.0, &view) == -1 && view.policy_editable == 0U);
+    free(state);
+}
+
+/* What the editors open on: the configured policy's mode and its list as the parser reads it back, spelled as written,
+   and whether a scan row's own policy on air shadows an edit. Never the row's. */
+static void
+test_tone_filter_setting(void) {
+    static dsd_opts opts;
+    dsd_state* state = make_state();
+    make_monitor_opts(&opts);
+    opts.wav_sample_rate = 48000;
+    opts.audio_in_type = AUDIO_IN_WAV;
+    dsd_app_tone_filter_setting setting;
+    assert(dsd_app_tone_filter_setting_get(&opts, state, &setting) == 0);
+    assert(setting.mode == DSD_TONE_FILTER_OFF && setting.list[0] == '\0' && setting.row_override == 0U);
+    set_policy(&opts, DSD_TONE_FILTER_BLOCK, "D023I/100");
+    assert(dsd_app_tone_filter_setting_get(&opts, state, &setting) == 0);
+    assert(setting.mode == DSD_TONE_FILTER_BLOCK && strcmp(setting.list, "100.0/D023I") == 0);
+    /* Off keeps its list, and the editor opens on it. */
+    opts.analog_tone_filter = DSD_TONE_FILTER_OFF;
+    assert(dsd_app_tone_filter_setting_get(&opts, state, &setting) == 0);
+    assert(setting.mode == DSD_TONE_FILTER_OFF && strcmp(setting.list, "100.0/D023I") == 0);
+    opts.analog_tone_filter = DSD_TONE_FILTER_BLOCK;
+
+    assert(dsd_scan_mode_begin(&opts, state) == 0);
+    assert(dsd_scan_mode_enter(&opts, state, DSD_SCAN_MODE_NFM) == 0);
+    dsd_scan_option_values row = {0};
+    row.present = DSD_SCAN_OPT_TONE;
+    row.tone_filter = DSD_TONE_FILTER_ALLOW;
+    assert(dsd_tone_set_parse("67.0", &row.tone_set, NULL, 0) == 0);
+    assert(dsd_scan_mode_options(&opts, state, &row) == 0);
+    assert(dsd_app_tone_filter_setting_get(&opts, state, &setting) == 0);
+    assert(setting.mode == DSD_TONE_FILTER_BLOCK && strcmp(setting.list, "100.0/D023I") == 0);
+    assert(setting.row_override == 1U);
+    /* A row without a policy of its own shadows nothing. */
+    assert(dsd_scan_mode_options(&opts, state, NULL) == 0);
+    assert(dsd_app_tone_filter_setting_get(&opts, state, &setting) == 0);
+    assert(setting.row_override == 0U && setting.mode == DSD_TONE_FILTER_BLOCK);
+    dsd_scan_mode_leave(&opts, state);
+
+    /* Invalid arguments: -1, and a zeroed setting when there is one to zero. */
+    DSD_MEMSET(&setting, 0x5A, sizeof(setting));
+    assert(dsd_app_tone_filter_setting_get(NULL, state, &setting) == -1);
+    assert(setting.mode == DSD_TONE_FILTER_OFF && setting.list[0] == '\0' && setting.row_override == 0U);
+    assert(dsd_app_tone_filter_setting_get(&opts, state, NULL) == -1);
+    dsd_state_ext_free_all(state);
+    free(state);
+}
+
+/* @p text is all ASCII, with exactly @p marks "...+N" summaries of a long list. */
+static void
+assert_ascii_with_marks(const char* text, int marks) {
+    for (const char* p = text; *p; p++) {
+        assert((unsigned char)*p < 0x80U);
+    }
+    int found = 0;
+    for (const char* p = strstr(text, "...+"); p; p = strstr(p + 4, "...+")) {
+        found++;
+    }
+    assert(found == marks);
+}
+
+/* The toast after a tone-filter edit: what the configured policy now is, and while a scan row's own policy is on air,
+   that the row overrides it, naming the row's -- as the squelch and width edits say it. */
+static void
+test_tone_filter_edit_notice(void) {
+    static dsd_opts opts;
+    dsd_state* state = make_state();
+    make_monitor_opts(&opts);
+    opts.wav_sample_rate = 48000;
+    opts.audio_in_type = AUDIO_IN_WAV;
+    char notice[DSD_APP_TONE_FILTER_NOTICE_SIZE];
+    set_policy(&opts, DSD_TONE_FILTER_ALLOW, "D023N/100");
+    assert(dsd_app_tone_filter_edit_notice(&opts, state, notice, sizeof(notice)) == 0);
+    assert(strcmp(notice, "Applied: Tone filter -> allow 100.0 Hz/D023N") == 0);
+    opts.analog_tone_filter = DSD_TONE_FILTER_OFF;
+    assert(dsd_app_tone_filter_edit_notice(&opts, state, notice, sizeof(notice)) == 0);
+    assert(strcmp(notice, "Applied: Tone filter -> off") == 0);
+    /* Wherever detection runs or not: the notice is about the setting. */
+    opts.analog_only = 0;
+    set_policy(&opts, DSD_TONE_FILTER_BLOCK, "67");
+    assert(dsd_app_tone_filter_edit_notice(&opts, state, notice, sizeof(notice)) == 0);
+    assert(strcmp(notice, "Applied: Tone filter -> block 67.0 Hz") == 0);
+    opts.analog_only = 1;
+
+    assert(dsd_scan_mode_begin(&opts, state) == 0);
+    assert(dsd_scan_mode_enter(&opts, state, DSD_SCAN_MODE_NFM) == 0);
+    dsd_scan_option_values row = {0};
+    row.present = DSD_SCAN_OPT_TONE;
+    row.tone_filter = DSD_TONE_FILTER_ALLOW;
+    assert(dsd_tone_set_parse("D754N", &row.tone_set, NULL, 0) == 0);
+    assert(dsd_scan_mode_options(&opts, state, &row) == 0);
+    assert(dsd_app_tone_filter_edit_notice(&opts, state, notice, sizeof(notice)) == 0);
+    assert(strcmp(notice, "Default tone filter -> block 67.0 Hz; this channel overrides it (allow D754N)") == 0);
+    row.tone_filter = DSD_TONE_FILTER_OFF;
+    DSD_MEMSET(&row.tone_set, 0, sizeof(row.tone_set));
+    assert(dsd_scan_mode_options(&opts, state, &row) == 0);
+    assert(dsd_app_tone_filter_edit_notice(&opts, state, notice, sizeof(notice)) == 0);
+    assert(strcmp(notice, "Default tone filter -> block 67.0 Hz; this channel overrides it (off)") == 0);
+    dsd_scan_mode_leave(&opts, state);
+
+    /* Long lists on both sides still fit the toast whole, each summarised, the closing mark kept. */
+    static const char k_long[] = "67/69.3/71.9/74.4/77/79.7/82.5/85.4/88.5/91.5/94.8/97.4/100/103.5/D023/D025/D026";
+    set_policy(&opts, DSD_TONE_FILTER_BLOCK, k_long);
+    assert(dsd_scan_mode_begin(&opts, state) == 0);
+    assert(dsd_scan_mode_enter(&opts, state, DSD_SCAN_MODE_NFM) == 0);
+    row.tone_filter = DSD_TONE_FILTER_ALLOW;
+    assert(dsd_tone_set_parse(k_long, &row.tone_set, NULL, 0) == 0);
+    assert(dsd_scan_mode_options(&opts, state, &row) == 0);
+    assert(dsd_app_tone_filter_edit_notice(&opts, state, notice, sizeof(notice)) == 0);
+    assert(strncmp(notice, "Default tone filter -> block 67.0 Hz/", 37) == 0);
+    const size_t length = strlen(notice);
+    assert(length < sizeof(notice) - 1U && notice[length - 1U] == ')');
+    assert(strstr(notice, "; this channel overrides it (allow 67.0 Hz/") != NULL);
+    /* A toast is ASCII, which the terminal's status line prints as is: each summary's mark is "...". */
+    assert_ascii_with_marks(notice, 2);
+    dsd_scan_mode_leave(&opts, state);
+    /* Without a row, the one list summarised the same way. */
+    assert(dsd_app_tone_filter_edit_notice(&opts, state, notice, sizeof(notice)) == 0);
+    assert(strncmp(notice, "Applied: Tone filter -> block 67.0 Hz/", 38) == 0);
+    assert_ascii_with_marks(notice, 1);
+
+    /* Invalid arguments. */
+    assert(dsd_app_tone_filter_edit_notice(NULL, state, notice, sizeof(notice)) == -1 && notice[0] == '\0');
+    assert(dsd_app_tone_filter_edit_notice(&opts, state, NULL, sizeof(notice)) == -1);
+    assert(dsd_app_tone_filter_edit_notice(&opts, state, notice, 0) == -1);
+    dsd_state_ext_free_all(state);
+    free(state);
+}
+
 static void
 test_invalid_arguments(void) {
     static dsd_opts opts;
@@ -441,7 +596,15 @@ test_invalid_arguments(void) {
     assert(view.visible == 0U && view.text[0] == '\0');
     assert(strcmp(view.configured_text, "off") == 0);
     assert(dsd_app_rx_tone_view(&opts, NULL, 0.0, &view) == -1);
+    assert(strcmp(view.configured_text, "off") == 0 && view.policy_visible == 0U);
     assert(dsd_app_rx_tone_view(&opts, state, 0.0, NULL) == -1);
+    /* No state: still the policy dsd_opts holds (a terminal menu row before the first snapshot), nothing else. */
+    opts.analog_tone_filter = DSD_TONE_FILTER_ALLOW;
+    assert(dsd_tone_set_parse("100.0/D023N", &opts.analog_tone_set, NULL, 0) == 0);
+    assert(dsd_app_rx_tone_view(&opts, NULL, 0.0, &view) == -1);
+    assert(strcmp(view.configured_text, "allow 100.0 Hz/D023N") == 0);
+    assert(view.visible == 0U && view.policy_visible == 0U && view.policy_editable == 0U && view.policy_row == 0U);
+    assert(view.gate_text[0] == '\0' && view.text[0] == '\0');
     free(state);
 }
 
@@ -454,5 +617,8 @@ main(void) {
     test_invalid_arguments();
     test_tone_filter_policy_text();
     test_tone_filter_row_policy();
+    test_tone_filter_editable();
+    test_tone_filter_setting();
+    test_tone_filter_edit_notice();
     return 0;
 }

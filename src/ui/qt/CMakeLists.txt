@@ -123,6 +123,7 @@ qt_add_resources(
         qml/TalkgroupCard.qml
         qml/TalkgroupsScreen.qml
         qml/ToggleRow.qml
+        qml/ToneFilterSheet.qml
         qml/TunerMarker.qml
         qml/UiPanel.qml
         qml/WizardScreen.qml

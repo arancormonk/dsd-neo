@@ -12,7 +12,8 @@
  * terminal's Call Info line, the Qt/Android monitor row -- so they cannot drift on what "no
  * carrier" or "none" means. It also carries the tone policy in force (issue #527) as separate
  * text, with what it does to the carrier on air, so a surface never mistakes the policy it was
- * given for the tone it received.
+ * given for the tone it received. The live tone-filter editor (terminal and Qt) opens on the
+ * configured policy this header also reads, and says what an edit did with its notice.
  */
 
 #ifndef DSD_NEO_INCLUDE_DSD_NEO_APP_CONTROL_RX_TONE_VIEW_H_
@@ -20,6 +21,7 @@
 
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/state_fwd.h>
+#include <stddef.h>
 #include <stdint.h>
 
 #ifdef __cplusplus
@@ -80,21 +82,64 @@ typedef struct {
         ALLOWED block-list pass on no tone); 0 when a confirmed value decided it, or nothing is decided. */
     uint8_t gate_no_tone;
     char gate_text[DSD_APP_RX_TONE_TEXT_SIZE]; /**< "passing", "muted: checking tone", ..., or "". */
+    /** 1 = detection runs, so a tone policy acts on what the monitor plays: the Tone filter row and its live editor
+        belong on screen whatever the policy, off included. Implied by @c policy_visible. */
+    uint8_t policy_editable;
 } dsd_app_rx_tone;
 
 /**
  * @brief Fill @p out from the published received tone.
  *
- * Zeroes @p out first, then always fills @c configured_text ("off" for invalid arguments), and the
- * policy fields whenever the arguments are valid. @p now_m is monotonic seconds,
- * the clock dsd_time_now_monotonic_s() reads: a publication from an input that has gone quiet
- * past its stale_after_ms deadline (a stdin, UDP or TCP producer that stopped sending, a live
- * radio stream whose source stopped) reads as no carrier, because the decoder, waiting for the
- * next sample, cannot say so itself; the verdict goes with it. Pass 0 to skip that check.
- * Returns 1 when the received row should be shown (@c visible), 0 when it should be left out, and
- * -1 for invalid arguments.
+ * Zeroes @p out first, then always fills @c configured_text ("off" without @p opts), and the
+ * policy fields whenever the arguments are valid. A NULL @p state still gets @c configured_text, read
+ * from @p opts alone (no scan row), and returns -1 with nothing else filled: a terminal menu row
+ * before the first snapshot reads the policy its own options hold, as its editor opens on it.
+ * @p now_m is monotonic seconds, the clock dsd_time_now_monotonic_s() reads: a publication from an
+ * input that has gone quiet past its stale_after_ms deadline (a stdin, UDP or TCP producer that
+ * stopped sending, a live radio stream whose source stopped) reads as no carrier, because the
+ * decoder, waiting for the next sample, cannot say so itself; the verdict goes with it. Pass 0 to
+ * skip that check. Returns 1 when the received row should be shown (@c visible), 0 when it should
+ * be left out, and -1 for invalid arguments.
  */
 int dsd_app_rx_tone_view(const dsd_opts* opts, const dsd_state* state, double now_m, dsd_app_rx_tone* out);
+
+/** @brief Room for a whole tone list as the parser reads it back, terminator included (DSD_TONE_LIST_TEXT_MAX + 1):
+ * what the live editor opens on and what DSD_APP_CMD_TONE_FILTER_SET carries. */
+enum { DSD_APP_TONE_FILTER_LIST_SIZE = 1024 };
+
+/** @brief Room for the notice after a tone-filter edit, terminator included (a toast, dsd_state::ui_msg). */
+enum { DSD_APP_TONE_FILTER_NOTICE_SIZE = 128 };
+
+/**
+ * @brief The configured CTCSS/DCS receive policy as the live editors open on it (issue #527).
+ *
+ * The configured policy is the one DSD_APP_CMD_TONE_FILTER_SET edits and a save writes
+ * (dsd_scan_mode_configured_tone_policy()): never a scan row's own, which runs over dsd_opts while the row is on air.
+ * @c list is its list as the parser reads it back, spelled as written ("100.0/D023I"), kept with off; "" for none.
+ */
+typedef struct {
+    int mode;             /**< dsd_tone_filter_mode of the configured policy. */
+    uint8_t row_override; /**< 1 = the scan row on air sets its own policy, which shadows an edit. */
+    char list[DSD_APP_TONE_FILTER_LIST_SIZE]; /**< The configured list, "" for none. */
+} dsd_app_tone_filter_setting;
+
+/**
+ * @brief Fill @p out with the configured tone policy from decoder state or a frontend snapshot pair.
+ *
+ * Zeroes @p out first (off, no list). Returns 0, or -1 for NULL @p opts or @p out.
+ */
+int dsd_app_tone_filter_setting_get(const dsd_opts* opts, const dsd_state* state, dsd_app_tone_filter_setting* out);
+
+/**
+ * @brief Write the notice after an edit of the configured tone policy: "Applied: Tone filter -> allow 100.0 Hz/D023N",
+ * or while a scan row's own policy is on air "Default tone filter -> allow 100.0 Hz; this channel overrides it
+ * (block 67.0 Hz)", as the squelch and width edits say it. Long lists are summarised so the whole notice fits
+ * DSD_APP_TONE_FILTER_NOTICE_SIZE, and the notice is ASCII, their overflow mark written "...+N" (it is a toast, which
+ * the terminal's status line prints as is). Reads the configured policy and the installed row options, so it is right
+ * on the decoder thread right after the edit. Returns 0, or -1 for NULL @p opts or @p out or a zero @p out_size (@p out
+ * then holds "" when it can).
+ */
+int dsd_app_tone_filter_edit_notice(const dsd_opts* opts, const dsd_state* state, char* out, size_t out_size);
 
 #ifdef __cplusplus
 }

@@ -2569,6 +2569,88 @@ test_tone_policy_roundtrip(void) {
     return rc;
 }
 
+/*
+ * The live tone-filter editor (DSD_APP_CMD_TONE_FILTER_SET) edits the configured policy through
+ * dsd_scan_mode_set_configured_tone_policy(). Edited while an nfm row's own policy is on air, the edit is what a save
+ * writes and loads back, never the row's; edited outside a row it is in force at once and saved the same way, off with
+ * its list kept.
+ */
+static int
+test_tone_policy_edit_roundtrip(void) {
+    int rc = 0;
+    auto opts_storage = std::unique_ptr<dsd_opts>(new dsd_opts{});
+    auto state_storage = std::unique_ptr<dsd_state>(new dsd_state{});
+    dsd_opts& opts = *opts_storage;
+    dsd_state& state = *state_storage;
+    reset_opts_and_state(opts, state);
+    opts.analog_tone_filter = DSD_TONE_FILTER_ALLOW;
+    dsd_tone_set row_set = {};
+    dsd_tone_set edited = {};
+    if (dsd_tone_set_parse("100.0", &opts.analog_tone_set, NULL, 0) != 0
+        || dsd_tone_set_parse("67.0", &row_set, NULL, 0) != 0
+        || dsd_tone_set_parse("D023I/71.9", &edited, NULL, 0) != 0) {
+        return 1;
+    }
+    if (dsd_scan_mode_begin(&opts, &state) != 0 || dsd_scan_mode_enter(&opts, &state, DSD_SCAN_MODE_NFM) != 0) {
+        return 1;
+    }
+    dsd_scan_option_values row = {};
+    row.present = DSD_SCAN_OPT_TONE;
+    row.tone_filter = DSD_TONE_FILTER_BLOCK;
+    row.tone_set = row_set;
+    if (dsd_scan_mode_options(&opts, &state, &row) != 0) {
+        return 1;
+    }
+    if (dsd_scan_mode_set_configured_tone_policy(&opts, &state, DSD_TONE_FILTER_BLOCK, &edited) != 0
+        || opts.analog_tone_filter != DSD_TONE_FILTER_BLOCK
+        || dsd_tone_set_equal(&opts.analog_tone_set, &row_set) == 0) {
+        DSD_FPRINTF(stderr, "FAIL: the row's own policy should shadow the edit\n");
+        rc |= 1;
+    }
+    dsdneoUserConfig snap;
+    dsd_snapshot_opts_to_user_config(&opts, &state, &snap);
+    char rendered[8192];
+    if (render_config_to_buffer(&snap, rendered, sizeof rendered) != 0) {
+        return 1;
+    }
+    rc |=
+        expect_contains("edited policy under a row", rendered, "tone_filter = \"block\"\ntone_list = \"71.9/D023I\"\n");
+    if (strstr(rendered, "tone_list = \"67.0\"") != nullptr || strstr(rendered, "tone_list = \"100.0\"") != nullptr) {
+        DSD_FPRINTF(stderr, "FAIL: the row's or the old policy was saved:\n%s\n", rendered);
+        rc |= 1;
+    }
+    dsdneoUserConfig loaded;
+    if (load_am_config_text(rendered, &loaded) != 0 || loaded.analog_tone_filter != DSD_TONE_FILTER_BLOCK
+        || dsd_tone_set_equal(&loaded.analog_tone_set, &edited) == 0) {
+        DSD_FPRINTF(stderr, "FAIL: the edited policy did not load back\n");
+        rc |= 1;
+    }
+    dsd_scan_mode_leave(&opts, &state);
+    if (opts.analog_tone_filter != DSD_TONE_FILTER_BLOCK || dsd_tone_set_equal(&opts.analog_tone_set, &edited) == 0) {
+        DSD_FPRINTF(stderr, "FAIL: the row's departure did not restore the edited policy\n");
+        rc |= 1;
+    }
+
+    /* No row: the edit is in force at once; off keeps its list, and saves and loads back as off with the list. */
+    if (dsd_scan_mode_set_configured_tone_policy(&opts, &state, DSD_TONE_FILTER_OFF, &edited) != 1
+        || opts.analog_tone_filter != DSD_TONE_FILTER_OFF) {
+        DSD_FPRINTF(stderr, "FAIL: the edit outside a row is not in force\n");
+        rc |= 1;
+    }
+    dsd_snapshot_opts_to_user_config(&opts, &state, &snap);
+    if (render_config_to_buffer(&snap, rendered, sizeof rendered) != 0) {
+        return 1;
+    }
+    if (strstr(rendered, "tone_filter") != nullptr || strstr(rendered, "tone_list = \"71.9/D023I\"\n") == nullptr
+        || load_am_config_text(rendered, &loaded) != 0 || loaded.analog_tone_filter != DSD_TONE_FILTER_OFF
+        || dsd_tone_set_equal(&loaded.analog_tone_set, &edited) == 0) {
+        DSD_FPRINTF(stderr, "FAIL: an edited off did not save its list alone:\n%s\n", rendered);
+        rc |= 1;
+    }
+    dsd_state_ext_free_all(&state);
+    return rc;
+}
+
 static int
 test_scanner_and_candidates_roundtrip(void) {
     static const char* ini = "[trunking]\n"
@@ -3964,6 +4046,7 @@ main(void) {
     rc |= test_radio_input_spec();
     rc |= test_am_mode_and_bandwidth_roundtrip();
     rc |= test_tone_policy_roundtrip();
+    rc |= test_tone_policy_edit_roundtrip();
     rc |= test_tg_lockout_persistence_roundtrip();
     rc |= test_scan_max_visit_snapshot_uses_configured_not_row_override();
     rc |= test_squelch_snapshot_uses_configured_not_row_override();

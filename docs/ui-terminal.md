@@ -220,6 +220,7 @@ Main Menu
 │   ├── Source audio monitor [Off]
 │   ├── Deemphasis [Off]
 │   ├── Audio low-pass... [Off]
+│   ├── Tone filter... [off]
 │   ├── ─────
 │   ├── Call alert beep [Off]                    a
 │   └── Alert on... [All]
@@ -731,6 +732,20 @@ a carrier is heard what it does with it: `passing`, `muted: checking tone` while
 `muted: no tone` for an allow list's traffic with none. With no carrier the line shows the policy alone. A terminal
 without UTF-8 gets `-` for the dash and `...+N` for the overflow mark. It is absent while no policy is in force, and
 wherever tones are not detected. See [Tone filter](cli.md#tone-filter-ctcssdcs-receive-policy).
+
+Audio > `Tone filter... [off]` edits the policy live. Its label reads the policy as the Call Info line does, in the same
+lowercase (`Tone filter... [allow 100.0 Hz/D023N]`, and under a scan row with its own policy
+`[block 67.0 Hz (row; default allow 100.0 Hz)]`; `...+N` for the overflow mark), and it opens a picker, `Off`,
+`Allow list...`, `Block list...` and `Off and clear list`, on the configured mode. Allow and block then prompt for the
+list of tones and codes separated by `/` (`67.0/100.0/D023N`), filled in with the configured list. Off keeps the
+configured list as it stands when the edit runs (so an edit or a loaded config made just before it is what it keeps;
+never a scan row's own), and `Off and clear list` turns the filter off and removes the list, so a save no longer writes
+one. The list goes to the decoder as typed, and one it refuses, or an empty list for allow or block, is refused in the
+status line with the reason (`Refused: tone filter: entry 2 is not a standard CTCSS tone or DCS code`) and changes
+nothing; an earlier edit still waiting to apply is applied all the same. The row edits the configured policy, the one
+Config > Save writes: while a scan row with its own policy is on air the row keeps it, and the status line says so
+(`Default tone filter -> allow 100.0 Hz; this channel overrides it (block 67.0 Hz)`). The row is always there; set to a
+list policy on a session where nothing detects tones, the log says once that it has no effect.
 
 ## Compact View
 

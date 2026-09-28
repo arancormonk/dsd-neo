@@ -241,6 +241,16 @@ int dsd_scan_mode_configured_analog_width(const dsd_opts* opts, const dsd_state*
  * the list to @p set (either may be NULL); OFF and an empty list without opts. Works on the live state (decoder
  * thread) and on a frontend snapshot pair alike. */
 void dsd_scan_mode_configured_tone_policy(const dsd_opts* opts, const dsd_state* state, int* mode, dsd_tone_set* set);
+/** Edit the configured CTCSS/DCS receive policy (dsd_opts::analog_tone_filter and analog_tone_set, issue #527: the live
+ * tone-filter editor, DSD_APP_CMD_TONE_FILTER_SET) without suspending the scope, as the squelch and width setters do,
+ * so no acquisition a row has made (a detected Phase 2 polarity, a followed call) is compared or reset. The policy is
+ * not validated here. Without a scope, or while one is suspended, dsd_opts holds the configured values and takes it.
+ * Under a live scope the configured baseline takes it, and dsd_opts does too unless the installed row options set their
+ * own policy (DSD_SCAN_OPT_TONE, an nfm row's --tone-allow, --tone-block or --no-tone-filter), which stays in force
+ * until the row leaves; the next row without one, and the leave, run the edit. Returns 1 when the policy is now in
+ * force in dsd_opts, 0 when a row's own policy shadows it, -1 without opts or @p set. Same thread and snapshot rules as
+ * dsd_scan_mode_set_configured_squelch(). */
+int dsd_scan_mode_set_configured_tone_policy(dsd_opts* opts, const dsd_state* state, int mode, const dsd_tone_set* set);
 /** Whether the configured decode mode is the analog FM monitor (-fA, the FM analog kind): the one decode mode in which
  * received-tone detection, and so the tone policy, runs (issue #527). The configured one while a scope is live, since a
  * scan row's own mode runs over dsd_opts meanwhile, else dsd_opts'. Unlike dsd_analog_tone_detection_active() it does

@@ -324,7 +324,7 @@ MetricsModel::View::operator==(const View& other) const {
     return site == other.site && qualityEquals(other) && tunerEquals(other) && slot_call[0] == other.slot_call[0]
            && slot_call[1] == other.slot_call[1] && lead_slot == other.lead_slot && controlEquals(other)
            && scanTimingEquals(other) && rxToneEquals(other) && rx_tone_configured_text == other.rx_tone_configured_text
-           && toneFilterEquals(other) && ui_message == other.ui_message;
+           && toneFilterEquals(other) && toneFilterSettingEquals(other) && ui_message == other.ui_message;
 }
 
 void
@@ -343,6 +343,7 @@ MetricsModel::publish(const View& next) {
     const bool rxToneMoved = !next.rxToneEquals(m_view);
     const bool rxToneConfiguredMoved = next.rx_tone_configured_text != m_view.rx_tone_configured_text;
     const bool toneFilterMoved = !next.toneFilterEquals(m_view);
+    const bool toneFilterSettingMoved = !next.toneFilterSettingEquals(m_view);
     const bool messageMoved = next.ui_message != m_view.ui_message;
     m_view = next;
     if (siteMoved) {
@@ -369,15 +370,16 @@ MetricsModel::publish(const View& next) {
     if (scanTimingMoved) {
         Q_EMIT scanTimingChanged();
     }
-    emitRxToneSignals(rxToneMoved, rxToneConfiguredMoved, toneFilterMoved);
+    emitRxToneSignals(rxToneMoved, rxToneConfiguredMoved, toneFilterMoved, toneFilterSettingMoved);
     if (messageMoved) {
         Q_EMIT uiMessageChanged();
     }
 }
 
-/* The received tone, the policy and its verdict each have their own signal: none of them announces another (#527). */
+/* The received tone, the policy, its verdict and the editor's setting each have their own signal: none of them
+   announces another (#527). */
 void
-MetricsModel::emitRxToneSignals(bool received, bool configured, bool verdict) {
+MetricsModel::emitRxToneSignals(bool received, bool configured, bool verdict, bool setting) {
     if (received) {
         Q_EMIT rxToneChanged();
     }
@@ -386,6 +388,9 @@ MetricsModel::emitRxToneSignals(bool received, bool configured, bool verdict) {
     }
     if (verdict) {
         Q_EMIT toneFilterChanged();
+    }
+    if (setting) {
+        Q_EMIT toneFilterSettingChanged();
     }
 }
 
@@ -398,8 +403,11 @@ MetricsModel::clear() {
     m_sync_type_here = DSD_SYNC_NONE;
     m_sync_seen_m = 0.0;
     View cleared;
-    /* The configured tone policy is not session state: stopping leaves it as configured. */
+    /* The configured tone policy is not session state: stopping leaves it as configured, for the text and the
+       editor. */
     cleared.rx_tone_configured_text = m_view.rx_tone_configured_text;
+    cleared.tone_filter_configured_mode = m_view.tone_filter_configured_mode;
+    cleared.tone_filter_configured_list = m_view.tone_filter_configured_list;
     publish(cleared);
 }
 
@@ -497,6 +505,8 @@ MetricsModel::fillRxToneView(View& next, const dsd_opts* opts_snapshot, const ds
     const int shown = dsd_app_rx_tone_view(opts_snapshot, snapshot, now_m, &view);
     next.rx_tone_configured_text = QString::fromUtf8(view.configured_text);
     fillToneFilterView(next, view.policy_visible != 0U, view.gate, view.gate_no_tone != 0U);
+    next.tone_filter_editable = view.policy_editable != 0U;
+    fillToneFilterSetting(next, opts_snapshot, snapshot);
     if (shown != 1) {
         return;
     }
@@ -532,6 +542,21 @@ MetricsModel::fillToneFilterView(View& next, bool visible, int gate, bool no_ton
             break;
         default: next.tone_filter_status_text.clear(); break;
     }
+}
+
+/**
+ * @brief What the live tone-filter editor (#527) opens on: the configured policy from app-control
+ * (dsd_app_tone_filter_setting_get()), never a scan row's own, and whether a row's own shadows an edit.
+ */
+void
+MetricsModel::fillToneFilterSetting(View& next, const dsd_opts* opts_snapshot, const dsd_state* snapshot) {
+    dsd_app_tone_filter_setting setting;
+    if (dsd_app_tone_filter_setting_get(opts_snapshot, snapshot, &setting) != 0) {
+        return;
+    }
+    next.tone_filter_configured_mode = setting.mode;
+    next.tone_filter_configured_list = QString::fromUtf8(setting.list);
+    next.tone_filter_row_override = setting.row_override != 0U;
 }
 
 namespace {

@@ -112,6 +112,7 @@ const char* lbl_monitor(const void* v, char* b, size_t n);
 const char* lbl_cosine(const void* v, char* b, size_t n);
 const char* lbl_deemph(const void* v, char* b, size_t n);
 const char* lbl_audio_lpf(const void* v, char* b, size_t n);
+const char* lbl_tone_filter(const void* v, char* b, size_t n);
 const char* lbl_call_alert(const void* v, char* b, size_t n);
 const char* lbl_call_alert_events(const void* v, char* b, size_t n);
 

@@ -157,6 +157,23 @@ class CommandBridge : public QObject {
     Q_INVOKABLE bool setAmBandwidthHz(int hz) const;
 
     /**
+     * @brief Set the configured CTCSS/DCS tone filter (issue #527): @p mode 0 off, 1 allow, 2 block, with its
+     * '/'-separated list of tones and codes as typed ("67.0/100.0/D023N"; empty for none, which only off takes).
+     *
+     * The decoder checks the list with the same parser as toneFilterError() and refuses what it cannot apply, with a
+     * message, keeping the policy it had. The edit sets the configured policy: a scan row with its own tone options
+     * keeps them while on air. A list longer than the command carries is refused here, without submitting anything.
+     */
+    Q_INVOKABLE bool setToneFilter(int mode, const QString& list) const;
+
+    /**
+     * @brief Why the decoder would refuse setToneFilter() with @p mode and @p list, or an empty string when it would
+     * apply it: the list parser's own message, naming entries by number and never repeating the text, for the editor to
+     * show inline.
+     */
+    Q_INVOKABLE QString toneFilterError(int mode, const QString& list) const;
+
+    /**
      * @brief Choose the demodulator: 0 for C4FM, 1 for QPSK, 2 for GFSK.
      *
      * A setter, not the hotkey's cycle: a control showing them as choices has to

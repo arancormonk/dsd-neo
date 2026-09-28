@@ -24,7 +24,9 @@
 #include <cstdlib>
 #include <dsd-neo/app_control/call_view.h>
 #include <dsd-neo/app_control/frontend_runtime.h>
+#include <dsd-neo/app_control/rx_tone_view.h>
 #include <dsd-neo/app_control/snapshot.h>
+#include <dsd-neo/core/analog_tone.h>
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/dsd_time.h>
 #include <dsd-neo/core/init.h>
@@ -35,6 +37,7 @@
 #include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/core/talkgroup_policy.h>
+#include <dsd-neo/runtime/analog_tones.h>
 #include <functional>
 #include <initializer_list>
 #include <memory>
@@ -461,6 +464,48 @@ test_am_bandwidth_bridge() {
     freeState(&state);
 }
 
+// The live tone-filter editor goes through the real bridge and decoder queue as DSD_APP_CMD_TONE_FILTER_SET with the
+// mode and the list as typed; the decoder applies what the list parser accepts and refuses the rest with the policy
+// unchanged. The bridge's inline check is that same parser's answer, empty when the edit would apply, and a list the
+// payload cannot hold is refused before anything is queued.
+static void
+test_tone_filter_bridge() {
+    dsd_qt::CommandBridge bridge;
+    static dsd_opts opts;
+    static dsd_state state;
+    initOpts(&opts);
+    initState(&state);
+    opts.audio_in_type = AUDIO_IN_PULSE;
+    opts.audio_out_type = 9;
+    opts.analog_only = 1;
+    dsd_app_frontend_runtime_start(nullptr, nullptr);
+    check(bridge.toneFilterError(DSD_TONE_FILTER_ALLOW, QStringLiteral("100/d023")).isEmpty());
+    check(bridge.toneFilterError(DSD_TONE_FILTER_OFF, QString()).isEmpty());
+    check(bridge.toneFilterError(DSD_TONE_FILTER_ALLOW, QStringLiteral("100,67"))
+          == QStringLiteral("use / between entries, not commas"));
+    check(bridge.toneFilterError(DSD_TONE_FILTER_BLOCK, QString())
+          == QStringLiteral("block needs a list of CTCSS tones or DCS codes, e.g. 67.0/100.0/D023N"));
+    check(bridge.toneFilterError(DSD_TONE_FILTER_ALLOW, QStringLiteral("100/xyzzy"))
+          == QStringLiteral("entry 2 is not a standard CTCSS tone or DCS code"));
+    check(bridge.setToneFilter(DSD_TONE_FILTER_ALLOW, QStringLiteral("100/d023")));
+    check(dsd_app_drain_cmds(&opts, &state) == 1);
+    dsd_tone_set want = {};
+    check(dsd_tone_set_parse("100.0/D023N", &want, nullptr, 0) == 0);
+    check(opts.analog_tone_filter == DSD_TONE_FILTER_ALLOW && dsd_tone_set_equal(&opts.analog_tone_set, &want));
+    check(bridge.setToneFilter(DSD_TONE_FILTER_BLOCK, QStringLiteral("100,67")));
+    check(dsd_app_drain_cmds(&opts, &state) == 1);
+    check(opts.analog_tone_filter == DSD_TONE_FILTER_ALLOW && dsd_tone_set_equal(&opts.analog_tone_set, &want));
+    const QString overlong(DSD_APP_TONE_FILTER_LIST_SIZE, QLatin1Char('/'));
+    check(!bridge.setToneFilter(DSD_TONE_FILTER_ALLOW, overlong));
+    check(!bridge.toneFilterError(DSD_TONE_FILTER_ALLOW, overlong).isEmpty());
+    check(dsd_app_drain_cmds(&opts, &state) == 0);
+    check(bridge.setToneFilter(DSD_TONE_FILTER_OFF, QString()));
+    check(dsd_app_drain_cmds(&opts, &state) == 1);
+    check(opts.analog_tone_filter == DSD_TONE_FILTER_OFF && dsd_tone_set_count(&opts.analog_tone_set) == 0);
+    dsd_app_frontend_runtime_stop();
+    freeState(&state);
+}
+
 static void
 test_zero_bounds() {
     dsd_qt::CommandBridge bridge;
@@ -507,6 +552,7 @@ main(int argc, char** argv) {
     test_sheet_policy_edits();
     test_nfm_bandwidth_bridge();
     test_am_bandwidth_bridge();
+    test_tone_filter_bridge();
     test_zero_bounds();
     test_auto_start_requests();
     test_initial_usb_record();

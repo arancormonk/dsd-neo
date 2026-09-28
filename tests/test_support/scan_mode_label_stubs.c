@@ -2,8 +2,10 @@
 /* Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com> */
 #include <assert.h>
 #include <dsd-neo/app_control/snapshot.h>
+#include <dsd-neo/core/analog_tone.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/opts_fwd.h>
+#include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/core/talkgroup_policy.h>
@@ -58,6 +60,15 @@ dsd_test_scan_labels_input_type(int audio_in_type) {
 }
 
 void
+dsd_test_scan_labels_tone_policy(int mode, const dsd_tone_set* set) {
+    snapshot_opts.analog_tone_filter = mode;
+    DSD_MEMSET(&snapshot_opts.analog_tone_set, 0, sizeof(snapshot_opts.analog_tone_set));
+    if (set) {
+        snapshot_opts.analog_tone_set = *set;
+    }
+}
+
+void
 dsd_test_scan_labels_set(int available, dsd_scan_mode mode) {
     snapshots_available = available;
     active_mode = mode;
@@ -81,6 +92,28 @@ dsd_scan_mode_configured_analog_width(const dsd_opts* opts, const dsd_state* sta
         width_hz = kind == DSD_ANALOG_DEMOD_AM ? opts->analog_am_bandwidth_hz : opts->analog_nfm_bandwidth_hz;
     }
     return width_hz > 0 ? width_hz : 0;
+}
+
+/* As scan_mode.c reads it: the stubbed configured view while one is set, dsd_opts otherwise. */
+void
+dsd_scan_mode_configured_tone_policy(const dsd_opts* opts, const dsd_state* state, int* mode, dsd_tone_set* set) {
+    const dsd_scan_settings* configured = dsd_scan_mode_configured_view(state);
+    int configured_mode = DSD_TONE_FILTER_OFF;
+    dsd_tone_set configured_set;
+    DSD_MEMSET(&configured_set, 0, sizeof(configured_set));
+    if (configured) {
+        configured_mode = configured->analog_tone_filter;
+        configured_set = configured->analog_tone_set;
+    } else if (opts) {
+        configured_mode = opts->analog_tone_filter;
+        configured_set = opts->analog_tone_set;
+    }
+    if (mode) {
+        *mode = configured_mode;
+    }
+    if (set) {
+        *set = configured_set;
+    }
 }
 
 void

@@ -14,6 +14,7 @@ Item {
             keySheet.visible = false;
             siteSheet.visible = false;
             networkSheet.visible = false;
+            toneFilterSheet.visible = false;
             historyDetail.visible = false;
             otherSlotMenu.visible = false;
         }
@@ -956,15 +957,17 @@ Item {
             // DSD_ANALOG_TONE_GATE_ALLOWED), "muted: checking tone", "muted: not
             // allowed" or "muted: no tone" in magenta. Shown while a policy is in force
             // where detection runs, which app-control decides for this row and the
-            // terminal alike. A Flow for the received row's reason: a long list and its
-            // verdict move under the label on a narrow phone rather than run off it.
+            // terminal alike, and with no policy too wherever detection runs, reading
+            // "off", so its Edit button can open the live editor. A Flow for the received
+            // row's reason: a long list, its verdict and the button move under the label
+            // on a narrow phone rather than run off it.
             Flow {
                 // Named so UI_QT_QML_CALL_LISTS can reach it with findChild().
                 objectName: "monitorToneFilter"
 
                 width: parent.width
                 spacing: 5
-                visible: metrics.toneFilterVisible
+                visible: metrics.toneFilterVisible || metrics.toneFilterEditable
 
                 Text {
                     objectName: "monitorToneFilterLabel"
@@ -998,6 +1001,19 @@ Item {
                     font.family: Theme.mono
                     font.pixelSize: Theme.fontSize(11)
                     color: metrics.toneFilterGate === 2 ? Theme.cyan : Theme.magenta
+                }
+
+                // The live editor (#527): it edits the configured policy, which a scan
+                // row with its own keeps in force while on air. Its own size, a full
+                // touch target that grows with the text: the Flow moves it under the
+                // row's text when it does not fit beside it.
+                OutlineButton {
+                    objectName: "monitorToneFilterEdit"
+
+                    text: qsTr("Edit")
+                    accessibleName: qsTr("Edit tone filter")
+                    enabled: decoderHost.running
+                    onClicked: toneFilterSheet.openEditor()
                 }
             }
 
@@ -1194,6 +1210,12 @@ Item {
             else if (index === 1)
                 commands.lockoutSlot(menuSlot === 2 ? 1 : 0);
         }
+    }
+
+    // #527: the live tone-filter editor, over the monitor like the key sheet.
+    ToneFilterSheet {
+        id: toneFilterSheet
+        z: 10
     }
 
     // WP-D2: the modal consumes input above every monitor control.

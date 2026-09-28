@@ -156,13 +156,19 @@ rx_tone_format_policy(int mode, const dsd_tone_set* set, char* out, size_t out_s
     return 1;
 }
 
+/* The scan row's own policy on air, or NULL when none is installed. */
+static const dsd_scan_option_values*
+rx_tone_row_policy(const dsd_state* state) {
+    const dsd_scan_option_values* row_options = dsd_scan_mode_row_options(state);
+    return (row_options && (row_options->present & DSD_SCAN_OPT_TONE) != 0U) ? row_options : NULL;
+}
+
 /* The tone policy in force (issue #527): dsd_opts holds a scan row's own while the row is on air. As every row override
    reads (squelch, channel width), the text then names the configured default it shadows: "block D023I (row; default
    allow 100.0 Hz)". */
 static void
 rx_tone_fill_policy_text(dsd_app_rx_tone* out, const dsd_opts* opts, const dsd_state* state) {
-    const dsd_scan_option_values* row_options = dsd_scan_mode_row_options(state);
-    const int row = row_options && (row_options->present & DSD_SCAN_OPT_TONE) != 0U;
+    const int row = rx_tone_row_policy(state) != NULL;
     char effective[DSD_APP_RX_TONE_POLICY_TEXT_SIZE];
     const int in_force =
         rx_tone_format_policy(opts->analog_tone_filter, &opts->analog_tone_set, effective, sizeof(effective),
@@ -208,11 +214,21 @@ dsd_app_rx_tone_view(const dsd_opts* opts, const dsd_state* state, double now_m,
         DSD_MEMSET(out, 0, sizeof(*out));
         DSD_SNPRINTF(out->configured_text, sizeof(out->configured_text), "%s", RX_TONE_POLICY_OFF_TEXT);
     }
-    if (!opts || !state || !out) {
+    if (!opts || !out) {
         return -1;
     }
     rx_tone_fill_policy_text(out, opts, state);
-    if (!dsd_analog_tone_detection_active(opts)) {
+    if (!state) {
+        /* No state, so no scan row and nothing received: the policy text alone, dsd_opts' own, the configured policy
+           as a frontend's own options hold it before the first snapshot (dsd_app_tone_filter_setting_get() reads it
+           the same way). Nothing belongs on screen. */
+        out->policy_visible = 0U;
+        return -1;
+    }
+    /* Where detection runs a policy acts on what the monitor plays, so its editor belongs on screen, no policy set
+       included; elsewhere nothing is shown, whatever is configured. */
+    out->policy_editable = dsd_analog_tone_detection_active(opts) ? 1U : 0U;
+    if (!out->policy_editable) {
         out->policy_visible = 0U;
     }
     rx_tone_fill_gate(out, opts, state, rx_tone_stale(&state->analog_rx, now_m));
@@ -237,4 +253,76 @@ dsd_app_rx_tone_view(const dsd_opts* opts, const dsd_state* state, double now_m,
     out->carrier_open = pub->carrier_open ? 1U : 0U;
     rx_tone_fill_status(out, pub);
     return 1;
+}
+
+/* The live editor (issue #527): what it opens on, and what its edit did. */
+
+_Static_assert(DSD_APP_TONE_FILTER_LIST_SIZE == DSD_TONE_LIST_TEXT_MAX + 1,
+               "the editor's list holds exactly the longest list the parser reads");
+
+/* Room for the lists in an edit's notice when a row shadows it: the configured policy the edit made, then the row's own
+   that stays in force, the configured one getting the larger share since it is the one edited. */
+enum {
+    RX_TONE_NOTICE_LIST_SIZE = 80,
+    RX_TONE_NOTICE_DEFAULT_LIST_SIZE = 32,
+    RX_TONE_NOTICE_ROW_LIST_SIZE = 24,
+};
+
+_Static_assert(DSD_APP_TONE_FILTER_NOTICE_SIZE
+                   >= (int)(sizeof("Applied: Tone filter -> block ") + RX_TONE_NOTICE_LIST_SIZE),
+               "an edit's notice fits");
+_Static_assert(DSD_APP_TONE_FILTER_NOTICE_SIZE
+                   >= (int)(sizeof("Default tone filter -> block ") + RX_TONE_NOTICE_DEFAULT_LIST_SIZE
+                            + sizeof("; this channel overrides it (block )") + RX_TONE_NOTICE_ROW_LIST_SIZE),
+               "a shadowed edit's notice fits");
+
+int
+dsd_app_tone_filter_setting_get(const dsd_opts* opts, const dsd_state* state, dsd_app_tone_filter_setting* out) {
+    if (out) {
+        DSD_MEMSET(out, 0, sizeof(*out));
+        out->mode = DSD_TONE_FILTER_OFF;
+    }
+    if (!opts || !out) {
+        return -1;
+    }
+    dsd_tone_set set;
+    DSD_MEMSET(&set, 0, sizeof(set));
+    dsd_scan_mode_configured_tone_policy(opts, state, &out->mode, &set);
+    if (dsd_tone_set_format(&set, out->list, sizeof(out->list)) < 0) {
+        out->list[0] = '\0';
+    }
+    out->row_override = rx_tone_row_policy(state) ? 1U : 0U;
+    return 0;
+}
+
+int
+dsd_app_tone_filter_edit_notice(const dsd_opts* opts, const dsd_state* state, char* out, size_t out_size) {
+    if (!out || out_size == 0U) {
+        return -1;
+    }
+    out[0] = '\0';
+    if (!opts) {
+        return -1;
+    }
+    int mode = DSD_TONE_FILTER_OFF;
+    dsd_tone_set set;
+    DSD_MEMSET(&set, 0, sizeof(set));
+    dsd_scan_mode_configured_tone_policy(opts, state, &mode, &set);
+    const dsd_scan_option_values* row = rx_tone_row_policy(state);
+    /* A toast is ASCII, the lists' overflow mark included: the terminal's status line prints it byte for byte,
+       whatever the terminal's encoding. */
+    char configured[DSD_APP_RX_TONE_POLICY_TEXT_SIZE];
+    (void)rx_tone_format_policy(mode, &set, configured, sizeof(configured),
+                                row ? RX_TONE_NOTICE_DEFAULT_LIST_SIZE : RX_TONE_NOTICE_LIST_SIZE);
+    dsd_tone_display_to_ascii(configured);
+    if (!row) {
+        DSD_SNPRINTF(out, out_size, "Applied: Tone filter -> %s", configured);
+        return 0;
+    }
+    char shadowing[DSD_APP_RX_TONE_POLICY_TEXT_SIZE];
+    (void)rx_tone_format_policy(row->tone_filter, &row->tone_set, shadowing, sizeof(shadowing),
+                                RX_TONE_NOTICE_ROW_LIST_SIZE);
+    dsd_tone_display_to_ascii(shadowing);
+    DSD_SNPRINTF(out, out_size, "Default tone filter -> %s; this channel overrides it (%s)", configured, shadowing);
+    return 0;
 }

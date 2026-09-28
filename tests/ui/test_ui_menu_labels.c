@@ -13,16 +13,19 @@
 
 #include <dsd-neo/app_control/history.h>
 #include <dsd-neo/app_control/snapshot.h>
+#include <dsd-neo/core/analog_tone.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/io/tcp_input.h>
 #include <dsd-neo/platform/file_compat.h>
+#include <dsd-neo/runtime/analog_tones.h>
 #include <dsd-neo/runtime/call_alert.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/decode_mode.h>
 #include <dsd-neo/runtime/radioreference.h>
 #include <dsd-neo/runtime/scan_mode.h>
+#include <dsd-neo/runtime/scan_options.h>
 #include <sndfile.h>
 #include <stdio.h>
 #include <string.h>
@@ -639,6 +642,71 @@ test_input_and_audio_labels(void) {
     return rc;
 }
 
+/*
+ * Audio > Tone filter... reads the policy the configuration sets, from the shared app-control view the Call Info line
+ * and the Qt monitor read: "off", or the mode and its list, and while a scan row's own policy is on air that policy
+ * with the configured one it shadows, "(row; default X)". A long list's overflow mark is ASCII here, as every menu
+ * label is. Before the first snapshot it reads the menu's own options, the policy its picker opens on, not "off".
+ */
+static int
+test_tone_filter_label(void) {
+    int rc = 0;
+    char b[192];
+    static dsd_opts opts;
+    static dsd_state state;
+    UiCtx ctx;
+    reset_fixture(&opts, &state, &ctx);
+    dsd_test_scan_labels_tone_policy(DSD_TONE_FILTER_OFF, NULL);
+    rc |= expect_str("tone filter off", lbl_tone_filter(&ctx, b, sizeof(b)), "Tone filter... [off]");
+    dsd_tone_set set;
+    DSD_MEMSET(&set, 0, sizeof(set));
+    (void)dsd_tone_set_parse("D023N/100", &set, NULL, 0);
+    dsd_test_scan_labels_tone_policy(DSD_TONE_FILTER_ALLOW, &set);
+    rc |= expect_str("tone filter allow", lbl_tone_filter(&ctx, b, sizeof(b)), "Tone filter... [allow 100.0 Hz/D023N]");
+    /* Off keeps its list, and reads off. */
+    dsd_test_scan_labels_tone_policy(DSD_TONE_FILTER_OFF, &set);
+    rc |= expect_str("tone filter off with a list", lbl_tone_filter(&ctx, b, sizeof(b)), "Tone filter... [off]");
+
+    /* An nfm row with its own policy on air: dsd_opts holds the row's, the configured view the default. */
+    dsd_scan_settings configured = {0};
+    configured.analog_tone_filter = DSD_TONE_FILTER_ALLOW;
+    configured.analog_tone_set = set;
+    dsd_test_scan_labels_configured(&configured);
+    dsd_scan_option_values row = {0};
+    row.present = DSD_SCAN_OPT_TONE;
+    row.tone_filter = DSD_TONE_FILTER_BLOCK;
+    (void)dsd_tone_set_parse("67.0", &row.tone_set, NULL, 0);
+    dsd_test_scan_labels_row_options(&row);
+    dsd_test_scan_labels_tone_policy(DSD_TONE_FILTER_BLOCK, &row.tone_set);
+    rc |= expect_str("tone filter under a row", lbl_tone_filter(&ctx, b, sizeof(b)),
+                     "Tone filter... [block 67.0 Hz (row; default allow 100.0 Hz/D023N)]");
+    dsd_test_scan_labels_row_options(NULL);
+    dsd_test_scan_labels_configured(NULL);
+
+    /* A long list says how much it left out, in ASCII. */
+    (void)dsd_tone_set_parse("67/69.3/71.9/74.4/77/79.7/82.5/85.4/88.5/91.5/94.8/97.4/100/103.5/D023/D025/D026", &set,
+                             NULL, 0);
+    dsd_test_scan_labels_tone_policy(DSD_TONE_FILTER_BLOCK, &set);
+    const char* label = lbl_tone_filter(&ctx, b, sizeof(b));
+    rc |= expect_int("tone filter long list",
+                     strncmp(label, "Tone filter... [block 67.0 Hz/69.3 Hz/", 38) == 0 && strstr(label, "...+") != NULL
+                         && strstr(label, "\xE2\x80\xA6") == NULL && label[strlen(label) - 1U] == ']',
+                     1);
+    dsd_test_scan_labels_tone_policy(DSD_TONE_FILTER_OFF, NULL);
+
+    /* No snapshot yet: the menu's own options, with no state. */
+    opts.analog_tone_filter = DSD_TONE_FILTER_ALLOW;
+    (void)dsd_tone_set_parse("D023N/100", &opts.analog_tone_set, NULL, 0);
+    dsd_test_scan_labels_set(0, DSD_SCAN_MODE_INHERIT);
+    rc |= expect_str("tone filter before snapshots", lbl_tone_filter(&ctx, b, sizeof(b)),
+                     "Tone filter... [allow 100.0 Hz/D023N]");
+    rc |= expect_str("tone filter without a context", lbl_tone_filter(NULL, b, sizeof(b)), "Tone filter... [off]");
+    dsd_test_scan_labels_set(1, DSD_SCAN_MODE_INHERIT);
+    opts.analog_tone_filter = DSD_TONE_FILTER_OFF;
+    DSD_MEMSET(&opts.analog_tone_set, 0, sizeof(opts.analog_tone_set));
+    return rc;
+}
+
 static int
 test_recording_labels(void) {
     int rc = 0;
@@ -830,6 +898,7 @@ main(void) {
     rc |= test_trunking_labels();
     rc |= test_encryption_labels();
     rc |= test_input_and_audio_labels();
+    rc |= test_tone_filter_label();
     rc |= test_recording_labels();
     rc |= test_display_and_advanced_labels();
     rc |= test_radioreference_labels_and_predicates();

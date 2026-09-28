@@ -41,6 +41,7 @@
 #include <dsd-neo/protocol/p25/p25_crypto.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #include <dsd-neo/runtime/analog_channel.h>
+#include <dsd-neo/runtime/analog_tones.h>
 #include <dsd-neo/runtime/scan_mode.h>
 #include <dsd-neo/runtime/unicode.h>
 #include <dsd-neo/ui/menu_core.h>
@@ -3478,13 +3479,10 @@ ui_format_tone_filter_line(const dsd_opts* opts, const dsd_state* state, double 
         return 0;
     }
     /* The list's overflow mark ("…+12") and the separator are the only non-ASCII this line holds; a terminal without
-       UTF-8 gets "..." and a hyphen instead of mojibake. The mark and "..." are both three bytes. */
+       UTF-8 gets "..." (dsd_tone_display_to_ascii()) and a hyphen instead of mojibake. */
     const char* dash = dsd_unicode_or_ascii("\xE2\x80\x94", "-");
-    const int ascii = strcmp(dash, "-") == 0;
-    if (ascii) {
-        for (char* mark = strstr(view.configured_text, "\xE2\x80\xA6"); mark; mark = strstr(mark, "\xE2\x80\xA6")) {
-            DSD_MEMCPY(mark, "...", 3U);
-        }
+    if (strcmp(dash, "-") == 0) {
+        dsd_tone_display_to_ascii(view.configured_text);
     }
     const int written = view.gate_text[0] ? DSD_SNPRINTF(buf, buf_sz, "| Tone filter: %s %s %s", view.configured_text,
                                                          dash, view.gate_text)

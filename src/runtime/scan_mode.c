@@ -1055,6 +1055,26 @@ dsd_scan_mode_configured_tone_policy(const dsd_opts* opts, const dsd_state* stat
 }
 
 int
+dsd_scan_mode_set_configured_tone_policy(dsd_opts* opts, const dsd_state* state, int mode, const dsd_tone_set* set) {
+    if (!opts || !set) {
+        return -1;
+    }
+    scan_scope* scope = state ? scan_scope_get(state) : NULL;
+    /* Suspended or absent, dsd_opts holds the configured values and resume recaptures them. */
+    if (scope && !scope->suspended) {
+        scope->configured.analog_tone_filter = mode;
+        scope->configured.analog_tone_set = *set;
+        /* Only an nfm row parses a policy of its own (scan_option_apply_tone()). */
+        if (scope->options.present & DSD_SCAN_OPT_TONE) {
+            return 0;
+        }
+    }
+    opts->analog_tone_filter = mode;
+    opts->analog_tone_set = *set;
+    return 1;
+}
+
+int
 dsd_scan_mode_configured_fm_monitor(const dsd_opts* opts, const dsd_state* state) {
     if (!opts) {
         return 0;

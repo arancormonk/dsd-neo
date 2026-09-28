@@ -618,6 +618,23 @@ dsd_tone_set_format_display(const dsd_tone_set* set, char* buf, size_t buf_size)
     return (int)used;
 }
 
+/* The ASCII spelling of TONE_SET_MORE_MARK, the same length, so it is swapped in place. */
+#define TONE_SET_MORE_MARK_ASCII "..."
+
+_Static_assert(sizeof(TONE_SET_MORE_MARK) == sizeof(TONE_SET_MORE_MARK_ASCII),
+               "the overflow mark and its ASCII spelling are the same length");
+
+void
+dsd_tone_display_to_ascii(char* text) {
+    if (!text) {
+        return;
+    }
+    const size_t mark_len = sizeof(TONE_SET_MORE_MARK) - 1U;
+    for (char* mark = strstr(text, TONE_SET_MORE_MARK); mark; mark = strstr(mark + mark_len, TONE_SET_MORE_MARK)) {
+        DSD_MEMCPY(mark, TONE_SET_MORE_MARK_ASCII, mark_len);
+    }
+}
+
 int
 dsd_tone_set_has_dcs(const dsd_tone_set* set) {
     if (!set) {
@@ -724,6 +741,30 @@ dsd_tone_filter_mode_parse(const char* text, int* mode) {
         }
     }
     return -1;
+}
+
+int
+dsd_tone_filter_check(int mode, const char* list, dsd_tone_set* out, char* err, size_t err_size) {
+    const char* name = dsd_tone_filter_mode_name(mode);
+    if (!out) {
+        return tone_list_error(err, err_size, "no policy");
+    }
+    if (!name) {
+        return tone_list_error(err, err_size, "the mode must be off, allow or block");
+    }
+    dsd_tone_set set;
+    DSD_MEMSET(&set, 0, sizeof(set));
+    if (!list || list[0] == '\0') {
+        if (mode != DSD_TONE_FILTER_OFF) {
+            char why[DSD_TONE_LIST_ERROR_SIZE];
+            DSD_SNPRINTF(why, sizeof(why), "%s needs a list of CTCSS tones or DCS codes, e.g. 67.0/100.0/D023N", name);
+            return tone_list_error(err, err_size, why);
+        }
+    } else if (dsd_tone_set_parse(list, &set, err, err_size) != 0) {
+        return -1;
+    }
+    *out = set;
+    return 0;
 }
 
 /* RTL stream output kind that carries monitor audio: RTL_STREAM_OUTPUT_AUDIO_MONITOR in the IO

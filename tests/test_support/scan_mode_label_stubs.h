@@ -2,6 +2,7 @@
 /* Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com> */
 #ifndef DSD_NEO_TEST_SCAN_MODE_LABEL_STUBS_H
 #define DSD_NEO_TEST_SCAN_MODE_LABEL_STUBS_H
+#include <dsd-neo/core/analog_tone.h>
 #include <dsd-neo/runtime/scan_mode.h>
 #include <dsd-neo/runtime/scan_options.h>
 #include <stddef.h>
@@ -14,5 +15,7 @@ void dsd_test_scan_labels_configured(const dsd_scan_settings* settings);
 void dsd_test_scan_labels_row_options(const dsd_scan_option_values* values);
 /* The input type the published options snapshot carries (AUDIO_IN_*; 0, Pulse, until set). */
 void dsd_test_scan_labels_input_type(int audio_in_type);
+/* The tone policy in force the published options snapshot carries (dsd_tone_filter_mode and its list; NULL: none). */
+void dsd_test_scan_labels_tone_policy(int mode, const dsd_tone_set* set);
 
 #endif

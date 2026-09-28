@@ -241,6 +241,13 @@ int dsd_tone_set_format(const dsd_tone_set* set, char* buf, size_t buf_size);
  */
 int dsd_tone_set_format_display(const dsd_tone_set* set, char* buf, size_t buf_size);
 
+/**
+ * @brief Spell the overflow mark dsd_tone_set_format_display() writes ("…", U+2026) as "..." wherever it appears in
+ * the NUL-terminated @p text, in place, for a surface that prints ASCII: a terminal menu label, a status-line toast, a
+ * terminal without UTF-8. Both spellings are three bytes, so the text keeps its length. NULL is ignored.
+ */
+void dsd_tone_display_to_ascii(char* text);
+
 /** @brief Entries in @p set (0 for NULL). */
 int dsd_tone_set_count(const dsd_tone_set* set);
 
@@ -275,6 +282,20 @@ const char* dsd_tone_filter_mode_name(int mode);
  * @return 0 with the dsd_tone_filter_mode in @p mode, -1 for anything else (@p mode untouched).
  */
 int dsd_tone_filter_mode_parse(const char* text, int* mode);
+
+/**
+ * @brief Check a whole tone policy as an editor sets it: the dsd_tone_filter_mode @p mode and its list @p list, the
+ * text dsd_tone_set_parse() reads, NULL or "" for none.
+ *
+ * Allow and block need a list; off takes one or none and keeps what it is given, as --no-tone-filter and
+ * [analog] tone_filter = off keep theirs. A mode that is none of the three, and a list the parser refuses, are refused.
+ * The live tone-filter command (DSD_APP_CMD_TONE_FILTER_SET) and the frontends' inline validation ask this one
+ * question. On failure @p out is untouched and @p err (when not NULL) says why, naming list entries by number and never
+ * repeating the text given (it fits DSD_TONE_LIST_ERROR_SIZE).
+ *
+ * @return 0 with the list in @p out (the empty set for none), -1 on failure (and for NULL @p out).
+ */
+int dsd_tone_filter_check(int mode, const char* list, dsd_tone_set* out, char* err, size_t err_size);
 
 /**
  * @brief Whether the decoder's analog receive tap runs: the analog monitor of either kind, FM or AM, on audio it can
