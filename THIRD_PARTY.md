@@ -57,6 +57,9 @@ for file-specific license/provenance details.
     of off-air radio transmissions redistributed for testing with attribution to Signal Identification Wiki
     contributors, with per-fixture upstream URLs recorded in `tools/build_iq_fixtures.py`. If upstream licensing is
     clarified, update this entry.
+  - The `provoice` fixture is the wiki's `Provoice.mp3` receiver-audio recording of one ProVoice transmission,
+    redistributed on the same terms. `tools/build_iq_fixtures.py` records its URL and pinned SHA-256, and undoes the
+    receiver's de-emphasis before converting it to baseband.
   - The analog fixtures `am_airband_real`, `nfm_ctcss_real`, `nfm_squelch_real_a` and `nfm_squelch_real_b` are short
     excerpts of the wiki's `AM_IQ.zip`, `IQ_CTCSS_example_482768kHz_IQ.zip` and `Unknown_NFM_squelch_IQ.zip` I/Q
     recordings, redistributed on the same terms as the other wiki-derived fixtures. `tools/build_iq_fixtures.py`

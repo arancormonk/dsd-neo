@@ -175,9 +175,15 @@ for r in $(seq 1 "$reps"); do
       --iq-replay "$capture" --iq-replay-rate "$rate" -o null > "$log" 2>&1
     rc=$?
     set -e
-    errs=$(grep -oE 'Total audio errors: [0-9]+' "$log" | tail -1 | grep -oE '[0-9]+$' || true)
-    voice=$(grep -c 'Voice' "$log" || true)
-    sync=$(grep -cE 'Sync: ' "$log" || true)
+    # The log is read as text (-a) whatever it holds: a D-STAR header decoded from noise prints its callsigns as
+    # raw bytes, which a UTF-8 grep takes for a binary file, and it then stops printing lines at the first of them.
+    errs=$(grep -a -oE 'Total audio errors: [0-9]+' "$log" | tail -1 | grep -oE '[0-9]+$' || true)
+    # Voice frames: lines that label one "Voice", or a ProVoice frame's " VOICE" after its sync, trunked (PV)
+    # or conventional (PV_C, which prints its addresses in between), or a D-STAR sync, voice or header, each of
+    # which opens a superframe of 21 AMBE frames. Startup notices that mention voice (the EDACS/ProVoice presets
+    # print two) are not frames.
+    voice=$(grep -a -v '^NOTICE:' "$log" | grep -a -cE 'Voice|Sync: [+-]PV(_C)? .*VOICE|Sync: [+-]DSTAR (VOICE|HEADER)' || true)
+    sync=$(grep -a -cE 'Sync: ' "$log" || true)
     analog=()
     for key in "${analog_keys[@]}"; do
       analog+=("$(line_value "$log" 'ANALOG METRIC:' "$key")")

@@ -1242,6 +1242,36 @@ soft_symbol_to_viterbi_cost(float symbol, const dsd_state* state, int bit_positi
     return llr_to_viterbi_cost(llr);
 }
 
+uint8_t
+dsd_two_level_symbol_reliability(const dsd_opts* opts, const dsd_state* state, float symbol) {
+    if (opts == NULL || state == NULL || !isfinite(symbol)) {
+        return 0U;
+    }
+
+    /* A legacy symbol capture keeps only the decided bit, which replay turns back into an ideal four-level
+     * amplitude (dsd_symbol_level_from_dibit()). Those amplitudes are not confidences, so the bit keeps a hard
+     * decision's weight. The soft capture format records the measured symbol and is used as it is. */
+    if (opts->audio_in_type == AUDIO_IN_SYMBOL_BIN && state->symbol_replay_format != DSD_SYMBOL_REPLAY_FORMAT_SOFT) {
+        return 255U;
+    }
+
+    /* The two-level form of soft_metric_for_bit()'s scale: full confidence at an ideal level. For
+     * two-level modes the warm start at sync sets min and max to the class means with center between
+     * them. Thresholds that are not ordered that way, or whose spacing is not a usable number, carry no
+     * information about confidence, so the bit keeps the weight a hard decision gives it. */
+    const float center = state->center;
+    const float half_spacing = 0.5f * (state->max - state->min);
+    if (!(state->min < center && center < state->max) || !isfinite(half_spacing) || half_spacing < 1e-6f) {
+        return 255U;
+    }
+
+    const float scaled = 255.0f * fabsf(symbol - center) / half_spacing;
+    if (scaled >= 255.0f) {
+        return 255U;
+    }
+    return (uint8_t)lrintf(scaled);
+}
+
 /**
  * GMSK (binary) soft symbol to Viterbi cost.
  *
