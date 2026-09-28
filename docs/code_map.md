@@ -834,8 +834,20 @@ installs from `src/engine/trunk_tuning.c` in `src/engine/trunk_tuning_hooks_inst
   bandwidth that filters no width of the kind, to leave the NFM width unset, or keep a wider bandwidth for AM), and
   `DSD_APP_CMD_RTL_ENABLE_INPUT` (Input > Switch source > RTL-SDR) asks `svc_check_rtl_input_analog_width()` before it
   rewrites the input and tears the running stream down, refusing a width the DSP bandwidth of the device it opens cannot
-  filter. Every change that commits to a radio stream start with an explicit width, or with AM, refuses it first while
-  `DSD_NEO_CHANNEL_LPF=0` (`svc_analog_width_env_allows()`), since the start would refuse it at any rate. Every one of
+  filter; `DSD_APP_CMD_AIRSPY_ENABLE_INPUT` (Switch source > Airspy) asks `svc_check_airspy_input_analog_width()`, which
+  holds the same widths only to the rules every rate shares, since the Airspy sets its own rate (issue #578). Every
+  change that commits to a radio stream start with an explicit width, or with AM, refuses it first while
+  `DSD_NEO_CHANNEL_LPF=0` (`svc_analog_width_env_allows()`), since the start would refuse it at any rate. A switch whose
+  start fails anyway (a width the rate the device delivered cannot filter, a device that does not open) never leaves
+  the session without the input it had (`ui_rtl_enable_input_failed()`): the input a start reads is captured before
+  the rewrite (`ui_radio_input`: device string and type, rtl_tcp endpoint, device index, tuning, gain, ppm, squelch,
+  volume, resample policy, Airspy and SoapySDR settings) and put back, a PCM input as it was (the switch never closed
+  it, and a background RTL stream it left running is not restarted) and an RTL-family input that ran restarted; it is
+  not reset as a new input (`ui_input_switched()`). The toast is `Refused: <why>` for a width refusal and
+  `Failed: <why>` otherwise, from `svc_describe_start_failure()`, which reads the refusal the start recorded
+  (`rtl_stream_start_analog_refusal()`) while the options still describe the input that failed: the environment rule,
+  or the width against the rate the device delivered with the fix for what sets it, or else the input that did not
+  start (Airspy, SoapySDR, rtl_tcp, I/Q replay, RTL-SDR). Every one of
   these classifies the input as the stream's `detect_radio_source()` does (`dsd_app_analog_rtl_bw_rate_hz()`): an
   `rtl`/`rtltcp` spec, or any device string on an RTL input that names no SoapySDR, Airspy or replay device (Input >
   Switch source > RTL-SDR leaves `pulse` there), runs at `rtl_dsp_bw_khz`, saturated rather than overflowed for a loaded
@@ -1390,9 +1402,12 @@ Notes:
     (`rtl_demod_finalize_analog_channel()`), including a rate the device forced. An explicit width the rate cannot
     realize, an explicit width with `DSD_NEO_CHANNEL_LPF=0`, or an explicit width on an IQ replay whose sidecar
     decimates after the demodulator (`post_downsample` above 1, `rtl_demod_check_analog_post_decimation()`) fails the
-    start with the validator's text; the unset AM default is held to the same rules. The unset NFM default never fails:
-    it keeps the `rate_in >= 20000` / `DSD_NEO_CHANNEL_LPF` enable rule and falls back to the legacy WIDE design where
-    the rate cannot fit 16 kHz, published as DSP-limited at the width that plan passes.
+    start with the validator's text; the unset AM default is held to the same rules. The refusal is also recorded, with
+    the kind, the configured width and the rate it was held to (`rtl_stream_start_analog_refusal()`, relaxed atomics
+    that every `rtl_stream_create()` and stream open clear), since the caller of a failed start has no stream left to
+    name the rate the device delivered (issue #578; test: `IO_RTL_STREAM_START_FAILURE`). The unset NFM default never
+    fails: it keeps the `rate_in >= 20000` / `DSD_NEO_CHANNEL_LPF` enable rule and falls back to the legacy WIDE design
+    where the rate cannot fit 16 kHz, published as DSP-limited at the width that plan passes.
   - AM (issue #524): an AM open (`rtl_demod_init_for_mode()`) and every switch to the AM kind
     (`rtl_demod_set_analog_kind()`, which also restarts the I/Q DC estimate) install the envelope detector
     (`dsd_am_demod`) with de-emphasis off (its coefficient cleared); FM gets the discriminator and the configured

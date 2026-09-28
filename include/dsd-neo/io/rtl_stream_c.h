@@ -87,6 +87,26 @@ int rtl_stream_create(dsd_opts* opts, RtlSdrContext** out_ctx);
  */
 int rtl_stream_start(RtlSdrContext* ctx);
 /**
+ * @brief Whether the last stream start failed at its analog channel check, and what it refused.
+ *
+ * A start checks the analog channel of the options it opens with once the rate chain is final, at the DSP rate the
+ * device actually delivers (a SoapySDR or Airspy device can force one, an I/Q replay runs at its capture's), and fails
+ * when it cannot run the width there: a width that rate cannot filter, any explicit width or the AM default while
+ * DSD_NEO_CHANNEL_LPF=0 turns the channel filter off, or a replay whose sidecar decimates after the demodulator. The
+ * refusal is logged with the validator's text and recorded here. Every stream create and every start forgets the
+ * last record, so after a start that failed for any other reason (a missing device, a failed open) this returns 0.
+ * The rate is otherwise lost once the start fails: rtl_stream_get_request_rate_hz() reads 0 with no stream, and
+ * rtl_stream_get_demod_rate_hz() still reads the stream before it. For the decoder thread that made the start, after
+ * it returned.
+ *
+ * @param out_kind     dsd_analog_demod the start was asked to run. May be NULL.
+ * @param out_width_hz Its configured width (0 = the kind's default, as dsd_opts_analog_width_hz() gives it). May be
+ *                     NULL.
+ * @param out_rate_hz  The DSP rate the start held the width to, in Hz. May be NULL.
+ * @return 1 when the last start was refused that way, filling the outputs; 0 otherwise, leaving them untouched.
+ */
+int rtl_stream_start_analog_refusal(int* out_kind, int* out_width_hz, int* out_rate_hz);
+/**
  * @brief Stop the stream and cleanup resources associated with the run.
  * Safe to call multiple times; subsequent calls are no-ops.
  * @param ctx Stream context created by rtl_stream_create().

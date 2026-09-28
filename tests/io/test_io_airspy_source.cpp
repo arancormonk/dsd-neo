@@ -299,9 +299,11 @@ main() {
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/io/rtl_stream.h>
+#include <dsd-neo/io/rtl_stream_c.h>
 #include <dsd-neo/platform/platform.h>
 #include <dsd-neo/platform/threading.h>
 #include <dsd-neo/platform/timing.h>
+#include <dsd-neo/runtime/analog_channel.h>
 #include <dsd-neo/runtime/exitflag.h>
 #include "rtl_stream_test_support.h"
 
@@ -388,7 +390,55 @@ main() {
         CHECK(!rtl_stream_test_has_resources());
         CHECK(!device_open && !streaming && closes == previous_closes + 2);
         CHECK(!dsd_exitflag_load());
+        CHECK(rtl_stream_start_analog_refusal(nullptr, nullptr, nullptr) == 0);
     }
+
+    // Issue #578: a start that refuses the analog width at the rate the device delivers records the refusal, which
+    // names that rate once the stream is gone. The Airspy decimates its capture to 19,531 Hz at a 12 kHz DSP bandwidth,
+    // which filters NFM 12.5 kHz but not 25 kHz.
+    opts->analog_only = 1;
+    opts->analog_demod = DSD_ANALOG_DEMOD_FM;
+    opts->rtl_dsp_bw_khz = 12;
+    for (int width_hz : {25000, 12500}) {
+        opts->analog_nfm_bandwidth_hz = width_hz;
+        fail_create = failure = create_calls = 0;
+        workers_entered.store(0);
+        workers_exited.store(0);
+        int previous_closes = closes;
+        RtlSdrOrchestrator stream(*opts);
+        int kind = -1;
+        int refused_width_hz = -1;
+        int rate_hz = -1;
+        if (width_hz == 25000) {
+            CHECK(stream.start() != 0);
+            CHECK(rtl_stream_start_analog_refusal(&kind, &refused_width_hz, &rate_hz) == 1);
+            CHECK(kind == DSD_ANALOG_DEMOD_FM && refused_width_hz == 25000);
+            CHECK(rate_hz == 19531 && !dsd_analog_width_realizable(25000, rate_hz));
+            CHECK(!rtl_stream_test_has_resources());
+            CHECK(!device_open && closes == previous_closes + 1 && !streaming);
+        } else {
+            CHECK(stream.start() == 0);
+            CHECK(rtl_stream_start_analog_refusal(&kind, &refused_width_hz, &rate_hz) == 0);
+            CHECK(kind == -1 && refused_width_hz == -1 && rate_hz == -1);
+            CHECK(stream.stop() == 0);
+            CHECK(!rtl_stream_test_has_resources());
+        }
+        CHECK(!dsd_exitflag_load());
+    }
+    // A create forgets the last start's refusal, so a start that never runs leaves none to report.
+    opts->analog_nfm_bandwidth_hz = 25000;
+    fail_create = failure = create_calls = 0;
+    workers_entered.store(0);
+    workers_exited.store(0);
+    {
+        RtlSdrOrchestrator stream(*opts);
+        CHECK(stream.start() != 0);
+    }
+    CHECK(rtl_stream_start_analog_refusal(nullptr, nullptr, nullptr) == 1);
+    RtlSdrContext* ctx = nullptr;
+    CHECK(rtl_stream_create(opts.get(), &ctx) == 0 && ctx);
+    CHECK(rtl_stream_start_analog_refusal(nullptr, nullptr, nullptr) == 0);
+    CHECK(rtl_stream_destroy(ctx) == 0);
     rtl_stream_test_set_thread_create(nullptr);
     return 0;
 }

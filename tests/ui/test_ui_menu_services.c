@@ -508,6 +508,29 @@ rtl_stream_start(RtlSdrContext* ctx) {
     return g_rtl_start_result;
 }
 
+/* What the last start recorded when its analog channel check refused it (issue #578): set by each case. */
+static int g_start_refused;
+static int g_start_refused_kind;
+static int g_start_refused_width_hz;
+static int g_start_refused_rate_hz;
+
+int
+rtl_stream_start_analog_refusal(int* out_kind, int* out_width_hz, int* out_rate_hz) {
+    if (!g_start_refused) {
+        return 0;
+    }
+    if (out_kind) {
+        *out_kind = g_start_refused_kind;
+    }
+    if (out_width_hz) {
+        *out_width_hz = g_start_refused_width_hz;
+    }
+    if (out_rate_hz) {
+        *out_rate_hz = g_start_refused_rate_hz;
+    }
+    return 1;
+}
+
 int
 rtl_stream_airspy_controls(const dsd_airspy_config* config) {
     (void)config;
@@ -910,7 +933,134 @@ test_locked_restarts(void) {
         rc |= expect_int("Airspy restores previous rate", (int)opts.airspy.sample_rate, 0);
         rc |= expect_int("Airspy restores previous frequency", (int)opts.rtlsdr_center_freq, 851000000);
     }
+
+    /* Issue #578: svc_airspy_reopen_locked() selects the Airspy and restarts once, under the caller's hold, and leaves
+       a failed start as it is for the caller to roll back. */
     reset_rtl_restart_stubs();
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    opts.audio_in_type = AUDIO_IN_RTL;
+    DSD_SNPRINTF(opts.audio_in_dev, sizeof(opts.audio_in_dev), "%s", "rtl:0:851.375M:0:0:48");
+    dsd_airspy_config_defaults(&opts.airspy);
+    dsd_airspy_config next = opts.airspy;
+    next.sample_rate = 2500000;
+    DSD_SNPRINTF(next.serial, sizeof next.serial, "%s", "123456789ABCDEF0");
+    g_p25_tick_guard_depth = 1;
+    g_rtl_create_result = 0;
+    rc |= expect_int("Airspy locked reopen reports start failure", svc_airspy_reopen_locked(&opts, &state, &next), -1);
+    rc |= expect_int("Airspy locked reopen starts once", g_rtl_start_calls, 1);
+    rc |= expect_int("Airspy locked reopen never enters", g_p25_tick_guard_enter_calls, 0);
+    rc |= expect_int("Airspy locked reopen lifecycle guarded", g_rtl_lifecycle_outside_guard, 0);
+    rc |= expect_int("Airspy locked reopen keeps the new rate", (int)opts.airspy.sample_rate, 2500000);
+    rc |= expect_str("Airspy locked reopen selects the Airspy", opts.audio_in_dev, "airspy:serial=123456789ABCDEF0");
+    rc |= expect_int("Airspy locked reopen leaves no stream", state.rtl_ctx == NULL, 1);
+    g_rtl_start_result = 0;
+    rc |= expect_int("Airspy locked reopen that starts", svc_airspy_reopen_locked(&opts, &state, &next), 0);
+    rc |= expect_int("Airspy locked reopen runs", state.rtl_ctx != NULL && opts.rtl_started == 1, 1);
+    next.sample_rate = 1234;
+    rc |=
+        expect_int("Airspy locked reopen refuses invalid settings", svc_airspy_reopen_locked(&opts, &state, &next), -1);
+    rc |= expect_int("invalid settings left the running stream", state.rtl_ctx != NULL && g_rtl_start_calls == 2, 1);
+    state.rtl_ctx = NULL;
+    reset_rtl_restart_stubs();
+    return rc;
+}
+
+/* Issue #578: what a failed stream start is reported as, from the refusal the start recorded (the width, the rate the
+ * device delivered and the fix for what sets it), or, with none, which input did not start. */
+static int
+test_describe_start_failure(void) {
+    static dsd_opts opts;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    char why[160];
+    int rc = 0;
+
+    g_start_refused = 1;
+    g_start_refused_kind = DSD_ANALOG_DEMOD_FM;
+    g_start_refused_width_hz = 25000;
+    g_start_refused_rate_hz = 19531;
+    DSD_SNPRINTF(opts.audio_in_dev, sizeof(opts.audio_in_dev), "%s", "airspy");
+    rc |= expect_int("airspy refusal", svc_describe_start_failure(&opts, why, sizeof why), 1);
+    rc |= expect_str("airspy refusal names the delivered rate and the device fix", why,
+                     "NFM 25 kHz does not fit the 19.531 kHz DSP rate (max 16.377 kHz); raise the DSP bandwidth or "
+                     "narrow the NFM width");
+
+    g_start_refused_rate_hz = 24000;
+    DSD_SNPRINTF(opts.audio_in_dev, sizeof(opts.audio_in_dev), "%s", "rtl:0:851.375M:0:0:24");
+    rc |= expect_int("rtl refusal", svc_describe_start_failure(&opts, why, sizeof why), 1);
+    rc |= expect_str("rtl refusal names the DSP bandwidths that fit", why,
+                     "NFM 25 kHz does not fit the 24 kHz DSP rate (max 20.4 kHz); use a 48 kHz DSP bandwidth");
+
+    /* A width the rate fits, refused for a reason the log names (a replay that decimates after the demodulator). */
+    g_start_refused_width_hz = 12500;
+    g_start_refused_rate_hz = 48000;
+    DSD_SNPRINTF(opts.audio_in_dev, sizeof(opts.audio_in_dev), "%s", "iqreplay:capture.json");
+    rc |= expect_int("replay refusal", svc_describe_start_failure(&opts, why, sizeof why), 1);
+    rc |= expect_str("replay refusal points at the log", why, "the I/Q replay input refused NFM 12.5 kHz (see log)");
+    /* The unset AM default is refused as the 6 kHz it runs. */
+    g_start_refused_kind = DSD_ANALOG_DEMOD_AM;
+    g_start_refused_width_hz = 0;
+    g_start_refused_rate_hz = 7500;
+    rc |= expect_int("AM default refusal", svc_describe_start_failure(&opts, why, sizeof why), 1);
+    rc |= expect_str("AM default refusal names its 6 kHz", why,
+                     "AM 6 kHz does not fit the 7.5 kHz DSP rate (max 5.55 kHz); narrow the AM width");
+    /* (The DSD_NEO_CHANNEL_LPF=0 text is covered by APP_COMMAND_QUEUE: dsd_setenv() is stubbed here.) */
+
+    /* No refusal recorded: the input that did not start, as the stream classifies its device string. */
+    g_start_refused = 0;
+
+    static const struct {
+        const char* dev;
+        const char* why;
+    } k_inputs[] = {
+        {"airspy:serial=123456789ABCDEF0", "the Airspy input did not start (see log)"},
+        {"soapy:driver=rtlsdr", "the SoapySDR input did not start (see log)"},
+        {"rtltcp:127.0.0.1:1234", "the rtl_tcp input did not start (see log)"},
+        {"iqreplay:capture.json", "the I/Q replay input did not start (see log)"},
+        {"rtl:0:851.375M", "the RTL-SDR input did not start (see log)"},
+        {"pulse", "the RTL-SDR input did not start (see log)"},
+    };
+
+    for (size_t i = 0; i < sizeof k_inputs / sizeof k_inputs[0]; i++) {
+        DSD_SNPRINTF(opts.audio_in_dev, sizeof(opts.audio_in_dev), "%s", k_inputs[i].dev);
+        rc |= expect_int(k_inputs[i].dev, svc_describe_start_failure(&opts, why, sizeof why), 0);
+        rc |= expect_str(k_inputs[i].dev, why, k_inputs[i].why);
+    }
+    return rc;
+}
+
+/* Issue #578: Input > Switch source > Airspy is held only to the rules every rate shares, since the device sets its own
+ * rate, which its start checks: DSD_NEO_CHANNEL_LPF=0 against an explicit width or the AM default (APP_COMMAND_QUEUE
+ * covers that refusal: dsd_setenv() is stubbed here), never the RTL DSP bandwidth. */
+static int
+test_airspy_input_analog_width(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    opts.audio_in_type = AUDIO_IN_PULSE;
+    DSD_SNPRINTF(opts.audio_in_dev, sizeof(opts.audio_in_dev), "%s", "pulse");
+    opts.analog_only = 1;
+    opts.analog_demod = DSD_ANALOG_DEMOD_FM;
+    opts.analog_nfm_bandwidth_hz = 25000;
+    opts.rtl_dsp_bw_khz = 12;
+    char why[160];
+    int rc = expect_int("rtl input holds the width to 12 kHz",
+                        svc_check_rtl_input_analog_width(&opts, &state, why, sizeof why), -1);
+    rc |= expect_int("airspy input holds no rate", svc_check_airspy_input_analog_width(&opts, &state, why, sizeof why),
+                     0);
+    rc |= expect_str("airspy input: no reason", why, "");
+    /* AM at 10 kHz on a running RTL-SDR at 8 kHz, which its DSP bandwidth cannot filter: the Airspy may. */
+    opts.audio_in_type = AUDIO_IN_RTL;
+    DSD_SNPRINTF(opts.audio_in_dev, sizeof(opts.audio_in_dev), "%s", "rtl:0:118.1M:0:0:8");
+    opts.rtl_dsp_bw_khz = 8;
+    opts.analog_demod = DSD_ANALOG_DEMOD_AM;
+    opts.analog_am_bandwidth_hz = 10000;
+    rc |= expect_int("AM: rtl input holds the width to 8 kHz",
+                     svc_check_rtl_input_analog_width(&opts, &state, why, sizeof why), -1);
+    rc |= expect_int("AM: airspy input holds no rate",
+                     svc_check_airspy_input_analog_width(&opts, &state, why, sizeof why), 0);
+    rc |= expect_int("null options", svc_check_airspy_input_analog_width(NULL, &state, why, sizeof why), -1);
     return rc;
 }
 
@@ -1966,6 +2116,8 @@ main(void) {
 #ifdef USE_RADIO
     rc |= test_rtl_restart_quiesces_p25_retunes();
     rc |= test_locked_restarts();
+    rc |= test_describe_start_failure();
+    rc |= test_airspy_input_analog_width();
     rc |= test_rtl_service_option_contracts();
     rc |= test_nfm_bandwidth_services();
     rc |= test_rtl_bandwidth_holds_the_analog_width_in_force();

@@ -6638,12 +6638,49 @@ stream_open_apply_audio_filters_from_config(void) {
     }
 }
 
-/* The authoritative analog channel check: rate_out is final here, including a rate the device forced. */
+/* The analog channel check that failed the last stream start (rtl_stream_start_analog_refusal()): the kind, the
+ * configured width (0 = the kind's default) and the DSP rate it was held to. Written by the start and read by the
+ * decoder thread that made it once it returned, so relaxed order suffices; every create and open clears it. */
+static std::atomic<int> g_start_analog_refused{0};
+static std::atomic<int> g_start_analog_refused_kind{0};
+static std::atomic<int> g_start_analog_refused_width_hz{0};
+static std::atomic<int> g_start_analog_refused_rate_hz{0};
+
+extern "C" void
+dsd_rtl_stream_forget_start_refusal(void) {
+    g_start_analog_refused.store(0, std::memory_order_relaxed);
+}
+
+extern "C" int
+rtl_stream_start_analog_refusal(int* out_kind, int* out_width_hz, int* out_rate_hz) {
+    if (!g_start_analog_refused.load(std::memory_order_relaxed)) {
+        return 0;
+    }
+    if (out_kind) {
+        *out_kind = g_start_analog_refused_kind.load(std::memory_order_relaxed);
+    }
+    if (out_width_hz) {
+        *out_width_hz = g_start_analog_refused_width_hz.load(std::memory_order_relaxed);
+    }
+    if (out_rate_hz) {
+        *out_rate_hz = g_start_analog_refused_rate_hz.load(std::memory_order_relaxed);
+    }
+    return 1;
+}
+
+/* The authoritative analog channel check: rate_out is final here, including a rate the device forced. A refusal is
+ * recorded with that rate for the caller of the failed start, which has no stream left to ask. */
 static int
 stream_open_finalize_analog_channel(const dsd_opts* opts) {
     char err[DSD_ANALOG_ERROR_TEXT_MAX];
     if (rtl_demod_finalize_analog_channel(&demod, opts, err, sizeof err) != 0) {
         LOG_ERROR("%s.\n", err);
+        if (opts) {
+            g_start_analog_refused_kind.store(opts->analog_demod, std::memory_order_relaxed);
+            g_start_analog_refused_width_hz.store(dsd_opts_analog_width_hz(opts), std::memory_order_relaxed);
+            g_start_analog_refused_rate_hz.store(demod.rate_out, std::memory_order_relaxed);
+            g_start_analog_refused.store(1, std::memory_order_relaxed);
+        }
         return -1;
     }
     return 0;
@@ -7102,6 +7139,7 @@ extern "C" int dsd_rtl_stream_soft_stop(void);
  */
 extern "C" int
 dsd_rtl_stream_open(dsd_opts* opts) {
+    dsd_rtl_stream_forget_start_refusal();
     if (!opts) {
         LOG_ERROR("RTL stream open: missing opts\n");
         return -1;

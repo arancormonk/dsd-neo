@@ -497,10 +497,48 @@ int svc_rtl_enable_input(dsd_opts* opts, dsd_state* state);
  * @return 0 when the switch may go ahead, -1 otherwise (reason in @p why, may be NULL).
  */
 int svc_check_rtl_input_analog_width(const dsd_opts* opts, const dsd_state* state, char* why, size_t why_size);
+/**
+ * @brief Check the configured analog width against the Airspy DSD_APP_CMD_AIRSPY_ENABLE_INPUT would open (issue #578).
+ *
+ * Asked before the switch rewrites the input and tears down the running one. The Airspy delivers a rate its sample rate
+ * and the DSP bandwidth set, which its start checks, so only the rules every rate shares apply: an explicit width, or
+ * the AM default, is refused while DSD_NEO_CHANNEL_LPF=0 turns the channel filter off. The widths held are the ones
+ * svc_check_rtl_input_analog_width() holds: the configured analog preset's, the configured width of a kind the scan
+ * runs beside it, and the width in force under an analog scan row. The unset NFM default is never refused.
+ *
+ * @return 0 when the switch may go ahead, -1 otherwise (reason in @p why, may be NULL).
+ */
+int svc_check_airspy_input_analog_width(const dsd_opts* opts, const dsd_state* state, char* why, size_t why_size);
+/**
+ * @brief A short reason the last stream start failed, for a toast (issue #578).
+ *
+ * Call it right after a failed start (svc_rtl_restart(), svc_rtl_enable_input()), while @p opts still describes the
+ * input that failed. When the start refused its analog width (rtl_stream_start_analog_refusal()), the reason is the
+ * one a check before the change gives: DSD_NEO_CHANNEL_LPF=0 turning off the filter the width needs, or the width, the
+ * DSP rate the device delivered, the widest width that rate filters and the fix for what sets it (a DSP bandwidth that
+ * fits on an RTL-SDR or rtl_tcp input, a wider DSP bandwidth or a narrower width on a SoapySDR or Airspy device, a
+ * narrower width on an I/Q replay); a width the rate fits, refused for another reason, points at the log. Otherwise it
+ * names the input that did not start (Airspy, SoapySDR, rtl_tcp, I/Q replay or RTL-SDR, as the stream classifies the
+ * device string) and points at the log. The start already logged its own text, so this logs nothing.
+ *
+ * @return 1 when the start refused its analog width, 0 when it failed for another reason.
+ */
+int svc_describe_start_failure(const dsd_opts* opts, char* why, size_t why_size);
 /** @brief Restart the RTL stream if active, tearing down any existing context. */
 int svc_rtl_restart(dsd_opts* opts, dsd_state* state);
 /** Restart without acquiring; caller holds the P25 SM tick guard. */
 int svc_rtl_restart_locked(dsd_opts* opts, dsd_state* state);
+/**
+ * @brief Select the Airspy with @p config and reopen it, without acquiring; caller holds the P25 SM tick guard.
+ *
+ * Writes @p config and its device string ("airspy", or "airspy:serial=..."), then restarts the stream
+ * (svc_rtl_restart_locked()) and refreshes the device info. Unlike svc_airspy_apply_config_locked(), a start that
+ * fails is left as it is, with no stream: the caller, which knows what the session ran before, rolls back. Invalid
+ * settings are refused before anything changes.
+ *
+ * @return 0 on success, -1 when the settings are invalid or the stream did not start.
+ */
+int svc_airspy_reopen_locked(dsd_opts* opts, dsd_state* state, const dsd_airspy_config* config);
 int svc_airspy_apply(dsd_opts* opts, dsd_state* state, const dsd_airspy_config* config);
 
 typedef struct {

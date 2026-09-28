@@ -1085,20 +1085,140 @@ ui_cmd_parse_double_payload(const struct dsd_app_command* c, double* out) {
 }
 
 #ifdef USE_RADIO
+/* The receive input a stream start reads, as a change that rewrites it finds it (issue #578): the device string and
+   input type, the rtl_tcp endpoint, the RTL device index, the tuning and front-end settings a start copies, the Airspy
+   and SoapySDR settings, and the digital resample policy. These are what Input > Switch source, a config's [input] and
+   its hot restart write. @c running says whether that input worked: any input but an RTL-family one (PCM, which no
+   switch closes), or an RTL-family one with a stream. A start that fails on the input that replaced it puts this one
+   back (ui_restore_radio_input()), so the session never ends up without an input it had. */
+typedef struct {
+    int running;
+    dsd_audio_in_type audio_in_type;
+    char audio_in_dev[sizeof(((dsd_opts*)0)->audio_in_dev)];
+    int rtltcp_enabled;
+    char rtltcp_hostname[sizeof(((dsd_opts*)0)->rtltcp_hostname)];
+    int rtltcp_portno;
+    int rtl_dev_index;
+    uint32_t rtlsdr_center_freq;
+    int rtl_dsp_bw_khz;
+    int rtl_gain_value;
+    int rtlsdr_ppm_error;
+    int rtl_auto_ppm;
+    double rtl_squelch_level;
+    int rtl_volume_multiplier;
+    int digital_resample_mode;
+    dsd_airspy_config airspy;
+    int airspy_config_error;
+    char soapy_profile[sizeof(((dsd_opts*)0)->soapy_profile)];
+    char soapy_stream_format[sizeof(((dsd_opts*)0)->soapy_stream_format)];
+    char soapy_antenna[sizeof(((dsd_opts*)0)->soapy_antenna)];
+    char soapy_clock[sizeof(((dsd_opts*)0)->soapy_clock)];
+    char soapy_settings[sizeof(((dsd_opts*)0)->soapy_settings)];
+    char soapy_gains[sizeof(((dsd_opts*)0)->soapy_gains)];
+    int soapy_bandwidth_hz;
+} ui_radio_input;
+
+static void
+ui_capture_radio_input(const dsd_opts* opts, const dsd_state* state, ui_radio_input* out) {
+    DSD_MEMSET(out, 0, sizeof *out);
+    if (!opts) {
+        return;
+    }
+    out->running = opts->audio_in_type != AUDIO_IN_RTL || (state && state->rtl_ctx != NULL);
+    out->audio_in_type = opts->audio_in_type;
+    DSD_MEMCPY(out->audio_in_dev, opts->audio_in_dev, sizeof out->audio_in_dev);
+    out->rtltcp_enabled = opts->rtltcp_enabled;
+    DSD_MEMCPY(out->rtltcp_hostname, opts->rtltcp_hostname, sizeof out->rtltcp_hostname);
+    out->rtltcp_portno = opts->rtltcp_portno;
+    out->rtl_dev_index = opts->rtl_dev_index;
+    out->rtlsdr_center_freq = opts->rtlsdr_center_freq;
+    out->rtl_dsp_bw_khz = opts->rtl_dsp_bw_khz;
+    out->rtl_gain_value = opts->rtl_gain_value;
+    out->rtlsdr_ppm_error = opts->rtlsdr_ppm_error;
+    out->rtl_auto_ppm = opts->rtl_auto_ppm;
+    out->rtl_squelch_level = opts->rtl_squelch_level;
+    out->rtl_volume_multiplier = opts->rtl_volume_multiplier;
+    out->digital_resample_mode = opts->digital_resample_mode;
+    out->airspy = opts->airspy;
+    out->airspy_config_error = opts->airspy_config_error;
+    DSD_MEMCPY(out->soapy_profile, opts->soapy_profile, sizeof out->soapy_profile);
+    DSD_MEMCPY(out->soapy_stream_format, opts->soapy_stream_format, sizeof out->soapy_stream_format);
+    DSD_MEMCPY(out->soapy_antenna, opts->soapy_antenna, sizeof out->soapy_antenna);
+    DSD_MEMCPY(out->soapy_clock, opts->soapy_clock, sizeof out->soapy_clock);
+    DSD_MEMCPY(out->soapy_settings, opts->soapy_settings, sizeof out->soapy_settings);
+    DSD_MEMCPY(out->soapy_gains, opts->soapy_gains, sizeof out->soapy_gains);
+    out->soapy_bandwidth_hz = opts->soapy_bandwidth_hz;
+}
+
+/* Put back the input @p in describes. The caller restarts it when it was an RTL-family input that ran. */
+static void
+ui_restore_radio_input(dsd_opts* opts, const ui_radio_input* in) {
+    opts->audio_in_type = in->audio_in_type;
+    DSD_MEMCPY(opts->audio_in_dev, in->audio_in_dev, sizeof opts->audio_in_dev);
+    opts->rtltcp_enabled = in->rtltcp_enabled;
+    DSD_MEMCPY(opts->rtltcp_hostname, in->rtltcp_hostname, sizeof opts->rtltcp_hostname);
+    opts->rtltcp_portno = in->rtltcp_portno;
+    opts->rtl_dev_index = in->rtl_dev_index;
+    opts->rtlsdr_center_freq = in->rtlsdr_center_freq;
+    opts->rtl_dsp_bw_khz = in->rtl_dsp_bw_khz;
+    opts->rtl_gain_value = in->rtl_gain_value;
+    opts->rtlsdr_ppm_error = in->rtlsdr_ppm_error;
+    opts->rtl_auto_ppm = in->rtl_auto_ppm;
+    opts->rtl_squelch_level = in->rtl_squelch_level;
+    opts->rtl_volume_multiplier = in->rtl_volume_multiplier;
+    opts->digital_resample_mode = in->digital_resample_mode;
+    opts->airspy = in->airspy;
+    opts->airspy_config_error = in->airspy_config_error;
+    DSD_MEMCPY(opts->soapy_profile, in->soapy_profile, sizeof opts->soapy_profile);
+    DSD_MEMCPY(opts->soapy_stream_format, in->soapy_stream_format, sizeof opts->soapy_stream_format);
+    DSD_MEMCPY(opts->soapy_antenna, in->soapy_antenna, sizeof opts->soapy_antenna);
+    DSD_MEMCPY(opts->soapy_clock, in->soapy_clock, sizeof opts->soapy_clock);
+    DSD_MEMCPY(opts->soapy_settings, in->soapy_settings, sizeof opts->soapy_settings);
+    DSD_MEMCPY(opts->soapy_gains, in->soapy_gains, sizeof opts->soapy_gains);
+    opts->soapy_bandwidth_hz = in->soapy_bandwidth_hz;
+}
+
 /* Input > Switch source > RTL-SDR opens a device at the RTL DSP bandwidth, so an explicit analog width that bandwidth
    cannot filter is refused before the running input is torn down: the new stream's start would refuse it and leave
-   none. An Airspy device sets its own rate, which its start checks. */
+   none. Input > Switch source > Airspy opens a device that sets its own rate, which its start holds the width to, so
+   only the rule every rate shares is asked first (issue #578): DSD_NEO_CHANNEL_LPF=0 turns off the filter an explicit
+   width, or the AM default, needs. */
 static int
 ui_cmd_rtl_enable_input_refused(const dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
-    if (!opts || !state || c->id != DSD_APP_CMD_RTL_ENABLE_INPUT) {
+    if (!opts || !state) {
         return 0;
     }
     char why[128];
-    if (svc_check_rtl_input_analog_width(opts, state, why, sizeof why) == 0) {
+    const int check = c->id == DSD_APP_CMD_AIRSPY_ENABLE_INPUT
+                          ? svc_check_airspy_input_analog_width(opts, state, why, sizeof why)
+                          : svc_check_rtl_input_analog_width(opts, state, why, sizeof why);
+    if (check == 0) {
         return 0;
     }
     ui_set_toast(state, 5, "Refused: %s", why);
     return 1;
+}
+
+/* Input > Switch source whose start failed on the new input (issue #578): a width the rate the device delivered cannot
+   filter, or a device that did not open. The switch never leaves the session without the input it had: the reason is
+   taken while the options still describe the input that failed (svc_describe_start_failure()), then the input that
+   ran before is put back, a PCM input as it was (the switch never closed it) and an RTL-family one started again. It
+   is the input that ran, so nothing is reset as for a new one (ui_input_switched()). */
+static void
+ui_rtl_enable_input_failed(dsd_opts* opts, dsd_state* state, const ui_radio_input* before) {
+    char why[128];
+    const int refused = svc_describe_start_failure(opts, why, sizeof why);
+    if (before->running) {
+        ui_restore_radio_input(opts, before);
+        if (before->audio_in_type == AUDIO_IN_RTL && svc_rtl_restart(opts, state) != 0) {
+            LOG_ERROR("Input switch: the input it replaced did not restart either; no radio input is running.\n");
+        }
+    }
+    if (refused) {
+        ui_set_toast(state, 5, "Refused: %s", why);
+    } else {
+        ui_set_toast(state, 5, "Failed: %s", why);
+    }
 }
 
 static int
@@ -1106,6 +1226,8 @@ ui_cmd_handle_rtl_enable_input(dsd_opts* opts, dsd_state* state, const struct ds
     if (ui_cmd_rtl_enable_input_refused(opts, state, c)) {
         return UI_CMD_APPLY_FAILED;
     }
+    ui_radio_input before;
+    ui_capture_radio_input(opts, state, &before);
     if (opts && c->id == DSD_APP_CMD_AIRSPY_ENABLE_INPUT) {
         DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "airspy%s%s",
                      opts->airspy.serial[0] ? ":serial=" : "", opts->airspy.serial);
@@ -1129,7 +1251,7 @@ ui_cmd_handle_rtl_enable_input(dsd_opts* opts, dsd_state* state, const struct ds
         } else if (ui_rc_is_not_supported(rc)) {
             ui_set_toast(state, 3, "Unsupported: active radio backend cannot enable RTL input");
         } else {
-            ui_set_toast(state, 4, "Failed: RTL input enable");
+            ui_rtl_enable_input_failed(opts, state, &before);
         }
     }
     return result;

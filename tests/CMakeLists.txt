@@ -5696,6 +5696,8 @@ if(
         dsd-neo_test_app_command_queue
         PRIVATE
             "LINKER:--wrap=rtl_stream_create"
+            "LINKER:--wrap=rtl_stream_start"
+            "LINKER:--wrap=rtl_stream_start_analog_refusal"
             "LINKER:--wrap=rtl_stream_stop"
             "LINKER:--wrap=rtl_stream_destroy"
             "LINKER:--wrap=rtl_stream_set_channel_squelch"
