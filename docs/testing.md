@@ -1077,7 +1077,10 @@ A failed `assert()` aborts the test before its cleanup runs. Once a temporary
 file or directory exists, check with a counted failure instead: print what
 failed, remove the file or directory, then return the failure. A write that
 fails while the test sets up its file counts the same way. An open that fails
-can still have created the file, so remove it on that path too.
+can still have created the file, so remove it on that path too. Close every
+handle on a file before removing it, including one the code under test hands
+back from an open the test expects it to refuse: the native Windows CRT cannot
+remove an open file.
 
 To check the whole suite, run it against an empty directory, which must still
 be empty afterwards. That does not catch a file a test creates by a relative
