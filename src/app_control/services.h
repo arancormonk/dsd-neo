@@ -651,7 +651,16 @@ int svc_rtl_restart_recovery_locked(dsd_opts* opts, dsd_state* state, int* out_c
  * @return 0 on success, -1 when the settings are invalid or the stream did not start.
  */
 int svc_airspy_reopen_locked(dsd_opts* opts, dsd_state* state, const dsd_airspy_config* config);
-int svc_airspy_apply(dsd_opts* opts, dsd_state* state, const dsd_airspy_config* config);
+/**
+ * @brief Apply native Airspy settings to the running Airspy with the shared tuning it runs (svc_airspy_apply_config()),
+ * for DSD_APP_CMD_AIRSPY_SET.
+ *
+ * @param out_capture_stopped Set to 1 when a reopen whose start failed put the settings it replaced back and started
+ *                            them again without the I/Q capture, which stays off for the session
+ *                            (svc_rtl_restart_recovery_locked()), else 0 (may be NULL).
+ * @return As svc_airspy_apply_config().
+ */
+int svc_airspy_apply(dsd_opts* opts, dsd_state* state, const dsd_airspy_config* config, int* out_capture_stopped);
 
 typedef struct {
     uint32_t frequency;

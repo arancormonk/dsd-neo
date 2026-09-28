@@ -892,7 +892,8 @@ installs from `src/engine/trunk_tuning.c` in `src/engine/trunk_tuning_hooks_inst
   as kept only when the start the change made never opened the capture (`rtl_stream_start_opened_capture()`: a width
   its analog check refused, a device that did not open); a start that opened it before failing (its workers, an
   Airspy that did not stream) or that ran and was undone had already written the file anew, and the log says that
-  instead. The toast notes `; I/Q capture stopped` when it fits (`ui_set_rollback_toast()`). The toast is `Refused: <why>` for a width refusal and
+  instead. The toast notes `; I/Q capture stopped` when it fits (`ui_set_rollback_toast()`), AIRSPY_SET's too
+  (`Failed: Airspy setting; I/Q capture stopped`, from `svc_airspy_apply()`'s `out_capture_stopped`). The toast is `Refused: <why>` for a width refusal and
   `Failed: <why>` otherwise, from `svc_describe_start_failure()`, which reads the refusal the start recorded
   (`rtl_stream_start_analog_refusal()`) while the options still describe the input that failed: the environment rule,
   or the width against the rate the device delivered with the fix for what sets it, or else the input that did not

@@ -11467,6 +11467,68 @@ test_input_switch_rollback_keeps_the_iq_capture(void) {
     return rc;
 }
 
+/* Submit an Airspy setting (DSD_APP_CMD_AIRSPY_SET) and drain it, as the decoder does. */
+static int
+submit_airspy_setting(dsd_opts* opts, dsd_state* state, const char* key, const char* value, const char* label) {
+    dsd_app_airspy_setting_payload edit;
+    DSD_MEMSET(&edit, 0, sizeof edit);
+    DSD_SNPRINTF(edit.key, sizeof edit.key, "%s", key);
+    DSD_SNPRINTF(edit.value, sizeof edit.value, "%s", value);
+    int rc = expect_true(label, dsd_app_command_submit(DSD_APP_CMD_AIRSPY_SET, &edit, sizeof edit) > 0);
+    state->ui_msg[0] = '\0';
+    rc |= expect_int(label, dsd_app_drain_cmds(opts, state), 1);
+    return rc;
+}
+
+/*
+ * Issue #578: an Airspy setting the running Airspy takes only when it opens (its sample rate) reopens it, and a start
+ * that fails puts the settings it replaced back and starts them again without the I/Q capture, as every rollback
+ * restart does. The capture stays off for the rest of the session, so the message says so beside the failure, as the
+ * config and Switch source rollbacks do. A setting that reopens and starts records on.
+ */
+static int
+test_airspy_setting_rollback_reports_the_iq_capture_stop(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static void* fake_ctx[2];
+    int rc = 0;
+    init_decode_mode_context(&opts, &state);
+    opts.audio_in_type = AUDIO_IN_RTL;
+    DSD_SNPRINTF(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", "airspy");
+    dsd_airspy_config_defaults(&opts.airspy);
+    const uint32_t rate_before = opts.airspy.sample_rate;
+    opts.rtl_dsp_bw_khz = 48;
+    opts.iq_capture_requested = 1;
+    DSD_SNPRINTF(opts.iq_capture_path, sizeof opts.iq_capture_path, "%s", "cap.iq");
+    state.rtl_ctx = (RtlSdrContext*)fake_ctx;
+    reset_config_rtl_wrap();
+    g_config_rtl_open_ok = 1;
+    g_config_rtl_fail_starts = 1;
+    g_capture_log[0] = '\0';
+    rc |= submit_airspy_setting(&opts, &state, "airspy_sample_rate", "2500000", "airspy rate fails");
+    rc |= expect_int("airspy rate fails: failed", dsd_app_command_test_last_failed(), 1);
+    rc |= expect_capture_stopped("airspy rate fails: recording kept", &opts, 0);
+    rc |= expect_int("airspy rate fails: the rate put back", (int)opts.airspy.sample_rate, (int)rate_before);
+    rc |= expect_int("airspy rate fails: the Airspy runs", state.rtl_ctx != NULL, 1);
+    rc |= expect_str("airspy rate fails toast", state.ui_msg, "Failed: Airspy setting; I/Q capture stopped");
+
+    /* One that starts records on, and says only that it applied. */
+    opts.iq_capture_requested = 1;
+    reset_config_rtl_wrap();
+    g_config_rtl_open_ok = 1;
+    rc |= submit_airspy_setting(&opts, &state, "airspy_sample_rate", "2500000", "airspy rate starts");
+    rc |=
+        expect_int("airspy rate starts: records on", g_config_rtl_create_capture == 1 && opts.iq_capture_requested, 1);
+    rc |= expect_str("airspy rate starts toast", state.ui_msg, "Applied: Airspy setting");
+
+    reset_config_rtl_wrap();
+    opts.iq_capture_requested = 0;
+    opts.iq_capture_path[0] = '\0';
+    state.rtl_ctx = NULL;
+    freeState(&state);
+    return rc;
+}
+
 #endif
 
 #ifdef DSD_NEO_TEST_IO_CONTROL_WRAP
@@ -11809,6 +11871,7 @@ main(void) {
     rc |= test_input_switch_that_fails_keeps_the_running_input();
     rc |= test_input_switch_holds_the_watchdog_guard();
     rc |= test_input_switch_rollback_keeps_the_iq_capture();
+    rc |= test_airspy_setting_rollback_reports_the_iq_capture_stop();
 #endif
     rc |= test_am_refused_on_pcm_input();
     rc |= test_am_bandwidth_set_validates();

@@ -1696,8 +1696,14 @@ ui_cmd_handle_airspy_set(dsd_opts* opts, dsd_state* state, const struct dsd_app_
     if (dsd_airspy_config_set(&config, edit.key, edit.value) != 0) {
         return UI_CMD_APPLY_INVALID_PAYLOAD;
     }
-    int rc = svc_airspy_apply(opts, state, &config);
-    ui_set_toast(state, 3, rc == 0 ? "Applied: Airspy setting" : "Failed: Airspy setting");
+    int capture_stopped = 0;
+    const int rc = svc_airspy_apply(opts, state, &config, &capture_stopped);
+    if (rc == 0) {
+        ui_set_toast(state, 3, "Applied: Airspy setting");
+    } else {
+        /* A reopen whose start failed started the settings it replaced again without the I/Q capture (issue #578). */
+        ui_set_rollback_toast(state, "Failed: ", "Airspy setting", capture_stopped);
+    }
     return ui_cmd_apply_status_from_service_rc(rc);
 }
 

@@ -1500,12 +1500,13 @@ svc_airspy_select(dsd_opts* opts, const dsd_airspy_config* config) {
 }
 
 /* Reopen the Airspy with @p config, and on a failed start put back @p previous and @p previous_tuning and start that
-   again, without the I/Q capture that would write over the recording (svc_rtl_restart_recovery_locked()). The watchdog
-   reads the input under the P25 SM tick guard, so the whole of it runs inside one hold (issue #578): the caller's
-   (@p guard_held), or one taken here. */
+   again, without the I/Q capture that would write over the recording (svc_rtl_restart_recovery_locked(), which sets
+   @p out_capture_stopped when it turned the capture off; may be NULL). The watchdog reads the input under the P25 SM
+   tick guard, so the whole of it runs inside one hold (issue #578): the caller's (@p guard_held), or one taken here. */
 static int
 svc_airspy_reopen_impl(dsd_opts* opts, dsd_state* state, const dsd_airspy_config* config,
-                       const dsd_airspy_config* previous, const svc_airspy_tuning* previous_tuning, int guard_held) {
+                       const dsd_airspy_config* previous, const svc_airspy_tuning* previous_tuning, int guard_held,
+                       int* out_capture_stopped) {
     if (!guard_held) {
         p25_sm_tick_guard_enter();
     }
@@ -1514,7 +1515,7 @@ svc_airspy_reopen_impl(dsd_opts* opts, dsd_state* state, const dsd_airspy_config
     if (rc != 0) {
         svc_airspy_select(opts, previous);
         svc_airspy_restore_tuning(opts, previous_tuning);
-        (void)svc_rtl_restart_recovery_locked(opts, state, NULL);
+        (void)svc_rtl_restart_recovery_locked(opts, state, out_capture_stopped);
     }
     if (!guard_held) {
         p25_sm_tick_guard_leave();
@@ -1571,9 +1572,14 @@ svc_airspy_apply_live(dsd_opts* opts, dsd_state* state, const dsd_airspy_config*
     return 0;
 }
 
+/* svc_airspy_apply_config(), holding the guard when @p guard_held is 0, and setting @p out_capture_stopped (may be
+   NULL; 0 on entry) when the restart of the settings a failed reopen replaced turned the I/Q capture off. */
 static int
 svc_airspy_apply_config_impl(dsd_opts* opts, dsd_state* state, const dsd_airspy_config* config,
-                             const svc_airspy_tuning* previous_tuning, int guard_held) {
+                             const svc_airspy_tuning* previous_tuning, int guard_held, int* out_capture_stopped) {
+    if (out_capture_stopped) {
+        *out_capture_stopped = 0;
+    }
     if (!opts || !state || !previous_tuning || !dsd_airspy_config_valid(config)) {
         return -1;
     }
@@ -1583,9 +1589,9 @@ svc_airspy_apply_config_impl(dsd_opts* opts, dsd_state* state, const dsd_airspy_
     dsd_airspy_config previous = opts->airspy;
     int reopen = svc_airspy_settings_reopen(&previous, config, previous_tuning->bandwidth, opts->rtl_dsp_bw_khz,
                                             previous_tuning->volume, opts->rtl_volume_multiplier);
-    int rc = (reopen || !state->rtl_ctx)
-                 ? svc_airspy_reopen_impl(opts, state, config, &previous, previous_tuning, guard_held)
-                 : svc_airspy_apply_live(opts, state, config, previous_tuning);
+    int rc = (reopen || !state->rtl_ctx) ? svc_airspy_reopen_impl(opts, state, config, &previous, previous_tuning,
+                                                                  guard_held, out_capture_stopped)
+                                         : svc_airspy_apply_live(opts, state, config, previous_tuning);
     (void)rtl_stream_airspy_info(&opts->airspy_info);
     return rc;
 }
@@ -1593,23 +1599,26 @@ svc_airspy_apply_config_impl(dsd_opts* opts, dsd_state* state, const dsd_airspy_
 int
 svc_airspy_apply_config(dsd_opts* opts, dsd_state* state, const dsd_airspy_config* config,
                         const svc_airspy_tuning* previous_tuning) {
-    return svc_airspy_apply_config_impl(opts, state, config, previous_tuning, 0);
+    return svc_airspy_apply_config_impl(opts, state, config, previous_tuning, 0, NULL);
 }
 
 int
 svc_airspy_apply_config_locked(dsd_opts* opts, dsd_state* state, const dsd_airspy_config* config,
                                const svc_airspy_tuning* previous_tuning) {
-    return svc_airspy_apply_config_impl(opts, state, config, previous_tuning, 1);
+    return svc_airspy_apply_config_impl(opts, state, config, previous_tuning, 1, NULL);
 }
 
 int
-svc_airspy_apply(dsd_opts* opts, dsd_state* state, const dsd_airspy_config* config) {
+svc_airspy_apply(dsd_opts* opts, dsd_state* state, const dsd_airspy_config* config, int* out_capture_stopped) {
+    if (out_capture_stopped) {
+        *out_capture_stopped = 0;
+    }
     if (!opts) {
         return -1;
     }
     const svc_airspy_tuning tuning = {opts->rtlsdr_center_freq, opts->rtl_dsp_bw_khz, opts->rtl_squelch_level,
                                       opts->rtl_volume_multiplier};
-    return svc_airspy_apply_config(opts, state, config, &tuning);
+    return svc_airspy_apply_config_impl(opts, state, config, &tuning, 0, out_capture_stopped);
 }
 
 int
