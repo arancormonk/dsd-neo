@@ -7,6 +7,7 @@
 #include <dsd-neo/io/iq_replay.h>
 #include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/platform/posix_compat.h>
+#include <errno.h>
 #include <inttypes.h>
 #include <stdio.h>
 #include <string.h>
@@ -88,12 +89,70 @@ write_text_file(const char* path, const char* text) {
     return 0;
 }
 
+/* A temp directory a test made and the NULL-terminated list of files the test writes in it. */
+typedef struct {
+    char dir[DSD_TEST_PATH_MAX];
+    const char* const* files;
+} temp_dir_entry;
+
+/* Every temp directory made so far, recorded as soon as it exists so that main() removes it whichever way the test
+ * that made it returned. */
+static temp_dir_entry g_temp_dirs[16];
+static size_t g_temp_dir_count = 0;
+
 static int
-mk_temp_dir(char* out_dir, size_t out_dir_size) {
+track_temp_dir(const char* dir, const char* const* files) {
+    if (g_temp_dir_count >= sizeof(g_temp_dirs) / sizeof(g_temp_dirs[0])) {
+        DSD_FPRINTF(stderr, "FAIL: no room to record temp directory %s\n", dir);
+        return -1;
+    }
+    temp_dir_entry* entry = &g_temp_dirs[g_temp_dir_count];
+    DSD_SNPRINTF(entry->dir, sizeof(entry->dir), "%s", dir);
+    entry->files = files;
+    g_temp_dir_count++;
+    return 0;
+}
+
+/* Remove every temp directory with the files in it, newest first so that a subdirectory goes before the directory
+ * holding it. One that is not empty afterwards fails the test. */
+static int
+remove_temp_dirs(void) {
+    int rc = 0;
+    while (g_temp_dir_count > 0U) {
+        g_temp_dir_count--;
+        const temp_dir_entry* entry = &g_temp_dirs[g_temp_dir_count];
+        if (dsd_test_remove_temp_dir(entry->dir, entry->files) != 0) {
+            DSD_FPRINTF(stderr, "FAIL: could not remove temp directory %s: %s\n", entry->dir, strerror(errno));
+            rc = 1;
+        }
+    }
+    return rc;
+}
+
+/* Make a temp directory for a test that writes @p files in it. */
+static int
+mk_temp_dir(char* out_dir, size_t out_dir_size, const char* const* files) {
     if (!out_dir || out_dir_size == 0) {
         return -1;
     }
     if (!dsd_test_mkdtemp(out_dir, out_dir_size, "dsdneo_iq_test")) {
+        return -1;
+    }
+    if (track_temp_dir(out_dir, files) != 0) {
+        (void)dsd_test_rmdir(out_dir);
+        return -1;
+    }
+    return 0;
+}
+
+/* Make the subdirectory @p subdir of a temp directory for a test that writes @p files in it. */
+static int
+mk_temp_subdir(const char* subdir, const char* const* files) {
+    if (dsd_mkdir(subdir, 0700) != 0) {
+        return -1;
+    }
+    if (track_temp_dir(subdir, files) != 0) {
+        (void)dsd_test_rmdir(subdir);
         return -1;
     }
     return 0;
@@ -236,7 +295,8 @@ static int
 test_metadata_round_trip_capture_open_close(void) {
     int rc = 0;
     char dir[256];
-    if (mk_temp_dir(dir, sizeof(dir)) != 0) {
+    static const char* const files[] = {"capture.iq", "capture.iq.json", NULL};
+    if (mk_temp_dir(dir, sizeof(dir), files) != 0) {
         DSD_FPRINTF(stderr, "failed to create temp dir\n");
         return 1;
     }
@@ -318,7 +378,8 @@ static int
 test_metadata_v2_events_round_trip(void) {
     int rc = 0;
     char dir[256];
-    if (mk_temp_dir(dir, sizeof(dir)) != 0) {
+    static const char* const files[] = {"events.iq", "events.iq.json", NULL};
+    if (mk_temp_dir(dir, sizeof(dir), files) != 0) {
         return 1;
     }
 
@@ -421,7 +482,8 @@ test_metadata_reuse_after_explicit_clear(void) {
     int rc = 0;
     char dir[256];
     char err[256] = {0};
-    if (mk_temp_dir(dir, sizeof(dir)) != 0) {
+    static const char* const files[] = {"events.iq", "events1.iq.json", "events2.iq.json", NULL};
+    if (mk_temp_dir(dir, sizeof(dir), files) != 0) {
         return 1;
     }
 
@@ -490,7 +552,8 @@ test_metadata_output_is_write_only_on_first_success(void) {
     int rc = 0;
     char dir[256];
     char err[256] = {0};
-    if (mk_temp_dir(dir, sizeof(dir)) != 0) {
+    static const char* const files[] = {"events.iq", "events.iq.json", NULL};
+    if (mk_temp_dir(dir, sizeof(dir), files) != 0) {
         return 1;
     }
 
@@ -538,7 +601,8 @@ test_missing_field_reports_clear_error(void) {
     int rc = 0;
     char dir[256];
     char err[256];
-    if (mk_temp_dir(dir, sizeof(dir)) != 0) {
+    static const char* const files[] = {"missing.iq.json", "missing.iq", NULL};
+    if (mk_temp_dir(dir, sizeof(dir), files) != 0) {
         return 1;
     }
     char meta[512];
@@ -599,7 +663,8 @@ test_json_unescape_and_control_rejection(void) {
     int rc = 0;
     char dir[256];
     char err[256];
-    if (mk_temp_dir(dir, sizeof(dir)) != 0) {
+    static const char* const files[] = {"escaped.iq.json", "bad_control.iq.json", "bad_nul.iq.json", NULL};
+    if (mk_temp_dir(dir, sizeof(dir), files) != 0) {
         return 1;
     }
 
@@ -608,9 +673,10 @@ test_json_unescape_and_control_rejection(void) {
      * path resolution are covered in the same parse. The rejection cases below
      * then prove decoded control bytes cannot reach operational string fields.
      */
+    static const char* const sub_files[] = {"test.iq", NULL};
     char subdir[512];
     path_join(subdir, sizeof(subdir), dir, "sub");
-    if (dsd_mkdir(subdir, 0700) != 0) {
+    if (mk_temp_subdir(subdir, sub_files) != 0) {
         return 1;
     }
 
@@ -756,7 +822,8 @@ test_invalid_json_shapes_and_number_types(void) {
     int rc = 0;
     char dir[256];
     char err[256];
-    if (mk_temp_dir(dir, sizeof(dir)) != 0) {
+    static const char* const files[] = {"x.iq", "trunc.iq.json", "nested.iq.json", "float.iq.json", NULL};
+    if (mk_temp_dir(dir, sizeof(dir), files) != 0) {
         return 1;
     }
 
@@ -864,7 +931,22 @@ test_event_timeline_validation(void) {
     int rc = 0;
     char dir[256];
     char err[256];
-    if (mk_temp_dir(dir, sizeof(dir)) != 0) {
+    static const char* const files[] = {"events_bad.iq",
+                                        "unknown_kind.iq.json",
+                                        "missing_duration.iq.json",
+                                        "negative_duration.iq.json",
+                                        "negative_offset.iq.json",
+                                        "unsorted_offsets.iq.json",
+                                        "offset_past_eof.iq.json",
+                                        "events_on_v1.iq.json",
+                                        "events_then_bad_field.iq.json",
+                                        "retuned_v1.iq.json",
+                                        "retuned_mute_only.iq.json",
+                                        "retuned_retune_only.iq.json",
+                                        "retune_flag_false.iq.json",
+                                        "retuned_count_mismatch.iq.json",
+                                        NULL};
+    if (mk_temp_dir(dir, sizeof(dir), files) != 0) {
         return 1;
     }
 
@@ -1086,7 +1168,9 @@ test_rate_chain_validation(void) {
     int rc = 0;
     char dir[256];
     char err[256];
-    if (mk_temp_dir(dir, sizeof(dir)) != 0) {
+    static const char* const files[] = {
+        "r.iq", "rate1.iq.json", "rate2.iq.json", "rate3.iq.json", "rate4.iq.json", "rate5.iq.json", NULL};
+    if (mk_temp_dir(dir, sizeof(dir), files) != 0) {
         return 1;
     }
 
@@ -1134,7 +1218,8 @@ test_relative_data_resolution_info_and_open_validation(void) {
     int rc = 0;
     char dir[256];
     char err[256];
-    if (mk_temp_dir(dir, sizeof(dir)) != 0) {
+    static const char* const files[] = {NULL}; /* everything this test writes is in the meta subdirectory */
+    if (mk_temp_dir(dir, sizeof(dir), files) != 0) {
         return 1;
     }
 
@@ -1143,9 +1228,12 @@ test_relative_data_resolution_info_and_open_validation(void) {
      * by the info printer and replay opener. Later cases keep the path valid but
      * vary byte counts and retune flags to exercise open-time rejection paths.
      */
+    static const char* const meta_files[] = {
+        "capture.iq",   "capture.iq.json",   "truncated_events.iq", "truncated_events.iq.json",
+        "bad_align.iq", "bad_align.iq.json", "retune.iq.json",      NULL};
     char subdir[512];
     path_join(subdir, sizeof(subdir), dir, "meta");
-    if (dsd_mkdir(subdir, 0700) != 0) {
+    if (mk_temp_subdir(subdir, meta_files) != 0) {
         return 1;
     }
 
@@ -1258,7 +1346,8 @@ test_replay_read_partial_eof_and_rewind(void) {
     int rc = 0;
     char dir[256];
     char err[256];
-    if (mk_temp_dir(dir, sizeof(dir)) != 0) {
+    static const char* const files[] = {"read.iq.json", "read.iq", NULL};
+    if (mk_temp_dir(dir, sizeof(dir), files) != 0) {
         return 1;
     }
 
@@ -1426,5 +1515,6 @@ main(void) {
     rc |= test_rate_chain_validation();
     rc |= test_relative_data_resolution_info_and_open_validation();
     rc |= test_replay_read_partial_eof_and_rewind();
+    rc |= remove_temp_dirs();
     return rc ? 1 : 0;
 }

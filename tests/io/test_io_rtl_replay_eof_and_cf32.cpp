@@ -4,6 +4,7 @@
  */
 
 #include <algorithm>
+#include <cerrno>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
@@ -57,6 +58,40 @@ enum : uint8_t {
     kReplayResetReasonFrequency = 0,
     kReplayResetReasonPpmCorrection = 2,
 };
+
+namespace {
+/* A fixture directory and the two files a fixture writes in it. */
+struct FixtureDir {
+    std::string dir;
+    std::string data_file;
+    std::string metadata_file;
+};
+} // namespace
+
+/* Every fixture directory made so far, recorded as soon as it exists so that main() removes it whichever way the test
+ * that made it returned. */
+static std::vector<FixtureDir> g_fixture_dirs;
+
+static void
+track_fixture_dir(const char* dir, const char* data_file, const char* metadata_file) {
+    g_fixture_dirs.push_back(FixtureDir{dir, data_file, metadata_file});
+}
+
+/* Remove every fixture directory with the files in it. One that is not empty afterwards fails the test. */
+static int
+remove_fixture_dirs(void) {
+    int rc = 0;
+    for (const FixtureDir& fixture : g_fixture_dirs) {
+        const char* const files[] = {fixture.data_file.c_str(), fixture.metadata_file.c_str(), nullptr};
+        if (dsd_test_remove_temp_dir(fixture.dir.c_str(), files) != 0) {
+            DSD_FPRINTF(stderr, "FAIL: could not remove fixture directory %s: %s\n", fixture.dir.c_str(),
+                        std::strerror(errno));
+            rc = 1;
+        }
+    }
+    g_fixture_dirs.clear();
+    return rc;
+}
 
 static int
 write_bytes_file(const char* path, const uint8_t* bytes, size_t len) {
@@ -178,6 +213,7 @@ make_replay_fixture(char* out_metadata_path, size_t out_metadata_path_size, dsd_
         DSD_FPRINTF(stderr, "FAIL: could not create temporary fixture directory\n");
         return 1;
     }
+    track_fixture_dir(temp_dir, "fixture.iq", "fixture.iq.json");
 
     char data_path[DSD_TEST_PATH_MAX];
     char metadata_path[DSD_TEST_PATH_MAX];
@@ -261,6 +297,7 @@ make_midrange_cu8_replay_fixture(char* out_metadata_path, size_t out_metadata_pa
         DSD_FPRINTF(stderr, "FAIL: could not create input-level fixture directory\n");
         return 1;
     }
+    track_fixture_dir(temp_dir, "level.iq", "level.iq.json");
 
     char data_path[DSD_TEST_PATH_MAX];
     char metadata_path[DSD_TEST_PATH_MAX];
@@ -314,6 +351,7 @@ make_historical_cu8_replay_fixture(char* out_metadata_path, size_t out_metadata_
         DSD_FPRINTF(stderr, "FAIL: could not create CU8 input-level fixture directory\n");
         return 1;
     }
+    track_fixture_dir(temp_dir, "level_cu8.iq", "level_cu8.iq.json");
 
     char data_path[DSD_TEST_PATH_MAX];
     char metadata_path[DSD_TEST_PATH_MAX];
@@ -365,6 +403,7 @@ make_constant_cf32_replay_fixture(char* out_metadata_path, size_t out_metadata_p
         DSD_FPRINTF(stderr, "FAIL: could not create CF32 input-level fixture directory\n");
         return 1;
     }
+    track_fixture_dir(temp_dir, "level_cf32.iq", "level_cf32.iq.json");
 
     char data_path[DSD_TEST_PATH_MAX];
     char metadata_path[DSD_TEST_PATH_MAX];
@@ -422,6 +461,7 @@ make_eventful_replay_fixture_with_reset_reason(char* out_metadata_path, size_t o
         DSD_FPRINTF(stderr, "FAIL: could not create event fixture directory\n");
         return 1;
     }
+    track_fixture_dir(temp_dir, "events.iq", "events.iq.json");
 
     char data_path[DSD_TEST_PATH_MAX];
     char metadata_path[DSD_TEST_PATH_MAX];
@@ -515,6 +555,7 @@ make_terminal_mute_replay_fixture(char* out_metadata_path, size_t out_metadata_p
         DSD_FPRINTF(stderr, "FAIL: could not create terminal mute fixture directory\n");
         return 1;
     }
+    track_fixture_dir(temp_dir, "terminal.iq", "terminal.iq.json");
 
     char data_path[DSD_TEST_PATH_MAX];
     char metadata_path[DSD_TEST_PATH_MAX];
@@ -1148,6 +1189,7 @@ test_cf32_unknown_capture_stage_rejected(void) {
         DSD_FPRINTF(stderr, "FAIL: could not create temporary metadata directory\n");
         return 1;
     }
+    track_fixture_dir(temp_dir, "bad.iq", "bad.iq.json");
 
     char data_path[DSD_TEST_PATH_MAX];
     char meta_path[DSD_TEST_PATH_MAX];
@@ -1219,5 +1261,6 @@ main(void) {
     rc |= test_realtime_loop_waits_for_terminal_mute_before_rewind();
     rc |= test_cf32_replay_fs4_policy_changes_output();
     rc |= test_cf32_unknown_capture_stage_rejected();
+    rc |= remove_fixture_dirs();
     return rc ? 1 : 0;
 }
