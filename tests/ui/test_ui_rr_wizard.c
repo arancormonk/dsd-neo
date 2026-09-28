@@ -31,6 +31,7 @@
 #include <dsd-neo/runtime/radioreference.h>
 #include <dsd-neo/runtime/radioreference_generate.h>
 #include <dsd-neo/runtime/radioreference_import.h>
+#include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -1554,6 +1555,18 @@ imp_case_close_keep_files(imp_case* ic) {
     wiz_case_close(&ic->c);
 }
 
+/**
+ * @brief Remove an emptied scratch directory; a failure (say, a file the case
+ *        did not remove) fails the test.
+ */
+static void
+expect_scratch_removed(const char* scratch) {
+    if (dsd_test_rmdir(scratch) != 0) {
+        DSD_FPRINTF(stderr, "FAIL: cannot remove scratch dir %s: %s\n", scratch, strerror(errno));
+        g_failures++;
+    }
+}
+
 static void
 imp_case_close(imp_case* ic) {
     wiz_case_close(&ic->c);
@@ -1561,9 +1574,7 @@ imp_case_close(imp_case* ic) {
     imp_remove_pair(ic, " chan.csv");
     imp_remove_pair(ic, " (2) group.csv");
     imp_remove_pair(ic, " (2) chan.csv");
-    /* remove() unlinks an empty directory on POSIX and simply fails on Windows,
-     * where the worst case is a leftover empty temp dir. */
-    (void)remove(ic->scratch);
+    expect_scratch_removed(ic->scratch);
 }
 
 /**
@@ -1591,7 +1602,7 @@ imp_case_open_in(imp_case* ic, const char* scratch) {
         return 0;
     }
     if (!wiz_case_open(&ic->c)) {
-        (void)remove(ic->scratch);
+        (void)dsd_test_rmdir(ic->scratch);
         return 0;
     }
     if (!drive_sid_to_system(&ic->c, "6673")) {
@@ -2340,7 +2351,7 @@ ref_case_close(ref_case* rc) {
     wiz_case_close(&rc->c);
     (void)remove(rc->sidecar_path);
     (void)remove(rc->csv_path);
-    (void)remove(rc->scratch);
+    expect_scratch_removed(rc->scratch);
 }
 
 static int
@@ -2356,26 +2367,26 @@ ref_case_open(ref_case* rc, const char* leaf, const char* seed, size_t seed_len,
     if (dsd_test_path_join(rc->csv_path, sizeof(rc->csv_path), rc->scratch, leaf) != 0
         || DSD_SNPRINTF(rc->sidecar_path, sizeof(rc->sidecar_path), "%s.rr", rc->csv_path) <= 0) {
         expect("refresh: scratch paths built", 0);
-        (void)remove(rc->scratch);
+        (void)dsd_test_rmdir(rc->scratch);
         return 0;
     }
     if (write_text_file(rc->csv_path, seed, seed_len) != 0) {
         expect("refresh: seed csv written", 0);
         (void)remove(rc->csv_path);
-        (void)remove(rc->scratch);
+        (void)dsd_test_rmdir(rc->scratch);
         return 0;
     }
     if (prov != NULL && dsd_rr_provenance_write(rc->csv_path, prov) != 0) {
         expect("refresh: seed sidecar written", 0);
         (void)remove(rc->sidecar_path);
         (void)remove(rc->csv_path);
-        (void)remove(rc->scratch);
+        (void)dsd_test_rmdir(rc->scratch);
         return 0;
     }
     if (!wiz_case_open(&rc->c)) {
         (void)remove(rc->sidecar_path);
         (void)remove(rc->csv_path);
-        (void)remove(rc->scratch);
+        (void)dsd_test_rmdir(rc->scratch);
         return 0;
     }
     rr_wizard_core_set_username(rc->c.core, k_username_sentinel);

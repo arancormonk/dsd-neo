@@ -2189,15 +2189,19 @@ static int
 test_ui_file_capture_commands_manage_handles(void) {
     char wav_dir[DSD_TEST_PATH_MAX] = {0};
     char sym_path[DSD_TEST_PATH_MAX] = {0};
-    if (!dsd_test_mkdtemp(wav_dir, sizeof wav_dir, "dsdneo_queue_wav_dir")
-        || create_removed_temp_path("dsdneo_queue_sym_stop", sym_path, sizeof sym_path) != 0) {
+    if (!dsd_test_mkdtemp(wav_dir, sizeof wav_dir, "dsdneo_queue_wav_dir")) {
         DSD_FPRINTF(stderr, "FAIL: temp capture path setup failed\n");
+        return 1;
+    }
+    if (create_removed_temp_path("dsdneo_queue_sym_stop", sym_path, sizeof sym_path) != 0) {
+        DSD_FPRINTF(stderr, "FAIL: temp capture path setup failed\n");
+        (void)dsd_test_rmdir(wav_dir);
         return 1;
     }
 
     test_runtime runtime;
     if (alloc_test_runtime(&runtime) != 0) {
-        (void)remove(wav_dir);
+        (void)dsd_test_rmdir(wav_dir);
         return 1;
     }
     dsd_opts* opts = runtime.opts;
@@ -2279,7 +2283,11 @@ test_ui_file_capture_commands_manage_handles(void) {
 
     free_test_runtime(&runtime);
     (void)remove(sym_path);
-    (void)remove(wav_dir);
+    /* WAV stop removes the temp pair, so the directory is empty by now. */
+    if (dsd_test_rmdir(wav_dir) != 0) {
+        DSD_FPRINTF(stderr, "FAIL: could not remove WAV temp directory %s: %s\n", wav_dir, strerror(errno));
+        rc |= 1;
+    }
     return rc;
 }
 
