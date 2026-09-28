@@ -11195,7 +11195,8 @@ if(DSD_HAS_RADIO)
         -fh
         "Site ID \\[02\\]\\[002\\]"
     )
-    # ProVoice has no CRC anywhere in its frame, so the payload asserted is what -Z prints: the header's
+    # Nothing in a ProVoice frame can fail a check -- the header has no CRC, and the voice's Golay and Hamming
+    # codes are perfect, decoding any input -- so the payload asserted is what -Z prints: the header's
     # fixed 64-bit field after the LID, and a 7100x4400 voice frame that decoded without a correction.
     # -fh decodes ProVoice inside the EDACS preset as well (issue #588).
     dsd_neo_add_iq_decode_test(

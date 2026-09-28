@@ -165,10 +165,11 @@ but the roll-off smears each transition across its neighbours and, as recorded, 
 builder undoes a single-pole 225 us de-emphasis (`AUDIO_DEEMPHASIS_US`) before remodulating it; swept over 150-500 us
 with the hard-decision decoder of the time, that value decoded the most frames at under one correction per voice
 frame. Under `-fp` and `-fh` the fixture decodes 40 ProVoice frames, 160 IMBE 7100x4400 voice frames, 86 of them with
-nothing to correct. ProVoice carries no CRC, BCH or
-parity anywhere in its frame, so `DECODE_IQ_PROVOICE` and `DECODE_IQ_PROVOICE_EDACS` assert on what `-Z` prints: the
-64-bit header field after the LID, the same in 30 of the 40 frames (the rest are a bit or two off, since nothing
-protects it). `DECODE_IQ_PROVOICE_IMBE` asserts a voice frame that decoded with no correction. With ±45 counts of added
+nothing to correct. Nothing in a ProVoice frame can fail a
+check: its header carries no CRC, BCH or parity, and the Golay(23,12) and Hamming(15,11) codes that protect the voice
+are perfect codes, which decode any input to some codeword. So `DECODE_IQ_PROVOICE` and `DECODE_IQ_PROVOICE_EDACS`
+assert on what `-Z` prints: the 64-bit header field after the LID, the same in 30 of the 40 frames (the rest are a bit
+or two off, since nothing protects it). `DECODE_IQ_PROVOICE_IMBE` asserts a voice frame that decoded with no correction. With ±45 counts of added
 noise the header still matches 21-25 times, and no other preset prints a ProVoice line from it.
 
 `dpmr_synth` is the exception to all of that: it is modulated from the CCH
@@ -1161,7 +1162,8 @@ Reading it:
   loses sync decodes fewer frames and accrues fewer errors without being better,
   so watch the `voice` column alongside the error rate.
 - **What `voice` counts.** Lines that label a frame `Voice`, and ProVoice frames,
-  which print `VOICE` after their sync and carry four IMBE voice frames each.
+  which print `VOICE` after their sync (trunked `PV`, or conventional `PV_C` with
+  its addresses in between) and carry four IMBE voice frames each.
   Startup `NOTICE:` lines are left out: the ProVoice and EDACS presets print two
   that mention voice, and before issue #588 they were the whole count for a
   ProVoice run, so its errors were divided by 2 rather than by its frames.
