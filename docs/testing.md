@@ -1167,6 +1167,12 @@ Reading it:
   Startup `NOTICE:` lines are left out: the ProVoice and EDACS presets print two
   that mention voice, and before issue #588 they were the whole count for a
   ProVoice run, so its errors were divided by 2 rather than by its frames.
+  D-STAR prints nothing labelled `Voice`, so its unit is the superframe: each
+  `Sync: ±DSTAR VOICE` or `Sync: ±DSTAR HEADER` line opens one of 21 AMBE voice
+  frames. Before issue #599 a D-STAR run counted none, and the report dropped it.
+  The log is read as text whatever bytes it holds: a D-STAR header decoded from
+  noise prints its callsigns raw, and a UTF-8 `grep` then takes the log for a
+  binary file and stops printing lines at the first of them.
 - **Soft-decision error counts are not a quality score on their own.** mbelib's
   soft Golay reports how many data bits of the codeword it chose differ from the
   hard decisions, so a soft decode that lands on the right codeword where the
