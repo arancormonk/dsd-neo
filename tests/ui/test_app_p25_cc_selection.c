@@ -83,14 +83,19 @@ return_cc(dsd_opts* opts, dsd_state* state, uint64_t request_id) {
     return DSD_TRUNK_TUNE_RESULT_OK;
 }
 
-static void
-setup(dsd_opts* opts, dsd_state* state) {
+/* Returns 0, or -1 when the decode-mode preset does not apply. The state is initialized either way, so the caller
+ * frees it. */
+static int
+try_setup(dsd_opts* opts, dsd_state* state) {
     initOpts(opts);
     initState(state);
     dsd_app_frontend_runtime_start(opts, state);
     state->cli_argc_effective = 0;
     state->cli_argv = NULL;
-    assert(dsd_apply_decode_mode_preset(DSDCFG_MODE_TDMA, DSD_DECODE_PRESET_PROFILE_CLI, opts, state) == 0);
+    if (dsd_apply_decode_mode_preset(DSDCFG_MODE_TDMA, DSD_DECODE_PRESET_PROFILE_CLI, opts, state) != 0) {
+        DSD_FPRINTF(stderr, "setup: the TDMA decode-mode preset did not apply\n");
+        return -1;
+    }
     opts->verbose = 0;
     opts->audio_in_type = AUDIO_IN_RTL;
     opts->rtlsdr_center_freq = CC_A;
@@ -126,16 +131,36 @@ setup(dsd_opts* opts, dsd_state* state) {
     dsd_trunk_tuning_requests_reset();
     const dsd_trunk_tuning_hooks hooks = {vc_tune, cc_tune, return_cc};
     dsd_trunk_tuning_hooks_set(hooks);
+    return 0;
+}
+
+static void
+setup(dsd_opts* opts, dsd_state* state) {
+    assert(try_setup(opts, state) == 0);
+}
+
+/* Select @p hz as the control channel the way a frontend does. Returns 0, or -1 when the command is not queued or
+ * not drained. */
+static int
+try_select_cc(dsd_opts* opts, dsd_state* state, uint32_t hz) {
+#ifdef USE_RADIO
+    if (dsd_app_command_set_u32(DSD_APP_CMD_RTL_SET_FREQ, hz) != DSD_APP_COMMAND_SUBMIT_QUEUED) {
+        DSD_FPRINTF(stderr, "select_cc: the RTL frequency command for %u Hz was not queued\n", (unsigned)hz);
+        return -1;
+    }
+    if (dsd_app_drain_cmds(opts, state) != 1) {
+        DSD_FPRINTF(stderr, "select_cc: the RTL frequency command for %u Hz was not drained\n", (unsigned)hz);
+        return -1;
+    }
+#else
+    (void)p25_sm_select_control_channel(p25_sm_get_ctx(), opts, state, (long)hz);
+#endif
+    return 0;
 }
 
 static void
 select_cc(dsd_opts* opts, dsd_state* state, uint32_t hz) {
-#ifdef USE_RADIO
-    assert(dsd_app_command_set_u32(DSD_APP_CMD_RTL_SET_FREQ, hz) == DSD_APP_COMMAND_SUBMIT_QUEUED);
-    assert(dsd_app_drain_cmds(opts, state) == 1);
-#else
-    (void)p25_sm_select_control_channel(p25_sm_get_ctx(), opts, state, (long)hz);
-#endif
+    assert(try_select_cc(opts, state, hz) == 0);
 }
 
 static void
@@ -399,8 +424,11 @@ check_cache_loads_selected_site(dsd_opts* opts, dsd_state* state, const char* di
         return 1;
     }
     dsd_neo_config_init();
-    setup(opts, state);
-    select_cc(opts, state, CC_B);
+    if (cache_check(try_setup(opts, state) == 0, "set up the P25 trunk state")
+        || cache_check(try_select_cc(opts, state, CC_B) == 0, "select the manual control channel")) {
+        freeState(state);
+        return 1;
+    }
     const long no_neighbor = 0;
     p25_cc_record_neighbor_frequencies(opts, state, &no_neighbor, 1);
     int failed = cache_check(state->p25_cc_cache_loaded == 0, "no load before the site is known");
