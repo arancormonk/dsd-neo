@@ -386,21 +386,6 @@ build_inbound_umbtc_explicit_dial(uint8_t* mbt) {
 }
 
 static int
-read_capture_file(const char* path, char* out, size_t out_sz) {
-    if (!path || !out || out_sz == 0) {
-        return -1;
-    }
-    FILE* f = fopen(path, "rb");
-    if (!f) {
-        return -1;
-    }
-    size_t n = fread(out, 1, out_sz - 1, f);
-    out[n] = '\0';
-    fclose(f);
-    return 0;
-}
-
-static int
 capture_mbt_output(const char* name, const uint8_t* mbt, size_t mbt_len, char* out, size_t out_sz) {
     static dsd_opts opts;
     static dsd_state state;
@@ -415,7 +400,7 @@ capture_mbt_output(const char* name, const uint8_t* mbt, size_t mbt_len, char* o
     (void)p25_decode_pdu_trunking(&opts, &state, mbt, mbt_len);
     dsd_test_capture_stderr_end(&cap);
 
-    int rc = read_capture_file(cap.path, out, out_sz);
+    int rc = dsd_test_capture_stderr_read(&cap, out, out_sz);
     dsd_state_ext_free_all(&state);
     return rc;
 }
@@ -569,7 +554,7 @@ main(void) {
         dsd_test_capture_stderr_end(&cap);
 
         char out[4096];
-        if (read_capture_file(cap.path, out, sizeof out) != 0) {
+        if (dsd_test_capture_stderr_read(&cap, out, sizeof out) != 0) {
             return 105;
         }
 
@@ -611,7 +596,7 @@ main(void) {
         dsd_test_capture_stderr_end(&cap);
 
         char out[4096];
-        if (read_capture_file(cap.path, out, sizeof out) != 0) {
+        if (dsd_test_capture_stderr_read(&cap, out, sizeof out) != 0) {
             return 107;
         }
 
@@ -699,7 +684,7 @@ main(void) {
         dsd_test_capture_stderr_end(&cap);
 
         char out[2048];
-        if (read_capture_file(cap.path, out, sizeof out) != 0) {
+        if (dsd_test_capture_stderr_read(&cap, out, sizeof out) != 0) {
             return 109;
         }
         rc |= expect_eq_int("mbt 0x04 short no grant", (int)p25_sm_get_ctx()->grant_count, 0);
@@ -929,7 +914,7 @@ main(void) {
         dsd_test_capture_stderr_end(&cap);
 
         char out[2048];
-        if (read_capture_file(cap.path, out, sizeof out) != 0) {
+        if (dsd_test_capture_stderr_read(&cap, out, sizeof out) != 0) {
             return 101;
         }
 
@@ -1012,7 +997,7 @@ main(void) {
         dsd_test_capture_stderr_end(&cap);
 
         char out[2048];
-        if (read_capture_file(cap.path, out, sizeof out) != 0) {
+        if (dsd_test_capture_stderr_read(&cap, out, sizeof out) != 0) {
             return 103;
         }
 

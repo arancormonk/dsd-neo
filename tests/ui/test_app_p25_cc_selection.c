@@ -398,6 +398,7 @@ test_cache(dsd_opts* opts, dsd_state* state) {
     assert(state->p25_cc_cache_loaded && cc && cc->count == 1 && cc->candidates[0] == CC_B + 25000);
     freeState(state);
     assert(remove(legacy) == 0 && remove(site) == 0);
+    assert(dsd_test_rmdir(dir) == 0);
 }
 
 static void

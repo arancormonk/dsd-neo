@@ -12,7 +12,9 @@
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/protocol/p25/p25_cc_candidates.h>
 #include <dsd-neo/runtime/config.h>
+#include <errno.h>
 #include <stdio.h>
+#include <string.h>
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
@@ -68,6 +70,10 @@ main(void) {
     rc |= expect_true("no cache file", fp == NULL);
     if (fp) {
         fclose(fp);
+    }
+    if (dsd_test_rmdir(dir) != 0) {
+        DSD_FPRINTF(stderr, "could not remove temp cache directory %s: %s\n", dir, strerror(errno));
+        rc |= 1;
     }
 
     // New state shouldn't warm-load (we cannot introspect list without file, so just assert file absence suffices)
