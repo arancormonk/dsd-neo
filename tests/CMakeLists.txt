@@ -11183,6 +11183,14 @@ if(DSD_HAS_RADIO)
         "Src=[0-9]"
     )
     dsd_neo_add_iq_decode_test(DECODE_IQ_DSTAR dstar -fd "SRC: KB7WUK")
+    # D-STAR voice decodes through the soft AMBE 3600x2400 path (issue #599). The payload is the first frame of the
+    # transmission's first voice superframe, which decodes with nothing to correct.
+    dsd_neo_add_iq_decode_test(
+        DECODE_IQ_DSTAR_AMBE
+        dstar
+        "-fd -Z"
+        "AMBE F709018E901180 err = \\[0\\] \\[0\\]"
+    )
     dsd_neo_add_iq_decode_test(
         DECODE_IQ_YSF
         ysf

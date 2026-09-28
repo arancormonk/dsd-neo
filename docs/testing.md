@@ -172,6 +172,13 @@ assert on what `-Z` prints: the 64-bit header field after the LID, the same in 3
 or two off, since nothing protects it). `DECODE_IQ_PROVOICE_IMBE` asserts a voice frame that decoded with no correction. With ±45 counts of added
 noise the header still matches 21-25 times, and no other preset prints a ProVoice line from it.
 
+`dstar` is the sigidwiki D-STAR clip, 4 s of one transmission. Under `-fd` it decodes six superframes, 126 AMBE
+3600x2400 voice frames: first a header matched in the noise before the carrier, whose 21 frames are mostly corrupt,
+then the transmission's own header and four voice superframes, 99 of whose 105 frames need no correction.
+`DECODE_IQ_DSTAR` asserts the source callsign from the slow data, and `DECODE_IQ_DSTAR_AMBE` (issue #599) asserts what
+`-Z` prints for the first frame of the first voice superframe. The hard and soft decoders give the same payload for
+every frame of the transmission; they differ only in the superframe behind the header matched in noise.
+
 `dpmr_synth` is the exception to all of that: it is modulated from the CCH
 reference vectors in `tests/protocol/dpmr/fixtures`, the same vectors
 `DPMR_REFERENCE_VECTORS` decodes, as continuous-phase 4FSK at 2400 baud with
@@ -1167,12 +1174,18 @@ Reading it:
   Startup `NOTICE:` lines are left out: the ProVoice and EDACS presets print two
   that mention voice, and before issue #588 they were the whole count for a
   ProVoice run, so its errors were divided by 2 rather than by its frames.
+  D-STAR prints nothing labelled `Voice`, so its unit is the superframe: each
+  `Sync: ±DSTAR VOICE` or `Sync: ±DSTAR HEADER` line opens one of 21 AMBE voice
+  frames. Before issue #599 a D-STAR run counted none, and the report dropped it.
+  The log is read as text whatever bytes it holds: a D-STAR header decoded from
+  noise prints its callsigns raw, and a UTF-8 `grep` then takes the log for a
+  binary file and stops printing lines at the first of them.
 - **Soft-decision error counts are not a quality score on their own.** mbelib's
   soft Golay reports how many data bits of the codeword it chose differ from the
   hard decisions, so a soft decode that lands on the right codeword where the
   hard one did not can report as many corrections, or more. For a change between
-  hard and soft decoding (issue #588), compare the builds' `-Z` IMBE payloads
-  against a reference decode as well.
+  hard and soft decoding (issues #588 and #599), compare the builds' `-Z` IMBE or
+  AMBE payloads against a reference decode as well.
 - **Paired per repeat.** Builds run round-robin with the order rotated each
   repeat, because a fixed order credits the better slot to whichever build holds
   it. The report compares within a repeat for the same reason.

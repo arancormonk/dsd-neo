@@ -24,7 +24,9 @@ processDSTAR(dsd_opts* opts, dsd_state* state) {
     uint8_t sd[480];
     DSD_MEMSET(sd, 0, sizeof(sd));
     int i, j;
-    char ambe_fr[4][24];
+    /* Soft AMBE 3600x2400 frame: each cell the interleave reaches carries its symbol's bit and the confidence in it
+     * (issue #599). The 24 it never reaches stay bit 0 at reliability 0, which the decoder never reads. */
+    dsd_vocoder_soft_bit ambe_fr[4][24];
     DSD_MEMSET(ambe_fr, 0, sizeof(ambe_fr));
 
     /* The superframe sits behind an exact 24-symbol sync word, which is the only thing about
@@ -41,13 +43,15 @@ processDSTAR(dsd_opts* opts, dsd_state* state) {
         const int* x = dstar_interleave_x;
 
         for (i = 0; i < 72; i++) {
-            int dibit = get_dibit_and_analog_signal(opts, state, NULL);
-            ambe_fr[*w][*x] = dibit & 1;
+            float symbol = 0.0f;
+            int dibit = getDibitAndSoftSymbol(opts, state, &symbol);
+            ambe_fr[*w][*x].bit = (uint8_t)(dibit & 1);
+            ambe_fr[*w][*x].reliability = dsd_two_level_symbol_reliability(opts, state, symbol);
             w++;
             x++;
         }
 
-        processMbeFrame(opts, state, NULL, ambe_fr, NULL);
+        processMbeFrameSoft(opts, state, NULL, ambe_fr, NULL);
         dsd_play_synthesized_voice(opts, state);
 
         if (j != 20) {

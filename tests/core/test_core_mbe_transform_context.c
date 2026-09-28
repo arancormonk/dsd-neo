@@ -1786,6 +1786,125 @@ test_process_mbe_frame_hard_dstar_stages_audio(void) {
     return rc;
 }
 
+/* D-STAR voice parameters for a test frame, varied by `variant`. b0's top bit is clear, so the frame is never one of
+ * the tone or silence patterns ((b0 & 0x7E) == 0x7E) and synthesizes speech. */
+static void
+fill_dstar_voice_params(char ambe_d[49], int variant) {
+    for (int i = 0; i < 49; i++) {
+        ambe_d[i] = (char)((((i * 7) + variant) % 3) == 1);
+    }
+    ambe_d[0] = 0;
+}
+
+/* An AMBE 3600x2400 frame in the decoder's plane layout. The encoder is the hard decoder's inverse: every parameter
+ * bit round-trips except ambe_d[24], the spare, which decodes as the second Golay word's scrambled parity. */
+static int
+build_dstar_voice_frame(int variant, char frame[4][24]) {
+    char ambe_d[49];
+    fill_dstar_voice_params(ambe_d, variant);
+    return mbe_encodeAmbe3600x2400Frame(ambe_d, frame);
+}
+
+static int
+audio_frames_differ(const float* a, const float* b) {
+    for (int i = 0; i < 160; i++) {
+        if (fabsf(a[i] - b[i]) > 1e-3f) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+enum { DSTAR_ROUTE_FRAMES = 3 };
+
+/* processDSTAR_HD() hands the superframe behind a D-STAR header to processDSTAR() without changing the synctype, so
+ * those voice frames reach the vocoder as DSD_SYNC_DSTAR_HD_*. They are AMBE 3600x2400 like any other D-STAR voice.
+ * The 2450 decoder shares the ECC, so the parameters and error counts would agree whichever codec ran; only the
+ * synthesis shows the difference, and the model it leaves for the next frame. So two frames behind a header and one
+ * after it are compared with mbelib's own 2400 frame chain, and the 2450 chain must differ from it. */
+static int
+test_process_mbe_frame_dstar_header_voice_decodes_as_ambe2400(void) {
+    static const int sequences[][DSTAR_ROUTE_FRAMES] = {
+        {DSD_SYNC_DSTAR_VOICE_POS, DSD_SYNC_DSTAR_VOICE_POS, DSD_SYNC_DSTAR_VOICE_POS},
+        {DSD_SYNC_DSTAR_HD_POS, DSD_SYNC_DSTAR_HD_POS, DSD_SYNC_DSTAR_VOICE_POS},
+        {DSD_SYNC_DSTAR_HD_NEG, DSD_SYNC_DSTAR_HD_NEG, DSD_SYNC_DSTAR_VOICE_NEG},
+    };
+    int rc = 0;
+    static dsd_opts opts;
+    static dsd_state state;
+    static mbe_parms cur;
+    static mbe_parms prev;
+    static mbe_parms prev_enhanced;
+    static mbe_parms cur2;
+    static mbe_parms prev2;
+    static mbe_parms prev_enhanced2;
+    static mbe_parms ref_cur;
+    static mbe_parms ref_prev;
+    static mbe_parms ref_prev_enhanced;
+    static float ref_audio[DSTAR_ROUTE_FRAMES][160];
+    static float ambe2450_audio[DSTAR_ROUTE_FRAMES][160];
+    static char ref_err_str[DSTAR_ROUTE_FRAMES][96];
+    int ref_errs[DSTAR_ROUTE_FRAMES];
+    int ref_errs2[DSTAR_ROUTE_FRAMES];
+    char frames[DSTAR_ROUTE_FRAMES][4][24];
+    char ambe_d[49];
+    char label[96];
+    mbe_process_result result;
+    int ambe2450_differs = 0;
+
+    for (int f = 0; f < DSTAR_ROUTE_FRAMES; f++) {
+        rc |= expect_eq_int("dstar-route fixture encodes", build_dstar_voice_frame(f, frames[f]), 0);
+    }
+
+    mbe_initMbeParms(&ref_cur, &ref_prev, &ref_prev_enhanced);
+    for (int f = 0; f < DSTAR_ROUTE_FRAMES; f++) {
+        mbe_setThreadRngSeed(599U + (uint32_t)f);
+        int ret = mbe_processAmbe3600x2400Framef(ref_audio[f], &result, (const char (*)[24])frames[f], ambe_d, &ref_cur,
+                                                 &ref_prev, &ref_prev_enhanced);
+        store_expected_process_status(ret, ref_audio[f], &ref_errs[f], &ref_errs2[f], ref_err_str[f],
+                                      sizeof(ref_err_str[f]), &result);
+        rc |= expect_eq_int("dstar-route reference processes", ret >= 0, 1);
+    }
+    static const float silence[160];
+    rc |= expect_eq_int("dstar-route reference is not silence", audio_frames_differ(ref_audio[1], silence), 1);
+
+    mbe_initMbeParms(&ref_cur, &ref_prev, &ref_prev_enhanced);
+    for (int f = 0; f < DSTAR_ROUTE_FRAMES; f++) {
+        mbe_setThreadRngSeed(599U + (uint32_t)f);
+        int ret = mbe_processAmbe3600x2450Framef(ambe2450_audio[f], &result, (const char (*)[24])frames[f], ambe_d,
+                                                 &ref_cur, &ref_prev, &ref_prev_enhanced);
+        if (ret >= 0 && audio_frames_differ(ambe2450_audio[f], ref_audio[f])) {
+            ambe2450_differs = 1;
+        }
+    }
+    rc |= expect_eq_int("dstar-route 2450 synthesis differs", ambe2450_differs, 1);
+
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    opts.floating_point = 1;
+    for (size_t s = 0; s < sizeof(sequences) / sizeof(sequences[0]); s++) {
+        init_mbe_state(&state, &cur, &prev, &prev_enhanced, &cur2, &prev2, &prev_enhanced2);
+        for (int f = 0; f < DSTAR_ROUTE_FRAMES; f++) {
+            state.synctype = sequences[s][f];
+            mbe_setThreadRngSeed(599U + (uint32_t)f);
+            processMbeFrame(&opts, &state, NULL, frames[f], NULL);
+
+            DSD_SNPRINTF(label, sizeof(label), "dstar-route synctype %d frame %d audio", sequences[s][f], f);
+            rc |= expect_eq_mem(label, state.audio_out_temp_buf, ref_audio[f], sizeof(ref_audio[f]));
+            DSD_SNPRINTF(label, sizeof(label), "dstar-route synctype %d frame %d staged left", sequences[s][f], f);
+            rc |= expect_eq_mem(label, state.f_l, ref_audio[f], sizeof(ref_audio[f]));
+            DSD_SNPRINTF(label, sizeof(label), "dstar-route synctype %d frame %d errs", sequences[s][f], f);
+            rc |= expect_eq_int(label, state.errs, ref_errs[f]);
+            DSD_SNPRINTF(label, sizeof(label), "dstar-route synctype %d frame %d errs2", sequences[s][f], f);
+            rc |= expect_eq_int(label, state.errs2, ref_errs2[f]);
+            DSD_SNPRINTF(label, sizeof(label), "dstar-route synctype %d frame %d status", sequences[s][f], f);
+            rc |= expect_eq_int(label, strcmp(state.err_str, ref_err_str[f]), 0);
+        }
+        dsd_state_ext_free_all(&state);
+    }
+
+    return rc;
+}
+
 /* X2-TDMA and D-STAR write their WAV straight from the MBE post-processing;
  * like every other protocol there, it honours the call's talkgroup policy. */
 static int
@@ -2940,6 +3059,8 @@ run_provoice_frame(char hard_fr[7][24], dsd_vocoder_soft_bit soft_fr[7][24], pro
     static mbe_parms prev_enhanced2;
     uint8_t record[24] = {0};
 
+    /* Cleared before the early return below, so a caller never compares an unfilled run. */
+    DSD_MEMSET(run, 0, sizeof(*run));
     FILE* out = tmpfile();
     if (!out) {
         return 1;
@@ -3201,6 +3322,388 @@ test_process_mbe_frame_provoice_matches_library_frame_api(void) {
     return rc;
 }
 
+/*
+ * D-STAR soft decoding (issue #599). Frames come from mbelib's own AMBE 3600x2400 encoder (build_dstar_voice_frame()).
+ * Error counts cover data bits only, hard and soft alike, so channel errors go on data bits: C0's are fr[0][12..23]
+ * and C1's fr[1][11..22]. The rest of each Golay word is parity.
+ */
+static void
+dstar_soft_from_hard(char hard[4][24], dsd_vocoder_soft_bit soft[4][24], uint8_t reliability) {
+    for (int row = 0; row < 4; row++) {
+        for (int bit = 0; bit < 24; bit++) {
+            soft[row][bit].bit = (uint8_t)hard[row][bit];
+            soft[row][bit].reliability = reliability;
+        }
+    }
+}
+
+static void
+copy_dstar_soft_to_mbelib(const dsd_vocoder_soft_bit src[4][24], mbe_soft_bit dst[4][24]) {
+    for (int row = 0; row < 4; row++) {
+        for (int bit = 0; bit < 24; bit++) {
+            dst[row][bit].bit = src[row][bit].bit;
+            dst[row][bit].reliability = src[row][bit].reliability;
+        }
+    }
+}
+
+/* Random bits at random confidence: what a noisy channel hands the decoder. */
+static void
+fill_random_dstar_frame(uint32_t* rng, char hard[4][24], dsd_vocoder_soft_bit soft[4][24]) {
+    for (int row = 0; row < 4; row++) {
+        for (int bit = 0; bit < 24; bit++) {
+            uint32_t r = provoice_lcg_next(rng);
+            hard[row][bit] = (char)((r >> 31) & 1U);
+            soft[row][bit].bit = (uint8_t)hard[row][bit];
+            soft[row][bit].reliability = (uint8_t)(1U + ((r >> 8) % 255U));
+        }
+    }
+}
+
+typedef struct {
+    char params[49];
+    float audio[160];
+    int errs;
+    int errs2;
+    char err_str[96];
+} dstar_frame_run;
+
+/* One D-STAR frame through processMbeFrame (hard_fr) or processMbeFrameSoft (soft_fr) from fresh vocoder state,
+ * decoded twice with the second kept, as run_provoice_frame() does. The 49 decoded parameter bits come back from the
+ * MBE capture: each 8-byte record is the error count, 48 bits MSB first, then the last bit in a byte of its own. */
+static int
+run_dstar_frame(char hard_fr[4][24], dsd_vocoder_soft_bit soft_fr[4][24], dstar_frame_run* run) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static mbe_parms cur;
+    static mbe_parms prev;
+    static mbe_parms prev_enhanced;
+    static mbe_parms cur2;
+    static mbe_parms prev2;
+    static mbe_parms prev_enhanced2;
+    uint8_t record[16] = {0};
+
+    /* Cleared before the early return below, so a caller never compares an unfilled run. */
+    DSD_MEMSET(run, 0, sizeof(*run));
+    FILE* out = tmpfile();
+    if (!out) {
+        return 1;
+    }
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    opts.floating_point = 1;
+    opts.mbe_out_f = out;
+    init_mbe_state(&state, &cur, &prev, &prev_enhanced, &cur2, &prev2, &prev_enhanced2);
+    state.synctype = DSD_SYNC_DSTAR_VOICE_POS;
+
+    for (int pass = 0; pass < 2; pass++) {
+        mbe_setThreadRngSeed(599U + (uint32_t)pass);
+        if (soft_fr != NULL) {
+            processMbeFrameSoft(&opts, &state, NULL, soft_fr, NULL);
+        } else {
+            processMbeFrame(&opts, &state, NULL, hard_fr, NULL);
+        }
+    }
+
+    size_t got = 0U;
+    if (fseek(out, 0, SEEK_SET) == 0) {
+        got = fread(record, 1U, sizeof(record), out);
+    }
+    fclose(out);
+    opts.mbe_out_f = NULL;
+    for (int k = 0; k < 48; k++) {
+        run->params[k] = (char)((record[9 + (k / 8)] >> (7 - (k % 8))) & 1U);
+    }
+    run->params[48] = (char)record[15];
+    DSD_MEMCPY(run->audio, state.audio_out_temp_buf, sizeof(run->audio));
+    run->errs = state.errs;
+    run->errs2 = state.errs2;
+    DSD_SNPRINTF(run->err_str, sizeof(run->err_str), "%s", state.err_str);
+    dsd_state_ext_free_all(&state);
+    return expect_eq_int("dstar capture record", (int)got, (int)sizeof(record));
+}
+
+static int
+expect_dstar_runs_equal(const char* tag, const dstar_frame_run* got, const dstar_frame_run* want) {
+    char label[96];
+    int rc = 0;
+    DSD_SNPRINTF(label, sizeof(label), "%s params", tag);
+    rc |= expect_eq_mem(label, got->params, want->params, sizeof(got->params));
+    DSD_SNPRINTF(label, sizeof(label), "%s audio", tag);
+    rc |= expect_eq_mem(label, got->audio, want->audio, sizeof(got->audio));
+    DSD_SNPRINTF(label, sizeof(label), "%s errs", tag);
+    rc |= expect_eq_int(label, got->errs, want->errs);
+    DSD_SNPRINTF(label, sizeof(label), "%s errs2", tag);
+    rc |= expect_eq_int(label, got->errs2, want->errs2);
+    DSD_SNPRINTF(label, sizeof(label), "%s status", tag);
+    rc |= expect_eq_int(label, strcmp(got->err_str, want->err_str), 0);
+    return rc;
+}
+
+static int
+test_process_mbe_frame_soft_dstar_matches_hard(void) {
+    int rc = 0;
+    char clean[4][24];
+    char arbitrary[4][24];
+    dsd_vocoder_soft_bit soft[4][24];
+    dstar_frame_run hard_run;
+    dstar_frame_run soft_run;
+    uint32_t rng = 0x1599U;
+
+    /* Nothing to correct: the soft decode matches the hard one whatever the reliabilities say. */
+    rc |= expect_eq_int("soft-dstar clean fixture", build_dstar_voice_frame(1, clean), 0);
+    dstar_soft_from_hard(clean, soft, 0U);
+    for (int row = 0; row < 4; row++) {
+        for (int bit = 0; bit < 24; bit++) {
+            soft[row][bit].reliability = (uint8_t)(1 + (((row * 24) + bit) * 7) % 255);
+        }
+    }
+    rc |= run_dstar_frame(clean, NULL, &hard_run);
+    rc |= run_dstar_frame(NULL, soft, &soft_run);
+    static const float silence[160];
+    rc |= expect_eq_int("soft-dstar clean frame needs no correction", hard_run.errs2, 0);
+    rc |= expect_eq_int("soft-dstar clean frame is not silence", audio_frames_differ(hard_run.audio, silence), 1);
+    rc |= expect_dstar_runs_equal("soft-dstar clean", &soft_run, &hard_run);
+
+    /* Every bit at full confidence: soft maximum likelihood is minimum distance, which for the perfect Golay code is
+     * the hard decode, corrections included. */
+    fill_random_dstar_frame(&rng, arbitrary, soft);
+    dstar_soft_from_hard(arbitrary, soft, 255U);
+    rc |= run_dstar_frame(arbitrary, NULL, &hard_run);
+    rc |= run_dstar_frame(NULL, soft, &soft_run);
+    rc |= expect_eq_int("soft-dstar arbitrary frame has corrections", hard_run.errs2 > 0, 1);
+    rc |= expect_dstar_runs_equal("soft-dstar uniform", &soft_run, &hard_run);
+
+    return rc;
+}
+
+/* Four channel errors in C1, one past what Golay(23,12) corrects: the hard decode lands on the wrong codeword, and
+ * marking the four bits unreliable lets the soft decode recover the transmitted parameters. */
+static int
+test_process_mbe_frame_soft_dstar_erasures_recover_hard_miscorrection(void) {
+    int rc = 0;
+    char clean[4][24];
+    char corrupted[4][24];
+    dsd_vocoder_soft_bit soft[4][24];
+    dstar_frame_run clean_run;
+    dstar_frame_run hard_run;
+    dstar_frame_run soft_run;
+    dstar_frame_run uniform_run;
+
+    rc |= expect_eq_int("erasure-dstar clean fixture", build_dstar_voice_frame(1, clean), 0);
+    rc |= run_dstar_frame(clean, NULL, &clean_run);
+
+    /* Four data bits. Soft recovers the parameters and counts all four; with more than three errors mbelib then
+     * repeats the previous frame rather than playing this one. */
+    static const int data_flips[] = {12, 15, 18, 21};
+    DSD_MEMCPY(corrupted, clean, sizeof(corrupted));
+    for (size_t i = 0; i < sizeof(data_flips) / sizeof(data_flips[0]); i++) {
+        corrupted[1][data_flips[i]] ^= 1;
+    }
+    rc |= run_dstar_frame(corrupted, NULL, &hard_run);
+    rc |= expect_eq_int("erasure-dstar hard miscorrects",
+                        memcmp(hard_run.params, clean_run.params, sizeof(clean_run.params)) != 0, 1);
+
+    dstar_soft_from_hard(corrupted, soft, 200U);
+    for (size_t i = 0; i < sizeof(data_flips) / sizeof(data_flips[0]); i++) {
+        soft[1][data_flips[i]].reliability = 8U;
+    }
+    rc |= run_dstar_frame(NULL, soft, &soft_run);
+    rc |= expect_eq_mem("erasure-dstar soft recovers params", soft_run.params, clean_run.params,
+                        sizeof(clean_run.params));
+    rc |= expect_eq_int("erasure-dstar soft counts the four", soft_run.errs2, 4);
+    rc |= expect_eq_int("erasure-dstar soft repeats", strchr(soft_run.err_str, 'R') != NULL, 1);
+
+    /* The reliabilities are what recover it: the same bits at full confidence decode as the hard path does. */
+    dstar_soft_from_hard(corrupted, soft, 255U);
+    rc |= run_dstar_frame(NULL, soft, &uniform_run);
+    rc |= expect_eq_mem("erasure-dstar uniform follows hard", uniform_run.params, hard_run.params,
+                        sizeof(hard_run.params));
+
+    /* Two data bits and two parity bits. Soft counts only the two data bits, so it plays the recovered frame, which
+     * sounds as the clean frame does; the hard decode plays its miscorrection. */
+    static const int mixed_flips[] = {2, 7, 13, 19};
+    DSD_MEMCPY(corrupted, clean, sizeof(corrupted));
+    for (size_t i = 0; i < sizeof(mixed_flips) / sizeof(mixed_flips[0]); i++) {
+        corrupted[1][mixed_flips[i]] ^= 1;
+    }
+    rc |= run_dstar_frame(corrupted, NULL, &hard_run);
+    rc |= expect_eq_int("erasure-dstar mixed hard miscorrects",
+                        memcmp(hard_run.params, clean_run.params, sizeof(clean_run.params)) != 0, 1);
+    dstar_soft_from_hard(corrupted, soft, 200U);
+    for (size_t i = 0; i < sizeof(mixed_flips) / sizeof(mixed_flips[0]); i++) {
+        soft[1][mixed_flips[i]].reliability = 8U;
+    }
+    rc |= run_dstar_frame(NULL, soft, &soft_run);
+    rc |= expect_eq_mem("erasure-dstar mixed soft recovers params", soft_run.params, clean_run.params,
+                        sizeof(clean_run.params));
+    rc |= expect_eq_int("erasure-dstar mixed soft counts the data bits", soft_run.errs2, 2);
+    rc |= expect_eq_int("erasure-dstar mixed soft plays the frame", strchr(soft_run.err_str, 'R') == NULL, 1);
+    rc |= expect_eq_mem("erasure-dstar mixed soft sounds clean", soft_run.audio, clean_run.audio,
+                        sizeof(clean_run.audio));
+    rc |=
+        expect_eq_int("erasure-dstar mixed hard sounds wrong", audio_frames_differ(hard_run.audio, clean_run.audio), 1);
+
+    return rc;
+}
+
+/* The live path must give exactly what mbelib's own D-STAR frame API gives, frame after frame, through repeats and
+ * into muting. The result context that matters for AMBE 2400 is the C0 error count: a tone frame plays only with
+ * fewer than two C0 errors, and is replaced with comfort noise otherwise. So the sequence carries a tone frame with
+ * two C0 errors, and a parallel reference with MBE_PROCESS_FLAG_C0_VALID cleared, which plays the tone, must differ
+ * there, or this comparison could not catch the context being dropped.
+ *
+ * The sequence is a clean frame, random frames at random confidence, that tone frame, then frames carrying three
+ * errors in each Golay word: mbelib repeats a frame with more than three errors, and mutes once four repeats run. */
+enum {
+    DSTAR_PARITY_RANDOM_FRAMES = 6,
+    DSTAR_PARITY_TONE_FRAME = DSTAR_PARITY_RANDOM_FRAMES + 1,
+    DSTAR_PARITY_FRAMES = 20,
+};
+
+/* A tone frame: b0 is the tone pattern (ambe_d[0..5] set), and ambe_d[6..11], [42] and [43] give tone index 18. */
+static int
+build_dstar_tone_frame(char frame[4][24]) {
+    char ambe_d[49] = {0};
+    for (int i = 0; i < 6; i++) {
+        ambe_d[i] = 1;
+    }
+    ambe_d[8] = 1;
+    ambe_d[9] = 1;
+    ambe_d[10] = 1;
+    for (int i = 12; i < 16; i++) {
+        ambe_d[i] = 1;
+    }
+    return mbe_encodeAmbe3600x2400Frame(ambe_d, frame);
+}
+
+static int
+run_dstar_library_parity(int soft_path, int synctype) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static mbe_parms cur;
+    static mbe_parms prev;
+    static mbe_parms prev_enhanced;
+    static mbe_parms cur2;
+    static mbe_parms prev2;
+    static mbe_parms prev_enhanced2;
+    static mbe_parms lib_cur;
+    static mbe_parms lib_prev;
+    static mbe_parms lib_prev_enhanced;
+    static mbe_parms bare_cur;
+    static mbe_parms bare_prev;
+    static mbe_parms bare_prev_enhanced;
+    char tag[64];
+    char label[128];
+    uint32_t rng = 0x5990U;
+    int muted = 0;
+    int rc = 0;
+
+    DSD_SNPRINTF(tag, sizeof(tag), "dstar-parity %s synctype %d", soft_path ? "soft" : "hard", synctype);
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    opts.floating_point = 1;
+    init_mbe_state(&state, &cur, &prev, &prev_enhanced, &cur2, &prev2, &prev_enhanced2);
+    mbe_initMbeParms(&lib_cur, &lib_prev, &lib_prev_enhanced);
+    mbe_initMbeParms(&bare_cur, &bare_prev, &bare_prev_enhanced);
+
+    for (int frame = 0; frame < DSTAR_PARITY_FRAMES; frame++) {
+        char hard[4][24];
+        dsd_vocoder_soft_bit soft[4][24];
+        mbe_soft_bit lib_soft[4][24];
+        char ambe_d[49];
+        float lib_audio[160] = {0};
+        float bare_audio[160] = {0};
+        char expected_err_str[96] = {0};
+        int expected_errs = -1;
+        int expected_errs2 = -1;
+        mbe_process_result lib_result;
+        mbe_process_result bare_result;
+        const uint32_t seed = 0x5990U + (uint32_t)frame;
+
+        if (frame > 0 && frame <= DSTAR_PARITY_RANDOM_FRAMES) {
+            fill_random_dstar_frame(&rng, hard, soft);
+        } else if (frame == DSTAR_PARITY_TONE_FRAME) {
+            rc |= expect_eq_int("dstar-parity tone fixture", build_dstar_tone_frame(hard), 0);
+            hard[0][14] ^= 1;
+            hard[0][20] ^= 1;
+            dstar_soft_from_hard(hard, soft, 200U);
+        } else {
+            rc |= expect_eq_int("dstar-parity clean fixture", build_dstar_voice_frame(frame, hard), 0);
+            if (frame > DSTAR_PARITY_TONE_FRAME) {
+                static const int c0_flips[] = {13, 17, 22};
+                static const int c1_flips[] = {12, 16, 20};
+                for (int k = 0; k < 3; k++) {
+                    hard[0][c0_flips[k]] ^= 1;
+                    hard[1][c1_flips[k]] ^= 1;
+                }
+            }
+            dstar_soft_from_hard(hard, soft, 200U);
+        }
+        copy_dstar_soft_to_mbelib((const dsd_vocoder_soft_bit(*)[24])soft, lib_soft);
+
+        mbe_setThreadRngSeed(seed);
+        int lib_ret =
+            soft_path ? mbe_processAmbe3600x2400SoftFramef(lib_audio, &lib_result, (const mbe_soft_bit(*)[24])lib_soft,
+                                                           ambe_d, &lib_cur, &lib_prev, &lib_prev_enhanced)
+                      : mbe_processAmbe3600x2400Framef(lib_audio, &lib_result, (const char (*)[24])hard, ambe_d,
+                                                       &lib_cur, &lib_prev, &lib_prev_enhanced);
+        store_expected_process_status(lib_ret, lib_audio, &expected_errs, &expected_errs2, expected_err_str,
+                                      sizeof(expected_err_str), &lib_result);
+
+        mbe_setThreadRngSeed(seed);
+        int bare_ret = soft_path
+                           ? mbe_decodeAmbe3600x2400SoftFrame((const mbe_soft_bit(*)[24])lib_soft, ambe_d, &bare_result)
+                           : mbe_decodeAmbe3600x2400Frame((const char (*)[24])hard, ambe_d, &bare_result);
+        if (bare_ret >= 0) {
+            bare_result.flags &= ~MBE_PROCESS_FLAG_C0_VALID;
+            bare_ret =
+                mbe_processAmbe2400Dataf(bare_audio, &bare_result, ambe_d, &bare_cur, &bare_prev, &bare_prev_enhanced);
+        }
+
+        mbe_setThreadRngSeed(seed);
+        state.synctype = synctype;
+        if (soft_path) {
+            processMbeFrameSoft(&opts, &state, NULL, soft, NULL);
+        } else {
+            processMbeFrame(&opts, &state, NULL, hard, NULL);
+        }
+
+        DSD_SNPRINTF(label, sizeof(label), "%s frame %d library call", tag, frame);
+        rc |= expect_eq_int(label, lib_ret >= 0 && bare_ret >= 0, 1);
+        DSD_SNPRINTF(label, sizeof(label), "%s frame %d audio", tag, frame);
+        rc |= expect_eq_mem(label, state.audio_out_temp_buf, lib_audio, sizeof(lib_audio));
+        DSD_SNPRINTF(label, sizeof(label), "%s frame %d errs", tag, frame);
+        rc |= expect_eq_int(label, state.errs, expected_errs);
+        DSD_SNPRINTF(label, sizeof(label), "%s frame %d errs2", tag, frame);
+        rc |= expect_eq_int(label, state.errs2, expected_errs2);
+        DSD_SNPRINTF(label, sizeof(label), "%s frame %d status", tag, frame);
+        rc |= expect_eq_int(label, strcmp(state.err_str, expected_err_str), 0);
+        if (frame == DSTAR_PARITY_TONE_FRAME) {
+            DSD_SNPRINTF(label, sizeof(label), "%s tone frame counts two C0 errors", tag);
+            rc |= expect_eq_int(label, state.errs, 2);
+            DSD_SNPRINTF(label, sizeof(label), "%s tone frame differs without the C0 context", tag);
+            rc |= expect_eq_int(label, audio_frames_differ(bare_audio, lib_audio), 1);
+        }
+        if (lib_ret >= 0 && (lib_result.flags & MBE_PROCESS_FLAG_MUTE) != 0U) {
+            muted++;
+        }
+    }
+
+    DSD_SNPRINTF(label, sizeof(label), "%s reached a muted frame", tag);
+    rc |= expect_eq_int(label, muted > 0, 1);
+    dsd_state_ext_free_all(&state);
+    return rc;
+}
+
+static int
+test_process_mbe_frame_dstar_matches_library_frame_api(void) {
+    int rc = 0;
+    rc |= run_dstar_library_parity(0, DSD_SYNC_DSTAR_VOICE_POS);
+    rc |= run_dstar_library_parity(1, DSD_SYNC_DSTAR_VOICE_POS);
+    rc |= run_dstar_library_parity(0, DSD_SYNC_DSTAR_HD_POS);
+    rc |= run_dstar_library_parity(1, DSD_SYNC_DSTAR_HD_NEG);
+    return rc;
+}
+
 static int
 test_process_mbe_frame_ambe2_routes_slot2_error_state(void) {
     int rc = 0;
@@ -3251,8 +3754,10 @@ test_process_mbe_frame_ambe2_routes_slot2_error_state(void) {
     return rc;
 }
 
+/* The superframe behind a D-STAR header reaches the vocoder with the header's synctype, so both kinds of synctype must
+ * ignore the slot a TDMA decode left current. */
 static int
-test_process_mbe_frame_dstar_ignores_stale_stereo_slot_state(void) {
+run_dstar_stale_stereo_slot_case(int synctype) {
     int rc = 0;
     static dsd_opts opts;
     static dsd_state state;
@@ -3292,7 +3797,7 @@ test_process_mbe_frame_dstar_ignores_stale_stereo_slot_state(void) {
     rc |= expect_eq_int("dstar-second fixture processes", ret >= 0, 1);
 
     init_mbe_state(&state, &cur, &prev, &prev_enhanced, &cur2, &prev2, &prev_enhanced2);
-    state.synctype = DSD_SYNC_DSTAR_VOICE_POS;
+    state.synctype = synctype;
     state.currentslot = 1;
     state.audio_out_temp_bufR[0] = -4321.0F;
     state.f_r[0] = 1234.0F;
@@ -3323,6 +3828,17 @@ test_process_mbe_frame_dstar_ignores_stale_stereo_slot_state(void) {
     }
 
     dsd_state_ext_free_all(&state);
+    if (rc != 0) {
+        DSD_FPRINTF(stderr, "dstar-second failed for synctype %d\n", synctype);
+    }
+    return rc;
+}
+
+static int
+test_process_mbe_frame_dstar_ignores_stale_stereo_slot_state(void) {
+    int rc = 0;
+    rc |= run_dstar_stale_stereo_slot_case(DSD_SYNC_DSTAR_VOICE_POS);
+    rc |= run_dstar_stale_stereo_slot_case(DSD_SYNC_DSTAR_HD_POS);
     return rc;
 }
 
@@ -3580,6 +4096,7 @@ main(void) {
     rc |= test_process_mbe_frame_nxdn_cipher2_clamps_stale_bit_counter();
     rc |= test_process_mbe_frame_nxdn_cipher3_uses_aes_voice_offset();
     rc |= test_process_mbe_frame_hard_dstar_stages_audio();
+    rc |= test_process_mbe_frame_dstar_header_voice_decodes_as_ambe2400();
     rc |= test_process_mbe_frame_x2_dstar_wav_honors_talkgroup_policy();
     rc |= test_process_mbe_frame_mbe_capture_honors_record_policy();
     rc |= test_process_mbe_frame_p25p1_capture_honors_reverse_mute();
@@ -3601,6 +4118,9 @@ main(void) {
     rc |= test_process_mbe_frame_soft_provoice_matches_hard();
     rc |= test_process_mbe_frame_soft_provoice_erasures_recover_hard_miscorrection();
     rc |= test_process_mbe_frame_provoice_matches_library_frame_api();
+    rc |= test_process_mbe_frame_soft_dstar_matches_hard();
+    rc |= test_process_mbe_frame_soft_dstar_erasures_recover_hard_miscorrection();
+    rc |= test_process_mbe_frame_dstar_matches_library_frame_api();
     rc |= test_process_mbe_frame_ambe2_routes_slot2_error_state();
     rc |= test_process_mbe_frame_dstar_ignores_stale_stereo_slot_state();
     rc |= test_process_mbe_frame_media_protocol_lifecycle();
