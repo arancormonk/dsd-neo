@@ -24,6 +24,7 @@
 #include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/protocol/nxdn/nxdn_lfsr.h>
 #include <errno.h>
+#include <math.h>
 #include <mbelib-neo/mbelib.h>
 #include <sndfile.h>
 #include <stdint.h>
@@ -2840,6 +2841,366 @@ test_process_mbe_frame_hard_provoice_stages_audio(void) {
     return rc;
 }
 
+/*
+ * ProVoice soft decoding (issue #588). With C0 (row 0) zero the PN sequence is fixed, and the demodulator is an XOR
+ * with it, so applying mbelib's own demodulator to the codewords wanted after demodulation gives the frame to
+ * transmit. C1-C3 carry the all-ones Golay(23,12) codeword and C4-C5 zero, so the frame decodes with nothing to
+ * correct; row 6 is uncoded and takes a pattern. Together they give the parameters content that synthesizes sound.
+ */
+static int
+build_clean_provoice_frame(char frame[7][24]) {
+    DSD_MEMSET(frame, 0, (size_t)7 * 24);
+    for (int bit = 1; bit < 24; bit++) {
+        frame[1][bit] = 1;
+    }
+    for (int row = 2; row < 4; row++) {
+        for (int bit = 0; bit < 23; bit++) {
+            frame[row][bit] = 1;
+        }
+    }
+    if (mbe_demodulateImbe7100x4400Data(frame) < 0) {
+        return -1;
+    }
+    for (int bit = 0; bit < 23; bit++) {
+        frame[6][bit] = (char)((bit % 3) == 1);
+    }
+    return 0;
+}
+
+static void
+provoice_soft_from_hard(char hard[7][24], dsd_vocoder_soft_bit soft[7][24], uint8_t reliability) {
+    for (int row = 0; row < 7; row++) {
+        for (int bit = 0; bit < 24; bit++) {
+            soft[row][bit].bit = (uint8_t)hard[row][bit];
+            soft[row][bit].reliability = reliability;
+        }
+    }
+}
+
+static void
+copy_provoice_soft_to_mbelib(const dsd_vocoder_soft_bit src[7][24], mbe_soft_bit dst[7][24]) {
+    for (int row = 0; row < 7; row++) {
+        for (int bit = 0; bit < 24; bit++) {
+            dst[row][bit].bit = src[row][bit].bit;
+            dst[row][bit].reliability = src[row][bit].reliability;
+        }
+    }
+}
+
+static uint32_t
+provoice_lcg_next(uint32_t* rng) {
+    *rng = (*rng * 1664525U) + 1013904223U;
+    return *rng;
+}
+
+/* Random bits at random confidence: what a noisy channel hands the decoder. */
+static void
+fill_random_provoice_frame(uint32_t* rng, char hard[7][24], dsd_vocoder_soft_bit soft[7][24]) {
+    for (int row = 0; row < 7; row++) {
+        for (int bit = 0; bit < 24; bit++) {
+            uint32_t r = provoice_lcg_next(rng);
+            hard[row][bit] = (char)((r >> 31) & 1U);
+            soft[row][bit].bit = (uint8_t)hard[row][bit];
+            soft[row][bit].reliability = (uint8_t)(1U + ((r >> 8) % 255U));
+        }
+    }
+}
+
+typedef struct {
+    uint8_t params[11];
+    float audio[160];
+    int errs;
+    int errs2;
+} provoice_frame_run;
+
+/* Audio that must differ is compared by value: bit-exact equality is what expect_eq_mem() checks, and a difference
+ * has to be more than rounding to count. */
+static int
+provoice_audio_differs(const float* a, const float* b) {
+    for (int i = 0; i < 160; i++) {
+        if (fabsf(a[i] - b[i]) > 1e-3f) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+/* One ProVoice frame through processMbeFrame (hard_fr) or processMbeFrameSoft (soft_fr) from fresh vocoder state.
+ * The first frame after a reset synthesizes silence, so the frame is decoded twice and the second is kept. The 88
+ * decoded parameter bits come back from the MBE capture, packed as it records them. */
+static int
+run_provoice_frame(char hard_fr[7][24], dsd_vocoder_soft_bit soft_fr[7][24], provoice_frame_run* run) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static mbe_parms cur;
+    static mbe_parms prev;
+    static mbe_parms prev_enhanced;
+    static mbe_parms cur2;
+    static mbe_parms prev2;
+    static mbe_parms prev_enhanced2;
+    uint8_t record[24] = {0};
+
+    FILE* out = tmpfile();
+    if (!out) {
+        return 1;
+    }
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    opts.floating_point = 1;
+    opts.mbe_out_f = out;
+    init_mbe_state(&state, &cur, &prev, &prev_enhanced, &cur2, &prev2, &prev_enhanced2);
+    state.synctype = DSD_SYNC_PROVOICE_POS;
+
+    mbe_setThreadRngSeed(588U);
+    for (int pass = 0; pass < 2; pass++) {
+        if (soft_fr != NULL) {
+            processMbeFrameSoft(&opts, &state, NULL, NULL, soft_fr);
+        } else {
+            processMbeFrame(&opts, &state, NULL, NULL, hard_fr);
+        }
+    }
+
+    size_t got = 0U;
+    if (fseek(out, 0, SEEK_SET) == 0) {
+        got = fread(record, 1U, sizeof(record), out);
+    }
+    fclose(out);
+    opts.mbe_out_f = NULL;
+    DSD_MEMCPY(run->params, &record[13], sizeof(run->params));
+    DSD_MEMCPY(run->audio, state.audio_out_temp_buf, sizeof(run->audio));
+    run->errs = state.errs;
+    run->errs2 = state.errs2;
+    dsd_state_ext_free_all(&state);
+    return expect_eq_int("provoice capture record", (int)got, (int)sizeof(record));
+}
+
+static int
+expect_provoice_runs_equal(const char* tag, const provoice_frame_run* got, const provoice_frame_run* want) {
+    char label[96];
+    int rc = 0;
+    DSD_SNPRINTF(label, sizeof(label), "%s params", tag);
+    rc |= expect_eq_mem(label, got->params, want->params, sizeof(got->params));
+    DSD_SNPRINTF(label, sizeof(label), "%s audio", tag);
+    rc |= expect_eq_mem(label, got->audio, want->audio, sizeof(got->audio));
+    DSD_SNPRINTF(label, sizeof(label), "%s errs", tag);
+    rc |= expect_eq_int(label, got->errs, want->errs);
+    DSD_SNPRINTF(label, sizeof(label), "%s errs2", tag);
+    rc |= expect_eq_int(label, got->errs2, want->errs2);
+    return rc;
+}
+
+static int
+test_process_mbe_frame_soft_provoice_matches_hard(void) {
+    int rc = 0;
+    char clean[7][24];
+    char arbitrary[7][24];
+    dsd_vocoder_soft_bit soft[7][24];
+    provoice_frame_run hard_run;
+    provoice_frame_run soft_run;
+    uint32_t rng = 0x1588U;
+
+    /* Nothing to correct: the soft decode matches the hard one whatever the reliabilities say. */
+    rc |= expect_eq_int("soft-provoice clean fixture", build_clean_provoice_frame(clean), 0);
+    provoice_soft_from_hard(clean, soft, 0U);
+    for (int row = 0; row < 7; row++) {
+        for (int bit = 0; bit < 24; bit++) {
+            soft[row][bit].reliability = (uint8_t)(1 + (((row * 24) + bit) * 7) % 255);
+        }
+    }
+    rc |= run_provoice_frame(clean, NULL, &hard_run);
+    rc |= run_provoice_frame(NULL, soft, &soft_run);
+    static const float silence[160];
+    rc |= expect_eq_int("soft-provoice clean frame needs no correction", hard_run.errs2, 0);
+    rc |= expect_eq_int("soft-provoice clean frame is not silence", provoice_audio_differs(hard_run.audio, silence), 1);
+    rc |= expect_provoice_runs_equal("soft-provoice clean", &soft_run, &hard_run);
+
+    /* Every bit at full confidence: soft maximum likelihood is minimum distance, which for the perfect Golay and
+     * Hamming codes is the hard decode, corrections included. */
+    fill_random_provoice_frame(&rng, arbitrary, soft);
+    provoice_soft_from_hard(arbitrary, soft, 255U);
+    rc |= run_provoice_frame(arbitrary, NULL, &hard_run);
+    rc |= run_provoice_frame(NULL, soft, &soft_run);
+    rc |= expect_eq_int("soft-provoice arbitrary frame has corrections", hard_run.errs2 > 0, 1);
+    rc |= expect_provoice_runs_equal("soft-provoice uniform", &soft_run, &hard_run);
+
+    return rc;
+}
+
+/* Four channel errors in one Golay(23,12) word, one past what it corrects: the hard decode lands on the wrong
+ * codeword, while marking those four bits unreliable lets the soft decode recover the transmitted parameters. */
+static int
+test_process_mbe_frame_soft_provoice_erasures_recover_hard_miscorrection(void) {
+    static const int flipped[] = {12, 15, 18, 21};
+    int rc = 0;
+    char clean[7][24];
+    char corrupted[7][24];
+    dsd_vocoder_soft_bit soft[7][24];
+    provoice_frame_run clean_run;
+    provoice_frame_run hard_run;
+    provoice_frame_run soft_run;
+    provoice_frame_run uniform_run;
+
+    rc |= expect_eq_int("erasure-provoice clean fixture", build_clean_provoice_frame(clean), 0);
+    rc |= run_provoice_frame(clean, NULL, &clean_run);
+
+    DSD_MEMCPY(corrupted, clean, sizeof(corrupted));
+    for (size_t i = 0; i < sizeof(flipped) / sizeof(flipped[0]); i++) {
+        corrupted[2][flipped[i]] ^= 1;
+    }
+    rc |= run_provoice_frame(corrupted, NULL, &hard_run);
+    rc |= expect_eq_int("erasure-provoice hard miscorrects",
+                        memcmp(hard_run.params, clean_run.params, sizeof(clean_run.params)) != 0, 1);
+
+    provoice_soft_from_hard(corrupted, soft, 200U);
+    for (size_t i = 0; i < sizeof(flipped) / sizeof(flipped[0]); i++) {
+        soft[2][flipped[i]].reliability = 8U;
+    }
+    rc |= run_provoice_frame(NULL, soft, &soft_run);
+    rc |= expect_eq_mem("erasure-provoice soft recovers params", soft_run.params, clean_run.params,
+                        sizeof(clean_run.params));
+    rc |= expect_eq_int("erasure-provoice soft counts the four", soft_run.errs2, 4);
+
+    /* The reliabilities are what recover it: the same bits at full confidence decode as the hard path does. */
+    provoice_soft_from_hard(corrupted, soft, 255U);
+    rc |= run_provoice_frame(NULL, soft, &uniform_run);
+    rc |= expect_eq_mem("erasure-provoice uniform follows hard", uniform_run.params, hard_run.params,
+                        sizeof(hard_run.params));
+
+    return rc;
+}
+
+/* The live path must give exactly what mbelib's own ProVoice frame API gives, frame after frame, through repeats and
+ * into muting. Muted frames are where the ProVoice result context shows: they get comfort noise only while the
+ * decode's MBE_PROCESS_FLAG_PROVOICE reaches the 4400 data API, so a parallel run with the flag cleared must differ
+ * there, or this comparison could not catch the context being dropped.
+ *
+ * The sequence is a clean frame, random frames at random confidence, then frames carrying as many errors as the
+ * codes correct: mbelib repeats a frame with two or more C0 errors and 10 + 40 x error rate in all, and a fourth
+ * repeat in a row mutes. */
+enum { PROVOICE_PARITY_RANDOM_FRAMES = 6, PROVOICE_PARITY_FRAMES = 20 };
+
+/* Three errors in the data bits of C0 and of each Golay word, one in each Hamming word's: 14 corrections. */
+static void
+add_correctable_provoice_errors(char frame[7][24]) {
+    static const int golay_rows[][4] = {{0, 13, 15, 17}, {1, 13, 17, 21}, {2, 12, 16, 20}, {3, 12, 16, 20}};
+    for (size_t i = 0; i < sizeof(golay_rows) / sizeof(golay_rows[0]); i++) {
+        for (int k = 1; k < 4; k++) {
+            frame[golay_rows[i][0]][golay_rows[i][k]] ^= 1;
+        }
+    }
+    frame[4][8] ^= 1;
+    frame[5][8] ^= 1;
+}
+
+static int
+run_provoice_library_parity(int soft_path) {
+    const char* tag = soft_path ? "provoice-parity soft" : "provoice-parity hard";
+    static dsd_opts opts;
+    static dsd_state state;
+    static mbe_parms cur;
+    static mbe_parms prev;
+    static mbe_parms prev_enhanced;
+    static mbe_parms cur2;
+    static mbe_parms prev2;
+    static mbe_parms prev_enhanced2;
+    static mbe_parms lib_cur;
+    static mbe_parms lib_prev;
+    static mbe_parms lib_prev_enhanced;
+    static mbe_parms p25_cur;
+    static mbe_parms p25_prev;
+    static mbe_parms p25_prev_enhanced;
+    char label[96];
+    uint32_t rng = 0x5880U;
+    int muted = 0;
+    int rc = 0;
+
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    opts.floating_point = 1;
+    init_mbe_state(&state, &cur, &prev, &prev_enhanced, &cur2, &prev2, &prev_enhanced2);
+    state.synctype = DSD_SYNC_PROVOICE_POS;
+    mbe_initMbeParms(&lib_cur, &lib_prev, &lib_prev_enhanced);
+    mbe_initMbeParms(&p25_cur, &p25_prev, &p25_prev_enhanced);
+
+    for (int frame = 0; frame < PROVOICE_PARITY_FRAMES; frame++) {
+        char hard[7][24];
+        dsd_vocoder_soft_bit soft[7][24];
+        mbe_soft_bit lib_soft[7][24];
+        char imbe_d[88];
+        float lib_audio[160] = {0};
+        float p25_audio[160] = {0};
+        char expected_err_str[96] = {0};
+        int expected_errs = -1;
+        int expected_errs2 = -1;
+        mbe_process_result lib_result;
+        mbe_process_result p25_result;
+        const uint32_t seed = 0x5880U + (uint32_t)frame;
+
+        if (frame > 0 && frame <= PROVOICE_PARITY_RANDOM_FRAMES) {
+            fill_random_provoice_frame(&rng, hard, soft);
+        } else {
+            rc |= expect_eq_int("provoice-parity clean fixture", build_clean_provoice_frame(hard), 0);
+            if (frame > PROVOICE_PARITY_RANDOM_FRAMES) {
+                add_correctable_provoice_errors(hard);
+            }
+            provoice_soft_from_hard(hard, soft, 200U);
+        }
+        copy_provoice_soft_to_mbelib((const dsd_vocoder_soft_bit(*)[24])soft, lib_soft);
+
+        mbe_setThreadRngSeed(seed);
+        int lib_ret =
+            soft_path ? mbe_processImbe7100x4400SoftFramef(lib_audio, &lib_result, (const mbe_soft_bit(*)[24])lib_soft,
+                                                           imbe_d, &lib_cur, &lib_prev, &lib_prev_enhanced)
+                      : mbe_processImbe7100x4400Framef(lib_audio, &lib_result, (const char (*)[24])hard, imbe_d,
+                                                       &lib_cur, &lib_prev, &lib_prev_enhanced);
+        store_expected_process_status(lib_ret, lib_audio, &expected_errs, &expected_errs2, expected_err_str,
+                                      sizeof(expected_err_str), &lib_result);
+
+        mbe_setThreadRngSeed(seed);
+        int p25_ret = soft_path
+                          ? mbe_decodeImbe7100x4400SoftFrame((const mbe_soft_bit(*)[24])lib_soft, imbe_d, &p25_result)
+                          : mbe_decodeImbe7100x4400Frame((const char (*)[24])hard, imbe_d, &p25_result);
+        if (p25_ret >= 0) {
+            p25_result.flags &= ~MBE_PROCESS_FLAG_PROVOICE;
+            p25_ret = mbe_processImbe4400Dataf(p25_audio, &p25_result, imbe_d, &p25_cur, &p25_prev, &p25_prev_enhanced);
+        }
+
+        mbe_setThreadRngSeed(seed);
+        if (soft_path) {
+            processMbeFrameSoft(&opts, &state, NULL, NULL, soft);
+        } else {
+            processMbeFrame(&opts, &state, NULL, NULL, hard);
+        }
+
+        DSD_SNPRINTF(label, sizeof(label), "%s frame %d library call", tag, frame);
+        rc |= expect_eq_int(label, lib_ret >= 0 && p25_ret >= 0, 1);
+        DSD_SNPRINTF(label, sizeof(label), "%s frame %d audio", tag, frame);
+        rc |= expect_eq_mem(label, state.audio_out_temp_buf, lib_audio, sizeof(lib_audio));
+        DSD_SNPRINTF(label, sizeof(label), "%s frame %d errs", tag, frame);
+        rc |= expect_eq_int(label, state.errs, expected_errs);
+        DSD_SNPRINTF(label, sizeof(label), "%s frame %d errs2", tag, frame);
+        rc |= expect_eq_int(label, state.errs2, expected_errs2);
+        DSD_SNPRINTF(label, sizeof(label), "%s frame %d status", tag, frame);
+        rc |= expect_eq_int(label, strcmp(state.err_str, expected_err_str), 0);
+        if (lib_ret >= 0 && p25_ret >= 0 && (lib_result.flags & MBE_PROCESS_FLAG_MUTE) != 0U) {
+            muted++;
+            DSD_SNPRINTF(label, sizeof(label), "%s frame %d comfort noise differs from P25 noise", tag, frame);
+            rc |= expect_eq_int(label, provoice_audio_differs(p25_audio, lib_audio), 1);
+        }
+    }
+
+    DSD_SNPRINTF(label, sizeof(label), "%s reached a muted frame", tag);
+    rc |= expect_eq_int(label, muted > 0, 1);
+    dsd_state_ext_free_all(&state);
+    return rc;
+}
+
+static int
+test_process_mbe_frame_provoice_matches_library_frame_api(void) {
+    int rc = 0;
+    rc |= run_provoice_library_parity(0);
+    rc |= run_provoice_library_parity(1);
+    return rc;
+}
+
 static int
 test_process_mbe_frame_ambe2_routes_slot2_error_state(void) {
     int rc = 0;
@@ -3237,6 +3598,9 @@ main(void) {
     rc |= test_process_mbe_frame_p25p1_updates_error_history();
     rc |= test_process_mbe_frame_provoice_updates_debug_errors_without_p25_history();
     rc |= test_process_mbe_frame_hard_provoice_stages_audio();
+    rc |= test_process_mbe_frame_soft_provoice_matches_hard();
+    rc |= test_process_mbe_frame_soft_provoice_erasures_recover_hard_miscorrection();
+    rc |= test_process_mbe_frame_provoice_matches_library_frame_api();
     rc |= test_process_mbe_frame_ambe2_routes_slot2_error_state();
     rc |= test_process_mbe_frame_dstar_ignores_stale_stereo_slot_state();
     rc |= test_process_mbe_frame_media_protocol_lifecycle();

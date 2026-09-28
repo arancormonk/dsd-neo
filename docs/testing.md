@@ -127,7 +127,7 @@ Covered: P25 Phase 1 C4FM (control and voice), P25 Phase 1 CQPSK/LSM (control an
 voice, plus a two-ray simulcast-impaired control channel), P25 Phase 2, DMR
 voice, DMR Tier III control (including a CSBK-only RAS control channel replayed
 with `-F`, colour code 0 — regression coverage for issue #348), NXDN48, NXDN96,
-dPMR, D-STAR, YSF, EDACS, and M17, plus the received CTCSS tone and DCS code on synthetic
+dPMR, D-STAR, YSF, EDACS, ProVoice, and M17, plus the received CTCSS tone and DCS code on synthetic
 analog NFM under `-fA` (see "Received tone (CTCSS) on the analog monitor" and "Received code
 (DCS) on the analog monitor" below). The analog FM
 monitor's audio has its own cases, which score the audio rather than a log line; see
@@ -158,6 +158,19 @@ discriminator audio are integrated back into complex baseband (FM demodulation
 is invertible), so those fixtures exercise the same code path but carry none of
 the original RF impairments. Where a genuine off-air I/Q recording exists (P25
 C4FM/CQPSK, NXDN48/96, dPMR) it is used directly.
+
+`provoice` is the sigidwiki ProVoice clip, one 3.5 s transmission (issue #588). Unlike the other audio sources it was
+recorded from a receiver's de-emphasized audio rather than from its discriminator: its 9600 baud clock line is there,
+but the roll-off smears each transition across its neighbours and, as recorded, it gives no frame sync at all. The
+builder undoes a single-pole 225 us de-emphasis (`AUDIO_DEEMPHASIS_US`) before remodulating it; swept over 150-500 us
+with the hard-decision decoder of the time, that value decoded the most frames at under one correction per voice
+frame. Under `-fp` and `-fh` the fixture decodes 40 ProVoice frames, 160 IMBE 7100x4400 voice frames, 86 of them with
+nothing to correct. Nothing in a ProVoice frame can fail a
+check: its header carries no CRC, BCH or parity, and the Golay(23,12) and Hamming(15,11) codes that protect the voice
+are perfect codes, which decode any input to some codeword. So `DECODE_IQ_PROVOICE` and `DECODE_IQ_PROVOICE_EDACS`
+assert on what `-Z` prints: the 64-bit header field after the LID, the same in 30 of the 40 frames (the rest are a bit
+or two off, since nothing protects it). `DECODE_IQ_PROVOICE_IMBE` asserts a voice frame that decoded with no correction. With ±45 counts of added
+noise the header still matches 21-25 times, and no other preset prints a ProVoice line from it.
 
 `dpmr_synth` is the exception to all of that: it is modulated from the CCH
 reference vectors in `tests/protocol/dpmr/fixtures`, the same vectors
@@ -702,7 +715,7 @@ per start with the onset anywhere in a word; `<dsd-neo/dsp/analog_rx.h>` sets it
 
 Known gaps and caveats:
 
-- **ProVoice** and **X2-TDMA** have no usable public sample and are untested here.
+- **X2-TDMA** has no usable public sample and is untested here.
 - **dPMR** decodes only what its CCH CRC-7 verifies (issue #407), so the `dpmr` off-air capture publishes nothing:
   it carries no recoverable CCH, which is why the CRC was thought to be broken. `DECODE_IQ_DPMR_MARGINAL` pins that
   it still syncs and still publishes no identity; `DECODE_IQ_DPMR_SYNTH` is the accept case.
@@ -1148,6 +1161,18 @@ Reading it:
 - **Errors per decoded voice frame**, never the raw error total. A build that
   loses sync decodes fewer frames and accrues fewer errors without being better,
   so watch the `voice` column alongside the error rate.
+- **What `voice` counts.** Lines that label a frame `Voice`, and ProVoice frames,
+  which print `VOICE` after their sync (trunked `PV`, or conventional `PV_C` with
+  its addresses in between) and carry four IMBE voice frames each.
+  Startup `NOTICE:` lines are left out: the ProVoice and EDACS presets print two
+  that mention voice, and before issue #588 they were the whole count for a
+  ProVoice run, so its errors were divided by 2 rather than by its frames.
+- **Soft-decision error counts are not a quality score on their own.** mbelib's
+  soft Golay reports how many data bits of the codeword it chose differ from the
+  hard decisions, so a soft decode that lands on the right codeword where the
+  hard one did not can report as many corrections, or more. For a change between
+  hard and soft decoding (issue #588), compare the builds' `-Z` IMBE payloads
+  against a reference decode as well.
 - **Paired per repeat.** Builds run round-robin with the order rotated each
   repeat, because a fixed order credits the better slot to whichever build holds
   it. The report compares within a repeat for the same reason.
