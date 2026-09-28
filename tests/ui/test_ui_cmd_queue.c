@@ -8456,6 +8456,85 @@ test_config_reopen_that_fails_keeps_the_running_input(void) {
 }
 
 /*
+ * Issue #578: with no stream running before it, a config whose [input] names a radio input still opens that input, as
+ * it always has. When that start fails there is no input to put back: the config stays applied with no input running,
+ * the message says why, and the apply fails, as a failed Input > Switch source does. An Airspy with no stream opens
+ * the config's settings the same way, rather than starting the settings it replaced.
+ */
+static int
+test_config_reopen_with_no_stream_reports_the_failed_start(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static void* fake_ctx[2];
+    int rc = 0;
+
+    /* An -fA session on an RTL-SDR at 24 kHz with no stream, and a SoapySDR device whose start refuses 25 kHz. */
+    init_nfm_session(&opts, &state, (RtlSdrContext*)fake_ctx);
+    opts.analog_nfm_bandwidth_hz = 12500;
+    state.rtl_ctx = NULL;
+    reset_rx_family_wrap();
+    g_config_rtl_open_ok = 1;
+    g_config_rtl_fail_starts = 1;
+    g_config_rtl_refuse_rate_hz = 24000;
+    rc |= submit_config_device_source(&opts, &state, DSDCFG_INPUT_SOAPY, 0, 25000, "no stream soapy refused");
+    rc |= expect_int("no stream soapy refused: failed", dsd_app_command_test_last_failed(), 1);
+    rc |= expect_toast("no stream soapy refused toast", &state,
+                       "Config applied; no input running: NFM 25 kHz does not fit the 24 kHz DSP rate");
+    rc |= expect_int("no stream soapy refused: tried once", g_config_rtl_creates == 1 && g_config_rtl_starts == 1, 1);
+    rc |= expect_int("no stream soapy refused: no stream", state.rtl_ctx == NULL, 1);
+    rc |= expect_str("no stream soapy refused: config's input kept", opts.audio_in_dev, "soapy:driver=airspy");
+    rc |= expect_int("no stream soapy refused: config's width kept", opts.analog_nfm_bandwidth_hz, 25000);
+
+    /* An rtl_tcp input with no stream, and a config naming another host, whose start fails for the connection. */
+    DSD_SNPRINTF(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", "rtltcp:127.0.0.1:1234");
+    opts.rtltcp_enabled = 1;
+    DSD_SNPRINTF(opts.rtltcp_hostname, sizeof opts.rtltcp_hostname, "%s", "127.0.0.1");
+    opts.rtltcp_portno = 1234;
+    opts.analog_nfm_bandwidth_hz = 12500;
+    reset_rx_family_wrap();
+    g_config_rtl_open_ok = 1;
+    g_config_rtl_fail_starts = 1;
+    dsdneoUserConfig cfg;
+    DSD_MEMSET(&cfg, 0, sizeof cfg);
+    cfg.has_input = 1;
+    cfg.input_source = DSDCFG_INPUT_RTLTCP;
+    DSD_SNPRINTF(cfg.rtltcp_host, sizeof cfg.rtltcp_host, "%s", "192.0.2.7");
+    cfg.rtltcp_port = 1234;
+    rc |= submit_config(&opts, &state, &cfg, "no stream rtl_tcp fails");
+    rc |= expect_int("no stream rtl_tcp fails: failed", dsd_app_command_test_last_failed(), 1);
+    rc |= expect_str("no stream rtl_tcp fails toast", state.ui_msg,
+                     "Config applied; no input running: the rtl_tcp input did not start (see log)");
+    rc |= expect_int("no stream rtl_tcp fails: tried once", g_config_rtl_creates, 1);
+    rc |= expect_str("no stream rtl_tcp fails: config's host kept", opts.rtltcp_hostname, "192.0.2.7");
+
+    /* An Airspy with no stream, and a config with a new sample rate, whose start fails. */
+    DSD_SNPRINTF(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", "airspy");
+    opts.rtltcp_enabled = 0;
+    dsd_airspy_config_defaults(&opts.airspy);
+    reset_rx_family_wrap();
+    g_config_rtl_open_ok = 1;
+    g_config_rtl_fail_starts = 1;
+    DSD_MEMSET(&cfg, 0, sizeof cfg);
+    cfg.has_input = 1;
+    cfg.input_source = DSDCFG_INPUT_AIRSPY;
+    cfg.airspy = opts.airspy;
+    cfg.airspy.sample_rate = 2500000;
+    rc |= submit_config(&opts, &state, &cfg, "no stream airspy fails");
+    rc |= expect_int("no stream airspy fails: failed", dsd_app_command_test_last_failed(), 1);
+    rc |= expect_str("no stream airspy fails toast", state.ui_msg,
+                     "Config applied; no input running: the Airspy input did not start (see log)");
+    rc |= expect_int("no stream airspy fails: tried once", g_config_rtl_creates, 1);
+    rc |= expect_int("no stream airspy fails: config's rate kept", (int)opts.airspy.sample_rate, 2500000);
+    rc |= expect_int("no stream airspy fails: no stream", state.rtl_ctx == NULL, 1);
+
+    reset_config_rtl_wrap();
+    opts.analog_nfm_bandwidth_hz = 0;
+    state.rtl_ctx = NULL;
+    freeState(&state);
+    return rc;
+}
+
+/*
  * Issue #578: a config rollback puts back everything the config's [mode], [demod] and [analog] set that the decoder
  * reads, not only the settings a scan row snapshots. An EDACS-EA session with ESK, two extra LRRP ports and no tone
  * filter loads a config for standard EDACS, other LRRP ports and a tone filter, whose rtl_tcp host does not start: the
@@ -11505,6 +11584,7 @@ main(void) {
     rc |= test_config_reopen_that_fails_keeps_the_running_input();
     rc |= test_config_rollback_keeps_the_iq_capture();
     rc |= test_config_rollback_restores_mode_owned_settings();
+    rc |= test_config_reopen_with_no_stream_reports_the_failed_start();
     rc |= test_config_apply_restores_the_default_nfm_width();
     rc |= test_scan_list_holds_the_configured_nfm_width();
     rc |= test_scan_list_holds_the_configured_nfm_width_on_am();

@@ -1272,17 +1272,22 @@ ui_cfg_capture_rollback(const dsd_opts* opts, const dsd_state* state, ui_cfg_rol
  * the input's device settings and tuning, the input that ran is started again without the I/Q capture that would
  * write over its recording (svc_rtl_restart_recovery_locked()), and the toast says why. Returns -1
  * then, and the caller fails the apply. The rest of the config stays applied (its output, trunking, logging, alerts,
- * recording and DSP sections, the group list it imported, the environment defaults it set). With no
- * stream running before the apply there is no input to lose: the config waits for the next start, as it always has,
- * and 0 is returned. Caller holds the P25 SM tick guard.
+ * recording and DSP sections, the group list it imported, the environment defaults it set). With no stream running
+ * before the apply there is no input to put back: the config stays applied with no input running, the toast says why
+ * the one it opened did not start ("Config applied; no input running: ..."), and -1 is returned all the same, failing
+ * the apply as a failed start fails Input > Switch source. Caller holds the P25 SM tick guard.
  */
 static int
 ui_cfg_settle_reopen(dsd_opts* opts, dsd_state* state, int rc, const ui_cfg_rollback* before) {
-    if (rc == 0 || !before->input.running) {
+    if (rc == 0) {
         return 0;
     }
     char why[128];
     (void)svc_describe_start_failure(opts, why, sizeof why);
+    if (!before->input.running) {
+        ui_set_toast(state, 5, "Config applied; no input running: %s", why);
+        return -1;
+    }
     ui_restore_receive_settings(opts, state, &before->receive);
     ui_cfg_restore_mode_extras(opts, state, &before->mode);
     ui_restore_radio_input(opts, &before->input);
@@ -2848,9 +2853,10 @@ apply_cfg_rtl_common(dsd_opts* opts, const dsdneoUserConfig* cfg) {
     }
 }
 
-/* A config's RTL-family [input] that builds a spec other than the running RTL-family input's (@p before, the input the
-   apply found) reopens the device with the config's tuning. Returns what ui_cfg_settle_reopen() makes of the reopened
-   stream's start: -1 when it failed and the running input was put back, 0 otherwise. */
+/* A config's RTL-family [input] that builds a spec other than the RTL-family input's (@p before, the input the apply
+   found) reopens the device with the config's tuning, or opens it when no stream ran. Returns what
+   ui_cfg_settle_reopen() makes of the stream's start: -1 when it failed (the running input put back, or none to put
+   back), 0 otherwise. */
 static int
 apply_cfg_rtl_hot_restart(dsd_opts* opts, dsd_state* state, const dsdneoUserConfig* cfg,
                           const ui_cfg_rollback* before) {
@@ -3161,17 +3167,18 @@ cfg_is_live_airspy(const dsdneoUserConfig* cfg, const char* old_device, int old_
 
 #ifdef USE_RADIO
 /*
- * The running RTL-family input a config's [input] reopens or retunes, @p before being the input the apply found. An
- * Airspy source over a running Airspy applies what it can live (svc_airspy_apply_config_locked(), which also opens an
- * Airspy with no stream running, rolling its own settings back). A change the stream only takes when it opens (a new
- * sample rate or serial, DSP bandwidth or monitor volume, svc_airspy_settings_reopen()) reopens the running Airspy
- * here instead, where a start that fails puts back everything the config applied to the receive side
- * (ui_cfg_settle_reopen()), the widths included: the Airspy path's own rollback keeps the width it refused, so its
- * restart is refused too. Any other RTL-family source reopens the input for a new spec (apply_cfg_rtl_hot_restart()).
+ * The RTL-family input a config's [input] reopens or retunes, @p before being the input the apply found. An Airspy
+ * source over a running Airspy applies what it can live (svc_airspy_apply_config_locked()). A change the stream only
+ * takes when it opens (a new sample rate or serial, DSP bandwidth or monitor volume, svc_airspy_settings_reopen())
+ * reopens the running Airspy here instead, where a start that fails puts back everything the config applied to the
+ * receive side (ui_cfg_settle_reopen()), the widths included: the Airspy path's own rollback keeps the width it
+ * refused, so its restart is refused too. An Airspy with no stream running opens here the same way, where a start that
+ * fails has nothing to put back and says why. Any other RTL-family source reopens the input for a new spec
+ * (apply_cfg_rtl_hot_restart(), with or without a stream running).
  * The configured PPM never outlives a rollback: an RTL-SDR or rtl_tcp reopen opens with the request made before it
  * (the spec carries the PPM, the options it opens with do not), which the rollback puts back with the input, and the
- * Airspy path asks for it only once its input runs. Returns nonzero when the input was put back or the Airspy path
- * failed, which fails the apply.
+ * Airspy path asks for it only once its input runs. Returns nonzero when a start failed (the input put back, or none
+ * to put back) or the live Airspy path failed, which fails the apply.
  */
 static int
 apply_cfg_radio_input(dsd_opts* opts, dsd_state* state, const dsdneoUserConfig* cfg, const ui_cfg_rollback* before) {
@@ -3186,8 +3193,8 @@ apply_cfg_radio_input(dsd_opts* opts, dsd_state* state, const dsdneoUserConfig* 
     const svc_airspy_tuning tuning = {in->rtlsdr_center_freq, in->rtl_dsp_bw_khz, in->rtl_squelch_level,
                                       in->rtl_volume_multiplier};
     int rc = 0;
-    if (state->rtl_ctx
-        && svc_airspy_settings_reopen(&in->airspy, &cfg->airspy, tuning.bandwidth, opts->rtl_dsp_bw_khz, tuning.volume,
+    if (!state->rtl_ctx
+        || svc_airspy_settings_reopen(&in->airspy, &cfg->airspy, tuning.bandwidth, opts->rtl_dsp_bw_khz, tuning.volume,
                                       opts->rtl_volume_multiplier)) {
         rc = ui_cfg_settle_reopen(opts, state, svc_airspy_reopen_locked(opts, state, &cfg->airspy), before);
         if (rc != 0) {
@@ -6256,7 +6263,8 @@ ui_cmd_handle_config_apply(dsd_opts* opts, dsd_state* state, const struct dsd_ap
     const int restart_required = cfg_restore_lifecycle_owned(opts, &cfg, old_frontend_kind, old_trunk_scan_enabled);
 #ifdef USE_RADIO
     /* A reopen whose start fails puts the receive side back (ui_cfg_settle_reopen()), so everything below sees the
-       input, mode and widths the session ran, and publishes nothing for the settings the start refused. */
+       input, mode and widths the session ran, and publishes nothing for the settings the start refused; with no stream
+       running before it there is nothing to put back, and no stream to publish to. */
     const int radio_rc = apply_cfg_radio_input(opts, state, &cfg, &rollback);
 #endif
     apply_cfg_runtime_hot_switches(opts, state, &cfg, old_audio_in_dev, old_audio_in_type, old_wav_sample_rate,

@@ -912,8 +912,11 @@ installs from `src/engine/trunk_tuning.c` in `src/engine/trunk_tuning_hooks_inst
   the config (output, trunking, logging, alerts, recording and DSP, an imported group list, the environment defaults
   it set) stays applied. The configured PPM never outlives a rollback: an RTL-SDR or rtl_tcp reopen
   opens with the request made before it, which the rollback puts back with the input, and the Airspy path requests it
-  only once the reopened Airspy runs. With no stream running before the apply, nothing is put back, and the config waits
-  for the next start. Tests: `APP_COMMAND_QUEUE`, `UI_MENU_SERVICES`, `UI_MENU_AIRSPY_CONFIG_REFUSED_WIDTH`,
+  only once the reopened Airspy runs. With no stream running before the apply the config's input is still opened (the
+  hot restart, or an Airspy source over a stopped Airspy through `svc_airspy_reopen_locked()` rather than the Airspy
+  path's own rollback, which would start the settings it replaced); a start that fails has nothing to put back, so the
+  config stays applied, the toast is `Config applied; no input running: <why>` and the apply fails, as a failed Switch
+  source does. Tests: `APP_COMMAND_QUEUE`, `UI_MENU_SERVICES`, `UI_MENU_AIRSPY_CONFIG_REFUSED_WIDTH`,
   `ENGINE_CHANNEL_SCAN` (the leave's result), `IO_RTL_DEMOD_CONFIG` (request numbering and outcomes, the kept kind and
   monitor output).
 - AM (issue #524): `DSD_APP_CMD_DECODE_MODE_SET` takes `DSDCFG_MODE_AM` (the preset ids end there, as do the
