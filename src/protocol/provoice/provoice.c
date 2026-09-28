@@ -24,20 +24,26 @@ typedef struct {
     uint16_t bit_count;
 } provoice_reader;
 
+/* One two-level symbol: its hard bit goes to raw_bits, which the header and BF fields are read from, and, when
+ * out_reliability is given, the confidence in that bit goes to the soft IMBE decode (issue #588). */
 static int
-provoice_next_dibit(provoice_reader* reader) {
-    int dibit = get_dibit_and_analog_signal(reader->opts, reader->state, NULL);
-    reader->raw_bits[reader->bit_count++] = (uint8_t)dibit;
-    return dibit;
+provoice_next_bit(provoice_reader* reader, uint8_t* out_reliability) {
+    float symbol = 0.0f;
+    int bit = getDibitAndSoftSymbol(reader->opts, reader->state, &symbol);
+    reader->raw_bits[reader->bit_count++] = (uint8_t)bit;
+    if (out_reliability != NULL) {
+        *out_reliability = dsd_two_level_symbol_reliability(reader->opts, reader->state, symbol);
+    }
+    return bit;
 }
 
 static int
-provoice_next_dibit_callback(void* user, int* out_dibit) {
+provoice_next_bit_callback(void* user, int* out_bit, uint8_t* out_reliability) {
     provoice_reader* reader = (provoice_reader*)user;
-    if (reader == NULL || out_dibit == NULL) {
+    if (reader == NULL || out_bit == NULL || out_reliability == NULL) {
         return -1;
     }
-    *out_dibit = provoice_next_dibit(reader);
+    *out_bit = provoice_next_bit(reader, out_reliability);
     return 0;
 }
 
@@ -45,7 +51,7 @@ static void
 provoice_read_raw_bits(provoice_reader* reader, int count) {
     int i;
     for (i = 0; i < count; i++) {
-        (void)provoice_next_dibit(reader);
+        (void)provoice_next_bit(reader, NULL);
     }
 }
 
@@ -85,18 +91,19 @@ provoice_play_voice(dsd_opts* opts, dsd_state* state) {
 }
 
 static void
-provoice_decode_imbe_pair(dsd_opts* opts, dsd_state* state, char frame1[7][24], char frame2[7][24]) {
-    processMbeFrame(opts, state, NULL, NULL, frame1);
+provoice_decode_imbe_pair(dsd_opts* opts, dsd_state* state, dsd_provoice_imbe_frame frame1,
+                          dsd_provoice_imbe_frame frame2) {
+    processMbeFrameSoft(opts, state, NULL, NULL, frame1);
     provoice_play_voice(opts, state);
-    processMbeFrame(opts, state, NULL, NULL, frame2);
+    processMbeFrameSoft(opts, state, NULL, NULL, frame2);
     provoice_play_voice(opts, state);
 }
 
 int
 processProVoice(dsd_opts* opts, dsd_state* state) {
     uint8_t raw_bits[800];
-    char imbe7100_fr1[DSD_PROVOICE_IMBE_ROWS][DSD_PROVOICE_IMBE_COLS];
-    char imbe7100_fr2[DSD_PROVOICE_IMBE_ROWS][DSD_PROVOICE_IMBE_COLS];
+    dsd_provoice_imbe_frame imbe7100_fr1;
+    dsd_provoice_imbe_frame imbe7100_fr2;
     unsigned long long int initial;
     unsigned long long int secondary;
     uint16_t lid;
@@ -129,7 +136,7 @@ processProVoice(dsd_opts* opts, dsd_state* state) {
         DSD_FPRINTF(stderr, " %016llX", secondary);
     }
 
-    if (dsd_provoice_load_imbe_frame_pair(provoice_next_dibit_callback, &reader, imbe7100_fr1, imbe7100_fr2) < 0) {
+    if (dsd_provoice_load_imbe_frame_pair(provoice_next_bit_callback, &reader, imbe7100_fr1, imbe7100_fr2) < 0) {
         DSD_FPRINTF(stderr, "\n");
         provoice_confirm_end_frame(state);
         return provoice_confirm_is_confirmed(state);
@@ -143,7 +150,7 @@ processProVoice(dsd_opts* opts, dsd_state* state) {
         DSD_FPRINTF(stderr, "\n BF: %04X ", bf);
     }
 
-    if (dsd_provoice_load_imbe_frame_pair(provoice_next_dibit_callback, &reader, imbe7100_fr1, imbe7100_fr2) < 0) {
+    if (dsd_provoice_load_imbe_frame_pair(provoice_next_bit_callback, &reader, imbe7100_fr1, imbe7100_fr2) < 0) {
         DSD_FPRINTF(stderr, "\n");
         provoice_confirm_end_frame(state);
         return provoice_confirm_is_confirmed(state);

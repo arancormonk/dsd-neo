@@ -49,6 +49,15 @@ uint8_t dmr_compute_reliability(const dsd_state* st, float sym);
 void soft_symbol_frame_begin(dsd_state* state);
 uint16_t soft_symbol_to_viterbi_cost(float symbol, const dsd_state* state, int bit_position);
 uint16_t gmsk_soft_symbol_to_viterbi_cost(float symbol, const dsd_state* state);
+/**
+ * \brief Confidence (0 = none, 255 = full) in a two-level symbol's hard bit, for soft-decision vocoder FEC.
+ *
+ * The distance from state->center over half the spacing of state->min and state->max, which the sync warm start
+ * leaves on the two class means: 255 at a mean and beyond, 0 on the threshold. Polarity does not enter. Thresholds
+ * with no usable spacing, and symbols replayed from a legacy symbol capture (which stores only the decided bit),
+ * return 255, the weight a hard decision carries; a non-finite symbol or a NULL opts or state returns 0.
+ */
+uint8_t dsd_two_level_symbol_reliability(const dsd_opts* opts, const dsd_state* state, float symbol);
 int digitize(const dsd_opts* opts, dsd_state* state, float symbol);
 void skipDibit(dsd_opts* opts, dsd_state* state, int count);
 
