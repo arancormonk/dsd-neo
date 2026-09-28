@@ -1060,22 +1060,32 @@ failure paths as well as when it passes. `dsd_test_mkstemp()`,
 working directory. Remove each file with `remove()`, including any the code
 under test wrote there, such as a P25 control-channel cache file or an I/Q
 capture's sidecar, then remove the directory with `dsd_test_rmdir()`.
-`dsd_test_remove_temp_dir()` does both from a list of file names. Check the
-result of the directory removal and fail the test if it fails. The removal
-succeeds only on an empty directory, so the check also catches a file the test
-forgot to list or a new file the code under test starts writing.
-`dsd_test_capture_stderr_read()` deletes the capture file it reads. A test that
-does not read its capture removes `cap.path` itself after
-`dsd_test_capture_stderr_end()`.
+`dsd_test_remove_temp_dir()` does both from a list of file names. Never remove a
+directory with `remove()`: the native Windows CRT does not remove directories,
+so it would stay behind there. Check the result of the directory removal and
+fail the test if it fails. The removal succeeds only on an empty directory, so
+the check also catches a file the test forgot to list or a new file the code
+under test starts writing. `dsd_test_capture_stderr_read()` deletes the capture
+file it reads. A test that does not read its capture removes `cap.path` itself
+after `dsd_test_capture_stderr_end()`.
+
+A failed `assert()` aborts the test before its cleanup runs. Once a temporary
+file or directory exists, check with a counted failure instead: print what
+failed, remove the file or directory, then return the failure. A write that
+fails while the test sets up its file counts the same way.
 
 To check the whole suite, run it against an empty directory, which must still
-be empty afterwards:
+be empty afterwards. That does not catch a file a test creates by a relative
+path, which lands in its working directory (`build/dev-debug/tests` under
+ctest), so compare that directory's listing before and after the run too:
 
 ```sh
 T=$(mktemp -d)
+find build/dev-debug/tests | sort > "$T.before"
 DSD_NEO_TEST_TMPDIR=$T TMPDIR=$T ctest --preset dev-debug --output-on-failure
 ls -A "$T"   # prints nothing
-rmdir "$T"
+find build/dev-debug/tests | sort | diff "$T.before" -   # prints nothing
+rmdir "$T"; rm "$T.before"
 ```
 
 Repeat this in a `-DDSD_ENABLE_QT_UI=ON` build with `-R '^UI_QT'` and
