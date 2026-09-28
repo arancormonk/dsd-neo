@@ -2375,24 +2375,41 @@ collect_nfm_profile(const dsd_csv_channel_profile* row, void* context) {
     seen->count++;
 }
 
-/* Import @p body as a channel map; returns csvChanImport()'s result and the diagnostics it logged, or -2 when the map
- * could not be written or imported. A failure returns rather than asserts, so the caller still removes @p path. */
+/* The channel-map checks below run while their map file exists, so they count failures rather than assert: the test
+ * still removes the file before a failure ends it. Returns 1 when @p ok is false. */
+static int
+channel_map_check(int ok, const char* what) {
+    if (!ok) {
+        DSD_FPRINTF(stderr, "FAIL: %s\n", what);
+        return 1;
+    }
+    return 0;
+}
+
+/* import_channel_map_text() could not write or import the map; csvChanImport() itself returns only 0 or -1. */
+#define CHANNEL_MAP_NOT_IMPORTED (-2)
+
+/* Import @p body as a channel map; returns csvChanImport()'s result and the diagnostics it logged, or
+ * CHANNEL_MAP_NOT_IMPORTED with an empty log when the map could not be written or imported. A failure returns rather
+ * than asserts, so the caller still removes @p path, and it must count as a failed check. */
 static int
 import_channel_map_text(const char* path, const char* body, char* log, size_t log_size) {
     log[0] = '\0';
     if (write_text_file(path, body) != 0) {
         DSD_FPRINTF(stderr, "could not write channel map %s\n", path);
-        return -2;
+        return CHANNEL_MAP_NOT_IMPORTED;
     }
     dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
     dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
-    int imported = -2;
+    int imported = CHANNEL_MAP_NOT_IMPORTED;
     dsd_test_capture_stderr cap;
     if (opts && state && dsd_test_capture_stderr_begin(&cap, "chan_nfm") == 0) {
         DSD_SNPRINTF(opts->chan_in_file, sizeof opts->chan_in_file, "%s", path);
         imported = csvChanImport(opts, state);
         (void)dsd_test_capture_stderr_end(&cap);
         (void)dsd_test_capture_stderr_read(&cap, log, log_size);
+    } else {
+        DSD_FPRINTF(stderr, "could not import channel map %s\n", path);
     }
     free(opts);
     free_test_state(state);
@@ -2431,12 +2448,15 @@ test_nfm_channel_map_rows(void) {
         rc = 1;
     }
     nfm_profiles seen = {0};
-    assert(dsd_csv_inspect_channel_profiles(path, &seen, collect_nfm_profile) == 0);
-    assert(seen.count == 5);
-    assert(strcmp(seen.mode[0], "dmr") == 0 && seen.bandwidth_hz[0] == -1);
-    assert(strcmp(seen.mode[1], "nfm") == 0 && seen.bandwidth_hz[1] == 12500 && seen.squelch_db_set[1]);
-    assert(strcmp(seen.mode[3], "nfm") == 0 && seen.bandwidth_hz[3] == -1 && seen.key_source[3] == 0);
-    assert(strcmp(seen.mode[4], "") == 0);
+    rc |= channel_map_check(dsd_csv_inspect_channel_profiles(path, &seen, collect_nfm_profile) == 0,
+                            "mixed nfm map: profiles inspected");
+    rc |= channel_map_check(seen.count == 5, "mixed nfm map: 5 rows");
+    rc |= channel_map_check(strcmp(seen.mode[0], "dmr") == 0 && seen.bandwidth_hz[0] == -1, "mixed nfm map: row 1");
+    rc |= channel_map_check(strcmp(seen.mode[1], "nfm") == 0 && seen.bandwidth_hz[1] == 12500 && seen.squelch_db_set[1],
+                            "mixed nfm map: row 2");
+    rc |= channel_map_check(strcmp(seen.mode[3], "nfm") == 0 && seen.bandwidth_hz[3] == -1 && seen.key_source[3] == 0,
+                            "mixed nfm map: row 4");
+    rc |= channel_map_check(strcmp(seen.mode[4], "") == 0, "mixed nfm map: row 5");
 
     const char* header = "channel,frequency_hz,mode,options\n";
 
@@ -2473,8 +2493,9 @@ test_nfm_channel_map_rows(void) {
         "channel,frequency_hz,mode,single_key_hex,options\n1,154430000,nfm,SECRETAB,--squelch-db -60\n"};
     for (size_t i = 0; i < sizeof(keyed) / sizeof(keyed[0]); i++) {
         rc |= expect_import_refused(path, keyed[i], "row 2: key columns are not supported for mode nfm");
-        (void)import_channel_map_text(path, keyed[i], log, sizeof log);
-        assert(strstr(log, "SECRET") == NULL);
+        const int imported = import_channel_map_text(path, keyed[i], log, sizeof log);
+        rc |= channel_map_check(imported != CHANNEL_MAP_NOT_IMPORTED && strstr(log, "SECRET") == NULL,
+                                "keyed nfm row: the key text stays out of the log");
     }
     assert(remove(path) == 0);
     return rc;
@@ -2504,13 +2525,16 @@ test_am_channel_map_rows(void) {
         rc = 1;
     }
     nfm_profiles seen = {0};
-    assert(dsd_csv_inspect_channel_profiles(path, &seen, collect_nfm_profile) == 0);
-    assert(seen.count == 5);
-    assert(strcmp(seen.mode[0], "am") == 0 && seen.bandwidth_hz[0] == 8333 && seen.squelch_db_set[0]);
-    assert(strcmp(seen.mode[1], "nfm") == 0 && seen.bandwidth_hz[1] == 12500);
-    assert(strcmp(seen.mode[2], "dmr") == 0 && seen.bandwidth_hz[2] == -1);
-    assert(strcmp(seen.mode[3], "am") == 0 && seen.bandwidth_hz[3] == -1 && seen.key_source[3] == 0);
-    assert(strcmp(seen.mode[4], "") == 0);
+    rc |= channel_map_check(dsd_csv_inspect_channel_profiles(path, &seen, collect_nfm_profile) == 0,
+                            "mixed am map: profiles inspected");
+    rc |= channel_map_check(seen.count == 5, "mixed am map: 5 rows");
+    rc |= channel_map_check(strcmp(seen.mode[0], "am") == 0 && seen.bandwidth_hz[0] == 8333 && seen.squelch_db_set[0],
+                            "mixed am map: row 1");
+    rc |= channel_map_check(strcmp(seen.mode[1], "nfm") == 0 && seen.bandwidth_hz[1] == 12500, "mixed am map: row 2");
+    rc |= channel_map_check(strcmp(seen.mode[2], "dmr") == 0 && seen.bandwidth_hz[2] == -1, "mixed am map: row 3");
+    rc |= channel_map_check(strcmp(seen.mode[3], "am") == 0 && seen.bandwidth_hz[3] == -1 && seen.key_source[3] == 0,
+                            "mixed am map: row 4");
+    rc |= channel_map_check(strcmp(seen.mode[4], "") == 0, "mixed am map: row 5");
 
     const char* header = "channel,frequency_hz,mode,options\n";
 
@@ -2544,8 +2568,9 @@ test_am_channel_map_rows(void) {
         "channel,frequency_hz,mode,single_key_hex,options\n1,118300000,am,SECRETAB,--squelch-db -60\n"};
     for (size_t i = 0; i < sizeof(keyed) / sizeof(keyed[0]); i++) {
         rc |= expect_import_refused(path, keyed[i], "row 2: key columns are not supported for mode am");
-        (void)import_channel_map_text(path, keyed[i], log, sizeof log);
-        assert(strstr(log, "SECRET") == NULL);
+        const int imported = import_channel_map_text(path, keyed[i], log, sizeof log);
+        rc |= channel_map_check(imported != CHANNEL_MAP_NOT_IMPORTED && strstr(log, "SECRET") == NULL,
+                                "keyed am row: the key text stays out of the log");
     }
     assert(remove(path) == 0);
     return rc;
@@ -2649,9 +2674,10 @@ test_nfm_channel_map_tone_lists(void) {
 
     for (size_t i = 0; i < sizeof(refused) / sizeof(refused[0]); i++) {
         rc |= expect_import_refused(path, refused[i].body, refused[i].diagnostic);
-        (void)import_channel_map_text(path, refused[i].body, log, sizeof log);
-        if (strstr(log, "SECRET") || strstr(log, "150.0") || strstr(log, "D047I")) {
-            DSD_FPRINTF(stderr, "tone refusal %zu echoed the row: %s\n", i, log);
+        const int imported = import_channel_map_text(path, refused[i].body, log, sizeof log);
+        if (imported == CHANNEL_MAP_NOT_IMPORTED || strstr(log, "SECRET") || strstr(log, "150.0")
+            || strstr(log, "D047I")) {
+            DSD_FPRINTF(stderr, "tone refusal %zu echoed the row or was not imported: %s\n", i, log);
             rc = 1;
         }
     }
