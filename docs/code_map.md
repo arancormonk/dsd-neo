@@ -1641,6 +1641,13 @@ Private per-protocol modules worth knowing about:
   `mbe_process_provoice()` hands the decode's `mbe_process_result` to `mbe_processImbe4400Dataf()` unchanged: its
   `MBE_PROCESS_FLAG_PROVOICE` is what gives a muted frame ProVoice comfort noise rather than the P25 level, and
   `CORE_MBE_TRANSFORM_CONTEXT` pins the live path to mbelib's own ProVoice frame API through repeats into muting.
+- `src/protocol/dstar/dstar.c` — `processDSTAR()` reads one superframe: 21 AMBE 3600x2400 voice frames and the slow
+  data between them. `processDSTAR_HD()` decodes the RF header and then calls it without changing `state->synctype`,
+  so the voice frames behind a header reach the vocoder as `DSD_SYNC_DSTAR_HD_*`. `processMbeFrameInternal()` sends
+  every `DSD_SYNC_IS_DSTAR()` synctype to `mbe_process_dstar()`; before issue #599 only the voice synctypes went
+  there, and a header's superframe was synthesized as DMR AMBE 3600x2450, whose model then carried into the next
+  superframe. The two codecs share the ECC, so only the audio shows the difference: `CORE_MBE_TRANSFORM_CONTEXT`
+  compares header and voice synctypes with mbelib's own 2400 frame chain.
 - `src/protocol/dpmr/dpmr_confirm.{c,h}` — the same shape for dPMR, gating both audio and the hunt (issue #407). The
   check is the CCH CRC-7, which was there all along: it covers the 41 payload bits behind all six Hamming(12,8)
   blocks, so a passing half means the half decoded. What it replaced was `dpmr_ids_are_strong()`, which accepted a

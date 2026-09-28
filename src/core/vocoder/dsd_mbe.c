@@ -1996,7 +1996,8 @@ processMbeFrameInternal(dsd_opts* opts, dsd_state* state, char imbe_fr[8][23], c
         mbe_process_p25p1(opts, state, imbe_fr, imbe_soft_fr, &frame_ctx);
     } else if (DSD_SYNC_IS_PROVOICE(state->synctype)) {
         mbe_process_provoice(opts, state, imbe7100_fr, imbe7100_soft_fr, &frame_ctx);
-    } else if ((state->synctype == DSD_SYNC_DSTAR_VOICE_POS) || (state->synctype == DSD_SYNC_DSTAR_VOICE_NEG)) {
+    } else if (DSD_SYNC_IS_DSTAR(state->synctype)) {
+        /* Header synctypes too: processDSTAR_HD() decodes the superframe behind the header under its own synctype. */
         mbe_process_dstar(opts, state, ambe_fr, &frame_ctx);
     } else if (DSD_SYNC_IS_X2TDMA(state->synctype)) {
         mbe_process_x2(opts, state, ambe_fr, ambe_soft_fr, &frame_ctx);
