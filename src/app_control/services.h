@@ -466,11 +466,13 @@ unsigned int svc_rtl_start_count(void);
 
 /** @brief What became of the last analog monitor request (svc_take_monitor_request_outcome()). */
 typedef enum {
-    SVC_MONITOR_REQUEST_NONE = 0, /**< None outstanding, still pending, or its stream is gone. */
-    SVC_MONITOR_REQUEST_TAKEN,    /**< Taken by the demod thread, replaced by a later request, or made of a stream
-                                       app-control has replaced since (svc_rtl_start_count()). */
-    SVC_MONITOR_REQUEST_REFUSED,  /**< Refused where it landed (a retune moved the demod rate after it was checked), or
-                                       a scan leave's return to the monitor refused at once. */
+    SVC_MONITOR_REQUEST_NONE = 0,   /**< None outstanding, still pending, or its stream is gone. */
+    SVC_MONITOR_REQUEST_TAKEN,      /**< Taken by the demod thread, or made of a stream app-control has replaced since
+                                         (svc_rtl_start_count()). */
+    SVC_MONITOR_REQUEST_REFUSED,    /**< Refused where it landed (a retune moved the demod rate after it was checked),
+                                         or a scan leave's return to the monitor refused at once. */
+    SVC_MONITOR_REQUEST_SUPERSEDED, /**< Never taken: a later request replaced it in the stream's queue, or a retune's
+                                         receive family retired it (RTL_STREAM_RX_REQUEST_REPLACED). */
 } svc_monitor_request_outcome;
 
 /** @brief A refused analog monitor request and what the front end kept (svc_take_monitor_request_outcome()). */
@@ -522,7 +524,11 @@ typedef struct {
  * superseded (a CQPSK toggle, a symbol profile) is reported with svc_monitor_refusal::superseded set: that later
  * request decides what the front end runs, so a refused scan leave is left to it, a switch onto the monitor armed
  * before the leave included, while any other refused switch onto the monitor the front end did not make still goes
- * back. Decoder thread only.
+ * back. A request the demod thread never took reads SUPERSEDED (issue #578): a later request that did not take the
+ * record over (a switch to the digital family, an engine's analog request) replaced it in the stream's queue, or a
+ * retune's receive family retired it (a scan that goes on to an analog row), so the front end neither ran nor refused
+ * it, and what replaced it decides what the front end runs. There is nothing to reconcile then, and a switch onto the
+ * monitor armed before the request stays armed for the next monitor request to settle. Decoder thread only.
  *
  * @return svc_monitor_request_outcome.
  */

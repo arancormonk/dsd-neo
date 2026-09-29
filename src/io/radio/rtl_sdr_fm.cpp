@@ -8403,6 +8403,9 @@ static int g_profile_req_chan = -1;
 static int g_profile_req_ted_sps = -1; /* <0 = leave timing untouched, 0 = clear override only */
 static int g_profile_req_ted_sps_is_override = 0;
 static uint32_t g_profile_req_analog_seq = 0U; /* the queued analog request's number */
+/* The number of the first analog request the queued one replaced in turn, each while the one before it was still queued
+ * (its own number when it replaced none): the demod thread took none of the requests numbered from there on. */
+static uint32_t g_profile_req_analog_first_seq = 0U;
 /* The CQPSK state the stream runs once every numbered request has applied, noted as each one is queued, whoever queues
  * it (rtl_stream_requested_cqpsk()): an analog family request enters the monitor, which turns CQPSK off; a demod
  * profile request sets the state it names, or leaves it; a digital family request leaves it to the symbol profile
@@ -8411,8 +8414,10 @@ static int g_profile_req_cqpsk_after = 0;
 
 /* Receive-request numbering (rtl_stream_receive_request_seq(), rtl_stream_receive_request_outcome()). A queued request
  * takes the next number under g_profile_req_m. The demod thread settles every number it took once it has applied and
- * published their effect, recording first an analog request it refused where it landed; a stream open, and a request
- * applied at once with no pipeline to take a queue, settle every number. */
+ * published their effect, recording first an analog request it refused where it landed. An analog request a later
+ * family request replaces in the queue, or a retune's family retires, is recorded as replaced (g_rx_req_replaced_run)
+ * before it settles with the request that replaced it, or with the retune. A stream open, and a request applied at once
+ * with no pipeline to take a queue, settle every number. */
 static std::atomic<uint32_t> g_rx_req_seq{0U};
 static std::atomic<uint32_t> g_rx_req_settled_seq{0U};
 static std::atomic<uint32_t> g_rx_req_refused_seq{0U};
@@ -8424,6 +8429,12 @@ static std::atomic<int> g_rx_req_refused_kept_analog{0};
 static std::atomic<int> g_rx_req_refused_kept_width_hz{0};
 static std::atomic<int> g_rx_req_refused_kept_kind{0};
 static std::atomic<int> g_rx_req_refused_kept_monitor{0};
+/* The last run of requests the stream dropped with a queued analog request the demod thread never took
+ * (rtl_stream_receive_request_outcome(): REPLACED), packed as the first number << 32 | the last: from the first analog
+ * request of a chain that replaced one another in the queue through the request that replaced the last of them, or
+ * that a retune's receive family retired. 0: none. Written under g_profile_req_m before the settlement that makes the
+ * requests visible as settled; a stream open forgets it. */
+static std::atomic<uint64_t> g_rx_req_replaced_run{0U};
 
 /* Number the request being queued. Called with g_profile_req_m held. Skips 0, which names no request. */
 static uint32_t
@@ -8441,6 +8452,26 @@ rtl_stream_settle_all_requests(void) {
     g_rx_req_settled_seq.store(g_rx_req_seq.load(std::memory_order_acquire), std::memory_order_release);
 }
 
+/* Record that the queued analog request, the ones it replaced in turn and every request numbered after them through
+ * @p last_seq were dropped without the demod thread taking any of them (g_rx_req_replaced_run). Called with
+ * g_profile_req_m held and an analog request queued. */
+static void
+rtl_stream_note_replaced_locked(uint32_t last_seq) {
+    g_rx_req_replaced_run.store((static_cast<uint64_t>(g_profile_req_analog_first_seq) << 32U) | last_seq,
+                                std::memory_order_relaxed);
+}
+
+/* Whether request @p seq was dropped with the last analog request the demod thread never took (g_rx_req_replaced_run).
+ */
+static int
+rtl_stream_request_replaced(uint32_t seq) {
+    const uint64_t run = g_rx_req_replaced_run.load(std::memory_order_relaxed);
+    const uint32_t first = static_cast<uint32_t>(run >> 32U);
+    const uint32_t last = static_cast<uint32_t>(run & 0xFFFFFFFFU);
+    /* Numbers wrap: @p seq lies in the run when it is no further past its first number than the last one is. */
+    return (seq != 0U && first != 0U && seq - first <= last - first) ? 1 : 0;
+}
+
 extern "C" uint32_t
 rtl_stream_receive_request_seq(void) {
     return g_rx_req_seq.load(std::memory_order_acquire);
@@ -8454,7 +8485,10 @@ rtl_stream_receive_request_outcome(uint32_t seq) {
         return RTL_STREAM_RX_REQUEST_PENDING;
     }
     const uint32_t refused = g_rx_req_refused_seq.load(std::memory_order_relaxed);
-    return (seq != 0U && refused == seq) ? RTL_STREAM_RX_REQUEST_REFUSED : RTL_STREAM_RX_REQUEST_SETTLED;
+    if (seq != 0U && refused == seq) {
+        return RTL_STREAM_RX_REQUEST_REFUSED;
+    }
+    return rtl_stream_request_replaced(seq) ? RTL_STREAM_RX_REQUEST_REPLACED : RTL_STREAM_RX_REQUEST_SETTLED;
 }
 
 extern "C" int
@@ -8763,7 +8797,16 @@ rtl_stream_request_analog_profile(int family, int kind, int width_hz) {
     }
     std::lock_guard<std::mutex> lock(g_profile_req_m);
     g_profile_req_cqpsk_after = (family == DSD_RX_FAMILY_ANALOG) ? 0 : rtl_stream_requested_cqpsk_locked();
+    /* An analog request still queued never reaches the demod thread, nor does anything queued with it: this one
+       replaces it, and they read replaced once this one settles (issue #578). */
+    const int replaces_analog = g_profile_req_analog_family >= 0;
+    if (replaces_analog) {
+        rtl_stream_note_replaced_locked(g_rx_req_seq.load(std::memory_order_relaxed));
+    }
     g_profile_req_analog_seq = rtl_stream_number_request_locked();
+    if (!replaces_analog) {
+        g_profile_req_analog_first_seq = g_profile_req_analog_seq;
+    }
     g_profile_req_analog_family = family;
     g_profile_req_analog_kind = kind;
     g_profile_req_analog_width_hz = width_hz;
@@ -8934,6 +8977,7 @@ rtl_stream_clear_demod_profile_request(void) {
     /* A refusal the previous stream recorded is not this stream's: it opens on the options as they are, so a request
        its predecessor refused says nothing about what it runs. */
     g_rx_req_refused_seq.store(0U, std::memory_order_relaxed);
+    g_rx_req_replaced_run.store(0U, std::memory_order_relaxed);
     rtl_stream_settle_all_requests();
     g_noted_digital_modes.store(0U, std::memory_order_release);
 }
@@ -9160,8 +9204,8 @@ static void* g_test_retune_family_checked_ctx = NULL;
  * (g_live_family_requests) before it takes the lock to queue, so under the lock an unchanged count means no family
  * request made since the attach is queued: a request newer than the attach is a symbol profile for the row on air.
  * Otherwise returns 1 with @p out_retired_through the number the dropped requests settle through once the family has
- * landed (0: none): as replaced by a later request, never refused (rtl_stream_receive_request_outcome()). Called with
- * the demod thread idle. */
+ * landed (0: none). A dropped analog request, and the requests dropped with it, then read replaced, never taken or
+ * refused (rtl_stream_receive_request_outcome(): REPLACED, issue #578). Called with the demod thread idle. */
 static int
 rtl_stream_retire_requests_before_family(const RtlRetuneProfile* profile, uint32_t* out_retired_through) {
     *out_retired_through = 0U;
@@ -9173,7 +9217,11 @@ rtl_stream_retire_requests_before_family(const RtlRetuneProfile* profile, uint32
         return 1;
     }
     const uint32_t newest = g_rx_req_seq.load(std::memory_order_relaxed);
+    const int analog_queued = g_profile_req_analog_family >= 0;
     if (newest == profile->family_request_seq) {
+        if (analog_queued) {
+            rtl_stream_note_replaced_locked(newest);
+        }
         g_profile_req_pending.store(0, std::memory_order_relaxed);
         g_profile_req_has_demod = 0;
         g_profile_req_analog_family = -1;
@@ -9181,6 +9229,9 @@ rtl_stream_retire_requests_before_family(const RtlRetuneProfile* profile, uint32
         return 1;
     }
     /* A symbol profile followed the attach and keeps the queue; only the older family request goes, settled with it. */
+    if (analog_queued) {
+        rtl_stream_note_replaced_locked(g_profile_req_analog_seq);
+    }
     g_profile_req_analog_family = -1;
     return 1;
 }
@@ -10202,11 +10253,37 @@ rx_request_test_monitor_return_refused(int channel_profile, int setting_hz, int*
     (void)rtl_stream_receive_request_refusal(seq, out_analog, out_width_hz, NULL, out_monitor);
 }
 
+/* An NFM width the published 48 kHz rate filters, replaced before the demod thread takes it by a switch to the digital
+   family, which the demod thread holds for the symbol profile it waits for, and that switch replaced in turn by the
+   same width again, which the demod thread takes at a 24 kHz demod rate that cannot filter it (issue #578): what each
+   request reads. */
+static void
+rx_request_test_analog_replaced(rtl_stream_test_rx_request_result* out) {
+    demod.analog_family = 1;
+    demod.analog_demod = DSD_ANALOG_DEMOD_FM;
+    demod.rate_out = 48000;
+    rtl_stream_publish_demod_profile_snapshot();
+    (void)rtl_stream_request_analog_profile(DSD_RX_FAMILY_ANALOG, DSD_ANALOG_DEMOD_FM, 25000);
+    out->analog_replaced_seq = rtl_stream_receive_request_seq();
+    (void)rtl_stream_request_analog_profile(DSD_RX_FAMILY_DIGITAL, DSD_ANALOG_DEMOD_FM, 0);
+    const uint32_t switch_seq = rtl_stream_receive_request_seq();
+    rtl_stream_consume_demod_profile_request();
+    out->analog_replaced_pending_outcome = rtl_stream_receive_request_outcome(out->analog_replaced_seq);
+    (void)rtl_stream_request_analog_profile(DSD_RX_FAMILY_ANALOG, DSD_ANALOG_DEMOD_FM, 25000);
+    const uint32_t last_seq = rtl_stream_receive_request_seq();
+    demod.rate_out = 24000;
+    rtl_stream_consume_demod_profile_request();
+    out->analog_replaced_outcome = rtl_stream_receive_request_outcome(out->analog_replaced_seq);
+    out->digital_replaced_outcome = rtl_stream_receive_request_outcome(switch_seq);
+    out->analog_replacing_outcome = rtl_stream_receive_request_outcome(last_seq);
+}
+
 /* The analog part of rtl_stream_test_rx_request_outcomes(): an NFM width the published 48 kHz rate filters, taken at a
    24 kHz demod rate that cannot (a retune moved the rate in between) by a stream on the analog family running AM at
    12.5 kHz (a switch from AM to NFM, refused), then a request queued after it; a return to the monitor refused on the
-   monitor and under a typed row's profile (rx_request_test_monitor_return_refused()); and the same width refused to a
-   stream on the digital family, which stays there. */
+   monitor and under a typed row's profile (rx_request_test_monitor_return_refused()); the same width refused to a
+   stream on the digital family, which stays there; and requests replaced in the queue
+   (rx_request_test_analog_replaced()). */
 static void
 rx_request_test_analog_refusal(rtl_stream_test_rx_request_result* out) {
     const int saved_rate_out = demod.rate_out;
@@ -10257,6 +10334,8 @@ rx_request_test_analog_refusal(rtl_stream_test_rx_request_result* out) {
     (void)rtl_stream_receive_request_refusal(out->refused_seq, &out->entry_kept_analog_family, NULL, NULL,
                                              &out->entry_kept_monitor);
 
+    rx_request_test_analog_replaced(out);
+
     demod.analog_family = saved_family;
     demod.analog_width_request_hz = saved_width_request;
     demod.analog_width_setting_hz = saved_width_setting;
@@ -10268,7 +10347,7 @@ rx_request_test_analog_refusal(rtl_stream_test_rx_request_result* out) {
 }
 
 /* The queue-dropping part: a stream open's clear, and a request made with no pipeline running, settle what is queued;
-   the open also forgets the refusal the stream before it recorded. */
+   the open also forgets the refusal, and the replaced requests, the stream before it recorded. */
 static void
 rx_request_test_dropped(rtl_stream_test_rx_request_result* out) {
     (void)rtl_stream_request_demod_profile(-1, 0, 0, -1, -1, 0);
@@ -10276,6 +10355,7 @@ rx_request_test_dropped(rtl_stream_test_rx_request_result* out) {
     rtl_stream_clear_demod_profile_request();
     out->open_outcome = rtl_stream_receive_request_outcome(open_seq);
     out->refused_outcome_after_open = rtl_stream_receive_request_outcome(out->refused_seq);
+    out->analog_replaced_outcome_after_open = rtl_stream_receive_request_outcome(out->analog_replaced_seq);
 
     (void)rtl_stream_request_demod_profile(-1, 0, 0, -1, -1, 0);
     const uint32_t stranded_seq = rtl_stream_receive_request_seq();

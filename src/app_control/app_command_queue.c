@@ -6990,6 +6990,11 @@ apply_cmd(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
  * or the row's tune, which is no monitor request, did not make it either, and the next monitor request's outcome
  * settles it (dropped once one is taken, gone back when one is refused off the kind asked for), or a revert finds the
  * configured settings moved on and drops it.
+ *
+ * A request the demod thread never took (SVC_MONITOR_REQUEST_SUPERSEDED: a later request replaced it in the stream's
+ * queue, or a retune's receive family retired it, as a scan that goes on to an analog row does with a leave's return)
+ * is neither taken nor refused: what replaced it decides the front end, nothing is reconciled, and a switch armed
+ * before it stays armed for the next monitor request to settle, as for a scan leave left to later (issue #578).
  */
 static void
 ui_settle_receive_requests(dsd_opts* opts, dsd_state* state) {
@@ -7002,6 +7007,7 @@ ui_settle_receive_requests(dsd_opts* opts, dsd_state* state) {
         g_analog_entry.armed = 0; /* the front end took the switch, or a request made after it */
         return;
     }
+    /* Nothing outstanding, still pending, or superseded before the front end took it: an armed switch stays armed. */
     if (outcome != SVC_MONITOR_REQUEST_REFUSED) {
         return;
     }

@@ -6091,6 +6091,12 @@ static uint32_t g_fake_rx_seq;
 static uint32_t g_fake_rx_settled;
 static uint32_t g_fake_rx_analog_seq;
 static uint32_t g_fake_rx_refused;
+/* Requests dropped with an analog request the demod thread never took (RTL_STREAM_RX_REQUEST_REPLACED): the first of
+   the chain of analog requests the queued one replaced in turn, and the last run the stream dropped, first to last
+   (0: none), as a later analog request replacing the queued one, or a retune retiring it, leaves them. */
+static uint32_t g_fake_rx_analog_first;
+static uint32_t g_fake_rx_replaced_first;
+static uint32_t g_fake_rx_replaced_last;
 /* What the stream kept when it refused (rtl_stream_receive_request_refusal()): its family, the analog width and the
    analog kind, and whether it kept the analog monitor output (0: the digital family, or a symbol profile applied under
    the analog family, a typed row's or CQPSK). */
@@ -6163,7 +6169,29 @@ __wrap_rtl_stream_receive_request_outcome(uint32_t seq) {
     if (g_fake_rx_settled - seq > 0x7FFFFFFFU) {
         return RTL_STREAM_RX_REQUEST_PENDING;
     }
-    return (seq != 0U && seq == g_fake_rx_refused) ? RTL_STREAM_RX_REQUEST_REFUSED : RTL_STREAM_RX_REQUEST_SETTLED;
+    if (seq != 0U && seq == g_fake_rx_refused) {
+        return RTL_STREAM_RX_REQUEST_REFUSED;
+    }
+    if (seq != 0U && g_fake_rx_replaced_first != 0U
+        && seq - g_fake_rx_replaced_first <= g_fake_rx_replaced_last - g_fake_rx_replaced_first) {
+        return RTL_STREAM_RX_REQUEST_REPLACED;
+    }
+    return RTL_STREAM_RX_REQUEST_SETTLED;
+}
+
+/* Whether an analog request is still queued: the last one, not taken yet. */
+static int
+fake_rx_analog_queued(void) {
+    return g_fake_rx_analog_seq != 0U
+           && __wrap_rtl_stream_receive_request_outcome(g_fake_rx_analog_seq) == RTL_STREAM_RX_REQUEST_PENDING;
+}
+
+/* The queued analog request, the ones it replaced in turn and every request through @p last_seq are dropped without the
+   demod thread taking any of them. */
+static void
+fake_rx_drop_queued_analog(uint32_t last_seq) {
+    g_fake_rx_replaced_first = g_fake_rx_analog_first;
+    g_fake_rx_replaced_last = last_seq;
 }
 
 int
@@ -6253,7 +6281,14 @@ __wrap_rtl_stream_request_analog_profile(int family, int kind, int width_hz) {
         g_fake_rx_settled = g_fake_rx_seq;
     }
     g_fake_cqpsk_after = (family == DSD_RX_FAMILY_ANALOG) ? 0 : __wrap_rtl_stream_requested_cqpsk();
+    const int replaces_analog = fake_rx_analog_queued();
+    if (replaces_analog) {
+        fake_rx_drop_queued_analog(g_fake_rx_seq);
+    }
     g_fake_rx_analog_seq = ++g_fake_rx_seq;
+    if (!replaces_analog) {
+        g_fake_rx_analog_first = g_fake_rx_analog_seq;
+    }
     if (g_fake_take_next_analog_at_once) {
         g_analog_req_result = (g_fake_take_next_analog_at_once == 2) ? -1 : 0;
         g_fake_take_next_analog_at_once = 0;
@@ -6339,10 +6374,23 @@ demod_thread_refuses_analog_keeping(int analog_family, int width_hz) {
     demod_thread_refuses_analog_keeping_kind(analog_family, DSD_ANALOG_DEMOD_FM, width_hz);
 }
 
-/* The stream restarts: the open drops what the previous stream left queued and forgets a refusal it recorded. */
+/* A scan row's retune lands its receive family before the demod thread has taken the requests still queued, and
+   retires them (rtl_stream_retire_requests_before_family()): they settle without the demod thread running them, and an
+   analog request among them reads replaced, with the requests dropped with it. */
+static void
+retune_retires_the_queued_requests(void) {
+    if (fake_rx_analog_queued()) {
+        fake_rx_drop_queued_analog(g_fake_rx_seq);
+    }
+    g_fake_rx_settled = g_fake_rx_seq;
+}
+
+/* The stream restarts: the open drops what the previous stream left queued and forgets a refusal, and the requests
+   replaced, it recorded. */
 static void
 stream_reopens(int cqpsk) {
     g_fake_rx_refused = 0U;
+    g_fake_rx_replaced_first = g_fake_rx_replaced_last = 0U;
     demod_thread_lands(cqpsk);
 }
 
@@ -6352,6 +6400,7 @@ static void
 reset_rx_family_wrap(void) {
     reset_config_rtl_wrap();
     demod_thread_lands(g_fake_cqpsk);
+    g_fake_rx_replaced_first = g_fake_rx_replaced_last = 0U;
     g_analog_check_result = 0;
     g_analog_req_result = 0;
     g_fake_analog_req_max_hz = 0;
@@ -9610,6 +9659,61 @@ test_scan_leave_left_to_later_on_analog_keeps_an_armed_switch(void) {
 }
 
 /*
+ * Issue #578: a scan leave's return to the monitor that the stream drops before the demod thread takes it, with a
+ * switch onto Analog armed before the leave. An -fA session scanning a typed NXDN48 row on the analog family changes
+ * its configured mode to DMR and back to Analog under the row, which arms the switch from DMR
+ * (init_switch_armed_under_a_row_on_analog()). A channel map with a dmr and an am row is imported with the scanner on:
+ * the import leaves the row and queues the return to NFM 16 kHz, and the scan goes on. The am row's tune then lands its
+ * receive family before the demod thread takes that return, which retires it: the front end never ran it, so it was
+ * not taken, and the row's tune decides the front end. Nothing is asked or toasted, and the switch stays armed for the
+ * next monitor request to settle: with the am row on air, the scanner stopped, and the front end refusing that return
+ * where it lands, keeping the AM monitor, the decoder goes back on DMR, rather than asking for the NFM default.
+ */
+static int
+test_scan_leave_retired_by_a_row_keeps_an_armed_switch(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static void* fake_ctx[2];
+    int rc = 0;
+    dsd_test_temp_cwd cwd;
+    if (dsd_test_temp_cwd_enter(&cwd, "dsdneo_ui_cmd_queue_leave_retired") != 0) {
+        DSD_FPRINTF(stderr, "temp working directory setup failed: %s\n", strerror(errno));
+        return 1;
+    }
+
+    rc |= init_switch_armed_under_a_row_on_analog(&opts, &state, (RtlSdrContext*)fake_ctx, "leave retired");
+    static const char map[] = "channel,frequency_hz,name,mode,options\n"
+                              "1,461000000,one,dmr,\n"
+                              "2,462000000,two,am,\n";
+    rc |= write_file_bytes("leave_retired_map.csv", map, strlen(map));
+    post_string(DSD_APP_CMD_IMPORT_CHANNEL_MAP, "leave_retired_map.csv");
+    rc |= expect_int("leave retired: imported", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("leave retired: the scanner stays on", opts.scanner_mode == 1 && state.lcn_freq_count == 2, 1);
+    rc |= expect_last_monitor_request("leave retired: the leave queued", 1, DSD_ANALOG_DEMOD_FM, 16000);
+    const int demod_requests = g_demod_req_calls;
+    retune_retires_the_queued_requests();
+    g_fake_monitor_kind = DSD_ANALOG_DEMOD_AM;
+    g_fake_monitor_width_hz = 6000;
+    g_fake_monitor_lpf_on = 1;
+    state.ui_msg[0] = '\0';
+    (void)dsd_app_drain_cmds(&opts, &state);
+    rc |= expect_int("leave retired: still Analog",
+                     opts.analog_only == 1 && dsd_infer_decode_mode_preset(&opts) == DSDCFG_MODE_ANALOG, 1);
+    rc |= expect_int("leave retired: width kept", opts.analog_nfm_bandwidth_hz, 16000);
+    rc |= expect_int("leave retired: nothing more asked",
+                     g_analog_req_calls == 1 && g_demod_req_calls == demod_requests, 1);
+    rc |= expect_str("leave retired: no toast", state.ui_msg, "");
+    rc |= expect_switch_still_armed_off_an_am_row(&opts, &state, "leave retired: still armed");
+    (void)remove("leave_retired_map.csv");
+    finish_scan_row_on_analog(&opts, &state);
+
+    if (dsd_test_temp_cwd_leave(&cwd) != 0) {
+        rc = 1;
+    }
+    return rc;
+}
+
+/*
  * Issue #578: what became of a scan leave's return to the monitor goes with the stream it was asked of. An -fM session
  * with the AM default leaves a typed NXDN48 row at a 7.5 kHz rate that cannot filter that default, so the front end
  * refuses the return at once, while the row's own symbol profile is still queued: the record waits for that profile to
@@ -9786,8 +9890,9 @@ test_refused_switch_onto_analog_puts_the_mode_back(void) {
     (void)dsd_app_drain_cmds(&opts, &state);
     rc |= expect_int("taken: Analog stays", opts.analog_only, 1);
 
-    /* Switched to Analog and on to P25 before either landed; the stream then reports the Analog switch refused. The
-       P25 request replaced it, so the decoder stays where the operator put it last. */
+    /* Switched to Analog and on to P25 before either landed: the P25 request replaced the Analog switch in the queue,
+       so the stream reports that switch replaced, never taken, whatever it then says of P25's own request, and the
+       decoder stays where the operator put it last. */
     freeState(&state);
     init_dmr_session_with_nfm_width(&opts, &state, (RtlSdrContext*)fake_ctx, 16000);
     (void)dsd_app_command_set_i32(DSD_APP_CMD_DECODE_MODE_SET, (int32_t)DSDCFG_MODE_ANALOG);
@@ -13325,6 +13430,7 @@ main(void) {
     rc |= test_superseded_scan_leave_keeps_an_armed_switch();
     rc |= test_continuing_scan_leave_keeps_an_armed_switch();
     rc |= test_scan_leave_left_to_later_on_analog_keeps_an_armed_switch();
+    rc |= test_scan_leave_retired_by_a_row_keeps_an_armed_switch();
     rc |= test_scan_leave_record_goes_with_its_stream();
     rc |= test_refused_leave_at_once_reads_the_am_default_it_asked_for();
     rc |= test_refused_switch_onto_analog_puts_the_mode_back();

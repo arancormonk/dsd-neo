@@ -104,6 +104,15 @@ typedef struct rtl_stream_test_rx_request_result {
     int typed_row_return_kept_analog;
     int typed_row_return_kept_monitor;
     int typed_row_return_kept_width_hz;
+    /* An NFM width replaced in the queue by a switch to the digital family, which the demod thread holds for its symbol
+       profile, and that switch replaced in turn by the same width again, which the demod thread takes at a demod rate
+       that cannot filter it (issue #578): what each reads. */
+    uint32_t analog_replaced_seq;           /* the number of the first width */
+    int analog_replaced_pending_outcome;    /* the first width while the switch that replaced it is held */
+    int analog_replaced_outcome;            /* the first width once the last one is taken */
+    int digital_replaced_outcome;           /* the switch to the digital family then */
+    int analog_replacing_outcome;           /* the last width, taken and refused */
+    int analog_replaced_outcome_after_open; /* the first width once a stream open has run */
 } rtl_stream_test_rx_request_result;
 
 int rtl_stream_test_rx_request_outcomes(rtl_stream_test_rx_request_result* out);

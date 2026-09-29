@@ -862,7 +862,14 @@ installs from `src/engine/trunk_tuning.c` in `src/engine/trunk_tuning_hooks_inst
   anything else the drain does with the refusal (`ui_scan_leave_left_to_later()`), whatever the front end kept: an
   `-fA` session whose typed row runs on the analog family and whose mode went to DMR and back under the row keeps
   analog FM, the kind the leave asked for, which would otherwise drop the switch as made, leaving no mode for a later
-  return refused off that kind (the scanner stopped on an AM row) to go back to. A typed digital
+  return refused off that kind (the scanner stopped on an AM row) to go back to. A return the demod thread never took
+  is no more taken than refused: a later request that does not carry the leave on replaced it in the stream's queue,
+  or the next row's tune retired it (a scan going on to an `nfm` or `am` row, whose receive family lands before the
+  demod thread takes the return). The stream reads it replaced (`RTL_STREAM_RX_REQUEST_REPLACED`), not settled as one
+  the front end ran, and the record superseded (`SVC_MONITOR_REQUEST_SUPERSEDED`): nothing is reconciled and an armed
+  switch stays armed, where reading it taken would drop the switch, and a later return refused off the kind asked for
+  would ask for the NFM default rather than go back to the old mode. Any monitor request the stream replaced or retired
+  reads so, a leave or not. A typed digital
   row's channel profile never touches the width setting, so the drain reconciles "kept width, else default"
   (`ui_settle_refused_scan_leave()`): a front end still on the monitor of the leave's kind gives the configured width
   the width that monitor runs (`svc_restore_analog_width()`); one off it (a typed row's profile, the other kind's
@@ -1654,8 +1661,9 @@ Notes:
     to the row's family when the device finishes the retune. The other way round, a family that lands retires the live
     requests still queued from before it was attached (`rtl_stream_retire_requests_before_family()`, by the request
     number it records): a width or mode command drained just before the scan advanced would otherwise be taken at the
-    demod thread's next block boundary and put the front end back on the family or width the row just left. They
-    settle as replaced; a symbol profile queued after the attach is the row's own and still applies. The retire checks
+    demod thread's next block boundary and put the front end back on the family or width the row just left. An
+    analog request retired this way reads replaced (below), never taken; a symbol profile queued after the attach is
+    the row's own and still applies. The retire checks
     for a superseding family request again under the request lock (`g_profile_req_m`), which orders the decoder's
     requests against it: one made while the retune lands supersedes the family as one made before does. An
     analog width is checked again against the demod rate it lands on, both a live request when the demod thread
@@ -1671,8 +1679,14 @@ Notes:
     for its rate. Every queued receive request (analog profile or demod profile) is numbered
     (`rtl_stream_receive_request_seq()`), and `rtl_stream_receive_request_outcome()` says whether the demod thread has
     settled it: pending until it takes it and has published what it applied (the consume publishes the demod snapshot
-    before it settles), settled with a later request that replaced it, and settled by a stream open (which drops the
-    queue) or a request with no pipeline to take the queue; an analog request refused where it landed reads refused,
+    before it settles), and settled by a stream open (which drops the queue) or a request with no pipeline to take the
+    queue. An analog request the demod thread never took reads replaced (`RTL_STREAM_RX_REQUEST_REPLACED`, issue #578)
+    once it settles, not settled like one the front end ran: a later analog request replaced it in the queue, or a
+    retune's family retired it (above: a scan going on to an analog row), and what replaced it decides the front end.
+    So do the analog requests it replaced in turn, each queued over the one before it, and a demod profile queued among
+    them and dropped with them (`g_rx_req_replaced_run`, the last such run, recorded under the request lock before the
+    settlement and forgotten by the next stream open); any other request dropped untaken (a demod profile a later
+    request replaced) reads settled. An analog request refused where it landed reads refused,
     with the family, analog width setting and kind the stream kept, and whether it kept the monitor output
     (`dsd_demod_analog_monitor_active()`: a typed digital row's channel profile or CQPSK under the analog family keeps
     the setting without running it), recorded before the settlement (`rtl_stream_receive_request_refusal()`), until the

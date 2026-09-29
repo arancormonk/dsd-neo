@@ -1335,7 +1335,8 @@ expect_rx_request_outcomes(void) {
     rc |= expect_int_eq("rx request pending: stream still publishes CQPSK off", r.published_cqpsk_while_pending, 0);
     rc |= expect_int_eq("rx request taken: settled", r.outcome_after_consume, RTL_STREAM_RX_REQUEST_SETTLED);
     rc |= expect_int_eq("rx request settled: stream publishes CQPSK on", r.published_cqpsk_after_consume, 1);
-    rc |= expect_int_eq("rx request replaced: settled", r.replaced_outcome, RTL_STREAM_RX_REQUEST_SETTLED);
+    rc |= expect_int_eq("rx demod profile replaced by another: settled", r.replaced_outcome,
+                        RTL_STREAM_RX_REQUEST_SETTLED);
     rc |= expect_int_eq("rx analog request queued", r.analog_request_rc, 0);
     rc |= expect_int_eq("rx analog request refused where it landed", r.analog_outcome, RTL_STREAM_RX_REQUEST_REFUSED);
     rc |= expect_int_eq("rx request after a refusal: settled", r.after_refused_outcome, RTL_STREAM_RX_REQUEST_SETTLED);
@@ -1362,7 +1363,20 @@ expect_rx_request_outcomes(void) {
                         0);
     rc |= expect_int_eq("rx monitor return refused under a typed row: the setting", r.typed_row_return_kept_width_hz,
                         16000);
+    /* Issue #578: an analog request the demod thread never took, because a later family request replaced it in the
+       queue, reads replaced, not settled like one it ran; so does a switch to the digital family replaced the same
+       way while the demod thread held it for its symbol profile, and the first of the two, replaced before that. */
+    rc |= expect_int_eq("rx analog request replaced: pending while its replacement is held",
+                        r.analog_replaced_pending_outcome, RTL_STREAM_RX_REQUEST_PENDING);
+    rc |= expect_int_eq("rx analog request replaced: replaced", r.analog_replaced_outcome,
+                        RTL_STREAM_RX_REQUEST_REPLACED);
+    rc |= expect_int_eq("rx digital family request replaced in turn: replaced", r.digital_replaced_outcome,
+                        RTL_STREAM_RX_REQUEST_REPLACED);
+    rc |= expect_int_eq("rx request that replaced them: taken (refused)", r.analog_replacing_outcome,
+                        RTL_STREAM_RX_REQUEST_REFUSED);
     rc |= expect_int_eq("rx request dropped by an open: settled", r.open_outcome, RTL_STREAM_RX_REQUEST_SETTLED);
+    rc |= expect_int_eq("rx replaced request forgotten by the next open", r.analog_replaced_outcome_after_open,
+                        RTL_STREAM_RX_REQUEST_SETTLED);
     rc |= expect_int_eq("rx refusal forgotten by the next open", r.refused_outcome_after_open,
                         RTL_STREAM_RX_REQUEST_SETTLED);
     rc |= expect_int_eq("rx request stranded without a pipeline: settled", r.no_stream_outcome,

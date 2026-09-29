@@ -60,7 +60,11 @@ symbol_profile_configured_digital(const dsd_opts* opts, const dsd_state* state) 
  * leave the front end refused at once queued nothing (refused_at_once): seq is then the last request queued before it,
  * and what the front end kept is what it publishes once that one has settled. A request queued after the recorded one
  * that does not take the record over (a CQPSK toggle on, a symbol profile) supersedes it, whenever the refusal comes:
- * that request decides the front end, and a refused leave is left to it (svc_monitor_refusal::superseded).
+ * that request decides the front end, and a refused leave is left to it (svc_monitor_refusal::superseded). One that
+ * replaced the recorded request in the stream's queue before the demod thread took it (a switch to the digital family),
+ * or a retune's receive family that retired it (a scan going on to an analog row), leaves nothing to reconcile: the
+ * request reads replaced (RTL_STREAM_RX_REQUEST_REPLACED), never taken, and its record superseded
+ * (SVC_MONITOR_REQUEST_SUPERSEDED), issue #578.
  *
  * The record goes with the stream the request was made of (stream_starts: svc_rtl_start_count() then). A stream
  * app-control starts since (a restart, a reopen, an input switch or the restart of a rollback) opens on the options it
@@ -92,9 +96,10 @@ symbol_profile_record_on_this_stream(void) {
     return g_monitor_request.stream_starts == svc_rtl_start_count();
 }
 
-/* Whether the last request queued here has not reached the front end: still queued, or refused (where it landed, or at
-   once by a scan leave) and not yet collected (svc_take_monitor_request_outcome()), by the stream running now. One the
-   stream settled was taken there, and its width ran; a stream started since opened on the options it was given. */
+/* Whether the last request queued here has not reached the front end: still queued, refused (where it landed, or at
+   once by a scan leave), or replaced in the stream's queue or retired by a retune before the demod thread took it, and
+   not yet collected (svc_take_monitor_request_outcome()), by the stream running now. One the stream settled was taken
+   there, and its width ran; a stream started since opened on the options it was given. */
 static int
 symbol_profile_earlier_not_run(void) {
     return g_monitor_request.pending && symbol_profile_record_on_this_stream()
@@ -462,6 +467,13 @@ svc_take_monitor_request_outcome(const dsd_opts* opts, const dsd_state* state, s
         return SVC_MONITOR_REQUEST_NONE;
     }
     g_monitor_request.pending = 0;
+    /* The demod thread never took the request: a later one that did not take the record over replaced it in the queue,
+       or a retune's receive family retired it (a scan going on to an analog row), and that decides the front end. A
+       leave refused at once queued nothing of its own, so the request before it having been replaced says only that
+       it has settled: what the front end publishes then says what it kept. */
+    if (outcome == RTL_STREAM_RX_REQUEST_REPLACED && !g_monitor_request.refused_at_once) {
+        return SVC_MONITOR_REQUEST_SUPERSEDED;
+    }
     svc_monitor_refusal refusal = {0};
     if (!symbol_profile_read_refusal(outcome, &refusal)) {
         return SVC_MONITOR_REQUEST_TAKEN;

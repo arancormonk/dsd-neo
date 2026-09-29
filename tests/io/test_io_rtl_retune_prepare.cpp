@@ -793,8 +793,8 @@ test_retune_family_superseded_by_a_later_live_request(void) {
 /* A width command the decoder drained just before the scanner advanced queues a live analog request the demod thread
  * has not taken when the next row's retune lands (issue #526). That request is older than the retune's family: the
  * retune retires it, so the demod thread's next block boundary does not put the front end back on the analog family
- * over the digital row now on air, and the request settles as replaced, never refused. A symbol profile queued after
- * the retune's profile is newer, and still applies. */
+ * over the digital row now on air, and the request reads replaced (issue #578): the demod thread never ran it, and it
+ * was not refused either. A symbol profile queued after the retune's profile is newer, and still applies. */
 static int
 test_retune_family_retires_older_queued_requests(void) {
     const rtl_stream_test_retune_step steps[] = {
@@ -810,19 +810,21 @@ test_retune_family_retires_older_queued_requests(void) {
     failed |= expect_landing("digital row over a queued width", &r[1], 0, 0, DSD_DEMOD_OUTPUT_SYMBOL_CQPSK);
     failed |= expect_int_eq("still digital after the boundary", r[1].boundary_family, 0);
     failed |= expect_int_eq("still on its CQPSK profile", r[1].boundary_output_kind, DSD_DEMOD_OUTPUT_SYMBOL_CQPSK);
-    failed |= expect_int_eq("the queued width settled as replaced", r[1].queued_request_outcome,
-                            RTL_STREAM_RX_REQUEST_SETTLED);
+    failed |=
+        expect_int_eq("the queued width reads replaced", r[1].queued_request_outcome, RTL_STREAM_RX_REQUEST_REPLACED);
 
     failed |= expect_landing("digital row with a later symbol profile", &r[3], 0, 0, DSD_DEMOD_OUTPUT_SYMBOL_CQPSK);
     failed |= expect_int_eq("the later profile keeps the digital family", r[3].boundary_family, 0);
     failed |=
         expect_int_eq("and applies at the boundary", r[3].boundary_output_kind, DSD_DEMOD_OUTPUT_FSK_DISCRIMINATOR);
     failed |=
-        expect_int_eq("the older width settled with it", r[3].queued_request_outcome, RTL_STREAM_RX_REQUEST_SETTLED);
+        expect_int_eq("the older width reads replaced", r[3].queued_request_outcome, RTL_STREAM_RX_REQUEST_REPLACED);
 
     failed |= expect_landing("nfm row over a queued width", &r[4], 1, 11250, DSD_DEMOD_OUTPUT_AUDIO_MONITOR);
     failed |= expect_int_eq("keeps the row's width after the boundary", r[4].boundary_width_hz, 11250);
     failed |= expect_int_eq("on the monitor", r[4].boundary_output_kind, DSD_DEMOD_OUTPUT_AUDIO_MONITOR);
+    failed |= expect_int_eq("the queued width under the nfm row reads replaced", r[4].queued_request_outcome,
+                            RTL_STREAM_RX_REQUEST_REPLACED);
     return failed;
 }
 
