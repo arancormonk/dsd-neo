@@ -43,6 +43,11 @@ typedef struct {
     dsd_scan_option_values options;
     double squelch_entered_from;
     scan_squelch_pending squelch_pending;
+    /* The landing decision the row's symbol timing used (issue #583): 1 when the row was timed for the output rate the
+     * digital family lands on, 0 when for the live rate. Set by every timing of the row, and held at 1 by the row's
+     * later timings until the engine spends it on the row's retune (dsd_scan_mode_take_timed_digital_family()), which
+     * carries the digital family by it; a row's entry clears it. Decoder thread only. */
+    int timed_digital_family;
 } scan_scope;
 
 static const char* const mode_names[] = {"",      "p25", "dmr", "nxdn96", "nxdn48", "dpmr",
@@ -506,21 +511,35 @@ scan_scope_cqpsk_explicit(const dsd_opts* opts, const scan_scope* scope) {
 }
 
 /* The rate a row with @p symbol_rate_hz (0: no symbol clock) is timed for; see dsd_scan_mode_symbol_timing_rate_hz().
- * @p cqpsk_explicit says @p cqpsk is the target's own choice (scan_scope_cqpsk_explicit()). */
+ * @p cqpsk_explicit says @p cqpsk is the target's own choice (scan_scope_cqpsk_explicit()). @p row is the live scope
+ * of the row being timed, which records the landing decision this timing used (NULL: the configured decoder, no row).
+ */
 static int
-scan_timing_rate_hz(const dsd_opts* opts, int configured_digital, int symbol_rate_hz, int cqpsk, int cqpsk_explicit) {
+scan_timing_rate_hz(const dsd_opts* opts, scan_scope* row, int configured_digital, int symbol_rate_hz, int cqpsk,
+                    int cqpsk_explicit) {
     const int input_rate = dsd_opts_current_input_timing_rate(opts);
+    const int timed_digital_family = row && row->timed_digital_family;
+    if (row) {
+        row->timed_digital_family = 0;
+    }
     if (opts->audio_in_type != AUDIO_IN_RTL) {
         return input_rate;
     }
-    if (symbol_rate_hz > 0 && configured_digital && dsd_rtl_stream_metrics_hook_analog_family_after_pending()) {
+    if (symbol_rate_hz > 0 && configured_digital
+        && (timed_digital_family || dsd_rtl_stream_metrics_hook_analog_family_after_pending())) {
         /* The tune switches the family, and the output rate with it, only once it lands on the demod thread. It
            lands the digital family whenever the engine attaches one to it, by the same answer (issue #583): the
-           analog family runs now, or may once an analog retune or request already outstanding lands. It lands the
-           target's own CQPSK choice where it has one, and otherwise the one DSD_NEO_CQPSK names when set. */
+           analog family runs now, or may once an analog retune or request already outstanding lands. A row already
+           timed for that landing stays timed for it even when the answer has fallen to 0 since (the analog work
+           outstanding then failed, or was refused or replaced): the engine attaches the family to the row's retune
+           by the row's decision too (dsd_scan_mode_take_timed_digital_family()). It lands the target's own CQPSK
+           choice where it has one, and otherwise the one DSD_NEO_CQPSK names when set. */
         const unsigned int landing_hz = dsd_rtl_stream_metrics_hook_output_rate_for_family(
             DSD_RX_FAMILY_DIGITAL, cqpsk ? 1 : 0, symbol_rate_hz, cqpsk_explicit ? 1 : 0);
         if (landing_hz > 0U) {
+            if (row) {
+                row->timed_digital_family = 1;
+            }
             return (int)landing_hz;
         }
     }
@@ -533,19 +552,38 @@ dsd_scan_mode_symbol_timing_rate_hz(const dsd_opts* opts, const dsd_state* state
     if (!opts) {
         return 0;
     }
-    return scan_timing_rate_hz(opts, dsd_scan_mode_configured_digital(opts, state), symbol_rate_hz, cqpsk,
-                               scan_scope_cqpsk_explicit(opts, scan_scope_get(state)));
+    scan_scope* scope = scan_scope_get(state);
+    return scan_timing_rate_hz(opts, scope, dsd_scan_mode_configured_digital(opts, state), symbol_rate_hz, cqpsk,
+                               scan_scope_cqpsk_explicit(opts, scope));
+}
+
+int
+dsd_scan_mode_timed_digital_family(const dsd_state* state) {
+    const scan_scope* scope = scan_scope_get(state);
+    return scope && scope->timed_digital_family ? 1 : 0;
+}
+
+int
+dsd_scan_mode_take_timed_digital_family(const dsd_state* state) {
+    scan_scope* scope = scan_scope_get(state);
+    if (!scope || !scope->timed_digital_family) {
+        return 0;
+    }
+    scope->timed_digital_family = 0;
+    return 1;
 }
 
 /* Time the decoder for the row @p scope describes. The scope's own configured baseline says whether the configured
  * mode is digital: dsd_opts already holds the row's class here, and the configured view is gone while suspended. An
- * analog row has no symbol clock and keeps the live rate. */
+ * analog row has no symbol clock and keeps the live rate. The live scope records the decision, @p scope itself or,
+ * for a row dsd_scan_mode_prepare() stages on a temporary scope, the one its tune is prepared under. */
 static void
 scan_scope_apply_timing(const dsd_opts* opts, dsd_state* state, const scan_scope* scope,
                         dsd_decode_mode_profile profile) {
     const int clock_hz = dsd_scan_mode_is_analog(scope->mode) ? 0 : profile.symbol_rate_hz;
-    const int rate_hz = scan_timing_rate_hz(opts, scan_configured_digital(opts, scope->configured.analog_only),
-                                            clock_hz, state->rf_mod == 1, scan_scope_cqpsk_explicit(opts, scope));
+    const int rate_hz =
+        scan_timing_rate_hz(opts, scan_scope_get(state), scan_configured_digital(opts, scope->configured.analog_only),
+                            clock_hz, state->rf_mod == 1, scan_scope_cqpsk_explicit(opts, scope));
     state->samplesPerSymbol = dsd_opts_compute_sps_rate(opts, profile.symbol_rate_hz, rate_hz);
     state->symbolCenter = dsd_opts_symbol_center(state->samplesPerSymbol);
     state->sps_hunt_idx = (int)profile.sps_profile_index;
@@ -825,6 +863,8 @@ dsd_scan_mode_enter(dsd_opts* opts, dsd_state* state, dsd_scan_mode mode) {
     scope->modulation = 0;
     scope->mode = mode;
     scope->suspended = 0;
+    /* A new row makes its own landing decision. */
+    scope->timed_digital_family = 0;
     scan_scope_apply(opts, state, scope);
     /* No push here: the row's own options follow, and dsd_scan_mode_options() pushes the net
      * change once. A transition already pending keeps its origin, since the demod has heard
@@ -900,8 +940,9 @@ scan_configured_retime(const dsd_opts* opts, dsd_state* state) {
     if (profile.symbol_rate_hz <= 0) {
         return;
     }
-    /* The configured decoder is no target: its switch lands where an open of the mode would. */
-    const int rate_hz = scan_timing_rate_hz(opts, 1, profile.symbol_rate_hz, state->rf_mod == 1, 0);
+    /* The configured decoder is no target: its switch lands where an open of the mode would. It is no row either, so
+       the row's landing decision is left as it is. */
+    const int rate_hz = scan_timing_rate_hz(opts, NULL, 1, profile.symbol_rate_hz, state->rf_mod == 1, 0);
     state->samplesPerSymbol = dsd_opts_compute_sps_rate(opts, profile.symbol_rate_hz, rate_hz);
     state->symbolCenter = dsd_opts_symbol_center(state->samplesPerSymbol);
 }
@@ -1202,6 +1243,12 @@ dsd_scan_mode_prepare(dsd_opts* opts, dsd_state* state, dsd_scan_mode mode, cons
     }
     if (dsd_scan_mode_begin(opts, state) != 0) {
         return -1;
+    }
+    /* The row staged here is the one the next retune is prepared for: it makes its own landing decision, which the
+       live scope records (scan_scope_apply_timing()). */
+    scan_scope* live = scan_scope_get(state);
+    if (live) {
+        live->timed_digital_family = 0;
     }
     dsd_scan_settings effective;
     dsd_scan_settings_capture(opts, state, &effective);

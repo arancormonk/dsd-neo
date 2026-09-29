@@ -1243,6 +1243,98 @@ test_am_row_width_scope(void) {
     free(o);
 }
 
+/* --- Issue #583: the landing decision a row's timing used, which the engine attaches the digital family by --- */
+
+/* What the stream answers for the analog family once the work outstanding lands, and how often it was asked. */
+static int g_after_pending_answer;
+static int g_after_pending_reads;
+
+static int
+fake_analog_family_after_pending(void) {
+    g_after_pending_reads++;
+    return g_after_pending_answer;
+}
+
+/* A front end on CQPSK at 78125 Hz, where a switch to the digital family lands at 48 kHz. */
+static unsigned int
+fake_live_output_rate(void) {
+    return 78125U;
+}
+
+static unsigned int
+fake_output_rate_for_family(int family, int cqpsk_enable, int symbol_rate_hz, int cqpsk_explicit) {
+    (void)cqpsk_enable;
+    (void)symbol_rate_hz;
+    (void)cqpsk_explicit;
+    return family == DSD_RX_FAMILY_DIGITAL ? 48000U : 0U;
+}
+
+/* A row timed while analog work is outstanding is timed for the digital family's landing and records it; its later
+ * timings keep that landing without asking the stream again, even once the work has failed, until the engine spends
+ * the decision on the row's retune. Entering or staging a row starts a new decision; an analog row, a row off RTL
+ * input and a row timed at the live rate record 0; a resume re-times the row and records what it used. */
+static void
+test_row_timing_records_its_landing_decision(void) {
+    dsd_opts* o = (dsd_opts*)calloc(1, sizeof(*o));
+    dsd_state* s = (dsd_state*)calloc(1, sizeof(*s));
+    assert(o && s);
+    o->wav_sample_rate = 48000;
+    o->audio_in_type = AUDIO_IN_RTL;
+    o->rtl_dsp_bw_khz = 48;
+    o->frame_dmr = 1;
+    const dsd_rtl_stream_metrics_hooks hooks = {.output_rate_hz = fake_live_output_rate,
+                                                .analog_family_after_pending = fake_analog_family_after_pending,
+                                                .output_rate_for_family = fake_output_rate_for_family};
+    dsd_rtl_stream_metrics_hooks_set(&hooks);
+    assert(dsd_scan_mode_timed_digital_family(s) == 0 && dsd_scan_mode_take_timed_digital_family(s) == 0);
+
+    g_after_pending_answer = 1;
+    assert(dsd_scan_mode_enter(o, s, DSD_SCAN_MODE_DMR) == 0);
+    assert(s->samplesPerSymbol == 10 && dsd_scan_mode_timed_digital_family(s) == 1);
+    /* The outstanding analog work fails before the row's retune is prepared. */
+    g_after_pending_answer = 0;
+    g_after_pending_reads = 0;
+    assert(dsd_scan_mode_symbol_timing_rate_hz(o, s, 4800, 0) == 48000);
+    assert(g_after_pending_reads == 0 && dsd_scan_mode_timed_digital_family(s) == 1);
+    assert(dsd_scan_mode_suspend(o, s));
+    (void)dsd_scan_mode_resume(o, s);
+    assert(s->samplesPerSymbol == 10 && dsd_scan_mode_timed_digital_family(s) == 1);
+    assert(dsd_scan_mode_take_timed_digital_family(s) == 1);
+    assert(dsd_scan_mode_timed_digital_family(s) == 0 && dsd_scan_mode_take_timed_digital_family(s) == 0);
+    /* Spent: the row's next timing asks the stream again, and times it at the live rate. */
+    assert(dsd_scan_mode_symbol_timing_rate_hz(o, s, 4800, 0) == 78125);
+    assert(g_after_pending_reads == 1 && dsd_scan_mode_timed_digital_family(s) == 0);
+
+    /* A decision no retune spent does not outlive its row. */
+    g_after_pending_answer = 1;
+    assert(dsd_scan_mode_symbol_timing_rate_hz(o, s, 4800, 0) == 48000 && dsd_scan_mode_timed_digital_family(s) == 1);
+    g_after_pending_answer = 0;
+    assert(dsd_scan_mode_enter(o, s, DSD_SCAN_MODE_P25) == 0);
+    assert(s->samplesPerSymbol == 16 && dsd_scan_mode_timed_digital_family(s) == 0);
+    /* A -Y row staged for its tune records its decision in the live scope, for the retune prepared next. */
+    g_after_pending_answer = 1;
+    dsd_scan_settings prepared;
+    assert(dsd_scan_mode_prepare(o, s, DSD_SCAN_MODE_DMR, NULL, &prepared) == 0);
+    assert(prepared.state_samplesPerSymbol == 10 && dsd_scan_mode_timed_digital_family(s) == 1);
+    /* An analog row has no symbol clock, and a blank row no timing of its own. */
+    assert(dsd_scan_mode_enter(o, s, DSD_SCAN_MODE_NFM) == 0);
+    assert(dsd_scan_mode_timed_digital_family(s) == 0);
+    assert(dsd_scan_mode_prepare(o, s, DSD_SCAN_MODE_DMR, NULL, &prepared) == 0);
+    assert(dsd_scan_mode_prepare(o, s, DSD_SCAN_MODE_INHERIT, NULL, &prepared) == 0);
+    assert(dsd_scan_mode_timed_digital_family(s) == 0);
+    /* Off RTL input the input's rate times the row. */
+    o->audio_in_type = AUDIO_IN_WAV;
+    assert(dsd_scan_mode_enter(o, s, DSD_SCAN_MODE_DMR) == 0);
+    assert(dsd_scan_mode_timed_digital_family(s) == 0);
+    dsd_scan_mode_leave(o, s);
+    assert(dsd_scan_mode_timed_digital_family(s) == 0 && dsd_scan_mode_take_timed_digital_family(s) == 0);
+
+    dsd_rtl_stream_metrics_hooks_set(NULL);
+    dsd_state_ext_free_all(s);
+    free(s);
+    free(o);
+}
+
 int
 main(void) {
     test_nfm_class_names();
@@ -1262,6 +1354,7 @@ main(void) {
     test_tone_row_override_scope();
     test_configured_tone_policy_edit();
     test_configured_squelch_edit();
+    test_row_timing_records_its_landing_decision();
     dsd_opts* o = (dsd_opts*)calloc(1, sizeof(*o));
     dsd_state* s = (dsd_state*)calloc(1, sizeof(*s));
     dsd_state* copy = (dsd_state*)calloc(1, sizeof(*copy));

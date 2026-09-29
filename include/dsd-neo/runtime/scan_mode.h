@@ -292,8 +292,27 @@ int dsd_scan_mode_configured_digital(const dsd_opts* opts, const dsd_state* stat
  * the decoder and the TED the tune queues are timed for the samples they will get. DSD_NEO_CQPSK decides that CQPSK
  * state when set, unless the scope is a --trunk-scan target that makes its own choice (issue #583): P25 with a
  * modulation value (auto, c4fm or cqpsk), or DMR or NXDN at either rate, whose @p cqpsk stands, as the engine lands it.
- * 0 without opts. */
+ *
+ * Under a scan scope this times the scope's row and records the landing decision it used
+ * (dsd_scan_mode_timed_digital_family()), as the scope's own timing of a row does (dsd_scan_mode_enter(),
+ * dsd_scan_mode_prepare(), dsd_scan_mode_resume()). A row once timed for the digital family's landing stays timed for
+ * it, whatever the stream answers by then, until the engine spends that decision on the row's retune
+ * (dsd_scan_mode_take_timed_digital_family()), which then carries the digital family whatever the stream answers: the
+ * answer can fall from 1 to 0 between the two (outstanding analog work failing on another thread), and the decoder, the
+ * TED and the front end are then still timed for, and land on, one family. 0 without opts. */
 int dsd_scan_mode_symbol_timing_rate_hz(const dsd_opts* opts, const dsd_state* state, int symbol_rate_hz, int cqpsk);
+/** Whether the scan scope's row was timed for the output rate the digital family lands on (issue #583): the landing
+ * decision its last timing used (dsd_scan_mode_symbol_timing_rate_hz()), 1 for the digital family's landing, 0 for the
+ * live rate. 0 without a scope, after a row's entry until the row is timed, for an analog row, off RTL input, and once
+ * the engine has spent the decision (dsd_scan_mode_take_timed_digital_family()). Decoder thread only; not carried by
+ * frontend snapshots (dsd_scan_mode_copy_snapshot()). */
+int dsd_scan_mode_timed_digital_family(const dsd_state* state);
+/** dsd_scan_mode_timed_digital_family(), spending the decision: the engine takes it once per retune preparation, so the
+ * row's retune carries the digital family when the row was timed for it, and a later retune the row's timing did not
+ * precede (a control channel hunt of a parked trunked target) decides by what the stream answers then. It writes the
+ * scan scope attached to @p state; the pointer is const only because that scope lives in the state's extension slot,
+ * as with dsd_scan_mode_target_modulation(). Decoder thread only, with the live state. */
+int dsd_scan_mode_take_timed_digital_family(const dsd_state* state);
 #ifdef __cplusplus
 }
 #endif

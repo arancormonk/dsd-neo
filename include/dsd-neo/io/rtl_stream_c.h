@@ -523,7 +523,10 @@ int rtl_stream_analog_family_active(void);
  * digital family running where it lands: it retires older live requests and lands its symbol profile as a switch to
  * the digital family would, where the decoder, timed by this same answer, expects it
  * (rtl_stream_prepare_retune_analog_profile_for_target()). A digital-only session answers 0 throughout, as the
- * published family alone does.
+ * published family alone does. Only the decoder thread queues receive requests and retunes, and the controller and
+ * demod threads only resolve them, so between two reads on the decoder thread the answer can only fall from 1 to 0,
+ * unless the decoder thread queued analog work in between; a scan row's timing records the decision it made from it
+ * (dsd_scan_mode_timed_digital_family()), which its retune's family follows.
  *
  * With no stream running there is no controller to read, but the live requests and the published family still are:
  * a stream that closed on the analog family keeps publishing it, so the answer is then 1, as

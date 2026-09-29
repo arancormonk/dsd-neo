@@ -127,7 +127,9 @@ int dsd_rtl_stream_metrics_hook_analog_family_active(void);
  *
  * A digital retune queued now lands after that outstanding work. The engine attaches the digital family to it by this
  * answer (rtl_stream_analog_family_after_pending()), so a caller timing the decoder for the family that retune lands
- * reads it too, and the two agree.
+ * reads it too. The answer can fall between the two reads, as outstanding analog work fails on another thread, so a
+ * scan row's timing records the decision it made (dsd_scan_mode_timed_digital_family()), and the engine attaches the
+ * family to the row's retune by that decision (issue #583).
  *
  * @return 1 when the analog family runs or may run once outstanding work lands, 0 otherwise. With no hook of its own
  *         installed it answers as dsd_rtl_stream_metrics_hook_analog_family_active() does, the live family alone.
