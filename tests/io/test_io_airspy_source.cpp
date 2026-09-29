@@ -304,6 +304,7 @@ main() {
 #include <dsd-neo/io/rtl_stream_fwd.h>
 #include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/platform/platform.h>
+#include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/platform/threading.h>
 #include <dsd-neo/platform/timing.h>
 #include <dsd-neo/runtime/analog_channel.h>
@@ -349,6 +350,29 @@ file_size(const char* path) {
     }
     (void)fclose(fp);
     return size;
+}
+
+/* Stand in for what an earlier stream recorded at @p path: 1024 bytes. */
+static void
+write_recording(const char* path) {
+    FILE* recording = dsd_fopen_private(path, "wb");
+    CHECK(recording);
+    static const unsigned char kRecorded[1024] = {0};
+    CHECK(fwrite(kRecorded, 1, sizeof kRecorded, recording) == sizeof kRecorded);
+    CHECK(fclose(recording) == 0);
+}
+
+/* Start a stream on @p opts that fails, with no worker or SDK failure injected unless the caller set one. */
+static void
+start_failing_stream(dsd_opts& opts) {
+    fail_create = create_calls = 0;
+    workers_entered.store(0);
+    workers_exited.store(0);
+    {
+        RtlSdrOrchestrator stream(opts);
+        CHECK(stream.start() != 0);
+    }
+    CHECK(!rtl_stream_test_has_resources() && !device_open);
 }
 
 static int
@@ -467,13 +491,7 @@ main() {
     char capture_path[DSD_TEST_PATH_MAX];
     CHECK(dsd_test_mkdtemp(capture_dir, sizeof capture_dir, "dsdneo_start_capture") != nullptr);
     CHECK(dsd_test_path_join(capture_path, sizeof capture_path, capture_dir, "cap.iq") == 0);
-    {
-        FILE* recording = dsd_fopen_private(capture_path, "wb");
-        CHECK(recording);
-        static const unsigned char kRecorded[1024] = {0};
-        CHECK(fwrite(kRecorded, 1, sizeof kRecorded, recording) == sizeof kRecorded);
-        CHECK(fclose(recording) == 0);
-    }
+    write_recording(capture_path);
     opts->iq_capture_requested = 1;
     opts->iq_capture_format = DSD_IQ_FORMAT_CF32;
     DSD_SNPRINTF(opts->iq_capture_path, sizeof opts->iq_capture_path, "%s", capture_path);
@@ -494,6 +512,27 @@ main() {
         CHECK(rtl_stream_start_opened_capture() == sdk_fails);
         CHECK(file_size(capture_path) == (sdk_fails ? 0 : 1024));
     }
+    // What the start records is the writer's own open of the file. A writer that fails before it opens the file
+    // (here a directory that does not exist) wrote nothing, and the start says it did not open the capture; one that
+    // opened the file and then failed (its metadata sidecar cannot replace the directory standing at that path) had
+    // written the recording anew, and the start says it did.
+    opts->analog_nfm_bandwidth_hz = 12500;
+    failure = 0;
+    char missing_path[DSD_TEST_PATH_MAX];
+    CHECK(dsd_test_path_join(missing_path, sizeof missing_path, capture_dir, "missing/cap.iq") == 0);
+    DSD_SNPRINTF(opts->iq_capture_path, sizeof opts->iq_capture_path, "%s", missing_path);
+    start_failing_stream(*opts);
+    CHECK(rtl_stream_start_opened_capture() == 0);
+    CHECK(file_size(missing_path) == -1);
+    DSD_SNPRINTF(opts->iq_capture_path, sizeof opts->iq_capture_path, "%s", capture_path);
+    write_recording(capture_path);
+    char sidecar_path[DSD_TEST_PATH_MAX];
+    CHECK(dsd_test_path_join(sidecar_path, sizeof sidecar_path, capture_dir, "cap.iq.json") == 0);
+    CHECK(dsd_mkdir(sidecar_path, 0700) == 0);
+    start_failing_stream(*opts);
+    CHECK(rtl_stream_start_opened_capture() == 1);
+    CHECK(file_size(capture_path) == -1);
+    CHECK(dsd_test_rmdir(sidecar_path) == 0);
     // A create forgets it.
     failure = 0;
     CHECK(rtl_stream_create(opts.get(), &ctx) == 0 && ctx);

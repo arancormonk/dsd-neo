@@ -6066,9 +6066,9 @@ stream_open_fill_capture_writer_config(const dsd_opts* opts, RadioSourceKind sou
     return 0;
 }
 
-/* Whether the last stream start opened the I/Q capture writer (rtl_stream_start_opened_capture()). Written by the
- * start and read by the decoder thread that made it once it returned, so relaxed order suffices; every create and open
- * clears it (dsd_rtl_stream_forget_start_refusal()). */
+/* Whether the last stream start's I/Q capture writer opened the capture file for writing, as the writer reports it
+ * (rtl_stream_start_opened_capture()). Written by the start and read by the decoder thread that made it once it
+ * returned, so relaxed order suffices; every create and open clears it (dsd_rtl_stream_forget_start_refusal()). */
 static std::atomic<int> g_start_opened_capture{0};
 
 static int
@@ -6089,12 +6089,13 @@ stream_open_capture_writer(const dsd_opts* opts, RadioSourceKind source_kind) {
         return -1;
     }
 
-    /* From here the capture file is written anew: the writer opens it for writing, and one that fails to open, or a
-       start that fails after it opened, removes what it wrote. Whatever a stream before this one recorded there is no
-       longer kept. */
-    g_start_opened_capture.store(1, std::memory_order_relaxed);
+    /* The writer says whether it opened the capture file for writing, which writes it anew: whatever a stream before
+       this one recorded there is no longer kept, even when the writer then fails (removing what it wrote), or the
+       start fails after it. One that fails before that open leaves the recording as it was. */
     dsd_iq_capture_writer* writer = NULL;
-    int rc = dsd_iq_capture_open(&cfg, &writer, err_buf, sizeof(err_buf));
+    int data_opened = 0;
+    int rc = dsd_iq_capture_open_ex(&cfg, &writer, &data_opened, err_buf, sizeof(err_buf));
+    g_start_opened_capture.store(data_opened, std::memory_order_relaxed);
     if (rc != DSD_IQ_OK || !writer) {
         LOG_ERROR("Failed to open IQ capture writer: %s\n", err_buf[0] ? err_buf : "unknown error");
         return -1;

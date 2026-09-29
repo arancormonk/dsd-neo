@@ -107,18 +107,18 @@ int rtl_stream_start(RtlSdrContext* ctx);
  */
 int rtl_stream_start_analog_refusal(int* out_kind, int* out_width_hz, int* out_rate_hz);
 /**
- * @brief Whether the last stream start opened the I/Q capture (--iq-capture), writing the capture file anew.
+ * @brief Whether the last stream start opened the I/Q capture (--iq-capture) file, writing it anew.
  *
  * A start with the capture requested opens its writer once the device runs, before it starts its workers and the
- * device's streaming: the writer opens the data file for writing, which ends what a stream before it recorded there,
- * and a writer that fails to open, or a start that fails after it opened, removes what it wrote (the metadata sidecar,
- * and the data file when the writer itself failed). So a start that failed after this point (a worker that did not
- * start, an Airspy SDK that did not stream) has already written over an earlier recording, and one that failed before
- * it (its analog channel check, a device that did not open) left that recording as the stream before it closed it.
- * Every stream create and every start forgets the last record. For the decoder thread that made the start, after it
- * returned.
+ * device's streaming. The writer reports whether it opened the data file for writing (dsd_iq_capture_open_ex()),
+ * which ends what a stream before it recorded there, and this is that report: a writer that fails after the open, or
+ * a start that fails after the writer opened (a worker that did not start, an Airspy SDK that did not stream), has
+ * already written over an earlier recording, removing what it wrote (the metadata sidecar, and the data file when the
+ * writer itself failed). A start that failed before the open (its analog channel check, a device that did not open, a
+ * writer that failed before it opened the file) left that recording as the stream before it closed it. Every stream
+ * create and every start forgets the last record. For the decoder thread that made the start, after it returned.
  *
- * @return 1 when the last start went on to open the capture writer, 0 otherwise.
+ * @return 1 when the last start opened the capture file for writing, 0 otherwise.
  */
 int rtl_stream_start_opened_capture(void);
 /**

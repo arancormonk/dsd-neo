@@ -633,8 +633,9 @@ int svc_rtl_restart_locked(dsd_opts* opts, dsd_state* state);
  * stopped the stream that ran, which closed its I/Q capture (--iq-capture) with what it had recorded, and a start opens
  * the capture file anew, writing over it. So a recovery start of a radio input never reopens the capture, which stays
  * off for the rest of the session (iq_capture_requested cleared), and the log says so, naming the file: kept, when the
- * start the change made failed before it opened the capture (its analog check, a device that did not open), or
- * written over by that start, when it had opened it (rtl_stream_start_opened_capture(): its workers or the device's
+ * start the change made failed before it opened the capture file (its analog check, a device that did not open, a
+ * capture writer that failed before its open), or written over by that start, when it had opened it
+ * (rtl_stream_start_opened_capture(): the capture writer's sidecar or thread, its workers or the device's
  * streaming failed after that, or it ran and the change was undone).
  *
  * @param out_capture_stopped Set to 1 when the capture was turned off here, else 0 (may be NULL).

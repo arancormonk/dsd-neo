@@ -1485,8 +1485,23 @@ static DSD_THREAD_RETURN_TYPE
     DSD_THREAD_RETURN;
 }
 
+/* Report through @p out_data_opened (may be NULL) whether the open has opened the data file for writing. */
+static void
+capture_open_report_data(int* out_data_opened, int opened) {
+    if (out_data_opened) {
+        *out_data_opened = opened;
+    }
+}
+
 int
 dsd_iq_capture_open(const dsd_iq_capture_config* cfg, dsd_iq_capture_writer** out, char* err_buf, size_t err_buf_size) {
+    return dsd_iq_capture_open_ex(cfg, out, NULL, err_buf, err_buf_size);
+}
+
+int
+dsd_iq_capture_open_ex(const dsd_iq_capture_config* cfg, dsd_iq_capture_writer** out, int* out_data_opened,
+                       char* err_buf, size_t err_buf_size) {
+    capture_open_report_data(out_data_opened, 0);
     if (!cfg || !out) {
         set_error(err_buf, err_buf_size, "invalid capture open arguments");
         return DSD_IQ_ERR_INVALID_ARG;
@@ -1537,9 +1552,12 @@ dsd_iq_capture_open(const dsd_iq_capture_config* cfg, dsd_iq_capture_writer** ou
         }
     }
     {
+        /* Only a data file this open emptied is removed: one it could not open is left as it was. */
         int rc = capture_open_init_files(w, err_buf, err_buf_size);
+        const int data_opened = w->data_fp != NULL;
+        capture_open_report_data(out_data_opened, data_opened);
         if (rc != DSD_IQ_OK) {
-            capture_open_cleanup(w, 1, 0);
+            capture_open_cleanup(w, data_opened, 0);
             return rc;
         }
     }

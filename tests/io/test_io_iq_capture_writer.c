@@ -10,6 +10,7 @@
 #include <dsd-neo/io/iq_replay.h>
 #include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/platform/platform.h>
+#include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/platform/timing.h>
 #include <inttypes.h>
 #include <stdio.h>
@@ -1851,6 +1852,92 @@ test_public_error_contracts(void) {
     return rc;
 }
 
+/* The size of the file at @p path, or -1 when it cannot be opened for reading. */
+static long
+file_size_or_missing(const char* path) {
+    FILE* fp = dsd_fopen_private(path, "rb");
+    if (!fp) {
+        return -1;
+    }
+    long size = -1;
+    if (fseek(fp, 0, SEEK_END) == 0) {
+        size = ftell(fp);
+    }
+    (void)fclose(fp);
+    return size;
+}
+
+/*
+ * Issue #578: the open reports whether it opened the data file for writing, which ends what an earlier capture recorded
+ * there. One that fails before that (its configuration, or a data path it cannot open for writing) leaves the path as
+ * it found it, removing nothing it did not open: the recording at the data path survives an invalid configuration, and
+ * a directory standing at the data path survives the failed open. One that opened the file and then failed (its
+ * metadata sidecar cannot replace a directory at that path) reports the open, and removes the file it emptied.
+ */
+static int
+test_open_reports_whether_it_opened_the_data_file(void) {
+    int rc = 0;
+    char dir[256];
+    char data_path[512];
+    char metadata_path[512];
+    char err[256];
+    if (mk_temp_dir(dir, sizeof(dir)) != 0) {
+        return 1;
+    }
+    path_join(data_path, sizeof(data_path), dir, "rec.iq");
+    path_join(metadata_path, sizeof(metadata_path), dir, "rec.iq.json");
+    FILE* recording = dsd_fopen_private(data_path, "wb");
+    rc |= expect_true("recording written", recording != NULL);
+    if (recording) {
+        static const unsigned char k_recorded[512] = {0};
+        rc |= expect_true("recording filled", fwrite(k_recorded, 1, sizeof k_recorded, recording) == sizeof k_recorded);
+        (void)fclose(recording);
+    }
+
+    dsd_iq_capture_config cfg;
+    fill_base_capture_cfg(&cfg, data_path, metadata_path, DSD_IQ_FORMAT_CU8);
+    dsd_iq_capture_writer* writer = NULL;
+    int opened = -1;
+    dsd_iq_capture_config bad = cfg;
+    bad.sample_rate_hz = 0;
+    rc |= expect_int("invalid config fails", dsd_iq_capture_open_ex(&bad, &writer, &opened, err, sizeof(err)),
+                     DSD_IQ_ERR_INVALID_ARG);
+    rc |= expect_int("invalid config: not opened", opened, 0);
+    rc |= expect_true("invalid config: recording intact", file_size_or_missing(data_path) == 512);
+
+    /* A directory at the data path: the open for writing fails, and the path is not the writer's to remove. */
+    char dir_data_path[512];
+    char dir_metadata_path[512];
+    path_join(dir_data_path, sizeof(dir_data_path), dir, "busy.iq");
+    path_join(dir_metadata_path, sizeof(dir_metadata_path), dir, "busy.iq.json");
+    rc |= expect_int("data path directory made", dsd_mkdir(dir_data_path, 0700), 0);
+    dsd_iq_capture_config unopenable;
+    fill_base_capture_cfg(&unopenable, dir_data_path, dir_metadata_path, DSD_IQ_FORMAT_CU8);
+    opened = -1;
+    rc |= expect_int("unopenable data path fails",
+                     dsd_iq_capture_open_ex(&unopenable, &writer, &opened, err, sizeof(err)), DSD_IQ_ERR_IO);
+    rc |= expect_int("unopenable data path: not opened", opened, 0);
+    rc |= expect_int("unopenable data path: left as found", dsd_test_rmdir(dir_data_path), 0);
+
+    /* A directory at the metadata path: the data file was opened, emptying the recording, before the sidecar failed. */
+    rc |= expect_int("metadata path directory made", dsd_mkdir(metadata_path, 0700), 0);
+    opened = -1;
+    rc |= expect_int("sidecar failure fails", dsd_iq_capture_open_ex(&cfg, &writer, &opened, err, sizeof(err)),
+                     DSD_IQ_ERR_IO);
+    rc |= expect_int("sidecar failure: opened", opened, 1);
+    rc |= expect_true("sidecar failure: the emptied file removed", file_size_or_missing(data_path) == -1);
+    rc |= expect_int("metadata path directory removed", dsd_test_rmdir(metadata_path), 0);
+
+    opened = -1;
+    rc |= expect_int("open succeeds", dsd_iq_capture_open_ex(&cfg, &writer, &opened, err, sizeof(err)), DSD_IQ_OK);
+    rc |= expect_int("open succeeds: opened", opened, 1);
+    if (writer) {
+        dsd_iq_capture_close(writer, NULL);
+    }
+    cleanup_capture(dir, data_path, metadata_path);
+    return rc;
+}
+
 int
 main(void) {
     int rc = 0;
@@ -1879,6 +1966,7 @@ main(void) {
 #endif
     rc |= test_bare_name_roundtrip_and_legacy_resolution();
     rc |= test_public_error_contracts();
+    rc |= test_open_reports_whether_it_opened_the_data_file();
     return rc ? 1 : 0;
 }
 

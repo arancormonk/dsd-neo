@@ -319,10 +319,10 @@ Notes
   config that reopens the device or an Airspy setting that reopens it, whose start fails, puts back the input that ran
   and starts it again without the capture instead, so that restart never writes over the file: the capture stays off
   for the rest of the session, and the log says so (the message too when it fits, `...; I/Q capture stopped`).
-  The recording made so far is kept when the failed start stopped before it opened the capture (a width it refused, a
-  device that did not open); a start that failed after opening it (its workers, an Airspy that did not stream), or one
-  a config undid because its stream could not run the scan row on air, had already written the file anew, and the log
-  says that instead.
+  The recording made so far is kept when the failed start stopped before it opened the capture file (a width it
+  refused, a device that did not open, a capture file it could not open); a start that failed after opening it (its
+  workers, an Airspy that did not stream), or one a config undid because its stream could not run the scan row on air,
+  had already written the file anew, and the log says that instead.
 - `--iq-replay` and `--iq-info` accept either the data file or the `.json` metadata path.
 - Retuned captures with v2 replay event timelines can be replayed. Older retuned captures without an event timeline are
   reported by `--iq-info` and rejected by `--iq-replay`.
