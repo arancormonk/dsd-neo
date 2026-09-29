@@ -1043,8 +1043,10 @@ svc_describe_monitor_return_refusal(const dsd_opts* opts, int kind, int width_hz
     char runs[DSD_ANALOG_WIDTH_TEXT_MAX + 48];
 #ifdef USE_RADIO
     /* The rate the scan left the front end on, which a row's retune can have moved off the DSP bandwidth: the one the
-       stream publishes, not the one rtl_dsp_bw_khz gives (svc_describe_analog_refusal()). */
-    const int rate_hz = (opts && opts->audio_in_type == AUDIO_IN_RTL) ? rtl_stream_get_demod_rate_hz() : 0;
+       stream holds requests to from the moment a retune or start settles it (rtl_stream_get_request_rate_hz()), not
+       the one rtl_dsp_bw_khz gives (svc_describe_analog_refusal()), nor the metrics rate, which follows only with the
+       next I/Q block. */
+    const int rate_hz = (opts && opts->audio_in_type == AUDIO_IN_RTL) ? rtl_stream_get_request_rate_hz() : 0;
     if (rate_hz > 0 && held_hz > 0 && !dsd_analog_width_realizable(held_hz, rate_hz)) {
         char rate[DSD_ANALOG_WIDTH_TEXT_MAX];
         (void)dsd_analog_width_format(rate_hz, rate, sizeof rate);

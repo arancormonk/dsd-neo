@@ -887,7 +887,8 @@ installs from `src/engine/trunk_tuning.c` in `src/engine/trunk_tuning_hooks_inst
   one from before the fallback and the toast says the default does not fit either, rather than an unarmed analog
   entry reverting nothing; behind a later request it is left to that request as above, keeping the default the
   leave's toast named. The toast (`svc_describe_monitor_return_refusal()`) names the width, the rate the stream
-  publishes (not the one `rtl_dsp_bw_khz` gives, which a row's retune has left) and what the monitor runs: `Refused:
+  holds requests to (`rtl_stream_get_request_rate_hz()`: not the one `rtl_dsp_bw_khz` gives, which a row's retune has
+  left, nor the metrics rate, which follows only with the next I/Q block) and what the monitor runs: `Refused:
   NFM 16 kHz does not fit the 16 kHz DSP rate; the monitor is back on the NFM default`. It is settled only while the options are still the ones
   the leave put back (the analog family, that kind, that width) and no scan runs: a channel-map adopt or RadioReference
   import that keeps the scanner on gets its front end from the next row's tune, and is deliberately left to it. A width

@@ -636,10 +636,14 @@ rtl_stream_get_demod_rate_hz(void) {
     return g_demod_rate_hz;
 }
 
+/* The request rate when a case sets one apart from the metrics rate (a retune the metrics have not caught up with);
+   -1 follows g_demod_rate_hz. */
+static int g_request_rate_hz = -1;
+
 /* The rate a running stream holds analog requests to, which a channel-map import holds its nfm rows to. */
 int
 rtl_stream_get_request_rate_hz(void) {
-    return g_demod_rate_hz;
+    return g_request_rate_hz >= 0 ? g_request_rate_hz : g_demod_rate_hz;
 }
 
 /* The analog width view's reading of the unset NFM default where the channel filter runs but the rate cannot realize
@@ -2343,6 +2347,18 @@ test_describe_monitor_return_refusal(void) {
     svc_describe_monitor_return_refusal(&opts, DSD_ANALOG_DEMOD_AM, 10000, -1, why, sizeof why);
     rc |= expect_str("monitor return: a rate that fits", why,
                      "the RTL front end refused AM 10 kHz (see log); the AM default is refused too");
+    /* A retune the metrics have not caught up with: the request rate the refusal was held to is the one named. */
+    g_demod_rate_hz = 16000;
+    g_request_rate_hz = 12000;
+    svc_describe_monitor_return_refusal(&opts, DSD_ANALOG_DEMOD_FM, 16000, 0, why, sizeof why);
+    rc |= expect_str("monitor return: the request rate, not stale metrics", why,
+                     "NFM 16 kHz does not fit the 12 kHz DSP rate; the monitor is back on the NFM default");
+    g_demod_rate_hz = 48000;
+    g_request_rate_hz = 16000;
+    svc_describe_monitor_return_refusal(&opts, DSD_ANALOG_DEMOD_FM, 16000, 0, why, sizeof why);
+    rc |= expect_str("monitor return: a request rate that refuses, stale metrics that fit", why,
+                     "NFM 16 kHz does not fit the 16 kHz DSP rate; the monitor is back on the NFM default");
+    g_request_rate_hz = -1;
     /* Off an RTL input the published rate is no rate that input runs at. */
     opts.audio_in_type = AUDIO_IN_PULSE;
     g_demod_rate_hz = 16000;

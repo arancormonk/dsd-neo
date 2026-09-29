@@ -9005,6 +9005,7 @@ test_nfm_width_refused_after_the_check(void) {
     DSD_SNPRINTF(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", "airspy");
     opts.analog_nfm_bandwidth_hz = 12500;
     g_fake_demod_rate_hz = 16000; /* where the stream's rate has moved to */
+    g_fake_request_rate_hz = 16000;
 
     /* The request refused at once. */
     reset_rx_family_wrap();
@@ -9083,6 +9084,7 @@ test_nfm_width_refused_after_the_check(void) {
     g_analog_req_result = 0;
 
     g_fake_demod_rate_hz = 0;
+    g_fake_request_rate_hz = 0;
     opts.analog_nfm_bandwidth_hz = 0;
     state.rtl_ctx = NULL;
     freeState(&state);
@@ -9164,6 +9166,7 @@ init_scan_row_on_analog(dsd_opts* opts, dsd_state* state, RtlSdrContext* fake_ct
     reset_rx_family_wrap();
     g_fake_analog_family = 1;
     g_fake_demod_rate_hz = 16000;
+    g_fake_request_rate_hz = 16000;
     return rc;
 }
 
@@ -9196,6 +9199,7 @@ finish_scan_row_on_analog(dsd_opts* opts, dsd_state* state) {
     reset_rx_family_wrap();
     g_fake_analog_family = 0;
     g_fake_demod_rate_hz = 0;
+    g_fake_request_rate_hz = 0;
     opts->analog_nfm_bandwidth_hz = 0;
     opts->analog_am_bandwidth_hz = 0;
     state->rtl_ctx = NULL;
@@ -9275,6 +9279,7 @@ test_refused_scan_leave_is_reported_and_reconciled(void) {
     rc |= init_scan_row_on_analog(&opts, &state, (RtlSdrContext*)fake_ctx, DSD_ANALOG_DEMOD_AM, 10000,
                                   DSD_SCAN_MODE_NXDN48, NULL, "am leave");
     g_fake_demod_rate_hz = 7500;
+    g_fake_request_rate_hz = 7500;
     g_fake_analog_req_max_hz = 5000;
     g_analog_check_result = -1;
     rc |= submit_scanner_stop(&opts, &state, "am leave: stopped");
@@ -9292,6 +9297,7 @@ test_refused_scan_leave_is_reported_and_reconciled(void) {
     rc |= init_scan_row_on_analog(&opts, &state, (RtlSdrContext*)fake_ctx, DSD_ANALOG_DEMOD_AM, 10000,
                                   DSD_SCAN_MODE_NFM, NULL, "am default refused on landing");
     g_fake_demod_rate_hz = 7500;
+    g_fake_request_rate_hz = 7500;
     g_fake_analog_req_max_hz = 5000;
     g_fake_monitor_kind = DSD_ANALOG_DEMOD_FM;
     g_fake_monitor_width_hz = 16000;
@@ -9387,6 +9393,7 @@ test_refused_scan_leave_is_left_to_a_later_request(void) {
     rc |= init_scan_row_on_analog(&opts, &state, (RtlSdrContext*)fake_ctx, DSD_ANALOG_DEMOD_AM, 10000,
                                   DSD_SCAN_MODE_NFM, NULL, "cqpsk after an am default");
     g_fake_demod_rate_hz = 7500;
+    g_fake_request_rate_hz = 7500;
     g_fake_analog_req_max_hz = 5000;
     g_fake_monitor_kind = DSD_ANALOG_DEMOD_FM;
     g_fake_monitor_width_hz = 16000;
@@ -9466,6 +9473,7 @@ test_superseded_scan_leave_keeps_an_armed_switch(void) {
                      dsd_scan_mode_configured_preset(&opts, &state) == DSDCFG_MODE_ANALOG, 1);
     rc |= expect_int("armed leave: no monitor request under the row", g_analog_req_calls, 0);
     g_fake_demod_rate_hz = 16000;
+    g_fake_request_rate_hz = 16000;
     rc |= submit_scanner_stop(&opts, &state, "armed leave: stopped");
     rc |= expect_last_monitor_request("armed leave: the leave queued", 1, DSD_ANALOG_DEMOD_FM, 16000);
     submit_cqpsk_toggle();
@@ -9497,6 +9505,7 @@ test_superseded_scan_leave_keeps_an_armed_switch(void) {
     reset_rx_family_wrap();
     g_fake_cqpsk = 0;
     g_fake_demod_rate_hz = 0;
+    g_fake_request_rate_hz = 0;
     opts.analog_nfm_bandwidth_hz = 0;
     state.rtl_ctx = NULL;
     freeState(&state);
@@ -9545,6 +9554,7 @@ test_continuing_scan_leave_keeps_an_armed_switch(void) {
     rc |= submit_decode_mode(&opts, &state, DSDCFG_MODE_ANALOG, "scan goes on: Analog under the row");
     rc |= expect_int("scan goes on: no monitor request under the row", g_analog_req_calls, 0);
     g_fake_demod_rate_hz = 16000;
+    g_fake_request_rate_hz = 16000;
     static const char map[] = "channel,frequency_hz,name,mode,options\n"
                               "1,461000000,one,dmr,\n"
                               "2,462000000,two,dmr,\n";
@@ -9579,6 +9589,7 @@ test_continuing_scan_leave_keeps_an_armed_switch(void) {
     dsd_rtl_stream_metrics_hooks_set(NULL);
     reset_rx_family_wrap();
     g_fake_demod_rate_hz = 0;
+    g_fake_request_rate_hz = 0;
     opts.analog_nfm_bandwidth_hz = 0;
     state.rtl_ctx = NULL;
     (void)remove("leave_map.csv");
@@ -9774,6 +9785,7 @@ test_scan_leave_record_goes_with_its_stream(void) {
         rc |= init_scan_row_on_analog(&opts, &state, (RtlSdrContext*)fake_ctx, DSD_ANALOG_DEMOD_AM, 0,
                                       DSD_SCAN_MODE_NXDN48, NULL, label);
         g_fake_demod_rate_hz = 7500;
+        g_fake_request_rate_hz = 7500;
         g_analog_req_result = at_once ? -1 : 0;
         ++g_fake_rx_seq; /* the row's symbol profile, not taken yet */
         rc |= submit_scanner_stop(&opts, &state, label);
@@ -9790,6 +9802,7 @@ test_scan_leave_record_goes_with_its_stream(void) {
            the 6 kHz the default's channel filter sets. */
         stream_reopens(0);
         g_fake_demod_rate_hz = 24000;
+        g_fake_request_rate_hz = 24000;
         g_fake_monitor_kind = DSD_ANALOG_DEMOD_AM;
         g_fake_monitor_width_hz = 6000;
         g_fake_monitor_lpf_on = 1;
@@ -9823,12 +9836,14 @@ test_refused_leave_at_once_reads_the_am_default_it_asked_for(void) {
         rc |= init_scan_row_on_analog(&opts, &state, (RtlSdrContext*)fake_ctx, DSD_ANALOG_DEMOD_AM, 0, DSD_SCAN_MODE_AM,
                                       NULL, label);
         g_fake_demod_rate_hz = 7500;
+        g_fake_request_rate_hz = 7500;
         g_analog_req_result = -1;
         ++g_fake_rx_seq; /* a request queued before the leave, not taken yet */
         rc |= submit_scanner_stop(&opts, &state, label);
         rc |= expect_last_monitor_request(label, 1, DSD_ANALOG_DEMOD_AM, 0);
         g_analog_req_result = 0;
         g_fake_demod_rate_hz = 24000;
+        g_fake_request_rate_hz = 24000;
         g_fake_monitor_kind = DSD_ANALOG_DEMOD_AM;
         g_fake_monitor_width_hz = runs_default ? 6000 : 8000;
         g_fake_monitor_lpf_on = 1;
@@ -9940,6 +9955,7 @@ test_refused_leave_off_the_monitor_reverts_a_switch_between_kinds(void) {
         rc |= expect_int(label, dsd_scan_mode_configured_preset(&opts, &state) == DSDCFG_MODE_AM, 1);
         rc |= expect_int(label, g_analog_req_calls, 0);
         g_fake_demod_rate_hz = 7500;
+        g_fake_request_rate_hz = 7500;
         g_analog_check_result = -1; /* the AM default does not fit the rate either */
         rc |= stop_scanner_refusing_the_leave(&opts, &state, at_once, DSD_ANALOG_DEMOD_AM, 10000, DSD_ANALOG_DEMOD_FM,
                                               0, label);
@@ -10044,6 +10060,7 @@ run_leave_revert_case(const leave_revert_case* c, refusal_timing leave, refusal_
     }
     rc |= expect_int(label, g_analog_req_calls, 0);
     g_fake_demod_rate_hz = c->rate_hz;
+    g_fake_request_rate_hz = c->rate_hz;
     g_analog_check_result = c->check_refuses ? -1 : 0;
     if (c->monitor) {
         g_fake_monitor_kind = c->kind;

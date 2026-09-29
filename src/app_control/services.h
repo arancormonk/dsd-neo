@@ -342,11 +342,12 @@ void svc_describe_analog_refusal(const dsd_opts* opts, int kind, int width_hz, c
  *
  * The leave asks for the configured width of analog @p kind (@p width_hz: 0 for the kind's default) at the rate the
  * scan left the front end on, which a row's retune can have moved off the DSP bandwidth: the rate named is the one the
- * stream publishes (rtl_stream_get_demod_rate_hz()), as in "NFM 16 kHz does not fit the 16 kHz DSP rate". What follows
- * says what the decoder settled on: @p runs_hz > 0, "the monitor keeps NFM 12.5 kHz" (the width the monitor kept); 0,
- * "the monitor is back on the NFM default"; -1, "the AM default does not fit it either" (nothing was changed; nothing
- * more is said when the refused width was that default). A refusal that rate does not explain (no rate published, or
- * one the width fits) points at the log. Fits a toast with its "Refused: " prefix.
+ * stream holds requests to (rtl_stream_get_request_rate_hz(), current from the moment a retune or start settles it,
+ * where the metrics rate follows only with the next I/Q block), as in "NFM 16 kHz does not fit the 16 kHz DSP rate".
+ * What follows says what the decoder settled on: @p runs_hz > 0, "the monitor keeps NFM 12.5 kHz" (the width the
+ * monitor kept); 0, "the monitor is back on the NFM default"; -1, "the AM default does not fit it either" (nothing was
+ * changed; nothing more is said when the refused width was that default). A refusal that rate does not explain (no
+ * rate published, or one the width fits) points at the log. Fits a toast with its "Refused: " prefix.
  */
 void svc_describe_monitor_return_refusal(const dsd_opts* opts, int kind, int width_hz, int runs_hz, char* why,
                                          size_t why_size);
