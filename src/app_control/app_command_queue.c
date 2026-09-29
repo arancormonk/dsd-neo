@@ -6382,17 +6382,25 @@ apply_cfg_receive_family_change(dsd_opts* opts, dsd_state* state, const dsdneoUs
     return rc;
 }
 
+/* Whether a config apply's new input, opened with no stream running before it, runs but refuses the scan row on air,
+   which the apply reported ("Config applied; the scan row cannot run: ...": ui_cfg_settle_reopen() returned 1, issue
+   #578). Set by the apply (ui_cfg_note_refused_row()) and taken, once the command has run, for the resume of the scope
+   it ran under (ui_scope_stream_of()). */
+static int g_cfg_row_refusal_reported;
+
 #ifdef USE_RADIO
 /* A config apply whose new input, with no stream running before it, runs but refuses the scan row on air
-   (ui_cfg_settle_reopen() returned @p radio_rc 1): the input and the config stay, and the toast says the row cannot
-   run. That stream opened on the config's receive side, so a switch onto the analog monitor, or between FM and AM, the
-   config made (apply_cfg_receive_family_change()) has nothing left for the front end to refuse: it is dropped, and the
-   row's own refusal when the scope resumes does not put the decoder back on the mode the session had
-   (ui_revert_analog_entry()) over the config the toast says was applied (issue #578). */
+   (ui_cfg_settle_reopen() returned @p radio_rc 1): the input and the whole config stay, its [mode] and [analog] widths
+   included, and the toast says the row cannot run. That stream opened on the config's receive side, so a switch onto
+   the analog monitor, or between FM and AM, the config made (apply_cfg_receive_family_change()) has nothing left for
+   the front end to refuse: it is dropped. The row's own refusal when the scope resumes is the one the toast reports, so
+   it is noted for the resume (g_cfg_row_refusal_reported), which then puts back neither the mode the session had
+   (ui_revert_analog_entry()) nor the width from before a config that set the one the row runs (issue #578). */
 static void
-ui_cfg_drop_entry_for_refused_row(int radio_rc) {
+ui_cfg_note_refused_row(int radio_rc) {
     if (radio_rc > 0) {
         g_analog_entry.armed = 0;
+        g_cfg_row_refusal_reported = 1;
     }
 }
 #endif
@@ -6474,7 +6482,7 @@ ui_cmd_handle_config_apply(dsd_opts* opts, dsd_state* state, const struct dsd_ap
     /* A width the front end refused after the check (put back, with a toast) fails the apply like a reconfigure. */
     reconfigure_rc |= apply_cfg_receive_family_change(opts, state, &cfg, &old_rx);
 #ifdef USE_RADIO
-    ui_cfg_drop_entry_for_refused_row(radio_rc);
+    ui_cfg_note_refused_row(radio_rc);
     if (radio_rc != 0) {
         return UI_CMD_APPLY_FAILED;
     }
@@ -6670,32 +6678,56 @@ apply_cmd_leave_scanner_scope(dsd_opts* opts, dsd_state* state, int guarded) {
     }
 }
 
+/* What a scoped command did to the stream while the scan scope was suspended (issue #578). */
+typedef enum {
+    UI_SCOPE_STREAM_KEPT = 0,    /* started none */
+    UI_SCOPE_STREAM_STARTED,     /* started one, which opened on the configured settings, not the row's */
+    UI_SCOPE_STREAM_REFUSES_ROW, /* started one that refuses the row on air, which the command reported */
+} ui_scope_stream;
+
+/* What the command that ran since svc_rtl_start_count() read @p starts_before did to the stream. Takes the note of a
+   refused row a config apply left (g_cfg_row_refusal_reported), so that it goes with that command alone. */
+static ui_scope_stream
+ui_scope_stream_of(unsigned int starts_before) {
+    const int row_refused = g_cfg_row_refusal_reported;
+    g_cfg_row_refusal_reported = 0;
+    if (svc_rtl_start_count() == starts_before) {
+        return UI_SCOPE_STREAM_KEPT;
+    }
+    return row_refused ? UI_SCOPE_STREAM_REFUSES_ROW : UI_SCOPE_STREAM_STARTED;
+}
+
 /* The row's constraint back over the configured options a scoped command edited, and the front end told of what
    changed. A width the row runs on the analog family is an acquisition setting there (dsd_scan_settings_equal()), so a
    configured width it runs reaches the front end with the profile the resume publishes, which keeps the width from
    before the command for a refusal where it lands (ui_settle_receive_requests()); a digital row's front end
    takes no width, and a row that sets its own (issue #526) keeps it over the edit. Returns -1 when that was a switch
    onto the analog monitor, or between FM and AM, the front end refused at once, which puts the decoder back as it was
-   and fails the command. A stream the command started meanwhile (@p restarted) gets the row's profile either way
-   (ui_resume_scope_and_publish()). */
+   and fails the command. A stream the command started meanwhile (@p stream) gets the row's profile either way
+   (ui_resume_scope_and_publish()); one that refuses the row on air, as the command reported (UI_SCOPE_STREAM_REFUSES_ROW:
+   a config apply with no stream before it, which keeps the input it opened and the whole config), refuses that
+   profile for the reason the command's toast gives, not for a width or a switch the command made, so nothing is put
+   back and the toast stands (issue #578). */
 static int
-apply_cmd_resume_scope(dsd_opts* opts, dsd_state* state, const ui_analog_widths* before, int restarted) {
+apply_cmd_resume_scope(dsd_opts* opts, dsd_state* state, const ui_analog_widths* before, ui_scope_stream stream) {
     int changed = 0;
-    if (ui_resume_scope_and_publish(opts, state, &changed, before, restarted) != 0) {
-        /* Refused at once (a retune moved the demod rate since the command held the width to it): the front end kept
-           its receive profile, so the decoder goes back to it, the mode it had before a switch onto the monitor or
-           between FM and AM, or else the width the monitor kept. */
-        if (ui_revert_analog_entry(opts, state, dsd_opts_analog_width_hz(opts), NULL)) {
-            return -1;
-        }
-        const int kind = opts->analog_demod;
-        const int before_hz = ui_analog_width_before(before, kind);
-        const int width_hz = dsd_app_analog_width_setting_hz(opts, kind);
-        if (width_hz != before_hz) {
-            /* Only a row that takes the configured width has its width in force changed by a scoped command, so the
-               width in force before it was the configured one as well. */
-            ui_restore_refused_analog_width(opts, state, kind, width_hz, before_hz, before_hz);
-        }
+    if (ui_resume_scope_and_publish(opts, state, &changed, before, stream != UI_SCOPE_STREAM_KEPT) == 0
+        || stream == UI_SCOPE_STREAM_REFUSES_ROW) {
+        return 0;
+    }
+    /* Refused at once (a retune moved the demod rate since the command held the width to it): the front end kept its
+       receive profile, so the decoder goes back to it, the mode it had before a switch onto the monitor or between FM
+       and AM, or else the width the monitor kept. */
+    if (ui_revert_analog_entry(opts, state, dsd_opts_analog_width_hz(opts), NULL)) {
+        return -1;
+    }
+    const int kind = opts->analog_demod;
+    const int before_hz = ui_analog_width_before(before, kind);
+    const int width_hz = dsd_app_analog_width_setting_hz(opts, kind);
+    if (width_hz != before_hz) {
+        /* Only a row that takes the configured width has its width in force changed by a scoped command, so the width
+           in force before it was the configured one as well. */
+        ui_restore_refused_analog_width(opts, state, kind, width_hz, before_hz, before_hz);
     }
     return 0;
 }
@@ -6796,12 +6828,12 @@ ui_cmd_widths_before_of(const dsd_opts* opts, const dsd_state* state, const stru
 }
 
 /* The row's constraint back after a command that suspended it (@p scoped) and maybe started a stream meanwhile
-   (@p restarted) (apply_cmd_resume_scope()), then, for a config apply, the configured widths it changed noted once
-   every request it made is made (ui_note_config_width_changes()). Returns -1 when the resume failed. */
+   (@p stream) (apply_cmd_resume_scope()), then, for a config apply, the configured widths it changed noted once every
+   request it made is made (ui_note_config_width_changes()). Returns -1 when the resume failed. */
 static int
-apply_cmd_resume_and_note_widths(dsd_opts* opts, dsd_state* state, int scoped, int restarted,
+apply_cmd_resume_and_note_widths(dsd_opts* opts, dsd_state* state, int scoped, ui_scope_stream stream,
                                  const ui_cmd_widths_before* before) {
-    const int resume_failed = scoped && apply_cmd_resume_scope(opts, state, &before->in_force, restarted) != 0;
+    const int resume_failed = scoped && apply_cmd_resume_scope(opts, state, &before->in_force, stream) != 0;
     if (before->config_apply) {
         ui_note_config_width_changes(opts, state, &before->configured);
     }
@@ -6859,14 +6891,14 @@ apply_cmd_scoped(dsd_opts* opts, dsd_state* state, const struct dsd_app_command*
     /* A stream the command starts while the scope is suspended opens on the configured settings (issue #578). */
     const unsigned int starts_before = svc_rtl_start_count();
     const int result = apply_cmd_unscoped(opts, state, c);
-    const int restarted = svc_rtl_start_count() != starts_before;
+    const ui_scope_stream stream = ui_scope_stream_of(starts_before);
     if (groups_suspended) {
         dsd_scan_groups_resume(state);
     }
     if (ui_cmd_leaves_scanner_scope(opts, was_scanner)) {
         apply_cmd_leave_scanner_scope(opts, state, guarded);
     }
-    if (apply_cmd_resume_and_note_widths(opts, state, scoped, restarted, &widths_before) != 0) {
+    if (apply_cmd_resume_and_note_widths(opts, state, scoped, stream, &widths_before) != 0) {
         return UI_CMD_APPLY_FAILED;
     }
     apply_cmd_fall_back_from_am_on_pcm(opts, state, c);

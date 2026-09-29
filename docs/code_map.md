@@ -959,9 +959,11 @@ installs from `src/engine/trunk_tuning.c` in `src/engine/trunk_tuning_hooks_inst
   config stays applied, the toast is `Config applied; no input running: <why>` and the apply fails, as a failed Switch
   source does, and a start whose stream refuses the scan row keeps the input it opened, with `Config applied; the scan
   row cannot run: <why>`, and fails the apply. That stream opened on the config's receive side, so a switch onto the
-  monitor or between FM and AM the same config made is not left armed as one the front end could refuse
-  (`ui_cfg_drop_entry_for_refused_row()`): the row's own refusal when the scope resumes leaves the configured mode, and
-  the toast, as the config set them. Tests: `APP_COMMAND_QUEUE`, `UI_MENU_SERVICES`, `UI_MENU_AIRSPY_CONFIG_REFUSED_WIDTH`,
+  monitor or between FM and AM the same config made is not left armed as one the front end could refuse, and the row's
+  own refusal when the scope resumes is the one the toast reports (`ui_cfg_note_refused_row()`, which the scoped
+  command's resume reads as `UI_SCOPE_STREAM_REFUSES_ROW`, `ui_scope_stream_of()`): it leaves the configured mode, the
+  configured widths (a row without a width of its own runs the one the config set, which may be the width refused) and
+  the toast as the config set them. Tests: `APP_COMMAND_QUEUE`, `UI_MENU_SERVICES`, `UI_MENU_AIRSPY_CONFIG_REFUSED_WIDTH`,
   `ENGINE_CHANNEL_SCAN` (the leave's result), `IO_RTL_DEMOD_CONFIG` (request numbering and outcomes, the kept kind and
   monitor output).
 - AM (issue #524): `DSD_APP_CMD_DECODE_MODE_SET` takes `DSDCFG_MODE_AM` (the preset ids end there, as do the
