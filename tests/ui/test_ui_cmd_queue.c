@@ -9415,6 +9415,92 @@ test_superseded_scan_leave_keeps_an_armed_switch(void) {
 }
 
 /*
+ * Issue #578: a refused scan leave whose scan keeps running, with a switch onto Analog armed before it. A DMR session on
+ * an RTL-SDR at a 48 kHz DSP bandwidth, with NFM 16 kHz stored, scans a typed NXDN48 row and changes its configured
+ * mode to Analog: the row keeps its own profile on the digital family, so the switch is armed with no monitor request
+ * yet. A channel map with two rows is then imported, which leaves the row and asks the front end back onto the
+ * monitor, while the scanner stays on to visit the new rows; a retune had moved the rate to 16 kHz, so the demod thread
+ * refuses that return where it lands, keeping the digital family. The next row's tune decides the front end, so the
+ * refusal is left to it, the armed switch included: the decoder stays on Analog and nothing is toasted, rather than go
+ * back to DMR for a return the scan has moved on from. The switch stays armed for the next monitor request to settle:
+ * once a row is on air and the scanner stops, the front end refusing that return as well puts the decoder back on DMR.
+ */
+static int
+test_continuing_scan_leave_keeps_an_armed_switch(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static void* fake_ctx[2];
+    int rc = 0;
+    dsd_test_temp_cwd cwd;
+    if (dsd_test_temp_cwd_enter(&cwd, "dsdneo_ui_cmd_queue_leave_map") != 0) {
+        DSD_FPRINTF(stderr, "temp working directory setup failed: %s\n", strerror(errno));
+        return 1;
+    }
+    init_decode_mode_context(&opts, &state);
+    reset_rx_family_wrap();
+    opts.audio_in_type = AUDIO_IN_RTL;
+    DSD_SNPRINTF(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", "rtl:0:851.375M:0:0:48");
+    opts.rtl_dsp_bw_khz = 48;
+    state.rtl_ctx = (RtlSdrContext*)fake_ctx;
+    rc |= submit_decode_mode(&opts, &state, DSDCFG_MODE_DMR, "scan goes on: DMR");
+    opts.analog_nfm_bandwidth_hz = 16000;
+    demod_thread_lands(0);
+    (void)dsd_app_drain_cmds(&opts, &state);
+    dsd_rtl_stream_metrics_hooks_set(&g_scan_leave_hooks);
+    opts.scanner_mode = 1;
+    rc |= expect_int("scan goes on: typed row", dsd_scan_mode_enter(&opts, &state, DSD_SCAN_MODE_NXDN48), 0);
+    rc |= expect_int("scan goes on: row options", dsd_scan_mode_options(&opts, &state, NULL), 0);
+    reset_rx_family_wrap();
+    g_fake_analog_family = 0;
+
+    rc |= submit_decode_mode(&opts, &state, DSDCFG_MODE_ANALOG, "scan goes on: Analog under the row");
+    rc |= expect_int("scan goes on: no monitor request under the row", g_analog_req_calls, 0);
+    g_fake_demod_rate_hz = 16000;
+    static const char map[] = "channel,frequency_hz,name,mode,options\n"
+                              "1,461000000,one,dmr,\n"
+                              "2,462000000,two,dmr,\n";
+    rc |= write_file_bytes("leave_map.csv", map, strlen(map));
+    post_string(DSD_APP_CMD_IMPORT_CHANNEL_MAP, "leave_map.csv");
+    rc |= expect_int("scan goes on: map imported", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("scan goes on: the scanner stays on", opts.scanner_mode == 1 && state.lcn_freq_count == 2, 1);
+    rc |= expect_last_monitor_request("scan goes on: the leave queued", 1, DSD_ANALOG_DEMOD_FM, 16000);
+    const int demod_requests = g_demod_req_calls;
+    demod_thread_refuses_leave_keeping(0, 0, DSD_ANALOG_DEMOD_FM, 16000);
+    state.ui_msg[0] = '\0';
+    (void)dsd_app_drain_cmds(&opts, &state);
+    rc |= expect_int("scan goes on: still Analog",
+                     opts.analog_only == 1 && dsd_infer_decode_mode_preset(&opts) == DSDCFG_MODE_ANALOG, 1);
+    rc |= expect_int("scan goes on: width kept", opts.analog_nfm_bandwidth_hz, 16000);
+    rc |= expect_int("scan goes on: nothing more asked", g_analog_req_calls == 1 && g_demod_req_calls == demod_requests,
+                     1);
+    rc |= expect_str("scan goes on: no toast", state.ui_msg, "");
+
+    /* Still armed: a row of the new map on air, the scanner stopped, and that return refused as well. */
+    rc |= expect_int("scan goes on: next row", dsd_scan_mode_enter(&opts, &state, DSD_SCAN_MODE_DMR), 0);
+    rc |= expect_int("scan goes on: next row options", dsd_scan_mode_options(&opts, &state, NULL), 0);
+    rc |= submit_scanner_stop(&opts, &state, "scan goes on: stopped");
+    rc |= expect_last_monitor_request("scan goes on: the stop's return queued", 2, DSD_ANALOG_DEMOD_FM, 16000);
+    demod_thread_refuses_leave_keeping(0, 0, DSD_ANALOG_DEMOD_FM, 16000);
+    state.ui_msg[0] = '\0';
+    (void)dsd_app_drain_cmds(&opts, &state);
+    rc |= expect_int("scan goes on: back on DMR",
+                     opts.analog_only == 0 && dsd_infer_decode_mode_preset(&opts) == DSDCFG_MODE_DMR, 1);
+    rc |= expect_toast("scan goes on: says why", &state, "Failed: Analog -> ");
+
+    dsd_rtl_stream_metrics_hooks_set(NULL);
+    reset_rx_family_wrap();
+    g_fake_demod_rate_hz = 0;
+    opts.analog_nfm_bandwidth_hz = 0;
+    state.rtl_ctx = NULL;
+    (void)remove("leave_map.csv");
+    freeState(&state);
+    if (dsd_test_temp_cwd_leave(&cwd) != 0) {
+        rc = 1;
+    }
+    return rc;
+}
+
+/*
  * Issue #578: what became of a scan leave's return to the monitor goes with the stream it was asked of. An -fM session
  * with the AM default leaves a typed NXDN48 row at a 7.5 kHz rate that cannot filter that default, so the front end
  * refuses the return at once, while the row's own symbol profile is still queued: the record waits for that profile to
@@ -13128,6 +13214,7 @@ main(void) {
     rc |= test_refused_scan_leave_is_reported_and_reconciled();
     rc |= test_refused_scan_leave_is_left_to_a_later_request();
     rc |= test_superseded_scan_leave_keeps_an_armed_switch();
+    rc |= test_continuing_scan_leave_keeps_an_armed_switch();
     rc |= test_scan_leave_record_goes_with_its_stream();
     rc |= test_refused_leave_at_once_reads_the_am_default_it_asked_for();
     rc |= test_refused_switch_onto_analog_puts_the_mode_back();

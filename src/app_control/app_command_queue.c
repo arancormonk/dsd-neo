@@ -5928,15 +5928,22 @@ ui_restore_refused_analog_width(dsd_opts* opts, dsd_state* state, int kind, int 
     ui_set_toast(state, 5, "Refused: %s", why);
 }
 
+/* Whether a scan still decides the front end after a scan leave: a scan row's scope in force or being updated, or the
+   conventional scanner still on with rows to visit (a channel-map adopt or a RadioReference import that keeps it on),
+   whose next row's tune decides what the front end runs. A refused leave is left to that tune (issue #578). */
+static int
+ui_scan_goes_on(const dsd_opts* opts, const dsd_state* state) {
+    return dsd_scan_mode_configured_view(state) || dsd_scan_mode_updating(state)
+           || (opts->scanner_mode == 1 && state->lcn_freq_count > 0);
+}
+
 /* Whether the options are still the ones a refused scan leave put back (@p refusal): the analog family, the kind and
-   configured width it asked for, and no scan running or updating. A channel-map adopt or a RadioReference import that
-   keeps the scanner on gets its front end from the next row's tune. */
+   configured width it asked for, and no scan going on (ui_scan_goes_on()). */
 static int
 ui_scan_leave_options_stand(const dsd_opts* opts, const dsd_state* state, const svc_monitor_refusal* refusal) {
     return dsd_opts_is_analog_family(opts) && opts->analog_demod == refusal->kind
            && dsd_app_analog_width_setting_hz(opts, refusal->kind) == refusal->width_hz
-           && !dsd_scan_mode_configured_view(state) && !dsd_scan_mode_updating(state)
-           && !(opts->scanner_mode == 1 && state->lcn_freq_count > 0);
+           && !ui_scan_goes_on(opts, state);
 }
 
 /* A refused scan leave's front end off the monitor of the kind it asked for (@p refusal): the kind's default is asked
@@ -6964,10 +6971,12 @@ apply_cmd(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
  * A scan leave's return to the monitor, refused at once or where it landed, or a request that carried it on
  * (svc_leave_channel_scan()), is reconciled as ui_settle_refused_scan_leave() says (issue #578), since a typed row may
  * have left the front end off the monitor with the width setting untouched, unless a request queued after it decides
- * the front end instead (svc_monitor_refusal::superseded). A switch onto the monitor or between FM and AM armed before
- * the leave goes back first (ui_revert_analog_entry()), but not over such a later request (a CQPSK toggle made before
- * the demod thread took the return), whose profile the old mode's would replace: the switch then stays armed, since the
- * later request, which is no monitor request, did not make it either, and the next monitor request's outcome settles
+ * the front end instead (svc_monitor_refusal::superseded), or the scan goes on (ui_scan_goes_on(): a channel-map adopt
+ * or a RadioReference import that keeps the scanner on), whose next row's tune decides it. A switch onto the monitor or
+ * between FM and AM armed before the leave goes back first (ui_revert_analog_entry()), but in neither of those cases:
+ * the old mode's profile would replace the later request's (a CQPSK toggle made before the demod thread took the
+ * return), or go back on a return the scan has moved on from. The switch then stays armed, since the later request or
+ * the row's tune, which is no monitor request, did not make it either, and the next monitor request's outcome settles
  * it (dropped once one is taken, gone back when one is refused off the kind asked for), or a revert finds the
  * configured settings moved on and drops it.
  */
@@ -6987,10 +6996,11 @@ ui_settle_receive_requests(dsd_opts* opts, dsd_state* state) {
     }
     int changed = 0;
     if (!refusal.kept_analog || refusal.kept_kind != refusal.kind) {
-        /* A scan leave's refusal that a later request superseded leaves an armed switch alone: going back would publish
-           the old mode's profile over that request. The later request is no monitor request (one would have taken the
-           record over), so the front end has made the switch no more than before, and it stays armed. */
-        if (!(refusal.scan_leave && refusal.superseded)) {
+        /* A scan leave's refusal that a later request superseded, or whose scan goes on, leaves an armed switch alone:
+           going back would publish the old mode's profile over that request, or over the next row's tune. Neither is a
+           monitor request (one would have taken the record over), so the front end has made the switch no more than
+           before, and it stays armed. */
+        if (!(refusal.scan_leave && (refusal.superseded || ui_scan_goes_on(opts, state)))) {
             changed = ui_revert_analog_entry(opts, state, refusal.width_hz, &refusal);
         }
         if (!changed && refusal.scan_leave) {
