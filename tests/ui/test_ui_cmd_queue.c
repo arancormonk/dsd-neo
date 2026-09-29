@@ -5198,6 +5198,11 @@ static int g_config_rtl_refused;
 static int g_config_rtl_refused_kind;
 static int g_config_rtl_refused_width_hz;
 static int g_config_rtl_refused_rate_hz;
+/* Issue #578: above 0, the DSP rate every device delivers. A start that does not fail for its device, handed options
+   that run the analog family with an explicit width that rate cannot filter, is refused there and records the refusal
+   at that rate, as the stream's analog channel check refuses a width once the device has set its rate; one handed a
+   profile that rate runs (a digital row's, a width it filters) starts. */
+static int g_config_rtl_device_rate_hz;
 /* Issue #578: whether the last create was handed an I/Q capture request (--iq-capture), and how many creates were. */
 static int g_config_rtl_create_capture = -1;
 static int g_config_rtl_captures;
@@ -5251,6 +5256,14 @@ reset_config_rtl_wrap(void) {
     g_config_rtl_create_bw_khz = -1;
     g_config_rtl_starts = g_config_rtl_fail_starts = g_config_rtl_refuse_rate_hz = 0;
     g_config_rtl_refused = g_config_rtl_refused_kind = g_config_rtl_refused_width_hz = g_config_rtl_refused_rate_hz = 0;
+    g_config_rtl_device_rate_hz = 0;
+}
+
+/* Whether the start of the last create is refused at the rate every device delivers (g_config_rtl_device_rate_hz). */
+static int
+config_rtl_device_rate_refuses_width(void) {
+    return g_config_rtl_device_rate_hz > 0 && g_config_rtl_create_analog_only == 1 && g_config_rtl_create_width_hz > 0
+           && !dsd_analog_width_realizable(g_config_rtl_create_width_hz, g_config_rtl_device_rate_hz);
 }
 
 // GNU ld --wrap entry points must keep the reserved __wrap_* symbol name.
@@ -5285,6 +5298,13 @@ __wrap_rtl_stream_start(RtlSdrContext* ctx) {
     ++g_config_rtl_starts;
     g_config_rtl_refused = 0;
     const int capturing = g_config_rtl_create_capture == 1;
+    if (g_config_rtl_fail_starts <= 0 && config_rtl_device_rate_refuses_width()) {
+        g_config_rtl_refused = 1;
+        g_config_rtl_refused_kind = g_config_rtl_create_kind;
+        g_config_rtl_refused_width_hz = g_config_rtl_create_width_hz;
+        g_config_rtl_refused_rate_hz = g_config_rtl_device_rate_hz;
+        return -1;
+    }
     if (g_config_rtl_fail_starts <= 0) {
         g_config_rtl_opened_capture = capturing;
         config_rtl_start_latch(1);
@@ -10841,11 +10861,12 @@ test_config_apply_holds_a_scan_row_width_to_a_reopen(void) {
 }
 
 /*
- * Issue #578: a config apply runs inside a scan row's suspended scope, so a stream it starts, reopened for its [input]
- * or started again on the input a failed reopen replaced, opens on the configured settings, not the row's. The row
- * compares unchanged once the scope resumes, so the resume asks the front end for the row's profile anyway: an nfm row
- * on a DMR-configured scanner gets its analog monitor back, whether the reopen failed and put the running input back
- * or started (the successful reopen is issue #583's item 1).
+ * Issue #578: a config apply runs inside a scan row's suspended scope, so a stream its [input] reopens opens on the
+ * configured settings, not the row's, and one started again on the input a failed reopen replaced opens on the row the
+ * stream it replaced ran, which the scope's options do not hold either. The row compares unchanged once the scope
+ * resumes, so the resume asks the front end for the row's profile anyway: an nfm row on a DMR-configured scanner gets
+ * its analog monitor back, whether the reopen failed and put the running input back or started (the successful reopen
+ * is issue #583's item 1).
  */
 static int
 test_config_reopen_under_a_scan_row_republishes_the_row(void) {
@@ -10869,9 +10890,11 @@ test_config_reopen_under_a_scan_row_republishes_the_row(void) {
         g_config_rtl_fail_starts = starts ? 0 : 1;
         rc |= submit_config_device_source(&opts, &state, DSDCFG_INPUT_SOAPY, 0, 0, label);
         rc |= expect_int(label, dsd_app_command_test_last_failed(), starts ? 0 : 1);
-        /* The stream started, the reopened SoapySDR device or the RTL-SDR put back, runs the configured DMR. */
+        /* The reopened SoapySDR device runs the configured DMR; the RTL-SDR put back runs the row's 12.5 kHz monitor,
+           as its stream did. */
         rc |= expect_int(label, g_config_rtl_creates == (starts ? 1 : 2) && state.rtl_ctx != NULL, 1);
-        rc |= expect_int(label, g_config_rtl_create_analog_only, 0);
+        rc |= expect_int(label, g_config_rtl_create_analog_only, starts ? 0 : 1);
+        rc |= expect_int(label, g_config_rtl_create_width_hz, starts ? 0 : 12500);
         rc |= expect_str(label, opts.audio_in_dev, starts ? "soapy:driver=airspy" : "rtl:0:851.375M:0:0:16");
         /* The row is back in force, and the front end is asked for its monitor. */
         rc |=
@@ -10947,10 +10970,11 @@ test_config_reopen_under_a_cqpsk_row_times_the_row(void) {
 
 /*
  * Issue #578: the same republish on an Analog-configured session. A typed P25 row there runs its symbol profile under
- * the analog family the reopened stream opened on (the configured monitor), with no family switch asked of the stream.
+ * the analog family the reopened stream opened on (the configured monitor), with no family switch asked of the stream;
+ * the RTL-SDR a failed reopen put back opens on the row itself, as the stream it replaced ran it, on the digital family.
  * A CQPSK row's timing loop then runs at the demod rate the stream published at its start, not at the monitor's 48 kHz
  * resampled audio: 4 samples per 4800 Bd symbol at a SoapySDR device's 19,531 Hz, and 5 at the 24 kHz DSP bandwidth of
- * the RTL-SDR a failed reopen put back. A C4FM row there reads the monitor audio, and keeps 10.
+ * the RTL-SDR put back. A C4FM row reads the audio the stream delivers, and keeps 10.
  */
 static int
 test_config_reopen_under_a_cqpsk_row_on_an_analog_session_times_the_row(void) {
@@ -10978,14 +11002,15 @@ test_config_reopen_under_a_cqpsk_row_on_an_analog_session_times_the_row(void) {
             state.samplesPerSymbol = cqpsk ? 1 : 10;
             state.symbolCenter = 0;
             reset_rx_family_wrap();
-            g_fake_analog_family = 1; /* the stream opened on the configured monitor */
+            /* The reopened stream opened on the configured monitor, the one put back on the row's P25. */
+            g_fake_analog_family = starts;
             g_config_rtl_open_ok = 1;
             g_config_rtl_fail_starts = starts ? 0 : 1;
             g_fake_request_rate_hz = starts ? 19531 : 24000;
             rc |= submit_config_device_source(&opts, &state, DSDCFG_INPUT_SOAPY, 0, 0, label);
             rc |= expect_int(label, dsd_app_command_test_last_failed(), starts ? 0 : 1);
             rc |= expect_int(label, g_config_rtl_creates == (starts ? 1 : 2) && state.rtl_ctx != NULL, 1);
-            rc |= expect_int(label, g_config_rtl_create_analog_only, 1);
+            rc |= expect_int(label, g_config_rtl_create_analog_only, starts);
             rc |= expect_int(label, dsd_scan_mode_active(&state) == DSD_SCAN_MODE_P25 && state.rf_mod == cqpsk, 1);
             rc |= expect_int(label, g_analog_req_calls, 0);
             rc |=
@@ -11252,6 +11277,66 @@ test_config_reopen_whose_scan_row_the_new_stream_refuses(void) {
     opts.analog_nfm_bandwidth_hz = 0;
     state.rtl_ctx = NULL;
     freeState(&state);
+    return rc;
+}
+
+/*
+ * Issue #578: a config apply's rollback starts the input that ran on the receive profile its stream ran. The apply runs
+ * under a scan row's suspended scope, whose options are the configured settings, while the stream ran the row over
+ * them. An Analog-configured session on an Airspy at a 12 kHz DSP bandwidth (19,531 Hz) scans a typed NXDN48 row, whose
+ * digital profile the stream runs, with a configured NFM width of 25 kHz that rate cannot filter (the DSP bandwidth was
+ * lowered while the row ran, reopening the stream on the row). A config then reopens the input as a SoapySDR device
+ * that does not open: started again on the configured monitor, the Airspy would refuse 25 kHz and leave no input, so
+ * it starts on the row's NXDN48 profile, and the configured settings go back for the row to resume over. The same holds
+ * when the reopened stream's start refuses the configured width itself: a reopen opens on the configured settings,
+ * holding their width to the rate the new stream runs whatever row is on air, as every reopen holds the configured
+ * width (the analog monitor the scan leaves back to), so the config is not applied and the Airspy starts on the row.
+ */
+static int
+test_config_rollback_restarts_the_profile_the_stream_ran(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static void* fake_ctx[2];
+    static const char* const labels[] = {"rollback on the row: device fails", "rollback on the row: width refused"};
+    int rc = 0;
+    for (int refused = 0; refused <= 1; ++refused) {
+        const char* label = labels[refused];
+        init_nfm_session(&opts, &state, (RtlSdrContext*)fake_ctx);
+        DSD_SNPRINTF(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", "airspy");
+        opts.rtl_dsp_bw_khz = 12;
+        opts.analog_nfm_bandwidth_hz = 25000;
+        opts.scanner_mode = 1;
+        rc |= expect_int(label, dsd_scan_mode_enter(&opts, &state, DSD_SCAN_MODE_NXDN48), 0);
+        rc |= expect_int(label, dsd_scan_mode_options(&opts, &state, NULL), 0);
+        reset_rx_family_wrap();
+        g_config_rtl_open_ok = 1;
+        g_config_rtl_device_rate_hz = 19531;
+        g_config_rtl_fail_starts = refused ? 0 : 1; /* the SoapySDR device does not open */
+        rc |= submit_config_device_source(&opts, &state, DSDCFG_INPUT_SOAPY, 0, 25000, label);
+        rc |= expect_int(label, dsd_app_command_test_last_failed(), 1);
+        rc |= expect_toast(label, &state,
+                           refused
+                               ? "Config not applied: NFM 25 kHz does not fit the 19.531 kHz DSP rate (max 16.377 kHz)"
+                               : "Config not applied: the SoapySDR input did not start (see log)");
+        rc |= expect_restarted_on(label, &opts, &state, "airspy");
+        rc |= expect_int(label, g_config_rtl_create_analog_only, 0);
+        rc |= expect_int(label, opts.rtl_dsp_bw_khz, 12);
+        rc |= expect_int(label,
+                         dsd_scan_mode_active(&state) == DSD_SCAN_MODE_NXDN48 && !dsd_scan_mode_updating(&state)
+                             && opts.analog_only == 0 && opts.frame_nxdn48 == 1,
+                         1);
+        const dsd_scan_settings* configured = dsd_scan_mode_configured_view(&state);
+        rc |= expect_int(label,
+                         configured && configured->analog_only == 1 && configured->analog_demod == DSD_ANALOG_DEMOD_FM
+                             && configured->analog_nfm_bandwidth_hz == 25000,
+                         1);
+        dsd_scan_mode_leave(&opts, &state);
+        reset_config_rtl_wrap();
+        opts.scanner_mode = 0;
+        opts.analog_nfm_bandwidth_hz = 0;
+        state.rtl_ctx = NULL;
+        freeState(&state);
+    }
     return rc;
 }
 
@@ -12947,6 +13032,7 @@ main(void) {
     rc |= test_config_reopen_that_changes_the_row_modulation_times_the_row();
     rc |= test_config_reopen_times_the_row_for_the_modulation_it_runs();
     rc |= test_config_reopen_whose_scan_row_the_new_stream_refuses();
+    rc |= test_config_rollback_restarts_the_profile_the_stream_ran();
     rc |= test_config_reopen_that_stops_the_scanner_skips_the_row();
     rc |= test_config_with_no_stream_keeps_its_mode_when_the_scan_row_cannot_run();
     rc |= test_config_with_no_stream_keeps_its_width_when_the_scan_row_cannot_run();

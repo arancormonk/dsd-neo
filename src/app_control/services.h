@@ -457,7 +457,8 @@ int svc_leave_channel_scan(dsd_opts* opts, dsd_state* state);
  * support.
  *
  * A scoped command compares it across its run to tell whether it started a stream while a scan row's scope was
- * suspended (issue #578): that stream opened on the configured settings, not the row's. The record of the last analog
+ * suspended (issue #578): that stream opened on other settings than the row the resume puts back (a reopen on the
+ * configured settings, a rollback's restart on the row as the stream it replaced ran it). The record of the last analog
  * monitor request goes with the stream it counts (svc_take_monitor_request_outcome()). Decoder thread only, as every
  * restart is.
  */
@@ -515,8 +516,8 @@ typedef struct {
  * a request queued before the leave, left it on a rate and a monitor that run it), a leave for the kind's default
  * included when the monitor's channel filter runs that default's design (the AM default, published as 6 kHz). A
  * request made of a stream app-control has replaced since (a restart, a reopen, an input switch, a rollback's restart:
- * svc_rtl_start_count() moved) reads TAKEN, whatever the old stream did with it: the new stream opened on the
- * configured options, and what it publishes says nothing of the old one's refusal. A refusal, at once or where the
+ * svc_rtl_start_count() moved) reads TAKEN, whatever the old stream did with it: the new stream opened on the options
+ * it was given, not on the old one's requests, and what it publishes says nothing of the old one's refusal. A refusal, at once or where the
  * request landed, of a request that a receive request queued after it, from anywhere, has superseded (a CQPSK toggle,
  * a symbol profile) is reported with svc_monitor_refusal::superseded set: that later request decides what the front end
  * runs, so a refused scan leave is left to it, a switch onto the monitor armed before the leave included, while any
@@ -654,6 +655,14 @@ int svc_rtl_restart_locked(dsd_opts* opts, dsd_state* state);
  * (a switch to PCM leaves the stream running, recording) is not started again, but the change stopped it all the same
  * (@p stream_stopped), so the capture stops for the session the same way, and the log says so: the next radio start
  * would write over what that stream recorded.
+ *
+ * The input starts on the receive profile the stream the change stopped ran. That is the options in force, except
+ * under a scan row's suspended scope (a config apply), where the options hold the configured settings while the stream
+ * ran the row's constraint over them (dsd_scan_mode_suspended_effective()): a typed digital row's profile, or an
+ * analog row's own width, at a rate that need not run the configured analog width (a DSP bandwidth lowered while a
+ * digital row ran leaves it one the rate cannot filter, which a start on the configured monitor would refuse, leaving
+ * no input). The start opens on the row's constraint, and the configured settings go back once it has, for the
+ * scope's resume to put the row back over.
  *
  * The failed start can also have latched a failure of the input that replaced the one that ran for the session (an
  * Airspy that did not open latches a device failure, which turns the session's normal end into a failure exit:

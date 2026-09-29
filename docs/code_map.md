@@ -242,7 +242,9 @@ Tests: `tests/engine/test_engine_trunk_scan.c` (`ENGINE_TRUNK_SCAN`) and
   profiles use the restored SPS hunt index, so AUTO's saved timing and the frontend's rate/levels agree after leaving a
   row. `dsd_scan_mode_row_options()` borrows the installed nonsecret row options (valid while suspended and on held
   snapshots), and `dsd_scan_mode_row()` gives the row's class while suspended too, which `dsd_scan_mode_active()`
-  reports as INHERIT then (a config apply asks it for the analog monitor the resume puts back, issue #578). Row
+  reports as INHERIT then (a config apply asks it for the analog monitor the resume puts back, issue #578), and
+  `dsd_scan_mode_suspended_effective()` the settings in force when the scope was suspended (the row over the baseline,
+  which a rollback restarts the input on, issue #578). Row
   options are applied through a per-field table (`scan_option_appliers[]`), and the row squelch is pushed to the RTL
   demodulator from the scope's entry points only, once per row change. `dsd_scan_mode_enter()` never pushes, so every
   caller must follow it with `dsd_scan_mode_options()` (NULL for a row without options);
@@ -960,14 +962,21 @@ installs from `src/engine/trunk_tuning.c` in `src/engine/trunk_tuning_hooks_inst
   is the session's anyway), restarts that input, toasts `Config not applied: <why>` and fails the apply. What
   runs after it (the other hot restarts, the output reconfigure, `apply_cfg_receive_family_change()`) sees the receive
   side the session ran, so no analog entry is armed and no profile is published for the refused settings. Under a scan
-  row the apply, and so its reopen or rollback restart, runs inside the suspended scope, so the stream it starts opens
-  on the configured settings rather than the row's; the row then compares unchanged when the scope resumes, so
+  row the apply, and so its reopen or rollback restart, runs inside the suspended scope, whose options are the
+  configured settings. The reopen's stream opens on those, so its start holds the configured analog width to the rate
+  it delivers even while a digital row runs, as every reopen holds that width (the scan leaves back to that monitor),
+  and a width it refuses there rolls the config back. The rollback's restart opens on what the stream it replaces ran
+  instead (`svc_rtl_restart_recovery_locked()`, from `dsd_scan_mode_suspended_effective()`), with the configured
+  settings put back once it has: a typed digital row's profile, say, whose old rate need not run the configured width
+  (a DSP bandwidth lowered while that row ran), which a restart on the configured monitor would refuse, leaving no
+  input. Either stream opened on settings other than the row the resume puts back, and the row then compares unchanged
+  when the scope resumes, so
   `apply_cmd_scoped()` notes any stream started meanwhile (`svc_rtl_start_count()`, which `svc_rtl_restart_locked()`
   counts) and `ui_resume_scope_and_publish()` publishes the row's effective profile to it anyway, without ending the
   decoder's acquisition (issue #578; this also covers a reopen that starts, issue #583's first item). That publish,
   and the one for a row the update changed (a `[demod]` that turns a P25 row to CQPSK), is timed by one rule for the
   rate the new stream runs the row at (`ui_started_stream_rate()`), not with the timing the decoder kept from the old
-  stream nor the one the resume took from the rate the new stream delivers on the configured settings (a CQPSK row read
+  stream nor the one the resume took from the rate the new stream delivers on the settings it opened on (a CQPSK row read
   at the symbol-rate output has one sample per symbol, which the request would clamp to 2). A front end still on the
   analog family under a digital configured mode is switched to the digital family, which lands where an open of the
   mode would (the CQPSK family `DSD_NEO_CQPSK` names when set, with an output chain designed for it), so a row with a

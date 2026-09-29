@@ -63,8 +63,8 @@ symbol_profile_configured_digital(const dsd_opts* opts, const dsd_state* state) 
  * that request decides the front end, and a refused leave is left to it (svc_monitor_refusal::superseded).
  *
  * The record goes with the stream the request was made of (stream_starts: svc_rtl_start_count() then). A stream
- * app-control starts since (a restart, a reopen, an input switch or the restart of a rollback) opens on the configured
- * options, and its open settles whatever the old stream left queued and forgets a refusal it recorded
+ * app-control starts since (a restart, a reopen, an input switch or the restart of a rollback) opens on the options it
+ * is given, and its open settles whatever the old stream left queued and forgets a refusal it recorded
  * (rtl_stream_receive_request_outcome()), so the record says nothing of it: it reads as taken, never as not run, and a
  * leave refused at once is not read against what the new stream publishes.
  */
@@ -94,7 +94,7 @@ symbol_profile_record_on_this_stream(void) {
 
 /* Whether the last request queued here has not reached the front end: still queued, or refused (where it landed, or at
    once by a scan leave) and not yet collected (svc_take_monitor_request_outcome()), by the stream running now. One the
-   stream settled was taken there, and its width ran; a stream started since opened on the configured options. */
+   stream settled was taken there, and its width ran; a stream started since opened on the options it was given. */
 static int
 symbol_profile_earlier_not_run(void) {
     return g_monitor_request.pending && symbol_profile_record_on_this_stream()
@@ -452,7 +452,7 @@ svc_take_monitor_request_outcome(const dsd_opts* opts, const dsd_state* state, s
         return SVC_MONITOR_REQUEST_NONE;
     }
     if (!symbol_profile_record_on_this_stream()) {
-        /* A stream app-control started since opened on the configured options: nothing the old stream did with the
+        /* A stream app-control started since opened on the options it was given: nothing the old stream did with the
            request is left to reconcile. */
         g_monitor_request.pending = 0;
         return SVC_MONITOR_REQUEST_TAKEN;

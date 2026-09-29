@@ -1492,6 +1492,26 @@ svc_recovery_stop_capture(dsd_opts* opts, int stream_stopped) {
     return 1;
 }
 
+/* Start the input the options describe on the receive profile the stream the failed change stopped ran (issue #578).
+   Outside a scan row's suspended scope that is the options in force. A config apply runs with the scope suspended, so
+   the options hold the configured settings, while the stream ran the row's constraint over them
+   (dsd_scan_mode_suspended_effective()): a typed digital row's profile, or an analog row's own width, at a rate that
+   need not run the configured analog width (a DSP bandwidth lowered while a digital row ran). The start opens on that
+   constraint, and the configured settings go back once it has, for the resume to put the row back over. */
+static int
+svc_rtl_start_on_the_profile_that_ran_locked(dsd_opts* opts, dsd_state* state) {
+    const dsd_scan_settings* ran = dsd_scan_mode_suspended_effective(state);
+    if (!ran) {
+        return svc_rtl_start_locked(opts, state);
+    }
+    dsd_scan_settings configured;
+    dsd_scan_settings_capture(opts, state, &configured);
+    dsd_scan_settings_restore(ran, opts, state);
+    const int rc = svc_rtl_start_locked(opts, state);
+    dsd_scan_settings_restore(&configured, opts, state);
+    return rc;
+}
+
 int
 svc_rtl_restart_recovery_locked(dsd_opts* opts, dsd_state* state, int stream_stopped,
                                 const dsd_input_failure* failure_before, int* out_capture_stopped) {
@@ -1520,7 +1540,7 @@ svc_rtl_restart_recovery_locked(dsd_opts* opts, dsd_state* state, int stream_sto
         dsd_input_failure_report((dsd_input_failure_kind)failure_before->kind, failure_before->native_code);
         put_back_generation = dsd_input_failure_generation();
     }
-    const int rc = svc_rtl_start_locked(opts, state);
+    const int rc = svc_rtl_start_on_the_profile_that_ran_locked(opts, state);
     if (rc != 0 && failure_before) {
         dsd_input_failure now;
         dsd_input_failure_get(&now);
