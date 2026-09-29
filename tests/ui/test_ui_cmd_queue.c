@@ -9950,6 +9950,169 @@ test_refused_leave_off_the_monitor_reverts_a_switch_between_kinds(void) {
     return rc;
 }
 
+/* When the front end refuses a request: at once, at the rate it publishes, or where the request lands. */
+typedef enum { REFUSED_AT_ONCE, REFUSED_ON_LANDING } refusal_timing;
+
+/* A switch between FM and AM armed under a scan row, whose leave the front end refuses keeping the kind the session
+   ran, and whose revert's own monitor request it refuses as well
+   (test_refused_leave_revert_refused_gets_the_leave_policy()). */
+typedef struct {
+    const char* name;
+    int kind;               /* the kind the session runs, and the revert goes back to */
+    int width_hz;           /* ... with this configured width */
+    dsd_scan_mode row_mode; /* the row scanned */
+    int row_width_hz;       /* an nfm row's own width (0: none) */
+    int to_kind;            /* the kind the switch under the row is onto */
+    int to_width_hz;        /* ... with this configured width */
+    int pending_width_hz;   /* a width of kind set while the switch is pending (0: none) */
+    int rate_hz;            /* the rate the row's retune left the front end on */
+    int refuses_above_hz;   /* the widest width the front end queues at that rate */
+    int check_refuses;      /* rtl_stream_check_analog_profile() refuses (the AM default, a pending width) */
+    int monitor;            /* the front end keeps the monitor of kind at kept_width_hz (0: the row's profile) */
+    int kept_width_hz;      /* the width the monitor runs, or the width setting of kind off it */
+    int asked_hz;           /* what the revert asks of the front end, the hold applied */
+    int end_width_hz;       /* the configured width of kind the decoder ends on */
+    int end_calls;          /* monitor requests made in all */
+    int end_request_hz;     /* the width of kind the last one asked for */
+    const char* toast;
+} leave_revert_case;
+
+/* Stop the scanner under the row @p c scans, with the switch armed: the front end refuses the leave's return (@p leave),
+   keeping what @p c says, the decoder goes back to @p c's kind, and the front end refuses the monitor request the revert
+   makes as well (@p revert), keeping the same. */
+static int
+stop_scanner_refusing_the_leave_and_its_revert(dsd_opts* opts, dsd_state* state, const leave_revert_case* c,
+                                               refusal_timing leave, refusal_timing revert, const char* label) {
+    if (leave == REFUSED_AT_ONCE) {
+        g_fake_analog_req_max_hz = c->refuses_above_hz;
+    }
+    int rc = submit_scanner_stop(opts, state, label);
+    if (leave == REFUSED_AT_ONCE) {
+        return rc;
+    }
+    rc |= expect_last_monitor_request(label, 1, c->to_kind, c->to_width_hz);
+    demod_thread_refuses_leave_keeping(1, c->monitor, c->kind, c->kept_width_hz);
+    if (revert == REFUSED_AT_ONCE) {
+        g_fake_analog_req_max_hz = c->refuses_above_hz;
+    }
+    state->ui_msg[0] = '\0';
+    (void)dsd_app_drain_cmds(opts, state);
+    if (revert == REFUSED_ON_LANDING) {
+        char tag[192];
+        DSD_SNPRINTF(tag, sizeof tag, "%s: the revert asks for the kind it ran", label);
+        rc |= expect_last_monitor_request(tag, 2, c->kind, c->asked_hz);
+        rc |= expect_toast(tag, state, "Failed: ");
+        demod_thread_refuses_leave_keeping(1, c->monitor, c->kind, c->kept_width_hz);
+        state->ui_msg[0] = '\0';
+        (void)dsd_app_drain_cmds(opts, state);
+    }
+    return rc;
+}
+
+/* The configured width of analog @p kind in @p opts. */
+static int
+configured_width_of(const dsd_opts* opts, int kind) {
+    return kind == DSD_ANALOG_DEMOD_AM ? opts->analog_am_bandwidth_hz : opts->analog_nfm_bandwidth_hz;
+}
+
+/* Run @p c in the timings @p leave and @p revert, and check what the decoder ends on. */
+static int
+run_leave_revert_case(const leave_revert_case* c, refusal_timing leave, refusal_timing revert, const char* timing) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static void* fake_ctx[2];
+    char label[128];
+    char tag[192];
+    DSD_SNPRINTF(label, sizeof label, "%s, %s", c->name, timing);
+    dsd_scan_option_values row = {0};
+    if (c->row_width_hz > 0) {
+        row.present = DSD_SCAN_OPT_BANDWIDTH;
+        row.channel_bw_hz = c->row_width_hz;
+    }
+    int rc = init_scan_row_on_analog(&opts, &state, (RtlSdrContext*)fake_ctx, c->kind, c->width_hz, c->row_mode,
+                                     c->row_width_hz > 0 ? &row : NULL, label);
+    if (c->to_kind == DSD_ANALOG_DEMOD_AM) {
+        rc |= submit_am_width(&opts, &state, c->to_width_hz, label);
+        rc |= submit_decode_mode(&opts, &state, DSDCFG_MODE_AM, label);
+    } else {
+        rc |= submit_nfm_width(&opts, &state, c->to_width_hz, label);
+        rc |= submit_decode_mode(&opts, &state, DSDCFG_MODE_ANALOG, label);
+    }
+    if (c->pending_width_hz > 0) {
+        rc |= (c->kind == DSD_ANALOG_DEMOD_AM) ? submit_am_width(&opts, &state, c->pending_width_hz, label)
+                                               : submit_nfm_width(&opts, &state, c->pending_width_hz, label);
+    }
+    rc |= expect_int(label, g_analog_req_calls, 0);
+    g_fake_demod_rate_hz = c->rate_hz;
+    g_analog_check_result = c->check_refuses ? -1 : 0;
+    if (c->monitor) {
+        g_fake_monitor_kind = c->kind;
+        g_fake_monitor_width_hz = c->kept_width_hz;
+        g_fake_monitor_lpf_on = 1;
+    }
+    rc |= stop_scanner_refusing_the_leave_and_its_revert(&opts, &state, c, leave, revert, label);
+    DSD_SNPRINTF(tag, sizeof tag, "%s: back on the kind it ran", label);
+    rc |= expect_int(tag, opts.analog_only == 1 && opts.analog_demod == c->kind, 1);
+    DSD_SNPRINTF(tag, sizeof tag, "%s: its configured width", label);
+    rc |= expect_int(tag, configured_width_of(&opts, c->kind), c->end_width_hz);
+    DSD_SNPRINTF(tag, sizeof tag, "%s: the other kind's width kept", label);
+    rc |= expect_int(tag, configured_width_of(&opts, c->to_kind), c->to_width_hz);
+    DSD_SNPRINTF(tag, sizeof tag, "%s: the last monitor request", label);
+    rc |= expect_last_monitor_request(tag, c->end_calls, c->kind, c->end_request_hz);
+    DSD_SNPRINTF(tag, sizeof tag, "%s: toast", label);
+    rc |= expect_toast(tag, &state, c->toast);
+    state.ui_msg[0] = '\0';
+    (void)dsd_app_drain_cmds(&opts, &state);
+    DSD_SNPRINTF(tag, sizeof tag, "%s: reported once", label);
+    rc |= expect_str(tag, state.ui_msg, "");
+    finish_scan_row_on_analog(&opts, &state);
+    return rc;
+}
+
+/*
+ * Issue #578: a switch between FM and AM armed under a scan row goes back when the scan's leave is refused keeping the
+ * other kind, and the monitor request that revert makes, for the kind the front end kept, is refused as well: the rate
+ * a row's retune left cannot filter that kind's width either. The revert is part of the leave, so the leave's "kept
+ * width, else default" holds for the kind it restores:
+ * - an -fA session with NFM 16 kHz switched to AM 10 kHz under an NXDN48 row and left at a 7.5 kHz rate goes back to
+ *   Analog on the NFM default, which is asked for and configured, rather than on NFM 16 kHz with the front end still on
+ *   the row's digital filter and no monitor it can run;
+ * - an -fM session with AM 10 kHz switched to Analog goes back to AM with its 10 kHz, which the AM default cannot
+ *   replace at that rate: the toast says so;
+ * - an NFM width changed while the switch was pending, which the rate cannot filter, goes back to the 12.5 kHz the
+ *   front end holds before the revert asks for it (ui_hold_reverted_analog_width()), and the leave's rule settles what
+ *   was asked: the NFM default;
+ * - under an nfm row with its own 12.5 kHz, whose monitor the front end keeps, the configured 16 kHz takes the 12.5 kHz
+ *   that monitor runs, and nothing more is asked.
+ * Every timing ends the same: each refusal at once, at the rate the front end publishes, or where its request lands,
+ * and the revert's refused at once after a leave refused where it lands (a retune moved the published rate in
+ * between). The toast names the width refused for the kind restored and what the monitor runs, once.
+ */
+static int
+test_refused_leave_revert_refused_gets_the_leave_policy(void) {
+    static const leave_revert_case cases[] = {
+        {"nfm 16k -> am under a row", DSD_ANALOG_DEMOD_FM, 16000, DSD_SCAN_MODE_NXDN48, 0, DSD_ANALOG_DEMOD_AM, 10000,
+         0, 7500, 5000, 0, 0, 16000, 16000, 0, 3, 0,
+         "Refused: NFM 16 kHz does not fit the 7.5 kHz DSP rate; the monitor is back on the NFM default"},
+        {"am 10k -> analog under a row", DSD_ANALOG_DEMOD_AM, 10000, DSD_SCAN_MODE_NXDN48, 0, DSD_ANALOG_DEMOD_FM,
+         16000, 0, 7500, 5000, 1, 0, 10000, 10000, 10000, 2, 10000,
+         "Refused: AM 10 kHz does not fit the 7.5 kHz DSP rate; the AM default does not fit it either"},
+        {"nfm 12.5k -> am, 16k set while pending", DSD_ANALOG_DEMOD_FM, 12500, DSD_SCAN_MODE_NXDN48, 0,
+         DSD_ANALOG_DEMOD_AM, 10000, 16000, 7500, 5000, 1, 0, 12500, 12500, 0, 3, 0,
+         "Refused: NFM 12.5 kHz does not fit the 7.5 kHz DSP rate; the monitor is back on the NFM default"},
+        {"nfm 16k -> am under an nfm row's 12.5k", DSD_ANALOG_DEMOD_FM, 16000, DSD_SCAN_MODE_NFM, 12500,
+         DSD_ANALOG_DEMOD_AM, 15000, 0, 16000, 13200, 0, 1, 12500, 16000, 12500, 2, 16000,
+         "Refused: NFM 16 kHz does not fit the 16 kHz DSP rate; the monitor keeps NFM 12.5 kHz"},
+    };
+    int rc = 0;
+    for (size_t i = 0; i < sizeof cases / sizeof cases[0]; i++) {
+        rc |= run_leave_revert_case(&cases[i], REFUSED_AT_ONCE, REFUSED_AT_ONCE, "both at once");
+        rc |= run_leave_revert_case(&cases[i], REFUSED_ON_LANDING, REFUSED_ON_LANDING, "both on landing");
+        rc |= run_leave_revert_case(&cases[i], REFUSED_ON_LANDING, REFUSED_AT_ONCE, "leave on landing, revert at once");
+    }
+    return rc;
+}
+
 /* A DMR session on an RTL-SDR input at a 16 kHz DSP bandwidth, with an explicit NFM width stored while digital (the
    front end is asked with the fake's answer, so a width the rate cannot filter gets as far as the request). */
 static void
@@ -13575,6 +13738,7 @@ main(void) {
     rc |= test_scan_leave_record_goes_with_its_stream();
     rc |= test_refused_leave_at_once_reads_the_am_default_it_asked_for();
     rc |= test_refused_leave_off_the_monitor_reverts_a_switch_between_kinds();
+    rc |= test_refused_leave_revert_refused_gets_the_leave_policy();
     rc |= test_refused_switch_onto_analog_puts_the_mode_back();
     rc |= test_refused_switch_onto_analog_with_a_width_set_after_it();
     rc |= test_refused_switch_onto_analog_under_a_row();

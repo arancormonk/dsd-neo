@@ -894,8 +894,16 @@ installs from `src/engine/trunk_tuning.c` in `src/engine/trunk_tuning_hooks_inst
   change made while the leave was still queued replaces its request and carries the leave on; a switch onto the monitor
   armed before it reverts first (`ui_revert_analog_entry()`) when the front end kept the digital family or the other
   kind, and is dropped when it kept the analog family of the kind asked for, unless a later request superseded the
-  leave or the scan goes on, as above; a
-  DSP-menu CQPSK-off refusal is no leave and keeps CQPSK on. A typed row's retune still in flight when a leave was accepted can land its symbol profile over the monitor,
+  leave or the scan goes on, as above. That revert is part of the leave: its request for the kind it puts back carries
+  the leave on (`svc_publish_symbol_profile_after_scan_leave()`), so when the rate the row left cannot filter that
+  kind's width either (NFM 16 kHz after a switch to AM under an NXDN48 row, left at 7.5 kHz), the refusal, at once
+  (`ui_settle_leave_revert_refused_at_once()`, from what the front end kept for the leave) or where it lands, is
+  reconciled for that kind by the same rule: the width its monitor kept, else its default (`Refused: NFM 16 kHz does
+  not fit the 7.5 kHz DSP rate; the monitor is back on the NFM default`, replacing the revert's `Failed:` toast), an AM
+  default the rate refuses too leaving the width as it is, rather than an analog decoder on a width the front end
+  cannot filter over the row's digital profile. A width of that kind changed while the switch was pending, which the
+  rate cannot filter, goes back to the one the front end holds first (`ui_hold_reverted_analog_width()`), and the rule
+  settles what the revert then asked for. A DSP-menu CQPSK-off refusal is no leave and keeps CQPSK on. A typed row's retune still in flight when a leave was accepted can land its symbol profile over the monitor,
   as any retune without a family does (Per-channel decoder modes, above); that is no refusal, and nothing here
   reconciles it. A switch to Analog or AM (`DECODE_MODE_SET`, a config's `[mode]`) holds an explicit
   width, or the AM width, to the rate first, under a scan row as well (`ui_check_mode_receive_profile()`); a `[mode]`

@@ -226,12 +226,15 @@ int svc_publish_symbol_profile_changing_width(const dsd_opts* opts, dsd_state* s
 
 /**
  * @brief svc_publish_symbol_profile_changing_width() for the kind's default a refused scan leave falls back on (issue
- * #578), with @p configured_before_hz the configured width from before that fallback.
+ * #578), with @p configured_before_hz the configured width from before that fallback, and for the mode a refused leave
+ * puts back (a switch between FM and AM armed under the row, which the front end never made), with -1.
  *
  * The analog monitor request it makes carries the leave on, as one that replaces a leave's request still queued does
- * (svc_publish_analog_bandwidth()): a refusal of the default where it lands (a retune in flight moved the rate again)
- * is collected with svc_monitor_refusal::scan_leave set, so the drain reconciles it as a refused leave, putting the
- * configured width from before the fallback back, rather than as an analog entry nothing armed.
+ * (svc_publish_analog_bandwidth()): a refusal where it lands (a retune in flight moved the rate again for the default,
+ * or the rate the row left cannot filter the width of the kind put back either) is collected with
+ * svc_monitor_refusal::scan_leave set, so the drain reconciles it as a refused leave, putting the configured width from
+ * before the fallback back, or the kind put back on the width its monitor kept or on its default, rather than as an
+ * analog entry nothing armed or a width change that left the width as it was.
  *
  * @return As svc_publish_symbol_profile().
  */
@@ -495,8 +498,8 @@ typedef struct {
                            family, or the analog family under a symbol profile applied on its own (a typed digital scan
                            row's channel profile, CQPSK), where @c kept_width_hz is a setting, not a width that runs. */
     int scan_leave;   /**< 1: a scan leave's return to the monitor (svc_leave_channel_scan()), a request that replaced
-                           one before it reached the front end, or the default a refused leave fell back on
-                           (svc_publish_symbol_profile_after_scan_leave()). */
+                           one before it reached the front end, or the default a refused leave fell back on, or the
+                           mode a refused leave put back asked for (svc_publish_symbol_profile_after_scan_leave()). */
     int superseded;   /**< 1: a receive request was queued after this one, from anywhere (a CQPSK toggle, a symbol
                            profile), and decides what the front end runs; one that replaced this request before it
                            reached the front end carries its record on instead, so it never counts. */

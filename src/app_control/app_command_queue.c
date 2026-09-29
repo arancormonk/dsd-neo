@@ -4392,6 +4392,24 @@ ui_hold_reverted_analog_width(dsd_opts* opts, const dsd_state* state, const svc_
     }
 }
 
+static int ui_settle_refused_scan_leave(dsd_opts* opts, dsd_state* state, const svc_monitor_refusal* refusal);
+
+/*
+ * A switch a refused scan leave put back (@p leave: what the front end kept when it refused the leave's return, issue
+ * #578), whose own monitor request for the kind restored the front end refused at once, at the rate it publishes: that
+ * request queued nothing, so the front end still runs what it kept, and the kind restored is reconciled as the leave's
+ * own kind would be (ui_settle_refused_scan_leave()), its toast replacing the revert's to say what the monitor runs.
+ */
+static void
+ui_settle_leave_revert_refused_at_once(dsd_opts* opts, dsd_state* state, const svc_monitor_refusal* leave) {
+    svc_monitor_refusal refusal = *leave;
+    refusal.kind = opts->analog_demod;
+    refusal.width_hz = dsd_opts_analog_width_hz(opts);
+    refusal.configured_before_hz = -1; /* the revert changed the kind, not the configured width of the one restored */
+    refusal.superseded = 0;
+    (void)ui_settle_refused_scan_leave(opts, state, &refusal);
+}
+
 /*
  * The front end refused the switch onto the analog monitor or onto its other kind (@p width_hz: the width of that kind
  * it refused, 0 for its default) and stayed digital, or on the kind it ran (@p kept: what it recorded keeping, for a
@@ -4400,6 +4418,15 @@ ui_hold_reverted_analog_width(dsd_opts* opts, const dsd_state* state, const svc_
  * timed for the demod rate the front end runs now, under a scan row's scope as well, and say why. Returns 1 when it
  * did; 0 when no switch is armed, or the configured settings have moved on since (a later command published its own
  * profile).
+ *
+ * A switch a refused scan leave puts back (@p kept carries the leave; the scan has stopped, so no scope is in force) is
+ * part of that leave (issue #578): the rate a row's retune left can filter the kind restored no better than the one
+ * the leave asked for, and the front end can still run the row's digital profile. The request for the kind restored
+ * carries the leave on (svc_publish_symbol_profile_after_scan_leave()), so a refusal where it lands is reconciled as a
+ * refused leave, and one at once is reconciled here the same way (ui_settle_leave_revert_refused_at_once()): the width
+ * a monitor of that kind kept, else the kind's default, the toast saying what the monitor runs. The hold runs before
+ * that request is made (a width of the kind restored changed while the switch was pending, which the rate cannot filter,
+ * goes back to the one the front end runs), so the leave's rule only settles what the request, held or not, asked for.
  */
 static int
 ui_revert_analog_entry(dsd_opts* opts, dsd_state* state, int width_hz, const svc_monitor_refusal* kept) {
@@ -4445,8 +4472,15 @@ ui_revert_analog_entry(dsd_opts* opts, dsd_state* state, int width_hz, const svc
     if (scoped) {
         (void)ui_resume_scope_and_publish(opts, state, &changed, NULL, 0);
     }
+    const int leave = kept && kept->scan_leave;
+    int refused_at_once = 0;
     if (reverted && !scoped) {
-        (void)svc_publish_symbol_profile(opts, state, dsd_scan_mode_effective_profile(opts, state));
+        const dsd_decode_mode_profile profile = dsd_scan_mode_effective_profile(opts, state);
+        if (leave) {
+            refused_at_once = svc_publish_symbol_profile_after_scan_leave(opts, state, profile, -1) != 0;
+        } else {
+            (void)svc_publish_symbol_profile(opts, state, profile);
+        }
         dsd_frame_sync_reset_acquisition(opts, state, opts->trunk_scan_enabled != 1);
         reset_call_tracking(opts, state, 1);
     }
@@ -4457,6 +4491,9 @@ ui_revert_analog_entry(dsd_opts* opts, dsd_state* state, int width_hz, const svc
         ui_set_toast(state, 5, "Failed: %s -> %s",
                      dsd_decode_mode_display_name(kind == DSD_ANALOG_DEMOD_AM ? DSDCFG_MODE_AM : DSDCFG_MODE_ANALOG),
                      why);
+    }
+    if (refused_at_once) {
+        ui_settle_leave_revert_refused_at_once(opts, state, kept);
     }
     return reverted;
 }
@@ -5994,8 +6031,11 @@ ui_scan_leave_fall_back_to_default(dsd_opts* opts, dsd_state* state, const svc_m
  * That request carries the leave on (svc_publish_symbol_profile_after_scan_leave()), so a default refused where it
  * lands (a retune in flight moved the rate again) comes back here as a refused default: nothing more is asked of the
  * front end, and the configured width goes back to the one from before the fallback. The toast says why either way,
- * naming the width the leave asked for. Only while the options are still the ones the leave put back (the analog
- * family, that kind, that width). A refusal left to what came after the leave never gets here
+ * naming the width the leave asked for. A switch between FM and AM armed under the row, which the leave's refusal put
+ * back, is part of the leave: the request for the kind put back carries the leave on too, and one the front end refuses
+ * at once or where it lands is settled here for that kind (ui_revert_analog_entry()), since the rate the row left can
+ * filter its width no better. Only while the options are still the ones the leave put back (the analog family, that
+ * kind, that width). A refusal left to what came after the leave never gets here
  * (ui_scan_leave_left_to_later(), which the drain asks first): a channel-map adopt or a RadioReference import that keeps
  * the scanner on gets its front end from the next row's tune, and is deliberately left to it, and a receive request
  * queued after the leave's, from anywhere (a CQPSK toggle made before the demod thread took the return), decides what
@@ -6989,7 +7029,9 @@ apply_cmd(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
  * from, and dropping the switch would leave no mode to go back to. The switch then stays armed, since the later request
  * or the row's tune, which is no monitor request, did not make it either, and the next monitor request's outcome
  * settles it (dropped once one is taken, gone back when one is refused off the kind asked for), or a revert finds the
- * configured settings moved on and drops it.
+ * configured settings moved on and drops it. A switch the leave's refusal put back asks the front end for the kind it
+ * restores with the leave carried on, so a refusal of that request, at once or where it lands, is reconciled for that
+ * kind as the leave's own would be.
  *
  * A request the demod thread never took (SVC_MONITOR_REQUEST_SUPERSEDED: a later request replaced it in the stream's
  * queue, or a retune's receive family retired it, as a scan that goes on to an analog row does with a leave's return)

@@ -54,9 +54,10 @@ symbol_profile_configured_digital(const dsd_opts* opts, const dsd_state* state) 
  * one kind is never the baseline of the other.
  *
  * A scan leave's return to the monitor is recorded with scan_leave set (issue #578), and so is a request that replaces
- * it before it reached the front end (a width change made while it was still queued), and the kind's default a refused
- * leave falls back on (svc_publish_symbol_profile_after_scan_leave()), with the width from before that fallback: a
- * refusal then reconciles the decoder with what the front end kept after a scan, rather than only put a width back. A
+ * it before it reached the front end (a width change made while it was still queued), the kind's default a refused
+ * leave falls back on (svc_publish_symbol_profile_after_scan_leave()), with the width from before that fallback, and
+ * the kind a refused leave puts back (a switch between FM and AM armed under the row), with none: a refusal then
+ * reconciles the decoder with what the front end kept after a scan, rather than only put a width back. A
  * leave the front end refused at once queued nothing (refused_at_once): seq is then the last request queued before it,
  * and what the front end kept is what it publishes once that one has settled. A request queued after the recorded one
  * that does not take the record over (a CQPSK toggle on, a symbol profile) supersedes it, whenever the refusal comes:
@@ -144,8 +145,8 @@ symbol_profile_note_width_change(int kind, int configured_before_hz) {
    is the configured width of that kind from before the change the request carries (-1: it carries none). A request
    that replaces a scan leave's return to the monitor before it reached the front end carries that return on (a width
    set right after the scanner stopped), and so does one made for a refused leave (@p scan_leave: the kind's default it
-   falls back on): its refusal is reconciled as the leave's would have been. Returns the request's result: -1 when the
-   front end refused it at the rate it publishes now, which leaves the record as it was. */
+   falls back on, or the kind it puts back): its refusal is reconciled as the leave's would have been. Returns the
+   request's result: -1 when the front end refused it at the rate it publishes now, which leaves the record as it was. */
 static int
 symbol_profile_request_monitor(const dsd_opts* opts, int configured_before_hz, int scan_leave) {
     /* Read before this request is queued: one the stream settled by then was taken there, and its width ran. */
@@ -233,7 +234,8 @@ svc_check_mode_receive_profile(const dsd_opts* opts, const dsd_state* state, dsd
 
 /* svc_publish_symbol_profile(), with @p configured_before_hz the configured width of the analog kind in force from
    before a change the caller made to the width it publishes (-1: none), which the analog monitor request records, and
-   @p scan_leave set for the default a refused scan leave falls back on, which that request carries the leave on for. */
+   @p scan_leave set for the default a refused scan leave falls back on, or the mode it puts back, which that request
+   carries the leave on for. */
 static int
 symbol_profile_publish(const dsd_opts* opts, dsd_state* state, dsd_decode_mode_profile profile,
                        int configured_before_hz, int scan_leave) {
