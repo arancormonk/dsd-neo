@@ -61,6 +61,12 @@ symbol_profile_configured_digital(const dsd_opts* opts, const dsd_state* state) 
  * is what it publishes once that one has settled. A request queued after the recorded one that does not take the record
  * over (a CQPSK toggle on, a symbol profile) supersedes it, whenever the refusal comes: that request decides the front
  * end, and a refused leave is left to it (svc_monitor_refusal::superseded).
+ *
+ * The record goes with the stream the request was made of (stream_starts: svc_rtl_start_count() then). A stream
+ * app-control starts since (a restart, a reopen, an input switch or the restart of a rollback) opens on the configured
+ * options, and its open settles whatever the old stream left queued and forgets a refusal it recorded
+ * (rtl_stream_receive_request_outcome()), so the record says nothing of it: it reads as taken, never as not run, and a
+ * leave refused at once is not read against what the new stream publishes.
  */
 static struct {
     int pending;
@@ -71,7 +77,8 @@ static struct {
     int first_configured_before_hz[2]; /* by dsd_analog_demod; -1: none */
     int scan_leave;
     int refused_at_once;
-} g_monitor_request = {0, 0U, 0, 0, 0, {-1, -1}, 0, 0};
+    unsigned int stream_starts;
+} g_monitor_request = {0, 0U, 0, 0, 0, {-1, -1}, 0, 0, 0U};
 
 /* A running RTL-family stream the decoder's requests reach. */
 static int
@@ -79,12 +86,18 @@ symbol_profile_rtl_running(const dsd_opts* opts, const dsd_state* state) {
     return opts->audio_in_type == AUDIO_IN_RTL && state->rtl_ctx;
 }
 
+/* Whether the last request queued here went to the stream running now: none app-control started since replaced it. */
+static int
+symbol_profile_record_on_this_stream(void) {
+    return g_monitor_request.stream_starts == svc_rtl_start_count();
+}
+
 /* Whether the last request queued here has not reached the front end: still queued, or refused (where it landed, or at
-   once by a scan leave) and not yet collected (svc_take_monitor_request_outcome()). One the stream settled was taken
-   there, and its width ran. */
+   once by a scan leave) and not yet collected (svc_take_monitor_request_outcome()), by the stream running now. One the
+   stream settled was taken there, and its width ran; a stream started since opened on the configured options. */
 static int
 symbol_profile_earlier_not_run(void) {
-    return g_monitor_request.pending
+    return g_monitor_request.pending && symbol_profile_record_on_this_stream()
            && (g_monitor_request.refused_at_once
                || rtl_stream_receive_request_outcome(g_monitor_request.seq) != RTL_STREAM_RX_REQUEST_SETTLED);
 }
@@ -103,6 +116,7 @@ symbol_profile_record_request(const dsd_opts* opts, uint32_t seq, int configured
     }
     g_monitor_request.pending = 1;
     g_monitor_request.seq = seq;
+    g_monitor_request.stream_starts = svc_rtl_start_count();
     g_monitor_request.kind = opts->analog_demod;
     g_monitor_request.width_hz = dsd_opts_analog_width_hz(opts);
     g_monitor_request.configured_before_hz = configured_before_hz;
@@ -387,8 +401,9 @@ svc_leave_channel_scan(dsd_opts* opts, dsd_state* state) {
    kind and effective width, not the width setting, so a width the channel filter sets reads as that explicit width
    (the kind's default design included) and one the DSP rate limits as the kind's default. Off the monitor (a typed
    digital row's channel profile, CQPSK under the analog family) the front end publishes no kind, and the request's
-   stands for it. Returns 0 when the front end runs what the leave asked for after all (a stream reopened on the
-   configured options since): nothing was refused. */
+   stands for it. Returns 0 when the front end runs what the leave asked for after all (a request queued before it that
+   asked the same landed on a rate that runs it): nothing was refused. A stream started since is never read here: the
+   record went with the stream it was made of (svc_take_monitor_request_outcome()). */
 static int
 symbol_profile_published_kept(svc_monitor_refusal* kept) {
     int kind = g_monitor_request.kind;
@@ -412,6 +427,12 @@ svc_take_monitor_request_outcome(const dsd_opts* opts, const dsd_state* state, s
     if (!opts || !state || !symbol_profile_rtl_running(opts, state)) {
         g_monitor_request.pending = 0; /* the stream it went to is gone; the next start opens on the options */
         return SVC_MONITOR_REQUEST_NONE;
+    }
+    if (!symbol_profile_record_on_this_stream()) {
+        /* A stream app-control started since opened on the configured options: nothing the old stream did with the
+           request is left to reconcile. */
+        g_monitor_request.pending = 0;
+        return SVC_MONITOR_REQUEST_TAKEN;
     }
     const int outcome = rtl_stream_receive_request_outcome(g_monitor_request.seq);
     if (outcome == RTL_STREAM_RX_REQUEST_PENDING) {

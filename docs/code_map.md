@@ -838,7 +838,11 @@ installs from `src/engine/trunk_tuning.c` in `src/engine/trunk_tuning_hooks_inst
   that one has settled what the stream publishes says what the front end kept (the monitor's kind and the width its
   channel filter runs, one the DSP rate limits reading as the default; off the monitor, the analog or digital family).
   One refused where it lands says it from the stream's record, which notes whether the front end kept the monitor
-  output. Either way, a request queued after the leave's, from anywhere, that does not carry it on (a CQPSK toggle made
+  output. The record goes with the stream it was made of: once app-control starts another (a restart, a reopen, an
+  input switch, a rollback's restart; `svc_rtl_start_count()` moved), it reads taken, since the new stream opened on
+  the configured options and its open settled what the old one left queued, so a leave refused at once is never read
+  against what the new stream publishes (whose AM default monitor, publishing the 6 kHz its filter runs, would read as
+  another refusal). Either way, a request queued after the leave's, from anywhere, that does not carry it on (a CQPSK toggle made
   before the demod thread took the return, a symbol profile) decides the front end instead
   (`svc_monitor_refusal::superseded`): the refusal is left to it, with nothing asked, the configured width as it is
   and no toast, since asking for the default would turn that CQPSK off again. A switch onto the monitor armed before

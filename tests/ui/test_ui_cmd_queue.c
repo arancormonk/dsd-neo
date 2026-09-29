@@ -9314,6 +9314,56 @@ test_superseded_scan_leave_keeps_an_armed_switch(void) {
     return rc;
 }
 
+/*
+ * Issue #578: what became of a scan leave's return to the monitor goes with the stream it was asked of. An -fM session
+ * with the AM default leaves a typed NXDN48 row at a 7.5 kHz rate that cannot filter that default, so the front end
+ * refuses the return at once, while the row's own symbol profile is still queued: the record waits for that profile to
+ * settle. The stream is then restarted (DSD_APP_CMD_RTL_RESTART) and opens on the configured options, running the AM
+ * default the old stream refused, which its monitor publishes as the 6 kHz its channel filter runs. That says nothing
+ * about the old stream's refusal: the record goes with the stream it was made on, the configured width stays the
+ * default, nothing more is asked of the front end, and the restart's toast stands. The same holds for a leave whose
+ * return was still queued when the stream was restarted.
+ */
+static int
+test_scan_leave_record_goes_with_its_stream(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static void* fake_ctx[2];
+    int rc = 0;
+    for (int at_once = 1; at_once >= 0; at_once--) {
+        const char* label = at_once ? "leave at once, then a restart" : "leave queued, then a restart";
+        rc |= init_scan_row_on_analog(&opts, &state, (RtlSdrContext*)fake_ctx, DSD_ANALOG_DEMOD_AM, 0,
+                                      DSD_SCAN_MODE_NXDN48, NULL, label);
+        g_fake_demod_rate_hz = 7500;
+        g_analog_req_result = at_once ? -1 : 0;
+        ++g_fake_rx_seq; /* the row's symbol profile, not taken yet */
+        rc |= submit_scanner_stop(&opts, &state, label);
+        rc |= expect_last_monitor_request(label, 1, DSD_ANALOG_DEMOD_AM, 0);
+        rc |= expect_int(label, strstr(state.ui_msg, "Refused") == NULL, 1);
+        g_analog_req_result = 0;
+        g_config_rtl_open_ok = 1;
+        rc |= expect_int(label, dsd_app_command_action(DSD_APP_CMD_RTL_RESTART), DSD_APP_COMMAND_SUBMIT_QUEUED);
+        state.ui_msg[0] = '\0';
+        rc |= expect_int(label, dsd_app_drain_cmds(&opts, &state), 1);
+        rc |= expect_int(label, state.rtl_ctx == (RtlSdrContext*)g_config_rtl_ctx, 1);
+        rc |= expect_toast(label, &state, "Applied: RTL stream restarted");
+        /* The new stream opened on the AM default: the open settled what the old one left queued, and its monitor runs
+           the 6 kHz the default's channel filter sets. */
+        stream_reopens(0);
+        g_fake_demod_rate_hz = 24000;
+        g_fake_monitor_kind = DSD_ANALOG_DEMOD_AM;
+        g_fake_monitor_width_hz = 6000;
+        g_fake_monitor_lpf_on = 1;
+        (void)dsd_app_drain_cmds(&opts, &state);
+        rc |= expect_int(label, opts.analog_am_bandwidth_hz, 0);
+        rc |= expect_int(label, opts.analog_only == 1 && opts.analog_demod == DSD_ANALOG_DEMOD_AM, 1);
+        rc |= expect_last_monitor_request(label, 1, DSD_ANALOG_DEMOD_AM, 0);
+        rc |= expect_str(label, state.ui_msg, "Applied: RTL stream restarted");
+        finish_scan_row_on_analog(&opts, &state);
+    }
+    return rc;
+}
+
 /* A DMR session on an RTL-SDR input at a 16 kHz DSP bandwidth, with an explicit NFM width stored while digital (the
    front end is asked with the fake's answer, so a width the rate cannot filter gets as far as the request). */
 static void
@@ -12865,6 +12915,7 @@ main(void) {
     rc |= test_refused_scan_leave_is_reported_and_reconciled();
     rc |= test_refused_scan_leave_is_left_to_a_later_request();
     rc |= test_superseded_scan_leave_keeps_an_armed_switch();
+    rc |= test_scan_leave_record_goes_with_its_stream();
     rc |= test_refused_switch_onto_analog_puts_the_mode_back();
     rc |= test_refused_switch_onto_analog_with_a_width_set_after_it();
     rc |= test_refused_switch_onto_analog_under_a_row();
