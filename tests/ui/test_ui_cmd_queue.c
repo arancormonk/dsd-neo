@@ -5211,6 +5211,10 @@ static int g_config_rtl_opened_capture;
    (airspy_monitor()) latches a device failure before the start returns success. One-shot. */
 static int g_config_rtl_airspy_stops_after_open;
 
+/* Issue #578: 1 has the next start that fails for a device reason open its device first, as one does that fails after
+   the capture opened (an Airspy then clears the latch), without opening the capture. One-shot. */
+static int g_config_rtl_next_fail_opens;
+
 /* Issue #578: the input failure a start latches for the session (dsd_input_failure_report()), as the io does: an Airspy
    that does not open latches a device failure, which ends the session with a failure exit
    (dsd_engine_run_with_lifecycle()), and one that opens clears the latch (airspy_source_open()). A width refused before
@@ -5236,6 +5240,7 @@ static void
 reset_config_rtl_wrap(void) {
     dsd_input_failure_clear();
     g_config_rtl_airspy_stops_after_open = 0;
+    g_config_rtl_next_fail_opens = 0;
     g_config_rtl_creates = 0;
     g_config_rtl_create_capture = -1;
     g_config_rtl_captures = 0;
@@ -5294,7 +5299,8 @@ __wrap_rtl_stream_start(RtlSdrContext* ctx) {
     } else {
         g_config_rtl_opened_capture = capturing && g_config_rtl_fail_after_capture;
         /* A start that failed after the capture opened had opened its device. */
-        config_rtl_start_latch(g_config_rtl_fail_after_capture);
+        config_rtl_start_latch(g_config_rtl_fail_after_capture || g_config_rtl_next_fail_opens);
+        g_config_rtl_next_fail_opens = 0;
     }
     return -1;
 }
@@ -12169,7 +12175,8 @@ expect_input_failure(const char* label, int kind) {
  * reopen both do, and so do a DSP bandwidth change and an Airspy setting, whose Airspy opens again; a failure latched
  * before the change (an rtl_tcp server that refused an earlier connect) stands as it was. A failure the restarted input
  * latches itself stands too: an Airspy whose device stops at once, which its monitor thread latches before the start
- * returns. A rollback whose restart fails as well leaves the session with no input, and the failure latched stands.
+ * returns. A rollback whose restart fails as well leaves the session with no input, and the failure latched stands,
+ * even one the restart latched that reads as the failure put back.
  */
 static int
 test_rollback_puts_back_the_input_failure(void) {
@@ -12283,6 +12290,30 @@ test_rollback_puts_back_the_input_failure(void) {
     rc |= switch_input_from(&opts, &state, DSD_APP_CMD_RTL_ENABLE_INPUT, "latch airspy to rtl, both fail drained");
     rc |= expect_int("latch airspy to rtl, both fail: no input", state.rtl_ctx == NULL, 1);
     rc |= expect_input_failure("latch airspy to rtl, both fail: the Airspy's", DSD_INPUT_FAILURE_DEVICE);
+
+    /* A device failure latched before a change that reopens the Airspy that ran (a DSP bandwidth change, an Airspy
+       setting): the Airspy opens, which clears the latch, and then fails, and the Airspy that ran does not open again,
+       latching that same failure itself. No input runs, and that failure stands though it reads as the one put back. */
+    for (int caller = 0; caller < 2; ++caller) {
+        const char* label = caller ? "latch airspy rate, fails as before" : "latch airspy bw 24, fails as before";
+        DSD_SNPRINTF(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", "airspy");
+        opts.audio_in_type = AUDIO_IN_RTL;
+        opts.rtl_dsp_bw_khz = 48;
+        state.rtl_ctx = (RtlSdrContext*)fake_ctx;
+        reset_config_rtl_wrap();
+        g_config_rtl_open_ok = 1;
+        g_config_rtl_fail_starts = 2;
+        g_config_rtl_next_fail_opens = 1;
+        dsd_input_failure_report(DSD_INPUT_FAILURE_DEVICE, -5);
+        if (caller == 0) {
+            rc |= submit_dsp_bandwidth(&opts, &state, 24, label);
+        } else {
+            rc |= submit_airspy_setting(&opts, &state, "airspy_sample_rate", "2500000", label);
+        }
+        rc |= expect_int(label, g_config_rtl_starts == 2 && g_config_rtl_next_fail_opens == 0, 1);
+        rc |= expect_int(label, state.rtl_ctx == NULL, 1);
+        rc |= expect_input_failure(label, DSD_INPUT_FAILURE_DEVICE);
+    }
 
     reset_config_rtl_wrap();
     state.rtl_ctx = NULL;

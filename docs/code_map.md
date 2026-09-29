@@ -627,6 +627,13 @@ Tests: `tests/engine/test_engine_trunk_scan.c` (`ENGINE_TRUNK_SCAN`) and
     or without curl and expat, so the no-expat configuration still builds it. `radioreference/rr_provenance.c`
     reads and writes the plain-text `<file>.rr` sidecars that make a generated CSV refreshable. Both
     frontends consume that header, so the Qt model and the terminal wizard cannot drift apart.
+  - Session input failure latch (`include/dsd-neo/runtime/input_failure.h`, `src/runtime/input_failure.c`): the last
+    failure of the session's input, kind and native code (`dsd_input_failure_report()`; `dsd_input_failure_clear()`
+    at the session's start and when an Airspy opens or an rtl_tcp server connects), which
+    `dsd_engine_run_with_lifecycle()` reads at the end to return 1 after a device failure. A mutex guards it, since
+    device threads report. `dsd_input_failure_generation()` counts its writes, a clear included, so a caller can tell
+    that something wrote the latch even when the write repeats the failure latched (the rollback restart,
+    `svc_rtl_restart_recovery_locked()`). Test: `RUNTIME_INPUT_FAILURE`.
 - Build files: `src/runtime/CMakeLists.txt`
 - Config docs: `docs/config-system.md`, `docs/radioreference-import.md`
 
@@ -904,7 +911,10 @@ installs from `src/engine/trunk_tuning.c` in `src/engine/trunk_tuning_hooks_inst
   (`ui_radio_input` takes it with the input, and `svc_airspy_reopen_impl()` before its reopen) once the stream the
   change left is stopped and before it starts anything (a PCM input starts nothing): a failure the restarted stream
   latches stands, even one an Airspy's monitor thread latches before the start returns, and a restart that fails keeps
-  its own failure, or the change's when it latched none, with no input running. Its log names the file
+  its own failure, even the very one put back (an Airspy that again does not open), or the change's when it latched
+  none (it wrote nothing to the latch, or left it clear: an Airspy that opened, then failed), with no input running.
+  What the restart wrote is told by the latch's write count (`dsd_input_failure_generation()`), read right after the
+  put-back, not by its value. Its log names the file
   as kept only when the start the change made never opened the capture file (`rtl_stream_start_opened_capture()`: a
   width its analog check refused, a device that did not open, a capture writer that failed before it opened the file);
   a start that opened it before failing (its workers, an Airspy that did not stream) or that ran and was undone had

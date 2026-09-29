@@ -5510,6 +5510,20 @@ add_test(
 )
 
 add_executable(
+    dsd-neo_test_runtime_input_failure
+    runtime/test_runtime_input_failure.c
+)
+target_include_directories(
+    dsd-neo_test_runtime_input_failure
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+target_link_libraries(
+    dsd-neo_test_runtime_input_failure
+    PRIVATE dsd-neo_runtime
+)
+add_test(NAME RUNTIME_INPUT_FAILURE COMMAND dsd-neo_test_runtime_input_failure)
+
+add_executable(
     dsd-neo_test_runtime_config_env
     runtime/test_runtime_config_env.cpp
 )

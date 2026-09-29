@@ -25,6 +25,11 @@ typedef struct {
 void dsd_input_failure_clear(void);
 void dsd_input_failure_report(dsd_input_failure_kind kind, int code);
 void dsd_input_failure_get(dsd_input_failure* out);
+/** The latch's write count: every dsd_input_failure_report(), dsd_input_failure_clear() included, advances it by one
+ * under the latch's lock, whether or not the value written differs from the one latched; a read does not. It wraps, so
+ * compare two reads only for equality: they differ when something wrote the latch in between, which a compare of the
+ * values read cannot tell when the write repeats the failure latched. */
+unsigned int dsd_input_failure_generation(void);
 dsd_input_failure_kind dsd_input_failure_classify_socket(int code);
 #ifdef __cplusplus
 }

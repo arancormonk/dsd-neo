@@ -1489,19 +1489,24 @@ svc_rtl_restart_recovery_locked(dsd_opts* opts, dsd_state* state, const dsd_inpu
     /* The input that ran runs again, so a failure the failed change latched is not the session's: the latch goes back
        to the one from before the change once the stream the change left is gone and before the restart starts
        anything, so a failure the restarted stream latches stands, even one its threads latch before its start returns
-       (an Airspy whose device stops at once). A restart that fails with the latch still reading the one put back (it
-       latched no failure of its own) leaves the change's failure in place, with no input running. */
+       (an Airspy whose device stops at once). A restart that fails and leaves no failure of its own latched gets the
+       change's back, with no input running: one that wrote nothing to the latch since the put-back, or whose writes
+       left it clear (an Airspy that opened, then failed). The latch's write count tells what the restart wrote, not
+       its value, which reads as the one put back when the restart latches that failure again (an Airspy that again
+       does not open); it is read right after the put-back, while no stream runs to write the latch. */
     svc_rtl_stop_locked(opts, state);
     dsd_input_failure failed;
     dsd_input_failure_get(&failed);
+    unsigned int put_back_generation = 0U;
     if (failure_before) {
         dsd_input_failure_report((dsd_input_failure_kind)failure_before->kind, failure_before->native_code);
+        put_back_generation = dsd_input_failure_generation();
     }
     const int rc = svc_rtl_start_locked(opts, state);
     if (rc != 0 && failure_before) {
         dsd_input_failure now;
         dsd_input_failure_get(&now);
-        if (now.kind == failure_before->kind && now.native_code == failure_before->native_code) {
+        if (dsd_input_failure_generation() == put_back_generation || now.kind == DSD_INPUT_FAILURE_NONE) {
             dsd_input_failure_report((dsd_input_failure_kind)failed.kind, failed.native_code);
         }
     }

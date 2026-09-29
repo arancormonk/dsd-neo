@@ -451,6 +451,9 @@ static int g_rtl_start_result = -1;
 /* Issue #578: a device failure (this native code; 0: none) the next start latches before it returns, as an Airspy's
    monitor thread does when the device stops right after the start launched it (airspy_monitor()). One-shot. */
 static int g_rtl_start_latches_code = 0;
+/* Issue #578: 1 has the next start clear the input failure latch first, as an Airspy that opens does
+   (airspy_source_open()), whether the start then fails or latches a failure after it. One-shot. */
+static int g_rtl_start_clears_latch = 0;
 /* Issue #578: whether the last create was handed an I/Q capture request, and how many creates were. */
 static int g_rtl_create_capture = -1;
 static int g_rtl_create_captures = 0;
@@ -514,6 +517,10 @@ rtl_stream_start(RtlSdrContext* ctx) {
     (void)ctx;
     note_rtl_lifecycle_call();
     g_rtl_start_calls++;
+    if (g_rtl_start_clears_latch) {
+        dsd_input_failure_clear();
+        g_rtl_start_clears_latch = 0;
+    }
     if (g_rtl_start_latches_code != 0) {
         dsd_input_failure_report(DSD_INPUT_FAILURE_DEVICE, g_rtl_start_latches_code);
         g_rtl_start_latches_code = 0;
@@ -884,6 +891,7 @@ reset_rtl_restart_stubs(void) {
     g_rtl_create_result = -1;
     g_rtl_start_result = -1;
     g_rtl_start_latches_code = 0;
+    g_rtl_start_clears_latch = 0;
     g_rtl_create_capture = -1;
     g_rtl_create_captures = 0;
 }
@@ -1039,6 +1047,28 @@ test_locked_restarts(void) {
         dsd_input_failure_report(DSD_INPUT_FAILURE_DEVICE, -5);
         rc |= expect_int(label, svc_rtl_restart_recovery_locked(&opts, &state, &failure_before, NULL) == 0, starts);
         rc |= expect_input_failure(label, DSD_INPUT_FAILURE_DEVICE, -7);
+    }
+    /* A recovery that fails latching the very failure that was put back (an Airspy that again does not open, with the
+       code it had before the change) latched it itself: it stands over the change's, here none (the Airspy the change
+       opened cleared the latch before a later step failed). */
+    const dsd_input_failure device_before = {DSD_INPUT_FAILURE_DEVICE, -7};
+    g_rtl_start_result = -1;
+    g_rtl_start_latches_code = -7;
+    dsd_input_failure_clear();
+    rc |= expect_int("recovery that fails with the failure put back",
+                     svc_rtl_restart_recovery_locked(&opts, &state, &device_before, NULL) != 0, 1);
+    rc |= expect_input_failure("recovery that fails with the failure put back keeps it", DSD_INPUT_FAILURE_DEVICE, -7);
+    /* A recovery that clears the latch (an Airspy that opens) and then fails latched no failure of its own: the change's
+       comes back, whether the one put back was a failure or none. */
+    const dsd_input_failure none_before = {DSD_INPUT_FAILURE_NONE, 0};
+    for (int none = 0; none <= 1; ++none) {
+        const char* label = none ? "recovery that clears, then fails, over none" : "recovery that clears, then fails";
+        g_rtl_start_result = -1;
+        g_rtl_start_clears_latch = 1;
+        dsd_input_failure_report(DSD_INPUT_FAILURE_DEVICE, -5);
+        rc |= expect_int(
+            label, svc_rtl_restart_recovery_locked(&opts, &state, none ? &none_before : &failure_before, NULL) != 0, 1);
+        rc |= expect_input_failure(label, DSD_INPUT_FAILURE_DEVICE, -5);
     }
     g_rtl_start_result = 0;
     dsd_input_failure_clear();

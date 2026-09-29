@@ -646,7 +646,9 @@ int svc_rtl_restart_locked(dsd_opts* opts, dsd_state* state);
  * session had latched before the change (@p failure_before) is put back once the stream the change left is stopped,
  * before the restart starts anything: a failure the restarted stream latches stands, including one its threads latch
  * before its start returns (an Airspy's monitor thread when the device stops at once). A restart that fails keeps the
- * failure it latched, or, having latched none, the change's, with no input running.
+ * failure it latched, even the very one put back (an Airspy that again does not open), or, having latched none (it
+ * wrote nothing to the latch, or left it clear: an Airspy that opened, then failed), the change's, with no input
+ * running. What the restart wrote is told by the latch's write count (dsd_input_failure_generation()), not its value.
  *
  * @param failure_before The input failure latched before the change started anything (dsd_input_failure_get()); NULL
  *                       leaves the latch alone.
