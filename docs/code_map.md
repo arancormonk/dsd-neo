@@ -929,7 +929,10 @@ installs from `src/engine/trunk_tuning.c` in `src/engine/trunk_tuning_hooks_inst
   so before the scope resumes the new stream is asked for the analog monitor the row puts back
   (`ui_scan_row_resumed_monitor()`: the kind of the row's class, read with `dsd_scan_mode_row()` while suspended, and
   the row's own width or the configured one; `svc_check_started_stream_analog()` at the rate the stream published when
-  it started). A SoapySDR or Airspy device sets a rate no check could know up front, so one that refuses it (an nfm
+  it started). A config that turns the conventional scanner off leaves the scope rather than resume it, by the rule
+  `apply_cmd_scoped()` leaves it by (`ui_cmd_leaves_scanner_scope()`: the scanner on before the apply, as
+  `ui_cfg_rollback` records it, and neither it nor a trunk scan on after), so the row it leaves is not asked of the new
+  stream. A SoapySDR or Airspy device sets a rate no check could know up front, so one that refuses it (an nfm
   row's own 25 kHz at an Airspy's 19,531 Hz) fails the reopen as a failed start does, rolled back with `Config not
   applied: <why>`, rather than leave the decoder on the row's monitor over a front end on the configured settings. The
   rest of the config (output, trunking, logging, alerts, recording and DSP, an imported group list, the environment

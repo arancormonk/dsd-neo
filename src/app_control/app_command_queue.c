@@ -1097,6 +1097,14 @@ ui_restore_settings_keeping_row_policy(dsd_opts* opts, dsd_state* state, dsd_sca
     dsd_scan_settings_restore(back, opts, state);
 }
 
+/* Whether a scoped command that found the conventional scanner on (@p was_scanner) leaves the scan scope rather than
+   resume it (apply_cmd_leave_scanner_scope()): the scanner is off once the command has run, and no trunk scan owns the
+   tuner. The row the scope holds then never runs again, and the session goes back to its configured settings. */
+static int
+ui_cmd_leaves_scanner_scope(const dsd_opts* opts, int was_scanner) {
+    return was_scanner && opts->scanner_mode != 1 && opts->trunk_scan_enabled != 1;
+}
+
 #ifdef USE_RADIO
 /* A rollback's toast: @p prefix and the reason @p why, and, when the restart of the input that ran turned the I/Q
    capture off to keep the recording (svc_rtl_restart_recovery_locked(), @p capture_stopped), a note of it if the whole
@@ -1249,11 +1257,13 @@ ui_cfg_restore_mode_extras(dsd_opts* opts, dsd_state* state, const ui_cfg_mode_e
 /* What a config apply that reopens the running input puts back when the reopened stream does not start (issue #578):
    the input a start reads, the configured receive settings, and the rest of what [mode] sets that the decoder reads.
    Taken once the config has passed its checks, before it is applied: under a scan row, while the scope is suspended,
-   so the receive settings are the configured ones. */
+   so the receive settings are the configured ones. @c was_scanner says whether the conventional scanner ran then,
+   which, with what the config leaves, decides whether the scope resumes (ui_cmd_leaves_scanner_scope()). */
 typedef struct {
     ui_radio_input input;
     dsd_scan_settings receive;
     ui_cfg_mode_extras mode;
+    int was_scanner;
 } ui_cfg_rollback;
 
 static void
@@ -1262,17 +1272,19 @@ ui_cfg_capture_rollback(const dsd_opts* opts, const dsd_state* state, ui_cfg_rol
     ui_capture_radio_input(opts, state, &out->input);
     dsd_scan_settings_capture(opts, state, &out->receive);
     ui_cfg_capture_mode_extras(opts, state, &out->mode);
+    out->was_scanner = opts->scanner_mode == 1;
 }
 
 /* The analog monitor the scan row on air runs once its suspended scope resumes (issue #578): the kind an nfm or am row
    runs, or the configured one a row that declares no mode inherits on an analog session, with the width of that kind
    in force then, the row's own (--nfm-bandwidth-hz, --am-bandwidth-hz) or else the configured one, which @p opts holds
-   while the scope is suspended. Returns 0, with no kind or width, when no row's scope is suspended or the row runs no
-   monitor (a digital row, or one on a digital session: the resume asks the front end for a symbol profile, which takes
-   no width). */
+   while the scope is suspended. Returns 0, with no kind or width, when no row's scope is suspended, when the command
+   leaves that scope rather than resume it (a config that turns off the conventional scanner @p was_scanner says ran:
+   ui_cmd_leaves_scanner_scope()), or when the row runs no monitor (a digital row, or one on a digital session: the
+   resume asks the front end for a symbol profile, which takes no width). */
 static int
-ui_scan_row_resumed_monitor(const dsd_opts* opts, const dsd_state* state, int* kind, int* width_hz) {
-    if (!dsd_scan_mode_updating(state)) {
+ui_scan_row_resumed_monitor(const dsd_opts* opts, const dsd_state* state, int was_scanner, int* kind, int* width_hz) {
+    if (!dsd_scan_mode_updating(state) || ui_cmd_leaves_scanner_scope(opts, was_scanner)) {
         return 0;
     }
     const dsd_scan_mode mode = dsd_scan_mode_row(state);
@@ -1318,7 +1330,7 @@ ui_cfg_settle_reopen(dsd_opts* opts, dsd_state* state, int rc, const ui_cfg_roll
     if (rc == 0) {
         int kind = DSD_ANALOG_DEMOD_FM;
         int width_hz = 0;
-        if (!ui_scan_row_resumed_monitor(opts, state, &kind, &width_hz)
+        if (!ui_scan_row_resumed_monitor(opts, state, before->was_scanner, &kind, &width_hz)
             || svc_check_started_stream_analog(opts, kind, width_hz, why, sizeof why) == 0) {
             return 0;
         }
@@ -6566,11 +6578,9 @@ command_writes_policy_store(const struct dsd_app_command* c) {
     return 0;
 }
 
+/* A command that turned the conventional scanner off (ui_cmd_leaves_scanner_scope()) ends its scan. */
 static void
 apply_cmd_leave_scanner_scope(dsd_opts* opts, dsd_state* state, int guarded) {
-    if (opts->scanner_mode == 1 || opts->trunk_scan_enabled == 1) {
-        return;
-    }
     if (!guarded) {
         p25_sm_tick_guard_enter();
     }
@@ -6775,7 +6785,7 @@ apply_cmd_scoped(dsd_opts* opts, dsd_state* state, const struct dsd_app_command*
     if (groups_suspended) {
         dsd_scan_groups_resume(state);
     }
-    if (was_scanner) {
+    if (ui_cmd_leaves_scanner_scope(opts, was_scanner)) {
         apply_cmd_leave_scanner_scope(opts, state, guarded);
     }
     if (apply_cmd_resume_and_note_widths(opts, state, scoped, restarted, &widths_before) != 0) {

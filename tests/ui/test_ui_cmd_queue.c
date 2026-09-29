@@ -10664,6 +10664,65 @@ test_config_reopen_whose_scan_row_the_new_stream_refuses(void) {
 }
 
 /*
+ * Issue #578: the row a reopen's new stream is held to is the one the scope resumes. A config that turns the scanner off
+ * ([trunking] scanner = false) leaves the scope instead (apply_cmd_leave_scanner_scope()), and the session goes back to
+ * the configured settings the new stream opened on, so the row it leaves is not asked of that stream. A DMR-configured
+ * scanner on an nfm row with its own 25 kHz width loads a config that reopens the input as an Airspy at a 12 kHz DSP
+ * bandwidth, whose 19,531 Hz cannot filter 25 kHz, and stops the scanner: the Airspy runs the configured DMR, and the
+ * apply succeeds with the I/Q capture still on.
+ */
+static int
+test_config_reopen_that_stops_the_scanner_skips_the_row(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static void* fake_ctx[2];
+    int rc = 0;
+    init_dmr_session_with_nfm_width(&opts, &state, (RtlSdrContext*)fake_ctx, 0);
+    opts.scanner_mode = 1;
+    dsd_scan_option_values row = {0};
+    row.present = DSD_SCAN_OPT_BANDWIDTH;
+    row.channel_bw_hz = 25000;
+    rc |= expect_int("scanner off: nfm row", dsd_scan_mode_enter(&opts, &state, DSD_SCAN_MODE_NFM), 0);
+    rc |= expect_int("scanner off: its width", dsd_scan_mode_options(&opts, &state, &row), 0);
+    g_fake_analog_family = 1; /* the front end runs the row's monitor */
+    opts.iq_capture_requested = 1;
+    DSD_SNPRINTF(opts.iq_capture_path, sizeof opts.iq_capture_path, "%s", "cap.iq");
+
+    reset_rx_family_wrap();
+    g_config_rtl_open_ok = 1;
+    g_analog_check_result = -1; /* the new stream cannot filter the row's 25 kHz */
+    g_fake_request_rate_hz = 19531;
+    dsdneoUserConfig cfg;
+    DSD_MEMSET(&cfg, 0, sizeof cfg);
+    cfg.has_input = 1;
+    cfg.input_source = DSDCFG_INPUT_AIRSPY;
+    dsd_airspy_config_defaults(&cfg.airspy);
+    cfg.rtl_bw_khz = 12;
+    cfg.has_trunking = 1;
+    cfg.trunk_scanner = 0;
+    rc |= submit_config(&opts, &state, &cfg, "scanner off");
+    rc |= expect_int("scanner off: applied", dsd_app_command_test_last_failed(), 0);
+    rc |= expect_int("scanner off: the Airspy started once, with the capture",
+                     g_config_rtl_creates == 1 && g_config_rtl_create_capture == 1 && state.rtl_ctx != NULL, 1);
+    rc |= expect_str("scanner off: on the Airspy", opts.audio_in_dev, "airspy");
+    rc |= expect_int("scanner off: the capture stays on", opts.iq_capture_requested, 1);
+    rc |= expect_int("scanner off: no rollback toast", strstr(state.ui_msg, "Config not applied") == NULL, 1);
+    rc |= expect_int("scanner off: the scan left, on the configured DMR",
+                     opts.scanner_mode == 0 && dsd_scan_mode_active(&state) == DSD_SCAN_MODE_INHERIT
+                         && !dsd_scan_mode_updating(&state) && opts.analog_only == 0 && opts.frame_dmr == 1,
+                     1);
+
+    reset_rx_family_wrap();
+    g_fake_analog_family = 0;
+    opts.iq_capture_requested = 0;
+    opts.iq_capture_path[0] = '\0';
+    opts.analog_nfm_bandwidth_hz = 0;
+    state.rtl_ctx = NULL;
+    freeState(&state);
+    return rc;
+}
+
+/*
  * Issue #526: an am scan row or target without a width of its own runs the configured AM width whenever it comes on
  * air, the AM default (6 kHz) included, which always runs its channel filter. So a config apply that leaves the session
  * on a preset that runs no AM -- a digital one, or -fA beside its own NFM width -- still holds its [analog]
@@ -11928,6 +11987,7 @@ main(void) {
     rc |= test_config_apply_holds_a_scan_row_width_to_a_reopen();
     rc |= test_config_reopen_under_a_scan_row_republishes_the_row();
     rc |= test_config_reopen_whose_scan_row_the_new_stream_refuses();
+    rc |= test_config_reopen_that_stops_the_scanner_skips_the_row();
     rc |= test_config_apply_holds_the_configured_am_width_under_am_rows();
     rc |= test_config_apply_holds_an_am_row_width_to_a_reopen();
 #ifdef DSD_NEO_TEST_RTL_WRAP
