@@ -422,6 +422,23 @@ symbol_profile_published_kept(svc_monitor_refusal* kept) {
             || (asked_hz == 0 && kept->kept_width_hz == dsd_analog_width_default_hz(g_monitor_request.kind)));
     return !runs_asked;
 }
+
+/* What the front end kept when it refused the recorded request, at once or where it landed (@p outcome, settled or
+   refused), filled into @p refusal with what the request carried. Returns 0 when it did not refuse it after all. */
+static int
+symbol_profile_read_refusal(int outcome, svc_monitor_refusal* refusal) {
+    refusal->kind = g_monitor_request.kind;
+    refusal->width_hz = g_monitor_request.width_hz;
+    refusal->kept_analog = 1;
+    refusal->kept_kind = g_monitor_request.kind;
+    refusal->scan_leave = g_monitor_request.scan_leave;
+    if (g_monitor_request.refused_at_once) {
+        return symbol_profile_published_kept(refusal);
+    }
+    return outcome == RTL_STREAM_RX_REQUEST_REFUSED
+           && rtl_stream_receive_request_refusal(g_monitor_request.seq, &refusal->kept_analog, &refusal->kept_width_hz,
+                                                 &refusal->kept_kind, &refusal->kept_monitor);
+}
 #endif
 
 int
@@ -446,19 +463,7 @@ svc_take_monitor_request_outcome(const dsd_opts* opts, const dsd_state* state, s
     }
     g_monitor_request.pending = 0;
     svc_monitor_refusal refusal = {0};
-    refusal.kind = g_monitor_request.kind;
-    refusal.width_hz = g_monitor_request.width_hz;
-    refusal.kept_analog = 1;
-    refusal.kept_kind = g_monitor_request.kind;
-    refusal.scan_leave = g_monitor_request.scan_leave;
-    if (g_monitor_request.refused_at_once) {
-        if (!symbol_profile_published_kept(&refusal)) {
-            return SVC_MONITOR_REQUEST_TAKEN;
-        }
-    } else if (outcome != RTL_STREAM_RX_REQUEST_REFUSED
-               || !rtl_stream_receive_request_refusal(g_monitor_request.seq, &refusal.kept_analog,
-                                                      &refusal.kept_width_hz, &refusal.kept_kind,
-                                                      &refusal.kept_monitor)) {
+    if (!symbol_profile_read_refusal(outcome, &refusal)) {
         return SVC_MONITOR_REQUEST_TAKEN;
     }
     /* A request queued after the one recorded, from anywhere (a CQPSK toggle, a symbol profile), whether the demod
