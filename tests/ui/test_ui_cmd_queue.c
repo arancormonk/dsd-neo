@@ -10653,6 +10653,148 @@ test_config_reopen_under_a_cqpsk_row_times_the_row(void) {
 }
 
 /*
+ * Issue #578: the same republish on an Analog-configured session. A typed P25 row there runs its symbol profile under
+ * the analog family the reopened stream opened on (the configured monitor), with no family switch asked of the stream.
+ * A CQPSK row's timing loop then runs at the demod rate the stream published at its start, not at the monitor's 48 kHz
+ * resampled audio: 4 samples per 4800 Bd symbol at a SoapySDR device's 19,531 Hz, and 5 at the 24 kHz DSP bandwidth of
+ * the RTL-SDR a failed reopen put back. A C4FM row there reads the monitor audio, and keeps 10.
+ */
+static int
+test_config_reopen_under_a_cqpsk_row_on_an_analog_session_times_the_row(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static void* fake_ctx[2];
+    static const char* const labels[2][2] = {{"analog c4fm row: reopen fails", "analog c4fm row: reopen starts"},
+                                             {"analog cqpsk row: reopen fails", "analog cqpsk row: reopen starts"}};
+    int rc = 0;
+    init_nfm_session(&opts, &state, (RtlSdrContext*)fake_ctx);
+    for (int cqpsk = 1; cqpsk >= 0; --cqpsk) {
+        DSD_SNPRINTF(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", "rtl:0:851.375M:0:0:24");
+        opts.rtl_dsp_bw_khz = 24;
+        rc |= expect_int(labels[cqpsk][0], dsd_scan_mode_enter(&opts, &state, DSD_SCAN_MODE_P25), 0);
+        const dsd_scan_modulation modulation = cqpsk ? DSD_SCAN_MODULATION_CQPSK : DSD_SCAN_MODULATION_C4FM;
+        dsd_scan_mode_target_modulation(&state, modulation);
+        dsd_scan_mode_apply_modulation(&opts, DSD_SCAN_MODE_P25, modulation);
+        state.rf_mod = cqpsk;
+        g_fake_cqpsk = cqpsk;
+        g_fake_output_rate_hz = 48000U; /* the monitor's resampled audio */
+        for (int starts = 0; starts <= 1; ++starts) {
+            const char* label = labels[cqpsk][starts];
+            const int sps = !cqpsk ? 10 : (starts ? 4 : 5);
+            /* The decoder reads a CQPSK row's symbol-rate output. */
+            state.samplesPerSymbol = cqpsk ? 1 : 10;
+            state.symbolCenter = 0;
+            reset_rx_family_wrap();
+            g_fake_analog_family = 1; /* the stream opened on the configured monitor */
+            g_config_rtl_open_ok = 1;
+            g_config_rtl_fail_starts = starts ? 0 : 1;
+            g_fake_request_rate_hz = starts ? 19531 : 24000;
+            rc |= submit_config_device_source(&opts, &state, DSDCFG_INPUT_SOAPY, 0, 0, label);
+            rc |= expect_int(label, dsd_app_command_test_last_failed(), starts ? 0 : 1);
+            rc |= expect_int(label, g_config_rtl_creates == (starts ? 1 : 2) && state.rtl_ctx != NULL, 1);
+            rc |= expect_int(label, g_config_rtl_create_analog_only, 1);
+            rc |= expect_int(label, dsd_scan_mode_active(&state) == DSD_SCAN_MODE_P25 && state.rf_mod == cqpsk, 1);
+            rc |= expect_int(label, g_analog_req_calls, 0);
+            rc |=
+                expect_int(label, g_demod_req_calls >= 1 && g_demod_req_cqpsk == cqpsk && g_demod_req_rate == 4800, 1);
+            rc |= expect_int(label, g_demod_req_ted_sps, sps);
+            rc |= expect_int(label, state.samplesPerSymbol, sps);
+        }
+        dsd_scan_mode_leave(&opts, &state);
+    }
+
+    reset_rx_family_wrap();
+    g_fake_cqpsk = 0;
+    g_fake_analog_family = 0;
+    g_fake_output_rate_hz = 0U;
+    state.rtl_ctx = NULL;
+    freeState(&state);
+    return rc;
+}
+
+/* The output rate the stream delivers now: once it runs CQPSK, one sample per 4800 Bd symbol; on the analog monitor,
+   its resampled audio. */
+static unsigned int g_hook_output_rate_hz;
+
+static unsigned int
+hook_output_rate(void) {
+    return g_hook_output_rate_hz;
+}
+
+/*
+ * Issue #578: a config reopen that also changes what the row on air runs has the row republished to the new stream as
+ * a changed row, timed for that stream as an unchanged one is. A P25 session scanning a P25 row that takes the
+ * configured modulation loads a config that reopens the input as a SoapySDR device and sets [demod] QPSK: the row now
+ * runs CQPSK, which the stream the reopen opened on the configured QPSK delivers at one sample per 4800 Bd symbol, while
+ * its timing loop runs at the device's 19,531 Hz demod rate. The row is republished for 4 samples per symbol, not for
+ * the 1 of the symbol-rate output (which the request would clamp to 2). The same row on an Analog-configured session
+ * runs CQPSK under the analog family the stream opened on, at the demod rate the stream published, not at the
+ * monitor's 48 kHz audio: 4 as well.
+ */
+static int
+test_config_reopen_that_changes_the_row_modulation_times_the_row(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static void* fake_ctx[2];
+    static const char* const labels[] = {"row modulation", "analog row modulation"};
+    int rc = 0;
+    const dsd_rtl_stream_metrics_hooks hooks = {.output_rate_hz = hook_output_rate,
+                                                .analog_family_active = rtl_stream_analog_family_active,
+                                                .output_rate_for_family = rtl_stream_output_rate_for_family};
+    for (int analog_session = 0; analog_session <= 1; ++analog_session) {
+        const char* label = labels[analog_session];
+        if (analog_session) {
+            init_nfm_session(&opts, &state, (RtlSdrContext*)fake_ctx);
+        } else {
+            init_decode_mode_context(&opts, &state);
+            opts.audio_in_type = AUDIO_IN_RTL;
+            DSD_SNPRINTF(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", "rtl:0:851.375M:0:0:48");
+            opts.rtl_dsp_bw_khz = 48;
+            state.rtl_ctx = (RtlSdrContext*)fake_ctx;
+            (void)dsd_app_command_set_i32(DSD_APP_CMD_DECODE_MODE_SET, (int32_t)DSDCFG_MODE_P25P1);
+            (void)dsd_app_drain_cmds(&opts, &state);
+        }
+        rc |= expect_int(label, dsd_scan_mode_enter(&opts, &state, DSD_SCAN_MODE_P25), 0);
+        rc |= expect_int(label, state.rf_mod, 0);
+        dsd_rtl_stream_metrics_hooks_set(&hooks);
+        reset_rx_family_wrap();
+        /* The stream the reopen opened on the configured settings: CQPSK on the P25 session, the monitor on the
+           Analog one. */
+        g_fake_analog_family = analog_session;
+        g_hook_output_rate_hz = analog_session ? 48000U : 4800U;
+        g_fake_output_rate_hz = g_hook_output_rate_hz;
+        g_fake_digital_rate = analog_session ? 0U : 19531U;
+        g_fake_request_rate_hz = 19531;
+        g_config_rtl_open_ok = 1;
+        dsdneoUserConfig cfg;
+        DSD_MEMSET(&cfg, 0, sizeof cfg);
+        cfg.has_input = 1;
+        cfg.input_source = DSDCFG_INPUT_SOAPY;
+        DSD_SNPRINTF(cfg.soapy_args, sizeof cfg.soapy_args, "%s", "driver=airspy");
+        cfg.has_demod = 1;
+        cfg.demod_path = DSDCFG_DEMOD_QPSK;
+        rc |= submit_config(&opts, &state, &cfg, label);
+        rc |= expect_int(label, dsd_app_command_test_last_failed(), 0);
+        rc |= expect_int(label, g_config_rtl_creates == 1 && state.rtl_ctx != NULL, 1);
+        rc |= expect_int(label, g_config_rtl_create_analog_only, analog_session);
+        rc |= expect_int(label, dsd_scan_mode_active(&state) == DSD_SCAN_MODE_P25 && state.rf_mod == 1, 1);
+        rc |= expect_int(label, g_demod_req_calls >= 1 && g_demod_req_cqpsk == 1 && g_demod_req_rate == 4800, 1);
+        rc |= expect_int(label, g_demod_req_ted_sps, 4);
+        rc |= expect_int(label, state.samplesPerSymbol, 4);
+
+        dsd_rtl_stream_metrics_hooks_set(NULL);
+        dsd_scan_mode_leave(&opts, &state);
+        reset_rx_family_wrap();
+        g_fake_analog_family = 0;
+        g_fake_digital_rate = 0U;
+        g_fake_output_rate_hz = g_hook_output_rate_hz = 0U;
+        state.rtl_ctx = NULL;
+        freeState(&state);
+    }
+    return rc;
+}
+
+/*
  * Issue #578: a config reopen that starts under a scan row's suspended scope opens the new stream on the configured
  * settings, so that start never held the row's own width to the rate the new device delivers, which a config that
  * reopens an Airspy or SoapySDR device cannot know up front. A DMR-configured scanner on an nfm row with its own 25 kHz
@@ -12227,6 +12369,8 @@ main(void) {
     rc |= test_config_apply_holds_a_scan_row_width_to_a_reopen();
     rc |= test_config_reopen_under_a_scan_row_republishes_the_row();
     rc |= test_config_reopen_under_a_cqpsk_row_times_the_row();
+    rc |= test_config_reopen_under_a_cqpsk_row_on_an_analog_session_times_the_row();
+    rc |= test_config_reopen_that_changes_the_row_modulation_times_the_row();
     rc |= test_config_reopen_whose_scan_row_the_new_stream_refuses();
     rc |= test_config_reopen_that_stops_the_scanner_skips_the_row();
     rc |= test_config_with_no_stream_keeps_its_mode_when_the_scan_row_cannot_run();

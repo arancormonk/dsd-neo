@@ -4255,29 +4255,48 @@ ui_analog_width_before(const ui_analog_widths* before, int kind) {
     return (kind == DSD_ANALOG_DEMOD_AM) ? before->am_hz : before->nfm_hz;
 }
 
+/* Time the decoder, and the symbol profile it publishes next, for @p profile at @p rate_hz. */
+static void
+ui_time_profile(const dsd_opts* opts, dsd_state* state, dsd_decode_mode_profile profile, int rate_hz) {
+    state->samplesPerSymbol = dsd_opts_compute_sps_rate(opts, profile.symbol_rate_hz, rate_hz);
+    state->symbolCenter = dsd_opts_symbol_center(state->samplesPerSymbol);
+}
+
 /* Time the decoder for @p profile at @p rate_hz and ask the front end for that profile (svc_publish_symbol_profile(),
    which times a switch out of the analog family for the rate it lands on instead). Returns the publish's result. */
 static int
 ui_publish_profile_timed(const dsd_opts* opts, dsd_state* state, dsd_decode_mode_profile profile, int rate_hz) {
-    state->samplesPerSymbol = dsd_opts_compute_sps_rate(opts, profile.symbol_rate_hz, rate_hz);
-    state->symbolCenter = dsd_opts_symbol_center(state->samplesPerSymbol);
+    ui_time_profile(opts, state, profile, rate_hz);
     return svc_publish_symbol_profile(opts, state, profile);
 }
 
-/* The rate a stream a command started under a suspended scope runs the row's @p profile at once the resume's publish
-   lands. A digital front end runs it on the digital family, at that family's rate for the row's modulation
-   (rtl_stream_output_rate_for_family()), as a switch out of the analog family is timed (svc_publish_symbol_profile()):
-   the demod rate a CQPSK row's timing loop runs at, which is not the FSK output the stream opened on when that output
-   is resampled (a SoapySDR or Airspy device's rate). Otherwise, the rate the stream delivers now. */
+/*
+ * The rate a stream a command started under a suspended scope runs the row's @p profile at once the resume's publish
+ * lands (issue #578). The stream opened on the configured settings, so the rate it delivers now can be another
+ * family's or modulation's. A row with a symbol clock runs on the digital family when the configured mode is digital
+ * (dsd_scan_mode_configured_digital(): svc_publish_symbol_profile() moves a front end still on the analog family
+ * there), or when the front end already runs it: at that family's rate for the row's modulation
+ * (rtl_stream_output_rate_for_family(), as a switch out of the analog family is timed), which for a CQPSK row is the
+ * demod rate its timing loop runs at, not the resampled FSK output a SoapySDR or Airspy stream opened on, nor the
+ * symbol-rate output of a stream that opened on CQPSK. On an analog session a typed digital row runs its profile under
+ * the analog family the stream opened on: a CQPSK row's timing loop then runs at the demod rate the stream published at
+ * its start (rtl_stream_get_request_rate_hz()), not at the monitor's resampled audio, which an FSK row reads.
+ * Otherwise (an analog row, an FSK row on the monitor output, the M17 encoder's analog front end), the rate the stream
+ * delivers now.
+ */
 static int
 ui_started_stream_rate(const dsd_opts* opts, const dsd_state* state, dsd_decode_mode_profile profile) {
 #ifdef USE_RADIO
-    if (opts->audio_in_type == AUDIO_IN_RTL && state->rtl_ctx && !dsd_opts_is_analog_family(opts)
-        && !rtl_stream_analog_family_active()) {
-        const unsigned int rate_hz =
-            rtl_stream_output_rate_for_family(DSD_RX_FAMILY_DIGITAL, state->rf_mod == 1, profile.symbol_rate_hz);
-        if (rate_hz > 0U) {
-            return (int)rate_hz;
+    if (opts->audio_in_type == AUDIO_IN_RTL && state->rtl_ctx && opts->analog_only != 1 && profile.symbol_rate_hz > 0) {
+        const int cqpsk = state->rf_mod == 1;
+        int rate_hz = 0;
+        if (dsd_scan_mode_configured_digital(opts, state) || !rtl_stream_analog_family_active()) {
+            rate_hz = (int)rtl_stream_output_rate_for_family(DSD_RX_FAMILY_DIGITAL, cqpsk, profile.symbol_rate_hz);
+        } else if (cqpsk) {
+            rate_hz = rtl_stream_get_request_rate_hz();
+        }
+        if (rate_hz > 0) {
+            return rate_hz;
         }
     }
 #else
@@ -4294,28 +4313,33 @@ ui_started_stream_rate(const dsd_opts* opts, const dsd_state* state, dsd_decode_
    where it lands (svc_publish_symbol_profile_changing_width()). @p restarted says the update started a stream while
    the scope was suspended (a config apply's reopen, or the restart of the input a failed one replaced): that stream
    opened on the configured settings, not the row's, so the row's profile is published to it even when the row
-   compares unchanged and the decoder keeps its acquisition (issue #578). It is timed for the rate that stream runs the
-   row at (ui_started_stream_rate()), not with the timing the decoder kept, which was the old stream's: a CQPSK row runs
-   at one sample per symbol, the stream's symbol-rate output, which is no timing for the new stream's symbol loop. */
+   compares unchanged and the decoder keeps its acquisition (issue #578). Changed or not, the row's profile is then
+   timed for the rate that stream runs the row at (ui_started_stream_rate()), not with the timing the decoder kept from
+   the old stream, nor the one the resume took from the rate the new stream delivers on the configured settings: a CQPSK
+   row read at the stream's symbol-rate output has one sample per symbol, which is no timing for its symbol loop. */
 static int
 ui_resume_scope_and_publish(dsd_opts* opts, dsd_state* state, int* out_changed, const ui_analog_widths* before,
                             int restarted) {
     const int resuming = dsd_scan_mode_updating(state);
     *out_changed = dsd_scan_mode_resume(opts, state) ? 1 : 0;
-    if (!*out_changed) {
-        if (!restarted || !resuming) {
-            return 0;
-        }
-        const dsd_decode_mode_profile profile = dsd_scan_mode_effective_profile(opts, state);
-        return ui_publish_profile_timed(opts, state, profile, ui_started_stream_rate(opts, state, profile));
+    const int started_stream = restarted && resuming;
+    if (!*out_changed && !started_stream) {
+        return 0;
     }
-    reset_call_tracking(opts, state, 1);
-    dsd_frame_sync_reset_acquisition(opts, state, opts->trunk_scan_enabled != 1);
-    const int width_before = ui_analog_width_before(before, opts->analog_demod);
-    const int configured_before_hz =
-        (width_before >= 0 && dsd_opts_analog_width_hz(opts) != width_before) ? width_before : -1;
-    return svc_publish_symbol_profile_changing_width(opts, state, dsd_scan_mode_effective_profile(opts, state),
-                                                     configured_before_hz);
+    const dsd_decode_mode_profile profile = dsd_scan_mode_effective_profile(opts, state);
+    int configured_before_hz = -1;
+    if (*out_changed) {
+        reset_call_tracking(opts, state, 1);
+        dsd_frame_sync_reset_acquisition(opts, state, opts->trunk_scan_enabled != 1);
+        const int width_before = ui_analog_width_before(before, opts->analog_demod);
+        if (width_before >= 0 && dsd_opts_analog_width_hz(opts) != width_before) {
+            configured_before_hz = width_before;
+        }
+    }
+    if (started_stream) {
+        ui_time_profile(opts, state, profile, ui_started_stream_rate(opts, state, profile));
+    }
+    return svc_publish_symbol_profile_changing_width(opts, state, profile, configured_before_hz);
 }
 
 /*
