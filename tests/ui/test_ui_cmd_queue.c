@@ -13497,27 +13497,27 @@ test_rollback_restart_republishes_the_scan_row(void) {
 
     static const struct {
         const char* label;
-        int command;
         const char* dev;
+        const char* toast;
+        int command;
         int row;
         int row_cqpsk;
         int cqpsk_env;
-        const char* toast;
     } legs[] = {
-        {"airspy switch fails, c4fm row, DSD_NEO_CQPSK=1", DSD_APP_CMD_AIRSPY_ENABLE_INPUT, "rtl:0:851.375M:0:0:24", 1,
-         0, 1, "Failed: the Airspy input did not start (see log)"},
-        {"dsp bw fails, c4fm row, DSD_NEO_CQPSK=1", DSD_APP_CMD_RTL_SET_BW, "rtl:0:851.375M:0:0:24", 1, 0, 1,
-         "Failed: the RTL-SDR input did not start (see log)"},
-        {"airspy setting fails, c4fm row, DSD_NEO_CQPSK=1", DSD_APP_CMD_AIRSPY_SET, "airspy", 1, 0, 1,
-         "Failed: Airspy setting"},
-        {"rtl switch fails, cqpsk row, DSD_NEO_CQPSK=0", DSD_APP_CMD_RTL_ENABLE_INPUT, "airspy", 1, 1, 0,
-         "Failed: the RTL-SDR input did not start (see log)"},
-        {"dsp bw fails, cqpsk row, DSD_NEO_CQPSK=0", DSD_APP_CMD_RTL_SET_BW, "rtl:0:851.375M:0:0:24", 1, 1, 0,
-         "Failed: the RTL-SDR input did not start (see log)"},
-        {"airspy setting fails, cqpsk row, DSD_NEO_CQPSK=0", DSD_APP_CMD_AIRSPY_SET, "airspy", 1, 1, 0,
-         "Failed: Airspy setting"},
-        {"dsp bw fails, no scan row", DSD_APP_CMD_RTL_SET_BW, "rtl:0:851.375M:0:0:24", 0, 0, 1,
-         "Failed: the RTL-SDR input did not start (see log)"},
+        {"airspy switch fails, c4fm row, DSD_NEO_CQPSK=1", "rtl:0:851.375M:0:0:24",
+         "Failed: the Airspy input did not start (see log)", DSD_APP_CMD_AIRSPY_ENABLE_INPUT, 1, 0, 1},
+        {"dsp bw fails, c4fm row, DSD_NEO_CQPSK=1", "rtl:0:851.375M:0:0:24",
+         "Failed: the RTL-SDR input did not start (see log)", DSD_APP_CMD_RTL_SET_BW, 1, 0, 1},
+        {"airspy setting fails, c4fm row, DSD_NEO_CQPSK=1", "airspy", "Failed: Airspy setting", DSD_APP_CMD_AIRSPY_SET,
+         1, 0, 1},
+        {"rtl switch fails, cqpsk row, DSD_NEO_CQPSK=0", "airspy", "Failed: the RTL-SDR input did not start (see log)",
+         DSD_APP_CMD_RTL_ENABLE_INPUT, 1, 1, 0},
+        {"dsp bw fails, cqpsk row, DSD_NEO_CQPSK=0", "rtl:0:851.375M:0:0:24",
+         "Failed: the RTL-SDR input did not start (see log)", DSD_APP_CMD_RTL_SET_BW, 1, 1, 0},
+        {"airspy setting fails, cqpsk row, DSD_NEO_CQPSK=0", "airspy", "Failed: Airspy setting", DSD_APP_CMD_AIRSPY_SET,
+         1, 1, 0},
+        {"dsp bw fails, no scan row", "rtl:0:851.375M:0:0:24", "Failed: the RTL-SDR input did not start (see log)",
+         DSD_APP_CMD_RTL_SET_BW, 0, 0, 1},
     };
 
     int rc = 0;
@@ -13606,20 +13606,20 @@ test_restart_under_a_scan_row_republishes_the_row(void) {
 
     static const struct {
         const char* label;
-        int command;
         const char* dev;
+        const char* dev_after;
+        int command;
         int khz;
         int row;
-        const char* dev_after;
     } legs[] = {
-        {"airspy switch", DSD_APP_CMD_AIRSPY_ENABLE_INPUT, "rtl:0:851.375M:0:0:24", 24, 1, "airspy"},
-        {"rtl switch", DSD_APP_CMD_RTL_ENABLE_INPUT, "airspy", 24, 1, "rtl"},
-        {"dsp bw 48", DSD_APP_CMD_RTL_SET_BW, "rtl:0:851.375M:0:0:24", 48, 1, "rtl:0:851.375M:0:0:24"},
-        {"airspy setting", DSD_APP_CMD_AIRSPY_SET, "airspy", 24, 1, "airspy"},
-        {"explicit restart", DSD_APP_CMD_RTL_RESTART, "rtl:0:851.375M:0:0:24", 24, 1, "rtl:0:851.375M:0:0:24"},
-        {"gain", DSD_APP_CMD_RTL_SET_GAIN, "rtl:0:851.375M:0:0:24", 24, 1, "rtl:0:851.375M:0:0:24"},
-        {"device index", DSD_APP_CMD_RTL_SET_DEV, "rtl:0:851.375M:0:0:24", 24, 1, "rtl:0:851.375M:0:0:24"},
-        {"dsp bw 48, no scan row", DSD_APP_CMD_RTL_SET_BW, "rtl:0:851.375M:0:0:24", 48, 0, "rtl:0:851.375M:0:0:24"},
+        {"airspy switch", "rtl:0:851.375M:0:0:24", "airspy", DSD_APP_CMD_AIRSPY_ENABLE_INPUT, 24, 1},
+        {"rtl switch", "airspy", "rtl", DSD_APP_CMD_RTL_ENABLE_INPUT, 24, 1},
+        {"dsp bw 48", "rtl:0:851.375M:0:0:24", "rtl:0:851.375M:0:0:24", DSD_APP_CMD_RTL_SET_BW, 48, 1},
+        {"airspy setting", "airspy", "airspy", DSD_APP_CMD_AIRSPY_SET, 24, 1},
+        {"explicit restart", "rtl:0:851.375M:0:0:24", "rtl:0:851.375M:0:0:24", DSD_APP_CMD_RTL_RESTART, 24, 1},
+        {"gain", "rtl:0:851.375M:0:0:24", "rtl:0:851.375M:0:0:24", DSD_APP_CMD_RTL_SET_GAIN, 24, 1},
+        {"device index", "rtl:0:851.375M:0:0:24", "rtl:0:851.375M:0:0:24", DSD_APP_CMD_RTL_SET_DEV, 24, 1},
+        {"dsp bw 48, no scan row", "rtl:0:851.375M:0:0:24", "rtl:0:851.375M:0:0:24", DSD_APP_CMD_RTL_SET_BW, 48, 0},
     };
 
     int rc = 0;
