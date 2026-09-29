@@ -526,11 +526,13 @@ scan_timing_rate_hz(const dsd_opts* opts, scan_scope* row, int configured_digita
         return input_rate;
     }
     if (symbol_rate_hz > 0 && configured_digital
-        && (timed_digital_family || dsd_rtl_stream_metrics_hook_analog_family_after_pending())) {
+        && (timed_digital_family || dsd_rtl_stream_metrics_hook_family_landing_after_pending())) {
         /* The tune switches the family, and the output rate with it, only once it lands on the demod thread. It
            lands the digital family whenever the engine attaches one to it, by the same answer (issue #583): the
-           analog family runs now, or may once an analog retune or request already outstanding lands. A row already
-           timed for that landing stays timed for it even when the answer has fallen to 0 since (the analog work
+           analog family runs now, or an analog retune or request already outstanding lands it, or a retune that
+           carries the digital family is still outstanding (the row's own, when a command re-times the row before it
+           lands), which lands the digital family's landing even on a front end already digital. A row already timed
+           for that landing stays timed for it even when the answer has fallen to 0 since (the analog work
            outstanding then failed, or was refused or replaced): the engine attaches the family to the row's retune
            by the row's decision too (dsd_scan_mode_take_timed_digital_family()). It lands the target's own CQPSK
            choice where it has one, and otherwise the one DSD_NEO_CQPSK names when set. */

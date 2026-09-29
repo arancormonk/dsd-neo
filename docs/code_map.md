@@ -224,21 +224,27 @@ Tests: `tests/engine/test_engine_trunk_scan.c` (`ENGINE_TRUNK_SCAN`) and
   prepared settings a scanner tunes with already carry the row width; its callers are `channel_scan.c` and the
   `scan_mode_replay` / `analog_replay` hosts. A row's symbol timing is computed for the output rate its tune lands on,
   `dsd_scan_mode_symbol_timing_rate_hz()`: the live rate, except while the RTL front end still runs the analog family
-  after an analog row, or may run it once the work already outstanding lands (`analog_family_after_pending`, issue
-  #583), and the configured mode is digital (`dsd_scan_mode_configured_digital()`), when a digital row's tune switches
-  the family and the rate is the digital family's (`output_rate_for_family`), not the monitor's resampled audio rate. The -Y scope timing and the trunk-scan target timing (`trunk_scan_p25_cc_sps()`, `trunk_scan_gfsk_sps()`)
-  read it, and each timing of a row records in the scope the landing decision it used
+  after an analog row, or the work already outstanding lands a family (`family_landing_after_pending`, issue #583: an
+  analog retune or request, or a retune that carries the digital family, which lands that family's prediction even on
+  a front end already digital, the row's own included when a command re-times the row before it lands), and the
+  configured mode is digital (`dsd_scan_mode_configured_digital()`), when a digital row's tune lands the digital
+  family and the rate is that family's (`output_rate_for_family`), not the monitor's resampled audio rate or the rate
+  a digital front end runs before the landing. The -Y scope timing and the trunk-scan target timing
+  (`trunk_scan_p25_cc_sps()`, `trunk_scan_gfsk_sps()`) read it, and each timing of a row records in the scope the
+  landing decision it used
   (`scan_scope::timed_digital_family`, `dsd_scan_mode_timed_digital_family()`, issue #583; a `-Y` row staged by
   `dsd_scan_mode_prepare()` records in the live scope). A row once timed for the digital family stays timed for it,
   without asking the stream again, until `trunk_tuning.c` spends the decision on the row's retune
   (`dsd_scan_mode_take_timed_digital_family()`); entering or staging a row clears it. The retune's preparation decides
-  once (`dsd_engine_retune_leaves_analog_family()`): the row's decision, or the stream's answer when the row has none,
+  once (`dsd_engine_retune_lands_digital_family()`): the row's decision, or the stream's answer when the row has none,
   and the GFSK chain's TED, the digital family attached and the `-Y` supersede accounting all follow it, so the
   decoder, the TED the retune profile carries and the front end are timed for one family even when outstanding analog
   work fails between the row's timing and its retune (the answer can only fall there: only the decoder thread queues
-  receive work, and it queues analog work only for an analog row, with no row on air, or at a leave). A later retune
-  of the row that no timing preceded (a parked trunked target's control channel hunt) decides by the stream's answer,
-  as a retune outside a scan does. The stream lands a retune that carries the digital
+  receive work, and it queues analog work only for an analog row, with no row on air, or at a leave, and a retune that
+  carries the digital family only as a row's or control channel's own retune). A later retune of the row that no
+  timing preceded (a parked trunked target's control channel hunt) decides by the stream's answer, as a retune outside
+  a scan does, and a later timing of the row while its retune is outstanding (a resume after a scoped command) finds
+  that retune in the stream's answer. The stream lands a retune that carries the digital
   family on that prediction whether the front end still runs the analog family where it lands or not (the RTL
   stream's family-switch notes). The rate is asked for the CQPSK state the switch lands, which is `DSD_NEO_CQPSK`'s
   when set unless the scope is a `--trunk-scan` target that makes its own choice (`scan_scope_cqpsk_explicit()`, issue
@@ -329,11 +335,14 @@ Tests: `tests/engine/test_engine_trunk_scan.c` (`ENGINE_TRUNK_SCAN`) and
   queued for it; a digital row attaches the digital family ahead of its symbol profile only while the configured mode
   is digital (a typed digital row on an `-fA` session keeps the monitor output) and the row was timed for that family's
   landing (the decision its timing recorded, spent by this retune; Scoped scan options above), or the front end runs
-  the analog family or may run it once the work already outstanding lands (`dsd_engine_retune_leaves_analog_family()`,
-  issue #583, decided once per retune preparation). The second
-  is the stream's `rtl_stream_analog_family_after_pending()`, a union of the published family, a retune the controller
-  has taken or holds queued that carries the analog family (not superseded, and still bound to the target it goes to),
-  and live requests still unsettled that leave the stream on the analog family. The digital retune lands after that
+  the analog family or the work already outstanding lands a family (`dsd_engine_retune_lands_digital_family()`, issue
+  #583, decided once per retune preparation). The second
+  is the stream's `rtl_stream_family_landing_after_pending()`, a union of the published analog family, a retune the
+  controller has taken or holds queued that carries a family, either one (not superseded, and still bound to the
+  target it goes to), and live requests still unsettled that leave the stream on the analog family. A retune that
+  carries the digital family counts because it lands where that family's prediction says even on a front end already
+  digital, so a digital retune queued behind it, or a timing of its own row made before it lands, is timed and
+  attached for that landing, not the live rate. The digital retune lands after that
   work, so an Advance or Avoid while an analog target's retune is still in flight, or a width edit for it still queued
   (a retune that completes FAILED included, through the tick's automatic advance), attaches the family: the analog
   retune lands first and the family switches back, and the older width request is retired rather than taken over the
@@ -375,11 +384,15 @@ Tests: `tests/engine/test_engine_trunk_scan.c` (`ENGINE_TRUNK_SCAN`) and
   (a trunk scan's Advance and Avoid behind an nfm target's retune in flight, a retune coalesced behind it, a width
   edit queued behind it, with the retune in flight or completed FAILED, a P25 target without a modulation under
   `-mq` and `DSD_NEO_CQPSK=0` timed for the switch behind it, the nfm retune failing between a P25 or DMR target's
-  timing and its retune, and no retune finding analog work its row's timing had not), `ENGINE_TRUNK_RETUNE_REGRESSION`
+  timing and its retune, a resume re-timing a P25 target while its digital-family retune is still outstanding on a
+  front end left digital, and no retune finding a family landing its row's timing had not),
+  `ENGINE_TRUNK_RETUNE_REGRESSION`
   (one read per preparation, and a row's decision deciding and being spent), `RUNTIME_SCAN_MODE` (what a row's timing
   records, holds and clears) and `IO_RTL_RETUNE_PREPARE`
-  (`rtl_stream_test_family_after_pending()`, two retunes outstanding at once included, and a retune with the digital
-  family landing on a front end already digital); for a target's own CQPSK choice after an nfm target
+  (`rtl_stream_test_family_landing_after_pending()`, a digital-family retune queued, in flight, landed, superseded
+  and stale on a digital stream, two retunes outstanding at once included, a plain one beside one with a family among
+  them, and a retune with the digital family landing on a front end already digital); for a target's own CQPSK choice
+  after an nfm target
   `ENGINE_NO_CARRIER_RESET` (P25 `cqpsk` under `DSD_NEO_CQPSK=0`, `auto` and `c4fm` under `=1`, DMR under `=1`, and a
   P25 target without a modulation), `ENGINE_TRUNK_RETUNE_REGRESSION` (a `p25-trunk` and a DMR trunk target's
   control-channel tune), `ENGINE_TRUNK_SCAN` (the switch, a resume and the scope rule against `-Y`) and
@@ -611,12 +624,12 @@ Tests: `tests/engine/test_engine_trunk_scan.c` (`ENGINE_TRUNK_SCAN`) and
     `ENGINE_TRUNK_SCAN`.
   - The RTL metrics hook table (`include/dsd-neo/runtime/rtl_stream_metrics_hooks.h`) also carries the receive-family
     request (`apply_analog_profile`), the published analog profile (`analog_profile`), whether the analog family runs
-    (`analog_family_active`), whether it runs or may run once the retunes and requests already outstanding land
-    (`analog_family_after_pending`, issue #583: the rule the engine attaches the digital family by, which the scan
+    (`analog_family_active`), whether it runs or the retunes and requests already outstanding land a family, either
+    one (`family_landing_after_pending`, issue #583: the rule the engine attaches the digital family by, which the scan
     timing follows; a table without it falls back to `analog_family_active`) and the output rate a family switch lands
     on (`output_rate_for_family`, told whether the CQPSK state is a trunk-scan target's own choice, which stands over
     `DSD_NEO_CQPSK` there, issue #583); the engine installs `rtl_stream_request_analog_profile()`,
-    `rtl_stream_get_analog_profile()`, `rtl_stream_analog_family_active()`, `rtl_stream_analog_family_after_pending()`
+    `rtl_stream_get_analog_profile()`, `rtl_stream_analog_family_active()`, `rtl_stream_family_landing_after_pending()`
     and `rtl_stream_output_rate_for_family()` behind them. Tests: `RUNTIME_RTL_STREAM_METRICS_HOOKS`,
     `ENGINE_RTL_STREAM_METRICS_HOOKS_INSTALL`.
   - Sub-audible signalling tables and text (`include/dsd-neo/runtime/analog_tones.h`, `src/runtime/analog_tones.c`):
@@ -1785,13 +1798,14 @@ Notes:
     taking a request), is what tells the decoder the published CQPSK state includes its request. Each also notes the
     receive family it leaves the stream on (a family request names it, a demod profile leaves it, and a retune's family
     that retires the requests queued before it names the family it lands), which
-    `rtl_stream_analog_family_after_pending()` reads (issue #583) after the controller's in-flight marker
+    `rtl_stream_family_landing_after_pending()` reads (issue #583) after the controller's in-flight marker
     (`controller_state::retune_in_flight_family`, set when the controller takes a retune and cleared once it has landed
-    and published it) and its queued retune, both under `hop_m`, and before the published family, never holding two of
-    the locks; each source publishes before it stops counting, so a landing between two reads is not missed. Tests:
-    `IO_RTL_DEMOD_CONFIG` (`rtl_stream_test_rx_request_outcomes()`, the requested family included) and
-    `IO_RTL_RETUNE_PREPARE` (`rtl_stream_test_family_after_pending()`). A digital family
-    request leaves the analog family whenever the stream
+    and published it) and its queued retune, both under `hop_m` and counted for either family they carry
+    (`controller_family_retune_outstanding()`), and before the published family, never holding two of the locks; each
+    source publishes before it stops counting (a landed retune its family and the output chain the finalize designed),
+    so a landing between two reads is not missed. Tests: `IO_RTL_DEMOD_CONFIG` (`rtl_stream_test_rx_request_outcomes()`,
+    the requested family included) and `IO_RTL_RETUNE_PREPARE` (`rtl_stream_test_family_landing_after_pending()`). A
+    digital family request leaves the analog family whenever the stream
     runs it (`demod_state::analog_family`, published as `rtl_stream_analog_family_active()`), including after a symbol
     profile applied on its own (a typed digital scan row under `-fA`, a CQPSK toggle) has moved the front end off the
     analog monitor: such a profile never leaves the family, and the decoder asks for the digital family only when its
@@ -1838,7 +1852,7 @@ Notes:
     digital family lands that way even when the front end already runs the digital family where it lands (an analog
     retune refused there, or a request replaced, left it digital; issue #583,
     `rtl_stream_retune_lands_digital_family()`): the engine attaches the family and times the decoder for the switch's
-    landing by one decision per row (`scan_timing_rate_hz()` records it, `dsd_engine_retune_leaves_analog_family()`
+    landing by one decision per row (`scan_timing_rate_hz()` records it, `dsd_engine_retune_lands_digital_family()`
     spends it), so its symbol profile
     runs the same CQPSK state and channel filter (`rtl_stream_resolve_landing_profile()`), the controller's finalize
     designs the resampler and output rate for them from the same inputs, and the TED is the landing one. Only the switch

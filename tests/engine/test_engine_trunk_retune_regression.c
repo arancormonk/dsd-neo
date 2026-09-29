@@ -99,9 +99,9 @@ static int g_rtl_analog_prepare_calls = 0;
 static int g_rtl_analog_prepare_rc = 0;
 static rtl_stream_retune_analog_profile g_rtl_analog_prepared;
 static uint32_t g_rtl_analog_prepared_target_hz = 0U;
-/* What the stub stream answers for the analog family once outstanding work lands (issue #583), and the cqpsk_explicit
+/* What the stub stream answers for whether outstanding work lands a family (issue #583), and the cqpsk_explicit
  * argument of the last digital-family output-rate query (-1: none). */
-static int g_rtl_analog_family_after_pending = 0;
+static int g_rtl_family_landing_after_pending = 0;
 static int g_rtl_rate_for_family_explicit = -1;
 /* How often that answer was read, and 1 to have the analog work it reports fail right after the next read, so any later
  * read answers 0 (issue #583). */
@@ -579,15 +579,15 @@ rtl_stream_analog_family_active(void) {
     return 0;
 }
 
-/* Nothing outstanding lands the analog family either (issue #583), so these retunes attach no family, unless a case
- * puts the front end behind an analog target. */
+/* Nothing outstanding lands a family either (issue #583), so these retunes attach no family, unless a case puts the
+ * front end behind an analog target. */
 int
-rtl_stream_analog_family_after_pending(void) {
+rtl_stream_family_landing_after_pending(void) {
     g_rtl_after_pending_reads++;
-    const int answer = g_rtl_analog_family_after_pending;
+    const int answer = g_rtl_family_landing_after_pending;
     if (g_rtl_after_pending_fails_after_read) {
         g_rtl_after_pending_fails_after_read = 0;
-        g_rtl_analog_family_after_pending = 0;
+        g_rtl_family_landing_after_pending = 0;
     }
     return answer;
 }
@@ -710,7 +710,7 @@ test_trunked_targets_after_an_analog_target_keep_their_cqpsk(dsd_opts* opts, dsd
     g_trunk_scan_active_p25_target = 1;
     g_trunk_scan_active_p25_cqpsk_is_set = 1;
     g_trunk_scan_active_p25_cqpsk_enable = 1;
-    g_rtl_analog_family_after_pending = 1;
+    g_rtl_family_landing_after_pending = 1;
     g_rtl_tune_result = RTL_STREAM_TUNE_OK;
     g_rtl_pending_active = 0;
     g_rtl_analog_prepare_calls = 0;
@@ -747,15 +747,15 @@ test_trunked_targets_after_an_analog_target_keep_their_cqpsk(dsd_opts* opts, dsd
 
     g_trunk_scan_active_gfsk_symbol_rate = 0;
     g_trunk_scan_target_count = 0;
-    g_rtl_analog_family_after_pending = 0;
+    g_rtl_family_landing_after_pending = 0;
     g_runtime_config_is_set = 0;
     g_trunk_scan_active_p25_cqpsk_is_set = 0;
     rtl_stream_clear_pending_retune_profile();
 }
 
 /* Issue #583, one landing-family decision per retune preparation: a DMR control-channel tune outside a scan (no scan
- * row's timing for it to follow) asks the stream once whether the analog family runs, or may run once the work
- * outstanding lands. An analog retune is outstanding at that read and fails right after it: the GFSK chain's TED,
+ * row's timing for it to follow) asks the stream once whether the analog family runs, or the work outstanding lands a
+ * family. An analog retune is outstanding at that read and fails right after it: the GFSK chain's TED,
  * timed for the rate the digital family lands on, and the digital family attached, which lands it there, both follow
  * that one answer, where a second read would attach no family to a retune whose TED was timed for one. */
 static void
@@ -767,7 +767,7 @@ test_gfsk_retune_decides_its_family_once(dsd_opts* opts, dsd_state* state) {
     opts->trunk_enable = 1;
     state->rtl_ctx = (RtlSdrContext*)state;
     state->rf_mod = 2;
-    g_rtl_analog_family_after_pending = 1;
+    g_rtl_family_landing_after_pending = 1;
     g_rtl_after_pending_fails_after_read = 1;
     g_rtl_after_pending_reads = 0;
     g_rtl_digital_family_rate_hz = 24000;
@@ -805,7 +805,7 @@ test_gfsk_retune_decides_its_family_once(dsd_opts* opts, dsd_state* state) {
     opts->analog_only = 0;
 
     g_rtl_digital_family_rate_hz = 48000;
-    g_rtl_analog_family_after_pending = 0;
+    g_rtl_family_landing_after_pending = 0;
     g_rtl_after_pending_fails_after_read = 0;
     rtl_stream_clear_pending_retune_profile();
 }

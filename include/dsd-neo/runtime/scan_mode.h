@@ -283,13 +283,15 @@ dsd_decode_mode_profile dsd_scan_mode_effective_profile(const dsd_opts* opts, co
  * as svc_publish_symbol_profile() decides for a configured-mode change. */
 int dsd_scan_mode_configured_digital(const dsd_opts* opts, const dsd_state* state);
 /** The output rate, in Hz, a scan row's symbol timing is computed for (issue #526): the input's timing rate, or on RTL
- * input the stream's live output rate. While the RTL front end runs the analog family after an analog row, or may run
- * it once an analog retune or request already outstanding lands (issue #583:
- * dsd_rtl_stream_metrics_hook_analog_family_after_pending()), and the configured mode is digital
+ * input the stream's live output rate. While the RTL front end runs the analog family after an analog row, or an
+ * analog retune or request, or a retune that carries the digital family, is still outstanding (issue #583:
+ * dsd_rtl_stream_metrics_hook_family_landing_after_pending()), and the configured mode is digital
  * (dsd_scan_mode_configured_digital()), a row with a symbol clock (@p symbol_rate_hz > 0) lands the digital family
- * with its tune, whose output rate differs from the monitor's resampled audio rate: the rate is then the one that
- * family will run at for @p symbol_rate_hz and @p cqpsk (dsd_rtl_stream_metrics_hook_output_rate_for_family()), so
- * the decoder and the TED the tune queues are timed for the samples they will get. DSD_NEO_CQPSK decides that CQPSK
+ * with its tune, whose output rate differs from the monitor's resampled audio rate and from the rate a digital front
+ * end runs before that landing: the rate is then the one that family will run at for @p symbol_rate_hz and @p cqpsk
+ * (dsd_rtl_stream_metrics_hook_output_rate_for_family()), so the decoder and the TED the tune queues are timed for the
+ * samples they will get. A row timed again while its own retune, carrying the digital family, is outstanding (a
+ * resume after a command) is timed for that landing too. DSD_NEO_CQPSK decides that CQPSK
  * state when set, unless the scope is a --trunk-scan target that makes its own choice (issue #583): P25 with a
  * modulation value (auto, c4fm or cqpsk), or DMR or NXDN at either rate, whose @p cqpsk stands, as the engine lands it.
  *

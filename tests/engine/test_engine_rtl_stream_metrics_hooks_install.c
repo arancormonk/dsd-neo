@@ -152,12 +152,12 @@ rtl_stream_analog_family_active(void) {
     return 1;
 }
 
-static int g_family_after_pending_calls;
+static int g_family_landing_after_pending_calls;
 
 /* Answers unlike rtl_stream_analog_family_active() above, so the wrapper is seen to reach this one. */
 int
-rtl_stream_analog_family_after_pending(void) {
-    ++g_family_after_pending_calls;
+rtl_stream_family_landing_after_pending(void) {
+    ++g_family_landing_after_pending_calls;
     return 0;
 }
 
@@ -349,9 +349,9 @@ main(void) {
     /* So do the family readback and the output rate a family switch lands on. */
     assert(dsd_rtl_stream_metrics_hook_analog_family_active() == 1);
     assert(g_analog_family_active_calls == 1);
-    /* The family once outstanding work lands is the stream's own query, not the live family (issue #583). */
-    assert(dsd_rtl_stream_metrics_hook_analog_family_after_pending() == 0);
-    assert(g_family_after_pending_calls == 1);
+    /* Whether outstanding work lands a family is the stream's own query, not the live family (issue #583). */
+    assert(dsd_rtl_stream_metrics_hook_family_landing_after_pending() == 0);
+    assert(g_family_landing_after_pending_calls == 1);
     assert(g_analog_family_active_calls == 1);
     /* The target's own CQPSK choice reaches the stream with it (issue #583). */
     assert(dsd_rtl_stream_metrics_hook_output_rate_for_family(0, 1, 6000, 1) == 24000U);

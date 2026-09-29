@@ -888,36 +888,47 @@ int rtl_stream_test_retune_profile_sequence(const rtl_stream_test_retune_step* s
 int rtl_stream_test_retune_profile_sequence_at_rate(const rtl_stream_test_retune_step* steps, size_t count,
                                                     int forced_rate_out_hz, rtl_stream_test_retune_landing* out);
 
-/* What rtl_stream_analog_family_after_pending() answers at each point (issue #583). */
-typedef struct rtl_stream_test_family_after_pending_result {
+/* What rtl_stream_family_landing_after_pending() answers at each point (issue #583). */
+typedef struct rtl_stream_test_family_landing_after_pending_result {
     int digital_only;        /* a digital stream with nothing queued or in flight */
     int width_queued;        /* an NFM width request queued on that stream, not yet taken by the demod thread */
     int width_queued_public; /* the public query then, which reads no controller with none running */
     int width_retiring;      /* a digital-family retune queued after it, taken by the controller */
     int width_retired;       /* ... once that retune has landed and retired the request */
     int width_outcome;       /* the request's outcome then (rtl_stream_receive_request_outcome()) */
-    int analog_queued;       /* an analog retune queued on the controller */
-    int analog_taken;        /* ... taken by it, in flight */
-    int analog_landed;       /* ... landed: the stream publishes the analog family */
-    int digital_landed;      /* a digital-family retune landed after it */
-    int analog_live;         /* the stream on the analog family again, nothing outstanding */
-    int analog_live_public;  /* the public query then, with no stream running: the published family it keeps */
-    int digital_in_flight;   /* a digital-family retune taken while the stream runs the analog family */
-    int digital_left_analog; /* ... once it has landed */
-    int superseded_taken;    /* an analog retune taken, then a live digital family request made after the take */
-    int superseded_landed;   /* ... once it has landed, neither its family nor its profile applied */
-    /* Two retunes outstanding at once on a digital stream: one taken (in flight), one queued behind it. */
+    /* A digital-family retune on the digital stream, with no analog work anywhere. */
+    int digital_queued;            /* queued on the controller */
+    int digital_taken;             /* ... taken by it, in flight */
+    int digital_landed_on_digital; /* ... landed */
+    int digital_superseded_queued; /* one queued, then a live digital family request made after the attach */
+    int digital_superseded_taken;  /* one taken, then a live digital family request made after the take */
+    int digital_stale_queued;      /* a digital-family profile left queued for a target a coalesced retune moved from */
+    int analog_queued;             /* an analog retune queued on the controller */
+    int analog_taken;              /* ... taken by it, in flight */
+    int analog_landed;             /* ... landed: the stream publishes the analog family */
+    int digital_landed;            /* a digital-family retune landed after it */
+    int analog_live;               /* the stream on the analog family again, nothing outstanding */
+    int analog_live_public;        /* the public query then, with no stream running: the published family it keeps */
+    int digital_in_flight;         /* a digital-family retune taken while the stream runs the analog family */
+    int digital_left_analog;       /* ... once it has landed */
+    int superseded_taken;          /* an analog retune taken, then a live digital family request made after the take */
+    int superseded_landed;         /* ... once it has landed, neither its family nor its profile applied */
+    /* Two retunes outstanding at once on a digital stream: one taken (in flight), one queued behind it. A plain retune
+     * carries no family. */
     int analog_in_flight_digital_queued;  /* an analog retune in flight, a digital-family one queued */
     int digital_in_flight_analog_queued;  /* a digital-family retune in flight, an analog one queued */
     int digital_in_flight_digital_queued; /* a digital-family retune in flight, another queued */
+    int digital_in_flight_plain_queued;   /* a digital-family retune in flight, a plain one queued */
+    int plain_in_flight_digital_queued;   /* a plain retune in flight, a digital-family one queued */
+    int analog_in_flight_plain_queued;    /* an analog retune in flight, a plain one queued */
     int stale_queued;  /* an analog profile left queued for a target a coalesced retune moved away from */
     int landed_family; /* demod_state::analog_family once the last retune landed */
-} rtl_stream_test_family_after_pending_result;
+} rtl_stream_test_family_landing_after_pending_result;
 
-/* Drive rtl_stream_analog_family_after_pending() on a DMR stream opened at 48 kHz, with a stand-in controller whose
+/* Drive rtl_stream_family_landing_after_pending() on a DMR stream opened at 48 kHz, with a stand-in controller whose
  * retunes are queued, taken and landed the way the controller thread does (without a device), and the real request
  * queue, whose requests wait for the demod thread as with a pipeline running. */
-int rtl_stream_test_family_after_pending(rtl_stream_test_family_after_pending_result* out);
+int rtl_stream_test_family_landing_after_pending(rtl_stream_test_family_landing_after_pending_result* out);
 
 typedef struct rtl_stream_test_replay_state {
     int replay_input_eof;

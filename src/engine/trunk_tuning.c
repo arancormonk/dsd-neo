@@ -338,32 +338,35 @@ dsd_engine_prepare_p25_cc_rtl_chain(const dsd_opts* opts, dsd_state* state, long
                                                  profile, ted_sps, 0);
 }
 
-/* Whether a digital retune moves the front end off the analog family after an analog scan row or target (issues #526,
- * #583). A retune preparation decides it once, and the GFSK chain's TED and the digital family it attaches both follow
- * that one answer. Only when the configured mode is digital, and when the scan row the retune is for was timed for
- * the digital family's landing (dsd_scan_mode_take_timed_digital_family(); with @p spend the decision is taken, so a
- * later retune no timing of the row preceded decides afresh), or the front end runs the analog family now or may run
- * it once the work already outstanding lands (rtl_stream_analog_family_after_pending()). The retune queued here lands
- * after that work: an analog target's retune still in flight when the operator moves on, or a width edit for it still
- * queued, would otherwise leave its symbol profile on the analog monitor. Without a scan row (a plain -T retune, a
- * control channel outside a scan) the stream's answer decides alone.
+/* Whether a digital retune carries the digital family, which lands it where the digital family's prediction says
+ * (rtl_stream_output_rate_for_family()), after an analog scan row or target (issues #526, #583). A retune preparation
+ * decides it once, and the GFSK chain's TED and the digital family it attaches both follow that one answer. Only when
+ * the configured mode is digital, and when the scan row the retune is for was timed for the digital family's landing
+ * (dsd_scan_mode_take_timed_digital_family(); with @p spend the decision is taken, so a later retune no timing of the
+ * row preceded decides afresh), or the front end runs the analog family now, or the work already outstanding lands a
+ * family (rtl_stream_family_landing_after_pending()). The retune queued here lands after that work: an analog target's
+ * retune still in flight when the operator moves on, or a width edit for it still queued, would otherwise leave its
+ * symbol profile on the analog monitor, and a retune that carries the digital family still outstanding moves the
+ * output rate to that family's landing, which this retune then has to land on too, as the decoder is timed for it.
+ * Without a scan row (a plain -T retune, a control channel outside a scan) the stream's answer decides alone.
  *
  * The row's timing asked the stream the same question first (dsd_scan_mode_symbol_timing_rate_hz()). Only the decoder
  * thread queues receive requests and retunes, while the controller and demod threads only resolve them, so between
  * the two reads the answer can only fall from 1 to 0 (an analog retune that fails, or is refused where it lands, a
  * request retired or replaced), which the row's own decision absorbs: its retune still carries the family the decoder
  * and its TED were timed for. It cannot rise from 0 to 1 for a row's retune: the scanners prepare it straight after
- * timing the row (trunk_scan_switch_to(), channel_scan_start_row()), queueing no receive work in between, and the
- * decoder thread queues analog work only for an analog row or target (its retune, and the width
+ * timing the row (trunk_scan_switch_to(), channel_scan_start_row()), queueing no receive work in between, the decoder
+ * thread queues analog work only for an analog row or target (its retune, and the width
  * trunk_scan_reapply_analog_width() asks again once that lands), with no row on air or at a scan's leave (app-control
  * asks for the analog monitor only when the options in force run it, and not while a command holds the scope
- * suspended), none of which leaves a digital row's timing behind it. */
+ * suspended), and it queues a retune that carries the digital family only as a row's or a control channel's own retune,
+ * here, none of which leaves a digital row's timing behind it. */
 static int
-dsd_engine_retune_leaves_analog_family(const dsd_opts* opts, const dsd_state* state, int spend) {
+dsd_engine_retune_lands_digital_family(const dsd_opts* opts, const dsd_state* state, int spend) {
     const int timed_digital_family =
         spend ? dsd_scan_mode_take_timed_digital_family(state) : dsd_scan_mode_timed_digital_family(state);
     return dsd_scan_mode_configured_digital(opts, state)
-           && (timed_digital_family || rtl_stream_analog_family_after_pending());
+           && (timed_digital_family || rtl_stream_family_landing_after_pending());
 }
 
 /* Whether the CQPSK state of the symbol profile queued for the parked trunk-scan target is the target's own choice,
@@ -382,12 +385,13 @@ dsd_engine_trunk_scan_cqpsk_explicit(const dsd_state* state) {
 }
 
 /* The output rate a four-level GFSK profile for @p symbol_rate_hz runs at once the retune lands: the stream's live
- * rate, or the digital family's when the retune leaves the analog family (@p leaves_analog, the preparation's
- * dsd_engine_retune_leaves_analog_family()), whose monitor output is resampled to its audio rate. A trunk-scan
- * target's FSK stands over DSD_NEO_CQPSK there (dsd_engine_trunk_scan_cqpsk_explicit()). */
+ * rate, or the digital family's when the retune carries that family (@p lands_digital_family, the preparation's
+ * dsd_engine_retune_lands_digital_family()), which it lands on from the analog monitor, resampled to its audio rate,
+ * or from a digital front end alike. A trunk-scan target's FSK stands over DSD_NEO_CQPSK there
+ * (dsd_engine_trunk_scan_cqpsk_explicit()). */
 static int
-dsd_engine_gfsk_landing_rate(const dsd_state* state, int symbol_rate_hz, int leaves_analog) {
-    if (leaves_analog) {
+dsd_engine_gfsk_landing_rate(const dsd_state* state, int symbol_rate_hz, int lands_digital_family) {
+    if (lands_digital_family) {
         const unsigned int landing_hz = rtl_stream_output_rate_for_family(DSD_RX_FAMILY_DIGITAL, 0, symbol_rate_hz,
                                                                           dsd_engine_trunk_scan_cqpsk_explicit(state));
         if (landing_hz > 0U) {
@@ -405,11 +409,11 @@ dsd_engine_gfsk_landing_rate(const dsd_state* state, int symbol_rate_hz, int lea
  */
 static void
 dsd_engine_prepare_gfsk_cc_rtl_chain(const dsd_opts* opts, const dsd_state* state, long int target_freq_hz, int ted_sps,
-                                     int symbol_rate_hz, int leaves_analog) {
+                                     int symbol_rate_hz, int lands_digital_family) {
     int retune_ted_sps = ted_sps;
     if (state->rtl_ctx) {
-        retune_ted_sps = dsd_opts_compute_sps_rate(opts, symbol_rate_hz,
-                                                   dsd_engine_gfsk_landing_rate(state, symbol_rate_hz, leaves_analog));
+        retune_ted_sps = dsd_opts_compute_sps_rate(
+            opts, symbol_rate_hz, dsd_engine_gfsk_landing_rate(state, symbol_rate_hz, lands_digital_family));
     }
     dsd_engine_prepare_retune_profile_for_target(opts, state, (uint32_t)target_freq_hz, 0, symbol_rate_hz, 4,
                                                  dsd_rtl_channel_profile_for(opts, symbol_rate_hz, 4, 2),
@@ -482,15 +486,15 @@ dsd_engine_prepare_scan_analog_profile(const dsd_opts* opts, const dsd_state* st
 
 /* A digital tune after an analog scan row (a -Y row, a conventional or trunked target, a return to a control
  * channel): the symbol profile already queued for the target lands on the digital family, which also retires any live
- * request queued before it (a width edit for the analog target). It is attached when the retune leaves the analog
- * family (@p leaves_analog, the preparation's dsd_engine_retune_leaves_analog_family(): the row was timed for that
- * landing, or the front end runs the analog family or may run it once outstanding work lands); a digital-only session
- * never does, so it retunes as it always has. It says whether the profile's CQPSK state is a trunk-scan target's own
+ * request queued before it (a width edit for the analog target). It is attached when the retune carries that family
+ * (@p lands_digital_family, the preparation's dsd_engine_retune_lands_digital_family(): the row was timed for that
+ * landing, or the front end runs the analog family or outstanding work lands a family); a digital-only session never
+ * does, so it retunes as it always has. It says whether the profile's CQPSK state is a trunk-scan target's own
  * choice (dsd_engine_trunk_scan_cqpsk_explicit()), which the stream then lands over DSD_NEO_CQPSK (issue #583); the
  * stream ignores that for a profile that leaves the CQPSK state alone. */
 static void
-dsd_engine_prepare_digital_family(const dsd_state* state, long int freq, int leaves_analog) {
-    if (!leaves_analog) {
+dsd_engine_prepare_digital_family(const dsd_state* state, long int freq, int lands_digital_family) {
+    if (!lands_digital_family) {
         return;
     }
     const rtl_stream_retune_analog_profile digital = {DSD_RX_FAMILY_DIGITAL, DSD_ANALOG_DEMOD_FM, 0,
@@ -498,10 +502,10 @@ dsd_engine_prepare_digital_family(const dsd_state* state, long int freq, int lea
     (void)rtl_stream_prepare_retune_analog_profile_for_target((uint32_t)freq, &digital);
 }
 
-/* @p leaves_analog is the preparation's one landing-family decision (dsd_engine_retune_leaves_analog_family()). */
+/* @p lands_digital_family is the preparation's one landing-family decision (dsd_engine_retune_lands_digital_family()). */
 static void
 dsd_engine_prepare_cc_rtl_chain(const dsd_opts* opts, dsd_state* state, long int target_freq_hz, int ted_sps,
-                                int leaves_analog) {
+                                int lands_digital_family) {
     if (!opts || !state || opts->audio_in_type != AUDIO_IN_RTL) {
         return;
     }
@@ -512,7 +516,7 @@ dsd_engine_prepare_cc_rtl_chain(const dsd_opts* opts, dsd_state* state, long int
     if (ted_sps > 0) {
         const int gfsk_rate = dsd_engine_gfsk_cc_symbol_rate(state);
         if (gfsk_rate > 0) {
-            dsd_engine_prepare_gfsk_cc_rtl_chain(opts, state, target_freq_hz, ted_sps, gfsk_rate, leaves_analog);
+            dsd_engine_prepare_gfsk_cc_rtl_chain(opts, state, target_freq_hz, ted_sps, gfsk_rate, lands_digital_family);
             return;
         }
     }
@@ -937,9 +941,9 @@ dsd_engine_trunk_tune_to_cc_request(dsd_opts* opts, dsd_state* state, long int f
     dsd_engine_maybe_drain_audio(opts, state);
     if (opts->audio_in_type == AUDIO_IN_RTL) {
 #ifdef USE_RADIO
-        const int leaves_analog = dsd_engine_retune_leaves_analog_family(opts, state, 1);
-        dsd_engine_prepare_cc_rtl_chain(opts, state, freq, ted_sps, leaves_analog);
-        dsd_engine_prepare_digital_family(state, freq, leaves_analog);
+        const int lands_digital_family = dsd_engine_retune_lands_digital_family(opts, state, 1);
+        dsd_engine_prepare_cc_rtl_chain(opts, state, freq, ted_sps, lands_digital_family);
+        dsd_engine_prepare_digital_family(state, freq, lands_digital_family);
 #endif
     }
     result = dsd_engine_tune_with_backend(opts, state, freq, request_id);
@@ -972,7 +976,7 @@ dsd_engine_prepare_scan_profile(const dsd_opts* opts, dsd_state* state, long int
         return dsd_engine_prepare_scan_analog_profile(opts, state, freq);
     }
     if (ted_sps > 0) {
-        const int leaves_analog = dsd_engine_retune_leaves_analog_family(opts, state, 1);
+        const int lands_digital_family = dsd_engine_retune_lands_digital_family(opts, state, 1);
         if (dsd_engine_conventional_scan_active(opts)) {
             const int rate = dsd_frame_sync_active_profile_symbol_rate_hz(state);
             const int levels = dsd_frame_sync_active_profile_levels(state);
@@ -980,9 +984,9 @@ dsd_engine_prepare_scan_profile(const dsd_opts* opts, dsd_state* state, long int
                                                          dsd_rtl_channel_profile_for(opts, rate, levels, state->rf_mod),
                                                          ted_sps, 0);
         } else {
-            dsd_engine_prepare_cc_rtl_chain(opts, state, freq, ted_sps, leaves_analog);
+            dsd_engine_prepare_cc_rtl_chain(opts, state, freq, ted_sps, lands_digital_family);
         }
-        dsd_engine_prepare_digital_family(state, freq, leaves_analog);
+        dsd_engine_prepare_digital_family(state, freq, lands_digital_family);
     }
     return 0;
 }
@@ -1024,7 +1028,7 @@ dsd_engine_scan_retune_attaches_family(const dsd_opts* opts, const dsd_state* st
     }
     /* As dsd_engine_prepare_scan_profile() queues them: the analog profile, or a symbol profile with the digital
        family (dsd_engine_prepare_digital_family()), by the decision the tune's preparation spends. */
-    return dsd_opts_is_analog_family(opts) || (ted_sps > 0 && dsd_engine_retune_leaves_analog_family(opts, state, 0));
+    return dsd_opts_is_analog_family(opts) || (ted_sps > 0 && dsd_engine_retune_lands_digital_family(opts, state, 0));
 #else
     (void)opts;
     (void)state;

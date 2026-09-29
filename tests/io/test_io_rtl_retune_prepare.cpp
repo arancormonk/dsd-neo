@@ -1066,7 +1066,7 @@ expect_digital_front_end_landings(const char* cqpsk_env, int from_profile, const
 
 /* A retune that carries the digital family lands where the decoder's timing predicted, even when the front end is
  * already on the digital family where it lands (issue #583). The engine attaches the family when the front end runs
- * the analog family or may run it once outstanding work lands, and the decoder is timed for the switch's landing then
+ * the analog family or outstanding work lands a family, and the decoder is timed for the switch's landing then
  * (rtl_stream_output_rate_for_family()); an analog retune that fails, or a request replaced, can leave the front end
  * digital when the retune lands. A P25 target with no modulation under -mq and DSD_NEO_CQPSK=0,
  * after a target that put the stream on CQPSK at 78125 Hz, is timed for the FSK discriminator at 48 kHz: it lands
@@ -1089,18 +1089,20 @@ test_digital_family_lands_where_timed_on_a_digital_front_end(void) {
     return failed;
 }
 
-/* Whether the stream runs the analog family once the work already queued or in flight lands (issue #583): the union of
- * the published family, an outstanding retune that carries the analog family, and the live requests still unsettled.
- * The engine attaches the digital family to a digital retune by it, so each has to count: a width edit queued behind
- * an NFM target's retune, the NFM retune itself while the controller holds it queued or in flight, and the analog
- * family it lands. A digital retune in flight does not hide the analog family the stream still runs; a retune a later
- * live request superseded lands no family, and a profile a coalesced retune left behind for another target never
+/* Whether a digital retune queued now lands on a receive family's landing (issue #583): the union of the published
+ * analog family, an outstanding retune that lands a family, and the live requests still unsettled. The engine attaches
+ * the digital family to a digital retune by it, and times the decoder for that landing, so each has to count: a width
+ * edit queued behind an NFM target's retune, the NFM retune itself while the controller holds it queued or in flight,
+ * the analog family it lands, and a digital-family retune queued or in flight on a front end already digital, which
+ * lands where the digital family's prediction says, not at the live rate. A digital retune in flight does not hide the
+ * analog family the stream still runs, and a plain retune beside one that lands a family does not hide it; a retune a
+ * later live request superseded lands no family, and a profile a coalesced retune left behind for another target never
  * applies. */
 static int
-test_analog_family_after_pending(void) {
-    rtl_stream_test_family_after_pending_result r;
+test_family_landing_after_pending(void) {
+    rtl_stream_test_family_landing_after_pending_result r;
     DSD_MEMSET(&r, 0, sizeof r);
-    int failed = expect_int_eq("after-pending hook", rtl_stream_test_family_after_pending(&r), 0);
+    int failed = expect_int_eq("after-pending hook", rtl_stream_test_family_landing_after_pending(&r), 0);
     failed |= expect_int_eq("after-pending: digital only", r.digital_only, 0);
     failed |= expect_int_eq("after-pending: a queued NFM width request", r.width_queued, 1);
     failed |= expect_int_eq("after-pending: the public query sees the queued width", r.width_queued_public, 1);
@@ -1109,6 +1111,13 @@ test_analog_family_after_pending(void) {
     failed |= expect_int_eq("after-pending: retired by the digital retune's family", r.width_retired, 0);
     failed |= expect_int_eq("after-pending: the retired width reads replaced", r.width_outcome,
                             RTL_STREAM_RX_REQUEST_REPLACED);
+    failed |= expect_int_eq("after-pending: a digital-family retune queued on a digital stream", r.digital_queued, 1);
+    failed |= expect_int_eq("after-pending: a digital-family retune taken on a digital stream", r.digital_taken, 1);
+    failed |= expect_int_eq("after-pending: that retune landed", r.digital_landed_on_digital, 0);
+    failed |= expect_int_eq("after-pending: a queued digital-family retune superseded", r.digital_superseded_queued, 0);
+    failed |= expect_int_eq("after-pending: a digital-family retune superseded after the take",
+                            r.digital_superseded_taken, 0);
+    failed |= expect_int_eq("after-pending: a stale queued digital-family profile", r.digital_stale_queued, 0);
     failed |= expect_int_eq("after-pending: an analog retune queued", r.analog_queued, 1);
     failed |= expect_int_eq("after-pending: an analog retune taken", r.analog_taken, 1);
     failed |= expect_int_eq("after-pending: an analog retune landed", r.analog_landed, 1);
@@ -1121,13 +1130,21 @@ test_analog_family_after_pending(void) {
     failed |= expect_int_eq("after-pending: that digital retune landed", r.digital_left_analog, 0);
     failed |= expect_int_eq("after-pending: an analog retune superseded after the take", r.superseded_taken, 0);
     failed |= expect_int_eq("after-pending: the superseded retune landed", r.superseded_landed, 0);
-    /* A union, not the newest word: the retune queued behind the one in flight does not hide it. */
+    /* A union, not the newest word: the retune queued behind the one in flight does not hide it, and each lands a
+       family. Two digital-family retunes each land where the digital family's prediction says. */
     failed |= expect_int_eq("after-pending: an analog retune in flight, a digital one queued behind it",
                             r.analog_in_flight_digital_queued, 1);
     failed |= expect_int_eq("after-pending: a digital retune in flight, an analog one queued behind it",
                             r.digital_in_flight_analog_queued, 1);
     failed |= expect_int_eq("after-pending: two digital retunes outstanding on a digital stream",
-                            r.digital_in_flight_digital_queued, 0);
+                            r.digital_in_flight_digital_queued, 1);
+    /* A plain retune (no family) beside one that lands a family hides it neither queued nor in flight. */
+    failed |= expect_int_eq("after-pending: a digital retune in flight, a plain one queued behind it",
+                            r.digital_in_flight_plain_queued, 1);
+    failed |= expect_int_eq("after-pending: a plain retune in flight, a digital one queued behind it",
+                            r.plain_in_flight_digital_queued, 1);
+    failed |= expect_int_eq("after-pending: an analog retune in flight, a plain one queued behind it",
+                            r.analog_in_flight_plain_queued, 1);
     failed |= expect_int_eq("after-pending: a stale queued profile for another target", r.stale_queued, 0);
     failed |= expect_int_eq("after-pending: the stream ends on the digital family", r.landed_family, 0);
     return failed;
@@ -1982,7 +1999,7 @@ main(void) {
     failed |= test_dmr_retune_after_an_analog_retune_lands_on_fsk();
     failed |= test_target_cqpsk_choice_stands_after_an_analog_target();
     failed |= test_digital_family_lands_where_timed_on_a_digital_front_end();
-    failed |= test_analog_family_after_pending();
+    failed |= test_family_landing_after_pending();
 
     return failed ? 1 : 0;
 }

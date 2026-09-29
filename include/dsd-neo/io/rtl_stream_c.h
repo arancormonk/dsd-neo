@@ -497,45 +497,49 @@ int rtl_stream_get_analog_profile(int* out_kind, int* out_width_hz, int* out_lpf
 int rtl_stream_analog_family_active(void);
 
 /**
- * @brief Report whether the stream runs the analog receive family now, or may run it once the receive requests and
- * retunes already queued or in flight have landed (issue #583).
+ * @brief Report whether a digital retune queued now lands on a receive family's landing rather than on the profile the
+ * stream runs: the stream runs the analog family now, or the receive requests and retunes already queued or in flight
+ * land a family once they have landed (issue #583).
  *
  * rtl_stream_analog_family_active() answers for the family published now. A retune the controller has taken, or one
  * queued for it, lands its family later, and so does a live request the demod thread has not taken yet (a width edit
  * made while an analog target's retune was still in flight). A caller deciding whether a digital retune it queues now
- * must attach the digital family reads this instead: the retune lands after that outstanding work, so a symbol profile
- * without the family would land on the analog family it leaves behind, and an older analog request would take the
- * front end back to the monitor.
+ * must attach the digital family, or timing the decoder for where that retune lands, reads this instead: the retune
+ * lands after that outstanding work, so a symbol profile without the family would land on the analog family it leaves
+ * behind, an older analog request would take the front end back to the monitor, and a digital-family retune still
+ * outstanding moves the output rate to the digital family's landing, not the rate the stream runs now.
  *
  * The answer is a union, 1 when any of these holds:
  * - the published family is analog (rtl_stream_analog_family_active());
- * - a retune the controller has taken, or the one queued for it, carries the analog family, lands on the target it
+ * - a retune the controller has taken, or the one queued for it, carries a receive family, lands on the target it
  *   was queued for, and has not been superseded by a later live family request
- *   (rtl_stream_prepare_retune_analog_profile_for_target());
+ *   (rtl_stream_prepare_retune_analog_profile_for_target()): the analog family, or the digital family, which lands
+ *   where rtl_stream_output_rate_for_family() predicts even on a front end already on the digital family;
  * - a live receive request is still unsettled and the requests queued so far leave the stream on the analog family
  *   (rtl_stream_receive_request_outcome()).
  *
- * The retunes are read first, then the live requests, then the published family, and each publishes its family before
- * it stops counting as outstanding, so a landing between two reads is still seen. A union rather than the newest word
- * on the family: a queued retune coalesces with a later one and takes its profile, so a digital retune queued behind
- * an analog one can be replaced by one that carries no family. The answer can only err towards 1 (an analog retune
- * refused where it lands, a request replaced later), which attaches the digital family to a retune that finds the
- * digital family running where it lands: it retires older live requests and lands its symbol profile as a switch to
+ * The retunes are read first, then the live requests, then the published family, and each publishes what it landed
+ * before it stops counting as outstanding, so a landing between two reads is still seen. A union rather than the newest
+ * word on the family: a queued retune coalesces with a later one and takes its profile, so a retune that carries a
+ * family, queued behind another, can be replaced by one that carries none. The answer can only err towards 1 (an analog
+ * retune refused where it lands, a request replaced later), which attaches the digital family to a retune that finds
+ * the digital family running where it lands: it retires older live requests and lands its symbol profile as a switch to
  * the digital family would, where the decoder, timed by this same answer, expects it
- * (rtl_stream_prepare_retune_analog_profile_for_target()). A digital-only session answers 0 throughout, as the
- * published family alone does. Only the decoder thread queues receive requests and retunes, and the controller and
- * demod threads only resolve them, so between two reads on the decoder thread the answer can only fall from 1 to 0,
- * unless the decoder thread queued analog work in between; a scan row's timing records the decision it made from it
- * (dsd_scan_mode_timed_digital_family()), which its retune's family follows.
+ * (rtl_stream_prepare_retune_analog_profile_for_target()). A digital-only session never attaches a family, so it
+ * answers 0 throughout, as the published family alone does. Only the decoder thread queues receive requests and
+ * retunes, and the controller and demod threads only resolve them, so between two reads on the decoder thread the answer
+ * can only fall from 1 to 0, unless the decoder thread queued work that lands a family in between. A scan row's timing
+ * records the decision it made from it (dsd_scan_mode_timed_digital_family()), which its retune's family follows, and a
+ * timing of the row made while that retune is outstanding reads 1 from the retune itself.
  *
  * With no stream running there is no controller to read, but the live requests and the published family still are:
  * a stream that closed on the analog family keeps publishing it, so the answer is then 1, as
  * rtl_stream_analog_family_active() is.
  *
- * @return 1 when the analog family runs now or may run once outstanding work lands, or, with no stream running, when
- *         the family last published is analog; 0 otherwise.
+ * @return 1 when the analog family runs now or outstanding work lands a family, or, with no stream running, when the
+ *         family last published is analog; 0 otherwise.
  */
-int rtl_stream_analog_family_after_pending(void);
+int rtl_stream_family_landing_after_pending(void);
 
 /**
  * @brief Report the analog kind and configured channel width the stream runs on the analog family, whether or not its

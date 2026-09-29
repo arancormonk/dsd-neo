@@ -141,9 +141,9 @@ dsd_rtl_stream_metrics_hook_analog_family_active(void) {
 }
 
 int
-dsd_rtl_stream_metrics_hook_analog_family_after_pending(void) {
-    if (g_rtl_stream_metrics_hooks.analog_family_after_pending) {
-        return g_rtl_stream_metrics_hooks.analog_family_after_pending() > 0 ? 1 : 0;
+dsd_rtl_stream_metrics_hook_family_landing_after_pending(void) {
+    if (g_rtl_stream_metrics_hooks.family_landing_after_pending) {
+        return g_rtl_stream_metrics_hooks.family_landing_after_pending() > 0 ? 1 : 0;
     }
     /* A table without it (a test's fake front end) answers for the live family, as the decoder did before it. */
     return dsd_rtl_stream_metrics_hook_analog_family_active();

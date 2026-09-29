@@ -1245,12 +1245,12 @@ test_am_row_width_scope(void) {
 
 /* --- Issue #583: the landing decision a row's timing used, which the engine attaches the digital family by --- */
 
-/* What the stream answers for the analog family once the work outstanding lands, and how often it was asked. */
+/* What the stream answers for whether the work outstanding lands a family, and how often it was asked. */
 static int g_after_pending_answer;
 static int g_after_pending_reads;
 
 static int
-fake_analog_family_after_pending(void) {
+fake_family_landing_after_pending(void) {
     g_after_pending_reads++;
     return g_after_pending_answer;
 }
@@ -1283,7 +1283,7 @@ test_row_timing_records_its_landing_decision(void) {
     o->rtl_dsp_bw_khz = 48;
     o->frame_dmr = 1;
     const dsd_rtl_stream_metrics_hooks hooks = {.output_rate_hz = fake_live_output_rate,
-                                                .analog_family_after_pending = fake_analog_family_after_pending,
+                                                .family_landing_after_pending = fake_family_landing_after_pending,
                                                 .output_rate_for_family = fake_output_rate_for_family};
     dsd_rtl_stream_metrics_hooks_set(&hooks);
     assert(dsd_scan_mode_timed_digital_family(s) == 0 && dsd_scan_mode_take_timed_digital_family(s) == 0);
