@@ -1269,7 +1269,8 @@ svc_input_width_fits(int kind, int configured_hz, int rate_hz, char* why, size_t
 }
 
 /* The analog widths an input switch opens a stream with, held to @p rate_hz, the rate the RTL DSP bandwidth gives the
-   device it opens (0: a device that sets its own rate, which its start checks; only the rules every rate shares). */
+   device it opens (0: a device that sets its own rate, against which its start checks the width in force; only the
+   rules every rate shares). */
 static int
 svc_check_input_analog_width_at(const dsd_opts* opts, const dsd_state* state, int rate_hz, char* why, size_t why_size) {
     int kind = DSD_ANALOG_DEMOD_FM;
@@ -1314,7 +1315,7 @@ svc_check_airspy_input_analog_width(const dsd_opts* opts, const dsd_state* state
     if (!opts) {
         return -1;
     }
-    /* The Airspy delivers its own rate, which its start holds the widths to. */
+    /* The Airspy delivers its own rate, which its start holds the width in force to. */
     return svc_check_input_analog_width_at(opts, state, 0, why, why_size);
 }
 

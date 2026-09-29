@@ -300,7 +300,9 @@ width needs. A row without a width of its own is held to the rate with the confi
 named again whenever that configured width changes; the AM default always runs its channel filter, so an `am` row on it
 is held like an explicit width. While the scan has such a row, the configured width of its kind is in use on any
 session, as under `-fA` or `-fM`: a width edit or a loaded config that sets a width the DSP rate cannot filter, and a
-DSP bandwidth or an input switch whose rate cannot filter the configured width, is refused, whichever row is on air.
+DSP bandwidth or an input switch that would open an RTL-SDR or rtl_tcp device at a rate that cannot filter the
+configured width, is refused, whichever row is on air (a SoapySDR or Airspy device's start checks only the width in
+force against the rate it delivers).
 While a row with its own width is on air, an RTL DSP bandwidth that cannot filter the width is refused rather than
 reopening the stream on it, from the DSP bandwidth control, Input > Switch source and a loaded config alike.
 

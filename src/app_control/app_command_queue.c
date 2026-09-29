@@ -1374,9 +1374,9 @@ ui_cfg_settle_reopen(dsd_opts* opts, dsd_state* state, int rc, const ui_cfg_roll
 
 /* Input > Switch source > RTL-SDR opens a device at the RTL DSP bandwidth, so an explicit analog width that bandwidth
    cannot filter is refused before the running input is torn down: the new stream's start would refuse it and leave
-   none. Input > Switch source > Airspy opens a device that sets its own rate, which its start holds the width to, so
-   only the rule every rate shares is asked first (issue #578): DSD_NEO_CHANNEL_LPF=0 turns off the filter an explicit
-   width, or the AM default, needs. */
+   none. Input > Switch source > Airspy opens a device that sets its own rate, which its start holds the width in force
+   to (none under a scan row that runs a digital protocol), so only the rule every rate shares is asked first (issue
+   #578): DSD_NEO_CHANNEL_LPF=0 turns off the filter an explicit width, or the AM default, needs. */
 static int
 ui_cmd_rtl_enable_input_refused(const dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
     if (!opts || !state) {

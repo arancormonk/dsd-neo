@@ -290,7 +290,9 @@ Tests: `tests/engine/test_engine_trunk_scan.c` (`ENGINE_TRUNK_SCAN`) and
   While the scan has such a row or target (`dsd_engine_scan_runs_configured_nfm_width()`, `_am_width()`, public in
   `trunk_scan.h`), app-control holds the configured width of that kind to the rate on any session, as under -fA: the
   width command, a config apply, `RTL_SET_BW` and Input > Switch source refuse a width or bandwidth that cannot run it,
-  whichever row is on air. What is left to warn about is a list loaded over such a width, or a rate a device forced. A
+  whichever row is on air (`RTL_SET_BW` and the switch at the rate the DSP bandwidth gives an RTL-SDR or rtl_tcp
+  device; on a SoapySDR or Airspy device they leave the rate to the start, which checks only the width it opens on,
+  the one in force). What is left to warn about is a list loaded over such a width, or a rate a device forced. A
   trunk-scan retune in flight on an analog target keeps the width it queued; a width edit made meanwhile reaches the
   front end as a live request the landing retune can land over, so the coordinator requests the width in force again
   once the retune lands wherever it differs (`trunk_scan_reapply_analog_width()`), as the `-Y` scanner restages such a
@@ -922,8 +924,12 @@ installs from `src/engine/trunk_tuning.c` in `src/engine/trunk_tuning_hooks_inst
   `DSD_APP_CMD_RTL_ENABLE_INPUT` (Input > Switch source > RTL-SDR) asks `svc_check_rtl_input_analog_width()` before it
   rewrites the input and tears the running stream down, refusing a width the DSP bandwidth of the device it opens cannot
   filter; `DSD_APP_CMD_AIRSPY_ENABLE_INPUT` (Switch source > Airspy) asks `svc_check_airspy_input_analog_width()`, which
-  holds the same widths only to the rules every rate shares, since the Airspy sets its own rate (issue #578). Every
-  change that commits to a radio stream start with an explicit width, or with AM, refuses it first while
+  holds the same widths only to the rules every rate shares, since the Airspy sets its own rate (issue #578). Its start
+  then holds only the width it opens on to the delivered rate (`rtl_demod_finalize_analog_channel()`): the switch is
+  unscoped, so under a scan row that runs a digital protocol it opens on the row's digital profile and checks no analog
+  width, and a configured width that rate cannot filter is left to the scan: its leave's refused return to the monitor
+  is reconciled (`ui_settle_refused_scan_leave()`), and an analog row or target that runs it is skipped at every visit.
+  Every change that commits to a radio stream start with an explicit width, or with AM, refuses it first while
   `DSD_NEO_CHANNEL_LPF=0` (`svc_analog_width_env_allows()`), since the start would refuse it at any rate. A switch whose
   start fails anyway (a width the rate the device delivered cannot filter, a device that does not open) never leaves
   the session without the input it had: the input a start reads is captured before
