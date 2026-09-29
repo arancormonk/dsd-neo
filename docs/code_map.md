@@ -924,7 +924,12 @@ installs from `src/engine/trunk_tuning.c` in `src/engine/trunk_tuning_hooks_inst
   on the configured settings rather than the row's; the row then compares unchanged when the scope resumes, so
   `apply_cmd_scoped()` notes any stream started meanwhile (`svc_rtl_start_count()`, which `svc_rtl_restart_locked()`
   counts) and `ui_resume_scope_and_publish()` publishes the row's effective profile to it anyway, without ending the
-  decoder's acquisition (issue #578; this also covers a reopen that starts, issue #583's first item). For the same
+  decoder's acquisition (issue #578; this also covers a reopen that starts, issue #583's first item). It is timed for
+  the rate the new stream runs the row at (`ui_started_stream_rate()`: on a digital front end the digital family's rate
+  for the row's modulation, `rtl_stream_output_rate_for_family()`, as a switch out of the analog family is timed, since
+  a CQPSK row's timing loop runs at the demod rate rather than the resampled FSK output a SoapySDR or Airspy stream
+  opened on; else the rate it delivers now), not with the timing the decoder kept from the old stream (a CQPSK row
+  reads its symbol-rate output at one sample per symbol, which the request would clamp to 2). For the same
   reason a reopen that starts under a scan row held only the configured settings to the rate the new device delivers,
   so before the scope resumes the new stream is asked for the analog monitor the row puts back
   (`ui_scan_row_resumed_monitor()`: the kind of the row's class, read with `dsd_scan_mode_row()` while suspended, and

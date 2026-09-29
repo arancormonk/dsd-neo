@@ -4249,6 +4249,37 @@ ui_analog_width_before(const ui_analog_widths* before, int kind) {
     return (kind == DSD_ANALOG_DEMOD_AM) ? before->am_hz : before->nfm_hz;
 }
 
+/* Time the decoder for @p profile at @p rate_hz and ask the front end for that profile (svc_publish_symbol_profile(),
+   which times a switch out of the analog family for the rate it lands on instead). Returns the publish's result. */
+static int
+ui_publish_profile_timed(const dsd_opts* opts, dsd_state* state, dsd_decode_mode_profile profile, int rate_hz) {
+    state->samplesPerSymbol = dsd_opts_compute_sps_rate(opts, profile.symbol_rate_hz, rate_hz);
+    state->symbolCenter = dsd_opts_symbol_center(state->samplesPerSymbol);
+    return svc_publish_symbol_profile(opts, state, profile);
+}
+
+/* The rate a stream a command started under a suspended scope runs the row's @p profile at once the resume's publish
+   lands. A digital front end runs it on the digital family, at that family's rate for the row's modulation
+   (rtl_stream_output_rate_for_family()), as a switch out of the analog family is timed (svc_publish_symbol_profile()):
+   the demod rate a CQPSK row's timing loop runs at, which is not the FSK output the stream opened on when that output
+   is resampled (a SoapySDR or Airspy device's rate). Otherwise, the rate the stream delivers now. */
+static int
+ui_started_stream_rate(const dsd_opts* opts, const dsd_state* state, dsd_decode_mode_profile profile) {
+#ifdef USE_RADIO
+    if (opts->audio_in_type == AUDIO_IN_RTL && state->rtl_ctx && !dsd_opts_is_analog_family(opts)
+        && !rtl_stream_analog_family_active()) {
+        const unsigned int rate_hz =
+            rtl_stream_output_rate_for_family(DSD_RX_FAMILY_DIGITAL, state->rf_mod == 1, profile.symbol_rate_hz);
+        if (rate_hz > 0U) {
+            return (int)rate_hz;
+        }
+    }
+#else
+    (void)profile;
+#endif
+    return current_demod_rate(opts, state);
+}
+
 /* The row's constraint back over the configured options a scoped update edited. When that changes the decoder, the
    acquisition it made ends and the front end is told the effective profile: @p out_changed says whether it did, and
    the result is that publish's (-1: the front end refused the analog profile at once). @p before holds the widths in
@@ -4257,16 +4288,20 @@ ui_analog_width_before(const ui_analog_widths* before, int kind) {
    where it lands (svc_publish_symbol_profile_changing_width()). @p restarted says the update started a stream while
    the scope was suspended (a config apply's reopen, or the restart of the input a failed one replaced): that stream
    opened on the configured settings, not the row's, so the row's profile is published to it even when the row
-   compares unchanged and the decoder keeps its acquisition (issue #578). */
+   compares unchanged and the decoder keeps its acquisition (issue #578). It is timed for the rate that stream runs the
+   row at (ui_started_stream_rate()), not with the timing the decoder kept, which was the old stream's: a CQPSK row runs
+   at one sample per symbol, the stream's symbol-rate output, which is no timing for the new stream's symbol loop. */
 static int
 ui_resume_scope_and_publish(dsd_opts* opts, dsd_state* state, int* out_changed, const ui_analog_widths* before,
                             int restarted) {
     const int resuming = dsd_scan_mode_updating(state);
     *out_changed = dsd_scan_mode_resume(opts, state) ? 1 : 0;
     if (!*out_changed) {
-        return (restarted && resuming)
-                   ? svc_publish_symbol_profile(opts, state, dsd_scan_mode_effective_profile(opts, state))
-                   : 0;
+        if (!restarted || !resuming) {
+            return 0;
+        }
+        const dsd_decode_mode_profile profile = dsd_scan_mode_effective_profile(opts, state);
+        return ui_publish_profile_timed(opts, state, profile, ui_started_stream_rate(opts, state, profile));
     }
     reset_call_tracking(opts, state, 1);
     dsd_frame_sync_reset_acquisition(opts, state, opts->trunk_scan_enabled != 1);
@@ -4392,13 +4427,10 @@ ui_revert_analog_entry(dsd_opts* opts, dsd_state* state, int width_hz, const svc
  */
 static int
 decode_mode_republish(const dsd_opts* opts, dsd_state* state, dsdneoUserDecodeMode mode) {
-    const dsd_decode_mode_profile profile = dsd_decode_mode_profile_for(mode);
-    state->samplesPerSymbol = dsd_opts_compute_sps_rate(opts, profile.symbol_rate_hz, current_demod_rate(opts, state));
-    state->symbolCenter = dsd_opts_symbol_center(state->samplesPerSymbol);
     /* The SPS hunt resumes from wherever the previous mode left it, and its next
-       pass overwrites the timing just computed; the RTL front end likewise keeps
+       pass overwrites the timing computed here; the RTL front end likewise keeps
        the old mode's demodulator family and channel filter until told otherwise. */
-    return svc_publish_symbol_profile(opts, state, profile);
+    return ui_publish_profile_timed(opts, state, dsd_decode_mode_profile_for(mode), current_demod_rate(opts, state));
 }
 
 /*
