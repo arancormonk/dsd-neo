@@ -6953,7 +6953,11 @@ apply_cmd(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
  * (svc_leave_channel_scan()), is reconciled as ui_settle_refused_scan_leave() says (issue #578), since a typed row may
  * have left the front end off the monitor with the width setting untouched, unless a request queued after it decides
  * the front end instead (svc_monitor_refusal::superseded). A switch onto the monitor or between FM and AM armed before
- * the leave still goes back first (ui_revert_analog_entry()).
+ * the leave goes back first (ui_revert_analog_entry()), but not over such a later request (a CQPSK toggle made before
+ * the demod thread took the return), whose profile the old mode's would replace: the switch then stays armed, since the
+ * later request, which is no monitor request, did not make it either, and the next monitor request's outcome settles
+ * it (dropped once one is taken, gone back when one is refused off the kind asked for), or a revert finds the
+ * configured settings moved on and drops it.
  */
 static void
 ui_settle_receive_requests(dsd_opts* opts, dsd_state* state) {
@@ -6971,7 +6975,12 @@ ui_settle_receive_requests(dsd_opts* opts, dsd_state* state) {
     }
     int changed = 0;
     if (!refusal.kept_analog || refusal.kept_kind != refusal.kind) {
-        changed = ui_revert_analog_entry(opts, state, refusal.width_hz, &refusal);
+        /* A scan leave's refusal that a later request superseded leaves an armed switch alone: going back would publish
+           the old mode's profile over that request. The later request is no monitor request (one would have taken the
+           record over), so the front end has made the switch no more than before, and it stays armed. */
+        if (!(refusal.scan_leave && refusal.superseded)) {
+            changed = ui_revert_analog_entry(opts, state, refusal.width_hz, &refusal);
+        }
         if (!changed && refusal.scan_leave) {
             changed = ui_settle_refused_scan_leave(opts, state, &refusal);
         }

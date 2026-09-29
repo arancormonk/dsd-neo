@@ -841,9 +841,13 @@ installs from `src/engine/trunk_tuning.c` in `src/engine/trunk_tuning_hooks_inst
   output. Either way, a request queued after the leave's, from anywhere, that does not carry it on (a CQPSK toggle made
   before the demod thread took the return, a symbol profile) decides the front end instead
   (`svc_monitor_refusal::superseded`): the refusal is left to it, with nothing asked, the configured width as it is
-  and no toast, since asking for the default would turn that CQPSK off again; a switch onto the monitor armed before
-  the leave still goes back. A typed digital row's channel profile
-  never touches the width setting, so the drain reconciles "kept width, else default"
+  and no toast, since asking for the default would turn that CQPSK off again. A switch onto the monitor armed before
+  the leave (a mode change onto Analog under a typed digital row, which asks the monitor for nothing until the leave)
+  is left to it too, rather than going back and publishing the old mode's profile over it: the later request is no
+  monitor request (one would carry the leave on), so the front end has made that switch no more than before, and it
+  stays armed for the next monitor request's outcome to settle (dropped once one is taken, gone back when one is
+  refused off the kind asked for), or for a revert that finds the configured settings moved on to drop. A typed digital
+  row's channel profile never touches the width setting, so the drain reconciles "kept width, else default"
   (`ui_settle_refused_scan_leave()`): a front end still on the monitor of the leave's kind gives the configured width
   the width that monitor runs (`svc_restore_analog_width()`); one off it (a typed row's profile, the other kind's
   monitor, the digital family) is asked for the kind's default, which is stored as the configured width, straight
@@ -859,8 +863,8 @@ installs from `src/engine/trunk_tuning.c` in `src/engine/trunk_tuning_hooks_inst
   the leave put back (the analog family, that kind, that width) and no scan runs: a channel-map adopt or RadioReference
   import that keeps the scanner on gets its front end from the next row's tune, and is deliberately left to it. A width
   change made while the leave was still queued replaces its request and carries the leave on; a switch onto the monitor
-  armed before it still reverts first (`ui_revert_analog_entry()`); a DSP-menu CQPSK-off refusal is no leave and keeps
-  CQPSK on. A typed row's retune still in flight when a leave was accepted can land its symbol profile over the monitor,
+  armed before it reverts first (`ui_revert_analog_entry()`) unless a later request superseded the leave, as above; a
+  DSP-menu CQPSK-off refusal is no leave and keeps CQPSK on. A typed row's retune still in flight when a leave was accepted can land its symbol profile over the monitor,
   as any retune without a family does (Per-channel decoder modes, above); that is no refusal, and nothing here
   reconciles it. A switch to Analog or AM (`DECODE_MODE_SET`, a config's `[mode]`) holds an explicit
   width, or the AM width, to the rate first, under a scan row as well (`ui_check_mode_receive_profile()`); a `[mode]`

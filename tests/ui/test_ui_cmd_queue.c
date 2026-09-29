@@ -9237,6 +9237,83 @@ test_refused_scan_leave_is_left_to_a_later_request(void) {
     return rc;
 }
 
+/*
+ * Issue #578: the refused scan leave a later request decides, with a switch onto Analog armed before it. A DMR session
+ * on an RTL-SDR at a 48 kHz DSP bandwidth, with NFM 16 kHz stored, scans a typed NXDN48 row and changes its configured
+ * mode to Analog: the row keeps its own profile on the digital family, so the switch is armed with no monitor request
+ * yet. Stopping the scanner queues the leave's return to the monitor, and CQPSK toggled on before the demod thread
+ * takes it queues its profile after it; a retune had moved the rate to 16 kHz, so the demod thread refuses the return
+ * where it lands, keeping the digital family, and turns CQPSK on. Going back to DMR then would publish its FSK profile
+ * over that CQPSK and toast a failure for a return the later request decided, so the refusal is left to it, the armed
+ * switch included: the decoder stays on Analog with CQPSK on, and nothing is toasted. The front end has made the
+ * switch no more than before, so it stays armed for the next monitor request to settle: CQPSK toggled off asks for the
+ * monitor, and the front end refusing that one as well puts the decoder back on DMR.
+ */
+static int
+test_superseded_scan_leave_keeps_an_armed_switch(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static void* fake_ctx[2];
+    int rc = 0;
+    init_decode_mode_context(&opts, &state);
+    reset_rx_family_wrap();
+    opts.audio_in_type = AUDIO_IN_RTL;
+    DSD_SNPRINTF(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", "rtl:0:851.375M:0:0:48");
+    opts.rtl_dsp_bw_khz = 48;
+    state.rtl_ctx = (RtlSdrContext*)fake_ctx;
+    rc |= submit_decode_mode(&opts, &state, DSDCFG_MODE_DMR, "armed leave: DMR");
+    opts.analog_nfm_bandwidth_hz = 16000;
+    demod_thread_lands(0);
+    (void)dsd_app_drain_cmds(&opts, &state);
+    dsd_rtl_stream_metrics_hooks_set(&g_scan_leave_hooks);
+    opts.scanner_mode = 1;
+    rc |= expect_int("armed leave: typed row", dsd_scan_mode_enter(&opts, &state, DSD_SCAN_MODE_NXDN48), 0);
+    rc |= expect_int("armed leave: row options", dsd_scan_mode_options(&opts, &state, NULL), 0);
+    reset_rx_family_wrap();
+    g_fake_analog_family = 0;
+
+    rc |= submit_decode_mode(&opts, &state, DSDCFG_MODE_ANALOG, "armed leave: Analog under the row");
+    rc |= expect_int("armed leave: configured Analog",
+                     dsd_scan_mode_configured_preset(&opts, &state) == DSDCFG_MODE_ANALOG, 1);
+    rc |= expect_int("armed leave: no monitor request under the row", g_analog_req_calls, 0);
+    g_fake_demod_rate_hz = 16000;
+    rc |= submit_scanner_stop(&opts, &state, "armed leave: stopped");
+    rc |= expect_last_monitor_request("armed leave: the leave queued", 1, DSD_ANALOG_DEMOD_FM, 16000);
+    submit_cqpsk_toggle();
+    rc |= expect_int("armed leave: toggled", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("armed leave: CQPSK on queued", g_demod_req_cqpsk, 1);
+    const int demod_requests = g_demod_req_calls;
+    g_fake_cqpsk = 1;
+    demod_thread_refuses_leave_keeping(0, 0, DSD_ANALOG_DEMOD_FM, 16000);
+    state.ui_msg[0] = '\0';
+    (void)dsd_app_drain_cmds(&opts, &state);
+    rc |= expect_leave_left_to_a_later_request("armed leave: left to CQPSK", &opts, &state, DSD_ANALOG_DEMOD_FM, 16000,
+                                               1);
+    rc |= expect_int("armed leave: configured Analog still", dsd_infer_decode_mode_preset(&opts) == DSDCFG_MODE_ANALOG,
+                     1);
+    rc |= expect_int("armed leave: no profile over CQPSK", g_demod_req_calls, demod_requests);
+
+    /* Still armed: CQPSK off asks for the monitor, which the front end refuses where it lands as well. */
+    submit_cqpsk_toggle();
+    rc |= expect_int("armed leave: CQPSK off", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_last_monitor_request("armed leave: the monitor asked for", 2, DSD_ANALOG_DEMOD_FM, 16000);
+    demod_thread_refuses_analog_keeping(0, 0);
+    state.ui_msg[0] = '\0';
+    (void)dsd_app_drain_cmds(&opts, &state);
+    rc |= expect_int("armed leave: back on DMR",
+                     opts.analog_only == 0 && dsd_infer_decode_mode_preset(&opts) == DSDCFG_MODE_DMR, 1);
+    rc |= expect_toast("armed leave: says why", &state, "Failed: Analog -> ");
+
+    dsd_rtl_stream_metrics_hooks_set(NULL);
+    reset_rx_family_wrap();
+    g_fake_cqpsk = 0;
+    g_fake_demod_rate_hz = 0;
+    opts.analog_nfm_bandwidth_hz = 0;
+    state.rtl_ctx = NULL;
+    freeState(&state);
+    return rc;
+}
+
 /* A DMR session on an RTL-SDR input at a 16 kHz DSP bandwidth, with an explicit NFM width stored while digital (the
    front end is asked with the fake's answer, so a width the rate cannot filter gets as far as the request). */
 static void
@@ -12787,6 +12864,7 @@ main(void) {
     rc |= test_nfm_width_follows_a_queued_scan_leave();
     rc |= test_refused_scan_leave_is_reported_and_reconciled();
     rc |= test_refused_scan_leave_is_left_to_a_later_request();
+    rc |= test_superseded_scan_leave_keeps_an_armed_switch();
     rc |= test_refused_switch_onto_analog_puts_the_mode_back();
     rc |= test_refused_switch_onto_analog_with_a_width_set_after_it();
     rc |= test_refused_switch_onto_analog_under_a_row();

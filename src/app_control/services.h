@@ -513,7 +513,8 @@ typedef struct {
  * the configured options). A refusal, at once or where the request landed, of a request that a receive request queued
  * after it, from anywhere, has superseded (a CQPSK toggle, a symbol profile) is reported with
  * svc_monitor_refusal::superseded set: that later request decides what the front end runs, so a refused scan leave is
- * left to it, while a switch onto the monitor the front end did not make still goes back. Decoder thread only.
+ * left to it, a switch onto the monitor armed before the leave included, while any other refused switch onto the
+ * monitor the front end did not make still goes back. Decoder thread only.
  *
  * @return svc_monitor_request_outcome.
  */
