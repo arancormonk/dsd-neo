@@ -643,7 +643,10 @@ int svc_rtl_restart_locked(dsd_opts* opts, dsd_state* state);
  * capture writer that failed before its open), or written over by that start, when it had opened it
  * (rtl_stream_start_opened_capture(): the capture writer's sidecar or thread, its workers or the device's
  * streaming failed after that, or it ran and the change was undone). An input that is not RTL-family (PCM, which no
- * change closes) needs no start: it is running again once the options describe it.
+ * change closes) needs no start: it is running again once the options describe it. A radio stream that ran behind it
+ * (a switch to PCM leaves the stream running, recording) is not started again, but the change stopped it all the same
+ * (@p stream_stopped), so the capture stops for the session the same way, and the log says so: the next radio start
+ * would write over what that stream recorded.
  *
  * The failed start can also have latched a failure of the input that replaced the one that ran for the session (an
  * Airspy that did not open latches a device failure, which turns the session's normal end into a failure exit:
@@ -655,13 +658,15 @@ int svc_rtl_restart_locked(dsd_opts* opts, dsd_state* state);
  * wrote nothing to the latch, or left it clear: an Airspy that opened, then failed), the change's, with no input
  * running. What the restart wrote is told by the latch's write count (dsd_input_failure_generation()), not its value.
  *
+ * @param stream_stopped 1 when a radio stream ran before the change (state->rtl_ctx), which the change stopped: the
+ *                       input's own, or one running behind a PCM input.
  * @param failure_before The input failure latched before the change started anything (dsd_input_failure_get()); NULL
  *                       leaves the latch alone.
  * @param out_capture_stopped Set to 1 when the capture was turned off here, else 0 (may be NULL).
  * @return 0 when the input runs again; nonzero otherwise, as svc_rtl_restart_locked().
  */
-int svc_rtl_restart_recovery_locked(dsd_opts* opts, dsd_state* state, const dsd_input_failure* failure_before,
-                                    int* out_capture_stopped);
+int svc_rtl_restart_recovery_locked(dsd_opts* opts, dsd_state* state, int stream_stopped,
+                                    const dsd_input_failure* failure_before, int* out_capture_stopped);
 /**
  * @brief Select the Airspy with @p config and reopen it, without acquiring; caller holds the P25 SM tick guard.
  *

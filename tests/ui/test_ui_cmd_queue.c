@@ -12086,6 +12086,51 @@ test_input_switch_rollback_keeps_the_iq_capture(void) {
     rc |= expect_str("capture rtl to airspy toast", state.ui_msg,
                      "Failed: the Airspy input did not start (see log); I/Q capture stopped");
 
+    /* A recording RTL-SDR session switched to Pulse keeps its stream running in the background, recording. A switch to
+       an Airspy that does not open stops that stream, which closes the capture with what it recorded, and puts Pulse
+       back, which starts nothing: the capture stops all the same, so that no later radio start writes over the file,
+       and the log and the message say so. */
+    opts.audio_in_type = AUDIO_IN_PULSE;
+    DSD_SNPRINTF(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", "pulse");
+    opts.iq_capture_requested = 1;
+    state.rtl_ctx = (RtlSdrContext*)fake_ctx;
+    reset_config_rtl_wrap();
+    g_config_rtl_open_ok = 1;
+    g_config_rtl_fail_starts = 1;
+    g_capture_log[0] = '\0';
+    rc |= switch_input_from(&opts, &state, DSD_APP_CMD_AIRSPY_ENABLE_INPUT, "capture pcm over a stream drained");
+    rc |= expect_int("capture pcm over a stream: the Airspy tried with the capture, nothing restarted",
+                     g_config_rtl_creates == 1 && g_config_rtl_captures == 1, 1);
+    rc |= expect_int("capture pcm over a stream: still Pulse, the stream stopped",
+                     opts.audio_in_type == AUDIO_IN_PULSE && state.rtl_ctx == NULL, 1);
+    rc |= expect_str("capture pcm over a stream: device put back", opts.audio_in_dev, "pulse");
+    rc |= expect_int("capture pcm over a stream: capture off", opts.iq_capture_requested, 0);
+    rc |= expect_int("capture pcm over a stream: logged, recording kept",
+                     strstr(g_capture_log, "I/Q capture stopped") != NULL && strstr(g_capture_log, "cap.iq") != NULL
+                         && strstr(g_capture_log, "which is kept") != NULL,
+                     1);
+    rc |= expect_str("capture pcm over a stream toast", state.ui_msg,
+                     "Failed: the Airspy input did not start (see log); I/Q capture stopped");
+    reset_config_rtl_wrap();
+    g_config_rtl_open_ok = 1;
+    rc |= switch_input_from(&opts, &state, DSD_APP_CMD_AIRSPY_ENABLE_INPUT, "capture pcm over a stream: then opens");
+    rc |= expect_int("capture pcm over a stream: the next start does not record",
+                     g_config_rtl_creates == 1 && g_config_rtl_create_capture == 0 && state.rtl_ctx != NULL, 1);
+
+    /* The same with no stream running behind Pulse: none was stopped, so the capture stays on. */
+    opts.audio_in_type = AUDIO_IN_PULSE;
+    DSD_SNPRINTF(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", "pulse");
+    opts.iq_capture_requested = 1;
+    state.rtl_ctx = NULL;
+    reset_config_rtl_wrap();
+    g_config_rtl_open_ok = 1;
+    g_config_rtl_fail_starts = 1;
+    g_capture_log[0] = '\0';
+    rc |= switch_input_from(&opts, &state, DSD_APP_CMD_AIRSPY_ENABLE_INPUT, "capture pcm alone drained");
+    rc |= expect_int("capture pcm alone: capture still on", opts.iq_capture_requested, 1);
+    rc |= expect_str("capture pcm alone: nothing logged", g_capture_log, "");
+    rc |= expect_str("capture pcm alone toast", state.ui_msg, "Failed: the Airspy input did not start (see log)");
+
     /* A switch that works opens the capture on the new input. */
     opts.audio_in_type = AUDIO_IN_PULSE;
     DSD_SNPRINTF(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", "pulse");

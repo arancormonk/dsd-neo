@@ -894,7 +894,8 @@ installs from `src/engine/trunk_tuning.c` in `src/engine/trunk_tuning_hooks_inst
   the session without the input it had: the input a start reads is captured before
   the rewrite (`ui_radio_input`: device string and type, rtl_tcp endpoint, device index, tuning, gain, ppm, squelch,
   volume, resample policy, Airspy and SoapySDR settings) and put back, a PCM input as it was (the switch never closed
-  it, and a background RTL stream it left running is not restarted) and an RTL-family input that ran restarted; it is
+  it, and a background RTL stream it left running, which the failed start stopped, is not restarted, its I/Q capture
+  stopping with it as below) and an RTL-family input that ran restarted; it is
   not reset as a new input (`ui_input_switched()`). The P25 SM watchdog reads the input, and may retune it, under
   its tick guard, so the switch holds that guard from the copy of the input it would put back (a copy taken before
   it could miss a retune the watchdog completed meanwhile, which the rollback would undo) through its rewrite of the
@@ -909,7 +910,10 @@ installs from `src/engine/trunk_tuning.c` in `src/engine/trunk_tuning_hooks_inst
   config apply's reopen; a gain, device index or explicit stream restart that fails still leaves no stream. Every one
   of these rollback restarts, and the config apply's below, goes through `svc_rtl_restart_recovery_locked()`: the failed change already stopped the stream that ran,
   which closed its I/Q capture with what it had recorded, and a start reopens the capture file for writing, so the
-  restart runs with `iq_capture_requested` cleared and leaves the capture off for the session. The failed start can
+  restart runs with `iq_capture_requested` cleared and leaves the capture off for the session. A PCM input put back
+  starts nothing, but a radio stream that ran behind it, recording (a switch to PCM leaves it running;
+  `ui_radio_input::stream_running`, the recovery's `stream_stopped`), was stopped the same way, so the capture stops
+  then too, rather than let the next radio start of the session write over that stream's recording. The failed start can
   also have latched a failure of its input for the session (an Airspy that did not open latches
   `DSD_INPUT_FAILURE_DEVICE`, which makes `dsd_engine_run_with_lifecycle()` return 1 at a normal end), and an RTL-SDR,
   SoapySDR or PCM input put back clears none, so the restart puts back the failure latched before the change

@@ -1458,33 +1458,51 @@ svc_rtl_restart_locked(dsd_opts* opts, dsd_state* state) {
     return svc_rtl_start_locked(opts, state);
 }
 
+/* Turn the I/Q capture off for the rest of the session before a rollback restart (svc_rtl_restart_recovery_locked()),
+   and log it naming the file, when a stream start would write over what the stream the failed change stopped
+   recorded: the restart of a radio input that ran, or, with a PCM input put back (@p stream_stopped: a radio stream ran
+   behind it, which a switch to PCM leaves running), the next radio start of the session. The start the change made
+   may have written over it already: it opens the capture once its device runs, before its workers and the device's
+   streaming, which can still fail (rtl_stream_start_opened_capture()). Returns 1 when it turned the capture off. */
+static int
+svc_recovery_stop_capture(dsd_opts* opts, int stream_stopped) {
+    const int restarts_radio = opts->audio_in_type == AUDIO_IN_RTL;
+    if (!opts->iq_capture_requested || (!restarts_radio && !stream_stopped)) {
+        return 0;
+    }
+    opts->iq_capture_requested = 0;
+    if (rtl_stream_start_opened_capture()) {
+        LOG_WARN("I/Q capture stopped: the start the change made had already reopened %s, writing over what %s "
+                 "recorded. %s\n",
+                 opts->iq_capture_path,
+                 restarts_radio ? "the input that ran" : "the radio stream running behind the input that ran",
+                 restarts_radio ? "That input restarts without the capture, which stays off for the rest of this "
+                                  "session."
+                                : "The capture stays off for the rest of this session.");
+    } else if (restarts_radio) {
+        LOG_WARN("I/Q capture stopped: restarting the input that ran would reopen %s and write over what it "
+                 "recorded, which is kept. The capture stays off for the rest of this session.\n",
+                 opts->iq_capture_path);
+    } else {
+        LOG_WARN("I/Q capture stopped: the change stopped the radio stream running behind the input that ran, closing "
+                 "%s with what it recorded, which is kept; the next radio start would write over it. The capture "
+                 "stays off for the rest of this session.\n",
+                 opts->iq_capture_path);
+    }
+    return 1;
+}
+
 int
-svc_rtl_restart_recovery_locked(dsd_opts* opts, dsd_state* state, const dsd_input_failure* failure_before,
-                                int* out_capture_stopped) {
+svc_rtl_restart_recovery_locked(dsd_opts* opts, dsd_state* state, int stream_stopped,
+                                const dsd_input_failure* failure_before, int* out_capture_stopped) {
     if (out_capture_stopped) {
         *out_capture_stopped = 0;
     }
     if (!opts || !state) {
         return -1;
     }
-    /* The stream the failed change stopped closed the capture with what it recorded; a start would reopen the file and
-       write over it. The start the change made may have done so already: it opens the capture once its device runs,
-       before its workers and the device's streaming, which can still fail (rtl_stream_start_opened_capture()). */
-    if (opts->iq_capture_requested && opts->audio_in_type == AUDIO_IN_RTL) {
-        opts->iq_capture_requested = 0;
-        if (out_capture_stopped) {
-            *out_capture_stopped = 1;
-        }
-        if (rtl_stream_start_opened_capture()) {
-            LOG_WARN("I/Q capture stopped: the start the change made had already reopened %s, writing over what the "
-                     "input that ran recorded. That input restarts without the capture, which stays off for the rest "
-                     "of this session.\n",
-                     opts->iq_capture_path);
-        } else {
-            LOG_WARN("I/Q capture stopped: restarting the input that ran would reopen %s and write over what it "
-                     "recorded, which is kept. The capture stays off for the rest of this session.\n",
-                     opts->iq_capture_path);
-        }
+    if (svc_recovery_stop_capture(opts, stream_stopped) && out_capture_stopped) {
+        *out_capture_stopped = 1;
     }
     /* The input that ran runs again, so a failure the failed change latched is not the session's: the latch goes back
        to the one from before the change once the stream the change left is gone and before the restart starts
@@ -1543,12 +1561,13 @@ svc_airspy_reopen_impl(dsd_opts* opts, dsd_state* state, const dsd_airspy_config
     }
     dsd_input_failure failure_before;
     dsd_input_failure_get(&failure_before);
+    const int stream_stopped = state->rtl_ctx != NULL;
     svc_airspy_select(opts, config);
     const int rc = svc_rtl_restart_locked(opts, state);
     if (rc != 0) {
         svc_airspy_select(opts, previous);
         svc_airspy_restore_tuning(opts, previous_tuning);
-        (void)svc_rtl_restart_recovery_locked(opts, state, &failure_before, out_capture_stopped);
+        (void)svc_rtl_restart_recovery_locked(opts, state, stream_stopped, &failure_before, out_capture_stopped);
     }
     if (!guard_held) {
         p25_sm_tick_guard_leave();

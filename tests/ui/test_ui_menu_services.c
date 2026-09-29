@@ -997,20 +997,26 @@ test_locked_restarts(void) {
     g_rtl_create_result = 0;
     g_rtl_start_result = 0;
     int stopped = -1;
-    rc |= expect_int("recovery restart starts", svc_rtl_restart_recovery_locked(&opts, &state, NULL, &stopped), 0);
+    rc |= expect_int("recovery restart starts", svc_rtl_restart_recovery_locked(&opts, &state, 1, NULL, &stopped), 0);
     rc |= expect_int("recovery restart stops the capture", stopped == 1 && opts.iq_capture_requested == 0, 1);
     rc |= expect_int("recovery restart opens without it", g_rtl_create_capture, 0);
     rc |= expect_int("recovery restart under the caller's hold",
                      g_p25_tick_guard_enter_calls == 0 && g_rtl_lifecycle_outside_guard == 0, 1);
     rc |= expect_int("recovery restart with the capture off",
-                     svc_rtl_restart_recovery_locked(&opts, &state, NULL, &stopped), 0);
+                     svc_rtl_restart_recovery_locked(&opts, &state, 1, NULL, &stopped), 0);
     rc |= expect_int("recovery restart: nothing to stop", stopped, 0);
     opts.audio_in_type = AUDIO_IN_PULSE;
     opts.iq_capture_requested = 1;
-    (void)svc_rtl_restart_recovery_locked(&opts, &state, NULL, NULL);
+    (void)svc_rtl_restart_recovery_locked(&opts, &state, 0, NULL, NULL);
     rc |= expect_int("recovery restart of PCM leaves the capture", opts.iq_capture_requested, 1);
-    rc |=
-        expect_int("recovery restart null options", svc_rtl_restart_recovery_locked(NULL, &state, NULL, &stopped), -1);
+    /* A radio stream that ran behind PCM, recording, was stopped by the change: nothing restarts it, but the capture
+       stops all the same, so the next radio start of the session does not write over what it recorded. */
+    rc |= expect_int("recovery of PCM over a stopped stream",
+                     svc_rtl_restart_recovery_locked(&opts, &state, 1, NULL, &stopped), 0);
+    rc |= expect_int("recovery of PCM over a stopped stream stops the capture",
+                     stopped == 1 && opts.iq_capture_requested == 0, 1);
+    rc |= expect_int("recovery restart null options", svc_rtl_restart_recovery_locked(NULL, &state, 1, NULL, &stopped),
+                     -1);
     rc |= expect_int("recovery restart null options: nothing stopped", stopped, 0);
 
     /* Issue #578: once the input that ran runs again, the input failure the session had latched before the change comes
@@ -1022,18 +1028,18 @@ test_locked_restarts(void) {
         opts.audio_in_type = pcm ? AUDIO_IN_PULSE : AUDIO_IN_RTL;
         g_rtl_start_result = 0;
         dsd_input_failure_report(DSD_INPUT_FAILURE_DEVICE, -5);
-        rc |= expect_int(label, svc_rtl_restart_recovery_locked(&opts, &state, &failure_before, NULL), 0);
+        rc |= expect_int(label, svc_rtl_restart_recovery_locked(&opts, &state, 1, &failure_before, NULL), 0);
         rc |= expect_input_failure(label, DSD_INPUT_FAILURE_REFUSED, 111);
     }
     opts.audio_in_type = AUDIO_IN_RTL;
     g_rtl_start_result = -1;
     dsd_input_failure_report(DSD_INPUT_FAILURE_DEVICE, -5);
     rc |= expect_int("recovery restart that fails",
-                     svc_rtl_restart_recovery_locked(&opts, &state, &failure_before, NULL) != 0, 1);
+                     svc_rtl_restart_recovery_locked(&opts, &state, 1, &failure_before, NULL) != 0, 1);
     rc |= expect_input_failure("recovery restart that fails keeps the latch", DSD_INPUT_FAILURE_DEVICE, -5);
     g_rtl_start_result = 0;
     rc |= expect_int("recovery restart with nothing to put back",
-                     svc_rtl_restart_recovery_locked(&opts, &state, NULL, NULL), 0);
+                     svc_rtl_restart_recovery_locked(&opts, &state, 1, NULL, NULL), 0);
     rc |=
         expect_input_failure("recovery restart with nothing to put back keeps the latch", DSD_INPUT_FAILURE_DEVICE, -5);
     /* A failure the recovery stream latches itself stands, whether its start then returns success (an Airspy whose
@@ -1045,7 +1051,7 @@ test_locked_restarts(void) {
         g_rtl_start_result = starts ? 0 : -1;
         g_rtl_start_latches_code = -7;
         dsd_input_failure_report(DSD_INPUT_FAILURE_DEVICE, -5);
-        rc |= expect_int(label, svc_rtl_restart_recovery_locked(&opts, &state, &failure_before, NULL) == 0, starts);
+        rc |= expect_int(label, svc_rtl_restart_recovery_locked(&opts, &state, 1, &failure_before, NULL) == 0, starts);
         rc |= expect_input_failure(label, DSD_INPUT_FAILURE_DEVICE, -7);
     }
     /* A recovery that fails latching the very failure that was put back (an Airspy that again does not open, with the
@@ -1056,7 +1062,7 @@ test_locked_restarts(void) {
     g_rtl_start_latches_code = -7;
     dsd_input_failure_clear();
     rc |= expect_int("recovery that fails with the failure put back",
-                     svc_rtl_restart_recovery_locked(&opts, &state, &device_before, NULL) != 0, 1);
+                     svc_rtl_restart_recovery_locked(&opts, &state, 1, &device_before, NULL) != 0, 1);
     rc |= expect_input_failure("recovery that fails with the failure put back keeps it", DSD_INPUT_FAILURE_DEVICE, -7);
     /* A recovery that clears the latch (an Airspy that opens) and then fails latched no failure of its own: the change's
        comes back, whether the one put back was a failure or none. */
@@ -1067,7 +1073,8 @@ test_locked_restarts(void) {
         g_rtl_start_clears_latch = 1;
         dsd_input_failure_report(DSD_INPUT_FAILURE_DEVICE, -5);
         rc |= expect_int(
-            label, svc_rtl_restart_recovery_locked(&opts, &state, none ? &none_before : &failure_before, NULL) != 0, 1);
+            label, svc_rtl_restart_recovery_locked(&opts, &state, 1, none ? &none_before : &failure_before, NULL) != 0,
+            1);
         rc |= expect_input_failure(label, DSD_INPUT_FAILURE_DEVICE, -5);
     }
     g_rtl_start_result = 0;

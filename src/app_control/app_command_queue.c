@@ -1125,11 +1125,15 @@ ui_set_rollback_toast(dsd_state* state, const char* prefix, const char* why, int
    and SoapySDR settings, and the digital resample policy. These are what Input > Switch source, a config's [input] and
    its hot restart write. @c running says whether that input worked: any input but an RTL-family one (PCM, which no
    switch closes), or an RTL-family one with a stream. A start that fails on the input that replaced it puts this one
-   back (ui_restore_radio_input()), so the session never ends up without an input it had. @c failure is the input
-   failure the session had latched then, which the failed start can have replaced with its own and which comes back
-   once this input runs again (svc_rtl_restart_recovery_locked()). */
+   back (ui_restore_radio_input()), so the session never ends up without an input it had. @c stream_running says
+   whether a radio stream ran then (state->rtl_ctx): the RTL-family input's own, or one running behind a PCM input,
+   which a switch to PCM leaves running, recording. The start stops that stream either way, closing its I/Q capture,
+   which the rollback accounts for even when it only puts PCM back. @c failure is the input failure the session had
+   latched then, which the failed start can have replaced with its own and which comes back once this input runs again
+   (svc_rtl_restart_recovery_locked()). */
 typedef struct {
     int running;
+    int stream_running;
     dsd_audio_in_type audio_in_type;
     char audio_in_dev[sizeof(((dsd_opts*)0)->audio_in_dev)];
     int rtltcp_enabled;
@@ -1162,7 +1166,8 @@ ui_capture_radio_input(const dsd_opts* opts, const dsd_state* state, ui_radio_in
     if (!opts) {
         return;
     }
-    out->running = opts->audio_in_type != AUDIO_IN_RTL || (state && state->rtl_ctx != NULL);
+    out->stream_running = state && state->rtl_ctx != NULL;
+    out->running = opts->audio_in_type != AUDIO_IN_RTL || out->stream_running;
     out->audio_in_type = opts->audio_in_type;
     DSD_MEMCPY(out->audio_in_dev, opts->audio_in_dev, sizeof out->audio_in_dev);
     out->rtltcp_enabled = opts->rtltcp_enabled;
@@ -1355,7 +1360,9 @@ ui_cfg_settle_reopen(dsd_opts* opts, dsd_state* state, int rc, const ui_cfg_roll
     ui_cfg_restore_mode_extras(opts, state, &before->mode);
     ui_restore_radio_input(opts, &before->input);
     int capture_stopped = 0;
-    if (svc_rtl_restart_recovery_locked(opts, state, &before->input.failure, &capture_stopped) != 0) {
+    if (svc_rtl_restart_recovery_locked(opts, state, before->input.stream_running, &before->input.failure,
+                                        &capture_stopped)
+        != 0) {
         LOG_ERROR("Config: the input it replaced did not restart either; no radio input is running.\n");
     }
     ui_set_rollback_toast(state, "Config not applied: ", why, capture_stopped);
@@ -1388,10 +1395,11 @@ ui_cmd_rtl_enable_input_refused(const dsd_opts* opts, dsd_state* state, const st
    session without the input it had: the reason is taken while the options still describe the input that failed
    (svc_describe_start_failure(), into @p why), then the input that ran before (@p before) is put back and running
    again (svc_rtl_restart_recovery_locked(), which sets @p out_capture_stopped): a PCM input as it was (a switch never
-   closed it), an RTL-family one started again without the I/Q capture that would write over its recording, and either
-   with the input failure the session had latched before the change. It is the input that ran, so nothing is reset as
-   for a new one (ui_input_switched()). Caller holds the P25 SM tick guard. Returns 1 when the start refused its width,
-   0 when it failed for another reason. */
+   closed it; a radio stream that ran behind it, recording, stays stopped, and the capture with it), an RTL-family one
+   started again without the I/Q capture that would write over its recording, and either with the input failure the
+   session had latched before the change. It is the input that ran, so nothing is reset as for a new one
+   (ui_input_switched()). Caller holds the P25 SM tick guard. Returns 1 when the start refused its width, 0 when it
+   failed for another reason. */
 static int
 ui_radio_start_failed_locked(dsd_opts* opts, dsd_state* state, const ui_radio_input* before, char* why, size_t why_size,
                              int* out_capture_stopped) {
@@ -1399,7 +1407,8 @@ ui_radio_start_failed_locked(dsd_opts* opts, dsd_state* state, const ui_radio_in
     const int refused = svc_describe_start_failure(opts, why, why_size);
     if (before->running) {
         ui_restore_radio_input(opts, before);
-        if (svc_rtl_restart_recovery_locked(opts, state, &before->failure, out_capture_stopped) != 0) {
+        if (svc_rtl_restart_recovery_locked(opts, state, before->stream_running, &before->failure, out_capture_stopped)
+            != 0) {
             LOG_ERROR("The input the change replaced did not restart either; no radio input is running.\n");
         }
     }
