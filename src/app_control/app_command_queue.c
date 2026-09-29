@@ -6704,10 +6704,10 @@ ui_scope_stream_of(unsigned int starts_before) {
    takes no width, and a row that sets its own (issue #526) keeps it over the edit. Returns -1 when that was a switch
    onto the analog monitor, or between FM and AM, the front end refused at once, which puts the decoder back as it was
    and fails the command. A stream the command started meanwhile (@p stream) gets the row's profile either way
-   (ui_resume_scope_and_publish()); one that refuses the row on air, as the command reported (UI_SCOPE_STREAM_REFUSES_ROW:
-   a config apply with no stream before it, which keeps the input it opened and the whole config), refuses that
-   profile for the reason the command's toast gives, not for a width or a switch the command made, so nothing is put
-   back and the toast stands (issue #578). */
+   (ui_resume_scope_and_publish()); one that refuses the row on air, as the command reported
+   (UI_SCOPE_STREAM_REFUSES_ROW: a config apply with no stream before it, which keeps the input it opened and the whole
+   config), refuses that profile for the reason the command's toast gives, not for a width or a switch the command
+   made, so nothing is put back and the toast stands (issue #578). */
 static int
 apply_cmd_resume_scope(dsd_opts* opts, dsd_state* state, const ui_analog_widths* before, ui_scope_stream stream) {
     int changed = 0;

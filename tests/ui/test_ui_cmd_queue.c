@@ -10725,10 +10725,10 @@ hook_output_rate(void) {
  * Issue #578: a config reopen that also changes what the row on air runs has the row republished to the new stream as
  * a changed row, timed for that stream as an unchanged one is. A P25 session scanning a P25 row that takes the
  * configured modulation loads a config that reopens the input as a SoapySDR device and sets [demod] QPSK: the row now
- * runs CQPSK, which the stream the reopen opened on the configured QPSK delivers at one sample per 4800 Bd symbol, while
- * its timing loop runs at the device's 19,531 Hz demod rate. The row is republished for 4 samples per symbol, not for
- * the 1 of the symbol-rate output (which the request would clamp to 2). The same row on an Analog-configured session
- * runs CQPSK under the analog family the stream opened on, at the demod rate the stream published, not at the
+ * runs CQPSK, which the stream the reopen opened on the configured QPSK delivers at one sample per 4800 Bd symbol,
+ * while its timing loop runs at the device's 19,531 Hz demod rate. The row is republished for 4 samples per symbol,
+ * not for the 1 of the symbol-rate output (which the request would clamp to 2). The same row on an Analog-configured
+ * session runs CQPSK under the analog family the stream opened on, at the demod rate the stream published, not at the
  * monitor's 48 kHz audio: 4 as well.
  */
 static int
@@ -10959,9 +10959,9 @@ submit_config_airspy_widths(dsd_opts* opts, dsd_state* state, int nfm_hz, int am
  * width that config sets can be the one the new stream refuses: a DMR-configured scanner with no stream, on an nfm row
  * that takes the configured 12.5 kHz, loads a config that opens an Airspy whose 19,531 Hz cannot filter the 25 kHz it
  * sets. The row's refusal when the scope resumes is the one the apply reported: the configured width stays 25 kHz and
- * the toast stays the scan row's, rather than the width going back to 12.5 kHz with "Refused: ...". An am row that takes
- * the configured AM width does the same for a 20 kHz AM width. With a stream running before, the same config is rolled
- * back, the configured 12.5 kHz with it, and the resume leaves the "Config not applied: ..." toast.
+ * the toast stays the scan row's, rather than the width going back to 12.5 kHz with "Refused: ...". An am row that
+ * takes the configured AM width does the same for a 20 kHz AM width. With a stream running before, the same config is
+ * rolled back, the configured 12.5 kHz with it, and the resume leaves the "Config not applied: ..." toast.
  */
 static int
 test_config_with_no_stream_keeps_its_width_when_the_scan_row_cannot_run(void) {
@@ -12062,12 +12062,12 @@ expect_input_failure(const char* label, int kind) {
 /*
  * Issue #578: a start that fails on the input that replaced the one that ran can latch a failure of that input for the
  * session: an Airspy that does not open latches a device failure, which turns the session's normal end into a failure
- * exit (dsd_engine_run_with_lifecycle()). A rollback that has the input that ran running again puts back the failure the
- * session had latched before the change, whatever that input is: a PCM input only put back, or an RTL-SDR or SoapySDR
- * input started again, whose start neither latches nor clears one. Input > Switch source and a config apply's reopen
- * both do, and so do a DSP bandwidth change and an Airspy setting, whose Airspy opens again; a failure latched before
- * the change (an rtl_tcp server that refused an earlier connect) stands as it was. A rollback whose restart fails as
- * well leaves the session with no input, and the failure latched stands.
+ * exit (dsd_engine_run_with_lifecycle()). A rollback that has the input that ran running again puts back the failure
+ * the session had latched before the change, whatever that input is: a PCM input only put back, or an RTL-SDR or
+ * SoapySDR input started again, whose start neither latches nor clears one. Input > Switch source and a config apply's
+ * reopen both do, and so do a DSP bandwidth change and an Airspy setting, whose Airspy opens again; a failure latched
+ * before the change (an rtl_tcp server that refused an earlier connect) stands as it was. A rollback whose restart
+ * fails as well leaves the session with no input, and the failure latched stands.
  */
 static int
 test_rollback_puts_back_the_input_failure(void) {

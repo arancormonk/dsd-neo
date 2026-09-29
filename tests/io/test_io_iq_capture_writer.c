@@ -1962,9 +1962,10 @@ __wrap_fdopen(int fd, const char* mode) {
 // NOLINTEND(bugprone-reserved-identifier,cert-dcl37-c,cert-dcl51-cpp,misc-use-internal-linkage)
 
 /*
- * Issue #578: the data file is emptied when its descriptor opens for writing, before the stream over it is made. An open
- * whose fdopen() then fails has ended the recording at the data path all the same: it reports the data file opened, so
- * a rollback's log never calls that recording kept, and removes the file it emptied, as after a later failure.
+ * Issue #578: the data file is emptied when its descriptor opens for writing, before the stream over it is made. An
+ * open whose fdopen() then fails has ended the recording at the data path all the same: it reports the data file
+ * opened, so a rollback's log never calls that recording kept, and removes the file it emptied, as after a later
+ * failure.
  */
 static int
 test_open_reports_a_data_file_it_emptied_without_a_stream(void) {
