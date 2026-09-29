@@ -45,6 +45,7 @@
 #include <dsd-neo/runtime/analog_channel.h>
 #include <dsd-neo/runtime/analog_tones.h>
 #include <dsd-neo/runtime/decode_mode.h>
+#include <dsd-neo/runtime/input_failure.h>
 #include <dsd-neo/runtime/log.h>
 #include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
 #include <dsd-neo/runtime/scan_mode.h>
@@ -5206,8 +5207,26 @@ static int g_config_rtl_captures;
 static int g_config_rtl_fail_after_capture;
 static int g_config_rtl_opened_capture;
 
+/* Issue #578: the input failure a start latches for the session (dsd_input_failure_report()), as the io does: an Airspy
+   that does not open latches a device failure, which ends the session with a failure exit
+   (dsd_engine_run_with_lifecycle()), and one that opens clears the latch (airspy_source_open()). A width refused before
+   the device opens latches nothing, and the other inputs here latch nothing and clear nothing. @p opened says whether
+   the start opened its device. */
+static void
+config_rtl_start_latch(int opened) {
+    if (strncmp(g_config_rtl_create_dev, "airspy", 6) != 0) {
+        return;
+    }
+    if (opened) {
+        dsd_input_failure_clear();
+    } else {
+        dsd_input_failure_report(DSD_INPUT_FAILURE_DEVICE, -5);
+    }
+}
+
 static void
 reset_config_rtl_wrap(void) {
+    dsd_input_failure_clear();
     g_config_rtl_creates = 0;
     g_config_rtl_create_capture = -1;
     g_config_rtl_captures = 0;
@@ -5254,6 +5273,7 @@ __wrap_rtl_stream_start(RtlSdrContext* ctx) {
     const int capturing = g_config_rtl_create_capture == 1;
     if (g_config_rtl_fail_starts <= 0) {
         g_config_rtl_opened_capture = capturing;
+        config_rtl_start_latch(1);
         return 0;
     }
     --g_config_rtl_fail_starts;
@@ -5264,6 +5284,8 @@ __wrap_rtl_stream_start(RtlSdrContext* ctx) {
         g_config_rtl_refused_rate_hz = g_config_rtl_refuse_rate_hz;
     } else {
         g_config_rtl_opened_capture = capturing && g_config_rtl_fail_after_capture;
+        /* A start that failed after the capture opened had opened its device. */
+        config_rtl_start_latch(g_config_rtl_fail_after_capture);
     }
     return -1;
 }
@@ -11789,6 +11811,113 @@ test_airspy_setting_rollback_reports_the_iq_capture_stop(void) {
     return rc;
 }
 
+/* The input failure the session has latched (dsd_input_failure_get()) is of @p kind. */
+static int
+expect_input_failure(const char* label, int kind) {
+    dsd_input_failure failure;
+    dsd_input_failure_get(&failure);
+    return expect_int(label, failure.kind, kind);
+}
+
+/*
+ * Issue #578: a start that fails on the input that replaced the one that ran can latch a failure of that input for the
+ * session: an Airspy that does not open latches a device failure, which turns the session's normal end into a failure
+ * exit (dsd_engine_run_with_lifecycle()). A rollback that has the input that ran running again puts back the failure the
+ * session had latched before the change, whatever that input is: a PCM input only put back, or an RTL-SDR or SoapySDR
+ * input started again, whose start neither latches nor clears one. Input > Switch source and a config apply's reopen
+ * both do, and so do a DSP bandwidth change and an Airspy setting, whose Airspy opens again; a failure latched before
+ * the change (an rtl_tcp server that refused an earlier connect) stands as it was. A rollback whose restart fails as
+ * well leaves the session with no input, and the failure latched stands.
+ */
+static int
+test_rollback_puts_back_the_input_failure(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static void* fake_ctx[2];
+    int rc = 0;
+    init_decode_mode_context(&opts, &state);
+    dsd_airspy_config_defaults(&opts.airspy);
+    opts.rtl_dsp_bw_khz = 48;
+
+    /* PCM switched to an Airspy that does not open: PCM is put back, and so is the latch. */
+    opts.audio_in_type = AUDIO_IN_PULSE;
+    DSD_SNPRINTF(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", "pulse");
+    state.rtl_ctx = NULL;
+    reset_config_rtl_wrap();
+    g_config_rtl_open_ok = 1;
+    g_config_rtl_fail_starts = 1;
+    rc |= switch_input_from(&opts, &state, DSD_APP_CMD_AIRSPY_ENABLE_INPUT, "latch pcm to airspy drained");
+    rc |= expect_str("latch pcm to airspy: still PCM", opts.audio_in_dev, "pulse");
+    rc |= expect_str("latch pcm to airspy toast", state.ui_msg, "Failed: the Airspy input did not start (see log)");
+    rc |= expect_input_failure("latch pcm to airspy: nothing latched", DSD_INPUT_FAILURE_NONE);
+
+    /* ... with a failure latched before the switch: that one stands. */
+    reset_config_rtl_wrap();
+    g_config_rtl_open_ok = 1;
+    g_config_rtl_fail_starts = 1;
+    dsd_input_failure_report(DSD_INPUT_FAILURE_REFUSED, 111);
+    rc |= switch_input_from(&opts, &state, DSD_APP_CMD_AIRSPY_ENABLE_INPUT, "latch pcm to airspy, earlier drained");
+    rc |= expect_input_failure("latch pcm to airspy, earlier: the earlier one", DSD_INPUT_FAILURE_REFUSED);
+
+    /* A running RTL-SDR or SoapySDR input switched to that Airspy: started again. */
+    static const char* const devs[] = {"rtl:0:851.375M:0:0:48", "soapy:driver=rtlsdr"};
+    for (size_t i = 0; i < sizeof devs / sizeof devs[0]; ++i) {
+        opts.audio_in_type = AUDIO_IN_RTL;
+        DSD_SNPRINTF(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", devs[i]);
+        state.rtl_ctx = (RtlSdrContext*)fake_ctx;
+        reset_config_rtl_wrap();
+        g_config_rtl_open_ok = 1;
+        g_config_rtl_fail_starts = 1;
+        rc |= switch_input_from(&opts, &state, DSD_APP_CMD_AIRSPY_ENABLE_INPUT, devs[i]);
+        rc |= expect_int(devs[i], g_config_rtl_creates == 2 && state.rtl_ctx != NULL, 1);
+        rc |= expect_str(devs[i], opts.audio_in_dev, devs[i]);
+        rc |= expect_input_failure(devs[i], DSD_INPUT_FAILURE_NONE);
+    }
+
+    /* A config whose [input] opens that Airspy over the running RTL-SDR: the RTL-SDR runs again. */
+    DSD_SNPRINTF(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", "rtl:0:851.375M:0:0:48");
+    state.rtl_ctx = (RtlSdrContext*)fake_ctx;
+    reset_config_rtl_wrap();
+    g_config_rtl_open_ok = 1;
+    g_config_rtl_fail_starts = 1;
+    rc |= submit_config_device_source(&opts, &state, DSDCFG_INPUT_AIRSPY, 0, 0, "latch cfg airspy over rtl");
+    rc |= expect_int("latch cfg airspy over rtl: failed", dsd_app_command_test_last_failed(), 1);
+    rc |= expect_str("latch cfg airspy over rtl: RTL-SDR back", opts.audio_in_dev, "rtl:0:851.375M:0:0:48");
+    rc |= expect_int("latch cfg airspy over rtl: running", g_config_rtl_creates == 2 && state.rtl_ctx != NULL, 1);
+    rc |= expect_input_failure("latch cfg airspy over rtl: nothing latched", DSD_INPUT_FAILURE_NONE);
+
+    /* A running Airspy whose DSP bandwidth, or sample rate, reopens it on a start that does not open: the Airspy that
+       ran opens again. */
+    DSD_SNPRINTF(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", "airspy");
+    state.rtl_ctx = (RtlSdrContext*)fake_ctx;
+    reset_config_rtl_wrap();
+    g_config_rtl_open_ok = 1;
+    g_config_rtl_fail_starts = 1;
+    rc |= submit_dsp_bandwidth(&opts, &state, 24, "latch airspy bw 24");
+    rc |= expect_int("latch airspy bw 24: back at 48 kHz", opts.rtl_dsp_bw_khz == 48 && state.rtl_ctx != NULL, 1);
+    rc |= expect_input_failure("latch airspy bw 24: nothing latched", DSD_INPUT_FAILURE_NONE);
+    reset_config_rtl_wrap();
+    g_config_rtl_open_ok = 1;
+    g_config_rtl_fail_starts = 1;
+    rc |= submit_airspy_setting(&opts, &state, "airspy_sample_rate", "2500000", "latch airspy rate");
+    rc |= expect_int("latch airspy rate: running", g_config_rtl_creates == 2 && state.rtl_ctx != NULL, 1);
+    rc |= expect_input_failure("latch airspy rate: nothing latched", DSD_INPUT_FAILURE_NONE);
+
+    /* The Airspy switched to an RTL-SDR that does not open, and its own restart does not open either: no input runs,
+       and the failure the Airspy latched stands. */
+    reset_config_rtl_wrap();
+    g_config_rtl_open_ok = 1;
+    g_config_rtl_fail_starts = 2;
+    rc |= switch_input_from(&opts, &state, DSD_APP_CMD_RTL_ENABLE_INPUT, "latch airspy to rtl, both fail drained");
+    rc |= expect_int("latch airspy to rtl, both fail: no input", state.rtl_ctx == NULL, 1);
+    rc |= expect_input_failure("latch airspy to rtl, both fail: the Airspy's", DSD_INPUT_FAILURE_DEVICE);
+
+    reset_config_rtl_wrap();
+    state.rtl_ctx = NULL;
+    freeState(&state);
+    return rc;
+}
+
 #endif
 
 #ifdef DSD_NEO_TEST_IO_CONTROL_WRAP
@@ -12135,6 +12264,7 @@ main(void) {
     rc |= test_input_switch_holds_the_watchdog_guard();
     rc |= test_input_switch_rollback_keeps_the_iq_capture();
     rc |= test_airspy_setting_rollback_reports_the_iq_capture_stop();
+    rc |= test_rollback_puts_back_the_input_failure();
     rc |= test_dsp_bandwidth_change_that_fails_keeps_the_running_input();
 #endif
     rc |= test_am_refused_on_pcm_input();

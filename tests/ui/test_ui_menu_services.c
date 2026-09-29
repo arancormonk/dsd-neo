@@ -36,6 +36,7 @@
 #include <dsd-neo/protocol/p25/p25_sm_watchdog.h>
 #include <dsd-neo/runtime/analog_channel.h>
 #include <dsd-neo/runtime/config.h>
+#include <dsd-neo/runtime/input_failure.h>
 #include <dsd-neo/runtime/log.h>
 #include <dsd-neo/runtime/scan_mode.h>
 #include <dsd-neo/runtime/scan_options.h>
@@ -698,6 +699,14 @@ expect_str(const char* tag, const char* got, const char* want) {
     return 0;
 }
 
+/* The input failure the session has latched (dsd_input_failure_get()) is @p kind with @p code. */
+static int
+expect_input_failure(const char* tag, int kind, int code) {
+    dsd_input_failure failure;
+    dsd_input_failure_get(&failure);
+    return expect_int(tag, failure.kind, kind) | expect_int(tag, failure.native_code, code);
+}
+
 static int
 test_mute_and_protocol_inversion_toggles(void) {
     int rc = 0;
@@ -972,20 +981,46 @@ test_locked_restarts(void) {
     g_rtl_create_result = 0;
     g_rtl_start_result = 0;
     int stopped = -1;
-    rc |= expect_int("recovery restart starts", svc_rtl_restart_recovery_locked(&opts, &state, &stopped), 0);
+    rc |= expect_int("recovery restart starts", svc_rtl_restart_recovery_locked(&opts, &state, NULL, &stopped), 0);
     rc |= expect_int("recovery restart stops the capture", stopped == 1 && opts.iq_capture_requested == 0, 1);
     rc |= expect_int("recovery restart opens without it", g_rtl_create_capture, 0);
     rc |= expect_int("recovery restart under the caller's hold",
                      g_p25_tick_guard_enter_calls == 0 && g_rtl_lifecycle_outside_guard == 0, 1);
-    rc |= expect_int("recovery restart with the capture off", svc_rtl_restart_recovery_locked(&opts, &state, &stopped),
-                     0);
+    rc |= expect_int("recovery restart with the capture off",
+                     svc_rtl_restart_recovery_locked(&opts, &state, NULL, &stopped), 0);
     rc |= expect_int("recovery restart: nothing to stop", stopped, 0);
     opts.audio_in_type = AUDIO_IN_PULSE;
     opts.iq_capture_requested = 1;
-    (void)svc_rtl_restart_recovery_locked(&opts, &state, NULL);
+    (void)svc_rtl_restart_recovery_locked(&opts, &state, NULL, NULL);
     rc |= expect_int("recovery restart of PCM leaves the capture", opts.iq_capture_requested, 1);
-    rc |= expect_int("recovery restart null options", svc_rtl_restart_recovery_locked(NULL, &state, &stopped), -1);
+    rc |=
+        expect_int("recovery restart null options", svc_rtl_restart_recovery_locked(NULL, &state, NULL, &stopped), -1);
     rc |= expect_int("recovery restart null options: nothing stopped", stopped, 0);
+
+    /* Issue #578: once the input that ran runs again, the input failure the session had latched before the change comes
+       back over the one the failed start latched (an Airspy that did not open), for a radio input started again and a
+       PCM input alike; a restart that fails leaves the latch as it is, and so does one given nothing to put back. */
+    const dsd_input_failure failure_before = {DSD_INPUT_FAILURE_REFUSED, 111};
+    for (int pcm = 0; pcm <= 1; ++pcm) {
+        const char* label = pcm ? "recovery of PCM puts back the latch" : "recovery restart puts back the latch";
+        opts.audio_in_type = pcm ? AUDIO_IN_PULSE : AUDIO_IN_RTL;
+        g_rtl_start_result = 0;
+        dsd_input_failure_report(DSD_INPUT_FAILURE_DEVICE, -5);
+        rc |= expect_int(label, svc_rtl_restart_recovery_locked(&opts, &state, &failure_before, NULL), 0);
+        rc |= expect_input_failure(label, DSD_INPUT_FAILURE_REFUSED, 111);
+    }
+    opts.audio_in_type = AUDIO_IN_RTL;
+    g_rtl_start_result = -1;
+    dsd_input_failure_report(DSD_INPUT_FAILURE_DEVICE, -5);
+    rc |= expect_int("recovery restart that fails",
+                     svc_rtl_restart_recovery_locked(&opts, &state, &failure_before, NULL) != 0, 1);
+    rc |= expect_input_failure("recovery restart that fails keeps the latch", DSD_INPUT_FAILURE_DEVICE, -5);
+    g_rtl_start_result = 0;
+    rc |= expect_int("recovery restart with nothing to put back",
+                     svc_rtl_restart_recovery_locked(&opts, &state, NULL, NULL), 0);
+    rc |=
+        expect_input_failure("recovery restart with nothing to put back keeps the latch", DSD_INPUT_FAILURE_DEVICE, -5);
+    dsd_input_failure_clear();
     state.rtl_ctx = NULL;
 
     /* Issue #578: svc_airspy_reopen_locked() selects the Airspy and restarts once, under the caller's hold, and leaves

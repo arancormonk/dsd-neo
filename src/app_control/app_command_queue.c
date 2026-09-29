@@ -66,6 +66,7 @@
 #include <dsd-neo/runtime/decode_mode.h>
 #include <dsd-neo/runtime/exitflag.h>
 #include <dsd-neo/runtime/freq_parse.h>
+#include <dsd-neo/runtime/input_failure.h>
 #include <dsd-neo/runtime/log.h>
 #include <dsd-neo/runtime/scan_mode.h>
 #include <dsd-neo/runtime/scan_options.h>
@@ -1124,7 +1125,9 @@ ui_set_rollback_toast(dsd_state* state, const char* prefix, const char* why, int
    and SoapySDR settings, and the digital resample policy. These are what Input > Switch source, a config's [input] and
    its hot restart write. @c running says whether that input worked: any input but an RTL-family one (PCM, which no
    switch closes), or an RTL-family one with a stream. A start that fails on the input that replaced it puts this one
-   back (ui_restore_radio_input()), so the session never ends up without an input it had. */
+   back (ui_restore_radio_input()), so the session never ends up without an input it had. @c failure is the input
+   failure the session had latched then, which the failed start can have replaced with its own and which comes back
+   once this input runs again (svc_rtl_restart_recovery_locked()). */
 typedef struct {
     int running;
     dsd_audio_in_type audio_in_type;
@@ -1150,6 +1153,7 @@ typedef struct {
     char soapy_settings[sizeof(((dsd_opts*)0)->soapy_settings)];
     char soapy_gains[sizeof(((dsd_opts*)0)->soapy_gains)];
     int soapy_bandwidth_hz;
+    dsd_input_failure failure;
 } ui_radio_input;
 
 static void
@@ -1182,9 +1186,10 @@ ui_capture_radio_input(const dsd_opts* opts, const dsd_state* state, ui_radio_in
     DSD_MEMCPY(out->soapy_settings, opts->soapy_settings, sizeof out->soapy_settings);
     DSD_MEMCPY(out->soapy_gains, opts->soapy_gains, sizeof out->soapy_gains);
     out->soapy_bandwidth_hz = opts->soapy_bandwidth_hz;
+    dsd_input_failure_get(&out->failure);
 }
 
-/* Put back the input @p in describes. The caller restarts it when it was an RTL-family input that ran. */
+/* Put back the input @p in describes. The caller has it running again (svc_rtl_restart_recovery_locked()). */
 static void
 ui_restore_radio_input(dsd_opts* opts, const ui_radio_input* in) {
     opts->audio_in_type = in->audio_in_type;
@@ -1314,15 +1319,16 @@ ui_scan_row_resumed_monitor(const dsd_opts* opts, const dsd_state* state, int wa
  * new stream delivers (a SoapySDR or Airspy device sets one no check could know up front): the stream is asked for it
  * now (svc_check_started_stream_analog()), and a stream that refuses it fails the reopen the same way, rather than
  * leave the decoder on the row's analog monitor over a front end that stays on the configured settings. Either way the
- * receive settings and the input @p before holds then go back, with the input's device settings and tuning, the
- * input that ran is started again without the I/Q capture (svc_rtl_restart_recovery_locked()), and the toast says why
- * ("Config not applied: ..."). Returns -1 then, and the caller fails the apply. The rest of the config stays applied
- * (its output, trunking, logging, alerts, recording and DSP sections, the group list it imported, the environment
- * defaults it set). With no stream running before the apply there is no input to put back: the config stays applied,
- * and the toast says why the input it opened did not start ("Config applied; no input running: ..."), returning -1 all
- * the same, failing the apply as a failed start fails Input > Switch source, or, when that input runs but refuses the
- * scan row, says so ("Config applied; the scan row cannot run: ...") and returns 1, which fails the apply with the new
- * input kept. Returns 0 when the reopened input runs everything asked of it. Caller holds the P25 SM tick guard.
+ * receive settings and the input @p before holds then go back, with the input's device settings and tuning, the input
+ * that ran is running again, without the I/Q capture and with the input failure the session had latched before the
+ * apply (svc_rtl_restart_recovery_locked()), and the toast says why ("Config not applied: ..."). Returns -1 then, and
+ * the caller fails the apply. The rest of the config stays applied (its output, trunking, logging, alerts, recording
+ * and DSP sections, the group list it imported, the environment defaults it set). With no stream running before the
+ * apply there is no input to put back: the config stays applied, and the toast says why the input it opened did not
+ * start ("Config applied; no input running: ..."), returning -1 all the same, failing the apply as a failed start fails
+ * Input > Switch source, or, when that input runs but refuses the scan row, says so ("Config applied; the scan row
+ * cannot run: ...") and returns 1, which fails the apply with the new input kept. Returns 0 when the reopened input
+ * runs everything asked of it. Caller holds the P25 SM tick guard.
  */
 static int
 ui_cfg_settle_reopen(dsd_opts* opts, dsd_state* state, int rc, const ui_cfg_rollback* before) {
@@ -1349,7 +1355,7 @@ ui_cfg_settle_reopen(dsd_opts* opts, dsd_state* state, int rc, const ui_cfg_roll
     ui_cfg_restore_mode_extras(opts, state, &before->mode);
     ui_restore_radio_input(opts, &before->input);
     int capture_stopped = 0;
-    if (svc_rtl_restart_recovery_locked(opts, state, &capture_stopped) != 0) {
+    if (svc_rtl_restart_recovery_locked(opts, state, &before->input.failure, &capture_stopped) != 0) {
         LOG_ERROR("Config: the input it replaced did not restart either; no radio input is running.\n");
     }
     ui_set_rollback_toast(state, "Config not applied: ", why, capture_stopped);
@@ -1380,11 +1386,12 @@ ui_cmd_rtl_enable_input_refused(const dsd_opts* opts, dsd_state* state, const st
 /* Input > Switch source, or a DSP bandwidth change, whose start failed on the new input or settings (issue #578): a
    width the rate the device delivered cannot filter, or a device that did not open. The command never leaves the
    session without the input it had: the reason is taken while the options still describe the input that failed
-   (svc_describe_start_failure(), into @p why), then the input that ran before (@p before) is put back, a PCM input as
-   it was (a switch never closed it) and an RTL-family one started again, without the I/Q capture that would write over
-   its recording (svc_rtl_restart_recovery_locked(), which sets @p out_capture_stopped). It is the input that ran, so
-   nothing is reset as for a new one (ui_input_switched()). Caller holds the P25 SM tick guard. Returns 1 when the
-   start refused its width, 0 when it failed for another reason. */
+   (svc_describe_start_failure(), into @p why), then the input that ran before (@p before) is put back and running
+   again (svc_rtl_restart_recovery_locked(), which sets @p out_capture_stopped): a PCM input as it was (a switch never
+   closed it), an RTL-family one started again without the I/Q capture that would write over its recording, and either
+   with the input failure the session had latched before the change. It is the input that ran, so nothing is reset as
+   for a new one (ui_input_switched()). Caller holds the P25 SM tick guard. Returns 1 when the start refused its width,
+   0 when it failed for another reason. */
 static int
 ui_radio_start_failed_locked(dsd_opts* opts, dsd_state* state, const ui_radio_input* before, char* why, size_t why_size,
                              int* out_capture_stopped) {
@@ -1392,8 +1399,7 @@ ui_radio_start_failed_locked(dsd_opts* opts, dsd_state* state, const ui_radio_in
     const int refused = svc_describe_start_failure(opts, why, why_size);
     if (before->running) {
         ui_restore_radio_input(opts, before);
-        if (before->audio_in_type == AUDIO_IN_RTL
-            && svc_rtl_restart_recovery_locked(opts, state, out_capture_stopped) != 0) {
+        if (svc_rtl_restart_recovery_locked(opts, state, &before->failure, out_capture_stopped) != 0) {
             LOG_ERROR("The input the change replaced did not restart either; no radio input is running.\n");
         }
     }

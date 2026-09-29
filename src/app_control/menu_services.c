@@ -35,6 +35,7 @@
 #include <dsd-neo/runtime/airspy_config.h>
 #include <dsd-neo/runtime/analog_channel.h>
 #include <dsd-neo/runtime/config.h>
+#include <dsd-neo/runtime/input_failure.h>
 #include <dsd-neo/runtime/log.h>
 #include <dsd-neo/runtime/scan_mode.h>
 #include <dsd-neo/runtime/scan_options.h>
@@ -1454,7 +1455,8 @@ done:
 }
 
 int
-svc_rtl_restart_recovery_locked(dsd_opts* opts, dsd_state* state, int* out_capture_stopped) {
+svc_rtl_restart_recovery_locked(dsd_opts* opts, dsd_state* state, const dsd_input_failure* failure_before,
+                                int* out_capture_stopped) {
     if (out_capture_stopped) {
         *out_capture_stopped = 0;
     }
@@ -1480,7 +1482,12 @@ svc_rtl_restart_recovery_locked(dsd_opts* opts, dsd_state* state, int* out_captu
                      opts->iq_capture_path);
         }
     }
-    return svc_rtl_restart_locked(opts, state);
+    const int rc = svc_rtl_restart_locked(opts, state);
+    /* The input that ran runs again, so a failure the failed start latched is not the session's. */
+    if (rc == 0 && failure_before) {
+        dsd_input_failure_report((dsd_input_failure_kind)failure_before->kind, failure_before->native_code);
+    }
+    return rc;
 }
 
 static void
@@ -1500,9 +1507,10 @@ svc_airspy_select(dsd_opts* opts, const dsd_airspy_config* config) {
 }
 
 /* Reopen the Airspy with @p config, and on a failed start put back @p previous and @p previous_tuning and start that
-   again, without the I/Q capture that would write over the recording (svc_rtl_restart_recovery_locked(), which sets
-   @p out_capture_stopped when it turned the capture off; may be NULL). The watchdog reads the input under the P25 SM
-   tick guard, so the whole of it runs inside one hold (issue #578): the caller's (@p guard_held), or one taken here. */
+   again, without the I/Q capture that would write over the recording, and with the input failure the session had
+   latched before the reopen (svc_rtl_restart_recovery_locked(), which sets @p out_capture_stopped when it turned the
+   capture off; may be NULL). The watchdog reads the input under the P25 SM tick guard, so the whole of it runs inside
+   one hold (issue #578): the caller's (@p guard_held), or one taken here. */
 static int
 svc_airspy_reopen_impl(dsd_opts* opts, dsd_state* state, const dsd_airspy_config* config,
                        const dsd_airspy_config* previous, const svc_airspy_tuning* previous_tuning, int guard_held,
@@ -1510,12 +1518,14 @@ svc_airspy_reopen_impl(dsd_opts* opts, dsd_state* state, const dsd_airspy_config
     if (!guard_held) {
         p25_sm_tick_guard_enter();
     }
+    dsd_input_failure failure_before;
+    dsd_input_failure_get(&failure_before);
     svc_airspy_select(opts, config);
     const int rc = svc_rtl_restart_locked(opts, state);
     if (rc != 0) {
         svc_airspy_select(opts, previous);
         svc_airspy_restore_tuning(opts, previous_tuning);
-        (void)svc_rtl_restart_recovery_locked(opts, state, out_capture_stopped);
+        (void)svc_rtl_restart_recovery_locked(opts, state, &failure_before, out_capture_stopped);
     }
     if (!guard_held) {
         p25_sm_tick_guard_leave();

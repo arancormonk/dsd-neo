@@ -23,6 +23,7 @@
 #include <stddef.h>
 
 #ifdef USE_RADIO
+#include <dsd-neo/runtime/input_failure.h>
 #include <stdint.h>
 #endif
 
@@ -636,12 +637,22 @@ int svc_rtl_restart_locked(dsd_opts* opts, dsd_state* state);
  * start the change made failed before it opened the capture file (its analog check, a device that did not open, a
  * capture writer that failed before its open), or written over by that start, when it had opened it
  * (rtl_stream_start_opened_capture(): the capture writer's sidecar or thread, its workers or the device's
- * streaming failed after that, or it ran and the change was undone).
+ * streaming failed after that, or it ran and the change was undone). An input that is not RTL-family (PCM, which no
+ * change closes) needs no start: it is running again once the options describe it.
  *
+ * The failed start can also have latched a failure of the input that replaced the one that ran for the session (an
+ * Airspy that did not open latches a device failure, which turns the session's normal end into a failure exit:
+ * dsd_engine_run_with_lifecycle()), and a start of an RTL-SDR, SoapySDR or PCM input clears none. So once the input
+ * that ran is running again, the failure the session had latched before the change (@p failure_before) is put back;
+ * a restart that fails leaves the latch as the starts left it, with no input running.
+ *
+ * @param failure_before The input failure latched before the change started anything (dsd_input_failure_get()); NULL
+ *                       leaves the latch alone.
  * @param out_capture_stopped Set to 1 when the capture was turned off here, else 0 (may be NULL).
- * @return 0 when the input started again; nonzero otherwise, as svc_rtl_restart_locked().
+ * @return 0 when the input runs again; nonzero otherwise, as svc_rtl_restart_locked().
  */
-int svc_rtl_restart_recovery_locked(dsd_opts* opts, dsd_state* state, int* out_capture_stopped);
+int svc_rtl_restart_recovery_locked(dsd_opts* opts, dsd_state* state, const dsd_input_failure* failure_before,
+                                    int* out_capture_stopped);
 /**
  * @brief Select the Airspy with @p config and reopen it, without acquiring; caller holds the P25 SM tick guard.
  *
