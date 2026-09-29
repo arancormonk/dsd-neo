@@ -6152,6 +6152,8 @@ static int g_fake_request_rate_hz;
 static uint32_t g_fake_output_rate_hz;
 /* The CQPSK state of the last demod profile requested. */
 static int g_demod_req_cqpsk;
+/* The channel filter the last demod profile request named (dsd_rtl_stream_channel_profile). */
+static int g_demod_req_chan;
 /* The digital decode modes the decoder notes with the front end (rtl_stream_set_digital_decode_modes()). */
 static int g_modes_note_calls;
 static int g_modes_note_order;
@@ -6349,10 +6351,10 @@ int
 __wrap_rtl_stream_request_demod_profile(int cqpsk_enable, int symbol_rate_hz, int levels, int channel_profile,
                                         int ted_sps, int ted_sps_is_override) {
     (void)levels;
-    (void)channel_profile;
     (void)ted_sps_is_override;
     g_demod_req_calls++;
     g_demod_req_cqpsk = cqpsk_enable;
+    g_demod_req_chan = channel_profile;
     g_demod_req_rate = symbol_rate_hz;
     g_demod_req_ted_sps = ted_sps;
     g_demod_req_order = ++g_rx_sequence;
@@ -6487,6 +6489,7 @@ reset_rx_family_wrap(void) {
     g_rx_sequence = 0;
     g_analog_req_calls = g_analog_req_family = g_analog_req_kind = g_analog_req_width_hz = g_analog_req_order = 0;
     g_demod_req_calls = g_demod_req_order = g_demod_req_rate = g_demod_req_ted_sps = g_demod_req_cqpsk = 0;
+    g_demod_req_chan = -1;
     g_modes_note_calls = g_modes_note_order = g_modes_note_dmr = g_modes_note_nxdn48 = 0;
     g_ensure_analog_calls = g_ensure_digital_calls = 0;
 }
@@ -11948,6 +11951,12 @@ test_config_reopen_times_the_row_for_the_modulation_it_runs(void) {
  * whose reopen starts leaves the row unchanged, and the resume publishes it to the new stream (ui_started_stream_rate()
  * times what lands nothing): the publish decides the landing, and times it, as for a changed row. With nothing
  * outstanding the row is timed at the live rate and the republish asks for the digital family as it always has.
+ *
+ * A DMR target with no modulation under -mq keeps the lock's CQPSK in its decoder, but its CQPSK choice is its own,
+ * CQPSK off: its GFSK retune lands the FSK discriminator whatever DSD_NEO_CQPSK says. The resume and the republish time
+ * it, and publish its profile, for that FSK (10 samples per symbol at 48 kHz, the 12.5 kHz filter), with a landing
+ * whose CQPSK state is the target's own, and with nothing outstanding the republish still asks for CQPSK off rather
+ * than put the front end its retune landed on FSK onto CQPSK.
  */
 static int
 test_scoped_republish_lands_where_the_row_was_timed(void) {
@@ -11957,19 +11966,31 @@ test_scoped_republish_lands_where_the_row_was_timed(void) {
 
     static const struct {
         const char* label;
+        dsd_scan_mode mode;
         dsd_scan_modulation modulation;
         int cqpsk_env;   /* DSD_NEO_CQPSK: -1 unset */
         int outstanding; /* a retune that carries the digital family is still outstanding */
         int sps;         /* the timing the decoder and the published profile get */
         int landing;     /* the family request is the marked landing */
         int explicit_choice;
-        int reopen; /* a config apply whose reopen starts, rather than the DMR inversion */
+        int reopen;          /* a config apply whose reopen starts, rather than the DMR inversion */
+        int published_cqpsk; /* the CQPSK state the published profile asks for */
+        int channel;         /* the channel filter it names */
     } legs[] = {
-        {"landing: no modulation under -mq", DSD_SCAN_MODULATION_INHERIT, 0, 1, 10, 1, 0, 0},
-        {"landing: modulation=cqpsk", DSD_SCAN_MODULATION_CQPSK, 0, 1, 16, 1, 1, 0},
-        {"landing: auto that learned cqpsk", DSD_SCAN_MODULATION_AUTO, 1, 1, 16, 1, 1, 0},
-        {"landing: a reopen that starts", DSD_SCAN_MODULATION_INHERIT, 0, 1, 10, 1, 0, 1},
-        {"landing: nothing outstanding", DSD_SCAN_MODULATION_INHERIT, 0, 0, 16, 0, -1, 0},
+        {"landing: no modulation under -mq", DSD_SCAN_MODE_P25, DSD_SCAN_MODULATION_INHERIT, 0, 1, 10, 1, 0, 0, 1,
+         DSD_RTL_STREAM_CHANNEL_PROFILE_P25_CQPSK},
+        {"landing: modulation=cqpsk", DSD_SCAN_MODE_P25, DSD_SCAN_MODULATION_CQPSK, 0, 1, 16, 1, 1, 0, 1,
+         DSD_RTL_STREAM_CHANNEL_PROFILE_P25_CQPSK},
+        {"landing: auto that learned cqpsk", DSD_SCAN_MODE_P25, DSD_SCAN_MODULATION_AUTO, 1, 1, 16, 1, 1, 0, 1,
+         DSD_RTL_STREAM_CHANNEL_PROFILE_P25_CQPSK},
+        {"landing: a reopen that starts", DSD_SCAN_MODE_P25, DSD_SCAN_MODULATION_INHERIT, 0, 1, 10, 1, 0, 1, 1,
+         DSD_RTL_STREAM_CHANNEL_PROFILE_P25_CQPSK},
+        {"landing: nothing outstanding", DSD_SCAN_MODE_P25, DSD_SCAN_MODULATION_INHERIT, 0, 0, 16, 0, -1, 0, 1,
+         DSD_RTL_STREAM_CHANNEL_PROFILE_P25_CQPSK},
+        {"landing: dmr target under -mq", DSD_SCAN_MODE_DMR, DSD_SCAN_MODULATION_INHERIT, 0, 1, 10, 1, 1, 0, 0,
+         DSD_RTL_STREAM_CHANNEL_PROFILE_12K5},
+        {"landing: dmr target, nothing outstanding", DSD_SCAN_MODE_DMR, DSD_SCAN_MODULATION_INHERIT, 0, 0, 16, 0, -1, 0,
+         0, DSD_RTL_STREAM_CHANNEL_PROFILE_12K5},
     };
 
     const dsd_rtl_stream_metrics_hooks hooks = {.output_rate_hz = hook_output_rate,
@@ -11984,7 +12005,9 @@ test_scoped_republish_lands_where_the_row_was_timed(void) {
         DSD_SNPRINTF(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", "rtl:0:851.375M:0:0:48");
         opts.rtl_dsp_bw_khz = 48;
         state.rtl_ctx = (RtlSdrContext*)fake_ctx;
-        (void)dsd_app_command_set_i32(DSD_APP_CMD_DECODE_MODE_SET, (int32_t)DSDCFG_MODE_P25P1);
+        (void)dsd_app_command_set_i32(
+            DSD_APP_CMD_DECODE_MODE_SET,
+            (int32_t)(legs[i].mode == DSD_SCAN_MODE_DMR ? DSDCFG_MODE_DMR : DSDCFG_MODE_P25P1));
         (void)dsd_app_drain_cmds(&opts, &state);
         /* -mq */
         dsd_scan_mode_apply_modulation(&opts, DSD_SCAN_MODE_P25, DSD_SCAN_MODULATION_CQPSK);
@@ -12000,7 +12023,7 @@ test_scoped_republish_lands_where_the_row_was_timed(void) {
         g_fake_digital_rate = 78125U;
         g_fake_digital_fsk_rate = 48000U;
         g_fake_family_landing_outstanding = legs[i].outstanding;
-        rc |= expect_int(label, dsd_scan_mode_enter(&opts, &state, DSD_SCAN_MODE_P25), 0);
+        rc |= expect_int(label, dsd_scan_mode_enter(&opts, &state, legs[i].mode), 0);
         dsd_scan_mode_target_modulation(&state, legs[i].modulation);
         rc |= expect_int(label, dsd_scan_mode_options(&opts, &state, NULL), 0);
         if (legs[i].modulation == DSD_SCAN_MODULATION_AUTO) {
@@ -12022,9 +12045,11 @@ test_scoped_republish_lands_where_the_row_was_timed(void) {
             rc |= expect_int(label, dsd_app_command_action(DSD_APP_CMD_INV_DMR_TOGGLE), DSD_APP_COMMAND_SUBMIT_QUEUED);
             rc |= expect_int(label, dsd_app_drain_cmds(&opts, &state), 1);
         }
-        rc |= expect_int(label, dsd_scan_mode_active(&state) == DSD_SCAN_MODE_P25 && state.rf_mod == 1, 1);
+        rc |= expect_int(label, dsd_scan_mode_active(&state) == legs[i].mode && state.rf_mod == 1, 1);
         rc |= expect_int(label, state.samplesPerSymbol, legs[i].sps);
-        rc |= expect_int(label, g_demod_req_calls >= 1 && g_demod_req_cqpsk == 1 && g_demod_req_rate == 4800, 1);
+        rc |= expect_int(label, g_demod_req_calls >= 1 && g_demod_req_rate == 4800, 1);
+        rc |= expect_int(label, g_demod_req_cqpsk, legs[i].published_cqpsk);
+        rc |= expect_int(label, g_demod_req_chan, legs[i].channel);
         rc |= expect_int(label, g_demod_req_ted_sps, legs[i].sps);
         /* The republish's own requests: the family first, then the row's profile. */
         rc |= expect_int(label,

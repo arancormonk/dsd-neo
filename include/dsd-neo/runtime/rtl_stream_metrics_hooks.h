@@ -175,7 +175,8 @@ int dsd_rtl_stream_metrics_hook_family_landing_after_pending(void);
  * @param symbol_rate_hz Digital symbol rate, which decides the digital resampling policy.
  * @param cqpsk_explicit Non-zero when @p cqpsk_enable is a trunk-scan target's own choice (a P25 target's
  *                       `modulation`, or a DMR/NXDN target's FSK), which stands over DSD_NEO_CQPSK where the retune
- *                       the engine queues for it lands (rtl_stream_output_rate_for_family(), issue #583).
+ *                       the engine queues for it lands, or the live landing a republish of the row asks for
+ *                       (rtl_stream_output_rate_for_family(), issue #583).
  * @return Predicted output rate in Hz, or 0 when it is unknown or no RTL front end is installed.
  */
 unsigned int dsd_rtl_stream_metrics_hook_output_rate_for_family(int family, int cqpsk_enable, int symbol_rate_hz,

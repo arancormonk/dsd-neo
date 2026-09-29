@@ -888,20 +888,25 @@ dsd_engine_channel_scan_step_manual(dsd_opts* opts, dsd_state* state) {
  * the monitor's resampled audio, or the rate a typed row's profile ran at. The decoder, and the profile it publishes,
  * are timed for the rate the digital family lands on instead, as svc_publish_symbol_profile() times a mode change
  * outside a row. So they are when work still outstanding lands a family on a front end already digital (issue #583: a
- * row's retune that carries the digital family, still in flight, or an analog row's), by the stream's answer
- * (dsd_rtl_stream_metrics_hook_family_landing_after_pending()), which includes the live analog family. The digital
- * family asked for then is the landing (dsd_rtl_stream_metrics_hook_request_digital_family_landing()), which puts the
- * front end on that prediction whichever family it runs where it lands: the leave supersedes a retune still
- * outstanding, which lands its centre only, and one that landed before it leaves the landing to put the configured
- * decoder's profile where it is timed. The configured decoder is no target, so its CQPSK state is an open's, as
- * DSD_NEO_CQPSK decides when set. With nothing outstanding on a digital front end the saved timing stands, and the plain
- * request is a no-op there.
+ * row's retune that carries the digital family, still in flight, or an analog row's), or when the row on air was timed
+ * for that landing: the leave decides once, as a republish does, with the configured mode digital and either the row's
+ * recorded decision (@p row_timed_digital_family, read from the scope before the leave removed it:
+ * dsd_scan_mode_timed_digital_family()) or the stream's answer
+ * (dsd_rtl_stream_metrics_hook_family_landing_after_pending(), which includes the live analog family). The row's
+ * decision stands when the stream's answer has fallen since (a scoped command's resume timed the row for the landing
+ * while its retune was outstanding, and that work failed before the scan stopped), so the configured decoder is not
+ * timed and published by a different answer than the row was. The digital family asked for then is the landing
+ * (dsd_rtl_stream_metrics_hook_request_digital_family_landing()), which puts the front end on that prediction whichever
+ * family it runs where it lands: the leave supersedes a retune still outstanding, which lands its centre only, and one
+ * that landed before it leaves the landing to put the configured decoder's profile where it is timed. The configured
+ * decoder is no target, so its CQPSK state is an open's, as DSD_NEO_CQPSK decides when set. With no decision for the
+ * landing on a digital front end the saved timing stands, and the plain request is a no-op there.
  *
  * A leave that switches the front end's family, or its analog kind (an nfm row's FM monitor on an -fM session, issue
  * #524), also drops the analog monitor block the decoder has part-collected from the old family's or kind's output, as
  * a decode-mode change between them does. */
 static int
-channel_scan_restore_frontend(const dsd_opts* opts, dsd_state* state) {
+channel_scan_restore_frontend(const dsd_opts* opts, dsd_state* state, int row_timed_digital_family) {
     if (opts->audio_in_type != AUDIO_IN_RTL) {
         return 0;
     }
@@ -920,7 +925,9 @@ channel_scan_restore_frontend(const dsd_opts* opts, dsd_state* state) {
     if (analog_family_active) {
         dsd_symbol_analog_block_reset(state);
     }
-    const int lands_digital_family = dsd_rtl_stream_metrics_hook_family_landing_after_pending();
+    const int lands_digital_family =
+        dsd_scan_mode_configured_digital(opts, state)
+        && (row_timed_digital_family || dsd_rtl_stream_metrics_hook_family_landing_after_pending());
     if (lands_digital_family) {
         const unsigned int rate_hz = dsd_rtl_stream_metrics_hook_output_rate_for_family(
             DSD_RX_FAMILY_DIGITAL, state->rf_mod == 1, profile.symbol_rate_hz, 0);
@@ -955,11 +962,13 @@ dsd_engine_channel_scan_leave(dsd_opts* opts, dsd_state* state) {
     (void)dsd_state_ext_set(state, DSD_STATE_EXT_ENGINE_CHANNEL_SCAN, NULL, NULL);
     dsd_scan_groups_leave(state);
     dsd_scan_maps_leave(state);
+    /* The landing decision the row on air was timed with goes with its scope; the restore decides by it too. */
+    const int row_timed_digital_family = dsd_scan_mode_timed_digital_family(state);
     dsd_scan_mode_leave(opts, state);
     int monitor_request = 0;
     if (active) {
         dsd_frame_sync_reset_acquisition(opts, state, opts->trunk_scan_enabled != 1);
-        monitor_request = channel_scan_restore_frontend(opts, state);
+        monitor_request = channel_scan_restore_frontend(opts, state, row_timed_digital_family);
         /* A rigctl peer that demodulated an am row, or ran a row's own passband, goes back to what the configured
          * session asks for: no later tune outside a scan would undo it (issue #526). It queues no receive request, so
          * the analog profile request stays the leave's last. */

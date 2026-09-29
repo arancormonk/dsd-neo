@@ -8851,7 +8851,8 @@ rtl_stream_apply_analog_request(int kind, int width_hz) {
 /* Body of an analog profile request. Callers hold the family-switch gate or run on the demod thread.
  * @p next_cqpsk and @p next_symbol_rate_hz describe the symbol profile applied after a switch to digital (-1 / 0
  * when none follows), and @p next_cqpsk_explicit whether its CQPSK state is a trunk-scan target's own choice, which a
- * retune's profile says (RtlRetuneProfile::cqpsk_explicit) and a live request never does
+ * retune's profile says (RtlRetuneProfile::cqpsk_explicit) and a live digital landing can
+ * (rtl_stream_request_digital_family_landing()), and a plain live family request never does
  * (rtl_stream_leave_analog_family()).
  *
  * A switch to digital leaves the analog family whenever the stream runs it, the state rtl_stream_analog_family_active()
@@ -9022,9 +9023,10 @@ rtl_stream_request_digital_family_landing(int cqpsk_explicit) {
  * an open of the mode picks, which DSD_NEO_CQPSK decides when set, and the channel-filter enable rule of the open
  * (rtl_demod_open_cqpsk_request(), rtl_demod_open_channel_profile()), for the switch and for the profile applied after
  * it alike. With @p cqpsk_explicit the profile's CQPSK state is a trunk-scan target's own choice (a retune's
- * RtlRetuneProfile::cqpsk_explicit, issue #583): it stands, and so does the channel filter it names, under the same
- * enable rule (rtl_demod_landing_cqpsk()). A live request passes 0; the value it resolves to resolves to itself again,
- * so the switch that follows with it lands the same family. */
+ * RtlRetuneProfile::cqpsk_explicit, or the flag a live digital landing carries, issue #583): it stands, and so does the
+ * channel filter it names, under the same enable rule (rtl_demod_landing_cqpsk()). A plain live family request passes
+ * 0. The live consume path resolves before the switch and hands it the resolved value with the same flag, which
+ * resolves to itself again, so the switch lands the same family. */
 static void
 rtl_stream_resolve_landing_profile(int* cqpsk, int* channel_profile, int symbol_rate_hz, int cqpsk_explicit) {
     const int landing = rtl_demod_landing_cqpsk(*cqpsk, cqpsk_explicit);
@@ -9108,7 +9110,9 @@ rtl_stream_settle_taken_requests(uint32_t taken_seq, uint32_t refused_seq) {
  * demod rate, target and policy, so the stream runs at the rate rtl_stream_output_rate_for_family() predicts. A symbol
  * profile request alone keeps the chain the stream runs. Nothing else of a switch happens: the family switch is not
  * recorded and no loops are reset beyond a CQPSK change's. An output rate that moved leaves the ring's samples at the
- * old rate behind, so they are dropped and the output generation moves, as a CQPSK change does. Demod thread only. */
+ * old rate behind, so they are dropped and the output generation moves, as a CQPSK change does. An external backend's
+ * retune that carries the digital family, which has no finalize, lands its output chain here too
+ * (rtl_stream_apply_pending_retune_profile_for_target()). Demod thread, or a caller holding the family-switch gate. */
 static void
 rtl_stream_design_digital_landing_output(void) {
     struct output_state* outp = rtl_stream_active_output();
@@ -9607,21 +9611,18 @@ rtl_stream_apply_retune_ted(const RtlRetuneProfile* profile, int lands_digital_f
     demod.ted_sps_override = profile->ted_override ? ted_sps : 0;
 }
 
-/* Returns 1 when the profile asked for an analog channel the demod rate cannot run, which is refused and leaves the
- * front end on the receive profile it had (the caller reports the retune failed), else 0. */
+/* The receive part of a retune profile that applies on its target, after its gain profile: the receive-family switch,
+ * then the symbol profile and its TED. Returns 1 when the profile asked for an analog channel the demod rate cannot
+ * run, as rtl_stream_apply_retune_profile() does, else 0. @p out_lands_digital_family is set to 1 once the symbol
+ * profile of a profile that carries the digital family has applied (rtl_stream_retune_lands_digital_family()), whose
+ * resampler and output rate the caller then designs for the CQPSK state it landed, else 0. Callers hold the
+ * controller's reconfigure gate (controller_enter_reconfigure_gate()) or the family-switch gate
+ * (rtl_stream_enter_demod_family_switch_gate()), so the demod thread is parked between blocks while the symbol profile
+ * and TED are written; the family switch and the CQPSK toggle ask for the gate again themselves, find it held and only
+ * wait for the idle demod thread. */
 static int
-rtl_stream_apply_retune_profile(const RtlRetuneProfile* profile, uint32_t center_freq_hz) {
-    if (!profile || !profile->active) {
-        return 0;
-    }
-    if (profile->target_freq_hz != 0U) {
-        if (center_freq_hz == 0U || profile->target_freq_hz != center_freq_hz) {
-            return 0;
-        }
-    }
-
-    rtl_stream_apply_retune_gain_profile(profile);
-
+rtl_stream_apply_retune_receive_profile(const RtlRetuneProfile* profile, int* out_lands_digital_family) {
+    *out_lands_digital_family = 0;
     const int family = rtl_stream_apply_retune_family(profile);
     if (family != RTL_RETUNE_FAMILY_CONTINUE) {
         /* The analog family has no symbol clock. A symbol profile queued for the same target would toggle the
@@ -9632,9 +9633,11 @@ rtl_stream_apply_retune_profile(const RtlRetuneProfile* profile, uint32_t center
         return family == RTL_RETUNE_FAMILY_REFUSED ? 1 : 0;
     }
 
-    /* The resampler and output rate for the CQPSK state landed here follow once the profile has applied
-       (controller_finalize_rate_chain()), from the same inputs rtl_demod_enter_digital_family() designs them from at a
-       switch, so a front end already on the digital family lands the output rate a switch would too. */
+    /* The resampler and output rate for the CQPSK state landed here follow once the profile has applied, from the same
+       inputs rtl_demod_enter_digital_family() designs them from at a switch (the controller's finalize,
+       controller_finalize_rate_chain(), or an external backend's landing,
+       rtl_stream_apply_pending_retune_profile_for_target()), so a front end already on the digital family lands the
+       output rate a switch would too. */
     const int lands_digital_family = rtl_stream_retune_lands_digital_family(profile);
     int cqpsk = -1;
     int channel_profile = -1;
@@ -9650,14 +9653,55 @@ rtl_stream_apply_retune_profile(const RtlRetuneProfile* profile, uint32_t center
     }
 
     rtl_stream_apply_retune_ted(profile, lands_digital_family);
+    *out_lands_digital_family = lands_digital_family;
     return 0;
 }
 
+/* Returns 1 when the profile asked for an analog channel the demod rate cannot run, which is refused and leaves the
+ * front end on the receive profile it had (the caller reports the retune failed), else 0. The controller applies it
+ * with its reconfigure gate held and designs the output chain after it (controller_finalize_rate_chain()). */
+static int
+rtl_stream_apply_retune_profile(const RtlRetuneProfile* profile, uint32_t center_freq_hz) {
+    if (!profile || !profile->active) {
+        return 0;
+    }
+    if (profile->target_freq_hz != 0U) {
+        if (center_freq_hz == 0U || profile->target_freq_hz != center_freq_hz) {
+            return 0;
+        }
+    }
+
+    rtl_stream_apply_retune_gain_profile(profile);
+    int lands_digital_family = 0;
+    return rtl_stream_apply_retune_receive_profile(profile, &lands_digital_family);
+}
+
+/* An external backend's retune (a rigctl peer that tuned an RTL input outside -Y, dsd_engine_tune_with_backend())
+ * lands the profile queued for its target from the decoder's thread while the demod thread runs: there is no
+ * controller retune, so no reconfigure gate and no finalize. Its gain profile goes to the device first, as the
+ * controller applies it. The receive part then applies under the family-switch gate the CQPSK toggle and a live family
+ * switch use (rtl_stream_enter_demod_family_switch_gate(), which parks the demod thread between blocks), held across
+ * the family switch, the symbol profile, its TED and the output chain, so none of those demod writes races a block and
+ * the demod thread never runs one with part of the landing applied. A profile that carries the digital family then gets
+ * the output chain a finalize designs for it (rtl_stream_design_digital_landing_output(), as a live digital landing on
+ * the digital family does), so the front end runs where rtl_stream_output_rate_for_family() predicted, the rate the
+ * engine timed the decoder for when it attached the family (issue #583), whichever family it ran here. A profile
+ * without a family keeps the output chain the stream runs, as it always has. */
 extern "C" void
 rtl_stream_apply_pending_retune_profile_for_target(uint32_t target_freq_hz) {
     RtlRetuneProfile profile{};
-    (void)rtl_stream_take_pending_retune_profile(&profile, 0U, target_freq_hz);
-    rtl_stream_apply_retune_profile(&profile, target_freq_hz);
+    if (!rtl_stream_take_pending_retune_profile(&profile, 0U, target_freq_hz)) {
+        return;
+    }
+    rtl_stream_apply_retune_gain_profile(&profile);
+    const int gate_armed = rtl_stream_enter_demod_family_switch_gate();
+    int lands_digital_family = 0;
+    (void)rtl_stream_apply_retune_receive_profile(&profile, &lands_digital_family);
+    if (lands_digital_family) {
+        rtl_stream_design_digital_landing_output();
+    }
+    rtl_stream_publish_demod_profile_snapshot();
+    rtl_stream_leave_demod_family_switch_gate(gate_armed);
 }
 
 extern "C" int
@@ -13561,10 +13605,34 @@ family_test_queue_symbol_profile(uint32_t target_hz, int symbol_profile) {
                                                            4800, 4, channel_profile, 10, 0, NULL);
 }
 
-/* One step of rtl_stream_test_retune_profile_sequence(): queue, take and land @p step's profile on @p target_hz. */
+/* Whether a retune profile is queued for @p target_hz (rtl_stream_take_pending_retune_profile() would take it). */
+static int
+family_test_retune_profile_queued_for(uint32_t target_hz) {
+    std::lock_guard<std::mutex> lock(g_pending_retune_profile_mutex);
+    return rtl_stream_retune_profile_matches_target(&g_pending_retune_profile, target_hz);
+}
+
+/* Land the profile queued for @p target_hz as an external backend's retune does (a rigctl peer that tuned an RTL input,
+ * dsd_engine_tune_with_backend()): from the decoder's thread while the pipeline runs, with no controller retune and so
+ * no finalize (rtl_stream_apply_pending_retune_profile_for_target()). The stream the caller had set is put back.
+ * Returns 1 when a profile was queued for the target and the landing took it. */
+static int
+family_test_apply_external_retune(uint32_t target_hz) {
+    const int queued = family_test_retune_profile_queued_for(target_hz);
+    RtlSdrInternals* const previous = g_stream;
+    g_stream = &g_cqpsk_toggle_test_stream;
+    rtl_stream_apply_pending_retune_profile_for_target(target_hz);
+    g_stream = previous;
+    return (queued && !family_test_retune_profile_queued_for(target_hz)) ? 1 : 0;
+}
+
+/* One step of rtl_stream_test_retune_profile_sequence(): queue, take and land @p step's profile on @p target_hz, as the
+ * controller does, or with @p external_backend as an external backend's retune does
+ * (family_test_apply_external_retune(), which takes the profile itself, so no live_family_after_take request is made).
+ */
 static void
 family_test_land_retune_step(const dsd_opts* opts, uint32_t target_hz, const rtl_stream_test_retune_step* step,
-                             rtl_stream_test_retune_landing* out) {
+                             int external_backend, rtl_stream_test_retune_landing* out) {
     *out = {};
     rtl_stream_clear_pending_retune_profile();
     family_test_live_family_request(step->live_family_before);
@@ -13589,14 +13657,20 @@ family_test_land_retune_step(const dsd_opts* opts, uint32_t target_hz, const rtl
         family_test_queue_with_pipeline(-1, 0, 1);
     }
     RtlRetuneProfile profile{};
-    out->taken = rtl_stream_take_pending_retune_profile(&profile, 7U, target_hz);
-    family_test_live_family_request(step->live_family_after_take);
+    if (!external_backend) {
+        out->taken = rtl_stream_take_pending_retune_profile(&profile, 7U, target_hz);
+        family_test_live_family_request(step->live_family_after_take);
+    }
     /* Static storage: its address goes into the file-scope hook context, which never holds a stack address. */
     static FamilyTestLandingRequest landing_request;
     landing_request = {step->queued_live_request, step->queued_live_width_hz, 0U};
     g_test_retune_family_checked_hook = family_test_request_at_landing;
     g_test_retune_family_checked_ctx = &landing_request;
-    (void)family_test_finalize_on_pipeline(&controller, opts, target_hz, out->taken ? &profile : NULL);
+    if (external_backend) {
+        out->taken = family_test_apply_external_retune(target_hz);
+    } else {
+        (void)family_test_finalize_on_pipeline(&controller, opts, target_hz, out->taken ? &profile : NULL);
+    }
     g_test_retune_family_checked_hook = NULL;
     g_test_retune_family_checked_ctx = NULL;
     if (landing_request.seq != 0U) {
@@ -13630,7 +13704,14 @@ rtl_stream_test_retune_profile_sequence(const rtl_stream_test_retune_step* steps
 extern "C" int
 rtl_stream_test_retune_profile_sequence_at_rate(const rtl_stream_test_retune_step* steps, size_t count,
                                                 int forced_rate_out_hz, rtl_stream_test_retune_landing* out) {
-    if (!steps || !out || count == 0U) {
+    return rtl_stream_test_retune_profile_sequence_external(steps, count, forced_rate_out_hz, 0U, out);
+}
+
+extern "C" int
+rtl_stream_test_retune_profile_sequence_external(const rtl_stream_test_retune_step* steps, size_t count,
+                                                 int forced_rate_out_hz, uint32_t external_steps,
+                                                 rtl_stream_test_retune_landing* out) {
+    if (!steps || !out || count == 0U || count > 32U) {
         return -1;
     }
     const FamilyTestSaved saved = family_test_save();
@@ -13646,7 +13727,9 @@ rtl_stream_test_retune_profile_sequence_at_rate(const rtl_stream_test_retune_ste
     }
     rtl_stream_clear_demod_profile_request();
     for (size_t i = 0; i < count; i++) {
-        family_test_land_retune_step(&dmr_opts, kFamilyTestRetuneHz + (uint32_t)(i * 12500U), &steps[i], &out[i]);
+        const int external_backend = (external_steps & (1U << i)) != 0U ? 1 : 0;
+        family_test_land_retune_step(&dmr_opts, kFamilyTestRetuneHz + (uint32_t)(i * 12500U), &steps[i],
+                                     external_backend, &out[i]);
     }
     rtl_stream_clear_pending_retune_profile();
     family_test_restore(saved);

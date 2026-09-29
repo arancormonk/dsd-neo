@@ -207,7 +207,7 @@ including `auto`, overrides global modulation handling, `DSD_NEO_CQPSK` included
 first one after an `nfm-conventional` or `am-conventional` target too. An empty value preserves an explicit global
 modulation lock; after an analog target, a P25 target without one lands on the CQPSK state `DSD_NEO_CQPSK` names when
 it is set, as a stream opened for it would. DMR and NXDN targets run the FSK discriminator whatever `DSD_NEO_CQPSK`
-says.
+or a global `-mq` lock says, also when a command made while the target is on air publishes its profile again.
 Modes declared in a target's `chan_csv` do not override its type. NXDN48 targets do not require an outer `-fi`. Audio
 retains the startup output layout, with mono NXDN voice duplicated into both channels when the output is stereo.
 A `p25-conventional` target disables trunking and parks on its fixed frequency without a P25 trunking state-machine

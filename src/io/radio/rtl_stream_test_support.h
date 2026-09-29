@@ -888,6 +888,15 @@ int rtl_stream_test_retune_profile_sequence(const rtl_stream_test_retune_step* s
 int rtl_stream_test_retune_profile_sequence_at_rate(const rtl_stream_test_retune_step* steps, size_t count,
                                                     int forced_rate_out_hz, rtl_stream_test_retune_landing* out);
 
+/* rtl_stream_test_retune_profile_sequence_at_rate(), with each step whose bit is set in @p external_steps (bit i for
+ * step i, at most 32 steps) landed as an external backend's retune is (issue #583: a rigctl peer that tuned an RTL
+ * input): its queued profile applied from the decoder's thread with the pipeline running, through
+ * rtl_stream_apply_pending_retune_profile_for_target(), with no controller retune and no finalize. Such a step makes no
+ * live_family_after_take request, and its taken says the landing took the profile queued for its target. */
+int rtl_stream_test_retune_profile_sequence_external(const rtl_stream_test_retune_step* steps, size_t count,
+                                                     int forced_rate_out_hz, uint32_t external_steps,
+                                                     rtl_stream_test_retune_landing* out);
+
 /* What rtl_stream_family_landing_after_pending() answers at each point (issue #583). */
 typedef struct rtl_stream_test_family_landing_after_pending_result {
     int digital_only;        /* a digital stream with nothing queued or in flight */

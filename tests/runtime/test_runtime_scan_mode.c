@@ -1409,7 +1409,10 @@ test_resume_times_the_learned_modulation(void) {
 
 /* The scope's rule for a trunk-scan target's own CQPSK choice (issue #583), which a live republish of the row asks
  * with dsd_scan_mode_cqpsk_explicit(): P25 with a modulation value, and DMR or NXDN at either rate, under
- * --trunk-scan; not a P25 target with no modulation, an analog row, a -Y row, nor without a scope or options. */
+ * --trunk-scan; not a P25 target with no modulation, an analog row, a -Y row, nor without a scope or options. With it
+ * comes the CQPSK state the row lands with: a P25 target's is the modulation its decoder runs, a DMR or NXDN target's
+ * is CQPSK off whatever rf_mod a -mq lock left it on (the FSK its GFSK chain always lands), and a row that makes no
+ * choice of its own lands with the decoder's, which DSD_NEO_CQPSK then overrides when set. */
 static void
 test_scope_cqpsk_explicit_rule(void) {
     dsd_opts* o = (dsd_opts*)calloc(1, sizeof(*o));
@@ -1417,29 +1420,102 @@ test_scope_cqpsk_explicit_rule(void) {
     assert(o && s);
     o->wav_sample_rate = 48000;
     o->trunk_scan_enabled = 1;
-    assert(dsd_scan_mode_cqpsk_explicit(o, s) == 0);
+    int cqpsk = -1;
+    assert(dsd_scan_mode_cqpsk_explicit(o, s, &cqpsk) == 0 && cqpsk == 0);
     assert(dsd_scan_mode_enter(o, s, DSD_SCAN_MODE_P25) == 0);
-    assert(dsd_scan_mode_cqpsk_explicit(o, s) == 0);
+    s->rf_mod = 1;
+    assert(dsd_scan_mode_cqpsk_explicit(o, s, &cqpsk) == 0 && cqpsk == 1);
     static const dsd_scan_modulation own[] = {DSD_SCAN_MODULATION_AUTO, DSD_SCAN_MODULATION_C4FM,
                                               DSD_SCAN_MODULATION_CQPSK};
     for (size_t i = 0; i < sizeof own / sizeof own[0]; i++) {
         dsd_scan_mode_target_modulation(s, own[i]);
-        assert(dsd_scan_mode_cqpsk_explicit(o, s) == 1);
+        for (int rf_mod = 0; rf_mod <= 1; rf_mod++) {
+            s->rf_mod = rf_mod;
+            cqpsk = -1;
+            assert(dsd_scan_mode_cqpsk_explicit(o, s, &cqpsk) == 1 && cqpsk == rf_mod);
+        }
     }
-    assert(dsd_scan_mode_cqpsk_explicit(NULL, s) == 0);
+    assert(dsd_scan_mode_cqpsk_explicit(o, s, NULL) == 1);
+    assert(dsd_scan_mode_cqpsk_explicit(NULL, s, &cqpsk) == 0);
     static const dsd_scan_mode gfsk[] = {DSD_SCAN_MODE_DMR, DSD_SCAN_MODE_NXDN96, DSD_SCAN_MODE_NXDN48};
     for (size_t i = 0; i < sizeof gfsk / sizeof gfsk[0]; i++) {
         assert(dsd_scan_mode_enter(o, s, gfsk[i]) == 0);
-        assert(dsd_scan_mode_cqpsk_explicit(o, s) == 1);
+        s->rf_mod = 1;
+        cqpsk = -1;
+        assert(dsd_scan_mode_cqpsk_explicit(o, s, &cqpsk) == 1 && cqpsk == 0);
     }
     assert(dsd_scan_mode_enter(o, s, DSD_SCAN_MODE_NFM) == 0);
-    assert(dsd_scan_mode_cqpsk_explicit(o, s) == 0);
+    s->rf_mod = 1;
+    assert(dsd_scan_mode_cqpsk_explicit(o, s, &cqpsk) == 0 && cqpsk == 1);
     o->trunk_scan_enabled = 0;
     assert(dsd_scan_mode_enter(o, s, DSD_SCAN_MODE_DMR) == 0);
-    assert(dsd_scan_mode_cqpsk_explicit(o, s) == 0);
+    s->rf_mod = 1;
+    assert(dsd_scan_mode_cqpsk_explicit(o, s, &cqpsk) == 0 && cqpsk == 1);
     dsd_scan_mode_leave(o, s);
     o->trunk_scan_enabled = 1;
-    assert(dsd_scan_mode_cqpsk_explicit(o, s) == 0);
+    s->rf_mod = 0;
+    assert(dsd_scan_mode_cqpsk_explicit(o, s, &cqpsk) == 0 && cqpsk == 0);
+    dsd_state_ext_free_all(s);
+    free(s);
+    free(o);
+}
+
+/* Issue #583: a DMR or NXDN trunk-scan target runs the FSK discriminator, the CQPSK choice the engine's GFSK chain
+ * makes its own, also when a -mq lock leaves the decoder's rf_mod on CQPSK (a target with no modulation). With a
+ * retune that carries the digital family outstanding, on a front end left on CQPSK at 78125 Hz under DSD_NEO_CQPSK=0,
+ * the target's entry and a scoped command's resume time it for the FSK discriminator's 48 kHz landing (10 samples per
+ * 4800 Bd symbol, 20 per 2400 Bd one), not for CQPSK at 78125 Hz (16 or 33): the rate the target's GFSK retune lands
+ * and the republish after the resume asks for. A caller's own CQPSK state gives way to the target's choice, so whatever
+ * state it times the target with, the timing is the one that landing runs at. */
+static void
+test_gfsk_target_timed_for_its_fsk_landing(void) {
+    dsd_opts* o = (dsd_opts*)calloc(1, sizeof(*o));
+    dsd_state* s = (dsd_state*)calloc(1, sizeof(*s));
+    assert(o && s);
+    o->wav_sample_rate = 48000;
+    o->audio_in_type = AUDIO_IN_RTL;
+    o->rtl_dsp_bw_khz = 48;
+    o->trunk_scan_enabled = 1;
+    assert(dsd_apply_decode_mode_preset(DSDCFG_MODE_DMR, DSD_DECODE_PRESET_PROFILE_CLI, o, s) == 0);
+    /* -mq */
+    dsd_scan_mode_apply_modulation(o, DSD_SCAN_MODE_P25, DSD_SCAN_MODULATION_CQPSK);
+    s->rf_mod = 1;
+    const dsd_rtl_stream_metrics_hooks hooks = {.output_rate_hz = fake_live_output_rate,
+                                                .family_landing_after_pending = fake_family_landing_after_pending,
+                                                .output_rate_for_family = fake_cqpsk_landing_rate_for_family};
+    dsd_rtl_stream_metrics_hooks_set(&hooks);
+    g_fake_cqpsk_env = 0;
+    g_after_pending_answer = 1;
+
+    static const struct {
+        dsd_scan_mode mode;
+        int symbol_rate_hz;
+    } targets[] = {
+        {DSD_SCAN_MODE_DMR, 4800},
+        {DSD_SCAN_MODE_NXDN96, 4800},
+        {DSD_SCAN_MODE_NXDN48, 2400},
+    };
+
+    for (size_t i = 0; i < sizeof targets / sizeof targets[0]; i++) {
+        const int fsk_sps = dsd_opts_compute_sps_rate(o, targets[i].symbol_rate_hz, 48000);
+        assert(fsk_sps != dsd_opts_compute_sps_rate(o, targets[i].symbol_rate_hz, 78125));
+        assert(dsd_scan_mode_enter(o, s, targets[i].mode) == 0);
+        assert(dsd_scan_mode_options(o, s, NULL) == 0);
+        /* The -mq lock keeps the decoder on CQPSK: only the target's own choice says FSK. */
+        assert(s->rf_mod == 1);
+        assert(s->samplesPerSymbol == fsk_sps && dsd_scan_mode_timed_digital_family(s) == 1);
+        assert(dsd_scan_mode_symbol_timing_rate_hz(o, s, targets[i].symbol_rate_hz, 1) == 48000);
+        assert(dsd_scan_mode_suspend(o, s));
+        o->inverted_dmr = !o->inverted_dmr;
+        (void)dsd_scan_mode_resume(o, s);
+        assert(s->rf_mod == 1);
+        assert(s->samplesPerSymbol == fsk_sps && s->symbolCenter == dsd_opts_symbol_center(fsk_sps));
+    }
+
+    dsd_scan_mode_leave(o, s);
+    g_fake_cqpsk_env = -1;
+    g_after_pending_answer = 0;
+    dsd_rtl_stream_metrics_hooks_set(NULL);
     dsd_state_ext_free_all(s);
     free(s);
     free(o);
@@ -1467,6 +1543,7 @@ main(void) {
     test_row_timing_records_its_landing_decision();
     test_resume_times_the_learned_modulation();
     test_scope_cqpsk_explicit_rule();
+    test_gfsk_target_timed_for_its_fsk_landing();
     dsd_opts* o = (dsd_opts*)calloc(1, sizeof(*o));
     dsd_state* s = (dsd_state*)calloc(1, sizeof(*s));
     dsd_state* copy = (dsd_state*)calloc(1, sizeof(*copy));

@@ -624,8 +624,11 @@ int rtl_stream_channel_lpf_default(void);
  *                       set, as it does at stream open and at the switch itself, unless @p cqpsk_explicit.
  * @param symbol_rate_hz Digital symbol rate, which decides the digital resampling policy.
  * @param cqpsk_explicit Non-zero when @p cqpsk_enable is a trunk-scan target's own choice, which stands over
- *                       DSD_NEO_CQPSK at the switch (rtl_stream_retune_analog_profile::cqpsk_explicit, issue #583);
- *                       0 for a live request, which lands where an open of the mode would.
+ *                       DSD_NEO_CQPSK at the switch (issue #583): what a retune that carries the digital family says
+ *                       (rtl_stream_retune_analog_profile::cqpsk_explicit), or a live digital landing
+ *                       (rtl_stream_request_digital_family_landing(), which a republish of a trunk-scan row asks with
+ *                       the scope's flag). 0 for a plain live family request (rtl_stream_request_analog_profile()) and
+ *                       a landing whose CQPSK state is no target's own, which land where an open of the mode would.
  * @return Predicted output rate in Hz, derived from the last published demod rate (48000 until a stream has opened
  *         and published its own), or 0 when that rate is not positive.
  */
@@ -691,14 +694,15 @@ typedef struct rtl_stream_retune_analog_profile {
  * lands there whether the front end still runs the analog family where the retune lands or already runs the digital
  * family (an analog retune refused where it landed, or a request replaced, can leave it there); the family itself is
  * switched, with the loop resets of a switch, only from the analog family. A front end already on the digital family
- * gets its output chain designed again where the stream retunes; an external backend's retune
- * (rtl_stream_apply_pending_retune_profile_for_target()) keeps the chain it runs, as a symbol profile request does. A
- * retune that carries no family applies its symbol profile as queued.
+ * gets its output chain designed again where the stream retunes, and where an external backend's retune lands
+ * (rtl_stream_apply_pending_retune_profile_for_target()), which has no retune of the stream's own to finalize it. A
+ * retune that carries no family applies its symbol profile as queued, over the output chain it finds.
  *
  * A live rtl_stream_request_analog_profile() or rtl_stream_request_digital_family_landing() accepted after this call is
  * the newer word on the family: the retune then lands on its target with neither this family nor the symbol profile
- * queued with it, so the front end stays on the family and profile the live requests chose. A scanner that leaves while its row's retune is still in flight puts
- * the configured family back that way, and the late retune does not switch it back to the row's.
+ * queued with it, so the front end stays on the family and profile the live requests chose. A scanner that leaves
+ * while its row's retune is still in flight puts the configured family back that way, and the late retune does not
+ * switch it back to the row's.
  *
  * @return 0 when attached; -1 when refused (same rules and refusal log as rtl_stream_request_analog_profile()).
  */
@@ -722,6 +726,14 @@ uint32_t rtl_stream_live_family_request_count(void);
  *
  * Use this when an external backend, such as rigctl, has completed a frequency
  * change and the queued profile was bound to that target.
+ *
+ * Called on the decoder thread while the demod thread runs. The gain profile goes to the device first; the receive
+ * family, the symbol profile and its TED then apply with the demod thread parked between blocks by the family-switch
+ * gate the CQPSK toggle uses, as the stream's own retune applies them under its reconfigure gate. A profile that
+ * carries the digital family lands as it does on the stream's own retune
+ * (rtl_stream_prepare_retune_analog_profile_for_target()): the output chain is designed again for the CQPSK state and
+ * symbol rate it lands, so the stream runs at the rate rtl_stream_output_rate_for_family() predicted (issue #583). A
+ * profile without a family keeps the output chain.
  */
 void rtl_stream_apply_pending_retune_profile_for_target(uint32_t target_freq_hz);
 

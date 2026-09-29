@@ -177,6 +177,19 @@ symbol_profile_configured_width_run(int kept_width_hz) {
                : -1;
 }
 
+/* The modulation a republish runs @p state's row on (dsd_state::rf_mod: 0 C4FM, 1 CQPSK, 2 GFSK), given the CQPSK
+   state the row lands with, @p row_cqpsk (dsd_scan_mode_cqpsk_explicit(), issue #583): the decoder's own, unless the
+   row is a trunk-scan DMR or NXDN target whose decoder a -mq lock left on CQPSK while its own choice is CQPSK off: it
+   then runs the GFSK chain the engine lands it on, with that chain's channel filter (dsd_rtl_channel_profile_for() for
+   GFSK). */
+static int
+symbol_profile_row_modulation(const dsd_state* state, int row_cqpsk) {
+    if (row_cqpsk) {
+        return 1;
+    }
+    return state->rf_mod == 1 ? 2 : state->rf_mod;
+}
+
 /* The symbol profile a digital mode runs on: the CQPSK family for @p rf_mod 1, otherwise the FSK discriminator. The
    clamp mirrors the no-override setter this replaced. */
 static void
@@ -286,7 +299,14 @@ symbol_profile_publish(const dsd_opts* opts, dsd_state* state, dsd_decode_mode_p
     if (opts->analog_only) {
         return 0;
     }
-    const int mod = state->rf_mod;
+    /* The CQPSK state the row runs, and whether it is a trunk-scan target's own choice, by the rule the row's timing
+       and the engine's retune follow (dsd_scan_mode_cqpsk_explicit(), issue #583): a DMR or NXDN target runs CQPSK
+       off, whatever rf_mod a -mq lock left it on; otherwise the decoder's modulation. The republish times the decoder,
+       asks for the landing and publishes the symbol profile with it, so none of them undoes the FSK the target's GFSK
+       retune lands, or supersedes that retune with CQPSK. */
+    int row_cqpsk = 0;
+    const int cqpsk_explicit = dsd_scan_mode_cqpsk_explicit(opts, state, &row_cqpsk);
+    const int mod = symbol_profile_row_modulation(state, row_cqpsk);
     const int configured_digital = symbol_profile_configured_digital(opts, state);
     /* One landing decision, by the rule a scan row's timing and the engine's attach follow (issue #583): the digital
        family's landing when the configured mode is digital and the row on air was timed for it
@@ -296,15 +316,14 @@ symbol_profile_publish(const dsd_opts* opts, dsd_state* state, dsd_decode_mode_p
        on the demod thread after this returns, and until then the output rate is the one it runs (the analog monitor's
        resampled audio, the rate a CQPSK toggle or typed row put it on, or a digital chain the landing designs again),
        not the rate the landing runs at. Time the decoder, and the front end below, for that rate, with the CQPSK state
-       a trunk-scan target keeps as its own over DSD_NEO_CQPSK (dsd_scan_mode_cqpsk_explicit(); 0 for a -Y row or a
-       plain session), and ask for the landing itself rather than the plain family request, which switches only an
+       a trunk-scan target keeps as its own over DSD_NEO_CQPSK (cqpsk_explicit above; 0 for a -Y row or a plain
+       session), and ask for the landing itself rather than the plain family request, which switches only an
        analog front end: the republish is the newer word on the family, so it lands there whether an outstanding
        retune it supersedes lands after it or one landed before it. Otherwise the plain request, a no-op unless the
        front end is analog. Either is queued for the demod thread rather than written into demod state from the
        caller's thread, the digital family first, then the symbol profile it runs on. */
     if (configured_digital
         && (dsd_scan_mode_timed_digital_family(state) || rtl_stream_family_landing_after_pending())) {
-        const int cqpsk_explicit = dsd_scan_mode_cqpsk_explicit(opts, state);
         const unsigned int rate_hz =
             rtl_stream_output_rate_for_family(DSD_RX_FAMILY_DIGITAL, mod == 1, profile.symbol_rate_hz, cqpsk_explicit);
         if (rate_hz > 0U) {

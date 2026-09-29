@@ -902,14 +902,17 @@ test_leave_retimes_the_digital_landing(void) {
     assert(state->symbolCenter == dsd_opts_symbol_center(4));
     assert(digital_restore_sps == 4);
 
-    /* A digital session's front end is already on the digital family: nothing to predict, the saved timing stands. */
+    /* A digital session's front end is already on the digital family: nothing to predict, the saved timing stands. It
+     * is digital from the row's entry on, so the row is not timed for a landing either (issue #583: the leave decides
+     * by the row's recorded decision too, test_leave_keeps_the_rows_recorded_landing()). */
+    fake_analog_family = 0;
     assert(dsd_apply_decode_mode_preset(DSDCFG_MODE_DMR, DSD_DECODE_PRESET_PROFILE_CLI, opts, state) == 0);
     state->samplesPerSymbol = 5;
     state->symbolCenter = dsd_opts_symbol_center(5);
     assert(dsd_scan_mode_enter(opts, state, DSD_SCAN_MODE_NXDN48) == 0);
     assert(dsd_scan_mode_options(opts, state, NULL) == 0);
+    assert(dsd_scan_mode_timed_digital_family(state) == 0);
     reset_frontend_records();
-    fake_analog_family = 0;
     dsd_engine_channel_scan_leave(opts, state);
     assert(opts->frame_dmr == 1);
     assert(rate_for_family_calls == 0);
@@ -964,6 +967,10 @@ test_leave_lands_where_it_times_the_configured_decoder(void) {
         state->symbolCenter = dsd_opts_symbol_center(10);
         assert(dsd_scan_mode_enter(opts, state, DSD_SCAN_MODE_NXDN48) == 0);
         assert(dsd_scan_mode_options(opts, state, NULL) == 0);
+        /* The row's retune was prepared and spent whatever landing decision its entry recorded, so the stream's answer
+           at the leave decides here (test_leave_keeps_the_rows_recorded_landing() covers a decision a resume
+           recorded again). */
+        (void)dsd_scan_mode_take_timed_digital_family(state);
         reset_frontend_records();
         fake_analog_family = legs[i].analog_family;
         fake_family_landing_outstanding = legs[i].outstanding;
@@ -986,6 +993,84 @@ test_leave_lands_where_it_times_the_configured_decoder(void) {
     }
 
     fake_analog_family = 0;
+    fake_family_landing_outstanding = 0;
+    fake_digital_rate = 0U;
+    dsd_rtl_stream_metrics_hooks_set(NULL);
+    dsd_state_trunk_lcn_free(state);
+    dsd_state_ext_free_all(state);
+    free(state);
+    free(opts);
+}
+
+/*
+ * Issue #583: the leave decides the landing once, by the rule a row's timing and a republish follow: the configured
+ * mode is digital and the row on air was timed for the digital family's landing, or the stream says the analog family
+ * runs or outstanding work lands a family. A scoped command's resume under the row timed it for that landing while the
+ * row's retune, carrying the digital family, was outstanding; that work then failed before the scan stopped, so the
+ * stream's answer fell to 0 while the row's recorded decision stayed 1. The leave reads that decision before it removes
+ * the scope, so it still times the configured decoder for the landing and asks for the landing, rather than publish a
+ * profile timed for the landing over a front end the plain request leaves where it runs. With neither the row's
+ * decision nor the stream's answer the saved timing stands and the plain request is made.
+ */
+static void
+test_leave_keeps_the_rows_recorded_landing(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
+    assert(opts && state);
+    opts->scanner_mode = 1;
+    opts->audio_in_type = AUDIO_IN_RTL;
+    assert(dsd_apply_decode_mode_preset(DSDCFG_MODE_DMR, DSD_DECODE_PRESET_PROFILE_CLI, opts, state) == 0);
+    const dsd_rtl_stream_metrics_hooks hooks = {.apply_demod_profile = record_digital_restore,
+                                                .apply_analog_profile = record_analog_restore,
+                                                .request_digital_family_landing = record_digital_landing,
+                                                .analog_family_active = report_analog_family,
+                                                .family_landing_after_pending = report_family_landing_after_pending,
+                                                .output_rate_for_family = report_output_rate_for_family};
+    dsd_rtl_stream_metrics_hooks_set(&hooks);
+    fake_digital_rate = 24000U;
+
+    static const struct {
+        int recorded; /* the row's resume timed it for the landing before the outstanding work failed */
+        int sps;      /* the configured decoder's timing once the leave has run */
+    } legs[] = {
+        {1, 5},  /* timed for its 24 kHz landing, as the row was */
+        {0, 10}, /* no decision and nothing outstanding: the timing the configuration saved stands */
+    };
+
+    for (size_t i = 0; i < sizeof legs / sizeof legs[0]; i++) {
+        state->samplesPerSymbol = 10;
+        state->symbolCenter = dsd_opts_symbol_center(10);
+        fake_analog_family = 0;
+        fake_family_landing_outstanding = legs[i].recorded;
+        assert(dsd_scan_mode_enter(opts, state, DSD_SCAN_MODE_NXDN48) == 0);
+        assert(dsd_scan_mode_options(opts, state, NULL) == 0);
+        /* The row's retune is prepared and spends the entry's decision (dsd_engine_prepare_scan_profile()). */
+        (void)dsd_scan_mode_take_timed_digital_family(state);
+        /* A scoped command's resume re-times the row while that retune is still outstanding. */
+        assert(dsd_scan_mode_suspend(opts, state));
+        (void)dsd_scan_mode_resume(opts, state);
+        assert(dsd_scan_mode_timed_digital_family(state) == legs[i].recorded);
+        /* The outstanding work fails: the stream's answer falls to 0 before the scan stops. */
+        fake_family_landing_outstanding = 0;
+        reset_frontend_records();
+        dsd_engine_channel_scan_leave(opts, state);
+        assert(opts->analog_only == 0 && opts->frame_dmr == 1);
+        assert(state->samplesPerSymbol == legs[i].sps && digital_restore_sps == legs[i].sps);
+        assert(digital_restore_calls == 1);
+        assert(dsd_scan_mode_timed_digital_family(state) == 0);
+        if (legs[i].recorded) {
+            assert(rate_for_family_calls == 1 && rate_for_family_family == DSD_RX_FAMILY_DIGITAL);
+            assert(rate_for_family_symbol_rate == 4800 && rate_for_family_explicit == 0);
+            assert(landing_request_calls == 1 && landing_request_explicit == 0);
+            assert(landing_request_order < digital_restore_order);
+            assert(analog_restore_calls == 0);
+        } else {
+            assert(rate_for_family_calls == 0 && landing_request_calls == 0);
+            assert(analog_restore_calls == 1 && analog_restore_family == DSD_RX_FAMILY_DIGITAL);
+            assert(analog_restore_order < digital_restore_order);
+        }
+    }
+
     fake_family_landing_outstanding = 0;
     fake_digital_rate = 0U;
     dsd_rtl_stream_metrics_hooks_set(NULL);
@@ -2047,6 +2132,7 @@ main(void) {
     test_leave_restores_configured_receive_family();
     test_leave_retimes_the_digital_landing();
     test_leave_lands_where_it_times_the_configured_decoder();
+    test_leave_keeps_the_rows_recorded_landing();
     test_leave_family_switch_drops_partial_analog_block();
     test_option_commit_boundary();
     test_option_only_rows_and_policy_edits();
