@@ -5728,6 +5728,7 @@ if(
             "LINKER:--wrap=rtl_stream_receive_request_outcome"
             "LINKER:--wrap=rtl_stream_receive_request_refusal"
             "LINKER:--wrap=rtl_stream_get_analog_profile"
+            "LINKER:--wrap=rtl_stream_get_analog_setting"
             "LINKER:--wrap=rtl_stream_requested_cqpsk"
             "LINKER:--wrap=rtl_stream_get_demod_rate_hz"
             "LINKER:--wrap=rtl_stream_get_request_rate_hz"

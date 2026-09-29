@@ -64,6 +64,21 @@ int rtl_stream_test_cqpsk_toggle_output_clear(int start_cqpsk, int target_cqpsk,
                                               size_t queued_samples, int cached_symbols,
                                               rtl_stream_test_cqpsk_toggle_result* out_result);
 
+/* A return to the NFM monitor at 16 kHz, checked at 48 kHz and refused where it landed at 16 kHz (issue #578), by a
+ * stream on the analog family: what rtl_stream_receive_request_refusal() says it kept, and what the stream publishes
+ * then, which a leave the front end refused at once reads instead: the analog kind and width setting the family runs
+ * (rtl_stream_get_analog_setting()) and whether the monitor output runs (rtl_stream_get_analog_profile()). */
+typedef struct rtl_stream_test_monitor_return_refusal {
+    int kept_analog;
+    int kept_monitor;
+    int kept_kind;
+    int kept_width_hz;
+    int published_family;
+    int published_kind;
+    int published_width_hz;
+    int published_monitor;
+} rtl_stream_test_monitor_return_refusal;
+
 /* What became of receive requests on a running stream (rtl_stream_receive_request_outcome()), each consumed the way
  * the demod thread consumes them between blocks. */
 typedef struct rtl_stream_test_rx_request_result {
@@ -95,15 +110,12 @@ typedef struct rtl_stream_test_rx_request_result {
     int entry_kept_monitor;            /* ... and the monitor output it did not keep */
     uint32_t refused_seq;              /* the number of that refused switch */
     int refused_outcome_after_open;    /* its outcome once a stream open has run */
-    /* A return to the monitor at 16 kHz, checked at 48 kHz and refused where it landed at 16 kHz (issue #578), by a
-       stream on the NFM monitor at 12.5 kHz, and by one on the analog family under a typed digital row's channel
-       profile with a 16 kHz setting: what rtl_stream_receive_request_refusal() says each kept. */
-    int monitor_return_kept_analog;
-    int monitor_return_kept_monitor;
-    int monitor_return_kept_width_hz;
-    int typed_row_return_kept_analog;
-    int typed_row_return_kept_monitor;
-    int typed_row_return_kept_width_hz;
+    /* A return to the NFM monitor refused where it landed (rtl_stream_test_monitor_return_refusal), by a stream on the
+       NFM monitor at 12.5 kHz, by one on the analog family under a typed digital row's channel profile with a 16 kHz
+       NFM setting, and by one running AM at 10 kHz under that profile (a switch to NFM armed under the row). */
+    rtl_stream_test_monitor_return_refusal monitor_return;
+    rtl_stream_test_monitor_return_refusal typed_row_return;
+    rtl_stream_test_monitor_return_refusal am_row_return;
     /* An NFM width replaced in the queue by a switch to the digital family, which the demod thread holds for its symbol
        profile, and that switch replaced in turn by the same width again, which the demod thread takes at a demod rate
        that cannot filter it (issue #578): what each reads. */

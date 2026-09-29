@@ -1875,6 +1875,10 @@ static std::atomic<int> g_pub_analog_lpf_on{0};
 /* demod_state::analog_family: set on the analog family even while a symbol profile applied under it (a CQPSK toggle, a
  * typed digital scan row) has moved the front end off the monitor output and g_pub_analog_family reads 0. */
 static std::atomic<int> g_pub_rx_analog_family{0};
+/* demod_state::analog_demod and analog_width_setting_hz on the analog family (0 outside it), on the monitor output or
+ * off it under such a symbol profile (rtl_stream_get_analog_setting()). */
+static std::atomic<int> g_pub_rx_analog_kind{0};
+static std::atomic<int> g_pub_rx_analog_width_setting_hz{0};
 /* demod_state::channel_lpf_default_enable: whether the channel filter runs where no width requests it (the unset NFM
  * default, a digital profile), as the stream's configuration decided it. -1 until a stream has published it. */
 static std::atomic<int> g_pub_channel_lpf_default{-1};
@@ -7749,6 +7753,9 @@ rtl_stream_publish_analog_profile_snapshot(void) {
     g_pub_analog_width_hz.store(width_hz, std::memory_order_relaxed);
     g_pub_analog_lpf_on.store(lpf_on, std::memory_order_relaxed);
     g_pub_analog_family.store(family, std::memory_order_relaxed);
+    g_pub_rx_analog_kind.store(demod.analog_family ? demod.analog_demod : 0, std::memory_order_relaxed);
+    g_pub_rx_analog_width_setting_hz.store(demod.analog_family ? demod.analog_width_setting_hz : 0,
+                                           std::memory_order_relaxed);
     g_pub_rx_analog_family.store(demod.analog_family ? 1 : 0, std::memory_order_relaxed);
     g_pub_channel_lpf_default.store(demod.channel_lpf_default_enable ? 1 : 0, std::memory_order_relaxed);
     g_pub_resamp_target_hz.store(demod.resamp_target_hz, std::memory_order_relaxed);
@@ -7811,6 +7818,18 @@ rtl_stream_get_analog_profile(int* out_kind, int* out_width_hz, int* out_lpf_on)
 extern "C" int
 rtl_stream_analog_family_active(void) {
     return g_pub_rx_analog_family.load(std::memory_order_relaxed) ? 1 : 0;
+}
+
+extern "C" int
+rtl_stream_get_analog_setting(int* out_kind, int* out_width_hz) {
+    const int family = g_pub_rx_analog_family.load(std::memory_order_relaxed) ? 1 : 0;
+    if (out_kind) {
+        *out_kind = family ? g_pub_rx_analog_kind.load(std::memory_order_relaxed) : 0;
+    }
+    if (out_width_hz) {
+        *out_width_hz = family ? g_pub_rx_analog_width_setting_hz.load(std::memory_order_relaxed) : 0;
+    }
+    return family;
 }
 
 extern "C" int
@@ -10230,14 +10249,14 @@ rx_request_test_published_cqpsk(void) {
 }
 
 /* A return to the NFM monitor at 16 kHz, which the published 48 kHz rate filters, taken at a 16 kHz demod rate that
-   cannot (issue #578: a retune moved the rate in between), by a stream on the analog family whose output runs
-   @p channel_profile with the configured width @p setting_hz: what the stream says it kept, as
-   *@p out_analog, *@p out_monitor and *@p out_width_hz. */
+   cannot (issue #578: a retune moved the rate in between), by a stream on the analog family running analog @p kind
+   with the configured width @p setting_hz, whose output runs @p channel_profile: what the stream says it kept, and what
+   it publishes then (rtl_stream_test_monitor_return_refusal). */
 static void
-rx_request_test_monitor_return_refused(int channel_profile, int setting_hz, int* out_analog, int* out_monitor,
-                                       int* out_width_hz) {
+rx_request_test_monitor_return_refused(int kind, int channel_profile, int setting_hz,
+                                       rtl_stream_test_monitor_return_refusal* out) {
     demod.analog_family = 1;
-    demod.analog_demod = DSD_ANALOG_DEMOD_FM;
+    demod.analog_demod = kind;
     demod.output_kind = DSD_DEMOD_OUTPUT_AUDIO_MONITOR;
     demod.cqpsk_enable = 0;
     demod.channel_lpf_profile = channel_profile;
@@ -10249,8 +10268,12 @@ rx_request_test_monitor_return_refused(int channel_profile, int setting_hz, int*
     const uint32_t seq = rtl_stream_receive_request_seq();
     demod.rate_out = 16000;
     rtl_stream_consume_demod_profile_request();
-    *out_analog = *out_monitor = *out_width_hz = -1;
-    (void)rtl_stream_receive_request_refusal(seq, out_analog, out_width_hz, NULL, out_monitor);
+    out->kept_analog = out->kept_monitor = out->kept_kind = out->kept_width_hz = -1;
+    (void)rtl_stream_receive_request_refusal(seq, &out->kept_analog, &out->kept_width_hz, &out->kept_kind,
+                                             &out->kept_monitor);
+    out->published_kind = out->published_width_hz = -1;
+    out->published_family = rtl_stream_get_analog_setting(&out->published_kind, &out->published_width_hz);
+    out->published_monitor = rtl_stream_get_analog_profile(NULL, NULL, NULL);
 }
 
 /* An NFM width the published 48 kHz rate filters, replaced before the demod thread takes it by a switch to the digital
@@ -10281,8 +10304,8 @@ rx_request_test_analog_replaced(rtl_stream_test_rx_request_result* out) {
 /* The analog part of rtl_stream_test_rx_request_outcomes(): an NFM width the published 48 kHz rate filters, taken at a
    24 kHz demod rate that cannot (a retune moved the rate in between) by a stream on the analog family running AM at
    12.5 kHz (a switch from AM to NFM, refused), then a request queued after it; a return to the monitor refused on the
-   monitor and under a typed row's profile (rx_request_test_monitor_return_refused()); the same width refused to a
-   stream on the digital family, which stays there; and requests replaced in the queue
+   monitor and under a typed row's profile, over NFM and over AM (rx_request_test_monitor_return_refused()); the same
+   width refused to a stream on the digital family, which stays there; and requests replaced in the queue
    (rx_request_test_analog_replaced()). */
 static void
 rx_request_test_analog_refusal(rtl_stream_test_rx_request_result* out) {
@@ -10317,10 +10340,9 @@ rx_request_test_analog_refusal(rtl_stream_test_rx_request_result* out) {
     out->refused_outcome_kept = rtl_stream_receive_request_outcome(analog_seq);
     out->settled_refusal_reported = rtl_stream_receive_request_refusal(later_seq, NULL, NULL, NULL, NULL);
 
-    rx_request_test_monitor_return_refused(DSD_CH_LPF_PROFILE_WIDE, 12500, &out->monitor_return_kept_analog,
-                                           &out->monitor_return_kept_monitor, &out->monitor_return_kept_width_hz);
-    rx_request_test_monitor_return_refused(DSD_CH_LPF_PROFILE_6K25, 16000, &out->typed_row_return_kept_analog,
-                                           &out->typed_row_return_kept_monitor, &out->typed_row_return_kept_width_hz);
+    rx_request_test_monitor_return_refused(DSD_ANALOG_DEMOD_FM, DSD_CH_LPF_PROFILE_WIDE, 12500, &out->monitor_return);
+    rx_request_test_monitor_return_refused(DSD_ANALOG_DEMOD_FM, DSD_CH_LPF_PROFILE_6K25, 16000, &out->typed_row_return);
+    rx_request_test_monitor_return_refused(DSD_ANALOG_DEMOD_AM, DSD_CH_LPF_PROFILE_6K25, 10000, &out->am_row_return);
 
     demod.analog_family = 0;
     demod.rate_out = 48000;

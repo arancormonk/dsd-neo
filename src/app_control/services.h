@@ -481,8 +481,9 @@ typedef struct {
     int width_hz;      /**< The configured width of that kind it carried (0 = default). */
     int kept_analog;   /**< 1: the front end stayed on the analog family; 0: on the digital family it was asked to
                             leave, so a switch onto the analog monitor did not happen. */
-    int kept_kind;     /**< The dsd_analog_demod the analog family kept: another kind than @c kind when a switch
-                            between FM and AM did not happen. */
+    int kept_kind;     /**< The dsd_analog_demod the analog family kept, on its monitor output or off it (a typed
+                            digital row's profile): another kind than @c kind when a switch between FM and AM did not
+                            happen. */
     int kept_width_hz; /**< The configured analog width the analog family kept (0 = the kind's default, AM's
                             included). */
     int configured_before_hz; /**< The configured width of @c kind the front end ran before the refused change: from
@@ -512,11 +513,13 @@ typedef struct {
  * puts the configured width back to the one the monitor kept, or the decoder back on the mode it had before a switch
  * onto the monitor, or between FM and AM, the front end did not make, or reconciles a refused scan leave. A leave
  * refused at once queued nothing, so once the requests queued before it have settled, what the front end publishes says
- * what it kept (rtl_stream_get_analog_profile(), rtl_stream_analog_family_active()): the monitor's kind and the width
- * its channel filter runs (one the DSP rate limits reads as the kind's default), or the analog or digital family off
- * the monitor. It reads TAKEN when the front end publishes the monitor the leave asked for (a retune in flight, or a
- * request queued before the leave, left it on a rate and a monitor that run it), a leave for the kind's default
- * included when the monitor's channel filter runs that default's design (the AM default, published as 6 kHz). A request
+ * what it kept (rtl_stream_get_analog_profile(), rtl_stream_get_analog_setting()): the monitor's kind and the width
+ * its channel filter runs (one the DSP rate limits reads as the kind's default), or off the monitor the digital family
+ * or the kind and width setting the analog family runs, which a refusal where the request landed records too, so both
+ * timings read the same kind kept (never the one the leave asked for). It reads TAKEN when the front end publishes the
+ * monitor the leave asked for (a retune in flight, or a request queued before the leave, left it on a rate and a
+ * monitor that run it), a leave for the kind's default included when the monitor's channel filter runs that default's
+ * design (the AM default, published as 6 kHz). A request
  * made of a stream app-control has replaced since (a restart, a reopen, an input switch, a rollback's restart:
  * svc_rtl_start_count() moved) reads TAKEN, whatever the old stream did with it: the new stream opened on the options
  * it was given, not on the old one's requests, and what it publishes says nothing of the old one's refusal. A refusal,

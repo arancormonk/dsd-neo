@@ -838,7 +838,11 @@ installs from `src/engine/trunk_tuning.c` in `src/engine/trunk_tuning_hooks_inst
   queues its own (so the `first_configured_before_hz` chain holds) and records a leave that asked for the monitor. A
   leave the front end refuses at once queues nothing: the record keeps the number of the request before it, and once
   that one has settled what the stream publishes says what the front end kept (the monitor's kind and the width its
-  channel filter runs, one the DSP rate limits reading as the default; off the monitor, the analog or digital family).
+  channel filter runs, one the DSP rate limits reading as the default; off the monitor, the digital family, or the
+  kind and width setting the analog family runs, `rtl_stream_get_analog_setting()`, which a refusal where it lands
+  records too). Off the monitor that kind is the family's own, never the one the leave asked for: a mode change under
+  a typed row moves the configured kind (AM to Analog, or the reverse) while the front end keeps the kind it ran, so
+  a switch armed there goes back in either timing rather than being dropped as made.
   A monitor that runs what the leave asked for (a retune in flight left it there) refused nothing, and a leave for the
   kind's default counts a monitor of that kind whose filter runs the default's design as running it (the AM default
   publishes the 6 kHz it filters, which would otherwise read as another width kept).
@@ -1030,7 +1034,7 @@ installs from `src/engine/trunk_tuning.c` in `src/engine/trunk_tuning_hooks_inst
   configured widths (a row without a width of its own runs the one the config set, which may be the width refused) and
   the toast as the config set them. Tests: `APP_COMMAND_QUEUE`, `UI_MENU_SERVICES`, `UI_MENU_AIRSPY_CONFIG_REFUSED_WIDTH`,
   `ENGINE_CHANNEL_SCAN` (the leave's result), `IO_RTL_DEMOD_CONFIG` (request numbering and outcomes, the kept kind and
-  monitor output).
+  monitor output, and the kind and width setting published off the monitor).
 - AM (issue #524): `DSD_APP_CMD_DECODE_MODE_SET` takes `DSDCFG_MODE_AM` (the preset ids end there, as do the
   RadioReference import's) and refuses it on a PCM input (`dsd_decode_mode_runs_on_input()`); on a running RTL session
   it holds the AM width to the rate (above) and switches live across AM, Analog and the digital modes. A switch between
@@ -1501,6 +1505,7 @@ Runtime controls (via `include/dsd-neo/io/rtl_stream_c.h`):
   those caller-thread checks use, from the stream's start; 0 with no stream), `rtl_stream_get_analog_profile()`,
   `rtl_stream_analog_family_active()` (the analog family, including
   while a CQPSK toggle or a typed row's profile has moved the front end off the monitor output),
+  `rtl_stream_get_analog_setting()` (the kind and width setting that family runs, on the monitor output or off it),
   `rtl_stream_output_rate_for_family()` (the output rate a pending switch will produce),
   `rtl_stream_set_digital_decode_modes()` (the decoder's configured digital modes, which pick the FSK channel profile
   a CQPSK toggle returns to once a live switch has moved the stream onto the digital family),
@@ -1690,7 +1695,10 @@ Notes:
     with the family, analog width setting and kind the stream kept, and whether it kept the monitor output
     (`dsd_demod_analog_monitor_active()`: a typed digital row's channel profile or CQPSK under the analog family keeps
     the setting without running it), recorded before the settlement (`rtl_stream_receive_request_refusal()`), until the
-    next stream open forgets it. Each numbered request also notes
+    next stream open forgets it. The stream publishes the same kind and width setting of the analog family whether or
+    not the monitor output runs (`rtl_stream_get_analog_setting()`, beside `rtl_stream_get_analog_profile()`, which
+    publishes a kind and width only on the monitor), so a request refused at once is read against what the family runs
+    as a refusal where it lands is (issue #578). Each numbered request also notes
     the CQPSK state it leaves the stream on (an analog family request turns it off, a demod profile sets or leaves it),
     which `rtl_stream_requested_cqpsk()` answers with while any request is unsettled.
     That, not the output generation (which the clear for a request moves before the publish, and a retune moves without

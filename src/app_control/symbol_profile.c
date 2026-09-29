@@ -405,21 +405,31 @@ svc_leave_channel_scan(dsd_opts* opts, dsd_state* state) {
    publishes, once the requests queued before it have settled, filled into @p kept. The monitor output publishes its
    kind and effective width, not the width setting, so a width the channel filter sets reads as that explicit width
    (the kind's default design included) and one the DSP rate limits as the kind's default. Off the monitor (a typed
-   digital row's channel profile, CQPSK under the analog family) the front end publishes no kind, and the request's
-   stands for it. Returns 0 when the front end runs what the leave asked for after all (a retune in flight, or a request
-   queued before the leave, left it on a rate and a monitor that run it): nothing was refused. A leave that asked for
-   the kind's default asked for its default design, so a monitor of that kind whose channel filter runs that design
-   (the AM default always does, published as 6 kHz) runs it, as one the DSP rate limits does. A stream started since is
-   never read here: the record went with the stream it was made of (svc_take_monitor_request_outcome()). */
+   digital row's channel profile, CQPSK under the analog family) the analog family publishes the kind it runs and the
+   width setting it was asked for (rtl_stream_get_analog_setting()), which a refusal where the request landed records
+   too: never the kind the leave asked for, which a mode change under a typed row can have moved to the other one while
+   the front end kept its own (issue #578). Returns 0 when the front end runs what the leave asked for after all (a
+   retune in flight, or a request queued before the leave, left it on a rate and a monitor that run it): nothing was
+   refused. A leave that asked for the kind's default asked for its default design, so a monitor of that kind whose
+   channel filter runs that design (the AM default always does, published as 6 kHz) runs it, as one the DSP rate limits
+   does. A stream started since is never read here: the record went with the stream it was made of
+   (svc_take_monitor_request_outcome()). */
 static int
 symbol_profile_published_kept(svc_monitor_refusal* kept) {
-    int kind = g_monitor_request.kind;
+    int kind = 0;
     int width_hz = 0;
     int lpf_on = 0;
+    int family_kind = 0;
+    int family_width_hz = 0;
     kept->kept_monitor = rtl_stream_get_analog_profile(&kind, &width_hz, &lpf_on) == 1 ? 1 : 0;
-    kept->kept_analog = (kept->kept_monitor || rtl_stream_analog_family_active()) ? 1 : 0;
-    kept->kept_kind = kept->kept_monitor ? kind : g_monitor_request.kind;
-    kept->kept_width_hz = (kept->kept_monitor && lpf_on) ? width_hz : 0;
+    const int family = rtl_stream_get_analog_setting(&family_kind, &family_width_hz) == 1 ? 1 : 0;
+    kept->kept_analog = (kept->kept_monitor || family) ? 1 : 0;
+    kept->kept_kind = kept->kept_monitor ? kind : family_kind;
+    if (kept->kept_monitor) {
+        kept->kept_width_hz = lpf_on ? width_hz : 0;
+    } else {
+        kept->kept_width_hz = family_width_hz;
+    }
     const int asked_hz = g_monitor_request.width_hz;
     const int runs_asked =
         kept->kept_monitor && kept->kept_kind == g_monitor_request.kind

@@ -497,6 +497,24 @@ int rtl_stream_get_analog_profile(int* out_kind, int* out_width_hz, int* out_lpf
 int rtl_stream_analog_family_active(void);
 
 /**
+ * @brief Report the analog kind and configured channel width the stream runs on the analog family, whether or not its
+ * monitor output runs.
+ *
+ * rtl_stream_get_analog_profile() publishes a kind and width only while the monitor output runs. A symbol profile
+ * applied under the family without a family request (a CQPSK toggle, a typed digital scan row's profile) moves the
+ * front end off that output with the family's kind and width setting left as they were: they are what the monitor
+ * returns to, and what a refused request leaves the stream on (rtl_stream_receive_request_refusal() records the same
+ * two). A caller that reads what the front end kept once its requests have settled reads this, so the kind a mode
+ * change under a typed row asked for is never taken for the one the family runs.
+ *
+ * @param out_kind     dsd_analog_demod the analog family runs (0 outside the family). May be NULL.
+ * @param out_width_hz Configured width the family was asked for (demod_state::analog_width_setting_hz: 0 for the
+ *                     kind's default, AM's included; 0 outside the family). May be NULL.
+ * @return 1 while the stream runs the analog family (as rtl_stream_analog_family_active()), 0 otherwise.
+ */
+int rtl_stream_get_analog_setting(int* out_kind, int* out_width_hz);
+
+/**
  * @brief Report whether the stream runs its channel filter where no width requests one: the unset NFM default on the
  * analog monitor, and a digital profile.
  *
