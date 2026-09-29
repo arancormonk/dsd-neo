@@ -5936,6 +5936,15 @@ ui_scan_goes_on(const dsd_opts* opts, const dsd_state* state) {
            || (opts->scanner_mode == 1 && state->lcn_freq_count > 0);
 }
 
+/* Whether a scan leave's refused return to the monitor (@p refusal) is left to what came after it: a receive request
+   queued after it, which superseded it and decides the front end (svc_monitor_refusal::superseded), or a scan that
+   goes on, whose next row's tune decides it (ui_scan_goes_on()). Nothing is put back for such a refusal: neither the
+   configured width, nor the mode a switch armed before the leave replaced. */
+static int
+ui_scan_leave_left_to_later(const dsd_opts* opts, const dsd_state* state, const svc_monitor_refusal* refusal) {
+    return refusal->scan_leave && (refusal->superseded || ui_scan_goes_on(opts, state));
+}
+
 /* Whether the options are still the ones a refused scan leave put back (@p refusal): the analog family, the kind and
    configured width it asked for, and no scan going on (ui_scan_goes_on()). */
 static int
@@ -6999,7 +7008,7 @@ ui_settle_receive_requests(dsd_opts* opts, dsd_state* state) {
            going back would publish the old mode's profile over that request, or over the next row's tune. Neither is a
            monitor request (one would have taken the record over), so the front end has made the switch no more than
            before, and it stays armed. */
-        if (!(refusal.scan_leave && (refusal.superseded || ui_scan_goes_on(opts, state)))) {
+        if (!ui_scan_leave_left_to_later(opts, state, &refusal)) {
             changed = ui_revert_analog_entry(opts, state, refusal.width_hz, &refusal);
         }
         if (!changed && refusal.scan_leave) {
