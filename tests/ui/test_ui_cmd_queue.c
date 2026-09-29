@@ -11957,6 +11957,14 @@ test_config_reopen_times_the_row_for_the_modulation_it_runs(void) {
  * it, and publish its profile, for that FSK (10 samples per symbol at 48 kHz, the 12.5 kHz filter), with a landing
  * whose CQPSK state is the target's own, and with nothing outstanding the republish still asks for CQPSK off rather
  * than put the front end its retune landed on FSK onto CQPSK.
+ *
+ * A stream a command starts with nothing outstanding lands no family, so the command times the row for the rate that
+ * stream runs it at (ui_started_stream_rate()), with the same CQPSK state the republish asks for: a config apply whose
+ * reopen starts under the suspended scope, and an explicit restart, which leaves the scope in force. Under -mq and
+ * DSD_NEO_CQPSK=0 the new stream opens on the FSK discriminator, its 78125 Hz demod rate resampled to 48 kHz. The DMR
+ * target is asked for CQPSK off there, so it reads that 48 kHz output: 10 samples per symbol, not the 16 of the demod
+ * rate its decoder's inherited CQPSK would pick. A P25 target with modulation=cqpsk is asked for its own CQPSK, whose
+ * timing loop runs at the demod rate: 16.
  */
 static int
 test_scoped_republish_lands_where_the_row_was_timed(void) {
@@ -11973,7 +11981,7 @@ test_scoped_republish_lands_where_the_row_was_timed(void) {
         int sps;         /* the timing the decoder and the published profile get */
         int landing;     /* the family request is the marked landing */
         int explicit_choice;
-        int reopen;          /* a config apply whose reopen starts, rather than the DMR inversion */
+        int restart; /* the command: 0 the DMR inversion, 1 a config apply whose reopen starts, 2 an explicit restart */
         int published_cqpsk; /* the CQPSK state the published profile asks for */
         int channel;         /* the channel filter it names */
     } legs[] = {
@@ -11991,6 +11999,14 @@ test_scoped_republish_lands_where_the_row_was_timed(void) {
          DSD_RTL_STREAM_CHANNEL_PROFILE_12K5},
         {"landing: dmr target, nothing outstanding", DSD_SCAN_MODE_DMR, DSD_SCAN_MODULATION_INHERIT, 0, 0, 16, 0, -1, 0,
          0, DSD_RTL_STREAM_CHANNEL_PROFILE_12K5},
+        {"reopen: dmr target under -mq, nothing outstanding", DSD_SCAN_MODE_DMR, DSD_SCAN_MODULATION_INHERIT, 0, 0, 10,
+         0, -1, 1, 0, DSD_RTL_STREAM_CHANNEL_PROFILE_12K5},
+        {"reopen: modulation=cqpsk, nothing outstanding", DSD_SCAN_MODE_P25, DSD_SCAN_MODULATION_CQPSK, 0, 0, 16, 0, -1,
+         1, 1, DSD_RTL_STREAM_CHANNEL_PROFILE_P25_CQPSK},
+        {"restart: dmr target under -mq, nothing outstanding", DSD_SCAN_MODE_DMR, DSD_SCAN_MODULATION_INHERIT, 0, 0, 10,
+         0, -1, 2, 0, DSD_RTL_STREAM_CHANNEL_PROFILE_12K5},
+        {"restart: modulation=cqpsk, nothing outstanding", DSD_SCAN_MODE_P25, DSD_SCAN_MODULATION_CQPSK, 0, 0, 16, 0,
+         -1, 2, 1, DSD_RTL_STREAM_CHANNEL_PROFILE_P25_CQPSK},
     };
 
     const dsd_rtl_stream_metrics_hooks hooks = {.output_rate_hz = hook_output_rate,
@@ -12034,11 +12050,20 @@ test_scoped_republish_lands_where_the_row_was_timed(void) {
         state.samplesPerSymbol = legs[i].sps;
         state.symbolCenter = dsd_opts_symbol_center(legs[i].sps);
 
-        if (legs[i].reopen) {
-            /* The new stream publishes the demod rate it started on; a CQPSK row that lands nothing is timed for it. */
+        if (legs[i].restart) {
+            /* The new stream opens under DSD_NEO_CQPSK=0 on the FSK discriminator, which resamples the 78125 Hz demod
+               rate it publishes to 48 kHz; a CQPSK row that lands nothing is timed for that demod rate. */
             g_config_rtl_open_ok = 1;
+            g_fake_cqpsk = 0;
+            g_hook_output_rate_hz = 48000U;
+            g_fake_output_rate_hz = 48000U;
             g_fake_request_rate_hz = 78125;
-            rc |= submit_config_device_source(&opts, &state, DSDCFG_INPUT_SOAPY, 0, 0, label);
+            if (legs[i].restart == 1) {
+                rc |= submit_config_device_source(&opts, &state, DSDCFG_INPUT_SOAPY, 0, 0, label);
+            } else {
+                rc |= expect_true(label, post_empty(DSD_APP_CMD_RTL_RESTART) > 0);
+                rc |= expect_int(label, dsd_app_drain_cmds(&opts, &state), 1);
+            }
             rc |= expect_int(label, dsd_app_command_test_last_failed(), 0);
             rc |= expect_int(label, g_config_rtl_creates == 1 && state.rtl_ctx != NULL, 1);
         } else {
@@ -12053,7 +12078,7 @@ test_scoped_republish_lands_where_the_row_was_timed(void) {
         rc |= expect_int(label, g_demod_req_ted_sps, legs[i].sps);
         /* The republish's own requests: the family first, then the row's profile. */
         rc |= expect_int(label,
-                         (legs[i].reopen || (g_analog_req_calls == 1 && g_demod_req_calls == 1))
+                         (legs[i].restart || (g_analog_req_calls == 1 && g_demod_req_calls == 1))
                              && g_analog_req_family == DSD_RX_FAMILY_DIGITAL && g_analog_req_order < g_demod_req_order,
                          1);
         rc |= expect_int(label, g_analog_req_landing, legs[i].landing);

@@ -1145,7 +1145,9 @@ installs from `src/engine/trunk_tuning.c` in `src/engine/trunk_tuning_hooks_inst
   `DSD_NEO_CQPSK` names when set, unless the row is a trunk-scan target that makes its own choice, with an output
   chain designed for it), and times the row at that rate itself (`svc_publish_symbol_profile()`, which decides the
   landing once and asks for it, issue #583), so `ui_started_stream_rate()` times only a publish that lands none. That
-  one applies the row's own CQPSK state, whatever `DSD_NEO_CQPSK` says, over the output chain the stream opened
+  one applies the row's own CQPSK state (`dsd_scan_mode_cqpsk_explicit()`: the decoder's, except that a trunk-scan DMR
+  or NXDN target runs CQPSK off whatever `rf_mod` a `-mq` lock left it on, and is timed as the FSK row it is asked to
+  be), whatever `DSD_NEO_CQPSK` says, over the output chain the stream opened
   on, on the digital family or under the analog family a typed row runs on an analog session: a CQPSK row's timing
   loop runs at the demod rate the stream published at its start (`rtl_stream_get_request_rate_hz()`), not at the
   resampled output of a stream that opened on the FSK discriminator or the monitor, and an FSK row's samples leave at

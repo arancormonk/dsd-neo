@@ -4297,6 +4297,12 @@ ui_publish_profile_timed(const dsd_opts* opts, dsd_state* state, dsd_decode_mode
  * open, a family switch, a retune or a landing resamples anew; an analog row; the M17 encoder's analog front end) keeps
  * the rate the stream delivers.
  *
+ * The row's own CQPSK state is the one the publish asks for (dsd_scan_mode_cqpsk_explicit(), issue #583): the
+ * decoder's, unless the row is a trunk-scan DMR or NXDN target, which runs CQPSK off whatever rf_mod a -mq lock left
+ * it on. Such a target is asked for the FSK discriminator, and reads the rate the stream delivers, not the demod rate
+ * its decoder's inherited CQPSK would pick: under DSD_NEO_CQPSK=0 a stream that opened on FSK, resampled to 48 kHz,
+ * would otherwise run it at 48 kHz timed for the demod rate.
+ *
  * A row the publish lands on the digital family's landing is timed there by the publish itself instead
  * (svc_publish_symbol_profile(), issue #583): a front end still on the analog family under a digital configured mode,
  * a row timed for that landing, or work outstanding that lands a family. The landing is where an open of the mode
@@ -4307,8 +4313,10 @@ ui_publish_profile_timed(const dsd_opts* opts, dsd_state* state, dsd_decode_mode
 static int
 ui_started_stream_rate(const dsd_opts* opts, const dsd_state* state, dsd_decode_mode_profile profile) {
 #ifdef USE_RADIO
+    int row_cqpsk = 0;
+    (void)dsd_scan_mode_cqpsk_explicit(opts, state, &row_cqpsk);
     if (opts->audio_in_type == AUDIO_IN_RTL && state->rtl_ctx && opts->analog_only != 1 && profile.symbol_rate_hz > 0
-        && state->rf_mod == 1) {
+        && row_cqpsk) {
         const int rate_hz = rtl_stream_get_request_rate_hz();
         if (rate_hz > 0) {
             return rate_hz;
