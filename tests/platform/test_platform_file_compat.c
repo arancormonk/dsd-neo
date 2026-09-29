@@ -164,6 +164,47 @@ expect_private_open_modes_and_read_fallback(void) {
     return ok ? 0 : 1;
 }
 
+/* Issue #578: dsd_fopen_private_ex() says whether it opened the path, which a write mode creates or empties: 0 for
+   arguments it refuses and a path it cannot open, 1 for a path it opened, written or read. */
+static int
+expect_private_open_reports_the_open(void) {
+    const char* name = "dsd_neo_private_opened_test.tmp";
+    (void)remove(name);
+    int opened = -1;
+    errno = 0;
+    if (dsd_fopen_private_ex(NULL, "wb", &opened) != NULL || errno != EINVAL || opened != 0) {
+        return 1;
+    }
+    opened = -1;
+    if (dsd_fopen_private_ex(name, "x", &opened) != NULL || opened != 0) {
+        return 1;
+    }
+    opened = -1;
+    if (dsd_fopen_private_ex("dsd_neo_missing_private_dir/opened.tmp", "wb", &opened) != NULL || opened != 0) {
+        return 1;
+    }
+    opened = -1;
+    FILE* fp = dsd_fopen_private_ex(name, "wb", &opened);
+    if (!fp) {
+        return 1;
+    }
+    int ok = opened == 1 && fputs("probe\n", fp) >= 0;
+    ok = fclose(fp) == 0 && ok;
+    opened = -1;
+    fp = dsd_fopen_private_ex(name, "r", &opened);
+    ok = ok && fp != NULL && opened == 1;
+    if (fp) {
+        ok = fclose(fp) == 0 && ok;
+    }
+    fp = dsd_fopen_private_ex(name, "w", NULL);
+    ok = ok && fp != NULL;
+    if (fp) {
+        ok = fclose(fp) == 0 && ok;
+    }
+    (void)remove(name);
+    return ok ? 0 : 1;
+}
+
 static int
 write_probe_file(const char* path) {
     FILE* fp = dsd_fopen_private(path, "w");
@@ -465,6 +506,7 @@ main(void) {
     rc |= expect_posix_compat_wrappers();
     rc |= expect_descriptor_wrappers();
     rc |= expect_private_open_modes_and_read_fallback();
+    rc |= expect_private_open_reports_the_open();
     rc |= expect_existing_regular_file_guards();
     rc |= expect_resolves_existing_file();
     rc |= expect_opens_existing_file();

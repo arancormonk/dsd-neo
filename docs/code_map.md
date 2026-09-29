@@ -353,6 +353,9 @@ Tests: `tests/engine/test_engine_trunk_scan.c` (`ENGINE_TRUNK_SCAN`) and
   compatibility)
   - Directory listing: `dsd_dir_list()` in `include/dsd-neo/platform/file_compat.h`, implemented once per
     platform in `file_compat_posix.c` and `file_compat_win32.c`
+  - Private file opens: `dsd_fopen_private()` creates a written file owner-only; `dsd_fopen_private_ex()` also says
+    whether it opened the path, which for a write mode creates or empties it before the stream over the descriptor is
+    made, so an open whose `fdopen()` fails still reports the file it emptied (issue #578: the I/Q capture writer)
   - Audio backends: selected by `DSD_AUDIO_BACKEND` (`auto` → PortAudio on Windows, PulseAudio
     elsewhere; `none` → `audio_null.c` discard/silence backend; `aaudio` → Android). Exactly one
     backend translation unit is compiled per build; the shared last-error store lives in
@@ -1521,9 +1524,12 @@ Notes:
     opened the I/Q capture file for writing (`rtl_stream_start_opened_capture()`), which writes it anew before the
     workers and the device's streaming start and can still fail: a rollback that restarts the input that ran cannot
     claim it kept that recording. The record is the writer's own report of that open (`dsd_iq_capture_open_ex()`'s
-    `out_data_opened`, set once the data file is open "wb", a later sidecar or thread failure included), so a writer
-    that fails before it (its configuration, an allocation, a data file it cannot open) reports the recording kept, and
-    removes nothing it did not open (test: `IO_IQ_CAPTURE_WRITER`). The unset NFM default never
+    `out_data_opened`, set once the data file's descriptor opens for writing, which empties it, from the platform open's
+    own report, `dsd_fopen_private_ex()`: a stream that `fdopen()` then cannot make over it, or a later sidecar or
+    thread failure, included, and the writer removes the file it emptied), so a writer that fails before it (its
+    configuration, an allocation, a data file it cannot open) reports the recording kept, and removes nothing it did
+    not open (test: `IO_IQ_CAPTURE_WRITER`, an `fdopen()` failure injected through `--wrap` where GNU ld offers it;
+    `PLATFORM_FILE_COMPAT`). The unset NFM default never
     fails: it keeps the `rate_in >= 20000` / `DSD_NEO_CHANNEL_LPF` enable rule and falls back to the legacy WIDE design
     where the rate cannot fit 16 kHz, published as DSP-limited at the width that plan passes.
   - AM (issue #524): an AM open (`rtl_demod_init_for_mode()`) and every switch to the AM kind

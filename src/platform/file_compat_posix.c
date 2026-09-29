@@ -89,13 +89,20 @@ dsd_private_open_flags(const char* mode) {
 }
 
 FILE*
-dsd_fopen_private(const char* path, const char* mode) {
+dsd_fopen_private_ex(const char* path, const char* mode, int* out_opened) {
+    if (out_opened) {
+        *out_opened = 0;
+    }
     if (!path || !mode) {
         errno = EINVAL;
         return NULL;
     }
     if (mode[0] == 'r') {
-        return fopen(path, mode);
+        FILE* fp = fopen(path, mode);
+        if (out_opened) {
+            *out_opened = fp != NULL;
+        }
+        return fp;
     }
 
     int flags = dsd_private_open_flags(mode);
@@ -107,12 +114,23 @@ dsd_fopen_private(const char* path, const char* mode) {
     if (fd < 0) {
         return NULL;
     }
+    /* The file is created or emptied now, whatever becomes of the stream over it. */
+    if (out_opened) {
+        *out_opened = 1;
+    }
 
     FILE* fp = fdopen(fd, mode);
     if (!fp) {
+        int saved_errno = errno ? errno : EINVAL;
         close(fd);
+        errno = saved_errno;
     }
     return fp;
+}
+
+FILE*
+dsd_fopen_private(const char* path, const char* mode) {
+    return dsd_fopen_private_ex(path, mode, NULL);
 }
 
 FILE*

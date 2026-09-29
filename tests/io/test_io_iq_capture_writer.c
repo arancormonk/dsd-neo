@@ -12,6 +12,7 @@
 #include <dsd-neo/platform/platform.h>
 #include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/platform/timing.h>
+#include <errno.h>
 #include <inttypes.h>
 #include <stdio.h>
 #include <string.h>
@@ -1938,6 +1939,71 @@ test_open_reports_whether_it_opened_the_data_file(void) {
     return rc;
 }
 
+#if defined(DSD_TEST_FAULT_FDOPEN)
+/* The next fdopen() fails once (ENOMEM), after the descriptor it is handed was opened: a private open for writing has
+   then already created or emptied the file. */
+static int g_fail_next_fdopen;
+
+// GNU ld --wrap requires these exact external symbol names.
+// NOLINTBEGIN(bugprone-reserved-identifier,cert-dcl37-c,cert-dcl51-cpp,misc-use-internal-linkage)
+FILE* __real_fdopen(int fd, const char* mode);
+FILE* __wrap_fdopen(int fd, const char* mode);
+
+FILE*
+__wrap_fdopen(int fd, const char* mode) {
+    if (g_fail_next_fdopen) {
+        g_fail_next_fdopen = 0;
+        errno = ENOMEM;
+        return NULL;
+    }
+    return __real_fdopen(fd, mode);
+}
+
+// NOLINTEND(bugprone-reserved-identifier,cert-dcl37-c,cert-dcl51-cpp,misc-use-internal-linkage)
+
+/*
+ * Issue #578: the data file is emptied when its descriptor opens for writing, before the stream over it is made. An open
+ * whose fdopen() then fails has ended the recording at the data path all the same: it reports the data file opened, so
+ * a rollback's log never calls that recording kept, and removes the file it emptied, as after a later failure.
+ */
+static int
+test_open_reports_a_data_file_it_emptied_without_a_stream(void) {
+    int rc = 0;
+    char dir[256];
+    char data_path[512];
+    char metadata_path[512];
+    char err[256];
+    if (mk_temp_dir(dir, sizeof(dir)) != 0) {
+        return 1;
+    }
+    path_join(data_path, sizeof(data_path), dir, "rec.iq");
+    path_join(metadata_path, sizeof(metadata_path), dir, "rec.iq.json");
+    FILE* recording = dsd_fopen_private(data_path, "wb");
+    rc |= expect_true("fdopen: recording written", recording != NULL);
+    if (recording) {
+        static const unsigned char k_recorded[512] = {0};
+        rc |= expect_true("fdopen: recording filled",
+                          fwrite(k_recorded, 1, sizeof k_recorded, recording) == sizeof k_recorded);
+        (void)fclose(recording);
+    }
+
+    dsd_iq_capture_config cfg;
+    fill_base_capture_cfg(&cfg, data_path, metadata_path, DSD_IQ_FORMAT_CU8);
+    dsd_iq_capture_writer* writer = NULL;
+    int opened = -1;
+    g_fail_next_fdopen = 1;
+    rc |= expect_int("fdopen failure fails", dsd_iq_capture_open_ex(&cfg, &writer, &opened, err, sizeof(err)),
+                     DSD_IQ_ERR_IO);
+    rc |= expect_int("fdopen failure: the stream was asked for", g_fail_next_fdopen, 0);
+    g_fail_next_fdopen = 0;
+    rc |= expect_int("fdopen failure: opened", opened, 1);
+    rc |= expect_true("fdopen failure: no writer", writer == NULL);
+    rc |= expect_true("fdopen failure: the emptied file removed", file_size_or_missing(data_path) == -1);
+    cleanup_capture(dir, data_path, metadata_path);
+    return rc;
+}
+#endif
+
 int
 main(void) {
     int rc = 0;
@@ -1967,6 +2033,9 @@ main(void) {
     rc |= test_bare_name_roundtrip_and_legacy_resolution();
     rc |= test_public_error_contracts();
     rc |= test_open_reports_whether_it_opened_the_data_file();
+#if defined(DSD_TEST_FAULT_FDOPEN)
+    rc |= test_open_reports_a_data_file_it_emptied_without_a_stream();
+#endif
     return rc ? 1 : 0;
 }
 

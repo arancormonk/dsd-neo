@@ -88,13 +88,14 @@ int dsd_iq_capture_open(const dsd_iq_capture_config* cfg, dsd_iq_capture_writer*
 /**
  * @brief dsd_iq_capture_open(), also reporting whether it opened the data file for writing.
  *
- * Opening the data file for writing empties it, ending whatever an earlier capture recorded there. An open that fails
- * before that (invalid arguments or configuration, an allocation, paths it cannot resolve, a data file it cannot open)
- * leaves the data path as it found it. One that fails after it (the metadata sidecar, the writer's queue or thread)
- * removes the data file it emptied.
+ * Opening the data file for writing empties it, ending whatever an earlier capture recorded there, as soon as its
+ * descriptor opens (dsd_fopen_private_ex()). An open that fails before that (invalid arguments or configuration, an
+ * allocation, paths it cannot resolve, a data file it cannot open) leaves the data path as it found it. One that fails
+ * after it (the stream over that descriptor, the metadata sidecar, the writer's queue or thread) removes the data file
+ * it emptied.
  *
- * @param out_data_opened Set to 1 once the data file was opened for writing, whether or not the open then succeeds,
- *                        and 0 otherwise. May be NULL.
+ * @param out_data_opened Set to 1 once the data file's descriptor was opened for writing, whether or not the open then
+ *                        succeeds, and 0 otherwise. May be NULL.
  * @return As dsd_iq_capture_open().
  */
 int dsd_iq_capture_open_ex(const dsd_iq_capture_config* cfg, dsd_iq_capture_writer** out, int* out_data_opened,

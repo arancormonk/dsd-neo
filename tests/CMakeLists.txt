@@ -10072,6 +10072,18 @@ target_link_libraries(
     dsd-neo_test_io_iq_capture_writer
     PRIVATE dsd-neo_io_iq dsd-neo_platform dsd-neo_test_support
 )
+# Issue #578: a case fails fdopen() once, after the data file's descriptor opened, through GNU ld's --wrap, so it only
+# exists where that works.
+if(NOT APPLE AND NOT WIN32 AND (CMAKE_C_COMPILER_ID MATCHES "GNU|Clang"))
+    target_compile_definitions(
+        dsd-neo_test_io_iq_capture_writer
+        PRIVATE DSD_TEST_FAULT_FDOPEN
+    )
+    target_link_options(
+        dsd-neo_test_io_iq_capture_writer
+        PRIVATE "LINKER:--wrap=fdopen"
+    )
+endif()
 add_test(NAME IO_IQ_CAPTURE_WRITER COMMAND dsd-neo_test_io_iq_capture_writer)
 
 add_executable(
