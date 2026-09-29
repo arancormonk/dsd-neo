@@ -497,6 +497,37 @@ int rtl_stream_get_analog_profile(int* out_kind, int* out_width_hz, int* out_lpf
 int rtl_stream_analog_family_active(void);
 
 /**
+ * @brief Report whether the stream runs the analog receive family now, or may run it once the receive requests and
+ * retunes already queued or in flight have landed (issue #583).
+ *
+ * rtl_stream_analog_family_active() answers for the family published now. A retune the controller has taken, or one
+ * queued for it, lands its family later, and so does a live request the demod thread has not taken yet (a width edit
+ * made while an analog target's retune was still in flight). A caller deciding whether a digital retune it queues now
+ * must attach the digital family reads this instead: the retune lands after that outstanding work, so a symbol profile
+ * without the family would land on the analog family it leaves behind, and an older analog request would take the
+ * front end back to the monitor.
+ *
+ * The answer is a union, 1 when any of these holds:
+ * - the published family is analog (rtl_stream_analog_family_active());
+ * - a retune the controller has taken, or the one queued for it, carries the analog family, lands on the target it
+ *   was queued for, and has not been superseded by a later live family request
+ *   (rtl_stream_prepare_retune_analog_profile_for_target());
+ * - a live receive request is still unsettled and the requests queued so far leave the stream on the analog family
+ *   (rtl_stream_receive_request_outcome()).
+ *
+ * The retunes are read first, then the live requests, then the published family, and each publishes its family before
+ * it stops counting as outstanding, so a landing between two reads is still seen. A union rather than the newest word
+ * on the family: a queued retune coalesces with a later one and takes its profile, so a digital retune queued behind
+ * an analog one can be replaced by one that carries no family. The answer can only err towards 1 (an analog retune
+ * refused where it lands, a request replaced later), which attaches the digital family to a landing that is digital
+ * already and only retires older live requests. A digital-only session answers 0 throughout, as the published family
+ * alone does.
+ *
+ * @return 1 when the analog family runs now or may run once outstanding work lands, 0 otherwise (and with no stream).
+ */
+int rtl_stream_analog_family_after_pending(void);
+
+/**
  * @brief Report the analog kind and configured channel width the stream runs on the analog family, whether or not its
  * monitor output runs.
  *

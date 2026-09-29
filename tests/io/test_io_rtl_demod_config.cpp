@@ -1372,6 +1372,20 @@ expect_rx_request_outcomes(void) {
     rc |= expect_int_eq("rx requested CQPSK: the queued toggle's", r.requested_cqpsk_while_pending, 1);
     rc |= expect_int_eq("rx requested CQPSK: off once the monitor is asked for", r.requested_cqpsk_analog_queued, 0);
     rc |= expect_int_eq("rx requested CQPSK: the stream's once that was refused", r.requested_cqpsk_after_refusal, 1);
+    /* Issue #583: the receive family the queued requests leave the stream on, which a digital retune queued meanwhile
+       lands after: a demod profile leaves it, a family request names it, and once they settle the stream's says. */
+    rc |= expect_int_eq("rx requested family: a symbol profile leaves the digital family",
+                        r.requested_family_while_pending, DSD_RX_FAMILY_DIGITAL);
+    rc |= expect_int_eq("rx requested family: the analog request's", r.requested_family_analog_queued,
+                        DSD_RX_FAMILY_ANALOG);
+    rc |= expect_int_eq("rx requested family: the stream's once that was refused", r.requested_family_after_refusal,
+                        DSD_RX_FAMILY_ANALOG);
+    rc |= expect_int_eq("rx requested family: a switch onto the monitor queued on the digital family",
+                        r.requested_family_entry_queued, DSD_RX_FAMILY_ANALOG);
+    rc |= expect_int_eq("rx requested family: the digital family the stream kept when that was refused",
+                        r.requested_family_entry_kept, DSD_RX_FAMILY_DIGITAL);
+    rc |= expect_int_eq("rx requested family: a switch to digital held for its symbol profile",
+                        r.requested_family_digital_held, DSD_RX_FAMILY_DIGITAL);
     rc |= expect_int_eq("rx refusal reported", r.refusal_reported, 1);
     rc |= expect_int_eq("rx refusal: the analog family kept", r.kept_analog_family, 1);
     rc |= expect_int_eq("rx refusal: the width the stream kept, not the one refused", r.kept_width_hz, 12500);

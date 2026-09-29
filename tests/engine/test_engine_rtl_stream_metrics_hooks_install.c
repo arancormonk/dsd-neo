@@ -151,6 +151,15 @@ rtl_stream_analog_family_active(void) {
     return 1;
 }
 
+static int g_family_after_pending_calls;
+
+/* Answers unlike rtl_stream_analog_family_active() above, so the wrapper is seen to reach this one. */
+int
+rtl_stream_analog_family_after_pending(void) {
+    ++g_family_after_pending_calls;
+    return 0;
+}
+
 unsigned int
 rtl_stream_output_rate_for_family(int family, int cqpsk_enable, int symbol_rate_hz) {
     ++g_output_rate_for_family_calls;
@@ -337,6 +346,10 @@ main(void) {
     assert(analog_lpf_on == 1);
     /* So do the family readback and the output rate a family switch lands on. */
     assert(dsd_rtl_stream_metrics_hook_analog_family_active() == 1);
+    assert(g_analog_family_active_calls == 1);
+    /* The family once outstanding work lands is the stream's own query, not the live family (issue #583). */
+    assert(dsd_rtl_stream_metrics_hook_analog_family_after_pending() == 0);
+    assert(g_family_after_pending_calls == 1);
     assert(g_analog_family_active_calls == 1);
     assert(dsd_rtl_stream_metrics_hook_output_rate_for_family(0, 1, 6000) == 24000U);
     assert(g_output_rate_for_family_calls == 1);

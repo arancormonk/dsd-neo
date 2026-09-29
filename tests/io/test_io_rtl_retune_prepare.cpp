@@ -862,6 +862,59 @@ test_retune_family_superseded_while_it_lands(void) {
     return failed;
 }
 
+/* A DMR target's retune after an analog target's (issue #583): with the digital family attached it leaves the analog
+ * family the analog retune landed, and its symbol profile runs the FSK discriminator rather than monitor audio. */
+static int
+test_dmr_retune_after_an_analog_retune_lands_on_fsk(void) {
+    const rtl_stream_test_retune_step steps[] = {
+        {DSD_RX_FAMILY_ANALOG, DSD_ANALOG_DEMOD_FM, 12500, RTL_STREAM_TEST_SYMBOL_NONE, -1, -1,
+         RTL_STREAM_TEST_QUEUED_NONE, 0},
+        {DSD_RX_FAMILY_DIGITAL, DSD_ANALOG_DEMOD_FM, 0, RTL_STREAM_TEST_SYMBOL_DMR_FSK, -1, -1,
+         RTL_STREAM_TEST_QUEUED_NONE, 0},
+    };
+    rtl_stream_test_retune_landing r[2];
+    DSD_MEMSET(r, 0, sizeof r);
+    int failed = expect_int_eq("dmr after nfm hook", rtl_stream_test_retune_profile_sequence(steps, 2U, r), 0);
+    failed |= expect_landing("nfm target", &r[0], 1, 12500, DSD_DEMOD_OUTPUT_AUDIO_MONITOR);
+    failed |= expect_landing("dmr target after it", &r[1], 0, 0, DSD_DEMOD_OUTPUT_FSK_DISCRIMINATOR);
+    failed |= expect_int_eq("dmr target runs CQPSK off", r[1].applied_cqpsk_enable, 0);
+    return failed;
+}
+
+/* Whether the stream runs the analog family once the work already queued or in flight lands (issue #583): the union of
+ * the published family, an outstanding retune that carries the analog family, and the live requests still unsettled.
+ * The engine attaches the digital family to a digital retune by it, so each has to count: a width edit queued behind
+ * an NFM target's retune, the NFM retune itself while the controller holds it queued or in flight, and the analog
+ * family it lands. A digital retune in flight does not hide the analog family the stream still runs; a retune a later
+ * live request superseded lands no family, and a profile a coalesced retune left behind for another target never
+ * applies. */
+static int
+test_analog_family_after_pending(void) {
+    rtl_stream_test_family_after_pending_result r;
+    DSD_MEMSET(&r, 0, sizeof r);
+    int failed = expect_int_eq("after-pending hook", rtl_stream_test_family_after_pending(&r), 0);
+    failed |= expect_int_eq("after-pending: digital only", r.digital_only, 0);
+    failed |= expect_int_eq("after-pending: a queued NFM width request", r.width_queued, 1);
+    failed |= expect_int_eq("after-pending: the public query sees the queued width", r.width_queued_public, 1);
+    failed |=
+        expect_int_eq("after-pending: the width still queued behind a digital retune in flight", r.width_retiring, 1);
+    failed |= expect_int_eq("after-pending: retired by the digital retune's family", r.width_retired, 0);
+    failed |= expect_int_eq("after-pending: the retired width reads replaced", r.width_outcome,
+                            RTL_STREAM_RX_REQUEST_REPLACED);
+    failed |= expect_int_eq("after-pending: an analog retune queued", r.analog_queued, 1);
+    failed |= expect_int_eq("after-pending: an analog retune taken", r.analog_taken, 1);
+    failed |= expect_int_eq("after-pending: an analog retune landed", r.analog_landed, 1);
+    failed |= expect_int_eq("after-pending: a digital retune landed after it", r.digital_landed, 0);
+    failed |= expect_int_eq("after-pending: back on the analog family", r.analog_live, 1);
+    failed |= expect_int_eq("after-pending: live analog under a digital retune in flight", r.digital_in_flight, 1);
+    failed |= expect_int_eq("after-pending: that digital retune landed", r.digital_left_analog, 0);
+    failed |= expect_int_eq("after-pending: an analog retune superseded after the take", r.superseded_taken, 0);
+    failed |= expect_int_eq("after-pending: the superseded retune landed", r.superseded_landed, 0);
+    failed |= expect_int_eq("after-pending: a stale queued profile for another target", r.stale_queued, 0);
+    failed |= expect_int_eq("after-pending: the stream ends on the digital family", r.landed_family, 0);
+    return failed;
+}
+
 /* The live family requests the stream accepts are counted, running stream or not, and a refused one is not (issue
  * #526): the -Y scanner compares the count across a row's outstanding retune, whose family a request counted meanwhile
  * has superseded. */
@@ -1708,6 +1761,8 @@ main(void) {
     failed |= test_retune_family_retires_older_queued_requests();
     failed |= test_retune_family_superseded_while_it_lands();
     failed |= test_live_family_request_count();
+    failed |= test_dmr_retune_after_an_analog_retune_lands_on_fsk();
+    failed |= test_analog_family_after_pending();
 
     return failed ? 1 : 0;
 }

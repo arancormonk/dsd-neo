@@ -338,12 +338,15 @@ dsd_engine_prepare_p25_cc_rtl_chain(const dsd_opts* opts, dsd_state* state, long
                                                  profile, ted_sps, 0);
 }
 
-/* Whether a digital retune moves the front end off the analog family it still runs after an analog scan row (issue
- * #526): only when the configured mode is digital, the rule the row's timing followed
+/* Whether a digital retune moves the front end off the analog family after an analog scan row or target (issues #526,
+ * #583): only when the configured mode is digital, and when the front end runs the analog family now or may run it
+ * once the work already outstanding lands (rtl_stream_analog_family_after_pending()). The retune queued here lands
+ * after that work: an analog target's retune still in flight when the operator moves on, or a width edit for it
+ * still queued, would otherwise leave its symbol profile on the analog monitor. The row's timing follows the same rule
  * (dsd_scan_mode_symbol_timing_rate_hz()), so the TED queued here is for the family the retune lands. */
 static int
 dsd_engine_retune_leaves_analog_family(const dsd_opts* opts, const dsd_state* state) {
-    return dsd_scan_mode_configured_digital(opts, state) && rtl_stream_analog_family_active();
+    return dsd_scan_mode_configured_digital(opts, state) && rtl_stream_analog_family_after_pending();
 }
 
 /* The output rate a four-level GFSK profile for @p symbol_rate_hz runs at once the retune lands: the stream's live
@@ -444,8 +447,10 @@ dsd_engine_prepare_scan_analog_profile(const dsd_opts* opts, const dsd_state* st
 }
 
 /* A digital tune after an analog scan row (a -Y row, a conventional or trunked target, a return to a control
- * channel): the symbol profile already queued for the target lands on the digital family. Nothing is attached while
- * the front end runs the digital family, so a digital-only session retunes exactly as it always has. */
+ * channel): the symbol profile already queued for the target lands on the digital family, which also retires any live
+ * request queued before it (a width edit for the analog target). It is attached whenever the front end runs the analog
+ * family or may run it once outstanding work lands (dsd_engine_retune_leaves_analog_family()); a digital-only session
+ * never does, so it retunes as it always has. */
 static void
 dsd_engine_prepare_digital_family(const dsd_opts* opts, const dsd_state* state, long int freq) {
     if (!dsd_engine_retune_leaves_analog_family(opts, state)) {

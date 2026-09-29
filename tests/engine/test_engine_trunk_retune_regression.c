@@ -566,6 +566,12 @@ rtl_stream_analog_family_active(void) {
     return 0;
 }
 
+/* Nothing outstanding lands the analog family either (issue #583), so these retunes attach no family. */
+int
+rtl_stream_analog_family_after_pending(void) {
+    return 0;
+}
+
 unsigned int
 rtl_stream_output_rate_for_family(int family, int cqpsk_enable, int symbol_rate_hz) {
     (void)family;

@@ -48,9 +48,11 @@ int dsd_engine_scan_dsp_rate_hz(const dsd_opts* opts, const dsd_state* state);
 uint32_t dsd_engine_scan_family_requests(const dsd_opts* opts);
 /** @brief Whether dsd_engine_scan_tune_to_freq(), called with the options now in force and @p ted_sps, attaches a
  * receive family to the row's retune: an analog row's always does, and a digital row's with a symbol clock
- * (@p ted_sps > 0) while the front end runs the analog family and the configured mode is digital. Only such a retune is
- * superseded by a live family request made before it lands (dsd_engine_scan_family_requests()); one without a family
- * lands its symbol profile whatever the requests (issue #526). 0 on any input but an RTL-family one. */
+ * (@p ted_sps > 0) while the front end runs the analog family, or may run it once the retunes and requests already
+ * outstanding land (rtl_stream_analog_family_after_pending(), issue #583), and the configured mode is digital. Only
+ * such a retune is superseded by a live family request made before it lands (dsd_engine_scan_family_requests()); one
+ * without a family lands its symbol profile whatever the requests (issue #526). 0 on any input but an RTL-family
+ * one. */
 int dsd_engine_scan_retune_attaches_family(const dsd_opts* opts, const dsd_state* state, int ted_sps);
 /** @brief Once a scanner has left its rows, put a rigctl peer back (issue #526): a scan tune asks a peer that
  * demodulates audio input for an am row's AM, or an nfm row's own passband, and nothing else undoes that once the

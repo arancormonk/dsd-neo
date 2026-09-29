@@ -293,6 +293,50 @@ test_family_hooks(void) {
     dsd_rtl_stream_metrics_hooks_set(NULL);
 }
 
+static int g_family_after_pending_result = 0;
+static int g_family_after_pending_calls = 0;
+
+static int
+fake_analog_family_after_pending(void) {
+    ++g_family_after_pending_calls;
+    return g_family_after_pending_result;
+}
+
+/* The family once outstanding work lands (issue #583): 0 with no RTL front end installed, forwarded and folded to 0/1
+ * when its hook is installed, and the live family's answer from a table that installs only that one (the decoder's
+ * timing then follows the live family, as before the hook existed). */
+static void
+test_family_after_pending_hook(void) {
+    dsd_rtl_stream_metrics_hooks_set(NULL);
+    assert(dsd_rtl_stream_metrics_hook_analog_family_after_pending() == 0);
+
+    dsd_rtl_stream_metrics_hooks hooks = {0};
+    hooks.analog_family_active = fake_analog_family_active;
+    hooks.analog_family_after_pending = fake_analog_family_after_pending;
+    dsd_rtl_stream_metrics_hooks_set(&hooks);
+    g_family_active_result = 0;
+    g_family_after_pending_calls = 0;
+    g_family_after_pending_result = 1;
+    assert(dsd_rtl_stream_metrics_hook_analog_family_after_pending() == 1);
+    g_family_after_pending_result = 7;
+    assert(dsd_rtl_stream_metrics_hook_analog_family_after_pending() == 1);
+    g_family_after_pending_result = -1;
+    assert(dsd_rtl_stream_metrics_hook_analog_family_after_pending() == 0);
+    g_family_active_result = 1;
+    g_family_after_pending_result = 0;
+    assert(dsd_rtl_stream_metrics_hook_analog_family_after_pending() == 0);
+    assert(g_family_after_pending_calls == 4);
+
+    hooks.analog_family_after_pending = NULL;
+    dsd_rtl_stream_metrics_hooks_set(&hooks);
+    g_family_active_result = 1;
+    assert(dsd_rtl_stream_metrics_hook_analog_family_after_pending() == 1);
+    g_family_active_result = 0;
+    assert(dsd_rtl_stream_metrics_hook_analog_family_after_pending() == 0);
+    assert(g_family_after_pending_calls == 4);
+    dsd_rtl_stream_metrics_hooks_set(NULL);
+}
+
 int
 main(void) {
     /*
@@ -303,6 +347,7 @@ main(void) {
 
     test_analog_profile_outputs();
     test_family_hooks();
+    test_family_after_pending_hook();
 
     // Default behavior with hooks unset.
     dsd_rtl_stream_metrics_hooks_set(NULL);

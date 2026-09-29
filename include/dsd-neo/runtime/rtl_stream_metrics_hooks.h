@@ -53,6 +53,8 @@ typedef struct {
     int (*analog_profile)(int* out_kind, int* out_width_hz, int* out_lpf_on);
     /* 1 while the front end runs the analog receive family, including under a symbol profile applied on its own. */
     int (*analog_family_active)(void);
+    /* 1 while it runs the analog family, or may once the requests and retunes already outstanding land. */
+    int (*analog_family_after_pending)(void);
     /* Output rate the front end will have once it runs the family (dsd_rx_family); 0 when unknown. */
     unsigned int (*output_rate_for_family)(int family, int cqpsk_enable, int symbol_rate_hz);
 } dsd_rtl_stream_metrics_hooks;
@@ -118,6 +120,18 @@ int dsd_rtl_stream_metrics_hook_analog_profile(int* out_kind, int* out_width_hz,
  * @return 1 while the analog family runs, 0 otherwise or when no RTL front end is installed.
  */
 int dsd_rtl_stream_metrics_hook_analog_family_active(void);
+/**
+ * @brief Report whether the RTL front end runs the analog receive family now, or may run it once the receive requests
+ * and retunes already queued or in flight have landed (issue #583).
+ *
+ * A digital retune queued now lands after that outstanding work. The engine attaches the digital family to it by this
+ * answer (rtl_stream_analog_family_after_pending()), so a caller timing the decoder for the family that retune lands
+ * reads it too, and the two agree.
+ *
+ * @return 1 when the analog family runs or may run once outstanding work lands, 0 otherwise. With no hook of its own
+ *         installed it answers as dsd_rtl_stream_metrics_hook_analog_family_active() does, the live family alone.
+ */
+int dsd_rtl_stream_metrics_hook_analog_family_after_pending(void);
 /**
  * @brief Predict the output rate the RTL front end will have once it runs @p family.
  *

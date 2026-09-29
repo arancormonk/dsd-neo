@@ -487,8 +487,10 @@ scan_timing_rate_hz(const dsd_opts* opts, int configured_digital, int symbol_rat
     if (opts->audio_in_type != AUDIO_IN_RTL) {
         return input_rate;
     }
-    if (symbol_rate_hz > 0 && configured_digital && dsd_rtl_stream_metrics_hook_analog_family_active()) {
-        /* The tune switches the family, and the output rate with it, only once it lands on the demod thread. */
+    if (symbol_rate_hz > 0 && configured_digital && dsd_rtl_stream_metrics_hook_analog_family_after_pending()) {
+        /* The tune switches the family, and the output rate with it, only once it lands on the demod thread. It
+           lands the digital family whenever the engine attaches one to it, by the same answer (issue #583): the
+           analog family runs now, or may once an analog retune or request already outstanding lands. */
         const unsigned int landing_hz =
             dsd_rtl_stream_metrics_hook_output_rate_for_family(DSD_RX_FAMILY_DIGITAL, cqpsk ? 1 : 0, symbol_rate_hz);
         if (landing_hz > 0U) {

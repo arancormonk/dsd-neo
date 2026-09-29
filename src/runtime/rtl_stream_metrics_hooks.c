@@ -140,6 +140,15 @@ dsd_rtl_stream_metrics_hook_analog_family_active(void) {
     return 0;
 }
 
+int
+dsd_rtl_stream_metrics_hook_analog_family_after_pending(void) {
+    if (g_rtl_stream_metrics_hooks.analog_family_after_pending) {
+        return g_rtl_stream_metrics_hooks.analog_family_after_pending() > 0 ? 1 : 0;
+    }
+    /* A table without it (a test's fake front end) answers for the live family, as the decoder did before it. */
+    return dsd_rtl_stream_metrics_hook_analog_family_active();
+}
+
 unsigned int
 dsd_rtl_stream_metrics_hook_output_rate_for_family(int family, int cqpsk_enable, int symbol_rate_hz) {
     if (g_rtl_stream_metrics_hooks.output_rate_for_family) {
