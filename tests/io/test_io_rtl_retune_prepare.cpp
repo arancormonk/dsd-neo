@@ -1148,6 +1148,38 @@ test_external_backend_retune_lands_where_timed(void) {
     return failed;
 }
 
+/* An external backend's landing runs on the decoder's thread while the controller thread can be reconfiguring the
+ * stream (a PPM correction, issue #583), and both rewrite the demodulator and its output chain. They take turns: a
+ * landing that finds a reconfiguration holding the gate waits for it to end instead of treating the closed gate as its
+ * own, and a reconfiguration that starts while a landing holds the gate waits for the landing to leave rather than
+ * enter beside it and reopen the gate under it. Each landing still lands where it was timed once it had its turn. */
+static int
+test_external_backend_landing_waits_for_reconfiguration(void) {
+    rtl_stream_test_external_landing_race_result r;
+    DSD_MEMSET(&r, 0, sizeof r);
+    int failed =
+        expect_int_eq("external landing race hook", rtl_stream_test_external_landing_against_reconfigure(&r), 0);
+    failed |= expect_int_eq("external landing under a reconfiguration: taken", r.landing_taken, 1);
+    failed |= expect_int_eq("external landing under a reconfiguration: waits for the gate", r.landing_waited, 1);
+    failed |=
+        expect_int_eq("external landing under a reconfiguration: lands after it ends", r.landed_during_reconfigure, 0);
+    failed |= expect_int_eq("external landing under a reconfiguration: CQPSK output", r.held_output_kind,
+                            DSD_DEMOD_OUTPUT_SYMBOL_CQPSK);
+    failed |=
+        expect_int_eq("external landing under a reconfiguration: output rate", r.held_output_rate, kForcedDemodRateHz);
+    failed |= expect_int_eq("reconfiguration during an external landing: landing taken", r.arriving_taken, 1);
+    failed |= expect_int_eq("reconfiguration during an external landing: waits for the gate", r.reconfigure_waited, 1);
+    failed |= expect_int_eq("reconfiguration during an external landing: enters after the landing left",
+                            r.reconfigure_during_landing, 0);
+    failed |= expect_int_eq("reconfiguration during an external landing: the gate stays closed under the landing",
+                            r.gate_held_through_landing, 1);
+    failed |= expect_int_eq("reconfiguration during an external landing: FSK output", r.arriving_output_kind,
+                            DSD_DEMOD_OUTPUT_FSK_DISCRIMINATOR);
+    failed |= expect_int_eq("reconfiguration during an external landing: output rate", r.arriving_output_rate, 48000);
+    failed |= expect_int_eq("external landing race: the gate is open again", r.gate_open_after, 1);
+    return failed;
+}
+
 /* Whether a digital retune queued now lands on a receive family's landing (issue #583): the union of the published
  * analog family, an outstanding retune that lands a family, and the live requests still unsettled. The engine attaches
  * the digital family to a digital retune by it, and times the decoder for that landing, so each has to count: a width
@@ -2188,6 +2220,7 @@ main(void) {
     failed |= test_target_cqpsk_choice_stands_after_an_analog_target();
     failed |= test_digital_family_lands_where_timed_on_a_digital_front_end();
     failed |= test_external_backend_retune_lands_where_timed();
+    failed |= test_external_backend_landing_waits_for_reconfiguration();
     failed |= test_family_landing_after_pending();
     failed |= test_live_republish_lands_where_it_was_timed();
 

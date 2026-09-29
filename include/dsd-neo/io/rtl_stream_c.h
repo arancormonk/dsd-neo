@@ -727,13 +727,14 @@ uint32_t rtl_stream_live_family_request_count(void);
  * Use this when an external backend, such as rigctl, has completed a frequency
  * change and the queued profile was bound to that target.
  *
- * Called on the decoder thread while the demod thread runs. The gain profile goes to the device first; the receive
- * family, the symbol profile and its TED then apply with the demod thread parked between blocks by the family-switch
- * gate the CQPSK toggle uses, as the stream's own retune applies them under its reconfigure gate. A profile that
- * carries the digital family lands as it does on the stream's own retune
- * (rtl_stream_prepare_retune_analog_profile_for_target()): the output chain is designed again for the CQPSK state and
- * symbol rate it lands, so the stream runs at the rate rtl_stream_output_rate_for_family() predicted (issue #583). A
- * profile without a family keeps the output chain.
+ * Called on the decoder thread while the demod thread runs. The landing holds the stream's reconfigure gate throughout,
+ * which parks the demod thread between blocks: it waits while the controller thread is reconfiguring the stream (a PPM
+ * correction, a hop), and the next reconfiguration waits until the landing has finished. Under the gate the gain
+ * profile goes to the device, then the receive family, the symbol profile and its TED apply, in the order the stream's
+ * own retune applies them under that gate. A profile that carries the digital family lands as it does on the stream's
+ * own retune (rtl_stream_prepare_retune_analog_profile_for_target()): the output chain is designed again for the CQPSK
+ * state and symbol rate it lands, so the stream runs at the rate rtl_stream_output_rate_for_family() predicted (issue
+ * #583). A profile without a family keeps the output chain.
  */
 void rtl_stream_apply_pending_retune_profile_for_target(uint32_t target_freq_hz);
 

@@ -4311,11 +4311,81 @@ controller_finalize_reconfigure(struct controller_state* s, const dsd_opts* opts
                                           previous_rate_out_hz, retune_profile);
 }
 
+/* Ownership of the reconfigure gate (controller_state::retune_in_progress), which parks the demod thread between blocks
+ * while its holder rewrites demod and output state. A controller reconfiguration takes it
+ * (controller_enter_reconfigure_gate(): a retune, a hop or a PPM correction on the controller thread, a replay event on
+ * the replay thread), and so does anything else that rewrites that state from outside the demod thread
+ * (rtl_stream_enter_demod_family_switch_gate(): an external backend's retune landing on the decoder's thread, a CQPSK
+ * toggle). One thread holds it at a time; another waits until the holder has taken the flag down and left. So no two of
+ * them rewrite the demodulator or its output chain together (an external landing's resampler redesign and a
+ * finalize's, issue #583), and none reopens the gate while another's work still runs. The holder may ask again: the
+ * family switch and the CQPSK toggle a retune profile applies ask for the gate inside the reconfiguration or landing
+ * that applies them, which only counts on the holder's own thread (t_reconfigure_gate_depth) and leaves the flag to the
+ * outermost entry.
+ *
+ * Nobody asks for it with another lock held, and every lock a holder takes (hop_m, g_profile_req_m,
+ * g_pending_retune_profile_mutex, an output ring's ready_m) is taken after it. A holder waits only for the demod thread
+ * to finish its block, and the demod thread never asks for the gate and gives up an output write the decoder would have
+ * to make room for once the flag is up (demod_write_output_samples_interruptible()), so a decoder's thread waiting here
+ * for the controller cannot hold up the controller in turn. */
+namespace {
+struct ReconfigureGateOwner {
+    std::mutex m;
+    std::condition_variable released;
+    int held = 0;    /* a thread holds the gate; guarded by m */
+    int waiters = 0; /* threads waiting to take it, which the internal test hooks read; guarded by m */
+};
+} // namespace
+
+static ReconfigureGateOwner g_reconfigure_gate;
+/* How many times the calling thread took the gate without giving it back (reconfigure_gate_take()). */
+static thread_local int t_reconfigure_gate_depth = 0;
+
+/* Take the reconfigure gate for the calling thread, waiting while another thread holds it. Returns 1 when this call
+ * took it, so the caller raises the flag and takes it down again before reconfigure_gate_give(), or 0 when the thread
+ * held it already. */
+static int
+reconfigure_gate_take(void) {
+    t_reconfigure_gate_depth++;
+    if (t_reconfigure_gate_depth > 1) {
+        return 0;
+    }
+    std::unique_lock<std::mutex> lock(g_reconfigure_gate.m);
+    if (g_reconfigure_gate.held) {
+        g_reconfigure_gate.waiters++;
+        g_reconfigure_gate.released.wait(lock, [] { return g_reconfigure_gate.held == 0; });
+        g_reconfigure_gate.waiters--;
+    }
+    g_reconfigure_gate.held = 1;
+    return 1;
+}
+
+/* Undo one reconfigure_gate_take() of the calling thread; the outermost lets a thread waiting for the gate take it. */
+static void
+reconfigure_gate_give(void) {
+    if (t_reconfigure_gate_depth <= 0) {
+        return;
+    }
+    t_reconfigure_gate_depth--;
+    if (t_reconfigure_gate_depth > 0) {
+        return;
+    }
+    {
+        std::lock_guard<std::mutex> lock(g_reconfigure_gate.m);
+        g_reconfigure_gate.held = 0;
+    }
+    g_reconfigure_gate.released.notify_all();
+}
+
+/* Close the reconfigure gate for a controller reconfiguration: take it (waiting for an external landing or CQPSK toggle
+ * that holds it), raise the flag, and wait for the demod thread to finish its block. controller_end_reconfigure()
+ * opens it again. Never entered by a thread that holds the gate already. */
 static inline void
 controller_enter_reconfigure_gate(struct controller_state* s) {
     if (!s) {
         return;
     }
+    (void)reconfigure_gate_take();
     s->retune_in_progress.store(1, std::memory_order_release);
     rtl_stream_signal_output_waiters(g_stream && g_stream->output ? g_stream->output : &output);
     controller_wait_for_demod_idle(s);
@@ -4338,12 +4408,15 @@ controller_begin_reconfigure(struct controller_state* s) {
     controller_prepare_reconfigure_input();
 }
 
+/* Open the gate controller_enter_reconfigure_gate() closed: the flag comes down before the gate is given back, so the
+ * next holder's flag is never taken down under it. */
 static inline void
 controller_end_reconfigure(struct controller_state* s) {
     if (!s) {
         return;
     }
     s->retune_in_progress.store(0, std::memory_order_release);
+    reconfigure_gate_give();
 }
 
 static int
@@ -8369,31 +8442,46 @@ rtl_stream_clear_output_for_demod_family_switch(void) {
     }
 }
 
+/* What rtl_stream_enter_demod_family_switch_gate() took, which rtl_stream_leave_demod_family_switch_gate() gives back. */
+enum {
+    RTL_DEMOD_GATE_NONE = 0,   /* no stream runs, so there is no demod thread to park and nothing was taken */
+    RTL_DEMOD_GATE_ARMED = 1,  /* this entry took the reconfigure gate and raised its flag */
+    RTL_DEMOD_GATE_NESTED = 2, /* the thread held the gate already (a reconfiguration or landing applying a profile) */
+};
+
+/* Park the demod thread between blocks so the caller can rewrite demod and output state from its own thread: the
+ * reconfigure gate is taken for it (reconfigure_gate_take()), waiting while a controller reconfiguration or another
+ * thread's landing holds it rather than running beside it, and its flag raised. A thread that holds the gate already
+ * (the controller applying a retune profile, an external landing) only waits for the idle demod thread. */
 static int
 rtl_stream_enter_demod_family_switch_gate(void) {
     if (!g_stream) {
-        return 0;
+        return RTL_DEMOD_GATE_NONE;
     }
-    int expected = 0;
-    if (!controller.retune_in_progress.compare_exchange_strong(expected, 1, std::memory_order_acq_rel,
-                                                               std::memory_order_acquire)) {
+    if (!reconfigure_gate_take()) {
         controller_wait_for_demod_idle(&controller);
-        return 0;
+        return RTL_DEMOD_GATE_NESTED;
     }
+    controller.retune_in_progress.store(1, std::memory_order_release);
     rtl_stream_signal_output_waiters(g_stream && g_stream->output ? g_stream->output : &output);
     controller_wait_for_demod_idle(&controller);
-    return 1;
+    return RTL_DEMOD_GATE_ARMED;
 }
 
+/* Give back what rtl_stream_enter_demod_family_switch_gate() returned as @p gate: an armed gate's flag comes down, and
+ * the demod thread is woken, before the gate is given back. */
 static void
-rtl_stream_leave_demod_family_switch_gate(int gate_armed) {
-    if (!gate_armed) {
+rtl_stream_leave_demod_family_switch_gate(int gate) {
+    if (gate == RTL_DEMOD_GATE_NONE) {
         return;
     }
-    controller.retune_in_progress.store(0, std::memory_order_release);
-    if (input_ring.buffer && input_ring.capacity > 0U) {
-        safe_cond_signal(&input_ring.ready, &input_ring.ready_m);
+    if (gate == RTL_DEMOD_GATE_ARMED) {
+        controller.retune_in_progress.store(0, std::memory_order_release);
+        if (input_ring.buffer && input_ring.capacity > 0U) {
+            safe_cond_signal(&input_ring.ready, &input_ring.ready_m);
+        }
     }
+    reconfigure_gate_give();
 }
 
 /* Body of rtl_stream_toggle_cqpsk without the demod-family switch gate.
@@ -8426,10 +8514,10 @@ rtl_stream_toggle_cqpsk(int onoff) {
     /* Arm the gate unconditionally: deciding based on demod.cqpsk_enable here
      * would itself be a cross-thread read of a demod-owned field. The gate is
      * cheap when nothing changes and this path is rare (UI/profile switches). */
-    int gate_armed = rtl_stream_enter_demod_family_switch_gate();
+    const int gate = rtl_stream_enter_demod_family_switch_gate();
     rtl_stream_apply_cqpsk_toggle(onoff);
     rtl_stream_publish_demod_profile_snapshot();
-    rtl_stream_leave_demod_family_switch_gate(gate_armed);
+    rtl_stream_leave_demod_family_switch_gate(gate);
 }
 
 /* ---------------- Deferred demod-profile application ----------------
@@ -9455,6 +9543,10 @@ rtl_stream_retune_analog_profile_fits(const RtlRetuneProfile* profile) {
  * requests older than that family: a request the decoder makes on its own thread can land there. */
 static void (*g_test_retune_family_checked_hook)(void*) = NULL;
 static void* g_test_retune_family_checked_ctx = NULL;
+/* Called by rtl_stream_apply_pending_retune_profile_for_target() once it holds the gate, before the profile's receive
+ * part applies. */
+static void (*g_test_external_landing_hook)(void*) = NULL;
+static void* g_test_external_landing_ctx = NULL;
 #endif
 
 /* Drop the live requests still queued that are older than @p profile's family (issue #526): made before the family was
@@ -9544,7 +9636,7 @@ rtl_stream_apply_retune_family(const RtlRetuneProfile* profile) {
     }
     const int levels_valid = (profile->levels == 2 || profile->levels == 4) ? 1 : 0;
     const int next_symbol_rate_hz = (profile->symbol_rate_hz > 0 && levels_valid) ? profile->symbol_rate_hz : 0;
-    const int gate_armed = rtl_stream_enter_demod_family_switch_gate();
+    const int gate = rtl_stream_enter_demod_family_switch_gate();
 #if defined(DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS)
     if (g_test_retune_family_checked_hook) {
         g_test_retune_family_checked_hook(g_test_retune_family_checked_ctx);
@@ -9553,13 +9645,13 @@ rtl_stream_apply_retune_family(const RtlRetuneProfile* profile) {
     uint32_t retired_through = 0U;
     if (!rtl_stream_retire_requests_before_family(profile, &retired_through)) {
         /* Superseded while it landed: the later request applies at the demod thread's next block boundary. */
-        rtl_stream_leave_demod_family_switch_gate(gate_armed);
+        rtl_stream_leave_demod_family_switch_gate(gate);
         return RTL_RETUNE_FAMILY_DONE;
     }
     rtl_stream_apply_analog_profile_params(profile->analog_family, profile->analog_kind, profile->analog_width_hz,
                                            profile->cqpsk_enable, next_symbol_rate_hz, profile->cqpsk_explicit);
     rtl_stream_settle_requests_through(retired_through);
-    rtl_stream_leave_demod_family_switch_gate(gate_armed);
+    rtl_stream_leave_demod_family_switch_gate(gate);
     return profile->analog_family == DSD_RX_FAMILY_ANALOG ? RTL_RETUNE_FAMILY_DONE : RTL_RETUNE_FAMILY_CONTINUE;
 }
 
@@ -9618,8 +9710,8 @@ rtl_stream_apply_retune_ted(const RtlRetuneProfile* profile, int lands_digital_f
  * resampler and output rate the caller then designs for the CQPSK state it landed, else 0. Callers hold the
  * controller's reconfigure gate (controller_enter_reconfigure_gate()) or the family-switch gate
  * (rtl_stream_enter_demod_family_switch_gate()), so the demod thread is parked between blocks while the symbol profile
- * and TED are written; the family switch and the CQPSK toggle ask for the gate again themselves, find it held and only
- * wait for the idle demod thread. */
+ * and TED are written; the family switch and the CQPSK toggle ask for the gate again themselves, find their own thread
+ * holding it and only wait for the idle demod thread. */
 static int
 rtl_stream_apply_retune_receive_profile(const RtlRetuneProfile* profile, int* out_lands_digital_family) {
     *out_lands_digital_family = 0;
@@ -9678,30 +9770,37 @@ rtl_stream_apply_retune_profile(const RtlRetuneProfile* profile, uint32_t center
 
 /* An external backend's retune (a rigctl peer that tuned an RTL input outside -Y, dsd_engine_tune_with_backend())
  * lands the profile queued for its target from the decoder's thread while the demod thread runs: there is no
- * controller retune, so no reconfigure gate and no finalize. Its gain profile goes to the device first, as the
- * controller applies it. The receive part then applies under the family-switch gate the CQPSK toggle and a live family
- * switch use (rtl_stream_enter_demod_family_switch_gate(), which parks the demod thread between blocks), held across
- * the family switch, the symbol profile, its TED and the output chain, so none of those demod writes races a block and
- * the demod thread never runs one with part of the landing applied. A profile that carries the digital family then gets
- * the output chain a finalize designs for it (rtl_stream_design_digital_landing_output(), as a live digital landing on
- * the digital family does), so the front end runs where rtl_stream_output_rate_for_family() predicted, the rate the
- * engine timed the decoder for when it attached the family (issue #583), whichever family it ran here. A profile
- * without a family keeps the output chain the stream runs, as it always has. */
+ * controller retune of its own, so no finalize. It takes the reconfigure gate for the whole landing
+ * (rtl_stream_enter_demod_family_switch_gate()), which waits while the controller thread is reconfiguring the stream (a
+ * PPM correction, a hop) and keeps the next reconfiguration out until the landing has left, and parks the demod thread
+ * between blocks. Under it, in the controller's order, the gain profile goes to the device, then the family switch, the
+ * symbol profile and its TED apply, so none of those writes races the demod thread's block, the controller's device
+ * programming or its finalize, and the demod thread never runs a block with part of the landing applied. A profile that
+ * carries the digital family then gets the output chain a finalize designs for it
+ * (rtl_stream_design_digital_landing_output(), as a live digital landing on the digital family does), so the front end
+ * runs where rtl_stream_output_rate_for_family() predicted, the rate the engine timed the decoder for when it attached
+ * the family (issue #583), whichever family it ran here. A profile without a family keeps the output chain the stream
+ * runs, as it always has. */
 extern "C" void
 rtl_stream_apply_pending_retune_profile_for_target(uint32_t target_freq_hz) {
     RtlRetuneProfile profile{};
     if (!rtl_stream_take_pending_retune_profile(&profile, 0U, target_freq_hz)) {
         return;
     }
+    const int gate = rtl_stream_enter_demod_family_switch_gate();
+#if defined(DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS)
+    if (g_test_external_landing_hook) {
+        g_test_external_landing_hook(g_test_external_landing_ctx);
+    }
+#endif
     rtl_stream_apply_retune_gain_profile(&profile);
-    const int gate_armed = rtl_stream_enter_demod_family_switch_gate();
     int lands_digital_family = 0;
     (void)rtl_stream_apply_retune_receive_profile(&profile, &lands_digital_family);
     if (lands_digital_family) {
         rtl_stream_design_digital_landing_output();
     }
     rtl_stream_publish_demod_profile_snapshot();
-    rtl_stream_leave_demod_family_switch_gate(gate_armed);
+    rtl_stream_leave_demod_family_switch_gate(gate);
 }
 
 extern "C" int
@@ -13735,6 +13834,215 @@ rtl_stream_test_retune_profile_sequence_external(const rtl_stream_test_retune_st
     family_test_restore(saved);
     family_test_release_buffers();
     return 0;
+}
+
+/* Threads waiting to take the reconfigure gate (reconfigure_gate_take()). */
+static int
+reconfigure_gate_waiters(void) {
+    std::lock_guard<std::mutex> lock(g_reconfigure_gate.m);
+    return g_reconfigure_gate.waiters;
+}
+
+namespace {
+/* One external backend's landing raced against a controller reconfiguration
+ * (rtl_stream_test_external_landing_against_reconfigure()). */
+struct ExternalLandingRace {
+    uint32_t target_hz = 0U;
+    std::atomic<int> pause_in_gate{0}; /* the landing stops inside the gate until the release */
+    std::atomic<int> release{0};
+    std::atomic<int> reconfiguring{0}; /* a controller reconfiguration holds the gate */
+    std::atomic<int> in_gate{0};       /* the landing reached its receive part */
+    std::atomic<int> landed_during_reconfigure{0};
+    std::atomic<int> gate_held_after_pause{0};
+    std::atomic<int> landing_done{0};
+    std::atomic<int> reconfigure_entered{0};
+    std::atomic<int> reconfigure_during_landing{0};
+    std::atomic<int> reconfigure_done{0};
+};
+
+/* Static storage, because the landing hook keeps its address in a file-scope pointer while the race runs. */
+ExternalLandingRace g_external_landing_race;
+} // namespace
+
+/* Clear the race for a new run on @p target_hz, before any thread that uses it starts. */
+static ExternalLandingRace*
+external_landing_race_reset(uint32_t target_hz, int pause_in_gate) {
+    ExternalLandingRace* r = &g_external_landing_race;
+    r->target_hz = target_hz;
+    r->pause_in_gate.store(pause_in_gate, std::memory_order_relaxed);
+    r->release.store(0, std::memory_order_relaxed);
+    r->reconfiguring.store(0, std::memory_order_relaxed);
+    r->in_gate.store(0, std::memory_order_relaxed);
+    r->landed_during_reconfigure.store(0, std::memory_order_relaxed);
+    r->gate_held_after_pause.store(0, std::memory_order_relaxed);
+    r->landing_done.store(0, std::memory_order_relaxed);
+    r->reconfigure_entered.store(0, std::memory_order_relaxed);
+    r->reconfigure_during_landing.store(0, std::memory_order_relaxed);
+    r->reconfigure_done.store(0, std::memory_order_relaxed);
+    return r;
+}
+
+/* The landing's stop inside the gate, before its receive part: it notes whether a controller reconfiguration still
+ * holds the gate, and with pause_in_gate waits there for the release (bounded) and then notes whether the gate is still
+ * closed. */
+static void
+external_landing_race_in_gate(void* arg) {
+    ExternalLandingRace* r = static_cast<ExternalLandingRace*>(arg);
+    r->landed_during_reconfigure.store(r->reconfiguring.load(std::memory_order_acquire), std::memory_order_release);
+    r->in_gate.store(1, std::memory_order_release);
+    if (!r->pause_in_gate.load(std::memory_order_acquire)) {
+        return;
+    }
+    for (int waited_ms = 0; waited_ms < 5000 && !r->release.load(std::memory_order_acquire); waited_ms++) {
+        dsd_sleep_ms(1);
+    }
+    r->gate_held_after_pause.store(controller.retune_in_progress.load(std::memory_order_acquire),
+                                   std::memory_order_release);
+}
+
+/* The decoder's thread: the external backend's landing of the profile queued for the race's target. */
+static DSD_THREAD_RETURN_TYPE
+#if DSD_PLATFORM_WIN_NATIVE
+    __stdcall
+#endif
+    external_landing_race_decoder(void* arg) {
+    ExternalLandingRace* r = static_cast<ExternalLandingRace*>(arg);
+    rtl_stream_apply_pending_retune_profile_for_target(r->target_hz);
+    r->landing_done.store(1, std::memory_order_release);
+    DSD_THREAD_RETURN;
+}
+
+/* The controller thread: a reconfiguration entering and leaving its gate, as controller_process_ppm_change() does. It
+ * notes whether the landing it races was still stopped inside the gate when it got in. */
+static DSD_THREAD_RETURN_TYPE
+#if DSD_PLATFORM_WIN_NATIVE
+    __stdcall
+#endif
+    external_landing_race_controller(void* arg) {
+    ExternalLandingRace* r = static_cast<ExternalLandingRace*>(arg);
+    controller_enter_reconfigure_gate(&controller);
+    r->reconfigure_during_landing.store(r->release.load(std::memory_order_acquire) ? 0 : 1, std::memory_order_release);
+    r->reconfigure_entered.store(1, std::memory_order_release);
+    controller_end_reconfigure(&controller);
+    r->reconfigure_done.store(1, std::memory_order_release);
+    DSD_THREAD_RETURN;
+}
+
+/* Wait (bounded) until @p done is set or a thread waits to take the reconfigure gate. Returns 1 when a waiter was seen
+ * while @p done was still clear. */
+static int
+external_landing_race_wait_for_waiter(const std::atomic<int>* done) {
+    for (int waited_ms = 0; waited_ms < 5000; waited_ms++) {
+        if (done->load(std::memory_order_acquire)) {
+            return 0;
+        }
+        if (reconfigure_gate_waiters() > 0) {
+            return done->load(std::memory_order_acquire) ? 0 : 1;
+        }
+        dsd_sleep_ms(1);
+    }
+    return 0;
+}
+
+/* Queue @p symbol_profile's retune for @p target_hz with the digital family attached, carrying whether its CQPSK state
+ * is the target's own, as the engine queues a digital target's retune behind outstanding analog work. */
+static void
+family_test_queue_digital_landing(uint32_t target_hz, int symbol_profile) {
+    family_test_queue_symbol_profile(target_hz, symbol_profile);
+    const rtl_stream_retune_analog_profile attach = {DSD_RX_FAMILY_DIGITAL, DSD_ANALOG_DEMOD_FM, 0,
+                                                     family_test_symbol_profile_explicit(symbol_profile)};
+    (void)rtl_stream_prepare_retune_analog_profile_for_target(target_hz, &attach);
+}
+
+/* An explicit P25 CQPSK target's landing starts on the decoder's thread while the test thread holds the controller's
+ * reconfigure gate, which it leaves once the landing was seen waiting for it (or finished). */
+static int
+external_landing_race_held_reconfigure(uint32_t target_hz, rtl_stream_test_external_landing_race_result* out) {
+    family_test_queue_digital_landing(target_hz, RTL_STREAM_TEST_SYMBOL_P25_CQPSK_EXPLICIT);
+    ExternalLandingRace* r = external_landing_race_reset(target_hz, 0);
+    g_stream = &g_cqpsk_toggle_test_stream;
+    controller_enter_reconfigure_gate(&controller);
+    r->reconfiguring.store(1, std::memory_order_release);
+    dsd_thread_t decoder{};
+    const int started = dsd_thread_create(&decoder, external_landing_race_decoder, r) == 0 ? 1 : 0;
+    out->landing_waited = started ? external_landing_race_wait_for_waiter(&r->landing_done) : 0;
+    r->reconfiguring.store(0, std::memory_order_release);
+    controller_end_reconfigure(&controller);
+    if (started) {
+        (void)dsd_thread_join(decoder);
+    }
+    g_stream = NULL;
+    out->landing_taken =
+        (r->in_gate.load(std::memory_order_acquire) && !family_test_retune_profile_queued_for(target_hz)) ? 1 : 0;
+    out->landed_during_reconfigure = r->landed_during_reconfigure.load(std::memory_order_acquire);
+    out->held_output_kind = demod.output_kind;
+    out->held_output_rate = (int)output.rate;
+    return started ? 0 : -1;
+}
+
+/* An explicit DMR target's landing stops inside the gate on the decoder's thread; a controller reconfiguration then
+ * starts on a thread of its own, and the landing is released once the reconfiguration was seen waiting for the gate (or
+ * finished). */
+static int
+external_landing_race_arriving_reconfigure(uint32_t target_hz, rtl_stream_test_external_landing_race_result* out) {
+    family_test_queue_digital_landing(target_hz, RTL_STREAM_TEST_SYMBOL_DMR_FSK_EXPLICIT);
+    ExternalLandingRace* r = external_landing_race_reset(target_hz, 1);
+    g_stream = &g_cqpsk_toggle_test_stream;
+    dsd_thread_t decoder{};
+    dsd_thread_t reconfigure{};
+    const int decoder_started = dsd_thread_create(&decoder, external_landing_race_decoder, r) == 0 ? 1 : 0;
+    const int in_gate = decoder_started ? read_race_wait_for(&r->in_gate, 5000) : 0;
+    const int reconfigure_started =
+        (in_gate && dsd_thread_create(&reconfigure, external_landing_race_controller, r) == 0) ? 1 : 0;
+    if (reconfigure_started) {
+        out->reconfigure_waited = external_landing_race_wait_for_waiter(&r->reconfigure_done);
+    }
+    r->release.store(1, std::memory_order_release);
+    if (decoder_started) {
+        (void)dsd_thread_join(decoder);
+    }
+    if (reconfigure_started) {
+        (void)dsd_thread_join(reconfigure);
+    }
+    g_stream = NULL;
+    out->arriving_taken = (in_gate && !family_test_retune_profile_queued_for(target_hz)) ? 1 : 0;
+    out->reconfigure_during_landing = r->reconfigure_during_landing.load(std::memory_order_acquire);
+    out->gate_held_through_landing = r->gate_held_after_pause.load(std::memory_order_acquire);
+    out->arriving_output_kind = demod.output_kind;
+    out->arriving_output_rate = (int)output.rate;
+    return (decoder_started && reconfigure_started) ? 0 : -1;
+}
+
+extern "C" int
+rtl_stream_test_external_landing_against_reconfigure(rtl_stream_test_external_landing_race_result* out) {
+    if (!out) {
+        return -1;
+    }
+    *out = {};
+    const FamilyTestSaved saved = family_test_save();
+    g_stream = NULL;
+    static dsd_opts dmr_opts;
+    DSD_MEMSET(&dmr_opts, 0, sizeof dmr_opts);
+    dmr_opts.frame_dmr = 1;
+    g_cqpsk_toggle_test_stream.output = &output;
+    g_cqpsk_toggle_test_stream.opts = &dmr_opts;
+    if (family_test_seed_open(&dmr_opts, 48000, 78125) != 0) {
+        family_test_restore(saved);
+        return -2;
+    }
+    rtl_stream_clear_demod_profile_request();
+    g_test_external_landing_hook = external_landing_race_in_gate;
+    g_test_external_landing_ctx = &g_external_landing_race;
+    int rc = external_landing_race_held_reconfigure(kFamilyTestRetuneHz, out);
+    rc |= external_landing_race_arriving_reconfigure(kFamilyTestRetuneHz + 12500U, out);
+    g_test_external_landing_hook = NULL;
+    g_test_external_landing_ctx = NULL;
+    out->gate_open_after =
+        (controller.retune_in_progress.load(std::memory_order_acquire) == 0 && reconfigure_gate_waiters() == 0) ? 1 : 0;
+    rtl_stream_clear_pending_retune_profile();
+    family_test_restore(saved);
+    family_test_release_buffers();
+    return rc == 0 ? 0 : -3;
 }
 
 /* Queue a retune to @p target_hz on the stand-in controller @p s, as the engine prepares one and rtl_stream_tune()

@@ -897,6 +897,31 @@ int rtl_stream_test_retune_profile_sequence_external(const rtl_stream_test_retun
                                                      int forced_rate_out_hz, uint32_t external_steps,
                                                      rtl_stream_test_retune_landing* out);
 
+/* An external backend's retune landing against a controller reconfiguration on another thread (issue #583). */
+typedef struct rtl_stream_test_external_landing_race_result {
+    /* The controller holds its reconfigure gate (controller_enter_reconfigure_gate()) when the landing starts. */
+    int landing_taken;             /* 1 when the landing took the profile queued for its target */
+    int landing_waited;            /* 1 when the landing was seen waiting for the gate while the controller held it */
+    int landed_during_reconfigure; /* 1 when the landing's receive part ran before the reconfiguration ended */
+    int held_output_kind;          /* demod_state::output_kind once both finished */
+    int held_output_rate;          /* the output rate then */
+    /* The landing holds the gate, stopped inside it, when a controller reconfiguration starts on another thread. */
+    int arriving_taken;
+    int reconfigure_waited;         /* 1 when the reconfiguration was seen waiting for the gate the landing held */
+    int reconfigure_during_landing; /* 1 when the reconfiguration entered the gate before the landing left it */
+    int gate_held_through_landing;  /* 1 when the gate was still closed once the reconfiguration had tried to enter */
+    int arriving_output_kind;
+    int arriving_output_rate;
+    int gate_open_after; /* 1 when the gate was open again once every thread finished */
+} rtl_stream_test_external_landing_race_result;
+
+/* Open DMR at 48 kHz on a device forced to 78,125 Hz and land two digital-family retunes as an external backend does
+ * (rtl_stream_apply_pending_retune_profile_for_target(), on a thread of its own standing for the decoder's): an
+ * explicit P25 CQPSK target's while the test thread holds the controller's reconfigure gate, then an explicit DMR
+ * target's, stopped inside the gate while a controller reconfiguration starts on a third thread. Each wait is bounded,
+ * so a landing or reconfiguration that never waits reports so instead of hanging the suite. */
+int rtl_stream_test_external_landing_against_reconfigure(rtl_stream_test_external_landing_race_result* out);
+
 /* What rtl_stream_family_landing_after_pending() answers at each point (issue #583). */
 typedef struct rtl_stream_test_family_landing_after_pending_result {
     int digital_only;        /* a digital stream with nothing queued or in flight */

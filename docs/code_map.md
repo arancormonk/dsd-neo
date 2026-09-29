@@ -1800,7 +1800,14 @@ Notes:
     designed for, so its analog width is published as DSP-limited, scaled by `post_downsample`.
   - While the pipeline runs, `demod_state` is written by the demod thread, or by a thread holding the reconfigure or
     family-switch gate while the demod thread is parked (a retune's finalize on the controller thread, a gated CQPSK
-    toggle). Receive-family requests are queued and applied by the demod thread between blocks; a retune profile's
+    toggle, an external backend's retune landing on the decoder's thread). Both gates are one gate with one owner
+    (`reconfigure_gate_take()`): a thread that asks for it while another holds it waits until the holder has taken the
+    flag (`retune_in_progress`) down and left, so a controller reconfiguration and a landing or toggle never rewrite the
+    demodulator or output chain together and neither reopens the gate under the other; a holder that asks again (the
+    family switch or CQPSK toggle a retune profile applies) only counts on its own thread. It is taken with no other
+    lock held, and its holders wait only for the demod thread, which never asks for it and cuts an output write short
+    while the flag is up.
+    Receive-family requests are queued and applied by the demod thread between blocks; a retune profile's
     family fields apply with the rest of the retune under the reconfigure gate, as its symbol profile and CQPSK toggle
     always have, and an analog one applies no symbol profile, CQPSK toggle or timing queued for the same target. A live
     family request accepted after a retune profile's family was attached supersedes it (`g_live_family_requests`, read
@@ -1922,7 +1929,10 @@ Notes:
     its gain first and then the family switch, symbol profile, TED and, for a profile that carries the digital family,
     the output chain a live digital landing designs (`rtl_stream_design_digital_landing_output()`), all under the
     family-switch gate the CQPSK toggle uses (`rtl_stream_enter_demod_family_switch_gate()`), which parks the demod
-    thread between blocks, so it lands on the same prediction. A retune without a family applies its symbol profile as
+    thread between blocks, so it lands on the same prediction. That gate is the controller's reconfigure gate with its
+    one owner, held for the whole landing: the landing waits while a controller reconfiguration (a PPM correction, a
+    hop) runs, and the next one waits for the landing, so the two never redesign the resampler together.
+    A retune without a family applies its symbol profile as
     queued, as a digital-only session always has, over the output chain it finds. A live digital landing
     (`rtl_stream_request_digital_family_landing()`, issue #583: a republish, or a channel-scan leave, that timed the
     decoder for the digital family's landing because the analog family runs or outstanding work lands a family) lands
@@ -1967,7 +1977,9 @@ Notes:
     live digital landing on a stream already digital at a forced 78125 Hz, `rtl_stream_test_live_digital_landing()`:
     the output kind, CQPSK state, filter, output rate and TED the prediction names, alone and in every order against a
     retune that carries the digital family, with no family switch recorded, while a plain request keeps the profile
-    as queued).
+    as queued; and an external backend's landing against a controller reconfiguration on another thread,
+    `rtl_stream_test_external_landing_against_reconfigure()`: each waits for the other to leave the gate, and the
+    landing still lands where it was timed).
   - `output_state::rate` (`<dsd-neo/runtime/ring.h>`) is atomic: the controller and demod threads write it and the
     decoder and UI threads read it through `dsd_rtl_stream_output_rate()`.
   - The output ring is cleared from the demod thread (family switch, reacquire) and the controller (reconfigure gate)
