@@ -895,8 +895,8 @@ installs from `src/engine/trunk_tuning.c` in `src/engine/trunk_tuning_hooks_inst
   width at the rate the device delivers. An Airspy reopened for its monitor volume alone, which the stream copies only
   when it opens, delivers the rate it runs now, so the running front end holds the width as when nothing reopens
   (`CFG_REOPEN_AT_RUNNING_RATE`, issue #578), and holds it even where the config leaves it as it was: the reopened
-  stream opens on the configured width, which a typed digital row on air leaves unused and the running rate need not
-  filter (a DSP bandwidth lowered while that row ran). Since the stream a reopen starts runs the scan row on air again once the
+  stream opens on the configured width, which a typed digital row on air leaves unused, and a DSP bandwidth lowered
+  under that row can leave too wide. Since the stream a reopen starts runs the scan row on air again once the
   scope resumes, an analog row's own width is held to the reopened rate the same way (`cfg_check_scan_row_width()`, for
   the row's kind), and on a session the config leaves on another kind or none the configured width of a kind is held
   while the scan has an analog row or target of that kind without a width of its own (`cfg_check_scan_widths()`). An
@@ -983,7 +983,7 @@ installs from `src/engine/trunk_tuning.c` in `src/engine/trunk_tuning_hooks_inst
   decoder's acquisition (issue #578; this also covers a reopen that starts, issue #583's first item). That publish,
   and the one for a row the update changed (a `[demod]` that turns a P25 row to CQPSK), is timed by one rule for the
   rate the new stream runs the row at (`ui_started_stream_rate()`), not with the timing the decoder kept from the old
-  stream nor the one the resume took from the rate the new stream delivers on the settings it opened on (a CQPSK row read
+  stream nor the one the resume took from the rate the new stream opened at (a CQPSK row read
   at the symbol-rate output has one sample per symbol, which the request would clamp to 2). A front end still on the
   analog family under a digital configured mode is switched to the digital family, which lands where an open of the
   mode would (the CQPSK family `DSD_NEO_CQPSK` names when set, with an output chain designed for it), so a row with a

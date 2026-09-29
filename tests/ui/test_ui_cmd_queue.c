@@ -9415,15 +9415,15 @@ test_superseded_scan_leave_keeps_an_armed_switch(void) {
 }
 
 /*
- * Issue #578: a refused scan leave whose scan keeps running, with a switch onto Analog armed before it. A DMR session on
- * an RTL-SDR at a 48 kHz DSP bandwidth, with NFM 16 kHz stored, scans a typed NXDN48 row and changes its configured
+ * Issue #578: a refused scan leave whose scan keeps running, with a switch onto Analog armed before it. A DMR session
+ * on an RTL-SDR at a 48 kHz DSP bandwidth, with NFM 16 kHz stored, scans a typed NXDN48 row and changes its configured
  * mode to Analog: the row keeps its own profile on the digital family, so the switch is armed with no monitor request
- * yet. A channel map with two rows is then imported, which leaves the row and asks the front end back onto the
- * monitor, while the scanner stays on to visit the new rows; a retune had moved the rate to 16 kHz, so the demod thread
- * refuses that return where it lands, keeping the digital family. The next row's tune decides the front end, so the
- * refusal is left to it, the armed switch included: the decoder stays on Analog and nothing is toasted, rather than go
- * back to DMR for a return the scan has moved on from. The switch stays armed for the next monitor request to settle:
- * once a row is on air and the scanner stops, the front end refusing that return as well puts the decoder back on DMR.
+ * yet. A channel map with two rows is then imported, which leaves the row and asks the front end back onto the monitor,
+ * while the scanner stays on to visit the new rows; a retune had moved the rate to 16 kHz, so the demod thread refuses
+ * that return where it lands, keeping the digital family. The next row's tune decides the front end, so the refusal is
+ * left to it, the armed switch included: the decoder stays on Analog and nothing is toasted, rather than go back to DMR
+ * for a return the scan has moved on from. The switch stays armed for the next monitor request to settle: once a row is
+ * on air and the scanner stops, the front end refusing that return as well puts the decoder back on DMR.
  */
 static int
 test_continuing_scan_leave_keeps_an_armed_switch(void) {
@@ -11137,10 +11137,10 @@ test_config_reopen_under_a_cqpsk_row_times_the_row(void) {
 /*
  * Issue #578: the same republish on an Analog-configured session. A typed P25 row there runs its symbol profile under
  * the analog family the reopened stream opened on (the configured monitor), with no family switch asked of the stream;
- * the RTL-SDR a failed reopen put back opens on the row itself, as the stream it replaced ran it, on the digital family.
- * A CQPSK row's timing loop then runs at the demod rate the stream published at its start, not at the monitor's 48 kHz
- * resampled audio: 4 samples per 4800 Bd symbol at a SoapySDR device's 19,531 Hz, and 5 at the 24 kHz DSP bandwidth of
- * the RTL-SDR put back. A C4FM row reads the audio the stream delivers, and keeps 10.
+ * the RTL-SDR a failed reopen put back opens on the row itself, as the stream it replaced ran it, on the digital
+ * family. A CQPSK row's timing loop then runs at the demod rate the stream published at its start, not at the monitor's
+ * 48 kHz resampled audio: 4 samples per 4800 Bd symbol at a SoapySDR device's 19,531 Hz, and 5 at the 24 kHz DSP
+ * bandwidth of the RTL-SDR put back. A C4FM row reads the audio the stream delivers, and keeps 10.
  */
 static int
 test_config_reopen_under_a_cqpsk_row_on_an_analog_session_times_the_row(void) {

@@ -1324,20 +1324,19 @@ ui_scan_row_resumed_monitor(const dsd_opts* opts, const dsd_state* state, int wa
  * runs, as every reopen holds it (the scan leaves back to that monitor). A start that worked there was therefore never
  * asked for the analog monitor the row puts back when the scope resumes, at the rate the new stream delivers (a
  * SoapySDR or Airspy device sets one no check could know up front): the stream is asked for it now
- * (svc_check_started_stream_analog()), and a stream that refuses it fails the reopen the same way, rather than leave the
- * decoder on the row's analog monitor over a front end that stays on the configured settings. Either way the receive
- * settings and the input @p before holds then go back, with the input's device settings and tuning, the input that ran
- * is running again, on the receive profile its stream ran (under a scan row, the row's, not the configured settings
- * the suspended scope's options hold, which the old rate need not run), without the I/Q capture and with the input
- * failure the session had latched before the apply (svc_rtl_restart_recovery_locked()), and the toast says why
- * ("Config not applied: ..."). Returns -1 then, and
- * the caller fails the apply. The rest of the config stays applied (its output, trunking, logging, alerts, recording
- * and DSP sections, the group list it imported, the environment defaults it set). With no stream running before the
- * apply there is no input to put back: the config stays applied, and the toast says why the input it opened did not
- * start ("Config applied; no input running: ..."), returning -1 all the same, failing the apply as a failed start fails
- * Input > Switch source, or, when that input runs but refuses the scan row, says so ("Config applied; the scan row
- * cannot run: ...") and returns 1, which fails the apply with the new input kept. Returns 0 when the reopened input
- * runs everything asked of it. Caller holds the P25 SM tick guard.
+ * (svc_check_started_stream_analog()), and a stream that refuses it fails the reopen the same way, rather than leave
+ * the decoder on the row's analog monitor over a front end that stays on the configured settings. Either way the
+ * receive settings and the input @p before holds then go back, with the input's device settings and tuning, the input
+ * that ran is running again, on the receive profile its stream ran (under a scan row, the row's, not the configured
+ * settings the suspended scope's options hold, which the old rate need not run), without the I/Q capture and with the
+ * input failure the session had latched before the apply (svc_rtl_restart_recovery_locked()), and the toast says why
+ * ("Config not applied: ..."). Returns -1 then, and the caller fails the apply. The rest of the config stays applied
+ * (its output, trunking, logging, alerts, recording and DSP sections, the group list it imported, the environment
+ * defaults it set). With no stream running before the apply there is no input to put back: the config stays applied,
+ * and the toast says why the input it opened did not start ("Config applied; no input running: ..."), returning -1 all
+ * the same, failing the apply as a failed start fails Input > Switch source, or, when that input runs but refuses the
+ * scan row, says so ("Config applied; the scan row cannot run: ...") and returns 1, which fails the apply with the new
+ * input kept. Returns 0 when the reopened input runs everything asked of it. Caller holds the P25 SM tick guard.
  */
 static int
 ui_cfg_settle_reopen(dsd_opts* opts, dsd_state* state, int rc, const ui_cfg_rollback* before) {
@@ -4287,16 +4286,16 @@ ui_publish_profile_timed(const dsd_opts* opts, dsd_state* state, dsd_decode_mode
  * The rate a stream a command started under a suspended scope runs the row's @p profile at once the resume's publish
  * lands (issue #578). A reopen's stream opened on the configured settings, so the rate it delivers now can be another
  * family's or modulation's; a rollback's restart opened on the row as the stream it replaced ran it. A front end still
- * on the analog family is moved onto the digital family when the configured mode is
- * digital (dsd_scan_mode_configured_digital(), svc_publish_symbol_profile()), and that switch lands where an open of
- * the mode would, on the CQPSK family DSD_NEO_CQPSK names when set and an output chain designed for it: a row with a
- * symbol clock is timed at the rate that switch lands on (rtl_stream_output_rate_for_family()). Otherwise the request
- * applies the row's own CQPSK state, whatever DSD_NEO_CQPSK says, over the output chain the stream opened on, whether
- * that is the digital family or the analog one a typed row runs its profile under on an analog session. A CQPSK row's
- * timing loop then runs at the demod rate the stream published at its start (rtl_stream_get_request_rate_hz()), not at
- * the resampled output of a stream that opened on the FSK discriminator or the analog monitor. Anything else (an FSK
- * row, whose samples leave at the rate the stream delivers now, which only an open, a family switch or a retune
- * resamples anew; an analog row; the M17 encoder's analog front end) keeps the rate the stream delivers.
+ * on the analog family is moved onto the digital family when the configured mode is digital
+ * (dsd_scan_mode_configured_digital(), svc_publish_symbol_profile()), and that switch lands where an open of the mode
+ * would, on the CQPSK family DSD_NEO_CQPSK names when set and an output chain designed for it: a row with a symbol
+ * clock is timed at the rate that switch lands on (rtl_stream_output_rate_for_family()). Otherwise the request applies
+ * the row's own CQPSK state, whatever DSD_NEO_CQPSK says, over the output chain the stream opened on, whether that is
+ * the digital family or the analog one a typed row runs its profile under on an analog session. A CQPSK row's timing
+ * loop then runs at the demod rate the stream published at its start (rtl_stream_get_request_rate_hz()), not at the
+ * resampled output of a stream that opened on the FSK discriminator or the analog monitor. Anything else (an FSK row,
+ * whose samples leave at the rate the stream delivers now, which only an open, a family switch or a retune resamples
+ * anew; an analog row; the M17 encoder's analog front end) keeps the rate the stream delivers.
  */
 static int
 ui_started_stream_rate(const dsd_opts* opts, const dsd_state* state, dsd_decode_mode_profile profile) {
@@ -6919,8 +6918,8 @@ apply_cmd_scoped(dsd_opts* opts, dsd_state* state, const struct dsd_app_command*
                              && (c->id == DSD_APP_CMD_IMPORT_GROUP_LIST || c->id == DSD_APP_CMD_IMPORT_GROUP_LIST_CLEAR
                                  || c->id == DSD_APP_CMD_CONFIG_APPLY);
     const int groups_suspended = group_update && dsd_scan_groups_suspend(state);
-    /* A stream the command starts while the scope is suspended opens on other settings than the row's the resume puts
-       back: a reopen on the configured ones, a rollback's restart on the row as it ran before the command (issue #578). */
+    /* A stream the command starts while the scope is suspended opens on other settings than the row the resume puts
+       back: a reopen on the configured ones, a rollback's restart on the row as it ran before (issue #578). */
     const unsigned int starts_before = svc_rtl_start_count();
     const int result = apply_cmd_unscoped(opts, state, c);
     const ui_scope_stream stream = ui_scope_stream_of(starts_before);

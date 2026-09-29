@@ -509,19 +509,20 @@ typedef struct {
  * what the front end kept, as the stream recorded it when it refused (rtl_stream_receive_request_refusal()): the caller
  * puts the configured width back to the one the monitor kept, or the decoder back on the mode it had before a switch
  * onto the monitor, or between FM and AM, the front end did not make, or reconciles a refused scan leave. A leave
- * refused at once queued nothing, so once the requests queued before it have settled, what the front end publishes
- * says what it kept (rtl_stream_get_analog_profile(), rtl_stream_analog_family_active()): the monitor's kind and the
- * width its channel filter runs (one the DSP rate limits reads as the kind's default), or the analog or digital family
- * off the monitor. It reads TAKEN when the front end publishes the monitor the leave asked for (a retune in flight, or
- * a request queued before the leave, left it on a rate and a monitor that run it), a leave for the kind's default
- * included when the monitor's channel filter runs that default's design (the AM default, published as 6 kHz). A
- * request made of a stream app-control has replaced since (a restart, a reopen, an input switch, a rollback's restart:
+ * refused at once queued nothing, so once the requests queued before it have settled, what the front end publishes says
+ * what it kept (rtl_stream_get_analog_profile(), rtl_stream_analog_family_active()): the monitor's kind and the width
+ * its channel filter runs (one the DSP rate limits reads as the kind's default), or the analog or digital family off
+ * the monitor. It reads TAKEN when the front end publishes the monitor the leave asked for (a retune in flight, or a
+ * request queued before the leave, left it on a rate and a monitor that run it), a leave for the kind's default
+ * included when the monitor's channel filter runs that default's design (the AM default, published as 6 kHz). A request
+ * made of a stream app-control has replaced since (a restart, a reopen, an input switch, a rollback's restart:
  * svc_rtl_start_count() moved) reads TAKEN, whatever the old stream did with it: the new stream opened on the options
- * it was given, not on the old one's requests, and what it publishes says nothing of the old one's refusal. A refusal, at once or where the
- * request landed, of a request that a receive request queued after it, from anywhere, has superseded (a CQPSK toggle,
- * a symbol profile) is reported with svc_monitor_refusal::superseded set: that later request decides what the front end
- * runs, so a refused scan leave is left to it, a switch onto the monitor armed before the leave included, while any
- * other refused switch onto the monitor the front end did not make still goes back. Decoder thread only.
+ * it was given, not on the old one's requests, and what it publishes says nothing of the old one's refusal. A refusal,
+ * at once or where the request landed, of a request that a receive request queued after it, from anywhere, has
+ * superseded (a CQPSK toggle, a symbol profile) is reported with svc_monitor_refusal::superseded set: that later
+ * request decides what the front end runs, so a refused scan leave is left to it, a switch onto the monitor armed
+ * before the leave included, while any other refused switch onto the monitor the front end did not make still goes
+ * back. Decoder thread only.
  *
  * @return svc_monitor_request_outcome.
  */
