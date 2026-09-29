@@ -10717,6 +10717,64 @@ test_config_reopen_whose_scan_row_the_new_stream_refuses(void) {
 }
 
 /*
+ * Issue #578: with no stream running before it, a config apply whose new input runs but refuses the scan row on air
+ * keeps that input and the whole config, and says the row cannot run. That holds for a config that also moves the
+ * session onto the analog monitor: the new stream opened on it, so the row's refusal when the scope resumes is not the
+ * front end refusing the switch, and the decoder does not go back to the mode the session had. A DMR-configured scanner
+ * with no stream, on an nfm row with its own 25 kHz width, loads a config with [mode] analog that opens an Airspy at a
+ * 12 kHz DSP bandwidth, whose 19,531 Hz refuses 25 kHz: the configured mode is Analog, the Airspy runs, and the toast
+ * is the scan row's.
+ */
+static int
+test_config_with_no_stream_keeps_its_mode_when_the_scan_row_cannot_run(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static void* fake_ctx[2];
+    int rc = 0;
+    init_dmr_session_with_nfm_width(&opts, &state, (RtlSdrContext*)fake_ctx, 0);
+    opts.scanner_mode = 1;
+    dsd_scan_option_values row = {0};
+    row.present = DSD_SCAN_OPT_BANDWIDTH;
+    row.channel_bw_hz = 25000;
+    rc |= expect_int("no stream mode: nfm row", dsd_scan_mode_enter(&opts, &state, DSD_SCAN_MODE_NFM), 0);
+    rc |= expect_int("no stream mode: its width", dsd_scan_mode_options(&opts, &state, &row), 0);
+    state.rtl_ctx = NULL;
+
+    reset_rx_family_wrap();
+    g_config_rtl_open_ok = 1;
+    g_analog_check_result = -1; /* the new stream cannot filter the row's 25 kHz */
+    g_fake_request_rate_hz = 19531;
+    g_fake_analog_req_max_hz = 16377; /* and refuses it when asked */
+    dsdneoUserConfig cfg;
+    DSD_MEMSET(&cfg, 0, sizeof cfg);
+    cfg.has_input = 1;
+    cfg.input_source = DSDCFG_INPUT_AIRSPY;
+    dsd_airspy_config_defaults(&cfg.airspy);
+    cfg.rtl_bw_khz = 12;
+    cfg.has_mode = 1;
+    cfg.decode_mode = DSDCFG_MODE_ANALOG;
+    rc |= submit_config(&opts, &state, &cfg, "no stream mode");
+    rc |= expect_int("no stream mode: failed", dsd_app_command_test_last_failed(), 1);
+    rc |= expect_int("no stream mode: the Airspy runs", g_config_rtl_creates == 1 && state.rtl_ctx != NULL, 1);
+    rc |= expect_str("no stream mode: on the Airspy", opts.audio_in_dev, "airspy");
+    rc |= expect_int("no stream mode: opened on the configured Analog", g_config_rtl_create_analog_only, 1);
+    rc |= expect_toast("no stream mode toast", &state,
+                       "Config applied; the scan row cannot run: NFM 25 kHz does not fit the 19.531 kHz DSP rate");
+    rc |= expect_int("no stream mode: the configured mode is Analog",
+                     dsd_scan_mode_configured_preset_exact(&opts, &state), DSDCFG_MODE_ANALOG);
+    rc |= expect_int("no stream mode: the row back in force",
+                     dsd_scan_mode_active(&state) == DSD_SCAN_MODE_NFM && !dsd_scan_mode_updating(&state), 1);
+
+    dsd_scan_mode_leave(&opts, &state);
+    reset_rx_family_wrap();
+    opts.scanner_mode = 0;
+    opts.analog_nfm_bandwidth_hz = 0;
+    state.rtl_ctx = NULL;
+    freeState(&state);
+    return rc;
+}
+
+/*
  * Issue #578: the row a reopen's new stream is held to is the one the scope resumes. A config that turns the scanner off
  * ([trunking] scanner = false) leaves the scope instead (apply_cmd_leave_scanner_scope()), and the session goes back to
  * the configured settings the new stream opened on, so the row it leaves is not asked of that stream. A DMR-configured
@@ -12042,6 +12100,7 @@ main(void) {
     rc |= test_config_reopen_under_a_cqpsk_row_times_the_row();
     rc |= test_config_reopen_whose_scan_row_the_new_stream_refuses();
     rc |= test_config_reopen_that_stops_the_scanner_skips_the_row();
+    rc |= test_config_with_no_stream_keeps_its_mode_when_the_scan_row_cannot_run();
     rc |= test_config_apply_holds_the_configured_am_width_under_am_rows();
     rc |= test_config_apply_holds_an_am_row_width_to_a_reopen();
 #ifdef DSD_NEO_TEST_RTL_WRAP

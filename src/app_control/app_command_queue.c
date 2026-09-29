@@ -6352,6 +6352,21 @@ apply_cfg_receive_family_change(dsd_opts* opts, dsd_state* state, const dsdneoUs
     return rc;
 }
 
+#ifdef USE_RADIO
+/* A config apply whose new input, with no stream running before it, runs but refuses the scan row on air
+   (ui_cfg_settle_reopen() returned @p radio_rc 1): the input and the config stay, and the toast says the row cannot
+   run. That stream opened on the config's receive side, so a switch onto the analog monitor, or between FM and AM, the
+   config made (apply_cfg_receive_family_change()) has nothing left for the front end to refuse: it is dropped, and the
+   row's own refusal when the scope resumes does not put the decoder back on the mode the session had
+   (ui_revert_analog_entry()) over the config the toast says was applied (issue #578). */
+static void
+ui_cfg_drop_entry_for_refused_row(int radio_rc) {
+    if (radio_rc > 0) {
+        g_analog_entry.armed = 0;
+    }
+}
+#endif
+
 /* A config apply that moved the input is an input switch like the commands that make one, and
    one that changed the decode mode a decode-mode change: either way the tone heard before it
    goes (issue #522). Out of the analog monitor nothing else forgets it before the row can come
@@ -6429,6 +6444,7 @@ ui_cmd_handle_config_apply(dsd_opts* opts, dsd_state* state, const struct dsd_ap
     /* A width the front end refused after the check (put back, with a toast) fails the apply like a reconfigure. */
     reconfigure_rc |= apply_cfg_receive_family_change(opts, state, &cfg, &old_rx);
 #ifdef USE_RADIO
+    ui_cfg_drop_entry_for_refused_row(radio_rc);
     if (radio_rc != 0) {
         return UI_CMD_APPLY_FAILED;
     }
