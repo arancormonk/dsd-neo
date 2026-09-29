@@ -837,6 +837,9 @@ installs from `src/engine/trunk_tuning.c` in `src/engine/trunk_tuning_hooks_inst
   leave the front end refuses at once queues nothing: the record keeps the number of the request before it, and once
   that one has settled what the stream publishes says what the front end kept (the monitor's kind and the width its
   channel filter runs, one the DSP rate limits reading as the default; off the monitor, the analog or digital family).
+  A monitor that runs what the leave asked for (a retune in flight left it there) refused nothing, and a leave for the
+  kind's default counts a monitor of that kind whose filter runs the default's design as running it (the AM default
+  publishes the 6 kHz it filters, which would otherwise read as another width kept).
   One refused where it lands says it from the stream's record, which notes whether the front end kept the monitor
   output. The record goes with the stream it was made of: once app-control starts another (a restart, a reopen, an
   input switch, a rollback's restart; `svc_rtl_start_count()` moved), it reads taken, since the new stream opened on

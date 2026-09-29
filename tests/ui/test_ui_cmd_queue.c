@@ -9364,6 +9364,52 @@ test_scan_leave_record_goes_with_its_stream(void) {
     return rc;
 }
 
+/*
+ * Issue #578: a scan leave refused at once that asked for the AM default, on a stream that runs that default once the
+ * requests queued before the leave have settled. An -fM session with the AM default leaves an am row at a 7.5 kHz rate
+ * that cannot filter the default, while a request queued before the leave is still on its way; a retune in flight
+ * then lands the front end on a 24 kHz rate and the am row's AM default monitor, which publishes the 6 kHz its channel
+ * filter runs. That is the default the leave asked for, not a width the monitor kept instead: nothing was refused, so
+ * the configured width stays the default and nothing is toasted. A monitor that runs another AM width (8 kHz) did keep
+ * one, and the configured width takes it, with the toast.
+ */
+static int
+test_refused_leave_at_once_reads_the_am_default_it_asked_for(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static void* fake_ctx[2];
+    int rc = 0;
+    for (int runs_default = 1; runs_default >= 0; runs_default--) {
+        const char* label = runs_default ? "am default leave: the default runs" : "am default leave: 8 kHz runs";
+        rc |= init_scan_row_on_analog(&opts, &state, (RtlSdrContext*)fake_ctx, DSD_ANALOG_DEMOD_AM, 0, DSD_SCAN_MODE_AM,
+                                      NULL, label);
+        g_fake_demod_rate_hz = 7500;
+        g_analog_req_result = -1;
+        ++g_fake_rx_seq; /* a request queued before the leave, not taken yet */
+        rc |= submit_scanner_stop(&opts, &state, label);
+        rc |= expect_last_monitor_request(label, 1, DSD_ANALOG_DEMOD_AM, 0);
+        g_analog_req_result = 0;
+        g_fake_demod_rate_hz = 24000;
+        g_fake_monitor_kind = DSD_ANALOG_DEMOD_AM;
+        g_fake_monitor_width_hz = runs_default ? 6000 : 8000;
+        g_fake_monitor_lpf_on = 1;
+        demod_thread_lands(0);
+        state.ui_msg[0] = '\0';
+        (void)dsd_app_drain_cmds(&opts, &state);
+        rc |= expect_int(label, opts.analog_am_bandwidth_hz, runs_default ? 0 : 8000);
+        rc |= expect_int(label, opts.analog_only == 1 && opts.analog_demod == DSD_ANALOG_DEMOD_AM, 1);
+        rc |= expect_last_monitor_request(label, 1, DSD_ANALOG_DEMOD_AM, 0);
+        if (runs_default) {
+            rc |= expect_str(label, state.ui_msg, "");
+        } else {
+            rc |= expect_toast(label, &state, "Refused: ");
+            rc |= expect_toast(label, &state, "; the monitor keeps AM 8 kHz");
+        }
+        finish_scan_row_on_analog(&opts, &state);
+    }
+    return rc;
+}
+
 /* A DMR session on an RTL-SDR input at a 16 kHz DSP bandwidth, with an explicit NFM width stored while digital (the
    front end is asked with the fake's answer, so a width the rate cannot filter gets as far as the request). */
 static void
@@ -12916,6 +12962,7 @@ main(void) {
     rc |= test_refused_scan_leave_is_left_to_a_later_request();
     rc |= test_superseded_scan_leave_keeps_an_armed_switch();
     rc |= test_scan_leave_record_goes_with_its_stream();
+    rc |= test_refused_leave_at_once_reads_the_am_default_it_asked_for();
     rc |= test_refused_switch_onto_analog_puts_the_mode_back();
     rc |= test_refused_switch_onto_analog_with_a_width_set_after_it();
     rc |= test_refused_switch_onto_analog_under_a_row();

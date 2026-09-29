@@ -56,11 +56,11 @@ symbol_profile_configured_digital(const dsd_opts* opts, const dsd_state* state) 
  * A scan leave's return to the monitor is recorded with scan_leave set (issue #578), and so is a request that replaces
  * it before it reached the front end (a width change made while it was still queued), and the kind's default a refused
  * leave falls back on (svc_publish_symbol_profile_after_scan_leave()), with the width from before that fallback: a
- * refusal then reconciles the decoder with what the front end kept after a scan, rather than only put a width back. A leave the front end refused
- * at once queued nothing (refused_at_once): seq is then the last request queued before it, and what the front end kept
- * is what it publishes once that one has settled. A request queued after the recorded one that does not take the record
- * over (a CQPSK toggle on, a symbol profile) supersedes it, whenever the refusal comes: that request decides the front
- * end, and a refused leave is left to it (svc_monitor_refusal::superseded).
+ * refusal then reconciles the decoder with what the front end kept after a scan, rather than only put a width back. A
+ * leave the front end refused at once queued nothing (refused_at_once): seq is then the last request queued before it,
+ * and what the front end kept is what it publishes once that one has settled. A request queued after the recorded one
+ * that does not take the record over (a CQPSK toggle on, a symbol profile) supersedes it, whenever the refusal comes:
+ * that request decides the front end, and a refused leave is left to it (svc_monitor_refusal::superseded).
  *
  * The record goes with the stream the request was made of (stream_starts: svc_rtl_start_count() then). A stream
  * app-control starts since (a restart, a reopen, an input switch or the restart of a rollback) opens on the configured
@@ -401,9 +401,11 @@ svc_leave_channel_scan(dsd_opts* opts, dsd_state* state) {
    kind and effective width, not the width setting, so a width the channel filter sets reads as that explicit width
    (the kind's default design included) and one the DSP rate limits as the kind's default. Off the monitor (a typed
    digital row's channel profile, CQPSK under the analog family) the front end publishes no kind, and the request's
-   stands for it. Returns 0 when the front end runs what the leave asked for after all (a request queued before it that
-   asked the same landed on a rate that runs it): nothing was refused. A stream started since is never read here: the
-   record went with the stream it was made of (svc_take_monitor_request_outcome()). */
+   stands for it. Returns 0 when the front end runs what the leave asked for after all (a retune in flight, or a request
+   queued before the leave, left it on a rate and a monitor that run it): nothing was refused. A leave that asked for
+   the kind's default asked for its default design, so a monitor of that kind whose channel filter runs that design
+   (the AM default always does, published as 6 kHz) runs it, as one the DSP rate limits does. A stream started since is
+   never read here: the record went with the stream it was made of (svc_take_monitor_request_outcome()). */
 static int
 symbol_profile_published_kept(svc_monitor_refusal* kept) {
     int kind = g_monitor_request.kind;
@@ -413,8 +415,12 @@ symbol_profile_published_kept(svc_monitor_refusal* kept) {
     kept->kept_analog = (kept->kept_monitor || rtl_stream_analog_family_active()) ? 1 : 0;
     kept->kept_kind = kept->kept_monitor ? kind : g_monitor_request.kind;
     kept->kept_width_hz = (kept->kept_monitor && lpf_on) ? width_hz : 0;
-    return !(kept->kept_monitor && kept->kept_kind == g_monitor_request.kind
-             && kept->kept_width_hz == g_monitor_request.width_hz);
+    const int asked_hz = g_monitor_request.width_hz;
+    const int runs_asked =
+        kept->kept_monitor && kept->kept_kind == g_monitor_request.kind
+        && (kept->kept_width_hz == asked_hz
+            || (asked_hz == 0 && kept->kept_width_hz == dsd_analog_width_default_hz(g_monitor_request.kind)));
+    return !runs_asked;
 }
 #endif
 
