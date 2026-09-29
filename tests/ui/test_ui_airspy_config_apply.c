@@ -20,7 +20,9 @@
 #include "dsd-neo/core/state_fwd.h"
 #include "dsd-neo/io/rtl_stream_c.h"
 #include "dsd-neo/io/rtl_stream_fwd.h"
+#include "dsd-neo/runtime/analog_channel.h"
 #include "dsd-neo/runtime/config.h"
+#include "dsd-neo/runtime/decode_mode.h"
 
 static int test_context;
 static int test_creates;
@@ -36,10 +38,19 @@ static uint32_t test_open_freq;
 static int test_open_bw;
 static int test_open_volume;
 static uint32_t test_open_rate;
+/* Issue #578: the analog profile the last create opened with, and the DSP rate a start refuses a width at (0: none).
+   A start refuses a held width that rate cannot filter, as the stream's analog channel check does at the rate the
+   device delivered, and records the refusal (rtl_stream_start_analog_refusal()); every create forgets it. */
+static int test_open_analog;
+static int test_open_kind;
+static int test_open_width;
+static int test_refuse_rate;
+static int test_refused;
 
 // NOLINTBEGIN(bugprone-reserved-identifier,cert-dcl37-c,cert-dcl51-cpp,misc-use-internal-linkage)
 int __wrap_rtl_stream_create(dsd_opts* opts, RtlSdrContext** ctx);
 int __wrap_rtl_stream_start(RtlSdrContext* ctx);
+int __wrap_rtl_stream_start_analog_refusal(int* out_kind, int* out_width_hz, int* out_rate_hz);
 int __wrap_rtl_stream_stop(RtlSdrContext* ctx);
 int __wrap_rtl_stream_destroy(RtlSdrContext* ctx);
 uint32_t __wrap_rtl_stream_output_rate(const RtlSdrContext* ctx);
@@ -56,6 +67,10 @@ __wrap_rtl_stream_create(dsd_opts* opts, RtlSdrContext** ctx) {
     test_open_bw = opts->rtl_dsp_bw_khz;
     test_open_volume = opts->rtl_volume_multiplier;
     test_open_rate = opts->airspy.sample_rate;
+    test_open_analog = dsd_opts_is_analog_family(opts);
+    test_open_kind = opts->analog_demod;
+    test_open_width = dsd_opts_analog_width_hz(opts);
+    test_refused = 0;
     if (test_fail_create) {
         test_fail_create--;
         *ctx = NULL;
@@ -68,7 +83,31 @@ __wrap_rtl_stream_create(dsd_opts* opts, RtlSdrContext** ctx) {
 int
 __wrap_rtl_stream_start(RtlSdrContext* ctx) {
     (void)ctx;
+    const int held = (test_open_kind == DSD_ANALOG_DEMOD_AM && test_open_width == 0)
+                         ? dsd_analog_width_default_hz(DSD_ANALOG_DEMOD_AM)
+                         : test_open_width;
+    if (test_refuse_rate > 0 && test_open_analog && held > 0 && !dsd_analog_width_realizable(held, test_refuse_rate)) {
+        test_refused = 1;
+        return -1;
+    }
     return 0;
+}
+
+int
+__wrap_rtl_stream_start_analog_refusal(int* out_kind, int* out_width_hz, int* out_rate_hz) {
+    if (!test_refused) {
+        return 0;
+    }
+    if (out_kind) {
+        *out_kind = test_open_kind;
+    }
+    if (out_width_hz) {
+        *out_width_hz = test_open_width;
+    }
+    if (out_rate_hz) {
+        *out_rate_hz = test_refuse_rate;
+    }
+    return 1;
 }
 
 int
@@ -222,6 +261,81 @@ test_config_apply(int failure) {
     free(opts);
 }
 
+/*
+ * Issue #578: a live Airspy at a 12 kHz DSP bandwidth delivers 19,531 Hz, which filters at most 16.377 kHz. A config
+ * that reopens it for a new sample rate is held only to the rules every rate shares before it commits, so the reopened
+ * stream's start refuses a 25 kHz width there. The apply then puts back what the start ran on (the Airspy settings, the
+ * tuning, the decode mode and the widths), restarts the Airspy it had, says why and fails: the session keeps a stream,
+ * instead of none and the refused width.
+ */
+static void
+test_config_refused_width(void) {
+    for (int onto_analog = 0; onto_analog < 2; ++onto_analog) {
+        dsd_opts* opts = calloc(1, sizeof(*opts));
+        dsd_state* state = calloc(1, sizeof(*state));
+        struct dsd_app_command* cmd = calloc(1, sizeof(*cmd));
+        dsdneoUserConfig* cfg = calloc(1, sizeof(*cfg));
+        assert(opts && state && cmd && cfg);
+        initOpts(opts);
+        initState(state);
+        /* Case A: an -fA session on NFM 12.5 kHz, and a config with a 25 kHz width. Case B: a DMR session with a
+           stored 25 kHz, and a config whose [mode] moves it onto the analog monitor. */
+        const dsdneoUserDecodeMode mode = onto_analog ? DSDCFG_MODE_DMR : DSDCFG_MODE_ANALOG;
+        assert(dsd_apply_decode_mode_preset(mode, DSD_DECODE_PRESET_PROFILE_CONFIG, opts, state) == 0);
+        opts->analog_nfm_bandwidth_hz = onto_analog ? 25000 : 12500;
+        opts->audio_out_type = 9;
+        opts->audio_in_type = AUDIO_IN_RTL;
+        opts->rtlsdr_center_freq = 851000000;
+        opts->rtl_dsp_bw_khz = 12;
+        opts->rtl_volume_multiplier = 2;
+        DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "airspy");
+        state->rtl_ctx = (RtlSdrContext*)&test_context;
+        cfg->has_input = 1;
+        cfg->input_source = DSDCFG_INPUT_AIRSPY;
+        cfg->airspy = opts->airspy;
+        cfg->airspy.sample_rate = 2500000;
+        cfg->rtl_bw_khz = 12;
+        cfg->rtl_volume = 2;
+        cfg->has_output = 1;
+        cfg->output_backend = DSDCFG_OUTPUT_NULL;
+        if (onto_analog) {
+            cfg->has_mode = 1;
+            cfg->decode_mode = DSDCFG_MODE_ANALOG;
+        } else {
+            cfg->has_analog = 1;
+            cfg->analog_nfm_bandwidth_hz = 25000;
+        }
+        cmd->id = DSD_APP_CMD_CONFIG_APPLY;
+        cmd->n = sizeof(*cfg);
+        DSD_MEMCPY(cmd->data, cfg, sizeof(*cfg));
+        test_creates = 0;
+        test_refuse_rate = 19531;
+        assert(apply_cmd(opts, state, cmd) == UI_CMD_APPLY_FAILED);
+        assert(test_creates == 2); /* the refused reopen, then the Airspy it had */
+        assert(state->rtl_ctx == (RtlSdrContext*)&test_context && opts->rtl_started == 1);
+        assert(strcmp(opts->audio_in_dev, "airspy") == 0 && opts->airspy.sample_rate == 0);
+        assert(test_open_rate == 0 && test_open_bw == 12 && test_open_freq == 851000000);
+        assert(strncmp(state->ui_msg, "Config not applied: NFM 25 kHz does not fit the 19.531 kHz DSP rate",
+                       strlen("Config not applied: NFM 25 kHz does not fit the 19.531 kHz DSP rate"))
+               == 0);
+        if (onto_analog) {
+            assert(test_open_analog == 0);
+            assert(dsd_infer_decode_mode_preset(opts) == DSDCFG_MODE_DMR && opts->analog_only == 0);
+            assert(opts->analog_nfm_bandwidth_hz == 25000);
+        } else {
+            assert(test_open_analog == 1 && test_open_width == 12500);
+            assert(opts->analog_nfm_bandwidth_hz == 12500);
+        }
+        test_refuse_rate = 0;
+        state->rtl_ctx = NULL;
+        freeState(state);
+        free(cfg);
+        free(cmd);
+        free(state);
+        free(opts);
+    }
+}
+
 static void
 test_serial_cli_override(void) {
     for (int serial = 0; serial < 2; ++serial) {
@@ -251,6 +365,8 @@ main(int argc, char** argv) {
     assert(argc == 2);
     if (strcmp(argv[1], "M2") == 0) {
         test_serial_cli_override();
+    } else if (strcmp(argv[1], "M11") == 0) {
+        test_config_refused_width();
     } else {
         test_config_apply(strcmp(argv[1], "M7") == 0);
     }

@@ -1317,6 +1317,34 @@ expect_analog_explicit_width_forces_lpf(void) {
 }
 
 /*
+ * A return to the NFM monitor refused where it landed (issue #578): the stream records keeping the analog family, the
+ * monitor output or not (@p monitor), and the kind @p kind with the width setting @p width_hz it runs, and publishes
+ * the same kind and setting whether or not the monitor output runs (rtl_stream_get_analog_setting()), which is what a
+ * leave the front end refused at once reads: off the monitor, rtl_stream_get_analog_profile() publishes no kind.
+ */
+static int
+expect_monitor_return(const char* name, const rtl_stream_test_monitor_return_refusal& r, int monitor, int kind,
+                      int width_hz) {
+    char label[160];
+#define RETURN_EXPECT(text, got, want)                                                                                 \
+    do {                                                                                                               \
+        DSD_SNPRINTF(label, sizeof label, "%s: %s", name, text);                                                       \
+        rc |= expect_int_eq(label, (got), (want));                                                                     \
+    } while (0)
+    int rc = 0;
+    RETURN_EXPECT("analog kept", r.kept_analog, 1);
+    RETURN_EXPECT("monitor kept", r.kept_monitor, monitor);
+    RETURN_EXPECT("kind kept", r.kept_kind, kind);
+    RETURN_EXPECT("setting kept", r.kept_width_hz, width_hz);
+    RETURN_EXPECT("published: the analog family", r.published_family, 1);
+    RETURN_EXPECT("published: the kind kept", r.published_kind, kind);
+    RETURN_EXPECT("published: the setting kept", r.published_width_hz, width_hz);
+    RETURN_EXPECT("published: the monitor output", r.published_monitor, monitor);
+#undef RETURN_EXPECT
+    return rc;
+}
+
+/*
  * Issue #525: the decoder tells a receive request the demod thread has taken from one still queued by the request's
  * number, not by the output generation, which moves before the demod thread publishes what it applied and also on a
  * retune that takes no request. An analog width refused where it lands reads as refused, so the decoder can put its
@@ -1335,7 +1363,8 @@ expect_rx_request_outcomes(void) {
     rc |= expect_int_eq("rx request pending: stream still publishes CQPSK off", r.published_cqpsk_while_pending, 0);
     rc |= expect_int_eq("rx request taken: settled", r.outcome_after_consume, RTL_STREAM_RX_REQUEST_SETTLED);
     rc |= expect_int_eq("rx request settled: stream publishes CQPSK on", r.published_cqpsk_after_consume, 1);
-    rc |= expect_int_eq("rx request replaced: settled", r.replaced_outcome, RTL_STREAM_RX_REQUEST_SETTLED);
+    rc |= expect_int_eq("rx demod profile replaced by another: settled", r.replaced_outcome,
+                        RTL_STREAM_RX_REQUEST_SETTLED);
     rc |= expect_int_eq("rx analog request queued", r.analog_request_rc, 0);
     rc |= expect_int_eq("rx analog request refused where it landed", r.analog_outcome, RTL_STREAM_RX_REQUEST_REFUSED);
     rc |= expect_int_eq("rx request after a refusal: settled", r.after_refused_outcome, RTL_STREAM_RX_REQUEST_SETTLED);
@@ -1348,9 +1377,32 @@ expect_rx_request_outcomes(void) {
     rc |= expect_int_eq("rx refusal: the width the stream kept, not the one refused", r.kept_width_hz, 12500);
     rc |= expect_int_eq("rx refusal: the kind the stream kept, not the one refused (AM, asked for NFM)", r.kept_kind,
                         DSD_ANALOG_DEMOD_AM);
+    rc |= expect_int_eq("rx refusal: off the monitor output (CQPSK on)", r.kept_monitor, 0);
     rc |= expect_int_eq("rx settled request: no refusal", r.settled_refusal_reported, 0);
     rc |= expect_int_eq("rx refused switch: the digital family kept", r.entry_kept_analog_family, 0);
+    rc |= expect_int_eq("rx refused switch: no monitor output kept", r.entry_kept_monitor, 0);
+    /* Issue #578: a return to the monitor refused where it landed says whether the front end kept the monitor output,
+       whose width the decoder can take, or a typed row's channel profile, where the width is only the setting. */
+    rc |= expect_monitor_return("rx monitor return refused on the monitor", r.monitor_return, 1, DSD_ANALOG_DEMOD_FM,
+                                12500);
+    rc |= expect_monitor_return("rx monitor return refused under a typed row", r.typed_row_return, 0,
+                                DSD_ANALOG_DEMOD_FM, 16000);
+    rc |= expect_monitor_return("rx monitor return refused under a typed row over AM", r.am_row_return, 0,
+                                DSD_ANALOG_DEMOD_AM, 10000);
+    /* Issue #578: an analog request the demod thread never took, because a later family request replaced it in the
+       queue, reads replaced, not settled like one it ran; so does a switch to the digital family replaced the same
+       way while the demod thread held it for its symbol profile, and the first of the two, replaced before that. */
+    rc |= expect_int_eq("rx analog request replaced: pending while its replacement is held",
+                        r.analog_replaced_pending_outcome, RTL_STREAM_RX_REQUEST_PENDING);
+    rc |= expect_int_eq("rx analog request replaced: replaced", r.analog_replaced_outcome,
+                        RTL_STREAM_RX_REQUEST_REPLACED);
+    rc |= expect_int_eq("rx digital family request replaced in turn: replaced", r.digital_replaced_outcome,
+                        RTL_STREAM_RX_REQUEST_REPLACED);
+    rc |= expect_int_eq("rx request that replaced them: taken (refused)", r.analog_replacing_outcome,
+                        RTL_STREAM_RX_REQUEST_REFUSED);
     rc |= expect_int_eq("rx request dropped by an open: settled", r.open_outcome, RTL_STREAM_RX_REQUEST_SETTLED);
+    rc |= expect_int_eq("rx replaced request forgotten by the next open", r.analog_replaced_outcome_after_open,
+                        RTL_STREAM_RX_REQUEST_SETTLED);
     rc |= expect_int_eq("rx refusal forgotten by the next open", r.refused_outcome_after_open,
                         RTL_STREAM_RX_REQUEST_SETTLED);
     rc |= expect_int_eq("rx request stranded without a pipeline: settled", r.no_stream_outcome,

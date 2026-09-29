@@ -131,6 +131,22 @@ int dsd_fchmod(int fd, int mode);
 FILE* dsd_fopen_private(const char* path, const char* mode);
 
 /**
+ * @brief dsd_fopen_private(), also reporting whether it opened @p path.
+ *
+ * A write mode creates or empties the file once its descriptor opens, before the stream over that descriptor is made,
+ * so an open whose stream cannot be made (fdopen() out of memory) returns NULL with the file already created or
+ * emptied. A caller that must know whether it touched the file (the I/Q capture writer, which reports writing over an
+ * earlier recording) reads @p out_opened. A read mode opens as fopen() does.
+ *
+ * @param path       File path.
+ * @param mode       fopen-compatible mode string.
+ * @param out_opened Set to 1 once @p path was opened, whether or not the stream over it was then made, and 0
+ *                   otherwise. May be NULL.
+ * @return FILE stream, or NULL on error.
+ */
+FILE* dsd_fopen_private_ex(const char* path, const char* mode, int* out_opened);
+
+/**
  * @brief Create a private temporary sibling file for atomic replacement.
  *
  * The temporary file is created in the same directory as @p final_path with

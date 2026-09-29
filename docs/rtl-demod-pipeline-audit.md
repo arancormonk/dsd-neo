@@ -312,7 +312,11 @@ refuses rather than clamps, and the checks sit where the rate is known:
   drain puts back that width and says why (`svc_take_monitor_request_outcome()`),
   so the configured width never stays one the filter does not run, even when
   an earlier width request landed in between. A stream open forgets a refusal
-  its predecessor recorded: it opens on the options as they are.
+  its predecessor recorded: it opens on the options as they are. An analog
+  request the demod thread never took, because a later request replaced it in
+  the queue or a retune's family retired it, reads replaced
+  (`RTL_STREAM_RX_REQUEST_REPLACED`), not settled like one it ran, and the
+  drain leaves it to what replaced it.
 - A switch to Analog (a decode-mode change, a config's `[mode]`) holds an
   explicit width to the rate first, under a scan row too. A retune that moves
   the rate after that check gets the switch refused at once or where it lands,

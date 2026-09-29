@@ -1016,16 +1016,20 @@ capture_open_resolve_paths(struct dsd_iq_capture_writer* w, const dsd_iq_capture
     return DSD_IQ_OK;
 }
 
+/* Open the data file for writing and write the initial metadata sidecar. @p out_data_opened is set to 1 once the data
+   file's descriptor opened, which empties it, even when the stream over it could not be made (w->data_fp NULL), and
+   stays 0 otherwise. */
 static int
-capture_open_init_files(struct dsd_iq_capture_writer* w, char* err_buf, size_t err_buf_size) {
+capture_open_init_files(struct dsd_iq_capture_writer* w, int* out_data_opened, char* err_buf, size_t err_buf_size) {
     dsd_iq_capture_metadata_stats initial_stats;
     DSD_MEMSET(&initial_stats, 0, sizeof(initial_stats));
+    *out_data_opened = 0;
 
     if (format_utc_now(w->capture_started_utc, sizeof(w->capture_started_utc)) != 0) {
         set_error(err_buf, err_buf_size, "failed to build UTC capture timestamp");
         return DSD_IQ_ERR_IO;
     }
-    w->data_fp = dsd_fopen_private(w->cfg.data_path, "wb");
+    w->data_fp = dsd_fopen_private_ex(w->cfg.data_path, "wb", out_data_opened);
     if (!w->data_fp) {
         set_error(err_buf, err_buf_size, "failed to open capture data file '%s': %s", w->cfg.data_path,
                   strerror(errno));
@@ -1485,8 +1489,23 @@ static DSD_THREAD_RETURN_TYPE
     DSD_THREAD_RETURN;
 }
 
+/* Report through @p out_data_opened (may be NULL) whether the open has opened the data file for writing. */
+static void
+capture_open_report_data(int* out_data_opened, int opened) {
+    if (out_data_opened) {
+        *out_data_opened = opened;
+    }
+}
+
 int
 dsd_iq_capture_open(const dsd_iq_capture_config* cfg, dsd_iq_capture_writer** out, char* err_buf, size_t err_buf_size) {
+    return dsd_iq_capture_open_ex(cfg, out, NULL, err_buf, err_buf_size);
+}
+
+int
+dsd_iq_capture_open_ex(const dsd_iq_capture_config* cfg, dsd_iq_capture_writer** out, int* out_data_opened,
+                       char* err_buf, size_t err_buf_size) {
+    capture_open_report_data(out_data_opened, 0);
     if (!cfg || !out) {
         set_error(err_buf, err_buf_size, "invalid capture open arguments");
         return DSD_IQ_ERR_INVALID_ARG;
@@ -1537,9 +1556,13 @@ dsd_iq_capture_open(const dsd_iq_capture_config* cfg, dsd_iq_capture_writer** ou
         }
     }
     {
-        int rc = capture_open_init_files(w, err_buf, err_buf_size);
+        /* Only a data file this open emptied is removed: one it could not open is left as it was. Its descriptor's open
+           empties it, so one whose stream could not be made over that descriptor is removed as well. */
+        int data_opened = 0;
+        int rc = capture_open_init_files(w, &data_opened, err_buf, err_buf_size);
+        capture_open_report_data(out_data_opened, data_opened);
         if (rc != DSD_IQ_OK) {
-            capture_open_cleanup(w, 1, 0);
+            capture_open_cleanup(w, data_opened, 0);
             return rc;
         }
     }

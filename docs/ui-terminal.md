@@ -434,10 +434,16 @@ message says the channel overrides it); a width the DSP rate cannot filter is re
 fix (on a digital session too, while the scan has an `nfm` row or target without a width of its own, which runs the
 configured width), and a `DSP bandwidth...` value the explicit NFM width cannot run at is refused with one saying to
 narrow the width first. Input > Switch source > RTL-SDR refuses the switch, keeping the running input, when its DSP
-bandwidth cannot filter the explicit NFM width (see `docs/cli.md`, Analog reception). The Qt and Android Radio sheet
-shows the same reading, spelled the same way, on any session while an `nfm` or `am` row is on air; a row's own width
-reads first there, with a `row` badge and the configured default of its kind the stepper edits beside it (`12.5 kHz`
-over a `row` badge and `default 16 kHz`; `default 6 kHz` under an `am` row while the AM width is unset).
+bandwidth cannot filter the explicit NFM width, and Switch source > Airspy refuses it while `DSD_NEO_CHANNEL_LPF=0`
+turns off the filter the width needs; a switch whose start fails anyway (a width the Airspy's rate cannot filter, a
+device that does not open) puts the running input back with the reason. The Airspy's start checks only the width it
+opens on, the one in force, and a scan row that runs a digital protocol has none: a configured width the Airspy's rate
+cannot filter then waits for the scan to stop, whose refused return to the monitor settles it (see `docs/cli.md`,
+Analog reception). The Qt
+and Android Radio sheet shows the same reading, spelled the same way, on any session while an `nfm` or `am` row is on
+air; a row's own width reads first there, with a `row` badge and the configured default of its kind the stepper edits
+beside it (`12.5 kHz` over a `row` badge and `default 16 kHz`; `default 6 kHz` under an `am` row while the AM width is
+unset).
 
 The low-level threshold is controlled by `--input-level-warn-db`, `DSD_NEO_INPUT_WARN_DB`, or the `[input]`
 `input_warn_db` user-config key, and defaults to `-40 dBFS`. Changes made through the terminal menu persist through

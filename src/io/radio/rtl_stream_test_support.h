@@ -64,6 +64,21 @@ int rtl_stream_test_cqpsk_toggle_output_clear(int start_cqpsk, int target_cqpsk,
                                               size_t queued_samples, int cached_symbols,
                                               rtl_stream_test_cqpsk_toggle_result* out_result);
 
+/* A return to the NFM monitor at 16 kHz, checked at 48 kHz and refused where it landed at 16 kHz (issue #578), by a
+ * stream on the analog family: what rtl_stream_receive_request_refusal() says it kept, and what the stream publishes
+ * then, which a leave the front end refused at once reads instead: the analog kind and width setting the family runs
+ * (rtl_stream_get_analog_setting()) and whether the monitor output runs (rtl_stream_get_analog_profile()). */
+typedef struct rtl_stream_test_monitor_return_refusal {
+    int kept_analog;
+    int kept_monitor;
+    int kept_kind;
+    int kept_width_hz;
+    int published_family;
+    int published_kind;
+    int published_width_hz;
+    int published_monitor;
+} rtl_stream_test_monitor_return_refusal;
+
 /* What became of receive requests on a running stream (rtl_stream_receive_request_outcome()), each consumed the way
  * the demod thread consumes them between blocks. */
 typedef struct rtl_stream_test_rx_request_result {
@@ -89,10 +104,27 @@ typedef struct rtl_stream_test_rx_request_result {
     int kept_width_hz;                 /* the analog width it says the stream kept */
     int kept_kind;                     /* the analog kind it says the stream kept (AM: the kind it ran when an NFM
                                           request was refused) */
+    int kept_monitor;                  /* whether it says the stream kept the monitor output (CQPSK on there: 0) */
     int settled_refusal_reported;      /* rtl_stream_receive_request_refusal() for a settled request */
     int entry_kept_analog_family;      /* the family kept when a switch onto the monitor was refused */
+    int entry_kept_monitor;            /* ... and the monitor output it did not keep */
     uint32_t refused_seq;              /* the number of that refused switch */
     int refused_outcome_after_open;    /* its outcome once a stream open has run */
+    /* A return to the NFM monitor refused where it landed (rtl_stream_test_monitor_return_refusal), by a stream on the
+       NFM monitor at 12.5 kHz, by one on the analog family under a typed digital row's channel profile with a 16 kHz
+       NFM setting, and by one running AM at 10 kHz under that profile (a switch to NFM armed under the row). */
+    rtl_stream_test_monitor_return_refusal monitor_return;
+    rtl_stream_test_monitor_return_refusal typed_row_return;
+    rtl_stream_test_monitor_return_refusal am_row_return;
+    /* An NFM width replaced in the queue by a switch to the digital family, which the demod thread holds for its symbol
+       profile, and that switch replaced in turn by the same width again, which the demod thread takes at a demod rate
+       that cannot filter it (issue #578): what each reads. */
+    uint32_t analog_replaced_seq;           /* the number of the first width */
+    int analog_replaced_pending_outcome;    /* the first width while the switch that replaced it is held */
+    int analog_replaced_outcome;            /* the first width once the last one is taken */
+    int digital_replaced_outcome;           /* the switch to the digital family then */
+    int analog_replacing_outcome;           /* the last width, taken and refused */
+    int analog_replaced_outcome_after_open; /* the first width once a stream open has run */
 } rtl_stream_test_rx_request_result;
 
 int rtl_stream_test_rx_request_outcomes(rtl_stream_test_rx_request_result* out);
@@ -318,6 +350,9 @@ typedef struct rtl_stream_test_family_switch_result {
     /* Output kind once the digital session, after the switch, has had a CQPSK symbol profile applied and then a C4FM
        one: a fresh digital open comes back to the FSK discriminator. */
     int output_kind_after_cqpsk_round_trip;
+    /* The two legs of that round trip, CQPSK then C4FM: the output kind each ran, and the output rate after it. */
+    int round_trip_output_kind[2];
+    int round_trip_output_rate[2];
     /* The DSP menu's CQPSK toggle (a CQPSK flip with no symbol profile, as apply_dsp_op_cqpsk_toggle() queues it) made
        twice, right after the switch and on a fresh open of the digital mode: the channel profile, output kind and
        symbol levels after each. Turning CQPSK off returns to the FSK channel profile an open picks from the decode

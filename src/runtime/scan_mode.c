@@ -454,6 +454,18 @@ dsd_scan_mode_active(const dsd_state* state) {
     return scope && !scope->suspended ? scope->mode : DSD_SCAN_MODE_INHERIT;
 }
 
+dsd_scan_mode
+dsd_scan_mode_row(const dsd_state* state) {
+    const scan_scope* scope = scan_scope_get(state);
+    return scope ? scope->mode : DSD_SCAN_MODE_INHERIT;
+}
+
+const dsd_scan_settings*
+dsd_scan_mode_suspended_effective(const dsd_state* state) {
+    const scan_scope* scope = scan_scope_get(state);
+    return scope && scope->suspended ? &scope->effective : NULL;
+}
+
 static int
 scan_configured_digital(const dsd_opts* opts, int configured_analog_only) {
     return (configured_analog_only == 1 && opts->m17encoder != 1) ? 0 : 1;

@@ -131,6 +131,15 @@ int dsd_scan_mode_names_list(char* out, size_t out_size);
 dsd_decode_mode_profile dsd_scan_mode_profile(dsd_scan_mode mode);
 /** Active class, including combined P25; INHERIT when no override is installed. */
 dsd_scan_mode dsd_scan_mode_active(const dsd_state* state);
+/** The class of the row the scope holds, suspended or not (INHERIT without a scope): the one dsd_scan_mode_resume()
+ * reapplies over the configured settings a command is updating, which dsd_scan_mode_active() does not report while the
+ * scope is suspended. Decoder thread or a consumer-owned snapshot only. */
+dsd_scan_mode dsd_scan_mode_row(const dsd_state* state);
+/** The settings in force when a command suspended the scope (dsd_scan_mode_suspend()): the row's constraint over the
+ * configured settings, which a stream started before the command opened on or was asked for, and which
+ * dsd_scan_mode_resume() puts back when the row compares unchanged. NULL unless the scope is suspended. Decoder thread
+ * only. */
+const dsd_scan_settings* dsd_scan_mode_suspended_effective(const dsd_state* state);
 /** Capture/restore effective fields for a staged tune; no pointers or audio sink fields are changed. */
 void dsd_scan_settings_capture(const dsd_opts* opts, const dsd_state* state, dsd_scan_settings* out);
 void dsd_scan_settings_restore(const dsd_scan_settings* saved, dsd_opts* opts, dsd_state* state);

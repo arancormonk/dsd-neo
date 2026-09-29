@@ -298,12 +298,19 @@ main() {
 #include <atomic>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/opts_fwd.h>
+#include <dsd-neo/io/iq_types.h>
 #include <dsd-neo/io/rtl_stream.h>
+#include <dsd-neo/io/rtl_stream_c.h>
+#include <dsd-neo/io/rtl_stream_fwd.h>
+#include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/platform/platform.h>
+#include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/platform/threading.h>
 #include <dsd-neo/platform/timing.h>
+#include <dsd-neo/runtime/analog_channel.h>
 #include <dsd-neo/runtime/exitflag.h>
 #include "rtl_stream_test_support.h"
+#include "test_support.h"
 
 namespace {
 struct Worker {
@@ -328,6 +335,44 @@ static DSD_THREAD_RETURN_TYPE
     auto result = worker->entry(worker->context);
     workers_exited.fetch_add(1);
     return result;
+}
+
+/* The size of the file at @p path, or -1 when it cannot be read. */
+static long
+file_size(const char* path) {
+    FILE* fp = dsd_fopen_private(path, "rb");
+    if (!fp) {
+        return -1;
+    }
+    long size = -1;
+    if (fseek(fp, 0, SEEK_END) == 0) {
+        size = ftell(fp);
+    }
+    (void)fclose(fp);
+    return size;
+}
+
+/* Stand in for what an earlier stream recorded at @p path: 1024 bytes. */
+static void
+write_recording(const char* path) {
+    FILE* recording = dsd_fopen_private(path, "wb");
+    CHECK(recording);
+    static const unsigned char kRecorded[1024] = {0};
+    CHECK(fwrite(kRecorded, 1, sizeof kRecorded, recording) == sizeof kRecorded);
+    CHECK(fclose(recording) == 0);
+}
+
+/* Start a stream on @p opts that fails, with no worker or SDK failure injected unless the caller set one. */
+static void
+start_failing_stream(dsd_opts& opts) {
+    fail_create = create_calls = 0;
+    workers_entered.store(0);
+    workers_exited.store(0);
+    {
+        RtlSdrOrchestrator stream(opts);
+        CHECK(stream.start() != 0);
+    }
+    CHECK(!rtl_stream_test_has_resources() && !device_open);
 }
 
 static int
@@ -388,7 +433,114 @@ main() {
         CHECK(!rtl_stream_test_has_resources());
         CHECK(!device_open && !streaming && closes == previous_closes + 2);
         CHECK(!dsd_exitflag_load());
+        CHECK(rtl_stream_start_analog_refusal(nullptr, nullptr, nullptr) == 0);
     }
+
+    // Issue #578: a start that refuses the analog width at the rate the device delivers records the refusal, which
+    // names that rate once the stream is gone. The Airspy decimates its capture to 19,531 Hz at a 12 kHz DSP bandwidth,
+    // which filters NFM 12.5 kHz but not 25 kHz.
+    opts->analog_only = 1;
+    opts->analog_demod = DSD_ANALOG_DEMOD_FM;
+    opts->rtl_dsp_bw_khz = 12;
+    for (int width_hz : {25000, 12500}) {
+        opts->analog_nfm_bandwidth_hz = width_hz;
+        fail_create = failure = create_calls = 0;
+        workers_entered.store(0);
+        workers_exited.store(0);
+        int previous_closes = closes;
+        RtlSdrOrchestrator stream(*opts);
+        int kind = -1;
+        int refused_width_hz = -1;
+        int rate_hz = -1;
+        if (width_hz == 25000) {
+            CHECK(stream.start() != 0);
+            CHECK(rtl_stream_start_analog_refusal(&kind, &refused_width_hz, &rate_hz) == 1);
+            CHECK(kind == DSD_ANALOG_DEMOD_FM && refused_width_hz == 25000);
+            CHECK(rate_hz == 19531 && !dsd_analog_width_realizable(25000, rate_hz));
+            CHECK(!rtl_stream_test_has_resources());
+            CHECK(!device_open && closes == previous_closes + 1 && !streaming);
+        } else {
+            CHECK(stream.start() == 0);
+            CHECK(rtl_stream_start_analog_refusal(&kind, &refused_width_hz, &rate_hz) == 0);
+            CHECK(kind == -1 && refused_width_hz == -1 && rate_hz == -1);
+            CHECK(stream.stop() == 0);
+            CHECK(!rtl_stream_test_has_resources());
+        }
+        CHECK(!dsd_exitflag_load());
+    }
+    // A create forgets the last start's refusal, so a start that never runs leaves none to report.
+    opts->analog_nfm_bandwidth_hz = 25000;
+    fail_create = failure = create_calls = 0;
+    workers_entered.store(0);
+    workers_exited.store(0);
+    {
+        RtlSdrOrchestrator stream(*opts);
+        CHECK(stream.start() != 0);
+    }
+    CHECK(rtl_stream_start_analog_refusal(nullptr, nullptr, nullptr) == 1);
+    RtlSdrContext* ctx = nullptr;
+    CHECK(rtl_stream_create(opts.get(), &ctx) == 0 && ctx);
+    CHECK(rtl_stream_start_analog_refusal(nullptr, nullptr, nullptr) == 0);
+    CHECK(rtl_stream_destroy(ctx) == 0);
+
+    // Issue #578: a start opens the I/Q capture (--iq-capture) once the device runs, before its workers and the Airspy
+    // SDK's start, writing the file anew, and records that it did: a start that fails after that point has already
+    // written over what a stream before it recorded there, so a rollback cannot say it kept it. A start its analog
+    // check refuses fails before, and leaves the recording as it was.
+    char capture_dir[DSD_TEST_PATH_MAX];
+    char capture_path[DSD_TEST_PATH_MAX];
+    CHECK(dsd_test_mkdtemp(capture_dir, sizeof capture_dir, "dsdneo_start_capture") != nullptr);
+    CHECK(dsd_test_path_join(capture_path, sizeof capture_path, capture_dir, "cap.iq") == 0);
+    write_recording(capture_path);
+    opts->iq_capture_requested = 1;
+    opts->iq_capture_format = DSD_IQ_FORMAT_CF32;
+    DSD_SNPRINTF(opts->iq_capture_path, sizeof opts->iq_capture_path, "%s", capture_path);
+    for (int sdk_fails : {0, 1}) {
+        // 25 kHz, which the 19,531 Hz rate refuses at the analog check; 12.5 kHz, which it filters, with an SDK start
+        // that fails.
+        opts->analog_nfm_bandwidth_hz = sdk_fails ? 12500 : 25000;
+        fail_create = create_calls = 0;
+        failure = sdk_fails ? 2 : 0;
+        workers_entered.store(0);
+        workers_exited.store(0);
+        {
+            RtlSdrOrchestrator stream(*opts);
+            CHECK(stream.start() != 0);
+        }
+        CHECK(!rtl_stream_test_has_resources() && !device_open);
+        CHECK(rtl_stream_start_analog_refusal(nullptr, nullptr, nullptr) == (sdk_fails ? 0 : 1));
+        CHECK(rtl_stream_start_opened_capture() == sdk_fails);
+        CHECK(file_size(capture_path) == (sdk_fails ? 0 : 1024));
+    }
+    // What the start records is the writer's own open of the file. A writer that fails before it opens the file
+    // (here a directory that does not exist) wrote nothing, and the start says it did not open the capture; one that
+    // opened the file and then failed (its metadata sidecar cannot replace the directory standing at that path) had
+    // written the recording anew, and the start says it did.
+    opts->analog_nfm_bandwidth_hz = 12500;
+    failure = 0;
+    char missing_path[DSD_TEST_PATH_MAX];
+    CHECK(dsd_test_path_join(missing_path, sizeof missing_path, capture_dir, "missing/cap.iq") == 0);
+    DSD_SNPRINTF(opts->iq_capture_path, sizeof opts->iq_capture_path, "%s", missing_path);
+    start_failing_stream(*opts);
+    CHECK(rtl_stream_start_opened_capture() == 0);
+    CHECK(file_size(missing_path) == -1);
+    DSD_SNPRINTF(opts->iq_capture_path, sizeof opts->iq_capture_path, "%s", capture_path);
+    write_recording(capture_path);
+    char sidecar_path[DSD_TEST_PATH_MAX];
+    CHECK(dsd_test_path_join(sidecar_path, sizeof sidecar_path, capture_dir, "cap.iq.json") == 0);
+    CHECK(dsd_mkdir(sidecar_path, 0700) == 0);
+    start_failing_stream(*opts);
+    CHECK(rtl_stream_start_opened_capture() == 1);
+    CHECK(file_size(capture_path) == -1);
+    CHECK(dsd_test_rmdir(sidecar_path) == 0);
+    // A create forgets it.
+    failure = 0;
+    CHECK(rtl_stream_create(opts.get(), &ctx) == 0 && ctx);
+    CHECK(rtl_stream_start_opened_capture() == 0);
+    CHECK(rtl_stream_destroy(ctx) == 0);
+    opts->iq_capture_requested = 0;
+    static const char* const kCaptureFiles[] = {"cap.iq", "cap.iq.json", nullptr};
+    CHECK(dsd_test_remove_temp_dir(capture_dir, kCaptureFiles) == 0);
     rtl_stream_test_set_thread_create(nullptr);
     return 0;
 }

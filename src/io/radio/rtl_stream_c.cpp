@@ -27,6 +27,7 @@ double dsd_rtl_stream_return_pwr(void);
 int dsd_rtl_stream_cqpsk_timing_bias(void);
 unsigned int dsd_rtl_stream_output_rate(void);
 void dsd_rtl_stream_register_tune_completion_callback(rtl_stream_tune_completion_callback callback, void* user_data);
+void dsd_rtl_stream_forget_start_refusal(void);
 }
 
 #include <dsd-neo/io/rtl_stream.h>
@@ -44,6 +45,9 @@ struct RtlSdrContext {
  */
 extern "C" int
 rtl_stream_create(dsd_opts* opts, RtlSdrContext** out_ctx) {
+    /* A create that fails is no start refused for its width (rtl_stream_start_analog_refusal()), nor one that opened
+       the capture (rtl_stream_start_opened_capture()). */
+    dsd_rtl_stream_forget_start_refusal();
     if (!out_ctx || !opts) {
         return -1;
     }

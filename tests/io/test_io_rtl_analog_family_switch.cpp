@@ -247,6 +247,26 @@ expect_menu_toggles_like_open(const char* label, const rtl_stream_test_family_sw
     return rc;
 }
 
+/* After the switch the digital session applies a CQPSK symbol profile and then a C4FM one. On the digital family each
+ * runs the CQPSK state it asks for, whatever DSD_NEO_CQPSK says: the override decides only an open and a switch out of
+ * the analog family. Neither moves the output chain the switch set up (only an open, a family switch or a retune
+ * designs the resampler again), so the C4FM profile's samples leave at the output rate the stream delivered before
+ * the CQPSK one: what the decoder times a scan row republished to a restarted stream by (issue #578). */
+static int
+expect_round_trip_runs_its_own_cqpsk(const char* label, const rtl_stream_test_family_switch_result& r) {
+    static const int kinds[2] = {RTL_STREAM_OUTPUT_SYMBOL_CQPSK, RTL_STREAM_OUTPUT_FSK_DISCRIMINATOR};
+    static const char* const legs[2] = {"CQPSK", "C4FM"};
+    int rc = 0;
+    char name[192];
+    for (int i = 0; i < 2; i++) {
+        DSD_SNPRINTF(name, sizeof name, "%s: %s profile on the digital family runs it", label, legs[i]);
+        rc |= expect_int(name, r.round_trip_output_kind[i], kinds[i]);
+        DSD_SNPRINTF(name, sizeof name, "%s: %s profile keeps the output rate", label, legs[i]);
+        rc |= expect_int(name, r.round_trip_output_rate[i], r.switched_digital.output_rate);
+    }
+    return rc;
+}
+
 namespace {
 
 struct family_case {
@@ -346,6 +366,7 @@ run_case(const family_case& c, int rate_hz, int forced_rate_out_hz, int nfm_widt
     rc |= expect_menu_toggles_like_open(label, r);
     rc |= expect_int("CQPSK and back returns to the FSK discriminator", r.output_kind_after_cqpsk_round_trip,
                      RTL_STREAM_OUTPUT_FSK_DISCRIMINATOR);
+    rc |= expect_round_trip_runs_its_own_cqpsk(label, r);
     return rc;
 }
 
@@ -1278,6 +1299,7 @@ expect_override_digital_leg(const family_case& c, const char* cqpsk_env, int lan
         rc |= expect_int(label, r.fresh_digital.output_kind, want_kind);
         rc |= expect_fields_equal(label, r.switched_digital, r.fresh_digital);
         rc |= expect_int(label, (int)r.predicted_digital_output_rate, r.switched_digital.output_rate);
+        rc |= expect_round_trip_runs_its_own_cqpsk(label, r);
         /* The analog family never runs CQPSK: a -fA open under the override runs the FM monitor, and so does the
            switch to analog (from the digital session). */
         DSD_SNPRINTF(label, sizeof label, "DSD_NEO_CQPSK=%s, %s@%d: -fA open runs the FM monitor", cqpsk_env, c.name,

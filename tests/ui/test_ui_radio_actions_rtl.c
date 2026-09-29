@@ -15,6 +15,7 @@
 #include <stdint.h>
 #include <stdio.h>
 #include "command_dispatch.h"
+#include "services.h"
 
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
@@ -122,17 +123,43 @@ rtl_stream_receive_request_outcome(uint32_t seq) {
 }
 
 int
-rtl_stream_receive_request_refusal(uint32_t seq, int* out_analog_family, int* out_width_hz, int* out_kind) {
+rtl_stream_receive_request_refusal(uint32_t seq, int* out_analog_family, int* out_width_hz, int* out_kind,
+                                   int* out_monitor) {
     (void)seq;
     (void)out_analog_family;
     (void)out_width_hz;
     (void)out_kind;
+    (void)out_monitor;
+    return 0;
+}
+
+/* Nor does it publish the analog monitor, or the analog family's kind and width, which a scan leave refused at once
+   would be read from. */
+int
+rtl_stream_get_analog_profile(int* out_kind, int* out_width_hz, int* out_lpf_on) {
+    (void)out_kind;
+    (void)out_width_hz;
+    (void)out_lpf_on;
+    return 0;
+}
+
+int
+rtl_stream_get_analog_setting(int* out_kind, int* out_width_hz) {
+    (void)out_kind;
+    (void)out_width_hz;
     return 0;
 }
 
 int
 rtl_stream_requested_cqpsk(void) {
     return 0;
+}
+
+/* Linked in with the record of queued receive requests (symbol_profile.c), which goes with the stream app-control last
+   started: these tests start none. */
+unsigned int
+svc_rtl_start_count(void) {
+    return 0U;
 }
 
 static int

@@ -1811,6 +1811,8 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/src/app_control/actions/actions_radio.c
     ${PROJECT_SOURCE_DIR}/src/app_control/symbol_profile.c
     ${PROJECT_SOURCE_DIR}/src/runtime/decode_mode.c
+    # symbol_profile.c records a scan leave (svc_leave_channel_scan()) around the engine's.
+    test_support/channel_scan_stubs.c
 )
 target_compile_definitions(
     dsd-neo_test_app_control_actions_rtl
@@ -5508,6 +5510,20 @@ add_test(
 )
 
 add_executable(
+    dsd-neo_test_runtime_input_failure
+    runtime/test_runtime_input_failure.c
+)
+target_include_directories(
+    dsd-neo_test_runtime_input_failure
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+target_link_libraries(
+    dsd-neo_test_runtime_input_failure
+    PRIVATE dsd-neo_runtime
+)
+add_test(NAME RUNTIME_INPUT_FAILURE COMMAND dsd-neo_test_runtime_input_failure)
+
+add_executable(
     dsd-neo_test_runtime_config_env
     runtime/test_runtime_config_env.cpp
 )
@@ -5696,6 +5712,9 @@ if(
         dsd-neo_test_app_command_queue
         PRIVATE
             "LINKER:--wrap=rtl_stream_create"
+            "LINKER:--wrap=rtl_stream_start"
+            "LINKER:--wrap=rtl_stream_start_analog_refusal"
+            "LINKER:--wrap=rtl_stream_start_opened_capture"
             "LINKER:--wrap=rtl_stream_stop"
             "LINKER:--wrap=rtl_stream_destroy"
             "LINKER:--wrap=rtl_stream_set_channel_squelch"
@@ -5708,9 +5727,14 @@ if(
             "LINKER:--wrap=rtl_stream_receive_request_seq"
             "LINKER:--wrap=rtl_stream_receive_request_outcome"
             "LINKER:--wrap=rtl_stream_receive_request_refusal"
+            "LINKER:--wrap=rtl_stream_get_analog_profile"
+            "LINKER:--wrap=rtl_stream_get_analog_setting"
             "LINKER:--wrap=rtl_stream_requested_cqpsk"
             "LINKER:--wrap=rtl_stream_get_demod_rate_hz"
+            "LINKER:--wrap=rtl_stream_get_request_rate_hz"
             "LINKER:--wrap=rtl_stream_output_rate"
+            "LINKER:--wrap=p25_sm_tick_guard_enter"
+            "LINKER:--wrap=p25_sm_tick_guard_leave"
     )
 endif()
 add_test(NAME APP_COMMAND_QUEUE COMMAND dsd-neo_test_app_command_queue)
@@ -10063,6 +10087,18 @@ target_link_libraries(
     dsd-neo_test_io_iq_capture_writer
     PRIVATE dsd-neo_io_iq dsd-neo_platform dsd-neo_test_support
 )
+# Issue #578: a case fails fdopen() once, after the data file's descriptor opened, through GNU ld's --wrap, so it only
+# exists where that works.
+if(NOT APPLE AND NOT WIN32 AND (CMAKE_C_COMPILER_ID MATCHES "GNU|Clang"))
+    target_compile_definitions(
+        dsd-neo_test_io_iq_capture_writer
+        PRIVATE DSD_TEST_FAULT_FDOPEN
+    )
+    target_link_options(
+        dsd-neo_test_io_iq_capture_writer
+        PRIVATE "LINKER:--wrap=fdopen"
+    )
+endif()
 add_test(NAME IO_IQ_CAPTURE_WRITER COMMAND dsd-neo_test_io_iq_capture_writer)
 
 add_executable(
@@ -12604,6 +12640,7 @@ if(DSD_HAS_AIRSPY)
         PRIVATE
             dsd-neo_io_radio_private_test_support
             dsd-neo_core
+            dsd-neo_test_support
             dsd-neo_warnings
     )
     if(DSD_HAS_RTLSDR)
@@ -12648,6 +12685,7 @@ if(
         PRIVATE
             "LINKER:--wrap=rtl_stream_create"
             "LINKER:--wrap=rtl_stream_start"
+            "LINKER:--wrap=rtl_stream_start_analog_refusal"
             "LINKER:--wrap=rtl_stream_stop"
             "LINKER:--wrap=rtl_stream_destroy"
             "LINKER:--wrap=rtl_stream_output_rate"
@@ -12666,12 +12704,17 @@ if(
         COMMAND dsd-neo_test_ui_airspy_config_apply M10
     )
     add_test(
+        NAME UI_MENU_AIRSPY_CONFIG_REFUSED_WIDTH
+        COMMAND dsd-neo_test_ui_airspy_config_apply M11
+    )
+    add_test(
         NAME RUNTIME_AIRSPY_CLI_OVERRIDE
         COMMAND dsd-neo_test_ui_airspy_config_apply M2
     )
     set_tests_properties(
         UI_MENU_AIRSPY_CONFIG_FAILURE
         UI_MENU_AIRSPY_CONFIG_TUNING
+        UI_MENU_AIRSPY_CONFIG_REFUSED_WIDTH
         RUNTIME_AIRSPY_CLI_OVERRIDE
         PROPERTIES TIMEOUT 120
     )

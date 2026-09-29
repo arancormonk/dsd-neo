@@ -23,8 +23,14 @@ int dsd_engine_channel_scan_pending(dsd_opts* opts, dsd_state* state);
  * A completed tune without a row commit keeps decoding gated even when a subsequent
  * retry is rejected or deferred; ordinary scanning may still advance to recover. */
 int dsd_engine_channel_scan_service_sync(dsd_opts* opts, dsd_state* state);
-/** Cancel row ownership and restore configured settings. Late completions cannot adopt a row. */
-void dsd_engine_channel_scan_leave(dsd_opts* opts, dsd_state* state);
+/** Cancel row ownership and restore configured settings. Late completions cannot adopt a row. Under an analog preset
+ * on an RTL input, an active scan's leave asks the front end back onto the configured analog profile (kind and width);
+ * that is the last receive request the leave makes, so rtl_stream_receive_request_seq() names it right after. Returns 1
+ * when that request was queued, -1 when the front end refused it at once at the rate it publishes (a retune moved the
+ * rate since the width was held to it; also with no front end hook installed), and 0 when the leave asked nothing of
+ * the monitor: NULL arguments, no active scan, not RTL input, or a digital configured family. The interactive leaves
+ * go through svc_leave_channel_scan(), which records the result for the decoder (issue #578). */
+int dsd_engine_channel_scan_leave(dsd_opts* opts, dsd_state* state);
 /** Count the analog (nfm or am) rows of the loaded channel map whose width the RTL front end refuses at DSP rate
  * @p dsp_rate_hz (issue #526): the row's own width of its kind (--nfm-bandwidth-hz, --am-bandwidth-hz), else the
  * configured width of its kind it runs (the AM default, 6 kHz, included), which that rate cannot filter, and any held

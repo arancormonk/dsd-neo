@@ -23,6 +23,7 @@
 #include <stddef.h>
 
 #ifdef USE_RADIO
+#include <dsd-neo/runtime/input_failure.h>
 #include <stdint.h>
 #endif
 
@@ -224,6 +225,23 @@ int svc_publish_symbol_profile_changing_width(const dsd_opts* opts, dsd_state* s
                                               int configured_before_hz);
 
 /**
+ * @brief svc_publish_symbol_profile_changing_width() for the kind's default a refused scan leave falls back on (issue
+ * #578), with @p configured_before_hz the configured width from before that fallback, and for the mode a refused leave
+ * puts back (a switch between FM and AM armed under the row, which the front end never made), with -1.
+ *
+ * The analog monitor request it makes carries the leave on, as one that replaces a leave's request still queued does
+ * (svc_publish_analog_bandwidth()): a refusal where it lands (a retune in flight moved the rate again for the default,
+ * or the rate the row left cannot filter the width of the kind put back either) is collected with
+ * svc_monitor_refusal::scan_leave set, so the drain reconciles it as a refused leave, putting the configured width from
+ * before the fallback back, or the kind put back on the width its monitor kept or on its default, rather than as an
+ * analog entry nothing armed or a width change that left the width as it was.
+ *
+ * @return As svc_publish_symbol_profile().
+ */
+int svc_publish_symbol_profile_after_scan_leave(const dsd_opts* opts, dsd_state* state, dsd_decode_mode_profile profile,
+                                                int configured_before_hz);
+
+/**
  * @brief Ask a running RTL front end, before a decode-mode change commits, whether it takes the receive profile
  * @p mode will publish.
  *
@@ -319,6 +337,22 @@ int svc_check_analog_bandwidth_at_device_rate(int kind, int width_hz, char* why,
 void svc_describe_analog_refusal(const dsd_opts* opts, int kind, int width_hz, char* why, size_t why_size);
 
 /**
+ * @brief A short reason the front end refused a scan leave's return to the analog monitor (issue #578), and what the
+ * monitor runs instead, for a toast.
+ *
+ * The leave asks for the configured width of analog @p kind (@p width_hz: 0 for the kind's default) at the rate the
+ * scan left the front end on, which a row's retune can have moved off the DSP bandwidth: the rate named is the one the
+ * stream holds requests to (rtl_stream_get_request_rate_hz(), current from the moment a retune or start settles it,
+ * where the metrics rate follows only with the next I/Q block), as in "NFM 16 kHz does not fit the 16 kHz DSP rate".
+ * What follows says what the decoder settled on: @p runs_hz > 0, "the monitor keeps NFM 12.5 kHz" (the width the
+ * monitor kept); 0, "the monitor is back on the NFM default"; -1, "the AM default does not fit it either" (nothing was
+ * changed; nothing more is said when the refused width was that default). A refusal that rate does not explain (no
+ * rate published, or one the width fits) points at the log. Fits a toast with its "Refused: " prefix.
+ */
+void svc_describe_monitor_return_refusal(const dsd_opts* opts, int kind, int width_hz, int runs_hz, char* why,
+                                         size_t why_size);
+
+/**
  * @brief Set the configured channel width of analog @p kind (DSD_APP_CMD_NFM_BANDWIDTH_SET for NFM,
  * DSD_APP_CMD_AM_BANDWIDTH_SET for AM), live when that kind's monitor runs.
  *
@@ -374,14 +408,15 @@ int svc_store_analog_width_setting(dsd_opts* opts, const dsd_state* state, int k
  *
  * Does nothing unless the options in force run an analog preset of @p kind with a stream running. A switch onto the
  * analog family or onto the kind, a CQPSK toggle back to it or a scan row's leave that the demod thread has not taken
- * yet has its queued width replaced. Under a scan row's suspended scope (dsd_scan_mode_updating()) it waits: the scoped
- * command dispatcher calls it again once the row's constraint is back, so a typed digital row keeps its own profile.
- * CQPSK toggled on under an analog preset keeps the front end off the monitor, whether the demod thread has taken that
- * toggle yet or not (rtl_stream_requested_cqpsk(), which answers for every request queued); svc_toggle_rtl_cqpsk()
- * turning it off requests the analog profile with the configured width. For callers that changed the width (the width
- * commands, a config apply), with @p configured_before_hz the configured width of @p kind from before their change,
- * which the record keeps for a refusal where the request lands (svc_restore_analog_width()). Decoder thread only: it
- * keeps the record svc_take_monitor_request_outcome() reads.
+ * yet has its queued width replaced; a request that replaces a leave's this way carries the leave on, so a refusal
+ * where it lands is reconciled as the leave's would be (svc_leave_channel_scan()). Under a scan row's suspended scope
+ * (dsd_scan_mode_updating()) it waits: the scoped command dispatcher calls it again once the row's constraint is back,
+ * so a typed digital row keeps its own profile. CQPSK toggled on under an analog preset keeps the front end off the
+ * monitor, whether the demod thread has taken that toggle yet or not (rtl_stream_requested_cqpsk(), which answers for
+ * every request queued); svc_toggle_rtl_cqpsk() turning it off requests the analog profile with the configured width.
+ * For callers that changed the width (the width commands, a config apply), with @p configured_before_hz the configured
+ * width of @p kind from before their change, which the record keeps for a refusal where the request lands
+ * (svc_restore_analog_width()). Decoder thread only: it keeps the record svc_take_monitor_request_outcome() reads.
  *
  * @return 0 when requested or when there is nothing to request; -1 when the front end refused the request (at the rate
  *         it publishes now, logged with the validator's text), which leaves its receive profile as it was.
@@ -403,11 +438,45 @@ int svc_publish_analog_bandwidth(const dsd_opts* opts, const dsd_state* state, i
  */
 void svc_note_analog_width_change(const dsd_opts* opts, const dsd_state* state, int kind, int configured_before_hz);
 
+/**
+ * @brief Leave the conventional channel scan (dsd_engine_channel_scan_leave()) from a command, and keep what became of
+ * its return to the analog monitor for the command drain (issue #578).
+ *
+ * Every interactive leave calls this rather than the engine: a scanner stop, a tuner release, trunking taking the
+ * tuner, a manual tune off a typed list, a channel-map adopt or clear, a RadioReference import and the leave after a
+ * command that stopped the scanner. Under an analog preset with an RTL stream running, a leave that asked the front end
+ * back onto the configured analog profile is recorded like the analog monitor requests this module makes
+ * (svc_take_monitor_request_outcome()), whether the request was queued (and may yet be refused where it lands) or
+ * refused at once, which queues nothing. The front end keeps its receive profile either way, and a typed digital row's
+ * channel profile never touched the width setting, so the drain reconciles the decoder with what it kept. A leave that
+ * asked the monitor for nothing (a digital session, no scan active) leaves the record of the last request alone.
+ * Decoder thread only.
+ *
+ * @return As dsd_engine_channel_scan_leave(): 1 queued, -1 refused at once, 0 nothing asked of the monitor.
+ */
+int svc_leave_channel_scan(dsd_opts* opts, dsd_state* state);
+
+/**
+ * @brief How many radio streams app-control has started (svc_rtl_restart_locked()), from 0; always 0 without radio
+ * support.
+ *
+ * A scoped command compares it across its run to tell whether it started a stream while a scan row's scope was
+ * suspended (issue #578): that stream opened on other settings than the row the resume puts back (a reopen on the
+ * configured settings, a rollback's restart on the row as the stream it replaced ran it). The record of the last analog
+ * monitor request goes with the stream it counts (svc_take_monitor_request_outcome()). Decoder thread only, as every
+ * restart is.
+ */
+unsigned int svc_rtl_start_count(void);
+
 /** @brief What became of the last analog monitor request (svc_take_monitor_request_outcome()). */
 typedef enum {
-    SVC_MONITOR_REQUEST_NONE = 0, /**< None outstanding, still pending, or its stream is gone. */
-    SVC_MONITOR_REQUEST_TAKEN,    /**< Taken by the demod thread, or replaced by a later request. */
-    SVC_MONITOR_REQUEST_REFUSED,  /**< Refused where it landed: a retune moved the demod rate after it was checked. */
+    SVC_MONITOR_REQUEST_NONE = 0,   /**< None outstanding, still pending, or its stream is gone. */
+    SVC_MONITOR_REQUEST_TAKEN,      /**< Taken by the demod thread, or made of a stream app-control has replaced since
+                                         (svc_rtl_start_count()). */
+    SVC_MONITOR_REQUEST_REFUSED,    /**< Refused where it landed (a retune moved the demod rate after it was checked),
+                                         or a scan leave's return to the monitor refused at once. */
+    SVC_MONITOR_REQUEST_SUPERSEDED, /**< Never taken: a later request replaced it in the stream's queue, or a retune's
+                                         receive family retired it (RTL_STREAM_RX_REQUEST_REPLACED). */
 } svc_monitor_request_outcome;
 
 /** @brief A refused analog monitor request and what the front end kept (svc_take_monitor_request_outcome()). */
@@ -416,8 +485,9 @@ typedef struct {
     int width_hz;      /**< The configured width of that kind it carried (0 = default). */
     int kept_analog;   /**< 1: the front end stayed on the analog family; 0: on the digital family it was asked to
                             leave, so a switch onto the analog monitor did not happen. */
-    int kept_kind;     /**< The dsd_analog_demod the analog family kept: another kind than @c kind when a switch
-                            between FM and AM did not happen. */
+    int kept_kind;     /**< The dsd_analog_demod the analog family kept, on its monitor output or off it (a typed
+                            digital row's profile): another kind than @c kind when a switch between FM and AM did not
+                            happen. */
     int kept_width_hz; /**< The configured analog width the analog family kept (0 = the kind's default, AM's
                             included). */
     int configured_before_hz; /**< The configured width of @c kind the front end ran before the refused change: from
@@ -425,17 +495,47 @@ typedef struct {
                                    end ran none of and kept another width, from before the first of them of that kind
                                    (a width change of that kind made while the other kind ran counts, and one of the
                                    other kind never does); -1: none. */
+    int kept_monitor; /**< 1: the analog family kept its monitor output, which runs @c kept_width_hz; 0: the digital
+                           family, or the analog family under a symbol profile applied on its own (a typed digital scan
+                           row's channel profile, CQPSK), where @c kept_width_hz is a setting, not a width that runs. */
+    int scan_leave;   /**< 1: a scan leave's return to the monitor (svc_leave_channel_scan()), a request that replaced
+                           one before it reached the front end, or the default a refused leave fell back on, or the
+                           mode a refused leave put back asked for (svc_publish_symbol_profile_after_scan_leave()). */
+    int superseded;   /**< 1: a receive request was queued after this one, from anywhere (a CQPSK toggle, a symbol
+                           profile), and decides what the front end runs; one that replaced this request before it
+                           reached the front end carries its record on instead, so it never counts. */
 } svc_monitor_refusal;
 
 /**
  * @brief Collect what became of the last analog monitor request queued from app-control: a width change
  * (svc_publish_analog_bandwidth()), the analog profile svc_publish_symbol_profile() requests for a switch onto the
- * monitor, between FM and AM, or a republish, or a CQPSK toggle back to the monitor (svc_toggle_rtl_cqpsk()).
+ * monitor, between FM and AM, or a republish, a CQPSK toggle back to the monitor (svc_toggle_rtl_cqpsk()), or a scan
+ * leave's return to the monitor (svc_leave_channel_scan()).
  *
  * Reports each request once. SVC_MONITOR_REQUEST_REFUSED fills @p out (may be NULL) with what the request carried and
  * what the front end kept, as the stream recorded it when it refused (rtl_stream_receive_request_refusal()): the caller
  * puts the configured width back to the one the monitor kept, or the decoder back on the mode it had before a switch
- * onto the monitor, or between FM and AM, the front end did not make. Decoder thread only.
+ * onto the monitor, or between FM and AM, the front end did not make, or reconciles a refused scan leave. A leave
+ * refused at once queued nothing, so once the requests queued before it have settled, what the front end publishes says
+ * what it kept (rtl_stream_get_analog_profile(), rtl_stream_get_analog_setting()): the monitor's kind and the width
+ * its channel filter runs (one the DSP rate limits reads as the kind's default), or off the monitor the digital family
+ * or the kind and width setting the analog family runs, which a refusal where the request landed records too, so both
+ * timings read the same kind kept (never the one the leave asked for). It reads TAKEN when the front end publishes the
+ * monitor the leave asked for (a retune in flight, or a request queued before the leave, left it on a rate and a
+ * monitor that run it), a leave for the kind's default included when the monitor's channel filter runs that default's
+ * design (the AM default, published as 6 kHz). A request
+ * made of a stream app-control has replaced since (a restart, a reopen, an input switch, a rollback's restart:
+ * svc_rtl_start_count() moved) reads TAKEN, whatever the old stream did with it: the new stream opened on the options
+ * it was given, not on the old one's requests, and what it publishes says nothing of the old one's refusal. A refusal,
+ * at once or where the request landed, of a request that a receive request queued after it, from anywhere, has
+ * superseded (a CQPSK toggle, a symbol profile) is reported with svc_monitor_refusal::superseded set: that later
+ * request decides what the front end runs, so a refused scan leave is left to it, a switch onto the monitor armed
+ * before the leave included, while any other refused switch onto the monitor the front end did not make still goes
+ * back. A request the demod thread never took reads SUPERSEDED (issue #578): a later request that did not take the
+ * record over (a switch to the digital family, an engine's analog request) replaced it in the stream's queue, or a
+ * retune's receive family retired it (a scan that goes on to an analog row), so the front end neither ran nor refused
+ * it, and what replaced it decides what the front end runs. There is nothing to reconcile then, and a switch onto the
+ * monitor armed before the request stays armed for the next monitor request to settle. Decoder thread only.
  *
  * @return svc_monitor_request_outcome.
  */
@@ -475,8 +575,17 @@ void svc_toggle_inv_m17(dsd_opts* opts);
 
 #ifdef USE_RADIO
 // RTL-SDR configuration and lifecycle helpers
-/** @brief Switch active input to RTL-SDR and restart the stream. */
-int svc_rtl_enable_input(dsd_opts* opts, dsd_state* state);
+/**
+ * @brief Switch the active input to the RTL-family device the options name and restart the stream, without acquiring;
+ * caller holds the P25 SM tick guard.
+ *
+ * The caller holds the guard from before it rewrites the device string until it has settled the start (issue #578):
+ * the watchdog reads the input, and may retune it, under that guard, so the rewrite, the start and, when the start
+ * fails, putting back the input that ran and starting it again all happen inside one hold.
+ *
+ * @return 0 when the stream started; nonzero otherwise, as svc_rtl_restart_locked().
+ */
+int svc_rtl_enable_input_locked(dsd_opts* opts, dsd_state* state);
 /**
  * @brief Check the configured analog width against the RTL-SDR input DSD_APP_CMD_RTL_ENABLE_INPUT would open.
  *
@@ -488,8 +597,8 @@ int svc_rtl_enable_input(dsd_opts* opts, dsd_state* state);
  * own width or, on a session whose preset runs another kind, the configured width of the row's kind, must fit that rate
  * as well. On such a session the configured width of a kind is held while the scan has an analog row or target of that
  * kind without a width of its own to visit (dsd_engine_scan_runs_configured_nfm_width(), _am_width()), whichever row is
- * on air. A SoapySDR or I/Q replay
- * input is reopened at a rate its device or capture sets, which its start checks. The unset NFM default is never
+ * on air. A SoapySDR or I/Q replay input is reopened at a rate its device or capture sets, which its start holds only
+ * the width it opens on to, the one in force (under a digital scan row, none). The unset NFM default is never
  * refused. An explicit width, or the AM default, is refused, whatever the rate, while DSD_NEO_CHANNEL_LPF=0 turns the
  * channel filter off. A rate refusal's reason names the width, the rate, the widest width it filters and the DSP
  * bandwidths that would fit; the validator's text is logged.
@@ -497,11 +606,121 @@ int svc_rtl_enable_input(dsd_opts* opts, dsd_state* state);
  * @return 0 when the switch may go ahead, -1 otherwise (reason in @p why, may be NULL).
  */
 int svc_check_rtl_input_analog_width(const dsd_opts* opts, const dsd_state* state, char* why, size_t why_size);
+/**
+ * @brief Check the configured analog width against the Airspy DSD_APP_CMD_AIRSPY_ENABLE_INPUT would open (issue #578).
+ *
+ * Asked before the switch rewrites the input and tears down the running one. The Airspy delivers a rate its sample rate
+ * and the DSP bandwidth set, which its start holds the width it opens on to, so only the rules every rate shares apply
+ * here: an explicit width, or the AM default, is refused while DSD_NEO_CHANNEL_LPF=0 turns the channel filter off. The
+ * widths held are the ones svc_check_rtl_input_analog_width() holds: the configured analog preset's, the configured
+ * width of a kind the scan runs beside it, and the width in force under an analog scan row. The unset NFM default is
+ * never refused. The switch is unscoped, so its start opens on the settings in force and checks only the width in force
+ * against the delivered rate: under a scan row that runs a digital protocol, none, and a configured width that rate
+ * cannot filter is left to the scan (its leave's refused return to the monitor, and the analog rows that run it).
+ *
+ * @return 0 when the switch may go ahead, -1 otherwise (reason in @p why, may be NULL).
+ */
+int svc_check_airspy_input_analog_width(const dsd_opts* opts, const dsd_state* state, char* why, size_t why_size);
+/**
+ * @brief A short reason the last stream start failed, for a toast (issue #578).
+ *
+ * Call it right after a failed start (svc_rtl_restart(), svc_rtl_enable_input_locked()), while @p opts still
+ * describes the input that failed. When the start refused its analog width (rtl_stream_start_analog_refusal()), the
+ * reason is the one a check before the change gives: DSD_NEO_CHANNEL_LPF=0 turning off the filter the width needs, or
+ * the width, the DSP rate the device delivered, the widest width that rate filters and the fix for what sets it (a DSP
+ * bandwidth that fits on an RTL-SDR or rtl_tcp input, a wider DSP bandwidth or a narrower width on a SoapySDR or Airspy
+ * device, a narrower width on an I/Q replay); a width the rate fits, refused for another reason, points at the log.
+ * Otherwise it names the input that did not start (Airspy, SoapySDR, rtl_tcp, I/Q replay or RTL-SDR, as the stream
+ * classifies the device string) and points at the log. The start already logged its own text, so this logs nothing.
+ *
+ * @return 1 when the start refused its analog width, 0 when it failed for another reason.
+ */
+int svc_describe_start_failure(const dsd_opts* opts, char* why, size_t why_size);
+/**
+ * @brief Whether the stream that just started, on the input @p opts describes, takes the analog monitor of @p kind at
+ * @p width_hz (0 = the kind's default) at the rate it delivers (issue #578).
+ *
+ * For a start that opened on other settings than the ones the stream is about to be asked for: a config apply's reopen
+ * runs inside a scan row's suspended scope, so its start held the configured settings to the delivered rate, not the
+ * row's analog monitor, which the resume asks for next (a SoapySDR or Airspy device sets a rate nothing could check up
+ * front). Asks the stream (rtl_stream_check_analog_profile(), which logs a refusal) at the rate it published when it
+ * started. A refusal's reason, for a toast, is worded as svc_describe_start_failure() words a start's own: the width
+ * against that rate with the fix for what sets it, or the environment rule.
+ *
+ * @return 0 when the stream takes it; -1 when it refuses it (reason in @p why, may be NULL).
+ */
+int svc_check_started_stream_analog(const dsd_opts* opts, int kind, int width_hz, char* why, size_t why_size);
 /** @brief Restart the RTL stream if active, tearing down any existing context. */
 int svc_rtl_restart(dsd_opts* opts, dsd_state* state);
 /** Restart without acquiring; caller holds the P25 SM tick guard. */
 int svc_rtl_restart_locked(dsd_opts* opts, dsd_state* state);
-int svc_airspy_apply(dsd_opts* opts, dsd_state* state, const dsd_airspy_config* config);
+/**
+ * @brief Start the input the options describe again after the start on the input that replaced it failed, or ran but
+ * was undone, without acquiring; caller holds the P25 SM tick guard (issue #578).
+ *
+ * Every rollback restart goes through it: Input > Switch source, a DSP bandwidth change (RTL_SET_BW) and a config
+ * apply putting back the input that ran, and an Airspy settings reopen putting back the settings it replaced
+ * (svc_airspy_apply_config()). The change already
+ * stopped the stream that ran, which closed its I/Q capture (--iq-capture) with what it had recorded, and a start opens
+ * the capture file anew, writing over it. So a recovery start of a radio input never reopens the capture, which stays
+ * off for the rest of the session (iq_capture_requested cleared), and the log says so, naming the file: kept, when the
+ * start the change made failed before it opened the capture file (its analog check, a device that did not open, a
+ * capture writer that failed before its open), or written over by that start, when it had opened it
+ * (rtl_stream_start_opened_capture(): the capture writer's sidecar or thread, its workers or the device's
+ * streaming failed after that, or it ran and the change was undone). An input that is not RTL-family (PCM, which no
+ * change closes) needs no start: it is running again once the options describe it. A radio stream that ran behind it
+ * (a switch to PCM leaves the stream running, recording) is not started again, but the change stopped it all the same
+ * (@p stream_stopped), so the capture stops for the session the same way, and the log says so: the next radio start
+ * would write over what that stream recorded.
+ *
+ * The input starts on the receive profile the stream the change stopped ran. That is the options in force, except
+ * under a scan row's suspended scope (a config apply), where the options hold the configured settings while the stream
+ * ran the row's constraint over them (dsd_scan_mode_suspended_effective()): a typed digital row's profile, or an
+ * analog row's own width, at a rate that need not run the configured analog width (a DSP bandwidth lowered while a
+ * digital row ran leaves it one the rate cannot filter, which a start on the configured monitor would refuse, leaving
+ * no input). The start opens on the row's constraint, and the configured settings go back once it has, for the
+ * scope's resume to put the row back over.
+ *
+ * The failed start can also have latched a failure of the input that replaced the one that ran for the session (an
+ * Airspy that did not open latches a device failure, which turns the session's normal end into a failure exit:
+ * dsd_engine_run_with_lifecycle()), and a start of an RTL-SDR, SoapySDR or PCM input clears none. So the failure the
+ * session had latched before the change (@p failure_before) is put back once the stream the change left is stopped,
+ * before the restart starts anything: a failure the restarted stream latches stands, including one its threads latch
+ * before its start returns (an Airspy's monitor thread when the device stops at once). A restart that fails keeps the
+ * failure it latched, even the very one put back (an Airspy that again does not open), or, having latched none (it
+ * wrote nothing to the latch, or left it clear: an Airspy that opened, then failed), the change's, with no input
+ * running. What the restart wrote is told by the latch's write count (dsd_input_failure_generation()), not its value.
+ *
+ * @param stream_stopped 1 when a radio stream ran before the change (state->rtl_ctx), which the change stopped: the
+ *                       input's own, or one running behind a PCM input.
+ * @param failure_before The input failure latched before the change started anything (dsd_input_failure_get()); NULL
+ *                       leaves the latch alone.
+ * @param out_capture_stopped Set to 1 when the capture was turned off here, else 0 (may be NULL).
+ * @return 0 when the input runs again; nonzero otherwise, as svc_rtl_restart_locked().
+ */
+int svc_rtl_restart_recovery_locked(dsd_opts* opts, dsd_state* state, int stream_stopped,
+                                    const dsd_input_failure* failure_before, int* out_capture_stopped);
+/**
+ * @brief Select the Airspy with @p config and reopen it, without acquiring; caller holds the P25 SM tick guard.
+ *
+ * Writes @p config and its device string ("airspy", or "airspy:serial=..."), then restarts the stream
+ * (svc_rtl_restart_locked()) and refreshes the device info. Unlike svc_airspy_apply_config_locked(), a start that
+ * fails is left as it is, with no stream: the caller, which knows what the session ran before, rolls back. Invalid
+ * settings are refused before anything changes.
+ *
+ * @return 0 on success, -1 when the settings are invalid or the stream did not start.
+ */
+int svc_airspy_reopen_locked(dsd_opts* opts, dsd_state* state, const dsd_airspy_config* config);
+/**
+ * @brief Apply native Airspy settings to the running Airspy with the shared tuning it runs (svc_airspy_apply_config()),
+ * for DSD_APP_CMD_AIRSPY_SET.
+ *
+ * @param out_capture_stopped Set to 1 when a reopen whose start failed put the settings it replaced back and started
+ *                            them again without the I/Q capture, which stays off for the session
+ *                            (svc_rtl_restart_recovery_locked()), else 0 (may be NULL).
+ * @return As svc_airspy_apply_config().
+ */
+int svc_airspy_apply(dsd_opts* opts, dsd_state* state, const dsd_airspy_config* config, int* out_capture_stopped);
 
 typedef struct {
     uint32_t frequency;
@@ -511,7 +730,9 @@ typedef struct {
 } svc_airspy_tuning;
 
 /** Apply native settings and shared tuning together; restore prior tuning on failure.
- * opts holds the requested tuning and the previous native settings on entry. */
+ * opts holds the requested tuning and the previous native settings on entry. A reopen, and the restart of the previous
+ * settings after one that fails, run inside one hold of the P25 SM tick guard, which the watchdog reads the input
+ * under. */
 int svc_airspy_apply_config(dsd_opts* opts, dsd_state* state, const dsd_airspy_config* config,
                             const svc_airspy_tuning* previous_tuning);
 /** Apply and roll back without acquiring; caller holds the P25 SM tick guard. */
@@ -539,8 +760,18 @@ int svc_rtl_set_gain(dsd_opts* opts, dsd_state* state, int value);
  * keep a wider DSP bandwidth ("DSP BW 12 kHz cannot filter the scan row's NFM 12.5 kHz (max 9.6 kHz); keep a wider DSP
  * bandwidth"). The validator's full text is logged. The reopen is also refused while DSD_NEO_CHANNEL_LPF=0 turns off
  * the channel filter that width needs, which its start would refuse at any rate.
+ *
+ * A bandwidth it takes reopens the running RTL-family input under one hold of the P25 SM tick guard. A reopen whose
+ * start fails is left with no stream and @p why empty, for the caller that knows the input that ran to put it back
+ * (DSD_APP_CMD_RTL_SET_BW does, issue #578): a SoapySDR or Airspy device delivers a rate the bandwidth sets, which no
+ * check before the reopen knows, and any device can fail to open.
+ *
+ * @return 0 when stored (and reopened); -1 with @p why set when refused before anything changed; otherwise the failed
+ *         restart's nonzero result, with @p why empty.
  */
 int svc_rtl_set_bandwidth(dsd_opts* opts, dsd_state* state, int khz, char* why, size_t why_size);
+/** svc_rtl_set_bandwidth() without acquiring; caller holds the P25 SM tick guard. */
+int svc_rtl_set_bandwidth_locked(dsd_opts* opts, dsd_state* state, int khz, char* why, size_t why_size);
 /**
  * @brief Set the RTL squelch threshold from a decibel value.
  *

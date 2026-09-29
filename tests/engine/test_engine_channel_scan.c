@@ -654,6 +654,8 @@ static int analog_restore_order;
 static int digital_restore_calls;
 static int digital_restore_order;
 static int digital_restore_sps;
+/* The front end's answer to an analog profile request: 0 queues it, -1 refuses it at once (a retune moved its rate). */
+static int analog_restore_result;
 /* What the front end reports: whether it runs the analog family, and the output rate the digital family lands on. */
 static int fake_analog_family;
 static unsigned int fake_digital_rate;
@@ -669,7 +671,7 @@ record_analog_restore(int family, int kind, int width_hz) {
     analog_restore_kind = kind;
     analog_restore_width_hz = width_hz;
     analog_restore_order = ++frontend_sequence;
-    return 0;
+    return analog_restore_result;
 }
 
 static int
@@ -723,6 +725,7 @@ reset_frontend_records(void) {
     frontend_sequence = 0;
     analog_restore_calls = analog_restore_family = analog_restore_kind = analog_restore_width_hz = 0;
     analog_restore_order = digital_restore_calls = digital_restore_order = digital_restore_sps = 0;
+    analog_restore_result = 0;
     rate_for_family_calls = rate_for_family_family = rate_for_family_cqpsk = rate_for_family_symbol_rate = 0;
 }
 
@@ -731,6 +734,8 @@ reset_frontend_records(void) {
  * profile -- family, demodulator and channel width -- rather than a hard-coded
  * WIDE digital profile that leaves the RTL stream on the row's digital family.
  * A digital session gets the digital family first, then its symbol profile.
+ * The leave says what became of the analog request (issue #578): queued (1),
+ * refused at once (-1), or none asked for (0), so the decoder can reconcile it.
  */
 static void
 test_leave_restores_configured_receive_family(void) {
@@ -749,13 +754,26 @@ test_leave_restores_configured_receive_family(void) {
     reset_frontend_records();
     assert(dsd_scan_mode_enter(opts, state, DSD_SCAN_MODE_DMR) == 0);
     assert(opts->analog_only == 0 && opts->frame_dmr == 1);
-    dsd_engine_channel_scan_leave(opts, state);
+    assert(dsd_engine_channel_scan_leave(opts, state) == 1);
     assert(opts->analog_only == 1 && dsd_opts_is_analog_family(opts));
     assert(analog_restore_calls == 1);
     assert(analog_restore_family == DSD_RX_FAMILY_ANALOG);
     assert(analog_restore_kind == DSD_ANALOG_DEMOD_FM);
     assert(analog_restore_width_hz == 12500);
     assert(digital_restore_calls == 0);
+    /* A second leave with nothing active asks the front end for nothing. */
+    assert(dsd_engine_channel_scan_leave(opts, state) == 0);
+    assert(analog_restore_calls == 1);
+
+    /* The front end refuses the configured width at once: the leave still restores the configured options, and says
+     * so. */
+    reset_frontend_records();
+    analog_restore_result = -1;
+    assert(dsd_scan_mode_enter(opts, state, DSD_SCAN_MODE_NXDN48) == 0);
+    assert(dsd_engine_channel_scan_leave(opts, state) == -1);
+    assert(opts->analog_only == 1 && dsd_opts_is_analog_family(opts));
+    assert(analog_restore_calls == 1 && analog_restore_width_hz == 12500);
+    analog_restore_result = 0;
 
     /* The configured demodulator kind survives a typed row: the row's digital preset puts the kind back to FM, and
      * leaving the row restores the configured kind together with that kind's width. */
@@ -779,11 +797,11 @@ test_leave_restores_configured_receive_family(void) {
     dsd_engine_channel_scan_leave(opts, state);
     assert(analog_restore_calls == 1 && analog_restore_width_hz == 0);
 
-    /* A digital session: digital family first, then the symbol profile it runs on. */
+    /* A digital session: digital family first, then the symbol profile it runs on. No monitor is asked for. */
     assert(dsd_apply_decode_mode_preset(DSDCFG_MODE_DMR, DSD_DECODE_PRESET_PROFILE_CLI, opts, state) == 0);
     reset_frontend_records();
     assert(dsd_scan_mode_enter(opts, state, DSD_SCAN_MODE_NXDN48) == 0);
-    dsd_engine_channel_scan_leave(opts, state);
+    assert(dsd_engine_channel_scan_leave(opts, state) == 0);
     assert(analog_restore_calls == 1 && analog_restore_family == DSD_RX_FAMILY_DIGITAL);
     assert(digital_restore_calls == 1 && analog_restore_order < digital_restore_order);
 
@@ -791,8 +809,14 @@ test_leave_restores_configured_receive_family(void) {
     opts->audio_in_type = AUDIO_IN_WAV;
     reset_frontend_records();
     assert(dsd_scan_mode_enter(opts, state, DSD_SCAN_MODE_P25) == 0);
-    dsd_engine_channel_scan_leave(opts, state);
+    assert(dsd_engine_channel_scan_leave(opts, state) == 0);
     assert(analog_restore_calls == 0 && digital_restore_calls == 0);
+    assert(dsd_apply_decode_mode_preset(DSDCFG_MODE_ANALOG, DSD_DECODE_PRESET_PROFILE_CLI, opts, state) == 0);
+    assert(dsd_scan_mode_enter(opts, state, DSD_SCAN_MODE_P25) == 0);
+    assert(dsd_engine_channel_scan_leave(opts, state) == 0);
+    assert(analog_restore_calls == 0);
+    assert(dsd_engine_channel_scan_leave(NULL, state) == 0);
+    assert(dsd_engine_channel_scan_leave(opts, NULL) == 0);
 
     dsd_rtl_stream_metrics_hooks_set(NULL);
     dsd_state_trunk_lcn_free(state);

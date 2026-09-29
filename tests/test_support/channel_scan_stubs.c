@@ -8,11 +8,12 @@
 #include <dsd-neo/runtime/scan_mode.h>
 #include <stddef.h>
 
-/* Action-only tests have no tuner; exercise the production scoped-settings teardown. */
-void
+/* Action-only tests have no tuner; exercise the production scoped-settings teardown. Nothing is asked of a monitor. */
+int
 dsd_engine_channel_scan_leave(dsd_opts* opts, dsd_state* state) {
     (void)dsd_state_ext_set(state, DSD_STATE_EXT_ENGINE_CHANNEL_SCAN, NULL, NULL);
     dsd_scan_mode_leave(opts, state);
+    return 0;
 }
 
 /* Nor a running scan list: no row waits to run the configured NFM width (issue #526). APP_COMMAND_QUEUE drives the real

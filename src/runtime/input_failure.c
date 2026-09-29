@@ -11,6 +11,9 @@
 static dsd_mutex_t failure_mutex;
 static atomic_int mutex_state = 0;
 static dsd_input_failure failure;
+/* Writes to failure (dsd_input_failure_generation()), under failure_mutex: every write goes through
+   dsd_input_failure_report(). */
+static unsigned int failure_generation;
 
 static void
 lock_failure(void) {
@@ -31,6 +34,7 @@ dsd_input_failure_report(dsd_input_failure_kind kind, int code) {
     lock_failure();
     failure.kind = kind;
     failure.native_code = code;
+    ++failure_generation;
     dsd_mutex_unlock(&failure_mutex);
 }
 
@@ -47,6 +51,14 @@ dsd_input_failure_get(dsd_input_failure* out) {
     lock_failure();
     *out = failure;
     dsd_mutex_unlock(&failure_mutex);
+}
+
+unsigned int
+dsd_input_failure_generation(void) {
+    lock_failure();
+    const unsigned int generation = failure_generation;
+    dsd_mutex_unlock(&failure_mutex);
+    return generation;
 }
 
 dsd_input_failure_kind

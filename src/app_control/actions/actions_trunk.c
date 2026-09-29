@@ -10,12 +10,12 @@
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
-#include <dsd-neo/engine/channel_scan.h>
 #include <dsd-neo/protocol/p25/p25_sm_watchdog.h>
 #include <dsd-neo/runtime/trunk_scan_hooks.h>
 #include <stdint.h>
 #include <time.h>
 #include "../command_dispatch.h"
+#include "../services.h"
 
 #include "dsd-neo/app_control/commands.h"
 #include "dsd-neo/core/key_set.h"
@@ -30,7 +30,7 @@ trunk_enable_on(dsd_opts* opts, dsd_state* state) {
     p25_sm_tick_guard_enter();
     opts->trunk_enable = 1;
     if (opts->trunk_scan_enabled != 1) {
-        dsd_engine_channel_scan_leave(opts, state);
+        (void)svc_leave_channel_scan(opts, state);
         dsd_scan_keys_leave(state);
     }
     opts->scanner_mode = 0;
@@ -88,7 +88,7 @@ ui_handle_scanner_toggle(dsd_opts* opts, dsd_state* state, const struct dsd_app_
     opts->scanner_mode = opts->scanner_mode ? 0 : 1;
     opts->trunk_enable = 0;
     if (was_scanner && opts->trunk_scan_enabled != 1) {
-        dsd_engine_channel_scan_leave(opts, state);
+        (void)svc_leave_channel_scan(opts, state);
         dsd_scan_keys_leave(state);
     }
     return 1;
