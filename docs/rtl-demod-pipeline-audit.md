@@ -422,7 +422,12 @@ drained in the same pass of the command queue as the mode change):
   rule, as on a retune that stays on the digital family
   (`rtl_demod_landing_cqpsk()`); the output-rate prediction follows it too.
   `-Y` rows and P25 targets without a modulation still land where an open of
-  the mode would. The
+  the mode would. A retune that carries the digital family lands its symbol
+  profile this way even when the front end already runs the digital family
+  where it lands (an analog retune refused there, or a request replaced, left
+  it digital): the decoder was timed for the switch's landing when the family
+  was attached, so the CQPSK state, channel filter, output rate and TED are
+  the switch's, without the switch's family record or loop resets. The
   override does not reach the analog family: a `-fA` open runs the FM monitor
   under `DSD_NEO_CQPSK=1` (or a QPSK modulation), as the switch to analog does.
   The family request

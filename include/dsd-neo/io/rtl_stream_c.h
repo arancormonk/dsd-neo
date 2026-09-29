@@ -519,11 +519,18 @@ int rtl_stream_analog_family_active(void);
  * it stops counting as outstanding, so a landing between two reads is still seen. A union rather than the newest word
  * on the family: a queued retune coalesces with a later one and takes its profile, so a digital retune queued behind
  * an analog one can be replaced by one that carries no family. The answer can only err towards 1 (an analog retune
- * refused where it lands, a request replaced later), which attaches the digital family to a landing that is digital
- * already and only retires older live requests. A digital-only session answers 0 throughout, as the published family
- * alone does.
+ * refused where it lands, a request replaced later), which attaches the digital family to a retune that finds the
+ * digital family running where it lands: it retires older live requests and lands its symbol profile as a switch to
+ * the digital family would, where the decoder, timed by this same answer, expects it
+ * (rtl_stream_prepare_retune_analog_profile_for_target()). A digital-only session answers 0 throughout, as the
+ * published family alone does.
  *
- * @return 1 when the analog family runs now or may run once outstanding work lands, 0 otherwise (and with no stream).
+ * With no stream running there is no controller to read, but the live requests and the published family still are:
+ * a stream that closed on the analog family keeps publishing it, so the answer is then 1, as
+ * rtl_stream_analog_family_active() is.
+ *
+ * @return 1 when the analog family runs now or may run once outstanding work lands, or, with no stream running, when
+ *         the family last published is analog; 0 otherwise.
  */
 int rtl_stream_analog_family_after_pending(void);
 
@@ -563,6 +570,8 @@ int rtl_stream_channel_lpf_default(void);
  *
  * A family switch is deferred to the demod thread, so a caller that sets symbol timing for the new family must not
  * read the current output rate (the analog monitor resamples to its audio rate; a digital stream usually does not).
+ * A retune that carries the digital family lands on this rate too, whether the front end still runs the analog family
+ * where it lands or already runs the digital family (rtl_stream_prepare_retune_analog_profile_for_target()).
  *
  * @param family         dsd_rx_family.
  * @param cqpsk_enable   Non-zero for the CQPSK symbol output (digital family only). DSD_NEO_CQPSK overrides it when
@@ -613,7 +622,7 @@ typedef struct rtl_stream_retune_analog_profile {
     int width_hz; /**< Explicit analog channel width in Hz; 0 selects the kind's default. */
     /** Digital family only: non-zero when the CQPSK state of the symbol profile queued for the target is the target's
      *  own choice (a trunk-scan target's `modulation`, or a DMR/NXDN target's FSK), which stands over DSD_NEO_CQPSK
-     *  where the switch lands (issue #583). 0 lands where an open of the mode would. Ignored with the analog family,
+     *  where the retune lands (issue #583). 0 lands where an open of the mode would. Ignored with the analog family,
      *  and for a symbol profile that leaves the CQPSK state alone (cqpsk_enable < 0). */
     int cqpsk_explicit;
 } rtl_stream_retune_analog_profile;
@@ -627,10 +636,18 @@ typedef struct rtl_stream_retune_analog_profile {
  * alone. A DSD_RX_FAMILY_DIGITAL switch then applies the queued symbol profile; a DSD_RX_FAMILY_ANALOG switch
  * applies none of it (the analog family has no symbol clock), only the gain profile.
  *
- * A DSD_RX_FAMILY_DIGITAL switch out of the analog family lands the CQPSK family and channel filter an open of the
- * mode would, which DSD_NEO_CQPSK decides when set (rtl_demod_open_cqpsk_request()), unless @p analog's
- * cqpsk_explicit says the queued symbol profile's CQPSK state is the target's own: that state then stands, with the
- * channel filter the profile names, as it does on a retune that stays on the digital family.
+ * A retune that carries DSD_RX_FAMILY_DIGITAL lands as a switch out of the analog family would: the CQPSK family and
+ * channel filter an open of the mode would, which DSD_NEO_CQPSK decides when set (rtl_demod_open_cqpsk_request()),
+ * unless @p analog's cqpsk_explicit says the queued symbol profile's CQPSK state is the target's own: that state then
+ * stands, with the channel filter the profile names, as it does on a retune that carries no family. The resampler and
+ * output rate follow that CQPSK state, and the TED is timed for the demod rate it lands on, so the retune lands where
+ * rtl_stream_output_rate_for_family() predicts, the rate a caller that attaches the family times the decoder for. It
+ * lands there whether the front end still runs the analog family where the retune lands or already runs the digital
+ * family (an analog retune refused where it landed, or a request replaced, can leave it there); the family itself is
+ * switched, with the loop resets of a switch, only from the analog family. A front end already on the digital family
+ * gets its output chain designed again where the stream retunes; an external backend's retune
+ * (rtl_stream_apply_pending_retune_profile_for_target()) keeps the chain it runs, as a symbol profile request does. A
+ * retune that carries no family applies its symbol profile as queued.
  *
  * A live rtl_stream_request_analog_profile() accepted after this call is the newer word on the family: the retune then
  * lands on its target with neither this family nor the symbol profile queued with it, so the front end stays on the

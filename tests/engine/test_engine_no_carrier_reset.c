@@ -144,6 +144,8 @@ static int g_rtl_analog_request_width_hz = 0;
  * asked by the tuning side straight from the stream, and by the decoder through the metrics hooks. */
 static int g_stream_rate_explicit = -1;
 static int g_hook_rate_explicit = -1;
+/* The cqpsk_enable argument of the decoder's last digital-family output-rate query (-1: none since the reset). */
+static int g_hook_rate_cqpsk = -1;
 
 /* A retune profile as the fake stream queues it (the g_pending_* fields). */
 typedef struct fake_retune_profile {
@@ -228,6 +230,7 @@ reset_rtl_profile_fakes(void) {
     g_rtl_analog_request_width_hz = 0;
     g_stream_rate_explicit = -1;
     g_hook_rate_explicit = -1;
+    g_hook_rate_cqpsk = -1;
     g_rtl_timeout_outstanding = 0;
     g_retune_in_flight = (fake_retune){0};
     g_retune_queued = (fake_retune){0};
@@ -1254,10 +1257,10 @@ fake_family_analog_active(void) {
 /* The decoder's output-rate query, which the tuning side's is told apart from by what each records. */
 static unsigned int
 fake_hook_output_rate_for_family(int family, int cqpsk_enable, int symbol_rate_hz, int cqpsk_explicit) {
-    (void)cqpsk_enable;
     (void)symbol_rate_hz;
     if (family == DSD_RX_FAMILY_DIGITAL) {
         g_hook_rate_explicit = cqpsk_explicit;
+        g_hook_rate_cqpsk = cqpsk_enable;
     }
     return fake_output_rate_for_family(family);
 }
@@ -1784,6 +1787,64 @@ test_trunk_scan_dmr_target_stays_fsk_after_nfm(void) {
     static const cqpsk_choice_case c = {
         "dmr target under DSD_NEO_CQPSK=1", "1", "dmr,dmr-conventional,461400000,,250,250,,\n", 461400000U, 0, 1, 2, 1};
     return run_cqpsk_choice_case(&c);
+}
+
+/* A P25 target with no modulation under -mq and DSD_NEO_CQPSK=0, advanced to while the nfm target's retune is still in
+ * flight: the nfm retune may land the analog family first, so the P25 retune carries the digital family, and its
+ * profile leaves the CQPSK state to the stream, which lands the one the override names. The P25 chain times the
+ * decoder, and the TED the retune carries, for that landing by the same answer: the digital family's rate, asked for
+ * -mq's CQPSK with no choice of the target's own. Should the nfm retune then fail, the P25 retune lands on the digital
+ * family it finds, where the stream still lands it as a switch would (IO_RTL_RETUNE_PREPARE). */
+static int
+test_trunk_scan_p25_target_without_modulation_behind_an_nfm_retune(void) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    const char* label = "p25 target without modulation behind an nfm retune";
+    (void)dsd_setenv("DSD_NEO_CQPSK", "0", 1);
+    dsd_neo_config_init();
+    /* -mq: the CQPSK lock a target with no modulation keeps. */
+    opts->mod_c4fm = 0;
+    opts->mod_qpsk = 1;
+    opts->mod_gfsk = 0;
+    opts->mod_cli_lock = 1;
+    state->rf_mod = 1;
+    char path[DSD_TEST_PATH_MAX];
+    int rc = start_family_trunk_scan(opts, state, path, sizeof path, kModulationHeader,
+                                     "fire,nfm-conventional,154330000,,250,250,,\n"
+                                     "lsm,p25-conventional,851012500,,250,250,,\n",
+                                     1);
+    rc |= expect_case(label, "the nfm retune is in flight",
+                      g_retune_in_flight.freq == 154330000U && fake_retune_lands_analog(&g_retune_in_flight)
+                          && g_rtl_analog_family == 0);
+    g_hook_rate_cqpsk = -1;
+    g_hook_rate_explicit = -1;
+    rc |= expect_case(label, "advance to the p25 target",
+                      dsd_engine_trunk_scan_control(opts, state, DSD_TRUNK_SCAN_CONTROL_ADVANCE) == 0);
+    rc |= expect_case(label, "its retune waits behind the nfm one", g_retune_queued.freq == 851012500U);
+    rc |= expect_case(label, "its retune carries the digital family, with no choice of its own",
+                      tune_family_for(851012500U) == DSD_RX_FAMILY_DIGITAL && tune_explicit_for(851012500U) == 0);
+    rc |= expect_case(label, "its profile leaves the CQPSK state to the stream",
+                      tune_cqpsk_for(851012500U) == -1 && state->rf_mod == 1);
+    rc |= expect_case(label, "the decoder is timed for the switch's landing",
+                      g_hook_rate_cqpsk == 1 && g_hook_rate_explicit == 0 && state->samplesPerSymbol == 5);
+    rc |= expect_case(label, "and so is the TED its retune carries", g_retune_queued.profile.ted_sps == 5);
+    if (rc) {
+        DSD_FPRINTF(stderr,
+                    "  %s: family %d, cqpsk %d, explicit %d, rf_mod %d, decoder asked cqpsk %d explicit %d, sps %d, "
+                    "TED %d\n",
+                    label, tune_family_for(851012500U), tune_cqpsk_for(851012500U), tune_explicit_for(851012500U),
+                    state->rf_mod, g_hook_rate_cqpsk, g_hook_rate_explicit, state->samplesPerSymbol,
+                    g_retune_queued.profile.ted_sps);
+    }
+    land_outstanding_tune(&g_retune_in_flight, DSD_TRUNK_TUNE_RESULT_FAILED);
+    land_outstanding_tune(&g_retune_queued, DSD_TRUNK_TUNE_RESULT_OK);
+    rc |= expect_case(label, "the p25 retune lands on the digital family the failed nfm retune left",
+                      g_rtl_analog_family == 0 && g_rtl_symbol_rate_hz == 4800);
+    stop_cqpsk_env_trunk_scan(opts, state, path);
+    return rc;
 }
 
 /* A row width the published DSP rate cannot fit is skipped at every visit without asking the stream for it: the stream
@@ -4875,6 +4936,7 @@ main(void) {
     rc |= test_trunk_scan_advance_with_a_width_edit_queued();
     rc |= test_trunk_scan_p25_modulation_stands_after_nfm();
     rc |= test_trunk_scan_dmr_target_stays_fsk_after_nfm();
+    rc |= test_trunk_scan_p25_target_without_modulation_behind_an_nfm_retune();
     rc |= test_scoped_mode_change_on_nfm_row_times_the_baseline_for_digital();
     rc |= test_typed_scan_refused_width_skipped_without_the_stream();
     rc |= test_typed_scan_width_skipped_under_channel_lpf_override();
