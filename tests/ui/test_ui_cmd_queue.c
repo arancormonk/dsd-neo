@@ -13403,6 +13403,246 @@ test_rollback_puts_back_the_input_failure(void) {
     return rc;
 }
 
+#if defined(DSD_NEO_TEST_ANALOG_WRAP) && defined(DSD_NEO_TEST_AUDIO_ENSURE_WRAP)
+/*
+ * Issue #578: a DMR-configured scanner on @p dev at a 24 kHz DSP bandwidth, with a P25 row on air (@p row; 0: the
+ * configured DMR, no row) that runs its own modulation (@p row_cqpsk: CQPSK, else C4FM), which the decoder runs
+ * (state->rf_mod) and the stream ran, the row's tune having applied it whatever DSD_NEO_CQPSK says. Every stream a
+ * start opens here runs the CQPSK state an open picks, DSD_NEO_CQPSK's (@p cqpsk_env; -1, unset, as 0 for the settings
+ * here): CQPSK, whose output is the 24 kHz demod rate, or the FSK discriminator resampled to 48 kHz.
+ */
+static void
+init_row_restart_session(dsd_opts* opts, dsd_state* state, RtlSdrContext* fake_ctx, const char* dev, int row,
+                         int row_cqpsk, int cqpsk_env) {
+    init_dmr_session_with_nfm_width(opts, state, fake_ctx, 0);
+    DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", dev);
+    opts->rtl_dsp_bw_khz = 24;
+    dsd_airspy_config_defaults(&opts->airspy);
+    if (row) {
+        (void)dsd_scan_mode_enter(opts, state, DSD_SCAN_MODE_P25);
+        (void)dsd_scan_mode_options(opts, state, NULL);
+        const dsd_scan_modulation modulation = row_cqpsk ? DSD_SCAN_MODULATION_CQPSK : DSD_SCAN_MODULATION_C4FM;
+        dsd_scan_mode_target_modulation(state, modulation);
+        dsd_scan_mode_apply_modulation(opts, DSD_SCAN_MODE_P25, modulation);
+    }
+    state->rf_mod = row ? row_cqpsk : 0;
+    /* The decoder reads a CQPSK row's symbol-rate output, and a C4FM row's samples at the 24 kHz the stream ran. */
+    state->samplesPerSymbol = (row && row_cqpsk) ? 1 : 5;
+    state->symbolCenter = 0;
+    reset_rx_family_wrap();
+    g_config_rtl_open_ok = 1;
+    g_fake_cqpsk_env = cqpsk_env;
+    g_fake_cqpsk = cqpsk_env > 0 ? 1 : 0;
+    g_fake_analog_family = 0;
+    g_fake_output_rate_hz = cqpsk_env > 0 ? 24000U : 48000U;
+    g_fake_request_rate_hz = 24000;
+}
+
+static void
+finish_row_restart_session(dsd_opts* opts, dsd_state* state) {
+    dsd_scan_mode_leave(opts, state);
+    reset_rx_family_wrap();
+    g_fake_cqpsk = 0;
+    g_fake_output_rate_hz = 0U;
+    state->rtl_ctx = NULL;
+    freeState(state);
+}
+
+/* Submit @p command, one that restarts the radio stream the options describe, and drain it: Input > Switch source,
+   a DSP bandwidth of @p khz, an Airspy sample rate, an explicit restart, a gain or a device index. */
+static int
+submit_stream_restart(dsd_opts* opts, dsd_state* state, int command, int khz, const char* label) {
+    switch (command) {
+        case DSD_APP_CMD_RTL_ENABLE_INPUT:
+        case DSD_APP_CMD_AIRSPY_ENABLE_INPUT: return switch_input_from(opts, state, command, label);
+        case DSD_APP_CMD_RTL_SET_BW: return submit_dsp_bandwidth(opts, state, khz, label);
+        case DSD_APP_CMD_AIRSPY_SET: return submit_airspy_setting(opts, state, "airspy_sample_rate", "2500000", label);
+        default: break;
+    }
+    int rc = expect_true(label, (command == DSD_APP_CMD_RTL_RESTART ? post_empty(command) : post_i32(command, 1)) > 0);
+    state->ui_msg[0] = '\0';
+    rc |= expect_int(label, dsd_app_drain_cmds(opts, state), 1);
+    return rc;
+}
+
+/* The row's profile, a P25 one of @p cqpsk, was asked of the stream running now, timed for @p sps samples per symbol,
+   and the row is still on air with that modulation. */
+static int
+expect_row_republished(const char* label, const dsd_state* state, int cqpsk, int sps) {
+    int rc = expect_int(label, dsd_scan_mode_active(state) == DSD_SCAN_MODE_P25 && state->rf_mod == cqpsk, 1);
+    rc |= expect_int(label, g_demod_req_calls >= 1 && g_demod_req_cqpsk == cqpsk && g_demod_req_rate == 4800, 1);
+    rc |= expect_int(label, g_demod_req_ted_sps, sps);
+    rc |= expect_int(label, state->samplesPerSymbol, sps);
+    rc |= expect_int(label, g_analog_req_calls == 0 || g_analog_req_family == DSD_RX_FAMILY_DIGITAL, 1);
+    return rc;
+}
+
+/*
+ * Issue #578: Input > Switch source, a DSP bandwidth change and an Airspy setting leave a scan row's scope in force, so
+ * a stream they start opens on the row's settings, but with the CQPSK state an open picks, which DSD_NEO_CQPSK decides
+ * when set, while the row's tune applied the row's own. When the start fails, the rollback restarts the input that ran
+ * the same way: under DSD_NEO_CQPSK=1 a P25 C4FM row the stream ran on the FSK discriminator comes back on CQPSK, and
+ * under DSD_NEO_CQPSK=0 a CQPSK row comes back on the FSK discriminator. The input is back, but it would not run the
+ * row until another profile request, so the row's profile is asked of the restarted stream, as a scoped command's
+ * resume asks it of a stream it started, and timed for the rate that stream runs it at: a C4FM row at the 24 kHz the
+ * CQPSK open delivers (5 samples per 4800 Bd symbol), a CQPSK row at the 24 kHz demod rate its timing loop runs at, not
+ * the 48 kHz of the FSK output (10). Nothing is reset as for a new input. With no scan row the rollback asks nothing,
+ * as before.
+ */
+static int
+test_rollback_restart_republishes_the_scan_row(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static void* fake_ctx[2];
+
+    static const struct {
+        const char* label;
+        int command;
+        const char* dev;
+        int row;
+        int row_cqpsk;
+        int cqpsk_env;
+        const char* toast;
+    } legs[] = {
+        {"airspy switch fails, c4fm row, DSD_NEO_CQPSK=1", DSD_APP_CMD_AIRSPY_ENABLE_INPUT, "rtl:0:851.375M:0:0:24", 1,
+         0, 1, "Failed: the Airspy input did not start (see log)"},
+        {"dsp bw fails, c4fm row, DSD_NEO_CQPSK=1", DSD_APP_CMD_RTL_SET_BW, "rtl:0:851.375M:0:0:24", 1, 0, 1,
+         "Failed: the RTL-SDR input did not start (see log)"},
+        {"airspy setting fails, c4fm row, DSD_NEO_CQPSK=1", DSD_APP_CMD_AIRSPY_SET, "airspy", 1, 0, 1,
+         "Failed: Airspy setting"},
+        {"rtl switch fails, cqpsk row, DSD_NEO_CQPSK=0", DSD_APP_CMD_RTL_ENABLE_INPUT, "airspy", 1, 1, 0,
+         "Failed: the RTL-SDR input did not start (see log)"},
+        {"dsp bw fails, cqpsk row, DSD_NEO_CQPSK=0", DSD_APP_CMD_RTL_SET_BW, "rtl:0:851.375M:0:0:24", 1, 1, 0,
+         "Failed: the RTL-SDR input did not start (see log)"},
+        {"airspy setting fails, cqpsk row, DSD_NEO_CQPSK=0", DSD_APP_CMD_AIRSPY_SET, "airspy", 1, 1, 0,
+         "Failed: Airspy setting"},
+        {"dsp bw fails, no scan row", DSD_APP_CMD_RTL_SET_BW, "rtl:0:851.375M:0:0:24", 0, 0, 1,
+         "Failed: the RTL-SDR input did not start (see log)"},
+    };
+
+    int rc = 0;
+    for (size_t i = 0; i < sizeof legs / sizeof legs[0]; ++i) {
+        const char* label = legs[i].label;
+        init_row_restart_session(&opts, &state, (RtlSdrContext*)fake_ctx, legs[i].dev, legs[i].row, legs[i].row_cqpsk,
+                                 legs[i].cqpsk_env);
+        g_config_rtl_fail_starts = 1; /* the new device, bandwidth or rate does not start */
+        const uint32_t generation = state.analog_rx.generation;
+        rc |= submit_stream_restart(&opts, &state, legs[i].command, 12, label);
+        rc |= expect_int(label, dsd_app_command_test_last_failed(), 1);
+        rc |= expect_int(label, g_config_rtl_creates == 2 && g_config_rtl_starts == 2 && state.rtl_ctx != NULL, 1);
+        rc |= expect_str(label, g_config_rtl_create_dev, legs[i].dev);
+        rc |= expect_str(label, opts.audio_in_dev, legs[i].dev);
+        rc |= expect_int(label, opts.rtl_dsp_bw_khz, 24);
+        rc |= expect_str(label, state.ui_msg, legs[i].toast);
+        if (legs[i].command == DSD_APP_CMD_AIRSPY_ENABLE_INPUT || legs[i].command == DSD_APP_CMD_RTL_ENABLE_INPUT) {
+            rc |= expect_received_tone_kept(label, &state, generation);
+        }
+        if (legs[i].row) {
+            rc |= expect_row_republished(label, &state, legs[i].row_cqpsk, 5);
+        } else {
+            rc |= expect_int(label, g_demod_req_calls == 0 && g_analog_req_calls == 0, 1);
+        }
+        finish_row_restart_session(&opts, &state);
+    }
+    return rc;
+}
+
+/*
+ * Issue #578: the same rollback under an analog row. The restart opens on the row's monitor, as the stream it replaced
+ * ran it (the options in force are the row's), and the row's profile asked of it is that monitor: an nfm row's own
+ * 12.5 kHz, an am row's own 20 kHz, and no symbol profile.
+ */
+static int
+test_rollback_restart_republishes_an_analog_scan_row(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static void* fake_ctx[2];
+    static const char* const labels[] = {"airspy switch fails, nfm row", "airspy switch fails, am row"};
+    int rc = 0;
+    for (int am = 0; am <= 1; ++am) {
+        const char* label = labels[am];
+        const int kind = am ? DSD_ANALOG_DEMOD_AM : DSD_ANALOG_DEMOD_FM;
+        const int width_hz = am ? 20000 : 12500;
+        init_row_restart_session(&opts, &state, (RtlSdrContext*)fake_ctx, "rtl:0:851.375M:0:0:24", 0, 0, -1);
+        dsd_scan_option_values row = {0};
+        row.present = DSD_SCAN_OPT_BANDWIDTH;
+        row.channel_bw_hz = width_hz;
+        row.channel_bw_kind = kind;
+        rc |= expect_int(label, dsd_scan_mode_enter(&opts, &state, am ? DSD_SCAN_MODE_AM : DSD_SCAN_MODE_NFM), 0);
+        rc |= expect_int(label, dsd_scan_mode_options(&opts, &state, &row), 0);
+        g_fake_analog_family = 1; /* the front end runs the row's monitor */
+        g_fake_output_rate_hz = 48000U;
+        g_config_rtl_fail_starts = 1;
+        const uint32_t generation = state.analog_rx.generation;
+        rc |= switch_input_from(&opts, &state, DSD_APP_CMD_AIRSPY_ENABLE_INPUT, label);
+        rc |= expect_int(label, dsd_app_command_test_last_failed(), 1);
+        rc |= expect_restarted_on(label, &opts, &state, "rtl:0:851.375M:0:0:24");
+        rc |= expect_int(label,
+                         g_config_rtl_create_analog_only == 1 && g_config_rtl_create_kind == kind
+                             && g_config_rtl_create_width_hz == width_hz,
+                         1);
+        rc |= expect_received_tone_kept(label, &state, generation);
+        rc |= expect_int(label, dsd_scan_mode_active(&state) == (am ? DSD_SCAN_MODE_AM : DSD_SCAN_MODE_NFM), 1);
+        rc |= expect_last_monitor_request(label, 1, kind, width_hz);
+        rc |= expect_int(label, g_demod_req_calls, 0);
+        finish_row_restart_session(&opts, &state);
+    }
+    return rc;
+}
+
+/*
+ * Issue #578: a stream such a command starts that works opens the same way, on the row's settings with the CQPSK state
+ * the open picks, and is asked for the row's profile the same way, timed for the rate it runs the row at. Under
+ * DSD_NEO_CQPSK=1 a P25 C4FM row runs the FSK discriminator on the new Airspy, the RTL-SDR switched back to, the RTL-SDR
+ * reopened at a 48 kHz DSP bandwidth (10 samples per symbol at the 48 kHz CQPSK output), the Airspy reopened at a new
+ * sample rate, and the RTL-SDR an explicit restart, a gain or a device index reopens. With no scan row a restart asks
+ * nothing, as before.
+ */
+static int
+test_restart_under_a_scan_row_republishes_the_row(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static void* fake_ctx[2];
+
+    static const struct {
+        const char* label;
+        int command;
+        const char* dev;
+        int khz;
+        int row;
+        const char* dev_after;
+    } legs[] = {
+        {"airspy switch", DSD_APP_CMD_AIRSPY_ENABLE_INPUT, "rtl:0:851.375M:0:0:24", 24, 1, "airspy"},
+        {"rtl switch", DSD_APP_CMD_RTL_ENABLE_INPUT, "airspy", 24, 1, "rtl"},
+        {"dsp bw 48", DSD_APP_CMD_RTL_SET_BW, "rtl:0:851.375M:0:0:24", 48, 1, "rtl:0:851.375M:0:0:24"},
+        {"airspy setting", DSD_APP_CMD_AIRSPY_SET, "airspy", 24, 1, "airspy"},
+        {"explicit restart", DSD_APP_CMD_RTL_RESTART, "rtl:0:851.375M:0:0:24", 24, 1, "rtl:0:851.375M:0:0:24"},
+        {"gain", DSD_APP_CMD_RTL_SET_GAIN, "rtl:0:851.375M:0:0:24", 24, 1, "rtl:0:851.375M:0:0:24"},
+        {"device index", DSD_APP_CMD_RTL_SET_DEV, "rtl:0:851.375M:0:0:24", 24, 1, "rtl:0:851.375M:0:0:24"},
+        {"dsp bw 48, no scan row", DSD_APP_CMD_RTL_SET_BW, "rtl:0:851.375M:0:0:24", 48, 0, "rtl:0:851.375M:0:0:24"},
+    };
+
+    int rc = 0;
+    for (size_t i = 0; i < sizeof legs / sizeof legs[0]; ++i) {
+        char label[96];
+        DSD_SNPRINTF(label, sizeof label, "%s that starts, c4fm row, DSD_NEO_CQPSK=1", legs[i].label);
+        init_row_restart_session(&opts, &state, (RtlSdrContext*)fake_ctx, legs[i].dev, legs[i].row, 0, 1);
+        g_fake_output_rate_hz = (unsigned int)legs[i].khz * 1000U; /* the new CQPSK stream's output */
+        rc |= submit_stream_restart(&opts, &state, legs[i].command, legs[i].khz, label);
+        rc |= expect_int(label, dsd_app_command_test_last_failed(), 0);
+        rc |= expect_int(label, g_config_rtl_creates == 1 && state.rtl_ctx != NULL, 1);
+        rc |= expect_str(label, opts.audio_in_dev, legs[i].dev_after);
+        if (legs[i].row) {
+            rc |= expect_row_republished(label, &state, 0, legs[i].khz == 48 ? 10 : 5);
+        } else {
+            rc |= expect_int(label, g_demod_req_calls == 0 && g_analog_req_calls == 0, 1);
+        }
+        finish_row_restart_session(&opts, &state);
+    }
+    return rc;
+}
+#endif
+
 #endif
 
 #ifdef DSD_NEO_TEST_IO_CONTROL_WRAP
@@ -13766,6 +14006,11 @@ main(void) {
     rc |= test_airspy_setting_rollback_reports_the_iq_capture_stop();
     rc |= test_rollback_puts_back_the_input_failure();
     rc |= test_dsp_bandwidth_change_that_fails_keeps_the_running_input();
+#if defined(DSD_NEO_TEST_ANALOG_WRAP) && defined(DSD_NEO_TEST_AUDIO_ENSURE_WRAP)
+    rc |= test_rollback_restart_republishes_the_scan_row();
+    rc |= test_rollback_restart_republishes_an_analog_scan_row();
+    rc |= test_restart_under_a_scan_row_republishes_the_row();
+#endif
 #endif
     rc |= test_am_refused_on_pcm_input();
     rc |= test_am_bandwidth_set_validates();

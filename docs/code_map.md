@@ -1009,7 +1009,15 @@ installs from `src/engine/trunk_tuning.c` in `src/engine/trunk_tuning_hooks_inst
   when the scope resumes, so
   `apply_cmd_scoped()` notes any stream started meanwhile (`svc_rtl_start_count()`, which `svc_rtl_restart_locked()`
   counts) and `ui_resume_scope_and_publish()` publishes the row's effective profile to it anyway, without ending the
-  decoder's acquisition (issue #578; this also covers a reopen that starts, issue #583's first item). That publish,
+  decoder's acquisition (issue #578; this also covers a reopen that starts, issue #583's first item). A command that
+  leaves the scope in force (Input > Switch source, `RTL_SET_BW`, `AIRSPY_SET`, a gain, device index or explicit
+  restart) starts its stream, and the restart its rollback makes, on the row's settings in force, but an open picks its
+  CQPSK state by its own rule (`DSD_NEO_CQPSK` when set, else the QPSK flag of the options), not the CQPSK state the
+  row's tune applied and the decoder runs (`state->rf_mod`): under `DSD_NEO_CQPSK=1` a C4FM row would come back on
+  CQPSK. So `apply_cmd_scoped()` asks any stream such a command started for the row's effective profile at once
+  (`ui_publish_row_to_started_stream()`, the same `svc_rtl_start_count()` note); the publish ends no acquisition and
+  resets nothing as for a new input (a rollback's restart runs no `ui_input_switched()`), and an analog row's profile
+  is the monitor the stream opened on. Each of these publishes,
   and the one for a row the update changed (a `[demod]` that turns a P25 row to CQPSK), is timed by one rule for the
   rate the new stream runs the row at (`ui_started_stream_rate()`), not with the timing the decoder kept from the old
   stream nor the one the resume took from the rate the new stream opened at (a CQPSK row read

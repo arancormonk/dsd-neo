@@ -1401,8 +1401,9 @@ ui_cmd_rtl_enable_input_refused(const dsd_opts* opts, dsd_state* state, const st
    closed it; a radio stream that ran behind it, recording, stays stopped, and the capture with it), an RTL-family one
    started again without the I/Q capture that would write over its recording, and either with the input failure the
    session had latched before the change. It is the input that ran, so nothing is reset as for a new one
-   (ui_input_switched()). Caller holds the P25 SM tick guard. Returns 1 when the start refused its width, 0 when it
-   failed for another reason. */
+   (ui_input_switched()); under a scan row, the row's profile is asked of the restarted stream once the command has run
+   (ui_publish_row_to_started_stream()). Caller holds the P25 SM tick guard. Returns 1 when the start refused its width,
+   0 when it failed for another reason. */
 static int
 ui_radio_start_failed_locked(dsd_opts* opts, dsd_state* state, const ui_radio_input* before, char* why, size_t why_size,
                              int* out_capture_stopped) {
@@ -4283,10 +4284,12 @@ ui_publish_profile_timed(const dsd_opts* opts, dsd_state* state, dsd_decode_mode
 }
 
 /*
- * The rate a stream a command started under a suspended scope runs the row's @p profile at once the resume's publish
- * lands (issue #578). A reopen's stream opened on the configured settings, so the rate it delivers now can be another
- * family's or modulation's; a rollback's restart opened on the row as the stream it replaced ran it. A front end still
- * on the analog family is moved onto the digital family when the configured mode is digital
+ * The rate a stream a command started runs the row's @p profile at once the publish that asks it for that profile lands
+ * (issue #578): the resume's, for a command that suspended the scope, or the one right after a command that left it in
+ * force (ui_publish_row_to_started_stream()). A reopen under a suspended scope opened on the configured settings, so
+ * the rate it delivers now can be another family's or modulation's; a rollback's restart, and a stream a command that
+ * left the scope in force started, opened on the row's settings, with the CQPSK state an open picks for them. A front
+ * end still on the analog family is moved onto the digital family when the configured mode is digital
  * (dsd_scan_mode_configured_digital(), svc_publish_symbol_profile()), and that switch lands where an open of the mode
  * would, on the CQPSK family DSD_NEO_CQPSK names when set and an output chain designed for it: a row with a symbol
  * clock is timed at the rate that switch lands on (rtl_stream_output_rate_for_family()). Otherwise the request applies
@@ -4316,6 +4319,28 @@ ui_started_stream_rate(const dsd_opts* opts, const dsd_state* state, dsd_decode_
     (void)profile;
 #endif
     return current_demod_rate(opts, state);
+}
+
+/*
+ * A stream a command started while a scan row's scope was in force, not suspended (issue #578): Input > Switch source,
+ * a DSP bandwidth, an Airspy setting, a gain, a device index or an explicit restart that worked, or the restart of the
+ * input that ran when one of those did not start. It opened on the options in force, the row's, but an open picks its
+ * CQPSK state by its own rule, DSD_NEO_CQPSK's when set, else the QPSK flag of the options, not the CQPSK state the
+ * decoder runs the row with (state->rf_mod), which the row's tune applied whatever DSD_NEO_CQPSK says: under
+ * DSD_NEO_CQPSK=1 the stream would run a C4FM row on CQPSK, and under DSD_NEO_CQPSK=0 a CQPSK row on the FSK
+ * discriminator, until another profile request. The row's effective profile is asked of it, as the resume asks it of a
+ * stream a command that suspended the scope started (ui_resume_scope_and_publish()), and timed for the rate the stream
+ * runs the row at (ui_started_stream_rate()), without ending the decoder's acquisition, and with nothing reset as for a
+ * new input (ui_input_switched()). An analog row's profile is the monitor the stream opened on, whose width its start
+ * held to the rate it runs, so the front end runs that monitor whatever the request's outcome.
+ */
+static void
+ui_publish_row_to_started_stream(const dsd_opts* opts, dsd_state* state) {
+    if (!dsd_scan_mode_configured_view(state)) {
+        return;
+    }
+    const dsd_decode_mode_profile profile = dsd_scan_mode_effective_profile(opts, state);
+    (void)ui_publish_profile_timed(opts, state, profile, ui_started_stream_rate(opts, state, profile));
 }
 
 /* The row's constraint back over the configured options a scoped update edited. When that changes the decoder, the
@@ -6693,7 +6718,8 @@ command_updates_scan_mode(const struct dsd_app_command* c) {
          * edits the configured default through dsd_scan_mode_set_configured_squelch(), which
          * touches no acquisition setting, so a squelch nudge can never read as a decoder change
          * that ends the call. AIRSPY_SET and the input enables rewrite no squelch, and a stream
-         * they reopen has to start on the row's acquisition and threshold, the ones in force. */
+         * they reopen has to start on the row's acquisition and threshold, the ones in force (its
+         * CQPSK state, which an open picks by its own rule, follows: ui_publish_row_to_started_stream()). */
     };
     if (!c) {
         return 0;
@@ -6968,7 +6994,9 @@ apply_cmd_scoped(dsd_opts* opts, dsd_state* state, const struct dsd_app_command*
                                  || c->id == DSD_APP_CMD_CONFIG_APPLY);
     const int groups_suspended = group_update && dsd_scan_groups_suspend(state);
     /* A stream the command starts while the scope is suspended opens on other settings than the row the resume puts
-       back: a reopen on the configured ones, a rollback's restart on the row as it ran before (issue #578). */
+       back: a reopen on the configured ones, a rollback's restart on the row as it ran before (issue #578). One a
+       command that leaves the scope in force starts opens on the row's settings with the CQPSK state an open picks,
+       and is asked for the row's profile at once (ui_publish_row_to_started_stream()). */
     const unsigned int starts_before = svc_rtl_start_count();
     const int result = apply_cmd_unscoped(opts, state, c);
     const ui_scope_stream stream = ui_scope_stream_of(starts_before);
@@ -6977,6 +7005,9 @@ apply_cmd_scoped(dsd_opts* opts, dsd_state* state, const struct dsd_app_command*
     }
     if (ui_cmd_leaves_scanner_scope(opts, was_scanner)) {
         apply_cmd_leave_scanner_scope(opts, state, guarded);
+    }
+    if (!scoped && stream != UI_SCOPE_STREAM_KEPT) {
+        ui_publish_row_to_started_stream(opts, state);
     }
     if (apply_cmd_resume_and_note_widths(opts, state, scoped, stream, &widths_before) != 0) {
         return UI_CMD_APPLY_FAILED;
