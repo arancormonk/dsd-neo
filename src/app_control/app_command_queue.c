@@ -5966,12 +5966,16 @@ ui_scan_leave_fall_back_to_default(dsd_opts* opts, dsd_state* state, const svc_m
  * front end, and the configured width goes back to the one from before the fallback. The toast says why either way,
  * naming the width the leave asked for. Only while the options are still the ones the leave put back (the analog
  * family, that kind, that width) and no scan runs: a channel-map adopt or a RadioReference import that keeps the
- * scanner on gets its front end from the next row's tune, and is deliberately left to it. Returns 1 when it acted.
+ * scanner on gets its front end from the next row's tune, and is deliberately left to it. Nor when a receive request
+ * queued after the leave's, from anywhere, superseded it (a CQPSK toggle made before the demod thread took the return):
+ * that request decides what the front end runs, and asking for the default would undo it (CQPSK off again), so the
+ * refusal is left to it, with no request, the configured width as it is and no toast; the stream logged the refusal.
+ * Returns 1 when it acted.
  */
 static int
 ui_settle_refused_scan_leave(dsd_opts* opts, dsd_state* state, const svc_monitor_refusal* refusal) {
     const int kind = refusal->kind;
-    if (!ui_scan_leave_options_stand(opts, state, refusal)) {
+    if (refusal->superseded || !ui_scan_leave_options_stand(opts, state, refusal)) {
         return 0;
     }
     /* A refused default (the NFM default never is) was the fallback of a width refused before it, or a change to the
@@ -6938,8 +6942,9 @@ apply_cmd(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
  *
  * A scan leave's return to the monitor, refused at once or where it landed, or a request that carried it on
  * (svc_leave_channel_scan()), is reconciled as ui_settle_refused_scan_leave() says (issue #578), since a typed row may
- * have left the front end off the monitor with the width setting untouched. A switch onto the monitor or between FM
- * and AM armed before the leave still goes back first (ui_revert_analog_entry()).
+ * have left the front end off the monitor with the width setting untouched, unless a request queued after it decides
+ * the front end instead (svc_monitor_refusal::superseded). A switch onto the monitor or between FM and AM armed before
+ * the leave still goes back first (ui_revert_analog_entry()).
  */
 static void
 ui_settle_receive_requests(dsd_opts* opts, dsd_state* state) {

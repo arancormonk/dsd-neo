@@ -491,6 +491,9 @@ typedef struct {
     int scan_leave;   /**< 1: a scan leave's return to the monitor (svc_leave_channel_scan()), a request that replaced
                            one before it reached the front end, or the default a refused leave fell back on
                            (svc_publish_symbol_profile_after_scan_leave()). */
+    int superseded;   /**< 1: a receive request was queued after this one, from anywhere (a CQPSK toggle, a symbol
+                           profile), and decides what the front end runs; one that replaced this request before it
+                           reached the front end carries its record on instead, so it never counts. */
 } svc_monitor_refusal;
 
 /**
@@ -506,9 +509,11 @@ typedef struct {
  * refused at once queued nothing, so once the requests queued before it have settled, what the front end publishes
  * says what it kept (rtl_stream_get_analog_profile(), rtl_stream_analog_family_active()): the monitor's kind and the
  * width its channel filter runs (one the DSP rate limits reads as the kind's default), or the analog or digital family
- * off the monitor. It reads TAKEN when a request queued since, from anywhere, has decided what the front end runs, or
- * when the front end publishes the monitor the leave asked for (a stream reopened on the configured options).
- * Decoder thread only.
+ * off the monitor. It reads TAKEN when the front end publishes the monitor the leave asked for (a stream reopened on
+ * the configured options). A refusal, at once or where the request landed, of a request that a receive request queued
+ * after it, from anywhere, has superseded (a CQPSK toggle, a symbol profile) is reported with
+ * svc_monitor_refusal::superseded set: that later request decides what the front end runs, so a refused scan leave is
+ * left to it, while a switch onto the monitor the front end did not make still goes back. Decoder thread only.
  *
  * @return svc_monitor_request_outcome.
  */

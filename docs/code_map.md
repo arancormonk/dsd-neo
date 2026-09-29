@@ -836,9 +836,13 @@ installs from `src/engine/trunk_tuning.c` in `src/engine/trunk_tuning_hooks_inst
   queues its own (so the `first_configured_before_hz` chain holds) and records a leave that asked for the monitor. A
   leave the front end refuses at once queues nothing: the record keeps the number of the request before it, and once
   that one has settled what the stream publishes says what the front end kept (the monitor's kind and the width its
-  channel filter runs, one the DSP rate limits reading as the default; off the monitor, the analog or digital family); a
-  request queued since, from anywhere, has decided the front end instead. One refused where it lands says it from the
-  stream's record, which notes whether the front end kept the monitor output. A typed digital row's channel profile
+  channel filter runs, one the DSP rate limits reading as the default; off the monitor, the analog or digital family).
+  One refused where it lands says it from the stream's record, which notes whether the front end kept the monitor
+  output. Either way, a request queued after the leave's, from anywhere, that does not carry it on (a CQPSK toggle made
+  before the demod thread took the return, a symbol profile) decides the front end instead
+  (`svc_monitor_refusal::superseded`): the refusal is left to it, with nothing asked, the configured width as it is
+  and no toast, since asking for the default would turn that CQPSK off again; a switch onto the monitor armed before
+  the leave still goes back. A typed digital row's channel profile
   never touches the width setting, so the drain reconciles "kept width, else default"
   (`ui_settle_refused_scan_leave()`): a front end still on the monitor of the leave's kind gives the configured width
   the width that monitor runs (`svc_restore_analog_width()`); one off it (a typed row's profile, the other kind's
@@ -848,9 +852,10 @@ installs from `src/engine/trunk_tuning.c` in `src/engine/trunk_tuning_hooks_inst
   That default request carries the leave on, with the width from before it, so an AM default refused where it lands (a
   retune in flight moved the rate again) is reconciled as a refused leave too: the configured width goes back to the
   one from before the fallback and the toast says the default does not fit either, rather than an unarmed analog
-  entry reverting nothing. The toast (`svc_describe_monitor_return_refusal()`) names the width, the rate the stream publishes (not the one
-  `rtl_dsp_bw_khz` gives, which a row's retune has left) and what the monitor runs: `Refused: NFM 16 kHz does not fit
-  the 16 kHz DSP rate; the monitor is back on the NFM default`. It is settled only while the options are still the ones
+  entry reverting nothing; behind a later request it is left to that request as above, keeping the default the
+  leave's toast named. The toast (`svc_describe_monitor_return_refusal()`) names the width, the rate the stream
+  publishes (not the one `rtl_dsp_bw_khz` gives, which a row's retune has left) and what the monitor runs: `Refused:
+  NFM 16 kHz does not fit the 16 kHz DSP rate; the monitor is back on the NFM default`. It is settled only while the options are still the ones
   the leave put back (the analog family, that kind, that width) and no scan runs: a channel-map adopt or RadioReference
   import that keeps the scanner on gets its front end from the next row's tune, and is deliberately left to it. A width
   change made while the leave was still queued replaces its request and carries the leave on; a switch onto the monitor

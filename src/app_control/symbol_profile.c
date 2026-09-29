@@ -58,7 +58,9 @@ symbol_profile_configured_digital(const dsd_opts* opts, const dsd_state* state) 
  * leave falls back on (svc_publish_symbol_profile_after_scan_leave()), with the width from before that fallback: a
  * refusal then reconciles the decoder with what the front end kept after a scan, rather than only put a width back. A leave the front end refused
  * at once queued nothing (refused_at_once): seq is then the last request queued before it, and what the front end kept
- * is what it publishes once that one has settled.
+ * is what it publishes once that one has settled. A request queued after the recorded one that does not take the record
+ * over (a CQPSK toggle on, a symbol profile) supersedes it, whenever the refusal comes: that request decides the front
+ * end, and a refused leave is left to it (svc_monitor_refusal::superseded).
  */
 static struct {
     int pending;
@@ -423,8 +425,7 @@ svc_take_monitor_request_outcome(const dsd_opts* opts, const dsd_state* state, s
     refusal.kept_kind = g_monitor_request.kind;
     refusal.scan_leave = g_monitor_request.scan_leave;
     if (g_monitor_request.refused_at_once) {
-        /* A request queued after the refused leave, from anywhere, has decided what the front end runs since. */
-        if (rtl_stream_receive_request_seq() != g_monitor_request.seq || !symbol_profile_published_kept(&refusal)) {
+        if (!symbol_profile_published_kept(&refusal)) {
             return SVC_MONITOR_REQUEST_TAKEN;
         }
     } else if (outcome != RTL_STREAM_RX_REQUEST_REFUSED
@@ -433,6 +434,11 @@ svc_take_monitor_request_outcome(const dsd_opts* opts, const dsd_state* state, s
                                                       &refusal.kept_monitor)) {
         return SVC_MONITOR_REQUEST_TAKEN;
     }
+    /* A request queued after the one recorded, from anywhere (a CQPSK toggle, a symbol profile), whether the demod
+       thread took it with the refused one or has yet to, decides what the front end runs from here. One that replaced
+       the recorded request before it reached the front end took its record over, so the numbers differ only for a
+       request that did not. */
+    refusal.superseded = rtl_stream_receive_request_seq() != g_monitor_request.seq ? 1 : 0;
     refusal.kept_analog = refusal.kept_analog ? 1 : 0;
     refusal.kept_monitor = refusal.kept_monitor ? 1 : 0;
     refusal.configured_before_hz = symbol_profile_configured_width_run(refusal.kept_width_hz);

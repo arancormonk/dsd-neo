@@ -9142,6 +9142,101 @@ test_refused_scan_leave_is_reported_and_reconciled(void) {
     return rc;
 }
 
+/* A refused scan leave that a later request decided is left to it: CQPSK stays what the front end was last asked for
+   (on), nothing more is asked of the monitor than the @p calls requests made before, the configured width of @p kind
+   stays @p width_hz, and nothing is toasted, in this drain or the next. */
+static int
+expect_leave_left_to_a_later_request(const char* label, dsd_opts* opts, dsd_state* state, int kind, int width_hz,
+                                     int calls) {
+    int rc = expect_int(label, __wrap_rtl_stream_requested_cqpsk(), 1);
+    rc |= expect_int(label, g_analog_req_calls, calls);
+    rc |= expect_int(label, kind == DSD_ANALOG_DEMOD_AM ? opts->analog_am_bandwidth_hz : opts->analog_nfm_bandwidth_hz,
+                     width_hz);
+    rc |= expect_int(label, opts->analog_only == 1 && opts->analog_demod == kind, 1);
+    rc |= expect_str(label, state->ui_msg, "");
+    (void)dsd_app_drain_cmds(opts, state);
+    rc |= expect_str(label, state->ui_msg, "");
+    return rc;
+}
+
+/*
+ * Issue #578: a scan leave's return to the analog monitor that the front end refuses once a later request is queued
+ * behind it, from anywhere, which decides what the front end runs instead. Stopping the scanner queues the return, and
+ * CQPSK toggled on from the DSP menu before the demod thread takes it queues its profile after it; the demod thread
+ * refuses the return where it lands and turns CQPSK on. Asking for the kind's default then would turn CQPSK off again
+ * behind the operator's back, so the refusal is left to the later request: nothing is asked, the configured width stays
+ * and nothing is toasted (the stream logged the refusal). The same holds for the AM default a refused leave fell back
+ * on, refused where it lands behind a later request, which keeps the default the leave's toast named, and for a leave
+ * refused at once while the request before it was still queued.
+ */
+static int
+test_refused_scan_leave_is_left_to_a_later_request(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static void* fake_ctx[2];
+    int rc = 0;
+
+    /* Refused where it lands, taken together with the CQPSK toggle queued after it. */
+    rc |= init_scan_row_on_analog(&opts, &state, (RtlSdrContext*)fake_ctx, DSD_ANALOG_DEMOD_FM, 16000,
+                                  DSD_SCAN_MODE_NXDN48, NULL, "cqpsk after a leave");
+    rc |= submit_scanner_stop(&opts, &state, "cqpsk after a leave: stopped");
+    rc |= expect_last_monitor_request("cqpsk after a leave: the leave queued", 1, DSD_ANALOG_DEMOD_FM, 16000);
+    submit_cqpsk_toggle();
+    rc |= expect_int("cqpsk after a leave: toggled", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("cqpsk after a leave: CQPSK on queued", g_demod_req_calls == 1 && g_demod_req_cqpsk == 1, 1);
+    g_fake_cqpsk = 1;
+    demod_thread_refuses_leave_keeping(1, 0, DSD_ANALOG_DEMOD_FM, 16000);
+    state.ui_msg[0] = '\0';
+    (void)dsd_app_drain_cmds(&opts, &state);
+    rc |= expect_leave_left_to_a_later_request("cqpsk after a leave: left to CQPSK", &opts, &state, DSD_ANALOG_DEMOD_FM,
+                                               16000, 1);
+    finish_scan_row_on_analog(&opts, &state);
+
+    /* -fM with AM 10 kHz leaving an nfm row at a 7.5 kHz rate: the leave is refused at once and the AM default asked
+       for, and CQPSK is toggled on before the demod thread takes that; it refuses the default where it lands, keeping
+       the FM family with CQPSK on. */
+    rc |= init_scan_row_on_analog(&opts, &state, (RtlSdrContext*)fake_ctx, DSD_ANALOG_DEMOD_AM, 10000,
+                                  DSD_SCAN_MODE_NFM, NULL, "cqpsk after an am default");
+    g_fake_demod_rate_hz = 7500;
+    g_fake_analog_req_max_hz = 5000;
+    g_fake_monitor_kind = DSD_ANALOG_DEMOD_FM;
+    g_fake_monitor_width_hz = 16000;
+    g_fake_monitor_lpf_on = 1;
+    rc |= submit_scanner_stop(&opts, &state, "cqpsk after an am default: stopped");
+    rc |= expect_last_monitor_request("cqpsk after an am default: the default asked for", 2, DSD_ANALOG_DEMOD_AM, 0);
+    rc |= expect_int("cqpsk after an am default: the default configured", opts.analog_am_bandwidth_hz, 0);
+    submit_cqpsk_toggle();
+    rc |= expect_int("cqpsk after an am default: toggled", dsd_app_drain_cmds(&opts, &state), 1);
+    g_fake_cqpsk = 1;
+    demod_thread_refuses_leave_keeping(1, 0, DSD_ANALOG_DEMOD_FM, 16000);
+    state.ui_msg[0] = '\0';
+    (void)dsd_app_drain_cmds(&opts, &state);
+    rc |= expect_leave_left_to_a_later_request("cqpsk after an am default: left to CQPSK", &opts, &state,
+                                               DSD_ANALOG_DEMOD_AM, 0, 2);
+    finish_scan_row_on_analog(&opts, &state);
+
+    /* Refused at once while the row's own symbol profile, queued through the hooks, was still on its way, with CQPSK
+       toggled on in the same drain: the leave's record names that profile, and the toggle is queued after it. */
+    rc |= init_scan_row_on_analog(&opts, &state, (RtlSdrContext*)fake_ctx, DSD_ANALOG_DEMOD_FM, 16000,
+                                  DSD_SCAN_MODE_NXDN48, NULL, "cqpsk after a leave at once");
+    g_fake_analog_req_max_hz = 13200;
+    ++g_fake_rx_seq; /* the row's symbol profile, not taken yet */
+    rc |= expect_int("cqpsk after a leave at once: stop queued", dsd_app_command_action(DSD_APP_CMD_SCANNER_TOGGLE),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    submit_cqpsk_toggle();
+    state.ui_msg[0] = '\0';
+    rc |= expect_int("cqpsk after a leave at once: drained", dsd_app_drain_cmds(&opts, &state), 2);
+    rc |= expect_int("cqpsk after a leave at once: stopped", opts.scanner_mode, 0);
+    rc |=
+        expect_int("cqpsk after a leave at once: CQPSK on queued", g_demod_req_calls == 1 && g_demod_req_cqpsk == 1, 1);
+    demod_thread_lands(1);
+    (void)dsd_app_drain_cmds(&opts, &state);
+    rc |= expect_leave_left_to_a_later_request("cqpsk after a leave at once: left to CQPSK", &opts, &state,
+                                               DSD_ANALOG_DEMOD_FM, 16000, 1);
+    finish_scan_row_on_analog(&opts, &state);
+    return rc;
+}
+
 /* A DMR session on an RTL-SDR input at a 16 kHz DSP bandwidth, with an explicit NFM width stored while digital (the
    front end is asked with the fake's answer, so a width the rate cannot filter gets as far as the request). */
 static void
@@ -12646,6 +12741,7 @@ main(void) {
     rc |= test_nfm_width_refused_after_the_check();
     rc |= test_nfm_width_follows_a_queued_scan_leave();
     rc |= test_refused_scan_leave_is_reported_and_reconciled();
+    rc |= test_refused_scan_leave_is_left_to_a_later_request();
     rc |= test_refused_switch_onto_analog_puts_the_mode_back();
     rc |= test_refused_switch_onto_analog_with_a_width_set_after_it();
     rc |= test_refused_switch_onto_analog_under_a_row();
