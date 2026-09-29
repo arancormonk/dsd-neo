@@ -11687,10 +11687,14 @@ family_test_switch_to_digital(const dsd_opts* digital_opts, const rtl_stream_tes
     family_test_menu_cqpsk_toggles(out->switched_toggle_channel_profile, out->switched_toggle_output_kind,
                                    out->switched_toggle_levels);
     /* The digital session goes on to a CQPSK profile and back, as a modulation change or a typed row does. */
-    (void)rtl_stream_request_demod_profile(1, 4800, 4, DSD_CH_LPF_PROFILE_P25_CQPSK, 10, 0);
-    family_test_demod_thread_boundary();
-    (void)rtl_stream_request_demod_profile(0, 4800, 4, DSD_CH_LPF_PROFILE_P25_C4FM, 10, 0);
-    family_test_demod_thread_boundary();
+    static const int trip_cqpsk[2] = {1, 0};
+    static const int trip_channel_profile[2] = {DSD_CH_LPF_PROFILE_P25_CQPSK, DSD_CH_LPF_PROFILE_P25_C4FM};
+    for (int i = 0; i < 2; i++) {
+        (void)rtl_stream_request_demod_profile(trip_cqpsk[i], 4800, 4, trip_channel_profile[i], 10, 0);
+        family_test_demod_thread_boundary();
+        out->round_trip_output_kind[i] = demod.output_kind;
+        out->round_trip_output_rate[i] = output.rate;
+    }
     out->output_kind_after_cqpsk_round_trip = demod.output_kind;
 }
 

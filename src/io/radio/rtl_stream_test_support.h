@@ -329,6 +329,9 @@ typedef struct rtl_stream_test_family_switch_result {
     /* Output kind once the digital session, after the switch, has had a CQPSK symbol profile applied and then a C4FM
        one: a fresh digital open comes back to the FSK discriminator. */
     int output_kind_after_cqpsk_round_trip;
+    /* The two legs of that round trip, CQPSK then C4FM: the output kind each ran, and the output rate after it. */
+    int round_trip_output_kind[2];
+    int round_trip_output_rate[2];
     /* The DSP menu's CQPSK toggle (a CQPSK flip with no symbol profile, as apply_dsp_op_cqpsk_toggle() queues it) made
        twice, right after the switch and on a fresh open of the digital mode: the channel profile, output kind and
        symbol levels after each. Turning CQPSK off returns to the FSK channel profile an open picks from the decode

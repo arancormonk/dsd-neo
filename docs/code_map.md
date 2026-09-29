@@ -936,13 +936,16 @@ installs from `src/engine/trunk_tuning.c` in `src/engine/trunk_tuning_hooks_inst
   and the one for a row the update changed (a `[demod]` that turns a P25 row to CQPSK), is timed by one rule for the
   rate the new stream runs the row at (`ui_started_stream_rate()`), not with the timing the decoder kept from the old
   stream nor the one the resume took from the rate the new stream delivers on the configured settings (a CQPSK row read
-  at the symbol-rate output has one sample per symbol, which the request would clamp to 2): a row with a symbol clock
-  runs on the digital family when the configured mode is digital or the front end already runs it, at that family's
-  rate for the row's modulation (`rtl_stream_output_rate_for_family()`, as a switch out of the analog family is timed:
-  for CQPSK the demod rate its timing loop runs at, not the resampled FSK output a SoapySDR or Airspy stream opened on);
-  a typed row on an analog session runs under the analog family the stream opened on, where a CQPSK row's loop runs at
-  the demod rate the stream published at its start (`rtl_stream_get_request_rate_hz()`) rather than the monitor's
-  resampled audio, which an FSK row reads; anything else is timed for the rate the stream delivers now. For the same
+  at the symbol-rate output has one sample per symbol, which the request would clamp to 2). A front end still on the
+  analog family under a digital configured mode is switched to the digital family, which lands where an open of the
+  mode would (the CQPSK family `DSD_NEO_CQPSK` names when set, with an output chain designed for it), so a row with a
+  symbol clock is timed at the rate that switch lands on (`rtl_stream_output_rate_for_family()`). Otherwise the
+  request applies the row's own CQPSK state, whatever `DSD_NEO_CQPSK` says, over the output chain the stream opened
+  on, on the digital family or under the analog family a typed row runs on an analog session: a CQPSK row's timing
+  loop runs at the demod rate the stream published at its start (`rtl_stream_get_request_rate_hz()`), not at the
+  resampled output of a stream that opened on the FSK discriminator or the monitor, and an FSK row's samples leave at
+  the rate the stream delivers now (only an open, a family switch or a retune designs the resampler again), which
+  times it and anything else. For the same
   reason a reopen that starts under a scan row held only the configured settings to the rate the new device delivers,
   so before the scope resumes the new stream is asked for the analog monitor the row puts back
   (`ui_scan_row_resumed_monitor()`: the kind of the row's class, read with `dsd_scan_mode_row()` while suspended, and
@@ -1662,12 +1665,16 @@ Notes:
     below a 20 kHz DSP rate by default) (`rtl_demod_open_cqpsk_request()`, `rtl_demod_open_channel_profile()`, also
     behind `rtl_stream_output_rate_for_family()`), and the digital resampler
     and output rate are decided for that profile when the switch is made (`rtl_demod_enter_digital_family()` takes its
-    CQPSK flag and symbol rate), so a forced rate lands where an open of the profile would. Tests:
+    CQPSK flag and symbol rate), so a forced rate lands where an open of the profile would. On the digital family a
+    symbol profile request applies the CQPSK state it asks for, `DSD_NEO_CQPSK` or not, and keeps the output chain the
+    stream runs: only an open, a family switch or a retune designs the resampler again. Tests:
     `IO_RTL_ANALOG_FAMILY_SWITCH` (digital → analog → digital, and a `-fA` start switched to digital, each equal to a
     fresh open, loop state, monitor audio state, I/Q corrections and filter histories included, also under
     `DSD_NEO_CQPSK=0` and `=1` and with the channel filter off (`DSD_NEO_CHANNEL_LPF=0`, a 12 kHz DSP rate), with the
     stream keeping the options snapshot it opened with, for P25
     C4FM/CQPSK, DMR, NXDN48, dPMR and ProVoice (also at a 12 kHz DSP rate) at unforced and forced rates and D-STAR,
+    a CQPSK profile and a C4FM one after the switch each running the CQPSK state it asks for at the output rate the
+    switch set up, under either override,
     the DSP menu's CQPSK toggle made twice after the switch landing where it lands on a fresh open, including
     from a `-fA` session a CQPSK toggle or a
     typed digital row had moved off the monitor output, or with a CQPSK toggle still queued when the digital mode is

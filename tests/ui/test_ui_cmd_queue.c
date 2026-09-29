@@ -6033,6 +6033,13 @@ static int g_demod_req_ted_sps;
    symbol profile a CQPSK toggle or typed row applied under it). */
 static int g_fake_analog_family;
 static unsigned int g_fake_digital_rate;
+/* The output rate a switch out of the analog family lands the FSK discriminator on
+   (rtl_stream_output_rate_for_family()), which a SoapySDR or Airspy device's demod rate is resampled to. 0 reports
+   g_fake_digital_rate for either modulation, as the fake stream otherwise tells them apart nowhere. */
+static unsigned int g_fake_digital_fsk_rate;
+/* DSD_NEO_CQPSK as the stream applies it to an open and to a switch out of the analog family: -1 unset, else the CQPSK
+   state it forces. */
+static int g_fake_cqpsk_env = -1;
 /* What rtl_stream_check_analog_profile() answers (0 accepts), and what it was asked. */
 static int g_analog_check_result;
 static int g_analog_check_calls;
@@ -6241,12 +6248,13 @@ __wrap_rtl_stream_analog_family_active(void) {
     return g_fake_analog_family;
 }
 
+/* A switch out of the analog family lands on the CQPSK state an open of the mode would, DSD_NEO_CQPSK's when set. */
 unsigned int
 __wrap_rtl_stream_output_rate_for_family(int family, int cqpsk_enable, int symbol_rate_hz) {
     (void)family;
-    (void)cqpsk_enable;
     (void)symbol_rate_hz;
-    return g_fake_digital_rate;
+    const int landing_cqpsk = g_fake_cqpsk_env >= 0 ? g_fake_cqpsk_env : cqpsk_enable;
+    return (landing_cqpsk <= 0 && g_fake_digital_fsk_rate > 0U) ? g_fake_digital_fsk_rate : g_fake_digital_rate;
 }
 
 void
@@ -6313,6 +6321,8 @@ reset_rx_family_wrap(void) {
     g_analog_req_result = 0;
     g_fake_analog_req_max_hz = 0;
     g_fake_request_rate_hz = 0;
+    g_fake_digital_fsk_rate = 0U;
+    g_fake_cqpsk_env = -1;
     g_fake_monitor_kind = -1;
     g_fake_monitor_width_hz = g_fake_monitor_lpf_on = 0;
     g_fake_rx_kept_monitor = 0;
@@ -10603,10 +10613,10 @@ test_config_reopen_under_a_scan_row_republishes_the_row(void) {
  * Issue #578: the resume republishes the row on air to a stream the config apply started under its suspended scope. A
  * CQPSK row the decoder runs at the stream's symbol-rate output keeps one sample per symbol, which is no timing for the
  * new stream's Gardner loop (the request would clamp it to 2): the row's profile is timed for the rate the new stream
- * runs it at, the digital family's for its modulation, as a switch out of the analog family is timed. A P25 CQPSK row on
- * a DMR-configured scanner gets 10 samples per 4800 Bd symbol from the RTL-SDR a failed reopen put back at 48 kHz, and
- * 4 from a SoapySDR device whose 19,531 Hz demod rate the stream opened on DMR resamples to a 48 kHz FSK output: the
- * CQPSK loop runs at the demod rate.
+ * runs it at, the demod rate the stream published at its start, which the CQPSK loop runs at on the digital family. A
+ * P25 CQPSK row on a DMR-configured scanner gets 10 samples per 4800 Bd symbol from the RTL-SDR a failed reopen put
+ * back at 48 kHz, and 4 from a SoapySDR device whose 19,531 Hz demod rate the stream opened on DMR resamples to a
+ * 48 kHz FSK output.
  */
 static int
 test_config_reopen_under_a_cqpsk_row_times_the_row(void) {
@@ -10632,7 +10642,7 @@ test_config_reopen_under_a_cqpsk_row_times_the_row(void) {
         reset_rx_family_wrap();
         g_config_rtl_open_ok = 1;
         g_config_rtl_fail_starts = starts ? 0 : 1;
-        g_fake_digital_rate = starts ? 19531U : 48000U;
+        g_fake_request_rate_hz = starts ? 19531 : 48000;
         rc |= submit_config_device_source(&opts, &state, DSDCFG_INPUT_SOAPY, 0, 0, label);
         rc |= expect_int(label, dsd_app_command_test_last_failed(), starts ? 0 : 1);
         rc |= expect_int(label, g_config_rtl_creates == (starts ? 1 : 2) && state.rtl_ctx != NULL, 1);
@@ -10788,6 +10798,88 @@ test_config_reopen_that_changes_the_row_modulation_times_the_row(void) {
         g_fake_analog_family = 0;
         g_fake_digital_rate = 0U;
         g_fake_output_rate_hz = g_hook_output_rate_hz = 0U;
+        state.rtl_ctx = NULL;
+        freeState(&state);
+    }
+    return rc;
+}
+
+/*
+ * Issue #578: the row republished to a restarted stream is timed for the modulation the stream will run it with. The
+ * stream a digital session's reopen started runs the digital family already, and there a symbol profile request applies
+ * the row's own CQPSK state, whatever DSD_NEO_CQPSK says (the override decides the CQPSK family only of an open and of
+ * a switch out of the analog family), and keeps the output chain the stream opened on. Each session here reopens as a
+ * SoapySDR device at a 19,531 Hz demod rate, whose FSK output an open of an FSK mode resamples to 48 kHz. Under
+ * DSD_NEO_CQPSK=0 a DMR-configured scanner's stream opens on the FSK discriminator, and a P25 CQPSK row runs CQPSK
+ * there, its timing loop at the demod rate: 4 samples per 4800 Bd symbol, not the 10 of the FSK output the override
+ * would land a switch on. A P25 session configured for QPSK opens on CQPSK, with no resampler, and a P25 row with its
+ * own C4FM runs the FSK discriminator there at the 19,531 Hz output the stream delivers: 4, not the 10 of the 48 kHz a
+ * switch onto C4FM would resample to. Under DSD_NEO_CQPSK=1 the DMR scanner's stream opens on CQPSK as well, and a C4FM
+ * row reads the same 19,531 Hz: 4.
+ */
+static int
+test_config_reopen_times_the_row_for_the_modulation_it_runs(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static void* fake_ctx[2];
+
+    static const struct {
+        const char* label;
+        int cqpsk_env;       /* DSD_NEO_CQPSK: -1 unset */
+        int configured_qpsk; /* a P25 session configured for QPSK, else a DMR one */
+        int row_cqpsk;
+    } legs[] = {
+        {"DSD_NEO_CQPSK=0, dmr session, cqpsk row", 0, 0, 1},
+        {"p25 qpsk session, c4fm row", -1, 1, 0},
+        {"DSD_NEO_CQPSK=1, dmr session, c4fm row", 1, 0, 0},
+    };
+
+    int rc = 0;
+    for (size_t i = 0; i < sizeof legs / sizeof legs[0]; ++i) {
+        const char* label = legs[i].label;
+        const int cqpsk = legs[i].row_cqpsk;
+        init_dmr_session_with_nfm_width(&opts, &state, (RtlSdrContext*)fake_ctx, 0);
+        if (legs[i].configured_qpsk) {
+            (void)dsd_app_command_set_i32(DSD_APP_CMD_DECODE_MODE_SET, (int32_t)DSDCFG_MODE_P25P1);
+            (void)dsd_app_drain_cmds(&opts, &state);
+            dsd_scan_mode_apply_modulation(&opts, DSD_SCAN_MODE_P25, DSD_SCAN_MODULATION_CQPSK);
+            state.rf_mod = 1;
+        }
+        rc |= expect_int(label, dsd_scan_mode_enter(&opts, &state, DSD_SCAN_MODE_P25), 0);
+        const dsd_scan_modulation modulation = cqpsk ? DSD_SCAN_MODULATION_CQPSK : DSD_SCAN_MODULATION_C4FM;
+        dsd_scan_mode_target_modulation(&state, modulation);
+        dsd_scan_mode_apply_modulation(&opts, DSD_SCAN_MODE_P25, modulation);
+        state.rf_mod = cqpsk;
+        reset_rx_family_wrap();
+        /* The stream the reopen opened on the configured settings: CQPSK when the override or the QPSK configuration
+           picks it (its output at the demod rate), else the FSK discriminator resampled to 48 kHz. A switch out of the
+           analog family would land on the family the override picks (rtl_stream_output_rate_for_family()). */
+        const int opened_cqpsk = legs[i].cqpsk_env >= 0 ? legs[i].cqpsk_env : legs[i].configured_qpsk;
+        g_fake_cqpsk_env = legs[i].cqpsk_env;
+        g_fake_cqpsk = opened_cqpsk;
+        g_fake_analog_family = 0;
+        g_fake_output_rate_hz = opened_cqpsk ? 19531U : 48000U;
+        g_fake_request_rate_hz = 19531;
+        g_fake_digital_rate = 19531U;
+        g_fake_digital_fsk_rate = 48000U;
+        g_config_rtl_open_ok = 1;
+        state.samplesPerSymbol = cqpsk ? 1 : 10;
+        state.symbolCenter = 0;
+        rc |= submit_config_device_source(&opts, &state, DSDCFG_INPUT_SOAPY, 0, 0, label);
+        rc |= expect_int(label, dsd_app_command_test_last_failed(), 0);
+        rc |= expect_int(label, g_config_rtl_creates == 1 && state.rtl_ctx != NULL, 1);
+        rc |= expect_int(label, dsd_scan_mode_active(&state) == DSD_SCAN_MODE_P25 && state.rf_mod == cqpsk, 1);
+        /* The digital family asked for with it is the one the stream runs: no switch lands. */
+        rc |= expect_int(label, g_analog_req_calls == 0 || g_analog_req_family == DSD_RX_FAMILY_DIGITAL, 1);
+        rc |= expect_int(label, g_demod_req_calls >= 1 && g_demod_req_cqpsk == cqpsk && g_demod_req_rate == 4800, 1);
+        rc |= expect_int(label, g_demod_req_ted_sps, 4);
+        rc |= expect_int(label, state.samplesPerSymbol, 4);
+
+        dsd_scan_mode_leave(&opts, &state);
+        reset_rx_family_wrap();
+        g_fake_cqpsk = 0;
+        g_fake_digital_rate = 0U;
+        g_fake_output_rate_hz = 0U;
         state.rtl_ctx = NULL;
         freeState(&state);
     }
@@ -12469,6 +12561,7 @@ main(void) {
     rc |= test_config_reopen_under_a_cqpsk_row_times_the_row();
     rc |= test_config_reopen_under_a_cqpsk_row_on_an_analog_session_times_the_row();
     rc |= test_config_reopen_that_changes_the_row_modulation_times_the_row();
+    rc |= test_config_reopen_times_the_row_for_the_modulation_it_runs();
     rc |= test_config_reopen_whose_scan_row_the_new_stream_refuses();
     rc |= test_config_reopen_that_stops_the_scanner_skips_the_row();
     rc |= test_config_with_no_stream_keeps_its_mode_when_the_scan_row_cannot_run();

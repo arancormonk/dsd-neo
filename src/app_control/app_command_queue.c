@@ -4272,17 +4272,17 @@ ui_publish_profile_timed(const dsd_opts* opts, dsd_state* state, dsd_decode_mode
 
 /*
  * The rate a stream a command started under a suspended scope runs the row's @p profile at once the resume's publish
- * lands (issue #578). The stream opened on the configured settings, so the rate it delivers now can be another
- * family's or modulation's. A row with a symbol clock runs on the digital family when the configured mode is digital
- * (dsd_scan_mode_configured_digital(): svc_publish_symbol_profile() moves a front end still on the analog family
- * there), or when the front end already runs it: at that family's rate for the row's modulation
- * (rtl_stream_output_rate_for_family(), as a switch out of the analog family is timed), which for a CQPSK row is the
- * demod rate its timing loop runs at, not the resampled FSK output a SoapySDR or Airspy stream opened on, nor the
- * symbol-rate output of a stream that opened on CQPSK. On an analog session a typed digital row runs its profile under
- * the analog family the stream opened on: a CQPSK row's timing loop then runs at the demod rate the stream published at
- * its start (rtl_stream_get_request_rate_hz()), not at the monitor's resampled audio, which an FSK row reads.
- * Otherwise (an analog row, an FSK row on the monitor output, the M17 encoder's analog front end), the rate the stream
- * delivers now.
+ * lands (issue #578). The stream opened on the configured settings, so the rate it delivers now can be another family's
+ * or modulation's. A front end still on the analog family is moved onto the digital family when the configured mode is
+ * digital (dsd_scan_mode_configured_digital(), svc_publish_symbol_profile()), and that switch lands where an open of
+ * the mode would, on the CQPSK family DSD_NEO_CQPSK names when set and an output chain designed for it: a row with a
+ * symbol clock is timed at the rate that switch lands on (rtl_stream_output_rate_for_family()). Otherwise the request
+ * applies the row's own CQPSK state, whatever DSD_NEO_CQPSK says, over the output chain the stream opened on, whether
+ * that is the digital family or the analog one a typed row runs its profile under on an analog session. A CQPSK row's
+ * timing loop then runs at the demod rate the stream published at its start (rtl_stream_get_request_rate_hz()), not at
+ * the resampled output of a stream that opened on the FSK discriminator or the analog monitor. Anything else (an FSK
+ * row, whose samples leave at the rate the stream delivers now, which only an open, a family switch or a retune
+ * resamples anew; an analog row; the M17 encoder's analog front end) keeps the rate the stream delivers.
  */
 static int
 ui_started_stream_rate(const dsd_opts* opts, const dsd_state* state, dsd_decode_mode_profile profile) {
@@ -4290,7 +4290,7 @@ ui_started_stream_rate(const dsd_opts* opts, const dsd_state* state, dsd_decode_
     if (opts->audio_in_type == AUDIO_IN_RTL && state->rtl_ctx && opts->analog_only != 1 && profile.symbol_rate_hz > 0) {
         const int cqpsk = state->rf_mod == 1;
         int rate_hz = 0;
-        if (dsd_scan_mode_configured_digital(opts, state) || !rtl_stream_analog_family_active()) {
+        if (rtl_stream_analog_family_active() && dsd_scan_mode_configured_digital(opts, state)) {
             rate_hz = (int)rtl_stream_output_rate_for_family(DSD_RX_FAMILY_DIGITAL, cqpsk, profile.symbol_rate_hz);
         } else if (cqpsk) {
             rate_hz = rtl_stream_get_request_rate_hz();
