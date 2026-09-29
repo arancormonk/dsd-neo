@@ -6093,7 +6093,7 @@ cfg_radio_reopen(const dsd_opts* opts, const dsdneoUserConfig* cfg) {
            shared tuning the config applies (apply_shared_radio_tuning_from_config()). A reopen runs at the rate the
            device delivers for the new settings: a wider DSP bandwidth decimates its capture less. The monitor volume
            is only copied when the stream opens, so a reopen for it alone runs at the rate the Airspy runs now, which
-           the running front end holds a width to (issue #578). */
+           the running front end holds the configured width the stream opens on to, changed or not (issue #578). */
         const int bw_khz = cfg_reopen_rtl_bw_khz(opts, cfg);
         const int next_bw_khz = dsd_analog_rtl_dsp_bw_is_selectable(bw_khz) ? bw_khz : DSD_ANALOG_RTL_DSP_BW_MAX_KHZ;
         const int next_volume = cfg->rtl_volume ? cfg->rtl_volume : opts->rtl_volume_multiplier;
@@ -6169,14 +6169,14 @@ cfg_check_scan_row_width(const dsd_opts* opts, dsd_state* state, const dsdneoUse
 /*
  * A width of analog @p kind that a DSP rate holds (an explicit width, or the AM default) and that the session runs once
  * the config is applied, held to the rate it will run at whenever the config changes the width, reopens a device under
- * it (cfg_radio_reopen()) or, with @p onto_monitor, moves the session onto the monitor or onto the kind with it: at the
- * DSP bandwidth an RTL-SDR or rtl_tcp reopen runs at, only to the rules every rate shares for a SoapySDR or Airspy
- * reopen (its start checks the rate it delivers, and a start that refuses it puts the running input back), otherwise
- * at the running front end's rate, which an Airspy reopened for its monitor volume alone keeps (issue #578).
+ * it (cfg_radio_reopen()) or, with @p opens_anew, has the front end open on it anew, changed or not: at the DSP
+ * bandwidth an RTL-SDR or rtl_tcp reopen runs at, only to the rules every rate shares for a SoapySDR or Airspy reopen
+ * (its start checks the rate it delivers, and a start that refuses it puts the running input back), otherwise at the
+ * running front end's rate, which an Airspy reopened for its monitor volume alone keeps (issue #578).
  */
 static int
 cfg_check_held_analog_width(const dsd_opts* opts, dsd_state* state, const dsdneoUserConfig* cfg, int kind, int width_hz,
-                            int onto_monitor) {
+                            int opens_anew) {
     const cfg_reopen_kind reopen = cfg_radio_reopen(opts, cfg);
     if (reopen == CFG_REOPEN_AT_DEVICE_RATE) {
         /* No rate to hold it to before the device opens, but the rules every rate shares still apply. */
@@ -6188,7 +6188,7 @@ cfg_check_held_analog_width(const dsd_opts* opts, dsd_state* state, const dsdneo
         return UI_CMD_APPLY_FAILED;
     }
     const int reopen_bw_khz = (reopen == CFG_REOPEN_AT_RTL_BW) ? cfg_reopen_rtl_bw_khz(opts, cfg) : 0;
-    const int holds = width_hz != dsd_app_analog_width_setting_hz(opts, kind) || reopen_bw_khz > 0 || onto_monitor;
+    const int holds = width_hz != dsd_app_analog_width_setting_hz(opts, kind) || reopen_bw_khz > 0 || opens_anew;
     return holds ? cfg_check_analog_width(opts, state, kind, reopen_bw_khz, width_hz) : UI_CMD_APPLY_COMPLETED;
 }
 
@@ -6248,8 +6248,13 @@ cfg_check_receive_family(const dsd_opts* opts, dsd_state* state, const dsdneoUse
     }
     const int width_hz = cfg_analog_width_after(opts, cfg, kind);
     if (width_hz > 0 || kind == DSD_ANALOG_DEMOD_AM) {
-        return cfg_check_held_analog_width(opts, state, cfg, kind, width_hz,
-                                           !dsd_opts_is_analog_family(opts) || opts->analog_demod != kind);
+        /* The front end opens on this width anew when the config moves the session onto the monitor or onto the kind,
+           and when it reopens the running Airspy for its volume alone: that stream opens on the configured settings
+           (the apply runs inside a scan row's suspended scope), at the rate it runs now, even where the config leaves
+           the width as it was and a typed digital row on air runs none (issue #578). */
+        const int opens_anew = !dsd_opts_is_analog_family(opts) || opts->analog_demod != kind
+                               || cfg_radio_reopen(opts, cfg) == CFG_REOPEN_AT_RUNNING_RATE;
+        return cfg_check_held_analog_width(opts, state, cfg, kind, width_hz, opens_anew);
     }
     if (!cfg->has_mode || opts->analog_only || opts->analog_nfm_bandwidth_hz != 0
         || svc_check_mode_receive_profile(opts, state, cfg->decode_mode) == 0) {

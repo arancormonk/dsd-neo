@@ -889,7 +889,9 @@ installs from `src/engine/trunk_tuning.c` in `src/engine/trunk_tuning_hooks_inst
   every rate shares (`svc_check_analog_bandwidth_at_device_rate()`) and left to that stream's start, which checks the
   width at the rate the device delivers. An Airspy reopened for its monitor volume alone, which the stream copies only
   when it opens, delivers the rate it runs now, so the running front end holds the width as when nothing reopens
-  (`CFG_REOPEN_AT_RUNNING_RATE`, issue #578). Since the stream a reopen starts runs the scan row on air again once the
+  (`CFG_REOPEN_AT_RUNNING_RATE`, issue #578), and holds it even where the config leaves it as it was: the reopened
+  stream opens on the configured width, which a typed digital row on air leaves unused and the running rate need not
+  filter (a DSP bandwidth lowered while that row ran). Since the stream a reopen starts runs the scan row on air again once the
   scope resumes, an analog row's own width is held to the reopened rate the same way (`cfg_check_scan_row_width()`, for
   the row's kind), and on a session the config leaves on another kind or none the configured width of a kind is held
   while the scan has an analog row or target of that kind without a width of its own (`cfg_check_scan_widths()`). An

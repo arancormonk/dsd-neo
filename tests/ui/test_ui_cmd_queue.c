@@ -8469,6 +8469,86 @@ test_config_apply_leaves_a_soapy_or_airspy_reopen_to_its_start(void) {
     return rc;
 }
 
+/*
+ * Issue #578: an Airspy reopened for its monitor volume alone runs at the rate it runs now, on the configured settings
+ * the apply leaves (it runs inside a scan row's suspended scope), so the running front end holds the configured width
+ * up front even when the config leaves it unchanged. An Analog-configured Airspy at a 12 kHz DSP bandwidth (19,531 Hz)
+ * scans a typed NXDN48 row, whose digital profile the stream runs, with a configured NFM width of 25 kHz that rate
+ * cannot filter (the DSP bandwidth was lowered while the row ran). A config that changes the volume and the frequency,
+ * with no [analog], would reopen the Airspy on that width, which its start refuses: it is refused first, naming the
+ * width and the rate, with nothing applied and nothing reopened. A configured width the running rate filters reopens
+ * the Airspy for the new volume as before.
+ */
+static int
+test_config_volume_only_reopen_holds_the_unchanged_width(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static void* fake_ctx[2];
+    int rc = 0;
+    init_nfm_session(&opts, &state, (RtlSdrContext*)fake_ctx);
+    DSD_SNPRINTF(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", "airspy");
+    dsd_airspy_config_defaults(&opts.airspy);
+    opts.rtl_dsp_bw_khz = 12;
+    opts.rtl_volume_multiplier = 2;
+    opts.rtlsdr_center_freq = 851375000U;
+    opts.analog_nfm_bandwidth_hz = 25000;
+    opts.scanner_mode = 1;
+    rc |= expect_int("volume only under a row: typed row", dsd_scan_mode_enter(&opts, &state, DSD_SCAN_MODE_NXDN48), 0);
+    rc |= expect_int("volume only under a row: row options", dsd_scan_mode_options(&opts, &state, NULL), 0);
+    reset_rx_family_wrap();
+    g_fake_demod_rate_hz = 19531;
+    g_config_rtl_open_ok = 1;
+    g_config_rtl_device_rate_hz = 19531;
+    g_analog_check_result = -1;
+    dsdneoUserConfig cfg;
+    DSD_MEMSET(&cfg, 0, sizeof cfg);
+    cfg.has_input = 1;
+    cfg.input_source = DSDCFG_INPUT_AIRSPY;
+    cfg.airspy = opts.airspy;
+    cfg.rtl_bw_khz = 12;
+    cfg.rtl_volume = 3;
+    DSD_SNPRINTF(cfg.rtl_freq, sizeof cfg.rtl_freq, "%s", "852.5M");
+    rc |= submit_config(&opts, &state, &cfg, "volume only under a row");
+    rc |= expect_int(
+        "volume only under a row: the front end asked",
+        g_analog_check_calls == 1 && g_analog_check_kind == DSD_ANALOG_DEMOD_FM && g_analog_check_width_hz == 25000, 1);
+    rc |= expect_int("volume only under a row: failed", dsd_app_command_test_last_failed(), 1);
+    rc |= expect_toast("volume only under a row: toast", &state,
+                       "Config not applied: NFM 25 kHz does not fit the 19.531 kHz DSP rate");
+    rc |= expect_int("volume only under a row: nothing reopened", g_config_rtl_creates, 0);
+    rc |= expect_int("volume only under a row: stream kept", state.rtl_ctx == (RtlSdrContext*)fake_ctx, 1);
+    rc |= expect_int("volume only under a row: volume kept", opts.rtl_volume_multiplier, 2);
+    rc |= expect_int("volume only under a row: frequency kept", opts.rtlsdr_center_freq == 851375000U, 1);
+    rc |= expect_int("volume only under a row: the row still on air",
+                     dsd_scan_mode_active(&state) == DSD_SCAN_MODE_NXDN48 && opts.analog_only == 0, 1);
+    const dsd_scan_settings* configured = dsd_scan_mode_configured_view(&state);
+    rc |= expect_int("volume only under a row: width kept", configured && configured->analog_nfm_bandwidth_hz == 25000,
+                     1);
+
+    /* A configured 12.5 kHz the running rate filters: the Airspy reopens for the volume. */
+    (void)dsd_scan_mode_set_configured_analog_width(&opts, &state, DSD_ANALOG_DEMOD_FM, 12500);
+    reset_rx_family_wrap();
+    g_fake_demod_rate_hz = 19531;
+    g_config_rtl_open_ok = 1;
+    g_config_rtl_device_rate_hz = 19531;
+    rc |= submit_config(&opts, &state, &cfg, "volume only, width fits");
+    rc |= expect_int("volume only, width fits: the front end asked",
+                     g_analog_check_calls == 1 && g_analog_check_width_hz == 12500, 1);
+    rc |= expect_int("volume only, width fits: applied", dsd_app_command_test_last_failed(), 0);
+    rc |= expect_int("volume only, width fits: reopened", g_config_rtl_creates == 1 && state.rtl_ctx != NULL, 1);
+    rc |= expect_int("volume only, width fits: volume applied", opts.rtl_volume_multiplier, 3);
+
+    dsd_scan_mode_leave(&opts, &state);
+    reset_config_rtl_wrap();
+    g_fake_demod_rate_hz = 0;
+    g_analog_check_result = 0;
+    opts.scanner_mode = 0;
+    opts.analog_nfm_bandwidth_hz = 0;
+    state.rtl_ctx = NULL;
+    freeState(&state);
+    return rc;
+}
+
 /* The stream the rollback started runs the input the config apply found: the second create was handed @p dev, and the
    session has a stream again. */
 static int
@@ -13017,6 +13097,7 @@ main(void) {
     rc |= test_config_apply_holds_nfm_width_to_a_new_dsp_bandwidth();
     rc |= test_config_apply_holds_nfm_width_to_the_rate_the_reopen_runs_at();
     rc |= test_config_apply_leaves_a_soapy_or_airspy_reopen_to_its_start();
+    rc |= test_config_volume_only_reopen_holds_the_unchanged_width();
     rc |= test_config_reopen_that_fails_keeps_the_running_input();
     rc |= test_config_rollback_keeps_the_iq_capture();
     rc |= test_config_rollback_restores_mode_owned_settings();
