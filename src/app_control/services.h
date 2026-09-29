@@ -642,9 +642,11 @@ int svc_rtl_restart_locked(dsd_opts* opts, dsd_state* state);
  *
  * The failed start can also have latched a failure of the input that replaced the one that ran for the session (an
  * Airspy that did not open latches a device failure, which turns the session's normal end into a failure exit:
- * dsd_engine_run_with_lifecycle()), and a start of an RTL-SDR, SoapySDR or PCM input clears none. So once the input
- * that ran is running again, the failure the session had latched before the change (@p failure_before) is put back;
- * a restart that fails leaves the latch as the starts left it, with no input running.
+ * dsd_engine_run_with_lifecycle()), and a start of an RTL-SDR, SoapySDR or PCM input clears none. So the failure the
+ * session had latched before the change (@p failure_before) is put back once the stream the change left is stopped,
+ * before the restart starts anything: a failure the restarted stream latches stands, including one its threads latch
+ * before its start returns (an Airspy's monitor thread when the device stops at once). A restart that fails keeps the
+ * failure it latched, or, having latched none, the change's, with no input running.
  *
  * @param failure_before The input failure latched before the change started anything (dsd_input_failure_get()); NULL
  *                       leaves the latch alone.

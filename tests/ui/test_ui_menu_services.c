@@ -448,6 +448,9 @@ static int g_rtl_create_calls = 0;
 static int g_rtl_start_calls = 0;
 static int g_rtl_create_result = -1;
 static int g_rtl_start_result = -1;
+/* Issue #578: a device failure (this native code; 0: none) the next start latches before it returns, as an Airspy's
+   monitor thread does when the device stops right after the start launched it (airspy_monitor()). One-shot. */
+static int g_rtl_start_latches_code = 0;
 /* Issue #578: whether the last create was handed an I/Q capture request, and how many creates were. */
 static int g_rtl_create_capture = -1;
 static int g_rtl_create_captures = 0;
@@ -511,6 +514,10 @@ rtl_stream_start(RtlSdrContext* ctx) {
     (void)ctx;
     note_rtl_lifecycle_call();
     g_rtl_start_calls++;
+    if (g_rtl_start_latches_code != 0) {
+        dsd_input_failure_report(DSD_INPUT_FAILURE_DEVICE, g_rtl_start_latches_code);
+        g_rtl_start_latches_code = 0;
+    }
     return g_rtl_start_result;
 }
 
@@ -876,6 +883,7 @@ reset_rtl_restart_stubs(void) {
     g_rtl_start_calls = 0;
     g_rtl_create_result = -1;
     g_rtl_start_result = -1;
+    g_rtl_start_latches_code = 0;
     g_rtl_create_capture = -1;
     g_rtl_create_captures = 0;
 }
@@ -1020,6 +1028,19 @@ test_locked_restarts(void) {
                      svc_rtl_restart_recovery_locked(&opts, &state, NULL, NULL), 0);
     rc |=
         expect_input_failure("recovery restart with nothing to put back keeps the latch", DSD_INPUT_FAILURE_DEVICE, -5);
+    /* A failure the recovery stream latches itself stands, whether its start then returns success (an Airspy whose
+       monitor thread sees the device stop before the start returns) or fails: the failure from before the change is
+       put back before the start, not over what the start latched. */
+    for (int starts = 1; starts >= 0; --starts) {
+        const char* label =
+            starts ? "recovery start that latches a failure keeps it" : "recovery that fails with its own failure";
+        g_rtl_start_result = starts ? 0 : -1;
+        g_rtl_start_latches_code = -7;
+        dsd_input_failure_report(DSD_INPUT_FAILURE_DEVICE, -5);
+        rc |= expect_int(label, svc_rtl_restart_recovery_locked(&opts, &state, &failure_before, NULL) == 0, starts);
+        rc |= expect_input_failure(label, DSD_INPUT_FAILURE_DEVICE, -7);
+    }
+    g_rtl_start_result = 0;
     dsd_input_failure_clear();
     state.rtl_ctx = NULL;
 

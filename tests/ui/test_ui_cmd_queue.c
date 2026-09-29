@@ -5207,6 +5207,10 @@ static int g_config_rtl_captures;
 static int g_config_rtl_fail_after_capture;
 static int g_config_rtl_opened_capture;
 
+/* Issue #578: 1 has the next Airspy start that opens its device see the device stop at once: its monitor thread
+   (airspy_monitor()) latches a device failure before the start returns success. One-shot. */
+static int g_config_rtl_airspy_stops_after_open;
+
 /* Issue #578: the input failure a start latches for the session (dsd_input_failure_report()), as the io does: an Airspy
    that does not open latches a device failure, which ends the session with a failure exit
    (dsd_engine_run_with_lifecycle()), and one that opens clears the latch (airspy_source_open()). A width refused before
@@ -5217,16 +5221,21 @@ config_rtl_start_latch(int opened) {
     if (strncmp(g_config_rtl_create_dev, "airspy", 6) != 0) {
         return;
     }
-    if (opened) {
-        dsd_input_failure_clear();
-    } else {
+    if (!opened) {
         dsd_input_failure_report(DSD_INPUT_FAILURE_DEVICE, -5);
+        return;
+    }
+    dsd_input_failure_clear();
+    if (g_config_rtl_airspy_stops_after_open) {
+        g_config_rtl_airspy_stops_after_open = 0;
+        dsd_input_failure_report(DSD_INPUT_FAILURE_DEVICE, -1);
     }
 }
 
 static void
 reset_config_rtl_wrap(void) {
     dsd_input_failure_clear();
+    g_config_rtl_airspy_stops_after_open = 0;
     g_config_rtl_creates = 0;
     g_config_rtl_create_capture = -1;
     g_config_rtl_captures = 0;
@@ -12158,8 +12167,9 @@ expect_input_failure(const char* label, int kind) {
  * the session had latched before the change, whatever that input is: a PCM input only put back, or an RTL-SDR or
  * SoapySDR input started again, whose start neither latches nor clears one. Input > Switch source and a config apply's
  * reopen both do, and so do a DSP bandwidth change and an Airspy setting, whose Airspy opens again; a failure latched
- * before the change (an rtl_tcp server that refused an earlier connect) stands as it was. A rollback whose restart
- * fails as well leaves the session with no input, and the failure latched stands.
+ * before the change (an rtl_tcp server that refused an earlier connect) stands as it was. A failure the restarted input
+ * latches itself stands too: an Airspy whose device stops at once, which its monitor thread latches before the start
+ * returns. A rollback whose restart fails as well leaves the session with no input, and the failure latched stands.
  */
 static int
 test_rollback_puts_back_the_input_failure(void) {
@@ -12234,6 +12244,36 @@ test_rollback_puts_back_the_input_failure(void) {
     rc |= submit_airspy_setting(&opts, &state, "airspy_sample_rate", "2500000", "latch airspy rate");
     rc |= expect_int("latch airspy rate: running", g_config_rtl_creates == 2 && state.rtl_ctx != NULL, 1);
     rc |= expect_input_failure("latch airspy rate: nothing latched", DSD_INPUT_FAILURE_NONE);
+
+    /* The Airspy that ran, opened again by each rollback (a DSP bandwidth change, an Airspy setting, a switch to an
+       RTL-SDR and a config's SoapySDR [input], none of which start), stops at once: its monitor thread latches a device
+       failure before the restart returns. That is the session's failure, and it stands. */
+    for (int caller = 0; caller < 4; ++caller) {
+        static const char* const labels[] = {"latch airspy bw 24, lost again", "latch airspy rate, lost again",
+                                             "latch airspy to rtl, lost again",
+                                             "latch cfg soapy over airspy, lost again"};
+        const char* label = labels[caller];
+        DSD_SNPRINTF(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", "airspy");
+        opts.audio_in_type = AUDIO_IN_RTL;
+        opts.rtl_dsp_bw_khz = 48;
+        state.rtl_ctx = (RtlSdrContext*)fake_ctx;
+        reset_config_rtl_wrap();
+        g_config_rtl_open_ok = 1;
+        g_config_rtl_fail_starts = 1;
+        g_config_rtl_airspy_stops_after_open = 1;
+        if (caller == 0) {
+            rc |= submit_dsp_bandwidth(&opts, &state, 24, label);
+        } else if (caller == 1) {
+            rc |= submit_airspy_setting(&opts, &state, "airspy_sample_rate", "2500000", label);
+        } else if (caller == 2) {
+            rc |= switch_input_from(&opts, &state, DSD_APP_CMD_RTL_ENABLE_INPUT, label);
+        } else {
+            rc |= submit_config_device_source(&opts, &state, DSDCFG_INPUT_SOAPY, 0, 0, label);
+        }
+        rc |= expect_str(label, opts.audio_in_dev, "airspy");
+        rc |= expect_int(label, g_config_rtl_creates == 2 && g_config_rtl_airspy_stops_after_open == 0, 1);
+        rc |= expect_input_failure(label, DSD_INPUT_FAILURE_DEVICE);
+    }
 
     /* The Airspy switched to an RTL-SDR that does not open, and its own restart does not open either: no input runs,
        and the failure the Airspy latched stands. */

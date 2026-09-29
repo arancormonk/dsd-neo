@@ -900,9 +900,11 @@ installs from `src/engine/trunk_tuning.c` in `src/engine/trunk_tuning_hooks_inst
   restart runs with `iq_capture_requested` cleared and leaves the capture off for the session. The failed start can
   also have latched a failure of its input for the session (an Airspy that did not open latches
   `DSD_INPUT_FAILURE_DEVICE`, which makes `dsd_engine_run_with_lifecycle()` return 1 at a normal end), and an RTL-SDR,
-  SoapySDR or PCM input put back clears none, so once the input that ran runs again (a PCM input too, which starts
-  nothing) the restart puts back the failure latched before the change: `ui_radio_input` takes it with the input, and
-  `svc_airspy_reopen_impl()` before its reopen; a restart that fails leaves the latch, with no input running. Its log names the file
+  SoapySDR or PCM input put back clears none, so the restart puts back the failure latched before the change
+  (`ui_radio_input` takes it with the input, and `svc_airspy_reopen_impl()` before its reopen) once the stream the
+  change left is stopped and before it starts anything (a PCM input starts nothing): a failure the restarted stream
+  latches stands, even one an Airspy's monitor thread latches before the start returns, and a restart that fails keeps
+  its own failure, or the change's when it latched none, with no input running. Its log names the file
   as kept only when the start the change made never opened the capture file (`rtl_stream_start_opened_capture()`: a
   width its analog check refused, a device that did not open, a capture writer that failed before it opened the file);
   a start that opened it before failing (its workers, an Airspy that did not stream) or that ran and was undone had

@@ -1416,14 +1416,9 @@ svc_rtl_restart(dsd_opts* opts, dsd_state* state) {
     return result;
 }
 
-int
-svc_rtl_restart_locked(dsd_opts* opts, dsd_state* state) {
-    if (!opts || !state) {
-        return -1;
-    }
-    int result = 0;
-
-    /* Stop and destroy any existing stream context. */
+/* Stop and destroy any existing stream context. */
+static void
+svc_rtl_stop_locked(dsd_opts* opts, dsd_state* state) {
     if (state->rtl_ctx) {
         rtl_stream_stop(state->rtl_ctx);
         rtl_stream_destroy(state->rtl_ctx);
@@ -1431,27 +1426,36 @@ svc_rtl_restart_locked(dsd_opts* opts, dsd_state* state) {
     }
     opts->rtl_started = 0;
     opts->rtl_needs_restart = 0;
+}
 
-    /* If the radio pipeline is the active input, immediately recreate and start the stream
-       so changes take effect as soon as the user confirms the setting. */
-    if (opts->audio_in_type == AUDIO_IN_RTL) {
-        if (rtl_stream_create(opts, &state->rtl_ctx) < 0) {
-            result = -1;
-            goto done;
-        }
-        if (rtl_stream_start(state->rtl_ctx) < 0) {
-            rtl_stream_destroy(state->rtl_ctx);
-            state->rtl_ctx = NULL;
-            result = -1;
-            goto done;
-        }
-        opts->rtl_started = 1;
-        opts->rtl_needs_restart = 0;
-        ++g_svc_rtl_starts;
+/* If the radio pipeline is the active input, create and start the stream so changes take effect as soon as the user
+   confirms the setting; nothing to start otherwise. Returns 0 then, or when the stream started. */
+static int
+svc_rtl_start_locked(dsd_opts* opts, dsd_state* state) {
+    if (opts->audio_in_type != AUDIO_IN_RTL) {
+        return 0;
     }
+    if (rtl_stream_create(opts, &state->rtl_ctx) < 0) {
+        return -1;
+    }
+    if (rtl_stream_start(state->rtl_ctx) < 0) {
+        rtl_stream_destroy(state->rtl_ctx);
+        state->rtl_ctx = NULL;
+        return -1;
+    }
+    opts->rtl_started = 1;
+    opts->rtl_needs_restart = 0;
+    ++g_svc_rtl_starts;
+    return 0;
+}
 
-done:
-    return result;
+int
+svc_rtl_restart_locked(dsd_opts* opts, dsd_state* state) {
+    if (!opts || !state) {
+        return -1;
+    }
+    svc_rtl_stop_locked(opts, state);
+    return svc_rtl_start_locked(opts, state);
 }
 
 int
@@ -1482,10 +1486,24 @@ svc_rtl_restart_recovery_locked(dsd_opts* opts, dsd_state* state, const dsd_inpu
                      opts->iq_capture_path);
         }
     }
-    const int rc = svc_rtl_restart_locked(opts, state);
-    /* The input that ran runs again, so a failure the failed start latched is not the session's. */
-    if (rc == 0 && failure_before) {
+    /* The input that ran runs again, so a failure the failed change latched is not the session's: the latch goes back
+       to the one from before the change once the stream the change left is gone and before the restart starts
+       anything, so a failure the restarted stream latches stands, even one its threads latch before its start returns
+       (an Airspy whose device stops at once). A restart that fails with the latch still reading the one put back (it
+       latched no failure of its own) leaves the change's failure in place, with no input running. */
+    svc_rtl_stop_locked(opts, state);
+    dsd_input_failure failed;
+    dsd_input_failure_get(&failed);
+    if (failure_before) {
         dsd_input_failure_report((dsd_input_failure_kind)failure_before->kind, failure_before->native_code);
+    }
+    const int rc = svc_rtl_start_locked(opts, state);
+    if (rc != 0 && failure_before) {
+        dsd_input_failure now;
+        dsd_input_failure_get(&now);
+        if (now.kind == failure_before->kind && now.native_code == failure_before->native_code) {
+            dsd_input_failure_report((dsd_input_failure_kind)failed.kind, failed.native_code);
+        }
     }
     return rc;
 }
