@@ -289,7 +289,10 @@ int dsd_scan_mode_configured_digital(const dsd_opts* opts, const dsd_state* stat
  * (dsd_scan_mode_configured_digital()), a row with a symbol clock (@p symbol_rate_hz > 0) lands the digital family
  * with its tune, whose output rate differs from the monitor's resampled audio rate: the rate is then the one that
  * family will run at for @p symbol_rate_hz and @p cqpsk (dsd_rtl_stream_metrics_hook_output_rate_for_family()), so
- * the decoder and the TED the tune queues are timed for the samples they will get. 0 without opts. */
+ * the decoder and the TED the tune queues are timed for the samples they will get. DSD_NEO_CQPSK decides that CQPSK
+ * state when set, unless the scope is a --trunk-scan target that makes its own choice (issue #583): P25 with a
+ * modulation value (auto, c4fm or cqpsk), or DMR or NXDN at either rate, whose @p cqpsk stands, as the engine lands it.
+ * 0 without opts. */
 int dsd_scan_mode_symbol_timing_rate_hz(const dsd_opts* opts, const dsd_state* state, int symbol_rate_hz, int cqpsk);
 #ifdef __cplusplus
 }

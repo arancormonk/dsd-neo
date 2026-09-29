@@ -1438,6 +1438,14 @@ rtl_demod_open_cqpsk_request(int requested_cqpsk) {
 }
 
 int
+rtl_demod_landing_cqpsk(int requested_cqpsk, int requested_is_explicit) {
+    if (requested_is_explicit && requested_cqpsk >= 0) {
+        return requested_cqpsk ? 1 : 0;
+    }
+    return rtl_demod_open_cqpsk_request(requested_cqpsk);
+}
+
+int
 rtl_demod_open_channel_profile(int landing_cqpsk, int requested_cqpsk, int channel_profile, int symbol_rate_hz,
                                int channel_lpf_enabled) {
     if (landing_cqpsk <= 0 && !channel_lpf_enabled) {

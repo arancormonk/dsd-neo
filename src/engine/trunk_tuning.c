@@ -349,13 +349,29 @@ dsd_engine_retune_leaves_analog_family(const dsd_opts* opts, const dsd_state* st
     return dsd_scan_mode_configured_digital(opts, state) && rtl_stream_analog_family_after_pending();
 }
 
+/* Whether the CQPSK state of the symbol profile queued for the parked trunk-scan target is the target's own choice,
+ * which stands over DSD_NEO_CQPSK where a retune out of the analog family lands (issue #583), as it does on a retune
+ * that stays on the digital family: a P25 target with a modulation value (c4fm, cqpsk or auto:
+ * dsd_engine_trunk_scan_active_p25_cqpsk_request() answers), or a DMR or NXDN target, whose GFSK chain always queues
+ * CQPSK off. A P25 target with no modulation, a -Y row and a plain -T retune (no coordinator) land where an open of the
+ * mode would. The decoder's timing decides the same from the scan scope (dsd_scan_mode_symbol_timing_rate_hz()). */
+static int
+dsd_engine_trunk_scan_cqpsk_explicit(const dsd_state* state) {
+    int requested_cqpsk = 0;
+    return (dsd_engine_trunk_scan_active_p25_cqpsk_request(state, &requested_cqpsk)
+            || dsd_engine_trunk_scan_active_gfsk_symbol_rate(state) > 0)
+               ? 1
+               : 0;
+}
+
 /* The output rate a four-level GFSK profile for @p symbol_rate_hz runs at once the retune lands: the stream's live
  * rate, or the digital family's while the retune leaves the analog family, whose monitor output is resampled to its
- * audio rate. */
+ * audio rate. A trunk-scan target's FSK stands over DSD_NEO_CQPSK there (dsd_engine_trunk_scan_cqpsk_explicit()). */
 static int
 dsd_engine_gfsk_landing_rate(const dsd_opts* opts, const dsd_state* state, int symbol_rate_hz) {
     if (dsd_engine_retune_leaves_analog_family(opts, state)) {
-        const unsigned int landing_hz = rtl_stream_output_rate_for_family(DSD_RX_FAMILY_DIGITAL, 0, symbol_rate_hz);
+        const unsigned int landing_hz = rtl_stream_output_rate_for_family(DSD_RX_FAMILY_DIGITAL, 0, symbol_rate_hz,
+                                                                          dsd_engine_trunk_scan_cqpsk_explicit(state));
         if (landing_hz > 0U) {
             return (int)landing_hz;
         }
@@ -442,7 +458,7 @@ dsd_engine_prepare_scan_analog_profile(const dsd_opts* opts, const dsd_state* st
     }
     dsd_engine_prepare_retune_profile_for_target(opts, state, (uint32_t)freq, -1, 0, 4, RTL_STREAM_CHANNEL_PROFILE_WIDE,
                                                  0, 0);
-    const rtl_stream_retune_analog_profile analog = {DSD_RX_FAMILY_ANALOG, opts->analog_demod, width_hz};
+    const rtl_stream_retune_analog_profile analog = {DSD_RX_FAMILY_ANALOG, opts->analog_demod, width_hz, 0};
     return rtl_stream_prepare_retune_analog_profile_for_target((uint32_t)freq, &analog);
 }
 
@@ -450,13 +466,16 @@ dsd_engine_prepare_scan_analog_profile(const dsd_opts* opts, const dsd_state* st
  * channel): the symbol profile already queued for the target lands on the digital family, which also retires any live
  * request queued before it (a width edit for the analog target). It is attached whenever the front end runs the analog
  * family or may run it once outstanding work lands (dsd_engine_retune_leaves_analog_family()); a digital-only session
- * never does, so it retunes as it always has. */
+ * never does, so it retunes as it always has. It says whether the profile's CQPSK state is a trunk-scan target's own
+ * choice (dsd_engine_trunk_scan_cqpsk_explicit()), which the stream then lands over DSD_NEO_CQPSK (issue #583); the
+ * stream ignores that for a profile that leaves the CQPSK state alone. */
 static void
 dsd_engine_prepare_digital_family(const dsd_opts* opts, const dsd_state* state, long int freq) {
     if (!dsd_engine_retune_leaves_analog_family(opts, state)) {
         return;
     }
-    const rtl_stream_retune_analog_profile digital = {DSD_RX_FAMILY_DIGITAL, DSD_ANALOG_DEMOD_FM, 0};
+    const rtl_stream_retune_analog_profile digital = {DSD_RX_FAMILY_DIGITAL, DSD_ANALOG_DEMOD_FM, 0,
+                                                      dsd_engine_trunk_scan_cqpsk_explicit(state)};
     (void)rtl_stream_prepare_retune_analog_profile_for_target((uint32_t)freq, &digital);
 }
 

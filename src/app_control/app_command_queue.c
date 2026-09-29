@@ -4307,7 +4307,7 @@ ui_started_stream_rate(const dsd_opts* opts, const dsd_state* state, dsd_decode_
         const int cqpsk = state->rf_mod == 1;
         int rate_hz = 0;
         if (rtl_stream_analog_family_active() && dsd_scan_mode_configured_digital(opts, state)) {
-            rate_hz = (int)rtl_stream_output_rate_for_family(DSD_RX_FAMILY_DIGITAL, cqpsk, profile.symbol_rate_hz);
+            rate_hz = (int)rtl_stream_output_rate_for_family(DSD_RX_FAMILY_DIGITAL, cqpsk, profile.symbol_rate_hz, 0);
         } else if (cqpsk) {
             rate_hz = rtl_stream_get_request_rate_hz();
         }

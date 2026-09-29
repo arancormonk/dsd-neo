@@ -412,7 +412,17 @@ drained in the same pass of the command queue as the mode change):
   P25 C4FM for a 4800 sym/s P25 CQPSK request turned onto the discriminator) and
   the open's enable rule: while the channel filter is off (`DSD_NEO_CHANNEL_LPF=0`,
   or a DSP rate below 20 kHz by default) an open on the discriminator keeps the
-  WIDE profile, and so does the switch, whatever profile the mode names. The
+  WIDE profile, and so does the switch, whatever profile the mode names. One
+  exception (issue #583): a trunk-scan target's retune out of the analog family
+  (after an `nfm-conventional` or `am-conventional` target) whose digital family
+  says the symbol profile's CQPSK state is the target's own choice
+  (`cqpsk_explicit`: a P25 target with a `modulation` value, `auto` included,
+  and every DMR or NXDN target, which runs FSK). That state stands over the
+  override, with the channel filter the profile names under the same enable
+  rule, as on a retune that stays on the digital family
+  (`rtl_demod_landing_cqpsk()`); the output-rate prediction follows it too.
+  `-Y` rows and P25 targets without a modulation still land where an open of
+  the mode would. The
   override does not reach the analog family: a `-fA` open runs the FM monitor
   under `DSD_NEO_CQPSK=1` (or a QPSK modulation), as the switch to analog does.
   The family request
@@ -553,7 +563,11 @@ discriminator output unchanged, at 48 kHz and through the 24 kHz resampler.
   its rate cannot realize an explicit width (the capture, centre, rate and width
   put back, and the retune completing as failed, a retune to the running centre
   included), the stop when the device does not return to a rate that fits it,
-  and analog retune profiles; `IO_RTL_ANALOG_FAMILY_SWITCH` checks that digital
+  analog retune profiles, and a trunk-scan target's own CQPSK choice landing
+  after an analog target under `DSD_NEO_CQPSK=0` and `=1` (CQPSK, C4FM and DMR
+  FSK, and profiles that are not the target's own, at a forced 78,125 Hz with
+  the predicted output rate); `IO_RTL_DEMOD_CONFIG` also holds
+  `rtl_demod_landing_cqpsk()`'s truth table; `IO_RTL_ANALOG_FAMILY_SWITCH` checks that digital
   -> analog -> digital ends on a fresh open for P25 C4FM/CQPSK, DMR, NXDN48 and
   dPMR, at unforced rates and at forced 78,125 and 60,000 Hz rates, under
   `DSD_NEO_CQPSK=0`/`=1` and with the channel filter off

@@ -11,7 +11,9 @@
 #include <dsd-neo/dsp/demod_state.h>
 #include <dsd-neo/io/iq_types.h>
 #include <dsd-neo/io/rtl_stream_c.h>
+#include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/runtime/analog_channel.h>
+#include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/exitflag.h>
 #include <dsd-neo/runtime/input_failure.h>
 #include <dsd-neo/runtime/log.h>
@@ -878,6 +880,115 @@ test_dmr_retune_after_an_analog_retune_lands_on_fsk(void) {
     failed |= expect_landing("nfm target", &r[0], 1, 12500, DSD_DEMOD_OUTPUT_AUDIO_MONITOR);
     failed |= expect_landing("dmr target after it", &r[1], 0, 0, DSD_DEMOD_OUTPUT_FSK_DISCRIMINATOR);
     failed |= expect_int_eq("dmr target runs CQPSK off", r[1].applied_cqpsk_enable, 0);
+    return failed;
+}
+
+namespace {
+/* One digital target's landing after an nfm target's (issue #583): the symbol profile it queues, and what it must land
+ * on under the DSD_NEO_CQPSK value a case sets. */
+struct item3_landing {
+    const char* name;
+    int symbol_profile; /* RTL_STREAM_TEST_SYMBOL_* */
+    int cqpsk_enable;
+    int output_kind;
+    int channel_profile;
+    int output_rate;
+};
+} // namespace
+
+/* Under DSD_NEO_CQPSK=@p cqpsk_env, land each of @p want's digital targets after an nfm target on a stream whose device
+ * settled on 78125 Hz (where the FSK discriminator is resampled to 48 kHz and CQPSK is not), and check what it lands
+ * on, and that rtl_stream_output_rate_for_family(), asked beforehand with the profile's CQPSK state and whether it is
+ * the target's own, predicted the rate it runs at. */
+static int
+expect_item3_landings(const char* cqpsk_env, const item3_landing* want, size_t count) {
+    enum { kMaxTargets = 8 };
+
+    if (count == 0U || count > kMaxTargets) {
+        return 1;
+    }
+    (void)dsd_setenv("DSD_NEO_CQPSK", cqpsk_env, 1);
+    dsd_neo_config_init();
+    rtl_stream_test_retune_step steps[2U * kMaxTargets];
+    DSD_MEMSET(steps, 0, sizeof steps);
+    for (size_t i = 0; i < count; i++) {
+        steps[2U * i] = {DSD_RX_FAMILY_ANALOG,
+                         DSD_ANALOG_DEMOD_FM,
+                         12500,
+                         RTL_STREAM_TEST_SYMBOL_NONE,
+                         -1,
+                         -1,
+                         RTL_STREAM_TEST_QUEUED_NONE,
+                         0};
+        steps[(2U * i) + 1U] = {DSD_RX_FAMILY_DIGITAL,
+                                DSD_ANALOG_DEMOD_FM,
+                                0,
+                                want[i].symbol_profile,
+                                -1,
+                                -1,
+                                RTL_STREAM_TEST_QUEUED_NONE,
+                                0};
+    }
+    rtl_stream_test_retune_landing r[2U * kMaxTargets];
+    DSD_MEMSET(r, 0, sizeof r);
+    char label[160];
+    DSD_SNPRINTF(label, sizeof label, "DSD_NEO_CQPSK=%s: item 3 sequence hook", cqpsk_env);
+    int failed = expect_int_eq(label, rtl_stream_test_retune_profile_sequence_at_rate(steps, 2U * count, 78125, r), 0);
+    for (size_t i = 0; i < count; i++) {
+        const rtl_stream_test_retune_landing* nfm = &r[2U * i];
+        const rtl_stream_test_retune_landing* digital = &r[(2U * i) + 1U];
+        DSD_SNPRINTF(label, sizeof label, "DSD_NEO_CQPSK=%s: nfm target before %s", cqpsk_env, want[i].name);
+        failed |= expect_landing(label, nfm, 1, 12500, DSD_DEMOD_OUTPUT_AUDIO_MONITOR);
+        DSD_SNPRINTF(label, sizeof label, "DSD_NEO_CQPSK=%s: %s", cqpsk_env, want[i].name);
+        failed |= expect_landing(label, digital, 0, 0, want[i].output_kind);
+        DSD_SNPRINTF(label, sizeof label, "DSD_NEO_CQPSK=%s: %s CQPSK", cqpsk_env, want[i].name);
+        failed |= expect_int_eq(label, digital->applied_cqpsk_enable, want[i].cqpsk_enable);
+        DSD_SNPRINTF(label, sizeof label, "DSD_NEO_CQPSK=%s: %s channel filter", cqpsk_env, want[i].name);
+        failed |= expect_int_eq(label, digital->applied_channel_profile, want[i].channel_profile);
+        DSD_SNPRINTF(label, sizeof label, "DSD_NEO_CQPSK=%s: %s output rate", cqpsk_env, want[i].name);
+        failed |= expect_int_eq(label, digital->applied_output_rate, want[i].output_rate);
+        DSD_SNPRINTF(label, sizeof label, "DSD_NEO_CQPSK=%s: %s predicted rate", cqpsk_env, want[i].name);
+        failed |= expect_int_eq(label, digital->predicted_output_rate, digital->applied_output_rate);
+    }
+    (void)dsd_unsetenv("DSD_NEO_CQPSK");
+    dsd_neo_config_init();
+    return failed;
+}
+
+/* Item 3 of issue #583 and its GFSK sibling: a trunk-scan target's own CQPSK choice stands over DSD_NEO_CQPSK when its
+ * retune leaves the analog family after an nfm target, as it does on a digital-to-digital retune. A P25 target with
+ * modulation=cqpsk lands on CQPSK with the P25 CQPSK filter under DSD_NEO_CQPSK=0; one with modulation=c4fm lands on the
+ * FSK discriminator with the P25 C4FM filter under =1; a DMR target, which always runs FSK, lands on the discriminator
+ * under =1. A profile whose CQPSK state is not the target's own (a -Y row, a P25 target with no modulation) still lands
+ * where an open of the mode would, as the override says. */
+static int
+test_target_cqpsk_choice_stands_after_an_analog_target(void) {
+    static const item3_landing cqpsk_off[] = {
+        {"explicit cqpsk", RTL_STREAM_TEST_SYMBOL_P25_CQPSK_EXPLICIT, 1, DSD_DEMOD_OUTPUT_SYMBOL_CQPSK,
+         DSD_CH_LPF_PROFILE_P25_CQPSK, 78125},
+        {"explicit c4fm", RTL_STREAM_TEST_SYMBOL_P25_C4FM_EXPLICIT, 0, DSD_DEMOD_OUTPUT_FSK_DISCRIMINATOR,
+         DSD_CH_LPF_PROFILE_P25_C4FM, 48000},
+        {"dmr target", RTL_STREAM_TEST_SYMBOL_DMR_FSK_EXPLICIT, 0, DSD_DEMOD_OUTPUT_FSK_DISCRIMINATOR,
+         DSD_CH_LPF_PROFILE_12K5, 48000},
+        {"-Y dmr row", RTL_STREAM_TEST_SYMBOL_DMR_FSK, 0, DSD_DEMOD_OUTPUT_FSK_DISCRIMINATOR, DSD_CH_LPF_PROFILE_12K5,
+         48000},
+        {"cqpsk not the target's own", RTL_STREAM_TEST_SYMBOL_P25_CQPSK, 0, DSD_DEMOD_OUTPUT_FSK_DISCRIMINATOR,
+         DSD_CH_LPF_PROFILE_P25_C4FM, 48000},
+    };
+    static const item3_landing cqpsk_on[] = {
+        {"explicit cqpsk", RTL_STREAM_TEST_SYMBOL_P25_CQPSK_EXPLICIT, 1, DSD_DEMOD_OUTPUT_SYMBOL_CQPSK,
+         DSD_CH_LPF_PROFILE_P25_CQPSK, 78125},
+        {"explicit c4fm", RTL_STREAM_TEST_SYMBOL_P25_C4FM_EXPLICIT, 0, DSD_DEMOD_OUTPUT_FSK_DISCRIMINATOR,
+         DSD_CH_LPF_PROFILE_P25_C4FM, 48000},
+        {"dmr target", RTL_STREAM_TEST_SYMBOL_DMR_FSK_EXPLICIT, 0, DSD_DEMOD_OUTPUT_FSK_DISCRIMINATOR,
+         DSD_CH_LPF_PROFILE_12K5, 48000},
+        {"-Y dmr row", RTL_STREAM_TEST_SYMBOL_DMR_FSK, 1, DSD_DEMOD_OUTPUT_SYMBOL_CQPSK, DSD_CH_LPF_PROFILE_P25_CQPSK,
+         78125},
+        {"cqpsk not the target's own", RTL_STREAM_TEST_SYMBOL_P25_CQPSK, 1, DSD_DEMOD_OUTPUT_SYMBOL_CQPSK,
+         DSD_CH_LPF_PROFILE_P25_CQPSK, 78125},
+    };
+    int failed = expect_item3_landings("0", cqpsk_off, sizeof cqpsk_off / sizeof cqpsk_off[0]);
+    failed |= expect_item3_landings("1", cqpsk_on, sizeof cqpsk_on / sizeof cqpsk_on[0]);
     return failed;
 }
 
@@ -1762,6 +1873,7 @@ main(void) {
     failed |= test_retune_family_superseded_while_it_lands();
     failed |= test_live_family_request_count();
     failed |= test_dmr_retune_after_an_analog_retune_lands_on_fsk();
+    failed |= test_target_cqpsk_choice_stands_after_an_analog_target();
     failed |= test_analog_family_after_pending();
 
     return failed ? 1 : 0;

@@ -6158,7 +6158,8 @@ int __wrap_rtl_stream_request_analog_profile(int family, int kind, int width_hz)
 int __wrap_rtl_stream_request_demod_profile(int cqpsk_enable, int symbol_rate_hz, int levels, int channel_profile,
                                             int ted_sps, int ted_sps_is_override);
 int __wrap_rtl_stream_analog_family_active(void);
-unsigned int __wrap_rtl_stream_output_rate_for_family(int family, int cqpsk_enable, int symbol_rate_hz);
+unsigned int __wrap_rtl_stream_output_rate_for_family(int family, int cqpsk_enable, int symbol_rate_hz,
+                                                      int cqpsk_explicit);
 void __wrap_rtl_stream_set_digital_decode_modes(const dsd_opts* opts);
 uint32_t __wrap_rtl_stream_receive_request_seq(void);
 int __wrap_rtl_stream_receive_request_outcome(uint32_t seq);
@@ -6354,12 +6355,13 @@ __wrap_rtl_stream_analog_family_active(void) {
     return g_fake_analog_family;
 }
 
-/* A switch out of the analog family lands on the CQPSK state an open of the mode would, DSD_NEO_CQPSK's when set. */
+/* A switch out of the analog family lands on the CQPSK state an open of the mode would, DSD_NEO_CQPSK's when set,
+ * unless it is a trunk-scan target's own choice (issue #583), which no command here asks for. */
 unsigned int
-__wrap_rtl_stream_output_rate_for_family(int family, int cqpsk_enable, int symbol_rate_hz) {
+__wrap_rtl_stream_output_rate_for_family(int family, int cqpsk_enable, int symbol_rate_hz, int cqpsk_explicit) {
     (void)family;
     (void)symbol_rate_hz;
-    const int landing_cqpsk = g_fake_cqpsk_env >= 0 ? g_fake_cqpsk_env : cqpsk_enable;
+    const int landing_cqpsk = (g_fake_cqpsk_env >= 0 && !cqpsk_explicit) ? g_fake_cqpsk_env : cqpsk_enable;
     return (landing_cqpsk <= 0 && g_fake_digital_fsk_rate > 0U) ? g_fake_digital_fsk_rate : g_fake_digital_rate;
 }
 

@@ -480,9 +480,35 @@ dsd_scan_mode_configured_digital(const dsd_opts* opts, const dsd_state* state) {
     return scan_configured_digital(opts, configured ? configured->analog_only : opts->analog_only);
 }
 
-/* The rate a row with @p symbol_rate_hz (0: no symbol clock) is timed for; see dsd_scan_mode_symbol_timing_rate_hz(). */
+/* Whether the target @p scope runs makes its own CQPSK choice, which stands over DSD_NEO_CQPSK where its tune lands out
+ * of the analog family (issue #583): under --trunk-scan, a P25 target with a modulation value (auto, c4fm or cqpsk),
+ * and a DMR or NXDN target, which runs the FSK discriminator whatever the override says. Only the trunk-scan
+ * coordinator sets a scope's modulation (dsd_scan_mode_target_modulation()), and it maps exactly its DMR and NXDN
+ * target types to those three modes, so this is the rule the engine attaches the digital family by
+ * (dsd_engine_prepare_digital_family()): the decoder is timed for the CQPSK state the tune lands. A -Y row of the same
+ * modes, and a P25 target with no modulation, land where an open of the mode would. */
 static int
-scan_timing_rate_hz(const dsd_opts* opts, int configured_digital, int symbol_rate_hz, int cqpsk) {
+scan_scope_cqpsk_explicit(const dsd_opts* opts, const scan_scope* scope) {
+    if (!scope || opts->trunk_scan_enabled != 1) {
+        return 0;
+    }
+    switch (scope->mode) {
+        case DSD_SCAN_MODE_P25:
+            return (scope->modulation == DSD_SCAN_MODULATION_AUTO || scope->modulation == DSD_SCAN_MODULATION_C4FM
+                    || scope->modulation == DSD_SCAN_MODULATION_CQPSK)
+                       ? 1
+                       : 0;
+        case DSD_SCAN_MODE_DMR:
+        case DSD_SCAN_MODE_NXDN96:
+        case DSD_SCAN_MODE_NXDN48: return 1;
+        default: return 0;
+    }
+}
+
+/* The rate a row with @p symbol_rate_hz (0: no symbol clock) is timed for; see dsd_scan_mode_symbol_timing_rate_hz().
+ * @p cqpsk_explicit says @p cqpsk is the target's own choice (scan_scope_cqpsk_explicit()). */
+static int
+scan_timing_rate_hz(const dsd_opts* opts, int configured_digital, int symbol_rate_hz, int cqpsk, int cqpsk_explicit) {
     const int input_rate = dsd_opts_current_input_timing_rate(opts);
     if (opts->audio_in_type != AUDIO_IN_RTL) {
         return input_rate;
@@ -490,9 +516,10 @@ scan_timing_rate_hz(const dsd_opts* opts, int configured_digital, int symbol_rat
     if (symbol_rate_hz > 0 && configured_digital && dsd_rtl_stream_metrics_hook_analog_family_after_pending()) {
         /* The tune switches the family, and the output rate with it, only once it lands on the demod thread. It
            lands the digital family whenever the engine attaches one to it, by the same answer (issue #583): the
-           analog family runs now, or may once an analog retune or request already outstanding lands. */
-        const unsigned int landing_hz =
-            dsd_rtl_stream_metrics_hook_output_rate_for_family(DSD_RX_FAMILY_DIGITAL, cqpsk ? 1 : 0, symbol_rate_hz);
+           analog family runs now, or may once an analog retune or request already outstanding lands. It lands the
+           target's own CQPSK choice where it has one, and otherwise the one DSD_NEO_CQPSK names when set. */
+        const unsigned int landing_hz = dsd_rtl_stream_metrics_hook_output_rate_for_family(
+            DSD_RX_FAMILY_DIGITAL, cqpsk ? 1 : 0, symbol_rate_hz, cqpsk_explicit ? 1 : 0);
         if (landing_hz > 0U) {
             return (int)landing_hz;
         }
@@ -506,7 +533,8 @@ dsd_scan_mode_symbol_timing_rate_hz(const dsd_opts* opts, const dsd_state* state
     if (!opts) {
         return 0;
     }
-    return scan_timing_rate_hz(opts, dsd_scan_mode_configured_digital(opts, state), symbol_rate_hz, cqpsk);
+    return scan_timing_rate_hz(opts, dsd_scan_mode_configured_digital(opts, state), symbol_rate_hz, cqpsk,
+                               scan_scope_cqpsk_explicit(opts, scan_scope_get(state)));
 }
 
 /* Time the decoder for the row @p scope describes. The scope's own configured baseline says whether the configured
@@ -517,7 +545,7 @@ scan_scope_apply_timing(const dsd_opts* opts, dsd_state* state, const scan_scope
                         dsd_decode_mode_profile profile) {
     const int clock_hz = dsd_scan_mode_is_analog(scope->mode) ? 0 : profile.symbol_rate_hz;
     const int rate_hz = scan_timing_rate_hz(opts, scan_configured_digital(opts, scope->configured.analog_only),
-                                            clock_hz, state->rf_mod == 1);
+                                            clock_hz, state->rf_mod == 1, scan_scope_cqpsk_explicit(opts, scope));
     state->samplesPerSymbol = dsd_opts_compute_sps_rate(opts, profile.symbol_rate_hz, rate_hz);
     state->symbolCenter = dsd_opts_symbol_center(state->samplesPerSymbol);
     state->sps_hunt_idx = (int)profile.sps_profile_index;
@@ -872,7 +900,8 @@ scan_configured_retime(const dsd_opts* opts, dsd_state* state) {
     if (profile.symbol_rate_hz <= 0) {
         return;
     }
-    const int rate_hz = scan_timing_rate_hz(opts, 1, profile.symbol_rate_hz, state->rf_mod == 1);
+    /* The configured decoder is no target: its switch lands where an open of the mode would. */
+    const int rate_hz = scan_timing_rate_hz(opts, 1, profile.symbol_rate_hz, state->rf_mod == 1, 0);
     state->samplesPerSymbol = dsd_opts_compute_sps_rate(opts, profile.symbol_rate_hz, rate_hz);
     state->symbolCenter = dsd_opts_symbol_center(state->samplesPerSymbol);
 }

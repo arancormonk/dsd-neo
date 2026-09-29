@@ -99,6 +99,10 @@ static int g_rtl_analog_prepare_calls = 0;
 static int g_rtl_analog_prepare_rc = 0;
 static rtl_stream_retune_analog_profile g_rtl_analog_prepared;
 static uint32_t g_rtl_analog_prepared_target_hz = 0U;
+/* What the stub stream answers for the analog family once outstanding work lands (issue #583), and the cqpsk_explicit
+ * argument of the last digital-family output-rate query (-1: none). */
+static int g_rtl_analog_family_after_pending = 0;
+static int g_rtl_rate_for_family_explicit = -1;
 static size_t g_trunk_scan_target_count = 0;
 static int g_trunk_scan_active_gfsk_symbol_rate = 0;
 static int g_trunk_scan_saved_autogain_is_set = 0;
@@ -566,17 +570,20 @@ rtl_stream_analog_family_active(void) {
     return 0;
 }
 
-/* Nothing outstanding lands the analog family either (issue #583), so these retunes attach no family. */
+/* Nothing outstanding lands the analog family either (issue #583), so these retunes attach no family, unless a case
+ * puts the front end behind an analog target. */
 int
 rtl_stream_analog_family_after_pending(void) {
-    return 0;
+    return g_rtl_analog_family_after_pending;
 }
 
 unsigned int
-rtl_stream_output_rate_for_family(int family, int cqpsk_enable, int symbol_rate_hz) {
-    (void)family;
+rtl_stream_output_rate_for_family(int family, int cqpsk_enable, int symbol_rate_hz, int cqpsk_explicit) {
     (void)cqpsk_enable;
     (void)symbol_rate_hz;
+    if (family == DSD_RX_FAMILY_DIGITAL) {
+        g_rtl_rate_for_family_explicit = cqpsk_explicit;
+    }
     return 48000U;
 }
 
@@ -650,6 +657,72 @@ const dsdneoRuntimeConfig*
 dsd_neo_get_config(void) {
     return g_runtime_config_is_set ? &g_runtime_config : NULL;
 }
+
+#ifdef USE_RADIO
+/* Issue #583 item 3 through the trunked path: a p25-trunk target's control-channel tune after an analog target, with
+ * DSD_NEO_CQPSK forcing CQPSK off and the target asking for CQPSK. Its retune attaches the digital family, and says the
+ * CQPSK request queued with it is the target's own, so the stream lands it on CQPSK as it would after a digital
+ * target. Without a modulation of its own the request is left to the stream and the family says nothing; a DMR target
+ * (the GFSK chain, CQPSK off) always says so, and times its TED by the same rule. */
+static void
+test_trunked_targets_after_an_analog_target_keep_their_cqpsk(dsd_opts* opts, dsd_state* state) {
+    DSD_MEMSET(opts, 0, sizeof(*opts));
+    DSD_MEMSET(state, 0, sizeof(*state));
+    DSD_MEMSET(&g_runtime_config, 0, sizeof(g_runtime_config));
+    opts->audio_in_type = AUDIO_IN_RTL;
+    opts->trunk_enable = 1;
+    opts->trunk_scan_enabled = 1;
+    state->rtl_ctx = (RtlSdrContext*)state;
+    state->p25_cc_is_tdma = 0;
+    g_runtime_config_is_set = 1;
+    g_runtime_config.cqpsk_is_set = 1;
+    g_runtime_config.cqpsk_enable = 0;
+    g_trunk_scan_active_p25_target = 1;
+    g_trunk_scan_active_p25_cqpsk_is_set = 1;
+    g_trunk_scan_active_p25_cqpsk_enable = 1;
+    g_rtl_analog_family_after_pending = 1;
+    g_rtl_tune_result = RTL_STREAM_TUNE_OK;
+    g_rtl_pending_active = 0;
+    g_rtl_analog_prepare_calls = 0;
+    DSD_MEMSET(&g_rtl_analog_prepared, 0, sizeof(g_rtl_analog_prepared));
+    assert(dsd_engine_trunk_tune_to_cc_request(opts, state, 853250000, 5, 0U) == DSD_TRUNK_TUNE_RESULT_OK);
+    assert(state->rf_mod == 1);
+    assert(g_rtl_analog_prepare_calls == 1);
+    assert(g_rtl_analog_prepared.family == DSD_RX_FAMILY_DIGITAL);
+    assert(g_rtl_analog_prepared_target_hz == 853250000U);
+    assert(g_rtl_analog_prepared.cqpsk_explicit == 1);
+
+    /* No modulation of its own: the override decides where it lands. */
+    g_trunk_scan_active_p25_cqpsk_is_set = 0;
+    g_rtl_analog_prepare_calls = 0;
+    DSD_MEMSET(&g_rtl_analog_prepared, 0, sizeof(g_rtl_analog_prepared));
+    assert(dsd_engine_trunk_tune_to_cc_request(opts, state, 853500000, 5, 0U) == DSD_TRUNK_TUNE_RESULT_OK);
+    assert(g_rtl_analog_prepare_calls == 1);
+    assert(g_rtl_analog_prepared.family == DSD_RX_FAMILY_DIGITAL);
+    assert(g_rtl_analog_prepared.cqpsk_explicit == 0);
+
+    /* A DMR trunk target under DSD_NEO_CQPSK=1: the GFSK chain's CQPSK off stands. */
+    g_runtime_config.cqpsk_enable = 1;
+    g_trunk_scan_active_p25_target = 0;
+    g_trunk_scan_active_gfsk_symbol_rate = 4800;
+    g_trunk_scan_target_count = 1;
+    g_rtl_rate_for_family_explicit = -1;
+    g_rtl_analog_prepare_calls = 0;
+    DSD_MEMSET(&g_rtl_analog_prepared, 0, sizeof(g_rtl_analog_prepared));
+    assert(dsd_engine_trunk_tune_to_cc_request(opts, state, 461750000, 10, 0U) == DSD_TRUNK_TUNE_RESULT_OK);
+    assert(g_rtl_analog_prepare_calls == 1);
+    assert(g_rtl_analog_prepared.family == DSD_RX_FAMILY_DIGITAL);
+    assert(g_rtl_analog_prepared.cqpsk_explicit == 1);
+    assert(g_rtl_rate_for_family_explicit == 1);
+
+    g_trunk_scan_active_gfsk_symbol_rate = 0;
+    g_trunk_scan_target_count = 0;
+    g_rtl_analog_family_after_pending = 0;
+    g_runtime_config_is_set = 0;
+    g_trunk_scan_active_p25_cqpsk_is_set = 0;
+    rtl_stream_clear_pending_retune_profile();
+}
+#endif
 
 static void
 test_backend_tune_updates_center_freq_cache(void) {
@@ -2202,6 +2275,10 @@ main(void) {
                == (cc_type == 1 ? RTL_STREAM_CHANNEL_PROFILE_P25_CQPSK : RTL_STREAM_CHANNEL_PROFILE_P25_C4FM));
         rtl_stream_clear_pending_retune_profile();
     }
+#endif
+
+#ifdef USE_RADIO
+    test_trunked_targets_after_an_analog_target_keep_their_cqpsk(opts, state);
 #endif
 
     printf("ENGINE_TRUNK_RETUNE_REGRESSION: OK\n");

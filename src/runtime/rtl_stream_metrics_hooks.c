@@ -150,13 +150,15 @@ dsd_rtl_stream_metrics_hook_analog_family_after_pending(void) {
 }
 
 unsigned int
-dsd_rtl_stream_metrics_hook_output_rate_for_family(int family, int cqpsk_enable, int symbol_rate_hz) {
+dsd_rtl_stream_metrics_hook_output_rate_for_family(int family, int cqpsk_enable, int symbol_rate_hz,
+                                                   int cqpsk_explicit) {
     if (g_rtl_stream_metrics_hooks.output_rate_for_family) {
-        return g_rtl_stream_metrics_hooks.output_rate_for_family(family, cqpsk_enable, symbol_rate_hz);
+        return g_rtl_stream_metrics_hooks.output_rate_for_family(family, cqpsk_enable, symbol_rate_hz, cqpsk_explicit);
     }
     (void)family;
     (void)cqpsk_enable;
     (void)symbol_rate_hz;
+    (void)cqpsk_explicit;
     return 0U;
 }
 

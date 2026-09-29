@@ -254,6 +254,7 @@ static int g_family_active_result = 0;
 static int g_rate_for_family_family = -1;
 static int g_rate_for_family_cqpsk = -1;
 static int g_rate_for_family_symbol_rate = -1;
+static int g_rate_for_family_explicit = -1;
 
 static int
 fake_analog_family_active(void) {
@@ -261,10 +262,11 @@ fake_analog_family_active(void) {
 }
 
 static unsigned int
-fake_output_rate_for_family(int family, int cqpsk_enable, int symbol_rate_hz) {
+fake_output_rate_for_family(int family, int cqpsk_enable, int symbol_rate_hz, int cqpsk_explicit) {
     g_rate_for_family_family = family;
     g_rate_for_family_cqpsk = cqpsk_enable;
     g_rate_for_family_symbol_rate = symbol_rate_hz;
+    g_rate_for_family_explicit = cqpsk_explicit;
     return 24000U;
 }
 
@@ -274,7 +276,8 @@ static void
 test_family_hooks(void) {
     dsd_rtl_stream_metrics_hooks_set(NULL);
     assert(dsd_rtl_stream_metrics_hook_analog_family_active() == 0);
-    assert(dsd_rtl_stream_metrics_hook_output_rate_for_family(0, 0, 4800) == 0U);
+    assert(dsd_rtl_stream_metrics_hook_output_rate_for_family(0, 0, 4800, 0) == 0U);
+    assert(dsd_rtl_stream_metrics_hook_output_rate_for_family(0, 1, 4800, 1) == 0U);
 
     dsd_rtl_stream_metrics_hooks hooks = {0};
     hooks.analog_family_active = fake_analog_family_active;
@@ -288,8 +291,12 @@ test_family_hooks(void) {
     assert(dsd_rtl_stream_metrics_hook_analog_family_active() == 0);
     g_family_active_result = 0;
     assert(dsd_rtl_stream_metrics_hook_analog_family_active() == 0);
-    assert(dsd_rtl_stream_metrics_hook_output_rate_for_family(0, 1, 6000) == 24000U);
+    assert(dsd_rtl_stream_metrics_hook_output_rate_for_family(0, 1, 6000, 0) == 24000U);
     assert(g_rate_for_family_family == 0 && g_rate_for_family_cqpsk == 1 && g_rate_for_family_symbol_rate == 6000);
+    assert(g_rate_for_family_explicit == 0);
+    /* A trunk-scan target's own CQPSK choice is forwarded with the rest (issue #583). */
+    assert(dsd_rtl_stream_metrics_hook_output_rate_for_family(0, 0, 4800, 1) == 24000U);
+    assert(g_rate_for_family_cqpsk == 0 && g_rate_for_family_symbol_rate == 4800 && g_rate_for_family_explicit == 1);
     dsd_rtl_stream_metrics_hooks_set(NULL);
 }
 

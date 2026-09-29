@@ -55,8 +55,9 @@ typedef struct {
     int (*analog_family_active)(void);
     /* 1 while it runs the analog family, or may once the requests and retunes already outstanding land. */
     int (*analog_family_after_pending)(void);
-    /* Output rate the front end will have once it runs the family (dsd_rx_family); 0 when unknown. */
-    unsigned int (*output_rate_for_family)(int family, int cqpsk_enable, int symbol_rate_hz);
+    /* Output rate the front end will have once it runs the family (dsd_rx_family); 0 when unknown. cqpsk_explicit: the
+       CQPSK state is a trunk-scan target's own choice, which stands over DSD_NEO_CQPSK at the switch. */
+    unsigned int (*output_rate_for_family)(int family, int cqpsk_enable, int symbol_rate_hz, int cqpsk_explicit);
 } dsd_rtl_stream_metrics_hooks;
 
 typedef enum DSD_ATTR_PACKED dsd_rtl_stream_channel_profile {
@@ -139,11 +140,16 @@ int dsd_rtl_stream_metrics_hook_analog_family_after_pending(void);
  * family reads this rather than the current output rate.
  *
  * @param family         dsd_rx_family.
- * @param cqpsk_enable   Non-zero for the CQPSK symbol output (digital family only).
+ * @param cqpsk_enable   Non-zero for the CQPSK symbol output (digital family only). DSD_NEO_CQPSK overrides it when
+ *                       set, as it does where the switch lands, unless @p cqpsk_explicit.
  * @param symbol_rate_hz Digital symbol rate, which decides the digital resampling policy.
+ * @param cqpsk_explicit Non-zero when @p cqpsk_enable is a trunk-scan target's own choice (a P25 target's
+ *                       `modulation`, or a DMR/NXDN target's FSK), which stands over DSD_NEO_CQPSK where the retune
+ *                       the engine queues for it lands (rtl_stream_output_rate_for_family(), issue #583).
  * @return Predicted output rate in Hz, or 0 when it is unknown or no RTL front end is installed.
  */
-unsigned int dsd_rtl_stream_metrics_hook_output_rate_for_family(int family, int cqpsk_enable, int symbol_rate_hz);
+unsigned int dsd_rtl_stream_metrics_hook_output_rate_for_family(int family, int cqpsk_enable, int symbol_rate_hz,
+                                                                int cqpsk_explicit);
 int dsd_rtl_stream_metrics_hook_cqpsk_status(int* out_cqpsk_enable, int* out_cqpsk_timing_active);
 int dsd_rtl_stream_metrics_hook_request_cqpsk_reacquire(void);
 int dsd_rtl_stream_metrics_hook_cqpsk_timing_bias(void);

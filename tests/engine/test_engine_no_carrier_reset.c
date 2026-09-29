@@ -116,6 +116,8 @@ static int g_pending_ted_override = 0;
 static int g_pending_analog_family = -1;
 static int g_pending_analog_kind = 0;
 static int g_pending_analog_width_hz = 0;
+/* Whether the digital family attached says the profile's CQPSK state is the target's own (issue #583). */
+static int g_pending_cqpsk_explicit = 0;
 static int g_refuse_analog_profile = 0;
 static int g_analog_attach_calls = 0;
 /* What the fake front end runs: the analog family (monitor output) or not, and its width. */
@@ -138,6 +140,10 @@ static int g_live_family_requests = 0;
 static int g_pending_family_requests = 0;
 static int g_rtl_analog_request_queued = 0;
 static int g_rtl_analog_request_width_hz = 0;
+/* Issue #583: the cqpsk_explicit argument of the last digital-family output-rate query (-1: none since the reset),
+ * asked by the tuning side straight from the stream, and by the decoder through the metrics hooks. */
+static int g_stream_rate_explicit = -1;
+static int g_hook_rate_explicit = -1;
 
 /* A retune profile as the fake stream queues it (the g_pending_* fields). */
 typedef struct fake_retune_profile {
@@ -153,6 +159,7 @@ typedef struct fake_retune_profile {
     int analog_kind;
     int analog_width_hz;
     int family_requests;
+    int cqpsk_explicit;
 } fake_retune_profile;
 
 /* A tune the controller still owns (issue #583). */
@@ -170,10 +177,13 @@ typedef struct fake_retune {
 static int g_rtl_timeout_outstanding = 0;
 static fake_retune g_retune_in_flight;
 static fake_retune g_retune_queued;
-/* The receive family attached to each tune's retune profile, recorded before the fake applies it (-1: none). */
+/* The receive family attached to each tune's retune profile, recorded before the fake applies it (-1: none), with the
+ * profile's CQPSK request (-2: no profile) and whether the family attached says it is the target's own (-1: none). */
 #define FAKE_TUNE_LOG_MAX 16
 static uint32_t g_tune_log_freq[FAKE_TUNE_LOG_MAX];
 static int g_tune_log_family[FAKE_TUNE_LOG_MAX];
+static int g_tune_log_cqpsk[FAKE_TUNE_LOG_MAX];
+static int g_tune_log_explicit[FAKE_TUNE_LOG_MAX];
 static int g_tune_log_count = 0;
 
 static void
@@ -200,6 +210,7 @@ reset_rtl_profile_fakes(void) {
     g_pending_analog_family = -1;
     g_pending_analog_kind = 0;
     g_pending_analog_width_hz = 0;
+    g_pending_cqpsk_explicit = 0;
     g_refuse_analog_profile = 0;
     g_analog_attach_calls = 0;
     g_rtl_analog_family = 0;
@@ -215,6 +226,8 @@ reset_rtl_profile_fakes(void) {
     g_pending_family_requests = 0;
     g_rtl_analog_request_queued = 0;
     g_rtl_analog_request_width_hz = 0;
+    g_stream_rate_explicit = -1;
+    g_hook_rate_explicit = -1;
     g_rtl_timeout_outstanding = 0;
     g_retune_in_flight = (fake_retune){0};
     g_retune_queued = (fake_retune){0};
@@ -250,14 +263,23 @@ __wrap_rtl_stream_output_rate(const RtlSdrContext* ctx) {
     return (uint32_t)g_rtl_output_rate;
 }
 
-unsigned int
-__wrap_rtl_stream_output_rate_for_family(int family, int cqpsk_enable, int symbol_rate_hz) {
-    (void)cqpsk_enable;
-    (void)symbol_rate_hz;
+/* The output rate the fake front end runs @p family at. */
+static unsigned int
+fake_output_rate_for_family(int family) {
     if (g_rtl_family_rates) {
         return family == DSD_RX_FAMILY_ANALOG ? 48000U : 24000U;
     }
     return (uint32_t)g_rtl_output_rate;
+}
+
+unsigned int
+__wrap_rtl_stream_output_rate_for_family(int family, int cqpsk_enable, int symbol_rate_hz, int cqpsk_explicit) {
+    (void)cqpsk_enable;
+    (void)symbol_rate_hz;
+    if (family == DSD_RX_FAMILY_DIGITAL) {
+        g_stream_rate_explicit = cqpsk_explicit;
+    }
+    return fake_output_rate_for_family(family);
 }
 
 int
@@ -309,6 +331,7 @@ __wrap_rtl_stream_prepare_retune_profile_for_target_with_gain(uint32_t target_fr
     g_pending_channel_profile = channel_profile;
     g_pending_ted_sps = ted_sps;
     g_pending_ted_override = persist_ted_override ? 1 : 0;
+    g_pending_cqpsk_explicit = 0;
 }
 
 int
@@ -334,6 +357,7 @@ __wrap_rtl_stream_prepare_retune_analog_profile_for_target(uint32_t target_freq_
     g_pending_analog_family = analog->family;
     g_pending_analog_kind = analog->kind;
     g_pending_analog_width_hz = analog->width_hz;
+    g_pending_cqpsk_explicit = (analog->family == DSD_RX_FAMILY_DIGITAL && analog->cqpsk_explicit) ? 1 : 0;
     g_pending_family_requests = g_live_family_requests;
     return 0;
 }
@@ -395,6 +419,7 @@ __wrap_rtl_stream_request_demod_profile(int cqpsk_enable, int symbol_rate_hz, in
 void
 __wrap_rtl_stream_clear_pending_retune_profile(void) {
     g_pending_analog_family = -1;
+    g_pending_cqpsk_explicit = 0;
     g_pending_active = 0;
     g_pending_target_freq_hz = 0;
     g_pending_cqpsk = -1;
@@ -457,9 +482,10 @@ apply_pending_profile(uint32_t target_freq_hz) {
 static fake_retune_profile
 fake_take_pending_profile(void) {
     const fake_retune_profile profile = {
-        g_pending_active,        g_pending_target_freq_hz,  g_pending_cqpsk,           g_pending_symbol_rate_hz,
-        g_pending_symbol_levels, g_pending_channel_profile, g_pending_ted_sps,         g_pending_ted_override,
-        g_pending_analog_family, g_pending_analog_kind,     g_pending_analog_width_hz, g_pending_family_requests,
+        g_pending_active,         g_pending_target_freq_hz,  g_pending_cqpsk,           g_pending_symbol_rate_hz,
+        g_pending_symbol_levels,  g_pending_channel_profile, g_pending_ted_sps,         g_pending_ted_override,
+        g_pending_analog_family,  g_pending_analog_kind,     g_pending_analog_width_hz, g_pending_family_requests,
+        g_pending_cqpsk_explicit,
     };
     __wrap_rtl_stream_clear_pending_retune_profile();
     return profile;
@@ -479,6 +505,7 @@ fake_put_pending_profile(const fake_retune_profile* profile) {
     g_pending_analog_kind = profile->analog_kind;
     g_pending_analog_width_hz = profile->analog_width_hz;
     g_pending_family_requests = profile->family_requests;
+    g_pending_cqpsk_explicit = profile->cqpsk_explicit;
 }
 
 /* A tune that timed out: the controller took its profile and still owns it (g_rtl_timeout_outstanding). */
@@ -527,18 +554,43 @@ note_tune_family(uint32_t freq) {
     const int bound = g_pending_active && (g_pending_target_freq_hz == 0U || g_pending_target_freq_hz == freq);
     g_tune_log_freq[g_tune_log_count] = freq;
     g_tune_log_family[g_tune_log_count] = bound ? g_pending_analog_family : -1;
+    g_tune_log_cqpsk[g_tune_log_count] = bound ? g_pending_cqpsk : -2;
+    g_tune_log_explicit[g_tune_log_count] =
+        (bound && g_pending_analog_family == DSD_RX_FAMILY_DIGITAL) ? g_pending_cqpsk_explicit : -1;
     g_tune_log_count++;
 }
 
-/* The family attached to the last tune of @p freq (note_tune_family()), or -2 when it was never tuned. */
+/* The last tune of @p freq in the tune log (note_tune_family()), or -1 when it was never tuned. */
 static int
-tune_family_for(uint32_t freq) {
+tune_log_index_for(uint32_t freq) {
     for (int i = g_tune_log_count - 1; i >= 0; i--) {
         if (g_tune_log_freq[i] == freq) {
-            return g_tune_log_family[i];
+            return i;
         }
     }
-    return -2;
+    return -1;
+}
+
+/* The family attached to the last tune of @p freq, or -2 when it was never tuned. */
+static int
+tune_family_for(uint32_t freq) {
+    const int i = tune_log_index_for(freq);
+    return i >= 0 ? g_tune_log_family[i] : -2;
+}
+
+/* The CQPSK request of the profile the last tune of @p freq ran with, or -3 when it was never tuned. */
+static int
+tune_cqpsk_for(uint32_t freq) {
+    const int i = tune_log_index_for(freq);
+    return i >= 0 ? g_tune_log_cqpsk[i] : -3;
+}
+
+/* Whether the digital family attached to the last tune of @p freq said its CQPSK state is the target's own (-1: no
+ * digital family attached), or -2 when it was never tuned. */
+static int
+tune_explicit_for(uint32_t freq) {
+    const int i = tune_log_index_for(freq);
+    return i >= 0 ? g_tune_log_explicit[i] : -2;
 }
 
 static int
@@ -1199,6 +1251,17 @@ fake_family_analog_active(void) {
     return g_rtl_analog_family;
 }
 
+/* The decoder's output-rate query, which the tuning side's is told apart from by what each records. */
+static unsigned int
+fake_hook_output_rate_for_family(int family, int cqpsk_enable, int symbol_rate_hz, int cqpsk_explicit) {
+    (void)cqpsk_enable;
+    (void)symbol_rate_hz;
+    if (family == DSD_RX_FAMILY_DIGITAL) {
+        g_hook_rate_explicit = cqpsk_explicit;
+    }
+    return fake_output_rate_for_family(family);
+}
+
 /* The decoder side reads the stream through the metrics hooks, the tuning side through the wrapped stream calls: both
  * see the same front end. */
 static void
@@ -1208,7 +1271,7 @@ install_family_rate_hooks(void) {
     hooks.output_rate_hz = fake_family_output_rate_hz;
     hooks.analog_family_active = fake_family_analog_active;
     hooks.analog_family_after_pending = __wrap_rtl_stream_analog_family_after_pending;
-    hooks.output_rate_for_family = __wrap_rtl_stream_output_rate_for_family;
+    hooks.output_rate_for_family = fake_hook_output_rate_for_family;
     dsd_rtl_stream_metrics_hooks_set(&hooks);
 }
 
@@ -1440,27 +1503,31 @@ expect_case(const char* label, const char* what, int cond) {
     return 0;
 }
 
-/* Start a --trunk-scan over @p targets (written to @p path) on a digital RTL session, through the real coordinator and
- * tuning, with the nfm target's first retune timing out: it lands only when the case lands it. */
+/* Start a --trunk-scan over @p targets (under the CSV @p header, written to @p path) on a digital RTL session, through
+ * the real coordinator and tuning, with the family-rate hooks installed. With @p outstanding the nfm target's first
+ * retune times out: it lands only when the case lands it. */
 static int
-start_outstanding_trunk_scan(dsd_opts* opts, dsd_state* state, char* path, size_t path_size, const char* targets) {
-    const int fd = dsd_test_mkstemp(path, path_size, "nfm-outstanding-");
+start_family_trunk_scan(dsd_opts* opts, dsd_state* state, char* path, size_t path_size, const char* header,
+                        const char* targets, int outstanding) {
+    const int fd = dsd_test_mkstemp(path, path_size, "nfm-family-scan-");
     if (fd < 0) {
         path[0] = '\0';
         return 1;
     }
     dsd_close(fd);
     FILE* fp = dsd_fopen_private(path, "w");
-    int rc = expect_true("outstanding targets file", fp != NULL);
+    int rc = expect_true("family scan targets file", fp != NULL);
     if (fp) {
-        DSD_FPRINTF(fp, "id,type,frequency_hz,chan_csv,dwell_ms,activity_hold_ms,notes,options\n%s", targets);
+        DSD_FPRINTF(fp, "%s%s", header, targets);
         (void)fclose(fp);
     }
     reset_rtl_profile_fakes();
     dsd_trunk_tuning_requests_reset();
     install_family_rate_hooks();
-    g_rtl_timeout_outstanding = 1;
-    g_rtl_tune_result = RTL_STREAM_TUNE_TIMEOUT;
+    if (outstanding) {
+        g_rtl_timeout_outstanding = 1;
+        g_rtl_tune_result = RTL_STREAM_TUNE_TIMEOUT;
+    }
     dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){.tune_to_freq_request = dsd_engine_trunk_tune_to_freq_request,
                                                         .tune_to_cc_request = dsd_engine_trunk_tune_to_cc_request,
                                                         .return_to_cc_request = dsd_engine_return_to_cc_request});
@@ -1469,7 +1536,16 @@ start_outstanding_trunk_scan(dsd_opts* opts, dsd_state* state, char* path, size_
     state->rtl_ctx = (RtlSdrContext*)state;
     DSD_SNPRINTF(opts->trunk_scan_targets_csv, sizeof opts->trunk_scan_targets_csv, "%s", path);
     char err[256] = {0};
-    rc |= expect_true("outstanding trunk scan init", dsd_engine_trunk_scan_init(opts, state, err, sizeof err) == 0);
+    rc |= expect_true("family scan init", dsd_engine_trunk_scan_init(opts, state, err, sizeof err) == 0);
+    return rc;
+}
+
+/* start_family_trunk_scan() with the nfm target's first retune timing out, still in flight. */
+static int
+start_outstanding_trunk_scan(dsd_opts* opts, dsd_state* state, char* path, size_t path_size, const char* targets) {
+    int rc =
+        start_family_trunk_scan(opts, state, path, path_size,
+                                "id,type,frequency_hz,chan_csv,dwell_ms,activity_hold_ms,notes,options\n", targets, 1);
     rc |= expect_true("the nfm retune is in flight", g_retune_in_flight.active && g_retune_in_flight.freq == 154330000U
                                                          && fake_retune_lands_analog(&g_retune_in_flight)
                                                          && g_rtl_analog_family == 0);
@@ -1610,6 +1686,104 @@ test_trunk_scan_advance_with_a_width_edit_queued(void) {
                           && g_rtl_cqpsk_enable == 0);
     stop_outstanding_trunk_scan(opts, state, path);
     return rc;
+}
+
+/* --- Issue #583 item 3 and its GFSK sibling: a trunk-scan target's own CQPSK choice after an nfm-conventional target,
+ * under a DSD_NEO_CQPSK that says otherwise. The tunes land at once. Where the retune lands is the stream's
+ * (IO_RTL_RETUNE_PREPARE); these check that the digital family the tuning side attaches says the profile's CQPSK state
+ * is the target's own, and that the decoder's timing asks for the landing rate the same way, the two by one rule. --- */
+
+static const char kModulationHeader[] = "id,type,frequency_hz,chan_csv,dwell_ms,activity_hold_ms,notes,modulation\n";
+
+/* The same as stop_outstanding_trunk_scan(), with DSD_NEO_CQPSK unset again. */
+static void
+stop_cqpsk_env_trunk_scan(dsd_opts* opts, dsd_state* state, const char* path) {
+    stop_outstanding_trunk_scan(opts, state, path);
+    (void)dsd_unsetenv("DSD_NEO_CQPSK");
+    dsd_neo_config_init();
+}
+
+/* One digital target after an nfm-conventional one, advanced to under DSD_NEO_CQPSK=@p cqpsk_env. */
+typedef struct {
+    const char* label;
+    const char* cqpsk_env;
+    const char* digital_target; /* its CSV row, at 461400000 Hz (DMR) or 851012500 Hz (P25) */
+    uint32_t digital_hz;
+    int want_cqpsk;    /* the CQPSK request of the profile its tune queues (-1: left to the stream) */
+    int want_explicit; /* whether the digital family attached says that request is the target's own */
+    int want_rf_mod;
+    int want_stream_explicit; /* the tuning side's own landing-rate query for the TED (-1: none, as for P25) */
+} cqpsk_choice_case;
+
+static int
+run_cqpsk_choice_case(const cqpsk_choice_case* c) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    (void)dsd_setenv("DSD_NEO_CQPSK", c->cqpsk_env, 1);
+    dsd_neo_config_init();
+    char targets[256];
+    DSD_SNPRINTF(targets, sizeof targets, "fire,nfm-conventional,154330000,,250,250,,\n%s", c->digital_target);
+    char path[DSD_TEST_PATH_MAX];
+    int rc = start_family_trunk_scan(opts, state, path, sizeof path, kModulationHeader, targets, 0);
+    rc |= expect_case(c->label, "the nfm target runs the monitor",
+                      g_rtl_analog_family == 1 && g_rtl_tune_freq == 154330000U);
+    g_hook_rate_explicit = -1;
+    g_stream_rate_explicit = -1;
+    rc |= expect_case(c->label, "advance to the digital target",
+                      dsd_engine_trunk_scan_control(opts, state, DSD_TRUNK_SCAN_CONTROL_ADVANCE) == 0);
+    rc |= expect_case(c->label, "its retune carries the digital family",
+                      g_rtl_tune_freq == c->digital_hz && tune_family_for(c->digital_hz) == DSD_RX_FAMILY_DIGITAL);
+    rc |= expect_case(c->label, "its profile asks for the target's CQPSK state",
+                      tune_cqpsk_for(c->digital_hz) == c->want_cqpsk && state->rf_mod == c->want_rf_mod);
+    rc |= expect_case(c->label, "the digital family says whose choice it is",
+                      tune_explicit_for(c->digital_hz) == c->want_explicit);
+    rc |= expect_case(c->label, "the decoder is timed by the same rule", g_hook_rate_explicit == c->want_explicit);
+    rc |= expect_case(c->label, "and so is the TED the tune queues", g_stream_rate_explicit == c->want_stream_explicit);
+    if (rc) {
+        DSD_FPRINTF(stderr,
+                    "  %s: family %d, cqpsk %d, explicit %d, rf_mod %d, decoder asked explicit %d, tuning asked "
+                    "explicit %d\n",
+                    c->label, tune_family_for(c->digital_hz), tune_cqpsk_for(c->digital_hz),
+                    tune_explicit_for(c->digital_hz), state->rf_mod, g_hook_rate_explicit, g_stream_rate_explicit);
+    }
+    stop_cqpsk_env_trunk_scan(opts, state, path);
+    return rc;
+}
+
+/* Item 3: a P25 target that names its modulation keeps it over DSD_NEO_CQPSK after an nfm target, as it does after a
+ * digital target: modulation=cqpsk under DSD_NEO_CQPSK=0, and the mirror, modulation=c4fm under =1. auto is the
+ * target's own choice too (C4FM for a site not yet heard on CQPSK), and stands under =1. A P25 target with no
+ * modulation still lands where an open would, as the override says: its digital family says nothing of its own. */
+static int
+test_trunk_scan_p25_modulation_stands_after_nfm(void) {
+    static const cqpsk_choice_case cases[] = {
+        {"cqpsk target under DSD_NEO_CQPSK=0", "0", "lsm,p25-conventional,851012500,,250,250,,cqpsk\n", 851012500U, 1,
+         1, 1, -1},
+        {"auto target under DSD_NEO_CQPSK=1", "1", "lsm,p25-conventional,851012500,,250,250,,auto\n", 851012500U, 0, 1,
+         0, -1},
+        {"c4fm target under DSD_NEO_CQPSK=1", "1", "lsm,p25-conventional,851012500,,250,250,,c4fm\n", 851012500U, 0, 1,
+         0, -1},
+        {"p25 target without modulation under DSD_NEO_CQPSK=0", "0", "lsm,p25-conventional,851012500,,250,250,,\n",
+         851012500U, -1, 0, 0, -1},
+    };
+    int rc = 0;
+    for (size_t i = 0; i < sizeof cases / sizeof cases[0]; i++) {
+        rc |= run_cqpsk_choice_case(&cases[i]);
+    }
+    return rc;
+}
+
+/* The GFSK sibling: a DMR target always runs the FSK discriminator, and the GFSK chain queues CQPSK off for it. Under
+ * DSD_NEO_CQPSK=1 that stands after an nfm target as it does after a digital one, and the TED the tuning side computes
+ * for the landing is asked for the same way. */
+static int
+test_trunk_scan_dmr_target_stays_fsk_after_nfm(void) {
+    static const cqpsk_choice_case c = {
+        "dmr target under DSD_NEO_CQPSK=1", "1", "dmr,dmr-conventional,461400000,,250,250,,\n", 461400000U, 0, 1, 2, 1};
+    return run_cqpsk_choice_case(&c);
 }
 
 /* A row width the published DSP rate cannot fit is skipped at every visit without asking the stream for it: the stream
@@ -4699,6 +4873,8 @@ main(void) {
     rc |= test_trunk_scan_coalesced_retune_behind_an_nfm_retune();
     rc |= test_trunk_scan_failed_nfm_retune_with_a_width_edit_queued();
     rc |= test_trunk_scan_advance_with_a_width_edit_queued();
+    rc |= test_trunk_scan_p25_modulation_stands_after_nfm();
+    rc |= test_trunk_scan_dmr_target_stays_fsk_after_nfm();
     rc |= test_scoped_mode_change_on_nfm_row_times_the_baseline_for_digital();
     rc |= test_typed_scan_refused_width_skipped_without_the_stream();
     rc |= test_typed_scan_width_skipped_under_channel_lpf_override();

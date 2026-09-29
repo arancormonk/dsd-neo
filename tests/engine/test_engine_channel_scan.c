@@ -663,6 +663,7 @@ static int rate_for_family_calls;
 static int rate_for_family_family;
 static int rate_for_family_cqpsk;
 static int rate_for_family_symbol_rate;
+static int rate_for_family_explicit;
 
 static int
 record_analog_restore(int family, int kind, int width_hz) {
@@ -712,11 +713,12 @@ report_analog_profile(int* out_kind, int* out_width_hz, int* out_lpf_on) {
 }
 
 static unsigned int
-report_output_rate_for_family(int family, int cqpsk_enable, int symbol_rate_hz) {
+report_output_rate_for_family(int family, int cqpsk_enable, int symbol_rate_hz, int cqpsk_explicit) {
     rate_for_family_calls++;
     rate_for_family_family = family;
     rate_for_family_cqpsk = cqpsk_enable;
     rate_for_family_symbol_rate = symbol_rate_hz;
+    rate_for_family_explicit = cqpsk_explicit;
     return family == DSD_RX_FAMILY_DIGITAL ? fake_digital_rate : 48000U;
 }
 
@@ -727,6 +729,7 @@ reset_frontend_records(void) {
     analog_restore_order = digital_restore_calls = digital_restore_order = digital_restore_sps = 0;
     analog_restore_result = 0;
     rate_for_family_calls = rate_for_family_family = rate_for_family_cqpsk = rate_for_family_symbol_rate = 0;
+    rate_for_family_explicit = -1;
 }
 
 /*
@@ -870,6 +873,8 @@ test_leave_retimes_the_digital_landing(void) {
     assert(rate_for_family_calls == 1 && rate_for_family_family == DSD_RX_FAMILY_DIGITAL);
     assert(rate_for_family_symbol_rate == 6000);
     assert(rate_for_family_cqpsk == (state->rf_mod == 1));
+    /* The leave is a live request, which lands where an open of the mode would: DSD_NEO_CQPSK decides it (#583). */
+    assert(rate_for_family_explicit == 0);
     assert(state->samplesPerSymbol == 4);
     assert(state->symbolCenter == dsd_opts_symbol_center(4));
     assert(digital_restore_sps == 4);

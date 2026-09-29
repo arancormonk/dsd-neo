@@ -162,6 +162,9 @@ static int g_explicit_call_ends = 0;
 static int g_fake_family_tracking = 0;
 static int g_fake_family_analog = 0;
 static int g_fake_family_last_cqpsk = -1;
+/* The cqpsk_explicit argument of the last landing-rate query (issue #583): 1 when the target's own CQPSK choice stands
+ * over DSD_NEO_CQPSK where the tune lands. */
+static int g_fake_family_last_explicit = -1;
 
 static unsigned int
 fake_rtl_output_rate_hz(void) {
@@ -179,9 +182,10 @@ fake_family_analog_active(void) {
 }
 
 static unsigned int
-fake_family_landing_rate_hz(int family, int cqpsk_enable, int symbol_rate_hz) {
+fake_family_landing_rate_hz(int family, int cqpsk_enable, int symbol_rate_hz, int cqpsk_explicit) {
     (void)symbol_rate_hz;
     g_fake_family_last_cqpsk = cqpsk_enable;
+    g_fake_family_last_explicit = cqpsk_explicit;
     return family == DSD_RX_FAMILY_ANALOG ? 48000U : 24000U;
 }
 
@@ -11194,7 +11198,10 @@ test_nfm_target_refuses_live_decryption(void) {
 /* A digital target after an nfm-conventional one is timed for the family its tune lands, not for the analog monitor
  * still running when the switch times it: at bw=24 the monitor output is 48 kHz and the digital output 24 kHz, so DMR
  * and P25 get 5 samples per symbol and NXDN48 10, in the decoder and in the TED the tune queues alike. The P25 target
- * runs CQPSK, whose landing rate is asked for the CQPSK output. */
+ * runs CQPSK, whose landing rate is asked for the CQPSK output. Each landing rate is asked for the target's own CQPSK
+ * choice (issue #583), which stands over DSD_NEO_CQPSK where the tune lands, as the tuning side attaches it: the P25
+ * target's modulation=cqpsk, and the FSK every DMR and NXDN target runs. A resume re-times the P25 target on air the
+ * same way while its tune has not landed yet. */
 static int
 test_digital_target_after_nfm_timed_for_digital_family(void) {
     char dir[DSD_TEST_PATH_MAX];
@@ -11248,17 +11255,35 @@ test_digital_target_after_nfm_timed_for_digital_family(void) {
         now += 0.26;
         trunk_scan_test_set_now(now);
         g_fake_family_last_cqpsk = -1;
+        g_fake_family_last_explicit = -1;
         g_scan_tune_to_freq_ted_sps = 0;
         dsd_engine_trunk_scan_tick(&opts, &state);
         test_rc |= expect_active_target(&state, "digital after nfm", digital[i].target);
         if (state.samplesPerSymbol != digital[i].sps || g_scan_tune_to_freq_ted_sps != digital[i].sps
-            || g_fake_family_last_cqpsk != digital[i].cqpsk || g_fake_family_analog != 0) {
+            || g_fake_family_last_cqpsk != digital[i].cqpsk || g_fake_family_last_explicit != 1
+            || g_fake_family_analog != 0) {
             DSD_FPRINTF(stderr,
-                        "target %zu after an nfm target: sps=%d ted=%d cqpsk asked=%d analog=%d, want sps/ted %d "
-                        "cqpsk %d on the digital family\n",
+                        "target %zu after an nfm target: sps=%d ted=%d cqpsk asked=%d explicit=%d analog=%d, want "
+                        "sps/ted %d cqpsk %d explicit 1 on the digital family\n",
                         digital[i].target, state.samplesPerSymbol, g_scan_tune_to_freq_ted_sps,
-                        g_fake_family_last_cqpsk, g_fake_family_analog, digital[i].sps, digital[i].cqpsk);
+                        g_fake_family_last_cqpsk, g_fake_family_last_explicit, g_fake_family_analog, digital[i].sps,
+                        digital[i].cqpsk);
             test_rc = 1;
+        }
+        if (digital[i].cqpsk) {
+            /* A command run under the P25 target while the front end is still on the analog family (its tune not yet
+               landed): the resume re-times the target for its landing, by the same rule. */
+            g_fake_family_analog = 1;
+            g_fake_family_last_cqpsk = -1;
+            g_fake_family_last_explicit = -1;
+            (void)dsd_scan_mode_suspend(&opts, &state);
+            (void)dsd_scan_mode_resume(&opts, &state);
+            if (g_fake_family_last_cqpsk != 1 || g_fake_family_last_explicit != 1 || state.samplesPerSymbol != 5) {
+                DSD_FPRINTF(stderr, "resume on the p25 target: cqpsk asked=%d explicit=%d sps=%d, want 1, 1, 5\n",
+                            g_fake_family_last_cqpsk, g_fake_family_last_explicit, state.samplesPerSymbol);
+                test_rc = 1;
+            }
+            g_fake_family_analog = 0;
         }
         now += 0.26;
         trunk_scan_test_set_now(now);
@@ -11276,6 +11301,69 @@ test_digital_target_after_nfm_timed_for_digital_family(void) {
     dsd_rtl_stream_metrics_hooks_set(NULL);
     trunk_scan_test_clear_now();
     cleanup_paths(dir, target_path, NULL);
+    return test_rc;
+}
+
+/* The decoder's side of the rule (issue #583): a trunk-scan target's scope says its CQPSK choice is its own when it is
+ * P25 with a modulation value (auto, c4fm or cqpsk) or DMR/NXDN at either rate, and the landing rate is asked with
+ * cqpsk_explicit set then. A P25 target without a modulation, and a -Y row of any of those modes, are asked without it:
+ * they land where an open of the mode would, as DSD_NEO_CQPSK says. */
+static int
+test_symbol_timing_explicit_follows_the_scope(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    reset_scan_opts_state(&opts, &state);
+    dsd_rtl_stream_metrics_hooks hooks = {0};
+    hooks.output_rate_hz = fake_family_output_rate_hz;
+    hooks.analog_family_active = fake_family_analog_active;
+    hooks.output_rate_for_family = fake_family_landing_rate_hz;
+    dsd_rtl_stream_metrics_hooks_set(&hooks);
+    g_fake_family_analog = 1;
+
+    static const struct {
+        int trunk_scan;
+        dsd_scan_mode mode;
+        dsd_scan_modulation modulation;
+        int want_explicit;
+    } rows[] = {
+        {1, DSD_SCAN_MODE_P25, DSD_SCAN_MODULATION_CQPSK, 1},
+        {1, DSD_SCAN_MODE_P25, DSD_SCAN_MODULATION_C4FM, 1},
+        {1, DSD_SCAN_MODE_P25, DSD_SCAN_MODULATION_AUTO, 1},
+        {1, DSD_SCAN_MODE_P25, DSD_SCAN_MODULATION_INHERIT, 0},
+        {1, DSD_SCAN_MODE_DMR, DSD_SCAN_MODULATION_INHERIT, 1},
+        {1, DSD_SCAN_MODE_NXDN96, DSD_SCAN_MODULATION_GFSK, 1},
+        {1, DSD_SCAN_MODE_NXDN48, DSD_SCAN_MODULATION_AUTO, 1},
+        {1, DSD_SCAN_MODE_DPMR, DSD_SCAN_MODULATION_INHERIT, 0},
+        {0, DSD_SCAN_MODE_P25, DSD_SCAN_MODULATION_CQPSK, 0},
+        {0, DSD_SCAN_MODE_DMR, DSD_SCAN_MODULATION_INHERIT, 0},
+        {0, DSD_SCAN_MODE_NXDN96, DSD_SCAN_MODULATION_INHERIT, 0},
+        {0, DSD_SCAN_MODE_NXDN48, DSD_SCAN_MODULATION_INHERIT, 0},
+    };
+
+    int test_rc = 0;
+    for (size_t i = 0; i < sizeof rows / sizeof rows[0]; i++) {
+        opts.trunk_scan_enabled = rows[i].trunk_scan;
+        opts.scanner_mode = rows[i].trunk_scan ? 0 : 1;
+        if (dsd_scan_mode_enter(&opts, &state, rows[i].mode) != 0) {
+            DSD_FPRINTF(stderr, "timing scope row %zu: enter failed\n", i);
+            test_rc = 1;
+            continue;
+        }
+        dsd_scan_mode_target_modulation(&state, rows[i].modulation);
+        g_fake_family_last_explicit = -1;
+        const int rate_hz = dsd_scan_mode_symbol_timing_rate_hz(&opts, &state, 4800, 0);
+        if (rate_hz != 24000 || g_fake_family_last_explicit != rows[i].want_explicit) {
+            DSD_FPRINTF(stderr,
+                        "timing scope row %zu (%s, %s, modulation %d): rate=%d explicit=%d, want 24000 and %d\n", i,
+                        rows[i].trunk_scan ? "--trunk-scan" : "-Y", dsd_scan_mode_name(rows[i].mode),
+                        (int)rows[i].modulation, rate_hz, g_fake_family_last_explicit, rows[i].want_explicit);
+            test_rc = 1;
+        }
+    }
+    (void)dsd_scan_mode_leave(&opts, &state);
+    g_fake_family_analog = 0;
+    dsd_rtl_stream_metrics_hooks_set(NULL);
+    reset_scan_opts_state(&opts, &state);
     return test_rc;
 }
 
@@ -12174,6 +12262,7 @@ main(void) {
     rc |= run_with_default_tune_hook(test_nfm_target_refuses_live_decryption);
     rc |= run_with_default_tune_hook(test_nfm_target_warnings_at_scan_start);
     rc |= run_with_default_tune_hook(test_digital_target_after_nfm_timed_for_digital_family);
+    rc |= run_with_default_tune_hook(test_symbol_timing_explicit_follows_the_scope);
     rc |= run_with_default_tune_hook(test_nfm_target_width_rechecked_when_the_dsp_rate_changes);
     rc |= run_with_default_tune_hook(test_nfm_target_refused_width_skipped_quietly);
     rc |= run_with_default_tune_hook(test_nfm_target_width_skipped_under_channel_lpf_override);

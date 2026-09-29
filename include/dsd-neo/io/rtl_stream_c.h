@@ -566,12 +566,15 @@ int rtl_stream_channel_lpf_default(void);
  *
  * @param family         dsd_rx_family.
  * @param cqpsk_enable   Non-zero for the CQPSK symbol output (digital family only). DSD_NEO_CQPSK overrides it when
- *                       set, as it does at stream open and at the switch itself.
+ *                       set, as it does at stream open and at the switch itself, unless @p cqpsk_explicit.
  * @param symbol_rate_hz Digital symbol rate, which decides the digital resampling policy.
+ * @param cqpsk_explicit Non-zero when @p cqpsk_enable is a trunk-scan target's own choice, which stands over
+ *                       DSD_NEO_CQPSK at the switch (rtl_stream_retune_analog_profile::cqpsk_explicit, issue #583);
+ *                       0 for a live request, which lands where an open of the mode would.
  * @return Predicted output rate in Hz, derived from the last published demod rate (48000 until a stream has opened
  *         and published its own), or 0 when that rate is not positive.
  */
-unsigned int rtl_stream_output_rate_for_family(int family, int cqpsk_enable, int symbol_rate_hz);
+unsigned int rtl_stream_output_rate_for_family(int family, int cqpsk_enable, int symbol_rate_hz, int cqpsk_explicit);
 
 typedef struct rtl_stream_retune_gain_profile {
     int tuner_gain_is_set;
@@ -608,6 +611,11 @@ typedef struct rtl_stream_retune_analog_profile {
     int family;   /**< dsd_rx_family to switch to: DSD_RX_FAMILY_DIGITAL or DSD_RX_FAMILY_ANALOG. */
     int kind;     /**< dsd_analog_demod (analog family only). */
     int width_hz; /**< Explicit analog channel width in Hz; 0 selects the kind's default. */
+    /** Digital family only: non-zero when the CQPSK state of the symbol profile queued for the target is the target's
+     *  own choice (a trunk-scan target's `modulation`, or a DMR/NXDN target's FSK), which stands over DSD_NEO_CQPSK
+     *  where the switch lands (issue #583). 0 lands where an open of the mode would. Ignored with the analog family,
+     *  and for a symbol profile that leaves the CQPSK state alone (cqpsk_enable < 0). */
+    int cqpsk_explicit;
 } rtl_stream_retune_analog_profile;
 
 /**
@@ -618,6 +626,11 @@ typedef struct rtl_stream_retune_analog_profile {
  * queued for this target, an analog-only profile is queued that leaves the CQPSK family, symbol profile and timing
  * alone. A DSD_RX_FAMILY_DIGITAL switch then applies the queued symbol profile; a DSD_RX_FAMILY_ANALOG switch
  * applies none of it (the analog family has no symbol clock), only the gain profile.
+ *
+ * A DSD_RX_FAMILY_DIGITAL switch out of the analog family lands the CQPSK family and channel filter an open of the
+ * mode would, which DSD_NEO_CQPSK decides when set (rtl_demod_open_cqpsk_request()), unless @p analog's
+ * cqpsk_explicit says the queued symbol profile's CQPSK state is the target's own: that state then stands, with the
+ * channel filter the profile names, as it does on a retune that stays on the digital family.
  *
  * A live rtl_stream_request_analog_profile() accepted after this call is the newer word on the family: the retune then
  * lands on its target with neither this family nor the symbol profile queued with it, so the front end stays on the

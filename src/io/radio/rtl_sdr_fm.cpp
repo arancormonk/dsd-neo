@@ -200,6 +200,12 @@ struct RtlRetuneProfile {
     /* The number of the last live receive request (family or demod profile) made before the family was attached
        (g_rx_req_seq): a request still queued with this number or an earlier one is older than the family. */
     uint32_t family_request_seq = 0U;
+    /* With the digital family: the symbol profile's CQPSK state is the target's own choice and stands over
+       DSD_NEO_CQPSK where the switch lands (rtl_stream_retune_analog_profile::cqpsk_explicit, issue #583). It travels
+       with the rest of the profile, under the lock of the copy that holds it: g_pending_retune_profile_mutex while
+       queued for a target, controller_state::hop_m while the controller holds it queued, and the controller thread's
+       own copy once taken. */
+    int cqpsk_explicit = 0;
     int cqpsk_enable = 0;
     int symbol_rate_hz = 0;
     int levels = 0;
@@ -7866,7 +7872,7 @@ rtl_stream_channel_lpf_default(void) {
 }
 
 extern "C" unsigned int
-rtl_stream_output_rate_for_family(int family, int cqpsk_enable, int symbol_rate_hz) {
+rtl_stream_output_rate_for_family(int family, int cqpsk_enable, int symbol_rate_hz, int cqpsk_explicit) {
     const int rate_out = g_pub_rate_out.load(std::memory_order_relaxed);
     const int resamp_target = g_pub_resamp_target_hz.load(std::memory_order_relaxed);
     if (rate_out <= 0) {
@@ -7875,8 +7881,9 @@ rtl_stream_output_rate_for_family(int family, int cqpsk_enable, int symbol_rate_
     if (family == DSD_RX_FAMILY_ANALOG) {
         return (unsigned int)rtl_demod_monitor_output_rate_for(resamp_target, rate_out);
     }
-    /* The switch lands on the CQPSK family an open of the mode would (rtl_stream_leave_analog_family()). */
-    if (rtl_demod_open_cqpsk_request(cqpsk_enable) > 0) {
+    /* The switch lands on the CQPSK family an open of the mode would, or on a trunk-scan target's own choice
+       (rtl_stream_leave_analog_family()). */
+    if (rtl_demod_landing_cqpsk(cqpsk_enable, cqpsk_explicit) > 0) {
         return (unsigned int)rate_out;
     }
     const int target = rtl_demod_digital_resample_target_for(
@@ -8763,13 +8770,15 @@ rtl_stream_enter_analog_family(int kind, int width_hz) {
 
 /* @p cqpsk_enable and @p symbol_rate_hz name the symbol profile applied right after the switch (-1 / 0 when none is
  * queued), which decides the digital resampler and so the output rate committed here. The CQPSK family is the one an
- * open of the mode lands on (rtl_demod_open_cqpsk_request()); the caller applies the same one with the profile. */
+ * open of the mode lands on, or with @p cqpsk_explicit a trunk-scan target's own choice (rtl_demod_landing_cqpsk());
+ * the caller applies the same one with the profile. */
 static void
-rtl_stream_leave_analog_family(int cqpsk_enable, int symbol_rate_hz) {
+rtl_stream_leave_analog_family(int cqpsk_enable, int symbol_rate_hz, int cqpsk_explicit) {
     struct output_state scratch;
     scratch.rate = rtl_stream_active_output()->rate.load();
     rtl_demod_enter_digital_family(&demod, &scratch, rtl_stream_fsk_channel_profile_for_current_mode(),
-                                   rtl_demod_open_cqpsk_request(cqpsk_enable), symbol_rate_hz, rtl_dsp_bw_hz);
+                                   rtl_demod_landing_cqpsk(cqpsk_enable, cqpsk_explicit), symbol_rate_hz,
+                                   rtl_dsp_bw_hz);
     rtl_stream_commit_family_switch(DSD_RX_FAMILY_DIGITAL, scratch.rate);
 }
 
@@ -8798,7 +8807,9 @@ rtl_stream_apply_analog_request(int kind, int width_hz) {
 
 /* Body of an analog profile request. Callers hold the family-switch gate or run on the demod thread.
  * @p next_cqpsk and @p next_symbol_rate_hz describe the symbol profile applied after a switch to digital (-1 / 0
- * when none follows).
+ * when none follows), and @p next_cqpsk_explicit whether its CQPSK state is a trunk-scan target's own choice, which a
+ * retune's profile says (RtlRetuneProfile::cqpsk_explicit) and a live request never does
+ * (rtl_stream_leave_analog_family()).
  *
  * A switch to digital leaves the analog family whenever the stream runs it, the state rtl_stream_analog_family_active()
  * publishes and the decoder times the switch by. That includes a front end a symbol profile applied without a family
@@ -8808,11 +8819,12 @@ rtl_stream_apply_analog_request(int kind, int width_hz) {
  * only when its configured mode is digital (svc_publish_symbol_profile()), so a typed digital row on an analog session
  * republishes its symbol profile without one and keeps the monitor output it has always had. */
 static void
-rtl_stream_apply_analog_profile_params(int family, int kind, int width_hz, int next_cqpsk, int next_symbol_rate_hz) {
+rtl_stream_apply_analog_profile_params(int family, int kind, int width_hz, int next_cqpsk, int next_symbol_rate_hz,
+                                       int next_cqpsk_explicit) {
     if (family == DSD_RX_FAMILY_ANALOG) {
         rtl_stream_apply_analog_request(kind, width_hz);
     } else if (family == DSD_RX_FAMILY_DIGITAL && demod.analog_family) {
-        rtl_stream_leave_analog_family(next_cqpsk, next_symbol_rate_hz);
+        rtl_stream_leave_analog_family(next_cqpsk, next_symbol_rate_hz, next_cqpsk_explicit);
     }
     rtl_stream_publish_demod_profile_snapshot();
 }
@@ -8949,10 +8961,13 @@ rtl_stream_request_analog_profile(int family, int kind, int width_hz) {
 /* The symbol profile a switch out of the analog family lands on: its CQPSK family and channel filter become the ones
  * an open of the mode picks, which DSD_NEO_CQPSK decides when set, and the channel-filter enable rule of the open
  * (rtl_demod_open_cqpsk_request(), rtl_demod_open_channel_profile()), for the switch and for the profile applied after
- * it alike. */
+ * it alike. With @p cqpsk_explicit the profile's CQPSK state is a trunk-scan target's own choice (a retune's
+ * RtlRetuneProfile::cqpsk_explicit, issue #583): it stands, and so does the channel filter it names, under the same
+ * enable rule (rtl_demod_landing_cqpsk()). A live request passes 0; the value it resolves to resolves to itself again,
+ * so the switch that follows with it lands the same family. */
 static void
-rtl_stream_resolve_landing_profile(int* cqpsk, int* channel_profile, int symbol_rate_hz) {
-    const int landing = rtl_demod_open_cqpsk_request(*cqpsk);
+rtl_stream_resolve_landing_profile(int* cqpsk, int* channel_profile, int symbol_rate_hz, int cqpsk_explicit) {
+    const int landing = rtl_demod_landing_cqpsk(*cqpsk, cqpsk_explicit);
     *channel_profile = rtl_demod_open_channel_profile(landing, *cqpsk, *channel_profile, symbol_rate_hz,
                                                       demod.channel_lpf_default_enable);
     *cqpsk = landing;
@@ -9072,12 +9087,12 @@ rtl_stream_consume_demod_profile_request(void) {
         rtl_stream_drop_refused_analog_request(&analog_family, analog_kind, analog_width_hz, analog_seq);
     const bool lands_on_digital = has_demod && analog_family == DSD_RX_FAMILY_DIGITAL && demod.analog_family;
     if (lands_on_digital) {
-        rtl_stream_resolve_landing_profile(&cqpsk, &chan, sym_rate);
+        rtl_stream_resolve_landing_profile(&cqpsk, &chan, sym_rate, 0);
         ted_sps = rtl_stream_landing_ted_sps(ted_sps, ted_sps_is_override, sym_rate);
     }
     if (analog_family >= 0) {
         rtl_stream_apply_analog_profile_params(analog_family, analog_kind, analog_width_hz, has_demod ? cqpsk : -1,
-                                               has_demod ? sym_rate : 0);
+                                               has_demod ? sym_rate : 0, 0);
     }
     if (has_demod) {
         rtl_stream_apply_demod_profile_params(cqpsk, sym_rate, levels, chan, ted_sps, ted_sps_is_override, 0);
@@ -9230,6 +9245,8 @@ rtl_stream_prepare_retune_analog_profile_for_target(uint32_t target_freq_hz,
     g_pending_retune_profile.analog_family = analog->family;
     g_pending_retune_profile.analog_kind = analog->kind;
     g_pending_retune_profile.analog_width_hz = analog->width_hz;
+    g_pending_retune_profile.cqpsk_explicit =
+        (analog->family == DSD_RX_FAMILY_DIGITAL && analog->cqpsk_explicit) ? 1 : 0;
     g_pending_retune_profile.family_request_count = g_live_family_requests.load(std::memory_order_acquire);
     g_pending_retune_profile.family_request_seq = g_rx_req_seq.load(std::memory_order_acquire);
     return 0;
@@ -9416,7 +9433,7 @@ rtl_stream_apply_retune_family(const RtlRetuneProfile* profile) {
         return RTL_RETUNE_FAMILY_DONE;
     }
     rtl_stream_apply_analog_profile_params(profile->analog_family, profile->analog_kind, profile->analog_width_hz,
-                                           profile->cqpsk_enable, next_symbol_rate_hz);
+                                           profile->cqpsk_enable, next_symbol_rate_hz, profile->cqpsk_explicit);
     rtl_stream_settle_requests_through(retired_through);
     rtl_stream_leave_demod_family_switch_gate(gate_armed);
     return profile->analog_family == DSD_RX_FAMILY_ANALOG ? RTL_RETUNE_FAMILY_DONE : RTL_RETUNE_FAMILY_CONTINUE;
@@ -9429,13 +9446,14 @@ rtl_stream_retune_leaves_analog(const RtlRetuneProfile* profile) {
 }
 
 /* The CQPSK family and channel filter a retune profile's symbol profile runs on: the ones its family switch landed on
- * when @p leaves_analog (rtl_stream_resolve_landing_profile()), otherwise its own. */
+ * when @p leaves_analog (rtl_stream_resolve_landing_profile(), which keeps a trunk-scan target's own choice), otherwise
+ * its own. */
 static void
 rtl_stream_retune_symbol_family(const RtlRetuneProfile* profile, int leaves_analog, int* cqpsk, int* channel_profile) {
     *cqpsk = profile->cqpsk_enable;
     *channel_profile = profile->channel_profile;
     if (leaves_analog) {
-        rtl_stream_resolve_landing_profile(cqpsk, channel_profile, profile->symbol_rate_hz);
+        rtl_stream_resolve_landing_profile(cqpsk, channel_profile, profile->symbol_rate_hz, profile->cqpsk_explicit);
     }
 }
 
@@ -11830,7 +11848,7 @@ family_test_restore(const FamilyTestSaved& saved) {
  * does not change: the family request is all the stream learns. */
 static void
 family_test_switch_to_analog(const dsd_opts* analog_opts, rtl_stream_test_family_switch_result* out) {
-    out->predicted_analog_output_rate = rtl_stream_output_rate_for_family(DSD_RX_FAMILY_ANALOG, 0, 0);
+    out->predicted_analog_output_rate = rtl_stream_output_rate_for_family(DSD_RX_FAMILY_ANALOG, 0, 0, 0);
     out->analog_request_rc = rtl_stream_request_analog_profile(DSD_RX_FAMILY_ANALOG, analog_opts->analog_demod,
                                                                dsd_opts_analog_width_hz(analog_opts));
     out->analog_deferred_until_consume = demod.analog_family == 0 ? 1 : 0;
@@ -11878,7 +11896,7 @@ static void
 family_test_switch_to_digital(const dsd_opts* digital_opts, const rtl_stream_test_digital_request* req,
                               int landed_rate_out_hz, rtl_stream_test_family_switch_result* out) {
     out->predicted_digital_output_rate =
-        rtl_stream_output_rate_for_family(DSD_RX_FAMILY_DIGITAL, req->cqpsk_enable, req->symbol_rate_hz);
+        rtl_stream_output_rate_for_family(DSD_RX_FAMILY_DIGITAL, req->cqpsk_enable, req->symbol_rate_hz, 0);
     rtl_stream_set_digital_decode_modes(digital_opts);
     int rc = rtl_stream_request_analog_profile(DSD_RX_FAMILY_DIGITAL, DSD_ANALOG_DEMOD_FM, 0);
     if (req->boundary_between_requests) {
@@ -13071,7 +13089,7 @@ rtl_stream_test_analog_request_without_stream(int stale_rate_out_hz, int kind, i
     demod.rate_out = stale_rate_out_hz;
     rtl_stream_publish_demod_profile_snapshot(); /* what the earlier session left in the mirror */
     const int rc = rtl_stream_request_analog_profile(DSD_RX_FAMILY_ANALOG, kind, width_hz);
-    const rtl_stream_retune_analog_profile analog = {DSD_RX_FAMILY_ANALOG, kind, width_hz};
+    const rtl_stream_retune_analog_profile analog = {DSD_RX_FAMILY_ANALOG, kind, width_hz, 0};
     *out_retune_rc = rtl_stream_prepare_retune_analog_profile_for_target(kFamilyTestCenterHz, &analog);
     rtl_stream_clear_pending_retune_profile();
     demod.rate_out = prev_rate_out;
@@ -13129,7 +13147,7 @@ rtl_stream_test_analog_request_with_stream(int rate_hz, int analog_stream, int p
     out->plan_kept = !family_test_channel_plan_dropped();
     (void)rtl_stream_get_analog_profile(NULL, &out->published_width_after, &out->published_lpf_on_after);
 
-    const rtl_stream_retune_analog_profile analog = {DSD_RX_FAMILY_ANALOG, kind, width_hz};
+    const rtl_stream_retune_analog_profile analog = {DSD_RX_FAMILY_ANALOG, kind, width_hz, 0};
     out->retune_rc = rtl_stream_prepare_retune_analog_profile_for_target(kFamilyTestCenterHz, &analog);
     RtlRetuneProfile pending{};
     out->retune_queued = rtl_stream_take_pending_retune_profile(&pending, 0U, kFamilyTestCenterHz);
@@ -13251,7 +13269,7 @@ rtl_stream_test_retune_analog_profile_at_rate(uint32_t target_hz, int rate_hz, i
         rtl_stream_prepare_retune_profile_for_target_with_gain(target_hz, 1, 4800, 4, DSD_CH_LPF_PROFILE_P25_CQPSK, 10,
                                                                0, NULL);
     }
-    const rtl_stream_retune_analog_profile analog = {family, kind, width_hz};
+    const rtl_stream_retune_analog_profile analog = {family, kind, width_hz, 0};
     out->queued_rc = rtl_stream_prepare_retune_analog_profile_for_target(target_hz, &analog);
 
     RtlRetuneProfile other{};
@@ -13349,17 +13367,44 @@ family_test_request_at_landing(void* ctx) {
     request->seq = rtl_stream_receive_request_seq();
 }
 
+/* The CQPSK state the symbol profile RTL_STREAM_TEST_SYMBOL_* @p symbol_profile asks for (-1: none queued). */
+static int
+family_test_symbol_profile_cqpsk(int symbol_profile) {
+    switch (symbol_profile) {
+        case RTL_STREAM_TEST_SYMBOL_P25_CQPSK:
+        case RTL_STREAM_TEST_SYMBOL_P25_CQPSK_EXPLICIT: return 1;
+        case RTL_STREAM_TEST_SYMBOL_DMR_FSK:
+        case RTL_STREAM_TEST_SYMBOL_P25_C4FM_EXPLICIT:
+        case RTL_STREAM_TEST_SYMBOL_DMR_FSK_EXPLICIT: return 0;
+        default: return -1;
+    }
+}
+
+/* Whether that CQPSK state is the target's own choice, which the digital family attached after it says. */
+static int
+family_test_symbol_profile_explicit(int symbol_profile) {
+    return (symbol_profile == RTL_STREAM_TEST_SYMBOL_P25_CQPSK_EXPLICIT
+            || symbol_profile == RTL_STREAM_TEST_SYMBOL_P25_C4FM_EXPLICIT
+            || symbol_profile == RTL_STREAM_TEST_SYMBOL_DMR_FSK_EXPLICIT)
+               ? 1
+               : 0;
+}
+
 /* Queue the symbol profile a digital row or target queues for @p target_hz before its family is attached
- * (RTL_STREAM_TEST_SYMBOL_*). */
+ * (RTL_STREAM_TEST_SYMBOL_*): 4800 sym/s, four levels, with the channel filter its requester names. */
 static void
 family_test_queue_symbol_profile(uint32_t target_hz, int symbol_profile) {
-    if (symbol_profile == RTL_STREAM_TEST_SYMBOL_P25_CQPSK) {
-        rtl_stream_prepare_retune_profile_for_target_with_gain(target_hz, 1, 4800, 4, DSD_CH_LPF_PROFILE_P25_CQPSK, 10,
-                                                               0, NULL);
-    } else if (symbol_profile == RTL_STREAM_TEST_SYMBOL_DMR_FSK) {
-        rtl_stream_prepare_retune_profile_for_target_with_gain(target_hz, 0, 4800, 4, DSD_CH_LPF_PROFILE_12K5, 10, 0,
-                                                               NULL);
+    const int cqpsk = family_test_symbol_profile_cqpsk(symbol_profile);
+    if (cqpsk < 0) {
+        return;
     }
+    int channel_profile = DSD_CH_LPF_PROFILE_12K5;
+    if (cqpsk) {
+        channel_profile = DSD_CH_LPF_PROFILE_P25_CQPSK;
+    } else if (symbol_profile == RTL_STREAM_TEST_SYMBOL_P25_C4FM_EXPLICIT) {
+        channel_profile = DSD_CH_LPF_PROFILE_P25_C4FM;
+    }
+    rtl_stream_prepare_retune_profile_for_target_with_gain(target_hz, cqpsk, 4800, 4, channel_profile, 10, 0, NULL);
 }
 
 /* One step of rtl_stream_test_retune_profile_sequence(): queue, take and land @p step's profile on @p target_hz. */
@@ -13376,7 +13421,13 @@ family_test_land_retune_step(const dsd_opts* opts, uint32_t target_hz, const rtl
         queued_seq = rtl_stream_receive_request_seq();
     }
     family_test_queue_symbol_profile(target_hz, step->with_symbol_profile);
-    const rtl_stream_retune_analog_profile analog = {step->family, step->kind, step->width_hz};
+    const int step_cqpsk = family_test_symbol_profile_cqpsk(step->with_symbol_profile);
+    const int step_explicit = family_test_symbol_profile_explicit(step->with_symbol_profile);
+    if (step_cqpsk >= 0) {
+        out->predicted_output_rate =
+            (int)rtl_stream_output_rate_for_family(DSD_RX_FAMILY_DIGITAL, step_cqpsk, 4800, step_explicit);
+    }
+    const rtl_stream_retune_analog_profile analog = {step->family, step->kind, step->width_hz, step_explicit};
     out->queued_rc = rtl_stream_prepare_retune_analog_profile_for_target(target_hz, &analog);
     if (step->queued_live_request == RTL_STREAM_TEST_QUEUED_SYMBOL_AFTER) {
         family_test_queue_with_pipeline(-1, 0, 1);
@@ -13399,6 +13450,8 @@ family_test_land_retune_step(const dsd_opts* opts, uint32_t target_hz, const rtl
     out->applied_width_hz = demod.channel_lpf_width_hz;
     out->applied_output_kind = demod.output_kind;
     out->applied_cqpsk_enable = demod.cqpsk_enable;
+    out->applied_channel_profile = demod.channel_lpf_profile;
+    out->applied_output_rate = (int)output.rate;
     if (step->queued_live_request != RTL_STREAM_TEST_QUEUED_NONE) {
         g_stream = &g_cqpsk_toggle_test_stream;
         family_test_demod_thread_boundary();
@@ -13414,6 +13467,12 @@ family_test_land_retune_step(const dsd_opts* opts, uint32_t target_hz, const rtl
 extern "C" int
 rtl_stream_test_retune_profile_sequence(const rtl_stream_test_retune_step* steps, size_t count,
                                         rtl_stream_test_retune_landing* out) {
+    return rtl_stream_test_retune_profile_sequence_at_rate(steps, count, 0, out);
+}
+
+extern "C" int
+rtl_stream_test_retune_profile_sequence_at_rate(const rtl_stream_test_retune_step* steps, size_t count,
+                                                int forced_rate_out_hz, rtl_stream_test_retune_landing* out) {
     if (!steps || !out || count == 0U) {
         return -1;
     }
@@ -13424,7 +13483,7 @@ rtl_stream_test_retune_profile_sequence(const rtl_stream_test_retune_step* steps
     dmr_opts.frame_dmr = 1;
     g_cqpsk_toggle_test_stream.output = &output;
     g_cqpsk_toggle_test_stream.opts = &dmr_opts;
-    if (family_test_seed_open(&dmr_opts, 48000, 0) != 0) {
+    if (family_test_seed_open(&dmr_opts, 48000, forced_rate_out_hz) != 0) {
         family_test_restore(saved);
         return -2;
     }
@@ -13445,7 +13504,7 @@ static void
 family_test_queue_retune(struct controller_state* s, uint32_t target_hz, int family, int symbol_profile) {
     family_test_queue_symbol_profile(target_hz, symbol_profile);
     const rtl_stream_retune_analog_profile attach = {family, DSD_ANALOG_DEMOD_FM,
-                                                     family == DSD_RX_FAMILY_ANALOG ? 12500 : 0};
+                                                     family == DSD_RX_FAMILY_ANALOG ? 12500 : 0, 0};
     (void)rtl_stream_prepare_retune_analog_profile_for_target(target_hz, &attach);
     (void)schedule_manual_retune_on_controller(s, target_hz);
 }

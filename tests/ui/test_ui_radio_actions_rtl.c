@@ -102,10 +102,11 @@ rtl_stream_analog_family_active(void) {
 }
 
 unsigned int
-rtl_stream_output_rate_for_family(int family, int cqpsk_enable, int symbol_rate_hz) {
+rtl_stream_output_rate_for_family(int family, int cqpsk_enable, int symbol_rate_hz, int cqpsk_explicit) {
     (void)family;
     (void)cqpsk_enable;
     (void)symbol_rate_hz;
+    (void)cqpsk_explicit;
     return 48000U;
 }
 

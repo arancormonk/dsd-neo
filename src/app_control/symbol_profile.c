@@ -294,7 +294,7 @@ symbol_profile_publish(const dsd_opts* opts, dsd_state* state, dsd_decode_mode_p
            row put it on), not the rate the digital stream will run at. Time the decoder, and the front end below,
            for the digital rate. */
         const unsigned int rate_hz =
-            rtl_stream_output_rate_for_family(DSD_RX_FAMILY_DIGITAL, mod == 1, profile.symbol_rate_hz);
+            rtl_stream_output_rate_for_family(DSD_RX_FAMILY_DIGITAL, mod == 1, profile.symbol_rate_hz, 0);
         if (rate_hz > 0U) {
             state->samplesPerSymbol = dsd_opts_compute_sps_rate(opts, profile.symbol_rate_hz, (int)rate_hz);
             state->symbolCenter = dsd_opts_symbol_center(state->samplesPerSymbol);

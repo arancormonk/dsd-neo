@@ -824,11 +824,17 @@ enum {
 };
 
 /* The symbol profile a retune step queues for its target before it attaches the family
- * (rtl_stream_test_retune_step::with_symbol_profile), as a digital row or target does. */
+ * (rtl_stream_test_retune_step::with_symbol_profile), as a digital row or target does. The explicit ones attach the
+ * digital family with cqpsk_explicit set, as the engine does for a trunk-scan target whose CQPSK choice is its own
+ * (issue #583): a P25 target with a modulation value, and every DMR or NXDN target. */
 enum {
     RTL_STREAM_TEST_SYMBOL_NONE = 0,
     RTL_STREAM_TEST_SYMBOL_P25_CQPSK = 1, /* P25 on CQPSK: 4800 sym/s, the P25 CQPSK channel filter */
     RTL_STREAM_TEST_SYMBOL_DMR_FSK = 2,   /* DMR on the FSK discriminator: CQPSK off, 4800 sym/s, the 12.5 kHz filter */
+    RTL_STREAM_TEST_SYMBOL_P25_CQPSK_EXPLICIT = 3, /* P25 on CQPSK, the target's own choice (modulation=cqpsk) */
+    RTL_STREAM_TEST_SYMBOL_P25_C4FM_EXPLICIT = 4,  /* P25 on C4FM: CQPSK off, 4800 sym/s, the P25 C4FM channel filter,
+                                                      the target's own choice (modulation=c4fm) */
+    RTL_STREAM_TEST_SYMBOL_DMR_FSK_EXPLICIT = 5, /* DMR on the FSK discriminator, as a DMR trunk-scan target runs it */
 };
 
 /* One scan row's retune (issue #526): the receive family its profile attaches, and the live family request a scanner
@@ -851,6 +857,11 @@ typedef struct rtl_stream_test_retune_landing {
     int applied_width_hz;    /* demod_state::channel_lpf_width_hz then */
     int applied_output_kind; /* demod_state::output_kind then */
     int applied_cqpsk_enable;
+    int applied_channel_profile; /* demod_state::channel_lpf_profile then */
+    int applied_output_rate;     /* the output rate then */
+    /* With a symbol profile: rtl_stream_output_rate_for_family() for the digital family, asked before the retune landed
+       with the profile's CQPSK state and whether it is explicit, as the decoder times the target for it. */
+    int predicted_output_rate;
     /* With a queued_live_request: the same once the demod thread reached its next block boundary after the retune,
        and what became of the queued request (rtl_stream_receive_request_outcome()). */
     int boundary_family;
@@ -867,6 +878,11 @@ typedef struct rtl_stream_test_retune_landing {
  * pipeline running instead, so it waits for the demod thread, which reaches a block boundary once the retune landed. */
 int rtl_stream_test_retune_profile_sequence(const rtl_stream_test_retune_step* steps, size_t count,
                                             rtl_stream_test_retune_landing* out);
+
+/* rtl_stream_test_retune_profile_sequence() with the device settled on @p forced_rate_out_hz (0: none) from the open,
+ * where the FSK discriminator is resampled to 48 kHz and CQPSK is not (issue #583). */
+int rtl_stream_test_retune_profile_sequence_at_rate(const rtl_stream_test_retune_step* steps, size_t count,
+                                                    int forced_rate_out_hz, rtl_stream_test_retune_landing* out);
 
 /* What rtl_stream_analog_family_after_pending() answers at each point (issue #583). */
 typedef struct rtl_stream_test_family_after_pending_result {

@@ -912,7 +912,7 @@ channel_scan_restore_frontend(const dsd_opts* opts, dsd_state* state) {
     if (analog_family_active) {
         dsd_symbol_analog_block_reset(state);
         const unsigned int rate_hz = dsd_rtl_stream_metrics_hook_output_rate_for_family(
-            DSD_RX_FAMILY_DIGITAL, state->rf_mod == 1, profile.symbol_rate_hz);
+            DSD_RX_FAMILY_DIGITAL, state->rf_mod == 1, profile.symbol_rate_hz, 0);
         if (rate_hz > 0U) {
             state->samplesPerSymbol = dsd_opts_compute_sps_rate(opts, profile.symbol_rate_hz, (int)rate_hz);
             state->symbolCenter = dsd_opts_symbol_center(state->samplesPerSymbol);

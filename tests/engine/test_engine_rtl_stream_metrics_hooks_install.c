@@ -144,6 +144,7 @@ static int g_output_rate_for_family_calls;
 static int g_last_rate_family;
 static int g_last_rate_cqpsk;
 static int g_last_rate_symbol_rate;
+static int g_last_rate_explicit;
 
 int
 rtl_stream_analog_family_active(void) {
@@ -161,11 +162,12 @@ rtl_stream_analog_family_after_pending(void) {
 }
 
 unsigned int
-rtl_stream_output_rate_for_family(int family, int cqpsk_enable, int symbol_rate_hz) {
+rtl_stream_output_rate_for_family(int family, int cqpsk_enable, int symbol_rate_hz, int cqpsk_explicit) {
     ++g_output_rate_for_family_calls;
     g_last_rate_family = family;
     g_last_rate_cqpsk = cqpsk_enable;
     g_last_rate_symbol_rate = symbol_rate_hz;
+    g_last_rate_explicit = cqpsk_explicit;
     return 24000U;
 }
 
@@ -351,9 +353,11 @@ main(void) {
     assert(dsd_rtl_stream_metrics_hook_analog_family_after_pending() == 0);
     assert(g_family_after_pending_calls == 1);
     assert(g_analog_family_active_calls == 1);
-    assert(dsd_rtl_stream_metrics_hook_output_rate_for_family(0, 1, 6000) == 24000U);
+    /* The target's own CQPSK choice reaches the stream with it (issue #583). */
+    assert(dsd_rtl_stream_metrics_hook_output_rate_for_family(0, 1, 6000, 1) == 24000U);
     assert(g_output_rate_for_family_calls == 1);
     assert(g_last_rate_family == 0 && g_last_rate_cqpsk == 1 && g_last_rate_symbol_rate == 6000);
+    assert(g_last_rate_explicit == 1);
 
     int cqpsk_enable = -1;
     int cqpsk_timing = -1;

@@ -1551,6 +1551,43 @@ expect_m17_encoder_unchanged(void) {
 }
 
 /*
+ * The CQPSK family a switch out of the analog family lands on (issue #583): a trunk-scan target's own choice (explicit,
+ * and a request made) stands whatever DSD_NEO_CQPSK says, as on a retune that stays on the digital family; anything
+ * else lands where an open of the mode would, which the override decides when set. With no request made the explicit
+ * flag changes nothing.
+ */
+static int
+expect_landing_cqpsk_truth_table(void) {
+    static const struct {
+        const char* env; /* DSD_NEO_CQPSK, or NULL for unset */
+        int requested;
+        int is_explicit;
+        int want;
+    } rows[] = {
+        {NULL, -1, 0, -1}, {NULL, 0, 0, 0}, {NULL, 1, 0, 1}, {NULL, -1, 1, -1}, {NULL, 0, 1, 0}, {NULL, 1, 1, 1},
+        {"0", -1, 0, 0},   {"0", 0, 0, 0},  {"0", 1, 0, 0},  {"0", -1, 1, 0},   {"0", 0, 1, 0},  {"0", 1, 1, 1},
+        {"1", -1, 0, 1},   {"1", 0, 0, 1},  {"1", 1, 0, 1},  {"1", -1, 1, 1},   {"1", 0, 1, 0},  {"1", 1, 1, 1},
+    };
+
+    int rc = 0;
+    for (size_t i = 0; i < sizeof rows / sizeof rows[0]; i++) {
+        if (rows[i].env) {
+            (void)dsd_setenv("DSD_NEO_CQPSK", rows[i].env, 1);
+        } else {
+            (void)dsd_unsetenv("DSD_NEO_CQPSK");
+        }
+        dsd_neo_config_init();
+        char label[128];
+        DSD_SNPRINTF(label, sizeof label, "landing CQPSK: DSD_NEO_CQPSK=%s, requested %d, explicit %d",
+                     rows[i].env ? rows[i].env : "unset", rows[i].requested, rows[i].is_explicit);
+        rc |= expect_int_eq(label, rtl_demod_landing_cqpsk(rows[i].requested, rows[i].is_explicit), rows[i].want);
+    }
+    (void)dsd_unsetenv("DSD_NEO_CQPSK");
+    dsd_neo_config_init();
+    return rc;
+}
+
+/*
  * The analog family's monitor audio comes from the FM discriminator. DSD_NEO_CQPSK=1, or a QPSK modulation left on the
  * options, must not put a -fA open on the CQPSK path, which would hand the monitor differential phase symbols instead
  * of audio; a live switch to analog lands on FM the same way. A digital open under the override still runs CQPSK.
@@ -2275,6 +2312,7 @@ main(void) {
     rc |= expect_analog_env_off_conflict();
     rc |= expect_m17_encoder_unchanged();
     rc |= expect_analog_open_ignores_cqpsk();
+    rc |= expect_landing_cqpsk_truth_table();
     rc |= expect_analog_am_open();
     rc |= expect_audio_monitor_reset_clears_am_carrier();
     rc |= expect_analog_kind_switch();
