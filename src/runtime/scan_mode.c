@@ -566,6 +566,11 @@ dsd_scan_mode_timed_digital_family(const dsd_state* state) {
 }
 
 int
+dsd_scan_mode_cqpsk_explicit(const dsd_opts* opts, const dsd_state* state) {
+    return opts ? scan_scope_cqpsk_explicit(opts, scan_scope_get(state)) : 0;
+}
+
+int
 dsd_scan_mode_take_timed_digital_family(const dsd_state* state) {
     scan_scope* scope = scan_scope_get(state);
     if (!scope || !scope->timed_digital_family) {
@@ -591,11 +596,17 @@ scan_scope_apply_timing(const dsd_opts* opts, dsd_state* state, const scan_scope
     state->sps_hunt_idx = (int)profile.sps_profile_index;
 }
 
-static void
-scan_scope_apply_decoder(dsd_opts* opts, dsd_state* state, const scan_scope* scope) {
+/* Put the row @p scope describes over the configured decoder, all but its symbol timing, and fill @p out_profile with
+ * the profile the row is timed with. Returns 0 for a blank row, which runs the configured decoder with its timing. The
+ * caller times the row (scan_scope_apply_timing()) once the modulation the row runs is decided: the preset's, the
+ * configured lock's or the scope's, and on resume the one a P25 row learned (dsd_scan_mode_resume()). */
+static int
+scan_scope_apply_row_decoder(dsd_opts* opts, dsd_state* state, const scan_scope* scope,
+                             dsd_decode_mode_profile* out_profile) {
     dsd_scan_settings_restore(&scope->configured, opts, state);
     if (scope->mode == DSD_SCAN_MODE_INHERIT) {
-        return;
+        *out_profile = dsd_scan_mode_profile(DSD_SCAN_MODE_INHERIT);
+        return 0;
     }
     opts->mod_p25p2_c4fm = 0;
     opts->mod_p25p2_profile_lock = 0;
@@ -623,12 +634,20 @@ scan_scope_apply_decoder(dsd_opts* opts, dsd_state* state, const scan_scope* sco
         dsd_scan_mode_apply_modulation(opts, scope->mode, scope->modulation);
         state->rf_mod = dsd_opts_modulation(opts);
     }
-    dsd_decode_mode_profile profile = dsd_scan_mode_profile(scope->mode);
+    *out_profile = dsd_scan_mode_profile(scope->mode);
     if (scope->mode == DSD_SCAN_MODE_P25 && opts->mod_p25p2_profile_lock
         && scope->configured.state_sps_hunt_idx == DSD_FRAME_SYNC_SPS_PROFILE_6000_4) {
-        profile = dsd_decode_mode_profile_for(DSDCFG_MODE_P25P2);
+        *out_profile = dsd_decode_mode_profile_for(DSDCFG_MODE_P25P2);
     }
-    scan_scope_apply_timing(opts, state, scope, profile);
+    return 1;
+}
+
+static void
+scan_scope_apply_decoder(dsd_opts* opts, dsd_state* state, const scan_scope* scope) {
+    dsd_decode_mode_profile profile;
+    if (scan_scope_apply_row_decoder(opts, state, scope, &profile)) {
+        scan_scope_apply_timing(opts, state, scope, profile);
+    }
 }
 
 typedef void (*scan_option_applier)(dsd_opts* opts, dsd_state* state, const dsd_scan_option_values* values);
@@ -959,17 +978,26 @@ dsd_scan_mode_resume(dsd_opts* opts, dsd_state* state) {
     dsd_scan_settings_capture(opts, state, &scope->configured);
     scope->configured_mode = dsd_infer_decode_mode_preset_exact(opts);
     scope->suspended = 0;
-    scan_scope_apply(opts, state, scope);
+    dsd_decode_mode_profile profile;
+    const int timed = scan_scope_apply_row_decoder(opts, state, scope, &profile);
     if (scope->mode == DSD_SCAN_MODE_P25) {
         /* Configuration updates do not move the receiver off its Phase 2 channel
          * or erase an unlocked modulation acquired on the current P25 row. */
         if (scope->effective.state_sps_hunt_idx == DSD_FRAME_SYNC_SPS_PROFILE_6000_4) {
-            scan_scope_apply_timing(opts, state, scope, dsd_decode_mode_profile_for(DSDCFG_MODE_P25P2));
+            profile = dsd_decode_mode_profile_for(DSDCFG_MODE_P25P2);
         }
         if (!opts->mod_cli_lock) {
             state->rf_mod = scope->effective.state_rf_mod;
         }
     }
+    /* Timed once the row runs the modulation it keeps (issue #583): a modulation=auto target that learned CQPSK gets
+       the preset's C4FM back from the row decoder until the lines above restore what it learned, and timed with that
+       C4FM it would be timed for the FSK discriminator's landing (its own choice stands over DSD_NEO_CQPSK there)
+       while it runs, and is republished with, CQPSK. */
+    if (timed) {
+        scan_scope_apply_timing(opts, state, scope, profile);
+    }
+    scan_options_apply(opts, state, &scope->options);
     dsd_scan_settings effective;
     dsd_scan_settings_capture(opts, state, &effective);
     /* Monitoring is audio routing, the row-scoped options are policy (forcing, CRC,

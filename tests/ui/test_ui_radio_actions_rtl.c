@@ -37,6 +37,9 @@ static int g_analog_family;
 static int g_analog_kind;
 static int g_analog_width_hz;
 static int g_analog_order;
+/* Digital family requests that land the digital family's landing (issue #583): none here, where nothing outstanding
+   lands a family on the digital front end. */
+static int g_landing_calls;
 static int g_modes_calls;
 static int g_modes_order;
 
@@ -98,6 +101,19 @@ rtl_stream_check_analog_profile(int family, int kind, int width_hz) {
 /* The front end is digital throughout these tests. */
 int
 rtl_stream_analog_family_active(void) {
+    return 0;
+}
+
+/* ... with nothing outstanding that lands a family. */
+int
+rtl_stream_family_landing_after_pending(void) {
+    return 0;
+}
+
+int
+rtl_stream_request_digital_family_landing(int cqpsk_explicit) {
+    (void)cqpsk_explicit;
+    g_landing_calls++;
     return 0;
 }
 
@@ -200,6 +216,7 @@ reset_profile_capture(const dsd_opts* opts) {
     g_analog_kind = -1;
     g_analog_width_hz = -1;
     g_analog_order = 0;
+    g_landing_calls = 0;
     g_modes_calls = 0;
     g_modes_order = 0;
 }
@@ -223,6 +240,7 @@ test_p25p2_toggle_applies_rtl_profile_before_lock(void) {
     rc |= expect_int("p25p2 qpsk dispatch", dispatch_one(&opts, &state, &cmd), 1);
     rc |= expect_int("p25p2 qpsk request call", g_request_calls, 1);
     rc |= expect_int("p25p2 qpsk asks for the digital family", g_analog_family, DSD_RX_FAMILY_DIGITAL);
+    rc |= expect_int("p25p2 qpsk: the plain family request, nothing outstanding", g_landing_calls, 0);
     rc |= expect_int("p25p2 qpsk family before profile", g_analog_order > 0 && g_analog_order < g_request_order, 1);
     rc |= expect_int("p25p2 qpsk notes the configured digital modes", g_modes_calls, 1);
     rc |= expect_int("p25p2 qpsk notes them before the family request",

@@ -4288,29 +4288,28 @@ ui_publish_profile_timed(const dsd_opts* opts, dsd_state* state, dsd_decode_mode
  * (issue #578): the resume's, for a command that suspended the scope, or the one right after a command that left it in
  * force (ui_publish_row_to_started_stream()). A reopen under a suspended scope opened on the configured settings, so
  * the rate it delivers now can be another family's or modulation's; a rollback's restart, and a stream a command that
- * left the scope in force started, opened on the row's settings, with the CQPSK state an open picks for them. A front
- * end still on the analog family is moved onto the digital family when the configured mode is digital
- * (dsd_scan_mode_configured_digital(), svc_publish_symbol_profile()), and that switch lands where an open of the mode
- * would, on the CQPSK family DSD_NEO_CQPSK names when set and an output chain designed for it: a row with a symbol
- * clock is timed at the rate that switch lands on (rtl_stream_output_rate_for_family()). Otherwise the request applies
- * the row's own CQPSK state, whatever DSD_NEO_CQPSK says, over the output chain the stream opened on, whether that is
- * the digital family or the analog one a typed row runs its profile under on an analog session. A CQPSK row's timing
- * loop then runs at the demod rate the stream published at its start (rtl_stream_get_request_rate_hz()), not at the
- * resampled output of a stream that opened on the FSK discriminator or the analog monitor. Anything else (an FSK row,
- * whose samples leave at the rate the stream delivers now, which only an open, a family switch or a retune resamples
- * anew; an analog row; the M17 encoder's analog front end) keeps the rate the stream delivers.
+ * left the scope in force started, opened on the row's settings, with the CQPSK state an open picks for them. The
+ * request applies the row's own CQPSK state, whatever DSD_NEO_CQPSK says, over the output chain the stream opened on,
+ * whether that is the digital family or the analog one a typed row runs its profile under on an analog session. A
+ * CQPSK row's timing loop then runs at the demod rate the stream published at its start
+ * (rtl_stream_get_request_rate_hz()), not at the resampled output of a stream that opened on the FSK discriminator or
+ * the analog monitor. Anything else (an FSK row, whose samples leave at the rate the stream delivers now, which only an
+ * open, a family switch, a retune or a landing resamples anew; an analog row; the M17 encoder's analog front end) keeps
+ * the rate the stream delivers.
+ *
+ * A row the publish lands on the digital family's landing is timed there by the publish itself instead
+ * (svc_publish_symbol_profile(), issue #583): a front end still on the analog family under a digital configured mode,
+ * a row timed for that landing, or work outstanding that lands a family. The landing is where an open of the mode
+ * would put it (the CQPSK family DSD_NEO_CQPSK names when set, unless the row is a trunk-scan target that makes its own
+ * choice, dsd_scan_mode_cqpsk_explicit()), with an output chain designed for it, and the publish decides it once, times
+ * the decoder for it and asks for that landing, so the timing here is only for a publish that lands none.
  */
 static int
 ui_started_stream_rate(const dsd_opts* opts, const dsd_state* state, dsd_decode_mode_profile profile) {
 #ifdef USE_RADIO
-    if (opts->audio_in_type == AUDIO_IN_RTL && state->rtl_ctx && opts->analog_only != 1 && profile.symbol_rate_hz > 0) {
-        const int cqpsk = state->rf_mod == 1;
-        int rate_hz = 0;
-        if (rtl_stream_analog_family_active() && dsd_scan_mode_configured_digital(opts, state)) {
-            rate_hz = (int)rtl_stream_output_rate_for_family(DSD_RX_FAMILY_DIGITAL, cqpsk, profile.symbol_rate_hz, 0);
-        } else if (cqpsk) {
-            rate_hz = rtl_stream_get_request_rate_hz();
-        }
+    if (opts->audio_in_type == AUDIO_IN_RTL && state->rtl_ctx && opts->analog_only != 1 && profile.symbol_rate_hz > 0
+        && state->rf_mod == 1) {
+        const int rate_hz = rtl_stream_get_request_rate_hz();
         if (rate_hz > 0) {
             return rate_hz;
         }

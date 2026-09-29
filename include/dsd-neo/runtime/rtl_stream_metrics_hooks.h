@@ -49,12 +49,16 @@ typedef struct {
     void (*set_channel_squelch)(double mean_power);
     /* Receive family / analog profile request (dsd_rx_family, dsd_analog_demod, width in Hz; 0 = default). */
     int (*apply_analog_profile)(int family, int kind, int width_hz);
+    /* A digital family request that lands the digital family's landing whichever family the front end runs
+       (rtl_stream_request_digital_family_landing()); cqpsk_explicit as for output_rate_for_family. */
+    int (*request_digital_family_landing)(int cqpsk_explicit);
     /* Published analog profile; returns 1 while the analog family is active. */
     int (*analog_profile)(int* out_kind, int* out_width_hz, int* out_lpf_on);
     /* 1 while the front end runs the analog receive family, including under a symbol profile applied on its own. */
     int (*analog_family_active)(void);
-    /* 1 while it runs the analog family, or while requests or retunes already outstanding land a family: a digital
-       retune queued now lands on the digital family's landing (rtl_stream_family_landing_after_pending()). */
+    /* 1 while it runs the analog family, or while requests or retunes already outstanding land a family (a digital
+       landing requested live included): a digital retune queued now lands on the digital family's landing
+       (rtl_stream_family_landing_after_pending()). */
     int (*family_landing_after_pending)(void);
     /* Output rate the front end will have once it runs the family (dsd_rx_family); 0 when unknown. cqpsk_explicit: the
        CQPSK state is a trunk-scan target's own choice, which stands over DSD_NEO_CQPSK at the switch. */
@@ -108,6 +112,23 @@ int dsd_rtl_stream_metrics_hook_set_channel_squelch(double mean_power);
  */
 int dsd_rtl_stream_metrics_hook_apply_analog_profile(int family, int kind, int width_hz);
 /**
+ * @brief Ask the RTL front end for the digital family, landing where the digital family's prediction says whichever
+ * family it runs where the request applies (issue #583).
+ *
+ * A caller that timed the decoder for that landing (dsd_rtl_stream_metrics_hook_output_rate_for_family()) because the
+ * analog family runs or outstanding work lands a family (dsd_rtl_stream_metrics_hook_family_landing_after_pending())
+ * asks with this rather than dsd_rtl_stream_metrics_hook_apply_analog_profile(DSD_RX_FAMILY_DIGITAL, ...), which
+ * switches only a front end on the analog family: the symbol profile queued after it
+ * (dsd_rtl_stream_metrics_hook_apply_demod_profile()) then lands on that prediction even where a retune that carries
+ * the digital family landed first (rtl_stream_request_digital_family_landing()).
+ *
+ * @param cqpsk_explicit Non-zero when the CQPSK state of the symbol profile that follows is a trunk-scan target's own
+ *                       choice, which stands over DSD_NEO_CQPSK; 0 lands where an open of the mode would.
+ * @return 0 when accepted, -1 when refused or when no RTL front end is installed. With no hook of its own installed
+ *         it asks as dsd_rtl_stream_metrics_hook_apply_analog_profile() does for the digital family.
+ */
+int dsd_rtl_stream_metrics_hook_request_digital_family_landing(int cqpsk_explicit);
+/**
  * @brief Read the published analog receive profile.
  *
  * @return 1 while the analog family is active (outputs filled), 0 otherwise (outputs zeroed).
@@ -134,7 +155,9 @@ int dsd_rtl_stream_metrics_hook_analog_family_active(void);
  * (rtl_stream_output_rate_for_family(), not the live rate) reads it too, and so does a later timing of the row while
  * the row's own retune, carrying the family, is outstanding. The answer can fall between two reads, as outstanding
  * analog work fails on another thread, so a scan row's timing records the decision it made
- * (dsd_scan_mode_timed_digital_family()), and the engine attaches the family to the row's retune by that decision.
+ * (dsd_scan_mode_timed_digital_family()), and the engine attaches the family to the row's retune by that decision. A
+ * live request timed by it asks for the landing (dsd_rtl_stream_metrics_hook_request_digital_family_landing()), so the
+ * front end lands there whichever order that request and the outstanding work land in.
  *
  * @return 1 when the analog family runs or outstanding work lands a family, 0 otherwise. With no hook of its own
  *         installed it answers as dsd_rtl_stream_metrics_hook_analog_family_active() does, the live family alone.

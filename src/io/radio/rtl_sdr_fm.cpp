@@ -8471,6 +8471,19 @@ static int g_profile_req_cqpsk_after = 0;
  * lands. Like g_profile_req_cqpsk_after it says something only while a request is unsettled, and it is guarded by
  * g_profile_req_m like it. */
 static int g_profile_req_family_after = DSD_RX_FAMILY_DIGITAL;
+/* The queued digital family request is a landing (rtl_stream_request_digital_family_landing(), issue #583): the symbol
+ * profile queued with it lands as a switch out of the analog family would, whichever family the front end runs, and
+ * g_profile_req_landing_explicit says whether that profile's CQPSK state is a trunk-scan target's own choice. Both go
+ * with the queued family request: a later family request replaces them, and the demod thread takes them with it.
+ * Guarded by g_profile_req_m. */
+static int g_profile_req_digital_landing = 0;
+static int g_profile_req_landing_explicit = 0;
+/* Whether the requests queued so far end with a digital landing the demod thread has not applied
+ * (rtl_stream_requested_landing_locked()), noted like g_profile_req_family_after: a landing request sets it, any other
+ * family request clears it, a demod profile request leaves it, and a retune's family that retires the requests queued
+ * before it clears it (the retune lands its own family). It says something only while a request is unsettled, and it
+ * is guarded by g_profile_req_m. */
+static int g_profile_req_landing_after = 0;
 
 /* Receive-request numbering (rtl_stream_receive_request_seq(), rtl_stream_receive_request_outcome()). A queued request
  * takes the next number under g_profile_req_m. The demod thread settles every number it took once it has applied and
@@ -8602,10 +8615,36 @@ rtl_stream_requested_family_locked(void) {
     return rtl_stream_analog_family_active() ? DSD_RX_FAMILY_ANALOG : DSD_RX_FAMILY_DIGITAL;
 }
 
+#if defined(DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS)
+/* rtl_stream_requested_family_locked() on its own, for the request tests; the query reads it together with the
+ * landing the requests end with, under one lock (rtl_stream_requests_land_family()). */
 static int
 rtl_stream_requested_family(void) {
     std::lock_guard<std::mutex> lock(g_profile_req_m);
     return rtl_stream_requested_family_locked();
+}
+#endif
+
+/* Whether the requests queued so far end with a digital landing the demod thread has not applied yet
+ * (rtl_stream_request_digital_family_landing()): what the last of them notes while any is unsettled, else 0. Called
+ * with g_profile_req_m held. */
+static int
+rtl_stream_requested_landing_locked(void) {
+    if (rtl_stream_receive_request_outcome(g_rx_req_seq.load(std::memory_order_relaxed))
+        == RTL_STREAM_RX_REQUEST_PENDING) {
+        return g_profile_req_landing_after;
+    }
+    return 0;
+}
+
+/* Whether the live requests still unsettled land a receive family (rtl_stream_family_landing_after_pending()): they
+ * leave the stream on the analog family, or end with a digital landing, which lands where
+ * rtl_stream_output_rate_for_family() predicts even on a front end already digital. */
+static int
+rtl_stream_requests_land_family(void) {
+    std::lock_guard<std::mutex> lock(g_profile_req_m);
+    return (rtl_stream_requested_family_locked() == DSD_RX_FAMILY_ANALOG || rtl_stream_requested_landing_locked()) ? 1
+                                                                                                                   : 0;
 }
 
 /* Whether a retune that attached @p family (-1: none), with @p family_request_count live family requests counted at the
@@ -8639,17 +8678,18 @@ controller_family_retune_outstanding(struct controller_state* s) {
 }
 
 /* rtl_stream_family_landing_after_pending() against the retunes of @p s (NULL: none), read in the order that sees a
- * landing between two reads: the retunes under hop_m, then the live requests under g_profile_req_m, then the published
- * family, never holding two of the locks at once. The controller publishes what a retune landed (its family, and the
- * output chain the finalize designs for it) before it clears the in-flight marker, and the demod thread publishes what
- * it applied before it settles the requests it took (rtl_stream_settle_taken_requests()), so work that stops counting
- * as outstanding between two reads is already in the next source read, or in the live rate. */
+ * landing between two reads: the retunes under hop_m, then the live requests under g_profile_req_m (the analog family
+ * they leave the stream on, or a digital landing they end with), then the published family, never holding two of the
+ * locks at once. The controller publishes what a retune landed (its family, and the output chain the finalize designs
+ * for it) before it clears the in-flight marker, and the demod thread publishes what it applied (a digital landing's
+ * output chain included) before it settles the requests it took (rtl_stream_settle_taken_requests()), so work that
+ * stops counting as outstanding between two reads is already in the next source read, or in the live rate. */
 static int
 rtl_stream_family_landing_after_pending_for(struct controller_state* s) {
     if (s && controller_family_retune_outstanding(s)) {
         return 1;
     }
-    if (rtl_stream_requested_family() == DSD_RX_FAMILY_ANALOG) {
+    if (rtl_stream_requests_land_family()) {
         return 1;
     }
     return rtl_stream_analog_family_active();
@@ -8723,6 +8763,7 @@ rtl_stream_request_demod_profile(int cqpsk_enable, int symbol_rate_hz, int level
     std::lock_guard<std::mutex> lock(g_profile_req_m);
     g_profile_req_cqpsk_after = (cqpsk_enable >= 0) ? (cqpsk_enable ? 1 : 0) : rtl_stream_requested_cqpsk_locked();
     g_profile_req_family_after = rtl_stream_requested_family_locked();
+    g_profile_req_landing_after = rtl_stream_requested_landing_locked();
     (void)rtl_stream_number_request_locked();
     g_profile_req_has_demod = 1;
     g_profile_req_cqpsk = cqpsk_enable;
@@ -8921,8 +8962,12 @@ rtl_stream_check_analog_profile(int family, int kind, int width_hz) {
     return valid ? 0 : -1;
 }
 
-extern "C" int
-rtl_stream_request_analog_profile(int family, int kind, int width_hz) {
+/* Body of rtl_stream_request_analog_profile(), and of rtl_stream_request_digital_family_landing() with
+ * @p digital_landing set (the digital family only): that family request then lands the digital family's landing
+ * whichever family the front end runs where it applies, with @p cqpsk_explicit saying whether the CQPSK state of the
+ * symbol profile queued after it is a trunk-scan target's own choice. */
+static int
+rtl_stream_queue_family_request(int family, int kind, int width_hz, int digital_landing, int cqpsk_explicit) {
     if (!rtl_stream_analog_request_valid(family, kind, width_hz, rtl_stream_published_request_rate(),
                                          rtl_stream_analog_refused_result())) {
         return -1;
@@ -8937,6 +8982,7 @@ rtl_stream_request_analog_profile(int family, int kind, int width_hz) {
     std::lock_guard<std::mutex> lock(g_profile_req_m);
     g_profile_req_cqpsk_after = (family == DSD_RX_FAMILY_ANALOG) ? 0 : rtl_stream_requested_cqpsk_locked();
     g_profile_req_family_after = family;
+    g_profile_req_landing_after = digital_landing ? 1 : 0;
     /* An analog request still queued never reaches the demod thread, nor does anything queued with it: this one
        replaces it, and they read replaced once this one settles (issue #578). */
     const int replaces_analog = g_profile_req_analog_family >= 0;
@@ -8950,6 +8996,8 @@ rtl_stream_request_analog_profile(int family, int kind, int width_hz) {
     g_profile_req_analog_family = family;
     g_profile_req_analog_kind = kind;
     g_profile_req_analog_width_hz = width_hz;
+    g_profile_req_digital_landing = digital_landing ? 1 : 0;
+    g_profile_req_landing_explicit = (digital_landing && cqpsk_explicit) ? 1 : 0;
     /* A demod profile still queued from before this request is obsolete either way. The analog family has no symbol
        clock. A digital family runs on the symbol profile its caller queues right after this request, and that
        profile decides the digital resampler and the output rate the switch commits; an older one (a CQPSK toggle
@@ -8958,6 +9006,16 @@ rtl_stream_request_analog_profile(int family, int kind, int width_hz) {
     g_profile_req_has_demod = 0;
     g_profile_req_pending.store(1, std::memory_order_release);
     return 0;
+}
+
+extern "C" int
+rtl_stream_request_analog_profile(int family, int kind, int width_hz) {
+    return rtl_stream_queue_family_request(family, kind, width_hz, 0, 0);
+}
+
+extern "C" int
+rtl_stream_request_digital_family_landing(int cqpsk_explicit) {
+    return rtl_stream_queue_family_request(DSD_RX_FAMILY_DIGITAL, DSD_ANALOG_DEMOD_FM, 0, 1, cqpsk_explicit);
 }
 
 /* The symbol profile a switch out of the analog family lands on: its CQPSK family and channel filter become the ones
@@ -9043,12 +9101,31 @@ rtl_stream_settle_taken_requests(uint32_t taken_seq, uint32_t refused_seq) {
     g_rx_req_settled_seq.store(taken_seq, std::memory_order_release);
 }
 
+/* The output chain a digital landing designs on a front end that already runs the digital family
+ * (rtl_stream_request_digital_family_landing(), issue #583), once its symbol profile has applied: the resampler and
+ * output rate for the CQPSK state and symbol rate it landed on, by the helper rtl_demod_enter_digital_family() designs
+ * them with at a switch and a retune's finalize after its profile (controller_finalize_rate_chain()), from the same
+ * demod rate, target and policy, so the stream runs at the rate rtl_stream_output_rate_for_family() predicts. A symbol
+ * profile request alone keeps the chain the stream runs. Nothing else of a switch happens: the family switch is not
+ * recorded and no loops are reset beyond a CQPSK change's. An output rate that moved leaves the ring's samples at the
+ * old rate behind, so they are dropped and the output generation moves, as a CQPSK change does. Demod thread only. */
 static void
-rtl_stream_consume_demod_profile_request(void) {
-    if (!g_profile_req_pending.load(std::memory_order_acquire)) {
-        return;
+rtl_stream_design_digital_landing_output(void) {
+    struct output_state* outp = rtl_stream_active_output();
+    const int rate_before = outp->rate.load();
+    rtl_demod_maybe_update_resampler_after_rate_change(&demod, outp, rtl_dsp_bw_hz);
+    if (outp->rate.load() != rate_before) {
+        rtl_stream_clear_output_for_demod_family_switch();
     }
+}
+
+namespace {
+/* The receive requests the demod thread took from the queue at a block boundary
+ * (rtl_stream_take_demod_profile_request()). */
+struct TakenProfileRequest {
     int has_demod;
+    int digital_landing;
+    int landing_explicit;
     int analog_family;
     int analog_kind;
     int analog_width_hz;
@@ -9060,50 +9137,85 @@ rtl_stream_consume_demod_profile_request(void) {
     int ted_sps_is_override;
     uint32_t taken_seq;
     uint32_t analog_seq;
-    {
-        std::lock_guard<std::mutex> lock(g_profile_req_m);
-        g_profile_req_pending.store(0, std::memory_order_relaxed);
-        if (g_profile_req_analog_family == DSD_RX_FAMILY_DIGITAL && !g_profile_req_has_demod && demod.analog_family) {
-            /* Leaving analog lands on the symbol profile queued with it, which decides the digital resampler and the
-               output rate committed at the switch. Callers queue that profile as a second request right after the
-               family (svc_publish_symbol_profile(), the channel-scan leave), and this block boundary fell between
-               the two: keep the family request queued until its profile arrives and re-arms the consume, rather than
-               switching for the analog monitor's placeholder profile. */
-            return;
+};
+} // namespace
+
+/* Take what is queued for the demod thread into @p out and empty the queue, under g_profile_req_m. Returns 0, taking
+ * nothing, while a digital family request waits for its symbol profile. */
+static int
+rtl_stream_take_demod_profile_request(TakenProfileRequest* out) {
+    std::lock_guard<std::mutex> lock(g_profile_req_m);
+    g_profile_req_pending.store(0, std::memory_order_relaxed);
+    if (g_profile_req_analog_family == DSD_RX_FAMILY_DIGITAL && !g_profile_req_has_demod
+        && (demod.analog_family || g_profile_req_digital_landing)) {
+        /* Leaving analog lands on the symbol profile queued with it, which decides the digital resampler and the output
+           rate committed at the switch, and so does a digital landing on the digital family. Callers queue that
+           profile as a second request right after the family (svc_publish_symbol_profile(), the channel-scan leave),
+           and this block boundary fell between the two: keep the family request queued until its profile arrives and
+           re-arms the consume, rather than switching for the analog monitor's placeholder profile or losing the
+           landing to a profile applied alone. */
+        return 0;
+    }
+    out->has_demod = g_profile_req_has_demod;
+    out->digital_landing = g_profile_req_digital_landing;
+    out->landing_explicit = g_profile_req_landing_explicit;
+    out->analog_family = g_profile_req_analog_family;
+    out->analog_kind = g_profile_req_analog_kind;
+    out->analog_width_hz = g_profile_req_analog_width_hz;
+    out->cqpsk = g_profile_req_cqpsk;
+    out->sym_rate = g_profile_req_sym_rate;
+    out->levels = g_profile_req_levels;
+    out->chan = g_profile_req_chan;
+    out->ted_sps = g_profile_req_ted_sps;
+    out->ted_sps_is_override = g_profile_req_ted_sps_is_override;
+    out->taken_seq = g_rx_req_seq.load(std::memory_order_relaxed);
+    out->analog_seq = g_profile_req_analog_seq;
+    g_profile_req_has_demod = 0;
+    g_profile_req_analog_family = -1;
+    g_profile_req_digital_landing = 0;
+    g_profile_req_landing_explicit = 0;
+    return 1;
+}
+
+static void
+rtl_stream_consume_demod_profile_request(void) {
+    if (!g_profile_req_pending.load(std::memory_order_acquire)) {
+        return;
+    }
+    TakenProfileRequest req{};
+    if (!rtl_stream_take_demod_profile_request(&req)) {
+        return;
+    }
+    const uint32_t refused_seq = rtl_stream_drop_refused_analog_request(&req.analog_family, req.analog_kind,
+                                                                        req.analog_width_hz, req.analog_seq);
+    /* A switch out of the analog family, or a digital landing (issue #583) on either family, lands its symbol profile
+       where rtl_stream_output_rate_for_family() predicts: the CQPSK state and filter an open of the mode picks, or the
+       target's own (landing_explicit, which only a digital landing, taken with its profile, carries), and a TED for
+       the demod rate. On the digital family only the output chain is designed again; the switch itself happens only
+       from the analog family. */
+    const bool leaves_analog = demod.analog_family != 0;
+    const bool lands_on_digital =
+        req.has_demod && req.analog_family == DSD_RX_FAMILY_DIGITAL && (leaves_analog || req.digital_landing);
+    if (lands_on_digital) {
+        rtl_stream_resolve_landing_profile(&req.cqpsk, &req.chan, req.sym_rate, req.landing_explicit);
+        req.ted_sps = rtl_stream_landing_ted_sps(req.ted_sps, req.ted_sps_is_override, req.sym_rate);
+    }
+    if (req.analog_family >= 0) {
+        rtl_stream_apply_analog_profile_params(req.analog_family, req.analog_kind, req.analog_width_hz,
+                                               req.has_demod ? req.cqpsk : -1, req.has_demod ? req.sym_rate : 0,
+                                               req.landing_explicit);
+    }
+    if (req.has_demod) {
+        rtl_stream_apply_demod_profile_params(req.cqpsk, req.sym_rate, req.levels, req.chan, req.ted_sps,
+                                              req.ted_sps_is_override, 0);
+    }
+    if (lands_on_digital) {
+        if (!leaves_analog) {
+            rtl_stream_design_digital_landing_output();
         }
-        has_demod = g_profile_req_has_demod;
-        analog_family = g_profile_req_analog_family;
-        analog_kind = g_profile_req_analog_kind;
-        analog_width_hz = g_profile_req_analog_width_hz;
-        cqpsk = g_profile_req_cqpsk;
-        sym_rate = g_profile_req_sym_rate;
-        levels = g_profile_req_levels;
-        chan = g_profile_req_chan;
-        ted_sps = g_profile_req_ted_sps;
-        ted_sps_is_override = g_profile_req_ted_sps_is_override;
-        taken_seq = g_rx_req_seq.load(std::memory_order_relaxed);
-        analog_seq = g_profile_req_analog_seq;
-        g_profile_req_has_demod = 0;
-        g_profile_req_analog_family = -1;
-    }
-    const uint32_t refused_seq =
-        rtl_stream_drop_refused_analog_request(&analog_family, analog_kind, analog_width_hz, analog_seq);
-    const bool lands_on_digital = has_demod && analog_family == DSD_RX_FAMILY_DIGITAL && demod.analog_family;
-    if (lands_on_digital) {
-        rtl_stream_resolve_landing_profile(&cqpsk, &chan, sym_rate, 0);
-        ted_sps = rtl_stream_landing_ted_sps(ted_sps, ted_sps_is_override, sym_rate);
-    }
-    if (analog_family >= 0) {
-        rtl_stream_apply_analog_profile_params(analog_family, analog_kind, analog_width_hz, has_demod ? cqpsk : -1,
-                                               has_demod ? sym_rate : 0, 0);
-    }
-    if (has_demod) {
-        rtl_stream_apply_demod_profile_params(cqpsk, sym_rate, levels, chan, ted_sps, ted_sps_is_override, 0);
-    }
-    if (lands_on_digital) {
         rtl_stream_apply_landing_ted_floor();
     }
-    rtl_stream_settle_taken_requests(taken_seq, refused_seq);
+    rtl_stream_settle_taken_requests(req.taken_seq, refused_seq);
 }
 
 /* Discard any unconsumed queued request, and the digital decode modes a
@@ -9118,6 +9230,8 @@ rtl_stream_clear_demod_profile_request(void) {
     g_profile_req_pending.store(0, std::memory_order_relaxed);
     g_profile_req_has_demod = 0;
     g_profile_req_analog_family = -1;
+    g_profile_req_digital_landing = 0;
+    g_profile_req_landing_explicit = 0;
     /* A refusal the previous stream recorded is not this stream's: it opens on the options as they are, so a request
        its predecessor refused says nothing about what it runs. */
     g_rx_req_refused_seq.store(0U, std::memory_order_relaxed);
@@ -9366,8 +9480,11 @@ rtl_stream_retire_requests_before_family(const RtlRetuneProfile* profile, uint32
     const int analog_queued = g_profile_req_analog_family >= 0;
     /* Either way the requests left unsettled end on the family this retune lands
        (rtl_stream_requested_family_locked()): the dropped ones until they settle with it, or the symbol profile kept
-       after it. */
+       after it. A digital landing among the dropped requests lands nothing (rtl_stream_requested_landing_locked()). */
     g_profile_req_family_after = profile->analog_family;
+    g_profile_req_landing_after = 0;
+    g_profile_req_digital_landing = 0;
+    g_profile_req_landing_explicit = 0;
     if (newest == profile->family_request_seq) {
         if (analog_queued) {
             rtl_stream_note_replaced_locked(newest);
@@ -13776,6 +13893,138 @@ rtl_stream_test_family_landing_after_pending(rtl_stream_test_family_landing_afte
     target_hz = family_test_after_pending_digital(s, &dmr_opts, target_hz + 12500U, out);
     family_test_after_pending_retunes(s, &dmr_opts, target_hz, out);
     out->landed_family = demod.analog_family;
+
+    controller_cleanup(s);
+    rtl_stream_clear_pending_retune_profile();
+    family_test_restore(saved);
+    family_test_release_buffers();
+    return 0;
+}
+
+/* Queue a live republish of a P25 target as the decoder makes it, with a pipeline running so it waits for the demod
+ * thread: the digital family request (the marked landing, or the plain one), then the symbol profile it lands on,
+ * 4800 sym/s with the filter of the CQPSK state it asks for and @p ted_sps. Returns the family request's number. */
+static uint32_t
+family_test_queue_live_republish(const rtl_stream_test_live_landing_case* c, int marked, int ted_sps) {
+    RtlSdrInternals* const previous = g_stream;
+    g_stream = &g_cqpsk_toggle_test_stream;
+    if (marked) {
+        (void)rtl_stream_request_digital_family_landing(c->cqpsk_explicit);
+    } else {
+        (void)rtl_stream_request_analog_profile(DSD_RX_FAMILY_DIGITAL, DSD_ANALOG_DEMOD_FM, 0);
+    }
+    const uint32_t family_seq = rtl_stream_receive_request_seq();
+    (void)rtl_stream_request_demod_profile(
+        c->request_cqpsk ? 1 : 0, 4800, 4,
+        c->request_cqpsk ? DSD_CH_LPF_PROFILE_P25_CQPSK : DSD_CH_LPF_PROFILE_P25_C4FM, ted_sps, 0);
+    g_stream = previous;
+    return family_seq;
+}
+
+/* The demod thread's next block boundary, with the pipeline running. */
+static void
+family_test_live_boundary(void) {
+    RtlSdrInternals* const previous = g_stream;
+    g_stream = &g_cqpsk_toggle_test_stream;
+    family_test_demod_thread_boundary();
+    g_stream = previous;
+}
+
+/* Whether RTL_STREAM_TEST_LANDING_* @p order has a retune that carries the digital family taken by the controller when
+ * the republish is made. */
+static int
+family_test_live_landing_has_retune(int order) {
+    return (order == RTL_STREAM_TEST_LANDING_BEFORE_RETUNE || order == RTL_STREAM_TEST_LANDING_AFTER_SUPERSEDED
+            || order == RTL_STREAM_TEST_LANDING_AFTER_RETUNE)
+               ? 1
+               : 0;
+}
+
+/* Land the retune @p work took from @p s before the demod thread takes the republish, and note where it left the
+ * stream. */
+static void
+family_test_land_live_retune(struct controller_state* s, const dsd_opts* opts, const ControllerRetuneWork* work,
+                             rtl_stream_test_live_landing_result* out) {
+    family_test_land_taken_retune(s, opts, work);
+    out->retune_output_kind = demod.output_kind;
+    out->retune_output_rate = (int)output.rate;
+}
+
+/* Where the stream ended once the republish and the retune have both landed, and what became of the republish's family
+ * request numbered @p family_seq. */
+static void
+family_test_note_live_landing(struct controller_state* s, uint32_t family_seq,
+                              rtl_stream_test_live_landing_result* out) {
+    out->outstanding_after = rtl_stream_family_landing_after_pending_for(s);
+    out->output_kind = demod.output_kind;
+    out->cqpsk_enable = demod.cqpsk_enable;
+    out->channel_profile = demod.channel_lpf_profile;
+    out->output_rate = (int)output.rate;
+    out->ted_sps = demod.ted_sps;
+    out->analog_family = demod.analog_family;
+    out->family_switch_noted =
+        g_cqpsk_toggle_test_stream.rx_family_switch.load(std::memory_order_relaxed) == kRxFamilySwitchedDigital ? 1 : 0;
+    out->request_outcome = rtl_stream_receive_request_outcome(family_seq);
+}
+
+extern "C" int
+rtl_stream_test_live_digital_landing(const rtl_stream_test_live_landing_case* c,
+                                     rtl_stream_test_live_landing_result* out) {
+    if (!out) {
+        return -1;
+    }
+    *out = {};
+    if (!c) {
+        return -1;
+    }
+    const FamilyTestSaved saved = family_test_save();
+    g_stream = NULL;
+    static dsd_opts dmr_opts;
+    DSD_MEMSET(&dmr_opts, 0, sizeof dmr_opts);
+    dmr_opts.frame_dmr = 1;
+    g_cqpsk_toggle_test_stream.output = &output;
+    g_cqpsk_toggle_test_stream.opts = &dmr_opts;
+    if (family_test_seed_open(&dmr_opts, 48000, c->forced_rate_out_hz) != 0) {
+        family_test_restore(saved);
+        return -2;
+    }
+    rtl_stream_clear_demod_profile_request();
+    rtl_stream_clear_pending_retune_profile();
+    controller_state test_controller = {};
+    controller_init(&test_controller);
+    struct controller_state* s = &test_controller;
+    const uint32_t target_hz = kFamilyTestRetuneHz;
+    family_test_retune_through(s, &dmr_opts, target_hz, -1,
+                               c->from_cqpsk ? RTL_STREAM_TEST_SYMBOL_P25_CQPSK_EXPLICIT
+                                             : RTL_STREAM_TEST_SYMBOL_DMR_FSK_EXPLICIT);
+    out->predicted_output_rate =
+        (int)rtl_stream_output_rate_for_family(DSD_RX_FAMILY_DIGITAL, c->request_cqpsk, 4800, c->cqpsk_explicit);
+    const int queued_ted_sps = out->predicted_output_rate > 0 ? (out->predicted_output_rate + 2400) / 4800 : 10;
+
+    ControllerRetuneWork work = {};
+    int in_flight = 0;
+    if (family_test_live_landing_has_retune(c->order)) {
+        family_test_queue_retune(s, target_hz + 12500U, DSD_RX_FAMILY_DIGITAL, RTL_STREAM_TEST_SYMBOL_P25_CQPSK_UNSET);
+        in_flight = family_test_take_retune(s, &work);
+    }
+    if (in_flight && c->order == RTL_STREAM_TEST_LANDING_AFTER_RETUNE) {
+        family_test_land_live_retune(s, &dmr_opts, &work, out);
+        in_flight = 0;
+    }
+    const uint32_t family_seq = family_test_queue_live_republish(c, c->marked, queued_ted_sps);
+    if (c->order == RTL_STREAM_TEST_LANDING_REPLACED) {
+        (void)family_test_queue_live_republish(c, 0, queued_ted_sps);
+    }
+    out->outstanding_queued = rtl_stream_family_landing_after_pending_for(s);
+    if (in_flight && c->order == RTL_STREAM_TEST_LANDING_AFTER_SUPERSEDED) {
+        family_test_land_live_retune(s, &dmr_opts, &work, out);
+        in_flight = 0;
+    }
+    family_test_live_boundary();
+    if (in_flight) {
+        family_test_land_taken_retune(s, &dmr_opts, &work);
+    }
+    family_test_note_live_landing(s, family_seq, out);
 
     controller_cleanup(s);
     rtl_stream_clear_pending_retune_profile();

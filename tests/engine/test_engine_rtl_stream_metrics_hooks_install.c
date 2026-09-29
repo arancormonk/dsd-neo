@@ -124,6 +124,16 @@ rtl_stream_request_analog_profile(int family, int kind, int width_hz) {
     return -22;
 }
 
+static int g_digital_landing_calls;
+static int g_last_landing_explicit;
+
+int
+rtl_stream_request_digital_family_landing(int cqpsk_explicit) {
+    ++g_digital_landing_calls;
+    g_last_landing_explicit = cqpsk_explicit;
+    return -23;
+}
+
 int
 rtl_stream_get_analog_profile(int* out_kind, int* out_width_hz, int* out_lpf_on) {
     ++g_analog_profile_calls;
@@ -338,6 +348,10 @@ main(void) {
     assert(g_last_analog_family == 1);
     assert(g_last_analog_kind == 0);
     assert(g_last_analog_width_hz == 12500);
+    /* So does the digital family request that lands the digital family's landing (issue #583), not the plain one. */
+    assert(dsd_rtl_stream_metrics_hook_request_digital_family_landing(1) == -23);
+    assert(g_digital_landing_calls == 1 && g_last_landing_explicit == 1);
+    assert(g_request_analog_calls == 1);
     int analog_kind = -1;
     int analog_width = -1;
     int analog_lpf_on = -1;

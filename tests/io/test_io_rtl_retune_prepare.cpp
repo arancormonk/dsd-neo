@@ -1150,6 +1150,135 @@ test_family_landing_after_pending(void) {
     return failed;
 }
 
+namespace {
+/* Where a live republish lands on a stream already on the digital family (issue #583). */
+struct live_landing_want {
+    int cqpsk_enable;
+    int output_kind;
+    int channel_profile;
+    int output_rate;
+    int ted_sps;
+};
+} // namespace
+
+/* Run @p c under DSD_NEO_CQPSK=@p cqpsk_env and check where it lands: @p want, on the digital family with no family
+ * switch recorded, the request settled (or replaced, @p outcome), and nothing left outstanding. With @p predicted, the
+ * landing is the prediction the decoder was timed for (rtl_stream_output_rate_for_family()). */
+static int
+expect_live_landing(const char* stage, const char* cqpsk_env, const rtl_stream_test_live_landing_case* c,
+                    const live_landing_want* want, int predicted, int outcome,
+                    rtl_stream_test_live_landing_result* out) {
+    (void)dsd_setenv("DSD_NEO_CQPSK", cqpsk_env, 1);
+    dsd_neo_config_init();
+    DSD_MEMSET(out, 0, sizeof *out);
+    char label[192];
+    DSD_SNPRINTF(label, sizeof label, "%s: hook", stage);
+    int failed = expect_int_eq(label, rtl_stream_test_live_digital_landing(c, out), 0);
+    DSD_SNPRINTF(label, sizeof label, "%s: output kind", stage);
+    failed |= expect_int_eq(label, out->output_kind, want->output_kind);
+    DSD_SNPRINTF(label, sizeof label, "%s: CQPSK", stage);
+    failed |= expect_int_eq(label, out->cqpsk_enable, want->cqpsk_enable);
+    DSD_SNPRINTF(label, sizeof label, "%s: channel filter", stage);
+    failed |= expect_int_eq(label, out->channel_profile, want->channel_profile);
+    DSD_SNPRINTF(label, sizeof label, "%s: output rate", stage);
+    failed |= expect_int_eq(label, out->output_rate, want->output_rate);
+    DSD_SNPRINTF(label, sizeof label, "%s: TED", stage);
+    failed |= expect_int_eq(label, out->ted_sps, want->ted_sps);
+    if (predicted) {
+        DSD_SNPRINTF(label, sizeof label, "%s: lands the predicted rate", stage);
+        failed |= expect_int_eq(label, out->output_rate, out->predicted_output_rate);
+    }
+    DSD_SNPRINTF(label, sizeof label, "%s: stays on the digital family", stage);
+    failed |= expect_int_eq(label, out->analog_family, 0);
+    /* The stream opened digital: no switch is recorded, so its FSK channel profile still comes from its options. */
+    DSD_SNPRINTF(label, sizeof label, "%s: no family switch recorded", stage);
+    failed |= expect_int_eq(label, out->family_switch_noted, 0);
+    DSD_SNPRINTF(label, sizeof label, "%s: request outcome", stage);
+    failed |= expect_int_eq(label, out->request_outcome, outcome);
+    DSD_SNPRINTF(label, sizeof label, "%s: nothing outstanding once landed", stage);
+    failed |= expect_int_eq(label, out->outstanding_after, 0);
+    (void)dsd_unsetenv("DSD_NEO_CQPSK");
+    dsd_neo_config_init();
+    return failed;
+}
+
+/* A live republish that the decoder timed for the digital family's landing lands there on a front end already on the
+ * digital family, whichever order it and an outstanding retune that carries that family land in (issue #583). Under
+ * DSD_NEO_CQPSK=0, with the device settled on 78125 Hz and the stream left on CQPSK by a P25 target with
+ * modulation=cqpsk, a P25 target with no modulation under -mq is timed for the FSK discriminator at 48 kHz (10 samples
+ * per symbol): the marked request lands there, with the P25 C4FM filter and the TED an open times for the demod rate,
+ * alone; taken before the retune, which it superseded and which then lands only its centre; taken after that
+ * superseded retune kept the stream on CQPSK; and after the retune itself landed the same prediction. While it is
+ * queued the stream counts it as outstanding work that lands a family. A plain request, or a marked one a plain one
+ * replaced in the queue, keeps today's behaviour: the profile's CQPSK state and TED over the output chain the stream
+ * runs. A target whose CQPSK is its own choice keeps it over the override; under DSD_NEO_CQPSK=1 a landing from the
+ * FSK discriminator drops the 48 kHz resampler for CQPSK at the demod rate. */
+static int
+test_live_republish_lands_where_it_was_timed(void) {
+    const live_landing_want fsk_48k = {0, DSD_DEMOD_OUTPUT_FSK_DISCRIMINATOR, DSD_CH_LPF_PROFILE_P25_C4FM, 48000,
+                                       kLandingTedSps};
+    const live_landing_want cqpsk_queued = {1, DSD_DEMOD_OUTPUT_SYMBOL_CQPSK, DSD_CH_LPF_PROFILE_P25_CQPSK,
+                                            kForcedDemodRateHz, kQueuedTedSps};
+    const live_landing_want cqpsk_landed = {1, DSD_DEMOD_OUTPUT_SYMBOL_CQPSK, DSD_CH_LPF_PROFILE_P25_CQPSK,
+                                            kForcedDemodRateHz, kLandingTedSps};
+
+    /* Where the stream stands once the retune has landed, before the republish does: a retune the republish superseded
+       lands its centre only and keeps CQPSK at the demod rate; one that landed before it lands the prediction itself.
+       0: the republish lands first, or there is no retune. */
+    static const struct {
+        const char* stage;
+        int order;
+        int retune_output_kind;
+        int retune_output_rate;
+    } orders[] = {
+        {"marked landing alone", RTL_STREAM_TEST_LANDING_ALONE, 0, 0},
+        {"marked landing before the retune", RTL_STREAM_TEST_LANDING_BEFORE_RETUNE, 0, 0},
+        {"marked landing after the superseded retune", RTL_STREAM_TEST_LANDING_AFTER_SUPERSEDED,
+         DSD_DEMOD_OUTPUT_SYMBOL_CQPSK, kForcedDemodRateHz},
+        {"marked landing after the retune landed", RTL_STREAM_TEST_LANDING_AFTER_RETUNE,
+         DSD_DEMOD_OUTPUT_FSK_DISCRIMINATOR, 48000},
+    };
+
+    rtl_stream_test_live_landing_result r;
+    char label[192];
+    int failed = 0;
+    for (size_t i = 0; i < sizeof orders / sizeof orders[0]; i++) {
+        const rtl_stream_test_live_landing_case c = {kForcedDemodRateHz, 1, 1, 1, 0, orders[i].order};
+        failed |= expect_live_landing(orders[i].stage, "0", &c, &fsk_48k, 1, RTL_STREAM_RX_REQUEST_SETTLED, &r);
+        DSD_SNPRINTF(label, sizeof label, "%s: the prediction", orders[i].stage);
+        failed |= expect_int_eq(label, r.predicted_output_rate, 48000);
+        DSD_SNPRINTF(label, sizeof label, "%s: counted while queued", orders[i].stage);
+        failed |= expect_int_eq(label, r.outstanding_queued, 1);
+        if (orders[i].retune_output_rate > 0) {
+            DSD_SNPRINTF(label, sizeof label, "%s: output kind once the retune landed", orders[i].stage);
+            failed |= expect_int_eq(label, r.retune_output_kind, orders[i].retune_output_kind);
+            DSD_SNPRINTF(label, sizeof label, "%s: output rate once the retune landed", orders[i].stage);
+            failed |= expect_int_eq(label, r.retune_output_rate, orders[i].retune_output_rate);
+        }
+    }
+
+    /* A plain request keeps today's behaviour on a digital front end, and is not counted as outstanding. */
+    const rtl_stream_test_live_landing_case plain = {kForcedDemodRateHz, 1, 1, 0, 0, RTL_STREAM_TEST_LANDING_ALONE};
+    failed |= expect_live_landing("plain request", "0", &plain, &cqpsk_queued, 0, RTL_STREAM_RX_REQUEST_SETTLED, &r);
+    failed |= expect_int_eq("plain request: not counted while queued", r.outstanding_queued, 0);
+    /* A marked request a plain one replaced in the queue lands nothing of its own. */
+    const rtl_stream_test_live_landing_case replaced = {
+        kForcedDemodRateHz, 1, 1, 1, 0, RTL_STREAM_TEST_LANDING_REPLACED};
+    failed |= expect_live_landing("replaced marked request", "0", &replaced, &cqpsk_queued, 0,
+                                  RTL_STREAM_RX_REQUEST_REPLACED, &r);
+    failed |= expect_int_eq("replaced marked request: not counted while queued", r.outstanding_queued, 0);
+
+    /* modulation=cqpsk: the target's own CQPSK stands over DSD_NEO_CQPSK=0, timed for the demod rate. */
+    const rtl_stream_test_live_landing_case own = {kForcedDemodRateHz, 1, 1, 1, 1, RTL_STREAM_TEST_LANDING_ALONE};
+    failed |= expect_live_landing("target's own cqpsk", "0", &own, &cqpsk_landed, 1, RTL_STREAM_RX_REQUEST_SETTLED, &r);
+    /* DSD_NEO_CQPSK=1 from the FSK discriminator at 48 kHz: CQPSK at the demod rate, without the resampler. */
+    const rtl_stream_test_live_landing_case to_cqpsk = {kForcedDemodRateHz, 0, 0, 1, 0, RTL_STREAM_TEST_LANDING_ALONE};
+    failed |=
+        expect_live_landing("override onto cqpsk", "1", &to_cqpsk, &cqpsk_landed, 1, RTL_STREAM_RX_REQUEST_SETTLED, &r);
+    failed |= expect_int_eq("override onto cqpsk: the prediction", r.predicted_output_rate, kForcedDemodRateHz);
+    return failed;
+}
+
 /* The live family requests the stream accepts are counted, running stream or not, and a refused one is not (issue
  * #526): the -Y scanner compares the count across a row's outstanding retune, whose family a request counted meanwhile
  * has superseded. */
@@ -2000,6 +2129,7 @@ main(void) {
     failed |= test_target_cqpsk_choice_stands_after_an_analog_target();
     failed |= test_digital_family_lands_where_timed_on_a_digital_front_end();
     failed |= test_family_landing_after_pending();
+    failed |= test_live_republish_lands_where_it_was_timed();
 
     return failed ? 1 : 0;
 }

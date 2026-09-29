@@ -692,6 +692,27 @@ report_analog_family(void) {
     return fake_analog_family;
 }
 
+/* Outstanding work that lands a receive family on a front end on the digital family (issue #583): a row's retune that
+ * carries the digital family, still in flight when the scan is left. */
+static int fake_family_landing_outstanding;
+/* The digital family requests that land the digital family's landing (rtl_stream_request_digital_family_landing()). */
+static int landing_request_calls;
+static int landing_request_explicit;
+static int landing_request_order;
+
+static int
+report_family_landing_after_pending(void) {
+    return (fake_analog_family || fake_family_landing_outstanding) ? 1 : 0;
+}
+
+static int
+record_digital_landing(int cqpsk_explicit) {
+    landing_request_calls++;
+    landing_request_explicit = cqpsk_explicit;
+    landing_request_order = ++frontend_sequence;
+    return 0;
+}
+
 /* The analog kind whose monitor profile the front end has published (dsd_analog_demod); -1 publishes none. */
 static int fake_published_kind = -1;
 
@@ -730,6 +751,8 @@ reset_frontend_records(void) {
     analog_restore_result = 0;
     rate_for_family_calls = rate_for_family_family = rate_for_family_cqpsk = rate_for_family_symbol_rate = 0;
     rate_for_family_explicit = -1;
+    landing_request_calls = landing_request_order = 0;
+    landing_request_explicit = -1;
 }
 
 /*
@@ -892,6 +915,78 @@ test_leave_retimes_the_digital_landing(void) {
     assert(rate_for_family_calls == 0);
     assert(state->samplesPerSymbol == 5 && digital_restore_sps == 5);
 
+    fake_digital_rate = 0U;
+    dsd_rtl_stream_metrics_hooks_set(NULL);
+    dsd_state_trunk_lcn_free(state);
+    dsd_state_ext_free_all(state);
+    free(state);
+    free(opts);
+}
+
+/*
+ * Issue #583: the leave times the configured decoder for the digital family's landing whenever a digital retune queued
+ * now would land there: while the front end runs the analog family, and also on a front end already digital while
+ * outstanding work lands a family (a row's retune that carries the digital family, still in flight). The digital family
+ * it then asks for is the one that lands that prediction whichever family the front end runs where it lands
+ * (rtl_stream_request_digital_family_landing()), with no CQPSK choice of a target's own: the configured decoder lands
+ * where an open of the mode would. A retune that landed before the leave's request leaves it landing the same
+ * prediction; one still outstanding is superseded by it. With nothing outstanding on a digital front end the saved
+ * timing stands and the plain request is made, as a digital-only session always has.
+ */
+static void
+test_leave_lands_where_it_times_the_configured_decoder(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
+    assert(opts && state);
+    opts->scanner_mode = 1;
+    opts->audio_in_type = AUDIO_IN_RTL;
+    assert(dsd_apply_decode_mode_preset(DSDCFG_MODE_DMR, DSD_DECODE_PRESET_PROFILE_CLI, opts, state) == 0);
+    const dsd_rtl_stream_metrics_hooks hooks = {.apply_demod_profile = record_digital_restore,
+                                                .apply_analog_profile = record_analog_restore,
+                                                .request_digital_family_landing = record_digital_landing,
+                                                .analog_family_active = report_analog_family,
+                                                .family_landing_after_pending = report_family_landing_after_pending,
+                                                .output_rate_for_family = report_output_rate_for_family};
+    dsd_rtl_stream_metrics_hooks_set(&hooks);
+
+    static const struct {
+        int analog_family;
+        int outstanding;
+        int sps; /* the configured decoder's timing once the leave has run */
+    } legs[] = {
+        {0, 1, 5},  /* a digital front end with a digital-family retune in flight: timed for its 24 kHz landing */
+        {1, 0, 5},  /* the analog family runs: the switch lands at 24 kHz */
+        {0, 0, 10}, /* nothing outstanding: the timing the configuration saved stands */
+    };
+
+    for (size_t i = 0; i < sizeof legs / sizeof legs[0]; i++) {
+        state->samplesPerSymbol = 10;
+        state->symbolCenter = dsd_opts_symbol_center(10);
+        assert(dsd_scan_mode_enter(opts, state, DSD_SCAN_MODE_NXDN48) == 0);
+        assert(dsd_scan_mode_options(opts, state, NULL) == 0);
+        reset_frontend_records();
+        fake_analog_family = legs[i].analog_family;
+        fake_family_landing_outstanding = legs[i].outstanding;
+        fake_digital_rate = 24000U;
+        dsd_engine_channel_scan_leave(opts, state);
+        assert(opts->analog_only == 0 && opts->frame_dmr == 1);
+        assert(state->samplesPerSymbol == legs[i].sps && digital_restore_sps == legs[i].sps);
+        assert(digital_restore_calls == 1);
+        if (legs[i].sps == 5) {
+            assert(rate_for_family_calls == 1 && rate_for_family_family == DSD_RX_FAMILY_DIGITAL);
+            assert(rate_for_family_symbol_rate == 4800 && rate_for_family_explicit == 0);
+            assert(landing_request_calls == 1 && landing_request_explicit == 0);
+            assert(landing_request_order < digital_restore_order);
+            assert(analog_restore_calls == 0);
+        } else {
+            assert(rate_for_family_calls == 0 && landing_request_calls == 0);
+            assert(analog_restore_calls == 1 && analog_restore_family == DSD_RX_FAMILY_DIGITAL);
+            assert(analog_restore_order < digital_restore_order);
+        }
+    }
+
+    fake_analog_family = 0;
+    fake_family_landing_outstanding = 0;
     fake_digital_rate = 0U;
     dsd_rtl_stream_metrics_hooks_set(NULL);
     dsd_state_trunk_lcn_free(state);
@@ -1951,6 +2046,7 @@ main(void) {
     dsd_neo_log_set_tap(count_squelch_warnings, NULL);
     test_leave_restores_configured_receive_family();
     test_leave_retimes_the_digital_landing();
+    test_leave_lands_where_it_times_the_configured_decoder();
     test_leave_family_switch_drops_partial_analog_block();
     test_option_commit_boundary();
     test_option_only_rows_and_policy_edits();

@@ -5723,6 +5723,8 @@ if(
             "LINKER:--wrap=rtl_stream_request_analog_profile"
             "LINKER:--wrap=rtl_stream_request_demod_profile"
             "LINKER:--wrap=rtl_stream_analog_family_active"
+            "LINKER:--wrap=rtl_stream_family_landing_after_pending"
+            "LINKER:--wrap=rtl_stream_request_digital_family_landing"
             "LINKER:--wrap=rtl_stream_output_rate_for_family"
             "LINKER:--wrap=rtl_stream_set_digital_decode_modes"
             "LINKER:--wrap=rtl_stream_receive_request_seq"

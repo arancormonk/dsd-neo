@@ -288,22 +288,31 @@ symbol_profile_publish(const dsd_opts* opts, dsd_state* state, dsd_decode_mode_p
     }
     const int mod = state->rf_mod;
     const int configured_digital = symbol_profile_configured_digital(opts, state);
-    if (configured_digital && rtl_stream_analog_family_active()) {
-        /* Leaving analog: the family switch lands on the demod thread after this returns, and until then the
-           output rate is the analog family's (the monitor's resampled audio rate, or the rate a CQPSK toggle or typed
-           row put it on), not the rate the digital stream will run at. Time the decoder, and the front end below,
-           for the digital rate. */
+    /* One landing decision, by the rule a scan row's timing and the engine's attach follow (issue #583): the digital
+       family's landing when the configured mode is digital and the row on air was timed for it
+       (dsd_scan_mode_timed_digital_family(), a scoped command's resume included), or the front end runs the analog
+       family, or work already outstanding lands a family (rtl_stream_family_landing_after_pending(): a retune that
+       carries the digital family lands that prediction even on a front end already digital). The front end reaches it
+       on the demod thread after this returns, and until then the output rate is the one it runs (the analog monitor's
+       resampled audio, the rate a CQPSK toggle or typed row put it on, or a digital chain the landing designs again),
+       not the rate the landing runs at. Time the decoder, and the front end below, for that rate, with the CQPSK state
+       a trunk-scan target keeps as its own over DSD_NEO_CQPSK (dsd_scan_mode_cqpsk_explicit(); 0 for a -Y row or a
+       plain session), and ask for the landing itself rather than the plain family request, which switches only an
+       analog front end: the republish is the newer word on the family, so it lands there whether an outstanding
+       retune it supersedes lands after it or one landed before it. Otherwise the plain request, a no-op unless the
+       front end is analog. Either is queued for the demod thread rather than written into demod state from the
+       caller's thread, the digital family first, then the symbol profile it runs on. */
+    if (configured_digital
+        && (dsd_scan_mode_timed_digital_family(state) || rtl_stream_family_landing_after_pending())) {
+        const int cqpsk_explicit = dsd_scan_mode_cqpsk_explicit(opts, state);
         const unsigned int rate_hz =
-            rtl_stream_output_rate_for_family(DSD_RX_FAMILY_DIGITAL, mod == 1, profile.symbol_rate_hz, 0);
+            rtl_stream_output_rate_for_family(DSD_RX_FAMILY_DIGITAL, mod == 1, profile.symbol_rate_hz, cqpsk_explicit);
         if (rate_hz > 0U) {
             state->samplesPerSymbol = dsd_opts_compute_sps_rate(opts, profile.symbol_rate_hz, (int)rate_hz);
             state->symbolCenter = dsd_opts_symbol_center(state->samplesPerSymbol);
         }
-    }
-    /* Queued for the demod thread rather than written into demod state from the
-       caller's thread: the digital family first (a no-op unless the front end is
-       analog), then the symbol profile it runs on. */
-    if (configured_digital) {
+        (void)rtl_stream_request_digital_family_landing(cqpsk_explicit);
+    } else if (configured_digital) {
         (void)rtl_stream_request_analog_profile(DSD_RX_FAMILY_DIGITAL, DSD_ANALOG_DEMOD_FM, 0);
     }
     symbol_profile_request_symbols(opts, state, profile, mod);

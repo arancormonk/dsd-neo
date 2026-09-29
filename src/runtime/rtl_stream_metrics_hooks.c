@@ -6,6 +6,7 @@
 #include "dsd-neo/core/input_level.h"
 
 #include <dsd-neo/platform/atomic_compat.h>
+#include <dsd-neo/runtime/analog_channel.h>
 #include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
 
 #include <stdint.h>
@@ -111,6 +112,16 @@ dsd_rtl_stream_metrics_hook_apply_analog_profile(int family, int kind, int width
     (void)kind;
     (void)width_hz;
     return -1;
+}
+
+int
+dsd_rtl_stream_metrics_hook_request_digital_family_landing(int cqpsk_explicit) {
+    if (g_rtl_stream_metrics_hooks.request_digital_family_landing) {
+        return g_rtl_stream_metrics_hooks.request_digital_family_landing(cqpsk_explicit);
+    }
+    /* A table without it (a test's fake front end) gets the plain digital family request, as before the hook existed. */
+    (void)cqpsk_explicit;
+    return dsd_rtl_stream_metrics_hook_apply_analog_profile(DSD_RX_FAMILY_DIGITAL, DSD_ANALOG_DEMOD_FM, 0);
 }
 
 int

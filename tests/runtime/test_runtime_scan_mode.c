@@ -1335,6 +1335,116 @@ test_row_timing_records_its_landing_decision(void) {
     free(o);
 }
 
+/* DSD_NEO_CQPSK as the fake front end below applies it where the digital family lands: -1 unset, else the CQPSK state
+ * it forces unless the choice is a trunk-scan target's own. */
+static int g_fake_cqpsk_env = -1;
+
+/* A front end left on CQPSK at 78125 Hz: a landing on CQPSK runs there, one on the FSK discriminator is resampled to
+ * 48 kHz. */
+static unsigned int
+fake_cqpsk_landing_rate_for_family(int family, int cqpsk_enable, int symbol_rate_hz, int cqpsk_explicit) {
+    (void)symbol_rate_hz;
+    if (family != DSD_RX_FAMILY_DIGITAL) {
+        return 0U;
+    }
+    const int landing_cqpsk = (g_fake_cqpsk_env >= 0 && !cqpsk_explicit) ? g_fake_cqpsk_env : cqpsk_enable;
+    return landing_cqpsk > 0 ? 78125U : 48000U;
+}
+
+/* Issue #583: a P25 trunk-scan target with modulation=auto that learned CQPSK is timed on resume for the CQPSK it runs,
+ * the state dsd_scan_mode_resume() puts back, not for the preset's C4FM the scope applies on the way. With a retune
+ * that carries the digital family still outstanding the row is timed for that family's landing, where the target's
+ * own choice stands over DSD_NEO_CQPSK=1: timed with the preset's C4FM it would get the FSK discriminator's 48 kHz
+ * (10 samples per 4800 Bd symbol) where it runs CQPSK at 78125 Hz (16), and on its Phase 2 channel 8 samples per 6000
+ * Bd symbol where it gets 13. A scoped command (the DMR inversion edited under the suspended scope) changes the row, so
+ * the resume keeps the timing it computed. */
+static void
+test_resume_times_the_learned_modulation(void) {
+    dsd_opts* o = (dsd_opts*)calloc(1, sizeof(*o));
+    dsd_state* s = (dsd_state*)calloc(1, sizeof(*s));
+    assert(o && s);
+    o->wav_sample_rate = 48000;
+    o->audio_in_type = AUDIO_IN_RTL;
+    o->rtl_dsp_bw_khz = 48;
+    o->trunk_scan_enabled = 1;
+    assert(dsd_apply_decode_mode_preset(DSDCFG_MODE_P25P1, DSD_DECODE_PRESET_PROFILE_CLI, o, s) == 0);
+    const dsd_rtl_stream_metrics_hooks hooks = {.output_rate_hz = fake_live_output_rate,
+                                                .family_landing_after_pending = fake_family_landing_after_pending,
+                                                .output_rate_for_family = fake_cqpsk_landing_rate_for_family};
+    dsd_rtl_stream_metrics_hooks_set(&hooks);
+    g_fake_cqpsk_env = 1;
+    g_after_pending_answer = 1;
+
+    assert(dsd_scan_mode_enter(o, s, DSD_SCAN_MODE_P25) == 0);
+    dsd_scan_mode_target_modulation(s, DSD_SCAN_MODULATION_AUTO);
+    assert(dsd_scan_mode_options(o, s, NULL) == 0);
+    /* The target learned CQPSK on its control channel, and its switch timed it for that (trunk_scan.c). */
+    s->rf_mod = 1;
+    s->samplesPerSymbol = 16;
+    s->symbolCenter = dsd_opts_symbol_center(16);
+    assert(dsd_scan_mode_suspend(o, s));
+    o->inverted_dmr = !o->inverted_dmr;
+    assert(dsd_scan_mode_resume(o, s) == 1);
+    assert(s->rf_mod == 1);
+    assert(s->samplesPerSymbol == 16 && s->symbolCenter == dsd_opts_symbol_center(16));
+    assert(dsd_scan_mode_timed_digital_family(s) == 1);
+
+    /* On its Phase 2 channel the resume keeps the 6000 Bd profile, timed for the same CQPSK. */
+    s->sps_hunt_idx = DSD_FRAME_SYNC_SPS_PROFILE_6000_4;
+    s->samplesPerSymbol = 13;
+    assert(dsd_scan_mode_suspend(o, s));
+    o->inverted_dmr = !o->inverted_dmr;
+    assert(dsd_scan_mode_resume(o, s) == 1);
+    assert(s->rf_mod == 1 && s->sps_hunt_idx == DSD_FRAME_SYNC_SPS_PROFILE_6000_4);
+    assert(s->samplesPerSymbol == 13);
+
+    dsd_scan_mode_leave(o, s);
+    g_fake_cqpsk_env = -1;
+    g_after_pending_answer = 0;
+    dsd_rtl_stream_metrics_hooks_set(NULL);
+    dsd_state_ext_free_all(s);
+    free(s);
+    free(o);
+}
+
+/* The scope's rule for a trunk-scan target's own CQPSK choice (issue #583), which a live republish of the row asks
+ * with dsd_scan_mode_cqpsk_explicit(): P25 with a modulation value, and DMR or NXDN at either rate, under
+ * --trunk-scan; not a P25 target with no modulation, an analog row, a -Y row, nor without a scope or options. */
+static void
+test_scope_cqpsk_explicit_rule(void) {
+    dsd_opts* o = (dsd_opts*)calloc(1, sizeof(*o));
+    dsd_state* s = (dsd_state*)calloc(1, sizeof(*s));
+    assert(o && s);
+    o->wav_sample_rate = 48000;
+    o->trunk_scan_enabled = 1;
+    assert(dsd_scan_mode_cqpsk_explicit(o, s) == 0);
+    assert(dsd_scan_mode_enter(o, s, DSD_SCAN_MODE_P25) == 0);
+    assert(dsd_scan_mode_cqpsk_explicit(o, s) == 0);
+    static const dsd_scan_modulation own[] = {DSD_SCAN_MODULATION_AUTO, DSD_SCAN_MODULATION_C4FM,
+                                              DSD_SCAN_MODULATION_CQPSK};
+    for (size_t i = 0; i < sizeof own / sizeof own[0]; i++) {
+        dsd_scan_mode_target_modulation(s, own[i]);
+        assert(dsd_scan_mode_cqpsk_explicit(o, s) == 1);
+    }
+    assert(dsd_scan_mode_cqpsk_explicit(NULL, s) == 0);
+    static const dsd_scan_mode gfsk[] = {DSD_SCAN_MODE_DMR, DSD_SCAN_MODE_NXDN96, DSD_SCAN_MODE_NXDN48};
+    for (size_t i = 0; i < sizeof gfsk / sizeof gfsk[0]; i++) {
+        assert(dsd_scan_mode_enter(o, s, gfsk[i]) == 0);
+        assert(dsd_scan_mode_cqpsk_explicit(o, s) == 1);
+    }
+    assert(dsd_scan_mode_enter(o, s, DSD_SCAN_MODE_NFM) == 0);
+    assert(dsd_scan_mode_cqpsk_explicit(o, s) == 0);
+    o->trunk_scan_enabled = 0;
+    assert(dsd_scan_mode_enter(o, s, DSD_SCAN_MODE_DMR) == 0);
+    assert(dsd_scan_mode_cqpsk_explicit(o, s) == 0);
+    dsd_scan_mode_leave(o, s);
+    o->trunk_scan_enabled = 1;
+    assert(dsd_scan_mode_cqpsk_explicit(o, s) == 0);
+    dsd_state_ext_free_all(s);
+    free(s);
+    free(o);
+}
+
 int
 main(void) {
     test_nfm_class_names();
@@ -1355,6 +1465,8 @@ main(void) {
     test_configured_tone_policy_edit();
     test_configured_squelch_edit();
     test_row_timing_records_its_landing_decision();
+    test_resume_times_the_learned_modulation();
+    test_scope_cqpsk_explicit_rule();
     dsd_opts* o = (dsd_opts*)calloc(1, sizeof(*o));
     dsd_state* s = (dsd_state*)calloc(1, sizeof(*s));
     dsd_state* copy = (dsd_state*)calloc(1, sizeof(*copy));

@@ -191,7 +191,9 @@ void dsd_scan_mode_leave(dsd_opts* opts, dsd_state* state);
 int dsd_scan_mode_suspend(dsd_opts* opts, dsd_state* state);
 /** Save updated configuration and reapply the constraint. Return nonzero when decoder
  * settings changed and acquisition must reset; audio-routing and row-scoped option updates
- * (forcing, CRC policy, mutes, voice gate, group file, data/encrypted-call policy) return zero and simply take effect. */
+ * (forcing, CRC policy, mutes, voice gate, group file, data/encrypted-call policy) return zero and simply take effect.
+ * A P25 row keeps its Phase 2 profile and, without a modulation lock, the modulation it acquired, and is timed once
+ * both are back (dsd_scan_mode_symbol_timing_rate_hz(), issue #583). */
 int dsd_scan_mode_resume(dsd_opts* opts, dsd_state* state);
 /** Nonzero between suspend and resume; side effects must wait until effective settings are known. */
 int dsd_scan_mode_updating(const dsd_state* state);
@@ -291,9 +293,12 @@ int dsd_scan_mode_configured_digital(const dsd_opts* opts, const dsd_state* stat
  * end runs before that landing: the rate is then the one that family will run at for @p symbol_rate_hz and @p cqpsk
  * (dsd_rtl_stream_metrics_hook_output_rate_for_family()), so the decoder and the TED the tune queues are timed for the
  * samples they will get. A row timed again while its own retune, carrying the digital family, is outstanding (a
- * resume after a command) is timed for that landing too. DSD_NEO_CQPSK decides that CQPSK
- * state when set, unless the scope is a --trunk-scan target that makes its own choice (issue #583): P25 with a
- * modulation value (auto, c4fm or cqpsk), or DMR or NXDN at either rate, whose @p cqpsk stands, as the engine lands it.
+ * resume after a command) is timed for that landing too, with the modulation the row keeps (a P25 row's learned CQPSK
+ * under modulation=auto, which the resume puts back before it times the row), and the republish after it lands there
+ * (svc_publish_symbol_profile() decides by this row's decision and asks for the landing). DSD_NEO_CQPSK decides that
+ * CQPSK state when set, unless the scope is a --trunk-scan target that makes its own choice (issue #583,
+ * dsd_scan_mode_cqpsk_explicit()): P25 with a modulation value (auto, c4fm or cqpsk), or DMR or NXDN at either rate,
+ * whose @p cqpsk stands, as the engine lands it.
  *
  * Under a scan scope this times the scope's row and records the landing decision it used
  * (dsd_scan_mode_timed_digital_family()), as the scope's own timing of a row does (dsd_scan_mode_enter(),
@@ -306,8 +311,9 @@ int dsd_scan_mode_symbol_timing_rate_hz(const dsd_opts* opts, const dsd_state* s
 /** Whether the scan scope's row was timed for the output rate the digital family lands on (issue #583): the landing
  * decision its last timing used (dsd_scan_mode_symbol_timing_rate_hz()), 1 for the digital family's landing, 0 for the
  * live rate. 0 without a scope, after a row's entry until the row is timed, for an analog row, off RTL input, and once
- * the engine has spent the decision (dsd_scan_mode_take_timed_digital_family()). Decoder thread only; not carried by
- * frontend snapshots (dsd_scan_mode_copy_snapshot()). */
+ * the engine has spent the decision (dsd_scan_mode_take_timed_digital_family()). A live republish of the row decides by
+ * it without spending it (svc_publish_symbol_profile()), so a resume that timed the row for the landing is followed by
+ * a republish that lands there. Decoder thread only; not carried by frontend snapshots (dsd_scan_mode_copy_snapshot()). */
 int dsd_scan_mode_timed_digital_family(const dsd_state* state);
 /** dsd_scan_mode_timed_digital_family(), spending the decision: the engine takes it once per retune preparation, so the
  * row's retune carries the digital family when the row was timed for it, and a later retune the row's timing did not
@@ -315,6 +321,14 @@ int dsd_scan_mode_timed_digital_family(const dsd_state* state);
  * scan scope attached to @p state; the pointer is const only because that scope lives in the state's extension slot,
  * as with dsd_scan_mode_target_modulation(). Decoder thread only, with the live state. */
 int dsd_scan_mode_take_timed_digital_family(const dsd_state* state);
+/** Whether the scan scope's row is a --trunk-scan target that makes its own CQPSK choice (issue #583): P25 with a
+ * modulation value (auto, c4fm or cqpsk), or DMR or NXDN at either rate. That CQPSK state stands over DSD_NEO_CQPSK
+ * where a landing on the digital family puts it: the row's timing predicts the landing with it
+ * (dsd_scan_mode_symbol_timing_rate_hz()), the engine's retune for the target carries it
+ * (dsd_engine_trunk_scan_cqpsk_explicit(), the same rule), and a live republish of the row asks for it
+ * (svc_publish_symbol_profile()). 0 without opts or a scope, for a -Y row (no --trunk-scan), and for a P25 target
+ * with no modulation, which land where an open of the mode would. */
+int dsd_scan_mode_cqpsk_explicit(const dsd_opts* opts, const dsd_state* state);
 #ifdef __cplusplus
 }
 #endif
