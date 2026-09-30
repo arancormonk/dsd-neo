@@ -792,6 +792,68 @@ test_retune_family_superseded_by_a_later_live_request(void) {
     return failed;
 }
 
+/* A retune that carries no receive family (a typed digital row on a -fA or -fM session, whose configured mode is
+ * analog) lands its symbol profile over whatever family the front end runs. A live analog request made after its
+ * profile was queued is newer, though, and asks for the monitor, which a symbol profile would take away (issue #582: a
+ * scanner leaving to Analog or AM while the row's retune is in flight): the retune then lands its centre only. A later
+ * digital request does not supersede it (a digital session's republishes and scan leave make one, a no-op on the
+ * digital family, around every hop), nor does an analog request made before the profile was queued. */
+static int
+test_familyless_retune_superseded_by_a_later_analog_request(void) {
+    const rtl_stream_test_retune_step dmr_row[] = {
+        {DSD_RX_FAMILY_ANALOG, DSD_ANALOG_DEMOD_FM, 12500, RTL_STREAM_TEST_SYMBOL_NONE, -1, -1,
+         RTL_STREAM_TEST_QUEUED_NONE, 0},
+        {-1, DSD_ANALOG_DEMOD_FM, 0, RTL_STREAM_TEST_SYMBOL_DMR_FSK, -1, DSD_RX_FAMILY_ANALOG,
+         RTL_STREAM_TEST_QUEUED_NONE, 0},
+    };
+    rtl_stream_test_retune_landing r[2];
+    DSD_MEMSET(r, 0, sizeof r);
+    int failed = expect_int_eq("typed DMR row hook", rtl_stream_test_retune_profile_sequence(dmr_row, 2U, r), 0);
+    failed |= expect_landing("nfm row", &r[0], 1, 12500, DSD_DEMOD_OUTPUT_AUDIO_MONITOR);
+    failed |= expect_int_eq("typed DMR retune after a later analog request: taken", r[1].taken, 1);
+    failed |= expect_int_eq("typed DMR retune after a later analog request: family", r[1].applied_family, 1);
+    failed |= expect_int_eq("typed DMR retune after a later analog request: output", r[1].applied_output_kind,
+                            DSD_DEMOD_OUTPUT_AUDIO_MONITOR);
+    failed |= expect_int_eq("typed DMR retune after a later analog request: monitor's filter",
+                            r[1].applied_channel_profile, DSD_CH_LPF_PROFILE_WIDE);
+    failed |=
+        expect_int_eq("typed DMR retune after a later analog request: monitor's width", r[1].applied_width_hz, 12500);
+
+    const rtl_stream_test_retune_step p25_row[] = {
+        {DSD_RX_FAMILY_ANALOG, DSD_ANALOG_DEMOD_FM, 12500, RTL_STREAM_TEST_SYMBOL_NONE, -1, -1,
+         RTL_STREAM_TEST_QUEUED_NONE, 0},
+        {-1, DSD_ANALOG_DEMOD_FM, 0, RTL_STREAM_TEST_SYMBOL_P25_CQPSK, -1, DSD_RX_FAMILY_ANALOG,
+         RTL_STREAM_TEST_QUEUED_NONE, 0},
+    };
+    DSD_MEMSET(r, 0, sizeof r);
+    failed |= expect_int_eq("typed P25 row hook", rtl_stream_test_retune_profile_sequence(p25_row, 2U, r), 0);
+    failed |= expect_int_eq("typed P25 retune after a later analog request: taken", r[1].taken, 1);
+    failed |= expect_int_eq("typed P25 retune after a later analog request: output", r[1].applied_output_kind,
+                            DSD_DEMOD_OUTPUT_AUDIO_MONITOR);
+    failed |= expect_int_eq("typed P25 retune after a later analog request: CQPSK off", r[1].applied_cqpsk_enable, 0);
+    failed |= expect_int_eq("typed P25 retune after a later analog request: monitor's filter",
+                            r[1].applied_channel_profile, DSD_CH_LPF_PROFILE_WIDE);
+
+    /* A digital session's hops: a later digital request, or an analog one made before the profile, leaves it landing. */
+    const rtl_stream_test_retune_step hops[] = {
+        {-1, DSD_ANALOG_DEMOD_FM, 0, RTL_STREAM_TEST_SYMBOL_P25_CQPSK, -1, DSD_RX_FAMILY_DIGITAL,
+         RTL_STREAM_TEST_QUEUED_NONE, 0},
+        {-1, DSD_ANALOG_DEMOD_FM, 0, RTL_STREAM_TEST_SYMBOL_P25_CQPSK, DSD_RX_FAMILY_ANALOG, -1,
+         RTL_STREAM_TEST_QUEUED_NONE, 0},
+    };
+    DSD_MEMSET(r, 0, sizeof r);
+    failed |= expect_int_eq("digital hops hook", rtl_stream_test_retune_profile_sequence(hops, 2U, r), 0);
+    failed |= expect_int_eq("P25 hop after a later digital request: taken", r[0].taken, 1);
+    failed |= expect_int_eq("P25 hop after a later digital request: output", r[0].applied_output_kind,
+                            DSD_DEMOD_OUTPUT_SYMBOL_CQPSK);
+    failed |= expect_int_eq("P25 hop after a later digital request: CQPSK", r[0].applied_cqpsk_enable, 1);
+    failed |= expect_int_eq("P25 hop after an earlier analog request: taken", r[1].taken, 1);
+    failed |= expect_int_eq("P25 hop after an earlier analog request: output", r[1].applied_output_kind,
+                            DSD_DEMOD_OUTPUT_SYMBOL_CQPSK);
+    failed |= expect_int_eq("P25 hop after an earlier analog request: CQPSK", r[1].applied_cqpsk_enable, 1);
+    return failed;
+}
+
 /* A width command the decoder drained just before the scanner advanced queues a live analog request the demod thread
  * has not taken when the next row's retune lands (issue #526). That request is older than the retune's family: the
  * retune retires it, so the demod thread's next block boundary does not put the front end back on the analog family
@@ -1391,6 +1453,30 @@ test_live_family_request_count(void) {
     failed |= expect_int_eq("supersede hook", rtl_stream_test_retune_profile_sequence(supersede, 1U, r), 0);
     failed |=
         expect_int_eq("requests around a retune counted", (int)(rtl_stream_live_family_request_count() - before), 3);
+    return failed;
+}
+
+/* The supersedes of a retune queued with no family are counted apart (issue #582): every accepted live analog request
+ * and every scan leave (rtl_stream_supersede_familyless_retunes()). The -Y scanner compares the count across a row's
+ * retune that carries no family, whose symbol profile an analog request counted meanwhile has superseded. A digital
+ * request, the marked digital landing included, and a refused analog one are not counted. */
+static int
+test_familyless_retune_supersede_count(void) {
+    const uint32_t before = rtl_stream_familyless_retune_supersedes();
+    int failed = expect_int_eq("digital request accepted",
+                               rtl_stream_request_analog_profile(DSD_RX_FAMILY_DIGITAL, DSD_ANALOG_DEMOD_FM, 0), 0);
+    failed |= expect_int_eq("digital landing accepted", rtl_stream_request_digital_family_landing(0), 0);
+    failed |=
+        expect_int_eq("digital requests not counted", (int)(rtl_stream_familyless_retune_supersedes() - before), 0);
+    failed |= expect_int_eq("width below the NFM range refused",
+                            rtl_stream_request_analog_profile(DSD_RX_FAMILY_ANALOG, DSD_ANALOG_DEMOD_FM, 1000), -1);
+    failed |= expect_int_eq("refused analog request not counted",
+                            (int)(rtl_stream_familyless_retune_supersedes() - before), 0);
+    failed |= expect_int_eq("analog request accepted",
+                            rtl_stream_request_analog_profile(DSD_RX_FAMILY_ANALOG, DSD_ANALOG_DEMOD_AM, 0), 0);
+    failed |= expect_int_eq("analog request counted", (int)(rtl_stream_familyless_retune_supersedes() - before), 1);
+    rtl_stream_supersede_familyless_retunes();
+    failed |= expect_int_eq("scan leave counted", (int)(rtl_stream_familyless_retune_supersedes() - before), 2);
     return failed;
 }
 
@@ -2215,7 +2301,9 @@ main(void) {
     failed |= test_retune_family_superseded_by_a_later_live_request();
     failed |= test_retune_family_retires_older_queued_requests();
     failed |= test_retune_family_superseded_while_it_lands();
+    failed |= test_familyless_retune_superseded_by_a_later_analog_request();
     failed |= test_live_family_request_count();
+    failed |= test_familyless_retune_supersede_count();
     failed |= test_dmr_retune_after_an_analog_retune_lands_on_fsk();
     failed |= test_target_cqpsk_choice_stands_after_an_analog_target();
     failed |= test_digital_family_lands_where_timed_on_a_digital_front_end();

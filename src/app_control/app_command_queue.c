@@ -4224,6 +4224,30 @@ ui_analog_entry_keep_widths(dsd_scan_settings* settings, const dsd_scan_settings
     settings->analog_am_bandwidth_hz = now->analog_am_bandwidth_hz;
 }
 
+/* The settings a command changes without asking the front end for a receive profile of its own (issue #582): the
+   cosine filter (DSD_APP_CMD_COSINE_FILTER_TOGGLE), the inversions (DSD_APP_CMD_INVERT_TOGGLE, DSD_APP_CMD_INV_*_TOGGLE)
+   and the input monitor (DSD_APP_CMD_INPUT_MONITOR_TOGGLE). Of @p now over @p settings, each one @p now holds other
+   than @p since (every one, with @p since NULL). */
+static void
+ui_analog_entry_keep_unpublished(dsd_scan_settings* settings, const dsd_scan_settings* now,
+                                 const dsd_scan_settings* since) {
+#define UI_KEEP_UNPUBLISHED(field)                                                                                     \
+    do {                                                                                                               \
+        if (!since || now->field != since->field) {                                                                    \
+            settings->field = now->field;                                                                              \
+        }                                                                                                              \
+    } while (0)
+    UI_KEEP_UNPUBLISHED(use_cosine_filter);
+    UI_KEEP_UNPUBLISHED(inverted_p2);
+    UI_KEEP_UNPUBLISHED(inverted_x2tdma);
+    UI_KEEP_UNPUBLISHED(inverted_dmr);
+    UI_KEEP_UNPUBLISHED(inverted_dpmr);
+    UI_KEEP_UNPUBLISHED(inverted_ysf);
+    UI_KEEP_UNPUBLISHED(inverted_m17);
+    UI_KEEP_UNPUBLISHED(monitor_input_audio);
+#undef UI_KEEP_UNPUBLISHED
+}
+
 /* The configured options now run the analog family where they did not (@p was_analog_family), or another analog kind
    than @p was_kind: note the switch while a running RTL front end has it to make. One that supersedes a switch still
    armed keeps that switch's settings from before it (g_analog_entry). The channel widths are configuration a width
@@ -4449,7 +4473,9 @@ ui_settle_leave_revert_refused_at_once(dsd_opts* opts, dsd_state* state, const s
  * had before the switch, or on the ones the front end runs (ui_analog_entry_rollback(), ui_hold_reverted_analog_width()),
  * timed for the demod rate the front end runs now, under a scan row's scope as well, and say why. Returns 1 when it
  * did; 0 when no switch is armed, or the configured settings have moved on since (a later command published its own
- * profile).
+ * profile). A later command that asks the front end for no receive profile (the cosine filter, an inversion or the input
+ * monitor toggled, issue #582) has not moved them on: the decoder goes back all the same, keeping what it set, rather
+ * than stay on a kind the front end does not run.
  *
  * A switch a refused scan leave puts back (@p kept carries the leave; the scan has stopped, so no scope is in force) is
  * part of that leave (issue #578): the rate a row's retune left can filter the kind restored no better than the one
@@ -4474,10 +4500,13 @@ ui_revert_analog_entry(dsd_opts* opts, dsd_state* state, int width_hz, const svc
        revert keeps it (dsd_scan_settings_equal() compares the width of the analog kind the switch left). */
     dsd_scan_settings after = g_analog_entry.after;
     ui_analog_entry_keep_widths(&after, &now);
+    ui_analog_entry_keep_unpublished(&after, &now, NULL);
     const int reverted = dsd_scan_settings_equal(&now, &after, 0);
     if (reverted) {
         dsd_scan_settings back = *ui_analog_entry_rollback(kept);
         ui_analog_entry_keep_widths(&back, &now);
+        /* What such a command set since the switch stands; what the switch itself set goes back with it. */
+        ui_analog_entry_keep_unpublished(&back, &now, &g_analog_entry.after);
         ui_restore_settings_keeping_row_policy(opts, state, &back, &now);
         ui_hold_reverted_analog_width(opts, state, kept);
         if (!opts->analog_only) {

@@ -696,7 +696,10 @@ typedef struct rtl_stream_retune_analog_profile {
  * switched, with the loop resets of a switch, only from the analog family. A front end already on the digital family
  * gets its output chain designed again where the stream retunes, and where an external backend's retune lands
  * (rtl_stream_apply_pending_retune_profile_for_target()), which has no retune of the stream's own to finalize it. A
- * retune that carries no family applies its symbol profile as queued, over the output chain it finds.
+ * retune that carries no family applies its symbol profile as queued, over the output chain it finds, unless a live
+ * analog request or a scan leave counted after the profile was queued superseded it
+ * (rtl_stream_familyless_retune_supersedes()): then it lands its centre only. Otherwise it retires a live analog
+ * request still queued from before it was queued, which then reads replaced.
  *
  * A live rtl_stream_request_analog_profile() or rtl_stream_request_digital_family_landing() accepted after this call is
  * the newer word on the family: the retune then lands on its target with neither this family nor the symbol profile
@@ -720,6 +723,27 @@ int rtl_stream_prepare_retune_analog_profile_for_target(uint32_t target_freq_hz,
  * the front end runs, so the row it tuned for must be restaged.
  */
 uint32_t rtl_stream_live_family_request_count(void);
+
+/**
+ * @brief Number of supersedes counted so far for retune profiles queued with no receive family (issue #582).
+ *
+ * Rises by one per accepted rtl_stream_request_analog_profile() for DSD_RX_FAMILY_ANALOG (it asks for the monitor),
+ * running stream or not, and per rtl_stream_supersede_familyless_retunes(); a refused request, and a digital one,
+ * does not count. A retune profile queued with no receive family before the number last moved no longer lands its
+ * symbol profile: the retune moves its centre only. A scanner that queued such a row's retune compares the number when
+ * the retune completes, and restages the row when it moved.
+ */
+uint32_t rtl_stream_familyless_retune_supersedes(void);
+
+/**
+ * @brief Supersede the retune profiles queued with no receive family so far (issue #582).
+ *
+ * Counts one supersede (rtl_stream_familyless_retune_supersedes()). The -Y scan leave calls it before its own
+ * requests: a typed row's retune, which carries no family, is otherwise not superseded by the leave's digital family
+ * request, and the controller can still land it after the demod thread took the leave's requests, putting the row's
+ * symbol profile back over the configured decoder's for good. Superseded, it lands its centre only.
+ */
+void rtl_stream_supersede_familyless_retunes(void);
 
 /**
  * @brief Apply and clear a queued retune profile for a specific external retune target.

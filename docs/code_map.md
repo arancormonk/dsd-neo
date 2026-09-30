@@ -374,10 +374,18 @@ Tests: `tests/engine/test_engine_trunk_scan.c` (`ENGINE_TRUNK_SCAN`) and
   row still in scope (a width edit or a config apply republishing the outgoing row's receive profile), so the commit
   restages the row rather than run it on the outgoing row's family (`channel_scan_staged_stale()`, comparing
   `dsd_engine_scan_family_requests()`, the stream's `rtl_stream_live_family_request_count()`, with the count when the
-  tune was queued). Only a retune that carries a family is superseded (`dsd_engine_scan_retune_attaches_family()`, by
-  the same rule as the attach); one without lands its symbol profile whatever the requests, and its row commits as
-  staged. Leaving the scan
-  (`dsd_engine_channel_scan_leave()`) restores the configured RTL receive family through the metrics hooks: under `-fA`
+  tune was queued). A retune that carries a family is superseded by any of them
+  (`dsd_engine_scan_retune_attaches_family()`, by the same rule as the attach). One without (a typed digital row on an
+  analog session, or a digital session's row) lands its symbol profile whatever the digital requests; while the scan
+  runs only a live analog request supersedes it, since it asked for the monitor that symbol profile would take away
+  (issue #582; the scan leave below supersedes it too), and
+  the commit then restages its row by the stream's count of such supersedes
+  (`dsd_engine_scan_familyless_retune_supersedes()`, the stream's `rtl_stream_familyless_retune_supersedes()`).
+  Otherwise the row commits as staged. Leaving the scan
+  (`dsd_engine_channel_scan_leave()`) first supersedes the retunes still outstanding that carry no family
+  (`dsd_engine_scan_supersede_familyless_retunes()`, issue #582), so a typed row's retune the controller lands late
+  moves its centre only instead of putting the row's profile back over the configured decoder's, then
+  restores the configured RTL receive family through the metrics hooks: under `-fA`
   the configured analog profile (`apply_analog_profile`, analog family, demodulator kind and channel width with 0
   meaning the default), otherwise the digital family first and then the restored symbol profile (`apply_demod_profile`),
   so the demod thread switches family before it applies the profile. The leave decides the landing once, as a
@@ -395,7 +403,10 @@ Tests: `tests/engine/test_engine_trunk_scan.c` (`ENGINE_TRUNK_SCAN`) and
   family request, a no-op on a digital front end, and keeps the saved timing. A leave that switches the front end's
   family either way, or
   its analog kind (an nfm row's FM monitor left for an `-fM` session's AM one, told by the published analog profile),
-  also drops the analog monitor block the decoder has part-collected (`dsd_symbol_analog_block_reset()`). The M17
+  also drops the analog monitor block the decoder has part-collected (`dsd_symbol_analog_block_reset()`). A leave from
+  a typed digital row back to Analog or AM does neither (the row kept the front end on the analog family, on the row's
+  channel, where no monitor is published): `getSymbol()` drops that block, and collects none of the row's audio the
+  front end delivers until its monitor request lands (issue #582, see the monitor block in `dsp`). The M17
   encoder is not the analog family. The leave returns what became of its analog profile request, the last receive
   request it makes: 1 queued, -1 refused at once (the published rate, which a row's retune can have moved, cannot filter
   the configured width), 0 when it asked the monitor for nothing (no active scan, not RTL, a digital configured family).
@@ -403,7 +414,8 @@ Tests: `tests/engine/test_engine_trunk_scan.c` (`ENGINE_TRUNK_SCAN`) and
   leave goes through app-control's `svc_leave_channel_scan()`, which records it for the command drain (issue #578,
   below). Tests: `ENGINE_CHANNEL_SCAN` (the leave's landing included: behind a digital-family retune in flight, from
   the analog family, by the row's recorded decision once the stream's answer has fallen, and the plain request with
-  neither), and for the attach while analog work is
+  neither; and a typed digital row on an analog session restaged after a live analog request, and committed as staged
+  after a digital one), and for the attach while analog work is
   outstanding `ENGINE_NO_CARRIER_RESET`
   (a trunk scan's Advance and Avoid behind an nfm target's retune in flight, a retune coalesced behind it, a width
   edit queued behind it, with the retune in flight or completed FAILED, a P25 target without a modulation under
@@ -1021,9 +1033,11 @@ installs from `src/engine/trunk_tuning.c` in `src/engine/trunk_tuning_hooks_inst
   default the rate refuses too leaving the width as it is, rather than an analog decoder on a width the front end
   cannot filter over the row's digital profile. A width of that kind changed while the switch was pending, which the
   rate cannot filter, goes back to the one the front end holds first (`ui_hold_reverted_analog_width()`), and the rule
-  settles what the revert then asked for. A DSP-menu CQPSK-off refusal is no leave and keeps CQPSK on. A typed row's retune still in flight when a leave was accepted can land its symbol profile over the monitor,
-  as any retune without a family does (Per-channel decoder modes, above); that is no refusal, and nothing here
-  reconciles it. A switch to Analog or AM (`DECODE_MODE_SET`, a config's `[mode]`) holds an explicit
+  settles what the revert then asked for. A DSP-menu CQPSK-off refusal is no leave and keeps CQPSK on. A typed row's retune still in flight when a leave back to Analog or AM was
+  accepted lands its centre only: the leave's analog request supersedes the symbol profile that retune carries, which
+  would take the monitor away (Per-channel decoder modes, above; issue #582), so the monitor the leave put back stays.
+  A leave to a digital configured decoder makes no analog request, but the leave supersedes such a retune before its
+  requests all the same (Per-channel decoder modes, above), so the configured decoder's profile stays too. A switch to Analog or AM (`DECODE_MODE_SET`, a config's `[mode]`) holds an explicit
   width, or the AM width, to the rate first, under a scan row as well (`ui_check_mode_receive_profile()`); a `[mode]`
   without a decode key keeps the session's family and kind. A switch between FM and AM on the monitor is armed like a
   switch onto it (`ui_arm_analog_entry()`), and the stream records the kind it kept with a refusal, so one the front end
@@ -1183,8 +1197,11 @@ installs from `src/engine/trunk_tuning.c` in `src/engine/trunk_tuning_hooks_inst
   RadioReference import's) and refuses it on a PCM input (`dsd_decode_mode_runs_on_input()`); on a running RTL session
   it holds the AM width to the rate (above) and switches live across AM, Analog and the digital modes. A switch between
   FM and AM, by DECODE_MODE_SET or a config's `[mode]`, drops the analog monitor block the decoder part-collected, as a
-  family change does (`decode_mode_drop_old_analog_block()`), and one the front end refuses goes back to the monitor's
-  raw sink, not the digital one (`ui_revert_analog_entry()`). `[mode] decode = am` in a config applied to a PCM session
+  family change does (`decode_mode_drop_old_analog_block()`), and until the demod thread applies it `getSymbol()`
+  collects none of the old kind's audio the front end still delivers (issue #582, the monitor block in `dsp`); one
+  the front end refuses goes back to the monitor's raw sink, not the digital one (`ui_revert_analog_entry()`), also
+  after a toggle that asks the front end for no receive profile (the cosine filter, an inversion, the input monitor)
+  changed a setting the switch is compared by before the refusal: what the toggle set stands (issue #582). `[mode] decode = am` in a config applied to a PCM session
   applies, and then falls back. That fallback is `apply_cmd_fall_back_from_am_on_pcm()`, run after every command
   (`apply_cmd_scoped()`): a configured AM preset on an input that is not I/Q (a live input switch to Pulse, a file, TCP
   or UDP audio, or a config's `decode = am` on PCM) becomes the Analog monitor through the scope, as DECODE_MODE_SET
@@ -1593,6 +1610,21 @@ installs from `src/engine/trunk_tuning.c` in `src/engine/trunk_tuning_hooks_inst
   follows the output it reads: an analog-family decoder does not collect a direct (digital) output's samples while
   the front end has yet to switch, and a move between the monitor output and a direct one drops the part-collected
   block (`symbol_refresh_rtl_profile()`), so the first block the new family plays holds only its own samples.
+  On the monitor output it follows the monitor the stream publishes the same way (issue #582): while that is the
+  other analog kind (`dsd_rtl_stream_metrics_hook_analog_profile()`, a switch between FM and AM) or, on the analog
+  family, no monitor at all (`..._analog_family_active()` with nothing published: a typed digital `-Y` row's channel,
+  which a leave back to Analog or AM puts the monitor back from), an analog-family decoder collects nothing and drops
+  a part-collected block, whichever path changed the decoder. The demod thread clears the output ring before it
+  publishes a new monitor, so the answer read once per `getSymbol()` never admits the old profile's samples. Without
+  it a whole block of the old profile's audio, which a backlog the decoder catches up on after a block's synchronous
+  playback holds, would play: a block with no boundary in it is one `dsd_analog_rx_block_straddles_boundary()` cannot
+  mute. Nothing published (no front-end hooks, a front end off the analog family) leaves collection as it was; of
+  those only a session with no decode mode switched to Analog reads another profile until the switch lands (the M17
+  encoder is never the analog family). A front end the stream leaves off the configured monitor for good, such as a
+  scan leave whose fallback width the rate refuses too (the refusal's toast says so), is silent there, as a digital
+  output under an analog decoder is; a refused switch between FM and AM puts the decoder back on the kind the front end
+  kept (`ui_revert_analog_entry()`). A digital decoder on the monitor output (a typed row's, the `-8`
+  source monitor) collects what it reads. Test: `RTL_SYMBOL_CACHE_GENERATION`.
   `tests/engine/analog_replay.c` (`dsd-neo_test_analog_replay`, the `DECODE_IQ_ANALOG_*` audio cases) captures and
   scores exactly that output through the hook, and times it with a wrapped RTL stream read hook, so changes to the
   monitor chain are measured against what a listener hears; back them with `tools/replay_ab.sh --metric analog` evidence
@@ -1655,7 +1687,9 @@ Runtime controls (via `include/dsd-neo/io/rtl_stream_c.h`):
   a CQPSK toggle returns to once a live switch has moved the stream onto the digital family),
   `rtl_stream_prepare_retune_analog_profile_for_target()` (the same fields bound to a retune target), and
   `rtl_stream_live_family_request_count()` (the live family requests accepted so far; one accepted after a retune
-  profile's family was attached supersedes that family).
+  profile's family was attached supersedes that family), `rtl_stream_familyless_retune_supersedes()` (the live analog
+  requests among them, and the scan leaves; one counted after a retune profile with no family was queued supersedes
+  its symbol profile, issue #582) and `rtl_stream_supersede_familyless_retunes()` (the scan leave's count).
 - CQPSK control/status: `rtl_stream_toggle_cqpsk`, `rtl_stream_get_cqpsk_status`,
   `rtl_stream_request_cqpsk_reacquire`,
   `rtl_stream_set_ted_sps`/`rtl_stream_get_ted_sps`, `rtl_stream_set_ted_gain`/`rtl_stream_get_ted_gain`,
@@ -1814,7 +1848,33 @@ Notes:
     by `rtl_stream_live_family_request_count()`, which the `-Y` scanner compares across a row's retune): the
     retune lands on its target with neither that family nor the symbol profile queued with it, so a scanner that leaves
     while its row's retune is still in flight (the configured family put back by live requests) is not switched back
-    to the row's family when the device finishes the retune. The other way round, a family that lands retires the live
+    to the row's family when the device finishes the retune. A retune profile queued with no family (a typed digital
+    row on a `-fA` or `-fM` session, whose configured mode is analog, or any retune of a digital-only session) records
+    instead the supersedes counted so far (`g_familyless_retune_supersedes`, read by
+    `rtl_stream_familyless_retune_supersedes()`, issue #582): every live analog family request, which asks for the
+    monitor the profile's CQPSK toggle and symbol profile would take away, and every `-Y` scan leave, before its own
+    requests (`rtl_stream_supersede_familyless_retunes()`). One counted after the profile was queued supersedes it, and
+    the retune lands its centre only (`rtl_stream_retune_symbols_superseded()`). A scanner leaving while a typed row's
+    retune is in flight, and the controller starts that retune late (a PPM correction ahead of it, a starved controller
+    thread), therefore keeps the configured decoder's profile its leave put back, the monitor or a digital one, instead
+    of landing on the row's channel or CQPSK after the leave had settled, with nothing left to ask again. A plain
+    digital request supersedes no such profile: on the digital family it is a no-op a digital session makes around its
+    hops. The other way round, such a profile that lands retires a live analog request still queued from before it was
+    queued (`rtl_stream_retire_analog_request_before_symbols()`, by the request number it records when queued): a width
+    command drained just before the scan advanced to a typed row would otherwise be taken at the demod thread's next
+    block boundary and put the monitor back over the row on air. That request reads replaced, and settles once the
+    symbol profile has applied; a digital request or a symbol profile queued alone stays, and so does one queued after
+    the profile. Both are decided under the gate the landing holds and, for the retire, the request lock (a request
+    counts itself before it takes that lock): a request counted after them is taken at the demod thread's next block
+    boundary, after the profile. Tests: `IO_RTL_RETUNE_PREPARE` (a typed DMR and a P25 CQPSK row after a later analog
+    request, a P25 hop after a later digital or an earlier analog request, and the count),
+    `IO_RTL_ANALOG_FAMILY_SWITCH` (`rtl_stream_test_typed_row_retune_across_leave()`: the leave taken and settled
+    before the row's retune lands, on the controller and as an external backend's landing, under `-fA` and `-fM`, and a
+    leave made before the profile was queued, which the profile still lands over;
+    `rtl_stream_test_digital_leave_across_familyless_retune()`: a DMR session's leave, plain or landing, before a P25
+    row's late retune; `rtl_stream_test_older_analog_request_across_familyless_retune()`: a width request queued before
+    a typed row's retune, with no family or the digital family attached). For a retune with a family, the other
+    way round, a family that lands retires the live
     requests still queued from before it was attached (`rtl_stream_retire_requests_before_family()`, by the request
     number it records): a width or mode command drained just before the scan advanced would otherwise be taken at the
     demod thread's next block boundary and put the front end back on the family or width the row just left. An
@@ -1933,7 +1993,8 @@ Notes:
     one owner, held for the whole landing: the landing waits while a controller reconfiguration (a PPM correction, a
     hop) runs, and the next one waits for the landing, so the two never redesign the resampler together.
     A retune without a family applies its symbol profile as
-    queued, as a digital-only session always has, over the output chain it finds. A live digital landing
+    queued, as a digital-only session always has, over the output chain it finds, unless a live analog request or a
+    `-Y` scan leave counted after the profile was queued superseded it (above: then it lands its centre only). A live digital landing
     (`rtl_stream_request_digital_family_landing()`, issue #583: a republish, or a channel-scan leave, that timed the
     decoder for the digital family's landing because the analog family runs or outstanding work lands a family) lands
     the same way: from the analog family as the switch a plain digital request

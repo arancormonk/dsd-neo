@@ -275,8 +275,21 @@ typedef struct {
     int rtl_symbol_levels;
     uint32_t rtl_stream_generation;
     int cqpsk_symbol_rate;
+    /* On the monitor output, the monitor the front end publishes it runs: an analog kind (dsd_analog_demod), or
+       SYMBOL_MONITOR_OFF_PROFILE or SYMBOL_MONITOR_UNKNOWN (symbol_refresh_rtl_profile()). */
+    int rtl_monitor_kind;
 #endif
 } symbol_work_ctx;
+
+#ifdef USE_RADIO
+/* What symbol_work_ctx::rtl_monitor_kind holds when the front end publishes no analog kind. */
+enum {
+    /* Nothing published tells: a direct output, a front end off the analog family, or no front-end hooks at all. */
+    SYMBOL_MONITOR_UNKNOWN = -1,
+    /* The analog family on a profile other than its monitor: a typed digital scan row's channel. */
+    SYMBOL_MONITOR_OFF_PROFILE = -2,
+};
+#endif
 
 static inline void
 symbol_work_ctx_init(symbol_work_ctx* work, const dsd_state* state) {
@@ -288,6 +301,8 @@ symbol_work_ctx_init(symbol_work_ctx* work, const dsd_state* state) {
     work->timing_level = dsd_symbol_timing_debug_level();
 #ifdef USE_RADIO
     work->rtl_symbol_levels = 4;
+    /* Not 0, which is DSD_ANALOG_DEMOD_FM: only an RTL input's refresh classifies the monitor output. */
+    work->rtl_monitor_kind = SYMBOL_MONITOR_UNKNOWN;
 #endif
     if (!state) {
         return;
@@ -1371,6 +1386,22 @@ symbol_process_analog_capture(dsd_opts* opts, dsd_state* state, const symbol_wor
     if (work->rtl_direct_output && dsd_opts_is_analog_family(opts)) {
         return;
     }
+    /* Nor, on the monitor output, while the front end runs a monitor other than the one the decoder is configured for:
+       the other analog kind's (a switch between FM and AM, issue #582), or none (the analog family on a typed digital
+       scan row's channel, which a -Y leave back to Analog or AM puts the monitor back from). The decoder commits such
+       a change at once; the front end follows at the demod thread's next block boundary, clearing the output ring and
+       publishing its new monitor before that monitor's first sample. Until then the decoder reads another profile's
+       audio, a whole block of it when it has a backlog to catch up on, and a block with no boundary in it is one the
+       received-tone tap cannot mute (dsd_analog_rx_block_straddles_boundary()). A block part-collected from it is
+       dropped too, whichever path changed the decoder. A digital decoder on the monitor output collects what it reads,
+       as the -8 source monitor always has. */
+    if (!work->rtl_direct_output && work->rtl_monitor_kind != SYMBOL_MONITOR_UNKNOWN && dsd_opts_is_analog_family(opts)
+        && work->rtl_monitor_kind != opts->analog_demod) {
+        if (state->analog_sample_counter > 0) {
+            symbol_reset_analog_buffers(state);
+        }
+        return;
+    }
 #endif
     if (have_sync == 0) {
         symbol_process_unsynced_analog(opts, state, work->analog_out_cap, work->sample);
@@ -1510,6 +1541,19 @@ symbol_maybe_publish_rtl_input_level(dsd_opts* opts, dsd_state* state) {
     }
 }
 
+/* The monitor the front end publishes it runs (symbol_work_ctx::rtl_monitor_kind), read on the monitor output once per
+   getSymbol(). The demod thread clears the output ring before it publishes a new monitor, so no sample of the old one
+   is read under the new answer. A sample of the new one read under the old answer (the switch landing part-way
+   through a symbol) is only dropped. */
+static inline int
+rtl_symbol_monitor_kind(void) {
+    int kind = 0;
+    if (dsd_rtl_stream_metrics_hook_analog_profile(&kind, NULL, NULL) == 1) {
+        return kind;
+    }
+    return dsd_rtl_stream_metrics_hook_analog_family_active() ? SYMBOL_MONITOR_OFF_PROFILE : SYMBOL_MONITOR_UNKNOWN;
+}
+
 static inline int
 symbol_refresh_rtl_profile(dsd_state* state, symbol_work_ctx* work) {
     if (!work) {
@@ -1529,8 +1573,10 @@ symbol_refresh_rtl_profile(dsd_state* state, symbol_work_ctx* work) {
         work->rtl_profile_changed |=
             rtl_symbol_cache_profile(state, work->rtl_output_kind, work->rtl_channel_profile, work->rtl_symbol_rate_hz,
                                      work->rtl_symbol_levels, work->rtl_stream_generation);
+        work->rtl_monitor_kind = SYMBOL_MONITOR_UNKNOWN;
     } else {
         rtl_symbol_cache_clear(state);
+        work->rtl_monitor_kind = rtl_symbol_monitor_kind();
     }
     if (state && work->rtl_direct_output != was_direct) {
         /* The front end moved between the monitor output and a direct (digital) one: a receive-family switch landed.
