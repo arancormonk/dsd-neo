@@ -263,6 +263,9 @@ typedef struct rtl_stream_replay_batch {
 /**
  * @brief Get the tag of the batch the last I/Q replay read took its samples from.
  *
+ * Decoder thread only, while the stream is open: it reads the stream's state without a lock before it takes the
+ * output ring's lock, which is safe only on the thread that opens and closes the stream, the one that reads it.
+ *
  * @param out [out] The tag. Must not be NULL.
  * @return 0 with the tag; -1 when no replay runs or no replay read has returned samples yet.
  */

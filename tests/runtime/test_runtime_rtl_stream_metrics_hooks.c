@@ -393,6 +393,52 @@ test_digital_family_landing_hook(void) {
     dsd_rtl_stream_metrics_hooks_set(NULL);
 }
 
+/* A replay batch hook that fills its output even when it reports no batch. */
+static int g_replay_batch_result = 0;
+static int g_replay_batch_calls = 0;
+
+static int
+fake_replay_batch(dsd_rtl_stream_replay_batch* out) {
+    ++g_replay_batch_calls;
+    out->generation = 77U;
+    out->output_kind = 1;
+    out->channel_profile = 2;
+    out->symbol_rate_hz = 4800;
+    out->levels = 4;
+    return g_replay_batch_result;
+}
+
+/* The I/Q replay batch the decoder's last read took its samples from: none with no RTL front end installed, forwarded
+ * when its hook reports one, and none, with nothing left in the output, whenever the hook reports anything else. */
+static void
+test_replay_batch_hook(void) {
+    dsd_rtl_stream_replay_batch batch = {.generation = 9U, .output_kind = 9, .levels = 9};
+    dsd_rtl_stream_metrics_hooks_set(NULL);
+    assert(dsd_rtl_stream_metrics_hook_replay_batch(&batch) == 0);
+    assert(batch.generation == 0U && batch.output_kind == 0 && batch.channel_profile == 0);
+    assert(batch.symbol_rate_hz == 0 && batch.levels == 0);
+    assert(dsd_rtl_stream_metrics_hook_replay_batch(NULL) == 0);
+
+    dsd_rtl_stream_metrics_hooks hooks = {0};
+    hooks.replay_batch = fake_replay_batch;
+    dsd_rtl_stream_metrics_hooks_set(&hooks);
+    g_replay_batch_result = 1;
+    assert(dsd_rtl_stream_metrics_hook_replay_batch(&batch) == 1);
+    assert(batch.generation == 77U && batch.output_kind == 1 && batch.channel_profile == 2);
+    assert(batch.symbol_rate_hz == 4800 && batch.levels == 4);
+    const int results[] = {0, -1, 2};
+    for (size_t i = 0; i < sizeof(results) / sizeof(results[0]); i++) {
+        g_replay_batch_result = results[i];
+        assert(dsd_rtl_stream_metrics_hook_replay_batch(&batch) == 0);
+        assert(batch.generation == 0U && batch.output_kind == 0 && batch.channel_profile == 0);
+        assert(batch.symbol_rate_hz == 0 && batch.levels == 0);
+    }
+    /* A NULL output never reaches the hook. */
+    assert(dsd_rtl_stream_metrics_hook_replay_batch(NULL) == 0);
+    assert(g_replay_batch_calls == 4);
+    dsd_rtl_stream_metrics_hooks_set(NULL);
+}
+
 int
 main(void) {
     /*
@@ -405,6 +451,7 @@ main(void) {
     test_family_hooks();
     test_family_landing_after_pending_hook();
     test_digital_family_landing_hook();
+    test_replay_batch_hook();
 
     // Default behavior with hooks unset.
     dsd_rtl_stream_metrics_hooks_set(NULL);

@@ -675,11 +675,13 @@ Tests: `tests/engine/test_engine_trunk_scan.c` (`ENGINE_TRUNK_SCAN`) and
     one (`family_landing_after_pending`, issue #583: the rule the engine attaches the digital family by, which the scan
     timing follows; a table without it falls back to `analog_family_active`) and the output rate a family switch lands
     on (`output_rate_for_family`, told whether the CQPSK state is a trunk-scan target's own choice, which stands over
-    `DSD_NEO_CQPSK` there, issue #583); the engine installs `rtl_stream_request_analog_profile()`,
-    `rtl_stream_request_digital_family_landing()`, `rtl_stream_get_analog_profile()`,
-    `rtl_stream_analog_family_active()`, `rtl_stream_family_landing_after_pending()` and
-    `rtl_stream_output_rate_for_family()` behind them. Tests: `RUNTIME_RTL_STREAM_METRICS_HOOKS`,
-    `ENGINE_RTL_STREAM_METRICS_HOOKS_INSTALL`.
+    `DSD_NEO_CQPSK` there, issue #583), and what the I/Q replay batch the decoder's last read took its samples from ran
+    on (`replay_batch`, `dsd_rtl_stream_replay_batch`: generation, output kind, channel profile, symbol rate and
+    levels; decoder thread only, while the stream is open; issue #572); the engine installs
+    `rtl_stream_request_analog_profile()`, `rtl_stream_request_digital_family_landing()`,
+    `rtl_stream_get_analog_profile()`, `rtl_stream_analog_family_active()`, `rtl_stream_family_landing_after_pending()`,
+    `rtl_stream_output_rate_for_family()` and `rtl_stream_get_replay_batch()` behind them. Tests:
+    `RUNTIME_RTL_STREAM_METRICS_HOOKS`, `ENGINE_RTL_STREAM_METRICS_HOOKS_INSTALL`.
   - Sub-audible signalling tables and text (`include/dsd-neo/runtime/analog_tones.h`, `src/runtime/analog_tones.c`):
     the standard 50-tone CTCSS table in tenths of a hertz (150.0 Hz deliberately absent), index lookup and the
     `100.0` / `CTCSS 100.0 Hz` formatters (issue #522). Runtime owns it because the frontends format these values and
@@ -1592,6 +1594,17 @@ installs from `src/engine/trunk_tuning.c` in `src/engine/trunk_tuning_hooks_inst
   is owed. Without that the switch-on rewound the grid by a third of a symbol on NXDN48 and half a symbol on
   P25p1 roughly once per frame, and the switch-off skipped the same (#444). `SYMBOL_MATCHED_FILTER_SEAM` drives
   `getSymbol()` across each kind of switch and checks the content position never moves.
+- `dsd_symbol.c` reads a direct RTL output (the FSK discriminator, CQPSK symbols) through a 512-sample cache labelled
+  with the stream generation and the profile its samples came off, and takes a sample only under the labels the
+  decoder's work context has. A live read carries no labels, so a batch read across a generation bump is dropped
+  whole, and one read across a profile change is dropped from the next refresh on (`rtl_symbol_cache_refill()`).
+  Under `--iq-replay` the decoder paces the demod, so every RESET, hunt profile change and CQPSK toggle lands while it
+  waits in that read, and the drop would hit the first batch after each one, every time (issue #572). There the read's
+  batch tag (`dsd_rtl_stream_metrics_hook_replay_batch()`) labels the cache, and a batch whose labels the work context
+  has not seen yet comes back as `RTL_SYMBOL_CACHE_REFRESH`: the caller refreshes the work context, output kind, SPS,
+  levels and FSK timing exactly as after a drop, keeps the batch, and takes its first sample next. A monitor-output
+  batch, and one the stream flushed after it was published (the pop checks the batch's generation), are still
+  dropped. Test: `RTL_SYMBOL_CACHE_GENERATION`.
 - `dsd_symbol.c` owns the open-loop FSK symbol grid. Only the inter-frame sync search moves it, by a whole sample at
   a time, on the first zero crossing latched in the previous symbol — a bang-bang loop on one unfiltered sample
   index, and between frames the only thing tracking the sampling instant across a call. Issue #444 documents how
@@ -2135,7 +2148,8 @@ Notes:
     - The batch tag (`rtl_stream_replay_batch` in `rtl_stream_c.h`: chunk sequence, output generation, the published
       output kind, channel profile, symbol rate and levels, output rate, media start and duration, output count) of
       the batch the last read took samples from, with their place in it, is what `rtl_stream_get_replay_batch()`
-      returns.
+      returns, on the decoder thread while the stream is open. The symbol cache labels what it reads from it, through
+      the runtime metrics hook (see DSP), so it keeps the first batch after a change.
     - Lock order: `replay_eof_m`, then `output.ready_m`. The locked sections use the unlocked ring helpers.
 
     Tests: `IO_RTL_REPLAY_DETERMINISM` (greedy fast, slow and realtime readers with the same requests deliver the same

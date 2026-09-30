@@ -38,7 +38,15 @@ static int g_channel_profile = RTL_STREAM_CHANNEL_PROFILE_P25_C4FM;
 static float g_read_base = 1000.0f;
 static float g_read_base_step = 0.0f;
 static int g_read_calls = 0;
+/* The samples one read returns at most: one demod block's batch. */
+static int g_batch_samples = 4;
+/* A change lands while the decoder waits in its next read, before the batch it returns: a generation bump (a retune, a
+   replay RESET, a CQPSK toggle), or a profile the front end applies without one (the *_after_bump values, which a bump
+   applies too). */
 static int g_bump_generation_during_read = 0;
+static int g_change_profile_during_read = 0;
+/* The generation moves after the next read's batch was published: the decoder flushed the stream since. */
+static int g_flush_after_publish_during_read = 0;
 static float g_read_base_after_bump = 0.0f;
 static int g_output_kind_after_bump = -1;
 static int g_symbol_rate_hz_after_bump = 0;
@@ -54,6 +62,11 @@ static int g_max_read_calls = 0;
 static int g_analog_family = 0;
 static int g_monitor_published = 0;
 static int g_monitor_kind = DSD_ANALOG_DEMOD_FM;
+/* A paced I/Q replay (1) tags each read's batch with the generation and profile it was published under; a live stream
+   (0) tags nothing (fake_replay_batch()). */
+static int g_replay = 0;
+static int g_have_last_batch = 0;
+static dsd_rtl_stream_replay_batch g_last_batch;
 
 dsd_socket_t
 // NOLINTNEXTLINE(misc-use-internal-linkage)
@@ -178,6 +191,39 @@ fake_blast_analog(const dsd_opts* opts, dsd_state* state, size_t nbytes, const v
     g_analog_blocks++;
 }
 
+/* The change a read lands before its batch (g_bump_generation_during_read, g_change_profile_during_read), if any. */
+static void
+apply_change_during_read(void) {
+    if (!g_bump_generation_during_read && !g_change_profile_during_read) {
+        return;
+    }
+    if (g_bump_generation_during_read) {
+        g_stream_generation++;
+    }
+    if (g_output_kind_after_bump >= 0) {
+        g_output_kind = g_output_kind_after_bump;
+        g_output_kind_after_bump = -1;
+    }
+    if (g_symbol_rate_hz_after_bump > 0) {
+        g_symbol_rate_hz = g_symbol_rate_hz_after_bump;
+        g_symbol_rate_hz_after_bump = 0;
+    }
+    if (g_symbol_levels_after_bump > 0) {
+        g_symbol_levels = g_symbol_levels_after_bump;
+        g_symbol_levels_after_bump = 0;
+    }
+    if (g_channel_profile_after_bump >= 0) {
+        g_channel_profile = g_channel_profile_after_bump;
+        g_channel_profile_after_bump = -1;
+    }
+    if (g_read_base_after_bump > 0.0f) {
+        g_read_base = g_read_base_after_bump;
+        g_read_base_after_bump = 0.0f;
+    }
+    g_bump_generation_during_read = 0;
+    g_change_profile_during_read = 0;
+}
+
 static int
 fake_rtl_read(void* rtl_ctx, float* out, size_t count, int* out_got) {
     assert(rtl_ctx != NULL);
@@ -186,7 +232,7 @@ fake_rtl_read(void* rtl_ctx, float* out, size_t count, int* out_got) {
     /* The direct outputs fill the symbol cache (at least four samples); the monitor output is read one sample at a
        time. */
     assert(count >= 1U);
-    const int n = count < 4U ? (int)count : 4;
+    const int n = count < (size_t)g_batch_samples ? (int)count : g_batch_samples;
 
     g_read_calls++;
     if (g_max_read_calls > 0 && g_read_calls > g_max_read_calls) {
@@ -203,38 +249,36 @@ fake_rtl_read(void* rtl_ctx, float* out, size_t count, int* out_got) {
         *out_got = 0;
         return -1;
     }
-    float read_base = g_read_base;
-    if (g_bump_generation_during_read) {
-        g_stream_generation++;
-        if (g_output_kind_after_bump >= 0) {
-            g_output_kind = g_output_kind_after_bump;
-            g_output_kind_after_bump = -1;
-        }
-        if (g_symbol_rate_hz_after_bump > 0) {
-            g_symbol_rate_hz = g_symbol_rate_hz_after_bump;
-            g_symbol_rate_hz_after_bump = 0;
-        }
-        if (g_symbol_levels_after_bump > 0) {
-            g_symbol_levels = g_symbol_levels_after_bump;
-            g_symbol_levels_after_bump = 0;
-        }
-        if (g_channel_profile_after_bump >= 0) {
-            g_channel_profile = g_channel_profile_after_bump;
-            g_channel_profile_after_bump = -1;
-        }
-        if (g_read_base_after_bump > 0.0f) {
-            g_read_base = g_read_base_after_bump;
-            read_base = g_read_base;
-            g_read_base_after_bump = 0.0f;
-        }
-        g_bump_generation_during_read = 0;
-    }
+    apply_change_during_read();
+    const float read_base = g_read_base;
     for (int i = 0; i < n; i++) {
         out[i] = read_base + (float)i;
     }
     g_read_base += g_read_base_step;
+    /* The batch is published after the change, with what the front end then runs. */
+    g_last_batch = (dsd_rtl_stream_replay_batch){
+        .generation = g_stream_generation,
+        .output_kind = g_output_kind,
+        .channel_profile = g_channel_profile,
+        .symbol_rate_hz = g_symbol_rate_hz,
+        .levels = g_symbol_levels,
+    };
+    g_have_last_batch = 1;
+    if (g_flush_after_publish_during_read) {
+        g_stream_generation++;
+        g_flush_after_publish_during_read = 0;
+    }
     *out_got = n;
     return 0;
+}
+
+static int
+fake_replay_batch(dsd_rtl_stream_replay_batch* out) {
+    if (!g_replay || !g_have_last_batch) {
+        return 0;
+    }
+    *out = g_last_batch;
+    return 1;
 }
 
 static double
@@ -305,7 +349,10 @@ reset_stream_fixture(void) {
     g_read_base = 1000.0f;
     g_read_base_step = 0.0f;
     g_read_calls = 0;
+    g_batch_samples = 4;
     g_bump_generation_during_read = 0;
+    g_change_profile_during_read = 0;
+    g_flush_after_publish_during_read = 0;
     g_read_base_after_bump = 0.0f;
     g_output_kind_after_bump = -1;
     g_symbol_rate_hz_after_bump = 0;
@@ -318,6 +365,9 @@ reset_stream_fixture(void) {
     g_analog_family = 0;
     g_monitor_published = 0;
     g_monitor_kind = DSD_ANALOG_DEMOD_FM;
+    g_replay = 0;
+    g_have_last_batch = 0;
+    g_last_batch = (dsd_rtl_stream_replay_batch){0};
     dsd_rtl_stream_metrics_hook_symbol_cache_pending_reset();
 }
 
@@ -629,6 +679,374 @@ test_digital_decoder_collects_any_monitor(dsd_opts* opts, dsd_state* state, void
     }
 }
 
+/*
+ * Under a paced I/Q replay (issue #572) the decoder paces the demod, so a RESET, a profile the SPS hunt asked for and a
+ * CQPSK toggle all land while the decoder waits in its read, and the first batch after each carries labels the decoder
+ * has not seen yet. The replay tags that batch with what it ran on; the decoder keeps all of it and consumes it with
+ * the new profile. A live read carries no labels, so there the conservative drop stays: a batch read across a
+ * generation bump is dropped whole, and one read across a profile change is dropped from the next refresh on.
+ */
+static int g_failures = 0;
+
+static void
+expect_int(const char* label, const char* what, long got, long want) {
+    if (got != want) {
+        DSD_FPRINTF(stderr, "FAIL: %s: %s: got %ld, want %ld\n", label, what, got, want);
+        g_failures++;
+    }
+}
+
+static void
+expect_near(const char* label, const char* what, float got, float want) {
+    if (fabsf(got - want) >= 0.01f) {
+        DSD_FPRINTF(stderr, "FAIL: %s: %s: got %.4f, want %.4f\n", label, what, got, want);
+        g_failures++;
+    }
+}
+
+/* A symbol made only of the samples [@p base, @p base + @p span): a batch's samples are its base plus their index. */
+static void
+expect_from_batch(const char* label, const char* what, float symbol, float base, int span) {
+    if (symbol < base || symbol >= base + (float)span) {
+        DSD_FPRINTF(stderr, "FAIL: %s: %s: symbol %.4f is not from samples [%.0f, %.0f)\n", label, what, symbol, base,
+                    base + (float)span);
+        g_failures++;
+    }
+}
+
+static const char*
+mode_label(int replay) {
+    return replay ? "paced replay" : "live";
+}
+
+static void
+start_cqpsk_stream(dsd_opts* opts, dsd_state* state, void* rtl_context, int replay, int batch_samples) {
+    reset_stream_fixture();
+    reset_decoder_fixture(opts, state, rtl_context);
+    g_replay = replay;
+    g_batch_samples = batch_samples;
+    g_output_kind = RTL_STREAM_OUTPUT_SYMBOL_CQPSK;
+    g_channel_profile = RTL_STREAM_CHANNEL_PROFILE_P25_CQPSK;
+    state->rf_mod = 1;
+}
+
+static void
+start_fsk_stream(dsd_opts* opts, dsd_state* state, void* rtl_context, int replay, int batch_samples) {
+    reset_stream_fixture();
+    reset_decoder_fixture(opts, state, rtl_context);
+    g_replay = replay;
+    g_batch_samples = batch_samples;
+    g_output_kind = RTL_STREAM_OUTPUT_FSK_DISCRIMINATOR;
+    g_output_rate_hz = 48000U;
+    g_symbol_rate_hz = 4800;
+    g_symbol_levels = 4;
+    g_channel_profile = RTL_STREAM_CHANNEL_PROFILE_12K5;
+    state->rf_mod = 0;
+    state->sps_hunt_idx = DSD_FRAME_SYNC_SPS_PROFILE_4800_4;
+}
+
+/* CQPSK, one sample a symbol, four-sample batches from 1000: the first batch is consumed, then a change lands in the
+   next read, whose batch starts at 3000 (the next at 3100). */
+static void
+cqpsk_consume_first_batch(dsd_opts* opts, dsd_state* state) {
+    g_read_base = 1000.0f;
+    for (int i = 0; i < 4; i++) {
+        (void)getSymbol(opts, state, 1);
+    }
+    assert(g_read_calls == 1);
+    g_read_base = 3000.0f;
+    g_read_base_step = 100.0f;
+}
+
+/* A generation bump with a new rate, levels and channel profile, and a bump alone (a RESET). */
+static void
+run_cqpsk_bump(dsd_opts* opts, dsd_state* state, void* rtl_context, int replay, int profile_change) {
+    char label[96];
+    DSD_SNPRINTF(label, sizeof label, "%s, CQPSK, generation bump%s", mode_label(replay),
+                 profile_change ? " with a rate, levels and profile change" : " alone");
+    start_cqpsk_stream(opts, state, rtl_context, replay, 4);
+    cqpsk_consume_first_batch(opts, state);
+    g_bump_generation_during_read = 1;
+    if (profile_change) {
+        g_symbol_rate_hz_after_bump = 2400;
+        g_symbol_levels_after_bump = 2;
+        g_channel_profile_after_bump = RTL_STREAM_CHANNEL_PROFILE_6K25;
+    }
+    float first = getSymbol(opts, state, 1);
+    if (!replay) {
+        expect_near(label, "first symbol after the change (the batch read across it is dropped)", first, 3100.0f);
+        expect_int(label, "reads", g_read_calls, 3);
+        return;
+    }
+    expect_near(label, "first symbol after the change", first, 3000.0f);
+    expect_int(label, "reads", g_read_calls, 2);
+    expect_int(label, "cache generation", (long)state->rtl_symbol_cache_generation, 2);
+    expect_int(label, "cache symbol rate", state->rtl_symbol_cache_symbol_rate_hz, profile_change ? 2400 : 4800);
+    expect_int(label, "cache levels", state->rtl_symbol_cache_levels, profile_change ? 2 : 4);
+    expect_int(label, "cache channel profile", state->rtl_symbol_cache_channel_profile,
+               profile_change ? RTL_STREAM_CHANNEL_PROFILE_6K25 : RTL_STREAM_CHANNEL_PROFILE_P25_CQPSK);
+    /* The first sample is sliced on the new levels' thresholds. */
+    expect_near(label, "slicer minimum", state->min, profile_change ? -1.0f : -3.0f);
+    expect_int(label, "cached samples pending", dsd_rtl_stream_metrics_hook_symbol_cache_pending(), 3);
+    for (int i = 1; i < 4; i++) {
+        expect_near(label, "rest of the first batch", getSymbol(opts, state, 1), 3000.0f + (float)i);
+    }
+    expect_int(label, "reads after the whole first batch", g_read_calls, 2);
+    expect_near(label, "next batch", getSymbol(opts, state, 1), 3100.0f);
+    expect_int(label, "cleanup calls", g_cleanup_calls, 0);
+}
+
+/* The front end applies new levels without moving the generation (a profile the decoder asked for). */
+static void
+run_cqpsk_levels_change(dsd_opts* opts, dsd_state* state, void* rtl_context, int replay) {
+    char label[96];
+    DSD_SNPRINTF(label, sizeof label, "%s, CQPSK, levels change without a generation bump", mode_label(replay));
+    start_cqpsk_stream(opts, state, rtl_context, replay, 4);
+    cqpsk_consume_first_batch(opts, state);
+    g_change_profile_during_read = 1;
+    g_symbol_levels_after_bump = 2;
+    float first = getSymbol(opts, state, 1);
+    expect_near(label, "first symbol after the change", first, 3000.0f);
+    /* Live, the first sample goes out on the old levels, and the refresh before the next drops the rest. */
+    expect_near(label, "slicer minimum on the first sample", state->min, replay ? -1.0f : -3.0f);
+    expect_near(label, "second symbol after the change", getSymbol(opts, state, 1), replay ? 3001.0f : 3100.0f);
+    expect_int(label, "reads", g_read_calls, replay ? 2 : 3);
+    expect_int(label, "cache levels", state->rtl_symbol_cache_levels, 2);
+    expect_near(label, "slicer minimum", state->min, -1.0f);
+}
+
+/* FSK at 48 kHz and 4800 symbols/s (10 samples a symbol), batches of @p batch_samples from 1000, each 1000 above the
+   last: the first four symbols are read, then a change lands in the next read, whose batch starts at 9000. */
+static void
+fsk_consume_four_symbols(dsd_opts* opts, dsd_state* state, const char* label) {
+    g_read_base = 1000.0f;
+    g_read_base_step = 1000.0f;
+    for (int i = 0; i < 4; i++) {
+        expect_from_batch(label, "symbol before the change", getSymbol(opts, state, 1), 1000.0f, g_batch_samples);
+    }
+    assert(g_read_calls == 1);
+    assert(state->samplesPerSymbol == 10);
+    g_read_base_after_bump = 9000.0f;
+}
+
+/* A generation bump alone (a RESET) with no profile change, landing at a symbol boundary (40-sample batches, four
+   symbols each) or part-way through one (45-sample batches: the fifth symbol has taken five samples when it lands). */
+static void
+run_fsk_bump(dsd_opts* opts, dsd_state* state, void* rtl_context, int replay, int batch_samples) {
+    char label[96];
+    DSD_SNPRINTF(label, sizeof label, "%s, FSK, generation bump alone, %d-sample batches", mode_label(replay),
+                 batch_samples);
+    start_fsk_stream(opts, state, rtl_context, replay, batch_samples);
+    fsk_consume_four_symbols(opts, state, label);
+    /* A slicer the decoder has moved since, which the change resets. */
+    state->min = -1.0f;
+    g_bump_generation_during_read = 1;
+    float after[4];
+    for (int i = 0; i < 4; i++) {
+        after[i] = getSymbol(opts, state, 1);
+    }
+    const int reads_after_four = g_read_calls;
+    expect_near(label, "slicer reset", state->min, -30000.0f);
+    expect_int(label, "samples per symbol", state->samplesPerSymbol, 10);
+    if (!replay) {
+        expect_from_batch(label, "first symbol after the change (the batch read across it is dropped)", after[0],
+                          10000.0f, 10);
+        expect_int(label, "reads after four symbols", reads_after_four, 3);
+        return;
+    }
+    /* The new stream's symbols start on its first sample and take 40 samples of its first batch: one read. */
+    expect_from_batch(label, "first symbol after the change", after[0], 9000.0f, 10);
+    for (int i = 1; i < 4; i++) {
+        expect_from_batch(label, "symbols after the change", after[i], 9000.0f + (float)(10 * i), 10);
+    }
+    expect_int(label, "reads after four symbols", reads_after_four, 2);
+    expect_int(label, "cache generation", (long)state->rtl_symbol_cache_generation, 2);
+    expect_int(label, "cleanup calls", g_cleanup_calls, 0);
+}
+
+/* The SPS hunt steps to 2400 symbols/s and the front end follows at its next block without a generation bump: a new
+   rate and channel profile on the batch the next read returns (20 samples a symbol, two symbols a batch). */
+static void
+run_fsk_hunt_rate_change(dsd_opts* opts, dsd_state* state, void* rtl_context, int replay) {
+    char label[96];
+    DSD_SNPRINTF(label, sizeof label, "%s, FSK, hunt rate change without a generation bump", mode_label(replay));
+    start_fsk_stream(opts, state, rtl_context, replay, 40);
+    fsk_consume_four_symbols(opts, state, label);
+    state->sps_hunt_idx = DSD_FRAME_SYNC_SPS_PROFILE_2400_4;
+    g_change_profile_during_read = 1;
+    g_symbol_rate_hz_after_bump = 2400;
+    g_channel_profile_after_bump = RTL_STREAM_CHANNEL_PROFILE_6K25;
+    float first = getSymbol(opts, state, 1);
+    float second = getSymbol(opts, state, 1);
+    expect_int(label, "samples per symbol", state->samplesPerSymbol, 20);
+    expect_from_batch(label, "first symbol after the change", first, 9000.0f, 20);
+    expect_int(label, "cache symbol rate", state->rtl_symbol_cache_symbol_rate_hz, 2400);
+    expect_int(label, "cache channel profile", state->rtl_symbol_cache_channel_profile,
+               RTL_STREAM_CHANNEL_PROFILE_6K25);
+    if (!replay) {
+        /* The refresh before the second symbol finds the old profile's labels on the batch and drops the rest. */
+        expect_from_batch(label, "second symbol after the change (the rest of the batch is dropped)", second, 10000.0f,
+                          20);
+        expect_int(label, "reads", g_read_calls, 3);
+        return;
+    }
+    expect_from_batch(label, "second symbol after the change", second, 9020.0f, 20);
+    expect_int(label, "reads", g_read_calls, 2);
+}
+
+/* FSK -> CQPSK: the front end toggles CQPSK (a generation bump and a new output kind) while the FSK path waits in its
+   read. The symbol in flight ends there, as it does after a dropped batch, and the new output's first sample opens the
+   next one. */
+static void
+run_fsk_to_cqpsk(dsd_opts* opts, dsd_state* state, void* rtl_context, int replay) {
+    char label[96];
+    DSD_SNPRINTF(label, sizeof label, "%s, FSK to CQPSK", mode_label(replay));
+    start_fsk_stream(opts, state, rtl_context, replay, 4);
+    g_read_base = 4000.0f;
+    g_read_base_step = 100.0f;
+    g_bump_generation_during_read = 1;
+    g_output_kind_after_bump = RTL_STREAM_OUTPUT_SYMBOL_CQPSK;
+    g_symbol_rate_hz_after_bump = 4800;
+    g_symbol_levels_after_bump = 4;
+    g_channel_profile_after_bump = RTL_STREAM_CHANNEL_PROFILE_P25_CQPSK;
+    expect_near(label, "the FSK symbol in flight", getSymbol(opts, state, 1), 0.0f);
+    expect_int(label, "output kind", g_output_kind, RTL_STREAM_OUTPUT_SYMBOL_CQPSK);
+    state->rf_mod = 1;
+    float first = getSymbol(opts, state, 1);
+    if (!replay) {
+        expect_near(label, "first CQPSK symbol (the batch read across the toggle is dropped)", first, 4100.0f);
+        expect_int(label, "reads", g_read_calls, 2);
+        return;
+    }
+    expect_near(label, "first CQPSK symbol", first, 4000.0f);
+    for (int i = 1; i < 4; i++) {
+        expect_near(label, "rest of the first CQPSK batch", getSymbol(opts, state, 1), 4000.0f + (float)i);
+    }
+    expect_int(label, "reads", g_read_calls, 1);
+    expect_int(label, "cleanup calls", g_cleanup_calls, 0);
+}
+
+/* CQPSK -> FSK: the toggle lands while the CQPSK path waits in its read (40-sample batches). */
+static void
+run_cqpsk_to_fsk(dsd_opts* opts, dsd_state* state, void* rtl_context, int replay) {
+    char label[96];
+    DSD_SNPRINTF(label, sizeof label, "%s, CQPSK to FSK", mode_label(replay));
+    start_cqpsk_stream(opts, state, rtl_context, replay, 40);
+    g_read_base = 1000.0f;
+    g_read_base_step = 1000.0f;
+    for (int i = 0; i < 40; i++) {
+        (void)getSymbol(opts, state, 1);
+    }
+    assert(g_read_calls == 1);
+    state->rf_mod = 0;
+    g_bump_generation_during_read = 1;
+    g_output_kind_after_bump = RTL_STREAM_OUTPUT_FSK_DISCRIMINATOR;
+    g_symbol_rate_hz_after_bump = 4800;
+    g_symbol_levels_after_bump = 4;
+    g_channel_profile_after_bump = RTL_STREAM_CHANNEL_PROFILE_12K5;
+    g_read_base_after_bump = 9000.0f;
+    float after[4];
+    for (int i = 0; i < 4; i++) {
+        after[i] = getSymbol(opts, state, 1);
+    }
+    expect_int(label, "samples per symbol", state->samplesPerSymbol, 10);
+    if (!replay) {
+        expect_from_batch(label, "first FSK symbol (the batch read across the toggle is dropped)", after[0], 10000.0f,
+                          10);
+        expect_int(label, "reads after four symbols", g_read_calls, 3);
+        return;
+    }
+    for (int i = 0; i < 4; i++) {
+        expect_from_batch(label, "FSK symbols of the first batch", after[i], 9000.0f + (float)(10 * i), 10);
+    }
+    expect_int(label, "reads after four symbols", g_read_calls, 2);
+    expect_int(label, "cleanup calls", g_cleanup_calls, 0);
+}
+
+/* The stream's first read already runs on a new generation (the demod applied a queued profile before its first
+   block). */
+static void
+run_first_batch_of_stream(dsd_opts* opts, dsd_state* state, void* rtl_context, int replay) {
+    char label[96];
+    DSD_SNPRINTF(label, sizeof label, "%s, first batch of the stream", mode_label(replay));
+    start_cqpsk_stream(opts, state, rtl_context, replay, 4);
+    g_read_base = 1000.0f;
+    g_read_base_step = 100.0f;
+    g_bump_generation_during_read = 1;
+    expect_near(label, "first symbol", getSymbol(opts, state, 1), replay ? 1000.0f : 1100.0f);
+    expect_int(label, "reads", g_read_calls, replay ? 1 : 2);
+}
+
+/* A batch the stream moved on from after it was published (a flush the decoder asked for) is dropped in a replay too:
+   the pop checks the batch's generation, not the stream's. */
+static void
+run_flush_after_publish(dsd_opts* opts, dsd_state* state, void* rtl_context, int replay) {
+    char label[96];
+    DSD_SNPRINTF(label, sizeof label, "%s, flush after the batch was published", mode_label(replay));
+    start_cqpsk_stream(opts, state, rtl_context, replay, 4);
+    g_read_base = 3000.0f;
+    g_read_base_step = 100.0f;
+    g_flush_after_publish_during_read = 1;
+    expect_near(label, "first symbol", getSymbol(opts, state, 1), 3100.0f);
+    expect_int(label, "reads", g_read_calls, 2);
+}
+
+/* A direct output's switch to the monitor output: the monitor's batch is dropped, as a live read's is (that output is
+   read a sample at a time outside the cache), and the move off the direct output still drops the part-collected
+   analog block. */
+static void
+run_direct_to_monitor(dsd_opts* opts, dsd_state* state, void* rtl_context, int replay) {
+    char label[96];
+    DSD_SNPRINTF(label, sizeof label, "%s, FSK to the monitor output", mode_label(replay));
+    start_fsk_stream(opts, state, rtl_context, replay, 40);
+    g_read_base = 1000.0f;
+    g_read_base_step = 1000.0f;
+    for (int i = 0; i < 4; i++) {
+        (void)getSymbol(opts, state, 0);
+    }
+    assert(state->analog_sample_counter > 0);
+    g_bump_generation_during_read = 1;
+    g_output_kind_after_bump = RTL_STREAM_OUTPUT_AUDIO_MONITOR;
+    g_read_base_after_bump = 9000.0f;
+    expect_near(label, "the FSK symbol in flight", getSymbol(opts, state, 0), 0.0f);
+    expect_int(label, "part-collected analog samples", state->analog_sample_counter, 0);
+    expect_int(label, "cached samples pending", dsd_rtl_stream_metrics_hook_symbol_cache_pending(), 0);
+    expect_int(label, "cache output kind", state->rtl_symbol_cache_output_kind, 0);
+    expect_int(label, "cleanup calls", g_cleanup_calls, 0);
+}
+
+/* End of input: a failed read ends the stream in a replay as it does live. */
+static void
+run_read_failure(dsd_opts* opts, dsd_state* state, void* rtl_context, int replay) {
+    char label[96];
+    DSD_SNPRINTF(label, sizeof label, "%s, failed read", mode_label(replay));
+    start_cqpsk_stream(opts, state, rtl_context, replay, 4);
+    g_fail_reads = 1;
+    expect_near(label, "symbol", getSymbol(opts, state, 1), 0.0f);
+    expect_int(label, "failed reads", g_failed_read_calls, 1);
+    expect_int(label, "cleanup calls", g_cleanup_calls, 1);
+}
+
+static void
+test_replay_keeps_first_batch_after_change(dsd_opts* opts, dsd_state* state, void* rtl_context) {
+    for (int replay = 0; replay <= 1; replay++) {
+        run_cqpsk_bump(opts, state, rtl_context, replay, 1);
+        run_cqpsk_bump(opts, state, rtl_context, replay, 0);
+        run_cqpsk_levels_change(opts, state, rtl_context, replay);
+        run_fsk_bump(opts, state, rtl_context, replay, 40);
+        run_fsk_bump(opts, state, rtl_context, replay, 45);
+        run_fsk_hunt_rate_change(opts, state, rtl_context, replay);
+        run_fsk_to_cqpsk(opts, state, rtl_context, replay);
+        run_cqpsk_to_fsk(opts, state, rtl_context, replay);
+        run_first_batch_of_stream(opts, state, rtl_context, replay);
+        run_flush_after_publish(opts, state, rtl_context, replay);
+        run_direct_to_monitor(opts, state, rtl_context, replay);
+        run_read_failure(opts, state, rtl_context, replay);
+    }
+    reset_stream_fixture();
+    reset_decoder_fixture(opts, state, rtl_context);
+}
+
 int
 main(void) {
     static dsd_opts opts;
@@ -652,6 +1070,7 @@ main(void) {
         .stream_generation = fake_stream_generation,
         .analog_profile = fake_analog_profile,
         .analog_family_active = fake_analog_family_active,
+        .replay_batch = fake_replay_batch,
     };
     dsd_rtl_stream_metrics_hooks_set(&metrics_hooks);
 
@@ -983,6 +1402,8 @@ main(void) {
     assert(g_failed_read_calls == 1);
     assert(g_cleanup_calls == 1);
 
+    test_replay_keeps_first_batch_after_change(&opts, &state, &fake_rtl_context);
+
     dsd_udp_audio_hooks_set((dsd_udp_audio_hooks){.blast_analog = fake_blast_analog});
     test_analog_block_follows_family_switch(&opts, &state, &fake_rtl_context);
     test_analog_block_follows_kind_switch(&opts, &state, &fake_rtl_context);
@@ -994,5 +1415,9 @@ main(void) {
     dsd_rtl_stream_metrics_hooks_set(NULL);
     dsd_rtl_stream_metrics_hook_symbol_cache_pending_reset();
     dsd_state_ext_free_all(&state);
+    if (g_failures != 0) {
+        DSD_FPRINTF(stderr, "%d RTL symbol cache check(s) failed\n", g_failures);
+        return 1;
+    }
     return 0;
 }

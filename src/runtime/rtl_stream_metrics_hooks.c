@@ -174,6 +174,19 @@ dsd_rtl_stream_metrics_hook_output_rate_for_family(int family, int cqpsk_enable,
 }
 
 int
+dsd_rtl_stream_metrics_hook_replay_batch(dsd_rtl_stream_replay_batch* out) {
+    if (!out) {
+        return 0;
+    }
+    /* The output is zeroed whenever this returns 0, whatever an installed hook left in it. */
+    if (g_rtl_stream_metrics_hooks.replay_batch && g_rtl_stream_metrics_hooks.replay_batch(out) == 1) {
+        return 1;
+    }
+    *out = (dsd_rtl_stream_replay_batch){0};
+    return 0;
+}
+
+int
 dsd_rtl_stream_metrics_hook_cqpsk_status(int* out_cqpsk_enable, int* out_cqpsk_timing_active) {
     if (g_rtl_stream_metrics_hooks.cqpsk_status) {
         return g_rtl_stream_metrics_hooks.cqpsk_status(out_cqpsk_enable, out_cqpsk_timing_active);

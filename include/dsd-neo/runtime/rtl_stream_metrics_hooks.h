@@ -25,6 +25,21 @@
 extern "C" {
 #endif
 
+/**
+ * @brief What the I/Q replay batch the decoder's last RTL read took its samples from ran on.
+ *
+ * Under `--iq-replay` the decoder paces the demod: a read hands out samples of one demod block's output, which the
+ * demod published with the stream generation and the profile it ran on (`rtl_stream_replay_batch` in
+ * `<dsd-neo/io/rtl_stream_c.h>`, of which these are the fields DSP reads).
+ */
+typedef struct dsd_rtl_stream_replay_batch {
+    uint32_t generation; /**< The stream generation it was published under. */
+    int output_kind;     /**< Output kind (dsd_rtl_stream_metrics_hook_output_kind()). */
+    int channel_profile; /**< Channel profile (dsd_rtl_stream_channel_profile). */
+    int symbol_rate_hz;  /**< Symbol rate in symbols/s. */
+    int levels;          /**< Symbol levels. */
+} dsd_rtl_stream_replay_batch;
+
 typedef struct {
     unsigned int (*output_rate_hz)(void);
     int (*output_kind)(void);
@@ -63,6 +78,9 @@ typedef struct {
     /* Output rate the front end will have once it runs the family (dsd_rx_family); 0 when unknown. cqpsk_explicit: the
        CQPSK state is a trunk-scan target's own choice, which stands over DSD_NEO_CQPSK at the switch. */
     unsigned int (*output_rate_for_family)(int family, int cqpsk_enable, int symbol_rate_hz, int cqpsk_explicit);
+    /* The batch the decoder's last read took its samples from, while the input is an I/Q replay; 1 with it filled,
+       anything else when there is none (dsd_rtl_stream_metrics_hook_replay_batch()). Decoder thread only. */
+    int (*replay_batch)(dsd_rtl_stream_replay_batch* out);
 } dsd_rtl_stream_metrics_hooks;
 
 typedef enum DSD_ATTR_PACKED dsd_rtl_stream_channel_profile {
@@ -181,6 +199,18 @@ int dsd_rtl_stream_metrics_hook_family_landing_after_pending(void);
  */
 unsigned int dsd_rtl_stream_metrics_hook_output_rate_for_family(int family, int cqpsk_enable, int symbol_rate_hz,
                                                                 int cqpsk_explicit);
+/**
+ * @brief Read what the I/Q replay batch the decoder's last RTL read took its samples from ran on.
+ *
+ * Call it on the decoder thread only, while the RTL stream is open, right after a read that returned samples: the
+ * engine's hook reads the stream's state as only the thread that opens and closes the stream may
+ * (rtl_stream_get_replay_batch()).
+ *
+ * @param out [out] The batch.
+ * @return 1 with @p out filled while the input is an I/Q replay, which the decoder paces; 0 otherwise (a live input,
+ *         no replay read yet, no hook installed, or a NULL @p out), with @p out zeroed.
+ */
+int dsd_rtl_stream_metrics_hook_replay_batch(dsd_rtl_stream_replay_batch* out);
 int dsd_rtl_stream_metrics_hook_cqpsk_status(int* out_cqpsk_enable, int* out_cqpsk_timing_active);
 int dsd_rtl_stream_metrics_hook_request_cqpsk_reacquire(void);
 int dsd_rtl_stream_metrics_hook_cqpsk_timing_bias(void);
