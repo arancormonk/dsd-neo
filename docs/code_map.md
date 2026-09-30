@@ -1743,6 +1743,10 @@ Runtime controls (via `include/dsd-neo/io/rtl_stream_c.h`):
     since what the peer runs is no longer known (a lost reply to a request for the other demodulator leaves which one it
     runs not known either, `DSD_RIGCTL_KIND_UNKNOWN`), and a demodulator whose undo the peer did not accept keeps the
     own passband read for it, so the next undo still sends that rather than reading the row's back as the peer's own.
+    The engine's legacy rigctl leg (`no_carrier_tune_rigctl_if_needed()` in `engine.c`: the untyped `-Y` step and the
+    direct control-channel return) skips a repeat of the frequency and the `-B` it last sent. That cache holds for one
+    connection: `dsd_engine_rigctl_tune_cache_forget()` (`trunk_tuning.h`) empties it when rigctl reconnects (issue
+    #589), since the new connection's peer, another one or the same one restarted, was sent neither.
 
 Key public headers:
 
