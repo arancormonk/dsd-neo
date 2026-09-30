@@ -630,7 +630,19 @@ Tests: `tests/engine/test_engine_trunk_scan.c` (`ENGINE_TRUNK_SCAN`) and
     time: protocol windows (the DMR header repeat, SLCO print throttle and RC repeat dedup, the P25 PTT
     retransmission and FACCH double-END windows, the regroup key TTL, NXDN recent context), trunk SM stamps and ticks,
     sync stamps, and decoded-output timestamps and file names. The P25 SM watchdog thread sleeps in real time, but the
-    ticks it drives compare decode time. Real time drives device, socket and ring waits, replay pacing, auto-gain and
+    ticks it drives compare decode time. In `src/core`, `src/app_control` and `src/ui` decode time drives the call
+    store's fallback stamps (`call_state_observed_m()` and the recent-activity stamps, so the reacquisition window,
+    `started_m` and recent-activity TTLs share the protocols' clock), the event layer's VOICE_END alert and drop-hold due
+    times, event and history row stamps (merged-row spans), enc-lockout, patch-TTL and call-skip checks, init-time sync
+    seeds, output-file names, the symbol-file rotation timer, the frame, P25 SM and LRRP log stamps, the decoder-thread
+    command stamps in `app_command_queue.c` (call ends, `mark_cc_sync`, the `-Y` ticks, call-skip arming) and every
+    view that ages those stamps (`call_view`, `notification_status`, `p25_network`, the ncurses printer and P25 display,
+    the Qt metrics model). Qt and QML read decode time through `MetricsModel::decodeNowMs` (wall-clock ms, the scale of
+    a JavaScript time value). Real time there drives `ui_msg_expire` and terminal status toasts, UI frame throttles, the
+    `.bin` symbol-file pacing (`dsd_dibit.c`), the received-tone input-pause check, the Qt sync-label hold, import
+    stamps, and the Qt frontend's own clock (`src/ui/qt/realtime_clock.h`: last-listened stamps and their ages, location
+    fix and diagnostics-tail ages, the history's day sections and midnight timer), which is the one frontend file that
+    reads Qt's clock directly. Real time drives device, socket and ring waits, replay pacing, auto-gain and
     auto-PPM, the analog tap's input-pause deadline and backlog skip, UI publish throttles, `ui_msg_expire` toasts, the
     input-level warning cooldown, RadioReference dates and perf. Two sources below runtime in the link order keep the
     platform clocks for their real-time reads: `src/io/iq/iq_capture.c` (`dsd-neo_io_iq`) and
@@ -2430,10 +2442,18 @@ Qt Quick frontend (`src/ui/qt`):
 - After the session's first decoder redraw, `UiController` refreshes live metrics on every timer tick so scan
   countdowns and the sync-loss hold continue aging if input stalls. History, network and policy models still
   refresh on decoder redraws; session lifecycle clears live metrics and prevents stale snapshots from restoring them.
+- Two clocks: `MetricsModel` ages the call lines, the call-skip count and the scan countdown on the decode clock, and
+  publishes its wall-clock now as `decodeNowMs` (read live; `decodeNowMsChanged` fires from `refresh()` when the decode
+  second moves). QML compares decoded stamps only against it: `Util.shortAge(when, metrics.decodeNowMs)` for the
+  Monitor's recent-call ages and the session-start `monitorView.minWhen`/`talkgroups.sinceWhen` cutoffs in `Main.qml`.
+  The viewer's own moments stay on real time through `realtime_clock.h`, and QML ages a saved system's `lastHeard`
+  against `savedSystems.realtimeNowMs()` (`Util.heardText(lastHeard, nowMs)`). The sync-label hold and the received-tone
+  input-pause check use `dsd_realtime_mono_s()`. Tests: `UI_QT_METRICS_MODEL`, `UI_QT_QML_CALL_LISTS`
+  (`tst_monitor_recent_calls.qml`, `tst_history_session_identity.qml`).
 - Received tone or code (issues #522, #523): `MetricsModel` publishes the `rxTone*` group (`rxToneVisible`,
   `rxToneStatus`, `rxToneText`, `rxToneKind`, `rxToneTenthsHz`, `rxToneDcsCode`, `rxToneDcsInverted`,
   `rxToneDcsAliasCode`, `rxToneDcsAliasInverted`, `rxToneCarrier`) with its own `rxToneChanged` signal, filled from
-  `app_control/rx_tone_view` in `fillRxToneView()` against the frame's one clock reading, and returned to unknown by
+  `app_control/rx_tone_view` in `fillRxToneView()` against real monotonic time, and returned to unknown by
   `clear()` on stop. `rxToneConfiguredText` sits beside it with a signal of its own, `rxToneConfiguredTextChanged`,
   because it is configuration rather than session state: it reads the view's `off` from construction, keeps its value
   across a stop, and no received-tone change announces it. `qml/MonitorScreen.qml` shows it as the `RECEIVED TONE` row

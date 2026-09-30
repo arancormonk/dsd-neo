@@ -8,6 +8,7 @@
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/runtime/config.h>
+#include <dsd-neo/runtime/decode_clock.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -46,7 +47,7 @@ getSymbol(dsd_opts* opts, dsd_state* state, int have_sync) {
 
 uint64_t
 // NOLINTNEXTLINE(misc-use-internal-linkage)
-dsd_time_monotonic_ns(void) {
+dsd_realtime_mono_ns(void) {
     return g_now_ns;
 }
 

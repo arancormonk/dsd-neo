@@ -523,7 +523,7 @@ struct dsd_analog_rx_publication {
      * input-rate change, carrier hangover, stream pause), so a reader can tell a new reception
      * from the one it last saw. */
     uint32_t generation;
-    /** Monotonic ms (dsd_time_monotonic_ms()) after which this publication no longer describes
+    /** Real monotonic ms (dsd_realtime_mono_ms()) after which this publication no longer describes
      * the channel if the tap has not run again since. Set only on input that may pause: stdin,
      * UDP and TCP, whose producer may stop sending between transmissions, and live RTL-family
      * radio streams, which stop when their source does (an rtl_tcp server that went away, a

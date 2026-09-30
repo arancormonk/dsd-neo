@@ -4,6 +4,7 @@
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/synctype_ids.h>
+#include <dsd-neo/runtime/decode_clock.h>
 
 #include <assert.h>
 #include <math.h>
@@ -240,6 +241,106 @@ test_reacquisition_carries_media_timestamps(void) {
         dsd_state_ext_free_all(state);
         free(state);
     }
+}
+
+// A decode instant far from any platform clock reading (1e9 s), so a decision that read the
+// platform clock instead of the decode clock could not land on the expected side of its window.
+#define CALL_STATE_TEST_DECODE_T0_NS 1000000000000000000ULL
+#define CALL_STATE_TEST_DECODE_T0_S  1000000000.0
+
+static void
+decode_clock_at_ms(uint64_t offset_ms) {
+    dsd_decode_clock_test_set_ns(CALL_STATE_TEST_DECODE_T0_NS + (offset_ms * 1000000ULL));
+}
+
+static dsd_call_observation
+identityless_voice(uint8_t slot) {
+    dsd_call_observation observation = {0};
+    observation.protocol = 35;
+    observation.slot = slot;
+    observation.kind = DSD_CALL_KIND_VOICE;
+    return observation;
+}
+
+// The reacquisition window is judged on the decode clock, with the real clock left alone. The
+// engine's sync-loss end and the vocoder's identity-less media mark both pass no observation time,
+// so the store's own fallback stamps them; a protocol end that does pass its time stamps it from
+// the same decode clock, and the fallback must agree with it.
+static void
+test_reacquire_runs_on_the_decode_clock(void) {
+    dsd_state* state = (dsd_state*)calloc(1U, sizeof(*state));
+    assert(state != NULL);
+    dsd_decode_clock_use_test(CALL_STATE_TEST_DECODE_T0_NS);
+
+    // Both stamps from the fallback: 0.25 s after the fade is inside the 0.5 s window.
+    dsd_call_observation call = group_call(0U, 500U, 600U, 0.0);
+    assert(dsd_call_state_observe(state, &call, DSD_CALL_BOUNDARY_BEGIN) == 1);
+    decode_clock_at_ms(1000U);
+    assert(dsd_call_state_end_ex(state, 0U, 0.0, DSD_CALL_END_SYNC_LOSS) == 1);
+    decode_clock_at_ms(1250U);
+    dsd_call_observation reentry = identityless_voice(0U);
+    assert(dsd_call_state_observe(state, &reentry, DSD_CALL_BOUNDARY_BEGIN) == 1);
+    dsd_call_snapshot snapshot;
+    assert(dsd_call_state_get(state, 0U, &snapshot) == 1);
+    assert(snapshot.phase == DSD_CALL_PHASE_ACTIVE);
+    assert(snapshot.ota_target_id == 500U);
+    assert(snapshot.ota_source_id == 600U);
+
+    // One decode second after the fade is outside it, however little real time passed.
+    decode_clock_at_ms(10000U);
+    assert(dsd_call_state_end_ex(state, 0U, 0.0, DSD_CALL_END_SYNC_LOSS) == 1);
+    decode_clock_at_ms(11000U);
+    assert(dsd_call_state_observe(state, &reentry, DSD_CALL_BOUNDARY_BEGIN) == 1);
+    assert(dsd_call_state_get(state, 0U, &snapshot) == 1);
+    assert(snapshot.phase == DSD_CALL_PHASE_ACTIVE);
+    assert(snapshot.ota_target_id == 0U);
+    assert(snapshot.ota_source_id == 0U);
+
+    // An end its caller stamps from the decode clock, and a re-entry the fallback stamps.
+    assert(dsd_call_state_end_ex(state, 0U, 0.0, DSD_CALL_END_EXPLICIT) == 1);
+    decode_clock_at_ms(20000U);
+    assert(dsd_call_state_observe(state, &call, DSD_CALL_BOUNDARY_BEGIN) == 1);
+    assert(dsd_call_state_end_ex(state, 0U, dsd_decode_now_mono_s(), DSD_CALL_END_SYNC_LOSS) == 1);
+    decode_clock_at_ms(20250U);
+    assert(dsd_call_state_observe(state, &reentry, DSD_CALL_BOUNDARY_BEGIN) == 1);
+    assert(dsd_call_state_get(state, 0U, &snapshot) == 1);
+    assert(snapshot.phase == DSD_CALL_PHASE_ACTIVE);
+    assert(snapshot.ota_target_id == 500U);
+    // The fallback stamps at the decode clock's full resolution.
+    assert(double_near(snapshot.started_m, CALL_STATE_TEST_DECODE_T0_S + 20.25));
+
+    dsd_decode_clock_use_system();
+    dsd_state_ext_free_all(state);
+    free(state);
+}
+
+// Recent-activity rows publish and age on the decode clock when the caller passes no time, which
+// every protocol publisher and expiry sweep does.
+static void
+test_recent_activity_runs_on_the_decode_clock(void) {
+    dsd_state* state = (dsd_state*)calloc(1U, sizeof(*state));
+    assert(state != NULL);
+    dsd_decode_clock_use_test(CALL_STATE_TEST_DECODE_T0_NS);
+
+    const dsd_call_observation activity = group_call(0U, 100U, 9U, 0.0);
+    assert(dsd_recent_activity_publish(state, 0U, &activity, "Active Ch: 1234 TG: 100; ", 0U) == 1);
+    dsd_recent_activity_snapshot recent;
+    assert(dsd_recent_activity_copy_snapshot(state, &recent) == 1);
+    assert(recent.entries[0].updated_m_ms == CALL_STATE_TEST_DECODE_T0_NS / 1000000ULL);
+
+    decode_clock_at_ms(2900U);
+    assert(dsd_recent_activity_expire(state, 0U, 3000U) == 0);
+    assert(dsd_recent_activity_copy_snapshot(state, &recent) == 1);
+    assert(recent.entries[0].updated_m_ms != 0U);
+
+    decode_clock_at_ms(3100U);
+    assert(dsd_recent_activity_expire(state, 0U, 3000U) == 1);
+    assert(dsd_recent_activity_copy_snapshot(state, &recent) == 1);
+    assert(recent.entries[0].updated_m_ms == 0U);
+
+    dsd_decode_clock_use_system();
+    dsd_state_ext_free_all(state);
+    free(state);
 }
 
 static void
@@ -603,7 +704,9 @@ main(void) {
     test_retained_crypto_update();
     test_media_timestamps();
     test_reacquisition_carries_media_timestamps();
+    test_reacquire_runs_on_the_decode_clock();
     test_recent_activity(state);
+    test_recent_activity_runs_on_the_decode_clock();
     test_snapshot_clone(state);
     test_voice_specialization_and_sparse_metadata();
     test_explicit_identity_specializes_provisional_voice();

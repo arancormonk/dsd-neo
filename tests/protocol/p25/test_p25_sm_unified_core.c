@@ -887,6 +887,65 @@ test_tdma_facch_double_end_window_runs_on_the_decode_clock(void) {
     return fail;
 }
 
+// A conventional FACCH call fades (the engine's no-carrier end) and the vocoder's identity-less
+// media mark re-enters the slot. Neither passes an observation time, so the call store stamps both
+// and decides whether the re-entry is the faded call coming back. The MAC_END_PTT that follows
+// prints the identities that decision left on the slot, which must be the decode clock's verdict:
+// the faded call's 0.25 s after the fade, the unnamed re-entry's 2 s after it, however little real
+// time passed in between.
+static int
+run_identityless_reentry_mac_end(uint64_t reentry_gap_ms, const char* expect_line) {
+    reset_test_state();
+    g_opts.trunk_enable = 0;
+    g_state.p25_cc_freq = 0;
+    g_state.synctype = g_state.lastsynctype = DSD_SYNC_P25P2_POS;
+    g_state.currentslot = 1; // FACCH carries its own slot: slot 2.
+    dsd_decode_clock_use_test(P25_TEST_DECODE_T0_NS);
+    p25_sm_init_ctx(p25_sm_get_ctx(), &g_opts, &g_state);
+    p25_crypto_reset_slot(&g_state, 1);
+    int payload[180];
+    conventional_ptt_payload(payload, 1, 0);
+    process_FACCH_MAC_PDU(&g_opts, &g_state, payload);
+
+    decode_clock_at_ms(1000U);
+    (void)dsd_call_state_end_ex(&g_state, 1U, 0.0, DSD_CALL_END_SYNC_LOSS);
+    decode_clock_at_ms(1000U + reentry_gap_ms);
+    const dsd_call_observation reentry = {
+        .protocol = DSD_SYNC_P25P2_POS,
+        .slot = 1U,
+        .kind = DSD_CALL_KIND_VOICE,
+    };
+    (void)dsd_call_state_observe(&g_state, &reentry, DSD_CALL_BOUNDARY_BEGIN);
+
+    facch_end_payload(payload, 1000, 0xFFFFFF);
+    char out[8192];
+    dsd_test_capture_stderr cap;
+    if (dsd_test_capture_stderr_begin(&cap, "p25_reentry_mac_end") != 0) {
+        dsd_decode_clock_use_system();
+        return 1;
+    }
+    decode_clock_at_ms(1000U + reentry_gap_ms + 250U);
+    process_FACCH_MAC_PDU(&g_opts, &g_state, payload);
+    (void)dsd_test_capture_stderr_end(&cap);
+    const int read_ok = dsd_test_capture_stderr_read(&cap, out, sizeof(out)) == 0;
+    dsd_decode_clock_use_system();
+
+    if (!read_ok || strstr(out, expect_line) == NULL) {
+        DSD_FPRINTF(stderr, "FAIL: MAC_END %llu ms after an identity-less re-entry: want \"%s\" in \"%s\"\n",
+                    (unsigned long long)reentry_gap_ms, expect_line, read_ok ? out : "");
+        return 1;
+    }
+    return 0;
+}
+
+static int
+test_identityless_reentry_mac_end_identities_run_on_the_decode_clock(void) {
+    int fail = 0;
+    fail |= run_identityless_reentry_mac_end(250U, "VCH 2 - TG 1000 SRC 123 ");
+    fail |= run_identityless_reentry_mac_end(2000U, "VCH 2 - TG 0 SRC 0 ");
+    return fail;
+}
+
 static int
 test_conventional_voice_start_encryption_policy(void) {
     int fail = 0;
@@ -3328,6 +3387,7 @@ main(void) {
     fail += test_tdma_facch_double_end_release();
     fail += test_tdma_facch_double_end_release_placeholder_src();
     fail += test_tdma_facch_double_end_window_runs_on_the_decode_clock();
+    fail += test_identityless_reentry_mac_end_identities_run_on_the_decode_clock();
     fail += test_inband_target_change_rechecks_policy();
     fail += test_inband_policy_reject_preserves_tdma_companion();
     fail += test_inband_policy_reject_releases_after_companion_ended();

@@ -25,6 +25,7 @@
 #include <dsd-neo/protocol/dmr/dmr_utf8_text.h>
 #include <dsd-neo/protocol/pdu.h>
 #include <dsd-neo/runtime/colors.h>
+#include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/unicode.h>
 #include <math.h>
 #include <stdint.h>
@@ -76,8 +77,8 @@ gps_write_lrrp_compact(const dsd_opts* opts, const dsd_state* state, int slot, u
 
     char datestr[9];
     char timestr[7];
-    (void)dsd_format_local_datetime(time(NULL), DSD_LOCAL_DATETIME_DATE_COMPACT, datestr, sizeof datestr);
-    (void)dsd_format_local_datetime(time(NULL), DSD_LOCAL_DATETIME_TIME_COMPACT, timestr, sizeof timestr);
+    (void)dsd_format_local_datetime(dsd_decode_time(), DSD_LOCAL_DATETIME_DATE_COMPACT, datestr, sizeof datestr);
+    (void)dsd_format_local_datetime(dsd_decode_time(), DSD_LOCAL_DATETIME_TIME_COMPACT, timestr, sizeof timestr);
 
     FILE* p_file = dsd_fopen_private(opts->lrrp_out_file, "a");
     if (p_file == NULL) {
@@ -104,8 +105,8 @@ gps_write_lrrp_slash_colon(const dsd_opts* opts, const dsd_state* state, int slo
 
     char datestr[11];
     char timestr[9];
-    (void)dsd_format_local_datetime(time(NULL), DSD_LOCAL_DATETIME_DATE_SLASH, datestr, sizeof datestr);
-    (void)dsd_format_local_datetime(time(NULL), DSD_LOCAL_DATETIME_TIME_COLON, timestr, sizeof timestr);
+    (void)dsd_format_local_datetime(dsd_decode_time(), DSD_LOCAL_DATETIME_DATE_SLASH, datestr, sizeof datestr);
+    (void)dsd_format_local_datetime(dsd_decode_time(), DSD_LOCAL_DATETIME_TIME_COLON, timestr, sizeof timestr);
 
     FILE* p_file = dsd_fopen_private(opts->lrrp_out_file, "a");
     if (p_file == NULL) {

@@ -11,6 +11,7 @@
 #include <dsd-neo/core/enc_lockout.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/runtime/decode_clock.h>
 #include <stdio.h>
 
 #include "dsd-neo/core/opts_fwd.h"
@@ -80,7 +81,7 @@ dsd_enc_lockout_note(dsd_state* state, uint32_t target, int is_group, int algid,
         return 0;
     }
 
-    const time_t now = time(NULL);
+    const time_t now = dsd_decode_time();
     dsd_enc_lockout_entry* e = enc_lockout_find(state, target, is_group);
     int newly_locking = 0;
     if (!e) {

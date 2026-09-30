@@ -15,6 +15,7 @@
 #include <stdint.h>
 #include <utility>
 #include "metrics_model.h"
+#include "realtime_clock.h"
 
 #include <QStringList>
 #include <algorithm>
@@ -22,8 +23,8 @@
 #include <tuple>
 
 #include <QChar>
-#include <QDateTime>
 #include <QtGlobal>
+#include <cmath>
 #include <dsd-neo/app_control/analog_width_view.h>
 #include <dsd-neo/app_control/call_view.h>
 #include <dsd-neo/app_control/frontend.h>
@@ -31,7 +32,6 @@
 #include <dsd-neo/app_control/scan_timing_view.h>
 #include <dsd-neo/app_control/squelch_view.h>
 #include <dsd-neo/core/audio.h>
-#include <dsd-neo/core/dsd_time.h>
 #include <dsd-neo/core/enc_lockout.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/power.h>
@@ -39,6 +39,7 @@
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/core/talkgroup_policy.h>
 #include <dsd-neo/runtime/analog_channel.h>
+#include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/scan_mode.h>
 
 #include <dsd-neo/core/opts_fwd.h>
@@ -425,7 +426,7 @@ MetricsModel::fillListeningControlView(View& next, const dsd_opts* opts_snapshot
     next.enc_lockout_count = dsd_enc_lockout_active_count(snapshot);
     next.persist_tg_lockouts = opts_snapshot->persist_tg_lockouts != 0;
     next.temporary_tg_avoid_count = dsd_tg_policy_session_avoid_count(snapshot, 0, UINT32_MAX);
-    next.call_skip_count = dsd_tg_policy_call_skip_count(snapshot, dsd_time_now_monotonic_s());
+    next.call_skip_count = dsd_tg_policy_call_skip_count(snapshot, dsd_decode_now_mono_s());
     uint64_t tg_context = 0;
     dsd_tg_policy_table_version(snapshot, &tg_context, nullptr);
     next.tg_policy_context = QString::number(tg_context);
@@ -496,8 +497,9 @@ MetricsModel::fillScanTimingView(View& next, const dsd_opts* opts_snapshot, cons
  * The phrase and the visibility rule are app-control's (rx_tone_view), shared with the
  * terminal. Only the words are translated here; a tone or code is a value and stays as the
  * view wrote it ("CTCSS 100.0 Hz", "DCS D023N / D047I"). The configured text comes from its
- * own field of the view and nothing received is ever copied into it. @p now_m is the frame's
- * one clock reading, which ages the publication of an input that has gone quiet.
+ * own field of the view and nothing received is ever copied into it. @p now_m is real monotonic
+ * seconds (dsd_realtime_mono_s()), which ages the publication of an input that has gone quiet
+ * against the real-time deadline the tap stamped.
  */
 void
 MetricsModel::fillRxToneView(View& next, const dsd_opts* opts_snapshot, const dsd_state* snapshot, double now_m) const {
@@ -989,8 +991,10 @@ MetricsModel::refresh(const dsd_opts* opts_snapshot, const dsd_state* snapshot) 
 
     /* Sync is held for a moment after the last synced frame rather than sampled;
      * the hold decays on its own rather than being cleared on a retune. See
-     * fillDecoderView(), which documents why a one-shot reset was a race. */
-    fillDecoderView(next, opts_snapshot, snapshot, dsd_time_now_monotonic_s());
+     * fillDecoderView(), which documents why a one-shot reset was a race. The hold
+     * smooths what this poll sees, so it runs on real time: it has to decay while a
+     * stalled input leaves the decode clock where it stopped. */
+    fillDecoderView(next, opts_snapshot, snapshot, dsd_realtime_mono_s());
 
     /* Selected by modulation, not by cqpsk_enable: the C4FM estimator reads nothing on
      * a GFSK stream. Nothing reads at all on an input with no demodulator behind it
@@ -1009,7 +1013,9 @@ MetricsModel::refresh(const dsd_opts* opts_snapshot, const dsd_state* snapshot) 
         next.tuner_gain_text = QStringLiteral("—");
     }
 
-    const double now_m = dsd_time_now_monotonic_s();
+    /* Decode time: the call lines and the scan countdown age stamps the decoder took
+     * from the decode clock. */
+    const double now_m = dsd_decode_now_mono_s();
     fillSlotCalls(next, snapshot, now_m);
     fillQualityView(next, snapshot);
     fillSiteView(next, snapshot);
@@ -1020,23 +1026,39 @@ MetricsModel::refresh(const dsd_opts* opts_snapshot, const dsd_state* snapshot) 
      * assume a fresh session's defaults. */
     fillListeningControlView(next, opts_snapshot, snapshot);
     fillScanControlView(next, opts_snapshot, snapshot);
-    /* The same monotonic reading the call lines were aged against, not a second
-     * clock read: one frame has to describe one instant, or the countdown and the
-     * call durations beside it would come from moments either side of the poll. */
+    /* The same decode reading the call lines were aged against, not a second clock
+     * read: one frame has to describe one instant, or the countdown and the call
+     * durations beside it would come from moments either side of the poll. The
+     * received tone is aged against its input-pause deadline, which the tap stamps
+     * in real time. */
     fillScanTimingView(next, opts_snapshot, snapshot, now_m);
-    fillRxToneView(next, opts_snapshot, snapshot, now_m);
+    fillRxToneView(next, opts_snapshot, snapshot, dsd_realtime_mono_s());
 
     /* The engine's command acknowledgement, shown until its own expiry stamp. The
      * timer takes an expired message down without waiting for another publish —
      * an idle engine may not raise the redraw flag again for minutes. */
-    const qint64 message_remaining_s =
-        static_cast<qint64>(snapshot->ui_msg_expire) - QDateTime::currentSecsSinceEpoch();
+    const qint64 message_remaining_s = static_cast<qint64>(snapshot->ui_msg_expire) - realtimeSecsSinceEpoch();
     if (snapshot->ui_msg[0] != '\0' && message_remaining_s > 0) {
         next.ui_message = QString::fromUtf8(snapshot->ui_msg);
         m_messageTimer.start(static_cast<int>(qMin<qint64>(message_remaining_s, 30) * 1000) + 100);
     }
 
     publish(next);
+    notifyDecodeNow();
+}
+
+qlonglong
+MetricsModel::decodeNowMs() const {
+    return static_cast<qlonglong>(std::floor(dsd_decode_now_realtime_s() * 1000.0));
+}
+
+void
+MetricsModel::notifyDecodeNow() {
+    const qlonglong now_s = decodeNowMs() / 1000;
+    if (now_s != m_decode_now_notified_s) {
+        m_decode_now_notified_s = now_s;
+        Q_EMIT decodeNowMsChanged();
+    }
 }
 
 } // namespace dsd_qt

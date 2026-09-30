@@ -231,6 +231,8 @@ class MetricsModel : public QObject {
     Q_PROPERTY(QString squelchReadout READ squelchReadout NOTIFY controlChanged)
     Q_PROPERTY(int ppm READ ppm NOTIFY controlChanged)
     Q_PROPERTY(QString uiMessage READ uiMessage NOTIFY uiMessageChanged)
+    /* The decode clock's wall-clock now, for QML that ages or cuts off decoded stamps. */
+    Q_PROPERTY(qlonglong decodeNowMs READ decodeNowMs NOTIFY decodeNowMsChanged)
 
   public:
     QString
@@ -1237,6 +1239,21 @@ class MetricsModel : public QObject {
         return m_view.ui_message;
     }
 
+    /**
+     * @brief The decode clock's wall-clock now, in milliseconds since the Unix epoch.
+     *
+     * The scale of a JavaScript time value, and in live decoding the viewer's own clock, but on the
+     * decoder's timeline: what a call row's `when` and the history cutoffs are stamped on. QML
+     * compares decoded stamps against this rather than the JavaScript clock, so a call's age and a
+     * session's cutoff follow the decoder's clock, not the viewer's. Pure UI timers stay on real
+     * time.
+     *
+     * Read live on every access. decodeNowMsChanged is a re-render cue raised from refresh()
+     * whenever the whole second has moved, so a binding on it follows decode time between the
+     * screens' own minute ticks.
+     */
+    qlonglong decodeNowMs() const;
+
     /** Corrected errors per voice frame, never a bit-error percentage. */
     bool
     qualityValid() const {
@@ -1419,6 +1436,7 @@ class MetricsModel : public QObject {
     void toneFilterChanged();
     void toneFilterSettingChanged();
     void uiMessageChanged();
+    void decodeNowMsChanged();
 
   private:
     /**
@@ -1764,6 +1782,8 @@ class MetricsModel : public QObject {
     /** @brief Announce the received tone, the tone policy, its verdict and the editor's setting, each on its own signal
         (#522, #527). */
     void emitRxToneSignals(bool received, bool configured, bool verdict, bool setting);
+    /** Raise decodeNowMsChanged when the decode clock's whole second has moved since the last one. */
+    void notifyDecodeNow();
 
   public:
 #ifdef DSD_NEO_TEST_HOOKS
@@ -1789,6 +1809,8 @@ class MetricsModel : public QObject {
      * one-shot reset was a race. See syncedHere(). */
     int m_sync_type_here = DSD_SYNC_NONE;
     double m_sync_seen_m = 0.0;
+    /* The decode second decodeNowMsChanged last announced. */
+    qlonglong m_decode_now_notified_s = 0;
     /* Armed for a live ui_message's expiry stamp, so the message leaves the screen
      * on time even when the idle engine never publishes another frame. */
     QTimer m_messageTimer;

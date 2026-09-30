@@ -39,6 +39,7 @@
 #include <dsd-neo/core/talkgroup_policy.h>
 #include <dsd-neo/runtime/analog_channel.h>
 #include <dsd-neo/runtime/analog_tones.h>
+#include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/scan_mode.h>
 #include <dsd-neo/runtime/scan_options.h>
 
@@ -627,6 +628,48 @@ test_call_skip_metrics() {
     freeState(&state);
 }
 
+/*
+ * The call lines, the call-skip count and decodeNowMs read the decode clock the decoder stamps
+ * their inputs on, so under the TEST source they follow it with the real clock untouched: a call
+ * begun at T reads 7 s old at T + 7.5 s, and a skip armed at T lapses once its quiet window has
+ * passed in decode time.
+ */
+static void
+test_decode_clock_readings() {
+    static dsd_opts opts;
+    static dsd_state state;
+    initOpts(&opts);
+    initState(&state);
+    const uint64_t t0_ns = 1000000000000000000ULL; // 1e9 s: far from any platform clock reading.
+    dsd_decode_clock_use_test(t0_ns);
+    dsd_qt::MetricsModel model;
+    int now_changes = 0;
+    QObject::connect(&model, &dsd_qt::MetricsModel::decodeNowMsChanged, [&]() { ++now_changes; });
+
+    dsd_call_observation call = dsd_call_observation_data(DSD_SYNC_P25P2_POS, 0U, 123U, 456U);
+    call.kind = DSD_CALL_KIND_GROUP_VOICE;
+    // No observed_m: the call store stamps the start from the decode clock.
+    expect("decode-clock call begins", dsd_call_state_observe(&state, &call, DSD_CALL_BOUNDARY_BEGIN) == 1);
+    expect("decode-clock skip armed", dsd_tg_policy_call_skip_arm(&state, 100, 1, 0, dsd_decode_now_mono_s()) == 0);
+
+    dsd_decode_clock_test_set_ns(t0_ns + 7500000000ULL);
+    model.refresh(&opts, &state);
+    expect("call line ages on the decode clock", model.slot1CallSeconds() == 7);
+    expect("skip counted inside its decode-time quiet window", model.callSkipCount() == 1);
+    expect("decodeNowMs is the decode clock's wall time", model.decodeNowMs() == 1000000007500LL);
+    expect("decodeNowMs announces a new decode second", now_changes == 1);
+    model.refresh(&opts, &state);
+    expect("the same decode second stays quiet", now_changes == 1);
+
+    dsd_decode_clock_test_set_ns(t0_ns + static_cast<uint64_t>((DSD_TG_CALL_SKIP_QUIET_S + 1.0) * 1e9));
+    model.refresh(&opts, &state);
+    expect("skip lapses on the decode clock", model.callSkipCount() == 0);
+    expect("decodeNowMs announces the next decode second", now_changes == 2);
+
+    dsd_decode_clock_use_system();
+    freeState(&state);
+}
+
 static void
 test_options_readiness() {
     static dsd_opts opts;
@@ -1100,6 +1143,7 @@ int
 main(int argc, char** argv) {
     QCoreApplication app(argc, argv);
     test_options_readiness();
+    test_decode_clock_readings();
     test_temporary_lockout_metrics();
     test_call_skip_metrics();
     test_scan_timing();

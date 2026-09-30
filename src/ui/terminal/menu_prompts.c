@@ -16,6 +16,7 @@
 #include <curses.h>
 #include <dsd-neo/core/string_utils.h>
 #include <dsd-neo/platform/curses_compat.h>
+#include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/ui/keymap.h>
 #include <dsd-neo/ui/ui_prims.h>
 #include <stdlib.h>
@@ -881,7 +882,7 @@ ui_prompt_render(void) {
     // the field.
     if (footer_y > input_y + 1) {
         (void)ui_status_draw(win, input_y + 1, 2, body_w, footer_y - input_y - 1,
-                             UI_STATUS_FLAG_ANCHOR_BOTTOM | UI_STATUS_FLAG_BOLD, time(NULL));
+                             UI_STATUS_FLAG_ANCHOR_BOTTOM | UI_STATUS_FLAG_BOLD, dsd_realtime_time());
     }
     // Footer/title writes also move the curses cursor; place it last so input editing stays visible.
     wmove(win, input_y, cursor_x);
@@ -1512,7 +1513,7 @@ ui_chooser_render(void) {
     // Row 2 is the spacer under the title: the toast goes there, so a notice
     // raised just before this list opened ("No systems there. Try another
     // search.") is read on the list it explains rather than lost behind it.
-    (void)ui_status_draw(win, 2, 2, body_w, 1, UI_STATUS_FLAG_BOLD, time(NULL));
+    (void)ui_status_draw(win, 2, 2, body_w, 1, UI_STATUS_FLAG_BOLD, dsd_realtime_time());
     ui_chooser_draw_items(win, w, body_w, page_rows);
     mvwaddnstr(win, h - 2, 2, footer, body_w);
     wnoutrefresh(win);

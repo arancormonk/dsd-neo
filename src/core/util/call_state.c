@@ -4,13 +4,12 @@
  */
 
 #include <dsd-neo/core/call_state.h>
-#include <dsd-neo/core/dsd_time.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/platform/atomic_compat.h>
 #include <dsd-neo/platform/threading.h>
-#include <dsd-neo/platform/timing.h>
+#include <dsd-neo/runtime/decode_clock.h>
 
 #include <ctype.h>
 #include <stddef.h>
@@ -136,13 +135,13 @@ dsd_call_state_ensure(dsd_state* state) {
 }
 
 // The fallback deliberately matches the resolution of the clock every caller supplies. Endpoints
-// that pass observed_m all derive it from dsd_time_now_monotonic_s(), so truncating the fallback to
+// that pass observed_m all derive it from dsd_decode_now_mono_s(), so truncating the fallback to
 // whole milliseconds would let an end stamped at ns precision compare as later than a reopen that
 // really followed it -- and call_state_reacquires_ended_epoch() would reject a legitimate
 // reacquisition that landed inside the same millisecond.
 static double
 call_state_observed_m(double observed_m) {
-    return observed_m > 0.0 ? observed_m : dsd_time_now_monotonic_s();
+    return observed_m > 0.0 ? observed_m : dsd_decode_now_mono_s();
 }
 
 static uint64_t
@@ -350,13 +349,13 @@ call_state_observation_begins_epoch(const dsd_call_snapshot* current, const dsd_
  * inside the window coalesces. That end really was a sync loss and the identity really does
  * match, so time is the only discriminator left; the short window keeps it rare.
  *
- * Measured on whatever timeline the endpoints supply through call_state_observed_m(). No
- * decode-derived clock exists today -- every non-zero observed_m in the tree ultimately comes
- * from dsd_time_now_monotonic_s(), and callers that pass 0.0 get the same wall clock -- so under
- * unpaced replay (--iq-replay-rate fast, the default) gaps appear shorter than they were on air
- * and coalescing is correspondingly more eager. Documented in docs/iq-capture-replay.md; use
- * --iq-replay-rate realtime to reproduce live timing. If an air-time clock is ever added, route
- * it through call_state_observed_m() rather than introducing a second clock here.
+ * Measured on the decode clock: every non-zero observed_m in the tree comes from
+ * dsd_decode_now_mono_s(), and callers that pass 0.0 get the same read through
+ * call_state_observed_m(). Its SYSTEM source, which replay still runs on, reads the platform
+ * monotonic clock, so under unpaced replay (--iq-replay-rate fast, the default) gaps appear
+ * shorter than they were on air and coalescing is correspondingly more eager. Documented in
+ * docs/iq-capture-replay.md; use --iq-replay-rate realtime to reproduce live timing. Keep every
+ * stamp this window compares on that one clock rather than introducing a second one here.
  *
  * The constant itself is DSD_CALL_REACQUIRE_GAP_S in <dsd-neo/core/call_state.h>; the event layer
  * needs it to know how long to hold a VOICE_END alert open.
@@ -1036,7 +1035,7 @@ dsd_recent_activity_publish(dsd_state* state, uint8_t index, const dsd_call_obse
     if (!state || !recent_activity_index_valid(index) || (!observation && (!notice || notice[0] == '\0'))) {
         return -1;
     }
-    const uint64_t now_ms = observed_m_ms != 0U ? observed_m_ms : dsd_time_monotonic_ms();
+    const uint64_t now_ms = observed_m_ms != 0U ? observed_m_ms : dsd_decode_now_mono_ms();
     dsd_call_state_ext* ext = dsd_call_state_ext_get(state, 1);
     if (!ext) {
         return -1;
@@ -1126,7 +1125,7 @@ dsd_recent_activity_expire(dsd_state* state, uint64_t now_m_ms, uint64_t ttl_ms)
     if (!state) {
         return -1;
     }
-    const uint64_t now_ms = now_m_ms != 0U ? now_m_ms : dsd_time_monotonic_ms();
+    const uint64_t now_ms = now_m_ms != 0U ? now_m_ms : dsd_decode_now_mono_ms();
     const uint64_t max_age_ms = ttl_ms != 0U ? ttl_ms : DSD_RECENT_ACTIVITY_TTL_MS;
     dsd_call_state_ext* ext = dsd_call_state_ext_get(state, 0);
     if (!ext) {

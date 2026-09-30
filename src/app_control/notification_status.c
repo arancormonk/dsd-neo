@@ -6,7 +6,6 @@
 #include <dsd-neo/app_control/call_view.h>
 #include <dsd-neo/app_control/notification_status.h>
 #include <dsd-neo/core/call_state.h>
-#include <dsd-neo/core/dsd_time.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/safe_api.h>
@@ -15,6 +14,7 @@
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/platform/atomic_compat.h>
 #include <dsd-neo/platform/threading.h>
+#include <dsd-neo/runtime/decode_clock.h>
 #include <stdint.h>
 #include <string.h>
 
@@ -76,7 +76,7 @@ dsd_app_notification_publish_state(const dsd_state* state) {
     dsd_app_slot_call slots[DSD_CALL_STATE_SLOT_COUNT];
     int line_states[DSD_CALL_STATE_SLOT_COUNT];
     double started[DSD_CALL_STATE_SLOT_COUNT];
-    const double now_m = dsd_time_now_monotonic_s();
+    const double now_m = dsd_decode_now_mono_s();
     /* int, not uint8_t: DSD_CALL_STATE_SLOT_COUNT is an int-typed enum constant, and
        comparing a narrower loop variable against it is what
        bugprone-too-small-loop-variable flags -- matches the loop shape already used

@@ -15,6 +15,7 @@
 #include <dsd-neo/platform/threading.h>
 #include <dsd-neo/platform/timing.h>
 #include <dsd-neo/runtime/control_pump.h>
+#include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/ui/menu_core.h>
 #include <dsd-neo/ui/ncurses.h>
 #include <dsd-neo/ui/ui_async.h>
@@ -204,7 +205,7 @@ dsd_terminal_handle_input(dsd_opts* opts, dsd_state* state, int c) {
 }
 
 uint64_t
-dsd_time_monotonic_ns(void) {
+dsd_realtime_mono_ns(void) {
     return g_time_ns;
 }
 

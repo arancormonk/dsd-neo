@@ -19,6 +19,7 @@
 #include <dsd-neo/dsp/sync_calibration.h>
 #include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/runtime/analog_channel.h>
+#include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/log.h>
 #include <dsd-neo/runtime/shutdown.h>
 #include <mbelib-neo/mbelib.h>
@@ -129,7 +130,7 @@ init_opts_output_defaults(dsd_opts* opts) {
     opts->frame_log_write_error_reported = 0;
     opts->p25_sm_log_open_error_reported = 0;
     opts->p25_sm_log_write_error_reported = 0;
-    opts->symbol_out_file_creation_time = time(NULL);
+    opts->symbol_out_file_creation_time = dsd_decode_time();
     opts->symbol_out_file_is_auto = 0;
     opts->mbe_out = 0;
     opts->mbe_outR = 0; //second slot on a TDMA system
@@ -1051,13 +1052,13 @@ init_state_p25_and_trunk_defaults(dsd_state* state) {
     state->trunk_chan_map_seq = 0;
     state->lcn_freq_count = 0; //number of frequncies imported as an enumerated lcn list
     state->lcn_freq_roll = 0;  //needs reset if sync is found?
-    state->last_cc_sync_time = time(NULL);
-    state->last_vc_sync_time = time(NULL);
+    state->last_cc_sync_time = dsd_decode_time();
+    state->last_vc_sync_time = dsd_decode_time();
     state->rtl_fsk_reacquire_last_sync_time = 0;
     state->rtl_fsk_reacquire_last_sync_m = 0.0;
     state->rtl_fsk_reacquire_gap_start_m = 0.0;
     state->rtl_fsk_reacquire_last_request_m = 0.0;
-    state->last_t3_tune_time = time(NULL);
+    state->last_t3_tune_time = dsd_decode_time();
     state->is_con_plus = 0;
 }
 

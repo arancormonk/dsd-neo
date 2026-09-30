@@ -390,10 +390,11 @@ function systemMeta(sys) {
 }
 
 // "Last listened 2 minutes ago" / "Last listened yesterday" / "Not yet listened".
-function heardText(lastHeardSecs) {
+// nowMs is the real clock lastHeard is stamped from (savedSystems.realtimeNowMs()).
+function heardText(lastHeardSecs, nowMs) {
     if (!lastHeardSecs || lastHeardSecs <= 0)
         return qsTr("Not yet listened")
-    var delta = Math.floor(Date.now() / 1000) - lastHeardSecs
+    var delta = Math.floor(nowMs / 1000) - lastHeardSecs
     if (delta < 60)
         return qsTr("Last listened just now")
     if (delta < 3600) {
@@ -409,9 +410,10 @@ function heardText(lastHeardSecs) {
     return qsTr("Last listened %1 days ago").arg(Math.floor(delta / 86400))
 }
 
-// Compact age for a call row's right edge: "1m", "2h", "3d".
-function shortAge(whenSecs) {
-    var delta = Math.floor(Date.now() / 1000) - whenSecs
+// Compact age for a call row's right edge: "1m", "2h", "3d". nowMs is the decode clock the
+// row's when is stamped on (metrics.decodeNowMs), not the viewer's clock.
+function shortAge(whenSecs, nowMs) {
+    var delta = Math.floor(nowMs / 1000) - whenSecs
     if (delta < 60)
         return qsTr("now")
     if (delta < 3600)

@@ -463,7 +463,7 @@ const dsd_analog_ctcss_hop* dsd_analog_ctcss_last_hop(const dsd_analog_ctcss* de
 /**
  * @brief Test hook: replace the monotonic clock the tap reads to tell a paused live stream input.
  *
- * NULL restores dsd_time_monotonic_ms(). Defined only in the test-hook build of the DSP module
+ * NULL restores dsd_realtime_mono_ms(). Defined only in the test-hook build of the DSP module
  * (dsd-neo_dsp_private_test_support, compiled with DSD_NEO_TEST_HOOKS); the shipped library
  * has no such symbol.
  */

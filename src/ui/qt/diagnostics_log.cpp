@@ -18,6 +18,7 @@
 #include <QStandardPaths>
 #include <algorithm>
 #include <dsd-neo/runtime/log.h>
+#include "realtime_clock.h"
 
 namespace dsd_qt {
 namespace {
@@ -115,7 +116,7 @@ DiagnosticsLog::redact(QString text) {
 DiagnosticsLog::DiagnosticsLog(const QString& directory) : m_directory(directory) {
     QDir().mkpath(directory);
     QFile old(directory + QStringLiteral("/tail.log"));
-    if (QFileInfo(old).lastModified().secsTo(QDateTime::currentDateTime()) > 7LL * 24 * 3600) {
+    if (QFileInfo(old).lastModified().secsTo(realtimeCurrentDateTime()) > 7LL * 24 * 3600) {
         old.remove();
     }
     if (old.open(QIODevice::ReadOnly) && old.size() > 0) {

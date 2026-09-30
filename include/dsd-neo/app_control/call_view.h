@@ -123,7 +123,8 @@ typedef struct {
  *
  * @param lookup Result of dsd_call_state_get(); <= 0 means no epoch on the slot.
  * @param call   The snapshot it filled in. Only read when @p lookup is positive.
- * @param now_m  Monotonic seconds, the clock call_state stamps @c ended_m from.
+ * @param now_m  Decode-clock monotonic seconds (dsd_decode_now_mono_s()), the clock call_state stamps
+ *               @c ended_m from.
  * @param hold_s How long an ended epoch is held; see @ref DSD_APP_CALL_LINE_ENDED_HOLD_S.
  *
  * A negative age -- an end stamped a hair ahead of the poll -- counts as fresh rather

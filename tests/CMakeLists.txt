@@ -79,6 +79,19 @@ if(NOT WIN32)
     endif()
 endif()
 
+# The decode clock alone, for tests that compile protocol, core, app-control or
+# terminal sources directly instead of linking dsd-neo_runtime.
+add_library(
+    dsd-neo_test_decode_clock
+    STATIC
+    ${PROJECT_SOURCE_DIR}/src/runtime/decode_clock.c
+)
+target_include_directories(
+    dsd-neo_test_decode_clock
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+target_link_libraries(dsd-neo_test_decode_clock PUBLIC dsd-neo_platform)
+
 add_library(
     dsd-neo_test_call_state_support
     STATIC
@@ -90,24 +103,15 @@ target_include_directories(
     dsd-neo_test_call_state_support
     PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/core/util
 )
-target_link_libraries(dsd-neo_test_call_state_support PUBLIC dsd-neo_platform)
+# call_state.c stamps call and recent-activity times from the decode clock.
+target_link_libraries(
+    dsd-neo_test_call_state_support
+    PUBLIC dsd-neo_test_decode_clock dsd-neo_platform
+)
 target_compile_definitions(
     dsd-neo_test_call_state_support
     PRIVATE DSD_NEO_TEST_HOOKS
 )
-
-# The decode clock alone, for tests that compile protocol sources directly
-# instead of linking dsd-neo_runtime.
-add_library(
-    dsd-neo_test_decode_clock
-    STATIC
-    ${PROJECT_SOURCE_DIR}/src/runtime/decode_clock.c
-)
-target_include_directories(
-    dsd-neo_test_decode_clock
-    PRIVATE ${PROJECT_SOURCE_DIR}/include
-)
-target_link_libraries(dsd-neo_test_decode_clock PUBLIC dsd-neo_platform)
 
 add_library(
     dsd-neo_test_bit_packing
@@ -3060,7 +3064,7 @@ if(DSD_ENABLE_QT_UI)
     )
     target_link_libraries(
         dsd-neo_test_ui_qt_call_history_model
-        PRIVATE Qt6::Core Qt6::Test
+        PRIVATE Qt6::Core Qt6::Test dsd-neo_test_decode_clock
     )
     target_compile_definitions(
         dsd-neo_test_ui_qt_call_history_model
@@ -11151,9 +11155,26 @@ set(_DSD_NEO_DECODE_CLOCK_TEST_TARGETS
     dsd-neo_test_p25_p1_ldu1_helpers
     dsd-neo_test_p25_p1_ldu2_helpers
     dsd-neo_test_p25_p1_tdu
+    # Core, app-control and terminal sources compiled in directly. Some exist only
+    # with curses or radio support, hence the TARGET check below.
+    dsd-neo_test_core_gps_lrrp_crc_gating
+    dsd-neo_test_dmr_embedded_gps_position_error
+    dsd-neo_test_ui_chooser_navigation
+    dsd-neo_test_ui_dsp_display_radio_compile
+    dsd-neo_test_ui_menu_dynamic_label
+    dsd-neo_test_ui_menu_labels
+    dsd-neo_test_ui_menu_labels_radio
+    dsd-neo_test_ui_menu_render_helpers
+    dsd-neo_test_ui_panels_header_footer
+    dsd-neo_test_ui_prims_status_gamma
+    dsd-neo_test_ui_prompt_cursor
+    dsd-neo_test_ui_prompt_secret
+    dsd-neo_test_ui_prompt_validation
 )
 foreach(_target IN LISTS _DSD_NEO_DECODE_CLOCK_TEST_TARGETS)
-    target_link_libraries(${_target} PRIVATE dsd-neo_test_decode_clock)
+    if(TARGET ${_target})
+        target_link_libraries(${_target} PRIVATE dsd-neo_test_decode_clock)
+    endif()
 endforeach()
 unset(_DSD_NEO_DECODE_CLOCK_TEST_TARGETS)
 

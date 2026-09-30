@@ -47,6 +47,18 @@ Item {
             compare(callHistory.sessionLabel, "Exploring")
         }
 
+        // The monitor's and talkgroups' session cutoffs are compared with decoded stamps, so a
+        // start takes them from the decode clock rather than the viewer's.
+        function test_session_cutoff_is_on_the_decode_clock() {
+            testContext.setMetric("decodeNowMs", 1234567890123)
+            loader.item.startSystem(0)
+            compare(monitorView.minWhen, 1234567890)
+            compare(talkgroups.sinceWhen, 1234567890)
+            testContext.setMetric("decodeNowMs", Date.now())
+            monitorView.minWhen = 0
+            talkgroups.sinceWhen = 0
+        }
+
         function test_scan_start_has_no_identity() {
             scanLists.add({name: "Scan", sourceType: "rtltcp", host: "127.0.0.1", port: 1234,
                 entries: [{kind: "freq", name: "Simplex", protocol: "p25", freqMhz: "851.5", enabled: true}]})

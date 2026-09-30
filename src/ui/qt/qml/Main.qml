@@ -438,7 +438,7 @@ Window {
             // survived an Activity restart): bound the recent-calls pane to the
             // last hour rather than the whole persisted log.
             if (monitorView.minWhen === 0)
-                monitorView.minWhen = Math.floor(Date.now() / 1000) - 3600;
+                monitorView.minWhen = Math.floor(metrics.decodeNowMs / 1000) - 3600;
             if (talkgroups.sinceWhen === 0)
                 talkgroups.sinceWhen = monitorView.minWhen;
         }
@@ -590,8 +590,9 @@ Window {
         uiController.flushHistory();
         callHistory.sessionLabel = sys.name;
         callHistory.sessionUid = (!scan && sys.uid) ? sys.uid : "";
-        // The monitor's recent-calls pane shows this session, not the whole log.
-        monitorView.minWhen = Math.floor(Date.now() / 1000);
+        // The monitor's recent-calls pane shows this session, not the whole log. The
+        // cutoff is compared with the rows' decoded stamps, so it is the decode clock's.
+        monitorView.minWhen = Math.floor(metrics.decodeNowMs / 1000);
         talkgroups.sinceWhen = monitorView.minWhen;
     }
 

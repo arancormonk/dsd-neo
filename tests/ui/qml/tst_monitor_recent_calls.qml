@@ -401,6 +401,21 @@ Item {
             verify(row.metaText.indexOf("County EMS") < 0, "the meta line repeats the name: " + row.metaText)
         }
 
+        // A recent row's age is measured on the decode clock its when is stamped on, not on the
+        // viewer's clock: the store's stamps are fixed, so only decodeNowMs moves the label.
+        function test_03f_a_recent_row_ages_on_the_decode_clock() {
+            var newest = callHistory.newestWhen()
+            verify(newest > 0)
+            testContext.setMetric("decodeNowMs", (newest + 30) * 1000)
+            var first = null
+            tryVerify(function () { first = tc.list.itemAtIndex(0); return first !== null && first.rightText === "now" },
+                      5000, "30 s after the newest call on the decode clock")
+            testContext.setMetric("decodeNowMs", (newest + 2 * 3600) * 1000)
+            tryVerify(function () { first = tc.list.itemAtIndex(0); return first !== null && first.rightText === "2h" },
+                      5000, "two hours after the newest call on the decode clock")
+            testContext.setMetric("decodeNowMs", Date.now())
+        }
+
         function test_04_scrolling_back_holds_the_reader_place() {
             // The pane is short, so scroll by a couple of rows rather than a screen.
             tc.list.contentY = tc.list.originY + 150

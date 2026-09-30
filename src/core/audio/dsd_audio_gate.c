@@ -21,6 +21,7 @@
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/core/talkgroup_policy.h>
 #include <dsd-neo/protocol/p25/p25_crypto.h>
+#include <dsd-neo/runtime/decode_clock.h>
 #include <stdint.h>
 #include <time.h>
 
@@ -72,7 +73,7 @@ dsd_audio_p25_patch_member_active(const dsd_state* state, uint32_t ota_target, u
         return 0;
     }
 
-    time_t now = time(NULL);
+    time_t now = dsd_decode_time();
     for (int i = 0; i < state->p25_patch_count && i < 8; i++) {
         if (dsd_audio_p25_patch_entry_current(state, i, ota_target, now)
             && dsd_audio_p25_patch_entry_has_wgid(state, i, policy_tg)) {

@@ -12,7 +12,6 @@
 #include <dsd-neo/app_control/frontend.h>
 #include <dsd-neo/app_control/p25_metrics.h>
 #include <dsd-neo/core/constants.h>
-#include <dsd-neo/core/dsd_time.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
@@ -21,6 +20,7 @@
 #include <dsd-neo/protocol/p25/p25_sm_watchdog.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #include <dsd-neo/runtime/config.h>
+#include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/trunk_cc_candidates.h>
 #include <dsd-neo/ui/ncurses_internal.h>
 #include <dsd-neo/ui/ncurses_p25_display.h>
@@ -714,7 +714,7 @@ ui_print_p25_sm_last_release(const dsd_state* state) {
     if (state->p25_sm_last_release_time == 0) {
         return 0;
     }
-    double dt_rel = (double)(time(NULL) - state->p25_sm_last_release_time);
+    double dt_rel = (double)(dsd_decode_time() - state->p25_sm_last_release_time);
     printw("| SM Last: release d=%4.1fs\n", dt_rel);
     return 1;
 }
@@ -724,7 +724,7 @@ ui_print_p25_sm_last_reason(const dsd_state* state) {
     if (state->p25_sm_last_reason[0] == '\0' || state->p25_sm_last_reason_time == 0) {
         return 0;
     }
-    double dt_tag = (double)(time(NULL) - state->p25_sm_last_reason_time);
+    double dt_tag = (double)(dsd_decode_time() - state->p25_sm_last_reason_time);
     printw("| SM Last: %s d=%4.1fs\n", state->p25_sm_last_reason, dt_tag);
     return 1;
 }
@@ -734,7 +734,7 @@ ui_print_p25_sm_tags(const dsd_state* state) {
     if (state->p25_sm_tag_count <= 0) {
         return 0;
     }
-    time_t now = time(NULL);
+    time_t now = dsd_decode_time();
     ui_print_lborder_green();
     addstr(" SM Tags: ");
     int shown = 0;
@@ -1032,7 +1032,7 @@ ui_print_p25p2_slot_line(const dsd_state* state) {
 
 static int
 ui_print_p25p2_gate_line(const dsd_opts* opts, const dsd_state* state) {
-    time_t now = time(NULL);
+    time_t now = dsd_decode_time();
     double l_dmac = (state->p25_p2_last_mac_active[0] != 0) ? (double)(now - state->p25_p2_last_mac_active[0]) : -1.0;
     double r_dmac = (state->p25_p2_last_mac_active[1] != 0) ? (double)(now - state->p25_p2_last_mac_active[1]) : -1.0;
     double dt = (state->last_vc_sync_time != 0) ? (double)(now - state->last_vc_sync_time) : -1.0;
@@ -1061,8 +1061,8 @@ ui_print_p25p2_slot_metrics(const dsd_opts* opts, const dsd_state* state, int is
 
 static int
 ui_print_p25p1_sm_timers_metric(const dsd_state* state) {
-    time_t now = time(NULL);
-    double nowm = dsd_time_now_monotonic_s();
+    time_t now = dsd_decode_time();
+    double nowm = dsd_decode_now_mono_s();
     double dt_cc = ui_time_diff_maybe_monotonic(now, state->last_cc_sync_time, nowm, state->last_cc_sync_time_m);
     double dt_vc = ui_time_diff_maybe_monotonic(now, state->last_vc_sync_time, nowm, state->last_vc_sync_time_m);
     double dt_tune =
@@ -1188,7 +1188,7 @@ ui_print_p25_secondary_ccs(const dsd_opts* opts, const dsd_state* state) {
     int cols = ui_screen_cols_default80();
     int shown = 0;
     int line_used = 0;
-    time_t now = time(NULL);
+    time_t now = dsd_decode_time();
     int count = state->p25_secondary_cc_count;
     if (count > P25_SECONDARY_CC_MAX) {
         count = P25_SECONDARY_CC_MAX;
@@ -1226,7 +1226,7 @@ ui_print_p25_neighbors(const dsd_opts* opts, const dsd_state* state) {
     int cols = ui_screen_cols_default80();
     int shown = 0;
     int line_used = 0;
-    time_t now = time(NULL);
+    time_t now = dsd_decode_time();
     for (int i = 0; i < n && shown < 20; i++) {
         int k = idxs[i];
         char buf[160];

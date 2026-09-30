@@ -22,6 +22,7 @@
 #include <dsd-neo/platform/threading.h>
 #include <dsd-neo/protocol/edacs/edacs_afs.h>
 #include <dsd-neo/runtime/call_alert.h>
+#include <dsd-neo/runtime/decode_clock.h>
 #include <math.h>
 #include <stdarg.h>
 #include <stddef.h>
@@ -2943,6 +2944,147 @@ test_merged_row_start_stamp_is_frozen(void) {
     return rc;
 }
 
+// A decode instant far from any platform clock reading (1e9 s), so a due time or a row stamp taken
+// from the platform clocks instead of the decode clock could not come out at the expected value.
+#define ALERT_TEST_DECODE_T0_NS 1000000000000000000ULL
+#define ALERT_TEST_DECODE_T0_S  1000000000.0
+
+static void
+alert_decode_clock_at_ms(uint64_t offset_ms) {
+    dsd_decode_clock_test_set_ns(ALERT_TEST_DECODE_T0_NS + (offset_ms * 1000000ULL));
+}
+
+// Observe on the store's own clock (observed_m 0), as the vocoder's media mark and the engine's
+// no-carrier end do. A zero target is the vocoder's identity-less BEGIN.
+static int
+observe_unstamped_call(dsd_state* state, uint64_t target_id, uint64_t source_id) {
+    const dsd_call_observation observation = {
+        .protocol = DSD_SYNC_DMR_BS_VOICE_POS,
+        .slot = 0U,
+        .kind = target_id != 0U ? DSD_CALL_KIND_GROUP_VOICE : DSD_CALL_KIND_VOICE,
+        .ota_target_id = target_id,
+        .policy_target_id = target_id,
+        .ota_source_id = source_id,
+    };
+    return dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_BEGIN);
+}
+
+// The VOICE_END alert a sync-loss end holds open is due one reacquisition window after the end on
+// the decode clock, and is released by decode time alone: the real clock does not move here.
+static int
+test_end_alert_due_runs_on_the_decode_clock(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static Event_History_I event_history[2];
+    reset_fixture(&opts, &state, event_history);
+    opts.call_alert_events = DSD_CALL_ALERT_EVENT_VOICE_START | DSD_CALL_ALERT_EVENT_VOICE_END;
+    state.lastsynctype = DSD_SYNC_DMR_BS_VOICE_POS;
+    dsd_decode_clock_use_test(ALERT_TEST_DECODE_T0_NS);
+
+    int rc = expect_int("identified call begins", observe_unstamped_call(&state, 1234U, 5678U), 1);
+    dsd_event_sync_slot(&opts, &state, 0U);
+    alert_decode_clock_at_ms(2000U);
+    rc |= expect_int("sync loss ends it", dsd_call_state_end_ex(&state, 0U, 0.0, DSD_CALL_END_SYNC_LOSS), 1);
+    dsd_event_sync_slot(&opts, &state, 0U);
+    alert_decode_clock_at_ms(2400U);
+    dsd_event_sync_slot(&opts, &state, 0U);
+    rc |= expect_int("END alert still held 0.4 s after the end", g_beeper_count, 1);
+    dsd_call_context_snapshot context;
+    rc |= expect_int("context snapshot copies", dsd_call_context_copy_snapshot(&state, &context) > 0, 1);
+    rc |= expect_int("sync-loss end holds the alert", context.events[0].end_alert_pending, 1);
+    rc |= expect_int(
+        "alert is due one window after the decode-time end",
+        same_instant(context.events[0].end_alert_due_m, ALERT_TEST_DECODE_T0_S + 2.0 + DSD_CALL_REACQUIRE_GAP_S), 1);
+    alert_decode_clock_at_ms(2600U);
+    dsd_event_sync_slot(&opts, &state, 0U);
+    rc |= expect_int("END alert fires 0.6 s after the end", g_beeper_count, 2);
+
+    dsd_decode_clock_use_system();
+    dsd_state_ext_free_all(&state);
+    return rc;
+}
+
+// An identity-less audible row faded by a sync loss is held, not dropped, for one reacquisition
+// window on the decode clock, and dropped once decode time alone has passed its due time.
+static int
+test_drop_hold_due_runs_on_the_decode_clock(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static Event_History_I event_history[2];
+    reset_fixture(&opts, &state, event_history);
+    state.lastsynctype = DSD_SYNC_DMR_BS_VOICE_POS;
+    dsd_decode_clock_use_test(ALERT_TEST_DECODE_T0_NS);
+
+    int rc = expect_int("audible identity-less epoch starts", observe_unstamped_call(&state, 0U, 0U), 1);
+    rc |= expect_int("voice media runs", dsd_call_state_update_media(&state, 0U, 1, 0.0), 1);
+    dsd_event_sync_slot(&opts, &state, 0U);
+    alert_decode_clock_at_ms(1000U);
+    rc |= expect_int("carrier fades", dsd_call_state_end_ex(&state, 0U, 0.0, DSD_CALL_END_SYNC_LOSS), 1);
+    dsd_event_sync_slot(&opts, &state, 0U);
+    alert_decode_clock_at_ms(1400U);
+    dsd_event_sync_slot(&opts, &state, 0U);
+    dsd_call_context_snapshot context;
+    rc |= expect_int("context snapshot copies", dsd_call_context_copy_snapshot(&state, &context) > 0, 1);
+    rc |= expect_int("verdict still held 0.4 s after the fade", context.events[0].drop_hold_pending, 1);
+    rc |= expect_int("held row is not finalized", context.events[0].ended_committed, 0);
+    rc |= expect_int(
+        "hold is due one window after the decode-time fade",
+        same_instant(context.events[0].drop_hold_due_m, ALERT_TEST_DECODE_T0_S + 1.0 + DSD_CALL_REACQUIRE_GAP_S), 1);
+    alert_decode_clock_at_ms(1600U);
+    dsd_event_sync_slot(&opts, &state, 0U);
+    rc |= expect_int("second context snapshot copies", dsd_call_context_copy_snapshot(&state, &context) > 0, 1);
+    rc |= expect_int("hold released 0.6 s after the fade", context.events[0].drop_hold_pending, 0);
+    rc |= expect_int("released verdict finalizes the epoch", context.events[0].ended_committed, 1);
+    rc |= expect_int("the unexplained row is dropped", committed_history_rows(&event_history[0]), 0);
+
+    dsd_decode_clock_use_system();
+    dsd_state_ext_free_all(&state);
+    return rc;
+}
+
+// A transmission faded and reacquired twice commits one row whose span is the decode-time span of
+// the whole transmission: the start of the first segment to the end of the last, 9.25 s here,
+// which the whole-second stamps carry as 9. The real clock does not move here.
+static int
+test_merged_history_duration_runs_on_the_decode_clock(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static Event_History_I event_history[2];
+    reset_fixture(&opts, &state, event_history);
+    state.lastsynctype = DSD_SYNC_DMR_BS_VOICE_POS;
+    dsd_decode_clock_use_test(ALERT_TEST_DECODE_T0_NS);
+
+    int rc = expect_int("first segment begins", observe_unstamped_call(&state, 100U, 200U), 1);
+    dsd_event_sync_slot(&opts, &state, 0U);
+    alert_decode_clock_at_ms(2000U);
+    rc |= expect_int("first segment fades", dsd_call_state_end_ex(&state, 0U, 0.0, DSD_CALL_END_SYNC_LOSS), 1);
+    dsd_event_sync_slot(&opts, &state, 0U);
+    alert_decode_clock_at_ms(2250U);
+    rc |= expect_int("second segment reacquires", observe_unstamped_call(&state, 0U, 0U), 1);
+    dsd_event_sync_slot(&opts, &state, 0U);
+    alert_decode_clock_at_ms(5000U);
+    rc |= expect_int("second segment fades", dsd_call_state_end_ex(&state, 0U, 0.0, DSD_CALL_END_SYNC_LOSS), 1);
+    dsd_event_sync_slot(&opts, &state, 0U);
+    alert_decode_clock_at_ms(5250U);
+    rc |= expect_int("third segment reacquires", observe_unstamped_call(&state, 0U, 0U), 1);
+    dsd_event_sync_slot(&opts, &state, 0U);
+    alert_decode_clock_at_ms(9250U);
+    rc |= expect_int("third segment fades", dsd_call_state_end_ex(&state, 0U, 0.0, DSD_CALL_END_SYNC_LOSS), 1);
+    dsd_event_sync_slot(&opts, &state, 0U);
+
+    const Event_History* row = &event_history[0].Event_History_Items[1];
+    rc |= expect_int("the transmission commits one row", committed_history_rows(&event_history[0]), 1);
+    rc |= expect_int("the row names the first segment's call", (int)row->target_id, 100);
+    rc |=
+        expect_u64("merged duration is the decode-time span", (uint64_t)(row->event_time - row->event_start_time), 9U);
+    rc |= expect_u64("row starts at the first segment's decode start", (uint64_t)row->event_start_time,
+                     (uint64_t)ALERT_TEST_DECODE_T0_S);
+
+    dsd_decode_clock_use_system();
+    dsd_state_ext_free_all(&state);
+    return rc;
+}
+
 // commit_rev is the committed-rows-only change counter frontends gate their ring rescans on:
 // staged-row renders must leave it alone, while commits, merges and late enrichment advance it.
 static int
@@ -5204,6 +5346,8 @@ main(void) {
     rc |= test_dstar_sync_loss_after_media_keeps_identityless_row();
     rc |= test_unreliable_terminator_modes_keep_audible_identityless_rows();
     rc |= test_end_alert_deadline_matches_reacquire_window();
+    rc |= test_end_alert_due_runs_on_the_decode_clock();
+    rc |= test_drop_hold_due_runs_on_the_decode_clock();
     rc |= test_unverified_terminator_heal_window_is_tight();
     rc |= test_crypto_only_voice_epoch_commits_row();
     rc |= test_route_text_only_row_survives_epoch_change_commit();
@@ -5212,6 +5356,7 @@ main(void) {
     rc |= test_reacquired_transmission_commits_one_row();
     rc |= test_merged_row_end_stamp_advances();
     rc |= test_merged_row_start_stamp_is_frozen();
+    rc |= test_merged_history_duration_runs_on_the_decode_clock();
     rc |= test_commit_rev_tracks_committed_rows_only();
     rc |= test_terminator_after_sync_loss_end_blocks_reacquisition();
     rc |= test_end_reason_upgrade_is_one_directional();

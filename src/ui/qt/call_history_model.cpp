@@ -21,6 +21,7 @@
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/runtime/decode_clock.h>
 #include <iterator>
 #include <stdint.h>
 #include <utility>
@@ -28,6 +29,7 @@
 #include "call_history_merge.h"
 #include "dsd-neo/core/state_fwd.h"
 #include "json_store.h"
+#include "realtime_clock.h"
 
 namespace dsd_qt {
 
@@ -66,11 +68,17 @@ seen_key(int slot, qulonglong seq, qint64 when, qulonglong tg, int kind) {
     return QStringLiteral("%1|%2|%3|%4|%5").arg(slot).arg(seq).arg(when).arg(tg).arg(kind);
 }
 
-/** @brief "TODAY" / "YESTERDAY" / "MON 3 AUG" for the list's day sections. */
+/**
+ * @brief "TODAY" / "YESTERDAY" / "MON 3 AUG" for the list's day sections.
+ *
+ * Relative to the viewer's real calendar day, like the midnight timer that retires the labels: a
+ * section says which day a call was heard on, and a replayed capture's calls belong to their own
+ * dates, not to whichever day the decode clock happens to be showing.
+ */
 QString
 day_label(qint64 when) {
     const QDate day = QDateTime::fromSecsSinceEpoch(when).date();
-    const QDate today = QDate::currentDate();
+    const QDate today = realtimeCurrentDate();
     if (day == today) {
         return QStringLiteral("TODAY");
     }
@@ -113,8 +121,8 @@ CallHistoryModel::CallHistoryModel(QObject* parent) : QAbstractListModel(parent)
 
 void
 CallHistoryModel::scheduleDayRollover() {
-    const QDateTime now = QDateTime::currentDateTime();
-    const QDateTime nextMidnight = QDate::currentDate().addDays(1).startOfDay();
+    const QDateTime now = realtimeCurrentDateTime();
+    const QDateTime nextMidnight = realtimeCurrentDate().addDays(1).startOfDay();
     /* A second past the boundary, so a coarse timer that fires marginally early
      * cannot re-derive the very labels it was meant to retire. */
     m_dayTimer.start(static_cast<int>(qMin<qint64>(now.msecsTo(nextMidnight) + 1000, 86400000)));
@@ -658,7 +666,8 @@ CallHistoryModel::clearAll() {
     // UI rebuilds it from the (now empty) persisted log while the service's ring
     // still holds every cleared row. The persisted watermark is what keeps a clear
     // effective across an Activity restart.
-    m_clearedThrough = QDateTime::currentSecsSinceEpoch();
+    // On the decode clock, because it is compared with the rows' decoded stamps.
+    m_clearedThrough = static_cast<qint64>(dsd_decode_time());
     m_settings.setValue(QLatin1String(kClearedThroughKey), m_clearedThrough);
     endResetModel();
     Q_EMIT countChanged();

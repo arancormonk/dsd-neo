@@ -9,6 +9,7 @@
  */
 
 #include <curses.h>
+#include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/ui/ui_prims.h>
 #include <math.h>
 #include <stdarg.h>
@@ -56,7 +57,7 @@ ui_statusf(const char* fmt, ...) {
     if (hold > 8) {
         hold = 8;
     }
-    s_status_expire = time(NULL) + hold;
+    s_status_expire = dsd_realtime_time() + hold;
 }
 
 int

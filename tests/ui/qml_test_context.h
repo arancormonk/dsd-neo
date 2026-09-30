@@ -1170,6 +1170,12 @@ class CallLogStore : public QAbstractListModel {
         return channel;
     }
 
+    /** @brief The newest row's `when`, 0 with no rows: the stamps are fixed, so a case ages rows against it. */
+    Q_INVOKABLE qint64
+    newestWhen() const {
+        return m_rows.isEmpty() ? 0 : m_rows.first().when;
+    }
+
     /** @brief Prepend @p n calls, oldest first, so the list reads newest-first. */
     Q_INVOKABLE void
     pushMany(int n, const QString& dayLabel) {
@@ -1968,6 +1974,9 @@ class Setup : public QObject {
         metrics[QStringLiteral("siteConfirmed")] = false;
 
         metrics[QStringLiteral("uiMessage")] = QString();
+        // The decode clock's wall-clock now that recent-call ages and session cutoffs read: the
+        // fixture's decoder is idle, so it is simply the wall clock the screens used to read.
+        metrics[QStringLiteral("decodeNowMs")] = QDateTime::currentMSecsSinceEpoch();
         metrics[QStringLiteral("audioMuted")] = false;
         metrics[QStringLiteral("heldTg")] = 0;
         metrics[QStringLiteral("carrierLock")] = false;
