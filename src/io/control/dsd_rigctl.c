@@ -243,6 +243,7 @@ SetFreq(dsd_socket_t sockfd, long int freq) {
 typedef struct {
     dsd_socket_t sockfd;
     int touched;        /* a request this client made on the socket may have changed the peer */
+    int unconfirmed;    /* a reconnect took the record over: no request matches the cache until the peer accepts one */
     int kind;           /* cache: the demodulator last accepted (DSD_RIGCTL_KIND_UNKNOWN: not known) */
     int bw;             /* cache: the passband last accepted (0: the peer's own; INT_MIN: not known) */
     int own_read[2];    /* per dsd_analog_demod: the peer's own passband was looked up */
@@ -250,7 +251,7 @@ typedef struct {
     int row_changed[2]; /* a scan row asked for a passband of this demodulator since the scan's last restore */
 } rigctl_peer;
 
-static rigctl_peer s_peer = {DSD_INVALID_SOCKET, 0, DSD_ANALOG_DEMOD_FM, INT_MIN, {0, 0}, {0, 0}, {0, 0}};
+static rigctl_peer s_peer = {DSD_INVALID_SOCKET, 0, 0, DSD_ANALOG_DEMOD_FM, INT_MIN, {0, 0}, {0, 0}, {0, 0}};
 
 static void
 rigctl_peer_reset(dsd_socket_t sockfd) {
@@ -284,32 +285,39 @@ RigctlRebindPeer(dsd_socket_t old_fd, dsd_socket_t new_fd, int same_endpoint) {
      * connection that gets its number back would otherwise be taken for one on that frequency. */
     s_last_sockfd = DSD_INVALID_SOCKET;
     s_last_freq = LONG_MIN;
-    /* A reset record's socket is DSD_INVALID_SOCKET, which a missing old socket must not match. Without a record of the
-     * old socket, or of a request that may have changed its peer, the new one is a peer nothing was asked of, as on a
-     * first connection: it gets a fresh record at its first request (rigctl_peer_on()). */
-    if (old_fd == DSD_INVALID_SOCKET || s_peer.sockfd != old_fd || !s_peer.touched) {
-        return;
+    /* A reset record's socket is DSD_INVALID_SOCKET, which a missing old socket must not match. Only a record of a
+     * request that may have changed the old socket's peer is worth handing over. */
+    if (old_fd != DSD_INVALID_SOCKET && s_peer.sockfd == old_fd && s_peer.touched) {
+        if (same_endpoint) {
+            /* The same peer: what the scan changed on it, its own passbands, and what it last accepted (which a failed
+             * tune puts back) stay known. It may have restarted, or been changed, while the connection was down
+             * (often why it is reconnected), so no request is taken for one it already runs until it accepts one. */
+            s_peer.sockfd = new_fd;
+            s_peer.unconfirmed = 1;
+            return;
+        }
+        if (s_peer.kind != DSD_ANALOG_DEMOD_FM) {
+            /* Another endpoint may be another peer, whose own passbands the record does not describe, or the same one
+             * under another name, still on the am row's AM (or on either demodulator after a lost reply): FM is sent
+             * before anything else is taken for it. */
+            rigctl_peer_reset(new_fd);
+            s_peer.touched = 1;
+            s_peer.kind = DSD_RIGCTL_KIND_UNKNOWN;
+            return;
+        }
     }
-    if (same_endpoint) {
-        /* The same peer: what the scan changed on it, and its own passbands, stay known. What it runs now may not be
-         * what it last accepted, since it may have restarted, or been changed, while the connection was down (often
-         * why it is reconnected): as after a lost reply, no request matches the cache until one is answered. */
-        s_peer.sockfd = new_fd;
-        s_peer.bw = INT_MIN;
-        return;
-    }
-    /* Another endpoint may be another peer, whose own passbands the record does not describe, or the same one under
-     * another name. One the old peer's record leaves on AM, or on either demodulator after a lost reply, may run the
-     * am row's AM: FM is sent before anything else is taken for it. Otherwise the new peer is one nothing was asked of,
-     * as on a first connection, and keeps its own settings. */
-    const int may_run_am = s_peer.kind != DSD_ANALOG_DEMOD_FM;
+    /* Otherwise the new peer is one nothing was asked of, as on a first connection, and keeps its own settings. The
+     * record names it now, not the old socket closed next: a connection that gets that number back (the TCP audio
+     * input's, outside the P25 SM tick guard) would otherwise reset the record the watchdog's retunes use. */
     rigctl_peer_reset(new_fd);
-    if (may_run_am) {
-        s_peer.touched = 1;
-        s_peer.kind = DSD_RIGCTL_KIND_UNKNOWN;
-        s_peer.bw = INT_MIN;
-    }
 }
+
+#ifdef DSD_NEO_TEST_HOOKS
+dsd_socket_t
+dsd_rigctl_test_record_socket(void) {
+    return s_peer.sockfd;
+}
+#endif
 
 static int
 rigctl_kind(int kind) {
@@ -355,6 +363,7 @@ rigctl_request(rigctl_peer* peer, int kind, int send_bw, int cache_bw, char* buf
         peer->bw = INT_MIN;
     } else if (rc == 1) {
         peer->touched = 1;
+        peer->unconfirmed = 0;
         peer->kind = kind;
         peer->bw = cache_bw;
     }
@@ -480,7 +489,7 @@ SetModulationKind(dsd_socket_t sockfd, int kind, int bandwidth) {
         /* The passband read before a row changed it; where the peer could not say, Hamlib's 0 (normal passband). */
         send_bw = peer->own_bw[DSD_ANALOG_DEMOD_FM];
     }
-    if (peer->kind == want_kind && peer->bw == bandwidth) {
+    if (peer->kind == want_kind && peer->bw == bandwidth && !peer->unconfirmed) {
         return true; // unchanged
     }
     char buf[BUFSIZE + 1];
