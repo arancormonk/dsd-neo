@@ -698,6 +698,14 @@ rtl_stream_test_set_replay_block_hook(rtl_stream_test_replay_block_fn hook, void
     g_test_replay_block_hook = hook;
     g_test_replay_block_ctx = ctx;
 }
+
+/* The chunk whose replay block the demod discards (rtl_stream_test_replay_discard_chunk()); 0: none. */
+static std::atomic<uint64_t> g_test_replay_discard_sequence{0U};
+
+extern "C" void
+rtl_stream_test_replay_discard_chunk(uint64_t sequence) {
+    g_test_replay_discard_sequence.store(sequence, std::memory_order_release);
+}
 #endif
 
 /* A replay pipeline stage a test can stop at (RTL_STREAM_TEST_REPLAY_*); nothing outside test builds. */
@@ -2621,6 +2629,7 @@ demod_prepare_input_block(struct demod_state* d, DemodInputSpan* span) {
         if (span->got <= 0) {
             return 0;
         }
+        RTL_REPLAY_TEST_STAGE(RTL_STREAM_TEST_REPLAY_DEMOD_WRAPPED_RELEASED, (size_t)span->got);
     }
     span->input_block = span->direct_input_span ? span->ring_p1 : d->input_cb_buf;
     return 1;
@@ -3499,6 +3508,7 @@ demod_discard_iteration_input(DemodInputSpan* span) {
     if (!span || !span->replay || !g_stream) {
         return;
     }
+    RTL_REPLAY_TEST_STAGE(RTL_STREAM_TEST_REPLAY_DEMOD_DISCARD_RELEASED, (size_t)(span->got > 0 ? span->got : 0));
 
     /* Rewind/RESET boundaries wait for both an empty ring and the submitted
      * generation to be acknowledged. A controller gate can discard the final
@@ -3668,6 +3678,15 @@ demod_perf_log_block(int perf_on, uint64_t perf_output_start_ns, uint64_t perf_f
     rtl_perf_maybe_log(&snapshot);
 }
 
+#if defined(DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS)
+/* A test asked the demod to discard the replay block holding this span's chunk (rtl_stream_test_replay_discard_chunk()). */
+static int
+demod_test_replay_discard_requested(const DemodInputSpan* span) {
+    const uint64_t sequence = g_test_replay_discard_sequence.load(std::memory_order_acquire);
+    return (sequence != 0U && span->replay && span->chunk.sequence == sequence) ? 1 : 0;
+}
+#endif
+
 static int
 demod_prepare_iteration_input(struct demod_state* d, int is_rtltcp_input, DemodInputSpan* span,
                               DemodRetuneDiagBlock* retune_diag) {
@@ -3695,6 +3714,13 @@ demod_prepare_iteration_input(struct demod_state* d, int is_rtltcp_input, DemodI
         demod_leave_processing_block(&controller);
         return 0;
     }
+#if defined(DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS)
+    if (demod_test_replay_discard_requested(span)) {
+        demod_discard_iteration_input(span);
+        demod_leave_processing_block(&controller);
+        return 0;
+    }
+#endif
     int input_pairs = 0;
     float input_mean_abs = 0.0f;
     float input_max_abs = 0.0f;

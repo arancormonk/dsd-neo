@@ -2091,8 +2091,9 @@ Notes:
       chunk's input level when it starts the block.
 
     Tests: `IO_RTL_REPLAY_EOF_AND_CF32` (block log per chunk in fast and realtime replay, media time across a loop, a
-    chunk held numbered but uncommitted, a multi-chunk EOF, cf32 short reads, a read failure mid-chunk, the input
-    level at the first block).
+    chunk held numbered but uncommitted, a block that wraps the ring end and a discarded block, each releasing its
+    input before it acknowledges, a multi-chunk EOF, cf32 short reads, a read failure mid-chunk, the input level at
+    the first block).
   - I/Q replay end of stream (issue #572; `replay_thread_fn()` in `rtl_device.cpp`, `rtl_stream_read_replay()` in
     `rtl_sdr_fm.cpp`). The capture's end and a read the capture source refuses end a replay the same way:
     - The reader marks input EOF, waits on the input ring's `space` (50 ms at a time) for the demod to take the rest,

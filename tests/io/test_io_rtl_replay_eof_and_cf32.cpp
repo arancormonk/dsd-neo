@@ -1951,14 +1951,12 @@ test_replay_blocks_follow_capture_chunks(int realtime) {
 }
 
 namespace {
-/* test_replay_demod_never_acknowledges_an_unread_chunk(). */
-struct AckWindow {
-    uint64_t chunks = 0U;
-    std::atomic<uint64_t> blocks{0U};
-    std::atomic<uint64_t> reader_waiting_seq{0U};
+/* The reader's side of the acknowledgement tests: every chunk after the first is held numbered (its submit generation
+ * bumped) but uncommitted until the demod has acknowledged the block before it (hold_numbered_chunk()). */
+struct NumberedChunkHold {
     std::atomic<uint64_t> reader_holding_gen{0U}; /* the chunk the reader holds numbered, not committed */
     std::atomic<int> windows{0};                  /* chunks held until the demod acknowledged the block before them */
-    std::atomic<int> timeouts{0};
+    std::atomic<int> timeouts{0};                 /* holds the demod never answered */
     std::atomic<int> violations{0};
     std::atomic<uint64_t> violation_consumed{0U};
     std::atomic<uint64_t> violation_gen{0U};
@@ -1983,25 +1981,63 @@ wait_for_u64_at_least(const std::atomic<uint64_t>* value, uint64_t want, unsigne
     return 0;
 }
 
+/* Chunk @p gen is numbered and outside the ring: hold it there until the demod acknowledged block gen-1, and record
+ * whether the demod acknowledged chunk gen, which it cannot have read. */
 static void
-ack_window_hold_numbered_chunk(AckWindow* window, uint64_t gen) {
-    window->reader_holding_gen.store(gen, std::memory_order_release);
+hold_numbered_chunk(NumberedChunkHold* hold, uint64_t gen) {
+    hold->reader_holding_gen.store(gen, std::memory_order_release);
     for (unsigned int waited = 0U; waited <= 2000U; waited++) {
         const uint64_t consumed = replay_consumed_generation();
         if (consumed >= gen - 1U) {
             if (consumed >= gen) {
-                window->violation_consumed.store(consumed, std::memory_order_relaxed);
-                window->violation_gen.store(gen, std::memory_order_relaxed);
-                window->violations.fetch_add(1, std::memory_order_acq_rel);
+                hold->violation_consumed.store(consumed, std::memory_order_relaxed);
+                hold->violation_gen.store(gen, std::memory_order_relaxed);
+                hold->violations.fetch_add(1, std::memory_order_acq_rel);
             } else {
-                window->windows.fetch_add(1, std::memory_order_acq_rel);
+                hold->windows.fetch_add(1, std::memory_order_acq_rel);
             }
             return;
         }
         dsd_sleep_ms(1U);
     }
-    window->timeouts.fetch_add(1, std::memory_order_acq_rel);
+    hold->timeouts.fetch_add(1, std::memory_order_acq_rel);
 }
+
+static int
+expect_numbered_chunk_holds(const char* label, const NumberedChunkHold& hold, int want_windows) {
+    int rc = 0;
+    if (hold.violations.load() != 0) {
+        DSD_FPRINTF(stderr,
+                    "FAIL: %s: the demod acknowledged generation %llu while the reader held chunk %llu numbered but "
+                    "not committed\n",
+                    label, (unsigned long long)hold.violation_consumed.load(),
+                    (unsigned long long)hold.violation_gen.load());
+        rc = 1;
+    }
+    if (hold.windows.load() != want_windows) {
+        DSD_FPRINTF(stderr,
+                    "FAIL: %s: %d chunks were held uncommitted while the demod acknowledged the block before them "
+                    "(want %d)\n",
+                    label, hold.windows.load(), want_windows);
+        rc = 1;
+    }
+    if (hold.timeouts.load() != 0) {
+        DSD_FPRINTF(stderr, "FAIL: %s: %d reader holds timed out\n", label, hold.timeouts.load());
+        rc = 1;
+    }
+    return rc;
+}
+
+namespace {
+/* test_replay_demod_never_acknowledges_an_unread_chunk(). */
+struct AckWindow {
+    uint64_t chunks = 0U;
+    std::atomic<uint64_t> blocks{0U};
+    std::atomic<uint64_t> reader_waiting_seq{0U};
+    NumberedChunkHold hold;
+    std::atomic<int> demod_timeouts{0}; /* demod waits the reader never answered */
+};
+} // namespace
 
 static void
 ack_window_stage(int stage, size_t count, void* ctx) {
@@ -2014,27 +2050,33 @@ ack_window_stage(int stage, size_t count, void* ctx) {
             /* Block k: let the reader get to chunk k+1 first. A reader that runs ahead numbers it before the demod
                looks at a generation; one that waits for the demod has read it and waits for the ring to empty. */
             const uint64_t block = window->blocks.fetch_add(1U, std::memory_order_acq_rel) + 1U;
-            for (unsigned int waited = 0U; block < window->chunks && waited <= 2000U; waited++) {
-                if (window->reader_waiting_seq.load(std::memory_order_acquire) > block
-                    || window->reader_holding_gen.load(std::memory_order_acquire) > block) {
-                    break;
+            if (block >= window->chunks) {
+                break;
+            }
+            int reached = 0;
+            for (unsigned int waited = 0U; !reached && waited <= 2000U; waited++) {
+                reached = window->reader_waiting_seq.load(std::memory_order_acquire) > block
+                          || window->hold.reader_holding_gen.load(std::memory_order_acquire) > block;
+                if (!reached) {
+                    dsd_sleep_ms(1U);
                 }
-                dsd_sleep_ms(1U);
+            }
+            if (!reached) {
+                window->demod_timeouts.fetch_add(1, std::memory_order_acq_rel);
             }
             break;
         }
         case RTL_STREAM_TEST_REPLAY_DEMOD_DRAIN_DECISION: {
             /* Acknowledge block k only while the reader holds chunk k+1 numbered but not committed. */
             const uint64_t block = window->blocks.load(std::memory_order_acquire);
-            if (block < window->chunks) {
-                (void)wait_for_u64_at_least(&window->reader_holding_gen, block + 1U, 2000U);
+            if (block < window->chunks && !wait_for_u64_at_least(&window->hold.reader_holding_gen, block + 1U, 2000U)) {
+                window->demod_timeouts.fetch_add(1, std::memory_order_acq_rel);
             }
             break;
         }
         case RTL_STREAM_TEST_REPLAY_READER_BEFORE_COMMIT:
-            /* Chunk g is numbered and outside the ring: hold it there until the demod acknowledged block g-1. */
             if (count >= 2U) {
-                ack_window_hold_numbered_chunk(window, (uint64_t)count);
+                hold_numbered_chunk(&window->hold, (uint64_t)count);
             }
             break;
         default: break;
@@ -2045,7 +2087,9 @@ ack_window_stage(int stage, size_t count, void* ctx) {
  * input ring. A demod that acknowledges the newest submitted generation, not the one its own block carries, can
  * acknowledge a chunk it never read, and at EOF the reader then takes the demod for drained while it still holds the
  * last chunk. Every chunk after the first is held numbered but uncommitted until the demod acknowledged the block before
- * it; the demod must acknowledge only what it took. */
+ * it, and a reader that runs ahead gets to number it before the demod takes the generation it acknowledges. The
+ * whole-chunk handoff keeps the reader from running ahead; the two tests after this one cover the windows where the
+ * demod releases a block's input before it takes that generation. */
 static int
 test_replay_demod_never_acknowledges_an_unread_chunk(void) {
     const uint64_t chunks = 4U;
@@ -2073,18 +2117,123 @@ test_replay_demod_never_acknowledges_an_unread_chunk(void) {
     finish_replay(ctx, rescued);
     rtl_stream_test_set_replay_stage_hook(NULL, NULL);
 
-    if (window.violations.load() != 0) {
-        DSD_FPRINTF(stderr,
-                    "FAIL: unread chunk: the demod acknowledged generation %llu while the reader held chunk %llu "
-                    "numbered but not committed\n",
-                    (unsigned long long)window.violation_consumed.load(),
-                    (unsigned long long)window.violation_gen.load());
+    rc |= expect_numbered_chunk_holds("unread chunk", window.hold, (int)(chunks - 1U));
+    rc |= expect_int_eq("unread chunk: demod waits that timed out", window.demod_timeouts.load(), 0);
+    rc |= expect_true("unread chunk: the replay delivered output", delivered > 0U);
+    return rc;
+}
+
+namespace {
+/* run_early_release_window(): the demod releases one block's input before it takes the generation it acknowledges. */
+struct EarlyReleaseWindow {
+    int stage = 0;                               /* the demod's early-release stage this run holds at */
+    std::atomic<uint64_t> block_sequence{0U};    /* the chunk the demod's current block holds */
+    std::atomic<uint64_t> released_sequence{0U}; /* the chunk whose block released its input early */
+    std::atomic<int> early_releases{0};
+    NumberedChunkHold hold;
+    std::atomic<int> demod_timeouts{0};
+};
+} // namespace
+
+static void
+early_release_block_hook(const rtl_stream_test_replay_block* block, void* ctx) {
+    static_cast<EarlyReleaseWindow*>(ctx)->block_sequence.store(block->sequence, std::memory_order_release);
+}
+
+static void
+early_release_stage(int stage, size_t count, void* ctx) {
+    EarlyReleaseWindow* window = static_cast<EarlyReleaseWindow*>(ctx);
+    if (stage == window->stage) {
+        /* The block's input is released, so the reader may number the next chunk. Hold the demod, before it takes the
+           generation it acknowledges, until the reader holds that chunk numbered but uncommitted. */
+        const uint64_t sequence = window->block_sequence.load(std::memory_order_acquire);
+        window->released_sequence.store(sequence, std::memory_order_release);
+        window->early_releases.fetch_add(1, std::memory_order_acq_rel);
+        if (!wait_for_u64_at_least(&window->hold.reader_holding_gen, sequence + 1U, 2000U)) {
+            window->demod_timeouts.fetch_add(1, std::memory_order_acq_rel);
+        }
+        return;
+    }
+    if (stage == RTL_STREAM_TEST_REPLAY_READER_BEFORE_COMMIT && count >= 2U) {
+        hold_numbered_chunk(&window->hold, (uint64_t)count);
+    }
+}
+
+/* Replay @p metadata_path (@p chunks chunks) holding the demod at @p stage, the one early release of chunk
+ * @p released_sequence, until the reader holds the next chunk numbered; the demod must acknowledge its own chunk. */
+static int
+run_early_release_window(const char* label, const char* metadata_path, int stage, uint64_t chunks,
+                         uint64_t released_sequence) {
+    int rc = 0;
+    EarlyReleaseWindow window;
+    window.stage = stage;
+    rtl_stream_test_set_replay_block_hook(early_release_block_hook, &window);
+    rtl_stream_test_set_replay_stage_hook(early_release_stage, &window);
+    std::unique_ptr<dsd_opts> opts;
+    RtlSdrContext* ctx = NULL;
+    if (start_replay_stream(metadata_path, &opts, &ctx) != 0) {
+        rtl_stream_test_set_replay_stage_hook(NULL, NULL);
+        rtl_stream_test_set_replay_block_hook(NULL, NULL);
+        stop_and_destroy_stream(ctx);
+        return 1;
+    }
+    uint64_t delivered = 0U;
+    int rescued = 0;
+    rc |= read_replay_to_end(ctx, 10000U, label, &delivered, &rescued);
+    finish_replay(ctx, rescued);
+    rtl_stream_test_set_replay_stage_hook(NULL, NULL);
+    rtl_stream_test_set_replay_block_hook(NULL, NULL);
+
+    if (window.early_releases.load() != 1 || window.released_sequence.load() != released_sequence) {
+        DSD_FPRINTF(stderr, "FAIL: %s: %d early releases, the last for chunk %llu (want 1, for chunk %llu)\n", label,
+                    window.early_releases.load(), (unsigned long long)window.released_sequence.load(),
+                    (unsigned long long)released_sequence);
         rc |= 1;
     }
-    rc |= expect_int_eq("unread chunk: chunks held uncommitted while the demod acknowledged the block before them",
-                        window.windows.load(), (int)(chunks - 1U));
-    rc |= expect_int_eq("unread chunk: holds that timed out", window.timeouts.load(), 0);
-    rc |= expect_true("unread chunk: the replay delivered output", delivered > 0U);
+    if (window.demod_timeouts.load() != 0) {
+        DSD_FPRINTF(stderr, "FAIL: %s: the reader never numbered the chunk after the early release\n", label);
+        rc |= 1;
+    }
+    rc |= expect_numbered_chunk_holds(label, window.hold, (int)(chunks - 1U));
+    rc |= expect_true(label, delivered > 0U);
+    return rc;
+}
+
+/* Issue #572: a block that wraps the ring end is copied out of the ring and its input released before the demod
+ * processes it, so the reader can number the next chunk while the demod still works on this one. The demod must
+ * acknowledge the wrapped chunk's own generation, not the newest the reader numbered. */
+static int
+test_replay_wrapped_block_acknowledges_its_own_chunk(void) {
+    /* The events after the first 4096 bytes put every later chunk 4096 floats off the 64 KiB grid, so chunk 33 straddles
+       the end of the 2,097,152-float input ring (stream_open_init_pipeline()), and chunk 34 follows it. */
+    const uint64_t chunks = 34U;
+    int rc = 0;
+    char metadata_path[DSD_TEST_PATH_MAX];
+    rc |= make_eventful_replay_fixture(metadata_path, sizeof(metadata_path), 4096U + (chunks - 1U) * kReplayChunkBytes);
+    if (rc != 0) {
+        return 1;
+    }
+    return run_early_release_window("wrapped block", metadata_path, RTL_STREAM_TEST_REPLAY_DEMOD_WRAPPED_RELEASED,
+                                    chunks, 33U);
+}
+
+/* Issue #572: a block the demod discards (a controller gate closing on it) has its input released before the demod
+ * acknowledges it. The demod must acknowledge the discarded chunk's own generation, not the newest the reader
+ * numbered. */
+static int
+test_replay_discarded_block_acknowledges_its_own_chunk(void) {
+    const uint64_t chunks = 4U;
+    int rc = 0;
+    char metadata_path[DSD_TEST_PATH_MAX];
+    rc |= make_replay_fixture(metadata_path, sizeof(metadata_path), DSD_IQ_FORMAT_CU8, "post_mute_pre_widen", 1,
+                              (size_t)chunks * kReplayChunkBytes);
+    if (rc != 0) {
+        return 1;
+    }
+    rtl_stream_test_replay_discard_chunk(2U);
+    rc |= run_early_release_window("discarded block", metadata_path, RTL_STREAM_TEST_REPLAY_DEMOD_DISCARD_RELEASED,
+                                   chunks, 2U);
+    rtl_stream_test_replay_discard_chunk(0U);
     return rc;
 }
 
@@ -2432,6 +2581,8 @@ main(void) {
     rc |= test_replay_blocks_follow_capture_chunks(1);
     rc |= test_loop_replay_media_time_runs_on();
     rc |= test_replay_demod_never_acknowledges_an_unread_chunk();
+    rc |= test_replay_wrapped_block_acknowledges_its_own_chunk();
+    rc |= test_replay_discarded_block_acknowledges_its_own_chunk();
     rc |= test_replay_multi_chunk_eof_delivers_final_block();
     rc |= test_cf32_replay_short_reads_stay_aligned();
     rc |= test_replay_read_failure_mid_chunk_delivers_what_was_read();

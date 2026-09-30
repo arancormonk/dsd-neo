@@ -1131,6 +1131,11 @@ enum {
     RTL_STREAM_TEST_REPLAY_READER_BEFORE_COMMIT = 9,
     /* replay reader: made its drain decision (count: 1 if it reported the demod drained) */
     RTL_STREAM_TEST_REPLAY_READER_DRAIN_DECIDED = 10,
+    /* demod: copied a block that wraps the ring end out of the ring and released its input, before processing it
+       (count: floats) */
+    RTL_STREAM_TEST_REPLAY_DEMOD_WRAPPED_RELEASED = 11,
+    /* demod: released the input of a replay block it discards, before acknowledging the block (count: floats) */
+    RTL_STREAM_TEST_REPLAY_DEMOD_DISCARD_RELEASED = 12,
 };
 
 typedef void (*rtl_stream_test_replay_stage_fn)(int stage, size_t count, void* ctx);
@@ -1159,6 +1164,9 @@ typedef void (*rtl_stream_test_replay_block_fn)(const rtl_stream_test_replay_blo
 
 /* Install only while the stream is stopped. NULL removes the hook. */
 void rtl_stream_test_set_replay_block_hook(rtl_stream_test_replay_block_fn hook, void* ctx);
+/* The demod discards the I/Q replay block that holds chunk @p sequence instead of processing it, as a controller gate
+ * closing on it would; 0 disarms. Set while no replay runs. */
+void rtl_stream_test_replay_discard_chunk(uint64_t sequence);
 
 /* The next I/Q replay reader fails the read that follows @p after_chunks reads that returned data, with @p code (a
  * DSD_IQ_ERR_* value) as dsd_iq_replay_read() would. One failure per arming; a negative @p after_chunks disarms it. */
