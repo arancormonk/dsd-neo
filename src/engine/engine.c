@@ -102,7 +102,8 @@ struct CODEC2;
 void codec2_destroy(struct CODEC2* codec2_state);
 #endif
 
-// Local caches to avoid redundant device I/O in hot paths
+// Local caches to avoid redundant device I/O in hot paths. The rigctl pair holds for one connection:
+// dsd_engine_rigctl_tune_cache_forget() empties it once rigctl reconnects (issue #589).
 static long int s_last_rigctl_freq = -1;
 static int s_last_rigctl_bw = -12345;
 static uint64_t s_no_carrier_generic_recovery_request_id = 0U;
@@ -121,10 +122,15 @@ no_carrier_clear_generic_recovery_tracking(void) {
     s_no_carrier_generic_recovery_cc = 0;
 }
 
-static void
-reset_device_io_caches(void) {
+void
+dsd_engine_rigctl_tune_cache_forget(void) {
     s_last_rigctl_freq = -1;
     s_last_rigctl_bw = -12345;
+}
+
+static void
+reset_device_io_caches(void) {
+    dsd_engine_rigctl_tune_cache_forget();
     no_carrier_clear_generic_recovery_tracking();
     dsd_trunk_tuning_requests_reset();
 #ifdef USE_RADIO
@@ -738,6 +744,10 @@ dsd_engine_setup_connect_rigctl_if_enabled(dsd_opts* opts) {
     }
     opts->rigctl_sockfd = Connect(opts->rigctlhostname, opts->rigctlportno);
     if (opts->rigctl_sockfd != DSD_INVALID_SOCKET) {
+        /* Issue #589: the peer record names the connection before the lifecycle starts the P25 watchdog, whose retunes
+           use it; a first request made there would otherwise reset the record while a TCP audio reconnect's Connect()
+           reads it on this thread. */
+        RigctlRebindPeer(DSD_INVALID_SOCKET, opts->rigctl_sockfd, 0);
         opts->use_rigctl = 1;
         return;
     }

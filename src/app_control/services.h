@@ -53,7 +53,17 @@ int svc_open_symbol_in(dsd_opts* opts, dsd_state* state, const char* filename);
  */
 int svc_tcp_connect_audio(dsd_opts* opts, const char* host, int port);
 /**
- * @brief Connect to a rigctl server and enable rigctl control if successful.
+ * @brief Connect to a rigctl server and enable rigctl control if successful. Both app-control rigctl connects, the '9'
+ * key and the menu's host and port, go through here (issue #589); the engine's startup connection
+ * (dsd_engine_setup_connect_rigctl_if_enabled()) is the first of a run, has no socket to replace, and names the peer
+ * record itself.
+ *
+ * The new socket opens while the old one is still open and takes what the old one knew of its peer
+ * (RigctlRebindPeer(): the same peer for the same host, ignoring case, and port). The old socket is then closed, sent
+ * nothing, so a peer a scan changed keeps what it last set once another endpoint replaces it. The engine's legacy tune
+ * cache is forgotten. A connect that fails while rigctl is on changes nothing: the connection in use stays. Without
+ * one, a failure records @p host and @p port for the next attempt and leaves rigctl off. The connection is replaced
+ * under the P25 SM tick guard (the watchdog's retunes use it), so a caller must not hold that guard.
  */
 int svc_rigctl_connect(dsd_opts* opts, const char* host, int port);
 

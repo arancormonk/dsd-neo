@@ -45,14 +45,12 @@
 #include <dsd-neo/engine/scan_voice_gate.h>
 #include <dsd-neo/engine/trunk_scan.h>
 #include <dsd-neo/io/control.h>
-#include <dsd-neo/io/rigctl_client.h>
 #include <dsd-neo/io/rtl_stream_c.h>
 #include <dsd-neo/io/udp_input.h>
 #include <dsd-neo/platform/atomic_compat.h>
 #include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/platform/platform.h>
 #include <dsd-neo/platform/posix_compat.h>
-#include <dsd-neo/platform/sockets.h>
 #include <dsd-neo/platform/threading.h>
 #include <dsd-neo/protocol/dmr/dmr.h>
 #include <dsd-neo/protocol/p25/p25_cc_candidates.h>
@@ -5019,16 +5017,17 @@ apply_cmd_trunk_controls(dsd_opts* opts, dsd_state* state, const struct dsd_app_
             }
             return ui_cmd_apply_status_from_service_rc(rc);
         }
-        case DSD_APP_CMD_RIGCTL_CONNECT:
-            DSD_MEMCPY(opts->rigctlhostname, opts->tcp_hostname, sizeof(opts->rigctlhostname));
-            opts->rigctl_sockfd = Connect(opts->rigctlhostname, opts->rigctlportno);
-            opts->use_rigctl = (opts->rigctl_sockfd != DSD_INVALID_SOCKET) ? 1 : 0;
-            if (opts->use_rigctl) {
-                ui_set_toast(state, 3, "Rigctl connected: %s:%d", opts->rigctlhostname, opts->rigctlportno);
+        case DSD_APP_CMD_RIGCTL_CONNECT: {
+            /* The TCP input's host at the rigctl port, through the service the menu's connect takes too (issue #589).
+               The toasts name the host asked for: a failed reconnect keeps the old one in rigctlhostname. */
+            const int rc = svc_rigctl_connect(opts, opts->tcp_hostname, opts->rigctlportno);
+            if (rc == 0) {
+                ui_set_toast(state, 3, "Rigctl connected: %s:%d", opts->tcp_hostname, opts->rigctlportno);
             } else {
-                ui_set_toast(state, 4, "Rigctl connect failed: %s:%d", opts->rigctlhostname, opts->rigctlportno);
+                ui_set_toast(state, 4, "Rigctl connect failed: %s:%d", opts->tcp_hostname, opts->rigctlportno);
             }
-            return 1;
+            return ui_cmd_apply_status_from_service_rc(rc);
+        }
         case DSD_APP_CMD_RETURN_CC: return apply_manual_return_to_cc(opts, state);
         case DSD_APP_CMD_TUNER_RELEASE: return apply_tuner_release(opts, state);
         case DSD_APP_CMD_DECODE_MODE_SET: return apply_decode_mode_set(opts, state, c);

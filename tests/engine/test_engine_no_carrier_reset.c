@@ -264,6 +264,9 @@ reset_rtl_profile_fakes(void) {
 static int g_rigctl_setfreq_ok = 0;
 static int g_rigctl_setfreq_calls = 0;
 static long int g_rigctl_setfreq_freq = 0;
+// The -B requests the legacy rigctl leg makes (issue #589); the peer takes each one.
+static int g_rigctl_setmod_calls = 0;
+static int g_rigctl_setmod_bw = 0;
 
 #ifdef DSD_NEO_TEST_TIME_WRAP
 // The wall clock time() reads, which the -Y hangtime rule compares (engine.c no_carrier_run()): 0 leaves the real one,
@@ -711,6 +714,14 @@ __wrap_SetFreq(dsd_socket_t sockfd, long int freq) {
     return g_rigctl_setfreq_ok ? true : false;
 }
 
+bool
+__wrap_SetModulation(dsd_socket_t sockfd, int bandwidth) {
+    (void)sockfd;
+    g_rigctl_setmod_calls++;
+    g_rigctl_setmod_bw = bandwidth;
+    return true;
+}
+
 #ifdef DSD_NEO_TEST_TIME_WRAP
 time_t __real_time(time_t* result);
 time_t __wrap_time(time_t* result);
@@ -821,6 +832,16 @@ test_trunk_cache_with_mode_metadata(void) {
         noCarrier(opts, state);
     }
     rc |= expect_true("mode metadata preserves redundant return suppression", g_rigctl_setfreq_calls == 1);
+    /* Issue #589: a rigctl reconnect ends the suppression; the new connection's peer was sent nothing. */
+    dsd_engine_rigctl_tune_cache_forget();
+    opts->trunk_is_tuned = 1;
+    state->trunk_cc_freq = 941012500;
+    state->p25_cc_freq = 0;
+    state->lastsynctype = DSD_SYNC_DMR_BS_DATA_POS;
+    state->last_vc_sync_time = 0;
+    noCarrier(opts, state);
+    rc |= expect_true("return after a rigctl reconnect is sent again",
+                      g_rigctl_setfreq_calls == 2 && g_rigctl_setfreq_freq == 941012500);
     g_rigctl_setfreq_ok = 0;
     free_test_runtime(opts, state);
     return rc;
@@ -2831,6 +2852,49 @@ test_rx_tone_rigctl_scan_step(void) {
     rc |= expect_true("rigctl-step-moved",
                       g_rigctl_setfreq_calls > 0 && g_rigctl_setfreq_freq == 951012500 && state->lcn_freq_roll == 1);
     rc |= expect_true("rigctl-step-clears-rx-tone", rx_tone_publication_cleared(state, generation));
+    g_rigctl_setfreq_ok = 0;
+    free_test_runtime(opts, state);
+    return rc;
+}
+
+/* Issue #589: the legacy rigctl leg (the untyped -Y step here, and the direct control-channel return) skips a
+   frequency and a -B it sent last. What it sent describes one connection: once rigctl reconnects, the new
+   connection's peer -- another one, or the same one restarted -- was sent nothing, so both go out again. */
+static int
+test_rigctl_reconnect_forgets_the_legacy_tune_cache(void) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    int rc = 0;
+    opts->scanner_mode = 1;
+    opts->audio_in_type = AUDIO_IN_WAV;
+    opts->use_rigctl = 1;
+    opts->rigctl_sockfd = DSD_INVALID_SOCKET;
+    opts->setmod_bw = 12500;
+    opts->trunk_hangtime = 1;
+    // A frequency no other case uses: engine.c caches the last rigctl tune across cases.
+    state->trunk_lcn_freq[0] = 953012500;
+    state->lcn_freq_count = 1;
+    state->lcn_freq_roll = 0;
+    g_rigctl_setfreq_ok = 1;
+    g_rigctl_setfreq_calls = 0;
+    g_rigctl_setmod_calls = 0;
+
+    for (int i = 0; i < 2; i++) {
+        state->last_cc_sync_time = time(NULL) - 11;
+        noCarrier(opts, state);
+    }
+    rc |= expect_true("rigctl-step-suppresses-a-repeat-on-one-connection",
+                      g_rigctl_setfreq_calls == 1 && g_rigctl_setmod_calls == 1);
+
+    dsd_engine_rigctl_tune_cache_forget();
+    state->last_cc_sync_time = time(NULL) - 11;
+    noCarrier(opts, state);
+    rc |= expect_true("rigctl-step-after-a-reconnect-sends-both-again",
+                      g_rigctl_setfreq_calls == 2 && g_rigctl_setfreq_freq == 953012500 && g_rigctl_setmod_calls == 2
+                          && g_rigctl_setmod_bw == 12500);
     g_rigctl_setfreq_ok = 0;
     free_test_runtime(opts, state);
     return rc;
@@ -5137,6 +5201,7 @@ main(void) {
     rc |= test_rx_tone_survives_no_carrier();
 #ifdef DSD_NEO_TEST_RTL_WRAP
     rc |= test_rx_tone_rigctl_scan_step();
+    rc |= test_rigctl_reconnect_forgets_the_legacy_tune_cache();
     rc |= test_tone_rejection_steps_the_legacy_scan();
     rc |= test_tone_rejection_stays_on_a_single_row();
     rc |= test_tone_rejection_that_ended_steps_the_legacy_scan();

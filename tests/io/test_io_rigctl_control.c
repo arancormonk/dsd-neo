@@ -801,6 +801,253 @@ test_connect_on_another_socket_keeps_the_rigctl_record(void) {
     return 0;
 }
 
+/*
+ * Issue #589: a rigctl reconnect to the same host and port opens a new socket on another number while the old one is
+ * still open, and hands it the old socket's record (RigctlRebindPeer()). A scan's am row left the peer on AM at 6 kHz:
+ * the next row's FM undo and the scan's restore still send the peer's own passbands, read before the row changed them,
+ * rather than taking the new socket for a peer nothing was asked of and sending nothing.
+ */
+static int
+test_rebind_hands_the_scan_record_to_a_reconnect(void) {
+    char host[] = "127.0.0.1";
+
+    /* An am row on 190: the peer ran FM at 12.5 kHz and runs AM at 10 kHz of its own. */
+    reset_stubs();
+    push_response("FM\n12500\n");
+    push_response("RPRT 0\n");
+    push_response("AM\n10000\n");
+    push_response("RPRT 0\n");
+    assert(SetScanRowModulation(190, DSD_ANALOG_DEMOD_AM, 6000));
+    g_create_result = 191;
+    assert(Connect(host, 4532) == 191);
+    RigctlRebindPeer(190, 191, 1);
+    assert(CachedModulationKind(191) == DSD_ANALOG_DEMOD_AM);
+    /* The next digital row: FM at the peer's own 12.5 kHz. */
+    push_response("RPRT 0\n");
+    assert(SetModulationKind(191, DSD_ANALOG_DEMOD_FM, 0));
+    static const char* const undo[] = {"M NFM 12500\n", NULL};
+    assert(sent_since(4, undo));
+    /* The scan stops: AM goes back to its own 10 kHz, then FM to its own 12.5 kHz. */
+    push_response("RPRT 0\n");
+    push_response("RPRT 0\n");
+    assert(RestoreScanModulation(191, DSD_ANALOG_DEMOD_FM, 0));
+    static const char* const restore[] = {"M AM 10000\n", "M NFM 12500\n", NULL};
+    assert(sent_since(5, restore));
+    assert(CachedModulationKind(191) == DSD_ANALOG_DEMOD_FM);
+
+    /* An nfm row's own 25 kHz on 192, and the scan stops right after the reconnect: the peer gets its own 12.5 kHz
+       back rather than keeping the row's. */
+    reset_stubs();
+    push_response("FM\n12500\n");
+    push_response("RPRT 0\n");
+    assert(SetScanRowModulation(192, DSD_ANALOG_DEMOD_FM, 25000));
+    g_create_result = 193;
+    assert(Connect(host, 4532) == 193);
+    RigctlRebindPeer(192, 193, 1);
+    push_response("RPRT 0\n");
+    assert(RestoreScanModulation(193, DSD_ANALOG_DEMOD_FM, 0));
+    static const char* const restore_fm[] = {"M NFM 12500\n", NULL};
+    assert(sent_since(2, restore_fm));
+    const dsd_rigctl_modulation after = CachedModulation(193);
+    assert(after.kind == DSD_ANALOG_DEMOD_FM && after.bandwidth == 0);
+
+    /* The peer may have restarted, or been changed, while the connection was down (often why it is reconnected): a
+       request for what it last accepted is sent all the same, and the own passbands read before are still what the
+       restore sends, with no read taking the row's for the peer's own. */
+    reset_stubs();
+    push_response("FM\n12500\n");
+    push_response("RPRT 0\n");
+    push_response("AM\n10000\n");
+    push_response("RPRT 0\n");
+    assert(SetScanRowModulation(208, DSD_ANALOG_DEMOD_AM, 6000));
+    g_create_result = 209;
+    assert(Connect(host, 4532) == 209);
+    RigctlRebindPeer(208, 209, 1);
+    const dsd_rigctl_modulation rebound = CachedModulation(209);
+    assert(rebound.kind == DSD_ANALOG_DEMOD_AM && rebound.bandwidth == 6000);
+    push_response("RPRT 0\n");
+    assert(SetScanRowModulation(209, DSD_ANALOG_DEMOD_AM, 6000));
+    static const char* const again[] = {"M AM 6000\n", NULL};
+    assert(sent_since(4, again));
+    assert(SetScanRowModulation(209, DSD_ANALOG_DEMOD_AM, 6000));
+    assert(g_command_count == 5);
+    push_response("RPRT 0\n");
+    push_response("RPRT 0\n");
+    assert(RestoreScanModulation(209, DSD_ANALOG_DEMOD_FM, 0));
+    static const char* const restore_both[] = {"M AM 10000\n", "M NFM 12500\n", NULL};
+    assert(sent_since(5, restore_both));
+
+    /* What the peer last accepted is still what a failed tune puts back: a tune right after the reconnect whose
+       frequency the peer refuses returns the peer to the passband of the row still on air (its own 25 kHz), not to the
+       peer's own from before the scan. */
+    reset_stubs();
+    push_response("FM\n12500\n");
+    push_response("RPRT 0\n");
+    assert(SetScanRowModulation(215, DSD_ANALOG_DEMOD_FM, 25000));
+    g_create_result = 216;
+    assert(Connect(host, 4532) == 216);
+    RigctlRebindPeer(215, 216, 1);
+    const dsd_rigctl_modulation before = CachedModulation(216);
+    assert(before.kind == DSD_ANALOG_DEMOD_FM && before.bandwidth == 25000);
+    push_response("RPRT 0\n");
+    assert(SetScanRowModulation(216, DSD_ANALOG_DEMOD_FM, 20000));
+    push_response("RPRT 0\n");
+    assert(RevertModulation(216, before));
+    static const char* const put_back[] = {"M NFM 20000\n", "M NFM 25000\n", NULL};
+    assert(sent_since(2, put_back));
+    return 0;
+}
+
+/*
+ * Issue #589: a reconnect to another host or port may reach another peer, whose own passbands the old record does not
+ * describe, or the same one under another name. While the old peer may run AM (an am row's, or either after a lost
+ * reply), the new socket's demodulator is not known: FM is sent before anything else is taken for it, a refusal
+ * fails (so a best-effort tune fails too, CachedModulationKind()), and the scan's restore sends FM. The old peer's own
+ * passbands are never sent to the new one.
+ */
+static int
+test_rebind_to_another_endpoint_asks_a_peer_that_may_run_am_for_fm(void) {
+    char host[] = "10.0.0.2";
+
+    /* The scan stops right after the reconnect: the restore asks for FM at the new peer's own passband (0). */
+    reset_stubs();
+    push_response("FM\n12500\n");
+    push_response("RPRT 0\n");
+    push_response("AM\n10000\n");
+    push_response("RPRT 0\n");
+    assert(SetScanRowModulation(194, DSD_ANALOG_DEMOD_AM, 6000));
+    g_create_result = 195;
+    assert(Connect(host, 4532) == 195);
+    RigctlRebindPeer(194, 195, 0);
+    assert(CachedModulationKind(195) == DSD_RIGCTL_KIND_UNKNOWN);
+    push_response("RPRT 0\n");
+    assert(RestoreScanModulation(195, DSD_ANALOG_DEMOD_FM, 0));
+    static const char* const restore[] = {"M NFM 0\n", NULL};
+    assert(sent_since(4, restore));
+    assert(CachedModulationKind(195) == DSD_ANALOG_DEMOD_FM);
+
+    /* A refusal of the FM leaves the demodulator not known, and the next request asks again. */
+    reset_stubs();
+    push_response("RPRT 0\n");
+    assert(SetModulationKind(196, DSD_ANALOG_DEMOD_AM, 6000));
+    g_create_result = 197;
+    assert(Connect(host, 4532) == 197);
+    RigctlRebindPeer(196, 197, 0);
+    push_response("RPRT -1\n");
+    push_response("RPRT -1\n");
+    assert(!SetModulationKind(197, DSD_ANALOG_DEMOD_FM, 0));
+    static const char* const refused[] = {"M NFM 0\n", "M FM 0\n", NULL};
+    assert(sent_since(1, refused));
+    assert(CachedModulationKind(197) == DSD_RIGCTL_KIND_UNKNOWN);
+    push_response("RPRT 0\n");
+    assert(SetModulationKind(197, DSD_ANALOG_DEMOD_FM, 0));
+    assert(g_command_count == 4 && strcmp(g_commands[3], "M NFM 0\n") == 0);
+    assert(CachedModulationKind(197) == DSD_ANALOG_DEMOD_FM);
+
+    /* A lost reply to a request for AM leaves the old peer on either demodulator: the same holds. */
+    reset_stubs();
+    assert(!SetModulationKind(198, DSD_ANALOG_DEMOD_AM, 6000));
+    assert(CachedModulationKind(198) == DSD_RIGCTL_KIND_UNKNOWN);
+    g_create_result = 199;
+    assert(Connect(host, 4532) == 199);
+    RigctlRebindPeer(198, 199, 0);
+    assert(CachedModulationKind(199) == DSD_RIGCTL_KIND_UNKNOWN);
+    return 0;
+}
+
+/*
+ * Issue #589: a reconnect to another host or port while the old peer runs FM (an nfm row's own passband, say) opens a
+ * fresh record, as a first connection does: a peer nothing was asked of keeps its own settings, and one that refuses
+ * mode requests (a rigctld radio) does not fail every best-effort tune. The old peer's own passband is not sent to it.
+ * With no record of a change to the old socket's peer (nothing it accepted, or no old socket at all) nothing is handed
+ * over either. Whatever is handed over, the record names the new socket afterwards: the old one is closed next, and a
+ * connection that later gets its number back (the TCP audio input's, outside the P25 SM tick guard) must not reset the
+ * record the watchdog's retunes use.
+ */
+static int
+test_rebind_opens_a_fresh_record_where_no_am_is_left_behind(void) {
+    char host[] = "10.0.0.2";
+
+    reset_stubs();
+    push_response("FM\n12500\n");
+    push_response("RPRT 0\n");
+    assert(SetScanRowModulation(200, DSD_ANALOG_DEMOD_FM, 25000));
+    g_create_result = 201;
+    assert(Connect(host, 4532) == 201);
+    RigctlRebindPeer(200, 201, 0);
+    assert(CachedModulationKind(201) == DSD_ANALOG_DEMOD_FM);
+    assert(SetModulationKind(201, DSD_ANALOG_DEMOD_FM, 0));
+    assert(RestoreScanModulation(201, DSD_ANALOG_DEMOD_FM, 0));
+    assert(g_command_count == 2);
+    push_response("RPRT -1\n");
+    push_response("RPRT -1\n");
+    assert(!SetModulationKind(201, DSD_ANALOG_DEMOD_FM, 12500));
+    assert(CachedModulationKind(201) == DSD_ANALOG_DEMOD_FM);
+
+    /* Nothing this client asked changed the old socket's peer (FM at its own passband is never sent to such a peer, and
+       -B was refused): nothing is handed over, even for the same endpoint, and the new socket is a peer nothing was
+       asked of, as on a first connection, which keeps its own settings. */
+    reset_stubs();
+    assert(SetModulationKind(211, DSD_ANALOG_DEMOD_FM, 0));
+    push_response("RPRT -1\n");
+    push_response("RPRT -1\n");
+    assert(!SetModulationKind(211, DSD_ANALOG_DEMOD_FM, 12500));
+    g_create_result = 212;
+    assert(Connect(host, 4532) == 212);
+    RigctlRebindPeer(211, 212, 1);
+    assert(dsd_rigctl_test_record_socket() == 212);
+    assert(SetModulationKind(212, DSD_ANALOG_DEMOD_FM, 0));
+    assert(RestoreScanModulation(212, DSD_ANALOG_DEMOD_FM, 0));
+    assert(g_command_count == 2);
+
+    /* The record describes another socket than the one replaced: none of it is handed over. */
+    reset_stubs();
+    push_response("RPRT 0\n");
+    assert(SetModulationKind(202, DSD_ANALOG_DEMOD_AM, 6000));
+    RigctlRebindPeer(203, 204, 1);
+    assert(dsd_rigctl_test_record_socket() == 204);
+    assert(CachedModulationKind(204) == DSD_ANALOG_DEMOD_FM);
+    assert(SetModulationKind(204, DSD_ANALOG_DEMOD_FM, 0));
+    assert(g_command_count == 1);
+
+    /* No old socket: a record left on DSD_INVALID_SOCKET (a request made on no connection) is not handed over. */
+    reset_stubs();
+    assert(!SetModulationKind(DSD_INVALID_SOCKET, DSD_ANALOG_DEMOD_AM, 6000));
+    RigctlRebindPeer(DSD_INVALID_SOCKET, 205, 0);
+    assert(dsd_rigctl_test_record_socket() == 205);
+    assert(CachedModulationKind(205) == DSD_ANALOG_DEMOD_FM);
+    assert(SetModulationKind(205, DSD_ANALOG_DEMOD_FM, 0));
+    assert(g_command_count == 1);
+    return 0;
+}
+
+/* Issue #589: once a reconnect closes the old rigctl socket, a later connection can get its number back. The
+ * frequency last set on the closed socket says nothing of the new connection's peer, so the rebind forgets it and a
+ * connection on a reused number is sent it again. A connection that replaces no rigctl socket (the TCP audio input's)
+ * leaves it alone. */
+static int
+test_rebind_forgets_the_frequency_a_reused_number_would_match(void) {
+    char host[] = "127.0.0.1";
+    reset_stubs();
+    push_response("RPRT 0\n");
+    assert(SetFreq(206, 851012500L));
+    g_create_result = 207;
+    assert(Connect(host, 7355) == 207);
+    assert(SetFreq(206, 851012500L));
+    assert(g_command_count == 1);
+    /* Two rigctl reconnects: 206 is replaced by 210 and closed, then 210 by a connection that gets 206 back. */
+    g_create_result = 210;
+    assert(Connect(host, 4532) == 210);
+    RigctlRebindPeer(206, 210, 1);
+    g_create_result = 206;
+    assert(Connect(host, 4532) == 206);
+    RigctlRebindPeer(210, 206, 1);
+    push_response("RPRT 0\n");
+    assert(SetFreq(206, 851012500L));
+    assert(g_command_count == 2 && strcmp(g_commands[1], "F 851012500\n") == 0);
+    return 0;
+}
+
 /* A reply that fills the whole receive buffer (1024 bytes) is terminated inside every caller's buffer: the frequency
  * query, the frequency set and the modulation set each read one. */
 static int
@@ -971,6 +1218,10 @@ main(void) {
     rc |= test_cached_modulation_kind_follows_what_the_peer_accepted();
     rc |= test_revert_modulation_puts_back_what_the_peer_ran();
     rc |= test_connect_on_another_socket_keeps_the_rigctl_record();
+    rc |= test_rebind_hands_the_scan_record_to_a_reconnect();
+    rc |= test_rebind_to_another_endpoint_asks_a_peer_that_may_run_am_for_fm();
+    rc |= test_rebind_opens_a_fresh_record_where_no_am_is_left_behind();
+    rc |= test_rebind_forgets_the_frequency_a_reused_number_would_match();
     rc |= test_full_size_replies_stay_in_bounds();
     rc |= test_get_current_freq_parses_first_line_and_errors();
     rc |= test_io_control_set_freq_validation_and_rigctl_dispatch();

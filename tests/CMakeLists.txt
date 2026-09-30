@@ -2372,6 +2372,20 @@ target_include_directories(
 )
 add_test(NAME UI_TCP_AUDIO_CONNECT COMMAND dsd-neo_test_ui_tcp_audio_connect)
 
+add_executable(
+    dsd-neo_test_ui_rigctl_connect
+    ui/test_ui_rigctl_connect.c
+    ${PROJECT_SOURCE_DIR}/src/app_control/rigctl_connect.c
+)
+target_include_directories(
+    dsd-neo_test_ui_rigctl_connect
+    PRIVATE
+        ${PROJECT_SOURCE_DIR}/include
+        ${PROJECT_SOURCE_DIR}/src/app_control
+        ${_PUBLIC_INCLUDES}
+)
+add_test(NAME UI_RIGCTL_CONNECT COMMAND dsd-neo_test_ui_rigctl_connect)
+
 add_executable(dsd-neo_test_ui_burst_active_call ui/test_ui_burst_active_call.c)
 target_include_directories(
     dsd-neo_test_ui_burst_active_call
@@ -5000,6 +5014,7 @@ if(NOT APPLE AND (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"))
             "-Wl,--wrap=rtl_stream_get_request_rate_hz"
             "-Wl,--wrap=rtl_stream_request_demod_profile"
             "-Wl,--wrap=SetFreq"
+            "-Wl,--wrap=SetModulation"
             "-Wl,--wrap=rtl_stream_request_fsk_reacquire"
             "-Wl,--wrap=rtl_stream_tune"
             "-Wl,--wrap=rtl_stream_tune_tagged"
@@ -5090,7 +5105,7 @@ target_include_directories(
 if(NOT APPLE AND (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"))
     target_compile_definitions(
         dsd-neo_test_engine_run_setup
-        PRIVATE DSD_NEO_TEST_RTL_START_WRAP=1
+        PRIVATE DSD_NEO_TEST_RTL_START_WRAP=1 DSD_NEO_TEST_RIGCTL_WRAP=1
     )
     target_link_libraries(
         dsd-neo_test_engine_run_setup
@@ -5101,6 +5116,8 @@ if(NOT APPLE AND (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"))
             "-Wl,--wrap=rtl_stream_create"
             "-Wl,--wrap=rtl_stream_start"
             "-Wl,--wrap=rtl_stream_destroy"
+            "-Wl,--wrap=Connect"
+            "-Wl,--wrap=RigctlRebindPeer"
             ${LIBS}
             dsd-neo_test_support
     )
@@ -5696,6 +5713,7 @@ if(NOT APPLE AND NOT WIN32 AND (CMAKE_C_COMPILER_ID MATCHES "GNU|Clang"))
             "LINKER:--wrap=dsd_audio_ensure_analog_output"
             "LINKER:--wrap=dsd_audio_ensure_digital_output"
             "LINKER:--wrap=svc_tcp_connect_audio"
+            "LINKER:--wrap=svc_rigctl_connect"
             "LINKER:--wrap=openAudioInput"
     )
 endif()

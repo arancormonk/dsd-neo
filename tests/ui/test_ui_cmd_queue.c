@@ -36,6 +36,7 @@
 #include <dsd-neo/platform/atomic_compat.h>
 #include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/platform/posix_compat.h>
+#include <dsd-neo/platform/sockets.h>
 #include <dsd-neo/platform/threading.h>
 #include <dsd-neo/platform/timing.h>
 #include <dsd-neo/protocol/dmr/dmr_trunk_sm.h>
@@ -86,11 +87,19 @@ static int g_tcp_connect_calls = 0;
 static int g_open_audio_input_stub_armed = 0;
 static int g_open_audio_input_stub_rc = 0;
 static int g_open_audio_input_calls = 0;
+/* Rigctl connect (issue #589): the real service unless a test arms a result; the endpoint it was asked for. */
+static int g_rigctl_connect_stub_armed = 0;
+static int g_rigctl_connect_stub_rc = 0;
+static int g_rigctl_connect_calls = 0;
+static char g_rigctl_connect_host[256];
+static int g_rigctl_connect_port = 0;
 
 // GNU ld --wrap entry points must keep the reserved __wrap_* symbol name.
 // NOLINTBEGIN(bugprone-reserved-identifier, cert-dcl37-c, cert-dcl51-cpp, misc-use-internal-linkage)
 int __real_svc_tcp_connect_audio(dsd_opts* opts, const char* host, int port);
 int __wrap_svc_tcp_connect_audio(dsd_opts* opts, const char* host, int port);
+int __real_svc_rigctl_connect(dsd_opts* opts, const char* host, int port);
+int __wrap_svc_rigctl_connect(dsd_opts* opts, const char* host, int port);
 int __real_openAudioInput(dsd_opts* opts);
 int __wrap_openAudioInput(dsd_opts* opts);
 int __wrap_io_control_set_freq(dsd_opts* opts, dsd_state* state, long int freq);
@@ -118,6 +127,25 @@ __wrap_svc_tcp_connect_audio(dsd_opts* opts, const char* host, int port) {
         opts->audio_in_type = AUDIO_IN_TCP;
     }
     return g_tcp_connect_stub_rc;
+}
+
+/* An armed connect succeeds or fails without a socket; a success leaves the options as the real service does: rigctl
+   on over a new socket to the requested endpoint. */
+int
+__wrap_svc_rigctl_connect(dsd_opts* opts, const char* host, int port) {
+    if (!g_rigctl_connect_stub_armed) {
+        return __real_svc_rigctl_connect(opts, host, port);
+    }
+    g_rigctl_connect_calls++;
+    DSD_SNPRINTF(g_rigctl_connect_host, sizeof g_rigctl_connect_host, "%s", host ? host : "");
+    g_rigctl_connect_port = port;
+    if (g_rigctl_connect_stub_rc == 0 && opts && host) {
+        DSD_SNPRINTF(opts->rigctlhostname, sizeof opts->rigctlhostname, "%s", host);
+        opts->rigctlportno = port;
+        opts->rigctl_sockfd = (dsd_socket_t)42;
+        opts->use_rigctl = 1;
+    }
+    return g_rigctl_connect_stub_rc;
 }
 
 int
@@ -166,6 +194,15 @@ arm_tcp_connect_stub(int armed, int rc) {
     g_tcp_connect_stub_armed = armed;
     g_tcp_connect_stub_rc = rc;
     g_tcp_connect_calls = 0;
+}
+
+static void
+arm_rigctl_connect_stub(int armed, int rc) {
+    g_rigctl_connect_stub_armed = armed;
+    g_rigctl_connect_stub_rc = rc;
+    g_rigctl_connect_calls = 0;
+    g_rigctl_connect_host[0] = '\0';
+    g_rigctl_connect_port = 0;
 }
 
 static void
@@ -2720,6 +2757,41 @@ test_tcp_connect_clears_received_tone(void) {
         freeState(&state);
     }
     arm_tcp_connect_stub(0, 0);
+    return rc;
+}
+
+/*
+ * Issue #589: the '9' key reconnects rigctl to the TCP input's host at the rigctl port through the service the menu's
+ * connect takes too, which hands the new socket the peer's record and closes the old one. It reports the service's
+ * outcome, as the menu's connect does, and its toasts name the host it asked for, since a reconnect that fails keeps
+ * the old endpoint in the options.
+ */
+static int
+test_rigctl_reconnect_key_uses_the_connect_service(void) {
+    int rc = 0;
+    static dsd_opts opts;
+    static dsd_state state;
+    for (int connects = 0; connects < 2; connects++) {
+        const char* tag = connects ? "rigctl reconnect key" : "refused rigctl reconnect key";
+        init_test_context(&opts, &state);
+        DSD_SNPRINTF(opts.tcp_hostname, sizeof opts.tcp_hostname, "%s", "sdr.example");
+        DSD_SNPRINTF(opts.rigctlhostname, sizeof opts.rigctlhostname, "%s", "localhost");
+        opts.rigctlportno = 4532;
+        opts.rigctl_sockfd = (dsd_socket_t)41;
+        opts.use_rigctl = 1;
+        arm_rigctl_connect_stub(1, connects ? 0 : -1);
+        rc |= expect_int(tag, post_empty(DSD_APP_CMD_RIGCTL_CONNECT), DSD_APP_COMMAND_SUBMIT_QUEUED);
+        rc |= expect_int(tag, dsd_app_drain_cmds(&opts, &state), 1);
+        rc |= expect_int(tag, dsd_app_command_test_last_failed(), connects ? 0 : 1);
+        rc |= expect_int(tag, g_rigctl_connect_calls, 1);
+        rc |= expect_str(tag, g_rigctl_connect_host, "sdr.example");
+        rc |= expect_int(tag, g_rigctl_connect_port, 4532);
+        rc |= expect_contains(tag, state.ui_msg,
+                              connects ? "Rigctl connected: sdr.example:4532"
+                                       : "Rigctl connect failed: sdr.example:4532");
+        freeState(&state);
+    }
+    arm_rigctl_connect_stub(0, 0);
     return rc;
 }
 
@@ -14359,6 +14431,7 @@ main(void) {
     rc |= test_config_apply_mode_change_clears_received_tone();
 #ifdef DSD_NEO_TEST_IO_CONTROL_WRAP
     rc |= test_tcp_connect_clears_received_tone();
+    rc |= test_rigctl_reconnect_key_uses_the_connect_service();
     rc |= test_stop_playback_pulse_failure_clears_received_tone();
 #endif
     rc |= test_trunk_set();

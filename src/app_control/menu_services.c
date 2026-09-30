@@ -24,7 +24,6 @@
 #include <dsd-neo/engine/p25_bandplan_export.h>
 #include <dsd-neo/engine/trunk_scan.h>
 #include <dsd-neo/io/control.h>
-#include <dsd-neo/io/rigctl_client.h>
 #include <dsd-neo/io/rtl_stream_c.h>
 #include <dsd-neo/io/udp_socket_connect.h>
 #include <dsd-neo/platform/file_compat.h>
@@ -150,22 +149,6 @@ svc_open_symbol_in(dsd_opts* opts, dsd_state* state, const char* filename) {
         state->symbol_replay_has_soft = 0;
     }
     return 0;
-}
-
-int
-svc_rigctl_connect(dsd_opts* opts, const char* host, int port) {
-    if (!opts || !host || port <= 0) {
-        return -1;
-    }
-    DSD_SNPRINTF(opts->rigctlhostname, sizeof opts->rigctlhostname, "%s", host);
-    opts->rigctlportno = port;
-    opts->rigctl_sockfd = Connect(opts->rigctlhostname, opts->rigctlportno);
-    if (opts->rigctl_sockfd != DSD_INVALID_SOCKET) {
-        opts->use_rigctl = 1;
-        return 0;
-    }
-    opts->use_rigctl = 0;
-    return -1;
 }
 
 int
