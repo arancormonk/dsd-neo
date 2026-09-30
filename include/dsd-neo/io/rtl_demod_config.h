@@ -227,6 +227,15 @@ void rtl_demod_enter_analog_family(struct demod_state* demod, struct output_stat
 int rtl_demod_open_cqpsk_request(int requested_cqpsk);
 
 /**
+ * The CQPSK family a switch from the analog family to a digital mode lands on for @p requested_cqpsk (1 CQPSK, 0 FSK
+ * discriminator, -1 none requested). With @p requested_is_explicit set and a request made (>= 0), the request is a
+ * trunk-scan target's own choice and stands whatever DSD_NEO_CQPSK says, as it does on a retune that stays on the
+ * digital family (issue #583); otherwise the switch lands where an open of the mode would
+ * (rtl_demod_open_cqpsk_request()).
+ */
+int rtl_demod_landing_cqpsk(int requested_cqpsk, int requested_is_explicit);
+
+/**
  * The channel profile a digital open filters with once it lands on @p landing_cqpsk, for a symbol profile whose
  * requester chose @p channel_profile for @p requested_cqpsk. With the channel filter off (@p channel_lpf_enabled 0:
  * DSD_NEO_CHANNEL_LPF=0, or the default rule below a 20 kHz DSP rate), an open on the FSK discriminator keeps the

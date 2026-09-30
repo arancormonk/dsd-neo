@@ -99,6 +99,14 @@ typedef struct rtl_stream_test_rx_request_result {
     int requested_cqpsk_while_pending; /* rtl_stream_requested_cqpsk() with the CQPSK-on request pending */
     int requested_cqpsk_analog_queued; /* ... with the analog request queued over CQPSK on */
     int requested_cqpsk_after_refusal; /* ... once that request was refused: the CQPSK state the stream kept */
+    /* The receive family (dsd_rx_family) the queued requests leave the stream on (issue #583), at the same three
+       points: the CQPSK-on request on the digital stream, the analog request over AM, and once it was refused. */
+    int requested_family_while_pending;
+    int requested_family_analog_queued;
+    int requested_family_after_refusal;
+    int requested_family_entry_queued; /* a switch onto the monitor queued on the digital stream */
+    int requested_family_entry_kept;   /* ... once refused where it landed: the digital family the stream kept */
+    int requested_family_digital_held; /* a switch to the digital family the demod thread holds for its profile */
     int refusal_reported;              /* rtl_stream_receive_request_refusal() for the refused request */
     int kept_analog_family;            /* the family it says the stream kept (on the analog family, at 12.5 kHz) */
     int kept_width_hz;                 /* the analog width it says the stream kept */
@@ -815,13 +823,30 @@ enum {
                                                         family, then its C4FM symbol profile */
 };
 
+/* The symbol profile a retune step queues for its target before it attaches the family
+ * (rtl_stream_test_retune_step::with_symbol_profile), as a digital row or target does. The explicit ones attach the
+ * digital family with cqpsk_explicit set, as the engine does for a trunk-scan target whose CQPSK choice is its own
+ * (issue #583): a P25 target with a modulation value, and every DMR or NXDN target. */
+enum {
+    RTL_STREAM_TEST_SYMBOL_NONE = 0,
+    RTL_STREAM_TEST_SYMBOL_P25_CQPSK = 1, /* P25 on CQPSK: 4800 sym/s, the P25 CQPSK channel filter */
+    RTL_STREAM_TEST_SYMBOL_DMR_FSK = 2,   /* DMR on the FSK discriminator: CQPSK off, 4800 sym/s, the 12.5 kHz filter */
+    RTL_STREAM_TEST_SYMBOL_P25_CQPSK_EXPLICIT = 3, /* P25 on CQPSK, the target's own choice (modulation=cqpsk) */
+    RTL_STREAM_TEST_SYMBOL_P25_C4FM_EXPLICIT = 4,  /* P25 on C4FM: CQPSK off, 4800 sym/s, the P25 C4FM channel filter,
+                                                      the target's own choice (modulation=c4fm) */
+    RTL_STREAM_TEST_SYMBOL_DMR_FSK_EXPLICIT = 5, /* DMR on the FSK discriminator, as a DMR trunk-scan target runs it */
+    /* P25 whose profile leaves the CQPSK state to the stream (cqpsk_enable -1), with the P25 CQPSK channel filter: what
+       a P25 target with no modulation queues under -mq while DSD_NEO_CQPSK is set. The decoder times it for CQPSK. */
+    RTL_STREAM_TEST_SYMBOL_P25_CQPSK_UNSET = 6,
+};
+
 /* One scan row's retune (issue #526): the receive family its profile attaches, and the live family request a scanner
  * or a command makes around it. */
 typedef struct rtl_stream_test_retune_step {
-    int family; /* dsd_rx_family the retune profile attaches */
+    int family; /* dsd_rx_family the retune profile attaches; -1 attaches none, as a digital-only session's retune */
     int kind;   /* analog demodulator (with the analog family) */
     int width_hz;
-    int with_symbol_profile;    /* queue a P25 CQPSK symbol profile for the target first, as a digital row does */
+    int with_symbol_profile;    /* RTL_STREAM_TEST_SYMBOL_*: queued for the target before the family is attached */
     int live_family_before;     /* -1, or a live family request made before the profile is queued */
     int live_family_after_take; /* -1, or a live family request made once the controller has taken the profile */
     int queued_live_request;    /* RTL_STREAM_TEST_QUEUED_*: made with a pipeline running, so it waits in the queue */
@@ -835,6 +860,12 @@ typedef struct rtl_stream_test_retune_landing {
     int applied_width_hz;    /* demod_state::channel_lpf_width_hz then */
     int applied_output_kind; /* demod_state::output_kind then */
     int applied_cqpsk_enable;
+    int applied_channel_profile; /* demod_state::channel_lpf_profile then */
+    int applied_output_rate;     /* the output rate then */
+    int applied_ted_sps;         /* demod_state::ted_sps then */
+    /* With a symbol profile: rtl_stream_output_rate_for_family() for the digital family, asked before the retune landed
+       with the CQPSK state the decoder times the target for and whether it is the target's own, as the decoder asks. */
+    int predicted_output_rate;
     /* With a queued_live_request: the same once the demod thread reached its next block boundary after the retune,
        and what became of the queued request (rtl_stream_receive_request_outcome()). */
     int boundary_family;
@@ -851,6 +882,136 @@ typedef struct rtl_stream_test_retune_landing {
  * pipeline running instead, so it waits for the demod thread, which reaches a block boundary once the retune landed. */
 int rtl_stream_test_retune_profile_sequence(const rtl_stream_test_retune_step* steps, size_t count,
                                             rtl_stream_test_retune_landing* out);
+
+/* rtl_stream_test_retune_profile_sequence() with the device settled on @p forced_rate_out_hz (0: none) from the open,
+ * where the FSK discriminator is resampled to 48 kHz and CQPSK is not (issue #583). */
+int rtl_stream_test_retune_profile_sequence_at_rate(const rtl_stream_test_retune_step* steps, size_t count,
+                                                    int forced_rate_out_hz, rtl_stream_test_retune_landing* out);
+
+/* rtl_stream_test_retune_profile_sequence_at_rate(), with each step whose bit is set in @p external_steps (bit i for
+ * step i, at most 32 steps) landed as an external backend's retune is (issue #583: a rigctl peer that tuned an RTL
+ * input): its queued profile applied from the decoder's thread with the pipeline running, through
+ * rtl_stream_apply_pending_retune_profile_for_target(), with no controller retune and no finalize. Such a step makes no
+ * live_family_after_take request, and its taken says the landing took the profile queued for its target. */
+int rtl_stream_test_retune_profile_sequence_external(const rtl_stream_test_retune_step* steps, size_t count,
+                                                     int forced_rate_out_hz, uint32_t external_steps,
+                                                     rtl_stream_test_retune_landing* out);
+
+/* An external backend's retune landing against a controller reconfiguration on another thread (issue #583). */
+typedef struct rtl_stream_test_external_landing_race_result {
+    /* The controller holds its reconfigure gate (controller_enter_reconfigure_gate()) when the landing starts. */
+    int landing_taken;             /* 1 when the landing took the profile queued for its target */
+    int landing_waited;            /* 1 when the landing was seen waiting for the gate while the controller held it */
+    int landed_during_reconfigure; /* 1 when the landing's receive part ran before the reconfiguration ended */
+    int held_output_kind;          /* demod_state::output_kind once both finished */
+    int held_output_rate;          /* the output rate then */
+    /* The landing holds the gate, stopped inside it, when a controller reconfiguration starts on another thread. */
+    int arriving_taken;
+    int reconfigure_waited;         /* 1 when the reconfiguration was seen waiting for the gate the landing held */
+    int reconfigure_during_landing; /* 1 when the reconfiguration entered the gate before the landing left it */
+    int gate_held_through_landing;  /* 1 when the gate was still closed once the reconfiguration had tried to enter */
+    int arriving_output_kind;
+    int arriving_output_rate;
+    int gate_open_after; /* 1 when the gate was open again once every thread finished */
+} rtl_stream_test_external_landing_race_result;
+
+/* Open DMR at 48 kHz on a device forced to 78,125 Hz and land two digital-family retunes as an external backend does
+ * (rtl_stream_apply_pending_retune_profile_for_target(), on a thread of its own standing for the decoder's): an
+ * explicit P25 CQPSK target's while the test thread holds the controller's reconfigure gate, then an explicit DMR
+ * target's, stopped inside the gate while a controller reconfiguration starts on a third thread. Each wait is bounded,
+ * so a landing or reconfiguration that never waits reports so instead of hanging the suite. */
+int rtl_stream_test_external_landing_against_reconfigure(rtl_stream_test_external_landing_race_result* out);
+
+/* What rtl_stream_family_landing_after_pending() answers at each point (issue #583). */
+typedef struct rtl_stream_test_family_landing_after_pending_result {
+    int digital_only;        /* a digital stream with nothing queued or in flight */
+    int width_queued;        /* an NFM width request queued on that stream, not yet taken by the demod thread */
+    int width_queued_public; /* the public query then, which reads no controller with none running */
+    int width_retiring;      /* a digital-family retune queued after it, taken by the controller */
+    int width_retired;       /* ... once that retune has landed and retired the request */
+    int width_outcome;       /* the request's outcome then (rtl_stream_receive_request_outcome()) */
+    /* A digital-family retune on the digital stream, with no analog work anywhere. */
+    int digital_queued;            /* queued on the controller */
+    int digital_taken;             /* ... taken by it, in flight */
+    int digital_landed_on_digital; /* ... landed */
+    int digital_superseded_queued; /* one queued, then a live digital family request made after the attach */
+    int digital_superseded_taken;  /* one taken, then a live digital family request made after the take */
+    int digital_stale_queued;      /* a digital-family profile left queued for a target a coalesced retune moved from */
+    int analog_queued;             /* an analog retune queued on the controller */
+    int analog_taken;              /* ... taken by it, in flight */
+    int analog_landed;             /* ... landed: the stream publishes the analog family */
+    int digital_landed;            /* a digital-family retune landed after it */
+    int analog_live;               /* the stream on the analog family again, nothing outstanding */
+    int analog_live_public;        /* the public query then, with no stream running: the published family it keeps */
+    int digital_in_flight;         /* a digital-family retune taken while the stream runs the analog family */
+    int digital_left_analog;       /* ... once it has landed */
+    int superseded_taken;          /* an analog retune taken, then a live digital family request made after the take */
+    int superseded_landed;         /* ... once it has landed, neither its family nor its profile applied */
+    /* Two retunes outstanding at once on a digital stream: one taken (in flight), one queued behind it. A plain retune
+     * carries no family. */
+    int analog_in_flight_digital_queued;  /* an analog retune in flight, a digital-family one queued */
+    int digital_in_flight_analog_queued;  /* a digital-family retune in flight, an analog one queued */
+    int digital_in_flight_digital_queued; /* a digital-family retune in flight, another queued */
+    int digital_in_flight_plain_queued;   /* a digital-family retune in flight, a plain one queued */
+    int plain_in_flight_digital_queued;   /* a plain retune in flight, a digital-family one queued */
+    int analog_in_flight_plain_queued;    /* an analog retune in flight, a plain one queued */
+    int stale_queued;  /* an analog profile left queued for a target a coalesced retune moved away from */
+    int landed_family; /* demod_state::analog_family once the last retune landed */
+} rtl_stream_test_family_landing_after_pending_result;
+
+/* Drive rtl_stream_family_landing_after_pending() on a DMR stream opened at 48 kHz, with a stand-in controller whose
+ * retunes are queued, taken and landed the way the controller thread does (without a device), and the real request
+ * queue, whose requests wait for the demod thread as with a pipeline running. */
+int rtl_stream_test_family_landing_after_pending(rtl_stream_test_family_landing_after_pending_result* out);
+
+/* When a live republish's digital family request lands against a retune that carries the digital family, already
+ * attached and taken by the controller when the republish is made (rtl_stream_test_live_digital_landing(), issue
+ * #583). */
+enum {
+    RTL_STREAM_TEST_LANDING_ALONE = 0,            /* no retune outstanding */
+    RTL_STREAM_TEST_LANDING_BEFORE_RETUNE = 1,    /* taken by the demod thread before the retune lands */
+    RTL_STREAM_TEST_LANDING_AFTER_SUPERSEDED = 2, /* taken once the retune, superseded by it, has landed */
+    RTL_STREAM_TEST_LANDING_AFTER_RETUNE = 3,     /* requested once the retune has landed, not superseded */
+    RTL_STREAM_TEST_LANDING_REPLACED = 4, /* a plain digital family request and its profile queued after it, before the
+                                             demod thread took either */
+};
+
+/* One live republish of a P25 target on a stream already on the digital family. */
+typedef struct rtl_stream_test_live_landing_case {
+    int forced_rate_out_hz; /* the demod rate the device settled on (0: none forced) */
+    int from_cqpsk;     /* the stream runs CQPSK (a P25 target's own), else the FSK discriminator (a DMR target's) */
+    int request_cqpsk;  /* the CQPSK state the republish's symbol profile asks for (the decoder's rf_mod == 1) */
+    int marked;         /* rtl_stream_request_digital_family_landing(), else rtl_stream_request_analog_profile() */
+    int cqpsk_explicit; /* what the marked request says of the profile's CQPSK state */
+    int order;          /* RTL_STREAM_TEST_LANDING_* */
+} rtl_stream_test_live_landing_case;
+
+typedef struct rtl_stream_test_live_landing_result {
+    /* rtl_stream_output_rate_for_family() for the digital family, asked before the republish with the CQPSK state its
+       profile asks for and cqpsk_explicit, as the decoder asks it; the profile's TED is timed for it. */
+    int predicted_output_rate;
+    int outstanding_queued;  /* rtl_stream_family_landing_after_pending() with the republish queued */
+    int outstanding_after;   /* ... once the republish and the retune have both landed */
+    int retune_output_kind;  /* demod_state::output_kind right after the retune landed (the AFTER orders) */
+    int retune_output_rate;  /* the output rate then */
+    int output_kind;         /* demod_state::output_kind once everything landed */
+    int cqpsk_enable;        /* demod_state::cqpsk_enable then */
+    int channel_profile;     /* demod_state::channel_lpf_profile then */
+    int output_rate;         /* the output rate then */
+    int ted_sps;             /* demod_state::ted_sps then */
+    int analog_family;       /* demod_state::analog_family then */
+    int family_switch_noted; /* the stream recorded a switch to the digital family (RtlSdrInternals::rx_family_switch) */
+    int request_outcome;     /* rtl_stream_receive_request_outcome() of the republish's family request */
+} rtl_stream_test_live_landing_result;
+
+/* On a DMR stream opened at 48 kHz with the device settled on the case's forced rate, put the front end on CQPSK or the
+ * FSK discriminator with a retune that carries no family, then queue a live republish as the decoder makes it (the
+ * digital family request, then a P25 symbol profile at 4800 sym/s with the filter of the CQPSK state it asks for and a
+ * TED timed for the predicted rate) and let the demod thread take it at a block boundary, in the case's order against a
+ * P25 retune that carries the digital family and leaves the CQPSK state to the stream. Retunes are queued, taken and
+ * landed on a stand-in controller the way the controller thread does it, without a device. */
+int rtl_stream_test_live_digital_landing(const rtl_stream_test_live_landing_case* c,
+                                         rtl_stream_test_live_landing_result* out);
 
 typedef struct rtl_stream_test_replay_state {
     int replay_input_eof;

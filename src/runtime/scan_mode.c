@@ -43,6 +43,11 @@ typedef struct {
     dsd_scan_option_values options;
     double squelch_entered_from;
     scan_squelch_pending squelch_pending;
+    /* The landing decision the row's symbol timing used (issue #583): 1 when the row was timed for the output rate the
+     * digital family lands on, 0 when for the live rate. Set by every timing of the row, and held at 1 by the row's
+     * later timings until the engine spends it on the row's retune (dsd_scan_mode_take_timed_digital_family()), which
+     * carries the digital family by it; a row's entry clears it. Decoder thread only. */
+    int timed_digital_family;
 } scan_scope;
 
 static const char* const mode_names[] = {"",      "p25", "dmr", "nxdn96", "nxdn48", "dpmr",
@@ -480,18 +485,69 @@ dsd_scan_mode_configured_digital(const dsd_opts* opts, const dsd_state* state) {
     return scan_configured_digital(opts, configured ? configured->analog_only : opts->analog_only);
 }
 
-/* The rate a row with @p symbol_rate_hz (0: no symbol clock) is timed for; see dsd_scan_mode_symbol_timing_rate_hz(). */
+/* Whether the target @p scope runs makes its own CQPSK choice, which stands over DSD_NEO_CQPSK where its tune lands out
+ * of the analog family (issue #583), and the CQPSK state the row lands with, in @p out_cqpsk. The choice is the
+ * target's under --trunk-scan for a P25 target with a modulation value (auto, c4fm or cqpsk), whose state is the
+ * modulation its decoder runs (@p decoder_cqpsk: the scanner puts the target's modulation, or an auto target's learned
+ * one, into rf_mod before the row is timed), and for a DMR or NXDN target, whose state is CQPSK off whatever the
+ * decoder's rf_mod says: the engine's GFSK chain always lands it on the FSK discriminator, and a -mq lock leaves such a
+ * target with no modulation of its own on rf_mod 1. Only the trunk-scan coordinator sets a scope's modulation
+ * (dsd_scan_mode_target_modulation()), and it maps exactly its DMR and NXDN target types to those three modes, so this
+ * is the rule the engine attaches the digital family by (dsd_engine_prepare_digital_family()), with the CQPSK state its
+ * profile queues: the decoder is timed, and a republish asks, for the CQPSK state the tune lands. A -Y row of the same
+ * modes, and a P25 target with no modulation, make no choice of their own: they land with @p decoder_cqpsk where an
+ * open of the mode would, DSD_NEO_CQPSK deciding when set. */
 static int
-scan_timing_rate_hz(const dsd_opts* opts, int configured_digital, int symbol_rate_hz, int cqpsk) {
+scan_scope_cqpsk_choice(const dsd_opts* opts, const scan_scope* scope, int decoder_cqpsk, int* out_cqpsk) {
+    *out_cqpsk = decoder_cqpsk ? 1 : 0;
+    if (!scope || opts->trunk_scan_enabled != 1) {
+        return 0;
+    }
+    switch (scope->mode) {
+        case DSD_SCAN_MODE_P25:
+            return (scope->modulation == DSD_SCAN_MODULATION_AUTO || scope->modulation == DSD_SCAN_MODULATION_C4FM
+                    || scope->modulation == DSD_SCAN_MODULATION_CQPSK)
+                       ? 1
+                       : 0;
+        case DSD_SCAN_MODE_DMR:
+        case DSD_SCAN_MODE_NXDN96:
+        case DSD_SCAN_MODE_NXDN48: *out_cqpsk = 0; return 1;
+        default: return 0;
+    }
+}
+
+/* The rate a row with @p symbol_rate_hz (0: no symbol clock) is timed for; see dsd_scan_mode_symbol_timing_rate_hz().
+ * @p cqpsk_explicit says @p cqpsk is the target's own choice (scan_scope_cqpsk_choice(), which gives both). @p row is
+ * the live scope of the row being timed, which records the landing decision this timing used (NULL: the configured
+ * decoder, no row). */
+static int
+scan_timing_rate_hz(const dsd_opts* opts, scan_scope* row, int configured_digital, int symbol_rate_hz, int cqpsk,
+                    int cqpsk_explicit) {
     const int input_rate = dsd_opts_current_input_timing_rate(opts);
+    const int timed_digital_family = row && row->timed_digital_family;
+    if (row) {
+        row->timed_digital_family = 0;
+    }
     if (opts->audio_in_type != AUDIO_IN_RTL) {
         return input_rate;
     }
-    if (symbol_rate_hz > 0 && configured_digital && dsd_rtl_stream_metrics_hook_analog_family_active()) {
-        /* The tune switches the family, and the output rate with it, only once it lands on the demod thread. */
-        const unsigned int landing_hz =
-            dsd_rtl_stream_metrics_hook_output_rate_for_family(DSD_RX_FAMILY_DIGITAL, cqpsk ? 1 : 0, symbol_rate_hz);
+    if (symbol_rate_hz > 0 && configured_digital
+        && (timed_digital_family || dsd_rtl_stream_metrics_hook_family_landing_after_pending())) {
+        /* The tune switches the family, and the output rate with it, only once it lands on the demod thread. It
+           lands the digital family whenever the engine attaches one to it, by the same answer (issue #583): the
+           analog family runs now, or an analog retune or request already outstanding lands it, or a retune that
+           carries the digital family is still outstanding (the row's own, when a command re-times the row before it
+           lands), which lands the digital family's landing even on a front end already digital. A row already timed
+           for that landing stays timed for it even when the answer has fallen to 0 since (the analog work
+           outstanding then failed, or was refused or replaced): the engine attaches the family to the row's retune
+           by the row's decision too (dsd_scan_mode_take_timed_digital_family()). It lands the target's own CQPSK
+           choice where it has one, and otherwise the one DSD_NEO_CQPSK names when set. */
+        const unsigned int landing_hz = dsd_rtl_stream_metrics_hook_output_rate_for_family(
+            DSD_RX_FAMILY_DIGITAL, cqpsk ? 1 : 0, symbol_rate_hz, cqpsk_explicit ? 1 : 0);
         if (landing_hz > 0U) {
+            if (row) {
+                row->timed_digital_family = 1;
+            }
             return (int)landing_hz;
         }
     }
@@ -504,28 +560,68 @@ dsd_scan_mode_symbol_timing_rate_hz(const dsd_opts* opts, const dsd_state* state
     if (!opts) {
         return 0;
     }
-    return scan_timing_rate_hz(opts, dsd_scan_mode_configured_digital(opts, state), symbol_rate_hz, cqpsk);
+    scan_scope* scope = scan_scope_get(state);
+    int landing_cqpsk = 0;
+    const int cqpsk_explicit = scan_scope_cqpsk_choice(opts, scope, cqpsk, &landing_cqpsk);
+    return scan_timing_rate_hz(opts, scope, dsd_scan_mode_configured_digital(opts, state), symbol_rate_hz,
+                               landing_cqpsk, cqpsk_explicit);
+}
+
+int
+dsd_scan_mode_timed_digital_family(const dsd_state* state) {
+    const scan_scope* scope = scan_scope_get(state);
+    return scope && scope->timed_digital_family ? 1 : 0;
+}
+
+int
+dsd_scan_mode_cqpsk_explicit(const dsd_opts* opts, const dsd_state* state, int* out_cqpsk) {
+    int cqpsk = (state && state->rf_mod == 1) ? 1 : 0;
+    const int cqpsk_explicit = opts ? scan_scope_cqpsk_choice(opts, scan_scope_get(state), cqpsk, &cqpsk) : 0;
+    if (out_cqpsk) {
+        *out_cqpsk = cqpsk;
+    }
+    return cqpsk_explicit;
+}
+
+int
+dsd_scan_mode_take_timed_digital_family(const dsd_state* state) {
+    scan_scope* scope = scan_scope_get(state);
+    if (!scope || !scope->timed_digital_family) {
+        return 0;
+    }
+    scope->timed_digital_family = 0;
+    return 1;
 }
 
 /* Time the decoder for the row @p scope describes. The scope's own configured baseline says whether the configured
  * mode is digital: dsd_opts already holds the row's class here, and the configured view is gone while suspended. An
- * analog row has no symbol clock and keeps the live rate. */
+ * analog row has no symbol clock and keeps the live rate. The live scope records the decision, @p scope itself or,
+ * for a row dsd_scan_mode_prepare() stages on a temporary scope, the one its tune is prepared under. */
 static void
 scan_scope_apply_timing(const dsd_opts* opts, dsd_state* state, const scan_scope* scope,
                         dsd_decode_mode_profile profile) {
     const int clock_hz = dsd_scan_mode_is_analog(scope->mode) ? 0 : profile.symbol_rate_hz;
-    const int rate_hz = scan_timing_rate_hz(opts, scan_configured_digital(opts, scope->configured.analog_only),
-                                            clock_hz, state->rf_mod == 1);
+    int landing_cqpsk = 0;
+    const int cqpsk_explicit = scan_scope_cqpsk_choice(opts, scope, state->rf_mod == 1, &landing_cqpsk);
+    const int rate_hz =
+        scan_timing_rate_hz(opts, scan_scope_get(state), scan_configured_digital(opts, scope->configured.analog_only),
+                            clock_hz, landing_cqpsk, cqpsk_explicit);
     state->samplesPerSymbol = dsd_opts_compute_sps_rate(opts, profile.symbol_rate_hz, rate_hz);
     state->symbolCenter = dsd_opts_symbol_center(state->samplesPerSymbol);
     state->sps_hunt_idx = (int)profile.sps_profile_index;
 }
 
-static void
-scan_scope_apply_decoder(dsd_opts* opts, dsd_state* state, const scan_scope* scope) {
+/* Put the row @p scope describes over the configured decoder, all but its symbol timing, and fill @p out_profile with
+ * the profile the row is timed with. Returns 0 for a blank row, which runs the configured decoder with its timing. The
+ * caller times the row (scan_scope_apply_timing()) once the modulation the row runs is decided: the preset's, the
+ * configured lock's or the scope's, and on resume the one a P25 row learned (dsd_scan_mode_resume()). */
+static int
+scan_scope_apply_row_decoder(dsd_opts* opts, dsd_state* state, const scan_scope* scope,
+                             dsd_decode_mode_profile* out_profile) {
     dsd_scan_settings_restore(&scope->configured, opts, state);
     if (scope->mode == DSD_SCAN_MODE_INHERIT) {
-        return;
+        *out_profile = dsd_scan_mode_profile(DSD_SCAN_MODE_INHERIT);
+        return 0;
     }
     opts->mod_p25p2_c4fm = 0;
     opts->mod_p25p2_profile_lock = 0;
@@ -553,12 +649,20 @@ scan_scope_apply_decoder(dsd_opts* opts, dsd_state* state, const scan_scope* sco
         dsd_scan_mode_apply_modulation(opts, scope->mode, scope->modulation);
         state->rf_mod = dsd_opts_modulation(opts);
     }
-    dsd_decode_mode_profile profile = dsd_scan_mode_profile(scope->mode);
+    *out_profile = dsd_scan_mode_profile(scope->mode);
     if (scope->mode == DSD_SCAN_MODE_P25 && opts->mod_p25p2_profile_lock
         && scope->configured.state_sps_hunt_idx == DSD_FRAME_SYNC_SPS_PROFILE_6000_4) {
-        profile = dsd_decode_mode_profile_for(DSDCFG_MODE_P25P2);
+        *out_profile = dsd_decode_mode_profile_for(DSDCFG_MODE_P25P2);
     }
-    scan_scope_apply_timing(opts, state, scope, profile);
+    return 1;
+}
+
+static void
+scan_scope_apply_decoder(dsd_opts* opts, dsd_state* state, const scan_scope* scope) {
+    dsd_decode_mode_profile profile;
+    if (scan_scope_apply_row_decoder(opts, state, scope, &profile)) {
+        scan_scope_apply_timing(opts, state, scope, profile);
+    }
 }
 
 typedef void (*scan_option_applier)(dsd_opts* opts, dsd_state* state, const dsd_scan_option_values* values);
@@ -795,6 +899,8 @@ dsd_scan_mode_enter(dsd_opts* opts, dsd_state* state, dsd_scan_mode mode) {
     scope->modulation = 0;
     scope->mode = mode;
     scope->suspended = 0;
+    /* A new row makes its own landing decision. */
+    scope->timed_digital_family = 0;
     scan_scope_apply(opts, state, scope);
     /* No push here: the row's own options follow, and dsd_scan_mode_options() pushes the net
      * change once. A transition already pending keeps its origin, since the demod has heard
@@ -870,7 +976,9 @@ scan_configured_retime(const dsd_opts* opts, dsd_state* state) {
     if (profile.symbol_rate_hz <= 0) {
         return;
     }
-    const int rate_hz = scan_timing_rate_hz(opts, 1, profile.symbol_rate_hz, state->rf_mod == 1);
+    /* The configured decoder is no target: its switch lands where an open of the mode would. It is no row either, so
+       the row's landing decision is left as it is. */
+    const int rate_hz = scan_timing_rate_hz(opts, NULL, 1, profile.symbol_rate_hz, state->rf_mod == 1, 0);
     state->samplesPerSymbol = dsd_opts_compute_sps_rate(opts, profile.symbol_rate_hz, rate_hz);
     state->symbolCenter = dsd_opts_symbol_center(state->samplesPerSymbol);
 }
@@ -885,17 +993,26 @@ dsd_scan_mode_resume(dsd_opts* opts, dsd_state* state) {
     dsd_scan_settings_capture(opts, state, &scope->configured);
     scope->configured_mode = dsd_infer_decode_mode_preset_exact(opts);
     scope->suspended = 0;
-    scan_scope_apply(opts, state, scope);
+    dsd_decode_mode_profile profile;
+    const int timed = scan_scope_apply_row_decoder(opts, state, scope, &profile);
     if (scope->mode == DSD_SCAN_MODE_P25) {
         /* Configuration updates do not move the receiver off its Phase 2 channel
          * or erase an unlocked modulation acquired on the current P25 row. */
         if (scope->effective.state_sps_hunt_idx == DSD_FRAME_SYNC_SPS_PROFILE_6000_4) {
-            scan_scope_apply_timing(opts, state, scope, dsd_decode_mode_profile_for(DSDCFG_MODE_P25P2));
+            profile = dsd_decode_mode_profile_for(DSDCFG_MODE_P25P2);
         }
         if (!opts->mod_cli_lock) {
             state->rf_mod = scope->effective.state_rf_mod;
         }
     }
+    /* Timed once the row runs the modulation it keeps (issue #583): a modulation=auto target that learned CQPSK gets
+       the preset's C4FM back from the row decoder until the lines above restore what it learned, and timed with that
+       C4FM it would be timed for the FSK discriminator's landing (its own choice stands over DSD_NEO_CQPSK there)
+       while it runs, and is republished with, CQPSK. */
+    if (timed) {
+        scan_scope_apply_timing(opts, state, scope, profile);
+    }
+    scan_options_apply(opts, state, &scope->options);
     dsd_scan_settings effective;
     dsd_scan_settings_capture(opts, state, &effective);
     /* Monitoring is audio routing, the row-scoped options are policy (forcing, CRC,
@@ -1171,6 +1288,12 @@ dsd_scan_mode_prepare(dsd_opts* opts, dsd_state* state, dsd_scan_mode mode, cons
     }
     if (dsd_scan_mode_begin(opts, state) != 0) {
         return -1;
+    }
+    /* The row staged here is the one the next retune is prepared for: it makes its own landing decision, which the
+       live scope records (scan_scope_apply_timing()). */
+    scan_scope* live = scan_scope_get(state);
+    if (live) {
+        live->timed_digital_family = 0;
     }
     dsd_scan_settings effective;
     dsd_scan_settings_capture(opts, state, &effective);

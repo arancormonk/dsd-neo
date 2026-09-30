@@ -6,6 +6,7 @@
 #include "dsd-neo/core/input_level.h"
 
 #include <dsd-neo/platform/atomic_compat.h>
+#include <dsd-neo/runtime/analog_channel.h>
 #include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
 
 #include <stdint.h>
@@ -114,6 +115,16 @@ dsd_rtl_stream_metrics_hook_apply_analog_profile(int family, int kind, int width
 }
 
 int
+dsd_rtl_stream_metrics_hook_request_digital_family_landing(int cqpsk_explicit) {
+    if (g_rtl_stream_metrics_hooks.request_digital_family_landing) {
+        return g_rtl_stream_metrics_hooks.request_digital_family_landing(cqpsk_explicit);
+    }
+    /* A table without it (a test's fake front end) gets the plain digital family request, as before the hook existed. */
+    (void)cqpsk_explicit;
+    return dsd_rtl_stream_metrics_hook_apply_analog_profile(DSD_RX_FAMILY_DIGITAL, DSD_ANALOG_DEMOD_FM, 0);
+}
+
+int
 dsd_rtl_stream_metrics_hook_analog_profile(int* out_kind, int* out_width_hz, int* out_lpf_on) {
     /* Outputs are zeroed whenever this returns 0, whatever an installed hook left in them. */
     if (g_rtl_stream_metrics_hooks.analog_profile
@@ -140,14 +151,25 @@ dsd_rtl_stream_metrics_hook_analog_family_active(void) {
     return 0;
 }
 
+int
+dsd_rtl_stream_metrics_hook_family_landing_after_pending(void) {
+    if (g_rtl_stream_metrics_hooks.family_landing_after_pending) {
+        return g_rtl_stream_metrics_hooks.family_landing_after_pending() > 0 ? 1 : 0;
+    }
+    /* A table without it (a test's fake front end) answers for the live family, as the decoder did before it. */
+    return dsd_rtl_stream_metrics_hook_analog_family_active();
+}
+
 unsigned int
-dsd_rtl_stream_metrics_hook_output_rate_for_family(int family, int cqpsk_enable, int symbol_rate_hz) {
+dsd_rtl_stream_metrics_hook_output_rate_for_family(int family, int cqpsk_enable, int symbol_rate_hz,
+                                                   int cqpsk_explicit) {
     if (g_rtl_stream_metrics_hooks.output_rate_for_family) {
-        return g_rtl_stream_metrics_hooks.output_rate_for_family(family, cqpsk_enable, symbol_rate_hz);
+        return g_rtl_stream_metrics_hooks.output_rate_for_family(family, cqpsk_enable, symbol_rate_hz, cqpsk_explicit);
     }
     (void)family;
     (void)cqpsk_enable;
     (void)symbol_rate_hz;
+    (void)cqpsk_explicit;
     return 0U;
 }
 

@@ -1243,6 +1243,284 @@ test_am_row_width_scope(void) {
     free(o);
 }
 
+/* --- Issue #583: the landing decision a row's timing used, which the engine attaches the digital family by --- */
+
+/* What the stream answers for whether the work outstanding lands a family, and how often it was asked. */
+static int g_after_pending_answer;
+static int g_after_pending_reads;
+
+static int
+fake_family_landing_after_pending(void) {
+    g_after_pending_reads++;
+    return g_after_pending_answer;
+}
+
+/* A front end on CQPSK at 78125 Hz, where a switch to the digital family lands at 48 kHz. */
+static unsigned int
+fake_live_output_rate(void) {
+    return 78125U;
+}
+
+static unsigned int
+fake_output_rate_for_family(int family, int cqpsk_enable, int symbol_rate_hz, int cqpsk_explicit) {
+    (void)cqpsk_enable;
+    (void)symbol_rate_hz;
+    (void)cqpsk_explicit;
+    return family == DSD_RX_FAMILY_DIGITAL ? 48000U : 0U;
+}
+
+/* A row timed while analog work is outstanding is timed for the digital family's landing and records it; its later
+ * timings keep that landing without asking the stream again, even once the work has failed, until the engine spends
+ * the decision on the row's retune. Entering or staging a row starts a new decision; an analog row, a row off RTL
+ * input and a row timed at the live rate record 0; a resume re-times the row and records what it used. */
+static void
+test_row_timing_records_its_landing_decision(void) {
+    dsd_opts* o = (dsd_opts*)calloc(1, sizeof(*o));
+    dsd_state* s = (dsd_state*)calloc(1, sizeof(*s));
+    assert(o && s);
+    o->wav_sample_rate = 48000;
+    o->audio_in_type = AUDIO_IN_RTL;
+    o->rtl_dsp_bw_khz = 48;
+    o->frame_dmr = 1;
+    const dsd_rtl_stream_metrics_hooks hooks = {.output_rate_hz = fake_live_output_rate,
+                                                .family_landing_after_pending = fake_family_landing_after_pending,
+                                                .output_rate_for_family = fake_output_rate_for_family};
+    dsd_rtl_stream_metrics_hooks_set(&hooks);
+    assert(dsd_scan_mode_timed_digital_family(s) == 0 && dsd_scan_mode_take_timed_digital_family(s) == 0);
+
+    g_after_pending_answer = 1;
+    assert(dsd_scan_mode_enter(o, s, DSD_SCAN_MODE_DMR) == 0);
+    assert(s->samplesPerSymbol == 10 && dsd_scan_mode_timed_digital_family(s) == 1);
+    /* The outstanding analog work fails before the row's retune is prepared. */
+    g_after_pending_answer = 0;
+    g_after_pending_reads = 0;
+    assert(dsd_scan_mode_symbol_timing_rate_hz(o, s, 4800, 0) == 48000);
+    assert(g_after_pending_reads == 0 && dsd_scan_mode_timed_digital_family(s) == 1);
+    assert(dsd_scan_mode_suspend(o, s));
+    (void)dsd_scan_mode_resume(o, s);
+    assert(s->samplesPerSymbol == 10 && dsd_scan_mode_timed_digital_family(s) == 1);
+    assert(dsd_scan_mode_take_timed_digital_family(s) == 1);
+    assert(dsd_scan_mode_timed_digital_family(s) == 0 && dsd_scan_mode_take_timed_digital_family(s) == 0);
+    /* Spent: the row's next timing asks the stream again, and times it at the live rate. */
+    assert(dsd_scan_mode_symbol_timing_rate_hz(o, s, 4800, 0) == 78125);
+    assert(g_after_pending_reads == 1 && dsd_scan_mode_timed_digital_family(s) == 0);
+
+    /* A decision no retune spent does not outlive its row. */
+    g_after_pending_answer = 1;
+    assert(dsd_scan_mode_symbol_timing_rate_hz(o, s, 4800, 0) == 48000 && dsd_scan_mode_timed_digital_family(s) == 1);
+    g_after_pending_answer = 0;
+    assert(dsd_scan_mode_enter(o, s, DSD_SCAN_MODE_P25) == 0);
+    assert(s->samplesPerSymbol == 16 && dsd_scan_mode_timed_digital_family(s) == 0);
+    /* A -Y row staged for its tune records its decision in the live scope, for the retune prepared next. */
+    g_after_pending_answer = 1;
+    dsd_scan_settings prepared;
+    assert(dsd_scan_mode_prepare(o, s, DSD_SCAN_MODE_DMR, NULL, &prepared) == 0);
+    assert(prepared.state_samplesPerSymbol == 10 && dsd_scan_mode_timed_digital_family(s) == 1);
+    /* An analog row has no symbol clock, and a blank row no timing of its own. */
+    assert(dsd_scan_mode_enter(o, s, DSD_SCAN_MODE_NFM) == 0);
+    assert(dsd_scan_mode_timed_digital_family(s) == 0);
+    assert(dsd_scan_mode_prepare(o, s, DSD_SCAN_MODE_DMR, NULL, &prepared) == 0);
+    assert(dsd_scan_mode_prepare(o, s, DSD_SCAN_MODE_INHERIT, NULL, &prepared) == 0);
+    assert(dsd_scan_mode_timed_digital_family(s) == 0);
+    /* Off RTL input the input's rate times the row. */
+    o->audio_in_type = AUDIO_IN_WAV;
+    assert(dsd_scan_mode_enter(o, s, DSD_SCAN_MODE_DMR) == 0);
+    assert(dsd_scan_mode_timed_digital_family(s) == 0);
+    dsd_scan_mode_leave(o, s);
+    assert(dsd_scan_mode_timed_digital_family(s) == 0 && dsd_scan_mode_take_timed_digital_family(s) == 0);
+
+    dsd_rtl_stream_metrics_hooks_set(NULL);
+    dsd_state_ext_free_all(s);
+    free(s);
+    free(o);
+}
+
+/* DSD_NEO_CQPSK as the fake front end below applies it where the digital family lands: -1 unset, else the CQPSK state
+ * it forces unless the choice is a trunk-scan target's own. */
+static int g_fake_cqpsk_env = -1;
+
+/* A front end left on CQPSK at 78125 Hz: a landing on CQPSK runs there, one on the FSK discriminator is resampled to
+ * 48 kHz. */
+static unsigned int
+fake_cqpsk_landing_rate_for_family(int family, int cqpsk_enable, int symbol_rate_hz, int cqpsk_explicit) {
+    (void)symbol_rate_hz;
+    if (family != DSD_RX_FAMILY_DIGITAL) {
+        return 0U;
+    }
+    const int landing_cqpsk = (g_fake_cqpsk_env >= 0 && !cqpsk_explicit) ? g_fake_cqpsk_env : cqpsk_enable;
+    return landing_cqpsk > 0 ? 78125U : 48000U;
+}
+
+/* Issue #583: a P25 trunk-scan target with modulation=auto that learned CQPSK is timed on resume for the CQPSK it runs,
+ * the state dsd_scan_mode_resume() puts back, not for the preset's C4FM the scope applies on the way. With a retune
+ * that carries the digital family still outstanding the row is timed for that family's landing, where the target's
+ * own choice stands over DSD_NEO_CQPSK=1: timed with the preset's C4FM it would get the FSK discriminator's 48 kHz
+ * (10 samples per 4800 Bd symbol) where it runs CQPSK at 78125 Hz (16), and on its Phase 2 channel 8 samples per 6000
+ * Bd symbol where it gets 13. A scoped command (the DMR inversion edited under the suspended scope) changes the row, so
+ * the resume keeps the timing it computed. */
+static void
+test_resume_times_the_learned_modulation(void) {
+    dsd_opts* o = (dsd_opts*)calloc(1, sizeof(*o));
+    dsd_state* s = (dsd_state*)calloc(1, sizeof(*s));
+    assert(o && s);
+    o->wav_sample_rate = 48000;
+    o->audio_in_type = AUDIO_IN_RTL;
+    o->rtl_dsp_bw_khz = 48;
+    o->trunk_scan_enabled = 1;
+    assert(dsd_apply_decode_mode_preset(DSDCFG_MODE_P25P1, DSD_DECODE_PRESET_PROFILE_CLI, o, s) == 0);
+    const dsd_rtl_stream_metrics_hooks hooks = {.output_rate_hz = fake_live_output_rate,
+                                                .family_landing_after_pending = fake_family_landing_after_pending,
+                                                .output_rate_for_family = fake_cqpsk_landing_rate_for_family};
+    dsd_rtl_stream_metrics_hooks_set(&hooks);
+    g_fake_cqpsk_env = 1;
+    g_after_pending_answer = 1;
+
+    assert(dsd_scan_mode_enter(o, s, DSD_SCAN_MODE_P25) == 0);
+    dsd_scan_mode_target_modulation(s, DSD_SCAN_MODULATION_AUTO);
+    assert(dsd_scan_mode_options(o, s, NULL) == 0);
+    /* The target learned CQPSK on its control channel, and its switch timed it for that (trunk_scan.c). */
+    s->rf_mod = 1;
+    s->samplesPerSymbol = 16;
+    s->symbolCenter = dsd_opts_symbol_center(16);
+    assert(dsd_scan_mode_suspend(o, s));
+    o->inverted_dmr = !o->inverted_dmr;
+    assert(dsd_scan_mode_resume(o, s) == 1);
+    assert(s->rf_mod == 1);
+    assert(s->samplesPerSymbol == 16 && s->symbolCenter == dsd_opts_symbol_center(16));
+    assert(dsd_scan_mode_timed_digital_family(s) == 1);
+
+    /* On its Phase 2 channel the resume keeps the 6000 Bd profile, timed for the same CQPSK. */
+    s->sps_hunt_idx = DSD_FRAME_SYNC_SPS_PROFILE_6000_4;
+    s->samplesPerSymbol = 13;
+    assert(dsd_scan_mode_suspend(o, s));
+    o->inverted_dmr = !o->inverted_dmr;
+    assert(dsd_scan_mode_resume(o, s) == 1);
+    assert(s->rf_mod == 1 && s->sps_hunt_idx == DSD_FRAME_SYNC_SPS_PROFILE_6000_4);
+    assert(s->samplesPerSymbol == 13);
+
+    dsd_scan_mode_leave(o, s);
+    g_fake_cqpsk_env = -1;
+    g_after_pending_answer = 0;
+    dsd_rtl_stream_metrics_hooks_set(NULL);
+    dsd_state_ext_free_all(s);
+    free(s);
+    free(o);
+}
+
+/* The scope's rule for a trunk-scan target's own CQPSK choice (issue #583), which a live republish of the row asks
+ * with dsd_scan_mode_cqpsk_explicit(): P25 with a modulation value, and DMR or NXDN at either rate, under
+ * --trunk-scan; not a P25 target with no modulation, an analog row, a -Y row, nor without a scope or options. With it
+ * comes the CQPSK state the row lands with: a P25 target's is the modulation its decoder runs, a DMR or NXDN target's
+ * is CQPSK off whatever rf_mod a -mq lock left it on (the FSK its GFSK chain always lands), and a row that makes no
+ * choice of its own lands with the decoder's, which DSD_NEO_CQPSK then overrides when set. */
+static void
+test_scope_cqpsk_explicit_rule(void) {
+    dsd_opts* o = (dsd_opts*)calloc(1, sizeof(*o));
+    dsd_state* s = (dsd_state*)calloc(1, sizeof(*s));
+    assert(o && s);
+    o->wav_sample_rate = 48000;
+    o->trunk_scan_enabled = 1;
+    int cqpsk = -1;
+    assert(dsd_scan_mode_cqpsk_explicit(o, s, &cqpsk) == 0 && cqpsk == 0);
+    assert(dsd_scan_mode_enter(o, s, DSD_SCAN_MODE_P25) == 0);
+    s->rf_mod = 1;
+    assert(dsd_scan_mode_cqpsk_explicit(o, s, &cqpsk) == 0 && cqpsk == 1);
+    static const dsd_scan_modulation own[] = {DSD_SCAN_MODULATION_AUTO, DSD_SCAN_MODULATION_C4FM,
+                                              DSD_SCAN_MODULATION_CQPSK};
+    for (size_t i = 0; i < sizeof own / sizeof own[0]; i++) {
+        dsd_scan_mode_target_modulation(s, own[i]);
+        for (int rf_mod = 0; rf_mod <= 1; rf_mod++) {
+            s->rf_mod = rf_mod;
+            cqpsk = -1;
+            assert(dsd_scan_mode_cqpsk_explicit(o, s, &cqpsk) == 1 && cqpsk == rf_mod);
+        }
+    }
+    assert(dsd_scan_mode_cqpsk_explicit(o, s, NULL) == 1);
+    assert(dsd_scan_mode_cqpsk_explicit(NULL, s, &cqpsk) == 0);
+    static const dsd_scan_mode gfsk[] = {DSD_SCAN_MODE_DMR, DSD_SCAN_MODE_NXDN96, DSD_SCAN_MODE_NXDN48};
+    for (size_t i = 0; i < sizeof gfsk / sizeof gfsk[0]; i++) {
+        assert(dsd_scan_mode_enter(o, s, gfsk[i]) == 0);
+        s->rf_mod = 1;
+        cqpsk = -1;
+        assert(dsd_scan_mode_cqpsk_explicit(o, s, &cqpsk) == 1 && cqpsk == 0);
+    }
+    assert(dsd_scan_mode_enter(o, s, DSD_SCAN_MODE_NFM) == 0);
+    s->rf_mod = 1;
+    assert(dsd_scan_mode_cqpsk_explicit(o, s, &cqpsk) == 0 && cqpsk == 1);
+    o->trunk_scan_enabled = 0;
+    assert(dsd_scan_mode_enter(o, s, DSD_SCAN_MODE_DMR) == 0);
+    s->rf_mod = 1;
+    assert(dsd_scan_mode_cqpsk_explicit(o, s, &cqpsk) == 0 && cqpsk == 1);
+    dsd_scan_mode_leave(o, s);
+    o->trunk_scan_enabled = 1;
+    s->rf_mod = 0;
+    assert(dsd_scan_mode_cqpsk_explicit(o, s, &cqpsk) == 0 && cqpsk == 0);
+    dsd_state_ext_free_all(s);
+    free(s);
+    free(o);
+}
+
+/* Issue #583: a DMR or NXDN trunk-scan target runs the FSK discriminator, the CQPSK choice the engine's GFSK chain
+ * makes its own, also when a -mq lock leaves the decoder's rf_mod on CQPSK (a target with no modulation). With a
+ * retune that carries the digital family outstanding, on a front end left on CQPSK at 78125 Hz under DSD_NEO_CQPSK=0,
+ * the target's entry and a scoped command's resume time it for the FSK discriminator's 48 kHz landing (10 samples per
+ * 4800 Bd symbol, 20 per 2400 Bd one), not for CQPSK at 78125 Hz (16 or 33): the rate the target's GFSK retune lands
+ * and the republish after the resume asks for. A caller's own CQPSK state gives way to the target's choice, so whatever
+ * state it times the target with, the timing is the one that landing runs at. */
+static void
+test_gfsk_target_timed_for_its_fsk_landing(void) {
+    dsd_opts* o = (dsd_opts*)calloc(1, sizeof(*o));
+    dsd_state* s = (dsd_state*)calloc(1, sizeof(*s));
+    assert(o && s);
+    o->wav_sample_rate = 48000;
+    o->audio_in_type = AUDIO_IN_RTL;
+    o->rtl_dsp_bw_khz = 48;
+    o->trunk_scan_enabled = 1;
+    assert(dsd_apply_decode_mode_preset(DSDCFG_MODE_DMR, DSD_DECODE_PRESET_PROFILE_CLI, o, s) == 0);
+    /* -mq */
+    dsd_scan_mode_apply_modulation(o, DSD_SCAN_MODE_P25, DSD_SCAN_MODULATION_CQPSK);
+    s->rf_mod = 1;
+    const dsd_rtl_stream_metrics_hooks hooks = {.output_rate_hz = fake_live_output_rate,
+                                                .family_landing_after_pending = fake_family_landing_after_pending,
+                                                .output_rate_for_family = fake_cqpsk_landing_rate_for_family};
+    dsd_rtl_stream_metrics_hooks_set(&hooks);
+    g_fake_cqpsk_env = 0;
+    g_after_pending_answer = 1;
+
+    static const struct {
+        dsd_scan_mode mode;
+        int symbol_rate_hz;
+    } targets[] = {
+        {DSD_SCAN_MODE_DMR, 4800},
+        {DSD_SCAN_MODE_NXDN96, 4800},
+        {DSD_SCAN_MODE_NXDN48, 2400},
+    };
+
+    for (size_t i = 0; i < sizeof targets / sizeof targets[0]; i++) {
+        const int fsk_sps = dsd_opts_compute_sps_rate(o, targets[i].symbol_rate_hz, 48000);
+        assert(fsk_sps != dsd_opts_compute_sps_rate(o, targets[i].symbol_rate_hz, 78125));
+        assert(dsd_scan_mode_enter(o, s, targets[i].mode) == 0);
+        assert(dsd_scan_mode_options(o, s, NULL) == 0);
+        /* The -mq lock keeps the decoder on CQPSK: only the target's own choice says FSK. */
+        assert(s->rf_mod == 1);
+        assert(s->samplesPerSymbol == fsk_sps && dsd_scan_mode_timed_digital_family(s) == 1);
+        assert(dsd_scan_mode_symbol_timing_rate_hz(o, s, targets[i].symbol_rate_hz, 1) == 48000);
+        assert(dsd_scan_mode_suspend(o, s));
+        o->inverted_dmr = !o->inverted_dmr;
+        (void)dsd_scan_mode_resume(o, s);
+        assert(s->rf_mod == 1);
+        assert(s->samplesPerSymbol == fsk_sps && s->symbolCenter == dsd_opts_symbol_center(fsk_sps));
+    }
+
+    dsd_scan_mode_leave(o, s);
+    g_fake_cqpsk_env = -1;
+    g_after_pending_answer = 0;
+    dsd_rtl_stream_metrics_hooks_set(NULL);
+    dsd_state_ext_free_all(s);
+    free(s);
+    free(o);
+}
+
 int
 main(void) {
     test_nfm_class_names();
@@ -1262,6 +1540,10 @@ main(void) {
     test_tone_row_override_scope();
     test_configured_tone_policy_edit();
     test_configured_squelch_edit();
+    test_row_timing_records_its_landing_decision();
+    test_resume_times_the_learned_modulation();
+    test_scope_cqpsk_explicit_rule();
+    test_gfsk_target_timed_for_its_fsk_landing();
     dsd_opts* o = (dsd_opts*)calloc(1, sizeof(*o));
     dsd_state* s = (dsd_state*)calloc(1, sizeof(*s));
     dsd_state* copy = (dsd_state*)calloc(1, sizeof(*copy));

@@ -1555,7 +1555,7 @@ paths; they are not part of RTL-family digital FSK symbol decode.
 - `DSD_NEO_COSTAS_BW=<float>`, `DSD_NEO_COSTAS_DAMPING=<float>` — Costas loop tuning
 - `DSD_NEO_CHANNEL_LPF=0|1` — channel LPF enable/disable (auto-enabled at RTL DSP rates >=20 kHz; mode passbands protect nominal channel edges). An explicit analog width (`--nfm-bandwidth-hz`, `--am-bandwidth-hz`) and AM (`-fM`, its default width included) always run the filter, and `0` with either is an error
 - `DSD_NEO_WINDOW_FREEZE=1` — freeze symbol‑center window timing for debugging
-- `DSD_NEO_CQPSK=1` — enable CQPSK demodulation (`0` forces the FSK discriminator) for digital modes; the analog monitor always demodulates FM (`-fA`) or AM (`-fM`)
+- `DSD_NEO_CQPSK=1` — enable CQPSK demodulation (`0` forces the FSK discriminator) for digital modes; the analog monitor always demodulates FM (`-fA`) or AM (`-fM`). A `--trunk-scan` target that names its own `modulation` (`auto`, `c4fm`, `cqpsk`) keeps it, and a DMR or NXDN target keeps the FSK discriminator, whatever this says, after an analog target as after a digital one
 - `DSD_NEO_CQPSK_SYNC_INV=1`, `DSD_NEO_CQPSK_SYNC_NEG=1` — CQPSK sync polarity tweaks
 
 Misc

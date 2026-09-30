@@ -11,7 +11,9 @@
 #include <dsd-neo/dsp/demod_state.h>
 #include <dsd-neo/io/iq_types.h>
 #include <dsd-neo/io/rtl_stream_c.h>
+#include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/runtime/analog_channel.h>
+#include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/exitflag.h>
 #include <dsd-neo/runtime/input_failure.h>
 #include <dsd-neo/runtime/log.h>
@@ -862,6 +864,512 @@ test_retune_family_superseded_while_it_lands(void) {
     return failed;
 }
 
+/* A DMR target's retune after an analog target's (issue #583): with the digital family attached it leaves the analog
+ * family the analog retune landed, and its symbol profile runs the FSK discriminator rather than monitor audio. */
+static int
+test_dmr_retune_after_an_analog_retune_lands_on_fsk(void) {
+    const rtl_stream_test_retune_step steps[] = {
+        {DSD_RX_FAMILY_ANALOG, DSD_ANALOG_DEMOD_FM, 12500, RTL_STREAM_TEST_SYMBOL_NONE, -1, -1,
+         RTL_STREAM_TEST_QUEUED_NONE, 0},
+        {DSD_RX_FAMILY_DIGITAL, DSD_ANALOG_DEMOD_FM, 0, RTL_STREAM_TEST_SYMBOL_DMR_FSK, -1, -1,
+         RTL_STREAM_TEST_QUEUED_NONE, 0},
+    };
+    rtl_stream_test_retune_landing r[2];
+    DSD_MEMSET(r, 0, sizeof r);
+    int failed = expect_int_eq("dmr after nfm hook", rtl_stream_test_retune_profile_sequence(steps, 2U, r), 0);
+    failed |= expect_landing("nfm target", &r[0], 1, 12500, DSD_DEMOD_OUTPUT_AUDIO_MONITOR);
+    failed |= expect_landing("dmr target after it", &r[1], 0, 0, DSD_DEMOD_OUTPUT_FSK_DISCRIMINATOR);
+    failed |= expect_int_eq("dmr target runs CQPSK off", r[1].applied_cqpsk_enable, 0);
+    return failed;
+}
+
+/* The DSP rate the device settles on in these cases: CQPSK runs at it, the FSK discriminator is resampled to 48 kHz. */
+static const int kForcedDemodRateHz = 78125;
+/* The TED the test's symbol profiles queue (rtl_stream_test_retune_profile_sequence()), timed for 48 kHz. */
+static const int kQueuedTedSps = 10;
+/* The TED an open or a switch to the digital family times a 4800 sym/s profile with at the forced rate. */
+static const int kLandingTedSps = (kForcedDemodRateHz + (4800 / 2)) / 4800;
+
+namespace {
+/* One digital target's landing after an nfm target's (issue #583): the symbol profile it queues, and what it must land
+ * on under the DSD_NEO_CQPSK value a case sets. */
+struct item3_landing {
+    const char* name;
+    int symbol_profile; /* RTL_STREAM_TEST_SYMBOL_* */
+    int cqpsk_enable;
+    int output_kind;
+    int channel_profile;
+    int output_rate;
+};
+} // namespace
+
+/* Under DSD_NEO_CQPSK=@p cqpsk_env, land each of @p want's digital targets after an nfm target on a stream whose device
+ * settled on 78125 Hz (where the FSK discriminator is resampled to 48 kHz and CQPSK is not), and check what it lands
+ * on, and that rtl_stream_output_rate_for_family(), asked beforehand with the profile's CQPSK state and whether it is
+ * the target's own, predicted the rate it runs at. */
+static int
+expect_item3_landings(const char* cqpsk_env, const item3_landing* want, size_t count) {
+    enum { kMaxTargets = 8 };
+
+    if (count == 0U || count > kMaxTargets) {
+        return 1;
+    }
+    (void)dsd_setenv("DSD_NEO_CQPSK", cqpsk_env, 1);
+    dsd_neo_config_init();
+    rtl_stream_test_retune_step steps[2U * kMaxTargets];
+    DSD_MEMSET(steps, 0, sizeof steps);
+    for (size_t i = 0; i < count; i++) {
+        steps[2U * i] = {DSD_RX_FAMILY_ANALOG,
+                         DSD_ANALOG_DEMOD_FM,
+                         12500,
+                         RTL_STREAM_TEST_SYMBOL_NONE,
+                         -1,
+                         -1,
+                         RTL_STREAM_TEST_QUEUED_NONE,
+                         0};
+        steps[(2U * i) + 1U] = {DSD_RX_FAMILY_DIGITAL,
+                                DSD_ANALOG_DEMOD_FM,
+                                0,
+                                want[i].symbol_profile,
+                                -1,
+                                -1,
+                                RTL_STREAM_TEST_QUEUED_NONE,
+                                0};
+    }
+    rtl_stream_test_retune_landing r[2U * kMaxTargets];
+    DSD_MEMSET(r, 0, sizeof r);
+    char label[160];
+    DSD_SNPRINTF(label, sizeof label, "DSD_NEO_CQPSK=%s: item 3 sequence hook", cqpsk_env);
+    int failed = expect_int_eq(label, rtl_stream_test_retune_profile_sequence_at_rate(steps, 2U * count, 78125, r), 0);
+    for (size_t i = 0; i < count; i++) {
+        const rtl_stream_test_retune_landing* nfm = &r[2U * i];
+        const rtl_stream_test_retune_landing* digital = &r[(2U * i) + 1U];
+        DSD_SNPRINTF(label, sizeof label, "DSD_NEO_CQPSK=%s: nfm target before %s", cqpsk_env, want[i].name);
+        failed |= expect_landing(label, nfm, 1, 12500, DSD_DEMOD_OUTPUT_AUDIO_MONITOR);
+        DSD_SNPRINTF(label, sizeof label, "DSD_NEO_CQPSK=%s: %s", cqpsk_env, want[i].name);
+        failed |= expect_landing(label, digital, 0, 0, want[i].output_kind);
+        DSD_SNPRINTF(label, sizeof label, "DSD_NEO_CQPSK=%s: %s CQPSK", cqpsk_env, want[i].name);
+        failed |= expect_int_eq(label, digital->applied_cqpsk_enable, want[i].cqpsk_enable);
+        DSD_SNPRINTF(label, sizeof label, "DSD_NEO_CQPSK=%s: %s channel filter", cqpsk_env, want[i].name);
+        failed |= expect_int_eq(label, digital->applied_channel_profile, want[i].channel_profile);
+        DSD_SNPRINTF(label, sizeof label, "DSD_NEO_CQPSK=%s: %s output rate", cqpsk_env, want[i].name);
+        failed |= expect_int_eq(label, digital->applied_output_rate, want[i].output_rate);
+        DSD_SNPRINTF(label, sizeof label, "DSD_NEO_CQPSK=%s: %s predicted rate", cqpsk_env, want[i].name);
+        failed |= expect_int_eq(label, digital->predicted_output_rate, digital->applied_output_rate);
+        /* The switch times the profile for the demod rate it lands on, as an open does (rtl_stream_landing_ted_sps()),
+           not with the TED queued for 48 kHz. */
+        DSD_SNPRINTF(label, sizeof label, "DSD_NEO_CQPSK=%s: %s TED", cqpsk_env, want[i].name);
+        failed |= expect_int_eq(label, digital->applied_ted_sps, kLandingTedSps);
+    }
+    (void)dsd_unsetenv("DSD_NEO_CQPSK");
+    dsd_neo_config_init();
+    return failed;
+}
+
+/* Item 3 of issue #583 and its GFSK sibling: a trunk-scan target's own CQPSK choice stands over DSD_NEO_CQPSK when its
+ * retune leaves the analog family after an nfm target, as it does on a digital-to-digital retune. A P25 target with
+ * modulation=cqpsk lands on CQPSK with the P25 CQPSK filter under DSD_NEO_CQPSK=0; one with modulation=c4fm lands on the
+ * FSK discriminator with the P25 C4FM filter under =1; a DMR target, which always runs FSK, lands on the discriminator
+ * under =1. A profile whose CQPSK state is not the target's own (a -Y row, a P25 target with no modulation) still lands
+ * where an open of the mode would, as the override says. */
+static int
+test_target_cqpsk_choice_stands_after_an_analog_target(void) {
+    static const item3_landing cqpsk_off[] = {
+        {"explicit cqpsk", RTL_STREAM_TEST_SYMBOL_P25_CQPSK_EXPLICIT, 1, DSD_DEMOD_OUTPUT_SYMBOL_CQPSK,
+         DSD_CH_LPF_PROFILE_P25_CQPSK, 78125},
+        {"explicit c4fm", RTL_STREAM_TEST_SYMBOL_P25_C4FM_EXPLICIT, 0, DSD_DEMOD_OUTPUT_FSK_DISCRIMINATOR,
+         DSD_CH_LPF_PROFILE_P25_C4FM, 48000},
+        {"dmr target", RTL_STREAM_TEST_SYMBOL_DMR_FSK_EXPLICIT, 0, DSD_DEMOD_OUTPUT_FSK_DISCRIMINATOR,
+         DSD_CH_LPF_PROFILE_12K5, 48000},
+        {"-Y dmr row", RTL_STREAM_TEST_SYMBOL_DMR_FSK, 0, DSD_DEMOD_OUTPUT_FSK_DISCRIMINATOR, DSD_CH_LPF_PROFILE_12K5,
+         48000},
+        {"cqpsk not the target's own", RTL_STREAM_TEST_SYMBOL_P25_CQPSK, 0, DSD_DEMOD_OUTPUT_FSK_DISCRIMINATOR,
+         DSD_CH_LPF_PROFILE_P25_C4FM, 48000},
+    };
+    static const item3_landing cqpsk_on[] = {
+        {"explicit cqpsk", RTL_STREAM_TEST_SYMBOL_P25_CQPSK_EXPLICIT, 1, DSD_DEMOD_OUTPUT_SYMBOL_CQPSK,
+         DSD_CH_LPF_PROFILE_P25_CQPSK, 78125},
+        {"explicit c4fm", RTL_STREAM_TEST_SYMBOL_P25_C4FM_EXPLICIT, 0, DSD_DEMOD_OUTPUT_FSK_DISCRIMINATOR,
+         DSD_CH_LPF_PROFILE_P25_C4FM, 48000},
+        {"dmr target", RTL_STREAM_TEST_SYMBOL_DMR_FSK_EXPLICIT, 0, DSD_DEMOD_OUTPUT_FSK_DISCRIMINATOR,
+         DSD_CH_LPF_PROFILE_12K5, 48000},
+        {"-Y dmr row", RTL_STREAM_TEST_SYMBOL_DMR_FSK, 1, DSD_DEMOD_OUTPUT_SYMBOL_CQPSK, DSD_CH_LPF_PROFILE_P25_CQPSK,
+         78125},
+        {"cqpsk not the target's own", RTL_STREAM_TEST_SYMBOL_P25_CQPSK, 1, DSD_DEMOD_OUTPUT_SYMBOL_CQPSK,
+         DSD_CH_LPF_PROFILE_P25_CQPSK, 78125},
+    };
+    int failed = expect_item3_landings("0", cqpsk_off, sizeof cqpsk_off / sizeof cqpsk_off[0]);
+    failed |= expect_item3_landings("1", cqpsk_on, sizeof cqpsk_on / sizeof cqpsk_on[0]);
+    return failed;
+}
+
+namespace {
+/* What a P25 retune that leaves the CQPSK state to the stream lands on (issue #583). */
+struct digital_front_end_landing {
+    int cqpsk_enable;
+    int output_kind;
+    int channel_profile; /* -1: not checked */
+    int output_rate;
+    int ted_sps;
+};
+} // namespace
+
+static int
+expect_digital_front_end_landing(const char* stage, const rtl_stream_test_retune_landing* r,
+                                 const digital_front_end_landing* want) {
+    char label[160];
+    int failed = expect_landing(stage, r, 0, 0, want->output_kind);
+    DSD_SNPRINTF(label, sizeof label, "%s: CQPSK", stage);
+    failed |= expect_int_eq(label, r->applied_cqpsk_enable, want->cqpsk_enable);
+    if (want->channel_profile >= 0) {
+        DSD_SNPRINTF(label, sizeof label, "%s: channel filter", stage);
+        failed |= expect_int_eq(label, r->applied_channel_profile, want->channel_profile);
+    }
+    DSD_SNPRINTF(label, sizeof label, "%s: output rate", stage);
+    failed |= expect_int_eq(label, r->applied_output_rate, want->output_rate);
+    DSD_SNPRINTF(label, sizeof label, "%s: TED", stage);
+    failed |= expect_int_eq(label, r->applied_ted_sps, want->ted_sps);
+    return failed;
+}
+
+/* Under DSD_NEO_CQPSK=@p cqpsk_env, on a stream already on the digital family at the forced rate, put the front end on
+ * @p from_profile (a digital-only retune the controller lands), then land a P25 retune whose profile leaves the CQPSK
+ * state to the stream, first with the digital family attached and then, from @p from_profile again, without. With
+ * @p external_backend the P25 retunes land as an external backend's do (a rigctl peer that tuned the RTL input, issue
+ * #583), from the decoder's thread with no finalize, else as the controller lands them. */
+static int
+expect_digital_front_end_landings(const char* cqpsk_env, int from_profile, const digital_front_end_landing* attached,
+                                  const digital_front_end_landing* unattached, int external_backend) {
+    (void)dsd_setenv("DSD_NEO_CQPSK", cqpsk_env, 1);
+    dsd_neo_config_init();
+    const rtl_stream_test_retune_step steps[] = {
+        {-1, DSD_ANALOG_DEMOD_FM, 0, from_profile, -1, -1, RTL_STREAM_TEST_QUEUED_NONE, 0},
+        {DSD_RX_FAMILY_DIGITAL, DSD_ANALOG_DEMOD_FM, 0, RTL_STREAM_TEST_SYMBOL_P25_CQPSK_UNSET, -1, -1,
+         RTL_STREAM_TEST_QUEUED_NONE, 0},
+        {-1, DSD_ANALOG_DEMOD_FM, 0, from_profile, -1, -1, RTL_STREAM_TEST_QUEUED_NONE, 0},
+        {-1, DSD_ANALOG_DEMOD_FM, 0, RTL_STREAM_TEST_SYMBOL_P25_CQPSK_UNSET, -1, -1, RTL_STREAM_TEST_QUEUED_NONE, 0},
+    };
+    rtl_stream_test_retune_landing r[4];
+    DSD_MEMSET(r, 0, sizeof r);
+    const char* const path = external_backend ? "external backend" : "controller";
+    const uint32_t external_steps = external_backend ? ((1U << 1) | (1U << 3)) : 0U;
+    char label[160];
+    DSD_SNPRINTF(label, sizeof label, "DSD_NEO_CQPSK=%s, %s: digital front end sequence hook", cqpsk_env, path);
+    int failed = expect_int_eq(
+        label, rtl_stream_test_retune_profile_sequence_external(steps, 4U, kForcedDemodRateHz, external_steps, r), 0);
+    DSD_SNPRINTF(label, sizeof label, "DSD_NEO_CQPSK=%s, %s: the prediction the decoder times the target by", cqpsk_env,
+                 path);
+    failed |= expect_int_eq(label, r[1].predicted_output_rate, attached->output_rate);
+    DSD_SNPRINTF(label, sizeof label, "DSD_NEO_CQPSK=%s, %s: P25 target with the digital family attached", cqpsk_env,
+                 path);
+    failed |= expect_digital_front_end_landing(label, &r[1], attached);
+    DSD_SNPRINTF(label, sizeof label, "DSD_NEO_CQPSK=%s, %s: P25 target without a family", cqpsk_env, path);
+    failed |= expect_digital_front_end_landing(label, &r[3], unattached);
+    (void)dsd_unsetenv("DSD_NEO_CQPSK");
+    dsd_neo_config_init();
+    return failed;
+}
+
+/* A retune that carries the digital family lands where the decoder's timing predicted, even when the front end is
+ * already on the digital family where it lands (issue #583). The engine attaches the family when the front end runs
+ * the analog family or outstanding work lands a family, and the decoder is timed for the switch's landing then
+ * (rtl_stream_output_rate_for_family()); an analog retune that fails, or a request replaced, can leave the front end
+ * digital when the retune lands. A P25 target with no modulation under -mq and DSD_NEO_CQPSK=0,
+ * after a target that put the stream on CQPSK at 78125 Hz, is timed for the FSK discriminator at 48 kHz: it lands
+ * there, with the P25 C4FM filter and the TED an open times for the demod rate. Under DSD_NEO_CQPSK=1 from the FSK
+ * discriminator it lands on CQPSK at 78125 Hz. The same retune without the family retunes as a digital-only session
+ * always has: the profile leaves the CQPSK state, and the TED it carries applies. */
+static int
+test_digital_family_lands_where_timed_on_a_digital_front_end(void) {
+    const digital_front_end_landing off_attached = {0, DSD_DEMOD_OUTPUT_FSK_DISCRIMINATOR, DSD_CH_LPF_PROFILE_P25_C4FM,
+                                                    48000, kLandingTedSps};
+    const digital_front_end_landing off_unattached = {1, DSD_DEMOD_OUTPUT_SYMBOL_CQPSK, DSD_CH_LPF_PROFILE_P25_CQPSK,
+                                                      kForcedDemodRateHz, kQueuedTedSps};
+    const digital_front_end_landing on_attached = {1, DSD_DEMOD_OUTPUT_SYMBOL_CQPSK, DSD_CH_LPF_PROFILE_P25_CQPSK,
+                                                   kForcedDemodRateHz, kLandingTedSps};
+    const digital_front_end_landing on_unattached = {0, DSD_DEMOD_OUTPUT_FSK_DISCRIMINATOR, -1, 48000, kQueuedTedSps};
+    int failed = expect_digital_front_end_landings("0", RTL_STREAM_TEST_SYMBOL_P25_CQPSK_EXPLICIT, &off_attached,
+                                                   &off_unattached, 0);
+    failed |= expect_digital_front_end_landings("1", RTL_STREAM_TEST_SYMBOL_DMR_FSK_EXPLICIT, &on_attached,
+                                                &on_unattached, 0);
+    return failed;
+}
+
+/* The same landings through an external backend's retune (issue #583): a rigctl peer that tunes an RTL input outside
+ * -Y has no controller retune, so the queued profile applies from the decoder's thread
+ * (rtl_stream_apply_pending_retune_profile_for_target()) with no finalize to design the output chain. A profile that
+ * carries the digital family still lands where the decoder was timed: from CQPSK at 78125 Hz under DSD_NEO_CQPSK=0, a
+ * P25 target with no modulation lands the FSK discriminator resampled to 48 kHz with the P25 C4FM filter and the
+ * landing TED, and under =1 from the FSK discriminator it lands CQPSK at 78125 Hz. So does a DMR target, whose FSK is
+ * its own choice, from CQPSK under =0. A profile without a family applies as queued over the output chain it finds, as
+ * a digital-only session's retune always has, and an analog target's retune before a DMR target's leaves the analog
+ * family on the external path too. */
+static int
+test_external_backend_retune_lands_where_timed(void) {
+    const digital_front_end_landing off_attached = {0, DSD_DEMOD_OUTPUT_FSK_DISCRIMINATOR, DSD_CH_LPF_PROFILE_P25_C4FM,
+                                                    48000, kLandingTedSps};
+    const digital_front_end_landing off_unattached = {1, DSD_DEMOD_OUTPUT_SYMBOL_CQPSK, DSD_CH_LPF_PROFILE_P25_CQPSK,
+                                                      kForcedDemodRateHz, kQueuedTedSps};
+    const digital_front_end_landing on_attached = {1, DSD_DEMOD_OUTPUT_SYMBOL_CQPSK, DSD_CH_LPF_PROFILE_P25_CQPSK,
+                                                   kForcedDemodRateHz, kLandingTedSps};
+    const digital_front_end_landing on_unattached = {0, DSD_DEMOD_OUTPUT_FSK_DISCRIMINATOR, -1, 48000, kQueuedTedSps};
+    int failed = expect_digital_front_end_landings("0", RTL_STREAM_TEST_SYMBOL_P25_CQPSK_EXPLICIT, &off_attached,
+                                                   &off_unattached, 1);
+    failed |= expect_digital_front_end_landings("1", RTL_STREAM_TEST_SYMBOL_DMR_FSK_EXPLICIT, &on_attached,
+                                                &on_unattached, 1);
+
+    (void)dsd_setenv("DSD_NEO_CQPSK", "0", 1);
+    dsd_neo_config_init();
+    const rtl_stream_test_retune_step steps[] = {
+        {-1, DSD_ANALOG_DEMOD_FM, 0, RTL_STREAM_TEST_SYMBOL_P25_CQPSK_EXPLICIT, -1, -1, RTL_STREAM_TEST_QUEUED_NONE, 0},
+        {DSD_RX_FAMILY_DIGITAL, DSD_ANALOG_DEMOD_FM, 0, RTL_STREAM_TEST_SYMBOL_DMR_FSK_EXPLICIT, -1, -1,
+         RTL_STREAM_TEST_QUEUED_NONE, 0},
+        {DSD_RX_FAMILY_ANALOG, DSD_ANALOG_DEMOD_FM, 12500, RTL_STREAM_TEST_SYMBOL_NONE, -1, -1,
+         RTL_STREAM_TEST_QUEUED_NONE, 0},
+        {DSD_RX_FAMILY_DIGITAL, DSD_ANALOG_DEMOD_FM, 0, RTL_STREAM_TEST_SYMBOL_DMR_FSK_EXPLICIT, -1, -1,
+         RTL_STREAM_TEST_QUEUED_NONE, 0},
+    };
+    rtl_stream_test_retune_landing r[4];
+    DSD_MEMSET(r, 0, sizeof r);
+    failed |= expect_int_eq("external backend: dmr sequence hook",
+                            rtl_stream_test_retune_profile_sequence_external(steps, 4U, kForcedDemodRateHz,
+                                                                             (1U << 1) | (1U << 2) | (1U << 3), r),
+                            0);
+    const digital_front_end_landing dmr = {0, DSD_DEMOD_OUTPUT_FSK_DISCRIMINATOR, DSD_CH_LPF_PROFILE_12K5, 48000,
+                                           kLandingTedSps};
+    failed |= expect_int_eq("external backend: dmr target predicted rate", r[1].predicted_output_rate, 48000);
+    failed |= expect_digital_front_end_landing("external backend: dmr target from CQPSK", &r[1], &dmr);
+    failed |= expect_landing("external backend: nfm target", &r[2], 1, 12500, DSD_DEMOD_OUTPUT_AUDIO_MONITOR);
+    failed |= expect_int_eq("external backend: dmr target after the nfm target predicted rate",
+                            r[3].predicted_output_rate, 48000);
+    failed |= expect_digital_front_end_landing("external backend: dmr target after the nfm target", &r[3], &dmr);
+    (void)dsd_unsetenv("DSD_NEO_CQPSK");
+    dsd_neo_config_init();
+    return failed;
+}
+
+/* An external backend's landing runs on the decoder's thread while the controller thread can be reconfiguring the
+ * stream (a PPM correction, issue #583), and both rewrite the demodulator and its output chain. They take turns: a
+ * landing that finds a reconfiguration holding the gate waits for it to end instead of treating the closed gate as its
+ * own, and a reconfiguration that starts while a landing holds the gate waits for the landing to leave rather than
+ * enter beside it and reopen the gate under it. Each landing still lands where it was timed once it had its turn. */
+static int
+test_external_backend_landing_waits_for_reconfiguration(void) {
+    rtl_stream_test_external_landing_race_result r;
+    DSD_MEMSET(&r, 0, sizeof r);
+    int failed =
+        expect_int_eq("external landing race hook", rtl_stream_test_external_landing_against_reconfigure(&r), 0);
+    failed |= expect_int_eq("external landing under a reconfiguration: taken", r.landing_taken, 1);
+    failed |= expect_int_eq("external landing under a reconfiguration: waits for the gate", r.landing_waited, 1);
+    failed |=
+        expect_int_eq("external landing under a reconfiguration: lands after it ends", r.landed_during_reconfigure, 0);
+    failed |= expect_int_eq("external landing under a reconfiguration: CQPSK output", r.held_output_kind,
+                            DSD_DEMOD_OUTPUT_SYMBOL_CQPSK);
+    failed |=
+        expect_int_eq("external landing under a reconfiguration: output rate", r.held_output_rate, kForcedDemodRateHz);
+    failed |= expect_int_eq("reconfiguration during an external landing: landing taken", r.arriving_taken, 1);
+    failed |= expect_int_eq("reconfiguration during an external landing: waits for the gate", r.reconfigure_waited, 1);
+    failed |= expect_int_eq("reconfiguration during an external landing: enters after the landing left",
+                            r.reconfigure_during_landing, 0);
+    failed |= expect_int_eq("reconfiguration during an external landing: the gate stays closed under the landing",
+                            r.gate_held_through_landing, 1);
+    failed |= expect_int_eq("reconfiguration during an external landing: FSK output", r.arriving_output_kind,
+                            DSD_DEMOD_OUTPUT_FSK_DISCRIMINATOR);
+    failed |= expect_int_eq("reconfiguration during an external landing: output rate", r.arriving_output_rate, 48000);
+    failed |= expect_int_eq("external landing race: the gate is open again", r.gate_open_after, 1);
+    return failed;
+}
+
+/* Whether a digital retune queued now lands on a receive family's landing (issue #583): the union of the published
+ * analog family, an outstanding retune that lands a family, and the live requests still unsettled. The engine attaches
+ * the digital family to a digital retune by it, and times the decoder for that landing, so each has to count: a width
+ * edit queued behind an NFM target's retune, the NFM retune itself while the controller holds it queued or in flight,
+ * the analog family it lands, and a digital-family retune queued or in flight on a front end already digital, which
+ * lands where the digital family's prediction says, not at the live rate. A digital retune in flight does not hide the
+ * analog family the stream still runs, and a plain retune beside one that lands a family does not hide it; a retune a
+ * later live request superseded lands no family, and a profile a coalesced retune left behind for another target never
+ * applies. */
+static int
+test_family_landing_after_pending(void) {
+    rtl_stream_test_family_landing_after_pending_result r;
+    DSD_MEMSET(&r, 0, sizeof r);
+    int failed = expect_int_eq("after-pending hook", rtl_stream_test_family_landing_after_pending(&r), 0);
+    failed |= expect_int_eq("after-pending: digital only", r.digital_only, 0);
+    failed |= expect_int_eq("after-pending: a queued NFM width request", r.width_queued, 1);
+    failed |= expect_int_eq("after-pending: the public query sees the queued width", r.width_queued_public, 1);
+    failed |=
+        expect_int_eq("after-pending: the width still queued behind a digital retune in flight", r.width_retiring, 1);
+    failed |= expect_int_eq("after-pending: retired by the digital retune's family", r.width_retired, 0);
+    failed |= expect_int_eq("after-pending: the retired width reads replaced", r.width_outcome,
+                            RTL_STREAM_RX_REQUEST_REPLACED);
+    failed |= expect_int_eq("after-pending: a digital-family retune queued on a digital stream", r.digital_queued, 1);
+    failed |= expect_int_eq("after-pending: a digital-family retune taken on a digital stream", r.digital_taken, 1);
+    failed |= expect_int_eq("after-pending: that retune landed", r.digital_landed_on_digital, 0);
+    failed |= expect_int_eq("after-pending: a queued digital-family retune superseded", r.digital_superseded_queued, 0);
+    failed |= expect_int_eq("after-pending: a digital-family retune superseded after the take",
+                            r.digital_superseded_taken, 0);
+    failed |= expect_int_eq("after-pending: a stale queued digital-family profile", r.digital_stale_queued, 0);
+    failed |= expect_int_eq("after-pending: an analog retune queued", r.analog_queued, 1);
+    failed |= expect_int_eq("after-pending: an analog retune taken", r.analog_taken, 1);
+    failed |= expect_int_eq("after-pending: an analog retune landed", r.analog_landed, 1);
+    failed |= expect_int_eq("after-pending: a digital retune landed after it", r.digital_landed, 0);
+    failed |= expect_int_eq("after-pending: back on the analog family", r.analog_live, 1);
+    /* With no stream running no controller is read, but the published family is, which a stream closed on the analog
+       family keeps: the answer rtl_stream_analog_family_active() gives. */
+    failed |= expect_int_eq("after-pending: no stream, the analog family published", r.analog_live_public, 1);
+    failed |= expect_int_eq("after-pending: live analog under a digital retune in flight", r.digital_in_flight, 1);
+    failed |= expect_int_eq("after-pending: that digital retune landed", r.digital_left_analog, 0);
+    failed |= expect_int_eq("after-pending: an analog retune superseded after the take", r.superseded_taken, 0);
+    failed |= expect_int_eq("after-pending: the superseded retune landed", r.superseded_landed, 0);
+    /* A union, not the newest word: the retune queued behind the one in flight does not hide it, and each lands a
+       family. Two digital-family retunes each land where the digital family's prediction says. */
+    failed |= expect_int_eq("after-pending: an analog retune in flight, a digital one queued behind it",
+                            r.analog_in_flight_digital_queued, 1);
+    failed |= expect_int_eq("after-pending: a digital retune in flight, an analog one queued behind it",
+                            r.digital_in_flight_analog_queued, 1);
+    failed |= expect_int_eq("after-pending: two digital retunes outstanding on a digital stream",
+                            r.digital_in_flight_digital_queued, 1);
+    /* A plain retune (no family) beside one that lands a family hides it neither queued nor in flight. */
+    failed |= expect_int_eq("after-pending: a digital retune in flight, a plain one queued behind it",
+                            r.digital_in_flight_plain_queued, 1);
+    failed |= expect_int_eq("after-pending: a plain retune in flight, a digital one queued behind it",
+                            r.plain_in_flight_digital_queued, 1);
+    failed |= expect_int_eq("after-pending: an analog retune in flight, a plain one queued behind it",
+                            r.analog_in_flight_plain_queued, 1);
+    failed |= expect_int_eq("after-pending: a stale queued profile for another target", r.stale_queued, 0);
+    failed |= expect_int_eq("after-pending: the stream ends on the digital family", r.landed_family, 0);
+    return failed;
+}
+
+namespace {
+/* Where a live republish lands on a stream already on the digital family (issue #583). */
+struct live_landing_want {
+    int cqpsk_enable;
+    int output_kind;
+    int channel_profile;
+    int output_rate;
+    int ted_sps;
+};
+} // namespace
+
+/* Run @p c under DSD_NEO_CQPSK=@p cqpsk_env and check where it lands: @p want, on the digital family with no family
+ * switch recorded, the request settled (or replaced, @p outcome), and nothing left outstanding. With @p predicted, the
+ * landing is the prediction the decoder was timed for (rtl_stream_output_rate_for_family()). */
+static int
+expect_live_landing(const char* stage, const char* cqpsk_env, const rtl_stream_test_live_landing_case* c,
+                    const live_landing_want* want, int predicted, int outcome,
+                    rtl_stream_test_live_landing_result* out) {
+    (void)dsd_setenv("DSD_NEO_CQPSK", cqpsk_env, 1);
+    dsd_neo_config_init();
+    DSD_MEMSET(out, 0, sizeof *out);
+    char label[192];
+    DSD_SNPRINTF(label, sizeof label, "%s: hook", stage);
+    int failed = expect_int_eq(label, rtl_stream_test_live_digital_landing(c, out), 0);
+    DSD_SNPRINTF(label, sizeof label, "%s: output kind", stage);
+    failed |= expect_int_eq(label, out->output_kind, want->output_kind);
+    DSD_SNPRINTF(label, sizeof label, "%s: CQPSK", stage);
+    failed |= expect_int_eq(label, out->cqpsk_enable, want->cqpsk_enable);
+    DSD_SNPRINTF(label, sizeof label, "%s: channel filter", stage);
+    failed |= expect_int_eq(label, out->channel_profile, want->channel_profile);
+    DSD_SNPRINTF(label, sizeof label, "%s: output rate", stage);
+    failed |= expect_int_eq(label, out->output_rate, want->output_rate);
+    DSD_SNPRINTF(label, sizeof label, "%s: TED", stage);
+    failed |= expect_int_eq(label, out->ted_sps, want->ted_sps);
+    if (predicted) {
+        DSD_SNPRINTF(label, sizeof label, "%s: lands the predicted rate", stage);
+        failed |= expect_int_eq(label, out->output_rate, out->predicted_output_rate);
+    }
+    DSD_SNPRINTF(label, sizeof label, "%s: stays on the digital family", stage);
+    failed |= expect_int_eq(label, out->analog_family, 0);
+    /* The stream opened digital: no switch is recorded, so its FSK channel profile still comes from its options. */
+    DSD_SNPRINTF(label, sizeof label, "%s: no family switch recorded", stage);
+    failed |= expect_int_eq(label, out->family_switch_noted, 0);
+    DSD_SNPRINTF(label, sizeof label, "%s: request outcome", stage);
+    failed |= expect_int_eq(label, out->request_outcome, outcome);
+    DSD_SNPRINTF(label, sizeof label, "%s: nothing outstanding once landed", stage);
+    failed |= expect_int_eq(label, out->outstanding_after, 0);
+    (void)dsd_unsetenv("DSD_NEO_CQPSK");
+    dsd_neo_config_init();
+    return failed;
+}
+
+/* A live republish that the decoder timed for the digital family's landing lands there on a front end already on the
+ * digital family, whichever order it and an outstanding retune that carries that family land in (issue #583). Under
+ * DSD_NEO_CQPSK=0, with the device settled on 78125 Hz and the stream left on CQPSK by a P25 target with
+ * modulation=cqpsk, a P25 target with no modulation under -mq is timed for the FSK discriminator at 48 kHz (10 samples
+ * per symbol): the marked request lands there, with the P25 C4FM filter and the TED an open times for the demod rate,
+ * alone; taken before the retune, which it superseded and which then lands only its centre; taken after that
+ * superseded retune kept the stream on CQPSK; and after the retune itself landed the same prediction. While it is
+ * queued the stream counts it as outstanding work that lands a family. A plain request, or a marked one a plain one
+ * replaced in the queue, keeps today's behaviour: the profile's CQPSK state and TED over the output chain the stream
+ * runs. A target whose CQPSK is its own choice keeps it over the override; under DSD_NEO_CQPSK=1 a landing from the
+ * FSK discriminator drops the 48 kHz resampler for CQPSK at the demod rate. */
+static int
+test_live_republish_lands_where_it_was_timed(void) {
+    const live_landing_want fsk_48k = {0, DSD_DEMOD_OUTPUT_FSK_DISCRIMINATOR, DSD_CH_LPF_PROFILE_P25_C4FM, 48000,
+                                       kLandingTedSps};
+    const live_landing_want cqpsk_queued = {1, DSD_DEMOD_OUTPUT_SYMBOL_CQPSK, DSD_CH_LPF_PROFILE_P25_CQPSK,
+                                            kForcedDemodRateHz, kQueuedTedSps};
+    const live_landing_want cqpsk_landed = {1, DSD_DEMOD_OUTPUT_SYMBOL_CQPSK, DSD_CH_LPF_PROFILE_P25_CQPSK,
+                                            kForcedDemodRateHz, kLandingTedSps};
+
+    /* Where the stream stands once the retune has landed, before the republish does: a retune the republish superseded
+       lands its centre only and keeps CQPSK at the demod rate; one that landed before it lands the prediction itself.
+       0: the republish lands first, or there is no retune. */
+    static const struct {
+        const char* stage;
+        int order;
+        int retune_output_kind;
+        int retune_output_rate;
+    } orders[] = {
+        {"marked landing alone", RTL_STREAM_TEST_LANDING_ALONE, 0, 0},
+        {"marked landing before the retune", RTL_STREAM_TEST_LANDING_BEFORE_RETUNE, 0, 0},
+        {"marked landing after the superseded retune", RTL_STREAM_TEST_LANDING_AFTER_SUPERSEDED,
+         DSD_DEMOD_OUTPUT_SYMBOL_CQPSK, kForcedDemodRateHz},
+        {"marked landing after the retune landed", RTL_STREAM_TEST_LANDING_AFTER_RETUNE,
+         DSD_DEMOD_OUTPUT_FSK_DISCRIMINATOR, 48000},
+    };
+
+    rtl_stream_test_live_landing_result r;
+    char label[192];
+    int failed = 0;
+    for (size_t i = 0; i < sizeof orders / sizeof orders[0]; i++) {
+        const rtl_stream_test_live_landing_case c = {kForcedDemodRateHz, 1, 1, 1, 0, orders[i].order};
+        failed |= expect_live_landing(orders[i].stage, "0", &c, &fsk_48k, 1, RTL_STREAM_RX_REQUEST_SETTLED, &r);
+        DSD_SNPRINTF(label, sizeof label, "%s: the prediction", orders[i].stage);
+        failed |= expect_int_eq(label, r.predicted_output_rate, 48000);
+        DSD_SNPRINTF(label, sizeof label, "%s: counted while queued", orders[i].stage);
+        failed |= expect_int_eq(label, r.outstanding_queued, 1);
+        if (orders[i].retune_output_rate > 0) {
+            DSD_SNPRINTF(label, sizeof label, "%s: output kind once the retune landed", orders[i].stage);
+            failed |= expect_int_eq(label, r.retune_output_kind, orders[i].retune_output_kind);
+            DSD_SNPRINTF(label, sizeof label, "%s: output rate once the retune landed", orders[i].stage);
+            failed |= expect_int_eq(label, r.retune_output_rate, orders[i].retune_output_rate);
+        }
+    }
+
+    /* A plain request keeps today's behaviour on a digital front end, and is not counted as outstanding. */
+    const rtl_stream_test_live_landing_case plain = {kForcedDemodRateHz, 1, 1, 0, 0, RTL_STREAM_TEST_LANDING_ALONE};
+    failed |= expect_live_landing("plain request", "0", &plain, &cqpsk_queued, 0, RTL_STREAM_RX_REQUEST_SETTLED, &r);
+    failed |= expect_int_eq("plain request: not counted while queued", r.outstanding_queued, 0);
+    /* A marked request a plain one replaced in the queue lands nothing of its own. */
+    const rtl_stream_test_live_landing_case replaced = {
+        kForcedDemodRateHz, 1, 1, 1, 0, RTL_STREAM_TEST_LANDING_REPLACED};
+    failed |= expect_live_landing("replaced marked request", "0", &replaced, &cqpsk_queued, 0,
+                                  RTL_STREAM_RX_REQUEST_REPLACED, &r);
+    failed |= expect_int_eq("replaced marked request: not counted while queued", r.outstanding_queued, 0);
+
+    /* modulation=cqpsk: the target's own CQPSK stands over DSD_NEO_CQPSK=0, timed for the demod rate. */
+    const rtl_stream_test_live_landing_case own = {kForcedDemodRateHz, 1, 1, 1, 1, RTL_STREAM_TEST_LANDING_ALONE};
+    failed |= expect_live_landing("target's own cqpsk", "0", &own, &cqpsk_landed, 1, RTL_STREAM_RX_REQUEST_SETTLED, &r);
+    /* DSD_NEO_CQPSK=1 from the FSK discriminator at 48 kHz: CQPSK at the demod rate, without the resampler. */
+    const rtl_stream_test_live_landing_case to_cqpsk = {kForcedDemodRateHz, 0, 0, 1, 0, RTL_STREAM_TEST_LANDING_ALONE};
+    failed |=
+        expect_live_landing("override onto cqpsk", "1", &to_cqpsk, &cqpsk_landed, 1, RTL_STREAM_RX_REQUEST_SETTLED, &r);
+    failed |= expect_int_eq("override onto cqpsk: the prediction", r.predicted_output_rate, kForcedDemodRateHz);
+    return failed;
+}
+
 /* The live family requests the stream accepts are counted, running stream or not, and a refused one is not (issue
  * #526): the -Y scanner compares the count across a row's outstanding retune, whose family a request counted meanwhile
  * has superseded. */
@@ -1708,6 +2216,13 @@ main(void) {
     failed |= test_retune_family_retires_older_queued_requests();
     failed |= test_retune_family_superseded_while_it_lands();
     failed |= test_live_family_request_count();
+    failed |= test_dmr_retune_after_an_analog_retune_lands_on_fsk();
+    failed |= test_target_cqpsk_choice_stands_after_an_analog_target();
+    failed |= test_digital_family_lands_where_timed_on_a_digital_front_end();
+    failed |= test_external_backend_retune_lands_where_timed();
+    failed |= test_external_backend_landing_waits_for_reconfiguration();
+    failed |= test_family_landing_after_pending();
+    failed |= test_live_republish_lands_where_it_was_timed();
 
     return failed ? 1 : 0;
 }

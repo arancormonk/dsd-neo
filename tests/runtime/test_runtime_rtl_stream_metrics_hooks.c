@@ -9,6 +9,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include <dsd-neo/runtime/analog_channel.h>
 #include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
 
 static int g_output_rate_calls = 0;
@@ -254,6 +255,7 @@ static int g_family_active_result = 0;
 static int g_rate_for_family_family = -1;
 static int g_rate_for_family_cqpsk = -1;
 static int g_rate_for_family_symbol_rate = -1;
+static int g_rate_for_family_explicit = -1;
 
 static int
 fake_analog_family_active(void) {
@@ -261,10 +263,11 @@ fake_analog_family_active(void) {
 }
 
 static unsigned int
-fake_output_rate_for_family(int family, int cqpsk_enable, int symbol_rate_hz) {
+fake_output_rate_for_family(int family, int cqpsk_enable, int symbol_rate_hz, int cqpsk_explicit) {
     g_rate_for_family_family = family;
     g_rate_for_family_cqpsk = cqpsk_enable;
     g_rate_for_family_symbol_rate = symbol_rate_hz;
+    g_rate_for_family_explicit = cqpsk_explicit;
     return 24000U;
 }
 
@@ -274,7 +277,8 @@ static void
 test_family_hooks(void) {
     dsd_rtl_stream_metrics_hooks_set(NULL);
     assert(dsd_rtl_stream_metrics_hook_analog_family_active() == 0);
-    assert(dsd_rtl_stream_metrics_hook_output_rate_for_family(0, 0, 4800) == 0U);
+    assert(dsd_rtl_stream_metrics_hook_output_rate_for_family(0, 0, 4800, 0) == 0U);
+    assert(dsd_rtl_stream_metrics_hook_output_rate_for_family(0, 1, 4800, 1) == 0U);
 
     dsd_rtl_stream_metrics_hooks hooks = {0};
     hooks.analog_family_active = fake_analog_family_active;
@@ -288,8 +292,104 @@ test_family_hooks(void) {
     assert(dsd_rtl_stream_metrics_hook_analog_family_active() == 0);
     g_family_active_result = 0;
     assert(dsd_rtl_stream_metrics_hook_analog_family_active() == 0);
-    assert(dsd_rtl_stream_metrics_hook_output_rate_for_family(0, 1, 6000) == 24000U);
+    assert(dsd_rtl_stream_metrics_hook_output_rate_for_family(0, 1, 6000, 0) == 24000U);
     assert(g_rate_for_family_family == 0 && g_rate_for_family_cqpsk == 1 && g_rate_for_family_symbol_rate == 6000);
+    assert(g_rate_for_family_explicit == 0);
+    /* A trunk-scan target's own CQPSK choice is forwarded with the rest (issue #583). */
+    assert(dsd_rtl_stream_metrics_hook_output_rate_for_family(0, 0, 4800, 1) == 24000U);
+    assert(g_rate_for_family_cqpsk == 0 && g_rate_for_family_symbol_rate == 4800 && g_rate_for_family_explicit == 1);
+    dsd_rtl_stream_metrics_hooks_set(NULL);
+}
+
+static int g_family_landing_after_pending_result = 0;
+static int g_family_landing_after_pending_calls = 0;
+
+static int
+fake_family_landing_after_pending(void) {
+    ++g_family_landing_after_pending_calls;
+    return g_family_landing_after_pending_result;
+}
+
+/* Whether a digital retune queued now lands on a family's landing (issue #583): 0 with no RTL front end installed,
+ * forwarded and folded to 0/1 when its hook is installed, and the live family's answer from a table that installs only
+ * that one (the decoder's timing then follows the live family, as before the hook existed). */
+static void
+test_family_landing_after_pending_hook(void) {
+    dsd_rtl_stream_metrics_hooks_set(NULL);
+    assert(dsd_rtl_stream_metrics_hook_family_landing_after_pending() == 0);
+
+    dsd_rtl_stream_metrics_hooks hooks = {0};
+    hooks.analog_family_active = fake_analog_family_active;
+    hooks.family_landing_after_pending = fake_family_landing_after_pending;
+    dsd_rtl_stream_metrics_hooks_set(&hooks);
+    g_family_active_result = 0;
+    g_family_landing_after_pending_calls = 0;
+    g_family_landing_after_pending_result = 1;
+    assert(dsd_rtl_stream_metrics_hook_family_landing_after_pending() == 1);
+    g_family_landing_after_pending_result = 7;
+    assert(dsd_rtl_stream_metrics_hook_family_landing_after_pending() == 1);
+    g_family_landing_after_pending_result = -1;
+    assert(dsd_rtl_stream_metrics_hook_family_landing_after_pending() == 0);
+    g_family_active_result = 1;
+    g_family_landing_after_pending_result = 0;
+    assert(dsd_rtl_stream_metrics_hook_family_landing_after_pending() == 0);
+    assert(g_family_landing_after_pending_calls == 4);
+
+    hooks.family_landing_after_pending = NULL;
+    dsd_rtl_stream_metrics_hooks_set(&hooks);
+    g_family_active_result = 1;
+    assert(dsd_rtl_stream_metrics_hook_family_landing_after_pending() == 1);
+    g_family_active_result = 0;
+    assert(dsd_rtl_stream_metrics_hook_family_landing_after_pending() == 0);
+    assert(g_family_landing_after_pending_calls == 4);
+    dsd_rtl_stream_metrics_hooks_set(NULL);
+}
+
+static int g_plain_family_calls = 0;
+static int g_plain_family_family = -1;
+static int g_plain_family_kind = -1;
+static int g_plain_family_width_hz = -1;
+static int g_landing_calls = 0;
+static int g_landing_explicit = -1;
+
+static int
+fake_apply_analog_profile(int family, int kind, int width_hz) {
+    ++g_plain_family_calls;
+    g_plain_family_family = family;
+    g_plain_family_kind = kind;
+    g_plain_family_width_hz = width_hz;
+    return 0;
+}
+
+static int
+fake_request_digital_family_landing(int cqpsk_explicit) {
+    ++g_landing_calls;
+    g_landing_explicit = cqpsk_explicit;
+    return 5;
+}
+
+/* The digital family request that lands the digital family's landing whichever family the front end runs (issue
+ * #583): refused with no RTL front end, forwarded with its explicit flag when its hook is installed, and the plain
+ * digital family request from a table that installs only that one (a fake front end from before the hook existed). */
+static void
+test_digital_family_landing_hook(void) {
+    dsd_rtl_stream_metrics_hooks_set(NULL);
+    assert(dsd_rtl_stream_metrics_hook_request_digital_family_landing(0) == -1);
+
+    dsd_rtl_stream_metrics_hooks hooks = {0};
+    hooks.apply_analog_profile = fake_apply_analog_profile;
+    dsd_rtl_stream_metrics_hooks_set(&hooks);
+    assert(dsd_rtl_stream_metrics_hook_request_digital_family_landing(1) == 0);
+    assert(g_plain_family_calls == 1 && g_plain_family_family == DSD_RX_FAMILY_DIGITAL);
+    assert(g_plain_family_kind == DSD_ANALOG_DEMOD_FM && g_plain_family_width_hz == 0);
+
+    hooks.request_digital_family_landing = fake_request_digital_family_landing;
+    dsd_rtl_stream_metrics_hooks_set(&hooks);
+    assert(dsd_rtl_stream_metrics_hook_request_digital_family_landing(1) == 5);
+    assert(g_landing_calls == 1 && g_landing_explicit == 1);
+    assert(dsd_rtl_stream_metrics_hook_request_digital_family_landing(0) == 5);
+    assert(g_landing_calls == 2 && g_landing_explicit == 0);
+    assert(g_plain_family_calls == 1);
     dsd_rtl_stream_metrics_hooks_set(NULL);
 }
 
@@ -303,6 +403,8 @@ main(void) {
 
     test_analog_profile_outputs();
     test_family_hooks();
+    test_family_landing_after_pending_hook();
+    test_digital_family_landing_hook();
 
     // Default behavior with hooks unset.
     dsd_rtl_stream_metrics_hooks_set(NULL);

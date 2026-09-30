@@ -33,8 +33,9 @@ dsd_trunk_tune_result dsd_engine_return_to_cc_request(dsd_opts* opts, dsd_state*
  *
  * Queues the receive profile the row runs on, bound to @p freq: an analog row (the analog FM monitor in @p opts,
  * issue #526) gets the analog family at its width and no symbol profile; a digital row its symbol profile, and the
- * digital family when the front end runs the analog one and the configured mode is digital. A row width the front end
- * refuses at the rate it runs fails the tune before any backend moves.
+ * digital family when the configured mode is digital and the row was timed for that family's landing or the front end
+ * runs the analog family or outstanding work lands a family (dsd_engine_scan_retune_attaches_family(), issue #583). A
+ * row width the front end refuses at the rate it runs fails the tune before any backend moves.
  */
 dsd_trunk_tune_result dsd_engine_scan_tune_to_freq(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps,
                                                    uint64_t* out_request_id);
@@ -48,9 +49,13 @@ int dsd_engine_scan_dsp_rate_hz(const dsd_opts* opts, const dsd_state* state);
 uint32_t dsd_engine_scan_family_requests(const dsd_opts* opts);
 /** @brief Whether dsd_engine_scan_tune_to_freq(), called with the options now in force and @p ted_sps, attaches a
  * receive family to the row's retune: an analog row's always does, and a digital row's with a symbol clock
- * (@p ted_sps > 0) while the front end runs the analog family and the configured mode is digital. Only such a retune is
- * superseded by a live family request made before it lands (dsd_engine_scan_family_requests()); one without a family
- * lands its symbol profile whatever the requests (issue #526). 0 on any input but an RTL-family one. */
+ * (@p ted_sps > 0) when the configured mode is digital and the row was timed for the digital family's landing
+ * (dsd_scan_mode_timed_digital_family(), issue #583), or the front end runs the analog family, or the retunes and
+ * requests already outstanding land a family: the analog one, or the digital one, which a retune carrying it lands on
+ * the digital family's prediction (rtl_stream_family_landing_after_pending()). That is the decision the tune's
+ * preparation makes, and spends; this only reads it. Only such a retune is superseded by a live family request
+ * made before it lands (dsd_engine_scan_family_requests()); one without a family lands its symbol profile whatever the
+ * requests (issue #526). 0 on any input but an RTL-family one. */
 int dsd_engine_scan_retune_attaches_family(const dsd_opts* opts, const dsd_state* state, int ted_sps);
 /** @brief Once a scanner has left its rows, put a rigctl peer back (issue #526): a scan tune asks a peer that
  * demodulates audio input for an am row's AM, or an nfm row's own passband, and nothing else undoes that once the
