@@ -71,9 +71,10 @@ seen_key(int slot, qulonglong seq, qint64 when, qulonglong tg, int kind) {
 /**
  * @brief "TODAY" / "YESTERDAY" / "MON 3 AUG" for the list's day sections.
  *
- * Relative to the viewer's real calendar day, like the midnight timer that retires the labels: a
- * section says which day a call was heard on, and a replayed capture's calls belong to their own
- * dates, not to whichever day the decode clock happens to be showing.
+ * A deliberate real-time exception to the rule that decoded stamps are compared on the decode
+ * clock. The log spans sessions, and its sections name the viewer's calendar day, retired by the
+ * real midnight timer (scheduleDayRollover()). On the decode clock a week-old replay's calls would
+ * read "TODAY" and the labels would never roll over on time.
  */
 QString
 day_label(qint64 when) {

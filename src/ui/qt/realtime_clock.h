@@ -5,7 +5,7 @@
 
 /**
  * @file
- * @brief The Qt frontend's real-time clock reads, and the only place it takes one.
+ * @brief The Qt frontend's reads of Qt's real-time clock.
  *
  * Real time, never the decode clock. It is for toast lifetimes, refresh and midnight timers, and
  * moments that belong to the person using the app rather than to anything decoded: when a system
@@ -17,7 +17,9 @@
  * These are Qt's own reads, unchanged, because the stamps they are compared with come from Qt too:
  * a location fix is stamped with a JavaScript time value, which Qt rounds to the nearest
  * millisecond, so a truncating read would put a fresh fix a millisecond in the future. This is the
- * one frontend file that calls Qt's clock directly; every other file in src/ui/qt goes through it.
+ * one frontend file that calls Qt's clock directly; every other file in src/ui/qt that wants Qt's
+ * real time goes through it. Monotonic real-time reads (the metrics model's sync hold and
+ * received-tone age) use dsd_realtime_mono_s() instead, like the rest of the tree.
  */
 
 #ifndef DSD_NEO_SRC_UI_QT_REALTIME_CLOCK_H_

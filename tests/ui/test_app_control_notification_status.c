@@ -20,6 +20,7 @@
 #include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/platform/threading.h>
+#include <dsd-neo/runtime/decode_clock.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -141,6 +142,30 @@ test_sync_label_is_held_across_a_frame_with_no_sync(void) {
     dsd_app_notification_status status;
     assert(dsd_app_notification_get(&status) == 1);
     assert(strcmp(status.protocol, "P25p2") == 0);
+    destroy_state(state);
+}
+
+/* The hold is display smoothing, so it runs on real time like the Qt panel's: a decode clock that
+   moves on (a fast replay) must not expire it while no real time has passed. The call views beside
+   it still age on the decode clock. */
+static void
+test_sync_label_hold_runs_on_real_time(void) {
+    dsd_state* state = make_state();
+    dsd_app_notification_reset();
+    const uint64_t t0_ns = 1000000000000000000ULL; // 1e9 s: far from any platform clock reading.
+    dsd_decode_clock_use_test(t0_ns);
+
+    state->synctype = DSD_SYNC_P25P2_POS;
+    dsd_app_notification_publish_state(state);
+
+    dsd_decode_clock_test_set_ns(t0_ns + 100000000000ULL); // 100 s of decode time, no real time.
+    state->synctype = DSD_SYNC_NONE;
+    dsd_app_notification_publish_state(state);
+
+    dsd_app_notification_status status;
+    assert(dsd_app_notification_get(&status) == 1);
+    assert(strcmp(status.protocol, "P25p2") == 0);
+    dsd_decode_clock_use_system();
     destroy_state(state);
 }
 
@@ -746,6 +771,7 @@ main(void) {
     test_publish_state_carries_protocol_and_call();
     test_unsynced_publishes_empty_protocol();
     test_sync_label_is_held_across_a_frame_with_no_sync();
+    test_sync_label_hold_runs_on_real_time();
     test_publish_opts_carries_radio_and_trunking();
     test_non_radio_input_reports_no_centre();
     test_opts_only_publish_keeps_the_no_slot_sentinel();

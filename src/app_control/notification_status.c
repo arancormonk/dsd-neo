@@ -37,10 +37,12 @@ static atomic_int g_mu_state = 0; /* 0=uninit, 1=initing, 2=init */
    is the Android service's 1 Hz poll, so a desktop run must not pay for any of it. */
 static atomic_int g_wanted = 0;
 
-/* The sync-hold decay, sharing DSD_APP_SYNC_HOLD_S with the Qt panel so the two surfaces
-   cannot come to disagree about when a session stops reading as locked. Guarded by g_mu
-   with the record itself, because dsd_app_notification_reset() clears them together and
-   can be called from a thread other than the publisher's. */
+/* The sync-hold decay, sharing DSD_APP_SYNC_HOLD_S and the real-time clock with the Qt panel
+   so the two surfaces cannot come to disagree about when a session stops reading as locked.
+   It only smooths what a display shows, so it is real time even though the record beside it
+   ages decoded calls on the decode clock. Guarded by g_mu with the record itself, because
+   dsd_app_notification_reset() clears them together and can be called from a thread other
+   than the publisher's. */
 static int g_sync_type = DSD_SYNC_NONE;
 static double g_sync_seen_m = 0.0;
 
@@ -77,6 +79,7 @@ dsd_app_notification_publish_state(const dsd_state* state) {
     int line_states[DSD_CALL_STATE_SLOT_COUNT];
     double started[DSD_CALL_STATE_SLOT_COUNT];
     const double now_m = dsd_decode_now_mono_s();
+    const double hold_now_m = dsd_realtime_mono_s();
     /* int, not uint8_t: DSD_CALL_STATE_SLOT_COUNT is an int-typed enum constant, and
        comparing a narrower loop variable against it is what
        bugprone-too-small-loop-variable flags -- matches the loop shape already used
@@ -100,11 +103,12 @@ dsd_app_notification_publish_state(const dsd_state* state) {
        NONE whenever the current search window found nothing, which on a control channel
        is most of them. Published raw, the label blinks on and off between polls -- and
        because that changes the encoded record, the service re-posts the notification at
-       the full poll rate on a channel carrying no traffic at all. */
+       the full poll rate on a channel carrying no traffic at all. Real time, as in the Qt
+       panel: the hold is display smoothing, not a decode decision. */
     if (synctype != DSD_SYNC_NONE) {
         g_sync_type = synctype;
-        g_sync_seen_m = now_m;
-    } else if (g_sync_type != DSD_SYNC_NONE && (now_m - g_sync_seen_m) > DSD_APP_SYNC_HOLD_S) {
+        g_sync_seen_m = hold_now_m;
+    } else if (g_sync_type != DSD_SYNC_NONE && (hold_now_m - g_sync_seen_m) > DSD_APP_SYNC_HOLD_S) {
         g_sync_type = DSD_SYNC_NONE;
     }
 

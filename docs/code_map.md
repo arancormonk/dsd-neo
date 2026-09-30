@@ -2440,16 +2440,22 @@ Qt Quick frontend (`src/ui/qt`):
   `UI_QT_METRICS_MODEL`, `UI_QT_SESSION_ARGS`, `UI_QT_CONTROLLER`.
 
 - After the session's first decoder redraw, `UiController` refreshes live metrics on every timer tick so scan
-  countdowns and the sync-loss hold continue aging if input stalls. History, network and policy models still
-  refresh on decoder redraws; session lifecycle clears live metrics and prevents stale snapshots from restoring them.
+  countdowns and the sync-loss hold continue aging if input stalls. The countdowns age on the decode clock their
+  deadlines were stamped with, so in a replay they freeze while samples stop; the sync hold is real time and expires
+  either way. History, network and policy models still refresh on decoder redraws; session lifecycle clears live
+  metrics and prevents stale snapshots from restoring them.
 - Two clocks: `MetricsModel` ages the call lines, the call-skip count and the scan countdown on the decode clock, and
   publishes its wall-clock now as `decodeNowMs` (read live; `decodeNowMsChanged` fires from `refresh()` when the decode
   second moves). QML compares decoded stamps only against it: `Util.shortAge(when, metrics.decodeNowMs)` for the
   Monitor's recent-call ages and the session-start `monitorView.minWhen`/`talkgroups.sinceWhen` cutoffs in `Main.qml`.
   The viewer's own moments stay on real time through `realtime_clock.h`, and QML ages a saved system's `lastHeard`
-  against `savedSystems.realtimeNowMs()` (`Util.heardText(lastHeard, nowMs)`). The sync-label hold and the received-tone
-  input-pause check use `dsd_realtime_mono_s()`. Tests: `UI_QT_METRICS_MODEL`, `UI_QT_QML_CALL_LISTS`
-  (`tst_monitor_recent_calls.qml`, `tst_history_session_identity.qml`).
+  against `savedSystems.realtimeNowMs()` (`Util.heardText(lastHeard, nowMs)`). The sync-label hold (in the Qt panel and
+  the Android notification record, `app_control/notification_status.c`) and the received-tone input-pause check use
+  `dsd_realtime_mono_s()`. One sanctioned exception compares a decoded stamp with real time: `day_label()` in
+  `call_history_model.cpp` labels history sections "TODAY"/"YESTERDAY" against the viewer's real calendar day, paired
+  with the real midnight rollover timer, because the log spans sessions and a replay's calls keep their own dates.
+  Tests: `UI_QT_METRICS_MODEL`, `UI_QT_QML_CALL_LISTS` (`tst_monitor_recent_calls.qml`,
+  `tst_history_session_identity.qml`), `APP_CONTROL_NOTIFICATION_STATUS`.
 - Received tone or code (issues #522, #523): `MetricsModel` publishes the `rxTone*` group (`rxToneVisible`,
   `rxToneStatus`, `rxToneText`, `rxToneKind`, `rxToneTenthsHz`, `rxToneDcsCode`, `rxToneDcsInverted`,
   `rxToneDcsAliasCode`, `rxToneDcsAliasInverted`, `rxToneCarrier`) with its own `rxToneChanged` signal, filled from
