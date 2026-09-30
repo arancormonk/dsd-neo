@@ -1717,9 +1717,15 @@ Runtime controls (via `include/dsd-neo/io/rtl_stream_c.h`):
     so the undo sends the peer's own passband explicitly: `SetScanRowModulation()`, a scan row's own request, first asks
     the peer what it runs (`m`, switching a peer on the other demodulator to this one at passband 0 to read that one's),
     and `RestoreScanModulation()` puts back each passband a row changed, the other demodulator's first, before the
-    session's request. A peer that cannot answer `m` gets passband 0, best-effort. `Connect()` starts the record empty
-    for a connection on the number of a closed socket and leaves it alone for one on another number (the TCP audio
-    input's reconnect while the rigctl socket stays open), and `SetModulation()` is the FM call. The engine's rigctl
+    session's request. A peer that cannot answer `m` gets passband 0, best-effort. `Connect()` starts the record, and
+    the frequency `SetFreq()` last sent, empty for a connection on the number of a closed socket and leaves them alone
+    for one on another number (the TCP audio input's reconnect while the rigctl socket stays open), and
+    `SetModulation()` is the FM call. `RigctlRebindPeer()` hands a rigctl reconnect, opened while the socket it replaces
+    is still open, what that socket knew of its peer (issue #589): the whole record for the same host and port, so the
+    FM undo and the scan's restore still send the peer's own passbands; for another endpoint while the old peer may run
+    AM (an am row's, or either demodulator after a lost reply), a demodulator not known, so FM is sent first and a
+    refusal fails a best-effort tune; otherwise nothing, a peer nothing was asked of, so one that refuses mode requests
+    does not fail every tune. No own passband of the old peer reaches another endpoint. The engine's rigctl
     tune leg (`dsd_engine_tune_rigctl_modulation()` in `trunk_tuning.c`) asks a peer that demodulates audio input for
     an AM scan row's AM width and an nfm row's own width through `SetScanRowModulation()`, failing the row's tune when
     the peer refuses, and for `-B` otherwise, best-effort unless the peer refuses it while on an am row's AM or on a

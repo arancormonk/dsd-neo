@@ -16,9 +16,9 @@ extern "C" {
 
 /**
  * @brief Open a TCP connection to @p hostname:@p portno with the rigctl receive timeout. The rigctl peer's record
- * (SetModulationKind()) starts empty for a connection on the number of a socket closed before it; a connection on
- * another number, such as the TCP audio input's own (re)connect while the rigctl socket stays open, leaves the record
- * of that open socket alone.
+ * (SetModulationKind()) and the frequency SetFreq() last sent start empty for a connection on the number of a socket
+ * closed before it, such as the rigctl socket a reconnect closed (issue #589); a connection on another number, such as
+ * the TCP audio input's own (re)connect while the rigctl socket stays open, leaves those of that open socket alone.
  */
 dsd_socket_t Connect(char* hostname, int portno);
 long int GetCurrentFreq(dsd_socket_t sockfd);
@@ -39,7 +39,8 @@ bool SetModulation(dsd_socket_t sockfd, int bandwidth);
  * request asks again. After an I/O failure the request may have reached the peer, so what it runs is not known: the
  * next request on the socket is sent whatever it asks for, the FM undo included, and a request for the other
  * demodulator than the one the peer last accepted leaves that not known either (DSD_RIGCTL_KIND_UNKNOWN). Connect()
- * starts the cache of a new connection on a closed socket's number empty.
+ * starts the cache of a new connection on a closed socket's number empty, and RigctlRebindPeer() hands a reconnect
+ * what the socket it replaces knew.
  */
 bool SetModulationKind(dsd_socket_t sockfd, int kind, int bandwidth);
 
@@ -106,6 +107,27 @@ bool SetScanRowModulation(dsd_socket_t sockfd, int kind, int bandwidth);
  * of it stays for the next undo or restore to send. Returns what the session's request returns.
  */
 bool RestoreScanModulation(dsd_socket_t sockfd, int kind, int bandwidth);
+/**
+ * @brief Hand a rigctl reconnect what the socket it replaces knew of its peer (issue #589), without I/O.
+ *
+ * Call it once Connect() returned @p new_fd while @p old_fd is still open, so the two numbers differ, then close
+ * @p old_fd before anything is sent on @p new_fd (a peer may serve one client at a time). Without it the new socket is
+ * a peer nothing was asked of: a scan whose am row left the peer on AM would send no FM undo and no restore.
+ *
+ * - No record of @p old_fd (nothing was asked of its peer, or @p old_fd is DSD_INVALID_SOCKET): nothing changes, and
+ *   the new socket is a peer nothing was asked of, as after a first Connect().
+ * - @p same_endpoint (the same host and port): the new socket takes the whole record, so the FM undo and
+ *   RestoreScanModulation() still send the peer's own passbands read before a scan row changed them.
+ * - Another endpoint, with the old peer possibly on AM (an am row's, or either demodulator after a lost reply): it
+ *   may be the same peer under another name, so the new socket's demodulator is not known (DSD_RIGCTL_KIND_UNKNOWN,
+ *   passband not known). The next FM request is sent, the peer's own passband (0) included, a best-effort tune the
+ *   peer refuses fails (CachedModulationKind()), and the restore asks for FM. None of the old peer's own passbands
+ *   are sent to it.
+ * - Another endpoint, with the old peer on FM: a fresh record, as after a first Connect(), so a peer that refuses mode
+ *   requests does not fail every best-effort tune. The same peer reached under another name keeps a row passband it
+ *   still runs.
+ */
+void RigctlRebindPeer(dsd_socket_t old_fd, dsd_socket_t new_fd, int same_endpoint);
 
 #ifdef __cplusplus
 }

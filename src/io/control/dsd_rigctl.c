@@ -49,6 +49,7 @@
 static bool Send(dsd_socket_t sockfd, const char* buf);
 static bool Recv(dsd_socket_t sockfd, char* buf);
 static void rigctl_peer_forget(dsd_socket_t sockfd);
+static void rigctl_freq_forget(dsd_socket_t sockfd);
 
 /**
  * @brief Establish a TCP RIGCTL connection to the given host/port.
@@ -106,8 +107,10 @@ Connect(char* hostname, int portno) {
         (void)dsd_socket_setsockopt(sockfd, IPPROTO_TCP, TCP_NODELAY, &nodelay, sizeof(nodelay));
     }
 
-    /* A new connection on the number of a socket closed before it is a peer nothing was asked of. */
+    /* A new connection on the number of a socket closed before it is a peer nothing was asked of, and one no
+     * frequency was sent to (issue #589: a rigctl reconnect closes the socket it replaces). */
     rigctl_peer_forget(sockfd);
+    rigctl_freq_forget(sockfd);
     return sockfd;
 }
 
@@ -201,6 +204,20 @@ rigctl_response_ok(const char* response) {
     return end != response + 5 && code == 0;
 }
 
+/* The frequency SetFreq() last had accepted, and the socket it went out on. */
+static dsd_socket_t s_last_sockfd = DSD_INVALID_SOCKET;
+static long int s_last_freq = LONG_MIN;
+
+/* Forget the frequency when a new connection is opened on its socket's number: that socket was closed, and the peer
+ * of the new one was sent nothing. As for the peer record, a connection on another number leaves it alone. */
+static void
+rigctl_freq_forget(dsd_socket_t sockfd) {
+    if (s_last_sockfd == sockfd) {
+        s_last_sockfd = DSD_INVALID_SOCKET;
+        s_last_freq = LONG_MIN;
+    }
+}
+
 /**
  * @brief Set center frequency on the connected RIGCTL peer.
  *
@@ -212,8 +229,6 @@ rigctl_response_ok(const char* response) {
  */
 bool
 SetFreq(dsd_socket_t sockfd, long int freq) {
-    static dsd_socket_t s_last_sockfd = DSD_INVALID_SOCKET;
-    static long int s_last_freq = LONG_MIN;
     if (sockfd == s_last_sockfd && freq == s_last_freq) {
         return true; // no change; skip I/O
     }
@@ -274,6 +289,31 @@ rigctl_peer_on(dsd_socket_t sockfd) {
         rigctl_peer_reset(sockfd);
     }
     return &s_peer;
+}
+
+void
+RigctlRebindPeer(dsd_socket_t old_fd, dsd_socket_t new_fd, int same_endpoint) {
+    /* A reset record's socket is DSD_INVALID_SOCKET, which a missing old socket must not match. Without a record of the
+     * old socket nothing was asked of its peer: the new one gets a fresh record at its first request
+     * (rigctl_peer_on()). */
+    if (old_fd == DSD_INVALID_SOCKET || s_peer.sockfd != old_fd) {
+        return;
+    }
+    if (same_endpoint) {
+        s_peer.sockfd = new_fd; /* the same peer: what the scan changed on it, and its own passbands, stay known */
+        return;
+    }
+    /* Another endpoint may be another peer, whose own passbands the record does not describe, or the same one under
+     * another name. One the old peer's record leaves on AM, or on either demodulator after a lost reply, may run the
+     * am row's AM: FM is sent before anything else is taken for it. Otherwise the new peer is one nothing was asked of,
+     * as on a first connection, and keeps its own settings. */
+    const int may_run_am = s_peer.kind != DSD_ANALOG_DEMOD_FM;
+    rigctl_peer_reset(new_fd);
+    if (may_run_am) {
+        s_peer.touched = 1;
+        s_peer.kind = DSD_RIGCTL_KIND_UNKNOWN;
+        s_peer.bw = INT_MIN;
+    }
 }
 
 static int
