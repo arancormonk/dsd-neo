@@ -738,6 +738,109 @@ test_typed_row_retune_after_scan_leave_keeps_the_monitor(void) {
     return rc;
 }
 
+/* Check @p got against the DMR session's own profile @p want: the FSK discriminator, CQPSK off, its filter and rate. */
+static int
+expect_dmr_profile(const char* label, const rtl_stream_test_front_end_state* got,
+                   const rtl_stream_test_front_end_state* want) {
+    char name[192];
+    DSD_SNPRINTF(name, sizeof name, "%s: output", label);
+    int rc = expect_int(name, got->output_kind, want->output_kind);
+    DSD_SNPRINTF(name, sizeof name, "%s: CQPSK", label);
+    rc |= expect_int(name, got->cqpsk_enable, want->cqpsk_enable);
+    DSD_SNPRINTF(name, sizeof name, "%s: channel filter", label);
+    rc |= expect_int(name, got->channel_profile, want->channel_profile);
+    DSD_SNPRINTF(name, sizeof name, "%s: symbol rate", label);
+    rc |= expect_int(name, got->symbol_rate_hz, want->symbol_rate_hz);
+    return rc;
+}
+
+/* A -Y scan on a DMR session left while a typed row's retune is in flight (issue #582). A digital-only session's
+ * retunes carry no family, and the leave's plain digital request, a no-op on the digital family that the session makes
+ * around every hop, supersedes none of them, so when the controller started the row's retune late the demod thread took
+ * the leave's DMR profile first and the row's P25 profile landed over it for good. The leave now supersedes the
+ * family-less retunes outstanding: the row's retune lands its centre only, and the DMR profile stays. A leave made
+ * before the row's profile was queued is older, and the profile still lands. */
+static int
+test_digital_scan_leave_keeps_the_session_profile(void) {
+    static const int rows[2] = {RTL_STREAM_TEST_SYMBOL_P25_CQPSK, RTL_STREAM_TEST_SYMBOL_P25_C4FM_EXPLICIT};
+    int rc = 0;
+    for (int w = 0; w < 2; w++) {
+        for (int landing = 0; landing <= 1; landing++) {
+            char label[160];
+            const char* row = rows[w] == RTL_STREAM_TEST_SYMBOL_P25_CQPSK ? "P25 CQPSK row" : "P25 C4FM row";
+            const char* leave = landing ? "landing leave" : "plain leave";
+            rtl_stream_test_digital_leave_result r;
+            DSD_MEMSET(&r, 0, sizeof r);
+            DSD_SNPRINTF(label, sizeof label, "DMR session, %s, %s: run", row, leave);
+            rc |= expect_int(label, rtl_stream_test_digital_leave_across_familyless_retune(rows[w], landing, 0, &r), 0);
+            rc |= expect_int(label, r.rc, 0);
+            DSD_SNPRINTF(label, sizeof label, "DMR session, %s, %s: leave settled", row, leave);
+            rc |= expect_int(label, r.leave_outcome, RTL_STREAM_RX_REQUEST_SETTLED);
+            DSD_SNPRINTF(label, sizeof label, "DMR session, %s, %s: leave lands the session profile", row, leave);
+            rc |= expect_dmr_profile(label, &r.after_leave, &r.configured);
+            DSD_SNPRINTF(label, sizeof label, "DMR session, %s, %s: late row retune keeps it", row, leave);
+            rc |= expect_dmr_profile(label, &r.landed, &r.configured);
+            DSD_SNPRINTF(label, sizeof label, "DMR session, %s, %s: still there four blocks on", row, leave);
+            rc |= expect_dmr_profile(label, &r.after, &r.configured);
+        }
+        char label[160];
+        const int cqpsk = rows[w] == RTL_STREAM_TEST_SYMBOL_P25_CQPSK;
+        rtl_stream_test_digital_leave_result r;
+        DSD_MEMSET(&r, 0, sizeof r);
+        DSD_SNPRINTF(label, sizeof label, "DMR session, %s after an earlier leave: run",
+                     cqpsk ? "P25 CQPSK row" : "P25 C4FM row");
+        rc |= expect_int(label, rtl_stream_test_digital_leave_across_familyless_retune(rows[w], 0, 1, &r), 0);
+        rc |= expect_int(label, r.rc, 0);
+        DSD_SNPRINTF(label, sizeof label, "DMR session, %s after an earlier leave: row profile lands",
+                     cqpsk ? "P25 CQPSK row" : "P25 C4FM row");
+        rc |= expect_int(label, r.landed.channel_profile,
+                         cqpsk ? RTL_STREAM_CHANNEL_PROFILE_P25_CQPSK : RTL_STREAM_CHANNEL_PROFILE_P25_C4FM);
+        rc |= expect_int(label, r.landed.cqpsk_enable, cqpsk ? 1 : 0);
+    }
+    return rc;
+}
+
+/* A width command drained on a -fA or -fM session just before the -Y scanner advanced to a typed digital row (issue
+ * #582): the analog request is older than the row's retune, which carries no family on that session. At HEAD only a
+ * retune that attaches a family retired the requests queued before it, so the demod thread took the width request at
+ * its next block boundary and put the monitor back over the row the scanner sat on. The family-less retune retires it
+ * too now, and it reads replaced, as it does when the digital family is attached. */
+static int
+test_older_analog_request_does_not_undo_a_typed_row_retune(void) {
+    static const int kinds[2] = {DSD_ANALOG_DEMOD_FM, DSD_ANALOG_DEMOD_AM};
+    static const int rows[2] = {RTL_STREAM_TEST_SYMBOL_P25_CQPSK, RTL_STREAM_TEST_SYMBOL_DMR_FSK};
+    int rc = 0;
+    for (int k = 0; k < 2; k++) {
+        for (int w = 0; w < 2; w++) {
+            for (int attach = 0; attach <= 1; attach++) {
+                char label[192];
+                const char* stage = kinds[k] == DSD_ANALOG_DEMOD_AM ? "-fM" : "-fA";
+                const char* row = rows[w] == RTL_STREAM_TEST_SYMBOL_P25_CQPSK ? "P25 CQPSK row" : "DMR row";
+                const char* retune = attach ? "digital family attached" : "no family";
+                rtl_stream_test_older_analog_request_result r;
+                DSD_MEMSET(&r, 0, sizeof r);
+                DSD_SNPRINTF(label, sizeof label, "%s width then %s (%s): run", stage, row, retune);
+                rc |= expect_int(
+                    label, rtl_stream_test_older_analog_request_across_familyless_retune(kinds[k], rows[w], attach, &r),
+                    0);
+                rc |= expect_int(label, r.rc, 0);
+                DSD_SNPRINTF(label, sizeof label, "%s width then %s (%s): row lands off the monitor", stage, row,
+                             retune);
+                rc |= expect_int(label, r.landed.monitor, 0);
+                DSD_SNPRINTF(label, sizeof label, "%s width then %s (%s): row stays at the next boundary", stage, row,
+                             retune);
+                rc |= expect_int(label, r.after.monitor, 0);
+                rc |= expect_int(label, r.after.output_kind, r.landed.output_kind);
+                rc |= expect_int(label, r.after.channel_profile, r.landed.channel_profile);
+                DSD_SNPRINTF(label, sizeof label, "%s width then %s (%s): the width request reads replaced", stage, row,
+                             retune);
+                rc |= expect_int(label, r.request_outcome, RTL_STREAM_RX_REQUEST_REPLACED);
+            }
+        }
+    }
+    return rc;
+}
+
 /* The DSP menu's CQPSK toggle back to the monitor under -fA or -fM (svc_toggle_rtl_cqpsk()) is the analog request
  * alone: taken, it enters the monitor of the kind asked for at its width with CQPSK off; refused where it lands (a
  * retune moved the rate below what the width needs), it leaves the front end on CQPSK, never on a CQPSK-off profile
@@ -1701,6 +1804,8 @@ main(void) {
     rc |= test_monitor_output_scale();
     rc |= test_am_monitor_keeps_detector_under_symbol_profiles();
     rc |= test_typed_row_retune_after_scan_leave_keeps_the_monitor();
+    rc |= test_digital_scan_leave_keeps_the_session_profile();
+    rc |= test_older_analog_request_does_not_undo_a_typed_row_retune();
     rc |= test_monitor_return_from_cqpsk_is_the_analog_request_alone();
     rc |= test_am_requests_against_running_stream();
     rc |= expect_int("AM accepted with no stream",

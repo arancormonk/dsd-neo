@@ -55,10 +55,10 @@ typedef struct {
     /* The live receive-family requests the front end had accepted when the staged tune was queued
      * (dsd_engine_scan_family_requests(); issue #526), and whether that tune attached a receive family, which any later
      * request supersedes (dsd_engine_scan_retune_attaches_family()). A tune that attached none (a typed digital row on
-     * an analog session) only a later analog request supersedes, which the analog count says
-     * (dsd_engine_scan_analog_family_requests(); issue #582). */
+     * an analog session) only a later analog request supersedes, which the stream's count of such supersedes says
+     * (dsd_engine_scan_familyless_retune_supersedes(); issue #582). */
     uint32_t family_requests;
-    uint32_t analog_family_requests;
+    uint32_t familyless_supersedes;
     int family_attached;
     /* The map generation whose rows were last checked against the input (issues #521, #526), and the DSP rate its
      * analog row widths were last held to, with the configured NFM and AM widths a row without its own runs (issue
@@ -185,7 +185,7 @@ channel_scan_staged_stale(const dsd_opts* opts, const dsd_state* state, const ch
     if (scan->family_attached) {
         return scan->family_requests != dsd_engine_scan_family_requests(opts);
     }
-    return scan->analog_family_requests != dsd_engine_scan_analog_family_requests(opts);
+    return scan->familyless_supersedes != dsd_engine_scan_familyless_retune_supersedes(opts);
 }
 
 static int
@@ -826,7 +826,7 @@ channel_scan_start_row(dsd_opts* opts, dsd_state* state, int row) {
     scan->retry = 0;
     dsd_scan_settings_restore(&next, opts, state);
     scan->family_requests = dsd_engine_scan_family_requests(opts);
-    scan->analog_family_requests = dsd_engine_scan_analog_family_requests(opts);
+    scan->familyless_supersedes = dsd_engine_scan_familyless_retune_supersedes(opts);
     scan->family_attached = dsd_engine_scan_retune_attaches_family(opts, state, state->samplesPerSymbol);
     const dsd_trunk_tune_result result =
         dsd_engine_scan_tune_to_freq(opts, state, freq, state->samplesPerSymbol, &scan->request);
@@ -917,12 +917,18 @@ dsd_engine_channel_scan_step_manual(dsd_opts* opts, dsd_state* state) {
  * #524), also drops the analog monitor block the decoder has part-collected from the old family's or kind's output, as
  * a decode-mode change between them does. A leave from a typed digital row switches neither (the row kept the front
  * end on the analog family, on the row's channel): getSymbol() drops that block itself, and collects nothing, until
- * the monitor this requests is published (issue #582). */
+ * the monitor this requests is published (issue #582). Before any of its requests the leave supersedes the retunes
+ * queued with no family (a typed row's: dsd_engine_scan_supersede_familyless_retunes()), so one the controller lands
+ * late moves its centre only and does not undo the configured decoder's profile. */
 static int
 channel_scan_restore_frontend(const dsd_opts* opts, dsd_state* state, int row_timed_digital_family) {
     if (opts->audio_in_type != AUDIO_IN_RTL) {
         return 0;
     }
+    /* A typed row's retune still outstanding carries no family, so the requests below would not supersede it: the
+       controller could land it after the demod thread took them, and put the row's symbol profile back over the
+       configured decoder's for good. Superseded first, it lands its centre only (issue #582). */
+    dsd_engine_scan_supersede_familyless_retunes(opts);
     const int analog_family_active = dsd_rtl_stream_metrics_hook_analog_family_active();
     if (dsd_opts_is_analog_family(opts)) {
         int running_kind = opts->analog_demod;

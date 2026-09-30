@@ -197,11 +197,13 @@ struct RtlRetuneProfile {
     int analog_width_hz = 0;
     /* The live receive-family requests made before the family was attached (g_live_family_requests). */
     uint32_t family_request_count = 0U;
-    /* The number of the last live receive request (family or demod profile) made before the family was attached
-       (g_rx_req_seq): a request still queued with this number or an earlier one is older than the family. */
+    /* The number of the last live receive request (family or demod profile) made before the family was attached, or
+       before a profile with no family was queued (g_rx_req_seq): a request still queued with this number or an earlier
+       one is older than the family, or than that profile. */
     uint32_t family_request_seq = 0U;
-    /* The live analog family requests made before the profile was queued (g_live_analog_family_requests). */
-    uint32_t analog_request_count = 0U;
+    /* The supersedes counted before the profile was queued (g_familyless_retune_supersedes), which a profile with no
+       family goes by. */
+    uint32_t familyless_supersedes = 0U;
     /* With the digital family: the symbol profile's CQPSK state is the target's own choice and stands over
        DSD_NEO_CQPSK where the switch lands (rtl_stream_retune_analog_profile::cqpsk_explicit, issue #583). It travels
        with the rest of the profile, under the lock of the copy that holds it: g_pending_retune_profile_mutex while
@@ -333,15 +335,18 @@ static struct controller_state controller;
  * to the family its row wanted. */
 static std::atomic<uint32_t> g_live_family_requests{0U};
 
-/* Of those, the ones for the analog family, which ask for the monitor (issue #582). A retune profile with no family
- * attached records the count when it is queued (rtl_stream_store_pending_retune_profile()): a typed digital row's on a
- * -fA or -fM session, whose configured mode is analog, or a digital-only session's. An analog request made after that
- * is the newer word on what the front end runs: a scanner leaving to Analog or AM while the row's retune is still in
- * flight asks for the monitor back that way, as does a switch to Analog or AM. The profile's symbol profile would take
- * that monitor away again, so it does not land (rtl_stream_retune_symbols_superseded()), and the retune moves the
- * centre only. A digital request never supersedes such a profile: on the digital family it is a no-op that a digital
- * session makes around every hop. */
-static std::atomic<uint32_t> g_live_analog_family_requests{0U};
+/* What supersedes a retune profile queued with no family (issue #582): a typed digital row's on a -fA or -fM session,
+ * whose configured mode is analog, or any retune of a digital-only session. The profile records the count when it is
+ * queued (rtl_stream_store_pending_retune_profile()), and one counted after that is the newer word on what the front
+ * end runs, so the profile's symbol profile does not land (rtl_stream_retune_symbols_superseded()) and the retune moves
+ * the centre only. Two things count:
+ * - every accepted live analog family request (rtl_stream_queue_family_request()): it asks for the monitor, which the
+ *   profile's symbol profile would take away again (a scanner leaving to Analog or AM, a switch to Analog or AM);
+ * - every -Y scan leave (rtl_stream_supersede_familyless_retunes()), before its own requests: the configured decoder's
+ *   profile it puts back, a digital one's too, is newer than a row's retune the controller can still land late.
+ * A plain digital family request does not count: on the digital family it is a no-op that a digital session makes
+ * around every hop, whose retunes must still land their symbol profiles. */
+static std::atomic<uint32_t> g_familyless_retune_supersedes{0U};
 
 /* Whether a live family request was made after @p profile's family was attached (g_live_family_requests). */
 static int
@@ -350,13 +355,12 @@ rtl_stream_retune_family_superseded(const RtlRetuneProfile* profile) {
            && profile->family_request_count != g_live_family_requests.load(std::memory_order_acquire);
 }
 
-/* Whether a live analog family request was made after @p profile, which carries no family, was queued
- * (g_live_analog_family_requests): that request asked for the monitor, which the profile's symbol profile would take
- * away. */
+/* Whether a live analog family request or a scan leave was counted after @p profile, which carries no family, was
+ * queued (g_familyless_retune_supersedes). */
 static int
 rtl_stream_retune_symbols_superseded(const RtlRetuneProfile* profile) {
     return profile->analog_family < 0
-           && profile->analog_request_count != g_live_analog_family_requests.load(std::memory_order_acquire);
+           && profile->familyless_supersedes != g_familyless_retune_supersedes.load(std::memory_order_acquire);
 }
 
 namespace {
@@ -9083,11 +9087,11 @@ rtl_stream_queue_family_request(int family, int kind, int width_hz, int digital_
         return -1;
     }
     /* Newer than any retune profile whose family is attached already: that retune no longer lands its family. An
-       analog request is newer than a profile with no family queued already too: that retune no longer lands its
-       symbol profile. */
+       analog request is newer than a profile with no family queued already too (g_familyless_retune_supersedes): that
+       retune no longer lands its symbol profile. */
     g_live_family_requests.fetch_add(1U, std::memory_order_acq_rel);
     if (family == DSD_RX_FAMILY_ANALOG) {
-        g_live_analog_family_requests.fetch_add(1U, std::memory_order_acq_rel);
+        g_familyless_retune_supersedes.fetch_add(1U, std::memory_order_acq_rel);
     }
     if (!g_stream) {
         /* No pipeline, nothing to switch: the next stream open configures the front end from the options. */
@@ -9444,7 +9448,8 @@ rtl_stream_store_pending_retune_profile(uint32_t target_freq_hz, int cqpsk_enabl
     profile.ted_override = persist_ted_override ? 1 : 0;
     rtl_stream_copy_retune_gain_profile(&profile, gain_profile);
     profile.target_freq_hz = target_freq_hz;
-    profile.analog_request_count = g_live_analog_family_requests.load(std::memory_order_acquire);
+    profile.familyless_supersedes = g_familyless_retune_supersedes.load(std::memory_order_acquire);
+    profile.family_request_seq = g_rx_req_seq.load(std::memory_order_acquire);
 
     std::lock_guard<std::mutex> lock(g_pending_retune_profile_mutex);
     g_pending_retune_profile = profile;
@@ -9476,7 +9481,7 @@ rtl_stream_prepare_retune_analog_profile_for_target(uint32_t target_freq_hz,
         profile.active = 1;
         profile.cqpsk_enable = -1;
         profile.target_freq_hz = target_freq_hz;
-        profile.analog_request_count = g_live_analog_family_requests.load(std::memory_order_acquire);
+        profile.familyless_supersedes = g_familyless_retune_supersedes.load(std::memory_order_acquire);
         g_pending_retune_profile = profile;
     }
     g_pending_retune_profile.analog_family = analog->family;
@@ -9495,8 +9500,13 @@ rtl_stream_live_family_request_count(void) {
 }
 
 extern "C" uint32_t
-rtl_stream_live_analog_family_request_count(void) {
-    return g_live_analog_family_requests.load(std::memory_order_acquire);
+rtl_stream_familyless_retune_supersedes(void) {
+    return g_familyless_retune_supersedes.load(std::memory_order_acquire);
+}
+
+extern "C" void
+rtl_stream_supersede_familyless_retunes(void) {
+    g_familyless_retune_supersedes.fetch_add(1U, std::memory_order_acq_rel);
 }
 
 extern "C" void
@@ -9632,6 +9642,47 @@ rtl_stream_retire_requests_before_family(const RtlRetuneProfile* profile, uint32
     return 1;
 }
 
+/* Drop a live analog family request still queued from before @p profile, which carries no family, was queued (issue
+ * #582): a width or mode command the decoder drained just before a -Y scan on a -fA or -fM session advanced to a
+ * typed digital row. The retune runs the row's symbol profile, which the demod thread would otherwise take the monitor
+ * back from at its next block boundary, while the scanner sits on the row; it retires the older request as a retune
+ * that attaches a family retires the requests queued before it (rtl_stream_retire_requests_before_family()). Only an
+ * analog request goes: a digital family request, or a symbol profile queued alone, leaves the family as it is.
+ *
+ * Returns 0, and leaves the queue alone, when the profile was superseded after all (rtl_stream_retune_symbols_superseded(),
+ * checked again under the request lock: an analog request counts itself before it takes that lock to queue, so under
+ * it an unchanged count means the analog request queued is older than the profile). Otherwise returns 1 with
+ * @p out_retired_through the number the dropped requests settle through once the symbol profile has applied (0: none,
+ * or they settle with a newer symbol profile still queued). A dropped analog request, and the requests dropped with
+ * it, read replaced (issue #578). Called with the demod thread idle. */
+static int
+rtl_stream_retire_analog_request_before_symbols(const RtlRetuneProfile* profile, uint32_t* out_retired_through) {
+    *out_retired_through = 0U;
+    std::lock_guard<std::mutex> lock(g_profile_req_m);
+    if (rtl_stream_retune_symbols_superseded(profile)) {
+        return 0;
+    }
+    if (!g_profile_req_pending.load(std::memory_order_acquire) || g_profile_req_analog_family != DSD_RX_FAMILY_ANALOG) {
+        return 1;
+    }
+    /* The requests left unsettled end on the family the front end runs, which a retune with no family keeps. */
+    g_profile_req_family_after = demod.analog_family ? DSD_RX_FAMILY_ANALOG : DSD_RX_FAMILY_DIGITAL;
+    g_profile_req_landing_after = 0;
+    const uint32_t newest = g_rx_req_seq.load(std::memory_order_relaxed);
+    if (newest == profile->family_request_seq) {
+        rtl_stream_note_replaced_locked(newest);
+        g_profile_req_pending.store(0, std::memory_order_relaxed);
+        g_profile_req_has_demod = 0;
+        g_profile_req_analog_family = -1;
+        *out_retired_through = newest;
+        return 1;
+    }
+    /* A symbol profile followed the retune's and keeps the queue; only the older analog request goes, settled with it. */
+    rtl_stream_note_replaced_locked(g_profile_req_analog_seq);
+    g_profile_req_analog_family = -1;
+    return 1;
+}
+
 /* Settle every request through @p seq (0: none), unless a later settlement already did. */
 static void
 rtl_stream_settle_requests_through(uint32_t seq) {
@@ -9659,13 +9710,18 @@ enum {
  * (rtl_stream_retire_requests_before_family()), which checks for a superseding request again under the request lock:
  * one made while the profile lands supersedes it as one made before does. */
 static int
-rtl_stream_apply_retune_family(const RtlRetuneProfile* profile) {
+rtl_stream_apply_retune_family(const RtlRetuneProfile* profile, uint32_t* out_retired_through) {
+    *out_retired_through = 0U;
     if (profile->analog_family < 0) {
-        /* No family to switch; the symbol profile applies next, unless a later analog request asked for the monitor.
-           Checked once, under the gate the caller holds: nothing queued is dropped here, and a request counted after
-           this check is taken at the demod thread's next block boundary, which puts the monitor back over the profile
-           landed here. */
-        return rtl_stream_retune_symbols_superseded(profile) ? RTL_RETUNE_FAMILY_DONE : RTL_RETUNE_FAMILY_CONTINUE;
+        /* No family to switch; the symbol profile applies next, unless something counted since it was queued
+           superseded it (rtl_stream_retune_symbols_superseded()), and it retires an analog request queued before it.
+           Both are decided under the gate the caller holds and the request lock: a request counted after that is taken
+           at the demod thread's next block boundary, after the profile landed here. */
+        if (rtl_stream_retune_symbols_superseded(profile)
+            || !rtl_stream_retire_analog_request_before_symbols(profile, out_retired_through)) {
+            return RTL_RETUNE_FAMILY_DONE;
+        }
+        return RTL_RETUNE_FAMILY_CONTINUE;
     }
     if (rtl_stream_retune_family_superseded(profile)) {
         return RTL_RETUNE_FAMILY_DONE;
@@ -9754,7 +9810,8 @@ rtl_stream_apply_retune_ted(const RtlRetuneProfile* profile, int lands_digital_f
 static int
 rtl_stream_apply_retune_receive_profile(const RtlRetuneProfile* profile, int* out_lands_digital_family) {
     *out_lands_digital_family = 0;
-    const int family = rtl_stream_apply_retune_family(profile);
+    uint32_t retired_through = 0U;
+    const int family = rtl_stream_apply_retune_family(profile, &retired_through);
     if (family != RTL_RETUNE_FAMILY_CONTINUE) {
         /* The analog family has no symbol clock. A symbol profile queued for the same target would toggle the
            CQPSK family or the FSK discriminator back on and take the monitor output away, so it is dropped here,
@@ -9784,6 +9841,8 @@ rtl_stream_apply_retune_receive_profile(const RtlRetuneProfile* profile, int* ou
     }
 
     rtl_stream_apply_retune_ted(profile, lands_digital_family);
+    /* An older analog request this profile retired settles once the profile it gave way to has applied. */
+    rtl_stream_settle_requests_through(retired_through);
     *out_lands_digital_family = lands_digital_family;
     return 0;
 }
@@ -12851,7 +12910,7 @@ rtl_stream_test_am_monitor_symbol_profiles(int rate_hz, rtl_stream_test_am_symbo
     row.ted_sps = 10;
     row.target_freq_hz = kFamilyTestRetuneHz;
     /* Queued after the live requests above, as the scanner queues it: none supersedes it. */
-    row.analog_request_count = g_live_analog_family_requests.load(std::memory_order_acquire);
+    row.familyless_supersedes = g_familyless_retune_supersedes.load(std::memory_order_acquire);
     rc |= family_test_land_retune(&stream_opts, demod.rate_out, demod.rate_out, demod.rate_out, &row);
     out->retune_row_am = dsd_demod_am_active(&demod);
 
@@ -14216,6 +14275,168 @@ rtl_stream_test_typed_row_retune_across_leave(int kind, int row_symbol_profile, 
     family_test_release_buffers();
     fsk_reacquire_test_cleanup_output_ring(initialized_output);
     return rc == 0 ? 0 : -3;
+}
+
+/* What the front end runs now, published as the decoder reads it. */
+static void
+family_test_note_front_end(rtl_stream_test_front_end_state* out) {
+    out->analog_family = demod.analog_family;
+    out->output_kind = demod.output_kind;
+    out->cqpsk_enable = demod.cqpsk_enable;
+    out->channel_profile = demod.channel_lpf_profile;
+    out->symbol_rate_hz = demod.symbol_rate_hz;
+    out->monitor = dsd_demod_analog_monitor_active(&demod);
+    out->published = rtl_stream_get_analog_profile(NULL, NULL, NULL);
+}
+
+/* The DMR session's own symbol profile, timed for the 48 kHz output. */
+static int
+family_test_request_dmr_session_profile(void) {
+    return rtl_stream_request_demod_profile(0, 4800, 4, DSD_CH_LPF_PROFILE_12K5, 10, 0);
+}
+
+/* The -Y leave of a DMR session (channel_scan_restore_frontend()): the family-less retunes outstanding superseded, the
+   digital family asked for (the plain request, or with @p landing the marked landing), then the session's own symbol
+   profile, both taken at the demod thread's next block boundary. Returns the symbol profile request's number. */
+static uint32_t
+family_test_digital_scan_leave(int landing, int* rc) {
+    RtlSdrInternals* const previous = g_stream;
+    g_stream = &g_cqpsk_toggle_test_stream;
+    rtl_stream_supersede_familyless_retunes();
+    if (landing) {
+        *rc |= rtl_stream_request_digital_family_landing(0);
+    } else {
+        *rc |= rtl_stream_request_analog_profile(DSD_RX_FAMILY_DIGITAL, DSD_ANALOG_DEMOD_FM, 0);
+    }
+    *rc |= family_test_request_dmr_session_profile();
+    const uint32_t seq = rtl_stream_receive_request_seq();
+    family_test_demod_thread_boundary();
+    g_stream = previous;
+    return seq;
+}
+
+extern "C" int
+rtl_stream_test_digital_leave_across_familyless_retune(int row_symbol_profile, int landing, int leave_before_queue,
+                                                       rtl_stream_test_digital_leave_result* out) {
+    if (!out) {
+        return -1;
+    }
+    *out = {};
+    int initialized_output = 0;
+    if (fsk_reacquire_test_prepare_output_ring(0U, &initialized_output) != 0) {
+        fsk_reacquire_test_cleanup_output_ring(initialized_output);
+        return -2;
+    }
+    const FamilyTestSaved saved = family_test_save();
+    static dsd_opts stream_opts;
+    DSD_MEMSET(&stream_opts, 0, sizeof stream_opts);
+    stream_opts.frame_dmr = 1;
+    g_cqpsk_toggle_test_stream.output = &output;
+    g_cqpsk_toggle_test_stream.opts = &stream_opts;
+    g_stream = NULL;
+    int rc = family_test_seed_open(&stream_opts, 48000, 0);
+    rtl_stream_clear_demod_profile_request();
+    rtl_stream_clear_pending_retune_profile();
+    controller_state test_controller = {};
+    controller_init(&test_controller);
+    struct controller_state* s = &test_controller;
+
+    g_stream = &g_cqpsk_toggle_test_stream;
+    rc |= family_test_request_dmr_session_profile();
+    family_test_demod_thread_boundary();
+    g_stream = NULL;
+    family_test_note_front_end(&out->configured);
+
+    uint32_t leave_seq = 0U;
+    if (leave_before_queue) {
+        leave_seq = family_test_digital_scan_leave(landing, &rc);
+    }
+    family_test_queue_retune(s, kFamilyTestRetuneHz, -1, row_symbol_profile);
+    ControllerRetuneWork work = {};
+    const int taken = family_test_take_retune(s, &work);
+    if (!leave_before_queue) {
+        leave_seq = family_test_digital_scan_leave(landing, &rc);
+    }
+    family_test_note_front_end(&out->after_leave);
+    out->leave_outcome = rtl_stream_receive_request_outcome(leave_seq);
+    if (taken) {
+        family_test_land_taken_retune(s, &stream_opts, &work);
+        rtl_stream_publish_demod_profile_snapshot();
+    }
+    family_test_note_front_end(&out->landed);
+    g_stream = &g_cqpsk_toggle_test_stream;
+    for (int i = 0; i < 4; i++) {
+        family_test_demod_thread_boundary();
+    }
+    g_stream = NULL;
+    family_test_note_front_end(&out->after);
+
+    controller_cleanup(s);
+    rtl_stream_clear_demod_profile_request();
+    rtl_stream_clear_pending_retune_profile();
+    family_test_restore(saved);
+    family_test_release_buffers();
+    fsk_reacquire_test_cleanup_output_ring(initialized_output);
+    out->rc = (rc == 0 && taken) ? 0 : -1;
+    return 0;
+}
+
+extern "C" int
+rtl_stream_test_older_analog_request_across_familyless_retune(int kind, int row_symbol_profile, int attach_digital,
+                                                              rtl_stream_test_older_analog_request_result* out) {
+    if (!out) {
+        return -1;
+    }
+    *out = {};
+    int initialized_output = 0;
+    if (fsk_reacquire_test_prepare_output_ring(0U, &initialized_output) != 0) {
+        fsk_reacquire_test_cleanup_output_ring(initialized_output);
+        return -2;
+    }
+    const FamilyTestSaved saved = family_test_save();
+    static dsd_opts stream_opts;
+    DSD_MEMSET(&stream_opts, 0, sizeof stream_opts);
+    stream_opts.analog_only = 1;
+    stream_opts.monitor_input_audio = 1;
+    stream_opts.analog_demod = kind;
+    g_cqpsk_toggle_test_stream.output = &output;
+    g_cqpsk_toggle_test_stream.opts = &stream_opts;
+    g_stream = NULL;
+    int rc = family_test_seed_open(&stream_opts, 48000, 0);
+    rtl_stream_clear_demod_profile_request();
+    rtl_stream_clear_pending_retune_profile();
+    controller_state test_controller = {};
+    controller_init(&test_controller);
+    struct controller_state* s = &test_controller;
+
+    /* The width command, with the pipeline running: it waits in the queue for the demod thread. */
+    g_stream = &g_cqpsk_toggle_test_stream;
+    rc |= rtl_stream_request_analog_profile(DSD_RX_FAMILY_ANALOG, kind, kind == DSD_ANALOG_DEMOD_FM ? 16000 : 0);
+    const uint32_t seq = rtl_stream_receive_request_seq();
+    g_stream = NULL;
+
+    family_test_queue_retune(s, kFamilyTestRetuneHz, attach_digital ? DSD_RX_FAMILY_DIGITAL : -1, row_symbol_profile);
+    ControllerRetuneWork work = {};
+    const int taken = family_test_take_retune(s, &work);
+    if (taken) {
+        family_test_land_taken_retune(s, &stream_opts, &work);
+        rtl_stream_publish_demod_profile_snapshot();
+    }
+    family_test_note_front_end(&out->landed);
+    g_stream = &g_cqpsk_toggle_test_stream;
+    family_test_demod_thread_boundary();
+    g_stream = NULL;
+    family_test_note_front_end(&out->after);
+    out->request_outcome = rtl_stream_receive_request_outcome(seq);
+
+    controller_cleanup(s);
+    rtl_stream_clear_demod_profile_request();
+    rtl_stream_clear_pending_retune_profile();
+    family_test_restore(saved);
+    family_test_release_buffers();
+    fsk_reacquire_test_cleanup_output_ring(initialized_output);
+    out->rc = (rc == 0 && taken) ? 0 : -1;
+    return 0;
 }
 
 /* Queue @p in_flight_family's retune to @p target_hz on @p s and take it, queue @p queued_family's retune to @p target_hz

@@ -1456,24 +1456,27 @@ test_live_family_request_count(void) {
     return failed;
 }
 
-/* Of those, the analog ones are counted apart (issue #582): the -Y scanner compares that count across a row's retune
- * that carries no family, whose symbol profile an analog request counted meanwhile has superseded. A digital request,
- * the marked digital landing included, and a refused analog one are not counted. */
+/* The supersedes of a retune queued with no family are counted apart (issue #582): every accepted live analog request
+ * and every scan leave (rtl_stream_supersede_familyless_retunes()). The -Y scanner compares the count across a row's
+ * retune that carries no family, whose symbol profile an analog request counted meanwhile has superseded. A digital
+ * request, the marked digital landing included, and a refused analog one are not counted. */
 static int
-test_live_analog_family_request_count(void) {
-    const uint32_t before = rtl_stream_live_analog_family_request_count();
+test_familyless_retune_supersede_count(void) {
+    const uint32_t before = rtl_stream_familyless_retune_supersedes();
     int failed = expect_int_eq("digital request accepted",
                                rtl_stream_request_analog_profile(DSD_RX_FAMILY_DIGITAL, DSD_ANALOG_DEMOD_FM, 0), 0);
     failed |= expect_int_eq("digital landing accepted", rtl_stream_request_digital_family_landing(0), 0);
     failed |=
-        expect_int_eq("digital requests not counted", (int)(rtl_stream_live_analog_family_request_count() - before), 0);
+        expect_int_eq("digital requests not counted", (int)(rtl_stream_familyless_retune_supersedes() - before), 0);
     failed |= expect_int_eq("width below the NFM range refused",
                             rtl_stream_request_analog_profile(DSD_RX_FAMILY_ANALOG, DSD_ANALOG_DEMOD_FM, 1000), -1);
     failed |= expect_int_eq("refused analog request not counted",
-                            (int)(rtl_stream_live_analog_family_request_count() - before), 0);
+                            (int)(rtl_stream_familyless_retune_supersedes() - before), 0);
     failed |= expect_int_eq("analog request accepted",
                             rtl_stream_request_analog_profile(DSD_RX_FAMILY_ANALOG, DSD_ANALOG_DEMOD_AM, 0), 0);
-    failed |= expect_int_eq("analog request counted", (int)(rtl_stream_live_analog_family_request_count() - before), 1);
+    failed |= expect_int_eq("analog request counted", (int)(rtl_stream_familyless_retune_supersedes() - before), 1);
+    rtl_stream_supersede_familyless_retunes();
+    failed |= expect_int_eq("scan leave counted", (int)(rtl_stream_familyless_retune_supersedes() - before), 2);
     return failed;
 }
 
@@ -2300,7 +2303,7 @@ main(void) {
     failed |= test_retune_family_superseded_while_it_lands();
     failed |= test_familyless_retune_superseded_by_a_later_analog_request();
     failed |= test_live_family_request_count();
-    failed |= test_live_analog_family_request_count();
+    failed |= test_familyless_retune_supersede_count();
     failed |= test_dmr_retune_after_an_analog_retune_lands_on_fsk();
     failed |= test_target_cqpsk_choice_stands_after_an_analog_target();
     failed |= test_digital_family_lands_where_timed_on_a_digital_front_end();

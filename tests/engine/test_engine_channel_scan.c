@@ -80,12 +80,23 @@ dsd_engine_scan_family_requests(const dsd_opts* opts) {
 
 /* The analog ones among them (trunk_tuning.c, issue #582): a case standing in for a command that asks for the monitor
  * moves both counts. */
-static uint32_t g_analog_family_requests;
+static uint32_t g_familyless_supersedes;
 
 uint32_t
-dsd_engine_scan_analog_family_requests(const dsd_opts* opts) {
+dsd_engine_scan_familyless_retune_supersedes(const dsd_opts* opts) {
     (void)opts;
-    return g_analog_family_requests;
+    return g_familyless_supersedes;
+}
+
+/* The scan leave's supersede of the family-less retunes outstanding (trunk_tuning.c, issue #582): counted, and it
+ * moves the count above as the stream's does. */
+static int g_familyless_supersede_calls;
+
+void
+dsd_engine_scan_supersede_familyless_retunes(const dsd_opts* opts) {
+    (void)opts;
+    g_familyless_supersede_calls++;
+    g_familyless_supersedes++;
 }
 
 /* Whether the staged retune attaches a receive family (trunk_tuning.c), which is all a live request supersedes: an
@@ -1594,7 +1605,7 @@ test_typed_row_restages_after_a_live_analog_request(void) {
     dsd_rtl_stream_metrics_hooks_set(&hooks);
     expected_nxdn = 0;
     g_family_requests = 0U;
-    g_analog_family_requests = 0U;
+    g_familyless_supersedes = 0U;
     /* The typed row's retune attaches no family on this session. */
     g_frontend_analog = 0;
 
@@ -1608,7 +1619,7 @@ test_typed_row_restages_after_a_live_analog_request(void) {
     assert(tuned_analog_only == 0);
     assert(dsd_scan_mode_set_configured_nfm_bandwidth(opts, state, 12500) == 1);
     g_family_requests++;
-    g_analog_family_requests++;
+    g_familyless_supersedes++;
     int before = tunes;
     dsd_trunk_tuning_request_publish(request, DSD_TRUNK_TUNE_RESULT_OK);
     assert(dsd_engine_channel_scan_pending(opts, state) == 1);
@@ -1632,7 +1643,7 @@ test_typed_row_restages_after_a_live_analog_request(void) {
 
     tune_result = DSD_TRUNK_TUNE_RESULT_OK;
     g_family_requests = 0U;
-    g_analog_family_requests = 0U;
+    g_familyless_supersedes = 0U;
     dsd_engine_channel_scan_leave(opts, state);
     assert(opts->analog_only == 1);
     dsd_rtl_stream_metrics_hooks_set(NULL);
@@ -1641,6 +1652,45 @@ test_typed_row_restages_after_a_live_analog_request(void) {
     free(state);
     free(opts);
     tunes = reset_count = 0;
+}
+
+/* Leaving the scan supersedes the family-less retunes outstanding on an RTL front end, before its own requests (issue
+ * #582): a typed row's retune, which the controller can still land after the leave's requests were taken, would
+ * otherwise put the row's symbol profile back over the configured decoder's, a digital one's as well, for good. */
+static void
+test_leave_supersedes_familyless_retunes(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
+    assert(opts && state);
+    opts->scanner_mode = 1;
+    opts->audio_in_type = AUDIO_IN_RTL;
+    state->samplesPerSymbol = 10;
+    const dsd_rtl_stream_metrics_hooks hooks = {.apply_demod_profile = record_digital_restore,
+                                                .apply_analog_profile = record_analog_restore};
+    dsd_rtl_stream_metrics_hooks_set(&hooks);
+    static const dsdneoUserDecodeMode configured[2] = {DSDCFG_MODE_DMR, DSDCFG_MODE_ANALOG};
+    for (size_t i = 0; i < sizeof configured / sizeof configured[0]; i++) {
+        assert(dsd_apply_decode_mode_preset(configured[i], DSD_DECODE_PRESET_PROFILE_CLI, opts, state) == 0);
+        reset_frontend_records();
+        g_familyless_supersede_calls = 0;
+        assert(dsd_scan_mode_enter(opts, state, DSD_SCAN_MODE_P25) == 0);
+        (void)dsd_engine_channel_scan_leave(opts, state);
+        assert(g_familyless_supersede_calls == 1);
+        assert(digital_restore_calls + analog_restore_calls >= 1);
+    }
+
+    /* Not on another input, which has no RTL front end to ask. */
+    opts->audio_in_type = AUDIO_IN_PULSE;
+    g_familyless_supersede_calls = 0;
+    assert(dsd_scan_mode_enter(opts, state, DSD_SCAN_MODE_P25) == 0);
+    (void)dsd_engine_channel_scan_leave(opts, state);
+    assert(g_familyless_supersede_calls == 0);
+
+    g_familyless_supersedes = 0U;
+    dsd_rtl_stream_metrics_hooks_set(NULL);
+    dsd_state_ext_free_all(state);
+    free(state);
+    free(opts);
 }
 
 /* The commit restages a row only for a change its staged tune carries. A live family request made while a digital row's
@@ -2229,6 +2279,7 @@ main(void) {
     test_row_restages_only_for_the_width_its_kind_runs();
     test_row_restages_after_a_live_family_request();
     test_typed_row_restages_after_a_live_analog_request();
+    test_leave_supersedes_familyless_retunes();
     test_row_commits_when_nothing_its_tune_carries_changed();
     test_nfm_row_warnings_once_per_row();
     test_nfm_row_warnings_follow_the_dsp_rate();

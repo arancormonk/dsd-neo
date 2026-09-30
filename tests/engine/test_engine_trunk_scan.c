@@ -111,9 +111,15 @@ dsd_engine_scan_family_requests(const dsd_opts* opts) {
 
 /* And the analog ones among them (trunk_tuning.c), likewise. */
 uint32_t
-dsd_engine_scan_analog_family_requests(const dsd_opts* opts) {
+dsd_engine_scan_familyless_retune_supersedes(const dsd_opts* opts) {
     (void)opts;
     return 0U;
+}
+
+/* And the scan leave's supersede of the family-less retunes (trunk_tuning.c), likewise. */
+void
+dsd_engine_scan_supersede_familyless_retunes(const dsd_opts* opts) {
+    (void)opts;
 }
 
 /* And whether a -Y retune attaches a receive family (trunk_tuning.c): the request count above never moves here. */

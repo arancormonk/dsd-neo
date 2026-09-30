@@ -1020,11 +1020,22 @@ dsd_engine_scan_family_requests(const dsd_opts* opts) {
     return 0U;
 }
 
-uint32_t
-dsd_engine_scan_analog_family_requests(const dsd_opts* opts) {
+void
+dsd_engine_scan_supersede_familyless_retunes(const dsd_opts* opts) {
 #ifdef USE_RADIO
     if (opts && opts->audio_in_type == AUDIO_IN_RTL) {
-        return rtl_stream_live_analog_family_request_count();
+        rtl_stream_supersede_familyless_retunes();
+    }
+#else
+    (void)opts;
+#endif
+}
+
+uint32_t
+dsd_engine_scan_familyless_retune_supersedes(const dsd_opts* opts) {
+#ifdef USE_RADIO
+    if (opts && opts->audio_in_type == AUDIO_IN_RTL) {
+        return rtl_stream_familyless_retune_supersedes();
     }
 #else
     (void)opts;

@@ -569,6 +569,50 @@ typedef struct rtl_stream_test_typed_row_leave_result {
 int rtl_stream_test_typed_row_retune_across_leave(int kind, int row_symbol_profile, int leave_before_queue,
                                                   int external_backend, rtl_stream_test_typed_row_leave_result* out);
 
+/* What the front end runs at one step of the family-less retune cases below. */
+typedef struct rtl_stream_test_front_end_state {
+    int analog_family;   /* demod_state::analog_family */
+    int output_kind;     /* demod_state::output_kind */
+    int cqpsk_enable;    /* demod_state::cqpsk_enable */
+    int channel_profile; /* demod_state::channel_lpf_profile */
+    int symbol_rate_hz;  /* demod_state::symbol_rate_hz */
+    int monitor;         /* dsd_demod_analog_monitor_active() */
+    int published;       /* rtl_stream_get_analog_profile() */
+} rtl_stream_test_front_end_state;
+
+typedef struct rtl_stream_test_digital_leave_result {
+    int rc;            /* 0 when every request was accepted and the retune taken */
+    int leave_outcome; /* rtl_stream_receive_request_outcome() of the leave's symbol profile request, once taken */
+    rtl_stream_test_front_end_state configured;  /* the DMR session's own profile, before the scan row */
+    rtl_stream_test_front_end_state after_leave; /* once the demod thread took the leave's requests */
+    rtl_stream_test_front_end_state landed;      /* once the row's retune landed, late */
+    rtl_stream_test_front_end_state after;       /* four demod block boundaries later */
+} rtl_stream_test_digital_leave_result;
+
+/* A -Y scan on a DMR session left while a typed row's retune is in flight (issue #582): the row's retune carries no
+ * family (the configured mode is digital: a digital-only session's retunes never attach one), its symbol profile
+ * @p row_symbol_profile (RTL_STREAM_TEST_SYMBOL_P25_CQPSK or _P25_C4FM_EXPLICIT). The controller has taken it and
+ * starts it late. The leave (channel_scan_restore_frontend()) supersedes the family-less retunes outstanding
+ * (rtl_stream_supersede_familyless_retunes()), then asks for the digital family (with @p landing, as the marked
+ * landing) and the session's DMR symbol profile, which the demod thread takes before the retune lands. With
+ * @p leave_before_queue the leave is made before the row's profile is queued instead. */
+int rtl_stream_test_digital_leave_across_familyless_retune(int row_symbol_profile, int landing, int leave_before_queue,
+                                                           rtl_stream_test_digital_leave_result* out);
+
+typedef struct rtl_stream_test_older_analog_request_result {
+    int rc;              /* 0 when every request was accepted and the retune taken */
+    int request_outcome; /* rtl_stream_receive_request_outcome() of the older analog request, at the next boundary */
+    rtl_stream_test_front_end_state landed; /* once the row's retune landed */
+    rtl_stream_test_front_end_state after;  /* at the demod thread's next block boundary */
+} rtl_stream_test_older_analog_request_result;
+
+/* A width command drained on a -fA (@p kind FM) or -fM (AM) session just before the -Y scanner advanced to a typed
+ * digital row (issue #582): a live analog request the demod thread has not taken, then the row's retune, whose symbol
+ * profile @p row_symbol_profile carries no family (with @p attach_digital the digital family is attached instead, as a
+ * digital configured session attaches it), which the controller lands before the demod thread's next block boundary. */
+int rtl_stream_test_older_analog_request_across_familyless_retune(int kind, int row_symbol_profile, int attach_digital,
+                                                                  rtl_stream_test_older_analog_request_result* out);
+
 typedef struct rtl_stream_test_monitor_return_result {
     int open_rc;
     int cqpsk_on;                 /* demod_state::cqpsk_enable once the DSP menu's CQPSK-on toggle was taken */
