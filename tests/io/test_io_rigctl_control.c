@@ -940,7 +940,8 @@ test_rebind_to_another_endpoint_asks_a_peer_that_may_run_am_for_fm(void) {
  * Issue #589: a reconnect to another host or port while the old peer runs FM (an nfm row's own passband, say) opens a
  * fresh record, as a first connection does: a peer nothing was asked of keeps its own settings, and one that refuses
  * mode requests (a rigctld radio) does not fail every best-effort tune. The old peer's own passband is not sent to it.
- * With no record of the old socket (nothing asked of it, or no old socket at all) nothing is handed over either.
+ * With no record of a change to the old socket's peer (nothing it accepted, or no old socket at all) nothing is handed
+ * over either.
  */
 static int
 test_rebind_opens_a_fresh_record_where_no_am_is_left_behind(void) {
@@ -961,6 +962,22 @@ test_rebind_opens_a_fresh_record_where_no_am_is_left_behind(void) {
     push_response("RPRT -1\n");
     assert(!SetModulationKind(201, DSD_ANALOG_DEMOD_FM, 12500));
     assert(CachedModulationKind(201) == DSD_ANALOG_DEMOD_FM);
+
+    /* Nothing this client asked changed the old socket's peer (FM at its own passband is never sent to such a peer, and
+       -B was refused): nothing is handed over, even for the same endpoint, and the new socket is a peer nothing was
+       asked of, as on a first connection, which keeps its own settings. */
+    reset_stubs();
+    assert(SetModulationKind(211, DSD_ANALOG_DEMOD_FM, 0));
+    push_response("RPRT -1\n");
+    push_response("RPRT -1\n");
+    assert(!SetModulationKind(211, DSD_ANALOG_DEMOD_FM, 12500));
+    g_create_result = 212;
+    assert(Connect(host, 4532) == 212);
+    RigctlRebindPeer(211, 212, 1);
+    assert(CachedModulationKind(211) == DSD_ANALOG_DEMOD_FM);
+    assert(SetModulationKind(212, DSD_ANALOG_DEMOD_FM, 0));
+    assert(RestoreScanModulation(212, DSD_ANALOG_DEMOD_FM, 0));
+    assert(g_command_count == 2);
 
     /* The record describes another socket than the one replaced: it stays where it is. */
     reset_stubs();
@@ -983,10 +1000,11 @@ test_rebind_opens_a_fresh_record_where_no_am_is_left_behind(void) {
 }
 
 /* Issue #589: once a reconnect closes the old rigctl socket, a later connection can get its number back. The
- * frequency last set on the closed socket says nothing of the new connection's peer, so it is sent again. A connection
- * on another number (the TCP audio input's) leaves the cache of the open rigctl socket alone. */
+ * frequency last set on the closed socket says nothing of the new connection's peer, so the rebind forgets it and a
+ * connection on a reused number is sent it again. A connection that replaces no rigctl socket (the TCP audio input's)
+ * leaves it alone. */
 static int
-test_connect_on_a_reused_number_forgets_the_frequency(void) {
+test_rebind_forgets_the_frequency_a_reused_number_would_match(void) {
     char host[] = "127.0.0.1";
     reset_stubs();
     push_response("RPRT 0\n");
@@ -995,8 +1013,13 @@ test_connect_on_a_reused_number_forgets_the_frequency(void) {
     assert(Connect(host, 7355) == 207);
     assert(SetFreq(206, 851012500L));
     assert(g_command_count == 1);
+    /* Two rigctl reconnects: 206 is replaced by 210 and closed, then 210 by a connection that gets 206 back. */
+    g_create_result = 210;
+    assert(Connect(host, 4532) == 210);
+    RigctlRebindPeer(206, 210, 1);
     g_create_result = 206;
     assert(Connect(host, 4532) == 206);
+    RigctlRebindPeer(210, 206, 1);
     push_response("RPRT 0\n");
     assert(SetFreq(206, 851012500L));
     assert(g_command_count == 2 && strcmp(g_commands[1], "F 851012500\n") == 0);
@@ -1176,7 +1199,7 @@ main(void) {
     rc |= test_rebind_hands_the_scan_record_to_a_reconnect();
     rc |= test_rebind_to_another_endpoint_asks_a_peer_that_may_run_am_for_fm();
     rc |= test_rebind_opens_a_fresh_record_where_no_am_is_left_behind();
-    rc |= test_connect_on_a_reused_number_forgets_the_frequency();
+    rc |= test_rebind_forgets_the_frequency_a_reused_number_would_match();
     rc |= test_full_size_replies_stay_in_bounds();
     rc |= test_get_current_freq_parses_first_line_and_errors();
     rc |= test_io_control_set_freq_validation_and_rigctl_dispatch();

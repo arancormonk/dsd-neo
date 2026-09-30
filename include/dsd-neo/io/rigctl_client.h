@@ -16,9 +16,9 @@ extern "C" {
 
 /**
  * @brief Open a TCP connection to @p hostname:@p portno with the rigctl receive timeout. The rigctl peer's record
- * (SetModulationKind()) and the frequency SetFreq() last sent start empty for a connection on the number of a socket
- * closed before it, such as the rigctl socket a reconnect closed (issue #589); a connection on another number, such as
- * the TCP audio input's own (re)connect while the rigctl socket stays open, leaves those of that open socket alone.
+ * (SetModulationKind()) starts empty for a connection on the number of a socket closed before it; a connection on
+ * another number, such as the TCP audio input's own (re)connect while the rigctl socket stays open, leaves the record
+ * of that open socket alone.
  */
 dsd_socket_t Connect(char* hostname, int portno);
 long int GetCurrentFreq(dsd_socket_t sockfd);
@@ -111,11 +111,15 @@ bool RestoreScanModulation(dsd_socket_t sockfd, int kind, int bandwidth);
  * @brief Hand a rigctl reconnect what the socket it replaces knew of its peer (issue #589), without I/O.
  *
  * Call it once Connect() returned @p new_fd while @p old_fd is still open, so the two numbers differ, then close
- * @p old_fd before anything is sent on @p new_fd (a peer may serve one client at a time). Without it the new socket is
- * a peer nothing was asked of: a scan whose am row left the peer on AM would send no FM undo and no restore.
+ * @p old_fd before anything is sent on @p new_fd (a peer may serve one client at a time). Nothing may send on either
+ * socket meanwhile, or a reply to the old one would land in the new one's record: the reconnect service holds the P25
+ * SM tick guard, under which the watchdog's retunes run. Without it the new socket is a peer nothing was asked of: a
+ * scan whose am row left the peer on AM would send no FM undo and no restore. The frequency SetFreq() last sent is
+ * forgotten too, since a later connection can get the closed socket's number back.
  *
- * - No record of @p old_fd (nothing was asked of its peer, or @p old_fd is DSD_INVALID_SOCKET): nothing changes, and
- *   the new socket is a peer nothing was asked of, as after a first Connect().
+ * - No record of @p old_fd, or none of a request that may have changed its peer (nothing it accepted, or
+ *   @p old_fd is DSD_INVALID_SOCKET): the new socket is a peer nothing was asked of, as after a first Connect(), which
+ *   keeps its own settings (FM at its own passband is not sent to it).
  * - @p same_endpoint (the same host and port): the new socket takes the record, so the FM undo and
  *   RestoreScanModulation() still send the peer's own passbands read before a scan row changed them. The passband the
  *   peer last accepted is no longer known, since it may have restarted or been changed while the connection was down:
