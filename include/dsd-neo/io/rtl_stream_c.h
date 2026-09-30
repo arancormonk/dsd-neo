@@ -696,7 +696,9 @@ typedef struct rtl_stream_retune_analog_profile {
  * switched, with the loop resets of a switch, only from the analog family. A front end already on the digital family
  * gets its output chain designed again where the stream retunes, and where an external backend's retune lands
  * (rtl_stream_apply_pending_retune_profile_for_target()), which has no retune of the stream's own to finalize it. A
- * retune that carries no family applies its symbol profile as queued, over the output chain it finds.
+ * retune that carries no family applies its symbol profile as queued, over the output chain it finds, unless a live
+ * analog request accepted after the profile was queued superseded it (rtl_stream_live_analog_family_request_count()):
+ * then it lands its centre only.
  *
  * A live rtl_stream_request_analog_profile() or rtl_stream_request_digital_family_landing() accepted after this call is
  * the newer word on the family: the retune then lands on its target with neither this family nor the symbol profile

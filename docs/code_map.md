@@ -1028,9 +1028,11 @@ installs from `src/engine/trunk_tuning.c` in `src/engine/trunk_tuning_hooks_inst
   default the rate refuses too leaving the width as it is, rather than an analog decoder on a width the front end
   cannot filter over the row's digital profile. A width of that kind changed while the switch was pending, which the
   rate cannot filter, goes back to the one the front end holds first (`ui_hold_reverted_analog_width()`), and the rule
-  settles what the revert then asked for. A DSP-menu CQPSK-off refusal is no leave and keeps CQPSK on. A typed row's retune still in flight when a leave was accepted can land its symbol profile over the monitor,
-  as any retune without a family does (Per-channel decoder modes, above); that is no refusal, and nothing here
-  reconciles it. A switch to Analog or AM (`DECODE_MODE_SET`, a config's `[mode]`) holds an explicit
+  settles what the revert then asked for. A DSP-menu CQPSK-off refusal is no leave and keeps CQPSK on. A typed row's retune still in flight when a leave back to Analog or AM was
+  accepted lands its centre only: the leave's analog request supersedes the symbol profile that retune carries, which
+  would take the monitor away (Per-channel decoder modes, above; issue #582), so the monitor the leave put back stays.
+  A leave to a digital configured decoder makes no analog request, and such a retune can still land the row's profile
+  over the configured one; that is no refusal, and nothing here reconciles it. A switch to Analog or AM (`DECODE_MODE_SET`, a config's `[mode]`) holds an explicit
   width, or the AM width, to the rate first, under a scan row as well (`ui_check_mode_receive_profile()`); a `[mode]`
   without a decode key keeps the session's family and kind. A switch between FM and AM on the monitor is armed like a
   switch onto it (`ui_arm_analog_entry()`), and the stream records the kind it kept with a refusal, so one the front end
@@ -1972,7 +1974,8 @@ Notes:
     one owner, held for the whole landing: the landing waits while a controller reconfiguration (a PPM correction, a
     hop) runs, and the next one waits for the landing, so the two never redesign the resampler together.
     A retune without a family applies its symbol profile as
-    queued, as a digital-only session always has, over the output chain it finds. A live digital landing
+    queued, as a digital-only session always has, over the output chain it finds, unless a live analog request
+    accepted after the profile was queued superseded it (above: then it lands its centre only). A live digital landing
     (`rtl_stream_request_digital_family_landing()`, issue #583: a republish, or a channel-scan leave, that timed the
     decoder for the digital family's landing because the analog family runs or outstanding work lands a family) lands
     the same way: from the analog family as the switch a plain digital request

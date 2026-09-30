@@ -58,9 +58,10 @@ uint32_t dsd_engine_scan_analog_family_requests(const dsd_opts* opts);
  * (dsd_scan_mode_timed_digital_family(), issue #583), or the front end runs the analog family, or the retunes and
  * requests already outstanding land a family: the analog one, or the digital one, which a retune carrying it lands on
  * the digital family's prediction (rtl_stream_family_landing_after_pending()). That is the decision the tune's
- * preparation makes, and spends; this only reads it. Only such a retune is superseded by a live family request
- * made before it lands (dsd_engine_scan_family_requests()); one without a family lands its symbol profile whatever the
- * requests (issue #526). 0 on any input but an RTL-family one. */
+ * preparation makes, and spends; this only reads it. Such a retune is superseded by any live family request made
+ * before it lands (dsd_engine_scan_family_requests(), issue #526). One without a family lands its symbol profile
+ * whatever the digital requests; only a live analog request, which asks for the monitor, supersedes it
+ * (dsd_engine_scan_analog_family_requests(), issue #582). 0 on any input but an RTL-family one. */
 int dsd_engine_scan_retune_attaches_family(const dsd_opts* opts, const dsd_state* state, int ted_sps);
 /** @brief Once a scanner has left its rows, put a rigctl peer back (issue #526): a scan tune asks a peer that
  * demodulates audio input for an am row's AM, or an nfm row's own passband, and nothing else undoes that once the
