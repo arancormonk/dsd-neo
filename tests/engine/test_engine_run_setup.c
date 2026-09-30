@@ -11,6 +11,7 @@
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/engine/engine.h>
 #include <dsd-neo/platform/file_compat.h>
+#include <dsd-neo/platform/sockets.h>
 #include <dsd-neo/runtime/analog_channel.h>
 #include <dsd-neo/runtime/analog_tones.h>
 #include <dsd-neo/runtime/exitflag.h>
@@ -72,6 +73,37 @@ reset_rtl_start_fakes(int create_result, int start_result) {
     g_rtl_create_result = create_result;
     g_rtl_start_result = start_result;
 }
+#endif
+
+#ifdef DSD_NEO_TEST_RIGCTL_WRAP
+/* Issue #589: the rigctl connection the engine opens at start (a fake socket for the one port a case names) and the
+   peer record handed to it. */
+static int g_rigctl_fake_port = 0;
+static int g_rigctl_rebind_calls = 0;
+static dsd_socket_t g_rigctl_rebind_old = 0;
+static dsd_socket_t g_rigctl_rebind_new = 0;
+
+// GNU ld --wrap entry points must keep the reserved __wrap_* symbol names.
+// NOLINTBEGIN(bugprone-reserved-identifier, cert-dcl37-c, cert-dcl51-cpp, misc-use-internal-linkage)
+dsd_socket_t __real_Connect(char* hostname, int portno);
+
+dsd_socket_t
+__wrap_Connect(char* hostname, int portno) {
+    if (g_rigctl_fake_port != 0 && portno == g_rigctl_fake_port) {
+        return (dsd_socket_t)777;
+    }
+    return __real_Connect(hostname, portno);
+}
+
+void
+__wrap_RigctlRebindPeer(dsd_socket_t old_fd, dsd_socket_t new_fd, int same_endpoint) {
+    (void)same_endpoint;
+    g_rigctl_rebind_calls++;
+    g_rigctl_rebind_old = old_fd;
+    g_rigctl_rebind_new = new_fd;
+}
+
+// NOLINTEND(bugprone-reserved-identifier, cert-dcl37-c, cert-dcl51-cpp, misc-use-internal-linkage)
 #endif
 
 static int
@@ -746,6 +778,47 @@ test_config_channel_map_weighs_the_tone_filter(void) {
     return test_rc;
 }
 
+#ifdef DSD_NEO_TEST_RIGCTL_WRAP
+static int
+note_rigctl_rebinds_at_start(dsd_opts* opts, dsd_state* state, void* context) {
+    (void)opts;
+    (void)state;
+    *(int*)context = g_rigctl_rebind_calls;
+    return 0;
+}
+
+/* Issue #589: the rigctl connection the engine opens at start names the peer record before the lifecycle starts the
+ * P25 watchdog, whose retunes use it. Otherwise the watchdog's first request would reset the record while a TCP audio
+ * reconnect's Connect() reads it on the decoder thread. */
+static int
+test_startup_rigctl_connection_names_the_peer_record(void) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", "udp");
+    opts->use_rigctl = 1;
+    DSD_SNPRINTF(opts->rigctlhostname, sizeof opts->rigctlhostname, "%s", "127.0.0.1");
+    opts->rigctlportno = 45321;
+    g_rigctl_fake_port = 45321;
+    g_rigctl_rebind_calls = 0;
+    int rebinds_at_start = -1;
+    const dsd_engine_lifecycle_hooks hooks = {.start = note_rigctl_rebinds_at_start, .context = &rebinds_at_start};
+    const int result = dsd_engine_run_with_lifecycle(opts, state, &hooks);
+    int rc = expect_true("startup rigctl run ok", result == 0);
+    rc |= expect_true("startup rigctl connected", opts->use_rigctl == 1 && opts->rigctl_sockfd == (dsd_socket_t)777);
+    rc |= expect_true("startup rigctl record named before the lifecycle starts", rebinds_at_start == 1);
+    rc |= expect_true("startup rigctl record names the new socket",
+                      g_rigctl_rebind_old == DSD_INVALID_SOCKET && g_rigctl_rebind_new == (dsd_socket_t)777);
+    g_rigctl_fake_port = 0;
+    opts->use_rigctl = 0;
+    opts->rigctl_sockfd = DSD_INVALID_SOCKET;
+    free_test_runtime(opts, state);
+    return rc;
+}
+#endif
+
 int
 main(void) {
     int rc = 0;
@@ -768,6 +841,9 @@ main(void) {
     rc |= test_soapy_setup_normalizes_args_and_tuning();
     rc |= test_iq_replay_guard_and_requested_setup();
     rc |= test_lifecycle_hooks_start_after_setup_and_stop_before_cleanup();
+#ifdef DSD_NEO_TEST_RIGCTL_WRAP
+    rc |= test_startup_rigctl_connection_names_the_peer_record();
+#endif
     rc |= test_receiver_failure_is_not_successful_completion();
     rc |= test_config_channel_map_weighs_the_tone_filter();
 

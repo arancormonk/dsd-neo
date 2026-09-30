@@ -744,6 +744,10 @@ dsd_engine_setup_connect_rigctl_if_enabled(dsd_opts* opts) {
     }
     opts->rigctl_sockfd = Connect(opts->rigctlhostname, opts->rigctlportno);
     if (opts->rigctl_sockfd != DSD_INVALID_SOCKET) {
+        /* Issue #589: the peer record names the connection before the lifecycle starts the P25 watchdog, whose retunes
+           use it; a first request made there would otherwise reset the record while a TCP audio reconnect's Connect()
+           reads it on this thread. */
+        RigctlRebindPeer(DSD_INVALID_SOCKET, opts->rigctl_sockfd, 0);
         opts->use_rigctl = 1;
         return;
     }

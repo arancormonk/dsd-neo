@@ -5105,7 +5105,7 @@ target_include_directories(
 if(NOT APPLE AND (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"))
     target_compile_definitions(
         dsd-neo_test_engine_run_setup
-        PRIVATE DSD_NEO_TEST_RTL_START_WRAP=1
+        PRIVATE DSD_NEO_TEST_RTL_START_WRAP=1 DSD_NEO_TEST_RIGCTL_WRAP=1
     )
     target_link_libraries(
         dsd-neo_test_engine_run_setup
@@ -5116,6 +5116,8 @@ if(NOT APPLE AND (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"))
             "-Wl,--wrap=rtl_stream_create"
             "-Wl,--wrap=rtl_stream_start"
             "-Wl,--wrap=rtl_stream_destroy"
+            "-Wl,--wrap=Connect"
+            "-Wl,--wrap=RigctlRebindPeer"
             ${LIBS}
             dsd-neo_test_support
     )

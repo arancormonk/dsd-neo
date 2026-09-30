@@ -55,7 +55,8 @@ int svc_tcp_connect_audio(dsd_opts* opts, const char* host, int port);
 /**
  * @brief Connect to a rigctl server and enable rigctl control if successful. Both app-control rigctl connects, the '9'
  * key and the menu's host and port, go through here (issue #589); the engine's startup connection
- * (dsd_engine_setup_connect_rigctl_if_enabled()) is the first of a run and has no socket to replace.
+ * (dsd_engine_setup_connect_rigctl_if_enabled()) is the first of a run, has no socket to replace, and names the peer
+ * record itself.
  *
  * The new socket opens while the old one is still open and takes what the old one knew of its peer
  * (RigctlRebindPeer(): the same peer for the same host, ignoring case, and port). The old socket is then closed, sent
