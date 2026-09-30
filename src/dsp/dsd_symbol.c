@@ -1541,9 +1541,10 @@ symbol_maybe_publish_rtl_input_level(dsd_opts* opts, dsd_state* state) {
     }
 }
 
-/* The monitor the front end publishes it runs (symbol_work_ctx::rtl_monitor_kind), read on the monitor output. The
-   demod thread clears the output ring before it publishes a new monitor, so a sample of the new one is never read
-   under the old answer; one read under the new answer before it lands is only dropped. */
+/* The monitor the front end publishes it runs (symbol_work_ctx::rtl_monitor_kind), read on the monitor output once per
+   getSymbol(). The demod thread clears the output ring before it publishes a new monitor, so no sample of the old one
+   is read under the new answer. A sample of the new one read under the old answer (the switch landing part-way
+   through a symbol) is only dropped. */
 static inline int
 rtl_symbol_monitor_kind(void) {
     int kind = 0;
