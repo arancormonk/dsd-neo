@@ -61,7 +61,8 @@ int svc_tcp_connect_audio(dsd_opts* opts, const char* host, int port);
  * (RigctlRebindPeer(): the same peer for the same host, ignoring case, and port). The old socket is then closed, sent
  * nothing, so a peer a scan changed keeps what it last set once another endpoint replaces it. The engine's legacy tune
  * cache is forgotten. A connect that fails while rigctl is on changes nothing: the connection in use stays. Without
- * one, a failure records @p host and @p port for the next attempt and leaves rigctl off.
+ * one, a failure records @p host and @p port for the next attempt and leaves rigctl off. The connection is replaced
+ * under the P25 SM tick guard (the watchdog's retunes use it), so a caller must not hold that guard.
  */
 int svc_rigctl_connect(dsd_opts* opts, const char* host, int port);
 

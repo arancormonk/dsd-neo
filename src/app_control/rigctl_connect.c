@@ -8,6 +8,7 @@
 #include <dsd-neo/io/rigctl_client.h>
 #include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/platform/sockets.h>
+#include <dsd-neo/protocol/p25/p25_sm_watchdog.h>
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "services.h"
@@ -28,6 +29,9 @@ svc_rigctl_connect(dsd_opts* opts, const char* host, int port) {
     char next_host[sizeof opts->rigctlhostname];
     DSD_SNPRINTF(next_host, sizeof next_host, "%s", host);
 
+    /* The connect can block for long, so it runs outside the P25 SM tick guard; replacing the connection runs inside
+       it, since the watchdog's retunes use the rigctl socket and its peer record (as svc_rtl_restart() quiesces them
+       before it replaces the stream). */
     const int live = rigctl_connection_live(opts);
     const dsd_socket_t new_sockfd = Connect(next_host, port);
     if (new_sockfd == DSD_INVALID_SOCKET) {
@@ -36,10 +40,12 @@ svc_rigctl_connect(dsd_opts* opts, const char* host, int port) {
                passband) with nothing to put it back. */
             return -1;
         }
+        p25_sm_tick_guard_enter();
         DSD_SNPRINTF(opts->rigctlhostname, sizeof opts->rigctlhostname, "%s", next_host);
         opts->rigctlportno = port;
         opts->rigctl_sockfd = DSD_INVALID_SOCKET;
         opts->use_rigctl = 0;
+        p25_sm_tick_guard_leave();
         return -1;
     }
 
@@ -50,15 +56,16 @@ svc_rigctl_connect(dsd_opts* opts, const char* host, int port) {
     const dsd_socket_t old_sockfd = live ? opts->rigctl_sockfd : DSD_INVALID_SOCKET;
     const int same_endpoint =
         live && dsd_strcasecmp(opts->rigctlhostname, next_host) == 0 && opts->rigctlportno == port;
+    p25_sm_tick_guard_enter();
     RigctlRebindPeer(old_sockfd, new_sockfd, same_endpoint);
     if (old_sockfd != DSD_INVALID_SOCKET && old_sockfd != new_sockfd) {
         dsd_socket_close(old_sockfd);
     }
     dsd_engine_rigctl_tune_cache_forget();
-
     DSD_SNPRINTF(opts->rigctlhostname, sizeof opts->rigctlhostname, "%s", next_host);
     opts->rigctlportno = port;
     opts->rigctl_sockfd = new_sockfd;
     opts->use_rigctl = 1;
+    p25_sm_tick_guard_leave();
     return 0;
 }
