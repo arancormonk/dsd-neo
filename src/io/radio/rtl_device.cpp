@@ -1579,8 +1579,10 @@ replay_event_boundary_drained(struct rtl_device* s) {
     return (input_ring_used(ring) == 0U && generation_drained) ? 1 : 0;
 }
 
+/* The input half of an event boundary on its own, for a replay with no stream behind it (no wait_event_boundary): 50 ms
+ * timed waits until the demod has taken and acknowledged every chunk. */
 static int
-replay_wait_for_event_boundary_drain(struct rtl_device* s) {
+replay_wait_for_input_boundary_drain(struct rtl_device* s) {
     if (!s || !s->input_ring || s->input_ring->capacity == 0U) {
         return 1;
     }
@@ -1603,6 +1605,19 @@ replay_wait_for_event_boundary_drain(struct rtl_device* s) {
         }
         dsd_mutex_unlock(&ring->ready_m);
     }
+}
+
+/* Wait, with no deadline, until the pipeline is idle before the event of kind @p event_kind (0: a loop rewind) is applied
+ * (issue #572): the stream's wait_event_boundary, which also waits for the decoder to read and acknowledge every batch
+ * published, so the event lands between the same two chunks however the decoder is scheduled and nothing it has not
+ * read is cleared. Returns 1 once idle, 0 on a stop. */
+static int
+replay_wait_for_event_boundary_drain(struct rtl_device* s, int event_kind) {
+    REPLAY_TEST_READER_STAGE(RTL_STREAM_TEST_REPLAY_READER_EVENT_BOUNDARY, (size_t)event_kind);
+    if (!s || !s->replay_has_eof_state || !s->replay_eof.wait_event_boundary) {
+        return replay_wait_for_input_boundary_drain(s);
+    }
+    return (s->replay_eof.wait_event_boundary(s->replay_eof.eof_user) && !replay_forced_stop_requested(s)) ? 1 : 0;
 }
 
 #ifdef DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS
@@ -2318,7 +2333,9 @@ replay_dispatch_pending_events(struct rtl_device* s, uint32_t* event_cursor, uin
     while (*event_cursor < s->replay_cfg.event_count
            && s->replay_cfg.events[*event_cursor].byte_offset <= data_offset) {
         const dsd_iq_event* event = &s->replay_cfg.events[*event_cursor];
-        if (event->kind == DSD_IQ_EVENT_RESET && !replay_wait_for_event_boundary_drain(s)) {
+        /* Every event waits for an idle pipeline, even one at the offset of the event before it (the wait then returns
+           at once). */
+        if (!replay_wait_for_event_boundary_drain(s, (int)event->kind)) {
             return 0;
         }
         replay_dispatch_event(s, event, phase, have_carry, carry_byte, complex_written);
@@ -2361,10 +2378,10 @@ replay_handle_empty_read(struct rtl_device* s, uint64_t* complex_written, uint64
     }
     /* A rewind is a replay timeline boundary just like RESET. Do not restore
      * the initial capture state while the demodulator still owns samples from
-     * the completed pass; the reconfigure callback would otherwise purge that
-     * work and a short fast-mode capture could loop without ever publishing
-     * output. */
-    if (!replay_wait_for_event_boundary_drain(s)) {
+     * the completed pass, or the decoder has not read their output; the
+     * reconfigure callback would otherwise purge that work and a short
+     * fast-mode capture could loop without ever publishing output. */
+    if (!replay_wait_for_event_boundary_drain(s, 0)) {
         return replay_step_stopped_or_failed(s, out_failure_rc, DSD_IQ_ERR_INVALID_ARG);
     }
     int rewind_rc = dsd_iq_replay_rewind(s->replay_src);

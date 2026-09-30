@@ -2108,8 +2108,8 @@ Notes:
       at a time on `output.ready`. A reader that left without marking EOF counts as EOF.
     - A drained demod seen first means the ring already holds all of its output. The demod is reported drained only
       once it has acknowledged the last chunk submitted before EOF, and it acknowledges a chunk only after that
-      chunk's output is in the ring. A replay purges its input only at a RESET or loop boundary, with every chunk
-      already acknowledged.
+      chunk's output is in the ring. A replay purges its input only at a RESET or loop boundary, on an idle pipeline,
+      and the reader commits nothing until the purge is applied.
     - `replay_wake_all()` wakes every replay wait (both rings' `ready` and `space`, the demod's demand condition, and
       the EOF condition). It runs at EOF, on a failure, on a stop and when a start unwinds.
 
@@ -2142,6 +2142,32 @@ Notes:
     stream, the oracle's count; a block's output held unpublished stays out of the decoder's reach, and every read's
     tag describes its samples; bounded stops at each wait; zero-output and empty replays; a reader-start failure at
     the first demand wait), `IO_RTL_REPLAY_EOF_AND_CF32`.
+  - I/Q replay events on an idle pipeline (issue #572; "Replay events on an idle pipeline" in `rtl_sdr_fm.cpp`,
+    `replay_dispatch_pending_events()` in `rtl_device.cpp`). The reader applies every event (RETUNE, MUTE, RESET) and a
+    loop rewind only once the pipeline is idle, so it lands between the same two chunks and the same two decoder reads
+    however the decoder is scheduled:
+    - `rtl_replay_eof_state::wait_event_boundary` (`rtl_replay_wait_event_boundary()`) waits, with no deadline, until
+      the input ring is empty, every chunk submitted is acknowledged, the output ring is empty and the decoder has
+      acknowledged every batch published. It waits on the demand condition, which the decoder's acknowledgement and the
+      demod's (`replay_demod_drain_decide()`) both broadcast, and ends only on a stop, a forced stop or the global exit.
+      `replay_event_boundary_drained()` stays the input half, which a replay without a stream behind it waits for alone.
+    - An event at offset 0 waits for the decoder's first read (the virtual block 0). A RESET's drain and reconfigure gate
+      then find empty rings and only move the output generation; they drop nothing a slow decoder has not read.
+    - A RESET or rewind waits for its input purge by `g_ring_purge_done_seq`, which `replay_note_input_purge_consumed()`
+      counts after the discard: the reader takes the flag itself when the input ring is empty, and otherwise waits for
+      the demod that took it to finish discarding, so the next chunk is never the one discarded. Each wait covers one
+      purge request (a RESET's is the finalize's), read against a mark taken before it, with no deadline.
+    - A RETUNE keeps the centre the demod was last reset on, and the RESET after it resets the demod from there, as the
+      live retune the pair records does (`demod_retune_reset_plan()`: a hop starts the band-edge FLL fresh, a hop back
+      restores the cached seed). A rewind clears it.
+    - A replay block's output always fits the empty output ring (a `static_assert` on `resamp_outbuf` and `result`
+      against `kOutputRingCapacity`); a shortfall would be counted (`replay_output_truncated`) and logged.
+
+    Tests: `IO_RTL_REPLAY_DETERMINISM` (an eventful capture: RETUNE, MUTE and RESET groups off chunk boundaries, a lone
+    MUTE, a MUTE at offset 0 and at the end, identical across the fast, slow and realtime readers with every chunk a
+    block and nothing discarded; a decoder stalled at a RESET or a rewind loses nothing; the demod taking the purge
+    flag keeps the next chunk; the reset plans of a hop and a hop back; bounded stops at an event boundary and at a
+    rewind).
 - Local audio output backends and audio device listing live in `dsd-neo_platform` (see `src/platform/audio_*.c`).
 - Network audio/input backends live in `src/io/audio_backends/` (`udp_input.c`, `tcp_input.c`, `udp_audio.c`,
   `m17_udp.c`, `udp_bind.c`).

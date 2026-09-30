@@ -30,6 +30,7 @@ struct rtl_replay_chunk_meta {
 
 typedef void (*rtl_replay_input_drained_cb)(void* user);
 typedef void (*rtl_replay_wake_cb)(void* user);
+typedef int (*rtl_replay_wait_event_boundary_cb)(void* user);
 typedef void (*rtl_replay_event_cb)(const dsd_iq_event* event, void* user);
 typedef void (*rtl_replay_loop_restart_cb)(const dsd_iq_replay_config* cfg, void* user);
 
@@ -54,6 +55,10 @@ struct rtl_replay_eof_state {
     rtl_replay_input_drained_cb on_input_drained;
     /* Wakes every thread waiting on a replay condition (input and output rings, eof_cond): EOF, failure, stops. */
     rtl_replay_wake_cb wake_all;
+    /* Waits, with no deadline, for the pipeline to go idle before an event or a loop rewind is applied (issue #572):
+       the input ring empty, every chunk submitted acknowledged, the output ring empty, and every batch published
+       acknowledged by the decoder. Returns 1 then, 0 on a stop, a forced stop or the global exit. */
+    rtl_replay_wait_event_boundary_cb wait_event_boundary;
     rtl_replay_event_cb on_retune_event;
     rtl_replay_event_cb on_mute_event;
     rtl_replay_event_cb on_reset_event;

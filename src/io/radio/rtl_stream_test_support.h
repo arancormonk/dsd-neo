@@ -1107,8 +1107,9 @@ typedef struct rtl_stream_test_replay_state {
     int replay_event_last_reset_reason;
     uint32_t replay_loop_restart_count;
     uint32_t replay_loop_restart_last_frequency_hz;
-    uint64_t replay_out_written; /* output batches the demod published, the virtual block 0 included */
-    uint64_t replay_out_acked;   /* ... that the decoder acknowledged */
+    uint64_t replay_out_written;      /* output batches the demod published, the virtual block 0 included */
+    uint64_t replay_out_acked;        /* ... that the decoder acknowledged */
+    uint64_t replay_output_truncated; /* output samples a replay block could not publish (none should be) */
 } rtl_stream_test_replay_state;
 
 int dsd_rtl_stream_test_get_replay_state(rtl_stream_test_replay_state* out_state);
@@ -1146,6 +1147,13 @@ enum {
     RTL_STREAM_TEST_REPLAY_DEMOD_WAIT_FOR_DEMAND = 14,
     /* the thread opening a replay: the demod thread runs, and the replay reader is about to start */
     RTL_STREAM_TEST_REPLAY_READER_START = 15,
+    /* demod: took the input purge flag, before it discards the input ring */
+    RTL_STREAM_TEST_REPLAY_DEMOD_PURGE_TAKEN = 16,
+    /* replay reader: about to wait for the pipeline to go idle before an event (count: the event's DSD_IQ_EVENT_*
+       kind; 0 before a loop rewind) */
+    RTL_STREAM_TEST_REPLAY_READER_EVENT_BOUNDARY = 17,
+    /* replay reader: requested the input purge of a RESET or loop boundary, about to wait for it to be applied */
+    RTL_STREAM_TEST_REPLAY_READER_PURGE_WAIT = 18,
 };
 
 typedef void (*rtl_stream_test_replay_stage_fn)(int stage, size_t count, void* ctx);
@@ -1192,6 +1200,19 @@ void rtl_device_test_replay_fail_start(int fail);
 /* How many times the last replay reader's EOF sequence looked at the input ring while it waited for the ring to
  * empty. */
 uint64_t rtl_device_test_replay_eof_wait_iterations(void);
+
+/* The last retune reset plan applied to the stream's demodulator (a retune's finalize, a replay RESET, a stream open,
+ * a CQPSK reacquire), with the FLL decision the seed cache left it on. */
+typedef struct rtl_stream_test_reset_plan {
+    char reason[24]; /* the plan's reason: "frequency", "distant-frequency", "fresh-stream", ... */
+    uint32_t previous_center_hz;
+    uint32_t next_center_hz;
+    int reset_retained_fll;  /* the band-edge FLL starts fresh */
+    int restored_cached_fll; /* ... or from the seed cached for the new centre */
+} rtl_stream_test_reset_plan;
+
+/* 0 with the last plan in @p out, -1 when none was applied since the process started. */
+int rtl_stream_test_get_last_reset_plan(rtl_stream_test_reset_plan* out);
 
 #ifdef __cplusplus
 }

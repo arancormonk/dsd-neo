@@ -5,8 +5,9 @@
 
 /* Issue #572: under --iq-replay the decoder paces the demod. The demod starts a block only once the decoder waits on
  * an empty output ring with every block it published acknowledged, and publishes the block's output in one step with
- * its batch tag. The decoder's output then depends on the capture alone: fast or realtime, read greedily or slowly,
- * in any read size. These tests pin that, the publication step, and a bounded shutdown at every wait it adds. */
+ * its batch tag. A replayed event (RETUNE, MUTE, RESET, a loop rewind) is applied only once the pipeline is idle. The
+ * decoder's output then depends on the capture alone: fast or realtime, read greedily or slowly, in any read size.
+ * These tests pin that, the publication step, the events' boundary, and a bounded shutdown at every wait it adds. */
 
 #include <atomic>
 #include <cerrno>
@@ -20,7 +21,9 @@
 #include <dsd-neo/platform/threading.h>
 #include <dsd-neo/platform/timing.h>
 #include <dsd-neo/runtime/exitflag.h>
+#include <iterator>
 #include <memory>
+#include <numeric>
 #include <string>
 #include <vector>
 #include "dsd-neo/core/opts_fwd.h"
@@ -73,9 +76,42 @@ remove_fixture_dirs(void) {
     return rc;
 }
 
-/* Write @p payload as a cu8 capture with its sidecar; @p out_metadata_path receives the sidecar's path. */
+namespace {
+/* An event a capture records (make_capture_with_events()). */
+struct CaptureEvent {
+    uint64_t offset; /* the capture bytes before it */
+    dsd_iq_event_kind kind;
+    uint64_t value; /* a RETUNE's or RESET's channel centre in Hz; a MUTE's omitted bytes */
+};
+} // namespace
+
+/* The channel centres the captures retune between; each capture centre sits the fs/4 offset above its channel. */
+static const uint64_t kFirstCenterHz = 851375000ULL;
+static const uint64_t kSecondCenterHz = 851500000ULL;
+static const uint64_t kFs4OffsetHz = kCaptureRateHz / 4U;
+
 static int
-make_capture(const std::vector<uint8_t>& payload, char* out_metadata_path, size_t out_metadata_path_size) {
+record_capture_event(dsd_iq_capture_writer* writer, const CaptureEvent& event) {
+    dsd_iq_event ev;
+    DSD_MEMSET(&ev, 0, sizeof(ev));
+    ev.kind = event.kind;
+    if (event.kind == DSD_IQ_EVENT_MUTE) {
+        ev.duration_bytes = event.value;
+        DSD_SNPRINTF(ev.reason, sizeof(ev.reason), "%s", "retune_mute");
+    } else {
+        ev.center_frequency_hz = event.value;
+        ev.capture_center_frequency_hz = event.value + kFs4OffsetHz;
+        ev.sample_rate_hz = kCaptureRateHz;
+        DSD_SNPRINTF(ev.reason, sizeof(ev.reason), "%s", "frequency");
+    }
+    return dsd_iq_capture_record_event(writer, &ev) == DSD_IQ_OK ? 0 : 1;
+}
+
+/* Write @p payload as a cu8 capture with its sidecar and @p events (sorted by offset); @p out_metadata_path receives the
+ * sidecar's path. */
+static int
+make_capture_with_events(const std::vector<uint8_t>& payload, const std::vector<CaptureEvent>& events,
+                         char* out_metadata_path, size_t out_metadata_path_size) {
     char temp_dir[DSD_TEST_PATH_MAX];
     if (!dsd_test_mkdtemp(temp_dir, sizeof(temp_dir), "dsdneo_replay_determinism")) {
         DSD_FPRINTF(stderr, "FAIL: could not create a fixture directory\n");
@@ -96,8 +132,8 @@ make_capture(const std::vector<uint8_t>& payload, char* out_metadata_path, size_
     cfg.format = DSD_IQ_FORMAT_CU8;
     DSD_SNPRINTF(cfg.capture_stage, sizeof(cfg.capture_stage), "%s", "post_mute_pre_widen");
     cfg.sample_rate_hz = kCaptureRateHz;
-    cfg.center_frequency_hz = 851375000ULL;
-    cfg.capture_center_frequency_hz = 851759000ULL;
+    cfg.center_frequency_hz = kFirstCenterHz;
+    cfg.capture_center_frequency_hz = kFirstCenterHz + kFs4OffsetHz;
     cfg.tuner_gain_tenth_db = 270;
     cfg.rtl_dsp_bw_khz = 48;
     cfg.base_decimation = kDecimation;
@@ -115,10 +151,20 @@ make_capture(const std::vector<uint8_t>& payload, char* out_metadata_path, size_
         DSD_FPRINTF(stderr, "FAIL: could not open the capture writer: %s\n", err[0] ? err : "unknown");
         return 1;
     }
-    if (!payload.empty() && dsd_iq_capture_submit(writer, payload.data(), payload.size()) != DSD_IQ_OK) {
-        dsd_iq_capture_abort(writer);
-        DSD_FPRINTF(stderr, "FAIL: could not write the capture\n");
-        return 1;
+    size_t written = 0U;
+    for (size_t i = 0; i <= events.size(); i++) {
+        const size_t upto = i < events.size() ? (size_t)events[i].offset : payload.size();
+        if (upto > written && dsd_iq_capture_submit(writer, payload.data() + written, upto - written) != DSD_IQ_OK) {
+            dsd_iq_capture_abort(writer);
+            DSD_FPRINTF(stderr, "FAIL: could not write the capture\n");
+            return 1;
+        }
+        written = upto > written ? upto : written;
+        if (i < events.size() && record_capture_event(writer, events[i]) != 0) {
+            dsd_iq_capture_abort(writer);
+            DSD_FPRINTF(stderr, "FAIL: could not record capture event %zu\n", i + 1U);
+            return 1;
+        }
     }
     dsd_iq_capture_final_stats stats;
     DSD_MEMSET(&stats, 0, sizeof(stats));
@@ -127,6 +173,12 @@ make_capture(const std::vector<uint8_t>& payload, char* out_metadata_path, size_
         return 1;
     }
     return 0;
+}
+
+/* Write @p payload as a cu8 capture with its sidecar and no events. */
+static int
+make_capture(const std::vector<uint8_t>& payload, char* out_metadata_path, size_t out_metadata_path_size) {
+    return make_capture_with_events(payload, std::vector<CaptureEvent>(), out_metadata_path, out_metadata_path_size);
 }
 
 /* @p complex_samples of a tone 5 kHz off the channel centre (the capture carries the fs/4 offset the replay rotates
@@ -150,26 +202,75 @@ tone_and_noise_payload(size_t complex_samples) {
     return payload;
 }
 
-/* The oracle for how many samples a replay of @p capture_bytes delivers, from the capture layout alone: the reader
- * hands the demod 64 KiB chunks, the last one shorter, and each chunk's block decimates its complex samples by 32 to
- * the 48 kHz FSK discriminator output, floor(n / 32), with no resampling at 48 kHz. (A channel FIR that carries its
- * look-ahead across blocks moves this.) Nothing is dropped: a replay delivers every sample of every block. */
+namespace {
+/* A chunk the replay reader hands the demod as one block: its bytes, and the capture time of its first sample in
+ * complex samples, the samples a MUTE omitted included. */
+struct LayoutChunk {
+    uint64_t bytes;
+    uint64_t media_start;
+};
+} // namespace
+
+/* The chunks a replay of @p capture_bytes with @p events delivers, from the capture layout alone: the reader reads 64
+ * KiB at a time, cut short at the next event and at the end, and a MUTE moves the media timeline on by what it
+ * omitted. */
+static std::vector<LayoutChunk>
+capture_layout(size_t capture_bytes, const std::vector<CaptureEvent>& events) {
+    std::vector<LayoutChunk> chunks;
+    uint64_t offset = 0U;
+    uint64_t media = 0U;
+    std::vector<CaptureEvent>::const_iterator next = events.begin();
+    while (offset < capture_bytes) {
+        for (; next != events.end() && next->offset <= offset; ++next) {
+            if (next->kind == DSD_IQ_EVENT_MUTE) {
+                media += next->value / 2U;
+            }
+        }
+        uint64_t bytes = kChunkBytes;
+        if (next != events.end() && next->offset - offset < bytes) {
+            bytes = next->offset - offset;
+        }
+        if (capture_bytes - offset < bytes) {
+            bytes = capture_bytes - offset;
+        }
+        chunks.push_back(LayoutChunk{bytes, media});
+        offset += bytes;
+        media += bytes / 2U;
+    }
+    return chunks;
+}
+
+/* The oracle for how many samples a replay delivers, from its chunks alone: each chunk's block decimates its complex
+ * samples by 32 to the 48 kHz FSK discriminator output, floor(n / 32), with no resampling at 48 kHz. (A channel FIR
+ * that carries its look-ahead across blocks moves this.) Nothing is dropped: a replay delivers every sample of every
+ * block. */
+static uint64_t
+oracle_output_count_of(const std::vector<LayoutChunk>& chunks) {
+    return std::accumulate(chunks.begin(), chunks.end(), (uint64_t)0U, [](uint64_t total, const LayoutChunk& chunk) {
+        return total + (chunk.bytes / 2U) / kDecimation;
+    });
+}
+
+/* ... of a capture of @p capture_bytes with no events. */
 static uint64_t
 oracle_output_count(size_t capture_bytes) {
-    uint64_t total = 0U;
-    for (size_t offset = 0U; offset < capture_bytes; offset += kChunkBytes) {
-        const size_t bytes = (capture_bytes - offset < kChunkBytes) ? capture_bytes - offset : kChunkBytes;
-        total += (uint64_t)(bytes / 2U) / kDecimation;
-    }
-    return total;
+    return oracle_output_count_of(capture_layout(capture_bytes, std::vector<CaptureEvent>()));
+}
+
+/* Capture time of @p complex_samples in whole ns, rounded down. */
+static uint64_t
+media_ns(uint64_t complex_samples) {
+    return (complex_samples / kCaptureRateHz) * 1000000000ULL
+           + ((complex_samples % kCaptureRateHz) * 1000000000ULL) / kCaptureRateHz;
 }
 
 /* ---------------- Streams ---------------- */
 
-/* A DMR replay: the FSK discriminator output, at 4800 symbols/s. @p report: say why a start failed. */
+/* A DMR replay: the FSK discriminator output, at 4800 symbols/s; @p loop: with --iq-loop. @p report: say why a start
+ * failed. */
 static int
-start_replay_reporting(const char* metadata_path, int realtime, int report, std::unique_ptr<dsd_opts>* out_opts,
-                       RtlSdrContext** out_ctx) {
+start_replay_reporting(const char* metadata_path, int realtime, int loop, int report,
+                       std::unique_ptr<dsd_opts>* out_opts, RtlSdrContext** out_ctx) {
     *out_ctx = NULL;
     out_opts->reset(new dsd_opts());
     dsd_opts* opts = out_opts->get();
@@ -177,6 +278,7 @@ start_replay_reporting(const char* metadata_path, int realtime, int report, std:
     opts->audio_in_type = AUDIO_IN_RTL;
     opts->iq_replay_requested = 1;
     opts->iq_replay_rate_mode = realtime ? DSD_IQ_REPLAY_RATE_REALTIME : DSD_IQ_REPLAY_RATE_FAST;
+    opts->iq_replay_loop = loop ? 1 : 0;
     opts->frame_dmr = 1;
     DSD_SNPRINTF(opts->iq_replay_path, sizeof(opts->iq_replay_path), "%s", metadata_path);
     DSD_SNPRINTF(opts->audio_in_dev, sizeof(opts->audio_in_dev), "iqreplay:%s", metadata_path);
@@ -198,7 +300,7 @@ start_replay_reporting(const char* metadata_path, int realtime, int report, std:
 
 static int
 start_replay(const char* metadata_path, int realtime, std::unique_ptr<dsd_opts>* out_opts, RtlSdrContext** out_ctx) {
-    return start_replay_reporting(metadata_path, realtime, 1, out_opts, out_ctx);
+    return start_replay_reporting(metadata_path, realtime, 0, 1, out_opts, out_ctx);
 }
 
 /* Stop and destroy a replay; the elapsed time in ms. */
@@ -257,14 +359,40 @@ struct Leg {
     int lcg_sleeps; /* sleep 0-3 ms between reads, from an LCG */
 };
 
-/* What a leg delivered. */
+/* One block the demod took, as the block hook reports it. */
+struct BlockRecord {
+    uint64_t sequence;
+    size_t float_count;
+    uint64_t media_start_ns;
+    uint64_t media_end_ns;
+};
+
+/* How many of each event a replay applied. */
+struct EventCounts {
+    uint32_t retunes;
+    uint32_t mutes;
+    uint32_t resets;
+};
+
+/* What a leg delivered, and what the pipeline did on the way. */
 struct Signature {
     uint64_t samples = 0U;
     uint64_t fnv = 1469598103934665603ULL;
     std::vector<uint64_t> generation_changes; /* delivered positions where the output generation moved */
+    std::vector<uint64_t> batch_starts;       /* delivered position, then media start in ns, of each batch */
+    std::vector<BlockRecord> blocks;
+    int discards = 0;        /* blocks the demod discarded */
+    uint64_t truncated = 0U; /* output samples a block could not publish */
+    EventCounts events = {0U, 0U, 0U};
     int ended = 0;
     int reacquire_armed = 0;
     int profile_landed = 0; /* the stream ran the requested symbol rate by the end */
+};
+
+/* The demod thread's side of a leg (the block and stage hooks). */
+struct LegObserver {
+    std::vector<BlockRecord> blocks;
+    std::atomic<int> discards{0};
 };
 
 } // namespace
@@ -285,35 +413,53 @@ fnv1a_floats(Signature* sig, const float* samples, int n) {
     }
 }
 
+static void
+leg_block_hook(const rtl_stream_test_replay_block* block, void* ctx) {
+    LegObserver* observer = static_cast<LegObserver*>(ctx);
+    observer->blocks.push_back(
+        BlockRecord{block->sequence, block->float_count, block->media_start_ns, block->media_end_ns});
+}
+
+static void
+leg_stage_hook(int stage, size_t count, void* ctx) {
+    (void)count;
+    if (stage == RTL_STREAM_TEST_REPLAY_DEMOD_DISCARD_RELEASED) {
+        static_cast<LegObserver*>(ctx)->discards.fetch_add(1, std::memory_order_acq_rel);
+    }
+}
+
+/* Note where the batch a read of @p got samples took from starts, when it is a new one. */
+static void
+note_batch_start(Signature* sig, uint64_t* batch_sequence) {
+    rtl_stream_replay_batch tag;
+    if (rtl_stream_get_replay_batch(&tag) != 0 || tag.chunk_sequence == *batch_sequence) {
+        return;
+    }
+    *batch_sequence = tag.chunk_sequence;
+    sig->batch_starts.push_back(sig->samples);
+    sig->batch_starts.push_back(tag.media_start_ns);
+}
+
 static int
-run_leg(const char* metadata_path, const Leg& leg, Signature* sig) {
-    std::unique_ptr<dsd_opts> opts;
-    RtlSdrContext* ctx = NULL;
-    if (start_replay(metadata_path, leg.realtime, &opts, &ctx) != 0) {
-        return 1;
-    }
-    if (leg.start_delay_ms > 0U) {
-        dsd_sleep_ms(leg.start_delay_ms);
-    }
+read_leg(RtlSdrContext* ctx, const Leg& leg, Signature* sig) {
     std::vector<float> buf(512U);
     uint32_t lcg = 0x9E3779B9U;
     uint32_t generation = 0U;
+    uint64_t batch_sequence = 0U;
     int have_generation = 0;
     int reacquired = 0;
     int profiled = 0;
     const uint64_t deadline_ns = dsd_time_monotonic_ns() + 20000ULL * 1000000ULL;
-    int rc = 0;
     for (size_t read_index = 0U;; read_index++) {
         if (dsd_time_monotonic_ns() > deadline_ns) {
             DSD_FPRINTF(stderr, "FAIL: determinism leg %s: the replay did not end within 20 s\n", leg.name);
-            rc = 1;
-            break;
+            return 1;
         }
         const size_t want = leg.read_sizes[read_index % leg.read_size_count];
         int got = 0;
         if (rtl_stream_read(ctx, buf.data(), want, &got) != 0) {
             sig->ended = 1;
-            break;
+            return 0;
         }
         if (got <= 0) {
             continue;
@@ -324,6 +470,7 @@ run_leg(const char* metadata_path, const Leg& leg, Signature* sig) {
         }
         generation = now_generation;
         have_generation = 1;
+        note_batch_start(sig, &batch_sequence);
         fnv1a_floats(sig, buf.data(), got);
         sig->samples += (uint64_t)got;
         if (!reacquired && sig->samples >= kReacquireAt) {
@@ -340,40 +487,137 @@ run_leg(const char* metadata_path, const Leg& leg, Signature* sig) {
             dsd_sleep_ms((lcg >> 30) & 0x3U);
         }
     }
-    int symbol_rate_hz = 0;
-    (void)rtl_stream_get_symbol_profile_full(&symbol_rate_hz, NULL, NULL);
-    sig->profile_landed = symbol_rate_hz == 2400 ? 1 : 0;
-    (void)stop_replay(ctx);
+}
+
+static int
+run_leg(const char* metadata_path, const Leg& leg, Signature* sig) {
+    LegObserver observer;
+    rtl_stream_test_set_replay_block_hook(leg_block_hook, &observer);
+    rtl_stream_test_set_replay_stage_hook(leg_stage_hook, &observer);
+    std::unique_ptr<dsd_opts> opts;
+    RtlSdrContext* ctx = NULL;
+    int rc = 1;
+    if (start_replay(metadata_path, leg.realtime, &opts, &ctx) == 0) {
+        if (leg.start_delay_ms > 0U) {
+            dsd_sleep_ms(leg.start_delay_ms);
+        }
+        rc = read_leg(ctx, leg, sig);
+        int symbol_rate_hz = 0;
+        (void)rtl_stream_get_symbol_profile_full(&symbol_rate_hz, NULL, NULL);
+        sig->profile_landed = symbol_rate_hz == 2400 ? 1 : 0;
+        const rtl_stream_test_replay_state state = replay_state();
+        sig->truncated = state.replay_output_truncated;
+        sig->events =
+            EventCounts{state.replay_event_retune_count, state.replay_event_mute_count, state.replay_event_reset_count};
+        (void)stop_replay(ctx);
+    }
+    rtl_stream_test_set_replay_stage_hook(NULL, NULL);
+    rtl_stream_test_set_replay_block_hook(NULL, NULL);
+    sig->blocks = observer.blocks;
+    sig->discards = observer.discards.load();
     return rc;
 }
 
 static void
 print_signature(const char* name, const Signature& sig) {
-    DSD_FPRINTF(stderr, "  leg %-8s samples=%llu fnv=%016llx generation changes at", name,
-                (unsigned long long)sig.samples, (unsigned long long)sig.fnv);
+    DSD_FPRINTF(stderr,
+                "  leg %-8s samples=%llu fnv=%016llx blocks=%zu discards=%d truncated=%llu generation changes at", name,
+                (unsigned long long)sig.samples, (unsigned long long)sig.fnv, sig.blocks.size(), sig.discards,
+                (unsigned long long)sig.truncated);
     for (uint64_t position : sig.generation_changes) {
         DSD_FPRINTF(stderr, " %llu", (unsigned long long)position);
     }
     DSD_FPRINTF(stderr, "\n");
 }
 
-/* Issue #572: an event-free replay decodes the same whoever reads it. A greedy fast reader, a slow reader that starts
- * late and reads 1, 7 and 512 samples at a time with sleeps between, and a greedy realtime reader each ask for an FSK
- * reacquire and a symbol profile change at the same delivered positions. Each must get every sample the capture
- * holds, bit for bit the same, with the output generation moving at the same positions. A front end that runs ahead
- * of its decoder lands those requests on whatever block it reached, and a reacquire clears output the decoder has not
- * read. */
 static int
-test_replay_output_does_not_depend_on_the_reader(void) {
-    /* About 0.5 s: 23 whole chunks and a short last one. */
-    const size_t complex_samples = 768000U;
-    const std::vector<uint8_t> payload = tone_and_noise_payload(complex_samples);
-    char metadata_path[DSD_TEST_PATH_MAX];
-    if (make_capture(payload, metadata_path, sizeof(metadata_path)) != 0) {
+blocks_equal(const BlockRecord& a, const BlockRecord& b) {
+    return a.sequence == b.sequence && a.float_count == b.float_count && a.media_start_ns == b.media_start_ns
+           && a.media_end_ns == b.media_end_ns;
+}
+
+/* The blocks a leg's demod took are the capture's chunks, in order, each whole (a cu8 byte is one float), with its
+ * media span. */
+static int
+expect_blocks_follow_layout(const char* label, const Signature& sig, const std::vector<LayoutChunk>& layout) {
+    if (sig.blocks.size() != layout.size()) {
+        DSD_FPRINTF(stderr, "FAIL: %s: the demod took %zu blocks, the capture has %zu chunks\n", label,
+                    sig.blocks.size(), layout.size());
         return 1;
     }
-    const uint64_t want_samples = oracle_output_count(payload.size());
+    for (size_t i = 0; i < layout.size(); i++) {
+        const BlockRecord want = {i + 1U, (size_t)layout[i].bytes, media_ns(layout[i].media_start),
+                                  media_ns(layout[i].media_start + layout[i].bytes / 2U)};
+        if (!blocks_equal(sig.blocks[i], want)) {
+            DSD_FPRINTF(stderr,
+                        "FAIL: %s: block %zu is chunk %llu of %zu floats, media %llu-%llu ns; want chunk %llu of %zu "
+                        "floats, media %llu-%llu ns\n",
+                        label, i + 1U, (unsigned long long)sig.blocks[i].sequence, sig.blocks[i].float_count,
+                        (unsigned long long)sig.blocks[i].media_start_ns,
+                        (unsigned long long)sig.blocks[i].media_end_ns, (unsigned long long)want.sequence,
+                        want.float_count, (unsigned long long)want.media_start_ns,
+                        (unsigned long long)want.media_end_ns);
+            return 1;
+        }
+    }
+    return 0;
+}
 
+/* One leg on its own: it ended, its requests landed, it applied every event, and it delivered every sample of every
+ * chunk, with no block discarded and no output cut short. */
+static int
+expect_leg_complete(const char* capture, const Leg& leg, const Signature& sig, const std::vector<LayoutChunk>& layout,
+                    const EventCounts& want_events) {
+    int rc = 0;
+    char label[160];
+    DSD_SNPRINTF(label, sizeof(label), "%s leg %s: the replay ended", capture, leg.name);
+    rc |= expect_true(label, sig.ended);
+    DSD_SNPRINTF(label, sizeof(label), "%s leg %s: the FSK reacquire was armed", capture, leg.name);
+    rc |= expect_true(label, sig.reacquire_armed);
+    DSD_SNPRINTF(label, sizeof(label), "%s leg %s: the reacquire moved the output generation", capture, leg.name);
+    rc |= expect_true(label, !sig.generation_changes.empty());
+    DSD_SNPRINTF(label, sizeof(label), "%s leg %s: the symbol profile change landed", capture, leg.name);
+    rc |= expect_true(label, sig.profile_landed);
+    DSD_SNPRINTF(label, sizeof(label), "%s leg %s: samples delivered (the oracle's count, none dropped)", capture,
+                 leg.name);
+    rc |= expect_u64_eq(label, sig.samples, oracle_output_count_of(layout));
+    DSD_SNPRINTF(label, sizeof(label), "%s leg %s: blocks the demod discarded", capture, leg.name);
+    rc |= expect_u64_eq(label, (uint64_t)sig.discards, 0U);
+    DSD_SNPRINTF(label, sizeof(label), "%s leg %s: output samples a block could not publish", capture, leg.name);
+    rc |= expect_u64_eq(label, sig.truncated, 0U);
+    DSD_SNPRINTF(label, sizeof(label), "%s leg %s: RETUNEs applied", capture, leg.name);
+    rc |= expect_u64_eq(label, sig.events.retunes, want_events.retunes);
+    DSD_SNPRINTF(label, sizeof(label), "%s leg %s: MUTEs applied", capture, leg.name);
+    rc |= expect_u64_eq(label, sig.events.mutes, want_events.mutes);
+    DSD_SNPRINTF(label, sizeof(label), "%s leg %s: RESETs applied", capture, leg.name);
+    rc |= expect_u64_eq(label, sig.events.resets, want_events.resets);
+    DSD_SNPRINTF(label, sizeof(label), "%s leg %s", capture, leg.name);
+    rc |= expect_blocks_follow_layout(label, sig, layout);
+    return rc;
+}
+
+static int
+signatures_equal(const Signature& a, const Signature& b) {
+    if (a.samples != b.samples || a.fnv != b.fnv || a.generation_changes != b.generation_changes
+        || a.batch_starts != b.batch_starts || a.blocks.size() != b.blocks.size()) {
+        return 0;
+    }
+    for (size_t i = 0; i < a.blocks.size(); i++) {
+        if (!blocks_equal(a.blocks[i], b.blocks[i])) {
+            return 0;
+        }
+    }
+    return 1;
+}
+
+/* Replay @p metadata_path (the chunks @p layout, the events @p want_events) with a greedy fast reader, a slow reader
+ * that starts late and reads 1, 7 and 512 samples at a time with sleeps between, and a greedy realtime reader, each
+ * asking for an FSK reacquire and a symbol profile change at the same delivered positions. Each must get every sample
+ * of every chunk, bit for bit the same, with the output generation moving and every batch starting at the same
+ * positions, and the demod must take the same blocks. */
+static int
+expect_legs_agree(const char* capture, const char* metadata_path, const std::vector<LayoutChunk>& layout,
+                  const EventCounts& want_events) {
     static const size_t kGreedy[] = {512U};
     static const size_t kSlow[] = {1U, 7U, 512U};
     const Leg legs[] = {
@@ -387,26 +631,11 @@ test_replay_output_does_not_depend_on_the_reader(void) {
     for (size_t i = 0; i < leg_count; i++) {
         rc |= run_leg(metadata_path, legs[i], &sigs[i]);
     }
-
     int differ = 0;
     for (size_t i = 0; i < leg_count; i++) {
-        char label[128];
-        DSD_SNPRINTF(label, sizeof(label), "determinism leg %s: the replay ended", legs[i].name);
-        rc |= expect_true(label, sigs[i].ended);
-        DSD_SNPRINTF(label, sizeof(label), "determinism leg %s: the FSK reacquire was armed", legs[i].name);
-        rc |= expect_true(label, sigs[i].reacquire_armed);
-        DSD_SNPRINTF(label, sizeof(label), "determinism leg %s: the reacquire moved the output generation",
-                     legs[i].name);
-        rc |= expect_true(label, !sigs[i].generation_changes.empty());
-        DSD_SNPRINTF(label, sizeof(label), "determinism leg %s: the symbol profile change landed", legs[i].name);
-        rc |= expect_true(label, sigs[i].profile_landed);
-        DSD_SNPRINTF(label, sizeof(label), "determinism leg %s: samples delivered (the oracle's count, none dropped)",
-                     legs[i].name);
-        rc |= expect_u64_eq(label, sigs[i].samples, want_samples);
-        if (i > 0U
-            && (sigs[i].samples != sigs[0].samples || sigs[i].fnv != sigs[0].fnv
-                || sigs[i].generation_changes != sigs[0].generation_changes)) {
-            DSD_FPRINTF(stderr, "FAIL: determinism: leg %s delivered a different stream from leg %s\n", legs[i].name,
+        rc |= expect_leg_complete(capture, legs[i], sigs[i], layout, want_events);
+        if (i > 0U && !signatures_equal(sigs[i], sigs[0])) {
+            DSD_FPRINTF(stderr, "FAIL: %s: leg %s delivered a different stream from leg %s\n", capture, legs[i].name,
                         legs[0].name);
             differ = 1;
         }
@@ -418,6 +647,49 @@ test_replay_output_does_not_depend_on_the_reader(void) {
         rc = 1;
     }
     return rc;
+}
+
+/* Issue #572: an event-free replay decodes the same whoever reads it (expect_legs_agree()). A front end that runs ahead
+ * of its decoder lands the requests on whatever block it reached, and a reacquire clears output the decoder has not
+ * read. */
+static int
+test_replay_output_does_not_depend_on_the_reader(void) {
+    /* About 0.5 s: 23 whole chunks and a short last one. */
+    const size_t complex_samples = 768000U;
+    const std::vector<uint8_t> payload = tone_and_noise_payload(complex_samples);
+    char metadata_path[DSD_TEST_PATH_MAX];
+    if (make_capture(payload, metadata_path, sizeof(metadata_path)) != 0) {
+        return 1;
+    }
+    return expect_legs_agree("determinism", metadata_path, capture_layout(payload.size(), std::vector<CaptureEvent>()),
+                             EventCounts{0U, 0U, 0U});
+}
+
+/* The eventful capture: a MUTE at offset 0; a RETUNE, MUTE and RESET together, a lone MUTE, and a RETUNE, MUTE, RESET
+ * and MUTE together, none on a chunk boundary (the first cuts a chunk to an odd count of complex samples); and a MUTE
+ * at the end. Every MUTE omits a whole number of ms, so media time moves by exactly that. */
+static const CaptureEvent kEventfulEvents[] = {
+    {0U, DSD_IQ_EVENT_MUTE, 6144U},       {200002U, DSD_IQ_EVENT_RETUNE, kSecondCenterHz},
+    {200002U, DSD_IQ_EVENT_MUTE, 3072U},  {200002U, DSD_IQ_EVENT_RESET, kSecondCenterHz},
+    {700000U, DSD_IQ_EVENT_MUTE, 9216U},  {1000006U, DSD_IQ_EVENT_RETUNE, kFirstCenterHz},
+    {1000006U, DSD_IQ_EVENT_MUTE, 3072U}, {1000006U, DSD_IQ_EVENT_RESET, kFirstCenterHz},
+    {1000006U, DSD_IQ_EVENT_MUTE, 6144U}, {1536000U, DSD_IQ_EVENT_MUTE, 12288U},
+};
+
+/* Issue #572: a replay's RETUNE, MUTE and RESET events land on the same samples whoever reads it. Each waits for an
+ * idle pipeline, so the demod applies it between the same two chunks, and a RESET drops nothing a slow decoder had not
+ * read yet. */
+static int
+test_replay_events_do_not_depend_on_the_reader(void) {
+    const size_t complex_samples = 768000U;
+    const std::vector<uint8_t> payload = tone_and_noise_payload(complex_samples);
+    const std::vector<CaptureEvent> events(std::begin(kEventfulEvents), std::end(kEventfulEvents));
+    char metadata_path[DSD_TEST_PATH_MAX];
+    if (make_capture_with_events(payload, events, metadata_path, sizeof(metadata_path)) != 0) {
+        return 1;
+    }
+    return expect_legs_agree("eventful", metadata_path, capture_layout(payload.size(), events),
+                             EventCounts{2U, 6U, 2U});
 }
 
 /* ---------------- Publication ---------------- */
@@ -829,7 +1101,7 @@ test_replay_without_output_ends(void) {
         std::unique_ptr<dsd_opts> opts;
         RtlSdrContext* ctx = NULL;
         const uint64_t start_ns = dsd_time_monotonic_ns();
-        const int start_rc = start_replay_reporting(metadata_path, 0, !empty, &opts, &ctx);
+        const int start_rc = start_replay_reporting(metadata_path, 0, 0, !empty, &opts, &ctx);
         const uint64_t start_ms = (dsd_time_monotonic_ns() - start_ns) / 1000000ULL;
         if (empty) {
             rc |= expect_true("empty replay: the start is refused", start_rc != 0);
@@ -937,15 +1209,428 @@ test_replay_reader_start_failure_at_the_first_demand_wait(void) {
     return rc;
 }
 
+/* ---------------- Event boundaries ---------------- */
+
+/* A short chunk: shorter than the reader's 64 KiB, so a capture of a few runs fast. */
+static const size_t kShortChunkBytes = 40000U;
+
+/* A capture of @p chunks short chunks with a RETUNE and a RESET between each two, as a live retune records them,
+ * hopping from the first channel centre to the second and back; @p out_layout gets its chunks. */
+static int
+make_retune_capture(size_t chunks, std::vector<LayoutChunk>* out_layout, char* out_metadata_path,
+                    size_t out_metadata_path_size) {
+    std::vector<CaptureEvent> events;
+    for (size_t i = 1U; i < chunks; i++) {
+        const uint64_t center_hz = (i % 2U) != 0U ? kSecondCenterHz : kFirstCenterHz;
+        events.push_back(CaptureEvent{i * kShortChunkBytes, DSD_IQ_EVENT_RETUNE, center_hz});
+        events.push_back(CaptureEvent{i * kShortChunkBytes, DSD_IQ_EVENT_RESET, center_hz});
+    }
+    const std::vector<uint8_t> payload = tone_and_noise_payload(chunks * kShortChunkBytes / 2U);
+    *out_layout = capture_layout(payload.size(), events);
+    return make_capture_with_events(payload, events, out_metadata_path, out_metadata_path_size);
+}
+
+/* Read the replay to its end on a decoder thread, 512 samples at a time, within 10 s (else end it with the exit flag);
+ * @p out_delivered gets the samples read. */
+static int
+read_replay_to_end(const char* label, RtlSdrContext* ctx, uint64_t* out_delivered) {
+    *out_delivered = 0U;
+    BlockedRead reader;
+    reader.ctx = ctx;
+    dsd_thread_t thread;
+    if (dsd_thread_create(&thread, blocked_read_fn, &reader) != 0) {
+        DSD_FPRINTF(stderr, "FAIL: %s: the decoder thread started\n", label);
+        return 1;
+    }
+    int rc = 0;
+    if (!wait_for_int(&reader.done, 1, 10000U)) {
+        DSD_FPRINTF(stderr, "FAIL: %s: the replay reached its end within 10 s\n", label);
+        dsd_exitflag_store(1);
+        rc = 1;
+    }
+    (void)dsd_thread_join(thread);
+    dsd_exitflag_store(0);
+    *out_delivered = reader.delivered.load();
+    return rc;
+}
+
+namespace {
+/* test_replay_boundary_waits_for_a_stalled_decoder(). */
+struct DecoderStall {
+    std::atomic<int> holds{0};
+    std::atomic<int> resets_at_hold_end{-1};   /* RESETs applied by the time the decoder went on */
+    std::atomic<int> restarts_at_hold_end{-1}; /* ... and loop rewinds */
+};
+
+/* A decoder that reads until it gets samples of chunk stop_sequence's batch. */
+struct BatchReader {
+    RtlSdrContext* ctx = nullptr;
+    uint64_t stop_sequence = 0U;
+    std::atomic<uint64_t> before_stop{0U}; /* samples it read from the batches before that one */
+    std::atomic<int> reached{0};
+    std::atomic<int> done{0};
+};
+} // namespace
+
+static void
+decoder_stall_stage(int stage, size_t count, void* ctx) {
+    (void)count;
+    DecoderStall* stall = static_cast<DecoderStall*>(ctx);
+    if (stage != RTL_STREAM_TEST_REPLAY_DECODER_OUTPUT_FOUND
+        || stall->holds.fetch_add(1, std::memory_order_acq_rel) != 0) {
+        return;
+    }
+    /* The decoder found its first batch, the chunk before the first RESET or the rewind, and stalls four times as long
+       as the boundary used to wait for it (50 ms) before it cleared what was left. */
+    dsd_sleep_ms(200U);
+    const rtl_stream_test_replay_state state = replay_state();
+    stall->resets_at_hold_end.store((int)state.replay_event_reset_count, std::memory_order_release);
+    stall->restarts_at_hold_end.store((int)state.replay_loop_restart_count, std::memory_order_release);
+}
+
+static DSD_THREAD_RETURN_TYPE
+batch_reader_fn(void* arg) {
+    BatchReader* reader = static_cast<BatchReader*>(arg);
+    float buf[512];
+    for (;;) {
+        int got = 0;
+        if (rtl_stream_read(reader->ctx, buf, 512U, &got) != 0) {
+            break;
+        }
+        rtl_stream_replay_batch tag;
+        if (got <= 0 || rtl_stream_get_replay_batch(&tag) != 0) {
+            continue;
+        }
+        if (tag.chunk_sequence >= reader->stop_sequence) {
+            reader->reached.store(1, std::memory_order_release);
+            break;
+        }
+        reader->before_stop.fetch_add((uint64_t)got, std::memory_order_acq_rel);
+    }
+    reader->done.store(1, std::memory_order_release);
+    DSD_THREAD_RETURN;
+}
+
+/* Issue #572: a RESET, and a loop rewind, wait with no deadline for the decoder to read every sample before them. A
+ * decoder that stalls on the batch before one (200 ms, the forced interleaving) gets all of it once it goes on, where
+ * the boundary used to clear it after 50 ms. The RESET case reads the capture to its end; the rewind case reads until
+ * the second pass's first batch. */
+static int
+test_replay_boundary_waits_for_a_stalled_decoder(void) {
+    int rc = 0;
+    for (int rewind = 0; rewind <= 1; rewind++) {
+        const char* label = rewind ? "stalled decoder at a rewind" : "stalled decoder at a RESET";
+        std::vector<LayoutChunk> layout;
+        char metadata_path[DSD_TEST_PATH_MAX];
+        const std::vector<uint8_t> one_chunk = tone_and_noise_payload(kShortChunkBytes / 2U);
+        const int made = rewind ? make_capture(one_chunk, metadata_path, sizeof(metadata_path))
+                                : make_retune_capture(3U, &layout, metadata_path, sizeof(metadata_path));
+        if (made != 0) {
+            return 1;
+        }
+        if (rewind) {
+            layout = capture_layout(one_chunk.size(), std::vector<CaptureEvent>());
+        }
+        DecoderStall stall;
+        rtl_stream_test_set_replay_stage_hook(decoder_stall_stage, &stall);
+        std::unique_ptr<dsd_opts> opts;
+        RtlSdrContext* ctx = NULL;
+        if (start_replay_reporting(metadata_path, 0, rewind, 1, &opts, &ctx) != 0) {
+            rtl_stream_test_set_replay_stage_hook(NULL, NULL);
+            return 1;
+        }
+        /* The RESET case reads to the end (a chunk the capture never reaches); the rewind case to chunk 2, the second
+           pass's first. */
+        BatchReader reader;
+        reader.ctx = ctx;
+        reader.stop_sequence = rewind ? 2U : UINT64_MAX;
+        dsd_thread_t thread;
+        char what[256];
+        if (dsd_thread_create(&thread, batch_reader_fn, &reader) != 0) {
+            DSD_SNPRINTF(what, sizeof(what), "%s: the decoder thread started", label);
+            rc |= expect_true(what, 0);
+        } else {
+            if (!wait_for_int(&reader.done, 1, 10000U)) {
+                DSD_SNPRINTF(what, sizeof(what), "%s: the decoder read what it wanted within 10 s", label);
+                rc |= expect_true(what, 0);
+                dsd_exitflag_store(1);
+            }
+            (void)dsd_thread_join(thread);
+        }
+        const rtl_stream_test_replay_state state = replay_state();
+        (void)stop_replay(ctx);
+        dsd_exitflag_store(0);
+        rtl_stream_test_set_replay_stage_hook(NULL, NULL);
+        DSD_SNPRINTF(what, sizeof(what), "%s: the decoder stalled on its first batch", label);
+        rc |= expect_true(what, stall.holds.load() >= 1);
+        DSD_SNPRINTF(what, sizeof(what), "%s: nothing was applied while the decoder stalled before it", label);
+        rc |= expect_true(what, (rewind ? stall.restarts_at_hold_end.load() : stall.resets_at_hold_end.load()) == 0);
+        if (rewind) {
+            DSD_SNPRINTF(what, sizeof(what), "%s: the decoder got to the second pass", label);
+            rc |= expect_true(what, reader.reached.load());
+        } else {
+            DSD_SNPRINTF(what, sizeof(what), "%s: RESETs applied", label);
+            rc |= expect_u64_eq(what, state.replay_event_reset_count, 2U);
+        }
+        DSD_SNPRINTF(what, sizeof(what), "%s: samples delivered (the oracle's count, none dropped)", label);
+        rc |= expect_u64_eq(what, reader.before_stop.load(), oracle_output_count_of(layout));
+        DSD_SNPRINTF(what, sizeof(what), "%s: output samples a block could not publish", label);
+        rc |= expect_u64_eq(what, state.replay_output_truncated, 0U);
+    }
+    return rc;
+}
+
+namespace {
+/* test_replay_purge_the_demod_takes_keeps_the_next_chunk(). */
+struct PurgeRace {
+    std::atomic<int> top_holds{0};              /* holds of the demod at the top of its loop after the first block */
+    std::atomic<int> held_until_purge_wait{0};  /* ... that lasted until the reader waited for the RESET's purge */
+    std::atomic<int> purge_waits{0};            /* the reader's waits for a boundary's purge */
+    std::atomic<int> purges_taken{0};           /* purge flags the demod took */
+    std::atomic<int> reader_waited_for_take{0}; /* the reader's first purge wait went on only once the demod took it */
+};
+} // namespace
+
+static void
+purge_race_stage(int stage, size_t count, void* ctx) {
+    PurgeRace* race = static_cast<PurgeRace*>(ctx);
+    switch (stage) {
+        case RTL_STREAM_TEST_REPLAY_DEMOD_WAIT_FOR_DEMAND:
+            /* The first block is published (the virtual block 0 and it): hold the demod at the top of its loop, ahead
+               of its purge check, until the reader waits for the RESET's purge, so that the demod takes the flag. */
+            if (count == 2U && race->top_holds.fetch_add(1, std::memory_order_acq_rel) == 0) {
+                race->held_until_purge_wait.store(wait_for_int(&race->purge_waits, 1, 3000U),
+                                                  std::memory_order_release);
+            }
+            break;
+        case RTL_STREAM_TEST_REPLAY_READER_PURGE_WAIT:
+            /* The reader waits for the RESET's purge once the demod took the flag... */
+            if (race->purge_waits.fetch_add(1, std::memory_order_acq_rel) == 0) {
+                race->reader_waited_for_take.store(wait_for_int(&race->purges_taken, 1, 3000U),
+                                                   std::memory_order_release);
+            }
+            break;
+        case RTL_STREAM_TEST_REPLAY_DEMOD_PURGE_TAKEN:
+            /* ... and the demod discards the input ring 100 ms after it took the flag. */
+            if (race->purges_taken.fetch_add(1, std::memory_order_acq_rel) == 0) {
+                dsd_sleep_ms(100U);
+            }
+            break;
+        default: break;
+    }
+}
+
+/* Issue #572: the replay reader goes on past a RESET only once its input purge is applied. When the demod takes the
+ * purge flag, the reader waits until the demod has discarded the input ring, so the chunk after the RESET, which the
+ * reader commits next, is never the one discarded. The forced interleaving: the demod takes the flag while the reader
+ * waits, and holds its discard 100 ms. */
+static int
+test_replay_purge_the_demod_takes_keeps_the_next_chunk(void) {
+    std::vector<LayoutChunk> layout;
+    char metadata_path[DSD_TEST_PATH_MAX];
+    if (make_retune_capture(3U, &layout, metadata_path, sizeof(metadata_path)) != 0) {
+        return 1;
+    }
+    PurgeRace race;
+    LegObserver observer;
+    rtl_stream_test_set_replay_stage_hook(purge_race_stage, &race);
+    rtl_stream_test_set_replay_block_hook(leg_block_hook, &observer);
+    std::unique_ptr<dsd_opts> opts;
+    RtlSdrContext* ctx = NULL;
+    int rc = 1;
+    uint64_t delivered = 0U;
+    if (start_replay(metadata_path, 0, &opts, &ctx) == 0) {
+        rc = read_replay_to_end("purge race", ctx, &delivered);
+        (void)stop_replay(ctx);
+    }
+    rtl_stream_test_set_replay_stage_hook(NULL, NULL);
+    rtl_stream_test_set_replay_block_hook(NULL, NULL);
+    rc |= expect_true("purge race: the demod waited at the top of its loop until the reader waited for the purge",
+                      race.held_until_purge_wait.load());
+    rc |= expect_true("purge race: the demod took the purge flag while the reader waited for the purge",
+                      race.reader_waited_for_take.load());
+    Signature sig;
+    sig.blocks = observer.blocks;
+    rc |= expect_blocks_follow_layout("purge race (the chunk after the RESET reaches the demod)", sig, layout);
+    rc |= expect_u64_eq("purge race: samples delivered (the oracle's count, none dropped)", delivered,
+                        oracle_output_count_of(layout));
+    return rc;
+}
+
+namespace {
+/* test_replay_reset_after_a_retune_resets_from_the_old_centre(): the reset plan in force as the reader goes on past
+ * each RESET. */
+struct ResetPlans {
+    rtl_stream_test_reset_plan plan[2] = {};
+    std::atomic<int> have[2] = {{0}, {0}};
+};
+} // namespace
+
+static void
+reset_plan_stage(int stage, size_t count, void* ctx) {
+    ResetPlans* plans = static_cast<ResetPlans*>(ctx);
+    /* The reader read chunk 2 or 3, after the first or second RESET. */
+    if (stage != RTL_STREAM_TEST_REPLAY_READER_WAIT_FOR_EMPTY_INPUT || count < 2U || count > 3U) {
+        return;
+    }
+    const size_t which = count - 2U;
+    plans->have[which].store(rtl_stream_test_get_last_reset_plan(&plans->plan[which]) == 0 ? 1 : 0,
+                             std::memory_order_release);
+}
+
+static int
+expect_reset_plan(const char* label, const ResetPlans& plans, size_t which, uint32_t previous_hz, uint32_t next_hz,
+                  int reset_fll, int restored_fll) {
+    const rtl_stream_test_reset_plan& plan = plans.plan[which];
+    if (!plans.have[which].load() || std::strcmp(plan.reason, "frequency") != 0
+        || plan.previous_center_hz != previous_hz || plan.next_center_hz != next_hz
+        || plan.reset_retained_fll != reset_fll || plan.restored_cached_fll != restored_fll) {
+        DSD_FPRINTF(stderr,
+                    "FAIL: %s: reset plan %s %u -> %u Hz, FLL reset %d, restored %d; want frequency %u -> %u Hz, FLL "
+                    "reset %d, restored %d\n",
+                    label, plans.have[which].load() ? plan.reason : "(none)", plan.previous_center_hz,
+                    plan.next_center_hz, plan.reset_retained_fll, plan.restored_cached_fll, previous_hz, next_hz,
+                    reset_fll, restored_fll);
+        return 1;
+    }
+    return 0;
+}
+
+/* Issue #572: a replayed RESET resets the demod from the centre the RETUNE before it left, as the live retune it
+ * records did: a hop to a new centre starts its band-edge FLL fresh, and the hop back restores the seed cached for the
+ * old centre. Resetting from the centre the RETUNE moved to, both hops kept the old channel's FLL. */
+static int
+test_replay_reset_after_a_retune_resets_from_the_old_centre(void) {
+    std::vector<LayoutChunk> layout;
+    char metadata_path[DSD_TEST_PATH_MAX];
+    if (make_retune_capture(3U, &layout, metadata_path, sizeof(metadata_path)) != 0) {
+        return 1;
+    }
+    ResetPlans plans;
+    rtl_stream_test_set_replay_stage_hook(reset_plan_stage, &plans);
+    std::unique_ptr<dsd_opts> opts;
+    RtlSdrContext* ctx = NULL;
+    int rc = 1;
+    uint64_t delivered = 0U;
+    if (start_replay(metadata_path, 0, &opts, &ctx) == 0) {
+        rc = read_replay_to_end("reset plan", ctx, &delivered);
+        (void)stop_replay(ctx);
+    }
+    rtl_stream_test_set_replay_stage_hook(NULL, NULL);
+    rc |= expect_reset_plan("reset plan: the RESET after the hop to the second centre", plans, 0U,
+                            (uint32_t)kFirstCenterHz, (uint32_t)kSecondCenterHz, 1, 0);
+    rc |= expect_reset_plan("reset plan: the RESET after the hop back", plans, 1U, (uint32_t)kSecondCenterHz,
+                            (uint32_t)kFirstCenterHz, 0, 1);
+    return rc;
+}
+
+namespace {
+/* test_replay_event_boundary_waits_stop_in_bounded_time(). */
+struct BoundaryWait {
+    std::atomic<int> boundaries{0};
+    std::atomic<int> first_kind{-1}; /* the event the reader first waited for (DSD_IQ_EVENT_*), 0: a rewind */
+};
+} // namespace
+
+static void
+boundary_wait_stage(int stage, size_t count, void* ctx) {
+    BoundaryWait* wait = static_cast<BoundaryWait*>(ctx);
+    if (stage == RTL_STREAM_TEST_REPLAY_READER_EVENT_BOUNDARY
+        && wait->boundaries.fetch_add(1, std::memory_order_acq_rel) == 0) {
+        wait->first_kind.store((int)count, std::memory_order_release);
+    }
+}
+
+/* Wait up to @p timeout_ms for the replay reader thread to leave. */
+static int
+wait_for_reader_exit(unsigned int timeout_ms) {
+    for (unsigned int waited = 0U; waited <= timeout_ms; waited++) {
+        if (replay_state().replay_reader_exited) {
+            return 1;
+        }
+        dsd_sleep_ms(1U);
+    }
+    return 0;
+}
+
+/* Issue #572: the replay reader waits at an event, or at a loop rewind, until the decoder has read everything before
+ * it, and that wait ends in bounded time on a stop. The decoder reads one sample of the first chunk and no more. The
+ * reader must wait at the RETUNE (or the rewind) without applying it; then a soft stop returns within 2 s, and a forced
+ * stop or the global exit flag ends the reader within 1 s. */
+static int
+test_replay_event_boundary_waits_stop_in_bounded_time(void) {
+    static const char* const kHow[] = {"soft stop", "forced stop", "global exit"};
+    int rc = 0;
+    for (int rewind = 0; rewind <= 1; rewind++) {
+        for (int how = 0; how < 3; how++) {
+            char label[160];
+            DSD_SNPRINTF(label, sizeof(label), "%s, %s", rewind ? "loop rewind" : "RETUNE boundary", kHow[how]);
+            char metadata_path[DSD_TEST_PATH_MAX];
+            std::vector<LayoutChunk> layout;
+            const int made = rewind ? make_capture(tone_and_noise_payload(kShortChunkBytes / 2U), metadata_path,
+                                                   sizeof(metadata_path))
+                                    : make_retune_capture(2U, &layout, metadata_path, sizeof(metadata_path));
+            if (made != 0) {
+                return 1;
+            }
+            BoundaryWait wait;
+            rtl_stream_test_set_replay_stage_hook(boundary_wait_stage, &wait);
+            std::unique_ptr<dsd_opts> opts;
+            RtlSdrContext* ctx = NULL;
+            if (start_replay_reporting(metadata_path, 0, rewind, 1, &opts, &ctx) != 0) {
+                rtl_stream_test_set_replay_stage_hook(NULL, NULL);
+                return 1;
+            }
+            float sample = 0.0f;
+            int got = 0;
+            char what[256];
+            DSD_SNPRINTF(what, sizeof(what), "%s: the decoder read a sample of the first chunk", label);
+            rc |= expect_true(what, rtl_stream_read(ctx, &sample, 1U, &got) == 0 && got == 1);
+            const int waiting = wait_for_int(&wait.boundaries, 1, 2000U);
+            /* Four times the 50 ms a RESET or rewind used to wait for the decoder. */
+            dsd_sleep_ms(200U);
+            const rtl_stream_test_replay_state state = replay_state();
+            DSD_SNPRINTF(what, sizeof(what), "%s: the reader waits at the boundary", label);
+            rc |= expect_true(what, waiting && wait.first_kind.load() == (rewind ? 0 : (int)DSD_IQ_EVENT_RETUNE));
+            DSD_SNPRINTF(what, sizeof(what), "%s: nothing is applied while the decoder has not read the chunk", label);
+            rc |= expect_true(what,
+                              rewind ? state.replay_loop_restart_count == 0U : state.replay_event_retune_count == 0U);
+            if (how == 1) {
+                rtl_stream_test_replay_force_stop();
+            } else if (how == 2) {
+                dsd_exitflag_store(1);
+            }
+            if (how != 0) {
+                DSD_SNPRINTF(what, sizeof(what), "%s: the replay reader left within 1 s", label);
+                rc |= expect_true(what, wait_for_reader_exit(1000U));
+            }
+            const uint64_t stop_ms = stop_replay(ctx);
+            dsd_exitflag_store(0);
+            rtl_stream_test_set_replay_stage_hook(NULL, NULL);
+            if (stop_ms > 2000U) {
+                DSD_FPRINTF(stderr, "FAIL: %s: the stop took %llu ms (want <= 2000)\n", label,
+                            (unsigned long long)stop_ms);
+                rc = 1;
+            }
+        }
+    }
+    return rc;
+}
+
 int
 main(void) {
     int rc = 0;
     rc |= test_replay_output_does_not_depend_on_the_reader();
+    rc |= test_replay_events_do_not_depend_on_the_reader();
     rc |= test_replay_publishes_a_block_whole_with_its_tag();
     rc |= test_replay_demand_waits_stop_in_bounded_time();
     rc |= test_replay_decoder_wait_stops_in_bounded_time();
     rc |= test_replay_without_output_ends();
     rc |= test_replay_reader_start_failure_at_the_first_demand_wait();
+    rc |= test_replay_boundary_waits_for_a_stalled_decoder();
+    rc |= test_replay_purge_the_demod_takes_keeps_the_next_chunk();
+    rc |= test_replay_reset_after_a_retune_resets_from_the_old_centre();
+    rc |= test_replay_event_boundary_waits_stop_in_bounded_time();
     rc |= remove_fixture_dirs();
     return rc ? 1 : 0;
 }

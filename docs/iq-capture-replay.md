@@ -164,8 +164,11 @@ dsd-neo -fM --iq-replay tests/fixtures/iq/am_airband_real.iq.json --iq-replay-ra
   `contains_retunes: true` and no `events` array are rejected because they do not preserve enough ordering data to replay
   safely.
 - `RETUNE` events update replay-visible center frequency state. `RESET` events apply the same demod reset/purge/output
-  handling used by live retunes. `MUTE` events emit no samples, but advance replay phase accounting and realtime virtual
-  sample time by `duration_bytes`.
+  handling used by live retunes, from the center the `RETUNE` before them left, as the live retune did. `MUTE` events
+  emit no samples, but advance replay phase accounting and realtime virtual sample time by `duration_bytes`.
+- Replay applies an event, and an `--iq-loop` rewind, only once the decoder has read everything demodulated before it.
+  The decoder then meets each event at the same point in fast and realtime replay, and a `RESET` drops nothing a slow
+  decoder has not read.
 - `--iq-loop` rewinds the event cursor and replay timing so the event schedule repeats each pass.
 - User/API retune requests during IQ replay remain ignored; only metadata-scheduled replay events are applied.
 - Event timelines currently require a constant sample rate through the capture. Metadata with event sample-rate changes is
