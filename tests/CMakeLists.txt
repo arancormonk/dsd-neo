@@ -12802,3 +12802,14 @@ if(
         PROPERTIES TIMEOUT 120
     )
 endif()
+
+add_executable(
+    dsd-neo_test_runtime_decode_clock
+    runtime/test_runtime_decode_clock.c
+)
+target_include_directories(
+    dsd-neo_test_runtime_decode_clock
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+target_link_libraries(dsd-neo_test_runtime_decode_clock PRIVATE dsd-neo_runtime)
+add_test(NAME RUNTIME_DECODE_CLOCK COMMAND dsd-neo_test_runtime_decode_clock)

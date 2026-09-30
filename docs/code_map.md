@@ -616,6 +616,13 @@ Tests: `tests/engine/test_engine_trunk_scan.c` (`ENGINE_TRUNK_SCAN`) and
   - Config system (schema, expansion, user config), logging, memory helpers, rings, worker pools, RT scheduling
   - CLI parsing and interactive/bootstrap helpers (`include/dsd-neo/runtime/cli.h`)
   - Hook interfaces that let DSP/protocol code publish state without depending on UI internals
+  - Decode clock (`include/dsd-neo/runtime/decode_clock.h`, `src/runtime/decode_clock.c`): an injectable clock for
+    decode decisions and decoded-output timestamps (`dsd_decode_time()`, `dsd_decode_now_mono_{s,ms,ns}()`,
+    `dsd_decode_now_realtime_s()`) with SYSTEM (platform clocks, default), REPLAY (`anchor + media_ns`, anchor floored
+    at 2000-01-01Z, media time monotone and advanced only by the decoder thread) and TEST sources, held in
+    process-wide atomics. Sleeps, condvar deadlines, pacing, timeouts and metrics use the separate real-time reads
+    (`dsd_realtime_mono_{s,ms,ns}()`, `dsd_realtime_time()`, `dsd_realtime_now_s()`). One comparison never mixes the
+    two domains.
   - Analog channel contract shared by the CLI, config, app commands, scan rows and the demodulator
     (`include/dsd-neo/runtime/analog_channel.h`, `src/runtime/analog_channel.c`): `dsd_analog_demod` (FM = 0,
     AM = 1), `dsd_rx_family`, per-kind width ranges and defaults (NFM 8000–25000 Hz, default 16000; AM

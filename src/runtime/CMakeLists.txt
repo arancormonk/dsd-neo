@@ -11,6 +11,7 @@ target_sources(
         config_user_loader.cpp
         config_user_validation.cpp
         config_schema.c
+        decode_clock.c
         decode_mode.c
         scan_mode.c
         scan_options.c
