@@ -1194,7 +1194,9 @@ installs from `src/engine/trunk_tuning.c` in `src/engine/trunk_tuning_hooks_inst
   FM and AM, by DECODE_MODE_SET or a config's `[mode]`, drops the analog monitor block the decoder part-collected, as a
   family change does (`decode_mode_drop_old_analog_block()`), and until the demod thread applies it `getSymbol()`
   collects none of the old kind's audio the front end still delivers (issue #582, the monitor block in `dsp`); one
-  the front end refuses goes back to the monitor's raw sink, not the digital one (`ui_revert_analog_entry()`). `[mode] decode = am` in a config applied to a PCM session
+  the front end refuses goes back to the monitor's raw sink, not the digital one (`ui_revert_analog_entry()`), also
+  after a toggle that asks the front end for no receive profile (the cosine filter, an inversion, the input monitor)
+  changed a setting the switch is compared by before the refusal: what the toggle set stands (issue #582). `[mode] decode = am` in a config applied to a PCM session
   applies, and then falls back. That fallback is `apply_cmd_fall_back_from_am_on_pcm()`, run after every command
   (`apply_cmd_scoped()`): a configured AM preset on an input that is not I/Q (a live input switch to Pulse, a file, TCP
   or UDP audio, or a config's `decode = am` on PCM) becomes the Analog monitor through the scope, as DECODE_MODE_SET
@@ -1614,8 +1616,9 @@ installs from `src/engine/trunk_tuning.c` in `src/engine/trunk_tuning_hooks_inst
   mute. Nothing published (no front-end hooks, a front end off the analog family) leaves collection as it was; of
   those only a session with no decode mode switched to Analog reads another profile until the switch lands (the M17
   encoder is never the analog family). A front end the stream leaves off the configured monitor for good, such as a
-  refused switch whose revert was skipped or a scan leave whose fallback width the rate refuses too, is silent there,
-  as a digital output under an analog decoder is. A digital decoder on the monitor output (a typed row's, the `-8`
+  scan leave whose fallback width the rate refuses too (the refusal's toast says so), is silent there, as a digital
+  output under an analog decoder is; a refused switch between FM and AM puts the decoder back on the kind the front end
+  kept (`ui_revert_analog_entry()`). A digital decoder on the monitor output (a typed row's, the `-8`
   source monitor) collects what it reads. Test: `RTL_SYMBOL_CACHE_GENERATION`.
   `tests/engine/analog_replay.c` (`dsd-neo_test_analog_replay`, the `DECODE_IQ_ANALOG_*` audio cases) captures and
   scores exactly that output through the hook, and times it with a wrapped RTL stream read hook, so changes to the

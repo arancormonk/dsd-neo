@@ -10693,6 +10693,79 @@ test_refused_switch_between_fm_and_am_puts_the_mode_back(void) {
     return rc;
 }
 
+/* The toggles a switch between FM and AM can meet before the front end refuses it where it lands: each changes a
+   setting the switch is compared by, and none asks the front end for a receive profile of its own. */
+static const struct {
+    int cmd;
+    const char* name;
+} k_unpublished_toggles[] = {
+    {DSD_APP_CMD_COSINE_FILTER_TOGGLE, "cosine filter toggle"},
+    {DSD_APP_CMD_INV_DMR_TOGGLE, "DMR inversion toggle"},
+    {DSD_APP_CMD_INVERT_TOGGLE, "inversion toggle"},
+    {DSD_APP_CMD_INPUT_MONITOR_TOGGLE, "input monitor toggle"},
+};
+
+/* The settings those toggles change, packed so one comparison says whether a toggle's change stood. */
+static int
+unpublished_toggle_settings(const dsd_opts* opts) {
+    return (opts->use_cosine_filter ? 1 : 0) | (opts->inverted_dmr ? 2 : 0) | (opts->inverted_dpmr ? 4 : 0)
+           | (opts->inverted_x2tdma ? 8 : 0) | (opts->inverted_ysf ? 16 : 0) | (opts->inverted_m17 ? 32 : 0)
+           | (opts->monitor_input_audio ? 64 : 0);
+}
+
+/*
+ * Issue #582: a switch between FM and AM the front end refuses where it lands, after a toggle drained in the same pass
+ * (or any time before the refusal) changed a setting the switch is compared by: the cosine filter, an inversion, the
+ * input monitor. Those toggles ask the front end for no receive profile of their own, so the settings did not move on
+ * from the switch the way a later mode or modulation command's would: the decoder still goes back to the kind the front
+ * end kept, and says why, keeping what the toggle set. It was left on the refused kind with no word, over a front end
+ * running the other one, whose monitor getSymbol() then follows no more.
+ */
+static int
+test_refused_switch_after_an_unpublished_toggle_puts_the_mode_back(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static void* fake_ctx[2];
+    static const char k_refusal[] =
+        "Failed: AM -> AM 15 kHz does not fit the 16 kHz DSP rate (max 13.2 kHz); use a 24 or 48 kHz DSP bandwidth";
+    int rc = 0;
+    for (size_t i = 0; i < sizeof k_unpublished_toggles / sizeof k_unpublished_toggles[0]; i++) {
+        char label[128];
+        init_nfm_session_with_am_width(&opts, &state, (RtlSdrContext*)fake_ctx, 15000);
+        reset_rx_family_wrap();
+        const int settings_before = unpublished_toggle_settings(&opts);
+        (void)dsd_app_command_set_i32(DSD_APP_CMD_DECODE_MODE_SET, (int32_t)DSDCFG_MODE_AM);
+        (void)dsd_app_command_action(k_unpublished_toggles[i].cmd);
+        DSD_SNPRINTF(label, sizeof label, "fm -> am + %s: drained", k_unpublished_toggles[i].name);
+        rc |= expect_int(label, dsd_app_drain_cmds(&opts, &state), 2);
+        DSD_SNPRINTF(label, sizeof label, "fm -> am + %s: on AM while pending", k_unpublished_toggles[i].name);
+        rc |= expect_int(label, opts.analog_demod, DSD_ANALOG_DEMOD_AM);
+        const int settings_toggled = unpublished_toggle_settings(&opts);
+        DSD_SNPRINTF(label, sizeof label, "fm -> am + %s: toggled", k_unpublished_toggles[i].name);
+        rc |= expect_int(label, settings_toggled != settings_before, 1);
+        demod_thread_refuses_analog_keeping_kind(1, DSD_ANALOG_DEMOD_FM, 0);
+        state.ui_msg[0] = '\0';
+        (void)dsd_app_drain_cmds(&opts, &state);
+        /* Back on the analog monitor's FM kind (the input monitor toggle turns the monitor itself off, which no preset
+           does, so the preset is not inferred), with the refusal said. */
+        DSD_SNPRINTF(label, sizeof label, "fm -> am + %s: back on the analog family", k_unpublished_toggles[i].name);
+        rc |= expect_int(label, opts.analog_only, 1);
+        DSD_SNPRINTF(label, sizeof label, "fm -> am + %s: back on FM", k_unpublished_toggles[i].name);
+        rc |= expect_int(label, opts.analog_demod, DSD_ANALOG_DEMOD_FM);
+        DSD_SNPRINTF(label, sizeof label, "fm -> am + %s: refusal said", k_unpublished_toggles[i].name);
+        rc |= expect_toast(label, &state, k_refusal);
+        DSD_SNPRINTF(label, sizeof label, "fm -> am + %s: the toggle stands", k_unpublished_toggles[i].name);
+        rc |= expect_int(label, unpublished_toggle_settings(&opts), settings_toggled);
+        g_fake_analog_family = 0;
+        opts.analog_am_bandwidth_hz = 0;
+        opts.use_cosine_filter = 0;
+        opts.inverted_dmr = opts.inverted_dpmr = opts.inverted_x2tdma = opts.inverted_ysf = opts.inverted_m17 = 0;
+        state.rtl_ctx = NULL;
+        freeState(&state);
+    }
+    return rc;
+}
+
 /* A DMR session with explicit NFM and AM widths the front end refuses once a retune has moved its rate, switched to AM
    and on to Analog before the front end took the AM switch: the request queue is last-writer-wins, so the Analog
    request replaced the AM one, which never ran. The Analog switch is a second DECODE_MODE_SET in a later drain, or
@@ -14205,6 +14278,7 @@ main(void) {
     rc |= test_refused_switch_onto_analog_retimes_the_mode();
     rc |= test_nfm_width_changes_held_to_channel_lpf_off();
     rc |= test_refused_switch_between_fm_and_am_puts_the_mode_back();
+    rc |= test_refused_switch_after_an_unpublished_toggle_puts_the_mode_back();
     rc |= test_refused_switch_after_a_pending_switch_puts_the_running_mode_back();
     rc |= test_refused_switch_after_a_taken_switch_puts_the_running_mode_back();
     rc |= test_refused_switch_after_a_width_change_holds_the_width();
