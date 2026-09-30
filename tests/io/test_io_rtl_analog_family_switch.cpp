@@ -653,6 +653,91 @@ test_am_monitor_keeps_detector_under_symbol_profiles(void) {
     return rc;
 }
 
+/* A -Y scan on a -fA or -fM session left while a typed digital row's retune is in flight (issue #582). The row's
+ * retune carries no receive family (the configured mode is analog), so at HEAD its symbol profile landed whatever the
+ * requests: when the controller started the retune late (a PPM correction ahead of it, a starved controller thread),
+ * the demod thread took the leave's monitor request first and settled it, and the retune landing after it put the
+ * front end back on the row's channel, or on CQPSK, for good: the leave had settled, so nothing asked again. The
+ * leave's request is newer than the retune's profile, and asks for the monitor, which a symbol profile would take
+ * away: the retune lands its centre only. A leave made before the profile was queued is older, and the profile still
+ * lands over it. */
+static int
+test_typed_row_retune_after_scan_leave_keeps_the_monitor(void) {
+    static const int kinds[2] = {DSD_ANALOG_DEMOD_FM, DSD_ANALOG_DEMOD_AM};
+    static const int rows[2] = {RTL_STREAM_TEST_SYMBOL_DMR_FSK, RTL_STREAM_TEST_SYMBOL_P25_CQPSK};
+    int rc = 0;
+    for (int k = 0; k < 2; k++) {
+        for (int w = 0; w < 2; w++) {
+            for (int external = 0; external <= 1; external++) {
+                char label[160];
+                const char* stage = kinds[k] == DSD_ANALOG_DEMOD_AM ? "-fM" : "-fA";
+                const char* row = rows[w] == RTL_STREAM_TEST_SYMBOL_P25_CQPSK ? "P25 CQPSK row" : "DMR row";
+                const char* path = external ? "external landing" : "controller landing";
+                rtl_stream_test_typed_row_leave_result r;
+                DSD_MEMSET(&r, 0, sizeof r);
+                DSD_SNPRINTF(label, sizeof label, "%s %s leave, %s: run", stage, row, path);
+                rc |= expect_int(label,
+                                 rtl_stream_test_typed_row_retune_across_leave(kinds[k], rows[w], 0, external, &r), 0);
+                DSD_SNPRINTF(label, sizeof label, "%s %s leave, %s: open", stage, row, path);
+                rc |= expect_int(label, r.open_rc, 0);
+                DSD_SNPRINTF(label, sizeof label, "%s %s leave, %s: outgoing row off the monitor", stage, row, path);
+                rc |= expect_int(label, r.row_monitor, 0);
+                DSD_SNPRINTF(label, sizeof label, "%s %s leave, %s: retune taken", stage, row, path);
+                rc |= expect_int(label, r.taken, 1);
+                DSD_SNPRINTF(label, sizeof label, "%s %s leave, %s: leave accepted", stage, row, path);
+                rc |= expect_int(label, r.leave_rc, 0);
+                DSD_SNPRINTF(label, sizeof label, "%s %s leave, %s: leave lands the monitor", stage, row, path);
+                rc |= expect_int(label, r.leave_monitor, 1);
+                DSD_SNPRINTF(label, sizeof label, "%s %s leave, %s: leave settled", stage, row, path);
+                rc |= expect_int(label, r.leave_outcome, RTL_STREAM_RX_REQUEST_SETTLED);
+                DSD_SNPRINTF(label, sizeof label, "%s %s leave, %s: retune keeps the analog family", stage, row, path);
+                rc |= expect_int(label, r.landed_family, 1);
+                DSD_SNPRINTF(label, sizeof label, "%s %s leave, %s: retune keeps the monitor output", stage, row, path);
+                rc |= expect_int(label, r.landed_output_kind, RTL_STREAM_OUTPUT_AUDIO_MONITOR);
+                DSD_SNPRINTF(label, sizeof label, "%s %s leave, %s: retune keeps CQPSK off", stage, row, path);
+                rc |= expect_int(label, r.landed_cqpsk_enable, 0);
+                DSD_SNPRINTF(label, sizeof label, "%s %s leave, %s: retune keeps the monitor's filter", stage, row,
+                             path);
+                rc |= expect_int(label, r.landed_channel_profile, RTL_STREAM_CHANNEL_PROFILE_WIDE);
+                DSD_SNPRINTF(label, sizeof label, "%s %s leave, %s: monitor runs after the retune", stage, row, path);
+                rc |= expect_int(label, r.landed_monitor, 1);
+                DSD_SNPRINTF(label, sizeof label, "%s %s leave, %s: monitor published", stage, row, path);
+                rc |= expect_int(label, r.landed_published, 1);
+                DSD_SNPRINTF(label, sizeof label, "%s %s leave, %s: published kind", stage, row, path);
+                rc |= expect_int(label, r.landed_published_kind, kinds[k]);
+                DSD_SNPRINTF(label, sizeof label, "%s %s leave, %s: monitor at the next boundary", stage, row, path);
+                rc |= expect_int(label, r.boundary_monitor, 1);
+            }
+        }
+    }
+
+    /* A leave before the profile was queued: the profile is newer, and lands. */
+    for (int w = 0; w < 2; w++) {
+        const int cqpsk = rows[w] == RTL_STREAM_TEST_SYMBOL_P25_CQPSK;
+        char label[160];
+        rtl_stream_test_typed_row_leave_result r;
+        DSD_MEMSET(&r, 0, sizeof r);
+        DSD_SNPRINTF(label, sizeof label, "%s after an earlier leave: run", cqpsk ? "P25 CQPSK row" : "DMR row");
+        rc |=
+            expect_int(label, rtl_stream_test_typed_row_retune_across_leave(DSD_ANALOG_DEMOD_AM, rows[w], 1, 0, &r), 0);
+        DSD_SNPRINTF(label, sizeof label, "%s after an earlier leave: retune taken",
+                     cqpsk ? "P25 CQPSK row" : "DMR row");
+        rc |= expect_int(label, r.taken, 1);
+        DSD_SNPRINTF(label, sizeof label, "%s after an earlier leave: row profile lands",
+                     cqpsk ? "P25 CQPSK row" : "DMR row");
+        rc |= expect_int(label, r.landed_monitor, 0);
+        DSD_SNPRINTF(label, sizeof label, "%s after an earlier leave: CQPSK", cqpsk ? "P25 CQPSK row" : "DMR row");
+        rc |= expect_int(label, r.landed_cqpsk_enable, cqpsk ? 1 : 0);
+        DSD_SNPRINTF(label, sizeof label, "%s after an earlier leave: channel", cqpsk ? "P25 CQPSK row" : "DMR row");
+        rc |= expect_int(label, r.landed_channel_profile,
+                         cqpsk ? RTL_STREAM_CHANNEL_PROFILE_P25_CQPSK : RTL_STREAM_CHANNEL_PROFILE_12K5);
+        DSD_SNPRINTF(label, sizeof label, "%s after an earlier leave: no monitor published",
+                     cqpsk ? "P25 CQPSK row" : "DMR row");
+        rc |= expect_int(label, r.landed_published, 0);
+    }
+    return rc;
+}
+
 /* The DSP menu's CQPSK toggle back to the monitor under -fA or -fM (svc_toggle_rtl_cqpsk()) is the analog request
  * alone: taken, it enters the monitor of the kind asked for at its width with CQPSK off; refused where it lands (a
  * retune moved the rate below what the width needs), it leaves the front end on CQPSK, never on a CQPSK-off profile
@@ -1615,6 +1700,7 @@ main(void) {
     rc |= test_fm_am_kind_switch();
     rc |= test_monitor_output_scale();
     rc |= test_am_monitor_keeps_detector_under_symbol_profiles();
+    rc |= test_typed_row_retune_after_scan_leave_keeps_the_monitor();
     rc |= test_monitor_return_from_cqpsk_is_the_analog_request_alone();
     rc |= test_am_requests_against_running_stream();
     rc |= expect_int("AM accepted with no stream",

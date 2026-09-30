@@ -73,6 +73,13 @@ dsd_engine_scan_family_requests(const dsd_opts* opts) {
     return 0U;
 }
 
+/* And the analog ones among them (trunk_tuning.c), which never move here either. */
+uint32_t
+dsd_engine_scan_analog_family_requests(const dsd_opts* opts) {
+    (void)opts;
+    return 0U;
+}
+
 /* And whether a retune attaches a receive family (trunk_tuning.c): the request count above never moves here. */
 int
 dsd_engine_scan_retune_attaches_family(const dsd_opts* opts, const dsd_state* state, int ted_sps) {

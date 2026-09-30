@@ -540,6 +540,35 @@ typedef struct rtl_stream_test_am_symbol_profile_result {
  * same row profile and then an analog row's analog profile landed by retunes. */
 int rtl_stream_test_am_monitor_symbol_profiles(int rate_hz, rtl_stream_test_am_symbol_profile_result* out);
 
+typedef struct rtl_stream_test_typed_row_leave_result {
+    int open_rc;
+    int row_monitor;   /* dsd_demod_analog_monitor_active() with the outgoing typed row's profile on air */
+    int taken;         /* the incoming typed row's retune was taken (by the controller, or by the external landing) */
+    int leave_rc;      /* the leave's rtl_stream_request_analog_profile() */
+    int leave_monitor; /* dsd_demod_analog_monitor_active() once the demod thread took the leave's request */
+    int leave_outcome; /* rtl_stream_receive_request_outcome() of the leave's request then */
+    /* Once the incoming row's retune landed, and published as the demod thread publishes. */
+    int landed_family;          /* demod_state::analog_family */
+    int landed_output_kind;     /* demod_state::output_kind */
+    int landed_cqpsk_enable;    /* demod_state::cqpsk_enable */
+    int landed_channel_profile; /* demod_state::channel_lpf_profile */
+    int landed_monitor;         /* dsd_demod_analog_monitor_active() */
+    int landed_published;       /* rtl_stream_get_analog_profile(), what the decoder sees */
+    int landed_published_kind;
+    int boundary_monitor; /* dsd_demod_analog_monitor_active() at the demod thread's next block boundary */
+} rtl_stream_test_typed_row_leave_result;
+
+/* A -Y scan on a -fA (@p kind FM) or -fM (AM) session left while a typed digital row's retune is in flight (issue
+ * #582). The outgoing typed row's symbol profile is on air (the analog family, off the monitor). The incoming row's
+ * retune queues its symbol profile (@p row_symbol_profile, RTL_STREAM_TEST_SYMBOL_DMR_FSK or _P25_CQPSK) with no
+ * receive family, as a row does whose configured mode is analog, and the controller takes it. The leave then asks for
+ * the monitor (rtl_stream_request_analog_profile()), which the demod thread takes at its next block boundary before the
+ * retune lands, as it does when the controller starts the retune late. The retune lands last: on the controller, or
+ * with @p external_backend as an external backend's retune does. With @p leave_before_queue the leave's request is made
+ * before the retune's profile is queued instead, which leaves that profile newer than the request. */
+int rtl_stream_test_typed_row_retune_across_leave(int kind, int row_symbol_profile, int leave_before_queue,
+                                                  int external_backend, rtl_stream_test_typed_row_leave_result* out);
+
 typedef struct rtl_stream_test_monitor_return_result {
     int open_rc;
     int cqpsk_on;                 /* demod_state::cqpsk_enable once the DSP menu's CQPSK-on toggle was taken */

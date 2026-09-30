@@ -53,9 +53,12 @@ typedef struct {
     dsd_scan_key_change keys;
     uint64_t key_epoch;
     /* The live receive-family requests the front end had accepted when the staged tune was queued
-     * (dsd_engine_scan_family_requests(); issue #526), and whether that tune attached a receive family, which is all a
-     * later request supersedes (dsd_engine_scan_retune_attaches_family()). */
+     * (dsd_engine_scan_family_requests(); issue #526), and whether that tune attached a receive family, which any later
+     * request supersedes (dsd_engine_scan_retune_attaches_family()). A tune that attached none (a typed digital row on
+     * an analog session) only a later analog request supersedes, which the analog count says
+     * (dsd_engine_scan_analog_family_requests(); issue #582). */
     uint32_t family_requests;
+    uint32_t analog_family_requests;
     int family_attached;
     /* The map generation whose rows were last checked against the input (issues #521, #526), and the DSP rate its
      * analog row widths were last held to, with the configured NFM and AM widths a row without its own runs (issue
@@ -169,13 +172,20 @@ channel_scan_configured_changed(const dsd_state* state, const dsd_scan_settings*
  * outgoing analog row's monitor), yet the front end takes it as the newer word on the family and lands the staged
  * retune with neither its family nor its symbol profile (rtl_stream_prepare_retune_analog_profile_for_target()): a
  * digital row would otherwise commit on the analog monitor, or an nfm or am row on the digital family (issue #526). A
- * retune that carries no family lands its symbol profile whatever the requests, so it is not restaged for them. */
+ * retune that carries no family (a typed digital row on an analog session) lands its symbol profile whatever the
+ * digital requests, but a later analog request asked for the monitor, and the front end lands that retune with its
+ * centre only (issue #582): the row would commit on the monitor, so it is restaged for that request alone. */
 static int
 channel_scan_staged_stale(const dsd_opts* opts, const dsd_state* state, const channel_scan* scan) {
     dsd_scan_settings latest;
     dsd_scan_mode_configured(opts, state, &latest);
-    return channel_scan_configured_changed(state, &latest, scan) || scan->key_epoch != state->enc_lockout_key_epoch
-           || (scan->family_attached && scan->family_requests != dsd_engine_scan_family_requests(opts));
+    if (channel_scan_configured_changed(state, &latest, scan) || scan->key_epoch != state->enc_lockout_key_epoch) {
+        return 1;
+    }
+    if (scan->family_attached) {
+        return scan->family_requests != dsd_engine_scan_family_requests(opts);
+    }
+    return scan->analog_family_requests != dsd_engine_scan_analog_family_requests(opts);
 }
 
 static int
@@ -816,6 +826,7 @@ channel_scan_start_row(dsd_opts* opts, dsd_state* state, int row) {
     scan->retry = 0;
     dsd_scan_settings_restore(&next, opts, state);
     scan->family_requests = dsd_engine_scan_family_requests(opts);
+    scan->analog_family_requests = dsd_engine_scan_analog_family_requests(opts);
     scan->family_attached = dsd_engine_scan_retune_attaches_family(opts, state, state->samplesPerSymbol);
     const dsd_trunk_tune_result result =
         dsd_engine_scan_tune_to_freq(opts, state, freq, state->samplesPerSymbol, &scan->request);

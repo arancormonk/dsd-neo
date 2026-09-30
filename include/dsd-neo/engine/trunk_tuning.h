@@ -47,6 +47,11 @@ int dsd_engine_scan_dsp_rate_hz(const dsd_opts* opts, const dsd_state* state);
  * or 0 on any other input. A scanner row's retune queued before this number moved no longer lands the receive family,
  * or the symbol profile, that dsd_engine_scan_tune_to_freq() attached to it (issue #526). */
 uint32_t dsd_engine_scan_family_requests(const dsd_opts* opts);
+/** @brief The live analog family requests among those (rtl_stream_live_analog_family_request_count()), or 0 on any
+ * other input. A scanner row's retune that attaches no receive family (a typed digital row on an analog session),
+ * queued before this number moved, no longer lands the symbol profile dsd_engine_scan_tune_to_freq() queued with it:
+ * the analog request asked for the monitor (issue #582). */
+uint32_t dsd_engine_scan_analog_family_requests(const dsd_opts* opts);
 /** @brief Whether dsd_engine_scan_tune_to_freq(), called with the options now in force and @p ted_sps, attaches a
  * receive family to the row's retune: an analog row's always does, and a digital row's with a symbol clock
  * (@p ted_sps > 0) when the configured mode is digital and the row was timed for the digital family's landing

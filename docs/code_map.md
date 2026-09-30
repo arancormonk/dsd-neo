@@ -374,9 +374,12 @@ Tests: `tests/engine/test_engine_trunk_scan.c` (`ENGINE_TRUNK_SCAN`) and
   row still in scope (a width edit or a config apply republishing the outgoing row's receive profile), so the commit
   restages the row rather than run it on the outgoing row's family (`channel_scan_staged_stale()`, comparing
   `dsd_engine_scan_family_requests()`, the stream's `rtl_stream_live_family_request_count()`, with the count when the
-  tune was queued). Only a retune that carries a family is superseded (`dsd_engine_scan_retune_attaches_family()`, by
-  the same rule as the attach); one without lands its symbol profile whatever the requests, and its row commits as
-  staged. Leaving the scan
+  tune was queued). A retune that carries a family is superseded by any of them
+  (`dsd_engine_scan_retune_attaches_family()`, by the same rule as the attach). One without (a typed digital row on an
+  analog session, or a digital session's row) lands its symbol profile whatever the digital requests; only a live
+  analog request supersedes it, since it asked for the monitor that symbol profile would take away (issue #582), and
+  the commit then restages its row by the analog count (`dsd_engine_scan_analog_family_requests()`, the stream's
+  `rtl_stream_live_analog_family_request_count()`). Otherwise the row commits as staged. Leaving the scan
   (`dsd_engine_channel_scan_leave()`) restores the configured RTL receive family through the metrics hooks: under `-fA`
   the configured analog profile (`apply_analog_profile`, analog family, demodulator kind and channel width with 0
   meaning the default), otherwise the digital family first and then the restored symbol profile (`apply_demod_profile`),
@@ -406,7 +409,8 @@ Tests: `tests/engine/test_engine_trunk_scan.c` (`ENGINE_TRUNK_SCAN`) and
   leave goes through app-control's `svc_leave_channel_scan()`, which records it for the command drain (issue #578,
   below). Tests: `ENGINE_CHANNEL_SCAN` (the leave's landing included: behind a digital-family retune in flight, from
   the analog family, by the row's recorded decision once the stream's answer has fallen, and the plain request with
-  neither), and for the attach while analog work is
+  neither; and a typed digital row on an analog session restaged after a live analog request, and committed as staged
+  after a digital one), and for the attach while analog work is
   outstanding `ENGINE_NO_CARRIER_RESET`
   (a trunk scan's Advance and Avoid behind an nfm target's retune in flight, a retune coalesced behind it, a width
   edit queued behind it, with the retune in flight or completed FAILED, a P25 target without a modulation under
@@ -1673,7 +1677,9 @@ Runtime controls (via `include/dsd-neo/io/rtl_stream_c.h`):
   a CQPSK toggle returns to once a live switch has moved the stream onto the digital family),
   `rtl_stream_prepare_retune_analog_profile_for_target()` (the same fields bound to a retune target), and
   `rtl_stream_live_family_request_count()` (the live family requests accepted so far; one accepted after a retune
-  profile's family was attached supersedes that family).
+  profile's family was attached supersedes that family), and `rtl_stream_live_analog_family_request_count()` (the
+  analog ones among them; one accepted after a retune profile with no family was queued supersedes its symbol
+  profile, issue #582).
 - CQPSK control/status: `rtl_stream_toggle_cqpsk`, `rtl_stream_get_cqpsk_status`,
   `rtl_stream_request_cqpsk_reacquire`,
   `rtl_stream_set_ted_sps`/`rtl_stream_get_ted_sps`, `rtl_stream_set_ted_gain`/`rtl_stream_get_ted_gain`,
@@ -1832,7 +1838,22 @@ Notes:
     by `rtl_stream_live_family_request_count()`, which the `-Y` scanner compares across a row's retune): the
     retune lands on its target with neither that family nor the symbol profile queued with it, so a scanner that leaves
     while its row's retune is still in flight (the configured family put back by live requests) is not switched back
-    to the row's family when the device finishes the retune. The other way round, a family that lands retires the live
+    to the row's family when the device finishes the retune. A retune profile queued with no family (a typed digital
+    row on a `-fA` or `-fM` session, whose configured mode is analog) records the live analog family requests instead
+    (`g_live_analog_family_requests`, read by `rtl_stream_live_analog_family_request_count()`): one accepted after that
+    asked for the monitor, which the profile's CQPSK toggle and symbol profile would take away, so the retune lands its
+    centre only (`rtl_stream_retune_symbols_superseded()`, issue #582). A scanner leaving to Analog or AM while such a
+    row's retune is in flight, and the controller starts that retune late (a PPM correction ahead of it, a starved
+    controller thread), therefore keeps the monitor its leave put back, instead of landing on the row's channel or
+    CQPSK after the leave had settled, with nothing left to ask again. It is checked once, under the gate the landing
+    holds: nothing queued is dropped, and a request counted after the check is taken at the demod thread's next block
+    boundary, which puts the monitor back over the profile. A digital request supersedes no such profile: on the
+    digital family it is a no-op a digital session makes around its hops. Tests: `IO_RTL_RETUNE_PREPARE` (a typed DMR
+    and a P25 CQPSK row after a later analog request, a P25 hop after a later digital or an earlier analog request, and
+    the analog count), `IO_RTL_ANALOG_FAMILY_SWITCH` (`rtl_stream_test_typed_row_retune_across_leave()`: the leave
+    taken and settled before the row's retune lands, on the controller and as an external backend's landing, under
+    `-fA` and `-fM`, and a leave made before the profile was queued, which the profile still lands over). The other
+    way round, a family that lands retires the live
     requests still queued from before it was attached (`rtl_stream_retire_requests_before_family()`, by the request
     number it records): a width or mode command drained just before the scan advanced would otherwise be taken at the
     demod thread's next block boundary and put the front end back on the family or width the row just left. An

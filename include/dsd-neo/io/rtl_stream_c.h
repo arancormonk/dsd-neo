@@ -722,6 +722,18 @@ int rtl_stream_prepare_retune_analog_profile_for_target(uint32_t target_freq_hz,
 uint32_t rtl_stream_live_family_request_count(void);
 
 /**
+ * @brief Number of live analog family requests accepted so far (issue #582).
+ *
+ * The rtl_stream_request_analog_profile() calls for DSD_RX_FAMILY_ANALOG among those
+ * rtl_stream_live_family_request_count() counts: rises by one per accepted analog request, running stream or not; a
+ * refused request, and a digital one, does not count. A retune profile queued with no receive family attached before
+ * the number last moved no longer lands its symbol profile: the analog request asked for the monitor, which that
+ * profile would take away, and the retune moves its centre only. A scanner that queued such a row's retune compares
+ * the number when the retune completes, and restages the row when it moved.
+ */
+uint32_t rtl_stream_live_analog_family_request_count(void);
+
+/**
  * @brief Apply and clear a queued retune profile for a specific external retune target.
  *
  * Use this when an external backend, such as rigctl, has completed a frequency

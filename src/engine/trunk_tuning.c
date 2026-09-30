@@ -1020,6 +1020,18 @@ dsd_engine_scan_family_requests(const dsd_opts* opts) {
     return 0U;
 }
 
+uint32_t
+dsd_engine_scan_analog_family_requests(const dsd_opts* opts) {
+#ifdef USE_RADIO
+    if (opts && opts->audio_in_type == AUDIO_IN_RTL) {
+        return rtl_stream_live_analog_family_request_count();
+    }
+#else
+    (void)opts;
+#endif
+    return 0U;
+}
+
 int
 dsd_engine_scan_retune_attaches_family(const dsd_opts* opts, const dsd_state* state, int ted_sps) {
 #ifdef USE_RADIO

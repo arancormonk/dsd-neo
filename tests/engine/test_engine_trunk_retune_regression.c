@@ -613,6 +613,11 @@ rtl_stream_live_family_request_count(void) {
     return 0U;
 }
 
+uint32_t
+rtl_stream_live_analog_family_request_count(void) {
+    return 0U;
+}
+
 int
 dsd_analog_width_check(int kind, int width_hz, int rate_hz, char* err, size_t err_size) {
     (void)kind;
