@@ -695,10 +695,73 @@ drain_stream_to_eof(RtlSdrContext* ctx, uint64_t timeout_ms, uint64_t* out_total
 }
 
 namespace {
+/* A decoder reading a looping replay on its own thread until told to stop (start_loop_reader()). The decoder paces an
+ * I/Q replay, so a replay nobody reads never gets past its first block. */
+struct LoopReader {
+    RtlSdrContext* ctx = nullptr;
+    dsd_thread_t thread{};
+    std::atomic<int> stop{0};
+    std::atomic<int> done{0};
+    std::atomic<uint64_t> samples{0U};
+    int started = 0;
+    int rescued = 0;
+};
+} // namespace
+
+static DSD_THREAD_RETURN_TYPE
+loop_reader_fn(void* arg) {
+    LoopReader* reader = static_cast<LoopReader*>(arg);
+    float audio[1024];
+    while (!reader->stop.load(std::memory_order_acquire)) {
+        int got = 0;
+        if (rtl_stream_read(reader->ctx, audio, sizeof(audio) / sizeof(audio[0]), &got) != 0) {
+            break;
+        }
+        if (got > 0) {
+            reader->samples.fetch_add((uint64_t)got, std::memory_order_relaxed);
+        }
+    }
+    reader->done.store(1, std::memory_order_release);
+    DSD_THREAD_RETURN;
+}
+
+static int
+start_loop_reader(LoopReader* reader, RtlSdrContext* ctx) {
+    reader->ctx = ctx;
+    if (dsd_thread_create(&reader->thread, loop_reader_fn, reader) != 0) {
+        DSD_FPRINTF(stderr, "FAIL: could not start the decoder thread\n");
+        return 1;
+    }
+    reader->started = 1;
+    return 0;
+}
+
+/* Stop the reader before the stream stops: a looping replay's next output ends its read. One still reading after 2 s
+ * is ended with the global exit flag, which the caller clears once the stream is stopped (reader->rescued). */
+static void
+stop_loop_reader(LoopReader* reader) {
+    if (!reader->started) {
+        return;
+    }
+    reader->stop.store(1, std::memory_order_release);
+    for (unsigned int waited = 0U; waited < 2000U && !reader->done.load(std::memory_order_acquire); waited++) {
+        dsd_sleep_ms(1U);
+    }
+    if (!reader->done.load(std::memory_order_acquire)) {
+        DSD_FPRINTF(stderr, "FAIL: the looping replay's reader did not stop within 2 s\n");
+        reader->rescued = 1;
+        dsd_exitflag_store(1);
+    }
+    (void)dsd_thread_join(reader->thread);
+    reader->started = 0;
+}
+
+namespace {
 /* The input level as the demod found it when it took its first block (level_before_first_block_stage()). */
 struct FirstBlockLevel {
     std::atomic<int> checked{0};
     std::atomic<int> published{0};
+    LoopReader reader; /* the decoder, which the demod waits for before it takes a block */
 };
 } // namespace
 
@@ -716,8 +779,8 @@ level_before_first_block_stage(int stage, size_t count, void* ctx) {
     }
 }
 
-/* Start a looping replay for an input-level test. The demod publishes a chunk's input level when it starts the chunk's
- * block, so none is published before it takes its first block: the hook looks then. */
+/* Start a looping replay for an input-level test, with a decoder reading it. The demod publishes a chunk's input level
+ * when it starts the chunk's block, so none is published before it takes its first block: the hook looks then. */
 static int
 start_level_replay(const char* metadata_path, FirstBlockLevel* first, std::unique_ptr<dsd_opts>* out_opts,
                    RtlSdrContext** out_ctx) {
@@ -728,15 +791,25 @@ start_level_replay(const char* metadata_path, FirstBlockLevel* first, std::uniqu
         rtl_stream_test_set_replay_stage_hook(NULL, NULL);
         return 1;
     }
+    if (start_loop_reader(&first->reader, *out_ctx) != 0) {
+        stop_and_destroy_stream(*out_ctx);
+        *out_ctx = NULL;
+        rtl_stream_test_set_replay_stage_hook(NULL, NULL);
+        return 1;
+    }
     return 0;
 }
 
 /* Stop a replay start_level_replay() started, and check the demod found no level published before its first block. */
 static int
-finish_level_replay(const char* label, RtlSdrContext* ctx, const FirstBlockLevel* first) {
+finish_level_replay(const char* label, RtlSdrContext* ctx, FirstBlockLevel* first) {
+    stop_loop_reader(&first->reader);
     stop_and_destroy_stream(ctx);
+    if (first->reader.rescued) {
+        dsd_exitflag_store(0);
+    }
     rtl_stream_test_set_replay_stage_hook(NULL, NULL);
-    int rc = 0;
+    int rc = first->reader.rescued;
     if (!first->checked.load(std::memory_order_acquire)) {
         DSD_FPRINTF(stderr, "FAIL: %s: the demod took no block\n", label);
         rc = 1;
@@ -959,6 +1032,8 @@ test_replay_output_tail_available_after_demod_drain(void) {
         return 1;
     }
 
+    /* The decoder paces the replay: read a sample at a time until the demod has drained the input with the last
+       block's output still in the ring. */
     int saw_tail_window = 0;
     uint64_t wait_start_ns = dsd_time_monotonic_ns();
     while (dsd_time_monotonic_ns() - wait_start_ns < 5000ULL * 1000000ULL) {
@@ -972,12 +1047,16 @@ test_replay_output_tail_available_after_demod_drain(void) {
             saw_tail_window = 1;
             break;
         }
-        dsd_sleep_ms(2U);
+        float sample = 0.0f;
+        int got_one = 0;
+        if (rtl_stream_read(ctx, &sample, 1U, &got_one) != 0) {
+            break;
+        }
     }
 
     rc |= expect_true("demod-drained with buffered output seen", saw_tail_window);
 
-    float audio[512];
+    float audio[1];
     int got = 0;
     int read_rc = rtl_stream_read(ctx, audio, sizeof(audio) / sizeof(audio[0]), &got);
     rc |= expect_int_eq("tail read rc", read_rc, 0);
@@ -1141,6 +1220,12 @@ test_realtime_loop_waits_for_terminal_mute_before_rewind(void) {
         stop_and_destroy_stream(ctx);
         return 1;
     }
+    /* A decoder reads the replay on its own thread, so this one sees the events as they happen. */
+    LoopReader reader;
+    if (start_loop_reader(&reader, ctx) != 0) {
+        stop_and_destroy_stream(ctx);
+        return 1;
+    }
 
     uint64_t mute_seen_ns = 0;
     uint64_t restart_seen_ns = 0;
@@ -1171,7 +1256,12 @@ test_realtime_loop_waits_for_terminal_mute_before_rewind(void) {
         rc |= expect_u64_ge("realtime loop terminal mute interval", elapsed_ms, 40ULL);
     }
 
+    stop_loop_reader(&reader);
     stop_and_destroy_stream(ctx);
+    if (reader.rescued) {
+        dsd_exitflag_store(0);
+        rc |= 1;
+    }
     return rc;
 }
 

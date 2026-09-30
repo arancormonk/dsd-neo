@@ -10681,6 +10681,37 @@ if(DSD_HAS_RADIO)
     )
 
     add_executable(
+        dsd-neo_test_io_rtl_replay_determinism
+        io/test_io_rtl_replay_determinism.cpp
+    )
+    target_include_directories(
+        dsd-neo_test_io_rtl_replay_determinism
+        PRIVATE
+            ${PROJECT_SOURCE_DIR}/include
+            ${PROJECT_SOURCE_DIR}/src/io/radio
+            ${PROJECT_SOURCE_DIR}/tests/test_support
+    )
+    target_link_libraries(
+        dsd-neo_test_io_rtl_replay_determinism
+        PRIVATE
+            dsd-neo_io_radio_private_test_support
+            dsd-neo_io_iq
+            dsd-neo_core
+            dsd-neo_test_support
+    )
+    if(DSD_HAS_RTLSDR)
+        target_link_libraries(
+            dsd-neo_test_io_rtl_replay_determinism
+            PRIVATE ${RTLSDR_LIBRARIES} ${CMAKE_THREAD_LIBS_INIT}
+        )
+    endif()
+    add_test(
+        NAME IO_RTL_REPLAY_DETERMINISM
+        COMMAND dsd-neo_test_io_rtl_replay_determinism
+    )
+    set_tests_properties(IO_RTL_REPLAY_DETERMINISM PROPERTIES TIMEOUT 120)
+
+    add_executable(
         dsd-neo_test_io_rtl_preopened_fd
         io/test_io_rtl_preopened_fd.c
         io/rtl_open_failure_probe.cpp

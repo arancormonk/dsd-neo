@@ -238,6 +238,35 @@ uint32_t rtl_stream_output_rate(const RtlSdrContext* ctx);
  * explicit output clear.
  */
 uint32_t rtl_stream_output_generation(void);
+
+/**
+ * @brief What one demod block of an I/Q replay ran on, and where its output sits in capture time.
+ *
+ * Under `--iq-replay` the decoder paces the demod: the demod publishes each block's output as one batch, into an empty
+ * output ring, with this tag, and a replay read hands out samples of that one batch only. So the tag describes every
+ * sample the read returned.
+ */
+typedef struct rtl_stream_replay_batch {
+    uint64_t chunk_sequence;    /**< The capture chunk the block took, from 1. */
+    uint32_t output_generation; /**< rtl_stream_output_generation() the batch was published under. */
+    int output_kind;            /**< rtl_stream_output_kind the block ran. */
+    int channel_profile;        /**< Published channel profile (rtl_stream_channel_profile). */
+    int symbol_rate_hz;         /**< Published symbol rate in symbols/s. */
+    int symbol_levels;          /**< Published symbol levels. */
+    int output_rate_hz;         /**< Output sample rate in Hz. */
+    uint64_t media_start_ns;    /**< Capture time of the chunk's first sample, time a MUTE omitted included. */
+    uint64_t media_duration_ns; /**< Capture time the chunk spans. */
+    uint32_t output_count;      /**< Samples in the batch. */
+    uint32_t first_index;       /**< Index in the batch of the first sample the last read returned. */
+} rtl_stream_replay_batch;
+
+/**
+ * @brief Get the tag of the batch the last I/Q replay read took its samples from.
+ *
+ * @param out [out] The tag. Must not be NULL.
+ * @return 0 with the tag; -1 when no replay runs or no replay read has returned samples yet.
+ */
+int rtl_stream_get_replay_batch(rtl_stream_replay_batch* out);
 /**
  * @brief Return 1 when an RTL-family stream context is currently running.
  *

@@ -2110,10 +2110,38 @@ Notes:
       once it has acknowledged the last chunk submitted before EOF, and it acknowledges a chunk only after that
       chunk's output is in the ring. A replay purges its input only at a RESET or loop boundary, with every chunk
       already acknowledged.
-    - `replay_wake_all()` wakes every replay wait (both rings' `ready` and `space`, and the EOF condition). It runs at
-      EOF, on a failure, on a stop and when a start unwinds.
+    - `replay_wake_all()` wakes every replay wait (both rings' `ready` and `space`, the demod's demand condition, and
+      the EOF condition). It runs at EOF, on a failure, on a stop and when a start unwinds.
 
     Tests: `IO_RTL_REPLAY_EOF_AND_CF32`, `ENGINE_REPLAY_READ_ERROR`.
+  - I/Q replay decoder pacing (issue #572; "Replay decoder pacing" in `rtl_sdr_fm.cpp`). Under `--iq-replay` the
+    decoder paces the demod, so the demod's blocks and the decoder's reads and requests interleave the same way fast
+    or realtime, however the host is loaded and however the decoder reads:
+    - The demod starts a block only once the decoder waits in `rtl_stream_read_replay()` on an empty output ring and
+      has acknowledged every batch published (`replay_out_acked == replay_out_written`). The written count starts at
+      1, a virtual block 0, so the first block waits for the decoder's first read.
+    - The wait (`demod_wait_for_replay_demand()`) sits at the top of the demod loop, outside `demod_processing_active`,
+      so a gate waiting for an idle demod does not wait for it. It waits on its own `replay_demand_cond` with
+      `output.ready_m` (`output.space` fires on every read) in 10 ms steps, and ends on a stop, a forced stop or the
+      global exit, so a start that unwinds before any decoder reads returns. It logs once when the decoder has not
+      asked for output in 5 s while a receive request is pending.
+    - The demod publishes a block's output as one batch in one critical section under `output.ready_m`: the head
+      store, the batch tag, `written++` and the broadcast of `output.ready`. A block with no output publishes nothing,
+      and the demod goes on while the decoder still waits.
+    - The decoder acknowledges (`acked = written`) and broadcasts the demand under the same lock, when it finds the
+      ring empty. Every decoder read reaches that one point (`dsd_symbol.c`'s cache refill and single-sample reads,
+      `m17.c`, `edacs-fme.c`, the analog monitor). So the demod and the decoder never run at once, and a request, clear
+      or snapshot the decoder makes lands at the start of the next block.
+    - The batch tag (`rtl_stream_replay_batch` in `rtl_stream_c.h`: chunk sequence, output generation, the published
+      output kind, channel profile, symbol rate and levels, output rate, media start and duration, output count) of
+      the batch the last read took samples from, with their place in it, is what `rtl_stream_get_replay_batch()`
+      returns.
+    - Lock order: `replay_eof_m`, then `output.ready_m`. The locked sections use the unlocked ring helpers.
+
+    Tests: `IO_RTL_REPLAY_DETERMINISM` (greedy fast, slow and realtime readers with the same requests deliver the same
+    stream, the oracle's count; a block's output held unpublished stays out of the decoder's reach, and every read's
+    tag describes its samples; bounded stops at each wait; zero-output and empty replays; a reader-start failure at
+    the first demand wait), `IO_RTL_REPLAY_EOF_AND_CF32`.
 - Local audio output backends and audio device listing live in `dsd-neo_platform` (see `src/platform/audio_*.c`).
 - Network audio/input backends live in `src/io/audio_backends/` (`udp_input.c`, `tcp_input.c`, `udp_audio.c`,
   `m17_udp.c`, `udp_bind.c`).

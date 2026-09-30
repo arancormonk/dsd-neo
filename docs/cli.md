@@ -301,13 +301,12 @@ DirWatch modes keep the WAV and JSON files because the watcher needs stable file
 - `--iq-capture-format <cu8|cf32>` Capture format request (`cu8` default).
 - `--iq-capture-max-mb <n>` Capture byte cap in MiB (`0` unlimited).
 - `--iq-replay <path>` Replay capture metadata/data through the RTL pipeline.
-- `--iq-replay-rate <fast|realtime>` Replay pacing mode (`fast` default). `fast` lets the front end run ahead of the
-  decoder, bounded only by the output ring (~43 s at 48 kHz), so a short capture can be fully demodulated under the
-  profile the run started with: channel-profile changes the decoder requests mid-replay then land after the samples
-  they were meant to shape, or never at all once the reader hits EOF. Decoder-side symbol timing still follows the SPS
-  hunt either way, but anything that depends on the front end reacting to the decoder -- the Auto hunt narrowing the
-  channel filter onto a candidate, and the stream realignment that comes with it -- only behaves like live hardware
-  under `realtime`. Reproduce hunt and trunking behaviour with `realtime`; `fast` is for throughput over a capture.
+- `--iq-replay-rate <fast|realtime>` Replay pacing mode (`fast` default). In both modes the decoder paces the front
+  end: the demodulator starts on the next capture chunk only once the decoder has read everything before it. So what
+  the decoder asks of the front end mid-replay (the Auto hunt narrowing the channel filter onto a candidate, a
+  reacquire) lands at the same place in the capture, fast or realtime. `realtime` also holds the reader to the
+  capture's own sample clock; `fast` runs as fast as decoding allows. Decode-time windows (call gaps, hangtime) still
+  run on the wall clock, so reproduce trunking timing with `realtime` (see `docs/iq-capture-replay.md`).
 - `--iq-loop` Loop replay when EOF is reached.
 - `--iq-info <path>` Print capture metadata summary and exit.
 

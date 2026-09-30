@@ -662,7 +662,21 @@ struct RtlSdrInternals {
        reader alike. Lock order: replay_eof_m, then output.ready_m. */
     dsd_mutex_t replay_eof_m{};
     dsd_cond_t replay_eof_cond{};
-    int replay_eof_sync_inited = 0;
+    int replay_eof_sync_inited = 0; /* replay_eof_m, replay_eof_cond and replay_demand_cond exist */
+
+    /* Decoder pacing (see "Replay decoder pacing"). Output batches the demod published, from 1 (the virtual block 0),
+       and the count the decoder acknowledged; both change under output.ready_m. The demod waits on replay_demand_cond
+       (with output.ready_m), apart from output.space, which every read signals. */
+    std::atomic<uint64_t> replay_out_written{1U};
+    std::atomic<uint64_t> replay_out_acked{0U};
+    dsd_cond_t replay_demand_cond{};
+    /* The tag of the batch in the output ring (the demod writes it as it publishes the batch), the tag the decoder's
+       last read handed out, and how much of the batch in the ring the decoder has taken: all under output.ready_m. */
+    rtl_stream_replay_batch replay_published_batch{};
+    rtl_stream_replay_batch replay_read_batch{};
+    uint32_t replay_batch_taken = 0U;
+    int replay_have_read_batch = 0;
+    int replay_demand_warned = 0; /* demod thread: the long demand wait was logged */
 
     /* Watermark-based flow control for TCP lag resilience */
     struct input_ring_watermark watermark{};
@@ -705,6 +719,16 @@ static std::atomic<uint64_t> g_test_replay_discard_sequence{0U};
 extern "C" void
 rtl_stream_test_replay_discard_chunk(uint64_t sequence) {
     g_test_replay_discard_sequence.store(sequence, std::memory_order_release);
+}
+
+static void replay_wake_all(void);
+
+extern "C" void
+rtl_stream_test_replay_force_stop(void) {
+    if (g_stream) {
+        g_stream->replay_forced_stop.store(1, std::memory_order_release);
+    }
+    replay_wake_all();
 }
 #endif
 
@@ -794,6 +818,14 @@ stream_reset_replay_eof_state(struct RtlSdrInternals* s) {
     s->replay_last_submit_gen_at_eof.store(0, std::memory_order_release);
     s->replay_last_consume_gen.store(0, std::memory_order_release);
     s->replay_chunk = rtl_replay_chunk_meta{};
+    /* The internals are calloc'ed, so the virtual block 0 is set here. */
+    s->replay_out_written.store(1U, std::memory_order_release);
+    s->replay_out_acked.store(0U, std::memory_order_release);
+    s->replay_published_batch = rtl_stream_replay_batch{};
+    s->replay_read_batch = rtl_stream_replay_batch{};
+    s->replay_batch_taken = 0U;
+    s->replay_have_read_batch = 0;
+    s->replay_demand_warned = 0;
     g_replay_event_retune_count.store(0, std::memory_order_release);
     g_replay_event_mute_count.store(0, std::memory_order_release);
     g_replay_event_reset_count.store(0, std::memory_order_release);
@@ -805,8 +837,9 @@ stream_reset_replay_eof_state(struct RtlSdrInternals* s) {
 }
 
 /* Wake every thread waiting on a replay condition: the input ring's ready and space, the output ring's ready and
- * space, and the EOF condition. The EOF sequence and a failure (through rtl_replay_eof_state::wake_all), a stop, and a
- * start that unwinds use it, so no replay wait sleeps through the change that ends it. */
+ * space, the demod's demand condition, and the EOF condition. The EOF sequence and a failure (through
+ * rtl_replay_eof_state::wake_all), a stop, and a start that unwinds use it, so no replay wait sleeps through the change
+ * that ends it. */
 static void
 replay_wake_all(void) {
     if (input_ring.capacity > 0U) {
@@ -819,6 +852,9 @@ replay_wake_all(void) {
         dsd_mutex_lock(&output.ready_m);
         dsd_cond_broadcast(&output.ready);
         dsd_cond_broadcast(&output.space);
+        if (g_stream && g_stream->replay_eof_sync_inited) {
+            dsd_cond_broadcast(&g_stream->replay_demand_cond);
+        }
         dsd_mutex_unlock(&output.ready_m);
     }
     if (g_stream && g_stream->replay_eof_sync_inited) {
@@ -3603,11 +3639,10 @@ demod_write_output_samples_interruptible(struct output_state* o, const float* da
     return written;
 }
 
+/* The block's output as the ring takes it: resampled and scaled as its kind wants. Returns the sample count (0: none)
+ * and points @p out_data at the samples. */
 static size_t
-demod_write_output_block(struct demod_state* d, struct output_state* o) {
-    if (!d || !o) {
-        return 0U;
-    }
+demod_finish_output_block(struct demod_state* d, const float** out_data) {
     if (d->result_len <= 0) {
         return 0U;
     }
@@ -3627,12 +3662,133 @@ demod_write_output_block(struct demod_state* d, struct output_state* o) {
         if (scaled) {
             apply_output_scale(d, d->resamp_outbuf, out_n);
         }
-        return demod_write_output_samples_interruptible(o, d->resamp_outbuf, (size_t)out_n);
+        *out_data = d->resamp_outbuf;
+        return (size_t)out_n;
     }
     if (scaled) {
         apply_output_scale(d, d->result, d->result_len);
     }
-    return demod_write_output_samples_interruptible(o, d->result, (size_t)d->result_len);
+    *out_data = d->result;
+    return (size_t)d->result_len;
+}
+
+static size_t
+demod_write_output_block(struct demod_state* d, struct output_state* o) {
+    if (!d || !o) {
+        return 0U;
+    }
+    const float* data = NULL;
+    const size_t count = demod_finish_output_block(d, &data);
+    return count > 0U ? demod_write_output_samples_interruptible(o, data, count) : 0U;
+}
+
+/* ---------------- Replay decoder pacing (issue #572) ----------------
+ * Under --iq-replay the decoder paces the demod, so how the demod's blocks and the decoder's reads and requests
+ * interleave depends on the capture alone, not on the host's load or on how the decoder reads:
+ * - The demod starts a block only once the decoder waits in rtl_stream_read_replay() on an empty output ring and has
+ *   acknowledged every batch published (replay_out_acked == replay_out_written). The written count starts at 1, a
+ *   virtual block 0, so the first block waits for the decoder's first read.
+ * - It publishes the block's output as one batch in one critical section under output.ready_m: the head store, the
+ *   batch tag, written++ and the broadcast of output.ready. A block with no output publishes nothing, and the demod
+ *   goes on to the next block while the decoder still waits.
+ * - The decoder's empty check, acknowledgement and demand broadcast happen under the same lock.
+ * So the demod and the decoder never run at once: a request, a clear or a snapshot the decoder makes lands at the start
+ * of the next block. Lock order: replay_eof_m, then output.ready_m. */
+
+/* The replay is stopping: a stop, a forced stop (the replay device's stop) or the global exit. */
+static int
+replay_pacing_stopped(const struct RtlSdrInternals* s) {
+    return (dsd_exitflag_load() || s->should_exit.load(std::memory_order_acquire)
+            || s->replay_forced_stop.load(std::memory_order_acquire))
+               ? 1
+               : 0;
+}
+
+/* The demod's wait for the decoder's demand before a block: 1 once the decoder waits on an empty output ring with
+ * every batch acknowledged, 0 when the replay stops. The wait is 10 ms at a time, so it sees a stop that wakes no
+ * condition, and a start that unwinds before any decoder has read returns. It runs outside demod_processing_active, so
+ * a gate waiting for an idle demod (controller_wait_for_demod_idle()) does not wait for it. */
+static int
+demod_wait_for_replay_demand(struct output_state* o) {
+    struct RtlSdrInternals* s = g_stream;
+    if (!s || !s->replay_eof_sync_inited || !o->buffer) {
+        return 1;
+    }
+    RTL_REPLAY_TEST_STAGE(RTL_STREAM_TEST_REPLAY_DEMOD_WAIT_FOR_DEMAND,
+                          (size_t)s->replay_out_written.load(std::memory_order_acquire));
+    const uint64_t wait_start_ns = dsd_time_monotonic_ns();
+    int demand = 0;
+    dsd_mutex_lock(&o->ready_m);
+    for (;;) {
+        if (ring_is_empty(o)
+            && s->replay_out_acked.load(std::memory_order_relaxed)
+                   == s->replay_out_written.load(std::memory_order_relaxed)) {
+            demand = 1;
+            break;
+        }
+        if (replay_pacing_stopped(s)) {
+            break;
+        }
+        (void)dsd_cond_timedwait(&s->replay_demand_cond, &o->ready_m, 10);
+        if (!s->replay_demand_warned && dsd_time_monotonic_ns() - wait_start_ns > 5000000000ULL
+            && rtl_stream_receive_request_outcome(rtl_stream_receive_request_seq()) == RTL_STREAM_RX_REQUEST_PENDING) {
+            s->replay_demand_warned = 1;
+            dsd_mutex_unlock(&o->ready_m);
+            LOG_WARN("IQ replay: the decoder has not asked for more output in 5 s while a receive request is pending; "
+                     "the request lands only once the decoder reads again.\n");
+            dsd_mutex_lock(&o->ready_m);
+        }
+    }
+    dsd_mutex_unlock(&o->ready_m);
+    return demand;
+}
+
+/* The tag of a replay block's batch, but for its generation and count, which the publication fills in: the chunk it
+ * took and the profile and output it ran on, as the decoder reads them through the published mirrors. */
+static rtl_stream_replay_batch
+demod_replay_batch_tag(const DemodInputSpan* span, const struct output_state* o) {
+    rtl_stream_replay_batch tag = {};
+    tag.chunk_sequence = span->chunk.sequence;
+    tag.output_kind = g_pub_output_kind.load(std::memory_order_relaxed);
+    tag.channel_profile = g_pub_channel_profile.load(std::memory_order_relaxed);
+    tag.symbol_rate_hz = g_pub_symbol_rate.load(std::memory_order_relaxed);
+    tag.symbol_levels = g_pub_symbol_levels.load(std::memory_order_relaxed);
+    tag.output_rate_hz = o->rate.load(std::memory_order_relaxed);
+    tag.media_start_ns = span->chunk.media_start_ns;
+    tag.media_duration_ns = span->chunk.media_end_ns > span->chunk.media_start_ns
+                                ? span->chunk.media_end_ns - span->chunk.media_start_ns
+                                : 0U;
+    return tag;
+}
+
+/* Publish a replay block's output as one batch (see "Replay decoder pacing"). The demod started the block on an empty
+ * ring and nothing else writes to it, and an empty ring holds any block's output (resamp_outbuf, the largest, is half
+ * the ring), so it goes in whole, without waiting for space. Returns the samples published. */
+static size_t
+demod_publish_replay_output_block(struct demod_state* d, struct output_state* o, const DemodInputSpan* span) {
+    struct RtlSdrInternals* s = g_stream;
+    if (!d || !o || !o->buffer || !span || !s) {
+        return 0U;
+    }
+    const float* data = NULL;
+    const size_t count = demod_finish_output_block(d, &data);
+    if (count == 0U || demod_output_write_cancelled()) {
+        return 0U;
+    }
+    rtl_stream_replay_batch tag = demod_replay_batch_tag(span, o);
+    RTL_REPLAY_TEST_STAGE(RTL_STREAM_TEST_REPLAY_DEMOD_BEFORE_PUBLISH, count);
+    dsd_mutex_lock(&o->ready_m);
+    const size_t published = demod_copy_output_chunk(o, data, count, ring_free(o));
+    if (published > 0U) {
+        tag.output_generation = g_rtl_output_generation.load(std::memory_order_acquire);
+        tag.output_count = (uint32_t)published;
+        s->replay_published_batch = tag;
+        s->replay_batch_taken = 0U;
+        s->replay_out_written.fetch_add(1U, std::memory_order_acq_rel);
+        dsd_cond_broadcast(&o->ready);
+    }
+    dsd_mutex_unlock(&o->ready_m);
+    return published;
 }
 
 static double
@@ -3783,6 +3939,19 @@ demod_feed_wideband_spectrum(const struct demod_state* d) {
                                        controller.last_applied_freq_hz.load(std::memory_order_acquire));
 }
 
+/* Hand a block's output to the decoder, unless a retune has the output gated: published as one batch in a paced replay
+ * (@p replay_pull), written into the ring otherwise. Returns the samples it took. */
+static size_t
+demod_emit_output_block(struct demod_state* d, struct output_state* o, const DemodInputSpan* span, int replay_pull) {
+    if (controller.retune_in_progress.load(std::memory_order_acquire)) {
+        return 0U;
+    }
+    RTL_REPLAY_TEST_STAGE(RTL_STREAM_TEST_REPLAY_DEMOD_BEFORE_OUTPUT_WRITE, 0U);
+    const size_t written = replay_pull ? demod_publish_replay_output_block(d, o, span) : demod_write_output_block(d, o);
+    RTL_REPLAY_TEST_STAGE(RTL_STREAM_TEST_REPLAY_DEMOD_AFTER_OUTPUT_WRITE, written);
+    return written;
+}
+
 static DSD_THREAD_RETURN_TYPE
 #if DSD_PLATFORM_WIN_NATIVE
     __stdcall
@@ -3792,7 +3961,12 @@ static DSD_THREAD_RETURN_TYPE
     struct output_state* o = &output;
     maybe_set_thread_realtime_and_affinity("DEMOD");
     const int is_rtltcp_input = (g_stream && radio_source_is_rtltcp(g_stream->opts)) ? 1 : 0;
+    /* An I/Q replay is paced by its decoder (see "Replay decoder pacing"); a live source runs free. */
+    const int replay_pull = stream_is_replay_active();
     while (!demod_should_exit_requested()) {
+        if (replay_pull && !demod_wait_for_replay_demand(o)) {
+            break;
+        }
         DemodInputSpan span = {};
         DemodRetuneDiagBlock retune_diag = {};
         if (!demod_prepare_iteration_input(d, is_rtltcp_input, &span, &retune_diag)) {
@@ -3832,12 +4006,7 @@ static DSD_THREAD_RETURN_TYPE
         }
         demod_maybe_signal_squelch_hop(d);
         uint64_t perf_output_start_ns = perf_on ? dsd_time_monotonic_ns() : 0ULL;
-        size_t perf_output_samples = 0U;
-        if (!controller.retune_in_progress.load(std::memory_order_acquire)) {
-            RTL_REPLAY_TEST_STAGE(RTL_STREAM_TEST_REPLAY_DEMOD_BEFORE_OUTPUT_WRITE, 0U);
-            perf_output_samples = demod_write_output_block(d, o);
-            RTL_REPLAY_TEST_STAGE(RTL_STREAM_TEST_REPLAY_DEMOD_AFTER_OUTPUT_WRITE, perf_output_samples);
-        }
+        size_t perf_output_samples = demod_emit_output_block(d, o, &span, replay_pull);
         /* A replay chunk's generation is consumed only after its demodulated
          * output is committed. RESET/rewind boundaries use this generation to
          * avoid entering the reconfigure gate between DSP processing and the
@@ -6433,6 +6602,7 @@ stream_prepare_internals(const dsd_opts* opts) {
 
     if (g_stream) {
         if (g_stream->replay_eof_sync_inited) {
+            (void)dsd_cond_destroy(&g_stream->replay_demand_cond);
             (void)dsd_cond_destroy(&g_stream->replay_eof_cond);
             (void)dsd_mutex_destroy(&g_stream->replay_eof_m);
         }
@@ -6469,6 +6639,13 @@ stream_prepare_internals(const dsd_opts* opts) {
         g_stream = NULL;
         return -1;
     }
+    if (dsd_cond_init(&g_stream->replay_demand_cond) != 0) {
+        (void)dsd_cond_destroy(&g_stream->replay_eof_cond);
+        (void)dsd_mutex_destroy(&g_stream->replay_eof_m);
+        free(g_stream);
+        g_stream = NULL;
+        return -1;
+    }
     g_stream->replay_eof_sync_inited = 1;
     stream_reset_replay_eof_state(g_stream);
 
@@ -6483,6 +6660,7 @@ stream_destroy_internals(void) {
         return;
     }
     if (g_stream->replay_eof_sync_inited) {
+        (void)dsd_cond_destroy(&g_stream->replay_demand_cond);
         (void)dsd_cond_destroy(&g_stream->replay_eof_cond);
         (void)dsd_mutex_destroy(&g_stream->replay_eof_m);
     }
@@ -7282,6 +7460,7 @@ stream_open_start_replay_pipeline(void) {
     if (g_stream) {
         g_stream->demod_thread_started.store(1, std::memory_order_release);
     }
+    RTL_REPLAY_TEST_STAGE(RTL_STREAM_TEST_REPLAY_READER_START, 0U);
     LOG_INFO("Starting IQ replay reader...\n");
     if (rtl_device_start_async(rtl_device_handle, (uint32_t)ACTUAL_BUF_LENGTH) != 0) {
         LOG_ERROR("Failed to start replay reader thread.\n");
@@ -7854,9 +8033,25 @@ rtl_stream_read_live(float* out, size_t count, dsd_opts* opts, const dsd_state* 
     return got;
 }
 
+/* The decoder took @p n samples of the batch in the output ring (see "Replay decoder pacing"): the tag
+ * rtl_stream_get_replay_batch() reports from now, with the samples' place in the batch. Called with output.ready_m
+ * held, as the batch's publication was. */
+static void
+replay_note_batch_read_locked(size_t n) {
+    struct RtlSdrInternals* s = g_stream;
+    if (!s) {
+        return;
+    }
+    s->replay_read_batch = s->replay_published_batch;
+    s->replay_read_batch.first_index = s->replay_batch_taken;
+    s->replay_batch_taken += (uint32_t)n;
+    s->replay_have_read_batch = 1;
+}
+
 /* ring_read_available() for the replay read: two memcpy segments instead of a per-sample loop, under ready_m, and
  * never a wait. It returns 0 when a clear (rtl_stream_clear_output_ring()) emptied the ring after the caller saw it
- * occupied, so the caller looks again instead of waiting in a read nothing may ever satisfy. */
+ * occupied, so the caller looks again instead of waiting in a read nothing may ever satisfy. It notes what it took of
+ * the ring's batch under the same lock. */
 static int
 ring_read_available_copy(struct output_state* o, float* out, size_t count) {
     if (!o || !o->buffer || !out || count == 0U) {
@@ -7878,10 +8073,29 @@ ring_read_available_copy(struct output_state* o, float* out, size_t count) {
             t -= o->capacity;
         }
         o->tail.store(t);
+        replay_note_batch_read_locked(n);
         dsd_cond_signal(&o->space);
     }
     dsd_mutex_unlock(&o->ready_m);
     return (int)n;
+}
+
+extern "C" int
+rtl_stream_get_replay_batch(rtl_stream_replay_batch* out) {
+    if (!out) {
+        return -1;
+    }
+    *out = rtl_stream_replay_batch{};
+    if (!g_stream || !output.buffer || !stream_is_replay_active()) {
+        return -1;
+    }
+    dsd_mutex_lock(&output.ready_m);
+    const int have = g_stream->replay_have_read_batch;
+    if (have) {
+        *out = g_stream->replay_read_batch;
+    }
+    dsd_mutex_unlock(&output.ready_m);
+    return have ? 0 : -1;
 }
 
 /* Nothing more will reach the output ring: the demod drained the replay input, or the replay reader left without
@@ -7905,12 +8119,23 @@ rtl_stream_replay_read_stopped(void) {
     return (!g_stream || g_stream->replay_forced_stop.load(std::memory_order_acquire) || dsd_exitflag_load()) ? 1 : 0;
 }
 
-/* A 10 ms timed wait on output.ready for output or the end of the stream, which a stop also cuts short. */
+/* The decoder waits on the empty output ring (see "Replay decoder pacing"): acknowledge every batch published, wake the
+ * demod for the next block, then wait 10 ms on output.ready for its output or the end of the stream, which a stop also
+ * cuts short. The empty check, the acknowledgement and the demand happen under output.ready_m, the lock the demod
+ * publishes a batch and waits for demand under. This is the one place the decoder asks for output: every decoder read
+ * of a replay comes through rtl_stream_read_replay(). */
 static void
 rtl_stream_replay_wait_for_output(void) {
+    struct RtlSdrInternals* s = g_stream;
     dsd_mutex_lock(&output.ready_m);
-    if (ring_is_empty(&output) && !rtl_stream_replay_input_finished() && !rtl_stream_replay_read_stopped()) {
-        (void)dsd_cond_timedwait(&output.ready, &output.ready_m, 10);
+    if (ring_is_empty(&output)) {
+        if (s && s->replay_eof_sync_inited) {
+            s->replay_out_acked.store(s->replay_out_written.load(std::memory_order_relaxed), std::memory_order_release);
+            dsd_cond_broadcast(&s->replay_demand_cond);
+        }
+        if (!rtl_stream_replay_input_finished() && !rtl_stream_replay_read_stopped()) {
+            (void)dsd_cond_timedwait(&output.ready, &output.ready_m, 10);
+        }
     }
     dsd_mutex_unlock(&output.ready_m);
 }
@@ -12093,6 +12318,8 @@ dsd_rtl_stream_test_get_replay_state(rtl_stream_test_replay_state* out_state) {
     out_state->replay_loop_restart_count = g_replay_loop_restart_count.load(std::memory_order_acquire);
     out_state->replay_loop_restart_last_frequency_hz =
         g_replay_loop_restart_last_frequency_hz.load(std::memory_order_acquire);
+    out_state->replay_out_written = g_stream->replay_out_written.load(std::memory_order_acquire);
+    out_state->replay_out_acked = g_stream->replay_out_acked.load(std::memory_order_acquire);
     return 0;
 }
 

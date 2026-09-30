@@ -101,8 +101,9 @@ rounds down to sample alignment. Zero effective bytes are rejected for `--iq-rep
 ## Replay Pacing And Decode-Time Windows
 
 `--iq-replay-rate realtime` pins the replay thread to `start + samples_written / sample_rate`, so air time and wall
-clock advance together. The default `fast` mode applies no pacing at all: throughput is bounded only by ring
-backpressure and decode speed, so a capture's worth of air time completes in considerably less wall-clock time.
+clock advance together. The default `fast` mode puts no clock on the reader: the decoder paces the demodulator, a
+capture chunk at a time, so throughput is bounded by decode speed and a capture's worth of air time completes in
+considerably less wall-clock time.
 
 That matters because there is currently **no decode-derived clock** in the decoder. Protocol layers time call state
 against `dsd_time_now_monotonic_s()` (wall-clock monotonic), and any call site that passes `observed_m = 0.0` falls

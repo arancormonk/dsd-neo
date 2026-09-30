@@ -1107,6 +1107,8 @@ typedef struct rtl_stream_test_replay_state {
     int replay_event_last_reset_reason;
     uint32_t replay_loop_restart_count;
     uint32_t replay_loop_restart_last_frequency_hz;
+    uint64_t replay_out_written; /* output batches the demod published, the virtual block 0 included */
+    uint64_t replay_out_acked;   /* ... that the decoder acknowledged */
 } rtl_stream_test_replay_state;
 
 int dsd_rtl_stream_test_get_replay_state(rtl_stream_test_replay_state* out_state);
@@ -1136,6 +1138,14 @@ enum {
     RTL_STREAM_TEST_REPLAY_DEMOD_WRAPPED_RELEASED = 11,
     /* demod: released the input of a replay block it discards, before acknowledging the block (count: floats) */
     RTL_STREAM_TEST_REPLAY_DEMOD_DISCARD_RELEASED = 12,
+    /* demod: a block's output is ready, and neither in the output ring nor counted as published yet (count:
+       samples) */
+    RTL_STREAM_TEST_REPLAY_DEMOD_BEFORE_PUBLISH = 13,
+    /* demod: about to wait for the decoder's demand before it starts a block (count: blocks published so far, the
+       virtual block 0 included) */
+    RTL_STREAM_TEST_REPLAY_DEMOD_WAIT_FOR_DEMAND = 14,
+    /* the thread opening a replay: the demod thread runs, and the replay reader is about to start */
+    RTL_STREAM_TEST_REPLAY_READER_START = 15,
 };
 
 typedef void (*rtl_stream_test_replay_stage_fn)(int stage, size_t count, void* ctx);
@@ -1167,6 +1177,9 @@ void rtl_stream_test_set_replay_block_hook(rtl_stream_test_replay_block_fn hook,
 /* The demod discards the I/Q replay block that holds chunk @p sequence instead of processing it, as a controller gate
  * closing on it would; 0 disarms. Set while no replay runs. */
 void rtl_stream_test_replay_discard_chunk(uint64_t sequence);
+/* Raise the running I/Q replay's forced-stop flag and wake every replay wait, as the replay device's stop does, without
+ * tearing the stream down. */
+void rtl_stream_test_replay_force_stop(void);
 
 /* The next I/Q replay reader fails the read that follows @p after_chunks reads that returned data, with @p code (a
  * DSD_IQ_ERR_* value) as dsd_iq_replay_read() would. One failure per arming; a negative @p after_chunks disarms it. */
