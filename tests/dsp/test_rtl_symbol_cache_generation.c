@@ -12,11 +12,13 @@
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/state_fwd.h>
+#include <dsd-neo/dsp/analog_rx.h>
 #include <dsd-neo/dsp/frame_sync.h>
 #include <dsd-neo/dsp/symbol.h>
 #include <dsd-neo/io/rigctl_client.h>
 #include <dsd-neo/io/rtl_stream_c.h>
 #include <dsd-neo/platform/sockets.h>
+#include <dsd-neo/runtime/analog_channel.h>
 #include <dsd-neo/runtime/rtl_stream_io_hooks.h>
 #include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
 #include <dsd-neo/runtime/shutdown.h>
@@ -46,6 +48,12 @@ static int g_cleanup_calls = 0;
 static int g_fail_reads = 0;
 static int g_failed_read_calls = 0;
 static int g_max_read_calls = 0;
+/* The analog receive profile the front end publishes: the analog family, and on it the monitor of a kind, which is
+   published only while the output is the monitor (dsd_rtl_stream_metrics_hook_analog_profile()). Both 0 is what a
+   table without these hooks reads. */
+static int g_analog_family = 0;
+static int g_monitor_published = 0;
+static int g_monitor_kind = DSD_ANALOG_DEMOD_FM;
 
 dsd_socket_t
 // NOLINTNEXTLINE(misc-use-internal-linkage)
@@ -264,6 +272,28 @@ fake_output_rate_hz(void) {
     return g_output_rate_hz;
 }
 
+/* A constant width and filter, so the received-tone tap sees a boundary only where the published kind or the
+   generation moves. */
+static int
+fake_analog_profile(int* out_kind, int* out_width_hz, int* out_lpf_on) {
+    const int published = g_analog_family && g_monitor_published && g_output_kind == RTL_STREAM_OUTPUT_AUDIO_MONITOR;
+    if (out_kind) {
+        *out_kind = published ? g_monitor_kind : 0;
+    }
+    if (out_width_hz) {
+        *out_width_hz = published ? 12500 : 0;
+    }
+    if (out_lpf_on) {
+        *out_lpf_on = published ? 1 : 0;
+    }
+    return published;
+}
+
+static int
+fake_analog_family_active(void) {
+    return g_analog_family;
+}
+
 static void
 reset_stream_fixture(void) {
     g_stream_generation = 1U;
@@ -285,6 +315,9 @@ reset_stream_fixture(void) {
     g_fail_reads = 0;
     g_failed_read_calls = 0;
     g_max_read_calls = 0;
+    g_analog_family = 0;
+    g_monitor_published = 0;
+    g_monitor_kind = DSD_ANALOG_DEMOD_FM;
     dsd_rtl_stream_metrics_hook_symbol_cache_pending_reset();
 }
 
@@ -413,6 +446,189 @@ test_analog_block_follows_family_switch(dsd_opts* opts, dsd_state* state, void* 
     assert(g_cleanup_calls == 0);
 }
 
+/* Read @p count more samples of the front end's output. The monitor output is read one sample per read call. */
+static void
+read_monitor_samples(dsd_opts* opts, dsd_state* state, int count) {
+    const int target = g_read_calls + count;
+    while (g_read_calls < target) {
+        (void)getSymbol(opts, state, 0);
+    }
+}
+
+/* The first block the decoder played after the landing, read far enough that one past the landing's boundary (which
+   the received-tone tap mutes as the old profile's) completes: it holds only @p value, the new monitor's audio. */
+static void
+assert_first_block_after_landing(dsd_opts* opts, dsd_state* state, const char* label, short value) {
+    read_until_analog_block(opts, state, 3000);
+    if (g_analog_blocks != 1 || g_first_analog_block_samples != 960U || g_first_analog_block_min != value
+        || g_first_analog_block_max != value) {
+        DSD_FPRINTF(stderr, "%s: first block after the landing: blocks=%d samples=%zu min=%d max=%d, want all %d\n",
+                    label, g_analog_blocks, g_first_analog_block_samples, g_first_analog_block_min,
+                    g_first_analog_block_max, value);
+    }
+    assert(g_analog_blocks == 1);
+    assert(g_first_analog_block_samples == 960U);
+    assert(g_first_analog_block_min == value);
+    assert(g_first_analog_block_max == value);
+    assert(g_cleanup_calls == 0);
+}
+
+/* The audio each analog kind's detector delivers in these cases. */
+static float
+monitor_value_for_kind(int kind) {
+    return kind == DSD_ANALOG_DEMOD_AM ? 3000.0f : -2000.0f;
+}
+
+/*
+ * A live switch between the FM and AM monitors (issue #582) reaches the decoder as a family switch does: the decoder
+ * commits the new kind at once, and the front end follows at the demod thread's next block boundary, clearing the
+ * output ring, moving the stream generation and publishing the new kind before its first sample. Both kinds are the
+ * monitor output, so nothing in the output kind tells the decoder the samples it reads in between are the old
+ * detector's: the published kind does. A backlog of a whole block is ordinary (synchronous playback holds the decoder
+ * for a block's playing time), and a whole block of the old detector's audio holds no boundary for the received-tone
+ * tap to mute it by. None of it may be played as the new kind's, whether or not the change emptied the block
+ * (@p drop_block: DECODE_MODE_SET does, dsd_symbol_analog_block_reset()).
+ */
+static void
+run_kind_switch(dsd_opts* opts, dsd_state* state, void* rtl_context, int from_kind, int to_kind, int in_flight,
+                int drop_block) {
+    char label[96];
+    DSD_SNPRINTF(label, sizeof label, "%s -> %s, %d in flight%s", from_kind == DSD_ANALOG_DEMOD_AM ? "AM" : "FM",
+                 to_kind == DSD_ANALOG_DEMOD_AM ? "AM" : "FM", in_flight, drop_block ? "" : ", block kept");
+    reset_stream_fixture();
+    reset_decoder_fixture(opts, state, rtl_context);
+    reset_analog_block_capture();
+    set_analog_block_output(opts, 1);
+    state->rf_mod = 0;
+    opts->analog_demod = from_kind;
+    g_output_kind = RTL_STREAM_OUTPUT_AUDIO_MONITOR;
+    g_analog_family = 1;
+    g_monitor_published = 1;
+    g_monitor_kind = from_kind;
+    g_read_base = monitor_value_for_kind(from_kind);
+
+    /* The monitor plays its kind's audio, then part-collects a block. */
+    read_until_analog_block(opts, state, 3000);
+    assert(g_analog_blocks == 1);
+    reset_analog_block_capture();
+    read_monitor_samples(opts, state, 300);
+    assert(state->analog_sample_counter > 0);
+
+    /* The decoder commits the new kind; the front end still delivers the old detector's audio. */
+    opts->analog_demod = to_kind;
+    if (drop_block) {
+        dsd_symbol_analog_block_reset(state);
+    }
+    dsd_analog_rx_reset(state);
+    read_monitor_samples(opts, state, in_flight);
+    if (state->analog_sample_counter != 0 || g_analog_blocks != 0) {
+        DSD_FPRINTF(
+            stderr, "%s: before the landing: collected %d old-kind samples, played %d blocks (first min=%d max=%d)\n",
+            label, state->analog_sample_counter, g_analog_blocks, g_first_analog_block_min, g_first_analog_block_max);
+    }
+    assert(g_analog_blocks == 0);
+    assert(state->analog_sample_counter == 0);
+
+    /* The switch lands: the ring is cleared, the generation moves (twice) and the new kind is published. */
+    g_stream_generation += 2U;
+    g_monitor_kind = to_kind;
+    g_read_base = monitor_value_for_kind(to_kind);
+    assert_first_block_after_landing(opts, state, label, (short)monitor_value_for_kind(to_kind));
+}
+
+static void
+test_analog_block_follows_kind_switch(dsd_opts* opts, dsd_state* state, void* rtl_context) {
+    static const int kinds[2][2] = {
+        {DSD_ANALOG_DEMOD_FM, DSD_ANALOG_DEMOD_AM},
+        {DSD_ANALOG_DEMOD_AM, DSD_ANALOG_DEMOD_FM},
+    };
+    for (size_t k = 0; k < sizeof(kinds) / sizeof(kinds[0]); k++) {
+        run_kind_switch(opts, state, rtl_context, kinds[k][0], kinds[k][1], 1440, 1);
+        run_kind_switch(opts, state, rtl_context, kinds[k][0], kinds[k][1], 480, 1);
+        run_kind_switch(opts, state, rtl_context, kinds[k][0], kinds[k][1], 1440, 0);
+    }
+}
+
+/*
+ * Leaving a -Y scan that sits on a typed digital row, back to the configured Analog or AM decoder, is the same gap by
+ * another route: the row keeps the front end on the analog family and the monitor output with the row's channel, where
+ * the stream publishes no monitor, and the leave is no retune. The decoder is the configured analog one at once; the
+ * front end puts its monitor back at the demod thread's next block boundary. The leave does not empty the block (the
+ * front end's family did not change) and resets the received-tone tap (dsd_frame_sync_reset_acquisition()). None of
+ * the row's audio may be played as the monitor's.
+ */
+static void
+run_typed_row_leave(dsd_opts* opts, dsd_state* state, void* rtl_context, int kind) {
+    const char* label = kind == DSD_ANALOG_DEMOD_AM ? "typed row leave to AM" : "typed row leave to Analog";
+    reset_stream_fixture();
+    reset_decoder_fixture(opts, state, rtl_context);
+    reset_analog_block_capture();
+    set_analog_block_output(opts, 0);
+    state->rf_mod = 0;
+    opts->analog_demod = DSD_ANALOG_DEMOD_FM;
+    g_output_kind = RTL_STREAM_OUTPUT_AUDIO_MONITOR;
+    g_analog_family = 1;
+    g_monitor_published = 0;
+    g_read_base = 1500.0f;
+
+    /* The row's digital decoder collects the discriminator audio of its channel, as a digital session collects any
+       source it reads. */
+    read_monitor_samples(opts, state, 300);
+    assert(state->analog_sample_counter > 0);
+
+    /* The leave: the configured decoder is back, the front end is still on the row's channel. Two and a half blocks
+       of it arrive before the monitor request lands. */
+    opts->analog_only = 1;
+    opts->analog_demod = kind;
+    dsd_analog_rx_reset(state);
+    read_monitor_samples(opts, state, 2400);
+    if (state->analog_sample_counter != 0 || g_analog_blocks != 0) {
+        DSD_FPRINTF(stderr,
+                    "%s: before the landing: collected %d row samples, played %d blocks (first min=%d max=%d)\n", label,
+                    state->analog_sample_counter, g_analog_blocks, g_first_analog_block_min, g_first_analog_block_max);
+    }
+    assert(g_analog_blocks == 0);
+    assert(state->analog_sample_counter == 0);
+
+    /* The monitor request lands: the ring is cleared, the generation moves and the monitor is published. */
+    g_stream_generation += 2U;
+    g_monitor_published = 1;
+    g_monitor_kind = kind;
+    g_read_base = monitor_value_for_kind(kind);
+    assert_first_block_after_landing(opts, state, label, (short)monitor_value_for_kind(kind));
+}
+
+static void
+test_analog_block_follows_typed_row_leave(dsd_opts* opts, dsd_state* state, void* rtl_context) {
+    run_typed_row_leave(opts, state, rtl_context, DSD_ANALOG_DEMOD_AM);
+    run_typed_row_leave(opts, state, rtl_context, DSD_ANALOG_DEMOD_FM);
+}
+
+/* Only an analog-family decoder follows the monitor it is configured for. A digital decoder on the monitor output
+   (a typed row's decoder, or one a switch from AM has put back to FM while the monitor still runs AM) collects what
+   it reads, as the -8 source monitor always has. */
+static void
+test_digital_decoder_collects_any_monitor(dsd_opts* opts, dsd_state* state, void* rtl_context) {
+    for (int published = 0; published <= 1; published++) {
+        reset_stream_fixture();
+        reset_decoder_fixture(opts, state, rtl_context);
+        reset_analog_block_capture();
+        set_analog_block_output(opts, 0);
+        state->rf_mod = 0;
+        opts->analog_demod = DSD_ANALOG_DEMOD_FM;
+        g_output_kind = RTL_STREAM_OUTPUT_AUDIO_MONITOR;
+        g_analog_family = 1;
+        g_monitor_published = published;
+        g_monitor_kind = DSD_ANALOG_DEMOD_AM;
+        g_read_base = 1500.0f;
+        read_monitor_samples(opts, state, 300);
+        if (state->analog_sample_counter <= 0) {
+            DSD_FPRINTF(stderr, "digital decoder on the monitor (published %d) collected nothing\n", published);
+        }
+        assert(state->analog_sample_counter > 0);
+    }
+}
+
 int
 main(void) {
     static dsd_opts opts;
@@ -434,6 +650,8 @@ main(void) {
         .output_rate_hz = fake_output_rate_hz,
         .symbol_profile = fake_symbol_profile,
         .stream_generation = fake_stream_generation,
+        .analog_profile = fake_analog_profile,
+        .analog_family_active = fake_analog_family_active,
     };
     dsd_rtl_stream_metrics_hooks_set(&metrics_hooks);
 
@@ -767,6 +985,9 @@ main(void) {
 
     dsd_udp_audio_hooks_set((dsd_udp_audio_hooks){.blast_analog = fake_blast_analog});
     test_analog_block_follows_family_switch(&opts, &state, &fake_rtl_context);
+    test_analog_block_follows_kind_switch(&opts, &state, &fake_rtl_context);
+    test_analog_block_follows_typed_row_leave(&opts, &state, &fake_rtl_context);
+    test_digital_decoder_collects_any_monitor(&opts, &state, &fake_rtl_context);
     dsd_udp_audio_hooks_set((dsd_udp_audio_hooks){0});
 
     dsd_rtl_stream_io_hooks_set((dsd_rtl_stream_io_hooks){0});

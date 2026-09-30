@@ -395,7 +395,10 @@ Tests: `tests/engine/test_engine_trunk_scan.c` (`ENGINE_TRUNK_SCAN`) and
   family request, a no-op on a digital front end, and keeps the saved timing. A leave that switches the front end's
   family either way, or
   its analog kind (an nfm row's FM monitor left for an `-fM` session's AM one, told by the published analog profile),
-  also drops the analog monitor block the decoder has part-collected (`dsd_symbol_analog_block_reset()`). The M17
+  also drops the analog monitor block the decoder has part-collected (`dsd_symbol_analog_block_reset()`). A leave from
+  a typed digital row back to Analog or AM does neither (the row kept the front end on the analog family, on the row's
+  channel, where no monitor is published): `getSymbol()` drops that block, and collects none of the row's audio the
+  front end delivers until its monitor request lands (issue #582, see the monitor block in `dsp`). The M17
   encoder is not the analog family. The leave returns what became of its analog profile request, the last receive
   request it makes: 1 queued, -1 refused at once (the published rate, which a row's retune can have moved, cannot filter
   the configured width), 0 when it asked the monitor for nothing (no active scan, not RTL, a digital configured family).
@@ -1183,8 +1186,9 @@ installs from `src/engine/trunk_tuning.c` in `src/engine/trunk_tuning_hooks_inst
   RadioReference import's) and refuses it on a PCM input (`dsd_decode_mode_runs_on_input()`); on a running RTL session
   it holds the AM width to the rate (above) and switches live across AM, Analog and the digital modes. A switch between
   FM and AM, by DECODE_MODE_SET or a config's `[mode]`, drops the analog monitor block the decoder part-collected, as a
-  family change does (`decode_mode_drop_old_analog_block()`), and one the front end refuses goes back to the monitor's
-  raw sink, not the digital one (`ui_revert_analog_entry()`). `[mode] decode = am` in a config applied to a PCM session
+  family change does (`decode_mode_drop_old_analog_block()`), and until the demod thread applies it `getSymbol()`
+  collects none of the old kind's audio the front end still delivers (issue #582, the monitor block in `dsp`); one
+  the front end refuses goes back to the monitor's raw sink, not the digital one (`ui_revert_analog_entry()`). `[mode] decode = am` in a config applied to a PCM session
   applies, and then falls back. That fallback is `apply_cmd_fall_back_from_am_on_pcm()`, run after every command
   (`apply_cmd_scoped()`): a configured AM preset on an input that is not I/Q (a live input switch to Pulse, a file, TCP
   or UDP audio, or a config's `decode = am` on PCM) becomes the Analog monitor through the scope, as DECODE_MODE_SET
@@ -1593,6 +1597,20 @@ installs from `src/engine/trunk_tuning.c` in `src/engine/trunk_tuning_hooks_inst
   follows the output it reads: an analog-family decoder does not collect a direct (digital) output's samples while
   the front end has yet to switch, and a move between the monitor output and a direct one drops the part-collected
   block (`symbol_refresh_rtl_profile()`), so the first block the new family plays holds only its own samples.
+  On the monitor output it follows the monitor the stream publishes the same way (issue #582): while that is the
+  other analog kind (`dsd_rtl_stream_metrics_hook_analog_profile()`, a switch between FM and AM) or, on the analog
+  family, no monitor at all (`..._analog_family_active()` with nothing published: a typed digital `-Y` row's channel,
+  which a leave back to Analog or AM puts the monitor back from), an analog-family decoder collects nothing and drops
+  a part-collected block, whichever path changed the decoder. The demod thread clears the output ring before it
+  publishes a new monitor, so the answer read once per `getSymbol()` never admits the old profile's samples. Without
+  it a whole block of the old profile's audio, which a backlog the decoder catches up on after a block's synchronous
+  playback holds, would play: a block with no boundary in it is one `dsd_analog_rx_block_straddles_boundary()` cannot
+  mute. Nothing published (no front-end hooks, a front end off the analog family) leaves collection as it was; of
+  those only a session with no decode mode switched to Analog reads another profile until the switch lands (the M17
+  encoder is never the analog family). A front end the stream leaves off the configured monitor for good, such as a
+  refused switch whose revert was skipped or a scan leave whose fallback width the rate refuses too, is silent there,
+  as a digital output under an analog decoder is. A digital decoder on the monitor output (a typed row's, the `-8`
+  source monitor) collects what it reads. Test: `RTL_SYMBOL_CACHE_GENERATION`.
   `tests/engine/analog_replay.c` (`dsd-neo_test_analog_replay`, the `DECODE_IQ_ANALOG_*` audio cases) captures and
   scores exactly that output through the hook, and times it with a wrapped RTL stream read hook, so changes to the
   monitor chain are measured against what a listener hears; back them with `tools/replay_ab.sh --metric analog` evidence

@@ -904,7 +904,9 @@ dsd_engine_channel_scan_step_manual(dsd_opts* opts, dsd_state* state) {
  *
  * A leave that switches the front end's family, or its analog kind (an nfm row's FM monitor on an -fM session, issue
  * #524), also drops the analog monitor block the decoder has part-collected from the old family's or kind's output, as
- * a decode-mode change between them does. */
+ * a decode-mode change between them does. A leave from a typed digital row switches neither (the row kept the front
+ * end on the analog family, on the row's channel): getSymbol() drops that block itself, and collects nothing, until
+ * the monitor this requests is published (issue #582). */
 static int
 channel_scan_restore_frontend(const dsd_opts* opts, dsd_state* state, int row_timed_digital_family) {
     if (opts->audio_in_type != AUDIO_IN_RTL) {
