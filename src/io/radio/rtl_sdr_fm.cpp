@@ -9704,9 +9704,10 @@ enum {
  * otherwise the rest of the profile must not apply: the profile moves the front end onto the analog family, was
  * superseded by a live family request made after it was queued, which put the front end on the family (and the symbol
  * profile) wanted now, or asks for an analog channel the demod rate cannot run (refused, and the front end keeps its
- * receive profile). A profile with no family continues to its symbol profile unless a live analog request made after it
- * was queued asked for the monitor, which that symbol profile would take away (rtl_stream_retune_symbols_superseded(),
- * issue #582). A family that lands retires the live requests queued before it
+ * receive profile). A profile with no family continues to its symbol profile, retiring a live analog request queued
+ * before it, unless a live analog request (which asked for the monitor that symbol profile would take away) or a -Y
+ * scan leave was counted after it was queued (rtl_stream_retune_symbols_superseded(), issue #582). A family that lands
+ * retires the live requests queued before it
  * (rtl_stream_retire_requests_before_family()), which checks for a superseding request again under the request lock:
  * one made while the profile lands supersedes it as one made before does. */
 static int

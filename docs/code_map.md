@@ -376,8 +376,9 @@ Tests: `tests/engine/test_engine_trunk_scan.c` (`ENGINE_TRUNK_SCAN`) and
   `dsd_engine_scan_family_requests()`, the stream's `rtl_stream_live_family_request_count()`, with the count when the
   tune was queued). A retune that carries a family is superseded by any of them
   (`dsd_engine_scan_retune_attaches_family()`, by the same rule as the attach). One without (a typed digital row on an
-  analog session, or a digital session's row) lands its symbol profile whatever the digital requests; only a live
-  analog request supersedes it, since it asked for the monitor that symbol profile would take away (issue #582), and
+  analog session, or a digital session's row) lands its symbol profile whatever the digital requests; while the scan
+  runs only a live analog request supersedes it, since it asked for the monitor that symbol profile would take away
+  (issue #582; the scan leave below supersedes it too), and
   the commit then restages its row by the stream's count of such supersedes
   (`dsd_engine_scan_familyless_retune_supersedes()`, the stream's `rtl_stream_familyless_retune_supersedes()`).
   Otherwise the row commits as staged. Leaving the scan
@@ -1992,8 +1993,8 @@ Notes:
     one owner, held for the whole landing: the landing waits while a controller reconfiguration (a PPM correction, a
     hop) runs, and the next one waits for the landing, so the two never redesign the resampler together.
     A retune without a family applies its symbol profile as
-    queued, as a digital-only session always has, over the output chain it finds, unless a live analog request
-    accepted after the profile was queued superseded it (above: then it lands its centre only). A live digital landing
+    queued, as a digital-only session always has, over the output chain it finds, unless a live analog request or a
+    `-Y` scan leave counted after the profile was queued superseded it (above: then it lands its centre only). A live digital landing
     (`rtl_stream_request_digital_family_landing()`, issue #583: a republish, or a channel-scan leave, that timed the
     decoder for the digital family's landing because the analog family runs or outstanding work lands a family) lands
     the same way: from the analog family as the switch a plain digital request

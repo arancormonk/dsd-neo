@@ -55,7 +55,8 @@ typedef struct {
     /* The live receive-family requests the front end had accepted when the staged tune was queued
      * (dsd_engine_scan_family_requests(); issue #526), and whether that tune attached a receive family, which any later
      * request supersedes (dsd_engine_scan_retune_attaches_family()). A tune that attached none (a typed digital row on
-     * an analog session) only a later analog request supersedes, which the stream's count of such supersedes says
+     * an analog session) only a later analog request supersedes while the scan runs (a scan leave, which supersedes
+     * it too, ends the scan), which the stream's count of such supersedes says
      * (dsd_engine_scan_familyless_retune_supersedes(); issue #582). */
     uint32_t family_requests;
     uint32_t familyless_supersedes;
