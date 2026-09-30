@@ -3243,7 +3243,10 @@ ENGINE_OUT:
     dsd_engine_cleanup(opts, state);
     dsd_input_failure failure;
     dsd_input_failure_get(&failure);
-    if (failure.kind == DSD_INPUT_FAILURE_DEVICE) {
+    /* A receiver that failed, or an I/Q replay whose capture could not be read (the replay reader latches a file
+       failure, then ends the stream like its EOF), turns the normal end into a failure exit. */
+    if (failure.kind == DSD_INPUT_FAILURE_DEVICE
+        || (failure.kind == DSD_INPUT_FAILURE_FILE && opts->iq_replay_requested)) {
         rc = 1;
     }
     return rc;

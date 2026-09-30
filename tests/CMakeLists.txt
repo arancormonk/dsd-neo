@@ -5164,6 +5164,37 @@ if(DSD_HAS_RTLSDR AND NOT APPLE AND (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"))
     )
 endif()
 
+# An I/Q replay whose capture read fails, through the engine (issue #572): the replay
+# ends by itself with exit code 1. The capture read is wrapped, so the radio archive
+# links as it ships.
+if(DSD_HAS_RADIO AND NOT APPLE AND (CMAKE_C_COMPILER_ID MATCHES "GNU|Clang"))
+    add_executable(
+        dsd-neo_test_engine_replay_read_error
+        engine/test_engine_replay_read_error.c
+    )
+    target_include_directories(
+        dsd-neo_test_engine_replay_read_error
+        PRIVATE ${PROJECT_SOURCE_DIR}/include
+    )
+    target_link_libraries(
+        dsd-neo_test_engine_replay_read_error
+        PRIVATE
+            "-Wl,--start-group"
+            dsd-neo_engine
+            dsd-neo_io_radio
+            dsd-neo_io_iq
+            "-Wl,--end-group"
+            "-Wl,--wrap=dsd_iq_replay_read"
+            ${LIBS}
+            dsd-neo_test_support
+    )
+    add_test(
+        NAME ENGINE_REPLAY_READ_ERROR
+        COMMAND dsd-neo_test_engine_replay_read_error
+    )
+    set_tests_properties(ENGINE_REPLAY_READ_ERROR PROPERTIES TIMEOUT 60)
+endif()
+
 if(NOT APPLE AND (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"))
     add_executable(
         dsd-neo_test_engine_synced_trunk_scan_tick

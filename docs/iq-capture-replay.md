@@ -21,6 +21,9 @@ dsd-neo --iq-replay p25-control.iq.json -f1 --frontend terminal
 - `--iq-replay <path>`: replay a capture file pair.
 - `--iq-replay-rate <fast|realtime>`: replay pacing mode (default `fast`).
 - `--iq-loop`: loop replay at EOF.
+  Without it, a replay ends once the decoder has read everything the capture delivered. A capture that cannot be read to
+  its end (an I/O error partway) ends the same way after the samples already read, logs the error, and makes `dsd-neo`
+  exit with status 1.
 - `--iq-info <path>`: print metadata/size/alignment summary and exit.
 
 Path handling:

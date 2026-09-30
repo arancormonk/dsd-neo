@@ -4,6 +4,7 @@
  */
 
 #include <algorithm>
+#include <atomic>
 #include <cerrno>
 #include <cmath>
 #include <cstdint>
@@ -14,7 +15,10 @@
 #include <dsd-neo/io/iq_replay.h>
 #include <dsd-neo/io/rtl_stream_c.h>
 #include <dsd-neo/platform/file_compat.h>
+#include <dsd-neo/platform/threading.h>
 #include <dsd-neo/platform/timing.h>
+#include <dsd-neo/runtime/exitflag.h>
+#include <dsd-neo/runtime/input_failure.h>
 #include <memory>
 #include <string>
 #include <vector>
@@ -1247,9 +1251,469 @@ test_cf32_unknown_capture_stage_rejected(void) {
     return rc;
 }
 
+/* The stream's own output clear (rtl_sdr_fm.cpp), which a CQPSK toggle or a reacquire runs from the decoder thread. */
+extern "C" void dsd_rtl_stream_clear_output(void);
+
+/* One replay reader chunk (rtl_device.cpp replay_thread_fn()): a capture this size reaches the demod as one block. */
+static const size_t kReplayChunkBytes = 65536U;
+
+namespace {
+/* The decoder's side of a replay, run on its own thread so a test can bound how long the end of the stream takes to
+ * reach it. */
+struct ReplayReader {
+    RtlSdrContext* ctx = nullptr;
+    std::atomic<int> done{0};
+    std::atomic<uint64_t> samples{0U};
+};
+} // namespace
+
+static DSD_THREAD_RETURN_TYPE
+replay_reader_fn(void* arg) {
+    ReplayReader* reader = static_cast<ReplayReader*>(arg);
+    float audio[2048];
+    for (;;) {
+        int got = 0;
+        if (rtl_stream_read(reader->ctx, audio, sizeof(audio) / sizeof(audio[0]), &got) != 0) {
+            break;
+        }
+        if (got > 0) {
+            reader->samples.fetch_add((uint64_t)got, std::memory_order_relaxed);
+        }
+    }
+    reader->done.store(1, std::memory_order_release);
+    DSD_THREAD_RETURN;
+}
+
+/* Read the replay on a decoder thread until a read reports the end of the stream. A stream that has not ended after
+ * @p timeout_ms is ended from outside with the global exit flag, which every replay wait checks, so the test fails
+ * instead of hanging; *out_rescued is then 1, and finish_replay() has to stop the stream before the flag clears. */
+static int
+read_replay_to_end(RtlSdrContext* ctx, uint64_t timeout_ms, const char* label, uint64_t* out_samples,
+                   int* out_rescued) {
+    *out_samples = 0U;
+    *out_rescued = 0;
+    ReplayReader reader;
+    reader.ctx = ctx;
+    dsd_thread_t thread;
+    if (dsd_thread_create(&thread, replay_reader_fn, &reader) != 0) {
+        DSD_FPRINTF(stderr, "FAIL: %s: could not start the decoder thread\n", label);
+        return 1;
+    }
+    const uint64_t deadline_ns = dsd_time_monotonic_ns() + timeout_ms * 1000000ULL;
+    while (!reader.done.load(std::memory_order_acquire) && dsd_time_monotonic_ns() < deadline_ns) {
+        dsd_sleep_ms(1U);
+    }
+    int rc = 0;
+    if (!reader.done.load(std::memory_order_acquire)) {
+        DSD_FPRINTF(stderr, "FAIL: %s: the end of the replay did not reach the decoder within %llu ms\n", label,
+                    (unsigned long long)timeout_ms);
+        *out_rescued = 1;
+        dsd_exitflag_store(1);
+        rc = 1;
+    }
+    (void)dsd_thread_join(thread);
+    *out_samples = reader.samples.load(std::memory_order_relaxed);
+    return rc;
+}
+
+/* Stop and destroy a replay that read_replay_to_end() ran, then clear the exit flag a rescue raised. */
+static void
+finish_replay(RtlSdrContext* ctx, int rescued) {
+    stop_and_destroy_stream(ctx);
+    if (rescued) {
+        dsd_exitflag_store(0);
+    }
+}
+
+/* Wait up to @p timeout_ms for @p flag to become nonzero. */
+static int
+wait_for_flag(const std::atomic<int>* flag, unsigned int timeout_ms) {
+    for (unsigned int waited = 0U; waited < timeout_ms; waited++) {
+        if (flag->load(std::memory_order_acquire)) {
+            return 1;
+        }
+        dsd_sleep_ms(1U);
+    }
+    return flag->load(std::memory_order_acquire) ? 1 : 0;
+}
+
+/* Wait up to @p timeout_ms for the demod to report the replay input drained. */
+static int
+wait_for_demod_drained(unsigned int timeout_ms) {
+    for (unsigned int waited = 0U; waited < timeout_ms; waited++) {
+        rtl_stream_test_replay_state state;
+        DSD_MEMSET(&state, 0, sizeof(state));
+        if (dsd_rtl_stream_test_get_replay_state(&state) == 0 && state.replay_demod_drained) {
+            return 1;
+        }
+        dsd_sleep_ms(1U);
+    }
+    return 0;
+}
+
+namespace {
+/* One run of the EOF drain race on a one-chunk capture (test_replay_eof_drain_delivers_final_block()). */
+struct EofDrainRace {
+    std::atomic<int> reserve_delay_ms{0};
+    std::atomic<int> demod_holding{0};    /* the demod holds the block before it publishes the block's output */
+    std::atomic<int> decoder_parked{0};   /* the decoder found the ring empty while the demod held the block */
+    std::atomic<int> decoder_released{0}; /* ... and went on once the demod was reported drained */
+    std::atomic<int> demod_decisions{0};
+    std::atomic<int> reader_decisions{0};
+    std::atomic<int> output_writes{0};
+    std::atomic<uint64_t> written{0U};
+};
+} // namespace
+
+/* The first arrival of each side waits for the other side's first arrival, so both drain decisions are made together. */
+static void
+eof_drain_race_barrier(std::atomic<int>* mine, const std::atomic<int>* other) {
+    if (mine->fetch_add(1, std::memory_order_acq_rel) == 0) {
+        (void)wait_for_flag(other, 1000U);
+    }
+}
+
+static void
+eof_drain_race_stage(int stage, size_t count, void* ctx) {
+    EofDrainRace* race = static_cast<EofDrainRace*>(ctx);
+    switch (stage) {
+        case RTL_STREAM_TEST_REPLAY_DEMOD_AFTER_RESERVE: {
+            int delay_ms = race->reserve_delay_ms.load(std::memory_order_relaxed);
+            if (delay_ms > 0) {
+                dsd_sleep_ms((unsigned int)delay_ms);
+            }
+            break;
+        }
+        case RTL_STREAM_TEST_REPLAY_DEMOD_BEFORE_OUTPUT_WRITE:
+            /* The only block of a one-chunk capture: hold its output until the decoder has looked at the empty ring. */
+            if (race->output_writes.load(std::memory_order_acquire) == 0) {
+                race->demod_holding.store(1, std::memory_order_release);
+                (void)wait_for_flag(&race->decoder_parked, 2000U);
+            }
+            break;
+        case RTL_STREAM_TEST_REPLAY_DEMOD_AFTER_OUTPUT_WRITE:
+            race->written.fetch_add((uint64_t)count, std::memory_order_relaxed);
+            race->output_writes.fetch_add(1, std::memory_order_release);
+            break;
+        case RTL_STREAM_TEST_REPLAY_DEMOD_DRAIN_DECISION:
+            eof_drain_race_barrier(&race->demod_decisions, &race->reader_decisions);
+            break;
+        case RTL_STREAM_TEST_REPLAY_READER_DRAIN_DECISION:
+            eof_drain_race_barrier(&race->reader_decisions, &race->demod_decisions);
+            break;
+        case RTL_STREAM_TEST_REPLAY_DECODER_OUTPUT_EMPTY:
+            /* The decoder has seen the ring empty: let the demod publish the final block and be reported drained before
+               the decoder decides whether the stream has ended. */
+            if (race->demod_holding.load(std::memory_order_acquire)
+                && !race->decoder_parked.load(std::memory_order_acquire)) {
+                race->decoder_parked.store(1, std::memory_order_release);
+                if (wait_for_demod_drained(2000U)) {
+                    race->decoder_released.store(1, std::memory_order_release);
+                }
+            }
+            break;
+        default: break;
+    }
+}
+
+/* Issue #572: the decoder decides that the replay ended from what the demod reports once it drained the input, and
+ * that report comes after the demod publishes its last output. A decoder that looks at the ring before it reads the
+ * report can find the ring empty, then read "drained" once the final block landed, and end the stream with that block
+ * unread. The drain decisions themselves are made at once on both sides (demod and replay reader), which must not lose
+ * the wakeup either. Every sample the demod wrote must reach the decoder. */
+static int
+test_replay_eof_drain_delivers_final_block(void) {
+    int rc = 0;
+    char metadata_path[DSD_TEST_PATH_MAX];
+    rc |= make_replay_fixture(metadata_path, sizeof(metadata_path), DSD_IQ_FORMAT_CU8, "post_mute_pre_widen", 1,
+                              kReplayChunkBytes);
+    if (rc != 0) {
+        return 1;
+    }
+
+    for (int rep = 0; rep < 20; rep++) {
+        EofDrainRace race;
+        race.reserve_delay_ms.store((rep & 1) ? 5 : 0, std::memory_order_relaxed);
+        rtl_stream_test_set_replay_stage_hook(eof_drain_race_stage, &race);
+
+        std::unique_ptr<dsd_opts> opts;
+        RtlSdrContext* ctx = NULL;
+        if (start_replay_stream(metadata_path, &opts, &ctx) != 0) {
+            rtl_stream_test_set_replay_stage_hook(NULL, NULL);
+            stop_and_destroy_stream(ctx);
+            return 1;
+        }
+        uint64_t delivered = 0U;
+        int rescued = 0;
+        rc |= read_replay_to_end(ctx, 5000U, "EOF drain race", &delivered, &rescued);
+
+        rtl_stream_test_replay_state state;
+        DSD_MEMSET(&state, 0, sizeof(state));
+        rc |= expect_int_eq("EOF drain race replay state", dsd_rtl_stream_test_get_replay_state(&state), 0);
+        const uint64_t written = race.written.load(std::memory_order_relaxed);
+        rc |= expect_true("EOF drain race: the decoder looked at the empty ring while the demod held the block",
+                          race.decoder_parked.load());
+        rc |= expect_true("EOF drain race: the demod was reported drained while the decoder waited",
+                          race.decoder_released.load());
+        rc |= expect_true("EOF drain race: both sides made a drain decision",
+                          race.demod_decisions.load() > 0 && race.reader_decisions.load() > 0);
+        rc |= expect_true("EOF drain race: the demod published output", written > 0U);
+        if (delivered != written) {
+            DSD_FPRINTF(stderr,
+                        "FAIL: EOF drain race rep %d: the decoder read %llu of the %llu samples the demod wrote\n", rep,
+                        (unsigned long long)delivered, (unsigned long long)written);
+            rc |= 1;
+        }
+        rc |= expect_int_eq("EOF drain race demod drained", state.replay_demod_drained, 1);
+        rc |= expect_int_eq("EOF drain race output drained", state.replay_output_drained, 1);
+
+        finish_replay(ctx, rescued);
+        rtl_stream_test_set_replay_stage_hook(NULL, NULL);
+    }
+    return rc;
+}
+
+namespace {
+/* test_replay_read_survives_clear_at_eof(): clear the output once the decoder has seen the final block queued. */
+struct ClearAtEof {
+    std::atomic<int> cleared{0};
+};
+} // namespace
+
+static void
+clear_at_eof_stage(int stage, size_t count, void* ctx) {
+    (void)count;
+    ClearAtEof* clear = static_cast<ClearAtEof*>(ctx);
+    if (stage != RTL_STREAM_TEST_REPLAY_DECODER_OUTPUT_FOUND || clear->cleared.load(std::memory_order_acquire)) {
+        return;
+    }
+    /* Nothing is written after this block: once the demod reports itself drained, the clear leaves an empty ring
+       nothing will fill again. */
+    if (wait_for_demod_drained(2000U)) {
+        dsd_rtl_stream_clear_output();
+        clear->cleared.store(1, std::memory_order_release);
+    }
+}
+
+/* Issue #572: an output clear (a CQPSK toggle, a reacquire) can land between the decoder's look at the ring and its
+ * copy. At the end of a replay nothing fills the ring again, so a read that then waits for samples must still see
+ * that the stream ended, rather than wait forever. */
+static int
+test_replay_read_survives_clear_at_eof(void) {
+    int rc = 0;
+    char metadata_path[DSD_TEST_PATH_MAX];
+    rc |= make_replay_fixture(metadata_path, sizeof(metadata_path), DSD_IQ_FORMAT_CU8, "post_mute_pre_widen", 1,
+                              kReplayChunkBytes);
+    if (rc != 0) {
+        return 1;
+    }
+
+    ClearAtEof clear;
+    rtl_stream_test_set_replay_stage_hook(clear_at_eof_stage, &clear);
+    std::unique_ptr<dsd_opts> opts;
+    RtlSdrContext* ctx = NULL;
+    if (start_replay_stream(metadata_path, &opts, &ctx) != 0) {
+        rtl_stream_test_set_replay_stage_hook(NULL, NULL);
+        stop_and_destroy_stream(ctx);
+        return 1;
+    }
+    uint64_t delivered = 0U;
+    int rescued = 0;
+    rc |= read_replay_to_end(ctx, 3000U, "clear at EOF", &delivered, &rescued);
+    rc |= expect_true("clear at EOF: the output was cleared under the decoder's read", clear.cleared.load());
+    finish_replay(ctx, rescued);
+    rtl_stream_test_set_replay_stage_hook(NULL, NULL);
+    return rc;
+}
+
+/* Issue #572: a capture that cannot be read ends the replay the way its end does. The demod and the decoder drain
+ * what the reader delivered, the stream reports its end to the decoder, the read error is reported as a file input
+ * failure, and nothing raises the global exit flag. */
+static int
+test_replay_read_error_ends_stream(void) {
+    int rc = 0;
+    char metadata_path[DSD_TEST_PATH_MAX];
+    rc |= make_replay_fixture(metadata_path, sizeof(metadata_path), DSD_IQ_FORMAT_CU8, "post_mute_pre_widen", 1,
+                              8U * kReplayChunkBytes);
+    if (rc != 0) {
+        return 1;
+    }
+
+    dsd_input_failure_clear();
+    rtl_device_test_replay_inject_read_error(3, DSD_IQ_ERR_IO);
+    std::unique_ptr<dsd_opts> opts;
+    RtlSdrContext* ctx = NULL;
+    if (start_replay_stream(metadata_path, &opts, &ctx) != 0) {
+        rtl_device_test_replay_inject_read_error(-1, 0);
+        stop_and_destroy_stream(ctx);
+        return 1;
+    }
+    uint64_t delivered = 0U;
+    int rescued = 0;
+    rc |= read_replay_to_end(ctx, 5000U, "read error", &delivered, &rescued);
+
+    rtl_stream_test_replay_state state;
+    DSD_MEMSET(&state, 0, sizeof(state));
+    rc |= expect_int_eq("read error replay state", dsd_rtl_stream_test_get_replay_state(&state), 0);
+    rc |= expect_true("read failure: what was read before the error reached the decoder", delivered > 0U);
+    rc |= expect_int_eq("read failure: input EOF", state.replay_input_eof, 1);
+    rc |= expect_int_eq("read failure: demod drained", state.replay_demod_drained, 1);
+    rc |= expect_int_eq("read failure: output drained", state.replay_output_drained, 1);
+    rc |= expect_int_eq("read failure: the replay reader left", state.replay_reader_exited, 1);
+    if (!rescued) {
+        rc |= expect_int_eq("read failure: no global exit", (int)dsd_exitflag_load(), 0);
+    }
+    dsd_input_failure failure;
+    dsd_input_failure_get(&failure);
+    rc |= expect_int_eq("read error reported as a file input failure", failure.kind, DSD_INPUT_FAILURE_FILE);
+    rc |= expect_int_eq("read error code reported", failure.native_code, DSD_IQ_ERR_IO);
+
+    finish_replay(ctx, rescued);
+    rtl_device_test_replay_inject_read_error(-1, 0);
+    dsd_input_failure_clear();
+    return rc;
+}
+
+namespace {
+struct ReplayStart {
+    RtlSdrContext* ctx = nullptr;
+    std::atomic<int> done{0};
+    int rc = 0;
+};
+} // namespace
+
+static DSD_THREAD_RETURN_TYPE
+replay_start_fn(void* arg) {
+    ReplayStart* start = static_cast<ReplayStart*>(arg);
+    start->rc = rtl_stream_start(start->ctx);
+    start->done.store(1, std::memory_order_release);
+    DSD_THREAD_RETURN;
+}
+
+/* Issue #572: the replay reader failing to start after the demod thread started unwinds the start in bounded time,
+ * without the global exit flag (the application keeps running), and leaves nothing behind: the next replay runs. */
+static int
+test_replay_reader_start_failure_unwinds(void) {
+    int rc = 0;
+    char metadata_path[DSD_TEST_PATH_MAX];
+    rc |= make_replay_fixture(metadata_path, sizeof(metadata_path), DSD_IQ_FORMAT_CU8, "post_mute_pre_widen", 1,
+                              kReplayChunkBytes);
+    if (rc != 0) {
+        return 1;
+    }
+
+    std::unique_ptr<dsd_opts> opts(new dsd_opts());
+    prepare_replay_opts(opts.get(), metadata_path);
+    ReplayStart start;
+    if (rtl_stream_create(opts.get(), &start.ctx) != 0 || !start.ctx) {
+        DSD_FPRINTF(stderr, "FAIL: reader start failure: rtl_stream_create failed\n");
+        return 1;
+    }
+    rtl_device_test_replay_fail_start(1);
+    dsd_thread_t thread;
+    if (dsd_thread_create(&thread, replay_start_fn, &start) != 0) {
+        rtl_device_test_replay_fail_start(0);
+        rtl_stream_destroy(start.ctx);
+        return 1;
+    }
+    int finished = wait_for_flag(&start.done, 5000U);
+    rc |= expect_true("reader start failure: the start returned within 5 s", finished);
+    if (finished) {
+        rc |= expect_int_eq("reader start failure: no global exit", (int)dsd_exitflag_load(), 0);
+    } else {
+        dsd_exitflag_store(1);
+    }
+    (void)dsd_thread_join(thread);
+    rtl_device_test_replay_fail_start(0);
+    rc |= expect_true("reader start failure: the start failed", start.rc != 0);
+    rtl_stream_destroy(start.ctx);
+    dsd_exitflag_store(0);
+    rc |= expect_int_eq("reader start failure: no stream resources left", rtl_stream_test_has_resources(), 0);
+
+    std::unique_ptr<dsd_opts> next_opts;
+    RtlSdrContext* next = NULL;
+    rc |= start_replay_stream(metadata_path, &next_opts, &next);
+    if (next) {
+        uint64_t delivered = 0U;
+        int rescued = 0;
+        rc |= read_replay_to_end(next, 5000U, "replay after a reader start failure", &delivered, &rescued);
+        rc |= expect_true("replay after a reader start failure delivered output", delivered > 0U);
+        finish_replay(next, rescued);
+    }
+    return rc;
+}
+
+namespace {
+/* test_replay_eof_wait_does_not_spin(): the demod holds the capture's only block once the reader reached EOF. */
+struct SlowLastBlock {
+    std::atomic<int> held{0};
+};
+} // namespace
+
+static void
+slow_last_block_stage(int stage, size_t count, void* ctx) {
+    (void)count;
+    SlowLastBlock* slow = static_cast<SlowLastBlock*>(ctx);
+    if (stage != RTL_STREAM_TEST_REPLAY_DEMOD_AFTER_RESERVE || slow->held.exchange(1, std::memory_order_acq_rel)) {
+        return;
+    }
+    for (unsigned int waited = 0U; waited < 2000U; waited++) {
+        rtl_stream_test_replay_state state;
+        DSD_MEMSET(&state, 0, sizeof(state));
+        if (dsd_rtl_stream_test_get_replay_state(&state) == 0 && state.replay_input_eof) {
+            break;
+        }
+        dsd_sleep_ms(1U);
+    }
+    dsd_sleep_ms(300U);
+}
+
+/* Issue #572: at EOF the replay reader waits for the demod to take the rest of the input ring. While a slow demod
+ * holds the last block (300 ms here), that wait must sleep on the ring, not spin: a 50 ms timed wait looks at the
+ * ring a handful of times. */
+static int
+test_replay_eof_wait_does_not_spin(void) {
+    int rc = 0;
+    char metadata_path[DSD_TEST_PATH_MAX];
+    rc |= make_replay_fixture(metadata_path, sizeof(metadata_path), DSD_IQ_FORMAT_CU8, "post_mute_pre_widen", 1,
+                              kReplayChunkBytes);
+    if (rc != 0) {
+        return 1;
+    }
+
+    SlowLastBlock slow;
+    rtl_stream_test_set_replay_stage_hook(slow_last_block_stage, &slow);
+    std::unique_ptr<dsd_opts> opts;
+    RtlSdrContext* ctx = NULL;
+    if (start_replay_stream(metadata_path, &opts, &ctx) != 0) {
+        rtl_stream_test_set_replay_stage_hook(NULL, NULL);
+        stop_and_destroy_stream(ctx);
+        return 1;
+    }
+    uint64_t delivered = 0U;
+    int rescued = 0;
+    rc |= read_replay_to_end(ctx, 5000U, "slow last block", &delivered, &rescued);
+    const uint64_t iterations = rtl_device_test_replay_eof_wait_iterations();
+    rc |= expect_true("slow last block: the demod held the block", slow.held.load());
+    rc |= expect_true("slow last block: the block reached the decoder", delivered > 0U);
+    if (iterations > 50U) {
+        DSD_FPRINTF(stderr, "FAIL: the EOF input wait looked at the ring %llu times in about 300 ms (want <= 50)\n",
+                    (unsigned long long)iterations);
+        rc |= 1;
+    }
+    finish_replay(ctx, rescued);
+    rtl_stream_test_set_replay_stage_hook(NULL, NULL);
+    return rc;
+}
+
 int
 main(void) {
     int rc = 0;
+    rc |= test_replay_eof_drain_delivers_final_block();
+    rc |= test_replay_read_survives_clear_at_eof();
+    rc |= test_replay_read_error_ends_stream();
+    rc |= test_replay_reader_start_failure_unwinds();
+    rc |= test_replay_eof_wait_does_not_spin();
     rc |= test_cu8_replay_publishes_raw_input_level();
     rc |= test_cu8_replay_legacy_fs4_level_uses_raw_block();
     rc |= test_cf32_replay_fs4_level_uses_raw_block();

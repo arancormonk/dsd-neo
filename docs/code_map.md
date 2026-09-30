@@ -2066,13 +2066,30 @@ Notes:
   - The output ring is cleared from the demod thread (family switch, reacquire) and the controller (reconfigure gate)
     while the decoder reads it, and from the decoder thread itself under the family-switch gate (a CQPSK toggle, an
     external backend's retune whose landing moves the output rate). The readers (`ring_read_available()`,
-    `ring_read_batch()`) hold `ready_m` from their tail snapshot to their tail store, and
+    `ring_read_available_copy()`, `ring_read_batch()`) hold `ready_m` from their tail snapshot to their tail store, and
     `rtl_stream_clear_output_ring()` clears under it, so a read in flight cannot store its old tail over the cleared
     indices (which reads as a ring full of the old stream's samples).
     The clear bumps the output generation before it takes `ready_m`, and again under it once the ring is empty: a
     read that loaded the first bump can still reach the ring before the clear and take samples the clear drops, and
     the second bump keeps the stream from running on the generation that read carried them under.
     Tests: `RUNTIME_RINGS`, `IO_RTL_ANALOG_FAMILY_SWITCH`.
+  - I/Q replay end of stream (issue #572; `replay_thread_fn()` in `rtl_device.cpp`, `rtl_stream_read_replay()` in
+    `rtl_sdr_fm.cpp`). The capture's end and a read the capture source refuses end a replay the same way:
+    - The reader marks input EOF, waits on the input ring's `space` (50 ms at a time) for the demod to take the rest,
+      marks the input drained, then waits for the demod to drain.
+    - A failure is logged and latched as `DSD_INPUT_FAILURE_FILE`. Under `--iq-replay`,
+      `dsd_engine_run_with_lifecycle()` then returns 1.
+    - The drain decision (input drained, demod drained) is made under `replay_eof_m` by the reader and the demod
+      alike, so whichever decides second sees the other's store. The demod thread marks itself drained when it
+      leaves.
+    - The decoder's read never blocks inside a ring read. It loads "drained" before it looks at the ring: the demod
+      publishes its last output before it is reported drained. It copies with the non-blocking
+      `ring_read_available_copy()`, which a clear can leave empty-handed, and otherwise waits 10 ms at a time on
+      `output.ready`. A reader that left without marking EOF counts as EOF.
+    - `replay_wake_all()` wakes every replay wait (both rings' `ready` and `space`, and the EOF condition). It runs at
+      EOF, on a failure, on a stop and when a start unwinds.
+
+    Tests: `IO_RTL_REPLAY_EOF_AND_CF32`, `ENGINE_REPLAY_READ_ERROR`.
 - Local audio output backends and audio device listing live in `dsd-neo_platform` (see `src/platform/audio_*.c`).
 - Network audio/input backends live in `src/io/audio_backends/` (`udp_input.c`, `tcp_input.c`, `udp_audio.c`,
   `m17_udp.c`, `udp_bind.c`).

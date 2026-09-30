@@ -1092,6 +1092,7 @@ typedef struct rtl_stream_test_replay_state {
     int replay_demod_drained;
     int replay_output_drained;
     int replay_forced_stop;
+    int replay_reader_exited;
     int should_exit;
     uint64_t replay_last_submit_gen;
     uint64_t replay_last_submit_gen_at_eof;
@@ -1110,6 +1111,36 @@ typedef struct rtl_stream_test_replay_state {
 
 int dsd_rtl_stream_test_get_replay_state(rtl_stream_test_replay_state* out_state);
 int rtl_stream_test_steady_state_watermark_enabled(const char* audio_in_dev);
+
+/* Points of the I/Q replay pipeline a test can stop at (issue #572). Each is reported to the hook that
+ * rtl_stream_test_set_replay_stage_hook() installs, on the thread named, with the count the stage names (0 where it
+ * names none). The reporting thread holds no stream lock, so a hook may wait there for another thread to reach its own
+ * stage. */
+enum {
+    RTL_STREAM_TEST_REPLAY_DEMOD_AFTER_RESERVE = 1,       /* demod: took an input block (count: floats) */
+    RTL_STREAM_TEST_REPLAY_DEMOD_BEFORE_OUTPUT_WRITE = 2, /* demod: about to publish the block's output */
+    RTL_STREAM_TEST_REPLAY_DEMOD_AFTER_OUTPUT_WRITE = 3,  /* demod: published it (count: samples written) */
+    RTL_STREAM_TEST_REPLAY_DEMOD_DRAIN_DECISION = 4,      /* demod: about to decide whether the input is drained */
+    RTL_STREAM_TEST_REPLAY_READER_DRAIN_DECISION = 5,     /* replay reader: input ring empty at EOF, about to decide */
+    RTL_STREAM_TEST_REPLAY_DECODER_OUTPUT_FOUND = 6,      /* decoder: saw output queued, before it copies any */
+    RTL_STREAM_TEST_REPLAY_DECODER_OUTPUT_EMPTY = 7,      /* decoder: found nothing to copy, before its end check */
+};
+
+typedef void (*rtl_stream_test_replay_stage_fn)(int stage, size_t count, void* ctx);
+
+/* Install only while the stream is stopped. NULL removes the hook. */
+void rtl_stream_test_set_replay_stage_hook(rtl_stream_test_replay_stage_fn hook, void* ctx);
+/* Report @p stage to the installed hook. The replay reader in rtl_device.cpp reports its stage through this too. */
+void rtl_stream_test_replay_stage(int stage, size_t count);
+
+/* The next I/Q replay reader fails the read that follows @p after_chunks reads that returned data, with @p code (a
+ * DSD_IQ_ERR_* value) as dsd_iq_replay_read() would. One failure per arming; a negative @p after_chunks disarms it. */
+void rtl_device_test_replay_inject_read_error(int after_chunks, int code);
+/* Nonzero: rtl_device_start_async() refuses to start an I/Q replay reader, as a failed thread create would. */
+void rtl_device_test_replay_fail_start(int fail);
+/* How many times the last replay reader's EOF sequence looked at the input ring while it waited for the ring to
+ * empty. */
+uint64_t rtl_device_test_replay_eof_wait_iterations(void);
 
 #ifdef __cplusplus
 }
