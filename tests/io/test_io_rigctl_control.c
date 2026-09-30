@@ -850,6 +850,32 @@ test_rebind_hands_the_scan_record_to_a_reconnect(void) {
     assert(sent_since(2, restore_fm));
     const dsd_rigctl_modulation after = CachedModulation(193);
     assert(after.kind == DSD_ANALOG_DEMOD_FM && after.bandwidth == 0);
+
+    /* The peer may have restarted, or been changed, while the connection was down (often why it is reconnected): a
+       request for what it last accepted is sent all the same, and the own passbands read before are still what the
+       restore sends, with no read taking the row's for the peer's own. */
+    reset_stubs();
+    push_response("FM\n12500\n");
+    push_response("RPRT 0\n");
+    push_response("AM\n10000\n");
+    push_response("RPRT 0\n");
+    assert(SetScanRowModulation(208, DSD_ANALOG_DEMOD_AM, 6000));
+    g_create_result = 209;
+    assert(Connect(host, 4532) == 209);
+    RigctlRebindPeer(208, 209, 1);
+    const dsd_rigctl_modulation rebound = CachedModulation(209);
+    assert(rebound.kind == DSD_ANALOG_DEMOD_AM && rebound.bandwidth == INT_MIN);
+    push_response("RPRT 0\n");
+    assert(SetScanRowModulation(209, DSD_ANALOG_DEMOD_AM, 6000));
+    static const char* const again[] = {"M AM 6000\n", NULL};
+    assert(sent_since(4, again));
+    assert(SetScanRowModulation(209, DSD_ANALOG_DEMOD_AM, 6000));
+    assert(g_command_count == 5);
+    push_response("RPRT 0\n");
+    push_response("RPRT 0\n");
+    assert(RestoreScanModulation(209, DSD_ANALOG_DEMOD_FM, 0));
+    static const char* const restore_both[] = {"M AM 10000\n", "M NFM 12500\n", NULL};
+    assert(sent_since(5, restore_both));
     return 0;
 }
 

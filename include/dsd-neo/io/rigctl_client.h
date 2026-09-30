@@ -116,8 +116,10 @@ bool RestoreScanModulation(dsd_socket_t sockfd, int kind, int bandwidth);
  *
  * - No record of @p old_fd (nothing was asked of its peer, or @p old_fd is DSD_INVALID_SOCKET): nothing changes, and
  *   the new socket is a peer nothing was asked of, as after a first Connect().
- * - @p same_endpoint (the same host and port): the new socket takes the whole record, so the FM undo and
- *   RestoreScanModulation() still send the peer's own passbands read before a scan row changed them.
+ * - @p same_endpoint (the same host and port): the new socket takes the record, so the FM undo and
+ *   RestoreScanModulation() still send the peer's own passbands read before a scan row changed them. The passband the
+ *   peer last accepted is no longer known, since it may have restarted or been changed while the connection was down:
+ *   as after a lost reply, the next request is sent whatever it asks for.
  * - Another endpoint, with the old peer possibly on AM (an am row's, or either demodulator after a lost reply): it
  *   may be the same peer under another name, so the new socket's demodulator is not known (DSD_RIGCTL_KIND_UNKNOWN,
  *   passband not known). The next FM request is sent, the peer's own passband (0) included, a best-effort tune the

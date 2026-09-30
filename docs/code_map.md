@@ -1721,9 +1721,10 @@ Runtime controls (via `include/dsd-neo/io/rtl_stream_c.h`):
     the frequency `SetFreq()` last sent, empty for a connection on the number of a closed socket and leaves them alone
     for one on another number (the TCP audio input's reconnect while the rigctl socket stays open), and
     `SetModulation()` is the FM call. `RigctlRebindPeer()` hands a rigctl reconnect, opened while the socket it replaces
-    is still open, what that socket knew of its peer (issue #589): the whole record for the same host and port, so the
-    FM undo and the scan's restore still send the peer's own passbands; for another endpoint while the old peer may run
-    AM (an am row's, or either demodulator after a lost reply), a demodulator not known, so FM is sent first and a
+    is still open, what that socket knew of its peer (issue #589): the record for the same host and port, so the FM undo
+    and the scan's restore still send the peer's own passbands, with the passband last accepted not known (the peer may
+    have restarted or been changed meanwhile), so the next request is sent; for another endpoint while the old peer may
+    run AM (an am row's, or either demodulator after a lost reply), a demodulator not known, so FM is sent first and a
     refusal fails a best-effort tune; otherwise nothing, a peer nothing was asked of, so one that refuses mode requests
     does not fail every tune. No own passband of the old peer reaches another endpoint. Both rigctl reconnects, the '9'
     key (the TCP input's host at the rigctl port) and the menu's host and port, go through `svc_rigctl_connect()`

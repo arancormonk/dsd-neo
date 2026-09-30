@@ -300,7 +300,11 @@ RigctlRebindPeer(dsd_socket_t old_fd, dsd_socket_t new_fd, int same_endpoint) {
         return;
     }
     if (same_endpoint) {
-        s_peer.sockfd = new_fd; /* the same peer: what the scan changed on it, and its own passbands, stay known */
+        /* The same peer: what the scan changed on it, and its own passbands, stay known. What it runs now may not be
+         * what it last accepted, since it may have restarted, or been changed, while the connection was down (often
+         * why it is reconnected): as after a lost reply, no request matches the cache until one is answered. */
+        s_peer.sockfd = new_fd;
+        s_peer.bw = INT_MIN;
         return;
     }
     /* Another endpoint may be another peer, whose own passbands the record does not describe, or the same one under
