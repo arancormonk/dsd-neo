@@ -1725,7 +1725,11 @@ Runtime controls (via `include/dsd-neo/io/rtl_stream_c.h`):
     FM undo and the scan's restore still send the peer's own passbands; for another endpoint while the old peer may run
     AM (an am row's, or either demodulator after a lost reply), a demodulator not known, so FM is sent first and a
     refusal fails a best-effort tune; otherwise nothing, a peer nothing was asked of, so one that refuses mode requests
-    does not fail every tune. No own passband of the old peer reaches another endpoint. The engine's rigctl
+    does not fail every tune. No own passband of the old peer reaches another endpoint. Both rigctl reconnects, the '9'
+    key (the TCP input's host at the rigctl port) and the menu's host and port, go through `svc_rigctl_connect()`
+    (`src/app_control/rigctl_connect.c`): it connects, rebinds, closes the old socket without sending it anything (the
+    old peer keeps what a scan last set on it) and forgets the engine's legacy tune cache; a connect that fails while
+    rigctl is on changes nothing, so the connection in use and its record stay. The engine's rigctl
     tune leg (`dsd_engine_tune_rigctl_modulation()` in `trunk_tuning.c`) asks a peer that demodulates audio input for
     an AM scan row's AM width and an nfm row's own width through `SetScanRowModulation()`, failing the row's tune when
     the peer refuses, and for `-B` otherwise, best-effort unless the peer refuses it while on an am row's AM or on a

@@ -325,7 +325,11 @@ passband. A peer that cannot answer `m` is sent passband `0` instead, which only
 passband (Hamlib's meaning) returns to it. Audio input without a rigctl peer applies no width, and scan start says so;
 nothing demodulates an `am` row's AM there, so scan start names each `am` row as skipped at every visit, whatever its
 width. On an RTL-family input DSD-neo demodulates the I/Q itself and a rigctl peer beside it only follows the frequency:
-it is asked for `-B`, best-effort, whatever the row runs and whatever demodulator the peer is on.
+it is asked for `-B`, best-effort, whatever the row runs and whatever demodulator the peer is on. On audio input, a
+rigctl reconnect during the scan (the `9` key, or the menu's host and port) to the same host and port keeps what the
+scan needs to put the peer back; one to another host or port, while the old peer may be on an `am` row's AM, asks the
+new peer for FM at the next FM or digital row, a refusal skipping that row, and leaves the old peer as the scan last set
+it. A reconnect that fails keeps the connection in use.
 
 An analog row holds while its carrier is open: the squelch is open over the monitor audio (above the input's level
 floor, through a 200 ms hangover, at any input rate), whether or not audio is played, so `-o null` or a muted frontend

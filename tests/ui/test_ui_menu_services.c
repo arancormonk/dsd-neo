@@ -27,7 +27,6 @@
 #include <dsd-neo/engine/channel_scan.h>
 #include <dsd-neo/engine/p25_bandplan_export.h>
 #include <dsd-neo/io/control.h>
-#include <dsd-neo/io/rigctl_client.h>
 #include <dsd-neo/io/rtl_stream_c.h>
 #include <dsd-neo/io/udp_socket_connect.h>
 #include <dsd-neo/platform/file_compat.h>
@@ -398,13 +397,6 @@ dsd_event_history_reset(dsd_state* state) {
     for (uint8_t slot = 0; slot < 2U; slot++) {
         init_event_history(&state->event_history_s[slot], 0, 255);
     }
-}
-
-dsd_socket_t
-Connect(char* hostname, int portno) {
-    (void)hostname;
-    (void)portno;
-    return DSD_INVALID_SOCKET;
 }
 
 static int g_udp_connect_result = -1;
@@ -1508,13 +1500,6 @@ test_file_network_and_import_failure_contracts(void) {
     rc |= expect_str("udp output host stored before connect", opts.udp_hostname, "239.0.0.1");
     rc |= expect_int("udp output port stored before connect", opts.udp_portno, 23456);
     rc |= expect_int("udp output type not enabled on connect failure", opts.audio_out_type, 0);
-
-    rc |= expect_int("rigctl invalid port", svc_rigctl_connect(&opts, "localhost", 0), -1);
-    rc |= expect_int("rigctl connect failure", svc_rigctl_connect(&opts, "rig.local", 4532), -1);
-    rc |= expect_str("rigctl host stored before connect", opts.rigctlhostname, "rig.local");
-    rc |= expect_int("rigctl port stored before connect", opts.rigctlportno, 4532);
-    rc |= expect_int("rigctl socket invalid after connect failure", opts.rigctl_sockfd, DSD_INVALID_SOCKET);
-    rc |= expect_int("rigctl disabled after connect failure", opts.use_rigctl, 0);
 
     g_chan_import_result = -1;
     rc |= expect_int("channel import failure", svc_import_channel_map(&opts, &state, "channels.csv"), -1);

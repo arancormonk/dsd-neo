@@ -19,6 +19,7 @@ target_sources(
         frontend_snr.c
         menu_services.c
         notification_status.c
+        rigctl_connect.c
         rr_import_apply.c
         rx_tone_view.c
         scan_timing_view.c

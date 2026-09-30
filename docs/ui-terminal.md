@@ -552,7 +552,7 @@ expires independently of **Save user TG lockouts**. See [Skip lifetimes](cli.md#
 | `S` | Toggle ProVoice standard/EA mode (ProVoice modes) |
 | `Z` | Simulate “no carrier” event |
 | `8` | Connect/reconnect TCP audio input |
-| `9` | Connect/reconnect rigctl |
+| `9` | Connect/reconnect rigctl (the TCP input's host at the rigctl port); a reconnect replaces the old connection, and one that fails keeps it |
 
 ### Capture / playback
 

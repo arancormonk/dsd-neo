@@ -53,7 +53,14 @@ int svc_open_symbol_in(dsd_opts* opts, dsd_state* state, const char* filename);
  */
 int svc_tcp_connect_audio(dsd_opts* opts, const char* host, int port);
 /**
- * @brief Connect to a rigctl server and enable rigctl control if successful.
+ * @brief Connect to a rigctl server and enable rigctl control if successful; every rigctl (re)connect goes through
+ * here (issue #589).
+ *
+ * The new socket opens while the old one is still open and takes what the old one knew of its peer
+ * (RigctlRebindPeer(): the same peer for the same host, ignoring case, and port). The old socket is then closed, sent
+ * nothing, so a peer a scan changed keeps what it last set once another endpoint replaces it. The engine's legacy tune
+ * cache is forgotten. A connect that fails while rigctl is on changes nothing: the connection in use stays. Without
+ * one, a failure records @p host and @p port for the next attempt and leaves rigctl off.
  */
 int svc_rigctl_connect(dsd_opts* opts, const char* host, int port);
 

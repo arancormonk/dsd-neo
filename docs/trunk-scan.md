@@ -546,7 +546,11 @@ no symbol profile is applied over the monitor. Everything below applies to both 
   that cannot answer `m` is sent passband `0` instead, best-effort. Requests are cached on the demodulator and passband
   together, so a peer already running both is not asked again; after a request whose reply was lost the next one is
   always sent. On an RTL-family input DSD-neo demodulates the I/Q itself and the peer only follows the frequency: it is
-  asked for `-B`, best-effort, as before, whatever the target runs, and whatever demodulator the peer is on.
+  asked for `-B`, best-effort, as before, whatever the target runs, and whatever demodulator the peer is on. A rigctl
+  reconnect during the scan (the `9` key, or the menu's host and port) to the same host and port keeps what the scan
+  needs to put the peer back; one to another host or port, while the old peer may be on an AM target's AM, asks the new
+  peer for FM at the next FM or digital target's retune, a refusal failing that retune, and leaves the old peer as the
+  scan last set it. A reconnect that fails keeps the connection in use.
 - **Tone filter.** `--tone-allow <list>`, `--tone-block <list>` or `--no-tone-filter` in the `options` column set an
   `nfm-conventional` target's own CTCSS/DCS receive policy; without one the configured policy
   (`--tone-allow`/`--tone-block`, `[analog] tone_filter` and `tone_list`) applies (see "Tone filter" in `docs/cli.md`).
