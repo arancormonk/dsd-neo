@@ -36,6 +36,7 @@
 #include <dsd-neo/platform/atomic_compat.h>
 #include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/platform/posix_compat.h>
+#include <dsd-neo/platform/sockets.h>
 #include <dsd-neo/platform/threading.h>
 #include <dsd-neo/platform/timing.h>
 #include <dsd-neo/protocol/dmr/dmr_trunk_sm.h>
@@ -2760,9 +2761,10 @@ test_tcp_connect_clears_received_tone(void) {
 }
 
 /*
- * Issue #589: the '9' key reconnects rigctl to the TCP input's host at the rigctl port through the service every
- * rigctl (re)connect takes, which hands the new socket the peer's record and closes the old one. Its toasts name the
- * host it asked for, since a reconnect that fails keeps the old endpoint in the options.
+ * Issue #589: the '9' key reconnects rigctl to the TCP input's host at the rigctl port through the service the menu's
+ * connect takes too, which hands the new socket the peer's record and closes the old one. It reports the service's
+ * outcome, as the menu's connect does, and its toasts name the host it asked for, since a reconnect that fails keeps
+ * the old endpoint in the options.
  */
 static int
 test_rigctl_reconnect_key_uses_the_connect_service(void) {
@@ -2780,6 +2782,7 @@ test_rigctl_reconnect_key_uses_the_connect_service(void) {
         arm_rigctl_connect_stub(1, connects ? 0 : -1);
         rc |= expect_int(tag, post_empty(DSD_APP_CMD_RIGCTL_CONNECT), DSD_APP_COMMAND_SUBMIT_QUEUED);
         rc |= expect_int(tag, dsd_app_drain_cmds(&opts, &state), 1);
+        rc |= expect_int(tag, dsd_app_command_test_last_failed(), connects ? 0 : 1);
         rc |= expect_int(tag, g_rigctl_connect_calls, 1);
         rc |= expect_str(tag, g_rigctl_connect_host, "sdr.example");
         rc |= expect_int(tag, g_rigctl_connect_port, 4532);

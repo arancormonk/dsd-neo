@@ -51,7 +51,6 @@
 #include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/platform/platform.h>
 #include <dsd-neo/platform/posix_compat.h>
-#include <dsd-neo/platform/sockets.h>
 #include <dsd-neo/platform/threading.h>
 #include <dsd-neo/protocol/dmr/dmr.h>
 #include <dsd-neo/protocol/p25/p25_cc_candidates.h>
@@ -5019,7 +5018,7 @@ apply_cmd_trunk_controls(dsd_opts* opts, dsd_state* state, const struct dsd_app_
             return ui_cmd_apply_status_from_service_rc(rc);
         }
         case DSD_APP_CMD_RIGCTL_CONNECT: {
-            /* The TCP input's host at the rigctl port, through the service every rigctl (re)connect takes (issue #589).
+            /* The TCP input's host at the rigctl port, through the service the menu's connect takes too (issue #589).
                The toasts name the host asked for: a failed reconnect keeps the old one in rigctlhostname. */
             const int rc = svc_rigctl_connect(opts, opts->tcp_hostname, opts->rigctlportno);
             if (rc == 0) {
